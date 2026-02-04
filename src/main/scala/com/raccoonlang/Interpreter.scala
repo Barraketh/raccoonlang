@@ -17,7 +17,7 @@ object Interpreter {
   case object VUniverse extends VType { override def tpe: VType = this }
 
   // Dependent function type: Pi (x : binderTy) -> body(x)
-  case class VPi(binderName: String, binderTy: Value, body: Value => Value) extends VType {
+  case class VPi(argTy: VType, body: Value => VType) extends VType {
     override def tpe: VType = VUniverse
   }
 
@@ -50,47 +50,66 @@ object Interpreter {
     val empty: Env = Env(map = Map(), parent = None)
   }
 
-  private def error(message: String) = throw new RuntimeException(message)
+  private def error(message: String): Nothing = throw new RuntimeException(message)
 
   // Evaluate a type term to a type value (NbE domain)
-  private def evalType(ty: TypeTerm, env: Env): Value = ty match {
-    case Term.Ident("Type")        => VUniverse
-    case Term.Ident(name)           => env.find(name).getOrElse { throw new RuntimeException(s"$name not found") }
-    case Term.TypeVar(name)         => env.find(name).getOrElse { throw new RuntimeException(s"$name not found") }
-    case Term.TApp(fn, arg)         =>
-      val vf = evalType(fn, env)
-      val va = evalType(arg, env)
-      applyValue(vf, va, env)
-    case Term.Pi(binder, body)      =>
-      val bTy = evalType(binder.ty, env)
-      VPi(binder.name, bTy, (x: Value) => evalType(body, env.newScope.put(binder.name, x)))
+  private def evalType(ty: TypeTerm, env: Env): VType = {
+    val res = ty match {
+      case Term.Ident("Type") => VUniverse
+      case Term.Ident(name) =>
+        env.find(name).getOrElse {
+          throw new RuntimeException(s"$name not found")
+        }
+      case Term.TypeVar(name) =>
+        env.find(name).getOrElse {
+          throw new RuntimeException(s"$name not found")
+        }
+      case Term.TApp(fn, arg) =>
+        val vf = evalType(fn, env)
+        val va = evalType(arg, env)
+        applyValue(vf, va)
+      case Term.Pi(binder, body) =>
+        val bTy = evalType(binder.ty, env)
+        VPi(bTy, (x: Value) => evalType(body, env.newScope.put(binder.name, x)))
+    }
+    res match {
+      case v: VType =>
+        check(v, VUniverse)
+        v
+      case _ => error(s"$ty is not a type")
+    }
   }
 
   // Apply a value (for both term and type level), preserving types
-  private def applyValue(fn: Value, arg: Value, callEnv: Env): Value = fn match {
-    case lam: VLam =>
-      val newEnv = lam.env.newScope.maybePut(lam.name, lam).put(lam.argName, arg)
-      evalBody(lam.body, newEnv)
-    case other =>
-      other.tpe match {
-        case VPi(bName, bTy, bBody) =>
-          val resTy = bBody(arg).asInstanceOf[VType]
-          other match {
-            case VApp(h, args, _) => VApp(h, args.appended(arg), resTy)
-            case _                 => VApp(other, Vector(arg), resTy)
-          }
-        case notFn => error(s"Application to non-function type: $notFn")
-      }
+  private def applyValue(fn: Value, arg: Value): Value = {
+    fn.tpe match {
+      case VPi(argTy, body) =>
+        check(arg, argTy)
+        fn match {
+          case lam: VLam =>
+            val newEnv = lam.env.newScope.maybePut(lam.name, lam).put(lam.argName, arg)
+            evalBody(lam.body, newEnv)
+          case other =>
+            val resTy = body(arg)
+            other match {
+              case VApp(h, args, _) => VApp(h, args.appended(arg), resTy)
+              case _                => VApp(other, Vector(arg), resTy)
+            }
+        }
+
+      case notFn => error(s"Application to non-function type: $notFn")
+    }
   }
 
   // NbE-based definitional equality for values (types and terms)
   private def conv(v1: Value, v2: Value): Boolean = (v1, v2) match {
-    case (VUniverse, VUniverse) => true
+    case (VUniverse, VUniverse)                 => true
     case (VConst(n1, c1, _), VConst(n2, c2, _)) => n1 == n2 && c1 == c2
-    case (VApp(h1, as1, _), VApp(h2, as2, _))   => conv(h1, h2) && as1.length == as2.length && as1.zip(as2).forall { case (x, y) => conv(x, y) }
-    case (VPi(n1, a1, b1), VPi(n2, a2, b2)) =>
+    case (VApp(h1, as1, _), VApp(h2, as2, _)) =>
+      conv(h1, h2) && as1.length == as2.length && as1.zip(as2).forall { case (x, y) => conv(x, y) }
+    case (VPi(a1, b1), VPi(a2, b2)) =>
       conv(a1, a2) && {
-        val fresh = VConst(freshName(n1), Symbol, a1.asInstanceOf[VType])
+        val fresh = VConst(freshName(), Symbol, a1)
         val t1 = b1(fresh)
         val t2 = b2(fresh)
         conv(t1, t2)
@@ -100,17 +119,13 @@ object Interpreter {
 
   // Fresh symbol name helper
   private var gensymId: Long = 0L
-  private def freshName(prefix: String): String = {
+  private def freshName(): String = {
     gensymId += 1
-    val p = if (prefix == "_" || prefix.isEmpty) "x" else prefix
-    s"$$${p}_$gensymId"
+    s"$$x_$gensymId"
   }
 
-  // Synthesize the type of a value (trivial with typed values)
-  private def synth(value: Value, env: Env): Value = value.tpe
-
   // Check that a value has a given type (by conversion)
-  private def check(value: Value, tyVal: Value, env: Env): Unit = {
+  private def check(value: Value, tyVal: Value): Unit = {
     val got = value.tpe
     if (!conv(got, tyVal)) error(s"Type mismatch: expected $tyVal, found $got for $value")
   }
@@ -119,22 +134,22 @@ object Interpreter {
     val scrut = evalTerm(m.scrut, env)
     val (head, args) = scrut match {
       case VApp(head, args, _) => (head, args)
-      case c: VConst            => (c, Vector.empty)
-      case _                    => return VMatch(m, env, evalType(m.motive, env).asInstanceOf[VType])
+      case c: VConst           => (c, Vector.empty)
+      case _                   => return VMatch(m, env, evalType(m.motive, env))
     }
     head match {
       case VConst(ctorName, `ConstructorHead`, _) =>
         val branch = m.cases.find(c => c.ctorName == ctorName).getOrElse(error(s"Match failed - $ctorName not found"))
         if (args.length != branch.argNames.length) error("Wrong number of args")
         val withScrut = env.put(m.scrutName, scrut)
-        val newEnv = args.zip(branch.argNames).foldLeft(withScrut) {
-          case (curEnv, (argV, argName)) => curEnv.put(argName, argV)
+        val newEnv = args.zip(branch.argNames).foldLeft(withScrut) { case (curEnv, (argV, argName)) =>
+          curEnv.put(argName, argV)
         }
         evalTerm(branch.body, newEnv)
       case _ =>
         // Keep match neutral for typing purposes (motive gives its type)
         val withScrut = env.put(m.scrutName, scrut)
-        VMatch(m, withScrut, evalType(m.motive, withScrut).asInstanceOf[VType])
+        VMatch(m, withScrut, evalType(m.motive, withScrut))
     }
   }
 
@@ -143,13 +158,12 @@ object Interpreter {
     case Term.App(fn, arg) =>
       val vf = evalTerm(fn, env)
       val varg = evalTerm(arg, env)
-      applyValue(vf, varg, env)
+      applyValue(vf, varg)
     case Term.Lam(binder, body) =>
       val domTy = evalType(binder.ty, env)
       // lazy self to allow recursion in body typing
       lazy val lam: VLam = VLam(None, binder.name, body, env, lamType)
       lazy val lamType: VType = VPi(
-        binder.name,
         domTy,
         (x: Value) => {
           val env2 = env.newScope.maybePut(lam.name, lam).put(binder.name, x)
@@ -158,7 +172,7 @@ object Interpreter {
         }
       )
       lam
-    case m: Term.Match          => evalMatch(m, env)
+    case m: Term.Match => evalMatch(m, env)
 
   }
 
@@ -167,7 +181,7 @@ object Interpreter {
       val res = evalTerm(l.value, curEnv)
       l.ty.foreach { tyTerm =>
         val tyV = evalType(tyTerm, curEnv)
-        check(res, tyV, curEnv)
+        check(res, tyV)
       }
       curEnv.put(l.name, res)
     }
@@ -177,13 +191,13 @@ object Interpreter {
   private def evalDecl(decl: Decl, env: Env): Env = {
     decl match {
       case Decl.ConstDecl(isInline, name, ty, body) =>
-        val tyV = evalType(ty, env).asInstanceOf[VType]
+        val tyV = evalType(ty, env)
         val value =
           if (isInline)
             body
               .map(b => {
                 val res = evalBody(b, env)
-                check(res, tyV, env)
+                check(res, tyV)
                 res match {
                   case v: VLam => v.copy(name = Some(name))
                   case other   => other
@@ -195,10 +209,10 @@ object Interpreter {
         env.put(name, value)
 
       case Decl.InductiveDecl(name, ty, ctors) =>
-        val tyV = evalType(ty, env).asInstanceOf[VType]
+        val tyV = evalType(ty, env)
         val env2 = env.put(name, VConst(name, Inductive(ctors.map(c => c.name)), tyV))
         ctors.foldLeft(env2) { case (curEnv, c) =>
-          val ctorTy = evalType(c.ty, curEnv).asInstanceOf[VType]
+          val ctorTy = evalType(c.ty, curEnv)
           curEnv.put(c.name, VConst(c.name, ConstructorHead, ctorTy))
         }
     }
