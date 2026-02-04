@@ -40,7 +40,6 @@ object LanguageParser {
 
   private def typeTerm: Parser[TypeTerm] =
     pi |
-      (P('$') ~ ident).map(TypeVar) |
       sym('(') ~ typeTerm ~ sym(')') |
       (typeExpr ~ sym("->") ~ typeTerm).map { case (expr, term) => Pi(Binder("_", expr), term) } |
       typeExpr

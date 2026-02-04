@@ -60,10 +60,6 @@ object Interpreter {
         env.find(name).getOrElse {
           throw new RuntimeException(s"$name not found")
         }
-      case Term.TypeVar(name) =>
-        env.find(name).getOrElse {
-          throw new RuntimeException(s"$name not found")
-        }
       case Term.TApp(fn, arg) =>
         val vf = evalType(fn, env)
         val va = evalType(arg, env)

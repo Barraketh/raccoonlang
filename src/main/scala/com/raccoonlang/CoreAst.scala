@@ -10,8 +10,6 @@ object CoreAst {
     // Identifier (either type or term)
     final case class Ident(name: String) extends Term with TypeTerm
 
-    final case class TypeVar(name: String) extends TypeTerm
-
     // Application in type position
     final case class TApp(fn: TypeTerm, arg: TypeTerm) extends TypeTerm
 
