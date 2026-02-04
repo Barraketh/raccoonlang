@@ -28,10 +28,15 @@ object LanguageParser {
 
   private def kw(s: String) = (skipWS ~ P(s) ~/ wsSep).named(s"Kw($s)")
 
-  // TApp or Ident
+  // Type atoms: identifier, type variable, or parenthesized type
+  private def typeAtom: Parser[TypeTerm] =
+    sym('(') ~ typeTerm ~ sym(')') |
+      ident.map(Ident)
+
+  // General type application chain: atom atom ... -> TApp(...(atom1 atom2) atom3)
   private def typeExpr: Parser[TypeTerm] =
-    ident.rep(1, wsSep).map { idents =>
-      idents.tail.foldLeft(Ident(idents.head): TypeTerm) { case (curTerm, nextName) => TApp(curTerm, Ident(nextName)) }
+    typeAtom.rep(1, wsSep).map { atoms =>
+      atoms.tail.foldLeft(atoms.head) { case (curTerm, nextAtom) => TApp(curTerm, nextAtom) }
     }
 
   private def param = (sym('(') ~ ident ~ sym(':') ~/ typeTerm ~ sym(')')).map(Binder.tupled)

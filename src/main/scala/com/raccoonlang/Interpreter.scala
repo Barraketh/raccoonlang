@@ -30,6 +30,8 @@ object Interpreter {
   // Neutral match (when scrutinee is not a constructor)
   case class VMatch(m: Match, env: Env, tpe: VType) extends Value
 
+  case class TypeErr(message: String) extends RuntimeException(message)
+
   // Environment: names map to typed values
   final case class Env(map: Map[String, Value], parent: Option[Env]) {
     def find(name: String): Option[Value] = map.get(name).orElse(parent.flatMap(_.find(name)))
@@ -50,24 +52,24 @@ object Interpreter {
     val empty: Env = Env(map = Map(), parent = None)
   }
 
-  private def error(message: String): Nothing = throw new RuntimeException(message)
+  private def error(message: String): Nothing = throw TypeErr(message)
+
+  // Evaluate a type-position expression without enforcing it is a type yet
+  private def evalTT(tt: TypeTerm, env: Env): Value = tt match {
+    case Term.Ident("Type") => VUniverse
+    case Term.Ident(name)    => env.find(name).getOrElse { error(s"$name not found") }
+    case Term.TApp(fn, arg)  =>
+      val vf = evalTT(fn, env)
+      val va = evalTT(arg, env)
+      applyValue(vf, va)
+    case Term.Pi(binder, body) =>
+      val bTy = evalType(binder.ty, env)
+      VPi(bTy, (x: Value) => evalType(body, env.newScope.put(binder.name, x)))
+  }
 
   // Evaluate a type term to a type value (NbE domain)
   private def evalType(ty: TypeTerm, env: Env): VType = {
-    val res = ty match {
-      case Term.Ident("Type") => VUniverse
-      case Term.Ident(name) =>
-        env.find(name).getOrElse {
-          throw new RuntimeException(s"$name not found")
-        }
-      case Term.TApp(fn, arg) =>
-        val vf = evalType(fn, env)
-        val va = evalType(arg, env)
-        applyValue(vf, va)
-      case Term.Pi(binder, body) =>
-        val bTy = evalType(binder.ty, env)
-        VPi(bTy, (x: Value) => evalType(body, env.newScope.put(binder.name, x)))
-    }
+    val res = evalTT(ty, env)
     res match {
       case v: VType =>
         check(v, VUniverse)
@@ -141,16 +143,46 @@ object Interpreter {
         val newEnv = args.zip(branch.argNames).foldLeft(withScrut) { case (curEnv, (argV, argName)) =>
           curEnv.put(argName, argV)
         }
-        evalTerm(branch.body, newEnv)
+        val branchRes = evalTerm(branch.body, newEnv)
+        val expectTy = evalType(m.motive, withScrut)
+        check(branchRes, expectTy)
+        branchRes
       case _ =>
-        // Keep match neutral for typing purposes (motive gives its type)
+        // Scrutinee not a constructor: keep match neutral, but type-check all branches
         val withScrut = env.put(m.scrutName, scrut)
+
+        // For each branch, synthesize a scrutinee of that constructor with fresh symbolic args
+        m.cases.foreach { br =>
+          val ctorVal = env.find(br.ctorName).getOrElse(error(s"Constructor ${br.ctorName} not found"))
+          val (symArgs, scrutSynth, envWithArgs) = ctorVal match {
+            case VConst(_, ConstructorHead, ctorTy) =>
+              // Unroll constructor type Pis to build fresh symbols and synthesized scrutinee
+              def loop(ty: VType, accArgs: Vector[Value], curEnv: Env, names: Vector[String]): (Vector[Value], Value, Env) = ty match {
+                case VPi(argTy, body) if accArgs.length < br.argNames.length =>
+                  val argName = br.argNames(accArgs.length)
+                  val sym = VConst(freshName(), Symbol, argTy)
+                  val nextEnv = curEnv.put(argName, sym)
+                  val nextTy = body(sym)
+                  loop(nextTy, accArgs.appended(sym), nextEnv, names)
+                case _ =>
+                  val applied = accArgs.foldLeft(ctorVal: Value) { case (fn, a) => applyValue(fn, a) }
+                  (accArgs, applied, curEnv)
+              }
+              loop(ctorTy, Vector.empty, withScrut, br.argNames)
+            case other => error(s"${br.ctorName} is not a constructor: $other")
+          }
+          val envForBranch = envWithArgs.newScope.put(m.scrutName, scrutSynth)
+          val branchRes = evalTerm(br.body, envForBranch)
+          val expectTy = evalType(m.motive, envForBranch)
+          check(branchRes, expectTy)
+        }
+
         VMatch(m, withScrut, evalType(m.motive, withScrut))
     }
   }
 
   private def evalTerm(term: Term, env: Env): Value = term match {
-    case Term.Ident(name) => env.find(name).getOrElse { throw new RuntimeException(s"$name not found") }
+    case Term.Ident(name) => env.find(name).getOrElse { error(s"$name not found") }
     case Term.App(fn, arg) =>
       val vf = evalTerm(fn, env)
       val varg = evalTerm(arg, env)
@@ -188,17 +220,20 @@ object Interpreter {
     decl match {
       case Decl.ConstDecl(isInline, name, ty, body) =>
         val tyV = evalType(ty, env)
+        // Allow recursive references by pre-binding a symbolic self during body checking
+        val envWithSelf = env.put(name, VConst(name, Symbol, tyV))
+        val checkedBodyOpt = body.map { b =>
+          val res = evalBody(b, envWithSelf)
+          check(res, tyV)
+          res
+        }
         val value =
           if (isInline)
-            body
-              .map(b => {
-                val res = evalBody(b, env)
-                check(res, tyV)
-                res match {
-                  case v: VLam => v.copy(name = Some(name))
-                  case other   => other
-                }
-              })
+            checkedBodyOpt
+              .map {
+                case v: VLam => v.copy(name = Some(name))
+                case other   => other
+              }
               .getOrElse(VConst(name, Symbol, tyV))
           else VConst(name, Symbol, tyV)
 
