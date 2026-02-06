@@ -1,26 +1,28 @@
 package com.raccoonlang
+
+import com.raccoonlang.Util.NEL
 // Core AST for RaccoonCore (trusted kernel language)
 
 object CoreAst {
 
   sealed trait Term // Terms that can appear in function bodies
-  sealed trait TypeTerm // Terms that can appear in type expressions
+  sealed trait TypeTerm extends Term// Terms that can appear in type expressions
 
   object Term {
     // Identifier (either type or term)
     final case class Ident(name: String) extends Term with TypeTerm
 
     // Application in type position
-    final case class TApp(fn: TypeTerm, arg: TypeTerm) extends TypeTerm
+    final case class TApp(fn: TypeTerm, args: NEL[TypeTerm]) extends TypeTerm
 
     // Pi (x: A) -> B x
-    final case class Pi(binder: Binder, body: TypeTerm) extends TypeTerm
+    final case class Pi(binders: NEL[Binder], out: TypeTerm) extends TypeTerm
 
     // Application: f a (term-level)
-    final case class App(fn: Term, arg: Term) extends Term
+    final case class App(fn: Term, args: NEL[Term]) extends Term
 
     // Lambda: fun (x : A): B => body
-    final case class Lam(binder: Binder, body: Body) extends Term
+    final case class Lam(ty: Pi, body: Body) extends Term
 
     final case class Match(
         scrut: Term,
@@ -46,7 +48,7 @@ object CoreAst {
 
   object Decl {
     // Constant: name : type [:= value], with transparency (Opaque | Inline)
-    final case class ConstDecl(isInline: Boolean, name: String, ty: TypeTerm, body: Option[Body]) extends Decl
+    final case class ConstDecl(isInline: Boolean, name: String, ty: TypeTerm, body: Option[Term]) extends Decl
 
     // Inductive type declaration
     final case class InductiveDecl(name: String, ty: TypeTerm, ctors: Vector[Constructor]) extends Decl
