@@ -16,16 +16,16 @@ class InterpreterTests extends munit.FunSuite {
   // Erased shape comparison helpers
   sealed trait Shape
   case class SConst(name: String, ct: ConstType) extends Shape
-  case class SApp(head: Shape, args: Vector[Shape]) extends Shape
+  case class SApp(head: Shape, args: List[Shape]) extends Shape
 
   private def toShape(v: Value): Shape = v match {
-    case Interpreter.VConst(n, ct, _)         => SConst(n, ct)
-    case Interpreter.VApp(h, args, _)         => SApp(toShape(h), args.map(toShape))
-    case other                                => SConst(other.toString, ConstructorHead) // fallback, won't be used in this test
+    case Interpreter.VConst(n, ct, _) => SConst(n, ct)
+    case Interpreter.VApp(h, args, _) => SApp(toShape(h), args.toList.map(toShape))
+    case other                        => SConst(other.toString, ConstructorHead) // fallback, won't be used in this test
   }
 
   private val zeroS = SConst("Nat.zero", ConstructorHead)
-  private def succS(s: Shape) = SApp(SConst("Nat.succ", ConstructorHead), Vector(s))
+  private def succS(s: Shape) = SApp(SConst("Nat.succ", ConstructorHead), List(s))
 
   test("Nats compute") {
     val p = """

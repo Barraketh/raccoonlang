@@ -1,5 +1,7 @@
 package com.raccoonlang
 
+import com.raccoonlang.Util.NEL
+
 // Surface AST for RaccoonLang.  Will be elaborated into CoareAst
 object SurfaceAst {
 
@@ -11,16 +13,16 @@ object SurfaceAst {
     final case class Ident(name: String) extends Term with TypeTerm
 
     // Application in type position
-    final case class TApp(fn: TypeTerm, arg: TypeTerm) extends TypeTerm
+    final case class TApp(fn: TypeTerm, args: NEL[TypeTerm]) extends TypeTerm
 
     // Pi (x: A) -> B x
     final case class Pi(binder: Binder, body: TypeTerm) extends TypeTerm
 
     // Application: f a (term-level)
-    final case class App(fn: Term, arg: Term) extends Term
+    final case class App(fn: Term, args: NEL[Term]) extends Term
 
     // Lambda: fun (x : A)(y: B): B => body
-    final case class Lam(params: Vector[Binder], body: Body) extends Term
+    final case class Lam(header: FuncHeader, body: Body) extends Term
 
     final case class Match(
         scrut: Term,
@@ -37,7 +39,9 @@ object SurfaceAst {
 
   case class Binder(name: String, ty: TypeTerm)
 
-  case class DeclHeader(name: String, params: Vector[Binder], ty: TypeTerm)
+  case class FuncHeader(params: Vector[Binder], ty: TypeTerm)
+
+  case class DeclHeader(name: String, funcHeader: FuncHeader)
 
   case class Case(ctorName: String, argNames: Vector[String], body: Term)
 

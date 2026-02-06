@@ -4,6 +4,7 @@ import com.raccoonlang.Parser._
 import com.raccoonlang.SurfaceAst.Decl.{ConstDecl, InductiveDecl}
 import com.raccoonlang.SurfaceAst.Term._
 import com.raccoonlang.SurfaceAst._
+import com.raccoonlang.Util.NEL
 
 object LanguageParser {
   // Whitespace handling
@@ -29,14 +30,13 @@ object LanguageParser {
   private def kw(s: String) = (skipWS ~ P(s) ~/ wsSep).named(s"Kw($s)")
 
   // Type atoms: identifier, type variable, or parenthesized type
-  private def typeAtom: Parser[TypeTerm] =
-    sym('(') ~ typeTerm ~ sym(')') |
-      ident.map(Ident)
+  private def typeAtom: Parser[TypeTerm] = sym('(') ~ typeTerm ~ sym(')') | ident.map(Ident)
 
   // General type application chain: atom atom ... -> TApp(...(atom1 atom2) atom3)
   private def typeExpr: Parser[TypeTerm] =
     typeAtom.rep(1, wsSep).map { atoms =>
-      atoms.tail.foldLeft(atoms.head) { case (curTerm, nextAtom) => TApp(curTerm, nextAtom) }
+      if (atoms.length == 1) atoms.head
+      else TApp(atoms.head, NEL.mk(atoms.tail))
     }
 
   private def param = (sym('(') ~ ident ~ sym(':') ~/ typeTerm ~ sym(')')).map(Binder.tupled)
@@ -57,7 +57,7 @@ object LanguageParser {
     (let.rep(0, lineSep) ~ skipOneLine ~ term).map { case (lets, term) => Body(lets, term) }.named("Body")
 
   private def lambda: Parser[Lam] =
-    (kw("fun") ~ param.rep(1, skipWS) ~ sym("=>") ~ body).map(Lam.tupled)
+    (kw("fun") ~ funcHeader ~ sym("=>") ~ body).map(Lam.tupled)
 
   private def matchCase: Parser[Case] =
     (sym("|") ~ ident ~ wsSep ~ ident.rep(0, wsSep) ~ sym("=>") ~ term ~ lineSep)
@@ -69,15 +69,16 @@ object LanguageParser {
       kw("with") ~ lineSep ~ matchCase.rep(1)).map(Match.tupled)
   }
 
-  private def term: Parser[Term] = (lambda | matchP |
-    sym("(") ~ term ~ sym(")") |
-    ident.map(Ident))
+  private def term: Parser[Term] = (lambda | matchP | sym("(") ~ term ~ sym(")") | ident.map(Ident))
     .rep(1, wsSep)
     .map { terms =>
-      terms.tail.foldLeft(terms.head) { case (curTerm, nextTerm) => App(curTerm, nextTerm) }
+      if (terms.length == 1) terms.head
+      else App(terms.head, NEL.mk(terms.tail))
     }
 
-  private def declHeader: Parser[DeclHeader] = (ident ~ param.rep(0) ~ sym(':') ~ typeTerm).map(DeclHeader.tupled)
+  private def funcHeader: Parser[FuncHeader] = (param.rep(0) ~ sym(':') ~ typeTerm).map(FuncHeader.tupled)
+
+  private def declHeader: Parser[DeclHeader] = (ident ~ wsSep ~ funcHeader).map(DeclHeader.tupled)
 
   // inline? def foo (a: A)(b : B): C a := body
   private val constP: Parser[ConstDecl] =

@@ -2,12 +2,14 @@ package com.raccoonlang
 
 import com.raccoonlang.CoreAst.Term._
 import com.raccoonlang.CoreAst._
+import com.raccoonlang.Util.NEL
 
 object Interpreter {
   sealed trait ConstType
   case object ConstructorHead extends ConstType
   case class Inductive(constructorNames: Vector[String]) extends ConstType
   case object Symbol extends ConstType
+  case object Var extends ConstType
 
   // Runtime values (normal forms) used for both terms and types, all typed
   sealed trait Value { def tpe: VType }
@@ -16,17 +18,21 @@ object Interpreter {
   // Universe of types: the value denoting "Type" (Type : Type for now)
   case object VUniverse extends VType { override def tpe: VType = this }
 
-  // Dependent function type: Pi (x : binderTy) -> body(x)
-  case class VPi(argTy: VType, body: Value => VType) extends VType {
+  /** A function type. env must be mutable in order to allow recursion - lambdas and envs must be able to point to each
+    * other
+    */
+  case class VPi(var env: Env, binders: NEL[Binder], out: TypeTerm) extends VType {
     override def tpe: VType = VUniverse
+
+    override def toString: String = "VPi"
   }
 
   // Term-level constants and constructors (also used for type-level identifiers)
   case class VConst(name: String, constType: ConstType, tpe: VType) extends VType
   // Application (term or type level)
-  case class VApp(head: Value, args: Vector[Value], tpe: VType) extends VType
+  case class VApp(head: Value, args: NEL[Value], tpe: VType) extends VType
   // Lambda value (term-level function)
-  case class VLam(name: Option[String], argName: String, body: Body, env: Env, tpe: VType) extends Value
+  case class VLam(body: Body, tpe: VPi) extends Value
   // Neutral match (when scrutinee is not a constructor)
   case class VMatch(m: Match, env: Env, tpe: VType) extends Value
 
@@ -43,8 +49,6 @@ object Interpreter {
       else Env(map + (name -> value), parent)
     }
 
-    def maybePut(name: Option[String], value: Value): Env = name.map(n => put(n, value)).getOrElse(this)
-
     def newScope: Env = Env(Map.empty, Some(this))
   }
 
@@ -57,14 +61,12 @@ object Interpreter {
   // Evaluate a type-position expression without enforcing it is a type yet
   private def evalTT(tt: TypeTerm, env: Env): Value = tt match {
     case Term.Ident("Type") => VUniverse
-    case Term.Ident(name)    => env.find(name).getOrElse { error(s"$name not found") }
-    case Term.TApp(fn, arg)  =>
+    case Term.Ident(name)   => env.find(name).getOrElse { error(s"$name not found") }
+    case Term.TApp(fn, args) =>
       val vf = evalTT(fn, env)
-      val va = evalTT(arg, env)
-      applyValue(vf, va)
-    case Term.Pi(binder, body) =>
-      val bTy = evalType(binder.ty, env)
-      VPi(bTy, (x: Value) => evalType(body, env.newScope.put(binder.name, x)))
+      evalApply(vf, args, env)
+    case pi: Term.Pi => VPi(env, pi.binders, pi.out)
+
   }
 
   // Evaluate a type term to a type value (NbE domain)
@@ -78,21 +80,33 @@ object Interpreter {
     }
   }
 
-  // Apply a value (for both term and type level), preserving types
-  private def applyValue(fn: Value, arg: Value): Value = {
+  private def evalApply(fn: Value, args: NEL[Term], argsEnv: Env): Value = {
     fn.tpe match {
-      case VPi(argTy, body) =>
-        check(arg, argTy)
-        fn match {
-          case lam: VLam =>
-            val newEnv = lam.env.newScope.maybePut(lam.name, lam).put(lam.argName, arg)
-            evalBody(lam.body, newEnv)
-          case other =>
-            val resTy = body(arg)
-            other match {
-              case VApp(h, args, _) => VApp(h, args.appended(arg), resTy)
-              case _                => VApp(other, Vector(arg), resTy)
+      case VPi(funcEnv, binders, out) =>
+        if (args.length > binders.length) error("Too many args to fn")
+        val (argBinders, rest) = binders.splitAt(args.length)
+        val (nextFuncEnv, argValues) = args.zip(argBinders).foldLeft[(Env, Vector[Value])](funcEnv -> Vector.empty) {
+          case ((curFuncEnv, curValues), (nextArg, nextBinder)) =>
+            val argV = evalTerm(nextArg, argsEnv)
+            val argTy = evalType(nextBinder.ty, curFuncEnv)
+            check(argV, argTy)
+            curFuncEnv.put(nextBinder.name, argV) -> (curValues :+ argV)
+        }
+
+        val resTy = rest match {
+          case Some(remainingBinders) => VPi(nextFuncEnv, remainingBinders, out)
+          case None                   => evalType(out, nextFuncEnv)
+        }
+
+        (fn, resTy) match {
+          case (lam: VLam, pi: VPi) => VLam(lam.body, pi)
+          case (lam: VLam, _) =>
+            val newEnv = argValues.zip(binders.toList).foldLeft(lam.tpe.env.newScope) { case (curEnv, (argV, binder)) =>
+              curEnv.put(binder.name, argV)
             }
+            evalBody(lam.body, newEnv)
+          case (VApp(h, args, _), _) => VApp(h, args :++ argValues, resTy)
+          case (other, _)            => VApp(other, NEL.mk(argValues), resTy)
         }
 
       case notFn => error(s"Application to non-function type: $notFn")
@@ -105,12 +119,19 @@ object Interpreter {
     case (VConst(n1, c1, _), VConst(n2, c2, _)) => n1 == n2 && c1 == c2
     case (VApp(h1, as1, _), VApp(h2, as2, _)) =>
       conv(h1, h2) && as1.length == as2.length && as1.zip(as2).forall { case (x, y) => conv(x, y) }
-    case (VPi(a1, b1), VPi(a2, b2)) =>
-      conv(a1, a2) && {
-        val fresh = VConst(freshName(), Symbol, a1)
-        val t1 = b1(fresh)
-        val t2 = b2(fresh)
-        conv(t1, t2)
+    case (VPi(env1, binders1, out1), VPi(env2, binders2, out2)) =>
+      (binders1.length == binders2.length) && {
+        val (env1res, env2res, argsMatch) = binders1.zip(binders2).foldWhile[(Env, Env, Boolean)]((env1, env2, true)) {
+          case ((env1, env2, _), (b1, b2)) =>
+            val b1V = evalType(b1.ty, env1)
+            val b2V = evalType(b2.ty, env2)
+            if (!conv(b1V, b2V)) ((env1, env2, false), true)
+            else {
+              val fresh = VConst(freshName(), Var, b1V)
+              ((env1.put(b1.name, fresh), env2.put(b2.name, fresh), true), false)
+            }
+        }
+        argsMatch && conv(evalType(out1, env1res), evalType(out2, env2res))
       }
     case (x, y) => x == y
   }
@@ -125,14 +146,15 @@ object Interpreter {
   // Check that a value has a given type (by conversion)
   private def check(value: Value, tyVal: Value): Unit = {
     val got = value.tpe
-    if (!conv(got, tyVal)) error(s"Type mismatch: expected $tyVal, found $got for $value")
+    if (!conv(got, tyVal))
+      error(s"Type mismatch: expected $tyVal, found $got for $value")
   }
 
   private def evalMatch(m: Match, env: Env): Value = {
     val scrut = evalTerm(m.scrut, env)
     val (head, args) = scrut match {
-      case VApp(head, args, _) => (head, args)
-      case c: VConst           => (c, Vector.empty)
+      case VApp(head, args, _) => (head, args.toList)
+      case c: VConst           => (c, Nil)
       case _                   => return VMatch(m, env, evalType(m.motive, env))
     }
     head match {
@@ -154,54 +176,53 @@ object Interpreter {
         // For each branch, synthesize a scrutinee of that constructor with fresh symbolic args
         m.cases.foreach { br =>
           val ctorVal = env.find(br.ctorName).getOrElse(error(s"Constructor ${br.ctorName} not found"))
-          val (symArgs, scrutSynth, envWithArgs) = ctorVal match {
+          ctorVal match {
             case VConst(_, ConstructorHead, ctorTy) =>
-              // Unroll constructor type Pis to build fresh symbols and synthesized scrutinee
-              def loop(ty: VType, accArgs: Vector[Value], curEnv: Env, names: Vector[String]): (Vector[Value], Value, Env) = ty match {
-                case VPi(argTy, body) if accArgs.length < br.argNames.length =>
-                  val argName = br.argNames(accArgs.length)
-                  val sym = VConst(freshName(), Symbol, argTy)
-                  val nextEnv = curEnv.put(argName, sym)
-                  val nextTy = body(sym)
-                  loop(nextTy, accArgs.appended(sym), nextEnv, names)
-                case _ =>
-                  val applied = accArgs.foldLeft(ctorVal: Value) { case (fn, a) => applyValue(fn, a) }
-                  (accArgs, applied, curEnv)
+              val branchEnv = ctorTy match {
+                case pi: VPi =>
+                  if (br.argNames.length != pi.binders.length) error("Wrong number of args")
+                  val (freshVars, _) = assignFreshVars(pi)
+                  br.argNames.zip(freshVars).foldLeft(env) { case (curEnv, (argName, argVal)) =>
+                    curEnv.put(argName, argVal)
+                  }
+                case _ => env
               }
-              loop(ctorTy, Vector.empty, withScrut, br.argNames)
+
+              val branchRes = evalTerm(br.body, branchEnv)
+              val expectTy = evalType(m.motive, env)
+              check(branchRes, expectTy)
+
             case other => error(s"${br.ctorName} is not a constructor: $other")
           }
-          val envForBranch = envWithArgs.newScope.put(m.scrutName, scrutSynth)
-          val branchRes = evalTerm(br.body, envForBranch)
-          val expectTy = evalType(m.motive, envForBranch)
-          check(branchRes, expectTy)
         }
 
         VMatch(m, withScrut, evalType(m.motive, withScrut))
     }
   }
 
+  private def assignFreshVars(vpi: VPi): (Vector[Value], Env) = vpi.binders.foldLeft(Vector.empty[Value] -> vpi.env) {
+    case ((curValues, curEnv), binder) =>
+      val tyV = evalType(binder.ty, curEnv)
+      val fresh = VConst(freshName(), Var, tyV)
+      (curValues :+ fresh, curEnv.put(binder.name, fresh))
+  }
+
   private def evalTerm(term: Term, env: Env): Value = term match {
     case Term.Ident(name) => env.find(name).getOrElse { error(s"$name not found") }
-    case Term.App(fn, arg) =>
+    case Term.App(fn, args) =>
       val vf = evalTerm(fn, env)
-      val varg = evalTerm(arg, env)
-      applyValue(vf, varg)
-    case Term.Lam(binder, body) =>
-      val domTy = evalType(binder.ty, env)
-      // lazy self to allow recursion in body typing
-      lazy val lam: VLam = VLam(None, binder.name, body, env, lamType)
-      lazy val lamType: VType = VPi(
-        domTy,
-        (x: Value) => {
-          val env2 = env.newScope.maybePut(lam.name, lam).put(binder.name, x)
-          val bodyV = evalBody(body, env2)
-          bodyV.tpe
-        }
-      )
-      lam
-    case m: Term.Match => evalMatch(m, env)
+      evalApply(vf, args, env)
+    case Term.Lam(ty, body) =>
+      val vpi = VPi(env, ty.binders, ty.out)
+      val (_, nextEnv) = assignFreshVars(vpi)
 
+      val bodyV = evalBody(body, nextEnv)
+      val resType = evalType(vpi.out, nextEnv)
+
+      check(bodyV, resType)
+      VLam(body, vpi)
+    case m: Term.Match => evalMatch(m, env)
+    case tt: TypeTerm  => evalTT(tt, env)
   }
 
   private def evalBody(body: Body, env: Env): Value = {
@@ -222,22 +243,19 @@ object Interpreter {
         val tyV = evalType(ty, env)
         // Allow recursive references by pre-binding a symbolic self during body checking
         val envWithSelf = env.put(name, VConst(name, Symbol, tyV))
-        val checkedBodyOpt = body.map { b =>
-          val res = evalBody(b, envWithSelf)
-          check(res, tyV)
-          res
+        val checkedBodyOpt = body.map(b => evalTerm(b, envWithSelf))
+        val value = (checkedBodyOpt, isInline) match {
+          case (Some(v), true) => v
+          case _               => VConst(name, Symbol, tyV)
         }
-        val value =
-          if (isInline)
-            checkedBodyOpt
-              .map {
-                case v: VLam => v.copy(name = Some(name))
-                case other   => other
-              }
-              .getOrElse(VConst(name, Symbol, tyV))
-          else VConst(name, Symbol, tyV)
+        val nextEnv = env.put(name, value)
 
-        env.put(name, value)
+        value match {
+          case VLam(_, tpe) => tpe.env = nextEnv
+          case _            =>
+        }
+
+        nextEnv
 
       case Decl.InductiveDecl(name, ty, ctors) =>
         val tyV = evalType(ty, env)
