@@ -4,12 +4,13 @@ import com.raccoonlang.CoreAst.Term._
 import com.raccoonlang.CoreAst._
 import com.raccoonlang.Util.NEL
 
+import scala.annotation.tailrec
+
 object Interpreter {
   sealed trait ConstType
   case object ConstructorHead extends ConstType
   case class Inductive(constructorNames: Vector[String]) extends ConstType
   case object Symbol extends ConstType
-  case object Var extends ConstType
 
   // Runtime values (normal forms) used for both terms and types, all typed
   sealed trait Value { def tpe: VType }
@@ -36,24 +37,45 @@ object Interpreter {
   // Neutral match (when scrutinee is not a constructor)
   case class VMatch(m: Match, env: Env, tpe: VType) extends Value
 
+  case class Var(name: String, id: Long, tpe: VType) extends VType
+
   case class TypeErr(message: String) extends RuntimeException(message)
 
   // Environment: names map to typed values
-  final case class Env(map: Map[String, Value], parent: Option[Env]) {
-    def find(name: String): Option[Value] = map.get(name).orElse(parent.flatMap(_.find(name)))
+  // Also contains a second level of indirection to handle unification - Vars can point at other Vars or
+  // other values. You can only link the tops of var link chains (to make sure we can't get cycles)
+  final case class Env(map: Map[String, Value], parent: Option[Env], varLinks: Map[Long, Value]) {
+    def find(name: String): Option[Value] = map.get(name).orElse(parent.flatMap(_.find(name))) match {
+      case Some(Var(_, id, _)) if varLinks.contains(id) => Some(getVarTop(id))
+      case other                                             => other
+    }
 
     def put(name: String, value: Value): Env = {
       if (map.contains(name))
         throw new RuntimeException(s"$name already defined")
       else if (name == "_") this
-      else Env(map + (name -> value), parent)
+      else Env(map + (name -> value), parent, varLinks)
     }
 
-    def newScope: Env = Env(Map.empty, Some(this))
+    def addVarLink(id: Long, v: Value): Env = {
+      if (varLinks.contains(id)) error(s"FreshVar $id already linked")
+      v match {
+        case Var(_, vid, _) if varLinks.contains(vid) => error("Cannot link to bottom of chain")
+        case _                                             => Env(map, parent, varLinks + (id -> v))
+      }
+    }
+
+    @tailrec
+    def getVarTop(id: Long): Value = varLinks(id) match {
+      case Var(_, nextId, _) if varLinks.contains(nextId) => getVarTop(nextId)
+      case other                                               => other
+    }
+
+    def newScope: Env = Env(Map.empty, Some(this), varLinks)
   }
 
   object Env {
-    val empty: Env = Env(map = Map(), parent = None)
+    val empty: Env = Env(map = Map(), parent = None, varLinks = Map())
   }
 
   private def error(message: String): Nothing = throw TypeErr(message)
@@ -74,7 +96,7 @@ object Interpreter {
     val res = evalTT(ty, env)
     res match {
       case v: VType =>
-        check(v, VUniverse)
+        check(v, VUniverse, env)
         v
       case _ => error(s"$ty is not a type")
     }
@@ -89,7 +111,7 @@ object Interpreter {
           case ((curFuncEnv, curValues), (nextArg, nextBinder)) =>
             val argV = evalTerm(nextArg, argsEnv)
             val argTy = evalType(nextBinder.ty, curFuncEnv)
-            check(argV, argTy)
+            check(argV, argTy, curFuncEnv)
             curFuncEnv.put(nextBinder.name, argV) -> (curValues :+ argV)
         }
 
@@ -113,42 +135,89 @@ object Interpreter {
     }
   }
 
-  // NbE-based definitional equality for values (types and terms)
-  private def conv(v1: Value, v2: Value): Boolean = (v1, v2) match {
-    case (VUniverse, VUniverse)                 => true
-    case (VConst(n1, c1, _), VConst(n2, c2, _)) => n1 == n2 && c1 == c2
-    case (VApp(h1, as1, _), VApp(h2, as2, _)) =>
-      conv(h1, h2) && as1.length == as2.length && as1.zip(as2).forall { case (x, y) => conv(x, y) }
-    case (VPi(env1, binders1, out1), VPi(env2, binders2, out2)) =>
-      (binders1.length == binders2.length) && {
-        val (env1res, env2res, argsMatch) = binders1.zip(binders2).foldWhile[(Env, Env, Boolean)]((env1, env2, true)) {
-          case ((env1, env2, _), (b1, b2)) =>
-            val b1V = evalType(b1.ty, env1)
-            val b2V = evalType(b2.ty, env2)
-            if (!conv(b1V, b2V)) ((env1, env2, false), true)
-            else {
-              val fresh = VConst(freshName(), Var, b1V)
-              ((env1.put(b1.name, fresh), env2.put(b2.name, fresh), true), false)
-            }
-        }
-        argsMatch && conv(evalType(out1, env1res), evalType(out2, env2res))
-      }
-    case (x, y) => x == y
-  }
-
   // Fresh symbol name helper
   private var gensymId: Long = 0L
-  private def freshName(): String = {
+  private def freshVar(name: String, tpe: VType) = {
     gensymId += 1
-    s"$$x_$gensymId"
+    Var(name, gensymId, tpe)
+  }
+
+
+  private def occurs(id: Long, v: Value, env: Env): Boolean = v match {
+    case Var(_, vid, _) if vid == id => true
+    case Var(_, vid, _) if env.varLinks.contains(vid) => occurs(id, env.getVarTop(vid), env)
+    case VPi(piEnv, binders, out) =>
+      // Check binder types first
+      val inBinders = binders.toList.exists { b =>
+        val tv = evalType(b.ty, piEnv)
+        occurs(id, tv, env)
+      }
+      if (inBinders) true
+      else {
+        // Check codomain under fresh assignments for binders
+        val (_, extEnv) = assignFreshVars(VPi(piEnv, binders, out))
+        val outV = evalType(out, extEnv)
+        occurs(id, outV, env)
+      }
+    case VApp(h, args, _) => occurs(id, h, env) || args.toList.exists(a => occurs(id, a, env))
+    case _ => false
+  }
+
+  private def unify(v1: Value, v2: Value, env: Env): Env = {
+    (v1, v2) match {
+      case (VUniverse, VUniverse)                                         => env
+      case (VConst(n1, c1, _), VConst(n2, c2, _)) if n1 == n2 && c1 == c2 => env
+      case (p1 @ VPi(env1, bs1, out1), p2 @ VPi(env2, bs2, out2)) if bs1.length == bs2.length =>
+        // Extensional unification for Pi types: unify binder types and codomain under shared fresh vars
+        val (envAfterBinders, extEnv1, extEnv2) = bs1.toList.zip(bs2.toList).foldLeft((env, env1.newScope, env2.newScope)) {
+          case ((curEnv, curEnv1, curEnv2), (b1, b2)) =>
+            val t1 = evalType(b1.ty, curEnv1)
+            val t2 = evalType(b2.ty, curEnv2)
+            val nextEnv = unify(t1, t2, curEnv)
+            val x = freshVar(b1.name, t1)
+            (nextEnv, curEnv1.put(b1.name, x), curEnv2.put(b2.name, x))
+        }
+        val outT1 = evalType(out1, extEnv1)
+        val outT2 = evalType(out2, extEnv2)
+        unify(outT1, outT2, envAfterBinders)
+      case (VApp(h1, args1, _), VApp(h2, args2, _)) if args1.length == args2.length =>
+        val startCtx = unify(h1, h2, env)
+        args1.zip(args2).foldLeft(startCtx) { case (newCtx, (arg1, arg2)) => unify(arg1, arg2, newCtx) }
+
+      // Unify FreshVars through ctx. Basic idea: FreshVars can point at things through context
+      // unify creates a ctx of pointers. We only create pointers from the top of the chain
+
+      case (Var(_, id1, _), Var(_, id2, _)) if id1 == id2 => env
+
+      // If we have FreshVars, resolve the tops of the chain
+      case (Var(_, id, _), _) if env.varLinks.contains(id) => unify(env.getVarTop(id), v2, env)
+      case (_, Var(_, id, _)) if env.varLinks.contains(id) => unify(v1, env.getVarTop(id), env)
+
+      // Link two distinct, unlinked Vars: smaller id points to larger id
+      case (v1 @ Var(_, id1, ty1), v2 @ Var(_, id2, ty2)) =>
+        val (smallId, largeVar, smallTy, largeTy) =
+          if (id1 < id2) (id1, v2: Value, ty1, ty2) else (id2, v1: Value, ty2, ty1)
+        val env1 = unify(smallTy, largeTy, env)
+        env1.addVarLink(smallId, largeVar)
+
+      // Link unlinked Var (left) to a non-Var value
+      case (v @ Var(_, id, ty), other) =>
+        if (occurs(id, other, env)) error(s"Occurs check failed: $id in $other")
+        val env1 = unify(ty, other.tpe, env)
+        env1.addVarLink(id, other)
+
+      // Symmetric: link unlinked Var (right) to non-Var value
+      case (other, v @ Var(_, id, ty)) =>
+        if (occurs(id, other, env)) error(s"Occurs check failed: $id in $other")
+        val env1 = unify(ty, other.tpe, env)
+        env1.addVarLink(id, other)
+
+      case _ => error(s"Failed to unify $v1 and $v2")
+    }
   }
 
   // Check that a value has a given type (by conversion)
-  private def check(value: Value, tyVal: Value): Unit = {
-    val got = value.tpe
-    if (!conv(got, tyVal))
-      error(s"Type mismatch: expected $tyVal, found $got for $value")
-  }
+  private def check(value: Value, tyVal: VType, env: Env): Unit = { unify(value.tpe, tyVal, env); () }
 
   private def evalMatch(m: Match, env: Env): Value = {
     val scrut = evalTerm(m.scrut, env)
@@ -167,7 +236,7 @@ object Interpreter {
         }
         val branchRes = evalTerm(branch.body, newEnv)
         val expectTy = evalType(m.motive, withScrut)
-        check(branchRes, expectTy)
+        check(branchRes, expectTy, withScrut)
         branchRes
       case _ =>
         // Scrutinee not a constructor: keep match neutral, but type-check all branches
@@ -178,19 +247,31 @@ object Interpreter {
           val ctorVal = env.find(br.ctorName).getOrElse(error(s"Constructor ${br.ctorName} not found"))
           ctorVal match {
             case VConst(_, ConstructorHead, ctorTy) =>
-              val branchEnv = ctorTy match {
+              val (freshArgs, ctorEnv) = ctorTy match {
                 case pi: VPi =>
                   if (br.argNames.length != pi.binders.length) error("Wrong number of args")
-                  val (freshVars, _) = assignFreshVars(pi)
-                  br.argNames.zip(freshVars).foldLeft(env) { case (curEnv, (argName, argVal)) =>
-                    curEnv.put(argName, argVal)
-                  }
-                case _ => env
+                  assignFreshVars(pi)
+                case _ =>
+                  if (br.argNames.nonEmpty) error("Wrong number of args")
+                  (Vector.empty[Value], env)
+              }
+
+              val ctorResTy: VType = ctorTy match {
+                case VPi(_, _, out) => evalType(out, ctorEnv)
+                case otherTy: VType => otherTy
+              }
+
+              // Refine env by unifying scrutinee type with constructor result type
+              val refinedEnv = unify(scrut.tpe, ctorResTy, env)
+
+              val branchBase = refinedEnv.put(m.scrutName, scrut)
+              val branchEnv = br.argNames.zip(freshArgs).foldLeft(branchBase) {
+                case (curEnv, (argName, argVal)) => curEnv.put(argName, argVal)
               }
 
               val branchRes = evalTerm(br.body, branchEnv)
-              val expectTy = evalType(m.motive, env)
-              check(branchRes, expectTy)
+              val expectTy = evalType(m.motive, branchBase)
+              check(branchRes, expectTy, branchBase)
 
             case other => error(s"${br.ctorName} is not a constructor: $other")
           }
@@ -203,7 +284,7 @@ object Interpreter {
   private def assignFreshVars(vpi: VPi): (Vector[Value], Env) = vpi.binders.foldLeft(Vector.empty[Value] -> vpi.env) {
     case ((curValues, curEnv), binder) =>
       val tyV = evalType(binder.ty, curEnv)
-      val fresh = VConst(freshName(), Var, tyV)
+      val fresh = freshVar(binder.name, tyV)
       (curValues :+ fresh, curEnv.put(binder.name, fresh))
   }
 
@@ -219,7 +300,7 @@ object Interpreter {
       val bodyV = evalBody(body, nextEnv)
       val resType = evalType(vpi.out, nextEnv)
 
-      check(bodyV, resType)
+      check(bodyV, resType, nextEnv)
       VLam(body, vpi)
     case m: Term.Match => evalMatch(m, env)
     case tt: TypeTerm  => evalTT(tt, env)
@@ -230,7 +311,7 @@ object Interpreter {
       val res = evalTerm(l.value, curEnv)
       l.ty.foreach { tyTerm =>
         val tyV = evalType(tyTerm, curEnv)
-        check(res, tyV)
+        check(res, tyV, curEnv)
       }
       curEnv.put(l.name, res)
     }
