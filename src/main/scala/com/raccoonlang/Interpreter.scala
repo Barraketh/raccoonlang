@@ -13,31 +13,32 @@ object Interpreter {
   case object Symbol extends ConstType
 
   // Runtime values (normal forms) used for both terms and types, all typed
-  sealed trait Value { def tpe: VType }
-  sealed trait VType extends Value
+  sealed trait Value { def tpe: Value }
 
   // Universe of types: the value denoting "Type" (Type : Type for now)
-  case object VUniverse extends VType { override def tpe: VType = this }
+  case object VUniverse extends Value {
+    override def tpe: Value = this
+  }
 
   /** A function type. env must be mutable in order to allow recursion - lambdas and envs must be able to point to each
     * other
     */
-  case class VPi(var env: Env, binders: NEL[Binder], out: TypeTerm) extends VType {
-    override def tpe: VType = VUniverse
+  case class VPi(var env: Env, binders: NEL[Binder], out: TypeTerm) extends Value {
+    override def tpe: Value = VUniverse
 
     override def toString: String = "VPi"
   }
 
   // Term-level constants and constructors (also used for type-level identifiers)
-  case class VConst(name: String, constType: ConstType, tpe: VType) extends VType
+  case class VConst(name: String, constType: ConstType, tpe: Value) extends Value
   // Application (term or type level)
-  case class VApp(head: Value, args: NEL[Value], tpe: VType) extends VType
+  case class VApp(head: Value, args: NEL[Value], tpe: Value) extends Value
   // Lambda value (term-level function)
   case class VLam(body: Body, tpe: VPi) extends Value
   // Neutral match (when scrutinee is not a constructor)
-  case class VMatch(m: Match, env: Env, tpe: VType) extends Value
+  case class VMatch(m: Match, env: Env, tpe: Value) extends Value
 
-  case class Var(name: String, id: Long, tpe: VType) extends VType
+  case class Var(name: String, id: Long, tpe: Value) extends Value
 
   case class TypeErr(message: String) extends RuntimeException(message)
 
@@ -47,7 +48,7 @@ object Interpreter {
   final case class Env(map: Map[String, Value], parent: Option[Env], varLinks: Map[Long, Value]) {
     def find(name: String): Option[Value] = map.get(name).orElse(parent.flatMap(_.find(name))) match {
       case Some(Var(_, id, _)) if varLinks.contains(id) => Some(getVarTop(id))
-      case other                                             => other
+      case other                                        => other
     }
 
     def put(name: String, value: Value): Env = {
@@ -61,14 +62,14 @@ object Interpreter {
       if (varLinks.contains(id)) error(s"FreshVar $id already linked")
       v match {
         case Var(_, vid, _) if varLinks.contains(vid) => error("Cannot link to bottom of chain")
-        case _                                             => Env(map, parent, varLinks + (id -> v))
+        case _                                        => Env(map, parent, varLinks + (id -> v))
       }
     }
 
     @tailrec
     def getVarTop(id: Long): Value = varLinks(id) match {
       case Var(_, nextId, _) if varLinks.contains(nextId) => getVarTop(nextId)
-      case other                                               => other
+      case other                                          => other
     }
 
     def newScope: Env = Env(Map.empty, Some(this), varLinks)
@@ -92,10 +93,10 @@ object Interpreter {
   }
 
   // Evaluate a type term to a type value (NbE domain)
-  private def evalType(ty: TypeTerm, env: Env): VType = {
+  private def evalType(ty: TypeTerm, env: Env): Value = {
     val res = evalTT(ty, env)
     res match {
-      case v: VType =>
+      case v: Value =>
         check(v, VUniverse, env)
         v
       case _ => error(s"$ty is not a type")
@@ -137,16 +138,15 @@ object Interpreter {
 
   // Fresh symbol name helper
   private var gensymId: Long = 0L
-  private def freshVar(name: String, tpe: VType) = {
+  private def freshVar(name: String, tpe: Value) = {
     gensymId += 1
     Var(name, gensymId, tpe)
   }
 
-
   private def occurs(id: Long, v: Value, env: Env): Boolean = v match {
-    case Var(_, vid, _) if vid == id => true
+    case Var(_, vid, _) if vid == id                  => true
     case Var(_, vid, _) if env.varLinks.contains(vid) => occurs(id, env.getVarTop(vid), env)
-    case VPi(piEnv, binders, out) =>
+    case VPi(piEnv, binders, out)                     =>
       // Check binder types first
       val inBinders = binders.toList.exists { b =>
         val tv = evalType(b.ty, piEnv)
@@ -160,23 +160,24 @@ object Interpreter {
         occurs(id, outV, env)
       }
     case VApp(h, args, _) => occurs(id, h, env) || args.toList.exists(a => occurs(id, a, env))
-    case _ => false
+    case _                => false
   }
 
   private def unify(v1: Value, v2: Value, env: Env): Env = {
     (v1, v2) match {
-      case (VUniverse, VUniverse)                                         => env
-      case (VConst(n1, c1, _), VConst(n2, c2, _)) if n1 == n2 && c1 == c2 => env
+      case (VUniverse, VUniverse)                                                             => env
+      case (VConst(n1, c1, _), VConst(n2, c2, _)) if n1 == n2 && c1 == c2                     => env
       case (p1 @ VPi(env1, bs1, out1), p2 @ VPi(env2, bs2, out2)) if bs1.length == bs2.length =>
         // Extensional unification for Pi types: unify binder types and codomain under shared fresh vars
-        val (envAfterBinders, extEnv1, extEnv2) = bs1.toList.zip(bs2.toList).foldLeft((env, env1.newScope, env2.newScope)) {
-          case ((curEnv, curEnv1, curEnv2), (b1, b2)) =>
-            val t1 = evalType(b1.ty, curEnv1)
-            val t2 = evalType(b2.ty, curEnv2)
-            val nextEnv = unify(t1, t2, curEnv)
-            val x = freshVar(b1.name, t1)
-            (nextEnv, curEnv1.put(b1.name, x), curEnv2.put(b2.name, x))
-        }
+        val (envAfterBinders, extEnv1, extEnv2) =
+          bs1.toList.zip(bs2.toList).foldLeft((env, env1.newScope, env2.newScope)) {
+            case ((curEnv, curEnv1, curEnv2), (b1, b2)) =>
+              val t1 = evalType(b1.ty, curEnv1)
+              val t2 = evalType(b2.ty, curEnv2)
+              val nextEnv = unify(t1, t2, curEnv)
+              val x = freshVar(b1.name, t1)
+              (nextEnv, curEnv1.put(b1.name, x), curEnv2.put(b2.name, x))
+          }
         val outT1 = evalType(out1, extEnv1)
         val outT2 = evalType(out2, extEnv2)
         unify(outT1, outT2, envAfterBinders)
@@ -217,7 +218,7 @@ object Interpreter {
   }
 
   // Check that a value has a given type (by conversion)
-  private def check(value: Value, tyVal: VType, env: Env): Unit = { unify(value.tpe, tyVal, env); () }
+  private def check(value: Value, tyVal: Value, env: Env): Unit = { unify(value.tpe, tyVal, env); () }
 
   private def evalMatch(m: Match, env: Env): Value = {
     val scrut = evalTerm(m.scrut, env)
@@ -256,17 +257,17 @@ object Interpreter {
                   (Vector.empty[Value], env)
               }
 
-              val ctorResTy: VType = ctorTy match {
+              val ctorResTy: Value = ctorTy match {
                 case VPi(_, _, out) => evalType(out, ctorEnv)
-                case otherTy: VType => otherTy
+                case otherTy: Value => otherTy
               }
 
               // Refine env by unifying scrutinee type with constructor result type
               val refinedEnv = unify(scrut.tpe, ctorResTy, env)
 
               val branchBase = refinedEnv.put(m.scrutName, scrut)
-              val branchEnv = br.argNames.zip(freshArgs).foldLeft(branchBase) {
-                case (curEnv, (argName, argVal)) => curEnv.put(argName, argVal)
+              val branchEnv = br.argNames.zip(freshArgs).foldLeft(branchBase) { case (curEnv, (argName, argVal)) =>
+                curEnv.put(argName, argVal)
               }
 
               val branchRes = evalTerm(br.body, branchEnv)
