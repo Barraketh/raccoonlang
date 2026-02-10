@@ -5,53 +5,61 @@ import com.raccoonlang.Util.NEL
 
 object CoreAst {
 
-  sealed trait Term // Terms that can appear in function bodies
-  sealed trait TypeTerm extends Term// Terms that can appear in type expressions
+  // Terms that can appear in function bodies
+  sealed trait Term {
+    def span: Span
+  }
+
+  sealed trait TypeTerm extends Term // Terms that can appear in type expressions
 
   object Term {
     // Identifier (either type or term)
-    final case class Ident(name: String) extends Term with TypeTerm
+    final case class Ident(name: String, span: Span) extends Term with TypeTerm
 
     // Application in type position
-    final case class TApp(fn: TypeTerm, args: NEL[TypeTerm]) extends TypeTerm
+    final case class TApp(fn: TypeTerm, args: NEL[TypeTerm], span: Span) extends TypeTerm
 
     // Pi (x: A) -> B x
-    final case class Pi(binders: NEL[Binder], out: TypeTerm) extends TypeTerm
+    final case class Pi(binders: NEL[Binder], out: TypeTerm, span: Span) extends TypeTerm
 
     // Application: f a (term-level)
-    final case class App(fn: Term, args: NEL[Term]) extends Term
+    final case class App(fn: Term, args: NEL[Term], span: Span) extends Term
 
     // Lambda: fun (x : A): B => body
-    final case class Lam(ty: Pi, body: Body) extends Term
+    final case class Lam(ty: Pi, body: Body, span: Span) extends Term
 
     final case class Match(
         scrut: Term,
         scrutName: String,
         motive: TypeTerm,
-        cases: Vector[Case]
+        cases: Vector[Case],
+        span: Span
     ) extends Term
   }
 
   // Let: let x := foo
-  final case class Let(name: String, ty: Option[TypeTerm], value: Term)
+  final case class Let(name: String, ty: Option[TypeTerm], value: Term, span: Span)
 
-  case class Body(lets: Vector[Let], res: Term)
+  case class Body(lets: Vector[Let], res: Term, span: Span)
 
-  case class Binder(name: String, ty: TypeTerm)
+  case class Binder(name: String, ty: TypeTerm, span: Span)
 
-  case class Constructor(name: String, ty: TypeTerm)
+  case class Constructor(name: String, ty: TypeTerm, span: Span)
 
-  case class Case(ctorName: String, argNames: Vector[String], body: Term)
+  case class Case(ctorName: String, argNames: Vector[String], body: Term, span: Span)
 
   // Global declarations and environment entries
-  sealed trait Decl
+  sealed trait Decl {
+    def span: Span
+  }
 
   object Decl {
     // Constant: name : type [:= value], with transparency (Opaque | Inline)
-    final case class ConstDecl(isInline: Boolean, name: String, ty: TypeTerm, body: Option[Term]) extends Decl
+    final case class ConstDecl(isInline: Boolean, name: String, ty: TypeTerm, body: Option[Term], span: Span)
+      extends Decl
 
     // Inductive type declaration
-    final case class InductiveDecl(name: String, ty: TypeTerm, ctors: Vector[Constructor]) extends Decl
+    final case class InductiveDecl(name: String, ty: TypeTerm, ctors: Vector[Constructor], span: Span) extends Decl
   }
 
   case class Program(decls: Vector[Decl], body: Body)

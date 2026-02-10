@@ -41,6 +41,7 @@ object Interpreter {
   case class Var(name: String, id: Long, tpe: Value) extends Value
 
   case class TypeErr(message: String) extends RuntimeException(message)
+  case class TypeErrWithSpan(message: String, span: Span) extends RuntimeException(message)
 
   // Environment: names map to typed values
   // Also contains a second level of indirection to handle unification - Vars can point at other Vars or
@@ -83,9 +84,9 @@ object Interpreter {
 
   // Evaluate a type-position expression without enforcing it is a type yet
   private def evalTT(tt: TypeTerm, env: Env): Value = tt match {
-    case Term.Ident("Type") => VUniverse
-    case Term.Ident(name)   => env.find(name).getOrElse { error(s"$name not found") }
-    case Term.TApp(fn, args) =>
+    case Term.Ident("Type", _) => VUniverse
+    case Term.Ident(name, _)   => env.find(name).getOrElse { error(s"$name not found") }
+    case Term.TApp(fn, args, _) =>
       val vf = evalTT(fn, env)
       evalApply(vf, args, env)
     case pi: Term.Pi => VPi(env, pi.binders, pi.out)
@@ -289,22 +290,31 @@ object Interpreter {
       (curValues :+ fresh, curEnv.put(binder.name, fresh))
   }
 
-  private def evalTerm(term: Term, env: Env): Value = term match {
-    case Term.Ident(name) => env.find(name).getOrElse { error(s"$name not found") }
-    case Term.App(fn, args) =>
-      val vf = evalTerm(fn, env)
-      evalApply(vf, args, env)
-    case Term.Lam(ty, body) =>
-      val vpi = VPi(env, ty.binders, ty.out)
-      val (_, nextEnv) = assignFreshVars(vpi)
+  private def evalTerm(term: Term, env: Env): Value = {
+    try {
+      term match {
+        case Term.Ident(name, _) =>
+          env.find(name).getOrElse {
+            error(s"$name not found")
+          }
+        case Term.App(fn, args, _) =>
+          val vf = evalTerm(fn, env)
+          evalApply(vf, args, env)
+        case Term.Lam(ty, body, _) =>
+          val vpi = VPi(env, ty.binders, ty.out)
+          val (_, nextEnv) = assignFreshVars(vpi)
 
-      val bodyV = evalBody(body, nextEnv)
-      val resType = evalType(vpi.out, nextEnv)
+          val bodyV = evalBody(body, nextEnv)
+          val resType = evalType(vpi.out, nextEnv)
 
-      check(bodyV, resType, nextEnv)
-      VLam(body, vpi)
-    case m: Term.Match => evalMatch(m, env)
-    case tt: TypeTerm  => evalTT(tt, env)
+          check(bodyV, resType, nextEnv)
+          VLam(body, vpi)
+        case m: Term.Match => evalMatch(m, env)
+        case tt: TypeTerm  => evalTT(tt, env)
+      }
+    } catch {
+      case e: TypeErr => throw TypeErrWithSpan(e.message, term.span)
+    }
   }
 
   private def evalBody(body: Body, env: Env): Value = {
@@ -321,7 +331,7 @@ object Interpreter {
 
   private def evalDecl(decl: Decl, env: Env): Env = {
     decl match {
-      case Decl.ConstDecl(isInline, name, ty, body) =>
+      case Decl.ConstDecl(isInline, name, ty, body, _) =>
         val tyV = evalType(ty, env)
         // Allow recursive references by pre-binding a symbolic self during body checking
         val envWithSelf = env.put(name, VConst(name, Symbol, tyV))
@@ -339,7 +349,7 @@ object Interpreter {
 
         nextEnv
 
-      case Decl.InductiveDecl(name, ty, ctors) =>
+      case Decl.InductiveDecl(name, ty, ctors, _) =>
         val tyV = evalType(ty, env)
         val env2 = env.put(name, VConst(name, Inductive(ctors.map(c => c.name)), tyV))
         ctors.foldLeft(env2) { case (curEnv, c) =>

@@ -30,63 +30,67 @@ object LanguageParser {
   private def kw(s: String) = (skipWS ~ P(s) ~/ wsSep).named(s"Kw($s)")
 
   // Type atoms: identifier, type variable, or parenthesized type
-  private def typeAtom: Parser[TypeTerm] = sym('(') ~ typeTerm ~ sym(')') | ident.map(Ident)
+  private def typeAtom: Parser[TypeTerm] = sym('(') ~ typeTerm ~ sym(')') | ident.flatSpanned.map(Ident.tupled)
 
   // General type application chain: atom atom ... -> TApp(...(atom1 atom2) atom3)
   private def typeExpr: Parser[TypeTerm] =
-    typeAtom.rep(1, wsSep).map { atoms =>
+    typeAtom.rep(1, wsSep).spanned.mapAsT { case (atoms, span) =>
       if (atoms.length == 1) atoms.head
-      else TApp(atoms.head, NEL.mk(atoms.tail))
+      else TApp(atoms.head, NEL.mk(atoms.tail), span)
     }
 
-  private def param = (sym('(') ~ ident ~ sym(':') ~/ typeTerm ~ sym(')')).map(Binder.tupled)
+  private def param = (sym('(') ~ ident ~ sym(':') ~/ typeTerm ~ sym(')')).flatSpanned.map(Binder.tupled)
 
-  private def pi: Parser[Pi] = (param ~ sym("->") ~ typeTerm).map { Pi.tupled }
+  private def pi: Parser[Pi] = (param ~ sym("->") ~ typeTerm).flatSpanned.map { Pi.tupled }
 
   private def typeTerm: Parser[TypeTerm] =
     pi |
       sym('(') ~ typeTerm ~ sym(')') |
-      (typeExpr ~ sym("->") ~ typeTerm).map { case (expr, term) => Pi(Binder("_", expr), term) } |
+      (typeExpr.spanned ~ sym("->") ~ typeTerm).spanned.mapAsT { case ((expr, term), span) =>
+        Pi(Binder("_", expr.value, expr.span), term, span)
+      } |
       typeExpr
 
-  private def let: Parser[Let] = (kw("let") ~ ident ~ (sym(':') ~ typeTerm).? ~ sym(":=") ~ term).map {
-    case (name, ty, term) => Let(name, ty, term)
+  private def let: Parser[Let] = (kw("let") ~ ident ~ (sym(':') ~ typeTerm).? ~ sym(":=") ~ term).flatSpanned.map {
+    Let.tupled
   }
 
   private def body: Parser[Body] =
-    (let.rep(0, lineSep) ~ skipOneLine ~ term).map { case (lets, term) => Body(lets, term) }.named("Body")
+    (let.rep(0, lineSep) ~ skipOneLine ~ term).flatSpanned.map(Body.tupled).named("Body")
 
   private def lambda: Parser[Lam] =
-    (kw("fun") ~ funcHeader ~ sym("=>") ~ body).map(Lam.tupled)
+    (kw("fun") ~ funcHeader ~ sym("=>") ~ body).flatSpanned.map(Lam.tupled)
 
   private def matchCase: Parser[Case] =
-    (sym("|") ~ ident ~ wsSep ~ ident.rep(0, wsSep) ~ sym("=>") ~ term ~ lineSep)
+    (sym("|") ~ ident ~ wsSep ~ ident.rep(0, wsSep) ~ sym("=>") ~ term ~ lineSep).flatSpanned
       .map(Case.tupled)
       .named("Case")
 
   private def matchP: Parser[Match] = {
     (kw("match") ~ term ~ kw("as") ~ ident ~ kw("returning") ~ typeTerm ~
-      kw("with") ~ lineSep ~ matchCase.rep(1)).map(Match.tupled)
+      kw("with") ~ lineSep ~ matchCase.rep(1)).flatSpanned.map(Match.tupled)
   }
 
-  private def term: Parser[Term] = (lambda | matchP | sym("(") ~ term ~ sym(")") | ident.map(Ident))
+  private def term: Parser[Term] = (lambda | matchP | sym("(") ~ term ~ sym(")") | ident.flatSpanned.map(Ident.tupled))
     .rep(1, wsSep)
-    .map { terms =>
+    .spanned
+    .mapAsT { case (terms, span) =>
       if (terms.length == 1) terms.head
-      else App(terms.head, NEL.mk(terms.tail))
+      else App(terms.head, NEL.mk(terms.tail), span)
     }
 
-  private def funcHeader: Parser[FuncHeader] = (param.rep(0) ~ sym(':') ~ typeTerm).map(FuncHeader.tupled)
+  private def funcHeader: Parser[FuncHeader] = (param.rep(0) ~ sym(':') ~ typeTerm).flatSpanned.map(FuncHeader.tupled)
 
-  private def declHeader: Parser[DeclHeader] = (ident ~ wsSep ~ funcHeader).map(DeclHeader.tupled)
+  private def declHeader: Parser[DeclHeader] = (ident ~ wsSep ~ funcHeader).flatSpanned.map(DeclHeader.tupled)
 
   // inline? def foo (a: A)(b : B): C a := body
   private val constP: Parser[ConstDecl] =
-    (kw("inline").!.?.map(_.isDefined) ~ kw("def") ~ declHeader ~ (sym(":=") ~ skipOneLine ~ body).?)
+    (kw("inline").!.?.map(_.isDefined) ~ kw("def") ~ declHeader ~ (sym(":=") ~ skipOneLine ~ body).?).flatSpanned
       .map(ConstDecl.tupled)
 
   private def inductiveP: Parser[InductiveDecl] =
-    (kw("inductive") ~ declHeader ~ lineSep ~ (sym("|") ~ declHeader ~ lineSep).rep(0)).map(InductiveDecl.tupled)
+    (kw("inductive") ~ declHeader ~ lineSep ~ (sym("|") ~ declHeader ~ lineSep).rep(0)).flatSpanned
+      .map(InductiveDecl.tupled)
 
   private def declP: Parser[Decl] = constP | inductiveP
 

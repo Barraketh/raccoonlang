@@ -17,6 +17,9 @@ case class Failure(startIdx: Int, curIdx: Int, message: String) extends ParseRes
 
 case class ParseError(startIdx: Int, curIdx: Int, message: String) extends RuntimeException()
 
+case class Span(start: Int, end: Int)
+case class Spanned[+A](value: A, span: Span)
+
 trait Parser[+A] {
   def parse(input: String, startIdx: Int): ParseResult[A]
 
@@ -43,6 +46,19 @@ trait Parser[+A] {
 
   def filter(f: A => Boolean): Parser[A] = new FilterParser[A](this, f)
 
+  // Attach source span to the end of the tuple
+  def spanned: Parser[Spanned[A]] = new Parser[Spanned[A]] {
+    override def parse(input: String, startIdx: Int): ParseResult[Spanned[A]] = {
+      Parser.this.parse(input, startIdx) match {
+        case Success(value, sIdx, eIdx) => Success(Spanned(value, Span(sIdx, eIdx)), sIdx, eIdx)
+        case f: Failure                 => f
+      }
+    }
+  }
+
+  def flatSpanned(implicit C: Sequence.Combine[A, Span] @uncheckedVariance): Parser[C.Out] =
+    this.spanned.map(s => C.combine(s.value, s.span))
+
   //Useful combinators
   def rep(min: Int, sep: Parser[NoValueT]): Parser[Vector[A]] = {
     val p = (this ~ (sep ~ this).rep(min - 1)).map { case (a, buff) => buff.prepended(a) }
@@ -65,6 +81,12 @@ object Parser {
 
   implicit class MatchParserOps(p: MatchParser) {
     def ! : Parser[String] = Parser.Capture(p)
+  }
+
+  implicit class SpanParserOps[A](p: Parser[Spanned[A]]) {
+    def flatten(implicit C: Sequence.Combine[A, Span]): Parser[C.Out] = p.map(sp => C.combine(sp.value, sp.span))
+
+    def mapAsT[B](f: PartialFunction[(A, Span), B]): Parser[B] = p.map(sp => f((sp.value, sp.span)))
   }
 
   private def success(startIdx: Int, curIdx: Int): Success[NoValueT] = Success(Parser.NoValue, startIdx, curIdx)
