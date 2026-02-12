@@ -1,7 +1,5 @@
 package com.raccoonlang
 
-import com.raccoonlang.Interpreter.TypeErrWithSpan
-
 object ErrorReporter {
 
   case class Line(start: Int, end: Int, lineNum: Int)

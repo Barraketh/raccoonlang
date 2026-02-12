@@ -33,7 +33,7 @@ object SurfaceAst {
 
     final case class Match(
         scrut: Term,
-        scrutName: String,
+        binder: Binder,
         motive: TypeTerm,
         cases: Vector[Case],
         span: Span

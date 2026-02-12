@@ -33,10 +33,10 @@ object Elaborator {
         case pi: CA.Term.Pi => CA.Term.Lam(pi, elab(body), sp)
         case _              => throw new RuntimeException("WTF")
       }
-    case SA.Term.Match(scrut, scrutName, motive, cases, sp) =>
+    case SA.Term.Match(scrut, binder, motive, cases, sp) =>
       CA.Term.Match(
         elab(scrut),
-        scrutName,
+        elab(binder),
         elab(motive),
         cases.map(c => CA.Case(c.ctorName, c.argNames, elab(c.body), c.span)),
         sp

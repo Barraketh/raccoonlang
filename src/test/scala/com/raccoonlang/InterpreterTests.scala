@@ -1,13 +1,13 @@
 package com.raccoonlang
 
-import com.raccoonlang.Interpreter.{ConstType, ConstructorHead, Value}
+import com.raccoonlang.Interpreter2.{ConstType, ConstructorHead, Value}
 
 class InterpreterTests extends munit.FunSuite {
-  private def getValue(s: String): Interpreter.Value = {
+  private def getValue(s: String): Interpreter2.Value = {
     LanguageParser.parseProgram(s) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
-        Interpreter.run(core)
+        Interpreter2.run(core)
       case err: Failure => fail(s"Failed to parse: $err, ${s.substring(err.curIdx)}")
     }
 
@@ -19,9 +19,9 @@ class InterpreterTests extends munit.FunSuite {
   case class SApp(head: Shape, args: List[Shape]) extends Shape
 
   private def toShape(v: Value): Shape = v match {
-    case Interpreter.VConst(n, ct, _) => SConst(n, ct)
-    case Interpreter.VApp(h, args, _) => SApp(toShape(h), args.toList.map(toShape))
-    case other                        => SConst(other.toString, ConstructorHead) // fallback, won't be used in this test
+    case Interpreter2.VConst(n, ct, _) => SConst(n, ct)
+    case Interpreter2.VApp(h, args, _) => SApp(toShape(h), args.toList.map(toShape))
+    case other => SConst(other.toString, ConstructorHead) // fallback, won't be used in this test
   }
 
   private val zeroS = SConst("Nat.zero", ConstructorHead)
@@ -34,7 +34,7 @@ class InterpreterTests extends munit.FunSuite {
               | | succ : Nat -> Nat
               |
               |inline def add (a: Nat)(b: Nat): Nat :=
-              |  match b as _ returning Nat with
+              |  match b as (_: Nat) returning Nat with
               |  | Nat.zero => a
               |  | Nat.succ x => add (Nat.succ a) x
               |
