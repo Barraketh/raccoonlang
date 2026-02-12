@@ -1,7 +1,5 @@
 package com.raccoonlang
 
-import com.raccoonlang.Interpreter.TypeErr
-
 class E2EMatchRefinementTests extends munit.FunSuite {
   private def runProgram(src: String): Interpreter.Value = {
     LanguageParser.parseProgram(src) match {

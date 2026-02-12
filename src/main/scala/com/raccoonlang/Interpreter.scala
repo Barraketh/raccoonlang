@@ -35,13 +35,8 @@ object Interpreter {
   case class VApp(head: Value, args: NEL[Value], tpe: Value) extends Value
   // Lambda value (term-level function)
   case class VLam(body: Body, tpe: VPi) extends Value
-  // Neutral match (when scrutinee is not a constructor)
-  case class VMatch(m: Match, env: Env, tpe: Value) extends Value
 
   case class Var(name: String, id: Long, tpe: Value) extends Value
-
-  case class TypeErr(message: String) extends RuntimeException(message)
-  case class TypeErrWithSpan(message: String, span: Span) extends RuntimeException(message)
 
   // Environment: names map to typed values
   // Also contains a second level of indirection to handle unification - Vars can point at other Vars or
@@ -223,16 +218,57 @@ object Interpreter {
 
   private def evalMatch(m: Match, env: Env): Value = {
     val scrut = evalTerm(m.scrut, env)
+    val withScrut = env.put(m.binder.name, scrut)
+
+    // For each branch, synthesize a scrutinee of that constructor with fresh symbolic args
+    m.cases.foreach { br =>
+      val ctorVal = env.find(br.ctorName).getOrElse(error(s"Constructor ${br.ctorName} not found"))
+      ctorVal match {
+        case VConst(_, ConstructorHead, ctorTy) =>
+          val (freshArgs, ctorEnv) = ctorTy match {
+            case pi: VPi =>
+              if (br.argNames.length != pi.binders.length) error("Wrong number of args")
+              assignFreshVars(pi)
+            case _ =>
+              if (br.argNames.nonEmpty) error("Wrong number of args")
+              (Vector.empty[Value], env)
+          }
+
+          val ctorResTy: Value = ctorTy match {
+            case VPi(_, _, out) => evalType(out, ctorEnv)
+            case otherTy: Value => otherTy
+          }
+
+          // Refine env by unifying scrutinee type with constructor result type
+          val refinedEnv = unify(scrut.tpe, ctorResTy, env)
+
+          val branchBase = refinedEnv.put(m.binder.name, scrut)
+          val branchEnv = br.argNames.zip(freshArgs).foldLeft(branchBase) { case (curEnv, (argName, argVal)) =>
+            curEnv.put(argName, argVal)
+          }
+
+          val branchRes = evalTerm(br.body, branchEnv)
+          val expectTy = evalType(m.motive, branchBase)
+          check(branchRes, expectTy, branchBase)
+
+        case other => error(s"${br.ctorName} is not a constructor: $other")
+      }
+    }
+
+    val matchConst = VConst(s"match-${m.span.start}", Symbol, VPi(env, NEL.one(m.binder), m.motive))
+    val resType = evalType(m.motive, withScrut)
+    val resConst = VApp(matchConst, NEL.one(scrut), resType)
+
     val (head, args) = scrut match {
       case VApp(head, args, _) => (head, args.toList)
       case c: VConst           => (c, Nil)
-      case _                   => return VMatch(m, env, evalType(m.motive, env))
+      case _                   => return resConst
     }
     head match {
       case VConst(ctorName, `ConstructorHead`, _) =>
         val branch = m.cases.find(c => c.ctorName == ctorName).getOrElse(error(s"Match failed - $ctorName not found"))
         if (args.length != branch.argNames.length) error("Wrong number of args")
-        val withScrut = env.put(m.scrutName, scrut)
+        val withScrut = env.put(m.binder.name, scrut)
         val newEnv = args.zip(branch.argNames).foldLeft(withScrut) { case (curEnv, (argV, argName)) =>
           curEnv.put(argName, argV)
         }
@@ -240,46 +276,7 @@ object Interpreter {
         val expectTy = evalType(m.motive, withScrut)
         check(branchRes, expectTy, withScrut)
         branchRes
-      case _ =>
-        // Scrutinee not a constructor: keep match neutral, but type-check all branches
-        val withScrut = env.put(m.scrutName, scrut)
-
-        // For each branch, synthesize a scrutinee of that constructor with fresh symbolic args
-        m.cases.foreach { br =>
-          val ctorVal = env.find(br.ctorName).getOrElse(error(s"Constructor ${br.ctorName} not found"))
-          ctorVal match {
-            case VConst(_, ConstructorHead, ctorTy) =>
-              val (freshArgs, ctorEnv) = ctorTy match {
-                case pi: VPi =>
-                  if (br.argNames.length != pi.binders.length) error("Wrong number of args")
-                  assignFreshVars(pi)
-                case _ =>
-                  if (br.argNames.nonEmpty) error("Wrong number of args")
-                  (Vector.empty[Value], env)
-              }
-
-              val ctorResTy: Value = ctorTy match {
-                case VPi(_, _, out) => evalType(out, ctorEnv)
-                case otherTy: Value => otherTy
-              }
-
-              // Refine env by unifying scrutinee type with constructor result type
-              val refinedEnv = unify(scrut.tpe, ctorResTy, env)
-
-              val branchBase = refinedEnv.put(m.scrutName, scrut)
-              val branchEnv = br.argNames.zip(freshArgs).foldLeft(branchBase) { case (curEnv, (argName, argVal)) =>
-                curEnv.put(argName, argVal)
-              }
-
-              val branchRes = evalTerm(br.body, branchEnv)
-              val expectTy = evalType(m.motive, branchBase)
-              check(branchRes, expectTy, branchBase)
-
-            case other => error(s"${br.ctorName} is not a constructor: $other")
-          }
-        }
-
-        VMatch(m, withScrut, evalType(m.motive, withScrut))
+      case _ => resConst
     }
   }
 
