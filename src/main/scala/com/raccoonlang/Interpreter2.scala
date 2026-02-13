@@ -33,7 +33,7 @@ object Interpreter2 {
   }
 
   case class VConst(name: String, constType: ConstType, tpe: Value) extends Value
-  case class VLam(body: Body, tpe: VPi) extends Value
+  case class VLam(body: Term, tpe: VPi) extends Value
 
   case class VApp(head: Value, args: NEL[Value], tpe: Value) extends Value
 
@@ -95,7 +95,7 @@ object Interpreter2 {
           curEnv.put(name, value)
         }
         fn match {
-          case VLam(body, _) => evalBody(body, envWithArgs)
+          case VLam(body, _) => evalTerm(body, envWithArgs)
           case _             => VApp(fn, vArgs, evalTT(outTy, envWithArgs))
         }
       case _ => error(s"Cannot apply non-fn type ${fn.tpe}")
@@ -113,6 +113,7 @@ object Interpreter2 {
           val vpi = VPi(env, ty.binders, ty.out)
           VLam(body, vpi)
         case m: Term.Match => evalMatch(m, env)
+        case b: Term.Body  => evalBody(b, env)
       }
     } catch {
       case e: TypeErr => throw TypeErrWithSpan(e.message, term.span)
@@ -148,7 +149,7 @@ object Interpreter2 {
     }
   }
 
-  def evalBody(body: Body, env: Env): Value = {
+  def evalBody(body: Term.Body, env: Env): Value = {
     val newEnv = body.lets.foldLeft(env) { case (curEnv, l) =>
       val res = evalTerm(l.value, curEnv)
       curEnv.put(l.name, res)
@@ -191,6 +192,6 @@ object Interpreter2 {
   def run(p: Program): Value = {
     val baseEnv = Env.empty.put("Type", VUniverse)
     val env = p.decls.foldLeft(baseEnv) { case (env, decl) => evalDecl(decl, env) }
-    evalBody(p.body, env)
+    evalTerm(p.body, env)
   }
 }

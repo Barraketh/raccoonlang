@@ -56,7 +56,7 @@ object PrettyPrinter {
     s"let ${l.name}$tyStr := ${printTerm(l.value)}"
   }
 
-  private def printBody(b: CoreAst.Body): String = {
+  private def printBody(b: CoreAst.Term.Body): String = {
     if (b.lets.isEmpty) printTerm(b.res)
     else {
       val letsStr = b.lets.map(printLet).mkString("; ")
@@ -83,7 +83,7 @@ object PrettyPrinter {
       val as = args.toList.map(printTermAtom).mkString(" ")
       s"$head $as"
     case CoreAst.Term.Lam(ty, body, _) =>
-      s"fun ${printBinders(ty.binders)}: ${printTypeTerm(ty.out)} => ${printBody(body)}"
+      s"fun ${printBinders(ty.binders)}: ${printTypeTerm(ty.out)} => ${printTerm(body)}"
     case m @ CoreAst.Term.Match(_, _, _, _, _) => printMatch(m)
   }
 

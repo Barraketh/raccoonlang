@@ -25,8 +25,10 @@ object CoreAst {
     // Application: f a (term-level)
     final case class App(fn: Term, args: NEL[Term], span: Span) extends Term
 
+    case class Body(lets: Vector[Let], res: Term, span: Span) extends Term
+
     // Lambda: fun (x : A): B => body
-    final case class Lam(ty: Pi, body: Body, span: Span) extends Term
+    final case class Lam(ty: Pi, body: Term, span: Span) extends Term
 
     final case class Match(
         scrut: Term,
@@ -39,8 +41,6 @@ object CoreAst {
 
   // Let: let x := foo
   final case class Let(name: String, ty: Option[TypeTerm], value: Term, span: Span)
-
-  case class Body(lets: Vector[Let], res: Term, span: Span)
 
   case class Binder(name: String, ty: TypeTerm, span: Span)
 
@@ -62,5 +62,5 @@ object CoreAst {
     final case class InductiveDecl(name: String, ty: TypeTerm, ctors: Vector[Constructor], span: Span) extends Decl
   }
 
-  case class Program(decls: Vector[Decl], body: Body)
+  case class Program(decls: Vector[Decl], body: Term)
 }
