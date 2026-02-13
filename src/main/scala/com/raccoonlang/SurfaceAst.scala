@@ -29,7 +29,7 @@ object SurfaceAst {
     final case class App(fn: Term, args: NEL[Term], span: Span) extends Term
 
     // Lambda: fun (x : A)(y: B): B => body
-    final case class Lam(header: FuncHeader, body: Body, span: Span) extends Term
+    final case class Lam(header: FuncHeader, body: Term, span: Span) extends Term
 
     final case class Match(
         scrut: Term,
@@ -38,12 +38,12 @@ object SurfaceAst {
         cases: Vector[Case],
         span: Span
     ) extends Term
+
+    case class Body(lets: Vector[Let], out: Term, span: Span) extends Term
   }
 
   // Let: let x := foo
   final case class Let(name: String, ty: Option[TypeTerm], value: Term, span: Span)
-
-  case class Body(lets: Vector[Let], out: Term, span: Span)
 
   case class Binder(name: String, ty: TypeTerm, span: Span)
 
@@ -58,12 +58,12 @@ object SurfaceAst {
 
   object Decl {
     // Constant: name : type [:= value], with transparency (Opaque | Inline)
-    final case class ConstDecl(isInline: Boolean, header: DeclHeader, body: Option[Body], span: Span) extends Decl
+    final case class ConstDecl(isInline: Boolean, header: DeclHeader, body: Option[Term], span: Span) extends Decl
 
     // Inductive type declaration
     final case class InductiveDecl(header: DeclHeader, ctors: Vector[DeclHeader], span: Span) extends Decl
   }
 
-  case class Program(decls: Vector[Decl], body: Body)
+  case class Program(decls: Vector[Decl], body: Term)
 
 }

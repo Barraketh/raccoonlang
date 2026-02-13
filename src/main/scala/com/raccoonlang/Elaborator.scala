@@ -22,8 +22,8 @@ object Elaborator {
     case pi: SA.Term.Pi             => elabPi(pi)
   }
 
-  private def elab(body: SA.Body): CA.Body =
-    CA.Body(body.lets.map(l => CA.Let(l.name, l.ty.map(elab), elab(l.value), l.span)), elab(body.out), body.span)
+  private def elab(body: SA.Term.Body): CA.Term.Body =
+    CA.Term.Body(body.lets.map(l => CA.Let(l.name, l.ty.map(elab), elab(l.value), l.span)), elab(body.out), body.span)
 
   private def elab(term: SurfaceAst.Term): CA.Term = term match {
     case SA.Term.Ident(name, sp)   => CA.Term.Ident(name, sp)
@@ -33,6 +33,7 @@ object Elaborator {
         case pi: CA.Term.Pi => CA.Term.Lam(pi, elab(body), sp)
         case _              => throw new RuntimeException("WTF")
       }
+    case b: SA.Term.Body => elab(b)
     case SA.Term.Match(scrut, binder, motive, cases, sp) =>
       CA.Term.Match(
         elab(scrut),
@@ -58,9 +59,7 @@ object Elaborator {
         val body = c.body.map { b =>
           typeTerm match {
             case pi: CA.Term.Pi => CA.Term.Lam(pi, elab(b), c.span)
-            case _ =>
-              if (b.lets.nonEmpty) throw new RuntimeException("Can't do that")
-              elab(b.out)
+            case _              => elab(b)
           }
         }
         CoreAst.Decl.ConstDecl(c.isInline, c.header.name, typeTerm, body, c.span)

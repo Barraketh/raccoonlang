@@ -34,7 +34,7 @@ object Interpreter {
   // Application (term or type level)
   case class VApp(head: Value, args: NEL[Value], tpe: Value) extends Value
   // Lambda value (term-level function)
-  case class VLam(body: Body, tpe: VPi) extends Value
+  case class VLam(body: Term, tpe: VPi) extends Value
 
   case class Var(name: String, id: Long, tpe: Value) extends Value
 
@@ -123,7 +123,7 @@ object Interpreter {
             val newEnv = argValues.zip(binders.toList).foldLeft(lam.tpe.env.newScope) { case (curEnv, (argV, binder)) =>
               curEnv.put(binder.name, argV)
             }
-            evalBody(lam.body, newEnv)
+            evalTerm(lam.body, newEnv)
           case (VApp(h, args, _), _) => VApp(h, args :++ argValues, resTy)
           case (other, _)            => VApp(other, NEL.mk(argValues), resTy)
         }
@@ -301,13 +301,14 @@ object Interpreter {
           val vpi = VPi(env, ty.binders, ty.out)
           val (_, nextEnv) = assignFreshVars(vpi)
 
-          val bodyV = evalBody(body, nextEnv)
+          val bodyV = evalTerm(body, nextEnv)
           val resType = evalType(vpi.out, nextEnv)
 
           check(bodyV, resType, nextEnv)
           VLam(body, vpi)
         case m: Term.Match => evalMatch(m, env)
         case tt: TypeTerm  => evalTT(tt, env)
+        case b: Body       => evalBody(b, env)
       }
     } catch {
       case e: TypeErr => throw TypeErrWithSpan(e.message, term.span)
@@ -359,6 +360,6 @@ object Interpreter {
 
   def run(p: Program): Value = {
     val env = p.decls.foldLeft(Env.empty) { case (env, decl) => evalDecl(decl, env) }
-    evalBody(p.body, env)
+    evalTerm(p.body, env)
   }
 }

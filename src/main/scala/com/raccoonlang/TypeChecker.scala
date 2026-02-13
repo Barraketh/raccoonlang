@@ -26,7 +26,7 @@ object TypeChecker {
           curEnv.put(binder.name, value)
         }
         fn match {
-          case VLam(body, _) => evalBody(body, envWithArgs)
+          case VLam(body, _) => evalTerm(body, envWithArgs)
           case _             => VApp(fn, vArgs, typecheckTT(outTy, envWithArgs))
         }
       case _ => error(s"Cannot apply non-fn type ${fn.tpe}")
@@ -47,7 +47,7 @@ object TypeChecker {
       (curValues :+ fresh, curEnv.put(binder.name, fresh))
   }
 
-  private def typecheckBody(body: Body, env: Env): Value = {
+  private def typecheckBody(body: Term.Body, env: Env): Value = {
     val newEnv = body.lets.foldLeft(env) { case (curEnv, l) =>
       val res = typecheck(l.value, curEnv)
       l.ty.foreach { tyTerm =>
@@ -91,7 +91,7 @@ object TypeChecker {
             curEnv.put(argName, argVal)
           }
 
-          val branchRes = evalTerm(br.body, branchEnv)
+          val branchRes = typecheck(br.body, branchEnv)
           val expectTy = getType(m.motive, refinedEnv)
           check(branchRes, expectTy, refinedEnv)
 
@@ -196,13 +196,14 @@ object TypeChecker {
           val vpi = VPi(env, ty.binders, ty.out)
           val (_, nextEnv) = assignFreshVars(vpi)
 
-          val bodyV = typecheckBody(body, nextEnv)
+          val bodyV = typecheck(body, nextEnv)
           val resType = getType(vpi.out, nextEnv)
 
           check(bodyV, resType, nextEnv)
           VLam(body, vpi)
 
         case m: Term.Match => tyecheckMatch(m, env)
+        case b: Term.Body  => typecheckBody(b, env)
       }
     } catch {
       case e: TypeErr => throw TypeErrWithSpan(e.message, term.span)
