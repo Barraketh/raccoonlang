@@ -69,7 +69,7 @@ object LanguageParser {
       .named("Case")
 
   private def matchP: Parser[Match] = {
-    (kw("match") ~/ term ~ kw("as") ~/ param ~ kw("returning") ~/ typeTerm ~
+    (kw("match") ~/ term ~ kw("as") ~/ ident ~ kw("returning") ~/ typeTerm ~
       kw("with") ~ lineSep ~ matchCase.rep(1)).flatSpanned.map(Match.tupled)
   }
 

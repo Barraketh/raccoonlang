@@ -17,9 +17,12 @@ object TypeChecker {
   private def check(value: Value, tyVal: Value, env: Env): Unit = { unify(value.tpe, tyVal, env); () }
 
   private def typecheckApply(fn: Value, args: NEL[Term], argsEnv: Env): Value = {
-    val vArgs = args.map(a => typecheck(a, argsEnv))
     fn.tpe match {
       case VPi(env, binders, outTy) =>
+        if (binders.length != args.length)
+          error(s"Cannot apply function - expected ${binders.length} params, got ${args.length}")
+
+        val vArgs = args.map(a => typecheck(a, argsEnv))
         val envWithArgs = binders.zip(vArgs).foldLeft(env.newScope) { case (curEnv, (binder, value)) =>
           val argTy = getType(binder.ty, curEnv)
           check(value, argTy, curEnv)
@@ -61,9 +64,7 @@ object TypeChecker {
 
   private def tyecheckMatch(m: Match, env: Env): Value = {
     val scrut = typecheck(m.scrut, env)
-    val expectedScrutTy = getType(m.binder.ty, env)
-    check(scrut, expectedScrutTy, env)
-    val withScrut = env.put(m.binder.name, scrut)
+    val withScrut = env.put(m.scrutName, scrut)
 
     m.cases.foreach { br =>
       val ctorVal = env.find(br.ctorName).getOrElse(error(s"Constructor ${br.ctorName} not found"))

@@ -8,6 +8,8 @@ object CoreAst {
   // Terms that can appear in function bodies
   sealed trait Term {
     def span: Span
+
+    override def toString: String = PrettyPrinter.printTerm(this)
   }
 
   sealed trait TypeTerm extends Term // Terms that can appear in type expressions
@@ -32,7 +34,7 @@ object CoreAst {
 
     final case class Match(
         scrut: Term,
-        binder: Binder,
+        scrutName: String,
         motive: TypeTerm,
         cases: Vector[Case],
         span: Span
