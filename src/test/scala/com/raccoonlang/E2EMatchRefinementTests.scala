@@ -1,11 +1,11 @@
 package com.raccoonlang
 
 class E2EMatchRefinementTests extends munit.FunSuite {
-  private def runProgram(src: String): Interpreter.Value = {
+  private def runProgram(src: String): Interpreter2.Value = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
-        Interpreter.run(core)
+        Interpreter2.run(core)
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
   }
@@ -20,9 +20,10 @@ class E2EMatchRefinementTests extends munit.FunSuite {
         |inductive Eq : (A: Type) -> A -> A -> Type
         | | refl (A: Type)(x: A) : Eq A x x
         |
-        |def symmEq (a: Nat)(b: Nat)(p: Eq Nat a b): Eq Nat b a :=
-        |  match p as p0 returning Eq Nat b a with
+        |def symmEq (a: Nat)(b: Nat)(p: Eq Nat a b): Eq Nat b a := {
+        |  match p as _ returning Eq Nat b a with
         |  | Eq.refl A x => Eq.refl A x
+        |}
         |
         |do { Nat.zero }
         |""".stripMargin
@@ -40,9 +41,10 @@ class E2EMatchRefinementTests extends munit.FunSuite {
         |inductive Eq : (A: Type) -> A -> A -> Type
         | | refl (A: Type)(x: A) : Eq A x x
         |
-        |def congSucc2 (a: Nat)(b: Nat)(p: Eq Nat a b): Eq Nat (Nat.succ a) (Nat.succ b) :=
-        |  match p as p0 returning Eq Nat (Nat.succ a) (Nat.succ b) with
+        |def congSucc2 (a: Nat)(b: Nat)(p: Eq Nat a b): Eq Nat (Nat.succ a) (Nat.succ b) := {
+        |  match p as _ returning Eq Nat (Nat.succ a) (Nat.succ b) with
         |  | Eq.refl A x => Eq.refl Nat (Nat.succ x)
+        |}
         |
         |do { Nat.zero }
         |""".stripMargin
@@ -60,9 +62,10 @@ class E2EMatchRefinementTests extends munit.FunSuite {
         |inductive Eq : (A: Type) -> A -> A -> Type
         | | refl (A: Type)(x: A) : Eq A x x
         |
-        |def badCongCtor (a: Nat): Eq Nat a (Nat.succ a) :=
-        |  match Eq.refl Nat a as p0 returning Eq Nat a (Nat.succ a) with
+        |def badCongCtor (a: Nat): Eq Nat a (Nat.succ a) := {
+        |  match Eq.refl Nat a as _ returning Eq Nat a (Nat.succ a) with
         |  | Eq.refl A x => Eq.refl Nat x
+        |}
         |
         |do { Nat.zero }
         |""".stripMargin

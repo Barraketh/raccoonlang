@@ -1,13 +1,13 @@
 package com.raccoonlang
 
-import com.raccoonlang.Interpreter.{ConstType, ConstructorHead, Symbol, Value}
+import com.raccoonlang.Interpreter2.{ConstType, ConstructorHead, Symbol, Value}
 
 class E2EInterpreterTypingTests extends munit.FunSuite {
-  private def runProgram(src: String): Interpreter.Value = {
+  private def runProgram(src: String): Interpreter2.Value = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
-        Interpreter.run(core)
+        Interpreter2.run(core)
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
   }
@@ -18,8 +18,8 @@ class E2EInterpreterTypingTests extends munit.FunSuite {
   case class SApp(head: Shape, args: List[Shape]) extends Shape
 
   private def toShape(v: Value): Shape = v match {
-    case Interpreter.VConst(n, ct, _) => SConst(n, ct)
-    case Interpreter.VApp(h, args, _) => SApp(toShape(h), args.toList.map(toShape))
+    case Interpreter2.VConst(n, ct, _) => SConst(n, ct)
+    case Interpreter2.VApp(h, args, _) => SApp(toShape(h), args.toList.map(toShape))
     case other                        => SConst(other.toString, ConstructorHead) // fallback
   }
 
@@ -74,7 +74,7 @@ class E2EInterpreterTypingTests extends munit.FunSuite {
         |}
         |""".stripMargin
 
-    intercept[RuntimeException] {
+    intercept[TypeErrWithSpan] {
       runProgram(p)
     }
   }
@@ -103,10 +103,11 @@ class E2EInterpreterTypingTests extends munit.FunSuite {
         | | zero : Nat
         | | succ : Nat -> Nat
         |
-        |inline def pred (n: Nat): Nat :=
+        |inline def pred (n: Nat): Nat := {
         |  match n as _ returning Nat with
         |  | Nat.zero => Nat.zero
         |  | Nat.succ x => x
+        |}
         |
         |do {
         |  pred (Nat.succ Nat.zero)
@@ -124,10 +125,11 @@ class E2EInterpreterTypingTests extends munit.FunSuite {
         | | zero : Nat
         | | succ : Nat -> Nat
         |
-        |inline def bad (n: Nat): Type :=
+        |inline def bad (n: Nat): Type := {
         |  match n as _ returning Nat with
         |  | Nat.zero => Nat.zero
         |  | Nat.succ x => x
+        |}
         |
         |do { Nat.zero }
         |""".stripMargin

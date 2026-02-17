@@ -29,16 +29,16 @@ object PrettyPrinter {
     pt(tt)
   }
 
-  private def isAtomic(v: Interpreter.Value): Boolean = v match {
-    case Interpreter.VUniverse => true
-    case _: Interpreter.VConst => true
-    case _: Interpreter.Var    => true
-    case _                     => false
+  private def isAtomic(v: Interpreter2.Value): Boolean = v match {
+    case Interpreter2.VUniverse => true
+    case _: Interpreter2.VConst => true
+    case _: Interpreter2.Var    => true
+    case _                      => false
   }
 
-  private def printApp(head: Interpreter.Value, args: Util.NEL[Interpreter.Value]): String = {
+  private def printApp(head: Interpreter2.Value, args: Util.NEL[Interpreter2.Value]): String = {
     val headStr = head match {
-      case _: Interpreter.VApp | _: Interpreter.VConst | _: Interpreter.Var | Interpreter.VUniverse => print(head)
+      case _: Interpreter2.VApp | _: Interpreter2.VConst | _: Interpreter2.Var | Interpreter2.VUniverse => print(head)
       case _ => s"(${print(head)})"
     }
     val argsStr = args.toList.map { a => if (isAtomic(a)) print(a) else s"(${print(a)})" }.mkString(" ")
@@ -59,8 +59,8 @@ object PrettyPrinter {
   private def printBody(b: CoreAst.Term.Body): String = {
     if (b.lets.isEmpty) printTerm(b.res)
     else {
-      val letsStr = b.lets.map(printLet).mkString("; ")
-      s"do { $letsStr; ${printTerm(b.res)} }"
+      val letsStr = b.lets.map(printLet).mkString("\n")
+      s"{ $letsStr \n ${printTerm(b.res)} }"
     }
   }
 
@@ -73,18 +73,15 @@ object PrettyPrinter {
   }
 
   def printTerm(t: CoreAst.Term): String = t match {
-    case CoreAst.Term.Ident(name, _) => name
+    case tt: CoreAst.TypeTerm => printTypeTerm(tt)
     case CoreAst.Term.App(fn, args, _) =>
-      val head = printTermAtom(fn)
-      val as = args.toList.map(printTermAtom).mkString(" ")
-      s"$head $as"
-    case CoreAst.Term.TApp(fn, args, _) =>
       val head = printTermAtom(fn)
       val as = args.toList.map(printTermAtom).mkString(" ")
       s"$head $as"
     case CoreAst.Term.Lam(ty, body, _) =>
       s"fun ${printBinders(ty.binders)}: ${printTypeTerm(ty.out)} => ${printTerm(body)}"
     case m @ CoreAst.Term.Match(_, _, _, _, _) => printMatch(m)
+    case b: CoreAst.Term.Body                  => printBody(b)
   }
 
   private def printCase(c: CoreAst.Case): String = {
@@ -96,19 +93,20 @@ object PrettyPrinter {
     val scrutStr = printTermAtom(m.scrut)
     val motiveStr = printTypeTerm(m.motive)
     val casesStr = m.cases.map(printCase).mkString(" ")
-    s"match $scrutStr as ${printBinder(m.binder)} returning $motiveStr with $casesStr"
+    s"match $scrutStr as ${m.scrutName} returning $motiveStr with $casesStr"
   }
 
-  def print(value: Interpreter.Value): String = value match {
-    case Interpreter.VUniverse            => "Type"
-    case Interpreter.VPi(_, binders, out) => printTypeTerm(CoreAst.Term.Pi(binders, out, Span(0, 0)))
-    case Interpreter.VConst(name, _, _)   => name
-    case Interpreter.VApp(head, args, _)  => printApp(head, args)
-    case Interpreter.VLam(_, tpe) =>
+  def print(value: Interpreter2.Value): String = value match {
+    case Interpreter2.VUniverse            => "Type"
+    case Interpreter2.VPi(_, binders, out) => printTypeTerm(CoreAst.Term.Pi(binders, out, Span(0, 0)))
+    case Interpreter2.VConst(name, _, _)   => name
+    case Interpreter2.VApp(head, args, _)  => printApp(head, args)
+    case Interpreter2.VLam(_, tpe) =>
       val params = printBinders(tpe.binders)
       val outStr = printTypeTerm(tpe.out)
       s"fun $params: $outStr => …"
-    case Interpreter.Var(name, id, _) => s"$name#$id"
+    case Interpreter2.Var(name, id, _) => s"$name#$id"
+    case Interpreter2.VAny             => "Any"
   }
 
 }

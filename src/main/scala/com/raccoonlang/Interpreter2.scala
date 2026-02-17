@@ -1,6 +1,6 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.Term.Match
+import com.raccoonlang.CoreAst.Term.{Ident, Match}
 import com.raccoonlang.CoreAst._
 import com.raccoonlang.Util.NEL
 
@@ -17,9 +17,15 @@ object Interpreter2 {
 
   sealed trait Value {
     def tpe: Value
+
+    override def toString: String = PrettyPrinter.print(this)
   }
 
   case object VUniverse extends Value {
+    override def tpe: Value = VUniverse
+  }
+
+  case object VAny extends Value {
     override def tpe: Value = VUniverse
   }
 
@@ -121,13 +127,13 @@ object Interpreter2 {
   }
 
   private def getMatchConst(m: Match, env: Env): VConst = {
-    val tpe = VPi(env, NEL.one(m.binder), m.motive)
+    val tpe = VPi(env, NEL.one(Binder(m.scrutName, Ident("Any", m.span), m.span)), m.motive)
     VConst(s"match-${m.span.start}", Symbol, tpe)
   }
 
   private def evalMatch(m: Match, env: Env): Value = {
     val scrut = evalTerm(m.scrut, env)
-    val withScrut = env.put(m.binder.name, scrut)
+    val withScrut = env.put(m.scrutName, scrut)
     val resType = evalTerm(m.motive, withScrut)
     val matchConst = VApp(getMatchConst(m, env), NEL.one(scrut), resType)
 
@@ -190,8 +196,8 @@ object Interpreter2 {
   }
 
   def run(p: Program): Value = {
-    val baseEnv = Env.empty.put("Type", VUniverse)
+    val baseEnv = Env.empty.put("Type", VUniverse).put("Any", VAny)
     val env = p.decls.foldLeft(baseEnv) { case (env, decl) => evalDecl(decl, env) }
-    evalTerm(p.body, env)
+    TypeChecker.typecheck(p.body, env)
   }
 }
