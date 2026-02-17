@@ -3,12 +3,12 @@ package com.raccoonlang
 import com.raccoonlang.ErrorReporter.Source
 
 class VecZipTest extends munit.FunSuite {
-  private def runProgram(src: String): Interpreter2.Value = {
+  private def runProgram(src: String): Interpreter.Value = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
         try {
-          Interpreter2.run(core)
+          Interpreter.run(core)
         } catch {
           case t: TypeErrWithSpan =>
             val source = Source(src)

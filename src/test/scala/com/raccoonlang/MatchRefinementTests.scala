@@ -1,11 +1,11 @@
 package com.raccoonlang
 
-class E2EMatchRefinementTests extends munit.FunSuite {
-  private def runProgram(src: String): Interpreter2.Value = {
+class MatchRefinementTests extends munit.FunSuite {
+  private def runProgram(src: String): Interpreter.Value = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
-        Interpreter2.run(core)
+        Interpreter.run(core)
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
   }

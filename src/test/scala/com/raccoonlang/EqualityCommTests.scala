@@ -2,13 +2,13 @@ package com.raccoonlang
 
 import com.raccoonlang.ErrorReporter.Source
 
-class E2EEqualityCommTests extends munit.FunSuite {
-  private def runProgram(src: String): Interpreter2.Value = {
+class EqualityCommTests extends munit.FunSuite {
+  private def runProgram(src: String): Interpreter.Value = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
         try {
-          Interpreter2.run(core)
+          Interpreter.run(core)
         } catch {
           case t: TypeErrWithSpan =>
             val source = Source(src)
@@ -53,7 +53,9 @@ class E2EEqualityCommTests extends munit.FunSuite {
         |  match b as _ returning Eq Nat (add (Nat.succ a) b) (Nat.succ (add a b)) with
         |  | Nat.zero => Eq.refl Nat (Nat.succ a)
         |  | Nat.succ x => {
-        |    succAdd (Nat.succ a) x
+        |    let ih := succAdd a x
+        |    match ih as _ returning Eq Nat (add (Nat.succ a) b) (Nat.succ (add a b)) with
+        |    | Eq.refl _ _ => Eq.refl Nat (add (Nat.succ a) b) (Nat.succ (add a b))
         |  }
         |}
         |do { addComm Nat.zero Nat.zero }

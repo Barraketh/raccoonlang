@@ -2,7 +2,7 @@ package com.raccoonlang
 
 import com.raccoonlang.CoreAst.Term.Match
 import com.raccoonlang.CoreAst._
-import com.raccoonlang.Interpreter2._
+import com.raccoonlang.Interpreter._
 import com.raccoonlang.Util.NEL
 
 object TypeChecker {
