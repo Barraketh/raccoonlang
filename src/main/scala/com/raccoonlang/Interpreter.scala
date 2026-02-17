@@ -9,7 +9,7 @@ import scala.annotation.tailrec
 case class TypeErr(message: String) extends RuntimeException(message)
 case class TypeErrWithSpan(message: String, span: Span) extends RuntimeException(message)
 
-object Interpreter2 {
+object Interpreter {
   sealed trait ConstType
   case object ConstructorHead extends ConstType
   case class Inductive(constructorNames: Vector[String]) extends ConstType

@@ -1,13 +1,13 @@
 package com.raccoonlang
 
-import com.raccoonlang.Interpreter2.{ConstType, ConstructorHead, Symbol, Value}
+import com.raccoonlang.Interpreter.{ConstType, ConstructorHead, Symbol, Value}
 
-class E2EInterpreterTypingTests extends munit.FunSuite {
-  private def runProgram(src: String): Interpreter2.Value = {
+class TypingTests extends munit.FunSuite {
+  private def runProgram(src: String): Interpreter.Value = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
-        Interpreter2.run(core)
+        Interpreter.run(core)
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
   }
@@ -18,8 +18,8 @@ class E2EInterpreterTypingTests extends munit.FunSuite {
   case class SApp(head: Shape, args: List[Shape]) extends Shape
 
   private def toShape(v: Value): Shape = v match {
-    case Interpreter2.VConst(n, ct, _) => SConst(n, ct)
-    case Interpreter2.VApp(h, args, _) => SApp(toShape(h), args.toList.map(toShape))
+    case Interpreter.VConst(n, ct, _) => SConst(n, ct)
+    case Interpreter.VApp(h, args, _) => SApp(toShape(h), args.toList.map(toShape))
     case other                        => SConst(other.toString, ConstructorHead) // fallback
   }
 
