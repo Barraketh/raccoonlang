@@ -101,10 +101,15 @@ object PrettyPrinter {
     case Interpreter.VPi(_, binders, out) => printTypeTerm(CoreAst.Term.Pi(binders, out, Span(0, 0)))
     case Interpreter.VConst(name, _, _)   => name
     case Interpreter.VApp(head, args, _)  => printApp(head, args)
-    case Interpreter.VLam(_, tpe) =>
-      val params = printBinders(tpe.binders)
-      val outStr = printTypeTerm(tpe.out)
-      s"fun $params: $outStr => …"
+    case Interpreter.VLam(_, tpe, id) =>
+      id match {
+        case Some(v) => s"$v"
+        case None =>
+          val params = printBinders(tpe.binders)
+          val outStr = printTypeTerm(tpe.out)
+          s"fun $params: $outStr => …"
+      }
+
     case Interpreter.Var(name, id, _) => s"$name#$id"
     case Interpreter.VAny             => "Any"
   }

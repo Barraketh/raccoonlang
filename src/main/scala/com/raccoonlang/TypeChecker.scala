@@ -29,7 +29,7 @@ object TypeChecker {
           curEnv.put(binder.name, value)
         }
         fn match {
-          case VLam(body, _) =>
+          case VLam(body, _, _) =>
             evalTerm(body, envWithArgs) match {
               case StuckMatch(tpe) => VApp(fn, vArgs, tpe)
               case other           => other
@@ -150,6 +150,26 @@ object TypeChecker {
         val outT1 = getType(out1, extEnv1)
         val outT2 = getType(out2, extEnv2)
         unify(outT1, outT2, envAfterBinders)
+      case (l1 @ VLam(_, t1 @ VPi(env1, bs1, out1), id1), l2 @ VLam(_, t2 @ VPi(env2, bs2, out2), id2)) if bs1.length == bs2.length =>
+        // Lambda equality: first try ids, then referential equality, then extensional fallback
+        if (id1.isDefined && id1 == id2) env
+        else if (l1.eq(l2)) env
+        else {
+          val (envAfterBinders, extEnv1, extEnv2) =
+            bs1.toList.zip(bs2.toList).foldLeft((env, env1.newScope, env2.newScope)) {
+              case ((curEnv, curEnv1, curEnv2), (b1, b2)) =>
+                val ty1 = getType(b1.ty, curEnv1)
+                val ty2 = getType(b2.ty, curEnv2)
+                val nextEnv = unify(ty1, ty2, curEnv)
+                val x = freshVar(b1.name, ty1)
+                (nextEnv, curEnv1.put(b1.name, x), curEnv2.put(b2.name, x))
+            }
+          val args1: NEL[Term] = NEL.mk(bs1.toList.map(b => Term.Ident(b.name, Span(0, 0))))
+          val args2: NEL[Term] = NEL.mk(bs2.toList.map(b => Term.Ident(b.name, Span(0, 0))))
+          val app1 = typecheckApply(l1, args1, extEnv1)
+          val app2 = typecheckApply(l2, args2, extEnv2)
+          unify(app1, app2, envAfterBinders)
+        }
       case (VApp(h1, args1, _), VApp(h2, args2, _)) if args1.length == args2.length =>
         val startCtx = unify(h1, h2, env)
         args1.zip(args2).foldLeft(startCtx) { case (newCtx, (arg1, arg2)) => unify(arg1, arg2, newCtx) }
@@ -211,7 +231,7 @@ object TypeChecker {
           val resType = getType(vpi.out, nextEnv)
 
           check(bodyV, resType, nextEnv)
-          VLam(body, vpi)
+          VLam(body, vpi, None)
 
         case m: Term.Match => tyecheckMatch(m, env)
         case b: Term.Body  => typecheckBody(b, env)

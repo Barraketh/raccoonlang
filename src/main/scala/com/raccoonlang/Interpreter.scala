@@ -39,7 +39,15 @@ object Interpreter {
   }
 
   case class VConst(name: String, constType: ConstType, tpe: Value) extends Value
-  case class VLam(body: Term, tpe: VPi) extends Value
+  // Identifier for lambdas to shortcut equality when possible.
+  sealed trait LamId
+  object LamId {
+    final case class Const(name: String) extends LamId {
+      override def toString: String = name
+    }
+  }
+
+  case class VLam(body: Term, tpe: VPi, id: Option[LamId]) extends Value
 
   case class VApp(head: Value, args: NEL[Value], tpe: Value) extends Value
 
@@ -74,8 +82,8 @@ object Interpreter {
     @tailrec
     def getVarTop(id: Long): Value = varLinks(id) match {
       case Var(_, nextId, _) if varLinks.contains(nextId) => getVarTop(nextId)
-        case other => other
-      }
+      case other                                          => other
+    }
 
     def newScope: Env = Env(Map.empty, Some(this), varLinks)
   }
@@ -103,7 +111,7 @@ object Interpreter {
           curEnv.put(name, value)
         }
         fn match {
-          case VLam(body, _) =>
+          case VLam(body, _, _) =>
             val res = evalTerm(body, envWithArgs)
             res match {
               case StuckMatch(tpe) => VApp(fn, vArgs, tpe)
@@ -124,7 +132,7 @@ object Interpreter {
           evalApply(vf, args, env)
         case Term.Lam(ty, body, _) =>
           val vpi = VPi(env, ty.binders, ty.out)
-          VLam(body, vpi)
+          VLam(body, vpi, None)
         case m: Term.Match => evalMatch(m, env)
         case b: Term.Body  => evalBody(b, env)
       }
@@ -173,15 +181,16 @@ object Interpreter {
 
         // Allow recursive references by pre-binding a symbolic self during body checking
         val bodyOpt = body.map(b => TypeChecker.typecheck(b, env.put(name, declConst)))
-        val value = (bodyOpt, isInline) match {
-          case (Some(v), true) => v
-          case _               => declConst
+        val value: Value = (bodyOpt, isInline) match {
+          case (Some(lam @ VLam(_, tpe, _)), true) => VLam(lam.body, tpe, Some(LamId.Const(name)))
+          case (Some(v), true)                     => v
+          case _                                   => declConst
         }
         val nextEnv = env.put(name, value)
 
         value match {
-          case VLam(_, tpe) => tpe.env = nextEnv
-          case _            =>
+          case VLam(_, tpe, _) => tpe.env = nextEnv
+          case _               =>
         }
 
         nextEnv
