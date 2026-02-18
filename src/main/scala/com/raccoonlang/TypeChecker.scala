@@ -5,6 +5,9 @@ import com.raccoonlang.CoreAst._
 import com.raccoonlang.Interpreter._
 import com.raccoonlang.Util.NEL
 
+import scala.annotation.tailrec
+import scala.util.Try
+
 object TypeChecker {
 
   // Fresh symbol name helper
@@ -66,22 +69,24 @@ object TypeChecker {
     typecheck(body.res, newEnv)
   }
 
+  @tailrec
+  private def peelHead(v: Value): Value = v match {
+    case VApp(h, _, _) => peelHead(h)
+    case other         => other
+  }
+
   private def tyecheckMatch(m: Match, env: Env): Value = {
     val scrut = typecheck(m.scrut, env)
     val withScrut = env.put(m.scrutName, scrut)
 
-    m.cases.foreach { br =>
-      val ctorVal = env.find(br.ctorName).getOrElse(error(s"Constructor ${br.ctorName} not found"))
+    def unifyScrutWithCtor(ctorName: String): (Env, Vector[Value]) = {
+      val ctorVal = env.find(ctorName).getOrElse(error(s"Constructor ${ctorName} not found"))
 
       ctorVal match {
         case VConst(_, ConstructorHead, ctorTy) =>
           val (freshArgs, ctorEnv) = ctorTy match {
-            case pi: VPi =>
-              if (br.argNames.length != pi.binders.length) error("Wrong number of args")
-              assignFreshVars(pi)
-            case _ =>
-              if (br.argNames.nonEmpty) error("Wrong number of args")
-              (Vector.empty[Value], env)
+            case pi: VPi => assignFreshVars(pi)
+            case _       => (Vector.empty[Value], env)
           }
 
           val ctorResTy: Value = ctorTy match {
@@ -93,19 +98,44 @@ object TypeChecker {
             if (freshArgs.nonEmpty) VApp(ctorVal, NEL.mk(freshArgs), ctorResTy)
             else ctorVal
 
-          // Refine env by unifying scrutinee type with constructor result type
+          // Refine env by unifying scrutinee with applied constructor
           val refinedEnv = unify(scrut, appliedConstr, withScrut)
-
-          val branchEnv = br.argNames.zip(freshArgs).foldLeft(refinedEnv.newScope) { case (curEnv, (argName, argVal)) =>
-            curEnv.put(argName, argVal)
-          }
-
-          val branchRes = typecheck(br.body, branchEnv)
-          val expectTy = getType(m.motive, refinedEnv)
-          check(branchRes, expectTy, refinedEnv)
-
-        case other => error(s"${br.ctorName} is not a constructor: $other")
+          (refinedEnv, freshArgs)
+        case other => error(s"${ctorName} is not a constructor: $other")
       }
+    }
+
+    val ctrSet = peelHead(scrut.tpe) match {
+      case VConst(_, Inductive(names), _) => names.toSet
+      case _                              => error(s"Cannot match on non-inductive type ${scrut.tpe}")
+    }
+    val userCtrs = m.cases.map(_.ctorName)
+
+    val duplicates = userCtrs.groupBy(n => n).filter(_._2.length > 1)
+    if (duplicates.nonEmpty) error(s"Duplicate cases for ctrs ${duplicates.keys}")
+
+    val missing = ctrSet -- userCtrs
+    // Each missing ctor must be unreachable - that is, must fail to unify with scrut
+    // TODO: don't use exceptions
+    missing.foreach { ctorName =>
+      Try(unifyScrutWithCtor(ctorName)) match {
+        case util.Failure(_) =>
+        case util.Success(_) => error(s"Missing match case: $ctorName")
+      }
+    }
+
+    m.cases.foreach { br =>
+      val (refinedEnv, freshArgs) = unifyScrutWithCtor(br.ctorName)
+      if (br.argNames.length != freshArgs.length)
+        error(s"Wrong number of args - expected ${freshArgs.length}, got ${br.argNames.length}")
+
+      val branchEnv = br.argNames.zip(freshArgs).foldLeft(refinedEnv.newScope) { case (curEnv, (argName, argVal)) =>
+        curEnv.put(argName, argVal)
+      }
+
+      val branchRes = typecheck(br.body, branchEnv)
+      val expectTy = getType(m.motive, refinedEnv)
+      check(branchRes, expectTy, refinedEnv)
 
     }
 
@@ -150,7 +180,8 @@ object TypeChecker {
         val outT1 = getType(out1, extEnv1)
         val outT2 = getType(out2, extEnv2)
         unify(outT1, outT2, envAfterBinders)
-      case (l1 @ VLam(_, t1 @ VPi(env1, bs1, out1), id1), l2 @ VLam(_, t2 @ VPi(env2, bs2, out2), id2)) if bs1.length == bs2.length =>
+      case (l1 @ VLam(_, t1 @ VPi(env1, bs1, out1), id1), l2 @ VLam(_, t2 @ VPi(env2, bs2, out2), id2))
+          if bs1.length == bs2.length =>
         // Lambda equality: first try ids, then referential equality, then extensional fallback
         if (id1.isDefined && id1 == id2) env
         else if (l1.eq(l2)) env
