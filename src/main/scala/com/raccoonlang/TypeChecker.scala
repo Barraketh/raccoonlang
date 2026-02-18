@@ -96,7 +96,7 @@ object TypeChecker {
           // Refine env by unifying scrutinee type with constructor result type
           val refinedEnv = unify(scrut, appliedConstr, withScrut)
 
-          val branchEnv = br.argNames.zip(freshArgs).foldLeft(refinedEnv) { case (curEnv, (argName, argVal)) =>
+          val branchEnv = br.argNames.zip(freshArgs).foldLeft(refinedEnv.newScope) { case (curEnv, (argName, argVal)) =>
             curEnv.put(argName, argVal)
           }
 

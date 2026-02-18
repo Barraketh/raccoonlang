@@ -33,10 +33,11 @@ class InterpreterTests extends munit.FunSuite {
               | | zero : Nat
               | | succ : Nat -> Nat
               |
-              |inline def add (a: Nat)(b: Nat): Nat :=
-              |  match b as (_: Nat) returning Nat with
+              |inline def add (a: Nat)(b: Nat): Nat := {
+              |  match b as _ returning Nat with
               |  | Nat.zero => a
               |  | Nat.succ x => add (Nat.succ a) x
+              |}
               |
               |do {
               |  let a := Nat.succ Nat.zero

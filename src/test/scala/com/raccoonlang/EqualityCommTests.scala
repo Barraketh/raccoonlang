@@ -55,7 +55,33 @@ class EqualityCommTests extends munit.FunSuite {
         |  | Nat.succ x => succAdd (Nat.succ a) x
         |}
         |
-        |do { Nat.zero }
+        |// add 0 b = b
+        |def zeroAdd (b: Nat): Eq Nat (add Nat.zero b) b := {
+        |  match b as b0 returning Eq Nat (add Nat.zero b0) b0 with
+        |  | Nat.zero => Eq.refl Nat Nat.zero
+        |  | Nat.succ x => {
+        |    let ih := zeroAdd x
+        |    let step1 := succAdd Nat.zero x
+        |    let step2 := congSucc (add Nat.zero x) x ih
+        |    trans Nat (add (Nat.succ Nat.zero) x) (Nat.succ (add Nat.zero x)) (Nat.succ x) step1 step2
+        |  }
+        |}
+        |
+        |// add commutativity: a + b = b + a
+        |def addComm (a: Nat)(b: Nat): Eq Nat (add a b) (add b a) := {
+        |  match b as b0 returning Eq Nat (add a b0) (add b0 a) with
+        |  | Nat.zero => symm Nat (add Nat.zero a) a (zeroAdd a)
+        |  | Nat.succ x => {
+        |    let ih := addComm a x
+        |    let step1 := succAdd a x
+        |    let stepCong := congSucc (add a x) (add x a) ih
+        |    let stepSwap := symm Nat (add (Nat.succ x) a) (Nat.succ (add x a)) (succAdd x a)
+        |    let tail := trans Nat (Nat.succ (add a x)) (Nat.succ (add x a)) (add (Nat.succ x) a) stepCong stepSwap
+        |    trans Nat (add (Nat.succ a) x) (Nat.succ (add a x)) (add (Nat.succ x) a) step1 tail
+        |  }
+        |}
+        |
+        |do { addComm Nat.zero Nat.zero }
         |""".stripMargin
 
     runProgram(p)
