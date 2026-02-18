@@ -29,8 +29,12 @@ object TypeChecker {
           curEnv.put(binder.name, value)
         }
         fn match {
-          case VLam(body, _) => evalTerm(body, envWithArgs)
-          case _             => VApp(fn, vArgs, typecheckTT(outTy, envWithArgs))
+          case VLam(body, _) =>
+            evalTerm(body, envWithArgs) match {
+              case StuckMatch(tpe) => VApp(fn, vArgs, tpe)
+              case other           => other
+            }
+          case _ => VApp(fn, vArgs, typecheckTT(outTy, envWithArgs))
         }
       case _ => error(s"Cannot apply non-fn type ${fn.tpe}")
     }
@@ -85,8 +89,12 @@ object TypeChecker {
             case otherTy: Value => otherTy
           }
 
+          val appliedConstr =
+            if (freshArgs.nonEmpty) VApp(ctorVal, NEL.mk(freshArgs), ctorResTy)
+            else ctorVal
+
           // Refine env by unifying scrutinee type with constructor result type
-          val refinedEnv = unify(scrut.tpe, ctorResTy, withScrut)
+          val refinedEnv = unify(scrut, appliedConstr, withScrut)
 
           val branchEnv = br.argNames.zip(freshArgs).foldLeft(refinedEnv) { case (curEnv, (argName, argVal)) =>
             curEnv.put(argName, argVal)
@@ -164,13 +172,15 @@ object TypeChecker {
 
       // Link unlinked Var (left) to a non-Var value
       case (v @ Var(_, id, ty), other) =>
-        if (occurs(id, other, env)) error(s"Occurs check failed: $id in $other")
+        if (occurs(id, other, env))
+          error(s"Occurs check failed: $id in $other")
         val env1 = unify(ty, other.tpe, env)
         env1.addVarLink(id, other)
 
       // Symmetric: link unlinked Var (right) to non-Var value
       case (other, v @ Var(_, id, ty)) =>
-        if (occurs(id, other, env)) error(s"Occurs check failed: $id in $other")
+        if (occurs(id, other, env))
+          error(s"Occurs check failed: $id in $other")
         val env1 = unify(ty, other.tpe, env)
         env1.addVarLink(id, other)
 

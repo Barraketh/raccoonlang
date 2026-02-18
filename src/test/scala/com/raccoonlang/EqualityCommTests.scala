@@ -54,8 +54,7 @@ class EqualityCommTests extends munit.FunSuite {
         |  | Nat.zero => Eq.refl Nat (Nat.succ a)
         |  | Nat.succ x => {
         |    let ih := succAdd a x
-        |    match ih as _ returning Eq Nat (add (Nat.succ a) b) (Nat.succ (add a b)) with
-        |    | Eq.refl _ _ => Eq.refl Nat (add (Nat.succ a) b) (Nat.succ (add a b))
+        |    congSucc a x ih
         |  }
         |}
         |do { addComm Nat.zero Nat.zero }

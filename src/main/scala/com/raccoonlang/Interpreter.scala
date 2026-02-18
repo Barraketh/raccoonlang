@@ -1,6 +1,6 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.Term.{Ident, Match}
+import com.raccoonlang.CoreAst.Term.Match
 import com.raccoonlang.CoreAst._
 import com.raccoonlang.Util.NEL
 
@@ -45,6 +45,8 @@ object Interpreter {
 
   case class Var(name: String, id: Long, tpe: Value) extends Value
 
+  case class StuckMatch(tpe: Value) extends Value
+
   // Environment: names map to typed values
   // Also contains a second level of indirection to handle unification - Vars can point at other Vars or
   // other values. You can only link the tops of var link chains (to make sure we can't get cycles)
@@ -72,8 +74,8 @@ object Interpreter {
     @tailrec
     def getVarTop(id: Long): Value = varLinks(id) match {
       case Var(_, nextId, _) if varLinks.contains(nextId) => getVarTop(nextId)
-      case other                                          => other
-    }
+        case other => other
+      }
 
     def newScope: Env = Env(Map.empty, Some(this), varLinks)
   }
@@ -101,8 +103,13 @@ object Interpreter {
           curEnv.put(name, value)
         }
         fn match {
-          case VLam(body, _) => evalTerm(body, envWithArgs)
-          case _             => VApp(fn, vArgs, evalTT(outTy, envWithArgs))
+          case VLam(body, _) =>
+            val res = evalTerm(body, envWithArgs)
+            res match {
+              case StuckMatch(tpe) => VApp(fn, vArgs, tpe)
+              case other           => other
+            }
+          case _ => VApp(fn, vArgs, evalTT(outTy, envWithArgs))
         }
       case _ => error(s"Cannot apply non-fn type ${fn.tpe}")
     }
@@ -126,21 +133,16 @@ object Interpreter {
     }
   }
 
-  private def getMatchConst(m: Match, env: Env): VConst = {
-    val tpe = VPi(env, NEL.one(Binder(m.scrutName, Ident("Any", m.span), m.span)), m.motive)
-    VConst(s"match-${m.span.start}", Symbol, tpe)
-  }
-
   private def evalMatch(m: Match, env: Env): Value = {
     val scrut = evalTerm(m.scrut, env)
     val withScrut = env.put(m.scrutName, scrut)
-    val resType = evalTerm(m.motive, withScrut)
-    val matchConst = VApp(getMatchConst(m, env), NEL.one(scrut), resType)
+
+    lazy val stuckMatch = StuckMatch(evalTT(m.motive, withScrut))
 
     val (head, args) = scrut match {
       case VApp(head, args, _) => (head, args.toList)
       case c: VConst           => (c, Nil)
-      case _                   => return matchConst
+      case _                   => return stuckMatch
     }
 
     head match {
@@ -151,7 +153,7 @@ object Interpreter {
           curEnv.put(argName, argV)
         }
         evalTerm(branch.body, newEnv)
-      case _ => matchConst
+      case _ => stuckMatch
     }
   }
 
