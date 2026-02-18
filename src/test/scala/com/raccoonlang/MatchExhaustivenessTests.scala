@@ -1,7 +1,5 @@
 package com.raccoonlang
 
-import com.raccoonlang.ErrorReporter.Source
-
 class MatchExhaustivenessTests extends munit.FunSuite {
   private def runProgram(src: String): Interpreter.Value = {
     LanguageParser.parseProgram(src) match {
@@ -27,7 +25,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         |do { Nat.zero }
         |""".stripMargin
 
-    intercept[TypeErrWithSpan] {
+    intercept[MissingCase] {
       runProgram(p)
     }
   }
@@ -49,7 +47,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         |do { Nat.zero }
         |""".stripMargin
 
-    intercept[TypeErrWithSpan] {
+    intercept[DuplicateCase] {
       runProgram(p)
     }
   }
@@ -74,7 +72,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         |do { Nat.zero }
         |""".stripMargin
 
-    intercept[TypeErrWithSpan] {
+    intercept[UnreachableCase] {
       runProgram(p)
     }
   }

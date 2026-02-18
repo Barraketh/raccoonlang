@@ -70,7 +70,7 @@ class MatchRefinementTests extends munit.FunSuite {
         |do { Nat.zero }
         |""".stripMargin
 
-    intercept[RuntimeException] {
+    intercept[OccursCheckFailed] {
       runProgram(p)
     }
   }

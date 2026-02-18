@@ -74,7 +74,7 @@ class TypingTests extends munit.FunSuite {
         |}
         |""".stripMargin
 
-    intercept[TypeErrWithSpan] {
+    intercept[UnificationFailed] {
       runProgram(p)
     }
   }
