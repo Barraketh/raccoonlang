@@ -6,9 +6,6 @@ import com.raccoonlang.Util.NEL
 
 import scala.annotation.tailrec
 
-case class TypeErr(message: String) extends RuntimeException(message)
-case class TypeErrWithSpan(message: String, span: Span) extends RuntimeException(message)
-
 object Interpreter {
   sealed trait ConstType
   case object ConstructorHead extends ConstType
@@ -66,15 +63,15 @@ object Interpreter {
 
     def put(name: String, value: Value): Env = {
       if (map.contains(name))
-        throw new RuntimeException(s"$name already defined")
+        throw AlreadyDefined(name)
       else if (name == "_") this
       else Env(map + (name -> value), parent, varLinks)
     }
 
     def addVarLink(id: Long, v: Value): Env = {
-      if (varLinks.contains(id)) error(s"FreshVar $id already linked")
+      if (varLinks.contains(id)) throw VarAlreadyLinked(id)
       v match {
-        case Var(_, vid, _) if varLinks.contains(vid) => error("Cannot link to bottom of chain")
+        case Var(_, vid, _) if varLinks.contains(vid) => throw CannotLinkToBottom(vid)
         case _                                        => Env(map, parent, varLinks + (id -> v))
       }
     }
@@ -92,11 +89,9 @@ object Interpreter {
     val empty: Env = Env(map = Map(), parent = None, varLinks = Map())
   }
 
-  def error(message: String): Nothing = throw TypeErr(message)
-
   // Evaluate a type-position expression without enforcing it is a type yet
   private def evalTT(tt: TypeTerm, env: Env): Value = tt match {
-    case Term.Ident(name, _) => env.find(name).getOrElse { error(s"$name not found") }
+    case Term.Ident(name, sp) => env.find(name).getOrElse { throw TypeError.withSpan(NotFound(name), sp) }
     case Term.TApp(fn, args, _) =>
       val vf = evalTT(fn, env)
       evalApply(vf, args, env)
@@ -119,7 +114,7 @@ object Interpreter {
             }
           case _ => VApp(fn, vArgs, evalTT(outTy, envWithArgs))
         }
-      case _ => error(s"Cannot apply non-fn type ${fn.tpe}")
+      case _ => throw CannotApplyNonFunction(fn.tpe)
     }
   }
 
@@ -137,7 +132,7 @@ object Interpreter {
         case b: Term.Body  => evalBody(b, env)
       }
     } catch {
-      case e: TypeErr => throw TypeErrWithSpan(e.message, term.span)
+      case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, term.span)
     }
   }
 
@@ -155,8 +150,10 @@ object Interpreter {
 
     head match {
       case VConst(ctorName, `ConstructorHead`, _) =>
-        val branch = m.cases.find(c => c.ctorName == ctorName).getOrElse(error(s"Match failed - $ctorName not found"))
-        if (args.length != branch.argNames.length) error("Wrong number of args")
+        val branch =
+          m.cases.find(c => c.ctorName == ctorName).getOrElse(throw UnknownConstructor(ctorName, "", Some(m.span)))
+        if (args.length != branch.argNames.length)
+          throw ArityMismatch(branch.argNames.length, args.length, Some(branch.span))
         val newEnv = args.zip(branch.argNames).foldLeft(withScrut) { case (curEnv, (argV, argName)) =>
           curEnv.put(argName, argV)
         }

@@ -10,7 +10,7 @@ class VecZipTest extends munit.FunSuite {
         try {
           Interpreter.run(core)
         } catch {
-          case t: TypeErrWithSpan =>
+          case t: TypeError =>
             val source = Source(src)
             fail(ErrorReporter.pretty(t, source))
         }

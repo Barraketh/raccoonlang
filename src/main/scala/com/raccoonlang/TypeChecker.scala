@@ -23,7 +23,7 @@ object TypeChecker {
     fn.tpe match {
       case VPi(env, binders, outTy) =>
         if (binders.length != args.length)
-          error(s"Cannot apply function - expected ${binders.length} params, got ${args.length}")
+          throw ArityMismatch(binders.length, args.length)
 
         val vArgs = args.map(a => typecheck(a, argsEnv))
         val envWithArgs = binders.zip(vArgs).foldLeft(env.newScope) { case (curEnv, (binder, value)) =>
@@ -39,7 +39,7 @@ object TypeChecker {
             }
           case _ => VApp(fn, vArgs, typecheckTT(outTy, envWithArgs))
         }
-      case _ => error(s"Cannot apply non-fn type ${fn.tpe}")
+      case _ => throw CannotApplyNonFunction(fn.tpe)
     }
   }
 
@@ -75,12 +75,17 @@ object TypeChecker {
     case other         => other
   }
 
-  private def tyecheckMatch(m: Match, env: Env): Value = {
+  private def typecheckMatch(m: Match, env: Env): Value = {
     val scrut = typecheck(m.scrut, env)
     val withScrut = env.put(m.scrutName, scrut)
 
+    val (inductiveName, inductiveCtors) = peelHead(scrut.tpe) match {
+      case VConst(n, Inductive(names), _) => (n, names.toSet)
+      case _                              => throw NonInductiveMatch(scrut.tpe)
+    }
+
     def unifyScrutWithCtor(ctorName: String): (Env, Vector[Value]) = {
-      val ctorVal = env.find(ctorName).getOrElse(error(s"Constructor ${ctorName} not found"))
+      val ctorVal = env.find(ctorName).getOrElse(throw NotFound(ctorName))
 
       ctorVal match {
         case VConst(_, ConstructorHead, ctorTy) =>
@@ -101,42 +106,52 @@ object TypeChecker {
           // Refine env by unifying scrutinee with applied constructor
           val refinedEnv = unify(scrut, appliedConstr, withScrut)
           (refinedEnv, freshArgs)
-        case other => error(s"${ctorName} is not a constructor: $other")
+        case _ => throw UnknownConstructor(ctorName, inductiveName)
       }
     }
 
-    val ctrSet = peelHead(scrut.tpe) match {
-      case VConst(_, Inductive(names), _) => names.toSet
-      case _                              => error(s"Cannot match on non-inductive type ${scrut.tpe}")
+    // Check for duplicate constructors
+    m.cases.groupBy(_.ctorName).find(_._2.length > 1).foreach { case (ctor, cases) =>
+      throw DuplicateCase(ctor, Some(cases(1).span))
     }
-    val userCtrs = m.cases.map(_.ctorName)
 
-    val duplicates = userCtrs.groupBy(n => n).filter(_._2.length > 1)
-    if (duplicates.nonEmpty) error(s"Duplicate cases for ctrs ${duplicates.keys}")
-
-    val missing = ctrSet -- userCtrs
-    // Each missing ctor must be unreachable - that is, must fail to unify with scrut
+    // Check exhaustivity. Each missing ctor must be unreachable - that is, must fail to unify with scrut
     // TODO: don't use exceptions
+    val missing = inductiveCtors -- m.cases.map(_.ctorName)
     missing.foreach { ctorName =>
       Try(unifyScrutWithCtor(ctorName)) match {
         case util.Failure(_) =>
-        case util.Success(_) => error(s"Missing match case: $ctorName")
+        case util.Success(_) => throw MissingCase(ctorName)
       }
     }
 
+    // Check for unknown constructors
+    m.cases.find(c => !inductiveCtors.contains(c.ctorName)).foreach { c =>
+      throw UnknownConstructor(c.ctorName, inductiveName, Some(c.span))
+    }
+
     m.cases.foreach { br =>
-      val (refinedEnv, freshArgs) = unifyScrutWithCtor(br.ctorName)
-      if (br.argNames.length != freshArgs.length)
-        error(s"Wrong number of args - expected ${freshArgs.length}, got ${br.argNames.length}")
+      try {
+        val (refinedEnv, freshArgs) =
+          try {
+            unifyScrutWithCtor(br.ctorName)
+          } catch {
+            case _: UnificationFailed => throw UnreachableCase(br.ctorName, Some(br.span))
+          }
 
-      val branchEnv = br.argNames.zip(freshArgs).foldLeft(refinedEnv.newScope) { case (curEnv, (argName, argVal)) =>
-        curEnv.put(argName, argVal)
+        if (br.argNames.length != freshArgs.length)
+          throw ArityMismatch(freshArgs.length, br.argNames.length)
+
+        val branchEnv = br.argNames.zip(freshArgs).foldLeft(refinedEnv.newScope) { case (curEnv, (argName, argVal)) =>
+          curEnv.put(argName, argVal)
+        }
+
+        val branchRes = typecheck(br.body, branchEnv)
+        val expectTy = getType(m.motive, refinedEnv)
+        check(branchRes, expectTy, refinedEnv)
+      } catch {
+        case t: TypeError if t.span.isEmpty => throw TypeError.withSpan(t, br.span)
       }
-
-      val branchRes = typecheck(br.body, branchEnv)
-      val expectTy = getType(m.motive, refinedEnv)
-      check(branchRes, expectTy, refinedEnv)
-
     }
 
     evalTerm(m, env)
@@ -224,18 +239,18 @@ object TypeChecker {
       // Link unlinked Var (left) to a non-Var value
       case (v @ Var(_, id, ty), other) =>
         if (occurs(id, other, env))
-          error(s"Occurs check failed: $id in $other")
+          throw OccursCheckFailed(id, other)
         val env1 = unify(ty, other.tpe, env)
         env1.addVarLink(id, other)
 
       // Symmetric: link unlinked Var (right) to non-Var value
       case (other, v @ Var(_, id, ty)) =>
         if (occurs(id, other, env))
-          error(s"Occurs check failed: $id in $other")
+          throw OccursCheckFailed(id, other)
         val env1 = unify(ty, other.tpe, env)
         env1.addVarLink(id, other)
 
-      case _ => error(s"Failed to unify $v1 and $v2")
+      case _ => throw UnificationFailed(v1, v2)
     }
   }
 
@@ -243,7 +258,7 @@ object TypeChecker {
     val res = typecheck(term, env)
     res.tpe match {
       case VUniverse => res
-      case _         => error(s"$res is not a type")
+      case _         => throw NotAType(res)
     }
   }
 
@@ -264,11 +279,11 @@ object TypeChecker {
           check(bodyV, resType, nextEnv)
           VLam(body, vpi, None)
 
-        case m: Term.Match => tyecheckMatch(m, env)
+        case m: Term.Match => typecheckMatch(m, env)
         case b: Term.Body  => typecheckBody(b, env)
       }
     } catch {
-      case e: TypeErr => throw TypeErrWithSpan(e.message, term.span)
+      case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, term.span)
     }
 
   }

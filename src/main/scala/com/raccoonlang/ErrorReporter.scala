@@ -19,12 +19,13 @@ object ErrorReporter {
     def getLine(offset: Int): Line = lines.findLast(_.start <= offset).get
   }
 
-  def pretty(err: TypeErrWithSpan, source: Source): String = {
-    val line = source.getLine(err.span.start)
-    val lineOffset = err.span.start - line.start
+  def pretty(err: TypeError, source: Source): String = {
+    val sp = err.span.getOrElse(Span(0, 0))
+    val line = source.getLine(sp.start)
+    val lineOffset = sp.start - line.start
     val caretLine = " " * lineOffset + "^"
     s"""
-       |${line.lineNum}:${lineOffset}: error: ${err.message}
+       |${line.lineNum}:${lineOffset}: error: ${err.getMessage}
        |${source.s.slice(line.start, line.end)}
        |$caretLine
        |""".stripMargin
