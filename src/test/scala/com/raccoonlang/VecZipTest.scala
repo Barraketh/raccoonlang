@@ -36,12 +36,9 @@ class VecZipTest extends munit.FunSuite {
         |  let R := Pair A B
         |  match va as _ returning Vec R n with
         |  | Vec.nil t => Vec.nil R
-        |  | Vec.cons _ _ va0 a => {
+        |  | Vec.cons _ x va0 a => {
         |    match vb as _ returning Vec R n with
-        |    | Vec.cons _ _ vb0 b => {
-        |       match n as _ returning Vec R n with
-        |       | Nat.succ x => Vec.cons R x (zip A B x va vb ) (Pair.mk A B a b)
-        |    }
+        |    | Vec.cons _ _ vb0 b => Vec.cons R x (zip A B x va0 vb0 ) (Pair.mk A B a b)
         |  }
         |}
         |

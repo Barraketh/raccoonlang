@@ -28,6 +28,11 @@ object Util {
 
     def foldLeft[B](z: B)(op: (B, A) => B): B = toList.foldLeft(z)(op)
 
+    def foreach(f: A => Unit): Unit = {
+      f(head)
+      tail.foreach(f)
+    }
+
     def foldWhile[B](z: B)(op: (B, A) => (B, Boolean)): B = {
       @tailrec
       def loop(l: List[A], curB: B): B = {
