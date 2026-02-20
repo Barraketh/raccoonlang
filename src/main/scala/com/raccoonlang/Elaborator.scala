@@ -30,7 +30,7 @@ object Elaborator {
     case SA.Term.App(fn, args, sp) => CA.Term.App(elab(fn), args.map(elab), sp)
     case SA.Term.Lam(header, body, sp) =>
       getType(header) match {
-        case pi: CA.Term.Pi => CA.Term.Lam(pi, elab(body), sp)
+        case pi: CA.Term.Pi => CA.Term.Lam(pi, elab(body), sp, None)
         case _              => throw new RuntimeException("WTF")
       }
     case b: SA.Term.Body => elab(b)
@@ -58,7 +58,7 @@ object Elaborator {
         val typeTerm = getType(c.header.funcHeader)
         val body = c.body.map { b =>
           typeTerm match {
-            case pi: CA.Term.Pi => CA.Term.Lam(pi, elab(b), c.span)
+            case pi: CA.Term.Pi => CA.Term.Lam(pi, elab(b), c.span, Some(c.header.name))
             case _              => elab(b)
           }
         }

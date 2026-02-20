@@ -30,7 +30,7 @@ object CoreAst {
     case class Body(lets: Vector[Let], res: Term, span: Span) extends Term
 
     // Lambda: fun (x : A): B => body
-    final case class Lam(ty: Pi, body: Term, span: Span) extends Term
+    final case class Lam(ty: Pi, body: Term, span: Span, name: Option[String]) extends Term
 
     final case class Match(
         scrut: Term,

@@ -4,7 +4,7 @@ import com.raccoonlang.CoreAst.Term.Match
 import com.raccoonlang.CoreAst._
 import com.raccoonlang.Util.NEL
 
-import scala.annotation.tailrec
+import scala.collection.immutable.BitSet
 
 object Interpreter {
   sealed trait ConstType
@@ -14,133 +14,264 @@ object Interpreter {
 
   sealed trait Value {
     def tpe: Value
+    def synDeps: BitSet
 
     override def toString: String = PrettyPrinter.print(this)
   }
 
-  case object VUniverse extends Value {
-    override def tpe: Value = VUniverse
-  }
+  sealed trait Head extends Value
 
-  case object VAny extends Value {
-    override def tpe: Value = VUniverse
-  }
+  type MetaId = Int
 
-  /** A function type. env must be mutable in order to allow recursion - lambdas and envs must be able to point to each
-    * other
-    */
-  case class VPi(var env: Env, binders: NEL[Binder], out: TypeTerm) extends Value {
-    override def tpe: Value = VUniverse
-
-    override def toString: String = "VPi"
-  }
-
-  case class VConst(name: String, constType: ConstType, tpe: Value) extends Value
   // Identifier for lambdas to shortcut equality when possible.
   sealed trait LamId
   object LamId {
     final case class Const(name: String) extends LamId {
       override def toString: String = name
     }
+    final case class LocalId(nodeId: Int, params: Vector[Value]) extends LamId
   }
 
-  case class VLam(body: Term, tpe: VPi, id: Option[LamId]) extends Value
+  case object VUniverse extends Value {
+    override def tpe: Value = VUniverse
 
-  case class VApp(head: Value, args: NEL[Value], tpe: Value) extends Value
+    override val synDeps: BitSet = BitSet.empty
+  }
 
-  case class Var(name: String, id: Long, tpe: Value) extends Value
+  // Env must be mutable in order to allow recursion - lambdas and envs must be able to point to each other
+  case class VPi(var env: Env, binders: NEL[Binder], out: TypeTerm, synDeps: BitSet) extends Value {
+    override def tpe: Value = VUniverse
 
-  case class StuckMatch(tpe: Value) extends Value
+    override def toString: String = "VPi"
+  }
 
-  // Environment: names map to typed values
-  // Also contains a second level of indirection to handle unification - Vars can point at other Vars or
-  // other values. You can only link the tops of var link chains (to make sure we can't get cycles)
-  final case class Env(map: Map[String, Value], parent: Option[Env], varLinks: Map[Long, Value]) {
-    def find(name: String): Option[Value] = map.get(name).orElse(parent.flatMap(_.find(name))) match {
-      case Some(Var(_, id, _)) if varLinks.contains(id) => Some(getVarTop(id))
-      case other                                        => other
+  case class VConst(name: String, constType: ConstType, tpe: Value) extends Head {
+    override val synDeps: BitSet = tpe.synDeps
+  }
+
+  case class VApp(head: Head, args: NEL[Value], tpe: Value) extends Head {
+    override lazy val synDeps: BitSet = {
+      val res = collection.mutable.BitSet()
+      res |= head.synDeps
+      args.foreach(v => res |= v.synDeps)
+      res |= tpe.synDeps
+      res.toImmutable
     }
+  }
 
-    def put(name: String, value: Value): Env = {
-      if (map.contains(name))
-        throw AlreadyDefined(name)
-      else if (name == "_") this
-      else Env(map + (name -> value), parent, varLinks)
-    }
+  case class Meta(name: String, id: MetaId, tpe: Value) extends Head {
+    override val synDeps: BitSet = tpe.synDeps + id
+  }
 
-    def addVarLink(id: Long, v: Value): Env = {
-      if (varLinks.contains(id)) throw VarAlreadyLinked(id)
-      v match {
-        case Var(_, vid, _) if varLinks.contains(vid) => throw CannotLinkToBottom(vid)
-        case _                                        => Env(map, parent, varLinks + (id -> v))
+  case class VLam(body: Term, tpe: VPi, id: LamId) extends Value {
+    override lazy val synDeps: BitSet = {
+      id match {
+        case LamId.Const(_) => tpe.synDeps
+        case LamId.LocalId(_, params) =>
+          if (params.isEmpty) tpe.synDeps
+          else {
+            val res = collection.mutable.BitSet()
+            res |= tpe.synDeps
+            params.foreach(v => res |= v.synDeps)
+            res.toImmutable
+          }
       }
     }
+  }
 
-    @tailrec
-    def getVarTop(id: Long): Value = varLinks(id) match {
-      case Var(_, nextId, _) if varLinks.contains(nextId) => getVarTop(nextId)
-      case other                                          => other
+  case class StuckMatch(id: LamId.LocalId, term: Term.Match, scrut: Value, env: Env, tpe: Value) extends Value {
+    override def synDeps: BitSet = {
+      val res = collection.mutable.BitSet()
+      res |= tpe.synDeps
+      res |= scrut.synDeps
+      id.params.foreach(v => res |= v.synDeps)
+      res.toImmutable
+    }
+  }
+
+  // Environment: tracks lexical scope
+  final case class Env(globals: Map[String, Value], locals: Map[String, Value], parent: Option[Env]) {
+    def find(name: String): Option[Value] =
+      locals.get(name).orElse(globals.get(name)).orElse(parent.flatMap(_.find(name)))
+
+    def findLocal(name: String): Option[Value] =
+      locals.get(name).orElse(parent.flatMap(_.findLocal(name)))
+
+    def putGlobal(name: String, value: Value): Env = {
+      if (globals.contains(name))
+        throw AlreadyDefined(name)
+      else if (name == "_") this
+      else Env(globals + (name -> value), locals, parent)
     }
 
-    def newScope: Env = Env(Map.empty, Some(this), varLinks)
+    def putLocal(name: String, value: Value): Env = {
+      if (locals.contains(name) || globals.contains(name))
+        throw AlreadyDefined(name)
+      else if (name == "_") this
+      else Env(globals, locals + (name -> value), parent)
+    }
+
+    def newScope: Env = Env(Map.empty, Map.empty, Some(this))
   }
 
   object Env {
-    val empty: Env = Env(map = Map(), parent = None, varLinks = Map())
+    val empty: Env = Env(globals = Map(), locals = Map(), parent = None)
   }
+
+  // Tracks solutions to metas
+  final case class MetaStore(links: Map[MetaId, Value]) {
+    def isLinked(id: MetaId): Boolean = links.contains(id)
+
+    @annotation.tailrec
+    def force(v: Interpreter.Value): Interpreter.Value = v match {
+      case Interpreter.Meta(_, id, _) =>
+        links.get(id) match {
+          case Some(v) => force(v)
+          case None    => v
+        }
+      case other => other
+    }
+
+    def addLink(id: MetaId, v: Interpreter.Value): MetaStore = {
+      if (links.contains(id)) throw VarAlreadyLinked(id)
+      copy(links = links + (id -> v))
+    }
+  }
+
+  object MetaStore {
+    val empty: MetaStore = MetaStore(Map())
+  }
+
+  def whnf(v: Value, meta: MetaStore): Value = {
+    val v0 = meta.force(v)
+    v0 match {
+      case VApp(h, args, tpe) =>
+        val h0 = whnf(h, meta)
+        h0 match {
+          case lam: VLam =>
+            implicit val envWithArgs = getEnvWithArgs(lam.tpe, args)
+            val res = evalTerm(lam.body, meta)
+            whnf(res, meta)
+          case h0: Head =>
+            // Head is not reducible
+            if (h0 eq h) v0 else VApp(h0, args, tpe)
+        }
+      case vm: StuckMatch =>
+        val scrut0 = whnf(vm.scrut, meta)
+        val stillStuck = if (vm.scrut eq scrut0) vm else vm.copy(scrut = scrut0)
+        val head = scrut0 match {
+          case VApp(h, _, _) => h
+          case c: VConst     => c
+          case _             => return stillStuck
+        }
+
+        head match {
+          case _: VConst => whnf(evalMatchBody(vm.term, scrut0, meta, vm.env), meta)
+          case _         => stillStuck
+        }
+
+      case _ => v0
+    }
+  }
+
+  private def getEnvWithArgs(fnTpe: VPi, args: NEL[Value]): Env = {
+    if (fnTpe.binders.length != args.length) throw ArityMismatch(fnTpe.binders.length, args.length)
+
+    fnTpe.binders.map(_.name).zip(args).foldLeft(fnTpe.env.newScope) { case (curEnv, (name, value)) =>
+      curEnv.putLocal(name, value)
+    }
+  }
+
+  def evalPi(pi: Term.Pi)(implicit env: Env): VPi =
+    VPi(env, pi.binders, pi.out, FreeNames.getDeps(pi, env, Set.empty))
 
   // Evaluate a type-position expression without enforcing it is a type yet
-  private def evalTT(tt: TypeTerm, env: Env): Value = tt match {
-    case Term.Ident(name, sp) => env.find(name).getOrElse { throw TypeError.withSpan(NotFound(name), sp) }
-    case Term.TApp(fn, args, _) =>
-      val vf = evalTT(fn, env)
-      evalApply(vf, args, env)
-    case pi: Term.Pi => VPi(env, pi.binders, pi.out)
+  private def evalTT(tt: TypeTerm, meta: MetaStore)(implicit env: Env): Value = tt match {
+    case Term.Ident(name, sp)   => env.find(name).getOrElse { throw TypeError.withSpan(NotFound(name), sp) }
+    case Term.TApp(fn, args, _) => evalApplyTerm(fn, args, meta)
+    case pi: Term.Pi            => evalPi(pi)
   }
 
-  private def evalApply(fn: Value, args: NEL[Term], argsEnv: Env): Value = {
-    val vArgs = args.map(a => evalTerm(a, argsEnv))
-    fn.tpe match {
-      case VPi(env, binders, outTy) =>
-        val envWithArgs = binders.map(_.name).zip(vArgs).foldLeft(env.newScope) { case (curEnv, (name, value)) =>
-          curEnv.put(name, value)
-        }
-        fn match {
-          case VLam(body, _, _) =>
-            val res = evalTerm(body, envWithArgs)
-            res match {
-              case StuckMatch(tpe) => VApp(fn, vArgs, tpe)
-              case other           => other
-            }
-          case _ => VApp(fn, vArgs, evalTT(outTy, envWithArgs))
+  private def evalApply(fn: Value, vArgs: NEL[Value], meta: MetaStore): Value = {
+    val fn0 = whnf(fn, meta)
+    val tpe0 = whnf(fn0.tpe, meta)
+
+    tpe0 match {
+      case pi: VPi =>
+        implicit val envWithArgs: Env = getEnvWithArgs(pi, vArgs)
+        fn0 match {
+          case VLam(body, _, _) => evalTerm(body, meta)
+          case h: Head          => VApp(h, vArgs, evalTT(pi.out, meta))
+          case _                => throw CannotApplyNonFunction(fn)
         }
       case _ => throw CannotApplyNonFunction(fn.tpe)
     }
   }
 
-  def evalTerm(term: Term, env: Env): Value = {
+  private def evalApplyTerm(fn: Term, args: NEL[Term], meta: MetaStore)(implicit env: Env): Value = {
+    val vf = evalTerm(fn, meta)
+    val vArgs = args.map(a => evalTerm(a, meta))
+    evalApply(vf, vArgs, meta)
+  }
+
+  def evalLam(l: Term.Lam, vpi: VPi)(implicit env: Env): VLam = {
+    val id = l.name match {
+      case Some(funcName) => LamId.Const(funcName)
+      case None =>
+        val captureNames =
+          FreeNames.getFreeNames(l.body, Set.empty).toVector.filter(n => env.findLocal(n).isDefined).sorted
+        val captureVals = captureNames.map(n => env.findLocal(n).get)
+        LamId.LocalId(l.span.start, captureVals)
+
+    }
+    VLam(l.body, vpi, id)
+  }
+
+  private def evalLam(l: Term.Lam)(implicit env: Env): VLam = {
+    val vpi = evalPi(l.ty)
+    evalLam(l, vpi)
+  }
+
+  def evalTerm(term: Term, meta: MetaStore)(implicit env: Env): Value = {
     try {
       term match {
-        case tt: TypeTerm => evalTT(tt, env)
-        case Term.App(fn, args, _) =>
-          val vf = evalTerm(fn, env)
-          evalApply(vf, args, env)
-        case Term.Lam(ty, body, _) =>
-          val vpi = VPi(env, ty.binders, ty.out)
-          VLam(body, vpi, None)
-        case m: Term.Match => evalMatch(m, env)
-        case b: Term.Body  => evalBody(b, env)
+        case tt: TypeTerm          => evalTT(tt, meta)
+        case Term.App(fn, args, _) => evalApplyTerm(fn, args, meta)
+        case l: Term.Lam           => evalLam(l)
+        case m: Term.Match         => evalMatch(m, meta, env)
+        case b: Term.Body          => evalBody(b, meta, env)
       }
     } catch {
       case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, term.span)
     }
   }
 
-  private def evalMatch(m: Match, env: Env): Value = {
-    val scrut = evalTerm(m.scrut, env)
-    val withScrut = env.put(m.scrutName, scrut)
+  private def evalMatch(m: Match, meta: MetaStore, env: Env): Value = {
+    val scrut = whnf(evalTerm(m.scrut, meta)(env), meta)
+    evalMatchBody(m, scrut, meta, env)
+  }
 
-    lazy val stuckMatch = StuckMatch(evalTT(m.motive, withScrut))
+  private def evalMatchBody(m: Match, scrut: Value, meta: MetaStore, env: Env): Value = {
+    val withScrut = env.putLocal(m.scrutName, scrut)
+
+    lazy val stuckMatch = {
+      // Get all the free locals referenced in the body of the match - we will use them as the key, just like VLam
+      // We can treat scrutName as bound, since we are including it in StuckMatch and will unify it separately
+      val freeNames = m.cases
+        .foldLeft(Set.empty[String]) { case (curNames, c) =>
+          val nextNames = FreeNames.getFreeNames(c.body, bound = (c.argNames :+ m.scrutName).toSet)
+          curNames.union(nextNames)
+        }
+        .toVector
+        .filter(n => withScrut.findLocal(n).isDefined)
+        .sorted
+      val captures = freeNames.map(n => withScrut.findLocal(n).get)
+      val id = LamId.LocalId(m.span.start, captures)
+
+      val outType = evalTerm(m.motive, meta)(withScrut)
+
+      StuckMatch(id, m, scrut, withScrut, outType)
+    }
 
     val (head, args) = scrut match {
       case VApp(head, args, _) => (head, args.toList)
@@ -154,36 +285,35 @@ object Interpreter {
           m.cases.find(c => c.ctorName == ctorName).getOrElse(throw UnknownConstructor(ctorName, "", Some(m.span)))
         if (args.length != branch.argNames.length)
           throw ArityMismatch(branch.argNames.length, args.length, Some(branch.span))
-        val newEnv = args.zip(branch.argNames).foldLeft(withScrut) { case (curEnv, (argV, argName)) =>
-          curEnv.put(argName, argV)
+        val newEnv = args.zip(branch.argNames).foldLeft(withScrut.newScope) { case (curEnv, (argV, argName)) =>
+          curEnv.putLocal(argName, argV)
         }
-        evalTerm(branch.body, newEnv)
+        evalTerm(branch.body, meta)(newEnv)
       case _ => stuckMatch
     }
   }
 
-  def evalBody(body: Term.Body, env: Env): Value = {
+  def evalBody(body: Term.Body, meta: MetaStore, env: Env): Value = {
     val newEnv = body.lets.foldLeft(env) { case (curEnv, l) =>
-      val res = evalTerm(l.value, curEnv)
-      curEnv.put(l.name, res)
+      val res = evalTerm(l.value, meta)(curEnv)
+      curEnv.putLocal(l.name, res)
     }
-    evalTerm(body.res, newEnv)
+    evalTerm(body.res, meta)(newEnv)
   }
 
   private def evalDecl(decl: Decl, env: Env): Env = {
     decl match {
       case Decl.ConstDecl(isInline, name, ty, body, _) =>
-        val tyV = TypeChecker.getType(ty, env)
+        val (tyV, m) = TypeChecker.getType(ty, MetaStore.empty)(env)
         val declConst = VConst(name, Symbol, tyV)
 
         // Allow recursive references by pre-binding a symbolic self during body checking
-        val bodyOpt = body.map(b => TypeChecker.typecheck(b, env.put(name, declConst)))
+        val bodyOpt = body.map(b => TypeChecker.typecheck(b, m)(env.putGlobal(name, declConst))._1)
         val value: Value = (bodyOpt, isInline) match {
-          case (Some(lam @ VLam(_, tpe, _)), true) => VLam(lam.body, tpe, Some(LamId.Const(name)))
-          case (Some(v), true)                     => v
-          case _                                   => declConst
+          case (Some(v), true) => v
+          case _               => declConst
         }
-        val nextEnv = env.put(name, value)
+        val nextEnv = env.putGlobal(name, value)
 
         value match {
           case VLam(_, tpe, _) => tpe.env = nextEnv
@@ -193,19 +323,34 @@ object Interpreter {
         nextEnv
 
       case Decl.InductiveDecl(name, ty, ctors, _) =>
-        val tyV = TypeChecker.getType(ty, env)
-        val env2 = env.put(name, VConst(name, Inductive(ctors.map(c => c.name)), tyV))
+        val (inductiveType, _) = TypeChecker.getType(ty, MetaStore.empty)(env)
+        val inductiveHead = VConst(name, Inductive(ctors.map(c => c.name)), inductiveType)
+        val env2 = env.putGlobal(name, inductiveHead)
         ctors.foldLeft(env2) { case (curEnv, c) =>
-          val ctorTy = TypeChecker.getType(c.ty, curEnv)
-          curEnv.put(c.name, VConst(c.name, ConstructorHead, ctorTy))
+          val (ctorV, _) = TypeChecker.getType(c.ty, MetaStore.empty)(env2)
+
+          val ctorResTpe = ctorV match {
+            case v: VConst => v
+            case pi: VPi =>
+              val (_, nextEnv) = FreshVar.assignFreshVars(pi, MetaStore.empty)
+              evalTerm(pi.out, MetaStore.empty)(nextEnv)
+          }
+
+          val ctorResTpeHead = ctorResTpe match {
+            case VApp(head, _, _) => head
+            case other            => other
+          }
+
+          Unify.unify(ctorResTpeHead, inductiveHead, MetaStore.empty)
+          curEnv.putGlobal(c.name, VConst(c.name, ConstructorHead, ctorV))
         }
     }
 
   }
 
   def run(p: Program): Value = {
-    val baseEnv = Env.empty.put("Type", VUniverse).put("Any", VAny)
+    val baseEnv = Env.empty.putGlobal("Type", VUniverse)
     val env = p.decls.foldLeft(baseEnv) { case (env, decl) => evalDecl(decl, env) }
-    TypeChecker.typecheck(p.body, env)
+    TypeChecker.typecheck(p.body, MetaStore.empty)(env)._1
   }
 }
