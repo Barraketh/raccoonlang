@@ -1,8 +1,10 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.Term.Match
+import com.raccoonlang.CoreAst.Term.{Ident, Lam, Match}
 import com.raccoonlang.CoreAst._
+import com.raccoonlang.FreshVar.{assignFreshVars, freshVar}
 import com.raccoonlang.Interpreter._
+import com.raccoonlang.Unify.unify
 import com.raccoonlang.Util.NEL
 
 import scala.annotation.tailrec
@@ -10,63 +12,73 @@ import scala.util.Try
 
 object TypeChecker {
 
-  // Fresh symbol name helper
-  private var gensymId: Long = 0L
-  private def freshVar(name: String, tpe: Value) = {
-    gensymId += 1
-    Var(name, gensymId, tpe)
-  }
+  private def defEq(value: Value, tyVal: Value, meta: MetaStore): MetaStore = unify(value.tpe, tyVal, meta)
 
-  private def check(value: Value, tyVal: Value, env: Env): Unit = { unify(value.tpe, tyVal, env); () }
+  private def typecheckApply(fn: Value, args: NEL[Term], meta: MetaStore, argEnv: Env): (Value, MetaStore) = {
+    val fn0 = whnf(fn, meta)
+    val fnTy0 = whnf(fn0.tpe, meta)
 
-  private def typecheckApply(fn: Value, args: NEL[Term], argsEnv: Env): Value = {
-    fn.tpe match {
-      case VPi(env, binders, outTy) =>
-        if (binders.length != args.length)
-          throw ArityMismatch(binders.length, args.length)
+    fnTy0 match {
+      case VPi(env, binders, outTy, _) =>
+        if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
 
-        val vArgs = args.map(a => typecheck(a, argsEnv))
-        val envWithArgs = binders.zip(vArgs).foldLeft(env.newScope) { case (curEnv, (binder, value)) =>
-          val argTy = getType(binder.ty, curEnv)
-          check(value, argTy, curEnv)
-          curEnv.put(binder.name, value)
+        // Typecheck argument terms in argEnv
+        val (vArgs, meta1) = args.foldLeft((Vector.empty[Value], meta)) { case ((acc, m), nextArg) =>
+          val (v, m2) = typecheck(nextArg, m)(argEnv)
+          (acc :+ v, m2)
         }
+
+        // Typecheck args against binder types and extend pi env
+        val (envWithArgs, meta2) =
+          binders.toList.zip(vArgs).foldLeft((env.newScope, meta1)) { case ((curEnv, m), (binder, value)) =>
+            val (argTy, m1) = getType(binder.ty, m)(curEnv)
+            val m2 = defEq(value, argTy, m1)
+            (curEnv.put(binder.name, value), m2)
+          }
+
+        // Since we've already typechecked everything we care about, now we can just evalTerm
         fn match {
-          case VLam(body, _, _) =>
-            evalTerm(body, envWithArgs) match {
-              case StuckMatch(tpe) => VApp(fn, vArgs, tpe)
-              case other           => other
-            }
-          case _ => VApp(fn, vArgs, typecheckTT(outTy, envWithArgs))
+          case VLam(body, _, _) => (evalTerm(body, meta2)(envWithArgs), meta2)
+          case head: Head       => (VApp(head, NEL.mk(vArgs), evalTerm(outTy, meta2)(envWithArgs)), meta2)
+          case _                => throw CannotApplyNonFunction(fnTy0)
         }
-      case _ => throw CannotApplyNonFunction(fn.tpe)
+      case _ => throw CannotApplyNonFunction(fnTy0)
     }
   }
 
-  private def typecheckTT(term: TypeTerm, env: Env): Value = term match {
-    case t: Term.TApp =>
-      val fn = typecheck(t.fn, env)
-      typecheckApply(fn, t.args, env)
-    case _ => evalTerm(term, env)
+  private def typecheckApplyTerm(fn: Term, args: NEL[Term], meta: MetaStore)(implicit env: Env): (Value, MetaStore) = {
+    val (vf, m1) = typecheck(fn, meta)
+    typecheckApply(vf, args, m1, env)
   }
 
-  private def assignFreshVars(vpi: VPi): (Vector[Value], Env) = vpi.binders.foldLeft(Vector.empty[Value] -> vpi.env) {
-    case ((curValues, curEnv), binder) =>
-      val tyV = getType(binder.ty, curEnv)
-      val fresh = freshVar(binder.name, tyV)
-      (curValues :+ fresh, curEnv.put(binder.name, fresh))
-  }
-
-  private def typecheckBody(body: Term.Body, env: Env): Value = {
-    val newEnv = body.lets.foldLeft(env) { case (curEnv, l) =>
-      val res = typecheck(l.value, curEnv)
-      l.ty.foreach { tyTerm =>
-        val tyV = getType(tyTerm, curEnv)
-        check(res, tyV, curEnv)
-      }
-      curEnv.put(l.name, res)
+  // Check that all type terms typecheck under a fresh var assignment to binders
+  private def typecheckPi(pi: Term.Pi, meta: MetaStore, env: Env): (VPi, MetaStore) = {
+    val (finalMeta, bodyEnv) = pi.binders.foldLeft((meta, env.newScope)) { case ((curMeta, curEnv), b) =>
+      val (tyV, nextMeta) = getType(b.ty, curMeta)(curEnv)
+      (nextMeta, curEnv.put(b.name, freshVar(b.name, tyV)))
     }
-    typecheck(body.res, newEnv)
+    typecheckTT(pi.out, finalMeta)(bodyEnv)
+    (evalPi(pi)(env), meta)
+  }
+
+  private def typecheckTT(term: TypeTerm, meta: MetaStore)(implicit env: Env): (Value, MetaStore) = term match {
+    case t: Term.TApp => typecheckApplyTerm(t.fn, t.args, meta)
+    case pi: Term.Pi  => typecheckPi(pi, meta, env)
+    case ident: Ident => (evalTerm(ident, meta), meta)
+  }
+
+  private def typecheckBody(body: Term.Body, meta: MetaStore, env: Env): (Value, MetaStore) = {
+    val (newEnv, newMeta) = body.lets.foldLeft((env, meta)) { case ((curEnv, curMeta), l) =>
+      val (res, m1) = typecheck(l.value, curMeta)(curEnv)
+      val m2 = l.ty
+        .map { tyTerm =>
+          val (tyV, m21) = getType(tyTerm, m1)(curEnv)
+          defEq(res, tyV, m21)
+        }
+        .getOrElse(m1)
+      (curEnv.put(l.name, res), m2)
+    }
+    typecheck(body.res, newMeta)(newEnv)
   }
 
   @tailrec
@@ -75,49 +87,48 @@ object TypeChecker {
     case other         => other
   }
 
-  private def typecheckMatch(m: Match, env: Env): Value = {
-    val scrut = typecheck(m.scrut, env)
-    val withScrut = env.put(m.scrutName, scrut)
+  private def typecheckMatch(t: Match, meta: MetaStore, env: Env): (Value, MetaStore) = {
+    val (scrut, m1) = typecheck(t.scrut, meta)(env)
+    val withScrut = env.put(t.scrutName, scrut)
 
     val (inductiveName, inductiveCtors) = peelHead(scrut.tpe) match {
       case VConst(n, Inductive(names), _) => (n, names.toSet)
       case _                              => throw NonInductiveMatch(scrut.tpe)
     }
 
-    def unifyScrutWithCtor(ctorName: String): (Env, Vector[Value]) = {
+    def unifyScrutWithCtor(ctorName: String): (MetaStore, Vector[Value]) = {
       val ctorVal = env.find(ctorName).getOrElse(throw NotFound(ctorName))
 
       ctorVal match {
-        case VConst(_, ConstructorHead, ctorTy) =>
+        case h @ VConst(_, ConstructorHead, ctorTy) =>
           val (freshArgs, ctorEnv) = ctorTy match {
-            case pi: VPi => assignFreshVars(pi)
+            case pi: VPi => assignFreshVars(pi, m1)
             case _       => (Vector.empty[Value], env)
           }
 
           val ctorResTy: Value = ctorTy match {
-            case VPi(_, _, out) => getType(out, ctorEnv)
+            case VPi(_, _, out, _) =>
+              evalTerm(out, m1)(ctorEnv) // Again, we've already typechecked out, so we can just eval it
             case otherTy: Value => otherTy
           }
 
           val appliedConstr =
-            if (freshArgs.nonEmpty) VApp(ctorVal, NEL.mk(freshArgs), ctorResTy)
-            else ctorVal
+            if (freshArgs.nonEmpty) VApp(h, NEL.mk(freshArgs), ctorResTy)
+            else h
 
-          // Refine env by unifying scrutinee with applied constructor
-          val refinedEnv = unify(scrut, appliedConstr, withScrut)
-          (refinedEnv, freshArgs)
+          (unify(scrut, appliedConstr, m1), freshArgs)
         case _ => throw UnknownConstructor(ctorName, inductiveName)
       }
     }
 
     // Check for duplicate constructors
-    m.cases.groupBy(_.ctorName).find(_._2.length > 1).foreach { case (ctor, cases) =>
+    t.cases.groupBy(_.ctorName).find(_._2.length > 1).foreach { case (ctor, cases) =>
       throw DuplicateCase(ctor, Some(cases(1).span))
     }
 
     // Check exhaustivity. Each missing ctor must be unreachable - that is, must fail to unify with scrut
     // TODO: don't use exceptions
-    val missing = inductiveCtors -- m.cases.map(_.ctorName)
+    val missing = inductiveCtors -- t.cases.map(_.ctorName)
     missing.foreach { ctorName =>
       Try(unifyScrutWithCtor(ctorName)) match {
         case util.Failure(_) =>
@@ -126,13 +137,13 @@ object TypeChecker {
     }
 
     // Check for unknown constructors
-    m.cases.find(c => !inductiveCtors.contains(c.ctorName)).foreach { c =>
+    t.cases.find(c => !inductiveCtors.contains(c.ctorName)).foreach { c =>
       throw UnknownConstructor(c.ctorName, inductiveName, Some(c.span))
     }
 
-    m.cases.foreach { br =>
+    t.cases.foreach { br =>
       try {
-        val (refinedEnv, freshArgs) =
+        val (branchMetas, freshArgs) =
           try {
             unifyScrutWithCtor(br.ctorName)
           } catch {
@@ -142,145 +153,48 @@ object TypeChecker {
         if (br.argNames.length != freshArgs.length)
           throw ArityMismatch(freshArgs.length, br.argNames.length)
 
-        val branchEnv = br.argNames.zip(freshArgs).foldLeft(refinedEnv.newScope) { case (curEnv, (argName, argVal)) =>
+        val branchEnv = br.argNames.zip(freshArgs).foldLeft(withScrut.newScope) { case (curEnv, (argName, argVal)) =>
           curEnv.put(argName, argVal)
         }
 
-        val branchRes = typecheck(br.body, branchEnv)
-        val expectTy = getType(m.motive, refinedEnv)
-        check(branchRes, expectTy, refinedEnv)
+        val (branchRes, m2) = typecheck(br.body, branchMetas)(branchEnv)
+        val (expectTy, m3) = getType(t.motive, m2)(branchEnv)
+        defEq(branchRes, expectTy, m3)
       } catch {
         case t: TypeError if t.span.isEmpty => throw TypeError.withSpan(t, br.span)
       }
     }
 
-    evalTerm(m, env)
+    (evalTerm(t, m1)(withScrut), m1)
   }
 
-  private def occurs(id: Long, v: Value, env: Env): Boolean = v match {
-    case Var(_, vid, _) if vid == id                  => true
-    case Var(_, vid, _) if env.varLinks.contains(vid) => occurs(id, env.getVarTop(vid), env)
-    case VPi(piEnv, binders, out)                     =>
-      // Check binder types first
-      val inBinders = binders.toList.exists { b =>
-        val tv = getType(b.ty, piEnv)
-        occurs(id, tv, env)
-      }
-      if (inBinders) true
-      else {
-        // Check codomain under fresh assignments for binders
-        val (_, extEnv) = assignFreshVars(VPi(piEnv, binders, out))
-        val outV = getType(out, extEnv)
-        occurs(id, outV, env)
-      }
-    case VApp(h, args, _) => occurs(id, h, env) || args.toList.exists(a => occurs(id, a, env))
-    case _                => false
+  def typecheckLam(l: Lam, meta: MetaStore, env: Env): (Value, MetaStore) = {
+    val (vpi, m1) = typecheckPi(l.ty, meta, env)
+    val (_, bodyEnv) = assignFreshVars(vpi, m1)
+
+    val (bodyV, m2) = typecheck(l.body, m1)(bodyEnv)
+    val resType = evalTerm(l.ty.out, m2)(bodyEnv)
+
+    val m3 = defEq(bodyV, resType, m2)
+    (VLam(l.body, vpi, None), m3)
   }
 
-  private def unify(v1: Value, v2: Value, env: Env): Env = {
-    (v1, v2) match {
-      case (VUniverse, VUniverse)                                                             => env
-      case (VConst(n1, c1, _), VConst(n2, c2, _)) if n1 == n2 && c1 == c2                     => env
-      case (p1 @ VPi(env1, bs1, out1), p2 @ VPi(env2, bs2, out2)) if bs1.length == bs2.length =>
-        // Extensional unification for Pi types: unify binder types and codomain under shared fresh vars
-        val (envAfterBinders, extEnv1, extEnv2) =
-          bs1.toList.zip(bs2.toList).foldLeft((env, env1.newScope, env2.newScope)) {
-            case ((curEnv, curEnv1, curEnv2), (b1, b2)) =>
-              val t1 = getType(b1.ty, curEnv1)
-              val t2 = getType(b2.ty, curEnv2)
-              val nextEnv = unify(t1, t2, curEnv)
-              val x = freshVar(b1.name, t1)
-              (nextEnv, curEnv1.put(b1.name, x), curEnv2.put(b2.name, x))
-          }
-        val outT1 = getType(out1, extEnv1)
-        val outT2 = getType(out2, extEnv2)
-        unify(outT1, outT2, envAfterBinders)
-      case (l1 @ VLam(_, t1 @ VPi(env1, bs1, out1), id1), l2 @ VLam(_, t2 @ VPi(env2, bs2, out2), id2))
-          if bs1.length == bs2.length =>
-        // Lambda equality: first try ids, then referential equality, then extensional fallback
-        if (id1.isDefined && id1 == id2) env
-        else if (l1.eq(l2)) env
-        else {
-          val (envAfterBinders, extEnv1, extEnv2) =
-            bs1.toList.zip(bs2.toList).foldLeft((env, env1.newScope, env2.newScope)) {
-              case ((curEnv, curEnv1, curEnv2), (b1, b2)) =>
-                val ty1 = getType(b1.ty, curEnv1)
-                val ty2 = getType(b2.ty, curEnv2)
-                val nextEnv = unify(ty1, ty2, curEnv)
-                val x = freshVar(b1.name, ty1)
-                (nextEnv, curEnv1.put(b1.name, x), curEnv2.put(b2.name, x))
-            }
-          val args1: NEL[Term] = NEL.mk(bs1.toList.map(b => Term.Ident(b.name, Span(0, 0))))
-          val args2: NEL[Term] = NEL.mk(bs2.toList.map(b => Term.Ident(b.name, Span(0, 0))))
-          val app1 = typecheckApply(l1, args1, extEnv1)
-          val app2 = typecheckApply(l2, args2, extEnv2)
-          unify(app1, app2, envAfterBinders)
-        }
-      case (VApp(h1, args1, _), VApp(h2, args2, _)) if args1.length == args2.length =>
-        val startCtx = unify(h1, h2, env)
-        args1.zip(args2).foldLeft(startCtx) { case (newCtx, (arg1, arg2)) => unify(arg1, arg2, newCtx) }
-
-      // Unify FreshVars through ctx. Basic idea: FreshVars can point at things through context
-      // unify creates a ctx of pointers. We only create pointers from the top of the chain
-
-      case (Var(_, id1, _), Var(_, id2, _)) if id1 == id2 => env
-
-      // If we have FreshVars, resolve the tops of the chain
-      case (Var(_, id, _), _) if env.varLinks.contains(id) => unify(env.getVarTop(id), v2, env)
-      case (_, Var(_, id, _)) if env.varLinks.contains(id) => unify(v1, env.getVarTop(id), env)
-
-      // Link two distinct, unlinked Vars: smaller id points to larger id
-      case (v1 @ Var(_, id1, ty1), v2 @ Var(_, id2, ty2)) =>
-        val (smallId, largeVar, smallTy, largeTy) =
-          if (id1 < id2) (id1, v2: Value, ty1, ty2) else (id2, v1: Value, ty2, ty1)
-        val env1 = unify(smallTy, largeTy, env)
-        env1.addVarLink(smallId, largeVar)
-
-      // Link unlinked Var (left) to a non-Var value
-      case (v @ Var(_, id, ty), other) =>
-        if (occurs(id, other, env))
-          throw OccursCheckFailed(id, other)
-        val env1 = unify(ty, other.tpe, env)
-        env1.addVarLink(id, other)
-
-      // Symmetric: link unlinked Var (right) to non-Var value
-      case (other, v @ Var(_, id, ty)) =>
-        if (occurs(id, other, env))
-          throw OccursCheckFailed(id, other)
-        val env1 = unify(ty, other.tpe, env)
-        env1.addVarLink(id, other)
-
-      case _ => throw UnificationFailed(v1, v2)
-    }
-  }
-
-  def getType(term: TypeTerm, env: Env): Value = {
-    val res = typecheck(term, env)
-    res.tpe match {
+  def getType(term: TypeTerm, meta: MetaStore)(implicit env: Env): (Value, MetaStore) = {
+    val res = typecheck(term, meta)
+    res._1.tpe match {
       case VUniverse => res
-      case _         => throw NotAType(res)
+      case _         => throw NotAType(res._1)
     }
   }
 
-  def typecheck(term: CoreAst.Term, env: Env): Value = {
+  def typecheck(term: CoreAst.Term, meta: MetaStore)(implicit env: Env): (Value, MetaStore) = {
     try {
       term match {
-        case term: TypeTerm => typecheckTT(term, env)
-        case t: Term.App =>
-          val fn = typecheck(t.fn, env)
-          typecheckApply(fn, t.args, env)
-        case Term.Lam(ty, body, _) =>
-          val vpi = VPi(env, ty.binders, ty.out)
-          val (_, nextEnv) = assignFreshVars(vpi)
-
-          val bodyV = typecheck(body, nextEnv)
-          val resType = getType(vpi.out, nextEnv)
-
-          check(bodyV, resType, nextEnv)
-          VLam(body, vpi, None)
-
-        case m: Term.Match => typecheckMatch(m, env)
-        case b: Term.Body  => typecheckBody(b, env)
+        case term: TypeTerm => typecheckTT(term, meta)
+        case t: Term.App    => typecheckApplyTerm(t.fn, t.args, meta)
+        case l: Term.Lam    => typecheckLam(l, meta, env)
+        case m: Term.Match  => typecheckMatch(m, meta, env)
+        case b: Term.Body   => typecheckBody(b, meta, env)
       }
     } catch {
       case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, term.span)
