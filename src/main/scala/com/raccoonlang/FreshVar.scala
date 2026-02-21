@@ -15,7 +15,7 @@ object FreshVar {
     vpi.binders.foldLeft(Vector.empty[Value] -> vpi.env) { case ((curValues, curEnv), binder) =>
       val tyV = evalTerm(binder.ty, meta)(curEnv) // vpi has been typechecked already - no need to typecheck the binders
       val fresh = freshVar(binder.name, tyV)
-      (curValues :+ fresh, curEnv.put(binder.name, fresh))
+      (curValues :+ fresh, curEnv.putLocal(binder.name, fresh))
     }
 
 

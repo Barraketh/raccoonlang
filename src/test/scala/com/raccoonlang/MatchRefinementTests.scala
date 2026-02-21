@@ -15,7 +15,7 @@ class MatchRefinementTests extends munit.FunSuite {
       """
         |inductive Nat : Type
         | | zero : Nat
-        | | succ : Nat -> Nat
+        | | succ (p: Nat) : Nat
         |
         |inductive Eq : (A: Type) -> A -> A -> Type
         | | refl (A: Type)(x: A) : Eq A x x
@@ -36,7 +36,7 @@ class MatchRefinementTests extends munit.FunSuite {
       """
         |inductive Nat : Type
         | | zero : Nat
-        | | succ : Nat -> Nat
+        | | succ (p: Nat) : Nat
         |
         |inductive Eq : (A: Type) -> A -> A -> Type
         | | refl (A: Type)(x: A) : Eq A x x
@@ -57,7 +57,7 @@ class MatchRefinementTests extends munit.FunSuite {
       """
         |inductive Nat : Type
         | | zero : Nat
-        | | succ : Nat -> Nat
+        | | succ (p: Nat) : Nat
         |
         |inductive Eq : (A: Type) -> A -> A -> Type
         | | refl (A: Type)(x: A) : Eq A x x

@@ -33,7 +33,7 @@ object TypeChecker {
           binders.toList.zip(vArgs).foldLeft((env.newScope, meta1)) { case ((curEnv, m), (binder, value)) =>
             val (argTy, m1) = getType(binder.ty, m)(curEnv)
             val m2 = defEq(value, argTy, m1)
-            (curEnv.put(binder.name, value), m2)
+            (curEnv.putLocal(binder.name, value), m2)
           }
 
         // Since we've already typechecked everything we care about, now we can just evalTerm
@@ -55,7 +55,7 @@ object TypeChecker {
   private def typecheckPi(pi: Term.Pi, meta: MetaStore, env: Env): (VPi, MetaStore) = {
     val (finalMeta, bodyEnv) = pi.binders.foldLeft((meta, env.newScope)) { case ((curMeta, curEnv), b) =>
       val (tyV, nextMeta) = getType(b.ty, curMeta)(curEnv)
-      (nextMeta, curEnv.put(b.name, freshVar(b.name, tyV)))
+      (nextMeta, curEnv.putLocal(b.name, freshVar(b.name, tyV)))
     }
     typecheckTT(pi.out, finalMeta)(bodyEnv)
     (evalPi(pi)(env), meta)
@@ -76,7 +76,7 @@ object TypeChecker {
           defEq(res, tyV, m21)
         }
         .getOrElse(m1)
-      (curEnv.put(l.name, res), m2)
+      (curEnv.putLocal(l.name, res), m2)
     }
     typecheck(body.res, newMeta)(newEnv)
   }
@@ -89,7 +89,7 @@ object TypeChecker {
 
   private def typecheckMatch(t: Match, meta: MetaStore, env: Env): (Value, MetaStore) = {
     val (scrut, m1) = typecheck(t.scrut, meta)(env)
-    val withScrut = env.put(t.scrutName, scrut)
+    val withScrut = env.putLocal(t.scrutName, scrut)
 
     val (inductiveName, inductiveCtors) = peelHead(scrut.tpe) match {
       case VConst(n, Inductive(names), _) => (n, names.toSet)
@@ -154,7 +154,7 @@ object TypeChecker {
           throw ArityMismatch(freshArgs.length, br.argNames.length)
 
         val branchEnv = br.argNames.zip(freshArgs).foldLeft(withScrut.newScope) { case (curEnv, (argName, argVal)) =>
-          curEnv.put(argName, argVal)
+          curEnv.putLocal(argName, argVal)
         }
 
         val (branchRes, m2) = typecheck(br.body, branchMetas)(branchEnv)
@@ -165,7 +165,7 @@ object TypeChecker {
       }
     }
 
-    (evalTerm(t, m1)(withScrut), m1)
+    (evalTerm(t, m1)(env), m1)
   }
 
   def typecheckLam(l: Lam, meta: MetaStore, env: Env): (Value, MetaStore) = {

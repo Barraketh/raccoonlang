@@ -68,19 +68,32 @@ object Interpreter {
   }
 
   // Environment: tracks lexical scope
-  final case class Env(map: Map[String, Value], parent: Option[Env]) {
-    def find(name: String): Option[Value] = map.get(name).orElse(parent.flatMap(_.find(name)))
+  final case class Env(globals: Map[String, Value], locals: Map[String, Value], parent: Option[Env]) {
+    def find(name: String): Option[Value] =
+      locals.get(name).orElse(globals.get(name)).orElse(parent.flatMap(_.find(name)))
 
-    def put(name: String, value: Value): Env = {
-      if (map.contains(name)) throw AlreadyDefined(name)
+    def findLocal(name: String): Option[Value] =
+      locals.get(name).orElse(parent.flatMap(_.findLocal(name)))
+
+    def putGlobal(name: String, value: Value): Env = {
+      if (globals.contains(name))
+        throw AlreadyDefined(name)
       else if (name == "_") this
-      else Env(map + (name -> value), parent)
+      else Env(globals + (name -> value), locals, parent)
     }
-    def newScope: Env = Env(Map.empty, Some(this))
+
+    def putLocal(name: String, value: Value): Env = {
+      if (locals.contains(name) || globals.contains(name))
+        throw AlreadyDefined(name)
+      else if (name == "_") this
+      else Env(globals, locals + (name -> value), parent)
+    }
+
+    def newScope: Env = Env(Map.empty, Map.empty, Some(this))
   }
 
   object Env {
-    val empty: Env = Env(map = Map(), parent = None)
+    val empty: Env = Env(globals = Map(), locals = Map(), parent = None)
   }
 
   // Tracks solutions to metas
@@ -129,7 +142,7 @@ object Interpreter {
     if (fnTpe.binders.length != args.length) throw ArityMismatch(fnTpe.binders.length, args.length)
 
     fnTpe.binders.map(_.name).zip(args).foldLeft(fnTpe.env.newScope) { case (curEnv, (name, value)) =>
-      curEnv.put(name, value)
+      curEnv.putLocal(name, value)
     }
   }
 
@@ -173,19 +186,21 @@ object Interpreter {
         case Term.Lam(ty, body, _) =>
           val vpi = evalPi(ty)
           VLam(body, vpi, None)
-        case m: Term.Match => evalMatch(m, meta)
-        case b: Term.Body  => evalBody(b, meta)
+        case m: Term.Match => evalMatch(m, meta, env)
+        case b: Term.Body  => evalBody(b, meta, env)
       }
     } catch {
       case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, term.span)
     }
   }
 
-  private def evalMatch(m: Match, meta: MetaStore)(implicit env: Env): Value = {
-    val scrut = evalTerm(m.scrut, meta)
-    val withScrut = env.put(m.scrutName, scrut)
+  private def evalMatch(m: Match, meta: MetaStore, env: Env): Value = {
+    val scrut = whnf(evalTerm(m.scrut, meta)(env), meta)
+    val withScrut = env.putLocal(m.scrutName, scrut)
 
-    def stuckMatch: Value = ???
+    val outType = evalTerm(m.motive, meta)(withScrut)
+    // TODO: fix this
+    val stuckMatch = VApp(VConst(s"match-${m.span.start}", Symbol, outType), NEL.one(scrut), outType)
 
     val (head, args) = scrut match {
       case VApp(head, args, _) => (head, args.toList)
@@ -200,17 +215,17 @@ object Interpreter {
         if (args.length != branch.argNames.length)
           throw ArityMismatch(branch.argNames.length, args.length, Some(branch.span))
         val newEnv = args.zip(branch.argNames).foldLeft(withScrut) { case (curEnv, (argV, argName)) =>
-          curEnv.put(argName, argV)
+          curEnv.putLocal(argName, argV)
         }
         evalTerm(branch.body, meta)(newEnv)
       case _ => stuckMatch
     }
   }
 
-  def evalBody(body: Term.Body, meta: MetaStore)(implicit env: Env): Value = {
+  def evalBody(body: Term.Body, meta: MetaStore, env: Env): Value = {
     val newEnv = body.lets.foldLeft(env) { case (curEnv, l) =>
       val res = evalTerm(l.value, meta)(curEnv)
-      curEnv.put(l.name, res)
+      curEnv.putLocal(l.name, res)
     }
     evalTerm(body.res, meta)(newEnv)
   }
@@ -222,13 +237,13 @@ object Interpreter {
         val declConst = VConst(name, Symbol, tyV)
 
         // Allow recursive references by pre-binding a symbolic self during body checking
-        val bodyOpt = body.map(b => TypeChecker.typecheck(b, m)(env.put(name, declConst))._1)
+        val bodyOpt = body.map(b => TypeChecker.typecheck(b, m)(env.putGlobal(name, declConst))._1)
         val value: Value = (bodyOpt, isInline) match {
           case (Some(lam: VLam), true) => VLam(lam.body, lam.tpe, Some(LamId.Const(name)))
           case (Some(v), true)         => v
           case _                       => declConst
         }
-        val nextEnv = env.put(name, value)
+        val nextEnv = env.putGlobal(name, value)
 
         value match {
           case VLam(_, tpe, _) => tpe.env = nextEnv
@@ -239,18 +254,32 @@ object Interpreter {
 
       case Decl.InductiveDecl(name, ty, ctors, _) =>
         val (inductiveType, _) = TypeChecker.getType(ty, MetaStore.empty)(env)
-        val env2 = env.put(name, VConst(name, Inductive(ctors.map(c => c.name)), inductiveType))
+        val inductiveHead = VConst(name, Inductive(ctors.map(c => c.name)), inductiveType)
+        val env2 = env.putGlobal(name, inductiveHead)
         ctors.foldLeft(env2) { case (curEnv, c) =>
-          val (ctorTy, _) = TypeChecker.getType(c.ty, MetaStore.empty)(env2)
-          Unify.unify(ctorTy.tpe, inductiveType, MetaStore.empty)
-          curEnv.put(c.name, VConst(c.name, ConstructorHead, ctorTy))
+          val (ctorV, _) = TypeChecker.getType(c.ty, MetaStore.empty)(env2)
+
+          val ctorResTpe = ctorV match {
+            case v: VConst => v
+            case pi: VPi =>
+              val (_, nextEnv) = FreshVar.assignFreshVars(pi, MetaStore.empty)
+              evalTerm(pi.out, MetaStore.empty)(nextEnv)
+          }
+
+          val ctorResTpeHead = ctorResTpe match {
+            case VApp(head, _, _) => head
+            case other            => other
+          }
+
+          Unify.unify(ctorResTpeHead, inductiveHead, MetaStore.empty)
+          curEnv.putGlobal(c.name, VConst(c.name, ConstructorHead, ctorV))
         }
     }
 
   }
 
   def run(p: Program): Value = {
-    val baseEnv = Env.empty.put("Type", VUniverse)
+    val baseEnv = Env.empty.putGlobal("Type", VUniverse)
     val env = p.decls.foldLeft(baseEnv) { case (env, decl) => evalDecl(decl, env) }
     TypeChecker.typecheck(p.body, MetaStore.empty)(env)._1
   }

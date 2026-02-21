@@ -2,11 +2,30 @@ package com.raccoonlang
 
 import com.raccoonlang.Interpreter._
 
+import scala.collection.immutable.BitSet
+
 object Unify {
 
-  private def occurs(id: MetaId, v: Value, meta: MetaStore): Boolean = {
+  def expandedDeps(rhsSyn: BitSet, meta: MetaStore): BitSet = {
+    val seen = scala.collection.mutable.BitSet.empty
+    val work = scala.collection.mutable.ArrayDeque.empty[Int]
+    rhsSyn.foreach(id => { val r = id; if (!seen(r)) { seen += r; work += r } })
 
+    while (work.nonEmpty) {
+      val id = work.removeHead()
+      meta.links.get(id) match {
+        case None => ()
+        case Some(sol) =>
+          sol.synDeps.foreach { j =>
+            if (!seen(j)) { seen += j; work += j }
+          }
+      }
+    }
+    seen.toImmutable
   }
+
+  def occurs(id: MetaId, rhs: Value, meta: MetaStore): Boolean =
+    expandedDeps(rhs.synDeps, meta).contains(id)
 
   // Extensionally unify Pi types
   private def unifyPis(pi1: VPi, pi2: VPi, meta: MetaStore): (MetaStore, Env, Env) = {
@@ -17,7 +36,7 @@ object Unify {
           val t2 = evalTerm(b2.ty, curMeta)(curEnv2)
           val nextMeta = unify(t1, t2, curMeta)
           val x = FreshVar.freshVar(b1.name, t1)
-          (nextMeta, curEnv1.put(b1.name, x), curEnv2.put(b2.name, x))
+          (nextMeta, curEnv1.putLocal(b1.name, x), curEnv2.putLocal(b2.name, x))
       }
     val out1 = evalTerm(pi1.out, resMeta)(nextEnv1)
     val out2 = evalTerm(pi2.out, resMeta)(nextEnv2)
@@ -54,13 +73,15 @@ object Unify {
       // Link unlinked Var (left) to a non-Var value
       case (Meta(_, id, ty), other) =>
         val m1 = unify(ty, other.tpe, meta)
-        if (occurs(id, other, m1)) throw OccursCheckFailed(id, other)
+        if (occurs(id, other, m1))
+          throw OccursCheckFailed(id, other)
         m1.addLink(id, other)
 
       // Symmetric: link unlinked Var (right) to non-Var value
       case (other, Meta(_, id, ty)) =>
         val m1 = unify(ty, other.tpe, meta)
-        if (occurs(id, other, meta)) throw OccursCheckFailed(id, other)
+        if (occurs(id, other, meta))
+          throw OccursCheckFailed(id, other)
         m1.addLink(id, other)
 
       case _ => throw UnificationFailed(v1, v2)

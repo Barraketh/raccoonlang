@@ -54,8 +54,9 @@ object FreeNames {
     val freeNames = FreeNames.getFreeNames(term, bound)
     val deps = collection.mutable.BitSet()
     freeNames.foreach { name =>
-      val v = env.find(name).getOrElse { throw NotFound(name) }
-      deps |= v.synDeps
+      env.findLocal(name).foreach { v =>
+        deps |= v.synDeps
+      }
     }
     deps.toImmutable
   }
