@@ -163,7 +163,7 @@ object Interpreter {
     tpe0 match {
       case pi: VPi =>
         implicit val envWithArgs: Env = getEnvWithArgs(pi, vArgs)
-        fn match {
+        fn0 match {
           case VLam(body, _, _) => evalTerm(body, meta)
           case h: Head          => VApp(h, vArgs, evalTT(pi.out, meta))
           case _                => throw CannotApplyNonFunction(fn)

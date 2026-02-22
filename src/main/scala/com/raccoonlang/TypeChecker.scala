@@ -53,12 +53,12 @@ object TypeChecker {
 
   // Check that all type terms typecheck under a fresh var assignment to binders
   private def typecheckPi(pi: Term.Pi, meta: MetaStore, env: Env): (VPi, MetaStore) = {
-    val (finalMeta, bodyEnv) = pi.binders.foldLeft((meta, env.newScope)) { case ((curMeta, curEnv), b) =>
+    val (m1, bodyEnv) = pi.binders.foldLeft((meta, env.newScope)) { case ((curMeta, curEnv), b) =>
       val (tyV, nextMeta) = getType(b.ty, curMeta)(curEnv)
       (nextMeta, curEnv.putLocal(b.name, freshVar(b.name, tyV)))
     }
-    typecheckTT(pi.out, finalMeta)(bodyEnv)
-    (evalPi(pi)(env), meta)
+    val (_, m2) = getType(pi.out, m1)(bodyEnv)
+    (evalPi(pi)(env), m2)
   }
 
   private def typecheckTT(term: TypeTerm, meta: MetaStore)(implicit env: Env): (Value, MetaStore) = term match {
@@ -181,7 +181,7 @@ object TypeChecker {
 
   def getType(term: TypeTerm, meta: MetaStore)(implicit env: Env): (Value, MetaStore) = {
     val res = typecheck(term, meta)
-    res._1.tpe match {
+    Interpreter.whnf(res._1.tpe, meta) match {
       case VUniverse => res
       case _         => throw NotAType(res._1)
     }

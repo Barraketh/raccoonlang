@@ -80,7 +80,7 @@ object Unify {
       // Symmetric: link unlinked Var (right) to non-Var value
       case (other, Meta(_, id, ty)) =>
         val m1 = unify(ty, other.tpe, meta)
-        if (occurs(id, other, meta))
+        if (occurs(id, other, m1))
           throw OccursCheckFailed(id, other)
         m1.addLink(id, other)
 
