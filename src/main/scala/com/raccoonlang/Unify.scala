@@ -43,6 +43,15 @@ object Unify {
     (unify(out1, out2, resMeta), nextEnv1, nextEnv2)
   }
 
+  def unifyStuckMatches(v1: StuckMatch, v2: StuckMatch, meta: MetaStore): MetaStore = {
+    val m0 = unify(v1.scrut, v2.scrut, meta)
+    val m1 = unify(v1.tpe, v2.tpe, m0)
+
+    if (v1.id.params.length != v2.id.params.length) throw UnificationFailed(v1, v2) // Sanity check
+
+    v1.id.params.zip(v2.id.params).foldLeft(m1) { case (curMeta, (p1, p2)) => unify(p1, p2, curMeta) }
+  }
+
   def unify(v1: Value, v2: Value, meta: MetaStore): MetaStore = {
     val a = Interpreter.whnf(v1, meta)
     val b = Interpreter.whnf(v2, meta)
@@ -83,6 +92,9 @@ object Unify {
         if (occurs(id, other, m1))
           throw OccursCheckFailed(id, other)
         m1.addLink(id, other)
+
+      case (v1: StuckMatch, v2: StuckMatch) if v1.id.nodeId == v2.id.nodeId =>
+        unifyStuckMatches(v1, v2, meta)
 
       case _ => throw UnificationFailed(v1, v2)
     }

@@ -79,6 +79,16 @@ object Interpreter {
     }
   }
 
+  case class StuckMatch(id: LamId.LocalId, term: Term.Match, scrut: Value, env: Env, tpe: Value) extends Value {
+    override def synDeps: BitSet = {
+      val res = collection.mutable.BitSet()
+      res |= tpe.synDeps
+      res |= scrut.synDeps
+      id.params.foreach(v => res |= v.synDeps)
+      res.toImmutable
+    }
+  }
+
   // Environment: tracks lexical scope
   final case class Env(globals: Map[String, Value], locals: Map[String, Value], parent: Option[Env]) {
     def find(name: String): Option[Value] =
@@ -146,6 +156,20 @@ object Interpreter {
             // Head is not reducible
             if (h0 eq h) v0 else VApp(h0, args, tpe)
         }
+      case vm: StuckMatch =>
+        val scrut0 = whnf(vm.scrut, meta)
+        val stillStuck = if (vm.scrut eq scrut0) vm else vm.copy(scrut = scrut0)
+        val head = scrut0 match {
+          case VApp(h, _, _) => h
+          case c: VConst     => c
+          case _             => return stillStuck
+        }
+
+        head match {
+          case _: VConst => whnf(evalMatchBody(vm.term, scrut0, meta, vm.env), meta)
+          case _         => stillStuck
+        }
+
       case _ => v0
     }
   }
@@ -190,7 +214,7 @@ object Interpreter {
     evalApply(vf, vArgs, meta)
   }
 
-  def evalLam( l: Term.Lam, vpi: VPi)(implicit env: Env): VLam = {
+  def evalLam(l: Term.Lam, vpi: VPi)(implicit env: Env): VLam = {
     val id = l.name match {
       case Some(funcName) => LamId.Const(funcName)
       case None =>
@@ -224,11 +248,30 @@ object Interpreter {
 
   private def evalMatch(m: Match, meta: MetaStore, env: Env): Value = {
     val scrut = whnf(evalTerm(m.scrut, meta)(env), meta)
+    evalMatchBody(m, scrut, meta, env)
+  }
+
+  private def evalMatchBody(m: Match, scrut: Value, meta: MetaStore, env: Env): Value = {
     val withScrut = env.putLocal(m.scrutName, scrut)
 
-    val outType = evalTerm(m.motive, meta)(withScrut)
-    // TODO: fix this
-    val stuckMatch = VApp(VConst(s"match-${m.span.start}", Symbol, outType), NEL.one(scrut), outType)
+    lazy val stuckMatch = {
+      // Get all the free locals referenced in the body of the match - we will use them as the key, just like VLam
+      // We can treat scrutName as bound, since we are including it in StuckMatch and will unify it separately
+      val freeNames = m.cases
+        .foldLeft(Set.empty[String]) { case (curNames, c) =>
+          val nextNames = FreeNames.getFreeNames(c.body, bound = (c.argNames :+ m.scrutName).toSet)
+          curNames.union(nextNames)
+        }
+        .toVector
+        .filter(n => withScrut.findLocal(n).isDefined)
+        .sorted
+      val captures = freeNames.map(n => withScrut.findLocal(n).get)
+      val id = LamId.LocalId(m.span.start, captures)
+
+      val outType = evalTerm(m.motive, meta)(withScrut)
+
+      StuckMatch(id, m, scrut, withScrut, outType)
+    }
 
     val (head, args) = scrut match {
       case VApp(head, args, _) => (head, args.toList)
@@ -242,7 +285,7 @@ object Interpreter {
           m.cases.find(c => c.ctorName == ctorName).getOrElse(throw UnknownConstructor(ctorName, "", Some(m.span)))
         if (args.length != branch.argNames.length)
           throw ArityMismatch(branch.argNames.length, args.length, Some(branch.span))
-        val newEnv = args.zip(branch.argNames).foldLeft(withScrut) { case (curEnv, (argV, argName)) =>
+        val newEnv = args.zip(branch.argNames).foldLeft(withScrut.newScope) { case (curEnv, (argV, argName)) =>
           curEnv.putLocal(argName, argV)
         }
         evalTerm(branch.body, meta)(newEnv)
