@@ -68,7 +68,7 @@ object PrettyPrinter {
     case CoreAst.Term.Ident(_, _)          => printTerm(t)
     case CoreAst.Term.App(_, _, _)         => printTerm(t)
     case CoreAst.Term.TApp(_, _, _)        => printTerm(t)
-    case CoreAst.Term.Lam(_, _, _)         => s"(${printTerm(t)})"
+    case CoreAst.Term.Lam(_, _, _, _)      => s"(${printTerm(t)})"
     case CoreAst.Term.Match(_, _, _, _, _) => s"(${printTerm(t)})"
   }
 
@@ -78,7 +78,7 @@ object PrettyPrinter {
       val head = printTermAtom(fn)
       val as = args.toList.map(printTermAtom).mkString(" ")
       s"$head $as"
-    case CoreAst.Term.Lam(ty, body, _) =>
+    case CoreAst.Term.Lam(ty, body, _, _) =>
       s"fun ${printBinders(ty.binders)}: ${printTypeTerm(ty.out)} => ${printTerm(body)}"
     case m @ CoreAst.Term.Match(_, _, _, _, _) => printMatch(m)
     case b: CoreAst.Term.Body                  => printBody(b)
@@ -101,16 +101,8 @@ object PrettyPrinter {
     case Interpreter.VPi(_, binders, out, _) => printTypeTerm(CoreAst.Term.Pi(binders, out, Span(0, 0)))
     case Interpreter.VConst(name, _, _)      => name
     case Interpreter.VApp(head, args, _)     => printApp(head, args)
-    case Interpreter.VLam(_, tpe, id) =>
-      id match {
-        case Some(v) => s"$v"
-        case None =>
-          val params = printBinders(tpe.binders)
-          val outStr = printTypeTerm(tpe.out)
-          s"fun $params: $outStr => …"
-      }
-
-    case Interpreter.Meta(name, id, _) => s"$name#$id"
+    case Interpreter.VLam(_, _, id)          => id.toString
+    case Interpreter.Meta(name, id, _)       => s"$name#$id"
   }
 
 }

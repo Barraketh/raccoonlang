@@ -176,7 +176,7 @@ object TypeChecker {
     val resType = evalTerm(l.ty.out, m2)(bodyEnv)
 
     val m3 = defEq(bodyV, resType, m2)
-    (VLam(l.body, vpi, None), m3)
+    (Interpreter.evalLam(l, vpi)(env), m3)
   }
 
   def getType(term: TypeTerm, meta: MetaStore)(implicit env: Env): (Value, MetaStore) = {

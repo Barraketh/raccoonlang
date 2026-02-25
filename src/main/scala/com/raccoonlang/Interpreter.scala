@@ -29,6 +29,7 @@ object Interpreter {
     final case class Const(name: String) extends LamId {
       override def toString: String = name
     }
+    final case class LocalId(nodeId: Int, params: Vector[Value]) extends LamId
   }
 
   case object VUniverse extends Value {
@@ -62,9 +63,20 @@ object Interpreter {
     override val synDeps: BitSet = tpe.synDeps + id
   }
 
-  case class VLam(body: Term, tpe: VPi, id: Option[LamId]) extends Value {
-    override lazy val synDeps: BitSet =
-      tpe.synDeps.union(FreeNames.getDeps(body, tpe.env, tpe.binders.map(_.name).toList.toSet))
+  case class VLam(body: Term, tpe: VPi, id: LamId) extends Value {
+    override lazy val synDeps: BitSet = {
+      id match {
+        case LamId.Const(_) => tpe.synDeps
+        case LamId.LocalId(_, params) =>
+          if (params.isEmpty) tpe.synDeps
+          else {
+            val res = collection.mutable.BitSet()
+            res |= tpe.synDeps
+            params.foreach(v => res |= v.synDeps)
+            res.toImmutable
+          }
+      }
+    }
   }
 
   // Environment: tracks lexical scope
@@ -178,16 +190,32 @@ object Interpreter {
     evalApply(vf, vArgs, meta)
   }
 
+  def evalLam( l: Term.Lam, vpi: VPi)(implicit env: Env): VLam = {
+    val id = l.name match {
+      case Some(funcName) => LamId.Const(funcName)
+      case None =>
+        val captureNames =
+          FreeNames.getFreeNames(l.body, Set.empty).toVector.filter(n => env.findLocal(n).isDefined).sorted
+        val captureVals = captureNames.map(n => env.findLocal(n).get)
+        LamId.LocalId(l.span.start, captureVals)
+
+    }
+    VLam(l.body, vpi, id)
+  }
+
+  private def evalLam(l: Term.Lam)(implicit env: Env): VLam = {
+    val vpi = evalPi(l.ty)
+    evalLam(l, vpi)
+  }
+
   def evalTerm(term: Term, meta: MetaStore)(implicit env: Env): Value = {
     try {
       term match {
         case tt: TypeTerm          => evalTT(tt, meta)
         case Term.App(fn, args, _) => evalApplyTerm(fn, args, meta)
-        case Term.Lam(ty, body, _) =>
-          val vpi = evalPi(ty)
-          VLam(body, vpi, None)
-        case m: Term.Match => evalMatch(m, meta, env)
-        case b: Term.Body  => evalBody(b, meta, env)
+        case l: Term.Lam           => evalLam(l)
+        case m: Term.Match         => evalMatch(m, meta, env)
+        case b: Term.Body          => evalBody(b, meta, env)
       }
     } catch {
       case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, term.span)
@@ -239,9 +267,8 @@ object Interpreter {
         // Allow recursive references by pre-binding a symbolic self during body checking
         val bodyOpt = body.map(b => TypeChecker.typecheck(b, m)(env.putGlobal(name, declConst))._1)
         val value: Value = (bodyOpt, isInline) match {
-          case (Some(lam: VLam), true) => VLam(lam.body, lam.tpe, Some(LamId.Const(name)))
-          case (Some(v), true)         => v
-          case _                       => declConst
+          case (Some(v), true) => v
+          case _               => declConst
         }
         val nextEnv = env.putGlobal(name, value)
 

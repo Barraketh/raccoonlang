@@ -54,7 +54,7 @@ object Unify {
       case (p1: VPi, p2: VPi) if p1.binders.length == p2.binders.length           => unifyPis(p1, p2, meta)._1
       case (l1: VLam, l2: VLam) if l1.tpe.binders.length == l2.tpe.binders.length =>
         // Lambda equality: first try ids, then referential equality, then extensional fallback
-        if (l1.eq(l2) || (l1.id.isDefined && l1.id == l2.id)) meta
+        if (l1.eq(l2) || l1.id == l2.id) meta
         else {
           val (nextMeta, nextEnv1, nextEnv2) = unifyPis(l1.tpe, l2.tpe, meta)
           val res1 = evalTerm(l1.body, nextMeta)(nextEnv1)
