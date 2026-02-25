@@ -30,13 +30,13 @@ object TypeChecker {
         // Typecheck args against binder types and extend pi env
         val envWithArgs =
           binders.toList.zip(vArgs).foldLeft(env.newScope) { case (curEnv, (binder, value)) =>
-            val argTy = getType(binder.ty)(curEnv, meta)
+            val argTy = meta.eval(binder.ty)(curEnv)
             checkType(value, argTy)
             curEnv.putLocal(binder.name, value)
           }
 
         // Since we've already typechecked everything we care about, now we can just evalTerm
-        fn match {
+        fn0 match {
           case VLam(body, _, _) => meta.eval(body)(envWithArgs)
           case head: Head       => VApp(head, NEL.mk(vArgs), meta.eval(outTy)(envWithArgs))
           case _                => throw CannotApplyNonFunction(fnTy0)
@@ -119,7 +119,7 @@ object TypeChecker {
   private def typecheckMatch(t: Match, env: Env)(implicit meta: MetaCtx): Value = {
     val scrut = typecheck(t.scrut)(env, meta)
 
-    val (inductiveName, inductiveCtors) = peelHead(scrut.tpe) match {
+    val (inductiveName, inductiveCtors) = peelHead(meta.whnf(scrut.tpe)) match {
       case VConst(n, Inductive(names), _) => (n, names.toSet)
       case _                              => throw NonInductiveMatch(scrut.tpe)
     }
@@ -144,7 +144,7 @@ object TypeChecker {
       throw UnknownConstructor(c.ctorName, inductiveName, Some(c.span))
     }
 
-    val withScrut = env.putLocal(t.scrutName, scrut)
+    val withScrut = env.newScope.putLocal(t.scrutName, scrut)
     t.cases.foreach { br =>
       try {
         val branchCtx = meta.fork()
