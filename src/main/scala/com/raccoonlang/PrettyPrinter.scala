@@ -32,13 +32,13 @@ object PrettyPrinter {
   private def isAtomic(v: Interpreter.Value): Boolean = v match {
     case Interpreter.VUniverse => true
     case _: Interpreter.VConst => true
-    case _: Interpreter.Meta   => true
+    case _: Interpreter.Var   => true
     case _                     => false
   }
 
   private def printApp(head: Interpreter.Value, args: Util.NEL[Interpreter.Value]): String = {
     val headStr = head match {
-      case _: Interpreter.VApp | _: Interpreter.VConst | _: Interpreter.Meta | Interpreter.VUniverse => print(head)
+      case _: Interpreter.VApp | _: Interpreter.VConst | _: Interpreter.Var | Interpreter.VUniverse => print(head)
       case _ => s"(${print(head)})"
     }
     val argsStr = args.toList.map { a => if (isAtomic(a)) print(a) else s"(${print(a)})" }.mkString(" ")
@@ -102,7 +102,7 @@ object PrettyPrinter {
     case Interpreter.VConst(name, _, _)      => name
     case Interpreter.VApp(head, args, _)     => printApp(head, args)
     case Interpreter.VLam(_, _, id)          => s"func#$id"
-    case Interpreter.Meta(name, id, _)       => s"$name#$id"
+    case Interpreter.Var(name, id, _)       => s"$name#$id"
     case s: Interpreter.StuckMatch           => s"match#${s.id}"
   }
 

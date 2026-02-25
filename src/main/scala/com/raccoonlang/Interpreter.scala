@@ -2,6 +2,7 @@ package com.raccoonlang
 
 import com.raccoonlang.CoreAst.Term.Match
 import com.raccoonlang.CoreAst._
+import com.raccoonlang.TypeChecker.EqCtx
 import com.raccoonlang.Util.NEL
 
 import scala.collection.immutable.BitSet
@@ -21,7 +22,7 @@ object Interpreter {
 
   sealed trait Head extends Value
 
-  type MetaId = Int
+  type VarId = Int
 
   // Identifier for lambdas to shortcut equality when possible.
   sealed trait LamId
@@ -59,7 +60,7 @@ object Interpreter {
     }
   }
 
-  case class Meta(name: String, id: MetaId, tpe: Value) extends Head {
+  case class Var(name: String, id: VarId, tpe: Value) extends Head {
     override val synDeps: BitSet = tpe.synDeps + id
   }
 
@@ -118,13 +119,11 @@ object Interpreter {
     val empty: Env = Env(globals = Map(), locals = Map(), parent = None)
   }
 
-  // Tracks solutions to metas
-  final case class MetaStore(links: Map[MetaId, Value]) {
-    def isLinked(id: MetaId): Boolean = links.contains(id)
-
+  // Tracks equalities between variables
+  final case class EqStore(links: Map[VarId, Value]) {
     @annotation.tailrec
     def force(v: Interpreter.Value): Interpreter.Value = v match {
-      case Interpreter.Meta(_, id, _) =>
+      case Interpreter.Var(_, id, _) =>
         links.get(id) match {
           case Some(v) => force(v)
           case None    => v
@@ -132,17 +131,17 @@ object Interpreter {
       case other => other
     }
 
-    def addLink(id: MetaId, v: Interpreter.Value): MetaStore = {
+    def addLink(id: VarId, v: Interpreter.Value): EqStore = {
       if (links.contains(id)) throw VarAlreadyLinked(id)
       copy(links = links + (id -> v))
     }
   }
 
-  object MetaStore {
-    val empty: MetaStore = MetaStore(Map())
+  object EqStore {
+    val empty: EqStore = EqStore(Map())
   }
 
-  def whnf(v: Value, meta: MetaStore): Value = {
+  def whnf(v: Value, meta: EqStore): Value = {
     val v0 = meta.force(v)
     v0 match {
       case VApp(h, args, tpe) =>
@@ -186,13 +185,13 @@ object Interpreter {
     VPi(env, pi.binders, pi.out, FreeNames.getDeps(pi, env, Set.empty))
 
   // Evaluate a type-position expression without enforcing it is a type yet
-  private def evalTT(tt: TypeTerm, meta: MetaStore)(implicit env: Env): Value = tt match {
+  private def evalTT(tt: TypeTerm, meta: EqStore)(implicit env: Env): Value = tt match {
     case Term.Ident(name, sp)   => env.find(name).getOrElse { throw TypeError.withSpan(NotFound(name), sp) }
     case Term.TApp(fn, args, _) => evalApplyTerm(fn, args, meta)
     case pi: Term.Pi            => evalPi(pi)
   }
 
-  private def evalApply(fn: Value, vArgs: NEL[Value], meta: MetaStore): Value = {
+  private def evalApply(fn: Value, vArgs: NEL[Value], meta: EqStore): Value = {
     val fn0 = whnf(fn, meta)
     val tpe0 = whnf(fn0.tpe, meta)
 
@@ -208,7 +207,7 @@ object Interpreter {
     }
   }
 
-  private def evalApplyTerm(fn: Term, args: NEL[Term], meta: MetaStore)(implicit env: Env): Value = {
+  private def evalApplyTerm(fn: Term, args: NEL[Term], meta: EqStore)(implicit env: Env): Value = {
     val vf = evalTerm(fn, meta)
     val vArgs = args.map(a => evalTerm(a, meta))
     evalApply(vf, vArgs, meta)
@@ -232,7 +231,7 @@ object Interpreter {
     evalLam(l, vpi)
   }
 
-  def evalTerm(term: Term, meta: MetaStore)(implicit env: Env): Value = {
+  def evalTerm(term: Term, meta: EqStore)(implicit env: Env): Value = {
     try {
       term match {
         case tt: TypeTerm          => evalTT(tt, meta)
@@ -246,12 +245,12 @@ object Interpreter {
     }
   }
 
-  private def evalMatch(m: Match, meta: MetaStore, env: Env): Value = {
+  private def evalMatch(m: Match, meta: EqStore, env: Env): Value = {
     val scrut = whnf(evalTerm(m.scrut, meta)(env), meta)
     evalMatchBody(m, scrut, meta, env)
   }
 
-  private def evalMatchBody(m: Match, scrut: Value, meta: MetaStore, env: Env): Value = {
+  private def evalMatchBody(m: Match, scrut: Value, meta: EqStore, env: Env): Value = {
     val withScrut = env.newScope.putLocal(m.scrutName, scrut)
 
     lazy val stuckMatch = {
@@ -293,7 +292,7 @@ object Interpreter {
     }
   }
 
-  def evalBody(body: Term.Body, meta: MetaStore, env: Env): Value = {
+  def evalBody(body: Term.Body, meta: EqStore, env: Env): Value = {
     val newEnv = body.lets.foldLeft(env) { case (curEnv, l) =>
       val res = evalTerm(l.value, meta)(curEnv)
       curEnv.putLocal(l.name, res)
@@ -302,13 +301,14 @@ object Interpreter {
   }
 
   private def evalDecl(decl: Decl, env: Env): Env = {
+    val meta = EqCtx.empty
     decl match {
       case Decl.ConstDecl(isInline, name, ty, body, _) =>
-        val (tyV, m) = TypeChecker.getType(ty, MetaStore.empty)(env)
+        val tyV = TypeChecker.getType(ty)(env, meta)
         val declConst = VConst(name, Symbol, tyV)
 
         // Allow recursive references by pre-binding a symbolic self during body checking
-        val bodyOpt = body.map(b => TypeChecker.typecheck(b, m)(env.putGlobal(name, declConst))._1)
+        val bodyOpt = body.map(b => TypeChecker.typecheck(b)(env.putGlobal(name, declConst), meta))
         val value: Value = (bodyOpt, isInline) match {
           case (Some(v), true) => v
           case _               => declConst
@@ -323,17 +323,17 @@ object Interpreter {
         nextEnv
 
       case Decl.InductiveDecl(name, ty, ctors, _) =>
-        val (inductiveType, _) = TypeChecker.getType(ty, MetaStore.empty)(env)
+        val inductiveType = TypeChecker.getType(ty)(env, meta)
         val inductiveHead = VConst(name, Inductive(ctors.map(c => c.name)), inductiveType)
         val env2 = env.putGlobal(name, inductiveHead)
         ctors.foldLeft(env2) { case (curEnv, c) =>
-          val (ctorV, _) = TypeChecker.getType(c.ty, MetaStore.empty)(env2)
+          val ctorV = TypeChecker.getType(c.ty)(env2, meta)
 
           val ctorResTpe = ctorV match {
             case v: VConst => v
             case pi: VPi =>
-              val (_, nextEnv) = FreshVar.assignFreshVars(pi, MetaStore.empty)
-              evalTerm(pi.out, MetaStore.empty)(nextEnv)
+              val (_, nextEnv) = FreshVar.assignFreshVars(pi, EqStore.empty)
+              evalTerm(pi.out, EqStore.empty)(nextEnv)
           }
 
           val ctorResTpeHead = ctorResTpe match {
@@ -341,7 +341,7 @@ object Interpreter {
             case other            => other
           }
 
-          Unify.unify(ctorResTpeHead, inductiveHead, MetaStore.empty)
+          Unify.unify(ctorResTpeHead, inductiveHead, EqStore.empty)
           curEnv.putGlobal(c.name, VConst(c.name, ConstructorHead, ctorV))
         }
     }
@@ -351,6 +351,6 @@ object Interpreter {
   def run(p: Program): Value = {
     val baseEnv = Env.empty.putGlobal("Type", VUniverse)
     val env = p.decls.foldLeft(baseEnv) { case (env, decl) => evalDecl(decl, env) }
-    TypeChecker.typecheck(p.body, MetaStore.empty)(env)._1
+    TypeChecker.typecheck(p.body)(env, EqCtx.empty)
   }
 }
