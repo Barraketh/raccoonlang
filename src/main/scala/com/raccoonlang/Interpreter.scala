@@ -2,6 +2,7 @@ package com.raccoonlang
 
 import com.raccoonlang.CoreAst.Term.Match
 import com.raccoonlang.CoreAst._
+import com.raccoonlang.TypeChecker.MetaCtx
 import com.raccoonlang.Util.NEL
 
 import scala.collection.immutable.BitSet
@@ -120,8 +121,6 @@ object Interpreter {
 
   // Tracks solutions to metas
   final case class MetaStore(links: Map[MetaId, Value]) {
-    def isLinked(id: MetaId): Boolean = links.contains(id)
-
     @annotation.tailrec
     def force(v: Interpreter.Value): Interpreter.Value = v match {
       case Interpreter.Meta(_, id, _) =>
@@ -302,13 +301,14 @@ object Interpreter {
   }
 
   private def evalDecl(decl: Decl, env: Env): Env = {
+    val meta = MetaCtx.empty
     decl match {
       case Decl.ConstDecl(isInline, name, ty, body, _) =>
-        val (tyV, m) = TypeChecker.getType(ty, MetaStore.empty)(env)
+        val tyV = TypeChecker.getType(ty)(env, meta)
         val declConst = VConst(name, Symbol, tyV)
 
         // Allow recursive references by pre-binding a symbolic self during body checking
-        val bodyOpt = body.map(b => TypeChecker.typecheck(b, m)(env.putGlobal(name, declConst))._1)
+        val bodyOpt = body.map(b => TypeChecker.typecheck(b)(env.putGlobal(name, declConst), meta))
         val value: Value = (bodyOpt, isInline) match {
           case (Some(v), true) => v
           case _               => declConst
@@ -323,11 +323,11 @@ object Interpreter {
         nextEnv
 
       case Decl.InductiveDecl(name, ty, ctors, _) =>
-        val (inductiveType, _) = TypeChecker.getType(ty, MetaStore.empty)(env)
+        val inductiveType = TypeChecker.getType(ty)(env, meta)
         val inductiveHead = VConst(name, Inductive(ctors.map(c => c.name)), inductiveType)
         val env2 = env.putGlobal(name, inductiveHead)
         ctors.foldLeft(env2) { case (curEnv, c) =>
-          val (ctorV, _) = TypeChecker.getType(c.ty, MetaStore.empty)(env2)
+          val ctorV = TypeChecker.getType(c.ty)(env2, meta)
 
           val ctorResTpe = ctorV match {
             case v: VConst => v
@@ -351,6 +351,6 @@ object Interpreter {
   def run(p: Program): Value = {
     val baseEnv = Env.empty.putGlobal("Type", VUniverse)
     val env = p.decls.foldLeft(baseEnv) { case (env, decl) => evalDecl(decl, env) }
-    TypeChecker.typecheck(p.body, MetaStore.empty)(env)._1
+    TypeChecker.typecheck(p.body)(env, MetaCtx.empty)
   }
 }
