@@ -180,10 +180,10 @@ object TypeChecker {
   }
 
   def getType(term: TypeTerm, meta: MetaStore)(implicit env: Env): (Value, MetaStore) = {
-    val res = typecheck(term, meta)
-    Interpreter.whnf(res._1.tpe, meta) match {
-      case VUniverse => res
-      case _         => throw NotAType(res._1)
+    val (res, m1) = typecheck(term, meta)
+    Interpreter.whnf(res.tpe, m1) match {
+      case VUniverse => (res, m1)
+      case _         => throw NotAType(res)
     }
   }
 

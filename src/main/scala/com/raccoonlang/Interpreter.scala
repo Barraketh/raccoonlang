@@ -166,8 +166,8 @@ object Interpreter {
         }
 
         head match {
-          case _: VConst => whnf(evalMatchBody(vm.term, scrut0, meta, vm.env), meta)
-          case _         => stillStuck
+          case VConst(_, `ConstructorHead`, _) => whnf(evalMatchBody(vm.term, scrut0, meta, vm.env), meta)
+          case _                               => stillStuck
         }
 
       case _ => v0
@@ -219,7 +219,7 @@ object Interpreter {
       case Some(funcName) => LamId.Const(funcName)
       case None =>
         val captureNames =
-          FreeNames.getFreeNames(l.body, Set.empty).toVector.filter(n => env.findLocal(n).isDefined).sorted
+          FreeNames.getFreeNames(l, Set.empty).toVector.filter(n => env.findLocal(n).isDefined).sorted
         val captureVals = captureNames.map(n => env.findLocal(n).get)
         LamId.LocalId(l.span.start, captureVals)
 
@@ -252,7 +252,7 @@ object Interpreter {
   }
 
   private def evalMatchBody(m: Match, scrut: Value, meta: MetaStore, env: Env): Value = {
-    val withScrut = env.putLocal(m.scrutName, scrut)
+    val withScrut = env.newScope.putLocal(m.scrutName, scrut)
 
     lazy val stuckMatch = {
       // Get all the free locals referenced in the body of the match - we will use them as the key, just like VLam
