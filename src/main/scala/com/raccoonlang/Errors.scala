@@ -23,6 +23,7 @@ object TypeError {
     case e: GenericTypeError       => e.copy(span = Some(sp))
     case e: CannotLinkToBottom     => e.copy(span = Some(sp))
     case e: VarAlreadyLinked       => e.copy(span = Some(sp))
+    case e: TypeMismatch           => e.copy(span = Some(sp))
   }
 }
 
@@ -84,3 +85,8 @@ final case class AlreadyDefined(name: String, span: Option[Span] = None) extends
 }
 
 final case class GenericTypeError(msg: String, span: Option[Span] = None) extends TypeError
+
+final case class TypeMismatch(v1: Interpreter.Value, v2: Interpreter.Value, span: Option[Span] = None)
+  extends TypeError {
+  val msg: String = s"Type mismatch: $v1 expected type: $v2, actual: ${v1.tpe}"
+}
