@@ -119,7 +119,7 @@ object TypeChecker {
   }
 
   private def typecheckMatch(t: Match, env: Env)(implicit meta: EqStore): Value = {
-    val scrut = typecheck(t.scrut, env)
+    val scrut = Interpreter.whnf(typecheck(t.scrut, env))
 
     val (inductiveName, inductiveCtors) = peelHead(Interpreter.whnf(scrut.tpe)) match {
       case VConst(n, Inductive(names), _) => (n, names.toSet)
@@ -134,10 +134,23 @@ object TypeChecker {
     // Check exhaustivity. Each missing ctor must be unreachable - that is, must fail to unify with scrut
     // TODO: don't use exceptions
     val missing = inductiveCtors -- t.cases.map(_.ctorName)
-    missing.foreach { ctorName =>
-      Try(unifyScrutWithCtor(scrut, ctorName, inductiveName, env, meta)) match {
-        case util.Failure(_) =>
-        case util.Success(_) => throw MissingCase(ctorName)
+    if (missing.nonEmpty) {
+      // The only forms that we COULD unify with scrut is a Var, a ConstructorHead, or a ConstructorHead application
+      // For these forms, we can check reachability. For all others require all constructors for completeness.
+      val refinable = scrut match {
+        case _: Var                                      => true
+        case VApp(VConst(_, `ConstructorHead`, _), _, _) => true
+        case VConst(_, `ConstructorHead`, _)             => true
+        case _                                           => false
+      }
+      if (!refinable) throw MissingCase(missing.head)
+
+      // Scrut is refinable - verify it cannot unify with any missing ctor
+      missing.foreach { ctorName =>
+        Try(unifyScrutWithCtor(scrut, ctorName, inductiveName, env, meta)) match {
+          case util.Failure(_) =>
+          case util.Success(_) => throw MissingCase(ctorName)
+        }
       }
     }
 

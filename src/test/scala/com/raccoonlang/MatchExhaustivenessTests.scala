@@ -76,4 +76,30 @@ class MatchExhaustivenessTests extends munit.FunSuite {
       runProgram(p)
     }
   }
+
+  test("non-exhaustive: opaque scrutinee application should still require succ case") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ : Nat -> Nat
+        |
+        |// OPAQUE (not inline): evaluator will keep this as a Symbol head
+        |def g (n: Nat): Nat := Nat.zero
+        |
+        |def bad (n: Nat): Nat := {
+        |  // scrutinee is neutral/opaque application: g n
+        |  match g n as _ returning Nat with
+        |  | Nat.zero => Nat.zero
+        |}
+        |
+        |do { Nat.zero }
+        |""".stripMargin
+
+    // This SHOULD be rejected as non-exhaustive (missing Nat.succ).
+    // Today it will likely NOT throw MissingCase (bug), so this test fails.
+    intercept[MissingCase] {
+      runProgram(p)
+    }
+  }
 }
