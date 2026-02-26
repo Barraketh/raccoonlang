@@ -171,4 +171,27 @@ class TypingTests extends munit.FunSuite {
     val res = runProgram(p)
     assertEquals(toShape(res), succS(zeroS))
   }
+
+  test("Bad metas") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ : Nat -> Nat
+        |
+        |inductive Vec(A: Type)(n: Nat) : Type
+        | | nil(A: Type): Vec A Nat.zero
+        | | cons(A: Type)(n: Nat)(xs: Vec A n)(x: A): Vec A (Nat.succ n)
+        |
+        |inline def badVec (A: Type)(n: Nat)(v: Vec A n): Vec A Nat.zero := v
+        |
+        |do {
+        |  Nat.zero
+        |}
+        |""".stripMargin
+
+    intercept[UnificationFailed] {
+      runProgram(p)
+    }
+  }
 }

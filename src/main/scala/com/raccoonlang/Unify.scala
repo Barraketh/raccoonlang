@@ -6,7 +6,7 @@ import scala.collection.immutable.BitSet
 
 object Unify {
 
-  def expandedDeps(rhsSyn: BitSet, meta: MetaStore): BitSet = {
+  def expandedDeps(rhsSyn: BitSet, meta: EqStore): BitSet = {
     val seen = scala.collection.mutable.BitSet.empty
     val work = scala.collection.mutable.ArrayDeque.empty[Int]
     rhsSyn.foreach(id => { val r = id; if (!seen(r)) { seen += r; work += r } })
@@ -24,11 +24,11 @@ object Unify {
     seen.toImmutable
   }
 
-  def occurs(id: MetaId, rhs: Value, meta: MetaStore): Boolean =
+  def occurs(id: VarId, rhs: Value, meta: EqStore): Boolean =
     expandedDeps(rhs.synDeps, meta).contains(id)
 
   // Extensionally unify Pi types
-  private def unifyPis(pi1: VPi, pi2: VPi, meta: MetaStore): (MetaStore, Env, Env) = {
+  private def unifyPis(pi1: VPi, pi2: VPi, meta: EqStore): (EqStore, Env, Env) = {
     val (resMeta, nextEnv1, nextEnv2) =
       pi1.binders.zip(pi2.binders).foldLeft((meta, pi1.env.newScope, pi2.env.newScope)) {
         case ((curMeta, curEnv1, curEnv2), (b1, b2)) =>
@@ -43,7 +43,7 @@ object Unify {
     (unify(out1, out2, resMeta), nextEnv1, nextEnv2)
   }
 
-  def unifyStuckMatches(v1: StuckMatch, v2: StuckMatch, meta: MetaStore): MetaStore = {
+  def unifyStuckMatches(v1: StuckMatch, v2: StuckMatch, meta: EqStore): EqStore = {
     val m0 = unify(v1.scrut, v2.scrut, meta)
     val m1 = unify(v1.tpe, v2.tpe, m0)
 
@@ -52,7 +52,7 @@ object Unify {
     v1.id.params.zip(v2.id.params).foldLeft(m1) { case (curMeta, (p1, p2)) => unify(p1, p2, curMeta) }
   }
 
-  def unify(v1: Value, v2: Value, meta: MetaStore): MetaStore = {
+  def unify(v1: Value, v2: Value, meta: EqStore): EqStore = {
     val a = Interpreter.whnf(v1, meta)
     val b = Interpreter.whnf(v2, meta)
 
@@ -77,17 +77,17 @@ object Unify {
       // Unify FreshVars through ctx. Basic idea: FreshVars can point at things through context
       // unify creates a ctx of pointers. We only create pointers from the top of the chain
 
-      case (Meta(_, id1, _), Meta(_, id2, _)) if id1 == id2 => meta
+      case (Var(_, id1, _), Var(_, id2, _)) if id1 == id2 => meta
 
       // Link unlinked Var (left) to a non-Var value
-      case (Meta(_, id, ty), other) =>
+      case (Var(_, id, ty), other) =>
         val m1 = unify(ty, other.tpe, meta)
         if (occurs(id, other, m1))
           throw OccursCheckFailed(id, other)
         m1.addLink(id, other)
 
       // Symmetric: link unlinked Var (right) to non-Var value
-      case (other, Meta(_, id, ty)) =>
+      case (other, Var(_, id, ty)) =>
         val m1 = unify(ty, other.tpe, meta)
         if (occurs(id, other, m1))
           throw OccursCheckFailed(id, other)

@@ -11,9 +11,9 @@ import scala.util.Try
 
 object TypeChecker {
 
-  private def checkType(value: Value, tyVal: Value)(implicit meta: MetaCtx): Unit = meta.unify(value.tpe, tyVal)
+  private def checkType(value: Value, tyVal: Value)(implicit meta: EqCtx): Unit = meta.unify(value.tpe, tyVal)
 
-  private def typecheckApply(fn: Value, args: NEL[Term], argEnv: Env)(implicit meta: MetaCtx): Value = {
+  private def typecheckApply(fn: Value, args: NEL[Term], argEnv: Env)(implicit meta: EqCtx): Value = {
     val fn0 = meta.whnf(fn)
     val fnTy0 = meta.whnf(fn0.tpe)
 
@@ -45,13 +45,13 @@ object TypeChecker {
     }
   }
 
-  private def typecheckApplyTerm(fn: Term, args: NEL[Term])(implicit env: Env, meta: MetaCtx): Value = {
+  private def typecheckApplyTerm(fn: Term, args: NEL[Term])(implicit env: Env, meta: EqCtx): Value = {
     val vf = typecheck(fn)
     typecheckApply(vf, args, env)
   }
 
   // Check that all type terms typecheck under a fresh var assignment to binders
-  private def typecheckPi(pi: Term.Pi, env: Env)(implicit meta: MetaCtx): VPi = {
+  private def typecheckPi(pi: Term.Pi, env: Env)(implicit meta: EqCtx): VPi = {
     val bodyEnv = pi.binders.foldLeft(env.newScope) { case (curEnv, b) =>
       val tyV = getType(b.ty)(curEnv, meta)
       curEnv.putLocal(b.name, freshVar(b.name, tyV))
@@ -60,13 +60,13 @@ object TypeChecker {
     evalPi(pi)(env)
   }
 
-  private def typecheckTT(term: TypeTerm)(implicit env: Env, meta: MetaCtx): Value = term match {
+  private def typecheckTT(term: TypeTerm)(implicit env: Env, meta: EqCtx): Value = term match {
     case t: Term.TApp => typecheckApplyTerm(t.fn, t.args)
     case pi: Term.Pi  => typecheckPi(pi, env)
     case ident: Ident => meta.eval(ident)
   }
 
-  private def typecheckBody(body: Term.Body, env: Env)(implicit meta: MetaCtx): Value = {
+  private def typecheckBody(body: Term.Body, env: Env)(implicit meta: EqCtx): Value = {
     val newEnv = body.lets.foldLeft(env) { case (curEnv, l) =>
       val res = typecheck(l.value)(curEnv, meta)
       l.ty.foreach { tyTerm =>
@@ -89,7 +89,7 @@ object TypeChecker {
       ctorName: String,
       inductiveName: String,
       env: Env,
-      meta: MetaCtx
+      meta: EqCtx
   ): Vector[Value] = {
     val ctorVal = env.find(ctorName).getOrElse(throw NotFound(ctorName))
 
@@ -116,7 +116,7 @@ object TypeChecker {
     }
   }
 
-  private def typecheckMatch(t: Match, env: Env)(implicit meta: MetaCtx): Value = {
+  private def typecheckMatch(t: Match, env: Env)(implicit meta: EqCtx): Value = {
     val scrut = typecheck(t.scrut)(env, meta)
 
     val (inductiveName, inductiveCtors) = peelHead(meta.whnf(scrut.tpe)) match {
@@ -173,7 +173,7 @@ object TypeChecker {
     meta.eval(t)(env)
   }
 
-  def typecheckLam(l: Lam, env: Env)(implicit ctx: MetaCtx): Value = {
+  def typecheckLam(l: Lam, env: Env)(implicit ctx: EqCtx): Value = {
     val vpi = typecheckPi(l.ty, env)
     val (_, bodyEnv) = assignFreshVars(vpi, ctx.meta)
 
@@ -184,7 +184,7 @@ object TypeChecker {
     Interpreter.evalLam(l, vpi)(env)
   }
 
-  def getType(term: TypeTerm)(implicit env: Env, ctx: MetaCtx): Value = {
+  def getType(term: TypeTerm)(implicit env: Env, ctx: EqCtx): Value = {
     val res = typecheck(term)
 
     ctx.whnf(res.tpe) match {
@@ -193,7 +193,7 @@ object TypeChecker {
     }
   }
 
-  def typecheck(term: CoreAst.Term)(implicit env: Env, meta: MetaCtx): Value = {
+  def typecheck(term: CoreAst.Term)(implicit env: Env, meta: EqCtx): Value = {
     try {
       term match {
         case term: TypeTerm => typecheckTT(term)
@@ -218,7 +218,7 @@ object TypeChecker {
     * This really only works because there is exactly one place where fork, and that is the pattern match, so we don't
     * really need to reason about the mutable state - updating the meta by default is the correct behavior
     */
-  final class MetaCtx(var meta: Interpreter.MetaStore) {
+  final class EqCtx(var meta: Interpreter.EqStore) {
     def whnf(v: Interpreter.Value): Interpreter.Value =
       Interpreter.whnf(v, meta)
 
@@ -229,11 +229,11 @@ object TypeChecker {
       meta = Unify.unify(a, b, meta)
 
     /** Snapshot-style fork, useful for branch-local constraints (matches). */
-    def fork(): MetaCtx = new MetaCtx(meta)
+    def fork(): EqCtx = new EqCtx(meta)
   }
 
-  object MetaCtx {
-    def empty = new MetaCtx(MetaStore.empty)
+  object EqCtx {
+    def empty = new EqCtx(EqStore.empty)
   }
 
 }
