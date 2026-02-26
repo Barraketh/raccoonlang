@@ -74,7 +74,7 @@ class TypingTests extends munit.FunSuite {
         |}
         |""".stripMargin
 
-    intercept[UnificationFailed] {
+    intercept[TypeMismatch] {
       runProgram(p)
     }
   }
@@ -190,7 +190,7 @@ class TypingTests extends munit.FunSuite {
         |}
         |""".stripMargin
 
-    intercept[UnificationFailed] {
+    intercept[TypeMismatch] {
       runProgram(p)
     }
   }
