@@ -86,39 +86,19 @@ object TypeChecker {
     case other         => other
   }
 
-  private def unifyScrutWithCtor(
-      scrut: Value,
-      ctorName: String,
-      inductiveName: String,
-      env: Env,
+  private def typecheckBranch(br: Case, args: Seq[Value], envWithScrut: Env, motive: TypeTerm)(implicit
       eqStore: EqStore
-  ): (Vector[Value], EqStore) = {
-    val ctorVal = env.find(ctorName).getOrElse(throw NotFound(ctorName))
-
-    ctorVal match {
-      case h @ VConst(_, ConstructorHead, ctorTy) =>
-        val (freshArgs, ctorEnv) = ctorTy match {
-          case pi: VPi => assignFreshVars(pi, eqStore)
-          case _       => (Vector.empty[Value], env)
-        }
-
-        val ctorResTy: Value = ctorTy match {
-          case VPi(_, _, out, _) =>
-            Interpreter.evalTerm(out, ctorEnv)(eqStore) // Again, we've already typechecked out, so we can just eval it
-          case otherTy: Value => otherTy
-        }
-
-        val appliedConstr =
-          if (freshArgs.nonEmpty) VApp(h, NEL.mk(freshArgs), ctorResTy)
-          else h
-
-        val newEqStore = Unify.unify(scrut, appliedConstr, eqStore, Set.empty)
-        (freshArgs, newEqStore)
-      case _ => throw UnknownConstructor(ctorName, inductiveName)
+  ): Unit = {
+    if (args.length != br.argNames.length) throw ArityMismatch(args.length, br.argNames.length, Some(br.span))
+    val branchEnv = br.argNames.zip(args).foldLeft(envWithScrut) { case (curEnv, (argName, argVal)) =>
+      curEnv.putLocal(argName, argVal)
     }
+    val branchRes = typecheck(br.body, branchEnv)
+    val expectedTy = getType(motive, branchEnv)
+    checkType(branchRes, expectedTy)
   }
 
-  private def typecheckMatch(t: Match, env: Env)(implicit meta: EqStore): Value = {
+  private def typecheckMatch(t: Match, env: Env)(implicit eqStore: EqStore): Value = {
     val scrut = Interpreter.whnf(typecheck(t.scrut, env))
 
     val (inductiveName, inductiveCtors) = peelHead(Interpreter.whnf(scrut.tpe)) match {
@@ -131,57 +111,66 @@ object TypeChecker {
       throw DuplicateCase(ctor, Some(cases(1).span))
     }
 
-    // Check exhaustivity. Each missing ctor must be unreachable - that is, must fail to unify with scrut
-    // TODO: don't use exceptions
-    val missing = inductiveCtors -- t.cases.map(_.ctorName)
-    if (missing.nonEmpty) {
-      // The only forms that we COULD unify with scrut is a Var, a ConstructorHead, or a ConstructorHead application
-      // For these forms, we can check reachability. For all others require all constructors for completeness.
-      val refinable = scrut match {
-        case _: Var                                      => true
-        case VApp(VConst(_, `ConstructorHead`, _), _, _) => true
-        case VConst(_, `ConstructorHead`, _)             => true
-        case _                                           => false
-      }
-      if (!refinable) throw MissingCase(missing.head)
-
-      // Scrut is refinable - verify it cannot unify with any missing ctor
-      missing.foreach { ctorName =>
-        Try(unifyScrutWithCtor(scrut, ctorName, inductiveName, env, meta)) match {
-          case util.Failure(_) =>
-          case util.Success(_) => throw MissingCase(ctorName)
-        }
-      }
-    }
-
     // Check for unknown constructors
     t.cases.find(c => !inductiveCtors.contains(c.ctorName)).foreach { c =>
       throw UnknownConstructor(c.ctorName, inductiveName, Some(c.span))
     }
 
-    val withScrut = env.newScope.putLocal(t.scrutName, scrut)
-    t.cases.foreach { br =>
-      try {
-        val (freshArgs, branchCtx) =
-          try {
-            unifyScrutWithCtor(scrut, br.ctorName, inductiveName, env, meta)
-          } catch {
-            case _: UnificationFailed => throw UnreachableCase(br.ctorName, Some(br.span))
+    val scrutConst = scrut match {
+      case VConst(name, `ConstructorHead`, _)                => Some((name, Nil))
+      case VApp(VConst(name, `ConstructorHead`, _), args, _) => Some((name, args.toList))
+      case _                                                 => None
+    }
+
+    scrutConst match {
+      case Some((head, args)) =>
+        // Scrut is a constructor - we need to make sure that we have exactly one matching branch and then typecheck it
+        t.cases.find(c => c.ctorName != head).foreach { c => throw UnreachableCase(c.ctorName, Some(c.span)) }
+        val br = t.cases.find(c => c.ctorName == head).getOrElse(throw MissingCase(head))
+        typecheckBranch(br, args, env.newScope.putLocal(t.scrutName, scrut), t.motive)
+      case None =>
+        // We don't know scrut to be a specific constructor - gotta check exhaustivity and typecheck all branches
+        // For every possible ctor, we will try to unify its type with scrut type. If this fails, then this ctor is
+        // unreachable, and so we will make sure it is not in the match. If it is possible, then the ctor is reachable,
+        // and we make sure it is in the match and typecheck the branch with the resulting eqStore
+
+        inductiveCtors.foreach { ctorName =>
+          val ctorVal = env.find(ctorName).getOrElse(throw NotFound(ctorName))
+
+          ctorVal match {
+            case h @ VConst(_, ConstructorHead, ctorTy) =>
+              val (freshArgs, ctorEnv) = ctorTy match {
+                case pi: VPi => assignFreshVars(pi, eqStore)
+                case _       => (Vector.empty[Value], env)
+              }
+
+              val ctorResTy: Value = ctorTy match {
+                case VPi(_, _, out, _) =>
+                  Interpreter.evalTerm(out, ctorEnv)(
+                    eqStore
+                  ) // Again, we've already typechecked out, so we can just eval it
+                case otherTy: Value => otherTy
+              }
+
+              Try(Unify.unify(scrut.tpe, ctorResTy, eqStore, Set.empty)) match {
+                case util.Failure(_) =>
+                  // Case is unreachable - make sure it's not in the match
+                  t.cases.find(c => c.ctorName == ctorName).foreach(c => throw UnreachableCase(ctorName, Some(c.span)))
+                case util.Success(branchEqStore) =>
+                  // Case is reachable - typecheck its branch
+                  val br = t.cases.find(c => c.ctorName == ctorName).getOrElse(throw MissingCase(ctorName))
+                  val appliedConstr =
+                    if (freshArgs.nonEmpty) VApp(h, NEL.mk(freshArgs), ctorResTy)
+                    else h
+
+                  val envWithScrut = env.newScope.putLocal(t.scrutName, appliedConstr)
+
+                  typecheckBranch(br, freshArgs, envWithScrut, t.motive)(branchEqStore)
+              }
+
+            case _ => throw UnknownConstructor(ctorName, inductiveName)
           }
-
-        if (br.argNames.length != freshArgs.length)
-          throw ArityMismatch(freshArgs.length, br.argNames.length)
-
-        val branchEnv = br.argNames.zip(freshArgs).foldLeft(withScrut.newScope) { case (curEnv, (argName, argVal)) =>
-          curEnv.putLocal(argName, argVal)
         }
-
-        val branchRes = typecheck(br.body, branchEnv)(branchCtx)
-        val expectTy = getType(t.motive, branchEnv)(branchCtx)
-        checkType(branchRes, expectTy)(branchCtx)
-      } catch {
-        case t: TypeError if t.span.isEmpty => throw TypeError.withSpan(t, br.span)
-      }
     }
 
     Interpreter.evalTerm(t, env)

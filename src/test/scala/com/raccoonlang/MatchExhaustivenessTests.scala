@@ -102,4 +102,26 @@ class MatchExhaustivenessTests extends munit.FunSuite {
       runProgram(p)
     }
   }
+
+  test("exhaustive: opaque scrutinee application should typecheck") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ : Nat -> Nat
+        |
+        |def g (n: Nat): Nat := n   // not inline => opaque
+        |
+        |def ok (n: Nat): Nat := {
+        |  match g n as _ returning Nat with
+        |  | Nat.zero => Nat.zero
+        |  | Nat.succ x => x
+        |}
+        |
+        |do { Nat.zero }
+        |""".stripMargin
+
+    // Should typecheck (even if it evaluates to a stuck match at runtime for opaque g).
+    runProgram(p)
+  }
 }
