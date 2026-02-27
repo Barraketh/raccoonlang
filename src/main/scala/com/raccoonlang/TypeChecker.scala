@@ -6,7 +6,6 @@ import com.raccoonlang.FreshVar.{assignFreshVars, freshVar}
 import com.raccoonlang.Interpreter._
 import com.raccoonlang.Util.NEL
 
-import scala.annotation.tailrec
 import scala.util.Try
 
 object TypeChecker {
@@ -80,12 +79,6 @@ object TypeChecker {
     typecheck(body.res, newEnv)
   }
 
-  @tailrec
-  private def peelHead(v: Value): Value = v match {
-    case VApp(h, _, _) => peelHead(h)
-    case other         => other
-  }
-
   private def typecheckBranch(br: Case, args: Seq[Value], envWithScrut: Env, motive: TypeTerm)(implicit
       eqStore: EqStore
   ): Unit = {
@@ -101,9 +94,10 @@ object TypeChecker {
   private def typecheckMatch(t: Match, env: Env)(implicit eqStore: EqStore): Value = {
     val scrut = Interpreter.whnf(typecheck(t.scrut, env))
 
-    val (inductiveName, inductiveCtors) = peelHead(Interpreter.whnf(scrut.tpe)) match {
-      case VConst(n, Inductive(names), _) => (n, names.toSet)
-      case _                              => throw NonInductiveMatch(scrut.tpe)
+    val (inductiveName, inductiveCtors) = scrut.tpe match {
+      case VConst(n, Inductive(names), _)             => (n, names.toSet)
+      case VApp(VConst(n, Inductive(names), _), _, _) => (n, names.toSet)
+      case _                                          => throw NonInductiveMatch(scrut.tpe)
     }
 
     // Check for duplicate constructors
