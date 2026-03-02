@@ -93,8 +93,9 @@ object TypeChecker {
 
   private def typecheckMatch(t: Match, env: Env)(implicit eqStore: EqStore): Value = {
     val scrut = Interpreter.whnf(typecheck(t.scrut, env))
+    val scrutTpe = Interpreter.whnf(scrut.tpe)
 
-    val (inductiveName, inductiveCtors) = scrut.tpe match {
+    val (inductiveName, inductiveCtors) = scrutTpe match {
       case VConst(n, Inductive(names), _)             => (n, names.toSet)
       case VApp(VConst(n, Inductive(names), _), _, _) => (n, names.toSet)
       case _                                          => throw NonInductiveMatch(scrut.tpe)
