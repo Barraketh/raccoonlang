@@ -18,19 +18,25 @@ object PrettyPrinter {
           }
           .mkString(" -> ")
         s"$bindersStr -> ${pt(out)}"
+      case Term.SortProp(_)      => "Prop"
+      case Term.SortType(0, _)   => "Type"
+      case Term.SortType(lv, _)  => s"Type $lv"
     }
 
     def ptAtom(t: CoreAst.TypeTerm): String = t match {
-      case Term.Ident(_, _)   => pt(t)
-      case Term.TApp(_, _, _) => pt(t)
-      case Term.Pi(_, _, _)   => s"(${pt(t)})"
+      case Term.Ident(_, _)    => pt(t)
+      case Term.TApp(_, _, _)  => pt(t)
+      case Term.SortType(_, _) => pt(t)
+      case Term.SortProp(_)    => pt(t)
+      case Term.Pi(_, _, _)    => s"(${pt(t)})"
     }
 
     pt(tt)
   }
 
   private def isAtomic(v: Interpreter.Value): Boolean = v match {
-    case Interpreter.VUniverse => true
+    case Interpreter.VType(_)  => true
+    case Interpreter.VProp     => true
     case _: Interpreter.VConst => true
     case _: Interpreter.Var   => true
     case _                     => false
@@ -38,7 +44,7 @@ object PrettyPrinter {
 
   private def printApp(head: Interpreter.Value, args: Util.NEL[Interpreter.Value]): String = {
     val headStr = head match {
-      case _: Interpreter.VApp | _: Interpreter.VConst | _: Interpreter.Var | Interpreter.VUniverse => print(head)
+      case _: Interpreter.VApp | _: Interpreter.VConst | _: Interpreter.Var | _: Interpreter.VType | Interpreter.VProp => print(head)
       case _ => s"(${print(head)})"
     }
     val argsStr = args.toList.map { a => if (isAtomic(a)) print(a) else s"(${print(a)})" }.mkString(" ")
@@ -68,6 +74,8 @@ object PrettyPrinter {
     case CoreAst.Term.Ident(_, _)          => printTerm(t)
     case CoreAst.Term.App(_, _, _)         => printTerm(t)
     case CoreAst.Term.TApp(_, _, _)        => printTerm(t)
+    case CoreAst.Term.SortType(_, _)       => printTerm(t)
+    case CoreAst.Term.SortProp(_)          => printTerm(t)
     case CoreAst.Term.Lam(_, _, _, _)      => s"(${printTerm(t)})"
     case CoreAst.Term.Match(_, _, _, _, _) => s"(${printTerm(t)})"
   }
@@ -97,8 +105,10 @@ object PrettyPrinter {
   }
 
   def print(value: Interpreter.Value): String = value match {
-    case Interpreter.VUniverse               => "Type"
-    case Interpreter.VPi(_, binders, out, _) => printTypeTerm(CoreAst.Term.Pi(binders, out, Span(0, 0)))
+    case Interpreter.VProp                   => "Prop"
+    case Interpreter.VType(0)                => "Type"
+    case Interpreter.VType(lv)               => s"Type $lv"
+    case Interpreter.VPi(_, binders, out, _, _) => printTypeTerm(CoreAst.Term.Pi(binders, out, Span(0, 0)))
     case Interpreter.VConst(name, _, _)      => name
     case Interpreter.VApp(head, args, _)     => printApp(head, args)
     case Interpreter.VLam(_, _, id)          => s"func#$id"

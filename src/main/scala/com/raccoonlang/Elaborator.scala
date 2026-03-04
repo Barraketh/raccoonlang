@@ -20,6 +20,10 @@ object Elaborator {
     case SA.Term.Ident(name, sp)    => CoreAst.Term.Ident(name, sp)
     case SA.Term.TApp(fn, args, sp) => CoreAst.Term.TApp(elab(fn), args.map(elab), sp)
     case pi: SA.Term.Pi             => elabPi(pi)
+    case SA.Term.SortType(level, sp) =>
+      CoreAst.Term.SortType(level, sp)
+    case SA.Term.SortProp(sp) =>
+      CoreAst.Term.SortProp(sp)
   }
 
   private def elab(body: SA.Term.Body): CA.Term.Body =
@@ -42,6 +46,8 @@ object Elaborator {
         cases.map(c => CA.Case(c.ctorName, c.argNames, elab(c.body), c.span)),
         sp
       )
+    case SA.Term.SortType(level, sp) => CA.Term.SortType(level, sp)
+    case SA.Term.SortProp(sp)        => CA.Term.SortProp(sp)
   }
 
   private def elab(b: SA.Binder): CA.Binder = CA.Binder(b.name, elab(b.ty), b.span)
@@ -49,7 +55,10 @@ object Elaborator {
   private def getType(header: SA.FuncHeader): CA.TypeTerm = {
     val outTy = elab(header.ty)
     if (header.params.isEmpty) outTy
-    else CoreAst.Term.Pi(NEL.mk(header.params.map(elab)), outTy, header.span)
+    else {
+      val paramPi = CoreAst.Term.Pi(NEL.mk(header.params.map(elab)), outTy, header.span)
+      paramPi
+    }
   }
 
   def elab(surface: SurfaceAst.Decl): CoreAst.Decl = {

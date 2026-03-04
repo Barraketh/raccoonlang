@@ -11,19 +11,23 @@ object SurfaceAst {
   }
 
   // Terms that can appear in type expressions
-  sealed trait TypeTerm {
+  sealed trait TypeTerm extends Term {
     def span: Span
   }
 
   object Term {
     // Identifier (either type or term)
-    final case class Ident(name: String, span: Span) extends Term with TypeTerm
+    final case class Ident(name: String, span: Span) extends TypeTerm
 
     // Application in type position
     final case class TApp(fn: TypeTerm, args: NEL[TypeTerm], span: Span) extends TypeTerm
 
     // Pi (x: A) -> B x
     final case class Pi(binder: Binder, body: TypeTerm, span: Span) extends TypeTerm
+
+    // Sorts mirrored to CoreAst: Prop, Type n
+    final case class SortType(level: Int, span: Span) extends TypeTerm
+    final case class SortProp(span: Span) extends TypeTerm
 
     // Application: f a (term-level)
     final case class App(fn: Term, args: NEL[Term], span: Span) extends Term

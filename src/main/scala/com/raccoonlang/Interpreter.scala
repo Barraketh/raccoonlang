@@ -20,6 +20,7 @@ object Interpreter {
   }
 
   sealed trait Head extends Value
+  sealed trait Sort extends Value
 
   type VarId = Int
 
@@ -32,16 +33,18 @@ object Interpreter {
     final case class LocalId(nodeId: Int, params: Vector[Value]) extends LamId
   }
 
-  case object VUniverse extends Value {
-    override def tpe: Value = VUniverse
+  case class VType(level: Int) extends Sort {
+    override def tpe: Value = VType(level + 1)
+    override val synDeps: BitSet = BitSet.empty
+  }
 
+  case object VProp extends Sort {
+    override def tpe: Value = VType(0)
     override val synDeps: BitSet = BitSet.empty
   }
 
   // Env must be mutable in order to allow recursion - lambdas and envs must be able to point to each other
-  case class VPi(var env: Env, binders: NEL[Binder], out: TypeTerm, synDeps: BitSet) extends Value {
-    override def tpe: Value = VUniverse
-
+  case class VPi(var env: Env, binders: NEL[Binder], out: TypeTerm, synDeps: BitSet, tpe: Sort) extends Value {
     override def toString: String = "VPi"
   }
 
@@ -180,14 +183,39 @@ object Interpreter {
     }
   }
 
-  def evalPi(pi: Term.Pi, env: Env): VPi =
-    VPi(env, pi.binders, pi.out, FreeNames.getDeps(pi, env, Set.empty))
+  def evalPi(pi: Term.Pi, env: Env)(implicit eqStore: EqStore): VPi = {
+    val (bodyEnv, argTypes) = pi.binders.foldLeft((env.newScope, Vector.empty[Value])) {
+      case ((curEnv, curArgTypes), b) =>
+        val tyV = evalTerm(b.ty, curEnv)
+        (curEnv.putLocal(b.name, tyV), curArgTypes :+ tyV)
+    }
+
+    val outType = evalTerm(pi.out, bodyEnv)
+    val tpe = whnf(outType.tpe) match {
+      case VProp => VProp
+      case VType(lvl) =>
+        val paramLevels = argTypes.map { tyV =>
+          whnf(tyV.tpe) match {
+            case VType(pLvl) => pLvl
+            case VProp       => -1
+            case _           => throw NotAType(tyV)
+          }
+        }
+        val resLevel = (paramLevels :+ lvl).max
+        VType(resLevel)
+      case _ => throw NotAType(outType)
+    }
+
+    VPi(env, pi.binders, pi.out, FreeNames.getDeps(pi, env, Set.empty), tpe)
+  }
 
   // Evaluate a type-position expression without enforcing it is a type yet
   private def evalTT(tt: TypeTerm, env: Env)(implicit meta: EqStore): Value = tt match {
-    case Term.Ident(name, sp)   => env.find(name).getOrElse { throw TypeError.withSpan(NotFound(name), sp) }
-    case Term.TApp(fn, args, _) => evalApplyTerm(fn, args, env)
-    case pi: Term.Pi            => evalPi(pi, env)
+    case Term.Ident(name, sp)    => env.find(name).getOrElse { throw TypeError.withSpan(NotFound(name), sp) }
+    case Term.TApp(fn, args, _)  => evalApplyTerm(fn, args, env)
+    case pi: Term.Pi             => evalPi(pi, env)
+    case Term.SortType(level, _) => VType(level)
+    case Term.SortProp(_)        => VProp
   }
 
   private def evalApply(fn: Value, vArgs: NEL[Value])(implicit eqStore: EqStore): Value = {
@@ -196,6 +224,7 @@ object Interpreter {
 
     tpe0 match {
       case pi: VPi =>
+        if (pi.binders.length != vArgs.length) throw ArityMismatch(pi.binders.length, vArgs.length)
         val envWithArgs: Env = getEnvWithArgs(pi, vArgs)
         fn0 match {
           case VLam(body, _, _) => evalTerm(body, envWithArgs)
@@ -225,7 +254,7 @@ object Interpreter {
     VLam(l.body, vpi, id)
   }
 
-  private def evalLam(l: Term.Lam, env: Env): VLam = {
+  private def evalLam(l: Term.Lam, env: Env)(implicit eqStore: EqStore): VLam = {
     val vpi = evalPi(l.ty, env)
     evalLam(l, vpi, env)
   }
@@ -348,7 +377,7 @@ object Interpreter {
   }
 
   def run(p: Program): Value = {
-    val baseEnv = Env.empty.putGlobal("Type", VUniverse)
+    val baseEnv = Env.empty
     val env = p.decls.foldLeft(baseEnv) { case (env, decl) => evalDecl(decl, env) }
     TypeChecker.typecheck(p.body, env)(EqStore.empty)
   }

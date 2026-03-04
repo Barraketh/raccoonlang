@@ -58,7 +58,8 @@ object Unify {
     val b = Interpreter.whnf(v2)(meta)
 
     (a, b) match {
-      case (VUniverse, VUniverse)                                         => meta
+      case (VProp, VProp)                                                 => meta
+      case (VType(u1), VType(u2)) if u1 == u2                             => meta
       case (VConst(n1, c1, _), VConst(n2, c2, _)) if n1 == n2 && c1 == c2 => meta
 
       case (p1: VPi, p2: VPi) if p1.binders.length == p2.binders.length           => unifyPis(p1, p2, meta, rigid)._1

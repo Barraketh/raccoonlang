@@ -9,9 +9,15 @@ import com.raccoonlang.Util.NEL
 import scala.util.Try
 
 object TypeChecker {
+  private def sortLeq(a: Value, b: Value)(implicit eqStore: EqStore): Boolean = {
+    (Interpreter.whnf(a), Interpreter.whnf(b)) match {
+      case (Interpreter.VType(u), Interpreter.VType(v)) => u <= v
+      case _                                            => false
+    }
+  }
 
   private def checkType(value: Value, tyVal: Value)(implicit eqStore: EqStore): Unit = {
-    if (!defEq(value.tpe, tyVal)) throw TypeMismatch(value, tyVal)
+    if (!defEq(value.tpe, tyVal) && !sortLeq(value.tpe, tyVal)) throw TypeMismatch(value, tyVal)
   }
 
   private def typecheckApply(fn: Value, args: NEL[Term], argEnv: Env)(implicit eqStore: EqStore): Value = {
@@ -19,7 +25,7 @@ object TypeChecker {
     val fnTy0 = Interpreter.whnf(fn0.tpe)
 
     fnTy0 match {
-      case VPi(env, binders, outTy, _) =>
+      case VPi(env, binders, outTy, _, _) =>
         if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
 
         // Typecheck argument terms in argEnv
@@ -62,9 +68,11 @@ object TypeChecker {
   }
 
   private def typecheckTT(term: TypeTerm, env: Env)(implicit meta: EqStore): Value = term match {
-    case t: Term.TApp => typecheckApplyTerm(t.fn, t.args, env)
-    case pi: Term.Pi  => typecheckPi(pi, env)
-    case ident: Ident => Interpreter.evalTerm(ident, env)
+    case t: Term.TApp         => typecheckApplyTerm(t.fn, t.args, env)
+    case pi: Term.Pi          => typecheckPi(pi, env)
+    case Term.SortType(lv, _) => Interpreter.VType(lv)
+    case Term.SortProp(_)     => Interpreter.VProp
+    case ident: Ident         => Interpreter.evalTerm(ident, env)
   }
 
   private def typecheckBody(body: Term.Body, env: Env)(implicit meta: EqStore): Value = {
@@ -140,7 +148,7 @@ object TypeChecker {
               }
 
               val ctorResTy: Value = ctorTy match {
-                case VPi(_, _, out, _) =>
+                case VPi(_, _, out, _, _) =>
                   Interpreter.evalTerm(out, ctorEnv)(
                     eqStore
                   ) // Again, we've already typechecked out, so we can just eval it
@@ -186,8 +194,8 @@ object TypeChecker {
     val res = typecheck(term, env)
 
     Interpreter.whnf(res.tpe) match {
-      case VUniverse => res
-      case _         => throw NotAType(res)
+      case _: Interpreter.Sort => res
+      case _                   => throw NotAType(res)
     }
   }
 
@@ -237,7 +245,8 @@ object TypeChecker {
     val b = whnf(v2)
 
     (a, b) match {
-      case (VUniverse, VUniverse)                                       => true
+      case (Interpreter.VProp, Interpreter.VProp)                       => true
+      case (Interpreter.VType(u1), Interpreter.VType(u2)) if u1 == u2   => true
       case (VConst(n1, _, _), VConst(n2, _, _)) if n1 == n2             => true
       case (p1: VPi, p2: VPi) if p1.binders.length == p2.binders.length => defEqPi(p1, p2).isDefined
       case (l1: VLam, l2: VLam) if l1.tpe.binders.length == l2.tpe.binders.length =>
