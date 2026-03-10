@@ -24,6 +24,7 @@ object TypeError {
     case e: CannotLinkToBottom     => e.copy(span = Some(sp))
     case e: VarAlreadyLinked       => e.copy(span = Some(sp))
     case e: TypeMismatch           => e.copy(span = Some(sp))
+    case e: BindEval               => e.copy(span = Some(sp))
   }
 }
 
@@ -89,4 +90,8 @@ final case class GenericTypeError(msg: String, span: Option[Span] = None) extend
 final case class TypeMismatch(v1: Interpreter.Value, v2: Interpreter.Value, span: Option[Span] = None)
   extends TypeError {
   val msg: String = s"Type mismatch: $v1 expected type: $v2, actual: ${v1.tpe}"
+}
+
+final case class BindEval(name: String, span: Option[Span] = None) extends TypeError {
+  val msg: String = s"Tried to evaluate bind $$$name"
 }

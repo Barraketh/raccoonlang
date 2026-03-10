@@ -8,8 +8,6 @@ object CoreAst {
   // Terms that can appear in function bodies
   sealed trait Term {
     def span: Span
-
-    override def toString: String = PrettyPrinter.printTerm(this)
   }
 
   sealed trait TypeTerm extends Term // Terms that can appear in type expressions
@@ -24,9 +22,9 @@ object CoreAst {
     // Pi (x: A) -> B x
     final case class Pi(binders: NEL[Binder], out: TypeTerm, span: Span) extends TypeTerm
 
-    // Sort terms in core
-    final case class SortType(level: Int, span: Span) extends TypeTerm
-    final case class SortProp(span: Span) extends TypeTerm
+    final case class Bind(name: String, span: Span) extends TypeTerm
+
+    final case class NatLit(int: Int, span: Span) extends TypeTerm
 
     // Application: f a (term-level)
     final case class App(fn: Term, args: NEL[Term], span: Span) extends Term

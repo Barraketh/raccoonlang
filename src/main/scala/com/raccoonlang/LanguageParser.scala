@@ -17,7 +17,8 @@ object LanguageParser {
   private val skipAllWs = (emptyLine.rep(0) ~ skipWS).named("AllWS")
   private val skipOneLine = emptyLine.? ~ skipWS
 
-  private val keywords = List("fun", "let", "match", "as", "returning", "with", "inline", "def", "inductive", "Type", "Prop")
+  private val keywords =
+    List("fun", "let", "match", "as", "returning", "with", "inline", "def", "inductive")
 
   private val ident =
     (P(c => c.isLetter || c == '_') ~ P(c => c.isLetterOrDigit || c == '_' || c == '$' || c == '.').rep(0)).!.filter(
@@ -32,23 +33,9 @@ object LanguageParser {
   // number literal
   private val digits = CharsWhile(_.isDigit).!.named("Digits")
 
-  // Reusable parser for sort keywords (Prop, Type, Type n)
-  private def sortExpr: Parser[SurfaceAst.TypeTerm] = {
-    val typeKW: Parser[SurfaceAst.TypeTerm] =
-      (kw("Type") ~ (digits.?).spanned).mapAsT { case (optLevelStr, sp) =>
-        val lvl = optLevelStr.flatMap(s => if (s.isEmpty) None else Some(s.toInt)).getOrElse(0)
-        SurfaceAst.Term.SortType(lvl, sp)
-      }
-    val propKW: Parser[SurfaceAst.TypeTerm] =
-      kw("Prop").spanned.map(sp => SurfaceAst.Term.SortProp(sp.span))
-    typeKW | propKW
-  }
-
   // Type atoms: identifier, sort keywords, or parenthesized type
   private def typeAtom: Parser[TypeTerm] = {
-    sym('(') ~ typeTerm ~ sym(')') |
-      sortExpr |
-      ident.flatSpanned.map(Ident.tupled)
+    sym('(') ~ typeTerm ~ sym(')') | ident.flatSpanned.map(Ident.tupled)
   }
 
   // General type application chain: atom atom ... -> TApp(...(atom1 atom2) atom3)
@@ -93,7 +80,7 @@ object LanguageParser {
   }
 
   private def term: Parser[Term] =
-    (lambda | matchP | body | sym("(") ~/ term ~ sym(")") | sortExpr | ident.flatSpanned.map(Ident.tupled))
+    (lambda | matchP | body | sym("(") ~/ term ~ sym(")") | ident.flatSpanned.map(Ident.tupled))
       .rep(1, wsSep)
       .spanned
       .mapAsT { case (terms, span) =>

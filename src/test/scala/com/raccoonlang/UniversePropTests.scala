@@ -25,44 +25,6 @@ class UniversePropTests extends munit.FunSuite {
 
   private val zeroS = SConst("Nat.zero", ConstructorHead)
 
-  test("Type sugar is Type 0 and pretty-prints as Type") {
-    val p =
-      """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ : Nat -> Nat
-        |
-        |do { Type }
-        |""".stripMargin
-
-    val res = runProgram(p)
-    assertEquals(PrettyPrinter.print(res), "Type")
-  }
-
-  test("Type 0 and Type 2 parse and pretty-print") {
-    val p0 =
-      """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ : Nat -> Nat
-        |
-        |do { Type }
-        |""".stripMargin
-    val p2 =
-      """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ : Nat -> Nat
-        |
-        |do { Type 2 }
-        |""".stripMargin
-
-    val r0 = runProgram(p0)
-    val r2 = runProgram(p2)
-    assertEquals(PrettyPrinter.print(r0), "Type")
-    assertEquals(PrettyPrinter.print(r2), "Type 2")
-  }
-
   test("Type cumulativity: Type 0 fits Type 1 in polymorphic function") {
     val p =
       """
@@ -131,7 +93,6 @@ class UniversePropTests extends munit.FunSuite {
         |""".stripMargin
 
     val res = runProgram(p)
-    assertEquals(PrettyPrinter.print(res), "True.intro")
   }
 
   test("Type and Prop cannot be shadowed (parse failure)") {

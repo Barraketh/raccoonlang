@@ -1,6 +1,6 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.Term.Match
+import com.raccoonlang.CoreAst.Term.{Bind, Match, NatLit}
 import com.raccoonlang.CoreAst._
 import com.raccoonlang.Util.NEL
 
@@ -15,8 +15,6 @@ object Interpreter {
   sealed trait Value {
     def tpe: Value
     def synDeps: BitSet
-
-    override def toString: String = PrettyPrinter.print(this)
   }
 
   sealed trait Head extends Value
@@ -156,6 +154,7 @@ object Interpreter {
           case h0: Head =>
             // Head is not reducible
             if (h0 eq h) v0 else VApp(h0, args, tpe)
+          case _ => throw GenericTypeError("WTF")
         }
       case vm: StuckMatch =>
         val scrut0 = whnf(vm.scrut)
@@ -211,11 +210,11 @@ object Interpreter {
 
   // Evaluate a type-position expression without enforcing it is a type yet
   private def evalTT(tt: TypeTerm, env: Env)(implicit meta: EqStore): Value = tt match {
-    case Term.Ident(name, sp)    => env.find(name).getOrElse { throw TypeError.withSpan(NotFound(name), sp) }
-    case Term.TApp(fn, args, _)  => evalApplyTerm(fn, args, env)
-    case pi: Term.Pi             => evalPi(pi, env)
-    case Term.SortType(level, _) => VType(level)
-    case Term.SortProp(_)        => VProp
+    case Term.Ident(name, sp)   => env.find(name).getOrElse { throw TypeError.withSpan(NotFound(name), sp) }
+    case Term.TApp(fn, args, _) => evalApplyTerm(fn, args, env)
+    case pi: Term.Pi            => evalPi(pi, env)
+    case bi: Bind               => throw BindEval(bi.name, Some(bi.span))
+    case n: NatLit              => throw GenericTypeError("No evaling of number literals for now", Some(n.span))
   }
 
   private def evalApply(fn: Value, vArgs: NEL[Value])(implicit eqStore: EqStore): Value = {

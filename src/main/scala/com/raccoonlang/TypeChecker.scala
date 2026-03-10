@@ -70,8 +70,6 @@ object TypeChecker {
   private def typecheckTT(term: TypeTerm, env: Env)(implicit meta: EqStore): Value = term match {
     case t: Term.TApp         => typecheckApplyTerm(t.fn, t.args, env)
     case pi: Term.Pi          => typecheckPi(pi, env)
-    case Term.SortType(lv, _) => Interpreter.VType(lv)
-    case Term.SortProp(_)     => Interpreter.VProp
     case ident: Ident         => Interpreter.evalTerm(ident, env)
   }
 

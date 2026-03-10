@@ -33,8 +33,8 @@ object FreeNames {
   def getFreeNames(term: Term, bound: Set[String]): Set[String] = {
     term match {
       case Term.Ident(name, _)      => if (bound.contains(name)) Set.empty else Set(name)
-      case Term.SortType(_, _)      => Set.empty
-      case Term.SortProp(_)         => Set.empty
+      case b: Term.Bind             => Set.empty
+      case n: Term.NatLit           => Set.empty
       case Term.TApp(fn, args, _)   => getFreeNames((fn :: args).toList, bound)
       case Term.Pi(binders, out, _) => getFreeNames(binders.toList.map(b => (b.name, b.ty, None)), out, bound)
       case Term.App(fn, args, _)    => getFreeNames((fn :: args).toList, bound)
