@@ -44,7 +44,7 @@ object Unify {
     (unify(out1, out2, resMeta, nextRigid), nextEnv1, nextEnv2, nextRigid)
   }
 
-  def unifyStuckMatches(v1: StuckMatch, v2: StuckMatch, meta: EqStore, rigid: Set[VarId]): EqStore = {
+  def unifyStuckMatches(v1: VMatch, v2: VMatch, meta: EqStore, rigid: Set[VarId]): EqStore = {
     val m0 = unify(v1.scrut, v2.scrut, meta, rigid)
     val m1 = unify(v1.tpe, v2.tpe, m0, rigid)
 
@@ -75,7 +75,7 @@ object Unify {
         val startCtx = unify(v1.head, v2.head, meta, rigid)
         v1.args.zip(v2.args).foldLeft(startCtx) { case (newCtx, (arg1, arg2)) => unify(arg1, arg2, newCtx, rigid) }
 
-      case (v1: StuckMatch, v2: StuckMatch) if v1.id.nodeId == v2.id.nodeId =>
+      case (v1: VMatch, v2: VMatch) if v1.id.nodeId == v2.id.nodeId =>
         unifyStuckMatches(v1, v2, meta, rigid)
 
       // Unify FreshVars through ctx. Basic idea: FreshVars can point at things through context

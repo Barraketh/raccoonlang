@@ -32,7 +32,7 @@ object PrettyPrinter {
   private def isAtomic(v: Interpreter.Value): Boolean = v match {
     case Interpreter.VUniverse => true
     case _: Interpreter.VConst => true
-    case _: Interpreter.Var   => true
+    case _: Interpreter.Var    => true
     case _                     => false
   }
 
@@ -100,10 +100,10 @@ object PrettyPrinter {
     case Interpreter.VUniverse               => "Type"
     case Interpreter.VPi(_, binders, out, _) => printTypeTerm(CoreAst.Term.Pi(binders, out, Span(0, 0)))
     case Interpreter.VConst(name, _, _)      => name
-    case Interpreter.VApp(head, args, _)     => printApp(head, args)
+    case v: Interpreter.AppliedValue         => printApp(v.head, v.args)
     case Interpreter.VLam(_, _, id)          => s"func#$id"
-    case Interpreter.Var(name, id, _)       => s"$name#$id"
-    case s: Interpreter.StuckMatch           => s"match#${s.id}"
+    case Interpreter.Var(name, id, _)        => s"$name#$id"
+    case s: Interpreter.VMatch               => s"match#${s.id}"
   }
 
 }

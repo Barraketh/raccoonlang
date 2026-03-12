@@ -243,10 +243,10 @@ object TypeChecker {
             case None => false
           }
         }
-      case (VApp(h1, args1, _), VApp(h2, args2, _)) if args1.length == args2.length =>
-        defEq(h1, h2) && args1.zip(args2).forall { case (arg1, arg2) => defEq(arg1, arg2) }
+      case (v1: AppliedValue, v2: AppliedValue) if v1.args.length == v2.args.length =>
+        defEq(v1.head, v2.head) && v1.args.zip(v2.args).forall { case (arg1, arg2) => defEq(arg1, arg2) }
 
-      case (s1: StuckMatch, s2: StuckMatch) => defEqLamId(s1.id, s2.id) && defEq(s1.scrut, s2.scrut)
+      case (s1: VMatch, s2: VMatch) => defEqLamId(s1.id, s2.id) && defEq(s1.scrut, s2.scrut)
 
       case (Var(_, id1, _), Var(_, id2, _)) if id1 == id2 => true
       case _                                              => false
