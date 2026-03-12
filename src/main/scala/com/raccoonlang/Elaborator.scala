@@ -1,5 +1,6 @@
 package com.raccoonlang
 
+import com.raccoonlang.CoreAst.UnfoldStrategy
 import com.raccoonlang.Util.NEL
 
 object Elaborator {
@@ -30,7 +31,7 @@ object Elaborator {
     case SA.Term.App(fn, args, sp) => CA.Term.App(elab(fn), args.map(elab), sp)
     case SA.Term.Lam(header, body, sp) =>
       getType(header) match {
-        case pi: CA.Term.Pi => CA.Term.Lam(pi, elab(body), sp, None)
+        case pi: CA.Term.Pi => CA.Term.Lam(pi, elab(body), sp, None, isStable = false)
         case _              => throw new RuntimeException("WTF")
       }
     case b: SA.Term.Body => elab(b)
@@ -56,13 +57,12 @@ object Elaborator {
     surface match {
       case c: SurfaceAst.Decl.ConstDecl =>
         val typeTerm = getType(c.header.funcHeader)
-        val body = c.body.map { b =>
-          typeTerm match {
-            case pi: CA.Term.Pi => CA.Term.Lam(pi, elab(b), c.span, Some(c.header.name))
-            case _              => elab(b)
-          }
+        val body = typeTerm match {
+          case pi: CA.Term.Pi =>
+            CA.Term.Lam(pi, elab(c.body), c.span, Some(c.header.name), c.unfoldStrategy.contains(UnfoldStrategy.Stable))
+          case _ => elab(c.body)
         }
-        CoreAst.Decl.ConstDecl(c.isInline, c.header.name, typeTerm, body, c.span)
+        CoreAst.Decl.ConstDecl(c.unfoldStrategy, c.header.name, typeTerm, body, c.span)
       case c: SurfaceAst.Decl.InductiveDecl =>
         CoreAst.Decl.InductiveDecl(
           c.header.name,

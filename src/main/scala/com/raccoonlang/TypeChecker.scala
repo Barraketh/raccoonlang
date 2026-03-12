@@ -11,7 +11,8 @@ import scala.util.Try
 object TypeChecker {
 
   private def checkType(value: Value, tyVal: Value)(implicit eqStore: EqStore): Unit = {
-    if (!defEq(value.tpe, tyVal)) throw TypeMismatch(value, tyVal)
+    if (!defEq(value.tpe, tyVal))
+      throw TypeMismatch(value, tyVal)
   }
 
   private def typecheckApply(fn: Value, args: NEL[Term], argEnv: Env)(implicit eqStore: EqStore): Value = {

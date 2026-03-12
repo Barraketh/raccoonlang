@@ -68,7 +68,7 @@ object PrettyPrinter {
     case CoreAst.Term.Ident(_, _)          => printTerm(t)
     case CoreAst.Term.App(_, _, _)         => printTerm(t)
     case CoreAst.Term.TApp(_, _, _)        => printTerm(t)
-    case CoreAst.Term.Lam(_, _, _, _)      => s"(${printTerm(t)})"
+    case CoreAst.Term.Lam(_, _, _, _, _)   => s"(${printTerm(t)})"
     case CoreAst.Term.Match(_, _, _, _, _) => s"(${printTerm(t)})"
   }
 
@@ -78,7 +78,7 @@ object PrettyPrinter {
       val head = printTermAtom(fn)
       val as = args.toList.map(printTermAtom).mkString(" ")
       s"$head $as"
-    case CoreAst.Term.Lam(ty, body, _, _) =>
+    case CoreAst.Term.Lam(ty, body, _, _, _) =>
       s"fun ${printBinders(ty.binders)}: ${printTypeTerm(ty.out)} => ${printTerm(body)}"
     case m @ CoreAst.Term.Match(_, _, _, _, _) => printMatch(m)
     case b: CoreAst.Term.Body                  => printBody(b)
@@ -101,7 +101,7 @@ object PrettyPrinter {
     case Interpreter.VPi(_, binders, out, _) => printTypeTerm(CoreAst.Term.Pi(binders, out, Span(0, 0)))
     case Interpreter.VConst(name, _, _)      => name
     case v: Interpreter.AppliedValue         => printApp(v.head, v.args)
-    case Interpreter.VLam(_, _, id)          => s"func#$id"
+    case Interpreter.VLam(_, _, id, _)       => s"func#$id"
     case Interpreter.Var(name, id, _)        => s"$name#$id"
     case s: Interpreter.VMatch               => s"match#${s.id}"
   }

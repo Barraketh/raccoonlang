@@ -37,7 +37,7 @@ object FreeNames {
       case Term.Pi(binders, out, _) => getFreeNames(binders.toList.map(b => (b.name, b.ty, None)), out, bound)
       case Term.App(fn, args, _)    => getFreeNames((fn :: args).toList, bound)
       case Term.Body(lets, res, _)  => getFreeNames(lets.toList.map(l => (l.name, l.value, l.ty)), res, bound)
-      case Term.Lam(ty, body, _, _) =>
+      case Term.Lam(ty, body, _, _, _) =>
         val tyNames = getFreeNames(ty, bound)
         val bodyBound = bound ++ ty.binders.map(_.name).toList
         tyNames.union(getFreeNames(body, bodyBound))

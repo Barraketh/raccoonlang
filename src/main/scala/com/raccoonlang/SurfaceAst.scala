@@ -1,5 +1,6 @@
 package com.raccoonlang
 
+import com.raccoonlang.CoreAst.UnfoldStrategy
 import com.raccoonlang.Util.NEL
 
 // Surface AST for RaccoonLang.  Will be elaborated into CoareAst
@@ -58,7 +59,12 @@ object SurfaceAst {
 
   object Decl {
     // Constant: name : type [:= value], with transparency (Opaque | Inline)
-    final case class ConstDecl(isInline: Boolean, header: DeclHeader, body: Option[Term], span: Span) extends Decl
+    final case class ConstDecl(
+        unfoldStrategy: Option[UnfoldStrategy],
+        header: DeclHeader,
+        body: Term,
+        span: Span
+    ) extends Decl
 
     // Inductive type declaration
     final case class InductiveDecl(header: DeclHeader, ctors: Vector[DeclHeader], span: Span) extends Decl
