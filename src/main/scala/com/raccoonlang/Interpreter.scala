@@ -19,7 +19,14 @@ object Interpreter {
     override def toString: String = PrettyPrinter.print(this)
   }
 
-  sealed trait Head extends Value
+  // A computation that is blocked but could proceed when blockerId is resolved
+  sealed trait Blocked extends Value {
+    def blockerId: VarId
+  }
+
+  // A value that will block a computation - specifically, when trying to either match or apply it.
+  // A blocked value will do so, but also Var
+  sealed trait Blocker extends Blocked
 
   type VarId = Int
 
@@ -45,11 +52,15 @@ object Interpreter {
     override def toString: String = "VPi"
   }
 
-  case class VConst(name: String, constType: ConstType, tpe: Value) extends Head {
+  case class VConst(name: String, constType: ConstType, tpe: Value) extends Value {
     override val synDeps: BitSet = tpe.synDeps
   }
 
-  case class VApp(head: Head, args: NEL[Value], tpe: Value) extends Head {
+  trait AppliedValue extends Value {
+    def head: Value
+    def args: NEL[Value]
+    def tpe: Value
+
     override lazy val synDeps: BitSet = {
       val res = collection.mutable.BitSet()
       res |= head.synDeps
@@ -59,8 +70,14 @@ object Interpreter {
     }
   }
 
-  case class Var(name: String, id: VarId, tpe: Value) extends Head {
+  case class VApp(head: VConst, args: NEL[Value], tpe: Value) extends AppliedValue
+
+  case class VBlockedApp(head: Value, args: NEL[Value], tpe: Value, blockerId: VarId) extends AppliedValue with Blocked
+
+  case class Var(name: String, id: VarId, tpe: Value) extends Value with Blocker {
     override val synDeps: BitSet = tpe.synDeps + id
+
+    override val blockerId: VarId = id
   }
 
   case class VLam(body: Term, tpe: VPi, id: LamId) extends Value {
@@ -79,7 +96,8 @@ object Interpreter {
     }
   }
 
-  case class StuckMatch(id: LamId.LocalId, term: Term.Match, scrut: Value, env: Env, tpe: Value) extends Value {
+  case class StuckMatch(id: LamId.LocalId, term: Term.Match, scrut: Value, env: Env, tpe: Value, blockerId: VarId)
+    extends Blocked {
     override def synDeps: BitSet = {
       val res = collection.mutable.BitSet()
       res |= tpe.synDeps
@@ -143,29 +161,30 @@ object Interpreter {
   def whnf(v: Value)(implicit eqStore: EqStore): Value = {
     val v0 = eqStore.force(v)
     v0 match {
-      case VApp(h, args, tpe) =>
-        val h0 = whnf(h)
-        h0 match {
-          case lam: VLam =>
-            val envWithArgs = getEnvWithArgs(lam.tpe, args)
-            val res = evalTerm(lam.body, envWithArgs)
-            whnf(res)
-          case h0: Head =>
-            // Head is not reducible
-            if (h0 eq h) v0 else VApp(h0, args, tpe)
-        }
-      case vm: StuckMatch =>
-        val scrut0 = whnf(vm.scrut)
-        val stillStuck = if (vm.scrut eq scrut0) vm else vm.copy(scrut = scrut0)
-        val head = scrut0 match {
-          case VApp(h, _, _) => h
-          case c: VConst     => c
-          case _             => return stillStuck
-        }
+      case v0: Blocked if eqStore.links.contains(v0.blockerId) =>
+        v0 match {
+          case VBlockedApp(h, args, tpe, _) =>
+            val h0 = whnf(h)
+            h0 match {
+              case lam: VLam =>
+                val envWithArgs = getEnvWithArgs(lam.tpe, args)
+                val res = evalTerm(lam.body, envWithArgs)
+                whnf(res)
+              case b: Blocker =>
+                // Head is not reducible
+                VBlockedApp(b, args, tpe, b.blockerId)
+            }
+          case vm: StuckMatch =>
+            val scrut0 = whnf(vm.scrut)
+            val head = scrut0 match {
+              case VApp(h, _, _) => h
+              case c: VConst     => c
+              case b: Blocker    => return vm.copy(scrut = scrut0, blockerId = b.blockerId)
+            }
 
-        head match {
-          case VConst(_, `ConstructorHead`, _) => whnf(evalMatchBody(vm.term, scrut0, vm.env))
-          case _                               => stillStuck
+            head match {
+              case VConst(_, `ConstructorHead`, _) => whnf(evalMatchBody(vm.term, scrut0, vm.env))
+            }
         }
 
       case _ => v0
@@ -190,7 +209,7 @@ object Interpreter {
     case pi: Term.Pi            => evalPi(pi, env)
   }
 
-  private def evalApply(fn: Value, vArgs: NEL[Value])(implicit eqStore: EqStore): Value = {
+  def evalApply(fn: Value, vArgs: NEL[Value])(implicit eqStore: EqStore): Value = {
     val fn0 = whnf(fn)
     val tpe0 = whnf(fn0.tpe)
 
@@ -199,7 +218,8 @@ object Interpreter {
         val envWithArgs: Env = getEnvWithArgs(pi, vArgs)
         fn0 match {
           case VLam(body, _, _) => evalTerm(body, envWithArgs)
-          case h: Head          => VApp(h, vArgs, evalTT(pi.out, envWithArgs))
+          case h: VConst        => VApp(h, vArgs, evalTT(pi.out, envWithArgs))
+          case b: Blocker       => VBlockedApp(b, vArgs, evalTT(pi.out, envWithArgs), b.blockerId)
           case _                => throw CannotApplyNonFunction(fn)
         }
       case _ => throw CannotApplyNonFunction(fn.tpe)
@@ -252,7 +272,7 @@ object Interpreter {
   private def evalMatchBody(m: Match, scrut: Value, env: Env)(implicit eqStore: EqStore): Value = {
     val withScrut = env.newScope.putLocal(m.scrutName, scrut)
 
-    lazy val stuckMatch = {
+    def stuckMatch(blockerId: VarId) = {
       // Get all the free locals referenced in the body of the match - we will use them as the key, just like VLam
       // We can treat scrutName as bound, since we are including it in StuckMatch and will unify it separately
       val freeNames = m.cases
@@ -268,13 +288,13 @@ object Interpreter {
 
       val outType = evalTerm(m.motive, withScrut)
 
-      StuckMatch(id, m, scrut, withScrut, outType)
+      StuckMatch(id, m, scrut, withScrut, outType, blockerId)
     }
 
     val (head, args) = scrut match {
       case VApp(head, args, _) => (head, args.toList)
       case c: VConst           => (c, Nil)
-      case _                   => return stuckMatch
+      case b: Blocker          => return stuckMatch(b.blockerId)
     }
 
     head match {
@@ -287,7 +307,6 @@ object Interpreter {
           curEnv.putLocal(argName, argV)
         }
         evalTerm(branch.body, newEnv)
-      case _ => stuckMatch
     }
   }
 

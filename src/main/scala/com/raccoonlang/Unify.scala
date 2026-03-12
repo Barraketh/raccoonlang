@@ -71,9 +71,9 @@ object Unify {
           val res2 = evalTerm(l2.body, nextEnv2)(nextMeta)
           unify(res1, res2, nextMeta, nextRigid)
         }
-      case (VApp(h1, args1, _), VApp(h2, args2, _)) if args1.length == args2.length =>
-        val startCtx = unify(h1, h2, meta, rigid)
-        args1.zip(args2).foldLeft(startCtx) { case (newCtx, (arg1, arg2)) => unify(arg1, arg2, newCtx, rigid) }
+      case (v1: AppliedValue, v2: AppliedValue) if v1.args.length == v2.args.length =>
+        val startCtx = unify(v1.head, v2.head, meta, rigid)
+        v1.args.zip(v2.args).foldLeft(startCtx) { case (newCtx, (arg1, arg2)) => unify(arg1, arg2, newCtx, rigid) }
 
       case (v1: StuckMatch, v2: StuckMatch) if v1.id.nodeId == v2.id.nodeId =>
         unifyStuckMatches(v1, v2, meta, rigid)

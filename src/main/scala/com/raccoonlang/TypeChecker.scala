@@ -23,25 +23,17 @@ object TypeChecker {
         if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
 
         // Typecheck argument terms in argEnv
-        val vArgs = args.foldLeft(Vector.empty[Value]) { case (acc, nextArg) =>
-          val v = typecheck(nextArg, argEnv)
-          acc :+ v
-        }
+        val vArgs = args.map(arg => typecheck(arg, argEnv))
 
         // Typecheck args against binder types and extend pi env
-        val envWithArgs =
-          binders.toList.zip(vArgs).foldLeft(env.newScope) { case (curEnv, (binder, value)) =>
-            val argTy = Interpreter.evalTerm(binder.ty, curEnv)
-            checkType(value, argTy)
-            curEnv.putLocal(binder.name, value)
-          }
+        binders.toList.zip(vArgs.toList).foldLeft(env.newScope) { case (curEnv, (binder, value)) =>
+          val argTy = Interpreter.evalTerm(binder.ty, curEnv)
+          checkType(value, argTy)
+          curEnv.putLocal(binder.name, value)
+        }
 
         // Since we've already typechecked everything we care about, now we can just evalTerm
-        fn0 match {
-          case VLam(body, _, _) => Interpreter.evalTerm(body, envWithArgs)
-          case head: Head       => VApp(head, NEL.mk(vArgs), Interpreter.evalTerm(outTy, envWithArgs))
-          case _                => throw CannotApplyNonFunction(fnTy0)
-        }
+        Interpreter.evalApply(fn0, vArgs)
       case _ => throw CannotApplyNonFunction(fnTy0)
     }
   }
