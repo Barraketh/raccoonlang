@@ -19,14 +19,14 @@ object Interpreter {
     override def toString: String = PrettyPrinter.print(this)
   }
 
-  // A computation that is blocked but could proceed when blockerId is resolved
-  sealed trait Blocked extends Value {
+  // A value that will block a computation - specifically, when trying to either match or apply it.
+  // Specifically, Var, VBlockedApp, or BlockedMatch
+  sealed trait Blocker extends Value {
     def blockerId: VarId
   }
 
-  // A value that will block a computation - specifically, when trying to either match or apply it.
-  // A blocked value will do so, but also Var
-  sealed trait Blocker extends Blocked
+  // A computation that is blocked but could proceed when blockerId is resolved. VBlockedApp or BlockedMatch
+  sealed trait Blocked extends Blocker
 
   type VarId = Int
 
@@ -80,7 +80,7 @@ object Interpreter {
     override val blockerId: VarId = id
   }
 
-  case class VLam(body: Term, tpe: VPi, id: LamId) extends Value {
+  case class VLam(body: Term, tpe: VPi, id: LamId, isStable: Boolean) extends Value {
     override lazy val synDeps: BitSet = {
       id match {
         case LamId.Const(_) => tpe.synDeps
@@ -227,10 +227,19 @@ object Interpreter {
       case pi: VPi =>
         val envWithArgs: Env = getEnvWithArgs(pi, vArgs)
         fn0 match {
-          case VLam(body, _, _) => evalTerm(body, envWithArgs)
-          case h: VConst        => VApp(h, vArgs, evalTT(pi.out, envWithArgs))
-          case b: Blocker       => VBlockedApp(b, vArgs, evalTT(pi.out, envWithArgs), b.blockerId)
-          case _                => throw CannotApplyNonFunction(fn)
+          case VLam(body, _, _, isStable) =>
+            val res = evalTerm(body, envWithArgs)
+            (isStable, res) match {
+              case (true, b: Blocked) =>
+                b match {
+                  case VBlockedApp(VLam(_, _, _, true), _, _, _) => res
+                  case _                                         => VBlockedApp(fn0, vArgs, b.tpe, b.blockerId)
+                }
+              case _ => res
+            }
+          case h: VConst  => VApp(h, vArgs, evalTT(pi.out, envWithArgs))
+          case b: Blocker => VBlockedApp(b, vArgs, evalTT(pi.out, envWithArgs), b.blockerId)
+          case _          => throw CannotApplyNonFunction(fn)
         }
       case _ => throw CannotApplyNonFunction(fn.tpe)
     }
@@ -252,7 +261,7 @@ object Interpreter {
         LamId.LocalId(l.span.start, captureVals)
 
     }
-    VLam(l.body, vpi, id)
+    VLam(l.body, vpi, id, l.isStable)
   }
 
   private def evalLam(l: Term.Lam, env: Env): VLam = {
@@ -330,21 +339,21 @@ object Interpreter {
   private def evalDecl(decl: Decl, env: Env): Env = {
     implicit val eqStore = EqStore.empty
     decl match {
-      case Decl.ConstDecl(isInline, name, ty, body, _) =>
+      case Decl.ConstDecl(unfoldStrategy, name, ty, body, _) =>
         val tyV = TypeChecker.getType(ty, env)
         val declConst = VConst(name, Symbol, tyV)
 
         // Allow recursive references by pre-binding a symbolic self during body checking
-        val bodyOpt = body.map(b => TypeChecker.typecheck(b, env.putGlobal(name, declConst)))
-        val value: Value = (bodyOpt, isInline) match {
-          case (Some(v), true) => v
-          case _               => declConst
+        val bodyV = TypeChecker.typecheck(body, env.putGlobal(name, declConst))
+        val value: Value = unfoldStrategy match {
+          case Some(_) => bodyV
+          case None    => declConst
         }
         val nextEnv = env.putGlobal(name, value)
 
         value match {
-          case VLam(_, tpe, _) => tpe.env = nextEnv
-          case _               =>
+          case VLam(_, tpe, _, _) => tpe.env = nextEnv
+          case _                  =>
         }
 
         nextEnv

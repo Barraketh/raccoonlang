@@ -1,5 +1,6 @@
 package com.raccoonlang
 
+import com.raccoonlang.CoreAst.UnfoldStrategy
 import com.raccoonlang.Parser._
 import com.raccoonlang.SurfaceAst.Decl.{ConstDecl, InductiveDecl}
 import com.raccoonlang.SurfaceAst.Term._
@@ -17,7 +18,7 @@ object LanguageParser {
   private val skipAllWs = (emptyLine.rep(0) ~ skipWS).named("AllWS")
   private val skipOneLine = emptyLine.? ~ skipWS
 
-  private val keywords = List("fun", "let", "match", "as", "returning", "with", "inline", "def", "inductive")
+  private val keywords = List("fun", "let", "match", "as", "returning", "with", "inline", "def", "inductive", "stable")
 
   private val ident =
     (P(c => c.isLetter || c == '_') ~ P(c => c.isLetterOrDigit || c == '_' || c == '$' || c == '.').rep(0)).!.filter(
@@ -86,10 +87,12 @@ object LanguageParser {
 
   private def declHeader: Parser[DeclHeader] = (ident ~ wsSep ~ funcHeader).flatSpanned.map(DeclHeader.tupled)
 
+  private def unfoldStrategy: Parser[UnfoldStrategy] =
+    kw("inline").!.map(_ => UnfoldStrategy.Inline) | kw("stable").!.map(_ => UnfoldStrategy.Stable)
+
   // inline? def foo (a: A)(b : B): C a := body
   private val constP: Parser[ConstDecl] =
-    (kw("inline").!.?.map(_.isDefined) ~ kw("def") ~/ declHeader ~ (sym(":=") ~/ term).?).flatSpanned
-      .map(ConstDecl.tupled)
+    (unfoldStrategy.? ~ kw("def") ~/ declHeader ~ (sym(":=") ~/ term)).flatSpanned.map(ConstDecl.tupled)
 
   private def inductiveP: Parser[InductiveDecl] =
     (kw("inductive") ~/ declHeader ~ lineSep ~ (sym("|") ~ declHeader ~ lineSep).rep(0)).flatSpanned
