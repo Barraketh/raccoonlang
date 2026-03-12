@@ -96,8 +96,11 @@ object Interpreter {
     }
   }
 
-  case class StuckMatch(id: LamId.LocalId, term: Term.Match, scrut: Value, env: Env, tpe: Value, blockerId: VarId)
-    extends Blocked {
+  trait VMatch extends Value {
+    def id: LamId.LocalId
+    def scrut: Value
+    def tpe: Value
+
     override def synDeps: BitSet = {
       val res = collection.mutable.BitSet()
       res |= tpe.synDeps
@@ -106,6 +109,13 @@ object Interpreter {
       res.toImmutable
     }
   }
+
+  // The scrutinee of the match is an opaque symbol, so match will never proceed
+  case class StuckMatch(id: LamId.LocalId, scrut: Value, tpe: Value) extends VMatch
+
+  case class BlockedMatch(id: LamId.LocalId, term: Term.Match, scrut: Value, env: Env, tpe: Value, blockerId: VarId)
+    extends VMatch
+    with Blocked
 
   // Environment: tracks lexical scope
   final case class Env(globals: Map[String, Value], locals: Map[String, Value], parent: Option[Env]) {
@@ -174,7 +184,7 @@ object Interpreter {
                 // Head is not reducible
                 VBlockedApp(b, args, tpe, b.blockerId)
             }
-          case vm: StuckMatch =>
+          case vm: BlockedMatch =>
             val scrut0 = whnf(vm.scrut)
             val head = scrut0 match {
               case VApp(h, _, _) => h
@@ -272,7 +282,7 @@ object Interpreter {
   private def evalMatchBody(m: Match, scrut: Value, env: Env)(implicit eqStore: EqStore): Value = {
     val withScrut = env.newScope.putLocal(m.scrutName, scrut)
 
-    def stuckMatch(blockerId: VarId) = {
+    lazy val stuckMatchId = {
       // Get all the free locals referenced in the body of the match - we will use them as the key, just like VLam
       // We can treat scrutName as bound, since we are including it in StuckMatch and will unify it separately
       val freeNames = m.cases
@@ -284,17 +294,15 @@ object Interpreter {
         .filter(n => withScrut.findLocal(n).isDefined)
         .sorted
       val captures = freeNames.map(n => withScrut.findLocal(n).get)
-      val id = LamId.LocalId(m.span.start, captures)
-
-      val outType = evalTerm(m.motive, withScrut)
-
-      StuckMatch(id, m, scrut, withScrut, outType, blockerId)
+      LamId.LocalId(m.span.start, captures)
     }
+
+    lazy val outType = evalTerm(m.motive, withScrut)
 
     val (head, args) = scrut match {
       case VApp(head, args, _) => (head, args.toList)
       case c: VConst           => (c, Nil)
-      case b: Blocker          => return stuckMatch(b.blockerId)
+      case b: Blocker          => return BlockedMatch(stuckMatchId, m, scrut, withScrut, outType, b.blockerId)
     }
 
     head match {
@@ -307,6 +315,7 @@ object Interpreter {
           curEnv.putLocal(argName, argV)
         }
         evalTerm(branch.body, newEnv)
+      case _ => StuckMatch(stuckMatchId, scrut, outType)
     }
   }
 
