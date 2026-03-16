@@ -1,9 +1,7 @@
 package com.raccoonlang
 
-import com.raccoonlang.Interpreter.{ConstType, ConstructorHead, Symbol, Value}
-
 class TypingTests extends munit.FunSuite {
-  private def runProgram(src: String): Interpreter.Value = {
+  private def runProgram(src: String): Value = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
@@ -18,9 +16,9 @@ class TypingTests extends munit.FunSuite {
   case class SApp(head: Shape, args: List[Shape]) extends Shape
 
   private def toShape(v: Value): Shape = v match {
-    case Interpreter.VConst(n, ct, _) => SConst(n, ct)
-    case Interpreter.VApp(h, args, _) => SApp(toShape(h), args.toList.map(toShape))
-    case other                        => SConst(other.toString, ConstructorHead) // fallback
+    case Value.VConst(n, ct, _) => SConst(n, ct)
+    case Value.VApp(h, args, _) => SApp(toShape(h), args.toList.map(toShape))
+    case other                  => SConst(other.toString, ConstructorHead) // fallback
   }
 
   private val zeroS = SConst("Nat.zero", ConstructorHead)

@@ -27,16 +27,16 @@ object TypeError {
   }
 }
 
-final case class UnificationFailed(v1: Interpreter.Value, v2: Interpreter.Value, span: Option[Span] = None)
+final case class UnificationFailed(v1: Value, v2: Value, span: Option[Span] = None)
   extends TypeError {
   val msg: String = s"Failed to unify $v1 and $v2"
 }
 
-final case class OccursCheckFailed(id: Long, inVal: Interpreter.Value, span: Option[Span] = None) extends TypeError {
+final case class OccursCheckFailed(id: Long, inVal: Value, span: Option[Span] = None) extends TypeError {
   val msg: String = s"Occurs check failed: $id in $inVal"
 }
 
-final case class CannotApplyNonFunction(got: Interpreter.Value, span: Option[Span] = None) extends TypeError {
+final case class CannotApplyNonFunction(got: Value, span: Option[Span] = None) extends TypeError {
   val msg: String = s"Cannot apply non-fn type ${got}"
 }
 
@@ -68,11 +68,11 @@ final case class CannotLinkToBottom(id: Long, span: Option[Span] = None) extends
   val msg: String = s"Cannot link to bottom of chain for var $id"
 }
 
-final case class NotAType(value: Interpreter.Value, span: Option[Span] = None) extends TypeError {
+final case class NotAType(value: Value, span: Option[Span] = None) extends TypeError {
   val msg: String = s"$value is not a type"
 }
 
-final case class NonInductiveMatch(tpe: Interpreter.Value, span: Option[Span] = None) extends TypeError {
+final case class NonInductiveMatch(tpe: Value, span: Option[Span] = None) extends TypeError {
   val msg: String = s"Cannot match on non-inductive type $tpe"
 }
 
@@ -86,7 +86,7 @@ final case class AlreadyDefined(name: String, span: Option[Span] = None) extends
 
 final case class GenericTypeError(msg: String, span: Option[Span] = None) extends TypeError
 
-final case class TypeMismatch(v1: Interpreter.Value, v2: Interpreter.Value, span: Option[Span] = None)
+final case class TypeMismatch(v1: Value, v2: Value, span: Option[Span] = None)
   extends TypeError {
   val msg: String = s"Type mismatch: $v1 expected type: $v2, actual: ${v1.tpe}"
 }

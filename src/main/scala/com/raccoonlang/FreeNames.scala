@@ -2,7 +2,6 @@ package com.raccoonlang
 
 import com.raccoonlang.CoreAst.Term
 import com.raccoonlang.CoreAst.Term.Match
-import com.raccoonlang.Interpreter.Env
 
 import scala.collection.immutable.BitSet
 

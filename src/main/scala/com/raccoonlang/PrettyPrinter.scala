@@ -29,17 +29,17 @@ object PrettyPrinter {
     pt(tt)
   }
 
-  private def isAtomic(v: Interpreter.Value): Boolean = v match {
-    case Interpreter.VUniverse => true
-    case _: Interpreter.VConst => true
-    case _: Interpreter.Var    => true
-    case _                     => false
+  private def isAtomic(v: Value): Boolean = v match {
+    case Value.VUniverse => true
+    case _: Value.VConst => true
+    case _: Value.Var    => true
+    case _               => false
   }
 
-  private def printApp(head: Interpreter.Value, args: Util.NEL[Interpreter.Value]): String = {
+  private def printApp(head: Value, args: Util.NEL[Value]): String = {
     val headStr = head match {
-      case _: Interpreter.VApp | _: Interpreter.VConst | _: Interpreter.Var | Interpreter.VUniverse => print(head)
-      case _ => s"(${print(head)})"
+      case _: Value.VApp | _: Value.VConst | _: Value.Var | Value.VUniverse => print(head)
+      case _                                                                => s"(${print(head)})"
     }
     val argsStr = args.toList.map { a => if (isAtomic(a)) print(a) else s"(${print(a)})" }.mkString(" ")
     s"$headStr $argsStr"
@@ -96,14 +96,14 @@ object PrettyPrinter {
     s"match $scrutStr as ${m.scrutName} returning $motiveStr with $casesStr"
   }
 
-  def print(value: Interpreter.Value): String = value match {
-    case Interpreter.VUniverse               => "Type"
-    case Interpreter.VPi(_, binders, out, _) => printTypeTerm(CoreAst.Term.Pi(binders, out, Span(0, 0)))
-    case Interpreter.VConst(name, _, _)      => name
-    case v: Interpreter.AppliedValue         => printApp(v.head, v.args)
-    case Interpreter.VLam(_, _, id, _)       => s"func#$id"
-    case Interpreter.Var(name, id, _)        => s"$name#$id"
-    case s: Interpreter.VMatch               => s"match#${s.id}"
+  def print(value: Value): String = value match {
+    case Value.VUniverse               => "Type"
+    case Value.VPi(_, binders, out, _) => printTypeTerm(CoreAst.Term.Pi(binders, out, Span(0, 0)))
+    case Value.VConst(name, _, _)      => name
+    case v: Value.AppliedValue         => printApp(v.head, v.args)
+    case Value.VLam(_, _, id, _)       => s"func#$id"
+    case Value.Var(name, id, _)        => s"$name#$id"
+    case s: Value.VMatch               => s"match#${s.id}"
   }
 
 }

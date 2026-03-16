@@ -5,6 +5,7 @@ import com.raccoonlang.CoreAst._
 import com.raccoonlang.FreshVar.{assignFreshVars, freshVar}
 import com.raccoonlang.Interpreter._
 import com.raccoonlang.Util.NEL
+import com.raccoonlang.Value._
 
 import scala.util.Try
 

@@ -1,7 +1,7 @@
 package com.raccoonlang
 
 class MatchRefinementTests extends munit.FunSuite {
-  private def runProgram(src: String): Interpreter.Value = {
+  private def runProgram(src: String): Value = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)

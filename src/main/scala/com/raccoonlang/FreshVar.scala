@@ -1,6 +1,7 @@
 package com.raccoonlang
 
 import com.raccoonlang.Interpreter._
+import com.raccoonlang.Value.{VPi, Var, VarId}
 
 object FreshVar {
 
