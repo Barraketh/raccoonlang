@@ -15,8 +15,7 @@ object Interpreter {
             val h0 = whnf(h)
             h0 match {
               case lam: VLam =>
-                val envWithArgs = getEnvWithArgs(lam.tpe, args)
-                val res = evalTerm(lam.body, envWithArgs)
+                val res = lam.run(args, eqStore)
                 whnf(res)
               case b: Blocker =>
                 // Head is not reducible
@@ -65,12 +64,12 @@ object Interpreter {
       case pi: VPi =>
         val envWithArgs: Env = getEnvWithArgs(pi, vArgs)
         fn0 match {
-          case VLam(body, _, _, isStable) =>
-            val res = evalTerm(body, envWithArgs)
+          case VLam(_, _, isStable, run) =>
+            val res = run(vArgs, eqStore)
             (isStable, res) match {
               case (true, b: Blocked) =>
                 b match {
-                  case VBlockedApp(VLam(_, _, _, true), _, _, _) => res
+                  case VBlockedApp(VLam(_, _, true, _), _, _, _) => res
                   case _                                         => VBlockedApp(fn0, vArgs, b.tpe, b.blockerId)
                 }
               case _ => res
@@ -78,10 +77,6 @@ object Interpreter {
           case h: VConst  => VApp(h, vArgs, evalTT(pi.out, envWithArgs))
           case b: Blocker => VBlockedApp(b, vArgs, evalTT(pi.out, envWithArgs), b.blockerId)
           case _          => throw CannotApplyNonFunction(fn)
-        }
-      case BuiltFnType =>
-        fn0 match {
-          case b: BuiltinFn => b.fn.apply(vArgs.toVector)
         }
       case _ => throw CannotApplyNonFunction(fn.tpe)
     }
@@ -103,7 +98,15 @@ object Interpreter {
         LamId.LocalId(l.span.start, captureVals)
 
     }
-    VLam(l.body, vpi, id, l.isStable)
+    VLam(
+      vpi,
+      id,
+      l.isStable,
+      (args, eqStore) => {
+        val bodyEnv = getEnvWithArgs(vpi, args)
+        evalTerm(l.body, bodyEnv)(eqStore)
+      }
+    )
   }
 
   private def evalLam(l: Term.Lam, env: Env): VLam = {
@@ -196,7 +199,7 @@ object Interpreter {
         val nextEnv = env.putGlobal(name, value)
 
         value match {
-          case VLam(_, tpe, _, _) => tpe.env = nextEnv
+          case VLam(tpe, _, _, _) => tpe.env = nextEnv
           case _                  =>
         }
 
@@ -228,14 +231,21 @@ object Interpreter {
 
   }
 
-  def run(p: Program): Value = {
+  def run(p: Program, builtIn: List[(String, TypeTerm, (NEL[Value], EqStore) => Value)] = List.empty): Value = {
     val baseEnv =
       Env.empty
         .putGlobal("Type", VUniverse)
         .putGlobal("Normalizer", NormalizerType)
-        .putGlobal("add_normalizer_builtin", BuiltinFn(Normalizers.add_normalizer))
 
-    val env = p.decls.foldLeft(baseEnv) { case (env, decl) => evalDecl(decl, env) }
+    val nextEnv = builtIn.foldLeft(baseEnv) { case (curEnv, (name, tpe, lam)) =>
+      val tpeV = evalTT(tpe, baseEnv)(EqStore.empty)
+      tpeV match {
+        case pi: VPi =>
+          curEnv.putGlobal(name, VLam(pi, LamId.Const(name), isStable = false, lam))
+      }
+    }
+
+    val env = p.decls.foldLeft(nextEnv) { case (env, decl) => evalDecl(decl, env) }
     TypeChecker.typecheck(p.body, env)(EqStore.empty, NormalizerMap.empty)
   }
 }

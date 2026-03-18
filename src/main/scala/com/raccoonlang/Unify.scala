@@ -1,6 +1,7 @@
 package com.raccoonlang
 
 import com.raccoonlang.Interpreter._
+import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
 
 import scala.collection.immutable.BitSet
@@ -31,20 +32,20 @@ object Unify {
   // Extensionally unify Pi types
   private def unifyPis(pi1: VPi, pi2: VPi, meta: EqStore, rigid: Set[VarId])(implicit
       normalizers: NormalizerMap
-  ): (EqStore, Env, Env, Set[VarId]) = {
-    val (resMeta, nextEnv1, nextEnv2, nextRigid) =
-      pi1.binders.zip(pi2.binders).foldLeft((meta, pi1.env.newScope, pi2.env.newScope, rigid)) {
-        case ((curMeta, curEnv1, curEnv2, curRigid), (b1, b2)) =>
+  ): (EqStore, Vector[Var]) = {
+    val (resMeta, nextEnv1, nextEnv2, vars) =
+      pi1.binders.zip(pi2.binders).foldLeft((meta, pi1.env.newScope, pi2.env.newScope, Vector.empty[Var])) {
+        case ((curMeta, curEnv1, curEnv2, curVars), (b1, b2)) =>
           val t1 = evalTerm(b1.ty, curEnv1)(curMeta)
           val t2 = evalTerm(b2.ty, curEnv2)(curMeta)
-          val nextMeta = unify(t1, t2, curMeta, curRigid)
+          val nextMeta = unify(t1, t2, curMeta, rigid ++ curVars.map(_.id))
 
           val x = FreshVar.freshVar(b1.name, t1)
-          (nextMeta, curEnv1.putLocal(b1.name, x), curEnv2.putLocal(b2.name, x), curRigid + x.id)
+          (nextMeta, curEnv1.putLocal(b1.name, x), curEnv2.putLocal(b2.name, x), curVars :+ x)
       }
     val out1 = evalTerm(pi1.out, nextEnv1)(resMeta)
     val out2 = evalTerm(pi2.out, nextEnv2)(resMeta)
-    (unify(out1, out2, resMeta, nextRigid), nextEnv1, nextEnv2, nextRigid)
+    (unify(out1, out2, resMeta, rigid ++ vars.map(_.id)), vars)
   }
 
   def unifyStuckMatches(v1: VMatch, v2: VMatch, meta: EqStore, rigid: Set[VarId])(implicit
@@ -64,20 +65,18 @@ object Unify {
     val a = normalizerF(Interpreter.whnf(v1)(meta))
     val b = normalizerF(Interpreter.whnf(v2)(meta))
 
+    if (TypeChecker.defEq(a, b)(meta, normalizers)) return meta
+
     (a, b) match {
-      case (VUniverse, VUniverse)                                         => meta
-      case (VConst(n1, c1, _), VConst(n2, c2, _)) if n1 == n2 && c1 == c2 => meta
 
       case (p1: VPi, p2: VPi) if p1.binders.length == p2.binders.length           => unifyPis(p1, p2, meta, rigid)._1
       case (l1: VLam, l2: VLam) if l1.tpe.binders.length == l2.tpe.binders.length =>
-        // Lambda equality: first try ids, then referential equality, then extensional fallback
-        if (l1.eq(l2) || l1.id == l2.id) meta
-        else {
-          val (nextMeta, nextEnv1, nextEnv2, nextRigid) = unifyPis(l1.tpe, l2.tpe, meta, rigid)
-          val res1 = evalTerm(l1.body, nextEnv1)(nextMeta)
-          val res2 = evalTerm(l2.body, nextEnv2)(nextMeta)
-          unify(res1, res2, nextMeta, nextRigid)
-        }
+        // We know that the id check failed - falling back to extensional unification
+        val (nextMeta, newVars) = unifyPis(l1.tpe, l2.tpe, meta, rigid)
+        val varsNEL = NEL.mk(newVars)
+        val res1 = l1.run(varsNEL, nextMeta)
+        val res2 = l2.run(varsNEL, nextMeta)
+        unify(res1, res2, nextMeta, rigid ++ newVars.map(_.id))
       case (v1: AppliedValue, v2: AppliedValue) if v1.args.length == v2.args.length =>
         val startCtx = unify(v1.head, v2.head, meta, rigid)
         v1.args.zip(v2.args).foldLeft(startCtx) { case (newCtx, (arg1, arg2)) => unify(arg1, arg2, newCtx, rigid) }
@@ -87,8 +86,6 @@ object Unify {
 
       // Unify FreshVars through ctx. Basic idea: FreshVars can point at things through context
       // unify creates a ctx of pointers. We only create pointers from the top of the chain
-
-      case (Var(_, id1, _), Var(_, id2, _)) if id1 == id2 => meta
 
       // Link unlinked Var (left) to a non-Var value
       case (Var(_, id, ty), other) =>

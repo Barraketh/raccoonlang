@@ -42,9 +42,6 @@ object TypeChecker {
 
         // Since we've already typechecked everything we care about, now we can just evalTerm
         Interpreter.evalApply(fn0, vArgs)
-      case BuiltFnType =>
-        val vArgs = args.map(arg => typecheck(arg, argEnv))
-        Interpreter.evalApply(fn0, vArgs)
       case _ => throw CannotApplyNonFunction(fnTy0)
     }
   }
@@ -237,19 +234,20 @@ object TypeChecker {
   private def defEqPi(pi1: VPi, pi2: VPi)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
-  ): Option[(Env, Env)] = {
-    val (nextEnv1, nextEnv2) = pi1.binders.zip(pi2.binders).foldLeft((pi1.env.newScope, pi2.env.newScope)) {
-      case ((curEnv1, curEnv2), (b1, b2)) =>
-        val t1 = Interpreter.evalTerm(b1.ty, curEnv1)
-        val t2 = evalTerm(b2.ty, curEnv2)
-        if (!defEq(t1, t2)) return None
+  ): Option[Vector[Value]] = {
+    val (nextEnv1, nextEnv2, vars) =
+      pi1.binders.zip(pi2.binders).foldLeft((pi1.env.newScope, pi2.env.newScope, Vector.empty[Value])) {
+        case ((curEnv1, curEnv2, curVars), (b1, b2)) =>
+          val t1 = Interpreter.evalTerm(b1.ty, curEnv1)
+          val t2 = evalTerm(b2.ty, curEnv2)
+          if (!defEq(t1, t2)) return None
 
-        val x = FreshVar.freshVar(b1.name, t1)
-        (curEnv1.putLocal(b1.name, x), curEnv2.putLocal(b2.name, x))
-    }
+          val x = FreshVar.freshVar(b1.name, t1)
+          (curEnv1.putLocal(b1.name, x), curEnv2.putLocal(b2.name, x), curVars :+ x)
+      }
     val out1 = evalTerm(pi1.out, nextEnv1)
     val out2 = evalTerm(pi2.out, nextEnv2)
-    if (defEq(out1, out2)) Some((nextEnv1, nextEnv2))
+    if (defEq(out1, out2)) Some(vars)
     else None
 
   }
@@ -294,9 +292,10 @@ object TypeChecker {
         if (l1.eq(l2) || defEqLamId(l1.id, l2.id)) true
         else {
           defEqPi(l1.tpe, l2.tpe) match {
-            case Some((env1, env2)) =>
-              val res1 = evalTerm(l1.body, env1)
-              val res2 = evalTerm(l2.body, env2)
+            case Some(vars) =>
+              val varsNEL = NEL.mk(vars)
+              val res1 = l1.run(varsNEL, eqStore)
+              val res2 = l2.run(varsNEL, eqStore)
               defEq(res1, res2)
             case None => false
           }

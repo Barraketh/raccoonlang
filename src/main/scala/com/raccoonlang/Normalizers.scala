@@ -11,7 +11,7 @@ object Normalizers {
     case Value.Var(_, id, _)              => s"V:$id"
     case Value.VApp(h, args, _)           => s"A(${orderKey(h)};${args.toList.map(orderKey).mkString(",")})"
     case Value.VBlockedApp(h, args, _, _) => s"A(${orderKey(h)};${args.toList.map(orderKey).mkString(",")})"
-    case Value.VLam(_, _, id, _) =>
+    case Value.VLam(_, id, _, _) =>
       id match {
         case Value.LamId.Const(n)            => s"L:$n"
         case Value.LamId.LocalId(nodeId, ps) => s"L:$nodeId:${ps.map(orderKey).mkString(",")}"

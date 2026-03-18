@@ -3,12 +3,20 @@ package com.raccoonlang
 import com.raccoonlang.ErrorReporter.Source
 
 class EqualityWithNormalizerTests extends munit.FunSuite {
+  val addNormalizerTpe =
+    LanguageParser.parseFuncHeader("(A: Type)(zero: A)(add: A -> A -> A): Normalizer") match {
+      case Success(header, _, _) => Elaborator.getType(header)
+    }
+
   private def runProgram(src: String): Value = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
         try {
-          Interpreter.run(core)
+          Interpreter.run(
+            core,
+            List(("add_normalizer", addNormalizerTpe, (args, _) => Normalizers.add_normalizer(args.toVector)))
+          )
         } catch {
           case t: TypeError =>
             val source = Source(src)
@@ -30,9 +38,6 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
         |  | Nat.zero => a
         |  | Nat.succ x => add (Nat.succ a) x
         |}
-        |
-        |// trusted builtin marker; compiled in the checker
-        |inline def add_normalizer (A: Type)(zero: A)(add: A -> A -> A): Normalizer := add_normalizer_builtin A zero add
         |
         |inline def nat_add_normalizer : Normalizer := add_normalizer Nat Nat.zero add
         |

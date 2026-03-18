@@ -84,7 +84,7 @@ object Value {
     override val blockerId: VarId = id
   }
 
-  case class VLam(body: Term, tpe: VPi, id: LamId, isStable: Boolean) extends Value {
+  case class VLam(tpe: VPi, id: LamId, isStable: Boolean, run: (NEL[Value], EqStore) => Value) extends Value {
     override lazy val synDeps: BitSet = {
       id match {
         case LamId.Const(_) => tpe.synDeps
@@ -123,12 +123,6 @@ object Value {
     extends VMatch
     with Blocked
 
-  object KernelObject extends Value {
-    override def tpe: Value = KernelObject
-
-    override def synDeps: BitSet = BitSet.empty
-  }
-
   object NormalizerType extends Value {
     override def tpe: Value = VUniverse
 
@@ -145,18 +139,6 @@ object Value {
     override val tpe: Value = NormalizerType
 
     override val synDeps: BitSet = BitSet.empty
-  }
-
-  object BuiltFnType extends Value {
-    override def tpe: Value = KernelObject
-
-    override def synDeps: BitSet = BitSet.empty
-  }
-
-  case class BuiltinFn(fn: Vector[Value] => Value) extends Value {
-    override def synDeps: BitSet = BitSet.empty
-
-    override def tpe: Value = BuiltFnType
   }
 
 }

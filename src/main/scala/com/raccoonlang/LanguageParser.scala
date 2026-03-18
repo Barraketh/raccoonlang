@@ -130,12 +130,10 @@ object LanguageParser {
   private def programP: Parser[Program] =
     (skipAllWs ~ declP.rep(1, lineSep.rep(1)) ~ skipAllWs ~ doBlock).map(Program.tupled)
 
-  def parseDecls(input: String): ParseResult[Vector[Decl]] = {
-    try {
-      decls.parse(input, 0)
-    } catch {
-      case p: ParseError => Failure(p.startIdx, p.curIdx, p.message)
-    }
+  def parseFuncHeader(input: String): ParseResult[FuncHeader] = try {
+    funcHeader.parse(input, 0)
+  } catch {
+    case p: ParseError => Failure(p.startIdx, p.curIdx, p.message)
   }
 
   def parseProgram(input: String): ParseResult[Program] =

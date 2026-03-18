@@ -104,9 +104,7 @@ object PrettyPrinter {
     case Value.VLam(_, _, id, _)       => s"func#$id"
     case Value.Var(name, id, _)        => s"$name#$id"
     case s: Value.VMatch               => s"match#${s.id}"
-    case Value.KernelObject            => "KernelObject"
     case Value.NormalizerType          => "Normalizer"
-    case Value.BuiltFnType             => "BuiltinFn"
     case n: Value.Normalizer           => s"Normalizer ${n.name}"
   }
 

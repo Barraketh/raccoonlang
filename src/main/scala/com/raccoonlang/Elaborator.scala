@@ -70,7 +70,7 @@ object Elaborator {
 
   private def elab(b: SA.Binder): CA.Binder = CA.Binder(b.name, elab(b.ty), b.span)
 
-  private def getType(header: SA.FuncHeader): CA.TypeTerm = {
+  def getType(header: SA.FuncHeader): CA.TypeTerm = {
     val outTy = elab(header.ty)
     if (header.params.isEmpty) outTy
     else CoreAst.Term.Pi(NEL.mk(header.params.map(elab)), outTy, header.span)
