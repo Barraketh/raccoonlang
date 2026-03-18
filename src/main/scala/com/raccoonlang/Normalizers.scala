@@ -6,10 +6,12 @@ import com.raccoonlang.Value.{VApp, VBlockedApp, VConst, VarId}
 object Normalizers {
 
   private def orderKey(v: Value): String = v match {
-    case Value.VUniverse                  => "U"
-    case Value.VConst(n, _, _)            => s"C:$n"
-    case Value.Var(_, id, _)              => s"V:$id"
-    case Value.VApp(h, args, _)           => s"A(${orderKey(h)};${args.toList.map(orderKey).mkString(",")})"
+    case Value.LevelTpe         => "LTY"
+    case Value.Level(atoms, c)  => s"Lvl(${atoms.toList.sortBy(_._1).map(p => s"${p._1}->${p._2}").mkString(",")},$c)"
+    case Value.VSort(lvl)       => s"U:$lvl"
+    case Value.VConst(n, _, _)  => s"C:$n"
+    case Value.Var(_, id, _)    => s"V:$id"
+    case Value.VApp(h, args, _) => s"A(${orderKey(h)};${args.toList.map(orderKey).mkString(",")})"
     case Value.VBlockedApp(h, args, _, _) => s"A(${orderKey(h)};${args.toList.map(orderKey).mkString(",")})"
     case Value.VLam(_, id, _, _) =>
       id match {
@@ -73,7 +75,6 @@ object Normalizers {
               applyAdd(curVal, nextVal)(eqStore)
             }
         }
-
       }
     }
   }

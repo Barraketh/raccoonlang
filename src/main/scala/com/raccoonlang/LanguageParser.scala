@@ -29,7 +29,8 @@ object LanguageParser {
     "inline",
     "def",
     "inductive",
-    "stable"
+    "stable",
+    "Sort"
   )
 
   private val ident =
@@ -59,8 +60,11 @@ object LanguageParser {
 
   private def pi: Parser[Pi] = (param ~ sym("->") ~ typeTerm).flatSpanned.map { Pi.tupled }
 
+  private def sort: Parser[Sort] = ((kw("Sort") ~/ typeTerm)).flatSpanned.map(Sort.tupled)
+
   private def typeTerm: Parser[TypeTerm] =
     pi |
+      sort |
       sym('(') ~ typeTerm ~ sym(')') |
       (typeExpr.spanned ~ sym("->") ~ typeTerm).spanned.mapAsT { case ((expr, term), span) =>
         Pi(Binder("_", expr.value, expr.span), term, span)
@@ -131,19 +135,18 @@ object LanguageParser {
   private def doBlock = kw("do") ~ term
 
   private def programP: Parser[Program] =
-    (skipAllWs ~ declP.rep(1, lineSep.rep(1)) ~ skipAllWs ~ doBlock).map(Program.tupled)
+    (skipAllWs ~ declP.rep(0, lineSep.rep(1)) ~ skipAllWs ~ doBlock).map(Program.tupled)
 
-  def parseFuncHeader(input: String): ParseResult[FuncHeader] = try {
-    funcHeader.parse(input, 0)
+  private def tryParse[A](input: String, parser: Parser[A]): ParseResult[A] = try {
+    parser.parse(input, 0)
   } catch {
     case p: ParseError => Failure(p.startIdx, p.curIdx, p.message)
   }
 
-  def parseProgram(input: String): ParseResult[Program] =
-    try {
-      programP.parse(input, 0)
-    } catch {
-      case p: ParseError => Failure(p.startIdx, p.curIdx, p.message)
-    }
+  def parseFuncHeader(input: String): ParseResult[FuncHeader] = tryParse(input, funcHeader)
+
+  def parseDecls(input: String): ParseResult[Vector[Decl]] = tryParse(input, decls)
+
+  def parseProgram(input: String): ParseResult[Program] = tryParse(input, programP)
 
 }

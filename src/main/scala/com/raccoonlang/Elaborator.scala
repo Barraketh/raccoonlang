@@ -20,6 +20,7 @@ object Elaborator {
   private def elab(ty: SA.TypeTerm): CA.TypeTerm = ty match {
     case SA.Term.Ident(name, sp)    => CoreAst.Term.Ident(name, sp)
     case SA.Term.TApp(fn, args, sp) => CoreAst.Term.TApp(elab(fn), args.map(elab), sp)
+    case SA.Term.Sort(level, span)  => CA.Term.Sort(elab(level), span)
     case pi: SA.Term.Pi             => elabPi(pi)
   }
 

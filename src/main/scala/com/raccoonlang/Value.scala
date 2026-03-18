@@ -17,6 +17,10 @@ sealed trait Value {
   override def toString: String = PrettyPrinter.print(this)
 }
 
+sealed trait TopLevelValue extends Value {
+  override val synDeps: BitSet = BitSet.empty
+}
+
 object Value {
 
   // A value that will block a computation - specifically, when trying to either match or apply it.
@@ -41,16 +45,50 @@ object Value {
     final case class LocalId(nodeId: Int, params: Vector[Value]) extends LamId
   }
 
-  case object VUniverse extends Value {
-    override def tpe: Value = VUniverse
+  case object LevelTpe extends TopLevelValue {
+    override def tpe: Value = VSort(Level.zero)
+  }
 
-    override val synDeps: BitSet = BitSet.empty
+  case class Level(atoms: Map[VarId, Int], c: Int) extends Value {
+    override val tpe: Value = LevelTpe
+
+    override val synDeps: BitSet = BitSet(atoms.keys.toList: _*)
+  }
+  object Level {
+    def succ(l: Level): Level = {
+      Level(l.atoms.map { case (varId, k) => (varId, k + 1) }, l.c + 1)
+    }
+
+    def max(xs: Vector[Level]): Level = {
+      val flatAtoms = xs.flatMap(_.atoms)
+      val nextAtoms = flatAtoms.foldLeft(Map.empty[VarId, Int]) { case (curMap, (varId, k)) =>
+        val curK = curMap.getOrElse(varId, 0)
+        curMap + (varId -> math.max(curK, k))
+      }
+      val cMax = xs.map(_.c).max
+      val kMax = if (nextAtoms.nonEmpty) nextAtoms.values.max else 0
+      val nextC = if (cMax > kMax) cMax else 0
+      Level(nextAtoms, nextC)
+    }
+
+    def leq(l1: Level, l2: Level): Boolean = {
+      (l1.c <= l2.c || l2.atoms.values.exists(_ >= l1.c)) &&
+      l1.atoms.forall { case (varId, k) => k <= l2.atoms.getOrElse(varId, -1) }
+    }
+
+    def mk(varId: VarId): Level = Level(Map(varId -> 0), 0)
+
+    val zero = Level(Map.empty, 0)
+
+  }
+
+  case class VSort(level: Level) extends TopLevelValue {
+    override def tpe: Value = VSort(Level.succ(level))
   }
 
   // Env must be mutable in order to allow recursion - lambdas and envs must be able to point to each other
-  case class VPi(var env: Env, binders: NEL[Binder], out: TypeTerm, synDeps: BitSet, id: LamId) extends Value {
-    override def tpe: Value = VUniverse
-
+  case class VPi(var env: Env, binders: NEL[Binder], out: TypeTerm, synDeps: BitSet, id: LamId, tpe: Value)
+    extends Value {
     override def toString: String = "VPi"
   }
 
@@ -123,13 +161,11 @@ object Value {
     extends VMatch
     with Blocked
 
-  object NormalizerType extends Value {
-    override def tpe: Value = VUniverse
-
-    override val synDeps: BitSet = BitSet.empty
+  object NormalizerType extends TopLevelValue {
+    override def tpe: Value = VSort(Level.zero)
   }
 
-  trait Normalizer extends Value {
+  trait Normalizer extends TopLevelValue {
     def carrierKey: Normalizers.CarrierKey
 
     def normalize(v: Value, eqStore: EqStore): Value
@@ -137,8 +173,6 @@ object Value {
     def name: String
 
     override val tpe: Value = NormalizerType
-
-    override val synDeps: BitSet = BitSet.empty
   }
 
 }

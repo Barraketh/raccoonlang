@@ -25,6 +25,7 @@ object TypeError {
     case e: TypeMismatch             => e.copy(span = Some(sp))
     case e: DuplicateNormalizer      => e.copy(span = Some(sp))
     case e: InvalidConstructorResult => e.copy(span = Some(sp))
+    case e: NotALevel                => e.copy(span = Some(sp))
     case e: WTF                      => e.copy(span = Some(sp))
   }
 }
@@ -91,6 +92,10 @@ final case class TypeMismatch(v1: Value, v2: Value, span: Option[Span] = None) e
 
 final case class DuplicateNormalizer(n: Normalizers.CarrierKey, span: Option[Span] = None) extends TypeError {
   override val msg: String = s"Normalizer for $n is already defined"
+}
+
+final case class NotALevel(v1: Value, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"$v1 is not a Level"
 }
 
 final case class WTF(msg: String, span: Option[Span] = None) extends TypeError

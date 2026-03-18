@@ -1,5 +1,7 @@
 package com.raccoonlang
 
+import com.raccoonlang.Value.LevelTpe
+
 object PrettyPrinter {
 
   private def printTypeTerm(tt: CoreAst.TypeTerm): String = {
@@ -18,19 +20,21 @@ object PrettyPrinter {
           }
           .mkString(" -> ")
         s"$bindersStr -> ${pt(out)}"
+      case CoreAst.Term.Sort(lvl, _) => s"Sort ${printTermAtom(lvl)}"
     }
 
     def ptAtom(t: CoreAst.TypeTerm): String = t match {
-      case Term.Ident(_, _)   => pt(t)
-      case Term.TApp(_, _, _) => pt(t)
-      case Term.Pi(_, _, _)   => s"(${pt(t)})"
+      case Term.Ident(_, _)        => pt(t)
+      case Term.TApp(_, _, _)      => pt(t)
+      case CoreAst.Term.Sort(_, _) => pt(t)
+      case Term.Pi(_, _, _)        => s"(${pt(t)})"
     }
 
     pt(tt)
   }
 
   private def isAtomic(v: Value): Boolean = v match {
-    case Value.VUniverse => true
+    case _: Value.VSort  => true
     case _: Value.VConst => true
     case _: Value.Var    => true
     case _               => false
@@ -38,8 +42,8 @@ object PrettyPrinter {
 
   private def printApp(head: Value, args: Util.NEL[Value]): String = {
     val headStr = head match {
-      case _: Value.VApp | _: Value.VConst | _: Value.Var | Value.VUniverse => print(head)
-      case _                                                                => s"(${print(head)})"
+      case _: Value.VApp | _: Value.VConst | _: Value.Var | _: Value.VSort => print(head)
+      case _                                                               => s"(${print(head)})"
     }
     val argsStr = args.toList.map { a => if (isAtomic(a)) print(a) else s"(${print(a)})" }.mkString(" ")
     s"$headStr $argsStr"
@@ -68,6 +72,7 @@ object PrettyPrinter {
     case CoreAst.Term.Ident(_, _)           => printTerm(t)
     case CoreAst.Term.App(_, _, _)          => printTerm(t)
     case CoreAst.Term.TApp(_, _, _)         => printTerm(t)
+    case CoreAst.Term.Sort(_, _)            => printTerm(t)
     case CoreAst.Term.Lam(_, _, _, _, _, _) => s"(${printTerm(t)})"
     case CoreAst.Term.Match(_, _, _, _, _)  => s"(${printTerm(t)})"
     case CoreAst.Term.Body(_, _, _)         => s"(${printTerm(t)})"
@@ -99,15 +104,17 @@ object PrettyPrinter {
   }
 
   def print(value: Value): String = value match {
-    case Value.VUniverse                => "Type"
-    case Value.VPi(_, binders, out, _, _) => printTypeTerm(CoreAst.Term.Pi(binders, out, Span(0, 0)))
-    case Value.VConst(name, _, _)      => name
-    case v: Value.AppliedValue         => printApp(v.head, v.args)
-    case Value.VLam(_, _, id, _)       => s"func#$id"
-    case Value.Var(name, id, _)        => s"$name#$id"
-    case s: Value.VMatch               => s"match#${s.id}"
-    case Value.NormalizerType          => "Normalizer"
-    case n: Value.Normalizer           => s"Normalizer ${n.name}"
+    case Value.VSort(lvl)                    => s"Type $lvl"
+    case Value.Level(atoms, c)               => s"Level($atoms, $c)"
+    case Value.VPi(_, binders, out, _, _, _) => printTypeTerm(CoreAst.Term.Pi(binders, out, Span(0, 0)))
+    case Value.VConst(name, _, _)            => name
+    case v: Value.AppliedValue               => printApp(v.head, v.args)
+    case Value.VLam(_, _, id, _)             => s"func#$id"
+    case Value.Var(name, id, _)              => s"$name#$id"
+    case s: Value.VMatch                     => s"match#${s.id}"
+    case Value.NormalizerType                => "Normalizer"
+    case n: Value.Normalizer                 => s"Normalizer ${n.name}"
+    case LevelTpe                            => s"Level"
   }
 
 }

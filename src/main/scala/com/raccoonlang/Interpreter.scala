@@ -44,7 +44,7 @@ object Interpreter {
     }
   }
 
-  def evalPi(pi: Term.Pi, env: Env): VPi = {
+  def evalPi(pi: Term.Pi, env: Env)(implicit eqStore: EqStore): VPi = {
     val captureNames = FreeNames
       .getFreeNames(pi, Set.empty)
       .toVector
@@ -52,7 +52,14 @@ object Interpreter {
       .sorted
     val captureVals = captureNames.map(n => env.findLocal(n).get)
     val id = LamId.LocalId(pi.span.start, captureVals)
-    VPi(env, pi.binders, pi.out, FreeNames.getDeps(pi, env, Set.empty), id)
+
+    val (vars, bodyEnv) = FreshVar.assignFreshVars(pi.binders, env, eqStore)
+    val outType = evalTT(pi.out, bodyEnv)
+
+    val types = vars.map(_.tpe.tpe) :+ outType.tpe
+    val piLevel = Level.max(types.collect { case VSort(level) => level })
+
+    VPi(env, pi.binders, pi.out, FreeNames.getDeps(pi, env, Set.empty), id, VSort(piLevel))
   }
 
   // Evaluate a type-position expression without enforcing it is a type yet
@@ -60,6 +67,7 @@ object Interpreter {
     case Term.Ident(name, sp)   => env.find(name).getOrElse { throw TypeError.withSpan(NotFound(name), sp) }
     case Term.TApp(fn, args, _) => evalApplyTerm(fn, args, env)
     case pi: Term.Pi            => evalPi(pi, env)
+    case s: Term.Sort           => evalSort(s, env)
   }
 
   def evalApply(fn: Value, vArgs: NEL[Value])(implicit eqStore: EqStore): Value = {
@@ -115,9 +123,21 @@ object Interpreter {
     )
   }
 
-  private def evalLam(l: Term.Lam, env: Env): VLam = {
+  private def evalLam(l: Term.Lam, env: Env)(implicit eqStore: EqStore): VLam = {
     val vpi = evalPi(l.ty, env)
     evalLam(l, vpi, env)
+  }
+
+  def getLevel(v: Value)(implicit eqStore: EqStore): Level = {
+    resolveInEqStore(v) match {
+      case l: Level => l
+      case v: Var   => Level.mk(v.id)
+      case v        => throw NotALevel(v)
+    }
+  }
+
+  private def evalSort(s: Term.Sort, env: Env)(implicit eqStore: EqStore): VSort = {
+    VSort(getLevel(evalTT(s.level, env)))
   }
 
   def evalTerm(term: Term, env: Env)(implicit eqStore: EqStore): Value = {
@@ -268,7 +288,7 @@ object Interpreter {
     }
   }
 
-  private def evalDecl(decl: Decl, env: Env): Env = {
+  def evalDecl(decl: Decl, env: Env): Env = {
     implicit val eqStore = EqStore.empty
     implicit val normalizers = NormalizerMap.empty
 
@@ -298,22 +318,49 @@ object Interpreter {
 
   }
 
-  def run(p: Program, builtIn: List[(String, TypeTerm, (NEL[Value], EqStore) => Value)] = List.empty): Value = {
+  def run(p: Program): Value = {
     val baseEnv =
       Env.empty
-        .putGlobal("Type", VUniverse)
+        .putGlobal("Type", VSort(Level.zero))
         .putGlobal("Normalizer", NormalizerType)
+        .putGlobal("Level", LevelTpe)
+        .putGlobal("Level.zero", Level.zero)
 
-    val nextEnv = builtIn.foldLeft(baseEnv) { case (curEnv, (name, tpe, lam)) =>
+    val builtinFuncs = List[(String, TypeTerm, (NEL[Value], EqStore) => Value)](
+      (
+        "add_normalizer",
+        parseHeader("(A: Type)(zero: A)(add: A -> A -> A): Normalizer"),
+        (args, _) => Normalizers.add_normalizer(args.toVector)
+      ),
+      (
+        "Level.succ",
+        parseHeader("(l: Level): Level"),
+        (args, eqStore) => Value.Level.succ(getLevel(args.head)(eqStore))
+      ),
+      (
+        "Level.max",
+        parseHeader("(l1: Level)(l2: Level): Level"),
+        (args, eqStore) => Value.Level.max(args.map(l => getLevel(l)(eqStore)).toVector)
+      )
+    )
+
+    val nextEnv = builtinFuncs.foldLeft(baseEnv) { case (curEnv, (name, tpe, lam)) =>
       val tpeV = evalTT(tpe, curEnv)(EqStore.empty)
       tpeV match {
         case pi: VPi =>
-          curEnv.putGlobal(name, VLam(pi, LamId.Const(name), isStable = false, lam))
+          curEnv.putGlobal(name, VLam(pi, LamId.Const(name), isStable = true, lam))
         case _ => curEnv
       }
     }
 
     val env = p.decls.foldLeft(nextEnv) { case (env, decl) => evalDecl(decl, env) }
     TypeChecker.typecheck(p.body, env)(EqStore.empty, NormalizerMap.empty)
+  }
+
+  private def parseHeader(s: String): TypeTerm = {
+    LanguageParser.parseFuncHeader(s) match {
+      case Success(header, _, _) => Elaborator.getType(header)
+      case err: Failure          => throw new RuntimeException(err.message)
+    }
   }
 }

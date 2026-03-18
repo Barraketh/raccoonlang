@@ -11,11 +11,18 @@ import scala.util.Try
 
 object TypeChecker {
 
+  private def sortLeq(a: Value, b: Value)(implicit eqStore: EqStore): Boolean = {
+    (Interpreter.resolveInEqStore(a), Interpreter.resolveInEqStore(b)) match {
+      case (Value.VSort(u), Value.VSort(v)) => Level.leq(u, v)
+      case _                                => false
+    }
+  }
+
   private def checkType(value: Value, tyVal: Value)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): Unit = {
-    if (!defEq(value.tpe, tyVal))
+    if (!defEq(value.tpe, tyVal) && !sortLeq(value.tpe, tyVal))
       throw TypeMismatch(value, tyVal)
   }
 
@@ -27,7 +34,7 @@ object TypeChecker {
     val fnTy0 = Interpreter.resolveInEqStore(fn0.tpe)
 
     fnTy0 match {
-      case VPi(env, binders, outTy, _, _) =>
+      case VPi(env, binders, outTy, _, _, _) =>
         if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
 
         // Typecheck argument terms in argEnv
@@ -71,6 +78,7 @@ object TypeChecker {
     case t: Term.TApp => typecheckApplyTerm(t.fn, t.args, env)
     case pi: Term.Pi  => typecheckPi(pi, env)
     case ident: Ident => Interpreter.evalTerm(ident, env)
+    case s: Term.Sort => typecheckSort(s, env)
   }
 
   private def typecheckBody(body: Term.Body, env: Env)(implicit
@@ -153,7 +161,7 @@ object TypeChecker {
               }
 
               val ctorResTy: Value = ctorTy match {
-                case VPi(_, _, out, _, _) =>
+                case VPi(_, _, out, _, _, _) =>
                   // Again, we've already typechecked out, so we can just eval it
                   Interpreter.evalTerm(out, ctorEnv)(eqStore)
                 case otherTy: Value => otherTy
@@ -207,11 +215,14 @@ object TypeChecker {
 
   def getType(term: TypeTerm, env: Env)(implicit ctx: EqStore, normalizerMap: NormalizerMap): Value = {
     val res = typecheck(term, env)
-
     Interpreter.resolveInEqStore(res.tpe) match {
-      case VUniverse => res
-      case _         => throw NotAType(res)
+      case _: VSort => res
+      case _        => throw NotAType(res)
     }
+  }
+
+  def typecheckSort(s: Term.Sort, env: Env)(implicit eqStore: EqStore, normalizerMap: NormalizerMap): Value = {
+    VSort(getLevel(typecheckTT(s.level, env)))
   }
 
   def typecheck(term: CoreAst.Term, env: Env)(implicit
@@ -285,8 +296,9 @@ object TypeChecker {
     val b = normalizerF(resolveInEqStore(v2))
 
     (a, b) match {
-      case (VUniverse, VUniverse)                                       => true
+      case (VSort(l1), VSort(l2)) if l1 == l2                           => true
       case (NormalizerType, NormalizerType)                             => true
+      case (LevelTpe, LevelTpe)                                         => true
       case (VConst(n1, _, _), VConst(n2, _, _)) if n1 == n2             => true
       case (p1: VPi, p2: VPi) if p1.binders.length == p2.binders.length => defEqPi(p1, p2).isDefined
       case (l1: VLam, l2: VLam) if l1.tpe.binders.length == l2.tpe.binders.length =>
