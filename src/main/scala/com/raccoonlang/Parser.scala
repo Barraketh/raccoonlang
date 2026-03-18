@@ -29,7 +29,7 @@ trait Parser[+A] {
   def ~/[B](p2: => Parser[B])(implicit C: Sequence.Combine[A, B] @uncheckedVariance): Parser[C.Out] =
     FatalRight(Sequence.seqParser[A, B](this, p2, fatal = true, C))
 
-  def rep(min: Int)(implicit acc: Rep.Accumulator[A] @uncheckedVariance): Parser[acc.Out] =
+  def rep(min: Int)(implicit acc: Rep.AccumulatorMaker[A] @uncheckedVariance): Parser[acc.Out] =
     Rep.repParser(this, min, acc)
 
   def |[Out >: A, B <: Out](p2: => Parser[B]): Parser[Out] = new OrParser[Out, A, B](this, p2)
@@ -273,17 +273,29 @@ object Parser {
       def length: Int
       def res: Out
     }
+    
+    trait AccumulatorMaker[A] {
+      type Out
+      def make(): Accumulator[A] { type Out = AccumulatorMaker.this.Out }
+    }
 
     private object Accumulator extends LowPriImplicits {
       type Aux[A, O] = Accumulator[A] { type Out = O }
+    }
 
-      implicit val nvAccumulator: Aux[NoValueT, NoValueT] = new Accumulator[NoValueT] {
-        private var _count: Int = 0
+    private object AccumulatorMaker extends LowPriMakerImplicits {
+      type Aux[A, O] = AccumulatorMaker[A] { type Out = O }
 
+      implicit val nvAccumulator: Aux[NoValueT, NoValueT] = new AccumulatorMaker[NoValueT] {
         override type Out = NoValueT
-        override def put(a: NoValueT): Unit = _count = _count + 1
-        override def length: Int = _count
-        override def res: NoValueT = NoValue
+        override def make(): Accumulator[NoValueT] { type Out = NoValueT } = new Accumulator[NoValueT] {
+          private var _count: Int = 0
+
+          override type Out = NoValueT
+          override def put(a: NoValueT): Unit = _count = _count + 1
+          override def length: Int = _count
+          override def res: NoValueT = NoValue
+        }
       }
     }
 
@@ -298,22 +310,37 @@ object Parser {
       }
     }
 
-    def repParser[A](p: Parser[A], min: Int, acc: Accumulator[A]): Parser[acc.Out] = new Parser[acc.Out] {
+    private trait LowPriMakerImplicits {
+      implicit def valueAccumulator[A]: AccumulatorMaker.Aux[A, Vector[A]] = new AccumulatorMaker[A] {
+        override type Out = Vector[A]
+        override def make(): Accumulator[A] { type Out = Vector[A] } = new Accumulator[A] {
+          private val _buf = ArrayBuffer.empty[A]
+
+          override type Out = Vector[A]
+          override def put(a: A): Unit = _buf += a
+          override def length: Int = _buf.length
+          override def res: Out = _buf.toVector
+        }
+      }
+    }
+
+    def repParser[A](p: Parser[A], min: Int, acc: AccumulatorMaker[A]): Parser[acc.Out] = new Parser[acc.Out] {
       override def parse(input: String, startIdx: Int): ParseResult[acc.Out] = {
+        val inst = acc.make()
         var done = false
         var curIdx = startIdx
 
         while (!done) {
           p.parse(input, curIdx) match {
             case Success(a, _, endIdx) =>
-              acc.put(a)
+              inst.put(a)
               curIdx = endIdx
             case _: Failure =>
               done = true
           }
         }
 
-        if (acc.length >= min) Success(acc.res, startIdx, curIdx)
+        if (inst.length >= min) Success(inst.res, startIdx, curIdx)
         else Failure(startIdx, curIdx, s"$this: Not enough instances parsed")
       }
 
