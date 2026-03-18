@@ -8,22 +8,24 @@ sealed trait TypeError extends RuntimeException {
 
 object TypeError {
   def withSpan(err: TypeError, sp: Span): TypeError = err match {
-    case e: UnificationFailed      => e.copy(span = Some(sp))
-    case e: OccursCheckFailed      => e.copy(span = Some(sp))
-    case e: CannotApplyNonFunction => e.copy(span = Some(sp))
-    case e: ArityMismatch          => e.copy(span = Some(sp))
-    case e: UnknownConstructor     => e.copy(span = Some(sp))
-    case e: DuplicateCase          => e.copy(span = Some(sp))
-    case e: UnreachableCase        => e.copy(span = Some(sp))
-    case e: MissingCase            => e.copy(span = Some(sp))
-    case e: NotAType               => e.copy(span = Some(sp))
-    case e: NonInductiveMatch      => e.copy(span = Some(sp))
-    case e: NotFound               => e.copy(span = Some(sp))
-    case e: AlreadyDefined         => e.copy(span = Some(sp))
-    case e: CannotLinkToBottom     => e.copy(span = Some(sp))
-    case e: VarAlreadyLinked       => e.copy(span = Some(sp))
-    case e: TypeMismatch           => e.copy(span = Some(sp))
-    case e: DuplicateNormalizer    => e.copy(span = Some(sp))
+    case e: UnificationFailed        => e.copy(span = Some(sp))
+    case e: OccursCheckFailed        => e.copy(span = Some(sp))
+    case e: CannotApplyNonFunction   => e.copy(span = Some(sp))
+    case e: ArityMismatch            => e.copy(span = Some(sp))
+    case e: UnknownConstructor       => e.copy(span = Some(sp))
+    case e: DuplicateCase            => e.copy(span = Some(sp))
+    case e: UnreachableCase          => e.copy(span = Some(sp))
+    case e: MissingCase              => e.copy(span = Some(sp))
+    case e: NotAType                 => e.copy(span = Some(sp))
+    case e: NonInductiveMatch        => e.copy(span = Some(sp))
+    case e: NotFound                 => e.copy(span = Some(sp))
+    case e: AlreadyDefined           => e.copy(span = Some(sp))
+    case e: CannotLinkToBottom       => e.copy(span = Some(sp))
+    case e: VarAlreadyLinked         => e.copy(span = Some(sp))
+    case e: TypeMismatch             => e.copy(span = Some(sp))
+    case e: DuplicateNormalizer      => e.copy(span = Some(sp))
+    case e: InvalidConstructorResult => e.copy(span = Some(sp))
+    case e: WTF                      => e.copy(span = Some(sp))
   }
 }
 
@@ -89,4 +91,18 @@ final case class TypeMismatch(v1: Value, v2: Value, span: Option[Span] = None) e
 
 final case class DuplicateNormalizer(n: Normalizers.CarrierKey, span: Option[Span] = None) extends TypeError {
   override val msg: String = s"Normalizer for $n is already defined"
+}
+
+final case class WTF(msg: String, span: Option[Span] = None) extends TypeError
+
+final case class InvalidConstructorResult(
+    ctor: String,
+    inductive: String,
+    got: Value,
+    expectedArity: Int,
+    gotArity: Int,
+    span: Option[Span] = None
+) extends TypeError {
+  override val msg: String =
+    s"Constructor $ctor must return $inductive applied to $expectedArity args, but got $got with $gotArity args"
 }

@@ -154,13 +154,14 @@ object TypeChecker {
 
               val ctorResTy: Value = ctorTy match {
                 case VPi(_, _, out, _) =>
-                  Interpreter.evalTerm(out, ctorEnv)(
-                    eqStore
-                  ) // Again, we've already typechecked out, so we can just eval it
+                  // Again, we've already typechecked out, so we can just eval it
+                  Interpreter.evalTerm(out, ctorEnv)(eqStore)
                 case otherTy: Value => otherTy
               }
 
-              Try(Unify.unify(scrut.tpe, ctorResTy, eqStore, Set.empty)) match {
+              val branchRefinable = scrut.tpe.synDeps ++ ctorResTy.synDeps
+
+              Try(Unify.unify(scrut.tpe, ctorResTy, eqStore.allow(branchRefinable))) match {
                 case util.Failure(_) =>
                   // Case is unreachable - make sure it's not in the match
                   t.cases.find(c => c.ctorName == ctorName).foreach(c => throw UnreachableCase(ctorName, Some(c.span)))
