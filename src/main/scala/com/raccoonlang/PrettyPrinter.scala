@@ -97,8 +97,8 @@ object PrettyPrinter {
   }
 
   def print(value: Value): String = value match {
-    case Value.VUniverse               => "Type"
-    case Value.VPi(_, binders, out, _) => printTypeTerm(CoreAst.Term.Pi(binders, out, Span(0, 0)))
+    case Value.VUniverse                => "Type"
+    case Value.VPi(_, binders, out, _, _) => printTypeTerm(CoreAst.Term.Pi(binders, out, Span(0, 0)))
     case Value.VConst(name, _, _)      => name
     case v: Value.AppliedValue         => printApp(v.head, v.args)
     case Value.VLam(_, _, id, _)       => s"func#$id"

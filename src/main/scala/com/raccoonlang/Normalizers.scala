@@ -5,7 +5,7 @@ import com.raccoonlang.Value.{VApp, VBlockedApp, VConst, VarId}
 
 object Normalizers {
 
-  private def orderKey(v: Value)(implicit eqStore: EqStore): String = v match {
+  private def orderKey(v: Value): String = v match {
     case Value.VUniverse                  => "U"
     case Value.VConst(n, _, _)            => s"C:$n"
     case Value.Var(_, id, _)              => s"V:$id"
@@ -17,7 +17,11 @@ object Normalizers {
         case Value.LamId.LocalId(nodeId, ps) => s"L:$nodeId:${ps.map(orderKey).mkString(",")}"
       }
     case m: Value.VMatch => s"M:${m.id.nodeId}:${orderKey(m.scrut)}:${m.id.params.map(orderKey).mkString(",")}"
-    case p: Value.VPi    => s"P:${p.binders.length}:${orderKey(Interpreter.evalTerm(p.out, p.env))}"
+    case p: Value.VPi =>
+      p.id match {
+        case Value.LamId.Const(n)            => s"P:${p.binders.length}:$n"
+        case Value.LamId.LocalId(nodeId, ps) => s"P:${p.binders.length}:$nodeId:${ps.map(orderKey).mkString(",")}"
+      }
   }
 
   // Key to select a normalizer for a carrier type
@@ -56,15 +60,13 @@ object Normalizers {
         Interpreter.evalApply(addFn, NEL(v1, v2 :: Nil))
 
       override def normalize(v: Value, eqStore: EqStore): Value = {
-        implicit val eq: EqStore = eqStore
-
         val flattened = flatten(v).filter(v => v != zero).sortBy(v => orderKey(v))
         flattened match {
           case Nil         => zero
           case head :: Nil => head
           case h1 :: h2 :: tail =>
-            tail.foldLeft(applyAdd(h1, h2)) { case (curVal, nextVal) =>
-              applyAdd(curVal, nextVal)
+            tail.foldLeft(applyAdd(h1, h2)(eqStore)) { case (curVal, nextVal) =>
+              applyAdd(curVal, nextVal)(eqStore)
             }
         }
 

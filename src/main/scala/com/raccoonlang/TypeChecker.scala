@@ -27,7 +27,7 @@ object TypeChecker {
     val fnTy0 = Interpreter.resolveInEqStore(fn0.tpe)
 
     fnTy0 match {
-      case VPi(env, binders, outTy, _) =>
+      case VPi(env, binders, outTy, _, _) =>
         if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
 
         // Typecheck argument terms in argEnv
@@ -153,7 +153,7 @@ object TypeChecker {
               }
 
               val ctorResTy: Value = ctorTy match {
-                case VPi(_, _, out, _) =>
+                case VPi(_, _, out, _, _) =>
                   // Again, we've already typechecked out, so we can just eval it
                   Interpreter.evalTerm(out, ctorEnv)(eqStore)
                 case otherTy: Value => otherTy

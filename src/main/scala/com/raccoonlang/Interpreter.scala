@@ -46,8 +46,16 @@ object Interpreter {
     }
   }
 
-  def evalPi(pi: Term.Pi, env: Env): VPi =
-    VPi(env, pi.binders, pi.out, FreeNames.getDeps(pi, env, Set.empty))
+  def evalPi(pi: Term.Pi, env: Env): VPi = {
+    val captureNames = FreeNames
+      .getFreeNames(pi, Set.empty)
+      .toVector
+      .filter(n => env.findLocal(n).isDefined)
+      .sorted
+    val captureVals = captureNames.map(n => env.findLocal(n).get)
+    val id = LamId.LocalId(pi.span.start, captureVals)
+    VPi(env, pi.binders, pi.out, FreeNames.getDeps(pi, env, Set.empty), id)
+  }
 
   // Evaluate a type-position expression without enforcing it is a type yet
   private def evalTT(tt: TypeTerm, env: Env)(implicit meta: EqStore): Value = tt match {
