@@ -11,12 +11,18 @@ import scala.util.Try
 
 object TypeChecker {
 
-  private def checkType(value: Value, tyVal: Value)(implicit eqStore: EqStore): Unit = {
+  private def checkType(value: Value, tyVal: Value)(implicit
+      eqStore: EqStore,
+      normalizers: NormalizerMap
+  ): Unit = {
     if (!defEq(value.tpe, tyVal))
       throw TypeMismatch(value, tyVal)
   }
 
-  private def typecheckApply(fn: Value, args: NEL[Term], argEnv: Env)(implicit eqStore: EqStore): Value = {
+  private def typecheckApply(fn: Value, args: NEL[Term], argEnv: Env)(implicit
+      eqStore: EqStore,
+      normalizers: NormalizerMap
+  ): Value = {
     val fn0 = Interpreter.whnf(fn)
     val fnTy0 = Interpreter.whnf(fn0.tpe)
 
@@ -36,17 +42,23 @@ object TypeChecker {
 
         // Since we've already typechecked everything we care about, now we can just evalTerm
         Interpreter.evalApply(fn0, vArgs)
+      case BuiltFnType =>
+        val vArgs = args.map(arg => typecheck(arg, argEnv))
+        Interpreter.evalApply(fn0, vArgs)
       case _ => throw CannotApplyNonFunction(fnTy0)
     }
   }
 
-  private def typecheckApplyTerm(fn: Term, args: NEL[Term], env: Env)(implicit meta: EqStore): Value = {
+  private def typecheckApplyTerm(fn: Term, args: NEL[Term], env: Env)(implicit
+      meta: EqStore,
+      normalizers: NormalizerMap
+  ): Value = {
     val vf = typecheck(fn, env)
     typecheckApply(vf, args, env)
   }
 
   // Check that all type terms typecheck under a fresh var assignment to binders
-  private def typecheckPi(pi: Term.Pi, env: Env)(implicit meta: EqStore): VPi = {
+  private def typecheckPi(pi: Term.Pi, env: Env)(implicit meta: EqStore, normalizers: NormalizerMap): VPi = {
     val bodyEnv = pi.binders.foldLeft(env.newScope) { case (curEnv, b) =>
       val tyV = getType(b.ty, curEnv)
       curEnv.putLocal(b.name, freshVar(b.name, tyV))
@@ -55,13 +67,19 @@ object TypeChecker {
     evalPi(pi, env)
   }
 
-  private def typecheckTT(term: TypeTerm, env: Env)(implicit meta: EqStore): Value = term match {
+  private def typecheckTT(term: TypeTerm, env: Env)(implicit
+      meta: EqStore,
+      normalizers: NormalizerMap
+  ): Value = term match {
     case t: Term.TApp => typecheckApplyTerm(t.fn, t.args, env)
     case pi: Term.Pi  => typecheckPi(pi, env)
     case ident: Ident => Interpreter.evalTerm(ident, env)
   }
 
-  private def typecheckBody(body: Term.Body, env: Env)(implicit meta: EqStore): Value = {
+  private def typecheckBody(body: Term.Body, env: Env)(implicit
+      meta: EqStore,
+      normalizers: NormalizerMap
+  ): Value = {
     val newEnv = body.lets.foldLeft(env) { case (curEnv, l) =>
       val res = typecheck(l.value, curEnv)
       l.ty.foreach { tyTerm =>
@@ -74,7 +92,8 @@ object TypeChecker {
   }
 
   private def typecheckBranch(br: Case, args: Seq[Value], envWithScrut: Env, motive: TypeTerm)(implicit
-      eqStore: EqStore
+      eqStore: EqStore,
+      normalizers: NormalizerMap
   ): Unit = {
     if (args.length != br.argNames.length) throw ArityMismatch(args.length, br.argNames.length, Some(br.span))
     val branchEnv = br.argNames.zip(args).foldLeft(envWithScrut) { case (curEnv, (argName, argVal)) =>
@@ -85,7 +104,10 @@ object TypeChecker {
     checkType(branchRes, expectedTy)
   }
 
-  private def typecheckMatch(t: Match, env: Env)(implicit eqStore: EqStore): Value = {
+  private def typecheckMatch(t: Match, env: Env)(implicit
+      eqStore: EqStore,
+      normalizers: NormalizerMap
+  ): Value = {
     val scrut = Interpreter.whnf(typecheck(t.scrut, env))
     val scrutTpe = Interpreter.whnf(scrut.tpe)
 
@@ -154,7 +176,7 @@ object TypeChecker {
 
                   val envWithScrut = env.newScope.putLocal(t.scrutName, appliedConstr)
 
-                  typecheckBranch(br, freshArgs, envWithScrut, t.motive)(branchEqStore)
+                  typecheckBranch(br, freshArgs, envWithScrut, t.motive)(branchEqStore, normalizers)
               }
 
             case _ => throw UnknownConstructor(ctorName, inductiveName)
@@ -165,7 +187,16 @@ object TypeChecker {
     Interpreter.evalTerm(t, env)
   }
 
-  def typecheckLam(l: Lam, env: Env)(implicit eqStore: EqStore): Value = {
+  def typecheckLam(l: Lam, env: Env, normalizers: NormalizerMap)(implicit eqStore: EqStore): Value = {
+    implicit val nextNormalizerMap = l.uses.foldLeft(normalizers) { case (curNormalizers, nextUse) =>
+      val normalizer = typecheck(nextUse.normalizer, env)(eqStore, curNormalizers)
+      normalizer match {
+        case n: Value.Normalizer => curNormalizers.use(n)
+        case _ =>
+          throw TypeMismatch(normalizer, NormalizerType)
+      }
+    }
+
     val vpi = typecheckPi(l.ty, env)
     val (_, bodyEnv) = assignFreshVars(vpi, eqStore)
 
@@ -176,7 +207,7 @@ object TypeChecker {
     Interpreter.evalLam(l, vpi, env)
   }
 
-  def getType(term: TypeTerm, env: Env)(implicit ctx: EqStore): Value = {
+  def getType(term: TypeTerm, env: Env)(implicit ctx: EqStore, normalizerMap: NormalizerMap): Value = {
     val res = typecheck(term, env)
 
     Interpreter.whnf(res.tpe) match {
@@ -185,12 +216,15 @@ object TypeChecker {
     }
   }
 
-  def typecheck(term: CoreAst.Term, env: Env)(implicit eqStore: EqStore): Value = {
+  def typecheck(term: CoreAst.Term, env: Env)(implicit
+      eqStore: EqStore,
+      normalizers: NormalizerMap
+  ): Value = {
     try {
       term match {
         case term: TypeTerm => typecheckTT(term, env)
         case t: Term.App    => typecheckApplyTerm(t.fn, t.args, env)
-        case l: Term.Lam    => typecheckLam(l, env)
+        case l: Term.Lam    => typecheckLam(l, env, normalizers)
         case m: Term.Match  => typecheckMatch(m, env)
         case b: Term.Body   => typecheckBody(b, env)
       }
@@ -200,7 +234,10 @@ object TypeChecker {
 
   }
 
-  private def defEqPi(pi1: VPi, pi2: VPi)(implicit eqStore: EqStore): Option[(Env, Env)] = {
+  private def defEqPi(pi1: VPi, pi2: VPi)(implicit
+      eqStore: EqStore,
+      normalizers: NormalizerMap
+  ): Option[(Env, Env)] = {
     val (nextEnv1, nextEnv2) = pi1.binders.zip(pi2.binders).foldLeft((pi1.env.newScope, pi2.env.newScope)) {
       case ((curEnv1, curEnv2), (b1, b2)) =>
         val t1 = Interpreter.evalTerm(b1.ty, curEnv1)
@@ -217,7 +254,10 @@ object TypeChecker {
 
   }
 
-  private def defEqLamId(id1: LamId, id2: LamId)(implicit eqStore: EqStore): Boolean = {
+  private def defEqLamId(id1: LamId, id2: LamId)(implicit
+      eqStore: EqStore,
+      normalizers: NormalizerMap
+  ): Boolean = {
     (id1, id2) match {
       case (LamId.Const(n1), LamId.Const(n2)) if n1 == n2 => true
       case (l1: LamId.LocalId, l2: LamId.LocalId) if l1.nodeId == l2.nodeId && l1.params.length == l2.params.length =>
@@ -226,12 +266,28 @@ object TypeChecker {
     }
   }
 
-  private def defEq(v1: Value, v2: Value)(implicit eqStore: EqStore): Boolean = {
-    val a = whnf(v1)
-    val b = whnf(v2)
+  def getNormalizerF(v1: Value, v2: Value)(implicit eqStore: EqStore, normalizers: NormalizerMap): Value => Value = {
+    val key1 = Normalizers.getCarrierKey(v1.tpe)
+    val key2 = Normalizers.getCarrierKey(v2.tpe)
+    val normalizer =
+      if (key1 == key2) key1.flatMap(normalizers.get)
+      else None
+
+    normalizer match {
+      case Some(n) => (v: Value) => n.normalize(v, eqStore)
+      case None    => (v: Value) => v
+    }
+  }
+
+  def defEq(v1: Value, v2: Value)(implicit eqStore: EqStore, normalizers: NormalizerMap): Boolean = {
+    val normalizerF = getNormalizerF(v1, v2)
+
+    val a = normalizerF(whnf(v1))
+    val b = normalizerF(whnf(v2))
 
     (a, b) match {
       case (VUniverse, VUniverse)                                       => true
+      case (NormalizerType, NormalizerType)                             => true
       case (VConst(n1, _, _), VConst(n2, _, _)) if n1 == n2             => true
       case (p1: VPi, p2: VPi) if p1.binders.length == p2.binders.length => defEqPi(p1, p2).isDefined
       case (l1: VLam, l2: VLam) if l1.tpe.binders.length == l2.tpe.binders.length =>

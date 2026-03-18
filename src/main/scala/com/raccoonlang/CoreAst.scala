@@ -44,7 +44,8 @@ object CoreAst {
     case class Body(lets: Vector[Let], res: Term, span: Span) extends Term
 
     // Lambda: fun (x : A): B => body
-    final case class Lam(ty: Pi, body: Term, span: Span, name: Option[String], isStable: Boolean) extends Term
+    final case class Lam(ty: Pi, uses: Vector[Use], body: Term, span: Span, name: Option[String], isStable: Boolean)
+      extends Term
 
     final case class Match(
         scrut: Term,
@@ -57,6 +58,9 @@ object CoreAst {
 
   // Let: let x := foo
   final case class Let(name: String, ty: Option[TypeTerm], value: Term, span: Span)
+
+  // Use directive (first-class normalizer application)
+  final case class Use(normalizer: Term, span: Span)
 
   case class Binder(name: String, ty: TypeTerm, span: Span)
 

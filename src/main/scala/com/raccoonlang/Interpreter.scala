@@ -79,6 +79,10 @@ object Interpreter {
           case b: Blocker => VBlockedApp(b, vArgs, evalTT(pi.out, envWithArgs), b.blockerId)
           case _          => throw CannotApplyNonFunction(fn)
         }
+      case BuiltFnType =>
+        fn0 match {
+          case b: BuiltinFn => b.fn.apply(vArgs.toVector)
+        }
       case _ => throw CannotApplyNonFunction(fn.tpe)
     }
   }
@@ -176,6 +180,8 @@ object Interpreter {
 
   private def evalDecl(decl: Decl, env: Env): Env = {
     implicit val eqStore = EqStore.empty
+    implicit val normalizers = NormalizerMap.empty
+
     decl match {
       case Decl.ConstDecl(unfoldStrategy, name, ty, body, _) =>
         val tyV = TypeChecker.getType(ty, env)
@@ -223,8 +229,13 @@ object Interpreter {
   }
 
   def run(p: Program): Value = {
-    val baseEnv = Env.empty.putGlobal("Type", VUniverse)
+    val baseEnv =
+      Env.empty
+        .putGlobal("Type", VUniverse)
+        .putGlobal("Normalizer", NormalizerType)
+        .putGlobal("add_normalizer_builtin", BuiltinFn(Normalizers.add_normalizer))
+
     val env = p.decls.foldLeft(baseEnv) { case (env, decl) => evalDecl(decl, env) }
-    TypeChecker.typecheck(p.body, env)(EqStore.empty)
+    TypeChecker.typecheck(p.body, env)(EqStore.empty, NormalizerMap.empty)
   }
 }

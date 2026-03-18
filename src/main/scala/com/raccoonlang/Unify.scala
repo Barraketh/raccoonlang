@@ -29,7 +29,9 @@ object Unify {
     expandedDeps(rhs.synDeps, meta).contains(id)
 
   // Extensionally unify Pi types
-  private def unifyPis(pi1: VPi, pi2: VPi, meta: EqStore, rigid: Set[VarId]): (EqStore, Env, Env, Set[VarId]) = {
+  private def unifyPis(pi1: VPi, pi2: VPi, meta: EqStore, rigid: Set[VarId])(implicit
+      normalizers: NormalizerMap
+  ): (EqStore, Env, Env, Set[VarId]) = {
     val (resMeta, nextEnv1, nextEnv2, nextRigid) =
       pi1.binders.zip(pi2.binders).foldLeft((meta, pi1.env.newScope, pi2.env.newScope, rigid)) {
         case ((curMeta, curEnv1, curEnv2, curRigid), (b1, b2)) =>
@@ -45,7 +47,9 @@ object Unify {
     (unify(out1, out2, resMeta, nextRigid), nextEnv1, nextEnv2, nextRigid)
   }
 
-  def unifyStuckMatches(v1: VMatch, v2: VMatch, meta: EqStore, rigid: Set[VarId]): EqStore = {
+  def unifyStuckMatches(v1: VMatch, v2: VMatch, meta: EqStore, rigid: Set[VarId])(implicit
+      normalizers: NormalizerMap
+  ): EqStore = {
     val m0 = unify(v1.scrut, v2.scrut, meta, rigid)
     val m1 = unify(v1.tpe, v2.tpe, m0, rigid)
 
@@ -54,9 +58,11 @@ object Unify {
     v1.id.params.zip(v2.id.params).foldLeft(m1) { case (curMeta, (p1, p2)) => unify(p1, p2, curMeta, rigid) }
   }
 
-  def unify(v1: Value, v2: Value, meta: EqStore, rigid: Set[VarId]): EqStore = {
-    val a = Interpreter.whnf(v1)(meta)
-    val b = Interpreter.whnf(v2)(meta)
+  def unify(v1: Value, v2: Value, meta: EqStore, rigid: Set[VarId])(implicit normalizers: NormalizerMap): EqStore = {
+    val normalizerF = TypeChecker.getNormalizerF(v1, v2)(meta, normalizers)
+
+    val a = normalizerF(Interpreter.whnf(v1)(meta))
+    val b = normalizerF(Interpreter.whnf(v2)(meta))
 
     (a, b) match {
       case (VUniverse, VUniverse)                                         => meta

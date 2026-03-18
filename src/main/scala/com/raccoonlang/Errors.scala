@@ -20,15 +20,14 @@ object TypeError {
     case e: NonInductiveMatch      => e.copy(span = Some(sp))
     case e: NotFound               => e.copy(span = Some(sp))
     case e: AlreadyDefined         => e.copy(span = Some(sp))
-    case e: GenericTypeError       => e.copy(span = Some(sp))
     case e: CannotLinkToBottom     => e.copy(span = Some(sp))
     case e: VarAlreadyLinked       => e.copy(span = Some(sp))
     case e: TypeMismatch           => e.copy(span = Some(sp))
+    case e: DuplicateNormalizer    => e.copy(span = Some(sp))
   }
 }
 
-final case class UnificationFailed(v1: Value, v2: Value, span: Option[Span] = None)
-  extends TypeError {
+final case class UnificationFailed(v1: Value, v2: Value, span: Option[Span] = None) extends TypeError {
   val msg: String = s"Failed to unify $v1 and $v2"
 }
 
@@ -84,9 +83,10 @@ final case class AlreadyDefined(name: String, span: Option[Span] = None) extends
   val msg: String = s"$name already defined"
 }
 
-final case class GenericTypeError(msg: String, span: Option[Span] = None) extends TypeError
+final case class TypeMismatch(v1: Value, v2: Value, span: Option[Span] = None) extends TypeError {
+  val msg: String = s"Type mismatch: expected type: $v2, actual: ${v1.tpe}"
+}
 
-final case class TypeMismatch(v1: Value, v2: Value, span: Option[Span] = None)
-  extends TypeError {
-  val msg: String = s"Type mismatch: $v1 expected type: $v2, actual: ${v1.tpe}"
+final case class DuplicateNormalizer(n: Normalizers.CarrierKey, span: Option[Span] = None) extends TypeError {
+  override val msg: String = s"Normalizer for $n is already defined"
 }

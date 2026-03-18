@@ -40,8 +40,11 @@ object SurfaceAst {
         span: Span
     ) extends Term
 
-    case class Body(lets: Vector[Let], out: Term, span: Span) extends Term
+    case class Body(uses: Vector[Use], lets: Vector[Let], out: Term, span: Span) extends Term
   }
+
+  // Use a first-class normalizer value within a body scope
+  final case class Use(normalizer: Term, span: Span)
 
   // Let: let x := foo
   final case class Let(name: String, ty: Option[TypeTerm], value: Term, span: Span)

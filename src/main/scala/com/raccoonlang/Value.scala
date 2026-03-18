@@ -122,4 +122,41 @@ object Value {
   case class BlockedMatch(id: LamId.LocalId, term: Term.Match, scrut: Value, env: Env, tpe: Value, blockerId: VarId)
     extends VMatch
     with Blocked
+
+  object KernelObject extends Value {
+    override def tpe: Value = KernelObject
+
+    override def synDeps: BitSet = BitSet.empty
+  }
+
+  object NormalizerType extends Value {
+    override def tpe: Value = VUniverse
+
+    override val synDeps: BitSet = BitSet.empty
+  }
+
+  trait Normalizer extends Value {
+    def carrierKey: Normalizers.CarrierKey
+
+    def normalize(v: Value, eqStore: EqStore): Value
+
+    def name: String
+
+    override val tpe: Value = NormalizerType
+
+    override val synDeps: BitSet = BitSet.empty
+  }
+
+  object BuiltFnType extends Value {
+    override def tpe: Value = KernelObject
+
+    override def synDeps: BitSet = BitSet.empty
+  }
+
+  case class BuiltinFn(fn: Vector[Value] => Value) extends Value {
+    override def synDeps: BitSet = BitSet.empty
+
+    override def tpe: Value = BuiltFnType
+  }
+
 }

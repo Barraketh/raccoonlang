@@ -50,6 +50,8 @@ object Util {
     def forall(op: A => Boolean): Boolean = op(head) && tail.forall(op)
 
     def toList: List[A] = head :: tail
+
+    def toVector: Vector[A] = Vector(head) :++ tail
   }
   case object NEL {
     def mk[A](vector: Vector[A]): NEL[A] = NEL(vector.head, vector.tail.toList)

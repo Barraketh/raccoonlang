@@ -18,7 +18,19 @@ object LanguageParser {
   private val skipAllWs = (emptyLine.rep(0) ~ skipWS).named("AllWS")
   private val skipOneLine = emptyLine.? ~ skipWS
 
-  private val keywords = List("fun", "let", "match", "as", "returning", "with", "inline", "def", "inductive", "stable")
+  private val keywords = List(
+    "fun",
+    "let",
+    "use",
+    "match",
+    "as",
+    "returning",
+    "with",
+    "inline",
+    "def",
+    "inductive",
+    "stable"
+  )
 
   private val ident =
     (P(c => c.isLetter || c == '_') ~ P(c => c.isLetterOrDigit || c == '_' || c == '$' || c == '.').rep(0)).!.filter(
@@ -56,13 +68,24 @@ object LanguageParser {
     Let.tupled
   }
 
-  private def body: Parser[Body] =
-    sym("{") ~/ skipOneLine ~ (let.rep(0, lineSep) ~ skipOneLine ~ term ~ skipOneLine ~ sym("}")).flatSpanned
-      .map(Body.tupled)
-      .named("Body")
+  private def useStmt: Parser[Use] = (kw("use") ~/ term).flatSpanned.map(Use.tupled)
 
-  private def lambda: Parser[Lam] =
-    (kw("fun") ~ funcHeader ~ sym("=>") ~ term).flatSpanned.map(Lam.tupled)
+  private def body: Parser[Body] = {
+    val content = (useStmt.rep(0, lineSep) ~ let.rep(0, lineSep) ~ skipOneLine ~ term).map { case (uses, lets, res) =>
+      (uses, lets, res)
+    }.spanned
+    (sym("{") ~/ skipOneLine ~ content ~ skipOneLine ~ sym("}"))
+      .map { s =>
+        Body(s.value._1, s.value._2, s.value._3, s.span)
+      }
+      .named("Body")
+  }
+
+  // no longer support `using normalizer` in parser; replaced by `use` statements
+
+  private def lambda: Parser[Term] =
+    (kw("fun") ~ funcHeader ~ sym("=>") ~ term).flatSpanned
+      .map[SurfaceAst.Term] { case (header, body, span) => Lam(header, body, span) }
 
   private def matchCase: Parser[Case] =
     (sym("|") ~/ ident ~ wsSep ~ ident.rep(0, wsSep) ~ sym("=>") ~ term ~ lineSep).flatSpanned

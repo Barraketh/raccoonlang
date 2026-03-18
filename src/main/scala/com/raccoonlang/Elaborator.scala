@@ -23,18 +23,41 @@ object Elaborator {
     case pi: SA.Term.Pi             => elabPi(pi)
   }
 
-  private def elab(body: SA.Term.Body): CA.Term.Body =
+  private def elab(use: SA.Use): CA.Use = CA.Use(elab(use.normalizer), use.span)
+
+  private def elab(body: SA.Term.Body): CA.Term.Body = {
+    if (body.uses.nonEmpty) throw new RuntimeException("Use statements only allowed at top of fn declaration")
+
     CA.Term.Body(body.lets.map(l => CA.Let(l.name, l.ty.map(elab), elab(l.value), l.span)), elab(body.out), body.span)
+  }
+
+  private def elabLam(
+      pi: CA.Term.Pi,
+      body: SA.Term,
+      name: Option[String],
+      isStable: Boolean,
+      span: Span
+  ): CA.Term.Lam = {
+    val (uses, newBody) = body match {
+      case b: SA.Term.Body => (b.uses, b.copy(uses = Vector.empty))
+      case _               => (Vector.empty, body)
+    }
+    CA.Term.Lam(pi, uses.map(elab), elab(newBody), span, name, isStable)
+  }
+
+  private def elab(l: SA.Term.Lam): CA.Term.Lam = {
+    getType(l.header) match {
+      case pi: CA.Term.Pi =>
+        elabLam(pi, l.body, None, isStable = false, l.span)
+      case _ => throw new RuntimeException("WTF")
+    }
+  }
 
   private def elab(term: SurfaceAst.Term): CA.Term = term match {
     case SA.Term.Ident(name, sp)   => CA.Term.Ident(name, sp)
     case SA.Term.App(fn, args, sp) => CA.Term.App(elab(fn), args.map(elab), sp)
-    case SA.Term.Lam(header, body, sp) =>
-      getType(header) match {
-        case pi: CA.Term.Pi => CA.Term.Lam(pi, elab(body), sp, None, isStable = false)
-        case _              => throw new RuntimeException("WTF")
-      }
-    case b: SA.Term.Body => elab(b)
+    case l: SA.Term.Lam            => elab(l)
+    case b: SA.Term.Body           => elab(b)
     case SA.Term.Match(scrut, scrutName, motive, cases, sp) =>
       CA.Term.Match(
         elab(scrut),
@@ -59,7 +82,7 @@ object Elaborator {
         val typeTerm = getType(c.header.funcHeader)
         val body = typeTerm match {
           case pi: CA.Term.Pi =>
-            CA.Term.Lam(pi, elab(c.body), c.span, Some(c.header.name), c.unfoldStrategy.contains(UnfoldStrategy.Stable))
+            elabLam(pi, c.body, Some(c.header.name), c.unfoldStrategy.contains(UnfoldStrategy.Stable), c.span)
           case _ => elab(c.body)
         }
         CoreAst.Decl.ConstDecl(c.unfoldStrategy, c.header.name, typeTerm, body, c.span)
