@@ -6,23 +6,23 @@ import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
 
 object Interpreter {
-  def whnf(v: Value)(implicit eqStore: EqStore): Value = {
+  def resolveInEqStore(v: Value)(implicit eqStore: EqStore): Value = {
     val v0 = eqStore.force(v)
     v0 match {
       case v0: Blocked if eqStore.links.contains(v0.blockerId) =>
         v0 match {
           case VBlockedApp(h, args, tpe, _) =>
-            val h0 = whnf(h)
+            val h0 = resolveInEqStore(h)
             h0 match {
               case lam: VLam =>
                 val res = lam.run(args, eqStore)
-                whnf(res)
+                resolveInEqStore(res)
               case b: Blocker =>
                 // Head is not reducible
                 VBlockedApp(b, args, tpe, b.blockerId)
             }
           case vm: BlockedMatch =>
-            val scrut0 = whnf(vm.scrut)
+            val scrut0 = resolveInEqStore(vm.scrut)
             val head = scrut0 match {
               case VApp(h, _, _) => h
               case c: VConst     => c
@@ -30,7 +30,7 @@ object Interpreter {
             }
 
             head match {
-              case VConst(_, `ConstructorHead`, _) => whnf(evalMatchBody(vm.term, scrut0, vm.env))
+              case VConst(_, `ConstructorHead`, _) => resolveInEqStore(evalMatchBody(vm.term, scrut0, vm.env))
             }
         }
 
@@ -57,8 +57,8 @@ object Interpreter {
   }
 
   def evalApply(fn: Value, vArgs: NEL[Value])(implicit eqStore: EqStore): Value = {
-    val fn0 = whnf(fn)
-    val tpe0 = whnf(fn0.tpe)
+    val fn0 = resolveInEqStore(fn)
+    val tpe0 = resolveInEqStore(fn0.tpe)
 
     tpe0 match {
       case pi: VPi =>
@@ -129,7 +129,7 @@ object Interpreter {
   }
 
   private def evalMatch(m: Match, env: Env)(implicit eqStore: EqStore): Value = {
-    val scrut = whnf(evalTerm(m.scrut, env))
+    val scrut = resolveInEqStore(evalTerm(m.scrut, env))
     evalMatchBody(m, scrut, env)
   }
 
@@ -197,7 +197,7 @@ object Interpreter {
   }
 
   private def decomposeCtorResult(v: Value)(implicit eqStore: EqStore): (Value, Vector[Value]) = {
-    whnf(v) match {
+    resolveInEqStore(v) match {
       case h: VConst        => (h, Vector.empty)
       case VApp(h, args, _) => (h, args.toVector)
       case other            => (other, Vector.empty)

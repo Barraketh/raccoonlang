@@ -62,8 +62,8 @@ object Unify {
   def unify(v1: Value, v2: Value, meta: EqStore)(implicit normalizers: NormalizerMap): EqStore = {
     val normalizerF = TypeChecker.getNormalizerF(v1, v2)(meta, normalizers)
 
-    val a = normalizerF(Interpreter.whnf(v1)(meta))
-    val b = normalizerF(Interpreter.whnf(v2)(meta))
+    val a = normalizerF(Interpreter.resolveInEqStore(v1)(meta))
+    val b = normalizerF(Interpreter.resolveInEqStore(v2)(meta))
 
     if (TypeChecker.defEq(a, b)(meta, normalizers)) return meta
 

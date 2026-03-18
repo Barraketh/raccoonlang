@@ -23,8 +23,8 @@ object TypeChecker {
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): Value = {
-    val fn0 = Interpreter.whnf(fn)
-    val fnTy0 = Interpreter.whnf(fn0.tpe)
+    val fn0 = Interpreter.resolveInEqStore(fn)
+    val fnTy0 = Interpreter.resolveInEqStore(fn0.tpe)
 
     fnTy0 match {
       case VPi(env, binders, outTy, _) =>
@@ -93,7 +93,7 @@ object TypeChecker {
       normalizers: NormalizerMap
   ): Unit = {
     if (args.length != br.argNames.length) throw ArityMismatch(args.length, br.argNames.length, Some(br.span))
-    val branchEnv = br.argNames.zip(args).foldLeft(envWithScrut) { case (curEnv, (argName, argVal)) =>
+    val branchEnv = br.argNames.zip(args).foldLeft(envWithScrut.newScope) { case (curEnv, (argName, argVal)) =>
       curEnv.putLocal(argName, argVal)
     }
     val branchRes = typecheck(br.body, branchEnv)
@@ -105,8 +105,8 @@ object TypeChecker {
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): Value = {
-    val scrut = Interpreter.whnf(typecheck(t.scrut, env))
-    val scrutTpe = Interpreter.whnf(scrut.tpe)
+    val scrut = Interpreter.resolveInEqStore(typecheck(t.scrut, env))
+    val scrutTpe = Interpreter.resolveInEqStore(scrut.tpe)
 
     val (inductiveName, inductiveCtors) = scrutTpe match {
       case VConst(n, Inductive(names), _)             => (n, names.toSet)
@@ -208,7 +208,7 @@ object TypeChecker {
   def getType(term: TypeTerm, env: Env)(implicit ctx: EqStore, normalizerMap: NormalizerMap): Value = {
     val res = typecheck(term, env)
 
-    Interpreter.whnf(res.tpe) match {
+    Interpreter.resolveInEqStore(res.tpe) match {
       case VUniverse => res
       case _         => throw NotAType(res)
     }
@@ -281,8 +281,8 @@ object TypeChecker {
   def defEq(v1: Value, v2: Value)(implicit eqStore: EqStore, normalizers: NormalizerMap): Boolean = {
     val normalizerF = getNormalizerF(v1, v2)
 
-    val a = normalizerF(whnf(v1))
-    val b = normalizerF(whnf(v2))
+    val a = normalizerF(resolveInEqStore(v1))
+    val b = normalizerF(resolveInEqStore(v2))
 
     (a, b) match {
       case (VUniverse, VUniverse)                                       => true
