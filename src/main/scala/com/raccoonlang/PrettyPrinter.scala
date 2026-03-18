@@ -70,6 +70,8 @@ object PrettyPrinter {
     case CoreAst.Term.TApp(_, _, _)         => printTerm(t)
     case CoreAst.Term.Lam(_, _, _, _, _, _) => s"(${printTerm(t)})"
     case CoreAst.Term.Match(_, _, _, _, _)  => s"(${printTerm(t)})"
+    case CoreAst.Term.Body(_, _, _)         => s"(${printTerm(t)})"
+    case CoreAst.Term.Pi(_, _, _)           => s"(${printTerm(t)})"
   }
 
   def printTerm(t: CoreAst.Term): String = t match {

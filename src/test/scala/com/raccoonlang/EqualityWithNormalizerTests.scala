@@ -3,10 +3,13 @@ package com.raccoonlang
 import com.raccoonlang.ErrorReporter.Source
 
 class EqualityWithNormalizerTests extends munit.FunSuite {
-  val addNormalizerTpe =
-    LanguageParser.parseFuncHeader("(A: Type)(zero: A)(add: A -> A -> A): Normalizer") match {
+  val addNormalizerTpe = {
+    val headerSrc = "(A: Type)(zero: A)(add: A -> A -> A): Normalizer"
+    LanguageParser.parseFuncHeader(headerSrc) match {
       case Success(header, _, _) => Elaborator.getType(header)
+      case err: Failure          => fail(s"Failed to parse header: $err, ${headerSrc.substring(err.curIdx)}")
     }
+  }
 
   private def runProgram(src: String): Value = {
     LanguageParser.parseProgram(src) match {

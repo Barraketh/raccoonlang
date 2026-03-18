@@ -18,19 +18,17 @@ object Interpreter {
                 val res = lam.run(args, eqStore)
                 resolveInEqStore(res)
               case b: Blocker =>
-                // Head is not reducible
+                // Head is not reducible; remain blocked on this blocker
                 VBlockedApp(b, args, tpe, b.blockerId)
+              case other =>
+                // Now that the head is resolved and not blocked, perform the application
+                resolveInEqStore(evalApply(other, args))
             }
           case vm: BlockedMatch =>
             val scrut0 = resolveInEqStore(vm.scrut)
-            val head = scrut0 match {
-              case VApp(h, _, _) => h
-              case c: VConst     => c
-              case b: Blocker    => return vm.copy(scrut = scrut0, blockerId = b.blockerId)
-            }
-
-            head match {
-              case VConst(_, `ConstructorHead`, _) => resolveInEqStore(evalMatchBody(vm.term, scrut0, vm.env))
+            scrut0 match {
+              case b: Blocker => vm.copy(scrut = scrut0, blockerId = b.blockerId)
+              case _          => resolveInEqStore(evalMatchBody(vm.term, scrut0, vm.env))
             }
         }
 
@@ -165,6 +163,7 @@ object Interpreter {
       case VApp(head, args, _) => (head, args.toList)
       case c: VConst           => (c, Nil)
       case b: Blocker          => return BlockedMatch(stuckMatchId, m, scrut, withScrut, outType, b.blockerId)
+      case other               => (other, Nil)
     }
 
     head match {
@@ -306,10 +305,11 @@ object Interpreter {
         .putGlobal("Normalizer", NormalizerType)
 
     val nextEnv = builtIn.foldLeft(baseEnv) { case (curEnv, (name, tpe, lam)) =>
-      val tpeV = evalTT(tpe, baseEnv)(EqStore.empty)
+      val tpeV = evalTT(tpe, curEnv)(EqStore.empty)
       tpeV match {
         case pi: VPi =>
           curEnv.putGlobal(name, VLam(pi, LamId.Const(name), isStable = false, lam))
+        case _ => curEnv
       }
     }
 

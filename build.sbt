@@ -4,9 +4,10 @@ ThisBuild / organization := "org.leanlite"
 
 lazy val root = (project in file(".")).settings(
   name := "raccoon-lang",
-  Compile / console / scalacOptions ++= Seq(
+  Compile / scalacOptions ++= Seq(
     "-deprecation",
-    "-feature"
+    "-feature",
+    "-Xfatal-warnings"
   ),
   Test / fork := true,
   libraryDependencies ++= Seq(

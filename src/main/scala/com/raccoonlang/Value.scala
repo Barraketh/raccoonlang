@@ -58,7 +58,7 @@ object Value {
     override val synDeps: BitSet = tpe.synDeps
   }
 
-  trait AppliedValue extends Value {
+  sealed trait AppliedValue extends Value {
     def head: Value
 
     def args: NEL[Value]

@@ -22,6 +22,10 @@ object Normalizers {
         case Value.LamId.Const(n)            => s"P:${p.binders.length}:$n"
         case Value.LamId.LocalId(nodeId, ps) => s"P:${p.binders.length}:$nodeId:${ps.map(orderKey).mkString(",")}"
       }
+    case av: Value.AppliedValue =>
+      s"A(${orderKey(av.head)};${av.args.toList.map(orderKey).mkString(",")})"
+    case Value.NormalizerType => "NormalizerType"
+    case n: Value.Normalizer  => s"Normalizer:${n.name}"
   }
 
   // Key to select a normalizer for a carrier type
