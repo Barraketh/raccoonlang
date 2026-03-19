@@ -4,6 +4,10 @@ import scala.annotation.tailrec
 
 object Util {
   case class NEL[+A](head: A, tail: List[A]) {
+    def apply(idx: Int): A = {
+      if (idx == 0) head
+      else tail(idx - 1)
+    }
     def ::[B >: A](elem: B): NEL[B] = NEL(elem, toList)
 
     def :::[B >: A](prefix: NEL[B]): NEL[B] = NEL(prefix.head, prefix.tail ::: toList)
@@ -48,6 +52,8 @@ object Util {
     }
 
     def forall(op: A => Boolean): Boolean = op(head) && tail.forall(op)
+
+    def exists(op: A => Boolean): Boolean = op(head) || tail.exists(op)
 
     def toList: List[A] = head :: tail
 

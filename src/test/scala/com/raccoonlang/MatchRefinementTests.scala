@@ -17,7 +17,7 @@ class MatchRefinementTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (p: Nat) : Nat
         |
-        |inductive Eq : (A: Type) -> A -> A -> Type
+        |inductive Eq : (A: Type) -> A -> A -> Sort Level.one
         | | refl (A: Type)(x: A) : Eq A x x
         |
         |def symmEq (a: Nat)(b: Nat)(p: Eq Nat a b): Eq Nat b a := {
@@ -38,7 +38,7 @@ class MatchRefinementTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (p: Nat) : Nat
         |
-        |inductive Eq : (A: Type) -> A -> A -> Type
+        |inductive Eq : (A: Type) -> A -> A -> Sort Level.one
         | | refl (A: Type)(x: A) : Eq A x x
         |
         |def congSucc2 (a: Nat)(b: Nat)(p: Eq Nat a b): Eq Nat (Nat.succ a) (Nat.succ b) := {
@@ -59,7 +59,7 @@ class MatchRefinementTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (p: Nat) : Nat
         |
-        |inductive Eq : (A: Type) -> A -> A -> Type
+        |inductive Eq : (A: Type) -> A -> A -> Sort Level.one
         | | refl (A: Type)(x: A) : Eq A x x
         |
         |def badCongCtor (a: Nat): Eq Nat a (Nat.succ a) := {

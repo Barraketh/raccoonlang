@@ -59,7 +59,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         | | zero : Nat
         | | succ : Nat -> Nat
         |
-        |inductive Vec(A: Type)(n: Nat) : Type
+        |inductive Vec(A: Type)(n: Nat) : Sort Level.one
         | | nil(A: Type): Vec A Nat.zero
         | | cons(A: Type)(n: Nat)(xs: Vec A n)(x: A): Vec A (Nat.succ n)
         |

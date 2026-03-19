@@ -8,25 +8,28 @@ sealed trait TypeError extends RuntimeException {
 
 object TypeError {
   def withSpan(err: TypeError, sp: Span): TypeError = err match {
-    case e: UnificationFailed        => e.copy(span = Some(sp))
-    case e: OccursCheckFailed        => e.copy(span = Some(sp))
-    case e: CannotApplyNonFunction   => e.copy(span = Some(sp))
-    case e: ArityMismatch            => e.copy(span = Some(sp))
-    case e: UnknownConstructor       => e.copy(span = Some(sp))
-    case e: DuplicateCase            => e.copy(span = Some(sp))
-    case e: UnreachableCase          => e.copy(span = Some(sp))
-    case e: MissingCase              => e.copy(span = Some(sp))
-    case e: NotAType                 => e.copy(span = Some(sp))
-    case e: NonInductiveMatch        => e.copy(span = Some(sp))
-    case e: NotFound                 => e.copy(span = Some(sp))
-    case e: AlreadyDefined           => e.copy(span = Some(sp))
-    case e: CannotLinkToBottom       => e.copy(span = Some(sp))
-    case e: VarAlreadyLinked         => e.copy(span = Some(sp))
-    case e: TypeMismatch             => e.copy(span = Some(sp))
-    case e: DuplicateNormalizer      => e.copy(span = Some(sp))
-    case e: InvalidConstructorResult => e.copy(span = Some(sp))
-    case e: NotALevel                => e.copy(span = Some(sp))
-    case e: WTF                      => e.copy(span = Some(sp))
+    case e: UnificationFailed         => e.copy(span = Some(sp))
+    case e: OccursCheckFailed         => e.copy(span = Some(sp))
+    case e: CannotApplyNonFunction    => e.copy(span = Some(sp))
+    case e: ArityMismatch             => e.copy(span = Some(sp))
+    case e: UnknownConstructor        => e.copy(span = Some(sp))
+    case e: DuplicateCase             => e.copy(span = Some(sp))
+    case e: UnreachableCase           => e.copy(span = Some(sp))
+    case e: MissingCase               => e.copy(span = Some(sp))
+    case e: NotAType                  => e.copy(span = Some(sp))
+    case e: NonInductiveMatch         => e.copy(span = Some(sp))
+    case e: NotFound                  => e.copy(span = Some(sp))
+    case e: AlreadyDefined            => e.copy(span = Some(sp))
+    case e: CannotLinkToBottom        => e.copy(span = Some(sp))
+    case e: VarAlreadyLinked          => e.copy(span = Some(sp))
+    case e: TypeMismatch              => e.copy(span = Some(sp))
+    case e: DuplicateNormalizer       => e.copy(span = Some(sp))
+    case e: InvalidConstructorResult  => e.copy(span = Some(sp))
+    case e: NotALevel                 => e.copy(span = Some(sp))
+    case e: InductiveUniverseTooSmall => e.copy(span = Some(sp))
+    case e: NonStrictlyPositive       => e.copy(span = Some(sp))
+    case e: InductiveTypeNotASort     => e.copy(span = Some(sp))
+    case e: WTF                       => e.copy(span = Some(sp))
   }
 }
 
@@ -104,10 +107,35 @@ final case class InvalidConstructorResult(
     ctor: String,
     inductive: String,
     got: Value,
-    expectedArity: Int,
-    gotArity: Int,
     span: Option[Span] = None
 ) extends TypeError {
   override val msg: String =
-    s"Constructor $ctor must return $inductive applied to $expectedArity args, but got $got with $gotArity args"
+    s"Constructor $ctor must return $inductive but got $got"
+}
+
+final case class InductiveUniverseTooSmall(
+    inductive: String,
+    where: String,
+    fieldTy: Value,
+    fieldUniverse: Value.Level,
+    inductiveUniverse: Value.Level,
+    span: Option[Span] = None
+) extends TypeError {
+  override val msg: String =
+    s"Inductive $inductive lives in Sort $inductiveUniverse, but $where has type $fieldTy : Sort $fieldUniverse"
+}
+
+final case class InductiveTypeNotASort(tpe: Value, span: Option[Span]) extends TypeError {
+  override def msg: String = s"Inductive type must be a Sort, got $tpe instead"
+}
+
+final case class NonStrictlyPositive(
+    inductive: String,
+    ctor: String,
+    field: String,
+    fieldTy: Value,
+    span: Option[Span] = None
+) extends TypeError {
+  override val msg: String =
+    s"Constructor $ctor of $inductive is not strictly positive in field $field : $fieldTy"
 }

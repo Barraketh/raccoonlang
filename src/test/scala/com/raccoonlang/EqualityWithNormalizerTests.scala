@@ -33,7 +33,7 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
         |
         |inline def nat_add_normalizer : Normalizer := add_normalizer Nat Nat.zero add
         |
-        |inductive Eq : (A: Type) -> A -> A -> Type
+        |inductive Eq : (A: Type) -> A -> A -> Sort Level.one
         | | refl (A: Type)(x: A) : Eq A x x
         |
         |// Using the additive normalizer over Nat, these equalities become definitional
@@ -80,7 +80,7 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
         |  | Nat.succ x => add (Nat.succ a) x
         |}
         |
-        |inductive Eq : (A: Type) -> A -> A -> Type
+        |inductive Eq : (A: Type) -> A -> A -> Sort Level.one
         | | refl (A: Type)(x: A) : Eq A x x
         |
         |inline def addCommNoNorm (a: Nat)(b: Nat): Eq Nat (add a b) (add b a) := Eq.refl Nat (add a b)
@@ -91,7 +91,7 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
-        intercept[TypeError] { Interpreter.run(core) }
+        intercept[TypeMismatch] { Interpreter.run(core) }
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }
@@ -109,7 +109,7 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
         |  | Nat.succ x => add (Nat.succ a) x
         |}
         |
-        |inductive Eq : (A: Type) -> A -> A -> Type
+        |inductive Eq : (A: Type) -> A -> A -> Sort Level.one
         | | refl (A: Type)(x: A) : Eq A x x
         |
         |inline def addZeroLeftNoNorm (a: Nat): Eq Nat (add Nat.zero a) a := Eq.refl Nat (add Nat.zero a)
@@ -120,7 +120,7 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
-        intercept[TypeError] { Interpreter.run(core) }
+        intercept[TypeMismatch] { Interpreter.run(core) }
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }

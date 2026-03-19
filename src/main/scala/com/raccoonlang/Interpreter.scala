@@ -208,86 +208,6 @@ object Interpreter {
     evalTerm(body.res, newEnv)
   }
 
-  private def familyArity(inductiveTy: Value): Int = inductiveTy match {
-    case pi: VPi => pi.binders.length
-    case _       => 0
-  }
-
-  private def evalCtorResultType(ctorTy: Value)(implicit eqStore: EqStore): Value = ctorTy match {
-    case pi: VPi =>
-      // Instantiate constructor binders with fresh locals so we can evaluate the result type
-      // under arbitrary arguments. We are *not* unifying here.
-      val (_, ctorEnv) = FreshVar.assignFreshVars(pi, eqStore)
-      evalTerm(pi.out, ctorEnv)
-    case other =>
-      other
-  }
-
-  private def decomposeCtorResult(v: Value)(implicit eqStore: EqStore): (Value, Vector[Value]) = {
-    resolveInEqStore(v) match {
-      case h: VConst        => (h, Vector.empty)
-      case VApp(h, args, _) => (h, args.toVector)
-      case other            => (other, Vector.empty)
-    }
-  }
-
-  private def checkCtorReturnsInductive(
-      ctor: Constructor,
-      ctorTy: Value,
-      inductiveHead: VConst,
-      inductiveArity: Int
-  )(implicit eqStore: EqStore, normalizers: NormalizerMap): Unit = {
-    val ctorResTy = evalCtorResultType(ctorTy)
-    val (head, args) = decomposeCtorResult(ctorResTy)
-
-    // Result must reduce to the inductive family head
-    if (!TypeChecker.defEq(head, inductiveHead))
-      throw InvalidConstructorResult(
-        ctor = ctor.name,
-        inductive = inductiveHead.name,
-        got = ctorResTy,
-        expectedArity = inductiveArity,
-        gotArity = args.length,
-        span = Some(ctor.span)
-      )
-
-    // For now, since you are not distinguishing parameters vs indices,
-    // require the constructor result to apply the family to *all* family args.
-    if (args.length != inductiveArity)
-      throw InvalidConstructorResult(
-        ctor = ctor.name,
-        inductive = inductiveHead.name,
-        got = ctorResTy,
-        expectedArity = inductiveArity,
-        gotArity = args.length,
-        span = Some(ctor.span)
-      )
-  }
-
-  private def evalInductiveDecl(decl: Decl.InductiveDecl, env: Env): Env = {
-    implicit val eqStore: EqStore = EqStore.empty
-    implicit val normalizers: NormalizerMap = NormalizerMap.empty
-
-    val inductiveType = TypeChecker.getType(decl.ty, env)
-    val inductiveHead = VConst(decl.name, Inductive(decl.ctors.map(_.name)), inductiveType)
-    val inductiveArity = familyArity(inductiveType)
-
-    // Constructors should be checked in an environment where the inductive itself is available,
-    // but not where previous constructors are available.
-    val envWithInductive = env.putGlobal(decl.name, inductiveHead)
-
-    decl.ctors.foreach { ctor =>
-      val ctorTy = TypeChecker.getType(ctor.ty, envWithInductive)
-      checkCtorReturnsInductive(ctor, ctorTy, inductiveHead, inductiveArity)
-    }
-
-    // Once all constructors are validated, add them to the final environment.
-    decl.ctors.foldLeft(envWithInductive) { case (curEnv, ctor) =>
-      val ctorTy = TypeChecker.getType(ctor.ty, envWithInductive)
-      curEnv.putGlobal(ctor.name, VConst(ctor.name, ConstructorHead, ctorTy))
-    }
-  }
-
   def evalDecl(decl: Decl, env: Env): Env = {
     implicit val eqStore = EqStore.empty
     implicit val normalizers = NormalizerMap.empty
@@ -312,7 +232,7 @@ object Interpreter {
 
         nextEnv
 
-      case d: Decl.InductiveDecl => evalInductiveDecl(d, env)
+      case d: Decl.InductiveDecl => InductiveChecks.evalInductiveDecl(d, env)
 
     }
 
@@ -325,6 +245,7 @@ object Interpreter {
         .putGlobal("Normalizer", NormalizerType)
         .putGlobal("Level", LevelTpe)
         .putGlobal("Level.zero", Level.zero)
+        .putGlobal("Level.one", Level(Map.empty, 1))
 
     val builtinFuncs = List[(String, TypeTerm, (NEL[Value], EqStore) => Value)](
       (
