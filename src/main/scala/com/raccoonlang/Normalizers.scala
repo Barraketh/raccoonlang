@@ -26,8 +26,10 @@ object Normalizers {
       }
     case av: Value.AppliedValue =>
       s"A(${orderKey(av.head)};${av.args.toList.map(orderKey).mkString(",")})"
-    case Value.NormalizerType => "NormalizerType"
-    case n: Value.Normalizer  => s"Normalizer:${n.name}"
+    case Value.ConstructorHead(n, _, _, _) => s"K:$n"
+    case Value.VCtor(h, fields, _)         => s"D:${orderKey(h)};${fields.map(orderKey).mkString(",")}"
+    case Value.NormalizerType              => "NormalizerType"
+    case n: Value.Normalizer               => s"Normalizer:${n.name}"
   }
 
   // Key to select a normalizer for a carrier type

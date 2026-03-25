@@ -88,12 +88,24 @@ object Elaborator {
         }
         CoreAst.Decl.ConstDecl(c.unfoldStrategy, c.header.name, typeTerm, body, c.span)
       case c: SurfaceAst.Decl.InductiveDecl =>
-        CoreAst.Decl.InductiveDecl(
+        val header = CA.InductiveHeader(
           c.header.name,
-          getType(c.header.funcHeader),
-          c.ctors.map(ctor => CA.Constructor(c.header.name + "." + ctor.name, getType(ctor.funcHeader), ctor.span)),
+          c.header.params.map(elab),
+          c.header.indices.map(elab),
+          elab(c.header.resultTy),
           c.span
         )
+
+        val ctors =
+          c.ctors.map { ctor =>
+            CA.ConstructorDecl(
+              name = c.header.name + "." + ctor.name,
+              fields = ctor.fields.map(elab),
+              resultTy = elab(ctor.resultTy),
+              span = ctor.span
+            )
+          }
+        CoreAst.Decl.InductiveDecl(header, ctors, c.span)
     }
   }
 

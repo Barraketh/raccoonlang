@@ -13,23 +13,26 @@ class InterpreterTests extends munit.FunSuite {
 
   // Erased shape comparison helpers
   sealed trait Shape
-  case class SConst(name: String, ct: ConstType) extends Shape
+  case class SConst(name: String) extends Shape
   case class SApp(head: Shape, args: List[Shape]) extends Shape
 
   private def toShape(v: Value): Shape = v match {
-    case Value.VConst(n, ct, _) => SConst(n, ct)
+    case Value.ConstructorHead(n, _, _, _) => SConst(n)
+    case Value.VCtor(h, fields, _) =>
+      if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))
+    case Value.VConst(n, _, _)  => SConst(n)
     case Value.VApp(h, args, _) => SApp(toShape(h), args.toList.map(toShape))
-    case other                  => SConst(other.toString, ConstructorHead) // fallback, won't be used in this test
+    case other                  => SConst(other.toString) // fallback, won't be used in this test
   }
 
-  private val zeroS = SConst("Nat.zero", ConstructorHead)
-  private def succS(s: Shape) = SApp(SConst("Nat.succ", ConstructorHead), List(s))
+  private val zeroS = SConst("Nat.zero")
+  private def succS(s: Shape) = SApp(SConst("Nat.succ"), List(s))
 
   test("Nats compute") {
     val p = """
               |inductive Nat : Type
               | | zero : Nat
-              | | succ : Nat -> Nat
+              | | succ (_: Nat) : Nat
               |
               |stable def add (a: Nat)(b: Nat): Nat := {
               |  match b as _ returning Nat with
@@ -46,5 +49,51 @@ class InterpreterTests extends munit.FunSuite {
     val res = getValue(p)
     assertEquals(toShape(res), succS(succS(zeroS)))
 
+  }
+
+  test("zero-arity constructor identifier evaluates to VCtor") {
+    val p =
+      """
+        |inductive Bool : Type
+        | | true : Bool
+        | | false : Bool
+        |
+        |do {
+        |  Bool.true
+        |}
+        |""".stripMargin
+
+    InterpreterTests.this.getValue(p) match {
+      case Value.VCtor(head, fields, _) =>
+        assertEquals(head.name, "Bool.true")
+        assertEquals(fields, Vector.empty)
+      case other =>
+        fail(s"expected VCtor, got: $other")
+    }
+  }
+
+  test("nullary constructor with family params evaluates to VCtor after param application") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Vec (A: Type) indices (n: Nat) : Sort Level.one
+        | | nil : Vec A Nat.zero
+        | | cons (n: Nat) (xs: Vec A n) (x: A): Vec A (Nat.succ n)
+        |
+        |do {
+        |  Vec.nil Nat
+        |}
+        |""".stripMargin
+
+    InterpreterTests.this.getValue(p) match {
+      case Value.VCtor(head, fields, _) =>
+        assertEquals(head.name, "Vec.nil")
+        assertEquals(fields, Vector.empty)
+      case other =>
+        fail(s"expected VCtor, got: $other")
+    }
   }
 }

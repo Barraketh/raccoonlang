@@ -29,6 +29,7 @@ object LanguageParser {
     "inline",
     "def",
     "inductive",
+    "indices",
     "stable",
     "Sort"
   )
@@ -117,6 +118,19 @@ object LanguageParser {
 
   private def declHeader: Parser[DeclHeader] = (ident ~ funcHeader).flatSpanned.map(DeclHeader.tupled)
 
+  // New inductive-specific parsers
+  private def inductiveHeader: Parser[InductiveHeader] = {
+    val paramsP = param.rep(0)
+    val indicesP = (kw("indices") ~/ param.rep(0)).?.map(_.getOrElse(Vector.empty))
+    (ident ~ paramsP ~ indicesP ~ sym(':') ~ typeTerm).flatSpanned
+      .map { case (name, ps, is, ty, sp) => InductiveHeader(name, ps, is, ty, sp) }
+  }
+
+  private def ctorDecl: Parser[ConstructorDecl] = {
+    (sym("|") ~/ ident ~ param.rep(0) ~ sym(':') ~ typeTerm ~ lineSep).flatSpanned
+      .map { case (name, fields, resTy, sp) => ConstructorDecl(name, fields, resTy, sp) }
+  }
+
   private def unfoldStrategy: Parser[UnfoldStrategy] =
     kw("inline").!.map(_ => UnfoldStrategy.Inline) | kw("stable").!.map(_ => UnfoldStrategy.Stable)
 
@@ -125,7 +139,7 @@ object LanguageParser {
     (unfoldStrategy.? ~ kw("def") ~/ declHeader ~ (sym(":=") ~/ term)).flatSpanned.map(ConstDecl.tupled)
 
   private def inductiveP: Parser[InductiveDecl] =
-    (kw("inductive") ~/ declHeader ~ lineSep ~ (sym("|") ~ declHeader ~ lineSep).rep(0)).flatSpanned
+    (kw("inductive") ~/ inductiveHeader ~ lineSep ~ ctorDecl.rep(0)).flatSpanned
       .map(InductiveDecl.tupled)
 
   private def declP: Parser[Decl] = constP | inductiveP

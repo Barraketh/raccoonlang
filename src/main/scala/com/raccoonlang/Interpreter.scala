@@ -6,6 +6,23 @@ import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
 
 object Interpreter {
+  private def normalizeLevel(l: Level)(implicit eqStore: EqStore): Level = {
+    val pieces = Vector(Level(Map.empty, l.c)) ++
+      l.atoms.toVector.map { case (varId, k) =>
+        val base = eqStore.links.get(varId) match {
+          case Some(sol) =>
+            eqStore.force(sol) match {
+              case next: Level   => normalizeLevel(next)
+              case Var(_, id, _) => Level.mk(id)
+              case other         => throw NotALevel(other)
+            }
+          case None => Level.mk(varId)
+        }
+        Level.addOffset(base, k)
+      }
+    Level.max(pieces)
+  }
+
   def resolveInEqStore(v: Value)(implicit eqStore: EqStore): Value = {
     val v0 = eqStore.force(v)
     v0 match {
@@ -32,12 +49,15 @@ object Interpreter {
             }
         }
 
+      case l: Level if l.atoms.keySet.intersect(eqStore.links.keySet).nonEmpty => normalizeLevel(l)
+
       case _ => v0
     }
   }
 
   private def getEnvWithArgs(fnTpe: VPi, args: NEL[Value]): Env = {
-    if (fnTpe.binders.length != args.length) throw ArityMismatch(fnTpe.binders.length, args.length)
+    if (fnTpe.binders.length != args.length)
+      throw ArityMismatch(fnTpe.binders.length, args.length)
 
     fnTpe.binders.map(_.name).zip(args).foldLeft(fnTpe.env.newScope) { case (curEnv, (name, value)) =>
       curEnv.putLocal(name, value)
@@ -64,10 +84,20 @@ object Interpreter {
 
   // Evaluate a type-position expression without enforcing it is a type yet
   private def evalTT(tt: TypeTerm, env: Env)(implicit meta: EqStore): Value = tt match {
-    case Term.Ident(name, sp)   => env.find(name).getOrElse { throw TypeError.withSpan(NotFound(name), sp) }
+    case i: Term.Ident          => evalIdent(i, env)
     case Term.TApp(fn, args, _) => evalApplyTerm(fn, args, env)
     case pi: Term.Pi            => evalPi(pi, env)
     case s: Term.Sort           => evalSort(s, env)
+  }
+
+  private def evalIdent(i: Term.Ident, env: Env): Value = {
+    val res = env.find(i.name).getOrElse {
+      throw TypeError.withSpan(NotFound(i.name), i.span)
+    }
+    res match {
+      case h: ConstructorHead if h.totalArity == 0 => VCtor(h, Vector.empty, h.tpe)
+      case _                                       => res
+    }
   }
 
   def evalApply(fn: Value, vArgs: NEL[Value])(implicit eqStore: EqStore): Value = {
@@ -88,7 +118,11 @@ object Interpreter {
                 }
               case _ => res
             }
-          case h: VConst  => VApp(h, vArgs, evalTT(pi.out, envWithArgs))
+          case h: VConst => VApp(h, vArgs, evalTT(pi.out, envWithArgs))
+          case h: ConstructorHead =>
+            val resultTy = evalTT(pi.out, envWithArgs)
+            val fields = vArgs.toVector.drop(h.numParams)
+            VCtor(h, fields, resultTy)
           case b: Blocker => VBlockedApp(b, vArgs, evalTT(pi.out, envWithArgs), b.blockerId)
           case _          => throw CannotApplyNonFunction(fn)
         }
@@ -163,13 +197,16 @@ object Interpreter {
     val withScrut = env.newScope.putLocal(m.scrutName, scrut)
 
     lazy val stuckMatchId = {
-      // Get all the free locals referenced in the body of the match - we will use them as the key, just like VLam
+      // Get all the free locals referenced in the body or the motive - we will use them as the key, just like VLam
       // We can treat scrutName as bound, since we are including it in StuckMatch and will unify it separately
-      val freeNames = m.cases
+      val bodyFree = m.cases
         .foldLeft(Set.empty[String]) { case (curNames, c) =>
           val nextNames = FreeNames.getFreeNames(c.body, bound = (c.argNames :+ m.scrutName).toSet)
           curNames.union(nextNames)
         }
+      val motiveFree = FreeNames.getFreeNames(m.motive, Set(m.scrutName))
+      val freeNames = bodyFree
+        .union(motiveFree)
         .toVector
         .filter(n => withScrut.findLocal(n).isDefined)
         .sorted
@@ -180,24 +217,20 @@ object Interpreter {
     lazy val outType = evalTerm(m.motive, withScrut)
 
     val (head, args) = scrut match {
-      case VApp(head, args, _) => (head, args.toList)
-      case c: VConst           => (c, Nil)
-      case b: Blocker          => return BlockedMatch(stuckMatchId, m, scrut, withScrut, outType, b.blockerId)
-      case other               => (other, Nil)
+      case VCtor(head, fields, _) => (head, fields)
+      case b: Blocker             => return BlockedMatch(stuckMatchId, m, scrut, withScrut, outType, b.blockerId)
+      case _                      => return StuckMatch(stuckMatchId, scrut, outType)
     }
 
-    head match {
-      case VConst(ctorName, `ConstructorHead`, _) =>
-        val branch =
-          m.cases.find(c => c.ctorName == ctorName).getOrElse(throw UnknownConstructor(ctorName, "", Some(m.span)))
-        if (args.length != branch.argNames.length)
-          throw ArityMismatch(branch.argNames.length, args.length, Some(branch.span))
-        val newEnv = args.zip(branch.argNames).foldLeft(withScrut.newScope) { case (curEnv, (argV, argName)) =>
-          curEnv.putLocal(argName, argV)
-        }
-        evalTerm(branch.body, newEnv)
-      case _ => StuckMatch(stuckMatchId, scrut, outType)
+    val ctorName = head.name
+    val branch =
+      m.cases.find(c => c.ctorName == ctorName).getOrElse(throw UnknownConstructor(ctorName, "", Some(m.span)))
+    if (args.length != branch.argNames.length)
+      throw ArityMismatch(branch.argNames.length, args.length, Some(branch.span))
+    val newEnv = args.zip(branch.argNames).foldLeft(withScrut.newScope) { case (curEnv, (argV, argName)) =>
+      curEnv.putLocal(argName, argV)
     }
+    evalTerm(branch.body, newEnv)
   }
 
   def evalBody(body: Term.Body, env: Env)(implicit eqStore: EqStore): Value = {

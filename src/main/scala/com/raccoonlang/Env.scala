@@ -32,7 +32,8 @@ case class ScopedMap(map: Map[String, Value], parent: Option[ScopedMap]) {
   def find(name: String): Option[Value] = map.get(name).orElse(parent.flatMap(_.find(name)))
 
   def put(name: String, value: Value): ScopedMap = {
-    if (map.contains(name)) throw AlreadyDefined(name)
+    if (map.contains(name))
+      throw AlreadyDefined(name)
     ScopedMap(map + (name -> value), parent)
   }
 

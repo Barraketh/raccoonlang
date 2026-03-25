@@ -12,24 +12,27 @@ class TypingTests extends munit.FunSuite {
 
   // Erased shape comparison helpers
   sealed trait Shape
-  case class SConst(name: String, ct: ConstType) extends Shape
+  case class SConst(name: String) extends Shape
   case class SApp(head: Shape, args: List[Shape]) extends Shape
 
   private def toShape(v: Value): Shape = v match {
-    case Value.VConst(n, ct, _) => SConst(n, ct)
+    case Value.ConstructorHead(n, _, _, _) => SConst(n)
+    case Value.VCtor(h, fields, _) =>
+      if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))
+    case Value.VConst(n, _, _)  => SConst(n)
     case Value.VApp(h, args, _) => SApp(toShape(h), args.toList.map(toShape))
-    case other                  => SConst(other.toString, ConstructorHead) // fallback
+    case other                  => SConst(other.toString) // fallback
   }
 
-  private val zeroS = SConst("Nat.zero", ConstructorHead)
-  private def succS(s: Shape) = SApp(SConst("Nat.succ", ConstructorHead), List(s))
+  private val zeroS = SConst("Nat.zero")
+  private def succS(s: Shape) = SApp(SConst("Nat.succ"), List(s))
 
   test("inline id typechecks and reduces") {
     val p =
       """
         |inductive Nat : Type
         | | zero : Nat
-        | | succ : Nat -> Nat
+        | | succ (_: Nat) : Nat
         |
         |inline def id (A: Type)(x: A): A := x
         |
@@ -47,7 +50,7 @@ class TypingTests extends munit.FunSuite {
       """
         |inductive Nat : Type
         | | zero : Nat
-        | | succ : Nat -> Nat
+        | | succ (_: Nat) : Nat
         |
         |inline def bad (A: Type)(x: A): A -> A := x
         |
@@ -64,7 +67,7 @@ class TypingTests extends munit.FunSuite {
       """
         |inductive Nat : Type
         | | zero : Nat
-        | | succ : Nat -> Nat
+        | | succ (_: Nat) : Nat
         |
         |do {
         |  let s : Nat := Nat.succ
@@ -82,7 +85,7 @@ class TypingTests extends munit.FunSuite {
       """
         |inductive Nat : Type
         | | zero : Nat
-        | | succ : Nat -> Nat
+        | | succ (_: Nat) : Nat
         |
         |do {
         |  let f : (x: Nat) -> Nat := fun (y: Nat): Nat => y
@@ -99,7 +102,7 @@ class TypingTests extends munit.FunSuite {
       """
         |inductive Nat : Type
         | | zero : Nat
-        | | succ : Nat -> Nat
+        | | succ (_: Nat) : Nat
         |
         |inline def pred (n: Nat): Nat := {
         |  match n as _ returning Nat with
@@ -121,7 +124,7 @@ class TypingTests extends munit.FunSuite {
       """
         |inductive Nat : Type
         | | zero : Nat
-        | | succ : Nat -> Nat
+        | | succ (_: Nat) : Nat
         |
         |inline def bad (n: Nat): Type := {
         |  match n as _ returning Nat with
@@ -142,7 +145,7 @@ class TypingTests extends munit.FunSuite {
       """
         |inductive Nat : Type
         | | zero : Nat
-        | | succ : Nat -> Nat
+        | | succ (_: Nat) : Nat
         |
         |def inc (n: Nat): Nat := Nat.succ n
         |
@@ -150,7 +153,7 @@ class TypingTests extends munit.FunSuite {
         |""".stripMargin
 
     val res = runProgram(p)
-    assertEquals(toShape(res), SConst("inc", Symbol))
+    assertEquals(toShape(res), SConst("inc"))
   }
 
   test("unannotated let with constructor synthesizes type and reduces when applied") {
@@ -158,7 +161,7 @@ class TypingTests extends munit.FunSuite {
       """
         |inductive Nat : Type
         | | zero : Nat
-        | | succ : Nat -> Nat
+        | | succ (_: Nat) : Nat
         |
         |do {
         |  let one := Nat.succ Nat.zero
@@ -175,11 +178,11 @@ class TypingTests extends munit.FunSuite {
       """
         |inductive Nat : Type
         | | zero : Nat
-        | | succ : Nat -> Nat
+        | | succ (_: Nat) : Nat
         |
-        |inductive Vec(A: Type)(n: Nat) : Sort Level.one
-        | | nil(A: Type): Vec A Nat.zero
-        | | cons(A: Type)(n: Nat)(xs: Vec A n)(x: A): Vec A (Nat.succ n)
+        |inductive Vec (A: Type) indices (n: Nat) : Sort Level.one
+        | | nil : Vec A Nat.zero
+        | | cons (n: Nat) (xs: Vec A n) (x: A): Vec A (Nat.succ n)
         |
         |inline def badVec (A: Type)(n: Nat)(v: Vec A n): Vec A Nat.zero := v
         |
@@ -191,5 +194,27 @@ class TypingTests extends munit.FunSuite {
     intercept[TypeMismatch] {
       runProgram(p)
     }
+  }
+
+  test("reachable nullary ctor branch binds scrutName at instantiated result type") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Vec (A: Type) indices (n: Nat) : Sort Level.one
+        | | nil : Vec A Nat.zero
+        | | cons (n: Nat) (xs: Vec A n) (x: A): Vec A (Nat.succ n)
+        |
+        |inline def keepNil (A: Type)(v: Vec A Nat.zero): Vec A Nat.zero := {
+        |  match v as self returning Vec A Nat.zero with
+        |  | Vec.nil => self
+        |}
+        |
+        |do { Nat.zero }
+        |""".stripMargin
+
+    runProgram(p)
   }
 }

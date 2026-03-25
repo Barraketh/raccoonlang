@@ -66,7 +66,22 @@ object CoreAst {
 
   case class Binder(name: String, ty: TypeTerm, span: Span)
 
-  case class Constructor(name: String, ty: TypeTerm, span: Span)
+  case class InductiveHeader(
+      name: String,
+      params: Vector[Binder],
+      indices: Vector[Binder],
+      resultTy: TypeTerm,
+      span: Span
+  ) {
+    def arity: Int = params.length + indices.length
+  }
+
+  case class ConstructorDecl(
+      name: String,
+      fields: Vector[Binder],
+      resultTy: TypeTerm,
+      span: Span
+  )
 
   case class Case(ctorName: String, argNames: Vector[String], body: Term, span: Span)
 
@@ -85,8 +100,12 @@ object CoreAst {
         span: Span
     ) extends Decl
 
-    // Inductive type declaration
-    final case class InductiveDecl(name: String, ty: TypeTerm, ctors: Vector[Constructor], span: Span) extends Decl
+    // Inductive type declaration (structured)
+    final case class InductiveDecl(
+        header: InductiveHeader,
+        ctors: Vector[ConstructorDecl],
+        span: Span
+    ) extends Decl
   }
 
   case class Program(decls: Vector[Decl], body: Term)

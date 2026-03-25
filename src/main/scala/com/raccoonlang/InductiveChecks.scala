@@ -1,6 +1,7 @@
 package com.raccoonlang
 
 import com.raccoonlang.CoreAst._
+import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
 
 object InductiveChecks {
@@ -26,6 +27,7 @@ object InductiveChecks {
         val allTypes = binderVars.map(_.tpe) :+ Interpreter.evalTerm(pi.out, bodyEnv)
         allTypes.exists(v => occursInductive(v, inductiveHead))
 
+      case _: ConstructorHead | _: VCtor                                                      => false
       case _: Level | LevelTpe | _: Normalizer | NormalizerType | _: VLam | _: VSort | _: Var => false
     }
 
@@ -48,6 +50,7 @@ object InductiveChecks {
         // For any head F (including the inductive), reject if I occurs in any argument.
         !args.exists(arg => occursInductive(arg, inductiveHead))
 
+      case _: ConstructorHead | _: VCtor                                                                  => true
       case _: Level | LevelTpe | _: Normalizer | NormalizerType | _: VLam | _: VSort | _: Var | _: VConst => true
     }
 
@@ -61,77 +64,93 @@ object InductiveChecks {
     implicit val eqStore: EqStore = EqStore.empty
     implicit val normalizers: NormalizerMap = NormalizerMap.empty
 
-    val inductiveType = TypeChecker.getType(decl.ty, env)
+    val inductiveType = {
+      val binders = decl.header.params ++ decl.header.indices
+      val ty =
+        if (binders.isEmpty) decl.header.resultTy
+        else Term.Pi(NEL.mk(binders), decl.header.resultTy, decl.header.span)
+      TypeChecker.getType(ty, env)
+    }
+
+    val inductiveHead = VConst(
+      decl.header.name,
+      Inductive(InductiveMeta(decl.ctors.map(_.name), decl.header.params.length, decl.header.indices.length)),
+      inductiveType
+    )
+
+    // Constructors are checked in an environment that contains the inductive and inductive params assigned
+    val envWithInductive = env.putGlobal(decl.header.name, inductiveHead)
+    val (paramVars, envWithParams) = FreshVar.assignFreshVars(decl.header.params, envWithInductive, eqStore)
 
     val inductiveLevel = {
-      val outTpe = inductiveType match {
-        case pi: VPi =>
-          val (_, bodyEnv) = FreshVar.assignFreshVars(pi, eqStore)
-          Interpreter.evalTerm(pi.out, bodyEnv)
-        case other => other
-      }
-      outTpe match {
+      TypeChecker.getType(decl.header.resultTy, envWithParams) match {
         case VSort(u) => u
-        case other    => throw InductiveTypeNotASort(other, Some(decl.ty.span))
+        case other    => throw InductiveTypeNotASort(other, Some(decl.header.resultTy.span))
       }
     }
 
-    val inductiveHead = VConst(decl.name, Inductive(decl.ctors.map(_.name)), inductiveType)
-
-    // Constructors are checked in an environment that contains the inductive
-    // but not the other constructors.
-    val envWithInductive = env.putGlobal(decl.name, inductiveHead)
-
     decl.ctors.foreach { ctor =>
-      // 1) Constructor as a whole must still be a valid type
-      val ctorTy = TypeChecker.getType(ctor.ty, envWithInductive)
+      val outputTpe = {
+        val (fieldVars, bodyEnv) = FreshVar.assignFreshVars(ctor.fields, envWithParams, eqStore)
 
-      val outputTpe = ctorTy match {
-        case pi: VPi =>
-          val (fields, bodyEnv) = FreshVar.assignFreshVars(pi, eqStore)
+        fieldVars.zipWithIndex.foreach { case (field, idx) =>
+          val binder = ctor.fields(idx)
 
-          fields.zipWithIndex.foreach { case (field, idx) =>
-            val binder = pi.binders(idx)
+          // 2) Every constructor field type must live in a sort <= the inductive sort
+          val tpeLevel = sortLevelOfType(field.tpe)
+          if (!Level.leq(tpeLevel, inductiveLevel))
+            throw InductiveUniverseTooSmall(
+              decl.header.name,
+              s"${ctor.name}.${binder.name}",
+              field.tpe,
+              tpeLevel,
+              inductiveLevel,
+              Some(binder.span)
+            )
 
-            // 2) Every constructor field type must live in a sort <= the inductive sort
-            val tpeLevel = sortLevelOfType(field.tpe)
-            if (!Level.leq(tpeLevel, inductiveLevel))
-              throw InductiveUniverseTooSmall(
-                decl.name,
-                s"${ctor.name}.${binder.name}",
-                field.tpe,
-                tpeLevel,
-                inductiveLevel,
-                Some(binder.span)
-              )
+          // 3) Every constructor field type must be strictly positive in the inductive
+          if (!isStrictlyPositive(field.tpe, inductiveHead))
+            throw NonStrictlyPositive(
+              inductive = inductiveHead.name,
+              ctor = ctor.name,
+              field = binder.name,
+              fieldTy = field.tpe,
+              span = Some(binder.span)
+            )
+        }
 
-            // 3) Every constructor field type must be strictly positive in the inductive
-            if (!isStrictlyPositive(field.tpe, inductiveHead))
-              throw NonStrictlyPositive(
-                inductive = inductiveHead.name,
-                ctor = ctor.name,
-                field = binder.name,
-                fieldTy = field.tpe,
-                span = Some(binder.span)
-              )
-          }
-
-          Interpreter.evalTerm(pi.out, bodyEnv)
-        case other => other
+        Interpreter.evalTerm(ctor.resultTy, bodyEnv)
       }
 
-      // 4) Constructor result must be the inductive family head applied to the full family arity
-      (inductiveType, outputTpe) match {
-        case (_: VPi, VApp(h, _, _)) if h.name == inductiveHead.name =>
-        case (_, VConst(name, _, _)) if name == inductiveHead.name   =>
-        case (_, other) => throw InvalidConstructorResult(ctor.name, decl.name, other, Some(ctor.span))
+      // 4) Constructor result must be the inductive family head applied to the full family arity,
+      // and params must be uniform - must equal to the original paramVars
+      val resultErr = InvalidConstructorResult(ctor.name, decl.header.name, outputTpe, Some(ctor.span))
+      val outputArgs = outputTpe match {
+        case VApp(h, args, _) if h.name == inductiveHead.name => args.toVector
+        case VConst(name, _, _) if name == inductiveHead.name => Vector.empty[Value]
+        case _                                                => throw resultErr
       }
+
+      if (outputArgs.length != decl.header.arity) throw resultErr
+
+      outputArgs.take(paramVars.length).zip(paramVars).foreach { case (arg, paramVar) =>
+        if (!TypeChecker.defEq(arg, paramVar)) throw resultErr
+      }
+
     }
 
     // Only after all constructor checks succeed do we add the constructors to the environment.
     decl.ctors.foldLeft(envWithInductive) { case (curEnv, ctor) =>
-      val ctorTy = TypeChecker.getType(ctor.ty, envWithInductive)
-      curEnv.putGlobal(ctor.name, VConst(ctor.name, ConstructorHead, ctorTy))
+      val allBinders = decl.header.params ++ ctor.fields
+      val fullTypeTerm =
+        if (allBinders.isEmpty) ctor.resultTy
+        else Term.Pi(NEL.mk(allBinders), ctor.resultTy, ctor.span)
+      val fullType = TypeChecker.getType(fullTypeTerm, envWithInductive)
+
+      curEnv.putGlobal(
+        ctor.name,
+        ConstructorHead(ctor.name, decl.header.params.length, allBinders.length, fullType)
+      )
     }
   }
 }

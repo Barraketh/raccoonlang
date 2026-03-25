@@ -24,7 +24,7 @@ class UniverseTests extends munit.FunSuite {
       """
         |inductive Nat : Type
         |  | zero: Nat
-        |  | succ: Nat -> Nat
+        |  | succ (_: Nat) : Nat
         |
         |do {
         |  let x : Type := Nat
@@ -91,7 +91,7 @@ class UniverseTests extends munit.FunSuite {
       """
         |inductive Nat : Type
         |  | zero: Nat
-        |  | succ: Nat -> Nat
+        |  | succ (_: Nat) : Nat
         |
         |inline def f (u: Level)(A: Sort u)(x: A): A := x
         |
@@ -127,7 +127,7 @@ class UniverseTests extends munit.FunSuite {
       """
         |inductive Nat : Type
         |  | zero: Nat
-        |  | succ: Nat -> Nat
+        |  | succ (_: Nat) : Nat
         |
         |def up2 (u: Level)(A: Sort u): Sort (Level.succ (Level.succ u)) := A
         |
@@ -195,7 +195,7 @@ class UniverseTests extends munit.FunSuite {
       """
         |inductive Nat : Type
         |  | zero: Nat
-        |  | succ: Nat -> Nat
+        |  | succ (_: Nat) : Nat
         |
         |inline def idAt (u: Level)(A: Sort u)(x: A): A := x
         |

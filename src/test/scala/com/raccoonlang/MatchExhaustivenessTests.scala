@@ -15,7 +15,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
       """
         |inductive Nat : Type
         | | zero : Nat
-        | | succ : Nat -> Nat
+        | | succ (_: Nat) : Nat
         |
         |def onlyZero (n: Nat): Nat := {
         |  match n as _ returning Nat with
@@ -35,7 +35,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
       """
         |inductive Nat : Type
         | | zero : Nat
-        | | succ : Nat -> Nat
+        | | succ (_: Nat) : Nat
         |
         |def dup (n: Nat): Nat := {
         |  match n as _ returning Nat with
@@ -57,16 +57,16 @@ class MatchExhaustivenessTests extends munit.FunSuite {
       """
         |inductive Nat : Type
         | | zero : Nat
-        | | succ : Nat -> Nat
+        | | succ (_: Nat) : Nat
         |
-        |inductive Vec(A: Type)(n: Nat) : Sort Level.one
-        | | nil(A: Type): Vec A Nat.zero
-        | | cons(A: Type)(n: Nat)(xs: Vec A n)(x: A): Vec A (Nat.succ n)
+        |inductive Vec (A: Type) indices (n: Nat) : Sort Level.one
+        | | nil : Vec A Nat.zero
+        | | cons (n: Nat) (xs: Vec A n) (x: A): Vec A (Nat.succ n)
         |
         |def f (A: Type)(v: Vec A Nat.zero): Nat := {
         |  match v as _ returning Nat with
-        |  | Vec.nil t => Nat.zero
-        |  | Vec.cons a n xs x => Nat.zero
+        |  | Vec.nil => Nat.zero
+        |  | Vec.cons n xs x => Nat.zero
         |}
         |
         |do { Nat.zero }
@@ -82,7 +82,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
       """
         |inductive Nat : Type
         | | zero : Nat
-        | | succ : Nat -> Nat
+        | | succ (_: Nat) : Nat
         |
         |// OPAQUE (not inline): evaluator will keep this as a Symbol head
         |def g (n: Nat): Nat := Nat.zero
@@ -108,7 +108,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
       """
         |inductive Nat : Type
         | | zero : Nat
-        | | succ : Nat -> Nat
+        | | succ (_: Nat) : Nat
         |
         |def g (n: Nat): Nat := n   // not inline => opaque
         |

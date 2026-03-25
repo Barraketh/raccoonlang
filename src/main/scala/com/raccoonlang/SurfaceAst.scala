@@ -57,6 +57,21 @@ object SurfaceAst {
 
   case class DeclHeader(name: String, funcHeader: FuncHeader, span: Span)
 
+  case class InductiveHeader(
+      name: String,
+      params: Vector[Binder],
+      indices: Vector[Binder],
+      resultTy: TypeTerm,
+      span: Span
+  )
+
+  case class ConstructorDecl(
+      name: String,
+      fields: Vector[Binder],
+      resultTy: TypeTerm,
+      span: Span
+  )
+
   case class Case(ctorName: String, argNames: Vector[String], body: Term, span: Span)
 
   // Global declarations and environment entries
@@ -72,7 +87,7 @@ object SurfaceAst {
     ) extends Decl
 
     // Inductive type declaration
-    final case class InductiveDecl(header: DeclHeader, ctors: Vector[DeclHeader], span: Span) extends Decl
+    final case class InductiveDecl(header: InductiveHeader, ctors: Vector[ConstructorDecl], span: Span) extends Decl
   }
 
   case class Program(decls: Vector[Decl], body: Term)

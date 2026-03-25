@@ -11,7 +11,7 @@ import scala.util.Try
 
 object TypeChecker {
 
-  private def sortLeq(a: Value, b: Value)(implicit eqStore: EqStore): Boolean = {
+  def sortLeq(a: Value, b: Value)(implicit eqStore: EqStore): Boolean = {
     (Interpreter.resolveInEqStore(a), Interpreter.resolveInEqStore(b)) match {
       case (Value.VSort(u), Value.VSort(v)) => Level.leq(u, v)
       case _                                => false
@@ -35,7 +35,8 @@ object TypeChecker {
 
     fnTy0 match {
       case VPi(env, binders, outTy, _, _, _) =>
-        if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
+        if (binders.length != args.length)
+          throw ArityMismatch(binders.length, args.length)
 
         // Typecheck argument terms in argEnv
         val vArgs = args.map(arg => typecheck(arg, argEnv))
@@ -100,7 +101,8 @@ object TypeChecker {
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): Unit = {
-    if (args.length != br.argNames.length) throw ArityMismatch(args.length, br.argNames.length, Some(br.span))
+    if (args.length != br.argNames.length)
+      throw ArityMismatch(args.length, br.argNames.length, Some(br.span))
     val branchEnv = br.argNames.zip(args).foldLeft(envWithScrut.newScope) { case (curEnv, (argName, argVal)) =>
       curEnv.putLocal(argName, argVal)
     }
@@ -117,9 +119,9 @@ object TypeChecker {
     val scrutTpe = Interpreter.resolveInEqStore(scrut.tpe)
 
     val (inductiveName, inductiveCtors) = scrutTpe match {
-      case VConst(n, Inductive(names), _)             => (n, names.toSet)
-      case VApp(VConst(n, Inductive(names), _), _, _) => (n, names.toSet)
-      case _                                          => throw NonInductiveMatch(scrut.tpe)
+      case VConst(n, Inductive(meta), _)             => (n, meta.constructorNames.toSet)
+      case VApp(VConst(n, Inductive(meta), _), _, _) => (n, meta.constructorNames.toSet)
+      case _                                         => throw NonInductiveMatch(scrut.tpe)
     }
 
     // Check for duplicate constructors
@@ -133,9 +135,8 @@ object TypeChecker {
     }
 
     val scrutConst = scrut match {
-      case VConst(name, `ConstructorHead`, _)                => Some((name, Nil))
-      case VApp(VConst(name, `ConstructorHead`, _), args, _) => Some((name, args.toList))
-      case _                                                 => None
+      case VCtor(h, fields, _) => Some((h.name, fields))
+      case _                   => None
     }
 
     scrutConst match {
@@ -154,7 +155,7 @@ object TypeChecker {
           val ctorVal = env.find(ctorName).getOrElse(throw NotFound(ctorName))
 
           ctorVal match {
-            case h @ VConst(_, ConstructorHead, ctorTy) =>
+            case h @ ConstructorHead(_, numParams, fields, ctorTy) =>
               val (freshArgs, ctorEnv) = ctorTy match {
                 case pi: VPi => assignFreshVars(pi, eqStore)
                 case _       => (Vector.empty[Value], env)
@@ -176,13 +177,10 @@ object TypeChecker {
                 case util.Success(branchEqStore) =>
                   // Case is reachable - typecheck its branch
                   val br = t.cases.find(c => c.ctorName == ctorName).getOrElse(throw MissingCase(ctorName))
-                  val appliedConstr =
-                    if (freshArgs.nonEmpty) VApp(h, NEL.mk(freshArgs), ctorResTy)
-                    else h
-
+                  val fieldArgs = freshArgs.drop(numParams)
+                  val appliedConstr = VCtor(h, fieldArgs, ctorResTy)
                   val envWithScrut = env.newScope.putLocal(t.scrutName, appliedConstr)
-
-                  typecheckBranch(br, freshArgs, envWithScrut, t.motive)(branchEqStore, normalizers)
+                  typecheckBranch(br, fieldArgs, envWithScrut, t.motive)(branchEqStore, normalizers)
               }
 
             case _ => throw UnknownConstructor(ctorName, inductiveName)
@@ -299,6 +297,8 @@ object TypeChecker {
       case (VSort(l1), VSort(l2)) if l1 == l2                           => true
       case (NormalizerType, NormalizerType)                             => true
       case (LevelTpe, LevelTpe)                                         => true
+      case (l1: Level, l2: Level)                                       => Level.leq(l1, l2) && Level.leq(l2, l1)
+      case (s1: VSort, s2: VSort)                                       => defEq(s1.level, s2.level)
       case (VConst(n1, _, _), VConst(n2, _, _)) if n1 == n2             => true
       case (p1: VPi, p2: VPi) if p1.binders.length == p2.binders.length => defEqPi(p1, p2).isDefined
       case (l1: VLam, l2: VLam) if l1.tpe.binders.length == l2.tpe.binders.length =>
@@ -315,6 +315,14 @@ object TypeChecker {
         }
       case (v1: AppliedValue, v2: AppliedValue) if v1.args.length == v2.args.length =>
         defEq(v1.head, v2.head) && v1.args.zip(v2.args).forall { case (arg1, arg2) => defEq(arg1, arg2) }
+
+      case (c1: VCtor, c2: VCtor) if c1.fields.length == c2.fields.length =>
+        defEq(c1.head, c2.head) && c1.fields.zip(c2.fields).forall { case (a, b) => defEq(a, b) } && defEq(
+          c1.tpe,
+          c2.tpe
+        )
+
+      case (c1: ConstructorHead, c2: ConstructorHead) if c1.name == c2.name => true
 
       case (s1: VMatch, s2: VMatch) => defEqLamId(s1.id, s2.id) && defEq(s1.scrut, s2.scrut)
 

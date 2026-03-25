@@ -20,6 +20,11 @@ object FreshVar {
       (curValues :+ fresh, curEnv.putLocal(binder.name, fresh))
     }
 
+  def assignFreshVars(binders: Vector[CoreAst.Binder], env: Env, meta: EqStore): (Vector[Var], Env) = {
+    if (binders.isEmpty) (Vector.empty, env)
+    else assignFreshVars(NEL.mk(binders), env, meta)
+  }
+
   def assignFreshVars(vpi: VPi, meta: EqStore): (Vector[Var], Env) = assignFreshVars(vpi.binders, vpi.env, meta)
 
 }

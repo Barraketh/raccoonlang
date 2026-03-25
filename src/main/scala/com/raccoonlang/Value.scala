@@ -5,9 +5,14 @@ import com.raccoonlang.Util.NEL
 
 import scala.collection.immutable.BitSet
 
+final case class InductiveMeta(
+    constructorNames: Vector[String],
+    paramCount: Int,
+    indexCount: Int
+)
+
 sealed trait ConstType
-case object ConstructorHead extends ConstType
-case class Inductive(constructorNames: Vector[String]) extends ConstType
+case class Inductive(meta: InductiveMeta) extends ConstType
 case object Symbol extends ConstType
 
 sealed trait Value {
@@ -49,15 +54,24 @@ object Value {
     override def tpe: Value = VSort(Level.zero)
   }
 
+  // Represents max(var1 + k1, var2 + k2... , c)
+  // Invariant: c is either 0 or c > k1...kn
   case class Level(atoms: Map[VarId, Int], c: Int) extends Value {
     override val tpe: Value = LevelTpe
 
     override val synDeps: BitSet = BitSet(atoms.keys.toList: _*)
   }
   object Level {
-    def succ(l: Level): Level = {
-      Level(l.atoms.map { case (varId, k) => (varId, k + 1) }, l.c + 1)
+    def addOffset(l: Level, offset: Int): Level = {
+      if (offset == 0) l
+      else {
+        val newAtoms = l.atoms.map { case (varId, k) => (varId, k + offset) }
+        val newC = math.max(l.c + offset, 0)
+        Level(newAtoms, newC)
+      }
     }
+
+    def succ(l: Level): Level = addOffset(l, 1)
 
     def max(xs: Vector[Level]): Level = {
       val flatAtoms = xs.flatMap(_.atoms)
@@ -82,8 +96,10 @@ object Value {
 
   }
 
-  case class VSort(level: Level) extends TopLevelValue {
+  case class VSort(level: Level) extends Value {
     override def tpe: Value = VSort(Level.succ(level))
+
+    override def synDeps: BitSet = level.synDeps
   }
 
   // Env must be mutable in order to allow recursion - lambdas and envs must be able to point to each other
@@ -135,6 +151,19 @@ object Value {
             res.toImmutable
           }
       }
+    }
+  }
+
+  case class ConstructorHead(name: String, numParams: Int, totalArity: Int, tpe: Value) extends TopLevelValue
+
+  // Fully applied constructor.
+  case class VCtor(head: ConstructorHead, fields: Vector[Value], tpe: Value) extends Value {
+    override lazy val synDeps: BitSet = {
+      val res = collection.mutable.BitSet()
+      res |= head.synDeps
+      fields.foreach(v => res |= v.synDeps)
+      res |= tpe.synDeps
+      res.toImmutable
     }
   }
 
