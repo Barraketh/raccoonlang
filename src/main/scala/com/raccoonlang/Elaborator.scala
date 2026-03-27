@@ -109,6 +109,6 @@ object Elaborator {
     }
   }
 
-  def elab(p: SA.Program): CA.Program = CA.Program(p.decls.map(elab), elab(p.body))
+  def elab(p: SA.Program): CA.Program = CA.Program(p.decls.map(elab), p.body.map(elab))
 
 }

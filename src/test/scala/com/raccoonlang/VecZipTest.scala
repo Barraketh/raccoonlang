@@ -3,7 +3,7 @@ package com.raccoonlang
 import com.raccoonlang.ErrorReporter.Source
 
 class VecZipTest extends munit.FunSuite {
-  private def runProgram(src: String): Value = {
+  private def typecheckDecls(src: String): Unit = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
@@ -43,14 +43,14 @@ class VecZipTest extends munit.FunSuite {
         |  }
         |}
         |
-        |do {
+        |{
         |  Nat.zero
         |}
         |
         |
         |""".stripMargin
 
-    runProgram(program)
+    typecheckDecls(program)
   }
 
 }

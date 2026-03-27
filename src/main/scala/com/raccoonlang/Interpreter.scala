@@ -274,7 +274,7 @@ object Interpreter {
 
   }
 
-  def run(p: Program): Value = {
+  def run(p: Program): Option[Value] = {
     val baseEnv =
       Env.empty
         .putGlobal("Type", VSort(Level.zero))
@@ -311,7 +311,7 @@ object Interpreter {
     }
 
     val env = p.decls.foldLeft(nextEnv) { case (env, decl) => evalDecl(decl, env) }
-    TypeChecker.typecheck(p.body, env)(EqStore.empty, NormalizerMap.empty)
+    p.body.map(b => TypeChecker.typecheck(b, env)(EqStore.empty, NormalizerMap.empty))
   }
 
   private def parseHeader(s: String): TypeTerm = {

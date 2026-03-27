@@ -1,11 +1,19 @@
 package com.raccoonlang
 
 class TypingTests extends munit.FunSuite {
-  private def runProgram(src: String): Value = {
+  private def typecheckDecls(src: String): Unit = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
         Interpreter.run(core)
+      case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
+    }
+  }
+  private def runProgram(src: String): Value = {
+    LanguageParser.parseProgram(src) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value)
+        Interpreter.run(core).getOrElse(fail("Program has no body"))
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
   }
@@ -36,7 +44,7 @@ class TypingTests extends munit.FunSuite {
         |
         |inline def id (A: Type)(x: A): A := x
         |
-        |do {
+        |{
         |  id Nat Nat.zero
         |}
         |""".stripMargin
@@ -53,12 +61,10 @@ class TypingTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inline def bad (A: Type)(x: A): A -> A := x
-        |
-        |do { Nat.zero }
         |""".stripMargin
 
     intercept[RuntimeException] {
-      runProgram(p)
+      typecheckDecls(p)
     }
   }
 
@@ -69,7 +75,7 @@ class TypingTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |do {
+        |{
         |  let s : Nat := Nat.succ
         |  s
         |}
@@ -87,7 +93,7 @@ class TypingTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |do {
+        |{
         |  let f : (x: Nat) -> Nat := fun (y: Nat): Nat => y
         |  f Nat.zero
         |}
@@ -110,7 +116,7 @@ class TypingTests extends munit.FunSuite {
         |  | Nat.succ x => x
         |}
         |
-        |do {
+        |{
         |  pred (Nat.succ Nat.zero)
         |}
         |""".stripMargin
@@ -131,12 +137,10 @@ class TypingTests extends munit.FunSuite {
         |  | Nat.zero => Nat.zero
         |  | Nat.succ x => x
         |}
-        |
-        |do { Nat.zero }
         |""".stripMargin
 
     intercept[RuntimeException] {
-      runProgram(p)
+      typecheckDecls(p)
     }
   }
 
@@ -149,7 +153,7 @@ class TypingTests extends munit.FunSuite {
         |
         |def inc (n: Nat): Nat := Nat.succ n
         |
-        |do { inc }
+        |{ inc }
         |""".stripMargin
 
     val res = runProgram(p)
@@ -163,7 +167,7 @@ class TypingTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |do {
+        |{
         |  let one := Nat.succ Nat.zero
         |  one
         |}
@@ -185,14 +189,10 @@ class TypingTests extends munit.FunSuite {
         | | cons (n: Nat) (xs: Vec A n) (x: A): Vec A (Nat.succ n)
         |
         |inline def badVec (A: Type)(n: Nat)(v: Vec A n): Vec A Nat.zero := v
-        |
-        |do {
-        |  Nat.zero
-        |}
         |""".stripMargin
 
     intercept[TypeMismatch] {
-      runProgram(p)
+      typecheckDecls(p)
     }
   }
 
@@ -211,11 +211,9 @@ class TypingTests extends munit.FunSuite {
         |  match v as self returning Vec A Nat.zero with
         |  | Vec.nil => self
         |}
-        |
-        |do { Nat.zero }
         |""".stripMargin
 
-    runProgram(p)
+    typecheckDecls(p)
   }
 
   test("nullary top-level inline def body must match declared type") {
@@ -226,12 +224,10 @@ class TypingTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inline def bad : Nat := Type
-        |
-        |do { Nat.zero }
         |""".stripMargin
 
     intercept[TypeMismatch] {
-      runProgram(p)
+      typecheckDecls(p)
     }
   }
 
@@ -243,12 +239,10 @@ class TypingTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |def bad : Nat := Type
-        |
-        |do { Nat.zero }
         |""".stripMargin
 
     intercept[TypeMismatch] {
-      runProgram(p)
+      typecheckDecls(p)
     }
   }
 }

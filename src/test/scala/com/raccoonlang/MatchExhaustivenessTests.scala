@@ -1,7 +1,7 @@
 package com.raccoonlang
 
 class MatchExhaustivenessTests extends munit.FunSuite {
-  private def runProgram(src: String): Value = {
+  private def typecheckDecls(src: String): Unit = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
@@ -22,12 +22,9 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         |  | Nat.zero => Nat.zero
         |}
         |
-        |do { Nat.zero }
         |""".stripMargin
 
-    intercept[MissingCase] {
-      runProgram(p)
-    }
+    intercept[MissingCase] { typecheckDecls(p) }
   }
 
   test("duplicate case: two Nat.zero branches") {
@@ -44,12 +41,9 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         |  | Nat.succ x => x
         |}
         |
-        |do { Nat.zero }
         |""".stripMargin
 
-    intercept[DuplicateCase] {
-      runProgram(p)
-    }
+    intercept[DuplicateCase] { typecheckDecls(p) }
   }
 
   test("unreachable case: Vec.cons on Vec A Nat.zero") {
@@ -69,12 +63,9 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         |  | Vec.cons n xs x => Nat.zero
         |}
         |
-        |do { Nat.zero }
         |""".stripMargin
 
-    intercept[UnreachableCase] {
-      runProgram(p)
-    }
+    intercept[UnreachableCase] { typecheckDecls(p) }
   }
 
   test("non-exhaustive: opaque scrutinee application should still require succ case") {
@@ -93,14 +84,11 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         |  | Nat.zero => Nat.zero
         |}
         |
-        |do { Nat.zero }
         |""".stripMargin
 
     // This SHOULD be rejected as non-exhaustive (missing Nat.succ).
     // Today it will likely NOT throw MissingCase (bug), so this test fails.
-    intercept[MissingCase] {
-      runProgram(p)
-    }
+    intercept[MissingCase] { typecheckDecls(p) }
   }
 
   test("exhaustive: opaque scrutinee application should typecheck") {
@@ -118,10 +106,9 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         |  | Nat.succ x => x
         |}
         |
-        |do { Nat.zero }
         |""".stripMargin
 
     // Should typecheck (even if it evaluates to a stuck match at runtime for opaque g).
-    runProgram(p)
+    typecheckDecls(p)
   }
 }

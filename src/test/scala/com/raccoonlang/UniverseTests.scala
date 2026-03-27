@@ -11,7 +11,7 @@ class UniverseTests extends munit.FunSuite {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
         try {
-          Interpreter.run(core)
+          Interpreter.run(core).getOrElse(fail("Program has no body"))
         } catch {
           case t: TypeError =>
             val source = Source(src)
@@ -28,7 +28,7 @@ class UniverseTests extends munit.FunSuite {
         |  | zero: Nat
         |  | succ (_: Nat) : Nat
         |
-        |do {
+        |{
         |  let x : Type := Nat
         |  x
         |}
@@ -40,7 +40,7 @@ class UniverseTests extends munit.FunSuite {
   test("Type 1 does not fit in Type 0 (let ascription fails)") {
     val p =
       """
-        |do {
+        |{
         |  let x : Type := Type
         |  x
         |}
@@ -57,7 +57,7 @@ class UniverseTests extends munit.FunSuite {
   test("Type has type Sort (Level.succ Level.zero)") {
     val p =
       """
-        |do { Type }
+        |{ Type }
         |""".stripMargin
 
     val res = runProgram(p)
@@ -75,7 +75,7 @@ class UniverseTests extends munit.FunSuite {
   test("Ascribe higher sort: let s : Sort 2 := Type") {
     val p =
       """
-        |do {
+        |{
         |  let s : Sort (Level.succ (Level.succ Level.zero)) := Type
         |  s
         |}
@@ -97,7 +97,7 @@ class UniverseTests extends munit.FunSuite {
         |
         |inline def f (u: Level)(A: Sort u)(x: A): A := x
         |
-        |do { f Level.zero Nat Nat.zero }
+        |{ f Level.zero Nat Nat.zero }
         |""".stripMargin
 
     val res = runProgram(p)
@@ -109,7 +109,7 @@ class UniverseTests extends munit.FunSuite {
   test("Cumulativity: Sort 0 fits into Sort 2 via let ascription (using Type)") {
     val p =
       """
-        |do {
+        |{
         |  let s : Sort (Level.succ (Level.succ Level.zero)) := Type
         |  s
         |}
@@ -133,7 +133,7 @@ class UniverseTests extends munit.FunSuite {
         |
         |def up2 (u: Level)(A: Sort u): Sort (Level.succ (Level.succ u)) := A
         |
-        |do { up2 Level.zero Nat }
+        |{ up2 Level.zero Nat }
         |""".stripMargin
 
     val res = runProgram(p)
@@ -149,7 +149,6 @@ class UniverseTests extends munit.FunSuite {
       """
         |def badDown (u: Level)(A: Sort (Level.succ u)): Sort u := A
         |
-        |do { Type }
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {
@@ -163,7 +162,7 @@ class UniverseTests extends munit.FunSuite {
   test("Pi formation level: (A: Sort 0)(x: A) -> A has type Sort 1") {
     val p =
       """
-        |do { fun (A: Sort Level.zero)(x: A): A => x }
+        |{ fun (A: Sort Level.zero)(x: A): A => x }
         |""".stripMargin
 
     val res = runProgram(p)
@@ -180,7 +179,7 @@ class UniverseTests extends munit.FunSuite {
   test("Level is a type and has type Sort(0)") {
     val p =
       """
-        |do { Level }
+        |{ Level }
         |""".stripMargin
 
     val res = runProgram(p)
@@ -201,7 +200,7 @@ class UniverseTests extends munit.FunSuite {
         |
         |inline def idAt (u: Level)(A: Sort u)(x: A): A := x
         |
-        |do { idAt Level.zero Nat Nat.zero }
+        |{ idAt Level.zero Nat Nat.zero }
         |""".stripMargin
 
     val res = runProgram(p)

@@ -2,7 +2,7 @@ package com.raccoonlang
 
 class InductiveCheckTest extends munit.FunSuite {
 
-  private def elabAndRun(src: String): Value = {
+  private def elabAndTypecheck(src: String): Unit = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
@@ -21,10 +21,9 @@ class InductiveCheckTest extends munit.FunSuite {
         |inductive Bad : Nat
         | | mk : Bad
         |
-        |do { Nat.zero }
         |""".stripMargin
 
-    intercept[InductiveTypeNotASort] { elabAndRun(p) }
+    intercept[InductiveTypeNotASort] { elabAndTypecheck(p) }
   }
 
   test("Inductive type must be a Sort (Pi case): inductive Bad(A: Type) : A") {
@@ -37,10 +36,9 @@ class InductiveCheckTest extends munit.FunSuite {
         |inductive Bad(A: Type) : A
         | | mk(A: Type): Bad A
         |
-        |do { Nat.zero }
         |""".stripMargin
 
-    intercept[InductiveTypeNotASort] { elabAndRun(p) }
+    intercept[InductiveTypeNotASort] { elabAndTypecheck(p) }
   }
 
   test("Constructor result must be inductive head: ctor returns Nat, not Bad") {
@@ -53,10 +51,9 @@ class InductiveCheckTest extends munit.FunSuite {
         |inductive Bad : Type
         | | mk : Nat
         |
-        |do { Nat.zero }
         |""".stripMargin
 
-    intercept[InvalidConstructorResult] { elabAndRun(p) }
+    intercept[InvalidConstructorResult] { elabAndTypecheck(p) }
   }
 
   test("Field universe too large: (A: Sort Level.one) in Type inductive") {
@@ -65,10 +62,9 @@ class InductiveCheckTest extends munit.FunSuite {
         |inductive Small : Type
         | | mk (A: Sort Level.one): Small
         |
-        |do { Type }
         |""".stripMargin
 
-    intercept[InductiveUniverseTooSmall] { elabAndRun(p) }
+    intercept[InductiveUniverseTooSmall] { elabAndTypecheck(p) }
   }
 
   test("Non-strict positivity: function-typed field with Bad in domain (f: Bad -> Bad)") {
@@ -77,10 +73,9 @@ class InductiveCheckTest extends munit.FunSuite {
         |inductive Bad : Type
         | | con (f: Bad -> Bad): Bad
         |
-        |do { Type }
         |""".stripMargin
 
-    intercept[NonStrictlyPositive] { elabAndRun(p) }
+    intercept[NonStrictlyPositive] { elabAndTypecheck(p) }
   }
 
   test("Non-strict positivity: aligned universes under other constructor F args (Wrap u (Bad u))") {
@@ -91,10 +86,9 @@ class InductiveCheckTest extends munit.FunSuite {
         |inductive Bad : Sort Level.zero
         | | con(x: Wrap Bad): Bad
         |
-        |do { Type }
         |""".stripMargin
 
-    intercept[NonStrictlyPositive] { elabAndRun(p) }
+    intercept[NonStrictlyPositive] { elabAndTypecheck(p) }
   }
 
   test("Constructor result parameter prefix must match repeated params") {
@@ -107,10 +101,9 @@ class InductiveCheckTest extends munit.FunSuite {
         |inductive Vec (A: Type) indices (n: Nat) : Sort Level.one
         | | bad : (A: Type) -> (n: Nat) -> Vec Nat Nat.zero
         |
-        |do { Nat.zero }
         |""".stripMargin
 
-    intercept[InvalidConstructorResult] { elabAndRun(p) }
+    intercept[InvalidConstructorResult] { elabAndTypecheck(p) }
   }
 
   test("Constructor result must have full family arity (params + indices)") {
@@ -123,10 +116,9 @@ class InductiveCheckTest extends munit.FunSuite {
         |inductive Vec (A: Type) indices (n: Nat) : Sort Level.one
         | | bad : (A: Type) -> (n: Nat) -> Vec A
         |
-        |do { Nat.zero }
         |""".stripMargin
 
-    intercept[ArityMismatch] { elabAndRun(p) }
+    intercept[ArityMismatch] { elabAndTypecheck(p) }
   }
 
   test("Inductive params must be uniform") {
@@ -139,9 +131,8 @@ class InductiveCheckTest extends munit.FunSuite {
         |inductive Vec (A: Type) indices (n: Nat) : Sort Level.one
         | | bad (B: Type)(n: Nat): Vec B n
         |
-        |do { Nat.zero }
         |""".stripMargin
 
-    intercept[InvalidConstructorResult] { elabAndRun(p) }
+    intercept[InvalidConstructorResult] { elabAndTypecheck(p) }
   }
 }

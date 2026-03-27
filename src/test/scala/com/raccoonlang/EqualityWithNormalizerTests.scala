@@ -3,7 +3,7 @@ package com.raccoonlang
 import com.raccoonlang.ErrorReporter.Source
 
 class EqualityWithNormalizerTests extends munit.FunSuite {
-  private def runProgram(src: String): Value = {
+  private def typecheckDecls(src: String): Unit = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
@@ -58,13 +58,9 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
         |  Eq.refl Nat (add x (add y z))
         |}
         |
-        |do {
-        |  // Just ensure all proofs typecheck under the normalizer
-        |  addComm Nat.zero (Nat.succ Nat.zero)
-        |}
         |""".stripMargin
 
-    runProgram(p)
+    typecheckDecls(p)
   }
 
   test("Negative: commutativity proof without normalizer fails") {
@@ -85,7 +81,6 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
         |
         |inline def addCommNoNorm (a: Nat)(b: Nat): Eq Nat (add a b) (add b a) := Eq.refl Nat (add a b)
         |
-        |do { addCommNoNorm Nat.zero (Nat.succ Nat.zero) }
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {
@@ -114,7 +109,6 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
         |
         |inline def addZeroLeftNoNorm (a: Nat): Eq Nat (add Nat.zero a) a := Eq.refl Nat (add Nat.zero a)
         |
-        |do { addZeroLeftNoNorm (Nat.succ Nat.zero) }
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {

@@ -145,11 +145,9 @@ object LanguageParser {
   private def declP: Parser[Decl] = constP | inductiveP
 
   private def decls: Parser[Vector[Decl]] = skipAllWs ~ declP.rep(1, lineSep) ~ skipAllWs ~ End
-
-  private def doBlock = kw("do") ~ term
-
+  
   private def programP: Parser[Program] =
-    (skipAllWs ~ declP.rep(0, lineSep.rep(1)) ~ skipAllWs ~ doBlock).map(Program.tupled)
+    (skipAllWs ~ declP.rep(0, lineSep.rep(1)) ~ skipAllWs ~ term.?).map(Program.tupled)
 
   private def tryParse[A](input: String, parser: Parser[A]): ParseResult[A] = try {
     parser.parse(input, 0)

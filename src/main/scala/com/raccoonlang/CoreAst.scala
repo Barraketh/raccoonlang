@@ -108,5 +108,5 @@ object CoreAst {
     ) extends Decl
   }
 
-  case class Program(decls: Vector[Decl], body: Term)
+  case class Program(decls: Vector[Decl], body: Option[Term])
 }

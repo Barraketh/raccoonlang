@@ -5,7 +5,7 @@ class InterpreterTests extends munit.FunSuite {
     LanguageParser.parseProgram(s) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
-        Interpreter.run(core)
+        Interpreter.run(core).getOrElse(fail("Program has no body"))
       case err: Failure => fail(s"Failed to parse: $err, ${s.substring(err.curIdx)}")
     }
 
@@ -40,7 +40,7 @@ class InterpreterTests extends munit.FunSuite {
               |  | Nat.succ x => add (Nat.succ a) x
               |}
               |
-              |do {
+              |{
               |  let a := Nat.succ Nat.zero
               |  add a a
               |}
@@ -58,7 +58,7 @@ class InterpreterTests extends munit.FunSuite {
         | | true : Bool
         | | false : Bool
         |
-        |do {
+        |{
         |  Bool.true
         |}
         |""".stripMargin
@@ -83,7 +83,7 @@ class InterpreterTests extends munit.FunSuite {
         | | nil : Vec A Nat.zero
         | | cons (n: Nat) (xs: Vec A n) (x: A): Vec A (Nat.succ n)
         |
-        |do {
+        |{
         |  Vec.nil Nat
         |}
         |""".stripMargin

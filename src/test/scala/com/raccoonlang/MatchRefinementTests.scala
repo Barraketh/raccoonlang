@@ -1,7 +1,7 @@
 package com.raccoonlang
 
 class MatchRefinementTests extends munit.FunSuite {
-  private def runProgram(src: String): Value = {
+  private def typecheckDecls(src: String): Unit = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
@@ -25,10 +25,9 @@ class MatchRefinementTests extends munit.FunSuite {
         |  | Eq.refl x => Eq.refl Nat x
         |}
         |
-        |do { Nat.zero }
         |""".stripMargin
 
-    runProgram(p)
+    typecheckDecls(p)
   }
 
   test("match refinement: congSucc via wrapped scrut succeeds") {
@@ -46,10 +45,9 @@ class MatchRefinementTests extends munit.FunSuite {
         |  | Eq.refl x => Eq.refl Nat (Nat.succ x)
         |}
         |
-        |do { Nat.zero }
         |""".stripMargin
 
-    runProgram(p)
+    typecheckDecls(p)
   }
 
   test("match refinement negative: mismatched motive (extra succ) fails (ctor scrut)") {
@@ -67,12 +65,9 @@ class MatchRefinementTests extends munit.FunSuite {
         |  | Eq.refl x => Eq.refl Nat x
         |}
         |
-        |do { Nat.zero }
         |""".stripMargin
 
-    intercept[TypeMismatch] {
-      runProgram(p)
-    }
+    intercept[TypeMismatch] { typecheckDecls(p) }
   }
 
   test("match refinement: cumulative family parameter on neutral Vec scrut succeeds") {
@@ -92,9 +87,8 @@ class MatchRefinementTests extends munit.FunSuite {
         |  | Vec.cons k xs x => self
         |}
         |
-        |do { Nat.zero }
         |""".stripMargin
 
-    runProgram(p)
+    typecheckDecls(p)
   }
 }
