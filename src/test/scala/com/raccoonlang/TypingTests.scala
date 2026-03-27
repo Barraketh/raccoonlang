@@ -217,4 +217,38 @@ class TypingTests extends munit.FunSuite {
 
     runProgram(p)
   }
+
+  test("nullary top-level inline def body must match declared type") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inline def bad : Nat := Type
+        |
+        |do { Nat.zero }
+        |""".stripMargin
+
+    intercept[TypeMismatch] {
+      runProgram(p)
+    }
+  }
+
+  test("nullary top-level opaque def body must match declared type") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |def bad : Nat := Type
+        |
+        |do { Nat.zero }
+        |""".stripMargin
+
+    intercept[TypeMismatch] {
+      runProgram(p)
+    }
+  }
 }

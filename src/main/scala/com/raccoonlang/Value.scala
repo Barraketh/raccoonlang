@@ -66,7 +66,7 @@ object Value {
       if (offset == 0) l
       else {
         val newAtoms = l.atoms.map { case (varId, k) => (varId, k + offset) }
-        val newC = math.max(l.c + offset, 0)
+        val newC = if (l.c > 0 || l.atoms.isEmpty) l.c + offset else 0
         Level(newAtoms, newC)
       }
     }

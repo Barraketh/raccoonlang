@@ -7,8 +7,6 @@ import com.raccoonlang.Interpreter._
 import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
 
-import scala.util.Try
-
 object TypeChecker {
 
   def sortLeq(a: Value, b: Value)(implicit eqStore: EqStore): Boolean = {
@@ -18,7 +16,7 @@ object TypeChecker {
     }
   }
 
-  private def checkType(value: Value, tyVal: Value)(implicit
+  def checkType(value: Value, tyVal: Value)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): Unit = {
@@ -170,11 +168,18 @@ object TypeChecker {
 
               val branchRefinable = scrut.tpe.synDeps ++ ctorResTy.synDeps
 
-              Try(Unify.unify(scrut.tpe, ctorResTy, eqStore.allow(branchRefinable))) match {
-                case util.Failure(_) =>
+              val branchEqStoreOpt =
+                try {
+                  Some(Unify.unify(scrut.tpe, ctorResTy, eqStore.allow(branchRefinable)))
+                } catch {
+                  case _: UnificationFailed | _: OccursCheckFailed => None
+                }
+
+              branchEqStoreOpt match {
+                case None =>
                   // Case is unreachable - make sure it's not in the match
                   t.cases.find(c => c.ctorName == ctorName).foreach(c => throw UnreachableCase(ctorName, Some(c.span)))
-                case util.Success(branchEqStore) =>
+                case Some(branchEqStore) =>
                   // Case is reachable - typecheck its branch
                   val br = t.cases.find(c => c.ctorName == ctorName).getOrElse(throw MissingCase(ctorName))
                   val fieldArgs = freshArgs.drop(numParams)

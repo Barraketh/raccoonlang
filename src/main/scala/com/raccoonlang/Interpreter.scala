@@ -252,6 +252,9 @@ object Interpreter {
 
         // Allow recursive references by pre-binding a symbolic self during body checking
         val bodyV = TypeChecker.typecheck(body, env.putGlobal(name, declConst))
+
+        TypeChecker.checkType(bodyV, tyV)
+
         val value: Value = unfoldStrategy match {
           case Some(_) => bodyV
           case None    => declConst
