@@ -1,0 +1,14 @@
+inductive Nat : Type
+ | zero : Nat
+ | succ (_: Nat) : Nat
+
+inline def add (a: Nat)(b: Nat): Nat := {
+  match b as _ returning Nat with
+  | Nat.zero => a
+  | Nat.succ x => add (Nat.succ a) x
+}
+
+{
+  let a := Nat.succ Nat.zero
+  add a a
+}
