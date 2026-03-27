@@ -97,6 +97,23 @@ inline def addComm (a: Nat)(b: Nat): Eq Nat (add a b) (add b a) := {
 
 ## Quickstart
 
+To just try out the language, download the latest release (arm mac only at the moment), then run in your shell
+```bash
+raccoon /path/to/program.rac
+```
+
+Prebuilt macOS binaries are currently distributed unsigned, so macOS may warn on first launch.
+
+To allow the binary:
+
+1. Run it once from Terminal.
+2. Open **System Settings → Privacy & Security**.
+3. Click **Open Anyway** for the blocked binary.
+4. Re-run the command.
+
+
+## Developing / building from source
+
 ### Requirements
 
 - Java 17+
