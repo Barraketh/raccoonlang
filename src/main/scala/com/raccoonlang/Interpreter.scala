@@ -74,7 +74,7 @@ object Interpreter {
     val id = LamId.LocalId(pi.span.start, captureVals)
 
     val (vars, bodyEnv) = FreshVar.assignFreshVars(pi.binders, env, eqStore)
-    val outType = evalTT(pi.out, bodyEnv)
+    val outType = evalTypeTerm(pi.out, bodyEnv)
 
     val types = vars.map(_.tpe.tpe) :+ outType.tpe
     val piLevel = Level.max(types.collect { case VSort(level) => level })
@@ -82,12 +82,18 @@ object Interpreter {
     VPi(env, pi.binders, pi.out, FreeNames.getDeps(pi, env, Set.empty), id, VSort(piLevel))
   }
 
+  private def evalTApp(app: Term.TApp, env: Env)(implicit meta: EqStore): Value = {
+    val fn = evalTypeTerm(app.fn, env)
+    val args = app.args.map(arg => evalTypeTerm(arg, env))
+    evalApply(fn, args)
+  }
+
   // Evaluate a type-position expression without enforcing it is a type yet
-  private def evalTT(tt: TypeTerm, env: Env)(implicit meta: EqStore): Value = tt match {
-    case i: Term.Ident          => evalIdent(i, env)
-    case Term.TApp(fn, args, _) => evalApplyTerm(fn, args, env)
-    case pi: Term.Pi            => evalPi(pi, env)
-    case s: Term.Sort           => evalSort(s, env)
+  def evalTypeTerm(tt: TypeTerm, env: Env)(implicit meta: EqStore): Value = tt match {
+    case i: Term.Ident => evalIdent(i, env)
+    case a: Term.TApp  => evalTApp(a, env)
+    case pi: Term.Pi   => evalPi(pi, env)
+    case s: Term.Sort  => evalSort(s, env)
   }
 
   private def evalIdent(i: Term.Ident, env: Env): Value = {
@@ -118,12 +124,12 @@ object Interpreter {
                 }
               case _ => res
             }
-          case h: VConst => VApp(h, vArgs, evalTT(pi.out, envWithArgs))
+          case h: VConst => VApp(h, vArgs, evalTypeTerm(pi.out, envWithArgs))
           case h: ConstructorHead =>
-            val resultTy = evalTT(pi.out, envWithArgs)
+            val resultTy = evalTypeTerm(pi.out, envWithArgs)
             val fields = vArgs.toVector.drop(h.numParams)
             VCtor(h, fields, resultTy)
-          case b: Blocker => VBlockedApp(b, vArgs, evalTT(pi.out, envWithArgs), b.blockerId)
+          case b: Blocker => VBlockedApp(b, vArgs, evalTypeTerm(pi.out, envWithArgs), b.blockerId)
           case _          => throw CannotApplyNonFunction(fn)
         }
       case _ => throw CannotApplyNonFunction(fn.tpe)
@@ -171,13 +177,13 @@ object Interpreter {
   }
 
   private def evalSort(s: Term.Sort, env: Env)(implicit eqStore: EqStore): VSort = {
-    VSort(getLevel(evalTT(s.level, env)))
+    VSort(getLevel(evalTypeTerm(s.level, env)))
   }
 
   def evalTerm(term: Term, env: Env)(implicit eqStore: EqStore): Value = {
     try {
       term match {
-        case tt: TypeTerm          => evalTT(tt, env)
+        case tt: TypeTerm          => evalTypeTerm(tt, env)
         case Term.App(fn, args, _) => evalApplyTerm(fn, args, env)
         case l: Term.Lam           => evalLam(l, env)
         case m: Term.Match         => evalMatch(m, env)
@@ -214,7 +220,7 @@ object Interpreter {
       LamId.LocalId(m.span.start, captures)
     }
 
-    lazy val outType = evalTerm(m.motive, withScrut)
+    lazy val outType = evalTypeTerm(m.motive, withScrut)
 
     val (head, args) = scrut match {
       case VCtor(head, fields, _) => (head, fields)
@@ -302,7 +308,7 @@ object Interpreter {
     )
 
     val nextEnv = builtinFuncs.foldLeft(baseEnv) { case (curEnv, (name, tpe, lam)) =>
-      val tpeV = evalTT(tpe, curEnv)(EqStore.empty)
+      val tpeV = evalTypeTerm(tpe, curEnv)(EqStore.empty)
       tpeV match {
         case pi: VPi =>
           curEnv.putGlobal(name, VLam(pi, LamId.Const(name), isStable = true, lam))

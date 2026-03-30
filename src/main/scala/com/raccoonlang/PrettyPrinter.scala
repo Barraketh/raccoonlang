@@ -68,7 +68,7 @@ object PrettyPrinter {
     }
   }
 
-  private def printTermAtom(t: CoreAst.Term): String = t match {
+  private def printTermAtom(t: CoreAst.Ast): String = t match {
     case CoreAst.Term.Ident(_, _)           => printTerm(t)
     case CoreAst.Term.App(_, _, _)          => printTerm(t)
     case CoreAst.Term.TApp(_, _, _)         => printTerm(t)
@@ -79,7 +79,7 @@ object PrettyPrinter {
     case CoreAst.Term.Pi(_, _, _)           => s"(${printTerm(t)})"
   }
 
-  def printTerm(t: CoreAst.Term): String = t match {
+  def printTerm(t: CoreAst.Ast): String = t match {
     case tt: CoreAst.TypeTerm => printTypeTerm(tt)
     case CoreAst.Term.App(fn, args, _) =>
       val head = printTermAtom(fn)

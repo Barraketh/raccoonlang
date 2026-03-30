@@ -4,6 +4,8 @@ import com.raccoonlang.CoreAst._
 import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
 
+import scala.annotation.tailrec
+
 object InductiveChecks {
 
   // ------------ Occurrence and Positivity ------------
@@ -24,7 +26,7 @@ object InductiveChecks {
         sameInductiveHead(h, inductiveHead) || args.exists(arg => occursInductive(arg, inductiveHead))
       case pi: VPi =>
         val (binderVars, bodyEnv) = FreshVar.assignFreshVars(pi, eqStore)
-        val allTypes = binderVars.map(_.tpe) :+ Interpreter.evalTerm(pi.out, bodyEnv)
+        val allTypes = binderVars.map(_.tpe) :+ Interpreter.evalTypeTerm(pi.out, bodyEnv)
         allTypes.exists(v => occursInductive(v, inductiveHead))
 
       case _: ConstructorHead | _: VCtor                                                      => false
@@ -35,6 +37,7 @@ object InductiveChecks {
   // - in Pi(x : A) -> B, the inductive may not occur in A, and must be strictly positive in B
   // - a direct recursive occurrence I args is allowed, provided I does not occur in the args
   // - under any other type constructor application F args, recursive occurrence in args is rejected
+  @tailrec
   private def isStrictlyPositive(v: Value, inductiveHead: VConst)(implicit eqStore: EqStore): Boolean =
     v match {
       case _: Blocked => false // Be conservative: blocked shapes are not strictly positive
@@ -43,7 +46,7 @@ object InductiveChecks {
       case pi: VPi =>
         val (binderVars, bodyEnv) = FreshVar.assignFreshVars(pi, eqStore)
         !binderVars.exists(v => occursInductive(v.tpe, inductiveHead)) && isStrictlyPositive(
-          Interpreter.evalTerm(pi.out, bodyEnv),
+          Interpreter.evalTypeTerm(pi.out, bodyEnv),
           inductiveHead
         )
       case VApp(_, args, _) =>
@@ -119,7 +122,7 @@ object InductiveChecks {
             )
         }
 
-        Interpreter.evalTerm(ctor.resultTy, bodyEnv)
+        Interpreter.evalTypeTerm(ctor.resultTy, bodyEnv)
       }
 
       // 4) Constructor result must be the inductive family head applied to the full family arity,

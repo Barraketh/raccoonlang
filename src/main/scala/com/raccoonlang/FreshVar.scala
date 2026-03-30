@@ -15,7 +15,8 @@ object FreshVar {
 
   def assignFreshVars(binders: NEL[CoreAst.Binder], env: Env, meta: EqStore): (Vector[Var], Env) =
     binders.foldLeft(Vector.empty[Var] -> env.newScope) { case ((curValues, curEnv), binder) =>
-      val tyV = evalTerm(binder.ty, curEnv)(meta) // vpi has been typechecked already - no need to typecheck the binders
+      val tyV =
+        evalTypeTerm(binder.ty, curEnv)(meta) // vpi has been typechecked already - no need to typecheck the binders
       val fresh = freshVar(binder.name, tyV)
       (curValues :+ fresh, curEnv.putLocal(binder.name, fresh))
     }

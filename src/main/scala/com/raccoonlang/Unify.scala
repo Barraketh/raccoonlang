@@ -36,15 +36,15 @@ object Unify {
     val (resMeta, nextEnv1, nextEnv2, vars) =
       pi1.binders.zip(pi2.binders).foldLeft((meta, pi1.env.newScope, pi2.env.newScope, Vector.empty[Var])) {
         case ((curMeta, curEnv1, curEnv2, curVars), (b1, b2)) =>
-          val t1 = evalTerm(b1.ty, curEnv1)(curMeta)
-          val t2 = evalTerm(b2.ty, curEnv2)(curMeta)
+          val t1 = evalTypeTerm(b1.ty, curEnv1)(curMeta)
+          val t2 = evalTypeTerm(b2.ty, curEnv2)(curMeta)
           val nextMeta = unify(t1, t2, curMeta)
 
           val x = FreshVar.freshVar(b1.name, t1)
           (nextMeta, curEnv1.putLocal(b1.name, x), curEnv2.putLocal(b2.name, x), curVars :+ x)
       }
-    val out1 = evalTerm(pi1.out, nextEnv1)(resMeta)
-    val out2 = evalTerm(pi2.out, nextEnv2)(resMeta)
+    val out1 = evalTypeTerm(pi1.out, nextEnv1)(resMeta)
+    val out2 = evalTypeTerm(pi2.out, nextEnv2)(resMeta)
     (unify(out1, out2, resMeta), vars)
   }
 

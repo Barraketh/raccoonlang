@@ -19,14 +19,17 @@ object CoreAst {
     case object Stable extends UnfoldStrategy
   }
 
-  // Terms that can appear in function bodies
-  sealed trait Term {
+  sealed trait Ast {
     def span: Span
 
     override def toString: String = PrettyPrinter.printTerm(this)
   }
 
-  sealed trait TypeTerm extends Term // Terms that can appear in type expressions
+  // Terms that can appear in function bodies
+  sealed trait Term extends Ast
+
+  // Terms that can appear in type expressions
+  sealed trait TypeTerm extends Ast
 
   object Term {
     // Identifier (either type or term)

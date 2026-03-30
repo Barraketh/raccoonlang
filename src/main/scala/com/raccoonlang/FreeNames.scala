@@ -1,20 +1,20 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.Term
 import com.raccoonlang.CoreAst.Term.Match
+import com.raccoonlang.CoreAst.{Ast, Term}
 
 import scala.collection.immutable.BitSet
 
 object FreeNames {
 
-  private def getFreeNames(terms: List[Term], bound: Set[String]): Set[String] = {
+  private def getFreeNames(terms: List[Ast], bound: Set[String]): Set[String] = {
     val l: List[Set[String]] = terms.map(tt => getFreeNames(tt, bound))
     l.reduce[Set[String]] { case (s1, s2) => s1.union(s2) }
   }
 
   private def getFreeNames(
-      binders: List[(String, Term, Option[Term])],
-      out: Term,
+      binders: List[(String, Ast, Option[Ast])],
+      out: Ast,
       bound: Set[String]
   ): Set[String] = {
     val (nextNames, nextBound) = binders.foldLeft((Set.empty[String], bound)) {
@@ -29,7 +29,7 @@ object FreeNames {
     nextNames.union(getFreeNames(out, nextBound))
   }
 
-  def getFreeNames(term: Term, bound: Set[String]): Set[String] = {
+  def getFreeNames(term: CoreAst.Ast, bound: Set[String]): Set[String] = {
     term match {
       case Term.Ident(name, _)      => if (bound.contains(name)) Set.empty else Set(name)
       case Term.Sort(level, _)      => getFreeNames(level, bound)
@@ -50,7 +50,7 @@ object FreeNames {
     }
   }
 
-  def getDeps(term: Term, env: Env, bound: Set[String]): BitSet = {
+  def getDeps(term: Ast, env: Env, bound: Set[String]): BitSet = {
     val freeNames = FreeNames.getFreeNames(term, bound)
     val deps = collection.mutable.BitSet()
     freeNames.foreach { name =>
