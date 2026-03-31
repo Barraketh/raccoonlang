@@ -47,15 +47,17 @@ object LanguageParser {
 
   private def kw(s: String) = (skipWS ~ P(s) ~/ wsSep).named(s"Kw($s)")
 
+  private def identTerm = ident.flatSpanned.map(Ident.tupled)
+
   // Type atoms: identifier, type variable, or parenthesized type
-  private def typeAtom: Parser[TypeTerm] = sym('(') ~ typeTerm ~ symTight(')') | ident.flatSpanned.map(Ident.tupled)
+  private def typeAtom: Parser[TypeTerm] = sym('(') ~ typeTerm ~ symTight(')') | identTerm
 
   // General type application chain: atom atom ... -> TApp(...(atom1 atom2) atom3)
-  private def typeExpr: Parser[TypeTerm] =
-    typeAtom.rep(1, wsSep).spanned.mapAsT { case (atoms, span) =>
-      if (atoms.length == 1) atoms.head
-      else TApp(atoms.head, NEL.mk(atoms.tail), span)
-    }
+  private def typeExpr: Parser[TypeTerm] = {
+    (identTerm ~ wsSep ~ typeAtom.rep(1, wsSep)).flatSpanned.map { case (name, args, span) =>
+      TApp(name, NEL.mk(args), span)
+    } | typeAtom
+  }
 
   private def param = (sym('(') ~ ident ~ sym(':') ~/ typeTerm ~ symTight(')')).flatSpanned.map(Binder.tupled)
 
@@ -145,7 +147,7 @@ object LanguageParser {
   private def declP: Parser[Decl] = constP | inductiveP
 
   private def decls: Parser[Vector[Decl]] = skipAllWs ~ declP.rep(1, lineSep) ~ skipAllWs ~ End
-  
+
   private def programP: Parser[Program] =
     (skipAllWs ~ declP.rep(0, lineSep.rep(1)) ~ skipAllWs ~ term.?).map(Program.tupled)
 

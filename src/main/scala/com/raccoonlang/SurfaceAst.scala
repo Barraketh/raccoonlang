@@ -21,7 +21,7 @@ object SurfaceAst {
     final case class Ident(name: String, span: Span) extends Term with TypeTerm
 
     // Application in type position
-    final case class TApp(fn: TypeTerm, args: NEL[TypeTerm], span: Span) extends TypeTerm
+    final case class TApp(fn: Ident, args: NEL[TypeTerm], span: Span) extends TypeTerm
 
     // Pi (x: A) -> B x
     final case class Pi(binder: Binder, body: TypeTerm, span: Span) extends TypeTerm
