@@ -5,6 +5,8 @@ import com.raccoonlang.CoreAst._
 import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
 
+import scala.collection.immutable.BitSet
+
 object Interpreter {
   private def normalizeLevel(l: Level)(implicit eqStore: EqStore): Level = {
     val pieces = Vector(Level(Map.empty, l.c)) ++
@@ -79,7 +81,15 @@ object Interpreter {
     val types = vars.map(_.tpe.tpe) :+ outType.tpe
     val piLevel = Level.max(types.collect { case VSort(level) => level })
 
-    VPi(env, pi.binders, pi.out, FreeNames.getDeps(pi, env, Set.empty), id, VSort(piLevel))
+    VPi(
+      env,
+      pi.binders,
+      codomain = (env, eqStore) => evalTypeTerm(pi.out, env)(eqStore),
+      Some(pi.out),
+      FreeNames.getDeps(pi, env, Set.empty),
+      id,
+      VSort(piLevel)
+    )
   }
 
   private def evalTApp(app: Term.TApp, env: Env)(implicit meta: EqStore): Value = {
@@ -93,7 +103,6 @@ object Interpreter {
     case i: Term.Ident => evalIdent(i, env)
     case a: Term.TApp  => evalTApp(a, env)
     case pi: Term.Pi   => evalPi(pi, env)
-    case s: Term.Sort  => evalSort(s, env)
   }
 
   private def evalIdent(i: Term.Ident, env: Env): Value = {
@@ -124,12 +133,12 @@ object Interpreter {
                 }
               case _ => res
             }
-          case h: VConst => VApp(h, vArgs, evalTypeTerm(pi.out, envWithArgs))
+          case h: VConst => VApp(h, vArgs, pi.codomain(envWithArgs, eqStore))
           case h: ConstructorHead =>
-            val resultTy = evalTypeTerm(pi.out, envWithArgs)
+            val resultTy = pi.codomain(envWithArgs, eqStore)
             val fields = vArgs.toVector.drop(h.numParams)
             VCtor(h, fields, resultTy)
-          case b: Blocker => VBlockedApp(b, vArgs, evalTypeTerm(pi.out, envWithArgs), b.blockerId)
+          case b: Blocker => VBlockedApp(b, vArgs, pi.codomain(envWithArgs, eqStore), b.blockerId)
           case _          => throw CannotApplyNonFunction(fn)
         }
       case _ => throw CannotApplyNonFunction(fn.tpe)
@@ -174,10 +183,6 @@ object Interpreter {
       case v: Var   => Level.mk(v.id)
       case v        => throw NotALevel(v)
     }
-  }
-
-  private def evalSort(s: Term.Sort, env: Env)(implicit eqStore: EqStore): VSort = {
-    VSort(getLevel(evalTypeTerm(s.level, env)))
   }
 
   def evalTerm(term: Term, env: Env)(implicit eqStore: EqStore): Value = {
@@ -307,7 +312,7 @@ object Interpreter {
       )
     )
 
-    val nextEnv = builtinFuncs.foldLeft(baseEnv) { case (curEnv, (name, tpe, lam)) =>
+    val env2 = builtinFuncs.foldLeft(baseEnv) { case (curEnv, (name, tpe, lam)) =>
       val tpeV = evalTypeTerm(tpe, curEnv)(EqStore.empty)
       tpeV match {
         case pi: VPi =>
@@ -315,6 +320,30 @@ object Interpreter {
         case _ => curEnv
       }
     }
+
+    val nextEnv = env2.putGlobal(
+      "Sort",
+      VLam(
+        VPi(
+          env2,
+          NEL.one(Binder("l", CoreAst.Term.Ident("Level", Span(0, 0)), Span(0, 0))),
+          (env, eqStore) => {
+            val l = getLevel(env.findLocal("l").get)(eqStore)
+            VSort(Level.succ(l))
+          },
+          None,
+          BitSet.empty,
+          LamId.Const("Sort"),
+          VSort(Level.zero)
+        ),
+        LamId.Const("Sort"),
+        true,
+        (args, eqStore) => {
+          val l = getLevel(args(0))(eqStore)
+          VSort(l)
+        }
+      )
+    )
 
     val env = p.decls.foldLeft(nextEnv) { case (env, decl) => evalDecl(decl, env) }
     p.body.map(b => TypeChecker.typecheck(b, env)(EqStore.empty, NormalizerMap.empty))

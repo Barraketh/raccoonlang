@@ -26,8 +26,6 @@ object SurfaceAst {
     // Pi (x: A) -> B x
     final case class Pi(binder: Binder, body: TypeTerm, span: Span) extends TypeTerm
 
-    final case class Sort(level: TypeTerm, span: Span) extends TypeTerm
-
     // Application: f a (term-level)
     final case class App(fn: Term, args: NEL[Term], span: Span) extends Term
 

@@ -31,7 +31,6 @@ object LanguageParser {
     "inductive",
     "indices",
     "stable",
-    "Sort"
   )
 
   private val ident =
@@ -63,11 +62,8 @@ object LanguageParser {
 
   private def pi: Parser[Pi] = (param ~ sym("->") ~ typeTerm).flatSpanned.map { Pi.tupled }
 
-  private def sort: Parser[Sort] = ((kw("Sort") ~/ typeTerm)).flatSpanned.map(Sort.tupled)
-
   private def typeTerm: Parser[TypeTerm] =
     pi |
-      sort |
       sym('(') ~ typeTerm ~ sym(')') |
       (typeExpr.spanned ~ sym("->") ~ typeTerm).spanned.mapAsT { case ((expr, term), span) =>
         Pi(Binder("_", expr.value, expr.span), term, span)

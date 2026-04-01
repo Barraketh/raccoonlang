@@ -20,14 +20,12 @@ object PrettyPrinter {
           }
           .mkString(" -> ")
         s"$bindersStr -> ${pt(out)}"
-      case CoreAst.Term.Sort(lvl, _) => s"Sort ${printTermAtom(lvl)}"
     }
 
     def ptAtom(t: CoreAst.TypeTerm): String = t match {
-      case Term.Ident(_, _)        => pt(t)
-      case Term.TApp(_, _, _)      => pt(t)
-      case CoreAst.Term.Sort(_, _) => pt(t)
-      case Term.Pi(_, _, _)        => s"(${pt(t)})"
+      case Term.Ident(_, _)   => pt(t)
+      case Term.TApp(_, _, _) => pt(t)
+      case Term.Pi(_, _, _)   => s"(${pt(t)})"
     }
 
     pt(tt)
@@ -72,7 +70,6 @@ object PrettyPrinter {
     case CoreAst.Term.Ident(_, _)           => printTerm(t)
     case CoreAst.Term.App(_, _, _)          => printTerm(t)
     case CoreAst.Term.TApp(_, _, _)         => printTerm(t)
-    case CoreAst.Term.Sort(_, _)            => printTerm(t)
     case CoreAst.Term.Lam(_, _, _, _, _, _) => s"(${printTerm(t)})"
     case CoreAst.Term.Match(_, _, _, _, _)  => s"(${printTerm(t)})"
     case CoreAst.Term.Body(_, _, _)         => s"(${printTerm(t)})"
@@ -104,9 +101,14 @@ object PrettyPrinter {
   }
 
   def print(value: Value): String = value match {
-    case Value.VSort(lvl)                     => s"Type $lvl"
-    case Value.Level(atoms, c)                => s"Level($atoms, $c)"
-    case Value.VPi(_, binders, out, _, _, _)  => printTypeTerm(CoreAst.Term.Pi(binders, out, Span(0, 0)))
+    case Value.VSort(lvl)      => s"Type $lvl"
+    case Value.Level(atoms, c) => s"Level($atoms, $c)"
+    case Value.VPi(_, binders, _, outSyntax, _, _, _) =>
+      val outTerm = outSyntax match {
+        case Some(term) => term
+        case None       => CoreAst.Term.Ident("Any", Span(0, 0))
+      }
+      printTypeTerm(CoreAst.Term.Pi(binders, outTerm, Span(0, 0)))
     case Value.VConst(name, _, _)             => name
     case v: Value.AppliedValue                => printApp(v.head, v.args)
     case Value.ConstructorHead(name, _, _, _) => name

@@ -41,8 +41,6 @@ object CoreAst {
     // Pi (x: A) -> B x
     final case class Pi(binders: NEL[Binder], out: TypeTerm, span: Span) extends TypeTerm
 
-    final case class Sort(level: TypeTerm, span: Span) extends TypeTerm
-
     // Application: f a (term-level)
     final case class App(fn: Term, args: NEL[Term], span: Span) extends Term
 

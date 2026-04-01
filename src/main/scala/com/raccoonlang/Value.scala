@@ -103,8 +103,15 @@ object Value {
   }
 
   // Env must be mutable in order to allow recursion - lambdas and envs must be able to point to each other
-  case class VPi(var env: Env, binders: NEL[Binder], out: TypeTerm, synDeps: BitSet, id: LamId, tpe: Value)
-    extends Value {
+  case class VPi(
+      var env: Env,
+      binders: NEL[Binder],
+      codomain: (Env, EqStore) => Value,
+      outSyntax: Option[TypeTerm],
+      synDeps: BitSet,
+      id: LamId,
+      tpe: Value
+  ) extends Value {
     override def toString: String = "VPi"
   }
 

@@ -43,8 +43,8 @@ object Unify {
           val x = FreshVar.freshVar(b1.name, t1)
           (nextMeta, curEnv1.putLocal(b1.name, x), curEnv2.putLocal(b2.name, x), curVars :+ x)
       }
-    val out1 = evalTypeTerm(pi1.out, nextEnv1)(resMeta)
-    val out2 = evalTypeTerm(pi2.out, nextEnv2)(resMeta)
+    val out1 = pi1.codomain(nextEnv1, resMeta)
+    val out2 = pi2.codomain(nextEnv2, resMeta)
     (unify(out1, out2, resMeta), vars)
   }
 

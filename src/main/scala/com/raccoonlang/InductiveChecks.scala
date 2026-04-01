@@ -26,7 +26,7 @@ object InductiveChecks {
         sameInductiveHead(h, inductiveHead) || args.exists(arg => occursInductive(arg, inductiveHead))
       case pi: VPi =>
         val (binderVars, bodyEnv) = FreshVar.assignFreshVars(pi, eqStore)
-        val allTypes = binderVars.map(_.tpe) :+ Interpreter.evalTypeTerm(pi.out, bodyEnv)
+        val allTypes = binderVars.map(_.tpe) :+ pi.codomain(bodyEnv, eqStore)
         allTypes.exists(v => occursInductive(v, inductiveHead))
 
       case _: ConstructorHead | _: VCtor                                                      => false
@@ -46,7 +46,7 @@ object InductiveChecks {
       case pi: VPi =>
         val (binderVars, bodyEnv) = FreshVar.assignFreshVars(pi, eqStore)
         !binderVars.exists(v => occursInductive(v.tpe, inductiveHead)) && isStrictlyPositive(
-          Interpreter.evalTypeTerm(pi.out, bodyEnv),
+          pi.codomain(bodyEnv, eqStore),
           inductiveHead
         )
       case VApp(_, args, _) =>

@@ -32,7 +32,7 @@ object TypeChecker {
     val fnTy0 = Interpreter.resolveInEqStore(fn0.tpe)
 
     fnTy0 match {
-      case VPi(env, binders, outTy, _, _, _) =>
+      case VPi(env, binders, _, _, _, _, _) =>
         if (binders.length != args.length)
           throw ArityMismatch(binders.length, args.length)
 
@@ -84,7 +84,6 @@ object TypeChecker {
     case t: Term.TApp => typecheckTApp(t, env)
     case pi: Term.Pi  => typecheckPi(pi, env)
     case ident: Ident => Interpreter.evalTerm(ident, env)
-    case s: Term.Sort => typecheckSort(s, env)
   }
 
   private def typecheckBody(body: Term.Body, env: Env)(implicit
@@ -160,17 +159,15 @@ object TypeChecker {
           val ctorVal = env.find(ctorName).getOrElse(throw NotFound(ctorName))
 
           ctorVal match {
-            case h @ ConstructorHead(_, numParams, fields, ctorTy) =>
+            case h @ ConstructorHead(_, numParams, _, ctorTy) =>
               val (freshArgs, ctorEnv) = ctorTy match {
                 case pi: VPi => assignFreshVars(pi, eqStore)
                 case _       => (Vector.empty[Value], env)
               }
 
               val ctorResTy: Value = ctorTy match {
-                case VPi(_, _, out, _, _, _) =>
-                  // Again, we've already typechecked out, so we can just eval it
-                  Interpreter.evalTypeTerm(out, ctorEnv)(eqStore)
-                case otherTy: Value => otherTy
+                case VPi(_, _, codomain, _, _, _, _) => codomain(ctorEnv, eqStore)
+                case otherTy: Value                  => otherTy
               }
 
               val branchRefinable = scrut.tpe.synDeps ++ ctorResTy.synDeps
@@ -231,10 +228,6 @@ object TypeChecker {
     }
   }
 
-  def typecheckSort(s: Term.Sort, env: Env)(implicit eqStore: EqStore, normalizerMap: NormalizerMap): Value = {
-    VSort(getLevel(typecheckTT(s.level, env)))
-  }
-
   def typecheck(term: CoreAst.Term, env: Env)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
@@ -267,8 +260,8 @@ object TypeChecker {
           val x = FreshVar.freshVar(b1.name, t1)
           (curEnv1.putLocal(b1.name, x), curEnv2.putLocal(b2.name, x), curVars :+ x)
       }
-    val out1 = evalTypeTerm(pi1.out, nextEnv1)
-    val out2 = evalTypeTerm(pi2.out, nextEnv2)
+    val out1 = pi1.codomain(nextEnv1, eqStore)
+    val out2 = pi2.codomain(nextEnv2, eqStore)
     if (defEq(out1, out2)) Some(vars)
     else None
 
