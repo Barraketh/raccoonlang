@@ -57,12 +57,13 @@ object Interpreter {
     }
   }
 
-  private def getEnvWithArgs(fnTpe: VPi, args: NEL[Value]): Env = {
+  private def getEnvWithArgs(fnTpe: VPi, args: NEL[Value])(implicit eqStore: EqStore) = {
     if (fnTpe.binders.length != args.length)
       throw ArityMismatch(fnTpe.binders.length, args.length)
 
-    fnTpe.binders.map(_.name).zip(args).foldLeft(fnTpe.env.newScope) { case (curEnv, (name, value)) =>
-      curEnv.putLocal(name, value)
+    fnTpe.binders.toList.zip(args.toList).foldLeft(fnTpe.env.newScope) { case (curEnv, (binder, value)) =>
+      val openedEnv = TypePatternOps.bindValue(curEnv, binder.ty, value.tpe, eqStore)
+      openedEnv.putLocal(binder.name, value)
     }
   }
 
@@ -75,7 +76,7 @@ object Interpreter {
     val captureVals = captureNames.map(n => env.findLocal(n).get)
     val id = LamId.LocalId(pi.span.start, captureVals)
 
-    val (vars, bodyEnv) = FreshVar.assignFreshVars(pi.binders, env, eqStore)
+    val (vars, bodyEnv, _) = FreshVar.assignFreshVars(pi.binders, env, eqStore)
     val outType = evalTypeTerm(pi.out, bodyEnv)
 
     val types = vars.map(_.tpe.tpe) :+ outType.tpe
@@ -166,7 +167,7 @@ object Interpreter {
       id,
       l.isStable,
       (args, eqStore) => {
-        val bodyEnv = getEnvWithArgs(vpi, args)
+        val bodyEnv = getEnvWithArgs(vpi, args)(eqStore)
         evalTerm(l.body, bodyEnv)(eqStore)
       }
     )

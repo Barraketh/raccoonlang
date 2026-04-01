@@ -7,22 +7,26 @@ import com.raccoonlang.Interpreter._
 import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
 
+import scala.collection.BitSet
+
 object TypeChecker {
 
   def sortLeq(a: Value, b: Value)(implicit eqStore: EqStore): Boolean = {
     (Interpreter.resolveInEqStore(a), Interpreter.resolveInEqStore(b)) match {
       case (Value.VSort(u), Value.VSort(v)) => Level.leq(u, v)
+      case (l1: Level, l2: Level)           => Level.leq(l1, l2)
+      case (l1: Level, v: Var)              => Level.leq(l1, Level.mk(v.id))
+      case (v: Var, l2: Level)              => Level.leq(Level.mk(v.id), l2)
       case _                                => false
     }
   }
 
-  def checkType(value: Value, tyVal: Value)(implicit
-      eqStore: EqStore,
-      normalizers: NormalizerMap
-  ): Unit = {
-    if (!defEq(value.tpe, tyVal) && !sortLeq(value.tpe, tyVal))
-      throw TypeMismatch(value, tyVal)
-  }
+  def checkFits(actual: Value, expected: Value)(implicit eqStore: EqStore, normalizers: NormalizerMap): Unit =
+    if (!defEq(actual, expected) && !sortLeq(actual, expected))
+      throw TypeMismatch(expected, actual)
+
+  def checkType(value: Value, tyVal: Value)(implicit eqStore: EqStore, normalizers: NormalizerMap): Unit =
+    checkFits(value.tpe, tyVal)
 
   private def typecheckApply(fn: Value, args: NEL[Value])(implicit
       eqStore: EqStore,
@@ -38,9 +42,8 @@ object TypeChecker {
 
         // Typecheck args against binder types and extend pi env
         binders.toList.zip(args.toList).foldLeft(env.newScope) { case (curEnv, (binder, value)) =>
-          val argTy = Interpreter.evalTypeTerm(binder.ty, curEnv)
-          checkType(value, argTy)
-          curEnv.putLocal(binder.name, value)
+          val openedEnv = TypePatternOps.matchValue(curEnv, binder.ty, value.tpe, eqStore)
+          openedEnv.putLocal(binder.name, value)
         }
 
         // Since we've already typechecked everything we care about, now we can just evalTerm
@@ -70,8 +73,12 @@ object TypeChecker {
   // Check that all type terms typecheck under a fresh var assignment to binders
   private def typecheckPi(pi: Term.Pi, env: Env)(implicit meta: EqStore, normalizers: NormalizerMap): VPi = {
     val bodyEnv = pi.binders.foldLeft(env.newScope) { case (curEnv, b) =>
-      val tyV = getType(b.ty, curEnv)
-      curEnv.putLocal(b.name, freshVar(b.name, tyV))
+      val (openedEnv, domTy, _) = TypePatternOps.freshOpen(curEnv, b.ty, meta)
+      Interpreter.resolveInEqStore(domTy.tpe) match {
+        case _: VSort =>
+        case _        => throw NotAType(domTy)
+      }
+      openedEnv.putLocal(b.name, freshVar(b.name, domTy))
     }
     getType(pi.out, bodyEnv)
     evalPi(pi, env)
@@ -160,9 +167,9 @@ object TypeChecker {
 
           ctorVal match {
             case h @ ConstructorHead(_, numParams, _, ctorTy) =>
-              val (freshArgs, ctorEnv) = ctorTy match {
+              val (freshArgs, ctorEnv, _) = ctorTy match {
                 case pi: VPi => assignFreshVars(pi, eqStore)
-                case _       => (Vector.empty[Value], env)
+                case _       => (Vector.empty[Value], env, BitSet.empty)
               }
 
               val ctorResTy: Value = ctorTy match {
@@ -211,7 +218,7 @@ object TypeChecker {
     }
 
     val vpi = typecheckPi(l.ty, env)
-    val (_, bodyEnv) = assignFreshVars(vpi, eqStore)
+    val (_, bodyEnv, _) = assignFreshVars(vpi, eqStore)
 
     val bodyV = typecheck(l.body, bodyEnv)
     val resType = Interpreter.evalTypeTerm(l.ty.out, bodyEnv)
@@ -249,22 +256,18 @@ object TypeChecker {
   private def defEqPi(pi1: VPi, pi2: VPi)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
-  ): Option[Vector[Value]] = {
-    val (nextEnv1, nextEnv2, vars) =
-      pi1.binders.zip(pi2.binders).foldLeft((pi1.env.newScope, pi2.env.newScope, Vector.empty[Value])) {
-        case ((curEnv1, curEnv2, curVars), (b1, b2)) =>
-          val t1 = Interpreter.evalTypeTerm(b1.ty, curEnv1)
-          val t2 = evalTypeTerm(b2.ty, curEnv2)
-          if (!defEq(t1, t2)) return None
+  ): Option[(Vector[Var], EqStore)] = {
+    val (vars1, nextEnv1, newVars1) = FreshVar.assignFreshVars(pi1, eqStore)
+    val (vars2, nextEnv2, newVars2) = FreshVar.assignFreshVars(pi2, eqStore)
 
-          val x = FreshVar.freshVar(b1.name, t1)
-          (curEnv1.putLocal(b1.name, x), curEnv2.putLocal(b2.name, x), curVars :+ x)
-      }
-    val out1 = pi1.codomain(nextEnv1, eqStore)
-    val out2 = pi2.codomain(nextEnv2, eqStore)
-    if (defEq(out1, out2)) Some(vars)
+    val newEqStore = vars1.zip(vars2).foldLeft(eqStore.allow(newVars1 ++ newVars2)) { case (curEqStore, (var1, var2)) =>
+      Unify.unify(var1, var2, curEqStore)
+    }
+
+    val out1 = pi1.codomain(nextEnv1, newEqStore)
+    val out2 = pi2.codomain(nextEnv2, newEqStore)
+    if (defEq(out1, out2)(newEqStore, normalizers)) Some((vars1, newEqStore))
     else None
-
   }
 
   private def defEqLamId(id1: LamId, id2: LamId)(implicit
@@ -310,11 +313,11 @@ object TypeChecker {
         if (l1.eq(l2) || defEqLamId(l1.id, l2.id)) true
         else {
           defEqPi(l1.tpe, l2.tpe) match {
-            case Some(vars) =>
+            case Some((vars, nextEqStore)) =>
               val varsNEL = NEL.mk(vars)
-              val res1 = l1.run(varsNEL, eqStore)
-              val res2 = l2.run(varsNEL, eqStore)
-              defEq(res1, res2)
+              val res1 = l1.run(varsNEL, nextEqStore)
+              val res2 = l2.run(varsNEL, nextEqStore)
+              defEq(res1, res2)(nextEqStore, normalizers)
             case None => false
           }
         }

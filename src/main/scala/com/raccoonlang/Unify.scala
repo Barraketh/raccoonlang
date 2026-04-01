@@ -1,6 +1,5 @@
 package com.raccoonlang
 
-import com.raccoonlang.Interpreter._
 import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
 
@@ -30,22 +29,19 @@ object Unify {
     expandedDeps(rhs.synDeps, meta).contains(id)
 
   // Extensionally unify Pi types
-  private def unifyPis(pi1: VPi, pi2: VPi, meta: EqStore)(implicit
+  private def unifyPis(pi1: VPi, pi2: VPi, eqStore: EqStore)(implicit
       normalizers: NormalizerMap
   ): (EqStore, Vector[Var]) = {
-    val (resMeta, nextEnv1, nextEnv2, vars) =
-      pi1.binders.zip(pi2.binders).foldLeft((meta, pi1.env.newScope, pi2.env.newScope, Vector.empty[Var])) {
-        case ((curMeta, curEnv1, curEnv2, curVars), (b1, b2)) =>
-          val t1 = evalTypeTerm(b1.ty, curEnv1)(curMeta)
-          val t2 = evalTypeTerm(b2.ty, curEnv2)(curMeta)
-          val nextMeta = unify(t1, t2, curMeta)
+    val (vars1, nextEnv1, newVars1) = FreshVar.assignFreshVars(pi1, eqStore)
+    val (vars2, nextEnv2, newVars2) = FreshVar.assignFreshVars(pi2, eqStore)
 
-          val x = FreshVar.freshVar(b1.name, t1)
-          (nextMeta, curEnv1.putLocal(b1.name, x), curEnv2.putLocal(b2.name, x), curVars :+ x)
-      }
-    val out1 = pi1.codomain(nextEnv1, resMeta)
-    val out2 = pi2.codomain(nextEnv2, resMeta)
-    (unify(out1, out2, resMeta), vars)
+    val newEqStore = vars1.zip(vars2).foldLeft(eqStore.allow(newVars1 ++ newVars2)) { case (curEqStore, (var1, var2)) =>
+      Unify.unify(var1, var2, curEqStore)
+    }
+
+    val out1 = pi1.codomain(nextEnv1, newEqStore)
+    val out2 = pi2.codomain(nextEnv2, newEqStore)
+    (unify(out1, out2, newEqStore), vars1)
   }
 
   private def unifyStuckMatches(v1: VMatch, v2: VMatch, meta: EqStore)(implicit

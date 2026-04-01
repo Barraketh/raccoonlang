@@ -16,7 +16,10 @@ object InductiveChecks {
       case _                             => false
     }
 
-  private def occursInductive(v: Value, inductiveHead: VConst)(implicit eqStore: EqStore): Boolean =
+  private def occursInductive(v: Value, inductiveHead: VConst)(implicit
+      eqStore: EqStore,
+      normalizers: NormalizerMap
+  ): Boolean =
     v match {
       case _: Blocked => true // Be conservative: blocked types may hide an occurrence
       case _: VMatch  => true
@@ -25,7 +28,7 @@ object InductiveChecks {
       case VApp(h, args, _) =>
         sameInductiveHead(h, inductiveHead) || args.exists(arg => occursInductive(arg, inductiveHead))
       case pi: VPi =>
-        val (binderVars, bodyEnv) = FreshVar.assignFreshVars(pi, eqStore)
+        val (binderVars, bodyEnv, _) = FreshVar.assignFreshVars(pi, eqStore)
         val allTypes = binderVars.map(_.tpe) :+ pi.codomain(bodyEnv, eqStore)
         allTypes.exists(v => occursInductive(v, inductiveHead))
 
@@ -38,13 +41,16 @@ object InductiveChecks {
   // - a direct recursive occurrence I args is allowed, provided I does not occur in the args
   // - under any other type constructor application F args, recursive occurrence in args is rejected
   @tailrec
-  private def isStrictlyPositive(v: Value, inductiveHead: VConst)(implicit eqStore: EqStore): Boolean =
+  private def isStrictlyPositive(v: Value, inductiveHead: VConst)(implicit
+      eqStore: EqStore,
+      normalizer: NormalizerMap
+  ): Boolean =
     v match {
       case _: Blocked => false // Be conservative: blocked shapes are not strictly positive
       case _: VMatch  => false
 
       case pi: VPi =>
-        val (binderVars, bodyEnv) = FreshVar.assignFreshVars(pi, eqStore)
+        val (binderVars, bodyEnv, _) = FreshVar.assignFreshVars(pi, eqStore)
         !binderVars.exists(v => occursInductive(v.tpe, inductiveHead)) && isStrictlyPositive(
           pi.codomain(bodyEnv, eqStore),
           inductiveHead
@@ -83,7 +89,7 @@ object InductiveChecks {
 
     // Constructors are checked in an environment that contains the inductive and inductive params assigned
     val envWithInductive = env.putGlobal(decl.header.name, inductiveHead)
-    val (paramVars, envWithParams) = FreshVar.assignFreshVars(decl.header.params, envWithInductive, eqStore)
+    val (paramVars, envWithParams, _) = FreshVar.assignFreshVars(decl.header.params, envWithInductive, eqStore)
 
     val inductiveLevel = {
       TypeChecker.getType(decl.header.resultTy, envWithParams) match {
@@ -94,7 +100,7 @@ object InductiveChecks {
 
     decl.ctors.foreach { ctor =>
       val outputTpe = {
-        val (fieldVars, bodyEnv) = FreshVar.assignFreshVars(ctor.fields, envWithParams, eqStore)
+        val (fieldVars, bodyEnv, _) = FreshVar.assignFreshVars(ctor.fields, envWithParams, eqStore)
 
         fieldVars.zipWithIndex.foreach { case (field, idx) =>
           val binder = ctor.fields(idx)

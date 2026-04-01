@@ -1,15 +1,20 @@
 package com.raccoonlang
 
+import com.raccoonlang.CoreAst.Term.Ident
 import com.raccoonlang.Value.LevelTpe
 
 object PrettyPrinter {
 
-  private def printTypeTerm(tt: CoreAst.TypeTerm): String = {
+  private def printTypePattern(tp: CoreAst.TypePattern): String = {
     import com.raccoonlang.CoreAst.Term
 
-    def pt(t: CoreAst.TypeTerm): String = t match {
+    def pt(t: CoreAst.TypePattern): String = t match {
       case Term.Ident(name, _) => name
       case Term.TApp(fn, args, _) =>
+        val headStr = ptAtom(fn)
+        val argsStr = args.toList.map(ptAtom).mkString(" ")
+        s"$headStr $argsStr"
+      case Term.PatternApp(fn, args, _) =>
         val headStr = ptAtom(fn)
         val argsStr = args.toList.map(ptAtom).mkString(" ")
         s"$headStr $argsStr"
@@ -20,16 +25,21 @@ object PrettyPrinter {
           }
           .mkString(" -> ")
         s"$bindersStr -> ${pt(out)}"
+      case Term.Capture(name, _) => s"$$$name"
     }
 
-    def ptAtom(t: CoreAst.TypeTerm): String = t match {
-      case Term.Ident(_, _)   => pt(t)
-      case Term.TApp(_, _, _) => pt(t)
-      case Term.Pi(_, _, _)   => s"(${pt(t)})"
+    def ptAtom(t: CoreAst.TypePattern): String = t match {
+      case Term.Ident(_, _)         => pt(t)
+      case Term.TApp(_, _, _)       => pt(t)
+      case Term.PatternApp(_, _, _) => pt(t)
+      case Term.Pi(_, _, _)         => s"(${pt(t)})"
+      case Term.Capture(_, _)       => pt(t)
     }
 
-    pt(tt)
+    pt(tp)
   }
+
+  private def printTypeTerm(tt: CoreAst.TypeTerm): String = printTypePattern(tt)
 
   private def isAtomic(v: Value): Boolean = v match {
     case _: Value.VSort  => true
@@ -47,14 +57,14 @@ object PrettyPrinter {
     s"$headStr $argsStr"
   }
 
-  private def printBinder(b: CoreAst.Binder): String = s"(${b.name}: ${printTypeTerm(b.ty)})"
+  private def printBinder(b: CoreAst.Binder): String = s"(${b.name}: ${printTypePattern(b.ty)})"
 
   private def printBinders(binders: Util.NEL[CoreAst.Binder]): String =
     binders.toList.map(printBinder).mkString(" ")
 
   // ---- Core term pretty printing (for neutral match bodies/scrutinees) ----
   private def printLet(l: CoreAst.Let): String = {
-    val tyStr = l.ty.map(t => s": ${printTypeTerm(t)}").getOrElse("")
+    val tyStr = l.ty.map(t => s": ${printTypePattern(t)}").getOrElse("")
     s"let ${l.name}$tyStr := ${printTerm(l.value)}"
   }
 
@@ -70,14 +80,17 @@ object PrettyPrinter {
     case CoreAst.Term.Ident(_, _)           => printTerm(t)
     case CoreAst.Term.App(_, _, _)          => printTerm(t)
     case CoreAst.Term.TApp(_, _, _)         => printTerm(t)
+    case p: CoreAst.Term.PatternApp         => printTypePattern(p)
     case CoreAst.Term.Lam(_, _, _, _, _, _) => s"(${printTerm(t)})"
     case CoreAst.Term.Match(_, _, _, _, _)  => s"(${printTerm(t)})"
     case CoreAst.Term.Body(_, _, _)         => s"(${printTerm(t)})"
     case CoreAst.Term.Pi(_, _, _)           => s"(${printTerm(t)})"
+    case CoreAst.Term.Capture(name, _)      => s"$$$name"
   }
 
   def printTerm(t: CoreAst.Ast): String = t match {
-    case tt: CoreAst.TypeTerm => printTypeTerm(tt)
+    case tt: CoreAst.TypeTerm       => printTypeTerm(tt)
+    case p: CoreAst.Term.PatternApp => printTypePattern(p)
     case CoreAst.Term.App(fn, args, _) =>
       val head = printTermAtom(fn)
       val as = args.toList.map(printTermAtom).mkString(" ")
@@ -86,6 +99,7 @@ object PrettyPrinter {
       s"fun ${printBinders(ty.binders)}: ${printTypeTerm(ty.out)} => ${printTerm(body)}"
     case m @ CoreAst.Term.Match(_, _, _, _, _) => printMatch(m)
     case b: CoreAst.Term.Body                  => printBody(b)
+    case CoreAst.Term.Capture(name, _)         => s"$$$name"
   }
 
   private def printCase(c: CoreAst.Case): String = {
@@ -103,10 +117,10 @@ object PrettyPrinter {
   def print(value: Value): String = value match {
     case Value.VSort(lvl)      => s"Type $lvl"
     case Value.Level(atoms, c) => s"Level($atoms, $c)"
-    case Value.VPi(_, binders, _, outSyntax, _, _, _) =>
-      val outTerm = outSyntax match {
-        case Some(term) => term
-        case None       => CoreAst.Term.Ident("Any", Span(0, 0))
+    case Value.VPi(_, binders, _, out, _, _, _) =>
+      val outTerm = out match {
+        case Some(value) => value
+        case None        => Ident("Any", Span(0, 0))
       }
       printTypeTerm(CoreAst.Term.Pi(binders, outTerm, Span(0, 0)))
     case Value.VConst(name, _, _)             => name

@@ -23,6 +23,14 @@ object Elaborator {
     case i: SA.Term.Ident           => elab(i)
     case SA.Term.TApp(fn, args, sp) => CoreAst.Term.TApp(elab(fn), args.map(elab), sp)
     case pi: SA.Term.Pi             => elabPi(pi)
+    case SA.Term.Capture(name, sp)  => throw new RuntimeException(s"$$ cannot be used here: $name")
+  }
+
+  private def elabPattern(ty: SA.TypeTerm): CA.TypePattern = ty match {
+    case i: SA.Term.Ident           => elab(i)
+    case SA.Term.TApp(fn, args, sp) => CoreAst.Term.PatternApp(elab(fn), args.map(elabPattern), sp)
+    case pi: SA.Term.Pi             => elabPi(pi)
+    case SA.Term.Capture(name, sp)  => CA.Term.Capture(name, sp)
   }
 
   private def elab(use: SA.Use): CA.Use = CA.Use(elab(use.normalizer), use.span)
@@ -70,7 +78,7 @@ object Elaborator {
       )
   }
 
-  private def elab(b: SA.Binder): CA.Binder = CA.Binder(b.name, elab(b.ty), b.span)
+  private def elab(b: SA.Binder): CA.Binder = CA.Binder(b.name, elabPattern(b.ty), b.span)
 
   def getType(header: SA.FuncHeader): CA.TypeTerm = {
     val outTy = elab(header.ty)

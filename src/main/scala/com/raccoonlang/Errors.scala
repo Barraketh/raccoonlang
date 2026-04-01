@@ -8,28 +8,31 @@ sealed trait TypeError extends RuntimeException {
 
 object TypeError {
   def withSpan(err: TypeError, sp: Span): TypeError = err match {
-    case e: UnificationFailed         => e.copy(span = Some(sp))
-    case e: OccursCheckFailed         => e.copy(span = Some(sp))
-    case e: CannotApplyNonFunction    => e.copy(span = Some(sp))
-    case e: ArityMismatch             => e.copy(span = Some(sp))
-    case e: UnknownConstructor        => e.copy(span = Some(sp))
-    case e: DuplicateCase             => e.copy(span = Some(sp))
-    case e: UnreachableCase           => e.copy(span = Some(sp))
-    case e: MissingCase               => e.copy(span = Some(sp))
-    case e: NotAType                  => e.copy(span = Some(sp))
-    case e: NonInductiveMatch         => e.copy(span = Some(sp))
-    case e: NotFound                  => e.copy(span = Some(sp))
-    case e: AlreadyDefined            => e.copy(span = Some(sp))
-    case e: CannotLinkToBottom        => e.copy(span = Some(sp))
-    case e: VarAlreadyLinked          => e.copy(span = Some(sp))
-    case e: TypeMismatch              => e.copy(span = Some(sp))
-    case e: DuplicateNormalizer       => e.copy(span = Some(sp))
-    case e: InvalidConstructorResult  => e.copy(span = Some(sp))
-    case e: NotALevel                 => e.copy(span = Some(sp))
-    case e: InductiveUniverseTooSmall => e.copy(span = Some(sp))
-    case e: NonStrictlyPositive       => e.copy(span = Some(sp))
-    case e: InductiveTypeNotASort     => e.copy(span = Some(sp))
-    case e: WTF                       => e.copy(span = Some(sp))
+    case e: UnificationFailed               => e.copy(span = Some(sp))
+    case e: OccursCheckFailed               => e.copy(span = Some(sp))
+    case e: CannotApplyNonFunction          => e.copy(span = Some(sp))
+    case e: ArityMismatch                   => e.copy(span = Some(sp))
+    case e: UnknownConstructor              => e.copy(span = Some(sp))
+    case e: DuplicateCase                   => e.copy(span = Some(sp))
+    case e: UnreachableCase                 => e.copy(span = Some(sp))
+    case e: MissingCase                     => e.copy(span = Some(sp))
+    case e: NotAType                        => e.copy(span = Some(sp))
+    case e: NonInductiveMatch               => e.copy(span = Some(sp))
+    case e: NotFound                        => e.copy(span = Some(sp))
+    case e: AlreadyDefined                  => e.copy(span = Some(sp))
+    case e: CannotLinkToBottom              => e.copy(span = Some(sp))
+    case e: VarAlreadyLinked                => e.copy(span = Some(sp))
+    case e: TypeMismatch                    => e.copy(span = Some(sp))
+    case e: DuplicateNormalizer             => e.copy(span = Some(sp))
+    case e: InvalidConstructorResult        => e.copy(span = Some(sp))
+    case e: NotALevel                       => e.copy(span = Some(sp))
+    case e: InductiveUniverseTooSmall       => e.copy(span = Some(sp))
+    case e: NonStrictlyPositive             => e.copy(span = Some(sp))
+    case e: InductiveTypeNotASort           => e.copy(span = Some(sp))
+    case e: PatternCaptureNeedsExpectedType => e.copy(span = Some(sp))
+    case e: PatternHeadMismatch             => e.copy(span = Some(sp))
+    case e: PatternArityMismatch            => e.copy(span = Some(sp))
+    case e: WTF                             => e.copy(span = Some(sp))
   }
 }
 
@@ -89,8 +92,8 @@ final case class AlreadyDefined(name: String, span: Option[Span] = None) extends
   val msg: String = s"$name already defined"
 }
 
-final case class TypeMismatch(v1: Value, v2: Value, span: Option[Span] = None) extends TypeError {
-  val msg: String = s"Type mismatch: expected type: $v2, actual: ${v1.tpe}"
+final case class TypeMismatch(expected: Value, actual: Value, span: Option[Span] = None) extends TypeError {
+  val msg: String = s"Type mismatch: expected type: $expected, actual: $actual"
 }
 
 final case class DuplicateNormalizer(n: Normalizers.CarrierKey, span: Option[Span] = None) extends TypeError {
@@ -99,6 +102,23 @@ final case class DuplicateNormalizer(n: Normalizers.CarrierKey, span: Option[Spa
 
 final case class NotALevel(v1: Value, span: Option[Span] = None) extends TypeError {
   override def msg: String = s"$v1 is not a Level"
+}
+
+final case class PatternCaptureNeedsExpectedType(name: String, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"Pattern capture $$$name needs an expected type"
+}
+
+final case class PatternHeadMismatch(expectedHead: Value, got: Value, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"Pattern expected head $expectedHead, got $got"
+}
+
+final case class PatternArityMismatch(
+    head: Value,
+    expected: Int,
+    got: Int,
+    span: Option[Span] = None
+) extends TypeError {
+  override def msg: String = s"Pattern head $head expected $expected args, got $got"
 }
 
 final case class WTF(msg: String, span: Option[Span] = None) extends TypeError

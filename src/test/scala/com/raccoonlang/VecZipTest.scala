@@ -53,4 +53,32 @@ class VecZipTest extends munit.FunSuite {
     typecheckDecls(program)
   }
 
+  test("Indexed Vec zip with type patterns") {
+    val program =
+      """
+        |inductive Nat : Type
+        |  | zero : Nat
+        |  | succ (_: Nat) : Nat
+        |
+        |inductive Vec (A: Sort $u) indices (n: Nat) : Sort u
+        |  | nil: Vec A Nat.zero
+        |  | cons (v: Vec A $n)(elem: A): Vec A (Nat.succ n)
+        |
+        |inductive Pair (A: Sort $u1)(B: Sort $u2): Sort (Level.max u1 u2)
+        |  | mk(a: A)(b: B): Pair A B
+        |
+        |inline def zip(va: Vec $A $n)(vb: Vec $B n): Vec (Pair A B) n := {
+        |  let ResType := Vec (Pair A B) n
+        |  match va as _ returning ResType with
+        |  | Vec.nil => Vec.nil (Pair A B)
+        |  | Vec.cons va0 a => {
+        |    match vb as _ returning ResType with
+        |    | Vec.cons vb0 b => Vec.cons (Pair A B) (zip va0 vb0) (Pair.mk A B a b)
+        |  }
+        |}
+        |""".stripMargin
+
+    typecheckDecls(program)
+  }
+
 }

@@ -28,8 +28,11 @@ object CoreAst {
   // Terms that can appear in function bodies
   sealed trait Term extends Ast
 
+  // Terms that can appear in args
+  sealed trait TypePattern extends Ast
+
   // Terms that can appear in type expressions
-  sealed trait TypeTerm extends Ast
+  sealed trait TypeTerm extends TypePattern
 
   object Term {
     // Identifier (either type or term)
@@ -37,6 +40,9 @@ object CoreAst {
 
     // Application in type position
     final case class TApp(fn: Ident, args: NEL[TypeTerm], span: Span) extends TypeTerm
+
+    // Application in type pattern
+    final case class PatternApp(fn: Ident, args: NEL[TypePattern], span: Span) extends TypePattern
 
     // Pi (x: A) -> B x
     final case class Pi(binders: NEL[Binder], out: TypeTerm, span: Span) extends TypeTerm
@@ -57,6 +63,8 @@ object CoreAst {
         cases: Vector[Case],
         span: Span
     ) extends Term
+
+    case class Capture(name: String, span: Span) extends TypePattern
   }
 
   // Let: let x := foo
@@ -65,7 +73,7 @@ object CoreAst {
   // Use directive (first-class normalizer application)
   final case class Use(normalizer: Term, span: Span)
 
-  case class Binder(name: String, ty: TypeTerm, span: Span)
+  case class Binder(name: String, ty: TypePattern, span: Span)
 
   case class InductiveHeader(
       name: String,

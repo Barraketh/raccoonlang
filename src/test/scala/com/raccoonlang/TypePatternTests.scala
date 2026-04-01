@@ -1,0 +1,362 @@
+package com.raccoonlang
+
+import com.raccoonlang.ErrorReporter.Source
+
+class TypePatternTests extends munit.FunSuite {
+
+  private def typecheckDecls(src: String): Unit = {
+    LanguageParser.parseProgram(src) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value)
+        Interpreter.run(core)
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
+    }
+  }
+
+  private def runProgram(src: String): Value = {
+    LanguageParser.parseProgram(src) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value)
+        try {
+          Interpreter.run(core).getOrElse(fail("Program has no body"))
+        } catch {
+          case t: TypeError =>
+            val source = Source(src)
+            fail(ErrorReporter.pretty(t, source))
+        }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
+    }
+  }
+
+  // Erased shape comparison helpers
+  sealed trait Shape
+  case class SConst(name: String) extends Shape
+  case class SApp(head: Shape, args: List[Shape]) extends Shape
+
+  private def toShape(v: Value): Shape = v match {
+    case Value.ConstructorHead(n, _, _, _) => SConst(n)
+    case Value.VCtor(h, fields, _) =>
+      if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))
+    case Value.VConst(n, _, _)  => SConst(n)
+    case Value.VApp(h, args, _) => SApp(toShape(h), args.toList.map(toShape))
+    case other                  => SConst(other.toString)
+  }
+
+  private val zeroS = SConst("Nat.zero")
+  private def succS(s: Shape) = SApp(SConst("Nat.succ"), List(s))
+  private def boxMkS(s: Shape) = SApp(SConst("Box.mk"), List(s))
+  private def vecConsS(tail: Shape, head: Shape) = SApp(SConst("Vec.cons"), List(tail, head))
+
+  test("positive: capture family argument from binder and use it in codomain/body") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Box (A: Sort $u) : Sort u
+        | | mk (a: A) : Box A
+        |
+        |inline def unbox (b: Box $A): A := {
+        |  match b as _ returning A with
+        |  | Box.mk a => a
+        |}
+        |
+        |{
+        |  unbox (Box.mk Nat Nat.zero)
+        |}
+        |""".stripMargin
+
+    val res = runProgram(p)
+    assertEquals(toShape(res), zeroS)
+  }
+
+  test("positive: capture indexed argument from binder and use it as a term") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Vec (A: Sort $u) indices (n: Nat) : Sort u
+        | | nil : Vec A Nat.zero
+        | | cons (tail: Vec A $n) (head: A) : Vec A (Nat.succ n)
+        |
+        |inline def len (v: Vec Nat $n): Nat := n
+        |
+        |{
+        |  len (Vec.cons Nat (Vec.nil Nat) Nat.zero)
+        |}
+        |""".stripMargin
+
+    val res = runProgram(p)
+    assertEquals(toShape(res), succS(zeroS))
+  }
+
+  test("positive: visible capture from one binder can be reused in later binders and codomain") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Box (A: Sort $u) : Sort u
+        | | mk (a: A) : Box A
+        |
+        |inline def repack (b: Box $A)(x: A): Box A := Box.mk A x
+        |
+        |{
+        |  repack (Box.mk Nat Nat.zero) (Nat.succ Nat.zero)
+        |}
+        |""".stripMargin
+
+    val res = runProgram(p)
+    assertEquals(toShape(res), boxMkS(succS(zeroS)))
+  }
+
+  test("positive: later binder can reuse captured index from earlier binder") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Vec (A: Sort $u) indices (n: Nat) : Sort u
+        | | nil : Vec A Nat.zero
+        | | cons (tail: Vec A $n) (head: A) : Vec A (Nat.succ n)
+        |
+        |inline def sameLenLeft (v1: Vec Nat $n)(v2: Vec Nat n): Nat := n
+        |
+        |{
+        |  sameLenLeft (Vec.nil Nat) (Vec.nil Nat)
+        |}
+        |""".stripMargin
+
+    val res = runProgram(p)
+    assertEquals(toShape(res), zeroS)
+  }
+
+  test("positive: Pi equality through flattened type patterns succeeds under renaming") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Vec (A: Sort $u) indices (n: Nat) : Sort u
+        | | nil : Vec A Nat.zero
+        | | cons (tail: Vec A $n) (head: A) : Vec A (Nat.succ n)
+        |
+        |{
+        |  let f : (v: Vec Nat $n) -> Vec Nat n := fun (w: Vec Nat $m): Vec Nat m => w
+        |  f (Vec.cons Nat (Vec.nil Nat) Nat.zero)
+        |}
+        |""".stripMargin
+
+    val res = runProgram(p)
+    assertEquals(toShape(res), vecConsS(SConst("Vec.nil"), zeroS))
+  }
+
+  test("positive: type patterns work in inductive constructor fields") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Vec (A: Sort $u) indices (n: Nat) : Sort u
+        | | nil : Vec A Nat.zero
+        | | cons (tail: Vec A $n) (head: A) : Vec A (Nat.succ n)
+        |
+        |inductive PackedHead (A: Type) : Type
+        | | mk (v: Vec A $n) (x: A) : PackedHead A
+        |
+        |""".stripMargin
+
+    typecheckDecls(p)
+  }
+
+  test("negative: bare capture in binder type needs an expected type") {
+    val p =
+      """
+        |def bad (x: $A): Type := A
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value)
+        intercept[PatternCaptureNeedsExpectedType] {
+          Interpreter.run(core)
+        }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
+  }
+
+  test("negative: pattern arity mismatch in function binder is rejected") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Vec (A: Sort $u) indices (n: Nat) : Sort u
+        | | nil : Vec A Nat.zero
+        | | cons (tail: Vec A $n) (head: A) : Vec A (Nat.succ n)
+        |
+        |def bad (v: Vec $A): Nat := Nat.zero
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value)
+        intercept[PatternArityMismatch] {
+          Interpreter.run(core)
+        }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
+  }
+
+  test("negative: pattern arity mismatch in constructor field is rejected") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Vec (A: Sort $u) indices (n: Nat) : Sort u
+        | | nil : Vec A Nat.zero
+        | | cons (tail: Vec A $n) (head: A) : Vec A (Nat.succ n)
+        |
+        |inductive Bad : Type
+        | | mk (v: Vec $A) : Bad
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value)
+        intercept[PatternArityMismatch] {
+          Interpreter.run(core)
+        }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
+  }
+
+  test("negative: call-site type pattern head mismatch is rejected") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Box (A: Sort $u) : Sort u
+        | | mk (a: A) : Box A
+        |
+        |inline def unbox (b: Box $A): A := {
+        |  match b as _ returning A with
+        |  | Box.mk a => a
+        |}
+        |
+        |{
+        |  unbox Nat.zero
+        |}
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value)
+        intercept[PatternHeadMismatch] {
+          Interpreter.run(core)
+        }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
+  }
+
+  test("negative: hidden derived binders are not visible in the codomain") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Box (A: Sort $u) : Sort u
+        | | mk (a: A) : Box A
+        |
+        |inline def bad (b: Box $A): Sort u := A
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value)
+        intercept[NotFound] {
+          Interpreter.run(core)
+        }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
+  }
+
+  test("negative: later binder using captured index rejects mismatched actual argument") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Vec (A: Sort $u) indices (n: Nat) : Sort u
+        | | nil : Vec A Nat.zero
+        | | cons (tail: Vec A $n) (head: A) : Vec A (Nat.succ n)
+        |
+        |inline def sameLenLeft (v1: Vec Nat $n)(v2: Vec Nat n): Nat := n
+        |
+        |{
+        |  sameLenLeft (Vec.nil Nat) (Vec.cons Nat (Vec.nil Nat) Nat.zero)
+        |}
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value)
+        intercept[TypeMismatch] {
+          Interpreter.run(core)
+        }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
+  }
+
+  test("negative: Pi equality through flattened type patterns rejects changed dependent codomain") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Vec (A: Sort $u) indices (n: Nat) : Sort u
+        | | nil : Vec A Nat.zero
+        | | cons (tail: Vec A $n) (head: A) : Vec A (Nat.succ n)
+        |
+        |{
+        |  let f : (v: Vec Nat $n) -> Vec Nat n := {
+        |    fun (w: Vec Nat $m): Vec Nat (Nat.succ m) => Vec.cons Nat w Nat.zero
+        |  }
+        |  f
+        |}
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value)
+        intercept[TypeMismatch] {
+          Interpreter.run(core)
+        }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
+  }
+}

@@ -7,47 +7,67 @@ import scala.collection.immutable.BitSet
 
 object FreeNames {
 
-  private def getFreeNames(terms: List[Ast], bound: Set[String]): Set[String] = {
-    val l: List[Set[String]] = terms.map(tt => getFreeNames(tt, bound))
-    l.reduce[Set[String]] { case (s1, s2) => s1.union(s2) }
-  }
-
-  private def getFreeNames(
-      binders: List[(String, Ast, Option[Ast])],
-      out: Ast,
-      bound: Set[String]
-  ): Set[String] = {
-    val (nextNames, nextBound) = binders.foldLeft((Set.empty[String], bound)) {
-      case ((curNames, curBound), (name, t1, t2)) =>
-        val n1 = getFreeNames(t1, curBound)
-        val n2 = t2 match {
-          case Some(t) => n1.union(getFreeNames(t, curBound))
-          case None    => n1
-        }
-        (curNames.union(n2), curBound + name)
+  // Threaded traversal: returns (freeNames, updatedBound)
+  private def goList(terms: List[Ast], bound0: Set[String]): (Set[String], Set[String]) = {
+    terms.foldLeft((Set.empty[String], bound0)) { case ((curFree, curBound), t) =>
+      val (f, b) = go(t, curBound)
+      (curFree union f, b)
     }
-    nextNames.union(getFreeNames(out, nextBound))
   }
 
-  def getFreeNames(term: CoreAst.Ast, bound: Set[String]): Set[String] = {
+  private def go(term: CoreAst.Ast, bound: Set[String]): (Set[String], Set[String]) = {
     term match {
-      case Term.Ident(name, _)      => if (bound.contains(name)) Set.empty else Set(name)
-      case Term.TApp(fn, args, _)   => getFreeNames((fn :: args).toList, bound)
-      case Term.Pi(binders, out, _) => getFreeNames(binders.toList.map(b => (b.name, b.ty, None)), out, bound)
-      case Term.App(fn, args, _)    => getFreeNames((fn :: args).toList, bound)
-      case Term.Body(lets, res, _)  => getFreeNames(lets.toList.map(l => (l.name, l.value, l.ty)), res, bound)
+      case Term.Ident(name, _) =>
+        (if (bound.contains(name)) Set.empty else Set(name), bound)
+
+      case Term.Capture(name, _) =>
+        // Captures introduce a bound variable for the remainder of the traversal
+        (Set.empty, bound + name)
+
+      case Term.TApp(fn, args, _) => goList((fn :: args).toList, bound)
+
+      case Term.PatternApp(fn, args, _) => goList((fn :: args).toList, bound)
+
+      case Term.Pi(binders, out, _) =>
+        // Each binder: evaluate its type with current bound; then add binder name to bound
+        val (freeFromBinders, boundAfterBinders) = binders.toList.foldLeft((Set.empty[String], bound)) {
+          case ((curFree, curBound), b) =>
+            val (fTy, bAfterTy) = go(b.ty, curBound)
+            (curFree union fTy, bAfterTy + b.name)
+        }
+        val (freeOut, boundAfterOut) = go(out, boundAfterBinders)
+        (freeFromBinders union freeOut, boundAfterOut)
+
+      case Term.App(fn, args, _) => goList((fn :: args).toList, bound)
+
+      case Term.Body(lets, res, _) =>
+        val (freeLets, boundAfterLets) = lets.toList.foldLeft((Set.empty[String], bound)) {
+          case ((curFree, curBound), l) =>
+            val (fVal, b1) = go(l.value, curBound)
+            val fTy = l.ty.map(t => go(t, curBound)._1).getOrElse(Set.empty[String])
+            (curFree union fVal union fTy, b1 + l.name)
+        }
+        val (freeRes, boundAfterRes) = go(res, boundAfterLets)
+        (freeLets union freeRes, boundAfterRes)
+
       case Term.Lam(ty, _, body, _, _, _) =>
-        val tyNames = getFreeNames(ty, bound)
-        val bodyBound = bound ++ ty.binders.map(_.name).toList
-        tyNames.union(getFreeNames(body, bodyBound))
+        val (freeTy, boundAfterTy) = go(ty, bound)
+        val (freeBody, boundAfterBody) = go(body, boundAfterTy)
+        (freeTy union freeBody, boundAfterBody)
+
       case Match(scrut, scrutName, motive, cases, _) =>
-        val n1 = getFreeNames(scrut, bound)
-        val b1 = bound + scrutName
-        val n2 = getFreeNames(motive, b1)
-        val caseNames = cases.map(c => getFreeNames(c.body, b1 ++ c.argNames))
-        (caseNames :+ n1 :+ n2).reduce[Set[String]] { case (s1, s2) => s1.union(s2) }
+        val (freeScrut, b1) = go(scrut, bound)
+        val bWithScrut = b1 + scrutName
+        val (freeMotive, b2) = go(motive, bWithScrut)
+        val freeCases = cases.foldLeft(Set.empty[String]) { case (curFree, c) =>
+          val (fCase, _) = go(c.body, bWithScrut ++ c.argNames)
+          curFree union fCase
+        }
+        (freeScrut union freeMotive union freeCases, b2)
     }
   }
+
+  def getFreeNames(term: CoreAst.Ast, bound: Set[String]): Set[String] = go(term, bound)._1
 
   def getDeps(term: Ast, env: Env, bound: Set[String]): BitSet = {
     val freeNames = FreeNames.getFreeNames(term, bound)

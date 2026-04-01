@@ -49,7 +49,9 @@ object LanguageParser {
   private def identTerm = ident.flatSpanned.map(Ident.tupled)
 
   // Type atoms: identifier, type variable, or parenthesized type
-  private def typeAtom: Parser[TypeTerm] = sym('(') ~ typeTerm ~ symTight(')') | identTerm
+  private def capture: Parser[TypeTerm] = (symTight("$") ~/ ident).flatSpanned.map(Capture.tupled)
+
+  private def typeAtom: Parser[TypeTerm] = sym('(') ~ typeTerm ~ symTight(')') | capture | identTerm
 
   // General type application chain: atom atom ... -> TApp(...(atom1 atom2) atom3)
   private def typeExpr: Parser[TypeTerm] = {
