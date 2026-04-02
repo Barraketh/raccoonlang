@@ -32,8 +32,10 @@ object InductiveChecks {
         val allTypes = binderVars.map(_.tpe) :+ pi.codomain(bodyEnv, eqStore)
         allTypes.exists(v => occursInductive(v, inductiveHead))
 
-      case _: ConstructorHead | _: VCtor                                                      => false
-      case _: Level | LevelTpe | _: Normalizer | NormalizerType | _: VLam | _: VSort | _: Var => false
+      case _: ConstructorHead | _: VCtor => false
+      case _: Level | LevelTpe | _: Normalizer | NormalizerType | _: VLam | _: VSort | _: Var | PropTpe |
+          KernelObject =>
+        false
     }
 
   // Conservative strict positivity:
@@ -59,14 +61,10 @@ object InductiveChecks {
         // For any head F (including the inductive), reject if I occurs in any argument.
         !args.exists(arg => occursInductive(arg, inductiveHead))
 
-      case _: ConstructorHead | _: VCtor                                                                  => true
-      case _: Level | LevelTpe | _: Normalizer | NormalizerType | _: VLam | _: VSort | _: Var | _: VConst => true
-    }
-
-  private def sortLevelOfType(v: Value): Level =
-    v.tpe match {
-      case VSort(u) => u
-      case other    => throw WTF(s"Expected a type with a sort, got $v : $other")
+      case _: ConstructorHead | _: VCtor => true
+      case _: Level | LevelTpe | _: Normalizer | NormalizerType | _: VLam | _: VSort | _: Var | _: VConst | PropTpe |
+          KernelObject =>
+        true
     }
 
   def evalInductiveDecl(decl: Decl.InductiveDecl, env: Env): Env = {
@@ -91,11 +89,11 @@ object InductiveChecks {
     val envWithInductive = env.putGlobal(decl.header.name, inductiveHead)
     val (paramVars, envWithParams, _) = FreshVar.assignFreshVars(decl.header.params, envWithInductive, eqStore)
 
-    val inductiveLevel = {
-      TypeChecker.getType(decl.header.resultTy, envWithParams) match {
-        case VSort(u) => u
-        case other    => throw InductiveTypeNotASort(other, Some(decl.header.resultTy.span))
-      }
+    val resTpe = TypeChecker.getType(decl.header.resultTy, envWithParams)
+    val familyUniverse: Universe = resTpe match {
+      case v: VSort => v
+      case PropTpe  => PropTpe
+      case other    => throw InductiveTypeNotASort(other, Some(decl.header.resultTy.span))
     }
 
     decl.ctors.foreach { ctor =>
@@ -105,17 +103,25 @@ object InductiveChecks {
         fieldVars.zipWithIndex.foreach { case (field, idx) =>
           val binder = ctor.fields(idx)
 
-          // 2) Every constructor field type must live in a sort <= the inductive sort
-          val tpeLevel = sortLevelOfType(field.tpe)
-          if (!Level.leq(tpeLevel, inductiveLevel))
-            throw InductiveUniverseTooSmall(
-              decl.header.name,
-              s"${ctor.name}.${binder.name}",
-              field.tpe,
-              tpeLevel,
-              inductiveLevel,
-              Some(binder.span)
-            )
+          // 2) Universe bound: skip for Prop families; enforce for Sort families
+          familyUniverse match {
+            case VSort(inductiveLevel) =>
+              TypeChecker.getUniverse(field.tpe) match {
+                case VSort(tpeLevel) =>
+                  if (!Level.leq(tpeLevel, inductiveLevel))
+                    throw InductiveUniverseTooSmall(
+                      decl.header.name,
+                      s"${ctor.name}.${binder.name}",
+                      field.tpe,
+                      tpeLevel,
+                      inductiveLevel,
+                      Some(binder.span)
+                    )
+                case Value.PropTpe =>
+              }
+
+            case PropTpe => // no universe restriction
+          }
 
           // 3) Every constructor field type must be strictly positive in the inductive
           if (!isStrictlyPositive(field.tpe, inductiveHead))

@@ -32,6 +32,7 @@ object TypeError {
     case e: PatternCaptureNeedsExpectedType => e.copy(span = Some(sp))
     case e: PatternHeadMismatch             => e.copy(span = Some(sp))
     case e: PatternArityMismatch            => e.copy(span = Some(sp))
+    case e: PropEliminationRestricted       => e.copy(span = Some(sp))
     case e: WTF                             => e.copy(span = Some(sp))
   }
 }
@@ -158,4 +159,13 @@ final case class NonStrictlyPositive(
 ) extends TypeError {
   override val msg: String =
     s"Constructor $ctor of $inductive is not strictly positive in field $field : $fieldTy"
+}
+
+final case class PropEliminationRestricted(
+    inductive: String,
+    motive: Value,
+    span: Option[Span] = None
+) extends TypeError {
+  override def msg: String =
+    s"Cannot eliminate proposition $inductive into non-Prop motive $motive"
 }

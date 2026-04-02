@@ -66,6 +66,7 @@ object Elaborator {
   private def elab(term: SurfaceAst.Term): CA.Term = term match {
     case SA.Term.Ident(name, sp)   => CA.Term.Ident(name, sp)
     case SA.Term.App(fn, args, sp) => CA.Term.App(elab(fn), args.map(elab), sp)
+    case pi: SA.Term.Pi            => elabPi(pi)
     case l: SA.Term.Lam            => elab(l)
     case b: SA.Term.Body           => elab(b)
     case SA.Term.Match(scrut, scrutName, motive, cases, sp) =>

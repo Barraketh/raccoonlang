@@ -116,6 +116,8 @@ object PrettyPrinter {
 
   def print(value: Value): String = value match {
     case Value.VSort(lvl)      => s"Type $lvl"
+    case Value.PropTpe         => "Prop"
+    case Value.KernelObject    => "KernelObject"
     case Value.Level(atoms, c) => s"Level($atoms, $c)"
     case Value.VPi(_, binders, _, out, _, _, _) =>
       val outTerm = out match {

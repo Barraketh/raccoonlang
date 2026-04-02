@@ -45,7 +45,7 @@ object CoreAst {
     final case class PatternApp(fn: Ident, args: NEL[TypePattern], span: Span) extends TypePattern
 
     // Pi (x: A) -> B x
-    final case class Pi(binders: NEL[Binder], out: TypeTerm, span: Span) extends TypeTerm
+    final case class Pi(binders: NEL[Binder], out: TypeTerm, span: Span) extends Term with TypeTerm
 
     // Application: f a (term-level)
     final case class App(fn: Term, args: NEL[Term], span: Span) extends Term

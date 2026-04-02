@@ -28,6 +28,14 @@ object TypeChecker {
   def checkType(value: Value, tyVal: Value)(implicit eqStore: EqStore, normalizers: NormalizerMap): Unit =
     checkFits(value.tpe, tyVal)
 
+  def getUniverse(value: Value)(implicit eqStore: EqStore): Universe = {
+    resolveInEqStore(value.tpe) match {
+      case u: Universe           => u
+      case _ if value == PropTpe => PropTpe
+      case _                     => throw NotAType(value.tpe)
+    }
+  }
+
   private def typecheckApply(fn: Value, args: NEL[Value])(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
@@ -74,10 +82,6 @@ object TypeChecker {
   private def typecheckPi(pi: Term.Pi, env: Env)(implicit meta: EqStore, normalizers: NormalizerMap): VPi = {
     val bodyEnv = pi.binders.foldLeft(env.newScope) { case (curEnv, b) =>
       val (openedEnv, domTy, _) = TypePatternOps.freshOpen(curEnv, b.ty, meta)
-      Interpreter.resolveInEqStore(domTy.tpe) match {
-        case _: VSort =>
-        case _        => throw NotAType(domTy)
-      }
       openedEnv.putLocal(b.name, freshVar(b.name, domTy))
     }
     getType(pi.out, bodyEnv)
@@ -144,6 +148,15 @@ object TypeChecker {
     t.cases.find(c => !inductiveCtors.contains(c.ctorName)).foreach { c =>
       throw UnknownConstructor(c.ctorName, inductiveName, Some(c.span))
     }
+
+    // Prop elimination restriction: if inductive lives in Prop, motive must also live in Prop
+    val withScrut = env.newScope.putLocal(t.scrutName, scrut)
+    val motiveTy = getType(t.motive, withScrut)
+
+    def allowsLargeElim(name: String): Boolean = name == "False" || name == "Eq"
+
+    if (getUniverse(scrut.tpe) == PropTpe && getUniverse(motiveTy) != PropTpe && !allowsLargeElim(inductiveName))
+      throw PropEliminationRestricted(inductiveName, motiveTy, Some(t.span))
 
     val scrutConst = scrut match {
       case VCtor(h, fields, _) => Some((h.name, fields))
@@ -229,9 +242,19 @@ object TypeChecker {
 
   def getType(term: TypeTerm, env: Env)(implicit ctx: EqStore, normalizerMap: NormalizerMap): Value = {
     val res = typecheckTT(term, env)
-    Interpreter.resolveInEqStore(res.tpe) match {
-      case _: VSort => res
-      case _        => throw NotAType(res)
+    assertType(res)
+    res
+  }
+
+  def assertType(value: Value)(implicit ctx: EqStore): Unit = {
+    Interpreter.resolveInEqStore(value) match {
+      case PropTpe =>
+      case _ =>
+        Interpreter.resolveInEqStore(value.tpe) match {
+          case _: VSort | PropTpe =>
+          case _ =>
+            throw NotAType(value)
+        }
     }
   }
 
@@ -303,6 +326,7 @@ object TypeChecker {
 
     (a, b) match {
       case (VSort(l1), VSort(l2)) if l1 == l2                           => true
+      case (PropTpe, PropTpe)                                           => true
       case (NormalizerType, NormalizerType)                             => true
       case (LevelTpe, LevelTpe)                                         => true
       case (l1: Level, l2: Level)                                       => Level.leq(l1, l2) && Level.leq(l2, l1)

@@ -79,8 +79,17 @@ object Interpreter {
     val (vars, bodyEnv, _) = FreshVar.assignFreshVars(pi.binders, env, eqStore)
     val outType = evalTypeTerm(pi.out, bodyEnv)
 
-    val types = vars.map(_.tpe.tpe) :+ outType.tpe
-    val piLevel = Level.max(types.collect { case VSort(level) => level })
+    // Determine classifier for Pi: Prop if codomain is Prop, otherwise predicative max
+
+    val piClassifier: Universe = TypeChecker.getUniverse(outType) match {
+      case PropTpe => PropTpe
+      case VSort(outLevel) =>
+        val domLevels: Vector[Level] = vars
+          .map(v => TypeChecker.getUniverse(v.tpe))
+          .collect { case VSort(level) => level }
+
+        VSort(Level.max(domLevels :+ outLevel))
+    }
 
     VPi(
       env,
@@ -89,7 +98,7 @@ object Interpreter {
       Some(pi.out),
       FreeNames.getDeps(pi, env, Set.empty),
       id,
-      VSort(piLevel)
+      piClassifier
     )
   }
 
@@ -294,6 +303,7 @@ object Interpreter {
         .putGlobal("Level", LevelTpe)
         .putGlobal("Level.zero", Level.zero)
         .putGlobal("Level.one", Level(Map.empty, 1))
+        .putGlobal("Prop", PropTpe)
 
     val builtinFuncs = List[(String, TypeTerm, (NEL[Value], EqStore) => Value)](
       (

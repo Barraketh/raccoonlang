@@ -50,8 +50,18 @@ object Value {
     final case class LocalId(nodeId: Int, params: Vector[Value]) extends LamId
   }
 
+  sealed trait Universe extends Value
+
   case object LevelTpe extends TopLevelValue {
     override def tpe: Value = VSort(Level.zero)
+  }
+
+  case object KernelObject extends TopLevelValue {
+    override def tpe: Value = KernelObject
+  }
+
+  case object PropTpe extends TopLevelValue with Universe {
+    override def tpe: Value = KernelObject
   }
 
   // Represents max(var1 + k1, var2 + k2... , c)
@@ -96,7 +106,7 @@ object Value {
 
   }
 
-  case class VSort(level: Level) extends Value {
+  case class VSort(level: Level) extends Universe {
     override def tpe: Value = VSort(Level.succ(level))
 
     override def synDeps: BitSet = level.synDeps
@@ -110,7 +120,7 @@ object Value {
       outSyntax: Option[TypeTerm],
       synDeps: BitSet,
       id: LamId,
-      tpe: Value
+      tpe: Universe
   ) extends Value {
     override def toString: String = "VPi"
   }

@@ -9,6 +9,8 @@ object Normalizers {
     case Value.LevelTpe         => "LTY"
     case Value.Level(atoms, c)  => s"Lvl(${atoms.toList.sortBy(_._1).map(p => s"${p._1}->${p._2}").mkString(",")},$c)"
     case Value.VSort(lvl)       => s"U:$lvl"
+    case Value.PropTpe          => "Prop"
+    case Value.KernelObject     => "KernelObject"
     case Value.VConst(n, _, _)  => s"C:$n"
     case Value.Var(_, id, _)    => s"V:$id"
     case Value.VApp(h, args, _) => s"A(${orderKey(h)};${args.toList.map(orderKey).mkString(",")})"

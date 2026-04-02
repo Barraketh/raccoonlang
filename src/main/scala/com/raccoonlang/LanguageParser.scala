@@ -30,7 +30,7 @@ object LanguageParser {
     "def",
     "inductive",
     "indices",
-    "stable",
+    "stable"
   )
 
   private val ident =
@@ -62,15 +62,13 @@ object LanguageParser {
 
   private def param = (sym('(') ~ ident ~ sym(':') ~/ typeTerm ~ symTight(')')).flatSpanned.map(Binder.tupled)
 
-  private def pi: Parser[Pi] = (param ~ sym("->") ~ typeTerm).flatSpanned.map { Pi.tupled }
+  private def pi: Parser[Pi] = (param ~ sym("->") ~ typeTerm).flatSpanned.map { Pi.tupled } |
+    (typeExpr.spanned ~ sym("->") ~ typeTerm).spanned.mapAsT { case ((expr, term), span) =>
+      Pi(Binder("_", expr.value, expr.span), term, span)
+    }
 
   private def typeTerm: Parser[TypeTerm] =
-    pi |
-      sym('(') ~ typeTerm ~ sym(')') |
-      (typeExpr.spanned ~ sym("->") ~ typeTerm).spanned.mapAsT { case ((expr, term), span) =>
-        Pi(Binder("_", expr.value, expr.span), term, span)
-      } |
-      typeExpr
+    pi | sym('(') ~ typeTerm ~ sym(')') | typeExpr
 
   private def let: Parser[Let] = (kw("let") ~ ident ~ (sym(':') ~ typeTerm).? ~ sym(":=") ~ term).flatSpanned.map {
     Let.tupled
@@ -102,11 +100,11 @@ object LanguageParser {
 
   private def matchP: Parser[Match] = {
     (kw("match") ~/ term ~ kw("as") ~/ ident ~ kw("returning") ~/ typeTerm ~
-      (skipWS ~ P("with") ~/ lineSep) ~ matchCase.rep(1)).flatSpanned.map(Match.tupled)
+      (skipWS ~ P("with") ~/ lineSep) ~ matchCase.rep(0)).flatSpanned.map(Match.tupled)
   }
 
   private def term: Parser[Term] =
-    (lambda | matchP | body | sym("(") ~/ term ~ symTight(")") | ident.flatSpanned.map(Ident.tupled))
+    (lambda | matchP | body | pi | sym("(") ~/ term ~ symTight(")") | ident.flatSpanned.map(Ident.tupled))
       .rep(1, wsSep)
       .spanned
       .mapAsT { case (terms, span) =>
