@@ -12,6 +12,7 @@ as well as a research platform for exploring language features to make formally-
 when that simplifies the overall system. Current examples:
     - Universe level normalization and unification
     - Type-driven expression normalization (see `docs/normalizers.md`)
+    - Type Patterns
 
 ## Implemented today
 
@@ -22,6 +23,7 @@ when that simplifies the overall system. Current examples:
     - Validates exhaustiveness checking: missing, duplicate, and unreachable branches
 - Cumulative universes, first-class `Level`, `Sort u`, universe validation, and sort unification
 - Extensible definitional equality through type-driven expression normalization
+- Type patterns
 - JVM CLI plus Scala Native build for macOS
 
 ## A few concrete examples
@@ -95,6 +97,37 @@ inline def addComm (a: Nat)(b: Nat): Eq Nat (add a b) (add b a) := {
 }
 ```
 
+### Type patterns
+
+An alternative to implicit parameters. A binder can contain captures in the type, and later parameters can reference
+these captures. See example below. You declare a capture with a '$'[name] . When applying a function,
+these patterns bind the incoming type like regular pattern matches in a language like Lean. A failure to match will
+result in a typecheck failure. This feature allows us to greatly reduce the number of function params - zip would
+otherwise have 7 params.
+
+```raccoon
+inductive Nat : Type
+  | zero : Nat
+  | succ (_: Nat) : Nat
+
+inductive Vec (A: Sort $u) indices (n: Nat) : Sort u
+  | nil: Vec A Nat.zero
+  | cons (v: Vec A $n)(elem: A): Vec A (Nat.succ n)
+
+inductive Pair (A: Sort $u1)(B: Sort $u2): Sort (Level.max u1 u2)
+  | mk(a: A)(b: B): Pair A B
+
+inline def zip(va: Vec $A $n)(vb: Vec $B n): Vec (Pair A B) n := {
+  let ResType := Vec (Pair A B) n
+  match va as _ returning ResType with
+  | Vec.nil => Vec.nil (Pair A B)
+  | Vec.cons va0 a => {
+    match vb as _ returning ResType with
+    | Vec.cons vb0 b => Vec.cons (Pair A B) (zip va0 vb0) (Pair.mk A B a b)
+  }
+}
+```
+
 ## Quickstart
 
 To just try out the language, download the latest release (arm mac only at the moment), then run in your shell
@@ -162,4 +195,3 @@ Planned / not yet implemented:
 - Impredicative Prop / imax
 - Quotients
 - File imports
-- Type patterns (as an alternative to implicit params)
