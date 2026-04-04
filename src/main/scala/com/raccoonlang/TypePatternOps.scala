@@ -34,6 +34,7 @@ object TypePatternOps {
     resolveInEqStore(v) match {
       case VSort(level)       => Some((SortHead, Vector(level)))
       case av: AppliedValue   => Some((ValueHead(av.head), av.args.toVector))
+      case v: VCtor           => Some(ValueHead(v.head), v.fields)
       case h: VConst          => Some((ValueHead(h), Vector.empty))
       case h: ConstructorHead => Some((ValueHead(h), Vector.empty))
       case _                  => None

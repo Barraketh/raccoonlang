@@ -7,8 +7,6 @@ import com.raccoonlang.Interpreter._
 import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
 
-import scala.collection.BitSet
-
 object TypeChecker {
 
   def sortLeq(a: Value, b: Value)(implicit eqStore: EqStore): Boolean = {
@@ -132,93 +130,155 @@ object TypeChecker {
     checkType(branchRes, expectedTy)
   }
 
+  case class ReachableCtor(
+      name: String,
+      head: ConstructorHead,
+      fieldArgs: Vector[Value],
+      resultTy: Value,
+      branchEqStore: EqStore
+  )
+
   private def typecheckMatch(t: Match, env: Env)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): Value = {
+
+    def freshCtorCopy(h: ConstructorHead): (Vector[Value], Value) =
+      h.tpe match {
+        case pi: VPi =>
+          val (freshArgs, ctorEnv, _) = assignFreshVars(pi, eqStore)
+          val ctorResTy = pi.codomain(ctorEnv, eqStore)
+          (freshArgs.drop(h.numParams).map(v => v: Value), ctorResTy)
+
+        case otherTy => (Vector.empty, otherTy)
+      }
+
+    def computeReachableCtors(
+        scrutTpe: Value,
+        inductiveName: String,
+        ctorNames: Vector[String]
+    ): Vector[ReachableCtor] =
+      ctorNames.flatMap { ctorName =>
+        env.find(ctorName).getOrElse(throw NotFound(ctorName)) match {
+          case h @ ConstructorHead(_, numParams, _, ctorTy) =>
+            val (freshArgs, ctorEnv, _) = ctorTy match {
+              case pi: VPi => assignFreshVars(pi, eqStore)
+              case _       => (Vector.empty[Var], env, scala.collection.immutable.BitSet.empty)
+            }
+
+            val ctorResTy: Value = ctorTy match {
+              case VPi(_, _, codomain, _, _, _, _) => codomain(ctorEnv, eqStore)
+              case otherTy                         => otherTy
+            }
+
+            val refinable = scrutTpe.synDeps ++ ctorResTy.synDeps
+
+            try {
+              val branchEqStore = Unify.unify(scrutTpe, ctorResTy, eqStore.allow(refinable))
+              Some(
+                ReachableCtor(
+                  name = ctorName,
+                  head = h,
+                  fieldArgs = freshArgs.drop(numParams).map(v => v: Value),
+                  resultTy = ctorResTy,
+                  branchEqStore = branchEqStore
+                )
+              )
+            } catch {
+              case _: UnificationFailed | _: OccursCheckFailed => None
+            }
+
+          case _ => throw UnknownConstructor(ctorName, inductiveName)
+        }
+      }
+
+    def allowLargeElimination(scrutTpe: Value, reachable: Vector[ReachableCtor]): Boolean = {
+      if (reachable.isEmpty) return true
+      if (reachable.length > 1) return false
+
+      val only = reachable.head
+      val (fields1, res1) = freshCtorCopy(only.head)
+      val (fields2, res2) = freshCtorCopy(only.head)
+
+      val refinable0 = scrutTpe.synDeps ++ res1.synDeps ++ res2.synDeps
+
+      val startEq =
+        try {
+          val eq1 = Unify.unify(res1, scrutTpe, eqStore.allow(refinable0))
+          Unify.unify(res2, scrutTpe, eq1)
+        } catch {
+          case _: UnificationFailed | _: OccursCheckFailed => return false
+        }
+
+      fields1.zip(fields2).forall { case (f1, f2) =>
+        TypeChecker.getUniverse(f1.tpe)(startEq) match {
+          case PropTpe => true
+          case _       => TypeChecker.defEq(f1, f2)(startEq, normalizers)
+        }
+      }
+    }
+
     val scrut = Interpreter.resolveInEqStore(typecheck(t.scrut, env))
     val scrutTpe = Interpreter.resolveInEqStore(scrut.tpe)
 
-    val (inductiveName, inductiveCtors) = scrutTpe match {
-      case VConst(n, Inductive(meta), _)             => (n, meta.constructorNames.toSet)
-      case VApp(VConst(n, Inductive(meta), _), _, _) => (n, meta.constructorNames.toSet)
+    val (inductiveName, inductiveCtorNames) = scrutTpe match {
+      case VConst(n, Inductive(meta), _)             => (n, meta.constructorNames)
+      case VApp(VConst(n, Inductive(meta), _), _, _) => (n, meta.constructorNames)
       case _                                         => throw NonInductiveMatch(scrut.tpe)
     }
+    val inductiveCtorSet = inductiveCtorNames.toSet
 
-    // Check for duplicate constructors
+    // Duplicate / unknown branch checks are purely syntactic.
     t.cases.groupBy(_.ctorName).find(_._2.length > 1).foreach { case (ctor, cases) =>
       throw DuplicateCase(ctor, Some(cases(1).span))
     }
 
-    // Check for unknown constructors
-    t.cases.find(c => !inductiveCtors.contains(c.ctorName)).foreach { c =>
+    t.cases.find(c => !inductiveCtorSet.contains(c.ctorName)).foreach { c =>
       throw UnknownConstructor(c.ctorName, inductiveName, Some(c.span))
     }
 
-    // Prop elimination restriction: if inductive lives in Prop, motive must also live in Prop
     val withScrut = env.newScope.putLocal(t.scrutName, scrut)
     val motiveTy = getType(t.motive, withScrut)
 
-    def allowsLargeElim(name: String): Boolean = name == "False" || name == "Eq"
+    // Shared type-based reachability analysis.
+    lazy val reachableByType: Vector[ReachableCtor] =
+      computeReachableCtors(scrutTpe, inductiveName, inductiveCtorNames)
 
-    if (getUniverse(scrut.tpe) == PropTpe && getUniverse(motiveTy) != PropTpe && !allowsLargeElim(inductiveName))
+    // Large elimination from Prop is allowed only for empty / singleton-like propositions.
+    if (
+      getUniverse(scrut.tpe) == PropTpe &&
+      getUniverse(motiveTy) != PropTpe &&
+      !allowLargeElimination(scrutTpe, reachableByType)
+    ) {
       throw PropEliminationRestricted(inductiveName, motiveTy, Some(t.span))
-
-    val scrutConst = scrut match {
-      case VCtor(h, fields, _) => Some((h.name, fields))
-      case _                   => None
     }
 
-    scrutConst match {
-      case Some((head, args)) =>
-        // Scrut is a constructor - we need to make sure that we have exactly one matching branch and then typecheck it
-        t.cases.find(c => c.ctorName != head).foreach { c => throw UnreachableCase(c.ctorName, Some(c.span)) }
-        val br = t.cases.find(c => c.ctorName == head).getOrElse(throw MissingCase(head))
-        typecheckBranch(br, args, env.newScope.putLocal(t.scrutName, scrut), t.motive)
-      case None =>
-        // We don't know scrut to be a specific constructor - gotta check exhaustivity and typecheck all branches
-        // For every possible ctor, we will try to unify its type with scrut type. If this fails, then this ctor is
-        // unreachable, and so we will make sure it is not in the match. If it is possible, then the ctor is reachable,
-        // and we make sure it is in the match and typecheck the branch with the resulting eqStore
+    scrut match {
+      case VCtor(h, fields, _) =>
+        // Exact-value fast path: once the scrutinee is known to be a specific constructor,
+        // every other constructor branch is unreachable.
+        t.cases.find(_.ctorName != h.name).foreach { c =>
+          throw UnreachableCase(c.ctorName, Some(c.span))
+        }
 
-        inductiveCtors.foreach { ctorName =>
-          val ctorVal = env.find(ctorName).getOrElse(throw NotFound(ctorName))
+        val br = t.cases.find(_.ctorName == h.name).getOrElse(throw MissingCase(h.name))
+        typecheckBranch(br, fields, withScrut, t.motive)
 
-          ctorVal match {
-            case h @ ConstructorHead(_, numParams, _, ctorTy) =>
-              val (freshArgs, ctorEnv, _) = ctorTy match {
-                case pi: VPi => assignFreshVars(pi, eqStore)
-                case _       => (Vector.empty[Value], env, BitSet.empty)
+      case _ =>
+        val reachableMap = reachableByType.map(info => info.name -> info).toMap
+
+        inductiveCtorNames.foreach { ctorName =>
+          reachableMap.get(ctorName) match {
+            case None =>
+              t.cases.find(_.ctorName == ctorName).foreach { c =>
+                throw UnreachableCase(ctorName, Some(c.span))
               }
 
-              val ctorResTy: Value = ctorTy match {
-                case VPi(_, _, codomain, _, _, _, _) => codomain(ctorEnv, eqStore)
-                case otherTy: Value                  => otherTy
-              }
-
-              val branchRefinable = scrut.tpe.synDeps ++ ctorResTy.synDeps
-
-              val branchEqStoreOpt =
-                try {
-                  Some(Unify.unify(scrut.tpe, ctorResTy, eqStore.allow(branchRefinable)))
-                } catch {
-                  case _: UnificationFailed | _: OccursCheckFailed => None
-                }
-
-              branchEqStoreOpt match {
-                case None =>
-                  // Case is unreachable - make sure it's not in the match
-                  t.cases.find(c => c.ctorName == ctorName).foreach(c => throw UnreachableCase(ctorName, Some(c.span)))
-                case Some(branchEqStore) =>
-                  // Case is reachable - typecheck its branch
-                  val br = t.cases.find(c => c.ctorName == ctorName).getOrElse(throw MissingCase(ctorName))
-                  val fieldArgs = freshArgs.drop(numParams)
-                  val appliedConstr = VCtor(h, fieldArgs, ctorResTy)
-                  val envWithScrut = env.newScope.putLocal(t.scrutName, appliedConstr)
-                  typecheckBranch(br, fieldArgs, envWithScrut, t.motive)(branchEqStore, normalizers)
-              }
-
-            case _ => throw UnknownConstructor(ctorName, inductiveName)
+            case Some(info) =>
+              val br = t.cases.find(_.ctorName == ctorName).getOrElse(throw MissingCase(ctorName))
+              val appliedCtor = VCtor(info.head, info.fieldArgs, info.resultTy)
+              val envWithBranchScrut = env.newScope.putLocal(t.scrutName, appliedCtor)
+              typecheckBranch(br, info.fieldArgs, envWithBranchScrut, t.motive)(info.branchEqStore, normalizers)
           }
         }
     }

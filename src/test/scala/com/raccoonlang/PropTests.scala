@@ -249,31 +249,6 @@ class PropTests extends munit.FunSuite {
     typecheckDecls(p)
   }
 
-  test("Negative: elimination from And into Nat is rejected") {
-    val p =
-      """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
-        |inductive And (P: Prop)(Q: Prop) : Prop
-        | | intro (p: P)(q: Q) : And P Q
-        |
-        |def badElim (P: Prop)(Q: Prop)(h: And P Q): Nat := {
-        |  match h as _ returning Nat with
-        |  | And.intro p q => Nat.zero
-        |}
-        |""".stripMargin
-
-    LanguageParser.parseProgram(p) match {
-      case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        intercept[PropEliminationRestricted] { Interpreter.run(core) }
-      case err: Failure =>
-        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
-    }
-  }
-
   test("Negative: elimination from Exists into Nat is rejected") {
     val p =
       """
@@ -362,6 +337,147 @@ class PropTests extends munit.FunSuite {
         |""".stripMargin
 
     typecheckDecls(p)
+  }
+
+  test("Large elimination from True into Nat is allowed") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive True : Prop
+        | | intro : True
+        |
+        |def trueToNat (h: True): Nat := {
+        |  match h as _ returning Nat with
+        |  | True.intro => Nat.zero
+        |}
+        |""".stripMargin
+
+    typecheckDecls(p)
+  }
+
+  test("Large elimination from indexed-empty Prop family is allowed") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive IsZero indices (n: Nat) : Prop
+        | | intro : IsZero Nat.zero
+        |
+        |def absurdSucc (n: Nat)(h: IsZero (Nat.succ n)): Nat := {
+        |  match h as _ returning Nat with
+        |}
+        |""".stripMargin
+
+    typecheckDecls(p)
+  }
+
+  test("Large elimination is allowed when constructor field is uniquely forced by indices") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive IdxWrap (A: Type) indices (x: A) : Prop
+        | | intro (y: A) : IdxWrap A y
+        |
+        |def unwrapIdx (n: Nat)(h: IdxWrap Nat n): Nat := {
+        |  match h as _ returning Nat with
+        |  | IdxWrap.intro y => y
+        |}
+        |
+        |{
+        |  unwrapIdx Nat.zero (IdxWrap.intro Nat Nat.zero)
+        |}
+        |""".stripMargin
+
+    val res = runProgram(p)
+    assertEquals(toShape(res), zeroS)
+  }
+
+  test("Large elimination is allowed when exactly one constructor is reachable at the given index") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Shape indices (n: Nat) : Prop
+        | | zeroCase : Shape Nat.zero
+        | | succCase (m: Nat) : Shape (Nat.succ m)
+        |
+        |def predFromShape (n: Nat)(h: Shape (Nat.succ n)): Nat := {
+        |  match h as _ returning Nat with
+        |  | Shape.succCase m => m
+        |}
+        |
+        |{
+        |  predFromShape Nat.zero (Shape.succCase Nat.zero)
+        |}
+        |""".stripMargin
+
+    val res = runProgram(p)
+    assertEquals(toShape(res), zeroS)
+  }
+
+  test("Negative: large elimination from Prop with unforced Type-valued field is rejected") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive HasCarrier : Prop
+        | | intro (A: Type) : HasCarrier
+        |
+        |def badCarrier (h: HasCarrier): Nat := {
+        |  match h as _ returning Nat with
+        |  | HasCarrier.intro A => Nat.zero
+        |}
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value)
+        intercept[PropEliminationRestricted] { Interpreter.run(core) }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
+  }
+
+  test("Negative: large elimination is rejected when two constructors are reachable") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Or (P: Prop)(Q: Prop) : Prop
+        | | inl (p: P) : Or P Q
+        | | inr (q: Q) : Or P Q
+        |
+        |inductive True : Prop
+        | | intro : True
+        |
+        |def badOr (h: Or True True): Nat := {
+        |  match h as _ returning Nat with
+        |  | Or.inl p => Nat.zero
+        |  | Or.inr q => Nat.zero
+        |}
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value)
+        intercept[PropEliminationRestricted] { Interpreter.run(core) }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
   }
 
   // ---------------------------------------------------------------------------

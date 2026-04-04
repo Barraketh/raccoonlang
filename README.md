@@ -22,7 +22,7 @@ when that simplifies the overall system. Current examples:
     - Branch refinement for indexed families / dependent pattern matching.  Supports equality proofs.
     - Validates exhaustiveness checking: missing, duplicate, and unreachable branches
 - Cumulative universes, first-class `Level`, `Sort u`, universe validation, and sort unification
-  - Impredicative Prop
+  - Impredicative Prop with controlled large elimination
 - Extensible definitional equality through type-driven expression normalization
 - Type patterns
 - JVM CLI plus Scala Native build for macOS
