@@ -262,34 +262,42 @@ object Interpreter {
     evalTerm(body.res, newEnv)
   }
 
-  def evalDecl(decl: Decl, env: Env): Env = {
+  case class Worlds(checkEnv: Env, runEnv: Env)
+
+  def evalDecl(decl: Decl, worlds: Worlds): Worlds = {
     implicit val eqStore = EqStore.empty
     implicit val normalizers = NormalizerMap.empty
 
     decl match {
       case Decl.ConstDecl(unfoldStrategy, name, ty, body, _) =>
-        val tyV = TypeChecker.getType(ty, env)
+        val tyV = TypeChecker.getType(ty, worlds.checkEnv)
         val declConst = VConst(name, Symbol, tyV)
 
         // Allow recursive references by pre-binding a symbolic self during body checking
-        val bodyV = TypeChecker.typecheck(body, env.putGlobal(name, declConst))
+        val bodyV = TypeChecker.typecheck(body, worlds.checkEnv.putGlobal(name, declConst))
 
         TypeChecker.checkType(bodyV, tyV)
 
-        val value: Value = unfoldStrategy match {
+        val checkValue: Value = unfoldStrategy match {
           case Some(_) => bodyV
           case None    => declConst
         }
-        val nextEnv = env.putGlobal(name, value)
-
-        value match {
-          case VLam(tpe, _, _, _) => tpe.env = nextEnv
+        val nextCheckEnv = worlds.checkEnv.putGlobal(name, checkValue)
+        checkValue match {
+          case VLam(tpe, _, _, _) => tpe.env = nextCheckEnv
           case _                  =>
         }
 
-        nextEnv
+        val runtimeBodyV = Interpreter.evalTerm(body, worlds.runEnv.putGlobal(name, declConst))
+        val nextRunEnv = worlds.runEnv.putGlobal(name, runtimeBodyV)
+        runtimeBodyV match {
+          case VLam(tpe, _, _, _) => tpe.env = nextRunEnv
+          case _                  =>
+        }
 
-      case d: Decl.InductiveDecl => InductiveChecks.evalInductiveDecl(d, env)
+        Worlds(nextCheckEnv, nextRunEnv)
+
+      case d: Decl.InductiveDecl => InductiveChecks.evalInductiveDecl(d, worlds)
 
     }
 
@@ -356,8 +364,11 @@ object Interpreter {
       )
     )
 
-    val env = p.decls.foldLeft(nextEnv) { case (env, decl) => evalDecl(decl, env) }
-    p.body.map(b => TypeChecker.typecheck(b, env)(EqStore.empty, NormalizerMap.empty))
+    val worlds = p.decls.foldLeft(Worlds(nextEnv, nextEnv)) { case (curWorlds, decl) => evalDecl(decl, curWorlds) }
+    p.body.map { b =>
+      TypeChecker.typecheck(b, worlds.checkEnv)(EqStore.empty, NormalizerMap.empty)
+      Interpreter.evalTerm(b, worlds.runEnv)(EqStore.empty)
+    }
   }
 
   private def parseHeader(s: String): TypeTerm = {

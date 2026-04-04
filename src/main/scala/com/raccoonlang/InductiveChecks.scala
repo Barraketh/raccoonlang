@@ -1,6 +1,7 @@
 package com.raccoonlang
 
 import com.raccoonlang.CoreAst._
+import com.raccoonlang.Interpreter.Worlds
 import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
 
@@ -90,27 +91,48 @@ object InductiveChecks {
         true
     }
 
-  def evalInductiveDecl(decl: Decl.InductiveDecl, env: Env): Env = {
+  private def installInductive(decl: Decl.InductiveDecl, baseEnv: Env, inductiveHead: VConst)(implicit
+      eqStore: EqStore,
+      normalizerMap: NormalizerMap
+  ): Env = {
+    val envWithInductive = baseEnv.putGlobal(decl.header.name, inductiveHead)
+
+    decl.ctors.foldLeft(envWithInductive) { case (curEnv, ctor) =>
+      val allBinders = decl.header.params ++ ctor.fields
+      val fullTypeTerm =
+        if (allBinders.isEmpty) ctor.resultTy
+        else Term.Pi(NEL.mk(allBinders), ctor.resultTy, ctor.span)
+
+      val fullType = TypeChecker.getType(fullTypeTerm, envWithInductive)
+
+      curEnv.putGlobal(
+        ctor.name,
+        ConstructorHead(ctor.name, decl.header.params.length, allBinders.length, fullType)
+      )
+    }
+  }
+
+  def evalInductiveDecl(decl: Decl.InductiveDecl, worlds: Worlds): Worlds = {
     implicit val eqStore: EqStore = EqStore.empty
     implicit val normalizers: NormalizerMap = NormalizerMap.empty
 
-    val inductiveType = {
+    val ty = {
       val binders = decl.header.params ++ decl.header.indices
-      val ty =
-        if (binders.isEmpty) decl.header.resultTy
-        else Term.Pi(NEL.mk(binders), decl.header.resultTy, decl.header.span)
-      TypeChecker.getType(ty, env)
+      if (binders.isEmpty) decl.header.resultTy
+      else Term.Pi(NEL.mk(binders), decl.header.resultTy, decl.header.span)
     }
 
-    val inductiveHead = VConst(
-      decl.header.name,
-      Inductive(InductiveMeta(decl.ctors.map(_.name), decl.header.params.length, decl.header.indices.length)),
-      inductiveType
-    )
+    val inductiveTypeCheck = TypeChecker.getType(ty, worlds.checkEnv)
+    val inductiveTypeRun = Interpreter.evalTypeTerm(ty, worlds.runEnv)
+
+    val meta = InductiveMeta(decl.ctors.map(_.name), decl.header.params.length, decl.header.indices.length)
+
+    val inductiveHeadCheck = VConst(decl.header.name, Inductive(meta), inductiveTypeCheck)
+    val inductiveHeadRun = VConst(decl.header.name, Inductive(meta), inductiveTypeRun)
 
     // Constructors are checked in an environment that contains the inductive and inductive params assigned
-    val envWithInductive = env.putGlobal(decl.header.name, inductiveHead)
-    val (paramVars, envWithParams, _) = FreshVar.assignFreshVars(decl.header.params, envWithInductive, eqStore)
+    val checkEnvWithInductive = worlds.checkEnv.putGlobal(decl.header.name, inductiveHeadCheck)
+    val (paramVars, envWithParams, _) = FreshVar.assignFreshVars(decl.header.params, checkEnvWithInductive, eqStore)
 
     val resTpe = TypeChecker.getType(decl.header.resultTy, envWithParams)
     val familyUniverse: Universe = resTpe match {
@@ -147,9 +169,9 @@ object InductiveChecks {
           }
 
           // 3) Every constructor field type must be strictly positive in the inductive
-          if (!isStrictlyPositive(field.tpe, inductiveHead))
+          if (!isStrictlyPositive(field.tpe, inductiveHeadCheck))
             throw NonStrictlyPositive(
-              inductive = inductiveHead.name,
+              inductive = inductiveHeadCheck.name,
               ctor = ctor.name,
               field = binder.name,
               fieldTy = field.tpe,
@@ -164,9 +186,9 @@ object InductiveChecks {
       // and params must be uniform - must equal to the original paramVars
       val resultErr = InvalidConstructorResult(ctor.name, decl.header.name, outputTpe, Some(ctor.span))
       val outputArgs = outputTpe match {
-        case VApp(h, args, _) if h.name == inductiveHead.name => args.toVector
-        case VConst(name, _, _) if name == inductiveHead.name => Vector.empty[Value]
-        case _                                                => throw resultErr
+        case VApp(h, args, _) if h.name == inductiveHeadCheck.name => args.toVector
+        case VConst(name, _, _) if name == inductiveHeadCheck.name => Vector.empty[Value]
+        case _                                                     => throw resultErr
       }
 
       if (outputArgs.length != decl.header.arity) throw resultErr
@@ -177,18 +199,10 @@ object InductiveChecks {
 
     }
 
-    // Only after all constructor checks succeed do we add the constructors to the environment.
-    decl.ctors.foldLeft(envWithInductive) { case (curEnv, ctor) =>
-      val allBinders = decl.header.params ++ ctor.fields
-      val fullTypeTerm =
-        if (allBinders.isEmpty) ctor.resultTy
-        else Term.Pi(NEL.mk(allBinders), ctor.resultTy, ctor.span)
-      val fullType = TypeChecker.getType(fullTypeTerm, envWithInductive)
+    // Only after all constructor checks succeed do we add the decl to the environments.
+    val nextCheckEnv = installInductive(decl, worlds.checkEnv, inductiveHeadCheck)
+    val nextRunEnv = installInductive(decl, worlds.runEnv, inductiveHeadRun)
 
-      curEnv.putGlobal(
-        ctor.name,
-        ConstructorHead(ctor.name, decl.header.params.length, allBinders.length, fullType)
-      )
-    }
+    Worlds(nextCheckEnv, nextRunEnv)
   }
 }
