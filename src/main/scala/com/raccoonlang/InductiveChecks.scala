@@ -16,13 +16,28 @@ object InductiveChecks {
       case _                             => false
     }
 
+  @tailrec
+  private def collectBlocked(v: Value, acc: Vector[Value] = Vector.empty): (Value, Vector[Value]) =
+    v match {
+      case VBlockedApp(h, args, _, _) => collectBlocked(h, args.toVector ++ acc)
+      case h                          => (h, acc)
+    }
+
   private def occursInductive(v: Value, inductiveHead: VConst)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): Boolean =
     v match {
-      case _: Blocked => true // Be conservative: blocked types may hide an occurrence
-      case _: VMatch  => true
+      // Be conservative: blocked types may hide an occurrence
+      case _: VMatch => true
+
+      case vb @ VBlockedApp(_, _, resultTy, _) =>
+        val (head0, flatArgs) = collectBlocked(vb)
+        head0 match {
+          case _: Var =>
+            flatArgs.exists(arg => occursInductive(arg, inductiveHead)) || occursInductive(resultTy, inductiveHead)
+          case _ => true
+        }
 
       case h: VConst => sameInductiveHead(h, inductiveHead)
       case VApp(h, args, _) =>
@@ -48,8 +63,16 @@ object InductiveChecks {
       normalizer: NormalizerMap
   ): Boolean =
     v match {
-      case _: Blocked => false // Be conservative: blocked shapes are not strictly positive
-      case _: VMatch  => false
+      // Be conservative: blocked shapes are not strictly positive
+      case _: VMatch => false
+
+      case vb @ VBlockedApp(_, _, resultTy, _) =>
+        val (head0, flatArgs) = collectBlocked(vb)
+        head0 match {
+          case _: Var =>
+            !flatArgs.exists(arg => occursInductive(arg, inductiveHead)) && isStrictlyPositive(resultTy, inductiveHead)
+          case _ => false
+        }
 
       case pi: VPi =>
         val (binderVars, bodyEnv, _) = FreshVar.assignFreshVars(pi, eqStore)
