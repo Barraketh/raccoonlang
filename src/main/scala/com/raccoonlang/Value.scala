@@ -37,6 +37,10 @@ object Value {
   // A computation that is blocked but could proceed when blockerId is resolved. VBlockedApp or BlockedMatch
   sealed trait Blocked extends Blocker
 
+  sealed trait UpdatableType {
+    def withTpe(tpe: Value): Value
+  }
+
   type VarId = Int
 
   // Identifier for lambdas to shortcut equality when possible.
@@ -121,12 +125,20 @@ object Value {
       synDeps: BitSet,
       id: LamId,
       tpe: Universe
-  ) extends Value {
+  ) extends Value
+    with UpdatableType {
     override def toString: String = "VPi"
+
+    override def withTpe(tpe: Value): Value = tpe match {
+      case u: Universe => this.copy(tpe = u)
+      case _           => throw WTF(s"Cannot update Pi type to $tpe")
+    }
   }
 
-  case class VConst(name: String, constType: ConstType, tpe: Value) extends Value {
+  case class VConst(name: String, constType: ConstType, tpe: Value) extends Value with UpdatableType {
     override val synDeps: BitSet = tpe.synDeps
+
+    override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
   sealed trait AppliedValue extends Value {
@@ -145,14 +157,23 @@ object Value {
     }
   }
 
-  case class VApp(head: VConst, args: NEL[Value], tpe: Value) extends AppliedValue
+  case class VApp(head: VConst, args: NEL[Value], tpe: Value) extends AppliedValue with UpdatableType {
+    override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
+  }
 
-  case class VBlockedApp(head: Value, args: NEL[Value], tpe: Value, blockerId: VarId) extends AppliedValue with Blocked
+  case class VBlockedApp(head: Value, args: NEL[Value], tpe: Value, blockerId: VarId)
+    extends AppliedValue
+    with Blocked
+    with UpdatableType {
+    override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
+  }
 
-  case class Var(name: String, id: VarId, tpe: Value) extends Value with Blocker {
+  case class Var(name: String, id: VarId, tpe: Value) extends Value with Blocker with UpdatableType {
     override val synDeps: BitSet = tpe.synDeps + id
 
     override val blockerId: VarId = id
+
+    override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
   case class VLam(tpe: VPi, id: LamId, isStable: Boolean, run: (NEL[Value], EqStore) => Value) extends Value {
@@ -171,10 +192,14 @@ object Value {
     }
   }
 
-  case class ConstructorHead(name: String, numParams: Int, totalArity: Int, tpe: Value) extends TopLevelValue
+  case class ConstructorHead(name: String, numParams: Int, totalArity: Int, tpe: Value)
+    extends TopLevelValue
+    with UpdatableType {
+    override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
+  }
 
   // Fully applied constructor.
-  case class VCtor(head: ConstructorHead, fields: Vector[Value], tpe: Value) extends Value {
+  case class VCtor(head: ConstructorHead, fields: Vector[Value], tpe: Value) extends Value with UpdatableType {
     override lazy val synDeps: BitSet = {
       val res = collection.mutable.BitSet()
       res |= head.synDeps
@@ -182,6 +207,8 @@ object Value {
       res |= tpe.synDeps
       res.toImmutable
     }
+
+    override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
   trait VMatch extends Value {
@@ -201,11 +228,16 @@ object Value {
   }
 
   // The scrutinee of the match is an opaque symbol, so match will never proceed
-  case class StuckMatch(id: LamId.LocalId, scrut: Value, tpe: Value) extends VMatch
+  case class StuckMatch(id: LamId.LocalId, scrut: Value, tpe: Value) extends VMatch with UpdatableType {
+    override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
+  }
 
   case class BlockedMatch(id: LamId.LocalId, term: Term.Match, scrut: Value, env: Env, tpe: Value, blockerId: VarId)
     extends VMatch
     with Blocked
+    with UpdatableType {
+    override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
+  }
 
   object NormalizerType extends TopLevelValue {
     override def tpe: Value = VSort(Level.zero)

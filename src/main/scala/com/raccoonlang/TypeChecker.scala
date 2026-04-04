@@ -103,11 +103,17 @@ object TypeChecker {
   ): Value = {
     val newEnv = body.lets.foldLeft(env) { case (curEnv, l) =>
       val res = typecheck(l.value, curEnv)
-      l.ty.foreach { tyTerm =>
-        val tyV = getType(tyTerm, curEnv)
-        checkType(res, tyV)
-      }
-      curEnv.putLocal(l.name, res)
+      val withType = l.ty
+        .map { tyTerm =>
+          val tyV = getType(tyTerm, curEnv)
+          checkType(res, tyV)
+          res match {
+            case u: UpdatableType => u.withTpe(tyV)
+            case _                => res
+          }
+        }
+        .getOrElse(res)
+      curEnv.putLocal(l.name, withType)
     }
     typecheck(body.res, newEnv)
   }

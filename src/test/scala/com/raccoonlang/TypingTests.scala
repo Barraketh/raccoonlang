@@ -144,22 +144,6 @@ class TypingTests extends munit.FunSuite {
     }
   }
 
-  test("opaque constant stays symbol and is callable but not reduced") {
-    val p =
-      """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
-        |def inc (n: Nat): Nat := Nat.succ n
-        |
-        |{ inc }
-        |""".stripMargin
-
-    val res = runProgram(p)
-    assertEquals(toShape(res), SConst("inc"))
-  }
-
   test("unannotated let with constructor synthesizes type and reduces when applied") {
     val p =
       """

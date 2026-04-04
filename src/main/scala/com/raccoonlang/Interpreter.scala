@@ -177,7 +177,13 @@ object Interpreter {
       l.isStable,
       (args, eqStore) => {
         val bodyEnv = getEnvWithArgs(vpi, args)(eqStore)
-        evalTerm(l.body, bodyEnv)(eqStore)
+        val res = evalTerm(l.body, bodyEnv)(eqStore)
+        res match {
+          case u: UpdatableType =>
+            val tpe = vpi.codomain(bodyEnv, eqStore)
+            u.withTpe(tpe)
+          case _ => res
+        }
       }
     )
   }
@@ -257,7 +263,12 @@ object Interpreter {
   def evalBody(body: Term.Body, env: Env)(implicit eqStore: EqStore): Value = {
     val newEnv = body.lets.foldLeft(env) { case (curEnv, l) =>
       val res = evalTerm(l.value, curEnv)
-      curEnv.putLocal(l.name, res)
+      val withTpe = (res, l.ty) match {
+        case (u: UpdatableType, Some(ty)) =>
+          u.withTpe(evalTypeTerm(ty, curEnv))
+        case _ => res
+      }
+      curEnv.putLocal(l.name, withTpe)
     }
     evalTerm(body.res, newEnv)
   }
