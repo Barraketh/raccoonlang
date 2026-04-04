@@ -22,6 +22,7 @@ when that simplifies the overall system. Current examples:
     - Branch refinement for indexed families / dependent pattern matching.  Supports equality proofs.
     - Validates exhaustiveness checking: missing, duplicate, and unreachable branches
 - Cumulative universes, first-class `Level`, `Sort u`, universe validation, and sort unification
+  - Impredicative Prop
 - Extensible definitional equality through type-driven expression normalization
 - Type patterns
 - JVM CLI plus Scala Native build for macOS
@@ -192,6 +193,7 @@ sbt native/nativeLink
 Planned / not yet implemented:
 - Strict positivity checking in inductive declarations is overly conservative
 - Mutually-recursive inductives
-- Impredicative Prop / imax
 - Quotients
 - File imports
+- No standard library
+- No performance benchmarks
