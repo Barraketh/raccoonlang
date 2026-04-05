@@ -28,20 +28,12 @@ object Unify {
   def occurs(id: VarId, rhs: Value, meta: EqStore): Boolean =
     expandedDeps(rhs.synDeps, meta).contains(id)
 
-  // Extensionally unify Pi types
   private def unifyPis(pi1: VPi, pi2: VPi, eqStore: EqStore)(implicit
       normalizers: NormalizerMap
   ): (EqStore, Vector[Var]) = {
-    val (vars1, nextEnv1, newVars1) = FreshVar.assignFreshVars(pi1, eqStore)
-    val (vars2, nextEnv2, newVars2) = FreshVar.assignFreshVars(pi2, eqStore)
-
-    val newEqStore = vars1.zip(vars2).foldLeft(eqStore.allow(newVars1 ++ newVars2)) { case (curEqStore, (var1, var2)) =>
-      Unify.unify(var1, var2, curEqStore)
-    }
-
-    val out1 = pi1.codomain(nextEnv1, newEqStore)
-    val out2 = pi2.codomain(nextEnv2, newEqStore)
-    (unify(out1, out2, newEqStore), vars1)
+    val related = TypeChecker.relatePis(pi1, pi2)(eqStore, normalizers)
+    val nextEqStore = unify(related.out1, related.out2, related.eqStore)
+    (nextEqStore, related.vars)
   }
 
   private def unifyStuckMatches(v1: VMatch, v2: VMatch, meta: EqStore)(implicit

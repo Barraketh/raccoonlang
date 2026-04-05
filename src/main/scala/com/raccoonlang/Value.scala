@@ -116,7 +116,6 @@ object Value {
     override def synDeps: BitSet = level.synDeps
   }
 
-  // Env must be mutable in order to allow recursion - lambdas and envs must be able to point to each other
   case class VPi(
       env: Env,
       binders: NEL[Binder],

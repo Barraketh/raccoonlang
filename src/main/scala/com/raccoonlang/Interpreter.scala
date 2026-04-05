@@ -57,15 +57,8 @@ object Interpreter {
     }
   }
 
-  private def getEnvWithArgs(fnTpe: VPi, args: NEL[Value])(implicit eqStore: EqStore) = {
-    if (fnTpe.binders.length != args.length)
-      throw ArityMismatch(fnTpe.binders.length, args.length)
-
-    fnTpe.binders.toList.zip(args.toList).foldLeft(fnTpe.env.newScope) { case (curEnv, (binder, value)) =>
-      val openedEnv = TypePatternOps.bindValue(curEnv, binder.ty, value.tpe, eqStore)
-      openedEnv.putLocal(binder.name, value)
-    }
-  }
+  private def getEnvWithArgs(fnTpe: VPi, args: NEL[Value])(implicit eqStore: EqStore) =
+    BinderOps.instantiate(fnTpe.binders, fnTpe.env, args, eqStore)
 
   def evalPi(pi: Term.Pi, env: Env)(implicit eqStore: EqStore): VPi = {
     val captureNames = FreeNames

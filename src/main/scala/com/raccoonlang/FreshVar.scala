@@ -14,13 +14,10 @@ object FreshVar {
     Var(name, gensymId, tpe)
   }
 
-  def assignFreshVars(binders: NEL[CoreAst.Binder], env: Env, meta: EqStore): (Vector[Var], Env, BitSet) =
-    binders.foldLeft((Vector.empty[Var], env.newScope, BitSet.empty)) {
-      case ((curValues, curEnv, curNewVars), binder) =>
-        val (openedEnv, tyV, newVars) = TypePatternOps.freshOpen(curEnv, binder.ty, meta)
-        val fresh = freshVar(binder.name, tyV)
-        (curValues :+ fresh, openedEnv.putLocal(binder.name, fresh), curNewVars ++ newVars + fresh.id)
-    }
+  def assignFreshVars(binders: NEL[CoreAst.Binder], env: Env, meta: EqStore): (Vector[Var], Env, BitSet) = {
+    val res = BinderOps.freshen(binders, env, meta)
+    (res.vars, res.env, res.newVars)
+  }
 
   def assignFreshVars(binders: Vector[CoreAst.Binder], env: Env, meta: EqStore): (Vector[Var], Env, BitSet) = {
     if (binders.isEmpty) (Vector.empty, env, BitSet.empty)

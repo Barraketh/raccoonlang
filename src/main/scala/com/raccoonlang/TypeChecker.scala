@@ -2,7 +2,7 @@ package com.raccoonlang
 
 import com.raccoonlang.CoreAst.Term.{Ident, Lam, Match}
 import com.raccoonlang.CoreAst._
-import com.raccoonlang.FreshVar.{assignFreshVars, freshVar}
+import com.raccoonlang.FreshVar.assignFreshVars
 import com.raccoonlang.Interpreter._
 import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
@@ -43,14 +43,7 @@ object TypeChecker {
 
     fnTy0 match {
       case VPi(env, binders, _, _, _, _, _) =>
-        if (binders.length != args.length)
-          throw ArityMismatch(binders.length, args.length)
-
-        // Typecheck args against binder types and extend pi env
-        binders.toList.zip(args.toList).foldLeft(env.newScope) { case (curEnv, (binder, value)) =>
-          val openedEnv = TypePatternOps.matchValue(curEnv, binder.ty, value.tpe, eqStore)
-          openedEnv.putLocal(binder.name, value)
-        }
+        BinderOps.checkAndInstantiate(binders, env, args, eqStore)
 
         // Since we've already typechecked everything we care about, now we can just evalTerm
         Interpreter.evalApply(fn0, args)
@@ -78,10 +71,7 @@ object TypeChecker {
 
   // Check that all type terms typecheck under a fresh var assignment to binders
   private def typecheckPi(pi: Term.Pi, env: Env)(implicit meta: EqStore, normalizers: NormalizerMap): VPi = {
-    val bodyEnv = pi.binders.foldLeft(env.newScope) { case (curEnv, b) =>
-      val (openedEnv, domTy, _) = TypePatternOps.freshOpen(curEnv, b.ty, meta)
-      openedEnv.putLocal(b.name, freshVar(b.name, domTy))
-    }
+    val bodyEnv = BinderOps.freshen(pi.binders, env, meta).env
     getType(pi.out, bodyEnv)
     evalPi(pi, env)
   }
@@ -348,20 +338,32 @@ object TypeChecker {
 
   }
 
+  case class RelatedPis(vars: Vector[Var], out1: Value, out2: Value, eqStore: EqStore)
+
+  def relatePis(pi1: VPi, pi2: VPi)(implicit
+      eqStore: EqStore,
+      normalizers: NormalizerMap
+  ): RelatedPis = {
+    val (vars1, nextEnv1, newVars1) = FreshVar.assignFreshVars(pi1, eqStore)
+    val (vars2, nextEnv2, newVars2) = FreshVar.assignFreshVars(pi2, eqStore)
+
+    val relatedEqStore =
+      vars1.zip(vars2).foldLeft(eqStore.allow(newVars1 ++ newVars2)) { case (curEqStore, (var1, var2)) =>
+        Unify.unify(var1, var2, curEqStore)
+      }
+
+    val out1 = pi1.codomain(nextEnv1, relatedEqStore)
+    val out2 = pi2.codomain(nextEnv2, relatedEqStore)
+
+    RelatedPis(vars1, out1, out2, relatedEqStore)
+  }
+
   private def defEqPi(pi1: VPi, pi2: VPi)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): Option[(Vector[Var], EqStore)] = {
-    val (vars1, nextEnv1, newVars1) = FreshVar.assignFreshVars(pi1, eqStore)
-    val (vars2, nextEnv2, newVars2) = FreshVar.assignFreshVars(pi2, eqStore)
-
-    val newEqStore = vars1.zip(vars2).foldLeft(eqStore.allow(newVars1 ++ newVars2)) { case (curEqStore, (var1, var2)) =>
-      Unify.unify(var1, var2, curEqStore)
-    }
-
-    val out1 = pi1.codomain(nextEnv1, newEqStore)
-    val out2 = pi2.codomain(nextEnv2, newEqStore)
-    if (defEq(out1, out2)(newEqStore, normalizers)) Some((vars1, newEqStore))
+    val related = relatePis(pi1, pi2)
+    if (defEq(related.out1, related.out2)(related.eqStore, normalizers)) Some((related.vars, related.eqStore))
     else None
   }
 
