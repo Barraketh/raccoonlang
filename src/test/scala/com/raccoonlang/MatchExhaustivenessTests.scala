@@ -86,8 +86,6 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         |
         |""".stripMargin
 
-    // This SHOULD be rejected as non-exhaustive (missing Nat.succ).
-    // Today it will likely NOT throw MissingCase (bug), so this test fails.
     intercept[MissingCase] { typecheckDecls(p) }
   }
 

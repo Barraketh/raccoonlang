@@ -17,6 +17,8 @@ final case class Env(
   }
 
   def putLocal(name: String, value: Value): Env = {
+    if (globals.contains(name))
+      throw AlreadyDefined(name)
     if (name == "_") this
     else copy(locals = locals.put(name, value))
   }

@@ -171,13 +171,18 @@ object Interpreter {
         LamId.LocalId(l.span.start, captureVals)
 
     }
-    VLam(
+    lazy val self: VLam = VLam(
       vpi,
       id,
       l.isStable,
       (args, eqStore) => {
         val bodyEnv = getEnvWithArgs(vpi, args)(eqStore)
-        val res = evalTerm(l.body, bodyEnv)(eqStore)
+        val recurEnv =
+          l.name match {
+            case Some(name) => bodyEnv.putGlobal(name, self)
+            case None       => bodyEnv
+          }
+        val res = evalTerm(l.body, recurEnv)(eqStore)
         res match {
           case u: UpdatableType =>
             val tpe = vpi.codomain(bodyEnv, eqStore)
@@ -186,6 +191,7 @@ object Interpreter {
         }
       }
     )
+    self
   }
 
   private def evalLam(l: Term.Lam, env: Env)(implicit eqStore: EqStore): VLam = {
@@ -284,8 +290,7 @@ object Interpreter {
         val tyV = TypeChecker.getType(ty, worlds.checkEnv)
         val declConst = VConst(name, Symbol, tyV)
 
-        // Allow recursive references by pre-binding a symbolic self during body checking
-        val bodyV = TypeChecker.typecheck(body, worlds.checkEnv.putGlobal(name, declConst))
+        val bodyV = TypeChecker.typecheck(body, worlds.checkEnv)
 
         TypeChecker.checkType(bodyV, tyV)
 
@@ -294,17 +299,9 @@ object Interpreter {
           case None    => declConst
         }
         val nextCheckEnv = worlds.checkEnv.putGlobal(name, checkValue)
-        checkValue match {
-          case VLam(tpe, _, _, _) => tpe.env = nextCheckEnv
-          case _                  =>
-        }
 
-        val runtimeBodyV = Interpreter.evalTerm(body, worlds.runEnv.putGlobal(name, declConst))
+        val runtimeBodyV = Interpreter.evalTerm(body, worlds.runEnv)
         val nextRunEnv = worlds.runEnv.putGlobal(name, runtimeBodyV)
-        runtimeBodyV match {
-          case VLam(tpe, _, _, _) => tpe.env = nextRunEnv
-          case _                  =>
-        }
 
         Worlds(nextCheckEnv, nextRunEnv)
 

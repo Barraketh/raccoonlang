@@ -299,7 +299,13 @@ object TypeChecker {
     val vpi = typecheckPi(l.ty, env)
     val (_, bodyEnv, _) = assignFreshVars(vpi, eqStore)
 
-    val bodyV = typecheck(l.body, bodyEnv)
+    val recurEnv =
+      l.name match {
+        case Some(name) => bodyEnv.putGlobal(name, Value.VConst(name, Symbol, vpi))
+        case None       => bodyEnv
+      }
+
+    val bodyV = typecheck(l.body, recurEnv)
     val resType = Interpreter.evalTypeTerm(l.ty.out, bodyEnv)
 
     checkType(bodyV, resType)
