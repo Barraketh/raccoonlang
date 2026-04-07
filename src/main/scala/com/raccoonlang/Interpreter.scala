@@ -11,7 +11,7 @@ object Interpreter {
   private def normalizeLevel(l: Level)(implicit eqStore: EqStore): Level = {
     val pieces = Vector(Level(Map.empty, l.c)) ++
       l.atoms.toVector.map { case (varId, k) =>
-        val base = eqStore.links.get(varId) match {
+        val base = eqStore.subst.get(varId) match {
           case Some(sol) =>
             eqStore.force(sol) match {
               case next: Level   => normalizeLevel(next)
@@ -28,7 +28,7 @@ object Interpreter {
   def resolveInEqStore(v: Value)(implicit eqStore: EqStore): Value = {
     val v0 = eqStore.force(v)
     v0 match {
-      case v0: Blocked if eqStore.links.contains(v0.blockerId) =>
+      case v0: Blocked if eqStore.subst.contains(v0.blockerId) =>
         v0 match {
           case VBlockedApp(h, args, tpe, _) =>
             val h0 = resolveInEqStore(h)
@@ -51,7 +51,7 @@ object Interpreter {
             }
         }
 
-      case l: Level if l.atoms.keySet.intersect(eqStore.links.keySet).nonEmpty => normalizeLevel(l)
+      case l: Level if l.atoms.keySet.intersect(eqStore.subst.keySet).nonEmpty => normalizeLevel(l)
 
       case _ => v0
     }

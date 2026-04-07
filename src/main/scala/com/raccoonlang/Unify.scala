@@ -3,30 +3,7 @@ package com.raccoonlang
 import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
 
-import scala.collection.immutable.BitSet
-
 object Unify {
-
-  def expandedDeps(rhsSyn: BitSet, meta: EqStore): BitSet = {
-    val seen = scala.collection.mutable.BitSet.empty
-    val work = scala.collection.mutable.ArrayDeque.empty[Int]
-    rhsSyn.foreach(id => { val r = id; if (!seen(r)) { seen += r; work += r } })
-
-    while (work.nonEmpty) {
-      val id = work.removeHead()
-      meta.links.get(id) match {
-        case None => ()
-        case Some(sol) =>
-          sol.synDeps.foreach { j =>
-            if (!seen(j)) { seen += j; work += j }
-          }
-      }
-    }
-    seen.toImmutable
-  }
-
-  def occurs(id: VarId, rhs: Value, meta: EqStore): Boolean =
-    expandedDeps(rhs.synDeps, meta).contains(id)
 
   private def unifyPis(pi1: VPi, pi2: VPi, eqStore: EqStore)(implicit
       normalizers: NormalizerMap
@@ -51,7 +28,7 @@ object Unify {
     if (l1.atoms.size == 1 && l1.c == 0) {
       val (varId, k) = l1.atoms.head
       if (
-        meta.isRefinable(varId) && !occurs(varId, l2, meta)
+        meta.isRefinable(varId) && !meta.occurs(varId, l2)
         && l2.atoms.values.forall(k2 => k2 >= k) // For now make sure that offsets don't go negative
         && (l2.c >= k || (l2.c == 0 && l2.atoms.nonEmpty))
       ) {
@@ -78,7 +55,7 @@ object Unify {
 
   private def linkVar(v: Var, other: Value, meta: EqStore)(implicit normlizers: NormalizerMap): EqStore = {
     val m1 = if (TypeChecker.sortLeq(other.tpe, v.tpe)(meta)) meta else unify(v.tpe, other.tpe, meta)
-    if (occurs(v.id, other, m1))
+    if (m1.occurs(v.id, other))
       throw OccursCheckFailed(v.id, other)
     m1.addLink(v.id, other)
   }
