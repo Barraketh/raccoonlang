@@ -1,5 +1,7 @@
 package com.raccoonlang
 
+import com.raccoonlang.CoreAst.TypePattern
+
 sealed trait TypeError extends RuntimeException {
   def msg: String
   def span: Option[Span]
@@ -33,6 +35,7 @@ object TypeError {
     case e: PatternHeadMismatch             => e.copy(span = Some(sp))
     case e: PatternArityMismatch            => e.copy(span = Some(sp))
     case e: PropEliminationRestricted       => e.copy(span = Some(sp))
+    case e: LevelPatternMismatch            => e.copy(span = Some(sp))
     case e: WTF                             => e.copy(span = Some(sp))
   }
 }
@@ -168,4 +171,8 @@ final case class PropEliminationRestricted(
 ) extends TypeError {
   override def msg: String =
     s"Cannot eliminate proposition $inductive into non-Prop motive $motive"
+}
+
+final case class LevelPatternMismatch(p: TypePattern, v: Value, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"Level pattern mismatch - expected $p, got $v"
 }

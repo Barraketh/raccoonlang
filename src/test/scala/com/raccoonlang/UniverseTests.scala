@@ -302,4 +302,21 @@ class UniverseTests extends munit.FunSuite {
       )
     }
   }
+
+  test("positive: capture through Level.succ in a type pattern works") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inline def idUp (A: Sort (Level.succ $u))(x: A): A := x
+        |
+        |{
+        |  idUp Type Nat
+        |}
+        |""".stripMargin
+
+    runProgram(p)
+  }
 }

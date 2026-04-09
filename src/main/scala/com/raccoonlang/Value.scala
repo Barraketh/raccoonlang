@@ -85,6 +85,11 @@ object Value {
       }
     }
 
+    /** Check if Level covers offset - that is, is it safe to subtract offset from level.
+      */
+    def geq(l: Level, offset: Int): Boolean =
+      l.atoms.values.forall(k => k >= offset) && (l.c >= offset || (l.c == 0 && l.atoms.nonEmpty))
+
     def succ(l: Level): Level = addOffset(l, 1)
 
     def max(xs: Vector[Level]): Level = {

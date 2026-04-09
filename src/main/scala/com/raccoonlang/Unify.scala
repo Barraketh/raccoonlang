@@ -27,11 +27,7 @@ object Unify {
   private def unifyLevels(l1: Level, l2: Level, meta: EqStore): Option[EqStore] = {
     if (l1.atoms.size == 1 && l1.c == 0) {
       val (varId, k) = l1.atoms.head
-      if (
-        meta.isRefinable(varId) && !meta.occurs(varId, l2)
-        && l2.atoms.values.forall(k2 => k2 >= k) // For now make sure that offsets don't go negative
-        && (l2.c >= k || (l2.c == 0 && l2.atoms.nonEmpty))
-      ) {
+      if (meta.isRefinable(varId) && !meta.occurs(varId, l2) && Level.geq(l2, k)) {
         val other = Level.addOffset(l2, -k)
         Some(meta.addLink(varId, other))
       } else None

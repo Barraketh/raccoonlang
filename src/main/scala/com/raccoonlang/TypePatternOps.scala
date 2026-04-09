@@ -34,8 +34,8 @@ object TypePatternOps {
     resolveInEqStore(fn) match {
       case VLam(_, LamId.Const("Sort"), _, _) => SortHead
       // Defensive: older environments could install Sort as a const; keep support
-      case VConst("Sort", _, _)               => SortHead
-      case other                               => ValueHead(other)
+      case VConst("Sort", _, _) => SortHead
+      case other                => ValueHead(other)
     }
 
   private def actualHeadView(v: Value)(implicit eqStore: EqStore): Option[(SemanticHead, Vector[Value])] =
@@ -140,16 +140,22 @@ object TypePatternOps {
       env: Env,
       pat: TypePattern,
       value: Value
-  )(implicit eqStore: EqStore): Env = pat match {
-    case Capture(name, _) => env.putLocal(name, value)
+  )(implicit eqStore: EqStore): Env = {
+    value.tpe match {
+      case LevelTpe => bindLevel(env, pat, value)
+      case _ =>
+        pat match {
+          case Capture(name, _) => env.putLocal(name, value)
 
-    case _: TypeTerm => env
+          case _: TypeTerm => env
 
-    case PatternApp(_, patArgs, _) =>
-      val args = decomposeForBinding(value, patArgs.length)
-      patArgs.toVector.zip(args).foldLeft(env) { case (curEnv, (nextPat, arg)) =>
-        bindInternal(curEnv, nextPat, arg)
-      }
+          case PatternApp(_, patArgs, _) =>
+            val args = decomposeForBinding(value, patArgs.length)
+            patArgs.toVector.zip(args).foldLeft(env) { case (curEnv, (nextPat, arg)) =>
+              bindInternal(curEnv, nextPat, arg)
+            }
+        }
+    }
   }
 
   private def matchOpenInternal(
@@ -162,33 +168,63 @@ object TypePatternOps {
   ): Env = {
     val actual0 = resolveInEqStore(actual)
 
-    p match {
-      case Capture(name, _) => userEnv.putLocal(name, actual0)
+    actual0.tpe match {
+      case LevelTpe => matchLevel(userEnv, p, actual0)
+      case _ =>
+        p match {
+          case Capture(name, _) => userEnv.putLocal(name, actual0)
 
-      case t: TypeTerm =>
-        val v = evalTypeTerm(t, userEnv)
-        TypeChecker.checkFits(actual0, v)
-        userEnv
+          case t: TypeTerm =>
+            val v = evalTypeTerm(t, userEnv)
+            TypeChecker.checkFits(actual0, v)
+            userEnv
 
-      case PatternApp(fn, args, _) =>
-        val fnV = evalTypeTerm(fn, userEnv)
-        val pi = requirePi(fnV)
+          case PatternApp(fn, args, _) =>
+            val fnV = evalTypeTerm(fn, userEnv)
+            val pi = requirePi(fnV)
 
-        if (pi.binders.length != args.length)
-          throw PatternArityMismatch(fnV, pi.binders.length, args.length)
+            if (pi.binders.length != args.length)
+              throw PatternArityMismatch(fnV, pi.binders.length, args.length)
 
-        val actualArgs = decomposeForPatternHeadDef(fnV, actual0)
-        if (actualArgs.length != args.length)
-          throw PatternArityMismatch(fnV, args.length, actualArgs.length)
+            val actualArgs = decomposeForPatternHeadDef(fnV, actual0)
+            if (actualArgs.length != args.length)
+              throw PatternArityMismatch(fnV, args.length, actualArgs.length)
 
-        val (nextUserEnv, _) =
-          pi.binders.toList.zip(args.toList).zip(actualArgs).foldLeft((userEnv, pi.env.newScope)) {
-            case ((curUserEnv, curPiEnv), ((binder, argPat), actualArg)) =>
-              val nextPiEnv = bindInternal(curPiEnv, binder.ty, actualArg.tpe).putLocal(binder.name, actualArg)
-              val nextUserEnv = matchOpenInternal(curUserEnv, argPat, actualArg)
-              (nextUserEnv, nextPiEnv)
-          }
-        nextUserEnv
+            val (nextUserEnv, _) =
+              pi.binders.toList.zip(args.toList).zip(actualArgs).foldLeft((userEnv, pi.env.newScope)) {
+                case ((curUserEnv, curPiEnv), ((binder, argPat), actualArg)) =>
+                  val nextPiEnv = bindInternal(curPiEnv, binder.ty, actualArg.tpe).putLocal(binder.name, actualArg)
+                  val nextUserEnv = matchOpenInternal(curUserEnv, argPat, actualArg)
+                  (nextUserEnv, nextPiEnv)
+              }
+            nextUserEnv
+        }
+    }
+  }
+
+  private def matchLevel(env: Env, p: TypePattern, actualTy: Value)(implicit
+      eqStore: EqStore,
+      normalizerMap: NormalizerMap
+  ): Env = {
+    val actualL = Interpreter.getLevel(actualTy)
+    val o = openPatternInternal(env, p, Some(LevelTpe))
+    val patternL = Interpreter.getLevel(o.value)
+    if (o.captures.isEmpty) {
+      TypeChecker.checkFits(actualL, patternL)
+      env
+    } else if (o.captures.length == 1 && patternL.atoms.size == 1 && patternL.c == 0) {
+      val offset = patternL.atoms.head._2
+      if (Level.geq(actualL, offset)) env.putLocal(o.captures.head._1, Value.Level.addOffset(actualL, -offset))
+      else throw LevelPatternMismatch(p, actualTy)
+    } else throw LevelPatternMismatch(p, actualTy)
+  }
+
+  private def bindLevel(env: Env, p: TypePattern, actualTy: Value)(implicit eqStore: EqStore): Env = {
+    val o = openPatternInternal(env, p, Some(LevelTpe))
+    if (o.captures.isEmpty) env
+    else {
+      val offset = Interpreter.getLevel(o.value).atoms.head._2
+      env.putLocal(o.captures.head._1, Value.Level.addOffset(Interpreter.getLevel(actualTy), -offset))
     }
   }
 
