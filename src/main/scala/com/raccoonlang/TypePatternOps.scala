@@ -9,6 +9,13 @@ import com.raccoonlang.Value._
 import scala.collection.immutable.BitSet
 
 object TypePatternOps {
+  final case class OpenedPattern(
+      env: Env,
+      value: Value,
+      captures: Vector[(String, Var)],
+      newVars: BitSet
+  )
+
   private def requirePi(fn: Value)(implicit eqStore: EqStore): VPi =
     resolveInEqStore(fn.tpe) match {
       case pi: VPi => pi
@@ -26,8 +33,9 @@ object TypePatternOps {
   private def fnHeadView(fn: Value)(implicit eqStore: EqStore): SemanticHead =
     resolveInEqStore(fn) match {
       case VLam(_, LamId.Const("Sort"), _, _) => SortHead
+      // Defensive: older environments could install Sort as a const; keep support
       case VConst("Sort", _, _)               => SortHead
-      case other                              => ValueHead(other)
+      case other                               => ValueHead(other)
     }
 
   private def actualHeadView(v: Value)(implicit eqStore: EqStore): Option[(SemanticHead, Vector[Value])] =
@@ -70,27 +78,28 @@ object TypePatternOps {
       case None => throw WTF(s"Failed to deconstruct $actual")
     }
 
-  // =========================
-  // User-visible opening
-  // =========================
-  //
-  // These functions open the pattern the user actually wrote in a binder like:
-  //   (v : Vec $A $n)
-  // Captures here are exported into userEnv.
-
-  private def freshOpenInternal(
+  private def openPatternInternal(
       env: Env,
       p: TypePattern,
       expectedTy: Option[Value]
-  )(implicit eqStore: EqStore): (Env, Value, BitSet) = p match {
+  )(implicit eqStore: EqStore): OpenedPattern = p match {
     case Capture(name, _) =>
       val exp = expectedTy.getOrElse(throw PatternCaptureNeedsExpectedType(name))
       val fresh = FreshVar.freshVar(name, exp)
-      (env.putLocal(name, fresh), fresh, BitSet.apply(fresh.id))
+      OpenedPattern(
+        env = env.putLocal(name, fresh),
+        value = fresh,
+        captures = Vector(name -> fresh),
+        newVars = BitSet(fresh.id)
+      )
 
     case t: TypeTerm =>
-      val v = evalTypeTerm(t, env)
-      (env, v, BitSet.empty)
+      OpenedPattern(
+        env = env,
+        value = evalTypeTerm(t, env),
+        captures = Vector.empty,
+        newVars = BitSet.empty
+      )
 
     case PatternApp(fn, args, _) =>
       val fnV = evalTypeTerm(fn, env)
@@ -99,25 +108,32 @@ object TypePatternOps {
       if (pi.binders.length != args.length)
         throw PatternArityMismatch(fnV, pi.binders.length, args.length)
 
-      val newVars = collection.mutable.BitSet()
+      val allNewVars = collection.mutable.BitSet.empty
+      var visibleCaptures = Vector.empty[(String, Var)]
+
       val (nextUserEnv, _, argVals) =
         pi.binders.toList.zip(args.toList).foldLeft((env, pi.env.newScope, Vector.empty[Value])) {
           case ((curUserEnv, curFamilyEnv, curArgs), (binder, argPat)) =>
-            val (familyAfterBinderTy, binderTyV, newVarIds1) = freshOpenInternal(curFamilyEnv, binder.ty, None)
-            val (userAfterArg, argV, newVarIds2) = freshOpenInternal(curUserEnv, argPat, Some(binderTyV))
+            val openedBinderTy = openPatternInternal(curFamilyEnv, binder.ty, None)
+            val openedArg = openPatternInternal(curUserEnv, argPat, Some(openedBinderTy.value))
 
-            newVars |= newVarIds1
-            newVars |= newVarIds2
+            allNewVars |= openedBinderTy.newVars
+            allNewVars |= openedArg.newVars
+            visibleCaptures = visibleCaptures ++ openedArg.captures
 
             (
-              userAfterArg,
-              familyAfterBinderTy.putLocal(binder.name, argV),
-              curArgs :+ argV
+              openedArg.env,
+              openedBinderTy.env.putLocal(binder.name, openedArg.value),
+              curArgs :+ openedArg.value
             )
         }
 
-      val res = evalApply(fnV, NEL.mk(argVals))
-      (nextUserEnv, res, newVars.toImmutable)
+      OpenedPattern(
+        env = nextUserEnv,
+        value = evalApply(fnV, NEL.mk(argVals)),
+        captures = visibleCaptures,
+        newVars = allNewVars.toImmutable
+      )
   }
 
   private def bindInternal(
@@ -180,10 +196,15 @@ object TypePatternOps {
   // Public API
   // =========================
 
+  def openPattern(env: Env, p: TypePattern, meta: EqStore): OpenedPattern = {
+    implicit val eqStore: EqStore = meta
+    openPatternInternal(env, p, None)
+  }
+
   // Used by FreshVar.assignFreshVars and typecheckPi
   def freshOpen(env: Env, p: TypePattern, meta: EqStore): (Env, Value, BitSet) = {
-    implicit val eqStore: EqStore = meta
-    freshOpenInternal(env, p, None)
+    val opened = openPattern(env, p, meta)
+    (opened.env, opened.value, opened.newVars)
   }
 
   // Used by Interpreter.getEnvWithArgs

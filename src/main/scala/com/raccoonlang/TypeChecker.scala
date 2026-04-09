@@ -338,33 +338,65 @@ object TypeChecker {
 
   }
 
+  private def readbackPatternCapture(v: Var, eqStore: EqStore): Value =
+    if (v.tpe == LevelTpe) Interpreter.getLevel(v)(eqStore)
+    else Interpreter.resolveInEqStore(v)(eqStore)
+
+  private def relatePiBinders(
+      binders: Util.NEL[CoreAst.Binder],
+      baseEnv: Env,
+      args: Vector[Var],
+      startEqStore: EqStore
+  )(implicit normalizers: NormalizerMap): (Env, EqStore) = {
+    if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
+
+    binders.toList.zip(args).foldLeft((baseEnv.newScope, startEqStore)) { case ((curEnv, curEqStore), (binder, arg)) =>
+      val opened = TypePatternOps.openPattern(curEnv, binder.ty, curEqStore)
+
+      val nextEqStore =
+        Unify.unify(opened.value, arg.tpe, curEqStore.allow(opened.newVars))
+
+      val envWithCaptures =
+        opened.captures.foldLeft(curEnv) { case (envAcc, (name, captureVar)) =>
+          envAcc.putLocal(name, readbackPatternCapture(captureVar, nextEqStore))
+        }
+
+      (envWithCaptures.putLocal(binder.name, arg), nextEqStore)
+    }
+  }
+
   case class RelatedPis(vars: Vector[Var], out1: Value, out2: Value, eqStore: EqStore)
 
   def relatePis(pi1: VPi, pi2: VPi)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): RelatedPis = {
-    val (vars1, nextEnv1, newVars1) = FreshVar.assignFreshVars(pi1, eqStore)
-    val (vars2, nextEnv2, newVars2) = FreshVar.assignFreshVars(pi2, eqStore)
+    val (sharedVars, nextEnv1, newVars1) = FreshVar.assignFreshVars(pi1, eqStore)
 
-    val relatedEqStore =
-      vars1.zip(vars2).foldLeft(eqStore.allow(newVars1 ++ newVars2)) { case (curEqStore, (var1, var2)) =>
-        Unify.unify(var1, var2, curEqStore)
-      }
+    // Positional binder vars themselves are rigid.
+    // Only the hidden/user captures introduced while opening pi1's binder patterns stay refinable.
+    val sharedVarIds = scala.collection.immutable.BitSet(sharedVars.map(_.id): _*)
+    val startEqStore = eqStore.allow(newVars1 -- sharedVarIds)
+
+    val (nextEnv2, relatedEqStore) = relatePiBinders(pi2.binders, pi2.env, sharedVars, startEqStore)
 
     val out1 = pi1.codomain(nextEnv1, relatedEqStore)
     val out2 = pi2.codomain(nextEnv2, relatedEqStore)
 
-    RelatedPis(vars1, out1, out2, relatedEqStore)
+    RelatedPis(sharedVars, out1, out2, relatedEqStore)
   }
 
   private def defEqPi(pi1: VPi, pi2: VPi)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): Option[(Vector[Var], EqStore)] = {
-    val related = relatePis(pi1, pi2)
-    if (defEq(related.out1, related.out2)(related.eqStore, normalizers)) Some((related.vars, related.eqStore))
-    else None
+    try {
+      val related = relatePis(pi1, pi2)
+      if (defEq(related.out1, related.out2)(related.eqStore, normalizers)) Some((related.vars, related.eqStore))
+      else None
+    } catch {
+      case _: UnificationFailed => None
+    }
   }
 
   private def defEqLamId(id1: LamId, id2: LamId)(implicit
@@ -399,13 +431,12 @@ object TypeChecker {
     val b = normalizerF(resolveInEqStore(v2))
 
     (a, b) match {
-      case (VSort(l1), VSort(l2)) if l1 == l2                           => true
-      case (PropTpe, PropTpe)                                           => true
-      case (NormalizerType, NormalizerType)                             => true
-      case (LevelTpe, LevelTpe)                                         => true
-      case (l1: Level, l2: Level)                                       => Level.leq(l1, l2) && Level.leq(l2, l1)
-      case (s1: VSort, s2: VSort)                                       => defEq(s1.level, s2.level)
-      case (VConst(n1, _, _), VConst(n2, _, _)) if n1 == n2             => true
+      case (PropTpe, PropTpe)                               => true
+      case (NormalizerType, NormalizerType)                 => true
+      case (LevelTpe, LevelTpe)                             => true
+      case (l1: Level, l2: Level)                           => l1 == l2 || Level.leq(l1, l2) && Level.leq(l2, l1)
+      case (s1: VSort, s2: VSort)                           => defEq(s1.level, s2.level)
+      case (VConst(n1, _, _), VConst(n2, _, _)) if n1 == n2 => true
       case (p1: VPi, p2: VPi) if p1.binders.length == p2.binders.length => defEqPi(p1, p2).isDefined
       case (l1: VLam, l2: VLam) if l1.tpe.binders.length == l2.tpe.binders.length =>
         if (l1.eq(l2) || defEqLamId(l1.id, l2.id)) true
