@@ -100,7 +100,10 @@ object Interpreter {
   def evalTypeTerm(tt: TypeTerm, env: Env)(implicit meta: EqStore): Value = tt match {
     case i: Term.Ident => evalIdent(i, env)
     case a: Term.TApp  => evalTApp(a, env)
-    case pi: Term.Pi   => evalPi(pi, env)
+    case s: Term.TSelect =>
+      val base = evalTypeTerm(s.base, env)
+      evalSelect(base, s.field, env, s.span.start)
+    case pi: Term.Pi => evalPi(pi, env)
   }
 
   private def evalIdent(i: Term.Ident, env: Env): Value = {
@@ -198,14 +201,85 @@ object Interpreter {
   def evalTerm(term: Term, env: Env)(implicit eqStore: EqStore): Value = {
     try {
       term match {
-        case tt: TypeTerm          => evalTypeTerm(tt, env)
-        case Term.App(fn, args, _) => evalApplyTerm(fn, args, env)
-        case l: Term.Lam           => evalLam(l, env)
-        case m: Term.Match         => evalMatch(m, env)
-        case b: Term.Body          => evalBody(b, env)
+        case Term.Select(base, field, span) => evalSelect(evalTerm(base, env), field, env, span.start)
+        case tt: TypeTerm                   => evalTypeTerm(tt, env)
+        case Term.App(fn, args, _)          => evalApplyTerm(fn, args, env)
+        case l: Term.Lam                    => evalLam(l, env)
+        case m: Term.Match                  => evalMatch(m, env)
+        case b: Term.Body                   => evalBody(b, env)
       }
     } catch {
       case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, term.span)
+    }
+  }
+
+  // Inline selection on values (term and type positions share logic)
+  private def computeSelectResultTypeFrom(vType: Value, field: String, env: Env)(implicit
+      eqStore: EqStore,
+      normalizers: NormalizerMap = NormalizerMap.empty
+  ): Value = {
+    val vt0 = resolveInEqStore(vType)
+    val (indName, meta, typeArgs) = vt0 match {
+      case VConst(n, Inductive(m), _)              => (n, m, Vector.empty[Value])
+      case VApp(VConst(n, Inductive(m), _), as, _) => (n, m, as)
+      case other                                   => throw NotAType(other)
+    }
+
+    // Only valid structs support selection
+    if (!meta.isStruct) throw NotAStruct(indName)
+    val ctorName = meta.constructorNames.head
+
+    env.find(ctorName).getOrElse(throw NotFound(ctorName)) match {
+      case ConstructorHead(_, numParams, _, ctorTy, isStruct) =>
+        if (!isStruct) throw NotAStruct(indName)
+        ctorTy match {
+          case pi: VPi =>
+            // 1) Bind inductive params to the vType args in the constructor Pi env
+            val paramArgs = typeArgs.take(numParams)
+
+            val envWithParams: Env =
+              if (numParams == 0) pi.env
+              else BinderOps.instantiate(pi.binders.take(numParams), pi.env, Util.NEL.mk(paramArgs), eqStore)
+
+            // 2) Build the telescope up to and including the requested field with params in scope
+            val allFieldBinders = pi.binders.toList.drop(numParams)
+            val fieldIdx = allFieldBinders.indexWhere(_.name == field)
+            if (fieldIdx < 0) throw NotFound(field)
+
+            val fieldTelescope = allFieldBinders.take(fieldIdx + 1)
+            val (_, telEnv, _) = FreshVar.assignFreshVars(fieldTelescope.toVector, envWithParams, eqStore)
+
+            // Find field in the telescope env and return its type
+            telEnv.find(field).get.tpe
+          case _ => throw NotFound(field)
+        }
+      case _ => throw NotFound(ctorName)
+    }
+  }
+
+  def evalSelect(v: Value, field: String, env: Env, locationId: Int)(implicit eqStore: EqStore): Value = {
+    val v0 = resolveInEqStore(v)
+    v0 match {
+      case VCtor(head, fields, _) =>
+        if (!head.isStruct) throw NotAStruct(head.name)
+
+        head.tpe match {
+          case pi: VPi =>
+            val fieldBinders = pi.binders.toList.drop(head.numParams)
+            val idx = fieldBinders.indexWhere(_.name == field)
+            if (idx >= 0 && idx < fields.length && fieldBinders(idx).name != "_") fields(idx)
+            else throw NotFound(field)
+          case _ => throw NotFound(field)
+        }
+
+      case b: Blocker =>
+        val resultTy = computeSelectResultTypeFrom(v0.tpe, field, env)
+        val id = ValueId.LocalId(locationId, Vector(v0))
+        VBlockedThunk(eqStore => evalSelect(v, field, env, locationId)(eqStore), id, resultTy, b.blockerId)
+      case _ =>
+        val resultTy = computeSelectResultTypeFrom(v0.tpe, field, env)
+        val head = VConst(s"select.$field", Symbol, KernelObject)
+        VApp(head, Vector(v), resultTy)
     }
   }
 

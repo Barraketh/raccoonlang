@@ -24,7 +24,8 @@ object FreeNames {
         // Captures introduce a bound variable for the remainder of the traversal
         (Set.empty, bound + name)
 
-      case Term.TApp(fn, args, _) => goList((fn :: args).toList, bound)
+      case Term.TApp(fn, args, _)   => goList((fn :: args).toList, bound)
+      case Term.TSelect(base, _, _) => go(base, bound)
 
       case Term.PatternApp(fn, args, _) => goList((fn :: args).toList, bound)
 
@@ -38,7 +39,8 @@ object FreeNames {
         val (freeOut, boundAfterOut) = go(out, boundAfterBinders)
         (freeFromBinders union freeOut, boundAfterOut)
 
-      case Term.App(fn, args, _) => goList((fn :: args).toList, bound)
+      case Term.App(fn, args, _)   => goList((fn :: args).toList, bound)
+      case Term.Select(base, _, _) => go(base, bound)
 
       case Term.Body(lets, res, _) =>
         val (freeLets, boundAfterLets) = lets.toList.foldLeft((Set.empty[String], bound)) {

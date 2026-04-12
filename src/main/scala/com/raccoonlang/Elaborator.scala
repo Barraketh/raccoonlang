@@ -20,17 +20,19 @@ object Elaborator {
   private def elab(i: SA.Term.Ident): CA.Term.Ident = CA.Term.Ident(i.name, i.span)
 
   private def elab(ty: SA.TypeTerm): CA.TypeTerm = ty match {
-    case i: SA.Term.Ident           => elab(i)
-    case SA.Term.TApp(fn, args, sp) => CoreAst.Term.TApp(elab(fn), args.map(elab), sp)
-    case pi: SA.Term.Pi             => elabPi(pi)
-    case SA.Term.Capture(name, sp)  => throw new RuntimeException(s"$$ cannot be used here: $name")
+    case i: SA.Term.Ident                 => elab(i)
+    case SA.Term.TApp(fn, args, sp)       => CoreAst.Term.TApp(elab(fn), args.map(elab), sp)
+    case pi: SA.Term.Pi                   => elabPi(pi)
+    case SA.Term.TSelect(base, field, sp) => CA.Term.TSelect(elab(base), field, sp)
+    case SA.Term.Capture(name, sp)        => throw new RuntimeException(s"$$ cannot be used here: $name")
   }
 
   private def elabPattern(ty: SA.TypeTerm): CA.TypePattern = ty match {
-    case i: SA.Term.Ident           => elab(i)
-    case SA.Term.TApp(fn, args, sp) => CoreAst.Term.PatternApp(elab(fn), args.map(elabPattern), sp)
-    case pi: SA.Term.Pi             => elabPi(pi)
-    case SA.Term.Capture(name, sp)  => CA.Term.Capture(name, sp)
+    case i: SA.Term.Ident                 => elab(i)
+    case SA.Term.TApp(fn, args, sp)       => CoreAst.Term.PatternApp(elab(fn), args.map(elabPattern), sp)
+    case pi: SA.Term.Pi                   => elabPi(pi)
+    case SA.Term.TSelect(base, field, sp) => CA.Term.TSelect(elab(base), field, sp)
+    case SA.Term.Capture(name, sp)        => CA.Term.Capture(name, sp)
   }
 
   private def elab(use: SA.Use): CA.Use = CA.Use(elab(use.normalizer), use.span)
@@ -64,11 +66,12 @@ object Elaborator {
   }
 
   private def elab(term: SurfaceAst.Term): CA.Term = term match {
-    case SA.Term.Ident(name, sp)   => CA.Term.Ident(name, sp)
-    case SA.Term.App(fn, args, sp) => CA.Term.App(elab(fn), args.map(elab), sp)
-    case pi: SA.Term.Pi            => elabPi(pi)
-    case l: SA.Term.Lam            => elab(l)
-    case b: SA.Term.Body           => elab(b)
+    case SA.Term.Ident(name, sp)         => CA.Term.Ident(name, sp)
+    case SA.Term.App(fn, args, sp)       => CA.Term.App(elab(fn), args.map(elab), sp)
+    case SA.Term.Select(base, field, sp) => CA.Term.Select(elab(base), field, sp)
+    case pi: SA.Term.Pi                  => elabPi(pi)
+    case l: SA.Term.Lam                  => elab(l)
+    case b: SA.Term.Body                 => elab(b)
     case SA.Term.Match(scrut, scrutName, motive, cases, sp) =>
       CA.Term.Match(
         elab(scrut),
@@ -115,7 +118,7 @@ object Elaborator {
               span = ctor.span
             )
           }
-        CoreAst.Decl.InductiveDecl(header, ctors, c.span)
+        CoreAst.Decl.InductiveDecl(header, ctors, c.isStruct, c.span)
     }
   }
 

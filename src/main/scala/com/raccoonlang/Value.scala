@@ -8,7 +8,8 @@ import scala.collection.immutable.BitSet
 final case class InductiveMeta(
     constructorNames: Vector[String],
     paramCount: Int,
-    indexCount: Int
+    indexCount: Int,
+    isStruct: Boolean
 )
 
 sealed trait ConstType
@@ -209,7 +210,7 @@ object Value {
     }
   }
 
-  case class ConstructorHead(name: String, numParams: Int, totalArity: Int, tpe: Value)
+  case class ConstructorHead(name: String, numParams: Int, totalArity: Int, tpe: Value, isStruct: Boolean)
     extends TopLevelValue
     with UpdatableType {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)

@@ -91,7 +91,8 @@ object InductiveChecks {
         true
     }
 
-  private def installInductive(decl: Decl.InductiveDecl, baseEnv: Env, inductiveHead: VConst)(implicit
+  private def installInductive(decl: Decl.InductiveDecl, baseEnv: Env, inductiveHead: VConst, isStruct: Boolean)(
+      implicit
       eqStore: EqStore,
       normalizerMap: NormalizerMap
   ): Env = {
@@ -103,11 +104,11 @@ object InductiveChecks {
         if (allBinders.isEmpty) ctor.resultTy
         else Term.Pi(NEL.mk(allBinders), ctor.resultTy, ctor.span)
 
-      val fullType = TypeChecker.getType(fullTypeTerm, envWithInductive)
+      val fullType = TypeChecker.getType(fullTypeTerm, curEnv)
 
       curEnv.putGlobal(
         ctor.name,
-        ConstructorHead(ctor.name, decl.header.params.length, allBinders.length, fullType)
+        ConstructorHead(ctor.name, decl.header.params.length, allBinders.length, fullType, isStruct)
       )
     }
   }
@@ -116,8 +117,10 @@ object InductiveChecks {
     implicit val eqStore: EqStore = EqStore.empty
     implicit val normalizers: NormalizerMap = NormalizerMap.empty
 
+    val header = decl.header
+    val name = header.name
     val ty = {
-      val binders = decl.header.params ++ decl.header.indices
+      val binders = header.params ++ header.indices
       if (binders.isEmpty) decl.header.resultTy
       else Term.Pi(NEL.mk(binders), decl.header.resultTy, decl.header.span)
     }
@@ -125,29 +128,39 @@ object InductiveChecks {
     val inductiveTypeCheck = TypeChecker.getType(ty, worlds.checkEnv)
     val inductiveTypeRun = Interpreter.evalTypeTerm(ty, worlds.runEnv)
 
-    val meta = InductiveMeta(decl.ctors.map(_.name), decl.header.params.length, decl.header.indices.length)
+    val meta =
+      InductiveMeta(decl.ctors.map(_.name), decl.header.params.length, decl.header.indices.length, decl.isStruct)
 
-    val inductiveHeadCheck = VConst(decl.header.name, Inductive(meta), inductiveTypeCheck)
-    val inductiveHeadRun = VConst(decl.header.name, Inductive(meta), inductiveTypeRun)
+    val inductivedHead = VConst(name, Inductive(meta), inductiveTypeCheck)
 
     // Constructors are checked in an environment that contains the inductive and inductive params assigned
-    val checkEnvWithInductive = worlds.checkEnv.putGlobal(decl.header.name, inductiveHeadCheck)
-    val (paramVars, envWithParams, _) = FreshVar.assignFreshVars(decl.header.params, checkEnvWithInductive, eqStore)
+    val checkEnvWithInductive = worlds.checkEnv.putGlobal(name, inductivedHead)
+    val (paramVars, envWithParams, _) = FreshVar.assignFreshVars(header.params, checkEnvWithInductive, eqStore)
 
-    val resTpe = TypeChecker.getType(decl.header.resultTy, envWithParams)
+    val resTpe = TypeChecker.getType(header.resultTy, envWithParams)
     val familyUniverse: Universe = resTpe match {
       case v: VSort => v
       case PropTpe  => PropTpe
-      case other    => throw InductiveTypeNotASort(other, Some(decl.header.resultTy.span))
+      case other    => throw InductiveTypeNotASort(other, Some(header.resultTy.span))
+    }
+
+    // Determine whether this inductive is a valid struct (after computing universe)
+    if (decl.isStruct) {
+      if (decl.ctors.length != 1)
+        throw InvalidStruct(name, s"has ${decl.ctors.length} constructors (expected exactly 1)", Some(header.span))
+      if (decl.ctors.head.fields.exists(_.name == "_"))
+        throw InvalidStruct(name, "constructor has anonymous '_' fields", Some(header.span))
+      if (familyUniverse == PropTpe)
+        throw InvalidStruct(name, "lives in Prop", Some(header.span))
+      if (header.indices.nonEmpty)
+        throw InvalidStruct(name, "Structs may not have indices", Some(header.span))
     }
 
     decl.ctors.foreach { ctor =>
       val outputTpe = {
         val (fieldVars, bodyEnv, _) = FreshVar.assignFreshVars(ctor.fields, envWithParams, eqStore)
 
-        fieldVars.zipWithIndex.foreach { case (field, idx) =>
-          val binder = ctor.fields(idx)
-
+        ctor.fields.zip(fieldVars).foreach { case (binder, field) =>
           // 2) Universe bound: skip for Prop families; enforce for Sort families
           familyUniverse match {
             case VSort(inductiveLevel) =>
@@ -155,7 +168,7 @@ object InductiveChecks {
                 case VSort(tpeLevel) =>
                   if (!Level.leq(tpeLevel, inductiveLevel))
                     throw InductiveUniverseTooSmall(
-                      decl.header.name,
+                      name,
                       s"${ctor.name}.${binder.name}",
                       field.tpe,
                       tpeLevel,
@@ -169,9 +182,9 @@ object InductiveChecks {
           }
 
           // 3) Every constructor field type must be strictly positive in the inductive
-          if (!isStrictlyPositive(field.tpe, inductiveHeadCheck))
+          if (!isStrictlyPositive(field.tpe, inductivedHead))
             throw NonStrictlyPositive(
-              inductive = inductiveHeadCheck.name,
+              inductive = name,
               ctor = ctor.name,
               field = binder.name,
               fieldTy = field.tpe,
@@ -184,14 +197,14 @@ object InductiveChecks {
 
       // 4) Constructor result must be the inductive family head applied to the full family arity,
       // and params must be uniform - must equal to the original paramVars
-      val resultErr = InvalidConstructorResult(ctor.name, decl.header.name, outputTpe, Some(ctor.span))
+      val resultErr = InvalidConstructorResult(ctor.name, name, outputTpe, Some(ctor.span))
       val outputArgs = outputTpe match {
-        case VApp(h, args, _) if h.name == inductiveHeadCheck.name => args.toVector
-        case VConst(name, _, _) if name == inductiveHeadCheck.name => Vector.empty[Value]
-        case _                                                     => throw resultErr
+        case VApp(h, args, _) if h.name == name => args.toVector
+        case VConst(n, _, _) if n == name       => Vector.empty[Value]
+        case _                                  => throw resultErr
       }
 
-      if (outputArgs.length != decl.header.arity) throw resultErr
+      if (outputArgs.length != header.arity) throw resultErr
 
       outputArgs.take(paramVars.length).zip(paramVars).foreach { case (arg, paramVar) =>
         if (!TypeChecker.defEq(arg, paramVar)) throw resultErr
@@ -199,9 +212,12 @@ object InductiveChecks {
 
     }
 
+    val inductiveHeadCheck = VConst(name, Inductive(meta), inductiveTypeCheck)
+    val inductiveHeadRun = VConst(name, Inductive(meta), inductiveTypeRun)
+
     // Only after all constructor checks succeed do we add the decl to the environments.
-    val nextCheckEnv = installInductive(decl, worlds.checkEnv, inductiveHeadCheck)
-    val nextRunEnv = installInductive(decl, worlds.runEnv, inductiveHeadRun)
+    val nextCheckEnv = installInductive(decl, worlds.checkEnv, inductiveHeadCheck, decl.isStruct)
+    val nextRunEnv = installInductive(decl, worlds.runEnv, inductiveHeadRun, decl.isStruct)
 
     Worlds(nextCheckEnv, nextRunEnv)
   }

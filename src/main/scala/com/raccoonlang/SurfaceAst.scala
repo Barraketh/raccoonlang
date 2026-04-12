@@ -20,6 +20,10 @@ object SurfaceAst {
     // Identifier (either type or term)
     final case class Ident(name: String, span: Span) extends Term with TypeTerm
 
+    // Projection: base[field]
+    final case class TSelect(base: TypeTerm, field: String, span: Span) extends TypeTerm
+    final case class Select(base: Term, field: String, span: Span) extends Term
+
     // Application in type position
     final case class TApp(fn: Ident, args: NEL[TypeTerm], span: Span) extends TypeTerm
 
@@ -88,7 +92,12 @@ object SurfaceAst {
     ) extends Decl
 
     // Inductive type declaration
-    final case class InductiveDecl(header: InductiveHeader, ctors: Vector[ConstructorDecl], span: Span) extends Decl
+    final case class InductiveDecl(
+        header: InductiveHeader,
+        ctors: Vector[ConstructorDecl],
+        isStruct: Boolean,
+        span: Span
+    ) extends Decl
   }
 
   case class Program(decls: Vector[Decl], body: Option[Term])

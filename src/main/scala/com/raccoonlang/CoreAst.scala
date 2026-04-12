@@ -38,6 +38,12 @@ object CoreAst {
     // Identifier (either type or term)
     final case class Ident(name: String, span: Span) extends Term with TypeTerm
 
+    // Projection in type position: base[field]
+    final case class TSelect(base: TypeTerm, field: String, span: Span) extends TypeTerm
+
+    // Projection in term position: base[field]
+    final case class Select(base: Term, field: String, span: Span) extends Term
+
     // Application in type position
     final case class TApp(fn: Ident, args: NEL[TypeTerm], span: Span) extends TypeTerm
 
@@ -113,6 +119,7 @@ object CoreAst {
     final case class InductiveDecl(
         header: InductiveHeader,
         ctors: Vector[ConstructorDecl],
+        isStruct: Boolean,
         span: Span
     ) extends Decl
   }

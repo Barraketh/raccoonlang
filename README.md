@@ -25,7 +25,56 @@ when that simplifies the overall system. Current examples:
   - Impredicative Prop with controlled large elimination
 - Extensible definitional equality through type-driven expression normalization
 - Type patterns
+- Structs / Projections
 - JVM CLI plus Scala Native build for macOS
+
+## Structs & Projections
+
+- What is a struct: a special case of an inductive family with exactly one constructor and named fields. Structs are intended for record-like data where fields are directly projectable by name.
+- Formation rules:
+  - Exactly one constructor.
+  - No indices (only parameters allowed).
+  - Must live in `Type`/`Sort u` (not in `Prop`).
+  - All fields must be named (no anonymous `_` fields).
+  - Violations are reported as `InvalidStruct` at declaration time.
+- Projection syntax:
+  - Term position: `p[field]` selects the named field from a value `p` of a struct family.
+  - Type position: projections are allowed and preserve neutrality (e.g., projecting from an opaque constant or blocked expression remains neutral).
+  - Unknown fields report `NotFound`. Selecting from a non-struct reports `NotAStruct`.
+
+Example: simple non-dependent projections
+
+```raccoon
+inductive Nat : Type
+ | zero : Nat
+ | succ (_: Nat) : Nat
+
+struct Pair (A: Type)(B: Type) : Type
+ | mk (fst: A)(snd: B) : Pair A B
+
+inline def first (p: Pair $A $B): A := p[fst]
+inline def second (p: Pair $A $B): B := p[snd]
+
+{ first (Pair.mk Nat Nat Nat.zero (Nat.succ Nat.zero)) }
+```
+
+Example: dependent projection in types (indices)
+
+```raccoon
+inductive Nat : Type
+ | zero : Nat
+ | succ (_: Nat) : Nat
+
+inductive Vec (A: Type) indices (n: Nat) : Type
+ | nil : Vec A Nat.zero
+ | cons (tail: Vec A $n) (head: A) : Vec A (Nat.succ n)
+
+struct WrapIdx (A: Type)(n: Nat) : Type
+ | mk (x: Vec A n) : WrapIdx A n
+
+inline def get (A: Type)(n: Nat)(w: WrapIdx A n): Vec A n := w[x]
+```
+
 
 ## A few concrete examples
 
@@ -128,6 +177,33 @@ inline def zip(va: Vec $A $n)(vb: Vec $B n): Vec (Pair A B) n := {
   }
 }
 ```
+
+### Structs and Projections
+
+What is a struct: a special case of an inductive family with exactly one constructor and named fields. Structs are intended for record-like data where fields are directly projectable by name.
+Formation rules:
+  - Exactly one constructor.
+  - No indices (only parameters allowed).
+  - Must live in `Type`/`Sort u` (not in `Prop`).
+  - All fields must be named (no anonymous `_` fields).
+
+
+Projection syntax: `p[field]` selects the named field from a value `p` of a struct family. 
+
+Example: simple non-dependent projections
+
+```raccoon
+inductive Nat : Type
+ | zero : Nat
+ | succ (_: Nat) : Nat
+
+struct Pair (A: Type)(B: Type) : Type
+ | mk (fst: A)(snd: B) : Pair A B
+
+inline def first (p: Pair $A $B): A := p[fst]
+inline def second (p: Pair $A $B): B := p[snd]
+```
+
 
 ## Quickstart
 

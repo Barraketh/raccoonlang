@@ -29,6 +29,7 @@ object LanguageParser {
     "inline",
     "def",
     "inductive",
+    "struct",
     "indices",
     "stable"
   )
@@ -48,10 +49,27 @@ object LanguageParser {
 
   private def identTerm = ident.flatSpanned.map(Ident.tupled)
 
-  // Type atoms: identifier, type variable, or parenthesized type
+  // Common bracket suffix parser
+  private def bracketSuffix: Parser[Vector[String]] = (symTight("[") ~/ ident ~ symTight("]")).rep(0)
+
+  private def termAtom: Parser[Term] = {
+    val base: Parser[Term] = (sym("(") ~/ term ~ symTight(")")) | identTerm
+    (base.spanned ~ bracketSuffix).spanned.mapAsT { case ((b, fields), sp) =>
+      fields.foldLeft(b.value: SurfaceAst.Term) { case (acc, f) => SurfaceAst.Term.Select(acc, f, sp) }
+    }
+  }
+
+  // Type atoms: identifier, type variable, or parenthesized type, with bracket selects as a postfix variant
   private def capture: Parser[TypeTerm] = (symTight("$") ~/ ident).flatSpanned.map(Capture.tupled)
 
-  private def typeAtom: Parser[TypeTerm] = sym('(') ~ typeTerm ~ symTight(')') | capture | identTerm
+  private def identTypeTerm: Parser[TypeTerm] = ident.flatSpanned.map[TypeTerm](Ident.tupled)
+
+  private def typeAtom: Parser[TypeTerm] = {
+    val base: Parser[TypeTerm] = (sym('(') ~ typeTerm ~ symTight(')')) | identTypeTerm
+    (base.spanned ~ bracketSuffix).spanned.mapAsT { case ((b, fields), sp) =>
+      fields.foldLeft(b.value: SurfaceAst.TypeTerm) { case (acc, f) => SurfaceAst.Term.TSelect(acc, f, sp) }
+    } | capture
+  }
 
   // General type application chain: atom atom ... -> TApp(...(atom1 atom2) atom3)
   private def typeExpr: Parser[TypeTerm] = {
@@ -104,7 +122,7 @@ object LanguageParser {
   }
 
   private def term: Parser[Term] =
-    (lambda | matchP | body | pi | sym("(") ~/ term ~ symTight(")") | ident.flatSpanned.map(Ident.tupled))
+    (lambda | matchP | body | pi | termAtom)
       .rep(1, wsSep)
       .spanned
       .mapAsT { case (terms, span) =>
@@ -138,9 +156,13 @@ object LanguageParser {
 
   private def inductiveP: Parser[InductiveDecl] =
     (kw("inductive") ~/ inductiveHeader ~ lineSep ~ ctorDecl.rep(0)).flatSpanned
-      .map(InductiveDecl.tupled)
+      .map { case (h, cs, sp) => InductiveDecl(h, cs, isStruct = false, sp) }
 
-  private def declP: Parser[Decl] = constP | inductiveP
+  private def structP: Parser[InductiveDecl] =
+    (kw("struct") ~/ inductiveHeader ~ lineSep ~ ctorDecl.rep(0)).flatSpanned
+      .map { case (h, cs, sp) => InductiveDecl(h, cs, isStruct = true, sp) }
+
+  private def declP: Parser[Decl] = constP | inductiveP | structP
 
   private def decls: Parser[Vector[Decl]] = skipAllWs ~ declP.rep(1, lineSep) ~ skipAllWs ~ End
 

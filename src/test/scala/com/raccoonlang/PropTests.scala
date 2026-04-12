@@ -43,7 +43,7 @@ class PropTests extends munit.FunSuite {
   case class SApp(head: Shape, args: List[Shape]) extends Shape
 
   private def toShape(v: Value): Shape = v match {
-    case Value.ConstructorHead(n, _, _, _) => SConst(n)
+    case Value.ConstructorHead(n, _, _, _, _) => SConst(n)
     case Value.VCtor(h, fields, _) =>
       if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))
     case Value.VConst(n, _, _)  => SConst(n)

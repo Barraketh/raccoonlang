@@ -1,7 +1,5 @@
 package com.raccoonlang
 
-import scala.annotation.tailrec
-
 object Util {
   case class NEL[+A](head: A, tail: List[A]) {
     def apply(idx: Int): A = {
@@ -21,12 +19,12 @@ object Util {
 
     def map[B](f: A => B): NEL[B] = NEL(f(head), tail.map(f))
 
-    def length: Int = tail.length + 1
-
-    def splitAt(idx: Int): (NEL[A], Option[NEL[A]]) = {
-      val (headL, tailL) = (head :: tail).splitAt(idx)
-      (NEL.mk(headL), NEL.mkOpt(tailL))
+    def take(toTake: Int): NEL[A] = {
+      if (toTake == 0) throw new RuntimeException("Cannot take 0 args")
+      NEL(head, tail.take(toTake - 1))
     }
+
+    def length: Int = tail.length + 1
 
     def zip[B](others: NEL[B]): NEL[(A, B)] = NEL((head, others.head), tail.zip(others.tail))
 
@@ -35,20 +33,6 @@ object Util {
     def foreach(f: A => Unit): Unit = {
       f(head)
       tail.foreach(f)
-    }
-
-    def foldWhile[B](z: B)(op: (B, A) => (B, Boolean)): B = {
-      @tailrec
-      def loop(l: List[A], curB: B): B = {
-        if (l.isEmpty) curB
-        else {
-          val (nextB, isDone) = op(curB, l.head)
-          if (isDone) nextB
-          else loop(l.tail, nextB)
-        }
-      }
-
-      loop(toList, z)
     }
 
     def forall(op: A => Boolean): Boolean = op(head) && tail.forall(op)

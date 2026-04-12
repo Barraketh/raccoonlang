@@ -80,9 +80,10 @@ object TypeChecker {
       meta: EqStore,
       normalizers: NormalizerMap
   ): Value = term match {
-    case t: Term.TApp => typecheckTApp(t, env)
-    case pi: Term.Pi  => typecheckPi(pi, env)
-    case ident: Ident => Interpreter.evalTerm(ident, env)
+    case t: Term.TApp    => typecheckTApp(t, env)
+    case t: Term.TSelect => Interpreter.evalTypeTerm(t, env)
+    case pi: Term.Pi     => typecheckPi(pi, env)
+    case ident: Ident    => Interpreter.evalTerm(ident, env)
   }
 
   private def typecheckBody(body: Term.Body, env: Env)(implicit
@@ -150,7 +151,7 @@ object TypeChecker {
     ): Vector[ReachableCtor] =
       ctorNames.flatMap { ctorName =>
         env.find(ctorName).getOrElse(throw NotFound(ctorName)) match {
-          case h @ ConstructorHead(_, numParams, _, ctorTy) =>
+          case h @ ConstructorHead(_, numParams, _, ctorTy, _) =>
             val (freshArgs, ctorEnv, _) = ctorTy match {
               case pi: VPi => assignFreshVars(pi, eqStore)
               case _       => (Vector.empty[Var], env, scala.collection.immutable.BitSet.empty)
@@ -327,6 +328,7 @@ object TypeChecker {
     try {
       term match {
         case term: TypeTerm => typecheckTT(term, env)
+        case t: Term.Select => Interpreter.evalTerm(t, env)
         case t: Term.App    => typecheckApp(t, env)
         case l: Term.Lam    => typecheckLam(l, env, normalizers)
         case m: Term.Match  => typecheckMatch(m, env)
