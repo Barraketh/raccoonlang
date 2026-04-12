@@ -17,14 +17,14 @@ object Normalizers {
     case Value.VBlockedApp(h, args, _, _) => s"A(${orderKey(h)};${args.toList.map(orderKey).mkString(",")})"
     case Value.VLam(_, id, _, _) =>
       id match {
-        case Value.LamId.Const(n)            => s"L:$n"
-        case Value.LamId.LocalId(nodeId, ps) => s"L:$nodeId:${ps.map(orderKey).mkString(",")}"
+        case Value.ValueId.Const(n)            => s"L:$n"
+        case Value.ValueId.LocalId(nodeId, ps) => s"L:$nodeId:${ps.map(orderKey).mkString(",")}"
       }
-    case m: Value.VBlockedThunk => s"M:${m.id.nodeId}:${m.id.params.map(orderKey).mkString(",")}"
+    case m: Value.VBlockedThunk => s"M:${m.id.nodeId}:${m.id.captures.map(orderKey).mkString(",")}"
     case p: Value.VPi =>
       p.id match {
-        case Value.LamId.Const(n)            => s"P:${p.binders.length}:$n"
-        case Value.LamId.LocalId(nodeId, ps) => s"P:${p.binders.length}:$nodeId:${ps.map(orderKey).mkString(",")}"
+        case Value.ValueId.Const(n)            => s"P:${p.binders.length}:$n"
+        case Value.ValueId.LocalId(nodeId, ps) => s"P:${p.binders.length}:$nodeId:${ps.map(orderKey).mkString(",")}"
       }
     case av: Value.AppliedValue =>
       s"A(${orderKey(av.head)};${av.args.toList.map(orderKey).mkString(",")})"

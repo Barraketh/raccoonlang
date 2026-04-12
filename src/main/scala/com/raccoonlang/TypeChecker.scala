@@ -399,14 +399,15 @@ object TypeChecker {
     }
   }
 
-  private def defEqLamId(id1: LamId, id2: LamId)(implicit
+  private def defEqLamId(id1: ValueId, id2: ValueId)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): Boolean = {
     (id1, id2) match {
-      case (LamId.Const(n1), LamId.Const(n2)) if n1 == n2 => true
-      case (l1: LamId.LocalId, l2: LamId.LocalId) if l1.nodeId == l2.nodeId && l1.params.length == l2.params.length =>
-        l1.params.zip(l2.params).forall { case (v1, v2) => defEq(v1, v2) }
+      case (ValueId.Const(n1), ValueId.Const(n2)) if n1 == n2 => true
+      case (l1: ValueId.LocalId, l2: ValueId.LocalId)
+          if l1.nodeId == l2.nodeId && l1.captures.length == l2.captures.length =>
+        l1.captures.zip(l2.captures).forall { case (v1, v2) => defEq(v1, v2) }
       case _ => false
     }
   }

@@ -32,7 +32,7 @@ object TypePatternOps {
 
   private def fnHeadView(fn: Value)(implicit eqStore: EqStore): SemanticHead =
     resolveInEqStore(fn) match {
-      case VLam(_, LamId.Const("Sort"), _, _) => SortHead
+      case VLam(_, ValueId.Const("Sort"), _, _) => SortHead
       // Defensive: older environments could install Sort as a const; keep support
       case VConst("Sort", _, _) => SortHead
       case other                => ValueHead(other)

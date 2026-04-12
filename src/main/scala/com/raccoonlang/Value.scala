@@ -44,14 +44,14 @@ object Value {
   type VarId = Int
 
   // Identifier for lambdas to shortcut equality when possible.
-  sealed trait LamId
+  sealed trait ValueId
 
-  object LamId {
-    final case class Const(name: String) extends LamId {
+  object ValueId {
+    final case class Const(name: String) extends ValueId {
       override def toString: String = name
     }
 
-    final case class LocalId(nodeId: Int, params: Vector[Value]) extends LamId
+    final case class LocalId(nodeId: Int, captures: Vector[Value]) extends ValueId
   }
 
   sealed trait Universe extends Value
@@ -127,7 +127,7 @@ object Value {
       codomain: (Env, EqStore) => Value,
       outSyntax: Option[TypeTerm],
       synDeps: BitSet,
-      id: LamId,
+      id: ValueId,
       tpe: Universe
   ) extends Value
     with UpdatableType {
@@ -172,7 +172,7 @@ object Value {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
-  case class VBlockedThunk(thunk: EqStore => Value, id: LamId.LocalId, tpe: Value, blockerId: VarId)
+  case class VBlockedThunk(thunk: EqStore => Value, id: ValueId.LocalId, tpe: Value, blockerId: VarId)
     extends Blocked
     with UpdatableType {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
@@ -180,7 +180,7 @@ object Value {
     override def synDeps: BitSet = {
       val res = collection.mutable.BitSet()
       res |= tpe.synDeps
-      id.params.foreach(v => res |= v.synDeps)
+      id.captures.foreach(v => res |= v.synDeps)
       res.toImmutable
     }
   }
@@ -193,11 +193,11 @@ object Value {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
-  case class VLam(tpe: VPi, id: LamId, isStable: Boolean, run: (NEL[Value], EqStore) => Value) extends Value {
+  case class VLam(tpe: VPi, id: ValueId, isStable: Boolean, run: (NEL[Value], EqStore) => Value) extends Value {
     override lazy val synDeps: BitSet = {
       id match {
-        case LamId.Const(_) => tpe.synDeps
-        case LamId.LocalId(_, params) =>
+        case ValueId.Const(_) => tpe.synDeps
+        case ValueId.LocalId(_, params) =>
           if (params.isEmpty) tpe.synDeps
           else {
             val res = collection.mutable.BitSet()

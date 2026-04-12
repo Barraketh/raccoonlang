@@ -62,7 +62,7 @@ object Interpreter {
       .filter(n => env.findLocal(n).isDefined)
       .sorted
     val captureVals = captureNames.map(n => env.findLocal(n).get)
-    val id = LamId.LocalId(pi.span.start, captureVals)
+    val id = ValueId.LocalId(pi.span.start, captureVals)
 
     val (vars, bodyEnv, _) = FreshVar.assignFreshVars(pi.binders, env, eqStore)
     val outType = evalTypeTerm(pi.out, bodyEnv)
@@ -151,12 +151,12 @@ object Interpreter {
 
   def evalLam(l: Term.Lam, vpi: VPi, env: Env): VLam = {
     val id = l.name match {
-      case Some(funcName) => LamId.Const(funcName)
+      case Some(funcName) => ValueId.Const(funcName)
       case None =>
         val captureNames =
           FreeNames.getFreeNames(l, Set.empty).toVector.filter(n => env.findLocal(n).isDefined).sorted
         val captureVals = captureNames.map(n => env.findLocal(n).get)
-        LamId.LocalId(l.span.start, captureVals)
+        ValueId.LocalId(l.span.start, captureVals)
 
     }
     lazy val self: VLam = VLam(
@@ -229,7 +229,7 @@ object Interpreter {
     }
 
     def mkBlockedMatch(b: Blocker): Value = {
-      val lamId = LamId.LocalId(m.span.start, computeMatchCaptures())
+      val lamId = ValueId.LocalId(m.span.start, computeMatchCaptures())
       val outType = evalTypeTerm(m.motive, withScrut)
       VBlockedThunk(eqStore => evalMatch(m, env)(eqStore), lamId, outType, b.blockerId)
     }
@@ -328,7 +328,7 @@ object Interpreter {
       val tpeV = evalTypeTerm(tpe, curEnv)(EqStore.empty)
       tpeV match {
         case pi: VPi =>
-          curEnv.putGlobal(name, VLam(pi, LamId.Const(name), isStable = true, lam))
+          curEnv.putGlobal(name, VLam(pi, ValueId.Const(name), isStable = true, lam))
         case _ => curEnv
       }
     }
@@ -345,10 +345,10 @@ object Interpreter {
           },
           None,
           BitSet.empty,
-          LamId.Const("Sort"),
+          ValueId.Const("Sort"),
           VSort(Level.zero)
         ),
-        LamId.Const("Sort"),
+        ValueId.Const("Sort"),
         true,
         (args, eqStore) => {
           val l = getLevel(args(0))(eqStore)

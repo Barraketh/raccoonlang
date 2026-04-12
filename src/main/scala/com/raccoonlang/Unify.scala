@@ -17,8 +17,8 @@ object Unify {
       normalizers: NormalizerMap
   ): EqStore = {
     val m1 = unify(v1.tpe, v2.tpe, meta)
-    if (v1.id.params.length != v2.id.params.length) throw UnificationFailed(v1, v2) // Sanity check
-    v1.id.params.zip(v2.id.params).foldLeft(m1) { case (curMeta, (p1, p2)) => unify(p1, p2, curMeta) }
+    if (v1.id.captures.length != v2.id.captures.length) throw UnificationFailed(v1, v2) // Sanity check
+    v1.id.captures.zip(v2.id.captures).foldLeft(m1) { case (curMeta, (p1, p2)) => unify(p1, p2, curMeta) }
   }
 
   private def unifyLevels(l1: Level, l2: Level, meta: EqStore): Option[EqStore] = {
