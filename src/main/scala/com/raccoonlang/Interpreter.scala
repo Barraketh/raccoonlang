@@ -34,21 +34,16 @@ object Interpreter {
             val h0 = resolveInEqStore(h)
             h0 match {
               case lam: VLam =>
-                val res = lam.run(args, eqStore)
+                val res = lam.run(NEL.mk(args), eqStore)
                 resolveInEqStore(res)
               case b: Blocker =>
                 // Head is not reducible; remain blocked on this blocker
                 VBlockedApp(b, args, tpe, b.blockerId)
               case other =>
                 // Now that the head is resolved and not blocked, perform the application
-                resolveInEqStore(evalApply(other, args))
+                resolveInEqStore(evalApply(other, NEL.mk(args)))
             }
-          case vm: BlockedMatch =>
-            val scrut0 = resolveInEqStore(vm.scrut)
-            scrut0 match {
-              case b: Blocker => vm.copy(scrut = scrut0, blockerId = b.blockerId)
-              case _          => resolveInEqStore(evalMatchBody(vm.term, scrut0, vm.env))
-            }
+          case vm: VBlockedThunk => resolveInEqStore(vm.thunk(eqStore))
         }
 
       case l: Level if l.atoms.keySet.intersect(eqStore.subst.keySet).nonEmpty => normalizeLevel(l)
@@ -132,16 +127,16 @@ object Interpreter {
               case (true, b: Blocked) =>
                 b match {
                   case VBlockedApp(VLam(_, _, true, _), _, _, _) => res
-                  case _                                         => VBlockedApp(fn0, vArgs, b.tpe, b.blockerId)
+                  case _                                         => VBlockedApp(fn0, vArgs.toList, b.tpe, b.blockerId)
                 }
               case _ => res
             }
-          case h: VConst => VApp(h, vArgs, pi.codomain(envWithArgs, eqStore))
+          case h: VConst => VApp(h, vArgs.toVector, pi.codomain(envWithArgs, eqStore))
           case h: ConstructorHead =>
             val resultTy = pi.codomain(envWithArgs, eqStore)
             val fields = vArgs.toVector.drop(h.numParams)
             VCtor(h, fields, resultTy)
-          case b: Blocker => VBlockedApp(b, vArgs, pi.codomain(envWithArgs, eqStore), b.blockerId)
+          case b: Blocker => VBlockedApp(b, vArgs.toList, pi.codomain(envWithArgs, eqStore), b.blockerId)
           case _          => throw CannotApplyNonFunction(fn)
         }
       case _ => throw CannotApplyNonFunction(fn.tpe)
@@ -215,37 +210,34 @@ object Interpreter {
   }
 
   private def evalMatch(m: Match, env: Env)(implicit eqStore: EqStore): Value = {
-    val scrut = resolveInEqStore(evalTerm(m.scrut, env))
-    evalMatchBody(m, scrut, env)
-  }
-
-  private def evalMatchBody(m: Match, scrut: Value, env: Env)(implicit eqStore: EqStore): Value = {
-    val withScrut = env.newScope.putLocal(m.scrutName, scrut)
-
-    lazy val stuckMatchId = {
-      // Get all the free locals referenced in the body or the motive - we will use them as the key, just like VLam
-      // We can treat scrutName as bound, since we are including it in StuckMatch and will unify it separately
-      val bodyFree = m.cases
-        .foldLeft(Set.empty[String]) { case (curNames, c) =>
-          val nextNames = FreeNames.getFreeNames(c.body, bound = (c.argNames :+ m.scrutName).toSet)
-          curNames.union(nextNames)
-        }
-      val motiveFree = FreeNames.getFreeNames(m.motive, Set(m.scrutName))
-      val freeNames = bodyFree
-        .union(motiveFree)
+    def computeMatchCaptures(): Vector[Value] = {
+      FreeNames
+        .getFreeNames(m, Set.empty)
         .toVector
-        .filter(n => withScrut.findLocal(n).isDefined)
+        .filter(n => env.findLocal(n).isDefined)
         .sorted
-      val captures = freeNames.map(n => withScrut.findLocal(n).get)
-      LamId.LocalId(m.span.start, captures)
+        .map(n => env.findLocal(n).get)
     }
 
-    lazy val outType = evalTypeTerm(m.motive, withScrut)
+    val scrut = resolveInEqStore(evalTerm(m.scrut, env))
+    val withScrut = env.newScope.putLocal(m.scrutName, scrut)
+
+    def mkStuckMatch(): Value = {
+      val outType = evalTypeTerm(m.motive, withScrut)
+      val head = VConst(s"match#${m.span.start}", Symbol, KernelObject)
+      VApp(head, computeMatchCaptures(), outType)
+    }
+
+    def mkBlockedMatch(b: Blocker): Value = {
+      val lamId = LamId.LocalId(m.span.start, computeMatchCaptures())
+      val outType = evalTypeTerm(m.motive, withScrut)
+      VBlockedThunk(eqStore => evalMatch(m, env)(eqStore), lamId, outType, b.blockerId)
+    }
 
     val (head, args) = scrut match {
       case VCtor(head, fields, _) => (head, fields)
-      case b: Blocker             => return BlockedMatch(stuckMatchId, m, scrut, withScrut, outType, b.blockerId)
-      case _                      => return StuckMatch(stuckMatchId, scrut, outType)
+      case b: Blocker             => return mkBlockedMatch(b)
+      case _                      => return mkStuckMatch()
     }
 
     val ctorName = head.name

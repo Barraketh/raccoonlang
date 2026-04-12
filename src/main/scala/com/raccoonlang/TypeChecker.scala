@@ -461,7 +461,7 @@ object TypeChecker {
 
       case (c1: ConstructorHead, c2: ConstructorHead) if c1.name == c2.name => true
 
-      case (s1: VMatch, s2: VMatch) => defEqLamId(s1.id, s2.id) && defEq(s1.scrut, s2.scrut)
+      case (s1: VBlockedThunk, s2: VBlockedThunk) => defEqLamId(s1.id, s2.id)
 
       case (Var(_, id1, _), Var(_, id2, _)) if id1 == id2 => true
       case _                                              => false

@@ -20,7 +20,7 @@ object Normalizers {
         case Value.LamId.Const(n)            => s"L:$n"
         case Value.LamId.LocalId(nodeId, ps) => s"L:$nodeId:${ps.map(orderKey).mkString(",")}"
       }
-    case m: Value.VMatch => s"M:${m.id.nodeId}:${orderKey(m.scrut)}:${m.id.params.map(orderKey).mkString(",")}"
+    case m: Value.VBlockedThunk => s"M:${m.id.nodeId}:${m.id.params.map(orderKey).mkString(",")}"
     case p: Value.VPi =>
       p.id match {
         case Value.LamId.Const(n)            => s"P:${p.binders.length}:$n"

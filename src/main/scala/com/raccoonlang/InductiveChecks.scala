@@ -30,7 +30,7 @@ object InductiveChecks {
   ): Boolean =
     v match {
       // Be conservative: blocked types may hide an occurrence
-      case _: VMatch => true
+      case _: VBlockedThunk => true
 
       case vb @ VBlockedApp(_, _, resultTy, _) =>
         val (head0, flatArgs) = collectBlocked(vb)
@@ -65,7 +65,7 @@ object InductiveChecks {
   ): Boolean =
     v match {
       // Be conservative: blocked shapes are not strictly positive
-      case _: VMatch => false
+      case _: VBlockedThunk => false
 
       case vb @ VBlockedApp(_, _, resultTy, _) =>
         val (head0, flatArgs) = collectBlocked(vb)

@@ -48,7 +48,7 @@ object PrettyPrinter {
     case _               => false
   }
 
-  private def printApp(head: Value, args: Util.NEL[Value]): String = {
+  private def printApp(head: Value, args: Seq[Value]): String = {
     val headStr = head match {
       case _: Value.VApp | _: Value.VConst | _: Value.Var | _: Value.VSort => print(head)
       case _                                                               => s"(${print(head)})"
@@ -132,12 +132,12 @@ object PrettyPrinter {
       val headStr = print(head)
       if (fields.isEmpty) headStr
       else s"$headStr ${fields.map(f => if (isAtomic(f)) print(f) else s"(${print(f)})").mkString(" ")}"
-    case Value.VLam(_, _, id, _) => s"func#$id"
-    case Value.Var(name, id, _)  => s"$name#$id"
-    case s: Value.VMatch         => s"match#${s.id}"
-    case Value.NormalizerType    => "Normalizer"
-    case n: Value.Normalizer     => s"Normalizer ${n.name}"
-    case LevelTpe                => s"Level"
+    case v: Value.VLam          => s"func#${v.id}"
+    case Value.Var(name, id, _) => s"$name#$id"
+    case s: Value.VBlockedThunk => s"match#${s.id}"
+    case Value.NormalizerType   => "Normalizer"
+    case n: Value.Normalizer    => s"Normalizer ${n.name}"
+    case LevelTpe               => s"Level"
   }
 
 }

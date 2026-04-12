@@ -1,6 +1,6 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.{Binder, Term, TypeTerm}
+import com.raccoonlang.CoreAst.{Binder, TypeTerm}
 import com.raccoonlang.Util.NEL
 
 import scala.collection.immutable.BitSet
@@ -148,7 +148,7 @@ object Value {
   sealed trait AppliedValue extends Value {
     def head: Value
 
-    def args: NEL[Value]
+    def args: Seq[Value]
 
     def tpe: Value
 
@@ -161,15 +161,28 @@ object Value {
     }
   }
 
-  case class VApp(head: VConst, args: NEL[Value], tpe: Value) extends AppliedValue with UpdatableType {
+  case class VApp(head: VConst, args: Vector[Value], tpe: Value) extends AppliedValue with UpdatableType {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
-  case class VBlockedApp(head: Value, args: NEL[Value], tpe: Value, blockerId: VarId)
+  case class VBlockedApp(head: Value, args: List[Value], tpe: Value, blockerId: VarId)
     extends AppliedValue
     with Blocked
     with UpdatableType {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
+  }
+
+  case class VBlockedThunk(thunk: EqStore => Value, id: LamId.LocalId, tpe: Value, blockerId: VarId)
+    extends Blocked
+    with UpdatableType {
+    override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
+
+    override def synDeps: BitSet = {
+      val res = collection.mutable.BitSet()
+      res |= tpe.synDeps
+      id.params.foreach(v => res |= v.synDeps)
+      res.toImmutable
+    }
   }
 
   case class Var(name: String, id: VarId, tpe: Value) extends Value with Blocker with UpdatableType {
@@ -212,34 +225,6 @@ object Value {
       res.toImmutable
     }
 
-    override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
-  }
-
-  trait VMatch extends Value {
-    def id: LamId.LocalId
-
-    def scrut: Value
-
-    def tpe: Value
-
-    override def synDeps: BitSet = {
-      val res = collection.mutable.BitSet()
-      res |= tpe.synDeps
-      res |= scrut.synDeps
-      id.params.foreach(v => res |= v.synDeps)
-      res.toImmutable
-    }
-  }
-
-  // The scrutinee of the match is an opaque symbol, so match will never proceed
-  case class StuckMatch(id: LamId.LocalId, scrut: Value, tpe: Value) extends VMatch with UpdatableType {
-    override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
-  }
-
-  case class BlockedMatch(id: LamId.LocalId, term: Term.Match, scrut: Value, env: Env, tpe: Value, blockerId: VarId)
-    extends VMatch
-    with Blocked
-    with UpdatableType {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 

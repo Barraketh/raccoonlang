@@ -13,14 +13,11 @@ object Unify {
     (nextEqStore, related.vars)
   }
 
-  private def unifyStuckMatches(v1: VMatch, v2: VMatch, meta: EqStore)(implicit
+  private def unifyBlockedThunks(v1: VBlockedThunk, v2: VBlockedThunk, meta: EqStore)(implicit
       normalizers: NormalizerMap
   ): EqStore = {
-    val m0 = unify(v1.scrut, v2.scrut, meta)
-    val m1 = unify(v1.tpe, v2.tpe, m0)
-
+    val m1 = unify(v1.tpe, v2.tpe, meta)
     if (v1.id.params.length != v2.id.params.length) throw UnificationFailed(v1, v2) // Sanity check
-
     v1.id.params.zip(v2.id.params).foldLeft(m1) { case (curMeta, (p1, p2)) => unify(p1, p2, curMeta) }
   }
 
@@ -83,8 +80,8 @@ object Unify {
         val m1 = c1.fields.zip(c2.fields).foldLeft(m0) { case (cur, (x, y)) => unify(x, y, cur) }
         unify(c1.tpe, c2.tpe, m1)
 
-      case (v1: VMatch, v2: VMatch) if v1.id.nodeId == v2.id.nodeId =>
-        unifyStuckMatches(v1, v2, meta)
+      case (v1: VBlockedThunk, v2: VBlockedThunk) if v1.id.nodeId == v2.id.nodeId =>
+        unifyBlockedThunks(v1, v2, meta)
 
       case (s1: VSort, s2: VSort) => unifySorts(s1, s2, meta)
 
