@@ -237,12 +237,6 @@ object TypePatternOps {
     openPatternInternal(env, p, None)
   }
 
-  // Used by FreshVar.assignFreshVars and typecheckPi
-  def freshOpen(env: Env, p: TypePattern, meta: EqStore): (Env, Value, BitSet) = {
-    val opened = openPattern(env, p, meta)
-    (opened.env, opened.value, opened.newVars)
-  }
-
   // Used by Interpreter.getEnvWithArgs
   def bindValue(env: Env, p: TypePattern, actualTy: Value, meta: EqStore): Env = {
     implicit val eqStore: EqStore = meta

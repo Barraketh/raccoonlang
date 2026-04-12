@@ -64,7 +64,7 @@ object Interpreter {
     val captureVals = captureNames.map(n => env.findLocal(n).get)
     val id = ValueId.LocalId(pi.span.start, captureVals)
 
-    val (vars, bodyEnv, _) = FreshVar.assignFreshVars(pi.binders, env, eqStore)
+    val (vars, bodyEnv, _) = BinderOps.assignFreshVars(pi.binders, env, eqStore)
     val outType = evalTypeTerm(pi.out, bodyEnv)
 
     // Determine classifier for Pi: Prop if codomain is Prop, otherwise predicative max
@@ -247,7 +247,7 @@ object Interpreter {
             if (fieldIdx < 0) throw NotFound(field)
 
             val fieldTelescope = allFieldBinders.take(fieldIdx + 1)
-            val (_, telEnv, _) = FreshVar.assignFreshVars(fieldTelescope.toVector, envWithParams, eqStore)
+            val (_, telEnv, _) = BinderOps.assignFreshVars(fieldTelescope.toVector, envWithParams, eqStore)
 
             // Find field in the telescope env and return its type
             telEnv.find(field).get.tpe

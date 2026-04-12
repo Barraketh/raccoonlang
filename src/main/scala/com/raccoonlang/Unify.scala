@@ -7,9 +7,9 @@ object Unify {
 
   private def unifyPis(pi1: VPi, pi2: VPi, eqStore: EqStore)(implicit
       normalizers: NormalizerMap
-  ): (EqStore, Vector[Var]) = {
+  ): (EqStore, Vector[Value]) = {
     val related = TypeChecker.relatePis(pi1, pi2)(eqStore, normalizers)
-    val nextEqStore = unify(related.out1, related.out2, related.eqStore)
+    val nextEqStore = unify(related.out1, related.out2, eqStore)
     (nextEqStore, related.vars)
   }
 

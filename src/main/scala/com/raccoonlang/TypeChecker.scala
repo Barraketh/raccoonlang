@@ -1,8 +1,8 @@
 package com.raccoonlang
 
+import com.raccoonlang.BinderOps.assignFreshVars
 import com.raccoonlang.CoreAst.Term.{Ident, Lam, Match}
 import com.raccoonlang.CoreAst._
-import com.raccoonlang.FreshVar.assignFreshVars
 import com.raccoonlang.Interpreter._
 import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
@@ -340,61 +340,28 @@ object TypeChecker {
 
   }
 
-  private def readbackPatternCapture(v: Var, eqStore: EqStore): Value =
-    if (v.tpe == LevelTpe) Interpreter.getLevel(v)(eqStore)
-    else Interpreter.resolveInEqStore(v)(eqStore)
-
-  private def relatePiBinders(
-      binders: Util.NEL[CoreAst.Binder],
-      baseEnv: Env,
-      args: Vector[Var],
-      startEqStore: EqStore
-  )(implicit normalizers: NormalizerMap): (Env, EqStore) = {
-    if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
-
-    binders.toList.zip(args).foldLeft((baseEnv.newScope, startEqStore)) { case ((curEnv, curEqStore), (binder, arg)) =>
-      val opened = TypePatternOps.openPattern(curEnv, binder.ty, curEqStore)
-
-      val nextEqStore =
-        Unify.unify(opened.value, arg.tpe, curEqStore.allow(opened.newVars))
-
-      val envWithCaptures =
-        opened.captures.foldLeft(curEnv) { case (envAcc, (name, captureVar)) =>
-          envAcc.putLocal(name, readbackPatternCapture(captureVar, nextEqStore))
-        }
-
-      (envWithCaptures.putLocal(binder.name, arg), nextEqStore)
-    }
-  }
-
-  case class RelatedPis(vars: Vector[Var], out1: Value, out2: Value, eqStore: EqStore)
+  case class RelatedPis(vars: Vector[Value], out1: Value, out2: Value)
 
   def relatePis(pi1: VPi, pi2: VPi)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): RelatedPis = {
-    val (sharedVars, nextEnv1, newVars1) = FreshVar.assignFreshVars(pi1, eqStore)
+    val (sharedVars, nextEnv1, _) = assignFreshVars(pi1, eqStore)
+    val nextEnv2 = BinderOps.checkAndInstantiate(pi2.binders, pi2.env, NEL.mk(sharedVars), eqStore)
 
-    // Positional binder vars themselves are rigid.
-    // Only the hidden/user captures introduced while opening pi1's binder patterns stay refinable.
-    val sharedVarIds = scala.collection.immutable.BitSet(sharedVars.map(_.id): _*)
-    val startEqStore = eqStore.allow(newVars1 -- sharedVarIds)
+    val out1 = pi1.codomain(nextEnv1, eqStore)
+    val out2 = pi2.codomain(nextEnv2, eqStore)
 
-    val (nextEnv2, relatedEqStore) = relatePiBinders(pi2.binders, pi2.env, sharedVars, startEqStore)
-
-    val out1 = pi1.codomain(nextEnv1, relatedEqStore)
-    val out2 = pi2.codomain(nextEnv2, relatedEqStore)
-
-    RelatedPis(sharedVars, out1, out2, relatedEqStore)
+    RelatedPis(sharedVars, out1, out2)
   }
 
   private def defEqPi(pi1: VPi, pi2: VPi)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
-  ): Option[(Vector[Var], EqStore)] = {
+  ): Option[Vector[Value]] = {
     try {
       val related = relatePis(pi1, pi2)
-      if (defEq(related.out1, related.out2)(related.eqStore, normalizers)) Some((related.vars, related.eqStore))
+      if (defEq(related.out1, related.out2)) Some(related.vars)
       else None
     } catch {
       case _: UnificationFailed => None
@@ -445,11 +412,11 @@ object TypeChecker {
         if (l1.eq(l2) || defEqLamId(l1.id, l2.id)) true
         else {
           defEqPi(l1.tpe, l2.tpe) match {
-            case Some((vars, nextEqStore)) =>
+            case Some(vars) =>
               val varsNEL = NEL.mk(vars)
-              val res1 = l1.run(varsNEL, nextEqStore)
-              val res2 = l2.run(varsNEL, nextEqStore)
-              defEq(res1, res2)(nextEqStore, normalizers)
+              val res1 = l1.run(varsNEL, eqStore)
+              val res2 = l2.run(varsNEL, eqStore)
+              defEq(res1, res2)
             case None => false
           }
         }
