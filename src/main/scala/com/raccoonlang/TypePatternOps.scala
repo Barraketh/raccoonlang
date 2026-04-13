@@ -1,5 +1,6 @@
 package com.raccoonlang
 
+import com.raccoonlang.BinderOps.Freshened
 import com.raccoonlang.CoreAst.Term.{Capture, PatternApp}
 import com.raccoonlang.CoreAst.{TypePattern, TypeTerm}
 import com.raccoonlang.Interpreter._
@@ -9,10 +10,12 @@ import com.raccoonlang.Value._
 import scala.collection.immutable.BitSet
 
 object TypePatternOps {
-  final case class OpenedPattern(
+  private type Captures = Vector[(String, Var)]
+
+  final case class FreshOpened(
       env: Env,
       value: Value,
-      captures: Vector[(String, Var)],
+      captures: Captures,
       newVars: BitSet
   )
 
@@ -78,28 +81,59 @@ object TypePatternOps {
       case None => throw WTF(s"Failed to deconstruct $actual")
     }
 
-  private def openPatternInternal(
+  // Struct-aware fresh value builder for a given expected type.
+  private def freshValueForType(name: String, expectedTy: Value, env: Env)(implicit
+      eqStore: EqStore
+  ): (Value, BitSet) = {
+    val structMeta = Interpreter.resolveInEqStore(expectedTy) match {
+      case VConst(_, Inductive(meta), _) if meta.isStruct                => Some((meta, Vector.empty[Value]))
+      case VApp(VConst(_, Inductive(meta), _), args, _) if meta.isStruct => Some((meta, args))
+      case _                                                             => None
+    }
+
+    structMeta match {
+      case Some((meta, args)) =>
+        val ctorName = meta.constructorNames.head
+        val ctor = env.find(ctorName).getOrElse(throw NotFound(ctorName))
+        ctor match {
+          case h: ConstructorHead =>
+            val pi = requirePi(h)
+            val envWithParams: Env =
+              if (args.isEmpty) pi.env
+              else BinderOps.instantiate(pi.binders.take(args.length), pi.env, Util.NEL.mk(args), eqStore)
+
+            val freshVars: Freshened = {
+              val remainingFields = pi.binders.toVector.drop(args.length)
+              if (remainingFields.isEmpty) Freshened(Vector.empty, envWithParams, BitSet.empty)
+              else BinderOps.freshen(NEL.mk(remainingFields), envWithParams, eqStore)
+            }
+
+            val ty = pi.codomain(freshVars.env, eqStore)
+            val value = VCtor(h, freshVars.vars, ty)
+            (value, freshVars.newVars)
+          case _ => throw WTF(s"$ctorName is not a constructor head")
+        }
+      case None =>
+        val fresh = FreshVar.freshVar(name, expectedTy)
+        (fresh, BitSet(fresh.id))
+    }
+  }
+
+
+  private def freshVarInternal(
       env: Env,
       p: TypePattern,
       expectedTy: Option[Value]
-  )(implicit eqStore: EqStore): OpenedPattern = p match {
+  )(implicit eqStore: EqStore): FreshOpened = p match {
     case Capture(name, _) =>
       val exp = expectedTy.getOrElse(throw PatternCaptureNeedsExpectedType(name))
-      val fresh = FreshVar.freshVar(name, exp)
-      OpenedPattern(
-        env = env.putLocal(name, fresh),
-        value = fresh,
-        captures = Vector(name -> fresh),
-        newVars = BitSet(fresh.id)
-      )
+      val (v, newV) = freshValueForType(name, exp, env)
+      val caps: Captures = v match { case vv: Var => Vector(name -> vv); case _ => Vector.empty }
+      FreshOpened(env.putLocal(name, v), v, caps, newV)
 
     case t: TypeTerm =>
-      OpenedPattern(
-        env = env,
-        value = evalTypeTerm(t, env),
-        captures = Vector.empty,
-        newVars = BitSet.empty
-      )
+      val v = evalTypeTerm(t, env)
+      FreshOpened(env, v, Vector.empty, BitSet.empty)
 
     case PatternApp(fn, args, _) =>
       val fnV = evalTypeTerm(fn, env)
@@ -114,8 +148,8 @@ object TypePatternOps {
       val (nextUserEnv, _, argVals) =
         pi.binders.toList.zip(args.toList).foldLeft((env, pi.env.newScope, Vector.empty[Value])) {
           case ((curUserEnv, curFamilyEnv, curArgs), (binder, argPat)) =>
-            val openedBinderTy = openPatternInternal(curFamilyEnv, binder.ty, None)
-            val openedArg = openPatternInternal(curUserEnv, argPat, Some(openedBinderTy.value))
+            val openedBinderTy = freshVarInternal(curFamilyEnv, binder.ty, None)
+            val openedArg = freshVarInternal(curUserEnv, argPat, Some(openedBinderTy.value))
 
             allNewVars |= openedBinderTy.newVars
             allNewVars |= openedArg.newVars
@@ -128,12 +162,8 @@ object TypePatternOps {
             )
         }
 
-      OpenedPattern(
-        env = nextUserEnv,
-        value = evalApply(fnV, NEL.mk(argVals)),
-        captures = visibleCaptures,
-        newVars = allNewVars.toImmutable
-      )
+      val value = evalApply(fnV, NEL.mk(argVals))
+      FreshOpened(nextUserEnv, value, visibleCaptures, allNewVars.toImmutable)
   }
 
   private def bindInternal(
@@ -207,7 +237,7 @@ object TypePatternOps {
       normalizerMap: NormalizerMap
   ): Env = {
     val actualL = Interpreter.getLevel(actualTy)
-    val o = openPatternInternal(env, p, Some(LevelTpe))
+    val o = freshVarInternal(env, p, Some(LevelTpe))
     val patternL = Interpreter.getLevel(o.value)
     if (o.captures.isEmpty) {
       TypeChecker.checkFits(actualL, patternL)
@@ -220,7 +250,7 @@ object TypePatternOps {
   }
 
   private def bindLevel(env: Env, p: TypePattern, actualTy: Value)(implicit eqStore: EqStore): Env = {
-    val o = openPatternInternal(env, p, Some(LevelTpe))
+    val o = freshVarInternal(env, p, Some(LevelTpe))
     if (o.captures.isEmpty) env
     else {
       val offset = Interpreter.getLevel(o.value).atoms.head._2
@@ -232,9 +262,16 @@ object TypePatternOps {
   // Public API
   // =========================
 
-  def openPattern(env: Env, p: TypePattern, meta: EqStore): OpenedPattern = {
+  /** Create a fresh value for a binder and return:
+    *   - The fresh value (either a Var or a VCtor for struct types)
+    *   - The environment extended with any captures introduced by the binder's type pattern
+    *   - The set of newly created variable IDs
+    */
+  def freshVar(env: Env, binder: CoreAst.Binder, meta: EqStore): (Value, Env, BitSet) = {
     implicit val eqStore: EqStore = meta
-    openPatternInternal(env, p, None)
+    val fo = freshVarInternal(env, binder.ty, None)
+    val (fresh, extra) = freshValueForType(binder.name, fo.value, fo.env)
+    (fresh, fo.env, fo.newVars ++ extra)
   }
 
   // Used by Interpreter.getEnvWithArgs

@@ -4,7 +4,6 @@ import com.raccoonlang.Value.VPi
 
 object BinderOps {
   import com.raccoonlang.Util.NEL
-  import com.raccoonlang.Value.Var
 
   import scala.collection.immutable.BitSet
 
@@ -12,14 +11,13 @@ object BinderOps {
 
   def freshen(binders: NEL[CoreAst.Binder], baseEnv: Env, eqStore: EqStore): Freshened = {
     val (vars, env, newVars) =
-      binders.foldLeft((Vector.empty[Var], baseEnv.newScope, BitSet.empty)) {
+      binders.foldLeft((Vector.empty[Value], baseEnv.newScope, BitSet.empty)) {
         case ((curVars, curEnv, curNewVars), binder) =>
-          val opened = TypePatternOps.openPattern(curEnv, binder.ty, eqStore)
-          val fresh = FreshVar.freshVar(binder.name, opened.value)
+          val (fresh, openedEnv, newVars) = TypePatternOps.freshVar(curEnv, binder, eqStore)
           (
             curVars :+ fresh,
-            opened.env.putLocal(binder.name, fresh),
-            curNewVars ++ opened.newVars + fresh.id
+            openedEnv.putLocal(binder.name, fresh),
+            curNewVars ++ newVars
           )
       }
 
