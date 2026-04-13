@@ -201,25 +201,11 @@ The CLI reads a single `.rac` file, elaborates it, typechecks it, evaluates it, 
 sbt native/nativeLink
 ./native/target/scala-2.13/raccoon ./examples/nats.rac
 ```
+## Next Planned Features
 
-## Repository map
-
-- `src/main/scala/com/raccoonlang/Main.scala` — CLI entrypoint
-- `src/main/scala/com/raccoonlang/SurfaceAst.scala` — parsed surface language
-- `src/main/scala/com/raccoonlang/Elaborator.scala` — surface-to-core elaboration
-- `src/main/scala/com/raccoonlang/CoreAst.scala` — core syntax
-- `src/main/scala/com/raccoonlang/TypeChecker.scala` — typing, definitional equality, and match checking
-- `src/main/scala/com/raccoonlang/Interpreter.scala` — evaluation
-- `src/main/scala/com/raccoonlang/InductiveChecks.scala` — inductive-family validation
-- `src/test/scala/com/raccoonlang` — semantic tests
-
-
-## Limitations
-
-Planned / not yet implemented:
-- Strict positivity checking in inductive declarations is overly conservative
+- Typeclasses
+- Namespaces
+- File imports
+- Less-conservative positivity checking
 - Mutually-recursive inductives
 - Quotients
-- File imports
-- No standard library
-- No performance benchmarks
