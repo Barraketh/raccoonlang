@@ -27,35 +27,35 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
         |
         |stable def add (a: Nat)(b: Nat): Nat := {
         |  match b as _ returning Nat with
-        |  | Nat.zero => a
-        |  | Nat.succ x => add (Nat.succ a) x
+        |  | Nat::zero => a
+        |  | Nat::succ x => add (Nat::succ a) x
         |}
         |
-        |inline def nat_add_normalizer : Normalizer := add_normalizer Nat Nat.zero add
+        |inline def nat_add_normalizer : Normalizer := add_normalizer Nat Nat::zero add
         |
-        |inductive Eq (A: Type) indices (x: A) (y: A) : Sort Level.one
+        |inductive Eq (A: Type) indices (x: A) (y: A) : Sort Level::one
         | | refl (x: A) : Eq A x x
         |
         |// Using the additive normalizer over Nat, these equalities become definitional
         |
-        |inline def addZeroRight (a: Nat): Eq Nat (add a Nat.zero) a := { 
+        |inline def addZeroRight (a: Nat): Eq Nat (add a Nat::zero) a := { 
         |  use nat_add_normalizer
-        |  Eq.refl Nat (add a Nat.zero)
+        |  Eq::refl Nat (add a Nat::zero)
         |}
         |
-        |inline def addZeroLeft (a: Nat): Eq Nat (add Nat.zero a) a := { 
+        |inline def addZeroLeft (a: Nat): Eq Nat (add Nat::zero a) a := { 
         |  use nat_add_normalizer
-        |  Eq.refl Nat (add Nat.zero a)
+        |  Eq::refl Nat (add Nat::zero a)
         |}
         |
         |inline def addComm (a: Nat)(b: Nat): Eq Nat (add a b) (add b a) := { 
         |  use nat_add_normalizer
-        |  Eq.refl Nat (add a b)
+        |  Eq::refl Nat (add a b)
         |}
         |
         |inline def addAssoc (x: Nat)(y: Nat)(z: Nat): Eq Nat (add x (add y z)) (add (add x y) z) := { 
         |  use nat_add_normalizer
-        |  Eq.refl Nat (add x (add y z))
+        |  Eq::refl Nat (add x (add y z))
         |}
         |
         |""".stripMargin
@@ -72,14 +72,14 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
         |
         |stable def add (a: Nat)(b: Nat): Nat := {
         |  match b as _ returning Nat with
-        |  | Nat.zero => a
-        |  | Nat.succ x => add (Nat.succ a) x
+        |  | Nat::zero => a
+        |  | Nat::succ x => add (Nat::succ a) x
         |}
         |
-        |inductive Eq (A: Type) indices (x: A) (y: A) : Sort Level.one
+        |inductive Eq (A: Type) indices (x: A) (y: A) : Sort Level::one
         | | refl (x: A) : Eq A x x
         |
-        |inline def addCommNoNorm (a: Nat)(b: Nat): Eq Nat (add a b) (add b a) := Eq.refl Nat (add a b)
+        |inline def addCommNoNorm (a: Nat)(b: Nat): Eq Nat (add a b) (add b a) := Eq::refl Nat (add a b)
         |
         |""".stripMargin
 
@@ -100,14 +100,14 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
         |
         |stable def add (a: Nat)(b: Nat): Nat := {
         |  match b as _ returning Nat with
-        |  | Nat.zero => a
-        |  | Nat.succ x => add (Nat.succ a) x
+        |  | Nat::zero => a
+        |  | Nat::succ x => add (Nat::succ a) x
         |}
         |
-        |inductive Eq (A: Type) indices (x: A) (y: A) : Sort Level.one
+        |inductive Eq (A: Type) indices (x: A) (y: A) : Sort Level::one
         | | refl (x: A) : Eq A x x
         |
-        |inline def addZeroLeftNoNorm (a: Nat): Eq Nat (add Nat.zero a) a := Eq.refl Nat (add Nat.zero a)
+        |inline def addZeroLeftNoNorm (a: Nat): Eq Nat (add Nat::zero a) a := Eq::refl Nat (add Nat::zero a)
         |
         |""".stripMargin
 

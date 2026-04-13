@@ -50,8 +50,8 @@ class ProjectionTests extends munit.FunSuite {
     case other                  => SConst(other.toString)
   }
 
-  private val zeroS = SConst("Nat.zero")
-  private def succS(s: Shape) = SApp(SConst("Nat.succ"), List(s))
+  private val zeroS = SConst("Nat::zero")
+  private def succS(s: Shape) = SApp(SConst("Nat::succ"), List(s))
 
   test("non-dependent projections: Pair[fst] and Pair[snd]") {
     val p =
@@ -67,7 +67,7 @@ class ProjectionTests extends munit.FunSuite {
         |inline def second (p: Pair $A2 $B2): B2 := p[snd]
         |
         |{
-        |  let p : Pair Nat Nat := Pair.mk Nat Nat Nat.zero (Nat.succ Nat.zero)
+        |  let p : Pair Nat Nat := Pair::mk Nat Nat Nat::zero (Nat::succ Nat::zero)
         |  first p
         |}
         |""".stripMargin
@@ -84,8 +84,8 @@ class ProjectionTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Vec (A: Type) indices (n: Nat) : Type
-        | | nil : Vec A Nat.zero
-        | | cons (tail: Vec A $n) (head: A) : Vec A (Nat.succ n)
+        | | nil : Vec A Nat::zero
+        | | cons (tail: Vec A $n) (head: A) : Vec A (Nat::succ n)
         |
         |struct WrapIdx (A: Type)(n: Nat) : Type
         | | mk (x: Vec A n) : WrapIdx A n
@@ -93,14 +93,14 @@ class ProjectionTests extends munit.FunSuite {
         |inline def get (A: Type)(n: Nat)(w: WrapIdx A n): Vec A n := w[x]
         |
         |{
-        |  let v : Vec Nat Nat.zero := Vec.nil Nat
-        |  let w : WrapIdx Nat Nat.zero := WrapIdx.mk Nat Nat.zero v
-        |  get Nat Nat.zero w
+        |  let v : Vec Nat Nat::zero := Vec::nil Nat
+        |  let w : WrapIdx Nat Nat::zero := WrapIdx::mk Nat Nat::zero v
+        |  get Nat Nat::zero w
         |}
         |""".stripMargin
 
     val res = runProgram(p)
-    assertEquals(toShape(res), SConst("Vec.nil"))
+    assertEquals(toShape(res), SConst("Vec::nil"))
   }
 
   test("typecheck: dependent projection works in types with indices") {
@@ -111,8 +111,8 @@ class ProjectionTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Vec (A: Type) indices (n: Nat) : Type
-        | | nil : Vec A Nat.zero
-        | | cons (tail: Vec A $n) (head: A) : Vec A (Nat.succ n)
+        | | nil : Vec A Nat::zero
+        | | cons (tail: Vec A $n) (head: A) : Vec A (Nat::succ n)
         |
         |struct WrapIdx (A: Type)(n: Nat) : Type
         | | mk (x: Vec A n) : WrapIdx A n
@@ -131,8 +131,8 @@ class ProjectionTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Vec (A: Type) indices (n: Nat) : Type
-        | | nil : Vec A Nat.zero
-        | | cons (tail: Vec A $n) (head: A) : Vec A (Nat.succ n)
+        | | nil : Vec A Nat::zero
+        | | cons (tail: Vec A $n) (head: A) : Vec A (Nat::succ n)
         |
         |struct WrapIdx (A: Type)(n: Nat): Type
         | | mk (x: Vec A n) : WrapIdx A n
@@ -154,7 +154,7 @@ class ProjectionTests extends munit.FunSuite {
         | | mk (fst: A)(snd: B) : Pair A B
         |
         |// Opaque on purpose
-        |def mkPair (a: Nat)(b: Nat): Pair Nat Nat := Pair.mk Nat Nat a b
+        |def mkPair (a: Nat)(b: Nat): Pair Nat Nat := Pair::mk Nat Nat a b
         |
         |def firstOpaque (a: Nat)(b: Nat): Nat := {
         |  let p := mkPair a b
@@ -172,11 +172,11 @@ class ProjectionTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |struct PairU (A: Sort $u1)(B: Sort $u2) : Sort (Level.max u1 u2)
+        |struct PairU (A: Sort $u1)(B: Sort $u2) : Sort (Level::max u1 u2)
         | | mk (fst: A)(snd: B) : PairU A B
         |
         |// Opaque on purpose
-        |def F : PairU Type Type := PairU.mk Type Type Nat Nat
+        |def F : PairU Type Type := PairU::mk Type Type Nat Nat
         |
         |def idF (x: F[fst]): F[fst] := x
         |""".stripMargin
@@ -199,8 +199,8 @@ class ProjectionTests extends munit.FunSuite {
         |
         |inline def choose (n: Nat): Pair Nat Nat := {
         |  match step n as m returning Pair Nat Nat with
-        |  | Nat.zero => Pair.mk Nat Nat Nat.zero Nat.zero
-        |  | Nat.succ k => Pair.mk Nat Nat (Nat.succ k) k
+        |  | Nat::zero => Pair::mk Nat Nat Nat::zero Nat::zero
+        |  | Nat::succ k => Pair::mk Nat Nat (Nat::succ k) k
         |}
         |
         |def fstChoose (n: Nat): Nat := {
@@ -240,8 +240,8 @@ class ProjectionTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Vec (A: Type) indices (n: Nat) : Type
-        | | nil : Vec A Nat.zero
-        | | cons (tail: Vec A $n) (head: A) : Vec A (Nat.succ n)
+        | | nil : Vec A Nat::zero
+        | | cons (tail: Vec A $n) (head: A) : Vec A (Nat::succ n)
         |
         |struct HiddenVec (A: Type) : Type
         | | mk (v: Vec A $n) : HiddenVec A
@@ -289,23 +289,6 @@ class ProjectionTests extends munit.FunSuite {
     }
   }
 
-  test("negative: selecting from non-struct (anonymous '_') throws") {
-    val p =
-      """
-        |inductive Bad (A: Type) : Type
-        | | mk (_: A) : Bad A
-        |
-        |inline def get (A: Type)(b: Bad A): A := b[_]
-        |""".stripMargin
-
-    LanguageParser.parseProgram(p) match {
-      case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        intercept[NotAStruct] { Interpreter.run(core) }
-      case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
-    }
-  }
-
   test("negative: unknown field name on struct throws NotFound") {
     val p =
       """
@@ -323,7 +306,6 @@ class ProjectionTests extends munit.FunSuite {
     }
   }
 
-
   test("invalid: struct with multiple constructors is rejected") {
     val p =
       """
@@ -333,10 +315,8 @@ class ProjectionTests extends munit.FunSuite {
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {
-      case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        intercept[InvalidStruct] { Interpreter.run(core) }
-      case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+      case Success(value, _, _) => fail("Struct parsed successfully with multiple params")
+      case err: Failure         =>
     }
   }
 

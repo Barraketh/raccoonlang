@@ -19,7 +19,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         |
         |def onlyZero (n: Nat): Nat := {
         |  match n as _ returning Nat with
-        |  | Nat.zero => Nat.zero
+        |  | Nat::zero => Nat::zero
         |}
         |
         |""".stripMargin
@@ -27,7 +27,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
     intercept[MissingCase] { typecheckDecls(p) }
   }
 
-  test("duplicate case: two Nat.zero branches") {
+  test("duplicate case: two Nat::zero branches") {
     val p =
       """
         |inductive Nat : Type
@@ -36,9 +36,9 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         |
         |def dup (n: Nat): Nat := {
         |  match n as _ returning Nat with
-        |  | Nat.zero => Nat.zero
-        |  | Nat.zero => Nat.zero
-        |  | Nat.succ x => x
+        |  | Nat::zero => Nat::zero
+        |  | Nat::zero => Nat::zero
+        |  | Nat::succ x => x
         |}
         |
         |""".stripMargin
@@ -46,21 +46,21 @@ class MatchExhaustivenessTests extends munit.FunSuite {
     intercept[DuplicateCase] { typecheckDecls(p) }
   }
 
-  test("unreachable case: Vec.cons on Vec A Nat.zero") {
+  test("unreachable case: Vec::cons on Vec A Nat::zero") {
     val p =
       """
         |inductive Nat : Type
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Sort Level.one
-        | | nil : Vec A Nat.zero
-        | | cons (n: Nat) (xs: Vec A n) (x: A): Vec A (Nat.succ n)
+        |inductive Vec (A: Type) indices (n: Nat) : Sort Level::one
+        | | nil : Vec A Nat::zero
+        | | cons (n: Nat) (xs: Vec A n) (x: A): Vec A (Nat::succ n)
         |
-        |def f (A: Type)(v: Vec A Nat.zero): Nat := {
+        |def f (A: Type)(v: Vec A Nat::zero): Nat := {
         |  match v as _ returning Nat with
-        |  | Vec.nil => Nat.zero
-        |  | Vec.cons n xs x => Nat.zero
+        |  | Vec::nil => Nat::zero
+        |  | Vec::cons n xs x => Nat::zero
         |}
         |
         |""".stripMargin
@@ -76,12 +76,12 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |// OPAQUE (not inline): evaluator will keep this as a Symbol head
-        |def g (n: Nat): Nat := Nat.zero
+        |def g (n: Nat): Nat := Nat::zero
         |
         |def bad (n: Nat): Nat := {
         |  // scrutinee is neutral/opaque application: g n
         |  match g n as _ returning Nat with
-        |  | Nat.zero => Nat.zero
+        |  | Nat::zero => Nat::zero
         |}
         |
         |""".stripMargin
@@ -100,8 +100,8 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         |
         |def ok (n: Nat): Nat := {
         |  match g n as _ returning Nat with
-        |  | Nat.zero => Nat.zero
-        |  | Nat.succ x => x
+        |  | Nat::zero => Nat::zero
+        |  | Nat::succ x => x
         |}
         |
         |""".stripMargin

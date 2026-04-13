@@ -32,8 +32,8 @@ class TypingTests extends munit.FunSuite {
     case other                  => SConst(other.toString) // fallback
   }
 
-  private val zeroS = SConst("Nat.zero")
-  private def succS(s: Shape) = SApp(SConst("Nat.succ"), List(s))
+  private val zeroS = SConst("Nat::zero")
+  private def succS(s: Shape) = SApp(SConst("Nat::succ"), List(s))
 
   test("inline id typechecks and reduces") {
     val p =
@@ -45,7 +45,7 @@ class TypingTests extends munit.FunSuite {
         |inline def id (A: Type)(x: A): A := x
         |
         |{
-        |  id Nat Nat.zero
+        |  id Nat Nat::zero
         |}
         |""".stripMargin
 
@@ -76,7 +76,7 @@ class TypingTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |{
-        |  let s : Nat := Nat.succ
+        |  let s : Nat := Nat::succ
         |  s
         |}
         |""".stripMargin
@@ -95,7 +95,7 @@ class TypingTests extends munit.FunSuite {
         |
         |{
         |  let f : (x: Nat) -> Nat := fun (y: Nat): Nat => y
-        |  f Nat.zero
+        |  f Nat::zero
         |}
         |""".stripMargin
 
@@ -112,12 +112,12 @@ class TypingTests extends munit.FunSuite {
         |
         |inline def pred (n: Nat): Nat := {
         |  match n as _ returning Nat with
-        |  | Nat.zero => Nat.zero
-        |  | Nat.succ x => x
+        |  | Nat::zero => Nat::zero
+        |  | Nat::succ x => x
         |}
         |
         |{
-        |  pred (Nat.succ Nat.zero)
+        |  pred (Nat::succ Nat::zero)
         |}
         |""".stripMargin
 
@@ -134,8 +134,8 @@ class TypingTests extends munit.FunSuite {
         |
         |inline def bad (n: Nat): Type := {
         |  match n as _ returning Nat with
-        |  | Nat.zero => Nat.zero
-        |  | Nat.succ x => x
+        |  | Nat::zero => Nat::zero
+        |  | Nat::succ x => x
         |}
         |""".stripMargin
 
@@ -152,7 +152,7 @@ class TypingTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |{
-        |  let one := Nat.succ Nat.zero
+        |  let one := Nat::succ Nat::zero
         |  one
         |}
         |""".stripMargin
@@ -168,11 +168,11 @@ class TypingTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Sort Level.one
-        | | nil : Vec A Nat.zero
-        | | cons (n: Nat) (xs: Vec A n) (x: A): Vec A (Nat.succ n)
+        |inductive Vec (A: Type) indices (n: Nat) : Sort Level::one
+        | | nil : Vec A Nat::zero
+        | | cons (n: Nat) (xs: Vec A n) (x: A): Vec A (Nat::succ n)
         |
-        |inline def badVec (A: Type)(n: Nat)(v: Vec A n): Vec A Nat.zero := v
+        |inline def badVec (A: Type)(n: Nat)(v: Vec A n): Vec A Nat::zero := v
         |""".stripMargin
 
     intercept[TypeMismatch] {
@@ -187,13 +187,13 @@ class TypingTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Sort Level.one
-        | | nil : Vec A Nat.zero
-        | | cons (n: Nat) (xs: Vec A n) (x: A): Vec A (Nat.succ n)
+        |inductive Vec (A: Type) indices (n: Nat) : Sort Level::one
+        | | nil : Vec A Nat::zero
+        | | cons (n: Nat) (xs: Vec A n) (x: A): Vec A (Nat::succ n)
         |
-        |inline def keepNil (A: Type)(v: Vec A Nat.zero): Vec A Nat.zero := {
-        |  match v as self returning Vec A Nat.zero with
-        |  | Vec.nil => self
+        |inline def keepNil (A: Type)(v: Vec A Nat::zero): Vec A Nat::zero := {
+        |  match v as self returning Vec A Nat::zero with
+        |  | Vec::nil => self
         |}
         |""".stripMargin
 

@@ -112,7 +112,7 @@ object Elaborator {
         val ctors =
           c.ctors.map { ctor =>
             CA.ConstructorDecl(
-              name = c.header.name + "." + ctor.name,
+              name = c.header.name + "::" + ctor.name,
               fields = ctor.fields.map(elab),
               resultTy = elab(ctor.resultTy),
               span = ctor.span

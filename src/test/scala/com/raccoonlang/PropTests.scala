@@ -51,7 +51,7 @@ class PropTests extends munit.FunSuite {
     case other                  => SConst(other.toString)
   }
 
-  private val zeroS = SConst("Nat.zero")
+  private val zeroS = SConst("Nat::zero")
 
   // ---------------------------------------------------------------------------
   // Universe / Pi-formation tests for Prop
@@ -227,7 +227,7 @@ class PropTests extends munit.FunSuite {
         |
         |def andLeft (P: Prop)(Q: Prop)(h: And P Q): P := {
         |  match h as _ returning P with
-        |  | And.intro p q => p
+        |  | And::intro p q => p
         |}
         |""".stripMargin
 
@@ -242,7 +242,7 @@ class PropTests extends munit.FunSuite {
         |
         |def unpackToProp (A: Type)(p: A -> Prop)(h: Exists A p): Prop := {
         |  match h as _ returning Prop with
-        |  | Exists.intro w pw => p w
+        |  | Exists::intro w pw => p w
         |}
         |""".stripMargin
 
@@ -266,7 +266,7 @@ class PropTests extends munit.FunSuite {
         |
         |def badExists (h: Exists Nat alwaysTrue): Nat := {
         |  match h as _ returning Nat with
-        |  | Exists.intro w pw => Nat.zero
+        |  | Exists::intro w pw => Nat::zero
         |}
         |""".stripMargin
 
@@ -289,13 +289,13 @@ class PropTests extends munit.FunSuite {
         |inductive Eq (A: Type) indices (x: A) (y: A) : Prop
         | | refl (x: A) : Eq A x x
         |
-        |def eqToNat (n: Nat)(p: Eq Nat n Nat.zero): Nat := {
+        |def eqToNat (n: Nat)(p: Eq Nat n Nat::zero): Nat := {
         |  match p as _ returning Nat with
-        |  | Eq.refl x => Nat.zero
+        |  | Eq::refl x => Nat::zero
         |}
         |
         |{
-        |  eqToNat Nat.zero (Eq.refl Nat Nat.zero)
+        |  eqToNat Nat::zero (Eq::refl Nat Nat::zero)
         |}
         |""".stripMargin
 
@@ -315,7 +315,7 @@ class PropTests extends munit.FunSuite {
         |
         |def choose (n: Nat)(m: Nat)(p: Eq Nat n m): Type := {
         |  match p as _ returning Type with
-        |  | Eq.refl x => Nat
+        |  | Eq::refl x => Nat
         |}
         |""".stripMargin
 
@@ -351,7 +351,7 @@ class PropTests extends munit.FunSuite {
         |
         |def trueToNat (h: True): Nat := {
         |  match h as _ returning Nat with
-        |  | True.intro => Nat.zero
+        |  | True::intro => Nat::zero
         |}
         |""".stripMargin
 
@@ -366,9 +366,9 @@ class PropTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive IsZero indices (n: Nat) : Prop
-        | | intro : IsZero Nat.zero
+        | | intro : IsZero Nat::zero
         |
-        |def absurdSucc (n: Nat)(h: IsZero (Nat.succ n)): Nat := {
+        |def absurdSucc (n: Nat)(h: IsZero (Nat::succ n)): Nat := {
         |  match h as _ returning Nat with
         |}
         |""".stripMargin
@@ -388,11 +388,11 @@ class PropTests extends munit.FunSuite {
         |
         |def unwrapIdx (n: Nat)(h: IdxWrap Nat n): Nat := {
         |  match h as _ returning Nat with
-        |  | IdxWrap.intro y => y
+        |  | IdxWrap::intro y => y
         |}
         |
         |{
-        |  unwrapIdx Nat.zero (IdxWrap.intro Nat Nat.zero)
+        |  unwrapIdx Nat::zero (IdxWrap::intro Nat Nat::zero)
         |}
         |""".stripMargin
 
@@ -408,16 +408,16 @@ class PropTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Shape indices (n: Nat) : Prop
-        | | zeroCase : Shape Nat.zero
-        | | succCase (m: Nat) : Shape (Nat.succ m)
+        | | zeroCase : Shape Nat::zero
+        | | succCase (m: Nat) : Shape (Nat::succ m)
         |
-        |def predFromShape (n: Nat)(h: Shape (Nat.succ n)): Nat := {
+        |def predFromShape (n: Nat)(h: Shape (Nat::succ n)): Nat := {
         |  match h as _ returning Nat with
-        |  | Shape.succCase m => m
+        |  | Shape::succCase m => m
         |}
         |
         |{
-        |  predFromShape Nat.zero (Shape.succCase Nat.zero)
+        |  predFromShape Nat::zero (Shape::succCase Nat::zero)
         |}
         |""".stripMargin
 
@@ -437,7 +437,7 @@ class PropTests extends munit.FunSuite {
         |
         |def badCarrier (h: HasCarrier): Nat := {
         |  match h as _ returning Nat with
-        |  | HasCarrier.intro A => Nat.zero
+        |  | HasCarrier::intro A => Nat::zero
         |}
         |""".stripMargin
 
@@ -466,8 +466,8 @@ class PropTests extends munit.FunSuite {
         |
         |def badOr (h: Or True True): Nat := {
         |  match h as _ returning Nat with
-        |  | Or.inl p => Nat.zero
-        |  | Or.inr q => Nat.zero
+        |  | Or::inl p => Nat::zero
+        |  | Or::inr q => Nat::zero
         |}
         |""".stripMargin
 
@@ -496,7 +496,7 @@ class PropTests extends munit.FunSuite {
         |
         |def symm (A: Type)(x: A)(y: A)(p: Eq A x y): Eq A y x := {
         |  match p as _ returning Eq A y x with
-        |  | Eq.refl z => Eq.refl A z
+        |  | Eq::refl z => Eq::refl A z
         |}
         |""".stripMargin
 

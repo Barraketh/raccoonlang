@@ -34,10 +34,14 @@ object LanguageParser {
     "stable"
   )
 
-  private val ident =
-    (P(c => c.isLetter || c == '_') ~ P(c => c.isLetterOrDigit || c == '_' || c == '$' || c == '.').rep(0)).!.filter(
-      s => !keywords.contains(s)
-    ).named("Ident")
+  private val identAtom =
+    (P(c => c.isLetter) ~ P(c => c.isLetterOrDigit || c == '_').rep(0)).!.filter(s => !keywords.contains(s))
+
+  private val ident: Parser[String] = (identAtom ~ (P("::").! ~ identAtom).rep(0)).map { case (s, rest) =>
+    s + rest.map(pair => pair._1 + pair._2).mkString("")
+  }
+
+  private val argName: Parser[String] = ident | P("_").!
 
   private def sym(c: Char) = (skipWS ~ P(c) ~/ skipWS).named(s"Sym($c)")
   private def sym(s: String) = (skipWS ~ P(s) ~/ skipWS).named(s"Sym($s)")
@@ -78,7 +82,7 @@ object LanguageParser {
     } | typeAtom
   }
 
-  private def param = (sym('(') ~ ident ~ sym(':') ~/ typeTerm ~ symTight(')')).flatSpanned.map(Binder.tupled)
+  private def param = (sym('(') ~ argName ~ sym(':') ~/ typeTerm ~ symTight(')')).flatSpanned.map(Binder.tupled)
 
   private def pi: Parser[Pi] = (param ~ sym("->") ~ typeTerm).flatSpanned.map { Pi.tupled } |
     (typeExpr.spanned ~ sym("->") ~ typeTerm).spanned.mapAsT { case ((expr, term), span) =>
@@ -112,12 +116,12 @@ object LanguageParser {
       .map[SurfaceAst.Term] { case (header, body, span) => Lam(header, body, span) }
 
   private def matchCase: Parser[Case] =
-    (sym("|") ~/ ident ~ (wsSep ~ ident).rep(0) ~ sym("=>") ~ term ~ lineSep).flatSpanned
+    (sym("|") ~/ argName ~ (wsSep ~ argName).rep(0) ~ sym("=>") ~ term ~ lineSep).flatSpanned
       .map(Case.tupled)
       .named("Case")
 
   private def matchP: Parser[Match] = {
-    (kw("match") ~/ term ~ kw("as") ~/ ident ~ kw("returning") ~/ typeTerm ~
+    (kw("match") ~/ term ~ kw("as") ~/ argName ~ kw("returning") ~/ typeTerm ~
       (skipWS ~ P("with") ~/ lineSep) ~ matchCase.rep(0)).flatSpanned.map(Match.tupled)
   }
 
@@ -159,15 +163,15 @@ object LanguageParser {
       .map { case (h, cs, sp) => InductiveDecl(h, cs, isStruct = false, sp) }
 
   private def structP: Parser[InductiveDecl] =
-    (kw("struct") ~/ inductiveHeader ~ lineSep ~ ctorDecl.rep(0)).flatSpanned
-      .map { case (h, cs, sp) => InductiveDecl(h, cs, isStruct = true, sp) }
+    (kw("struct") ~/ inductiveHeader ~ lineSep ~ ctorDecl).flatSpanned
+      .map { case (h, cs, sp) => InductiveDecl(h, Vector(cs), isStruct = true, sp) }
 
   private def declP: Parser[Decl] = constP | inductiveP | structP
 
   private def decls: Parser[Vector[Decl]] = skipAllWs ~ declP.rep(1, lineSep) ~ skipAllWs ~ End
 
   private def programP: Parser[Program] =
-    (skipAllWs ~ declP.rep(0, lineSep.rep(1)) ~ skipAllWs ~ term.?).map(Program.tupled)
+    (skipAllWs ~ declP.rep(0, lineSep.rep(1)) ~ skipAllWs ~ term.? ~ skipAllWs ~ End).map(Program.tupled)
 
   private def tryParse[A](input: String, parser: Parser[A]): ParseResult[A] = try {
     parser.parse(input, 0)
