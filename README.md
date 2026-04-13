@@ -1,6 +1,6 @@
 # Raccoon Lang
 
-Raccoon is a small dependently typed language and implementation aimed to be a target for AI-assisted proof generation,
+Raccoon is a small dependently typed language aimed to be a target for AI-assisted proof generation,
 as well as a research platform for exploring language features to make formally-verified programming more ergonomic.
 
 ## Language design philosophy
@@ -70,35 +70,6 @@ inductive Vec (A: Type) indices (n: Nat) : Sort Level.one
  | cons (n: Nat) (xs: Vec A n) (x: A) : Vec A (Nat.succ n)
 ```
 
-### Equality by computation with a normalizer
-
-A normalizer rewrites a blocked expression into a different (equivalent) form.  For example, the 'add_normalizer'
-flattens all additions to a list, removes zeros and then sorts the list.  Currently, for demonstration purposes, it
-can be used without providing the relevant proofs, but in a full implementation it would require proofs of standard
-monoid laws.
-
-```raccoon
-inductive Nat : Type
- | zero : Nat
- | succ (_: Nat) : Nat
-
-stable def add (a: Nat)(b: Nat): Nat := {
-  match b as _ returning Nat with
-  | Nat.zero => a
-  | Nat.succ x => add (Nat.succ a) x
-}
-
-inline def nat_add_normalizer : Normalizer := add_normalizer Nat Nat.zero add
-
-inductive Eq (A: Type) indices (x: A) (y: A) : Sort Level.one
- | refl (x: A) : Eq A x x
-
-inline def addComm (a: Nat)(b: Nat): Eq Nat (add a b) (add b a) := {
-  use nat_add_normalizer
-  Eq.refl Nat (add a b)
-}
-```
-
 ### Type patterns
 
 An alternative to implicit parameters. A binder can contain captures in the type, and later parameters can reference
@@ -132,7 +103,7 @@ inline def zip(va: Vec $A $n)(vb: Vec $B n): Vec (Pair A B) n := {
 
 ### Structs and Projections
 
-What is a struct: a special case of an inductive family with exactly one constructor and named fields. Structs are intended for record-like data where fields are directly projectable by name.
+A struct is a special case of an inductive family with exactly one constructor and named fields. Structs are intended for record-like data where fields are directly projectable by name.
 Formation rules:
   - Exactly one constructor.
   - No indices (only parameters allowed).
@@ -140,7 +111,7 @@ Formation rules:
   - All fields must be named (no anonymous `_` fields).
 
 
-Projection syntax: `p[field]` selects the named field from a value `p` of a struct family. 
+Projection syntax: `p.field` selects the named field from a value `p` of a struct family. 
 
 Example: simple non-dependent projections
 
@@ -152,10 +123,38 @@ inductive Nat : Type
 struct Pair (A: Type)(B: Type) : Type
  | mk (fst: A)(snd: B) : Pair A B
 
-inline def first (p: Pair $A $B): A := p[fst]
-inline def second (p: Pair $A $B): B := p[snd]
+inline def first (p: Pair $A $B): A := p.fst
+inline def second (p: Pair $A $B): B := p.snd
 ```
 
+### Equality by computation with a normalizer
+
+A normalizer rewrites a blocked expression into a different (equivalent) form.  For example, the 'add_normalizer'
+flattens all additions to a list, removes zeros and then sorts the list.  Currently, for demonstration purposes, it
+can be used without providing the relevant proofs, but in a full implementation it would require proofs of standard
+monoid laws.
+
+```raccoon
+inductive Nat : Type
+ | zero : Nat
+ | succ (_: Nat) : Nat
+
+stable def add (a: Nat)(b: Nat): Nat := {
+  match b as _ returning Nat with
+  | Nat.zero => a
+  | Nat.succ x => add (Nat.succ a) x
+}
+
+inline def nat_add_normalizer : Normalizer := add_normalizer Nat Nat.zero add
+
+inductive Eq (A: Type) indices (x: A) (y: A) : Sort Level.one
+ | refl (x: A) : Eq A x x
+
+inline def addComm (a: Nat)(b: Nat): Eq Nat (add a b) (add b a) := {
+  use nat_add_normalizer
+  Eq.refl Nat (add a b)
+}
+```
 
 ## Quickstart
 

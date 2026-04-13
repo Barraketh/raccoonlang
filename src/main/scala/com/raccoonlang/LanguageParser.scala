@@ -54,7 +54,7 @@ object LanguageParser {
   private def identTerm = ident.flatSpanned.map(Ident.tupled)
 
   // Common bracket suffix parser
-  private def bracketSuffix: Parser[Vector[String]] = (symTight("[") ~/ ident ~ symTight("]")).rep(0)
+  private def bracketSuffix: Parser[Vector[String]] = (symTight(".") ~/ ident).rep(0)
 
   private def termAtom: Parser[Term] = {
     val base: Parser[Term] = (sym("(") ~/ term ~ symTight(")")) | identTerm
