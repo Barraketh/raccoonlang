@@ -16,6 +16,28 @@ object TypePatternOps {
       value: Option[Value]
   )
 
+  private sealed trait OpenMode {
+    def evalTypeTerm(term: TypeTerm, env: Env)(implicit eqStore: EqStore): Value
+
+    def bindPattern(env: Env, pattern: TypePattern, actual: Value)(implicit eqStore: EqStore): Env
+  }
+
+  private case object UncheckedOpenMode extends OpenMode {
+    override def evalTypeTerm(term: TypeTerm, env: Env)(implicit eqStore: EqStore): Value =
+      Interpreter.evalTypeTerm(term, env)
+
+    override def bindPattern(env: Env, pattern: TypePattern, actual: Value)(implicit eqStore: EqStore): Env =
+      bindInternal(env, pattern, actual)
+  }
+
+  private final case class CheckedOpenMode(normalizers: NormalizerMap) extends OpenMode {
+    override def evalTypeTerm(term: TypeTerm, env: Env)(implicit eqStore: EqStore): Value =
+      TypeChecker.evalTypeTerm(term, env)(eqStore, normalizers)
+
+    override def bindPattern(env: Env, pattern: TypePattern, actual: Value)(implicit eqStore: EqStore): Env =
+      matchOpenInternal(env, pattern, actual)(eqStore, normalizers)
+  }
+
   private def requirePi(fn: Value)(implicit eqStore: EqStore): VPi =
     resolveInEqStore(fn.tpe) match {
       case pi: VPi => pi
@@ -183,17 +205,23 @@ object TypePatternOps {
 
   private case class OpenedArgs(env: Env, piEnv: Env, vars: Vector[Value], newVarIds: BitSet)
 
-  private def openArgsAgainstBinders(env: Env, piEnv: Env, args: Vector[TypePattern], binders: Vector[CoreAst.Binder])(
-      implicit eqStore: EqStore
+  private def openArgsAgainstBinders(
+      env: Env,
+      piEnv: Env,
+      args: Vector[TypePattern],
+      binders: Vector[CoreAst.Binder],
+      mode: OpenMode
+  )(implicit
+      eqStore: EqStore
   ): OpenedArgs = {
     val newVarIds = collection.mutable.BitSet()
     val vars = collection.mutable.ArrayBuffer[Value]()
     var myEnv = env
 
     val newPiEnv = args.zip(binders).foldLeft(piEnv) { case (piEnv, (arg, piBinder)) =>
-      val piOpened = openAndCheck(piEnv, piBinder.ty)
+      val piOpened = openPatternInternal(piEnv, piBinder.ty, mode)
       val argV = arg match {
-        case tt: TypeTerm => Interpreter.evalTypeTerm(tt, myEnv)
+        case tt: TypeTerm => mode.evalTypeTerm(tt, myEnv)
         case Capture(name, _) =>
           val v = piOpened.value.getOrElse {
             val v = FreshVar.freshVar(piBinder.name, piOpened.tpe)
@@ -203,7 +231,7 @@ object TypePatternOps {
           myEnv = myEnv.putLocal(name, v)
           v
         case p: PatternApp =>
-          val myOpened = openAndCheck(myEnv, p)
+          val myOpened = openPatternInternal(myEnv, p, mode)
           newVarIds |= myOpened.newVars
           myOpened.tpe
       }
@@ -228,11 +256,11 @@ object TypePatternOps {
     * freshen constructor fields, build the constructor result, and then bind the supplied index patterns against the
     * indexes found in that result type.
     */
-  private def openAndCheck(env: Env, pattern: TypePattern)(implicit
+  private def openPatternInternal(env: Env, pattern: TypePattern, mode: OpenMode)(implicit
       eqStore: EqStore
   ): FreshOpened = {
     pattern match {
-      case tt: TypeTerm => FreshOpened(env, Interpreter.evalTypeTerm(tt, env), BitSet.empty, None)
+      case tt: TypeTerm => FreshOpened(env, mode.evalTypeTerm(tt, env), BitSet.empty, None)
       case Capture(name, _) =>
         throw PatternCaptureNeedsExpectedType(name)
       case PatternApp(fn, args, _) =>
@@ -252,7 +280,8 @@ object TypePatternOps {
                   env,
                   pi.env,
                   patternArgs.take(h.numParams),
-                  pi.binders.toVector.take(h.numParams)
+                  pi.binders.toVector.take(h.numParams),
+                  mode
                 )
 
                 val openedFields =
@@ -266,7 +295,7 @@ object TypePatternOps {
 
                 val resultEnv =
                   patternArgs.drop(h.numParams).zip(resultTypeArgs.drop(h.numParams)).foldLeft(openedParams.env) {
-                    case (curEnv, (indexPattern, resultIndex)) => bindInternal(curEnv, indexPattern, resultIndex)
+                    case (curEnv, (indexPattern, resultIndex)) => mode.bindPattern(curEnv, indexPattern, resultIndex)
                   }
 
                 FreshOpened(resultEnv, res.tpe, openedParams.newVarIds ++ openedFields.newVars, Some(res))
@@ -276,7 +305,7 @@ object TypePatternOps {
             val pi = requirePi(fnV)
             if (pi.binders.length != args.length) throw PatternArityMismatch(fnV, pi.binders.length, args.length)
 
-            val openedArgs = openArgsAgainstBinders(env, pi.env, args.toVector, pi.binders.toVector)
+            val openedArgs = openArgsAgainstBinders(env, pi.env, args.toVector, pi.binders.toVector, mode)
             val res = Interpreter.evalApply(fnV, NEL.mk(openedArgs.vars.toList))
             FreshOpened(openedArgs.env, res, openedArgs.newVarIds, None)
         }
@@ -295,7 +324,21 @@ object TypePatternOps {
     */
   def freshVar(env: Env, binder: CoreAst.Binder, meta: EqStore): (Value, Env, BitSet) = {
     implicit val eqStore: EqStore = meta
-    val f = openAndCheck(env, binder.ty)
+    val f = openPatternInternal(env, binder.ty, UncheckedOpenMode)
+    f.value match {
+      case Some(v) =>
+        (v, f.env, f.newVars)
+      case None =>
+        val v = FreshVar.freshVar(binder.name, f.tpe)
+        (v, f.env, f.newVars + v.id)
+    }
+  }
+
+  def freshVarAndCheck(env: Env, binder: CoreAst.Binder, meta: EqStore)(implicit
+      normalizers: NormalizerMap
+  ): (Value, Env, BitSet) = {
+    implicit val eqStore: EqStore = meta
+    val f = openPatternInternal(env, binder.ty, CheckedOpenMode(normalizers))
     f.value match {
       case Some(v) =>
         (v, f.env, f.newVars)

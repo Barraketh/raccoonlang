@@ -246,6 +246,56 @@ class TypePatternTests extends munit.FunSuite {
     }
   }
 
+  test("negative: concrete type pattern arguments are checked") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Box (A: Type) : Type
+        | | mk (a: A) : Box A
+        |
+        |def bad (b: Box Nat::zero): Type := Type
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value)
+        intercept[TypeMismatch] {
+          Interpreter.run(core)
+        }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
+  }
+
+  test("negative: checked struct type pattern validates concrete indices") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        |
+        |inductive Bool : Type
+        | | tt : Bool
+        |
+        |struct ChooseLeft (A: Type)(B: Type) indices (Out: Type) : Type
+        | | mk (x: A) : ChooseLeft A B A
+        |
+        |def bad (w: ChooseLeft Nat Bool Bool): Type := Type
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value)
+        intercept[TypeMismatch] {
+          Interpreter.run(core)
+        }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
+  }
+
   test("negative: call-site type pattern head mismatch is rejected") {
     val p =
       """

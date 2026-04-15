@@ -214,16 +214,12 @@ object Interpreter {
   }
 
   // Inline selection on values (term and type positions share logic)
-  private def computeSelectResultTypeFrom(vType: Value, field: String, env: Env)(implicit
-      eqStore: EqStore,
-      normalizers: NormalizerMap = NormalizerMap.empty
-  ): Value = {
+  private def computeSelectResultTypeFrom(vType: Value, field: String, env: Env)(implicit eqStore: EqStore): Value = {
     val vt0 = resolveInEqStore(vType)
     val (indName, meta, typeArgs) = vt0 match {
       case VConst(n, Inductive(m), _)              => (n, m, Vector.empty[Value])
       case VApp(VConst(n, Inductive(m), _), as, _) => (n, m, as)
-      case other                                   =>
-        throw NotAType(other)
+      case other                                   => throw NotAType(other)
     }
 
     // Only valid structs support selection

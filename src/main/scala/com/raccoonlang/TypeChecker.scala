@@ -1,6 +1,6 @@
 package com.raccoonlang
 
-import com.raccoonlang.BinderOps.assignFreshVars
+import com.raccoonlang.BinderOps.assignFreshVarsAndCheck
 import com.raccoonlang.CoreAst.Term.{Ident, Lam, Match}
 import com.raccoonlang.CoreAst._
 import com.raccoonlang.Interpreter._
@@ -56,8 +56,8 @@ object TypeChecker {
       meta: EqStore,
       normalizers: NormalizerMap
   ): Value = {
-    val fn = typecheckTT(app.fn, env)
-    val args = app.args.map(arg => typecheckTT(arg, env))
+    val fn = evalTypeTerm(app.fn, env)
+    val args = app.args.map(arg => evalTypeTerm(arg, env))
     typecheckApply(fn, args)
   }
 
@@ -72,19 +72,21 @@ object TypeChecker {
 
   // Check that all type terms typecheck under a fresh var assignment to binders
   private def typecheckPi(pi: Term.Pi, env: Env)(implicit meta: EqStore, normalizers: NormalizerMap): VPi = {
-    val bodyEnv = BinderOps.freshen(pi.binders, env, meta).env
+    val bodyEnv = BinderOps.freshenAndCheck(pi.binders, env, meta).env
     getType(pi.out, bodyEnv)
     evalPi(pi, env)
   }
 
-  private def typecheckTT(term: TypeTerm, env: Env)(implicit
+  def evalTypeTerm(term: TypeTerm, env: Env)(implicit
       meta: EqStore,
       normalizers: NormalizerMap
   ): Value = term match {
-    case t: Term.TApp    => typecheckTApp(t, env)
-    case t: Term.TSelect => Interpreter.evalTypeTerm(t, env)
-    case pi: Term.Pi     => typecheckPi(pi, env)
-    case ident: Ident    => Interpreter.evalTerm(ident, env)
+    case t: Term.TApp => typecheckTApp(t, env)
+    case Term.TSelect(base, field, span) =>
+      val t = evalTypeTerm(base, env)
+      Interpreter.evalSelect(t, field, env, span.start)
+    case pi: Term.Pi  => typecheckPi(pi, env)
+    case ident: Ident => Interpreter.evalTerm(ident, env)
   }
 
   private def typecheckBody(body: Term.Body, env: Env)(implicit
@@ -138,7 +140,7 @@ object TypeChecker {
     def freshCtorCopy(h: ConstructorHead): (Vector[Value], Value) =
       h.tpe match {
         case pi: VPi =>
-          val (freshArgs, ctorEnv, _) = assignFreshVars(pi, eqStore)
+          val (freshArgs, ctorEnv, _) = assignFreshVarsAndCheck(pi, eqStore)
           val ctorResTy = pi.codomain(ctorEnv, eqStore)
           (freshArgs.drop(h.numParams).map(v => v: Value), ctorResTy)
 
@@ -154,7 +156,7 @@ object TypeChecker {
         env.find(ctorName).getOrElse(throw NotFound(ctorName)) match {
           case h @ ConstructorHead(_, numParams, _, ctorTy, _) =>
             val (freshArgs, ctorEnv, _) = ctorTy match {
-              case pi: VPi => assignFreshVars(pi, eqStore)
+              case pi: VPi => assignFreshVarsAndCheck(pi, eqStore)
               case _       => (Vector.empty[Var], env, scala.collection.immutable.BitSet.empty)
             }
 
@@ -289,7 +291,7 @@ object TypeChecker {
     }
 
     val vpi = typecheckPi(l.ty, env)
-    val (_, bodyEnv, _) = assignFreshVars(vpi, eqStore)
+    val (_, bodyEnv, _) = assignFreshVarsAndCheck(vpi, eqStore)
 
     val recurEnv =
       l.name match {
@@ -305,7 +307,7 @@ object TypeChecker {
   }
 
   def getType(term: TypeTerm, env: Env)(implicit ctx: EqStore, normalizerMap: NormalizerMap): Value = {
-    val res = typecheckTT(term, env)
+    val res = evalTypeTerm(term, env)
     assertType(res)
     res
   }
@@ -328,7 +330,7 @@ object TypeChecker {
   ): Value = {
     try {
       term match {
-        case term: TypeTerm => typecheckTT(term, env)
+        case term: TypeTerm => evalTypeTerm(term, env)
         case t: Term.Select => Interpreter.evalTerm(t, env)
         case t: Term.App    => typecheckApp(t, env)
         case l: Term.Lam    => typecheckLam(l, env, normalizers)
@@ -347,7 +349,7 @@ object TypeChecker {
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): RelatedPis = {
-    val (sharedVars, nextEnv1, _) = assignFreshVars(pi1, eqStore)
+    val (sharedVars, nextEnv1, _) = assignFreshVarsAndCheck(pi1, eqStore)
     val nextEnv2 = BinderOps.checkAndInstantiate(pi2.binders, pi2.env, NEL.mk(sharedVars), eqStore)
 
     val out1 = pi1.codomain(nextEnv1, eqStore)

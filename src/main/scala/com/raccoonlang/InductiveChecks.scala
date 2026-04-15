@@ -158,7 +158,7 @@ object InductiveChecks {
 
     decl.ctors.foreach { ctor =>
       val outputTpe = {
-        val (fieldVars, bodyEnv, _) = BinderOps.assignFreshVars(ctor.fields, envWithParams, eqStore)
+        val (fieldVars, bodyEnv, _) = BinderOps.assignFreshVarsAndCheck(ctor.fields, envWithParams, eqStore)
 
         ctor.fields.zip(fieldVars).foreach { case (binder, field) =>
           // 2) Universe bound: skip for Prop families; enforce for Sort families
