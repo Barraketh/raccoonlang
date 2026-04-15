@@ -123,8 +123,8 @@ inductive Nat : Type
 struct Pair (A: Type)(B: Type) : Type
  | mk (fst: A)(snd: B) : Pair A B
 
-inline def first (p: Pair $A $B): A := p::fst
-inline def second (p: Pair $A $B): B := p::snd
+inline def first (p: Pair $A $B): A := p.fst
+inline def second (p: Pair $A $B): B := p.snd
 ```
 
 ### Equality by computation with a normalizer
