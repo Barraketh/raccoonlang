@@ -3,13 +3,13 @@
 
 The benchmark builds a chain
 
-    z1 := zip v v
-    z2 := zip v z1
+    z1 := zip(v, v)
+    z2 := zip(v, z1)
     ...
-    zN := zip v zN-1
-    consume zN
+    zN := zip(v, zN-1)
+    consume(zN)
 
-The final consume keeps the full nested indexed-vector type live, so the
+The final consume(...) keeps the full nested indexed-vector type live, so the
 program stresses parsing, elaboration, type-pattern inference, and dependent
 typechecking without spending time constructing a runtime vector value.
 """
@@ -51,35 +51,35 @@ def raccoon_source(size: int, inline_zip: bool) -> str:
     lets = []
     previous = "v"
     for idx in range(1, size + 1):
-        lets.append(f"  let z{idx} := zip v {previous}")
+        lets.append(f"  let z{idx} := zip(v, {previous})")
         previous = f"z{idx}"
 
     return f"""inductive Nat : Type
  | zero : Nat
  | succ (_: Nat) : Nat
 
-inductive Vec (A: Sort $u) indices (n: Nat) : Sort u
- | nil : Vec A Nat::zero
- | cons (tail: Vec A $n) (head: A) : Vec A (Nat::succ n)
+inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
+ | nil : Vec(A, Nat::zero)
+ | cons (tail: Vec(A, $n)) (head: A) : Vec(A, Nat::succ(n))
 
-inductive Pair (A: Sort $u1)(B: Sort $u2): Sort (Level::max u1 u2)
- | mk(a: A)(b: B): Pair A B
+inductive Pair (A: Sort($u1))(B: Sort($u2)): Sort(Level::max(u1, u2))
+ | mk(a: A)(b: B): Pair(A, B)
 
-{unfold} zip(va: Vec $A $n)(vb: Vec $B n): Vec (Pair A B) n := {{
-  let ResType := Vec (Pair A B) n
+{unfold} zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) := {{
+  let ResType := Vec(Pair(A, B), n)
   match va as _ returning ResType with
-  | Vec::nil => Vec::nil (Pair A B)
+  | Vec::nil => Vec::nil(Pair(A, B))
   | Vec::cons va0 a => {{
     match vb as _ returning ResType with
-    | Vec::cons vb0 b => Vec::cons (Pair A B) (zip va0 vb0) (Pair::mk A B a b)
+    | Vec::cons vb0 b => Vec::cons(Pair(A, B), zip(va0, vb0), Pair::mk(A, B, a, b))
   }}
 }}
 
-def consume (w: Vec $A $n): Nat := Nat::zero
+def consume (w: Vec($A, $n)): Nat := Nat::zero
 
-def bench (n: Nat)(v: Vec Nat n): Nat := {{
+def bench (n: Nat)(v: Vec(Nat, n)): Nat := {{
 {chr(10).join(lets)}
-  consume {previous}
+  consume({previous})
 }}
 """
 

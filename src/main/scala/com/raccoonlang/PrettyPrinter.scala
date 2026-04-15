@@ -13,12 +13,12 @@ object PrettyPrinter {
       case Term.TSelect(base, field, _) => s"${ptAtom(base)}[$field]"
       case Term.TApp(fn, args, _) =>
         val headStr = ptAtom(fn)
-        val argsStr = args.toList.map(ptAtom).mkString(" ")
-        s"$headStr $argsStr"
+        val argsStr = args.toList.map(ptAtom).mkString(", ")
+        s"$headStr($argsStr)"
       case Term.PatternApp(fn, args, _) =>
         val headStr = ptAtom(fn)
-        val argsStr = args.toList.map(ptAtom).mkString(" ")
-        s"$headStr $argsStr"
+        val argsStr = args.toList.map(ptAtom).mkString(", ")
+        s"$headStr($argsStr)"
       case Term.Pi(binders, out, _) =>
         val bindersStr = binders.toList
           .map { b =>
@@ -55,8 +55,8 @@ object PrettyPrinter {
       case _: Value.VApp | _: Value.VConst | _: Value.Var | _: Value.VSort => print(head)
       case _                                                               => s"(${print(head)})"
     }
-    val argsStr = args.toList.map { a => if (isAtomic(a)) print(a) else s"(${print(a)})" }.mkString(" ")
-    s"$headStr $argsStr"
+    val argsStr = args.toList.map(print).mkString(", ")
+    s"$headStr($argsStr)"
   }
 
   def printBinder(b: CoreAst.Binder): String = s"(${b.name}: ${printTypePattern(b.ty)})"
@@ -98,8 +98,8 @@ object PrettyPrinter {
     case CoreAst.Term.Select(base, field, _) => s"${printTermAtom(base)}[$field]"
     case CoreAst.Term.App(fn, args, _) =>
       val head = printTermAtom(fn)
-      val as = args.toList.map(printTermAtom).mkString(" ")
-      s"$head $as"
+      val as = args.toList.map(printTermAtom).mkString(", ")
+      s"$head($as)"
     case CoreAst.Term.Lam(ty, _, body, _, _, _) =>
       s"fun ${printBinders(ty.binders)}: ${printTypeTerm(ty.out)} => ${printTerm(body)}"
     case m @ CoreAst.Term.Match(_, _, _, _, _) => printMatch(m)
@@ -136,7 +136,7 @@ object PrettyPrinter {
     case Value.VCtor(head, fields, _) =>
       val headStr = print(head)
       if (fields.isEmpty) headStr
-      else s"$headStr ${fields.map(f => if (isAtomic(f)) print(f) else s"(${print(f)})").mkString(" ")}"
+      else s"$headStr(${fields.map(print).mkString(", ")})"
     case v: Value.VLam          => s"func#${v.id}"
     case Value.Var(name, id, _) => s"$name#$id"
     case s: Value.VBlockedThunk => s"match#${s.id}"

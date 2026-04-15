@@ -61,14 +61,14 @@ class ProjectionTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |struct Pair (A: Type)(B: Type) : Type
-        | | mk (fst: A)(snd: B) : Pair A B
+        | | mk (fst: A)(snd: B) : Pair(A, B)
         |
-        |inline def first (p: Pair $A1 $B1): A1 := p.fst
-        |inline def second (p: Pair $A2 $B2): B2 := p.snd
+        |inline def first (p: Pair($A1, $B1)): A1 := p.fst
+        |inline def second (p: Pair($A2, $B2)): B2 := p.snd
         |
         |{
-        |  let p : Pair Nat Nat := Pair::mk Nat Nat Nat::zero (Nat::succ Nat::zero)
-        |  first p
+        |  let p : Pair(Nat, Nat) := Pair::mk(Nat, Nat, Nat::zero, Nat::succ(Nat::zero))
+        |  first(p)
         |}
         |""".stripMargin
 
@@ -84,18 +84,18 @@ class ProjectionTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Vec (A: Type) indices (n: Nat) : Type
-        | | nil : Vec A Nat::zero
-        | | cons (tail: Vec A $n) (head: A) : Vec A (Nat::succ n)
+        | | nil : Vec(A, Nat::zero)
+        | | cons (tail: Vec(A, $n)) (head: A) : Vec(A, Nat::succ(n))
         |
         |struct WrapIdx (A: Type)(n: Nat) : Type
-        | | mk (x: Vec A n) : WrapIdx A n
+        | | mk (x: Vec(A, n)) : WrapIdx(A, n)
         |
-        |inline def get (A: Type)(n: Nat)(w: WrapIdx A n): Vec A n := w.x
+        |inline def get (A: Type)(n: Nat)(w: WrapIdx(A, n)): Vec(A, n) := w.x
         |
         |{
-        |  let v : Vec Nat Nat::zero := Vec::nil Nat
-        |  let w : WrapIdx Nat Nat::zero := WrapIdx::mk Nat Nat::zero v
-        |  get Nat Nat::zero w
+        |  let v : Vec(Nat, Nat::zero) := Vec::nil(Nat)
+        |  let w : WrapIdx(Nat, Nat::zero) := WrapIdx::mk(Nat, Nat::zero, v)
+        |  get(Nat, Nat::zero, w)
         |}
         |""".stripMargin
 
@@ -111,13 +111,13 @@ class ProjectionTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Vec (A: Type) indices (n: Nat) : Type
-        | | nil : Vec A Nat::zero
-        | | cons (tail: Vec A $n) (head: A) : Vec A (Nat::succ n)
+        | | nil : Vec(A, Nat::zero)
+        | | cons (tail: Vec(A, $n)) (head: A) : Vec(A, Nat::succ(n))
         |
         |struct WrapIdx (A: Type)(n: Nat) : Type
-        | | mk (x: Vec A n) : WrapIdx A n
+        | | mk (x: Vec(A, n)) : WrapIdx(A, n)
         |
-        |def useGet (A: Type)(n: Nat)(w: WrapIdx A n): Vec A n := w.x
+        |def useGet (A: Type)(n: Nat)(w: WrapIdx(A, n)): Vec(A, n) := w.x
         |""".stripMargin
 
     typecheckDecls(p)
@@ -131,13 +131,13 @@ class ProjectionTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Vec (A: Type) indices (n: Nat) : Type
-        | | nil : Vec A Nat::zero
-        | | cons (tail: Vec A $n) (head: A) : Vec A (Nat::succ n)
+        | | nil : Vec(A, Nat::zero)
+        | | cons (tail: Vec(A, $n)) (head: A) : Vec(A, Nat::succ(n))
         |
         |struct WrapIdx (A: Type)(n: Nat): Type
-        | | mk (x: Vec A n) : WrapIdx A n
+        | | mk (x: Vec(A, n)) : WrapIdx(A, n)
         |
-        |def useGet (w: WrapIdx $A $n): Vec A n := w.x
+        |def useGet (w: WrapIdx($A, $n)): Vec(A, n) := w.x
         |""".stripMargin
 
     typecheckDecls(p)
@@ -151,13 +151,13 @@ class ProjectionTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |struct Pair (A: Type)(B: Type) : Type
-        | | mk (fst: A)(snd: B) : Pair A B
+        | | mk (fst: A)(snd: B) : Pair(A, B)
         |
         |// Opaque on purpose
-        |def mkPair (a: Nat)(b: Nat): Pair Nat Nat := Pair::mk Nat Nat a b
+        |def mkPair (a: Nat)(b: Nat): Pair(Nat, Nat) := Pair::mk(Nat, Nat, a, b)
         |
         |def firstOpaque (a: Nat)(b: Nat): Nat := {
-        |  let p := mkPair a b
+        |  let p := mkPair(a, b)
         |  p.fst
         |}
         |""".stripMargin
@@ -172,11 +172,11 @@ class ProjectionTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |struct PairU (A: Sort $u1)(B: Sort $u2) : Sort (Level::max u1 u2)
-        | | mk (fst: A)(snd: B) : PairU A B
+        |struct PairU (A: Sort($u1))(B: Sort($u2)) : Sort(Level::max(u1, u2))
+        | | mk (fst: A)(snd: B) : PairU(A, B)
         |
         |// Opaque on purpose
-        |def F : PairU Type Type := PairU::mk Type Type Nat Nat
+        |def F : PairU(Type, Type) := PairU::mk(Type, Type, Nat, Nat)
         |
         |def idF (x: F.fst): F.fst := x
         |""".stripMargin
@@ -192,19 +192,19 @@ class ProjectionTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |struct Pair (A: Type)(B: Type) : Type
-        | | mk (fst: A)(snd: B) : Pair A B
+        | | mk (fst: A)(snd: B) : Pair(A, B)
         |
         |// Opaque on purpose
         |def step (n: Nat): Nat := n
         |
-        |inline def choose (n: Nat): Pair Nat Nat := {
-        |  match step n as m returning Pair Nat Nat with
-        |  | Nat::zero => Pair::mk Nat Nat Nat::zero Nat::zero
-        |  | Nat::succ k => Pair::mk Nat Nat (Nat::succ k) k
+        |inline def choose (n: Nat): Pair(Nat, Nat) := {
+        |  match step(n) as m returning Pair(Nat, Nat) with
+        |  | Nat::zero => Pair::mk(Nat, Nat, Nat::zero, Nat::zero)
+        |  | Nat::succ k => Pair::mk(Nat, Nat, Nat::succ(k), k)
         |}
         |
         |def fstChoose (n: Nat): Nat := {
-        |  let p := choose n
+        |  let p := choose(n)
         |  p.fst
         |}
         |""".stripMargin
@@ -220,9 +220,9 @@ class ProjectionTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |struct ChooseLeft (A: Type)(B: Type) indices (Out: Type) : Type
-        | | mk (x: A) : ChooseLeft A B A
+        | | mk (x: A) : ChooseLeft(A, B, A)
         |
-        |def getExplicit (A: Type)(B: Type)(w: ChooseLeft A B A): A := w.x
+        |def getExplicit (A: Type)(B: Type)(w: ChooseLeft(A, B, A)): A := w.x
         |""".stripMargin
 
     typecheckDecls(p)
@@ -236,13 +236,13 @@ class ProjectionTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |struct ChooseLeft (A: Type)(B: Type) indices (Out: Type) : Type
-        | | mk (x: A) : ChooseLeft A B A
+        | | mk (x: A) : ChooseLeft(A, B, A)
         |
-        |inline def getCaptured (w: ChooseLeft $A $B $Out): Out := w.x
+        |inline def getCaptured (w: ChooseLeft($A, $B, $Out)): Out := w.x
         |
         |{
-        |  let w : ChooseLeft Nat Nat Nat := ChooseLeft::mk Nat Nat Nat::zero
-        |  getCaptured w
+        |  let w : ChooseLeft(Nat, Nat, Nat) := ChooseLeft::mk(Nat, Nat, Nat::zero)
+        |  getCaptured(w)
         |}
         |""".stripMargin
 
@@ -258,11 +258,11 @@ class ProjectionTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Vec (A: Type) indices (n: Nat) : Type
-        | | nil : Vec A Nat::zero
-        | | cons (tail: Vec A $n) (head: A) : Vec A (Nat::succ n)
+        | | nil : Vec(A, Nat::zero)
+        | | cons (tail: Vec(A, $n)) (head: A) : Vec(A, Nat::succ(n))
         |
         |struct IndexedWrap (A: Type) indices (n: Nat) : Type
-        | | mk (k: Nat)(x: Vec A k) : IndexedWrap A k
+        | | mk (k: Nat)(x: Vec(A, k)) : IndexedWrap(A, k)
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {
@@ -282,15 +282,15 @@ class ProjectionTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Vec (A: Type) indices (n: Nat) : Type
-        | | nil : Vec A Nat::zero
-        | | cons (tail: Vec A $n) (head: A) : Vec A (Nat::succ n)
+        | | nil : Vec(A, Nat::zero)
+        | | cons (tail: Vec(A, $n)) (head: A) : Vec(A, Nat::succ(n))
         |
         |struct HiddenVec (A: Type) : Type
-        | | mk (v: Vec A $n) : HiddenVec A
+        | | mk (v: Vec(A, $n)) : HiddenVec(A)
         |
-        |inline def sameLenLeft (v1: Vec Nat $n)(v2: Vec Nat n): Nat := n
+        |inline def sameLenLeft (v1: Vec(Nat, $n))(v2: Vec(Nat, n)): Nat := n
         |
-        |def lenTwice (h: HiddenVec Nat): Nat := sameLenLeft h.v h.v
+        |def lenTwice (h: HiddenVec(Nat)): Nat := sameLenLeft(h.v, h.v)
         |""".stripMargin
 
     typecheckDecls(p)
@@ -300,9 +300,9 @@ class ProjectionTests extends munit.FunSuite {
     val p =
       """
         |inductive And (P: Prop)(Q: Prop) : Prop
-        | | intro (p: P)(q: Q) : And P Q
+        | | intro (p: P)(q: Q) : And(P, Q)
         |
-        |inline def bad (P: Prop)(Q: Prop)(h: And P Q): P := h.fst
+        |inline def bad (P: Prop)(Q: Prop)(h: And(P, Q)): P := h.fst
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {
@@ -317,10 +317,10 @@ class ProjectionTests extends munit.FunSuite {
     val p =
       """
         |inductive Or (A: Type)(B: Type) : Type
-        | | inl (a: A) : Or A B
-        | | inr (b: B) : Or A B
+        | | inl (a: A) : Or(A, B)
+        | | inr (b: B) : Or(A, B)
         |
-        |inline def bad (A: Type)(B: Type)(h: Or A B): A := h.fst
+        |inline def bad (A: Type)(B: Type)(h: Or(A, B)): A := h.fst
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {
@@ -335,9 +335,9 @@ class ProjectionTests extends munit.FunSuite {
     val p =
       """
         |struct Pair (A: Type)(B: Type) : Type
-        | | mk (fst: A)(snd: B) : Pair A B
+        | | mk (fst: A)(snd: B) : Pair(A, B)
         |
-        |inline def bad (A: Type)(B: Type)(p: Pair A B): A := p.foo
+        |inline def bad (A: Type)(B: Type)(p: Pair(A, B)): A := p.foo
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {
@@ -352,8 +352,8 @@ class ProjectionTests extends munit.FunSuite {
     val p =
       """
         |struct Bad (A: Type) : Type
-        | | mk1 (a: A) : Bad A
-        | | mk2 (a: A) : Bad A
+        | | mk1 (a: A) : Bad(A)
+        | | mk2 (a: A) : Bad(A)
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {
@@ -366,7 +366,7 @@ class ProjectionTests extends munit.FunSuite {
     val p =
       """
         |struct And (P: Prop)(Q: Prop) : Prop
-        | | intro (p: P)(q: Q) : And P Q
+        | | intro (p: P)(q: Q) : And(P, Q)
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {
@@ -381,7 +381,7 @@ class ProjectionTests extends munit.FunSuite {
     val p =
       """
         |struct Bad (A: Type) : Type
-        | | mk (_: A) : Bad A
+        | | mk (_: A) : Bad(A)
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {

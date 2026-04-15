@@ -9,14 +9,14 @@ This directory contains generated benchmarks for raccoon vs Lean.
 The generated benchmark body has this shape:
 
 ```text
-z1 := zip v v
-z2 := zip v z1
+z1 := zip(v, v)
+z2 := zip(v, z1)
 ...
-zN := zip v zN-1
-consume zN
+zN := zip(v, zN-1)
+consume(zN)
 ```
 
-The final `consume zN` keeps the deeply nested indexed-vector type live. The benchmark is intended to stress parsing, elaboration, universe/type inference, type-pattern inference in raccoon, and dependent typechecking. The benchmark does not execute `bench`, so it is not measuring runtime vector construction.
+The final `consume(zN)` keeps the deeply nested indexed-vector type live. The benchmark is intended to stress parsing, elaboration, universe/type inference, type-pattern inference in raccoon, and dependent typechecking. The benchmark does not execute `bench`, so it is not measuring runtime vector construction.
 
 The Lean version uses `Type u` rather than `Sort u` because Lean rejects this universe-polymorphic inductive when the result universe may be `Prop`.
 
@@ -108,4 +108,3 @@ Lean `4.31.0-nightly-2026-04-15`, arm64.
 | raised `maxRecDepth`, disabled heartbeats | 1,600 | 9.915s, success |
 | raised `maxRecDepth`, disabled heartbeats | 3,200 | 41.274s, success |
 | raised `maxRecDepth`, disabled heartbeats | 6,400 | failed after 178s |
-

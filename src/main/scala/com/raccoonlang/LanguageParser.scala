@@ -75,9 +75,12 @@ object LanguageParser {
     } | capture
   }
 
-  // General type application chain: atom atom ... -> TApp(...(atom1 atom2) atom3)
+  private def parenArgs[A](arg: => Parser[A]): Parser[Vector[A]] =
+    sym('(') ~/ arg.rep(1, sym(',')) ~ symTight(')')
+
+  // General type application: F(a, b, ...) -> TApp(F, a, b, ...)
   private def typeExpr: Parser[TypeTerm] = {
-    (identTerm ~ wsSep ~ typeAtom.rep(1, wsSep)).flatSpanned.map { case (name, args, span) =>
+    (identTerm ~ parenArgs(typeTerm)).flatSpanned.map { case (name, args, span) =>
       TApp(name, NEL.mk(args), span)
     } | typeAtom
   }
@@ -126,13 +129,13 @@ object LanguageParser {
   }
 
   private def term: Parser[Term] =
-    (lambda | matchP | body | pi | termAtom)
-      .rep(1, wsSep)
-      .spanned
-      .mapAsT { case (terms, span) =>
-        if (terms.length == 1) terms.head
-        else App(terms.head, NEL.mk(terms.tail), span)
-      }
+    ((lambda | matchP | body | pi | termAtom).spanned ~ parenArgs(term).?).spanned.mapAsT {
+      case ((fn, args), span) =>
+        args match {
+          case Some(value) => App(fn.value, NEL.mk(value), span)
+          case None        => fn.value
+        }
+    }
 
   private def funcHeader: Parser[FuncHeader] = (param.rep(0) ~ sym(':') ~ typeTerm).flatSpanned.map(FuncHeader.tupled)
 

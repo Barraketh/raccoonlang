@@ -53,7 +53,7 @@ object CoreAst {
     // Pi (x: A) -> B x
     final case class Pi(binders: NEL[Binder], out: TypeTerm, span: Span) extends Term with TypeTerm
 
-    // Application: f a (term-level)
+    // Application: f(a) (term-level)
     final case class App(fn: Term, args: NEL[Term], span: Span) extends Term
 
     case class Body(lets: Vector[Let], res: Term, span: Span) extends Term

@@ -33,7 +33,7 @@ object SurfaceAst {
     // Capture: `$name` binds a fresh variable in the type pattern
     final case class Capture(name: String, span: Span) extends TypeTerm
 
-    // Application: f a (term-level)
+    // Application: f(a) (term-level)
     final case class App(fn: Term, args: NEL[Term], span: Span) extends Term
 
     // Lambda: fun (x : A)(y: B): B => body

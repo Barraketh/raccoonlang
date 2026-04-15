@@ -182,16 +182,16 @@ class PropTests extends munit.FunSuite {
         | | intro : True
         |
         |inductive And (P: Prop)(Q: Prop) : Prop
-        | | intro (p: P)(q: Q) : And P Q
+        | | intro (p: P)(q: Q) : And(P, Q)
         |
         |inductive Exists (A: Type)(p: A -> Prop) : Prop
-        | | intro (w: A)(pw: p w) : Exists A p
+        | | intro (w: A)(pw: p(w)) : Exists(A, p)
         |
         |inductive HasCarrier : Prop
         | | intro (A: Type) : HasCarrier
         |
         |inductive HasSort (u: Level) : Prop
-        | | intro (A: Sort u) : HasSort u
+        | | intro (A: Sort(u)) : HasSort(u)
         |""".stripMargin
 
     typecheckDecls(p)
@@ -223,9 +223,9 @@ class PropTests extends munit.FunSuite {
     val p =
       """
         |inductive And (P: Prop)(Q: Prop) : Prop
-        | | intro (p: P)(q: Q) : And P Q
+        | | intro (p: P)(q: Q) : And(P, Q)
         |
-        |def andLeft (P: Prop)(Q: Prop)(h: And P Q): P := {
+        |def andLeft (P: Prop)(Q: Prop)(h: And(P, Q)): P := {
         |  match h as _ returning P with
         |  | And::intro p q => p
         |}
@@ -238,11 +238,11 @@ class PropTests extends munit.FunSuite {
     val p =
       """
         |inductive Exists (A: Type)(p: A -> Prop) : Prop
-        | | intro (w: A)(pw: p w) : Exists A p
+        | | intro (w: A)(pw: p(w)) : Exists(A, p)
         |
-        |def unpackToProp (A: Type)(p: A -> Prop)(h: Exists A p): Prop := {
+        |def unpackToProp (A: Type)(p: A -> Prop)(h: Exists(A, p)): Prop := {
         |  match h as _ returning Prop with
-        |  | Exists::intro w pw => p w
+        |  | Exists::intro w pw => p(w)
         |}
         |""".stripMargin
 
@@ -260,11 +260,11 @@ class PropTests extends munit.FunSuite {
         | | intro : True
         |
         |inductive Exists (A: Type)(p: A -> Prop) : Prop
-        | | intro (w: A)(pw: p w) : Exists A p
+        | | intro (w: A)(pw: p(w)) : Exists(A, p)
         |
         |inline def alwaysTrue (x: Nat): Prop := True
         |
-        |def badExists (h: Exists Nat alwaysTrue): Nat := {
+        |def badExists (h: Exists(Nat, alwaysTrue)): Nat := {
         |  match h as _ returning Nat with
         |  | Exists::intro w pw => Nat::zero
         |}
@@ -287,15 +287,15 @@ class PropTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Eq (A: Type) indices (x: A) (y: A) : Prop
-        | | refl (x: A) : Eq A x x
+        | | refl (x: A) : Eq(A, x, x)
         |
-        |def eqToNat (n: Nat)(p: Eq Nat n Nat::zero): Nat := {
+        |def eqToNat (n: Nat)(p: Eq(Nat, n, Nat::zero)): Nat := {
         |  match p as _ returning Nat with
         |  | Eq::refl x => Nat::zero
         |}
         |
         |{
-        |  eqToNat Nat::zero (Eq::refl Nat Nat::zero)
+        |  eqToNat(Nat::zero, Eq::refl(Nat, Nat::zero))
         |}
         |""".stripMargin
 
@@ -311,9 +311,9 @@ class PropTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Eq (A: Type) indices (x: A) (y: A) : Prop
-        | | refl (x: A) : Eq A x x
+        | | refl (x: A) : Eq(A, x, x)
         |
-        |def choose (n: Nat)(m: Nat)(p: Eq Nat n m): Type := {
+        |def choose (n: Nat)(m: Nat)(p: Eq(Nat, n, m)): Type := {
         |  match p as _ returning Type with
         |  | Eq::refl x => Nat
         |}
@@ -366,9 +366,9 @@ class PropTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive IsZero indices (n: Nat) : Prop
-        | | intro : IsZero Nat::zero
+        | | intro : IsZero(Nat::zero)
         |
-        |def absurdSucc (n: Nat)(h: IsZero (Nat::succ n)): Nat := {
+        |def absurdSucc (n: Nat)(h: IsZero(Nat::succ(n))): Nat := {
         |  match h as _ returning Nat with
         |}
         |""".stripMargin
@@ -384,15 +384,15 @@ class PropTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive IdxWrap (A: Type) indices (x: A) : Prop
-        | | intro (y: A) : IdxWrap A y
+        | | intro (y: A) : IdxWrap(A, y)
         |
-        |def unwrapIdx (n: Nat)(h: IdxWrap Nat n): Nat := {
+        |def unwrapIdx (n: Nat)(h: IdxWrap(Nat, n)): Nat := {
         |  match h as _ returning Nat with
         |  | IdxWrap::intro y => y
         |}
         |
         |{
-        |  unwrapIdx Nat::zero (IdxWrap::intro Nat Nat::zero)
+        |  unwrapIdx(Nat::zero, IdxWrap::intro(Nat, Nat::zero))
         |}
         |""".stripMargin
 
@@ -408,16 +408,16 @@ class PropTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Shape indices (n: Nat) : Prop
-        | | zeroCase : Shape Nat::zero
-        | | succCase (m: Nat) : Shape (Nat::succ m)
+        | | zeroCase : Shape(Nat::zero)
+        | | succCase (m: Nat) : Shape(Nat::succ(m))
         |
-        |def predFromShape (n: Nat)(h: Shape (Nat::succ n)): Nat := {
+        |def predFromShape (n: Nat)(h: Shape(Nat::succ(n))): Nat := {
         |  match h as _ returning Nat with
         |  | Shape::succCase m => m
         |}
         |
         |{
-        |  predFromShape Nat::zero (Shape::succCase Nat::zero)
+        |  predFromShape(Nat::zero, Shape::succCase(Nat::zero))
         |}
         |""".stripMargin
 
@@ -458,13 +458,13 @@ class PropTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Or (P: Prop)(Q: Prop) : Prop
-        | | inl (p: P) : Or P Q
-        | | inr (q: Q) : Or P Q
+        | | inl (p: P) : Or(P, Q)
+        | | inr (q: Q) : Or(P, Q)
         |
         |inductive True : Prop
         | | intro : True
         |
-        |def badOr (h: Or True True): Nat := {
+        |def badOr (h: Or(True, True)): Nat := {
         |  match h as _ returning Nat with
         |  | Or::inl p => Nat::zero
         |  | Or::inr q => Nat::zero
@@ -492,11 +492,11 @@ class PropTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Eq (A: Type) indices (x: A) (y: A) : Prop
-        | | refl (x: A) : Eq A x x
+        | | refl (x: A) : Eq(A, x, x)
         |
-        |def symm (A: Type)(x: A)(y: A)(p: Eq A x y): Eq A y x := {
-        |  match p as _ returning Eq A y x with
-        |  | Eq::refl z => Eq::refl A z
+        |def symm (A: Type)(x: A)(y: A)(p: Eq(A, x, y)): Eq(A, y, x) := {
+        |  match p as _ returning Eq(A, y, x) with
+        |  | Eq::refl z => Eq::refl(A, z)
         |}
         |""".stripMargin
 

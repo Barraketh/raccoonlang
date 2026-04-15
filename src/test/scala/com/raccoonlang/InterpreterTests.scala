@@ -37,12 +37,12 @@ class InterpreterTests extends munit.FunSuite {
               |stable def add (a: Nat)(b: Nat): Nat := {
               |  match b as _ returning Nat with
               |  | Nat::zero => a
-              |  | Nat::succ x => add (Nat::succ a) x
+              |  | Nat::succ x => add(Nat::succ(a), x)
               |}
               |
               |{
-              |  let a := Nat::succ Nat::zero
-              |  add a a
+              |  let a := Nat::succ(Nat::zero)
+              |  add(a, a)
               |}
               |""".stripMargin
 
@@ -79,12 +79,12 @@ class InterpreterTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Sort Level::one
-        | | nil : Vec A Nat::zero
-        | | cons (n: Nat) (xs: Vec A n) (x: A): Vec A (Nat::succ n)
+        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level::one)
+        | | nil : Vec(A, Nat::zero)
+        | | cons (n: Nat) (xs: Vec(A, n)) (x: A): Vec(A, Nat::succ(n))
         |
         |{
-        |  Vec::nil Nat
+        |  Vec::nil(Nat)
         |}
         |""".stripMargin
 

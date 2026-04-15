@@ -5,10 +5,10 @@ inductive Nat : Type
 inline def add (a: Nat)(b: Nat): Nat := {
   match b as _ returning Nat with
   | Nat::zero => a
-  | Nat::succ x => add (Nat::succ a) x
+  | Nat::succ x => add(Nat::succ(a), x)
 }
 
 {
-  let a := Nat::succ Nat::zero
-  add a a
+  let a := Nat::succ(Nat::zero)
+  add(a, a)
 }
