@@ -14,6 +14,33 @@ when that simplifies the overall system. Current examples:
     - Type-driven expression normalization (see `docs/normalizers.md`)
     - Type Patterns
 
+## A motivating benchmark
+
+The benchmark suite in [benchmarks](benchmarks/readme.md) includes a generated nested dependent `Vec.zip`
+stress test. It builds a chain of inferred dependent vector zips and then consumes the final value, so elaboration
+and typechecking must keep a large indexed-vector type live.  The benchmark shape is
+
+```text
+z1 := zip v v
+z2 := zip v z1
+...
+zN := zip v zN-1
+consume zN
+```
+
+Current results off my M1 laptop:
+
+| nested zips | Raccoon JVM opaque `zip` | Raccoon JVM inline `zip` |                Lean 4.31 nightly |
+|------------:|-------------------------:|-------------------------:|---------------------------------:|
+|         800 |                   0.420s |                   0.465s |                           2.872s |
+|       1,600 |                   0.466s |                   0.558s |                           9.915s |
+|       3,200 |                   0.587s |                   0.692s |                          41.274s |
+|       6,400 |                   0.716s |                   0.889s |                failed after 178s |
+|      51,200 |                   2.175s |                   3.435s |                              N/A |
+
+
+Note that at this point I have done 0 optimization - these performance wins are strictly algorithmic. 
+
 ## Implemented today
 
 - Inductive families with parameters and indices
