@@ -39,11 +39,11 @@ inductive Nat : Type
 
 inline def pred (n: Nat): Nat := {
   match n as _ returning Nat with
-  | Nat.zero => Nat.zero
-  | Nat.succ x => x
+  | Nat::zero => Nat::zero
+  | Nat::succ x => x
 }
 
-{ pred (Nat.succ Nat.zero) }
+{ pred (Nat::succ Nat::zero) }
 ```
 
 ### Universe-polymorphic identity
@@ -55,7 +55,7 @@ inductive Nat : Type
 
 inline def idAt (u: Level)(A: Sort u)(x: A): A := x
 
-{ idAt Level.zero Nat Nat.zero }
+{ idAt Level::zero Nat Nat::zero }
 ```
 
 ### Indexed vectors
@@ -65,9 +65,9 @@ inductive Nat : Type
  | zero : Nat
  | succ (_: Nat) : Nat
 
-inductive Vec (A: Type) indices (n: Nat) : Sort Level.one
- | nil : Vec A Nat.zero
- | cons (n: Nat) (xs: Vec A n) (x: A) : Vec A (Nat.succ n)
+inductive Vec (A: Type) indices (n: Nat) : Sort Level::one
+ | nil : Vec A Nat::zero
+ | cons (n: Nat) (xs: Vec A n) (x: A) : Vec A (Nat::succ n)
 ```
 
 ### Type patterns
@@ -84,19 +84,19 @@ inductive Nat : Type
   | succ (_: Nat) : Nat
 
 inductive Vec (A: Sort $u) indices (n: Nat) : Sort u
-  | nil: Vec A Nat.zero
-  | cons (v: Vec A $n)(elem: A): Vec A (Nat.succ n)
+  | nil: Vec A Nat::zero
+  | cons (v: Vec A $n)(elem: A): Vec A (Nat::succ n)
 
-inductive Pair (A: Sort $u1)(B: Sort $u2): Sort (Level.max u1 u2)
+inductive Pair (A: Sort $u1)(B: Sort $u2): Sort (Level::max u1 u2)
   | mk(a: A)(b: B): Pair A B
 
 inline def zip(va: Vec $A $n)(vb: Vec $B n): Vec (Pair A B) n := {
   let ResType := Vec (Pair A B) n
   match va as _ returning ResType with
-  | Vec.nil => Vec.nil (Pair A B)
-  | Vec.cons va0 a => {
+  | Vec::nil => Vec::nil (Pair A B)
+  | Vec::cons va0 a => {
     match vb as _ returning ResType with
-    | Vec.cons vb0 b => Vec.cons (Pair A B) (zip va0 vb0) (Pair.mk A B a b)
+    | Vec::cons vb0 b => Vec::cons (Pair A B) (zip va0 vb0) (Pair::mk A B a b)
   }
 }
 ```
@@ -123,8 +123,8 @@ inductive Nat : Type
 struct Pair (A: Type)(B: Type) : Type
  | mk (fst: A)(snd: B) : Pair A B
 
-inline def first (p: Pair $A $B): A := p.fst
-inline def second (p: Pair $A $B): B := p.snd
+inline def first (p: Pair $A $B): A := p::fst
+inline def second (p: Pair $A $B): B := p::snd
 ```
 
 ### Equality by computation with a normalizer
@@ -141,18 +141,18 @@ inductive Nat : Type
 
 stable def add (a: Nat)(b: Nat): Nat := {
   match b as _ returning Nat with
-  | Nat.zero => a
-  | Nat.succ x => add (Nat.succ a) x
+  | Nat::zero => a
+  | Nat::succ x => add (Nat::succ a) x
 }
 
-inline def nat_add_normalizer : Normalizer := add_normalizer Nat Nat.zero add
+inline def nat_add_normalizer : Normalizer := add_normalizer Nat Nat::zero add
 
-inductive Eq (A: Type) indices (x: A) (y: A) : Sort Level.one
+inductive Eq (A: Type) indices (x: A) (y: A) : Sort Level::one
  | refl (x: A) : Eq A x x
 
 inline def addComm (a: Nat)(b: Nat): Eq Nat (add a b) (add b a) := {
   use nat_add_normalizer
-  Eq.refl Nat (add a b)
+  Eq::refl Nat (add a b)
 }
 ```
 
