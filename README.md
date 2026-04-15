@@ -106,7 +106,7 @@ inline def zip(va: Vec $A $n)(vb: Vec $B n): Vec (Pair A B) n := {
 A struct is a special case of an inductive family with exactly one constructor and named fields. Structs are intended for record-like data where fields are directly projectable by name.
 Formation rules:
   - Exactly one constructor.
-  - No indices (only parameters allowed).
+  - Indices must only depend on params (not on constructor fields).
   - Must live in `Type`/`Sort u` (not in `Prop`).
   - All fields must be named (no anonymous `_` fields).
 

@@ -42,6 +42,8 @@ object Util {
     def toList: List[A] = head :: tail
 
     def toVector: Vector[A] = Vector(head) :++ tail
+
+    override def toString: String = (head :: tail).toString()
   }
   case object NEL {
     def mk[A](vector: Vector[A]): NEL[A] = NEL(vector.head, vector.tail.toList)

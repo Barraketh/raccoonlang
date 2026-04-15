@@ -135,7 +135,8 @@ object InductiveChecks {
 
     // Constructors are checked in an environment that contains the inductive and inductive params assigned
     val checkEnvWithInductive = worlds.checkEnv.putGlobal(name, inductivedHead)
-    val (paramVars, envWithParams, _) = BinderOps.assignFreshVars(header.params, checkEnvWithInductive, eqStore)
+    val (paramVars, envWithParams, paramDeps) =
+      BinderOps.assignFreshVars(header.params, checkEnvWithInductive, eqStore)
 
     val resTpe = TypeChecker.getType(header.resultTy, envWithParams)
     val familyUniverse: Universe = resTpe match {
@@ -152,8 +153,7 @@ object InductiveChecks {
         throw InvalidStruct(name, "constructor has anonymous '_' fields", Some(header.span))
       if (familyUniverse == PropTpe)
         throw InvalidStruct(name, "lives in Prop", Some(header.span))
-      if (header.indices.nonEmpty)
-        throw InvalidStruct(name, "Structs may not have indices", Some(header.span))
+
     }
 
     decl.ctors.foreach { ctor =>
@@ -208,6 +208,20 @@ object InductiveChecks {
 
       outputArgs.take(paramVars.length).zip(paramVars).foreach { case (arg, paramVar) =>
         if (!TypeChecker.defEq(arg, paramVar)) throw resultErr
+      }
+
+      if (decl.isStruct) {
+        val invalidIndex = header.indices.zip(outputArgs.drop(paramVars.length)).find { case (_, indexArg) =>
+          (indexArg.synDeps -- paramDeps).nonEmpty
+        }
+
+        invalidIndex.foreach { case (indexBinder, _) =>
+          throw InvalidStruct(
+            name,
+            s"constructor result index ${indexBinder.name} depends on constructor fields",
+            Some(ctor.resultTy.span)
+          )
+        }
       }
 
     }

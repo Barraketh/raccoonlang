@@ -59,7 +59,7 @@ object PrettyPrinter {
     s"$headStr $argsStr"
   }
 
-  private def printBinder(b: CoreAst.Binder): String = s"(${b.name}: ${printTypePattern(b.ty)})"
+  def printBinder(b: CoreAst.Binder): String = s"(${b.name}: ${printTypePattern(b.ty)})"
 
   private def printBinders(binders: Util.NEL[CoreAst.Binder]): String =
     binders.toList.map(printBinder).mkString(" ")

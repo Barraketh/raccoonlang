@@ -30,7 +30,8 @@ object TypeChecker {
     resolveInEqStore(value.tpe) match {
       case u: Universe           => u
       case _ if value == PropTpe => PropTpe
-      case _                     => throw NotAType(value.tpe)
+      case _ =>
+        throw NotAType(value.tpe)
     }
   }
 

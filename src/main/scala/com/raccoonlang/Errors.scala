@@ -39,6 +39,8 @@ object TypeError {
     case e: WTF                             => e.copy(span = Some(sp))
     case e: InvalidStruct                   => e.copy(span = Some(sp))
     case e: NotAStruct                      => e.copy(span = Some(sp))
+    case e: MultipleLevelCaptures           => e.copy(span = Some(sp))
+
   }
 }
 
@@ -173,6 +175,10 @@ final case class PropEliminationRestricted(
 ) extends TypeError {
   override def msg: String =
     s"Cannot eliminate proposition $inductive into non-Prop motive $motive"
+}
+
+final case class MultipleLevelCaptures(p: TypePattern, span: Option[Span]) extends TypeError {
+  override def msg: String = "Cannot pattern match multiple level captures "
 }
 
 final case class LevelPatternMismatch(p: TypePattern, v: Value, span: Option[Span] = None) extends TypeError {

@@ -212,15 +212,57 @@ class ProjectionTests extends munit.FunSuite {
     typecheckDecls(p)
   }
 
-  test("invalid: struct with indices is rejected") {
+  test("typecheck: struct output determined by params supports explicit specialized projection") {
     val p =
       """
         |inductive Nat : Type
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
+        |struct ChooseLeft (A: Type)(B: Type) indices (Out: Type) : Type
+        | | mk (x: A) : ChooseLeft A B A
+        |
+        |def getExplicit (A: Type)(B: Type)(w: ChooseLeft A B A): A := w.x
+        |""".stripMargin
+
+    typecheckDecls(p)
+  }
+
+  test("run: captured struct output determined by params can be reused in codomain") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |struct ChooseLeft (A: Type)(B: Type) indices (Out: Type) : Type
+        | | mk (x: A) : ChooseLeft A B A
+        |
+        |inline def getCaptured (w: ChooseLeft $A $B $Out): Out := w.x
+        |
+        |{
+        |  let w : ChooseLeft Nat Nat Nat := ChooseLeft::mk Nat Nat Nat::zero
+        |  getCaptured w
+        |}
+        |""".stripMargin
+
+    val res = runProgram(p)
+    assertEquals(toShape(res), zeroS)
+  }
+
+  test("invalid: struct output may not depend on constructor fields") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Vec (A: Type) indices (n: Nat) : Type
+        | | nil : Vec A Nat::zero
+        | | cons (tail: Vec A $n) (head: A) : Vec A (Nat::succ n)
+        |
         |struct IndexedWrap (A: Type) indices (n: Nat) : Type
-        | | mk (x: A) : IndexedWrap A n
+        | | mk (k: Nat)(x: Vec A k) : IndexedWrap A k
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {

@@ -79,7 +79,9 @@ object CoreAst {
   // Use directive (first-class normalizer application)
   final case class Use(normalizer: Term, span: Span)
 
-  case class Binder(name: String, ty: TypePattern, span: Span)
+  case class Binder(name: String, ty: TypePattern, span: Span) {
+    override def toString: String = PrettyPrinter.printBinder(this)
+  }
 
   case class InductiveHeader(
       name: String,

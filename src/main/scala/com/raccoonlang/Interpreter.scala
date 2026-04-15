@@ -222,7 +222,8 @@ object Interpreter {
     val (indName, meta, typeArgs) = vt0 match {
       case VConst(n, Inductive(m), _)              => (n, m, Vector.empty[Value])
       case VApp(VConst(n, Inductive(m), _), as, _) => (n, m, as)
-      case other                                   => throw NotAType(other)
+      case other                                   =>
+        throw NotAType(other)
     }
 
     // Only valid structs support selection
@@ -268,8 +269,10 @@ object Interpreter {
             val fieldBinders = pi.binders.toList.drop(head.numParams)
             val idx = fieldBinders.indexWhere(_.name == field)
             if (idx >= 0 && idx < fields.length && fieldBinders(idx).name != "_") fields(idx)
-            else throw NotFound(field)
-          case _ => throw NotFound(field)
+            else
+              throw NotFound(field)
+          case _ =>
+            throw NotFound(field)
         }
 
       case b: Blocker =>
