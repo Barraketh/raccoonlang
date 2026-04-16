@@ -124,7 +124,7 @@ object LanguageParser {
       .named("Case")
 
   private def matchP: Parser[Match] = {
-    (kw("match") ~/ term ~ kw("returning") ~/ typeTerm ~
+    (kw("match") ~/ term ~ (kw("returning") ~/ typeTerm).? ~
       (skipWS ~ P("with") ~/ lineSep) ~ matchCase.rep(0)).flatSpanned.map { case (scrut, motive, cases, sp) =>
       Match(scrut, motive, cases, sp)
     }

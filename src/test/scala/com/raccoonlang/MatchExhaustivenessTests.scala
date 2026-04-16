@@ -18,7 +18,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |def onlyZero (n: Nat): Nat := {
-        |  match n returning Nat with
+        |  match n with
         |  | Nat::zero => Nat::zero
         |}
         |
@@ -35,7 +35,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |def dup (n: Nat): Nat := {
-        |  match n returning Nat with
+        |  match n with
         |  | Nat::zero => Nat::zero
         |  | Nat::zero => Nat::zero
         |  | Nat::succ x => x
@@ -80,7 +80,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         |
         |def bad (n: Nat): Nat := {
         |  // scrutinee is neutral/opaque application: g n
-        |  match g(n) returning Nat with
+        |  match g(n) with
         |  | Nat::zero => Nat::zero
         |}
         |
@@ -99,7 +99,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         |def g (n: Nat): Nat := n   // not(inline) => opaque
         |
         |def ok (n: Nat): Nat := {
-        |  match g(n) returning Nat with
+        |  match g(n) with
         |  | Nat::zero => Nat::zero
         |  | Nat::succ x => x
         |}
@@ -108,5 +108,64 @@ class MatchExhaustivenessTests extends munit.FunSuite {
 
     // Should typecheck (even if it evaluates to a stuck match at runtime for opaque g).
     typecheckDecls(p)
+  }
+
+  test("omitted returning: inferred when all reachable constructor result types are equal") {
+    val p =
+      """
+        |inductive Wrap (A: Type) : Type
+        | | left (x: A) : Wrap(A)
+        | | right (x: A) : Wrap(A)
+        |
+        |def keepWrap (A: Type)(w: Wrap(A)): Wrap(A) := {
+        |  match w with
+        |  | Wrap::left x => Wrap::left(A, x)
+        |  | Wrap::right x => Wrap::right(A, x)
+        |}
+        |
+        |""".stripMargin
+
+    typecheckDecls(p)
+  }
+
+  test("omitted returning: rejected when no constructors are reachable") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive IsZero indices (n: Nat) : Type
+        | | intro : IsZero(Nat::zero)
+        |
+        |def absurdSucc (n: Nat)(h: IsZero(Nat::succ(n))): Nat := {
+        |  match h with
+        |}
+        |
+        |""".stripMargin
+
+    intercept[MissingReturningClause] { typecheckDecls(p) }
+  }
+
+  test("omitted returning: rejected when reachable constructor result types differ") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Shape indices (n: Nat) : Type
+        | | zeroCase : Shape(Nat::zero)
+        | | succCase (m: Nat) : Shape(Nat::succ(m))
+        |
+        |def keepShape (n: Nat)(s: Shape(n)): Shape(n) := {
+        |  match s with
+        |  | Shape::zeroCase => s
+        |  | Shape::succCase m => s
+        |}
+        |
+        |""".stripMargin
+
+    intercept[MissingReturningClause] { typecheckDecls(p) }
   }
 }

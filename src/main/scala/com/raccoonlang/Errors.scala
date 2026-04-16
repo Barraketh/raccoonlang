@@ -20,6 +20,7 @@ object TypeError {
     case e: MissingCase                     => e.copy(span = Some(sp))
     case e: NotAType                        => e.copy(span = Some(sp))
     case e: NonInductiveMatch               => e.copy(span = Some(sp))
+    case e: MissingReturningClause          => e.copy(span = Some(sp))
     case e: NotFound                        => e.copy(span = Some(sp))
     case e: AlreadyDefined                  => e.copy(span = Some(sp))
     case e: CannotLinkToBottom              => e.copy(span = Some(sp))
@@ -90,6 +91,10 @@ final case class NotAType(value: Value, span: Option[Span] = None) extends TypeE
 
 final case class NonInductiveMatch(tpe: Value, span: Option[Span] = None) extends TypeError {
   val msg: String = s"Cannot match on non-inductive type $tpe"
+}
+
+final case class MissingReturningClause(reason: String, span: Option[Span] = None) extends TypeError {
+  val msg: String = s"Match requires a returning clause: $reason"
 }
 
 final case class NotFound(name: String, span: Option[Span] = None) extends TypeError {

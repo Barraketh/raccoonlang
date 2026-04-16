@@ -284,13 +284,8 @@ object TypePatternOps {
                   mode
                 )
 
-                val openedFields =
-                  if (pi.binders.length > h.numParams)
-                    BinderOps.freshen(NEL.mk(pi.binders.toList.drop(h.numParams)), openedParams.piEnv, eqStore)
-                  else BinderOps.Freshened(Vector.empty, openedParams.piEnv, BitSet.empty)
-
-                val ctorArgs = openedParams.vars ++ openedFields.vars
-                val res = Interpreter.evalApply(h, NEL.mk(ctorArgs.toList))
+                val openedFields = ConstructorOps.freshFields(pi, h.numParams, openedParams.piEnv, eqStore)
+                val res = ConstructorOps.fromFreshFields(h, pi, openedFields, eqStore).value
                 val resultTypeArgs = decomposeForBinding(res.tpe, expectedTypeArgs)
 
                 val resultEnv =

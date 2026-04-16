@@ -75,7 +75,7 @@ object Elaborator {
     case SA.Term.Match(scrut, motive, cases, sp) =>
       CA.Term.Match(
         elab(scrut),
-        elab(motive),
+        motive.map(elab),
         cases.map(c => CA.Case(c.ctorName, c.argNames, elab(c.body), c.span)),
         sp
       )

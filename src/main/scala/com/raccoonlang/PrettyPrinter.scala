@@ -114,9 +114,9 @@ object PrettyPrinter {
 
   private def printMatch(m: CoreAst.Term.Match): String = {
     val scrutStr = printTermAtom(m.scrut)
-    val motiveStr = printTypeTerm(m.motive)
+    val motiveStr = m.motive.map(motive => s" returning ${printTypeTerm(motive)}").getOrElse("")
     val casesStr = m.cases.map(printCase).mkString(" ")
-    s"match $scrutStr returning $motiveStr with $casesStr"
+    s"match $scrutStr$motiveStr with $casesStr"
   }
 
   def print(value: Value): String = value match {

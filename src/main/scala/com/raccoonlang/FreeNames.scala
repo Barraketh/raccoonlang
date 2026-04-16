@@ -59,7 +59,7 @@ object FreeNames {
 
       case Match(scrut, motive, cases, _) =>
         val (freeScrut, b1) = go(scrut, bound)
-        val (freeMotive, b2) = go(motive, b1)
+        val (freeMotive, b2) = motive.map(go(_, b1)).getOrElse((Set.empty[String], b1))
         val freeCases = cases.foldLeft(Set.empty[String]) { case (curFree, c) =>
           val (fCase, _) = go(c.body, b1 ++ c.argNames)
           curFree union fCase

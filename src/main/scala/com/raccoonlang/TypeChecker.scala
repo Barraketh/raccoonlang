@@ -1,6 +1,6 @@
 package com.raccoonlang
 
-import com.raccoonlang.BinderOps.{assignFreshVars, assignFreshVarsAndCheck}
+import com.raccoonlang.BinderOps.assignFreshVarsAndCheck
 import com.raccoonlang.CoreAst.Term.{Ident, Lam, Match}
 import com.raccoonlang.CoreAst._
 import com.raccoonlang.Interpreter._
@@ -110,7 +110,7 @@ object TypeChecker {
     typecheck(body.res, newEnv)
   }
 
-  private def typecheckBranch(br: Case, args: Seq[Value], envWithScrut: Env, motive: TypeTerm)(implicit
+  private def typecheckBranch(br: Case, args: Seq[Value], envWithScrut: Env, expectedTy: Value)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): Unit = {
@@ -120,7 +120,6 @@ object TypeChecker {
       curEnv.putLocal(argName, argVal)
     }
     val branchRes = typecheck(br.body, branchEnv)
-    val expectedTy = getType(motive, branchEnv)
     checkType(branchRes, expectedTy)
   }
 
@@ -137,33 +136,17 @@ object TypeChecker {
       normalizers: NormalizerMap
   ): Value = {
 
-    def freshCtorCopy(h: ConstructorHead): (Vector[Value], Value) =
-      h.tpe match {
-        case pi: VPi =>
-          val (freshArgs, ctorEnv, _) = assignFreshVarsAndCheck(pi, eqStore)
-          val ctorResTy = pi.codomain(ctorEnv, eqStore)
-          (freshArgs.drop(h.numParams).map(v => v: Value), ctorResTy)
-
-        case otherTy => (Vector.empty, otherTy)
-      }
-
     def computeReachableCtors(
         scrut: Value,
         inductiveName: String,
-        ctorNames: Vector[String]
+        ctorNames: Vector[String],
+        scrutTypeParams: Vector[Value]
     ): Vector[ReachableCtor] =
       ctorNames.flatMap { ctorName =>
         env.find(ctorName).getOrElse(throw NotFound(ctorName)) match {
-          case h @ ConstructorHead(_, numParams, _, ctorTy, _) =>
-            val (freshArgs, ctorEnv, _) = ctorTy match {
-              case pi: VPi => assignFreshVars(pi, eqStore)
-              case _       => (Vector.empty[Var], env, scala.collection.immutable.BitSet.empty)
-            }
-
-            val appliedCtor: Value = ctorTy match {
-              case VPi(_, _, codomain, _, _, _, _) => VCtor(h, freshArgs, codomain(ctorEnv, eqStore))
-              case otherTy                         => VCtor(h, Vector.empty, otherTy)
-            }
+          case h: ConstructorHead =>
+            val instantiated = ConstructorOps.freshFieldsFromParams(h, scrutTypeParams, eqStore)
+            val appliedCtor: Value = instantiated.value
 
             val branchEqStore: Option[EqStore] =
               try {
@@ -182,7 +165,7 @@ object TypeChecker {
               }
 
             branchEqStore.map(eqStore =>
-              ReachableCtor(ctorName, h, freshArgs.drop(numParams), appliedCtor.tpe, eqStore)
+              ReachableCtor(ctorName, h, instantiated.fieldArgs, instantiated.resultTy, eqStore)
             )
 
           case _ => throw UnknownConstructor(ctorName, inductiveName)
@@ -194,8 +177,10 @@ object TypeChecker {
       if (reachable.length > 1) return false
 
       val only = reachable.head
-      val (fields1, res1) = freshCtorCopy(only.head)
-      val (fields2, res2) = freshCtorCopy(only.head)
+      val copy1 = ConstructorOps.freshAllArgs(only.head, eqStore)
+      val copy2 = ConstructorOps.freshAllArgs(only.head, eqStore)
+      val (fields1, res1) = (copy1.fieldArgs, copy1.resultTy)
+      val (fields2, res2) = (copy2.fieldArgs, copy2.resultTy)
 
       val refinable0 = scrutTpe.synDeps ++ res1.synDeps ++ res2.synDeps
 
@@ -218,10 +203,10 @@ object TypeChecker {
     val scrut = Interpreter.resolveInEqStore(typecheck(t.scrut, env))
     val scrutTpe = Interpreter.resolveInEqStore(scrut.tpe)
 
-    val (inductiveName, inductiveCtorNames) = scrutTpe match {
-      case VConst(n, Inductive(meta), _)             => (n, meta.constructorNames)
-      case VApp(VConst(n, Inductive(meta), _), _, _) => (n, meta.constructorNames)
-      case _                                         => throw NonInductiveMatch(scrut.tpe)
+    val (inductiveName, inductiveCtorNames, scrutTypeParams) = scrutTpe match {
+      case VConst(n, Inductive(meta), _)                => (n, meta.constructorNames, Vector.empty[Value])
+      case VApp(VConst(n, Inductive(meta), _), args, _) => (n, meta.constructorNames, args.take(meta.paramCount))
+      case _                                            => throw NonInductiveMatch(scrut.tpe)
     }
     val inductiveCtorSet = inductiveCtorNames.toSet
 
@@ -234,11 +219,28 @@ object TypeChecker {
       throw UnknownConstructor(c.ctorName, inductiveName, Some(c.span))
     }
 
-    val motiveTy = getType(t.motive, env)
-
     // Shared type-based reachability analysis.
     lazy val reachableByType: Vector[ReachableCtor] =
-      computeReachableCtors(scrut, inductiveName, inductiveCtorNames)
+      computeReachableCtors(scrut, inductiveName, inductiveCtorNames, scrutTypeParams)
+
+    def inferMotiveFromReachable(reachable: Vector[ReachableCtor]): Value = {
+      val first = reachable.headOption.getOrElse {
+        throw MissingReturningClause("no constructors are reachable", Some(t.span))
+      }
+      val inferred = first.resultTy
+      val allEqual = reachable.tail.forall { info =>
+        defEq(inferred, info.resultTy)
+      }
+      if (!allEqual)
+        throw MissingReturningClause("reachable constructors have different result types", Some(t.span))
+      assertType(inferred)
+      inferred
+    }
+
+    val motiveTy = t.motive match {
+      case Some(motiveSyntax) => getType(motiveSyntax, env)
+      case None               => inferMotiveFromReachable(reachableByType)
+    }
 
     // Large elimination from Prop is allowed only for empty / singleton-like propositions.
     if (
@@ -258,7 +260,7 @@ object TypeChecker {
         }
 
         val br = t.cases.find(_.ctorName == h.name).getOrElse(throw MissingCase(h.name))
-        typecheckBranch(br, fields, env, t.motive)
+        typecheckBranch(br, fields, env, motiveTy)
 
       case _ =>
         val reachableMap = reachableByType.map(info => info.name -> info).toMap
@@ -272,7 +274,7 @@ object TypeChecker {
 
             case Some(info) =>
               val br = t.cases.find(_.ctorName == ctorName).getOrElse(throw MissingCase(ctorName))
-              typecheckBranch(br, info.fieldArgs, env, t.motive)(info.branchEqStore, normalizers)
+              typecheckBranch(br, info.fieldArgs, env, motiveTy)(info.branchEqStore, normalizers)
           }
         }
     }

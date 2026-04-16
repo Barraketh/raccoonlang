@@ -64,7 +64,7 @@ object CoreAst {
 
     final case class Match(
         scrut: Term,
-        motive: TypeTerm,
+        motive: Option[TypeTerm],
         cases: Vector[Case],
         span: Span
     ) extends Term

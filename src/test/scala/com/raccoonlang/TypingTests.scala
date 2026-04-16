@@ -111,7 +111,7 @@ class TypingTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inline def pred (n: Nat): Nat := {
-        |  match n returning Nat with
+        |  match n with
         |  | Nat::zero => Nat::zero
         |  | Nat::succ x => x
         |}
@@ -133,7 +133,7 @@ class TypingTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inline def bad (n: Nat): Type := {
-        |  match n returning Nat with
+        |  match n with
         |  | Nat::zero => Nat::zero
         |  | Nat::succ x => x
         |}
@@ -192,7 +192,7 @@ class TypingTests extends munit.FunSuite {
         | | cons (n: Nat) (xs: Vec(A, n)) (x: A): Vec(A, Nat::succ(n))
         |
         |inline def keepNil (A: Type)(v: Vec(A, Nat::zero)): Vec(A, Nat::zero) := {
-        |  match v returning Vec(A, Nat::zero) with
+        |  match v with
         |  | Vec::nil => v
         |}
         |""".stripMargin

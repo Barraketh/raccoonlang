@@ -137,8 +137,7 @@ object Interpreter {
           case h: VConst => VApp(h, vArgs.toVector, pi.codomain(envWithArgs, eqStore))
           case h: ConstructorHead =>
             val resultTy = pi.codomain(envWithArgs, eqStore)
-            val fields = vArgs.toVector.drop(h.numParams)
-            VCtor(h, fields, resultTy)
+            ConstructorOps.fromAppliedArgs(h, vArgs.toVector, resultTy).value
           case b: Blocker => VBlockedApp(b, vArgs.toList, pi.codomain(envWithArgs, eqStore), b.blockerId)
           case _          => throw CannotApplyNonFunction(fn)
         }
@@ -231,23 +230,14 @@ object Interpreter {
         if (!isStruct) throw NotAStruct(indName)
         ctorTy match {
           case pi: VPi =>
-            // 1) Bind inductive params to the vType args in the constructor Pi env
-            val paramArgs = typeArgs.take(numParams)
-
-            val envWithParams: Env =
-              if (numParams == 0) pi.env
-              else BinderOps.instantiate(pi.binders.take(numParams), pi.env, Util.NEL.mk(paramArgs), eqStore)
-
-            // 2) Build the telescope up to and including the requested field with params in scope
-            val allFieldBinders = pi.binders.toList.drop(numParams)
+            val envWithParams = ConstructorOps.instantiateParams(pi, numParams, typeArgs.take(numParams), eqStore)
+            val allFieldBinders = ConstructorOps.fieldBinders(pi, numParams)
             val fieldIdx = allFieldBinders.indexWhere(_.name == field)
             if (fieldIdx < 0) throw NotFound(field)
 
-            val fieldTelescope = allFieldBinders.take(fieldIdx + 1)
-            val (_, telEnv, _) = BinderOps.assignFreshVars(fieldTelescope.toVector, envWithParams, eqStore)
+            val fieldPrefix = ConstructorOps.freshFieldPrefix(pi, numParams, envWithParams, fieldIdx + 1, eqStore)
 
-            // Find field in the telescope env and return its type
-            telEnv.find(field).get.tpe
+            fieldPrefix.env.find(field).get.tpe
           case _ => throw NotFound(field)
         }
       case _ => throw NotFound(ctorName)
@@ -294,15 +284,18 @@ object Interpreter {
 
     val scrut = resolveInEqStore(evalTerm(m.scrut, env))
 
+    def outType: Value = m.motive match {
+      case Some(motive) => evalTypeTerm(motive, env)
+      case None         => scrut.tpe
+    }
+
     def mkStuckMatch(): Value = {
-      val outType = evalTypeTerm(m.motive, env)
       val head = VConst(s"match#${m.span.start}", Symbol, KernelObject)
       VApp(head, computeMatchCaptures(), outType)
     }
 
     def mkBlockedMatch(b: Blocker): Value = {
       val lamId = ValueId.LocalId(m.span.start, computeMatchCaptures())
-      val outType = evalTypeTerm(m.motive, env)
       VBlockedThunk(eqStore => evalMatch(m, env)(eqStore), lamId, outType, b.blockerId)
     }
 
