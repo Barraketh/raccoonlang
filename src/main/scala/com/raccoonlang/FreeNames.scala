@@ -57,12 +57,11 @@ object FreeNames {
         val (freeBody, boundAfterBody) = go(body, boundAfterTy)
         (freeTy union freeBody, boundAfterBody)
 
-      case Match(scrut, scrutName, motive, cases, _) =>
+      case Match(scrut, motive, cases, _) =>
         val (freeScrut, b1) = go(scrut, bound)
-        val bWithScrut = b1 + scrutName
-        val (freeMotive, b2) = go(motive, bWithScrut)
+        val (freeMotive, b2) = go(motive, b1)
         val freeCases = cases.foldLeft(Set.empty[String]) { case (curFree, c) =>
-          val (fCase, _) = go(c.body, bWithScrut ++ c.argNames)
+          val (fCase, _) = go(c.body, b1 ++ c.argNames)
           curFree union fCase
         }
         (freeScrut union freeMotive union freeCases, b2)

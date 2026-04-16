@@ -65,7 +65,7 @@ inductive Nat : Type
  | succ (_: Nat) : Nat
 
 inline def pred (n: Nat): Nat := {
-  match n as _ returning Nat with
+  match n returning Nat with
   | Nat::zero => Nat::zero
   | Nat::succ x => x
 }
@@ -119,10 +119,10 @@ inductive Pair (A: Sort($u1))(B: Sort($u2)): Sort(Level::max(u1, u2))
 
 inline def zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) := {
   let ResType := Vec(Pair(A, B), n)
-  match va as _ returning ResType with
+  match va returning ResType with
   | Vec::nil => Vec::nil(Pair(A, B))
   | Vec::cons va0 a => {
-    match vb as _ returning ResType with
+    match vb returning ResType with
     | Vec::cons vb0 b => Vec::cons(Pair(A, B), zip(va0, vb0), Pair::mk(A, B, a, b))
   }
 }
@@ -167,7 +167,7 @@ inductive Nat : Type
  | succ (_: Nat) : Nat
 
 stable def add (a: Nat)(b: Nat): Nat := {
-  match b as _ returning Nat with
+  match b returning Nat with
   | Nat::zero => a
   | Nat::succ x => add(Nat::succ(a), x)
 }

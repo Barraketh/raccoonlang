@@ -293,17 +293,16 @@ object Interpreter {
     }
 
     val scrut = resolveInEqStore(evalTerm(m.scrut, env))
-    val withScrut = env.newScope.putLocal(m.scrutName, scrut)
 
     def mkStuckMatch(): Value = {
-      val outType = evalTypeTerm(m.motive, withScrut)
+      val outType = evalTypeTerm(m.motive, env)
       val head = VConst(s"match#${m.span.start}", Symbol, KernelObject)
       VApp(head, computeMatchCaptures(), outType)
     }
 
     def mkBlockedMatch(b: Blocker): Value = {
       val lamId = ValueId.LocalId(m.span.start, computeMatchCaptures())
-      val outType = evalTypeTerm(m.motive, withScrut)
+      val outType = evalTypeTerm(m.motive, env)
       VBlockedThunk(eqStore => evalMatch(m, env)(eqStore), lamId, outType, b.blockerId)
     }
 
@@ -318,7 +317,7 @@ object Interpreter {
       m.cases.find(c => c.ctorName == ctorName).getOrElse(throw UnknownConstructor(ctorName, "", Some(m.span)))
     if (args.length != branch.argNames.length)
       throw ArityMismatch(branch.argNames.length, args.length, Some(branch.span))
-    val newEnv = args.zip(branch.argNames).foldLeft(withScrut.newScope) { case (curEnv, (argV, argName)) =>
+    val newEnv = args.zip(branch.argNames).foldLeft(env.newScope) { case (curEnv, (argV, argName)) =>
       curEnv.putLocal(argName, argV)
     }
     evalTerm(branch.body, newEnv)

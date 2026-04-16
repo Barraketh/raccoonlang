@@ -226,7 +226,7 @@ class PropTests extends munit.FunSuite {
         | | intro (p: P)(q: Q) : And(P, Q)
         |
         |def andLeft (P: Prop)(Q: Prop)(h: And(P, Q)): P := {
-        |  match h as _ returning P with
+        |  match h returning P with
         |  | And::intro p q => p
         |}
         |""".stripMargin
@@ -241,7 +241,7 @@ class PropTests extends munit.FunSuite {
         | | intro (w: A)(pw: p(w)) : Exists(A, p)
         |
         |def unpackToProp (A: Type)(p: A -> Prop)(h: Exists(A, p)): Prop := {
-        |  match h as _ returning Prop with
+        |  match h returning Prop with
         |  | Exists::intro w pw => p(w)
         |}
         |""".stripMargin
@@ -265,7 +265,7 @@ class PropTests extends munit.FunSuite {
         |inline def alwaysTrue (x: Nat): Prop := True
         |
         |def badExists (h: Exists(Nat, alwaysTrue)): Nat := {
-        |  match h as _ returning Nat with
+        |  match h returning Nat with
         |  | Exists::intro w pw => Nat::zero
         |}
         |""".stripMargin
@@ -290,7 +290,7 @@ class PropTests extends munit.FunSuite {
         | | refl (x: A) : Eq(A, x, x)
         |
         |def eqToNat (n: Nat)(p: Eq(Nat, n, Nat::zero)): Nat := {
-        |  match p as _ returning Nat with
+        |  match p returning Nat with
         |  | Eq::refl x => Nat::zero
         |}
         |
@@ -314,7 +314,7 @@ class PropTests extends munit.FunSuite {
         | | refl (x: A) : Eq(A, x, x)
         |
         |def choose (n: Nat)(m: Nat)(p: Eq(Nat, n, m)): Type := {
-        |  match p as _ returning Type with
+        |  match p returning Type with
         |  | Eq::refl x => Nat
         |}
         |""".stripMargin
@@ -332,7 +332,7 @@ class PropTests extends munit.FunSuite {
         |inductive False : Prop
         |
         |def absurdNat (h: False): Nat := {
-        |  match h as _ returning Nat with
+        |  match h returning Nat with
         |}
         |""".stripMargin
 
@@ -350,7 +350,7 @@ class PropTests extends munit.FunSuite {
         | | intro : True
         |
         |def trueToNat (h: True): Nat := {
-        |  match h as _ returning Nat with
+        |  match h returning Nat with
         |  | True::intro => Nat::zero
         |}
         |""".stripMargin
@@ -369,7 +369,7 @@ class PropTests extends munit.FunSuite {
         | | intro : IsZero(Nat::zero)
         |
         |def absurdSucc (n: Nat)(h: IsZero(Nat::succ(n))): Nat := {
-        |  match h as _ returning Nat with
+        |  match h returning Nat with
         |}
         |""".stripMargin
 
@@ -387,7 +387,7 @@ class PropTests extends munit.FunSuite {
         | | intro (y: A) : IdxWrap(A, y)
         |
         |def unwrapIdx (n: Nat)(h: IdxWrap(Nat, n)): Nat := {
-        |  match h as _ returning Nat with
+        |  match h returning Nat with
         |  | IdxWrap::intro y => y
         |}
         |
@@ -412,7 +412,7 @@ class PropTests extends munit.FunSuite {
         | | succCase (m: Nat) : Shape(Nat::succ(m))
         |
         |def predFromShape (n: Nat)(h: Shape(Nat::succ(n))): Nat := {
-        |  match h as _ returning Nat with
+        |  match h returning Nat with
         |  | Shape::succCase m => m
         |}
         |
@@ -436,7 +436,7 @@ class PropTests extends munit.FunSuite {
         | | intro (A: Type) : HasCarrier
         |
         |def badCarrier (h: HasCarrier): Nat := {
-        |  match h as _ returning Nat with
+        |  match h returning Nat with
         |  | HasCarrier::intro A => Nat::zero
         |}
         |""".stripMargin
@@ -465,7 +465,7 @@ class PropTests extends munit.FunSuite {
         | | intro : True
         |
         |def badOr (h: Or(True, True)): Nat := {
-        |  match h as _ returning Nat with
+        |  match h returning Nat with
         |  | Or::inl p => Nat::zero
         |  | Or::inr q => Nat::zero
         |}
@@ -495,7 +495,7 @@ class PropTests extends munit.FunSuite {
         | | refl (x: A) : Eq(A, x, x)
         |
         |def symm (A: Type)(x: A)(y: A)(p: Eq(A, x, y)): Eq(A, y, x) := {
-        |  match p as _ returning Eq(A, y, x) with
+        |  match p returning Eq(A, y, x) with
         |  | Eq::refl z => Eq::refl(A, z)
         |}
         |""".stripMargin

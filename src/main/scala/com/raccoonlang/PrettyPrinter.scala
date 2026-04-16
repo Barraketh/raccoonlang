@@ -86,7 +86,7 @@ object PrettyPrinter {
     case CoreAst.Term.Select(base, field, _) => s"${printTermAtom(base)}[$field]"
     case p: CoreAst.Term.PatternApp          => printTypePattern(p)
     case CoreAst.Term.Lam(_, _, _, _, _, _)  => s"(${printTerm(t)})"
-    case CoreAst.Term.Match(_, _, _, _, _)   => s"(${printTerm(t)})"
+    case CoreAst.Term.Match(_, _, _, _)      => s"(${printTerm(t)})"
     case CoreAst.Term.Body(_, _, _)          => s"(${printTerm(t)})"
     case CoreAst.Term.Pi(_, _, _)            => s"(${printTerm(t)})"
     case CoreAst.Term.Capture(name, _)       => s"$$$name"
@@ -102,7 +102,7 @@ object PrettyPrinter {
       s"$head($as)"
     case CoreAst.Term.Lam(ty, _, body, _, _, _) =>
       s"fun ${printBinders(ty.binders)}: ${printTypeTerm(ty.out)} => ${printTerm(body)}"
-    case m @ CoreAst.Term.Match(_, _, _, _, _) => printMatch(m)
+    case m @ CoreAst.Term.Match(_, _, _, _)    => printMatch(m)
     case b: CoreAst.Term.Body                  => printBody(b)
     case CoreAst.Term.Capture(name, _)         => s"$$$name"
   }
@@ -116,7 +116,7 @@ object PrettyPrinter {
     val scrutStr = printTermAtom(m.scrut)
     val motiveStr = printTypeTerm(m.motive)
     val casesStr = m.cases.map(printCase).mkString(" ")
-    s"match $scrutStr as ${m.scrutName} returning $motiveStr with $casesStr"
+    s"match $scrutStr returning $motiveStr with $casesStr"
   }
 
   def print(value: Value): String = value match {

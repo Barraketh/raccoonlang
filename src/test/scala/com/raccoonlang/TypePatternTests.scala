@@ -60,7 +60,7 @@ class TypePatternTests extends munit.FunSuite {
         | | mk (a: A) : Box(A)
         |
         |inline def unbox (b: Box($A)): A := {
-        |  match b as _ returning A with
+        |  match b returning A with
         |  | Box::mk a => a
         |}
         |
@@ -307,7 +307,7 @@ class TypePatternTests extends munit.FunSuite {
         | | mk (a: A) : Box(A)
         |
         |inline def unbox (b: Box($A)): A := {
-        |  match b as _ returning A with
+        |  match b returning A with
         |  | Box::mk a => a
         |}
         |

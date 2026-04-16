@@ -72,10 +72,9 @@ object Elaborator {
     case pi: SA.Term.Pi                  => elabPi(pi)
     case l: SA.Term.Lam                  => elab(l)
     case b: SA.Term.Body                 => elab(b)
-    case SA.Term.Match(scrut, scrutName, motive, cases, sp) =>
+    case SA.Term.Match(scrut, motive, cases, sp) =>
       CA.Term.Match(
         elab(scrut),
-        scrutName,
         elab(motive),
         cases.map(c => CA.Case(c.ctorName, c.argNames, elab(c.body), c.span)),
         sp

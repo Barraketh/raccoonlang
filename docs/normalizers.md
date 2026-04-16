@@ -33,7 +33,7 @@ inductive Nat : Type
  | succ (_: Nat) : Nat
 
 stable def add (a: Nat)(b: Nat): Nat := {
-  match b as _ returning Nat with
+  match b returning Nat with
   | Nat::zero => a
   | Nat::succ x => add(Nat::succ(a), x)
 }

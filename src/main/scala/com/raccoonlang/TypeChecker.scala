@@ -1,6 +1,6 @@
 package com.raccoonlang
 
-import com.raccoonlang.BinderOps.assignFreshVarsAndCheck
+import com.raccoonlang.BinderOps.{assignFreshVars, assignFreshVarsAndCheck}
 import com.raccoonlang.CoreAst.Term.{Ident, Lam, Match}
 import com.raccoonlang.CoreAst._
 import com.raccoonlang.Interpreter._
@@ -148,7 +148,7 @@ object TypeChecker {
       }
 
     def computeReachableCtors(
-        scrutTpe: Value,
+        scrut: Value,
         inductiveName: String,
         ctorNames: Vector[String]
     ): Vector[ReachableCtor] =
@@ -156,31 +156,34 @@ object TypeChecker {
         env.find(ctorName).getOrElse(throw NotFound(ctorName)) match {
           case h @ ConstructorHead(_, numParams, _, ctorTy, _) =>
             val (freshArgs, ctorEnv, _) = ctorTy match {
-              case pi: VPi => assignFreshVarsAndCheck(pi, eqStore)
+              case pi: VPi => assignFreshVars(pi, eqStore)
               case _       => (Vector.empty[Var], env, scala.collection.immutable.BitSet.empty)
             }
 
-            val ctorResTy: Value = ctorTy match {
-              case VPi(_, _, codomain, _, _, _, _) => codomain(ctorEnv, eqStore)
-              case otherTy                         => otherTy
+            val appliedCtor: Value = ctorTy match {
+              case VPi(_, _, codomain, _, _, _, _) => VCtor(h, freshArgs, codomain(ctorEnv, eqStore))
+              case otherTy                         => VCtor(h, Vector.empty, otherTy)
             }
 
-            val refinable = scrutTpe.synDeps ++ ctorResTy.synDeps
+            val branchEqStore: Option[EqStore] =
+              try {
+                val refinable = scrut.synDeps ++ appliedCtor.synDeps
+                Some(Unify.unify(scrut, appliedCtor, eqStore.allow(refinable)))
+              } catch {
+                case _: UnificationFailed | _: OccursCheckFailed =>
+                  // scrut could be opaque, in which case we can't unify it with the applied ctor, but we still know
+                  // that the types should match, so unify the types instead
+                  val refinable = scrut.tpe.synDeps ++ appliedCtor.tpe.synDeps
+                  try {
+                    Some(Unify.unify(scrut.tpe, appliedCtor.tpe, eqStore.allow(refinable)))
+                  } catch {
+                    case _: UnificationFailed | _: OccursCheckFailed => None
+                  }
+              }
 
-            try {
-              val branchEqStore = Unify.unify(scrutTpe, ctorResTy, eqStore.allow(refinable))
-              Some(
-                ReachableCtor(
-                  name = ctorName,
-                  head = h,
-                  fieldArgs = freshArgs.drop(numParams).map(v => v: Value),
-                  resultTy = ctorResTy,
-                  branchEqStore = branchEqStore
-                )
-              )
-            } catch {
-              case _: UnificationFailed | _: OccursCheckFailed => None
-            }
+            branchEqStore.map(eqStore =>
+              ReachableCtor(ctorName, h, freshArgs.drop(numParams), appliedCtor.tpe, eqStore)
+            )
 
           case _ => throw UnknownConstructor(ctorName, inductiveName)
         }
@@ -231,12 +234,11 @@ object TypeChecker {
       throw UnknownConstructor(c.ctorName, inductiveName, Some(c.span))
     }
 
-    val withScrut = env.newScope.putLocal(t.scrutName, scrut)
-    val motiveTy = getType(t.motive, withScrut)
+    val motiveTy = getType(t.motive, env)
 
     // Shared type-based reachability analysis.
     lazy val reachableByType: Vector[ReachableCtor] =
-      computeReachableCtors(scrutTpe, inductiveName, inductiveCtorNames)
+      computeReachableCtors(scrut, inductiveName, inductiveCtorNames)
 
     // Large elimination from Prop is allowed only for empty / singleton-like propositions.
     if (
@@ -256,7 +258,7 @@ object TypeChecker {
         }
 
         val br = t.cases.find(_.ctorName == h.name).getOrElse(throw MissingCase(h.name))
-        typecheckBranch(br, fields, withScrut, t.motive)
+        typecheckBranch(br, fields, env, t.motive)
 
       case _ =>
         val reachableMap = reachableByType.map(info => info.name -> info).toMap
@@ -270,9 +272,7 @@ object TypeChecker {
 
             case Some(info) =>
               val br = t.cases.find(_.ctorName == ctorName).getOrElse(throw MissingCase(ctorName))
-              val appliedCtor = VCtor(info.head, info.fieldArgs, info.resultTy)
-              val envWithBranchScrut = env.newScope.putLocal(t.scrutName, appliedCtor)
-              typecheckBranch(br, info.fieldArgs, envWithBranchScrut, t.motive)(info.branchEqStore, normalizers)
+              typecheckBranch(br, info.fieldArgs, env, t.motive)(info.branchEqStore, normalizers)
           }
         }
     }

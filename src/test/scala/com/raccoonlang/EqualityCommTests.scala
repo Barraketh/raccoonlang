@@ -26,7 +26,7 @@ class EqualityCommTests extends munit.FunSuite {
         | | succ(_: Nat) : Nat
         |
         |stable def add (a: Nat)(b: Nat): Nat := {
-        |  match b as _ returning Nat with
+        |  match b returning Nat with
         |  | Nat::zero => a
         |  | Nat::succ x => add(Nat::succ(a), x)
         |}
@@ -35,29 +35,29 @@ class EqualityCommTests extends munit.FunSuite {
         | | refl (x: A) : Eq(A, x, x)
         |
         |def trans (A: Type)(x: A)(y: A)(z: A)(p: Eq(A, x, y))(q: Eq(A, y, z)): Eq(A, x, z) := {
-        |  match p as _ returning Eq(A, x, z) with
+        |  match p returning Eq(A, x, z) with
         |  | Eq::refl w => q
         |}
         |
         |def symm (A: Type)(x: A)(y: A)(p: Eq(A, x, y)): Eq(A, y, x) := {
-        |  match p as _ returning Eq(A, y, x) with
+        |  match p returning Eq(A, y, x) with
         |  | Eq::refl w => Eq::refl(A, w)
         |}
         |
         |def congSucc (a: Nat)(b: Nat)(p: Eq(Nat, a, b)): Eq(Nat, Nat::succ(a), Nat::succ(b)) := {
-        |  match p as _ returning Eq(Nat, Nat::succ(a), Nat::succ(b)) with
+        |  match p returning Eq(Nat, Nat::succ(a), Nat::succ(b)) with
         |  | Eq::refl x => Eq::refl(Nat, Nat::succ(x))
         |}
         |
         |def succAdd (a: Nat)(b: Nat): Eq(Nat, add(Nat::succ(a), b), Nat::succ(add(a, b))) := {
-        |  match b as b0 returning Eq(Nat, add(Nat::succ(a), b0), Nat::succ(add(a, b0))) with
+        |  match b returning Eq(Nat, add(Nat::succ(a), b), Nat::succ(add(a, b))) with
         |  | Nat::zero => Eq::refl(Nat, Nat::succ(a))
         |  | Nat::succ x => succAdd(Nat::succ(a), x)
         |}
         |
         |// add 0 b = b
         |def zeroAdd (b: Nat): Eq(Nat, add(Nat::zero, b), b) := {
-        |  match b as b0 returning Eq(Nat, add(Nat::zero, b0), b0) with
+        |  match b returning Eq(Nat, add(Nat::zero, b), b) with
         |  | Nat::zero => Eq::refl(Nat, Nat::zero)
         |  | Nat::succ x => {
         |    let ih := zeroAdd(x)
@@ -69,7 +69,7 @@ class EqualityCommTests extends munit.FunSuite {
         |
         |// add commutativity: a + b = b + a
         |def addComm (a: Nat)(b: Nat): Eq(Nat, add(a, b), add(b, a)) := {
-        |  match b as b0 returning Eq(Nat, add(a, b0), add(b0, a)) with
+        |  match b returning Eq(Nat, add(a, b), add(b, a)) with
         |  | Nat::zero => symm(Nat, add(Nat::zero, a), a, zeroAdd(a))
         |  | Nat::succ x => {
         |    let ih := addComm(a, x)

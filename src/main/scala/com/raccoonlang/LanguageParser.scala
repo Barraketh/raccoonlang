@@ -124,17 +124,18 @@ object LanguageParser {
       .named("Case")
 
   private def matchP: Parser[Match] = {
-    (kw("match") ~/ term ~ kw("as") ~/ argName ~ kw("returning") ~/ typeTerm ~
-      (skipWS ~ P("with") ~/ lineSep) ~ matchCase.rep(0)).flatSpanned.map(Match.tupled)
+    (kw("match") ~/ term ~ kw("returning") ~/ typeTerm ~
+      (skipWS ~ P("with") ~/ lineSep) ~ matchCase.rep(0)).flatSpanned.map { case (scrut, motive, cases, sp) =>
+      Match(scrut, motive, cases, sp)
+    }
   }
 
   private def term: Parser[Term] =
-    ((lambda | matchP | body | pi | termAtom).spanned ~ parenArgs(term).?).spanned.mapAsT {
-      case ((fn, args), span) =>
-        args match {
-          case Some(value) => App(fn.value, NEL.mk(value), span)
-          case None        => fn.value
-        }
+    ((lambda | matchP | body | pi | termAtom).spanned ~ parenArgs(term).?).spanned.mapAsT { case ((fn, args), span) =>
+      args match {
+        case Some(value) => App(fn.value, NEL.mk(value), span)
+        case None        => fn.value
+      }
     }
 
   private def funcHeader: Parser[FuncHeader] = (param.rep(0) ~ sym(':') ~ typeTerm).flatSpanned.map(FuncHeader.tupled)

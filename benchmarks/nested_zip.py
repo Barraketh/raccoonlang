@@ -67,10 +67,10 @@ inductive Pair (A: Sort($u1))(B: Sort($u2)): Sort(Level::max(u1, u2))
 
 {unfold} zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) := {{
   let ResType := Vec(Pair(A, B), n)
-  match va as _ returning ResType with
+  match va returning ResType with
   | Vec::nil => Vec::nil(Pair(A, B))
   | Vec::cons va0 a => {{
-    match vb as _ returning ResType with
+    match vb returning ResType with
     | Vec::cons vb0 b => Vec::cons(Pair(A, B), zip(va0, vb0), Pair::mk(A, B, a, b))
   }}
 }}

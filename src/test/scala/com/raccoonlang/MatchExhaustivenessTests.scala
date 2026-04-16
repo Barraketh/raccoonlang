@@ -18,7 +18,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |def onlyZero (n: Nat): Nat := {
-        |  match n as _ returning Nat with
+        |  match n returning Nat with
         |  | Nat::zero => Nat::zero
         |}
         |
@@ -35,7 +35,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |def dup (n: Nat): Nat := {
-        |  match n as _ returning Nat with
+        |  match n returning Nat with
         |  | Nat::zero => Nat::zero
         |  | Nat::zero => Nat::zero
         |  | Nat::succ x => x
@@ -58,7 +58,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         | | cons (n: Nat) (xs: Vec(A, n)) (x: A): Vec(A, Nat::succ(n))
         |
         |def f (A: Type)(v: Vec(A, Nat::zero)): Nat := {
-        |  match v as _ returning Nat with
+        |  match v returning Nat with
         |  | Vec::nil => Nat::zero
         |  | Vec::cons n xs x => Nat::zero
         |}
@@ -80,7 +80,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         |
         |def bad (n: Nat): Nat := {
         |  // scrutinee is neutral/opaque application: g n
-        |  match g(n) as _ returning Nat with
+        |  match g(n) returning Nat with
         |  | Nat::zero => Nat::zero
         |}
         |
@@ -99,7 +99,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         |def g (n: Nat): Nat := n   // not(inline) => opaque
         |
         |def ok (n: Nat): Nat := {
-        |  match g(n) as _ returning Nat with
+        |  match g(n) returning Nat with
         |  | Nat::zero => Nat::zero
         |  | Nat::succ x => x
         |}

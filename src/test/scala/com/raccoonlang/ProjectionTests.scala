@@ -198,7 +198,7 @@ class ProjectionTests extends munit.FunSuite {
         |def step (n: Nat): Nat := n
         |
         |inline def choose (n: Nat): Pair(Nat, Nat) := {
-        |  match step(n) as m returning Pair(Nat, Nat) with
+        |  match step(n) returning Pair(Nat, Nat) with
         |  | Nat::zero => Pair::mk(Nat, Nat, Nat::zero, Nat::zero)
         |  | Nat::succ k => Pair::mk(Nat, Nat, Nat::succ(k), k)
         |}
