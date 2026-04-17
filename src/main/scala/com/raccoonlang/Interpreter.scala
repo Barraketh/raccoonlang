@@ -92,8 +92,17 @@ object Interpreter {
 
   private def evalTApp(app: Term.TApp, env: Env)(implicit meta: EqStore): Value = {
     val fn = evalTypeTerm(app.fn, env)
-    val args = app.args.map(arg => evalTypeTerm(arg, env))
+    val orderedArgs = ArgumentOps.reorder(app.args, applyPi(fn).binders, Some(app.span))
+    val args = orderedArgs.map(arg => evalTypeTerm(arg, env))
     evalApply(fn, args)
+  }
+
+  private def applyPi(fn: Value)(implicit eqStore: EqStore): VPi = {
+    val fn0 = resolveInEqStore(fn)
+    resolveInEqStore(fn0.tpe) match {
+      case pi: VPi => pi
+      case other   => throw CannotApplyNonFunction(other)
+    }
   }
 
   // Evaluate a type-position expression without enforcing it is a type yet
@@ -145,9 +154,12 @@ object Interpreter {
     }
   }
 
-  private def evalApplyTerm(fn: Term, args: NEL[Term], env: Env)(implicit eqStore: EqStore): Value = {
+  private def evalApplyTerm(fn: Term, args: NEL[AppArg[Term]], env: Env, appSpan: Span)(implicit
+      eqStore: EqStore
+  ): Value = {
     val vf = evalTerm(fn, env)
-    val vArgs = args.map(a => evalTerm(a, env))
+    val orderedArgs = ArgumentOps.reorder(args, applyPi(vf).binders, Some(appSpan))
+    val vArgs = orderedArgs.map(a => evalTerm(a, env))
     evalApply(vf, vArgs)
   }
 
@@ -202,7 +214,7 @@ object Interpreter {
       term match {
         case Term.Select(base, field, span) => evalSelect(evalTerm(base, env), field, env, span.start)
         case tt: TypeTerm                   => evalTypeTerm(tt, env)
-        case Term.App(fn, args, _)          => evalApplyTerm(fn, args, env)
+        case Term.App(fn, args, span)       => evalApplyTerm(fn, args, env, span)
         case l: Term.Lam                    => evalLam(l, env)
         case m: Term.Match                  => evalMatch(m, env)
         case b: Term.Body                   => evalBody(b, env)

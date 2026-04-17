@@ -107,9 +107,15 @@ object TypePatternOps {
 
           case _: TypeTerm => env
 
-          case PatternApp(_, patArgs, _) =>
-            val args = decomposeForBinding(value, patArgs.length)
-            patArgs.toVector.zip(args).foldLeft(env) { case (curEnv, (nextPat, arg)) =>
+          case PatternApp(fn, patArgs, sp) =>
+            val fnV = env.find(fn.name).getOrElse(throw NotFound(fn.name))
+            val pi = requirePi(fnV)
+            if (pi.binders.length != patArgs.length)
+              throw PatternArityMismatch(fnV, pi.binders.length, patArgs.length, Some(sp))
+
+            val orderedPatArgs = ArgumentOps.reorder(patArgs, pi.binders, Some(sp))
+            val args = decomposeForBinding(value, orderedPatArgs.length)
+            orderedPatArgs.toVector.zip(args).foldLeft(env) { case (curEnv, (nextPat, arg)) =>
               bindInternal(curEnv, nextPat, arg)
             }
         }
@@ -137,19 +143,21 @@ object TypePatternOps {
             TypeChecker.checkFits(actual0, v)
             userEnv
 
-          case PatternApp(fn, args, _) =>
+          case PatternApp(fn, args, sp) =>
             val fnV = evalTypeTerm(fn, userEnv)
             val pi = requirePi(fnV)
 
             if (pi.binders.length != args.length)
-              throw PatternArityMismatch(fnV, pi.binders.length, args.length)
+              throw PatternArityMismatch(fnV, pi.binders.length, args.length, Some(sp))
+
+            val orderedArgs = ArgumentOps.reorder(args, pi.binders, Some(sp))
 
             val actualArgs = decomposeForPatternHeadDef(fnV, actual0)
-            if (actualArgs.length != args.length)
-              throw PatternArityMismatch(fnV, args.length, actualArgs.length)
+            if (actualArgs.length != orderedArgs.length)
+              throw PatternArityMismatch(fnV, orderedArgs.length, actualArgs.length, Some(sp))
 
             val (nextUserEnv, _) =
-              pi.binders.toList.zip(args.toList).zip(actualArgs).foldLeft((userEnv, pi.env.newScope)) {
+              pi.binders.toList.zip(orderedArgs.toList).zip(actualArgs).foldLeft((userEnv, pi.env.newScope)) {
                 case ((curUserEnv, curPiEnv), ((binder, argPat), actualArg)) =>
                   val nextPiEnv = bindInternal(curPiEnv, binder.ty, actualArg.tpe).putLocal(binder.name, actualArg)
                   val nextUserEnv = matchOpenInternal(curUserEnv, argPat, actualArg)
@@ -166,7 +174,11 @@ object TypePatternOps {
     case Capture(name, _) => (FreshVar.freshVar(name, LevelTpe), Some(name))
     case PatternApp(fn, args, _) =>
       val fnV = Interpreter.evalTerm(fn, env)
-      val openArgs = args.map(a => openLevelPattern(env, a))
+      val pi = requirePi(fnV)
+      if (pi.binders.length != args.length)
+        throw PatternArityMismatch(fnV, pi.binders.length, args.length, Some(p.span))
+      val orderedArgs = ArgumentOps.reorder(args, pi.binders, Some(p.span))
+      val openArgs = orderedArgs.map(a => openLevelPattern(env, a))
       val captures = openArgs.map(_._2).toList.collect { case Some(name) => name }
       val capture = if (captures.length > 1) throw MultipleLevelCaptures(p, Some(p.span)) else captures.headOption
       Interpreter.evalApply(fnV, openArgs.map(_._1)) -> capture
@@ -263,14 +275,15 @@ object TypePatternOps {
       case tt: TypeTerm => FreshOpened(env, mode.evalTypeTerm(tt, env), BitSet.empty, None)
       case Capture(name, _) =>
         throw PatternCaptureNeedsExpectedType(name)
-      case PatternApp(fn, args, _) =>
+      case PatternApp(fn, args, sp) =>
         val fnV = env.find(fn.name).getOrElse(throw NotFound(fn.name))
         resolveInEqStore(fnV) match {
           case VConst(_, Inductive(meta), _) if meta.isStruct =>
             val expectedTypeArgs = meta.paramCount + meta.indexCount
-            if (args.length != expectedTypeArgs) throw PatternArityMismatch(fnV, expectedTypeArgs, args.length)
+            if (args.length != expectedTypeArgs) throw PatternArityMismatch(fnV, expectedTypeArgs, args.length, Some(sp))
 
-            val patternArgs = args.toVector
+            val familyPi = requirePi(fnV)
+            val patternArgs = ArgumentOps.reorder(args, familyPi.binders, Some(sp)).toVector
             val ctorName = meta.constructorNames.head
             env.find(ctorName).getOrElse(throw NotFound(ctorName)) match {
               case h: ConstructorHead =>
@@ -298,9 +311,11 @@ object TypePatternOps {
             }
           case _ =>
             val pi = requirePi(fnV)
-            if (pi.binders.length != args.length) throw PatternArityMismatch(fnV, pi.binders.length, args.length)
+            if (pi.binders.length != args.length)
+              throw PatternArityMismatch(fnV, pi.binders.length, args.length, Some(sp))
 
-            val openedArgs = openArgsAgainstBinders(env, pi.env, args.toVector, pi.binders.toVector, mode)
+            val orderedArgs = ArgumentOps.reorder(args, pi.binders, Some(sp))
+            val openedArgs = openArgsAgainstBinders(env, pi.env, orderedArgs.toVector, pi.binders.toVector, mode)
             val res = Interpreter.evalApply(fnV, NEL.mk(openedArgs.vars.toList))
             FreshOpened(openedArgs.env, res, openedArgs.newVarIds, None)
         }

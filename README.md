@@ -9,7 +9,7 @@ as well as a research platform for exploring language features to make formally-
 - Ergonomic, but not at the cost of typechecking speed
 - Consistent
 - Small kernel core, with a bias toward keeping some traditionally elaborator-side mechanisms explicit in the kernel
-when that simplifies the overall system. Current examples:
+  when that simplifies the overall system. Current examples:
     - Universe level normalization and unification
     - Type-driven expression normalization (see `docs/normalizers.md`)
     - Type Patterns
@@ -18,7 +18,7 @@ when that simplifies the overall system. Current examples:
 
 The benchmark suite in [benchmarks](benchmarks/readme.md) includes a generated nested dependent `Vec.zip`
 stress test. It builds a chain of inferred dependent vector zips and then consumes the final value, so elaboration
-and typechecking must keep a large indexed-vector type live.  The benchmark shape is
+and typechecking must keep a large indexed-vector type live. The benchmark shape is
 
 ```text
 z1 := zip(v, v)
@@ -30,14 +30,13 @@ consume(zN)
 
 Current results on my M1 laptop:
 
-| nested zips | Raccoon JVM  | Lean 4.31 nightly |
-|------------:|-------------:|------------------:|
-|         800 |       0.465s |            2.872s |
-|       1,600 |       0.558s |            9.915s |
-|       3,200 |       0.692s |           41.274s |
-|       6,400 |       0.889s | timed out at 180s |
-|     51,200  |       3.435s |               N/A |
-
+| nested zips | Raccoon (JVM) | Lean 4.31 nightly |
+|------------:|--------------:|------------------:|
+|         800 |        0.465s |            2.872s |
+|       1,600 |        0.558s |            9.915s |
+|       3,200 |        0.692s |           41.274s |
+|       6,400 |        0.889s | timed out at 180s |
+|      51,200 |        3.435s |               N/A |
 
 Note that at this point I have done 0 optimization - these performance wins are strictly algorithmic.
 
@@ -46,10 +45,10 @@ Note that at this point I have done 0 optimization - these performance wins are 
 - Inductive families with parameters and indices
     - Validates positivity, universes, uniform parameters, constructor result shape
 - Dependent pattern matching
-    - Branch refinement for indexed families / dependent pattern matching.  Supports equality proofs.
+    - Branch refinement for indexed families / dependent pattern matching. Supports equality proofs.
     - Validates exhaustiveness checking: missing, duplicate, and unreachable branches
 - Cumulative universes, first-class `Level`, `Sort(u)`, universe validation, and sort unification
-  - Impredicative Prop with controlled large elimination
+    - Impredicative Prop with controlled large elimination
 - Extensible definitional equality through type-driven expression normalization
 - Type patterns
 - Structs / Projections
@@ -58,6 +57,11 @@ Note that at this point I have done 0 optimization - these performance wins are 
 ## A few concrete examples
 
 ### Simple inductive types and functions
+
+- Function applications can use a positional prefix followed by named arguments. All parameters still need to be
+  supplied.
+- Inductives can be pattern matched. Raccoon will check for exhaustiveness - only cases that raccoon can prove to be
+  impossible can be ommitted
 
 ```raccoon
 inductive Nat : Type
@@ -70,7 +74,14 @@ inline def pred (n: Nat): Nat := {
   | Nat::succ x => x
 }
 
-{ pred(Nat::succ(Nat::zero)) }
+inline def chooseSecond (a: Nat)(b: Nat): Nat := b
+
+{ 
+  let one := Nat::succ(Nat::zero)
+  let byPosition := chooseSecond(Nat::zero, one)
+  let byName := chooseSecond(a := Nat::zero, b := one)
+  chooseSecond(byPosition, b := byName)
+}
 ```
 
 ### Universe-polymorphic identity
@@ -130,13 +141,14 @@ inline def zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) := {
 
 ### Structs and Projections
 
-A struct is a special case of an inductive family with exactly one constructor and named fields. Structs are intended for record-like data where fields are directly projectable by name.
+A struct is a special case of an inductive family with exactly one constructor and named fields. Structs are intended
+for record-like data where fields are directly projectable by name.
 Formation rules:
-  - Exactly one constructor.
-  - Indices must only depend on params (not on constructor fields).
-  - Must live in `Type`/`Sort(u)` (not in `Prop`).
-  - All fields must be named (no anonymous `_` fields).
 
+- Exactly one constructor.
+- Indices must only depend on params (not on constructor fields).
+- Must live in `Type`/`Sort(u)` (not in `Prop`).
+- All fields must be named (no anonymous `_` fields).
 
 Projection syntax: `p.field` selects the named field from a value `p` of a struct family.
 
@@ -156,8 +168,8 @@ inline def second (p: Pair($A, $B)): B := p.snd
 
 ### Equality by computation with a normalizer
 
-A normalizer rewrites a blocked expression into a different (equivalent) form.  For example, the 'add_normalizer'
-flattens all additions to a list, removes zeros and then sorts the list.  Currently, for demonstration purposes, it
+A normalizer rewrites a blocked expression into a different (equivalent) form. For example, the 'add_normalizer'
+flattens all additions to a list, removes zeros and then sorts the list. Currently, for demonstration purposes, it
 can be used without providing the relevant proofs, but in a full implementation it would require proofs of standard
 monoid laws.
 
@@ -186,6 +198,7 @@ inline def addComm (a: Nat)(b: Nat): Eq(Nat, add(a, b), add(b, a)) := {
 ## Quickstart
 
 To just try out the language, download the latest release (arm mac only at the moment), then run in your shell
+
 ```bash
 raccoon /path/to/program.rac
 ```
@@ -198,7 +211,6 @@ To allow the binary:
 2. Open **System Settings → Privacy & Security**.
 3. Click **Open Anyway** for the blocked binary.
 4. Re-run the command.
-
 
 ## Developing / building from source
 
@@ -220,7 +232,8 @@ sbt test
 sbt "run path/to/program.rac"
 ```
 
-The CLI reads a single `.rac` file, elaborates it, typechecks it, evaluates it, and pretty-prints the resulting value when the program body produces one.
+The CLI reads a single `.rac` file, elaborates it, typechecks it, evaluates it, and pretty-prints the resulting value
+when the program body produces one.
 
 ### Build the native binary
 
@@ -228,6 +241,7 @@ The CLI reads a single `.rac` file, elaborates it, typechecks it, evaluates it, 
 sbt native/nativeLink
 ./native/target/scala-2.13/raccoon ./examples/nats.rac
 ```
+
 ## Next Planned Features
 
 - Typeclasses

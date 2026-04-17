@@ -41,6 +41,12 @@ object TypeError {
     case e: InvalidStruct                   => e.copy(span = Some(sp))
     case e: NotAStruct                      => e.copy(span = Some(sp))
     case e: MultipleLevelCaptures           => e.copy(span = Some(sp))
+    case e: UnknownNamedArgument            => e.copy(span = Some(sp))
+    case e: DuplicateNamedArgument          => e.copy(span = Some(sp))
+    case e: PositionalArgumentAfterNamed    => e.copy(span = Some(sp))
+    case e: CannotCallAnonymousArgument     => e.copy(span = Some(sp))
+    case e: NamedArgumentAlreadySupplied    => e.copy(span = Some(sp))
+    case e: AmbiguousNamedArgument          => e.copy(span = Some(sp))
 
   }
 }
@@ -196,4 +202,28 @@ final case class InvalidStruct(inductive: String, reason: String, span: Option[S
 
 final case class NotAStruct(inductive: String, span: Option[Span] = None) extends TypeError {
   override def msg: String = s"Cannot select field from non-struct $inductive"
+}
+
+final case class UnknownNamedArgument(name: String, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"Unknown named argument $name"
+}
+
+final case class DuplicateNamedArgument(name: String, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"Duplicate named argument $name"
+}
+
+final case class PositionalArgumentAfterNamed(span: Option[Span] = None) extends TypeError {
+  override def msg: String = "Positional arguments cannot follow named arguments"
+}
+
+final case class CannotCallAnonymousArgument(span: Option[Span] = None) extends TypeError {
+  override def msg: String = "Anonymous parameter _ cannot be called by name"
+}
+
+final case class NamedArgumentAlreadySupplied(name: String, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"Argument $name was already supplied by position"
+}
+
+final case class AmbiguousNamedArgument(name: String, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"Named argument $name is ambiguous"
 }

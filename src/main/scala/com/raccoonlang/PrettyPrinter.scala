@@ -4,6 +4,11 @@ import com.raccoonlang.CoreAst.Term.Ident
 import com.raccoonlang.Value.LevelTpe
 
 object PrettyPrinter {
+  private def printAppArg[A](arg: AppArg[A], printValue: A => String): String =
+    arg match {
+      case AppArg.Pos(value, _)         => printValue(value)
+      case AppArg.Named(name, value, _) => s"$name := ${printValue(value)}"
+    }
 
   private def printTypePattern(tp: CoreAst.TypePattern): String = {
     import com.raccoonlang.CoreAst.Term
@@ -13,11 +18,11 @@ object PrettyPrinter {
       case Term.TSelect(base, field, _) => s"${ptAtom(base)}[$field]"
       case Term.TApp(fn, args, _) =>
         val headStr = ptAtom(fn)
-        val argsStr = args.toList.map(ptAtom).mkString(", ")
+        val argsStr = args.toList.map(printAppArg(_, ptAtom)).mkString(", ")
         s"$headStr($argsStr)"
       case Term.PatternApp(fn, args, _) =>
         val headStr = ptAtom(fn)
-        val argsStr = args.toList.map(ptAtom).mkString(", ")
+        val argsStr = args.toList.map(printAppArg(_, ptAtom)).mkString(", ")
         s"$headStr($argsStr)"
       case Term.Pi(binders, out, _) =>
         val bindersStr = binders.toList
@@ -98,7 +103,7 @@ object PrettyPrinter {
     case CoreAst.Term.Select(base, field, _) => s"${printTermAtom(base)}[$field]"
     case CoreAst.Term.App(fn, args, _) =>
       val head = printTermAtom(fn)
-      val as = args.toList.map(printTermAtom).mkString(", ")
+      val as = args.toList.map(printAppArg(_, printTermAtom)).mkString(", ")
       s"$head($as)"
     case CoreAst.Term.Lam(ty, _, body, _, _, _) =>
       s"fun ${printBinders(ty.binders)}: ${printTypeTerm(ty.out)} => ${printTerm(body)}"

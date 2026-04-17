@@ -52,12 +52,21 @@ object TypeChecker {
     }
   }
 
+  private def applyPi(fn: Value)(implicit eqStore: EqStore): VPi = {
+    val fn0 = Interpreter.resolveInEqStore(fn)
+    Interpreter.resolveInEqStore(fn0.tpe) match {
+      case pi: VPi => pi
+      case other   => throw CannotApplyNonFunction(other)
+    }
+  }
+
   private def typecheckTApp(app: Term.TApp, env: Env)(implicit
       meta: EqStore,
       normalizers: NormalizerMap
   ): Value = {
     val fn = evalTypeTerm(app.fn, env)
-    val args = app.args.map(arg => evalTypeTerm(arg, env))
+    val orderedArgs = ArgumentOps.reorder(app.args, applyPi(fn).binders, Some(app.span))
+    val args = orderedArgs.map(arg => evalTypeTerm(arg, env))
     typecheckApply(fn, args)
   }
 
@@ -66,7 +75,8 @@ object TypeChecker {
       normalizers: NormalizerMap
   ): Value = {
     val fn = typecheck(app.fn, env)
-    val args = app.args.map(arg => typecheck(arg, env))
+    val orderedArgs = ArgumentOps.reorder(app.args, applyPi(fn).binders, Some(app.span))
+    val args = orderedArgs.map(arg => typecheck(arg, env))
     typecheckApply(fn, args)
   }
 

@@ -21,7 +21,7 @@ object Elaborator {
 
   private def elab(ty: SA.TypeTerm): CA.TypeTerm = ty match {
     case i: SA.Term.Ident                 => elab(i)
-    case SA.Term.TApp(fn, args, sp)       => CoreAst.Term.TApp(elab(fn), args.map(elab), sp)
+    case SA.Term.TApp(fn, args, sp)       => CoreAst.Term.TApp(elab(fn), args.map(_.map(elab)), sp)
     case pi: SA.Term.Pi                   => elabPi(pi)
     case SA.Term.TSelect(base, field, sp) => CA.Term.TSelect(elab(base), field, sp)
     case SA.Term.Capture(name, sp)        => throw new RuntimeException(s"$$ cannot be used here: $name")
@@ -29,7 +29,7 @@ object Elaborator {
 
   private def elabPattern(ty: SA.TypeTerm): CA.TypePattern = ty match {
     case i: SA.Term.Ident                 => elab(i)
-    case SA.Term.TApp(fn, args, sp)       => CoreAst.Term.PatternApp(elab(fn), args.map(elabPattern), sp)
+    case SA.Term.TApp(fn, args, sp)       => CoreAst.Term.PatternApp(elab(fn), args.map(_.map(elabPattern)), sp)
     case pi: SA.Term.Pi                   => elabPi(pi)
     case SA.Term.TSelect(base, field, sp) => CA.Term.TSelect(elab(base), field, sp)
     case SA.Term.Capture(name, sp)        => CA.Term.Capture(name, sp)
@@ -67,7 +67,7 @@ object Elaborator {
 
   private def elab(term: SurfaceAst.Term): CA.Term = term match {
     case SA.Term.Ident(name, sp)         => CA.Term.Ident(name, sp)
-    case SA.Term.App(fn, args, sp)       => CA.Term.App(elab(fn), args.map(elab), sp)
+    case SA.Term.App(fn, args, sp)       => CA.Term.App(elab(fn), args.map(_.map(elab)), sp)
     case SA.Term.Select(base, field, sp) => CA.Term.Select(elab(base), field, sp)
     case pi: SA.Term.Pi                  => elabPi(pi)
     case l: SA.Term.Lam                  => elab(l)

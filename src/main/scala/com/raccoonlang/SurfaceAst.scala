@@ -25,7 +25,7 @@ object SurfaceAst {
     final case class Select(base: Term, field: String, span: Span) extends Term
 
     // Application in type position
-    final case class TApp(fn: Ident, args: NEL[TypeTerm], span: Span) extends TypeTerm
+    final case class TApp(fn: Ident, args: NEL[AppArg[TypeTerm]], span: Span) extends TypeTerm
 
     // Pi (x: A) -> B x
     final case class Pi(binder: Binder, body: TypeTerm, span: Span) extends Term with TypeTerm
@@ -34,7 +34,7 @@ object SurfaceAst {
     final case class Capture(name: String, span: Span) extends TypeTerm
 
     // Application: f(a) (term-level)
-    final case class App(fn: Term, args: NEL[Term], span: Span) extends Term
+    final case class App(fn: Term, args: NEL[AppArg[Term]], span: Span) extends Term
 
     // Lambda: fun (x : A)(y: B): B => body
     final case class Lam(header: FuncHeader, body: Term, span: Span) extends Term

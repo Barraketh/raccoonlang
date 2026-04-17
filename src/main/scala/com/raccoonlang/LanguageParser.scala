@@ -75,12 +75,21 @@ object LanguageParser {
     } | capture
   }
 
-  private def parenArgs[A](arg: => Parser[A]): Parser[Vector[A]] =
-    sym('(') ~/ arg.rep(1, sym(',')) ~ symTight(')')
+  private def appArg[A](arg: => Parser[A]): Parser[AppArg[A]] = {
+    val named: Parser[AppArg[A]] =
+      (argName ~ sym(":=") ~/ arg).flatSpanned.map { case (name, value, span) =>
+        AppArg.Named(name, value, span)
+      }
+    val positional: Parser[AppArg[A]] = arg.spanned.map { sp => AppArg.Pos(sp.value, sp.span) }
+    named | positional
+  }
+
+  private def parenAppArgs[A](arg: => Parser[A]): Parser[Vector[AppArg[A]]] =
+    sym('(') ~/ appArg(arg).rep(1, sym(',')) ~ symTight(')')
 
   // General type application: F(a, b, ...) -> TApp(F, a, b, ...)
   private def typeExpr: Parser[TypeTerm] = {
-    (identTerm ~ parenArgs(typeTerm)).flatSpanned.map { case (name, args, span) =>
+    (identTerm ~ parenAppArgs(typeTerm)).flatSpanned.map { case (name, args, span) =>
       TApp(name, NEL.mk(args), span)
     } | typeAtom
   }
@@ -131,7 +140,7 @@ object LanguageParser {
   }
 
   private def term: Parser[Term] =
-    ((lambda | matchP | body | pi | termAtom).spanned ~ parenArgs(term).?).spanned.mapAsT { case ((fn, args), span) =>
+    ((lambda | matchP | body | pi | termAtom).spanned ~ parenAppArgs(term).?).spanned.mapAsT { case ((fn, args), span) =>
       args match {
         case Some(value) => App(fn.value, NEL.mk(value), span)
         case None        => fn.value

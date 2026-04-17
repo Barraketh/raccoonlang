@@ -45,16 +45,16 @@ object CoreAst {
     final case class Select(base: Term, field: String, span: Span) extends Term
 
     // Application in type position
-    final case class TApp(fn: Ident, args: NEL[TypeTerm], span: Span) extends TypeTerm
+    final case class TApp(fn: Ident, args: NEL[AppArg[TypeTerm]], span: Span) extends TypeTerm
 
     // Application in type pattern
-    final case class PatternApp(fn: Ident, args: NEL[TypePattern], span: Span) extends TypePattern
+    final case class PatternApp(fn: Ident, args: NEL[AppArg[TypePattern]], span: Span) extends TypePattern
 
     // Pi (x: A) -> B x
     final case class Pi(binders: NEL[Binder], out: TypeTerm, span: Span) extends Term with TypeTerm
 
     // Application: f(a) (term-level)
-    final case class App(fn: Term, args: NEL[Term], span: Span) extends Term
+    final case class App(fn: Term, args: NEL[AppArg[Term]], span: Span) extends Term
 
     case class Body(lets: Vector[Let], res: Term, span: Span) extends Term
 
