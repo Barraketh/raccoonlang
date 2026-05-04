@@ -1,6 +1,5 @@
 package com.raccoonlang
 
-import com.raccoonlang.BinderOps.assignFreshVarsAndCheck
 import com.raccoonlang.CoreAst.Term.{Ident, Lam, Match}
 import com.raccoonlang.CoreAst._
 import com.raccoonlang.Interpreter._
@@ -43,8 +42,8 @@ object TypeChecker {
     val fnTy0 = Interpreter.resolveInEqStore(fn0.tpe)
 
     fnTy0 match {
-      case VPi(env, binders, _, _, _, _, _) =>
-        BinderOps.checkAndInstantiate(binders, env, args, eqStore)
+      case pi: VPi =>
+        BinderOps.checkAndInstantiate(pi.binders, pi.env, args)
 
         // Since we've already typechecked everything we care about, now we can just evalTerm
         Interpreter.evalApply(fn0, args)
@@ -72,9 +71,9 @@ object TypeChecker {
 
   // Check that all type terms typecheck under a fresh var assignment to binders
   private def typecheckPi(pi: Term.Pi, env: Env)(implicit meta: EqStore, normalizers: NormalizerMap): VPi = {
-    val bodyEnv = BinderOps.freshenAndCheck(pi.binders, env, meta).env
-    getType(pi.out, bodyEnv)
-    evalPi(pi, env)
+    val freshened = BinderOps.freshenRawBinders(pi.binders, env, (tt, env) => evalTypeTerm(tt, env))
+    getType(pi.out, freshened.env)
+    evalPi(pi, env, NEL.mk(freshened.vBinders))
   }
 
   def evalTypeTerm(term: TypeTerm, env: Env)(implicit
@@ -143,10 +142,10 @@ object TypeChecker {
         scrutTypeParams: Vector[Value]
     ): Vector[ReachableCtor] =
       ctorNames.flatMap { ctorName =>
-        env.find(ctorName).getOrElse(throw NotFound(ctorName)) match {
+        env(ctorName) match {
           case h: ConstructorHead =>
-            val instantiated = ConstructorOps.freshFieldsFromParams(h, scrutTypeParams, eqStore)
-            val appliedCtor: Value = instantiated.value
+            val fresh = ConstructorOps.freshFromParams(h, scrutTypeParams)
+            val appliedCtor: Value = fresh.value
 
             val branchEqStore: Option[EqStore] =
               try {
@@ -164,9 +163,7 @@ object TypeChecker {
                   }
               }
 
-            branchEqStore.map(eqStore =>
-              ReachableCtor(ctorName, h, instantiated.fieldArgs, instantiated.resultTy, eqStore)
-            )
+            branchEqStore.map(eqStore => ReachableCtor(ctorName, h, fresh.value.fields, fresh.value.tpe, eqStore))
 
           case _ => throw UnknownConstructor(ctorName, inductiveName)
         }
@@ -177,10 +174,10 @@ object TypeChecker {
       if (reachable.length > 1) return false
 
       val only = reachable.head
-      val copy1 = ConstructorOps.freshAllArgs(only.head, eqStore)
-      val copy2 = ConstructorOps.freshAllArgs(only.head, eqStore)
-      val (fields1, res1) = (copy1.fieldArgs, copy1.resultTy)
-      val (fields2, res2) = (copy2.fieldArgs, copy2.resultTy)
+      val copy1 = ConstructorOps.freshAll(only.head)
+      val copy2 = ConstructorOps.freshAll(only.head)
+      val (fields1, res1) = (copy1.fields, copy1.tpe)
+      val (fields2, res2) = (copy2.fields, copy2.tpe)
 
       val refinable0 = scrutTpe.synDeps ++ res1.synDeps ++ res2.synDeps
 
@@ -293,7 +290,8 @@ object TypeChecker {
     }
 
     val vpi = typecheckPi(l.ty, env)
-    val (_, bodyEnv, _) = assignFreshVarsAndCheck(vpi, eqStore)
+    val freshBody = BinderOps.freshen(vpi)
+    val bodyEnv = freshBody.env
 
     val recurEnv =
       l.name match {
@@ -351,8 +349,10 @@ object TypeChecker {
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): RelatedPis = {
-    val (sharedVars, nextEnv1, _) = assignFreshVarsAndCheck(pi1, eqStore)
-    val nextEnv2 = BinderOps.checkAndInstantiate(pi2.binders, pi2.env, NEL.mk(sharedVars), eqStore)
+    val freshPi1 = BinderOps.freshen(pi1)
+    val sharedVars = freshPi1.vars
+    val nextEnv1 = freshPi1.env
+    val nextEnv2 = BinderOps.checkAndInstantiate(pi2.binders, pi2.env, NEL.mk(sharedVars))
 
     val out1 = pi1.codomain(nextEnv1, eqStore)
     val out2 = pi2.codomain(nextEnv2, eqStore)

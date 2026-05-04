@@ -1,70 +1,86 @@
 package com.raccoonlang
 
 import com.raccoonlang.Util.NEL
-import com.raccoonlang.Value.{ConstructorHead, VCtor, VPi}
+import com.raccoonlang.Value.{ConstructorHead, VBinder, VCtor, VPi}
 
 import scala.collection.immutable.BitSet
 
 object ConstructorOps {
-  final case class Instantiation(head: ConstructorHead, fieldArgs: Vector[Value], resultTy: Value) {
-    val value: VCtor = VCtor(head, fieldArgs, resultTy)
+  final case class FreshCtor(value: VCtor, newVars: BitSet)
+
+  final case class ConstructorShape(head: ConstructorHead, pi: VPi) {
+    val paramCount: Int = head.numParams
+
+    def paramBinders: Vector[VBinder] = pi.binders.toVector.take(paramCount)
+    def fieldBinders: Vector[VBinder] = pi.binders.toVector.drop(paramCount)
+
+    def paramArgs[A](args: Vector[A]): Vector[A] = args.take(paramCount)
+    def isParamIndex(idx: Int): Boolean = idx < paramCount
+
+    def instantiateParams(paramArgs: Vector[Value])(implicit eqStore: EqStore): Env = {
+      if (paramArgs.length != paramCount) throw ArityMismatch(paramCount, paramArgs.length)
+      if (paramCount == 0) pi.env
+      else BinderOps.instantiate(NEL.mk(paramBinders), pi.env, NEL.mk(paramArgs))
+    }
+
+    def makeCtor(allArgs: Vector[Value], resultTy: Value): VCtor = VCtor(head, allArgs.drop(paramCount), resultTy)
   }
 
-  def fromAppliedArgs(head: ConstructorHead, allArgs: Vector[Value], resultTy: Value): Instantiation =
-    Instantiation(head, allArgs.drop(head.numParams), resultTy)
+  object ConstructorShape {
+    def from(head: ConstructorHead): Option[ConstructorShape] =
+      head.tpe match {
+        case pi: VPi => Some(ConstructorShape(head, pi))
+        case _       => None
+      }
 
-  def instantiateParams(pi: VPi, numParams: Int, paramArgs: Vector[Value], eqStore: EqStore): Env = {
-    if (paramArgs.length != numParams) throw ArityMismatch(numParams, paramArgs.length)
-    if (numParams == 0) pi.env
-    else BinderOps.instantiate(pi.binders.take(numParams), pi.env, NEL.mk(paramArgs), eqStore)
+    def require(head: ConstructorHead): ConstructorShape = from(head).getOrElse(throw CannotApplyNonFunction(head.tpe))
   }
 
-  def fieldBinders(pi: VPi, numParams: Int): Vector[CoreAst.Binder] =
-    pi.binders.toList.drop(numParams).toVector
+  def freshFromParams(head: ConstructorHead, paramArgs: Vector[Value])(implicit eqStore: EqStore): FreshCtor =
+    ConstructorShape.from(head) match {
+      case Some(shape) =>
+        val envWithParams = shape.instantiateParams(paramArgs)
+        val fields = shape.fieldBinders
+        val fresh = freshFieldPrefix(fields, envWithParams, fields.length)
+        FreshCtor(VCtor(head, fresh.vars, shape.pi.codomain(fresh.env, eqStore)), fresh.newVars)
 
-  def freshFields(
-      pi: VPi,
-      numParams: Int,
-      envWithParams: Env,
+      case None => FreshCtor(VCtor(head, Vector.empty, head.tpe), BitSet.empty)
+    }
+
+  def freshAll(head: ConstructorHead)(implicit eqStore: EqStore): VCtor =
+    ConstructorShape.from(head) match {
+      case Some(shape) =>
+        val fresh = BinderOps.freshen(shape.pi)
+        shape.makeCtor(fresh.vars.map(v => v: Value), shape.pi.codomain(fresh.env, eqStore))
+
+      case None => VCtor(head, Vector.empty, head.tpe)
+    }
+
+  def structFieldType(head: ConstructorHead, typeArgs: Vector[Value], field: String)(implicit
       eqStore: EqStore
-  ): BinderOps.Freshened =
-    freshFieldPrefix(pi, numParams, envWithParams, fieldBinders(pi, numParams).length, eqStore)
+  ): Value = {
+    if (!head.isStruct) throw NotAStruct(head.name)
 
-  def freshFieldPrefix(
-      pi: VPi,
-      numParams: Int,
-      envWithParams: Env,
-      fieldCount: Int,
+    ConstructorShape.from(head) match {
+      case Some(shape) =>
+        val envWithParams = shape.instantiateParams(shape.paramArgs(typeArgs))
+        val allFieldBinders = shape.fieldBinders
+        val fieldIdx = allFieldBinders.indexWhere(_.name == field)
+        if (fieldIdx < 0) throw NotFound(field)
+
+        freshFieldPrefix(allFieldBinders, envWithParams, fieldIdx + 1).env(field).tpe
+
+      case None => throw NotFound(field)
+    }
+  }
+
+  // Starting from an environment where constructor parameters are already bound, allocate fresh values for the first
+  // fieldCount field binders so later field types can refer to earlier fields.
+  private def freshFieldPrefix(fieldBinders: Vector[VBinder], envWithParams: Env, fieldCount: Int)(implicit
       eqStore: EqStore
   ): BinderOps.Freshened = {
-    val binders = fieldBinders(pi, numParams).take(fieldCount)
+    val binders = fieldBinders.take(fieldCount)
     if (binders.isEmpty) BinderOps.Freshened(Vector.empty, envWithParams, BitSet.empty)
-    else BinderOps.freshen(NEL.mk(binders), envWithParams, eqStore)
+    else BinderOps.freshen(NEL.mk(binders), envWithParams)
   }
-
-  def fromFreshFields(
-      head: ConstructorHead,
-      pi: VPi,
-      freshFields: BinderOps.Freshened,
-      eqStore: EqStore
-  ): Instantiation =
-    Instantiation(head, freshFields.vars, pi.codomain(freshFields.env, eqStore))
-
-  def freshFieldsFromParams(head: ConstructorHead, paramArgs: Vector[Value], eqStore: EqStore): Instantiation =
-    head.tpe match {
-      case pi: VPi =>
-        val envWithParams = instantiateParams(pi, head.numParams, paramArgs, eqStore)
-        fromFreshFields(head, pi, freshFields(pi, head.numParams, envWithParams, eqStore), eqStore)
-
-      case otherTy => Instantiation(head, Vector.empty, otherTy)
-    }
-
-  def freshAllArgs(head: ConstructorHead, eqStore: EqStore)(implicit normalizers: NormalizerMap): Instantiation =
-    head.tpe match {
-      case pi: VPi =>
-        val (freshArgs, ctorEnv, _) = BinderOps.assignFreshVarsAndCheck(pi, eqStore)
-        Instantiation(head, freshArgs.drop(head.numParams).map(v => v: Value), pi.codomain(ctorEnv, eqStore))
-
-      case otherTy => Instantiation(head, Vector.empty, otherTy)
-    }
 }

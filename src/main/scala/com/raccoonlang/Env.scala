@@ -5,6 +5,8 @@ final case class Env(
     globals: Map[String, Value],
     locals: ScopedMap
 ) {
+  def apply(name: String): Value = find(name).getOrElse(throw NotFound(name))
+
   def find(name: String): Option[Value] = locals.find(name).orElse(globals.get(name))
 
   def findLocal(name: String): Option[Value] = locals.find(name)

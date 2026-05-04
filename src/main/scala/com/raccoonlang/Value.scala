@@ -1,6 +1,6 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.{Binder, TypeTerm}
+import com.raccoonlang.CoreAst.TypeTerm
 import com.raccoonlang.Util.NEL
 
 import scala.collection.immutable.BitSet
@@ -122,11 +122,18 @@ object Value {
     override def synDeps: BitSet = level.synDeps
   }
 
+  sealed trait CaptureType
+  case class StructuralCapture(binder: VBinder) extends CaptureType
+  case class LevelCapture(subtract: Int) extends CaptureType
+
+  case class VCapture(name: String, path: List[Int], captureType: CaptureType)
+
+  case class VBinder(name: String, ty: TypeTerm, captures: Vector[VCapture])
+
   case class VPi(
       env: Env,
-      binders: NEL[Binder],
+      binders: NEL[VBinder],
       codomain: (Env, EqStore) => Value,
-      outSyntax: Option[TypeTerm],
       synDeps: BitSet,
       id: ValueId,
       tpe: Universe

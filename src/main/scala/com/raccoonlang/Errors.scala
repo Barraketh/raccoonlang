@@ -1,6 +1,6 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.TypePattern
+import com.raccoonlang.Value.Level
 
 sealed trait TypeError extends RuntimeException {
   def msg: String
@@ -33,10 +33,9 @@ object TypeError {
     case e: NonStrictlyPositive             => e.copy(span = Some(sp))
     case e: InductiveTypeNotASort           => e.copy(span = Some(sp))
     case e: PatternCaptureNeedsExpectedType => e.copy(span = Some(sp))
-    case e: PatternHeadMismatch             => e.copy(span = Some(sp))
-    case e: PatternArityMismatch            => e.copy(span = Some(sp))
+    case e: FailedToOpenCapture             => e.copy(span = Some(sp))
     case e: PropEliminationRestricted       => e.copy(span = Some(sp))
-    case e: LevelPatternMismatch            => e.copy(span = Some(sp))
+    case e: InvalidLevelSubtraction         => e.copy(span = Some(sp))
     case e: WTF                             => e.copy(span = Some(sp))
     case e: InvalidStruct                   => e.copy(span = Some(sp))
     case e: NotAStruct                      => e.copy(span = Some(sp))
@@ -121,17 +120,8 @@ final case class PatternCaptureNeedsExpectedType(name: String, span: Option[Span
   override def msg: String = s"Pattern capture $$$name needs an expected type"
 }
 
-final case class PatternHeadMismatch(expectedHead: Value, got: Value, span: Option[Span] = None) extends TypeError {
-  override def msg: String = s"Pattern expected head $expectedHead, got $got"
-}
-
-final case class PatternArityMismatch(
-    head: Value,
-    expected: Int,
-    got: Int,
-    span: Option[Span] = None
-) extends TypeError {
-  override def msg: String = s"Pattern head $head expected $expected args, got $got"
+final case class FailedToOpenCapture(v: Value, idx: Int, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"Cannot return idx $idx of $v"
 }
 
 final case class WTF(msg: String, span: Option[Span] = None) extends TypeError
@@ -182,12 +172,12 @@ final case class PropEliminationRestricted(
     s"Cannot eliminate proposition $inductive into non-Prop motive $motive"
 }
 
-final case class MultipleLevelCaptures(p: TypePattern, span: Option[Span]) extends TypeError {
-  override def msg: String = "Cannot pattern match multiple level captures "
+final case class MultipleLevelCaptures(p: CoreAst.TypePattern, span: Option[Span]) extends TypeError {
+  override def msg: String = "Cannot pattern match multiple level captures " + p
 }
 
-final case class LevelPatternMismatch(p: TypePattern, v: Value, span: Option[Span] = None) extends TypeError {
-  override def msg: String = s"Level pattern mismatch - expected $p, got $v"
+final case class InvalidLevelSubtraction(l: Level, sub: Int, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"Tried to subtract $sub from $l"
 }
 
 final case class InvalidStruct(inductive: String, reason: String, span: Option[Span] = None) extends TypeError {

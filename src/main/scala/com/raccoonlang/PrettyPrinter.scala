@@ -1,6 +1,5 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.Term.Ident
 import com.raccoonlang.Value.LevelTpe
 
 object PrettyPrinter {
@@ -102,9 +101,9 @@ object PrettyPrinter {
       s"$head($as)"
     case CoreAst.Term.Lam(ty, _, body, _, _, _) =>
       s"fun ${printBinders(ty.binders)}: ${printTypeTerm(ty.out)} => ${printTerm(body)}"
-    case m @ CoreAst.Term.Match(_, _, _, _)    => printMatch(m)
-    case b: CoreAst.Term.Body                  => printBody(b)
-    case CoreAst.Term.Capture(name, _)         => s"$$$name"
+    case m @ CoreAst.Term.Match(_, _, _, _) => printMatch(m)
+    case b: CoreAst.Term.Body               => printBody(b)
+    case CoreAst.Term.Capture(name, _)      => s"$$$name"
   }
 
   private def printCase(c: CoreAst.Case): String = {
@@ -120,16 +119,11 @@ object PrettyPrinter {
   }
 
   def print(value: Value): String = value match {
-    case Value.VSort(lvl)      => s"Type $lvl"
-    case Value.PropTpe         => "Prop"
-    case Value.KernelObject    => "KernelObject"
-    case Value.Level(atoms, c) => s"Level($atoms, $c)"
-    case Value.VPi(_, binders, _, out, _, _, _) =>
-      val outTerm = out match {
-        case Some(value) => value
-        case None        => Ident("Any", Span(0, 0))
-      }
-      printTypeTerm(CoreAst.Term.Pi(binders, outTerm, Span(0, 0)))
+    case Value.VSort(lvl)                        => s"Type $lvl"
+    case Value.PropTpe                           => "Prop"
+    case Value.KernelObject                      => "KernelObject"
+    case Value.Level(atoms, c)                   => s"Level($atoms, $c)"
+    case pi: Value.VPi                           => "VPi"
     case Value.VConst(name, _, _)                => name
     case v: Value.AppliedValue                   => printApp(v.head, v.args)
     case Value.ConstructorHead(name, _, _, _, _) => name

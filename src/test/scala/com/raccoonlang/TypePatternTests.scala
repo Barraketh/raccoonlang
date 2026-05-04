@@ -212,7 +212,7 @@ class TypePatternTests extends munit.FunSuite {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
-        intercept[PatternArityMismatch] {
+        intercept[ArityMismatch] {
           Interpreter.run(core)
         }
       case err: Failure =>
@@ -238,7 +238,7 @@ class TypePatternTests extends munit.FunSuite {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
-        intercept[PatternArityMismatch] {
+        intercept[ArityMismatch] {
           Interpreter.run(core)
         }
       case err: Failure =>
@@ -319,7 +319,7 @@ class TypePatternTests extends munit.FunSuite {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
-        intercept[PatternHeadMismatch] {
+        intercept[FailedToOpenCapture] {
           Interpreter.run(core)
         }
       case err: Failure =>

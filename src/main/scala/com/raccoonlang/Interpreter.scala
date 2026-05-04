@@ -53,9 +53,9 @@ object Interpreter {
   }
 
   private def getEnvWithArgs(fnTpe: VPi, args: NEL[Value])(implicit eqStore: EqStore) =
-    BinderOps.instantiate(fnTpe.binders, fnTpe.env, args, eqStore)
+    BinderOps.instantiate(fnTpe.binders, fnTpe.env, args)
 
-  def evalPi(pi: Term.Pi, env: Env)(implicit eqStore: EqStore): VPi = {
+  def evalPi(pi: Term.Pi, env: Env, vBinders: NEL[VBinder])(implicit eqStore: EqStore): VPi = {
     val captureNames = FreeNames
       .getFreeNames(pi, Set.empty)
       .toVector
@@ -64,7 +64,9 @@ object Interpreter {
     val captureVals = captureNames.map(n => env.findLocal(n).get)
     val id = ValueId.LocalId(pi.span.start, captureVals)
 
-    val (vars, bodyEnv, _) = BinderOps.assignFreshVars(pi.binders, env, eqStore)
+    val fresh = BinderOps.freshen(vBinders, env)
+    val vars = fresh.vars
+    val bodyEnv = fresh.env
     val outType = evalTypeTerm(pi.out, bodyEnv)
 
     // Determine classifier for Pi: Prop if codomain is Prop, otherwise predicative max
@@ -81,13 +83,17 @@ object Interpreter {
 
     VPi(
       env,
-      pi.binders,
+      vBinders,
       codomain = (env, eqStore) => evalTypeTerm(pi.out, env)(eqStore),
-      Some(pi.out),
       FreeNames.getDeps(pi, env, Set.empty),
       id,
       piClassifier
     )
+  }
+
+  private def evalPi(pi: Term.Pi, env: Env)(implicit eqStore: EqStore): VPi = {
+    val binders = BinderOps.freshenRawBinders(pi.binders, env, (tt, env) => evalTypeTerm(tt, env)).vBinders
+    evalPi(pi, env, NEL.mk(binders))
   }
 
   private def evalTApp(app: Term.TApp, env: Env)(implicit meta: EqStore): Value = {
@@ -107,9 +113,7 @@ object Interpreter {
   }
 
   private def evalIdent(i: Term.Ident, env: Env): Value = {
-    val res = env.find(i.name).getOrElse {
-      throw TypeError.withSpan(NotFound(i.name), i.span)
-    }
+    val res = env(i.name)
     res match {
       case h: ConstructorHead if h.totalArity == 0 => VCtor(h, Vector.empty, h.tpe)
       case _                                       => res
@@ -137,7 +141,7 @@ object Interpreter {
           case h: VConst => VApp(h, vArgs.toVector, pi.codomain(envWithArgs, eqStore))
           case h: ConstructorHead =>
             val resultTy = pi.codomain(envWithArgs, eqStore)
-            ConstructorOps.fromAppliedArgs(h, vArgs.toVector, resultTy).value
+            ConstructorOps.ConstructorShape.require(h).makeCtor(vArgs.toVector, resultTy)
           case b: Blocker => VBlockedApp(b, vArgs.toList, pi.codomain(envWithArgs, eqStore), b.blockerId)
           case _          => throw CannotApplyNonFunction(fn)
         }
@@ -225,21 +229,10 @@ object Interpreter {
     if (!meta.isStruct) throw NotAStruct(indName)
     val ctorName = meta.constructorNames.head
 
-    env.find(ctorName).getOrElse(throw NotFound(ctorName)) match {
-      case ConstructorHead(_, numParams, _, ctorTy, isStruct) =>
-        if (!isStruct) throw NotAStruct(indName)
-        ctorTy match {
-          case pi: VPi =>
-            val envWithParams = ConstructorOps.instantiateParams(pi, numParams, typeArgs.take(numParams), eqStore)
-            val allFieldBinders = ConstructorOps.fieldBinders(pi, numParams)
-            val fieldIdx = allFieldBinders.indexWhere(_.name == field)
-            if (fieldIdx < 0) throw NotFound(field)
-
-            val fieldPrefix = ConstructorOps.freshFieldPrefix(pi, numParams, envWithParams, fieldIdx + 1, eqStore)
-
-            fieldPrefix.env.find(field).get.tpe
-          case _ => throw NotFound(field)
-        }
+    env(ctorName) match {
+      case head: ConstructorHead =>
+        if (!head.isStruct) throw NotAStruct(indName)
+        ConstructorOps.structFieldType(head, typeArgs, field)
       case _ => throw NotFound(ctorName)
     }
   }
@@ -250,16 +243,10 @@ object Interpreter {
       case VCtor(head, fields, _) =>
         if (!head.isStruct) throw NotAStruct(head.name)
 
-        head.tpe match {
-          case pi: VPi =>
-            val fieldBinders = pi.binders.toList.drop(head.numParams)
-            val idx = fieldBinders.indexWhere(_.name == field)
-            if (idx >= 0 && idx < fields.length && fieldBinders(idx).name != "_") fields(idx)
-            else
-              throw NotFound(field)
-          case _ =>
-            throw NotFound(field)
-        }
+        val fieldBinders = ConstructorOps.ConstructorShape.require(head).fieldBinders
+        val idx = fieldBinders.indexWhere(_.name == field)
+        if (idx >= 0 && idx < fields.length && fieldBinders(idx).name != "_") fields(idx)
+        else throw NotFound(field)
 
       case b: Blocker =>
         val resultTy = computeSelectResultTypeFrom(v0.tpe, field, env)
@@ -403,12 +390,11 @@ object Interpreter {
       VLam(
         VPi(
           env2,
-          NEL.one(Binder("l", CoreAst.Term.Ident("Level", Span(0, 0)), Span(0, 0))),
+          NEL.one(VBinder("l", CoreAst.Term.Ident("Level", Span(0, 0)), Vector.empty)),
           (env, eqStore) => {
             val l = getLevel(env.findLocal("l").get)(eqStore)
             VSort(Level.succ(l))
           },
-          None,
           BitSet.empty,
           ValueId.Const("Sort"),
           VSort(Level.zero)

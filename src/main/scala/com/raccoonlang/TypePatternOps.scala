@@ -1,42 +1,14 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.Term.{Capture, PatternApp}
-import com.raccoonlang.CoreAst.{TypePattern, TypeTerm}
+import com.raccoonlang.CoreAst.{Binder, Term, TypePattern, TypeTerm}
 import com.raccoonlang.Interpreter._
-import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
 
 import scala.collection.immutable.BitSet
 
 object TypePatternOps {
-  private final case class FreshOpened(
-      env: Env,
-      tpe: Value,
-      newVars: BitSet,
-      value: Option[Value]
-  )
-
-  private sealed trait OpenMode {
-    def evalTypeTerm(term: TypeTerm, env: Env)(implicit eqStore: EqStore): Value
-
-    def bindPattern(env: Env, pattern: TypePattern, actual: Value)(implicit eqStore: EqStore): Env
-  }
-
-  private case object UncheckedOpenMode extends OpenMode {
-    override def evalTypeTerm(term: TypeTerm, env: Env)(implicit eqStore: EqStore): Value =
-      Interpreter.evalTypeTerm(term, env)
-
-    override def bindPattern(env: Env, pattern: TypePattern, actual: Value)(implicit eqStore: EqStore): Env =
-      bindInternal(env, pattern, actual)
-  }
-
-  private final case class CheckedOpenMode(normalizers: NormalizerMap) extends OpenMode {
-    override def evalTypeTerm(term: TypeTerm, env: Env)(implicit eqStore: EqStore): Value =
-      TypeChecker.evalTypeTerm(term, env)(eqStore, normalizers)
-
-    override def bindPattern(env: Env, pattern: TypePattern, actual: Value)(implicit eqStore: EqStore): Env =
-      matchOpenInternal(env, pattern, actual)(eqStore, normalizers)
-  }
+  final case class FreshenedBinder(value: Value, env: Env, newVars: BitSet)
+  final case class FreshenedRawBinder(value: Value, env: Env, newVars: BitSet, binder: VBinder)
 
   private def requirePi(fn: Value)(implicit eqStore: EqStore): VPi =
     resolveInEqStore(fn.tpe) match {
@@ -44,268 +16,150 @@ object TypePatternOps {
       case other   => throw CannotApplyNonFunction(other)
     }
 
-  // =========================
-  // Semantic head views
-  // =========================
+  private def compileType(pattern: TypePattern): TypeTerm = pattern match {
+    case term: TypeTerm           => term
+    case Term.Capture(name, span) => Term.Ident(name, span)
+    case Term.PatternApp(fn, args, span) =>
+      Term.TApp(fn, args.map(compileType), span)
+  }
 
-  private sealed trait SemanticHead
-  private case class ValueHead(v: Value) extends SemanticHead
-  private case object SortHead extends SemanticHead
-
-  private def fnHeadView(fn: Value)(implicit eqStore: EqStore): SemanticHead =
-    resolveInEqStore(fn) match {
-      case VLam(_, ValueId.Const("Sort"), _, _) => SortHead
-      // Defensive: older environments could install Sort as a const; keep support
-      case VConst("Sort", _, _) => SortHead
-      case other                => ValueHead(other)
+  private def compileLevelCapture(pattern: TypePattern): Option[VCapture] =
+    pattern match {
+      case Term.Capture(name, _) => Some(VCapture(name, 0 :: Nil, LevelCapture(0)))
+      case Term.PatternApp(fn, args, _) if fn.name == "Level::succ" =>
+        compileLevelCapture(args.head).map {
+          case c @ VCapture(_, _, LevelCapture(subtract)) => c.copy(captureType = LevelCapture(subtract + 1))
+          case _ => throw WTF("Expected a level capture while compiling a level pattern")
+        }
+      case _ => None
     }
 
-  private def actualHeadView(v: Value)(implicit eqStore: EqStore): Option[(SemanticHead, Vector[Value])] =
+  private def collectCaptures(env: Env, pattern: TypePattern, evalTypeTerm: (CoreAst.TypeTerm, Env) => Value)(implicit
+      eqStore: EqStore
+  ): Vector[VCapture] =
+    pattern match {
+      case Term.PatternApp(fn, args, _) if fn.name == "Sort" => compileLevelCapture(args.head).toVector
+
+      case app: Term.PatternApp =>
+        val fnV = evalTypeTerm(app.fn, env)
+        val pi = requirePi(fnV)
+
+        pi.binders.zip(app.args).toVector.zipWithIndex.flatMap {
+          case ((binder, next), idx) =>
+            next match {
+              case _: TypeTerm => Vector.empty
+              case nested: Term.PatternApp =>
+                collectCaptures(env, nested, evalTypeTerm).map(capture => capture.copy(path = idx :: capture.path))
+              case Term.Capture(name, _) =>
+                Vector(VCapture(name, idx :: Nil, StructuralCapture(binder)))
+            }
+          case _ => Vector.empty
+        }
+
+      case _ => Vector.empty
+    }
+
+  def toVBinder(env: Env, binder: CoreAst.Binder, evalTypeTerm: (CoreAst.TypeTerm, Env) => Value)(implicit
+      eqStore: EqStore
+  ): VBinder = {
+    binder.ty match {
+      case Term.Capture(name, span) => throw PatternCaptureNeedsExpectedType(name, Some(span))
+      case _                        =>
+    }
+
+    val captures = collectCaptures(env, binder.ty, evalTypeTerm)
+    val resType = compileType(binder.ty)
+
+    val (withCaptures, _) = freshenCaptures(env, captures)
+    evalTypeTerm(resType, withCaptures)
+
+    VBinder(binder.name, resType, captures)
+  }
+
+  private def actualHeadView(v: Value)(implicit eqStore: EqStore): Option[(Value, Vector[Value])] =
     resolveInEqStore(v) match {
-      case VSort(level)       => Some((SortHead, Vector(level)))
-      case av: AppliedValue   => Some((ValueHead(av.head), av.args.toVector))
-      case v: VCtor           => Some((ValueHead(v.head), v.fields))
-      case h: VConst          => Some((ValueHead(h), Vector.empty))
-      case h: ConstructorHead => Some((ValueHead(h), Vector.empty))
+      case VSort(level)       => Some((envSortValue, Vector(level)))
+      case av: AppliedValue   => Some((av.head, av.args.toVector))
+      case v: VCtor           => Some((v.head, v.fields))
+      case h: VConst          => Some((h, Vector.empty))
+      case h: ConstructorHead => Some((h, Vector.empty))
       case _                  => None
     }
 
-  private def decomposeForPatternHeadDef(fn: Value, actual: Value)(implicit
-      eqStore: EqStore,
-      normalizers: NormalizerMap
-  ): Vector[Value] = {
-    val fnHead = fnHeadView(fn)
-    actualHeadView(actual) match {
-      case Some((SortHead, args)) if fnHead == SortHead => args
-      case Some((ValueHead(actualHead), args)) =>
-        fnHead match {
-          case ValueHead(expectedHead) if TypeChecker.defEq(actualHead, expectedHead) => args
-          case _ => throw PatternHeadMismatch(fn, actual)
-        }
-      case _ => throw PatternHeadMismatch(fn, actual)
-    }
-  }
+  private def envSortValue: Value = VConst("Sort", Symbol, KernelObject)
 
-  private def decomposeForBinding(actual: Value, expectedArity: Int)(implicit eqStore: EqStore): Vector[Value] =
-    actualHeadView(actual) match {
-      case Some((_, args)) if args.length == expectedArity => args
-      case Some((_, args)) =>
-        throw WTF(s"Pattern bind arity mismatch: expected $expectedArity args, got ${args.length} in $actual")
-      case None => throw WTF(s"Failed to deconstruct $actual")
-    }
-
-  private def bindInternal(
-      env: Env,
-      pat: TypePattern,
-      value: Value
-  )(implicit eqStore: EqStore): Env = {
-    value.tpe match {
-      case LevelTpe => bindLevel(env, pat, value)
-      case _ =>
-        pat match {
-          case Capture(name, _) => env.putLocal(name, value)
-
-          case _: TypeTerm => env
-
-          case PatternApp(_, patArgs, _) =>
-            val args = decomposeForBinding(value, patArgs.length)
-            patArgs.toVector.zip(args).foldLeft(env) { case (curEnv, (nextPat, arg)) =>
-              bindInternal(curEnv, nextPat, arg)
-            }
-        }
-    }
-  }
-
-  private def matchOpenInternal(
-      userEnv: Env,
-      p: TypePattern,
-      actual: Value
-  )(implicit
-      eqStore: EqStore,
-      normalizers: NormalizerMap
-  ): Env = {
-    val actual0 = resolveInEqStore(actual)
-
-    actual0.tpe match {
-      case LevelTpe => matchLevel(userEnv, p, actual0)
-      case _ =>
-        p match {
-          case Capture(name, _) => userEnv.putLocal(name, actual0)
-
-          case t: TypeTerm =>
-            val v = evalTypeTerm(t, userEnv)
-            TypeChecker.checkFits(actual0, v)
-            userEnv
-
-          case PatternApp(fn, args, _) =>
-            val fnV = evalTypeTerm(fn, userEnv)
-            val pi = requirePi(fnV)
-
-            if (pi.binders.length != args.length)
-              throw PatternArityMismatch(fnV, pi.binders.length, args.length)
-
-            val actualArgs = decomposeForPatternHeadDef(fnV, actual0)
-            if (actualArgs.length != args.length)
-              throw PatternArityMismatch(fnV, args.length, actualArgs.length)
-
-            val (nextUserEnv, _) =
-              pi.binders.toList.zip(args.toList).zip(actualArgs).foldLeft((userEnv, pi.env.newScope)) {
-                case ((curUserEnv, curPiEnv), ((binder, argPat), actualArg)) =>
-                  val nextPiEnv = bindInternal(curPiEnv, binder.ty, actualArg.tpe).putLocal(binder.name, actualArg)
-                  val nextUserEnv = matchOpenInternal(curUserEnv, argPat, actualArg)
-                  (nextUserEnv, nextPiEnv)
-              }
-            nextUserEnv
-        }
-    }
-  }
-
-  // TODO: This is very simplified - clean this up
-  private def openLevelPattern(env: Env, p: TypePattern)(implicit eqStore: EqStore): (Value, Option[String]) = p match {
-    case term: TypeTerm   => (Interpreter.evalTypeTerm(term, env), None)
-    case Capture(name, _) => (FreshVar.freshVar(name, LevelTpe), Some(name))
-    case PatternApp(fn, args, _) =>
-      val fnV = Interpreter.evalTerm(fn, env)
-      val openArgs = args.map(a => openLevelPattern(env, a))
-      val captures = openArgs.map(_._2).toList.collect { case Some(name) => name }
-      val capture = if (captures.length > 1) throw MultipleLevelCaptures(p, Some(p.span)) else captures.headOption
-      Interpreter.evalApply(fnV, openArgs.map(_._1)) -> capture
-  }
-
-  private def matchLevel(env: Env, p: TypePattern, actualTy: Value)(implicit
-      eqStore: EqStore,
-      normalizerMap: NormalizerMap
-  ): Env = {
-    val actualL = Interpreter.getLevel(actualTy)
-    val (levelTpe, capture) = openLevelPattern(env, p)
-    val patternL = Interpreter.getLevel(levelTpe)
-
-    capture match {
-      case Some(captureName) =>
-        if (patternL.atoms.size != 1 || patternL.c != 0) throw LevelPatternMismatch(p, actualTy)
-        val offset = patternL.atoms.head._2
-        if (Level.geq(actualL, offset)) env.putLocal(captureName, Value.Level.addOffset(actualL, -offset))
-        else throw LevelPatternMismatch(p, actualTy)
-      case None =>
-        TypeChecker.checkFits(actualL, patternL)
-        env
-    }
-  }
-
-  private def bindLevel(env: Env, p: TypePattern, actualTy: Value)(implicit eqStore: EqStore): Env = {
-    val (levelTpe, captures) = openLevelPattern(env, p)
-
-    captures match {
-      case Some(captureName) =>
-        val offset = Interpreter.getLevel(levelTpe).atoms.head._2
-        env.putLocal(captureName, Value.Level.addOffset(Interpreter.getLevel(actualTy), -offset))
-      case None => env
-    }
-  }
-
-  private case class OpenedArgs(env: Env, piEnv: Env, vars: Vector[Value], newVarIds: BitSet)
-
-  private def openArgsAgainstBinders(
-      env: Env,
-      piEnv: Env,
-      args: Vector[TypePattern],
-      binders: Vector[CoreAst.Binder],
-      mode: OpenMode
-  )(implicit
-      eqStore: EqStore
-  ): OpenedArgs = {
-    val newVarIds = collection.mutable.BitSet()
-    val vars = collection.mutable.ArrayBuffer[Value]()
-    var myEnv = env
-
-    val newPiEnv = args.zip(binders).foldLeft(piEnv) { case (piEnv, (arg, piBinder)) =>
-      val piOpened = openPatternInternal(piEnv, piBinder.ty, mode)
-      val argV = arg match {
-        case tt: TypeTerm => mode.evalTypeTerm(tt, myEnv)
-        case Capture(name, _) =>
-          val v = piOpened.value.getOrElse {
-            val v = FreshVar.freshVar(piBinder.name, piOpened.tpe)
-            newVarIds += v.id
-            v
-          }
-          myEnv = myEnv.putLocal(name, v)
-          v
-        case p: PatternApp =>
-          val myOpened = openPatternInternal(myEnv, p, mode)
-          newVarIds |= myOpened.newVars
-          myOpened.tpe
+  private def project(value: Value, path: List[Int])(implicit eqStore: EqStore): Value =
+    path.foldLeft(resolveInEqStore(value)) { case (cur, nextIdx) =>
+      val pieces = resolveInEqStore(cur) match {
+        case VSort(level)     => Vector(level)
+        case av: AppliedValue => av.args.toVector
+        case v: VCtor         => v.fields
+        case _                => throw FailedToOpenCapture(cur, nextIdx)
       }
-      vars += argV
-      piEnv.putLocal(piBinder.name, argV)
+      pieces.lift(nextIdx).getOrElse(throw FailedToOpenCapture(cur, nextIdx))
     }
 
-    OpenedArgs(myEnv, newPiEnv, vars.toVector, newVarIds.toImmutable)
+  private def openCaptures(env: Env, captures: Vector[VCapture], actualTy: Value)(implicit
+      eqStore: EqStore
+  ): Env = {
+    captures.foldLeft(env) { (curEnv, capture) =>
+      val captureValue = capture.captureType match {
+        case StructuralCapture(_) => project(actualTy, capture.path)
+        case LevelCapture(subtract) =>
+          val projected = Interpreter.getLevel(project(actualTy, capture.path))
+          if (!Level.geq(projected, subtract)) throw InvalidLevelSubtraction(projected, subtract)
+          Level.addOffset(projected, -subtract)
+      }
+      curEnv.putLocal(capture.name, captureValue)
+    }
   }
 
-  /** Open a type pattern without an expected actual value.
-    *
-    * This is used when forming binder types: concrete type terms evaluate normally, while captures are only meaningful
-    * inside an application pattern where the callee telescope gives them an expected type. For ordinary applications we
-    * walk the callee binders left-to-right, recursively opening each binder type, evaluating concrete arguments, and
-    * replacing captured or nested pattern arguments with fresh values. The returned environment contains only the
-    * user-visible captures introduced by the pattern; derived fresh binders stay private but are reported in `newVars`
-    * so equality can later refine them.
-    *
-    * Struct families get a special path because an argument pattern like `S $A $I` should create a representative
-    * struct value, not just the family type. We instantiate constructor params from the supplied param patterns,
-    * freshen constructor fields, build the constructor result, and then bind the supplied index patterns against the
-    * indexes found in that result type.
-    */
-  private def openPatternInternal(env: Env, pattern: TypePattern, mode: OpenMode)(implicit
-      eqStore: EqStore
-  ): FreshOpened = {
-    pattern match {
-      case tt: TypeTerm => FreshOpened(env, mode.evalTypeTerm(tt, env), BitSet.empty, None)
-      case Capture(name, _) =>
-        throw PatternCaptureNeedsExpectedType(name)
-      case PatternApp(fn, args, _) =>
-        val fnV = env.find(fn.name).getOrElse(throw NotFound(fn.name))
-        resolveInEqStore(fnV) match {
-          case VConst(_, Inductive(meta), _) if meta.isStruct =>
-            val expectedTypeArgs = meta.paramCount + meta.indexCount
-            if (args.length != expectedTypeArgs) throw PatternArityMismatch(fnV, expectedTypeArgs, args.length)
-
-            val patternArgs = args.toVector
-            val ctorName = meta.constructorNames.head
-            env.find(ctorName).getOrElse(throw NotFound(ctorName)) match {
-              case h: ConstructorHead =>
-                val pi = requirePi(h)
-
-                val openedParams = openArgsAgainstBinders(
-                  env,
-                  pi.env,
-                  patternArgs.take(h.numParams),
-                  pi.binders.toVector.take(h.numParams),
-                  mode
-                )
-
-                val openedFields = ConstructorOps.freshFields(pi, h.numParams, openedParams.piEnv, eqStore)
-                val res = ConstructorOps.fromFreshFields(h, pi, openedFields, eqStore).value
-                val resultTypeArgs = decomposeForBinding(res.tpe, expectedTypeArgs)
-
-                val resultEnv =
-                  patternArgs.drop(h.numParams).zip(resultTypeArgs.drop(h.numParams)).foldLeft(openedParams.env) {
-                    case (curEnv, (indexPattern, resultIndex)) => mode.bindPattern(curEnv, indexPattern, resultIndex)
-                  }
-
-                FreshOpened(resultEnv, res.tpe, openedParams.newVarIds ++ openedFields.newVars, Some(res))
-              case _ => throw WTF("Ctor not a constructor head")
-            }
-          case _ =>
-            val pi = requirePi(fnV)
-            if (pi.binders.length != args.length) throw PatternArityMismatch(fnV, pi.binders.length, args.length)
-
-            val openedArgs = openArgsAgainstBinders(env, pi.env, args.toVector, pi.binders.toVector, mode)
-            val res = Interpreter.evalApply(fnV, NEL.mk(openedArgs.vars.toList))
-            FreshOpened(openedArgs.env, res, openedArgs.newVarIds, None)
-        }
-
+  private def freshenCaptures(env: Env, captures: Vector[VCapture])(implicit eqStore: EqStore): (Env, BitSet) = {
+    captures.foldLeft((env, BitSet.empty)) { case ((curEnv, curNewVars), capture) =>
+      capture.captureType match {
+        case StructuralCapture(captureBinder) =>
+          val fresh = freshenBinder(curEnv, captureBinder)
+          (curEnv.putLocal(capture.name, fresh.value), curNewVars ++ fresh.newVars)
+        case LevelCapture(_) =>
+          val fresh = FreshVar.freshVar(capture.name, LevelTpe)
+          (curEnv.putLocal(capture.name, fresh), curNewVars + fresh.id)
+      }
     }
+  }
+
+  private def structConstructorForBinderType(env: Env, binderTy: TypeTerm)(implicit
+      eqStore: EqStore
+  ): Option[(ConstructorOps.ConstructorShape, Vector[TypeTerm])] = {
+    val (headValue, argTerms) = binderTy match {
+      case Term.TApp(fn, args, _) => (Interpreter.evalTypeTerm(fn, env), args.toVector)
+      case ident: Term.Ident      => (Interpreter.evalTypeTerm(ident, env), Vector.empty)
+      case _                      => return None
+    }
+
+    Interpreter.resolveInEqStore(headValue) match {
+      case VConst(_, Inductive(meta), _) if meta.isStruct =>
+        env(meta.constructorNames.head) match {
+          case head: ConstructorHead => ConstructorOps.ConstructorShape.from(head).map(_ -> argTerms)
+          case other                 => throw WTF(s"Expected constructor head, got $other")
+        }
+      case _ => None
+    }
+  }
+
+  private def freshenStructBinder(
+      env: Env,
+      binder: VBinder,
+      shape: ConstructorOps.ConstructorShape,
+      argTerms: Vector[TypeTerm]
+  )(implicit eqStore: EqStore): FreshenedBinder = {
+    // Freshen param captures because they are required to evaluate constructor parameter args.
+    val paramCaptures = binder.captures.filter(capture => shape.isParamIndex(capture.path.head))
+    val (paramEnv, paramCaptureVars) = freshenCaptures(env, paramCaptures)
+
+    val paramArgs = shape.paramArgs(argTerms).map(arg => Interpreter.evalTypeTerm(arg, paramEnv))
+    val fresh = ConstructorOps.freshFromParams(shape.head, paramArgs)
+    val refinedEnv = openCaptures(env, binder.captures, fresh.value.tpe)
+    FreshenedBinder(fresh.value, refinedEnv, paramCaptureVars ++ fresh.newVars)
   }
 
   // =========================
@@ -317,44 +171,40 @@ object TypePatternOps {
     *   - The environment extended with any captures introduced by the binder's type pattern
     *   - The set of newly created variable IDs
     */
-  def freshVar(env: Env, binder: CoreAst.Binder, meta: EqStore): (Value, Env, BitSet) = {
-    implicit val eqStore: EqStore = meta
-    val f = openPatternInternal(env, binder.ty, UncheckedOpenMode)
-    f.value match {
-      case Some(v) =>
-        (v, f.env, f.newVars)
+  def freshenBinder(env: Env, binder: VBinder)(implicit eqStore: EqStore): FreshenedBinder = {
+    structConstructorForBinderType(env, binder.ty) match {
+      case Some((shape, argTerms)) => freshenStructBinder(env, binder, shape, argTerms)
       case None =>
-        val v = FreshVar.freshVar(binder.name, f.tpe)
-        (v, f.env, f.newVars + v.id)
+        val (openedEnv, captureVars) = freshenCaptures(env, binder.captures)
+        val tpe = Interpreter.resolveInEqStore(Interpreter.evalTypeTerm(binder.ty, openedEnv))
+        val value = FreshVar.freshVar(binder.name, tpe)
+        FreshenedBinder(value, openedEnv, captureVars + value.id)
     }
   }
 
-  def freshVarAndCheck(env: Env, binder: CoreAst.Binder, meta: EqStore)(implicit
-      normalizers: NormalizerMap
-  ): (Value, Env, BitSet) = {
-    implicit val eqStore: EqStore = meta
-    val f = openPatternInternal(env, binder.ty, CheckedOpenMode(normalizers))
-    f.value match {
-      case Some(v) =>
-        (v, f.env, f.newVars)
-      case None =>
-        val v = FreshVar.freshVar(binder.name, f.tpe)
-        (v, f.env, f.newVars + v.id)
-    }
+  def freshenRawBinder(env: Env, binder: Binder, evalTypeTerm: (CoreAst.TypeTerm, Env) => Value)(implicit
+      eqStore: EqStore
+  ): FreshenedRawBinder = {
+    val vBinder = toVBinder(env, binder, evalTypeTerm)
+    val fresh = freshenBinder(env, vBinder)
+    FreshenedRawBinder(fresh.value, fresh.env, fresh.newVars, vBinder)
   }
 
   // Used by Interpreter.getEnvWithArgs
-  def bindValue(env: Env, p: TypePattern, actualTy: Value, meta: EqStore): Env = {
-    implicit val eqStore: EqStore = meta
-    bindInternal(env, p, actualTy)
+  def bindValue(env: Env, binder: VBinder, actual: Value)(implicit eqStore: EqStore): Env = {
+    val withCaptures = openCaptures(env, binder.captures, actual.tpe)
+    withCaptures.putLocal(binder.name, actual)
   }
 
   // Used by TypeChecker.typecheckApply
-  def matchValue(env: Env, p: TypePattern, actualTy: Value, meta: EqStore)(implicit
+  def bindValueAndCheck(env: Env, binder: VBinder, actual: Value)(implicit
+      eqStore: EqStore,
       normalizers: NormalizerMap
   ): Env = {
-    implicit val eqStore: EqStore = meta
-    matchOpenInternal(env, p, actualTy)
+    val openedEnv = openCaptures(env, binder.captures, actual.tpe)
+    val expectedTy = Interpreter.evalTypeTerm(binder.ty, openedEnv)
+    TypeChecker.checkType(actual, expectedTy)
+    openedEnv.putLocal(binder.name, actual)
   }
 
 }

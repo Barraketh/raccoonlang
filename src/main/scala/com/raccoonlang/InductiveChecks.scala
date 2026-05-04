@@ -6,6 +6,7 @@ import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
 
 import scala.annotation.tailrec
+import scala.collection.immutable.BitSet
 
 object InductiveChecks {
 
@@ -44,8 +45,8 @@ object InductiveChecks {
       case VApp(h, args, _) =>
         sameInductiveHead(h, inductiveHead) || args.exists(arg => occursInductive(arg, inductiveHead))
       case pi: VPi =>
-        val (binderVars, bodyEnv, _) = BinderOps.assignFreshVars(pi, eqStore)
-        val allTypes = binderVars.map(_.tpe) :+ pi.codomain(bodyEnv, eqStore)
+        val freshBinders = BinderOps.freshen(pi)
+        val allTypes = freshBinders.vars.map(_.tpe) :+ pi.codomain(freshBinders.env, eqStore)
         allTypes.exists(v => occursInductive(v, inductiveHead))
 
       case _: ConstructorHead | _: VCtor => false
@@ -76,11 +77,9 @@ object InductiveChecks {
         }
 
       case pi: VPi =>
-        val (binderVars, bodyEnv, _) = BinderOps.assignFreshVars(pi, eqStore)
-        !binderVars.exists(v => occursInductive(v.tpe, inductiveHead)) && isStrictlyPositive(
-          pi.codomain(bodyEnv, eqStore),
-          inductiveHead
-        )
+        val fresh = BinderOps.freshen(pi)
+        !fresh.vars.exists(v => occursInductive(v.tpe, inductiveHead)) &&
+        isStrictlyPositive(pi.codomain(fresh.env, eqStore), inductiveHead)
       case VApp(_, args, _) =>
         // For any head F (including the inductive), reject if I occurs in any argument.
         !args.exists(arg => occursInductive(arg, inductiveHead))
@@ -135,8 +134,14 @@ object InductiveChecks {
 
     // Constructors are checked in an environment that contains the inductive and inductive params assigned
     val checkEnvWithInductive = worlds.checkEnv.putGlobal(name, inductivedHead)
-    val (paramVars, envWithParams, paramDeps) =
-      BinderOps.assignFreshVars(header.params, checkEnvWithInductive, eqStore)
+    val (paramVars, envWithParams, paramDeps) = {
+      inductiveTypeCheck match {
+        case pi: VPi =>
+          val freshParams = BinderOps.freshen(pi.binders.toVector.take(header.params.length), checkEnvWithInductive)
+          (freshParams.vars, freshParams.env, freshParams.newVars)
+        case _ => (Vector.empty, checkEnvWithInductive, BitSet.empty)
+      }
+    }
 
     val resTpe = TypeChecker.getType(header.resultTy, envWithParams)
     val familyUniverse: Universe = resTpe match {
@@ -158,9 +163,9 @@ object InductiveChecks {
 
     decl.ctors.foreach { ctor =>
       val outputTpe = {
-        val (fieldVars, bodyEnv, _) = BinderOps.assignFreshVarsAndCheck(ctor.fields, envWithParams, eqStore)
+        val freshFields = BinderOps.freshenRawBindersAndCheck(ctor.fields, envWithParams)
 
-        ctor.fields.zip(fieldVars).foreach { case (binder, field) =>
+        ctor.fields.zip(freshFields.vars).foreach { case (binder, field) =>
           // 2) Universe bound: skip for Prop families; enforce for Sort families
           familyUniverse match {
             case VSort(inductiveLevel) =>
@@ -192,14 +197,14 @@ object InductiveChecks {
             )
         }
 
-        Interpreter.evalTypeTerm(ctor.resultTy, bodyEnv)
+        Interpreter.evalTypeTerm(ctor.resultTy, freshFields.env)
       }
 
       // 4) Constructor result must be the inductive family head applied to the full family arity,
       // and params must be uniform - must equal to the original paramVars
       val resultErr = InvalidConstructorResult(ctor.name, name, outputTpe, Some(ctor.span))
       val outputArgs = outputTpe match {
-        case VApp(h, args, _) if h.name == name => args.toVector
+        case VApp(h, args, _) if h.name == name => args
         case VConst(n, _, _) if n == name       => Vector.empty[Value]
         case _                                  => throw resultErr
       }
