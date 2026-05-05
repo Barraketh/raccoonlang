@@ -2,81 +2,97 @@ package com.raccoonlang
 
 import com.raccoonlang.CoreAst.Term.Match
 import com.raccoonlang.CoreAst.{Ast, Term}
+import org.roaringbitmap.RoaringBitmap
 
 object FreeNames {
 
-  // Threaded traversal: returns (freeNames, updatedBound)
-  private def goList(terms: List[Ast], bound0: Set[String]): (Set[String], Set[String]) = {
-    terms.foldLeft((Set.empty[String], bound0)) { case ((curFree, curBound), t) =>
-      val (f, b) = go(t, curBound)
-      (curFree union f, b)
+  final class LocalRefs private[FreeNames] (private[FreeNames] val bitmap: RoaringBitmap) {
+    def foreachValueIn(env: Env)(f: Value => Unit): Unit = {
+      val locals = env.locals
+      val limit = locals.length
+      val it = bitmap.getIntIterator
+      var keepGoing = true
+      while (keepGoing && it.hasNext) {
+        val id = it.next()
+        if (id < limit) f(locals(id))
+        else keepGoing = false
+      }
+    }
+
+    def valuesIn(env: Env): Vector[Value] = {
+      val values = Vector.newBuilder[Value]
+      foreachValueIn(env)(values += _)
+      values.result()
     }
   }
 
-  private def go(term: CoreAst.Ast, bound: Set[String]): (Set[String], Set[String]) = {
+  object LocalRefs {
+    val empty: LocalRefs = new LocalRefs(new RoaringBitmap)
+  }
+
+  private def goList(terms: List[Ast], bound: RoaringBitmap, free: RoaringBitmap): Unit =
+    terms.foreach(go(_, bound, free))
+
+  private def go(term: CoreAst.Ast, bound: RoaringBitmap, free: RoaringBitmap): Unit =
     term match {
-      case Term.Ident(name, _) =>
-        (if (bound.contains(name)) Set.empty else Set(name), bound)
+      case Term.GlobalRef(_, _) =>
 
-      case Term.Capture(name, _) =>
-        // Captures introduce a bound variable for the remainder of the traversal
-        (Set.empty, bound + name)
+      case Term.LocalRef(ref, _) =>
+        if (!bound.contains(ref.id)) free.add(ref.id)
 
-      case Term.TApp(fn, args, _)   => goList((fn :: args).toList, bound)
-      case Term.TSelect(base, _, _) => go(base, bound)
+      case Term.Capture(_, ref, _) =>
+        bound.add(ref.id)
 
-      case Term.PatternApp(fn, args, _) => goList((fn :: args).toList, bound)
+      case Term.TApp(fn, args, _)   => goList((fn :: args).toList, bound, free)
+      case Term.TSelect(base, _, _) => go(base, bound, free)
+
+      case Term.PatternApp(fn, args, _) => goList((fn :: args).toList, bound, free)
 
       case Term.Pi(binders, out, _) =>
-        // Each binder: evaluate its type with current bound; then add binder name to bound
-        val (freeFromBinders, boundAfterBinders) = binders.toList.foldLeft((Set.empty[String], bound)) {
-          case ((curFree, curBound), b) =>
-            val (fTy, bAfterTy) = go(b.ty, curBound)
-            (curFree union fTy, bAfterTy + b.name)
+        binders.foreach { b =>
+          go(b.ty, bound, free)
+          b.localRef.foreach(r => bound.add(r.id))
         }
-        val (freeOut, boundAfterOut) = go(out, boundAfterBinders)
-        (freeFromBinders union freeOut, boundAfterOut)
+        go(out, bound, free)
 
-      case Term.App(fn, args, _)   => goList((fn :: args).toList, bound)
-      case Term.Select(base, _, _) => go(base, bound)
+      case Term.App(fn, args, _)   => goList((fn :: args).toList, bound, free)
+      case Term.Select(base, _, _) => go(base, bound, free)
 
       case Term.Body(lets, res, _) =>
-        val (freeLets, boundAfterLets) = lets.toList.foldLeft((Set.empty[String], bound)) {
-          case ((curFree, curBound), l) =>
-            val (fVal, b1) = go(l.value, curBound)
-            val fTy = l.ty.map(t => go(t, curBound)._1).getOrElse(Set.empty[String])
-            (curFree union fVal union fTy, b1 + l.name)
+        lets.foreach { l =>
+          val typeBound = bound.clone()
+          go(l.value, bound, free)
+          l.ty.foreach(t => go(t, typeBound, free))
+          bound.add(l.localRef.id)
         }
-        val (freeRes, boundAfterRes) = go(res, boundAfterLets)
-        (freeLets union freeRes, boundAfterRes)
+        go(res, bound, free)
 
       case Term.Lam(ty, _, body, _, _, _) =>
-        val (freeTy, boundAfterTy) = go(ty, bound)
-        val (freeBody, boundAfterBody) = go(body, boundAfterTy)
-        (freeTy union freeBody, boundAfterBody)
+        go(ty, bound, free)
+        go(body, bound, free)
 
       case Match(scrut, motive, cases, _) =>
-        val (freeScrut, b1) = go(scrut, bound)
-        val (freeMotive, b2) = motive.map(go(_, b1)).getOrElse((Set.empty[String], b1))
-        val freeCases = cases.foldLeft(Set.empty[String]) { case (curFree, c) =>
-          val (fCase, _) = go(c.body, b1 ++ c.argNames)
-          curFree union fCase
+        go(scrut, bound, free)
+        val caseBound = bound.clone()
+        motive.foreach(go(_, bound, free))
+        cases.foreach { c =>
+          val nextBound = caseBound.clone()
+          c.argRefs.flatten.foreach(ref => nextBound.add(ref.id))
+          go(c.body, nextBound, free)
         }
-        (freeScrut union freeMotive union freeCases, b2)
     }
+
+  def getFreeRefs(term: CoreAst.Ast, bound: LocalRefs = LocalRefs.empty): LocalRefs = {
+    val free = new RoaringBitmap
+    go(term, bound.bitmap.clone(), free)
+    new LocalRefs(free)
   }
 
-  def getFreeNames(term: CoreAst.Ast, bound: Set[String]): Set[String] = go(term, bound)._1
-
-  def getDeps(term: Ast, env: Env, bound: Set[String]): DepSet = {
-    val freeNames = FreeNames.getFreeNames(term, bound)
+  def getDeps(term: Ast, env: Env, bound: LocalRefs = LocalRefs.empty): DepSet = {
     val deps = DepSet.newBuilder
-    freeNames.foreach { name =>
-      env.findLocal(name).foreach { v =>
-        deps.unionInPlace(v.synDeps)
-      }
+    getFreeRefs(term, bound).foreachValueIn(env) { v =>
+      deps.unionInPlace(v.synDeps)
     }
     deps.result()
   }
-
 }

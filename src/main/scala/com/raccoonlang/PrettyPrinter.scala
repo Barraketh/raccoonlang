@@ -3,12 +3,16 @@ package com.raccoonlang
 import com.raccoonlang.Value.LevelTpe
 
 object PrettyPrinter {
+  private def printRef(ref: CoreAst.Term.Ref): String = ref match {
+    case CoreAst.Term.GlobalRef(name, _) => name
+    case CoreAst.Term.LocalRef(ref, _)   => ref.name
+  }
 
   private def printTypePattern(tp: CoreAst.TypePattern): String = {
     import com.raccoonlang.CoreAst.Term
 
     def pt(t: CoreAst.TypePattern): String = t match {
-      case Term.Ident(name, _)          => name
+      case ref: Term.Ref                => printRef(ref)
       case Term.TSelect(base, field, _) => s"${ptAtom(base)}[$field]"
       case Term.TApp(fn, args, _) =>
         val headStr = ptAtom(fn)
@@ -25,16 +29,16 @@ object PrettyPrinter {
           }
           .mkString(" -> ")
         s"$bindersStr -> ${pt(out)}"
-      case Term.Capture(name, _) => s"$$$name"
+      case Term.Capture(name, _, _) => s"$$$name"
     }
 
     def ptAtom(t: CoreAst.TypePattern): String = t match {
-      case Term.Ident(_, _)         => pt(t)
+      case _: Term.Ref              => pt(t)
       case Term.TSelect(_, _, _)    => pt(t)
       case Term.TApp(_, _, _)       => pt(t)
       case Term.PatternApp(_, _, _) => pt(t)
       case Term.Pi(_, _, _)         => s"(${pt(t)})"
-      case Term.Capture(_, _)       => pt(t)
+      case Term.Capture(_, _, _)    => pt(t)
     }
 
     pt(tp)
@@ -78,7 +82,7 @@ object PrettyPrinter {
   }
 
   private def printTermAtom(t: CoreAst.Ast): String = t match {
-    case CoreAst.Term.Ident(_, _)            => printTerm(t)
+    case _: CoreAst.Term.Ref                 => printTerm(t)
     case CoreAst.Term.App(_, _, _)           => printTerm(t)
     case CoreAst.Term.TApp(_, _, _)          => printTerm(t)
     case ts: CoreAst.Term.TSelect            => printTypeTerm(ts)
@@ -88,7 +92,7 @@ object PrettyPrinter {
     case CoreAst.Term.Match(_, _, _, _)      => s"(${printTerm(t)})"
     case CoreAst.Term.Body(_, _, _)          => s"(${printTerm(t)})"
     case CoreAst.Term.Pi(_, _, _)            => s"(${printTerm(t)})"
-    case CoreAst.Term.Capture(name, _)       => s"$$$name"
+    case CoreAst.Term.Capture(name, _, _)    => s"$$$name"
   }
 
   def printTerm(t: CoreAst.Ast): String = t match {
@@ -103,7 +107,7 @@ object PrettyPrinter {
       s"fun ${printBinders(ty.binders)}: ${printTypeTerm(ty.out)} => ${printTerm(body)}"
     case m @ CoreAst.Term.Match(_, _, _, _) => printMatch(m)
     case b: CoreAst.Term.Body               => printBody(b)
-    case CoreAst.Term.Capture(name, _)      => s"$$$name"
+    case CoreAst.Term.Capture(name, _, _)  => s"$$$name"
   }
 
   private def printCase(c: CoreAst.Case): String = {

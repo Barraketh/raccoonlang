@@ -1,6 +1,6 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.Term.{Ident, Lam, Match}
+import com.raccoonlang.CoreAst.Term.{Lam, Match}
 import com.raccoonlang.CoreAst._
 import com.raccoonlang.Interpreter._
 import com.raccoonlang.Util.NEL
@@ -85,7 +85,7 @@ object TypeChecker {
       val t = evalTypeTerm(base, env)
       Interpreter.evalSelect(t, field, env, span.start)
     case pi: Term.Pi  => typecheckPi(pi, env)
-    case ident: Ident => Interpreter.evalTerm(ident, env)
+    case ref: Term.Ref => Interpreter.evalTerm(ref, env)
   }
 
   private def typecheckBody(body: Term.Body, env: Env)(implicit
@@ -104,7 +104,7 @@ object TypeChecker {
           }
         }
         .getOrElse(res)
-      curEnv.putLocal(l.name, withType)
+      curEnv.putLocal(l.localRef, withType)
     }
     typecheck(body.res, newEnv)
   }
@@ -115,8 +115,11 @@ object TypeChecker {
   ): Unit = {
     if (args.length != br.argNames.length)
       throw ArityMismatch(args.length, br.argNames.length, Some(br.span))
-    val branchEnv = br.argNames.zip(args).foldLeft(envWithScrut.newScope) { case (curEnv, (argName, argVal)) =>
-      curEnv.putLocal(argName, argVal)
+    val branchEnv = br.argRefs.zip(args).foldLeft(envWithScrut.newScope) { case (curEnv, (argRef, argVal)) =>
+      argRef match {
+        case Some(ref) => curEnv.putLocal(ref, argVal)
+        case None      => curEnv
+      }
     }
     val branchRes = typecheck(br.body, branchEnv)
     checkType(branchRes, expectedTy)

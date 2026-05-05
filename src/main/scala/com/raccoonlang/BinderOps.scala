@@ -9,6 +9,12 @@ object BinderOps {
   final case class Freshened(vars: Vector[Value], env: Env, newVars: DepSet)
   final case class FreshenedRawBinders(vars: Vector[Value], env: Env, newVars: DepSet, vBinders: Vector[VBinder])
 
+  private def putBinderLocal(env: Env, binder: VBinder, value: Value): Env =
+    binder.localRef match {
+      case Some(ref) => env.putLocal(ref, value)
+      case None      => env
+    }
+
   def freshen(binders: NEL[VBinder], baseEnv: Env)(implicit eqStore: EqStore): Freshened = {
     val vars = Vector.newBuilder[Value]
     var env = baseEnv.newScope
@@ -17,7 +23,7 @@ object BinderOps {
     binders.foreach { binder =>
       val fresh = TypePatternOps.freshenBinder(env, binder)
       vars += fresh.value
-      env = fresh.env.putLocal(binder.name, fresh.value)
+      env = putBinderLocal(fresh.env, binder, fresh.value)
       newVars.unionInPlace(fresh.newVars)
     }
 
@@ -41,7 +47,7 @@ object BinderOps {
     binders.foreach { binder =>
       val fresh = TypePatternOps.freshenRawBinder(env, binder, evalTypeTerm)
       vars += fresh.value
-      env = fresh.env.putLocal(binder.name, fresh.value)
+      env = putBinderLocal(fresh.env, fresh.binder, fresh.value)
       newVars.unionInPlace(fresh.newVars)
       vBinders += fresh.binder
     }

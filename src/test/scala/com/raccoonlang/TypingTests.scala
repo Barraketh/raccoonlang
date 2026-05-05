@@ -103,6 +103,43 @@ class TypingTests extends munit.FunSuite {
     assertEquals(toShape(res), zeroS)
   }
 
+  test("nested lambda captures outer local slot") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |{
+        |  let k := fun (x: Nat): ((y: Nat) -> Nat) => fun (y: Nat): Nat => x
+        |  let h := k(Nat::zero)
+        |  h(Nat::succ(Nat::zero))
+        |}
+        |""".stripMargin
+
+    val res = runProgram(p)
+    assertEquals(toShape(res), zeroS)
+  }
+
+  test("later let shadowing allocates a new local slot") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |{
+        |  let x := Nat::zero
+        |  let f := fun (y: Nat): Nat => x
+        |  let x := Nat::succ(Nat::zero)
+        |  f(x)
+        |}
+        |""".stripMargin
+
+    val res = runProgram(p)
+    assertEquals(toShape(res), zeroS)
+  }
+
   test("pred on Nat typechecks and reduces via match") {
     val p =
       """

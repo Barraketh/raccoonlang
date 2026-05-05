@@ -1,6 +1,6 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.TypeTerm
+import com.raccoonlang.CoreAst.{TypePattern, TypeTerm}
 import com.raccoonlang.Util.NEL
 
 final case class InductiveMeta(
@@ -121,12 +121,18 @@ object Value {
   }
 
   sealed trait CaptureType
-  case class StructuralCapture(binder: VBinder) extends CaptureType
+  case object StructuralCapture extends CaptureType
   case class LevelCapture(subtract: Int) extends CaptureType
 
-  case class VCapture(name: String, path: List[Int], captureType: CaptureType)
+  case class VCapture(name: String, localRef: CoreAst.LocalRef, path: List[Int], captureType: CaptureType)
 
-  case class VBinder(name: String, ty: TypeTerm, captures: Vector[VCapture])
+  case class VBinder(
+      name: String,
+      localRef: Option[CoreAst.LocalRef],
+      ty: TypePattern,
+      expectedTy: TypeTerm,
+      captures: Vector[VCapture]
+  )
 
   case class VPi(
       env: Env,

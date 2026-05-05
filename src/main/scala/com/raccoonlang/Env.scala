@@ -1,15 +1,16 @@
 package com.raccoonlang
 
-// Environment: tracks lexical scope
+// Runtime/checking environment for resolved CoreAst terms. Local references are dense slots in `locals`;
+// source-name scoping is handled by the elaborator before terms reach this layer.
 final case class Env(
     globals: Map[String, Value],
-    locals: ScopedMap
+    locals: Vector[Value]
 ) {
-  def apply(name: String): Value = find(name).getOrElse(throw NotFound(name))
+  def apply(name: String): Value = globals.getOrElse(name, throw NotFound(name))
 
-  def find(name: String): Option[Value] = locals.find(name).orElse(globals.get(name))
+  def apply(ref: CoreAst.LocalRef): Value = locals(ref.id)
 
-  def findLocal(name: String): Option[Value] = locals.find(name)
+  def find(name: String): Option[Value] = globals.get(name)
 
   def putGlobal(name: String, value: Value): Env = {
     if (globals.contains(name))
@@ -18,34 +19,18 @@ final case class Env(
     else copy(globals = globals + (name -> value))
   }
 
-  def putLocal(name: String, value: Value): Env = {
-    if (globals.contains(name))
-      throw AlreadyDefined(name)
-    if (name == "_") this
-    else copy(locals = locals.put(name, value))
+  def putLocal(ref: CoreAst.LocalRef, value: Value): Env = {
+    if (ref.id == locals.length) copy(locals = locals :+ value)
+    else if (ref.id < locals.length)
+      throw WTF(s"Local ref ${ref.name}#${ref.id} is already bound; env has ${locals.length} slots")
+    else throw WTF(s"Non-dense local ref ${ref.name}#${ref.id}; env has ${locals.length} slots")
   }
 
-  def newScope: Env = copy(locals = locals.newScope)
+  def newScope: Env = this
 }
 
 object Env {
-  val empty: Env = Env(globals = Map(), locals = ScopedMap.empty)
-}
-
-case class ScopedMap(map: Map[String, Value], parent: Option[ScopedMap]) {
-  def find(name: String): Option[Value] = map.get(name).orElse(parent.flatMap(_.find(name)))
-
-  def put(name: String, value: Value): ScopedMap = {
-    if (map.contains(name))
-      throw AlreadyDefined(name)
-    ScopedMap(map + (name -> value), parent)
-  }
-
-  def newScope: ScopedMap = ScopedMap(Map.empty, Some(this))
-}
-
-object ScopedMap {
-  val empty: ScopedMap = ScopedMap(Map.empty, None)
+  val empty: Env = Env(globals = Map(), locals = Vector.empty)
 }
 
 // Probably should live in Env, but I'll keep it separate for now

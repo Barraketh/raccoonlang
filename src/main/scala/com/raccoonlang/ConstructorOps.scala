@@ -66,7 +66,8 @@ object ConstructorOps {
         val fieldIdx = allFieldBinders.indexWhere(_.name == field)
         if (fieldIdx < 0) throw NotFound(field)
 
-        freshFieldPrefix(allFieldBinders, envWithParams, fieldIdx + 1).env(field).tpe
+        val fieldRef = allFieldBinders(fieldIdx).localRef.getOrElse(throw NotFound(field))
+        freshFieldPrefix(allFieldBinders, envWithParams, fieldIdx + 1).env(fieldRef).tpe
 
       case None => throw NotFound(field)
     }

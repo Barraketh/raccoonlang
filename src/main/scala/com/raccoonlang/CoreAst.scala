@@ -4,6 +4,7 @@ import com.raccoonlang.Util.NEL
 // Core AST for RaccoonCore (trusted kernel language)
 
 object CoreAst {
+  final case class LocalRef(id: Int, name: String)
 
   sealed trait UnfoldStrategy
   object UnfoldStrategy {
@@ -35,8 +36,11 @@ object CoreAst {
   sealed trait TypeTerm extends TypePattern
 
   object Term {
-    // Identifier (either type or term)
-    final case class Ident(name: String, span: Span) extends Term with TypeTerm
+    sealed trait Ref extends Term with TypeTerm
+
+    final case class GlobalRef(name: String, span: Span) extends Ref
+
+    final case class LocalRef(ref: CoreAst.LocalRef, span: Span) extends Ref
 
     // Projection in type position: base[field]
     final case class TSelect(base: TypeTerm, field: String, span: Span) extends TypeTerm
@@ -45,10 +49,10 @@ object CoreAst {
     final case class Select(base: Term, field: String, span: Span) extends Term
 
     // Application in type position
-    final case class TApp(fn: Ident, args: NEL[TypeTerm], span: Span) extends TypeTerm
+    final case class TApp(fn: Ref, args: NEL[TypeTerm], span: Span) extends TypeTerm
 
     // Application in type pattern
-    final case class PatternApp(fn: Ident, args: NEL[TypePattern], span: Span) extends TypePattern
+    final case class PatternApp(fn: Ref, args: NEL[TypePattern], span: Span) extends TypePattern
 
     // Pi (x: A) -> B x
     final case class Pi(binders: NEL[Binder], out: TypeTerm, span: Span) extends Term with TypeTerm
@@ -69,16 +73,16 @@ object CoreAst {
         span: Span
     ) extends Term
 
-    case class Capture(name: String, span: Span) extends TypePattern
+    case class Capture(name: String, localRef: CoreAst.LocalRef, span: Span) extends TypePattern
   }
 
   // Let: let x := foo
-  final case class Let(name: String, ty: Option[TypeTerm], value: Term, span: Span)
+  final case class Let(name: String, localRef: LocalRef, ty: Option[TypeTerm], value: Term, span: Span)
 
   // Use directive (first-class normalizer application)
   final case class Use(normalizer: Term, span: Span)
 
-  case class Binder(name: String, ty: TypePattern, span: Span) {
+  case class Binder(name: String, localRef: Option[LocalRef], ty: TypePattern, span: Span) {
     override def toString: String = PrettyPrinter.printBinder(this)
   }
 
@@ -99,7 +103,7 @@ object CoreAst {
       span: Span
   )
 
-  case class Case(ctorName: String, argNames: Vector[String], body: Term, span: Span)
+  case class Case(ctorName: String, argNames: Vector[String], argRefs: Vector[Option[LocalRef]], body: Term, span: Span)
 
   // Global declarations and environment entries
   sealed trait Decl {

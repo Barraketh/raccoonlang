@@ -54,12 +54,7 @@ object Interpreter {
     BinderOps.instantiate(fnTpe.binders, fnTpe.env, args)
 
   def evalPi(pi: Term.Pi, env: Env, vBinders: NEL[VBinder])(implicit eqStore: EqStore): VPi = {
-    val captureNames = FreeNames
-      .getFreeNames(pi, Set.empty)
-      .toVector
-      .filter(n => env.findLocal(n).isDefined)
-      .sorted
-    val captureVals = captureNames.map(n => env.findLocal(n).get)
+    val captureVals = FreeNames.getFreeRefs(pi).valuesIn(env)
     val id = ValueId.LocalId(pi.span.start, captureVals)
 
     val fresh = BinderOps.freshen(vBinders, env)
@@ -83,7 +78,7 @@ object Interpreter {
       env,
       vBinders,
       codomain = (env, eqStore) => evalTypeTerm(pi.out, env)(eqStore),
-      FreeNames.getDeps(pi, env, Set.empty),
+      FreeNames.getDeps(pi, env),
       id,
       piClassifier
     )
@@ -102,7 +97,7 @@ object Interpreter {
 
   // Evaluate a type-position expression without enforcing it is a type yet
   def evalTypeTerm(tt: TypeTerm, env: Env)(implicit meta: EqStore): Value = tt match {
-    case i: Term.Ident => evalIdent(i, env)
+    case ref: Term.Ref => evalRef(ref, env)
     case a: Term.TApp  => evalTApp(a, env)
     case s: Term.TSelect =>
       val base = evalTypeTerm(s.base, env)
@@ -110,8 +105,11 @@ object Interpreter {
     case pi: Term.Pi => evalPi(pi, env)
   }
 
-  private def evalIdent(i: Term.Ident, env: Env): Value = {
-    val res = env(i.name)
+  private def evalRef(ref: Term.Ref, env: Env): Value = {
+    val res = ref match {
+      case Term.GlobalRef(name, _) => env(name)
+      case Term.LocalRef(local, _) => env(local)
+    }
     res match {
       case h: ConstructorHead if h.totalArity == 0 => VCtor(h, Vector.empty, h.tpe)
       case _                                       => res
@@ -157,9 +155,7 @@ object Interpreter {
     val id = l.name match {
       case Some(funcName) => ValueId.Const(funcName)
       case None =>
-        val captureNames =
-          FreeNames.getFreeNames(l, Set.empty).toVector.filter(n => env.findLocal(n).isDefined).sorted
-        val captureVals = captureNames.map(n => env.findLocal(n).get)
+        val captureVals = FreeNames.getFreeRefs(l).valuesIn(env)
         ValueId.LocalId(l.span.start, captureVals)
 
     }
@@ -258,14 +254,7 @@ object Interpreter {
   }
 
   private def evalMatch(m: Match, env: Env)(implicit eqStore: EqStore): Value = {
-    def computeMatchCaptures(): Vector[Value] = {
-      FreeNames
-        .getFreeNames(m, Set.empty)
-        .toVector
-        .filter(n => env.findLocal(n).isDefined)
-        .sorted
-        .map(n => env.findLocal(n).get)
-    }
+    def computeMatchCaptures(): Vector[Value] = FreeNames.getFreeRefs(m).valuesIn(env)
 
     val scrut = resolveInEqStore(evalTerm(m.scrut, env))
 
@@ -295,8 +284,11 @@ object Interpreter {
       m.cases.find(c => c.ctorName == ctorName).getOrElse(throw UnknownConstructor(ctorName, "", Some(m.span)))
     if (args.length != branch.argNames.length)
       throw ArityMismatch(branch.argNames.length, args.length, Some(branch.span))
-    val newEnv = args.zip(branch.argNames).foldLeft(env.newScope) { case (curEnv, (argV, argName)) =>
-      curEnv.putLocal(argName, argV)
+    val newEnv = args.zip(branch.argRefs).foldLeft(env.newScope) { case (curEnv, (argV, argRef)) =>
+      argRef match {
+        case Some(ref) => curEnv.putLocal(ref, argV)
+        case None      => curEnv
+      }
     }
     evalTerm(branch.body, newEnv)
   }
@@ -309,7 +301,7 @@ object Interpreter {
           u.withTpe(evalTypeTerm(ty, curEnv))
         case _ => res
       }
-      curEnv.putLocal(l.name, withTpe)
+      curEnv.putLocal(l.localRef, withTpe)
     }
     evalTerm(body.res, newEnv)
   }
@@ -386,17 +378,28 @@ object Interpreter {
     val nextEnv = env2.putGlobal(
       "Sort",
       VLam(
-        VPi(
-          env2,
-          NEL.one(VBinder("l", CoreAst.Term.Ident("Level", Span(0, 0)), Vector.empty)),
-          (env, eqStore) => {
-            val l = getLevel(env.findLocal("l").get)(eqStore)
-            VSort(Level.succ(l))
-          },
-          DepSet.empty,
-          ValueId.Const("Sort"),
-          VSort(Level.zero)
-        ),
+        {
+          val lRef = CoreAst.LocalRef(0, "l")
+          VPi(
+            env2,
+            NEL.one(
+              VBinder(
+                "l",
+                Some(lRef),
+                CoreAst.Term.GlobalRef("Level", Span(0, 0)),
+                CoreAst.Term.GlobalRef("Level", Span(0, 0)),
+                Vector.empty
+              )
+            ),
+            (env, eqStore) => {
+              val l = getLevel(env(lRef))(eqStore)
+              VSort(Level.succ(l))
+            },
+            DepSet.empty,
+            ValueId.Const("Sort"),
+            VSort(Level.zero)
+          )
+        },
         ValueId.Const("Sort"),
         true,
         (args, eqStore) => {
