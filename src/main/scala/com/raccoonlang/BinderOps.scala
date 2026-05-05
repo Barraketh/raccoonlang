@@ -6,28 +6,26 @@ import com.raccoonlang.Value.{VBinder, VPi}
 object BinderOps {
   import com.raccoonlang.Util.NEL
 
-  import scala.collection.immutable.BitSet
-
-  final case class Freshened(vars: Vector[Value], env: Env, newVars: BitSet)
-  final case class FreshenedRawBinders(vars: Vector[Value], env: Env, newVars: BitSet, vBinders: Vector[VBinder])
+  final case class Freshened(vars: Vector[Value], env: Env, newVars: DepSet)
+  final case class FreshenedRawBinders(vars: Vector[Value], env: Env, newVars: DepSet, vBinders: Vector[VBinder])
 
   def freshen(binders: NEL[VBinder], baseEnv: Env)(implicit eqStore: EqStore): Freshened = {
     val vars = Vector.newBuilder[Value]
     var env = baseEnv.newScope
-    var newVars = BitSet.empty
+    val newVars = DepSet.newBuilder
 
     binders.foreach { binder =>
       val fresh = TypePatternOps.freshenBinder(env, binder)
       vars += fresh.value
       env = fresh.env.putLocal(binder.name, fresh.value)
-      newVars ++= fresh.newVars
+      newVars.unionInPlace(fresh.newVars)
     }
 
-    Freshened(vars.result(), env, newVars)
+    Freshened(vars.result(), env, newVars.result())
   }
 
   def freshen(binders: Vector[VBinder], baseEnv: Env)(implicit eqStore: EqStore): Freshened =
-    if (binders.isEmpty) Freshened(Vector.empty, baseEnv, BitSet.empty)
+    if (binders.isEmpty) Freshened(Vector.empty, baseEnv, DepSet.empty)
     else freshen(NEL.mk(binders), baseEnv)
 
   def freshen(vpi: VPi)(implicit eqStore: EqStore): Freshened = freshen(vpi.binders, vpi.env)
@@ -38,23 +36,23 @@ object BinderOps {
     val vars = Vector.newBuilder[Value]
     val vBinders = Vector.newBuilder[VBinder]
     var env = baseEnv.newScope
-    var newVars = BitSet.empty
+    val newVars = DepSet.newBuilder
 
     binders.foreach { binder =>
       val fresh = TypePatternOps.freshenRawBinder(env, binder, evalTypeTerm)
       vars += fresh.value
       env = fresh.env.putLocal(binder.name, fresh.value)
-      newVars ++= fresh.newVars
+      newVars.unionInPlace(fresh.newVars)
       vBinders += fresh.binder
     }
 
-    FreshenedRawBinders(vars.result(), env, newVars, vBinders.result())
+    FreshenedRawBinders(vars.result(), env, newVars.result(), vBinders.result())
   }
 
   def freshenRawBinders(binders: Vector[Binder], baseEnv: Env, evalTypeTerm: (CoreAst.TypeTerm, Env) => Value)(implicit
       eqStore: EqStore
   ): FreshenedRawBinders =
-    if (binders.isEmpty) FreshenedRawBinders(Vector.empty, baseEnv, BitSet.empty, Vector.empty)
+    if (binders.isEmpty) FreshenedRawBinders(Vector.empty, baseEnv, DepSet.empty, Vector.empty)
     else freshenRawBinders(NEL.mk(binders), baseEnv, evalTypeTerm)
 
   def freshenRawBindersAndCheck(binders: Vector[Binder], env: Env)(implicit

@@ -2,10 +2,8 @@ package com.raccoonlang
 
 import com.raccoonlang.Value.VarId
 
-import scala.collection.immutable.BitSet
-
 // Tracks equalities between variables through substitution
-final case class EqStore(subst: Map[VarId, Value], refinable: BitSet) {
+final case class EqStore(subst: Map[VarId, Value], refinable: DepSet) {
   @annotation.tailrec
   def force(v: Value): Value = v match {
     case Value.Var(_, id, _) =>
@@ -18,7 +16,7 @@ final case class EqStore(subst: Map[VarId, Value], refinable: BitSet) {
 
   def isRefinable(id: VarId): Boolean = refinable.contains(id)
 
-  def allow(ids: BitSet): EqStore = copy(refinable = refinable ++ ids)
+  def allow(ids: DepSet): EqStore = copy(refinable = refinable ++ ids)
 
   def addLink(id: VarId, v: Value): EqStore = {
     if (subst.contains(id)) throw VarAlreadyLinked(id)
@@ -28,33 +26,32 @@ final case class EqStore(subst: Map[VarId, Value], refinable: BitSet) {
 
   def occurs(id: VarId, in: Value): Boolean = transitiveDeps(in).contains(id)
 
-  lazy val solvedIds = BitSet.fromSpecific(subst.keySet)
+  lazy val solvedIds: DepSet = DepSet.from(subst.keySet)
 
-  private def transitiveDeps(v: Value): BitSet = {
-    var seen = v.synDeps
+  private def transitiveDeps(v: Value): DepSet = {
+    val seen = DepSet.newBuilder(v.synDeps)
     var frontier = v.synDeps
 
     while (frontier.nonEmpty) {
       val toExpand = frontier & solvedIds
-      val next = scala.collection.mutable.BitSet.empty
+      val next = DepSet.newBuilder
 
       toExpand.foreach { id =>
-        next |= subst(id).synDeps
+        next.unionInPlace(subst(id).synDeps)
       }
 
-      next --= seen
-      if (next.isEmpty) return seen
+      next.diffInPlace(seen)
+      if (next.isEmpty) return seen.result()
 
-      val nextImm = next.toImmutable
-      seen |= nextImm
-      frontier = nextImm
+      seen.unionInPlace(next)
+      frontier = next.result()
     }
 
-    seen
+    seen.result()
   }
 
 }
 
 object EqStore {
-  val empty: EqStore = EqStore(Map(), BitSet.empty)
+  val empty: EqStore = EqStore(Map(), DepSet.empty)
 }

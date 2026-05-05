@@ -179,7 +179,7 @@ object TypeChecker {
       val (fields1, res1) = (copy1.fields, copy1.tpe)
       val (fields2, res2) = (copy2.fields, copy2.tpe)
 
-      val refinable0 = scrutTpe.synDeps ++ res1.synDeps ++ res2.synDeps
+      val refinable0 = DepSet.unionAll(scrutTpe.synDeps, res1.synDeps, res2.synDeps)
 
       val startEq =
         try {

@@ -3,8 +3,6 @@ package com.raccoonlang
 import com.raccoonlang.CoreAst.TypeTerm
 import com.raccoonlang.Util.NEL
 
-import scala.collection.immutable.BitSet
-
 final case class InductiveMeta(
     constructorNames: Vector[String],
     paramCount: Int,
@@ -18,13 +16,13 @@ case object Symbol extends ConstType
 
 sealed trait Value {
   def tpe: Value
-  def synDeps: BitSet
+  def synDeps: DepSet
 
   override def toString: String = PrettyPrinter.print(this)
 }
 
 sealed trait TopLevelValue extends Value {
-  override val synDeps: BitSet = BitSet.empty
+  override val synDeps: DepSet = DepSet.empty
 }
 
 object Value {
@@ -74,7 +72,7 @@ object Value {
   case class Level(atoms: Map[VarId, Int], c: Int) extends Value {
     override val tpe: Value = LevelTpe
 
-    override val synDeps: BitSet = BitSet(atoms.keys.toList: _*)
+    override val synDeps: DepSet = DepSet.from(atoms.keys)
   }
   object Level {
     def addOffset(l: Level, offset: Int): Level = {
@@ -119,7 +117,7 @@ object Value {
   case class VSort(level: Level) extends Universe {
     override def tpe: Value = VSort(Level.succ(level))
 
-    override def synDeps: BitSet = level.synDeps
+    override def synDeps: DepSet = level.synDeps
   }
 
   sealed trait CaptureType
@@ -134,7 +132,7 @@ object Value {
       env: Env,
       binders: NEL[VBinder],
       codomain: (Env, EqStore) => Value,
-      synDeps: BitSet,
+      synDeps: DepSet,
       id: ValueId,
       tpe: Universe
   ) extends Value
@@ -148,7 +146,7 @@ object Value {
   }
 
   case class VConst(name: String, constType: ConstType, tpe: Value) extends Value with UpdatableType {
-    override val synDeps: BitSet = tpe.synDeps
+    override val synDeps: DepSet = tpe.synDeps
 
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
@@ -160,12 +158,12 @@ object Value {
 
     def tpe: Value
 
-    override lazy val synDeps: BitSet = {
-      val res = collection.mutable.BitSet()
-      res |= head.synDeps
-      args.foreach(v => res |= v.synDeps)
-      res |= tpe.synDeps
-      res.toImmutable
+    override lazy val synDeps: DepSet = {
+      val res = DepSet.newBuilder
+      res.unionInPlace(head.synDeps)
+      args.foreach(v => res.unionInPlace(v.synDeps))
+      res.unionInPlace(tpe.synDeps)
+      res.result()
     }
   }
 
@@ -185,16 +183,16 @@ object Value {
     with UpdatableType {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
 
-    override def synDeps: BitSet = {
-      val res = collection.mutable.BitSet()
-      res |= tpe.synDeps
-      id.captures.foreach(v => res |= v.synDeps)
-      res.toImmutable
+    override def synDeps: DepSet = {
+      val res = DepSet.newBuilder
+      res.unionInPlace(tpe.synDeps)
+      id.captures.foreach(v => res.unionInPlace(v.synDeps))
+      res.result()
     }
   }
 
   case class Var(name: String, id: VarId, tpe: Value) extends Value with Blocker with UpdatableType {
-    override val synDeps: BitSet = tpe.synDeps + id
+    override val synDeps: DepSet = tpe.synDeps + id
 
     override val blockerId: VarId = id
 
@@ -202,16 +200,16 @@ object Value {
   }
 
   case class VLam(tpe: VPi, id: ValueId, isStable: Boolean, run: (NEL[Value], EqStore) => Value) extends Value {
-    override lazy val synDeps: BitSet = {
+    override lazy val synDeps: DepSet = {
       id match {
         case ValueId.Const(_) => tpe.synDeps
         case ValueId.LocalId(_, params) =>
           if (params.isEmpty) tpe.synDeps
           else {
-            val res = collection.mutable.BitSet()
-            res |= tpe.synDeps
-            params.foreach(v => res |= v.synDeps)
-            res.toImmutable
+            val res = DepSet.newBuilder
+            res.unionInPlace(tpe.synDeps)
+            params.foreach(v => res.unionInPlace(v.synDeps))
+            res.result()
           }
       }
     }
@@ -225,12 +223,12 @@ object Value {
 
   // Fully applied constructor.
   case class VCtor(head: ConstructorHead, fields: Vector[Value], tpe: Value) extends Value with UpdatableType {
-    override lazy val synDeps: BitSet = {
-      val res = collection.mutable.BitSet()
-      res |= head.synDeps
-      fields.foreach(v => res |= v.synDeps)
-      res |= tpe.synDeps
-      res.toImmutable
+    override lazy val synDeps: DepSet = {
+      val res = DepSet.newBuilder
+      res.unionInPlace(head.synDeps)
+      fields.foreach(v => res.unionInPlace(v.synDeps))
+      res.unionInPlace(tpe.synDeps)
+      res.result()
     }
 
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)

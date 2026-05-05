@@ -3,8 +3,6 @@ package com.raccoonlang
 import com.raccoonlang.CoreAst.Term.Match
 import com.raccoonlang.CoreAst.{Ast, Term}
 
-import scala.collection.immutable.BitSet
-
 object FreeNames {
 
   // Threaded traversal: returns (freeNames, updatedBound)
@@ -70,15 +68,15 @@ object FreeNames {
 
   def getFreeNames(term: CoreAst.Ast, bound: Set[String]): Set[String] = go(term, bound)._1
 
-  def getDeps(term: Ast, env: Env, bound: Set[String]): BitSet = {
+  def getDeps(term: Ast, env: Env, bound: Set[String]): DepSet = {
     val freeNames = FreeNames.getFreeNames(term, bound)
-    val deps = collection.mutable.BitSet()
+    val deps = DepSet.newBuilder
     freeNames.foreach { name =>
       env.findLocal(name).foreach { v =>
-        deps |= v.synDeps
+        deps.unionInPlace(v.synDeps)
       }
     }
-    deps.toImmutable
+    deps.result()
   }
 
 }

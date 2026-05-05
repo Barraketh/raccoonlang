@@ -5,8 +5,6 @@ import com.raccoonlang.CoreAst._
 import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
 
-import scala.collection.immutable.BitSet
-
 object Interpreter {
   private def normalizeLevel(l: Level)(implicit eqStore: EqStore): Level = {
     val pieces = Vector(Level(Map.empty, l.c)) ++
@@ -395,7 +393,7 @@ object Interpreter {
             val l = getLevel(env.findLocal("l").get)(eqStore)
             VSort(Level.succ(l))
           },
-          BitSet.empty,
+          DepSet.empty,
           ValueId.Const("Sort"),
           VSort(Level.zero)
         ),

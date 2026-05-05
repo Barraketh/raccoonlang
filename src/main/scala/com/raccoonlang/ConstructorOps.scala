@@ -3,10 +3,8 @@ package com.raccoonlang
 import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value.{ConstructorHead, VBinder, VCtor, VPi}
 
-import scala.collection.immutable.BitSet
-
 object ConstructorOps {
-  final case class FreshCtor(value: VCtor, newVars: BitSet)
+  final case class FreshCtor(value: VCtor, newVars: DepSet)
 
   final case class ConstructorShape(head: ConstructorHead, pi: VPi) {
     val paramCount: Int = head.numParams
@@ -44,7 +42,7 @@ object ConstructorOps {
         val fresh = freshFieldPrefix(fields, envWithParams, fields.length)
         FreshCtor(VCtor(head, fresh.vars, shape.pi.codomain(fresh.env, eqStore)), fresh.newVars)
 
-      case None => FreshCtor(VCtor(head, Vector.empty, head.tpe), BitSet.empty)
+      case None => FreshCtor(VCtor(head, Vector.empty, head.tpe), DepSet.empty)
     }
 
   def freshAll(head: ConstructorHead)(implicit eqStore: EqStore): VCtor =
@@ -80,7 +78,7 @@ object ConstructorOps {
       eqStore: EqStore
   ): BinderOps.Freshened = {
     val binders = fieldBinders.take(fieldCount)
-    if (binders.isEmpty) BinderOps.Freshened(Vector.empty, envWithParams, BitSet.empty)
+    if (binders.isEmpty) BinderOps.Freshened(Vector.empty, envWithParams, DepSet.empty)
     else BinderOps.freshen(NEL.mk(binders), envWithParams)
   }
 }

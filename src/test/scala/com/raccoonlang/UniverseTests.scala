@@ -3,8 +3,6 @@ package com.raccoonlang
 import com.raccoonlang.ErrorReporter.Source
 import com.raccoonlang.Value.VSort
 
-import scala.collection.immutable.BitSet
-
 class UniverseTests extends munit.FunSuite {
   private def runProgram(src: String): Value = {
     LanguageParser.parseProgram(src) match {
@@ -291,7 +289,7 @@ class UniverseTests extends munit.FunSuite {
 
   test("sort unification rejects solving u + 1 = 0") {
     val u = FreshVar.freshVar("u", Value.LevelTpe)
-    implicit val eqStore: EqStore = EqStore.empty.allow(BitSet(u.id))
+    implicit val eqStore: EqStore = EqStore.empty.allow(DepSet(u.id))
     implicit val normalizers: NormalizerMap = NormalizerMap.empty
 
     intercept[UnificationFailed] {

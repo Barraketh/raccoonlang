@@ -4,11 +4,9 @@ import com.raccoonlang.CoreAst.{Binder, Term, TypePattern, TypeTerm}
 import com.raccoonlang.Interpreter._
 import com.raccoonlang.Value._
 
-import scala.collection.immutable.BitSet
-
 object TypePatternOps {
-  final case class FreshenedBinder(value: Value, env: Env, newVars: BitSet)
-  final case class FreshenedRawBinder(value: Value, env: Env, newVars: BitSet, binder: VBinder)
+  final case class FreshenedBinder(value: Value, env: Env, newVars: DepSet)
+  final case class FreshenedRawBinder(value: Value, env: Env, newVars: DepSet, binder: VBinder)
 
   private def requirePi(fn: Value)(implicit eqStore: EqStore): VPi =
     resolveInEqStore(fn.tpe) match {
@@ -114,8 +112,8 @@ object TypePatternOps {
     }
   }
 
-  private def freshenCaptures(env: Env, captures: Vector[VCapture])(implicit eqStore: EqStore): (Env, BitSet) = {
-    captures.foldLeft((env, BitSet.empty)) { case ((curEnv, curNewVars), capture) =>
+  private def freshenCaptures(env: Env, captures: Vector[VCapture])(implicit eqStore: EqStore): (Env, DepSet) = {
+    captures.foldLeft((env, DepSet.empty)) { case ((curEnv, curNewVars), capture) =>
       capture.captureType match {
         case StructuralCapture(captureBinder) =>
           val fresh = freshenBinder(curEnv, captureBinder)

@@ -6,7 +6,6 @@ import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
 
 import scala.annotation.tailrec
-import scala.collection.immutable.BitSet
 
 object InductiveChecks {
 
@@ -139,7 +138,7 @@ object InductiveChecks {
         case pi: VPi =>
           val freshParams = BinderOps.freshen(pi.binders.toVector.take(header.params.length), checkEnvWithInductive)
           (freshParams.vars, freshParams.env, freshParams.newVars)
-        case _ => (Vector.empty, checkEnvWithInductive, BitSet.empty)
+        case _ => (Vector.empty, checkEnvWithInductive, DepSet.empty)
       }
     }
 
