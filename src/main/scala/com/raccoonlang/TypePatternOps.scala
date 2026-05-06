@@ -1,6 +1,7 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.{Binder, Term, TypePattern, TypeTerm}
+import com.raccoonlang.CoreAst.{Binder, Term => CTerm, TypePattern => CTypePattern, TypeTerm => CTypeTerm}
+import com.raccoonlang.ElabAst.{Term => ETerm}
 import com.raccoonlang.Interpreter._
 import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
@@ -10,16 +11,30 @@ object TypePatternOps {
   final case class FreshenedRawBinder(value: Value, env: Env, newVars: DepSet, binder: VBinder)
   private final case class OpenedPattern(value: Value, env: Env, newVars: DepSet)
   private final case class OpenedApp(fn: Value, args: Vector[Value], env: Env, newVars: DepSet)
+  private final case class CheckedPattern(pattern: ElabAst.TypePattern, value: Value, env: Env, newVars: DepSet) {
+    def expectedTy: ElabAst.TypeTerm = compileType(pattern)
+  }
 
-  private def putBinderLocal(env: Env, binder: VBinder, value: Value): Env =
-    binder.localRef match {
-      case Some(ref) => env.putLocal(ref, value)
-      case None      => env
-    }
+  private def putBinderLocal(
+      env: Env,
+      binder: VBinder,
+      value: Value,
+      instanceTerm: Option[ElabAst.Term] = None
+  )(implicit eqStore: EqStore): Env = {
+    val instanceKey =
+      if (binder.isInstance || binder.isDerived) Some(InstanceSearch.instanceKey(binder.name, value, eqStore))
+      else None
+    env.putLocal(binder.localRef, value, instanceKey, instanceTerm)
+  }
 
-  private def globalName(ref: Term.Ref): Option[String] = ref match {
-    case Term.GlobalRef(name, _) => Some(name)
-    case Term.LocalRef(_, _)     => None
+  private def toElabRef(ref: CTerm.Ref): ETerm.Ref = ref match {
+    case CTerm.GlobalRef(name, span) => ETerm.GlobalRef(name, span)
+    case CTerm.LocalRef(ref, span)   => ETerm.LocalRef(ref, span)
+  }
+
+  private def globalName(ref: ETerm.Ref): Option[String] = ref match {
+    case ETerm.GlobalRef(name, _) => Some(name)
+    case ETerm.LocalRef(_, _)     => None
   }
 
   private def requirePi(fn: Value)(implicit eqStore: EqStore): VPi =
@@ -28,17 +43,23 @@ object TypePatternOps {
       case other   => throw CannotApplyNonFunction(other)
     }
 
-  private def compileType(pattern: TypePattern): TypeTerm = pattern match {
-    case term: TypeTerm             => term
-    case Term.Capture(_, ref, span) => Term.LocalRef(ref, span)
-    case Term.PatternApp(fn, args, span) =>
-      Term.TApp(fn, args.map(compileType), span)
+  private def compileType(pattern: ElabAst.TypePattern): ElabAst.TypeTerm = pattern match {
+    case term: ElabAst.TypeTerm      => term
+    case ETerm.Capture(_, ref, span) => ETerm.LocalRef(ref, span)
+    case ETerm.PatternApp(fn, args, span) =>
+      ETerm.App(fn, args.toVector.map(compileType), span)
   }
 
-  private def compileLevelCapture(pattern: TypePattern): Option[VCapture] =
+  private def checkedTermAsTypePattern(term: ElabAst.Term): ElabAst.TypePattern =
+    term match {
+      case pattern: ElabAst.TypePattern => pattern
+      case other => throw WTF(s"Expected checked instance term to be usable in a type pattern, got $other")
+    }
+
+  private def compileLevelCapture(pattern: ElabAst.TypePattern): Option[VCapture] =
     pattern match {
-      case Term.Capture(name, ref, _) => Some(VCapture(name, ref, 0 :: Nil, LevelCapture(0)))
-      case Term.PatternApp(fn, args, _) if globalName(fn).contains("Level::succ") =>
+      case ETerm.Capture(name, ref, _) => Some(VCapture(name, ref, 0 :: Nil, LevelCapture(0)))
+      case ETerm.PatternApp(fn, args, _) if globalName(fn).contains("Level::succ") =>
         compileLevelCapture(args.head).map {
           case c @ VCapture(_, _, _, LevelCapture(subtract)) => c.copy(captureType = LevelCapture(subtract + 1))
           case _ => throw WTF("Expected a level capture while compiling a level pattern")
@@ -46,34 +67,130 @@ object TypePatternOps {
       case _ => None
     }
 
-  private def collectCaptures(pattern: TypePattern): Vector[VCapture] =
+  private def collectCaptures(pattern: ElabAst.TypePattern): Vector[VCapture] =
     pattern match {
-      case Term.PatternApp(fn, args, _) if globalName(fn).contains("Sort") => compileLevelCapture(args.head).toVector
+      case ETerm.PatternApp(fn, args, _) if globalName(fn).contains("Sort") => compileLevelCapture(args.head).toVector
 
-      case app: Term.PatternApp =>
+      case app: ETerm.PatternApp =>
         app.args.toVector.zipWithIndex.flatMap { case (next, idx) =>
           next match {
-            case _: TypeTerm => Vector.empty
-            case nested: Term.PatternApp =>
+            case _: ElabAst.TypeTerm => Vector.empty
+            case nested: ETerm.PatternApp =>
               collectCaptures(nested).map(capture => capture.copy(path = idx :: capture.path))
-            case Term.Capture(name, localRef, _) => Vector(VCapture(name, localRef, idx :: Nil, StructuralCapture))
+            case ETerm.Capture(name, localRef, _) => Vector(VCapture(name, localRef, idx :: Nil, StructuralCapture))
           }
         }
 
       case _ => Vector.empty
     }
 
-  def toVBinder(env: Env, binder: CoreAst.Binder, evalTypeTerm: (CoreAst.TypeTerm, Env) => Value)(implicit
-      eqStore: EqStore
-  ): VBinder = {
-    val captures = collectCaptures(binder.ty)
-    val resType = compileType(binder.ty)
+  private def checkPattern(pattern: CTypePattern, env: Env)(implicit
+      eqStore: EqStore,
+      normalizers: NormalizerMap
+  ): CheckedPattern =
+    pattern match {
+      case term: CTypeTerm =>
+        val checked = TypeChecker.checkTypeTerm(term, env)
+        CheckedPattern(checked.term, checked.value, env, DepSet.empty)
+      case CTerm.Capture(name, _, span) =>
+        throw PatternCaptureNeedsExpectedType(name, Some(span))
+      case CTerm.PatternApp(fn, args, span) =>
+        checkPatternApp(fn, args.toVector, span, env)
+    }
 
-    val opened = openPattern(env, binder.ty)
-    evalTypeTerm(resType, opened.env)
+  private def checkPatternApp(
+      fn: CTerm.Ref,
+      args: Vector[CTypePattern],
+      span: Span,
+      env: Env
+  )(implicit eqStore: EqStore, normalizers: NormalizerMap): CheckedPattern = {
+    val fnTerm = toElabRef(fn)
+    val fnV = evalTypeTerm(fnTerm, env)
+    val pi = requirePi(fnV)
+    val binders = pi.binders.toVector
+    val explicitArgCount = binders.count(!_.isDerived)
 
-    VBinder(binder.name, binder.localRef, binder.ty, resType, captures)
+    var argIdx = 0
+    var callerEnv = env
+    var calleeEnv = pi.env
+    val argPatterns = Vector.newBuilder[ElabAst.TypePattern]
+    val argValues = Vector.newBuilder[Value]
+    val newVars = DepSet.newBuilder
+
+    binders.foreach { binder =>
+      val (argPattern, argValue, argTerm) =
+        if (binder.isDerived) {
+          val solved = BinderOps.solveBinder(calleeEnv, binder, env)
+          val term = checkedTermAsTypePattern(solved.term)
+          (term, solved.value, solved.term)
+        } else {
+          if (argIdx >= args.length) throw ArityMismatch(explicitArgCount, args.length, Some(span))
+          val arg = args(argIdx)
+          argIdx += 1
+
+          arg match {
+            case CTerm.Capture(name, ref, captureSpan) =>
+              val expected = openPattern(calleeEnv, binder.ty)
+              newVars.unionInPlace(expected.newVars)
+
+              val value = FreshVar.freshVar(name, expected.value)
+              val pattern = ETerm.Capture(name, ref, captureSpan)
+              val term = ETerm.LocalRef(ref, captureSpan)
+              callerEnv = callerEnv.putLocal(ref, value)
+              newVars.add(value.id)
+              (pattern, value, term)
+
+            case other =>
+              val checked = checkPattern(other, callerEnv)
+              callerEnv = checked.env
+              newVars.unionInPlace(checked.newVars)
+              (checked.pattern, checked.value, checked.expectedTy)
+          }
+        }
+
+      calleeEnv = bindValueAndCheck(calleeEnv, binder, argValue, Some(argTerm))
+      argPatterns += argPattern
+      argValues += argValue
+    }
+
+    if (argIdx != args.length) throw ArityMismatch(explicitArgCount, args.length, Some(span))
+
+    val checkedArgs = argPatterns.result()
+    val pattern = ETerm.PatternApp(fnTerm, NEL.mk(checkedArgs), span)
+    CheckedPattern(pattern, Interpreter.evalApply(fnV, NEL.mk(argValues.result())), callerEnv, newVars.result())
   }
+
+  def toVBinder(binder: CoreAst.Binder, env: Env)(implicit eqStore: EqStore, normalizers: NormalizerMap): VBinder = {
+    val checked = checkPattern(binder.ty, env)
+    val pattern = checked.pattern
+    val captures = collectCaptures(pattern)
+    val resType = checked.expectedTy
+    TypeChecker.assertType(Interpreter.evalTypeTerm(resType, checked.env))
+
+    val plan = TypePatternPlan(pattern, resType, captures)
+    VBinder(binder.name, binder.localRef, plan, binder.isDerived, binder.isInstance)
+  }
+
+  def toElabBinder(binder: VBinder, span: Span): ElabAst.Binder =
+    ElabAst.Binder(
+      binder.name,
+      binder.localRef,
+      binder.ty,
+      binder.expectedTy,
+      binder.captures,
+      span,
+      binder.isDerived,
+      binder.isInstance
+    )
+
+  def toVBinder(binder: ElabAst.Binder): VBinder =
+    VBinder(
+      binder.name,
+      binder.localRef,
+      TypePatternPlan(binder.ty, binder.expectedTy, binder.captures),
+      binder.isDerived,
+      binder.isInstance
+    )
 
   private def projectStep(value: Value, idx: Int)(implicit eqStore: EqStore): Value =
     resolveInEqStore(value) match {
@@ -103,12 +220,12 @@ object TypePatternOps {
     }
   }
 
-  private def structConstructorForBinderType(env: Env, binderTy: TypeTerm)(implicit
+  private def structConstructorForBinderType(env: Env, binderTy: ElabAst.TypeTerm)(implicit
       eqStore: EqStore
-  ): Option[(ConstructorOps.ConstructorShape, Vector[TypeTerm])] = {
+  ): Option[(ConstructorOps.ConstructorShape, Vector[ElabAst.Term])] = {
     val (headValue, argTerms) = binderTy match {
-      case Term.TApp(fn, args, _) => (Interpreter.evalTypeTerm(fn, env), args.toVector)
-      case ref: Term.Ref          => (Interpreter.evalTypeTerm(ref, env), Vector.empty)
+      case ETerm.App(fn, args, _) => (Interpreter.evalTerm(fn, env), args)
+      case ref: ETerm.Ref         => (Interpreter.evalTypeTerm(ref, env), Vector.empty)
       case _                      => return None
     }
 
@@ -126,23 +243,23 @@ object TypePatternOps {
       env: Env,
       binder: VBinder,
       shape: ConstructorOps.ConstructorShape,
-      argTerms: Vector[TypeTerm]
+      argTerms: Vector[ElabAst.Term]
   )(implicit eqStore: EqStore): FreshenedBinder = {
     val (args, newVars) = binder.ty match {
-      case app: Term.PatternApp =>
+      case app: ETerm.PatternApp =>
         val opened = openPatternPrefix(env, app, shape.paramCount)
         (opened.args, opened.newVars)
       case _ =>
-        (shape.paramArgs(argTerms).map(arg => Interpreter.evalTypeTerm(arg, env)), DepSet.empty)
+        (shape.paramArgs(argTerms).map(arg => Interpreter.evalTerm(arg, env)), DepSet.empty)
     }
     val fresh = ConstructorOps.freshFromParams(shape.head, args)
-    // Constructor params are only used to build the fresh struct. Captures are projected from the fresh result type
-    // under the original caller env so index refinements from the constructed value are preserved.
     val refinedEnv = openCaptures(env, binder.captures, fresh.value.tpe)
     FreshenedBinder(fresh.value, refinedEnv, newVars ++ fresh.newVars)
   }
 
-  private def openPatternPrefix(env: Env, app: Term.PatternApp, argCount: Int)(implicit eqStore: EqStore): OpenedApp = {
+  private def openPatternPrefix(env: Env, app: ETerm.PatternApp, argCount: Int)(implicit
+      eqStore: EqStore
+  ): OpenedApp = {
     val fnV = evalTypeTerm(app.fn, env)
     val pi = requirePi(fnV)
     val binders = pi.binders.toVector
@@ -157,7 +274,7 @@ object TypePatternOps {
 
     binders.zip(args).take(argCount).foreach { case (binder, arg) =>
       val argValue = arg match {
-        case Term.Capture(name, ref, _) =>
+        case ETerm.Capture(name, ref, _) =>
           val expected = openPattern(calleeEnv, binder.ty)
           newVars.unionInPlace(expected.newVars)
 
@@ -179,58 +296,59 @@ object TypePatternOps {
     OpenedApp(fnV, argValues.result(), callerEnv, newVars.result())
   }
 
-  private def openPattern(env: Env, pattern: TypePattern)(implicit eqStore: EqStore): OpenedPattern =
+  private def openPattern(env: Env, pattern: ElabAst.TypePattern)(implicit eqStore: EqStore): OpenedPattern =
     pattern match {
-      case app: Term.PatternApp =>
+      case app: ETerm.PatternApp =>
         val opened = openPatternPrefix(env, app, app.args.length)
         OpenedPattern(Interpreter.evalApply(opened.fn, NEL.mk(opened.args)), opened.env, opened.newVars)
-      case Term.Capture(name, _, span) => throw PatternCaptureNeedsExpectedType(name, Some(span))
-      case term: TypeTerm              => OpenedPattern(evalTypeTerm(term, env), env, DepSet.empty)
+      case ETerm.Capture(name, _, span) => throw PatternCaptureNeedsExpectedType(name, Some(span))
+      case term: ElabAst.TypeTerm       => OpenedPattern(evalTypeTerm(term, env), env, DepSet.empty)
     }
 
-  // =========================
-  // Public API
-  // =========================
-
-  /** Create a fresh value for a binder and return:
-    *   - The fresh value (either a Var or a VCtor for struct types)
-    *   - The environment extended with any captures introduced by the binder's type pattern
-    *   - The set of newly created variable IDs
-    */
   def freshenBinder(env: Env, binder: VBinder)(implicit eqStore: EqStore): FreshenedBinder = {
     structConstructorForBinderType(env, binder.expectedTy) match {
       case Some((shape, argTerms)) => freshenStructBinder(env, binder, shape, argTerms)
       case None =>
         val opened = openPattern(env, binder.ty)
-        val openedEnv = opened.env
         val value = FreshVar.freshVar(binder.name, opened.value)
-        FreshenedBinder(value, openedEnv, opened.newVars + value.id)
+        FreshenedBinder(value, opened.env, opened.newVars + value.id)
     }
   }
 
-  def freshenRawBinder(env: Env, binder: Binder, evalTypeTerm: (CoreAst.TypeTerm, Env) => Value)(implicit
-      eqStore: EqStore
+  def freshenRawBinder(env: Env, binder: Binder)(implicit
+      eqStore: EqStore,
+      normalizers: NormalizerMap
   ): FreshenedRawBinder = {
-    val vBinder = toVBinder(env, binder, evalTypeTerm)
+    val vBinder = toVBinder(binder, env)
     val fresh = freshenBinder(env, vBinder)
     FreshenedRawBinder(fresh.value, fresh.env, fresh.newVars, vBinder)
   }
 
-  // Used by Interpreter.getEnvWithArgs
-  def bindValue(env: Env, binder: VBinder, actual: Value)(implicit eqStore: EqStore): Env = {
+  def bindValue(
+      env: Env,
+      binder: VBinder,
+      actual: Value,
+      instanceTerm: Option[ElabAst.Term] = None
+  )(implicit eqStore: EqStore): Env = {
     val openedEnv = openCaptures(env, binder.captures, actual.tpe)
-    putBinderLocal(openedEnv, binder, actual)
+    putBinderLocal(openedEnv, binder, actual, instanceTerm)
   }
 
-  // Used by TypeChecker.typecheckApply
-  def bindValueAndCheck(env: Env, binder: VBinder, actual: Value)(implicit
+  def bindValueAndCheck(
+      env: Env,
+      binder: VBinder,
+      actual: Value,
+      instanceTerm: Option[ElabAst.Term] = None
+  )(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): Env = {
     val openedEnv = openCaptures(env, binder.captures, actual.tpe)
     val expectedTy = Interpreter.evalTypeTerm(binder.expectedTy, openedEnv)
     TypeChecker.checkType(actual, expectedTy)
-    putBinderLocal(openedEnv, binder, actual)
+    putBinderLocal(openedEnv, binder, Value.ascribe(actual, expectedTy), instanceTerm)
   }
 
+  def expectedType(env: Env, binder: VBinder)(implicit eqStore: EqStore): Value =
+    Interpreter.evalTypeTerm(binder.expectedTy, env)
 }

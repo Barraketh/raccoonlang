@@ -58,7 +58,7 @@ object CoreAst {
     final case class Pi(binders: NEL[Binder], out: TypeTerm, span: Span) extends Term with TypeTerm
 
     // Application: f(a) (term-level)
-    final case class App(fn: Term, args: NEL[Term], span: Span) extends Term
+    final case class App(fn: Term, args: Vector[Term], span: Span) extends Term
 
     case class Body(lets: Vector[Let], res: Term, span: Span) extends Term
 
@@ -77,12 +77,26 @@ object CoreAst {
   }
 
   // Let: let x := foo
-  final case class Let(name: String, localRef: LocalRef, ty: Option[TypeTerm], value: Term, span: Span)
+  final case class Let(
+      name: String,
+      localRef: LocalRef,
+      ty: Option[TypeTerm],
+      value: Term,
+      span: Span,
+      isInstance: Boolean = false
+  )
 
   // Use directive (first-class normalizer application)
   final case class Use(normalizer: Term, span: Span)
 
-  case class Binder(name: String, localRef: Option[LocalRef], ty: TypePattern, span: Span) {
+  case class Binder(
+      name: String,
+      localRef: LocalRef,
+      ty: TypePattern,
+      span: Span,
+      isDerived: Boolean = false,
+      isInstance: Boolean = false
+  ) {
     override def toString: String = PrettyPrinter.printBinder(this)
   }
 
@@ -117,7 +131,8 @@ object CoreAst {
         name: String,
         ty: TypeTerm,
         body: Term,
-        span: Span
+        span: Span,
+        isInstance: Boolean = false
     ) extends Decl
 
     // Inductive type declaration (structured)

@@ -256,7 +256,7 @@ class TypePatternTests extends munit.FunSuite {
         |inductive Box (A: Type) : Type
         | | mk (a: A) : Box(A)
         |
-        |def bad (b: Box(Nat::zero)): Type := Type
+        |def bad (b: Box(Nat::zero)): Type := Nat
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {

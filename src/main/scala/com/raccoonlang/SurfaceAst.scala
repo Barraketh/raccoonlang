@@ -34,7 +34,7 @@ object SurfaceAst {
     final case class Capture(name: String, span: Span) extends TypeTerm
 
     // Application: f(a) (term-level)
-    final case class App(fn: Term, args: NEL[Term], span: Span) extends Term
+    final case class App(fn: Term, args: Vector[Term], span: Span) extends Term
 
     // Lambda: fun (x : A)(y: B): B => body
     final case class Lam(header: FuncHeader, body: Term, span: Span) extends Term
@@ -53,9 +53,9 @@ object SurfaceAst {
   final case class Use(normalizer: Term, span: Span)
 
   // Let: let x := foo
-  final case class Let(name: String, ty: Option[TypeTerm], value: Term, span: Span)
+  final case class Let(name: String, ty: Option[TypeTerm], value: Term, span: Span, isInstance: Boolean = false)
 
-  case class Binder(name: String, ty: TypeTerm, span: Span)
+  case class Binder(name: String, ty: TypeTerm, span: Span, isDerived: Boolean = false, isInstance: Boolean = false)
 
   case class FuncHeader(params: Vector[Binder], ty: TypeTerm, span: Span)
 
@@ -87,7 +87,8 @@ object SurfaceAst {
         unfoldStrategy: Option[UnfoldStrategy],
         header: DeclHeader,
         body: Term,
-        span: Span
+        span: Span,
+        isInstance: Boolean = false
     ) extends Decl
 
     // Inductive type declaration

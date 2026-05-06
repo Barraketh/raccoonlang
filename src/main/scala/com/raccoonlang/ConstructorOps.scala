@@ -18,7 +18,7 @@ object ConstructorOps {
     def instantiateParams(paramArgs: Vector[Value])(implicit eqStore: EqStore): Env = {
       if (paramArgs.length != paramCount) throw ArityMismatch(paramCount, paramArgs.length)
       if (paramCount == 0) pi.env
-      else BinderOps.instantiate(NEL.mk(paramBinders), pi.env, NEL.mk(paramArgs))
+      else BinderOps.instantiateFull(NEL.mk(paramBinders), pi.env, NEL.mk(paramArgs))
     }
 
     def makeCtor(allArgs: Vector[Value], resultTy: Value): VCtor = VCtor(head, allArgs.drop(paramCount), resultTy)
@@ -66,7 +66,7 @@ object ConstructorOps {
         val fieldIdx = allFieldBinders.indexWhere(_.name == field)
         if (fieldIdx < 0) throw NotFound(field)
 
-        val fieldRef = allFieldBinders(fieldIdx).localRef.getOrElse(throw NotFound(field))
+        val fieldRef = allFieldBinders(fieldIdx).localRef
         freshFieldPrefix(allFieldBinders, envWithParams, fieldIdx + 1).env(fieldRef).tpe
 
       case None => throw NotFound(field)

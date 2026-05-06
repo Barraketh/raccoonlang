@@ -1,22 +1,22 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.Term.Match
-import com.raccoonlang.CoreAst._
+import com.raccoonlang.CoreAst.{Decl, Program, TypeTerm}
+import com.raccoonlang.ElabAst.{Term => ETerm}
 import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
 
 object Interpreter {
   private def normalizeLevel(l: Level)(implicit eqStore: EqStore): Level = {
     val pieces = Vector(Level(Map.empty, l.c)) ++
-      l.atoms.toVector.map { case (varId, k) =>
-        val base = eqStore.subst.get(varId) match {
+      l.atoms.toVector.map { case (atom, k) =>
+        val base = eqStore.subst.get(atom) match {
           case Some(sol) =>
             eqStore.force(sol) match {
               case next: Level   => normalizeLevel(next)
               case Var(_, id, _) => Level.mk(id)
               case other         => throw NotALevel(other)
             }
-          case None => Level.mk(varId)
+          case None => Level.mk(atom)
         }
         Level.addOffset(base, k)
       }
@@ -35,10 +35,8 @@ object Interpreter {
                 val res = lam.run(NEL.mk(args), eqStore)
                 resolveInEqStore(res)
               case b: Blocker =>
-                // Head is not reducible; remain blocked on this blocker
                 VBlockedApp(b, args, tpe, b.blockerId)
               case other =>
-                // Now that the head is resolved and not blocked, perform the application
                 resolveInEqStore(evalApply(other, NEL.mk(args)))
             }
           case vm: VBlockedThunk => resolveInEqStore(vm.thunk(eqStore))
@@ -51,9 +49,9 @@ object Interpreter {
   }
 
   private def getEnvWithArgs(fnTpe: VPi, args: NEL[Value])(implicit eqStore: EqStore) =
-    BinderOps.instantiate(fnTpe.binders, fnTpe.env, args)
+    BinderOps.instantiateFull(fnTpe.binders, fnTpe.env, args)
 
-  def evalPi(pi: Term.Pi, env: Env, vBinders: NEL[VBinder])(implicit eqStore: EqStore): VPi = {
+  def evalPi(pi: ETerm.Pi, env: Env, vBinders: NEL[VBinder])(implicit eqStore: EqStore): VPi = {
     val captureVals = FreeNames.getFreeRefs(pi).valuesIn(env)
     val id = ValueId.LocalId(pi.span.start, captureVals)
 
@@ -61,8 +59,6 @@ object Interpreter {
     val vars = fresh.vars
     val bodyEnv = fresh.env
     val outType = evalTypeTerm(pi.out, bodyEnv)
-
-    // Determine classifier for Pi: Prop if codomain is Prop, otherwise predicative max
 
     val piClassifier: Universe = TypeChecker.getUniverse(outType) match {
       case PropTpe => PropTpe
@@ -84,31 +80,25 @@ object Interpreter {
     )
   }
 
-  private def evalPi(pi: Term.Pi, env: Env)(implicit eqStore: EqStore): VPi = {
-    val binders = BinderOps.freshenRawBinders(pi.binders, env, (tt, env) => evalTypeTerm(tt, env)).vBinders
-    evalPi(pi, env, NEL.mk(binders))
+  private def evalPi(pi: ETerm.Pi, env: Env)(implicit eqStore: EqStore): VPi = {
+    val binders = pi.binders.map(TypePatternOps.toVBinder)
+    evalPi(pi, env, binders)
   }
 
-  private def evalTApp(app: Term.TApp, env: Env)(implicit meta: EqStore): Value = {
-    val fn = evalTypeTerm(app.fn, env)
-    val args = app.args.map(arg => evalTypeTerm(arg, env))
-    evalApply(fn, args)
+  def evalTypeTerm(tt: CoreAst.TypeTerm, env: Env)(implicit meta: EqStore): Value =
+    TypeChecker.evalTypeTerm(tt, env)(meta, NormalizerMap.empty)
+
+  def evalTypeTerm(tt: ElabAst.TypeTerm, env: Env)(implicit meta: EqStore): Value = tt match {
+    case ref: ETerm.Ref                  => evalRef(ref, env)
+    case ETerm.Select(base, field, span) => evalSelect(evalTerm(base, env), field, env, span.start)
+    case ETerm.App(fn, args, _)          => evalApplyTerm(fn, args, env)
+    case pi: ETerm.Pi                    => evalPi(pi, env)
   }
 
-  // Evaluate a type-position expression without enforcing it is a type yet
-  def evalTypeTerm(tt: TypeTerm, env: Env)(implicit meta: EqStore): Value = tt match {
-    case ref: Term.Ref => evalRef(ref, env)
-    case a: Term.TApp  => evalTApp(a, env)
-    case s: Term.TSelect =>
-      val base = evalTypeTerm(s.base, env)
-      evalSelect(base, s.field, env, s.span.start)
-    case pi: Term.Pi => evalPi(pi, env)
-  }
-
-  private def evalRef(ref: Term.Ref, env: Env): Value = {
+  private def evalRef(ref: ETerm.Ref, env: Env): Value = {
     val res = ref match {
-      case Term.GlobalRef(name, _) => env(name)
-      case Term.LocalRef(local, _) => env(local)
+      case ETerm.GlobalRef(name, _) => env(name)
+      case ETerm.LocalRef(local, _) => env(local)
     }
     res match {
       case h: ConstructorHead if h.totalArity == 0 => VCtor(h, Vector.empty, h.tpe)
@@ -145,13 +135,16 @@ object Interpreter {
     }
   }
 
-  private def evalApplyTerm(fn: Term, args: NEL[Term], env: Env)(implicit eqStore: EqStore): Value = {
+  private def evalApplyTerm(fn: ElabAst.Term, args: Vector[ElabAst.Term], env: Env)(implicit
+      eqStore: EqStore
+  ): Value = {
     val vf = evalTerm(fn, env)
     val vArgs = args.map(a => evalTerm(a, env))
-    evalApply(vf, vArgs)
+    if (vArgs.isEmpty) throw CannotApplyNonFunction(Interpreter.resolveInEqStore(vf.tpe))
+    evalApply(vf, NEL.mk(vArgs))
   }
 
-  def evalLam(l: Term.Lam, vpi: VPi, env: Env): VLam = {
+  def evalLam(l: ETerm.Lam, vpi: VPi, env: Env): VLam = {
     val id = l.name match {
       case Some(funcName) => ValueId.Const(funcName)
       case None =>
@@ -182,7 +175,7 @@ object Interpreter {
     self
   }
 
-  private def evalLam(l: Term.Lam, env: Env)(implicit eqStore: EqStore): VLam = {
+  private def evalLam(l: ETerm.Lam, env: Env)(implicit eqStore: EqStore): VLam = {
     val vpi = evalPi(l.ty, env)
     evalLam(l, vpi, env)
   }
@@ -195,22 +188,26 @@ object Interpreter {
     }
   }
 
-  def evalTerm(term: Term, env: Env)(implicit eqStore: EqStore): Value = {
+  def evalTerm(term: CoreAst.Term, env: Env)(implicit eqStore: EqStore): Value = {
+    val checked = TypeChecker.check(term, env)(eqStore, NormalizerMap.empty)
+    evalTerm(checked.term, env)
+  }
+
+  def evalTerm(term: ElabAst.Term, env: Env)(implicit eqStore: EqStore): Value = {
     try {
       term match {
-        case Term.Select(base, field, span) => evalSelect(evalTerm(base, env), field, env, span.start)
-        case tt: TypeTerm                   => evalTypeTerm(tt, env)
-        case Term.App(fn, args, _)          => evalApplyTerm(fn, args, env)
-        case l: Term.Lam                    => evalLam(l, env)
-        case m: Term.Match                  => evalMatch(m, env)
-        case b: Term.Body                   => evalBody(b, env)
+        case ETerm.Select(base, field, span) => evalSelect(evalTerm(base, env), field, env, span.start)
+        case ETerm.App(fn, args, _)          => evalApplyTerm(fn, args, env)
+        case tt: ElabAst.TypeTerm            => evalTypeTerm(tt, env)
+        case l: ETerm.Lam                    => evalLam(l, env)
+        case m: ETerm.Match                  => evalMatch(m, env)
+        case b: ETerm.Body                   => evalBody(b, env)
       }
     } catch {
       case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, term.span)
     }
   }
 
-  // Inline selection on values (term and type positions share logic)
   private def computeSelectResultTypeFrom(vType: Value, field: String, env: Env)(implicit eqStore: EqStore): Value = {
     val vt0 = resolveInEqStore(vType)
     val (indName, meta, typeArgs) = vt0 match {
@@ -219,7 +216,6 @@ object Interpreter {
       case other                                   => throw NotAType(other)
     }
 
-    // Only valid structs support selection
     if (!meta.isStruct) throw NotAStruct(indName)
     val ctorName = meta.constructorNames.head
 
@@ -253,7 +249,7 @@ object Interpreter {
     }
   }
 
-  private def evalMatch(m: Match, env: Env)(implicit eqStore: EqStore): Value = {
+  private def evalMatch(m: ETerm.Match, env: Env)(implicit eqStore: EqStore): Value = {
     def computeMatchCaptures(): Vector[Value] = FreeNames.getFreeRefs(m).valuesIn(env)
 
     val scrut = resolveInEqStore(evalTerm(m.scrut, env))
@@ -284,7 +280,7 @@ object Interpreter {
       m.cases.find(c => c.ctorName == ctorName).getOrElse(throw UnknownConstructor(ctorName, "", Some(m.span)))
     if (args.length != branch.argNames.length)
       throw ArityMismatch(branch.argNames.length, args.length, Some(branch.span))
-    val newEnv = args.zip(branch.argRefs).foldLeft(env.newScope) { case (curEnv, (argV, argRef)) =>
+    val newEnv = args.zip(branch.argRefs).foldLeft(env) { case (curEnv, (argV, argRef)) =>
       argRef match {
         case Some(ref) => curEnv.putLocal(ref, argV)
         case None      => curEnv
@@ -293,7 +289,7 @@ object Interpreter {
     evalTerm(branch.body, newEnv)
   }
 
-  def evalBody(body: Term.Body, env: Env)(implicit eqStore: EqStore): Value = {
+  def evalBody(body: ETerm.Body, env: Env)(implicit eqStore: EqStore): Value = {
     val newEnv = body.lets.foldLeft(env) { case (curEnv, l) =>
       val res = evalTerm(l.value, curEnv)
       val withTpe = (res, l.ty) match {
@@ -301,7 +297,8 @@ object Interpreter {
           u.withTpe(evalTypeTerm(ty, curEnv))
         case _ => res
       }
-      curEnv.putLocal(l.localRef, withTpe)
+      val instanceKey = if (l.isInstance) Some(InstanceSearch.instanceKey(l.name, withTpe, eqStore)) else None
+      curEnv.putLocal(l.localRef, withTpe, instanceKey, Some(ElabAst.Term.LocalRef(l.localRef, l.span)))
     }
     evalTerm(body.res, newEnv)
   }
@@ -313,22 +310,28 @@ object Interpreter {
     implicit val normalizers = NormalizerMap.empty
 
     decl match {
-      case Decl.ConstDecl(unfoldStrategy, name, ty, body, _) =>
-        val tyV = TypeChecker.getType(ty, worlds.checkEnv)
+      case Decl.ConstDecl(unfoldStrategy, name, ty, body, _, isInstance) =>
+        val checkedTy = TypeChecker.getCheckedType(ty, worlds.checkEnv)
+        val tyV = checkedTy.value
         val declConst = VConst(name, Symbol, tyV)
 
-        val bodyV = TypeChecker.typecheck(body, worlds.checkEnv)
+        val checkedBody = TypeChecker.check(body, worlds.checkEnv)
+        val bodyV0 = checkedBody.value
 
-        TypeChecker.checkType(bodyV, tyV)
+        TypeChecker.checkType(bodyV0, tyV)
+        val bodyV = Value.ascribe(bodyV0, tyV)
 
         val checkValue: Value = unfoldStrategy match {
           case Some(_) => bodyV
           case None    => declConst
         }
-        val nextCheckEnv = worlds.checkEnv.putGlobal(name, checkValue)
+        val checkInstanceKey = if (isInstance) Some(InstanceSearch.instanceKey(name, checkValue, eqStore)) else None
+        val nextCheckEnv = worlds.checkEnv.putGlobal(name, checkValue, checkInstanceKey)
 
-        val runtimeBodyV = Interpreter.evalTerm(body, worlds.runEnv)
-        val nextRunEnv = worlds.runEnv.putGlobal(name, runtimeBodyV)
+        val runtimeTyV = Interpreter.evalTypeTerm(checkedTy.term, worlds.runEnv)
+        val runtimeBodyV = Value.ascribe(Interpreter.evalTerm(checkedBody.term, worlds.runEnv), runtimeTyV)
+        val runInstanceKey = if (isInstance) Some(InstanceSearch.instanceKey(name, runtimeBodyV, eqStore)) else None
+        val nextRunEnv = worlds.runEnv.putGlobal(name, runtimeBodyV, runInstanceKey)
 
         Worlds(nextCheckEnv, nextRunEnv)
 
@@ -380,14 +383,15 @@ object Interpreter {
       VLam(
         {
           val lRef = CoreAst.LocalRef(0, "l")
+          val levelRef = ETerm.GlobalRef("Level", Span(0, 0))
           VPi(
             env2,
             NEL.one(
               VBinder(
                 "l",
-                Some(lRef),
-                CoreAst.Term.GlobalRef("Level", Span(0, 0)),
-                CoreAst.Term.GlobalRef("Level", Span(0, 0)),
+                lRef,
+                levelRef,
+                levelRef,
                 Vector.empty
               )
             ),
@@ -411,8 +415,8 @@ object Interpreter {
 
     val worlds = p.decls.foldLeft(Worlds(nextEnv, nextEnv)) { case (curWorlds, decl) => evalDecl(decl, curWorlds) }
     p.body.map { b =>
-      TypeChecker.typecheck(b, worlds.checkEnv)(EqStore.empty, NormalizerMap.empty)
-      Interpreter.evalTerm(b, worlds.runEnv)(EqStore.empty)
+      val checked = TypeChecker.check(b, worlds.checkEnv)(EqStore.empty, NormalizerMap.empty)
+      Interpreter.evalTerm(checked.term, worlds.runEnv)(EqStore.empty)
     }
   }
 

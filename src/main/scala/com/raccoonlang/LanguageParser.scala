@@ -28,6 +28,7 @@ object LanguageParser {
     "with",
     "inline",
     "def",
+    "instance",
     "inductive",
     "struct",
     "indices",
@@ -45,11 +46,13 @@ object LanguageParser {
 
   private def sym(c: Char) = (skipWS ~ P(c) ~/ skipWS).named(s"Sym($c)")
   private def sym(s: String) = (skipWS ~ P(s) ~/ skipWS).named(s"Sym($s)")
+
   // Variant that does not consume trailing whitespace; useful before ws-separated reps
   private def symTight(c: Char) = (skipWS ~ P(c)).named(s"SymTight($c)")
   private def symTight(s: String) = (skipWS ~ P(s)).named(s"SymTight($s)")
 
-  private def kw(s: String) = (skipWS ~ P(s) ~/ wsSep).named(s"Kw($s)")
+  private def kw(s: String) = (skipWS ~ P(s) ~ wsSep).named(s"Kw($s)")
+  private def kwTight(s: String) = (skipWS ~ P(s)).named(s"KwTight($s)")
 
   private def identTerm = ident.flatSpanned.map(Ident.tupled)
 
@@ -68,36 +71,66 @@ object LanguageParser {
 
   private def identTypeTerm: Parser[TypeTerm] = ident.flatSpanned.map[TypeTerm](Ident.tupled)
 
-  private def typeAtom: Parser[TypeTerm] = {
-    val base: Parser[TypeTerm] = (sym('(') ~ typeTerm ~ symTight(')')) | identTypeTerm
-    (base.spanned ~ bracketSuffix).spanned.mapAsT { case ((b, fields), sp) =>
-      fields.foldLeft(b.value: SurfaceAst.TypeTerm) { case (acc, f) => SurfaceAst.Term.TSelect(acc, f, sp) }
-    } | capture
-  }
-
   private def parenArgs[A](arg: => Parser[A]): Parser[Vector[A]] =
-    sym('(') ~/ arg.rep(1, sym(',')) ~ symTight(')')
+    P('(') ~/ arg.rep(0, sym(',')) ~ symTight(')')
 
-  // General type application: F(a, b, ...) -> TApp(F, a, b, ...)
-  private def typeExpr: Parser[TypeTerm] = {
-    (identTerm ~ parenArgs(typeTerm)).flatSpanned.map { case (name, args, span) =>
-      TApp(name, NEL.mk(args), span)
-    } | typeAtom
-  }
+  private def nonEmptyParenArgs[A](arg: => Parser[A]): Parser[NEL[A]] =
+    (sym('(') ~/ arg.rep(1, sym(',')) ~ symTight(')')).map(args => NEL.mk(args))
 
-  private def param = (sym('(') ~ argName ~ sym(':') ~/ typeTerm ~ symTight(')')).flatSpanned.map(Binder.tupled)
+  private def simplePi: Parser[Pi] = (param ~ sym("->") ~ typeTerm).flatSpanned.map { Pi.tupled }
 
-  private def pi: Parser[Pi] = (param ~ sym("->") ~ typeTerm).flatSpanned.map { Pi.tupled } |
-    (typeExpr.spanned ~ sym("->") ~ typeTerm).spanned.mapAsT { case ((expr, term), span) =>
-      Pi(Binder("_", expr.value, expr.span), term, span)
+  private def typeAtom: Parser[TypeTerm] =
+    simplePi |
+      sym('(') ~ typeTerm ~ sym(')') |
+      capture |
+      identTypeTerm
+
+  sealed trait TypeTrailer
+  case class Dot(name: String, span: Span) extends TypeTrailer
+  case class AppTrailer(args: NEL[TypeTerm], span: Span) extends TypeTrailer
+
+  private def typeTrailers: Parser[Vector[TypeTrailer]] =
+    ((P(".") ~/ identAtom).flatSpanned.map(Dot.tupled) |
+      nonEmptyParenArgs(typeTerm).flatSpanned.map(AppTrailer.tupled)).rep(0)
+
+  private def typeExpr: Parser[TypeTerm] =
+    (typeAtom ~ typeTrailers).map { case (ta, trailers) =>
+      trailers.foldLeft(ta) { case (curTypeTerm, nextTrailer) =>
+        nextTrailer match {
+          case Dot(name, sp) => TSelect(curTypeTerm, name, sp)
+          case AppTrailer(args, sp) =>
+            curTypeTerm match {
+              case i: Ident => TApp(i, args, sp)
+              case other    => throw ParseError(other.span.start, other.span.start, "Can only apply a function name")
+            }
+        }
+      }
     }
 
-  private def typeTerm: Parser[TypeTerm] =
-    pi | sym('(') ~ typeTerm ~ sym(')') | typeExpr
-
-  private def let: Parser[Let] = (kw("let") ~ ident ~ (sym(':') ~ typeTerm).? ~ sym(":=") ~ term).flatSpanned.map {
-    Let.tupled
+  private def typeTerm: Parser[TypeTerm] = (typeExpr ~ (sym("->") ~/ typeExpr).rep(0)).flatSpanned.map {
+    case (first, others, sp) =>
+      val pieces = first +: others
+      pieces.init.foldRight(pieces.last: TypeTerm) { case (lhs, rhs) =>
+        Pi(Binder("_", lhs, lhs.span), rhs, sp)
+      }
   }
+
+  private def normalParam: Parser[Binder] =
+    (sym('(') ~ kw("instance").!.? ~ argName ~ sym(':') ~/ typeTerm ~ symTight(')')).flatSpanned.map {
+      case (instanceOpt, name, ty, span) => Binder(name, ty, span, isInstance = instanceOpt.isDefined)
+    }
+
+  private def derivedParam: Parser[Binder] =
+    (sym('[') ~ argName ~ sym(':') ~/ typeTerm ~ symTight(']')).flatSpanned.map { case (name, ty, span) =>
+      Binder(name, ty, span, isDerived = true)
+    }
+
+  private def param: Parser[Binder] = normalParam | derivedParam
+
+  private def let: Parser[Let] =
+    (kw("let") ~/ kw("instance").!.? ~ ident ~ (sym(':') ~ typeTerm).? ~ sym(":=") ~ term).flatSpanned.map {
+      case (instanceOpt, name, ty, value, span) => Let(name, ty, value, span, isInstance = instanceOpt.isDefined)
+    }
 
   private def useStmt: Parser[Use] = (kw("use") ~/ term).flatSpanned.map(Use.tupled)
 
@@ -115,7 +148,7 @@ object LanguageParser {
   // no longer support `using normalizer` in parser; replaced by `use` statements
 
   private def lambda: Parser[Term] =
-    (kw("fun") ~ funcHeader ~ sym("=>") ~ term).flatSpanned
+    (kw("fun") ~/ funcHeader ~ sym("=>") ~ term).flatSpanned
       .map[SurfaceAst.Term] { case (header, body, span) => Lam(header, body, span) }
 
   private def matchCase: Parser[Case] =
@@ -125,15 +158,15 @@ object LanguageParser {
 
   private def matchP: Parser[Match] = {
     (kw("match") ~/ term ~ (kw("returning") ~/ typeTerm).? ~
-      (skipWS ~ P("with") ~/ lineSep) ~ matchCase.rep(0)).flatSpanned.map { case (scrut, motive, cases, sp) =>
+      (kwTight("with") ~/ lineSep) ~ matchCase.rep(0)).flatSpanned.map { case (scrut, motive, cases, sp) =>
       Match(scrut, motive, cases, sp)
     }
   }
 
   private def term: Parser[Term] =
-    ((lambda | matchP | body | pi | termAtom).spanned ~ parenArgs(term).?).spanned.mapAsT { case ((fn, args), span) =>
+    ((lambda | matchP | body | simplePi | termAtom).spanned ~ parenArgs(term).?).spanned.mapAsT { case ((fn, args), span) =>
       args match {
-        case Some(value) => App(fn.value, NEL.mk(value), span)
+        case Some(value) => App(fn.value, value, span)
         case None        => fn.value
       }
     }
@@ -158,9 +191,12 @@ object LanguageParser {
   private def unfoldStrategy: Parser[UnfoldStrategy] =
     kw("inline").!.map(_ => UnfoldStrategy.Inline) | kw("stable").!.map(_ => UnfoldStrategy.Stable)
 
-  // inline? def foo (a: A)(b : B): C a := body
+  // inline? def instance? foo (a: A)[b: B](c : C): D := body
   private val constP: Parser[ConstDecl] =
-    (unfoldStrategy.? ~ kw("def") ~/ declHeader ~ (sym(":=") ~/ term)).flatSpanned.map(ConstDecl.tupled)
+    (unfoldStrategy.? ~ kw("def") ~/ kw("instance").!.? ~ declHeader ~ (sym(":=") ~/ term)).flatSpanned.map {
+      case (unfoldStrategy, instanceOpt, header, body, span) =>
+        ConstDecl(unfoldStrategy, header, body, span, isInstance = instanceOpt.isDefined)
+    }
 
   private def inductiveP: Parser[InductiveDecl] =
     (kw("inductive") ~/ inductiveHeader ~ lineSep ~ ctorDecl.rep(0)).flatSpanned

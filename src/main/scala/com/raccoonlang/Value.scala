@@ -1,6 +1,5 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.{TypePattern, TypeTerm}
 import com.raccoonlang.Util.NEL
 
 final case class InductiveMeta(
@@ -26,6 +25,11 @@ sealed trait TopLevelValue extends Value {
 }
 
 object Value {
+  def ascribe(value: Value, tpe: Value): Value =
+    value match {
+      case u: UpdatableType => u.withTpe(tpe)
+      case _                => value
+    }
 
   // A value that will block a computation - specifically, when trying to either match or apply it.
   // Specifically, Var, VBlockedApp, or BlockedMatch
@@ -128,11 +132,37 @@ object Value {
 
   case class VBinder(
       name: String,
-      localRef: Option[CoreAst.LocalRef],
-      ty: TypePattern,
-      expectedTy: TypeTerm,
-      captures: Vector[VCapture]
-  )
+      localRef: CoreAst.LocalRef,
+      plan: TypePatternPlan,
+      isDerived: Boolean = false,
+      isInstance: Boolean = false
+  ) {
+    def ty: ElabAst.TypePattern = plan.pattern
+    def expectedTy: ElabAst.TypeTerm = plan.expected
+    def captures: Vector[VCapture] = plan.captures
+  }
+
+  object VBinder {
+    def apply(
+        name: String,
+        localRef: CoreAst.LocalRef,
+        ty: ElabAst.TypePattern,
+        expectedTy: ElabAst.TypeTerm,
+        captures: Vector[VCapture]
+    ): VBinder =
+      new VBinder(name, localRef, TypePatternPlan(ty, expectedTy, captures))
+
+    def apply(
+        name: String,
+        localRef: CoreAst.LocalRef,
+        ty: ElabAst.TypePattern,
+        expectedTy: ElabAst.TypeTerm,
+        captures: Vector[VCapture],
+        isDerived: Boolean,
+        isInstance: Boolean
+    ): VBinder =
+      new VBinder(name, localRef, TypePatternPlan(ty, expectedTy, captures), isDerived, isInstance)
+  }
 
   case class VPi(
       env: Env,
@@ -205,7 +235,12 @@ object Value {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
-  case class VLam(tpe: VPi, id: ValueId, isStable: Boolean, run: (NEL[Value], EqStore) => Value) extends Value {
+  case class VLam(
+      tpe: VPi,
+      id: ValueId,
+      isStable: Boolean,
+      run: (NEL[Value], EqStore) => Value
+  ) extends Value {
     override lazy val synDeps: DepSet = {
       id match {
         case ValueId.Const(_) => tpe.synDeps

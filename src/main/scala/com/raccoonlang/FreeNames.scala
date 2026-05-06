@@ -7,6 +7,8 @@ import org.roaringbitmap.RoaringBitmap
 object FreeNames {
 
   final class LocalRefs private[FreeNames] (private[FreeNames] val bitmap: RoaringBitmap) {
+    def isEmpty: Boolean = bitmap.isEmpty
+
     def foreachValueIn(env: Env)(f: Value => Unit): Unit = {
       val locals = env.locals
       val limit = locals.length
@@ -14,7 +16,7 @@ object FreeNames {
       var keepGoing = true
       while (keepGoing && it.hasNext) {
         val id = it.next()
-        if (id < limit) f(locals(id))
+        if (id < limit) f(locals(id).value)
         else keepGoing = false
       }
     }
@@ -30,8 +32,8 @@ object FreeNames {
     val empty: LocalRefs = new LocalRefs(new RoaringBitmap)
   }
 
-  private def goList(terms: List[Ast], bound: RoaringBitmap, free: RoaringBitmap): Unit =
-    terms.foreach(go(_, bound, free))
+  private def goList(terms: IterableOnce[Ast], bound: RoaringBitmap, free: RoaringBitmap): Unit =
+    terms.iterator.foreach(go(_, bound, free))
 
   private def go(term: CoreAst.Ast, bound: RoaringBitmap, free: RoaringBitmap): Unit =
     term match {
@@ -43,19 +45,19 @@ object FreeNames {
       case Term.Capture(_, ref, _) =>
         bound.add(ref.id)
 
-      case Term.TApp(fn, args, _)   => goList((fn :: args).toList, bound, free)
+      case Term.TApp(fn, args, _)   => goList(fn +: args.toVector, bound, free)
       case Term.TSelect(base, _, _) => go(base, bound, free)
 
-      case Term.PatternApp(fn, args, _) => goList((fn :: args).toList, bound, free)
+      case Term.PatternApp(fn, args, _) => goList(fn +: args.toVector, bound, free)
 
       case Term.Pi(binders, out, _) =>
         binders.foreach { b =>
           go(b.ty, bound, free)
-          b.localRef.foreach(r => bound.add(r.id))
+          bound.add(b.localRef.id)
         }
         go(out, bound, free)
 
-      case Term.App(fn, args, _)   => goList((fn :: args).toList, bound, free)
+      case Term.App(fn, args, _)   => goList(fn +: args, bound, free)
       case Term.Select(base, _, _) => go(base, bound, free)
 
       case Term.Body(lets, res, _) =>
@@ -95,4 +97,72 @@ object FreeNames {
     }
     deps.result()
   }
+
+  private def goElabList(terms: IterableOnce[ElabAst.Ast], bound: RoaringBitmap, free: RoaringBitmap): Unit =
+    terms.iterator.foreach(goElab(_, bound, free))
+
+  private def goElab(term: ElabAst.Ast, bound: RoaringBitmap, free: RoaringBitmap): Unit =
+    term match {
+      case ElabAst.Term.GlobalRef(_, _) =>
+
+      case ElabAst.Term.LocalRef(ref, _) =>
+        if (!bound.contains(ref.id)) free.add(ref.id)
+
+      case ElabAst.Term.Select(base, _, _) => goElab(base, bound, free)
+
+      case ElabAst.Term.App(fn, args, _) => goElabList(fn +: args, bound, free)
+
+      case ElabAst.Term.PatternApp(fn, args, _) => goElabList(fn +: args.toVector, bound, free)
+
+      case ElabAst.Term.Pi(binders, out, _) =>
+        binders.foreach { b =>
+          goElab(b.ty, bound, free)
+          bound.add(b.localRef.id)
+        }
+        goElab(out, bound, free)
+
+      case ElabAst.Term.Capture(_, ref, _) =>
+        bound.add(ref.id)
+
+      case ElabAst.Term.Body(lets, res, _) =>
+        lets.foreach { l =>
+          val typeBound = bound.clone()
+          goElab(l.value, bound, free)
+          l.ty.foreach(t => goElab(t, typeBound, free))
+          bound.add(l.localRef.id)
+        }
+        goElab(res, bound, free)
+
+      case ElabAst.Term.Lam(ty, _, body, _, _, _) =>
+        goElab(ty, bound, free)
+        goElab(body, bound, free)
+
+      case ElabAst.Term.Match(scrut, motive, cases, _) =>
+        goElab(scrut, bound, free)
+        val caseBound = bound.clone()
+        motive.foreach(goElab(_, bound, free))
+        cases.foreach { c =>
+          val nextBound = caseBound.clone()
+          c.argRefs.flatten.foreach(ref => nextBound.add(ref.id))
+          goElab(c.body, nextBound, free)
+        }
+    }
+
+  def getFreeRefs(term: ElabAst.Ast, bound: LocalRefs): LocalRefs = {
+    val free = new RoaringBitmap
+    goElab(term, bound.bitmap.clone(), free)
+    new LocalRefs(free)
+  }
+
+  def getFreeRefs(term: ElabAst.Ast): LocalRefs = getFreeRefs(term, LocalRefs.empty)
+
+  def getDeps(term: ElabAst.Ast, env: Env, bound: LocalRefs): DepSet = {
+    val deps = DepSet.newBuilder
+    getFreeRefs(term, bound).foreachValueIn(env) { v =>
+      deps.unionInPlace(v.synDeps)
+    }
+    deps.result()
+  }
+
+  def getDeps(term: ElabAst.Ast, env: Env): DepSet = getDeps(term, env, LocalRefs.empty)
 }

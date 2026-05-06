@@ -36,15 +36,29 @@ object Elaborator {
         case None      => CA.Term.GlobalRef(i.name, i.span)
       }
 
-    def addGlobal(name: String): ResolveEnv = copy(globals = globals + name)
+    def addGlobal(name: String): ResolveEnv =
+      if (globals.contains(name)) throw AlreadyDefined(name)
+      else copy(globals = globals + name)
+
+    private def allocate(name: String): (CA.LocalRef, ResolveEnv) = {
+      val ref = CA.LocalRef(nextLocal, name)
+      (ref, copy(nextLocal = nextLocal + 1))
+    }
 
     def bind(name: String, allowShadow: Boolean = false): (Option[CA.LocalRef], ResolveEnv) =
       if (name == "_") (None, this)
-      else if (globals.contains(name)) throw AlreadyDefined(name)
       else if (!allowShadow && scopes.head.contains(name)) throw AlreadyDefined(name)
       else {
-        val ref = CA.LocalRef(nextLocal, name)
-        (Some(ref), copy(scopes = (scopes.head + (name -> ref)) :: scopes.tail, nextLocal = nextLocal + 1))
+        val (ref, nextEnv) = allocate(name)
+        (Some(ref), nextEnv.copy(scopes = (scopes.head + (name -> ref)) :: scopes.tail))
+      }
+
+    def bindBinder(name: String, allowShadow: Boolean = false): (CA.LocalRef, ResolveEnv) =
+      if (name == "_") allocate(name)
+      else if (!allowShadow && scopes.head.contains(name)) throw AlreadyDefined(name)
+      else {
+        val (ref, nextEnv) = allocate(name)
+        (ref, nextEnv.copy(scopes = (scopes.head + (name -> ref)) :: scopes.tail))
       }
 
     def bindRequired(name: String, span: Span, allowShadow: Boolean = false): (CA.LocalRef, ResolveEnv) =
@@ -101,8 +115,8 @@ object Elaborator {
 
   private def elabBinder(b: SA.Binder, env: ResolveEnv): (CA.Binder, ResolveEnv) = {
     val (ty, envWithCaptures) = elabPattern(b.ty, env)
-    val (ref, nextEnv) = envWithCaptures.bind(b.name)
-    (CA.Binder(b.name, ref, ty, b.span), nextEnv)
+    val (ref, nextEnv) = envWithCaptures.bindBinder(b.name)
+    (CA.Binder(b.name, ref, ty, b.span, b.isDerived, b.isInstance), nextEnv)
   }
 
   private def elabBinders(binders: Vector[SA.Binder], env: ResolveEnv): (Vector[CA.Binder], ResolveEnv) =
@@ -134,7 +148,7 @@ object Elaborator {
       val ty = l.ty.map(elabType(_, curEnv))
       val value = elabTerm(l.value, curEnv)
       val (ref, nextEnv) = curEnv.bindRequired(l.name, l.span, allowShadow = true)
-      (curLets :+ CA.Let(l.name, ref, ty, value, l.span), nextEnv)
+      (curLets :+ CA.Let(l.name, ref, ty, value, l.span, l.isInstance), nextEnv)
     }
     CA.Term.Body(lets, elabTerm(body.out, bodyEnv), body.span)
   }
@@ -197,7 +211,7 @@ object Elaborator {
         elabLam(pi, header.bodyEnv, c.body, Some(c.header.name), c.unfoldStrategy.contains(UnfoldStrategy.Stable), c.span, env)
       case _ => elabTerm(c.body, env)
     }
-    (CA.Decl.ConstDecl(c.unfoldStrategy, c.header.name, header.ty, body, c.span), env.addGlobal(c.header.name))
+    (CA.Decl.ConstDecl(c.unfoldStrategy, c.header.name, header.ty, body, c.span, c.isInstance), env.addGlobal(c.header.name))
   }
 
   private def elabInductiveDecl(c: SurfaceAst.Decl.InductiveDecl, env: ResolveEnv): (CoreAst.Decl, ResolveEnv) = {

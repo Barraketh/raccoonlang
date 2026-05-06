@@ -4,6 +4,9 @@ import com.raccoonlang.ErrorReporter.Source
 import com.raccoonlang.Value.VSort
 
 class UniverseTests extends munit.FunSuite {
+  private def freshLevel(name: String): Value.Var =
+    FreshVar.freshVar(name, Value.LevelTpe)
+
   private def runProgram(src: String): Value = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
@@ -206,7 +209,7 @@ class UniverseTests extends munit.FunSuite {
   }
 
   test("Level.leq: constant can be covered by RHS atom") {
-    val a = FreshVar.freshVar("a", Value.LevelTpe)
+    val a = freshLevel("a")
     val lhs = Value.Level(Map.empty, 3)
     val rhs = Value.Level(Map(a.id -> 5), 0)
 
@@ -214,7 +217,7 @@ class UniverseTests extends munit.FunSuite {
   }
 
   test("Level.leq: atom is not covered by RHS constant") {
-    val a = FreshVar.freshVar("a", Value.LevelTpe)
+    val a = freshLevel("a")
     val lhs = Value.Level(Map(a.id -> 5), 0)
     val rhs = Value.Level(Map.empty, 7)
 
@@ -222,7 +225,7 @@ class UniverseTests extends munit.FunSuite {
   }
 
   test("Level.leq: same atom with larger RHS offset succeeds") {
-    val a = FreshVar.freshVar("a", Value.LevelTpe)
+    val a = freshLevel("a")
     val lhs = Value.Level(Map(a.id -> 2), 0)
     val rhs = Value.Level(Map(a.id -> 5), 0)
 
@@ -230,7 +233,7 @@ class UniverseTests extends munit.FunSuite {
   }
 
   test("Level.leq: same atom with smaller RHS offset fails") {
-    val a = FreshVar.freshVar("a", Value.LevelTpe)
+    val a = freshLevel("a")
     val lhs = Value.Level(Map(a.id -> 5), 0)
     val rhs = Value.Level(Map(a.id -> 2), 0)
 
@@ -238,7 +241,7 @@ class UniverseTests extends munit.FunSuite {
   }
 
   test("Level.leq: mixed max where RHS atom covers LHS constant and atom") {
-    val a = FreshVar.freshVar("a", Value.LevelTpe)
+    val a = freshLevel("a")
     val lhs = Value.Level(Map(a.id -> 2), 3) // max(a+2, 3)
     val rhs = Value.Level(Map(a.id -> 5), 0) // max(a+5)
 
@@ -246,8 +249,8 @@ class UniverseTests extends munit.FunSuite {
   }
 
   test("Level.leq: unrelated RHS atom does not cover LHS atom") {
-    val a = FreshVar.freshVar("a", Value.LevelTpe)
-    val b = FreshVar.freshVar("b", Value.LevelTpe)
+    val a = freshLevel("a")
+    val b = freshLevel("b")
     val lhs = Value.Level(Map(a.id -> 2), 0)
     val rhs = Value.Level(Map(b.id -> 10), 0)
 
@@ -255,8 +258,8 @@ class UniverseTests extends munit.FunSuite {
   }
 
   test("Level.leq: multiple atoms all must be covered") {
-    val a = FreshVar.freshVar("a", Value.LevelTpe)
-    val b = FreshVar.freshVar("b", Value.LevelTpe)
+    val a = freshLevel("a")
+    val b = freshLevel("b")
 
     val lhs = Value.Level(Map(a.id -> 2, b.id -> 1), 0)
     val rhsOk = Value.Level(Map(a.id -> 3, b.id -> 1), 0)
@@ -281,14 +284,14 @@ class UniverseTests extends munit.FunSuite {
   }
 
   test("Level.leq: reflexive on mixed level") {
-    val a = FreshVar.freshVar("a", Value.LevelTpe)
+    val a = freshLevel("a")
     val lvl = Value.Level(Map(a.id -> 4), 0)
 
     assert(Value.Level.leq(lvl, lvl))
   }
 
   test("sort unification rejects solving u + 1 = 0") {
-    val u = FreshVar.freshVar("u", Value.LevelTpe)
+    val u = freshLevel("u")
     implicit val eqStore: EqStore = EqStore.empty.allow(DepSet(u.id))
     implicit val normalizers: NormalizerMap = NormalizerMap.empty
 

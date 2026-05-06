@@ -40,7 +40,10 @@ object TypeError {
     case e: InvalidStruct                   => e.copy(span = Some(sp))
     case e: NotAStruct                      => e.copy(span = Some(sp))
     case e: MultipleLevelCaptures           => e.copy(span = Some(sp))
-
+    case e: NoInstanceFound                 => e.copy(span = Some(sp))
+    case e: CyclicInstanceSearch            => e.copy(span = Some(sp))
+    case e: InvalidInstance                 => e.copy(span = Some(sp))
+    case e: InstanceSearchBudgetExceeded    => e.copy(span = Some(sp))
   }
 }
 
@@ -186,4 +189,30 @@ final case class InvalidStruct(inductive: String, reason: String, span: Option[S
 
 final case class NotAStruct(inductive: String, span: Option[Span] = None) extends TypeError {
   override def msg: String = s"Cannot select field from non-struct $inductive"
+}
+
+final case class NoInstanceFound(goal: Value, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"No instance found for $goal"
+}
+
+final case class CyclicInstanceSearch(goal: Value, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"Cyclic instance search for $goal"
+}
+
+final case class InvalidInstance(
+    name: String,
+    tpe: Value,
+    reason: String = "non-searchable result type",
+    span: Option[Span] = None
+) extends TypeError {
+  override def msg: String = s"Invalid instance $name: $reason in $tpe"
+}
+
+final case class InstanceSearchBudgetExceeded(
+    goal: Value,
+    maxDepth: Int,
+    maxNodes: Int,
+    span: Option[Span] = None
+) extends TypeError {
+  override def msg: String = s"Instance search budget exceeded for $goal (depth $maxDepth, nodes $maxNodes)"
 }
