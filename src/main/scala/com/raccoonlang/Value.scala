@@ -128,40 +128,17 @@ object Value {
   case object StructuralCapture extends CaptureType
   case class LevelCapture(subtract: Int) extends CaptureType
 
-  case class VCapture(name: String, localRef: CoreAst.LocalRef, path: List[Int], captureType: CaptureType)
+  case class VCapture(localRef: CoreAst.LocalRef, path: List[Int], captureType: CaptureType)
 
   case class VBinder(
-      name: String,
       localRef: CoreAst.LocalRef,
-      plan: TypePatternPlan,
+      ty: CoreAst.CheckedTypePattern,
+      expectedTy: CoreAst.CheckedTypeTerm,
+      captures: Vector[Value.VCapture],
       isDerived: Boolean = false,
       isInstance: Boolean = false
   ) {
-    def ty: ElabAst.TypePattern = plan.pattern
-    def expectedTy: ElabAst.TypeTerm = plan.expected
-    def captures: Vector[VCapture] = plan.captures
-  }
-
-  object VBinder {
-    def apply(
-        name: String,
-        localRef: CoreAst.LocalRef,
-        ty: ElabAst.TypePattern,
-        expectedTy: ElabAst.TypeTerm,
-        captures: Vector[VCapture]
-    ): VBinder =
-      new VBinder(name, localRef, TypePatternPlan(ty, expectedTy, captures))
-
-    def apply(
-        name: String,
-        localRef: CoreAst.LocalRef,
-        ty: ElabAst.TypePattern,
-        expectedTy: ElabAst.TypeTerm,
-        captures: Vector[VCapture],
-        isDerived: Boolean,
-        isInstance: Boolean
-    ): VBinder =
-      new VBinder(name, localRef, TypePatternPlan(ty, expectedTy, captures), isDerived, isInstance)
+    def name: String = localRef.name
   }
 
   case class VPi(

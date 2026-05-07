@@ -123,8 +123,9 @@ object InductiveChecks {
       else Term.Pi(NEL.mk(binders), decl.header.resultTy, decl.header.span)
     }
 
-    val inductiveTypeCheck = TypeChecker.getType(ty, worlds.checkEnv)
-    val inductiveTypeRun = Interpreter.evalTypeTerm(ty, worlds.runEnv)
+    val checkedInductiveType = TypeChecker.getCheckedType(ty, worlds.checkEnv)
+    val inductiveTypeCheck = checkedInductiveType.value
+    val inductiveTypeRun = Interpreter.evalTypeTerm(checkedInductiveType.term, worlds.runEnv)
 
     val meta =
       InductiveMeta(decl.ctors.map(_.name), decl.header.params.length, decl.header.indices.length, decl.isStruct)
@@ -162,7 +163,7 @@ object InductiveChecks {
 
     decl.ctors.foreach { ctor =>
       val outputTpe = {
-        val freshFields = BinderOps.freshenRawBindersAndCheck(ctor.fields, envWithParams)
+        val freshFields = BinderOps.freshenRawBinders(ctor.fields, envWithParams)
 
         ctor.fields.zip(freshFields.vars).foreach { case (binder, field) =>
           // 2) Universe bound: skip for Prop families; enforce for Sort families
@@ -196,7 +197,7 @@ object InductiveChecks {
             )
         }
 
-        Interpreter.evalTypeTerm(ctor.resultTy, freshFields.env)
+        TypeChecker.getType(ctor.resultTy, freshFields.env)
       }
 
       // 4) Constructor result must be the inductive family head applied to the full family arity,

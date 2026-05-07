@@ -1,15 +1,20 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.Binder
 import com.raccoonlang.Value.{VBinder, VPi}
 
 object BinderOps {
   import com.raccoonlang.Util.NEL
 
   final case class Freshened(vars: Vector[Value], env: Env, newVars: DepSet)
-  final case class FreshenedRawBinders(vars: Vector[Value], env: Env, newVars: DepSet, vBinders: Vector[VBinder])
-  final case class CheckedArg(value: Value, term: ElabAst.Term)
-  final case class CompletedArgs(env: Env, values: Vector[Value], terms: Vector[ElabAst.Term])
+  final case class FreshenedRawBinders(
+      vars: Vector[Value],
+      env: Env,
+      newVars: DepSet,
+      vBinders: Vector[VBinder],
+      checkedBinders: Vector[CoreAst.CheckedBinder]
+  )
+  final case class CheckedArg(value: Value, term: CoreAst.CheckedTerm)
+  final case class CompletedArgs(env: Env, values: Vector[Value], terms: Vector[CoreAst.CheckedTerm])
 
   private def putBinderLocal(env: Env, binder: VBinder, value: Value)(implicit eqStore: EqStore): Env = {
     val instanceKey =
@@ -39,12 +44,13 @@ object BinderOps {
 
   def freshen(vpi: VPi)(implicit eqStore: EqStore): Freshened = freshen(vpi.binders, vpi.env)
 
-  def freshenRawBinders(binders: NEL[Binder], baseEnv: Env)(implicit
+  def freshenRawBinders(binders: NEL[CoreAst.RawBinder], baseEnv: Env)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): FreshenedRawBinders = {
     val vars = Vector.newBuilder[Value]
     val vBinders = Vector.newBuilder[VBinder]
+    val checkedBinders = Vector.newBuilder[CoreAst.CheckedBinder]
     var env = baseEnv
     val newVars = DepSet.newBuilder
 
@@ -54,22 +60,18 @@ object BinderOps {
       env = putBinderLocal(fresh.env, fresh.binder, fresh.value)
       newVars.unionInPlace(fresh.newVars)
       vBinders += fresh.binder
+      checkedBinders += fresh.checkedBinder
     }
 
-    FreshenedRawBinders(vars.result(), env, newVars.result(), vBinders.result())
+    FreshenedRawBinders(vars.result(), env, newVars.result(), vBinders.result(), checkedBinders.result())
   }
 
-  def freshenRawBinders(binders: Vector[Binder], baseEnv: Env)(implicit
+  def freshenRawBinders(binders: Vector[CoreAst.RawBinder], baseEnv: Env)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): FreshenedRawBinders =
-    if (binders.isEmpty) FreshenedRawBinders(Vector.empty, baseEnv, DepSet.empty, Vector.empty)
+    if (binders.isEmpty) FreshenedRawBinders(Vector.empty, baseEnv, DepSet.empty, Vector.empty, Vector.empty)
     else freshenRawBinders(NEL.mk(binders), baseEnv)
-
-  def freshenRawBindersAndCheck(binders: Vector[Binder], env: Env)(implicit
-      eqStore: EqStore,
-      normalizers: NormalizerMap
-  ): FreshenedRawBinders = freshenRawBinders(binders, env)
 
   def instantiateFull(binders: NEL[VBinder], baseEnv: Env, args: NEL[Value])(implicit eqStore: EqStore): Env = {
     if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
@@ -93,17 +95,11 @@ object BinderOps {
   def checkAndInstantiate(binders: NEL[VBinder], baseEnv: Env, args: Vector[CheckedArg], searchEnv: Env)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
-  ): CompletedArgs =
-    complete(binders, baseEnv, args, searchEnv)
-
-  private def complete(binders: NEL[VBinder], baseEnv: Env, args: Vector[CheckedArg], searchEnv: Env)(implicit
-      eqStore: EqStore,
-      normalizers: NormalizerMap
   ): CompletedArgs = {
     var argIdx = 0
     var telescopeEnv = baseEnv
     val values = Vector.newBuilder[Value]
-    val terms = Vector.newBuilder[ElabAst.Term]
+    val terms = Vector.newBuilder[CoreAst.CheckedTerm]
 
     val binderV = binders.toVector
     val explicitArgCount = binderV.count(!_.isDerived)
@@ -134,7 +130,9 @@ object BinderOps {
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): BinderOps.CheckedArg = {
-    val goal = TypePatternOps.expectedType(env, binder)
+    if (binder.isDerived && binder.captures.nonEmpty) throw CannotDirectlyApplyCapturedDerivedBinder(binder.name)
+
+    val goal = Interpreter.evalTypeTerm(binder.expectedTy, env)
     InstanceSearch.solve(goal, searchEnv)
   }
 }

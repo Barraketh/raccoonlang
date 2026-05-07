@@ -1,6 +1,5 @@
 package com.raccoonlang
 
-import com.raccoonlang.ElabAst.Term
 import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
 
@@ -11,7 +10,7 @@ object InstanceSearch {
   private val MaxNodes = 65536
 
   private final case class ResolvedGoal(key: ValueKey.Key, head: String)
-  private final case class SearchResult(value: Value, term: Term)
+  private final case class SearchResult(value: Value, term: CoreAst.CheckedTerm)
 
   private final class SearchContext {
     private val cache = mutable.HashMap.empty[ValueKey.Key, SearchResult]
@@ -141,7 +140,7 @@ object InstanceSearch {
 
         val (args, argTerms) = fillCandidateArgs(candidate, pi, goals, searchEnv, state, ctx)
         val res = Interpreter.evalApply(candidate.value, NEL.mk(args))
-        val resTerm = Term.App(candidate.term, argTerms, candidate.term.span)
+        val resTerm = CoreAst.Term.App[CoreAst.Checked](candidate.term, argTerms, candidate.term.span)
         SearchResult(res, resTerm)
 
       case resultTy =>
@@ -157,9 +156,9 @@ object InstanceSearch {
       initialSearchEnv: Env,
       state: SearchState,
       ctx: SearchContext
-  )(implicit eqStore: EqStore, normalizerMap: NormalizerMap): (Vector[Value], Vector[Term]) = {
+  )(implicit eqStore: EqStore, normalizerMap: NormalizerMap): (Vector[Value], Vector[CoreAst.CheckedTerm]) = {
     val values = Vector.newBuilder[Value]
-    val terms = Vector.newBuilder[Term]
+    val terms = Vector.newBuilder[CoreAst.CheckedTerm]
     val binders = pi.binders.toVector
 
     var telescopeEnv = pi.env

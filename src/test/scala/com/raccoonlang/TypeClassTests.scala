@@ -1,10 +1,9 @@
 package com.raccoonlang
 
-import com.raccoonlang.ElabAst.{Term => ETerm}
 import com.raccoonlang.Util.NEL
 
 class TypeClassTests extends munit.FunSuite {
-  private def parseHeaderType(src: String): CoreAst.TypeTerm =
+  private def parseHeaderType(src: String): CoreAst.RawTypeTerm =
     LanguageParser.parseFuncHeader(src) match {
       case Success(header, _, _) => Elaborator.getType(header)
       case err: Failure          => fail(s"Failed to parse header: $err, ${src.substring(err.curIdx)}")
@@ -20,7 +19,7 @@ class TypeClassTests extends munit.FunSuite {
         .putGlobal("Level::one", Value.Level(Map.empty, 1))
         .putGlobal("Prop", Value.PropTpe)
 
-    val builtinFuncs = List[(String, CoreAst.TypeTerm, (NEL[Value], EqStore) => Value)](
+    val builtinFuncs = List[(String, CoreAst.RawTypeTerm, (NEL[Value], EqStore) => Value)](
       (
         "add_normalizer",
         parseHeaderType("(A: Type)(zero: A)(add: A -> A -> A): Normalizer"),
@@ -39,7 +38,7 @@ class TypeClassTests extends munit.FunSuite {
     )
 
     val env2 = builtinFuncs.foldLeft(baseEnv) { case (curEnv, (name, tpe, lam)) =>
-      val tpeV = Interpreter.evalTypeTerm(tpe, curEnv)(EqStore.empty)
+      val tpeV = TypeChecker.evalTypeTerm(tpe, curEnv)(EqStore.empty, NormalizerMap.empty)
       tpeV match {
         case pi: Value.VPi =>
           curEnv.putGlobal(name, Value.VLam(pi, Value.ValueId.Const(name), isStable = true, lam))
@@ -52,10 +51,10 @@ class TypeClassTests extends munit.FunSuite {
       Value.VLam(
         {
           val lRef = CoreAst.LocalRef(0, "l")
-          val levelRef = ETerm.GlobalRef("Level", Span(0, 0))
+          val levelRef = CoreAst.Term.GlobalRef[CoreAst.Checked]("Level", Span(0, 0))
           Value.VPi(
             env2,
-            NEL.one(Value.VBinder("l", lRef, levelRef, levelRef, Vector.empty)),
+            NEL.one(Value.VBinder(lRef, CoreAst.TypePattern.Type(levelRef), levelRef, Vector.empty)),
             (env, eqStore) => {
               val l = Interpreter.getLevel(env(lRef))(eqStore)
               Value.VSort(Value.Level.succ(l))
@@ -242,6 +241,43 @@ class TypeClassTests extends munit.FunSuite {
           |""".stripMargin
 
     assertEquals(ctorName(runProgram(p)), "Eq::mk")
+  }
+
+  test("direct call rejects captured derived binders") {
+    val p =
+      prelude +
+        """
+          |inductive List (A: Type) : Type
+          | | nil : List(A)
+          |
+          |def instance natEq : Eq(Nat) := Eq::mk(Nat, Bool::true)
+          |
+          |def instance listEq [ea: Eq($A)]: Eq(List(A)) := Eq::mk(List(A), Bool::true)
+          |
+          |{
+          |  listEq()
+          |}
+          |""".stripMargin
+
+    intercept[CannotDirectlyApplyCapturedDerivedBinder] {
+      typecheckProgram(p)
+    }
+  }
+
+  test("type-position direct application rejects captured derived binders") {
+    val p =
+      prelude +
+        """
+          |def instance natEq : Eq(Nat) := Eq::mk(Nat, Bool::true)
+          |
+          |inline def CapturedType (A: Type)[eqB: Eq($B)]: Type := A
+          |
+          |def bad (x: CapturedType(Nat)): Nat := x
+          |""".stripMargin
+
+    intercept[CannotDirectlyApplyCapturedDerivedBinder] {
+      typecheckProgram(p)
+    }
   }
 
   test("universe-polymorphic parameterized instance derives at concrete Type") {

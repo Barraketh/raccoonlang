@@ -10,40 +10,41 @@ sealed trait TypeError extends RuntimeException {
 
 object TypeError {
   def withSpan(err: TypeError, sp: Span): TypeError = err match {
-    case e: UnificationFailed               => e.copy(span = Some(sp))
-    case e: OccursCheckFailed               => e.copy(span = Some(sp))
-    case e: CannotApplyNonFunction          => e.copy(span = Some(sp))
-    case e: ArityMismatch                   => e.copy(span = Some(sp))
-    case e: UnknownConstructor              => e.copy(span = Some(sp))
-    case e: DuplicateCase                   => e.copy(span = Some(sp))
-    case e: UnreachableCase                 => e.copy(span = Some(sp))
-    case e: MissingCase                     => e.copy(span = Some(sp))
-    case e: NotAType                        => e.copy(span = Some(sp))
-    case e: NonInductiveMatch               => e.copy(span = Some(sp))
-    case e: MissingReturningClause          => e.copy(span = Some(sp))
-    case e: NotFound                        => e.copy(span = Some(sp))
-    case e: AlreadyDefined                  => e.copy(span = Some(sp))
-    case e: CannotLinkToBottom              => e.copy(span = Some(sp))
-    case e: VarAlreadyLinked                => e.copy(span = Some(sp))
-    case e: TypeMismatch                    => e.copy(span = Some(sp))
-    case e: DuplicateNormalizer             => e.copy(span = Some(sp))
-    case e: InvalidConstructorResult        => e.copy(span = Some(sp))
-    case e: NotALevel                       => e.copy(span = Some(sp))
-    case e: InductiveUniverseTooSmall       => e.copy(span = Some(sp))
-    case e: NonStrictlyPositive             => e.copy(span = Some(sp))
-    case e: InductiveTypeNotASort           => e.copy(span = Some(sp))
-    case e: PatternCaptureNeedsExpectedType => e.copy(span = Some(sp))
-    case e: FailedToOpenCapture             => e.copy(span = Some(sp))
-    case e: PropEliminationRestricted       => e.copy(span = Some(sp))
-    case e: InvalidLevelSubtraction         => e.copy(span = Some(sp))
-    case e: WTF                             => e.copy(span = Some(sp))
-    case e: InvalidStruct                   => e.copy(span = Some(sp))
-    case e: NotAStruct                      => e.copy(span = Some(sp))
-    case e: MultipleLevelCaptures           => e.copy(span = Some(sp))
-    case e: NoInstanceFound                 => e.copy(span = Some(sp))
-    case e: CyclicInstanceSearch            => e.copy(span = Some(sp))
-    case e: InvalidInstance                 => e.copy(span = Some(sp))
-    case e: InstanceSearchBudgetExceeded    => e.copy(span = Some(sp))
+    case e: UnificationFailed                        => e.copy(span = Some(sp))
+    case e: OccursCheckFailed                        => e.copy(span = Some(sp))
+    case e: CannotApplyNonFunction                   => e.copy(span = Some(sp))
+    case e: ArityMismatch                            => e.copy(span = Some(sp))
+    case e: UnknownConstructor                       => e.copy(span = Some(sp))
+    case e: DuplicateCase                            => e.copy(span = Some(sp))
+    case e: UnreachableCase                          => e.copy(span = Some(sp))
+    case e: MissingCase                              => e.copy(span = Some(sp))
+    case e: NotAType                                 => e.copy(span = Some(sp))
+    case e: NonInductiveMatch                        => e.copy(span = Some(sp))
+    case e: MissingReturningClause                   => e.copy(span = Some(sp))
+    case e: NotFound                                 => e.copy(span = Some(sp))
+    case e: AlreadyDefined                           => e.copy(span = Some(sp))
+    case e: CannotLinkToBottom                       => e.copy(span = Some(sp))
+    case e: VarAlreadyLinked                         => e.copy(span = Some(sp))
+    case e: TypeMismatch                             => e.copy(span = Some(sp))
+    case e: DuplicateNormalizer                      => e.copy(span = Some(sp))
+    case e: InvalidConstructorResult                 => e.copy(span = Some(sp))
+    case e: NotALevel                                => e.copy(span = Some(sp))
+    case e: InductiveUniverseTooSmall                => e.copy(span = Some(sp))
+    case e: NonStrictlyPositive                      => e.copy(span = Some(sp))
+    case e: InductiveTypeNotASort                    => e.copy(span = Some(sp))
+    case e: PatternCaptureNeedsExpectedType          => e.copy(span = Some(sp))
+    case e: FailedToOpenCapture                      => e.copy(span = Some(sp))
+    case e: PropEliminationRestricted                => e.copy(span = Some(sp))
+    case e: InvalidLevelSubtraction                  => e.copy(span = Some(sp))
+    case e: WTF                                      => e.copy(span = Some(sp))
+    case e: InvalidStruct                            => e.copy(span = Some(sp))
+    case e: NotAStruct                               => e.copy(span = Some(sp))
+    case e: MultipleLevelCaptures                    => e.copy(span = Some(sp))
+    case e: NoInstanceFound                          => e.copy(span = Some(sp))
+    case e: CyclicInstanceSearch                     => e.copy(span = Some(sp))
+    case e: CannotDirectlyApplyCapturedDerivedBinder => e.copy(span = Some(sp))
+    case e: InvalidInstance                          => e.copy(span = Some(sp))
+    case e: InstanceSearchBudgetExceeded             => e.copy(span = Some(sp))
   }
 }
 
@@ -175,7 +176,7 @@ final case class PropEliminationRestricted(
     s"Cannot eliminate proposition $inductive into non-Prop motive $motive"
 }
 
-final case class MultipleLevelCaptures(p: CoreAst.TypePattern, span: Option[Span]) extends TypeError {
+final case class MultipleLevelCaptures(p: CoreAst.RawTypePattern, span: Option[Span]) extends TypeError {
   override def msg: String = "Cannot pattern match multiple level captures " + p
 }
 
@@ -197,6 +198,11 @@ final case class NoInstanceFound(goal: Value, span: Option[Span] = None) extends
 
 final case class CyclicInstanceSearch(goal: Value, span: Option[Span] = None) extends TypeError {
   override def msg: String = s"Cyclic instance search for $goal"
+}
+
+final case class CannotDirectlyApplyCapturedDerivedBinder(name: String, span: Option[Span] = None) extends TypeError {
+  override def msg: String =
+    s"Cannot directly apply a function whose derived binder $name contains pattern captures"
 }
 
 final case class InvalidInstance(
