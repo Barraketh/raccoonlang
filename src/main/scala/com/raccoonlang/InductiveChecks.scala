@@ -3,6 +3,7 @@ package com.raccoonlang
 import com.raccoonlang.CoreAst._
 import com.raccoonlang.Interpreter.Worlds
 import com.raccoonlang.Value._
+import com.raccoonlang.telescope.BinderOps
 
 import scala.annotation.tailrec
 

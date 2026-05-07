@@ -1,12 +1,13 @@
-package com.raccoonlang
+package com.raccoonlang.telescope
 
 import com.raccoonlang.CoreAst.{Term => CTerm, TypePattern => CPattern}
 import com.raccoonlang.Interpreter._
 import com.raccoonlang.Value._
+import com.raccoonlang._
 
 object TypePatternOps {
-  final case class FreshenedBinder(value: Value, env: Env, newVars: DepSet)
-  final case class FreshenedRawBinder(
+  private[telescope] final case class FreshenedBinder(value: Value, env: Env, newVars: DepSet)
+  private[telescope] final case class FreshenedRawBinder(
       value: Value,
       env: Env,
       newVars: DepSet,
@@ -196,9 +197,6 @@ object TypePatternOps {
     )
   }
 
-  def toVBinder(binder: CoreAst.RawBinder, env: Env)(implicit eqStore: EqStore, normalizers: NormalizerMap): VBinder =
-    checkBinder(binder, env).binder
-
   def toVBinder(binder: CoreAst.CheckedBinder): VBinder = {
     val expectedTy = compileType(binder.ty)
     VBinder(
@@ -324,7 +322,7 @@ object TypePatternOps {
       case CPattern.Type(term)         => OpenedPattern(evalTypeTerm(term, env), env, DepSet.empty)
     }
 
-  def freshenBinder(env: Env, binder: VBinder)(implicit eqStore: EqStore): FreshenedBinder = {
+  private[telescope] def freshenBinder(env: Env, binder: VBinder)(implicit eqStore: EqStore): FreshenedBinder = {
     structConstructorForBinderType(env, binder.expectedTy) match {
       case Some((shape, argTerms)) => freshenStructBinder(env, binder, shape, argTerms)
       case None =>
@@ -334,7 +332,7 @@ object TypePatternOps {
     }
   }
 
-  def freshenRawBinder(env: Env, binder: CoreAst.RawBinder)(implicit
+  private[telescope] def freshenRawBinder(env: Env, binder: CoreAst.RawBinder)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): FreshenedRawBinder = {
@@ -353,7 +351,7 @@ object TypePatternOps {
     putBinderLocal(openedEnv, binder, actual, instanceTerm)
   }
 
-  def bindValueAndCheck(
+  private[telescope] def bindValueAndCheck(
       env: Env,
       binder: VBinder,
       actual: Value,

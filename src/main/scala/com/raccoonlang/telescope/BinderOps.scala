@@ -1,6 +1,7 @@
-package com.raccoonlang
+package com.raccoonlang.telescope
 
 import com.raccoonlang.Value.{VBinder, VPi}
+import com.raccoonlang._
 
 object BinderOps {
   final case class Freshened(vars: Vector[Value], env: Env, newVars: DepSet)
@@ -118,7 +119,7 @@ object BinderOps {
     CompletedArgs(telescopeEnv, values.result(), terms.result())
   }
 
-  def solveBinder(env: Env, binder: VBinder, searchEnv: Env)(implicit
+  private[telescope] def solveBinder(env: Env, binder: VBinder, searchEnv: Env)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): BinderOps.CheckedArg = {

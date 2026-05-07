@@ -1,5 +1,6 @@
 package com.raccoonlang
 import com.raccoonlang.Value._
+import com.raccoonlang.telescope.{BinderOps, TypePatternOps}
 
 import scala.collection.mutable
 

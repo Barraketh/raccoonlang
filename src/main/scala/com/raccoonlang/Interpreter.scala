@@ -2,6 +2,7 @@ package com.raccoonlang
 
 import com.raccoonlang.CoreAst.{Decl, Program, RawTypeTerm, Term => CTerm}
 import com.raccoonlang.Value._
+import com.raccoonlang.telescope.{BinderOps, ConstructorOps, TypePatternOps}
 
 object Interpreter {
   private def normalizeLevel(l: Level)(implicit eqStore: EqStore): Level = {

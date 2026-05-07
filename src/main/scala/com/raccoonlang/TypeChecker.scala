@@ -2,6 +2,7 @@ package com.raccoonlang
 
 import com.raccoonlang.Interpreter._
 import com.raccoonlang.Value._
+import com.raccoonlang.telescope.{BinderOps, ConstructorOps}
 import com.raccoonlang.{CoreAst => CA}
 
 object TypeChecker {

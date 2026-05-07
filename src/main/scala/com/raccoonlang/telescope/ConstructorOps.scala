@@ -1,20 +1,24 @@
-package com.raccoonlang
+package com.raccoonlang.telescope
 
 import com.raccoonlang.Value.{ConstructorHead, VBinder, VCtor, VPi}
+import com.raccoonlang._
 
 object ConstructorOps {
   final case class FreshCtor(value: VCtor, newVars: DepSet)
 
-  final case class ConstructorShape(head: ConstructorHead, pi: VPi) {
-    val paramCount: Int = head.numParams
+  final case class ConstructorShape private[telescope] (
+      private[telescope] val head: ConstructorHead,
+      private[telescope] val pi: VPi
+  ) {
+    private[telescope] val paramCount: Int = head.numParams
 
-    def paramBinders: Vector[VBinder] = pi.binders.take(paramCount)
+    private[telescope] def paramBinders: Vector[VBinder] = pi.binders.take(paramCount)
     def fieldBinders: Vector[VBinder] = pi.binders.drop(paramCount)
 
-    def paramArgs[A](args: Vector[A]): Vector[A] = args.take(paramCount)
-    def isParamIndex(idx: Int): Boolean = idx < paramCount
+    private[telescope] def paramArgs[A](args: Vector[A]): Vector[A] = args.take(paramCount)
+    private[telescope] def isParamIndex(idx: Int): Boolean = idx < paramCount
 
-    def instantiateParams(paramArgs: Vector[Value])(implicit eqStore: EqStore): Env = {
+    private[telescope] def instantiateParams(paramArgs: Vector[Value])(implicit eqStore: EqStore): Env = {
       if (paramArgs.length != paramCount) throw ArityMismatch(paramCount, paramArgs.length)
       if (paramCount == 0) pi.env
       else BinderOps.instantiateFull(paramBinders, pi.env, paramArgs)
@@ -24,7 +28,7 @@ object ConstructorOps {
   }
 
   object ConstructorShape {
-    def from(head: ConstructorHead): Option[ConstructorShape] =
+    private[telescope] def from(head: ConstructorHead): Option[ConstructorShape] =
       head.tpe match {
         case pi: VPi => Some(ConstructorShape(head, pi))
         case _       => None
