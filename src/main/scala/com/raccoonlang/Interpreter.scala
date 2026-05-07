@@ -6,7 +6,7 @@ import com.raccoonlang.Value._
 
 object Interpreter {
   private def normalizeLevel(l: Level)(implicit eqStore: EqStore): Level = {
-    val pieces = Vector(Level(Map.empty, l.c)) ++
+    val pieces = Vector(Level.const(l.c)) ++
       l.atoms.toVector.map { case (atom, k) =>
         val base = eqStore.subst.get(atom) match {
           case Some(sol) =>
@@ -340,7 +340,7 @@ object Interpreter {
         .putGlobal("Normalizer", NormalizerType)
         .putGlobal("Level", LevelTpe)
         .putGlobal("Level::zero", Level.zero)
-        .putGlobal("Level::one", Level(Map.empty, 1))
+        .putGlobal("Level::one", Level.const(1))
         .putGlobal("Prop", PropTpe)
 
     val builtinFuncs = List[(String, RawTypeTerm, (NEL[Value], EqStore) => Value)](

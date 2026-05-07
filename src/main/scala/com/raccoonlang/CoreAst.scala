@@ -134,6 +134,8 @@ object CoreAst {
       isDerived: Boolean = false,
       isInstance: Boolean = false
   ) {
+    require(!isDerived || isInstance, "Derived binders must participate in local instance search")
+
     def name: String = localRef.name
 
     override def toString: String = PrettyPrinter.printBinder(this)

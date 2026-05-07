@@ -16,7 +16,7 @@ class TypeClassTests extends munit.FunSuite {
         .putGlobal("Normalizer", Value.NormalizerType)
         .putGlobal("Level", Value.LevelTpe)
         .putGlobal("Level::zero", Value.Level.zero)
-        .putGlobal("Level::one", Value.Level(Map.empty, 1))
+        .putGlobal("Level::one", Value.Level.const(1))
         .putGlobal("Prop", Value.PropTpe)
 
     val builtinFuncs = List[(String, CoreAst.RawTypeTerm, (NEL[Value], EqStore) => Value)](
@@ -828,6 +828,13 @@ class TypeClassTests extends munit.FunSuite {
   }
 
   test("derived parameter syntax parses in the middle of a header") {
+    LanguageParser.parseFuncHeader("(a: A)[b: B](c: C): D") match {
+      case Success(header, _, _) =>
+        assertEquals(header.params(1).isDerived, true)
+        assertEquals(header.params(1).isInstance, true)
+      case err: Failure => fail(s"Failed to parse header: $err")
+    }
+
     val src =
       """
         |inductive A : Type
@@ -846,5 +853,21 @@ class TypeClassTests extends munit.FunSuite {
         |""".stripMargin
 
     typecheckProgram(src)
+  }
+
+  test("derived binder without instance registration is rejected at construction") {
+    val span = Span(0, 1)
+    val ty = SurfaceAst.Term.Ident("A", span)
+
+    intercept[IllegalArgumentException] {
+      SurfaceAst.Binder("x", ty, span, isDerived = true)
+    }
+    intercept[IllegalArgumentException] {
+      CoreAst.Binder[CoreAst.Raw](CoreAst.LocalRef(0, "x"), CoreAst.TypePattern.Type(CoreAst.Term.GlobalRef("A", span)), span, isDerived = true)
+    }
+    intercept[IllegalArgumentException] {
+      val ty = CoreAst.Term.GlobalRef[CoreAst.Checked]("A", span)
+      Value.VBinder(CoreAst.LocalRef(0, "x"), CoreAst.TypePattern.Type(ty), ty, Vector.empty, isDerived = true)
+    }
   }
 }

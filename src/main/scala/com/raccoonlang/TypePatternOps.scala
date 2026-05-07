@@ -33,7 +33,7 @@ object TypePatternOps {
       instanceTerm: Option[CoreAst.CheckedTerm] = None
   )(implicit eqStore: EqStore): Env = {
     val instanceKey =
-      if (binder.isInstance || binder.isDerived) Some(InstanceSearch.instanceKey(binder.name, value, eqStore))
+      if (binder.isInstance) Some(InstanceSearch.instanceKey(binder.name, value, eqStore))
       else None
     env.putLocal(binder.localRef, value, instanceKey, instanceTerm)
   }

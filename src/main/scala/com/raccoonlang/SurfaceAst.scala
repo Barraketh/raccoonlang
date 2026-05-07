@@ -55,7 +55,9 @@ object SurfaceAst {
   // Let: let x := foo
   final case class Let(name: String, ty: Option[TypeTerm], value: Term, span: Span, isInstance: Boolean = false)
 
-  case class Binder(name: String, ty: TypeTerm, span: Span, isDerived: Boolean = false, isInstance: Boolean = false)
+  case class Binder(name: String, ty: TypeTerm, span: Span, isDerived: Boolean = false, isInstance: Boolean = false) {
+    require(!isDerived || isInstance, "Derived binders must participate in local instance search")
+  }
 
   case class FuncHeader(params: Vector[Binder], ty: TypeTerm, span: Span)
 

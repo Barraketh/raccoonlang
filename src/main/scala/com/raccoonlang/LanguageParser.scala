@@ -122,7 +122,7 @@ object LanguageParser {
 
   private def derivedParam: Parser[Binder] =
     (sym('[') ~ argName ~ sym(':') ~/ typeTerm ~ symTight(']')).flatSpanned.map { case (name, ty, span) =>
-      Binder(name, ty, span, isDerived = true)
+      Binder(name, ty, span, isDerived = true, isInstance = true)
     }
 
   private def param: Parser[Binder] = normalParam | derivedParam

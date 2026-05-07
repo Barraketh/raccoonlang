@@ -191,6 +191,18 @@ class UniverseTests extends munit.FunSuite {
     }
   }
 
+  test("Level.of enforces normalized construction") {
+    val a = freshLevel("a")
+
+    assertEquals(Value.Level.of(Map(a.id -> 3), 2), Value.Level.of(Map(a.id -> 3), 0))
+    intercept[IllegalArgumentException] {
+      Value.Level.of(Map(a.id -> -1), 0)
+    }
+    intercept[IllegalArgumentException] {
+      Value.Level.const(-1)
+    }
+  }
+
   // Instead of constructing Sort in term position, test level-parametric usage via a term at the appropriate level
   test("Level-parametric id at u=0 works for Nat") {
     val p =
@@ -210,40 +222,40 @@ class UniverseTests extends munit.FunSuite {
 
   test("Level.leq: constant can be covered by RHS atom") {
     val a = freshLevel("a")
-    val lhs = Value.Level(Map.empty, 3)
-    val rhs = Value.Level(Map(a.id -> 5), 0)
+    val lhs = Value.Level.const(3)
+    val rhs = Value.Level.of(Map(a.id -> 5), 0)
 
     assert(Value.Level.leq(lhs, rhs))
   }
 
   test("Level.leq: atom is not covered by RHS constant") {
     val a = freshLevel("a")
-    val lhs = Value.Level(Map(a.id -> 5), 0)
-    val rhs = Value.Level(Map.empty, 7)
+    val lhs = Value.Level.of(Map(a.id -> 5), 0)
+    val rhs = Value.Level.const(7)
 
     assert(!Value.Level.leq(lhs, rhs))
   }
 
   test("Level.leq: same atom with larger RHS offset succeeds") {
     val a = freshLevel("a")
-    val lhs = Value.Level(Map(a.id -> 2), 0)
-    val rhs = Value.Level(Map(a.id -> 5), 0)
+    val lhs = Value.Level.of(Map(a.id -> 2), 0)
+    val rhs = Value.Level.of(Map(a.id -> 5), 0)
 
     assert(Value.Level.leq(lhs, rhs))
   }
 
   test("Level.leq: same atom with smaller RHS offset fails") {
     val a = freshLevel("a")
-    val lhs = Value.Level(Map(a.id -> 5), 0)
-    val rhs = Value.Level(Map(a.id -> 2), 0)
+    val lhs = Value.Level.of(Map(a.id -> 5), 0)
+    val rhs = Value.Level.of(Map(a.id -> 2), 0)
 
     assert(!Value.Level.leq(lhs, rhs))
   }
 
   test("Level.leq: mixed max where RHS atom covers LHS constant and atom") {
     val a = freshLevel("a")
-    val lhs = Value.Level(Map(a.id -> 2), 3) // max(a+2, 3)
-    val rhs = Value.Level(Map(a.id -> 5), 0) // max(a+5)
+    val lhs = Value.Level.of(Map(a.id -> 2), 3) // max(a+2, 3)
+    val rhs = Value.Level.of(Map(a.id -> 5), 0) // max(a+5)
 
     assert(Value.Level.leq(lhs, rhs))
   }
@@ -251,8 +263,8 @@ class UniverseTests extends munit.FunSuite {
   test("Level.leq: unrelated RHS atom does not cover LHS atom") {
     val a = freshLevel("a")
     val b = freshLevel("b")
-    val lhs = Value.Level(Map(a.id -> 2), 0)
-    val rhs = Value.Level(Map(b.id -> 10), 0)
+    val lhs = Value.Level.of(Map(a.id -> 2), 0)
+    val rhs = Value.Level.of(Map(b.id -> 10), 0)
 
     assert(!Value.Level.leq(lhs, rhs))
   }
@@ -261,31 +273,31 @@ class UniverseTests extends munit.FunSuite {
     val a = freshLevel("a")
     val b = freshLevel("b")
 
-    val lhs = Value.Level(Map(a.id -> 2, b.id -> 1), 0)
-    val rhsOk = Value.Level(Map(a.id -> 3, b.id -> 1), 0)
-    val rhsBad = Value.Level(Map(a.id -> 3), 0)
+    val lhs = Value.Level.of(Map(a.id -> 2, b.id -> 1), 0)
+    val rhsOk = Value.Level.of(Map(a.id -> 3, b.id -> 1), 0)
+    val rhsBad = Value.Level.of(Map(a.id -> 3), 0)
 
     assert(Value.Level.leq(lhs, rhsOk))
     assert(!Value.Level.leq(lhs, rhsBad))
   }
 
   test("Level.leq: constant covered by RHS constant") {
-    val lhs = Value.Level(Map.empty, 3)
-    val rhs = Value.Level(Map.empty, 5)
+    val lhs = Value.Level.const(3)
+    val rhs = Value.Level.const(5)
 
     assert(Value.Level.leq(lhs, rhs))
   }
 
   test("Level.leq: larger constant not covered by smaller RHS constant") {
-    val lhs = Value.Level(Map.empty, 5)
-    val rhs = Value.Level(Map.empty, 3)
+    val lhs = Value.Level.const(5)
+    val rhs = Value.Level.const(3)
 
     assert(!Value.Level.leq(lhs, rhs))
   }
 
   test("Level.leq: reflexive on mixed level") {
     val a = freshLevel("a")
-    val lvl = Value.Level(Map(a.id -> 4), 0)
+    val lvl = Value.Level.of(Map(a.id -> 4), 0)
 
     assert(Value.Level.leq(lvl, lvl))
   }
@@ -297,7 +309,7 @@ class UniverseTests extends munit.FunSuite {
 
     intercept[UnificationFailed] {
       Unify.unify(
-        Value.VSort(Value.Level(Map(u.id -> 1), 0)),
+        Value.VSort(Value.Level.of(Map(u.id -> 1), 0)),
         Value.VSort(Value.Level.zero),
         eqStore
       )

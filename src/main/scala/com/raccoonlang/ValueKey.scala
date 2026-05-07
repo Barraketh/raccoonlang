@@ -119,7 +119,7 @@ object ValueKey {
 
   def orderKey(v: Value): Key = v match {
     case Value.LevelTpe        => tag(Tag.LevelTpe)
-    case Value.Level(atoms, c) => levelKey(atoms, c)
+    case level: Value.Level    => levelKey(level.atoms, level.c)
     case Value.VSort(lvl)      => mixKey(tag(Tag.Sort), orderKey(lvl))
     case Value.PropTpe         => tag(Tag.Prop)
     case Value.KernelObject    => tag(Tag.KernelObject)

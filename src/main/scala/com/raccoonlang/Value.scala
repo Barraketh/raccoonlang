@@ -72,19 +72,39 @@ object Value {
   }
 
   // Represents max(var1 + k1, var2 + k2... , c)
-  // Invariant: c is either 0 or c > k1...kn
-  case class Level(atoms: Map[VarId, Int], c: Int) extends Value {
+  // Invariant: all offsets are non-negative, c is non-negative, and c is either 0 or c > k1...kn.
+  final class Level private (val atoms: Map[VarId, Int], val c: Int) extends Value {
     override val tpe: Value = LevelTpe
 
     override val synDeps: DepSet = DepSet.from(atoms.keys)
+
+    override def equals(obj: Any): Boolean =
+      obj match {
+        case other: Level => atoms == other.atoms && c == other.c
+        case _            => false
+      }
+
+    override def hashCode(): Int = 31 * atoms.hashCode() + c
   }
   object Level {
+    def of(atoms: Map[VarId, Int], c: Int): Level = {
+      require(c >= 0, s"Level constant must be non-negative: $c")
+      require(atoms.values.forall(_ >= 0), s"Level atom offsets must be non-negative: $atoms")
+
+      val nextC =
+        if (atoms.nonEmpty && c <= atoms.values.max) 0
+        else c
+      new Level(atoms, nextC)
+    }
+
+    def const(c: Int): Level = of(Map.empty, c)
+
     def addOffset(l: Level, offset: Int): Level = {
       if (offset == 0) l
       else {
         val newAtoms = l.atoms.map { case (varId, k) => (varId, k + offset) }
         val newC = if (l.c > 0 || l.atoms.isEmpty) l.c + offset else 0
-        Level(newAtoms, newC)
+        of(newAtoms, newC)
       }
     }
 
@@ -104,7 +124,7 @@ object Value {
       val cMax = xs.map(_.c).max
       val kMax = if (nextAtoms.nonEmpty) nextAtoms.values.max else 0
       val nextC = if (cMax > kMax) cMax else 0
-      Level(nextAtoms, nextC)
+      of(nextAtoms, nextC)
     }
 
     def leq(l1: Level, l2: Level): Boolean = {
@@ -112,9 +132,9 @@ object Value {
       l1.atoms.forall { case (varId, k) => k <= l2.atoms.getOrElse(varId, -1) }
     }
 
-    def mk(varId: VarId): Level = Level(Map(varId -> 0), 0)
+    def mk(varId: VarId): Level = of(Map(varId -> 0), 0)
 
-    val zero = Level(Map.empty, 0)
+    val zero = const(0)
 
   }
 
@@ -138,6 +158,8 @@ object Value {
       isDerived: Boolean = false,
       isInstance: Boolean = false
   ) {
+    require(!isDerived || isInstance, "Derived binders must participate in local instance search")
+
     def name: String = localRef.name
   }
 

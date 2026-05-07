@@ -101,10 +101,11 @@ In `zeroShapeOnly`, the `NatShape::isSucc` branch is unreachable because the scr
 Type classes are ordinary structs. An instance is an ordinary definition or local binding marked as an instance, and
 instance search only runs for omitted binders whose default is `derive`.
 
-Search uses lexical priority. Local instance bindings are searched first; if exactly one local candidate succeeds,
-that candidate is used and globals are not considered. If multiple local candidates succeed, the search is ambiguous.
-Globals are searched only when no local candidate succeeds. This means a local instance can intentionally override a
-global one without creating ambiguity.
+Search uses lexical priority and stops at the first successful candidate in a tier. Local instance bindings are
+searched before globals, with newer local bindings tried first. If a local candidate succeeds, globals are not
+considered. Globals are searched only when no local candidate succeeds. This means a local instance can intentionally
+override a global one without creating ambiguity, and overlapping instances are resolved by search order rather than by
+ambiguity detection.
 
 ```raccoon
 inductive List (A: Type) : Type

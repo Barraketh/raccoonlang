@@ -18,7 +18,7 @@ object BinderOps {
 
   private def putBinderLocal(env: Env, binder: VBinder, value: Value)(implicit eqStore: EqStore): Env = {
     val instanceKey =
-      if (binder.isInstance || binder.isDerived) Some(InstanceSearch.instanceKey(binder.name, value, eqStore))
+      if (binder.isInstance) Some(InstanceSearch.instanceKey(binder.name, value, eqStore))
       else None
     env.putLocal(binder.localRef, value, instanceKey)
   }

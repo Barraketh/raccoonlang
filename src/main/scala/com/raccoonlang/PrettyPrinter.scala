@@ -138,7 +138,7 @@ object PrettyPrinter {
     case Value.VSort(lvl)                        => s"Type $lvl"
     case Value.PropTpe                           => "Prop"
     case Value.KernelObject                      => "KernelObject"
-    case Value.Level(atoms, c)                   => s"Level($atoms, $c)"
+    case level: Value.Level                      => s"Level(${level.atoms}, ${level.c})"
     case pi: Value.VPi                           => "VPi"
     case Value.VConst(name, _, _)                => name
     case v: Value.AppliedValue                   => printApp(v.head, v.args)
