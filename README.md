@@ -44,6 +44,7 @@ Note that at this point I have done 0 optimization - these performance wins are 
 
 - Inductive families with parameters and indices
     - Validates positivity, universes, uniform parameters, constructor result shape
+- Type classes as structs, with `def instance`, `let instance`, and '[f: Foo]' binders
 - Dependent pattern matching
     - Branch refinement for indexed families / dependent pattern matching. Supports equality proofs.
     - Validates exhaustiveness checking: missing, duplicate, and unreachable branches
@@ -56,12 +57,29 @@ Note that at this point I have done 0 optimization - these performance wins are 
 
 ## A few concrete examples
 
-### Simple inductive types and functions
+### Inductives and Pattern Matching
+
+Inductives can have parameters and indices, and their result can live in an explicit universe. This includes
+universe-polymorphic inductives whose fields and result type are parameterized by a `Level`.
+
+Pattern matches are checked for exhaustiveness. Required constructors must be present, duplicate cases are rejected,
+and constructors that are impossible at the scrutinee's indexed type can be omitted.
 
 ```raccoon
 inductive Nat : Type
  | zero : Nat
  | succ (_: Nat) : Nat
+
+inductive Box (u: Level)(A: Sort(u)) : Sort(u)
+ | mk (value: A) : Box(u, A)
+
+inductive Vec (u: Level)(A: Sort(u)) indices (n: Nat) : Sort(u)
+ | nil : Vec(u, A, Nat::zero)
+ | cons (n: Nat)(xs: Vec(u, A, n))(x: A) : Vec(u, A, Nat::succ(n))
+
+inductive NatShape indices (n: Nat) : Type
+ | isZero : NatShape(Nat::zero)
+ | isSucc (n: Nat) : NatShape(Nat::succ(n))
 
 inline def pred (n: Nat): Nat := {
   match n with
@@ -69,32 +87,40 @@ inline def pred (n: Nat): Nat := {
   | Nat::succ x => x
 }
 
-{ pred(Nat::succ(Nat::zero)) }
+inline def zeroShapeOnly (shape: NatShape(Nat::zero)): Nat := {
+  match shape returning Nat with
+  | NatShape::isZero => Nat::zero
+}
 ```
 
-### Universe-polymorphic identity
+In `zeroShapeOnly`, the `NatShape::isSucc` branch is unreachable because the scrutinee has type
+`NatShape(Nat::zero)`, so the match is still exhaustive without that constructor.
+
+### Type Classes
+
+Type classes are ordinary structs. An instance is an ordinary definition or local binding marked as an instance, and
+instance search only runs for omitted binders whose default is `derive`.
+
+Search uses lexical priority. Local instance bindings are searched first; if exactly one local candidate succeeds,
+that candidate is used and globals are not considered. If multiple local candidates succeed, the search is ambiguous.
+Globals are searched only when no local candidate succeeds. This means a local instance can intentionally override a
+global one without creating ambiguity.
 
 ```raccoon
-inductive Nat : Type
- | zero : Nat
- | succ (_: Nat) : Nat
+inductive List (A: Type) : Type
+ | nil : List(A)
 
-inline def idAt (u: Level)(A: Sort(u))(x: A): A := x
+def instance natEq : Eq(Nat) := Eq::mk(Nat, Bool::true)
 
-{ idAt(Level::zero, Nat, Nat::zero) }
+def instance listEq [ea: Eq($A)]: Eq(List(A)) := Eq::mk(List(A), Bool::true)
+
+inline def useListEq [eqA: Eq(List(Nat))]: Eq(List(Nat)) := eqA
+
+{
+  useListEq()
+}
 ```
 
-### Indexed vectors
-
-```raccoon
-inductive Nat : Type
- | zero : Nat
- | succ (_: Nat) : Nat
-
-inductive Vec (A: Type) indices (n: Nat) : Sort(Level::one)
- | nil : Vec(A, Nat::zero)
- | cons (n: Nat) (xs: Vec(A, n)) (x: A) : Vec(A, Nat::succ(n))
-```
 
 ### Type patterns
 
