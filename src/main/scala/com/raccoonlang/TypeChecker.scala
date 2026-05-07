@@ -1,7 +1,6 @@
 package com.raccoonlang
 
 import com.raccoonlang.Interpreter._
-import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
 import com.raccoonlang.{CoreAst => CA}
 
@@ -56,7 +55,7 @@ object TypeChecker {
         val completed = BinderOps.checkAndInstantiate(pi.binders, pi.env, args, env)
 
         Checked(
-          Interpreter.evalApply(fn0, NEL.mk(completed.values)),
+          Interpreter.evalApply(fn0, completed.values),
           CA.Term.App[CA.Checked](fnTerm, completed.terms, span)
         )
       case _ => throw CannotApplyNonFunction(fnTy0)
@@ -97,8 +96,8 @@ object TypeChecker {
   ): CheckedPi = {
     val freshened = BinderOps.freshenRawBinders(pi.binders, env)
     val checkedOut = getCheckedType(pi.out, freshened.env)
-    val checkedPi = CA.Term.Pi[CA.Checked](NEL.mk(freshened.checkedBinders), checkedOut.term, pi.span)
-    CheckedPi(evalPi(checkedPi, env, NEL.mk(freshened.vBinders)), checkedPi)
+    val checkedPi = CA.Term.Pi[CA.Checked](freshened.checkedBinders, checkedOut.term, pi.span)
+    CheckedPi(evalPi(checkedPi, env, freshened.vBinders), checkedPi)
   }
 
   def checkTypeTerm(term: CA.RawTypeTerm, env: Env)(implicit
@@ -116,7 +115,7 @@ object TypeChecker {
       )
     case t: CA.Term.TApp[CA.Raw] =>
       val fn = checkTypeTerm(t.fn, env)
-      val args = t.args.toVector.map(arg => checkedArg(checkTypeTerm(arg, env)))
+      val args = t.args.map(arg => checkedArg(checkTypeTerm(arg, env)))
       checkTypeApply(fn.value, args, fn.term, env, t.span)
     case CA.Term.TSelect(base, field, span) =>
       val checkedBase = checkTypeTerm(base, env)
@@ -430,8 +429,8 @@ object TypeChecker {
       normalizers: NormalizerMap
   ): RelatedPis = {
     if (
-      pi1.binders.toVector
-        .zip(pi2.binders.toVector)
+      pi1.binders
+        .zip(pi2.binders)
         .exists { case (b1, b2) => b1.isDerived != b2.isDerived || b1.isInstance != b2.isInstance }
     )
       throw TypeMismatch(pi1, pi2)
@@ -505,9 +504,8 @@ object TypeChecker {
         else {
           defEqPi(l1.tpe, l2.tpe) match {
             case Some(vars) =>
-              val varsNEL = NEL.mk(vars)
-              val res1 = l1.run(varsNEL, eqStore)
-              val res2 = l2.run(varsNEL, eqStore)
+              val res1 = l1.run(vars, eqStore)
+              val res2 = l2.run(vars, eqStore)
               defEq(res1, res2)
             case None => false
           }

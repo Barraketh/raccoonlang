@@ -17,14 +17,14 @@ object PrettyPrinter {
       case Term.Select(base, field, _)  => s"${printTermAtom(base)}[$field]"
       case Term.TApp(fn, args, _) =>
         val headStr = ptAtom(fn)
-        val argsStr = args.toList.map(ptAtom).mkString(", ")
+        val argsStr = args.map(ptAtom).mkString(", ")
         s"$headStr($argsStr)"
       case Term.App(fn, args, _) =>
         val headStr = printTermAtom(fn)
         val argsStr = args.map(printTermAtom).mkString(", ")
         s"$headStr($argsStr)"
       case Term.Pi(binders, out, _) =>
-        val bindersStr = binders.toList
+        val bindersStr = binders
           .map { b =>
             if (b.name == "_") printTypePattern(b.ty) else s"(${b.name}: ${printTypePattern(b.ty)})"
           }
@@ -49,7 +49,7 @@ object PrettyPrinter {
       case CoreAst.TypePattern.Type(term) => printTypeTerm(term)
       case CoreAst.TypePattern.App(fn, args, _) =>
         val headStr = printRef(fn)
-        val argsStr = args.toList.map(ptAtom).mkString(", ")
+        val argsStr = args.map(ptAtom).mkString(", ")
         s"$headStr($argsStr)"
       case CoreAst.TypePattern.Capture(ref, _) => s"$$${ref.name}"
     }
@@ -83,8 +83,8 @@ object PrettyPrinter {
     if (b.isDerived) s"[$body]" else if (b.isInstance) s"(instance $body)" else s"($body)"
   }
 
-  private def printBinders[P <: CoreAst.Phase](binders: Util.NEL[CoreAst.Binder[P]]): String =
-    binders.toList.map(printBinder).mkString(" ")
+  private def printBinders[P <: CoreAst.Phase](binders: Vector[CoreAst.Binder[P]]): String =
+    binders.map(printBinder).mkString(" ")
 
   // ---- Core term pretty printing (for neutral match bodies/scrutinees) ----
   private def printLet(l: CoreAst.Let[_]): String = {

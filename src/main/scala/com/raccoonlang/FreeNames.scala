@@ -45,7 +45,7 @@ object FreeNames {
 
       case CoreAst.TypePattern.App(fn, args, _) =>
         goTerm(fn, bound, free)
-        goPatterns(args.toVector, bound, free)
+        goPatterns(args, bound, free)
 
       case CoreAst.TypePattern.Type(term) =>
         goTerm(term, bound, free)
@@ -58,7 +58,7 @@ object FreeNames {
       case Term.LocalRef(ref, _) =>
         if (!bound.contains(ref.id)) free.add(ref.id)
 
-      case Term.TApp(fn, args, _)   => goTerms(fn +: args.toVector, bound, free)
+      case Term.TApp(fn, args, _)   => goTerms(fn +: args, bound, free)
       case Term.TSelect(base, _, _) => goTerm(base, bound, free)
 
       case Term.Pi(binders, out, _) =>

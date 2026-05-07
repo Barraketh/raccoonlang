@@ -1,6 +1,5 @@
 package com.raccoonlang
 
-import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
 
 object Unify {
@@ -67,9 +66,8 @@ object Unify {
       case (l1: VLam, l2: VLam) if l1.tpe.binders.length == l2.tpe.binders.length =>
         // We know that the id check failed - falling back to extensional unification
         val (nextMeta, newVars) = unifyPis(l1.tpe, l2.tpe, meta)
-        val varsNEL = NEL.mk(newVars)
-        val res1 = l1.run(varsNEL, nextMeta)
-        val res2 = l2.run(varsNEL, nextMeta)
+        val res1 = l1.run(newVars, nextMeta)
+        val res2 = l2.run(newVars, nextMeta)
         unify(res1, res2, nextMeta)
       case (v1: AppliedValue, v2: AppliedValue) if v1.args.length == v2.args.length =>
         val startCtx = unify(v1.head, v2.head, meta)

@@ -1,6 +1,5 @@
 package com.raccoonlang
 
-import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value.{VApp, VBlockedApp, VConst, VarId}
 
 object Normalizers {
@@ -38,7 +37,7 @@ object Normalizers {
       }
 
       private def applyAdd(v1: Value, v2: Value)(implicit eqStore: EqStore): Value =
-        Interpreter.evalApply(addFn, NEL(v1, v2 :: Nil))
+        Interpreter.evalApply(addFn, Vector(v1, v2))
 
       override def normalize(v: Value, eqStore: EqStore): Value = {
         val flattened = flatten(v).filter(v => v != zero).sortBy(v => ValueKey.orderKey(v))

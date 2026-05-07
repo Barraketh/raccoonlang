@@ -1,6 +1,5 @@
 package com.raccoonlang
 
-import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value.{ConstructorHead, VBinder, VCtor, VPi}
 
 object ConstructorOps {
@@ -9,8 +8,8 @@ object ConstructorOps {
   final case class ConstructorShape(head: ConstructorHead, pi: VPi) {
     val paramCount: Int = head.numParams
 
-    def paramBinders: Vector[VBinder] = pi.binders.toVector.take(paramCount)
-    def fieldBinders: Vector[VBinder] = pi.binders.toVector.drop(paramCount)
+    def paramBinders: Vector[VBinder] = pi.binders.take(paramCount)
+    def fieldBinders: Vector[VBinder] = pi.binders.drop(paramCount)
 
     def paramArgs[A](args: Vector[A]): Vector[A] = args.take(paramCount)
     def isParamIndex(idx: Int): Boolean = idx < paramCount
@@ -18,7 +17,7 @@ object ConstructorOps {
     def instantiateParams(paramArgs: Vector[Value])(implicit eqStore: EqStore): Env = {
       if (paramArgs.length != paramCount) throw ArityMismatch(paramCount, paramArgs.length)
       if (paramCount == 0) pi.env
-      else BinderOps.instantiateFull(NEL.mk(paramBinders), pi.env, NEL.mk(paramArgs))
+      else BinderOps.instantiateFull(paramBinders, pi.env, paramArgs)
     }
 
     def makeCtor(allArgs: Vector[Value], resultTy: Value): VCtor = VCtor(head, allArgs.drop(paramCount), resultTy)
@@ -80,6 +79,6 @@ object ConstructorOps {
   ): BinderOps.Freshened = {
     val binders = fieldBinders.take(fieldCount)
     if (binders.isEmpty) BinderOps.Freshened(Vector.empty, envWithParams, DepSet.empty)
-    else BinderOps.freshen(NEL.mk(binders), envWithParams)
+    else BinderOps.freshen(binders, envWithParams)
   }
 }

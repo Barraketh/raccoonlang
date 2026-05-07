@@ -1,7 +1,6 @@
 package com.raccoonlang
 
 import com.raccoonlang.CoreAst.UnfoldStrategy
-import com.raccoonlang.Util.NEL
 
 object Elaborator {
   val SA = SurfaceAst
@@ -78,8 +77,8 @@ object Elaborator {
     val body = elabType(pi.body, binderEnv)
     val span = Span(binder.span.start, body.span.end)
     body match {
-      case pi: CA.Term.Pi[CA.Raw] => CA.Term.Pi(binder :: pi.binders, pi.out, span)
-      case other                  => CA.Term.Pi(NEL.one(binder), other, span)
+      case pi: CA.Term.Pi[CA.Raw] => CA.Term.Pi(binder +: pi.binders, pi.out, span)
+      case other                  => CA.Term.Pi(Vector(binder), other, span)
     }
   }
 
@@ -100,12 +99,12 @@ object Elaborator {
         case other                         => throw WTF(s"Expected type term in selection pattern, got $other")
       }
     case SA.Term.TApp(fn, args, sp) =>
-      val (nextArgs, nextEnv) = args.toList.foldLeft((Vector.empty[CA.RawTypePattern], env)) {
+      val (nextArgs, nextEnv) = args.foldLeft((Vector.empty[CA.RawTypePattern], env)) {
         case ((curArgs, curEnv), arg) =>
           val (nextArg, argEnv) = elabPattern(arg, curEnv)
           (curArgs :+ nextArg, argEnv)
       }
-      (CA.TypePattern.App(env.resolveIdent(fn), NEL.mk(nextArgs), sp), nextEnv)
+      (CA.TypePattern.App(env.resolveIdent(fn), nextArgs, sp), nextEnv)
     case pi: SA.Term.Pi =>
       (CA.TypePattern.Type(elabPi(pi, env)), env)
     case SA.Term.Capture(name, sp) =>
@@ -133,7 +132,7 @@ object Elaborator {
     val outTy = elabType(header.ty, bodyEnv)
     val ty =
       if (params.isEmpty) outTy
-      else CA.Term.Pi(NEL.mk(params), outTy, header.span)
+      else CA.Term.Pi(params, outTy, header.span)
     HeaderResult(ty, bodyEnv)
   }
 

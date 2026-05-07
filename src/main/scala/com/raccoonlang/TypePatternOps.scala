@@ -2,7 +2,6 @@ package com.raccoonlang
 
 import com.raccoonlang.CoreAst.{Term => CTerm, TypePattern => CPattern}
 import com.raccoonlang.Interpreter._
-import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
 
 object TypePatternOps {
@@ -58,7 +57,7 @@ object TypePatternOps {
     case CPattern.Type(term)         => term
     case CPattern.Capture(ref, span) => CTerm.LocalRef[CoreAst.Checked](ref, span)
     case CPattern.App(fn, args, span) =>
-      CTerm.App[CoreAst.Checked](fn, args.toVector.map(compileType), span)
+      CTerm.App[CoreAst.Checked](fn, args.map(compileType), span)
   }
 
   private def checkedTermAsTypeTerm(term: CoreAst.CheckedTerm): CoreAst.CheckedTypeTerm =
@@ -86,7 +85,7 @@ object TypePatternOps {
       case CPattern.App(fn, args, _) if globalName(fn).contains("Sort") => compileLevelCapture(args.head).toVector
 
       case app: CPattern.App[CoreAst.Checked] =>
-        app.args.toVector.zipWithIndex.flatMap { case (next, idx) =>
+        app.args.zipWithIndex.flatMap { case (next, idx) =>
           next match {
             case CPattern.Type(_) => Vector.empty
             case nested: CPattern.App[CoreAst.Checked] =>
@@ -109,7 +108,7 @@ object TypePatternOps {
       case CPattern.Capture(ref, span) =>
         throw PatternCaptureNeedsExpectedType(ref.name, Some(span))
       case CPattern.App(fn, args, span) =>
-        checkPatternApp(fn, args.toVector, span, env)
+        checkPatternApp(fn, args, span, env)
     }
 
   private def checkPatternApp(
@@ -121,7 +120,7 @@ object TypePatternOps {
     val fnTerm = toCheckedRef(fn)
     val fnV = evalTypeTerm(fnTerm, env)
     val pi = requirePi(fnV)
-    val binders = pi.binders.toVector
+    val binders = pi.binders
     val explicitArgCount = binders.count(!_.isDerived)
 
     var argIdx = 0
@@ -170,8 +169,8 @@ object TypePatternOps {
     if (argIdx != args.length) throw ArityMismatch(explicitArgCount, args.length, Some(span))
 
     val checkedArgs = argPatterns.result()
-    val pattern = CPattern.App[CoreAst.Checked](fnTerm, NEL.mk(checkedArgs), span)
-    CheckedPattern(pattern, Interpreter.evalApply(fnV, NEL.mk(argValues.result())), callerEnv, newVars.result())
+    val pattern = CPattern.App[CoreAst.Checked](fnTerm, checkedArgs, span)
+    CheckedPattern(pattern, Interpreter.evalApply(fnV, argValues.result()), callerEnv, newVars.result())
   }
 
   private def checkBinder(binder: CoreAst.RawBinder, env: Env)(implicit
@@ -282,8 +281,8 @@ object TypePatternOps {
   ): OpenedApp = {
     val fnV = evalTypeTerm(app.fn, env)
     val pi = requirePi(fnV)
-    val binders = pi.binders.toVector
-    val args = app.args.toVector
+    val binders = pi.binders
+    val args = app.args
 
     if (binders.length != args.length) throw ArityMismatch(binders.length, args.length, Some(app.span))
 
@@ -320,7 +319,7 @@ object TypePatternOps {
     pattern match {
       case app: CPattern.App[CoreAst.Checked] =>
         val opened = openPatternPrefix(env, app, app.args.length)
-        OpenedPattern(Interpreter.evalApply(opened.fn, NEL.mk(opened.args)), opened.env, opened.newVars)
+        OpenedPattern(Interpreter.evalApply(opened.fn, opened.args), opened.env, opened.newVars)
       case CPattern.Capture(ref, span) => throw PatternCaptureNeedsExpectedType(ref.name, Some(span))
       case CPattern.Type(term)         => OpenedPattern(evalTypeTerm(term, env), env, DepSet.empty)
     }

@@ -1,6 +1,4 @@
 package com.raccoonlang
-
-import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
 
 import scala.collection.mutable
@@ -139,7 +137,7 @@ object InstanceSearch {
         val goals = fresh.vars.map(v => ValueOps.materialize(v.tpe, candidateEq))
 
         val (args, argTerms) = fillCandidateArgs(candidate, pi, goals, searchEnv, state, ctx)
-        val res = Interpreter.evalApply(candidate.value, NEL.mk(args))
+        val res = Interpreter.evalApply(candidate.value, args)
         val resTerm = CoreAst.Term.App[CoreAst.Checked](candidate.term, argTerms, candidate.term.span)
         SearchResult(res, resTerm)
 
@@ -159,7 +157,7 @@ object InstanceSearch {
   )(implicit eqStore: EqStore, normalizerMap: NormalizerMap): (Vector[Value], Vector[CoreAst.CheckedTerm]) = {
     val values = Vector.newBuilder[Value]
     val terms = Vector.newBuilder[CoreAst.CheckedTerm]
-    val binders = pi.binders.toVector
+    val binders = pi.binders
 
     var telescopeEnv = pi.env
     var idx = 0
@@ -196,7 +194,7 @@ object InstanceSearch {
     implicit val meta: EqStore = eqStore
     Interpreter.resolveInEqStore(tpe) match {
       case pi: VPi =>
-        pi.binders.toVector.find(!_.isDerived).foreach { binder =>
+        pi.binders.find(!_.isDerived).foreach { binder =>
           throw InvalidInstance(name, tpe, s"function instance binder ${binder.name} must be derived")
         }
       case _ => ()

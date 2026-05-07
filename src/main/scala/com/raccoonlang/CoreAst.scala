@@ -1,6 +1,4 @@
 package com.raccoonlang
-
-import com.raccoonlang.Util.NEL
 // Core AST for RaccoonCore (trusted kernel language)
 
 object CoreAst {
@@ -62,8 +60,10 @@ object CoreAst {
       override def span: Span = term.span
     }
 
-    final case class App[P <: Phase](fn: Term.Ref[P], args: NEL[TypePattern[P]], span: Span)
-      extends TypePattern[P]
+    final case class App[P <: Phase](fn: Term.Ref[P], args: Vector[TypePattern[P]], span: Span)
+      extends TypePattern[P] {
+      require(args.nonEmpty, "Type pattern application requires at least one argument")
+    }
 
     final case class Capture[P <: Phase](localRef: CoreAst.LocalRef, span: Span) extends TypePattern[P]
   }
@@ -82,12 +82,16 @@ object CoreAst {
     final case class Select[P <: Phase](base: Term[P], field: String, span: Span) extends Term[P] with TypeTerm[P]
 
     // Application in type position
-    final case class TApp[P <: Phase](fn: Ref[P], args: NEL[TypeTerm[P]], span: Span) extends TypeTerm[P]
+    final case class TApp[P <: Phase](fn: Ref[P], args: Vector[TypeTerm[P]], span: Span) extends TypeTerm[P] {
+      require(args.nonEmpty, "Type application requires at least one argument")
+    }
 
     // Pi (x: A) -> B x
-    final case class Pi[P <: Phase](binders: NEL[Binder[P]], out: TypeTerm[P], span: Span)
+    final case class Pi[P <: Phase](binders: Vector[Binder[P]], out: TypeTerm[P], span: Span)
       extends Term[P]
-      with TypeTerm[P]
+      with TypeTerm[P] {
+      require(binders.nonEmpty, "Pi requires at least one binder")
+    }
 
     // Application. This also appears in checked type terms after derived arguments have been inserted.
     final case class App[P <: Phase](fn: Term[P], args: Vector[Term[P]], span: Span) extends Term[P] with TypeTerm[P]

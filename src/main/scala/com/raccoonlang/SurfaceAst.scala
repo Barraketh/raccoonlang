@@ -1,7 +1,6 @@
 package com.raccoonlang
 
 import com.raccoonlang.CoreAst.UnfoldStrategy
-import com.raccoonlang.Util.NEL
 
 // Surface AST for RaccoonLang.  Will be elaborated into CoareAst
 object SurfaceAst {
@@ -25,7 +24,9 @@ object SurfaceAst {
     final case class Select(base: Term, field: String, span: Span) extends Term
 
     // Application in type position
-    final case class TApp(fn: Ident, args: NEL[TypeTerm], span: Span) extends TypeTerm
+    final case class TApp(fn: Ident, args: Vector[TypeTerm], span: Span) extends TypeTerm {
+      require(args.nonEmpty, "Type application requires at least one argument")
+    }
 
     // Pi (x: A) -> B x
     final case class Pi(binder: Binder, body: TypeTerm, span: Span) extends Term with TypeTerm

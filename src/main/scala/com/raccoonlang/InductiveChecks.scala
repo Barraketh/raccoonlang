@@ -2,7 +2,6 @@ package com.raccoonlang
 
 import com.raccoonlang.CoreAst._
 import com.raccoonlang.Interpreter.Worlds
-import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
 
 import scala.annotation.tailrec
@@ -20,7 +19,7 @@ object InductiveChecks {
   @tailrec
   private def collectBlocked(v: Value, acc: Vector[Value] = Vector.empty): (Value, Vector[Value]) =
     v match {
-      case VBlockedApp(h, args, _, _) => collectBlocked(h, args.toVector ++ acc)
+      case VBlockedApp(h, args, _, _) => collectBlocked(h, args ++ acc)
       case h                          => (h, acc)
     }
 
@@ -100,7 +99,7 @@ object InductiveChecks {
       val allBinders = decl.header.params ++ ctor.fields
       val fullTypeTerm =
         if (allBinders.isEmpty) ctor.resultTy
-        else Term.Pi(NEL.mk(allBinders), ctor.resultTy, ctor.span)
+        else Term.Pi(allBinders, ctor.resultTy, ctor.span)
 
       val fullType = TypeChecker.getType(fullTypeTerm, curEnv)
 
@@ -120,7 +119,7 @@ object InductiveChecks {
     val ty = {
       val binders = header.params ++ header.indices
       if (binders.isEmpty) decl.header.resultTy
-      else Term.Pi(NEL.mk(binders), decl.header.resultTy, decl.header.span)
+      else Term.Pi(binders, decl.header.resultTy, decl.header.span)
     }
 
     val checkedInductiveType = TypeChecker.getCheckedType(ty, worlds.checkEnv)
@@ -137,7 +136,7 @@ object InductiveChecks {
     val (paramVars, envWithParams, paramDeps) = {
       inductiveTypeCheck match {
         case pi: VPi =>
-          val freshParams = BinderOps.freshen(pi.binders.toVector.take(header.params.length), checkEnvWithInductive)
+          val freshParams = BinderOps.freshen(pi.binders.take(header.params.length), checkEnvWithInductive)
           (freshParams.vars, freshParams.env, freshParams.newVars)
         case _ => (Vector.empty, checkEnvWithInductive, DepSet.empty)
       }

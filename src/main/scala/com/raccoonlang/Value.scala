@@ -1,7 +1,5 @@
 package com.raccoonlang
 
-import com.raccoonlang.Util.NEL
-
 final case class InductiveMeta(
     constructorNames: Vector[String],
     paramCount: Int,
@@ -116,6 +114,8 @@ object Value {
     def succ(l: Level): Level = addOffset(l, 1)
 
     def max(xs: Vector[Level]): Level = {
+      require(xs.nonEmpty, "Level.max requires at least one level")
+
       val flatAtoms = xs.flatMap(_.atoms)
       val nextAtoms = flatAtoms.foldLeft(Map.empty[VarId, Int]) { case (curMap, (varId, k)) =>
         val curK = curMap.getOrElse(varId, 0)
@@ -165,13 +165,15 @@ object Value {
 
   case class VPi(
       env: Env,
-      binders: NEL[VBinder],
+      binders: Vector[VBinder],
       codomain: (Env, EqStore) => Value,
       synDeps: DepSet,
       id: ValueId,
       tpe: Universe
   ) extends Value
     with UpdatableType {
+    require(binders.nonEmpty, "VPi requires at least one binder")
+
     override def toString: String = "VPi"
 
     override def withTpe(tpe: Value): Value = tpe match {
@@ -206,10 +208,12 @@ object Value {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
-  case class VBlockedApp(head: Value, args: List[Value], tpe: Value, blockerId: VarId)
+  case class VBlockedApp(head: Value, args: Vector[Value], tpe: Value, blockerId: VarId)
     extends AppliedValue
     with Blocked
     with UpdatableType {
+    require(args.nonEmpty, "Blocked application requires at least one argument")
+
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
@@ -238,7 +242,7 @@ object Value {
       tpe: VPi,
       id: ValueId,
       isStable: Boolean,
-      run: (NEL[Value], EqStore) => Value
+      run: (Vector[Value], EqStore) => Value
   ) extends Value {
     override lazy val synDeps: DepSet = {
       id match {

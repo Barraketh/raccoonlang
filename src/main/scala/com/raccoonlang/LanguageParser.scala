@@ -5,7 +5,6 @@ import com.raccoonlang.Parser._
 import com.raccoonlang.SurfaceAst.Decl.{ConstDecl, InductiveDecl}
 import com.raccoonlang.SurfaceAst.Term._
 import com.raccoonlang.SurfaceAst._
-import com.raccoonlang.Util.NEL
 
 object LanguageParser {
   // Whitespace handling
@@ -74,8 +73,8 @@ object LanguageParser {
   private def parenArgs[A](arg: => Parser[A]): Parser[Vector[A]] =
     P('(') ~/ arg.rep(0, sym(',')) ~ symTight(')')
 
-  private def nonEmptyParenArgs[A](arg: => Parser[A]): Parser[NEL[A]] =
-    (sym('(') ~/ arg.rep(1, sym(',')) ~ symTight(')')).map(args => NEL.mk(args))
+  private def nonEmptyParenArgs[A](arg: => Parser[A]): Parser[Vector[A]] =
+    sym('(') ~/ arg.rep(1, sym(',')) ~ symTight(')')
 
   private def simplePi: Parser[Pi] = (param ~ sym("->") ~ typeTerm).flatSpanned.map { Pi.tupled }
 
@@ -87,7 +86,7 @@ object LanguageParser {
 
   sealed trait TypeTrailer
   case class Dot(name: String, span: Span) extends TypeTrailer
-  case class AppTrailer(args: NEL[TypeTerm], span: Span) extends TypeTrailer
+  case class AppTrailer(args: Vector[TypeTerm], span: Span) extends TypeTrailer
 
   private def typeTrailers: Parser[Vector[TypeTrailer]] =
     ((P(".") ~/ identAtom).flatSpanned.map(Dot.tupled) |

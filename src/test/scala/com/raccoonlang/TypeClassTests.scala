@@ -1,7 +1,5 @@
 package com.raccoonlang
 
-import com.raccoonlang.Util.NEL
-
 class TypeClassTests extends munit.FunSuite {
   private def parseHeaderType(src: String): CoreAst.RawTypeTerm =
     LanguageParser.parseFuncHeader(src) match {
@@ -19,11 +17,11 @@ class TypeClassTests extends munit.FunSuite {
         .putGlobal("Level::one", Value.Level.const(1))
         .putGlobal("Prop", Value.PropTpe)
 
-    val builtinFuncs = List[(String, CoreAst.RawTypeTerm, (NEL[Value], EqStore) => Value)](
+    val builtinFuncs = List[(String, CoreAst.RawTypeTerm, (Vector[Value], EqStore) => Value)](
       (
         "add_normalizer",
         parseHeaderType("(A: Type)(zero: A)(add: A -> A -> A): Normalizer"),
-        (args, _) => Normalizers.add_normalizer(args.toVector)
+        (args, _) => Normalizers.add_normalizer(args)
       ),
       (
         "Level::succ",
@@ -33,7 +31,7 @@ class TypeClassTests extends munit.FunSuite {
       (
         "Level::max",
         parseHeaderType("(l1: Level)(l2: Level): Level"),
-        (args, eqStore) => Value.Level.max(args.map(l => Interpreter.getLevel(l)(eqStore)).toVector)
+        (args, eqStore) => Value.Level.max(args.map(l => Interpreter.getLevel(l)(eqStore)))
       )
     )
 
@@ -54,7 +52,7 @@ class TypeClassTests extends munit.FunSuite {
           val levelRef = CoreAst.Term.GlobalRef[CoreAst.Checked]("Level", Span(0, 0))
           Value.VPi(
             env2,
-            NEL.one(Value.VBinder(lRef, CoreAst.TypePattern.Type(levelRef), levelRef, Vector.empty)),
+            Vector(Value.VBinder(lRef, CoreAst.TypePattern.Type(levelRef), levelRef, Vector.empty)),
             (env, eqStore) => {
               val l = Interpreter.getLevel(env(lRef))(eqStore)
               Value.VSort(Value.Level.succ(l))
@@ -112,7 +110,7 @@ class TypeClassTests extends munit.FunSuite {
     }
 
   private def applyValue(fn: Value, args: Value*)(implicit eqStore: EqStore): Value =
-    Interpreter.evalApply(fn, NEL.mk(args.toVector))
+    Interpreter.evalApply(fn, args.toVector)
 
   private def ctorName(v: Value): String = v match {
     case Value.VCtor(head, _, _) => head.name

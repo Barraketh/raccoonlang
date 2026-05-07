@@ -1,7 +1,6 @@
 package com.raccoonlang
 
 import com.raccoonlang.CoreAst.{Decl, Program, RawTypeTerm, Term => CTerm}
-import com.raccoonlang.Util.NEL
 import com.raccoonlang.Value._
 
 object Interpreter {
@@ -31,12 +30,12 @@ object Interpreter {
             val h0 = resolveInEqStore(h)
             h0 match {
               case lam: VLam =>
-                val res = lam.run(NEL.mk(args), eqStore)
+                val res = lam.run(args, eqStore)
                 resolveInEqStore(res)
               case b: Blocker =>
                 VBlockedApp(b, args, tpe, b.blockerId)
               case other =>
-                resolveInEqStore(evalApply(other, NEL.mk(args)))
+                resolveInEqStore(evalApply(other, args))
             }
           case vm: VBlockedThunk => resolveInEqStore(vm.thunk(eqStore))
         }
@@ -47,10 +46,10 @@ object Interpreter {
     }
   }
 
-  private def getEnvWithArgs(fnTpe: VPi, args: NEL[Value])(implicit eqStore: EqStore) =
+  private def getEnvWithArgs(fnTpe: VPi, args: Vector[Value])(implicit eqStore: EqStore) =
     BinderOps.instantiateFull(fnTpe.binders, fnTpe.env, args)
 
-  def evalPi(pi: CTerm.Pi[CoreAst.Checked], env: Env, vBinders: NEL[VBinder])(implicit eqStore: EqStore): VPi = {
+  def evalPi(pi: CTerm.Pi[CoreAst.Checked], env: Env, vBinders: Vector[VBinder])(implicit eqStore: EqStore): VPi = {
     val captureVals = FreeNames.getFreeRefs(pi).valuesIn(env)
     val id = ValueId.LocalId(pi.span.start, captureVals)
 
@@ -88,7 +87,7 @@ object Interpreter {
     case CTerm.Select(base, field, span)  => evalSelect(evalTerm(base, env), field, env, span.start)
     case CTerm.App(fn, args, _)           => evalApplyTerm(fn, args, env)
     case CTerm.TSelect(base, field, span) => evalSelect(evalTypeTerm(base, env), field, env, span.start)
-    case CTerm.TApp(fn, args, _)          => evalApplyTerm(fn, args.toVector, env)
+    case CTerm.TApp(fn, args, _)          => evalApplyTerm(fn, args, env)
     case pi: CTerm.Pi[CoreAst.Checked]    => evalPi(pi, env)
   }
 
@@ -103,7 +102,9 @@ object Interpreter {
     }
   }
 
-  def evalApply(fn: Value, vArgs: NEL[Value])(implicit eqStore: EqStore): Value = {
+  def evalApply(fn: Value, vArgs: Vector[Value])(implicit eqStore: EqStore): Value = {
+    require(vArgs.nonEmpty, "evalApply requires at least one argument")
+
     val fn0 = resolveInEqStore(fn)
     val tpe0 = resolveInEqStore(fn0.tpe)
 
@@ -117,15 +118,15 @@ object Interpreter {
               case (true, b: Blocked) =>
                 b match {
                   case VBlockedApp(VLam(_, _, true, _), _, _, _) => res
-                  case _                                         => VBlockedApp(fn0, vArgs.toList, b.tpe, b.blockerId)
+                  case _                                         => VBlockedApp(fn0, vArgs, b.tpe, b.blockerId)
                 }
               case _ => res
             }
-          case h: VConst => VApp(h, vArgs.toVector, pi.codomain(envWithArgs, eqStore))
+          case h: VConst => VApp(h, vArgs, pi.codomain(envWithArgs, eqStore))
           case h: ConstructorHead =>
             val resultTy = pi.codomain(envWithArgs, eqStore)
-            ConstructorOps.ConstructorShape.require(h).makeCtor(vArgs.toVector, resultTy)
-          case b: Blocker => VBlockedApp(b, vArgs.toList, pi.codomain(envWithArgs, eqStore), b.blockerId)
+            ConstructorOps.ConstructorShape.require(h).makeCtor(vArgs, resultTy)
+          case b: Blocker => VBlockedApp(b, vArgs, pi.codomain(envWithArgs, eqStore), b.blockerId)
           case _          => throw CannotApplyNonFunction(fn)
         }
       case _ => throw CannotApplyNonFunction(fn.tpe)
@@ -138,7 +139,7 @@ object Interpreter {
     val vf = evalTerm(fn, env)
     val vArgs = args.map(a => evalTerm(a, env))
     if (vArgs.isEmpty) throw CannotApplyNonFunction(Interpreter.resolveInEqStore(vf.tpe))
-    evalApply(vf, NEL.mk(vArgs))
+    evalApply(vf, vArgs)
   }
 
   def evalLam(l: CTerm.Lam[CoreAst.Checked], vpi: VPi, env: Env): VLam = {
@@ -343,11 +344,11 @@ object Interpreter {
         .putGlobal("Level::one", Level.const(1))
         .putGlobal("Prop", PropTpe)
 
-    val builtinFuncs = List[(String, RawTypeTerm, (NEL[Value], EqStore) => Value)](
+    val builtinFuncs = List[(String, RawTypeTerm, (Vector[Value], EqStore) => Value)](
       (
         "add_normalizer",
         parseHeader("(A: Type)(zero: A)(add: A -> A -> A): Normalizer"),
-        (args, _) => Normalizers.add_normalizer(args.toVector)
+        (args, _) => Normalizers.add_normalizer(args)
       ),
       (
         "Level::succ",
@@ -357,7 +358,7 @@ object Interpreter {
       (
         "Level::max",
         parseHeader("(l1: Level)(l2: Level): Level"),
-        (args, eqStore) => Value.Level.max(args.map(l => getLevel(l)(eqStore)).toVector)
+        (args, eqStore) => Value.Level.max(args.map(l => getLevel(l)(eqStore)))
       )
     )
 
@@ -378,7 +379,7 @@ object Interpreter {
           val levelRef = CTerm.GlobalRef[CoreAst.Checked]("Level", Span(0, 0))
           VPi(
             env2,
-            NEL.one(
+            Vector(
               VBinder(
                 lRef,
                 CoreAst.TypePattern.Type(levelRef),

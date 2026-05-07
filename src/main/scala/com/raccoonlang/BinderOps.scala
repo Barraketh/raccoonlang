@@ -3,8 +3,6 @@ package com.raccoonlang
 import com.raccoonlang.Value.{VBinder, VPi}
 
 object BinderOps {
-  import com.raccoonlang.Util.NEL
-
   final case class Freshened(vars: Vector[Value], env: Env, newVars: DepSet)
   final case class FreshenedRawBinders(
       vars: Vector[Value],
@@ -23,7 +21,9 @@ object BinderOps {
     env.putLocal(binder.localRef, value, instanceKey)
   }
 
-  def freshen(binders: NEL[VBinder], baseEnv: Env)(implicit eqStore: EqStore): Freshened = {
+  def freshen(binders: Vector[VBinder], baseEnv: Env)(implicit eqStore: EqStore): Freshened = {
+    if (binders.isEmpty) return Freshened(Vector.empty, baseEnv, DepSet.empty)
+
     val vars = Vector.newBuilder[Value]
     var env = baseEnv
     val newVars = DepSet.newBuilder
@@ -38,16 +38,15 @@ object BinderOps {
     Freshened(vars.result(), env, newVars.result())
   }
 
-  def freshen(binders: Vector[VBinder], baseEnv: Env)(implicit eqStore: EqStore): Freshened =
-    if (binders.isEmpty) Freshened(Vector.empty, baseEnv, DepSet.empty)
-    else freshen(NEL.mk(binders), baseEnv)
-
   def freshen(vpi: VPi)(implicit eqStore: EqStore): Freshened = freshen(vpi.binders, vpi.env)
 
-  def freshenRawBinders(binders: NEL[CoreAst.RawBinder], baseEnv: Env)(implicit
+  def freshenRawBinders(binders: Vector[CoreAst.RawBinder], baseEnv: Env)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): FreshenedRawBinders = {
+    if (binders.isEmpty)
+      return FreshenedRawBinders(Vector.empty, baseEnv, DepSet.empty, Vector.empty, Vector.empty)
+
     val vars = Vector.newBuilder[Value]
     val vBinders = Vector.newBuilder[VBinder]
     val checkedBinders = Vector.newBuilder[CoreAst.CheckedBinder]
@@ -66,33 +65,26 @@ object BinderOps {
     FreshenedRawBinders(vars.result(), env, newVars.result(), vBinders.result(), checkedBinders.result())
   }
 
-  def freshenRawBinders(binders: Vector[CoreAst.RawBinder], baseEnv: Env)(implicit
-      eqStore: EqStore,
-      normalizers: NormalizerMap
-  ): FreshenedRawBinders =
-    if (binders.isEmpty) FreshenedRawBinders(Vector.empty, baseEnv, DepSet.empty, Vector.empty, Vector.empty)
-    else freshenRawBinders(NEL.mk(binders), baseEnv)
-
-  def instantiateFull(binders: NEL[VBinder], baseEnv: Env, args: NEL[Value])(implicit eqStore: EqStore): Env = {
+  def instantiateFull(binders: Vector[VBinder], baseEnv: Env, args: Vector[Value])(implicit eqStore: EqStore): Env = {
     if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
 
-    binders.toList.zip(args.toList).foldLeft(baseEnv) { case (curEnv, (binder, value)) =>
+    binders.zip(args).foldLeft(baseEnv) { case (curEnv, (binder, value)) =>
       TypePatternOps.bindValue(curEnv, binder, value)
     }
   }
 
-  def checkAndInstantiateFull(binders: NEL[VBinder], baseEnv: Env, args: Vector[Value])(implicit
+  def checkAndInstantiateFull(binders: Vector[VBinder], baseEnv: Env, args: Vector[Value])(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): Env = {
     if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
 
-    binders.toVector.zip(args).foldLeft(baseEnv) { case (curEnv, (binder, value)) =>
+    binders.zip(args).foldLeft(baseEnv) { case (curEnv, (binder, value)) =>
       TypePatternOps.bindValueAndCheck(curEnv, binder, value)
     }
   }
 
-  def checkAndInstantiate(binders: NEL[VBinder], baseEnv: Env, args: Vector[CheckedArg], searchEnv: Env)(implicit
+  def checkAndInstantiate(binders: Vector[VBinder], baseEnv: Env, args: Vector[CheckedArg], searchEnv: Env)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): CompletedArgs = {
@@ -101,7 +93,7 @@ object BinderOps {
     val values = Vector.newBuilder[Value]
     val terms = Vector.newBuilder[CoreAst.CheckedTerm]
 
-    val binderV = binders.toVector
+    val binderV = binders
     val explicitArgCount = binderV.count(!_.isDerived)
 
     binderV.foreach { binder =>
