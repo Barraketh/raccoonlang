@@ -134,7 +134,7 @@ object InstanceSearch {
       case pi: VPi =>
         val fresh = BinderOps.freshen(pi)
         val resultTy = pi.codomain(fresh.env, eqStore)
-        val candidateEq = Unify.unify(resultTy, goal, eqStore.allow(fresh.newVars))
+        val candidateEq = ValueEquivalence.unify(resultTy, goal, eqStore.allow(fresh.newVars))
         val goals = fresh.vars.map(v => ValueOps.materialize(v.tpe, candidateEq))
 
         val (args, argTerms) = fillCandidateArgs(candidate, pi, goals, searchEnv, state, ctx)
@@ -143,7 +143,7 @@ object InstanceSearch {
         SearchResult(res, resTerm)
 
       case resultTy =>
-        Unify.unify(resultTy, goal, eqStore)
+        ValueEquivalence.unify(resultTy, goal, eqStore)
         SearchResult(candidate.value, candidate.term)
     }
   }

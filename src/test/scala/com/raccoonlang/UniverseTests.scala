@@ -308,7 +308,7 @@ class UniverseTests extends munit.FunSuite {
     implicit val normalizers: NormalizerMap = NormalizerMap.empty
 
     intercept[UnificationFailed] {
-      Unify.unify(
+      ValueEquivalence.unify(
         Value.VSort(Value.Level.of(Map(u.id -> 1), 0)),
         Value.VSort(Value.Level.zero),
         eqStore

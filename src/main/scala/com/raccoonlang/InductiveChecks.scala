@@ -212,7 +212,7 @@ object InductiveChecks {
       if (outputArgs.length != header.arity) throw resultErr
 
       outputArgs.take(paramVars.length).zip(paramVars).foreach { case (arg, paramVar) =>
-        if (!TypeChecker.defEq(arg, paramVar)) throw resultErr
+        if (!ValueEquivalence.defEq(arg, paramVar)) throw resultErr
       }
 
       if (decl.isStruct) {

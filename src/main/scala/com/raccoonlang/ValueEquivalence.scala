@@ -1,0 +1,221 @@
+package com.raccoonlang
+
+import com.raccoonlang.Value._
+import com.raccoonlang.telescope.BinderOps
+
+object ValueEquivalence {
+  def defEq(v1: Value, v2: Value)(implicit eqStore: EqStore, normalizers: NormalizerMap): Boolean = DefEq.defEq(v1, v2)
+
+  def unify(v1: Value, v2: Value, meta: EqStore)(implicit normalizers: NormalizerMap): EqStore =
+    Unify.unify(v1, v2, meta)
+
+  private object DefEq {
+    case class RelatedPis(vars: Vector[Value], out1: Value, out2: Value)
+
+    def relatePis(pi1: VPi, pi2: VPi)(implicit eqStore: EqStore, normalizers: NormalizerMap): RelatedPis = {
+      if (
+        pi1.binders.zip(pi2.binders).exists { case (b1, b2) =>
+          b1.isDerived != b2.isDerived || b1.isInstance != b2.isInstance
+        }
+      ) throw TypeMismatch(pi1, pi2)
+
+      val freshPi1 = BinderOps.freshen(pi1)
+      val sharedVars = freshPi1.vars
+      val nextEnv1 = freshPi1.env
+      val nextEnv2 = BinderOps.checkAndInstantiateFull(pi2.binders, pi2.env, sharedVars)
+
+      val out1 = pi1.codomain(nextEnv1, eqStore)
+      val out2 = pi2.codomain(nextEnv2, eqStore)
+
+      RelatedPis(sharedVars, out1, out2)
+    }
+
+    private def defEqPi(pi1: VPi, pi2: VPi)(implicit
+        eqStore: EqStore,
+        normalizers: NormalizerMap
+    ): Option[Vector[Value]] = {
+      try {
+        val related = relatePis(pi1, pi2)
+        if (defEq(related.out1, related.out2)) Some(related.vars)
+        else None
+      } catch {
+        case _: UnificationFailed | _: TypeMismatch => None
+      }
+    }
+
+    private def defEqLamId(id1: ValueId, id2: ValueId)(implicit
+        eqStore: EqStore,
+        normalizers: NormalizerMap
+    ): Boolean = {
+      (id1, id2) match {
+        case (ValueId.Const(n1), ValueId.Const(n2)) if n1 == n2 => true
+        case (l1: ValueId.LocalId, l2: ValueId.LocalId)
+            if l1.nodeId == l2.nodeId && l1.captures.length == l2.captures.length =>
+          l1.captures.zip(l2.captures).forall { case (v1, v2) => defEq(v1, v2) }
+        case _ => false
+      }
+    }
+
+    def getNormalizerF(v1: Value, v2: Value)(implicit eqStore: EqStore, normalizers: NormalizerMap): Value => Value = {
+      val key1 = Normalizers.getCarrierKey(v1.tpe)
+      val key2 = Normalizers.getCarrierKey(v2.tpe)
+      val normalizer =
+        if (key1 == key2) key1.flatMap(normalizers.get)
+        else None
+
+      normalizer match {
+        case Some(n) => (v: Value) => n.normalize(v, eqStore)
+        case None    => (v: Value) => v
+      }
+    }
+
+    private def sameValueObject(v1: Value, v2: Value): Boolean =
+      v1.asInstanceOf[AnyRef] eq v2.asInstanceOf[AnyRef]
+
+    private def hasSolvedDeps(v: Value)(implicit eqStore: EqStore): Boolean = v.synDeps.intersects(eqStore.solvedIds)
+
+    private def shouldTryStructuralDefEq(a: Value, b: Value)(implicit eqStore: EqStore): Boolean =
+      hasSolvedDeps(a) || hasSolvedDeps(b) || a.needsExtensionalEq || b.needsExtensionalEq
+
+    private def defEqStructural(a: Value, b: Value)(implicit eqStore: EqStore, normalizers: NormalizerMap): Boolean =
+      (a, b) match {
+        case (PropTpe, PropTpe)                               => true
+        case (NormalizerType, NormalizerType)                 => true
+        case (LevelTpe, LevelTpe)                             => true
+        case (l1: Level, l2: Level)                           => l1 == l2 || Level.leq(l1, l2) && Level.leq(l2, l1)
+        case (s1: VSort, s2: VSort)                           => defEq(s1.level, s2.level)
+        case (VConst(n1, _, _), VConst(n2, _, _)) if n1 == n2 => true
+        case (p1: VPi, p2: VPi) if p1.binders.length == p2.binders.length => defEqPi(p1, p2).isDefined
+        case (l1: VLam, l2: VLam) if l1.tpe.binders.length == l2.tpe.binders.length =>
+          if (l1.eq(l2) || defEqLamId(l1.id, l2.id)) true
+          else {
+            defEqPi(l1.tpe, l2.tpe) match {
+              case Some(vars) =>
+                val res1 = l1.run(vars, eqStore)
+                val res2 = l2.run(vars, eqStore)
+                defEq(res1, res2)
+              case None => false
+            }
+          }
+        case (v1: AppliedValue, v2: AppliedValue) if v1.args.length == v2.args.length =>
+          defEq(v1.head, v2.head) && v1.args.zip(v2.args).forall { case (arg1, arg2) => defEq(arg1, arg2) }
+
+        case (c1: VCtor, c2: VCtor) if c1.fields.length == c2.fields.length =>
+          defEq(c1.head, c2.head) && c1.fields.zip(c2.fields).forall { case (a, b) => defEq(a, b) }
+
+        case (c1: ConstructorHead, c2: ConstructorHead) if c1.name == c2.name => true
+
+        case (s1: VBlockedThunk, s2: VBlockedThunk) => defEqLamId(s1.id, s2.id)
+
+        case (Var(_, id1, _), Var(_, id2, _)) if id1 == id2 => true
+        case _                                              => false
+      }
+
+    def defEq(v1: Value, v2: Value)(implicit eqStore: EqStore, normalizers: NormalizerMap): Boolean = {
+      if (sameValueObject(v1, v2)) true
+      else {
+        val normalizerF = getNormalizerF(v1, v2)
+
+        val a = normalizerF(Interpreter.resolveInEqStore(v1))
+        val b = normalizerF(Interpreter.resolveInEqStore(v2))
+
+        sameValueObject(a, b) || a.key == b.key || (shouldTryStructuralDefEq(a, b) && defEqStructural(a, b))
+      }
+    }
+  }
+
+  private object Unify {
+
+    private def unifyPis(pi1: VPi, pi2: VPi, eqStore: EqStore)(implicit
+        normalizers: NormalizerMap
+    ): (EqStore, Vector[Value]) = {
+      val related = DefEq.relatePis(pi1, pi2)(eqStore, normalizers)
+      val nextEqStore = unify(related.out1, related.out2, eqStore)
+      (nextEqStore, related.vars)
+    }
+
+    private def unifyBlockedThunks(v1: VBlockedThunk, v2: VBlockedThunk, meta: EqStore)(implicit
+        normalizers: NormalizerMap
+    ): EqStore = {
+      val m1 = unify(v1.tpe, v2.tpe, meta)
+      if (v1.id.captures.length != v2.id.captures.length) throw UnificationFailed(v1, v2) // Sanity check
+      v1.id.captures.zip(v2.id.captures).foldLeft(m1) { case (curMeta, (p1, p2)) => unify(p1, p2, curMeta) }
+    }
+
+    private def unifyLevels(l1: Level, l2: Level, meta: EqStore): Option[EqStore] = {
+      if (l1.atoms.size == 1 && l1.c == 0) {
+        val (varId, k) = l1.atoms.head
+        if (meta.isRefinable(varId) && !meta.occurs(varId, l2) && Level.geq(l2, k)) {
+          val other = Level.addOffset(l2, -k)
+          Some(meta.addLink(varId, other))
+        } else None
+      } else None
+    }
+
+    private def unifySorts(v1: VSort, v2: VSort, meta: EqStore): EqStore = {
+      // Broad idea: we can unify (v + k) = other as v = other - k.  Everything else fails.
+      val l1 = Interpreter.resolveInEqStore(v1.level)(meta)
+      val l2 = Interpreter.resolveInEqStore(v2.level)(meta)
+
+      (l1, l2) match {
+        case (l1: Level, l2: Level) =>
+          unifyLevels(l1, l2, meta).orElse(unifyLevels(l2, l1, meta)).getOrElse {
+            throw UnificationFailed(l1, l2)
+          }
+        case _ => throw UnificationFailed(l1, l2)
+      }
+
+    }
+
+    private def linkVar(v: Var, other: Value, meta: EqStore)(implicit normlizers: NormalizerMap): EqStore = {
+      val m1 = if (TypeChecker.sortLeq(other.tpe, v.tpe)(meta)) meta else unify(v.tpe, other.tpe, meta)
+      if (m1.occurs(v.id, other))
+        throw OccursCheckFailed(v.id, other)
+      m1.addLink(v.id, other)
+    }
+
+    def unify(v1: Value, v2: Value, meta: EqStore)(implicit normalizers: NormalizerMap): EqStore = {
+      val normalizerF = DefEq.getNormalizerF(v1, v2)(meta, normalizers)
+
+      val a = normalizerF(Interpreter.resolveInEqStore(v1)(meta))
+      val b = normalizerF(Interpreter.resolveInEqStore(v2)(meta))
+
+      if (DefEq.defEq(a, b)(meta, normalizers)) return meta
+
+      (a, b) match {
+
+        case (p1: VPi, p2: VPi) if p1.binders.length == p2.binders.length           => unifyPis(p1, p2, meta)._1
+        case (l1: VLam, l2: VLam) if l1.tpe.binders.length == l2.tpe.binders.length =>
+          // We know that the id check failed - falling back to extensional unification
+          val (nextMeta, newVars) = unifyPis(l1.tpe, l2.tpe, meta)
+          val res1 = l1.run(newVars, nextMeta)
+          val res2 = l2.run(newVars, nextMeta)
+          unify(res1, res2, nextMeta)
+        case (v1: AppliedValue, v2: AppliedValue) if v1.args.length == v2.args.length =>
+          val startCtx = unify(v1.head, v2.head, meta)
+          v1.args.zip(v2.args).foldLeft(startCtx) { case (newCtx, (arg1, arg2)) => unify(arg1, arg2, newCtx) }
+
+        case (c1: VCtor, c2: VCtor) if c1.fields.length == c2.fields.length =>
+          val m0 = unify(c1.head, c2.head, meta)
+          val m1 = c1.fields.zip(c2.fields).foldLeft(m0) { case (cur, (x, y)) => unify(x, y, cur) }
+          unify(c1.tpe, c2.tpe, m1)
+
+        case (v1: VBlockedThunk, v2: VBlockedThunk) if v1.id.nodeId == v2.id.nodeId =>
+          unifyBlockedThunks(v1, v2, meta)
+
+        case (s1: VSort, s2: VSort) => unifySorts(s1, s2, meta)
+
+        // Unify FreshVars through ctx. Basic idea: FreshVars can point at things through context
+        // unify creates a ctx of pointers. We only create pointers from the top of the chain
+
+        // Link unlinked Var (left) to a non-Var value
+        case (v: Var, other) if meta.isRefinable(v.id) => linkVar(v, other, meta)
+
+        // Symmetric: link unlinked Var (right) to non-Var value
+        case (other, v: Var) if meta.isRefinable(v.id) => linkVar(v, other, meta)
+
+        case _ => throw UnificationFailed(v1, v2)
+      }
+    }
+  }
+}

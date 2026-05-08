@@ -123,10 +123,10 @@ This detail matters: normalizers are not applied because a term syntactically co
 
 In the current codebase, normalizers affect two places:
 
-- `TypeChecker.defEq`
-- `Unify.unify`
+- `ValueEquivalence.defEq`
+- `ValueEquivalence.unify`
 
-Both paths first choose a normalizer function with `TypeChecker.getNormalizerF`, then normalize each side, then continue with the usual comparison or unification logic.
+Both paths first choose a normalizer function through `ValueEquivalence`'s normalizer-selection helper, then normalize each side, then continue with the usual comparison or unification logic.
 
 That means the feature is part of the trusted equality/conversion path, not merely an elaborator convenience.
 

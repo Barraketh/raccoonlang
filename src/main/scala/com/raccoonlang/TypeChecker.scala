@@ -26,7 +26,7 @@ object TypeChecker {
   }
 
   def checkFits(actual: Value, expected: Value)(implicit eqStore: EqStore, normalizers: NormalizerMap): Unit =
-    if (!defEq(actual, expected) && !sortLeq(actual, expected))
+    if (!ValueEquivalence.defEq(actual, expected) && !sortLeq(actual, expected))
       throw TypeMismatch(expected, actual)
 
   def checkType(value: Value, tyVal: Value)(implicit eqStore: EqStore, normalizers: NormalizerMap): Unit =
@@ -209,12 +209,12 @@ object TypeChecker {
             val branchEqStore: Option[EqStore] =
               try {
                 val refinable = scrut.synDeps ++ appliedCtor.synDeps
-                Some(Unify.unify(scrut, appliedCtor, eqStore.allow(refinable)))
+                Some(ValueEquivalence.unify(scrut, appliedCtor, eqStore.allow(refinable)))
               } catch {
                 case _: UnificationFailed | _: OccursCheckFailed =>
                   val refinable = scrut.tpe.synDeps ++ appliedCtor.tpe.synDeps
                   try {
-                    Some(Unify.unify(scrut.tpe, appliedCtor.tpe, eqStore.allow(refinable)))
+                    Some(ValueEquivalence.unify(scrut.tpe, appliedCtor.tpe, eqStore.allow(refinable)))
                   } catch {
                     case _: UnificationFailed | _: OccursCheckFailed => None
                   }
@@ -240,8 +240,8 @@ object TypeChecker {
 
       val startEq =
         try {
-          val eq1 = Unify.unify(res1, scrutTpe, eqStore.allow(refinable0))
-          Unify.unify(res2, scrutTpe, eq1)
+          val eq1 = ValueEquivalence.unify(res1, scrutTpe, eqStore.allow(refinable0))
+          ValueEquivalence.unify(res2, scrutTpe, eq1)
         } catch {
           case _: UnificationFailed | _: OccursCheckFailed => return false
         }
@@ -249,7 +249,7 @@ object TypeChecker {
       fields1.zip(fields2).forall { case (f1, f2) =>
         TypeChecker.getUniverse(f1.tpe)(startEq) match {
           case PropTpe => true
-          case _       => TypeChecker.defEq(f1, f2)(startEq, normalizers)
+          case _       => ValueEquivalence.defEq(f1, f2)(startEq, normalizers)
         }
       }
     }
@@ -282,7 +282,7 @@ object TypeChecker {
       }
       val inferred = first.resultTy
       val allEqual = reachable.tail.forall { info =>
-        defEq(inferred, info.resultTy)
+        ValueEquivalence.defEq(inferred, info.resultTy)
       }
       if (!allEqual)
         throw MissingReturningClause("reachable constructors have different result types", Some(t.span))
@@ -423,120 +423,4 @@ object TypeChecker {
     }
   }
 
-  case class RelatedPis(vars: Vector[Value], out1: Value, out2: Value)
-
-  def relatePis(pi1: VPi, pi2: VPi)(implicit
-      eqStore: EqStore,
-      normalizers: NormalizerMap
-  ): RelatedPis = {
-    if (
-      pi1.binders
-        .zip(pi2.binders)
-        .exists { case (b1, b2) => b1.isDerived != b2.isDerived || b1.isInstance != b2.isInstance }
-    )
-      throw TypeMismatch(pi1, pi2)
-
-    val freshPi1 = BinderOps.freshen(pi1)
-    val sharedVars = freshPi1.vars
-    val nextEnv1 = freshPi1.env
-    val nextEnv2 = BinderOps.checkAndInstantiateFull(pi2.binders, pi2.env, sharedVars)
-
-    val out1 = pi1.codomain(nextEnv1, eqStore)
-    val out2 = pi2.codomain(nextEnv2, eqStore)
-
-    RelatedPis(sharedVars, out1, out2)
-  }
-
-  private def defEqPi(pi1: VPi, pi2: VPi)(implicit
-      eqStore: EqStore,
-      normalizers: NormalizerMap
-  ): Option[Vector[Value]] = {
-    try {
-      val related = relatePis(pi1, pi2)
-      if (defEq(related.out1, related.out2)) Some(related.vars)
-      else None
-    } catch {
-      case _: UnificationFailed | _: TypeMismatch => None
-    }
-  }
-
-  private def defEqLamId(id1: ValueId, id2: ValueId)(implicit
-      eqStore: EqStore,
-      normalizers: NormalizerMap
-  ): Boolean = {
-    (id1, id2) match {
-      case (ValueId.Const(n1), ValueId.Const(n2)) if n1 == n2 => true
-      case (l1: ValueId.LocalId, l2: ValueId.LocalId)
-          if l1.nodeId == l2.nodeId && l1.captures.length == l2.captures.length =>
-        l1.captures.zip(l2.captures).forall { case (v1, v2) => defEq(v1, v2) }
-      case _ => false
-    }
-  }
-
-  def getNormalizerF(v1: Value, v2: Value)(implicit eqStore: EqStore, normalizers: NormalizerMap): Value => Value = {
-    val key1 = Normalizers.getCarrierKey(v1.tpe)
-    val key2 = Normalizers.getCarrierKey(v2.tpe)
-    val normalizer =
-      if (key1 == key2) key1.flatMap(normalizers.get)
-      else None
-
-    normalizer match {
-      case Some(n) => (v: Value) => n.normalize(v, eqStore)
-      case None    => (v: Value) => v
-    }
-  }
-
-  private def sameValueObject(v1: Value, v2: Value): Boolean =
-    v1.asInstanceOf[AnyRef] eq v2.asInstanceOf[AnyRef]
-
-  private def hasSolvedDeps(v: Value)(implicit eqStore: EqStore): Boolean = v.synDeps.intersects(eqStore.solvedIds)
-
-  private def shouldTryStructuralDefEq(a: Value, b: Value)(implicit eqStore: EqStore): Boolean =
-    hasSolvedDeps(a) || hasSolvedDeps(b) || a.needsExtensionalEq || b.needsExtensionalEq
-
-  private def defEqStructural(a: Value, b: Value)(implicit eqStore: EqStore, normalizers: NormalizerMap): Boolean =
-    (a, b) match {
-      case (PropTpe, PropTpe)                               => true
-      case (NormalizerType, NormalizerType)                 => true
-      case (LevelTpe, LevelTpe)                             => true
-      case (l1: Level, l2: Level)                           => l1 == l2 || Level.leq(l1, l2) && Level.leq(l2, l1)
-      case (s1: VSort, s2: VSort)                           => defEq(s1.level, s2.level)
-      case (VConst(n1, _, _), VConst(n2, _, _)) if n1 == n2 => true
-      case (p1: VPi, p2: VPi) if p1.binders.length == p2.binders.length => defEqPi(p1, p2).isDefined
-      case (l1: VLam, l2: VLam) if l1.tpe.binders.length == l2.tpe.binders.length =>
-        if (l1.eq(l2) || defEqLamId(l1.id, l2.id)) true
-        else {
-          defEqPi(l1.tpe, l2.tpe) match {
-            case Some(vars) =>
-              val res1 = l1.run(vars, eqStore)
-              val res2 = l2.run(vars, eqStore)
-              defEq(res1, res2)
-            case None => false
-          }
-        }
-      case (v1: AppliedValue, v2: AppliedValue) if v1.args.length == v2.args.length =>
-        defEq(v1.head, v2.head) && v1.args.zip(v2.args).forall { case (arg1, arg2) => defEq(arg1, arg2) }
-
-      case (c1: VCtor, c2: VCtor) if c1.fields.length == c2.fields.length =>
-        defEq(c1.head, c2.head) && c1.fields.zip(c2.fields).forall { case (a, b) => defEq(a, b) }
-
-      case (c1: ConstructorHead, c2: ConstructorHead) if c1.name == c2.name => true
-
-      case (s1: VBlockedThunk, s2: VBlockedThunk) => defEqLamId(s1.id, s2.id)
-
-      case (Var(_, id1, _), Var(_, id2, _)) if id1 == id2 => true
-      case _                                              => false
-    }
-
-  def defEq(v1: Value, v2: Value)(implicit eqStore: EqStore, normalizers: NormalizerMap): Boolean = {
-    if (sameValueObject(v1, v2)) true
-    else {
-      val normalizerF = getNormalizerF(v1, v2)
-
-      val a = normalizerF(resolveInEqStore(v1))
-      val b = normalizerF(resolveInEqStore(v2))
-
-      sameValueObject(a, b) || a.key == b.key || (shouldTryStructuralDefEq(a, b) && defEqStructural(a, b))
-    }
-  }
 }
