@@ -47,7 +47,7 @@ object InstanceSearch {
     resultHeadKey(value.tpe, eqStore).getOrElse(throw InvalidInstance(name, value.tpe))
   }
 
-  def solve(goal: Value, searchEnv: Env)(implicit
+  def solve(goal: Value, searchEnv: TypecheckEnv)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): BinderOps.CheckedArg = {
@@ -59,7 +59,7 @@ object InstanceSearch {
     BinderOps.CheckedArg(res.value, res.term)
   }
 
-  private def solveInternal(goal: Value, searchEnv: Env, state: SearchState, ctx: SearchContext)(implicit
+  private def solveInternal(goal: Value, searchEnv: TypecheckEnv, state: SearchState, ctx: SearchContext)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): SearchResult = {
@@ -95,7 +95,7 @@ object InstanceSearch {
   private def tryCandidates(
       candidates: Vector[InstanceCandidate],
       goal: Value,
-      searchEnv: Env,
+      searchEnv: TypecheckEnv,
       state: SearchState,
       ctx: SearchContext
   )(implicit eqStore: EqStore, normalizers: NormalizerMap): CandidateSearch = {
@@ -123,7 +123,7 @@ object InstanceSearch {
   private def tryCandidate(
       candidate: InstanceCandidate,
       goal: Value,
-      searchEnv: Env,
+      searchEnv: TypecheckEnv,
       state: SearchState,
       ctx: SearchContext
   )(implicit
@@ -152,7 +152,7 @@ object InstanceSearch {
       candidate: InstanceCandidate,
       pi: VPi,
       goals: Vector[Value],
-      initialSearchEnv: Env,
+      initialSearchEnv: TypecheckEnv,
       state: SearchState,
       ctx: SearchContext
   )(implicit eqStore: EqStore, normalizerMap: NormalizerMap): (Vector[Value], Vector[CoreAst.CheckedTerm]) = {

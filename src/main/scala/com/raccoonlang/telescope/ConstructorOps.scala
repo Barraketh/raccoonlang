@@ -18,7 +18,7 @@ object ConstructorOps {
     private[telescope] def paramArgs[A](args: Vector[A]): Vector[A] = args.take(paramCount)
     private[telescope] def isParamIndex(idx: Int): Boolean = idx < paramCount
 
-    private[telescope] def instantiateParams(paramArgs: Vector[Value])(implicit eqStore: EqStore): Env = {
+    private[telescope] def instantiateParams(paramArgs: Vector[Value])(implicit eqStore: EqStore): RuntimeEnv = {
       if (paramArgs.length != paramCount) throw ArityMismatch(paramCount, paramArgs.length)
       if (paramCount == 0) pi.env
       else BinderOps.instantiateFull(paramBinders, pi.env, paramArgs)
@@ -78,9 +78,11 @@ object ConstructorOps {
 
   // Starting from an environment where constructor parameters are already bound, allocate fresh values for the first
   // fieldCount field binders so later field types can refer to earlier fields.
-  private def freshFieldPrefix(fieldBinders: Vector[VBinder], envWithParams: Env, fieldCount: Int)(implicit
-      eqStore: EqStore
-  ): BinderOps.Freshened = {
+  private def freshFieldPrefix(
+      fieldBinders: Vector[VBinder],
+      envWithParams: RuntimeEnv,
+      fieldCount: Int
+  )(implicit eqStore: EqStore): BinderOps.Freshened[RuntimeEnv] = {
     val binders = fieldBinders.take(fieldCount)
     if (binders.isEmpty) BinderOps.Freshened(Vector.empty, envWithParams, DepSet.empty)
     else BinderOps.freshen(binders, envWithParams)

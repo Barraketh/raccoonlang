@@ -3,6 +3,12 @@ package com.raccoonlang
 import com.raccoonlang.Value._
 
 object ValueOps {
+  def materializeEnv(env: EnvLike[_], eqStore: EqStore): RuntimeEnv = {
+    val locals = env.locals.map(_.mapValue(materialize(_, eqStore)))
+
+    RuntimeEnv(env.globals, locals)
+  }
+
   def materialize(value: Value, eqStore: EqStore): Value = {
     if (!mayNeedMaterialization(value, eqStore)) return value
 
@@ -25,10 +31,10 @@ object ValueOps {
           materialize(tpe, eqStore),
           blockerId
         )
-      case VBlockedThunk(thunk, id, tpe, blockerId) =>
+      case VBlockedThunk(body, id, tpe, blockerId) =>
         VBlockedThunk(
-          thunk,
-          ValueId.LocalId(id.nodeId, id.captures.map(materialize(_, eqStore))),
+          materializeBlockedThunkBody(body, eqStore),
+          materializeLocalId(id, eqStore),
           materialize(tpe, eqStore),
           blockerId
         )
@@ -42,8 +48,8 @@ object ValueOps {
         )
       case pi: VPi =>
         materializePi(pi, eqStore)
-      case VLam(tpe, id, isStable, run) =>
-        VLam(materializePi(tpe, eqStore), materializeId(id, eqStore), isStable, run)
+      case VLam(tpe, id, isStable, body) =>
+        VLam(materializePi(tpe, eqStore), materializeId(id, eqStore), isStable, materializeLamBody(body, eqStore))
     }
   }
 
@@ -63,14 +69,47 @@ object ValueOps {
     }
 
   private def materializePi(pi: VPi, eqStore: EqStore): VPi =
-    pi.copy(tpe = materializeUniverse(pi.tpe, eqStore))
+    pi.copy(
+      env = materializeEnv(pi.env, eqStore),
+      synDeps = materializeDeps(pi.synDeps, eqStore),
+      id = materializeId(pi.id, eqStore),
+      tpe = materializeUniverse(pi.tpe, eqStore)
+    )
 
   private def materializeConst(value: VConst, eqStore: EqStore): VConst =
     value.copy(tpe = materialize(value.tpe, eqStore))
 
   private def materializeId(id: ValueId, eqStore: EqStore): ValueId =
     id match {
-      case ValueId.LocalId(nodeId, captures) => ValueId.LocalId(nodeId, captures.map(materialize(_, eqStore)))
-      case other                             => other
+      case local: ValueId.LocalId => materializeLocalId(local, eqStore)
+      case other                  => other
     }
+
+  private def materializeLocalId(id: ValueId.LocalId, eqStore: EqStore): ValueId.LocalId =
+    ValueId.LocalId(id.nodeId, id.captures.map(materialize(_, eqStore)))
+
+  private def materializeLamBody(body: LamBody, eqStore: EqStore): LamBody =
+    body match {
+      case LamBody.Core(term, env) => LamBody.Core(term, materializeEnv(env, eqStore))
+      case native: LamBody.Native  => native
+    }
+
+  private def materializeBlockedThunkBody(body: BlockedThunkBody, eqStore: EqStore): BlockedThunkBody =
+    body match {
+      case BlockedThunkBody.Select(base, field, env, locationId) =>
+        BlockedThunkBody.Select(materialize(base, eqStore), field, materializeEnv(env, eqStore), locationId)
+      case BlockedThunkBody.Match(term, env) =>
+        BlockedThunkBody.Match(term, materializeEnv(env, eqStore))
+    }
+
+  private def materializeDeps(deps: DepSet, eqStore: EqStore): DepSet = {
+    val res = DepSet.newBuilder
+    deps.foreach { id =>
+      eqStore.subst.get(id) match {
+        case Some(solution) => res.unionInPlace(materialize(solution, eqStore).synDeps)
+        case None           => res.add(id)
+      }
+    }
+    res.result()
+  }
 }

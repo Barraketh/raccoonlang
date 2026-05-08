@@ -41,12 +41,12 @@ object Value {
     }
 
   // A value that will block a computation - specifically, when trying to either match or apply it.
-  // Specifically, Var, VBlockedApp, or BlockedMatch
+  // Specifically, Var, VBlockedApp, or VBlockedThunk
   sealed trait Blocker extends Value {
     def blockerId: VarId
   }
 
-  // A computation that is blocked but could proceed when blockerId is resolved. VBlockedApp or BlockedMatch
+  // A computation that is blocked but could proceed when blockerId is resolved. VBlockedApp or VBlockedThunk
   sealed trait Blocked extends Blocker
 
   sealed trait UpdatableType {
@@ -64,6 +64,37 @@ object Value {
     }
 
     final case class LocalId(nodeId: Int, captures: Vector[Value]) extends ValueId
+  }
+
+  private[raccoonlang] def envDeps(env: RuntimeEnv): DepSet = {
+    val res = DepSet.newBuilder
+    env.locals.foreach(_.valueOption.foreach(value => res.unionInPlace(value.synDeps)))
+    res.result()
+  }
+
+  sealed trait LamBody {
+    def synDeps: DepSet
+  }
+  object LamBody {
+    final case class Core(term: CoreAst.Term.Lam[CoreAst.Checked], env: RuntimeEnv) extends LamBody {
+      override lazy val synDeps: DepSet = envDeps(env)
+    }
+    final case class Native(run: (Vector[Value], EqStore) => Value) extends LamBody {
+      override val synDeps: DepSet = DepSet.empty
+    }
+  }
+
+  sealed trait BlockedThunkBody {
+    def synDeps: DepSet
+  }
+  object BlockedThunkBody {
+    final case class Select(base: Value, field: String, env: RuntimeEnv, locationId: Int) extends BlockedThunkBody {
+      override lazy val synDeps: DepSet = base.synDeps ++ envDeps(env)
+    }
+
+    final case class Match(term: CoreAst.Term.Match[CoreAst.Checked], env: RuntimeEnv) extends BlockedThunkBody {
+      override lazy val synDeps: DepSet = envDeps(env)
+    }
   }
 
   sealed trait Universe extends Value
@@ -175,9 +206,9 @@ object Value {
   }
 
   case class VPi(
-      env: Env,
+      env: RuntimeEnv,
       binders: Vector[VBinder],
-      codomain: (Env, EqStore) => Value,
+      codomain: (RuntimeEnv, EqStore) => Value,
       synDeps: DepSet,
       id: ValueId,
       tpe: Universe
@@ -229,15 +260,16 @@ object Value {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
-  case class VBlockedThunk(thunk: EqStore => Value, id: ValueId.LocalId, tpe: Value, blockerId: VarId)
+  case class VBlockedThunk(body: BlockedThunkBody, id: ValueId.LocalId, tpe: Value, blockerId: VarId)
     extends Blocked
     with UpdatableType {
     require(synDeps.contains(blockerId), "Blocked thunk synDeps must include blockerId")
 
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
 
-    override def synDeps: DepSet = {
+    override lazy val synDeps: DepSet = {
       val res = DepSet.newBuilder
+      res.unionInPlace(body.synDeps)
       res.unionInPlace(tpe.synDeps)
       id.captures.foreach(v => res.unionInPlace(v.synDeps))
       res.result()
@@ -256,16 +288,17 @@ object Value {
       tpe: VPi,
       id: ValueId,
       isStable: Boolean,
-      run: (Vector[Value], EqStore) => Value
+      body: LamBody
   ) extends Value {
     override lazy val synDeps: DepSet = {
+      val res = DepSet.newBuilder
+      res.unionInPlace(tpe.synDeps)
+      res.unionInPlace(body.synDeps)
       id match {
-        case ValueId.Const(_) => tpe.synDeps
+        case ValueId.Const(_) => res.result()
         case ValueId.LocalId(_, params) =>
-          if (params.isEmpty) tpe.synDeps
+          if (params.isEmpty) res.result()
           else {
-            val res = DepSet.newBuilder
-            res.unionInPlace(tpe.synDeps)
             params.foreach(v => res.unionInPlace(v.synDeps))
             res.result()
           }

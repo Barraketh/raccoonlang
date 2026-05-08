@@ -89,11 +89,11 @@ object InductiveChecks {
         true
     }
 
-  private def installInductive(decl: Decl.InductiveDecl, baseEnv: Env, inductiveHead: VConst, isStruct: Boolean)(
+  private def installInductive(decl: Decl.InductiveDecl, baseEnv: TypecheckEnv, inductiveHead: VConst, isStruct: Boolean)(
       implicit
       eqStore: EqStore,
       normalizerMap: NormalizerMap
-  ): Env = {
+  ): TypecheckEnv = {
     val envWithInductive = baseEnv.putGlobal(decl.header.name, inductiveHead)
 
     decl.ctors.foldLeft(envWithInductive) { case (curEnv, ctor) =>

@@ -6,37 +6,25 @@ import com.raccoonlang.Value._
 import com.raccoonlang._
 
 object TypePatternOps {
-  private[telescope] final case class FreshenedBinder(value: Value, env: Env, newVars: DepSet)
+  private[telescope] final case class FreshenedBinder[E <: EnvLike[E]](value: Value, env: E, newVars: DepSet)
   private[telescope] final case class FreshenedRawBinder(
       value: Value,
-      env: Env,
+      env: TypecheckEnv,
       newVars: DepSet,
       binder: VBinder,
       checkedBinder: CoreAst.CheckedBinder
   )
-  private final case class OpenedPattern(value: Value, env: Env, newVars: DepSet)
-  private final case class OpenedApp(fn: Value, args: Vector[Value], env: Env, newVars: DepSet)
+  private final case class OpenedPattern[E <: EnvLike[E]](value: Value, env: E, newVars: DepSet)
+  private final case class OpenedApp[E <: EnvLike[E]](fn: Value, args: Vector[Value], env: E, newVars: DepSet)
   private final case class CheckedPattern(
       pattern: CoreAst.CheckedTypePattern,
       value: Value,
-      env: Env,
+      env: TypecheckEnv,
       newVars: DepSet
   ) {
     def expectedTy: CoreAst.CheckedTypeTerm = compileType(pattern)
   }
   private final case class CheckedBinder(binder: VBinder, checkedBinder: CoreAst.CheckedBinder)
-
-  private def putBinderLocal(
-      env: Env,
-      binder: VBinder,
-      value: Value,
-      instanceTerm: Option[CoreAst.CheckedTerm] = None
-  )(implicit eqStore: EqStore): Env = {
-    val instanceKey =
-      if (binder.isInstance) Some(InstanceSearch.instanceKey(binder.name, value, eqStore))
-      else None
-    env.putLocal(binder.localRef, value, instanceKey, instanceTerm)
-  }
 
   private def toCheckedRef(ref: CoreAst.RawRef): CoreAst.CheckedRef = ref match {
     case CTerm.GlobalRef(name, span) => CTerm.GlobalRef[CoreAst.Checked](name, span)
@@ -98,7 +86,7 @@ object TypePatternOps {
       case _ => Vector.empty
     }
 
-  private def checkPattern(pattern: CoreAst.RawTypePattern, env: Env)(implicit
+  private def checkPattern(pattern: CoreAst.RawTypePattern, env: TypecheckEnv)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): CheckedPattern =
@@ -116,7 +104,7 @@ object TypePatternOps {
       fn: CoreAst.RawRef,
       args: Vector[CoreAst.RawTypePattern],
       span: Span,
-      env: Env
+      env: TypecheckEnv
   )(implicit eqStore: EqStore, normalizers: NormalizerMap): CheckedPattern = {
     val fnTerm = toCheckedRef(fn)
     val fnV = evalTypeTerm(fnTerm, env)
@@ -132,11 +120,11 @@ object TypePatternOps {
     val newVars = DepSet.newBuilder
 
     binders.foreach { binder =>
-      val (argPattern, argValue, argTerm) =
+      val (argPattern, argValue) =
         if (binder.isDerived) {
           val solved = BinderOps.solveBinder(calleeEnv, binder, env)
           val term = checkedTermAsTypePattern(solved.term)
-          (term, solved.value, solved.term)
+          (term, solved.value)
         } else {
           if (argIdx >= args.length) throw ArityMismatch(explicitArgCount, args.length, Some(span))
           val arg = args(argIdx)
@@ -149,20 +137,19 @@ object TypePatternOps {
 
               val value = FreshVar.freshVar(ref.name, expected.value)
               val pattern = CPattern.Capture[CoreAst.Checked](ref, captureSpan)
-              val term = CTerm.LocalRef[CoreAst.Checked](ref, captureSpan)
               callerEnv = callerEnv.putLocal(ref, value)
               newVars.add(value.id)
-              (pattern, value, term)
+              (pattern, value)
 
             case other =>
               val checked = checkPattern(other, callerEnv)
               callerEnv = checked.env
               newVars.unionInPlace(checked.newVars)
-              (checked.pattern, checked.value, checked.expectedTy)
+              (checked.pattern, checked.value)
           }
         }
 
-      calleeEnv = bindValueAndCheck(calleeEnv, binder, argValue, Some(argTerm))
+      calleeEnv = bindValueAndCheck(calleeEnv, binder, argValue)
       argPatterns += argPattern
       argValues += argValue
     }
@@ -174,7 +161,7 @@ object TypePatternOps {
     CheckedPattern(pattern, Interpreter.evalApply(fnV, argValues.result()), callerEnv, newVars.result())
   }
 
-  private def checkBinder(binder: CoreAst.RawBinder, env: Env)(implicit
+  private def checkBinder(binder: CoreAst.RawBinder, env: TypecheckEnv)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): CheckedBinder = {
@@ -222,9 +209,9 @@ object TypePatternOps {
   private def project(value: Value, path: List[Int])(implicit eqStore: EqStore): Value =
     path.foldLeft(resolveInEqStore(value)) { case (cur, nextIdx) => projectStep(cur, nextIdx) }
 
-  private def openCaptures(env: Env, captures: Vector[VCapture], actualTy: Value)(implicit
+  private def openCaptures[E <: EnvLike[E]](env: E, captures: Vector[VCapture], actualTy: Value)(implicit
       eqStore: EqStore
-  ): Env = {
+  ): E = {
     captures.foldLeft(env) { (curEnv, capture) =>
       val captureValue = capture.captureType match {
         case StructuralCapture => project(actualTy, capture.path)
@@ -237,7 +224,7 @@ object TypePatternOps {
     }
   }
 
-  private def structConstructorForBinderType(env: Env, binderTy: CoreAst.CheckedTypeTerm)(implicit
+  private def structConstructorForBinderType[E <: EnvLike[E]](env: E, binderTy: CoreAst.CheckedTypeTerm)(implicit
       eqStore: EqStore
   ): Option[(ConstructorOps.ConstructorShape, Vector[CoreAst.CheckedTerm])] = {
     val (headValue, argTerms) = binderTy match {
@@ -256,12 +243,12 @@ object TypePatternOps {
     }
   }
 
-  private def freshenStructBinder(
-      env: Env,
+  private def freshenStructBinder[E <: EnvLike[E]](
+      env: E,
       binder: VBinder,
       shape: ConstructorOps.ConstructorShape,
       argTerms: Vector[CoreAst.CheckedTerm]
-  )(implicit eqStore: EqStore): FreshenedBinder = {
+  )(implicit eqStore: EqStore): FreshenedBinder[E] = {
     val (args, newVars) = binder.ty match {
       case app: CPattern.App[CoreAst.Checked] =>
         val opened = openPatternPrefix(env, app, shape.paramCount)
@@ -274,9 +261,9 @@ object TypePatternOps {
     FreshenedBinder(fresh.value, refinedEnv, newVars ++ fresh.newVars)
   }
 
-  private def openPatternPrefix(env: Env, app: CPattern.App[CoreAst.Checked], argCount: Int)(implicit
+  private def openPatternPrefix[E <: EnvLike[E]](env: E, app: CPattern.App[CoreAst.Checked], argCount: Int)(implicit
       eqStore: EqStore
-  ): OpenedApp = {
+  ): OpenedApp[E] = {
     val fnV = evalTypeTerm(app.fn, env)
     val pi = requirePi(fnV)
     val binders = pi.binders
@@ -284,8 +271,8 @@ object TypePatternOps {
 
     if (binders.length != args.length) throw ArityMismatch(binders.length, args.length, Some(app.span))
 
-    var callerEnv = env
-    var calleeEnv = pi.env
+    var callerEnv: E = env
+    var calleeEnv: RuntimeEnv = pi.env
     val argValues = Vector.newBuilder[Value]
     val newVars = DepSet.newBuilder
 
@@ -313,7 +300,9 @@ object TypePatternOps {
     OpenedApp(fnV, argValues.result(), callerEnv, newVars.result())
   }
 
-  private def openPattern(env: Env, pattern: CoreAst.CheckedTypePattern)(implicit eqStore: EqStore): OpenedPattern =
+  private def openPattern[E <: EnvLike[E]](env: E, pattern: CoreAst.CheckedTypePattern)(implicit
+      eqStore: EqStore
+  ): OpenedPattern[E] =
     pattern match {
       case app: CPattern.App[CoreAst.Checked] =>
         val opened = openPatternPrefix(env, app, app.args.length)
@@ -322,7 +311,9 @@ object TypePatternOps {
       case CPattern.Type(term)         => OpenedPattern(evalTypeTerm(term, env), env, DepSet.empty)
     }
 
-  private[telescope] def freshenBinder(env: Env, binder: VBinder)(implicit eqStore: EqStore): FreshenedBinder = {
+  private[telescope] def freshenBinder[E <: EnvLike[E]](env: E, binder: VBinder)(implicit
+      eqStore: EqStore
+  ): FreshenedBinder[E] = {
     structConstructorForBinderType(env, binder.expectedTy) match {
       case Some((shape, argTerms)) => freshenStructBinder(env, binder, shape, argTerms)
       case None =>
@@ -332,7 +323,7 @@ object TypePatternOps {
     }
   }
 
-  private[telescope] def freshenRawBinder(env: Env, binder: CoreAst.RawBinder)(implicit
+  private[telescope] def freshenRawBinder(env: TypecheckEnv, binder: CoreAst.RawBinder)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): FreshenedRawBinder = {
@@ -342,28 +333,26 @@ object TypePatternOps {
   }
 
   def bindValue(
-      env: Env,
+      env: RuntimeEnv,
       binder: VBinder,
-      actual: Value,
-      instanceTerm: Option[CoreAst.CheckedTerm] = None
-  )(implicit eqStore: EqStore): Env = {
+      actual: Value
+  )(implicit eqStore: EqStore): RuntimeEnv = {
     val openedEnv = openCaptures(env, binder.captures, actual.tpe)
-    putBinderLocal(openedEnv, binder, actual, instanceTerm)
+    openedEnv.putLocal(binder.localRef, actual)
   }
 
   private[telescope] def bindValueAndCheck(
-      env: Env,
+      env: RuntimeEnv,
       binder: VBinder,
-      actual: Value,
-      instanceTerm: Option[CoreAst.CheckedTerm] = None
+      actual: Value
   )(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
-  ): Env = {
+  ): RuntimeEnv = {
     val openedEnv = openCaptures(env, binder.captures, actual.tpe)
     val expectedTy = Interpreter.evalTypeTerm(binder.expectedTy, openedEnv)
     TypeChecker.checkType(actual, expectedTy)
-    putBinderLocal(openedEnv, binder, Value.ascribe(actual, expectedTy), instanceTerm)
+    openedEnv.putLocal(binder.localRef, Value.ascribe(actual, expectedTy))
   }
 
 }

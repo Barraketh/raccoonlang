@@ -1,29 +1,102 @@
 package com.raccoonlang
 
-// Runtime/checking environment for resolved terms. Local references are dense slots in `locals`;
-// source-name scoping is handled by the elaborator before terms reach this layer.
-final case class Env(
-    globals: Map[String, Binding],
-    locals: Vector[Binding],
-    globalInstances: InstanceRegistry,
-    localInstances: Map[String, Vector[InstanceCandidate]]
-) {
+import org.roaringbitmap.RoaringBitmap
+
+// Shared lookup/update surface for environments. Values close over RuntimeEnv;
+// instance search takes TypecheckEnv explicitly so runtime closures cannot carry
+// local instance search state.
+trait EnvLike[E <: EnvLike[E]] {
+  def globals: Map[String, Binding]
+  def locals: Vector[Binding]
+
   def apply(name: String): Value = globals.getOrElse(name, throw NotFound(name)).value
+
+  def find(name: String): Option[Value] = globals.get(name).map(_.value)
 
   def apply(ref: CoreAst.LocalRef): Value =
     findLocalBinding(ref).map(_.value).getOrElse(throw NotFound(s"${ref.name}#${ref.id}"))
 
-  def find(name: String): Option[Value] = globals.get(name).map(_.value)
-
   def findLocalBinding(ref: CoreAst.LocalRef): Option[Binding] =
     if (ref.id >= 0 && ref.id < locals.length) Some(locals(ref.id)) else None
+
+  def getLocalsByIndexes(indexes: RoaringBitmap): Vector[Value] = {
+    val values = Vector.newBuilder[Value]
+    val limit = locals.length
+    val it = indexes.getIntIterator
+    while (it.hasNext) {
+      val id = it.next()
+      if (id < limit) values += locals(id).value
+      else throw WTF(s"Captured local index #$id is outside env with $limit locals")
+    }
+    values.result()
+  }
 
   def putGlobal(
       name: String,
       value: Value,
       instanceKey: Option[String] = None,
       instanceTerm: Option[CoreAst.CheckedTerm] = None
-  ): Env = {
+  ): E
+
+  def putLocal(
+      ref: CoreAst.LocalRef,
+      value: Value,
+      instanceKey: Option[String] = None,
+      instanceTerm: Option[CoreAst.CheckedTerm] = None
+  ): E
+
+  def closeForEval(capturedIndexes: Option[RoaringBitmap] = None): RuntimeEnv =
+    RuntimeEnv(
+      globals,
+      locals.zipWithIndex.map { case (binding, idx) =>
+        if (capturedIndexes.exists(_.contains(idx))) binding else Binding.pruned(binding.name)
+      }
+    )
+}
+
+final case class RuntimeEnv(
+    globals: Map[String, Binding],
+    locals: Vector[Binding]
+) extends EnvLike[RuntimeEnv] {
+  override def putGlobal(
+      name: String,
+      value: Value,
+      instanceKey: Option[String] = None,
+      instanceTerm: Option[CoreAst.CheckedTerm] = None
+  ): RuntimeEnv = {
+    if (globals.contains(name))
+      throw AlreadyDefined(name)
+    else if (name == "_") this
+    else copy(globals = globals + (name -> Binding.live(name, value)))
+  }
+
+  override def putLocal(
+      ref: CoreAst.LocalRef,
+      value: Value,
+      instanceKey: Option[String] = None,
+      instanceTerm: Option[CoreAst.CheckedTerm] = None
+  ): RuntimeEnv = {
+    if (ref.id == locals.length) copy(locals = locals :+ Binding.live(ref.name, value))
+    else if (ref.id < locals.length)
+      throw WTF(s"Local ref ${ref.name}#${ref.id} is already bound; env has ${locals.length} slots")
+    else throw WTF(s"Non-dense local ref ${ref.name}#${ref.id}; env has ${locals.length} slots")
+  }
+}
+
+// Runtime/checking environment for resolved terms. Local references are dense slots in `locals`;
+// source-name scoping is handled by the elaborator before terms reach this layer.
+final case class TypecheckEnv(
+    globals: Map[String, Binding],
+    locals: Vector[Binding],
+    globalInstances: InstanceRegistry,
+    localInstances: Map[String, Vector[InstanceCandidate]]
+) extends EnvLike[TypecheckEnv] {
+  override def putGlobal(
+      name: String,
+      value: Value,
+      instanceKey: Option[String] = None,
+      instanceTerm: Option[CoreAst.CheckedTerm] = None
+  ): TypecheckEnv = {
     if (globals.contains(name))
       throw AlreadyDefined(name)
     else if (name == "_") this
@@ -34,21 +107,21 @@ final case class Env(
         case None      => globalInstances
       }
       copy(
-        globals = globals + (name -> Binding(name, value)),
+        globals = globals + (name -> Binding.live(name, value)),
         globalInstances = nextInstances
       )
     }
   }
 
-  def putLocal(
+  override def putLocal(
       ref: CoreAst.LocalRef,
       value: Value,
       instanceKey: Option[String] = None,
       instanceTerm: Option[CoreAst.CheckedTerm] = None
-  ): Env = {
+  ): TypecheckEnv = {
     if (ref.id == locals.length) {
       val term = instanceTerm.getOrElse(CoreAst.Term.LocalRef[CoreAst.Checked](ref, Span(0, 0)))
-      val binding = Binding(ref.name, value)
+      val binding = Binding.live(ref.name, value)
 
       val nextLocalInstances = instanceKey match {
         case Some(key) =>
@@ -73,9 +146,9 @@ final case class Env(
 
 }
 
-object Env {
-  val empty: Env =
-    Env(
+object TypecheckEnv {
+  val empty: TypecheckEnv =
+    TypecheckEnv(
       globals = Map.empty,
       locals = Vector.empty,
       globalInstances = InstanceRegistry.empty,
@@ -85,8 +158,36 @@ object Env {
 
 final case class Binding(
     name: String,
-    value: Value
-)
+    state: Binding.State
+) {
+  def value: Value =
+    state match {
+      case Binding.Live(value) => value
+      case Binding.Pruned      => throw WTF(s"Accessed pruned local $name")
+    }
+
+  def valueOption: Option[Value] =
+    state match {
+      case Binding.Live(value) => Some(value)
+      case Binding.Pruned      => None
+    }
+
+  def mapValue(f: Value => Value): Binding =
+    state match {
+      case Binding.Live(value) => Binding.live(name, f(value))
+      case Binding.Pruned      => this
+    }
+}
+
+object Binding {
+  sealed trait State
+  final case class Live(value: Value) extends State
+  case object Pruned extends State
+
+  def live(name: String, value: Value): Binding = Binding(name, Live(value))
+
+  def pruned(name: String): Binding = Binding(name, Pruned)
+}
 
 final case class InstanceCandidate(
     name: String,

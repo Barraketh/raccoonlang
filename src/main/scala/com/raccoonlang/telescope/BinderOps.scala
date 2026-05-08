@@ -4,25 +4,27 @@ import com.raccoonlang.Value.{VBinder, VPi}
 import com.raccoonlang._
 
 object BinderOps {
-  final case class Freshened(vars: Vector[Value], env: Env, newVars: DepSet)
+  final case class Freshened[E <: EnvLike[E]](vars: Vector[Value], env: E, newVars: DepSet)
   final case class FreshenedRawBinders(
       vars: Vector[Value],
-      env: Env,
+      env: TypecheckEnv,
       newVars: DepSet,
       vBinders: Vector[VBinder],
       checkedBinders: Vector[CoreAst.CheckedBinder]
   )
   final case class CheckedArg(value: Value, term: CoreAst.CheckedTerm)
-  final case class CompletedArgs(env: Env, values: Vector[Value], terms: Vector[CoreAst.CheckedTerm])
+  final case class CompletedArgs(env: RuntimeEnv, values: Vector[Value], terms: Vector[CoreAst.CheckedTerm])
 
-  private def putBinderLocal(env: Env, binder: VBinder, value: Value)(implicit eqStore: EqStore): Env = {
+  private def putBinderLocal[E <: EnvLike[E]](env: E, binder: VBinder, value: Value)(implicit
+      eqStore: EqStore
+  ): E = {
     val instanceKey =
       if (binder.isInstance) Some(InstanceSearch.instanceKey(binder.name, value, eqStore))
       else None
     env.putLocal(binder.localRef, value, instanceKey)
   }
 
-  def freshen(binders: Vector[VBinder], baseEnv: Env)(implicit eqStore: EqStore): Freshened = {
+  def freshen[E <: EnvLike[E]](binders: Vector[VBinder], baseEnv: E)(implicit eqStore: EqStore): Freshened[E] = {
     if (binders.isEmpty) return Freshened(Vector.empty, baseEnv, DepSet.empty)
 
     val vars = Vector.newBuilder[Value]
@@ -39,9 +41,9 @@ object BinderOps {
     Freshened(vars.result(), env, newVars.result())
   }
 
-  def freshen(vpi: VPi)(implicit eqStore: EqStore): Freshened = freshen(vpi.binders, vpi.env)
+  def freshen(vpi: VPi)(implicit eqStore: EqStore): Freshened[RuntimeEnv] = freshen(vpi.binders, vpi.env)
 
-  def freshenRawBinders(binders: Vector[CoreAst.RawBinder], baseEnv: Env)(implicit
+  def freshenRawBinders(binders: Vector[CoreAst.RawBinder], baseEnv: TypecheckEnv)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): FreshenedRawBinders = {
@@ -66,7 +68,9 @@ object BinderOps {
     FreshenedRawBinders(vars.result(), env, newVars.result(), vBinders.result(), checkedBinders.result())
   }
 
-  def instantiateFull(binders: Vector[VBinder], baseEnv: Env, args: Vector[Value])(implicit eqStore: EqStore): Env = {
+  def instantiateFull(binders: Vector[VBinder], baseEnv: RuntimeEnv, args: Vector[Value])(implicit
+      eqStore: EqStore
+  ): RuntimeEnv = {
     if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
 
     binders.zip(args).foldLeft(baseEnv) { case (curEnv, (binder, value)) =>
@@ -74,10 +78,10 @@ object BinderOps {
     }
   }
 
-  def checkAndInstantiateFull(binders: Vector[VBinder], baseEnv: Env, args: Vector[Value])(implicit
+  def checkAndInstantiateFull(binders: Vector[VBinder], baseEnv: RuntimeEnv, args: Vector[Value])(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
-  ): Env = {
+  ): RuntimeEnv = {
     if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
 
     binders.zip(args).foldLeft(baseEnv) { case (curEnv, (binder, value)) =>
@@ -85,12 +89,17 @@ object BinderOps {
     }
   }
 
-  def checkAndInstantiate(binders: Vector[VBinder], baseEnv: Env, args: Vector[CheckedArg], searchEnv: Env)(implicit
+  def checkAndInstantiate(
+      binders: Vector[VBinder],
+      baseEnv: RuntimeEnv,
+      args: Vector[CheckedArg],
+      searchEnv: TypecheckEnv
+  )(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): CompletedArgs = {
     var argIdx = 0
-    var telescopeEnv = baseEnv
+    var telescopeEnv: RuntimeEnv = baseEnv
     val values = Vector.newBuilder[Value]
     val terms = Vector.newBuilder[CoreAst.CheckedTerm]
 
@@ -108,7 +117,7 @@ object BinderOps {
           next
         }
 
-      val nextTelescope = TypePatternOps.bindValueAndCheck(telescopeEnv, binder, arg.value, Some(arg.term))
+      val nextTelescope = TypePatternOps.bindValueAndCheck(telescopeEnv, binder, arg.value)
 
       telescopeEnv = nextTelescope
       values += arg.value
@@ -119,7 +128,7 @@ object BinderOps {
     CompletedArgs(telescopeEnv, values.result(), terms.result())
   }
 
-  private[telescope] def solveBinder(env: Env, binder: VBinder, searchEnv: Env)(implicit
+  private[telescope] def solveBinder(env: RuntimeEnv, binder: VBinder, searchEnv: TypecheckEnv)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): BinderOps.CheckedArg = {

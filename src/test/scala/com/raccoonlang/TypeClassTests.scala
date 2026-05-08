@@ -9,7 +9,7 @@ class TypeClassTests extends munit.FunSuite {
 
   private def initialWorlds: Interpreter.Worlds = {
     val baseEnv =
-      Env.empty
+      TypecheckEnv.empty
         .putGlobal("Type", Value.VSort(Value.Level.zero))
         .putGlobal("Normalizer", Value.NormalizerType)
         .putGlobal("Level", Value.LevelTpe)
@@ -39,7 +39,7 @@ class TypeClassTests extends munit.FunSuite {
       val tpeV = TypeChecker.evalTypeTerm(tpe, curEnv)(EqStore.empty, NormalizerMap.empty)
       tpeV match {
         case pi: Value.VPi =>
-          curEnv.putGlobal(name, Value.VLam(pi, Value.ValueId.Const(name), isStable = true, lam))
+          curEnv.putGlobal(name, Value.VLam(pi, Value.ValueId.Const(name), isStable = true, Value.LamBody.Native(lam)))
         case _ => curEnv
       }
     }
@@ -51,7 +51,7 @@ class TypeClassTests extends munit.FunSuite {
           val lRef = CoreAst.LocalRef(0, "l")
           val levelRef = CoreAst.Term.GlobalRef[CoreAst.Checked]("Level", Span(0, 0))
           Value.VPi(
-            env2,
+            env2.closeForEval(),
             Vector(Value.VBinder(lRef, CoreAst.TypePattern.Type(levelRef), levelRef, Vector.empty)),
             (env, eqStore) => {
               val l = Interpreter.getLevel(env(lRef))(eqStore)
@@ -64,10 +64,10 @@ class TypeClassTests extends munit.FunSuite {
         },
         Value.ValueId.Const("Sort"),
         true,
-        (args, eqStore) => {
+        Value.LamBody.Native((args, eqStore) => {
           val l = Interpreter.getLevel(args(0))(eqStore)
           Value.VSort(l)
-        }
+        })
       )
     )
 
@@ -103,7 +103,7 @@ class TypeClassTests extends munit.FunSuite {
     }
   }
 
-  private def namedValue(env: Env, name: String): Value =
+  private def namedValue(env: TypecheckEnv, name: String): Value =
     env(name) match {
       case h: Value.ConstructorHead if h.totalArity == 0 => Value.VCtor(h, Vector.empty, h.tpe)
       case other                                         => other
