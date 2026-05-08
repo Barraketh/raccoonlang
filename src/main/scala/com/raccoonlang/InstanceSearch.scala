@@ -180,7 +180,7 @@ object InstanceSearch {
 
   private def resolveGoal(goal: Value)(implicit eqStore: EqStore): ResolvedGoal = {
     val resolved = Interpreter.resolveInEqStore(goal)
-    ResolvedGoal(ValueKey.orderKey(resolved), headKeyResolved(resolved).getOrElse(throw NoInstanceFound(goal)))
+    ResolvedGoal(resolved.key, headKeyResolved(resolved).getOrElse(throw NoInstanceFound(goal)))
   }
 
   private def resultType(tpe: Value)(implicit eqStore: EqStore): Option[Value] =

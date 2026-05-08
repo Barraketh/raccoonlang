@@ -486,12 +486,15 @@ object TypeChecker {
     }
   }
 
-  def defEq(v1: Value, v2: Value)(implicit eqStore: EqStore, normalizers: NormalizerMap): Boolean = {
-    val normalizerF = getNormalizerF(v1, v2)
+  private def sameValueObject(v1: Value, v2: Value): Boolean =
+    v1.asInstanceOf[AnyRef] eq v2.asInstanceOf[AnyRef]
 
-    val a = normalizerF(resolveInEqStore(v1))
-    val b = normalizerF(resolveInEqStore(v2))
+  private def hasSolvedDeps(v: Value)(implicit eqStore: EqStore): Boolean = v.synDeps.intersects(eqStore.solvedIds)
 
+  private def shouldTryStructuralDefEq(a: Value, b: Value)(implicit eqStore: EqStore): Boolean =
+    hasSolvedDeps(a) || hasSolvedDeps(b) || a.needsExtensionalEq || b.needsExtensionalEq
+
+  private def defEqStructural(a: Value, b: Value)(implicit eqStore: EqStore, normalizers: NormalizerMap): Boolean =
     (a, b) match {
       case (PropTpe, PropTpe)                               => true
       case (NormalizerType, NormalizerType)                 => true
@@ -515,10 +518,7 @@ object TypeChecker {
         defEq(v1.head, v2.head) && v1.args.zip(v2.args).forall { case (arg1, arg2) => defEq(arg1, arg2) }
 
       case (c1: VCtor, c2: VCtor) if c1.fields.length == c2.fields.length =>
-        defEq(c1.head, c2.head) && c1.fields.zip(c2.fields).forall { case (a, b) => defEq(a, b) } && defEq(
-          c1.tpe,
-          c2.tpe
-        )
+        defEq(c1.head, c2.head) && c1.fields.zip(c2.fields).forall { case (a, b) => defEq(a, b) }
 
       case (c1: ConstructorHead, c2: ConstructorHead) if c1.name == c2.name => true
 
@@ -526,6 +526,17 @@ object TypeChecker {
 
       case (Var(_, id1, _), Var(_, id2, _)) if id1 == id2 => true
       case _                                              => false
+    }
+
+  def defEq(v1: Value, v2: Value)(implicit eqStore: EqStore, normalizers: NormalizerMap): Boolean = {
+    if (sameValueObject(v1, v2)) true
+    else {
+      val normalizerF = getNormalizerF(v1, v2)
+
+      val a = normalizerF(resolveInEqStore(v1))
+      val b = normalizerF(resolveInEqStore(v2))
+
+      sameValueObject(a, b) || a.key == b.key || (shouldTryStructuralDefEq(a, b) && defEqStructural(a, b))
     }
   }
 }

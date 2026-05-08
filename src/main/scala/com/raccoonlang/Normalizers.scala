@@ -40,7 +40,7 @@ object Normalizers {
         Interpreter.evalApply(addFn, Vector(v1, v2))
 
       override def normalize(v: Value, eqStore: EqStore): Value = {
-        val flattened = flatten(v).filter(v => v != zero).sortBy(v => ValueKey.orderKey(v))
+        val flattened = flatten(v).filter(v => v != zero).sortBy(_.key)
         flattened match {
           case Nil         => zero
           case head :: Nil => head

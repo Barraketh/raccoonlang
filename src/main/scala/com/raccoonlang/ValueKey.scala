@@ -91,7 +91,7 @@ object ValueKey {
     var cur = key
     var count = 0
     while (iter.hasNext) {
-      cur = mixKey(cur, orderKey(iter.next()))
+      cur = mixKey(cur, iter.next().key)
       count += 1
     }
     mixLong(cur, count.toLong)
@@ -120,15 +120,15 @@ object ValueKey {
   def orderKey(v: Value): Key = v match {
     case Value.LevelTpe        => tag(Tag.LevelTpe)
     case level: Value.Level    => levelKey(level.atoms, level.c)
-    case Value.VSort(lvl)      => mixKey(tag(Tag.Sort), orderKey(lvl))
+    case Value.VSort(lvl)      => mixKey(tag(Tag.Sort), lvl.key)
     case Value.PropTpe         => tag(Tag.Prop)
     case Value.KernelObject    => tag(Tag.KernelObject)
     case Value.VConst(n, _, _) => mixString(tag(Tag.Const), n)
     case Value.Var(_, id, _)   => mixLong(tag(Tag.Var), id.toLong)
     case Value.VApp(h, args, _) =>
-      mixValues(mixKey(tag(Tag.App), orderKey(h)), args)
+      mixValues(mixKey(tag(Tag.App), h.key), args)
     case Value.VBlockedApp(h, args, _, _) =>
-      mixValues(mixKey(tag(Tag.App), orderKey(h)), args)
+      mixValues(mixKey(tag(Tag.App), h.key), args)
     case Value.VLam(_, id, _, _) =>
       valueIdKey(tag(Tag.Lam), id)
     case m: Value.VBlockedThunk =>
@@ -136,11 +136,11 @@ object ValueKey {
     case p: Value.VPi =>
       mixLong(valueIdKey(tag(Tag.Pi), p.id), p.binders.length.toLong)
     case av: Value.AppliedValue =>
-      mixValues(mixKey(tag(Tag.App), orderKey(av.head)), av.args)
+      mixValues(mixKey(tag(Tag.App), av.head.key), av.args)
     case Value.ConstructorHead(n, _, _, _, _) =>
       mixString(tag(Tag.ConstructorHead), n)
     case Value.VCtor(h, fields, _) =>
-      mixValues(mixKey(tag(Tag.Ctor), orderKey(h)), fields)
+      mixValues(mixKey(tag(Tag.Ctor), h.key), fields)
     case Value.NormalizerType =>
       tag(Tag.NormalizerType)
     case n: Value.Normalizer =>

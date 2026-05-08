@@ -15,6 +15,9 @@ sealed trait Value {
   def tpe: Value
   def synDeps: DepSet
 
+  final lazy val key: ValueKey.Key = ValueKey.orderKey(this)
+  final lazy val needsExtensionalEq: Boolean = Value.needsExtensionalEq(this)
+
   override def toString: String = PrettyPrinter.print(this)
 }
 
@@ -27,6 +30,14 @@ object Value {
     value match {
       case u: UpdatableType => u.withTpe(tpe)
       case _                => value
+    }
+
+  private[raccoonlang] def needsExtensionalEq(value: Value): Boolean =
+    value match {
+      case _: VPi | _: VLam    => true
+      case app: AppliedValue   => app.head.needsExtensionalEq || app.args.exists(_.needsExtensionalEq)
+      case VCtor(_, fields, _) => fields.exists(_.needsExtensionalEq)
+      case _                   => false
     }
 
   // A value that will block a computation - specifically, when trying to either match or apply it.
@@ -213,6 +224,7 @@ object Value {
     with Blocked
     with UpdatableType {
     require(args.nonEmpty, "Blocked application requires at least one argument")
+    require(synDeps.contains(blockerId), "Blocked application synDeps must include blockerId")
 
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
@@ -220,6 +232,8 @@ object Value {
   case class VBlockedThunk(thunk: EqStore => Value, id: ValueId.LocalId, tpe: Value, blockerId: VarId)
     extends Blocked
     with UpdatableType {
+    require(synDeps.contains(blockerId), "Blocked thunk synDeps must include blockerId")
+
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
 
     override def synDeps: DepSet = {

@@ -9,6 +9,9 @@ final class DepSet private (private val bitmap: RoaringBitmap) {
 
   def nonEmpty: Boolean = !isEmpty
 
+  def intersects(other: DepSet): Boolean =
+    !isEmpty && !other.isEmpty && RoaringBitmap.intersects(bitmap, other.bitmap)
+
   def +(id: Int): DepSet = {
     val next = bitmap.clone()
     next.add(id)

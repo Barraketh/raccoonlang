@@ -48,12 +48,7 @@ object ValueOps {
   }
 
   private def mayNeedMaterialization(value: Value, eqStore: EqStore): Boolean =
-    if (eqStore.subst.isEmpty) false
-    else
-      value match {
-        case blocked: Blocker => ((value.synDeps + blocked.blockerId) & eqStore.solvedIds).nonEmpty
-        case _                => (value.synDeps & eqStore.solvedIds).nonEmpty
-      }
+    value.synDeps.intersects(eqStore.solvedIds)
 
   private def materializeLevel(level: Level, eqStore: EqStore): Level =
     Interpreter.resolveInEqStore(level)(eqStore) match {

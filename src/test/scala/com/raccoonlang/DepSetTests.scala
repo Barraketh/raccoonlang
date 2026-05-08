@@ -32,4 +32,12 @@ class DepSetTests extends munit.FunSuite {
     assertEquals(first, DepSet(1))
     assertEquals(builder.result(), DepSet(1, 2))
   }
+
+  test("intersects checks overlap without producing an intersection set") {
+    assert(DepSet(1, 3, 5).intersects(DepSet(2, 3, 4)))
+    assert(DepSet(2, 3, 4).intersects(DepSet(1, 3, 5)))
+    assert(!DepSet(1, 3, 5).intersects(DepSet(2, 4, 6)))
+    assert(!DepSet.empty.intersects(DepSet(1)))
+    assert(!DepSet(1).intersects(DepSet.empty))
+  }
 }
