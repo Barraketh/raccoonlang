@@ -9,7 +9,7 @@ object InstanceSearch {
   private val MaxNodes = 65536
 
   private final case class ResolvedGoal(key: ValueKey.Key, head: String)
-  private final case class SearchResult(value: Value, term: CoreAst.CheckedTerm)
+  private final case class SearchResult(value: Value, term: ElabAst.Term)
 
   private final class SearchContext {
     private val cache = mutable.HashMap.empty[ValueKey.Key, SearchResult]
@@ -139,7 +139,7 @@ object InstanceSearch {
 
         val (args, argTerms) = fillCandidateArgs(candidate, pi, goals, searchEnv, state, ctx)
         val res = Interpreter.evalApply(candidate.value, args)
-        val resTerm = CoreAst.Term.App[CoreAst.Checked](candidate.term, argTerms, candidate.term.span)
+        val resTerm = ElabAst.Term.App(candidate.term, argTerms, candidate.term.span)
         SearchResult(res, resTerm)
 
       case resultTy =>
@@ -155,9 +155,9 @@ object InstanceSearch {
       initialSearchEnv: TypecheckEnv,
       state: SearchState,
       ctx: SearchContext
-  )(implicit eqStore: EqStore, normalizerMap: NormalizerMap): (Vector[Value], Vector[CoreAst.CheckedTerm]) = {
+  )(implicit eqStore: EqStore, normalizerMap: NormalizerMap): (Vector[Value], Vector[ElabAst.Term]) = {
     val values = Vector.newBuilder[Value]
-    val terms = Vector.newBuilder[CoreAst.CheckedTerm]
+    val terms = Vector.newBuilder[ElabAst.Term]
     val binders = pi.binders
 
     var telescopeEnv = pi.env

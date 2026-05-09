@@ -10,10 +10,10 @@ object BinderOps {
       env: TypecheckEnv,
       newVars: DepSet,
       vBinders: Vector[VBinder],
-      checkedBinders: Vector[CoreAst.CheckedBinder]
+      checkedBinders: Vector[ElabAst.Binder]
   )
-  final case class CheckedArg(value: Value, term: CoreAst.CheckedTerm)
-  final case class CompletedArgs(env: RuntimeEnv, values: Vector[Value], terms: Vector[CoreAst.CheckedTerm])
+  final case class CheckedArg(value: Value, term: ElabAst.Term)
+  final case class CompletedArgs(env: RuntimeEnv, values: Vector[Value], terms: Vector[ElabAst.Term])
 
   private def putBinderLocal[E <: EnvLike[E]](env: E, binder: VBinder, value: Value)(implicit
       eqStore: EqStore
@@ -43,7 +43,7 @@ object BinderOps {
 
   def freshen(vpi: VPi)(implicit eqStore: EqStore): Freshened[RuntimeEnv] = freshen(vpi.binders, vpi.env)
 
-  def freshenRawBinders(binders: Vector[CoreAst.RawBinder], baseEnv: TypecheckEnv)(implicit
+  def freshenRawBinders(binders: Vector[CoreAst.Binder], baseEnv: TypecheckEnv)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): FreshenedRawBinders = {
@@ -52,7 +52,7 @@ object BinderOps {
 
     val vars = Vector.newBuilder[Value]
     val vBinders = Vector.newBuilder[VBinder]
-    val checkedBinders = Vector.newBuilder[CoreAst.CheckedBinder]
+    val checkedBinders = Vector.newBuilder[ElabAst.Binder]
     var env = baseEnv
     val newVars = DepSet.newBuilder
 
@@ -101,7 +101,7 @@ object BinderOps {
     var argIdx = 0
     var telescopeEnv: RuntimeEnv = baseEnv
     val values = Vector.newBuilder[Value]
-    val terms = Vector.newBuilder[CoreAst.CheckedTerm]
+    val terms = Vector.newBuilder[ElabAst.Term]
 
     val binderV = binders
     val explicitArgCount = binderV.count(!_.isDerived)

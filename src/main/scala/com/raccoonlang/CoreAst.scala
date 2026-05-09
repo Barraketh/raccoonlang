@@ -4,28 +4,6 @@ package com.raccoonlang
 object CoreAst {
   final case class LocalRef(id: Int, name: String)
 
-  // Raw terms come from the surface elaborator. Checked terms are produced by the typechecker and have derived
-  // arguments inserted, so the interpreter can evaluate them without performing elaboration or instance search.
-  sealed trait Phase
-  sealed trait Raw extends Phase
-  sealed trait Checked extends Phase
-
-  type RawTerm = Term[Raw]
-  type RawTypePattern = TypePattern[Raw]
-  type RawTypeTerm = TypeTerm[Raw]
-  type RawRef = Term.Ref[Raw]
-  type RawBinder = Binder[Raw]
-  type RawLet = Let[Raw]
-  type RawCase = Case[Raw]
-
-  type CheckedTerm = Term[Checked]
-  type CheckedTypePattern = TypePattern[Checked]
-  type CheckedTypeTerm = TypeTerm[Checked]
-  type CheckedRef = Term.Ref[Checked]
-  type CheckedBinder = Binder[Checked]
-  type CheckedLet = Let[Checked]
-  type CheckedCase = Case[Checked]
-
   sealed trait UnfoldStrategy
   object UnfoldStrategy {
     // Unfold computation as far as you can and return the result
@@ -40,88 +18,85 @@ object CoreAst {
     case object Stable extends UnfoldStrategy
   }
 
-  // Terms that can appear in function bodies
-  sealed trait Term[+P <: Phase] {
+  sealed trait Ast {
     def span: Span
 
     override def toString: String = PrettyPrinter.printTerm(this)
   }
 
+  // Terms that can appear in function bodies
+  sealed trait Term extends Ast
+
   // Terms that can appear in args
-  sealed trait TypePattern[+P <: Phase] {
-    def span: Span
-  }
+  sealed trait TypePattern extends Ast
 
   // Terms that can appear in type expressions
-  sealed trait TypeTerm[+P <: Phase] extends Term[P]
+  sealed trait TypeTerm extends Term
 
   object TypePattern {
-    final case class Type[P <: Phase](term: TypeTerm[P]) extends TypePattern[P] {
+    final case class Type(term: TypeTerm) extends TypePattern {
       override def span: Span = term.span
     }
 
-    final case class App[P <: Phase](fn: Term.Ref[P], args: Vector[TypePattern[P]], span: Span)
-      extends TypePattern[P] {
+    final case class App(fn: Term.Ref, args: Vector[TypePattern], span: Span) extends TypePattern {
       require(args.nonEmpty, "Type pattern application requires at least one argument")
     }
 
-    final case class Capture[P <: Phase](localRef: CoreAst.LocalRef, span: Span) extends TypePattern[P]
+    final case class Capture(localRef: CoreAst.LocalRef, span: Span) extends TypePattern
   }
 
   object Term {
-    sealed trait Ref[+P <: Phase] extends Term[P] with TypeTerm[P]
+    sealed trait Ref extends Term with TypeTerm
 
-    final case class GlobalRef[P <: Phase](name: String, span: Span) extends Ref[P]
+    final case class GlobalRef(name: String, span: Span) extends Ref
 
-    final case class LocalRef[P <: Phase](ref: CoreAst.LocalRef, span: Span) extends Ref[P]
+    final case class LocalRef(ref: CoreAst.LocalRef, span: Span) extends Ref
 
     // Projection in type position: base[field]
-    final case class TSelect[P <: Phase](base: TypeTerm[P], field: String, span: Span) extends TypeTerm[P]
+    final case class TSelect(base: TypeTerm, field: String, span: Span) extends TypeTerm
 
-    // Projection in term position. This also appears in checked type terms after typechecking type-position selects.
-    final case class Select[P <: Phase](base: Term[P], field: String, span: Span) extends Term[P] with TypeTerm[P]
+    // Projection in term position: base[field]
+    final case class Select(base: Term, field: String, span: Span) extends Term
 
     // Application in type position
-    final case class TApp[P <: Phase](fn: Ref[P], args: Vector[TypeTerm[P]], span: Span) extends TypeTerm[P] {
+    final case class TApp(fn: Ref, args: Vector[TypeTerm], span: Span) extends TypeTerm {
       require(args.nonEmpty, "Type application requires at least one argument")
     }
 
     // Pi (x: A) -> B x
-    final case class Pi[P <: Phase](binders: Vector[Binder[P]], out: TypeTerm[P], span: Span)
-      extends Term[P]
-      with TypeTerm[P] {
+    final case class Pi(binders: Vector[Binder], out: TypeTerm, span: Span) extends Term with TypeTerm {
       require(binders.nonEmpty, "Pi requires at least one binder")
     }
 
-    // Application. This also appears in checked type terms after derived arguments have been inserted.
-    final case class App[P <: Phase](fn: Term[P], args: Vector[Term[P]], span: Span) extends Term[P] with TypeTerm[P]
+    // Application: f(a) (term-level)
+    final case class App(fn: Term, args: Vector[Term], span: Span) extends Term
 
-    case class Body[P <: Phase](lets: Vector[Let[P]], res: Term[P], span: Span) extends Term[P]
+    final case class Body(lets: Vector[Let], res: Term, span: Span) extends Term
 
     // Lambda: fun (x : A): B => body
-    final case class Lam[P <: Phase](
-        ty: Pi[P],
-        uses: Vector[Use[P]],
-        body: Term[P],
+    final case class Lam(
+        ty: Pi,
+        uses: Vector[Use],
+        body: Term,
         span: Span,
         name: Option[String],
         isStable: Boolean
-    ) extends Term[P]
+    ) extends Term
 
-    final case class Match[P <: Phase](
-        scrut: Term[P],
-        motive: Option[TypeTerm[P]],
-        cases: Vector[Case[P]],
+    final case class Match(
+        scrut: Term,
+        motive: Option[TypeTerm],
+        cases: Vector[Case],
         span: Span
-    ) extends Term[P]
+    ) extends Term
 
   }
 
   // Let: let x := foo
-  final case class Let[P <: Phase](
+  final case class Let(
       localRef: LocalRef,
-      ty: Option[TypeTerm[P]],
-      value: Term[P],
+      ty: Option[TypeTerm],
+      value: Term,
       span: Span,
       isInstance: Boolean = false
   ) {
@@ -129,11 +104,11 @@ object CoreAst {
   }
 
   // Use directive (first-class normalizer application)
-  final case class Use[P <: Phase](normalizer: Term[P], span: Span)
+  final case class Use(normalizer: Term, span: Span)
 
-  case class Binder[P <: Phase](
+  final case class Binder(
       localRef: LocalRef,
-      ty: TypePattern[P],
+      ty: TypePattern,
       span: Span,
       isDerived: Boolean = false,
       isInstance: Boolean = false
@@ -147,9 +122,9 @@ object CoreAst {
 
   case class InductiveHeader(
       name: String,
-      params: Vector[RawBinder],
-      indices: Vector[RawBinder],
-      resultTy: RawTypeTerm,
+      params: Vector[Binder],
+      indices: Vector[Binder],
+      resultTy: TypeTerm,
       span: Span
   ) {
     def arity: Int = params.length + indices.length
@@ -157,12 +132,12 @@ object CoreAst {
 
   case class ConstructorDecl(
       name: String,
-      fields: Vector[RawBinder],
-      resultTy: RawTypeTerm,
+      fields: Vector[Binder],
+      resultTy: TypeTerm,
       span: Span
   )
 
-  case class Case[P <: Phase](ctorName: String, argRefs: Vector[Option[LocalRef]], body: Term[P], span: Span)
+  final case class Case(ctorName: String, argRefs: Vector[Option[LocalRef]], body: Term, span: Span)
 
   // Global declarations and environment entries
   sealed trait Decl {
@@ -174,8 +149,8 @@ object CoreAst {
     final case class ConstDecl(
         unfoldStrategy: Option[UnfoldStrategy],
         name: String,
-        ty: TypeTerm[Raw],
-        body: Term[Raw],
+        ty: TypeTerm,
+        body: Term,
         span: Span,
         isInstance: Boolean = false
     ) extends Decl
@@ -189,5 +164,5 @@ object CoreAst {
     ) extends Decl
   }
 
-  case class Program(decls: Vector[Decl], body: Option[RawTerm])
+  case class Program(decls: Vector[Decl], body: Option[Term])
 }

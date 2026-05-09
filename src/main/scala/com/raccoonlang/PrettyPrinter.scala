@@ -3,25 +3,20 @@ package com.raccoonlang
 import com.raccoonlang.Value.LevelTpe
 
 object PrettyPrinter {
-  private def printRef(ref: CoreAst.Term.Ref[_]): String = ref match {
+  private def printRef(ref: CoreAst.Term.Ref): String = ref match {
     case CoreAst.Term.GlobalRef(name, _) => name
     case CoreAst.Term.LocalRef(ref, _)   => ref.name
   }
 
-  private def printTypeTerm(tt: CoreAst.TypeTerm[_]): String = {
+  private def printTypeTerm(tt: CoreAst.TypeTerm): String = {
     import com.raccoonlang.CoreAst.Term
 
-    def pt(t: CoreAst.TypeTerm[_]): String = t match {
-      case ref: Term.Ref[_]             => printRef(ref)
+    def pt(t: CoreAst.TypeTerm): String = t match {
+      case ref: Term.Ref                => printRef(ref)
       case Term.TSelect(base, field, _) => s"${ptAtom(base)}[$field]"
-      case Term.Select(base, field, _)  => s"${printTermAtom(base)}[$field]"
       case Term.TApp(fn, args, _) =>
         val headStr = ptAtom(fn)
         val argsStr = args.map(ptAtom).mkString(", ")
-        s"$headStr($argsStr)"
-      case Term.App(fn, args, _) =>
-        val headStr = printTermAtom(fn)
-        val argsStr = args.map(printTermAtom).mkString(", ")
         s"$headStr($argsStr)"
       case Term.Pi(binders, out, _) =>
         val bindersStr = binders
@@ -32,20 +27,18 @@ object PrettyPrinter {
         s"$bindersStr -> ${pt(out)}"
     }
 
-    def ptAtom(t: CoreAst.TypeTerm[_]): String = t match {
-      case _: Term.Ref[_]           => pt(t)
-      case Term.TSelect(_, _, _)    => pt(t)
-      case Term.Select(_, _, _)     => pt(t)
-      case Term.TApp(_, _, _)       => pt(t)
-      case Term.App(_, _, _)        => pt(t)
-      case Term.Pi(_, _, _)         => s"(${pt(t)})"
+    def ptAtom(t: CoreAst.TypeTerm): String = t match {
+      case _: Term.Ref           => pt(t)
+      case Term.TSelect(_, _, _) => pt(t)
+      case Term.TApp(_, _, _)    => pt(t)
+      case Term.Pi(_, _, _)      => s"(${pt(t)})"
     }
 
     pt(tt)
   }
 
-  private def printTypePattern(tp: CoreAst.TypePattern[_]): String = {
-    def pt(t: CoreAst.TypePattern[_]): String = t match {
+  private def printTypePattern(tp: CoreAst.TypePattern): String = {
+    def pt(t: CoreAst.TypePattern): String = t match {
       case CoreAst.TypePattern.Type(term) => printTypeTerm(term)
       case CoreAst.TypePattern.App(fn, args, _) =>
         val headStr = printRef(fn)
@@ -54,9 +47,9 @@ object PrettyPrinter {
       case CoreAst.TypePattern.Capture(ref, _) => s"$$${ref.name}"
     }
 
-    def ptAtom(t: CoreAst.TypePattern[_]): String = t match {
-      case CoreAst.TypePattern.Type(term: CoreAst.Term.Pi[_]) => s"(${printTypeTerm(term)})"
-      case _                                                  => pt(t)
+    def ptAtom(t: CoreAst.TypePattern): String = t match {
+      case CoreAst.TypePattern.Type(term: CoreAst.Term.Pi) => s"(${printTypeTerm(term)})"
+      case _                                               => pt(t)
     }
 
     pt(tp)
@@ -78,59 +71,179 @@ object PrettyPrinter {
     s"$headStr($argsStr)"
   }
 
-  def printBinder(b: CoreAst.Binder[_]): String = {
+  def printBinder(b: CoreAst.Binder): String = {
     val body = s"${b.name}: ${printTypePattern(b.ty)}"
     if (b.isDerived) s"[$body]" else if (b.isInstance) s"(instance $body)" else s"($body)"
   }
 
-  private def printBinders[P <: CoreAst.Phase](binders: Vector[CoreAst.Binder[P]]): String =
+  private def printBinders(binders: Vector[CoreAst.Binder]): String =
     binders.map(printBinder).mkString(" ")
 
   // ---- Core term pretty printing (for neutral match bodies/scrutinees) ----
-  private def printLet(l: CoreAst.Let[_]): String = {
+  private def printLet(l: CoreAst.Let): String = {
     val tyStr = l.ty.map(t => s": ${printTypeTerm(t)}").getOrElse("")
     val inst = if (l.isInstance) "instance " else ""
-    s"let $inst${l.name}$tyStr := ${printTerm(l.value)}"
+    s"let $inst${l.name}$tyStr := ${printCoreTerm(l.value)}"
   }
 
-  private def printBody(b: CoreAst.Term.Body[_]): String = {
-    if (b.lets.isEmpty) printTerm(b.res)
+  private def printBody(b: CoreAst.Term.Body): String = {
+    if (b.lets.isEmpty) printCoreTerm(b.res)
     else {
       val letsStr = b.lets.map(printLet).mkString("\n")
-      s"{ $letsStr \n ${printTerm(b.res)} }"
+      s"{ $letsStr \n ${printCoreTerm(b.res)} }"
     }
   }
 
-  private def printTermAtom(t: CoreAst.Term[_]): String = t match {
-    case _: CoreAst.Term.Ref[_]              => printTerm(t)
-    case CoreAst.Term.App(_, _, _)           => printTerm(t)
-    case CoreAst.Term.TApp(_, _, _)          => printTerm(t)
-    case ts: CoreAst.Term.TSelect[_]         => printTypeTerm(ts)
+  private def printTermAtom(t: CoreAst.Term): String = t match {
+    case _: CoreAst.Term.Ref                 => printCoreTerm(t)
+    case CoreAst.Term.App(_, _, _)           => printCoreTerm(t)
+    case CoreAst.Term.TApp(_, _, _)          => printCoreTerm(t)
+    case ts: CoreAst.Term.TSelect            => printTypeTerm(ts)
     case CoreAst.Term.Select(base, field, _) => s"${printTermAtom(base)}[$field]"
-    case CoreAst.Term.Lam(_, _, _, _, _, _)  => s"(${printTerm(t)})"
-    case CoreAst.Term.Match(_, _, _, _)      => s"(${printTerm(t)})"
-    case CoreAst.Term.Body(_, _, _)          => s"(${printTerm(t)})"
-    case CoreAst.Term.Pi(_, _, _)            => s"(${printTerm(t)})"
+    case CoreAst.Term.Lam(_, _, _, _, _, _)  => s"(${printCoreTerm(t)})"
+    case CoreAst.Term.Match(_, _, _, _)      => s"(${printCoreTerm(t)})"
+    case CoreAst.Term.Body(_, _, _)          => s"(${printCoreTerm(t)})"
+    case CoreAst.Term.Pi(_, _, _)            => s"(${printCoreTerm(t)})"
   }
 
-  def printTerm(t: CoreAst.Term[_]): String = t match {
+  private def printCoreTerm(t: CoreAst.Term): String = t match {
     case CoreAst.Term.Lam(ty, _, body, _, _, _) =>
-      s"fun ${printBinders(ty.binders)}: ${printTypeTerm(ty.out)} => ${printTerm(body)}"
-    case m @ CoreAst.Term.Match(_, _, _, _) => printMatch(m)
-    case b: CoreAst.Term.Body[_]            => printBody(b)
-    case tt: CoreAst.TypeTerm[_]            => printTypeTerm(tt)
+      s"fun ${printBinders(ty.binders)}: ${printTypeTerm(ty.out)} => ${printCoreTerm(body)}"
+    case m @ CoreAst.Term.Match(_, _, _, _)  => printMatch(m)
+    case b: CoreAst.Term.Body                => printBody(b)
+    case CoreAst.Term.Select(base, field, _) => s"${printTermAtom(base)}[$field]"
+    case CoreAst.Term.App(fn, args, _) =>
+      val headStr = printTermAtom(fn)
+      val argsStr = args.map(printTermAtom).mkString(", ")
+      s"$headStr($argsStr)"
+    case tt: CoreAst.TypeTerm => printTypeTerm(tt)
   }
 
-  private def printCase(c: CoreAst.Case[_]): String = {
+  def printTerm(t: CoreAst.Ast): String = t match {
+    case term: CoreAst.Term           => printCoreTerm(term)
+    case pattern: CoreAst.TypePattern => printTypePattern(pattern)
+  }
+
+  private def printCase(c: CoreAst.Case): String = {
     val argNames = c.argRefs.map(_.map(_.name).getOrElse("_"))
     val args = if (argNames.isEmpty) "" else s" ${argNames.mkString(" ")}"
-    s"| ${c.ctorName}$args => ${printTerm(c.body)}"
+    s"| ${c.ctorName}$args => ${printCoreTerm(c.body)}"
   }
 
-  private def printMatch(m: CoreAst.Term.Match[_]): String = {
+  private def printMatch(m: CoreAst.Term.Match): String = {
     val scrutStr = printTermAtom(m.scrut)
     val motiveStr = m.motive.map(motive => s" returning ${printTypeTerm(motive)}").getOrElse("")
     val casesStr = m.cases.map(printCase).mkString(" ")
+    s"match $scrutStr$motiveStr with $casesStr"
+  }
+
+  private def printElabRef(ref: ElabAst.Term.Ref): String = ref match {
+    case ElabAst.Term.GlobalRef(name, _) => name
+    case ElabAst.Term.LocalRef(ref, _)   => ref.name
+  }
+
+  private def printElabTypeTerm(tt: ElabAst.TypeTerm): String = {
+    import com.raccoonlang.ElabAst.Term
+
+    def pt(t: ElabAst.TypeTerm): String = t match {
+      case ref: Term.Ref               => printElabRef(ref)
+      case Term.Select(base, field, _) => s"${printElabTermAtom(base)}[$field]"
+      case Term.App(fn, args, _) =>
+        val headStr = printElabTermAtom(fn)
+        val argsStr = args.map(printElabTermAtom).mkString(", ")
+        s"$headStr($argsStr)"
+      case Term.Pi(binders, out, _) =>
+        val bindersStr = binders
+          .map { b =>
+            if (b.name == "_") printElabTypePattern(b.ty) else s"(${b.name}: ${printElabTypePattern(b.ty)})"
+          }
+          .mkString(" -> ")
+        s"$bindersStr -> ${pt(out)}"
+    }
+
+    def ptAtom(t: ElabAst.TypeTerm): String = t match {
+      case _: Term.Ref          => pt(t)
+      case Term.Select(_, _, _) => pt(t)
+      case Term.App(_, _, _)    => pt(t)
+      case Term.Pi(_, _, _)     => s"(${pt(t)})"
+    }
+
+    pt(tt)
+  }
+
+  private def printElabTypePattern(tp: ElabAst.TypePattern): String = {
+    def pt(t: ElabAst.TypePattern): String = t match {
+      case ElabAst.TypePattern.Type(term) => printElabTypeTerm(term)
+      case ElabAst.TypePattern.App(fn, args, _) =>
+        val headStr = printElabRef(fn)
+        val argsStr = args.map(ptAtom).mkString(", ")
+        s"$headStr($argsStr)"
+      case ElabAst.TypePattern.Capture(ref, _) => s"$$${ref.name}"
+    }
+
+    def ptAtom(t: ElabAst.TypePattern): String = t match {
+      case ElabAst.TypePattern.Type(term: ElabAst.Term.Pi) => s"(${printElabTypeTerm(term)})"
+      case _                                               => pt(t)
+    }
+
+    pt(tp)
+  }
+
+  def printElabBinder(b: ElabAst.Binder): String = {
+    val body = s"${b.name}: ${printElabTypePattern(b.ty)}"
+    if (b.isDerived) s"[$body]" else if (b.isInstance) s"(instance $body)" else s"($body)"
+  }
+
+  private def printElabBinders(binders: Vector[ElabAst.Binder]): String =
+    binders.map(printElabBinder).mkString(" ")
+
+  private def printElabLet(l: ElabAst.Let): String = {
+    val tyStr = l.ty.map(t => s": ${printElabTypeTerm(t)}").getOrElse("")
+    val inst = if (l.isInstance) "instance " else ""
+    s"let $inst${l.name}$tyStr := ${printElabTerm0(l.value)}"
+  }
+
+  private def printElabBody(b: ElabAst.Term.Body): String = {
+    if (b.lets.isEmpty) printElabTerm0(b.res)
+    else {
+      val letsStr = b.lets.map(printElabLet).mkString("\n")
+      s"{ $letsStr \n ${printElabTerm0(b.res)} }"
+    }
+  }
+
+  private def printElabTermAtom(t: ElabAst.Term): String = t match {
+    case _: ElabAst.Term.Ref                 => printElabTerm0(t)
+    case ElabAst.Term.App(_, _, _)           => printElabTerm0(t)
+    case ElabAst.Term.Select(base, field, _) => s"${printElabTermAtom(base)}[$field]"
+    case ElabAst.Term.Lam(_, _, _, _, _, _)  => s"(${printElabTerm0(t)})"
+    case ElabAst.Term.Match(_, _, _, _)      => s"(${printElabTerm0(t)})"
+    case ElabAst.Term.Body(_, _, _)          => s"(${printElabTerm0(t)})"
+    case ElabAst.Term.Pi(_, _, _)            => s"(${printElabTerm0(t)})"
+  }
+
+  private def printElabTerm0(t: ElabAst.Term): String = t match {
+    case ElabAst.Term.Lam(ty, _, body, _, _, _) =>
+      s"fun ${printElabBinders(ty.binders)}: ${printElabTypeTerm(ty.out)} => ${printElabTerm0(body)}"
+    case m @ ElabAst.Term.Match(_, _, _, _) => printElabMatch(m)
+    case b: ElabAst.Term.Body               => printElabBody(b)
+    case tt: ElabAst.TypeTerm               => printElabTypeTerm(tt)
+  }
+
+  def printElabTerm(t: ElabAst.Ast): String = t match {
+    case term: ElabAst.Term           => printElabTerm0(term)
+    case pattern: ElabAst.TypePattern => printElabTypePattern(pattern)
+  }
+
+  private def printElabCase(c: ElabAst.Case): String = {
+    val argNames = c.argRefs.map(_.map(_.name).getOrElse("_"))
+    val args = if (argNames.isEmpty) "" else s" ${argNames.mkString(" ")}"
+    s"| ${c.ctorName}$args => ${printElabTerm0(c.body)}"
+  }
+
+  private def printElabMatch(m: ElabAst.Term.Match): String = {
+    val scrutStr = printElabTermAtom(m.scrut)
+    val motiveStr = m.motive.map(motive => s" returning ${printElabTypeTerm(motive)}").getOrElse("")
+    val casesStr = m.cases.map(printElabCase).mkString(" ")
     s"match $scrutStr$motiveStr with $casesStr"
   }
 

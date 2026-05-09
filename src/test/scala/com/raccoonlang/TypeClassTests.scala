@@ -1,7 +1,7 @@
 package com.raccoonlang
 
 class TypeClassTests extends munit.FunSuite {
-  private def parseHeaderType(src: String): CoreAst.RawTypeTerm =
+  private def parseHeaderType(src: String): CoreAst.TypeTerm =
     LanguageParser.parseFuncHeader(src) match {
       case Success(header, _, _) => Elaborator.getType(header)
       case err: Failure          => fail(s"Failed to parse header: $err, ${src.substring(err.curIdx)}")
@@ -17,7 +17,7 @@ class TypeClassTests extends munit.FunSuite {
         .putGlobal("Level::one", Value.Level.const(1))
         .putGlobal("Prop", Value.PropTpe)
 
-    val builtinFuncs = List[(String, CoreAst.RawTypeTerm, (Vector[Value], EqStore) => Value)](
+    val builtinFuncs = List[(String, CoreAst.TypeTerm, (Vector[Value], EqStore) => Value)](
       (
         "add_normalizer",
         parseHeaderType("(A: Type)(zero: A)(add: A -> A -> A): Normalizer"),
@@ -49,10 +49,10 @@ class TypeClassTests extends munit.FunSuite {
       Value.VLam(
         {
           val lRef = CoreAst.LocalRef(0, "l")
-          val levelRef = CoreAst.Term.GlobalRef[CoreAst.Checked]("Level", Span(0, 0))
+          val levelRef = ElabAst.Term.GlobalRef("Level", Span(0, 0))
           Value.VPi(
             env2.closeForEval(),
-            Vector(Value.VBinder(lRef, CoreAst.TypePattern.Type(levelRef), levelRef, Vector.empty)),
+            Vector(Value.VBinder(lRef, ElabAst.TypePattern.Type(levelRef), levelRef, Vector.empty)),
             (env, eqStore) => {
               val l = Interpreter.getLevel(env(lRef))(eqStore)
               Value.VSort(Value.Level.succ(l))
@@ -861,11 +861,11 @@ class TypeClassTests extends munit.FunSuite {
       SurfaceAst.Binder("x", ty, span, isDerived = true)
     }
     intercept[IllegalArgumentException] {
-      CoreAst.Binder[CoreAst.Raw](CoreAst.LocalRef(0, "x"), CoreAst.TypePattern.Type(CoreAst.Term.GlobalRef("A", span)), span, isDerived = true)
+      CoreAst.Binder(CoreAst.LocalRef(0, "x"), CoreAst.TypePattern.Type(CoreAst.Term.GlobalRef("A", span)), span, isDerived = true)
     }
     intercept[IllegalArgumentException] {
-      val ty = CoreAst.Term.GlobalRef[CoreAst.Checked]("A", span)
-      Value.VBinder(CoreAst.LocalRef(0, "x"), CoreAst.TypePattern.Type(ty), ty, Vector.empty, isDerived = true)
+      val ty = ElabAst.Term.GlobalRef("A", span)
+      Value.VBinder(CoreAst.LocalRef(0, "x"), ElabAst.TypePattern.Type(ty), ty, Vector.empty, isDerived = true)
     }
   }
 }

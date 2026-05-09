@@ -29,7 +29,7 @@ object Elaborator {
 
     def resolve(name: String): Option[CA.LocalRef] = scopes.collectFirst(Function.unlift(_.get(name)))
 
-    def resolveIdent(i: SA.Term.Ident): CA.RawRef =
+    def resolveIdent(i: SA.Term.Ident): CA.Term.Ref =
       resolve(i.name) match {
         case Some(ref) => CA.Term.LocalRef(ref, i.span)
         case None      => CA.Term.GlobalRef(i.name, i.span)
@@ -71,18 +71,18 @@ object Elaborator {
     def empty: ResolveEnv = ResolveEnv(List(Map.empty), 0, BuiltinGlobals)
   }
 
-  private def elabPi(pi: SA.Term.Pi, env: ResolveEnv): CA.Term.Pi[CA.Raw] = {
+  private def elabPi(pi: SA.Term.Pi, env: ResolveEnv): CA.Term.Pi = {
     val piEnv = env.enterScope
     val (binder, binderEnv) = elabBinder(pi.binder, piEnv)
     val body = elabType(pi.body, binderEnv)
     val span = Span(binder.span.start, body.span.end)
     body match {
-      case pi: CA.Term.Pi[CA.Raw] => CA.Term.Pi(binder +: pi.binders, pi.out, span)
-      case other                  => CA.Term.Pi(Vector(binder), other, span)
+      case pi: CA.Term.Pi => CA.Term.Pi(binder +: pi.binders, pi.out, span)
+      case other          => CA.Term.Pi(Vector(binder), other, span)
     }
   }
 
-  private def elabType(ty: SA.TypeTerm, env: ResolveEnv): CA.RawTypeTerm = ty match {
+  private def elabType(ty: SA.TypeTerm, env: ResolveEnv): CA.TypeTerm = ty match {
     case i: SA.Term.Ident                 => env.resolveIdent(i)
     case SA.Term.TApp(fn, args, sp)       => CA.Term.TApp(env.resolveIdent(fn), args.map(elabType(_, env)), sp)
     case pi: SA.Term.Pi                   => elabPi(pi, env)
@@ -90,7 +90,7 @@ object Elaborator {
     case SA.Term.Capture(name, sp)        => throw new RuntimeException(s"$$ cannot be used here: $name")
   }
 
-  private def elabPattern(ty: SA.TypeTerm, env: ResolveEnv): (CA.RawTypePattern, ResolveEnv) = ty match {
+  private def elabPattern(ty: SA.TypeTerm, env: ResolveEnv): (CA.TypePattern, ResolveEnv) = ty match {
     case i: SA.Term.Ident => (CA.TypePattern.Type(env.resolveIdent(i)), env)
     case SA.Term.TSelect(base, field, sp) =>
       val (basePattern, nextEnv) = elabPattern(base, env)
@@ -99,10 +99,9 @@ object Elaborator {
         case other                         => throw WTF(s"Expected type term in selection pattern, got $other")
       }
     case SA.Term.TApp(fn, args, sp) =>
-      val (nextArgs, nextEnv) = args.foldLeft((Vector.empty[CA.RawTypePattern], env)) {
-        case ((curArgs, curEnv), arg) =>
-          val (nextArg, argEnv) = elabPattern(arg, curEnv)
-          (curArgs :+ nextArg, argEnv)
+      val (nextArgs, nextEnv) = args.foldLeft((Vector.empty[CA.TypePattern], env)) { case ((curArgs, curEnv), arg) =>
+        val (nextArg, argEnv) = elabPattern(arg, curEnv)
+        (curArgs :+ nextArg, argEnv)
       }
       (CA.TypePattern.App(env.resolveIdent(fn), nextArgs, sp), nextEnv)
     case pi: SA.Term.Pi =>
@@ -112,19 +111,19 @@ object Elaborator {
       (CA.TypePattern.Capture(ref, sp), nextEnv)
   }
 
-  private def elabBinder(b: SA.Binder, env: ResolveEnv): (CA.RawBinder, ResolveEnv) = {
+  private def elabBinder(b: SA.Binder, env: ResolveEnv): (CA.Binder, ResolveEnv) = {
     val (ty, envWithCaptures) = elabPattern(b.ty, env)
     val (ref, nextEnv) = envWithCaptures.bindBinder(b.name)
     (CA.Binder(ref, ty, b.span, b.isDerived, b.isInstance), nextEnv)
   }
 
-  private def elabBinders(binders: Vector[SA.Binder], env: ResolveEnv): (Vector[CA.RawBinder], ResolveEnv) =
-    binders.foldLeft((Vector.empty[CA.RawBinder], env)) { case ((curBinders, curEnv), binder) =>
+  private def elabBinders(binders: Vector[SA.Binder], env: ResolveEnv): (Vector[CA.Binder], ResolveEnv) =
+    binders.foldLeft((Vector.empty[CA.Binder], env)) { case ((curBinders, curEnv), binder) =>
       val (nextBinder, nextEnv) = elabBinder(binder, curEnv)
       (curBinders :+ nextBinder, nextEnv)
     }
 
-  private final case class HeaderResult(ty: CA.RawTypeTerm, bodyEnv: ResolveEnv)
+  private final case class HeaderResult(ty: CA.TypeTerm, bodyEnv: ResolveEnv)
 
   private def elabHeader(header: SA.FuncHeader, env: ResolveEnv): HeaderResult = {
     val headerEnv = env.enterScope
@@ -136,14 +135,14 @@ object Elaborator {
     HeaderResult(ty, bodyEnv)
   }
 
-  def getType(header: SA.FuncHeader): CA.RawTypeTerm = elabHeader(header, ResolveEnv.empty).ty
+  def getType(header: SA.FuncHeader): CA.TypeTerm = elabHeader(header, ResolveEnv.empty).ty
 
-  private def elab(use: SA.Use, env: ResolveEnv): CA.Use[CA.Raw] = CA.Use(elabTerm(use.normalizer, env), use.span)
+  private def elab(use: SA.Use, env: ResolveEnv): CA.Use = CA.Use(elabTerm(use.normalizer, env), use.span)
 
-  private def elabBody(body: SA.Term.Body, env: ResolveEnv): CA.Term.Body[CA.Raw] = {
+  private def elabBody(body: SA.Term.Body, env: ResolveEnv): CA.Term.Body = {
     if (body.uses.nonEmpty) throw new RuntimeException("Use statements only allowed at top of fn declaration")
 
-    val (lets, bodyEnv) = body.lets.foldLeft((Vector.empty[CA.RawLet], env)) { case ((curLets, curEnv), l) =>
+    val (lets, bodyEnv) = body.lets.foldLeft((Vector.empty[CA.Let], env)) { case ((curLets, curEnv), l) =>
       val ty = l.ty.map(elabType(_, curEnv))
       val value = elabTerm(l.value, curEnv)
       val (ref, nextEnv) = curEnv.bindRequired(l.name, l.span, allowShadow = true)
@@ -153,14 +152,14 @@ object Elaborator {
   }
 
   private def elabLam(
-      pi: CA.Term.Pi[CA.Raw],
+      pi: CA.Term.Pi,
       bodyEnv: ResolveEnv,
       body: SA.Term,
       name: Option[String],
       isStable: Boolean,
       span: Span,
       outerEnv: ResolveEnv
-  ): CA.Term.Lam[CA.Raw] = {
+  ): CA.Term.Lam = {
     val (uses, newBody) = body match {
       case b: SA.Term.Body => (b.uses, b.copy(uses = Vector.empty))
       case _               => (Vector.empty, body)
@@ -168,16 +167,16 @@ object Elaborator {
     CA.Term.Lam(pi, uses.map(elab(_, outerEnv)), elabTerm(newBody, bodyEnv), span, name, isStable)
   }
 
-  private def elab(l: SA.Term.Lam, env: ResolveEnv): CA.Term.Lam[CA.Raw] = {
+  private def elab(l: SA.Term.Lam, env: ResolveEnv): CA.Term.Lam = {
     val header = elabHeader(l.header, env)
     header.ty match {
-      case pi: CA.Term.Pi[CA.Raw] =>
+      case pi: CA.Term.Pi =>
         elabLam(pi, header.bodyEnv, l.body, None, isStable = false, l.span, env)
       case _ => throw new RuntimeException("WTF")
     }
   }
 
-  private def elabTerm(term: SurfaceAst.Term, env: ResolveEnv): CA.RawTerm = term match {
+  private def elabTerm(term: SurfaceAst.Term, env: ResolveEnv): CA.Term = term match {
     case i: SA.Term.Ident                => env.resolveIdent(i)
     case SA.Term.App(fn, args, sp)       => CA.Term.App(elabTerm(fn, env), args.map(elabTerm(_, env)), sp)
     case SA.Term.Select(base, field, sp) => CA.Term.Select(elabTerm(base, env), field, sp)
@@ -193,7 +192,7 @@ object Elaborator {
       )
   }
 
-  private def elabCase(c: SA.Case, env: ResolveEnv): CA.RawCase = {
+  private def elabCase(c: SA.Case, env: ResolveEnv): CA.Case = {
     val caseEnv = env.enterScope
     val (argRefs, bodyEnv) = c.argNames.foldLeft((Vector.empty[Option[CA.LocalRef]], caseEnv)) {
       case ((curRefs, curEnv), argName) =>
@@ -206,7 +205,7 @@ object Elaborator {
   private def elabConstDecl(c: SurfaceAst.Decl.ConstDecl, env: ResolveEnv): (CoreAst.Decl, ResolveEnv) = {
     val header = elabHeader(c.header.funcHeader, env)
     val body = header.ty match {
-      case pi: CA.Term.Pi[CA.Raw] =>
+      case pi: CA.Term.Pi =>
         elabLam(
           pi,
           header.bodyEnv,

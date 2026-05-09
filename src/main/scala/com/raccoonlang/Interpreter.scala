@@ -1,6 +1,7 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.{Decl, Program, RawTypeTerm, Term => CTerm}
+import com.raccoonlang.CoreAst.{Decl, Program}
+import com.raccoonlang.ElabAst.{Term => ETerm}
 import com.raccoonlang.Value._
 import com.raccoonlang.telescope.{BinderOps, ConstructorOps, TypePatternOps}
 
@@ -52,7 +53,7 @@ object Interpreter {
   ): RuntimeEnv =
     BinderOps.instantiateFull(fnTpe.binders, baseEnv, args)
 
-  def evalPi[E <: EnvLike[E]](pi: CTerm.Pi[CoreAst.Checked], env: E, vBinders: Vector[VBinder])(implicit
+  def evalPi[E <: EnvLike[E]](pi: ETerm.Pi, env: E, vBinders: Vector[VBinder])(implicit
       eqStore: EqStore
   ): VPi = {
     val capturedIndexes = CapturedIndexes.getCapturedIndexes(pi, env)
@@ -90,23 +91,21 @@ object Interpreter {
     )
   }
 
-  private def evalPi[E <: EnvLike[E]](pi: CTerm.Pi[CoreAst.Checked], env: E)(implicit eqStore: EqStore): VPi = {
+  private def evalPi[E <: EnvLike[E]](pi: ETerm.Pi, env: E)(implicit eqStore: EqStore): VPi = {
     evalPi(pi, env, pi.binders.map(TypePatternOps.toVBinder))
   }
 
-  def evalTypeTerm[E <: EnvLike[E]](tt: CoreAst.CheckedTypeTerm, env: E)(implicit meta: EqStore): Value = tt match {
-    case ref: CTerm.Ref[CoreAst.Checked]  => evalRef(ref, env)
-    case CTerm.Select(base, field, span)  => evalSelect(evalTerm(base, env), field, env, span.start)
-    case CTerm.App(fn, args, _)           => evalApplyTerm(fn, args, env)
-    case CTerm.TSelect(base, field, span) => evalSelect(evalTypeTerm(base, env), field, env, span.start)
-    case CTerm.TApp(fn, args, _)          => evalApplyTerm(fn, args, env)
-    case pi: CTerm.Pi[CoreAst.Checked]    => evalPi(pi, env)
+  def evalTypeTerm[E <: EnvLike[E]](tt: ElabAst.TypeTerm, env: E)(implicit meta: EqStore): Value = tt match {
+    case ref: ETerm.Ref                  => evalRef(ref, env)
+    case ETerm.Select(base, field, span) => evalSelect(evalTerm(base, env), field, env, span.start)
+    case ETerm.App(fn, args, _)          => evalApplyTerm(fn, args, env)
+    case pi: ETerm.Pi                    => evalPi(pi, env)
   }
 
-  private def evalRef[E <: EnvLike[E]](ref: CoreAst.CheckedRef, env: E): Value = {
+  private def evalRef[E <: EnvLike[E]](ref: ETerm.Ref, env: E): Value = {
     val res = ref match {
-      case CTerm.GlobalRef(name, _) => env(name)
-      case CTerm.LocalRef(local, _) => env(local)
+      case ETerm.GlobalRef(name, _) => env(name)
+      case ETerm.LocalRef(local, _) => env(local)
     }
     res match {
       case h: ConstructorHead if h.totalArity == 0 => VCtor(h, Vector.empty, h.tpe)
@@ -145,8 +144,8 @@ object Interpreter {
     }
   }
 
-  private def evalApplyTerm[E <: EnvLike[E]](fn: CoreAst.CheckedTerm, args: Vector[CoreAst.CheckedTerm], env: E)(
-      implicit eqStore: EqStore
+  private def evalApplyTerm[E <: EnvLike[E]](fn: ElabAst.Term, args: Vector[ElabAst.Term], env: E)(implicit
+      eqStore: EqStore
   ): Value = {
     val vf = evalTerm(fn, env)
     val vArgs = args.map(a => evalTerm(a, env))
@@ -154,7 +153,7 @@ object Interpreter {
     evalApply(vf, vArgs)
   }
 
-  def evalLam[E <: EnvLike[E]](l: CTerm.Lam[CoreAst.Checked], vpi: VPi, env: E): VLam = {
+  def evalLam[E <: EnvLike[E]](l: ETerm.Lam, vpi: VPi, env: E): VLam = {
     val capturedIndexes = CapturedIndexes.getCapturedIndexes(l, env)
     val id = l.name match {
       case Some(funcName) => ValueId.Const(funcName)
@@ -191,7 +190,7 @@ object Interpreter {
       case BlockedThunkBody.Match(term, env)                     => evalMatch(term, env)
     }
 
-  private def evalLam[E <: EnvLike[E]](l: CTerm.Lam[CoreAst.Checked], env: E)(implicit eqStore: EqStore): VLam = {
+  private def evalLam[E <: EnvLike[E]](l: ETerm.Lam, env: E)(implicit eqStore: EqStore): VLam = {
     val vpi = evalPi(l.ty, env)
     evalLam(l, vpi, env)
   }
@@ -204,15 +203,15 @@ object Interpreter {
     }
   }
 
-  def evalTerm[E <: EnvLike[E]](term: CoreAst.CheckedTerm, env: E)(implicit eqStore: EqStore): Value = {
+  def evalTerm[E <: EnvLike[E]](term: ElabAst.Term, env: E)(implicit eqStore: EqStore): Value = {
     try {
       term match {
-        case CTerm.Select(base, field, span) => evalSelect(evalTerm(base, env), field, env, span.start)
-        case CTerm.App(fn, args, _)          => evalApplyTerm(fn, args, env)
-        case tt: CoreAst.CheckedTypeTerm     => evalTypeTerm(tt, env)
-        case l: CTerm.Lam[CoreAst.Checked]   => evalLam(l, env)
-        case m: CTerm.Match[CoreAst.Checked] => evalMatch(m, env)
-        case b: CTerm.Body[CoreAst.Checked]  => evalBody(b, env)
+        case ETerm.Select(base, field, span) => evalSelect(evalTerm(base, env), field, env, span.start)
+        case ETerm.App(fn, args, _)          => evalApplyTerm(fn, args, env)
+        case tt: ElabAst.TypeTerm            => evalTypeTerm(tt, env)
+        case l: ETerm.Lam                    => evalLam(l, env)
+        case m: ETerm.Match                  => evalMatch(m, env)
+        case b: ETerm.Body                   => evalBody(b, env)
       }
     } catch {
       case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, term.span)
@@ -269,7 +268,7 @@ object Interpreter {
     }
   }
 
-  private def evalMatch[E <: EnvLike[E]](m: CTerm.Match[CoreAst.Checked], env: E)(implicit eqStore: EqStore): Value = {
+  private def evalMatch[E <: EnvLike[E]](m: ETerm.Match, env: E)(implicit eqStore: EqStore): Value = {
     val capturedIndexes = CapturedIndexes.getCapturedIndexes(m, env)
 
     def computeMatchCaptures(): Vector[Value] = env.getLocalsByIndexes(capturedIndexes)
@@ -311,7 +310,7 @@ object Interpreter {
     evalTerm(branch.body, newEnv)
   }
 
-  def evalBody[E <: EnvLike[E]](body: CTerm.Body[CoreAst.Checked], env: E)(implicit eqStore: EqStore): Value = {
+  def evalBody[E <: EnvLike[E]](body: ETerm.Body, env: E)(implicit eqStore: EqStore): Value = {
     val newEnv = body.lets.foldLeft(env) { case (curEnv, l) =>
       val res = evalTerm(l.value, curEnv)
       val withTpe = (res, l.ty) match {
@@ -320,7 +319,7 @@ object Interpreter {
         case _ => res
       }
       val instanceKey = if (l.isInstance) Some(InstanceSearch.instanceKey(l.localRef.name, withTpe, eqStore)) else None
-      curEnv.putLocal(l.localRef, withTpe, instanceKey, Some(CTerm.LocalRef[CoreAst.Checked](l.localRef, l.span)))
+      curEnv.putLocal(l.localRef, withTpe, instanceKey, Some(ETerm.LocalRef(l.localRef, l.span)))
     }
     evalTerm(body.res, newEnv)
   }
@@ -373,7 +372,7 @@ object Interpreter {
         .putGlobal("Level::one", Level.const(1))
         .putGlobal("Prop", PropTpe)
 
-    val builtinFuncs = List[(String, RawTypeTerm, (Vector[Value], EqStore) => Value)](
+    val builtinFuncs = List[(String, CoreAst.TypeTerm, (Vector[Value], EqStore) => Value)](
       (
         "add_normalizer",
         parseHeader("(A: Type)(zero: A)(add: A -> A -> A): Normalizer"),
@@ -405,13 +404,13 @@ object Interpreter {
       VLam(
         {
           val lRef = CoreAst.LocalRef(0, "l")
-          val levelRef = CTerm.GlobalRef[CoreAst.Checked]("Level", Span(0, 0))
+          val levelRef = ETerm.GlobalRef("Level", Span(0, 0))
           VPi(
             env2.closeForEval(),
             Vector(
               VBinder(
                 lRef,
-                CoreAst.TypePattern.Type(levelRef),
+                ElabAst.TypePattern.Type(levelRef),
                 levelRef,
                 Vector.empty
               )
@@ -441,7 +440,7 @@ object Interpreter {
     }
   }
 
-  private def parseHeader(s: String): RawTypeTerm = {
+  private def parseHeader(s: String): CoreAst.TypeTerm = {
     LanguageParser.parseFuncHeader(s) match {
       case Success(header, _, _) => Elaborator.getType(header)
       case err: Failure          => throw new RuntimeException(err.message)

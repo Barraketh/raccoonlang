@@ -1,7 +1,7 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.Term
-import com.raccoonlang.CoreAst.Term.Match
+import com.raccoonlang.ElabAst.Term
+import com.raccoonlang.ElabAst.Term.Match
 import org.roaringbitmap.RoaringBitmap
 
 object CapturedIndexes {
@@ -13,34 +13,31 @@ object CapturedIndexes {
     if (ref.id < cutoff) refs.add(ref.id)
   }
 
-  private def goTerms(terms: IterableOnce[CoreAst.Term[_]], cutoff: Int, refs: RoaringBitmap): Unit =
+  private def goTerms(terms: IterableOnce[ElabAst.Term], cutoff: Int, refs: RoaringBitmap): Unit =
     terms.iterator.foreach(goTerm(_, cutoff, refs))
 
-  private def goPatterns(terms: IterableOnce[CoreAst.TypePattern[_]], cutoff: Int, refs: RoaringBitmap): Unit =
+  private def goPatterns(terms: IterableOnce[ElabAst.TypePattern], cutoff: Int, refs: RoaringBitmap): Unit =
     terms.iterator.foreach(goPattern(_, cutoff, refs))
 
-  private def goPattern(pattern: CoreAst.TypePattern[_], cutoff: Int, refs: RoaringBitmap): Unit =
+  private def goPattern(pattern: ElabAst.TypePattern, cutoff: Int, refs: RoaringBitmap): Unit =
     pattern match {
-      case CoreAst.TypePattern.Capture(ref, _) =>
+      case ElabAst.TypePattern.Capture(ref, _) =>
         addRef(ref, cutoff, refs)
 
-      case CoreAst.TypePattern.App(fn, args, _) =>
+      case ElabAst.TypePattern.App(fn, args, _) =>
         goTerm(fn, cutoff, refs)
         goPatterns(args, cutoff, refs)
 
-      case CoreAst.TypePattern.Type(term) =>
+      case ElabAst.TypePattern.Type(term) =>
         goTerm(term, cutoff, refs)
     }
 
-  private def goTerm(term: CoreAst.Term[_], cutoff: Int, refs: RoaringBitmap): Unit =
+  private def goTerm(term: ElabAst.Term, cutoff: Int, refs: RoaringBitmap): Unit =
     term match {
       case Term.GlobalRef(_, _) =>
 
       case Term.LocalRef(ref, _) =>
         addRef(ref, cutoff, refs)
-
-      case Term.TApp(fn, args, _)   => goTerms(fn +: args, cutoff, refs)
-      case Term.TSelect(base, _, _) => goTerm(base, cutoff, refs)
 
       case Term.Pi(binders, out, _) =>
         binders.foreach { b =>
@@ -70,7 +67,7 @@ object CapturedIndexes {
         }
     }
 
-  def getCapturedIndexes(term: CoreAst.Term[_], env: EnvLike[_]): RoaringBitmap = {
+  def getCapturedIndexes(term: ElabAst.Term, env: EnvLike[_]): RoaringBitmap = {
     val indexes = new RoaringBitmap
     if (env.locals.nonEmpty) {
       goTerm(term, env.locals.length, indexes)

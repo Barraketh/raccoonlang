@@ -76,7 +76,7 @@ object Value {
     def synDeps: DepSet
   }
   object LamBody {
-    final case class Core(term: CoreAst.Term.Lam[CoreAst.Checked], env: RuntimeEnv) extends LamBody {
+    final case class Core(term: ElabAst.Term.Lam, env: RuntimeEnv) extends LamBody {
       override lazy val synDeps: DepSet = envDeps(env)
     }
     final case class Native(run: (Vector[Value], EqStore) => Value) extends LamBody {
@@ -92,7 +92,7 @@ object Value {
       override lazy val synDeps: DepSet = base.synDeps ++ envDeps(env)
     }
 
-    final case class Match(term: CoreAst.Term.Match[CoreAst.Checked], env: RuntimeEnv) extends BlockedThunkBody {
+    final case class Match(term: ElabAst.Term.Match, env: RuntimeEnv) extends BlockedThunkBody {
       override lazy val synDeps: DepSet = envDeps(env)
     }
   }
@@ -194,8 +194,8 @@ object Value {
 
   case class VBinder(
       localRef: CoreAst.LocalRef,
-      ty: CoreAst.CheckedTypePattern,
-      expectedTy: CoreAst.CheckedTypeTerm,
+      ty: ElabAst.TypePattern,
+      expectedTy: ElabAst.TypeTerm,
       captures: Vector[Value.VCapture],
       isDerived: Boolean = false,
       isInstance: Boolean = false

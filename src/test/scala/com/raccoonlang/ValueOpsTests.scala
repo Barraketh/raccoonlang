@@ -1,12 +1,12 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.{Term => CTerm}
+import com.raccoonlang.ElabAst.{Term => ETerm}
 import com.raccoonlang.Value._
 
 class ValueOpsTests extends munit.FunSuite {
   private val span = Span(0, 0)
   private val valueType: Value = VSort(Level.zero)
-  private val typeRef: CoreAst.CheckedTypeTerm = CTerm.GlobalRef[CoreAst.Checked]("Type", span)
+  private val typeRef: ElabAst.TypeTerm = ETerm.GlobalRef("Type", span)
 
   private def symbolicValue(name: String): VConst =
     VConst(name, Symbol, valueType)
@@ -18,7 +18,7 @@ class ValueOpsTests extends munit.FunSuite {
     val ref = CoreAst.LocalRef(0, "x")
     val x = FreshVar.freshVar("x", valueType)
     val solution = symbolicValue("Solved")
-    val term = CTerm.LocalRef[CoreAst.Checked](ref, span)
+    val term = ETerm.LocalRef(ref, span)
     val env = TypecheckEnv.empty.putLocal(ref, x, Some("candidate"), Some(term))
 
     val materialized = ValueOps.materializeEnv(env, solve(x, solution))
@@ -35,7 +35,7 @@ class ValueOpsTests extends munit.FunSuite {
     val pruned = FreshVar.freshVar("pruned", valueType)
     val solution = symbolicValue("KeptSolution")
     val env = TypecheckEnv.empty.putLocal(keptRef, kept).putLocal(prunedRef, pruned)
-    val capturedIndexes = CapturedIndexes.getCapturedIndexes(CTerm.LocalRef[CoreAst.Checked](keptRef, span), env)
+    val capturedIndexes = CapturedIndexes.getCapturedIndexes(ETerm.LocalRef(keptRef, span), env)
 
     val closed = env.closeForEval(Some(capturedIndexes))
 
@@ -55,7 +55,7 @@ class ValueOpsTests extends munit.FunSuite {
     val env = TypecheckEnv.empty.putGlobal("Type", valueType).putLocal(capturedRef, captured)
     val runtimeEnv = RuntimeEnv(env.globals, env.locals)
 
-    val binder = VBinder(argRef, CoreAst.TypePattern.Type(typeRef), typeRef, Vector.empty)
+    val binder = VBinder(argRef, ElabAst.TypePattern.Type(typeRef), typeRef, Vector.empty)
     val pi = VPi(
       runtimeEnv,
       Vector(binder),
@@ -64,15 +64,15 @@ class ValueOpsTests extends munit.FunSuite {
       ValueId.LocalId(1, Vector(captured)),
       VSort(Level.zero)
     )
-    val piTerm = CTerm.Pi[CoreAst.Checked](
-      Vector(CoreAst.Binder(argRef, CoreAst.TypePattern.Type(typeRef), span)),
+    val piTerm = ETerm.Pi(
+      Vector(ElabAst.Binder(argRef, ElabAst.TypePattern.Type(typeRef), span)),
       typeRef,
       span
     )
-    val lamTerm = CTerm.Lam[CoreAst.Checked](
+    val lamTerm = ETerm.Lam(
       piTerm,
       Vector.empty,
-      CTerm.LocalRef[CoreAst.Checked](capturedRef, span),
+      ETerm.LocalRef(capturedRef, span),
       span,
       name = None,
       isStable = false
@@ -98,7 +98,7 @@ class ValueOpsTests extends munit.FunSuite {
     val env = TypecheckEnv.empty.putGlobal("Type", valueType).putLocal(capturedRef, captured)
     val runtimeEnv = env.closeForEval()
 
-    val binder = VBinder(argRef, CoreAst.TypePattern.Type(typeRef), typeRef, Vector.empty)
+    val binder = VBinder(argRef, ElabAst.TypePattern.Type(typeRef), typeRef, Vector.empty)
     val pi = VPi(
       runtimeEnv,
       Vector(binder),
@@ -107,15 +107,15 @@ class ValueOpsTests extends munit.FunSuite {
       ValueId.LocalId(1, Vector.empty),
       VSort(Level.zero)
     )
-    val piTerm = CTerm.Pi[CoreAst.Checked](
-      Vector(CoreAst.Binder(argRef, CoreAst.TypePattern.Type(typeRef), span)),
+    val piTerm = ETerm.Pi(
+      Vector(ElabAst.Binder(argRef, ElabAst.TypePattern.Type(typeRef), span)),
       typeRef,
       span
     )
-    val lamTerm = CTerm.Lam[CoreAst.Checked](
+    val lamTerm = ETerm.Lam(
       piTerm,
       Vector.empty,
-      CTerm.LocalRef[CoreAst.Checked](capturedRef, span),
+      ETerm.LocalRef(capturedRef, span),
       span,
       name = None,
       isStable = false
@@ -133,16 +133,16 @@ class ValueOpsTests extends munit.FunSuite {
     val captured = symbolicValue("Captured")
     val env = TypecheckEnv.empty.putGlobal("Type", valueType).putLocal(capturedRef, captured)
 
-    val piTerm = CTerm.Pi[CoreAst.Checked](
-      Vector(CoreAst.Binder(argRef, CoreAst.TypePattern.Type(typeRef), span)),
+    val piTerm = ETerm.Pi(
+      Vector(ElabAst.Binder(argRef, ElabAst.TypePattern.Type(typeRef), span)),
       typeRef,
       span
     )
     val vpi = Interpreter.evalPi(piTerm, env, piTerm.binders.map(com.raccoonlang.telescope.TypePatternOps.toVBinder))
-    val lamTerm = CTerm.Lam[CoreAst.Checked](
+    val lamTerm = ETerm.Lam(
       piTerm,
       Vector.empty,
-      CTerm.LocalRef[CoreAst.Checked](capturedRef, span),
+      ETerm.LocalRef(capturedRef, span),
       span,
       name = None,
       isStable = false
@@ -167,14 +167,14 @@ class ValueOpsTests extends munit.FunSuite {
     val runtimeEnv = RuntimeEnv(env.globals, env.locals)
     val head = ConstructorHead("C", numParams = 0, totalArity = 0, valueType, isStruct = false)
     val ctor = VCtor(head, Vector.empty, valueType)
-    val matchTerm = CTerm.Match[CoreAst.Checked](
-      CTerm.LocalRef[CoreAst.Checked](scrutRef, span),
+    val matchTerm = ETerm.Match(
+      ETerm.LocalRef(scrutRef, span),
       motive = None,
       cases = Vector(
-        CoreAst.Case[CoreAst.Checked](
+        ElabAst.Case(
           "C",
           Vector.empty,
-          CTerm.LocalRef[CoreAst.Checked](capturedRef, span),
+          ETerm.LocalRef(capturedRef, span),
           span
         )
       ),
@@ -214,14 +214,14 @@ class ValueOpsTests extends munit.FunSuite {
       .putLocal(capturedRef, captured)
       .putLocal(unusedRef, unused)
       .putLocal(scrutRef, scrut)
-    val matchTerm = CTerm.Match[CoreAst.Checked](
-      CTerm.LocalRef[CoreAst.Checked](scrutRef, span),
+    val matchTerm = ETerm.Match(
+      ETerm.LocalRef(scrutRef, span),
       motive = None,
       cases = Vector(
-        CoreAst.Case[CoreAst.Checked](
+        ElabAst.Case(
           "C",
           Vector.empty,
-          CTerm.LocalRef[CoreAst.Checked](capturedRef, span),
+          ETerm.LocalRef(capturedRef, span),
           span
         )
       ),
