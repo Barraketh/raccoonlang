@@ -7,6 +7,7 @@ class ValueOpsTests extends munit.FunSuite {
   private val span = Span(0, 0)
   private val valueType: Value = VSort(Level.zero)
   private val typeRef: ElabAst.TypeTerm = ETerm.GlobalRef("Type", span)
+  private val typeToTypeClassifier: Value.Universe = VSort(Level.succ(Level.zero))
 
   private def symbolicValue(name: String): VConst =
     VConst(name, Symbol, valueType)
@@ -62,11 +63,12 @@ class ValueOpsTests extends munit.FunSuite {
       (_, _) => valueType,
       captured.synDeps,
       ValueId.LocalId(1, Vector(captured)),
-      VSort(Level.zero)
+      typeToTypeClassifier
     )
     val piTerm = ETerm.Pi(
       Vector(ElabAst.Binder(argRef, ElabAst.TypePattern.Type(typeRef), span)),
       typeRef,
+      typeToTypeClassifier,
       span
     )
     val lamTerm = ETerm.Lam(
@@ -105,11 +107,12 @@ class ValueOpsTests extends munit.FunSuite {
       (_, _) => valueType,
       DepSet.empty,
       ValueId.LocalId(1, Vector.empty),
-      VSort(Level.zero)
+      typeToTypeClassifier
     )
     val piTerm = ETerm.Pi(
       Vector(ElabAst.Binder(argRef, ElabAst.TypePattern.Type(typeRef), span)),
       typeRef,
+      typeToTypeClassifier,
       span
     )
     val lamTerm = ETerm.Lam(
@@ -136,6 +139,7 @@ class ValueOpsTests extends munit.FunSuite {
     val piTerm = ETerm.Pi(
       Vector(ElabAst.Binder(argRef, ElabAst.TypePattern.Type(typeRef), span)),
       typeRef,
+      typeToTypeClassifier,
       span
     )
     val vpi = Interpreter.evalPi(piTerm, env, piTerm.binders.map(com.raccoonlang.telescope.TypePatternOps.toVBinder))

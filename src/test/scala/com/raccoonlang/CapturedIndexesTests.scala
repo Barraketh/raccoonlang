@@ -7,6 +7,7 @@ class CapturedIndexesTests extends munit.FunSuite {
   private val span = Span(0, 0)
   private val valueType: Value = VSort(Level.zero)
   private val typeRef: ElabAst.TypeTerm = ETerm.GlobalRef("Type", span)
+  private val classifier: Value.Universe = VSort(Level.zero)
 
   test("getCapturedIndexes collects only local indexes below the current env cutoff") {
     val capturedRef = CoreAst.LocalRef(0, "captured")
@@ -20,6 +21,7 @@ class CapturedIndexesTests extends munit.FunSuite {
         Vector(ETerm.LocalRef(capturedRef, span)),
         span
       ),
+      classifier,
       span
     )
 

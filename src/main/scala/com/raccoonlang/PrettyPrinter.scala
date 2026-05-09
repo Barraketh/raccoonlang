@@ -152,7 +152,7 @@ object PrettyPrinter {
         val headStr = printElabTermAtom(fn)
         val argsStr = args.map(printElabTermAtom).mkString(", ")
         s"$headStr($argsStr)"
-      case Term.Pi(binders, out, _) =>
+      case Term.Pi(binders, out, _, _) =>
         val bindersStr = binders
           .map { b =>
             if (b.name == "_") printElabTypePattern(b.ty) else s"(${b.name}: ${printElabTypePattern(b.ty)})"
@@ -165,7 +165,7 @@ object PrettyPrinter {
       case _: Term.Ref          => pt(t)
       case Term.Select(_, _, _) => pt(t)
       case Term.App(_, _, _)    => pt(t)
-      case Term.Pi(_, _, _)     => s"(${pt(t)})"
+      case Term.Pi(_, _, _, _)  => s"(${pt(t)})"
     }
 
     pt(tt)
@@ -218,7 +218,7 @@ object PrettyPrinter {
     case ElabAst.Term.Lam(_, _, _, _, _, _)  => s"(${printElabTerm0(t)})"
     case ElabAst.Term.Match(_, _, _, _)      => s"(${printElabTerm0(t)})"
     case ElabAst.Term.Body(_, _, _)          => s"(${printElabTerm0(t)})"
-    case ElabAst.Term.Pi(_, _, _)            => s"(${printElabTerm0(t)})"
+    case ElabAst.Term.Pi(_, _, _, _)         => s"(${printElabTerm0(t)})"
   }
 
   private def printElabTerm0(t: ElabAst.Term): String = t match {

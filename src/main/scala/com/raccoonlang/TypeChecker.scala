@@ -65,6 +65,17 @@ object TypeChecker {
 
   private def checkedArg(arg: CheckedType): BinderOps.CheckedArg = BinderOps.CheckedArg(arg.value, arg.term)
 
+  private def computePiClassifier(vars: Vector[Value], outType: Value)(implicit eqStore: EqStore): Universe =
+    TypeChecker.getUniverse(outType) match {
+      case PropTpe => PropTpe
+      case VSort(outLevel) =>
+        val domLevels: Vector[Level] = vars
+          .map(v => TypeChecker.getUniverse(v.tpe))
+          .collect { case VSort(level) => level }
+
+        VSort(Level.max(domLevels :+ outLevel))
+    }
+
   private def checkTypeApply(
       fn: Value,
       args: Vector[BinderOps.CheckedArg],
@@ -97,7 +108,8 @@ object TypeChecker {
   ): CheckedPi = {
     val freshened = BinderOps.freshenRawBinders(pi.binders, env)
     val checkedOut = getCheckedType(pi.out, freshened.env)
-    val checkedPi = EA.Term.Pi(freshened.checkedBinders, checkedOut.term, pi.span)
+    val classifier = computePiClassifier(freshened.vars, checkedOut.value)
+    val checkedPi = EA.Term.Pi(freshened.checkedBinders, checkedOut.term, classifier, pi.span)
     CheckedPi(evalPi(checkedPi, env, freshened.vBinders), checkedPi)
   }
 

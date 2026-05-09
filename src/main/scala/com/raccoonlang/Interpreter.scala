@@ -53,28 +53,11 @@ object Interpreter {
   ): RuntimeEnv =
     BinderOps.instantiateFull(fnTpe.binders, baseEnv, args)
 
-  def evalPi[E <: EnvLike[E]](pi: ETerm.Pi, env: E, vBinders: Vector[VBinder])(implicit
-      eqStore: EqStore
-  ): VPi = {
+  def evalPi[E <: EnvLike[E]](pi: ETerm.Pi, env: E, vBinders: Vector[VBinder]): VPi = {
     val capturedIndexes = CapturedIndexes.getCapturedIndexes(pi, env)
     val captureVals = env.getLocalsByIndexes(capturedIndexes)
     val id = ValueId.LocalId(pi.span.start, captureVals)
     val closedEnv = env.closeForEval(Some(capturedIndexes))
-
-    val fresh = BinderOps.freshen(vBinders, closedEnv)
-    val vars = fresh.vars
-    val bodyEnv = fresh.env
-    val outType = evalTypeTerm(pi.out, bodyEnv)
-
-    val piClassifier: Universe = TypeChecker.getUniverse(outType) match {
-      case PropTpe => PropTpe
-      case VSort(outLevel) =>
-        val domLevels: Vector[Level] = vars
-          .map(v => TypeChecker.getUniverse(v.tpe))
-          .collect { case VSort(level) => level }
-
-        VSort(Level.max(domLevels :+ outLevel))
-    }
 
     val synDeps = DepSet.newBuilder
     captureVals.foreach { v =>
@@ -87,13 +70,12 @@ object Interpreter {
       codomain = (env, eqStore) => evalTypeTerm(pi.out, env)(eqStore),
       synDeps.result(),
       id,
-      piClassifier
+      pi.classifier
     )
   }
 
-  private def evalPi[E <: EnvLike[E]](pi: ETerm.Pi, env: E)(implicit eqStore: EqStore): VPi = {
+  private def evalPi[E <: EnvLike[E]](pi: ETerm.Pi, env: E): VPi =
     evalPi(pi, env, pi.binders.map(TypePatternOps.toVBinder))
-  }
 
   def evalTypeTerm[E <: EnvLike[E]](tt: ElabAst.TypeTerm, env: E)(implicit meta: EqStore): Value = tt match {
     case ref: ETerm.Ref                  => evalRef(ref, env)

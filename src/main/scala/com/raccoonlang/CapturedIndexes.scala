@@ -39,7 +39,7 @@ object CapturedIndexes {
       case Term.LocalRef(ref, _) =>
         addRef(ref, cutoff, refs)
 
-      case Term.Pi(binders, out, _) =>
+      case Term.Pi(binders, out, _, _) =>
         binders.foreach { b =>
           goPattern(b.ty, cutoff, refs)
         }
