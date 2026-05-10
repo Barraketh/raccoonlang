@@ -4,18 +4,10 @@ import com.raccoonlang.Value.{VBinder, VPi}
 import com.raccoonlang._
 
 object BinderOps {
-  final case class Freshened[E <: EnvLike[E]](vars: Vector[Value], env: E, newVars: DepSet)
-  final case class FreshenedRawBinders(
-      vars: Vector[Value],
-      env: TypecheckEnv,
-      newVars: DepSet,
-      vBinders: Vector[VBinder],
-      checkedBinders: Vector[ElabAst.Binder]
-  )
   final case class CheckedArg(value: Value, term: ElabAst.Term)
   final case class CompletedArgs(env: RuntimeEnv, values: Vector[Value], terms: Vector[ElabAst.Term])
 
-  private def putBinderLocal[E <: EnvLike[E]](env: E, binder: VBinder, value: Value)(implicit
+  private[telescope] def putBinderLocal[E <: EnvLike[E]](env: E, binder: VBinder, value: Value)(implicit
       eqStore: EqStore
   ): E = {
     val instanceKey =
@@ -24,48 +16,33 @@ object BinderOps {
     env.putLocal(binder.localRef, value, instanceKey)
   }
 
-  def freshen[E <: EnvLike[E]](binders: Vector[VBinder], baseEnv: E)(implicit eqStore: EqStore): Freshened[E] = {
-    if (binders.isEmpty) return Freshened(Vector.empty, baseEnv, DepSet.empty)
-
-    val vars = Vector.newBuilder[Value]
+  def freshen[E <: EnvLike[E]](binders: Vector[VBinder], baseEnv: E)(implicit eqStore: EqStore): E = {
     var env = baseEnv
-    val newVars = DepSet.newBuilder
-
     binders.foreach { binder =>
-      val fresh = TypePatternOps.freshenBinder(env, binder)
-      vars += fresh.value
-      env = putBinderLocal(fresh.env, binder, fresh.value)
-      newVars.unionInPlace(fresh.newVars)
+      env = TypePatternOps.freshenBinder(env, binder)
     }
 
-    Freshened(vars.result(), env, newVars.result())
+    env
   }
 
-  def freshen(vpi: VPi)(implicit eqStore: EqStore): Freshened[RuntimeEnv] = freshen(vpi.binders, vpi.env)
+  def freshen(vpi: VPi)(implicit eqStore: EqStore): RuntimeEnv = freshen(vpi.binders, vpi.env)
 
-  def freshenRawBinders(binders: Vector[CoreAst.Binder], baseEnv: TypecheckEnv)(implicit
+  def toVBinders(binders: Vector[CoreAst.Binder], baseEnv: TypecheckEnv)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
-  ): FreshenedRawBinders = {
-    if (binders.isEmpty)
-      return FreshenedRawBinders(Vector.empty, baseEnv, DepSet.empty, Vector.empty, Vector.empty)
-
-    val vars = Vector.newBuilder[Value]
+  ): (Vector[VBinder], Vector[ElabAst.Binder]) = {
     val vBinders = Vector.newBuilder[VBinder]
     val checkedBinders = Vector.newBuilder[ElabAst.Binder]
     var env = baseEnv
-    val newVars = DepSet.newBuilder
 
     binders.foreach { binder =>
-      val fresh = TypePatternOps.freshenRawBinder(env, binder)
-      vars += fresh.value
-      env = putBinderLocal(fresh.env, fresh.binder, fresh.value)
-      newVars.unionInPlace(fresh.newVars)
-      vBinders += fresh.binder
-      checkedBinders += fresh.checkedBinder
+      val (vBinder, checkedBinder) = TypePatternOps.toVBinder(binder, env)
+      vBinders += vBinder
+      checkedBinders += checkedBinder
+      env = freshen(Vector(vBinder), env)
     }
 
-    FreshenedRawBinders(vars.result(), env, newVars.result(), vBinders.result(), checkedBinders.result())
+    (vBinders.result(), checkedBinders.result())
   }
 
   def instantiateFull(binders: Vector[VBinder], baseEnv: RuntimeEnv, args: Vector[Value])(implicit

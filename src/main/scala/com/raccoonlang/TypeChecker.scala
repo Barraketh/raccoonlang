@@ -106,11 +106,13 @@ object TypeChecker {
       meta: EqStore,
       normalizers: NormalizerMap
   ): CheckedPi = {
-    val freshened = BinderOps.freshenRawBinders(pi.binders, env)
-    val checkedOut = getCheckedType(pi.out, freshened.env)
-    val classifier = computePiClassifier(freshened.vars, checkedOut.value)
-    val checkedPi = EA.Term.Pi(freshened.checkedBinders, checkedOut.term, classifier, pi.span)
-    CheckedPi(evalPi(checkedPi, env, freshened.vBinders), checkedPi)
+    val (vBinders, checkedBinders) = BinderOps.toVBinders(pi.binders, env)
+    val binderEnv = BinderOps.freshen(vBinders, env)
+    val checkedOut = getCheckedType(pi.out, binderEnv)
+    val freshArgs = vBinders.map(binder => binderEnv(binder.localRef))
+    val classifier = computePiClassifier(freshArgs, checkedOut.value)
+    val checkedPi = EA.Term.Pi(checkedBinders, checkedOut.term, classifier, pi.span)
+    CheckedPi(evalPi(checkedPi, env, vBinders), checkedPi)
   }
 
   def checkTypeTerm(term: CA.TypeTerm, env: TypecheckEnv)(implicit
@@ -207,7 +209,7 @@ object TypeChecker {
         env(ctorName) match {
           case h: ConstructorHead =>
             val fresh = ConstructorOps.freshFromParams(h, scrutTypeParams)
-            val appliedCtor: Value = fresh.value
+            val appliedCtor: Value = fresh
 
             val branchEqStore: Option[EqStore] =
               try {
@@ -223,7 +225,7 @@ object TypeChecker {
                   }
               }
 
-            branchEqStore.map(eqStore => ReachableCtor(ctorName, h, fresh.value.fields, fresh.value.tpe, eqStore))
+            branchEqStore.map(eqStore => ReachableCtor(ctorName, h, fresh.fields, fresh.tpe, eqStore))
 
           case _ => throw UnknownConstructor(ctorName, inductiveName)
         }
@@ -359,8 +361,7 @@ object TypeChecker {
 
     val checkedPi = checkPi(l.ty, env)
     val vpi = checkedPi.value
-    val freshBody = BinderOps.freshen(vpi.binders, env)
-    val bodyEnv = freshBody.env
+    val bodyEnv = BinderOps.freshen(vpi.binders, env)
 
     val recurEnv =
       l.name match {

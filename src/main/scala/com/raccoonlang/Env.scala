@@ -31,6 +31,12 @@ trait EnvLike[E <: EnvLike[E]] {
     values.result()
   }
 
+  lazy val allDeps: DepSet = {
+    val res = DepSet.newBuilder
+    locals.foreach(b => b.foreach(v => res.unionInPlace(v.synDeps)))
+    res.result()
+  }
+
   def putGlobal(
       name: String,
       value: Value,
@@ -177,6 +183,11 @@ final case class Binding(
       case Binding.Live(value) => Binding.live(name, f(value))
       case Binding.Pruned      => this
     }
+
+  def foreach(f: Value => Unit): Unit = state match {
+    case Binding.Live(value) => f(value)
+    case _                   =>
+  }
 }
 
 object Binding {

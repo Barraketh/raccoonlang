@@ -132,10 +132,13 @@ object InstanceSearch {
   ): SearchResult = {
     Interpreter.resolveInEqStore(candidate.value.tpe) match {
       case pi: VPi =>
-        val fresh = BinderOps.freshen(pi)
-        val resultTy = pi.codomain(fresh.env, eqStore)
-        val candidateEq = ValueEquivalence.unify(resultTy, goal, eqStore.allow(fresh.newVars))
-        val goals = fresh.vars.map(v => ValueOps.materialize(v.tpe, candidateEq))
+        val freshEnv = BinderOps.freshen(pi)
+        val resultTy = pi.codomain(freshEnv, eqStore)
+
+        val candidateEq =
+          ValueEquivalence.unify(resultTy, goal, eqStore.allow(freshEnv.allDeps -- pi.env.allDeps))
+        val freshArgs = pi.binders.map(binder => freshEnv(binder.localRef))
+        val goals = freshArgs.map(v => ValueOps.materialize(v.tpe, candidateEq))
 
         val (args, argTerms) = fillCandidateArgs(candidate, pi, goals, searchEnv, state, ctx)
         val res = Interpreter.evalApply(candidate.value, args)
@@ -186,8 +189,8 @@ object InstanceSearch {
   private def resultType(tpe: Value)(implicit eqStore: EqStore): Option[Value] =
     Interpreter.resolveInEqStore(tpe) match {
       case pi: VPi =>
-        val fresh = BinderOps.freshen(pi)
-        Some(pi.codomain(fresh.env, eqStore))
+        val freshEnv = BinderOps.freshen(pi)
+        Some(pi.codomain(freshEnv, eqStore))
       case other => Some(other)
     }
 

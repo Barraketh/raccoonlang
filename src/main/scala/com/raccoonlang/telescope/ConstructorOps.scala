@@ -4,8 +4,6 @@ import com.raccoonlang.Value.{ConstructorHead, VBinder, VCtor, VPi}
 import com.raccoonlang._
 
 object ConstructorOps {
-  final case class FreshCtor(value: VCtor, newVars: DepSet)
-
   final case class ConstructorShape private[telescope] (
       private[telescope] val head: ConstructorHead,
       private[telescope] val pi: VPi
@@ -37,22 +35,24 @@ object ConstructorOps {
     def require(head: ConstructorHead): ConstructorShape = from(head).getOrElse(throw CannotApplyNonFunction(head.tpe))
   }
 
-  def freshFromParams(head: ConstructorHead, paramArgs: Vector[Value])(implicit eqStore: EqStore): FreshCtor =
+  def freshFromParams(head: ConstructorHead, paramArgs: Vector[Value])(implicit eqStore: EqStore): VCtor =
     ConstructorShape.from(head) match {
       case Some(shape) =>
         val envWithParams = shape.instantiateParams(paramArgs)
         val fields = shape.fieldBinders
         val fresh = freshFieldPrefix(fields, envWithParams, fields.length)
-        FreshCtor(VCtor(head, fresh.vars, shape.pi.codomain(fresh.env, eqStore)), fresh.newVars)
+        val fieldValues = fields.map(binder => fresh(binder.localRef))
+        VCtor(head, fieldValues, shape.pi.codomain(fresh, eqStore))
 
-      case None => FreshCtor(VCtor(head, Vector.empty, head.tpe), DepSet.empty)
+      case None => VCtor(head, Vector.empty, head.tpe)
     }
 
   def freshAll(head: ConstructorHead)(implicit eqStore: EqStore): VCtor =
     ConstructorShape.from(head) match {
       case Some(shape) =>
         val fresh = BinderOps.freshen(shape.pi)
-        shape.makeCtor(fresh.vars.map(v => v: Value), shape.pi.codomain(fresh.env, eqStore))
+        val args = shape.pi.binders.map(binder => fresh(binder.localRef))
+        shape.makeCtor(args, shape.pi.codomain(fresh, eqStore))
 
       case None => VCtor(head, Vector.empty, head.tpe)
     }
@@ -70,7 +70,8 @@ object ConstructorOps {
         if (fieldIdx < 0) throw NotFound(field)
 
         val fieldRef = allFieldBinders(fieldIdx).localRef
-        freshFieldPrefix(allFieldBinders, envWithParams, fieldIdx + 1).env(fieldRef).tpe
+        val envWithFields = freshFieldPrefix(allFieldBinders, envWithParams, fieldIdx + 1)
+        envWithFields(fieldRef).tpe
 
       case None => throw NotFound(field)
     }
@@ -82,9 +83,8 @@ object ConstructorOps {
       fieldBinders: Vector[VBinder],
       envWithParams: RuntimeEnv,
       fieldCount: Int
-  )(implicit eqStore: EqStore): BinderOps.Freshened[RuntimeEnv] = {
+  )(implicit eqStore: EqStore): RuntimeEnv = {
     val binders = fieldBinders.take(fieldCount)
-    if (binders.isEmpty) BinderOps.Freshened(Vector.empty, envWithParams, DepSet.empty)
-    else BinderOps.freshen(binders, envWithParams)
+    BinderOps.freshen(binders, envWithParams)
   }
 }

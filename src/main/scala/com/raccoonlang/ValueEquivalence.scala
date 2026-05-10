@@ -19,9 +19,8 @@ object ValueEquivalence {
         }
       ) throw TypeMismatch(pi1, pi2)
 
-      val freshPi1 = BinderOps.freshen(pi1)
-      val sharedVars = freshPi1.vars
-      val nextEnv1 = freshPi1.env
+      val nextEnv1 = BinderOps.freshen(pi1)
+      val sharedVars = pi1.binders.map(binder => nextEnv1(binder.localRef))
       val nextEnv2 = BinderOps.checkAndInstantiateFull(pi2.binders, pi2.env, sharedVars)
 
       val out1 = pi1.codomain(nextEnv1, eqStore)
@@ -187,9 +186,9 @@ object ValueEquivalence {
         case (p1: VPi, p2: VPi) if p1.binders.length == p2.binders.length           => unifyPis(p1, p2, meta)._1
         case (l1: VLam, l2: VLam) if l1.tpe.binders.length == l2.tpe.binders.length =>
           // We know that the id check failed - falling back to extensional unification
-          val (nextMeta, newVars) = unifyPis(l1.tpe, l2.tpe, meta)
-          val res1 = Interpreter.runLam(l1, newVars)(nextMeta)
-          val res2 = Interpreter.runLam(l2, newVars)(nextMeta)
+          val (nextMeta, sharedVars) = unifyPis(l1.tpe, l2.tpe, meta)
+          val res1 = Interpreter.runLam(l1, sharedVars)(nextMeta)
+          val res2 = Interpreter.runLam(l2, sharedVars)(nextMeta)
           unify(res1, res2, nextMeta)
         case (v1: AppliedValue, v2: AppliedValue) if v1.args.length == v2.args.length =>
           val startCtx = unify(v1.head, v2.head, meta)

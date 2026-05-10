@@ -44,8 +44,9 @@ object InductiveChecks {
       case VApp(h, args, _) =>
         sameInductiveHead(h, inductiveHead) || args.exists(arg => occursInductive(arg, inductiveHead))
       case pi: VPi =>
-        val freshBinders = BinderOps.freshen(pi)
-        val allTypes = freshBinders.vars.map(_.tpe) :+ pi.codomain(freshBinders.env, eqStore)
+        val freshEnv = BinderOps.freshen(pi)
+        val freshArgs = pi.binders.map(binder => freshEnv(binder.localRef))
+        val allTypes = freshArgs.map(_.tpe) :+ pi.codomain(freshEnv, eqStore)
         allTypes.exists(v => occursInductive(v, inductiveHead))
 
       case _: ConstructorHead | _: VCtor => false
@@ -76,9 +77,10 @@ object InductiveChecks {
         }
 
       case pi: VPi =>
-        val fresh = BinderOps.freshen(pi)
-        !fresh.vars.exists(v => occursInductive(v.tpe, inductiveHead)) &&
-        isStrictlyPositive(pi.codomain(fresh.env, eqStore), inductiveHead)
+        val freshEnv = BinderOps.freshen(pi)
+        val freshArgs = pi.binders.map(binder => freshEnv(binder.localRef))
+        !freshArgs.exists(v => occursInductive(v.tpe, inductiveHead)) &&
+        isStrictlyPositive(pi.codomain(freshEnv, eqStore), inductiveHead)
       case VApp(_, args, _) =>
         // For any head F (including the inductive), reject if I occurs in any argument.
         !args.exists(arg => occursInductive(arg, inductiveHead))
@@ -89,8 +91,12 @@ object InductiveChecks {
         true
     }
 
-  private def installInductive(decl: Decl.InductiveDecl, baseEnv: TypecheckEnv, inductiveHead: VConst, isStruct: Boolean)(
-      implicit
+  private def installInductive(
+      decl: Decl.InductiveDecl,
+      baseEnv: TypecheckEnv,
+      inductiveHead: VConst,
+      isStruct: Boolean
+  )(implicit
       eqStore: EqStore,
       normalizerMap: NormalizerMap
   ): TypecheckEnv = {
@@ -137,8 +143,12 @@ object InductiveChecks {
     val (paramVars, envWithParams, paramDeps) = {
       inductiveTypeCheck match {
         case pi: VPi =>
-          val freshParams = BinderOps.freshen(pi.binders.take(header.params.length), checkEnvWithInductive)
-          (freshParams.vars, freshParams.env, freshParams.newVars)
+          val paramBinders = pi.binders.take(header.params.length)
+          val envWithParams = BinderOps.freshen(paramBinders, checkEnvWithInductive)
+          val paramVars = paramBinders.map(binder => envWithParams(binder.localRef))
+
+          assert(checkEnvWithInductive.locals.isEmpty) // Sanity check
+          (paramVars, envWithParams, envWithParams.allDeps)
         case _ => (Vector.empty, checkEnvWithInductive, DepSet.empty)
       }
     }
@@ -163,9 +173,11 @@ object InductiveChecks {
 
     decl.ctors.foreach { ctor =>
       val outputTpe = {
-        val freshFields = BinderOps.freshenRawBinders(ctor.fields, envWithParams)
+        val (fieldBinders, _) = BinderOps.toVBinders(ctor.fields, envWithParams)
+        val fieldsEnv = BinderOps.freshen(fieldBinders, envWithParams)
+        val fieldVars = fieldBinders.map(binder => fieldsEnv(binder.localRef))
 
-        ctor.fields.zip(freshFields.vars).foreach { case (binder, field) =>
+        ctor.fields.zip(fieldVars).foreach { case (binder, field) =>
           // 2) Universe bound: skip for Prop families; enforce for Sort families
           familyUniverse match {
             case VSort(inductiveLevel) =>
@@ -197,7 +209,7 @@ object InductiveChecks {
             )
         }
 
-        TypeChecker.getType(ctor.resultTy, freshFields.env)
+        TypeChecker.getType(ctor.resultTy, fieldsEnv)
       }
 
       // 4) Constructor result must be the inductive family head applied to the full family arity,
