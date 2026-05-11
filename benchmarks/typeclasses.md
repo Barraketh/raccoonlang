@@ -13,7 +13,7 @@ Sampled on May 7, 2026 from branch `cur_main`, commit `3838a97`, on macOS 15.5 a
 - Timing: process wall-clock time; RaccoonJVM rows include JVM startup
 - Lean search budget: generated files set `maxHeartbeats = 0`, `synthInstance.maxHeartbeats = 0`, and `synthInstance.maxSize = 2000000000`
 
-The benchmark generator follows the current Raccoon invariant that instance functions cannot have ordinary non-derived binders. Generic Raccoon instances therefore recover parameters through type-pattern captures in derived dependencies, such as `[inner: TC($A)]: TC(Wrap(A))`. The `implicit-arity` scenario now uses a `Carrier($A0, ...)` dependency to keep the benchmark valid under that invariant.
+The benchmark generator follows the current Raccoon model where ordinary source applications provide every argument positionally, and instance search is requested explicitly with `derive[Goal]`. Generic Raccoon instances recover parameters through type-pattern captures in instance dependencies, such as `[inner: TC($A)]: TC(Wrap(A))`. The `implicit-arity` scenario uses a `Carrier($A0, ...)` dependency to keep the benchmark valid under that invariant.
 
 ## Results
 

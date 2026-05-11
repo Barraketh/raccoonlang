@@ -28,6 +28,7 @@ object LanguageParser {
     "inline",
     "def",
     "instance",
+    "derive",
     "inductive",
     "struct",
     "indices",
@@ -59,7 +60,9 @@ object LanguageParser {
   private def bracketSuffix: Parser[Vector[String]] = (symTight(".") ~/ ident).rep(0)
 
   private def termAtom: Parser[Term] = {
-    val base: Parser[Term] = (sym("(") ~/ term ~ symTight(")")) | identTerm
+    val derive: Parser[Term] =
+      (kwTight("derive") ~/ symTight("[") ~/ typeTerm ~ symTight("]")).flatSpanned.map(Derive.tupled)
+    val base: Parser[Term] = derive | (sym("(") ~/ term ~ symTight(")")) | identTerm
     (base.spanned ~ bracketSuffix).spanned.mapAsT { case ((b, fields), sp) =>
       fields.foldLeft(b.value: SurfaceAst.Term) { case (acc, f) => SurfaceAst.Term.Select(acc, f, sp) }
     }
@@ -115,16 +118,16 @@ object LanguageParser {
   }
 
   private def normalParam: Parser[Binder] =
-    (sym('(') ~ kw("instance").!.? ~ argName ~ sym(':') ~/ typeTerm ~ symTight(')')).flatSpanned.map {
-      case (instanceOpt, name, ty, span) => Binder(name, ty, span, isInstance = instanceOpt.isDefined)
+    (sym('(') ~ argName ~ sym(':') ~/ typeTerm ~ symTight(')')).flatSpanned.map { case (name, ty, span) =>
+      Binder(name, ty, span)
     }
 
-  private def derivedParam: Parser[Binder] =
+  private def instanceParam: Parser[Binder] =
     (sym('[') ~ argName ~ sym(':') ~/ typeTerm ~ symTight(']')).flatSpanned.map { case (name, ty, span) =>
-      Binder(name, ty, span, isDerived = true, isInstance = true)
+      Binder(name, ty, span, isInstance = true)
     }
 
-  private def param: Parser[Binder] = normalParam | derivedParam
+  private def param: Parser[Binder] = normalParam | instanceParam
 
   private def let: Parser[Let] =
     (kw("let") ~/ kw("instance").!.? ~ ident ~ (sym(':') ~ typeTerm).? ~ sym(":=") ~ term).flatSpanned.map {
@@ -163,11 +166,12 @@ object LanguageParser {
   }
 
   private def term: Parser[Term] =
-    ((lambda | matchP | body | simplePi | termAtom).spanned ~ parenArgs(term).?).spanned.mapAsT { case ((fn, args), span) =>
-      args match {
-        case Some(value) => App(fn.value, value, span)
-        case None        => fn.value
-      }
+    ((lambda | matchP | body | simplePi | termAtom).spanned ~ parenArgs(term).?).spanned.mapAsT {
+      case ((fn, args), span) =>
+        args match {
+          case Some(value) => App(fn.value, value, span)
+          case None        => fn.value
+        }
     }
 
   private def funcHeader: Parser[FuncHeader] = (param.rep(0) ~ sym(':') ~ typeTerm).flatSpanned.map(FuncHeader.tupled)

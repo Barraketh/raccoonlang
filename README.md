@@ -44,7 +44,7 @@ Note that at this point I have done 0 optimization - these performance wins are 
 
 - Inductive families with parameters and indices
     - Validates positivity, universes, uniform parameters, constructor result shape
-- Type classes as structs, with `def instance`, `let instance`, and '[f: Foo]' binders
+- Type classes as structs, with `def instance`, `let instance`, `[f: Foo]` instance binders, and explicit `derive[Foo]` search
 - Dependent pattern matching
     - Branch refinement for indexed families / dependent pattern matching. Supports equality proofs.
     - Validates exhaustiveness checking: missing, duplicate, and unreachable branches
@@ -99,7 +99,12 @@ In `zeroShapeOnly`, the `NatShape::isSucc` branch is unreachable because the scr
 ### Type Classes
 
 Type classes are ordinary structs. An instance is an ordinary definition or local binding marked as an instance, and
-instance search only runs for omitted binders whose default is `derive`.
+instance search runs only where a term expression explicitly asks for it with `derive[Goal]`.
+
+Bracket binders such as `[x: T]` are instance-marked binders. They are still ordinary positional arguments at call
+sites, but the bound value is registered for local instance search while checking the binder's scope. This lets instance
+functions declare searchable dependencies with type-pattern captures, and lets function bodies call `derive[...]`
+against instance-marked parameters.
 
 Search uses lexical priority and stops at the first successful candidate in a tier. Local instance bindings are
 searched before globals, with newer local bindings tried first. If a local candidate succeeds, globals are not
@@ -118,7 +123,7 @@ def instance listEq [ea: Eq($A)]: Eq(List(A)) := Eq::mk(List(A), Bool::true)
 inline def useListEq [eqA: Eq(List(Nat))]: Eq(List(Nat)) := eqA
 
 {
-  useListEq()
+  useListEq(derive[Eq(List(Nat))])
 }
 ```
 

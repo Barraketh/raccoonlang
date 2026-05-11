@@ -246,6 +246,29 @@ class TypePatternTests extends munit.FunSuite {
     }
   }
 
+  test("negative: extra pattern arguments are rejected") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        |
+        |inductive Box (A: Type) : Type
+        | | mk (a: A) : Box(A)
+        |
+        |def bad (b: Box(Nat, Nat::zero)): Type := Nat
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value)
+        intercept[ArityMismatch] {
+          Interpreter.run(core)
+        }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
+  }
+
   test("negative: concrete type pattern arguments are checked") {
     val p =
       """
@@ -327,7 +350,7 @@ class TypePatternTests extends munit.FunSuite {
     }
   }
 
-  test("negative: hidden derived binders are not visible in the codomain") {
+  test("negative: type-pattern captures are not visible in the codomain") {
     val p =
       """
         |inductive Nat : Type

@@ -73,7 +73,7 @@ object PrettyPrinter {
 
   def printBinder(b: CoreAst.Binder): String = {
     val body = s"${b.name}: ${printTypePattern(b.ty)}"
-    if (b.isDerived) s"[$body]" else if (b.isInstance) s"(instance $body)" else s"($body)"
+    if (b.isInstance) s"[$body]" else s"($body)"
   }
 
   private def printBinders(binders: Vector[CoreAst.Binder]): String =
@@ -97,6 +97,7 @@ object PrettyPrinter {
   private def printTermAtom(t: CoreAst.Term): String = t match {
     case _: CoreAst.Term.Ref                 => printCoreTerm(t)
     case CoreAst.Term.App(_, _, _)           => printCoreTerm(t)
+    case CoreAst.Term.Derive(_, _)           => printCoreTerm(t)
     case CoreAst.Term.TApp(_, _, _)          => printCoreTerm(t)
     case ts: CoreAst.Term.TSelect            => printTypeTerm(ts)
     case CoreAst.Term.Select(base, field, _) => s"${printTermAtom(base)}[$field]"
@@ -112,6 +113,7 @@ object PrettyPrinter {
     case m @ CoreAst.Term.Match(_, _, _, _)  => printMatch(m)
     case b: CoreAst.Term.Body                => printBody(b)
     case CoreAst.Term.Select(base, field, _) => s"${printTermAtom(base)}[$field]"
+    case CoreAst.Term.Derive(goal, _)        => s"derive[${printTypeTerm(goal)}]"
     case CoreAst.Term.App(fn, args, _) =>
       val headStr = printTermAtom(fn)
       val argsStr = args.map(printTermAtom).mkString(", ")
@@ -191,7 +193,7 @@ object PrettyPrinter {
 
   def printElabBinder(b: ElabAst.Binder): String = {
     val body = s"${b.name}: ${printElabTypePattern(b.ty)}"
-    if (b.isDerived) s"[$body]" else if (b.isInstance) s"(instance $body)" else s"($body)"
+    if (b.isInstance) s"(instance $body)" else s"($body)"
   }
 
   private def printElabBinders(binders: Vector[ElabAst.Binder]): String =

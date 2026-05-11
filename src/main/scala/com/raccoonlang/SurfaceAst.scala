@@ -34,6 +34,9 @@ object SurfaceAst {
     // Capture: `$name` binds a fresh variable in the type pattern
     final case class Capture(name: String, span: Span) extends TypeTerm
 
+    // Explicit instance search expression: derive[Goal]
+    final case class Derive(goal: TypeTerm, span: Span) extends Term
+
     // Application: f(a) (term-level)
     final case class App(fn: Term, args: Vector[Term], span: Span) extends Term
 
@@ -56,9 +59,7 @@ object SurfaceAst {
   // Let: let x := foo
   final case class Let(name: String, ty: Option[TypeTerm], value: Term, span: Span, isInstance: Boolean = false)
 
-  case class Binder(name: String, ty: TypeTerm, span: Span, isDerived: Boolean = false, isInstance: Boolean = false) {
-    require(!isDerived || isInstance, "Derived binders must participate in local instance search")
-  }
+  case class Binder(name: String, ty: TypeTerm, span: Span, isInstance: Boolean = false)
 
   case class FuncHeader(params: Vector[Binder], ty: TypeTerm, span: Span)
 

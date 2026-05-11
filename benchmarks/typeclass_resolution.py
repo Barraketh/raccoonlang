@@ -9,7 +9,7 @@ typeclass search cost is affected by different dimensions:
 * chain: recursive instance depth
 * failures: number of failing candidates before a success
 * branching: failing alternatives at each recursive level
-* implicit-arity: many parameters recovered from a captured derived dependency
+* implicit-arity: many parameters recovered from a captured instance dependency
 * explicit-control: explicit instance/value construction without search
 * repeat-query: repeated identical queries in one file
 * diamond: repeated shared-subgoal reuse through a layered hierarchy
@@ -123,8 +123,12 @@ def raccoon_type_binders(params: Iterable[str]) -> str:
     return "".join(f"({param}: Sort($u{idx}))" for idx, param in enumerate(params))
 
 
-def raccoon_derived_binder(name: str, ty: str) -> str:
+def raccoon_instance_binder(name: str, ty: str) -> str:
     return f"[{name}: {ty}]"
+
+
+def raccoon_derive(goal: str) -> str:
+    return f"derive[{goal}]"
 
 
 def raccoon_mk(name: str, args: Iterable[str] = ()) -> str:
@@ -264,7 +268,7 @@ def raccoon_width(size: int, calls: int, _branch_depth: int) -> str:
     decls.extend(raccoon_type_decl(name) for name in decoys + targets)
     decls.extend(f"def instance inst{name} : TC({name}) := {raccoon_mk('TC', [name])}\n\n" for name in decoys + targets)
     decls.append("inline def consume (A: Sort($u0))[tc: TC(A)]: BenchUnit := BenchUnit::unit\n\n")
-    decls.append(raccoon_bench([f"consume({target})" for target in targets]))
+    decls.append(raccoon_bench([f"consume({target}, {raccoon_derive(f'TC({target})')})" for target in targets]))
     return "".join(decls)
 
 
@@ -290,14 +294,14 @@ def raccoon_fanout(size: int, _calls: int, _branch_depth: int) -> str:
     )
     if dep_names:
         binders = "".join(
-            raccoon_derived_binder(f"d{i}", f"{dep}({'$A' if i == 0 else 'A'})")
+            raccoon_instance_binder(f"d{i}", f"{dep}({'$A' if i == 0 else 'A'})")
             for i, dep in enumerate(dep_names)
         )
         decls.append(f"def instance needInst {binders}: Need(A) := {raccoon_mk('Need', ['A'])}\n\n")
     else:
         decls.append(f"def instance needInst : Need(FanoutTarget) := {raccoon_mk('Need', ['FanoutTarget'])}\n\n")
     decls.append("inline def consume (A: Sort($u0))[need: Need(A)]: BenchUnit := BenchUnit::unit\n\n")
-    decls.append(raccoon_bench(["consume(FanoutTarget)"]))
+    decls.append(raccoon_bench([f"consume(FanoutTarget, {raccoon_derive('Need(FanoutTarget)')})"]))
     return "".join(decls)
 
 
@@ -327,7 +331,7 @@ def raccoon_chain(size: int, _calls: int, _branch_depth: int) -> str:
         f"def instance baseTC : TC(Base) := {raccoon_mk('TC', ['Base'])}\n\n",
         f"def instance wrapTC [inner: TC($A)]: TC(Wrap(A)) := {raccoon_mk('TC', ['Wrap(A)'])}\n\n",
         "inline def consume (A: Sort($u0))[tc: TC(A)]: BenchUnit := BenchUnit::unit\n\n",
-        raccoon_bench([f"consume({target})"]),
+        raccoon_bench([f"consume({target}, {raccoon_derive(f'TC({target})')})"]),
     ]
     return "".join(decls)
 
@@ -366,7 +370,7 @@ def raccoon_failures(size: int, _calls: int, _branch_depth: int) -> str:
         )
     decls.append(f"def instance goodGoal : Goal(FailureTarget) := {raccoon_mk('Goal', ['FailureTarget'])}\n\n")
     decls.append("inline def consume (A: Sort($u0))[goal: Goal(A)]: BenchUnit := BenchUnit::unit\n\n")
-    decls.append(raccoon_bench(["consume(FailureTarget)"]))
+    decls.append(raccoon_bench([f"consume(FailureTarget, {raccoon_derive('Goal(FailureTarget)')})"]))
     return "".join(decls)
 
 
@@ -410,7 +414,7 @@ def raccoon_branching(size: int, _calls: int, branch_depth: int) -> str:
     decls.append(f"def instance wrapTC [inner: TC($A)]: TC(Wrap(A)) := {raccoon_mk('TC', ['Wrap(A)'])}\n\n")
     decls.append(f"def instance baseTC : TC(Base) := {raccoon_mk('TC', ['Base'])}\n\n")
     decls.append("inline def consume (A: Sort($u0))[tc: TC(A)]: BenchUnit := BenchUnit::unit\n\n")
-    decls.append(raccoon_bench([f"consume({target})"]))
+    decls.append(raccoon_bench([f"consume({target}, {raccoon_derive(f'TC({target})')})"]))
     return "".join(decls)
 
 
@@ -447,7 +451,7 @@ def raccoon_implicit_arity(size: int, _calls: int, _branch_depth: int) -> str:
     target_args = ", ".join(targets)
     rel_type = f"Rel({args})" if args else "Rel"
     target_rel = f"Rel({target_args})" if target_args else "Rel"
-    consume_call = "consume()"
+    consume_call = f"consume({raccoon_derive(target_rel)})"
     decls = [raccoon_prelude()]
     decls.append(raccoon_struct("Rel", params))
     if params:
@@ -523,7 +527,7 @@ def raccoon_repeat_query(size: int, _calls: int, _branch_depth: int) -> str:
     decls = [raccoon_prelude(), raccoon_struct("TC", ["A"]), raccoon_type_decl("RepeatTarget")]
     decls.append(f"def instance repeatTC : TC(RepeatTarget) := {raccoon_mk('TC', ['RepeatTarget'])}\n\n")
     decls.append("inline def consume (A: Sort($u0))[tc: TC(A)]: BenchUnit := BenchUnit::unit\n\n")
-    decls.append(raccoon_bench(["consume(RepeatTarget)" for _ in range(size)]))
+    decls.append(raccoon_bench([f"consume(RepeatTarget, {raccoon_derive('TC(RepeatTarget)')})" for _ in range(size)]))
     return "".join(decls)
 
 
@@ -562,7 +566,7 @@ def raccoon_diamond(size: int, _calls: int, _branch_depth: int) -> str:
     decls.append(
         f"inline def consume (A: Sort($u0))[need: {need(size)}(A)]: BenchUnit := BenchUnit::unit\n\n"
     )
-    decls.append(raccoon_bench(["consume(DiamondTarget)"]))
+    decls.append(raccoon_bench([f"consume(DiamondTarget, {raccoon_derive(f'{need(size)}(DiamondTarget)')})"]))
     return "".join(decls)
 
 
@@ -619,7 +623,7 @@ def raccoon_overlap(size: int, _calls: int, _branch_depth: int) -> str:
     )
     decls.append(f"def instance baseGoal : Goal(Base) := {raccoon_mk('Goal', ['Base'])}\n\n")
     decls.append("inline def consume (A: Sort($u0))[goal: Goal(A)]: BenchUnit := BenchUnit::unit\n\n")
-    decls.append(raccoon_bench(["consume(Wrap(Base))"]))
+    decls.append(raccoon_bench([f"consume(Wrap(Base), {raccoon_derive('Goal(Wrap(Base))')})"]))
     return "".join(decls)
 
 
@@ -658,7 +662,10 @@ def raccoon_local_instances(size: int, _calls: int, _branch_depth: int) -> str:
     decls.extend(f"def instance inst{name} : Goal({name}) := {raccoon_mk('Goal', [name])}\n\n" for name in decoys)
     decls.append(f"def localGoal : Goal(LocalTarget) := {raccoon_mk('Goal', ['LocalTarget'])}\n\n")
     decls.append("inline def consume (A: Sort($u0))[goal: Goal(A)]: BenchUnit := BenchUnit::unit\n\n")
-    decls.append("inline def withLocal (instance localInst: Goal(LocalTarget)): BenchUnit := consume(LocalTarget)\n\n")
+    decls.append(
+        f"inline def withLocal [localInst: Goal(LocalTarget)]: BenchUnit := "
+        f"consume(LocalTarget, {raccoon_derive('Goal(LocalTarget)')})\n\n"
+    )
     decls.append(raccoon_bench(["withLocal(localGoal)"]))
     return "".join(decls)
 
@@ -700,7 +707,7 @@ def raccoon_defeq(size: int, _calls: int, _branch_depth: int) -> str:
     )
     decls.append("inline def consume (A: Sort($u0))[tc: TC(A)]: BenchUnit := BenchUnit::unit\n\n")
     target = "Wrap(Base)" if size == 0 else f"Alias{size - 1}(Base)"
-    decls.append(raccoon_bench([f"consume({target})"]))
+    decls.append(raccoon_bench([f"consume({target}, {raccoon_derive(f'TC({target})')})"]))
     return "".join(decls)
 
 
@@ -738,14 +745,14 @@ def raccoon_shared_fanout(size: int, _calls: int, _branch_depth: int) -> str:
     )
     if dep_names:
         binders = "".join(
-            raccoon_derived_binder(f"d{i}", f"{dep}({'$A' if i == 0 else 'A'})")
+            raccoon_instance_binder(f"d{i}", f"{dep}({'$A' if i == 0 else 'A'})")
             for i, dep in enumerate(dep_names)
         )
         decls.append(f"def instance needInst {binders}: Need(A) := {raccoon_mk('Need', ['A'])}\n\n")
     else:
         decls.append(f"def instance needInst : Need(SharedTarget) := {raccoon_mk('Need', ['SharedTarget'])}\n\n")
     decls.append("inline def consume (A: Sort($u0))[need: Need(A)]: BenchUnit := BenchUnit::unit\n\n")
-    decls.append(raccoon_bench(["consume(SharedTarget)"]))
+    decls.append(raccoon_bench([f"consume(SharedTarget, {raccoon_derive('Need(SharedTarget)')})"]))
     return "".join(decls)
 
 
@@ -781,7 +788,7 @@ struct Need (A: Sort($u0)) : Sort(u0)
         + raccoon_type_decl("BodyTarget")
         + f"def instance needInst : Need(BodyTarget) := Need::mk(BodyTarget, {payload})\n\n"
         + "inline def consume (A: Sort($u0))[need: Need(A)]: BenchUnit := BenchUnit::unit\n\n"
-        + raccoon_bench(["consume(BodyTarget)"])
+        + raccoon_bench([f"consume(BodyTarget, {raccoon_derive('Need(BodyTarget)')})"])
     )
 
 

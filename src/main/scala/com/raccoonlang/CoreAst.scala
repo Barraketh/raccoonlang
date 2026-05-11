@@ -58,6 +58,9 @@ object CoreAst {
     // Projection in term position: base[field]
     final case class Select(base: Term, field: String, span: Span) extends Term
 
+    // Explicit instance search expression: derive[Goal]
+    final case class Derive(goal: TypeTerm, span: Span) extends Term
+
     // Application in type position
     final case class TApp(fn: Ref, args: Vector[TypeTerm], span: Span) extends TypeTerm {
       require(args.nonEmpty, "Type application requires at least one argument")
@@ -110,11 +113,8 @@ object CoreAst {
       localRef: LocalRef,
       ty: TypePattern,
       span: Span,
-      isDerived: Boolean = false,
       isInstance: Boolean = false
   ) {
-    require(!isDerived || isInstance, "Derived binders must participate in local instance search")
-
     def name: String = localRef.name
 
     override def toString: String = PrettyPrinter.printBinder(this)

@@ -1,7 +1,6 @@
 package com.raccoonlang
 
-// Checked AST. Applications in this tree are fully elaborated: derived arguments have already been inserted,
-// and all local names are CoreAst.LocalRef slots.
+// Checked AST. Instance search expressions have already been resolved, and all local names are CoreAst.LocalRef slots.
 object ElabAst {
   sealed trait Ast {
     def span: Span
@@ -67,11 +66,8 @@ object ElabAst {
       localRef: CoreAst.LocalRef,
       ty: TypePattern,
       span: Span,
-      isDerived: Boolean = false,
       isInstance: Boolean = false
   ) {
-    require(!isDerived || isInstance, "Derived binders must participate in local instance search")
-
     def name: String = localRef.name
 
     override def toString: String = PrettyPrinter.printElabBinder(this)

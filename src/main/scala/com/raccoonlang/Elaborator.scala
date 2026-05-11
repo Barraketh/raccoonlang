@@ -114,7 +114,7 @@ object Elaborator {
   private def elabBinder(b: SA.Binder, env: ResolveEnv): (CA.Binder, ResolveEnv) = {
     val (ty, envWithCaptures) = elabPattern(b.ty, env)
     val (ref, nextEnv) = envWithCaptures.bindBinder(b.name)
-    (CA.Binder(ref, ty, b.span, b.isDerived, b.isInstance), nextEnv)
+    (CA.Binder(ref, ty, b.span, b.isInstance), nextEnv)
   }
 
   private def elabBinders(binders: Vector[SA.Binder], env: ResolveEnv): (Vector[CA.Binder], ResolveEnv) =
@@ -180,6 +180,7 @@ object Elaborator {
     case i: SA.Term.Ident                => env.resolveIdent(i)
     case SA.Term.App(fn, args, sp)       => CA.Term.App(elabTerm(fn, env), args.map(elabTerm(_, env)), sp)
     case SA.Term.Select(base, field, sp) => CA.Term.Select(elabTerm(base, env), field, sp)
+    case SA.Term.Derive(goal, sp)        => CA.Term.Derive(elabType(goal, env), sp)
     case pi: SA.Term.Pi                  => elabPi(pi, env)
     case l: SA.Term.Lam                  => elab(l, env)
     case b: SA.Term.Body                 => elabBody(b, env)

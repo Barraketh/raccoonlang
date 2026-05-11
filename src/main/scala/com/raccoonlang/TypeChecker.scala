@@ -10,11 +10,6 @@ object TypeChecker {
   final case class CheckedType(value: Value, term: EA.TypeTerm)
   private final case class CheckedPi(value: VPi, term: EA.Term.Pi)
 
-  private def toCheckedRef(ref: CA.Term.Ref): EA.Term.Ref = ref match {
-    case CA.Term.GlobalRef(name, span) => EA.Term.GlobalRef(name, span)
-    case CA.Term.LocalRef(ref, span)   => EA.Term.LocalRef(ref, span)
-  }
-
   def sortLeq(a: Value, b: Value)(implicit eqStore: EqStore): Boolean = {
     (Interpreter.resolveInEqStore(a), Interpreter.resolveInEqStore(b)) match {
       case (Value.VSort(u), Value.VSort(v)) => Level.leq(u, v)
@@ -45,7 +40,6 @@ object TypeChecker {
       fn: Value,
       args: Vector[BinderOps.CheckedArg],
       fnTerm: EA.Term,
-      env: TypecheckEnv,
       span: Span
   )(implicit eqStore: EqStore, normalizers: NormalizerMap): Checked = {
     val fn0 = Interpreter.resolveInEqStore(fn)
@@ -53,11 +47,11 @@ object TypeChecker {
 
     fnTy0 match {
       case pi: VPi =>
-        val completed = BinderOps.checkAndInstantiate(pi.binders, pi.env, args, env)
+        BinderOps.checkAndInstantiate(pi.binders, pi.env, args.map(_.value))
 
         Checked(
-          Interpreter.evalApply(fn0, completed.values),
-          EA.Term.App(fnTerm, completed.terms, span)
+          Interpreter.evalApply(fn0, args.map(_.value)),
+          EA.Term.App(fnTerm, args.map(_.term), span)
         )
       case _ => throw CannotApplyNonFunction(fnTy0)
     }
@@ -80,13 +74,12 @@ object TypeChecker {
       fn: Value,
       args: Vector[BinderOps.CheckedArg],
       fnTerm: EA.Term,
-      env: TypecheckEnv,
       span: Span
   )(implicit
       meta: EqStore,
       normalizers: NormalizerMap
   ): CheckedType = {
-    val checked = checkApply(fn, args, fnTerm, env, span)
+    val checked = checkApply(fn, args, fnTerm, span)
     CheckedType(checked.value, checked.term.asInstanceOf[EA.TypeTerm])
   }
 
@@ -99,7 +92,16 @@ object TypeChecker {
       val checkedArg = check(arg, env)
       BinderOps.CheckedArg(checkedArg.value, checkedArg.term)
     }
-    checkApply(fn.value, args, fn.term, env, app.span)
+    checkApply(fn.value, args, fn.term, app.span)
+  }
+
+  private def checkDerive(derive: CA.Term.Derive, env: TypecheckEnv)(implicit
+      meta: EqStore,
+      normalizers: NormalizerMap
+  ): Checked = {
+    val goal = getCheckedType(derive.goal, env)
+    val solved = InstanceSearch.solve(goal.value, env)
+    Checked(solved.value, solved.term)
   }
 
   private def checkPi(pi: CA.Term.Pi, env: TypecheckEnv)(implicit
@@ -115,6 +117,16 @@ object TypeChecker {
     CheckedPi(evalPi(checkedPi, env, vBinders), checkedPi)
   }
 
+  def checkRef(ref: CA.Term.Ref, env: TypecheckEnv)(implicit
+      meta: EqStore
+  ): (Value, EA.Term.Ref) = {
+    val checkedRef = ref match {
+      case CA.Term.GlobalRef(name, span) => EA.Term.GlobalRef(name, span)
+      case CA.Term.LocalRef(ref, span)   => EA.Term.LocalRef(ref, span)
+    }
+    (Interpreter.evalTypeTerm(checkedRef, env), checkedRef)
+  }
+
   def checkTypeTerm(term: CA.TypeTerm, env: TypecheckEnv)(implicit
       meta: EqStore,
       normalizers: NormalizerMap
@@ -122,7 +134,7 @@ object TypeChecker {
     case t: CA.Term.TApp =>
       val fn = checkTypeTerm(t.fn, env)
       val args = t.args.map(arg => checkedArg(checkTypeTerm(arg, env)))
-      checkTypeApply(fn.value, args, fn.term, env, t.span)
+      checkTypeApply(fn.value, args, fn.term, t.span)
     case CA.Term.TSelect(base, field, span) =>
       val checkedBase = checkTypeTerm(base, env)
       CheckedType(
@@ -132,9 +144,7 @@ object TypeChecker {
     case pi: CA.Term.Pi =>
       val checked = checkPi(pi, env)
       CheckedType(checked.value, checked.term)
-    case ref: CA.Term.Ref =>
-      val checkedRef = toCheckedRef(ref)
-      CheckedType(Interpreter.evalTypeTerm(checkedRef, env), checkedRef)
+    case ref: CA.Term.Ref => CheckedType.tupled(checkRef(ref, env))
   }
 
   def evalTypeTerm(term: CA.TypeTerm, env: TypecheckEnv)(implicit
@@ -415,6 +425,7 @@ object TypeChecker {
             EA.Term.Select(checkedBase.term, field, span)
           )
         case t: CA.Term.App   => checkApp(t, env)
+        case d: CA.Term.Derive => checkDerive(d, env)
         case l: CA.Term.Lam   => checkLam(l, env, normalizers)
         case m: CA.Term.Match => checkMatch(m, env)
         case b: CA.Term.Body  => checkBody(b, env)

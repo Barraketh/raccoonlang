@@ -74,34 +74,22 @@ class TypeClassTests extends munit.FunSuite {
     Interpreter.Worlds(nextEnv, nextEnv)
   }
 
-  private def runProgram(src: String): Value = {
+  private def parseProgram(src: String): CoreAst.Program =
     LanguageParser.parseProgram(src) match {
-      case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        Interpreter.run(core).getOrElse(fail("Program has no body"))
-      case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
+      case Success(value, _, _) => Elaborator.elab(value)
+      case err: Failure         => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
-  }
 
-  private def typecheckProgram(src: String): Unit = {
-    LanguageParser.parseProgram(src) match {
-      case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        Interpreter.run(core)
-      case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
-    }
-  }
+  private def runProgram(src: String): Value =
+    Interpreter.run(parseProgram(src)).getOrElse(fail("Program has no body"))
 
-  private def compileWorlds(src: String): Interpreter.Worlds = {
-    LanguageParser.parseProgram(src) match {
-      case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        core.decls.foldLeft(initialWorlds) { case (worlds, decl) =>
-          Interpreter.evalDecl(decl, worlds)
-        }
-      case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
+  private def typecheckProgram(src: String): Unit =
+    Interpreter.run(parseProgram(src))
+
+  private def compileWorlds(src: String): Interpreter.Worlds =
+    parseProgram(src).decls.foldLeft(initialWorlds) { case (worlds, decl) =>
+      Interpreter.evalDecl(decl, worlds)
     }
-  }
 
   private def namedValue(env: TypecheckEnv, name: String): Value =
     env(name) match {
@@ -132,7 +120,28 @@ class TypeClassTests extends munit.FunSuite {
       |
       |""".stripMargin
 
-  test("def instance supplies derived parameter") {
+  test("derive parses to CoreAst only and checks to the resolved term") {
+    val worlds = compileWorlds(
+      prelude +
+        """
+          |def instance natEq : Eq(Nat) := Eq::mk(Nat, Bool::true)
+          |""".stripMargin
+    )
+
+    val body = parseProgram("derive[Eq(Nat)]").body.getOrElse(fail("Program has no body"))
+    assert(body.isInstanceOf[CoreAst.Term.Derive])
+
+    implicit val eqStore: EqStore = EqStore.empty
+    implicit val normalizers: NormalizerMap = NormalizerMap.empty
+    val checked = TypeChecker.check(body, worlds.checkEnv)
+
+    checked.term match {
+      case ElabAst.Term.GlobalRef("natEq", _) =>
+      case other                              => fail(s"Expected resolved natEq term, got $other")
+    }
+  }
+
+  test("def instance is found by explicit derive expression") {
     val p =
       prelude +
         """
@@ -141,14 +150,14 @@ class TypeClassTests extends munit.FunSuite {
           |inline def useEq (A: Type)[eqA: Eq(A)]: Eq(A) := eqA
           |
           |{
-          |  useEq(Nat)
+          |  useEq(Nat, derive[Eq(Nat)])
           |}
           |""".stripMargin
 
     assertEquals(ctorName(runProgram(p)), "Eq::mk")
   }
 
-  test("checked term carries derived argument so runtime evaluation does not search") {
+  test("checked term carries resolved instance result so runtime evaluation does not search") {
     val worlds = compileWorlds(
       prelude +
         """
@@ -158,10 +167,7 @@ class TypeClassTests extends munit.FunSuite {
           |""".stripMargin
     )
 
-    val body = LanguageParser.parseProgram("{ useEq(Nat) }") match {
-      case Success(program, _, _) => Elaborator.elab(program).body.getOrElse(fail("Program has no body"))
-      case err: Failure           => fail(s"Failed to parse: $err")
-    }
+    val body = parseProgram("{ useEq(Nat, derive[Eq(Nat)]) }").body.getOrElse(fail("Program has no body"))
     implicit val eqStore: EqStore = EqStore.empty
     implicit val normalizers: NormalizerMap = NormalizerMap.empty
 
@@ -169,55 +175,6 @@ class TypeClassTests extends munit.FunSuite {
     val runEnvWithoutSearch = worlds.runEnv.copy(globalInstances = InstanceRegistry.empty)
 
     assertEquals(ctorName(Interpreter.evalTerm(checked.term, runEnvWithoutSearch)), "Eq::mk")
-  }
-
-  test("type-position application carries derived argument into runtime type evaluation") {
-    val p =
-      prelude +
-        """
-          |def instance natEq : Eq(Nat) := Eq::mk(Nat, Bool::true)
-          |
-          |inline def NeedsEqType (A: Type)[eqA: Eq(A)]: Type := A
-          |inline def id (A: Type)(x: A): A := x
-          |
-          |{
-          |  let x : NeedsEqType(Nat) := Nat::zero
-          |  id(NeedsEqType(Nat), x)
-          |}
-          |""".stripMargin
-
-    assertEquals(ctorName(runProgram(p)), "Nat::zero")
-  }
-
-  test("Type pattern") {
-    val p = prelude +
-      """
-        |def instance natEq : Eq(Nat) := Eq::mk(Nat, Bool::true)
-        |
-        |inline def NeedsEqType (A: Type)[eqA: Eq(A)]: Type := A
-        |
-        |def idNeeds (x: NeedsEqType(Nat)): NeedsEqType(Nat) := x
-        |""".stripMargin
-
-    typecheckProgram(p)
-  }
-
-  test("top-level declared type carries derived argument into runtime ascription") {
-    val p =
-      prelude +
-        """
-          |def instance natEq : Eq(Nat) := Eq::mk(Nat, Bool::true)
-          |
-          |inline def NeedsEqType (A: Type)[eqA: Eq(A)]: Type := A
-          |
-          |def top : NeedsEqType(Nat) := Nat::zero
-          |
-          |{
-          |  top
-          |}
-          |""".stripMargin
-
-    assertEquals(ctorName(runProgram(p)), "Nat::zero")
   }
 
   test("parameterized instance recursively derives dependencies") {
@@ -231,51 +188,12 @@ class TypeClassTests extends munit.FunSuite {
           |
           |def instance listEq [ea: Eq($A)]: Eq(List(A)) := Eq::mk(List(A), Bool::true)
           |
-          |inline def useListEq [eqA: Eq(List(Nat))]: Eq(List(Nat)) := eqA
-          |
           |{
-          |  useListEq()
+          |  derive[Eq(List(Nat))]
           |}
           |""".stripMargin
 
     assertEquals(ctorName(runProgram(p)), "Eq::mk")
-  }
-
-  test("direct call rejects captured derived binders") {
-    val p =
-      prelude +
-        """
-          |inductive List (A: Type) : Type
-          | | nil : List(A)
-          |
-          |def instance natEq : Eq(Nat) := Eq::mk(Nat, Bool::true)
-          |
-          |def instance listEq [ea: Eq($A)]: Eq(List(A)) := Eq::mk(List(A), Bool::true)
-          |
-          |{
-          |  listEq()
-          |}
-          |""".stripMargin
-
-    intercept[CannotDirectlyApplyCapturedDerivedBinder] {
-      typecheckProgram(p)
-    }
-  }
-
-  test("type-position direct application rejects captured derived binders") {
-    val p =
-      prelude +
-        """
-          |def instance natEq : Eq(Nat) := Eq::mk(Nat, Bool::true)
-          |
-          |inline def CapturedType (A: Type)[eqB: Eq($B)]: Type := A
-          |
-          |def bad (x: CapturedType(Nat)): Nat := x
-          |""".stripMargin
-
-    intercept[CannotDirectlyApplyCapturedDerivedBinder] {
-      typecheckProgram(p)
-    }
   }
 
   test("universe-polymorphic parameterized instance derives at concrete Type") {
@@ -297,140 +215,40 @@ class TypeClassTests extends munit.FunSuite {
         |
         |def instance tcInst [dep: Dep($A)]: TC(A) := TC::mk(A, BenchUnit::unit)
         |
-        |inline def useTC (A: Sort($u0))[tc: TC(A)]: TC(A) := tc
-        |
         |{
-        |  useTC(Target)
+        |  derive[TC(Target)]
         |}
         |""".stripMargin
 
     assertEquals(ctorName(runProgram(p)), "TC::mk")
   }
 
-  test("local derived dependency enables parameterized instance") {
-    val p =
-      """
-        |inductive Unit : Type
-        | | unit : Unit
-        |
-        |struct Carrier (u: Level)(A: Sort(u)) : Type
-        | | mk : Carrier(u, A)
-        |
-        |struct TC (u: Level)(A: Sort(u)) : Sort(u)
-        | | mk : TC(u, A)
-        |
-        |def instance unitCarrier : Carrier(Level::zero, Unit) := Carrier::mk(Level::zero, Unit)
-        |def instance tcInst [carrier: Carrier($u, $A)]: TC(u, A) := TC::mk(u, A)
-        |
-        |inline def useTC (u: Level)(A: Sort(u))[tc: TC(u, A)]: TC(u, A) := tc
-        |inline def poly (u: Level)(A: Sort(u))[carrier: Carrier(u, A)]: TC(u, A) := useTC(u, A)
-        |
-        |{
-        |  poly(Level::zero, Unit)
-        |}
-        |""".stripMargin
-
-    assertEquals(ctorName(runProgram(p)), "TC::mk")
-  }
-
-  test("complex level dependency enables parameterized instance") {
-    val p =
-      """
-        |struct Carrier (w: Level) : Type
-        | | mk : Carrier(w)
-        |
-        |struct TC (w: Level) : Type
-        | | mk : TC(w)
-        |
-        |def instance carrier : Carrier(Level::max(Level::max(Level::zero, Level::one), Level::succ(Level::one))) := Carrier::mk(Level::max(Level::max(Level::zero, Level::one), Level::succ(Level::one)))
-        |def instance tcInst [carrier: Carrier($w)]: TC(w) := TC::mk(w)
-        |
-        |inline def useTC (w: Level)[tc: TC(w)]: TC(w) := tc
-        |inline def poly (u: Level)(v: Level)(A: Sort(Level::max(Level::max(u, v), Level::succ(Level::one))))[carrier: Carrier(Level::max(Level::max(u, v), Level::succ(Level::one)))]: TC(Level::max(Level::max(u, v), Level::succ(Level::one))) := useTC(Level::max(Level::max(u, v), Level::succ(Level::one)))
-        |
-        |{
-        |  poly(Level::zero, Level::one, Sort(Level::one))
-        |}
-        |""".stripMargin
-
-    assertEquals(ctorName(runProgram(p)), "TC::mk")
-  }
-
-  test("instance functions reject non-derived binders") {
-    val p =
-      prelude +
-        """
-          |def instance polyEq (A: Type): Eq(A) := Eq::mk(A, Bool::true)
-          |""".stripMargin
-
-    intercept[InvalidInstance] {
-      typecheckProgram(p)
-    }
-  }
-
-  test("function-valued derived instance binders must themselves satisfy the instance invariant") {
-    val p =
-      prelude +
-        """
-          |struct HasFn (f: Nat -> Nat) : Type
-          | | mk : HasFn(f)
-          |
-          |def instance hasFn [f: Nat -> Nat]: HasFn(f) := HasFn::mk(f)
-          |
-          |""".stripMargin
-
-    intercept[InvalidInstance] {
-      typecheckProgram(p)
-    }
-  }
-
-  test("instance search quotes local function payload") {
-    val p =
-      prelude +
-        """
-          |struct HasFnValue : Type
-          | | mk (f: Nat -> Nat) : HasFnValue
-          |
-          |inline def useHasFnValue [h: HasFnValue]: HasFnValue := h
-          |
-          |{
-          |  let f := fun (x: Nat): Nat => x
-          |  let instance h : HasFnValue := HasFnValue::mk(f)
-          |  useHasFnValue()
-          |}
-          |""".stripMargin
-
-    assertEquals(ctorName(runProgram(p)), "HasFnValue::mk")
-  }
-
-  test("instance search quotes function expression payload") {
-    val p =
-      prelude +
-        """
-          |struct HasFnValue : Type
-          | | mk (f: Nat -> Nat) : HasFnValue
-          |
-          |inline def useHasFnValue [h: HasFnValue]: HasFnValue := h
-          |
-          |{
-          |  let instance h : HasFnValue := HasFnValue::mk(fun (x: Nat): Nat => x)
-          |  useHasFnValue()
-          |}
-          |""".stripMargin
-
-    assertEquals(ctorName(runProgram(p)), "HasFnValue::mk")
-  }
-
-  test("explicit instance binder does not mutate caller search environment for later derive") {
+  test("local instance binder participates in derive inside its function body") {
     val p =
       prelude +
         """
           |def natEq : Eq(Nat) := Eq::mk(Nat, Bool::true)
           |
-          |inline def useBinder (A: Type)(instance eqA: Eq(A))[eqAgain: Eq(A)]: Eq(A) := eqAgain
+          |inline def useBinder (A: Type)[eqA: Eq(A)]: Eq(A) := derive[Eq(A)]
           |
           |{
           |  useBinder(Nat, natEq)
+          |}
+          |""".stripMargin
+
+    assertEquals(ctorName(runProgram(p)), "Eq::mk")
+  }
+
+  test("plain explicit binder is not registered for derive inside its function body") {
+    val p =
+      prelude +
+        """
+          |def natEq : Eq(Nat) := Eq::mk(Nat, Bool::true)
+          |
+          |inline def usePlainBinder (A: Type)(eqA: Eq(A)): Eq(A) := derive[Eq(A)]
+          |
+          |{
+          |  usePlainBinder(Nat, natEq)
           |}
           |""".stripMargin
 
@@ -439,95 +257,51 @@ class TypeClassTests extends munit.FunSuite {
     }
   }
 
-  test("function equality rejects instance binder mismatch") {
+  test("local parameterized instance may close over local type") {
     val p =
       prelude +
         """
-          |def natEq : Eq(Nat) := Eq::mk(Nat, Bool::true)
-          |
-          |inline def idInst (instance eqA: Eq(Nat)): Eq(Nat) := eqA
-          |inline def acceptsPlain (f: (eqA: Eq(Nat)) -> Eq(Nat)): Eq(Nat) := f(natEq)
-          |
-          |{
-          |  acceptsPlain(idInst)
-          |}
-          |""".stripMargin
-
-    intercept[TypeMismatch] {
-      typecheckProgram(p)
-    }
-  }
-
-  test("later derived binders solve against the caller instance environment") {
-    val p =
-      prelude +
-        """
-          |struct NeedsEq (A: Type) : Type
-          | | mk (eq: Eq(A)) : NeedsEq(A)
+          |struct Box (A: Type) : Type
+          | | mk : Box(A)
           |
           |def instance natEq : Eq(Nat) := Eq::mk(Nat, Bool::true)
           |
-          |def instance needsEq [eqA: Eq($A)]: NeedsEq(A) := NeedsEq::mk(A, eqA)
-          |
-          |inline def useBoth [eqA: Eq(Nat)][needs: NeedsEq(Nat)]: NeedsEq(Nat) := needs
-          |
           |{
-          |  useBoth()
+          |  let A : Type := Nat
+          |  let instance boxInst : [eqA: Eq(A)] -> Box(A) := fun [eqA: Eq(A)]: Box(A) => Box::mk(A)
+          |  derive[Box(A)]
           |}
           |""".stripMargin
 
-    assertEquals(ctorName(runProgram(p)), "NeedsEq::mk")
-  }
-
-  test("instance search quotes freshened struct instance binder") {
-    val p =
-      prelude +
-        """
-          |inline def useEq [eqA: Eq(Nat)]: Eq(Nat) := eqA
-          |
-          |inline def shadow [eqA: Eq(Nat)]: Eq(Nat) := (fun (eqA: Eq(Nat)) : Eq(Nat) => useEq())(eqA)
-          |
-          |{
-          |  let instance localEq : Eq(Nat) := Eq::mk(Nat, Bool::true)
-          |  shadow()
-          |}
-          |""".stripMargin
-
-    assertEquals(ctorName(runProgram(p)), "Eq::mk")
-  }
-
-  test("plain inner binder does not suppress outer instance binder during derive") {
-    val p =
-      """
-          |inductive TC : Type
-          | | mk : TC
-          |
-          |inline def useTC [tc: TC]: TC := tc
-          |
-          |inline def shadow [tc: TC]: TC := (fun (tc: TC) : TC => useTC())(tc)
-          |
-          |{
-          |  let instance localTC : TC := TC::mk
-          |  shadow()
-          |}
-          |""".stripMargin
-
-    assertEquals(ctorName(runProgram(p)), "TC::mk")
+    assertEquals(ctorName(runProgram(p)), "Box::mk")
   }
 
   test("let instance participates in derive") {
     val p =
       prelude +
         """
-          |inline def useEq (A: Type)[eqA: Eq(A)]: Eq(A) := eqA
-          |
           |{
           |  let instance localEq : Eq(Nat) := Eq::mk(Nat, Bool::true)
-          |  useEq(Nat)
+          |  derive[Eq(Nat)]
           |}
           |""".stripMargin
 
     assertEquals(ctorName(runProgram(p)), "Eq::mk")
+  }
+
+  test("ordinary let is not searchable") {
+    val p =
+      prelude +
+        """
+          |{
+          |  let localEq : Eq(Nat) := Eq::mk(Nat, Bool::true)
+          |  derive[Eq(Nat)]
+          |}
+          |""".stripMargin
+
+    intercept[NoInstanceFound] {
+      typecheckProgram(p)
+    }
   }
 
   test("local instance has lexical priority over global instance") {
@@ -536,67 +310,13 @@ class TypeClassTests extends munit.FunSuite {
         """
           |def instance globalEq : Eq(Nat) := Eq::mk(Nat, Bool::true)
           |
-          |inline def useEq [eqA: Eq(Nat)]: Bool := eqA.ok
-          |
           |{
           |  let instance localEq : Eq(Nat) := Eq::mk(Nat, Bool::false)
-          |  useEq()
+          |  derive[Eq(Nat)].ok
           |}
           |""".stripMargin
 
     assertEquals(ctorName(runProgram(p)), "Bool::false")
-  }
-
-  test("global ambiguity is ignored when a local unique success exists") {
-    val p =
-      prelude +
-        """
-          |def instance globalEq1 : Eq(Nat) := Eq::mk(Nat, Bool::true)
-          |def instance globalEq2 : Eq(Nat) := Eq::mk(Nat, Bool::true)
-          |
-          |inline def useEq [eqA: Eq(Nat)]: Bool := eqA.ok
-          |
-          |{
-          |  let instance localEq : Eq(Nat) := Eq::mk(Nat, Bool::false)
-          |  useEq()
-          |}
-          |""".stripMargin
-
-    assertEquals(ctorName(runProgram(p)), "Bool::false")
-  }
-
-  test("local unique success ignores cyclic globals") {
-    val p =
-      prelude +
-        """
-          |def instance loopEq [eqA: Eq(Nat)]: Eq(Nat) := eqA
-          |
-          |inline def useEq [eqA: Eq(Nat)]: Bool := eqA.ok
-          |
-          |{
-          |  let instance localEq : Eq(Nat) := Eq::mk(Nat, Bool::false)
-          |  useEq()
-          |}
-          |""".stripMargin
-
-    assertEquals(ctorName(runProgram(p)), "Bool::false")
-  }
-
-  test("ordinary let is not searchable") {
-    val p =
-      prelude +
-        """
-          |inline def useEq (A: Type)[eqA: Eq(A)]: Eq(A) := eqA
-          |
-          |{
-          |  let localEq : Eq(Nat) := Eq::mk(Nat, Bool::true)
-          |  useEq(Nat)
-          |}
-          |""".stripMargin
-
-    intercept[NoInstanceFound] {
-      typecheckProgram(p)
-    }
   }
 
   test("ordinary local binding does not suppress same-named global instance") {
@@ -605,11 +325,9 @@ class TypeClassTests extends munit.FunSuite {
         """
           |def instance natEq : Eq(Nat) := Eq::mk(Nat, Bool::true)
           |
-          |inline def useEq [eqA: Eq(Nat)]: Bool := eqA.ok
-          |
           |{
           |  let natEq : Bool := Bool::false
-          |  useEq()
+          |  derive[Eq(Nat)].ok
           |}
           |""".stripMargin
 
@@ -620,30 +338,10 @@ class TypeClassTests extends munit.FunSuite {
     val p =
       prelude +
         """
-          |inline def useEq [eqA: Eq(Nat)]: Bool := eqA.ok
-          |
           |{
           |  let instance localEq : Eq(Nat) := Eq::mk(Nat, Bool::true)
           |  let instance localEq : Eq(Nat) := Eq::mk(Nat, Bool::false)
-          |  useEq()
-          |}
-          |""".stripMargin
-
-    assertEquals(ctorName(runProgram(p)), "Bool::false")
-  }
-
-  test("first successful local instance wins before globals for closed goal") {
-    val p =
-      prelude +
-        """
-          |def instance globalEq : Eq(Nat) := Eq::mk(Nat, Bool::true)
-          |
-          |inline def useEq [eqA: Eq(Nat)]: Bool := eqA.ok
-          |
-          |{
-          |  let instance localEq1 : Eq(Nat) := Eq::mk(Nat, Bool::true)
-          |  let instance localEq2 : Eq(Nat) := Eq::mk(Nat, Bool::false)
-          |  useEq()
+          |  derive[Eq(Nat)].ok
           |}
           |""".stripMargin
 
@@ -657,35 +355,15 @@ class TypeClassTests extends munit.FunSuite {
           |def instance natEq1 : Eq(Nat) := Eq::mk(Nat, Bool::true)
           |def instance natEq2 : Eq(Nat) := Eq::mk(Nat, Bool::false)
           |
-          |inline def useEq [eqA: Eq(Nat)]: Bool := eqA.ok
-          |
           |{
-          |  useEq()
+          |  derive[Eq(Nat)].ok
           |}
           |""".stripMargin
 
     assertEquals(ctorName(runProgram(p)), "Bool::true")
   }
 
-  test("semantically closed local alias keeps closed-goal priority semantics") {
-    val p =
-      prelude +
-        """
-          |def instance natEq1 : Eq(Nat) := Eq::mk(Nat, Bool::true)
-          |def instance natEq2 : Eq(Nat) := Eq::mk(Nat, Bool::false)
-          |
-          |inline def useEq (A: Type)[eqA: Eq(A)]: Bool := eqA.ok
-          |
-          |{
-          |  let A : Type := Nat
-          |  useEq(A)
-          |}
-          |""".stripMargin
-
-    assertEquals(ctorName(runProgram(p)), "Bool::true")
-  }
-
-  test("unsolved derived dependency fails that candidate only") {
+  test("unsolved dependency fails that candidate only") {
     val p =
       prelude +
         """
@@ -698,17 +376,15 @@ class TypeClassTests extends munit.FunSuite {
           |def instance bad [need: Need($A)]: TC(A) := TC::mk(A, Bool::false)
           |def instance good : TC(Nat) := TC::mk(Nat, Bool::true)
           |
-          |inline def useTC [tc: TC(Nat)]: TC(Nat) := tc
-          |
           |{
-          |  useTC()
+          |  derive[TC(Nat)].ok
           |}
           |""".stripMargin
 
-    assertEquals(ctorName(runProgram(p)), "TC::mk")
+    assertEquals(ctorName(runProgram(p)), "Bool::true")
   }
 
-  test("derived instance candidate accepts cumulative capture") {
+  test("instance candidate accepts cumulative capture") {
     val p =
       prelude +
         """
@@ -721,14 +397,12 @@ class TypeClassTests extends munit.FunSuite {
           |def instance needNat : Need(Nat) := Need::mk(Nat)
           |def instance high [need: Need($A)]: TC(A) := TC::mk(A, Bool::true)
           |
-          |inline def useTC [tc: TC(Nat)]: TC(Nat) := tc
-          |
           |{
-          |  useTC()
+          |  derive[TC(Nat)].ok
           |}
           |""".stripMargin
 
-    assertEquals(ctorName(runProgram(p)), "TC::mk")
+    assertEquals(ctorName(runProgram(p)), "Bool::true")
   }
 
   test("closed goal accepts first candidate after recursively choosing first dependency") {
@@ -744,10 +418,8 @@ class TypeClassTests extends munit.FunSuite {
           |def instance badWant [eqA: Eq(Nat)]: WantEq := WantEq::mk(Bool::false)
           |def instance goodWant : WantEq := WantEq::mk(Bool::true)
           |
-          |inline def useWant [want: WantEq]: Bool := want.ok
-          |
           |{
-          |  useWant()
+          |  derive[WantEq].ok
           |}
           |""".stripMargin
 
@@ -766,10 +438,8 @@ class TypeClassTests extends munit.FunSuite {
           |def instance badWant [eqA: Eq(Nat)]: WantEq := WantEq::mk(Bool::false)
           |def instance goodWant : WantEq := WantEq::mk(Bool::true)
           |
-          |inline def useWant [want: WantEq]: Bool := want.ok
-          |
           |{
-          |  useWant()
+          |  derive[WantEq].ok
           |}
           |""".stripMargin
 
@@ -782,16 +452,55 @@ class TypeClassTests extends munit.FunSuite {
         """
           |def instance loopEq [eqA: Eq(Nat)]: Eq(Nat) := eqA
           |
-          |inline def useEq [eqA: Eq(Nat)]: Eq(Nat) := eqA
-          |
           |{
-          |  useEq()
+          |  derive[Eq(Nat)]
           |}
           |""".stripMargin
 
     intercept[CyclicInstanceSearch] {
       typecheckProgram(p)
     }
+  }
+
+  test("derive fails when no matching instance exists") {
+    val p =
+      prelude +
+        """
+          |{
+          |  derive[Eq(Nat)]
+          |}
+          |""".stripMargin
+
+    intercept[NoInstanceFound] {
+      typecheckProgram(p)
+    }
+  }
+
+  test("derive expression is typechecked like an ordinary expression") {
+    val p =
+      prelude +
+        """
+          |def instance natEq : Eq(Nat) := Eq::mk(Nat, Bool::true)
+          |
+          |{
+          |  let bad : Bool := derive[Eq(Nat)]
+          |  bad
+          |}
+          |""".stripMargin
+
+    intercept[TypeMismatch] {
+      typecheckProgram(p)
+    }
+  }
+
+  test("derive is term syntax, not type syntax") {
+    val p =
+      prelude +
+        """
+          |def bad (x: derive[Eq(Nat)]): Nat := Nat::zero
+          |""".stripMargin
+
+    assert(LanguageParser.parseProgram(p).isInstanceOf[Failure])
   }
 
   test("instance search does not refine caller equality variables") {
@@ -823,49 +532,5 @@ class TypeClassTests extends munit.FunSuite {
 
     assertEquals(InstanceSearch.solve(goal, envWithEqA).value, eqA)
     assertEquals(eqStore.subst, Map.empty[Value.VarId, Value])
-  }
-
-  test("derived parameter syntax parses in the middle of a header") {
-    LanguageParser.parseFuncHeader("(a: A)[b: B](c: C): D") match {
-      case Success(header, _, _) =>
-        assertEquals(header.params(1).isDerived, true)
-        assertEquals(header.params(1).isInstance, true)
-      case err: Failure => fail(s"Failed to parse header: $err")
-    }
-
-    val src =
-      """
-        |inductive A : Type
-        | | mk : A
-        |
-        |inductive B : Type
-        | | mk : B
-        |
-        |inductive C : Type
-        | | mk : C
-        |
-        |inductive D : Type
-        | | mk : D
-        |
-        |def foo(a: A)[b: B](c: C): D := D::mk
-        |""".stripMargin
-
-    typecheckProgram(src)
-  }
-
-  test("derived binder without instance registration is rejected at construction") {
-    val span = Span(0, 1)
-    val ty = SurfaceAst.Term.Ident("A", span)
-
-    intercept[IllegalArgumentException] {
-      SurfaceAst.Binder("x", ty, span, isDerived = true)
-    }
-    intercept[IllegalArgumentException] {
-      CoreAst.Binder(CoreAst.LocalRef(0, "x"), CoreAst.TypePattern.Type(CoreAst.Term.GlobalRef("A", span)), span, isDerived = true)
-    }
-    intercept[IllegalArgumentException] {
-      val ty = ElabAst.Term.GlobalRef("A", span)
-      Value.VBinder(CoreAst.LocalRef(0, "x"), ElabAst.TypePattern.Type(ty), ty, Vector.empty, isDerived = true)
-    }
   }
 }

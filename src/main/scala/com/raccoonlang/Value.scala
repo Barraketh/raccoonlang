@@ -197,11 +197,8 @@ object Value {
       ty: ElabAst.TypePattern,
       expectedTy: ElabAst.TypeTerm,
       captures: Vector[Value.VCapture],
-      isDerived: Boolean = false,
       isInstance: Boolean = false
   ) {
-    require(!isDerived || isInstance, "Derived binders must participate in local instance search")
-
     def name: String = localRef.name
   }
 

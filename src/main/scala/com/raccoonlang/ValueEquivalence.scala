@@ -13,15 +13,12 @@ object ValueEquivalence {
     case class RelatedPis(vars: Vector[Value], out1: Value, out2: Value)
 
     def relatePis(pi1: VPi, pi2: VPi)(implicit eqStore: EqStore, normalizers: NormalizerMap): RelatedPis = {
-      if (
-        pi1.binders.zip(pi2.binders).exists { case (b1, b2) =>
-          b1.isDerived != b2.isDerived || b1.isInstance != b2.isInstance
-        }
-      ) throw TypeMismatch(pi1, pi2)
+      if (pi1.binders.zip(pi2.binders).exists { case (b1, b2) => b1.isInstance != b2.isInstance })
+        throw TypeMismatch(pi1, pi2)
 
       val nextEnv1 = BinderOps.freshen(pi1)
       val sharedVars = pi1.binders.map(binder => nextEnv1(binder.localRef))
-      val nextEnv2 = BinderOps.checkAndInstantiateFull(pi2.binders, pi2.env, sharedVars)
+      val nextEnv2 = BinderOps.checkAndInstantiate(pi2.binders, pi2.env, sharedVars)
 
       val out1 = pi1.codomain(nextEnv1, eqStore)
       val out2 = pi2.codomain(nextEnv2, eqStore)

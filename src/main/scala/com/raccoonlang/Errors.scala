@@ -41,7 +41,6 @@ object TypeError {
     case e: NotAStruct                               => e.copy(span = Some(sp))
     case e: NoInstanceFound                          => e.copy(span = Some(sp))
     case e: CyclicInstanceSearch                     => e.copy(span = Some(sp))
-    case e: CannotDirectlyApplyCapturedDerivedBinder => e.copy(span = Some(sp))
     case e: InvalidInstance                          => e.copy(span = Some(sp))
     case e: InstanceSearchBudgetExceeded             => e.copy(span = Some(sp))
   }
@@ -193,11 +192,6 @@ final case class NoInstanceFound(goal: Value, span: Option[Span] = None) extends
 
 final case class CyclicInstanceSearch(goal: Value, span: Option[Span] = None) extends TypeError {
   override def msg: String = s"Cyclic instance search for $goal"
-}
-
-final case class CannotDirectlyApplyCapturedDerivedBinder(name: String, span: Option[Span] = None) extends TypeError {
-  override def msg: String =
-    s"Cannot directly apply a function whose derived binder $name contains pattern captures"
 }
 
 final case class InvalidInstance(
