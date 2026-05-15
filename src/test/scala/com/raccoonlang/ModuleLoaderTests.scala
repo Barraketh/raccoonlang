@@ -271,8 +271,8 @@ class ModuleLoaderTests extends munit.FunSuite {
         |   | zero : Nat
         |   | succ (_: Nat) : Nat
         |
-        |  inductive Eq (A: Type) indices (x: A) (y: A) : Sort(Level.one)
-        |   | refl (x: A) : Eq(A, x, x)
+        |  inductive Eq (A: Type)(x: A)(y: A) : Sort(Level.one)
+        |   | refl {A: Type} (x: A) : Eq(A, x, x)
         |
         |  struct FunBox : Type
         |   | mk (f: (x: Nat) -> Nat) : FunBox

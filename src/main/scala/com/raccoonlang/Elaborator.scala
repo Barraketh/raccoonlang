@@ -530,20 +530,21 @@ object Elaborator {
         val name = env.qualify(c.header.name)
         val nameText = globalName(name)
         val headerEnv = env.enterLocalScope
-        val (params, envWithParams) = elabBinders(c.header.params, headerEnv)
-        val (indices, envWithIndices) = elabBinders(c.header.indices, envWithParams)
-        val resultTy = elabType(c.header.resultTy, envWithIndices)
-        val header = CA.InductiveHeader(nameText, params, indices, resultTy, c.span)
+        val (binders, envWithBinders) = elabBinders(c.header.binders, headerEnv)
+        val resultTy = elabType(c.header.resultTy, envWithBinders)
+        val header = CA.InductiveHeader(nameText, binders, resultTy, c.span)
 
         // Constructors may refer to the inductive head, but not to sibling constructors yet.
-        val ctorBaseEnv = envWithParams.addGlobal(name)
+        val ctorBaseEnv = env.addGlobal(name)
         val ctorNames = c.ctors.map(ctor => name :+ ctor.name)
         val ctors =
           c.ctors.zip(ctorNames).map { case (ctor, ctorName) =>
-            val (fields, envWithFields) = elabBinders(ctor.fields, ctorBaseEnv.enterLocalScope)
+            val (erasedBinders, envWithErased) = elabBinders(ctor.erasedBinders, ctorBaseEnv.enterLocalScope)
+            val (fields, envWithFields) = elabBinders(ctor.fields, envWithErased)
             CA.ConstructorDecl(
               canonicalName = globalName(ctorName),
               shortName = ctor.name,
+              erasedBinders = erasedBinders,
               fields = fields,
               resultTy = elabType(ctor.resultTy, envWithFields),
               span = ctor.span

@@ -91,48 +91,48 @@ class InductiveCheckTest extends munit.FunSuite {
     intercept[NonStrictlyPositive] { elabAndTypecheck(p) }
   }
 
-  test("Constructor result parameter prefix must match repeated params") {
+  test("Constructor result may choose family args through erased constructor binders") {
     val p =
       """
         |inductive Nat : Type
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
-        | | bad : (A: Type) -> (n: Nat) -> Vec(Nat, Nat.zero)
+        |inductive Vec (A: Type)(n: Nat) : Sort(Level.one)
+        | | mk {B: Type}{n: Nat}: Vec(B, n)
         |
         |""".stripMargin
 
-    intercept[InvalidConstructorResult] { elabAndTypecheck(p) }
+    elabAndTypecheck(p)
   }
 
-  test("Constructor result must have full family arity (params + indices)") {
+  test("Constructor result must have full family arity") {
     val p =
       """
         |inductive Nat : Type
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
-        | | bad : (A: Type) -> (n: Nat) -> Vec(A)
+        |inductive Vec (A: Type)(n: Nat) : Sort(Level.one)
+        | | bad {A: Type}: Vec(A)
         |
         |""".stripMargin
 
     intercept[ArityMismatch] { elabAndTypecheck(p) }
   }
 
-  test("Inductive params must be uniform") {
+  test("Struct result family args may not depend on stored fields") {
     val p =
       """
         |inductive Nat : Type
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
-        | | bad (B: Type)(n: Nat): Vec(B, n)
+        |struct IndexedWrap (A: Type)(n: Nat) : Type
+        | | mk {A: Type}(n: Nat): IndexedWrap(A, n)
         |
         |""".stripMargin
 
-    intercept[InvalidConstructorResult] { elabAndTypecheck(p) }
+    intercept[InvalidStruct] { elabAndTypecheck(p) }
   }
 }

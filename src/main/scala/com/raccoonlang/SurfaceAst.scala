@@ -114,14 +114,14 @@ object SurfaceAst {
 
     case class InductiveHeader(
         name: String,
-        params: Vector[Binder],
-        indices: Vector[Binder],
+        binders: Vector[Binder],
         resultTy: TypeTerm,
         span: Span
     )
 
     case class ConstructorDecl(
         name: String,
+        erasedBinders: Vector[Binder],
         fields: Vector[Binder],
         resultTy: TypeTerm,
         span: Span

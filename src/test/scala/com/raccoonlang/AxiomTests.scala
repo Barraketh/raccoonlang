@@ -62,7 +62,7 @@ class AxiomTests extends munit.FunSuite {
       natPrelude +
         """
           |struct Eq (A: Type) : Type
-          | | mk (ok: Nat) : Eq(A)
+          | | mk {A: Type} (ok: Nat) : Eq(A)
           |
           |axiom instance natEq : Eq(Nat)
           |

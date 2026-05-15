@@ -43,7 +43,7 @@ object ElabAst {
 
     final case class LocalRef(ref: CoreAst.LocalRef, span: Span) extends Ref
 
-    final case class Select(base: Term, field: String, span: Span) extends Term with TypeTerm
+    final case class Select(base: Term, field: String, resultTy: TypeTerm, span: Span) extends Term with TypeTerm
 
     final case class App(fn: Term, args: Vector[Term], span: Span) extends Term with TypeTerm
 

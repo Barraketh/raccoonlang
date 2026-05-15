@@ -4,25 +4,37 @@ import com.raccoonlang.Value.{ConstructorHead, VBinder, VCtor, VPi}
 import com.raccoonlang._
 
 object ConstructorOps {
+  final case class FreshCtorSpine(head: ConstructorHead, args: Vector[Value], tpe: Value) {
+    def fields: Vector[Value] = args.drop(head.numErased)
+
+    lazy val synDeps: DepSet = {
+      val res = DepSet.newBuilder
+      args.foreach(arg => res.unionInPlace(arg.synDeps))
+      res.unionInPlace(tpe.synDeps)
+      res.result()
+    }
+
+    def value: VCtor = VCtor(head, fields, tpe)
+
+    def materialize(eqStore: EqStore): FreshCtorSpine =
+      FreshCtorSpine(
+        ValueOps.materialize(head, eqStore).asInstanceOf[ConstructorHead],
+        args.map(arg => ValueOps.materialize(arg, eqStore)),
+        ValueOps.materialize(tpe, eqStore)
+      )
+  }
+
   final case class ConstructorShape private[telescope] (
       private[telescope] val head: ConstructorHead,
       private[telescope] val pi: VPi
   ) {
-    private[telescope] val paramCount: Int = head.numParams
+    private[telescope] val erasedCount: Int = head.numErased
 
-    private[telescope] def paramBinders: Vector[VBinder] = pi.binders.take(paramCount)
-    def fieldBinders: Vector[VBinder] = pi.binders.drop(paramCount)
+    def fieldBinders: Vector[VBinder] = pi.binders.drop(erasedCount)
 
-    private[telescope] def paramArgs[A](args: Vector[A]): Vector[A] = args.take(paramCount)
-    private[telescope] def isParamIndex(idx: Int): Boolean = idx < paramCount
+    def makeCtor(allArgs: Vector[Value], resultTy: Value): VCtor = VCtor(head, allArgs.drop(erasedCount), resultTy)
 
-    private[telescope] def instantiateParams(paramArgs: Vector[Value])(implicit eqStore: EqStore): RuntimeEnv = {
-      if (paramArgs.length != paramCount) throw ArityMismatch(paramCount, paramArgs.length)
-      if (paramCount == 0) pi.env
-      else BinderOps.instantiateFull(paramBinders, pi.env, paramArgs)
-    }
-
-    def makeCtor(allArgs: Vector[Value], resultTy: Value): VCtor = VCtor(head, allArgs.drop(paramCount), resultTy)
+    def freshSpine(allArgs: Vector[Value], resultTy: Value): FreshCtorSpine = FreshCtorSpine(head, allArgs, resultTy)
   }
 
   object ConstructorShape {
@@ -35,56 +47,13 @@ object ConstructorOps {
     def require(head: ConstructorHead): ConstructorShape = from(head).getOrElse(throw CannotApplyNonFunction(head.tpe))
   }
 
-  def freshFromParams(head: ConstructorHead, paramArgs: Vector[Value])(implicit eqStore: EqStore): VCtor =
-    ConstructorShape.from(head) match {
-      case Some(shape) =>
-        val envWithParams = shape.instantiateParams(paramArgs)
-        val fields = shape.fieldBinders
-        val fresh = freshFieldPrefix(fields, envWithParams, fields.length)
-        val fieldValues = fields.map(binder => fresh(binder.localRef))
-        VCtor(head, fieldValues, shape.pi.codomain(fresh, eqStore))
-
-      case None => VCtor(head, Vector.empty, head.tpe)
-    }
-
-  def freshAll(head: ConstructorHead)(implicit eqStore: EqStore): VCtor =
+  def freshSpine(head: ConstructorHead)(implicit eqStore: EqStore): FreshCtorSpine =
     ConstructorShape.from(head) match {
       case Some(shape) =>
         val fresh = BinderOps.freshen(shape.pi)
         val args = shape.pi.binders.map(binder => fresh(binder.localRef))
-        shape.makeCtor(args, shape.pi.codomain(fresh, eqStore))
+        shape.freshSpine(args, shape.pi.codomain(fresh, eqStore))
 
-      case None => VCtor(head, Vector.empty, head.tpe)
+      case None => FreshCtorSpine(head, Vector.empty, head.tpe)
     }
-
-  def structFieldType(head: ConstructorHead, typeArgs: Vector[Value], field: String)(implicit
-      eqStore: EqStore
-  ): Value = {
-    if (!head.isStruct) throw NotAStruct(head.name)
-
-    ConstructorShape.from(head) match {
-      case Some(shape) =>
-        val envWithParams = shape.instantiateParams(shape.paramArgs(typeArgs))
-        val allFieldBinders = shape.fieldBinders
-        val fieldIdx = allFieldBinders.indexWhere(_.name == field)
-        if (fieldIdx < 0) throw NotFound(field)
-
-        val fieldRef = allFieldBinders(fieldIdx).localRef
-        val envWithFields = freshFieldPrefix(allFieldBinders, envWithParams, fieldIdx + 1)
-        envWithFields(fieldRef).tpe
-
-      case None => throw NotFound(field)
-    }
-  }
-
-  // Starting from an environment where constructor parameters are already bound, allocate fresh values for the first
-  // fieldCount field binders so later field types can refer to earlier fields.
-  private def freshFieldPrefix(
-      fieldBinders: Vector[VBinder],
-      envWithParams: RuntimeEnv,
-      fieldCount: Int
-  )(implicit eqStore: EqStore): RuntimeEnv = {
-    val binders = fieldBinders.take(fieldCount)
-    BinderOps.freshen(binders, envWithParams)
-  }
 }

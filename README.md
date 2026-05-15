@@ -42,8 +42,8 @@ Note that at this point I have done 0 optimization - these performance wins are 
 
 ## Implemented today
 
-- Inductive families with parameters and indices
-    - Validates positivity, universes, uniform parameters, constructor result shape
+- Inductive families with explicit family arguments and erased constructor binders
+    - Validates positivity, universes, constructor result shape
 - Type classes as structs, with `def instance`, `let instance`, `[f: Foo]` instance binders, and explicit `derive[Foo]`
   search
 - Dependent pattern matching
@@ -61,11 +61,12 @@ Note that at this point I have done 0 optimization - these performance wins are 
 
 ### Inductives and Pattern Matching
 
-Inductives can have parameters and indices, and their result can live in an explicit universe. This includes
-universe-polymorphic inductives whose fields and result type are parameterized by a `Level`.
+Inductives can have explicit family arguments, and their result can live in an explicit universe. Constructors can
+bind erased arguments with `{...}` when a result family argument should be supplied but not stored as a field. This
+includes universe-polymorphic inductives whose fields and result type are parameterized by a `Level`.
 
 Pattern matches are checked for exhaustiveness. Required constructors must be present, duplicate cases are rejected,
-and constructors that are impossible at the scrutinee's indexed type can be omitted.
+and constructors that are impossible at the scrutinee's family type can be omitted.
 
 ```raccoon
 inductive Nat : Type
@@ -73,13 +74,13 @@ inductive Nat : Type
  | succ (_: Nat) : Nat
 
 inductive Box (u: Level)(A: Sort(u)) : Sort(u)
- | mk (value: A) : Box(u, A)
+ | mk {u: Level}{A: Sort(u)} (value: A) : Box(u, A)
 
-inductive Vec (u: Level)(A: Sort(u)) indices (n: Nat) : Sort(u)
- | nil : Vec(u, A, Nat.zero)
- | cons (n: Nat)(xs: Vec(u, A, n))(x: A) : Vec(u, A, Nat.succ(n))
+inductive Vec (u: Level)(A: Sort(u))(n: Nat) : Sort(u)
+ | nil {u: Level}{A: Sort(u)} : Vec(u, A, Nat.zero)
+ | cons {u: Level}{A: Sort(u)} (n: Nat)(xs: Vec(u, A, n))(x: A) : Vec(u, A, Nat.succ(n))
 
-inductive NatShape indices (n: Nat) : Type
+inductive NatShape (n: Nat) : Type
  | isZero : NatShape(Nat.zero)
  | isSucc (n: Nat) : NatShape(Nat.succ(n))
 
@@ -142,12 +143,12 @@ inductive Nat : Type
   | zero : Nat
   | succ (_: Nat) : Nat
 
-inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
-  | nil: Vec(A, Nat.zero)
-  | cons (v: Vec(A, $n))(elem: A): Vec(A, Nat.succ(n))
+inductive Vec (A: Sort($u))(n: Nat) : Sort(u)
+  | nil {A: Sort($u)}: Vec(A, Nat.zero)
+  | cons {A: Sort($u)} (v: Vec(A, $n))(elem: A): Vec(A, Nat.succ(n))
 
 inductive Pair (A: Sort($u1))(B: Sort($u2)): Sort(Level.max(u1, u2))
-  | mk(a: A)(b: B): Pair(A, B)
+  | mk(a: $A in Sort($u1))(b: $B in Sort($u2)): Pair(A, B)
 
 inline def zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) := {
   let ResType := Vec(Pair(A, B), n)
@@ -155,7 +156,7 @@ inline def zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) := {
   | Vec.nil => Vec.nil(Pair(A, B))
   | Vec.cons va0 a => {
     match vb returning ResType with
-    | Vec.cons vb0 b => Vec.cons(Pair(A, B), zip(va0, vb0), Pair.mk(A, B, a, b))
+    | Vec.cons vb0 b => Vec.cons(Pair(A, B), zip(va0, vb0), Pair.mk(a, b))
   }
 }
 ```
@@ -167,7 +168,7 @@ for record-like data where fields are directly projectable by name.
 Formation rules:
 
 - Exactly one constructor.
-- Indices must only depend on params (not on constructor fields).
+- Result family arguments must not depend on stored constructor fields.
 - Must live in `Type`/`Sort(u)` (not in `Prop`).
 - All fields must be named (no anonymous `_` fields).
 
@@ -237,8 +238,8 @@ stable def add (a: Nat)(b: Nat): Nat := {
 
 inline def nat_add_normalizer : Normalizer := add_normalizer(Nat, Nat.zero, add)
 
-inductive Eq (A: Type) indices (x: A) (y: A) : Sort(Level.one)
- | refl (x: A) : Eq(A, x, x)
+inductive Eq (A: Type)(x: A)(y: A) : Sort(Level.one)
+ | refl {A: Type} (x: A) : Eq(A, x, x)
 
 inline def addComm (a: Nat)(b: Nat): Eq(Nat, add(a, b), add(b, a)) := {
   use nat_add_normalizer
@@ -305,6 +306,7 @@ runs GraalVM `native-image`.
 
 ## Next Planned Features
 
+- Well-founded recursion
 - Less-conservative positivity checking
 - Mutually-recursive inductives
 - Quotients

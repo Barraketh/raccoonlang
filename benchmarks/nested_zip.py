@@ -58,12 +58,12 @@ def raccoon_source(size: int, inline_zip: bool) -> str:
  | zero : Nat
  | succ (_: Nat) : Nat
 
-inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
- | nil : Vec(A, Nat.zero)
- | cons (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
+inductive Vec (A: Sort($u))(n: Nat) : Sort(u)
+ | nil {{A: Sort($u)}} : Vec(A, Nat.zero)
+ | cons {{A: Sort($u)}} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
 
 inductive Pair (A: Sort($u1))(B: Sort($u2)): Sort(Level.max(u1, u2))
- | mk(a: A)(b: B): Pair(A, B)
+ | mk {{A: Sort($u1)}}{{B: Sort($u2)}} (a: A)(b: B): Pair(A, B)
 
 {unfold} zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) := {{
   let ResType := Vec(Pair(A, B), n)

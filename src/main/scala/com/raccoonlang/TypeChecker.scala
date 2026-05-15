@@ -9,6 +9,7 @@ object TypeChecker {
   final case class Checked(value: Value, term: EA.Term)
   final case class CheckedType(value: Value, term: EA.TypeTerm)
   private final case class CheckedPi(value: VPi, term: EA.Term.Pi)
+  private final case class CheckedSelect(value: Value, term: EA.Term.Select)
 
   def sortLeq(a: Value, b: Value)(implicit eqStore: EqStore): Boolean = {
     (a, b).caseOf {
@@ -129,10 +130,8 @@ object TypeChecker {
       checkTypeApply(fn.value, args, fn.term, t.span)
     case CA.Term.TSelect(base, field, span) =>
       val checkedBase = checkTypeTerm(base, env)
-      CheckedType(
-        Interpreter.evalSelect(checkedBase.value, field, env, span.nodeId),
-        EA.Term.Select(checkedBase.term, field, span)
-      )
+      val checkedSelect = checkSelect(checkedBase.value, checkedBase.term, field, span, env)
+      CheckedType(checkedSelect.value, checkedSelect.term)
     case pi: CA.Term.Pi =>
       val checked = checkPi(pi, env)
       CheckedType(checked.value, checked.term)
@@ -188,6 +187,55 @@ object TypeChecker {
     EA.Case(br.ctorName, br.argRefs, branchRes.term, br.span)
   }
 
+  private def checkSelect(baseValue: Value, baseTerm: EA.Term, field: String, span: Span, env: TypecheckEnv)(implicit
+      eqStore: EqStore,
+      normalizers: NormalizerMap
+  ): CheckedSelect = {
+    val vType = baseValue.tpe
+    val (indName, meta) = vType.caseOf {
+      case VConst(n, Inductive(m), _)             => (n, m)
+      case VApp(VConst(n, Inductive(m), _), _, _) => (n, m)
+      case other                                  => throw NotAType(other)
+    }
+
+    if (!meta.isStruct) throw NotAStruct(indName)
+
+    env(meta.constructorNames.head) match {
+      case head: ConstructorHead =>
+        if (!head.isStruct) throw NotAStruct(indName)
+        val shape = ConstructorOps.ConstructorShape.require(head)
+        val fieldIdx = shape.fieldBinders.indexWhere(_.name == field)
+        if (fieldIdx < 0) throw NotFound(field)
+
+        // Freshen the full constructor telescope, including erased binders. Erased binders are not stored in
+        // runtime VCtors, but they still participate in the constructor result type and may be needed while
+        // computing the projected field type.
+        val fresh = ConstructorOps.freshSpine(head)
+        val refined =
+          ValueEquivalence.unify(fresh.tpe, vType, eqStore.allow(fresh.synDeps))
+        val refinedFresh = fresh.materialize(refined)
+
+        var quoteContext = ValueQuote.Context.empty
+        shape.fieldBinders.take(fieldIdx).zipWithIndex.foreach { case (fieldBinder, idx) =>
+          // Constructor field binder refs are scoped to the constructor telescope, not to this projection site.
+          // For a later field type like Vec(A, n), the in-scope syntax for the fresh constructor field `n`
+          // is the earlier projection `base.n`, so teach the quoter that substitution before quoting later types.
+          val priorFieldTy = refinedFresh.fields(idx).tpe
+          val priorFieldTyTerm = ValueQuote.quoteType(priorFieldTy, env, span, quoteContext)(refined, normalizers)
+          val priorFieldTerm = EA.Term.Select(baseTerm, fieldBinder.name, priorFieldTyTerm, span)
+          quoteContext = quoteContext.withValue(refinedFresh.fields(idx), priorFieldTerm)(refined)
+        }
+
+        val resultTyTerm =
+          ValueQuote.quoteType(refinedFresh.fields(fieldIdx).tpe, env, span, quoteContext)(refined, normalizers)
+        val resultTy = Interpreter.evalTypeTerm(resultTyTerm, env)
+        val value = Interpreter.evalSelect(baseValue, field, env, span.nodeId, resultTy)
+        CheckedSelect(value, EA.Term.Select(baseTerm, field, resultTyTerm, span))
+
+      case _ => throw NotFound(meta.constructorNames.head)
+    }
+  }
+
   case class ReachableCtor(
       name: String,
       head: ConstructorHead,
@@ -203,43 +251,57 @@ object TypeChecker {
 
     def computeReachableCtors(
         scrut: Value,
+        scrutTpe: Value,
         inductiveName: String,
-        ctorNames: Vector[String],
-        scrutTypeParams: Vector[Value]
-    ): Vector[ReachableCtor] =
+        ctorNames: Vector[String]
+    ): Vector[ReachableCtor] = {
+      def rootRefinable(value: Value): DepSet =
+        value.caseOf {
+          case blocker: Blocker => DepSet(blocker.blockerId)
+          case _                => DepSet.empty
+        }
+
       ctorNames.flatMap { ctorName =>
         env(ctorName) match {
           case h: ConstructorHead =>
-            val fresh = ConstructorOps.freshFromParams(h, scrutTypeParams)
-            val appliedCtor: Value = fresh
+            try {
+              val fresh = ConstructorOps.freshSpine(h)
+              val appliedCtor: Value = fresh.value
 
-            val branchEqStore: Option[EqStore] =
-              try {
-                val refinable = scrut.synDeps ++ appliedCtor.synDeps
-                Some(ValueEquivalence.unify(scrut, appliedCtor, eqStore.allow(refinable)))
-              } catch {
-                case _: UnificationFailed | _: OccursCheckFailed =>
-                  val refinable = scrut.tpe.synDeps ++ appliedCtor.tpe.synDeps
-                  try {
-                    Some(ValueEquivalence.unify(scrut.tpe, appliedCtor.tpe, eqStore.allow(refinable)))
-                  } catch {
-                    case _: UnificationFailed | _: OccursCheckFailed => None
-                  }
+              val branchEqStore: Option[EqStore] =
+                try {
+                  val refinable = rootRefinable(scrut) ++ fresh.synDeps
+                  Some(ValueEquivalence.unify(scrut, appliedCtor, eqStore.allow(refinable)))
+                } catch {
+                  case _: UnificationFailed | _: OccursCheckFailed =>
+                    val refinable = scrutTpe.synDeps ++ fresh.synDeps
+                    try {
+                      Some(ValueEquivalence.unify(appliedCtor.tpe, scrutTpe, eqStore.allow(refinable)))
+                    } catch {
+                      case _: UnificationFailed | _: OccursCheckFailed => None
+                    }
+                }
+
+              branchEqStore.map { branchStore =>
+                val refinedResultTy = ValueOps.materialize(scrutTpe, branchStore)
+                ReachableCtor(ctorName, h, fresh.fields, refinedResultTy, branchStore)
               }
-
-            branchEqStore.map(eqStore => ReachableCtor(ctorName, h, fresh.fields, fresh.tpe, eqStore))
+            } catch {
+              case _: UnificationFailed | _: OccursCheckFailed => None
+            }
 
           case _ => throw UnknownConstructor(ctorName, inductiveName)
         }
       }
+    }
 
     def allowLargeElimination(scrutTpe: Value, reachable: Vector[ReachableCtor]): Boolean = {
       if (reachable.isEmpty) return true
       if (reachable.length > 1) return false
 
       val only = reachable.head
-      val copy1 = ConstructorOps.freshAll(only.head)
-      val copy2 = ConstructorOps.freshAll(only.head)
+      val copy1 = ConstructorOps.freshSpine(only.head)
+      val copy2 = ConstructorOps.freshSpine(only.head)
       val (fields1, res1) = (copy1.fields, copy1.tpe)
       val (fields2, res2) = (copy2.fields, copy2.tpe)
 
@@ -265,10 +327,12 @@ object TypeChecker {
     val scrut = Interpreter.resolveInEqStore(scrutChecked.value).value
     val scrutTpe = Interpreter.resolveInEqStore(scrut.tpe).value
 
-    val (inductiveName, inductiveMeta, scrutTypeParams) = scrutTpe match {
-      case VConst(n, Inductive(meta), _)                => (n, meta, Vector.empty[Value])
-      case VApp(VConst(n, Inductive(meta), _), args, _) => (n, meta, args.take(meta.paramCount))
-      case _                                            => throw NonInductiveMatch(scrut.tpe)
+    val (inductiveName, inductiveMeta) = scrutTpe match {
+      case VConst(n, Inductive(meta), _) => (n, meta)
+      case VApp(VConst(n, Inductive(meta), _), args, _) =>
+        if (args.length != meta.familyArity) throw NonInductiveMatch(scrut.tpe)
+        (n, meta)
+      case _ => throw NonInductiveMatch(scrut.tpe)
     }
     val inductiveCtorNames = inductiveMeta.constructorNames
     val cases = t.cases.map { c =>
@@ -276,9 +340,10 @@ object TypeChecker {
         if (c.isFullyQualified) inductiveMeta.constructors.collect {
           case ctor if ctor.canonicalName == c.ctorName => ctor.canonicalName
         }
-        else inductiveMeta.constructors.collect {
-          case ctor if ctor.shortName == c.ctorName => ctor.canonicalName
-        }
+        else
+          inductiveMeta.constructors.collect {
+            case ctor if ctor.shortName == c.ctorName => ctor.canonicalName
+          }
       candidates match {
         case Vector(name) => c.copy(ctorName = name)
         case Vector()     => throw UnknownConstructor(c.ctorName, inductiveName, Some(c.span))
@@ -291,7 +356,7 @@ object TypeChecker {
     }
 
     lazy val reachableByType: Vector[ReachableCtor] =
-      computeReachableCtors(scrut, inductiveName, inductiveCtorNames, scrutTypeParams)
+      computeReachableCtors(scrut, scrutTpe, inductiveName, inductiveCtorNames)
 
     def inferMotiveFromReachable(reachable: Vector[ReachableCtor]): Value = {
       val first = reachable.headOption.getOrElse {
@@ -421,10 +486,8 @@ object TypeChecker {
       term match {
         case CA.Term.Select(base, field, span) =>
           val checkedBase = check(base, env)
-          Checked(
-            Interpreter.evalSelect(checkedBase.value, field, env, span.nodeId),
-            EA.Term.Select(checkedBase.term, field, span)
-          )
+          val checkedSelect = checkSelect(checkedBase.value, checkedBase.term, field, span, env)
+          Checked(checkedSelect.value, checkedSelect.term)
         case t: CA.Term.App    => checkApp(t, env)
         case d: CA.Term.Derive => checkDerive(d, env)
         case l: CA.Term.Lam    => checkLam(l, env, normalizers)

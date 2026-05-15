@@ -205,9 +205,9 @@ class TypingTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
-        | | nil : Vec(A, Nat.zero)
-        | | cons (n: Nat) (xs: Vec(A, n)) (x: A): Vec(A, Nat.succ(n))
+        |inductive Vec (A: Type)(n: Nat) : Sort(Level.one)
+        | | nil {A: Type} : Vec(A, Nat.zero)
+        | | cons {A: Type} (n: Nat) (xs: Vec(A, n)) (x: A): Vec(A, Nat.succ(n))
         |
         |inline def badVec (A: Type)(n: Nat)(v: Vec(A, n)): Vec(A, Nat.zero) := v
         |""".stripMargin
@@ -224,9 +224,9 @@ class TypingTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
-        | | nil : Vec(A, Nat.zero)
-        | | cons (n: Nat) (xs: Vec(A, n)) (x: A): Vec(A, Nat.succ(n))
+        |inductive Vec (A: Type)(n: Nat) : Sort(Level.one)
+        | | nil {A: Type} : Vec(A, Nat.zero)
+        | | cons {A: Type} (n: Nat) (xs: Vec(A, n)) (x: A): Vec(A, Nat.succ(n))
         |
         |inline def keepNil (A: Type)(v: Vec(A, Nat.zero)): Vec(A, Nat.zero) := {
         |  match v with

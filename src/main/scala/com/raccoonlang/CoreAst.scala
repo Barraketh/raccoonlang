@@ -132,17 +132,17 @@ object CoreAst {
 
   case class InductiveHeader(
       name: String,
-      params: Vector[Binder],
-      indices: Vector[Binder],
+      binders: Vector[Binder],
       resultTy: TypeTerm,
       span: Span
   ) {
-    def arity: Int = params.length + indices.length
+    def arity: Int = binders.length
   }
 
   case class ConstructorDecl(
       canonicalName: String,
       shortName: String,
+      erasedBinders: Vector[Binder],
       fields: Vector[Binder],
       resultTy: TypeTerm,
       span: Span

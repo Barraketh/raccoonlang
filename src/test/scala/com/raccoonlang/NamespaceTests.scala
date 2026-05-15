@@ -26,8 +26,8 @@ class NamespaceTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive List (A: Type) : Type
-        | | nil : List(A)
-        | | cons (tail: List(A))(head: A) : List(A)
+        | | nil {A: Type} : List(A)
+        | | cons {A: Type} (tail: List(A))(head: A) : List(A)
         |
         |namespace List {
         |  inline def singleton (A: Type)(x: A): List(A) := cons(A, nil(A), x)
@@ -223,7 +223,7 @@ class NamespaceTests extends munit.FunSuite {
         |
         |namespace Data {
         |  inductive Tree (A: Type) : Type
-        |   | leaf (value: A) : Tree(A)
+        |   | leaf {A: Type} (value: A) : Tree(A)
         |}
         |
         |open Data
@@ -242,7 +242,7 @@ class NamespaceTests extends munit.FunSuite {
         |
         |namespace Data {
         |  inductive Tree (A: Type) : Type
-        |   | leaf (value: A) : Tree(A)
+        |   | leaf {A: Type} (value: A) : Tree(A)
         |}
         |
         |open Data.{Tree}
@@ -261,7 +261,7 @@ class NamespaceTests extends munit.FunSuite {
         |
         |namespace Data {
         |  inductive Tree (A: Type) : Type
-        |   | leaf (value: A) : Tree(A)
+        |   | leaf {A: Type} (value: A) : Tree(A)
         |}
         |
         |open Data.{Tree as DTree}
@@ -280,7 +280,7 @@ class NamespaceTests extends munit.FunSuite {
         |
         |namespace Data {
         |  inductive Tree (A: Type) : Type
-        |   | leaf (value: A) : Tree(A)
+        |   | leaf {A: Type} (value: A) : Tree(A)
         |}
         |
         |open Data.{*, -Tree}
@@ -299,12 +299,12 @@ class NamespaceTests extends munit.FunSuite {
         |
         |namespace A {
         |  inductive Tree (A: Type) : Type
-        |   | leaf (value: A) : Tree(A)
+        |   | leaf {A: Type} (value: A) : Tree(A)
         |}
         |
         |namespace B {
         |  inductive Tree (A: Type) : Type
-        |   | leaf (value: A) : Tree(A)
+        |   | leaf {A: Type} (value: A) : Tree(A)
         |}
         |
         |open A

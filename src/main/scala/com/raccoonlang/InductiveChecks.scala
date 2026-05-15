@@ -103,7 +103,7 @@ object InductiveChecks {
     val envWithInductive = baseEnv.putGlobal(decl.header.name, inductiveHead)
 
     decl.ctors.foldLeft(envWithInductive) { case (curEnv, ctor) =>
-      val allBinders = decl.header.params ++ ctor.fields
+      val allBinders = ctor.erasedBinders ++ ctor.fields
       val fullTypeTerm =
         if (allBinders.isEmpty) ctor.resultTy
         else Term.Pi(allBinders, ctor.resultTy, ctor.span)
@@ -112,7 +112,7 @@ object InductiveChecks {
 
       curEnv.putGlobal(
         ctor.canonicalName,
-        ConstructorHead(ctor.canonicalName, decl.header.params.length, allBinders.length, fullType, isStruct)
+        ConstructorHead(ctor.canonicalName, ctor.erasedBinders.length, allBinders.length, fullType, isStruct)
       )
     }
   }
@@ -127,9 +127,8 @@ object InductiveChecks {
     val header = decl.header
     val name = header.name
     val ty = {
-      val binders = header.params ++ header.indices
-      if (binders.isEmpty) decl.header.resultTy
-      else Term.Pi(binders, decl.header.resultTy, decl.header.span)
+      if (header.binders.isEmpty) decl.header.resultTy
+      else Term.Pi(header.binders, decl.header.resultTy, decl.header.span)
     }
 
     val checkedInductiveType = TypeChecker.getCheckedType(ty, worlds.checkEnv)
@@ -139,29 +138,23 @@ object InductiveChecks {
     val meta =
       InductiveMeta(
         decl.ctors.map(ctor => ConstructorMeta(ctor.shortName, ctor.canonicalName)),
-        decl.header.params.length,
-        decl.header.indices.length,
+        decl.header.binders.length,
         decl.isStruct
       )
 
     val inductivedHead = VConst(name, Inductive(meta), inductiveTypeCheck)
 
-    // Constructors are checked in an environment that contains the inductive and inductive params assigned
     val checkEnvWithInductive = worlds.checkEnv.putGlobal(name, inductivedHead)
-    val (paramVars, envWithParams, paramDeps) = {
+    val envWithFamilyBinders = {
       inductiveTypeCheck match {
         case pi: VPi =>
-          val paramBinders = pi.binders.take(header.params.length)
-          val envWithParams = BinderOps.freshen(paramBinders, checkEnvWithInductive)
-          val paramVars = paramBinders.map(binder => envWithParams(binder.localRef))
-
           assert(checkEnvWithInductive.locals.isEmpty) // Sanity check
-          (paramVars, envWithParams, envWithParams.allDeps)
-        case _ => (Vector.empty, checkEnvWithInductive, DepSet.empty)
+          BinderOps.freshen(pi.binders, checkEnvWithInductive)
+        case _ => checkEnvWithInductive
       }
     }
 
-    val resTpe = TypeChecker.getType(header.resultTy, envWithParams)
+    val resTpe = TypeChecker.getType(header.resultTy, envWithFamilyBinders)
     val familyUniverse: Universe = resTpe match {
       case v: VSort => v
       case PropTpe  => PropTpe
@@ -180,48 +173,16 @@ object InductiveChecks {
     }
 
     decl.ctors.foreach { ctor =>
-      val outputTpe = {
-        val (fieldBinders, _) = BinderOps.toVBinders(ctor.fields, envWithParams)
-        val fieldsEnv = BinderOps.freshen(fieldBinders, envWithParams)
-        val fieldVars = fieldBinders.map(binder => fieldsEnv(binder.localRef))
+      val (erasedBinders, _) = BinderOps.toVBinders(ctor.erasedBinders, checkEnvWithInductive)
+      val envWithErased = BinderOps.freshen(erasedBinders, checkEnvWithInductive)
+      val erasedDeps = envWithErased.allDeps
+      val (fieldBinders, _) = BinderOps.toVBinders(ctor.fields, envWithErased)
+      val fieldsEnv = BinderOps.freshen(fieldBinders, envWithErased)
+      val fieldVars = fieldBinders.map(binder => fieldsEnv(binder.localRef))
 
-        ctor.fields.zip(fieldVars).foreach { case (binder, field) =>
-          // 2) Universe bound: skip for Prop families; enforce for Sort families
-          familyUniverse match {
-            case VSort(inductiveLevel) =>
-              TypeChecker.getUniverse(field.tpe) match {
-                case VSort(tpeLevel) =>
-                  if (!Level.leq(tpeLevel, inductiveLevel))
-                    throw InductiveUniverseTooSmall(
-                      name,
-                      s"${ctor.canonicalName}.${binder.name}",
-                      field.tpe,
-                      tpeLevel,
-                      inductiveLevel,
-                      Some(binder.span)
-                    )
-                case Value.PropTpe =>
-              }
+      val outputTpe = TypeChecker.getType(ctor.resultTy, fieldsEnv)
 
-            case PropTpe => // no universe restriction
-          }
-
-          // 3) Every constructor field type must be strictly positive in the inductive
-          if (!isStrictlyPositive(field.tpe, inductivedHead))
-            throw NonStrictlyPositive(
-              inductive = name,
-              ctor = ctor.canonicalName,
-              field = binder.name,
-              fieldTy = field.tpe,
-              span = Some(binder.span)
-            )
-        }
-
-        TypeChecker.getType(ctor.resultTy, fieldsEnv)
-      }
-
-      // 4) Constructor result must be the inductive family head applied to the full family arity,
-      // and params must be uniform - must equal to the original paramVars
+      // 4) Constructor result must be the inductive family head applied to the full family arity.
       val resultErr = InvalidConstructorResult(ctor.canonicalName, name, outputTpe, Some(ctor.span))
       val outputArgs = outputTpe match {
         case VApp(h, args, _) if h.name == name => args
@@ -231,19 +192,49 @@ object InductiveChecks {
 
       if (outputArgs.length != header.arity) throw resultErr
 
-      outputArgs.take(paramVars.length).zip(paramVars).foreach { case (arg, paramVar) =>
-        if (!ValueEquivalence.defEq(arg, paramVar)) throw resultErr
+      val constructorUniverse = TypeChecker.getUniverse(outputTpe)
+
+      ctor.fields.zip(fieldVars).foreach { case (binder, field) =>
+        // 2) Universe bound: skip for Prop families; enforce for Sort families
+        constructorUniverse match {
+          case VSort(inductiveLevel) =>
+            TypeChecker.getUniverse(field.tpe) match {
+              case VSort(tpeLevel) =>
+                if (!Level.leq(tpeLevel, inductiveLevel))
+                  throw InductiveUniverseTooSmall(
+                    name,
+                    s"${ctor.canonicalName}.${binder.name}",
+                    field.tpe,
+                    tpeLevel,
+                    inductiveLevel,
+                    Some(binder.span)
+                  )
+              case Value.PropTpe =>
+            }
+
+          case PropTpe => // no universe restriction
+        }
+
+        // 3) Every stored constructor field type must be strictly positive in the inductive
+        if (!isStrictlyPositive(field.tpe, inductivedHead))
+          throw NonStrictlyPositive(
+            inductive = name,
+            ctor = ctor.canonicalName,
+            field = binder.name,
+            fieldTy = field.tpe,
+            span = Some(binder.span)
+          )
       }
 
       if (decl.isStruct) {
-        val invalidIndex = header.indices.zip(outputArgs.drop(paramVars.length)).find { case (_, indexArg) =>
-          (indexArg.synDeps -- paramDeps).nonEmpty
+        val invalidArg = header.binders.zip(outputArgs).find { case (_, familyArg) =>
+          (familyArg.synDeps -- erasedDeps).nonEmpty
         }
 
-        invalidIndex.foreach { case (indexBinder, _) =>
+        invalidArg.foreach { case (familyBinder, _) =>
           throw InvalidStruct(
             name,
-            s"constructor result index ${indexBinder.name} depends on constructor fields",
+            s"constructor result family argument ${familyBinder.name} depends on constructor fields",
             Some(ctor.resultTy.span)
           )
         }

@@ -97,7 +97,9 @@ object ValueEquivalence {
           defEq(v1.head, v2.head) && v1.args.zip(v2.args).forall { case (arg1, arg2) => defEq(arg1, arg2) }
 
         case (c1: VCtor, c2: VCtor) if c1.fields.length == c2.fields.length =>
-          defEq(c1.head, c2.head) && c1.fields.zip(c2.fields).forall { case (a, b) => defEq(a, b) }
+          defEq(c1.head, c2.head) &&
+          c1.fields.zip(c2.fields).forall { case (a, b) => defEq(a, b) } &&
+          defEq(c1.tpe, c2.tpe)
 
         case (c1: ConstructorHead, c2: ConstructorHead) if c1.name == c2.name => true
 
@@ -150,7 +152,7 @@ object ValueEquivalence {
     }
 
     private def unifySorts(v1: VSort, v2: VSort, meta: EqStore): EqStore = {
-      (v1, v2).caseOf {
+      (v1.level, v2.level).caseOf {
         case (l1: Level, l2: Level) =>
           unifyLevels(l1, l2, meta)
             .orElse(unifyLevels(l2, l1, meta))

@@ -37,7 +37,7 @@ class PrettyPrinterTests extends munit.FunSuite {
     val prelude =
       """
         |inductive Box (A: Type) : Type
-        | | mk (a: A) : Box(A)
+        | | mk {A: Type} (a: A) : Box(A)
         |
         |""".stripMargin
     val printed = PrettyPrinter.printTerm(axiomType(prelude + "axiom f : (_: Box($A)) -> A\n", "f"))

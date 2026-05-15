@@ -244,49 +244,12 @@ object TypePatternOps {
   private[telescope] def freshenBinder[E <: EnvLike[E]](env: E, binder: VBinder)(implicit
       eqStore: EqStore
   ): E = {
-    def putBinderLocal(env: E, value: Value): E = {
-      val instanceKey =
-        if (binder.isInstance) Some(InstanceSearch.instanceKey(binder.name, value, eqStore))
-        else None
-      env.putLocal(binder.localRef, value, instanceKey)
-    }
-
-    val structShape = binder.ty match {
-      case EBinderType.TypePattern(_, _) =>
-        binder.expectedTy match {
-          case ETerm.App(fn, args, _) => Some(Interpreter.evalTerm(fn, env) -> args)
-          case ref: ETerm.Ref         => Some(Interpreter.evalTypeTerm(ref, env) -> Vector.empty[ElabAst.Term])
-          case _                      => None
-        }
-      case EBinderType.ConstrainedCapture(_, _, _) => None
-    }
-
-    structShape.flatMap { case (headValue, argTerms) =>
-      headValue.caseOf {
-        case VConst(_, Inductive(meta), _) if meta.isStruct =>
-          env(meta.constructorNames.head) match {
-            case head: ConstructorHead => ConstructorOps.ConstructorShape.from(head).map(_ -> argTerms)
-            case other                 => throw WTF(s"Expected constructor head, got $other")
-          }
-        case _ => None
-      }
-    } match {
-      case Some((shape, argTerms)) =>
-        val args = binder.ty match {
-          case EBinderType.TypePattern(app: EPattern.App, _) =>
-            val opened = openPatternPrefix(env, app, shape.paramCount)
-            opened.args
-          case _ => shape.paramArgs(argTerms).map(arg => Interpreter.evalTerm(arg, env))
-        }
-        val fresh = ConstructorOps.freshFromParams(shape.head, args)
-        val refinedEnv = openCaptures(env, binder.captures, fresh.tpe)
-        putBinderLocal(refinedEnv, fresh)
-
-      case None =>
-        val (opened, openedEnv) = openBinderType(env, binder.ty)
-        val value = FreshVar.freshVar(binder.name, opened)
-        putBinderLocal(openedEnv, value)
-    }
+    val (opened, openedEnv) = openBinderType(env, binder.ty)
+    val value = FreshVar.freshVar(binder.name, opened)
+    val instanceKey =
+      if (binder.isInstance) Some(InstanceSearch.instanceKey(binder.name, value, eqStore))
+      else None
+    openedEnv.putLocal(binder.localRef, value, instanceKey)
   }
 
   def bindValue(env: RuntimeEnv, binder: VBinder, actual: Value)(implicit eqStore: EqStore): RuntimeEnv = {

@@ -17,8 +17,8 @@ class MatchRefinementTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (p: Nat) : Nat
         |
-        |inductive Eq (A: Type) indices (x: A) (y: A) : Sort(Level.one)
-        | | refl (x: A) : Eq(A, x, x)
+        |inductive Eq (A: Type)(x: A)(y: A) : Sort(Level.one)
+        | | refl {A: Type} (x: A) : Eq(A, x, x)
         |
         |def symmEq (a: Nat)(b: Nat)(p: Eq(Nat, a, b)): Eq(Nat, b, a) := {
         |  match p returning Eq(Nat, b, a) with
@@ -37,8 +37,8 @@ class MatchRefinementTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (p: Nat) : Nat
         |
-        |inductive Eq (A: Type) indices (x: A) (y: A) : Sort(Level.one)
-        | | refl (x: A) : Eq(A, x, x)
+        |inductive Eq (A: Type)(x: A)(y: A) : Sort(Level.one)
+        | | refl {A: Type} (x: A) : Eq(A, x, x)
         |
         |def congSucc2 (a: Nat)(b: Nat)(p: Eq(Nat, a, b)): Eq(Nat, Nat.succ(a), Nat.succ(b)) := {
         |  match p returning Eq(Nat, Nat.succ(a), Nat.succ(b)) with
@@ -57,8 +57,8 @@ class MatchRefinementTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (p: Nat) : Nat
         |
-        |inductive Eq (A: Type) indices (x: A) (y: A) : Sort(Level.one)
-        | | refl (x: A) : Eq(A, x, x)
+        |inductive Eq (A: Type)(x: A)(y: A) : Sort(Level.one)
+        | | refl {A: Type} (x: A) : Eq(A, x, x)
         |
         |def badCongCtor (a: Nat): Eq(Nat, a, Nat.succ(a)) := {
         |  match Eq.refl(Nat, a) returning Eq(Nat, a, Nat.succ(a)) with
@@ -77,9 +77,9 @@ class MatchRefinementTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (p: Nat) : Nat
         |
-        |inductive Vec (u: Level)(A: Sort(u)) indices (n: Nat) : Sort(u)
-        | | nil : Vec(u, A, Nat.zero)
-        | | cons (n: Nat) (xs: Vec(u, A, n)) (x: A) : Vec(u, A, Nat.succ(n))
+        |inductive Vec (u: Level)(A: Sort(u))(n: Nat) : Sort(u)
+        | | nil {u: Level}{A: Sort(u)} : Vec(u, A, Nat.zero)
+        | | cons {u: Level}{A: Sort(u)} (n: Nat) (xs: Vec(u, A, n)) (x: A) : Vec(u, A, Nat.succ(n))
         |
         |inline def keepVec (n: Nat)(v: Vec(Level.one, Nat, n)): Vec(Level.one, Nat, n) := {
         |  match v returning Vec(Level.one, Nat, n) with
@@ -90,5 +90,28 @@ class MatchRefinementTests extends munit.FunSuite {
         |""".stripMargin
 
     typecheckDecls(p)
+  }
+
+  test("match refinement negative: hidden erased binder is not inferred from family arguments") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Vec (A: Type)(n: Nat) : Type
+        | | nil {A: Type} : Vec(A, Nat.zero)
+        | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
+        |
+        |inductive Hidden (n: Nat) : Type
+        | | mk {m: Nat} (x: Vec(Nat, m)) : Hidden(Nat.zero)
+        |
+        |def bad (w: Hidden(Nat.zero)): Vec(Nat, Nat.zero) := {
+        |  match w returning Vec(Nat, Nat.zero) with
+        |  | Hidden.mk x => x
+        |}
+        |""".stripMargin
+
+    intercept[TypeMismatch] { typecheckDecls(p) }
   }
 }

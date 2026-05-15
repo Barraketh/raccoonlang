@@ -124,7 +124,7 @@ class TypeClassTests extends munit.FunSuite {
       | | false : Bool
       |
       |struct Eq (A: Type) : Type
-      | | mk (ok: Bool) : Eq(A)
+      | | mk {A: Type} (ok: Bool) : Eq(A)
       |
       |""".stripMargin
 
@@ -206,7 +206,7 @@ class TypeClassTests extends munit.FunSuite {
       prelude +
         """
           |inductive List (A: Type) : Type
-          | | nil : List(A)
+          | | nil {A: Type} : List(A)
           |
           |def instance natEq : Eq(Nat) := Eq.mk(Nat, Bool.true)
           |
@@ -227,10 +227,10 @@ class TypeClassTests extends munit.FunSuite {
         | | unit : BenchUnit
         |
         |struct Dep (A: Sort($u0)) : Sort(u0)
-        | | mk (val: BenchUnit) : Dep(A)
+        | | mk {A: Sort($u0)} (val: BenchUnit) : Dep(A)
         |
         |struct TC (A: Sort($u0)) : Sort(u0)
-        | | mk (val: BenchUnit) : TC(A)
+        | | mk {A: Sort($u0)} (val: BenchUnit) : TC(A)
         |
         |inductive Target : Type
         | | mk : Target
@@ -286,7 +286,7 @@ class TypeClassTests extends munit.FunSuite {
       prelude +
         """
           |struct Box (A: Type) : Type
-          | | mk : Box(A)
+          | | mk {A: Type} : Box(A)
           |
           |def instance natEq : Eq(Nat) := Eq.mk(Nat, Bool.true)
           |
@@ -392,10 +392,10 @@ class TypeClassTests extends munit.FunSuite {
       prelude +
         """
           |struct TC (A: Type) : Type
-          | | mk (ok: Bool) : TC(A)
+          | | mk {A: Type} (ok: Bool) : TC(A)
           |
           |struct Need (A: Type) : Type
-          | | mk : Need(A)
+          | | mk {A: Type} : Need(A)
           |
           |def instance bad [need: Need($A)]: TC(A) := TC.mk(A, Bool.false)
           |def instance good : TC(Nat) := TC.mk(Nat, Bool.true)
@@ -413,10 +413,10 @@ class TypeClassTests extends munit.FunSuite {
       prelude +
         """
           |struct Need (A: Sort(Level.one)) : Sort(Level.one)
-          | | mk : Need(A)
+          | | mk {A: Sort(Level.one)} : Need(A)
           |
           |struct TC (A: Sort(Level.one)) : Sort(Level.one)
-          | | mk (ok: Bool) : TC(A)
+          | | mk {A: Sort(Level.one)} (ok: Bool) : TC(A)
           |
           |def instance needNat : Need(Nat) := Need.mk(Nat)
           |def instance high [need: Need($A)]: TC(A) := TC.mk(A, Bool.true)

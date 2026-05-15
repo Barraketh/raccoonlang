@@ -25,12 +25,12 @@ class VecZipTest extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec(u: Level)(A: Sort(u)) indices (n: Nat) : Sort(u)
-        | | nil: Vec(u, A, Nat.zero)
-        | | cons(n: Nat)(vec: Vec(u, A, n))(elem: A): Vec(u, A, Nat.succ(n))
+        |inductive Vec(u: Level)(A: Sort(u))(n: Nat) : Sort(u)
+        | | nil {u: Level}{A: Sort(u)}: Vec(u, A, Nat.zero)
+        | | cons {u: Level}{A: Sort(u)}(n: Nat)(vec: Vec(u, A, n))(elem: A): Vec(u, A, Nat.succ(n))
         |
         |inductive Pair(u1: Level)(u2: Level)(A: Sort(u1))(B: Sort(u2)): Sort(Level.max(u1, u2))
-        | | mk(a: A)(b: B): Pair(u1, u2, A, B)
+        | | mk {u1: Level}{u2: Level}{A: Sort(u1)}{B: Sort(u2)}(a: A)(b: B): Pair(u1, u2, A, B)
         |
         |inline def zip(u1: Level)(u2: Level)(A: Sort(u1))(B: Sort(u2))(n: Nat)(va: Vec(u1, A, n))(vb: Vec(u2, B, n)): Vec(Level.max(u1, u2), Pair(u1, u2, A, B), n) := {
         |  let R := Pair(u1, u2, A, B)
@@ -60,12 +60,12 @@ class VecZipTest extends munit.FunSuite {
         |  | zero : Nat
         |  | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
-        |  | nil: Vec(A, Nat.zero)
-        |  | cons (v: Vec(A, $n))(elem: A): Vec(A, Nat.succ(n))
+        |inductive Vec (A: Sort($u))(n: Nat) : Sort(u)
+        |  | nil {A: Sort($u)}: Vec(A, Nat.zero)
+        |  | cons {A: Sort($u)} (v: Vec(A, $n))(elem: A): Vec(A, Nat.succ(n))
         |
         |inductive Pair (A: Sort($u1))(B: Sort($u2)): Sort(Level.max(u1, u2))
-        |  | mk(a: A)(b: B): Pair(A, B)
+        |  | mk(a: $A in Sort($u1))(b: $B in Sort($u2)): Pair(A, B)
         |
         |inline def zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) := {
         |  let ResType := Vec(Pair(A, B), n)
@@ -73,7 +73,7 @@ class VecZipTest extends munit.FunSuite {
         |  | Vec.nil => Vec.nil(Pair(A, B))
         |  | Vec.cons va0 a => {
         |    match vb returning ResType with
-        |    | Vec.cons vb0 b => Vec.cons(Pair(A, B), zip(va0, vb0), Pair.mk(A, B, a, b))
+        |    | Vec.cons vb0 b => Vec.cons(Pair(A, B), zip(va0, vb0), Pair.mk(a, b))
         |  }
         |}
         |""".stripMargin

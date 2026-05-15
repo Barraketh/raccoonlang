@@ -176,7 +176,7 @@ class ValueOpsTests extends munit.FunSuite {
     val solution = symbolicValue("ThunkSolution")
     val env = TypecheckEnv.empty.putLocal(capturedRef, captured).putLocal(scrutRef, scrut)
     val runtimeEnv = RuntimeEnv(env.globals, env.locals)
-    val head = ConstructorHead("C", numParams = 0, totalArity = 0, valueType, isStruct = false)
+    val head = ConstructorHead("C", numErased = 0, totalArity = 0, valueType, isStruct = false)
     val ctor = VCtor(head, Vector.empty, valueType)
     val matchTerm = ETerm.Match(
       ETerm.LocalRef(scrutRef, span),
@@ -250,5 +250,19 @@ class ValueOpsTests extends munit.FunSuite {
     }
     assert(!blocked.synDeps.contains(unused.id))
     assert(blocked.synDeps.contains(scrut.id))
+  }
+
+  test("constructor equality accounts for result type") {
+    implicit val eqStore: EqStore = EqStore.empty
+    implicit val normalizers: NormalizerMap = NormalizerMap.empty
+
+    val head = ConstructorHead("C", numErased = 0, totalArity = 0, valueType, isStruct = false)
+    val resultA = symbolicValue("ResultA")
+    val resultB = symbolicValue("ResultB")
+    val ctorA = VCtor(head, Vector.empty, resultA)
+    val ctorB = VCtor(head, Vector.empty, resultB)
+
+    assertNotEquals(ctorA.key, ctorB.key)
+    assert(!ValueEquivalence.defEq(ctorA, ctorB))
   }
 }

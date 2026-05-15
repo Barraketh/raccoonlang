@@ -163,7 +163,7 @@ object PrettyPrinter {
 
     def pt(t: ElabAst.TypeTerm): String = t match {
       case ref: Term.Ref               => printElabRef(ref)
-      case Term.Select(base, field, _) => s"${printElabTermAtom(base)}[$field]"
+      case Term.Select(base, field, _, _) => s"${printElabTermAtom(base)}[$field]"
       case Term.App(fn, args, _) =>
         val headStr = printElabTermAtom(fn)
         val argsStr = args.map(printElabTermAtom).mkString(", ")
@@ -177,7 +177,7 @@ object PrettyPrinter {
 
     def ptAtom(t: ElabAst.TypeTerm): String = t match {
       case _: Term.Ref          => pt(t)
-      case Term.Select(_, _, _) => pt(t)
+      case Term.Select(_, _, _, _) => pt(t)
       case Term.App(_, _, _)    => pt(t)
       case Term.Pi(_, _, _, _)  => s"(${pt(t)})"
     }
@@ -242,7 +242,7 @@ object PrettyPrinter {
   private def printElabTermAtom(t: ElabAst.Term): String = t match {
     case _: ElabAst.Term.Ref                 => printElabTerm0(t)
     case ElabAst.Term.App(_, _, _)           => printElabTerm0(t)
-    case ElabAst.Term.Select(base, field, _) => s"${printElabTermAtom(base)}[$field]"
+    case ElabAst.Term.Select(base, field, _, _) => s"${printElabTermAtom(base)}[$field]"
     case ElabAst.Term.Lam(_, _, _, _, _, _)  => s"(${printElabTerm0(t)})"
     case ElabAst.Term.Match(_, _, _, _)      => s"(${printElabTerm0(t)})"
     case ElabAst.Term.Body(_, _, _)          => s"(${printElabTerm0(t)})"

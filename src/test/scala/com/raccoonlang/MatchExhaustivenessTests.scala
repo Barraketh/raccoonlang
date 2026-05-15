@@ -53,9 +53,9 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
-        | | nil : Vec(A, Nat.zero)
-        | | cons (n: Nat) (xs: Vec(A, n)) (x: A): Vec(A, Nat.succ(n))
+        |inductive Vec (A: Type)(n: Nat) : Sort(Level.one)
+        | | nil {A: Type} : Vec(A, Nat.zero)
+        | | cons {A: Type} (n: Nat) (xs: Vec(A, n)) (x: A): Vec(A, Nat.succ(n))
         |
         |def f (A: Type)(v: Vec(A, Nat.zero)): Nat := {
         |  match v returning Nat with
@@ -114,8 +114,8 @@ class MatchExhaustivenessTests extends munit.FunSuite {
     val p =
       """
         |inductive Wrap (A: Type) : Type
-        | | left (x: A) : Wrap(A)
-        | | right (x: A) : Wrap(A)
+        | | left {A: Type} (x: A) : Wrap(A)
+        | | right {A: Type} (x: A) : Wrap(A)
         |
         |def keepWrap (A: Type)(w: Wrap(A)): Wrap(A) := {
         |  match w with
@@ -135,7 +135,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive IsZero indices (n: Nat) : Type
+        |inductive IsZero (n: Nat) : Type
         | | intro : IsZero(Nat.zero)
         |
         |def absurdSucc (n: Nat)(h: IsZero(Nat.succ(n))): Nat := {
@@ -154,7 +154,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Shape indices (n: Nat) : Type
+        |inductive Shape (n: Nat) : Type
         | | zeroCase : Shape(Nat.zero)
         | | succCase (m: Nat) : Shape(Nat.succ(m))
         |

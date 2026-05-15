@@ -53,6 +53,7 @@ object TypeError {
     case e: ImportedModuleHasBody                    => e.copy(span = Some(sp))
     case e: ModuleReadFailed                         => e.copy(span = Some(sp))
     case e: LocalCaseHead                            => e.copy(span = Some(sp))
+    case e: CannotQuoteValue                         => e.copy(span = Some(sp))
   }
 }
 
@@ -255,4 +256,8 @@ final case class InstanceSearchBudgetExceeded(
     span: Option[Span] = None
 ) extends TypeError {
   override def msg: String = s"Instance search budget exceeded for $goal (depth $maxDepth, nodes $maxNodes)"
+}
+
+final case class CannotQuoteValue(value: Value, reason: String, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"Cannot quote $value as checked syntax: $reason"
 }

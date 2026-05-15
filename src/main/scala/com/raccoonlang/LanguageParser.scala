@@ -33,7 +33,6 @@ object LanguageParser {
     "derive",
     "inductive",
     "struct",
-    "indices",
     "stable",
     "namespace",
     "open",
@@ -162,6 +161,11 @@ object LanguageParser {
       Binder(name, ty, span, isInstance = true)
     }
 
+  private def erasedParam(implicit sourceId: Option[SourceId]): Parser[Binder] =
+    (sym('{') ~ argName ~ sym(':') ~/ binderType ~ symTight('}')).flatSpanned(sourceId).map { case (name, ty, span) =>
+      Binder(name, ty, span)
+    }
+
   private def param(implicit sourceId: Option[SourceId]): Parser[Binder] = normalParam | instanceParam
 
   private def let(implicit sourceId: Option[SourceId]): Parser[Let] =
@@ -242,17 +246,18 @@ object LanguageParser {
 
   // New inductive-specific parsers
   private def inductiveHeader(implicit sourceId: Option[SourceId]): Parser[InductiveHeader] = {
-    val paramsP = param.rep(0)
-    val indicesP = (kw("indices") ~/ param.rep(0)).?.map(_.getOrElse(Vector.empty))
-    (ident ~ paramsP ~ indicesP ~ sym(':') ~ typeTerm)
+    val bindersP = param.rep(0)
+    (ident ~ bindersP ~ sym(':') ~ typeTerm)
       .flatSpanned(sourceId)
-      .map { case (name, ps, is, ty, sp) => InductiveHeader(name, ps, is, ty, sp) }
+      .map { case (name, binders, ty, sp) => InductiveHeader(name, binders, ty, sp) }
   }
 
   private def ctorDecl(implicit sourceId: Option[SourceId]): Parser[ConstructorDecl] = {
-    (sym("|") ~/ ident ~ param.rep(0) ~ sym(':') ~ typeTerm ~ lineSep)
+    (sym("|") ~/ ident ~ erasedParam.rep(0) ~ param.rep(0) ~ sym(':') ~ typeTerm ~ lineSep)
       .flatSpanned(sourceId)
-      .map { case (name, fields, resTy, sp) => ConstructorDecl(name, fields, resTy, sp) }
+      .map { case (name, erasedBinders, fields, resTy, sp) =>
+        ConstructorDecl(name, erasedBinders, fields, resTy, sp)
+      }
   }
 
   private def unfoldStrategy: Parser[UnfoldStrategy] =

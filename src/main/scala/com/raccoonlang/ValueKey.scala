@@ -148,8 +148,8 @@ object ValueKey {
       mixValues(mixKey(tag(Tag.App), av.head.key), av.args)
     case Value.ConstructorHead(n, _, _, _, _) =>
       mixString(tag(Tag.ConstructorHead), n)
-    case Value.VCtor(h, fields, _) =>
-      mixValues(mixKey(tag(Tag.Ctor), h.key), fields)
+    case Value.VCtor(h, fields, tpe) =>
+      mixKey(mixValues(mixKey(tag(Tag.Ctor), h.key), fields), tpe.key)
     case Value.NormalizerType =>
       tag(Tag.NormalizerType)
     case n: Value.Normalizer =>

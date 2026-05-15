@@ -182,16 +182,16 @@ class PropTests extends munit.FunSuite {
         | | intro : True
         |
         |inductive And (P: Prop)(Q: Prop) : Prop
-        | | intro (p: P)(q: Q) : And(P, Q)
+        | | intro {P: Prop}{Q: Prop} (p: P)(q: Q) : And(P, Q)
         |
         |inductive Exists (A: Type)(p: A -> Prop) : Prop
-        | | intro (w: A)(pw: p(w)) : Exists(A, p)
+        | | intro {A: Type}{p: A -> Prop} (w: A)(pw: p(w)) : Exists(A, p)
         |
         |inductive HasCarrier : Prop
         | | intro (A: Type) : HasCarrier
         |
         |inductive HasSort (u: Level) : Prop
-        | | intro (A: Sort(u)) : HasSort(u)
+        | | intro {u: Level} (A: Sort(u)) : HasSort(u)
         |""".stripMargin
 
     typecheckDecls(p)
@@ -223,7 +223,7 @@ class PropTests extends munit.FunSuite {
     val p =
       """
         |inductive And (P: Prop)(Q: Prop) : Prop
-        | | intro (p: P)(q: Q) : And(P, Q)
+        | | intro {P: Prop}{Q: Prop} (p: P)(q: Q) : And(P, Q)
         |
         |def andLeft (P: Prop)(Q: Prop)(h: And(P, Q)): P := {
         |  match h returning P with
@@ -238,7 +238,7 @@ class PropTests extends munit.FunSuite {
     val p =
       """
         |inductive Exists (A: Type)(p: A -> Prop) : Prop
-        | | intro (w: A)(pw: p(w)) : Exists(A, p)
+        | | intro {A: Type}{p: A -> Prop} (w: A)(pw: p(w)) : Exists(A, p)
         |
         |def unpackToProp (A: Type)(p: A -> Prop)(h: Exists(A, p)): Prop := {
         |  match h returning Prop with
@@ -260,7 +260,7 @@ class PropTests extends munit.FunSuite {
         | | intro : True
         |
         |inductive Exists (A: Type)(p: A -> Prop) : Prop
-        | | intro (w: A)(pw: p(w)) : Exists(A, p)
+        | | intro {A: Type}{p: A -> Prop} (w: A)(pw: p(w)) : Exists(A, p)
         |
         |inline def alwaysTrue (x: Nat): Prop := True
         |
@@ -286,8 +286,8 @@ class PropTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Eq (A: Type) indices (x: A) (y: A) : Prop
-        | | refl (x: A) : Eq(A, x, x)
+        |inductive Eq (A: Type)(x: A)(y: A) : Prop
+        | | refl {A: Type} (x: A) : Eq(A, x, x)
         |
         |def eqToNat (n: Nat)(p: Eq(Nat, n, Nat.zero)): Nat := {
         |  match p returning Nat with
@@ -310,8 +310,8 @@ class PropTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Eq (A: Type) indices (x: A) (y: A) : Prop
-        | | refl (x: A) : Eq(A, x, x)
+        |inductive Eq (A: Type)(x: A)(y: A) : Prop
+        | | refl {A: Type} (x: A) : Eq(A, x, x)
         |
         |def choose (n: Nat)(m: Nat)(p: Eq(Nat, n, m)): Type := {
         |  match p returning Type with
@@ -365,7 +365,7 @@ class PropTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive IsZero indices (n: Nat) : Prop
+        |inductive IsZero (n: Nat) : Prop
         | | intro : IsZero(Nat.zero)
         |
         |def absurdSucc (n: Nat)(h: IsZero(Nat.succ(n))): Nat := {
@@ -376,15 +376,15 @@ class PropTests extends munit.FunSuite {
     typecheckDecls(p)
   }
 
-  test("Large elimination is allowed when constructor field is uniquely forced by indices") {
+  test("Large elimination is allowed when constructor field is uniquely forced by family arguments") {
     val p =
       """
         |inductive Nat : Type
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive IdxWrap (A: Type) indices (x: A) : Prop
-        | | intro (y: A) : IdxWrap(A, y)
+        |inductive IdxWrap (A: Type)(x: A) : Prop
+        | | intro {A: Type} (y: A) : IdxWrap(A, y)
         |
         |def unwrapIdx (n: Nat)(h: IdxWrap(Nat, n)): Nat := {
         |  match h returning Nat with
@@ -407,7 +407,7 @@ class PropTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Shape indices (n: Nat) : Prop
+        |inductive Shape (n: Nat) : Prop
         | | zeroCase : Shape(Nat.zero)
         | | succCase (m: Nat) : Shape(Nat.succ(m))
         |
@@ -458,8 +458,8 @@ class PropTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Or (P: Prop)(Q: Prop) : Prop
-        | | inl (p: P) : Or(P, Q)
-        | | inr (q: Q) : Or(P, Q)
+        | | inl {P: Prop}{Q: Prop} (p: P) : Or(P, Q)
+        | | inr {P: Prop}{Q: Prop} (q: Q) : Or(P, Q)
         |
         |inductive True : Prop
         | | intro : True
@@ -491,8 +491,8 @@ class PropTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Eq (A: Type) indices (x: A) (y: A) : Prop
-        | | refl (x: A) : Eq(A, x, x)
+        |inductive Eq (A: Type)(x: A)(y: A) : Prop
+        | | refl {A: Type} (x: A) : Eq(A, x, x)
         |
         |def symm (A: Type)(x: A)(y: A)(p: Eq(A, x, y)): Eq(A, y, x) := {
         |  match p returning Eq(A, y, x) with

@@ -55,8 +55,10 @@ object CapturedIndexes {
         }
         goTerm(out, cutoff, refs)
 
-      case Term.App(fn, args, _)   => goTerms(fn +: args, cutoff, refs)
-      case Term.Select(base, _, _) => goTerm(base, cutoff, refs)
+      case Term.App(fn, args, _) => goTerms(fn +: args, cutoff, refs)
+      case Term.Select(base, _, resultTy, _) =>
+        goTerm(base, cutoff, refs)
+        goTerm(resultTy, cutoff, refs)
 
       case Term.Body(lets, res, _) =>
         lets.foreach { l =>

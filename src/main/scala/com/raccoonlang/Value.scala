@@ -56,7 +56,7 @@ object Value {
     value match {
       case _: VPi | _: VLam    => true
       case app: AppliedValue   => app.head.needsExtensionalEq || app.args.exists(_.needsExtensionalEq)
-      case VCtor(_, fields, _) => fields.exists(_.needsExtensionalEq)
+      case VCtor(_, fields, tpe) => fields.exists(_.needsExtensionalEq) || tpe.needsExtensionalEq
       case _                   => false
     }
 
@@ -334,13 +334,13 @@ object Value {
     }
   }
 
-  case class ConstructorHead(name: String, numParams: Int, totalArity: Int, tpe: Value, isStruct: Boolean)
+  case class ConstructorHead(name: String, numErased: Int, totalArity: Int, tpe: Value, isStruct: Boolean)
     extends TopLevelValue
     with UpdatableType {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
-  // Fully applied constructor.
+  // Runtime constructor value. `fields` contains only stored fields; erased constructor binders are not retained.
   case class VCtor(head: ConstructorHead, fields: Vector[Value], tpe: Value) extends Value with UpdatableType {
     override lazy val synDeps: DepSet = {
       val res = DepSet.newBuilder
@@ -371,8 +371,7 @@ object Value {
 
   final case class InductiveMeta(
       constructors: Vector[ConstructorMeta],
-      paramCount: Int,
-      indexCount: Int,
+      familyArity: Int,
       isStruct: Boolean
   ) {
     lazy val constructorNames: Vector[String] = constructors.map(_.canonicalName)

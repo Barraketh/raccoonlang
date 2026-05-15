@@ -31,8 +31,8 @@ class EqualityCommTests extends munit.FunSuite {
         |  | Nat.succ x => add(Nat.succ(a), x)
         |}
         |
-        |inductive Eq (A: Type) indices (x: A) (y: A) : Sort(Level.one)
-        | | refl (x: A) : Eq(A, x, x)
+        |inductive Eq (A: Type)(x: A)(y: A) : Sort(Level.one)
+        | | refl {A: Type} (x: A) : Eq(A, x, x)
         |
         |def trans (p: Eq($A, $x, $y))(q: Eq(A, y, $z)): Eq(A, x, z) := {
         |  match p returning Eq(A, x, z) with
