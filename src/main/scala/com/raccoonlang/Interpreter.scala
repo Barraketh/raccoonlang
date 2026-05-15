@@ -368,8 +368,8 @@ object Interpreter {
         .putGlobal("Type", VSort(Level.zero))
         .putGlobal("Normalizer", NormalizerType)
         .putGlobal("Level", LevelTpe)
-        .putGlobal("Level::zero", Level.zero)
-        .putGlobal("Level::one", Level.const(1))
+        .putGlobal("Level.zero", Level.zero)
+        .putGlobal("Level.one", Level.const(1))
         .putGlobal("Prop", PropTpe)
 
     val builtinFuncs = List[(String, CoreAst.TypeTerm, (Vector[Value], EqStore) => Value)](
@@ -379,12 +379,12 @@ object Interpreter {
         (args, _) => Normalizers.add_normalizer(args)
       ),
       (
-        "Level::succ",
+        "Level.succ",
         parseHeader("(l: Level): Level"),
         (args, eqStore) => Value.Level.succ(getLevel(args.head)(eqStore))
       ),
       (
-        "Level::max",
+        "Level.max",
         parseHeader("(l1: Level)(l2: Level): Level"),
         (args, eqStore) => Value.Level.max(args.map(l => getLevel(l)(eqStore)))
       )

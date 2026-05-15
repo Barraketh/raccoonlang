@@ -77,7 +77,7 @@ class UniverseTests extends munit.FunSuite {
     val p =
       """
         |{
-        |  let s : Sort(Level::succ(Level::succ(Level::zero))) := Type
+        |  let s : Sort(Level.succ(Level.succ(Level.zero))) := Type
         |  s
         |}
         |""".stripMargin
@@ -89,7 +89,7 @@ class UniverseTests extends munit.FunSuite {
     }
   }
 
-  test("def f(u: Level)(A: Sort u)(x: A): A := x; apply at u=0, A=Nat, x=Nat::zero") {
+  test("def f(u: Level)(A: Sort u)(x: A): A := x; apply at u=0, A=Nat, x=Nat.zero") {
     val p =
       """
         |inductive Nat : Type
@@ -98,12 +98,12 @@ class UniverseTests extends munit.FunSuite {
         |
         |inline def f (u: Level)(A: Sort(u))(x: A): A := x
         |
-        |{ f(Level::zero, Nat, Nat::zero) }
+        |{ f(Level.zero, Nat, Nat.zero) }
         |""".stripMargin
 
     val res = runProgram(p)
     res match {
-      case v => assertEquals(PrettyPrinter.print(v), "Nat::zero")
+      case v => assertEquals(PrettyPrinter.print(v), "Nat.zero")
     }
   }
 
@@ -111,7 +111,7 @@ class UniverseTests extends munit.FunSuite {
     val p =
       """
         |{
-        |  let s : Sort(Level::succ(Level::succ(Level::zero))) := Type
+        |  let s : Sort(Level.succ(Level.succ(Level.zero))) := Type
         |  s
         |}
         |""".stripMargin
@@ -132,9 +132,9 @@ class UniverseTests extends munit.FunSuite {
         |  | zero: Nat
         |  | succ (_: Nat) : Nat
         |
-        |def up2 (u: Level)(A: Sort(u)): Sort(Level::succ(Level::succ(u))) := A
+        |def up2 (u: Level)(A: Sort(u)): Sort(Level.succ(Level.succ(u))) := A
         |
-        |{ up2(Level::zero, Nat) }
+        |{ up2(Level.zero, Nat) }
         |""".stripMargin
 
     val res = runProgram(p)
@@ -148,7 +148,7 @@ class UniverseTests extends munit.FunSuite {
   test("Reject lowering: cannot return Sort (succ u) where Sort u is expected") {
     val p =
       """
-        |def badDown (u: Level)(A: Sort(Level::succ(u))): Sort(u) := A
+        |def badDown (u: Level)(A: Sort(Level.succ(u))): Sort(u) := A
         |
         |""".stripMargin
 
@@ -163,7 +163,7 @@ class UniverseTests extends munit.FunSuite {
   test("Pi formation level: (A: Sort 0)(x: A) -> A has type Sort 1") {
     val p =
       """
-        |{ fun (A: Sort(Level::zero))(x: A): A => x }
+        |{ fun (A: Sort(Level.zero))(x: A): A => x }
         |""".stripMargin
 
     val res = runProgram(p)
@@ -213,11 +213,11 @@ class UniverseTests extends munit.FunSuite {
         |
         |inline def idAt (u: Level)(A: Sort(u))(x: A): A := x
         |
-        |{ idAt(Level::zero, Nat, Nat::zero) }
+        |{ idAt(Level.zero, Nat, Nat.zero) }
         |""".stripMargin
 
     val res = runProgram(p)
-    assertEquals(PrettyPrinter.print(res), "Nat::zero")
+    assertEquals(PrettyPrinter.print(res), "Nat.zero")
   }
 
   test("Level.leq: constant can be covered by RHS atom") {
@@ -323,7 +323,7 @@ class UniverseTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inline def idUp (A: Sort(Level::succ($u)))(x: A): A := x
+        |inline def idUp (A: Sort(Level.succ($u)))(x: A): A := x
         |
         |{
         |  idUp(Type, Nat)

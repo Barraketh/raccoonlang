@@ -111,8 +111,8 @@ object InductiveChecks {
       val fullType = TypeChecker.getType(fullTypeTerm, curEnv)
 
       curEnv.putGlobal(
-        ctor.name,
-        ConstructorHead(ctor.name, decl.header.params.length, allBinders.length, fullType, isStruct)
+        ctor.canonicalName,
+        ConstructorHead(ctor.canonicalName, decl.header.params.length, allBinders.length, fullType, isStruct)
       )
     }
   }
@@ -137,7 +137,12 @@ object InductiveChecks {
     val inductiveTypeRun = Interpreter.evalTypeTerm(checkedInductiveType.term, worlds.runEnv)
 
     val meta =
-      InductiveMeta(decl.ctors.map(_.name), decl.header.params.length, decl.header.indices.length, decl.isStruct)
+      InductiveMeta(
+        decl.ctors.map(ctor => ConstructorMeta(ctor.shortName, ctor.canonicalName)),
+        decl.header.params.length,
+        decl.header.indices.length,
+        decl.isStruct
+      )
 
     val inductivedHead = VConst(name, Inductive(meta), inductiveTypeCheck)
 
@@ -189,7 +194,7 @@ object InductiveChecks {
                   if (!Level.leq(tpeLevel, inductiveLevel))
                     throw InductiveUniverseTooSmall(
                       name,
-                      s"${ctor.name}.${binder.name}",
+                      s"${ctor.canonicalName}.${binder.name}",
                       field.tpe,
                       tpeLevel,
                       inductiveLevel,
@@ -205,7 +210,7 @@ object InductiveChecks {
           if (!isStrictlyPositive(field.tpe, inductivedHead))
             throw NonStrictlyPositive(
               inductive = name,
-              ctor = ctor.name,
+              ctor = ctor.canonicalName,
               field = binder.name,
               fieldTy = field.tpe,
               span = Some(binder.span)
@@ -217,7 +222,7 @@ object InductiveChecks {
 
       // 4) Constructor result must be the inductive family head applied to the full family arity,
       // and params must be uniform - must equal to the original paramVars
-      val resultErr = InvalidConstructorResult(ctor.name, name, outputTpe, Some(ctor.span))
+      val resultErr = InvalidConstructorResult(ctor.canonicalName, name, outputTpe, Some(ctor.span))
       val outputArgs = outputTpe match {
         case VApp(h, args, _) if h.name == name => args
         case VConst(n, _, _) if n == name       => Vector.empty[Value]

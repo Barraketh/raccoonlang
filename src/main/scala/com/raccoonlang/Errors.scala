@@ -43,6 +43,9 @@ object TypeError {
     case e: CyclicInstanceSearch                     => e.copy(span = Some(sp))
     case e: InvalidInstance                          => e.copy(span = Some(sp))
     case e: InstanceSearchBudgetExceeded             => e.copy(span = Some(sp))
+    case e: AmbiguousName                            => e.copy(span = Some(sp))
+    case e: UnsupportedImport                        => e.copy(span = Some(sp))
+    case e: LocalCaseHead                            => e.copy(span = Some(sp))
   }
 }
 
@@ -104,6 +107,19 @@ final case class NotFound(name: String, span: Option[Span] = None) extends TypeE
 
 final case class AlreadyDefined(name: String, span: Option[Span] = None) extends TypeError {
   val msg: String = s"$name already defined"
+}
+
+final case class AmbiguousName(name: String, candidates: Vector[String], span: Option[Span] = None) extends TypeError {
+  override val msg: String = s"$name is ambiguous: ${candidates.mkString(", ")}"
+}
+
+final case class UnsupportedImport(path: String, span: Option[Span] = None) extends TypeError {
+  override val msg: String = s"Imports are not supported yet: $path"
+}
+
+final case class LocalCaseHead(name: String, span: Option[Span] = None) extends TypeError {
+  override val msg: String =
+    s"Case head $name is local; unqualified case heads must resolve to globals. Use .$name for short-name matching."
 }
 
 final case class TypeMismatch(expected: Value, actual: Value, span: Option[Span] = None) extends TypeError {

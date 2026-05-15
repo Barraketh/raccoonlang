@@ -265,19 +265,29 @@ object TypeChecker {
     val scrut = Interpreter.resolveInEqStore(scrutChecked.value).value
     val scrutTpe = Interpreter.resolveInEqStore(scrut.tpe).value
 
-    val (inductiveName, inductiveCtorNames, scrutTypeParams) = scrutTpe match {
-      case VConst(n, Inductive(meta), _)                => (n, meta.constructorNames, Vector.empty[Value])
-      case VApp(VConst(n, Inductive(meta), _), args, _) => (n, meta.constructorNames, args.take(meta.paramCount))
+    val (inductiveName, inductiveMeta, scrutTypeParams) = scrutTpe match {
+      case VConst(n, Inductive(meta), _)                => (n, meta, Vector.empty[Value])
+      case VApp(VConst(n, Inductive(meta), _), args, _) => (n, meta, args.take(meta.paramCount))
       case _                                            => throw NonInductiveMatch(scrut.tpe)
     }
-    val inductiveCtorSet = inductiveCtorNames.toSet
-
-    t.cases.groupBy(_.ctorName).find(_._2.length > 1).foreach { case (ctor, cases) =>
-      throw DuplicateCase(ctor, Some(cases(1).span))
+    val inductiveCtorNames = inductiveMeta.constructorNames
+    val cases = t.cases.map { c =>
+      val candidates =
+        if (c.isFullyQualified) inductiveMeta.constructors.collect {
+          case ctor if ctor.canonicalName == c.ctorName => ctor.canonicalName
+        }
+        else inductiveMeta.constructors.collect {
+          case ctor if ctor.shortName == c.ctorName => ctor.canonicalName
+        }
+      candidates match {
+        case Vector(name) => c.copy(ctorName = name)
+        case Vector()     => throw UnknownConstructor(c.ctorName, inductiveName, Some(c.span))
+        case many         => throw AmbiguousName(c.ctorName, many, Some(c.span))
+      }
     }
 
-    t.cases.find(c => !inductiveCtorSet.contains(c.ctorName)).foreach { c =>
-      throw UnknownConstructor(c.ctorName, inductiveName, Some(c.span))
+    cases.groupBy(_.ctorName).find(_._2.length > 1).foreach { case (ctor, duplicateCases) =>
+      throw DuplicateCase(ctor, Some(duplicateCases(1).span))
     }
 
     lazy val reachableByType: Vector[ReachableCtor] =
@@ -315,11 +325,11 @@ object TypeChecker {
 
     scrut match {
       case VCtor(h, fields, _) =>
-        t.cases.find(_.ctorName != h.name).foreach { c =>
+        cases.find(_.ctorName != h.name).foreach { c =>
           throw UnreachableCase(c.ctorName, Some(c.span))
         }
 
-        val br = t.cases.find(_.ctorName == h.name).getOrElse(throw MissingCase(h.name))
+        val br = cases.find(_.ctorName == h.name).getOrElse(throw MissingCase(h.name))
         checkedByCtor += h.name -> checkBranch(br, fields, env, motiveTy)
 
       case _ =>
@@ -328,12 +338,12 @@ object TypeChecker {
         inductiveCtorNames.foreach { ctorName =>
           reachableMap.get(ctorName) match {
             case None =>
-              t.cases.find(_.ctorName == ctorName).foreach { c =>
+              cases.find(_.ctorName == ctorName).foreach { c =>
                 throw UnreachableCase(ctorName, Some(c.span))
               }
 
             case Some(info) =>
-              val br = t.cases.find(_.ctorName == ctorName).getOrElse(throw MissingCase(ctorName))
+              val br = cases.find(_.ctorName == ctorName).getOrElse(throw MissingCase(ctorName))
               checkedByCtor += ctorName -> checkBranch(br, info.fieldArgs, env, motiveTy)(
                 info.branchEqStore,
                 normalizers
@@ -342,7 +352,7 @@ object TypeChecker {
         }
     }
 
-    val checkedCases = t.cases.map { c =>
+    val checkedCases = cases.map { c =>
       checkedByCtor.getOrElse(c.ctorName, throw WTF(s"Unchecked reachable case ${c.ctorName}"))
     }
     val checkedMatch = EA.Term.Match(scrutChecked.term, checkedMotive.map(_.term), checkedCases, t.span)

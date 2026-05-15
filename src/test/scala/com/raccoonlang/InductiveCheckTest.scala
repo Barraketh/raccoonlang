@@ -60,7 +60,7 @@ class InductiveCheckTest extends munit.FunSuite {
     val p =
       """
         |inductive Small : Type
-        | | mk (A: Sort(Level::one)): Small
+        | | mk (A: Sort(Level.one)): Small
         |
         |""".stripMargin
 
@@ -81,9 +81,9 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Non-strict positivity: aligned universes under other constructor F args (Wrap u (Bad u))") {
     val p =
       """
-        |def Wrap(A: Sort(Level::zero)): Sort(Level::zero) := A
+        |def Wrap(A: Sort(Level.zero)): Sort(Level.zero) := A
         |
-        |inductive Bad : Sort(Level::zero)
+        |inductive Bad : Sort(Level.zero)
         | | con(x: Wrap(Bad)): Bad
         |
         |""".stripMargin
@@ -98,8 +98,8 @@ class InductiveCheckTest extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level::one)
-        | | bad : (A: Type) -> (n: Nat) -> Vec(Nat, Nat::zero)
+        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
+        | | bad : (A: Type) -> (n: Nat) -> Vec(Nat, Nat.zero)
         |
         |""".stripMargin
 
@@ -113,7 +113,7 @@ class InductiveCheckTest extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level::one)
+        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
         | | bad : (A: Type) -> (n: Nat) -> Vec(A)
         |
         |""".stripMargin
@@ -128,7 +128,7 @@ class InductiveCheckTest extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level::one)
+        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
         | | bad (B: Type)(n: Nat): Vec(B, n)
         |
         |""".stripMargin

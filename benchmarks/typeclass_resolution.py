@@ -115,7 +115,7 @@ def raccoon_sort(params: Iterable[str]) -> str:
 
     level = levels[-1]
     for cur in reversed(levels[:-1]):
-        level = f"Level::max({cur}, {level})"
+        level = f"Level.max({cur}, {level})"
     return f"Sort({level})"
 
 
@@ -132,8 +132,8 @@ def raccoon_derive(goal: str) -> str:
 
 
 def raccoon_mk(name: str, args: Iterable[str] = ()) -> str:
-    all_args = [*args, "BenchUnit::unit"]
-    return f"{name}::mk({', '.join(all_args)})"
+    all_args = [*args, "BenchUnit.unit"]
+    return f"{name}.mk({', '.join(all_args)})"
 
 
 def raccoon_type_decl(name: str) -> str:
@@ -152,7 +152,7 @@ def raccoon_wrap_type(depth: int) -> str:
 
 def raccoon_bench(expressions: list[str]) -> str:
     if not expressions:
-        expressions = ["BenchUnit::unit"]
+        expressions = ["BenchUnit.unit"]
 
     lets = [f"  let q{idx} := {expr}" for idx, expr in enumerate(expressions[:-1])]
     body_lines = lets + [f"  {expressions[-1]}"]
@@ -163,9 +163,9 @@ def raccoon_bench(expressions: list[str]) -> str:
 
 
 def raccoon_payload_chain(size: int) -> str:
-    expr = "Payload::leaf"
+    expr = "Payload.leaf"
     for _ in range(size):
-        expr = f"Payload::node({expr}, Payload::leaf)"
+        expr = f"Payload.node({expr}, Payload.leaf)"
     return expr
 
 
@@ -267,7 +267,7 @@ def raccoon_width(size: int, calls: int, _branch_depth: int) -> str:
     decls = [raccoon_prelude(), raccoon_struct("TC", ["A"])]
     decls.extend(raccoon_type_decl(name) for name in decoys + targets)
     decls.extend(f"def instance inst{name} : TC({name}) := {raccoon_mk('TC', [name])}\n\n" for name in decoys + targets)
-    decls.append("inline def consume (A: Sort($u0))[tc: TC(A)]: BenchUnit := BenchUnit::unit\n\n")
+    decls.append("inline def consume (A: Sort($u0))[tc: TC(A)]: BenchUnit := BenchUnit.unit\n\n")
     decls.append(raccoon_bench([f"consume({target}, {raccoon_derive(f'TC({target})')})" for target in targets]))
     return "".join(decls)
 
@@ -300,7 +300,7 @@ def raccoon_fanout(size: int, _calls: int, _branch_depth: int) -> str:
         decls.append(f"def instance needInst {binders}: Need(A) := {raccoon_mk('Need', ['A'])}\n\n")
     else:
         decls.append(f"def instance needInst : Need(FanoutTarget) := {raccoon_mk('Need', ['FanoutTarget'])}\n\n")
-    decls.append("inline def consume (A: Sort($u0))[need: Need(A)]: BenchUnit := BenchUnit::unit\n\n")
+    decls.append("inline def consume (A: Sort($u0))[need: Need(A)]: BenchUnit := BenchUnit.unit\n\n")
     decls.append(raccoon_bench([f"consume(FanoutTarget, {raccoon_derive('Need(FanoutTarget)')})"]))
     return "".join(decls)
 
@@ -330,7 +330,7 @@ def raccoon_chain(size: int, _calls: int, _branch_depth: int) -> str:
 """,
         f"def instance baseTC : TC(Base) := {raccoon_mk('TC', ['Base'])}\n\n",
         f"def instance wrapTC [inner: TC($A)]: TC(Wrap(A)) := {raccoon_mk('TC', ['Wrap(A)'])}\n\n",
-        "inline def consume (A: Sort($u0))[tc: TC(A)]: BenchUnit := BenchUnit::unit\n\n",
+        "inline def consume (A: Sort($u0))[tc: TC(A)]: BenchUnit := BenchUnit.unit\n\n",
         raccoon_bench([f"consume({target}, {raccoon_derive(f'TC({target})')})"]),
     ]
     return "".join(decls)
@@ -369,7 +369,7 @@ def raccoon_failures(size: int, _calls: int, _branch_depth: int) -> str:
             f"def instance bad{name} [m: {name}(FailureTarget)]: Goal(FailureTarget) := {raccoon_mk('Goal', ['FailureTarget'])}\n\n"
         )
     decls.append(f"def instance goodGoal : Goal(FailureTarget) := {raccoon_mk('Goal', ['FailureTarget'])}\n\n")
-    decls.append("inline def consume (A: Sort($u0))[goal: Goal(A)]: BenchUnit := BenchUnit::unit\n\n")
+    decls.append("inline def consume (A: Sort($u0))[goal: Goal(A)]: BenchUnit := BenchUnit.unit\n\n")
     decls.append(raccoon_bench([f"consume(FailureTarget, {raccoon_derive('Goal(FailureTarget)')})"]))
     return "".join(decls)
 
@@ -413,7 +413,7 @@ def raccoon_branching(size: int, _calls: int, branch_depth: int) -> str:
         )
     decls.append(f"def instance wrapTC [inner: TC($A)]: TC(Wrap(A)) := {raccoon_mk('TC', ['Wrap(A)'])}\n\n")
     decls.append(f"def instance baseTC : TC(Base) := {raccoon_mk('TC', ['Base'])}\n\n")
-    decls.append("inline def consume (A: Sort($u0))[tc: TC(A)]: BenchUnit := BenchUnit::unit\n\n")
+    decls.append("inline def consume (A: Sort($u0))[tc: TC(A)]: BenchUnit := BenchUnit.unit\n\n")
     decls.append(raccoon_bench([f"consume({target}, {raccoon_derive(f'TC({target})')})"]))
     return "".join(decls)
 
@@ -465,7 +465,7 @@ def raccoon_implicit_arity(size: int, _calls: int, _branch_depth: int) -> str:
         )
     else:
         decls.append(f"def instance relInst : {rel_type} := {raccoon_mk('Rel', params)}\n\n")
-    decls.append(f"inline def consume [rel: {target_rel}]: BenchUnit := BenchUnit::unit\n\n")
+    decls.append(f"inline def consume [rel: {target_rel}]: BenchUnit := BenchUnit.unit\n\n")
     decls.append(raccoon_bench([consume_call]))
     return "".join(decls)
 
@@ -503,7 +503,7 @@ def raccoon_explicit_control(size: int, _calls: int, _branch_depth: int) -> str:
     decls = [raccoon_prelude(), raccoon_struct("Rel", params)]
     decls.extend(raccoon_type_decl(target) for target in targets)
     decls.append(f"inline def relValue {raccoon_type_binders(params)}: {rel_type} := {raccoon_mk('Rel', params)}\n\n")
-    decls.append(f"inline def consume (rel: {target_rel}): BenchUnit := BenchUnit::unit\n\n")
+    decls.append(f"inline def consume (rel: {target_rel}): BenchUnit := BenchUnit.unit\n\n")
     decls.append(raccoon_bench([f"consume({rel_call})"]))
     return "".join(decls)
 
@@ -526,7 +526,7 @@ def lean_explicit_control(size: int, _calls: int, _branch_depth: int, no_prelude
 def raccoon_repeat_query(size: int, _calls: int, _branch_depth: int) -> str:
     decls = [raccoon_prelude(), raccoon_struct("TC", ["A"]), raccoon_type_decl("RepeatTarget")]
     decls.append(f"def instance repeatTC : TC(RepeatTarget) := {raccoon_mk('TC', ['RepeatTarget'])}\n\n")
-    decls.append("inline def consume (A: Sort($u0))[tc: TC(A)]: BenchUnit := BenchUnit::unit\n\n")
+    decls.append("inline def consume (A: Sort($u0))[tc: TC(A)]: BenchUnit := BenchUnit.unit\n\n")
     decls.append(raccoon_bench([f"consume(RepeatTarget, {raccoon_derive('TC(RepeatTarget)')})" for _ in range(size)]))
     return "".join(decls)
 
@@ -564,7 +564,7 @@ def raccoon_diamond(size: int, _calls: int, _branch_depth: int) -> str:
             f"{need(idx)}(A) := {raccoon_mk(need(idx), ['A'])}\n\n"
         )
     decls.append(
-        f"inline def consume (A: Sort($u0))[need: {need(size)}(A)]: BenchUnit := BenchUnit::unit\n\n"
+        f"inline def consume (A: Sort($u0))[need: {need(size)}(A)]: BenchUnit := BenchUnit.unit\n\n"
     )
     decls.append(raccoon_bench([f"consume(DiamondTarget, {raccoon_derive(f'{need(size)}(DiamondTarget)')})"]))
     return "".join(decls)
@@ -622,7 +622,7 @@ def raccoon_overlap(size: int, _calls: int, _branch_depth: int) -> str:
         f"{raccoon_mk('Goal', ['Wrap(A)'])}\n\n"
     )
     decls.append(f"def instance baseGoal : Goal(Base) := {raccoon_mk('Goal', ['Base'])}\n\n")
-    decls.append("inline def consume (A: Sort($u0))[goal: Goal(A)]: BenchUnit := BenchUnit::unit\n\n")
+    decls.append("inline def consume (A: Sort($u0))[goal: Goal(A)]: BenchUnit := BenchUnit.unit\n\n")
     decls.append(raccoon_bench([f"consume(Wrap(Base), {raccoon_derive('Goal(Wrap(Base))')})"]))
     return "".join(decls)
 
@@ -661,7 +661,7 @@ def raccoon_local_instances(size: int, _calls: int, _branch_depth: int) -> str:
     decls.extend(raccoon_type_decl(name) for name in decoys)
     decls.extend(f"def instance inst{name} : Goal({name}) := {raccoon_mk('Goal', [name])}\n\n" for name in decoys)
     decls.append(f"def localGoal : Goal(LocalTarget) := {raccoon_mk('Goal', ['LocalTarget'])}\n\n")
-    decls.append("inline def consume (A: Sort($u0))[goal: Goal(A)]: BenchUnit := BenchUnit::unit\n\n")
+    decls.append("inline def consume (A: Sort($u0))[goal: Goal(A)]: BenchUnit := BenchUnit.unit\n\n")
     decls.append(
         f"inline def withLocal [localInst: Goal(LocalTarget)]: BenchUnit := "
         f"consume(LocalTarget, {raccoon_derive('Goal(LocalTarget)')})\n\n"
@@ -705,7 +705,7 @@ def raccoon_defeq(size: int, _calls: int, _branch_depth: int) -> str:
     decls.append(
         f"def instance wrapTC [inner: TC($A)]: TC(Wrap(A)) := {raccoon_mk('TC', ['Wrap(A)'])}\n\n"
     )
-    decls.append("inline def consume (A: Sort($u0))[tc: TC(A)]: BenchUnit := BenchUnit::unit\n\n")
+    decls.append("inline def consume (A: Sort($u0))[tc: TC(A)]: BenchUnit := BenchUnit.unit\n\n")
     target = "Wrap(Base)" if size == 0 else f"Alias{size - 1}(Base)"
     decls.append(raccoon_bench([f"consume({target}, {raccoon_derive(f'TC({target})')})"]))
     return "".join(decls)
@@ -751,7 +751,7 @@ def raccoon_shared_fanout(size: int, _calls: int, _branch_depth: int) -> str:
         decls.append(f"def instance needInst {binders}: Need(A) := {raccoon_mk('Need', ['A'])}\n\n")
     else:
         decls.append(f"def instance needInst : Need(SharedTarget) := {raccoon_mk('Need', ['SharedTarget'])}\n\n")
-    decls.append("inline def consume (A: Sort($u0))[need: Need(A)]: BenchUnit := BenchUnit::unit\n\n")
+    decls.append("inline def consume (A: Sort($u0))[need: Need(A)]: BenchUnit := BenchUnit.unit\n\n")
     decls.append(raccoon_bench([f"consume(SharedTarget, {raccoon_derive('Need(SharedTarget)')})"]))
     return "".join(decls)
 
@@ -786,8 +786,8 @@ struct Need (A: Sort($u0)) : Sort(u0)
 
 """
         + raccoon_type_decl("BodyTarget")
-        + f"def instance needInst : Need(BodyTarget) := Need::mk(BodyTarget, {payload})\n\n"
-        + "inline def consume (A: Sort($u0))[need: Need(A)]: BenchUnit := BenchUnit::unit\n\n"
+        + f"def instance needInst : Need(BodyTarget) := Need.mk(BodyTarget, {payload})\n\n"
+        + "inline def consume (A: Sort($u0))[need: Need(A)]: BenchUnit := BenchUnit.unit\n\n"
         + raccoon_bench([f"consume(BodyTarget, {raccoon_derive('Need(BodyTarget)')})"])
     )
 

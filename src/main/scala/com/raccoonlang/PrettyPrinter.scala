@@ -129,7 +129,8 @@ object PrettyPrinter {
   private def printCase(c: CoreAst.Case): String = {
     val argNames = c.argRefs.map(_.map(_.name).getOrElse("_"))
     val args = if (argNames.isEmpty) "" else s" ${argNames.mkString(" ")}"
-    s"| ${c.ctorName}$args => ${printCoreTerm(c.body)}"
+    val ctor = if (c.isFullyQualified) c.ctorName else s".${c.ctorName}"
+    s"| $ctor$args => ${printCoreTerm(c.body)}"
   }
 
   private def printMatch(m: CoreAst.Term.Match): String = {

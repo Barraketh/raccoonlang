@@ -2,17 +2,6 @@ package com.raccoonlang
 
 import com.raccoonlang.Value.ResolvedValue
 
-final case class InductiveMeta(
-    constructorNames: Vector[String],
-    paramCount: Int,
-    indexCount: Int,
-    isStruct: Boolean
-)
-
-sealed trait ConstType
-case class Inductive(meta: InductiveMeta) extends ConstType
-case object Symbol extends ConstType
-
 /**
  * Represents a typechecked value representation - the values that live in an Env. Values can contain Vars(), which
  * represent unknown values. Vars have a unique id, which means they can participate in equality. Thus values could be
@@ -367,6 +356,21 @@ object Value {
 
     override val tpe: Value = NormalizerType
   }
+
+  final case class ConstructorMeta(shortName: String, canonicalName: String)
+
+  final case class InductiveMeta(
+      constructors: Vector[ConstructorMeta],
+      paramCount: Int,
+      indexCount: Int,
+      isStruct: Boolean
+  ) {
+    lazy val constructorNames: Vector[String] = constructors.map(_.canonicalName)
+  }
+
+  sealed trait ConstType
+  case class Inductive(meta: InductiveMeta) extends ConstType
+  case object Symbol extends ConstType
 
   case class ResolvedValue(value: Value) {
     def caseOf[B](f: PartialFunction[Value, B]): B = f(value)

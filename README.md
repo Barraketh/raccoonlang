@@ -51,6 +51,7 @@ Note that at this point I have done 0 optimization - these performance wins are 
 - Cumulative universes, first-class `Level`, `Sort(u)`, universe validation, and sort unification
     - Impredicative Prop with controlled large elimination
 - Extensible definitional equality through type-driven expression normalization
+- Namespaces, dotted names, and scoped `open`
 - Type patterns
 - Structs / Projections
 - JVM CLI plus Scala Native build
@@ -74,27 +75,28 @@ inductive Box (u: Level)(A: Sort(u)) : Sort(u)
  | mk (value: A) : Box(u, A)
 
 inductive Vec (u: Level)(A: Sort(u)) indices (n: Nat) : Sort(u)
- | nil : Vec(u, A, Nat::zero)
- | cons (n: Nat)(xs: Vec(u, A, n))(x: A) : Vec(u, A, Nat::succ(n))
+ | nil : Vec(u, A, Nat.zero)
+ | cons (n: Nat)(xs: Vec(u, A, n))(x: A) : Vec(u, A, Nat.succ(n))
 
 inductive NatShape indices (n: Nat) : Type
- | isZero : NatShape(Nat::zero)
- | isSucc (n: Nat) : NatShape(Nat::succ(n))
+ | isZero : NatShape(Nat.zero)
+ | isSucc (n: Nat) : NatShape(Nat.succ(n))
 
 inline def pred (n: Nat): Nat := {
   match n with
-  | Nat::zero => Nat::zero
-  | Nat::succ x => x
+  | Nat.zero => Nat.zero
+  | Nat.succ x => x
 }
 
-inline def zeroShapeOnly (shape: NatShape(Nat::zero)): Nat := {
+inline def zeroShapeOnly (shape: NatShape(Nat.zero)): Nat := {
   match shape returning Nat with
-  | NatShape::isZero => Nat::zero
+  | NatShape.isZero => Nat.zero
 }
 ```
 
-In `zeroShapeOnly`, the `NatShape::isSucc` branch is unreachable because the scrutinee has type
-`NatShape(Nat::zero)`, so the match is still exhaustive without that constructor.
+In `zeroShapeOnly`, the `NatShape.isSucc` branch is unreachable because the scrutinee has type
+`NatShape(Nat.zero)`, so the match is still exhaustive without that constructor.
+
 
 ### Type Classes
 
@@ -116,9 +118,9 @@ ambiguity detection.
 inductive List (A: Type) : Type
  | nil : List(A)
 
-def instance natEq : Eq(Nat) := Eq::mk(Nat, Bool::true)
+def instance natEq : Eq(Nat) := Eq.mk(Nat, Bool.true)
 
-def instance listEq [ea: Eq($A)]: Eq(List(A)) := Eq::mk(List(A), Bool::true)
+def instance listEq [ea: Eq($A)]: Eq(List(A)) := Eq.mk(List(A), Bool.true)
 
 inline def useListEq [eqA: Eq(List(Nat))]: Eq(List(Nat)) := eqA
 
@@ -142,19 +144,19 @@ inductive Nat : Type
   | succ (_: Nat) : Nat
 
 inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
-  | nil: Vec(A, Nat::zero)
-  | cons (v: Vec(A, $n))(elem: A): Vec(A, Nat::succ(n))
+  | nil: Vec(A, Nat.zero)
+  | cons (v: Vec(A, $n))(elem: A): Vec(A, Nat.succ(n))
 
-inductive Pair (A: Sort($u1))(B: Sort($u2)): Sort(Level::max(u1, u2))
+inductive Pair (A: Sort($u1))(B: Sort($u2)): Sort(Level.max(u1, u2))
   | mk(a: A)(b: B): Pair(A, B)
 
 inline def zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) := {
   let ResType := Vec(Pair(A, B), n)
   match va returning ResType with
-  | Vec::nil => Vec::nil(Pair(A, B))
-  | Vec::cons va0 a => {
+  | Vec.nil => Vec.nil(Pair(A, B))
+  | Vec.cons va0 a => {
     match vb returning ResType with
-    | Vec::cons vb0 b => Vec::cons(Pair(A, B), zip(va0, vb0), Pair::mk(A, B, a, b))
+    | Vec.cons vb0 b => Vec.cons(Pair(A, B), zip(va0, vb0), Pair.mk(A, B, a, b))
   }
 }
 ```
@@ -186,6 +188,35 @@ inline def first (p: Pair($A, $B)): A := p.fst
 inline def second (p: Pair($A, $B)): B := p.snd
 ```
 
+### Namespaces and Opens
+
+Namespaces prefix declarations with dotted canonical names. Inductive constructors live under the inductive head, so
+`Nat.zero` and `Data.Tree.leaf` are ordinary global names. `open` brings existing children of a namespace into the
+current scope as a snapshot.
+
+```raccoon
+namespace Data {
+  inductive Tree : Type
+   | leaf : Tree
+   | node (left: Tree)(right: Tree) : Tree
+}
+
+open Data.{Tree as DTree}
+
+inline def example : Data.Tree :=
+  DTree.node(DTree.leaf, DTree.leaf)
+```
+
+Dotted names resolve local-first: if the first segment is a local, the rest of the path is projection. Use `_root_` to
+bypass locals, the current namespace, and opens. Opens support wildcard, selected, excluded, renamed, and root-qualified
+forms such as `open Nat`, `open Nat.{zero, succ}`, `open Nat.{*, -succ, succ as nsucc}`, and `open _root_.Nat`.
+
+Match case heads use normal global resolution. Prefix a case head with `.` to match by the constructor short name from
+the scrutinee type: `| .zero => ...`.
+
+See [docs/namespaces.md](docs/namespaces.md) for the exact resolution and open rules.
+
+
 ### Equality by computation with a normalizer
 
 A normalizer rewrites a blocked expression into a different (equivalent) form. For example, the 'add_normalizer'
@@ -200,18 +231,18 @@ inductive Nat : Type
 
 stable def add (a: Nat)(b: Nat): Nat := {
   match b with
-  | Nat::zero => a
-  | Nat::succ x => add(Nat::succ(a), x)
+  | Nat.zero => a
+  | Nat.succ x => add(Nat.succ(a), x)
 }
 
-inline def nat_add_normalizer : Normalizer := add_normalizer(Nat, Nat::zero, add)
+inline def nat_add_normalizer : Normalizer := add_normalizer(Nat, Nat.zero, add)
 
-inductive Eq (A: Type) indices (x: A) (y: A) : Sort(Level::one)
+inductive Eq (A: Type) indices (x: A) (y: A) : Sort(Level.one)
  | refl (x: A) : Eq(A, x, x)
 
 inline def addComm (a: Nat)(b: Nat): Eq(Nat, add(a, b), add(b, a)) := {
   use nat_add_normalizer
-  Eq::refl(Nat, add(a, b))
+  Eq.refl(Nat, add(a, b))
 }
 ```
 
@@ -267,8 +298,6 @@ runs GraalVM `native-image`.
 
 ## Next Planned Features
 
-- Typeclasses
-- Namespaces
 - File imports
 - Less-conservative positivity checking
 - Mutually-recursive inductives

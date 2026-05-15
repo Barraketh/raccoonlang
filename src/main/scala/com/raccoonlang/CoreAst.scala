@@ -131,13 +131,22 @@ object CoreAst {
   }
 
   case class ConstructorDecl(
-      name: String,
+      canonicalName: String,
+      shortName: String,
       fields: Vector[Binder],
       resultTy: TypeTerm,
       span: Span
-  )
+  ) {
+    def name: String = canonicalName
+  }
 
-  final case class Case(ctorName: String, argRefs: Vector[Option[LocalRef]], body: Term, span: Span)
+  final case class Case(
+      ctorName: String,
+      isFullyQualified: Boolean,
+      argRefs: Vector[Option[LocalRef]],
+      body: Term,
+      span: Span
+  )
 
   // Global declarations and environment entries
   sealed trait Decl {

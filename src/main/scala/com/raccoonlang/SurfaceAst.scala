@@ -24,7 +24,7 @@ object SurfaceAst {
     final case class Select(base: Term, field: String, span: Span) extends Term
 
     // Application in type position
-    final case class TApp(fn: Ident, args: Vector[TypeTerm], span: Span) extends TypeTerm {
+    final case class TApp(fn: TypeTerm, args: Vector[TypeTerm], span: Span) extends TypeTerm {
       require(args.nonEmpty, "Type application requires at least one argument")
     }
 
@@ -50,60 +50,97 @@ object SurfaceAst {
         span: Span
     ) extends Term
 
-    case class Body(uses: Vector[Use], lets: Vector[Let], out: Term, span: Span) extends Term
+    // Let: let x := foo
+    final case class Let(name: String, ty: Option[TypeTerm], value: Term, span: Span, isInstance: Boolean = false)
+
+    sealed trait BodyStmt {
+      def span: Span
+    }
+    final case class UseStmt(use: Use) extends BodyStmt {
+      override def span: Span = use.span
+    }
+    final case class OpenStmt(open: Command.Open) extends BodyStmt {
+      override def span: Span = open.span
+    }
+    final case class LetStmt(let: Let) extends BodyStmt {
+      override def span: Span = let.span
+    }
+    final case class Body(statements: Vector[BodyStmt], out: Term, span: Span) extends Term
+    final case class Case(
+        ctorPath: Vector[String],
+        useShortName: Boolean,
+        argNames: Vector[String],
+        body: Term,
+        span: Span
+    )
   }
 
   // Use a first-class normalizer value within a body scope
   final case class Use(normalizer: Term, span: Span)
 
-  // Let: let x := foo
-  final case class Let(name: String, ty: Option[TypeTerm], value: Term, span: Span, isInstance: Boolean = false)
-
   case class Binder(name: String, ty: TypeTerm, span: Span, isInstance: Boolean = false)
 
   case class FuncHeader(params: Vector[Binder], ty: TypeTerm, span: Span)
 
-  case class DeclHeader(name: String, funcHeader: FuncHeader, span: Span)
+  case class Import(path: Vector[String], span: Span)
 
-  case class InductiveHeader(
-      name: String,
-      params: Vector[Binder],
-      indices: Vector[Binder],
-      resultTy: TypeTerm,
-      span: Span
-  )
+  sealed trait Command
 
-  case class ConstructorDecl(
-      name: String,
-      fields: Vector[Binder],
-      resultTy: TypeTerm,
-      span: Span
-  )
+  object Command {
 
-  case class Case(ctorName: String, argNames: Vector[String], body: Term, span: Span)
-
-  // Global declarations and environment entries
-  sealed trait Decl
-
-  object Decl {
-    // Constant: name : type [:= value], with transparency (Opaque | Inline)
-    final case class ConstDecl(
-        unfoldStrategy: Option[UnfoldStrategy],
-        header: DeclHeader,
-        body: Term,
-        span: Span,
-        isInstance: Boolean = false
-    ) extends Decl
-
-    // Inductive type declaration
-    final case class InductiveDecl(
-        header: InductiveHeader,
-        ctors: Vector[ConstructorDecl],
-        isStruct: Boolean,
+    case class InductiveHeader(
+        name: String,
+        params: Vector[Binder],
+        indices: Vector[Binder],
+        resultTy: TypeTerm,
         span: Span
-    ) extends Decl
+    )
+
+    case class ConstructorDecl(
+        name: String,
+        fields: Vector[Binder],
+        resultTy: TypeTerm,
+        span: Span
+    )
+
+    // Global declarations and environment entries
+    sealed trait Decl extends Command
+
+    object Decl {
+      // Constant: name : type [:= value], with transparency (Opaque | Inline)
+      final case class ConstDecl(
+          unfoldStrategy: Option[UnfoldStrategy],
+          header: DeclHeader,
+          body: Term,
+          span: Span,
+          isInstance: Boolean = false
+      ) extends Decl
+
+      // Inductive type declaration
+      final case class InductiveDecl(
+          header: InductiveHeader,
+          ctors: Vector[ConstructorDecl],
+          isStruct: Boolean,
+          span: Span
+      ) extends Decl
+    }
+
+    case class Namespace(path: Vector[String], body: Vector[Command], span: Span) extends Command
+
+    case class Open(namespace: Vector[String], root: Boolean, rules: Vector[AliasRule], span: Span) extends Command
+
+    case class Block(body: Vector[Command], span: Span) extends Command
+
+    sealed trait AliasRule
+    object AliasRule {
+      case object Wildcard extends AliasRule
+      final case class Include(name: String, as: Option[String]) extends AliasRule
+      final case class Exclude(name: String) extends AliasRule
+    }
+
+    case class DeclHeader(name: String, funcHeader: FuncHeader, span: Span)
   }
 
-  case class Program(decls: Vector[Decl], body: Option[Term])
+  case class Program(imports: Vector[Import], decls: Vector[Command], body: Option[Term])
 
 }

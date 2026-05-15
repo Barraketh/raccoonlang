@@ -34,18 +34,18 @@ inductive Nat : Type
 
 stable def add (a: Nat)(b: Nat): Nat := {
   match b with
-  | Nat::zero => a
-  | Nat::succ x => add(Nat::succ(a), x)
+  | Nat.zero => a
+  | Nat.succ x => add(Nat.succ(a), x)
 }
 
-inline def nat_add_normalizer : Normalizer := add_normalizer(Nat, Nat::zero, add)
+inline def nat_add_normalizer : Normalizer := add_normalizer(Nat, Nat.zero, add)
 
-inductive Eq (A: Type) indices (x: A) (y: A) : Sort(Level::one)
+inductive Eq (A: Type) indices (x: A) (y: A) : Sort(Level.one)
  | refl (x: A) : Eq(A, x, x)
 
 inline def addComm (a: Nat)(b: Nat): Eq(Nat, add(a, b), add(b, a)) := {
   use nat_add_normalizer
-  Eq::refl(Nat, add(a, b))
+  Eq.refl(Nat, add(a, b))
 }
 ```
 
@@ -57,8 +57,8 @@ The feature is aimed at equalities that are mathematically simple but not defini
 
 For example, with a recursive definition of addition on `Nat`:
 
-- `add(a, Nat::zero) = a` may reduce directly, depending on the form of `a`
-- `add(Nat::zero, a) = a` usually does **not** reduce definitionally
+- `add(a, Nat.zero) = a` may reduce directly, depending on the form of `a`
+- `add(Nat.zero, a) = a` usually does **not** reduce definitionally
 - `add(a, b) = add(b, a)` certainly does not reduce definitionally
 - `add(x, add(y, z)) = add(add(x, y), z)` also does not reduce definitionally
 
@@ -156,8 +156,8 @@ So expressions such as these normalize to the same form:
 
 - `add(a, b)`
 - `add(b, a)`
-- `add(a, add(b, Nat::zero))`
-- `add(add(a, b), Nat::zero)`
+- `add(a, add(b, Nat.zero))`
+- `add(add(a, b), Nat.zero)`
 
 and similarly for associativity and identity.
 
@@ -173,7 +173,7 @@ That is an implementation choice made partly in service of normalizer-based rewr
 
 The strongest behavioral summary comes from the tests.
 
-With the additive normalizer in scope, all of the following typecheck using `Eq::refl` alone:
+With the additive normalizer in scope, all of the following typecheck using `Eq.refl` alone:
 
 - right identity of addition
 - left identity of addition

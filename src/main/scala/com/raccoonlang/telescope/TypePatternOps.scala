@@ -25,7 +25,7 @@ object TypePatternOps {
     def compileLevelCapture(pattern: ElabAst.TypePattern): Option[VCapture] =
       pattern match {
         case EPattern.Capture(ref, _) => Some(VCapture(ref, 0 :: Nil, LevelCapture(0)))
-        case EPattern.App(ETerm.GlobalRef("Level::succ", _), args, _) =>
+        case EPattern.App(ETerm.GlobalRef("Level.succ", _), args, _) =>
           compileLevelCapture(args.head).map {
             case c @ VCapture(_, _, LevelCapture(subtract)) => c.copy(captureType = LevelCapture(subtract + 1))
             case _ => throw WTF("Expected a level capture while compiling a level pattern")

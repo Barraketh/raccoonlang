@@ -26,25 +26,25 @@ class VecZipTest extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Vec(u: Level)(A: Sort(u)) indices (n: Nat) : Sort(u)
-        | | nil: Vec(u, A, Nat::zero)
-        | | cons(n: Nat)(vec: Vec(u, A, n))(elem: A): Vec(u, A, Nat::succ(n))
+        | | nil: Vec(u, A, Nat.zero)
+        | | cons(n: Nat)(vec: Vec(u, A, n))(elem: A): Vec(u, A, Nat.succ(n))
         |
-        |inductive Pair(u1: Level)(u2: Level)(A: Sort(u1))(B: Sort(u2)): Sort(Level::max(u1, u2))
+        |inductive Pair(u1: Level)(u2: Level)(A: Sort(u1))(B: Sort(u2)): Sort(Level.max(u1, u2))
         | | mk(a: A)(b: B): Pair(u1, u2, A, B)
         |
-        |inline def zip(u1: Level)(u2: Level)(A: Sort(u1))(B: Sort(u2))(n: Nat)(va: Vec(u1, A, n))(vb: Vec(u2, B, n)): Vec(Level::max(u1, u2), Pair(u1, u2, A, B), n) := {
+        |inline def zip(u1: Level)(u2: Level)(A: Sort(u1))(B: Sort(u2))(n: Nat)(va: Vec(u1, A, n))(vb: Vec(u2, B, n)): Vec(Level.max(u1, u2), Pair(u1, u2, A, B), n) := {
         |  let R := Pair(u1, u2, A, B)
-        |  let L := Level::max(u1, u2)
+        |  let L := Level.max(u1, u2)
         |  match va returning Vec(L, R, n) with
-        |  | Vec::nil => Vec::nil(L, R)
-        |  | Vec::cons x va0 a => {
+        |  | Vec.nil => Vec.nil(L, R)
+        |  | Vec.cons x va0 a => {
         |    match vb returning Vec(L, R, n) with
-        |    | Vec::cons _ vb0 b => Vec::cons(L, R, x, zip(u1, u2, A, B, x, va0, vb0), Pair::mk(u1, u2, A, B, a, b))
+        |    | Vec.cons _ vb0 b => Vec.cons(L, R, x, zip(u1, u2, A, B, x, va0, vb0), Pair.mk(u1, u2, A, B, a, b))
         |  }
         |}
         |
         |{
-        |  Nat::zero
+        |  Nat.zero
         |}
         |
         |
@@ -61,19 +61,19 @@ class VecZipTest extends munit.FunSuite {
         |  | succ (_: Nat) : Nat
         |
         |inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
-        |  | nil: Vec(A, Nat::zero)
-        |  | cons (v: Vec(A, $n))(elem: A): Vec(A, Nat::succ(n))
+        |  | nil: Vec(A, Nat.zero)
+        |  | cons (v: Vec(A, $n))(elem: A): Vec(A, Nat.succ(n))
         |
-        |inductive Pair (A: Sort($u1))(B: Sort($u2)): Sort(Level::max(u1, u2))
+        |inductive Pair (A: Sort($u1))(B: Sort($u2)): Sort(Level.max(u1, u2))
         |  | mk(a: A)(b: B): Pair(A, B)
         |
         |inline def zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) := {
         |  let ResType := Vec(Pair(A, B), n)
         |  match va returning ResType with
-        |  | Vec::nil => Vec::nil(Pair(A, B))
-        |  | Vec::cons va0 a => {
+        |  | Vec.nil => Vec.nil(Pair(A, B))
+        |  | Vec.cons va0 a => {
         |    match vb returning ResType with
-        |    | Vec::cons vb0 b => Vec::cons(Pair(A, B), zip(va0, vb0), Pair::mk(A, B, a, b))
+        |    | Vec.cons vb0 b => Vec.cons(Pair(A, B), zip(va0, vb0), Pair.mk(A, B, a, b))
         |  }
         |}
         |""".stripMargin
