@@ -356,6 +356,20 @@ object Interpreter {
 
         Worlds(nextCheckEnv, nextRunEnv)
 
+      case Decl.AxiomDecl(name, ty, _, isInstance) =>
+        val checkedTy = TypeChecker.getCheckedType(ty, worlds.checkEnv)
+        val tyV = checkedTy.value
+        val checkValue = VConst(name, Symbol, tyV)
+        val checkInstanceKey = if (isInstance) Some(InstanceSearch.instanceKey(name, checkValue, eqStore)) else None
+        val nextCheckEnv = worlds.checkEnv.putGlobal(name, checkValue, checkInstanceKey)
+
+        val runtimeTyV = Interpreter.evalTypeTerm(checkedTy.term, worlds.runEnv)
+        val runtimeValue = VConst(name, Symbol, runtimeTyV)
+        val runInstanceKey = if (isInstance) Some(InstanceSearch.instanceKey(name, runtimeValue, eqStore)) else None
+        val nextRunEnv = worlds.runEnv.putGlobal(name, runtimeValue, runInstanceKey)
+
+        Worlds(nextCheckEnv, nextRunEnv)
+
       case d: Decl.InductiveDecl => InductiveChecks.evalInductiveDecl(d, worlds)
 
     }

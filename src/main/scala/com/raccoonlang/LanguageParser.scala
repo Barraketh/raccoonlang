@@ -2,7 +2,7 @@ package com.raccoonlang
 
 import com.raccoonlang.CoreAst.UnfoldStrategy
 import com.raccoonlang.Parser._
-import com.raccoonlang.SurfaceAst.Command.Decl.{ConstDecl, InductiveDecl}
+import com.raccoonlang.SurfaceAst.Command.Decl.{AxiomDecl, ConstDecl, InductiveDecl}
 import com.raccoonlang.SurfaceAst.Command._
 import com.raccoonlang.SurfaceAst.Term._
 import com.raccoonlang.SurfaceAst._
@@ -27,6 +27,7 @@ object LanguageParser {
     "returning",
     "with",
     "inline",
+    "axiom",
     "def",
     "instance",
     "derive",
@@ -238,6 +239,13 @@ object LanguageParser {
         ConstDecl(unfoldStrategy, header, body, span, isInstance = instanceOpt.isDefined)
     }
 
+  private def axiomP(implicit sourceId: Option[SourceId]): Parser[AxiomDecl] =
+    (kw("axiom") ~/ kw("instance").!.? ~ declHeader)
+      .flatSpanned(sourceId)
+      .map { case (instanceOpt, header, span) =>
+        AxiomDecl(header, span, isInstance = instanceOpt.isDefined)
+      }
+
   private def inductiveP(implicit sourceId: Option[SourceId]): Parser[InductiveDecl] =
     (kw("inductive") ~/ inductiveHeader ~ lineSep ~ ctorDecl.rep(0)).flatSpanned(sourceId)
       .map { case (h, cs, sp) => InductiveDecl(h, cs, isStruct = false, sp) }
@@ -251,7 +259,7 @@ object LanguageParser {
   private def commandsP(implicit sourceId: Option[SourceId]): Parser[Vector[Command]] =
     skipAllWs ~ commandP.rep(0, lineSep.rep(1)) ~ skipAllWs
 
-  private def declP(implicit sourceId: Option[SourceId]): Parser[Decl] = constP | inductiveP | structP
+  private def declP(implicit sourceId: Option[SourceId]): Parser[Decl] = constP | axiomP | inductiveP | structP
 
   private def namespaceP(implicit sourceId: Option[SourceId]): Parser[Namespace] =
     (kw("namespace") ~/ pathP ~ sym('{') ~/ commandsP ~ symTight('}')).flatSpanned(sourceId).map {

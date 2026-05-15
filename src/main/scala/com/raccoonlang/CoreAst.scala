@@ -164,6 +164,13 @@ object CoreAst {
         isInstance: Boolean = false
     ) extends Decl
 
+    final case class AxiomDecl(
+        name: String,
+        ty: TypeTerm,
+        span: Span,
+        isInstance: Boolean = false
+    ) extends Decl
+
     // Inductive type declaration (structured)
     final case class InductiveDecl(
         header: InductiveHeader,

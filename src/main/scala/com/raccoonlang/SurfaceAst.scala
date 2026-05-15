@@ -116,6 +116,12 @@ object SurfaceAst {
           isInstance: Boolean = false
       ) extends Decl
 
+      final case class AxiomDecl(
+          header: DeclHeader,
+          span: Span,
+          isInstance: Boolean = false
+      ) extends Decl
+
       // Inductive type declaration
       final case class InductiveDecl(
           header: InductiveHeader,

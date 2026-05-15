@@ -499,6 +499,14 @@ object Elaborator {
           CA.Decl.ConstDecl(c.unfoldStrategy, nameText, header.ty, body, c.span, c.isInstance),
           envWithSelf
         )
+      case c: SurfaceAst.Command.Decl.AxiomDecl =>
+        val name = env.qualify(c.header.name)
+        val nameText = globalName(name)
+        val header = elabHeader(c.header.funcHeader, env)
+        (
+          CA.Decl.AxiomDecl(nameText, header.ty, c.span, c.isInstance),
+          env.addGlobal(name)
+        )
       case c: SurfaceAst.Command.Decl.InductiveDecl =>
         val name = env.qualify(c.header.name)
         val nameText = globalName(name)
