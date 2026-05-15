@@ -10,7 +10,7 @@ object TypePatternOps {
   private final case class OpenedApp[E <: EnvLike[E]](fn: Value, args: Vector[Value], env: E)
 
   private def requirePi(fn: Value)(implicit eqStore: EqStore): VPi =
-    resolveInEqStore(fn.tpe) match {
+    fn.tpe.caseOf {
       case pi: VPi => pi
       case other   => throw CannotApplyNonFunction(other)
     }
@@ -116,7 +116,7 @@ object TypePatternOps {
 
   private def project(value: Value, path: List[Int])(implicit eqStore: EqStore): Value = {
     def projectStep(value: Value, idx: Int): Value =
-      resolveInEqStore(value) match {
+      value.caseOf {
         case VSort(level) if idx == 0 => level
         case VApp(_, args, _)         => args.lift(idx).getOrElse(throw FailedToOpenCapture(value, idx))
         case VBlockedApp(_, args, _, _) =>
@@ -125,7 +125,7 @@ object TypePatternOps {
         case _        => throw FailedToOpenCapture(value, idx)
       }
 
-    path.foldLeft(resolveInEqStore(value)) { case (cur, nextIdx) => projectStep(cur, nextIdx) }
+    path.foldLeft(value) { case (cur, nextIdx) => projectStep(cur, nextIdx) }
   }
 
   private def openCaptures[E <: EnvLike[E]](env: E, captures: Vector[VCapture], actualTy: Value)(implicit
@@ -206,7 +206,7 @@ object TypePatternOps {
     }
 
     structShape.flatMap { case (headValue, argTerms) =>
-      Interpreter.resolveInEqStore(headValue) match {
+      headValue.caseOf {
         case VConst(_, Inductive(meta), _) if meta.isStruct =>
           env(meta.constructorNames.head) match {
             case head: ConstructorHead => ConstructorOps.ConstructorShape.from(head).map(_ -> argTerms)

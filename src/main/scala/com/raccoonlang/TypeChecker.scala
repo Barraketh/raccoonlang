@@ -11,7 +11,7 @@ object TypeChecker {
   private final case class CheckedPi(value: VPi, term: EA.Term.Pi)
 
   def sortLeq(a: Value, b: Value)(implicit eqStore: EqStore): Boolean = {
-    (Interpreter.resolveInEqStore(a), Interpreter.resolveInEqStore(b)) match {
+    (a, b).caseOf {
       case (Value.VSort(u), Value.VSort(v)) => Level.leq(u, v)
       case (l1: Level, l2: Level)           => Level.leq(l1, l2)
       case (l1: Level, v: Var)              => Level.leq(l1, Level.mk(v.id))
@@ -28,11 +28,10 @@ object TypeChecker {
     checkFits(value.tpe, tyVal)
 
   def getUniverse(value: Value)(implicit eqStore: EqStore): Universe = {
-    resolveInEqStore(value.tpe) match {
+    value.tpe.caseOf {
       case u: Universe           => u
       case _ if value == PropTpe => PropTpe
-      case _ =>
-        throw NotAType(value.tpe)
+      case _                     => throw NotAType(value.tpe)
     }
   }
 
@@ -42,18 +41,11 @@ object TypeChecker {
       fnTerm: EA.Term,
       span: Span
   )(implicit eqStore: EqStore, normalizers: NormalizerMap): Checked = {
-    val fn0 = Interpreter.resolveInEqStore(fn)
-    val fnTy0 = Interpreter.resolveInEqStore(fn0.tpe)
-
-    fnTy0 match {
+    fn.tpe.caseOf {
       case pi: VPi =>
         BinderOps.checkAndInstantiate(pi.binders, pi.env, args.map(_.value))
-
-        Checked(
-          Interpreter.evalApply(fn0, args.map(_.value)),
-          EA.Term.App(fnTerm, args.map(_.term), span)
-        )
-      case _ => throw CannotApplyNonFunction(fnTy0)
+        Checked(Interpreter.evalApply(fn, args.map(_.value)), EA.Term.App(fnTerm, args.map(_.term), span))
+      case _ => throw CannotApplyNonFunction(fn)
     }
   }
 
@@ -270,8 +262,8 @@ object TypeChecker {
     }
 
     val scrutChecked = check(t.scrut, env)
-    val scrut = Interpreter.resolveInEqStore(scrutChecked.value)
-    val scrutTpe = Interpreter.resolveInEqStore(scrut.tpe)
+    val scrut = Interpreter.resolveInEqStore(scrutChecked.value).value
+    val scrutTpe = Interpreter.resolveInEqStore(scrut.tpe).value
 
     val (inductiveName, inductiveCtorNames, scrutTypeParams) = scrutTpe match {
       case VConst(n, Inductive(meta), _)                => (n, meta.constructorNames, Vector.empty[Value])
@@ -401,13 +393,12 @@ object TypeChecker {
     getCheckedType(term, env).value
 
   def assertType(value: Value)(implicit ctx: EqStore): Unit = {
-    Interpreter.resolveInEqStore(value) match {
+    value.caseOf {
       case PropTpe =>
       case _ =>
-        Interpreter.resolveInEqStore(value.tpe) match {
+        value.tpe.caseOf {
           case _: VSort | PropTpe =>
-          case _ =>
-            throw NotAType(value)
+          case _                  => throw NotAType(value)
         }
     }
   }
@@ -424,11 +415,11 @@ object TypeChecker {
             Interpreter.evalSelect(checkedBase.value, field, env, span.start),
             EA.Term.Select(checkedBase.term, field, span)
           )
-        case t: CA.Term.App   => checkApp(t, env)
+        case t: CA.Term.App    => checkApp(t, env)
         case d: CA.Term.Derive => checkDerive(d, env)
-        case l: CA.Term.Lam   => checkLam(l, env, normalizers)
-        case m: CA.Term.Match => checkMatch(m, env)
-        case b: CA.Term.Body  => checkBody(b, env)
+        case l: CA.Term.Lam    => checkLam(l, env, normalizers)
+        case m: CA.Term.Match  => checkMatch(m, env)
+        case b: CA.Term.Body   => checkBody(b, env)
         case term: CA.TypeTerm =>
           val checked = checkTypeTerm(term, env)
           Checked(checked.value, checked.term)

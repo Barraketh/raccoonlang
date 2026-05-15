@@ -204,7 +204,7 @@ class ValueOpsTests extends munit.FunSuite {
     assert(materialized.synDeps.contains(scrut.id))
 
     val eqAll = eqCaptured.allow(DepSet(scrut.id)).addLink(scrut.id, ctor)
-    assertEquals(Interpreter.resolveInEqStore(materialized)(eqAll), solution)
+    assertEquals(Interpreter.resolveInEqStore(materialized)(eqAll).value, solution)
   }
 
   test("blocked match closures rewrite locals to referenced runtime slots") {

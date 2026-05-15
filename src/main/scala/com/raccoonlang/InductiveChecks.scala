@@ -121,6 +121,9 @@ object InductiveChecks {
     implicit val eqStore: EqStore = EqStore.empty
     implicit val normalizers: NormalizerMap = NormalizerMap.empty
 
+    // All direct Value matches in this function and its private helpers
+    // rely on EqStore.empty: no Vars are solved in this pass.
+
     val header = decl.header
     val name = header.name
     val ty = {

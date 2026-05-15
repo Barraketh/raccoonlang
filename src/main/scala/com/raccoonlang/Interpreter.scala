@@ -5,6 +5,22 @@ import com.raccoonlang.ElabAst.{Term => ETerm}
 import com.raccoonlang.Value._
 import com.raccoonlang.telescope.{BinderOps, ConstructorOps, TypePatternOps}
 
+/**
+ * Interpreter is responsible for evaluating ElabAst -> Value It also contains resolveInEqStore, which continues
+ * evaluation of blocked Values once unification has solved the blocker.
+ *
+ * Interpreter invariant:
+ *
+ * Every public evaluator returns a value in EqStore-WHNF relative to the EqStore passed to that evaluator.
+ *
+ * EqStore-WHNF means:
+ *   - the root is not a Var solved by eqStore
+ *   - the root is not a blocked computation whose blocker is solved by eqStore
+ *   - the root Level has been normalized with respect to solved level atoms
+ *
+ * This is a root/view invariant only. It does not recursively materialize nested fields, arguments, closure
+ * environments, lambda captures, or result types.
+ */
 object Interpreter {
   private def normalizeLevel(l: Level)(implicit eqStore: EqStore): Level = {
     val pieces = Vector(Level.const(l.c)) ++
@@ -23,23 +39,28 @@ object Interpreter {
     Level.max(pieces)
   }
 
-  def resolveInEqStore(v: Value)(implicit eqStore: EqStore): Value = {
+  /**
+   * Continues the reduction of v if v is blocked by a variable that's been solved in EqStore The default call (if v
+   * cannot be further reduced) should be quite fast, so we can call it defensively (don't need to worry too much about
+   * the performance impact of calling it too often).
+   */
+  private def resolve(v: Value)(implicit eqStore: EqStore): Value = {
     val v0 = eqStore.force(v)
     v0 match {
       case v0: Blocked if eqStore.subst.contains(v0.blockerId) =>
         v0 match {
           case VBlockedApp(h, args, tpe, _) =>
-            val h0 = resolveInEqStore(h)
+            val h0 = resolve(h)
             h0 match {
               case lam: VLam =>
                 val res = runLam(lam, args)
-                resolveInEqStore(res)
+                resolve(res)
               case b: Blocker =>
                 VBlockedApp(b, args, tpe, b.blockerId)
               case other =>
-                resolveInEqStore(evalApply(other, args))
+                resolve(evalApply(other, args))
             }
-          case vm: VBlockedThunk => resolveInEqStore(forceThunk(vm))
+          case vm: VBlockedThunk => resolve(forceThunk(vm))
         }
 
       case l: Level if l.atoms.keySet.intersect(eqStore.subst.keySet).nonEmpty => normalizeLevel(l)
@@ -47,6 +68,8 @@ object Interpreter {
       case _ => v0
     }
   }
+
+  def resolveInEqStore(v: Value)(implicit eqStore: EqStore): ResolvedValue = ResolvedValue(resolve(v))
 
   private def getEnvWithArgs(fnTpe: VPi, baseEnv: RuntimeEnv, args: Vector[Value])(implicit
       eqStore: EqStore
@@ -84,12 +107,12 @@ object Interpreter {
     case pi: ETerm.Pi                    => evalPi(pi, env)
   }
 
-  private def evalRef[E <: EnvLike[E]](ref: ETerm.Ref, env: E): Value = {
+  private def evalRef[E <: EnvLike[E]](ref: ETerm.Ref, env: E)(implicit eqStore: EqStore): Value = {
     val res = ref match {
       case ETerm.GlobalRef(name, _) => env(name)
       case ETerm.LocalRef(local, _) => env(local)
     }
-    res match {
+    resolveInEqStore(res).caseOf {
       case h: ConstructorHead if h.totalArity == 0 => VCtor(h, Vector.empty, h.tpe)
       case _                                       => res
     }
@@ -98,12 +121,10 @@ object Interpreter {
   def evalApply(fn: Value, vArgs: Vector[Value])(implicit eqStore: EqStore): Value = {
     require(vArgs.nonEmpty, "evalApply requires at least one argument")
 
-    val fn0 = resolveInEqStore(fn)
-    val tpe0 = resolveInEqStore(fn0.tpe)
-
-    tpe0 match {
+    fn.tpe.caseOf {
       case pi: VPi =>
         val envWithArgs: RuntimeEnv = getEnvWithArgs(pi, pi.env, vArgs)
+        val fn0 = resolve(fn)
         fn0 match {
           case lam @ VLam(_, _, isStable, _) =>
             val res = runLam(lam, vArgs)
@@ -131,7 +152,7 @@ object Interpreter {
   ): Value = {
     val vf = evalTerm(fn, env)
     val vArgs = args.map(a => evalTerm(a, env))
-    if (vArgs.isEmpty) throw CannotApplyNonFunction(Interpreter.resolveInEqStore(vf.tpe))
+    if (vArgs.isEmpty) throw CannotApplyNonFunction(resolve(vf.tpe))
     evalApply(vf, vArgs)
   }
 
@@ -147,8 +168,8 @@ object Interpreter {
     VLam(vpi, id, l.isStable, LamBody.Core(l, env.closeForEval(Some(capturedIndexes))))
   }
 
-  def runLam(lam: VLam, args: Vector[Value])(implicit eqStore: EqStore): Value =
-    lam.body match {
+  def runLam(lam: VLam, args: Vector[Value])(implicit eqStore: EqStore): Value = {
+    val res = lam.body match {
       case LamBody.Native(run) => run(args, eqStore)
       case LamBody.Core(term, coreEnv) =>
         val bodyEnv = getEnvWithArgs(lam.tpe, coreEnv, args)
@@ -165,6 +186,8 @@ object Interpreter {
           case _ => res
         }
     }
+    resolve(res)
+  }
 
   private def forceThunk(thunk: VBlockedThunk)(implicit eqStore: EqStore): Value =
     thunk.body match {
@@ -178,7 +201,7 @@ object Interpreter {
   }
 
   def getLevel(v: Value)(implicit eqStore: EqStore): Level = {
-    resolveInEqStore(v) match {
+    v.caseOf {
       case l: Level => l
       case v: Var   => Level.mk(v.id)
       case v        => throw NotALevel(v)
@@ -203,8 +226,7 @@ object Interpreter {
   private def computeSelectResultTypeFrom[E <: EnvLike[E]](vType: Value, field: String, env: E)(implicit
       eqStore: EqStore
   ): Value = {
-    val vt0 = resolveInEqStore(vType)
-    val (indName, meta, typeArgs) = vt0 match {
+    val (indName, meta, typeArgs) = vType.caseOf {
       case VConst(n, Inductive(m), _)              => (n, m, Vector.empty[Value])
       case VApp(VConst(n, Inductive(m), _), as, _) => (n, m, as)
       case other                                   => throw NotAType(other)
@@ -224,14 +246,14 @@ object Interpreter {
   def evalSelect[E <: EnvLike[E]](v: Value, field: String, env: E, locationId: Int)(implicit
       eqStore: EqStore
   ): Value = {
-    val v0 = resolveInEqStore(v)
+    val v0 = resolve(v)
     v0 match {
       case VCtor(head, fields, _) =>
         if (!head.isStruct) throw NotAStruct(head.name)
 
         val fieldBinders = ConstructorOps.ConstructorShape.require(head).fieldBinders
         val idx = fieldBinders.indexWhere(_.name == field)
-        if (idx >= 0 && idx < fields.length && fieldBinders(idx).name != "_") fields(idx)
+        if (idx >= 0 && idx < fields.length && fieldBinders(idx).name != "_") resolve(fields(idx))
         else throw NotFound(field)
 
       case b: Blocker =>
@@ -251,32 +273,28 @@ object Interpreter {
   }
 
   private def evalMatch[E <: EnvLike[E]](m: ETerm.Match, env: E)(implicit eqStore: EqStore): Value = {
-    val capturedIndexes = CapturedIndexes.getCapturedIndexes(m, env)
-
-    def computeMatchCaptures(): Vector[Value] = env.getLocalsByIndexes(capturedIndexes)
-
-    val scrut = resolveInEqStore(evalTerm(m.scrut, env))
-
-    def outType: Value = m.motive match {
-      case Some(motive) => evalTypeTerm(motive, env)
-      case None         => scrut.tpe
-    }
-
-    def mkStuckMatch(): Value = {
-      val head = VConst(s"match#${m.span.start}", Symbol, KernelObject)
-      VApp(head, computeMatchCaptures(), outType)
-    }
-
-    def mkBlockedMatch(b: Blocker): Value = {
-      val lamId = ValueId.LocalId(m.span.start, computeMatchCaptures())
-      VBlockedThunk(BlockedThunkBody.Match(m, env.closeForEval(Some(capturedIndexes))), lamId, outType, b.blockerId)
-    }
-
-    val (head, args) = scrut match {
-      case VCtor(head, fields, _) => (head, fields)
-      case b: Blocker             => return mkBlockedMatch(b)
-      case _                      => return mkStuckMatch()
-    }
+    val (head, args) = evalTerm(m.scrut, env).use(scrut =>
+      scrut.caseOf {
+        case VCtor(head, fields, _) => (head, fields)
+        case other                  =>
+          // We are either blocked or stuck
+          val capturedIndexes = CapturedIndexes.getCapturedIndexes(m, env)
+          val matchCaptures: Vector[Value] = env.getLocalsByIndexes(capturedIndexes)
+          val outType: Value = m.motive match {
+            case Some(motive) => evalTypeTerm(motive, env)
+            case None         => scrut.value.tpe
+          }
+          other match {
+            case b: Blocker =>
+              val lamId = ValueId.LocalId(m.span.start, matchCaptures)
+              val thunkBody = BlockedThunkBody.Match(m, env.closeForEval(Some(capturedIndexes)))
+              return VBlockedThunk(thunkBody, lamId, outType, b.blockerId)
+            case _ =>
+              val head = VConst(s"match#${m.span.start}", Symbol, KernelObject)
+              return VApp(head, matchCaptures, outType)
+          }
+      }
+    )
 
     val ctorName = head.name
     val branch =

@@ -8,7 +8,6 @@ object InstanceSearch {
   private val MaxDepth = 256
   private val MaxNodes = 65536
 
-  private final case class ResolvedGoal(key: ValueKey.Key, head: String)
   private final case class SearchResult(value: Value, term: ElabAst.Term)
 
   private final class SearchContext {
@@ -43,7 +42,6 @@ object InstanceSearch {
   }
 
   def instanceKey(name: String, value: Value, eqStore: EqStore): String = {
-    validateInstanceType(name, value.tpe, eqStore)
     resultHeadKey(value.tpe, eqStore).getOrElse(throw InvalidInstance(name, value.tpe))
   }
 
@@ -63,25 +61,26 @@ object InstanceSearch {
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): SearchResult = {
-    val resolvedGoal = resolveGoal(goal)
-    ctx.get(resolvedGoal.key) match {
+    val (head, key) = goal.use(rv => headKeyResolved(rv).getOrElse(throw NoInstanceFound(goal)) -> rv.value.key)
+
+    ctx.get(key) match {
       case Some(cached) => return cached
       case None         =>
     }
 
-    val entered = state.enter(goal, resolvedGoal.key)
+    val entered = state.enter(goal, key)
 
-    val tiers = searchEnv.instanceSearchTiers(resolvedGoal.head)
+    val tiers = searchEnv.instanceSearchTiers(head)
     val local = tryCandidates(tiers.locals, goal, searchEnv, entered, ctx)
     local.success match {
       case Some(success) =>
-        ctx.put(resolvedGoal.key, success)
+        ctx.put(key, success)
         success
       case None =>
         val global = tryCandidates(tiers.globals, goal, searchEnv, entered, ctx)
         global.success match {
           case Some(success) =>
-            ctx.put(resolvedGoal.key, success)
+            ctx.put(key, success)
             success
           case None =>
             if (local.hasCycle || global.hasCycle) throw CyclicInstanceSearch(goal)
@@ -130,7 +129,7 @@ object InstanceSearch {
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): SearchResult = {
-    Interpreter.resolveInEqStore(candidate.value.tpe) match {
+    candidate.value.tpe.caseOf {
       case pi: VPi =>
         val freshEnv = BinderOps.freshen(pi)
         val resultTy = pi.codomain(freshEnv, eqStore)
@@ -181,26 +180,17 @@ object InstanceSearch {
     (filledValues, terms.result())
   }
 
-  private def resolveGoal(goal: Value)(implicit eqStore: EqStore): ResolvedGoal = {
-    val resolved = Interpreter.resolveInEqStore(goal)
-    ResolvedGoal(resolved.key, headKeyResolved(resolved).getOrElse(throw NoInstanceFound(goal)))
-  }
-
   private def resultType(tpe: Value)(implicit eqStore: EqStore): Option[Value] =
-    Interpreter.resolveInEqStore(tpe) match {
+    tpe.caseOf {
       case pi: VPi =>
         val freshEnv = BinderOps.freshen(pi)
         Some(pi.codomain(freshEnv, eqStore))
       case other => Some(other)
     }
 
-  // TODO: fix this
-  private def validateInstanceType(name: String, tpe: Value, eqStore: EqStore): Unit = {}
+  private def headKey(value: Value)(implicit eqStore: EqStore): Option[String] = value.use(headKeyResolved)
 
-  private def headKey(value: Value)(implicit eqStore: EqStore): Option[String] =
-    headKeyResolved(Interpreter.resolveInEqStore(value))
-
-  private def headKeyResolved(value: Value): Option[String] = value match {
+  private def headKeyResolved(value: ResolvedValue): Option[String] = value.caseOf {
     case VApp(VConst(name, _, _), _, _) => Some(name)
     case VConst(name, _, _)             => Some(name)
     case _                              => None

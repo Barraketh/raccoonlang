@@ -112,8 +112,8 @@ object ValueEquivalence {
       else {
         val normalizerF = getNormalizerF(v1, v2)
 
-        val a = normalizerF(Interpreter.resolveInEqStore(v1))
-        val b = normalizerF(Interpreter.resolveInEqStore(v2))
+        val a = v1.use(rv => normalizerF(rv.value))
+        val b = v2.use(rv => normalizerF(rv.value))
 
         sameValueObject(a, b) || a.key == b.key || (shouldTryStructuralDefEq(a, b) && defEqStructural(a, b))
       }
@@ -138,6 +138,7 @@ object ValueEquivalence {
       v1.id.captures.zip(v2.id.captures).foldLeft(m1) { case (curMeta, (p1, p2)) => unify(p1, p2, curMeta) }
     }
 
+    // Broad idea: we can unify (v + k) = other as v = other - k.  Everything else fails.
     private def unifyLevels(l1: Level, l2: Level, meta: EqStore): Option[EqStore] = {
       if (l1.atoms.size == 1 && l1.c == 0) {
         val (varId, k) = l1.atoms.head
@@ -149,17 +150,13 @@ object ValueEquivalence {
     }
 
     private def unifySorts(v1: VSort, v2: VSort, meta: EqStore): EqStore = {
-      // Broad idea: we can unify (v + k) = other as v = other - k.  Everything else fails.
-      val l1 = Interpreter.resolveInEqStore(v1.level)(meta)
-      val l2 = Interpreter.resolveInEqStore(v2.level)(meta)
-
-      (l1, l2) match {
+      (v1, v2).caseOf {
         case (l1: Level, l2: Level) =>
-          unifyLevels(l1, l2, meta).orElse(unifyLevels(l2, l1, meta)).getOrElse {
-            throw UnificationFailed(l1, l2)
-          }
-        case _ => throw UnificationFailed(l1, l2)
-      }
+          unifyLevels(l1, l2, meta)
+            .orElse(unifyLevels(l2, l1, meta))
+            .getOrElse { throw UnificationFailed(l1, l2) }
+        case _ => throw UnificationFailed(v1, v2)
+      }(meta)
 
     }
 
@@ -173,8 +170,8 @@ object ValueEquivalence {
     def unify(v1: Value, v2: Value, meta: EqStore)(implicit normalizers: NormalizerMap): EqStore = {
       val normalizerF = DefEq.getNormalizerF(v1, v2)(meta, normalizers)
 
-      val a = normalizerF(Interpreter.resolveInEqStore(v1)(meta))
-      val b = normalizerF(Interpreter.resolveInEqStore(v2)(meta))
+      val a = normalizerF(Interpreter.resolveInEqStore(v1)(meta).value)
+      val b = normalizerF(Interpreter.resolveInEqStore(v2)(meta).value)
 
       if (DefEq.defEq(a, b)(meta, normalizers)) return meta
 
