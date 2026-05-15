@@ -9,6 +9,8 @@ class ValueOpsTests extends munit.FunSuite {
   private val typeRef: ElabAst.TypeTerm = ETerm.GlobalRef("Type", span)
   private val typeToTypeClassifier: Value.Universe = VSort(Level.succ(Level.zero))
 
+  private def nodeId(start: Int): AstNodeId = AstNodeId(None, start)
+
   private def symbolicValue(name: String): VConst =
     VConst(name, Symbol, valueType)
 
@@ -62,7 +64,7 @@ class ValueOpsTests extends munit.FunSuite {
       Vector(binder),
       (_, _) => valueType,
       captured.synDeps,
-      ValueId.LocalId(1, Vector(captured)),
+      ValueId.LocalId(nodeId(1), Vector(captured)),
       typeToTypeClassifier
     )
     val piTerm = ETerm.Pi(
@@ -80,7 +82,7 @@ class ValueOpsTests extends munit.FunSuite {
       isStable = false
     )
     val lam =
-      VLam(pi, ValueId.LocalId(2, Vector(captured)), isStable = false, LamBody.Core(lamTerm, runtimeEnv))
+      VLam(pi, ValueId.LocalId(nodeId(2), Vector(captured)), isStable = false, LamBody.Core(lamTerm, runtimeEnv))
 
     val materialized = ValueOps.materialize(lam, solve(captured, solution)).asInstanceOf[VLam]
 
@@ -106,7 +108,7 @@ class ValueOpsTests extends munit.FunSuite {
       Vector(binder),
       (_, _) => valueType,
       DepSet.empty,
-      ValueId.LocalId(1, Vector.empty),
+      ValueId.LocalId(nodeId(1), Vector.empty),
       typeToTypeClassifier
     )
     val piTerm = ETerm.Pi(
@@ -123,7 +125,7 @@ class ValueOpsTests extends munit.FunSuite {
       name = None,
       isStable = false
     )
-    val lam = VLam(pi, ValueId.LocalId(2, Vector.empty), isStable = false, LamBody.Core(lamTerm, runtimeEnv))
+    val lam = VLam(pi, ValueId.LocalId(nodeId(2), Vector.empty), isStable = false, LamBody.Core(lamTerm, runtimeEnv))
 
     intercept[WTF](Interpreter.evalApply(lam, Vector(symbolicValue("Arg")))(EqStore.empty))
   }
@@ -186,7 +188,7 @@ class ValueOpsTests extends munit.FunSuite {
     )
     val thunk = VBlockedThunk(
       BlockedThunkBody.Match(matchTerm, runtimeEnv),
-      ValueId.LocalId(3, Vector(scrut, captured)),
+      ValueId.LocalId(nodeId(3), Vector(scrut, captured)),
       valueType,
       scrut.id
     )

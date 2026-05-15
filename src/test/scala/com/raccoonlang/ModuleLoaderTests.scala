@@ -259,4 +259,73 @@ class ModuleLoaderTests extends munit.FunSuite {
     }
     assert(ErrorReporter.pretty(error, loaded).contains(badPath.toRealPath().toString))
   }
+
+  test("same-offset local value ids remain distinct across imported modules") {
+    val root = Files.createTempDirectory("raccoon-modules")
+    write(
+      root,
+      "Common.rac",
+      """
+        |namespace Common {
+        |  inductive Nat : Type
+        |   | zero : Nat
+        |   | succ (_: Nat) : Nat
+        |
+        |  inductive Eq (A: Type) indices (x: A) (y: A) : Sort(Level.one)
+        |   | refl (x: A) : Eq(A, x, x)
+        |
+        |  struct FunBox : Type
+        |   | mk (f: (x: Nat) -> Nat) : FunBox
+        |}
+        |""".stripMargin
+    )
+    write(
+      root,
+      "A.rac",
+      """
+        |import Common
+        |
+        |open Common
+        |
+        |namespace A {
+        |  inline def make : FunBox := FunBox.mk(fun (x: Nat): Nat => Nat.zero)
+        |}
+        |""".stripMargin
+    )
+    write(
+      root,
+      "B.rac",
+      """
+        |import Common
+        |
+        |open Common
+        |
+        |namespace B {
+        |  inline def make : FunBox := FunBox.mk(fun (x: Nat): Nat => x)
+        |}
+        |""".stripMargin
+    )
+    val entry = write(
+      root,
+      "Main.rac",
+      """
+        |import Common
+        |import A
+        |import B
+        |
+        |open Common
+        |
+        |def bad : Eq((x: Nat) -> Nat, A.make.f, B.make.f) := {
+        |  Eq.refl((x: Nat) -> Nat, A.make.f)
+        |}
+        |""".stripMargin
+    )
+
+    val loaded = ModuleLoader.load(entry)
+    val core = Elaborator.elab(loaded.program)
+
+    intercept[TypeError] {
+      Interpreter.run(core)
+    }
+  }
 }

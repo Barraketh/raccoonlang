@@ -44,14 +44,15 @@ Note that at this point I have done 0 optimization - these performance wins are 
 
 - Inductive families with parameters and indices
     - Validates positivity, universes, uniform parameters, constructor result shape
-- Type classes as structs, with `def instance`, `let instance`, `[f: Foo]` instance binders, and explicit `derive[Foo]` search
+- Type classes as structs, with `def instance`, `let instance`, `[f: Foo]` instance binders, and explicit `derive[Foo]`
+  search
 - Dependent pattern matching
     - Branch refinement for indexed families / dependent pattern matching. Supports equality proofs.
     - Validates exhaustiveness checking: missing, duplicate, and unreachable branches
 - Cumulative universes, first-class `Level`, `Sort(u)`, universe validation, and sort unification
     - Impredicative Prop with controlled large elimination
 - Extensible definitional equality through type-driven expression normalization
-- Namespaces, dotted names, and scoped `open`
+- Namespaces, file imports, dotted names, and scoped `open`
 - Type patterns
 - Structs / Projections
 - JVM CLI plus Scala Native build
@@ -97,7 +98,6 @@ inline def zeroShapeOnly (shape: NatShape(Nat.zero)): Nat := {
 In `zeroShapeOnly`, the `NatShape.isSucc` branch is unreachable because the scrutinee has type
 `NatShape(Nat.zero)`, so the match is still exhaustive without that constructor.
 
-
 ### Type Classes
 
 Type classes are ordinary structs. An instance is an ordinary definition or local binding marked as an instance, and
@@ -128,7 +128,6 @@ inline def useListEq [eqA: Eq(List(Nat))]: Eq(List(Nat)) := eqA
   useListEq(derive[Eq(List(Nat))])
 }
 ```
-
 
 ### Type patterns
 
@@ -195,6 +194,8 @@ Namespaces prefix declarations with dotted canonical names. Inductive constructo
 current scope as a snapshot.
 
 ```raccoon
+import Lib.Foo.Bar // import Lib/Foo/Bar.rac, making its definitions available
+
 namespace Data {
   inductive Tree : Type
    | leaf : Tree
@@ -215,7 +216,6 @@ Match case heads use normal global resolution. Prefix a case head with `.` to ma
 the scrutinee type: `| .zero => ...`.
 
 See [docs/namespaces.md](docs/namespaces.md) for the exact resolution and open rules.
-
 
 ### Equality by computation with a normalizer
 

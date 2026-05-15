@@ -130,7 +130,7 @@ object TypeChecker {
     case CA.Term.TSelect(base, field, span) =>
       val checkedBase = checkTypeTerm(base, env)
       CheckedType(
-        Interpreter.evalSelect(checkedBase.value, field, env, span.start),
+        Interpreter.evalSelect(checkedBase.value, field, env, span.nodeId),
         EA.Term.Select(checkedBase.term, field, span)
       )
     case pi: CA.Term.Pi =>
@@ -422,7 +422,7 @@ object TypeChecker {
         case CA.Term.Select(base, field, span) =>
           val checkedBase = check(base, env)
           Checked(
-            Interpreter.evalSelect(checkedBase.value, field, env, span.start),
+            Interpreter.evalSelect(checkedBase.value, field, env, span.nodeId),
             EA.Term.Select(checkedBase.term, field, span)
           )
         case t: CA.Term.App    => checkApp(t, env)

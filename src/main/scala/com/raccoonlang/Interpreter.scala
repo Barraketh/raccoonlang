@@ -79,7 +79,7 @@ object Interpreter {
   def evalPi[E <: EnvLike[E]](pi: ETerm.Pi, env: E, vBinders: Vector[VBinder]): VPi = {
     val capturedIndexes = CapturedIndexes.getCapturedIndexes(pi, env)
     val captureVals = env.getLocalsByIndexes(capturedIndexes)
-    val id = ValueId.LocalId(pi.span.start, captureVals)
+    val id = ValueId.LocalId(pi.span.nodeId, captureVals)
     val closedEnv = env.closeForEval(Some(capturedIndexes))
 
     val synDeps = DepSet.newBuilder
@@ -102,7 +102,7 @@ object Interpreter {
 
   def evalTypeTerm[E <: EnvLike[E]](tt: ElabAst.TypeTerm, env: E)(implicit meta: EqStore): Value = tt match {
     case ref: ETerm.Ref                  => evalRef(ref, env)
-    case ETerm.Select(base, field, span) => evalSelect(evalTerm(base, env), field, env, span.start)
+    case ETerm.Select(base, field, span) => evalSelect(evalTerm(base, env), field, env, span.nodeId)
     case ETerm.App(fn, args, _)          => evalApplyTerm(fn, args, env)
     case pi: ETerm.Pi                    => evalPi(pi, env)
   }
@@ -162,7 +162,7 @@ object Interpreter {
       case Some(funcName) => ValueId.Const(funcName)
       case None =>
         val captureVals = env.getLocalsByIndexes(capturedIndexes)
-        ValueId.LocalId(l.span.start, captureVals)
+        ValueId.LocalId(l.span.nodeId, captureVals)
 
     }
     VLam(vpi, id, l.isStable, LamBody.Core(l, env.closeForEval(Some(capturedIndexes))))
@@ -211,7 +211,7 @@ object Interpreter {
   def evalTerm[E <: EnvLike[E]](term: ElabAst.Term, env: E)(implicit eqStore: EqStore): Value = {
     try {
       term match {
-        case ETerm.Select(base, field, span) => evalSelect(evalTerm(base, env), field, env, span.start)
+        case ETerm.Select(base, field, span) => evalSelect(evalTerm(base, env), field, env, span.nodeId)
         case ETerm.App(fn, args, _)          => evalApplyTerm(fn, args, env)
         case tt: ElabAst.TypeTerm            => evalTypeTerm(tt, env)
         case l: ETerm.Lam                    => evalLam(l, env)
@@ -243,7 +243,7 @@ object Interpreter {
     }
   }
 
-  def evalSelect[E <: EnvLike[E]](v: Value, field: String, env: E, locationId: Int)(implicit
+  def evalSelect[E <: EnvLike[E]](v: Value, field: String, env: E, locationId: AstNodeId)(implicit
       eqStore: EqStore
   ): Value = {
     val v0 = resolve(v)
@@ -286,11 +286,11 @@ object Interpreter {
           }
           other match {
             case b: Blocker =>
-              val lamId = ValueId.LocalId(m.span.start, matchCaptures)
+              val lamId = ValueId.LocalId(m.span.nodeId, matchCaptures)
               val thunkBody = BlockedThunkBody.Match(m, env.closeForEval(Some(capturedIndexes)))
               return VBlockedThunk(thunkBody, lamId, outType, b.blockerId)
             case _ =>
-              val head = VConst(s"match#${m.span.start}", Symbol, KernelObject)
+              val head = VConst(s"match#${m.span.nodeId.stableName}", Symbol, KernelObject)
               return VApp(head, matchCaptures, outType)
           }
       }

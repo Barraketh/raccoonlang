@@ -83,7 +83,7 @@ object Value {
       override def toString: String = name
     }
 
-    final case class LocalId(nodeId: Int, captures: Vector[Value]) extends ValueId
+    final case class LocalId(nodeId: AstNodeId, captures: Vector[Value]) extends ValueId
   }
 
   private[raccoonlang] def envDeps(env: RuntimeEnv): DepSet = {
@@ -108,7 +108,8 @@ object Value {
     def synDeps: DepSet
   }
   object BlockedThunkBody {
-    final case class Select(base: Value, field: String, env: RuntimeEnv, locationId: Int) extends BlockedThunkBody {
+    final case class Select(base: Value, field: String, env: RuntimeEnv, locationId: AstNodeId)
+      extends BlockedThunkBody {
       override lazy val synDeps: DepSet = base.synDeps ++ envDeps(env)
     }
 

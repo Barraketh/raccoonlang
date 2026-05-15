@@ -97,12 +97,21 @@ object ValueKey {
     mixLong(cur, count.toLong)
   }
 
+  private def mixAstNodeId(key: Key, nodeId: AstNodeId): Key = {
+    val withSource =
+      nodeId.source match {
+        case Some(sourceId) => mixLong(mixLong(key, 1L), sourceId.value.toLong)
+        case None           => mixLong(key, 0L)
+      }
+    mixLong(withSource, nodeId.start.toLong)
+  }
+
   private def valueIdKey(key: Key, id: Value.ValueId): Key =
     id match {
       case Value.ValueId.Const(name) =>
         mixString(mixKey(key, tag(Tag.ConstId)), name)
       case Value.ValueId.LocalId(nodeId, captures) =>
-        mixValues(mixLong(mixKey(key, tag(Tag.LocalId)), nodeId.toLong), captures)
+        mixValues(mixAstNodeId(mixKey(key, tag(Tag.LocalId)), nodeId), captures)
     }
 
   private def levelKey(atoms: Map[Value.VarId, Int], c: Int): Key = {

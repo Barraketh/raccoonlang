@@ -18,7 +18,18 @@ case class Failure(startIdx: Int, curIdx: Int, message: String) extends ParseRes
 case class ParseError(startIdx: Int, curIdx: Int, message: String) extends RuntimeException()
 
 case class SourceId(value: Int) extends AnyVal
-case class Span(start: Int, end: Int, source: Option[SourceId] = None)
+
+case class AstNodeId(source: Option[SourceId], start: Int) {
+  def stableName: String =
+    source match {
+      case Some(sourceId) => s"${sourceId.value}:$start"
+      case None           => s"unknown:$start"
+    }
+}
+
+case class Span(start: Int, end: Int, source: Option[SourceId] = None) {
+  def nodeId: AstNodeId = AstNodeId(source, start)
+}
 case class Spanned[+A](value: A, span: Span)
 
 trait Parser[+A] {
@@ -70,7 +81,7 @@ trait Parser[+A] {
   def flatSpanned(sourceId: Option[SourceId])(implicit C: Sequence.Combine[A, Span] @uncheckedVariance): Parser[C.Out] =
     this.spanned(sourceId).map(s => C.combine(s.value, s.span))
 
-  //Useful combinators
+  // Useful combinators
   def rep(min: Int, sep: Parser[NoValueT]): Parser[Vector[A]] = {
     val p = (this ~ (sep ~ this).rep(min - 1)).map { case (a, buff) => buff.prepended(a) }
 
@@ -284,7 +295,7 @@ object Parser {
       def length: Int
       def res: Out
     }
-    
+
     trait AccumulatorMaker[A] {
       type Out
       def make(): Accumulator[A] { type Out = AccumulatorMaker.this.Out }
