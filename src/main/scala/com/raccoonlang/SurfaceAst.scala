@@ -15,6 +15,33 @@ object SurfaceAst {
     def span: Span
   }
 
+  sealed trait TypePattern {
+    def span: Span
+  }
+
+  sealed trait TopLevelTP extends TypePattern
+
+  object TypePattern {
+    final case class Type(term: TypeTerm) extends TopLevelTP {
+      override def span: Span = term.span
+    }
+
+    final case class App(fn: TypeTerm, args: Vector[TypePattern], span: Span) extends TopLevelTP {
+      require(args.nonEmpty, "Type pattern application requires at least one argument")
+    }
+
+    final case class Capture(name: String, span: Span) extends TypePattern
+  }
+
+  sealed trait BinderType {
+    def span: Span
+  }
+
+  object BinderType {
+    final case class TypePattern(tp: TopLevelTP, span: Span) extends BinderType
+    final case class ConstrainedCapture(name: String, constraint: TopLevelTP, span: Span) extends BinderType
+  }
+
   object Term {
     // Identifier (either type or term)
     final case class Ident(name: String, span: Span) extends Term with TypeTerm
@@ -30,9 +57,6 @@ object SurfaceAst {
 
     // Pi (x: A) -> B x
     final case class Pi(binder: Binder, body: TypeTerm, span: Span) extends Term with TypeTerm
-
-    // Capture: `$name` binds a fresh variable in the type pattern
-    final case class Capture(name: String, span: Span) extends TypeTerm
 
     // Explicit instance search expression: derive[Goal]
     final case class Derive(goal: TypeTerm, span: Span) extends Term
@@ -78,7 +102,7 @@ object SurfaceAst {
   // Use a first-class normalizer value within a body scope
   final case class Use(normalizer: Term, span: Span)
 
-  case class Binder(name: String, ty: TypeTerm, span: Span, isInstance: Boolean = false)
+  case class Binder(name: String, ty: BinderType, span: Span, isInstance: Boolean = false)
 
   case class FuncHeader(params: Vector[Binder], ty: TypeTerm, span: Span)
 

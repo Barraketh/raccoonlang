@@ -34,17 +34,17 @@ class EqualityCommTests extends munit.FunSuite {
         |inductive Eq (A: Type) indices (x: A) (y: A) : Sort(Level.one)
         | | refl (x: A) : Eq(A, x, x)
         |
-        |def trans (A: Type)(x: A)(y: A)(z: A)(p: Eq(A, x, y))(q: Eq(A, y, z)): Eq(A, x, z) := {
+        |def trans (p: Eq($A, $x, $y))(q: Eq(A, y, $z)): Eq(A, x, z) := {
         |  match p returning Eq(A, x, z) with
         |  | Eq.refl w => q
         |}
         |
-        |def symm (A: Type)(x: A)(y: A)(p: Eq(A, x, y)): Eq(A, y, x) := {
+        |def symm (p: Eq($A, $x, $y)): Eq(A, y, x) := {
         |  match p returning Eq(A, y, x) with
         |  | Eq.refl w => Eq.refl(A, w)
         |}
         |
-        |def congSucc (a: Nat)(b: Nat)(p: Eq(Nat, a, b)): Eq(Nat, Nat.succ(a), Nat.succ(b)) := {
+        |def congSucc(p: Eq(Nat, $a, $b)): Eq(Nat, Nat.succ(a), Nat.succ(b)) := {
         |  match p returning Eq(Nat, Nat.succ(a), Nat.succ(b)) with
         |  | Eq.refl x => Eq.refl(Nat, Nat.succ(x))
         |}
@@ -62,22 +62,22 @@ class EqualityCommTests extends munit.FunSuite {
         |  | Nat.succ x => {
         |    let ih := zeroAdd(x)
         |    let step1 := succAdd(Nat.zero, x)
-        |    let step2 := congSucc(add(Nat.zero, x), x, ih)
-        |    trans(Nat, add(Nat.succ(Nat.zero), x), Nat.succ(add(Nat.zero, x)), Nat.succ(x), step1, step2)
+        |    let step2 := congSucc(ih)
+        |    trans(step1, step2)
         |  }
         |}
         |
         |// add commutativity: a + b = b + a
         |def addComm (a: Nat)(b: Nat): Eq(Nat, add(a, b), add(b, a)) := {
         |  match b returning Eq(Nat, add(a, b), add(b, a)) with
-        |  | Nat.zero => symm(Nat, add(Nat.zero, a), a, zeroAdd(a))
+        |  | Nat.zero => symm(zeroAdd(a))
         |  | Nat.succ x => {
         |    let ih := addComm(a, x)
         |    let step1 := succAdd(a, x)
-        |    let stepCong := congSucc(add(a, x), add(x, a), ih)
-        |    let stepSwap := symm(Nat, add(Nat.succ(x), a), Nat.succ(add(x, a)), succAdd(x, a))
-        |    let tail := trans(Nat, Nat.succ(add(a, x)), Nat.succ(add(x, a)), add(Nat.succ(x), a), stepCong, stepSwap)
-        |    trans(Nat, add(Nat.succ(a), x), Nat.succ(add(a, x)), add(Nat.succ(x), a), step1, tail)
+        |    let stepCong := congSucc(ih)
+        |    let stepSwap := symm(succAdd(x, a))
+        |    let tail := trans(stepCong, stepSwap)
+        |    trans(step1, tail)
         |  }
         |}
         |

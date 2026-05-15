@@ -8,6 +8,10 @@ class CapturedIndexesTests extends munit.FunSuite {
   private val valueType: Value = VSort(Level.zero)
   private val typeRef: ElabAst.TypeTerm = ETerm.GlobalRef("Type", span)
   private val classifier: Value.Universe = VSort(Level.zero)
+  private val typeBinderType: ElabAst.BinderType = {
+    val pattern = ElabAst.TypePattern.Type(typeRef)
+    ElabAst.BinderType.TypePattern(pattern, pattern.span)
+  }
 
   test("getCapturedIndexes collects only local indexes below the current env cutoff") {
     val capturedRef = CoreAst.LocalRef(0, "captured")
@@ -15,7 +19,7 @@ class CapturedIndexesTests extends munit.FunSuite {
     val captured = FreshVar.freshVar("captured", valueType)
     val env = TypecheckEnv.empty.putLocal(capturedRef, captured)
     val term = ETerm.Pi(
-      Vector(ElabAst.Binder(binderRef, ElabAst.TypePattern.Type(typeRef), span)),
+      Vector(ElabAst.Binder(binderRef, typeBinderType, span)),
       ETerm.App(
         ETerm.LocalRef(binderRef, span),
         Vector(ETerm.LocalRef(capturedRef, span)),

@@ -32,6 +32,16 @@ object CapturedIndexes {
         goTerm(term, cutoff, refs)
     }
 
+  private def goBinderType(binderType: ElabAst.BinderType, cutoff: Int, refs: RoaringBitmap): Unit =
+    binderType match {
+      case ElabAst.BinderType.TypePattern(tp, _) =>
+        goPattern(tp, cutoff, refs)
+
+      case ElabAst.BinderType.ConstrainedCapture(ref, constraint, _) =>
+        addRef(ref, cutoff, refs)
+        goPattern(constraint, cutoff, refs)
+    }
+
   private def goTerm(term: ElabAst.Term, cutoff: Int, refs: RoaringBitmap): Unit =
     term match {
       case Term.GlobalRef(_, _) =>
@@ -41,7 +51,7 @@ object CapturedIndexes {
 
       case Term.Pi(binders, out, _, _) =>
         binders.foreach { b =>
-          goPattern(b.ty, cutoff, refs)
+          goBinderType(b.ty, cutoff, refs)
         }
         goTerm(out, cutoff, refs)
 

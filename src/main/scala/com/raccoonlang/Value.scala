@@ -212,11 +212,20 @@ object Value {
   case object StructuralCapture extends CaptureType
   case class LevelCapture(subtract: Int) extends CaptureType
 
-  case class VCapture(localRef: CoreAst.LocalRef, path: List[Int], captureType: CaptureType)
+  sealed trait CaptureRoot
+  case object ActualType extends CaptureRoot
+  case object ActualTypeClassifier extends CaptureRoot
+
+  case class VCapture(
+      localRef: CoreAst.LocalRef,
+      path: List[Int],
+      captureType: CaptureType,
+      root: CaptureRoot = ActualType
+  )
 
   case class VBinder(
       localRef: CoreAst.LocalRef,
-      ty: ElabAst.TypePattern,
+      ty: ElabAst.BinderType,
       expectedTy: ElabAst.TypeTerm,
       captures: Vector[Value.VCapture],
       isInstance: Boolean = false

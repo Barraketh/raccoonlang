@@ -30,19 +30,29 @@ object CoreAst {
   // Terms that can appear in args
   sealed trait TypePattern extends Ast
 
+  sealed trait TopLevelTP extends TypePattern
+
   // Terms that can appear in type expressions
   sealed trait TypeTerm extends Term
 
   object TypePattern {
-    final case class Type(term: TypeTerm) extends TypePattern {
+    final case class Type(term: TypeTerm) extends TopLevelTP {
       override def span: Span = term.span
     }
 
-    final case class App(fn: Term.Ref, args: Vector[TypePattern], span: Span) extends TypePattern {
+    final case class App(fn: Term.Ref, args: Vector[TypePattern], span: Span) extends TopLevelTP {
       require(args.nonEmpty, "Type pattern application requires at least one argument")
     }
 
     final case class Capture(localRef: CoreAst.LocalRef, span: Span) extends TypePattern
+  }
+
+  sealed trait BinderType extends Ast
+
+  object BinderType {
+    final case class TypePattern(tp: TopLevelTP, span: Span) extends BinderType
+    final case class ConstrainedCapture(localRef: CoreAst.LocalRef, constraint: TopLevelTP, span: Span)
+      extends BinderType
   }
 
   object Term {
@@ -111,7 +121,7 @@ object CoreAst {
 
   final case class Binder(
       localRef: LocalRef,
-      ty: TypePattern,
+      ty: BinderType,
       span: Span,
       isInstance: Boolean = false
   ) {

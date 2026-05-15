@@ -178,16 +178,64 @@ class TypePatternTests extends munit.FunSuite {
     typecheckDecls(p)
   }
 
-  test("negative: bare capture in binder type needs an expected type") {
+  test("positive: top-level constrained capture exposes type and level") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inline def constrainedId (x: $A in Sort($u)): A := x
+        |inline def capturedType (x: $A in Sort($u)): Sort(u) := A
+        |
+        |{
+        |  let z: Nat := constrainedId(Nat.zero)
+        |  capturedType(z)
+        |}
+        |""".stripMargin
+
+    val res = runProgram(p)
+    assertEquals(toShape(res), SConst("Nat"))
+  }
+
+  test("negative: bare capture in binder type is rejected") {
     val p =
       """
         |def bad (x: $A): Type := A
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {
+      case _: Success[_] => fail("Bare top-level capture parsed successfully")
+      case _: Failure    =>
+    }
+  }
+
+  test("negative: constrained capture syntax is binder-only") {
+    val p =
+      """
+        |def bad : $A in Type := Type
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
+      case _: Success[_] => fail("Constrained capture parsed as an ordinary type")
+      case _: Failure    =>
+    }
+  }
+
+  test("negative: top-level constrained capture enforces constraint") {
+    val p =
+      """
+        |def bad (x: $A in Type): A := x
+        |
+        |{
+        |  bad(Type)
+        |}
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
-        intercept[PatternCaptureNeedsExpectedType] {
+        intercept[TypeMismatch] {
           Interpreter.run(core)
         }
       case err: Failure =>

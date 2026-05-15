@@ -419,12 +419,13 @@ object Interpreter {
         {
           val lRef = CoreAst.LocalRef(0, "l")
           val levelRef = ETerm.GlobalRef("Level", Span(0, 0))
+          val levelPattern = ElabAst.TypePattern.Type(levelRef)
           VPi(
             env2.closeForEval(),
             Vector(
               VBinder(
                 lRef,
-                ElabAst.TypePattern.Type(levelRef),
+                ElabAst.BinderType.TypePattern(levelPattern, levelPattern.span),
                 levelRef,
                 Vector.empty
               )

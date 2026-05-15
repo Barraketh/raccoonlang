@@ -50,9 +50,17 @@ class TypeClassTests extends munit.FunSuite {
         {
           val lRef = CoreAst.LocalRef(0, "l")
           val levelRef = ElabAst.Term.GlobalRef("Level", Span(0, 0))
+          val levelPattern = ElabAst.TypePattern.Type(levelRef)
           Value.VPi(
             env2.closeForEval(),
-            Vector(Value.VBinder(lRef, ElabAst.TypePattern.Type(levelRef), levelRef, Vector.empty)),
+            Vector(
+              Value.VBinder(
+                lRef,
+                ElabAst.BinderType.TypePattern(levelPattern, levelPattern.span),
+                levelRef,
+                Vector.empty
+              )
+            ),
             (env, eqStore) => {
               val l = Interpreter.getLevel(env(lRef))(eqStore)
               Value.VSort(Value.Level.succ(l))
