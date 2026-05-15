@@ -86,5 +86,10 @@ match n with
 | s p => p
 ```
 
-Imports use dotted paths and are parsed, but module loading is not implemented yet, so imports are rejected during
-elaboration.
+## Imports
+
+Imports use dotted module paths. `import Lib.Nat` loads `Lib/Nat.rac` from the configured source root before elaborating
+the importing file.
+
+Imported declarations keep their canonical names. Imports do not automatically open a namespace, so write `open`
+explicitly when short names are desired.

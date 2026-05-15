@@ -2,6 +2,8 @@ package com.raccoonlang
 
 import com.raccoonlang.Value.Level
 
+import java.nio.file.Path
+
 sealed trait TypeError extends RuntimeException {
   def msg: String
   def span: Option[Span]
@@ -45,6 +47,11 @@ object TypeError {
     case e: InstanceSearchBudgetExceeded             => e.copy(span = Some(sp))
     case e: AmbiguousName                            => e.copy(span = Some(sp))
     case e: UnsupportedImport                        => e.copy(span = Some(sp))
+    case e: ModuleNotFound                           => e.copy(span = Some(sp))
+    case e: CyclicImport                             => e.copy(span = Some(sp))
+    case e: ModuleParseError                         => e.copy(span = Some(sp))
+    case e: ImportedModuleHasBody                    => e.copy(span = Some(sp))
+    case e: ModuleReadFailed                         => e.copy(span = Some(sp))
     case e: LocalCaseHead                            => e.copy(span = Some(sp))
   }
 }
@@ -114,7 +121,29 @@ final case class AmbiguousName(name: String, candidates: Vector[String], span: O
 }
 
 final case class UnsupportedImport(path: String, span: Option[Span] = None) extends TypeError {
-  override val msg: String = s"Imports are not supported yet: $path"
+  override val msg: String = s"Unresolved import $path; load files through ModuleLoader before elaboration"
+}
+
+final case class ModuleNotFound(importPath: String, searchedPaths: Vector[Path], span: Option[Span] = None)
+    extends TypeError {
+  override val msg: String = s"Module $importPath not found. Searched: ${searchedPaths.mkString(", ")}"
+}
+
+final case class CyclicImport(cycle: Vector[Path], span: Option[Span] = None) extends TypeError {
+  override val msg: String = s"Cyclic import: ${cycle.map(_.toString).mkString(" -> ")}"
+}
+
+final case class ModuleParseError(path: Path, message: String, offset: Int, span: Option[Span] = None)
+    extends TypeError {
+  override val msg: String = s"Failed to parse module ${path.toString}: $message"
+}
+
+final case class ImportedModuleHasBody(path: Path, span: Option[Span] = None) extends TypeError {
+  override val msg: String = s"Imported module ${path.toString} must not contain a program body"
+}
+
+final case class ModuleReadFailed(path: Path, reason: String, span: Option[Span] = None) extends TypeError {
+  override val msg: String = s"Failed to read module ${path.toString}: $reason"
 }
 
 final case class LocalCaseHead(name: String, span: Option[Span] = None) extends TypeError {

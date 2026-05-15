@@ -31,4 +31,29 @@ object ErrorReporter {
        |""".stripMargin
   }
 
+  def pretty(err: TypeError, loaded: ModuleLoader.LoadedProgram): String =
+    pretty(err, loaded.sources)
+
+  def pretty(err: TypeError, sources: Vector[ModuleLoader.LoadedSource]): String = {
+    if (sources.isEmpty)
+      return err.getMessage
+
+    val sp = err.span.getOrElse(Span(0, 0))
+    val loadedSource =
+      sp.source
+        .flatMap(sourceId => sources.find(_.sourceId == sourceId))
+        .getOrElse(sources.head)
+
+    val localOffset = math.max(0, math.min(sp.start, loadedSource.source.length))
+    val source = Source(loadedSource.source)
+    val line = source.getLine(localOffset)
+    val lineOffset = localOffset - line.start
+    val caretLine = " " * lineOffset + "^"
+    s"""
+       |${loadedSource.path.toString}:${line.lineNum}:${lineOffset}: error: ${err.getMessage}
+       |${loadedSource.source.slice(line.start, line.end)}
+       |$caretLine
+       |""".stripMargin
+  }
+
 }

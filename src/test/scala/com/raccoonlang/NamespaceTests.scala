@@ -585,7 +585,7 @@ class NamespaceTests extends munit.FunSuite {
     assertEquals(ctorName(runProgram(renamedUnqualified)), "Nat.zero")
   }
 
-  test("imports are parsed but rejected until module loading exists") {
+  test("raw elaboration rejects unresolved imports") {
     val p = "import Mathlib.Data.Nat.Basic\n"
 
     intercept[UnsupportedImport] {

@@ -247,7 +247,7 @@ object Elaborator {
     SurfacePath(root = name == RootName, if (name == RootName) Vector.empty else Vector(name), span)
 
   private def appendPath(path: SurfacePath, field: String, span: Span): SurfacePath =
-    path.copy(parts = path.parts :+ field, span = Span(path.span.start, span.end))
+    path.copy(parts = path.parts :+ field, span = Span(path.span.start, span.end, path.span.source.orElse(span.source)))
 
   private def flattenTermPath(term: SA.Term): Option[SurfacePath] =
     term match {
@@ -307,7 +307,7 @@ object Elaborator {
     val piEnv = env.enterLocalScope
     val (binder, binderEnv) = elabBinder(pi.binder, piEnv)
     val body = elabType(pi.body, binderEnv)
-    val span = Span(binder.span.start, body.span.end)
+    val span = Span(binder.span.start, body.span.end, binder.span.source.orElse(body.span.source))
     body match {
       case pi: CA.Term.Pi => CA.Term.Pi(binder +: pi.binders, pi.out, span)
       case other          => CA.Term.Pi(Vector(binder), other, span)

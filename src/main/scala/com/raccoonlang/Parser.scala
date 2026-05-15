@@ -17,7 +17,8 @@ case class Failure(startIdx: Int, curIdx: Int, message: String) extends ParseRes
 
 case class ParseError(startIdx: Int, curIdx: Int, message: String) extends RuntimeException()
 
-case class Span(start: Int, end: Int)
+case class SourceId(value: Int) extends AnyVal
+case class Span(start: Int, end: Int, source: Option[SourceId] = None)
 case class Spanned[+A](value: A, span: Span)
 
 trait Parser[+A] {
@@ -46,11 +47,15 @@ trait Parser[+A] {
 
   def filter(f: A => Boolean): Parser[A] = new FilterParser[A](this, f)
 
+  def spanned: Parser[Spanned[A]] = spanned(None)
+
+  def spanned(sourceId: SourceId): Parser[Spanned[A]] = spanned(Some(sourceId))
+
   // Attach source span to the end of the tuple
-  def spanned: Parser[Spanned[A]] = new Parser[Spanned[A]] {
+  def spanned(sourceId: Option[SourceId]): Parser[Spanned[A]] = new Parser[Spanned[A]] {
     override def parse(input: String, startIdx: Int): ParseResult[Spanned[A]] = {
       Parser.this.parse(input, startIdx) match {
-        case Success(value, sIdx, eIdx) => Success(Spanned(value, Span(sIdx, eIdx)), sIdx, eIdx)
+        case Success(value, sIdx, eIdx) => Success(Spanned(value, Span(sIdx, eIdx, sourceId)), sIdx, eIdx)
         case f: Failure                 => f
       }
     }
@@ -58,6 +63,12 @@ trait Parser[+A] {
 
   def flatSpanned(implicit C: Sequence.Combine[A, Span] @uncheckedVariance): Parser[C.Out] =
     this.spanned.map(s => C.combine(s.value, s.span))
+
+  def flatSpanned(sourceId: SourceId)(implicit C: Sequence.Combine[A, Span] @uncheckedVariance): Parser[C.Out] =
+    this.spanned(Some(sourceId)).map(s => C.combine(s.value, s.span))
+
+  def flatSpanned(sourceId: Option[SourceId])(implicit C: Sequence.Combine[A, Span] @uncheckedVariance): Parser[C.Out] =
+    this.spanned(sourceId).map(s => C.combine(s.value, s.span))
 
   //Useful combinators
   def rep(min: Int, sep: Parser[NoValueT]): Parser[Vector[A]] = {

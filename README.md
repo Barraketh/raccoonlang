@@ -283,8 +283,15 @@ sbt test
 sbt "run path/to/program.rac"
 ```
 
-The CLI reads a single `.rac` file, elaborates it, typechecks it, evaluates it, and pretty-prints the resulting value
-when the program body produces one.
+The CLI reads a `.rac` file, loads its imports, elaborates it, typechecks it, evaluates it, and pretty-prints the
+resulting value when the program body produces one.
+
+```bash
+sbt 'run --root examples examples/nats.rac'
+```
+
+`--root <dir>` can be repeated. `import Lib.Nat` searches source roots for `Lib/Nat.rac`. When no root is specified,
+the entry file's directory is used.
 
 ### Build the native binary
 
@@ -298,7 +305,6 @@ runs GraalVM `native-image`.
 
 ## Next Planned Features
 
-- File imports
 - Less-conservative positivity checking
 - Mutually-recursive inductives
 - Quotients
