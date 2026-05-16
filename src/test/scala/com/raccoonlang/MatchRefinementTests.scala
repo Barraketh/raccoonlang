@@ -17,12 +17,9 @@ class MatchRefinementTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (p: Nat) : Nat
         |
-        |inductive Eq (A: Type)(x: A)(y: A) : Sort(Level.one)
-        | | refl {A: Type} (x: A) : Eq(A, x, x)
-        |
         |def symmEq (a: Nat)(b: Nat)(p: Eq(Nat, a, b)): Eq(Nat, b, a) := {
         |  match p returning Eq(Nat, b, a) with
-        |  | Eq.refl x => Eq.refl(Nat, x)
+        |  | Eq.refl x => Eq.refl(x)
         |}
         |
         |""".stripMargin
@@ -37,12 +34,9 @@ class MatchRefinementTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (p: Nat) : Nat
         |
-        |inductive Eq (A: Type)(x: A)(y: A) : Sort(Level.one)
-        | | refl {A: Type} (x: A) : Eq(A, x, x)
-        |
         |def congSucc2 (a: Nat)(b: Nat)(p: Eq(Nat, a, b)): Eq(Nat, Nat.succ(a), Nat.succ(b)) := {
         |  match p returning Eq(Nat, Nat.succ(a), Nat.succ(b)) with
-        |  | Eq.refl x => Eq.refl(Nat, Nat.succ(x))
+        |  | Eq.refl x => Eq.refl(Nat.succ(x))
         |}
         |
         |""".stripMargin
@@ -57,12 +51,9 @@ class MatchRefinementTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (p: Nat) : Nat
         |
-        |inductive Eq (A: Type)(x: A)(y: A) : Sort(Level.one)
-        | | refl {A: Type} (x: A) : Eq(A, x, x)
-        |
         |def badCongCtor (a: Nat): Eq(Nat, a, Nat.succ(a)) := {
-        |  match Eq.refl(Nat, a) returning Eq(Nat, a, Nat.succ(a)) with
-        |  | Eq.refl x => Eq.refl(Nat, x)
+        |  match Eq.refl(a) returning Eq(Nat, a, Nat.succ(a)) with
+        |  | Eq.refl x => Eq.refl(x)
         |}
         |
         |""".stripMargin

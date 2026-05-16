@@ -76,8 +76,10 @@ object ModuleLoader {
               module.program.body.foreach(body => fail(ImportedModuleHasBody(module.path, Some(body.span))))
 
             module.program.imports.foreach { imp =>
-              val depPath = resolveImport(imp)
-              visit(depPath, imp.path.mkString("."), Some(imp.span), isEntry = false)
+              if (!Prelude.isPreludeImport(imp.path)) {
+                val depPath = resolveImport(imp)
+                visit(depPath, imp.path.mkString("."), Some(imp.span), isEntry = false)
+              }
             }
 
             if (!isEntry && !emitted(canonical)) {

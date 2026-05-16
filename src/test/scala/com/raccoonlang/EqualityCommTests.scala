@@ -31,9 +31,6 @@ class EqualityCommTests extends munit.FunSuite {
         |  | Nat.succ x => add(Nat.succ(a), x)
         |}
         |
-        |inductive Eq (A: Type)(x: A)(y: A) : Sort(Level.one)
-        | | refl {A: Type} (x: A) : Eq(A, x, x)
-        |
         |def trans (p: Eq($A, $x, $y))(q: Eq(A, y, $z)): Eq(A, x, z) := {
         |  match p returning Eq(A, x, z) with
         |  | Eq.refl w => q
@@ -41,24 +38,24 @@ class EqualityCommTests extends munit.FunSuite {
         |
         |def symm (p: Eq($A, $x, $y)): Eq(A, y, x) := {
         |  match p returning Eq(A, y, x) with
-        |  | Eq.refl w => Eq.refl(A, w)
+        |  | Eq.refl w => Eq.refl(w)
         |}
         |
         |def congSucc(p: Eq(Nat, $a, $b)): Eq(Nat, Nat.succ(a), Nat.succ(b)) := {
         |  match p returning Eq(Nat, Nat.succ(a), Nat.succ(b)) with
-        |  | Eq.refl x => Eq.refl(Nat, Nat.succ(x))
+        |  | Eq.refl x => Eq.refl(Nat.succ(x))
         |}
         |
         |def succAdd (a: Nat)(b: Nat): Eq(Nat, add(Nat.succ(a), b), Nat.succ(add(a, b))) := {
         |  match b returning Eq(Nat, add(Nat.succ(a), b), Nat.succ(add(a, b))) with
-        |  | Nat.zero => Eq.refl(Nat, Nat.succ(a))
+        |  | Nat.zero => Eq.refl(Nat.succ(a))
         |  | Nat.succ x => succAdd(Nat.succ(a), x)
         |}
         |
         |// add 0 b = b
         |def zeroAdd (b: Nat): Eq(Nat, add(Nat.zero, b), b) := {
         |  match b returning Eq(Nat, add(Nat.zero, b), b) with
-        |  | Nat.zero => Eq.refl(Nat, Nat.zero)
+        |  | Nat.zero => Eq.refl(Nat.zero)
         |  | Nat.succ x => {
         |    let ih := zeroAdd(x)
         |    let step1 := succAdd(Nat.zero, x)

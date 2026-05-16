@@ -117,17 +117,20 @@ override a global one without creating ambiguity, and overlapping instances are 
 ambiguity detection.
 
 ```raccoon
+struct DecEq (A: Type) : Type
+ | mk {A: Type} (result: Bool) : DecEq(A)
+
 inductive List (A: Type) : Type
  | nil : List(A)
 
-def instance natEq : Eq(Nat) := Eq.mk(Nat, Bool.true)
+def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
 
-def instance listEq [ea: Eq($A)]: Eq(List(A)) := Eq.mk(List(A), Bool.true)
+def instance listEq [ea: DecEq($A)]: DecEq(List(A)) := DecEq.mk(List(A), Bool.true)
 
-inline def useListEq [eqA: Eq(List(Nat))]: Eq(List(Nat)) := eqA
+inline def useListEq [eqA: DecEq(List(Nat))]: DecEq(List(Nat)) := eqA
 
 {
-  useListEq(derive[Eq(List(Nat))])
+  useListEq(derive[DecEq(List(Nat))])
 }
 ```
 
@@ -239,12 +242,9 @@ stable def add (a: Nat)(b: Nat): Nat := {
 
 inline def nat_add_normalizer : Normalizer := add_normalizer(Nat, Nat.zero, add)
 
-inductive Eq (A: Type)(x: A)(y: A) : Sort(Level.one)
- | refl {A: Type} (x: A) : Eq(A, x, x)
-
 inline def addComm (a: Nat)(b: Nat): Eq(Nat, add(a, b), add(b, a)) := {
   use nat_add_normalizer
-  Eq.refl(Nat, add(a, b))
+  Eq.refl(add(a, b))
 }
 ```
 
@@ -287,6 +287,12 @@ sbt "run path/to/program.rac"
 
 The CLI reads a `.rac` file, loads its imports, elaborates it, typechecks it, evaluates it, and pretty-prints the
 resulting value when the program body produces one.
+
+`Init/Prelude.rac` is bundled and loaded automatically before user code. An explicit `import Init.Prelude` is accepted
+as a no-op for compatibility with source files that name their prelude dependency.
+
+Prelude declarations can use `:= builtin` when their canonical name has a native implementation in the runtime builtin
+registry.
 
 ```bash
 sbt 'run --root examples examples/nats.rac'

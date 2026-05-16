@@ -176,10 +176,7 @@ class PropTests extends munit.FunSuite {
         | | left : Amb
         | | right : Amb
         |
-        |inductive Eq (A: Sort($u))(x: A)(y: A) : Prop
-        | | refl {A: Sort($u)} (x: A) : Eq(A, x, x)
-        |
-        |inline def sameProof (p: Amb): Eq(Amb, p, Amb.right) := Eq.refl(Amb, p)
+        |inline def sameProof (p: Amb): Eq(Amb, p, Amb.right) := Eq.refl(p)
         |""".stripMargin
 
     typecheckDecls(p)
@@ -302,16 +299,13 @@ class PropTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Eq (A: Type)(x: A)(y: A) : Prop
-        | | refl {A: Type} (x: A) : Eq(A, x, x)
-        |
         |def eqToNat (n: Nat)(p: Eq(Nat, n, Nat.zero)): Nat := {
         |  match p returning Nat with
         |  | Eq.refl x => Nat.zero
         |}
         |
         |{
-        |  eqToNat(Nat.zero, Eq.refl(Nat, Nat.zero))
+        |  eqToNat(Nat.zero, Eq.refl(Nat.zero))
         |}
         |""".stripMargin
 
@@ -325,9 +319,6 @@ class PropTests extends munit.FunSuite {
         |inductive Nat : Type
         | | zero : Nat
         | | succ (_: Nat) : Nat
-        |
-        |inductive Eq (A: Type)(x: A)(y: A) : Prop
-        | | refl {A: Type} (x: A) : Eq(A, x, x)
         |
         |def choose (n: Nat)(m: Nat)(p: Eq(Nat, n, m)): Type := {
         |  match p returning Type with
@@ -507,12 +498,9 @@ class PropTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Eq (A: Type)(x: A)(y: A) : Prop
-        | | refl {A: Type} (x: A) : Eq(A, x, x)
-        |
         |def symm (A: Type)(x: A)(y: A)(p: Eq(A, x, y)): Eq(A, y, x) := {
         |  match p returning Eq(A, y, x) with
-        |  | Eq.refl z => Eq.refl(A, z)
+        |  | Eq.refl z => Eq.refl(z)
         |}
         |""".stripMargin
 

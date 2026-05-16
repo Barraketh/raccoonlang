@@ -37,6 +37,7 @@ object LanguageParser {
     "namespace",
     "open",
     "import",
+    "builtin",
     "in"
   )
 
@@ -263,9 +264,13 @@ object LanguageParser {
   private def unfoldStrategy: Parser[UnfoldStrategy] =
     kw("inline").!.map(_ => UnfoldStrategy.Inline) | kw("stable").!.map(_ => UnfoldStrategy.Stable)
 
+  private def constBody(implicit sourceId: Option[SourceId]): Parser[ConstBody] =
+    kwTight("builtin").!.flatSpanned(sourceId).map { case (_, span) => ConstBody.Builtin(span) } |
+      term.map(ConstBody.TermBody.apply)
+
   // inline? def instance? foo (a: A)[b: B](c : C): D := body
   private def constP(implicit sourceId: Option[SourceId]): Parser[ConstDecl] =
-    (unfoldStrategy.? ~ kw("def") ~/ kw("instance").!.? ~ declHeader ~ (sym(":=") ~/ term))
+    (unfoldStrategy.? ~ kw("def") ~/ kw("instance").!.? ~ declHeader ~ (sym(":=") ~/ constBody))
       .flatSpanned(sourceId)
       .map { case (unfoldStrategy, instanceOpt, header, body, span) =>
         ConstDecl(unfoldStrategy, header, body, span, isInstance = instanceOpt.isDefined)

@@ -21,6 +21,18 @@ object SurfaceAst {
 
   sealed trait TopLevelTP extends TypePattern
 
+  sealed trait ConstBody {
+    def span: Span
+  }
+
+  object ConstBody {
+    final case class TermBody(term: Term) extends ConstBody {
+      override def span: Span = term.span
+    }
+
+    final case class Builtin(span: Span) extends ConstBody
+  }
+
   object TypePattern {
     final case class Type(term: TypeTerm) extends TopLevelTP {
       override def span: Span = term.span
@@ -135,7 +147,7 @@ object SurfaceAst {
       final case class ConstDecl(
           unfoldStrategy: Option[UnfoldStrategy],
           header: DeclHeader,
-          body: Term,
+          body: ConstBody,
           span: Span,
           isInstance: Boolean = false
       ) extends Decl

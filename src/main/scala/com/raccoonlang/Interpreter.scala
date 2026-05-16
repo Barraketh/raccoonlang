@@ -319,28 +319,38 @@ object Interpreter {
     implicit val normalizers = NormalizerMap.empty
 
     decl match {
-      case Decl.ConstDecl(unfoldStrategy, name, ty, body, _, isInstance) =>
+      case Decl.ConstDecl(unfoldStrategy, name, ty, body, span, isInstance) =>
         val checkedTy = TypeChecker.getCheckedType(ty, worlds.checkEnv)
         val tyV = checkedTy.value
-        val declConst = VConst(name, Symbol, tyV)
+        val runtimeTyV = Interpreter.evalTypeTerm(checkedTy.term, worlds.runEnv)
 
-        val checkedBody = TypeChecker.check(body, worlds.checkEnv)
-        val bodyV0 = checkedBody.value
+        val (checkValue, runtimeValue) = body match {
+          case CoreAst.ConstBody.Builtin(_) =>
+            if (unfoldStrategy.nonEmpty) throw WTF("Builtin declarations cannot be inline or stable", Some(span))
+            if (isInstance) throw WTF("Builtin declarations cannot be instances", Some(span))
+            (Builtins.instantiate(name, tyV, span), Builtins.instantiate(name, runtimeTyV, span))
 
-        TypeChecker.checkType(bodyV0, tyV)
-        val bodyV = Value.ascribe(bodyV0, tyV)
+          case CoreAst.ConstBody.TermBody(term) =>
+            val declConst = VConst(name, Symbol, tyV)
+            val checkedBody = TypeChecker.check(term, worlds.checkEnv)
+            val bodyV0 = checkedBody.value
 
-        val checkValue: Value = unfoldStrategy match {
-          case Some(_) => bodyV
-          case None    => declConst
+            TypeChecker.checkType(bodyV0, tyV)
+            val bodyV = Value.ascribe(bodyV0, tyV)
+
+            val checkValue: Value = unfoldStrategy match {
+              case Some(_) => bodyV
+              case None    => declConst
+            }
+            val runtimeBodyV = Value.ascribe(Interpreter.evalTerm(checkedBody.term, worlds.runEnv), runtimeTyV)
+            (checkValue, runtimeBodyV)
         }
+
         val checkInstanceKey = if (isInstance) Some(InstanceSearch.instanceKey(name, checkValue, eqStore)) else None
         val nextCheckEnv = worlds.checkEnv.putGlobal(name, checkValue, checkInstanceKey)
 
-        val runtimeTyV = Interpreter.evalTypeTerm(checkedTy.term, worlds.runEnv)
-        val runtimeBodyV = Value.ascribe(Interpreter.evalTerm(checkedBody.term, worlds.runEnv), runtimeTyV)
-        val runInstanceKey = if (isInstance) Some(InstanceSearch.instanceKey(name, runtimeBodyV, eqStore)) else None
-        val nextRunEnv = worlds.runEnv.putGlobal(name, runtimeBodyV, runInstanceKey)
+        val runInstanceKey = if (isInstance) Some(InstanceSearch.instanceKey(name, runtimeValue, eqStore)) else None
+        val nextRunEnv = worlds.runEnv.putGlobal(name, runtimeValue, runInstanceKey)
 
         Worlds(nextCheckEnv, nextRunEnv)
 
@@ -365,6 +375,15 @@ object Interpreter {
   }
 
   def run(p: Program): Option[Value] = {
+    val worlds =
+      p.decls.foldLeft(initialWorlds) { case (curWorlds, decl) => evalDecl(decl, curWorlds) }
+    p.body.map { b =>
+      val checked = TypeChecker.check(b, worlds.checkEnv)(EqStore.empty, NormalizerMap.empty)
+      Interpreter.evalTerm(checked.term, worlds.runEnv)(EqStore.empty)
+    }
+  }
+
+  private[raccoonlang] lazy val initialWorlds: Worlds = {
     val baseEnv =
       TypecheckEnv.empty
         .putGlobal("Type", TypeTpe)
@@ -374,81 +393,8 @@ object Interpreter {
         .putGlobal("Level.one", Level.one)
         .putGlobal("Prop", PropTpe)
 
-    val builtinFuncs = List[(String, CoreAst.TypeTerm, (Vector[Value], EqStore) => Value)](
-      (
-        "add_normalizer",
-        parseHeader("(A: Type)(zero: A)(add: A -> A -> A): Normalizer"),
-        (args, _) => Normalizers.add_normalizer(args)
-      ),
-      (
-        "Level.succ",
-        parseHeader("(l: Level): Level"),
-        (args, eqStore) => Value.Level.succ(getLevel(args.head)(eqStore))
-      ),
-      (
-        "Level.max",
-        parseHeader("(l1: Level)(l2: Level): Level"),
-        (args, eqStore) => Value.Level.max(args.map(l => getLevel(l)(eqStore)))
-      )
-    )
-
-    val env2 = builtinFuncs.foldLeft(baseEnv) { case (curEnv, (name, tpe, lam)) =>
-      val tpeV = TypeChecker.evalTypeTerm(tpe, curEnv)(EqStore.empty, NormalizerMap.empty)
-      tpeV match {
-        case pi: VPi =>
-          curEnv.putGlobal(name, VLam(pi, ValueId.Const(name), isStable = true, LamBody.Native(lam)))
-        case _ => curEnv
-      }
-    }
-
-    val envWithSort = env2.putGlobal(
-      "Sort",
-      VLam(
-        {
-          val lRef = CoreAst.LocalRef(0, "l")
-          val levelRef = ETerm.GlobalRef("Level", Span(0, 0))
-          val levelPattern = ElabAst.TypePattern.Type(levelRef)
-          VPi(
-            env2.closeForEval(),
-            Vector(
-              VBinder(
-                lRef,
-                ElabAst.BinderType.TypePattern(levelPattern, levelPattern.span),
-                levelRef,
-                Vector.empty
-              )
-            ),
-            (env, eqStore) => {
-              val l = getLevel(env(lRef))(eqStore)
-              VSort(Level.succ(l))
-            },
-            DepSet.empty,
-            ValueId.Const("Sort"),
-            TypeTpe
-          )
-        },
-        ValueId.Const("Sort"),
-        true,
-        LamBody.Native((args, eqStore) => {
-          val l = getLevel(args(0))(eqStore)
-          VSort(l)
-        })
-      )
-    )
-
-    val nextEnv = Quotients.install(envWithSort)
-
-    val worlds = p.decls.foldLeft(Worlds(nextEnv, nextEnv)) { case (curWorlds, decl) => evalDecl(decl, curWorlds) }
-    p.body.map { b =>
-      val checked = TypeChecker.check(b, worlds.checkEnv)(EqStore.empty, NormalizerMap.empty)
-      Interpreter.evalTerm(checked.term, worlds.runEnv)(EqStore.empty)
-    }
-  }
-
-  private def parseHeader(s: String): CoreAst.TypeTerm = {
-    LanguageParser.parseFuncHeader(s) match {
-      case Success(header, _, _) => Elaborator.getType(header)
-      case err: Failure          => throw new RuntimeException(err.message)
+    Prelude.core.decls.foldLeft(Worlds(baseEnv, baseEnv)) { case (curWorlds, decl) =>
+      evalDecl(decl, curWorlds)
     }
   }
 }

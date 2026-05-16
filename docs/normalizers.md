@@ -40,12 +40,9 @@ stable def add (a: Nat)(b: Nat): Nat := {
 
 inline def nat_add_normalizer : Normalizer := add_normalizer(Nat, Nat.zero, add)
 
-inductive Eq (A: Type) indices (x: A) (y: A) : Sort(Level.one)
- | refl (x: A) : Eq(A, x, x)
-
 inline def addComm (a: Nat)(b: Nat): Eq(Nat, add(a, b), add(b, a)) := {
   use nat_add_normalizer
-  Eq.refl(Nat, add(a, b))
+  Eq.refl(add(a, b))
 }
 ```
 
@@ -132,7 +129,7 @@ That means the feature is part of the trusted equality/conversion path, not mere
 
 ## The builtin additive normalizer
 
-The only builtin normalizer today is `add_normalizer`, introduced in the initial environment as:
+The only builtin normalizer today is `add_normalizer`, declared in `Init/Prelude.rac` as:
 
 ```raccoon
 (A: Type)(zero: A)(add: A -> A -> A): Normalizer

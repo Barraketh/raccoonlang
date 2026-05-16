@@ -39,9 +39,6 @@ class QuotientTests extends munit.FunSuite {
       | | zero : Nat
       | | succ (_: Nat) : Nat
       |
-      |inductive Eq (A: Sort($u))(x: A)(y: A) : Prop
-      | | refl {A: Sort($u)} (x: A) : Eq(A, x, x)
-      |
       |inline def Rel (a: Nat)(b: Nat): Prop := Eq(Nat, a, b)
       |""".stripMargin
 
@@ -64,12 +61,17 @@ class QuotientTests extends munit.FunSuite {
     }
   }
 
-  test("Quot.liftCore reduces on Quot.mk") {
+  test("Quot.lift reduces on Quot.mk") {
     val res = runProgram(
       natPrelude +
         """
+          |inline def sound (a: Nat)(b: Nat)(h: Rel(a, b)): Eq(Nat, Nat.succ(a), Nat.succ(b)) := {
+          |  match h returning Eq(Nat, Nat.succ(a), Nat.succ(b)) with
+          |  | Eq.refl x => Eq.refl(Nat.succ(x))
+          |}
+          |
           |{
-          |  Quot.liftCore(Nat, Rel, Nat, fun (x: Nat): Nat => Nat.succ(x), Quot.mk(Nat, Rel, Nat.zero))
+          |  Quot.lift(Nat, Rel, Nat, fun (x: Nat): Nat => Nat.succ(x), sound, Quot.mk(Nat, Rel, Nat.zero))
           |}
           |""".stripMargin
     )
@@ -77,7 +79,7 @@ class QuotientTests extends munit.FunSuite {
     assertEquals(toShape(res), natSucc(natZero))
   }
 
-  test("Quot.indCore reduces on Quot.mk for Prop motives") {
+  test("Quot.ind reduces on Quot.mk for Prop motives") {
     val res = runProgram(
       natPrelude +
         """
@@ -87,7 +89,7 @@ class QuotientTests extends munit.FunSuite {
           |inline def motive (q: Quot(Nat, Rel)): Prop := True
           |
           |{
-          |  Quot.indCore(Nat, Rel, motive, fun (a: Nat): motive(Quot.mk(Nat, Rel, a)) => True.intro, Quot.mk(Nat, Rel, Nat.zero))
+          |  Quot.ind(Nat, Rel, motive, fun (a: Nat): motive(Quot.mk(Nat, Rel, a)) => True.intro, Quot.mk(Nat, Rel, Nat.zero))
           |}
           |""".stripMargin
     )
@@ -100,17 +102,55 @@ class QuotientTests extends munit.FunSuite {
       natPrelude +
         """
           |namespace Quot {
-          |  inline def lift (q: Quot($A, $r))(B: Sort($v))(f: A -> B)(sound: (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b))): B := Quot.liftCore(A, r, B, f, q)
+          |  inline def liftOn (q: Quot($A, $r))(B: Sort($v))(f: A -> B)(sound: (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b))): B := Quot.lift(A, r, B, f, sound, q)
           |}
           |
           |inline def idSound (a: Nat)(b: Nat)(h: Rel(a, b)): Eq(Nat, a, b) := h
           |
           |{
-          |  Quot.lift(Quot.mk(Nat, Rel, Nat.zero), Nat, fun (x: Nat): Nat => x, idSound)
+          |  Quot.liftOn(Quot.mk(Nat, Rel, Nat.zero), Nat, fun (x: Nat): Nat => x, idSound)
           |}
           |""".stripMargin
     )
 
     assertEquals(toShape(res), natZero)
+  }
+
+  test("Quot.sound proves related representatives equal in the quotient") {
+    val res = runProgram(
+      natPrelude +
+        """
+          |{
+          |  Quot.sound(Nat, Rel, Nat.zero, Nat.zero, Eq.refl(Nat.zero))
+          |}
+          |""".stripMargin
+    )
+
+    res.tpe match {
+      case Value.VApp(Value.VConst("Eq", _, _), Vector(quotTy, left, right), _) =>
+        assert(PrettyPrinter.print(quotTy).startsWith("Quot(Nat, "))
+        assertEquals(toShape(left), SApp(SConst("Quot.mk"), List(natZero)))
+        assertEquals(toShape(right), SApp(SConst("Quot.mk"), List(natZero)))
+      case other =>
+        fail(s"Expected quotient equality proof, got $other")
+    }
+  }
+
+  test("unknown builtin declaration is rejected") {
+    val src =
+      """
+        |def bogus : Type := builtin
+        |""".stripMargin
+
+    val err = intercept[WTF] {
+      LanguageParser.parseProgram(src) match {
+        case Success(value, _, _) =>
+          Interpreter.run(Elaborator.elab(value))
+        case parseErr: Failure =>
+          fail(s"Failed to parse: $parseErr, ${src.substring(parseErr.curIdx)}")
+      }
+    }
+
+    assertEquals(err.msg, "Unknown builtin bogus")
   }
 }

@@ -56,6 +56,26 @@ class ModuleLoaderTests extends munit.FunSuite {
     assertEquals(ctorName(run(entry)), "Lib.Nat.zero")
   }
 
+  test("explicit Init.Prelude import is harmless because the prelude is automatic") {
+    val root = Files.createTempDirectory("raccoon-modules")
+    val entry = write(
+      root,
+      "Main.rac",
+      """
+        |import Init.Prelude
+        |
+        |inductive Nat : Type
+        | | zero : Nat
+        |
+        |{
+        |  Eq.refl(Nat.zero)
+        |}
+        |""".stripMargin
+    )
+
+    assertEquals(ctorName(run(entry)), "Eq.refl")
+  }
+
   test("loads transitive imports before importers") {
     val root = Files.createTempDirectory("raccoon-modules")
     write(
@@ -271,9 +291,6 @@ class ModuleLoaderTests extends munit.FunSuite {
         |   | zero : Nat
         |   | succ (_: Nat) : Nat
         |
-        |  inductive Eq (A: Type)(x: A)(y: A) : Sort(Level.one)
-        |   | refl {A: Type} (x: A) : Eq(A, x, x)
-        |
         |  struct FunBox : Type
         |   | mk (f: (x: Nat) -> Nat) : FunBox
         |}
@@ -316,7 +333,7 @@ class ModuleLoaderTests extends munit.FunSuite {
         |open Common
         |
         |def bad : Eq((x: Nat) -> Nat, A.make.f, B.make.f) := {
-        |  Eq.refl((x: Nat) -> Nat, A.make.f)
+        |  Eq.refl(A.make.f)
         |}
         |""".stripMargin
     )

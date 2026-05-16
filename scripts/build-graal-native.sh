@@ -70,6 +70,7 @@ OUTPUT_PATH="$OUTPUT_DIR/$OUTPUT_NAME"
 echo "Building native image at $OUTPUT_PATH"
 JAVA_HOME="$GRAAL_HOME" "$NATIVE_IMAGE_BIN" \
   --no-fallback \
+  -H:IncludeResources='Init/Prelude\.rac' \
   -o "$OUTPUT_PATH" \
   -cp "$CLASSPATH" \
   "$@" \

@@ -1,0 +1,24 @@
+def Sort (l: Level): Type := builtin
+
+namespace Level {
+  def succ (l: Level): Level := builtin
+
+  def max (l1: Level)(l2: Level): Level := builtin
+}
+
+def add_normalizer (A: Type)(zero: A)(add: A -> A -> A): Normalizer := builtin
+
+inductive Eq (A: Sort($u))(x: A)(y: A) : Prop
+ | refl (x: $A in Sort($u)) : Eq(A, x, x)
+
+axiom Quot (A: Sort($u))(r: A -> A -> Prop): Sort(u)
+
+namespace Quot {
+  def mk (A: Sort($u))(r: A -> A -> Prop)(a: A): Quot(A, r) := builtin
+
+  axiom sound (A: Sort($u))(r: A -> A -> Prop)(a: A)(b: A)(h: r(a, b)): Eq(Quot(A, r), Quot.mk(A, r, a), Quot.mk(A, r, b))
+
+  def lift (A: Sort($u))(r: A -> A -> Prop)(B: Sort($v))(f: A -> B)(sound: (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b)))(q: Quot(A, r)): B := builtin
+
+  def ind (A: Sort($u))(r: A -> A -> Prop)(motive: (q: Quot(A, r)) -> Prop)(mk: (a: A) -> motive(Quot.mk(A, r, a)))(q: Quot(A, r)): motive(q) := builtin
+}

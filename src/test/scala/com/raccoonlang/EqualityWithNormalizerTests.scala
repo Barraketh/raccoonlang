@@ -33,29 +33,26 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
         |
         |inline def nat_add_normalizer : Normalizer := add_normalizer(Nat, Nat.zero, add)
         |
-        |inductive Eq (A: Type)(x: A)(y: A) : Sort(Level.one)
-        | | refl {A: Type} (x: A) : Eq(A, x, x)
-        |
         |// Using the additive normalizer over Nat, these equalities become definitional
         |
         |inline def addZeroRight (a: Nat): Eq(Nat, add(a, Nat.zero), a) := {
         |  use nat_add_normalizer
-        |  Eq.refl(Nat, add(a, Nat.zero))
+        |  Eq.refl(add(a, Nat.zero))
         |}
         |
         |inline def addZeroLeft (a: Nat): Eq(Nat, add(Nat.zero, a), a) := {
         |  use nat_add_normalizer
-        |  Eq.refl(Nat, add(Nat.zero, a))
+        |  Eq.refl(add(Nat.zero, a))
         |}
         |
         |inline def addComm (a: Nat)(b: Nat): Eq(Nat, add(a, b), add(b, a)) := {
         |  use nat_add_normalizer
-        |  Eq.refl(Nat, add(a, b))
+        |  Eq.refl(add(a, b))
         |}
         |
         |inline def addAssoc (x: Nat)(y: Nat)(z: Nat): Eq(Nat, add(x, add(y, z)), add(add(x, y), z)) := {
         |  use nat_add_normalizer
-        |  Eq.refl(Nat, add(x, add(y, z)))
+        |  Eq.refl(add(x, add(y, z)))
         |}
         |
         |""".stripMargin
@@ -76,10 +73,7 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
         |  | Nat.succ x => add(Nat.succ(a), x)
         |}
         |
-        |inductive Eq (A: Type)(x: A)(y: A) : Sort(Level.one)
-        | | refl {A: Type} (x: A) : Eq(A, x, x)
-        |
-        |inline def addCommNoNorm (a: Nat)(b: Nat): Eq(Nat, add(a, b), add(b, a)) := Eq.refl(Nat, add(a, b))
+        |inline def addCommNoNorm (a: Nat)(b: Nat): Eq(Nat, add(a, b), add(b, a)) := Eq.refl(add(a, b))
         |
         |""".stripMargin
 
@@ -104,10 +98,7 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
         |  | Nat.succ x => add(Nat.succ(a), x)
         |}
         |
-        |inductive Eq (A: Type)(x: A)(y: A) : Sort(Level.one)
-        | | refl {A: Type} (x: A) : Eq(A, x, x)
-        |
-        |inline def addZeroLeftNoNorm (a: Nat): Eq(Nat, add(Nat.zero, a), a) := Eq.refl(Nat, add(Nat.zero, a))
+        |inline def addZeroLeftNoNorm (a: Nat): Eq(Nat, add(Nat.zero, a), a) := Eq.refl(add(Nat.zero, a))
         |
         |""".stripMargin
 

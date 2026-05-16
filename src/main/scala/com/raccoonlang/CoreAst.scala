@@ -32,6 +32,18 @@ object CoreAst {
 
   sealed trait TopLevelTP extends TypePattern
 
+  sealed trait ConstBody {
+    def span: Span
+  }
+
+  object ConstBody {
+    final case class TermBody(term: Term) extends ConstBody {
+      override def span: Span = term.span
+    }
+
+    final case class Builtin(span: Span) extends ConstBody
+  }
+
   // Terms that can appear in type expressions
   sealed trait TypeTerm extends Term
 
@@ -169,7 +181,7 @@ object CoreAst {
         unfoldStrategy: Option[UnfoldStrategy],
         name: String,
         ty: TypeTerm,
-        body: Term,
+        body: ConstBody,
         span: Span,
         isInstance: Boolean = false
     ) extends Decl

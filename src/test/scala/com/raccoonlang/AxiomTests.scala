@@ -61,13 +61,13 @@ class AxiomTests extends munit.FunSuite {
     val res = runProgram(
       natPrelude +
         """
-          |struct Eq (A: Type) : Type
-          | | mk {A: Type} (ok: Nat) : Eq(A)
+          |struct DecEq (A: Type) : Type
+          | | mk {A: Type} (ok: Nat) : DecEq(A)
           |
-          |axiom instance natEq : Eq(Nat)
+          |axiom instance natEq : DecEq(Nat)
           |
           |{
-          |  derive[Eq(Nat)]
+          |  derive[DecEq(Nat)]
           |}
           |""".stripMargin
     )

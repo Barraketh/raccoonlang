@@ -226,15 +226,7 @@ object Elaborator {
         Vector("Level"),
         Vector("Level", "zero"),
         Vector("Level", "one"),
-        Vector("Prop"),
-        Vector("Sort"),
-        Vector("Quot"),
-        Vector("Quot", "mk"),
-        Vector("Quot", "liftCore"),
-        Vector("Quot", "indCore"),
-        Vector("add_normalizer"),
-        Vector("Level", "succ"),
-        Vector("Level", "max")
+        Vector("Prop")
       )
 
     private val builtinRoot: NameNode =
@@ -400,7 +392,8 @@ object Elaborator {
     HeaderResult(ty, bodyEnv)
   }
 
-  def getType(header: SA.FuncHeader): CA.TypeTerm = elabHeader(header, ResolveEnv.empty).ty
+  def getType(header: SA.FuncHeader): CA.TypeTerm =
+    elabHeader(header, ResolveEnv.empty).ty
 
   private def elabLam(
       pi: CA.Term.Pi,
@@ -504,19 +497,25 @@ object Elaborator {
         val nameText = globalName(name)
         val header = elabHeader(c.header.funcHeader, env)
         val envWithSelf = env.addGlobal(name)
-        val bodyHeaderEnv = header.bodyEnv.copy(root = envWithSelf.root)
-        val body = header.ty match {
-          case pi: CA.Term.Pi =>
-            elabLam(
-              pi,
-              bodyHeaderEnv,
-              c.body,
-              Some(nameText),
-              c.unfoldStrategy.contains(UnfoldStrategy.Stable),
-              c.span,
-              envWithSelf
-            )
-          case _ => elabTerm(c.body, envWithSelf)
+        val body = c.body match {
+          case SA.ConstBody.Builtin(sp) => CA.ConstBody.Builtin(sp)
+          case SA.ConstBody.TermBody(term) =>
+            val bodyHeaderEnv = header.bodyEnv.copy(root = envWithSelf.root)
+            header.ty match {
+              case pi: CA.Term.Pi =>
+                CA.ConstBody.TermBody(
+                  elabLam(
+                    pi,
+                    bodyHeaderEnv,
+                    term,
+                    Some(nameText),
+                    c.unfoldStrategy.contains(UnfoldStrategy.Stable),
+                    c.span,
+                    envWithSelf
+                  )
+                )
+              case _ => CA.ConstBody.TermBody(elabTerm(term, envWithSelf))
+            }
         }
         (
           CA.Decl.ConstDecl(c.unfoldStrategy, nameText, header.ty, body, c.span, c.isInstance),
@@ -586,14 +585,26 @@ object Elaborator {
     (decls.result(), curEnv)
   }
 
-  def elab(surface: SurfaceAst.Command.Decl): CoreAst.Decl = elabDecl(surface, ResolveEnv.empty)._1
+  private lazy val preludeEnv: ResolveEnv = {
+    val (_, env) = elabCommands(Prelude.surface.decls, ResolveEnv.empty)
+    ResolveEnv.empty.copy(root = env.root)
+  }
 
-  def elab(p: SA.Program): CA.Program = {
+  def elab(surface: SurfaceAst.Command.Decl): CoreAst.Decl =
+    elabDecl(surface, preludeEnv)._1
+
+  private[raccoonlang] def elabWithoutPrelude(p: SA.Program): CA.Program =
+    elabProgram(p, ResolveEnv.empty)
+
+  def elab(p: SA.Program): CA.Program =
+    elabProgram(p, preludeEnv)
+
+  private def elabProgram(p: SA.Program, startEnv: ResolveEnv): CA.Program = {
     p.imports.headOption.foreach { imp =>
       throw UnsupportedImport(imp.path.mkString("."), Some(imp.span))
     }
 
-    val (decls, env) = elabCommands(p.decls, ResolveEnv.empty)
+    val (decls, env) = elabCommands(p.decls, startEnv)
     CA.Program(decls, p.body.map(elabTerm(_, env)))
   }
 }

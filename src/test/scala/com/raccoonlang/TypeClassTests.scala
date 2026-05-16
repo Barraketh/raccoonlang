@@ -1,87 +1,6 @@
 package com.raccoonlang
 
 class TypeClassTests extends munit.FunSuite {
-  private def parseHeaderType(src: String): CoreAst.TypeTerm =
-    LanguageParser.parseFuncHeader(src) match {
-      case Success(header, _, _) => Elaborator.getType(header)
-      case err: Failure          => fail(s"Failed to parse header: $err, ${src.substring(err.curIdx)}")
-    }
-
-  private def initialWorlds: Interpreter.Worlds = {
-    val baseEnv =
-      TypecheckEnv.empty
-        .putGlobal("Type", Value.TypeTpe)
-        .putGlobal("Normalizer", Value.NormalizerType)
-        .putGlobal("Level", Value.LevelTpe)
-        .putGlobal("Level.zero", Value.Level.zero)
-        .putGlobal("Level.one", Value.Level.one)
-        .putGlobal("Prop", Value.PropTpe)
-
-    val builtinFuncs = List[(String, CoreAst.TypeTerm, (Vector[Value], EqStore) => Value)](
-      (
-        "add_normalizer",
-        parseHeaderType("(A: Type)(zero: A)(add: A -> A -> A): Normalizer"),
-        (args, _) => Normalizers.add_normalizer(args)
-      ),
-      (
-        "Level.succ",
-        parseHeaderType("(l: Level): Level"),
-        (args, eqStore) => Value.Level.succ(Interpreter.getLevel(args.head)(eqStore))
-      ),
-      (
-        "Level.max",
-        parseHeaderType("(l1: Level)(l2: Level): Level"),
-        (args, eqStore) => Value.Level.max(args.map(l => Interpreter.getLevel(l)(eqStore)))
-      )
-    )
-
-    val env2 = builtinFuncs.foldLeft(baseEnv) { case (curEnv, (name, tpe, lam)) =>
-      val tpeV = TypeChecker.evalTypeTerm(tpe, curEnv)(EqStore.empty, NormalizerMap.empty)
-      tpeV match {
-        case pi: Value.VPi =>
-          curEnv.putGlobal(name, Value.VLam(pi, Value.ValueId.Const(name), isStable = true, Value.LamBody.Native(lam)))
-        case _ => curEnv
-      }
-    }
-
-    val nextEnv = env2.putGlobal(
-      "Sort",
-      Value.VLam(
-        {
-          val lRef = CoreAst.LocalRef(0, "l")
-          val levelRef = ElabAst.Term.GlobalRef("Level", Span(0, 0))
-          val levelPattern = ElabAst.TypePattern.Type(levelRef)
-          Value.VPi(
-            env2.closeForEval(),
-            Vector(
-              Value.VBinder(
-                lRef,
-                ElabAst.BinderType.TypePattern(levelPattern, levelPattern.span),
-                levelRef,
-                Vector.empty
-              )
-            ),
-            (env, eqStore) => {
-              val l = Interpreter.getLevel(env(lRef))(eqStore)
-              Value.VSort(Value.Level.succ(l))
-            },
-            DepSet.empty,
-            Value.ValueId.Const("Sort"),
-            Value.TypeTpe
-          )
-        },
-        Value.ValueId.Const("Sort"),
-        true,
-        Value.LamBody.Native((args, eqStore) => {
-          val l = Interpreter.getLevel(args(0))(eqStore)
-          Value.VSort(l)
-        })
-      )
-    )
-
-    Interpreter.Worlds(nextEnv, nextEnv)
-  }
-
   private def parseProgram(src: String): CoreAst.Program =
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) => Elaborator.elab(value)
@@ -95,7 +14,7 @@ class TypeClassTests extends munit.FunSuite {
     Interpreter.run(parseProgram(src))
 
   private def compileWorlds(src: String): Interpreter.Worlds =
-    parseProgram(src).decls.foldLeft(initialWorlds) { case (worlds, decl) =>
+    parseProgram(src).decls.foldLeft(Interpreter.initialWorlds) { case (worlds, decl) =>
       Interpreter.evalDecl(decl, worlds)
     }
 
@@ -123,8 +42,8 @@ class TypeClassTests extends munit.FunSuite {
       | | true : Bool
       | | false : Bool
       |
-      |struct Eq (A: Type) : Type
-      | | mk {A: Type} (ok: Bool) : Eq(A)
+      |struct DecEq (A: Type) : Type
+      | | mk {A: Type} (ok: Bool) : DecEq(A)
       |
       |""".stripMargin
 
@@ -132,16 +51,16 @@ class TypeClassTests extends munit.FunSuite {
     val worlds = compileWorlds(
       prelude +
         """
-          |def instance natEq : Eq(Nat) := Eq.mk(Nat, Bool.true)
+          |def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |""".stripMargin
     )
 
     val body = parseProgram(
       prelude +
         """
-          |def instance natEq : Eq(Nat) := Eq.mk(Nat, Bool.true)
+          |def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |
-          |derive[Eq(Nat)]
+          |derive[DecEq(Nat)]
           |""".stripMargin
     ).body.getOrElse(fail("Program has no body"))
     assert(body.isInstanceOf[CoreAst.Term.Derive])
@@ -160,36 +79,36 @@ class TypeClassTests extends munit.FunSuite {
     val p =
       prelude +
         """
-          |def instance natEq : Eq(Nat) := Eq.mk(Nat, Bool.true)
+          |def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |
-          |inline def useEq (A: Type)[eqA: Eq(A)]: Eq(A) := eqA
+          |inline def useEq (A: Type)[eqA: DecEq(A)]: DecEq(A) := eqA
           |
           |{
-          |  useEq(Nat, derive[Eq(Nat)])
+          |  useEq(Nat, derive[DecEq(Nat)])
           |}
           |""".stripMargin
 
-    assertEquals(ctorName(runProgram(p)), "Eq.mk")
+    assertEquals(ctorName(runProgram(p)), "DecEq.mk")
   }
 
   test("checked term carries resolved instance result so runtime evaluation does not search") {
     val worlds = compileWorlds(
       prelude +
         """
-          |def instance natEq : Eq(Nat) := Eq.mk(Nat, Bool.true)
+          |def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |
-          |inline def useEq (A: Type)[eqA: Eq(A)]: Eq(A) := eqA
+          |inline def useEq (A: Type)[eqA: DecEq(A)]: DecEq(A) := eqA
           |""".stripMargin
     )
 
     val body = parseProgram(
       prelude +
         """
-          |def instance natEq : Eq(Nat) := Eq.mk(Nat, Bool.true)
+          |def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |
-          |inline def useEq (A: Type)[eqA: Eq(A)]: Eq(A) := eqA
+          |inline def useEq (A: Type)[eqA: DecEq(A)]: DecEq(A) := eqA
           |
-          |{ useEq(Nat, derive[Eq(Nat)]) }
+          |{ useEq(Nat, derive[DecEq(Nat)]) }
           |""".stripMargin
     ).body.getOrElse(fail("Program has no body"))
     implicit val eqStore: EqStore = EqStore.empty
@@ -198,7 +117,7 @@ class TypeClassTests extends munit.FunSuite {
     val checked = TypeChecker.check(body, worlds.checkEnv)
     val runEnvWithoutSearch = worlds.runEnv.copy(globalInstances = InstanceRegistry.empty)
 
-    assertEquals(ctorName(Interpreter.evalTerm(checked.term, runEnvWithoutSearch)), "Eq.mk")
+    assertEquals(ctorName(Interpreter.evalTerm(checked.term, runEnvWithoutSearch)), "DecEq.mk")
   }
 
   test("parameterized instance recursively derives dependencies") {
@@ -208,16 +127,16 @@ class TypeClassTests extends munit.FunSuite {
           |inductive List (A: Type) : Type
           | | nil {A: Type} : List(A)
           |
-          |def instance natEq : Eq(Nat) := Eq.mk(Nat, Bool.true)
+          |def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |
-          |def instance listEq [ea: Eq($A)]: Eq(List(A)) := Eq.mk(List(A), Bool.true)
+          |def instance listEq [ea: DecEq($A)]: DecEq(List(A)) := DecEq.mk(List(A), Bool.true)
           |
           |{
-          |  derive[Eq(List(Nat))]
+          |  derive[DecEq(List(Nat))]
           |}
           |""".stripMargin
 
-    assertEquals(ctorName(runProgram(p)), "Eq.mk")
+    assertEquals(ctorName(runProgram(p)), "DecEq.mk")
   }
 
   test("universe-polymorphic parameterized instance derives at concrete Type") {
@@ -251,25 +170,25 @@ class TypeClassTests extends munit.FunSuite {
     val p =
       prelude +
         """
-          |def natEq : Eq(Nat) := Eq.mk(Nat, Bool.true)
+          |def natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |
-          |inline def useBinder (A: Type)[eqA: Eq(A)]: Eq(A) := derive[Eq(A)]
+          |inline def useBinder (A: Type)[eqA: DecEq(A)]: DecEq(A) := derive[DecEq(A)]
           |
           |{
           |  useBinder(Nat, natEq)
           |}
           |""".stripMargin
 
-    assertEquals(ctorName(runProgram(p)), "Eq.mk")
+    assertEquals(ctorName(runProgram(p)), "DecEq.mk")
   }
 
   test("plain explicit binder is not registered for derive inside its function body") {
     val p =
       prelude +
         """
-          |def natEq : Eq(Nat) := Eq.mk(Nat, Bool.true)
+          |def natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |
-          |inline def usePlainBinder (A: Type)(eqA: Eq(A)): Eq(A) := derive[Eq(A)]
+          |inline def usePlainBinder (A: Type)(eqA: DecEq(A)): DecEq(A) := derive[DecEq(A)]
           |
           |{
           |  usePlainBinder(Nat, natEq)
@@ -288,11 +207,11 @@ class TypeClassTests extends munit.FunSuite {
           |struct Box (A: Type) : Type
           | | mk {A: Type} : Box(A)
           |
-          |def instance natEq : Eq(Nat) := Eq.mk(Nat, Bool.true)
+          |def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |
           |{
           |  let A : Type := Nat
-          |  let instance boxInst : [eqA: Eq(A)] -> Box(A) := fun [eqA: Eq(A)]: Box(A) => Box.mk(A)
+          |  let instance boxInst : [eqA: DecEq(A)] -> Box(A) := fun [eqA: DecEq(A)]: Box(A) => Box.mk(A)
           |  derive[Box(A)]
           |}
           |""".stripMargin
@@ -305,12 +224,12 @@ class TypeClassTests extends munit.FunSuite {
       prelude +
         """
           |{
-          |  let instance localEq : Eq(Nat) := Eq.mk(Nat, Bool.true)
-          |  derive[Eq(Nat)]
+          |  let instance localEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
+          |  derive[DecEq(Nat)]
           |}
           |""".stripMargin
 
-    assertEquals(ctorName(runProgram(p)), "Eq.mk")
+    assertEquals(ctorName(runProgram(p)), "DecEq.mk")
   }
 
   test("ordinary let is not searchable") {
@@ -318,8 +237,8 @@ class TypeClassTests extends munit.FunSuite {
       prelude +
         """
           |{
-          |  let localEq : Eq(Nat) := Eq.mk(Nat, Bool.true)
-          |  derive[Eq(Nat)]
+          |  let localEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
+          |  derive[DecEq(Nat)]
           |}
           |""".stripMargin
 
@@ -332,11 +251,11 @@ class TypeClassTests extends munit.FunSuite {
     val p =
       prelude +
         """
-          |def instance globalEq : Eq(Nat) := Eq.mk(Nat, Bool.true)
+          |def instance globalEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |
           |{
-          |  let instance localEq : Eq(Nat) := Eq.mk(Nat, Bool.false)
-          |  derive[Eq(Nat)].ok
+          |  let instance localEq : DecEq(Nat) := DecEq.mk(Nat, Bool.false)
+          |  derive[DecEq(Nat)].ok
           |}
           |""".stripMargin
 
@@ -347,11 +266,11 @@ class TypeClassTests extends munit.FunSuite {
     val p =
       prelude +
         """
-          |def instance natEq : Eq(Nat) := Eq.mk(Nat, Bool.true)
+          |def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |
           |{
           |  let natEq : Bool := Bool.false
-          |  derive[Eq(Nat)].ok
+          |  derive[DecEq(Nat)].ok
           |}
           |""".stripMargin
 
@@ -363,9 +282,9 @@ class TypeClassTests extends munit.FunSuite {
       prelude +
         """
           |{
-          |  let instance localEq : Eq(Nat) := Eq.mk(Nat, Bool.true)
-          |  let instance localEq : Eq(Nat) := Eq.mk(Nat, Bool.false)
-          |  derive[Eq(Nat)].ok
+          |  let instance localEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
+          |  let instance localEq : DecEq(Nat) := DecEq.mk(Nat, Bool.false)
+          |  derive[DecEq(Nat)].ok
           |}
           |""".stripMargin
 
@@ -376,11 +295,11 @@ class TypeClassTests extends munit.FunSuite {
     val p =
       prelude +
         """
-          |def instance natEq1 : Eq(Nat) := Eq.mk(Nat, Bool.true)
-          |def instance natEq2 : Eq(Nat) := Eq.mk(Nat, Bool.false)
+          |def instance natEq1 : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
+          |def instance natEq2 : DecEq(Nat) := DecEq.mk(Nat, Bool.false)
           |
           |{
-          |  derive[Eq(Nat)].ok
+          |  derive[DecEq(Nat)].ok
           |}
           |""".stripMargin
 
@@ -436,10 +355,10 @@ class TypeClassTests extends munit.FunSuite {
           |struct WantEq : Type
           | | mk (ok: Bool) : WantEq
           |
-          |def instance natEq1 : Eq(Nat) := Eq.mk(Nat, Bool.true)
-          |def instance natEq2 : Eq(Nat) := Eq.mk(Nat, Bool.false)
+          |def instance natEq1 : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
+          |def instance natEq2 : DecEq(Nat) := DecEq.mk(Nat, Bool.false)
           |
-          |def instance badWant [eqA: Eq(Nat)]: WantEq := WantEq.mk(Bool.false)
+          |def instance badWant [eqA: DecEq(Nat)]: WantEq := WantEq.mk(Bool.false)
           |def instance goodWant : WantEq := WantEq.mk(Bool.true)
           |
           |{
@@ -457,9 +376,9 @@ class TypeClassTests extends munit.FunSuite {
           |struct WantEq : Type
           | | mk (ok: Bool) : WantEq
           |
-          |def instance loopEq [eqA: Eq(Nat)]: Eq(Nat) := eqA
+          |def instance loopEq [eqA: DecEq(Nat)]: DecEq(Nat) := eqA
           |
-          |def instance badWant [eqA: Eq(Nat)]: WantEq := WantEq.mk(Bool.false)
+          |def instance badWant [eqA: DecEq(Nat)]: WantEq := WantEq.mk(Bool.false)
           |def instance goodWant : WantEq := WantEq.mk(Bool.true)
           |
           |{
@@ -474,10 +393,10 @@ class TypeClassTests extends munit.FunSuite {
     val p =
       prelude +
         """
-          |def instance loopEq [eqA: Eq(Nat)]: Eq(Nat) := eqA
+          |def instance loopEq [eqA: DecEq(Nat)]: DecEq(Nat) := eqA
           |
           |{
-          |  derive[Eq(Nat)]
+          |  derive[DecEq(Nat)]
           |}
           |""".stripMargin
 
@@ -491,7 +410,7 @@ class TypeClassTests extends munit.FunSuite {
       prelude +
         """
           |{
-          |  derive[Eq(Nat)]
+          |  derive[DecEq(Nat)]
           |}
           |""".stripMargin
 
@@ -504,10 +423,10 @@ class TypeClassTests extends munit.FunSuite {
     val p =
       prelude +
         """
-          |def instance natEq : Eq(Nat) := Eq.mk(Nat, Bool.true)
+          |def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |
           |{
-          |  let bad : Bool := derive[Eq(Nat)]
+          |  let bad : Bool := derive[DecEq(Nat)]
           |  bad
           |}
           |""".stripMargin
@@ -521,7 +440,7 @@ class TypeClassTests extends munit.FunSuite {
     val p =
       prelude +
         """
-          |def bad (x: derive[Eq(Nat)]): Nat := Nat.zero
+          |def bad (x: derive[DecEq(Nat)]): Nat := Nat.zero
           |""".stripMargin
 
     assert(LanguageParser.parseProgram(p).isInstanceOf[Failure])
@@ -531,7 +450,7 @@ class TypeClassTests extends munit.FunSuite {
     val worlds = compileWorlds(
       prelude +
         """
-          |def instance natEq : Eq(Nat) := Eq.mk(Nat, Bool.true)
+          |def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |""".stripMargin
     )
     val env = worlds.runEnv
@@ -543,7 +462,7 @@ class TypeClassTests extends munit.FunSuite {
     implicit val eqStore: EqStore = EqStore.empty.allow(DepSet(a.id))
     implicit val normalizers: NormalizerMap = NormalizerMap.empty
 
-    val goal = applyValue(namedValue(envWithA, "Eq"), a)
+    val goal = applyValue(namedValue(envWithA, "DecEq"), a)
 
     intercept[NoInstanceFound] {
       InstanceSearch.solve(goal, envWithA)
