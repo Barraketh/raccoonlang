@@ -139,6 +139,39 @@ class TypeClassTests extends munit.FunSuite {
     assertEquals(ctorName(runProgram(p)), "DecEq.mk")
   }
 
+  test("ordinary candidate parameters are inferred from the target") {
+    val p =
+      prelude +
+        """
+          |def instance genericEq (A: Type): DecEq(A) := DecEq.mk(A, Bool.true)
+          |
+          |{
+          |  derive[DecEq(Nat)].ok
+          |}
+          |""".stripMargin
+
+    assertEquals(ctorName(runProgram(p)), "Bool.true")
+  }
+
+  test("instance candidate parameters are inferred from the target before recursive search") {
+    val p =
+      prelude +
+        """
+          |struct Wrap (A: Type)(eqA: DecEq(A)) : Type
+          | | mk {A: Type}{eqA: DecEq(A)} (ok: Bool) : Wrap(A, eqA)
+          |
+          |def natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
+          |
+          |def instance wrap [eqA: DecEq($A)]: Wrap(A, eqA) := Wrap.mk(A, eqA, Bool.true)
+          |
+          |{
+          |  derive[Wrap(Nat, natEq)].ok
+          |}
+          |""".stripMargin
+
+    assertEquals(ctorName(runProgram(p)), "Bool.true")
+  }
+
   test("universe-polymorphic parameterized instance derives at concrete Type") {
     val p =
       """

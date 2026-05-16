@@ -134,50 +134,49 @@ object InstanceSearch {
         val freshEnv = BinderOps.freshen(pi)
         val resultTy = pi.codomain(freshEnv, eqStore)
 
-        val candidateEq =
-          ValueEquivalence.unify(resultTy, goal, eqStore.allow(freshEnv.allDeps -- pi.env.allDeps))
+        val candidateDeps = freshEnv.allDeps -- pi.env.allDeps
+        val candidateEq = ValueEquivalence.unify(resultTy, goal, eqStore.allow(candidateDeps))
         val freshArgs = pi.binders.map(binder => freshEnv(binder.localRef))
-        val goals = freshArgs.map(v => ValueOps.materialize(v.tpe, candidateEq))
 
-        val (args, argTerms) = fillCandidateArgs(candidate, pi, goals, searchEnv, state, ctx)
+        val values = Vector.newBuilder[Value]
+        val terms = Vector.newBuilder[ElabAst.Term]
+        val binders = pi.binders
+        var telescopeEnv = pi.env
+        var idx = 0
+
+        while (idx < binders.length) {
+          val binder = binders(idx)
+          val freshArg = freshArgs(idx)
+          val inferred = ValueOps.materialize(freshArg, candidateEq)
+
+          val (arg, term) =
+            if (!inferred.synDeps.intersects(candidateDeps)) {
+              val term = ValueQuote.quoteTerm(inferred, searchEnv, candidate.term.span)(candidateEq, normalizers)
+              inferred -> term
+            } else if (binder.isInstance) {
+              val instanceGoal = ValueOps.materialize(freshArg.tpe, candidateEq)
+              val solved = solveInternal(instanceGoal, searchEnv, state, ctx)
+              solved.value -> solved.term
+            } else {
+              throw NoInstanceFound(goal)
+            }
+
+          telescopeEnv = TypePatternOps.bindValue(telescopeEnv, binder, arg)(candidateEq)
+          values += arg
+          terms += term
+          idx += 1
+        }
+
+        val args = values.result()
+        if (args.isEmpty) throw WTF(s"Instance candidate ${candidate.name} has empty telescope")
         val res = Interpreter.evalApply(candidate.value, args)
-        val resTerm = ElabAst.Term.App(candidate.term, argTerms, candidate.term.span)
+        val resTerm = ElabAst.Term.App(candidate.term, terms.result(), candidate.term.span)
         SearchResult(res, resTerm)
 
       case resultTy =>
         ValueEquivalence.unify(resultTy, goal, eqStore)
         SearchResult(candidate.value, candidate.term)
     }
-  }
-
-  private def fillCandidateArgs(
-      candidate: InstanceCandidate,
-      pi: VPi,
-      goals: Vector[Value],
-      initialSearchEnv: TypecheckEnv,
-      state: SearchState,
-      ctx: SearchContext
-  )(implicit eqStore: EqStore, normalizerMap: NormalizerMap): (Vector[Value], Vector[ElabAst.Term]) = {
-    val values = Vector.newBuilder[Value]
-    val terms = Vector.newBuilder[ElabAst.Term]
-    val binders = pi.binders
-
-    var telescopeEnv = pi.env
-    var idx = 0
-
-    while (idx < binders.length) {
-      val binder = binders(idx)
-      val goal = goals(idx)
-      val s = solveInternal(goal, initialSearchEnv, state, ctx)
-      telescopeEnv = TypePatternOps.bindValue(telescopeEnv, binder, s.value)
-      values += s.value
-      terms += s.term
-      idx += 1
-    }
-
-    val filledValues = values.result()
-    if (filledValues.isEmpty) throw WTF(s"Instance candidate ${candidate.name} has empty telescope")
-    (filledValues, terms.result())
   }
 
   private def resultType(tpe: Value)(implicit eqStore: EqStore): Option[Value] =
