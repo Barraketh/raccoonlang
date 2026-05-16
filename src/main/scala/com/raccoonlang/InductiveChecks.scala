@@ -157,7 +157,6 @@ object InductiveChecks {
     val resTpe = TypeChecker.getType(header.resultTy, envWithFamilyBinders)
     val familyUniverse: Universe = resTpe match {
       case v: VSort => v
-      case PropTpe  => PropTpe
       case other    => throw InductiveTypeNotASort(other, Some(header.resultTy.span))
     }
 
@@ -197,8 +196,12 @@ object InductiveChecks {
       ctor.fields.zip(fieldVars).foreach { case (binder, field) =>
         // 2) Universe bound: skip for Prop families; enforce for Sort families
         constructorUniverse match {
+          case PropTpe => // no universe restriction
+
           case VSort(inductiveLevel) =>
             TypeChecker.getUniverse(field.tpe) match {
+              case Value.PropTpe =>
+
               case VSort(tpeLevel) =>
                 if (!Level.leq(tpeLevel, inductiveLevel))
                   throw InductiveUniverseTooSmall(
@@ -209,10 +212,7 @@ object InductiveChecks {
                     inductiveLevel,
                     Some(binder.span)
                   )
-              case Value.PropTpe =>
             }
-
-          case PropTpe => // no universe restriction
         }
 
         // 3) Every stored constructor field type must be strictly positive in the inductive

@@ -77,7 +77,7 @@ class MatchRefinementTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (p: Nat) : Nat
         |
-        |inductive Vec (u: Level)(A: Sort(u))(n: Nat) : Sort(u)
+        |inductive Vec (u: Level)(A: Sort(u))(n: Nat) : Sort(Level.max(Level.one, u))
         | | nil {u: Level}{A: Sort(u)} : Vec(u, A, Nat.zero)
         | | cons {u: Level}{A: Sort(u)} (n: Nat) (xs: Vec(u, A, n)) (x: A) : Vec(u, A, Nat.succ(n))
         |

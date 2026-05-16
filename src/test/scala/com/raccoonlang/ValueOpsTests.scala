@@ -5,9 +5,9 @@ import com.raccoonlang.Value._
 
 class ValueOpsTests extends munit.FunSuite {
   private val span = Span(0, 0)
-  private val valueType: Value = VSort(Level.zero)
+  private val valueType: Value = TypeTpe
   private val typeRef: ElabAst.TypeTerm = ETerm.GlobalRef("Type", span)
-  private val typeToTypeClassifier: Value.Universe = VSort(Level.succ(Level.zero))
+  private val typeToTypeClassifier: Value.Universe = VSort(Level.succ(Level.one))
 
   private def binderType(term: ElabAst.TypeTerm): ElabAst.BinderType = {
     val pattern = ElabAst.TypePattern.Type(term)

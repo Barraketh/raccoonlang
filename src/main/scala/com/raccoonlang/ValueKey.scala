@@ -129,8 +129,8 @@ object ValueKey {
   def orderKey(v: Value): Key = v match {
     case Value.LevelTpe        => tag(Tag.LevelTpe)
     case level: Value.Level    => levelKey(level.atoms, level.c)
-    case Value.VSort(lvl)      => mixKey(tag(Tag.Sort), lvl.key)
     case Value.PropTpe         => tag(Tag.Prop)
+    case Value.VSort(lvl)      => mixKey(tag(Tag.Sort), lvl.key)
     case Value.KernelObject    => tag(Tag.KernelObject)
     case Value.VConst(n, _, _) => mixString(tag(Tag.Const), n)
     case Value.Var(_, id, _)   => mixLong(tag(Tag.Var), id.toLong)

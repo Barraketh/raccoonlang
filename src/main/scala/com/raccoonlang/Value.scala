@@ -21,15 +21,14 @@ import com.raccoonlang.Value.ResolvedValue
  *   - synDeps is the set of all VarIds that this Value contains, including in its type. It is extremely important to
  * maintain this correctly
  *   - key - a structural hash key of this value. Lazily computed by ValueKey.orderKey(). Used by defEq and Normalizers
- *   - needsExtensionalEq: keeps track of whether this value, is either itself or contains a value where
- * (needsExtensionalEq = true). See [[ValueEquivalence.defEq]] for exact semantics of the usage
+ *   - needsStructuralDefEq: tracks values whose key may differ even when structural equality can still succeed
  */
 sealed trait Value {
   def tpe: Value
   def synDeps: DepSet
 
   final lazy val key: ValueKey.Key = ValueKey.orderKey(this)
-  final lazy val needsExtensionalEq: Boolean = Value.needsExtensionalEq(this)
+  final lazy val needsStructuralDefEq: Boolean = Value.needsStructuralDefEq(this)
 
   override def toString: String = PrettyPrinter.print(this)
 
@@ -52,13 +51,19 @@ object Value {
       case _                => value
     }
 
-  private[raccoonlang] def needsExtensionalEq(value: Value): Boolean =
-    value match {
-      case _: VPi | _: VLam    => true
-      case app: AppliedValue   => app.head.needsExtensionalEq || app.args.exists(_.needsExtensionalEq)
-      case VCtor(_, fields, tpe) => fields.exists(_.needsExtensionalEq) || tpe.needsExtensionalEq
-      case _                   => false
+  private def isKnownProof(value: Value): Boolean =
+    value.tpe match {
+      case PropTpe => false
+      case tpe     => tpe.tpe == PropTpe
     }
+
+  private[raccoonlang] def needsStructuralDefEq(value: Value): Boolean =
+    isKnownProof(value) || (value match {
+      case _: VPi | _: VLam      => true
+      case app: AppliedValue     => app.head.needsStructuralDefEq || app.args.exists(_.needsStructuralDefEq)
+      case VCtor(_, fields, tpe) => fields.exists(_.needsStructuralDefEq) || tpe.needsStructuralDefEq
+      case _                     => false
+    })
 
   // A value that will block a computation - specifically, when trying to either match or apply it.
   // Specifically, Var, VBlockedApp, or VBlockedThunk
@@ -121,14 +126,10 @@ object Value {
   sealed trait Universe extends Value
 
   case object LevelTpe extends TopLevelValue {
-    override def tpe: Value = VSort(Level.zero)
+    override def tpe: Value = TypeTpe
   }
 
   case object KernelObject extends TopLevelValue {
-    override def tpe: Value = KernelObject
-  }
-
-  case object PropTpe extends TopLevelValue with Universe {
     override def tpe: Value = KernelObject
   }
 
@@ -199,6 +200,7 @@ object Value {
     def mk(varId: VarId): Level = of(Map(varId -> 0), 0)
 
     val zero = const(0)
+    val one = const(1)
 
   }
 
@@ -207,6 +209,9 @@ object Value {
 
     override def synDeps: DepSet = level.synDeps
   }
+
+  final val PropTpe: VSort = VSort(Level.zero)
+  final val TypeTpe: VSort = VSort(Level.one)
 
   sealed trait CaptureType
   case object StructuralCapture extends CaptureType
@@ -354,7 +359,7 @@ object Value {
   }
 
   object NormalizerType extends TopLevelValue {
-    override def tpe: Value = VSort(Level.zero)
+    override def tpe: Value = TypeTpe
   }
 
   trait Normalizer extends TopLevelValue {

@@ -43,10 +43,10 @@ object ValueQuote {
           .getOrElse(throw CannotQuoteValue(v, "escaping variable", Some(span)))
 
       case VSort(level) =>
-        if (level == Level.zero) ElabAst.Term.GlobalRef("Type", span)
+        if (level == Level.zero) ElabAst.Term.GlobalRef("Prop", span)
+        else if (level == Level.one) ElabAst.Term.GlobalRef("Type", span)
         else ElabAst.Term.App(ElabAst.Term.GlobalRef("Sort", span), Vector(quoteLevel(level, env, span, context)), span)
 
-      case PropTpe        => ElabAst.Term.GlobalRef("Prop", span)
       case LevelTpe       => ElabAst.Term.GlobalRef("Level", span)
       case NormalizerType => ElabAst.Term.GlobalRef("Normalizer", span)
 

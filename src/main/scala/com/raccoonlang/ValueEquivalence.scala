@@ -71,7 +71,20 @@ object ValueEquivalence {
     private def hasSolvedDeps(v: Value)(implicit eqStore: EqStore): Boolean = v.synDeps.intersects(eqStore.solvedIds)
 
     private def shouldTryStructuralDefEq(a: Value, b: Value)(implicit eqStore: EqStore): Boolean =
-      hasSolvedDeps(a) || hasSolvedDeps(b) || a.needsExtensionalEq || b.needsExtensionalEq
+      hasSolvedDeps(a) || hasSolvedDeps(b) || a.needsStructuralDefEq || b.needsStructuralDefEq
+
+    private def typeLivesInProp(tpe: Value)(implicit eqStore: EqStore): Boolean =
+      tpe.caseOf {
+        case PropTpe => false
+        case tpe0 =>
+          tpe0.tpe.caseOf {
+            case PropTpe => true
+            case _       => false
+          }
+      }
+
+    private def proofIrrelevant(a: Value, b: Value)(implicit eqStore: EqStore, normalizers: NormalizerMap): Boolean =
+      typeLivesInProp(a.tpe) && defEq(a.tpe, b.tpe)
 
     private def defEqStructural(a: Value, b: Value)(implicit eqStore: EqStore, normalizers: NormalizerMap): Boolean =
       (a, b) match {
@@ -111,6 +124,7 @@ object ValueEquivalence {
 
     def defEq(v1: Value, v2: Value)(implicit eqStore: EqStore, normalizers: NormalizerMap): Boolean = {
       if (sameValueObject(v1, v2)) true
+      else if (proofIrrelevant(v1, v2)) true
       else {
         val normalizerF = getNormalizerF(v1, v2)
 

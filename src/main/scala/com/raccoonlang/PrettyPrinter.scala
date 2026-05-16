@@ -162,7 +162,7 @@ object PrettyPrinter {
     import com.raccoonlang.ElabAst.Term
 
     def pt(t: ElabAst.TypeTerm): String = t match {
-      case ref: Term.Ref               => printElabRef(ref)
+      case ref: Term.Ref                  => printElabRef(ref)
       case Term.Select(base, field, _, _) => s"${printElabTermAtom(base)}[$field]"
       case Term.App(fn, args, _) =>
         val headStr = printElabTermAtom(fn)
@@ -176,10 +176,10 @@ object PrettyPrinter {
     }
 
     def ptAtom(t: ElabAst.TypeTerm): String = t match {
-      case _: Term.Ref          => pt(t)
+      case _: Term.Ref             => pt(t)
       case Term.Select(_, _, _, _) => pt(t)
-      case Term.App(_, _, _)    => pt(t)
-      case Term.Pi(_, _, _, _)  => s"(${pt(t)})"
+      case Term.App(_, _, _)       => pt(t)
+      case Term.Pi(_, _, _, _)     => s"(${pt(t)})"
     }
 
     def printElabPiBinder(b: ElabAst.Binder): String =
@@ -240,13 +240,13 @@ object PrettyPrinter {
   }
 
   private def printElabTermAtom(t: ElabAst.Term): String = t match {
-    case _: ElabAst.Term.Ref                 => printElabTerm0(t)
-    case ElabAst.Term.App(_, _, _)           => printElabTerm0(t)
+    case _: ElabAst.Term.Ref                    => printElabTerm0(t)
+    case ElabAst.Term.App(_, _, _)              => printElabTerm0(t)
     case ElabAst.Term.Select(base, field, _, _) => s"${printElabTermAtom(base)}[$field]"
-    case ElabAst.Term.Lam(_, _, _, _, _, _)  => s"(${printElabTerm0(t)})"
-    case ElabAst.Term.Match(_, _, _, _)      => s"(${printElabTerm0(t)})"
-    case ElabAst.Term.Body(_, _, _)          => s"(${printElabTerm0(t)})"
-    case ElabAst.Term.Pi(_, _, _, _)         => s"(${printElabTerm0(t)})"
+    case ElabAst.Term.Lam(_, _, _, _, _, _)     => s"(${printElabTerm0(t)})"
+    case ElabAst.Term.Match(_, _, _, _)         => s"(${printElabTerm0(t)})"
+    case ElabAst.Term.Body(_, _, _)             => s"(${printElabTerm0(t)})"
+    case ElabAst.Term.Pi(_, _, _, _)            => s"(${printElabTerm0(t)})"
   }
 
   private def printElabTerm0(t: ElabAst.Term): String = t match {
@@ -277,14 +277,15 @@ object PrettyPrinter {
   }
 
   def print(value: Value): String = value match {
-    case Value.VSort(lvl)                        => s"Type $lvl"
-    case Value.PropTpe                           => "Prop"
-    case Value.KernelObject                      => "KernelObject"
-    case level: Value.Level                      => s"Level(${level.atoms}, ${level.c})"
-    case pi: Value.VPi                           => "VPi"
-    case Value.VConst(name, _, _)                => name
-    case v: Value.AppliedValue                   => printApp(v.head, v.args)
-    case Value.ConstructorHead(name, _, _, _, _) => name
+    case Value.PropTpe                              => "Prop"
+    case Value.VSort(lvl) if lvl == Value.Level.one => "Type"
+    case Value.VSort(lvl)                           => s"Sort($lvl)"
+    case Value.KernelObject                         => "KernelObject"
+    case level: Value.Level                         => s"Level(${level.atoms}, ${level.c})"
+    case pi: Value.VPi                              => "VPi"
+    case Value.VConst(name, _, _)                   => name
+    case v: Value.AppliedValue                      => printApp(v.head, v.args)
+    case Value.ConstructorHead(name, _, _, _, _)    => name
     case Value.VCtor(head, fields, _) =>
       val headStr = print(head)
       if (fields.isEmpty) headStr

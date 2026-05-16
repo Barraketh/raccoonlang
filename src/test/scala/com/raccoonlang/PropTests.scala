@@ -1,7 +1,7 @@
 package com.raccoonlang
 
 import com.raccoonlang.ErrorReporter.Source
-import com.raccoonlang.Value.{KernelObject, PropTpe, VPi, VSort}
+import com.raccoonlang.Value.{PropTpe, VPi, VSort}
 
 class PropTests extends munit.FunSuite {
 
@@ -57,7 +57,7 @@ class PropTests extends munit.FunSuite {
   // Universe / Pi-formation tests for Prop
   // ---------------------------------------------------------------------------
 
-  test("Prop is a classifier and has type KernelObject") {
+  test("Prop is Sort 0 and has type Type") {
     val res = runProgram(
       """
         |{ Prop }
@@ -70,8 +70,8 @@ class PropTests extends munit.FunSuite {
     }
 
     res.tpe match {
-      case KernelObject =>
-      case other        => fail(s"Expected Prop : Sort Level.one, got: $other")
+      case VSort(u) => assertEquals(u, Value.Level.one)
+      case other    => fail(s"Expected Prop : Type, got: $other")
     }
   }
 
@@ -133,7 +133,7 @@ class PropTests extends munit.FunSuite {
     }
 
     res.tpe match {
-      case VSort(u) => assertEquals(u, Value.Level.zero)
+      case VSort(u) => assertEquals(u, Value.Level.one)
       case other    => fail(s"Expected (P: Prop) -> Nat to live in Type, got: $other")
     }
   }
@@ -164,6 +164,22 @@ class PropTests extends munit.FunSuite {
     val p =
       """
         |inline def idProof (P: Prop)(p: P): P := p
+        |""".stripMargin
+
+    typecheckDecls(p)
+  }
+
+  test("Proof irrelevance: distinct proofs of the same proposition are definitionally equal") {
+    val p =
+      """
+        |inductive Amb : Prop
+        | | left : Amb
+        | | right : Amb
+        |
+        |inductive Eq (A: Sort($u))(x: A)(y: A) : Prop
+        | | refl {A: Sort($u)} (x: A) : Eq(A, x, x)
+        |
+        |inline def sameProof (p: Amb): Eq(Amb, p, Amb.right) := Eq.refl(Amb, p)
         |""".stripMargin
 
     typecheckDecls(p)

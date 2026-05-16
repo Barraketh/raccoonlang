@@ -55,7 +55,7 @@ class UniverseTests extends munit.FunSuite {
     }
   }
 
-  test("Type has type Sort (Level.succ Level.zero)") {
+  test("Type is Sort Level.one and has type Sort Level.succ(Level.one)") {
     val p =
       """
         |{ Type }
@@ -63,13 +63,13 @@ class UniverseTests extends munit.FunSuite {
 
     val res = runProgram(p)
     res match {
-      case Value.VSort(lvl) => assertEquals(lvl, Value.Level.zero)
-      case other            => fail(s"Expected Type (Sort 0), got: $other")
+      case Value.VSort(lvl) => assertEquals(lvl, Value.Level.one)
+      case other            => fail(s"Expected Type (Sort 1), got: $other")
     }
 
     res.tpe match {
-      case Value.VSort(u1) => assertEquals(u1, Value.Level.succ(Value.Level.zero))
-      case other           => fail(s"Expected the type of Type to be Sort 1, got: $other")
+      case Value.VSort(u1) => assertEquals(u1, Value.Level.succ(Value.Level.one))
+      case other           => fail(s"Expected the type of Type to be Sort 2, got: $other")
     }
   }
 
@@ -84,12 +84,12 @@ class UniverseTests extends munit.FunSuite {
 
     val res = runProgram(p)
     res match {
-      case Value.VSort(lvl) => assertEquals(lvl, Value.Level.zero)
-      case other            => fail(s"Expected Sort 0 value (Type), got: $other")
+      case Value.VSort(lvl) => assertEquals(lvl, Value.Level.one)
+      case other            => fail(s"Expected Sort 1 value (Type), got: $other")
     }
   }
 
-  test("def f(u: Level)(A: Sort u)(x: A): A := x; apply at u=0, A=Nat, x=Nat.zero") {
+  test("def f(u: Level)(A: Sort u)(x: A): A := x; apply at u=1, A=Nat, x=Nat.zero") {
     val p =
       """
         |inductive Nat : Type
@@ -98,7 +98,7 @@ class UniverseTests extends munit.FunSuite {
         |
         |inline def f (u: Level)(A: Sort(u))(x: A): A := x
         |
-        |{ f(Level.zero, Nat, Nat.zero) }
+        |{ f(Level.one, Nat, Nat.zero) }
         |""".stripMargin
 
     val res = runProgram(p)
@@ -107,7 +107,7 @@ class UniverseTests extends munit.FunSuite {
     }
   }
 
-  test("Cumulativity: Sort 0 fits into Sort 2 via let ascription (using Type)") {
+  test("Cumulativity: Sort 1 fits into Sort 2 via let ascription (using Type)") {
     val p =
       """
         |{
@@ -118,8 +118,8 @@ class UniverseTests extends munit.FunSuite {
 
     val res = runProgram(p)
     res match {
-      case Value.VSort(lvl) => assertEquals(lvl, Value.Level.zero)
-      case other            => fail(s"Expected Sort 0 value, got: $other")
+      case Value.VSort(lvl) => assertEquals(lvl, Value.Level.one)
+      case other            => fail(s"Expected Sort 1 value, got: $other")
     }
   }
 
@@ -134,14 +134,14 @@ class UniverseTests extends munit.FunSuite {
         |
         |def up2 (u: Level)(A: Sort(u)): Sort(Level.succ(Level.succ(u))) := A
         |
-        |{ up2(Level.zero, Nat) }
+        |{ up2(Level.one, Nat) }
         |""".stripMargin
 
     val res = runProgram(p)
-    // The application stays opaque (non-inline). Just assert its type is Sort 2.
+    // The application stays opaque (non-inline). Just assert its type is Sort 3.
     res.tpe match {
-      case Value.VSort(l) => assertEquals(l, Value.Level.succ(Value.Level.succ(Value.Level.zero)))
-      case other          => fail(s"Expected result type Sort 2, got: $other")
+      case Value.VSort(l) => assertEquals(l, Value.Level.succ(Value.Level.succ(Value.Level.one)))
+      case other          => fail(s"Expected result type Sort 3, got: $other")
     }
   }
 
@@ -160,7 +160,7 @@ class UniverseTests extends munit.FunSuite {
     }
   }
 
-  test("Pi formation level: (A: Sort 0)(x: A) -> A has type Sort 1") {
+  test("Pi formation level: (A: Prop)(x: A) -> A has type Prop") {
     val p =
       """
         |{ fun (A: Sort(Level.zero))(x: A): A => x }
@@ -170,14 +170,14 @@ class UniverseTests extends munit.FunSuite {
     res match {
       case Value.VLam(pi, _, _, _) =>
         pi.tpe match {
-          case Value.VSort(u) => assertEquals(u, Value.Level.succ(Value.Level.zero))
-          case other          => fail(s"Expected Pi type to live in Sort 1, got: $other")
+          case Value.VSort(u) => assertEquals(u, Value.Level.zero)
+          case other          => fail(s"Expected Pi type to live in Prop, got: $other")
         }
       case other => fail(s"Expected a lambda, got: $other")
     }
   }
 
-  test("Level is a type and has type Sort(0)") {
+  test("Level is a type and has type Type") {
     val p =
       """
         |{ Level }
@@ -186,7 +186,7 @@ class UniverseTests extends munit.FunSuite {
     val res = runProgram(p)
     res match {
       case Value.LevelTpe =>
-        assertEquals(res.tpe, VSort(Value.Level.zero))
+        assertEquals(res.tpe, VSort(Value.Level.one))
       case other => fail(s"Expected Level type, got: $other")
     }
   }
@@ -204,7 +204,7 @@ class UniverseTests extends munit.FunSuite {
   }
 
   // Instead of constructing Sort in term position, test level-parametric usage via a term at the appropriate level
-  test("Level-parametric id at u=0 works for Nat") {
+  test("Level-parametric id at u=1 works for Nat") {
     val p =
       """
         |inductive Nat : Type
@@ -213,7 +213,7 @@ class UniverseTests extends munit.FunSuite {
         |
         |inline def idAt (u: Level)(A: Sort(u))(x: A): A := x
         |
-        |{ idAt(Level.zero, Nat, Nat.zero) }
+        |{ idAt(Level.one, Nat, Nat.zero) }
         |""".stripMargin
 
     val res = runProgram(p)

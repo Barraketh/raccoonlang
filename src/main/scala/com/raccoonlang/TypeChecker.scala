@@ -30,11 +30,18 @@ object TypeChecker {
 
   def getUniverse(value: Value)(implicit eqStore: EqStore): Universe = {
     value.tpe.caseOf {
-      case u: Universe           => u
-      case _ if value == PropTpe => PropTpe
-      case _                     => throw NotAType(value.tpe)
+      case u: Universe => u
+      case _           => throw NotAType(value.tpe)
     }
   }
+
+  def isPropValue(value: Value)(implicit eqStore: EqStore): Boolean = value.caseOf {
+    case PropTpe => true
+    case _       => false
+  }
+
+  def isPropValuedType(value: Value)(implicit eqStore: EqStore): Boolean =
+    isPropValue(value) || getUniverse(value) == PropTpe
 
   private def checkApply(
       fn: Value,
@@ -53,14 +60,16 @@ object TypeChecker {
   private def checkedArg(arg: CheckedType): BinderOps.CheckedArg = BinderOps.CheckedArg(arg.value, arg.term)
 
   private def computePiClassifier(vars: Vector[Value], outType: Value)(implicit eqStore: EqStore): Universe =
-    TypeChecker.getUniverse(outType) match {
-      case PropTpe => PropTpe
-      case VSort(outLevel) =>
-        val domLevels: Vector[Level] = vars
-          .map(v => TypeChecker.getUniverse(v.tpe))
-          .collect { case VSort(level) => level }
+    if (isPropValuedType(outType)) PropTpe
+    else {
+      TypeChecker.getUniverse(outType) match {
+        case VSort(outLevel) =>
+          val domLevels: Vector[Level] = vars
+            .map(v => TypeChecker.getUniverse(v.tpe))
+            .collect { case VSort(level) => level }
 
-        VSort(Level.max(domLevels :+ outLevel))
+          VSort(Level.max(domLevels :+ outLevel))
+      }
     }
 
   private def checkTypeApply(
@@ -380,7 +389,7 @@ object TypeChecker {
 
     if (
       getUniverse(scrut.tpe) == PropTpe &&
-      getUniverse(motiveTy) != PropTpe &&
+      !isPropValuedType(motiveTy) &&
       !allowLargeElimination(scrutTpe, reachableByType)
     ) {
       throw PropEliminationRestricted(inductiveName, motiveTy, Some(t.span))

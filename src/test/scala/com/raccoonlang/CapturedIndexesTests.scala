@@ -5,9 +5,9 @@ import com.raccoonlang.Value._
 
 class CapturedIndexesTests extends munit.FunSuite {
   private val span = Span(0, 0)
-  private val valueType: Value = VSort(Level.zero)
+  private val valueType: Value = TypeTpe
   private val typeRef: ElabAst.TypeTerm = ETerm.GlobalRef("Type", span)
-  private val classifier: Value.Universe = VSort(Level.zero)
+  private val classifier: Value.Universe = VSort(Level.succ(Level.one))
   private val typeBinderType: ElabAst.BinderType = {
     val pattern = ElabAst.TypePattern.Type(typeRef)
     ElabAst.BinderType.TypePattern(pattern, pattern.span)

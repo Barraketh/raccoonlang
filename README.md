@@ -50,7 +50,8 @@ Note that at this point I have done 0 optimization - these performance wins are 
     - Branch refinement for indexed families / dependent pattern matching. Supports equality proofs.
     - Validates exhaustiveness checking: missing, duplicate, and unreachable branches
 - Cumulative universes, first-class `Level`, `Sort(u)`, universe validation, and sort unification
-    - Impredicative Prop with controlled large elimination
+    - `Prop` is `Sort(Level.zero)`; `Type` is `Sort(Level.one)`
+    - Impredicative Prop with proof irrelevance and controlled large elimination
 - Extensible definitional equality through type-driven expression normalization
 - Namespaces, file imports, dotted names, and scoped `open`
 - Type patterns
@@ -76,7 +77,7 @@ inductive Nat : Type
 inductive Box (u: Level)(A: Sort(u)) : Sort(u)
  | mk {u: Level}{A: Sort(u)} (value: A) : Box(u, A)
 
-inductive Vec (u: Level)(A: Sort(u))(n: Nat) : Sort(u)
+inductive Vec (u: Level)(A: Sort(u))(n: Nat) : Sort(Level.max(Level.one, u))
  | nil {u: Level}{A: Sort(u)} : Vec(u, A, Nat.zero)
  | cons {u: Level}{A: Sort(u)} (n: Nat)(xs: Vec(u, A, n))(x: A) : Vec(u, A, Nat.succ(n))
 
@@ -143,7 +144,7 @@ inductive Nat : Type
   | zero : Nat
   | succ (_: Nat) : Nat
 
-inductive Vec (A: Sort($u))(n: Nat) : Sort(u)
+inductive Vec (A: Sort($u))(n: Nat) : Sort(Level.max(Level.one, u))
   | nil {A: Sort($u)}: Vec(A, Nat.zero)
   | cons {A: Sort($u)} (v: Vec(A, $n))(elem: A): Vec(A, Nat.succ(n))
 

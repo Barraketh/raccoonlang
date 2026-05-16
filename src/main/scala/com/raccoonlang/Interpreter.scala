@@ -367,11 +367,11 @@ object Interpreter {
   def run(p: Program): Option[Value] = {
     val baseEnv =
       TypecheckEnv.empty
-        .putGlobal("Type", VSort(Level.zero))
+        .putGlobal("Type", TypeTpe)
         .putGlobal("Normalizer", NormalizerType)
         .putGlobal("Level", LevelTpe)
         .putGlobal("Level.zero", Level.zero)
-        .putGlobal("Level.one", Level.const(1))
+        .putGlobal("Level.one", Level.one)
         .putGlobal("Prop", PropTpe)
 
     val builtinFuncs = List[(String, CoreAst.TypeTerm, (Vector[Value], EqStore) => Value)](
@@ -424,7 +424,7 @@ object Interpreter {
             },
             DepSet.empty,
             ValueId.Const("Sort"),
-            VSort(Level.zero)
+            TypeTpe
           )
         },
         ValueId.Const("Sort"),

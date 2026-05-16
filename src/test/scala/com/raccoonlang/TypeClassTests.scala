@@ -10,11 +10,11 @@ class TypeClassTests extends munit.FunSuite {
   private def initialWorlds: Interpreter.Worlds = {
     val baseEnv =
       TypecheckEnv.empty
-        .putGlobal("Type", Value.VSort(Value.Level.zero))
+        .putGlobal("Type", Value.TypeTpe)
         .putGlobal("Normalizer", Value.NormalizerType)
         .putGlobal("Level", Value.LevelTpe)
         .putGlobal("Level.zero", Value.Level.zero)
-        .putGlobal("Level.one", Value.Level.const(1))
+        .putGlobal("Level.one", Value.Level.one)
         .putGlobal("Prop", Value.PropTpe)
 
     val builtinFuncs = List[(String, CoreAst.TypeTerm, (Vector[Value], EqStore) => Value)](
@@ -67,7 +67,7 @@ class TypeClassTests extends munit.FunSuite {
             },
             DepSet.empty,
             Value.ValueId.Const("Sort"),
-            Value.VSort(Value.Level.zero)
+            Value.TypeTpe
           )
         },
         Value.ValueId.Const("Sort"),
@@ -226,10 +226,10 @@ class TypeClassTests extends munit.FunSuite {
         |inductive BenchUnit : Type
         | | unit : BenchUnit
         |
-        |struct Dep (A: Sort($u0)) : Sort(u0)
+        |struct Dep (A: Sort($u0)) : Sort(Level.max(Level.one, u0))
         | | mk {A: Sort($u0)} (val: BenchUnit) : Dep(A)
         |
-        |struct TC (A: Sort($u0)) : Sort(u0)
+        |struct TC (A: Sort($u0)) : Sort(Level.max(Level.one, u0))
         | | mk {A: Sort($u0)} (val: BenchUnit) : TC(A)
         |
         |inductive Target : Type
@@ -536,7 +536,7 @@ class TypeClassTests extends munit.FunSuite {
     )
     val env = worlds.runEnv
 
-    val a = FreshVar.freshVar("A", Value.VSort(Value.Level.zero))
+    val a = FreshVar.freshVar("A", Value.TypeTpe)
     val aRef = CoreAst.LocalRef(env.locals.length, "A")
     val envWithA = env.putLocal(aRef, a)
 
