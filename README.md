@@ -170,7 +170,7 @@ Formation rules:
 
 - Exactly one constructor.
 - Result family arguments must not depend on stored constructor fields.
-- Must live in `Type`/`Sort(u)` (not in `Prop`).
+- May live in `Type`/`Sort(u)` or `Prop`; projections from `Prop` structs obey Prop elimination restrictions.
 - All fields must be named (no anonymous `_` fields).
 
 Projection syntax: `p.field` selects the named field from a value `p` of a struct family.

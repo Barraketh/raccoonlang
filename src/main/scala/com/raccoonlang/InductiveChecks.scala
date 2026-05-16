@@ -166,8 +166,6 @@ object InductiveChecks {
         throw InvalidStruct(name, s"has ${decl.ctors.length} constructors (expected exactly 1)", Some(header.span))
       if (decl.ctors.head.fields.exists(_.name == "_"))
         throw InvalidStruct(name, "constructor has anonymous '_' fields", Some(header.span))
-      if (familyUniverse == PropTpe)
-        throw InvalidStruct(name, "lives in Prop", Some(header.span))
 
     }
 

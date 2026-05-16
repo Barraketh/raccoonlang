@@ -10,6 +10,7 @@ object TypeChecker {
   final case class CheckedType(value: Value, term: EA.TypeTerm)
   private final case class CheckedPi(value: VPi, term: EA.Term.Pi)
   private final case class CheckedSelect(value: Value, term: EA.Term.Select)
+  private final case class InductiveFamily(name: String, meta: InductiveMeta)
 
   def sortLeq(a: Value, b: Value)(implicit eqStore: EqStore): Boolean = {
     (a, b).caseOf {
@@ -43,21 +44,17 @@ object TypeChecker {
   def isPropValuedType(value: Value)(implicit eqStore: EqStore): Boolean =
     isPropValue(value) || getUniverse(value) == PropTpe
 
-  private def checkApply(
-      fn: Value,
-      args: Vector[BinderOps.CheckedArg],
-      fnTerm: EA.Term,
-      span: Span
-  )(implicit eqStore: EqStore, normalizers: NormalizerMap): Checked = {
+  private def checkApplyValue(fn: Value, args: Vector[BinderOps.CheckedArg])(implicit
+      eqStore: EqStore,
+      normalizers: NormalizerMap
+  ): Value =
     fn.tpe.caseOf {
       case pi: VPi =>
-        BinderOps.checkAndInstantiate(pi.binders, pi.env, args.map(_.value))
-        Checked(Interpreter.evalApply(fn, args.map(_.value)), EA.Term.App(fnTerm, args.map(_.term), span))
+        val values = args.map(_.value)
+        BinderOps.checkAndInstantiate(pi.binders, pi.env, values)
+        Interpreter.evalApply(fn, values)
       case _ => throw CannotApplyNonFunction(fn)
     }
-  }
-
-  private def checkedArg(arg: CheckedType): BinderOps.CheckedArg = BinderOps.CheckedArg(arg.value, arg.term)
 
   private def computePiClassifier(vars: Vector[Value], outType: Value)(implicit eqStore: EqStore): Universe =
     if (isPropValuedType(outType)) PropTpe
@@ -72,19 +69,6 @@ object TypeChecker {
       }
     }
 
-  private def checkTypeApply(
-      fn: Value,
-      args: Vector[BinderOps.CheckedArg],
-      fnTerm: EA.Term,
-      span: Span
-  )(implicit
-      meta: EqStore,
-      normalizers: NormalizerMap
-  ): CheckedType = {
-    val checked = checkApply(fn, args, fnTerm, span)
-    CheckedType(checked.value, checked.term.asInstanceOf[EA.TypeTerm])
-  }
-
   private def checkApp(app: CA.Term.App, env: TypecheckEnv)(implicit
       meta: EqStore,
       normalizers: NormalizerMap
@@ -94,7 +78,7 @@ object TypeChecker {
       val checkedArg = check(arg, env)
       BinderOps.CheckedArg(checkedArg.value, checkedArg.term)
     }
-    checkApply(fn.value, args, fn.term, app.span)
+    Checked(checkApplyValue(fn.value, args), EA.Term.App(fn.term, args.map(_.term), app.span))
   }
 
   private def checkDerive(derive: CA.Term.Derive, env: TypecheckEnv)(implicit
@@ -135,8 +119,11 @@ object TypeChecker {
   ): CheckedType = term match {
     case t: CA.Term.TApp =>
       val fn = checkTypeTerm(t.fn, env)
-      val args = t.args.map(arg => checkedArg(checkTypeTerm(arg, env)))
-      checkTypeApply(fn.value, args, fn.term, t.span)
+      val args = t.args.map { arg =>
+        val checked = checkTypeTerm(arg, env)
+        BinderOps.CheckedArg(checked.value, checked.term)
+      }
+      CheckedType(checkApplyValue(fn.value, args), EA.Term.App(fn.term, args.map(_.term), t.span))
     case CA.Term.TSelect(base, field, span) =>
       val checkedBase = checkTypeTerm(base, env)
       val checkedSelect = checkSelect(checkedBase.value, checkedBase.term, field, span, env)
@@ -196,16 +183,20 @@ object TypeChecker {
     EA.Case(br.ctorName, br.argRefs, branchRes.term, br.span)
   }
 
+  private def inductiveFamilyOf(value: Value)(implicit eqStore: EqStore): Option[InductiveFamily] =
+    value.caseOf {
+      case VConst(n, Inductive(meta), _) => Some(InductiveFamily(n, meta))
+      case VApp(VConst(n, Inductive(meta), _), args, _) if args.length == meta.familyArity =>
+        Some(InductiveFamily(n, meta))
+      case _ => None
+    }
+
   private def checkSelect(baseValue: Value, baseTerm: EA.Term, field: String, span: Span, env: TypecheckEnv)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): CheckedSelect = {
-    val vType = baseValue.tpe
-    val (indName, meta) = vType.caseOf {
-      case VConst(n, Inductive(m), _)             => (n, m)
-      case VApp(VConst(n, Inductive(m), _), _, _) => (n, m)
-      case other                                  => throw NotAType(other)
-    }
+    val vType = Interpreter.resolveInEqStore(baseValue.tpe).value
+    val InductiveFamily(indName, meta) = inductiveFamilyOf(vType).getOrElse(throw NotAType(vType))
 
     if (!meta.isStruct) throw NotAStruct(indName)
 
@@ -238,6 +229,15 @@ object TypeChecker {
         val resultTyTerm =
           ValueQuote.quoteType(refinedFresh.fields(fieldIdx).tpe, env, span, quoteContext)(refined, normalizers)
         val resultTy = Interpreter.evalTypeTerm(resultTyTerm, env)
+        val scrut = Interpreter.resolveInEqStore(baseValue).value
+        checkPropElimination(
+          indName,
+          vType,
+          resultTy,
+          computeReachableCtors(scrut, vType, indName, meta.constructorNames, env),
+          span
+        )
+
         val value = Interpreter.evalSelect(baseValue, field, env, span.nodeId, resultTy)
         CheckedSelect(value, EA.Term.Select(baseTerm, field, resultTyTerm, span))
 
@@ -245,7 +245,7 @@ object TypeChecker {
     }
   }
 
-  case class ReachableCtor(
+  private final case class ReachableCtor(
       name: String,
       head: ConstructorHead,
       fieldArgs: Vector[Value],
@@ -253,96 +253,97 @@ object TypeChecker {
       branchEqStore: EqStore
   )
 
+  private def computeReachableCtors(
+      scrut: Value,
+      scrutTpe: Value,
+      inductiveName: String,
+      ctorNames: Vector[String],
+      env: TypecheckEnv
+  )(implicit eqStore: EqStore, normalizers: NormalizerMap): Vector[ReachableCtor] = {
+    def tryUnify(left: Value, right: Value, refinable: DepSet): Option[EqStore] =
+      try Some(ValueEquivalence.unify(left, right, eqStore.allow(refinable)))
+      catch { case _: UnificationFailed | _: OccursCheckFailed => None }
+
+    def rootRefinable(value: Value): DepSet =
+      value.caseOf {
+        case blocker: Blocker => DepSet(blocker.blockerId)
+        case _                => DepSet.empty
+      }
+
+    ctorNames.flatMap { ctorName =>
+      env(ctorName) match {
+        case h: ConstructorHead =>
+          val fresh = ConstructorOps.freshSpine(h)
+          val valueRefinable = rootRefinable(scrut) ++ fresh.synDeps
+          val typeRefinable = scrutTpe.synDeps ++ fresh.synDeps
+
+          val branchEqStore =
+            tryUnify(scrut, fresh.value, valueRefinable)
+              .orElse(tryUnify(fresh.tpe, scrutTpe, typeRefinable))
+
+          branchEqStore.map { branchStore =>
+            val refinedResultTy = ValueOps.materialize(scrutTpe, branchStore)
+            ReachableCtor(ctorName, h, fresh.fields, refinedResultTy, branchStore)
+          }
+
+        case _ => throw UnknownConstructor(ctorName, inductiveName)
+      }
+    }
+  }
+
+  private def allowLargeElimination(scrutTpe: Value, reachable: Vector[ReachableCtor])(implicit
+      eqStore: EqStore,
+      normalizers: NormalizerMap
+  ): Boolean = {
+    if (reachable.isEmpty) return true
+    if (reachable.length > 1) return false
+
+    val only = reachable.head
+    val copy1 = ConstructorOps.freshSpine(only.head)
+    val copy2 = ConstructorOps.freshSpine(only.head)
+    val (fields1, res1) = (copy1.fields, copy1.tpe)
+    val (fields2, res2) = (copy2.fields, copy2.tpe)
+
+    val refinable0 = DepSet.unionAll(scrutTpe.synDeps, res1.synDeps, res2.synDeps)
+
+    val startEq =
+      try {
+        val eq1 = ValueEquivalence.unify(res1, scrutTpe, eqStore.allow(refinable0))
+        ValueEquivalence.unify(res2, scrutTpe, eq1)
+      } catch {
+        case _: UnificationFailed | _: OccursCheckFailed => return false
+      }
+
+    fields1.zip(fields2).forall { case (f1, f2) =>
+      TypeChecker.getUniverse(f1.tpe)(startEq) match {
+        case PropTpe => true
+        case _       => ValueEquivalence.defEq(f1, f2)(startEq, normalizers)
+      }
+    }
+  }
+
+  private def checkPropElimination(
+      inductiveName: String,
+      scrutTpe: Value,
+      motiveTy: Value,
+      reachable: => Vector[ReachableCtor],
+      span: Span
+  )(implicit eqStore: EqStore, normalizers: NormalizerMap): Unit =
+    if (getUniverse(scrutTpe) == PropTpe && !isPropValuedType(motiveTy)) {
+      if (!allowLargeElimination(scrutTpe, reachable))
+        throw PropEliminationRestricted(inductiveName, motiveTy, Some(span))
+    }
+
   private def checkMatch(t: CA.Term.Match, env: TypecheckEnv)(implicit
       eqStore: EqStore,
       normalizers: NormalizerMap
   ): Checked = {
-
-    def computeReachableCtors(
-        scrut: Value,
-        scrutTpe: Value,
-        inductiveName: String,
-        ctorNames: Vector[String]
-    ): Vector[ReachableCtor] = {
-      def rootRefinable(value: Value): DepSet =
-        value.caseOf {
-          case blocker: Blocker => DepSet(blocker.blockerId)
-          case _                => DepSet.empty
-        }
-
-      ctorNames.flatMap { ctorName =>
-        env(ctorName) match {
-          case h: ConstructorHead =>
-            try {
-              val fresh = ConstructorOps.freshSpine(h)
-              val appliedCtor: Value = fresh.value
-
-              val branchEqStore: Option[EqStore] =
-                try {
-                  val refinable = rootRefinable(scrut) ++ fresh.synDeps
-                  Some(ValueEquivalence.unify(scrut, appliedCtor, eqStore.allow(refinable)))
-                } catch {
-                  case _: UnificationFailed | _: OccursCheckFailed =>
-                    val refinable = scrutTpe.synDeps ++ fresh.synDeps
-                    try {
-                      Some(ValueEquivalence.unify(appliedCtor.tpe, scrutTpe, eqStore.allow(refinable)))
-                    } catch {
-                      case _: UnificationFailed | _: OccursCheckFailed => None
-                    }
-                }
-
-              branchEqStore.map { branchStore =>
-                val refinedResultTy = ValueOps.materialize(scrutTpe, branchStore)
-                ReachableCtor(ctorName, h, fresh.fields, refinedResultTy, branchStore)
-              }
-            } catch {
-              case _: UnificationFailed | _: OccursCheckFailed => None
-            }
-
-          case _ => throw UnknownConstructor(ctorName, inductiveName)
-        }
-      }
-    }
-
-    def allowLargeElimination(scrutTpe: Value, reachable: Vector[ReachableCtor]): Boolean = {
-      if (reachable.isEmpty) return true
-      if (reachable.length > 1) return false
-
-      val only = reachable.head
-      val copy1 = ConstructorOps.freshSpine(only.head)
-      val copy2 = ConstructorOps.freshSpine(only.head)
-      val (fields1, res1) = (copy1.fields, copy1.tpe)
-      val (fields2, res2) = (copy2.fields, copy2.tpe)
-
-      val refinable0 = DepSet.unionAll(scrutTpe.synDeps, res1.synDeps, res2.synDeps)
-
-      val startEq =
-        try {
-          val eq1 = ValueEquivalence.unify(res1, scrutTpe, eqStore.allow(refinable0))
-          ValueEquivalence.unify(res2, scrutTpe, eq1)
-        } catch {
-          case _: UnificationFailed | _: OccursCheckFailed => return false
-        }
-
-      fields1.zip(fields2).forall { case (f1, f2) =>
-        TypeChecker.getUniverse(f1.tpe)(startEq) match {
-          case PropTpe => true
-          case _       => ValueEquivalence.defEq(f1, f2)(startEq, normalizers)
-        }
-      }
-    }
-
     val scrutChecked = check(t.scrut, env)
     val scrut = Interpreter.resolveInEqStore(scrutChecked.value).value
     val scrutTpe = Interpreter.resolveInEqStore(scrut.tpe).value
 
-    val (inductiveName, inductiveMeta) = scrutTpe match {
-      case VConst(n, Inductive(meta), _) => (n, meta)
-      case VApp(VConst(n, Inductive(meta), _), args, _) =>
-        if (args.length != meta.familyArity) throw NonInductiveMatch(scrut.tpe)
-        (n, meta)
-      case _ => throw NonInductiveMatch(scrut.tpe)
-    }
+    val InductiveFamily(inductiveName, inductiveMeta) =
+      inductiveFamilyOf(scrutTpe).getOrElse(throw NonInductiveMatch(scrut.tpe))
     val inductiveCtorNames = inductiveMeta.constructorNames
     val cases = t.cases.map { c =>
       val candidates =
@@ -365,7 +366,7 @@ object TypeChecker {
     }
 
     lazy val reachableByType: Vector[ReachableCtor] =
-      computeReachableCtors(scrut, scrutTpe, inductiveName, inductiveCtorNames)
+      computeReachableCtors(scrut, scrutTpe, inductiveName, inductiveCtorNames, env)
 
     def inferMotiveFromReachable(reachable: Vector[ReachableCtor]): Value = {
       val first = reachable.headOption.getOrElse {
@@ -387,13 +388,7 @@ object TypeChecker {
       case None         => inferMotiveFromReachable(reachableByType)
     }
 
-    if (
-      getUniverse(scrut.tpe) == PropTpe &&
-      !isPropValuedType(motiveTy) &&
-      !allowLargeElimination(scrutTpe, reachableByType)
-    ) {
-      throw PropEliminationRestricted(inductiveName, motiveTy, Some(t.span))
-    }
+    checkPropElimination(inductiveName, scrutTpe, motiveTy, reachableByType, t.span)
 
     var checkedByCtor = Map.empty[String, EA.Case]
 

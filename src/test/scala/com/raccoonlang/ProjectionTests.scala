@@ -525,17 +525,36 @@ class ProjectionTests extends munit.FunSuite {
     }
   }
 
-  test("invalid: struct living in Prop is rejected") {
+  test("Prop structs may project Prop-valued fields") {
     val p =
       """
         |struct And (P: Prop)(Q: Prop) : Prop
-        | | intro {P: Prop}{Q: Prop} (p: P)(q: Q) : And(P, Q)
+        | | intro {P: Prop}{Q: Prop} (left: P)(right: Q) : And(P, Q)
+        |
+        |def andLeft (P: Prop)(Q: Prop)(h: And(P, Q)): P := h.left
+        |def andRight (P: Prop)(Q: Prop)(h: And(P, Q)): Q := h.right
+        |""".stripMargin
+
+    typecheckDecls(p)
+  }
+
+  test("negative: Prop struct projection into Type is restricted when the field is not forced") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |struct Nonempty (A: Type) : Prop
+        | | intro {A: Type} (val: A) : Nonempty(A)
+        |
+        |def bad (h: Nonempty(Nat)): Nat := h.val
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
-        intercept[InvalidStruct] { Interpreter.run(core) }
+        intercept[PropEliminationRestricted] { Interpreter.run(core) }
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }
