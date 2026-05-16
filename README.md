@@ -310,4 +310,4 @@ runs GraalVM `native-image`.
 - Well-founded recursion
 - Less-conservative positivity checking
 - Mutually-recursive inductives
-- Quotients
+- Full Prelude quotient API surface

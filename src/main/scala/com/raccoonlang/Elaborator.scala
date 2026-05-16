@@ -228,6 +228,10 @@ object Elaborator {
         Vector("Level", "one"),
         Vector("Prop"),
         Vector("Sort"),
+        Vector("Quot"),
+        Vector("Quot", "mk"),
+        Vector("Quot", "liftCore"),
+        Vector("Quot", "indCore"),
         Vector("add_normalizer"),
         Vector("Level", "succ"),
         Vector("Level", "max")

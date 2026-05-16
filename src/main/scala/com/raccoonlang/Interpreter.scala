@@ -401,7 +401,7 @@ object Interpreter {
       }
     }
 
-    val nextEnv = env2.putGlobal(
+    val envWithSort = env2.putGlobal(
       "Sort",
       VLam(
         {
@@ -435,6 +435,8 @@ object Interpreter {
         })
       )
     )
+
+    val nextEnv = Quotients.install(envWithSort)
 
     val worlds = p.decls.foldLeft(Worlds(nextEnv, nextEnv)) { case (curWorlds, decl) => evalDecl(decl, curWorlds) }
     p.body.map { b =>
