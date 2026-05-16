@@ -65,7 +65,7 @@ private object Builtins {
   private val entries: Map[String, Entry] =
     Map(
       "Sort" -> SortEntry,
-      "add_normalizer" -> Native((_, _, args, _) => Normalizers.add_normalizer(args)),
+      "add_normalizer" -> Native((_, _, args, _) => Normalizers.add_normalizer(args.head.tpe +: args)),
       "Level.succ" -> Native { (_, _, args, eqStore) =>
         Level.succ(Interpreter.getLevel(args.head)(eqStore))
       },
@@ -85,9 +85,9 @@ private object Builtins {
 
   private def runLift(self: VLam, selfType: VPi, args: Vector[Value], store: EqStore): Value = {
     implicit val eqStore: EqStore = store
-    val resultTy = args(2)
-    val f = args(3)
-    val q = args(5)
+    val q = args(0)
+    val resultTy = args(1)
+    val f = args(2)
 
     q.caseOf {
       case QuotientMk(rep) => Interpreter.evalApply(f, Vector(rep))
@@ -98,9 +98,9 @@ private object Builtins {
 
   private def runInd(self: VLam, selfType: VPi, args: Vector[Value], store: EqStore): Value = {
     implicit val eqStore: EqStore = store
-    val motive = args(2)
-    val mkCase = args(3)
-    val q = args(4)
+    val q = args(0)
+    val motive = args(1)
+    val mkCase = args(2)
     lazy val resultTy = Interpreter.evalApply(motive, Vector(q))
 
     q.caseOf {

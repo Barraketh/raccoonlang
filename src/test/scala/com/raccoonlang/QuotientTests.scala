@@ -71,7 +71,7 @@ class QuotientTests extends munit.FunSuite {
           |}
           |
           |{
-          |  Quot.lift(Nat, Rel, Nat, fun (x: Nat): Nat => Nat.succ(x), sound, Quot.mk(Nat, Rel, Nat.zero))
+          |  Quot.lift(Quot.mk(Nat, Rel, Nat.zero), Nat, fun (x: Nat): Nat => Nat.succ(x), sound)
           |}
           |""".stripMargin
     )
@@ -89,7 +89,7 @@ class QuotientTests extends munit.FunSuite {
           |inline def motive (q: Quot(Nat, Rel)): Prop := True
           |
           |{
-          |  Quot.ind(Nat, Rel, motive, fun (a: Nat): motive(Quot.mk(Nat, Rel, a)) => True.intro, Quot.mk(Nat, Rel, Nat.zero))
+          |  Quot.ind(Quot.mk(Nat, Rel, Nat.zero), motive, fun (a: Nat): motive(Quot.mk(Nat, Rel, a)) => True.intro)
           |}
           |""".stripMargin
     )
@@ -102,7 +102,7 @@ class QuotientTests extends munit.FunSuite {
       natPrelude +
         """
           |namespace Quot {
-          |  inline def liftOn (q: Quot($A, $r))(B: Sort($v))(f: A -> B)(sound: (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b))): B := Quot.lift(A, r, B, f, sound, q)
+          |  inline def liftOn (q: Quot($A, $r))(B: Sort($v))(f: A -> B)(sound: (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b))): B := Quot.lift(q, B, f, sound)
           |}
           |
           |inline def idSound (a: Nat)(b: Nat)(h: Rel(a, b)): Eq(Nat, a, b) := h
@@ -121,7 +121,7 @@ class QuotientTests extends munit.FunSuite {
       natPrelude +
         """
           |{
-          |  Quot.sound(Nat, Rel, Nat.zero, Nat.zero, Eq.refl(Nat.zero))
+          |  Quot.sound(Nat.zero, Nat.zero, Rel, Eq.refl(Nat.zero))
           |}
           |""".stripMargin
     )

@@ -31,7 +31,7 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
         |  | Nat.succ x => add(Nat.succ(a), x)
         |}
         |
-        |inline def nat_add_normalizer : Normalizer := add_normalizer(Nat, Nat.zero, add)
+        |inline def nat_add_normalizer : Normalizer := add_normalizer(Nat.zero, add)
         |
         |// Using the additive normalizer over Nat, these equalities become definitional
         |

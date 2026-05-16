@@ -56,6 +56,7 @@ Note that at this point I have done 0 optimization - these performance wins are 
 - Namespaces, file imports, dotted names, and scoped `open`
 - Type patterns
 - Structs / Projections
+- Quotients
 - JVM CLI plus Scala Native build
 
 ## A few concrete examples
