@@ -21,7 +21,7 @@ object ValueQuote {
       env: TypecheckEnv,
       span: Span,
       context: Context = Context.empty
-  )(implicit eqStore: EqStore, normalizers: NormalizerMap): ElabAst.TypeTerm =
+  )(implicit eqStore: EqStore, typecheckCtx: TypecheckContext): ElabAst.TypeTerm =
     quoteTerm(value, env, span, context) match {
       case tpe: ElabAst.TypeTerm => tpe
       case other                 => throw CannotQuoteValue(value, s"$other is not a type term", Some(span))
@@ -32,7 +32,7 @@ object ValueQuote {
       env: TypecheckEnv,
       span: Span,
       context: Context = Context.empty
-  )(implicit eqStore: EqStore, normalizers: NormalizerMap): ElabAst.Term = {
+  )(implicit eqStore: EqStore, typecheckCtx: TypecheckContext): ElabAst.Term = {
     val materialized = ValueOps.materialize(value, eqStore)
 
     materialized match {
@@ -95,7 +95,7 @@ object ValueQuote {
       env: TypecheckEnv,
       span: Span,
       context: Context
-  )(implicit eqStore: EqStore, normalizers: NormalizerMap): Option[ElabAst.Term.Select] =
+  )(implicit eqStore: EqStore, typecheckCtx: TypecheckContext): Option[ElabAst.Term.Select] =
     args match {
       case Vector(base) =>
         internalSelectField(head, env).map(field => quoteSelect(base, field, tpe, env, span, context))
@@ -109,7 +109,7 @@ object ValueQuote {
       env: TypecheckEnv,
       span: Span,
       context: Context
-  )(implicit eqStore: EqStore, normalizers: NormalizerMap): ElabAst.Term.Select =
+  )(implicit eqStore: EqStore, typecheckCtx: TypecheckContext): ElabAst.Term.Select =
     ElabAst.Term.Select(
       quoteTerm(base, env, span, context),
       field,
@@ -122,7 +122,7 @@ object ValueQuote {
       env: TypecheckEnv,
       span: Span,
       context: Context
-  )(implicit eqStore: EqStore, normalizers: NormalizerMap): ElabAst.Term = {
+  )(implicit eqStore: EqStore, typecheckCtx: TypecheckContext): ElabAst.Term = {
     val VCtor(head, fields, tpe) = ctor
     if (!env.globals.contains(head.name)) return localRefOrFail(ctor, env, span)
 
@@ -141,7 +141,7 @@ object ValueQuote {
           throw CannotQuoteValue(ctor, "cannot recover constructor arguments", Some(span))
       }
 
-    val quotedArgs = fresh.args.map(arg => quoteTerm(arg, env, span, context)(refined, normalizers))
+    val quotedArgs = fresh.args.map(arg => quoteTerm(arg, env, span, context)(refined, typecheckCtx))
     val fn = ElabAst.Term.GlobalRef(head.name, span)
     if (quotedArgs.isEmpty) fn else ElabAst.Term.App(fn, quotedArgs, span)
   }
@@ -163,7 +163,7 @@ object ValueQuote {
       env: TypecheckEnv,
       span: Span,
       context: Context
-  )(implicit eqStore: EqStore, normalizers: NormalizerMap): ElabAst.Term.Pi = {
+  )(implicit eqStore: EqStore, typecheckCtx: TypecheckContext): ElabAst.Term.Pi = {
     val freshEnv = BinderOps.freshen(pi)
     val freshArgs = pi.binders.map(binder => freshEnv(binder.localRef))
 

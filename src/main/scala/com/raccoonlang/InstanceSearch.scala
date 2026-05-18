@@ -47,19 +47,19 @@ object InstanceSearch {
 
   def solve(goal: Value, searchEnv: TypecheckEnv)(implicit
       eqStore: EqStore,
-      normalizers: NormalizerMap
+      typecheckCtx: TypecheckContext
   ): BinderOps.CheckedArg = {
     val ctx = new SearchContext
     val res = solveInternal(goal, searchEnv, SearchState.empty, ctx)(
       eqStore.copy(refinable = DepSet.empty),
-      normalizers
+      typecheckCtx
     )
     BinderOps.CheckedArg(res.value, res.term)
   }
 
   private def solveInternal(goal: Value, searchEnv: TypecheckEnv, state: SearchState, ctx: SearchContext)(implicit
       eqStore: EqStore,
-      normalizers: NormalizerMap
+      typecheckCtx: TypecheckContext
   ): SearchResult = {
     val (head, key) = goal.use(rv => headKeyResolved(rv).getOrElse(throw NoInstanceFound(goal)) -> rv.value.key)
 
@@ -97,7 +97,7 @@ object InstanceSearch {
       searchEnv: TypecheckEnv,
       state: SearchState,
       ctx: SearchContext
-  )(implicit eqStore: EqStore, normalizers: NormalizerMap): CandidateSearch = {
+  )(implicit eqStore: EqStore, typecheckCtx: TypecheckContext): CandidateSearch = {
     var hasCycle = false
     var hasBudgetExceeded = false
 
@@ -127,7 +127,7 @@ object InstanceSearch {
       ctx: SearchContext
   )(implicit
       eqStore: EqStore,
-      normalizers: NormalizerMap
+      typecheckCtx: TypecheckContext
   ): SearchResult = {
     candidate.value.tpe.caseOf {
       case pi: VPi =>
@@ -151,7 +151,7 @@ object InstanceSearch {
 
           val (arg, term) =
             if (!inferred.synDeps.intersects(candidateDeps)) {
-              val term = ValueQuote.quoteTerm(inferred, searchEnv, candidate.term.span)(candidateEq, normalizers)
+              val term = ValueQuote.quoteTerm(inferred, searchEnv, candidate.term.span)(candidateEq, typecheckCtx)
               inferred -> term
             } else if (binder.isInstance) {
               val instanceGoal = ValueOps.materialize(freshArg.tpe, candidateEq)

@@ -65,7 +65,7 @@ object TypePatternOps {
 
   private[telescope] def toVBinder(binder: CoreAst.Binder, env: TypecheckEnv)(implicit
       eqStore: EqStore,
-      normalizers: NormalizerMap
+      typecheckCtx: TypecheckContext
   ): (VBinder, ElabAst.Binder) = {
     def checkPattern(pattern: CoreAst.TypePattern, env: TypecheckEnv): (ElabAst.TypePattern, TypecheckEnv) =
       pattern match {
@@ -259,7 +259,7 @@ object TypePatternOps {
 
   private[telescope] def bindValueAndCheck(env: RuntimeEnv, binder: VBinder, actual: Value)(implicit
       eqStore: EqStore,
-      normalizers: NormalizerMap
+      typecheckCtx: TypecheckContext
   ): RuntimeEnv = {
     val openedEnv = openCaptures(env, binder.captures, actual.tpe)
     val expectedTy = Interpreter.evalTypeTerm(binder.expectedTy, openedEnv)

@@ -194,7 +194,7 @@ object Interpreter {
     thunk.body match {
       case BlockedThunkBody.Select(base, field, env, locationId) =>
         evalSelect(base, field, env, locationId, thunk.tpe)
-      case BlockedThunkBody.Match(term, env)                     => evalMatch(term, env)
+      case BlockedThunkBody.Match(term, env) => evalMatch(term, env)
     }
 
   private def evalLam[E <: EnvLike[E]](l: ETerm.Lam, env: E)(implicit eqStore: EqStore): VLam = {
@@ -215,11 +215,11 @@ object Interpreter {
       term match {
         case ETerm.Select(base, field, resultTy, span) =>
           evalSelect(evalTerm(base, env), field, env, span.nodeId, evalTypeTerm(resultTy, env))
-        case ETerm.App(fn, args, _)          => evalApplyTerm(fn, args, env)
-        case tt: ElabAst.TypeTerm            => evalTypeTerm(tt, env)
-        case l: ETerm.Lam                    => evalLam(l, env)
-        case m: ETerm.Match                  => evalMatch(m, env)
-        case b: ETerm.Body                   => evalBody(b, env)
+        case ETerm.App(fn, args, _) => evalApplyTerm(fn, args, env)
+        case tt: ElabAst.TypeTerm   => evalTypeTerm(tt, env)
+        case l: ETerm.Lam           => evalLam(l, env)
+        case m: ETerm.Match         => evalMatch(m, env)
+        case b: ETerm.Body          => evalBody(b, env)
       }
     } catch {
       case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, term.span)
@@ -316,7 +316,7 @@ object Interpreter {
 
   def evalDecl(decl: Decl, worlds: Worlds): Worlds = {
     implicit val eqStore = EqStore.empty
-    implicit val normalizers = NormalizerMap.empty
+    implicit val normalizers = TypecheckContext.empty
 
     decl match {
       case Decl.ConstDecl(unfoldStrategy, name, ty, body, span, isInstance) =>
@@ -378,7 +378,7 @@ object Interpreter {
     val worlds =
       p.decls.foldLeft(initialWorlds) { case (curWorlds, decl) => evalDecl(decl, curWorlds) }
     p.body.map { b =>
-      val checked = TypeChecker.check(b, worlds.checkEnv)(EqStore.empty, NormalizerMap.empty)
+      val checked = TypeChecker.check(b, worlds.checkEnv)(EqStore.empty, TypecheckContext.empty)
       Interpreter.evalTerm(checked.term, worlds.runEnv)(EqStore.empty)
     }
   }

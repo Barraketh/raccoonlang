@@ -26,7 +26,7 @@ object InductiveChecks {
 
   private def occursInductive(v: Value, inductiveHead: VConst)(implicit
       eqStore: EqStore,
-      normalizers: NormalizerMap
+      typecheckCtx: TypecheckContext
   ): Boolean =
     v match {
       // Be conservative: blocked types may hide an occurrence
@@ -62,7 +62,7 @@ object InductiveChecks {
   @tailrec
   private def isStrictlyPositive(v: Value, inductiveHead: VConst)(implicit
       eqStore: EqStore,
-      normalizer: NormalizerMap
+      typecheckCtx: TypecheckContext
   ): Boolean =
     v match {
       // Be conservative: blocked shapes are not strictly positive
@@ -98,7 +98,7 @@ object InductiveChecks {
       isStruct: Boolean
   )(implicit
       eqStore: EqStore,
-      normalizerMap: NormalizerMap
+      typecheckCtx: TypecheckContext
   ): TypecheckEnv = {
     val envWithInductive = baseEnv.putGlobal(decl.header.name, inductiveHead)
 
@@ -119,7 +119,7 @@ object InductiveChecks {
 
   def evalInductiveDecl(decl: Decl.InductiveDecl, worlds: Worlds): Worlds = {
     implicit val eqStore: EqStore = EqStore.empty
-    implicit val normalizers: NormalizerMap = NormalizerMap.empty
+    implicit val typecheckCtx: TypecheckContext = TypecheckContext.empty
 
     // All direct Value matches in this function and its private helpers
     // rely on EqStore.empty: no Vars are solved in this pass.
@@ -195,7 +195,6 @@ object InductiveChecks {
         // 2) Universe bound: skip for Prop families; enforce for Sort families
         constructorUniverse match {
           case PropTpe => // no universe restriction
-
           case VSort(inductiveLevel) =>
             TypeChecker.getUniverse(field.tpe) match {
               case Value.PropTpe =>

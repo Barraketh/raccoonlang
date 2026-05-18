@@ -220,16 +220,16 @@ object InstanceRegistry {
 }
 
 // Probably should live in Env, but I'll keep it separate for now
-case class NormalizerMap(map: Map[Normalizers.CarrierKey, Value.Normalizer]) {
-  def use(n: Value.Normalizer): NormalizerMap = {
-    if (map.contains(n.carrierKey)) throw DuplicateNormalizer(n.carrierKey)
+class TypecheckContext(normalizers: Map[Normalizers.CarrierKey, Value.Normalizer]) {
+  def useNormalizer(n: Value.Normalizer): TypecheckContext = {
+    if (normalizers.contains(n.carrierKey)) throw DuplicateNormalizer(n.carrierKey)
 
-    NormalizerMap(map + (n.carrierKey -> n))
+    new TypecheckContext(normalizers + (n.carrierKey -> n))
   }
 
-  def get(key: Normalizers.CarrierKey): Option[Value.Normalizer] = map.get(key)
+  def getNormalizer(key: Normalizers.CarrierKey): Option[Value.Normalizer] = normalizers.get(key)
 }
 
-object NormalizerMap {
-  val empty = NormalizerMap(Map.empty)
+object TypecheckContext {
+  val empty = new TypecheckContext(Map.empty)
 }

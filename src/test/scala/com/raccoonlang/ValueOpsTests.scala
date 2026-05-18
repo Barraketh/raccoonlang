@@ -254,7 +254,7 @@ class ValueOpsTests extends munit.FunSuite {
 
   test("constructor equality accounts for result type") {
     implicit val eqStore: EqStore = EqStore.empty
-    implicit val normalizers: NormalizerMap = NormalizerMap.empty
+    implicit val normalizers: TypecheckContext = TypecheckContext.empty
 
     val head = ConstructorHead("C", numErased = 0, totalArity = 0, valueType, isStruct = false)
     val resultA = symbolicValue("ResultA")

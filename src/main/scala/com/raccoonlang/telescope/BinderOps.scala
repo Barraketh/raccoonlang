@@ -19,7 +19,7 @@ object BinderOps {
 
   def toVBinders(binders: Vector[CoreAst.Binder], baseEnv: TypecheckEnv)(implicit
       eqStore: EqStore,
-      normalizers: NormalizerMap
+      typecheckCtx: TypecheckContext
   ): (Vector[VBinder], Vector[ElabAst.Binder]) = {
     val vBinders = Vector.newBuilder[VBinder]
     val checkedBinders = Vector.newBuilder[ElabAst.Binder]
@@ -46,8 +46,8 @@ object BinderOps {
   }
 
   def checkAndInstantiate(binders: Vector[VBinder], baseEnv: RuntimeEnv, args: Vector[Value])(implicit
-                                                                                              eqStore: EqStore,
-                                                                                              normalizers: NormalizerMap
+      eqStore: EqStore,
+      typecheckCtx: TypecheckContext
   ): RuntimeEnv = {
     if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
 

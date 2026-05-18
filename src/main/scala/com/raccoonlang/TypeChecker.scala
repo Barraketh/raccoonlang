@@ -22,11 +22,11 @@ object TypeChecker {
     }
   }
 
-  def checkFits(actual: Value, expected: Value)(implicit eqStore: EqStore, normalizers: NormalizerMap): Unit =
+  def checkFits(actual: Value, expected: Value)(implicit eqStore: EqStore, typecheckCtx: TypecheckContext): Unit =
     if (!ValueEquivalence.defEq(actual, expected) && !sortLeq(actual, expected))
       throw TypeMismatch(expected, actual)
 
-  def checkType(value: Value, tyVal: Value)(implicit eqStore: EqStore, normalizers: NormalizerMap): Unit =
+  def checkType(value: Value, tyVal: Value)(implicit eqStore: EqStore, typecheckCtx: TypecheckContext): Unit =
     checkFits(value.tpe, tyVal)
 
   def getUniverse(value: Value)(implicit eqStore: EqStore): Universe = {
@@ -46,7 +46,7 @@ object TypeChecker {
 
   private def checkApplyValue(fn: Value, args: Vector[BinderOps.CheckedArg])(implicit
       eqStore: EqStore,
-      normalizers: NormalizerMap
+      typecheckCtx: TypecheckContext
   ): Value =
     fn.tpe.caseOf {
       case pi: VPi =>
@@ -71,7 +71,7 @@ object TypeChecker {
 
   private def checkApp(app: CA.Term.App, env: TypecheckEnv)(implicit
       meta: EqStore,
-      normalizers: NormalizerMap
+      typecheckCtx: TypecheckContext
   ): Checked = {
     val fn = check(app.fn, env)
     val args = app.args.map { arg =>
@@ -83,7 +83,7 @@ object TypeChecker {
 
   private def checkDerive(derive: CA.Term.Derive, env: TypecheckEnv)(implicit
       meta: EqStore,
-      normalizers: NormalizerMap
+      typecheckCtx: TypecheckContext
   ): Checked = {
     val goal = getCheckedType(derive.goal, env)
     val solved = InstanceSearch.solve(goal.value, env)
@@ -92,7 +92,7 @@ object TypeChecker {
 
   private def checkPi(pi: CA.Term.Pi, env: TypecheckEnv)(implicit
       meta: EqStore,
-      normalizers: NormalizerMap
+      typecheckCtx: TypecheckContext
   ): CheckedPi = {
     val (vBinders, checkedBinders) = BinderOps.toVBinders(pi.binders, env)
     val binderEnv = BinderOps.freshen(vBinders, env)
@@ -115,7 +115,7 @@ object TypeChecker {
 
   def checkTypeTerm(term: CA.TypeTerm, env: TypecheckEnv)(implicit
       meta: EqStore,
-      normalizers: NormalizerMap
+      typecheckCtx: TypecheckContext
   ): CheckedType = term match {
     case t: CA.Term.TApp =>
       val fn = checkTypeTerm(t.fn, env)
@@ -136,12 +136,12 @@ object TypeChecker {
 
   def evalTypeTerm(term: CA.TypeTerm, env: TypecheckEnv)(implicit
       meta: EqStore,
-      normalizers: NormalizerMap
+      typecheckCtx: TypecheckContext
   ): Value = checkTypeTerm(term, env).value
 
   private def checkBody(body: CA.Term.Body, env: TypecheckEnv)(implicit
       meta: EqStore,
-      normalizers: NormalizerMap
+      typecheckCtx: TypecheckContext
   ): Checked = {
     val checkedLets = Vector.newBuilder[EA.Let]
     val newEnv = body.lets.foldLeft(env) { case (curEnv, l) =>
@@ -168,7 +168,7 @@ object TypeChecker {
 
   private def checkBranch(br: CA.Case, args: Seq[Value], envWithScrut: TypecheckEnv, expectedTy: Value)(implicit
       eqStore: EqStore,
-      normalizers: NormalizerMap
+      typecheckCtx: TypecheckContext
   ): EA.Case = {
     if (args.length != br.argRefs.length)
       throw ArityMismatch(args.length, br.argRefs.length, Some(br.span))
@@ -193,7 +193,7 @@ object TypeChecker {
 
   private def checkSelect(baseValue: Value, baseTerm: EA.Term, field: String, span: Span, env: TypecheckEnv)(implicit
       eqStore: EqStore,
-      normalizers: NormalizerMap
+      typecheckCtx: TypecheckContext
   ): CheckedSelect = {
     val vType = Interpreter.resolveInEqStore(baseValue.tpe).value
     val InductiveFamily(indName, meta) = inductiveFamilyOf(vType).getOrElse(throw NotAType(vType))
@@ -221,13 +221,13 @@ object TypeChecker {
           // For a later field type like Vec(A, n), the in-scope syntax for the fresh constructor field `n`
           // is the earlier projection `base.n`, so teach the quoter that substitution before quoting later types.
           val priorFieldTy = refinedFresh.fields(idx).tpe
-          val priorFieldTyTerm = ValueQuote.quoteType(priorFieldTy, env, span, quoteContext)(refined, normalizers)
+          val priorFieldTyTerm = ValueQuote.quoteType(priorFieldTy, env, span, quoteContext)(refined, typecheckCtx)
           val priorFieldTerm = EA.Term.Select(baseTerm, fieldBinder.name, priorFieldTyTerm, span)
           quoteContext = quoteContext.withValue(refinedFresh.fields(idx), priorFieldTerm)(refined)
         }
 
         val resultTyTerm =
-          ValueQuote.quoteType(refinedFresh.fields(fieldIdx).tpe, env, span, quoteContext)(refined, normalizers)
+          ValueQuote.quoteType(refinedFresh.fields(fieldIdx).tpe, env, span, quoteContext)(refined, typecheckCtx)
         val resultTy = Interpreter.evalTypeTerm(resultTyTerm, env)
         val scrut = Interpreter.resolveInEqStore(baseValue).value
         checkPropElimination(
@@ -259,7 +259,7 @@ object TypeChecker {
       inductiveName: String,
       ctorNames: Vector[String],
       env: TypecheckEnv
-  )(implicit eqStore: EqStore, normalizers: NormalizerMap): Vector[ReachableCtor] = {
+  )(implicit eqStore: EqStore, typecheckCtx: TypecheckContext): Vector[ReachableCtor] = {
     def tryUnify(left: Value, right: Value, refinable: DepSet): Option[EqStore] =
       try Some(ValueEquivalence.unify(left, right, eqStore.allow(refinable)))
       catch { case _: UnificationFailed | _: OccursCheckFailed => None }
@@ -293,7 +293,7 @@ object TypeChecker {
 
   private def allowLargeElimination(scrutTpe: Value, reachable: Vector[ReachableCtor])(implicit
       eqStore: EqStore,
-      normalizers: NormalizerMap
+      typecheckCtx: TypecheckContext
   ): Boolean = {
     if (reachable.isEmpty) return true
     if (reachable.length > 1) return false
@@ -317,7 +317,7 @@ object TypeChecker {
     fields1.zip(fields2).forall { case (f1, f2) =>
       TypeChecker.getUniverse(f1.tpe)(startEq) match {
         case PropTpe => true
-        case _       => ValueEquivalence.defEq(f1, f2)(startEq, normalizers)
+        case _       => ValueEquivalence.defEq(f1, f2)(startEq, typecheckCtx)
       }
     }
   }
@@ -328,7 +328,7 @@ object TypeChecker {
       motiveTy: Value,
       reachable: => Vector[ReachableCtor],
       span: Span
-  )(implicit eqStore: EqStore, normalizers: NormalizerMap): Unit =
+  )(implicit eqStore: EqStore, typecheckCtx: TypecheckContext): Unit =
     if (getUniverse(scrutTpe) == PropTpe && !isPropValuedType(motiveTy)) {
       if (!allowLargeElimination(scrutTpe, reachable))
         throw PropEliminationRestricted(inductiveName, motiveTy, Some(span))
@@ -336,7 +336,7 @@ object TypeChecker {
 
   private def checkMatch(t: CA.Term.Match, env: TypecheckEnv)(implicit
       eqStore: EqStore,
-      normalizers: NormalizerMap
+      typecheckCtx: TypecheckContext
   ): Checked = {
     val scrutChecked = check(t.scrut, env)
     val scrut = Interpreter.resolveInEqStore(scrutChecked.value).value
@@ -415,7 +415,7 @@ object TypeChecker {
               val br = cases.find(_.ctorName == ctorName).getOrElse(throw MissingCase(ctorName))
               checkedByCtor += ctorName -> checkBranch(br, info.fieldArgs, env, motiveTy)(
                 info.branchEqStore,
-                normalizers
+                typecheckCtx
               )
           }
         }
@@ -428,13 +428,13 @@ object TypeChecker {
     Checked(Interpreter.evalTerm(checkedMatch, env), checkedMatch)
   }
 
-  private def checkLam(l: CA.Term.Lam, env: TypecheckEnv, normalizers: NormalizerMap)(implicit
+  private def checkLam(l: CA.Term.Lam, env: TypecheckEnv, typecheckCtx: TypecheckContext)(implicit
       eqStore: EqStore
   ): Checked = {
-    implicit val nextNormalizerMap = l.uses.foldLeft(normalizers) { case (curNormalizers, nextUse) =>
-      val normalizer = check(nextUse.normalizer, env)(eqStore, curNormalizers)
+    implicit val nextNormalizerMap = l.uses.foldLeft(typecheckCtx) { case (curtypecheckCtx, nextUse) =>
+      val normalizer = check(nextUse.normalizer, env)(eqStore, curtypecheckCtx)
       normalizer.value match {
-        case n: Value.Normalizer => curNormalizers.use(n)
+        case n: Value.Normalizer => curtypecheckCtx.useNormalizer(n)
         case _ =>
           throw TypeMismatch(normalizer.value, NormalizerType)
       }
@@ -461,14 +461,14 @@ object TypeChecker {
 
   def getCheckedType(term: CA.TypeTerm, env: TypecheckEnv)(implicit
       ctx: EqStore,
-      normalizerMap: NormalizerMap
+      typecheckCtx: TypecheckContext
   ): CheckedType = {
     val res = checkTypeTerm(term, env)
     assertType(res.value)
     res
   }
 
-  def getType(term: CA.TypeTerm, env: TypecheckEnv)(implicit ctx: EqStore, normalizerMap: NormalizerMap): Value =
+  def getType(term: CA.TypeTerm, env: TypecheckEnv)(implicit ctx: EqStore, typecheckCtx: TypecheckContext): Value =
     getCheckedType(term, env).value
 
   def assertType(value: Value)(implicit ctx: EqStore): Unit = {
@@ -484,7 +484,7 @@ object TypeChecker {
 
   def check(term: CA.Term, env: TypecheckEnv)(implicit
       eqStore: EqStore,
-      normalizers: NormalizerMap
+      typecheckCtx: TypecheckContext
   ): Checked = {
     try {
       term match {
@@ -494,7 +494,7 @@ object TypeChecker {
           Checked(checkedSelect.value, checkedSelect.term)
         case t: CA.Term.App    => checkApp(t, env)
         case d: CA.Term.Derive => checkDerive(d, env)
-        case l: CA.Term.Lam    => checkLam(l, env, normalizers)
+        case l: CA.Term.Lam    => checkLam(l, env, typecheckCtx)
         case m: CA.Term.Match  => checkMatch(m, env)
         case b: CA.Term.Body   => checkBody(b, env)
         case term: CA.TypeTerm =>
