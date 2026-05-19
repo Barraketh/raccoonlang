@@ -91,8 +91,8 @@ private object Builtins {
 
     q.caseOf {
       case QuotientMk(rep) => Interpreter.evalApply(f, Vector(rep))
-      case b: Blocker     => VBlockedApp(self, args, resultTy, b.blockerId)
-      case _              => VApp(VConst(LiftName, Symbol, selfType), args, resultTy)
+      case b: Blocker      => VBlockedApp(self, args, resultTy, b.blockerId)
+      case _               => VApp(VConst(LiftName, Symbol, selfType), args, resultTy)
     }
   }
 
@@ -105,8 +105,8 @@ private object Builtins {
 
     q.caseOf {
       case QuotientMk(rep) => Interpreter.evalApply(mkCase, Vector(rep))
-      case b: Blocker     => VBlockedApp(self, args, resultTy, b.blockerId)
-      case _              => VApp(VConst(IndName, Symbol, selfType), args, resultTy)
+      case b: Blocker      => VBlockedApp(self, args, resultTy, b.blockerId)
+      case _               => VApp(VConst(IndName, Symbol, selfType), args, resultTy)
     }
   }
 

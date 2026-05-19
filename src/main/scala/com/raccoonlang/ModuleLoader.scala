@@ -17,7 +17,7 @@ object ModuleLoader {
   final case class LoadedProgram(program: SA.Program, sources: Vector[LoadedSource])
 
   final case class LoadFailure(error: TypeError, sources: Vector[LoadedSource])
-      extends RuntimeException(error.getMessage)
+    extends RuntimeException(error.getMessage)
 
   private final case class ParsedModule(path: Path, sourceId: SourceId, program: SA.Program)
 
@@ -152,10 +152,10 @@ object ModuleLoader {
 
   private def commandSpan(command: SA.Command): Span =
     command match {
-      case decl: SA.Command.Decl                       => declSpan(decl)
-      case SA.Command.Namespace(_, _, span)            => span
-      case SA.Command.Open(_, _, _, span)              => span
-      case SA.Command.Block(_, span)                   => span
+      case decl: SA.Command.Decl            => declSpan(decl)
+      case SA.Command.Namespace(_, _, span) => span
+      case SA.Command.Open(_, _, _, span)   => span
+      case SA.Command.Block(_, span)        => span
     }
 
   private def declSpan(decl: SA.Command.Decl): Span =
