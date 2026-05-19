@@ -66,7 +66,6 @@ class TypeClassTests extends munit.FunSuite {
     assert(body.isInstanceOf[CoreAst.Term.Derive])
 
     implicit val eqStore: EqStore = EqStore.empty
-    implicit val normalizers: TypecheckContext = TypecheckContext.empty
     val checked = TypeChecker.check(body, worlds.checkEnv)
 
     checked.term match {
@@ -112,7 +111,6 @@ class TypeClassTests extends munit.FunSuite {
           |""".stripMargin
     ).body.getOrElse(fail("Program has no body"))
     implicit val eqStore: EqStore = EqStore.empty
-    implicit val normalizers: TypecheckContext = TypecheckContext.empty
 
     val checked = TypeChecker.check(body, worlds.checkEnv)
     val runEnvWithoutSearch = worlds.runEnv.copy(globalInstances = InstanceRegistry.empty)
@@ -493,7 +491,6 @@ class TypeClassTests extends munit.FunSuite {
     val envWithA = env.putLocal(aRef, a)
 
     implicit val eqStore: EqStore = EqStore.empty.allow(DepSet(a.id))
-    implicit val normalizers: TypecheckContext = TypecheckContext.empty
 
     val goal = applyValue(namedValue(envWithA, "DecEq"), a)
 

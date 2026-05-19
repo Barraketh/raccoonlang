@@ -18,8 +18,7 @@ object BinderOps {
   def freshen(vpi: VPi)(implicit eqStore: EqStore): RuntimeEnv = freshen(vpi.binders, vpi.env)
 
   def toVBinders(binders: Vector[CoreAst.Binder], baseEnv: TypecheckEnv)(implicit
-      eqStore: EqStore,
-      typecheckCtx: TypecheckContext
+      eqStore: EqStore
   ): (Vector[VBinder], Vector[ElabAst.Binder]) = {
     val vBinders = Vector.newBuilder[VBinder]
     val checkedBinders = Vector.newBuilder[ElabAst.Binder]
@@ -45,14 +44,18 @@ object BinderOps {
     }
   }
 
-  def checkAndInstantiate(binders: Vector[VBinder], baseEnv: RuntimeEnv, args: Vector[Value])(implicit
-      eqStore: EqStore,
-      typecheckCtx: TypecheckContext
+  def checkAndInstantiate(
+      binders: Vector[VBinder],
+      runtimeEnv: RuntimeEnv,
+      args: Vector[Value],
+      normalizerMap: Normalizers.NormalizerMap
+  )(implicit
+      eqStore: EqStore
   ): RuntimeEnv = {
     if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
 
-    binders.zip(args).foldLeft(baseEnv) { case (curEnv, (binder, value)) =>
-      TypePatternOps.bindValueAndCheck(curEnv, binder, value)
+    binders.zip(args).foldLeft(runtimeEnv) { case (curRuntimeEnv, (binder, value)) =>
+      TypePatternOps.bindValueAndCheck(curRuntimeEnv, binder, value, normalizerMap)
     }
   }
 }

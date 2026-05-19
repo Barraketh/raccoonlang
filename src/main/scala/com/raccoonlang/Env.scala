@@ -95,7 +95,8 @@ final case class TypecheckEnv(
     globals: Map[String, Binding],
     locals: Vector[Binding],
     globalInstances: InstanceRegistry,
-    localInstances: Map[String, Vector[InstanceCandidate]]
+    localInstances: Map[String, Vector[InstanceCandidate]],
+    normalizers: Normalizers.NormalizerMap
 ) extends EnvLike[TypecheckEnv] {
   override def putGlobal(
       name: String,
@@ -150,6 +151,11 @@ final case class TypecheckEnv(
       globalInstances.get(key)
     )
 
+  def useNormalizer(n: Value.Normalizer): TypecheckEnv = {
+    if (normalizers.contains(n.carrierKey)) throw DuplicateNormalizer(n.carrierKey)
+
+    copy(normalizers = normalizers + (n.carrierKey -> n))
+  }
 }
 
 object TypecheckEnv {
@@ -158,7 +164,8 @@ object TypecheckEnv {
       globals = Map.empty,
       locals = Vector.empty,
       globalInstances = InstanceRegistry.empty,
-      localInstances = Map.empty
+      localInstances = Map.empty,
+      normalizers = Map.empty
     )
 }
 
@@ -217,19 +224,4 @@ final case class InstanceRegistry(buckets: Map[String, Vector[InstanceCandidate]
 
 object InstanceRegistry {
   val empty: InstanceRegistry = InstanceRegistry(Map.empty)
-}
-
-// Probably should live in Env, but I'll keep it separate for now
-class TypecheckContext(normalizers: Map[Normalizers.CarrierKey, Value.Normalizer]) {
-  def useNormalizer(n: Value.Normalizer): TypecheckContext = {
-    if (normalizers.contains(n.carrierKey)) throw DuplicateNormalizer(n.carrierKey)
-
-    new TypecheckContext(normalizers + (n.carrierKey -> n))
-  }
-
-  def getNormalizer(key: Normalizers.CarrierKey): Option[Value.Normalizer] = normalizers.get(key)
-}
-
-object TypecheckContext {
-  val empty = new TypecheckContext(Map.empty)
 }

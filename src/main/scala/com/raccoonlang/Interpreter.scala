@@ -316,7 +316,6 @@ object Interpreter {
 
   def evalDecl(decl: Decl, worlds: Worlds): Worlds = {
     implicit val eqStore = EqStore.empty
-    implicit val normalizers = TypecheckContext.empty
 
     decl match {
       case Decl.ConstDecl(unfoldStrategy, name, ty, body, span, isInstance) =>
@@ -335,7 +334,7 @@ object Interpreter {
             val checkedBody = TypeChecker.check(term, worlds.checkEnv)
             val bodyV0 = checkedBody.value
 
-            TypeChecker.checkType(bodyV0, tyV)
+            TypeChecker.checkType(bodyV0, tyV, worlds.checkEnv.normalizers)
             val bodyV = Value.ascribe(bodyV0, tyV)
 
             val checkValue: Value = unfoldStrategy match {
@@ -378,7 +377,7 @@ object Interpreter {
     val worlds =
       p.decls.foldLeft(initialWorlds) { case (curWorlds, decl) => evalDecl(decl, curWorlds) }
     p.body.map { b =>
-      val checked = TypeChecker.check(b, worlds.checkEnv)(EqStore.empty, TypecheckContext.empty)
+      val checked = TypeChecker.check(b, worlds.checkEnv)(EqStore.empty)
       Interpreter.evalTerm(checked.term, worlds.runEnv)(EqStore.empty)
     }
   }

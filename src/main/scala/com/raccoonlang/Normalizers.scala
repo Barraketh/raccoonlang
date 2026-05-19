@@ -11,6 +11,8 @@ object Normalizers {
     final case class VarKey(id: VarId) extends CarrierKey
   }
 
+  type NormalizerMap = Map[CarrierKey, Value.Normalizer]
+
   def getCarrierKey(v: Value): Option[CarrierKey] = v match {
     case VConst(name, _, _)             => Some(CarrierKey.Head(name))
     case VApp(VConst(name, _, _), _, _) => Some(CarrierKey.Head(name))

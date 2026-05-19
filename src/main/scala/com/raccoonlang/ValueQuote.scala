@@ -21,7 +21,7 @@ object ValueQuote {
       env: TypecheckEnv,
       span: Span,
       context: Context = Context.empty
-  )(implicit eqStore: EqStore, typecheckCtx: TypecheckContext): ElabAst.TypeTerm =
+  )(implicit eqStore: EqStore): ElabAst.TypeTerm =
     quoteTerm(value, env, span, context) match {
       case tpe: ElabAst.TypeTerm => tpe
       case other                 => throw CannotQuoteValue(value, s"$other is not a type term", Some(span))
@@ -32,7 +32,7 @@ object ValueQuote {
       env: TypecheckEnv,
       span: Span,
       context: Context = Context.empty
-  )(implicit eqStore: EqStore, typecheckCtx: TypecheckContext): ElabAst.Term = {
+  )(implicit eqStore: EqStore): ElabAst.Term = {
     val materialized = ValueOps.materialize(value, eqStore)
 
     materialized match {
@@ -95,7 +95,7 @@ object ValueQuote {
       env: TypecheckEnv,
       span: Span,
       context: Context
-  )(implicit eqStore: EqStore, typecheckCtx: TypecheckContext): Option[ElabAst.Term.Select] =
+  )(implicit eqStore: EqStore): Option[ElabAst.Term.Select] =
     args match {
       case Vector(base) =>
         internalSelectField(head, env).map(field => quoteSelect(base, field, tpe, env, span, context))
@@ -109,7 +109,7 @@ object ValueQuote {
       env: TypecheckEnv,
       span: Span,
       context: Context
-  )(implicit eqStore: EqStore, typecheckCtx: TypecheckContext): ElabAst.Term.Select =
+  )(implicit eqStore: EqStore): ElabAst.Term.Select =
     ElabAst.Term.Select(
       quoteTerm(base, env, span, context),
       field,
@@ -122,7 +122,7 @@ object ValueQuote {
       env: TypecheckEnv,
       span: Span,
       context: Context
-  )(implicit eqStore: EqStore, typecheckCtx: TypecheckContext): ElabAst.Term = {
+  )(implicit eqStore: EqStore): ElabAst.Term = {
     val VCtor(head, fields, tpe) = ctor
     if (!env.globals.contains(head.name)) return localRefOrFail(ctor, env, span)
 
@@ -132,16 +132,16 @@ object ValueQuote {
 
     val refined =
       try {
-        val start = ValueEquivalence.unify(fresh.tpe, tpe, eqStore.copy(refinable = fresh.synDeps))
+        val start = ValueEquivalence.unify(fresh.tpe, tpe, eqStore.copy(refinable = fresh.synDeps), env.normalizers)
         fresh.fields.zip(fields).foldLeft(start) { case (cur, (freshField, field)) =>
-          ValueEquivalence.unify(freshField, field, cur)
+          ValueEquivalence.unify(freshField, field, cur, env.normalizers)
         }
       } catch {
         case _: UnificationFailed | _: OccursCheckFailed =>
           throw CannotQuoteValue(ctor, "cannot recover constructor arguments", Some(span))
       }
 
-    val quotedArgs = fresh.args.map(arg => quoteTerm(arg, env, span, context)(refined, typecheckCtx))
+    val quotedArgs = fresh.args.map(arg => quoteTerm(arg, env, span, context)(refined))
     val fn = ElabAst.Term.GlobalRef(head.name, span)
     if (quotedArgs.isEmpty) fn else ElabAst.Term.App(fn, quotedArgs, span)
   }
@@ -163,7 +163,7 @@ object ValueQuote {
       env: TypecheckEnv,
       span: Span,
       context: Context
-  )(implicit eqStore: EqStore, typecheckCtx: TypecheckContext): ElabAst.Term.Pi = {
+  )(implicit eqStore: EqStore): ElabAst.Term.Pi = {
     val freshEnv = BinderOps.freshen(pi)
     val freshArgs = pi.binders.map(binder => freshEnv(binder.localRef))
 

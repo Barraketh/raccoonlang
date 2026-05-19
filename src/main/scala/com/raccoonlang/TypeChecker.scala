@@ -22,12 +22,14 @@ object TypeChecker {
     }
   }
 
-  def checkFits(actual: Value, expected: Value)(implicit eqStore: EqStore, typecheckCtx: TypecheckContext): Unit =
-    if (!ValueEquivalence.defEq(actual, expected) && !sortLeq(actual, expected))
+  def checkFits(actual: Value, expected: Value, normalizerMap: Normalizers.NormalizerMap)(implicit
+      eqStore: EqStore
+  ): Unit =
+    if (!ValueEquivalence.defEq(actual, expected, normalizerMap) && !sortLeq(actual, expected))
       throw TypeMismatch(expected, actual)
 
-  def checkType(value: Value, tyVal: Value)(implicit eqStore: EqStore, typecheckCtx: TypecheckContext): Unit =
-    checkFits(value.tpe, tyVal)
+  def checkType(value: Value, tyVal: Value, normalizerMap: Normalizers.NormalizerMap)(implicit eqStore: EqStore): Unit =
+    checkFits(value.tpe, tyVal, normalizerMap)
 
   def getUniverse(value: Value)(implicit eqStore: EqStore): Universe = {
     value.tpe.caseOf {
@@ -44,14 +46,13 @@ object TypeChecker {
   def isPropValuedType(value: Value)(implicit eqStore: EqStore): Boolean =
     isPropValue(value) || getUniverse(value) == PropTpe
 
-  private def checkApplyValue(fn: Value, args: Vector[BinderOps.CheckedArg])(implicit
-      eqStore: EqStore,
-      typecheckCtx: TypecheckContext
+  private def checkApplyValue(fn: Value, args: Vector[BinderOps.CheckedArg], normalizerMap: Normalizers.NormalizerMap)(
+      implicit eqStore: EqStore
   ): Value =
     fn.tpe.caseOf {
       case pi: VPi =>
         val values = args.map(_.value)
-        BinderOps.checkAndInstantiate(pi.binders, pi.env, values)
+        BinderOps.checkAndInstantiate(pi.binders, pi.env, values, normalizerMap)
         Interpreter.evalApply(fn, values)
       case _ => throw CannotApplyNonFunction(fn)
     }
@@ -70,20 +71,18 @@ object TypeChecker {
     }
 
   private def checkApp(app: CA.Term.App, env: TypecheckEnv)(implicit
-      meta: EqStore,
-      typecheckCtx: TypecheckContext
+      meta: EqStore
   ): Checked = {
     val fn = check(app.fn, env)
     val args = app.args.map { arg =>
       val checkedArg = check(arg, env)
       BinderOps.CheckedArg(checkedArg.value, checkedArg.term)
     }
-    Checked(checkApplyValue(fn.value, args), EA.Term.App(fn.term, args.map(_.term), app.span))
+    Checked(checkApplyValue(fn.value, args, env.normalizers), EA.Term.App(fn.term, args.map(_.term), app.span))
   }
 
   private def checkDerive(derive: CA.Term.Derive, env: TypecheckEnv)(implicit
-      meta: EqStore,
-      typecheckCtx: TypecheckContext
+      meta: EqStore
   ): Checked = {
     val goal = getCheckedType(derive.goal, env)
     val solved = InstanceSearch.solve(goal.value, env)
@@ -91,8 +90,7 @@ object TypeChecker {
   }
 
   private def checkPi(pi: CA.Term.Pi, env: TypecheckEnv)(implicit
-      meta: EqStore,
-      typecheckCtx: TypecheckContext
+      meta: EqStore
   ): CheckedPi = {
     val (vBinders, checkedBinders) = BinderOps.toVBinders(pi.binders, env)
     val binderEnv = BinderOps.freshen(vBinders, env)
@@ -114,8 +112,7 @@ object TypeChecker {
   }
 
   def checkTypeTerm(term: CA.TypeTerm, env: TypecheckEnv)(implicit
-      meta: EqStore,
-      typecheckCtx: TypecheckContext
+      meta: EqStore
   ): CheckedType = term match {
     case t: CA.Term.TApp =>
       val fn = checkTypeTerm(t.fn, env)
@@ -123,7 +120,7 @@ object TypeChecker {
         val checked = checkTypeTerm(arg, env)
         BinderOps.CheckedArg(checked.value, checked.term)
       }
-      CheckedType(checkApplyValue(fn.value, args), EA.Term.App(fn.term, args.map(_.term), t.span))
+      CheckedType(checkApplyValue(fn.value, args, env.normalizers), EA.Term.App(fn.term, args.map(_.term), t.span))
     case CA.Term.TSelect(base, field, span) =>
       val checkedBase = checkTypeTerm(base, env)
       val checkedSelect = checkSelect(checkedBase.value, checkedBase.term, field, span, env)
@@ -135,13 +132,11 @@ object TypeChecker {
   }
 
   def evalTypeTerm(term: CA.TypeTerm, env: TypecheckEnv)(implicit
-      meta: EqStore,
-      typecheckCtx: TypecheckContext
+      meta: EqStore
   ): Value = checkTypeTerm(term, env).value
 
   private def checkBody(body: CA.Term.Body, env: TypecheckEnv)(implicit
-      meta: EqStore,
-      typecheckCtx: TypecheckContext
+      meta: EqStore
   ): Checked = {
     val checkedLets = Vector.newBuilder[EA.Let]
     val newEnv = body.lets.foldLeft(env) { case (curEnv, l) =>
@@ -151,7 +146,7 @@ object TypeChecker {
         .map { tyTerm =>
           val checkedTy = getCheckedType(tyTerm, curEnv)
           val tyV = checkedTy.value
-          checkType(res, tyV)
+          checkType(res, tyV, curEnv.normalizers)
           checkedLets += EA.Let(l.localRef, Some(checkedTy.term), checkedValue.term, l.span, l.isInstance)
           Value.ascribe(res, tyV)
         }
@@ -167,8 +162,7 @@ object TypeChecker {
   }
 
   private def checkBranch(br: CA.Case, args: Seq[Value], envWithScrut: TypecheckEnv, expectedTy: Value)(implicit
-      eqStore: EqStore,
-      typecheckCtx: TypecheckContext
+      eqStore: EqStore
   ): EA.Case = {
     if (args.length != br.argRefs.length)
       throw ArityMismatch(args.length, br.argRefs.length, Some(br.span))
@@ -179,7 +173,7 @@ object TypeChecker {
       }
     }
     val branchRes = check(br.body, branchEnv)
-    checkType(branchRes.value, expectedTy)
+    checkType(branchRes.value, expectedTy, branchEnv.normalizers)
     EA.Case(br.ctorName, br.argRefs, branchRes.term, br.span)
   }
 
@@ -192,8 +186,7 @@ object TypeChecker {
     }
 
   private def checkSelect(baseValue: Value, baseTerm: EA.Term, field: String, span: Span, env: TypecheckEnv)(implicit
-      eqStore: EqStore,
-      typecheckCtx: TypecheckContext
+      eqStore: EqStore
   ): CheckedSelect = {
     val vType = Interpreter.resolveInEqStore(baseValue.tpe).value
     val InductiveFamily(indName, meta) = inductiveFamilyOf(vType).getOrElse(throw NotAType(vType))
@@ -212,7 +205,7 @@ object TypeChecker {
         // computing the projected field type.
         val fresh = ConstructorOps.freshSpine(head)
         val refined =
-          ValueEquivalence.unify(fresh.tpe, vType, eqStore.allow(fresh.synDeps))
+          ValueEquivalence.unify(fresh.tpe, vType, eqStore.allow(fresh.synDeps), env.normalizers)
         val refinedFresh = fresh.materialize(refined)
 
         var quoteContext = ValueQuote.Context.empty
@@ -221,13 +214,13 @@ object TypeChecker {
           // For a later field type like Vec(A, n), the in-scope syntax for the fresh constructor field `n`
           // is the earlier projection `base.n`, so teach the quoter that substitution before quoting later types.
           val priorFieldTy = refinedFresh.fields(idx).tpe
-          val priorFieldTyTerm = ValueQuote.quoteType(priorFieldTy, env, span, quoteContext)(refined, typecheckCtx)
+          val priorFieldTyTerm = ValueQuote.quoteType(priorFieldTy, env, span, quoteContext)(refined)
           val priorFieldTerm = EA.Term.Select(baseTerm, fieldBinder.name, priorFieldTyTerm, span)
           quoteContext = quoteContext.withValue(refinedFresh.fields(idx), priorFieldTerm)(refined)
         }
 
         val resultTyTerm =
-          ValueQuote.quoteType(refinedFresh.fields(fieldIdx).tpe, env, span, quoteContext)(refined, typecheckCtx)
+          ValueQuote.quoteType(refinedFresh.fields(fieldIdx).tpe, env, span, quoteContext)(refined)
         val resultTy = Interpreter.evalTypeTerm(resultTyTerm, env)
         val scrut = Interpreter.resolveInEqStore(baseValue).value
         checkPropElimination(
@@ -235,6 +228,7 @@ object TypeChecker {
           vType,
           resultTy,
           computeReachableCtors(scrut, vType, indName, meta.constructorNames, env),
+          env.normalizers,
           span
         )
 
@@ -259,9 +253,9 @@ object TypeChecker {
       inductiveName: String,
       ctorNames: Vector[String],
       env: TypecheckEnv
-  )(implicit eqStore: EqStore, typecheckCtx: TypecheckContext): Vector[ReachableCtor] = {
+  )(implicit eqStore: EqStore): Vector[ReachableCtor] = {
     def tryUnify(left: Value, right: Value, refinable: DepSet): Option[EqStore] =
-      try Some(ValueEquivalence.unify(left, right, eqStore.allow(refinable)))
+      try Some(ValueEquivalence.unify(left, right, eqStore.allow(refinable), env.normalizers))
       catch { case _: UnificationFailed | _: OccursCheckFailed => None }
 
     def rootRefinable(value: Value): DepSet =
@@ -291,9 +285,12 @@ object TypeChecker {
     }
   }
 
-  private def allowLargeElimination(scrutTpe: Value, reachable: Vector[ReachableCtor])(implicit
-      eqStore: EqStore,
-      typecheckCtx: TypecheckContext
+  private def allowLargeElimination(
+      scrutTpe: Value,
+      reachable: Vector[ReachableCtor],
+      normalizerMap: Normalizers.NormalizerMap
+  )(implicit
+      eqStore: EqStore
   ): Boolean = {
     if (reachable.isEmpty) return true
     if (reachable.length > 1) return false
@@ -308,8 +305,8 @@ object TypeChecker {
 
     val startEq =
       try {
-        val eq1 = ValueEquivalence.unify(res1, scrutTpe, eqStore.allow(refinable0))
-        ValueEquivalence.unify(res2, scrutTpe, eq1)
+        val eq1 = ValueEquivalence.unify(res1, scrutTpe, eqStore.allow(refinable0), normalizerMap)
+        ValueEquivalence.unify(res2, scrutTpe, eq1, normalizerMap)
       } catch {
         case _: UnificationFailed | _: OccursCheckFailed => return false
       }
@@ -317,7 +314,7 @@ object TypeChecker {
     fields1.zip(fields2).forall { case (f1, f2) =>
       TypeChecker.getUniverse(f1.tpe)(startEq) match {
         case PropTpe => true
-        case _       => ValueEquivalence.defEq(f1, f2)(startEq, typecheckCtx)
+        case _       => ValueEquivalence.defEq(f1, f2, normalizerMap)(startEq)
       }
     }
   }
@@ -327,16 +324,16 @@ object TypeChecker {
       scrutTpe: Value,
       motiveTy: Value,
       reachable: => Vector[ReachableCtor],
+      normalizerMap: Normalizers.NormalizerMap,
       span: Span
-  )(implicit eqStore: EqStore, typecheckCtx: TypecheckContext): Unit =
+  )(implicit eqStore: EqStore): Unit =
     if (getUniverse(scrutTpe) == PropTpe && !isPropValuedType(motiveTy)) {
-      if (!allowLargeElimination(scrutTpe, reachable))
+      if (!allowLargeElimination(scrutTpe, reachable, normalizerMap))
         throw PropEliminationRestricted(inductiveName, motiveTy, Some(span))
     }
 
   private def checkMatch(t: CA.Term.Match, env: TypecheckEnv)(implicit
-      eqStore: EqStore,
-      typecheckCtx: TypecheckContext
+      eqStore: EqStore
   ): Checked = {
     val scrutChecked = check(t.scrut, env)
     val scrut = Interpreter.resolveInEqStore(scrutChecked.value).value
@@ -374,7 +371,7 @@ object TypeChecker {
       }
       val inferred = first.resultTy
       val allEqual = reachable.tail.forall { info =>
-        ValueEquivalence.defEq(inferred, info.resultTy)
+        ValueEquivalence.defEq(inferred, info.resultTy, env.normalizers)(eqStore)
       }
       if (!allEqual)
         throw MissingReturningClause("reachable constructors have different result types", Some(t.span))
@@ -388,7 +385,7 @@ object TypeChecker {
       case None         => inferMotiveFromReachable(reachableByType)
     }
 
-    checkPropElimination(inductiveName, scrutTpe, motiveTy, reachableByType, t.span)
+    checkPropElimination(inductiveName, scrutTpe, motiveTy, reachableByType, env.normalizers, t.span)
 
     var checkedByCtor = Map.empty[String, EA.Case]
 
@@ -413,10 +410,7 @@ object TypeChecker {
 
             case Some(info) =>
               val br = cases.find(_.ctorName == ctorName).getOrElse(throw MissingCase(ctorName))
-              checkedByCtor += ctorName -> checkBranch(br, info.fieldArgs, env, motiveTy)(
-                info.branchEqStore,
-                typecheckCtx
-              )
+              checkedByCtor += ctorName -> checkBranch(br, info.fieldArgs, env, motiveTy)(info.branchEqStore)
           }
         }
     }
@@ -428,21 +422,21 @@ object TypeChecker {
     Checked(Interpreter.evalTerm(checkedMatch, env), checkedMatch)
   }
 
-  private def checkLam(l: CA.Term.Lam, env: TypecheckEnv, typecheckCtx: TypecheckContext)(implicit
+  private def checkLam(l: CA.Term.Lam, env: TypecheckEnv)(implicit
       eqStore: EqStore
   ): Checked = {
-    implicit val nextNormalizerMap = l.uses.foldLeft(typecheckCtx) { case (curtypecheckCtx, nextUse) =>
-      val normalizer = check(nextUse.normalizer, env)(eqStore, curtypecheckCtx)
+    val envWithNormalizers = l.uses.foldLeft(env) { case (curEnv, nextUse) =>
+      val normalizer = check(nextUse.normalizer, curEnv)(eqStore)
       normalizer.value match {
-        case n: Value.Normalizer => curtypecheckCtx.useNormalizer(n)
+        case n: Value.Normalizer => curEnv.useNormalizer(n)
         case _ =>
           throw TypeMismatch(normalizer.value, NormalizerType)
       }
     }
 
-    val checkedPi = checkPi(l.ty, env)
+    val checkedPi = checkPi(l.ty, envWithNormalizers)
     val vpi = checkedPi.value
-    val bodyEnv = BinderOps.freshen(vpi.binders, env)
+    val bodyEnv = BinderOps.freshen(vpi.binders, envWithNormalizers)
 
     val recurEnv =
       l.name match {
@@ -450,25 +444,24 @@ object TypeChecker {
         case None       => bodyEnv
       }
 
-    val checkedBody = check(l.body, recurEnv)
+    val checkedBody = check(l.body, recurEnv)(eqStore)
     val resType = Interpreter.evalTypeTerm(checkedPi.term.out, bodyEnv)
 
-    checkType(checkedBody.value, resType)
+    checkType(checkedBody.value, resType, recurEnv.normalizers)
     val checkedLam =
       EA.Term.Lam(checkedPi.term, Vector.empty, checkedBody.term, l.span, l.name, l.isStable)
     Checked(Interpreter.evalLam(checkedLam, vpi, env), checkedLam)
   }
 
   def getCheckedType(term: CA.TypeTerm, env: TypecheckEnv)(implicit
-      ctx: EqStore,
-      typecheckCtx: TypecheckContext
+      ctx: EqStore
   ): CheckedType = {
     val res = checkTypeTerm(term, env)
     assertType(res.value)
     res
   }
 
-  def getType(term: CA.TypeTerm, env: TypecheckEnv)(implicit ctx: EqStore, typecheckCtx: TypecheckContext): Value =
+  def getType(term: CA.TypeTerm, env: TypecheckEnv)(implicit ctx: EqStore): Value =
     getCheckedType(term, env).value
 
   def assertType(value: Value)(implicit ctx: EqStore): Unit = {
@@ -483,8 +476,7 @@ object TypeChecker {
   }
 
   def check(term: CA.Term, env: TypecheckEnv)(implicit
-      eqStore: EqStore,
-      typecheckCtx: TypecheckContext
+      eqStore: EqStore
   ): Checked = {
     try {
       term match {
@@ -494,7 +486,7 @@ object TypeChecker {
           Checked(checkedSelect.value, checkedSelect.term)
         case t: CA.Term.App    => checkApp(t, env)
         case d: CA.Term.Derive => checkDerive(d, env)
-        case l: CA.Term.Lam    => checkLam(l, env, typecheckCtx)
+        case l: CA.Term.Lam    => checkLam(l, env)
         case m: CA.Term.Match  => checkMatch(m, env)
         case b: CA.Term.Body   => checkBody(b, env)
         case term: CA.TypeTerm =>

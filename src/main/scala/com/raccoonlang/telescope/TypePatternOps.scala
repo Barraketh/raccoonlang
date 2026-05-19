@@ -64,8 +64,7 @@ object TypePatternOps {
     }
 
   private[telescope] def toVBinder(binder: CoreAst.Binder, env: TypecheckEnv)(implicit
-      eqStore: EqStore,
-      typecheckCtx: TypecheckContext
+      eqStore: EqStore
   ): (VBinder, ElabAst.Binder) = {
     def checkPattern(pattern: CoreAst.TypePattern, env: TypecheckEnv): (ElabAst.TypePattern, TypecheckEnv) =
       pattern match {
@@ -101,7 +100,7 @@ object TypePatternOps {
               }
 
             val argValue = Interpreter.evalTypeTerm(compileType(argPattern), patternEnv)
-            telescopeEnv = bindValueAndCheck(telescopeEnv, paramBinder, argValue)
+            telescopeEnv = bindValueAndCheck(telescopeEnv, paramBinder, argValue, patternEnv.normalizers)
             argPatterns += argPattern
           }
 
@@ -257,19 +256,23 @@ object TypePatternOps {
     openedEnv.putLocal(binder.localRef, actual)
   }
 
-  private[telescope] def bindValueAndCheck(env: RuntimeEnv, binder: VBinder, actual: Value)(implicit
-      eqStore: EqStore,
-      typecheckCtx: TypecheckContext
+  private[telescope] def bindValueAndCheck(
+      env: RuntimeEnv,
+      binder: VBinder,
+      actual: Value,
+      normalizerMap: Normalizers.NormalizerMap
+  )(implicit
+      eqStore: EqStore
   ): RuntimeEnv = {
     val openedEnv = openCaptures(env, binder.captures, actual.tpe)
     val expectedTy = Interpreter.evalTypeTerm(binder.expectedTy, openedEnv)
     binder.ty match {
       case EBinderType.ConstrainedCapture(_, constraint, _) =>
         val constraintTy = Interpreter.evalTypeTerm(compileType(constraint), openedEnv)
-        TypeChecker.checkType(expectedTy, constraintTy)
+        TypeChecker.checkType(expectedTy, constraintTy, normalizerMap)
       case _ =>
     }
-    TypeChecker.checkType(actual, expectedTy)
+    TypeChecker.checkType(actual, expectedTy, normalizerMap)
     openedEnv.putLocal(binder.localRef, Value.ascribe(actual, expectedTy))
   }
 

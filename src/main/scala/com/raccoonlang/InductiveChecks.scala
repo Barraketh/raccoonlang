@@ -25,8 +25,7 @@ object InductiveChecks {
     }
 
   private def occursInductive(v: Value, inductiveHead: VConst)(implicit
-      eqStore: EqStore,
-      typecheckCtx: TypecheckContext
+      eqStore: EqStore
   ): Boolean =
     v match {
       // Be conservative: blocked types may hide an occurrence
@@ -61,8 +60,7 @@ object InductiveChecks {
   // - under any other type constructor application F args, recursive occurrence in args is rejected
   @tailrec
   private def isStrictlyPositive(v: Value, inductiveHead: VConst)(implicit
-      eqStore: EqStore,
-      typecheckCtx: TypecheckContext
+      eqStore: EqStore
   ): Boolean =
     v match {
       // Be conservative: blocked shapes are not strictly positive
@@ -97,8 +95,7 @@ object InductiveChecks {
       inductiveHead: VConst,
       isStruct: Boolean
   )(implicit
-      eqStore: EqStore,
-      typecheckCtx: TypecheckContext
+      eqStore: EqStore
   ): TypecheckEnv = {
     val envWithInductive = baseEnv.putGlobal(decl.header.name, inductiveHead)
 
@@ -119,7 +116,6 @@ object InductiveChecks {
 
   def evalInductiveDecl(decl: Decl.InductiveDecl, worlds: Worlds): Worlds = {
     implicit val eqStore: EqStore = EqStore.empty
-    implicit val typecheckCtx: TypecheckContext = TypecheckContext.empty
 
     // All direct Value matches in this function and its private helpers
     // rely on EqStore.empty: no Vars are solved in this pass.

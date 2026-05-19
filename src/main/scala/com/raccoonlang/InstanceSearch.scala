@@ -46,20 +46,17 @@ object InstanceSearch {
   }
 
   def solve(goal: Value, searchEnv: TypecheckEnv)(implicit
-      eqStore: EqStore,
-      typecheckCtx: TypecheckContext
+      eqStore: EqStore
   ): BinderOps.CheckedArg = {
     val ctx = new SearchContext
     val res = solveInternal(goal, searchEnv, SearchState.empty, ctx)(
-      eqStore.copy(refinable = DepSet.empty),
-      typecheckCtx
+      eqStore.copy(refinable = DepSet.empty)
     )
     BinderOps.CheckedArg(res.value, res.term)
   }
 
   private def solveInternal(goal: Value, searchEnv: TypecheckEnv, state: SearchState, ctx: SearchContext)(implicit
-      eqStore: EqStore,
-      typecheckCtx: TypecheckContext
+      eqStore: EqStore
   ): SearchResult = {
     val (head, key) = goal.use(rv => headKeyResolved(rv).getOrElse(throw NoInstanceFound(goal)) -> rv.value.key)
 
@@ -97,7 +94,7 @@ object InstanceSearch {
       searchEnv: TypecheckEnv,
       state: SearchState,
       ctx: SearchContext
-  )(implicit eqStore: EqStore, typecheckCtx: TypecheckContext): CandidateSearch = {
+  )(implicit eqStore: EqStore): CandidateSearch = {
     var hasCycle = false
     var hasBudgetExceeded = false
 
@@ -126,8 +123,7 @@ object InstanceSearch {
       state: SearchState,
       ctx: SearchContext
   )(implicit
-      eqStore: EqStore,
-      typecheckCtx: TypecheckContext
+      eqStore: EqStore
   ): SearchResult = {
     candidate.value.tpe.caseOf {
       case pi: VPi =>
@@ -135,7 +131,7 @@ object InstanceSearch {
         val resultTy = pi.codomain(freshEnv, eqStore)
 
         val candidateDeps = freshEnv.allDeps -- pi.env.allDeps
-        val candidateEq = ValueEquivalence.unify(resultTy, goal, eqStore.allow(candidateDeps))
+        val candidateEq = ValueEquivalence.unify(resultTy, goal, eqStore.allow(candidateDeps), searchEnv.normalizers)
         val freshArgs = pi.binders.map(binder => freshEnv(binder.localRef))
 
         val values = Vector.newBuilder[Value]
@@ -151,7 +147,7 @@ object InstanceSearch {
 
           val (arg, term) =
             if (!inferred.synDeps.intersects(candidateDeps)) {
-              val term = ValueQuote.quoteTerm(inferred, searchEnv, candidate.term.span)(candidateEq, typecheckCtx)
+              val term = ValueQuote.quoteTerm(inferred, searchEnv, candidate.term.span)(candidateEq)
               inferred -> term
             } else if (binder.isInstance) {
               val instanceGoal = ValueOps.materialize(freshArg.tpe, candidateEq)
@@ -174,7 +170,7 @@ object InstanceSearch {
         SearchResult(res, resTerm)
 
       case resultTy =>
-        ValueEquivalence.unify(resultTy, goal, eqStore)
+        ValueEquivalence.unify(resultTy, goal, eqStore, searchEnv.normalizers)
         SearchResult(candidate.value, candidate.term)
     }
   }
