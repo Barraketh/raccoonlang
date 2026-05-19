@@ -109,13 +109,18 @@ object TypePatternOps {
           (pattern, patternEnv)
       }
 
-    def checkTopLevel(pattern: CoreAst.TopLevelTP, env: TypecheckEnv): (ElabAst.TopLevelTP, TypecheckEnv) = {
-      val (checked, checkedEnv) = checkPattern(pattern, env)
-      checked match {
-        case topLevel: ElabAst.TopLevelTP => (topLevel, checkedEnv)
-        case EPattern.Capture(ref, span)  => throw PatternCaptureNeedsExpectedType(ref.name, Some(span))
+    def checkTopLevel(pattern: CoreAst.TopLevelTP, env: TypecheckEnv): (ElabAst.TopLevelTP, TypecheckEnv) =
+      pattern match {
+        case CPattern.Type(term) =>
+          val checked = TypeChecker.getResidualizedType(term, env)
+          (EPattern.Type(checked.term), env)
+        case _ =>
+          val (checked, checkedEnv) = checkPattern(pattern, env)
+          checked match {
+            case topLevel: ElabAst.TopLevelTP => (topLevel, checkedEnv)
+            case EPattern.Capture(ref, span)  => throw PatternCaptureNeedsExpectedType(ref.name, Some(span))
+          }
       }
-    }
 
     def checkBinderType(binderType: CoreAst.BinderType, env: TypecheckEnv): (ElabAst.BinderType, TypecheckEnv) =
       binderType match {

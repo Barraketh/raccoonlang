@@ -36,6 +36,25 @@ class ValueOpsTests extends munit.FunSuite {
     assert(!materialized(ref).synDeps.contains(x.id))
   }
 
+  test("quote context materializes locals at quote time") {
+    val ref = CoreAst.LocalRef(0, "x")
+    val x = FreshVar.freshVar("x", valueType)
+    val solution = symbolicValue("Solved")
+    val env = TypecheckEnv.empty.putLocal(ref, x)
+
+    implicit val eqStore: EqStore = solve(x, solution)
+    val context = ValueQuote.quoteContext(env)
+
+    def assertQuotesToLocal(term: ElabAst.Term): Unit =
+      term match {
+        case ETerm.LocalRef(quotedRef, _) => assertEquals(quotedRef, ref)
+        case other                        => fail(s"Expected local ref quote for $ref, got $other")
+      }
+
+    assertQuotesToLocal(ValueQuote.quoteTerm(x, context, span))
+    assertQuotesToLocal(ValueQuote.quoteTerm(solution, context, span))
+  }
+
   test("closed runtime env prunes unused locals and materialization preserves pruned slots") {
     val keptRef = CoreAst.LocalRef(0, "kept")
     val prunedRef = CoreAst.LocalRef(1, "pruned")

@@ -14,7 +14,7 @@ object ConstructorOps {
       res.result()
     }
 
-    def value: VCtor = VCtor(head, fields, tpe)
+    def value: VCtor = VCtor(head, args, tpe)
 
     def materialize(eqStore: EqStore): FreshCtorSpine =
       FreshCtorSpine(
@@ -32,7 +32,7 @@ object ConstructorOps {
 
     def fieldBinders: Vector[VBinder] = pi.binders.drop(erasedCount)
 
-    def makeCtor(allArgs: Vector[Value], resultTy: Value): VCtor = VCtor(head, allArgs.drop(erasedCount), resultTy)
+    def makeCtor(allArgs: Vector[Value], resultTy: Value): VCtor = VCtor(head, allArgs, resultTy)
 
     def freshSpine(allArgs: Vector[Value], resultTy: Value): FreshCtorSpine = FreshCtorSpine(head, allArgs, resultTy)
   }

@@ -18,7 +18,8 @@ class InterpreterTests extends munit.FunSuite {
 
   private def toShape(v: Value): Shape = v match {
     case Value.ConstructorHead(n, _, _, _, _) => SConst(n)
-    case Value.VCtor(h, fields, _) =>
+    case ctor @ Value.VCtor(h, _, _) =>
+      val fields = ctor.fields
       if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))
     case Value.VConst(n, _, _)  => SConst(n)
     case Value.VApp(h, args, _) => SApp(toShape(h), args.toList.map(toShape))
@@ -64,9 +65,9 @@ class InterpreterTests extends munit.FunSuite {
         |""".stripMargin
 
     InterpreterTests.this.getValue(p) match {
-      case Value.VCtor(head, fields, _) =>
+      case ctor @ Value.VCtor(head, _, _) =>
         assertEquals(head.name, "Bool.true")
-        assertEquals(fields, Vector.empty)
+        assertEquals(ctor.fields, Vector.empty)
       case other =>
         fail(s"expected VCtor, got: $other")
     }
@@ -89,9 +90,10 @@ class InterpreterTests extends munit.FunSuite {
         |""".stripMargin
 
     InterpreterTests.this.getValue(p) match {
-      case Value.VCtor(head, fields, _) =>
+      case ctor @ Value.VCtor(head, args, _) =>
         assertEquals(head.name, "Vec.nil")
-        assertEquals(fields, Vector.empty)
+        assertEquals(ctor.fields, Vector.empty)
+        assertEquals(args.map(toShape), Vector(SConst("Nat")))
       case other =>
         fail(s"expected VCtor, got: $other")
     }

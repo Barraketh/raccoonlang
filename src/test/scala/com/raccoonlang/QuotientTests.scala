@@ -23,7 +23,8 @@ class QuotientTests extends munit.FunSuite {
 
   private def toShape(v: Value): Shape = v match {
     case Value.ConstructorHead(n, _, _, _, _) => SConst(n)
-    case Value.VCtor(h, fields, _) =>
+    case ctor @ Value.VCtor(h, _, _) =>
+      val fields = ctor.fields
       if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))
     case Value.VConst(n, _, _)  => SConst(n)
     case Value.VApp(h, args, _) => SApp(toShape(h), args.toList.map(toShape))
@@ -53,9 +54,10 @@ class QuotientTests extends munit.FunSuite {
     )
 
     res match {
-      case Value.VCtor(head, fields, _) =>
+      case ctor @ Value.VCtor(head, args, _) =>
         assertEquals(head.name, "Quot.mk")
-        assertEquals(fields.map(toShape), Vector(natZero))
+        assertEquals(ctor.fields.map(toShape), Vector(natZero))
+        assertEquals(args.length, 3)
       case other =>
         fail(s"Expected Quot.mk constructor value, got $other")
     }

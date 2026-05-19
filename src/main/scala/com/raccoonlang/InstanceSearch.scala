@@ -147,7 +147,8 @@ object InstanceSearch {
 
           val (arg, term) =
             if (!inferred.synDeps.intersects(candidateDeps)) {
-              val term = ValueQuote.quoteTerm(inferred, searchEnv, candidate.term.span)(candidateEq)
+              val context = ValueQuote.quoteContext(searchEnv)(candidateEq)
+              val term = ValueQuote.quoteTerm(inferred, context, candidate.term.span)(candidateEq)
               inferred -> term
             } else if (binder.isInstance) {
               val instanceGoal = ValueOps.materialize(freshArg.tpe, candidateEq)

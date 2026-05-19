@@ -113,8 +113,8 @@ private object Builtins {
   private object QuotientMk {
     def unapply(value: Value)(implicit eqStore: EqStore): Option[Value] =
       value.caseOf {
-        case VCtor(head, Vector(rep), _) if head.name == MkName => Some(rep)
-        case _                                                  => None
+        case ctor @ VCtor(head, _, _) if head.name == MkName && ctor.fields.length == 1 => Some(ctor.fields.head)
+        case _                                                                          => None
       }
   }
 }

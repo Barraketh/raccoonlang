@@ -122,10 +122,9 @@ object ValueEquivalence {
         case (v1: AppliedValue, v2: AppliedValue) if v1.args.length == v2.args.length =>
           defEq(v1.head, v2.head) && v1.args.zip(v2.args).forall { case (arg1, arg2) => defEq(arg1, arg2) }
 
-        case (c1: VCtor, c2: VCtor) if c1.fields.length == c2.fields.length =>
+        case (c1: VCtor, c2: VCtor) if c1.args.length == c2.args.length =>
           defEq(c1.head, c2.head) &&
-          c1.fields.zip(c2.fields).forall { case (a, b) => defEq(a, b) } &&
-          defEq(c1.tpe, c2.tpe)
+          c1.args.zip(c2.args).forall { case (a, b) => defEq(a, b) }
 
         case (c1: ConstructorHead, c2: ConstructorHead) if c1.name == c2.name => true
 
@@ -201,6 +200,24 @@ object ValueEquivalence {
       m1.addLink(v.id, other)
     }
 
+    /**
+     * This specifically handles wildcard vars during pattern matching. The problem is that wildcard vars never actually
+     * get stored in Env, so they can't be properly quoted. This forces us to prefer the other var as the representative
+     */
+    private def linkVarToPreferredRepresentative(v1: Var, v2: Var, meta: EqStore)(implicit
+        normalizerMap: Normalizers.NormalizerMap
+    ): EqStore = {
+      val v1Anonymous = v1.name == "_"
+      val v2Anonymous = v2.name == "_"
+      val (toLink, representative) =
+        if (v1Anonymous && !v2Anonymous) (v1, v2)
+        else if (v2Anonymous && !v1Anonymous) (v2, v1)
+        else if (v1.id > v2.id) (v1, v2)
+        else (v2, v1)
+
+      linkVar(toLink, representative, meta)
+    }
+
     def unify(v1: Value, v2: Value, meta: EqStore)(implicit normalizerMap: Normalizers.NormalizerMap): EqStore = {
       val normalizerF = DefEq.getNormalizerF(v1, v2)(meta, normalizerMap)
 
@@ -222,9 +239,9 @@ object ValueEquivalence {
           val startCtx = unify(v1.head, v2.head, meta)
           v1.args.zip(v2.args).foldLeft(startCtx) { case (newCtx, (arg1, arg2)) => unify(arg1, arg2, newCtx) }
 
-        case (c1: VCtor, c2: VCtor) if c1.fields.length == c2.fields.length =>
+        case (c1: VCtor, c2: VCtor) if c1.args.length == c2.args.length =>
           val m0 = unify(c1.head, c2.head, meta)
-          val m1 = c1.fields.zip(c2.fields).foldLeft(m0) { case (cur, (x, y)) => unify(x, y, cur) }
+          val m1 = c1.args.zip(c2.args).foldLeft(m0) { case (cur, (x, y)) => unify(x, y, cur) }
           unify(c1.tpe, c2.tpe, m1)
 
         case (v1: VBlockedThunk, v2: VBlockedThunk) if v1.id.nodeId == v2.id.nodeId =>
@@ -234,6 +251,8 @@ object ValueEquivalence {
 
         // Unify FreshVars through ctx. Basic idea: FreshVars can point at things through context
         // unify creates a ctx of pointers. We only create pointers from the top of the chain
+        case (v1: Var, v2: Var) if meta.isRefinable(v1.id) && meta.isRefinable(v2.id) =>
+          linkVarToPreferredRepresentative(v1, v2, meta)
 
         // Link unlinked Var (left) to a non-Var value
         case (v: Var, other) if meta.isRefinable(v.id) => linkVar(v, other, meta)

@@ -59,10 +59,10 @@ object Value {
 
   private[raccoonlang] def needsStructuralDefEq(value: Value): Boolean =
     isKnownProof(value) || (value match {
-      case _: VPi | _: VLam      => true
-      case app: AppliedValue     => app.head.needsStructuralDefEq || app.args.exists(_.needsStructuralDefEq)
-      case VCtor(_, fields, tpe) => fields.exists(_.needsStructuralDefEq) || tpe.needsStructuralDefEq
-      case _                     => false
+      case _: VPi | _: VLam    => true
+      case app: AppliedValue   => app.head.needsStructuralDefEq || app.args.exists(_.needsStructuralDefEq)
+      case VCtor(_, args, tpe) => args.exists(_.needsStructuralDefEq) || tpe.needsStructuralDefEq
+      case _                   => false
     })
 
   // A value that will block a computation - specifically, when trying to either match or apply it.
@@ -345,12 +345,14 @@ object Value {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
-  // Runtime constructor value. `fields` contains only stored fields; erased constructor binders are not retained.
-  case class VCtor(head: ConstructorHead, fields: Vector[Value], tpe: Value) extends Value with UpdatableType {
+  // Constructor value. `args` contains the full constructor application spine, including erased binders.
+  case class VCtor(head: ConstructorHead, args: Vector[Value], tpe: Value) extends Value with UpdatableType {
+    def fields: Vector[Value] = args.drop(head.numErased)
+
     override lazy val synDeps: DepSet = {
       val res = DepSet.newBuilder
       res.unionInPlace(head.synDeps)
-      fields.foreach(v => res.unionInPlace(v.synDeps))
+      args.foreach(v => res.unionInPlace(v.synDeps))
       res.unionInPlace(tpe.synDeps)
       res.result()
     }

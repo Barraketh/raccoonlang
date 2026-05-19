@@ -286,8 +286,9 @@ object PrettyPrinter {
     case Value.VConst(name, _, _)                   => name
     case v: Value.AppliedValue                      => printApp(v.head, v.args)
     case Value.ConstructorHead(name, _, _, _, _)    => name
-    case Value.VCtor(head, fields, _) =>
+    case ctor @ Value.VCtor(head, _, _) =>
       val headStr = print(head)
+      val fields = ctor.fields
       if (fields.isEmpty) headStr
       else s"$headStr(${fields.map(print).mkString(", ")})"
     case v: Value.VLam          => s"func#${v.id}"

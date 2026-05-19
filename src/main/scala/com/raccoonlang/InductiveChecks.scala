@@ -127,7 +127,7 @@ object InductiveChecks {
       else Term.Pi(header.binders, decl.header.resultTy, decl.header.span)
     }
 
-    val checkedInductiveType = TypeChecker.getCheckedType(ty, worlds.checkEnv)
+    val checkedInductiveType = TypeChecker.getResidualizedType(ty, worlds.checkEnv)
     val inductiveTypeCheck = checkedInductiveType.value
     val inductiveTypeRun = Interpreter.evalTypeTerm(checkedInductiveType.term, worlds.runEnv)
 

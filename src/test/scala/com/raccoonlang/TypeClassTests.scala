@@ -487,10 +487,9 @@ class TypeClassTests extends munit.FunSuite {
     val env = worlds.runEnv
 
     val a = FreshVar.freshVar("A", Value.TypeTpe)
+    implicit val eqStore: EqStore = EqStore.empty.allow(DepSet(a.id))
     val aRef = CoreAst.LocalRef(env.locals.length, "A")
     val envWithA = env.putLocal(aRef, a)
-
-    implicit val eqStore: EqStore = EqStore.empty.allow(DepSet(a.id))
 
     val goal = applyValue(namedValue(envWithA, "DecEq"), a)
 

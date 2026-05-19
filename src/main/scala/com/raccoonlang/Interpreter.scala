@@ -237,11 +237,12 @@ object Interpreter {
   ): Value = {
     val v0 = resolve(v)
     v0 match {
-      case VCtor(head, fields, _) =>
+      case ctor @ VCtor(head, _, _) =>
         if (!head.isStruct) throw NotAStruct(head.name)
 
         val fieldBinders = ConstructorOps.ConstructorShape.require(head).fieldBinders
         val idx = fieldBinders.indexWhere(_.name == field)
+        val fields = ctor.fields
         if (idx >= 0 && idx < fields.length && fieldBinders(idx).name != "_") resolve(fields(idx))
         else throw NotFound(field)
 
@@ -263,8 +264,8 @@ object Interpreter {
   private def evalMatch[E <: EnvLike[E]](m: ETerm.Match, env: E)(implicit eqStore: EqStore): Value = {
     val (head, args) = evalTerm(m.scrut, env).use(scrut =>
       scrut.caseOf {
-        case VCtor(head, fields, _) => (head, fields)
-        case other                  =>
+        case ctor @ VCtor(head, _, _) => (head, ctor.fields)
+        case other                    =>
           // We are either blocked or stuck
           val capturedIndexes = CapturedIndexes.getCapturedIndexes(m, env)
           val matchCaptures: Vector[Value] = env.getLocalsByIndexes(capturedIndexes)
@@ -319,7 +320,7 @@ object Interpreter {
 
     decl match {
       case Decl.ConstDecl(unfoldStrategy, name, ty, body, span, isInstance) =>
-        val checkedTy = TypeChecker.getCheckedType(ty, worlds.checkEnv)
+        val checkedTy = TypeChecker.getResidualizedType(ty, worlds.checkEnv)
         val tyV = checkedTy.value
         val runtimeTyV = Interpreter.evalTypeTerm(checkedTy.term, worlds.runEnv)
 
@@ -331,11 +332,14 @@ object Interpreter {
 
           case CoreAst.ConstBody.TermBody(term) =>
             val declConst = VConst(name, Symbol, tyV)
-            val checkedBody = TypeChecker.check(term, worlds.checkEnv)
-            val bodyV0 = checkedBody.value
+            val checkedBody0 = TypeChecker.check(term, worlds.checkEnv)
+            val bodyV0 = checkedBody0.value
 
             TypeChecker.checkType(bodyV0, tyV, worlds.checkEnv.normalizers)
             val bodyV = Value.ascribe(bodyV0, tyV)
+            val quoteContext = ValueQuote.quoteContext(worlds.checkEnv)
+            val checkedBody =
+              TypeChecker.residualizeTopLevelChecked(TypeChecker.Checked(bodyV, checkedBody0.term), quoteContext, term.span)
 
             val checkValue: Value = unfoldStrategy match {
               case Some(_) => bodyV
@@ -354,7 +358,7 @@ object Interpreter {
         Worlds(nextCheckEnv, nextRunEnv)
 
       case Decl.AxiomDecl(name, ty, _, isInstance) =>
-        val checkedTy = TypeChecker.getCheckedType(ty, worlds.checkEnv)
+        val checkedTy = TypeChecker.getResidualizedType(ty, worlds.checkEnv)
         val tyV = checkedTy.value
         val checkValue = VConst(name, Symbol, tyV)
         val checkInstanceKey = if (isInstance) Some(InstanceSearch.instanceKey(name, checkValue, eqStore)) else None
@@ -377,7 +381,10 @@ object Interpreter {
     val worlds =
       p.decls.foldLeft(initialWorlds) { case (curWorlds, decl) => evalDecl(decl, curWorlds) }
     p.body.map { b =>
-      val checked = TypeChecker.check(b, worlds.checkEnv)(EqStore.empty)
+      implicit val eqStore: EqStore = EqStore.empty
+      val checked0 = TypeChecker.check(b, worlds.checkEnv)
+      val quoteContext = ValueQuote.quoteContext(worlds.checkEnv)
+      val checked = TypeChecker.residualizeTopLevelChecked(checked0, quoteContext, b.span)
       Interpreter.evalTerm(checked.term, worlds.runEnv)(EqStore.empty)
     }
   }

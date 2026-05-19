@@ -136,6 +136,7 @@ final case class TypecheckEnv(
           localInstances + (key -> (candidate +: localInstances.getOrElse(key, Vector.empty)))
         case None => localInstances
       }
+
       copy(
         locals = locals :+ binding,
         localInstances = nextLocalInstances

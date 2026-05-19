@@ -1,198 +1,195 @@
 package com.raccoonlang
 
+import com.raccoonlang.ElabAst.{BinderType, Term, TypePattern}
 import com.raccoonlang.Value._
-import com.raccoonlang.telescope.{BinderOps, ConstructorOps}
+import com.raccoonlang.telescope.BinderOps
 
 object ValueQuote {
-  final case class Context(projectedVars: Map[VarId, ElabAst.Term] = Map.empty) {
-    def withValue(value: Value, term: ElabAst.Term)(implicit eqStore: EqStore): Context =
-      varId(value) match {
-        case Some(id) => copy(projectedVars = projectedVars + (id -> term))
-        case None     => this
-      }
+  type QuoteMap = Map[ValueKey.Key, ElabAst.Term]
+  final case class QuoteContext(quote: QuoteMap, localEnvLength: Int)
+
+  private final case class OpenedPi(
+      term: ElabAst.Term.Pi,
+      freshArgs: Vector[Value],
+      context: QuoteContext
+  )
+
+  def quoteContext(env: EnvLike[_])(implicit eqStore: EqStore): QuoteContext = {
+    val quote = env.locals.zipWithIndex.foldLeft(Map.empty[ValueKey.Key, ElabAst.Term]) {
+      case (quote, (binding, idx)) =>
+        binding.valueOption match {
+          case Some(value) =>
+            val ref = CoreAst.LocalRef(idx, binding.name)
+            withQuotedValue(quote, value, ElabAst.Term.LocalRef(ref, Span(0, 0)))
+          case None => quote
+        }
+    }
+    QuoteContext(quote, env.locals.length)
   }
 
-  object Context {
-    val empty: Context = Context()
-  }
-
-  def quoteType(
-      value: Value,
-      env: TypecheckEnv,
-      span: Span,
-      context: Context = Context.empty
-  )(implicit eqStore: EqStore): ElabAst.TypeTerm =
-    quoteTerm(value, env, span, context) match {
+  def quoteType(value: Value, context: QuoteContext, span: Span)(implicit eqStore: EqStore): ElabAst.TypeTerm =
+    quoteTerm(value, context, span) match {
       case tpe: ElabAst.TypeTerm => tpe
       case other                 => throw CannotQuoteValue(value, s"$other is not a type term", Some(span))
     }
 
-  def quoteTerm(
-      value: Value,
-      env: TypecheckEnv,
-      span: Span,
-      context: Context = Context.empty
-  )(implicit eqStore: EqStore): ElabAst.Term = {
+  def quoteTerm(value: Value, context: QuoteContext, span: Span)(implicit eqStore: EqStore): ElabAst.Term = {
     val materialized = ValueOps.materialize(value, eqStore)
 
+    quotedTermFor(context.quote, materialized).foreach(return _)
+
     materialized match {
-      case v @ Var(_, id, _) =>
-        context.projectedVars
-          .get(id)
-          .orElse(localRefFor(v, env, span))
-          .getOrElse(throw CannotQuoteValue(v, "escaping variable", Some(span)))
+      case v: Var => throw CannotQuoteValue(v, "escaping variable", Some(span))
 
       case VSort(level) =>
         if (level == Level.zero) ElabAst.Term.GlobalRef("Prop", span)
         else if (level == Level.one) ElabAst.Term.GlobalRef("Type", span)
-        else ElabAst.Term.App(ElabAst.Term.GlobalRef("Sort", span), Vector(quoteLevel(level, env, span, context)), span)
+        else ElabAst.Term.App(ElabAst.Term.GlobalRef("Sort", span), Vector(quoteLevel(level, context, span)), span)
 
       case LevelTpe       => ElabAst.Term.GlobalRef("Level", span)
       case NormalizerType => ElabAst.Term.GlobalRef("Normalizer", span)
 
       case const @ VConst(name, _, _) =>
-        if (env.globals.contains(name)) ElabAst.Term.GlobalRef(name, span)
-        else localRefOrFail(const, env, span)
+        if (
+          const.constType == Symbol &&
+          const.tpe == KernelObject &&
+          (const.name.startsWith("select.") || const.name.startsWith("match#"))
+        ) throw CannotQuoteValue(const, "internal synthetic constant", Some(span))
+        else ElabAst.Term.GlobalRef(name, span)
 
-      case app @ VApp(head, args, tpe) =>
-        quoteInternalSelect(head, args, tpe, env, span, context).getOrElse {
-          if (env.globals.contains(head.name)) {
-            val fn = quoteTerm(head, env, span, context)
-            ElabAst.Term.App(fn, args.map(arg => quoteTerm(arg, env, span, context)), span)
-          } else {
-            localRefOrFail(app, env, span)
-          }
-        }
+      case VApp(VConst(name, Symbol, KernelObject), Vector(base), tpe)
+          if name.startsWith("select.") && name.length > "select.".length =>
+        quoteSelect(base, name.substring("select.".length), tpe, context, span)
+
+      case VApp(head, args, _) =>
+        val fn = quoteTerm(head, context, span)
+        ElabAst.Term.App(fn, args.map(arg => quoteTerm(arg, context, span)), span)
 
       case VBlockedThunk(BlockedThunkBody.Select(base, field, _, _), _, tpe, _) =>
-        quoteSelect(base, field, tpe, env, span, context)
+        quoteSelect(base, field, tpe, context, span)
 
       case VBlockedApp(head, args, _, _) =>
-        ElabAst.Term.App(
-          quoteTerm(head, env, span, context),
-          args.map(arg => quoteTerm(arg, env, span, context)),
-          span
-        )
+        ElabAst.Term.App(quoteTerm(head, context, span), args.map(arg => quoteTerm(arg, context, span)), span)
 
-      case pi: VPi => quotePi(pi, env, span, context)
+      case lam: VLam => quoteLam(lam, context, span)
 
-      case head: ConstructorHead =>
-        if (env.globals.contains(head.name)) ElabAst.Term.GlobalRef(head.name, span)
-        else localRefOrFail(head, env, span)
+      case pi: VPi => quotePiOpened(pi, context, span).term
 
-      case ctor: VCtor => quoteCtor(ctor, env, span, context)
+      case head: ConstructorHead => ElabAst.Term.GlobalRef(head.name, span)
 
-      case level: Level => quoteLevel(level, env, span, context)
+      case ctor: VCtor => quoteCtor(ctor, context, span)
 
-      case other => localRefOrFail(other, env, span)
+      case level: Level => quoteLevel(level, context, span)
+
+      case other => throw CannotQuoteValue(other, "no quoted syntax", Some(span))
     }
   }
-
-  private def quoteInternalSelect(
-      head: VConst,
-      args: Vector[Value],
-      tpe: Value,
-      env: TypecheckEnv,
-      span: Span,
-      context: Context
-  )(implicit eqStore: EqStore): Option[ElabAst.Term.Select] =
-    args match {
-      case Vector(base) =>
-        internalSelectField(head, env).map(field => quoteSelect(base, field, tpe, env, span, context))
-      case _ => None
-    }
 
   private def quoteSelect(
       base: Value,
       field: String,
       resultTy: Value,
-      env: TypecheckEnv,
-      span: Span,
-      context: Context
+      context: QuoteContext,
+      span: Span
   )(implicit eqStore: EqStore): ElabAst.Term.Select =
-    ElabAst.Term.Select(
-      quoteTerm(base, env, span, context),
-      field,
-      quoteType(resultTy, env, span, context),
-      span
-    )
+    ElabAst.Term.Select(quoteTerm(base, context, span), field, quoteType(resultTy, context, span), span)
 
-  private def quoteCtor(
-      ctor: VCtor,
-      env: TypecheckEnv,
-      span: Span,
-      context: Context
-  )(implicit eqStore: EqStore): ElabAst.Term = {
-    val VCtor(head, fields, tpe) = ctor
-    if (!env.globals.contains(head.name)) return localRefOrFail(ctor, env, span)
+  private def quoteCtor(ctor: VCtor, context: QuoteContext, span: Span)(implicit eqStore: EqStore): ElabAst.Term = {
+    val VCtor(head, args, _) = ctor
 
-    val fresh = ConstructorOps.freshSpine(head)
-    if (fresh.fields.length != fields.length)
-      throw CannotQuoteValue(ctor, "constructor field arity mismatch", Some(span))
+    if (args.length != head.totalArity)
+      throw WTF(s"Constructor ${head.name} has ${args.length} args, expected ${head.totalArity}", Some(span))
 
-    val refined =
-      try {
-        val start = ValueEquivalence.unify(fresh.tpe, tpe, eqStore.copy(refinable = fresh.synDeps), env.normalizers)
-        fresh.fields.zip(fields).foldLeft(start) { case (cur, (freshField, field)) =>
-          ValueEquivalence.unify(freshField, field, cur, env.normalizers)
-        }
-      } catch {
-        case _: UnificationFailed | _: OccursCheckFailed =>
-          throw CannotQuoteValue(ctor, "cannot recover constructor arguments", Some(span))
-      }
-
-    val quotedArgs = fresh.args.map(arg => quoteTerm(arg, env, span, context)(refined))
+    val quotedArgs = args.map(arg => quoteTerm(arg, context, span))
     val fn = ElabAst.Term.GlobalRef(head.name, span)
     if (quotedArgs.isEmpty) fn else ElabAst.Term.App(fn, quotedArgs, span)
   }
 
-  private def internalSelectField(head: VConst, env: TypecheckEnv): Option[String] = {
-    val prefix = "select."
-    if (
-      head.constType == Symbol &&
-      head.tpe == KernelObject &&
-      !env.globals.contains(head.name) &&
-      head.name.startsWith(prefix) &&
-      head.name.length > prefix.length
-    ) Some(head.name.substring(prefix.length))
-    else None
-  }
+  private def quoteLam(lam: VLam, context: QuoteContext, span: Span)(implicit eqStore: EqStore): ElabAst.Term =
+    lam.id match {
+      case ValueId.Const(name) => ElabAst.Term.GlobalRef(name, span)
+      case _ =>
+        lam.body match {
+          case LamBody.Core(term, _) =>
+            val opened = quotePiOpened(lam.tpe, context, span)
+            val bodyValue = Interpreter.runLam(lam, opened.freshArgs)
+            val bodyTerm = quoteTerm(bodyValue, opened.context, span)
+            val name = lam.id match {
+              case ValueId.Const(globalName) => Some(globalName)
+              case _                         => term.name
+            }
+            ElabAst.Term.Lam(opened.term, term.uses, bodyTerm, span, name, lam.isStable)
 
-  private def quotePi(
-      pi: VPi,
-      env: TypecheckEnv,
-      span: Span,
-      context: Context
-  )(implicit eqStore: EqStore): ElabAst.Term.Pi = {
-    val freshEnv = BinderOps.freshen(pi)
-    val freshArgs = pi.binders.map(binder => freshEnv(binder.localRef))
-
-    var quoteEnv = env
-    var quoteContext = context
-    val quotedBinders = Vector.newBuilder[ElabAst.Binder]
-
-    pi.binders.zip(freshArgs).foreach { case (binder, freshArg) =>
-      val ref = CoreAst.LocalRef(quoteEnv.locals.length, binder.name)
-      val domain = quoteType(freshArg.tpe, quoteEnv, span, quoteContext)
-      val binderType = ElabAst.BinderType.TypePattern(ElabAst.TypePattern.Type(domain), span)
-      val quotedBinder = ElabAst.Binder(ref, binderType, span, binder.isInstance)
-
-      quotedBinders += quotedBinder
-      quoteContext = quoteContext.withValue(freshArg, ElabAst.Term.LocalRef(ref, span))
-      quoteEnv = quoteEnv.putLocal(ref, freshArg)
+          case LamBody.Native(_) => throw CannotQuoteValue(lam, "native lambda has no quoted syntax", Some(span))
+        }
     }
 
-    val outValue = pi.codomain(freshEnv, eqStore)
-    val quotedOut = quoteType(outValue, quoteEnv, span, quoteContext)
-    ElabAst.Term.Pi(quotedBinders.result(), quotedOut, pi.tpe, span)
+  private def quotePiOpened(pi: VPi, context: QuoteContext, span: Span)(implicit eqStore: EqStore): OpenedPi = {
+    val freshEnv = BinderOps.freshen(pi)
+    val freshArgs = pi.binders.map(b => freshEnv(b.localRef))
+    val piEnvLength = pi.env.locals.length
+    val freshLocals = freshEnv.locals.slice(piEnvLength, freshEnv.locals.length)
+
+    val nextQuote = freshLocals.zipWithIndex.foldLeft(context.quote) { case (quote, (lb, idx)) =>
+      val ref = CoreAst.LocalRef(context.localEnvLength + idx, lb.name)
+      withQuotedValue(quote, lb.value, ElabAst.Term.LocalRef(ref, Span(0, 0)))
+    }
+    val nextContext = QuoteContext(nextQuote, context.localEnvLength + freshLocals.length)
+    val result = pi.codomain(freshEnv, eqStore)
+    val quotedOut = quoteType(result, nextContext, span)
+
+    def reindex(l: CoreAst.LocalRef): CoreAst.LocalRef = l.copy(id = l.id - piEnvLength + context.localEnvLength)
+
+    def inlineTerm(term: ElabAst.Term): ElabAst.Term = term match {
+      case tt: ElabAst.TypeTerm => inlineTypeTerm(tt)
+      case other                => throw WTF(s"Non type-term $other in binder")
+    }
+
+    // Inline localRefs with id < pi.env.length, and reindex refs introduced by the opened Pi.
+    def inlineTypeTerm(term: ElabAst.TypeTerm): ElabAst.TypeTerm = term match {
+      case ref: Term.Ref =>
+        ref match {
+          case ref: Term.GlobalRef => ref
+          case ref: Term.LocalRef =>
+            if (ref.ref.id < piEnvLength) quoteType(pi.env.locals(ref.ref.id).value, context, ref.span)
+            else ref.copy(ref = reindex(ref.ref))
+        }
+      case s: Term.Select           => s.copy(base = inlineTerm(s.base), resultTy = inlineTypeTerm(s.resultTy))
+      case Term.App(fn, args, span) => Term.App(inlineTerm(fn), args.map(inlineTerm), span)
+      case pi: Term.Pi =>
+        val newBinders = pi.binders.map(b => b.copy(localRef = reindex(b.localRef), ty = inlineBinderType(b.ty)))
+        pi.copy(binders = newBinders, out = inlineTypeTerm(pi.out))
+    }
+
+    def inlineTopLevelTP(tp: ElabAst.TopLevelTP): ElabAst.TopLevelTP = tp match {
+      case TypePattern.Type(term) => TypePattern.Type(inlineTypeTerm(term))
+      case TypePattern.App(fn, args, span) =>
+        val newRef = inlineTypeTerm(fn) match {
+          case r: ElabAst.Term.Ref => r
+          case other               => throw WTF(s"Failed to inline ref $fn, got $other")
+        }
+        TypePattern.App(newRef, args.map(inlineTypePattern), span)
+    }
+
+    def inlineTypePattern(tp: ElabAst.TypePattern): ElabAst.TypePattern = tp match {
+      case p: ElabAst.TopLevelTP  => inlineTopLevelTP(p)
+      case c: TypePattern.Capture => c.copy(localRef = reindex(c.localRef))
+    }
+
+    def inlineBinderType(b: ElabAst.BinderType): ElabAst.BinderType = b match {
+      case b: BinderType.TypePattern => b.copy(tp = inlineTopLevelTP(b.tp))
+      case b: BinderType.ConstrainedCapture =>
+        b.copy(localRef = reindex(b.localRef), constraint = inlineTopLevelTP(b.constraint))
+    }
+
+    val quotedBinders = pi.binders.map { b =>
+      ElabAst.Binder(reindex(b.localRef), inlineBinderType(b.ty), Span(0, 0), b.isInstance)
+    }
+
+    OpenedPi(ElabAst.Term.Pi(quotedBinders, quotedOut, pi.tpe, span), freshArgs, nextContext)
   }
 
-  private def quoteLevel(
-      level: Level,
-      env: TypecheckEnv,
-      span: Span,
-      context: Context
-  )(implicit eqStore: EqStore): ElabAst.Term = {
+  private def quoteLevel(level: Level, context: QuoteContext, span: Span)(implicit eqStore: EqStore): ElabAst.Term = {
     def succ(term: ElabAst.Term, count: Int): ElabAst.Term =
       if (count == 0) term
       else {
@@ -210,14 +207,11 @@ object ValueQuote {
       else if (c == 1) ElabAst.Term.GlobalRef("Level.one", span)
       else succ(ElabAst.Term.GlobalRef("Level.zero", span), c)
 
-    val atomTerms =
-      level.atoms.toVector.sortBy(_._1).map { case (id, offset) =>
-        val base = context.projectedVars
-          .get(id)
-          .orElse(localRefForVar(id, env, span))
-          .getOrElse(throw CannotQuoteValue(Level.mk(id), "escaping level variable", Some(span)))
-        succ(base, offset)
-      }
+    val atomTerms = level.atoms.toVector.sortBy(_._1).map { case (id, offset) =>
+      val base = quotedTermFor(context.quote, Level.mk(id))
+        .getOrElse(throw CannotQuoteValue(Level.mk(id), "escaping level variable", Some(span)))
+      succ(base, offset)
+    }
 
     val pieces =
       if (level.c == 0 && atomTerms.nonEmpty) atomTerms
@@ -228,38 +222,22 @@ object ValueQuote {
     }
   }
 
-  private def varId(value: Value)(implicit eqStore: EqStore): Option[VarId] =
-    ValueOps.materialize(value, eqStore) match {
-      case Var(_, id, _) => Some(id)
-      case _             => None
-    }
+  private def quotedTermFor(quote: QuoteMap, value: Value)(implicit eqStore: EqStore): Option[ElabAst.Term] =
+    quote.get(ValueOps.materialize(value, eqStore).key)
 
-  private def localRefForVar(id: VarId, env: TypecheckEnv, span: Span)(implicit
+  def withQuotedValue(quote: QuoteMap, value: Value, term: ElabAst.Term)(implicit
       eqStore: EqStore
-  ): Option[ElabAst.Term.LocalRef] =
-    env.locals.zipWithIndex.reverseIterator.collectFirst {
-      case (binding, idx) if binding.valueOption.exists(value => varId(value).contains(id)) =>
-        ElabAst.Term.LocalRef(CoreAst.LocalRef(idx, binding.name), span)
-    }
-
-  private def localRefFor(value: Value, env: TypecheckEnv, span: Span)(implicit
-      eqStore: EqStore
-  ): Option[ElabAst.Term.LocalRef] = {
+  ): QuoteMap = {
     val materialized = ValueOps.materialize(value, eqStore)
-    env.locals.zipWithIndex.reverseIterator.collectFirst {
-      case (binding, idx) if binding.valueOption.exists(localValue => sameQuotedValue(materialized, localValue)) =>
-        ElabAst.Term.LocalRef(CoreAst.LocalRef(idx, binding.name), span)
+    val withValue = quote + (materialized.key -> term)
+    materialized match {
+      case Value.Var(_, id, Value.LevelTpe) => withValue + (Value.Level.mk(id).key -> term)
+      case _                                => withValue
     }
   }
 
-  private def localRefOrFail(value: Value, env: TypecheckEnv, span: Span)(implicit
+  def withQuotedValue(context: QuoteContext, value: Value, term: ElabAst.Term)(implicit
       eqStore: EqStore
-  ): ElabAst.Term =
-    localRefFor(value, env, span).getOrElse(throw CannotQuoteValue(value, "no in-scope syntax", Some(span)))
-
-  private def sameQuotedValue(a: Value, b: Value)(implicit eqStore: EqStore): Boolean = {
-    val a0 = ValueOps.materialize(a, eqStore)
-    val b0 = ValueOps.materialize(b, eqStore)
-    (a0.asInstanceOf[AnyRef] eq b0.asInstanceOf[AnyRef]) || a0.key == b0.key
-  }
+  ): QuoteContext =
+    context.copy(quote = withQuotedValue(context.quote, value, term))
 }
