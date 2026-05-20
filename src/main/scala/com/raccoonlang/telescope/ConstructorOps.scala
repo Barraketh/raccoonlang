@@ -35,6 +35,34 @@ object ConstructorOps {
     def makeCtor(allArgs: Vector[Value], resultTy: Value): VCtor = VCtor(head, allArgs, resultTy)
 
     def freshSpine(allArgs: Vector[Value], resultTy: Value): FreshCtorSpine = FreshCtorSpine(head, allArgs, resultTy)
+
+    def projectedFieldType(
+        base: Value,
+        baseType: Value,
+        fieldIdx: Int,
+        locationId: AstNodeId,
+        normalizerMap: Normalizers.NormalizerMap
+    )(implicit eqStore: EqStore): Value = {
+      val fresh = ConstructorOps.freshSpine(head)
+      val erasedDeps = fresh.args.take(erasedCount).foldLeft(DepSet.empty) { case (deps, arg) =>
+        deps ++ arg.synDeps
+      }
+      val refined = ValueEquivalence.unify(fresh.tpe, baseType, eqStore.allow(erasedDeps), normalizerMap)
+      val refinedFresh = fresh.materialize(refined)
+
+      var ctorEnv = pi.env
+      pi.binders.take(erasedCount).zip(refinedFresh.args.take(erasedCount)).foreach { case (binder, arg) =>
+        ctorEnv = TypePatternOps.bindValue(ctorEnv, binder, arg)
+      }
+
+      fieldBinders.take(fieldIdx).foreach { binder =>
+        val (previousFieldTy, _) = TypePatternOps.openBinderType(ctorEnv, binder.ty)
+        val previousField = Interpreter.evalSelect(base, binder.name, locationId, previousFieldTy)
+        ctorEnv = TypePatternOps.bindValue(ctorEnv, binder, previousField)
+      }
+
+      TypePatternOps.openBinderType(ctorEnv, fieldBinders(fieldIdx).ty)._1
+    }
   }
 
   object ConstructorShape {

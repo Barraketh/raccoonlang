@@ -236,7 +236,7 @@ object TypePatternOps {
       case EPattern.Type(term)         => (evalTypeTerm(term, env), env)
     }
 
-  private def openBinderType[E <: EnvLike[E]](env: E, binderType: ElabAst.BinderType)(implicit
+  private[telescope] def openBinderType[E <: EnvLike[E]](env: E, binderType: ElabAst.BinderType)(implicit
       eqStore: EqStore
   ): (Value, E) =
     binderType match {

@@ -25,7 +25,7 @@ object ValueQuote {
 
     def inlineTerm(t: ElabAst.Term): ElabAst.Term =
       t match {
-        case ElabAst.Term.GlobalRef(_, _) => t
+        case ElabAst.Term.GlobalRef(_, _)        => t
         case ElabAst.Term.LocalRef(ref, refSpan) => inlineLocal(ref, refSpan)
         case ElabAst.Term.Select(base, field, resultTy, selectSpan) =>
           ElabAst.Term.Select(inlineTerm(base), field, inlineTypeTerm(resultTy), selectSpan)
@@ -80,7 +80,7 @@ object ValueQuote {
 
     private def inlineTypePattern(tp: ElabAst.TypePattern): ElabAst.TypePattern =
       tp match {
-        case top: ElabAst.TopLevelTP       => inlineTopLevelTP(top)
+        case top: ElabAst.TopLevelTP                       => inlineTopLevelTP(top)
         case ElabAst.TypePattern.Capture(ref, captureSpan) => ElabAst.TypePattern.Capture(reindex(ref), captureSpan)
       }
 
@@ -159,12 +159,12 @@ object ValueQuote {
         val fn = quoteTerm(head, context, span)
         ElabAst.Term.App(fn, args.map(arg => quoteTerm(arg, context, span)), span)
 
-      case VBlockedThunk(ThunkBody.Select(base, field, _, _), _, tpe, _) =>
+      case VBlockedThunk(ThunkBody.Select(base, field, _), _, tpe, _) =>
         quoteSelect(base, field, tpe, context, span)
       case VBlockedThunk(ThunkBody.Match(term, env), _, _, _) =>
         quoteClosedMatch(term, env, context, span)
 
-      case VStuckThunk(ThunkBody.Select(base, field, _, _), _, tpe) =>
+      case VStuckThunk(ThunkBody.Select(base, field, _), _, tpe) =>
         quoteSelect(base, field, tpe, context, span)
       case VStuckThunk(ThunkBody.Match(term, env), _, _) =>
         quoteClosedMatch(term, env, context, span)

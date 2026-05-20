@@ -107,8 +107,8 @@ object ValueOps {
 
     private def materializeThunkBody(body: ThunkBody)(implicit eqStore: EqStore): ThunkBody =
       body match {
-        case ThunkBody.Select(base, field, env, locationId) =>
-          ThunkBody.Select(materialize(base), field, materializeEnv(env), locationId)
+        case ThunkBody.Select(base, field, locationId) =>
+          ThunkBody.Select(materialize(base), field, locationId)
         case ThunkBody.Match(term, env) =>
           ThunkBody.Match(term, materializeEnv(env))
       }

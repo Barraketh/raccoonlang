@@ -107,6 +107,8 @@ object TypeChecker {
       meta: EqStore
   ): Value = checkTypeTerm(term, env)
 
+  // Returning (Value, EA.Term) allows us to maintain the 'let' structure while quoting the Body.
+  // TODO: The returned term is used in top-level functions, but not in sub-expressions
   private def checkBody(body: CA.Term.Body, env: TypecheckEnv)(implicit
       meta: EqStore
   ): (Value, EA.Term) = {
@@ -182,26 +184,10 @@ object TypeChecker {
         val fieldIdx = shape.fieldBinders.indexWhere(_.name == field)
         if (fieldIdx < 0) throw NotFound(field)
 
-        // Freshen the full constructor telescope, including erased binders. The field type may depend on erased
-        // constructor arguments and on earlier stored fields, so projection typing works over the full spine.
-        val fresh = ConstructorOps.freshSpine(head)
-        val refined =
-          ValueEquivalence.unify(fresh.tpe, vType, eqStore.allow(fresh.synDeps), env.normalizers)
-        val refinedFresh = fresh.materialize(refined)
+        val resultTy = shape.projectedFieldType(baseValue, vType, fieldIdx, span.nodeId, env.normalizers)
+        if ((resultTy.synDeps -- (env.allDeps ++ baseValue.synDeps ++ vType.synDeps)).nonEmpty)
+          throw CannotQuoteValue(resultTy, "escaping variable", Some(span))
 
-        var projectionQuote = ValueQuote.quoteContext(env)(refined)
-        val baseTerm = quoteTerm(baseValue, quoteContext(env), span)
-        shape.fieldBinders.take(fieldIdx).zipWithIndex.foreach { case (fieldBinder, idx) =>
-          val priorFieldTyTerm = ValueQuote.quoteType(refinedFresh.fields(idx).tpe, projectionQuote, span)(refined)
-          val priorFieldTerm = EA.Term.Select(baseTerm, fieldBinder.name, priorFieldTyTerm, span)
-          projectionQuote = ValueQuote.withQuotedValue(projectionQuote, refinedFresh.fields(idx), priorFieldTerm)(
-            refined
-          )
-        }
-
-        val resultTyTerm =
-          ValueQuote.quoteType(refinedFresh.fields(fieldIdx).tpe, projectionQuote, span)(refined)
-        val resultTy = Interpreter.evalTypeTerm(resultTyTerm, env)
         val scrut = Interpreter.resolveInEqStore(baseValue).value
         checkPropElimination(
           indName,
@@ -212,7 +198,7 @@ object TypeChecker {
           span
         )
 
-        Interpreter.evalSelect(baseValue, field, env, span.nodeId, resultTy)
+        Interpreter.evalSelect(baseValue, field, span.nodeId, resultTy)
 
       case _ => throw NotFound(meta.constructorNames.head)
     }

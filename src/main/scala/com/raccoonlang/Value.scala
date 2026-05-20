@@ -113,8 +113,8 @@ object Value {
     def synDeps: DepSet
   }
   object ThunkBody {
-    final case class Select(base: Value, field: String, env: RuntimeEnv, locationId: AstNodeId) extends ThunkBody {
-      override lazy val synDeps: DepSet = base.synDeps ++ envDeps(env)
+    final case class Select(base: Value, field: String, locationId: AstNodeId) extends ThunkBody {
+      override lazy val synDeps: DepSet = base.synDeps
     }
 
     final case class Match(term: ElabAst.Term.Match, env: RuntimeEnv) extends ThunkBody {
