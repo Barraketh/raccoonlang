@@ -132,7 +132,7 @@ object TypeChecker {
       val quotedRes = ValueQuote.quoteTerm(withType, quoteCtx, l.value.span)
       checkedLets += EA.Let(l.localRef, resTyTerm, quotedRes, l.span, l.isInstance)
       val instanceKey = if (l.isInstance) Some(InstanceSearch.instanceKey(l.name, withType, meta)) else None
-      curEnv = curEnv.putLocal(l.localRef, withType, instanceKey, Some(EA.Term.LocalRef(l.localRef, l.span)))
+      curEnv = curEnv.putLocal(l.localRef, withType, instanceKey)
     }
 
     val checkedRes = check(body.res, curEnv)
@@ -465,7 +465,7 @@ object TypeChecker {
           checkApplyValue(fn, args, env.normalizers)
         case derive: CA.Term.Derive =>
           val goal = getType(derive.goal, env)
-          InstanceSearch.solve(goal, env).value
+          InstanceSearch.solve(goal, env)
 
         case l: CA.Term.Lam    => checkLam(l, env)
         case m: CA.Term.Match  => checkMatch(m, env)
@@ -473,9 +473,7 @@ object TypeChecker {
         case term: CA.TypeTerm => checkTypeTerm(term, env)
       }
     } catch {
-      case e: TypeError if e.span.isEmpty =>
-        e.printStackTrace()
-        throw TypeError.withSpan(e, term.span)
+      case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, term.span)
     }
   }
 

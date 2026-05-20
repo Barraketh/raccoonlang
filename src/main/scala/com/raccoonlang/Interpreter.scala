@@ -307,7 +307,7 @@ object Interpreter {
         case _ => res
       }
       val instanceKey = if (l.isInstance) Some(InstanceSearch.instanceKey(l.localRef.name, withTpe, eqStore)) else None
-      curEnv.putLocal(l.localRef, withTpe, instanceKey, Some(ETerm.LocalRef(l.localRef, l.span)))
+      curEnv.putLocal(l.localRef, withTpe, instanceKey)
     }
     evalTerm(body.res, newEnv)
   }

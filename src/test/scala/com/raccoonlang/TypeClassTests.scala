@@ -512,7 +512,7 @@ class TypeClassTests extends munit.FunSuite {
     val eqAKey = InstanceSearch.instanceKey("eqA", eqA, eqStore)
     val envWithEqA = envWithA.putLocal(eqARef, eqA, Some(eqAKey))
 
-    assertEquals(InstanceSearch.solve(goal, envWithEqA).value, eqA)
+    assertEquals(InstanceSearch.solve(goal, envWithEqA), eqA)
     assertEquals(eqStore.subst, Map.empty[Value.VarId, Value])
   }
 }

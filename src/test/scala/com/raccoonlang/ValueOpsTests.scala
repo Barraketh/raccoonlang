@@ -26,8 +26,7 @@ class ValueOpsTests extends munit.FunSuite {
     val ref = CoreAst.LocalRef(0, "x")
     val x = FreshVar.freshVar("x", valueType)
     val solution = symbolicValue("Solved")
-    val term = ETerm.LocalRef(ref, span)
-    val env = TypecheckEnv.empty.putLocal(ref, x, Some("candidate"), Some(term))
+    val env = TypecheckEnv.empty.putLocal(ref, x, Some("candidate"))
 
     val materialized = ValueOps.materializeEnv(env, solve(x, solution))
 

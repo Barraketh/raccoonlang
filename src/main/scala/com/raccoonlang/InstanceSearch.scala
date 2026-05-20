@@ -8,14 +8,12 @@ object InstanceSearch {
   private val MaxDepth = 256
   private val MaxNodes = 65536
 
-  private final case class SearchResult(value: Value, term: ElabAst.Term)
-
   private final class SearchContext {
-    private val cache = mutable.HashMap.empty[ValueKey.Key, SearchResult]
+    private val cache = mutable.HashMap.empty[ValueKey.Key, Value]
 
-    def get(key: ValueKey.Key): Option[SearchResult] = cache.get(key)
+    def get(key: ValueKey.Key): Option[Value] = cache.get(key)
 
-    def put(key: ValueKey.Key, cached: SearchResult): Unit = cache.update(key, cached)
+    def put(key: ValueKey.Key, cached: Value): Unit = cache.update(key, cached)
   }
 
   private final case class SearchState(stack: List[ValueKey.Key], depth: Int, nodes: Int) {
@@ -31,7 +29,7 @@ object InstanceSearch {
   }
 
   private final case class CandidateSearch(
-      success: Option[SearchResult],
+      success: Option[Value],
       hasCycle: Boolean = false,
       hasBudgetExceeded: Boolean = false
   )
@@ -45,19 +43,16 @@ object InstanceSearch {
     resultHeadKey(value.tpe, eqStore).getOrElse(throw InvalidInstance(name, value.tpe))
   }
 
-  def solve(goal: Value, searchEnv: TypecheckEnv)(implicit
-      eqStore: EqStore
-  ): BinderOps.CheckedArg = {
+  def solve(goal: Value, searchEnv: TypecheckEnv)(implicit eqStore: EqStore): Value = {
     val ctx = new SearchContext
-    val res = solveInternal(goal, searchEnv, SearchState.empty, ctx)(
+    solveInternal(goal, searchEnv, SearchState.empty, ctx)(
       eqStore.copy(refinable = DepSet.empty)
     )
-    BinderOps.CheckedArg(res.value, res.term)
   }
 
   private def solveInternal(goal: Value, searchEnv: TypecheckEnv, state: SearchState, ctx: SearchContext)(implicit
       eqStore: EqStore
-  ): SearchResult = {
+  ): Value = {
     val (head, key) = goal.use(rv => headKeyResolved(rv).getOrElse(throw NoInstanceFound(goal)) -> rv.value.key)
 
     ctx.get(key) match {
@@ -124,7 +119,7 @@ object InstanceSearch {
       ctx: SearchContext
   )(implicit
       eqStore: EqStore
-  ): SearchResult = {
+  ): Value = {
     candidate.value.tpe.caseOf {
       case pi: VPi =>
         val freshEnv = BinderOps.freshen(pi)
@@ -135,7 +130,6 @@ object InstanceSearch {
         val freshArgs = pi.binders.map(binder => freshEnv(binder.localRef))
 
         val values = Vector.newBuilder[Value]
-        val terms = Vector.newBuilder[ElabAst.Term]
         val binders = pi.binders
         var telescopeEnv = pi.env
         var idx = 0
@@ -145,34 +139,28 @@ object InstanceSearch {
           val freshArg = freshArgs(idx)
           val inferred = ValueOps.materialize(freshArg, candidateEq)
 
-          val (arg, term) =
+          val arg =
             if (!inferred.synDeps.intersects(candidateDeps)) {
-              val context = ValueQuote.quoteContext(searchEnv)(candidateEq)
-              val term = ValueQuote.quoteTerm(inferred, context, candidate.term.span)(candidateEq)
-              inferred -> term
+              inferred
             } else if (binder.isInstance) {
               val instanceGoal = ValueOps.materialize(freshArg.tpe, candidateEq)
-              val solved = solveInternal(instanceGoal, searchEnv, state, ctx)
-              solved.value -> solved.term
+              solveInternal(instanceGoal, searchEnv, state, ctx)
             } else {
               throw NoInstanceFound(goal)
             }
 
           telescopeEnv = TypePatternOps.bindValue(telescopeEnv, binder, arg)(candidateEq)
           values += arg
-          terms += term
           idx += 1
         }
 
         val args = values.result()
         if (args.isEmpty) throw WTF(s"Instance candidate ${candidate.name} has empty telescope")
-        val res = Interpreter.evalApply(candidate.value, args)
-        val resTerm = ElabAst.Term.App(candidate.term, terms.result(), candidate.term.span)
-        SearchResult(res, resTerm)
+        Interpreter.evalApply(candidate.value, args)
 
       case resultTy =>
         ValueEquivalence.unify(resultTy, goal, eqStore, searchEnv.normalizers)
-        SearchResult(candidate.value, candidate.term)
+        candidate.value
     }
   }
 

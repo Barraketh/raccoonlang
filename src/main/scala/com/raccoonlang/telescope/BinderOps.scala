@@ -4,8 +4,6 @@ import com.raccoonlang.Value.{VBinder, VPi}
 import com.raccoonlang._
 
 object BinderOps {
-  final case class CheckedArg(value: Value, term: ElabAst.Term)
-
   def freshen[E <: EnvLike[E]](binders: Vector[VBinder], baseEnv: E)(implicit eqStore: EqStore): E = {
     var env = baseEnv
     binders.foreach { binder =>

@@ -40,15 +40,13 @@ trait EnvLike[E <: EnvLike[E]] {
   def putGlobal(
       name: String,
       value: Value,
-      instanceKey: Option[String] = None,
-      instanceTerm: Option[ElabAst.Term] = None
+      instanceKey: Option[String] = None
   ): E
 
   def putLocal(
       ref: CoreAst.LocalRef,
       value: Value,
-      instanceKey: Option[String] = None,
-      instanceTerm: Option[ElabAst.Term] = None
+      instanceKey: Option[String] = None
   ): E
 
   def closeForEval(capturedIndexes: Option[RoaringBitmap] = None): RuntimeEnv =
@@ -67,8 +65,7 @@ final case class RuntimeEnv(
   override def putGlobal(
       name: String,
       value: Value,
-      instanceKey: Option[String] = None,
-      instanceTerm: Option[ElabAst.Term] = None
+      instanceKey: Option[String] = None
   ): RuntimeEnv = {
     if (globals.contains(name))
       throw AlreadyDefined(name)
@@ -79,8 +76,7 @@ final case class RuntimeEnv(
   override def putLocal(
       ref: CoreAst.LocalRef,
       value: Value,
-      instanceKey: Option[String] = None,
-      instanceTerm: Option[ElabAst.Term] = None
+      instanceKey: Option[String] = None
   ): RuntimeEnv = {
     if (ref.id == locals.length) copy(locals = locals :+ Binding.live(ref.name, value))
     else if (ref.id < locals.length)
@@ -101,16 +97,14 @@ final case class TypecheckEnv(
   override def putGlobal(
       name: String,
       value: Value,
-      instanceKey: Option[String] = None,
-      instanceTerm: Option[ElabAst.Term] = None
+      instanceKey: Option[String] = None
   ): TypecheckEnv = {
     if (globals.contains(name))
       throw AlreadyDefined(name)
     else if (name == "_") this
     else {
-      val term = instanceTerm.getOrElse(ElabAst.Term.GlobalRef(name, Span(0, 0)))
       val nextInstances = instanceKey match {
-        case Some(key) => globalInstances.add(key, name, value, term)
+        case Some(key) => globalInstances.add(key, name, value)
         case None      => globalInstances
       }
       copy(
@@ -123,16 +117,14 @@ final case class TypecheckEnv(
   override def putLocal(
       ref: CoreAst.LocalRef,
       value: Value,
-      instanceKey: Option[String] = None,
-      instanceTerm: Option[ElabAst.Term] = None
+      instanceKey: Option[String] = None
   ): TypecheckEnv = {
     if (ref.id == locals.length) {
-      val term = instanceTerm.getOrElse(ElabAst.Term.LocalRef(ref, Span(0, 0)))
       val binding = Binding.live(ref.name, value)
 
       val nextLocalInstances = instanceKey match {
         case Some(key) =>
-          val candidate = InstanceCandidate(ref.name, value, term)
+          val candidate = InstanceCandidate(ref.name, value)
           localInstances + (key -> (candidate +: localInstances.getOrElse(key, Vector.empty)))
         case None => localInstances
       }
@@ -210,15 +202,14 @@ object Binding {
 
 final case class InstanceCandidate(
     name: String,
-    value: Value,
-    term: ElabAst.Term
+    value: Value
 )
 
 final case class InstanceSearchTiers(locals: Vector[InstanceCandidate], globals: Vector[InstanceCandidate])
 
 final case class InstanceRegistry(buckets: Map[String, Vector[InstanceCandidate]]) {
-  def add(key: String, name: String, value: Value, term: ElabAst.Term): InstanceRegistry =
-    copy(buckets = buckets + (key -> (buckets.getOrElse(key, Vector.empty) :+ InstanceCandidate(name, value, term))))
+  def add(key: String, name: String, value: Value): InstanceRegistry =
+    copy(buckets = buckets + (key -> (buckets.getOrElse(key, Vector.empty) :+ InstanceCandidate(name, value))))
 
   def get(key: String): Vector[InstanceCandidate] = buckets.getOrElse(key, Vector.empty)
 }
