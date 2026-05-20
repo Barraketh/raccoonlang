@@ -28,8 +28,8 @@ object InductiveChecks {
       eqStore: EqStore
   ): Boolean =
     v match {
-      // Be conservative: blocked types may hide an occurrence
-      case _: VBlockedThunk => true
+      // Be conservative: neutral eliminators may hide an occurrence
+      case _: NeutralThunk => true
 
       case vb @ VBlockedApp(_, _, resultTy, _) =>
         val (head0, flatArgs) = collectBlocked(vb)
@@ -63,8 +63,8 @@ object InductiveChecks {
       eqStore: EqStore
   ): Boolean =
     v match {
-      // Be conservative: blocked shapes are not strictly positive
-      case _: VBlockedThunk => false
+      // Be conservative: neutral eliminators are not strictly positive
+      case _: NeutralThunk => false
 
       case vb @ VBlockedApp(_, _, resultTy, _) =>
         val (head0, flatArgs) = collectBlocked(vb)
@@ -127,9 +127,8 @@ object InductiveChecks {
       else Term.Pi(header.binders, decl.header.resultTy, decl.header.span)
     }
 
-    val checkedInductiveType = TypeChecker.getResidualizedType(ty, worlds.checkEnv)
-    val inductiveTypeCheck = checkedInductiveType.value
-    val inductiveTypeRun = Interpreter.evalTypeTerm(checkedInductiveType.term, worlds.runEnv)
+    val inductiveTypeCheck = TypeChecker.getType(ty, worlds.checkEnv)
+    val inductiveTypeRun = TypeChecker.getType(ty, worlds.runEnv)
 
     val meta =
       InductiveMeta(

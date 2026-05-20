@@ -1,6 +1,6 @@
 package com.raccoonlang.telescope
 
-import com.raccoonlang.CoreAst.{BinderType => CBinderType, TypePattern => CPattern}
+import com.raccoonlang.CoreAst.{Term, BinderType => CBinderType, TypePattern => CPattern}
 import com.raccoonlang.ElabAst.{BinderType => EBinderType, Term => ETerm, TypePattern => EPattern}
 import com.raccoonlang.Interpreter._
 import com.raccoonlang.Value._
@@ -63,17 +63,23 @@ object TypePatternOps {
         collectCaptures(constraint, ActualTypeClassifier) :+ VCapture(ref, Nil, StructuralCapture, ActualType)
     }
 
+  private def toElabRef(caRef: CoreAst.Term.Ref): ElabAst.Term.Ref = caRef match {
+    case Term.GlobalRef(name, span) => ElabAst.Term.GlobalRef(name, span)
+    case Term.LocalRef(ref, span)   => ElabAst.Term.LocalRef(ref, span)
+  }
+
   private[telescope] def toVBinder(binder: CoreAst.Binder, env: TypecheckEnv)(implicit
       eqStore: EqStore
   ): (VBinder, ElabAst.Binder) = {
-    def checkPattern(pattern: CoreAst.TypePattern, env: TypecheckEnv): (ElabAst.TypePattern, TypecheckEnv) =
+    def checkPattern(pattern: CoreAst.TypePattern, env: TypecheckEnv): (ElabAst.TypePattern, TypecheckEnv) = {
       pattern match {
         case CPattern.Type(term) =>
           val checked = TypeChecker.checkTypeTerm(term, env)
-          (EPattern.Type(checked.term), env)
+          val quoteCtx = ValueQuote.quoteContext(env)
+          (EPattern.Type(ValueQuote.quoteType(checked, quoteCtx, term.span)), env)
         case CPattern.Capture(ref, span) => throw PatternCaptureNeedsExpectedType(ref.name, Some(span))
         case CPattern.App(fn, args, span) =>
-          val (fnV, fnTerm) = TypeChecker.checkRef(fn, env)
+          val fnV = TypeChecker.checkRef(fn, env)
           val pi = requirePi(fnV)
           val binders = pi.binders
 
@@ -105,22 +111,18 @@ object TypePatternOps {
           }
 
           val checkedArgs = argPatterns.result()
-          val pattern = EPattern.App(fnTerm, checkedArgs, span)
+          val pattern = EPattern.App(toElabRef(fn), checkedArgs, span)
           (pattern, patternEnv)
       }
+    }
 
-    def checkTopLevel(pattern: CoreAst.TopLevelTP, env: TypecheckEnv): (ElabAst.TopLevelTP, TypecheckEnv) =
-      pattern match {
-        case CPattern.Type(term) =>
-          val checked = TypeChecker.getResidualizedType(term, env)
-          (EPattern.Type(checked.term), env)
-        case _ =>
-          val (checked, checkedEnv) = checkPattern(pattern, env)
-          checked match {
-            case topLevel: ElabAst.TopLevelTP => (topLevel, checkedEnv)
-            case EPattern.Capture(ref, span)  => throw PatternCaptureNeedsExpectedType(ref.name, Some(span))
-          }
+    def checkTopLevel(pattern: CoreAst.TopLevelTP, env: TypecheckEnv): (ElabAst.TopLevelTP, TypecheckEnv) = {
+      val (checked, checkedEnv) = checkPattern(pattern, env)
+      checked match {
+        case topLevel: ElabAst.TopLevelTP => (topLevel, checkedEnv)
+        case EPattern.Capture(ref, span)  => throw PatternCaptureNeedsExpectedType(ref.name, Some(span))
       }
+    }
 
     def checkBinderType(binderType: CoreAst.BinderType, env: TypecheckEnv): (ElabAst.BinderType, TypecheckEnv) =
       binderType match {

@@ -2,14 +2,12 @@ package com.raccoonlang
 
 import com.raccoonlang.Interpreter._
 import com.raccoonlang.Value._
+import com.raccoonlang.ValueQuote.{quoteContext, quoteTerm, quoteType}
 import com.raccoonlang.telescope.{BinderOps, ConstructorOps}
 import com.raccoonlang.{CoreAst => CA, ElabAst => EA}
 
 object TypeChecker {
-  final case class Checked(value: Value, term: EA.Term)
-  final case class CheckedType(value: Value, term: EA.TypeTerm)
-  private final case class CheckedPi(value: VPi, term: EA.Term.Pi)
-  private final case class CheckedSelect(value: Value, term: EA.Term.Select)
+  private final case class CheckedPi(vpi: VPi, bodyEnv: TypecheckEnv, outTy: Value)
   private final case class InductiveFamily(name: String, meta: InductiveMeta)
 
   def sortLeq(a: Value, b: Value)(implicit eqStore: EqStore): Boolean = {
@@ -46,57 +44,28 @@ object TypeChecker {
   def isPropValuedType(value: Value)(implicit eqStore: EqStore): Boolean =
     isPropValue(value) || getUniverse(value) == PropTpe
 
-  private def checkApplyValue(fn: Value, args: Vector[BinderOps.CheckedArg], normalizerMap: Normalizers.NormalizerMap)(
-      implicit eqStore: EqStore
+  private def checkApplyValue(fn: Value, args: Vector[Value], normalizerMap: Normalizers.NormalizerMap)(implicit
+      eqStore: EqStore
   ): Value =
     fn.tpe.caseOf {
       case pi: VPi =>
-        val values = args.map(_.value)
-        BinderOps.checkAndInstantiate(pi.binders, pi.env, values, normalizerMap)
-        Interpreter.evalApply(fn, values)
-      case _ => throw CannotApplyNonFunction(fn)
-    }
-
-  private def residualizeBoundaryTerm(
-      value: Value,
-      checkedTerm: EA.Term,
-      context: ValueQuote.QuoteContext,
-      span: Span
-  )(implicit eqStore: EqStore): EA.Term =
-    checkedTerm match {
-      case _: EA.Term.Body | _: EA.Term.Lam => checkedTerm
+        BinderOps.checkAndInstantiate(pi.binders, pi.env, args, normalizerMap)
+        Interpreter.evalApply(fn, args)
       case _ =>
-        ValueOps.materialize(value, eqStore).caseOf {
-          case _: Normalizer                                      => checkedTerm
-          case VBlockedThunk(_: BlockedThunkBody.Match, _, _, _)  => checkedTerm
-          case VApp(head, _, _) if head.name.startsWith("match#") => checkedTerm
-          case _                                                  => ValueQuote.quoteTerm(value, context, span)
-        }
+        throw CannotApplyNonFunction(fn)
     }
-
-  private def residualizeChecked(checked: Checked, context: ValueQuote.QuoteContext, span: Span)(implicit
-      eqStore: EqStore
-  ): Checked =
-    checked.copy(term = residualizeBoundaryTerm(checked.value, checked.term, context, span))
-
-  private[raccoonlang] def residualizeTopLevelChecked(
-      checked: Checked,
-      context: ValueQuote.QuoteContext,
-      span: Span
-  )(implicit eqStore: EqStore): Checked =
-    residualizeChecked(checked, context, span)
 
   private def checkPi(pi: CA.Term.Pi, env: TypecheckEnv)(implicit
       meta: EqStore
   ): CheckedPi = {
     val (vBinders, checkedBinders) = BinderOps.toVBinders(pi.binders, env)
     val binderEnv = BinderOps.freshen(vBinders, env)
-    val checkedOut = getResidualizedType(pi.out, binderEnv)
+    val outV = checkTypeTerm(pi.out, binderEnv)
     val freshArgs = vBinders.map(binder => binderEnv(binder.localRef))
     val classifier =
-      if (isPropValuedType(checkedOut.value)) PropTpe
+      if (isPropValuedType(outV)) PropTpe
       else {
-        getUniverse(checkedOut.value) match {
+        getUniverse(outV) match {
           case VSort(outLevel) =>
             val domLevels: Vector[Level] = freshArgs
               .map(v => getUniverse(v.tpe))
@@ -105,77 +74,68 @@ object TypeChecker {
             VSort(Level.max(domLevels :+ outLevel))
         }
       }
-    val checkedPi = EA.Term.Pi(checkedBinders, checkedOut.term, classifier, pi.span)
-    CheckedPi(evalPi(checkedPi, env, vBinders), checkedPi)
+    val checkedPi =
+      EA.Term.Pi(checkedBinders, quoteType(outV, quoteContext(binderEnv), pi.out.span), classifier, pi.span)
+    CheckedPi(evalPi(checkedPi, env, vBinders), binderEnv, outV)
   }
 
   def checkRef(ref: CA.Term.Ref, env: TypecheckEnv)(implicit
       meta: EqStore
-  ): (Value, EA.Term.Ref) = {
+  ): Value = {
     val checkedRef = ref match {
       case CA.Term.GlobalRef(name, span) => EA.Term.GlobalRef(name, span)
       case CA.Term.LocalRef(ref, span)   => EA.Term.LocalRef(ref, span)
     }
-    (Interpreter.evalTypeTerm(checkedRef, env), checkedRef)
+    Interpreter.evalTypeTerm(checkedRef, env)
   }
 
   def checkTypeTerm(term: CA.TypeTerm, env: TypecheckEnv)(implicit
       meta: EqStore
-  ): CheckedType = term match {
+  ): Value = term match {
     case t: CA.Term.TApp =>
       val fn = checkTypeTerm(t.fn, env)
-      val args = t.args.map { arg =>
-        val checked = checkTypeTerm(arg, env)
-        BinderOps.CheckedArg(checked.value, checked.term)
-      }
-      CheckedType(checkApplyValue(fn.value, args, env.normalizers), EA.Term.App(fn.term, args.map(_.term), t.span))
+      val args = t.args.map(arg => checkTypeTerm(arg, env))
+      checkApplyValue(fn, args, env.normalizers)
     case CA.Term.TSelect(base, field, span) =>
       val checkedBase = checkTypeTerm(base, env)
-      val checkedSelect = checkSelect(checkedBase.value, checkedBase.term, field, span, env)
-      CheckedType(checkedSelect.value, checkedSelect.term)
-    case pi: CA.Term.Pi =>
-      val checked = checkPi(pi, env)
-      CheckedType(checked.value, checked.term)
-    case ref: CA.Term.Ref => CheckedType.tupled(checkRef(ref, env))
+      checkSelect(checkedBase, field, span, env)
+    case pi: CA.Term.Pi   => checkPi(pi, env).vpi
+    case ref: CA.Term.Ref => checkRef(ref, env)
   }
 
   def evalTypeTerm(term: CA.TypeTerm, env: TypecheckEnv)(implicit
       meta: EqStore
-  ): Value = checkTypeTerm(term, env).value
+  ): Value = checkTypeTerm(term, env)
 
   private def checkBody(body: CA.Term.Body, env: TypecheckEnv)(implicit
       meta: EqStore
-  ): Checked = {
+  ): (Value, EA.Term) = {
     val checkedLets = Vector.newBuilder[EA.Let]
     var curEnv = env
 
     body.lets.foreach { l =>
-      val checkedValue = check(l.value, curEnv)
-      val res = checkedValue.value
-      var checkedTyTerm: Option[EA.TypeTerm] = None
+      val res = check(l.value, curEnv)
+      val quoteCtx = ValueQuote.quoteContext(curEnv)
+
+      var resTyTerm: Option[EA.TypeTerm] = None
       val withType = l.ty
         .map { tyTerm =>
-          val checkedTy = getResidualizedType(tyTerm, curEnv)
-          val tyV = checkedTy.value
+          val tyV = getType(tyTerm, curEnv)
           checkType(res, tyV, curEnv.normalizers)
-          checkedTyTerm = Some(checkedTy.term)
+          resTyTerm = Some(ValueQuote.quoteType(tyV, quoteCtx, tyTerm.span))
           Value.ascribe(res, tyV)
         }
         .getOrElse(res)
-      val residualValueTerm =
-        residualizeBoundaryTerm(withType, checkedValue.term, ValueQuote.quoteContext(curEnv), l.value.span)(
-          meta
-        )
-      checkedLets += EA.Let(l.localRef, checkedTyTerm, residualValueTerm, l.span, l.isInstance)
+
+      val quotedRes = ValueQuote.quoteTerm(withType, quoteCtx, l.value.span)
+      checkedLets += EA.Let(l.localRef, resTyTerm, quotedRes, l.span, l.isInstance)
       val instanceKey = if (l.isInstance) Some(InstanceSearch.instanceKey(l.name, withType, meta)) else None
       curEnv = curEnv.putLocal(l.localRef, withType, instanceKey, Some(EA.Term.LocalRef(l.localRef, l.span)))
     }
+
     val checkedRes = check(body.res, curEnv)
-    val residualRes =
-      residualizeBoundaryTerm(checkedRes.value, checkedRes.term, ValueQuote.quoteContext(curEnv), body.res.span)(
-        meta
-      )
-    Checked(checkedRes.value, EA.Term.Body(checkedLets.result(), residualRes, body.span))
+    val residualRes = ValueQuote.quoteTerm(checkedRes, ValueQuote.quoteContext(curEnv), body.res.span)
+    (checkedRes, EA.Term.Body(checkedLets.result(), residualRes, body.span))
   }
 
   private def checkBranch(br: CA.Case, args: Seq[Value], envWithScrut: TypecheckEnv, expectedTy: Value)(implicit
@@ -190,11 +150,11 @@ object TypeChecker {
       }
     }
     val branchRes = check(br.body, branchEnv)
-    checkType(branchRes.value, expectedTy, branchEnv.normalizers)
+    checkType(branchRes, expectedTy, branchEnv.normalizers)
     EA.Case(
       br.ctorName,
       br.argRefs,
-      residualizeChecked(branchRes, ValueQuote.quoteContext(branchEnv), br.body.span).term,
+      quoteTerm(branchRes, ValueQuote.quoteContext(branchEnv), br.body.span),
       br.span
     )
   }
@@ -207,9 +167,9 @@ object TypeChecker {
       case _ => None
     }
 
-  private def checkSelect(baseValue: Value, baseTerm: EA.Term, field: String, span: Span, env: TypecheckEnv)(implicit
+  private def checkSelect(baseValue: Value, field: String, span: Span, env: TypecheckEnv)(implicit
       eqStore: EqStore
-  ): CheckedSelect = {
+  ): Value = {
     val vType = Interpreter.resolveInEqStore(baseValue.tpe).value
     val InductiveFamily(indName, meta) = inductiveFamilyOf(vType).getOrElse(throw NotAType(vType))
 
@@ -230,6 +190,7 @@ object TypeChecker {
         val refinedFresh = fresh.materialize(refined)
 
         var projectionQuote = ValueQuote.quoteContext(env)(refined)
+        val baseTerm = quoteTerm(baseValue, quoteContext(env), span)
         shape.fieldBinders.take(fieldIdx).zipWithIndex.foreach { case (fieldBinder, idx) =>
           val priorFieldTyTerm = ValueQuote.quoteType(refinedFresh.fields(idx).tpe, projectionQuote, span)(refined)
           val priorFieldTerm = EA.Term.Select(baseTerm, fieldBinder.name, priorFieldTyTerm, span)
@@ -251,8 +212,7 @@ object TypeChecker {
           span
         )
 
-        val value = Interpreter.evalSelect(baseValue, field, env, span.nodeId, resultTy)
-        CheckedSelect(value, EA.Term.Select(baseTerm, field, resultTyTerm, span))
+        Interpreter.evalSelect(baseValue, field, env, span.nodeId, resultTy)
 
       case _ => throw NotFound(meta.constructorNames.head)
     }
@@ -353,9 +313,9 @@ object TypeChecker {
 
   private def checkMatch(t: CA.Term.Match, env: TypecheckEnv)(implicit
       eqStore: EqStore
-  ): Checked = {
+  ): Value = {
     val scrutChecked = check(t.scrut, env)
-    val scrut = Interpreter.resolveInEqStore(scrutChecked.value).value
+    val scrut = Interpreter.resolveInEqStore(scrutChecked).value
     val scrutTpe = Interpreter.resolveInEqStore(scrut.tpe).value
 
     val InductiveFamily(inductiveName, inductiveMeta) =
@@ -398,9 +358,9 @@ object TypeChecker {
       inferred
     }
 
-    val checkedMotive = t.motive.map(motiveSyntax => getResidualizedType(motiveSyntax, env))
+    val checkedMotive = t.motive.map(motiveSyntax => check(motiveSyntax, env))
     val motiveTy = checkedMotive match {
-      case Some(motive) => motive.value
+      case Some(motive) => motive
       case None         => inferMotiveFromReachable(reachableByType)
     }
 
@@ -437,26 +397,32 @@ object TypeChecker {
     val checkedCases = cases.map { c =>
       checkedByCtor.getOrElse(c.ctorName, throw WTF(s"Unchecked reachable case ${c.ctorName}"))
     }
-    val residualScrut = residualizeChecked(scrutChecked, ValueQuote.quoteContext(env), t.scrut.span).term
-    val checkedMatch = EA.Term.Match(residualScrut, checkedMotive.map(_.term), checkedCases, t.span)
-    Checked(Interpreter.evalTerm(checkedMatch, env), checkedMatch)
+    val quoteCtx = ValueQuote.quoteContext(env)
+    val residualScrut = quoteTerm(scrutChecked, quoteCtx, t.scrut.span)
+    val checkedMatch = EA.Term.Match(
+      residualScrut,
+      checkedMotive.map(v => quoteType(v, quoteCtx, t.motive.get.span)),
+      checkedCases,
+      t.span
+    )
+    Interpreter.evalTerm(checkedMatch, env)
   }
 
   private def checkLam(l: CA.Term.Lam, env: TypecheckEnv)(implicit
       eqStore: EqStore
-  ): Checked = {
+  ): VLam = {
     val envWithNormalizers = l.uses.foldLeft(env) { case (curEnv, nextUse) =>
       val normalizer = check(nextUse.normalizer, curEnv)(eqStore)
-      normalizer.value match {
+      normalizer match {
         case n: Value.Normalizer => curEnv.useNormalizer(n)
         case _ =>
-          throw TypeMismatch(normalizer.value, NormalizerType)
+          throw TypeMismatch(normalizer, NormalizerType)
       }
     }
 
-    val checkedPi = checkPi(l.ty, envWithNormalizers)
-    val vpi = checkedPi.value
-    val bodyEnv = BinderOps.freshen(vpi.binders, envWithNormalizers)
+    val checkedVpi = checkPi(l.ty, envWithNormalizers)
+    val vpi = checkedVpi.vpi
+    val bodyEnv = checkedVpi.bodyEnv
 
     val recurEnv =
       l.name match {
@@ -464,34 +430,28 @@ object TypeChecker {
         case None       => bodyEnv
       }
 
-    val checkedBody = check(l.body, recurEnv)(eqStore)
-    val resType = Interpreter.evalTypeTerm(checkedPi.term.out, bodyEnv)
+    val quoteCtx = quoteContext(recurEnv)
+    val (checkedBody, bodyTerm) = l.body match {
+      case b: CoreAst.Term.Body => checkBody(b, recurEnv)
+      case _ =>
+        val bodyV = check(l.body, recurEnv)(eqStore)
+        (bodyV, quoteTerm(bodyV, quoteCtx, l.body.span))
+    }
 
-    checkType(checkedBody.value, resType, recurEnv.normalizers)
-    val residualBody = residualizeChecked(checkedBody, ValueQuote.quoteContext(recurEnv), l.body.span).term
+    checkType(checkedBody, checkedVpi.outTy, recurEnv.normalizers)
+    val quotedPi = quoteTerm(vpi, quoteCtx, l.ty.span) match {
+      case pi: ElabAst.Term.Pi => pi
+      case other               => throw WTF(s"Failed to quote $vpi, got $other ")
+    }
     val checkedLam =
-      EA.Term.Lam(checkedPi.term, Vector.empty, residualBody, l.span, l.name, l.isStable)
-    Checked(Interpreter.evalLam(checkedLam, vpi, env), checkedLam)
-  }
-
-  def getResidualizedType(term: CA.TypeTerm, env: TypecheckEnv)(implicit
-      ctx: EqStore
-  ): CheckedType = {
-    val res = checkTypeTerm(term, env)
-    assertType(res.value)
-    val residualTerm =
-      res.term match {
-        case _: EA.Term.Pi       => res.term
-        case _: EA.Term.LocalRef => res.term
-        case _                   => ValueQuote.quoteType(res.value, ValueQuote.quoteContext(env), term.span)
-      }
-    res.copy(term = residualTerm)
+      EA.Term.Lam(quotedPi, Vector.empty, bodyTerm, l.span, l.name, l.isStable)
+    Interpreter.evalLam(checkedLam, vpi, env)
   }
 
   def getType(term: CA.TypeTerm, env: TypecheckEnv)(implicit ctx: EqStore): Value = {
     val res = checkTypeTerm(term, env)
-    assertType(res.value)
-    res.value
+    assertType(res)
+    res
   }
 
   def assertType(value: Value)(implicit ctx: EqStore): Unit = {
@@ -507,35 +467,29 @@ object TypeChecker {
 
   def check(term: CA.Term, env: TypecheckEnv)(implicit
       eqStore: EqStore
-  ): Checked = {
+  ): Value = {
     try {
       term match {
         case CA.Term.Select(base, field, span) =>
           val checkedBase = check(base, env)
-          val checkedSelect = checkSelect(checkedBase.value, checkedBase.term, field, span, env)
-          Checked(checkedSelect.value, checkedSelect.term)
+          checkSelect(checkedBase, field, span, env)
         case app: CA.Term.App =>
           val fn = check(app.fn, env)
-          val args = app.args.map { arg =>
-            val checkedArg = check(arg, env)
-            BinderOps.CheckedArg(checkedArg.value, checkedArg.term)
-          }
-          Checked(checkApplyValue(fn.value, args, env.normalizers), EA.Term.App(fn.term, args.map(_.term), app.span))
-
+          val args = app.args.map { arg => check(arg, env) }
+          checkApplyValue(fn, args, env.normalizers)
         case derive: CA.Term.Derive =>
           val goal = getType(derive.goal, env)
-          val solved = InstanceSearch.solve(goal, env)
-          residualizeChecked(Checked(solved.value, solved.term), ValueQuote.quoteContext(env), derive.span)
+          InstanceSearch.solve(goal, env).value
 
-        case l: CA.Term.Lam   => checkLam(l, env)
-        case m: CA.Term.Match => checkMatch(m, env)
-        case b: CA.Term.Body  => checkBody(b, env)
-        case term: CA.TypeTerm =>
-          val checked = checkTypeTerm(term, env)
-          Checked(checked.value, checked.term)
+        case l: CA.Term.Lam    => checkLam(l, env)
+        case m: CA.Term.Match  => checkMatch(m, env)
+        case b: CA.Term.Body   => checkBody(b, env)._1
+        case term: CA.TypeTerm => checkTypeTerm(term, env)
       }
     } catch {
-      case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, term.span)
+      case e: TypeError if e.span.isEmpty =>
+        e.printStackTrace()
+        throw TypeError.withSpan(e, term.span)
     }
   }
 

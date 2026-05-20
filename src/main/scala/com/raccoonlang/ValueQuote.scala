@@ -1,6 +1,5 @@
 package com.raccoonlang
 
-import com.raccoonlang.ElabAst.{BinderType, Term, TypePattern}
 import com.raccoonlang.Value._
 import com.raccoonlang.telescope.BinderOps
 
@@ -13,6 +12,101 @@ object ValueQuote {
       freshArgs: Vector[Value],
       context: QuoteContext
   )
+
+  private final class ClosedEnvInliner(env: RuntimeEnv, context: QuoteContext)(implicit eqStore: EqStore) {
+    private val envLength = env.locals.length
+
+    def reindex(ref: CoreAst.LocalRef): CoreAst.LocalRef =
+      ref.copy(id = ref.id - envLength + context.localEnvLength)
+
+    private def inlineLocal(ref: CoreAst.LocalRef, refSpan: Span): ElabAst.Term =
+      if (ref.id < envLength) quoteTerm(env.locals(ref.id).value, context, refSpan)
+      else ElabAst.Term.LocalRef(reindex(ref), refSpan)
+
+    def inlineTerm(t: ElabAst.Term): ElabAst.Term =
+      t match {
+        case ElabAst.Term.GlobalRef(_, _) => t
+        case ElabAst.Term.LocalRef(ref, refSpan) => inlineLocal(ref, refSpan)
+        case ElabAst.Term.Select(base, field, resultTy, selectSpan) =>
+          ElabAst.Term.Select(inlineTerm(base), field, inlineTypeTerm(resultTy), selectSpan)
+        case ElabAst.Term.App(fn, args, appSpan) =>
+          ElabAst.Term.App(inlineTerm(fn), args.map(inlineTerm), appSpan)
+        case ElabAst.Term.Pi(binders, out, classifier, piSpan) =>
+          val nextBinders = binders.map { b =>
+            b.copy(localRef = reindex(b.localRef), ty = inlineBinderType(b.ty))
+          }
+          ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, piSpan)
+        case ElabAst.Term.Body(lets, res, bodySpan) =>
+          val nextLets = lets.map { l =>
+            ElabAst.Let(reindex(l.localRef), l.ty.map(inlineTypeTerm), inlineTerm(l.value), l.span, l.isInstance)
+          }
+          ElabAst.Term.Body(nextLets, inlineTerm(res), bodySpan)
+        case ElabAst.Term.Lam(ty, uses, body, lamSpan, name, isStable) =>
+          ElabAst.Term.Lam(
+            inlineTypeTerm(ty).asInstanceOf[ElabAst.Term.Pi],
+            uses.map(u => u.copy(normalizer = inlineTerm(u.normalizer))),
+            inlineTerm(body),
+            lamSpan,
+            name,
+            isStable
+          )
+        case ElabAst.Term.Match(scrut, motive, cases, matchSpan) =>
+          ElabAst.Term.Match(
+            inlineTerm(scrut),
+            motive.map(inlineTypeTerm),
+            cases.map(inlineCase),
+            matchSpan
+          )
+      }
+
+    def inlineTypeTerm(t: ElabAst.TypeTerm): ElabAst.TypeTerm =
+      t match {
+        case ElabAst.Term.GlobalRef(_, _) => t
+        case ElabAst.Term.LocalRef(ref, refSpan) =>
+          inlineLocal(ref, refSpan) match {
+            case tt: ElabAst.TypeTerm => tt
+            case other                => throw CannotQuoteValue(env(ref), s"$other is not a type term", Some(refSpan))
+          }
+        case ElabAst.Term.Select(base, field, resultTy, selectSpan) =>
+          ElabAst.Term.Select(inlineTerm(base), field, inlineTypeTerm(resultTy), selectSpan)
+        case ElabAst.Term.App(fn, args, appSpan) =>
+          ElabAst.Term.App(inlineTerm(fn), args.map(inlineTerm), appSpan)
+        case ElabAst.Term.Pi(binders, out, classifier, piSpan) =>
+          val nextBinders = binders.map { b =>
+            b.copy(localRef = reindex(b.localRef), ty = inlineBinderType(b.ty))
+          }
+          ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, piSpan)
+      }
+
+    private def inlineTypePattern(tp: ElabAst.TypePattern): ElabAst.TypePattern =
+      tp match {
+        case top: ElabAst.TopLevelTP       => inlineTopLevelTP(top)
+        case ElabAst.TypePattern.Capture(ref, captureSpan) => ElabAst.TypePattern.Capture(reindex(ref), captureSpan)
+      }
+
+    private def inlineTopLevelTP(tp: ElabAst.TopLevelTP): ElabAst.TopLevelTP =
+      tp match {
+        case ElabAst.TypePattern.Type(tpe) => ElabAst.TypePattern.Type(inlineTypeTerm(tpe))
+        case ElabAst.TypePattern.App(fn, args, appSpan) =>
+          val nextFn =
+            inlineTypeTerm(fn) match {
+              case ref: ElabAst.Term.Ref => ref
+              case other                 => throw WTF(s"Failed to inline ref $fn, got $other")
+            }
+          ElabAst.TypePattern.App(nextFn, args.map(inlineTypePattern), appSpan)
+      }
+
+    def inlineBinderType(binderType: ElabAst.BinderType): ElabAst.BinderType =
+      binderType match {
+        case ElabAst.BinderType.TypePattern(tp, binderSpan) =>
+          ElabAst.BinderType.TypePattern(inlineTopLevelTP(tp), binderSpan)
+        case ElabAst.BinderType.ConstrainedCapture(ref, constraint, binderSpan) =>
+          ElabAst.BinderType.ConstrainedCapture(reindex(ref), inlineTopLevelTP(constraint), binderSpan)
+      }
+
+    def inlineCase(c: ElabAst.Case): ElabAst.Case =
+      ElabAst.Case(c.ctorName, c.argRefs.map(_.map(reindex)), inlineTerm(c.body), c.span)
+  }
 
   def quoteContext(env: EnvLike[_])(implicit eqStore: EqStore): QuoteContext = {
     val quote = env.locals.zipWithIndex.foldLeft(Map.empty[ValueKey.Key, ElabAst.Term]) {
@@ -65,8 +159,15 @@ object ValueQuote {
         val fn = quoteTerm(head, context, span)
         ElabAst.Term.App(fn, args.map(arg => quoteTerm(arg, context, span)), span)
 
-      case VBlockedThunk(BlockedThunkBody.Select(base, field, _, _), _, tpe, _) =>
+      case VBlockedThunk(ThunkBody.Select(base, field, _, _), _, tpe, _) =>
         quoteSelect(base, field, tpe, context, span)
+      case VBlockedThunk(ThunkBody.Match(term, env), _, _, _) =>
+        quoteClosedMatch(term, env, context, span)
+
+      case VStuckThunk(ThunkBody.Select(base, field, _, _), _, tpe) =>
+        quoteSelect(base, field, tpe, context, span)
+      case VStuckThunk(ThunkBody.Match(term, env), _, _) =>
+        quoteClosedMatch(term, env, context, span)
 
       case VBlockedApp(head, args, _, _) =>
         ElabAst.Term.App(quoteTerm(head, context, span), args.map(arg => quoteTerm(arg, context, span)), span)
@@ -93,6 +194,22 @@ object ValueQuote {
       span: Span
   )(implicit eqStore: EqStore): ElabAst.Term.Select =
     ElabAst.Term.Select(quoteTerm(base, context, span), field, quoteType(resultTy, context, span), span)
+
+  private def quoteClosedMatch(
+      term: ElabAst.Term.Match,
+      env: RuntimeEnv,
+      context: QuoteContext,
+      span: Span
+  )(implicit eqStore: EqStore): ElabAst.Term.Match = {
+    val inliner = new ClosedEnvInliner(env, context)
+
+    ElabAst.Term.Match(
+      quoteTerm(Interpreter.evalTerm(term.scrut, env), context, term.scrut.span),
+      term.motive.map(motive => quoteType(Interpreter.evalTypeTerm(motive, env), context, motive.span)),
+      term.cases.map(inliner.inlineCase),
+      span
+    )
+  }
 
   private def quoteCtor(ctor: VCtor, context: QuoteContext, span: Span)(implicit eqStore: EqStore): ElabAst.Term = {
     val VCtor(head, args, _) = ctor
@@ -137,53 +254,10 @@ object ValueQuote {
     val nextContext = QuoteContext(nextQuote, context.localEnvLength + freshLocals.length)
     val result = pi.codomain(freshEnv, eqStore)
     val quotedOut = quoteType(result, nextContext, span)
-
-    def reindex(l: CoreAst.LocalRef): CoreAst.LocalRef = l.copy(id = l.id - piEnvLength + context.localEnvLength)
-
-    def inlineTerm(term: ElabAst.Term): ElabAst.Term = term match {
-      case tt: ElabAst.TypeTerm => inlineTypeTerm(tt)
-      case other                => throw WTF(s"Non type-term $other in binder")
-    }
-
-    // Inline localRefs with id < pi.env.length, and reindex refs introduced by the opened Pi.
-    def inlineTypeTerm(term: ElabAst.TypeTerm): ElabAst.TypeTerm = term match {
-      case ref: Term.Ref =>
-        ref match {
-          case ref: Term.GlobalRef => ref
-          case ref: Term.LocalRef =>
-            if (ref.ref.id < piEnvLength) quoteType(pi.env.locals(ref.ref.id).value, context, ref.span)
-            else ref.copy(ref = reindex(ref.ref))
-        }
-      case s: Term.Select           => s.copy(base = inlineTerm(s.base), resultTy = inlineTypeTerm(s.resultTy))
-      case Term.App(fn, args, span) => Term.App(inlineTerm(fn), args.map(inlineTerm), span)
-      case pi: Term.Pi =>
-        val newBinders = pi.binders.map(b => b.copy(localRef = reindex(b.localRef), ty = inlineBinderType(b.ty)))
-        pi.copy(binders = newBinders, out = inlineTypeTerm(pi.out))
-    }
-
-    def inlineTopLevelTP(tp: ElabAst.TopLevelTP): ElabAst.TopLevelTP = tp match {
-      case TypePattern.Type(term) => TypePattern.Type(inlineTypeTerm(term))
-      case TypePattern.App(fn, args, span) =>
-        val newRef = inlineTypeTerm(fn) match {
-          case r: ElabAst.Term.Ref => r
-          case other               => throw WTF(s"Failed to inline ref $fn, got $other")
-        }
-        TypePattern.App(newRef, args.map(inlineTypePattern), span)
-    }
-
-    def inlineTypePattern(tp: ElabAst.TypePattern): ElabAst.TypePattern = tp match {
-      case p: ElabAst.TopLevelTP  => inlineTopLevelTP(p)
-      case c: TypePattern.Capture => c.copy(localRef = reindex(c.localRef))
-    }
-
-    def inlineBinderType(b: ElabAst.BinderType): ElabAst.BinderType = b match {
-      case b: BinderType.TypePattern => b.copy(tp = inlineTopLevelTP(b.tp))
-      case b: BinderType.ConstrainedCapture =>
-        b.copy(localRef = reindex(b.localRef), constraint = inlineTopLevelTP(b.constraint))
-    }
+    val inliner = new ClosedEnvInliner(pi.env, context)
 
     val quotedBinders = pi.binders.map { b =>
-      ElabAst.Binder(reindex(b.localRef), inlineBinderType(b.ty), Span(0, 0), b.isInstance)
+      ElabAst.Binder(inliner.reindex(b.localRef), inliner.inlineBinderType(b.ty), Span(0, 0), b.isInstance)
     }
 
     OpenedPi(ElabAst.Term.Pi(quotedBinders, quotedOut, pi.tpe, span), freshArgs, nextContext)

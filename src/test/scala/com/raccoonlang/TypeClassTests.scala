@@ -66,9 +66,11 @@ class TypeClassTests extends munit.FunSuite {
     assert(body.isInstanceOf[CoreAst.Term.Derive])
 
     implicit val eqStore: EqStore = EqStore.empty
-    val checked = TypeChecker.check(body, worlds.checkEnv)
+    val checkedV = TypeChecker.check(body, worlds.checkEnv)
+    val ctx = ValueQuote.quoteContext(worlds.checkEnv)
+    val term = ValueQuote.quoteTerm(checkedV, ctx, body.span)
 
-    checked.term match {
+    term match {
       case ElabAst.Term.GlobalRef("natEq", _) =>
       case other                              => fail(s"Expected resolved natEq term, got $other")
     }
@@ -97,6 +99,9 @@ class TypeClassTests extends munit.FunSuite {
           |def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |
           |inline def useEq (A: Type)[eqA: DecEq(A)]: DecEq(A) := eqA
+          |
+          |inline def useNatEq : DecEq(Nat) := useEq(Nat, derive[DecEq(Nat)])
+          |
           |""".stripMargin
     )
 
@@ -107,15 +112,20 @@ class TypeClassTests extends munit.FunSuite {
           |
           |inline def useEq (A: Type)[eqA: DecEq(A)]: DecEq(A) := eqA
           |
-          |{ useEq(Nat, derive[DecEq(Nat)]) }
+          |inline def useNatEq : DecEq(Nat) := useEq(Nat, derive[DecEq(Nat)])
+          |
+          |{ useNatEq }
           |""".stripMargin
     ).body.getOrElse(fail("Program has no body"))
     implicit val eqStore: EqStore = EqStore.empty
 
-    val checked = TypeChecker.check(body, worlds.checkEnv)
-    val runEnvWithoutSearch = worlds.runEnv.copy(globalInstances = InstanceRegistry.empty)
+    val checkedV  = TypeChecker.check(body, worlds.checkEnv)
+    val checkedTerm =
+      ValueQuote.quoteTerm(checkedV, ValueQuote.quoteContext(worlds.checkEnv), body.span)
 
-    assertEquals(ctorName(Interpreter.evalTerm(checked.term, runEnvWithoutSearch)), "DecEq.mk")
+    val runEnvWithoutSearch = worlds.runEnv.copy(globalInstances = InstanceRegistry.empty)
+    assertEquals(ctorName(Interpreter.evalTerm(checkedTerm, runEnvWithoutSearch)), "DecEq.mk")
+
   }
 
   test("parameterized instance recursively derives dependencies") {

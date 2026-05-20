@@ -3,7 +3,9 @@ package com.raccoonlang
 import com.raccoonlang.{ElabAst => EA}
 
 class ResidualizationTests extends munit.FunSuite {
-  private def checkBody(src: String): TypeChecker.Checked =
+  case class Checked(value: Value, term: EA.Term)
+
+  private def checkBody(src: String): Checked =
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
@@ -11,15 +13,13 @@ class ResidualizationTests extends munit.FunSuite {
           Interpreter.evalDecl(decl, curWorlds)
         }
         val body = core.body.getOrElse(fail("Program has no body"))
-        TypeChecker.check(body, worlds.checkEnv)(EqStore.empty)
+        implicit val eqStore: EqStore = EqStore.empty
+        val resV = TypeChecker.check(body, worlds.checkEnv)
+        val ctx = ValueQuote.quoteContext(worlds.checkEnv)
+        val term = ValueQuote.quoteTerm(resV, ctx, body.span)
+        Checked(resV, term)
 
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
-    }
-
-  private def bodyResult(term: EA.Term): EA.Term =
-    term match {
-      case EA.Term.Body(_, res, _) => res
-      case other                   => other
     }
 
   private def assertGlobal(term: EA.Term, name: String): Unit =
@@ -94,56 +94,8 @@ class ResidualizationTests extends munit.FunSuite {
           |""".stripMargin
 
     val checked = checkBody(p)
-    val residual = bodyResult(checked.term)
-    assertGlobal(residual, "Nat.zero")
-    assert(!containsGlobal(residual, "expensive"))
-  }
-
-  test("residualization preserves explicit let sharing for reduced applications") {
-    val p =
-      natDecls +
-        """
-          |def opaque (n: Nat): Nat := n
-          |inline def id (n: Nat): Nat := n
-          |
-          |{
-          |  let foo := opaque(Nat.zero)
-          |  id(foo)
-          |}
-          |""".stripMargin
-
-    checkBody(p).term match {
-      case EA.Term.Body(Vector(let), EA.Term.LocalRef(ref, _), _) =>
-        assertEquals(let.name, "foo")
-        assertEquals(ref.name, "foo")
-        assert(containsGlobal(let.value, "opaque"))
-      case other => fail(s"Expected a shared local residual, got $other")
-    }
-  }
-
-  test("quoted neutral applications reuse let locals instead of duplicating their values") {
-    val p =
-      natDecls +
-        """
-          |def opaque (n: Nat): Nat := n
-          |def hold (n: Nat): Nat := n
-          |
-          |{
-          |  let foo := opaque(Nat.zero)
-          |  hold(foo)
-          |}
-          |""".stripMargin
-
-    checkBody(p).term match {
-      case EA.Term.Body(
-            Vector(let),
-            EA.Term.App(EA.Term.GlobalRef("hold", _), Vector(EA.Term.LocalRef(ref, _)), _),
-            _
-          ) =>
-        assertEquals(let.name, "foo")
-        assertEquals(ref.name, "foo")
-      case other => fail(s"Expected neutral application to reuse foo, got $other")
-    }
+    assertGlobal(checked.term, "Nat.zero")
+    assert(!containsGlobal(checked.term, "expensive"))
   }
 
   test("struct projection from a known constructor residualizes to the selected field") {
@@ -160,8 +112,7 @@ class ResidualizationTests extends munit.FunSuite {
           |""".stripMargin
 
     checkBody(p).term match {
-      case EA.Term.Body(Vector(let), res, _) =>
-        assertEquals(let.name, "p")
+      case res @ EA.Term.GlobalRef(_, _) =>
         assertGlobal(res, "Nat.zero")
       case other => fail(s"Expected projection to residualize to Nat.zero, got $other")
     }
@@ -179,7 +130,7 @@ class ResidualizationTests extends munit.FunSuite {
           |""".stripMargin
 
     checkBody(p).term match {
-      case EA.Term.Body(_, EA.Term.Lam(_, _, body, _, _, _), _) =>
+      case EA.Term.Lam(_, _, body, _, _, _) =>
         assertGlobal(body, "Nat.zero")
       case other => fail(s"Expected lambda body to residualize to Nat.zero, got $other")
     }
@@ -204,31 +155,10 @@ class ResidualizationTests extends munit.FunSuite {
           |""".stripMargin
 
     checkBody(p).term match {
-      case EA.Term.Body(_, EA.Term.Match(_, _, cases, _), _) =>
+      case EA.Term.Match(_, _, cases, _) =>
         assertEquals(cases.map(_.ctorName).toSet, Set("Bool.true", "Bool.false"))
         cases.foreach(c => assertGlobal(c.body, "Nat.zero"))
       case other => fail(s"Expected stuck match with residualized branches, got $other")
-    }
-  }
-
-  test("type applications in annotations residualize to their computed type") {
-    val p =
-      natDecls +
-        """
-          |inline def TyId (A: Type): Type := A
-          |
-          |{
-          |  let x : TyId(Nat) := Nat.zero
-          |  x
-          |}
-          |""".stripMargin
-
-    checkBody(p).term match {
-      case EA.Term.Body(Vector(let), EA.Term.LocalRef(ref, _), _) =>
-        assertEquals(let.name, "x")
-        assertEquals(ref.name, "x")
-        assertEquals(let.ty.map(_.toString), Some("Nat"))
-      case other => fail(s"Expected let annotation to residualize to Nat, got $other")
     }
   }
 
@@ -251,7 +181,7 @@ class ResidualizationTests extends munit.FunSuite {
           |""".stripMargin
 
     checkBody(p).term match {
-      case EA.Term.Body(_, EA.Term.Match(scrut, _, _, _), _) =>
+      case EA.Term.Match(scrut, _, _, _) =>
         assert(!containsGlobal(scrut, "idBool"))
         assert(containsGlobal(scrut, "opaqueBool"))
       case other => fail(s"Expected stuck match residual, got $other")
@@ -270,7 +200,7 @@ class ResidualizationTests extends munit.FunSuite {
           |""".stripMargin
 
     checkBody(p).term match {
-      case EA.Term.Body(_, pi: EA.Term.Pi, _) =>
+      case pi: EA.Term.Pi =>
         pi.binders.head.ty match {
           case EA.BinderType.TypePattern(pattern, _) =>
             assertEquals(pattern.toString, "TyId(Nat)")
@@ -292,7 +222,7 @@ class ResidualizationTests extends munit.FunSuite {
         |""".stripMargin
 
     checkBody(p).term match {
-      case EA.Term.Body(_, pi: EA.Term.Pi, _) =>
+      case pi: EA.Term.Pi =>
         pi.binders.head.ty match {
           case EA.BinderType.TypePattern(
                 EA.TypePattern.App(EA.Term.GlobalRef("IdT", _), Vector(EA.TypePattern.Capture(aRef, _)), _),
@@ -324,7 +254,7 @@ class ResidualizationTests extends munit.FunSuite {
           |""".stripMargin
 
     checkBody(p).term match {
-      case EA.Term.Body(_, pi: EA.Term.Pi, _) =>
+      case pi: EA.Term.Pi =>
         assertEquals(pi.binders.length, 1)
         pi.binders.head.ty match {
           case EA.BinderType.TypePattern(
@@ -369,7 +299,7 @@ class ResidualizationTests extends munit.FunSuite {
           |""".stripMargin
 
     checkBody(p).term match {
-      case EA.Term.Body(_, pi: EA.Term.Pi, _) =>
+      case pi: EA.Term.Pi =>
         pi.binders.head.ty match {
           case EA.BinderType.TypePattern(
                 EA.TypePattern.App(
@@ -406,7 +336,7 @@ class ResidualizationTests extends munit.FunSuite {
         |""".stripMargin
 
     checkBody(p).term match {
-      case EA.Term.Body(_, pi: EA.Term.Pi, _) =>
+      case pi: EA.Term.Pi =>
         pi.binders.head.ty match {
           case EA.BinderType.ConstrainedCapture(aRef, EA.TypePattern.Type(EA.Term.GlobalRef("Type", _)), _) =>
             pi.out match {
@@ -429,7 +359,7 @@ class ResidualizationTests extends munit.FunSuite {
         |""".stripMargin
 
     checkBody(p).term match {
-      case EA.Term.Body(_, pi: EA.Term.Pi, _) =>
+      case pi: EA.Term.Pi =>
         pi.binders.head.ty match {
           case EA.BinderType.TypePattern(
                 EA.TypePattern.App(

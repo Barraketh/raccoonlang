@@ -293,7 +293,7 @@ object PrettyPrinter {
       else s"$headStr(${fields.map(print).mkString(", ")})"
     case v: Value.VLam          => s"func#${v.id}"
     case Value.Var(name, id, _) => s"$name#$id"
-    case s: Value.VBlockedThunk => s"match#${s.id}"
+    case s: Value.NeutralThunk  => s"match#${s.id}"
     case Value.NormalizerType   => "Normalizer"
     case n: Value.Normalizer    => s"Normalizer ${n.name}"
     case LevelTpe               => s"Level"

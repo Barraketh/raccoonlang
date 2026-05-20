@@ -45,6 +45,7 @@ object ValueKey {
     val Normalizer = 15
     val ConstId = 16
     val LocalId = 17
+    val StuckThunk = 18
   }
 
   private val SeedHi = -7046029254386353131L
@@ -142,6 +143,8 @@ object ValueKey {
       valueIdKey(tag(Tag.Lam), id)
     case m: Value.VBlockedThunk =>
       valueIdKey(tag(Tag.BlockedThunk), m.id)
+    case m: Value.VStuckThunk =>
+      valueIdKey(tag(Tag.StuckThunk), m.id)
     case p: Value.VPi =>
       mixLong(valueIdKey(tag(Tag.Pi), p.id), p.binders.length.toLong)
     case av: Value.AppliedValue =>

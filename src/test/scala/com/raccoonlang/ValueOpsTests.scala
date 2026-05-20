@@ -211,7 +211,7 @@ class ValueOpsTests extends munit.FunSuite {
       span
     )
     val thunk = VBlockedThunk(
-      BlockedThunkBody.Match(matchTerm, runtimeEnv),
+      ThunkBody.Match(matchTerm, runtimeEnv),
       ValueId.LocalId(nodeId(3), Vector(scrut, captured)),
       valueType,
       scrut.id
@@ -221,7 +221,7 @@ class ValueOpsTests extends munit.FunSuite {
     val materialized = ValueOps.materialize(thunk, eqCaptured).asInstanceOf[VBlockedThunk]
 
     materialized.body match {
-      case BlockedThunkBody.Match(_, materializedEnv) =>
+      case ThunkBody.Match(_, materializedEnv) =>
         assertEquals(materializedEnv(capturedRef), solution)
         assertEquals(materializedEnv(scrutRef), scrut)
       case other => fail(s"Expected materialized match thunk body, got $other")
@@ -261,7 +261,7 @@ class ValueOpsTests extends munit.FunSuite {
     val blocked = Interpreter.evalTerm(matchTerm, env)(EqStore.empty).asInstanceOf[VBlockedThunk]
 
     blocked.body match {
-      case BlockedThunkBody.Match(_, closed: RuntimeEnv) =>
+      case ThunkBody.Match(_, closed: RuntimeEnv) =>
         assertEquals(closed(capturedRef), captured)
         intercept[WTF](closed(unusedRef))
         assertEquals(closed(scrutRef), scrut)

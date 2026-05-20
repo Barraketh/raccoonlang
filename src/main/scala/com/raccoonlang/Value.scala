@@ -59,7 +59,7 @@ object Value {
 
   private[raccoonlang] def needsStructuralDefEq(value: Value): Boolean =
     isKnownProof(value) || (value match {
-      case _: VPi | _: VLam    => true
+      case _: VPi | _: VLam | _: VStuckThunk | _: VBlockedThunk => true
       case app: AppliedValue   => app.head.needsStructuralDefEq || app.args.exists(_.needsStructuralDefEq)
       case VCtor(_, args, tpe) => args.exists(_.needsStructuralDefEq) || tpe.needsStructuralDefEq
       case _                   => false
@@ -109,16 +109,15 @@ object Value {
     }
   }
 
-  sealed trait BlockedThunkBody {
+  sealed trait ThunkBody {
     def synDeps: DepSet
   }
-  object BlockedThunkBody {
-    final case class Select(base: Value, field: String, env: RuntimeEnv, locationId: AstNodeId)
-      extends BlockedThunkBody {
+  object ThunkBody {
+    final case class Select(base: Value, field: String, env: RuntimeEnv, locationId: AstNodeId) extends ThunkBody {
       override lazy val synDeps: DepSet = base.synDeps ++ envDeps(env)
     }
 
-    final case class Match(term: ElabAst.Term.Match, env: RuntimeEnv) extends BlockedThunkBody {
+    final case class Match(term: ElabAst.Term.Match, env: RuntimeEnv) extends ThunkBody {
       override lazy val synDeps: DepSet = envDeps(env)
     }
   }
@@ -293,11 +292,30 @@ object Value {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
-  case class VBlockedThunk(body: BlockedThunkBody, id: ValueId.LocalId, tpe: Value, blockerId: VarId)
+  sealed trait NeutralThunk extends Value with UpdatableType {
+    def body: ThunkBody
+    def id: ValueId.LocalId
+    def tpe: Value
+  }
+
+  case class VBlockedThunk(body: ThunkBody, id: ValueId.LocalId, tpe: Value, blockerId: VarId)
     extends Blocked
+    with NeutralThunk
     with UpdatableType {
     require(synDeps.contains(blockerId), "Blocked thunk synDeps must include blockerId")
 
+    override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
+
+    override lazy val synDeps: DepSet = {
+      val res = DepSet.newBuilder
+      res.unionInPlace(body.synDeps)
+      res.unionInPlace(tpe.synDeps)
+      id.captures.foreach(v => res.unionInPlace(v.synDeps))
+      res.result()
+    }
+  }
+
+  case class VStuckThunk(body: ThunkBody, id: ValueId.LocalId, tpe: Value) extends NeutralThunk {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
 
     override lazy val synDeps: DepSet = {

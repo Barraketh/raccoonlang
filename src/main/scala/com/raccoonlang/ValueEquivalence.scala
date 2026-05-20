@@ -128,7 +128,7 @@ object ValueEquivalence {
 
         case (c1: ConstructorHead, c2: ConstructorHead) if c1.name == c2.name => true
 
-        case (s1: VBlockedThunk, s2: VBlockedThunk) => defEqLamId(s1.id, s2.id)
+        case (s1: NeutralThunk, s2: NeutralThunk) => defEqLamId(s1.id, s2.id)
 
         case (Var(_, id1, _), Var(_, id2, _)) if id1 == id2 => true
         case _                                              => false
@@ -161,7 +161,7 @@ object ValueEquivalence {
       (nextEqStore, related.vars)
     }
 
-    private def unifyBlockedThunks(v1: VBlockedThunk, v2: VBlockedThunk, meta: EqStore)(implicit
+    private def unifyNeutralThunks(v1: NeutralThunk, v2: NeutralThunk, meta: EqStore)(implicit
         normalizerMap: Normalizers.NormalizerMap
     ): EqStore = {
       val m1 = unify(v1.tpe, v2.tpe, meta)
@@ -244,8 +244,8 @@ object ValueEquivalence {
           val m1 = c1.args.zip(c2.args).foldLeft(m0) { case (cur, (x, y)) => unify(x, y, cur) }
           unify(c1.tpe, c2.tpe, m1)
 
-        case (v1: VBlockedThunk, v2: VBlockedThunk) if v1.id.nodeId == v2.id.nodeId =>
-          unifyBlockedThunks(v1, v2, meta)
+        case (v1: NeutralThunk, v2: NeutralThunk) if v1.id.nodeId == v2.id.nodeId =>
+          unifyNeutralThunks(v1, v2, meta)
 
         case (s1: VSort, s2: VSort) => unifySorts(s1, s2, meta)
 

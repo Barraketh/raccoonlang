@@ -192,9 +192,9 @@ object Interpreter {
 
   private def forceThunk(thunk: VBlockedThunk)(implicit eqStore: EqStore): Value =
     thunk.body match {
-      case BlockedThunkBody.Select(base, field, env, locationId) =>
+      case ThunkBody.Select(base, field, env, locationId) =>
         evalSelect(base, field, env, locationId, thunk.tpe)
-      case BlockedThunkBody.Match(term, env) => evalMatch(term, env)
+      case ThunkBody.Match(term, env) => evalMatch(term, env)
     }
 
   private def evalLam[E <: EnvLike[E]](l: ETerm.Lam, env: E)(implicit eqStore: EqStore): VLam = {
@@ -250,7 +250,7 @@ object Interpreter {
         val head = VConst(s"select.$field", Symbol, KernelObject)
         val id = ValueId.LocalId(AstNodeId(None, 0), Vector(head, v0))
         VBlockedThunk(
-          BlockedThunkBody.Select(v, field, env.closeForEval(), locationId),
+          ThunkBody.Select(v, field, env.closeForEval(), locationId),
           id,
           resultTy,
           b.blockerId
@@ -273,14 +273,14 @@ object Interpreter {
             case Some(motive) => evalTypeTerm(motive, env)
             case None         => scrut.value.tpe
           }
+          val lamId = ValueId.LocalId(m.span.nodeId, matchCaptures)
           other match {
             case b: Blocker =>
-              val lamId = ValueId.LocalId(m.span.nodeId, matchCaptures)
-              val thunkBody = BlockedThunkBody.Match(m, env.closeForEval(Some(capturedIndexes)))
+              val thunkBody = ThunkBody.Match(m, env.closeForEval(Some(capturedIndexes)))
               return VBlockedThunk(thunkBody, lamId, outType, b.blockerId)
             case _ =>
-              val head = VConst(s"match#${m.span.nodeId.stableName}", Symbol, KernelObject)
-              return VApp(head, matchCaptures, outType)
+              val thunkBody = ThunkBody.Match(m, env.closeForEval(Some(capturedIndexes)))
+              return VStuckThunk(thunkBody, lamId, outType)
           }
       }
     )
@@ -320,9 +320,8 @@ object Interpreter {
 
     decl match {
       case Decl.ConstDecl(unfoldStrategy, name, ty, body, span, isInstance) =>
-        val checkedTy = TypeChecker.getResidualizedType(ty, worlds.checkEnv)
-        val tyV = checkedTy.value
-        val runtimeTyV = Interpreter.evalTypeTerm(checkedTy.term, worlds.runEnv)
+        val tyV = TypeChecker.getType(ty, worlds.checkEnv)
+        val runtimeTyV = TypeChecker.getType(ty, worlds.runEnv)
 
         val (checkValue, runtimeValue) = body match {
           case CoreAst.ConstBody.Builtin(_) =>
@@ -332,20 +331,16 @@ object Interpreter {
 
           case CoreAst.ConstBody.TermBody(term) =>
             val declConst = VConst(name, Symbol, tyV)
-            val checkedBody0 = TypeChecker.check(term, worlds.checkEnv)
-            val bodyV0 = checkedBody0.value
+            val bodyV0 = TypeChecker.check(term, worlds.checkEnv)
 
             TypeChecker.checkType(bodyV0, tyV, worlds.checkEnv.normalizers)
             val bodyV = Value.ascribe(bodyV0, tyV)
-            val quoteContext = ValueQuote.quoteContext(worlds.checkEnv)
-            val checkedBody =
-              TypeChecker.residualizeTopLevelChecked(TypeChecker.Checked(bodyV, checkedBody0.term), quoteContext, term.span)
 
             val checkValue: Value = unfoldStrategy match {
               case Some(_) => bodyV
               case None    => declConst
             }
-            val runtimeBodyV = Value.ascribe(Interpreter.evalTerm(checkedBody.term, worlds.runEnv), runtimeTyV)
+            val runtimeBodyV = Value.ascribe(TypeChecker.check(term, worlds.runEnv), runtimeTyV)
             (checkValue, runtimeBodyV)
         }
 
@@ -358,13 +353,12 @@ object Interpreter {
         Worlds(nextCheckEnv, nextRunEnv)
 
       case Decl.AxiomDecl(name, ty, _, isInstance) =>
-        val checkedTy = TypeChecker.getResidualizedType(ty, worlds.checkEnv)
-        val tyV = checkedTy.value
+        val tyV = TypeChecker.getType(ty, worlds.checkEnv)
         val checkValue = VConst(name, Symbol, tyV)
         val checkInstanceKey = if (isInstance) Some(InstanceSearch.instanceKey(name, checkValue, eqStore)) else None
         val nextCheckEnv = worlds.checkEnv.putGlobal(name, checkValue, checkInstanceKey)
 
-        val runtimeTyV = Interpreter.evalTypeTerm(checkedTy.term, worlds.runEnv)
+        val runtimeTyV = TypeChecker.getType(ty, worlds.runEnv)
         val runtimeValue = VConst(name, Symbol, runtimeTyV)
         val runInstanceKey = if (isInstance) Some(InstanceSearch.instanceKey(name, runtimeValue, eqStore)) else None
         val nextRunEnv = worlds.runEnv.putGlobal(name, runtimeValue, runInstanceKey)
@@ -382,10 +376,8 @@ object Interpreter {
       p.decls.foldLeft(initialWorlds) { case (curWorlds, decl) => evalDecl(decl, curWorlds) }
     p.body.map { b =>
       implicit val eqStore: EqStore = EqStore.empty
-      val checked0 = TypeChecker.check(b, worlds.checkEnv)
-      val quoteContext = ValueQuote.quoteContext(worlds.checkEnv)
-      val checked = TypeChecker.residualizeTopLevelChecked(checked0, quoteContext, b.span)
-      Interpreter.evalTerm(checked.term, worlds.runEnv)(EqStore.empty)
+      TypeChecker.check(b, worlds.checkEnv)
+      TypeChecker.check(b, worlds.runEnv)
     }
   }
 
