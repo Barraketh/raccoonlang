@@ -280,6 +280,6 @@ class ValueOpsTests extends munit.FunSuite {
     val ctorB = VCtor(head, Vector.empty, resultB)
 
     assertNotEquals(ctorA.key, ctorB.key)
-    assert(!ValueEquivalence.defEq(ctorA, ctorB, Map.empty))
+    assert(!ValueEquivalence.defEq(ctorA, ctorB, Map.empty, propIrrelevant = true))
   }
 }

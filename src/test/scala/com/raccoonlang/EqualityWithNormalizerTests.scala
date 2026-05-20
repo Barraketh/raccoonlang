@@ -25,7 +25,7 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |stable def add (a: Nat)(b: Nat): Nat := {
+        |stable def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
         |  match b with
         |  | Nat.zero => a
         |  | Nat.succ x => add(Nat.succ(a), x)
@@ -67,7 +67,7 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |stable def add (a: Nat)(b: Nat): Nat := {
+        |stable def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
         |  match b with
         |  | Nat.zero => a
         |  | Nat.succ x => add(Nat.succ(a), x)
@@ -92,7 +92,7 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |stable def add (a: Nat)(b: Nat): Nat := {
+        |stable def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
         |  match b with
         |  | Nat.zero => a
         |  | Nat.succ x => add(Nat.succ(a), x)

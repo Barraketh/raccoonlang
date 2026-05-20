@@ -9,7 +9,7 @@ inductive Vec(u: Level)(A: Sort(u))(n: Nat) : Sort(Level.max(Level.one, u))
 inductive Pair(u1: Level)(u2: Level)(A: Sort(u1))(B: Sort(u2)): Sort(Level.max(u1, u2))
  | mk {u1: Level}{u2: Level}{A: Sort(u1)}{B: Sort(u2)}(a: A)(b: B): Pair(u1, u2, A, B)
 
-inline def zip(u1: Level)(u2: Level)(A: Sort(u1))(B: Sort(u2))(n: Nat)(va: Vec(u1, A, n))(vb: Vec(u2, B, n)): Vec(Level.max(u1, u2), Pair(u1, u2, A, B), n) := {
+inline def zip(u1: Level)(u2: Level)(A: Sort(u1))(B: Sort(u2))(n: Nat)(va: Vec(u1, A, n))(vb: Vec(u2, B, n)): Vec(Level.max(u1, u2), Pair(u1, u2, A, B), n) decreases structural(n) := {
   let R := Pair(u1, u2, A, B)
   let L := Level.max(u1, u2)
   match va returning Vec(L, R, n) with

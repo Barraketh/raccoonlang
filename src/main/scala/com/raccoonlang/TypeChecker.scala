@@ -23,7 +23,7 @@ object TypeChecker {
   def checkFits(actual: Value, expected: Value, normalizerMap: Normalizers.NormalizerMap)(implicit
       eqStore: EqStore
   ): Unit =
-    if (!ValueEquivalence.defEq(actual, expected, normalizerMap) && !sortLeq(actual, expected))
+    if (!ValueEquivalence.defEq(actual, expected, normalizerMap, propIrrelevant = true) && !sortLeq(actual, expected))
       throw TypeMismatch(expected, actual)
 
   def checkType(value: Value, tyVal: Value, normalizerMap: Normalizers.NormalizerMap)(implicit eqStore: EqStore): Unit =
@@ -129,6 +129,8 @@ object TypeChecker {
         }
         .getOrElse(res)
 
+      TerminationChecker.forbidEscapedRawRecursive(withType, l.span)
+
       val quotedRes = ValueQuote.quoteTerm(withType, quoteCtx, l.value.span)
       checkedLets += EA.Let(l.localRef, resTyTerm, quotedRes, l.span, l.isInstance)
       val instanceKey = if (l.isInstance) Some(InstanceSearch.instanceKey(l.name, withType, meta)) else None
@@ -136,6 +138,7 @@ object TypeChecker {
     }
 
     val checkedRes = check(body.res, curEnv)
+    TerminationChecker.forbidEscapedRawRecursive(checkedRes, body.res.span)
     val residualRes = ValueQuote.quoteTerm(checkedRes, ValueQuote.quoteContext(curEnv), body.res.span)
     (checkedRes, EA.Term.Body(checkedLets.result(), residualRes, body.span))
   }
@@ -279,7 +282,7 @@ object TypeChecker {
     fields1.zip(fields2).forall { case (f1, f2) =>
       TypeChecker.getUniverse(f1.tpe)(startEq) match {
         case PropTpe => true
-        case _       => ValueEquivalence.defEq(f1, f2, normalizerMap)(startEq)
+        case _       => ValueEquivalence.defEq(f1, f2, normalizerMap, propIrrelevant = true)(startEq)
       }
     }
   }
@@ -336,7 +339,7 @@ object TypeChecker {
       }
       val inferred = first.resultTy
       val allEqual = reachable.tail.forall { info =>
-        ValueEquivalence.defEq(inferred, info.resultTy, env.normalizers)(eqStore)
+        ValueEquivalence.defEq(inferred, info.resultTy, env.normalizers, propIrrelevant = true)(eqStore)
       }
       if (!allEqual)
         throw MissingReturningClause("reachable constructors have different result types", Some(t.span))
@@ -411,9 +414,12 @@ object TypeChecker {
     val bodyEnv = checkedVpi.bodyEnv
 
     val recurEnv =
-      l.name match {
-        case Some(name) => bodyEnv.putGlobal(name, Value.VConst(name, Symbol, vpi))
-        case None       => bodyEnv
+      (l.name, l.decreases) match {
+        case (Some(name), Some(decreaseSpec)) =>
+          val recursiveSelf =
+            TerminationChecker.rawRecursiveSelf(name, vpi, decreaseSpec, bodyEnv, l.isStable)
+          bodyEnv.putGlobal(name, recursiveSelf)
+        case _ => bodyEnv
       }
 
     val quoteCtx = quoteContext(recurEnv)
@@ -425,6 +431,7 @@ object TypeChecker {
     }
 
     checkType(checkedBody, checkedVpi.outTy, recurEnv.normalizers)
+    TerminationChecker.forbidEscapedRawRecursive(checkedBody, l.body.span)
     val quotedPi = quoteTerm(vpi, quoteCtx, l.ty.span) match {
       case pi: ElabAst.Term.Pi => pi
       case other               => throw WTF(s"Failed to quote $vpi, got $other ")

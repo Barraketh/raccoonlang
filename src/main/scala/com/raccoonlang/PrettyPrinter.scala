@@ -67,6 +67,14 @@ object PrettyPrinter {
         s"$$${ref.name} in ${printTypePattern(constraint)}"
     }
 
+  private def printDecreaseSpec(spec: CoreAst.DecreaseSpec): String =
+    spec match {
+      case CoreAst.DecreaseSpec.Lexicographic(args, _) =>
+        s"decreases lexicographic(${args.map(_.name).mkString(", ")})"
+      case CoreAst.DecreaseSpec.Measure(term, _) =>
+        s"decreases measure(${printCoreTerm(term)})"
+    }
+
   private def isAtomic(v: Value): Boolean = v match {
     case _: Value.VSort  => true
     case _: Value.VConst => true
@@ -107,21 +115,22 @@ object PrettyPrinter {
   }
 
   private def printTermAtom(t: CoreAst.Term): String = t match {
-    case _: CoreAst.Term.Ref                 => printCoreTerm(t)
-    case CoreAst.Term.App(_, _, _)           => printCoreTerm(t)
-    case CoreAst.Term.Derive(_, _)           => printCoreTerm(t)
-    case CoreAst.Term.TApp(_, _, _)          => printCoreTerm(t)
-    case ts: CoreAst.Term.TSelect            => printTypeTerm(ts)
-    case CoreAst.Term.Select(base, field, _) => s"${printTermAtom(base)}[$field]"
-    case CoreAst.Term.Lam(_, _, _, _, _, _)  => s"(${printCoreTerm(t)})"
-    case CoreAst.Term.Match(_, _, _, _)      => s"(${printCoreTerm(t)})"
-    case CoreAst.Term.Body(_, _, _)          => s"(${printCoreTerm(t)})"
-    case CoreAst.Term.Pi(_, _, _)            => s"(${printCoreTerm(t)})"
+    case _: CoreAst.Term.Ref                   => printCoreTerm(t)
+    case CoreAst.Term.App(_, _, _)             => printCoreTerm(t)
+    case CoreAst.Term.Derive(_, _)             => printCoreTerm(t)
+    case CoreAst.Term.TApp(_, _, _)            => printCoreTerm(t)
+    case ts: CoreAst.Term.TSelect              => printTypeTerm(ts)
+    case CoreAst.Term.Select(base, field, _)   => s"${printTermAtom(base)}[$field]"
+    case CoreAst.Term.Lam(_, _, _, _, _, _, _) => s"(${printCoreTerm(t)})"
+    case CoreAst.Term.Match(_, _, _, _)        => s"(${printCoreTerm(t)})"
+    case CoreAst.Term.Body(_, _, _)            => s"(${printCoreTerm(t)})"
+    case CoreAst.Term.Pi(_, _, _)              => s"(${printCoreTerm(t)})"
   }
 
   private def printCoreTerm(t: CoreAst.Term): String = t match {
-    case CoreAst.Term.Lam(ty, _, body, _, _, _) =>
-      s"fun ${printBinders(ty.binders)}: ${printTypeTerm(ty.out)} => ${printCoreTerm(body)}"
+    case CoreAst.Term.Lam(ty, _, body, _, _, _, decreases) =>
+      val decreaseStr = decreases.map(spec => s" ${printDecreaseSpec(spec)}").getOrElse("")
+      s"fun ${printBinders(ty.binders)}: ${printTypeTerm(ty.out)}$decreaseStr => ${printCoreTerm(body)}"
     case m @ CoreAst.Term.Match(_, _, _, _)  => printMatch(m)
     case b: CoreAst.Term.Body                => printBody(b)
     case CoreAst.Term.Select(base, field, _) => s"${printTermAtom(base)}[$field]"
@@ -137,6 +146,7 @@ object PrettyPrinter {
     case term: CoreAst.Term             => printCoreTerm(term)
     case pattern: CoreAst.TypePattern   => printTypePattern(pattern)
     case binderType: CoreAst.BinderType => printBinderType(binderType)
+    case decrease: CoreAst.DecreaseSpec => printDecreaseSpec(decrease)
   }
 
   private def printCase(c: CoreAst.Case): String = {

@@ -54,6 +54,10 @@ object TypeError {
     case e: ModuleReadFailed                => e.copy(span = Some(sp))
     case e: LocalCaseHead                   => e.copy(span = Some(sp))
     case e: CannotQuoteValue                => e.copy(span = Some(sp))
+    case e: InvalidDecreaseSpec             => e.copy(span = Some(sp))
+    case e: MissingDecreaseSpec             => e.copy(span = Some(sp))
+    case e: NonDecreasingRecursiveCall      => e.copy(span = Some(sp))
+    case e: InvalidRecursiveOccurrence      => e.copy(span = Some(sp))
   }
 }
 
@@ -260,4 +264,22 @@ final case class InstanceSearchBudgetExceeded(
 
 final case class CannotQuoteValue(value: Value, reason: String, span: Option[Span] = None) extends TypeError {
   override def msg: String = s"Cannot quote $value as checked syntax: $reason"
+}
+
+final case class InvalidDecreaseSpec(reason: String, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"Invalid decreases annotation: $reason"
+}
+
+final case class MissingDecreaseSpec(function: String, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"Recursive call to $function requires a decreases annotation"
+}
+
+final case class NonDecreasingRecursiveCall(function: String, reason: String, span: Option[Span] = None)
+  extends TypeError {
+  override def msg: String = s"Recursive call to $function is not decreasing: $reason"
+}
+
+final case class InvalidRecursiveOccurrence(function: String, reason: String, span: Option[Span] = None)
+  extends TypeError {
+  override def msg: String = s"Invalid recursive occurrence of $function: $reason"
 }

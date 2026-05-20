@@ -222,24 +222,24 @@ object ValueQuote {
     if (quotedArgs.isEmpty) fn else ElabAst.Term.App(fn, quotedArgs, span)
   }
 
-  private def quoteLam(lam: VLam, context: QuoteContext, span: Span)(implicit eqStore: EqStore): ElabAst.Term =
-    lam.id match {
-      case ValueId.Const(name) => ElabAst.Term.GlobalRef(name, span)
-      case _ =>
-        lam.body match {
-          case LamBody.Core(term, _) =>
-            val opened = quotePiOpened(lam.tpe, context, span)
-            val bodyValue = Interpreter.runLam(lam, opened.freshArgs)
-            val bodyTerm = quoteTerm(bodyValue, opened.context, span)
-            val name = lam.id match {
-              case ValueId.Const(globalName) => Some(globalName)
-              case _                         => term.name
-            }
-            ElabAst.Term.Lam(opened.term, term.uses, bodyTerm, span, name, lam.isStable)
-
-          case LamBody.Native(_) => throw CannotQuoteValue(lam, "native lambda has no quoted syntax", Some(span))
+  private def quoteLam(lam: VLam, context: QuoteContext, span: Span)(implicit eqStore: EqStore): ElabAst.Term = {
+    (lam.id, lam.body) match {
+      case (_, LamBody.Native(_, true)) =>
+        // Note: this check has to come before the ValueId.Const shortcut for TerminationChecking
+        throw CannotQuoteValue(lam, "raw recursive self", Some(span))
+      case (ValueId.Const(name), _) => ElabAst.Term.GlobalRef(name, span)
+      case (_, LamBody.Core(term, _)) =>
+        val opened = quotePiOpened(lam.tpe, context, span)
+        val bodyValue = Interpreter.runLam(lam, opened.freshArgs)
+        val bodyTerm = quoteTerm(bodyValue, opened.context, span)
+        val name = lam.id match {
+          case ValueId.Const(globalName) => Some(globalName)
+          case _                         => term.name
         }
+        ElabAst.Term.Lam(opened.term, term.uses, bodyTerm, span, name, lam.isStable)
+      case (_, LamBody.Native(_, _)) => throw CannotQuoteValue(lam, "native lambda has no quoted syntax", Some(span))
     }
+  }
 
   private def quotePiOpened(pi: VPi, context: QuoteContext, span: Span)(implicit eqStore: EqStore): OpenedPi = {
     val freshEnv = BinderOps.freshen(pi)

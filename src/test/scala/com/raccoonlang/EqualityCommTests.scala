@@ -25,7 +25,7 @@ class EqualityCommTests extends munit.FunSuite {
         | | zero : Nat
         | | succ(_: Nat) : Nat
         |
-        |stable def add (a: Nat)(b: Nat): Nat := {
+        |stable def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
         |  match b with
         |  | Nat.zero => a
         |  | Nat.succ x => add(Nat.succ(a), x)
@@ -46,14 +46,14 @@ class EqualityCommTests extends munit.FunSuite {
         |  | Eq.refl x => Eq.refl(Nat.succ(x))
         |}
         |
-        |def succAdd (a: Nat)(b: Nat): Eq(Nat, add(Nat.succ(a), b), Nat.succ(add(a, b))) := {
+        |def succAdd (a: Nat)(b: Nat): Eq(Nat, add(Nat.succ(a), b), Nat.succ(add(a, b))) decreases structural(b) := {
         |  match b returning Eq(Nat, add(Nat.succ(a), b), Nat.succ(add(a, b))) with
         |  | Nat.zero => Eq.refl(Nat.succ(a))
         |  | Nat.succ x => succAdd(Nat.succ(a), x)
         |}
         |
         |// add 0 b = b
-        |def zeroAdd (b: Nat): Eq(Nat, add(Nat.zero, b), b) := {
+        |def zeroAdd (b: Nat): Eq(Nat, add(Nat.zero, b), b) decreases structural(b) := {
         |  match b returning Eq(Nat, add(Nat.zero, b), b) with
         |  | Nat.zero => Eq.refl(Nat.zero)
         |  | Nat.succ x => {
@@ -65,7 +65,7 @@ class EqualityCommTests extends munit.FunSuite {
         |}
         |
         |// add commutativity: a + b = b + a
-        |def addComm (a: Nat)(b: Nat): Eq(Nat, add(a, b), add(b, a)) := {
+        |def addComm (a: Nat)(b: Nat): Eq(Nat, add(a, b), add(b, a)) decreases structural(b) := {
         |  match b returning Eq(Nat, add(a, b), add(b, a)) with
         |  | Nat.zero => symm(zeroAdd(a))
         |  | Nat.succ x => {

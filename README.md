@@ -44,8 +44,7 @@ Note that at this point I have done 0 optimization - these performance wins are 
 
 - Inductive families with explicit family arguments and erased constructor binders
     - Validates positivity, universes, constructor result shape
-- Type classes as structs, with `def instance`, `let instance`, `[f: Foo]` instance binders, and explicit `derive[Foo]`
-  search
+- Termination checking of recursive functions
 - Dependent pattern matching
     - Branch refinement for indexed families / dependent pattern matching. Supports equality proofs.
     - Validates exhaustiveness checking: missing, duplicate, and unreachable branches
@@ -55,6 +54,8 @@ Note that at this point I have done 0 optimization - these performance wins are 
 - Extensible definitional equality through type-driven expression normalization
 - Namespaces, file imports, dotted names, and scoped `open`
 - Type patterns
+- Type classes with `def instance`, `let instance`, `[f: Foo]` instance binders, and explicit `derive[Foo]`
+  search
 - Structs / Projections
 - Quotients
 - JVM CLI plus Scala Native build
@@ -101,37 +102,35 @@ inline def zeroShapeOnly (shape: NatShape(Nat.zero)): Nat := {
 In `zeroShapeOnly`, the `NatShape.isSucc` branch is unreachable because the scrutinee has type
 `NatShape(Nat.zero)`, so the match is still exhaustive without that constructor.
 
-### Type Classes
+### Termination Checking
 
-Type classes are ordinary structs. An instance is an ordinary definition or local binding marked as an instance, and
-instance search runs only where a term expression explicitly asks for it with `derive[Goal]`.
+Recursive functions must say why recursive calls are smaller. A `structural` annotation names one inductive parameter,
+and each recursive call must pass a strict constructor subterm in that position. A `lexicographic` annotation checks a
+sequence of parameters: an earlier component may decrease, or an equal prefix can be followed by a later decrease. A
+`measure` annotation checks that an evaluated inductive-valued measure gets structurally smaller.
 
-Bracket binders such as `[x: T]` are instance-marked binders. They are still ordinary positional arguments at call
-sites, but the bound value is registered for local instance search while checking the binder's scope. This lets instance
-functions declare searchable dependencies with type-pattern captures, and lets function bodies call `derive[...]`
-against instance-marked parameters.
-
-Search uses lexical priority and stops at the first successful candidate in a tier. Local instance bindings are
-searched before globals, with newer local bindings tried first. If a local candidate succeeds, globals are not
-considered. Globals are searched only when no local candidate succeeds. This means a local instance can intentionally
-override a global one without creating ambiguity, and overlapping instances are resolved by search order rather than by
-ambiguity detection.
+The recursive function name is available only for direct recursive calls while checking the body. It cannot be stored in
+a `let`, passed as an argument, returned, or hidden inside another value.
 
 ```raccoon
-struct DecEq (A: Type) : Type
- | mk {A: Type} (result: Bool) : DecEq(A)
+inductive Nat : Type
+ | zero : Nat
+ | succ (_: Nat) : Nat
 
-inductive List (A: Type) : Type
- | nil : List(A)
+stable def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
+  match b with
+  | Nat.zero => a
+  | Nat.succ x => add(Nat.succ(a), x)
+}
 
-def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
-
-def instance listEq [ea: DecEq($A)]: DecEq(List(A)) := DecEq.mk(List(A), Bool.true)
-
-inline def useListEq [eqA: DecEq(List(Nat))]: DecEq(List(Nat)) := eqA
-
-{
-  useListEq(derive[DecEq(List(Nat))])
+inline def lex (a: Nat)(b: Nat): Nat decreases lexicographic(a, b) := {
+  match a with
+  | Nat.zero => {
+    match b with
+    | Nat.zero => Nat.zero
+    | Nat.succ b0 => lex(Nat.zero, b0)
+  }
+  | Nat.succ a0 => lex(a0, b)
 }
 ```
 
@@ -155,7 +154,7 @@ inductive Vec (A: Sort($u))(n: Nat) : Sort(Level.max(Level.one, u))
 inductive Pair (A: Sort($u1))(B: Sort($u2)): Sort(Level.max(u1, u2))
   | mk(a: $A in Sort($u1))(b: $B in Sort($u2)): Pair(A, B)
 
-inline def zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) := {
+inline def zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) decreases measure(n) := {
   let ResType := Vec(Pair(A, B), n)
   match va returning ResType with
   | Vec.nil => Vec.nil(Pair(A, B))
@@ -191,6 +190,40 @@ struct Pair (A: Type)(B: Type) : Type
 
 inline def first (p: Pair($A, $B)): A := p.fst
 inline def second (p: Pair($A, $B)): B := p.snd
+```
+
+### Type Classes
+
+An instance is an ordinary definition or local binding marked as an instance, and instance search runs only where a term
+expression explicitly asks for it with `derive[Goal]`.
+
+Bracket binders such as `[x: T]` are instance-marked binders. They are still ordinary positional arguments at call
+sites, but the bound value is registered for local instance search while checking the binder's scope. This lets instance
+functions declare searchable dependencies with type-pattern captures, and lets function bodies call `derive[...]`
+against instance-marked parameters.
+
+Search uses lexical priority and stops at the first successful candidate in a tier. Local instance bindings are
+searched before globals, with newer local bindings tried first. If a local candidate succeeds, globals are not
+considered. Globals are searched only when no local candidate succeeds. This means a local instance can intentionally
+override a global one without creating ambiguity, and overlapping instances are resolved by search order rather than by
+ambiguity detection.
+
+```raccoon
+struct DecEq (A: Type) : Type
+ | mk {A: Type} (result: Bool) : DecEq(A)
+
+inductive List (A: Type) : Type
+ | nil : List(A)
+
+def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
+
+def instance listEq [ea: DecEq($A)]: DecEq(List(A)) := DecEq.mk(List(A), Bool.true)
+
+inline def useListEq [eqA: DecEq(List(Nat))]: DecEq(List(Nat)) := eqA
+
+{
+  useListEq(derive[DecEq(List(Nat))])
+}
 ```
 
 ### Namespaces and Opens
@@ -235,7 +268,7 @@ inductive Nat : Type
  | zero : Nat
  | succ (_: Nat) : Nat
 
-stable def add (a: Nat)(b: Nat): Nat := {
+stable def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
   match b with
   | Nat.zero => a
   | Nat.succ x => add(Nat.succ(a), x)
@@ -314,7 +347,6 @@ runs GraalVM `native-image`.
 
 ## Next Planned Features
 
-- Well-founded recursion
 - Less-conservative positivity checking
 - Mutually-recursive inductives
 - Full Prelude quotient API surface

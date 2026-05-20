@@ -28,6 +28,8 @@ object Normalizers {
     new Value.Normalizer {
       override def name: String = "add_normalizer"
 
+      override val dependencies: Vector[Value] = args
+
       override def carrierKey: CarrierKey = ck
 
       private def flatten(v: Value): List[Value] = v match {

@@ -25,12 +25,22 @@ object SurfaceAst {
     def span: Span
   }
 
+  sealed trait DecreaseSpec {
+    def span: Span
+  }
+
   object ConstBody {
     final case class TermBody(term: Term) extends ConstBody {
       override def span: Span = term.span
     }
 
     final case class Builtin(span: Span) extends ConstBody
+  }
+
+  object DecreaseSpec {
+    final case class Structural(arg: String, span: Span) extends DecreaseSpec
+    final case class Lexicographic(args: Vector[String], span: Span) extends DecreaseSpec
+    final case class Measure(term: Term, span: Span) extends DecreaseSpec
   }
 
   object TypePattern {
@@ -147,6 +157,7 @@ object SurfaceAst {
       final case class ConstDecl(
           unfoldStrategy: Option[UnfoldStrategy],
           header: DeclHeader,
+          decreases: Option[DecreaseSpec],
           body: ConstBody,
           span: Span,
           isInstance: Boolean = false

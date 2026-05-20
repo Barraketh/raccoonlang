@@ -171,7 +171,7 @@ object Interpreter {
 
   def runLam(lam: VLam, args: Vector[Value])(implicit eqStore: EqStore): Value = {
     val res = lam.body match {
-      case LamBody.Native(run) => run(args, eqStore)
+      case LamBody.Native(run, _) => run(args, eqStore)
       case LamBody.Core(term, coreEnv) =>
         val bodyEnv = getEnvWithArgs(lam.tpe, coreEnv, args)
         val recurEnv =

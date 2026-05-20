@@ -401,6 +401,7 @@ object Elaborator {
       body: SA.Term,
       name: Option[String],
       isStable: Boolean,
+      decreases: Option[CA.DecreaseSpec],
       span: Span,
       outerEnv: ResolveEnv
   ): CA.Term.Lam = {
@@ -425,8 +426,25 @@ object Elaborator {
       case _ => (Vector.empty[SA.Use], body)
     }
     val checkedUses = uses.map(use => CA.Use(elabTerm(use.normalizer, outerEnv), use.span))
-    CA.Term.Lam(pi, checkedUses, elabTerm(newBody, bodyEnv), span, name, isStable)
+    CA.Term.Lam(pi, checkedUses, elabTerm(newBody, bodyEnv), span, name, isStable, decreases)
   }
+
+  private def elabDecreaseRef(name: String, span: Span, env: ResolveEnv): CA.LocalRef =
+    elabTerm(SA.Term.Ident(name, span), env) match {
+      case CA.Term.LocalRef(ref, _) => ref
+      case _ =>
+        throw InvalidDecreaseSpec(s"$name is not a function parameter", Some(span))
+    }
+
+  private def elabDecreaseSpec(spec: SA.DecreaseSpec, env: ResolveEnv): CA.DecreaseSpec =
+    spec match {
+      case SA.DecreaseSpec.Structural(arg, sp) =>
+        CA.DecreaseSpec.Lexicographic(Vector(elabDecreaseRef(arg, sp, env)), sp)
+      case SA.DecreaseSpec.Lexicographic(args, sp) =>
+        CA.DecreaseSpec.Lexicographic(args.map(arg => elabDecreaseRef(arg, sp, env)), sp)
+      case SA.DecreaseSpec.Measure(term, sp) =>
+        CA.DecreaseSpec.Measure(elabTerm(term, env), sp)
+    }
 
   private def elabTerm(term: SurfaceAst.Term, env: ResolveEnv): CA.Term = term match {
     case i: SA.Term.Ident =>
@@ -443,7 +461,7 @@ object Elaborator {
       val header = elabHeader(l.header, env)
       header.ty match {
         case pi: CA.Term.Pi =>
-          elabLam(pi, header.bodyEnv, l.body, None, isStable = false, l.span, env)
+          elabLam(pi, header.bodyEnv, l.body, None, isStable = false, None, l.span, env)
         case _ => throw new RuntimeException("WTF")
       }
     case b: SA.Term.Body =>
@@ -498,11 +516,18 @@ object Elaborator {
         val header = elabHeader(c.header.funcHeader, env)
         val envWithSelf = env.addGlobal(name)
         val body = c.body match {
-          case SA.ConstBody.Builtin(sp) => CA.ConstBody.Builtin(sp)
+          case SA.ConstBody.Builtin(sp) =>
+            if (c.decreases.nonEmpty)
+              throw InvalidDecreaseSpec(
+                "builtin definitions cannot have decreases annotations",
+                Some(c.decreases.get.span)
+              )
+            CA.ConstBody.Builtin(sp)
           case SA.ConstBody.TermBody(term) =>
             val bodyHeaderEnv = header.bodyEnv.copy(root = envWithSelf.root)
             header.ty match {
               case pi: CA.Term.Pi =>
+                val decreases = c.decreases.map(elabDecreaseSpec(_, header.bodyEnv))
                 CA.ConstBody.TermBody(
                   elabLam(
                     pi,
@@ -510,11 +535,15 @@ object Elaborator {
                     term,
                     Some(nameText),
                     c.unfoldStrategy.contains(UnfoldStrategy.Stable),
+                    decreases,
                     c.span,
                     envWithSelf
                   )
                 )
-              case _ => CA.ConstBody.TermBody(elabTerm(term, envWithSelf))
+              case _ =>
+                if (c.decreases.nonEmpty)
+                  throw InvalidDecreaseSpec("decreases requires a function definition", Some(c.decreases.get.span))
+                CA.ConstBody.TermBody(elabTerm(term, envWithSelf))
             }
         }
         (

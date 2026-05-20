@@ -36,12 +36,19 @@ object CoreAst {
     def span: Span
   }
 
+  sealed trait DecreaseSpec extends Ast
+
   object ConstBody {
     final case class TermBody(term: Term) extends ConstBody {
       override def span: Span = term.span
     }
 
     final case class Builtin(span: Span) extends ConstBody
+  }
+
+  object DecreaseSpec {
+    final case class Lexicographic(args: Vector[LocalRef], span: Span) extends DecreaseSpec
+    final case class Measure(term: Term, span: Span) extends DecreaseSpec
   }
 
   // Terms that can appear in type expressions
@@ -105,7 +112,8 @@ object CoreAst {
         body: Term,
         span: Span,
         name: Option[String],
-        isStable: Boolean
+        isStable: Boolean,
+        decreases: Option[DecreaseSpec]
     ) extends Term
 
     final case class Match(

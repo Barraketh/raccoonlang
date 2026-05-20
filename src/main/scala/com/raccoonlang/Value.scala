@@ -104,7 +104,7 @@ object Value {
     final case class Core(term: ElabAst.Term.Lam, env: RuntimeEnv) extends LamBody {
       override lazy val synDeps: DepSet = envDeps(env)
     }
-    final case class Native(run: (Vector[Value], EqStore) => Value) extends LamBody {
+    final case class Native(run: (Vector[Value], EqStore) => Value, isRawRecursive: Boolean = false) extends LamBody {
       override val synDeps: DepSet = DepSet.empty
     }
   }
@@ -384,6 +384,8 @@ object Value {
 
   trait Normalizer extends TopLevelValue {
     def carrierKey: Normalizers.CarrierKey
+
+    def dependencies: Vector[Value]
 
     def normalize(v: Value, eqStore: EqStore): Value
 
