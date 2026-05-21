@@ -6,9 +6,9 @@ class EqualityCommTests extends munit.FunSuite {
   private def typecheckDecls(src: String): Unit = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
+        val core = Elaborator.elab(value, Prelude.test)
         try {
-          Interpreter.run(core)
+          Interpreter.run(core, Prelude.test)
         } catch {
           case t: TypeError =>
             val source = Source(src)

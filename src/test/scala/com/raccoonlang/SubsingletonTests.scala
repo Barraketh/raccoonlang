@@ -31,9 +31,6 @@ class SubsingletonTests extends munit.FunSuite {
   test("propositions have a Subsingleton witness") {
     typecheckDecls(
       """
-        |inductive True : Prop
-        | | intro : True
-        |
         |def trueSubsingleton : Subsingleton(True) := propSubsingleton(True)
         |""".stripMargin
     )
@@ -42,9 +39,6 @@ class SubsingletonTests extends munit.FunSuite {
   test("generic proposition Subsingleton instance participates in derive") {
     typecheckDecls(
       """
-        |inductive True : Prop
-        | | intro : True
-        |
         |def derived : Subsingleton(True) := derive[Subsingleton(True)]
         |""".stripMargin
     )
@@ -54,9 +48,6 @@ class SubsingletonTests extends munit.FunSuite {
     val res =
       runProgram(
         """
-          |inductive True : Prop
-          | | intro : True
-          |
           |{
           |  Subsingleton.elim(derive[Subsingleton(True)], True.intro, True.intro)
           |}
@@ -72,9 +63,6 @@ class SubsingletonTests extends munit.FunSuite {
   test("ordinary data types are not subsingletons without an instance") {
     assertTypeError[NoInstanceFound](
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        |
         |def bad : Subsingleton(Nat) := derive[Subsingleton(Nat)]
         |""".stripMargin
     )

@@ -10,9 +10,9 @@ class UniverseTests extends munit.FunSuite {
   private def runProgram(src: String): Value = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
+        val core = Elaborator.elab(value, Prelude.test)
         try {
-          Interpreter.run(core).getOrElse(fail("Program has no body"))
+          Interpreter.run(core, Prelude.test).getOrElse(fail("Program has no body"))
         } catch {
           case t: TypeError =>
             val source = Source(src)
@@ -49,8 +49,8 @@ class UniverseTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        intercept[TypeMismatch] { Interpreter.run(core) }
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[TypeMismatch] { Interpreter.run(core, Prelude.test) }
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }
@@ -154,8 +154,8 @@ class UniverseTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        intercept[TypeMismatch] { Interpreter.run(core) }
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[TypeMismatch] { Interpreter.run(core, Prelude.test) }
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }

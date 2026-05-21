@@ -36,10 +36,6 @@ class QuotientTests extends munit.FunSuite {
 
   private val natPrelude =
     """
-      |inductive Nat : Type
-      | | zero : Nat
-      | | succ (_: Nat) : Nat
-      |
       |inline def Rel (a: Nat)(b: Nat): Prop := Eq(Nat, a, b)
       |""".stripMargin
 
@@ -85,13 +81,10 @@ class QuotientTests extends munit.FunSuite {
     val res = runProgram(
       natPrelude +
         """
-          |inductive True : Prop
-          | | intro : True
-          |
           |inline def motive (q: Quot(Nat, Rel)): Prop := True
           |
           |{
-          |  Quot.ind(Quot.mk(Nat, Rel, Nat.zero), motive, fun (a: Nat): motive(Quot.mk(Nat, Rel, a)) => True.intro)
+          |  Quot.inductionOn(Quot.mk(Nat, Rel, Nat.zero), motive, fun (a: Nat): motive(Quot.mk(Nat, Rel, a)) => True.intro)
           |}
           |""".stripMargin
     )
@@ -103,10 +96,6 @@ class QuotientTests extends munit.FunSuite {
     val res = runProgram(
       natPrelude +
         """
-          |namespace Quot {
-          |  inline def liftOn (q: Quot($A, $r))(B: Sort($v))(f: A -> B)(sound: (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b))): B := Quot.lift(q, B, f, sound)
-          |}
-          |
           |inline def idSound (a: Nat)(b: Nat)(h: Rel(a, b)): Eq(Nat, a, b) := h
           |
           |{

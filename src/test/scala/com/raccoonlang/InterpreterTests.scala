@@ -4,8 +4,8 @@ class InterpreterTests extends munit.FunSuite {
   private def getValue(s: String): Value = {
     LanguageParser.parseProgram(s) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        Interpreter.run(core).getOrElse(fail("Program has no body"))
+        val core = Elaborator.elab(value, Prelude.test)
+        Interpreter.run(core, Prelude.test).getOrElse(fail("Program has no body"))
       case err: Failure => fail(s"Failed to parse: $err, ${s.substring(err.curIdx)}")
     }
 

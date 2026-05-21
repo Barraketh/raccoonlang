@@ -3,18 +3,18 @@ package com.raccoonlang
 class TypeClassTests extends munit.FunSuite {
   private def parseProgram(src: String): CoreAst.Program =
     LanguageParser.parseProgram(src) match {
-      case Success(value, _, _) => Elaborator.elab(value)
+      case Success(value, _, _) => Elaborator.elab(value, Prelude.test)
       case err: Failure         => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
 
   private def runProgram(src: String): Value =
-    Interpreter.run(parseProgram(src)).getOrElse(fail("Program has no body"))
+    Interpreter.run(parseProgram(src), Prelude.test).getOrElse(fail("Program has no body"))
 
   private def typecheckProgram(src: String): Unit =
-    Interpreter.run(parseProgram(src))
+    Interpreter.run(parseProgram(src), Prelude.test)
 
   private def compileWorlds(src: String): Interpreter.Worlds =
-    parseProgram(src).decls.foldLeft(Interpreter.initialWorlds()) { case (worlds, decl) =>
+    parseProgram(src).decls.foldLeft(Interpreter.initialWorlds(Prelude.test)) { case (worlds, decl) =>
       Interpreter.evalDecl(decl, worlds)
     }
 

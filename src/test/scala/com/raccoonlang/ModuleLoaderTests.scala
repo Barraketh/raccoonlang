@@ -12,7 +12,7 @@ class ModuleLoaderTests extends munit.FunSuite {
   }
 
   private def loadCore(entry: Path): CoreAst.Program =
-    Elaborator.elab(ModuleLoader.load(entry).program)
+    loadCore(entry, Prelude.test)
 
   private def loadCore(entry: Path, prelude: Prelude.Config): CoreAst.Program = {
     val loaded = ModuleLoader.load(entry, ModuleLoader.LoadConfig.forEntry(entry, prelude))
@@ -20,7 +20,7 @@ class ModuleLoaderTests extends munit.FunSuite {
   }
 
   private def run(entry: Path): Value =
-    Interpreter.run(loadCore(entry)).getOrElse(fail("Program has no body"))
+    run(entry, Prelude.test)
 
   private def run(entry: Path, prelude: Prelude.Config): Value =
     Interpreter.run(loadCore(entry, prelude), prelude).getOrElse(fail("Program has no body"))
@@ -32,9 +32,7 @@ class ModuleLoaderTests extends munit.FunSuite {
     }
 
   private def loadError(entry: Path): TypeError =
-    intercept[ModuleLoader.LoadFailure] {
-      ModuleLoader.load(entry)
-    }.error
+    loadError(entry, Prelude.test)
 
   private def loadError(entry: Path, prelude: Prelude.Config): TypeError =
     intercept[ModuleLoader.LoadFailure] {
@@ -121,6 +119,27 @@ class ModuleLoaderTests extends munit.FunSuite {
 
     val explicitImportEntry = write(root, "ExplicitImport.rac", "import Init.Prelude\n{ Prop }\n")
     assert(loadError(explicitImportEntry, Prelude.none).isInstanceOf[ModuleNotFound])
+  }
+
+  test("small Init-like module can use the default Prelude surface") {
+    val root = Files.createTempDirectory("raccoon-modules")
+    val entry = write(
+      root,
+      "Main.rac",
+      """
+        |namespace InitPilot {
+        |  inline def sameNat (a: Nat)(b: Nat): Bool := beq(derive[BEq(Nat)], a, b)
+        |
+        |  def oneLeOne : le(natLE, Nat.succ(Nat.zero), Nat.succ(Nat.zero)) := Eq.refl(Bool.true)
+        |}
+        |
+        |{
+        |  InitPilot.sameNat(Nat.zero, Nat.zero)
+        |}
+        |""".stripMargin
+    )
+
+    assertEquals(ctorName(run(entry, Prelude.default)), "Bool.true")
   }
 
   test("loads transitive imports before importers") {
@@ -249,9 +268,9 @@ class ModuleLoaderTests extends munit.FunSuite {
         |}
         |""".stripMargin
     )
-    val loaded = ModuleLoader.load(leakingEntry)
+    val loaded = ModuleLoader.load(leakingEntry, ModuleLoader.LoadConfig.forEntry(leakingEntry, Prelude.test))
     intercept[NotFound] {
-      Elaborator.elab(loaded.program)
+      Elaborator.elab(loaded.program, Prelude.test)
     }
   }
 
@@ -303,9 +322,9 @@ class ModuleLoaderTests extends munit.FunSuite {
         |""".stripMargin
     )
 
-    val loaded = ModuleLoader.load(entry, ModuleLoader.LoadConfig(Vector(srcRoot)))
+    val loaded = ModuleLoader.load(entry, ModuleLoader.LoadConfig(Vector(srcRoot), Prelude.test))
     assertEquals(
-      ctorName(Interpreter.run(Elaborator.elab(loaded.program)).getOrElse(fail("Program has no body"))),
+      ctorName(Interpreter.run(Elaborator.elab(loaded.program, Prelude.test), Prelude.test).getOrElse(fail("Program has no body"))),
       "Lib.Nat.zero"
     )
   }
@@ -323,9 +342,9 @@ class ModuleLoaderTests extends munit.FunSuite {
     )
     val entry = write(root, "Main.rac", "import Lib.Bad\n")
 
-    val loaded = ModuleLoader.load(entry)
+    val loaded = ModuleLoader.load(entry, ModuleLoader.LoadConfig.forEntry(entry, Prelude.test))
     val error = intercept[NotFound] {
-      Elaborator.elab(loaded.program)
+      Elaborator.elab(loaded.program, Prelude.test)
     }
     assert(ErrorReporter.pretty(error, loaded).contains(badPath.toRealPath().toString))
   }
@@ -388,11 +407,11 @@ class ModuleLoaderTests extends munit.FunSuite {
         |""".stripMargin
     )
 
-    val loaded = ModuleLoader.load(entry)
-    val core = Elaborator.elab(loaded.program)
+    val loaded = ModuleLoader.load(entry, ModuleLoader.LoadConfig.forEntry(entry, Prelude.test))
+    val core = Elaborator.elab(loaded.program, Prelude.test)
 
     intercept[TypeError] {
-      Interpreter.run(core)
+      Interpreter.run(core, Prelude.test)
     }
   }
 }

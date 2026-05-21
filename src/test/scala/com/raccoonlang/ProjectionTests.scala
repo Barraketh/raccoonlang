@@ -7,9 +7,9 @@ class ProjectionTests extends munit.FunSuite {
   private def typecheckDecls(src: String): Unit = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
+        val core = Elaborator.elab(value, Prelude.test)
         try {
-          Interpreter.run(core)
+          Interpreter.run(core, Prelude.test)
         } catch {
           case t: TypeError =>
             val source = Source(src)
@@ -23,9 +23,9 @@ class ProjectionTests extends munit.FunSuite {
   private def runProgram(src: String): Value = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
+        val core = Elaborator.elab(value, Prelude.test)
         try {
-          Interpreter.run(core).getOrElse(fail("Program has no body"))
+          Interpreter.run(core, Prelude.test).getOrElse(fail("Program has no body"))
         } catch {
           case t: TypeError =>
             val source = Source(src)
@@ -375,8 +375,8 @@ class ProjectionTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        intercept[UnificationFailed] { Interpreter.run(core) }
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[UnificationFailed] { Interpreter.run(core, Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
@@ -399,8 +399,8 @@ class ProjectionTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        intercept[InvalidStruct] { Interpreter.run(core) }
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[InvalidStruct] { Interpreter.run(core, Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
@@ -425,8 +425,8 @@ class ProjectionTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        intercept[CannotQuoteValue] { Interpreter.run(core) }
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[CannotQuoteValue] { Interpreter.run(core, Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
@@ -453,8 +453,8 @@ class ProjectionTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        intercept[CannotQuoteValue] { Interpreter.run(core) }
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[CannotQuoteValue] { Interpreter.run(core, Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
@@ -471,8 +471,8 @@ class ProjectionTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        intercept[NotAStruct] { Interpreter.run(core) }
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[NotAStruct] { Interpreter.run(core, Prelude.test) }
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }
@@ -489,8 +489,8 @@ class ProjectionTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        intercept[NotAStruct] { Interpreter.run(core) }
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[NotAStruct] { Interpreter.run(core, Prelude.test) }
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }
@@ -506,8 +506,8 @@ class ProjectionTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        intercept[NotFound] { Interpreter.run(core) }
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[NotFound] { Interpreter.run(core, Prelude.test) }
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }
@@ -554,8 +554,8 @@ class ProjectionTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        intercept[PropEliminationRestricted] { Interpreter.run(core) }
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }
@@ -569,8 +569,8 @@ class ProjectionTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        intercept[InvalidStruct] { Interpreter.run(core) }
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[InvalidStruct] { Interpreter.run(core, Prelude.test) }
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }

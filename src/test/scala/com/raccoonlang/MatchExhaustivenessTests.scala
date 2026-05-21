@@ -4,8 +4,8 @@ class MatchExhaustivenessTests extends munit.FunSuite {
   private def typecheckDecls(src: String): Unit = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        Interpreter.run(core)
+        val core = Elaborator.elab(value, Prelude.test)
+        Interpreter.run(core, Prelude.test)
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
   }

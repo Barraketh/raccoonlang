@@ -4,16 +4,16 @@ class TypingTests extends munit.FunSuite {
   private def typecheckDecls(src: String): Unit = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        Interpreter.run(core)
+        val core = Elaborator.elab(value, Prelude.test)
+        Interpreter.run(core, Prelude.test)
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
   }
   private def runProgram(src: String): Value = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        Interpreter.run(core).getOrElse(fail("Program has no body"))
+        val core = Elaborator.elab(value, Prelude.test)
+        Interpreter.run(core, Prelude.test).getOrElse(fail("Program has no body"))
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
   }

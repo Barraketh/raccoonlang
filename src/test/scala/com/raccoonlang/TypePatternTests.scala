@@ -7,8 +7,8 @@ class TypePatternTests extends munit.FunSuite {
   private def typecheckDecls(src: String): Unit = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        Interpreter.run(core)
+        val core = Elaborator.elab(value, Prelude.test)
+        Interpreter.run(core, Prelude.test)
       case err: Failure =>
         fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
@@ -17,9 +17,9 @@ class TypePatternTests extends munit.FunSuite {
   private def runProgram(src: String): Value = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
+        val core = Elaborator.elab(value, Prelude.test)
         try {
-          Interpreter.run(core).getOrElse(fail("Program has no body"))
+          Interpreter.run(core, Prelude.test).getOrElse(fail("Program has no body"))
         } catch {
           case t: TypeError =>
             val source = Source(src)
@@ -235,9 +235,9 @@ class TypePatternTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
+        val core = Elaborator.elab(value, Prelude.test)
         intercept[TypeMismatch] {
-          Interpreter.run(core)
+          Interpreter.run(core, Prelude.test)
         }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
@@ -260,9 +260,9 @@ class TypePatternTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
+        val core = Elaborator.elab(value, Prelude.test)
         intercept[ArityMismatch] {
-          Interpreter.run(core)
+          Interpreter.run(core, Prelude.test)
         }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
@@ -286,9 +286,9 @@ class TypePatternTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
+        val core = Elaborator.elab(value, Prelude.test)
         intercept[ArityMismatch] {
-          Interpreter.run(core)
+          Interpreter.run(core, Prelude.test)
         }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
@@ -309,9 +309,9 @@ class TypePatternTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
+        val core = Elaborator.elab(value, Prelude.test)
         intercept[ArityMismatch] {
-          Interpreter.run(core)
+          Interpreter.run(core, Prelude.test)
         }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
@@ -333,9 +333,9 @@ class TypePatternTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
+        val core = Elaborator.elab(value, Prelude.test)
         intercept[TypeMismatch] {
-          Interpreter.run(core)
+          Interpreter.run(core, Prelude.test)
         }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
@@ -359,9 +359,9 @@ class TypePatternTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
+        val core = Elaborator.elab(value, Prelude.test)
         intercept[TypeMismatch] {
-          Interpreter.run(core)
+          Interpreter.run(core, Prelude.test)
         }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
@@ -390,9 +390,9 @@ class TypePatternTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
+        val core = Elaborator.elab(value, Prelude.test)
         intercept[FailedToOpenCapture] {
-          Interpreter.run(core)
+          Interpreter.run(core, Prelude.test)
         }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
@@ -415,7 +415,7 @@ class TypePatternTests extends munit.FunSuite {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         intercept[NotFound] {
-          Elaborator.elab(value)
+          Elaborator.elab(value, Prelude.test)
         }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
@@ -442,9 +442,9 @@ class TypePatternTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
+        val core = Elaborator.elab(value, Prelude.test)
         intercept[TypeMismatch] {
-          Interpreter.run(core)
+          Interpreter.run(core, Prelude.test)
         }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
@@ -472,9 +472,9 @@ class TypePatternTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
+        val core = Elaborator.elab(value, Prelude.test)
         intercept[TypeMismatch] {
-          Interpreter.run(core)
+          Interpreter.run(core, Prelude.test)
         }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")

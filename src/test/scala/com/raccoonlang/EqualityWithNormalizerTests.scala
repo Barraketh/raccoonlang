@@ -6,9 +6,9 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
   private def typecheckDecls(src: String): Unit = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
+        val core = Elaborator.elab(value, Prelude.test)
         try {
-          Interpreter.run(core)
+          Interpreter.run(core, Prelude.test)
         } catch {
           case t: TypeError =>
             val source = Source(src)
@@ -79,8 +79,8 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        intercept[TypeMismatch] { Interpreter.run(core) }
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[TypeMismatch] { Interpreter.run(core, Prelude.test) }
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }
@@ -104,8 +104,8 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        intercept[TypeMismatch] { Interpreter.run(core) }
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[TypeMismatch] { Interpreter.run(core, Prelude.test) }
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }

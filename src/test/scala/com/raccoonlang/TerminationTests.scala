@@ -6,8 +6,8 @@ class TerminationTests extends munit.FunSuite {
   private def runProgram(src: String): Option[Value] =
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        try Interpreter.run(core)
+        val core = Elaborator.elab(value, Prelude.test)
+        try Interpreter.run(core, Prelude.test)
         catch {
           case t: TypeError => fail(ErrorReporter.pretty(t, Source(src)))
         }
@@ -18,8 +18,8 @@ class TerminationTests extends munit.FunSuite {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         intercept[T] {
-          val core = Elaborator.elab(value)
-          Interpreter.run(core)
+          val core = Elaborator.elab(value, Prelude.test)
+          Interpreter.run(core, Prelude.test)
         }
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }

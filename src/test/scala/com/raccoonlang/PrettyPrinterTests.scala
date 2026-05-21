@@ -3,7 +3,7 @@ package com.raccoonlang
 class PrettyPrinterTests extends munit.FunSuite {
   private def parseCore(src: String): CoreAst.Program =
     LanguageParser.parseProgram(src) match {
-      case Success(value, _, _) => Elaborator.elab(value)
+      case Success(value, _, _) => Elaborator.elab(value, Prelude.test)
       case err: Failure        => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
 

@@ -3,15 +3,15 @@ package com.raccoonlang
 class NamespaceTests extends munit.FunSuite {
   private def parseCore(src: String): CoreAst.Program =
     LanguageParser.parseProgram(src) match {
-      case Success(value, _, _) => Elaborator.elab(value)
+      case Success(value, _, _) => Elaborator.elab(value, Prelude.test)
       case err: Failure         => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
 
   private def runProgram(src: String): Value =
-    Interpreter.run(parseCore(src)).getOrElse(fail("Program has no body"))
+    Interpreter.run(parseCore(src), Prelude.test).getOrElse(fail("Program has no body"))
 
   private def typecheckProgram(src: String): Unit =
-    Interpreter.run(parseCore(src))
+    Interpreter.run(parseCore(src), Prelude.test)
 
   private def ctorName(v: Value): String = v match {
     case Value.VCtor(head, _, _) => head.name
