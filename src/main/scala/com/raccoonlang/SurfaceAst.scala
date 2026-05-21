@@ -81,7 +81,7 @@ object SurfaceAst {
     final case class Pi(binder: Binder, body: TypeTerm, span: Span) extends Term with TypeTerm
 
     // Explicit instance search expression: derive[Goal]
-    final case class Derive(goal: TypeTerm, span: Span) extends Term
+    final case class Derive(goal: TypeTerm, span: Span) extends Term with TypeTerm
 
     // Application: f(a) (term-level)
     final case class App(fn: Term, args: Vector[Term], span: Span) extends Term

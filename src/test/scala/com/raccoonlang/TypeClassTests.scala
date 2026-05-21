@@ -477,14 +477,18 @@ class TypeClassTests extends munit.FunSuite {
     }
   }
 
-  test("derive is term syntax, not type syntax") {
+  test("derive can be used inside type-position arguments") {
     val p =
       prelude +
         """
-          |def bad (x: derive[DecEq(Nat)]): Nat := Nat.zero
+          |def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
+          |
+          |inline def Carrier (d: DecEq(Nat)): Type := Nat
+          |
+          |def ok (x: Carrier(derive[DecEq(Nat)])): Nat := x
           |""".stripMargin
 
-    assert(LanguageParser.parseProgram(p).isInstanceOf[Failure])
+    typecheckProgram(p)
   }
 
   test("instance search does not refine caller equality variables") {

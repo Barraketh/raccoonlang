@@ -297,8 +297,8 @@ class PreludeTests extends munit.FunSuite {
         |def noZeroSucc (h: Eq(Nat, Nat.zero, Nat.succ(Nat.zero))): False := Nat.zeroNeSucc(Nat.zero, h)
         |def succInjects (h: Eq(Nat, Nat.succ(Nat.zero), Nat.succ(Nat.zero))): Eq(Nat, Nat.zero, Nat.zero) := Nat.succInj(h)
         |
-        |def oneLeOne : le(natLE, Nat.succ(Nat.zero), Nat.succ(Nat.zero)) := Eq.refl(Bool.true)
-        |def zeroLtOne : lt(natLT, Nat.zero, Nat.succ(Nat.zero)) := Eq.refl(Bool.true)
+        |def oneLeOne : le(derive[LE(Nat)], Nat.succ(Nat.zero), Nat.succ(Nat.zero)) := Eq.refl(Bool.true)
+        |def zeroLtOne : lt(derive[LT(Nat)], Nat.zero, Nat.succ(Nat.zero)) := Eq.refl(Bool.true)
         |""".stripMargin
     )
 

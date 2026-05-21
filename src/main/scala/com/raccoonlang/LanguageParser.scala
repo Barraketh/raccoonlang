@@ -77,11 +77,11 @@ object LanguageParser {
     rootPath | scopedPath
   }
 
-  private def termAtom(implicit sourceId: Option[SourceId]): Parser[Term] = {
-    val derive: Parser[Term] =
-      (kwTight("derive") ~/ symTight("[") ~/ typeTerm ~ symTight("]")).flatSpanned(sourceId).map(Derive.tupled)
-    derive | (sym("(") ~/ term ~ symTight(")")) | rootTerm | identTerm
-  }
+  private def deriveP(implicit sourceId: Option[SourceId]): Parser[Derive] =
+    (kwTight("derive") ~/ symTight("[") ~/ typeTerm ~ symTight("]")).flatSpanned(sourceId).map(Derive.tupled)
+
+  private def termAtom(implicit sourceId: Option[SourceId]): Parser[Term] =
+    deriveP | (sym("(") ~/ term ~ symTight(")")) | rootTerm | identTerm
 
   // Type atoms: identifier or parenthesized type, with bracket selects as a postfix variant.
   // `$name` captures are parsed only by binder-type pattern parsers below.
@@ -101,6 +101,7 @@ object LanguageParser {
 
   private def typeAtom(implicit sourceId: Option[SourceId]): Parser[TypeTerm] =
     simplePi |
+      deriveP |
       sym('(') ~ typeTerm ~ sym(')') |
       rootTypeTerm |
       identTypeTerm

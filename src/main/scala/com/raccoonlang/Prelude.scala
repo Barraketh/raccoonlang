@@ -49,7 +49,8 @@ object Prelude {
     val surface =
       LanguageParser.parseProgram(source) match {
         case Success(program, _, _) => program
-        case Failure(_, curIdx, message) => throw new RuntimeException(s"Failed to parse $sourceName at offset $curIdx: $message")
+        case Failure(_, curIdx, message) =>
+          throw new RuntimeException(s"Failed to parse $sourceName at offset $curIdx: $message")
       }
     Config(surface, Elaborator.elabWithoutPrelude(surface), ignoredImports)
   }

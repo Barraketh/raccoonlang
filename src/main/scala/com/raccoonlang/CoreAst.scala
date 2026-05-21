@@ -88,7 +88,7 @@ object CoreAst {
     final case class Select(base: Term, field: String, span: Span) extends Term
 
     // Explicit instance search expression: derive[Goal]
-    final case class Derive(goal: TypeTerm, span: Span) extends Term
+    final case class Derive(goal: TypeTerm, span: Span) extends TypeTerm
 
     // Application in type position
     final case class TApp(fn: Ref, args: Vector[TypeTerm], span: Span) extends TypeTerm {

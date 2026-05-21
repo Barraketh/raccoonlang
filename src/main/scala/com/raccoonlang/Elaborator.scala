@@ -325,6 +325,7 @@ object Elaborator {
         case None       => CA.Term.TSelect(elabType(s.base, env), s.field, s.span)
       }
     case SA.Term.TApp(fn, args, sp) => CA.Term.TApp(elabTypeAppHead(fn, env), args.map(elabType(_, env)), sp)
+    case SA.Term.Derive(goal, sp)   => CA.Term.Derive(elabType(goal, env), sp)
     case pi: SA.Term.Pi             => elabPi(pi, env)
   }
 

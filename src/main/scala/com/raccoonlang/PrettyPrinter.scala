@@ -14,6 +14,7 @@ object PrettyPrinter {
     def pt(t: CoreAst.TypeTerm): String = t match {
       case ref: Term.Ref                => printRef(ref)
       case Term.TSelect(base, field, _) => s"${ptAtom(base)}[$field]"
+      case Term.Derive(goal, _)         => s"derive[${pt(goal)}]"
       case Term.TApp(fn, args, _) =>
         val headStr = ptAtom(fn)
         val argsStr = args.map(ptAtom).mkString(", ")
@@ -28,6 +29,7 @@ object PrettyPrinter {
     def ptAtom(t: CoreAst.TypeTerm): String = t match {
       case _: Term.Ref           => pt(t)
       case Term.TSelect(_, _, _) => pt(t)
+      case Term.Derive(_, _)     => pt(t)
       case Term.TApp(_, _, _)    => pt(t)
       case Term.Pi(_, _, _)      => s"(${pt(t)})"
     }

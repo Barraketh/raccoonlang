@@ -99,6 +99,9 @@ object TypeChecker {
     case CA.Term.TSelect(base, field, span) =>
       val checkedBase = checkTypeTerm(base, env)
       checkSelect(checkedBase, field, span, env)
+    case derive: CA.Term.Derive =>
+      val goal = getType(derive.goal, env)
+      InstanceSearch.solve(goal, env)
     case pi: CA.Term.Pi   => checkPi(pi, env).vpi
     case ref: CA.Term.Ref => checkRef(ref, env)
   }
