@@ -4,40 +4,67 @@ import java.nio.file.{Path, Paths}
 import scala.util.control.NonFatal
 
 object Main {
+  private final case class CliArgs(
+      roots: Vector[Path] = Vector.empty,
+      preludePath: Option[Path] = None,
+      noPrelude: Boolean = false,
+      entry: Option[Path] = None
+  )
+
   def main(args: Array[String]): Unit = {
-    val (rootArgs, entryArg) = {
+    val parsedArgs = {
       @annotation.tailrec
-      def loop(rest: List[String], roots: Vector[Path], entry: Option[Path]): (Vector[Path], Option[Path]) =
+      def loop(rest: List[String], cur: CliArgs): CliArgs =
         rest match {
           case Nil =>
-            (roots, entry)
+            cur
           case "--root" :: root :: tail =>
-            loop(tail, roots :+ Paths.get(root), entry)
+            loop(tail, cur.copy(roots = cur.roots :+ Paths.get(root)))
           case "--root" :: Nil =>
-            (roots, None)
-          case file :: tail if entry.isEmpty =>
-            loop(tail, roots, Some(Paths.get(file)))
+            cur.copy(entry = None)
+          case "--prelude" :: path :: tail =>
+            loop(tail, cur.copy(preludePath = Some(Paths.get(path))))
+          case "--prelude" :: Nil =>
+            cur.copy(entry = None)
+          case "--no-prelude" :: tail =>
+            loop(tail, cur.copy(noPrelude = true))
+          case file :: tail if cur.entry.isEmpty =>
+            loop(tail, cur.copy(entry = Some(Paths.get(file))))
           case _ =>
-            (roots, None)
+            cur.copy(entry = None)
         }
 
-      loop(args.toList, Vector.empty, None)
+      loop(args.toList, CliArgs())
     }
 
-    val entry = entryArg.getOrElse {
-      System.err.println("Usage: raccoon-lang [--root <dir>] <file>")
+    val entry = parsedArgs.entry.getOrElse {
+      System.err.println("Usage: raccoon-lang [--root <dir>] [--prelude <file> | --no-prelude] <file>")
+      sys.exit(2)
+      return
+    }
+
+    if (parsedArgs.noPrelude && parsedArgs.preludePath.nonEmpty) {
+      System.err.println("Usage: raccoon-lang [--root <dir>] [--prelude <file> | --no-prelude] <file>")
       sys.exit(2)
       return
     }
 
     var loadedOpt = Option.empty[ModuleLoader.LoadedProgram]
     try {
+      val prelude =
+        parsedArgs.preludePath match {
+          case Some(path)                   => Prelude.fromPath(path)
+          case None if parsedArgs.noPrelude => Prelude.none
+          case None                         => Prelude.default
+        }
+      val loadConfig =
+        if (parsedArgs.roots.isEmpty) ModuleLoader.LoadConfig.forEntry(entry, prelude)
+        else ModuleLoader.LoadConfig(parsedArgs.roots, prelude)
       val loaded =
-        if (rootArgs.isEmpty) ModuleLoader.load(entry)
-        else ModuleLoader.load(entry, ModuleLoader.LoadConfig(rootArgs))
+        ModuleLoader.load(entry, loadConfig)
       loadedOpt = Some(loaded)
-      val core = Elaborator.elab(loaded.program)
-      val resOpt = Interpreter.run(core)
+      val core = Elaborator.elab(loaded.program, prelude)
+      val resOpt = Interpreter.run(core, prelude)
       resOpt.foreach { v => println(PrettyPrinter.print(v)) }
       sys.exit(0)
     } catch {

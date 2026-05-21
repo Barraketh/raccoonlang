@@ -7,10 +7,10 @@ import scala.collection.mutable
 import scala.util.control.NonFatal
 
 object ModuleLoader {
-  final case class LoadConfig(sourceRoots: Vector[Path])
+  final case class LoadConfig(sourceRoots: Vector[Path], prelude: Prelude.Config = Prelude.default)
   object LoadConfig {
-    def forEntry(entry: Path): LoadConfig =
-      LoadConfig(Vector(entry.toAbsolutePath.normalize.getParent))
+    def forEntry(entry: Path, prelude: Prelude.Config = Prelude.default): LoadConfig =
+      LoadConfig(Vector(entry.toAbsolutePath.normalize.getParent), prelude)
   }
 
   final case class LoadedSource(sourceId: SourceId, path: Path, source: String)
@@ -26,7 +26,7 @@ object ModuleLoader {
 
   def load(entry: Path, config: LoadConfig): LoadedProgram = {
     val effectiveConfig =
-      if (config.sourceRoots.isEmpty) LoadConfig.forEntry(entry)
+      if (config.sourceRoots.isEmpty) LoadConfig.forEntry(entry, config.prelude)
       else config
     new Loader(effectiveConfig).load(entry)
   }
@@ -76,7 +76,7 @@ object ModuleLoader {
               module.program.body.foreach(body => fail(ImportedModuleHasBody(module.path, Some(body.span))))
 
             module.program.imports.foreach { imp =>
-              if (!Prelude.isPreludeImport(imp.path)) {
+              if (!config.prelude.ignoresImport(imp.path)) {
                 val depPath = resolveImport(imp)
                 visit(depPath, imp.path.mkString("."), Some(imp.span), isEntry = false)
               }

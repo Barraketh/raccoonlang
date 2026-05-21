@@ -9,7 +9,7 @@ class ResidualizationTests extends munit.FunSuite {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
-        val worlds = core.decls.foldLeft(Interpreter.initialWorlds) { case (curWorlds, decl) =>
+        val worlds = core.decls.foldLeft(Interpreter.initialWorlds()) { case (curWorlds, decl) =>
           Interpreter.evalDecl(decl, curWorlds)
         }
         val body = core.body.getOrElse(fail("Program has no body"))

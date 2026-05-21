@@ -370,9 +370,9 @@ object Interpreter {
 
   }
 
-  def run(p: Program): Option[Value] = {
+  def run(p: Program, prelude: Prelude.Config = Prelude.default): Option[Value] = {
     val worlds =
-      p.decls.foldLeft(initialWorlds) { case (curWorlds, decl) => evalDecl(decl, curWorlds) }
+      p.decls.foldLeft(initialWorlds(prelude)) { case (curWorlds, decl) => evalDecl(decl, curWorlds) }
     p.body.map { b =>
       implicit val eqStore: EqStore = EqStore.empty
       TypeChecker.check(b, worlds.checkEnv)
@@ -380,7 +380,7 @@ object Interpreter {
     }
   }
 
-  private[raccoonlang] lazy val initialWorlds: Worlds = {
+  private[raccoonlang] def initialWorlds(prelude: Prelude.Config = Prelude.default): Worlds = {
     val baseEnv =
       TypecheckEnv.empty
         .putGlobal("Type", TypeTpe)
@@ -390,7 +390,7 @@ object Interpreter {
         .putGlobal("Level.one", Level.one)
         .putGlobal("Prop", PropTpe)
 
-    Prelude.core.decls.foldLeft(Worlds(baseEnv, baseEnv)) { case (curWorlds, decl) =>
+    prelude.core.decls.foldLeft(Worlds(baseEnv, baseEnv)) { case (curWorlds, decl) =>
       evalDecl(decl, curWorlds)
     }
   }

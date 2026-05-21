@@ -14,7 +14,7 @@ class TypeClassTests extends munit.FunSuite {
     Interpreter.run(parseProgram(src))
 
   private def compileWorlds(src: String): Interpreter.Worlds =
-    parseProgram(src).decls.foldLeft(Interpreter.initialWorlds) { case (worlds, decl) =>
+    parseProgram(src).decls.foldLeft(Interpreter.initialWorlds()) { case (worlds, decl) =>
       Interpreter.evalDecl(decl, worlds)
     }
 
@@ -119,7 +119,7 @@ class TypeClassTests extends munit.FunSuite {
     ).body.getOrElse(fail("Program has no body"))
     implicit val eqStore: EqStore = EqStore.empty
 
-    val checkedV  = TypeChecker.check(body, worlds.checkEnv)
+    val checkedV = TypeChecker.check(body, worlds.checkEnv)
     val checkedTerm =
       ValueQuote.quoteTerm(checkedV, ValueQuote.quoteContext(worlds.checkEnv), body.span)
 

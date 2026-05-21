@@ -14,8 +14,16 @@ class ModuleLoaderTests extends munit.FunSuite {
   private def loadCore(entry: Path): CoreAst.Program =
     Elaborator.elab(ModuleLoader.load(entry).program)
 
+  private def loadCore(entry: Path, prelude: Prelude.Config): CoreAst.Program = {
+    val loaded = ModuleLoader.load(entry, ModuleLoader.LoadConfig.forEntry(entry, prelude))
+    Elaborator.elab(loaded.program, prelude)
+  }
+
   private def run(entry: Path): Value =
     Interpreter.run(loadCore(entry)).getOrElse(fail("Program has no body"))
+
+  private def run(entry: Path, prelude: Prelude.Config): Value =
+    Interpreter.run(loadCore(entry, prelude), prelude).getOrElse(fail("Program has no body"))
 
   private def ctorName(v: Value): String =
     v match {
@@ -26,6 +34,11 @@ class ModuleLoaderTests extends munit.FunSuite {
   private def loadError(entry: Path): TypeError =
     intercept[ModuleLoader.LoadFailure] {
       ModuleLoader.load(entry)
+    }.error
+
+  private def loadError(entry: Path, prelude: Prelude.Config): TypeError =
+    intercept[ModuleLoader.LoadFailure] {
+      ModuleLoader.load(entry, ModuleLoader.LoadConfig.forEntry(entry, prelude))
     }.error
 
   test("loads an entry-relative module and exposes canonical names") {
@@ -74,6 +87,40 @@ class ModuleLoaderTests extends munit.FunSuite {
     )
 
     assertEquals(ctorName(run(entry)), "Eq.refl")
+  }
+
+  test("can run with a custom prelude file") {
+    val root = Files.createTempDirectory("raccoon-modules")
+    val preludePath = write(
+      root,
+      "CustomPrelude.rac",
+      """
+        |inductive Tiny : Type
+        | | mk : Tiny
+        |""".stripMargin
+    )
+    val entry = write(
+      root,
+      "Main.rac",
+      """
+        |import Init.Prelude
+        |
+        |{
+        |  Tiny.mk
+        |}
+        |""".stripMargin
+    )
+
+    assertEquals(ctorName(run(entry, Prelude.fromPath(preludePath))), "Tiny.mk")
+  }
+
+  test("can run without an automatic prelude") {
+    val root = Files.createTempDirectory("raccoon-modules")
+    val noImportEntry = write(root, "NoImport.rac", "{ Prop }\n")
+    assertEquals(PrettyPrinter.print(run(noImportEntry, Prelude.none)), "Prop")
+
+    val explicitImportEntry = write(root, "ExplicitImport.rac", "import Init.Prelude\n{ Prop }\n")
+    assert(loadError(explicitImportEntry, Prelude.none).isInstanceOf[ModuleNotFound])
   }
 
   test("loads transitive imports before importers") {
@@ -257,7 +304,10 @@ class ModuleLoaderTests extends munit.FunSuite {
     )
 
     val loaded = ModuleLoader.load(entry, ModuleLoader.LoadConfig(Vector(srcRoot)))
-    assertEquals(ctorName(Interpreter.run(Elaborator.elab(loaded.program)).getOrElse(fail("Program has no body"))), "Lib.Nat.zero")
+    assertEquals(
+      ctorName(Interpreter.run(Elaborator.elab(loaded.program)).getOrElse(fail("Program has no body"))),
+      "Lib.Nat.zero"
+    )
   }
 
   test("loaded source diagnostics point at imported files") {

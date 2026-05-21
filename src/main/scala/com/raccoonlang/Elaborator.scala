@@ -614,19 +614,25 @@ object Elaborator {
     (decls.result(), curEnv)
   }
 
-  private lazy val preludeEnv: ResolveEnv = {
-    val (_, env) = elabCommands(Prelude.surface.decls, ResolveEnv.empty)
+  private def preludeEnv(prelude: Prelude.Config): ResolveEnv = {
+    val (_, env) = elabCommands(prelude.surface.decls, ResolveEnv.empty)
     ResolveEnv.empty.copy(root = env.root)
   }
 
   def elab(surface: SurfaceAst.Command.Decl): CoreAst.Decl =
-    elabDecl(surface, preludeEnv)._1
+    elab(surface, Prelude.default)
+
+  def elab(surface: SurfaceAst.Command.Decl, prelude: Prelude.Config): CoreAst.Decl =
+    elabDecl(surface, preludeEnv(prelude))._1
 
   private[raccoonlang] def elabWithoutPrelude(p: SA.Program): CA.Program =
     elabProgram(p, ResolveEnv.empty)
 
   def elab(p: SA.Program): CA.Program =
-    elabProgram(p, preludeEnv)
+    elab(p, Prelude.default)
+
+  def elab(p: SA.Program, prelude: Prelude.Config): CA.Program =
+    elabProgram(p, preludeEnv(prelude))
 
   private def elabProgram(p: SA.Program, startEnv: ResolveEnv): CA.Program = {
     p.imports.headOption.foreach { imp =>
