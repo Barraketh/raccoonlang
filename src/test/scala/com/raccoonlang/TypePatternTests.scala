@@ -60,7 +60,7 @@ class TypePatternTests extends munit.FunSuite {
         |inductive Box (A: Sort($u)) : Sort(u)
         | | mk {A: Sort($u)} (a: A) : Box(A)
         |
-        |inline def unbox (b: Box($A)): A := {
+        |def unbox (b: Box($A)): A := {
         |  match b returning A with
         |  | Box.mk a => a
         |}
@@ -85,7 +85,7 @@ class TypePatternTests extends munit.FunSuite {
         | | nil {A: Sort($u)} : Vec(A, Nat.zero)
         | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
         |
-        |inline def len (v: Vec(Nat, $n)): Nat := n
+        |def len (v: Vec(Nat, $n)): Nat := n
         |
         |{
         |  len(Vec.cons(Nat, Vec.nil(Nat), Nat.zero))
@@ -106,7 +106,7 @@ class TypePatternTests extends munit.FunSuite {
         |inductive Box (A: Sort($u)) : Sort(u)
         | | mk {A: Sort($u)} (a: A) : Box(A)
         |
-        |inline def repack (b: Box($A))(x: A): Box(A) := Box.mk(A, x)
+        |def repack (b: Box($A))(x: A): Box(A) := Box.mk(A, x)
         |
         |{
         |  repack(Box.mk(Nat, Nat.zero), Nat.succ(Nat.zero))
@@ -128,7 +128,7 @@ class TypePatternTests extends munit.FunSuite {
         | | nil {A: Sort($u)} : Vec(A, Nat.zero)
         | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
         |
-        |inline def sameLenLeft (v1: Vec(Nat, $n))(v2: Vec(Nat, n)): Nat := n
+        |def sameLenLeft (v1: Vec(Nat, $n))(v2: Vec(Nat, n)): Nat := n
         |
         |{
         |  sameLenLeft(Vec.nil(Nat), Vec.nil(Nat))
@@ -186,8 +186,8 @@ class TypePatternTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inline def constrainedId (x: $A in Sort($u)): A := x
-        |inline def capturedType (x: $A in Sort($u)): Sort(u) := A
+        |def constrainedId (x: $A in Sort($u)): A := x
+        |def capturedType (x: $A in Sort($u)): Sort(u) := A
         |
         |{
         |  let z: Nat := constrainedId(Nat.zero)
@@ -378,7 +378,7 @@ class TypePatternTests extends munit.FunSuite {
         |inductive Box (A: Sort($u)) : Sort(u)
         | | mk {A: Sort($u)} (a: A) : Box(A)
         |
-        |inline def unbox (b: Box($A)): A := {
+        |def unbox (b: Box($A)): A := {
         |  match b returning A with
         |  | Box.mk a => a
         |}
@@ -409,7 +409,7 @@ class TypePatternTests extends munit.FunSuite {
         |inductive Box (A: Sort($u)) : Sort(u)
         | | mk {A: Sort($u)} (a: A) : Box(A)
         |
-        |inline def bad (b: Box($A)): Sort(u) := A
+        |def bad (b: Box($A)): Sort(u) := A
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {
@@ -433,7 +433,7 @@ class TypePatternTests extends munit.FunSuite {
         | | nil {A: Sort($u)} : Vec(A, Nat.zero)
         | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
         |
-        |inline def sameLenLeft (v1: Vec(Nat, $n))(v2: Vec(Nat, n)): Nat := n
+        |def sameLenLeft (v1: Vec(Nat, $n))(v2: Vec(Nat, n)): Nat := n
         |
         |{
         |  sameLenLeft(Vec.nil(Nat), Vec.cons(Nat, Vec.nil(Nat), Nat.zero))

@@ -128,7 +128,7 @@ class ModuleLoaderTests extends munit.FunSuite {
       "Main.rac",
       """
         |namespace InitPilot {
-        |  inline def sameNat (a: Nat)(b: Nat): Bool := beq(derive[BEq(Nat)], a, b)
+        |  def sameNat (a: Nat)(b: Nat): Bool := beq(derive[BEq(Nat)], a, b)
         |
         |  def oneLeOne : le(derive[LE(Nat)], Nat.succ(Nat.zero), Nat.succ(Nat.zero)) := Eq.refl(Bool.true)
         |}
@@ -161,7 +161,7 @@ class ModuleLoaderTests extends munit.FunSuite {
         |import Lib.Nat
         |
         |namespace Lib {
-        |  inline def idNat (n: Nat): Nat := n
+        |  def idNat (n: Nat): Nat := n
         |}
         |""".stripMargin
     )
@@ -199,7 +199,7 @@ class ModuleLoaderTests extends munit.FunSuite {
         |import Lib.Nat
         |
         |namespace Lib {
-        |  inline def useNat (n: Nat): Nat := n
+        |  def useNat (n: Nat): Nat := n
         |}
         |""".stripMargin
     )
@@ -240,7 +240,7 @@ class ModuleLoaderTests extends munit.FunSuite {
         |open Lib.Nat
         |
         |namespace Lib {
-        |  inline def makeNat : Nat := zero
+        |  def makeNat : Nat := zero
         |}
         |""".stripMargin
     )
@@ -336,7 +336,7 @@ class ModuleLoaderTests extends munit.FunSuite {
       "Lib/Bad.rac",
       """
         |namespace Lib {
-        |  inline def bad : Missing := Missing
+        |  def bad : Missing := Missing
         |}
         |""".stripMargin
     )
@@ -374,7 +374,7 @@ class ModuleLoaderTests extends munit.FunSuite {
         |open Common
         |
         |namespace A {
-        |  inline def make : FunBox := FunBox.mk(fun (x: Nat): Nat => Nat.zero)
+        |  def make : FunBox := FunBox.mk(fun (x: Nat): Nat => Nat.zero)
         |}
         |""".stripMargin
     )
@@ -387,7 +387,7 @@ class ModuleLoaderTests extends munit.FunSuite {
         |open Common
         |
         |namespace B {
-        |  inline def make : FunBox := FunBox.mk(fun (x: Nat): Nat => x)
+        |  def make : FunBox := FunBox.mk(fun (x: Nat): Nat => x)
         |}
         |""".stripMargin
     )

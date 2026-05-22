@@ -38,9 +38,9 @@ stable def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
   | Nat.succ x => add(Nat.succ(a), x)
 }
 
-inline def nat_add_normalizer : Normalizer := add_normalizer(Nat, Nat.zero, add)
+def nat_add_normalizer : Normalizer := add_normalizer(Nat, Nat.zero, add)
 
-inline def addComm (a: Nat)(b: Nat): Eq(Nat, add(a, b), add(b, a)) := {
+def addComm (a: Nat)(b: Nat): Eq(Nat, add(a, b), add(b, a)) := {
   use nat_add_normalizer
   Eq.refl(add(a, b))
 }
@@ -160,7 +160,7 @@ and similarly for associativity and identity.
 
 ### Why stable definitions matter
 
-In the examples, addition is defined with `stable def add ...` rather than `inline def`.
+In the examples, addition is defined with `stable def add ...` rather than `def`.
 
 This relates to how evaluation preserves a stable head for blocked applications. The implementation explicitly notes that this behavior exists so normalizers can still recognize and rewrite expressions even when unfolding does not fully complete. Roughly speaking, if a function is marked stable, blocked computations can still retain the original function head instead of disappearing behind intermediate unfolding.
 

@@ -324,7 +324,7 @@ object Interpreter {
 
         val (checkValue, runtimeValue) = body match {
           case CoreAst.ConstBody.Builtin(_) =>
-            if (unfoldStrategy.nonEmpty) throw WTF("Builtin declarations cannot be inline or stable", Some(span))
+            if (unfoldStrategy.nonEmpty) throw WTF("Builtin declarations cannot be stable", Some(span))
             if (isInstance) throw WTF("Builtin declarations cannot be instances", Some(span))
             (Builtins.instantiate(name, tyV, span), Builtins.instantiate(name, runtimeTyV, span))
 

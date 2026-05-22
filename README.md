@@ -87,13 +87,13 @@ inductive NatShape (n: Nat) : Type
  | isZero : NatShape(Nat.zero)
  | isSucc (n: Nat) : NatShape(Nat.succ(n))
 
-inline def pred (n: Nat): Nat := {
+def pred (n: Nat): Nat := {
   match n with
   | Nat.zero => Nat.zero
   | Nat.succ x => x
 }
 
-inline def zeroShapeOnly (shape: NatShape(Nat.zero)): Nat := {
+def zeroShapeOnly (shape: NatShape(Nat.zero)): Nat := {
   match shape returning Nat with
   | NatShape.isZero => Nat.zero
 }
@@ -123,7 +123,7 @@ stable def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
   | Nat.succ x => add(Nat.succ(a), x)
 }
 
-inline def lex (a: Nat)(b: Nat): Nat decreases lexicographic(a, b) := {
+def lex (a: Nat)(b: Nat): Nat decreases lexicographic(a, b) := {
   match a with
   | Nat.zero => {
     match b with
@@ -154,7 +154,7 @@ inductive Vec (A: Sort($u))(n: Nat) : Sort(Level.max(Level.one, u))
 inductive Pair (A: Sort($u1))(B: Sort($u2)): Sort(Level.max(u1, u2))
   | mk(a: $A in Sort($u1))(b: $B in Sort($u2)): Pair(A, B)
 
-inline def zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) decreases measure(n) := {
+def zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) decreases measure(n) := {
   let ResType := Vec(Pair(A, B), n)
   match va returning ResType with
   | Vec.nil => Vec.nil(Pair(A, B))
@@ -188,8 +188,8 @@ inductive Nat : Type
 struct Pair (A: Type)(B: Type) : Type
  | mk (fst: A)(snd: B) : Pair(A, B)
 
-inline def first (p: Pair($A, $B)): A := p.fst
-inline def second (p: Pair($A, $B)): B := p.snd
+def first (p: Pair($A, $B)): A := p.fst
+def second (p: Pair($A, $B)): B := p.snd
 ```
 
 ### Type Classes
@@ -219,7 +219,7 @@ def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
 
 def instance listEq [ea: DecEq($A)]: DecEq(List(A)) := DecEq.mk(List(A), Bool.true)
 
-inline def useListEq [eqA: DecEq(List(Nat))]: DecEq(List(Nat)) := eqA
+def useListEq [eqA: DecEq(List(Nat))]: DecEq(List(Nat)) := eqA
 
 {
   useListEq(derive[DecEq(List(Nat))])
@@ -243,7 +243,7 @@ namespace Data {
 
 open Data.{Tree as DTree}
 
-inline def example : Data.Tree :=
+def example : Data.Tree :=
   DTree.node(DTree.leaf, DTree.leaf)
 ```
 
@@ -274,9 +274,9 @@ stable def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
   | Nat.succ x => add(Nat.succ(a), x)
 }
 
-inline def nat_add_normalizer : Normalizer := add_normalizer(Nat, Nat.zero, add)
+def nat_add_normalizer : Normalizer := add_normalizer(Nat, Nat.zero, add)
 
-inline def addComm (a: Nat)(b: Nat): Eq(Nat, add(a, b), add(b, a)) := {
+def addComm (a: Nat)(b: Nat): Eq(Nat, add(a, b), add(b, a)) := {
   use nat_add_normalizer
   Eq.refl(add(a, b))
 }

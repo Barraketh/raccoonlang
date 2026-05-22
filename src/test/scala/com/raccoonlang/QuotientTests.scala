@@ -36,7 +36,7 @@ class QuotientTests extends munit.FunSuite {
 
   private val natPrelude =
     """
-      |inline def Rel (a: Nat)(b: Nat): Prop := Eq(Nat, a, b)
+      |def Rel (a: Nat)(b: Nat): Prop := Eq(Nat, a, b)
       |""".stripMargin
 
   test("Quot.mk is a constructor head that stores only the representative") {
@@ -63,7 +63,7 @@ class QuotientTests extends munit.FunSuite {
     val res = runProgram(
       natPrelude +
         """
-          |inline def sound (a: Nat)(b: Nat)(h: Rel(a, b)): Eq(Nat, Nat.succ(a), Nat.succ(b)) := {
+          |def sound (a: Nat)(b: Nat)(h: Rel(a, b)): Eq(Nat, Nat.succ(a), Nat.succ(b)) := {
           |  match h returning Eq(Nat, Nat.succ(a), Nat.succ(b)) with
           |  | Eq.refl x => Eq.refl(Nat.succ(x))
           |}
@@ -81,7 +81,7 @@ class QuotientTests extends munit.FunSuite {
     val res = runProgram(
       natPrelude +
         """
-          |inline def motive (q: Quot(Nat, Rel)): Prop := True
+          |def motive (q: Quot(Nat, Rel)): Prop := True
           |
           |{
           |  Quot.inductionOn(Quot.mk(Nat, Rel, Nat.zero), motive, fun (a: Nat): motive(Quot.mk(Nat, Rel, a)) => True.intro)
@@ -96,7 +96,7 @@ class QuotientTests extends munit.FunSuite {
     val res = runProgram(
       natPrelude +
         """
-          |inline def idSound (a: Nat)(b: Nat)(h: Rel(a, b)): Eq(Nat, a, b) := h
+          |def idSound (a: Nat)(b: Nat)(h: Rel(a, b)): Eq(Nat, a, b) := h
           |
           |{
           |  Quot.liftOn(Quot.mk(Nat, Rel, Nat.zero), Nat, fun (x: Nat): Nat => x, idSound)

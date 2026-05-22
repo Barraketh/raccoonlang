@@ -47,7 +47,7 @@ class TypeClassTests extends munit.FunSuite {
       |
       |""".stripMargin
 
-  test("derive parses to CoreAst only and checks to the resolved term") {
+  test("derive parses to CoreAst only and checks to the unfolded resolved instance") {
     val worlds = compileWorlds(
       prelude +
         """
@@ -71,8 +71,8 @@ class TypeClassTests extends munit.FunSuite {
     val term = ValueQuote.quoteTerm(checkedV, ctx, body.span)
 
     term match {
-      case ElabAst.Term.GlobalRef("natEq", _) =>
-      case other                              => fail(s"Expected resolved natEq term, got $other")
+      case ElabAst.Term.App(ElabAst.Term.GlobalRef("DecEq.mk", _), args, _) if args.length == 2 =>
+      case other => fail(s"Expected unfolded resolved natEq term, got $other")
     }
   }
 
@@ -82,7 +82,7 @@ class TypeClassTests extends munit.FunSuite {
         """
           |def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |
-          |inline def useEq (A: Type)[eqA: DecEq(A)]: DecEq(A) := eqA
+          |def useEq (A: Type)[eqA: DecEq(A)]: DecEq(A) := eqA
           |
           |{
           |  useEq(Nat, derive[DecEq(Nat)])
@@ -98,9 +98,9 @@ class TypeClassTests extends munit.FunSuite {
         """
           |def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |
-          |inline def useEq (A: Type)[eqA: DecEq(A)]: DecEq(A) := eqA
+          |def useEq (A: Type)[eqA: DecEq(A)]: DecEq(A) := eqA
           |
-          |inline def useNatEq : DecEq(Nat) := useEq(Nat, derive[DecEq(Nat)])
+          |def useNatEq : DecEq(Nat) := useEq(Nat, derive[DecEq(Nat)])
           |
           |""".stripMargin
     )
@@ -110,9 +110,9 @@ class TypeClassTests extends munit.FunSuite {
         """
           |def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |
-          |inline def useEq (A: Type)[eqA: DecEq(A)]: DecEq(A) := eqA
+          |def useEq (A: Type)[eqA: DecEq(A)]: DecEq(A) := eqA
           |
-          |inline def useNatEq : DecEq(Nat) := useEq(Nat, derive[DecEq(Nat)])
+          |def useNatEq : DecEq(Nat) := useEq(Nat, derive[DecEq(Nat)])
           |
           |{ useNatEq }
           |""".stripMargin
@@ -213,7 +213,7 @@ class TypeClassTests extends munit.FunSuite {
         """
           |def natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |
-          |inline def useBinder (A: Type)[eqA: DecEq(A)]: DecEq(A) := derive[DecEq(A)]
+          |def useBinder (A: Type)[eqA: DecEq(A)]: DecEq(A) := derive[DecEq(A)]
           |
           |{
           |  useBinder(Nat, natEq)
@@ -229,7 +229,7 @@ class TypeClassTests extends munit.FunSuite {
         """
           |def natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |
-          |inline def usePlainBinder (A: Type)(eqA: DecEq(A)): DecEq(A) := derive[DecEq(A)]
+          |def usePlainBinder (A: Type)(eqA: DecEq(A)): DecEq(A) := derive[DecEq(A)]
           |
           |{
           |  usePlainBinder(Nat, natEq)
@@ -483,7 +483,7 @@ class TypeClassTests extends munit.FunSuite {
         """
           |def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |
-          |inline def Carrier (d: DecEq(Nat)): Type := Nat
+          |def Carrier (d: DecEq(Nat)): Type := Nat
           |
           |def ok (x: Carrier(derive[DecEq(Nat)])): Nat := x
           |""".stripMargin

@@ -31,26 +31,26 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
         |  | Nat.succ x => add(Nat.succ(a), x)
         |}
         |
-        |inline def nat_add_normalizer : Normalizer := add_normalizer(Nat.zero, add)
+        |def nat_add_normalizer : Normalizer := add_normalizer(Nat.zero, add)
         |
         |// Using the additive normalizer over Nat, these equalities become definitional
         |
-        |inline def addZeroRight (a: Nat): Eq(Nat, add(a, Nat.zero), a) := {
+        |def addZeroRight (a: Nat): Eq(Nat, add(a, Nat.zero), a) := {
         |  use nat_add_normalizer
         |  Eq.refl(add(a, Nat.zero))
         |}
         |
-        |inline def addZeroLeft (a: Nat): Eq(Nat, add(Nat.zero, a), a) := {
+        |def addZeroLeft (a: Nat): Eq(Nat, add(Nat.zero, a), a) := {
         |  use nat_add_normalizer
         |  Eq.refl(add(Nat.zero, a))
         |}
         |
-        |inline def addComm (a: Nat)(b: Nat): Eq(Nat, add(a, b), add(b, a)) := {
+        |def addComm (a: Nat)(b: Nat): Eq(Nat, add(a, b), add(b, a)) := {
         |  use nat_add_normalizer
         |  Eq.refl(add(a, b))
         |}
         |
-        |inline def addAssoc (x: Nat)(y: Nat)(z: Nat): Eq(Nat, add(x, add(y, z)), add(add(x, y), z)) := {
+        |def addAssoc (x: Nat)(y: Nat)(z: Nat): Eq(Nat, add(x, add(y, z)), add(add(x, y), z)) := {
         |  use nat_add_normalizer
         |  Eq.refl(add(x, add(y, z)))
         |}
@@ -73,7 +73,7 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
         |  | Nat.succ x => add(Nat.succ(a), x)
         |}
         |
-        |inline def addCommNoNorm (a: Nat)(b: Nat): Eq(Nat, add(a, b), add(b, a)) := Eq.refl(add(a, b))
+        |def addCommNoNorm (a: Nat)(b: Nat): Eq(Nat, add(a, b), add(b, a)) := Eq.refl(add(a, b))
         |
         |""".stripMargin
 
@@ -98,7 +98,7 @@ class EqualityWithNormalizerTests extends munit.FunSuite {
         |  | Nat.succ x => add(Nat.succ(a), x)
         |}
         |
-        |inline def addZeroLeftNoNorm (a: Nat): Eq(Nat, add(Nat.zero, a), a) := Eq.refl(add(Nat.zero, a))
+        |def addZeroLeftNoNorm (a: Nat): Eq(Nat, add(Nat.zero, a), a) := Eq.refl(add(Nat.zero, a))
         |
         |""".stripMargin
 

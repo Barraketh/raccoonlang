@@ -72,7 +72,7 @@ class MatchRefinementTests extends munit.FunSuite {
         | | nil {u: Level}{A: Sort(u)} : Vec(u, A, Nat.zero)
         | | cons {u: Level}{A: Sort(u)} (n: Nat) (xs: Vec(u, A, n)) (x: A) : Vec(u, A, Nat.succ(n))
         |
-        |inline def keepVec (n: Nat)(v: Vec(Level.one, Nat, n)): Vec(Level.one, Nat, n) := {
+        |def keepVec (n: Nat)(v: Vec(Level.one, Nat, n)): Vec(Level.one, Nat, n) := {
         |  match v returning Vec(Level.one, Nat, n) with
         |  | Vec.nil => v
         |  | Vec.cons k xs x => v

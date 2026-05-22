@@ -32,7 +32,7 @@ class VecZipTest extends munit.FunSuite {
         |inductive Pair(u1: Level)(u2: Level)(A: Sort(u1))(B: Sort(u2)): Sort(Level.max(u1, u2))
         | | mk {u1: Level}{u2: Level}{A: Sort(u1)}{B: Sort(u2)}(a: A)(b: B): Pair(u1, u2, A, B)
         |
-        |inline def zip(u1: Level)(u2: Level)(A: Sort(u1))(B: Sort(u2))(n: Nat)(va: Vec(u1, A, n))(vb: Vec(u2, B, n)): Vec(Level.max(u1, u2), Pair(u1, u2, A, B), n) decreases structural(n) := {
+        |def zip(u1: Level)(u2: Level)(A: Sort(u1))(B: Sort(u2))(n: Nat)(va: Vec(u1, A, n))(vb: Vec(u2, B, n)): Vec(Level.max(u1, u2), Pair(u1, u2, A, B), n) decreases structural(n) := {
         |  let R := Pair(u1, u2, A, B)
         |  let L := Level.max(u1, u2)
         |  match va returning Vec(L, R, n) with
@@ -67,7 +67,7 @@ class VecZipTest extends munit.FunSuite {
         |inductive Pair (A: Sort($u1))(B: Sort($u2)): Sort(Level.max(u1, u2))
         |  | mk(a: $A in Sort($u1))(b: $B in Sort($u2)): Pair(A, B)
         |
-        |inline def zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) decreases measure(n) := {
+        |def zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) decreases measure(n) := {
         |  let ResType := Vec(Pair(A, B), n)
         |  match va returning ResType with
         |  | Vec.nil => Vec.nil(Pair(A, B))

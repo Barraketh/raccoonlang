@@ -30,7 +30,7 @@ class NamespaceTests extends munit.FunSuite {
         | | cons {A: Type} (tail: List(A))(head: A) : List(A)
         |
         |namespace List {
-        |  inline def singleton (A: Type)(x: A): List(A) := cons(A, nil(A), x)
+        |  def singleton (A: Type)(x: A): List(A) := cons(A, nil(A), x)
         |}
         |
         |{
@@ -49,7 +49,7 @@ class NamespaceTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |namespace Nat {
-        |  inline def add (a: Nat)(b: Nat): Nat := a
+        |  def add (a: Nat)(b: Nat): Nat := a
         |}
         |
         |open Nat
@@ -70,7 +70,7 @@ class NamespaceTests extends munit.FunSuite {
         |open Nat
         |
         |namespace Nat {
-        |  inline def add (a: Nat)(b: Nat): Nat := a
+        |  def add (a: Nat)(b: Nat): Nat := a
         |}
         |
         |{
@@ -399,7 +399,7 @@ class NamespaceTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (p: Nat) : Nat
         |
-        |inline def pred (n: Nat): Nat := {
+        |def pred (n: Nat): Nat := {
         |  match n with
         |  | .zero => Nat.zero
         |  | .succ p => p
@@ -420,7 +420,7 @@ class NamespaceTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (p: Nat) : Nat
         |
-        |inline def bad (zero: Nat)(n: Nat): Nat := {
+        |def bad (zero: Nat)(n: Nat): Nat := {
         |  match n with
         |  | zero => Nat.zero
         |  | Nat.succ p => p
@@ -496,7 +496,7 @@ class NamespaceTests extends munit.FunSuite {
         |   | node (left: Tree)(right: Tree) : Tree
         |}
         |
-        |inline def classify (t: Data.Tree): Nat := {
+        |def classify (t: Data.Tree): Nat := {
         |  match t returning Nat with
         |  | Data.Tree.leaf => Nat.zero
         |  | Data.Tree.node left right => Nat.succ(Nat.zero)
@@ -523,7 +523,7 @@ class NamespaceTests extends munit.FunSuite {
         |
         |open Data
         |
-        |inline def classify (t: Tree): Nat := {
+        |def classify (t: Tree): Nat := {
         |  match t returning Nat with
         |  | Tree.leaf => Nat.zero
         |  | Tree.node left right => Nat.succ(Nat.zero)
@@ -550,7 +550,7 @@ class NamespaceTests extends munit.FunSuite {
         |
         |open Data.Tree
         |
-        |inline def classify (t: Data.Tree): Nat := {
+        |def classify (t: Data.Tree): Nat := {
         |  match t returning Nat with
         |  | leaf => Nat.zero
         |  | node left right => Nat.succ(Nat.zero)
@@ -571,7 +571,7 @@ class NamespaceTests extends munit.FunSuite {
         |
         |open Nat.{zero as z, succ as s}
         |
-        |inline def pred (n: Nat): Nat := {
+        |def pred (n: Nat): Nat := {
         |  match n returning Nat with
         |  | z => Nat.zero
         |  | s p => p

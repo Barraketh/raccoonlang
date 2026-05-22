@@ -36,14 +36,14 @@ class TypingTests extends munit.FunSuite {
   private val zeroS = SConst("Nat.zero")
   private def succS(s: Shape) = SApp(SConst("Nat.succ"), List(s))
 
-  test("inline id typechecks and reduces") {
+  test("def typechecks and reduces by default") {
     val p =
       """
         |inductive Nat : Type
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inline def id (A: Type)(x: A): A := x
+        |def id (A: Type)(x: A): A := x
         |
         |{
         |  id(Nat, Nat.zero)
@@ -54,14 +54,14 @@ class TypingTests extends munit.FunSuite {
     assertEquals(toShape(res), zeroS)
   }
 
-  test("inline def: declared return too large (A -> A) expected, value A") {
+  test("def: declared return too large (A -> A) expected, value A") {
     val p =
       """
         |inductive Nat : Type
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inline def bad (A: Type)(x: A): A -> A := x
+        |def bad (A: Type)(x: A): A -> A := x
         |""".stripMargin
 
     intercept[RuntimeException] {
@@ -148,7 +148,7 @@ class TypingTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inline def pred (n: Nat): Nat := {
+        |def pred (n: Nat): Nat := {
         |  match n with
         |  | Nat.zero => Nat.zero
         |  | Nat.succ x => x
@@ -163,14 +163,14 @@ class TypingTests extends munit.FunSuite {
     assertEquals(toShape(res), zeroS)
   }
 
-  test("inline def: declared result Type but branch returns Nat => mismatch") {
+  test("def: declared result Type but branch returns Nat => mismatch") {
     val p =
       """
         |inductive Nat : Type
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inline def bad (n: Nat): Type := {
+        |def bad (n: Nat): Type := {
         |  match n with
         |  | Nat.zero => Nat.zero
         |  | Nat.succ x => x
@@ -210,7 +210,7 @@ class TypingTests extends munit.FunSuite {
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (n: Nat) (xs: Vec(A, n)) (x: A): Vec(A, Nat.succ(n))
         |
-        |inline def badVec (A: Type)(n: Nat)(v: Vec(A, n)): Vec(A, Nat.zero) := v
+        |def badVec (A: Type)(n: Nat)(v: Vec(A, n)): Vec(A, Nat.zero) := v
         |""".stripMargin
 
     intercept[TypeMismatch] {
@@ -229,7 +229,7 @@ class TypingTests extends munit.FunSuite {
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (n: Nat) (xs: Vec(A, n)) (x: A): Vec(A, Nat.succ(n))
         |
-        |inline def keepNil (A: Type)(v: Vec(A, Nat.zero)): Vec(A, Nat.zero) := {
+        |def keepNil (A: Type)(v: Vec(A, Nat.zero)): Vec(A, Nat.zero) := {
         |  match v with
         |  | Vec.nil => v
         |}
@@ -238,14 +238,14 @@ class TypingTests extends munit.FunSuite {
     typecheckDecls(p)
   }
 
-  test("nullary top-level inline def body must match declared type") {
+  test("nullary top-level def body must match declared type") {
     val p =
       """
         |inductive Nat : Type
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inline def bad : Nat := Type
+        |opaque def bad : Nat := Type
         |""".stripMargin
 
     intercept[TypeMismatch] {

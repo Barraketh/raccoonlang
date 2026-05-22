@@ -164,7 +164,7 @@ class PropTests extends munit.FunSuite {
   test("Proof binders typecheck: identity over proofs") {
     val p =
       """
-        |inline def idProof (P: Prop)(p: P): P := p
+        |def idProof (P: Prop)(p: P): P := p
         |""".stripMargin
 
     typecheckDecls(p)
@@ -177,7 +177,7 @@ class PropTests extends munit.FunSuite {
         | | left : Amb
         | | right : Amb
         |
-        |inline def sameProof (p: Amb): Eq(Amb, p, Amb.right) := Eq.refl(p)
+        |def sameProof (p: Amb): Eq(Amb, p, Amb.right) := Eq.refl(p)
         |""".stripMargin
 
     typecheckDecls(p)
@@ -276,7 +276,7 @@ class PropTests extends munit.FunSuite {
         |inductive Exists (A: Type)(p: A -> Prop) : Prop
         | | intro {A: Type}{p: A -> Prop} (w: A)(pw: p(w)) : Exists(A, p)
         |
-        |inline def alwaysTrue (x: Nat): Prop := True
+        |def alwaysTrue (x: Nat): Prop := True
         |
         |def badExists (h: Exists(Nat, alwaysTrue)): Nat := {
         |  match h returning Nat with

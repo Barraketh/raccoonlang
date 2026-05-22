@@ -96,7 +96,7 @@ class UniverseTests extends munit.FunSuite {
         |  | zero: Nat
         |  | succ (_: Nat) : Nat
         |
-        |inline def f (u: Level)(A: Sort(u))(x: A): A := x
+        |def f (u: Level)(A: Sort(u))(x: A): A := x
         |
         |{ f(Level.one, Nat, Nat.zero) }
         |""".stripMargin
@@ -132,13 +132,13 @@ class UniverseTests extends munit.FunSuite {
         |  | zero: Nat
         |  | succ (_: Nat) : Nat
         |
-        |def up2 (u: Level)(A: Sort(u)): Sort(Level.succ(Level.succ(u))) := A
+        |opaque def up2 (u: Level)(A: Sort(u)): Sort(Level.succ(Level.succ(u))) := A
         |
         |{ up2(Level.one, Nat) }
         |""".stripMargin
 
     val res = runProgram(p)
-    // The application stays opaque (non-inline). Just assert its type is Sort 3.
+    // The application stays opaque. Just assert its type is Sort 3.
     res.tpe match {
       case Value.VSort(l) => assertEquals(l, Value.Level.succ(Value.Level.succ(Value.Level.one)))
       case other          => fail(s"Expected result type Sort 3, got: $other")
@@ -211,7 +211,7 @@ class UniverseTests extends munit.FunSuite {
         |  | zero: Nat
         |  | succ (_: Nat) : Nat
         |
-        |inline def idAt (u: Level)(A: Sort(u))(x: A): A := x
+        |def idAt (u: Level)(A: Sort(u))(x: A): A := x
         |
         |{ idAt(Level.one, Nat, Nat.zero) }
         |""".stripMargin
@@ -337,7 +337,7 @@ class UniverseTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inline def idUp (A: Sort(Level.succ($u)))(x: A): A := x
+        |def idUp (A: Sort(Level.succ($u)))(x: A): A := x
         |
         |{
         |  idUp(Type, Nat)

@@ -80,8 +80,8 @@ class PreludeTests extends munit.FunSuite {
   test("Prelude propositions and dependent carriers typecheck") {
     typecheckDecls(
         """
-        |inline def isTrue (b: Bool): Prop := True
-        |inline def boolFamily (n: Nat): Type := Bool
+        |def isTrue (b: Bool): Prop := True
+        |def boolFamily (n: Nat): Type := Bool
         |
         |def andProof : And(True, True) := And.intro(True, True, True.intro, True.intro)
         |def iffProof : Iff(True, True) := Iff.intro(True, True, fun (h: True): True => h, fun (h: True): True => h)
@@ -97,9 +97,9 @@ class PreludeTests extends munit.FunSuite {
     val res =
       runProgram(
         """
-          |inline def idNat (n: Nat): Nat := n
-          |inline def succNat (n: Nat): Nat := Nat.succ(n)
-          |inline def natFamily (n: Nat): Type := Nat
+          |def idNat (n: Nat): Nat := n
+          |def succNat (n: Nat): Nat := Nat.succ(n)
+          |def natFamily (n: Nat): Type := Nat
           |def funEq : Eq((x: Nat) -> Nat, idNat, idNat) := Eq.refl(idNat)
           |
           |def symmProof : Eq(Nat, Nat.zero, Nat.zero) := Eq.symm(Eq.refl(Nat.zero))
@@ -262,8 +262,8 @@ class PreludeTests extends munit.FunSuite {
     val listApiRes =
       runProgram(
         """
-          |inline def count (acc: Nat)(n: Nat): Nat := Nat.succ(acc)
-          |inline def isZeroNat (n: Nat): Bool := Nat.isZero(n)
+          |def count (acc: Nat)(n: Nat): Nat := Nat.succ(acc)
+          |def isZeroNat (n: Nat): Bool := Nat.isZero(n)
           |
           |{
           |  let xs := List.cons(Nat.zero, List.cons(Nat.succ(Nat.zero), List.nil(Nat)))

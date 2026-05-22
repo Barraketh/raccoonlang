@@ -153,7 +153,7 @@ object SurfaceAst {
     sealed trait Decl extends Command
 
     object Decl {
-      // Constant: name : type [:= value], with transparency (Opaque | Inline)
+      // Constant: name : type [:= value]. None means explicitly opaque; term definitions otherwise default to Inline.
       final case class ConstDecl(
           unfoldStrategy: Option[UnfoldStrategy],
           header: DeclHeader,

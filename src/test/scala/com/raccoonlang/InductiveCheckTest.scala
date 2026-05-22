@@ -81,7 +81,7 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Non-strict positivity: aligned universes under other constructor F args (Wrap u (Bad u))") {
     val p =
       """
-        |def Wrap(A: Sort(Level.zero)): Sort(Level.zero) := A
+        |opaque def Wrap(A: Sort(Level.zero)): Sort(Level.zero) := A
         |
         |inductive Bad : Sort(Level.zero)
         | | con(x: Wrap(Bad)): Bad

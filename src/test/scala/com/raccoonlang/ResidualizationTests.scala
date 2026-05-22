@@ -72,7 +72,7 @@ class ResidualizationTests extends munit.FunSuite {
       | | succ (_: Nat) : Nat
       |""".stripMargin
 
-  test("residualizes an inline match application to the selected constructor") {
+  test("residualizes a transparent match application to the selected constructor") {
     val p =
       natDecls +
         """
@@ -82,7 +82,7 @@ class ResidualizationTests extends munit.FunSuite {
           |
           |def expensive (n: Nat): Nat := n
           |
-          |inline def choose (b: Bool)(x: Nat): Nat := {
+          |def choose (b: Bool)(x: Nat): Nat := {
           |  match b returning Nat with
           |  | Bool.true => x
           |  | Bool.false => Nat.zero
@@ -122,7 +122,7 @@ class ResidualizationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |inline def id (n: Nat): Nat := n
+          |def id (n: Nat): Nat := n
           |
           |{
           |  fun (n: Nat): Nat => id(Nat.zero)
@@ -144,8 +144,8 @@ class ResidualizationTests extends munit.FunSuite {
           | | true : Bool
           | | false : Bool
           |
-          |inline def id (n: Nat): Nat := n
-          |def opaqueBool (b: Bool): Bool := b
+          |def id (n: Nat): Nat := n
+          |opaque def opaqueBool (b: Bool): Bool := b
           |
           |{
           |  match opaqueBool(Bool.true) returning Nat with
@@ -170,8 +170,8 @@ class ResidualizationTests extends munit.FunSuite {
           | | true : Bool
           | | false : Bool
           |
-          |inline def idBool (b: Bool): Bool := b
-          |def opaqueBool (b: Bool): Bool := b
+          |def idBool (b: Bool): Bool := b
+          |opaque def opaqueBool (b: Bool): Bool := b
           |
           |{
           |  match idBool(opaqueBool(Bool.true)) returning Nat with
@@ -192,7 +192,7 @@ class ResidualizationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |inline def TyId (A: Type): Type := A
+          |def TyId (A: Type): Type := A
           |
           |{
           |  (_: TyId(Nat)) -> Nat
@@ -213,8 +213,8 @@ class ResidualizationTests extends munit.FunSuite {
   test("Pi binder quotation preserves captures under reducible type-pattern heads") {
     val p =
       """
-        |inline def IdT (A: Type): Type := A
-        |inline def Fn : Type := (_: IdT($A)) -> A
+        |def IdT (A: Type): Type := A
+        |def Fn : Type := (_: IdT($A)) -> A
         |
         |{
         |  Fn
@@ -246,7 +246,7 @@ class ResidualizationTests extends munit.FunSuite {
           | | nil {A: Sort($u)} : Vec(A, Nat.zero)
           | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
           |
-          |inline def IndexedFn (_: Nat): Type := (v: Vec(Nat, $n)) -> Vec(Nat, n)
+          |def IndexedFn (_: Nat): Type := (v: Vec(Nat, $n)) -> Vec(Nat, n)
           |
           |{
           |  IndexedFn(Nat.zero)
@@ -291,7 +291,7 @@ class ResidualizationTests extends munit.FunSuite {
           | | nil {A: Sort($u)} : Vec(A, Nat.zero)
           | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
           |
-          |inline def IndexedFn (A: Type): Type := (v: Vec(A, $n)) -> Vec(A, n)
+          |def IndexedFn (A: Type): Type := (v: Vec(A, $n)) -> Vec(A, n)
           |
           |{
           |  IndexedFn(Nat)

@@ -46,8 +46,8 @@ def parse_kinds(value: str) -> list[str]:
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
-def raccoon_source(size: int, inline_zip: bool) -> str:
-    unfold = "inline def" if inline_zip else "def"
+def raccoon_source(size: int, transparent_zip: bool) -> str:
+    unfold = "def" if transparent_zip else "opaque def"
     lets = []
     previous = "v"
     for idx in range(1, size + 1):
@@ -125,8 +125,8 @@ def write_file(path: Path, contents: str) -> None:
 
 def generate_raccoon(out_dir: Path, sizes: Iterable[int]) -> None:
     for size in sizes:
-        write_file(out_dir / f"nested_zip_opaque_{size}.rac", raccoon_source(size, inline_zip=False))
-        write_file(out_dir / f"nested_zip_inline_{size}.rac", raccoon_source(size, inline_zip=True))
+        write_file(out_dir / f"nested_zip_opaque_{size}.rac", raccoon_source(size, transparent_zip=False))
+        write_file(out_dir / f"nested_zip_transparent_{size}.rac", raccoon_source(size, transparent_zip=True))
 
 
 def generate_lean(out_dir: Path, sizes: Iterable[int]) -> None:
@@ -292,7 +292,7 @@ def main() -> int:
     parser.add_argument("--out-dir", type=Path, default=Path("/tmp/raccoonlang-benchmarks/nested-zip"))
     parser.add_argument("--raccoon-sizes", type=parse_sizes, default=DEFAULT_RACCOON_SIZES)
     parser.add_argument("--lean-sizes", type=parse_sizes, default=DEFAULT_LEAN_SIZES)
-    parser.add_argument("--raccoon-kinds", type=parse_kinds, default=["opaque", "inline"])
+    parser.add_argument("--raccoon-kinds", type=parse_kinds, default=["opaque", "transparent"])
     parser.add_argument("--reps", type=int, default=5, help="repetitions for sizes below --large-threshold")
     parser.add_argument("--large-reps", type=int, default=3)
     parser.add_argument("--large-threshold", type=int, default=51200)
@@ -304,7 +304,7 @@ def main() -> int:
     args = parser.parse_args()
 
     runners = expand_runners(args.runner or ["generate"])
-    invalid_kinds = sorted(set(args.raccoon_kinds) - {"opaque", "inline"})
+    invalid_kinds = sorted(set(args.raccoon_kinds) - {"opaque", "transparent"})
     if invalid_kinds:
         raise ValueError(f"unknown raccoon kind(s): {', '.join(invalid_kinds)}")
 

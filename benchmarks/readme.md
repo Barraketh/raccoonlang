@@ -56,7 +56,7 @@ Useful options:
 - `--runner` may be repeated, for example `--runner jvm --runner native`.
 - `--raccoon-sizes 0,100,400,800,1600,6400,12800,51200` selects raccoon sizes.
 - `--lean-sizes 800,1600,3200` selects Lean sizes.
-- `--raccoon-kinds opaque`, `--raccoon-kinds inline`, or `--raccoon-kinds opaque,inline` selects raccoon `zip` transparency.
+- `--raccoon-kinds opaque`, `--raccoon-kinds transparent`, or `--raccoon-kinds opaque,transparent` selects raccoon `zip` transparency.
 - `--out-dir /tmp/raccoonlang-benchmarks/nested-zip` controls where generated sources are written.
 
 The runner prints process wall-clock times. JVM timings include JVM startup for each run.
@@ -69,7 +69,7 @@ Measured on April 15, 2026 on an Apple Silicon macOS machine. The repository wor
 
 Direct JVM CLI, including JVM startup per run. Values are medians.
 
-| nested zips | opaque `zip` | inline `zip` |
+| nested zips | opaque `zip` | transparent `zip` |
 |---:|---:|---:|
 | 0 | 0.298s | 0.291s |
 | 100 | 0.340s | 0.361s |
@@ -84,7 +84,7 @@ Direct JVM CLI, including JVM startup per run. Values are medians.
 
 Scala Native binary, process startup included. Values are medians.
 
-| nested zips | opaque `zip` | inline `zip` |
+| nested zips | opaque `zip` | transparent `zip` |
 |---:|---:|---:|
 | 0 | 0.006s | 0.006s |
 | 100 | 0.010s | 0.012s |

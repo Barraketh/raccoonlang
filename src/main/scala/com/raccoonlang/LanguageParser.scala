@@ -26,7 +26,7 @@ object LanguageParser {
     "as",
     "returning",
     "with",
-    "inline",
+    "opaque",
     "axiom",
     "def",
     "instance",
@@ -266,8 +266,8 @@ object LanguageParser {
       }
   }
 
-  private def unfoldStrategy: Parser[UnfoldStrategy] =
-    kw("inline").!.map(_ => UnfoldStrategy.Inline) | kw("stable").!.map(_ => UnfoldStrategy.Stable)
+  private def explicitUnfoldStrategy: Parser[Option[UnfoldStrategy]] =
+    kw("opaque").!.map(_ => None) | kw("stable").!.map(_ => Some(UnfoldStrategy.Stable))
 
   private def constBody(implicit sourceId: Option[SourceId]): Parser[ConstBody] =
     kwTight("builtin").!.flatSpanned(sourceId).map { case (_, span) => ConstBody.Builtin(span) } |
@@ -292,12 +292,23 @@ object LanguageParser {
     kw("decreases") ~/ (structural | lexicographic | measure)
   }
 
-  // inline? def instance? foo (a: A)[b: B](c : C): D := body
+  // (opaque | stable)? def instance? foo (a: A)[b: B](c : C): D := body
   private def constP(implicit sourceId: Option[SourceId]): Parser[ConstDecl] =
-    (unfoldStrategy.? ~ kw("def") ~/ kw("instance").!.? ~ declHeader ~ decreasesP.? ~ (sym(":=") ~/ constBody))
+    (explicitUnfoldStrategy.? ~ kw("def") ~/ kw("instance").!.? ~ declHeader ~ decreasesP.? ~ (sym(":=") ~/ constBody))
       .flatSpanned(sourceId)
-      .map { case (unfoldStrategy, instanceOpt, header, decreases, body, span) =>
-        ConstDecl(unfoldStrategy, header, decreases, body, span, isInstance = instanceOpt.isDefined)
+      .map { case (explicitStrategy, instanceOpt, header, decreases, body, span) =>
+        val default = body match {
+          case ConstBody.Builtin(_)  => None
+          case ConstBody.TermBody(_) => Some(UnfoldStrategy.Inline)
+        }
+        ConstDecl(
+          explicitStrategy.getOrElse(default),
+          header,
+          decreases,
+          body,
+          span,
+          isInstance = instanceOpt.isDefined
+        )
       }
 
   private def axiomP(implicit sourceId: Option[SourceId]): Parser[AxiomDecl] =

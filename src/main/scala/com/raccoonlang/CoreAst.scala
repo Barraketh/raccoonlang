@@ -6,7 +6,7 @@ object CoreAst {
 
   sealed trait UnfoldStrategy
   object UnfoldStrategy {
-    // Unfold computation as far as you can and return the result
+    // Unfold computation as far as you can and return the result. This is the default for term definitions.
     case object Inline extends UnfoldStrategy
 
     // Try to unfold, but if the result is blocked and does not have a stable head then treat as opaque (which will
@@ -184,7 +184,7 @@ object CoreAst {
   }
 
   object Decl {
-    // Constant: name : type [:= value], with transparency (Opaque | Inline)
+    // Constant: name : type [:= value]. None means explicitly opaque; term definitions otherwise default to Inline.
     final case class ConstDecl(
         unfoldStrategy: Option[UnfoldStrategy],
         name: String,
