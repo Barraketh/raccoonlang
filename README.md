@@ -42,8 +42,8 @@ Note that at this point I have done 0 optimization - these performance wins are 
 
 ## Implemented today
 
-- Inductive families with explicit family arguments and erased constructor binders
-    - Validates positivity, universes, constructor result shape
+- Inductive families with explicit params, indices, and erased constructor binders
+    - Validates positivity, universes, constructor result shape, and uniform params
 - Termination checking of recursive functions
 - Dependent pattern matching
     - Branch refinement for indexed families / dependent pattern matching. Supports equality proofs.
@@ -64,9 +64,10 @@ Note that at this point I have done 0 optimization - these performance wins are 
 
 ### Inductives and Pattern Matching
 
-Inductives can have explicit family arguments, and their result can live in an explicit universe. Constructors can
-bind erased arguments with `{...}` when a result family argument should be supplied but not stored as a field. This
-includes universe-polymorphic inductives whose fields and result type are parameterized by a `Level`.
+Inductives can split family arguments into uniform params and non-uniform indices with `indices`, and their result
+can live in an explicit universe. Constructors can bind erased arguments with `{...}` for params that should be
+supplied but not stored as fields; indices are supplied by ordinary fields, fixed result expressions, or type-pattern
+captures. This includes universe-polymorphic inductives whose fields and result type are parameterized by a `Level`.
 
 Pattern matches are checked for exhaustiveness. Required constructors must be present, duplicate cases are rejected,
 and constructors that are impossible at the scrutinee's family type can be omitted.
@@ -79,11 +80,11 @@ inductive Nat : Type
 inductive Box (u: Level)(A: Sort(u)) : Sort(u)
  | mk {u: Level}{A: Sort(u)} (value: A) : Box(u, A)
 
-inductive Vec (u: Level)(A: Sort(u))(n: Nat) : Sort(Level.max(Level.one, u))
+inductive Vec (u: Level)(A: Sort(u)) indices (n: Nat) : Sort(Level.max(Level.one, u))
  | nil {u: Level}{A: Sort(u)} : Vec(u, A, Nat.zero)
  | cons {u: Level}{A: Sort(u)} (n: Nat)(xs: Vec(u, A, n))(x: A) : Vec(u, A, Nat.succ(n))
 
-inductive NatShape (n: Nat) : Type
+inductive NatShape indices (n: Nat) : Type
  | isZero : NatShape(Nat.zero)
  | isSucc (n: Nat) : NatShape(Nat.succ(n))
 
@@ -147,7 +148,7 @@ inductive Nat : Type
   | zero : Nat
   | succ (_: Nat) : Nat
 
-inductive Vec (A: Sort($u))(n: Nat) : Sort(Level.max(Level.one, u))
+inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(Level.max(Level.one, u))
   | nil {A: Sort($u)}: Vec(A, Nat.zero)
   | cons {A: Sort($u)} (v: Vec(A, $n))(elem: A): Vec(A, Nat.succ(n))
 
@@ -172,7 +173,8 @@ for record-like data where fields are directly projectable by name.
 Formation rules:
 
 - Exactly one constructor.
-- Result family arguments must not depend on stored constructor fields.
+- Params before `indices` must be returned uniformly by every constructor.
+- Indices may be fixed by the constructor result or recovered from stored fields and type-pattern captures.
 - May live in `Type`/`Sort(u)` or `Prop`; projections from `Prop` structs obey Prop elimination restrictions.
 - All fields must be named (no anonymous `_` fields).
 
@@ -186,7 +188,7 @@ inductive Nat : Type
  | succ (_: Nat) : Nat
 
 struct Pair (A: Type)(B: Type) : Type
- | mk (fst: A)(snd: B) : Pair(A, B)
+ | mk {A: Type}{B: Type} (fst: A)(snd: B) : Pair(A, B)
 
 def first (p: Pair($A, $B)): A := p.fst
 def second (p: Pair($A, $B)): B := p.snd

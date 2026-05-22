@@ -42,6 +42,7 @@ object LanguageParser {
     "structural",
     "lexicographic",
     "measure",
+    "indices",
     "in"
   )
 
@@ -263,10 +264,11 @@ object LanguageParser {
 
   // New inductive-specific parsers
   private def inductiveHeader(implicit sourceId: Option[SourceId]): Parser[InductiveHeader] = {
-    val bindersP = layoutParam.rep(0)
-    (ident ~ bindersP ~ skipAllWs ~ sym(':') ~/ skipAllWs ~ typeTerm)
+    val paramsP = layoutParam.rep(0)
+    val indicesP = (kw("indices") ~/ layoutParam.rep(0)).?.map(_.getOrElse(Vector.empty))
+    (ident ~ paramsP ~ indicesP ~ skipAllWs ~ sym(':') ~/ skipAllWs ~ typeTerm)
       .flatSpanned(sourceId)
-      .map { case (name, binders, ty, sp) => InductiveHeader(name, binders, ty, sp) }
+      .map { case (name, params, indices, ty, sp) => InductiveHeader(name, params, indices, ty, sp) }
   }
 
   private def ctorDecl(implicit sourceId: Option[SourceId]): Parser[ConstructorDecl] = {

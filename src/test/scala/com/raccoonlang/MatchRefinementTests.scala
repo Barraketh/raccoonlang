@@ -68,7 +68,7 @@ class MatchRefinementTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (p: Nat) : Nat
         |
-        |inductive Vec (u: Level)(A: Sort(u))(n: Nat) : Sort(Level.max(Level.one, u))
+        |inductive Vec (u: Level)(A: Sort(u)) indices (n: Nat) : Sort(Level.max(Level.one, u))
         | | nil {u: Level}{A: Sort(u)} : Vec(u, A, Nat.zero)
         | | cons {u: Level}{A: Sort(u)} (n: Nat) (xs: Vec(u, A, n)) (x: A) : Vec(u, A, Nat.succ(n))
         |
@@ -83,14 +83,14 @@ class MatchRefinementTests extends munit.FunSuite {
     typecheckDecls(p)
   }
 
-  test("match refinement negative: hidden erased binder is not inferred from family arguments") {
+  test("match refinement negative: non-param erased binders are rejected") {
     val p =
       """
         |inductive Nat : Type
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Type)(n: Nat) : Type
+        |inductive Vec (A: Type) indices (n: Nat) : Type
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
         |
@@ -103,6 +103,6 @@ class MatchRefinementTests extends munit.FunSuite {
         |}
         |""".stripMargin
 
-    intercept[TypeMismatch] { typecheckDecls(p) }
+    intercept[InvalidErasedConstructorBinder] { typecheckDecls(p) }
   }
 }

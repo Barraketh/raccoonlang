@@ -89,6 +89,47 @@ object InductiveChecks {
         true
     }
 
+  private def checkErasedBindersAreParams(ctor: ConstructorDecl, header: InductiveHeader): Unit = {
+    val paramNames = header.params.map(_.name).toSet
+    ctor.erasedBinders.foldLeft(Set.empty[String]) { case (seen, binder) =>
+      if (!paramNames.contains(binder.name)) {
+        val reason =
+          if (header.indices.exists(_.name == binder.name))
+            "indices must be passed through constructor fields or type patterns"
+          else if (header.params.isEmpty) "this inductive has no params"
+          else s"expected one of ${header.params.map(_.name).mkString(", ")}"
+        throw InvalidErasedConstructorBinder(ctor.canonicalName, binder.name, reason, Some(binder.span))
+      }
+      if (seen.contains(binder.name))
+        throw InvalidErasedConstructorBinder(
+          ctor.canonicalName,
+          binder.name,
+          "duplicate erased parameter",
+          Some(binder.span)
+        )
+      seen + binder.name
+    }
+  }
+
+  private def checkUniformParams(
+      header: InductiveHeader,
+      ctor: ConstructorDecl,
+      outputArgs: Vector[Value],
+      normalizers: Normalizers.NormalizerMap,
+      allowedParamValues: Map[String, Vector[Value]]
+  )(implicit eqStore: EqStore): Unit =
+    header.params.zip(outputArgs).foreach { case (param, outputArg) =>
+      val isUniform =
+        allowedParamValues.get(param.name).exists { values =>
+          values.exists { value =>
+            ValueEquivalence.defEq(outputArg, value, normalizers, propIrrelevant = true)
+          }
+        }
+
+      if (!isUniform)
+        throw NonUniformInductiveParam(header.name, ctor.canonicalName, param.name, outputArg, Some(ctor.resultTy.span))
+    }
+
   private def installInductive(
       decl: Decl.InductiveDecl,
       baseEnv: TypecheckEnv,
@@ -165,12 +206,17 @@ object InductiveChecks {
     }
 
     decl.ctors.foreach { ctor =>
+      checkErasedBindersAreParams(ctor, header)
+
       val (erasedBinders, _) = BinderOps.toVBinders(ctor.erasedBinders, checkEnvWithInductive)
       val envWithErased = BinderOps.freshen(erasedBinders, checkEnvWithInductive)
-      val erasedDeps = envWithErased.allDeps
       val (fieldBinders, _) = BinderOps.toVBinders(ctor.fields, envWithErased)
       val fieldsEnv = BinderOps.freshen(fieldBinders, envWithErased)
       val fieldVars = fieldBinders.map(binder => fieldsEnv(binder.localRef))
+      val allowedParamValues =
+        (erasedBinders.map(binder => binder.name -> envWithErased(binder.localRef)) ++
+          fieldBinders.flatMap(_.captures.map(capture => capture.localRef.name -> fieldsEnv(capture.localRef))))
+          .groupMap(_._1)(_._2)
 
       val outputTpe = TypeChecker.getType(ctor.resultTy, fieldsEnv)
 
@@ -183,6 +229,7 @@ object InductiveChecks {
       }
 
       if (outputArgs.length != header.arity) throw resultErr
+      checkUniformParams(header, ctor, outputArgs, fieldsEnv.normalizers, allowedParamValues)
 
       val constructorUniverse = TypeChecker.getUniverse(outputTpe)
 
@@ -216,20 +263,6 @@ object InductiveChecks {
             fieldTy = field.tpe,
             span = Some(binder.span)
           )
-      }
-
-      if (decl.isStruct) {
-        val invalidArg = header.binders.zip(outputArgs).find { case (_, familyArg) =>
-          (familyArg.synDeps -- erasedDeps).nonEmpty
-        }
-
-        invalidArg.foreach { case (familyBinder, _) =>
-          throw InvalidStruct(
-            name,
-            s"constructor result family argument ${familyBinder.name} depends on constructor fields",
-            Some(ctor.resultTy.span)
-          )
-        }
       }
 
     }

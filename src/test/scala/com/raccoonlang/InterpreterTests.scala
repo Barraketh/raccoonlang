@@ -80,7 +80,7 @@ class InterpreterTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Type)(n: Nat) : Sort(Level.one)
+        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (n: Nat) (xs: Vec(A, n)) (x: A): Vec(A, Nat.succ(n))
         |

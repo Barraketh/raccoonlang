@@ -30,6 +30,8 @@ object TypeError {
     case e: TypeMismatch                    => e.copy(span = Some(sp))
     case e: DuplicateNormalizer             => e.copy(span = Some(sp))
     case e: InvalidConstructorResult        => e.copy(span = Some(sp))
+    case e: InvalidErasedConstructorBinder  => e.copy(span = Some(sp))
+    case e: NonUniformInductiveParam        => e.copy(span = Some(sp))
     case e: NotALevel                       => e.copy(span = Some(sp))
     case e: InductiveUniverseTooSmall       => e.copy(span = Some(sp))
     case e: NonStrictlyPositive             => e.copy(span = Some(sp))
@@ -186,6 +188,27 @@ final case class InvalidConstructorResult(
 ) extends TypeError {
   override val msg: String =
     s"Constructor $ctor must return $inductive but got $got"
+}
+
+final case class InvalidErasedConstructorBinder(
+    ctor: String,
+    binder: String,
+    reason: String,
+    span: Option[Span] = None
+) extends TypeError {
+  override val msg: String =
+    s"Invalid erased constructor binder $binder in $ctor: $reason"
+}
+
+final case class NonUniformInductiveParam(
+    inductive: String,
+    ctor: String,
+    param: String,
+    got: Value,
+    span: Option[Span] = None
+) extends TypeError {
+  override val msg: String =
+    s"Constructor $ctor of $inductive returns non-uniform parameter $param as $got"
 }
 
 final case class InductiveUniverseTooSmall(

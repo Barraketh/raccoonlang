@@ -12,7 +12,7 @@ def id (x: $A in Sort($u)): A := x
 
 def const (x: $A in Sort($u))(y: $B in Sort($v)): A := x
 
-inductive Eq (A: Sort($u))(x: A)(y: A) : Prop
+inductive Eq (A: Sort($u)) indices (x: A)(y: A) : Prop
  | refl (x: $A in Sort($u)) : Eq(A, x, x)
 
 namespace Eq {

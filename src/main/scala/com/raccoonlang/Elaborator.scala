@@ -563,9 +563,10 @@ object Elaborator {
         val name = env.qualify(c.header.name)
         val nameText = globalName(name)
         val headerEnv = env.enterLocalScope
-        val (binders, envWithBinders) = elabBinders(c.header.binders, headerEnv)
-        val resultTy = elabType(c.header.resultTy, envWithBinders)
-        val header = CA.InductiveHeader(nameText, binders, resultTy, c.span)
+        val (params, envWithParams) = elabBinders(c.header.params, headerEnv)
+        val (indices, envWithIndices) = elabBinders(c.header.indices, envWithParams)
+        val resultTy = elabType(c.header.resultTy, envWithIndices)
+        val header = CA.InductiveHeader(nameText, params, indices, resultTy, c.span)
 
         // Constructors may refer to the inductive head, but not to sibling constructors yet.
         val ctorBaseEnv = env.addGlobal(name)

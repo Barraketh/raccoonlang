@@ -84,18 +84,18 @@ class ProjectionTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Type)(n: Nat) : Type
+        |inductive Vec (A: Type) indices (n: Nat) : Type
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
         |
-        |struct WrapIdx (A: Type)(n: Nat) : Type
-        | | mk {A: Type}{n: Nat} (x: Vec(A, n)) : WrapIdx(A, n)
+        |struct WrapIdx (A: Type) indices (n: Nat) : Type
+        | | mk {A: Type} (x: Vec(A, $n)) : WrapIdx(A, n)
         |
         |def get (A: Type)(n: Nat)(w: WrapIdx(A, n)): Vec(A, n) := w.x
         |
         |{
         |  let v : Vec(Nat, Nat.zero) := Vec.nil(Nat)
-        |  let w : WrapIdx(Nat, Nat.zero) := WrapIdx.mk(Nat, Nat.zero, v)
+        |  let w : WrapIdx(Nat, Nat.zero) := WrapIdx.mk(Nat, v)
         |  get(Nat, Nat.zero, w)
         |}
         |""".stripMargin
@@ -111,12 +111,12 @@ class ProjectionTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Type)(n: Nat) : Type
+        |inductive Vec (A: Type) indices (n: Nat) : Type
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
         |
-        |struct WrapIdx (A: Type)(n: Nat) : Type
-        | | mk {A: Type}{n: Nat} (x: Vec(A, n)) : WrapIdx(A, n)
+        |struct WrapIdx (A: Type) indices (n: Nat) : Type
+        | | mk {A: Type} (x: Vec(A, $n)) : WrapIdx(A, n)
         |
         |def useGet (A: Type)(n: Nat)(w: WrapIdx(A, n)): Vec(A, n) := w.x
         |""".stripMargin
@@ -131,12 +131,12 @@ class ProjectionTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Type)(n: Nat) : Type
+        |inductive Vec (A: Type) indices (n: Nat) : Type
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
         |
-        |struct WrapIdx (A: Type)(n: Nat): Type
-        | | mk {A: Type}{n: Nat} (x: Vec(A, n)) : WrapIdx(A, n)
+        |struct WrapIdx (A: Type) indices (n: Nat): Type
+        | | mk {A: Type} (x: Vec(A, $n)) : WrapIdx(A, n)
         |
         |def useGet (w: WrapIdx($A, $n)): Vec(A, n) := w.x
         |""".stripMargin
@@ -151,7 +151,7 @@ class ProjectionTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Type)(n: Nat) : Type
+        |inductive Vec (A: Type) indices (n: Nat) : Type
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
         |
@@ -235,15 +235,15 @@ class ProjectionTests extends munit.FunSuite {
         | | zero : Nat
         |
         |inductive Pack : Type
-        | | mk {A: Type} (x: A) : Pack
+        | | mk (x: $A in Type) : Pack
         |
         |inductive Wrap (p: Pack) : Type
         | | intro {p: Pack} : Wrap(p)
         |
         |struct S : Type
-        | | mk (x: Wrap(Pack.mk(Nat, Nat.zero))) : S
+        | | mk (x: Wrap(Pack.mk(Nat.zero))) : S
         |
-        |def get (s: S): Wrap(Pack.mk(Nat, Nat.zero)) := s.x
+        |def get (s: S): Wrap(Pack.mk(Nat.zero)) := s.x
         |""".stripMargin
 
     typecheckDecls(p)
@@ -346,7 +346,7 @@ class ProjectionTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |struct ChooseLeft (A: Type)(B: Type)(Out: Type) : Type
+        |struct ChooseLeft (A: Type)(B: Type) indices (Out: Type) : Type
         | | mk {A: Type}{B: Type} (x: A) : ChooseLeft(A, B, A)
         |
         |def getExplicit (A: Type)(B: Type)(w: ChooseLeft(A, B, A)): A := w.x
@@ -362,7 +362,7 @@ class ProjectionTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |struct ChooseLeft (A: Type)(B: Type)(Out: Type) : Type
+        |struct ChooseLeft (A: Type)(B: Type) indices (Out: Type) : Type
         | | mk {A: Type}{B: Type} (x: A) : ChooseLeft(A, B, A)
         |
         |def getCaptured (w: ChooseLeft($A, $B, $Out)): Out := w.x
@@ -382,28 +382,22 @@ class ProjectionTests extends munit.FunSuite {
     }
   }
 
-  test("invalid: struct output may not depend on constructor fields") {
+  test("typecheck: struct indices may depend on constructor fields") {
     val p =
       """
         |inductive Nat : Type
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Type)(n: Nat) : Type
+        |inductive Vec (A: Type) indices (n: Nat) : Type
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
         |
-        |struct IndexedWrap (A: Type)(n: Nat) : Type
+        |struct IndexedWrap (A: Type) indices (n: Nat) : Type
         | | mk {A: Type} (k: Nat)(x: Vec(A, k)) : IndexedWrap(A, k)
         |""".stripMargin
 
-    LanguageParser.parseProgram(p) match {
-      case Success(value, _, _) =>
-        val core = Elaborator.elab(value, Prelude.test)
-        intercept[InvalidStruct] { Interpreter.run(core, Prelude.test) }
-      case err: Failure =>
-        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
-    }
+    typecheckDecls(p)
   }
 
   test("negative: projection does not infer hidden erased binders from family arguments") {
@@ -413,7 +407,7 @@ class ProjectionTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Type)(n: Nat) : Type
+        |inductive Vec (A: Type) indices (n: Nat) : Type
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
         |
@@ -426,7 +420,7 @@ class ProjectionTests extends munit.FunSuite {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[CannotQuoteValue] { Interpreter.run(core, Prelude.test) }
+        intercept[InvalidErasedConstructorBinder] { Interpreter.run(core, Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
@@ -439,7 +433,7 @@ class ProjectionTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Type)(n: Nat) : Type
+        |inductive Vec (A: Type) indices (n: Nat) : Type
         | | nil {A: Type} : Vec(A, Nat.zero)
         | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
         |

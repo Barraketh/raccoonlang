@@ -136,10 +136,13 @@ object SurfaceAst {
 
     case class InductiveHeader(
         name: String,
-        binders: Vector[Binder],
+        params: Vector[Binder],
+        indices: Vector[Binder],
         resultTy: TypeTerm,
         span: Span
-    )
+    ) {
+      def binders: Vector[Binder] = params ++ indices
+    }
 
     case class ConstructorDecl(
         name: String,

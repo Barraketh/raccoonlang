@@ -242,7 +242,7 @@ class ResidualizationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |inductive Vec (A: Sort($u))(n: Nat) : Sort(u)
+          |inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
           | | nil {A: Sort($u)} : Vec(A, Nat.zero)
           | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
           |
@@ -287,7 +287,7 @@ class ResidualizationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |inductive Vec (A: Sort($u))(n: Nat) : Sort(u)
+          |inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
           | | nil {A: Sort($u)} : Vec(A, Nat.zero)
           | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
           |

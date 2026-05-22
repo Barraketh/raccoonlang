@@ -78,6 +78,23 @@ class InductiveCheckTest extends munit.FunSuite {
     intercept[NonStrictlyPositive] { elabAndTypecheck(p) }
   }
 
+  test("Strict positivity allows function-valued fields with no visible recursive occurrence") {
+    val p =
+      """
+        |struct Set(A: Type) : Type
+        | | mk {A: Type} (mem: A -> Prop) : Set(A)
+        |
+        |namespace Set {
+        |  def mem (x: $A in Type)(s: Set(A)): Prop := s.mem(x)
+        |
+        |  struct Subset(A: Type)(s: Set(A))(t: Set(A)) : Prop
+        |   | intro {A: Type}{s: Set(A)}{t: Set(A)} (apply: (x: A) -> mem(x, s) -> mem(x, t)) : Subset(A, s, t)
+        |}
+        |""".stripMargin
+
+    elabAndTypecheck(p)
+  }
+
   test("Non-strict positivity: aligned universes under other constructor F args (Wrap u (Bad u))") {
     val p =
       """
@@ -91,19 +108,19 @@ class InductiveCheckTest extends munit.FunSuite {
     intercept[NonStrictlyPositive] { elabAndTypecheck(p) }
   }
 
-  test("Constructor result may choose family args through erased constructor binders") {
+  test("Constructor erased binders must be inductive params") {
     val p =
       """
         |inductive Nat : Type
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Type)(n: Nat) : Sort(Level.one)
+        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
         | | mk {B: Type}{n: Nat}: Vec(B, n)
         |
         |""".stripMargin
 
-    elabAndTypecheck(p)
+    intercept[InvalidErasedConstructorBinder] { elabAndTypecheck(p) }
   }
 
   test("Constructor result must have full family arity") {
@@ -113,7 +130,7 @@ class InductiveCheckTest extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Type)(n: Nat) : Sort(Level.one)
+        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
         | | bad {A: Type}: Vec(A)
         |
         |""".stripMargin
@@ -121,18 +138,29 @@ class InductiveCheckTest extends munit.FunSuite {
     intercept[ArityMismatch] { elabAndTypecheck(p) }
   }
 
-  test("Struct result family args may not depend on stored fields") {
+  test("Constructor erased binders may not bind indices") {
     val p =
       """
         |inductive Nat : Type
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |struct IndexedWrap (A: Type)(n: Nat) : Type
-        | | mk {A: Type}(n: Nat): IndexedWrap(A, n)
+        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
+        | | bad {A: Type}{n: Nat}: Vec(A, n)
         |
         |""".stripMargin
 
-    intercept[InvalidStruct] { elabAndTypecheck(p) }
+    intercept[InvalidErasedConstructorBinder] { elabAndTypecheck(p) }
+  }
+
+  test("Constructor params must come from erased binders or type-pattern captures") {
+    val p =
+      """
+        |struct Bad (A: Type) : Sort(Level.succ(Level.one))
+        | | mk (A: Type): Bad(A)
+        |
+        |""".stripMargin
+
+    intercept[NonUniformInductiveParam] { elabAndTypecheck(p) }
   }
 }

@@ -4,7 +4,7 @@ import com.raccoonlang.Value.{ConstructorHead, VBinder, VCtor, VPi}
 import com.raccoonlang._
 
 object ConstructorOps {
-  final case class FreshCtorSpine(head: ConstructorHead, args: Vector[Value], tpe: Value) {
+  final case class FreshCtorSpine(head: ConstructorHead, args: Vector[Value], tpe: Value, env: RuntimeEnv) {
     def fields: Vector[Value] = args.drop(head.numErased)
 
     lazy val synDeps: DepSet = {
@@ -20,7 +20,8 @@ object ConstructorOps {
       FreshCtorSpine(
         ValueOps.materialize(head, eqStore).asInstanceOf[ConstructorHead],
         args.map(arg => ValueOps.materialize(arg, eqStore)),
-        ValueOps.materialize(tpe, eqStore)
+        ValueOps.materialize(tpe, eqStore),
+        ValueOps.materializeEnv(env, eqStore)
       )
   }
 
@@ -34,7 +35,8 @@ object ConstructorOps {
 
     def makeCtor(allArgs: Vector[Value], resultTy: Value): VCtor = VCtor(head, allArgs, resultTy)
 
-    def freshSpine(allArgs: Vector[Value], resultTy: Value): FreshCtorSpine = FreshCtorSpine(head, allArgs, resultTy)
+    def freshSpine(allArgs: Vector[Value], resultTy: Value, env: RuntimeEnv): FreshCtorSpine =
+      FreshCtorSpine(head, allArgs, resultTy, env)
 
     def projectedFieldType(
         base: Value,
@@ -44,11 +46,13 @@ object ConstructorOps {
         normalizerMap: Normalizers.NormalizerMap
     )(implicit eqStore: EqStore): Value = {
       val fresh = ConstructorOps.freshSpine(head)
-      val erasedDeps = fresh.args.take(erasedCount).foldLeft(DepSet.empty) { case (deps, arg) =>
-        deps ++ arg.synDeps
-      }
-      val refined = ValueEquivalence.unify(fresh.tpe, baseType, eqStore.allow(erasedDeps), normalizerMap)
+      val refined = ValueEquivalence.unify(fresh.tpe, baseType, eqStore.allow(fresh.tpe.synDeps), normalizerMap)
       val refinedFresh = fresh.materialize(refined)
+
+      def bindRefinedCaptures(env: RuntimeEnv, binder: VBinder): RuntimeEnv =
+        binder.captures.foldLeft(env) { case (curEnv, capture) =>
+          curEnv.putLocal(capture.localRef, refinedFresh.env(capture.localRef))
+        }
 
       var ctorEnv = pi.env
       pi.binders.take(erasedCount).zip(refinedFresh.args.take(erasedCount)).foreach { case (binder, arg) =>
@@ -56,12 +60,14 @@ object ConstructorOps {
       }
 
       fieldBinders.take(fieldIdx).foreach { binder =>
-        val (previousFieldTy, _) = TypePatternOps.openBinderType(ctorEnv, binder.ty)
+        val previousFieldEnv = bindRefinedCaptures(ctorEnv, binder)
+        val previousFieldTy = Interpreter.evalTypeTerm(binder.expectedTy, previousFieldEnv)
         val previousField = Interpreter.evalSelect(base, binder.name, locationId, previousFieldTy)
-        ctorEnv = TypePatternOps.bindValue(ctorEnv, binder, previousField)
+        ctorEnv = previousFieldEnv.putLocal(binder.localRef, previousField)
       }
 
-      TypePatternOps.openBinderType(ctorEnv, fieldBinders(fieldIdx).ty)._1
+      val fieldEnv = bindRefinedCaptures(ctorEnv, fieldBinders(fieldIdx))
+      Interpreter.evalTypeTerm(fieldBinders(fieldIdx).expectedTy, fieldEnv)
     }
   }
 
@@ -80,8 +86,8 @@ object ConstructorOps {
       case Some(shape) =>
         val fresh = BinderOps.freshen(shape.pi)
         val args = shape.pi.binders.map(binder => fresh(binder.localRef))
-        shape.freshSpine(args, shape.pi.codomain(fresh, eqStore))
+        shape.freshSpine(args, shape.pi.codomain(fresh, eqStore), fresh)
 
-      case None => FreshCtorSpine(head, Vector.empty, head.tpe)
+      case None => FreshCtorSpine(head, Vector.empty, head.tpe, RuntimeEnv(Map.empty, Vector.empty))
     }
 }

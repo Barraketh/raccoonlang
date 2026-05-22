@@ -373,7 +373,7 @@ class PropTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive IsZero (n: Nat) : Prop
+        |inductive IsZero indices (n: Nat) : Prop
         | | intro : IsZero(Nat.zero)
         |
         |def absurdSucc (n: Nat)(h: IsZero(Nat.succ(n))): Nat := {
@@ -391,7 +391,7 @@ class PropTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive IdxWrap (A: Type)(x: A) : Prop
+        |inductive IdxWrap (A: Type) indices (x: A) : Prop
         | | intro {A: Type} (y: A) : IdxWrap(A, y)
         |
         |def unwrapIdx (n: Nat)(h: IdxWrap(Nat, n)): Nat := {
@@ -415,7 +415,7 @@ class PropTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Shape (n: Nat) : Prop
+        |inductive Shape indices (n: Nat) : Prop
         | | zeroCase : Shape(Nat.zero)
         | | succCase (m: Nat) : Shape(Nat.succ(m))
         |
