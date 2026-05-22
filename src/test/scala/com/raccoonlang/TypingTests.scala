@@ -238,6 +238,40 @@ class TypingTests extends munit.FunSuite {
     typecheckDecls(p)
   }
 
+  test("definition body can start on next line and wrap applications") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |def apply
+        |  (f:
+        |    Nat ->
+        |    Nat
+        |  )
+        |  (x: Nat)
+        |  : Nat :=
+        |  f(
+        |    x
+        |  )
+        |
+        |def useApply : Nat :=
+        |  apply(
+        |    fun (n: Nat): Nat =>
+        |      n,
+        |    Nat.zero
+        |  )
+        |
+        |{
+        |  useApply
+        |}
+        |""".stripMargin
+
+    val res = runProgram(p)
+    assertEquals(toShape(res), zeroS)
+  }
+
   test("nullary top-level def body must match declared type") {
     val p =
       """
@@ -245,7 +279,7 @@ class TypingTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |opaque def bad : Nat := Type
+        |def bad : Nat := Type
         |""".stripMargin
 
     intercept[TypeMismatch] {
@@ -260,7 +294,7 @@ class TypingTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |def bad : Nat := Type
+        |opaque def bad : Nat := Type
         |""".stripMargin
 
     intercept[TypeMismatch] {

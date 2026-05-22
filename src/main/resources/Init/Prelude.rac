@@ -424,7 +424,12 @@ namespace Option {
   }
 }
 
-def instance optionBEq [beqA: BEq($A)]: BEq(Option(A)) := BEq.mk(Option(A), fun (x: Option(A))(y: Option(A)): Bool => Option.beq(beqA, x, y))
+def instance optionBEq [beqA: BEq($A)]: BEq(Option(A)) :=
+  BEq.mk(
+    Option(A),
+    fun (x: Option(A))(y: Option(A)): Bool =>
+      Option.beq(beqA, x, y)
+  )
 
 namespace List {
   stable def beq [beqA: BEq($A)](xs: List(A))(ys: List(A)): Bool decreases structural(xs) := {
@@ -442,13 +447,27 @@ namespace List {
   }
 }
 
-def instance listBEq [beqA: BEq($A)]: BEq(List(A)) := BEq.mk(List(A), fun (xs: List(A))(ys: List(A)): Bool => List.beq(beqA, xs, ys))
+def instance listBEq [beqA: BEq($A)]: BEq(List(A)) :=
+  BEq.mk(
+    List(A),
+    fun (xs: List(A))(ys: List(A)): Bool =>
+      List.beq(beqA, xs, ys)
+  )
 
 namespace Prod {
-  def beq [beqA: BEq($A)][beqB: BEq($B)](x: Prod(A, B))(y: Prod(A, B)): Bool := Bool.and(BEq.beq(beqA, Prod.fst(x), Prod.fst(y)), BEq.beq(beqB, Prod.snd(x), Prod.snd(y)))
+  def beq [beqA: BEq($A)][beqB: BEq($B)](x: Prod(A, B))(y: Prod(A, B)): Bool :=
+    Bool.and(
+      BEq.beq(beqA, Prod.fst(x), Prod.fst(y)),
+      BEq.beq(beqB, Prod.snd(x), Prod.snd(y))
+    )
 }
 
-def instance prodBEq [beqA: BEq($A)][beqB: BEq($B)]: BEq(Prod(A, B)) := BEq.mk(Prod(A, B), fun (x: Prod(A, B))(y: Prod(A, B)): Bool => Prod.beq(beqA, beqB, x, y))
+def instance prodBEq [beqA: BEq($A)][beqB: BEq($B)]: BEq(Prod(A, B)) :=
+  BEq.mk(
+    Prod(A, B),
+    fun (x: Prod(A, B))(y: Prod(A, B)): Bool =>
+      Prod.beq(beqA, beqB, x, y)
+  )
 
 struct DecidableEq (A: Sort($u)) : Sort(Level.max(Level.one, u))
  | mk {A: Sort($u)} (decEq: (a: A) -> (b: A) -> Decidable(Eq(A, a, b))) : DecidableEq(A)
