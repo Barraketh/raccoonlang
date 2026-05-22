@@ -22,7 +22,7 @@ class QuotientTests extends munit.FunSuite {
   case class SApp(head: Shape, args: List[Shape]) extends Shape
 
   private def toShape(v: Value): Shape = v match {
-    case Value.ConstructorHead(n, _, _, _, _) => SConst(n)
+    case Value.ConstructorHead(n, _, _, _) => SConst(n)
     case ctor @ Value.VCtor(h, _, _) =>
       val fields = ctor.fields
       if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))

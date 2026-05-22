@@ -183,31 +183,9 @@ object TypeChecker {
 
     if (!meta.isStruct) throw NotAStruct(indName)
 
-    env(meta.constructorNames.head) match {
-      case head: ConstructorHead =>
-        if (!head.isStruct) throw NotAStruct(indName)
-        val shape = ConstructorOps.ConstructorShape.require(head)
-        val fieldIdx = shape.fieldBinders.indexWhere(_.name == field)
-        if (fieldIdx < 0) throw NotFound(field)
-
-        val resultTy = shape.projectedFieldType(baseValue, vType, fieldIdx, span.nodeId, env.normalizers)
-        if ((resultTy.synDeps -- (env.allDeps ++ baseValue.synDeps ++ vType.synDeps)).nonEmpty)
-          throw CannotQuoteValue(resultTy, "escaping variable", Some(span))
-
-        val scrut = Interpreter.resolveInEqStore(baseValue).value
-        checkPropElimination(
-          indName,
-          vType,
-          resultTy,
-          computeReachableCtors(scrut, vType, indName, meta.constructorNames, env),
-          env.normalizers,
-          span
-        )
-
-        Interpreter.evalSelect(baseValue, field, span.nodeId, resultTy)
-
-      case _ => throw NotFound(meta.constructorNames.head)
-    }
+    val selectorName = s"$indName.$field"
+    val selector = env.find(selectorName).getOrElse(throw NotFound(selectorName, Some(span)))
+    checkApplyValue(selector, Vector(baseValue), env.normalizers)
   }
 
   private final case class ReachableCtor(

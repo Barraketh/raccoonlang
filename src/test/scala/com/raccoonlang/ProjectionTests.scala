@@ -42,7 +42,7 @@ class ProjectionTests extends munit.FunSuite {
   case class SApp(head: Shape, args: List[Shape]) extends Shape
 
   private def toShape(v: Value): Shape = v match {
-    case Value.ConstructorHead(n, _, _, _, _) => SConst(n)
+    case Value.ConstructorHead(n, _, _, _) => SConst(n)
     case ctor @ Value.VCtor(h, _, _) =>
       val fields = ctor.fields
       if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))
@@ -376,7 +376,7 @@ class ProjectionTests extends munit.FunSuite {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[UnificationFailed] { Interpreter.run(core, Prelude.test) }
+        intercept[TypeMismatch] { Interpreter.run(core, Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
@@ -419,14 +419,13 @@ class ProjectionTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value, Prelude.test)
-        intercept[InvalidErasedConstructorBinder] { Interpreter.run(core, Prelude.test) }
+        intercept[InvalidErasedConstructorBinder] { Elaborator.elab(value, Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }
 
-  test("negative: repeated projection does not synthesize a stable hidden struct witness") {
+  test("negative: struct selector is rejected when a field has hidden dependencies") {
     val p =
       """
         |inductive Nat : Type
@@ -447,8 +446,7 @@ class ProjectionTests extends munit.FunSuite {
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value, Prelude.test)
-        intercept[CannotQuoteValue] { Interpreter.run(core, Prelude.test) }
+        intercept[NotFound] { Elaborator.elab(value, Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }

@@ -101,9 +101,7 @@ object Interpreter {
     evalPi(pi, env, pi.binders.map(TypePatternOps.toVBinder))
 
   def evalTypeTerm[E <: EnvLike[E]](tt: ElabAst.TypeTerm, env: E)(implicit meta: EqStore): Value = tt match {
-    case ref: ETerm.Ref => evalRef(ref, env)
-    case ETerm.Select(base, field, resultTy, span) =>
-      evalSelect(evalTerm(base, env), field, span.nodeId, evalTypeTerm(resultTy, env))
+    case ref: ETerm.Ref         => evalRef(ref, env)
     case ETerm.App(fn, args, _) => evalApplyTerm(fn, args, env)
     case pi: ETerm.Pi           => evalPi(pi, env)
   }
@@ -134,6 +132,11 @@ object Interpreter {
                 b match {
                   case VBlockedApp(VLam(_, _, true, _), _, _, _) => res
                   case _                                         => VBlockedApp(fn0, vArgs, b.tpe, b.blockerId)
+                }
+              case (true, stuck: VStuckThunk) =>
+                lam.id match {
+                  case ValueId.Const(name) => VApp(VConst(name, Symbol, lam.tpe), vArgs, stuck.tpe)
+                  case _                   => res
                 }
               case _ => res
             }
@@ -192,8 +195,6 @@ object Interpreter {
 
   private def forceThunk(thunk: VBlockedThunk)(implicit eqStore: EqStore): Value =
     thunk.body match {
-      case ThunkBody.Select(base, field, locationId) =>
-        evalSelect(base, field, locationId, thunk.tpe)
       case ThunkBody.Match(term, env) => evalMatch(term, env)
     }
 
@@ -213,8 +214,6 @@ object Interpreter {
   def evalTerm[E <: EnvLike[E]](term: ElabAst.Term, env: E)(implicit eqStore: EqStore): Value = {
     try {
       term match {
-        case ETerm.Select(base, field, resultTy, span) =>
-          evalSelect(evalTerm(base, env), field, span.nodeId, evalTypeTerm(resultTy, env))
         case ETerm.App(fn, args, _) => evalApplyTerm(fn, args, env)
         case tt: ElabAst.TypeTerm   => evalTypeTerm(tt, env)
         case l: ETerm.Lam           => evalLam(l, env)
@@ -223,40 +222,6 @@ object Interpreter {
       }
     } catch {
       case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, term.span)
-    }
-  }
-
-  def evalSelect(
-      v: Value,
-      field: String,
-      locationId: AstNodeId,
-      resultTy: => Value
-  )(implicit
-      eqStore: EqStore
-  ): Value = {
-    val v0 = resolve(v)
-    v0 match {
-      case ctor @ VCtor(head, _, _) =>
-        if (!head.isStruct) throw NotAStruct(head.name)
-
-        val fieldBinders = ConstructorOps.ConstructorShape.require(head).fieldBinders
-        val idx = fieldBinders.indexWhere(_.name == field)
-        val fields = ctor.fields
-        if (idx >= 0 && idx < fields.length && fieldBinders(idx).name != "_") resolve(fields(idx))
-        else throw NotFound(field)
-
-      case b: Blocker =>
-        val head = VConst(s"select.$field", Symbol, KernelObject)
-        val id = ValueId.LocalId(AstNodeId(None, 0), Vector(head, v0))
-        VBlockedThunk(
-          ThunkBody.Select(v, field, locationId),
-          id,
-          resultTy,
-          b.blockerId
-        )
-      case _ =>
-        val head = VConst(s"select.$field", Symbol, KernelObject)
-        VApp(head, Vector(v), resultTy)
     }
   }
 

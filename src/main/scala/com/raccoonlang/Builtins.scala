@@ -47,11 +47,11 @@ private object Builtins {
       }
   }
 
-  private final case class Constructor(numErased: Int, isStruct: Boolean = false) extends Entry {
+  private final case class Constructor(numErased: Int) extends Entry {
     override def instantiate(name: String, tpe: Value, span: Span): Value =
       tpe match {
         case pi: VPi if numErased <= pi.binders.length =>
-          ConstructorHead(name, numErased, pi.binders.length, pi, isStruct)
+          ConstructorHead(name, numErased, pi.binders.length, pi)
         case pi: VPi =>
           throw ArityMismatch(numErased, pi.binders.length, Some(span))
         case other => throw CannotApplyNonFunction(other, Some(span))

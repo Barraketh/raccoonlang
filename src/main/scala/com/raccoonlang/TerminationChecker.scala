@@ -140,8 +140,7 @@ object TerminationChecker {
         case ctor: VCtor => first(ctor.args).orElse(loop(ctor.tpe))
         case neutral: NeutralThunk =>
           (neutral.body match {
-            case ThunkBody.Select(base, _, _) => loop(base)
-            case ThunkBody.Match(_, env)      => inRuntimeEnv(env)
+            case ThunkBody.Match(_, env) => inRuntimeEnv(env)
           })
             .orElse(inId(neutral.id))
             .orElse(loop(neutral.tpe))
@@ -159,7 +158,7 @@ object TerminationChecker {
           inRuntimeEnv(pi.env)
             .orElse(inId(pi.id))
             .orElse(loop(pi.tpe))
-        case ConstructorHead(_, _, _, tpe, _)                                  => loop(tpe)
+        case ConstructorHead(_, _, _, tpe)                                     => loop(tpe)
         case n: Normalizer                                                     => first(n.dependencies)
         case _: Universe | _: Level | LevelTpe | NormalizerType | KernelObject => None
       }

@@ -261,6 +261,299 @@ object Elaborator {
       case _ => None
     }
 
+  private def expandStructSelectors(commands: Vector[SA.Command]): Vector[SA.Command] =
+    commands.flatMap {
+      case decl: SA.Command.Decl.InductiveDecl =>
+        structSelectorNamespace(decl) match {
+          case Some(selectors) => Vector(decl, selectors)
+          case None            => Vector(decl)
+        }
+
+      case SA.Command.Namespace(path, body, span) =>
+        Vector(SA.Command.Namespace(path, expandStructSelectors(body), span))
+
+      case SA.Command.Block(body, span) =>
+        Vector(SA.Command.Block(expandStructSelectors(body), span))
+
+      case other => Vector(other)
+    }
+
+  private def checkConstructorParamDiscipline(
+      header: SA.Command.InductiveHeader,
+      ctor: SA.Command.ConstructorDecl,
+      ctorName: String
+  ): Unit = {
+    val paramNames = header.params.map(_.name).toSet
+    val indexNames = header.indices.map(_.name).toSet
+
+    ctor.erasedBinders.foldLeft(Set.empty[String]) { case (seen, binder) =>
+      if (!paramNames.contains(binder.name)) {
+        val reason =
+          if (indexNames.contains(binder.name)) "indices must be passed through constructor fields or type patterns"
+          else if (header.params.isEmpty) "this inductive has no params"
+          else s"expected one of ${header.params.map(_.name).mkString(", ")}"
+        throw InvalidErasedConstructorBinder(ctorName, binder.name, reason, Some(binder.span))
+      }
+      if (seen.contains(binder.name))
+        throw InvalidErasedConstructorBinder(ctorName, binder.name, "duplicate erased parameter", Some(binder.span))
+      seen + binder.name
+    }
+
+    ctor.fields.find(field => paramNames.contains(field.name)).foreach { field =>
+      throw InvalidErasedConstructorBinder(
+        ctorName,
+        field.name,
+        "constructor fields named like inductive params must be erased",
+        Some(field.span)
+      )
+    }
+
+    val fieldCaptures = ctor.fields.flatMap(field => binderTypeCaptureNames(field.ty))
+
+    header.params.foreach { param =>
+      val erasedWitnesses = ctor.erasedBinders.filter(_.name == param.name)
+      val captureWitnesses = fieldCaptures.filter(_ == param.name)
+
+      val witnessCount = erasedWitnesses.length + captureWitnesses.length
+      if (witnessCount != 1)
+        throw InvalidErasedConstructorBinder(
+          ctorName,
+          param.name,
+          "expected exactly one erased binder or type-pattern capture for this inductive parameter",
+          Some(ctor.span)
+        )
+    }
+  }
+
+  private def binderTypeCaptureNames(binderType: SA.BinderType): Vector[String] =
+    binderType match {
+      case SA.BinderType.TypePattern(tp, _) => typePatternCaptureNames(tp)
+      case SA.BinderType.ConstrainedCapture(name, constraint, _) =>
+        typePatternCaptureNames(constraint) :+ name
+    }
+
+  private def typePatternCaptureNames(pattern: SA.TypePattern): Vector[String] =
+    pattern match {
+      case SA.TypePattern.Type(_)          => Vector.empty
+      case SA.TypePattern.Capture(name, _) => Vector(name)
+      case SA.TypePattern.App(_, args, _)  => args.flatMap(typePatternCaptureNames)
+    }
+
+  private def structSelectorNamespace(decl: SA.Command.Decl.InductiveDecl): Option[SA.Command.Namespace] = {
+    if (!decl.isStruct || decl.ctors.isEmpty) return None
+
+    val header = decl.header
+    val ctor = decl.ctors.head
+    val fields = ctor.fields.filter(_.name != "_")
+    if (fields.isEmpty) return None
+
+    val usedNames = (header.binders ++ ctor.erasedBinders ++ ctor.fields).map(_.name).toSet
+    val selfName = freshGeneratedName("__self", usedNames)
+    val selfSpan = header.span
+    val selfType = {
+      val head = SA.Term.Ident(header.name, header.span)
+      val args = header.binders.map(binder => SA.TypePattern.Capture(binder.name, binder.span))
+      if (args.isEmpty) SA.TypePattern.Type(head)
+      else SA.TypePattern.App(head, args, header.span)
+    }
+    val selfBinder =
+      SA.Binder(selfName, SA.BinderType.TypePattern(selfType, selfSpan), selfSpan)
+
+    val selectors =
+      fields.zipWithIndex.map { case (field, fieldIdx) =>
+        val previousFields = fields.take(fieldIdx).map(_.name).toSet
+        val resultTy = selectorResultType(header.name, selfName, field.ty, previousFields, field.span)
+        val selectorHeader =
+          SA.Command.DeclHeader(
+            field.name,
+            SA.FuncHeader(Vector(selfBinder), resultTy, Span(selfSpan.start, resultTy.span.end, selfSpan.source)),
+            field.span
+          )
+        val body =
+          SA.Term.Match(
+            SA.Term.Ident(selfName, selfSpan),
+            Some(resultTy),
+            Vector(
+              SA.Term.Case(
+                Vector(header.name, ctor.name),
+                useShortName = false,
+                ctor.fields.map(_.name),
+                SA.Term.Ident(field.name, field.span),
+                field.span
+              )
+            ),
+            field.span
+          )
+
+        SA.Command.Decl.ConstDecl(
+          Some(UnfoldStrategy.Stable),
+          selectorHeader,
+          decreases = None,
+          SA.ConstBody.TermBody(body),
+          field.span
+        )
+      }
+
+    Some(SA.Command.Namespace(Vector(header.name), selectors, header.span))
+  }
+
+  @tailrec
+  private def freshGeneratedName(base: String, used: Set[String], suffix: Int = 0): String = {
+    val candidate = if (suffix == 0) base else s"$base$suffix"
+    if (!used.contains(candidate)) candidate else freshGeneratedName(base, used, suffix + 1)
+  }
+
+  private def selectorResultType(
+      structName: String,
+      selfName: String,
+      binderType: SA.BinderType,
+      previousFields: Set[String],
+      span: Span
+  ): SA.TypeTerm =
+    binderType match {
+      case SA.BinderType.TypePattern(tp, _) =>
+        typePatternAsType(structName, selfName, tp, previousFields, span)
+
+      case SA.BinderType.ConstrainedCapture(name, _, captureSpan) =>
+        if (previousFields.contains(name))
+          throw InvalidStruct(structName, s"type capture $name shadows an earlier field", Some(captureSpan))
+        SA.Term.Ident(name, captureSpan)
+    }
+
+  private def rewriteTypeTerm(
+      structName: String,
+      selfName: String,
+      term: SA.TypeTerm,
+      previousFields: Set[String]
+  ): SA.TypeTerm =
+    term match {
+      case SA.Term.Ident(name, span) if previousFields.contains(name) =>
+        selectorCall(structName, name, selfName, span)
+
+      case i: SA.Term.Ident => i
+
+      case SA.Term.TSelect(base, field, span) =>
+        SA.Term.TSelect(rewriteTypeTerm(structName, selfName, base, previousFields), field, span)
+
+      case SA.Term.TApp(fn, args, span) =>
+        SA.Term.TApp(
+          rewriteTypeTerm(structName, selfName, fn, previousFields),
+          args.map(arg => rewriteTypeTerm(structName, selfName, arg, previousFields)),
+          span
+        )
+
+      case SA.Term.Derive(goal, span) =>
+        SA.Term.Derive(rewriteTypeTerm(structName, selfName, goal, previousFields), span)
+
+      case SA.Term.Pi(binder, body, span) =>
+        rejectShadowingCapture(structName, binder, previousFields)
+        SA.Term.Pi(
+          binder.copy(ty = rewriteBinderType(structName, selfName, binder.ty, previousFields)),
+          rewriteTypeTerm(structName, selfName, body, previousFields),
+          span
+        )
+    }
+
+  private def selectorCall(structName: String, fieldName: String, selfName: String, span: Span): SA.TypeTerm =
+    SA.Term.TApp(
+      SA.Term.TSelect(SA.Term.Ident(structName, span), fieldName, span),
+      Vector(SA.Term.Ident(selfName, span)),
+      span
+    )
+
+  private def rewriteBinderType(
+      structName: String,
+      selfName: String,
+      binderType: SA.BinderType,
+      previousFields: Set[String]
+  ): SA.BinderType =
+    binderType match {
+      case SA.BinderType.TypePattern(tp, span) =>
+        SA.BinderType.TypePattern(rewriteTopLevelPattern(structName, selfName, tp, previousFields), span)
+
+      case SA.BinderType.ConstrainedCapture(name, constraint, span) =>
+        if (previousFields.contains(name))
+          throw InvalidStruct(structName, s"type capture $name shadows an earlier field", Some(span))
+        SA.BinderType.ConstrainedCapture(
+          name,
+          rewriteTopLevelPattern(structName, selfName, constraint, previousFields),
+          span
+        )
+    }
+
+  private def rewriteTopLevelPattern(
+      structName: String,
+      selfName: String,
+      pattern: SA.TopLevelTP,
+      previousFields: Set[String]
+  ): SA.TopLevelTP =
+    rewriteTypePattern(structName, selfName, pattern, previousFields) match {
+      case topLevel: SA.TopLevelTP => topLevel
+      case SA.TypePattern.Capture(name, span) =>
+        throw InvalidStruct(structName, s"type capture $name needs an expected type", Some(span))
+    }
+
+  private def rewriteTypePattern(
+      structName: String,
+      selfName: String,
+      pattern: SA.TypePattern,
+      previousFields: Set[String]
+  ): SA.TypePattern =
+    pattern match {
+      case SA.TypePattern.Type(term) =>
+        SA.TypePattern.Type(rewriteTypeTerm(structName, selfName, term, previousFields))
+
+      case SA.TypePattern.App(fn, args, span) =>
+        SA.TypePattern.App(
+          rewriteTypeTerm(structName, selfName, fn, previousFields),
+          args.map(arg => rewriteTypePattern(structName, selfName, arg, previousFields)),
+          span
+        )
+
+      case SA.TypePattern.Capture(name, span) =>
+        if (previousFields.contains(name))
+          throw InvalidStruct(structName, s"type capture $name shadows an earlier field", Some(span))
+        pattern
+    }
+
+  private def typePatternAsType(
+      structName: String,
+      selfName: String,
+      pattern: SA.TypePattern,
+      previousFields: Set[String],
+      span: Span
+  ): SA.TypeTerm =
+    pattern match {
+      case SA.TypePattern.Type(term) =>
+        rewriteTypeTerm(structName, selfName, term, previousFields)
+
+      case SA.TypePattern.App(fn, args, appSpan) =>
+        SA.Term.TApp(
+          rewriteTypeTerm(structName, selfName, fn, previousFields),
+          args.map(arg => typePatternAsType(structName, selfName, arg, previousFields, appSpan)),
+          appSpan
+        )
+
+      case SA.TypePattern.Capture(name, captureSpan) =>
+        if (previousFields.contains(name))
+          throw InvalidStruct(structName, s"type capture $name shadows an earlier field", Some(captureSpan))
+        SA.Term.Ident(name, captureSpan)
+    }
+
+  private def rejectShadowingCapture(
+      structName: String,
+      binder: SA.Binder,
+      previousFields: Set[String]
+  ): Unit = {
+    if (previousFields.contains(binder.name))
+      throw InvalidStruct(structName, s"Pi binder ${binder.name} shadows an earlier field", Some(binder.span))
+
+    val captured = binderTypeCaptureNames(binder.ty).toSet
+    captured.find(previousFields.contains).foreach { name =>
+      throw InvalidStruct(structName, s"type capture $name shadows an earlier field", Some(binder.span))
+    }
+  }
+
   /**
    * Elaborate a dotted path using the local-first rule.
    *
@@ -562,6 +855,9 @@ object Elaborator {
       case c: SurfaceAst.Command.Decl.InductiveDecl =>
         val name = env.qualify(c.header.name)
         val nameText = globalName(name)
+        c.ctors.foreach { ctor =>
+          checkConstructorParamDiscipline(c.header, ctor, globalName(name :+ ctor.name))
+        }
         val headerEnv = env.enterLocalScope
         val (params, envWithParams) = elabBinders(c.header.params, headerEnv)
         val (indices, envWithIndices) = elabBinders(c.header.indices, envWithParams)
@@ -617,15 +913,9 @@ object Elaborator {
   }
 
   private def preludeEnv(prelude: Prelude.Config): ResolveEnv = {
-    val (_, env) = elabCommands(prelude.surface.decls, ResolveEnv.empty)
+    val (_, env) = elabCommands(expandStructSelectors(prelude.surface.decls), ResolveEnv.empty)
     ResolveEnv.empty.copy(root = env.root)
   }
-
-  def elab(surface: SurfaceAst.Command.Decl): CoreAst.Decl =
-    elab(surface, Prelude.default)
-
-  def elab(surface: SurfaceAst.Command.Decl, prelude: Prelude.Config): CoreAst.Decl =
-    elabDecl(surface, preludeEnv(prelude))._1
 
   private[raccoonlang] def elabWithoutPrelude(p: SA.Program): CA.Program =
     elabProgram(p, ResolveEnv.empty)
@@ -641,7 +931,7 @@ object Elaborator {
       throw UnsupportedImport(imp.path.mkString("."), Some(imp.span))
     }
 
-    val (decls, env) = elabCommands(p.decls, startEnv)
+    val (decls, env) = elabCommands(expandStructSelectors(p.decls), startEnv)
     CA.Program(decls, p.body.map(elabTerm(_, env)))
   }
 }

@@ -113,10 +113,6 @@ object Value {
     def synDeps: DepSet
   }
   object ThunkBody {
-    final case class Select(base: Value, field: String, locationId: AstNodeId) extends ThunkBody {
-      override lazy val synDeps: DepSet = base.synDeps
-    }
-
     final case class Match(term: ElabAst.Term.Match, env: RuntimeEnv) extends ThunkBody {
       override lazy val synDeps: DepSet = envDeps(env)
     }
@@ -357,7 +353,7 @@ object Value {
     }
   }
 
-  case class ConstructorHead(name: String, numErased: Int, totalArity: Int, tpe: Value, isStruct: Boolean)
+  case class ConstructorHead(name: String, numErased: Int, totalArity: Int, tpe: Value)
     extends TopLevelValue
     with UpdatableType {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)

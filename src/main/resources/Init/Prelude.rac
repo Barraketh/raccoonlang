@@ -68,12 +68,6 @@ def absurd (h: $a in Prop)(hn: Not(a))(C: Sort($u)): C := False.elim(hn(h), C)
 struct And (a: Prop)(b: Prop) : Prop
  | intro {a: Prop}{b: Prop} (left: a)(right: b) : And(a, b)
 
-namespace And {
-  def left (h: And($a, $b)): a := h.left
-
-  def right (h: And($a, $b)): b := h.right
-}
-
 inductive Or (a: Prop)(b: Prop) : Prop
  | inl {b: Prop} (left: $a in Prop) : Or(a, b)
  | inr {a: Prop} (right: $b in Prop) : Or(a, b)
@@ -88,18 +82,6 @@ namespace Or {
 
 struct Iff (a: Prop)(b: Prop) : Prop
  | intro {a: Prop}{b: Prop} (mp: a -> b)(mpr: b -> a) : Iff(a, b)
-
-namespace Iff {
-  def mp (h: Iff($a, $b))(ha: a): b := {
-    match h returning b with
-    | Iff.intro f g => f(ha)
-  }
-
-  def mpr (h: Iff($a, $b))(hb: b): a := {
-    match h returning a with
-    | Iff.intro f g => g(hb)
-  }
-}
 
 inductive Empty : Type
 
@@ -370,12 +352,6 @@ namespace List {
 struct Prod (A: Sort($u))(B: Sort($v)) : Sort(Level.max(u, v))
  | mk {A: Sort($u)}{B: Sort($v)} (fst: A)(snd: B) : Prod(A, B)
 
-namespace Prod {
-  def fst (p: Prod($A, $B)): A := p.fst
-
-  def snd (p: Prod($A, $B)): B := p.snd
-}
-
 struct Sigma (A: Sort($u))(v: Level)(B: A -> Sort(v)) : Sort(Level.max(u, v))
  | mk {A: Sort($u)}{v: Level}{B: A -> Sort(v)} (fst: A)(snd: B(fst)) : Sigma(A, v, B)
 
@@ -400,11 +376,7 @@ def instance natInhabited : Inhabited(Nat) := Inhabited.mk(Nat, Nat.zero)
 struct BEq (A: Sort($u)) : Sort(Level.max(Level.one, u))
  | mk {A: Sort($u)} (beq: A -> A -> Bool) : BEq(A)
 
-namespace BEq {
-  def beq [self: BEq($A)](a: A)(b: A): Bool := self.beq(a, b)
-}
-
-def beq [self: BEq($A)](a: A)(b: A): Bool := BEq.beq(self, a, b)
+def beq [self: BEq($A)](a: A)(b: A): Bool := BEq.beq(self)(a, b)
 
 def instance unitBEq : BEq(Unit) := BEq.mk(Unit, fun (a: Unit)(b: Unit): Bool => Bool.true)
 
@@ -419,7 +391,7 @@ namespace Option {
     | Option.some xVal => {
       match y returning Bool with
       | Option.none => Bool.false
-      | Option.some yVal => BEq.beq(beqA, xVal, yVal)
+      | Option.some yVal => BEq.beq(beqA)(xVal, yVal)
     }
   }
 }
@@ -442,7 +414,7 @@ namespace List {
     | List.cons x xsTail => {
       match ys returning Bool with
       | List.nil => Bool.false
-      | List.cons y ysTail => Bool.and(BEq.beq(beqA, x, y), List.beq(beqA, xsTail, ysTail))
+      | List.cons y ysTail => Bool.and(BEq.beq(beqA)(x, y), List.beq(beqA, xsTail, ysTail))
     }
   }
 }
@@ -457,8 +429,8 @@ def instance listBEq [beqA: BEq($A)]: BEq(List(A)) :=
 namespace Prod {
   def beq [beqA: BEq($A)][beqB: BEq($B)](x: Prod(A, B))(y: Prod(A, B)): Bool :=
     Bool.and(
-      BEq.beq(beqA, Prod.fst(x), Prod.fst(y)),
-      BEq.beq(beqB, Prod.snd(x), Prod.snd(y))
+      BEq.beq(beqA)(Prod.fst(x), Prod.fst(y)),
+      BEq.beq(beqB)(Prod.snd(x), Prod.snd(y))
     )
 }
 
@@ -473,12 +445,10 @@ struct DecidableEq (A: Sort($u)) : Sort(Level.max(Level.one, u))
  | mk {A: Sort($u)} (decEq: (a: A) -> (b: A) -> Decidable(Eq(A, a, b))) : DecidableEq(A)
 
 namespace DecidableEq {
-  def decEq [self: DecidableEq($A)](a: A)(b: A): Decidable(Eq(A, a, b)) := self.decEq(a, b)
-
-  def toBEq [self: DecidableEq($A)]: BEq(A) := BEq.mk(A, fun (a: A)(b: A): Bool => Decidable.toBool(DecidableEq.decEq(self, a, b)))
+  def toBEq [self: DecidableEq($A)]: BEq(A) := BEq.mk(A, fun (a: A)(b: A): Bool => Decidable.toBool(DecidableEq.decEq(self)(a, b)))
 }
 
-def decEq [self: DecidableEq($A)](a: A)(b: A): Decidable(Eq(A, a, b)) := DecidableEq.decEq(self, a, b)
+def decEq [self: DecidableEq($A)](a: A)(b: A): Decidable(Eq(A, a, b)) := DecidableEq.decEq(self)(a, b)
 
 namespace False {
   def decEq (a: False)(b: False): Decidable(Eq(False, a, b)) := falseElim(a, Decidable(Eq(False, a, b)))
@@ -574,20 +544,12 @@ def instance natDecidableEq : DecidableEq(Nat) := DecidableEq.mk(Nat, Nat.decEq)
 struct LE (A: Sort($u)) : Sort(Level.max(Level.one, u))
  | mk {A: Sort($u)} (le: A -> A -> Prop) : LE(A)
 
-namespace LE {
-  def le [self: LE($A)](a: A)(b: A): Prop := self.le(a, b)
-}
-
-def le [self: LE($A)](a: A)(b: A): Prop := LE.le(self, a, b)
+def le [self: LE($A)](a: A)(b: A): Prop := LE.le(self)(a, b)
 
 struct LT (A: Sort($u)) : Sort(Level.max(Level.one, u))
  | mk {A: Sort($u)} (lt: A -> A -> Prop) : LT(A)
 
-namespace LT {
-  def lt [self: LT($A)](a: A)(b: A): Prop := self.lt(a, b)
-}
-
-def lt [self: LT($A)](a: A)(b: A): Prop := LT.lt(self, a, b)
+def lt [self: LT($A)](a: A)(b: A): Prop := LT.lt(self)(a, b)
 
 def instance natLE : LE(Nat) := LE.mk(Nat, Nat.le)
 
@@ -595,10 +557,6 @@ def instance natLT : LT(Nat) := LT.mk(Nat, Nat.lt)
 
 struct Subsingleton (A: Sort($u)) : Prop
  | intro {A: Sort($u)} (elim: (a: A) -> (b: A) -> Eq(A, a, b)) : Subsingleton(A)
-
-namespace Subsingleton {
-  def elim [h: Subsingleton($A)](a: A)(b: A): Eq(A, a, b) := h.elim(a, b)
-}
 
 def instance propSubsingleton (P: Prop): Subsingleton(P) := Subsingleton.intro(P, fun (a: P)(b: P): Eq(P, a, b) => Eq.refl(a))
 

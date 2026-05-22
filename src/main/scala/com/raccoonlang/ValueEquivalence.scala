@@ -177,7 +177,9 @@ object ValueEquivalence {
     ): EqStore = {
       val m1 = unify(v1.tpe, v2.tpe, meta)
       if (v1.id.captures.length != v2.id.captures.length) throw UnificationFailed(v1, v2) // Sanity check
-      v1.id.captures.zip(v2.id.captures).foldLeft(m1) { case (curMeta, (p1, p2)) => unify(p1, p2, curMeta) }
+      v1.id.captures.zip(v2.id.captures).foldLeft(m1) { case (curMeta, (p1, p2)) =>
+        unify(p1, p2, curMeta)
+      }
     }
 
     // Broad idea: we can unify (v + k) = other as v = other - k.  Everything else fails.
@@ -229,7 +231,9 @@ object ValueEquivalence {
       linkVar(toLink, representative, meta)
     }
 
-    def unify(v1: Value, v2: Value, meta: EqStore)(implicit normalizerMap: Normalizers.NormalizerMap): EqStore = {
+    def unify(v1: Value, v2: Value, meta: EqStore)(implicit
+        normalizerMap: Normalizers.NormalizerMap
+    ): EqStore = {
       val normalizerF = DefEq.getNormalizerF(v1, v2)(meta, normalizerMap)
 
       val a = normalizerF(Interpreter.resolveInEqStore(v1)(meta).value)
@@ -239,7 +243,8 @@ object ValueEquivalence {
 
       (a, b) match {
 
-        case (p1: VPi, p2: VPi) if p1.binders.length == p2.binders.length           => unifyPis(p1, p2, meta)._1
+        case (p1: VPi, p2: VPi) if p1.binders.length == p2.binders.length =>
+          unifyPis(p1, p2, meta)._1
         case (l1: VLam, l2: VLam) if l1.tpe.binders.length == l2.tpe.binders.length =>
           // We know that the id check failed - falling back to extensional unification
           val (nextMeta, sharedVars) = unifyPis(l1.tpe, l2.tpe, meta)
@@ -248,11 +253,15 @@ object ValueEquivalence {
           unify(res1, res2, nextMeta)
         case (v1: AppliedValue, v2: AppliedValue) if v1.args.length == v2.args.length =>
           val startCtx = unify(v1.head, v2.head, meta)
-          v1.args.zip(v2.args).foldLeft(startCtx) { case (newCtx, (arg1, arg2)) => unify(arg1, arg2, newCtx) }
+          v1.args.zip(v2.args).foldLeft(startCtx) { case (newCtx, (arg1, arg2)) =>
+            unify(arg1, arg2, newCtx)
+          }
 
         case (c1: VCtor, c2: VCtor) if c1.args.length == c2.args.length =>
           val m0 = unify(c1.head, c2.head, meta)
-          val m1 = c1.args.zip(c2.args).foldLeft(m0) { case (cur, (x, y)) => unify(x, y, cur) }
+          val m1 = c1.args.zip(c2.args).foldLeft(m0) { case (cur, (x, y)) =>
+            unify(x, y, cur)
+          }
           unify(c1.tpe, c2.tpe, m1)
 
         case (v1: NeutralThunk, v2: NeutralThunk) if v1.id.nodeId == v2.id.nodeId =>

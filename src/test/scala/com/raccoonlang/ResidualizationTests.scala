@@ -32,8 +32,6 @@ class ResidualizationTests extends munit.FunSuite {
     term match {
       case EA.Term.GlobalRef(n, _) => n == name
       case EA.Term.LocalRef(_, _)  => false
-      case EA.Term.Select(base, _, resultTy, _) =>
-        containsGlobal(base, name) || containsGlobal(resultTy, name)
       case EA.Term.App(fn, args, _) =>
         containsGlobal(fn, name) || args.exists(arg => containsGlobal(arg, name))
       case EA.Term.Pi(binders, out, _, _) =>

@@ -37,38 +37,6 @@ object ConstructorOps {
 
     def freshSpine(allArgs: Vector[Value], resultTy: Value, env: RuntimeEnv): FreshCtorSpine =
       FreshCtorSpine(head, allArgs, resultTy, env)
-
-    def projectedFieldType(
-        base: Value,
-        baseType: Value,
-        fieldIdx: Int,
-        locationId: AstNodeId,
-        normalizerMap: Normalizers.NormalizerMap
-    )(implicit eqStore: EqStore): Value = {
-      val fresh = ConstructorOps.freshSpine(head)
-      val refined = ValueEquivalence.unify(fresh.tpe, baseType, eqStore.allow(fresh.tpe.synDeps), normalizerMap)
-      val refinedFresh = fresh.materialize(refined)
-
-      def bindRefinedCaptures(env: RuntimeEnv, binder: VBinder): RuntimeEnv =
-        binder.captures.foldLeft(env) { case (curEnv, capture) =>
-          curEnv.putLocal(capture.localRef, refinedFresh.env(capture.localRef))
-        }
-
-      var ctorEnv = pi.env
-      pi.binders.take(erasedCount).zip(refinedFresh.args.take(erasedCount)).foreach { case (binder, arg) =>
-        ctorEnv = TypePatternOps.bindValue(ctorEnv, binder, arg)
-      }
-
-      fieldBinders.take(fieldIdx).foreach { binder =>
-        val previousFieldEnv = bindRefinedCaptures(ctorEnv, binder)
-        val previousFieldTy = Interpreter.evalTypeTerm(binder.expectedTy, previousFieldEnv)
-        val previousField = Interpreter.evalSelect(base, binder.name, locationId, previousFieldTy)
-        ctorEnv = previousFieldEnv.putLocal(binder.localRef, previousField)
-      }
-
-      val fieldEnv = bindRefinedCaptures(ctorEnv, fieldBinders(fieldIdx))
-      Interpreter.evalTypeTerm(fieldBinders(fieldIdx).expectedTy, fieldEnv)
-    }
   }
 
   object ConstructorShape {

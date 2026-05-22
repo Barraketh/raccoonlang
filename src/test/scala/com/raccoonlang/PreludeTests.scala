@@ -57,8 +57,8 @@ class PreludeTests extends munit.FunSuite {
         |def fromOr : True := Or.elim(trueOr, True, fun (h: True): True => h, fun (h: False): True => falseElim(h, True))
         |
         |def trueIff : Iff(True, True) := Iff.intro(True, True, fun (h: True): True => h, fun (h: True): True => h)
-        |def iffForward : True := Iff.mp(trueIff, True.intro)
-        |def iffBackward : True := Iff.mpr(trueIff, True.intro)
+        |def iffForward : True := Iff.mp(trueIff)(True.intro)
+        |def iffBackward : True := Iff.mpr(trueIff)(True.intro)
         |def eqForward : True := Eq.mp(Eq.refl(True), True.intro)
         |def eqBackward : True := Eq.mpr(Eq.refl(True), True.intro)
         |
@@ -79,7 +79,7 @@ class PreludeTests extends munit.FunSuite {
 
   test("Prelude propositions and dependent carriers typecheck") {
     typecheckDecls(
-        """
+      """
         |def isTrue (b: Bool): Prop := True
         |def boolFamily (n: Nat): Type := Bool
         |
@@ -225,7 +225,7 @@ class PreludeTests extends munit.FunSuite {
           |  Option.getD(Option.some(Nat.zero), Nat.succ(Nat.zero))
           |}
           |""".stripMargin
-    )
+      )
     assertEquals(ctorName(optionRes), "Nat.zero")
 
     val optionBindRes =
@@ -284,7 +284,7 @@ class PreludeTests extends munit.FunSuite {
           |  derive[Inhabited(Nat)].default
           |}
           |""".stripMargin
-    )
+      )
     assertEquals(ctorName(inhabitedRes), "Nat.zero")
   }
 

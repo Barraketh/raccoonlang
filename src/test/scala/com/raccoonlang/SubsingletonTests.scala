@@ -49,7 +49,7 @@ class SubsingletonTests extends munit.FunSuite {
       runProgram(
         """
           |{
-          |  Subsingleton.elim(derive[Subsingleton(True)], True.intro, True.intro)
+          |  Subsingleton.elim(derive[Subsingleton(True)])(True.intro, True.intro)
           |}
           |""".stripMargin
       )

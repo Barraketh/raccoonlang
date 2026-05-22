@@ -27,8 +27,6 @@ object ValueQuote {
       t match {
         case ElabAst.Term.GlobalRef(_, _)        => t
         case ElabAst.Term.LocalRef(ref, refSpan) => inlineLocal(ref, refSpan)
-        case ElabAst.Term.Select(base, field, resultTy, selectSpan) =>
-          ElabAst.Term.Select(inlineTerm(base), field, inlineTypeTerm(resultTy), selectSpan)
         case ElabAst.Term.App(fn, args, appSpan) =>
           ElabAst.Term.App(inlineTerm(fn), args.map(inlineTerm), appSpan)
         case ElabAst.Term.Pi(binders, out, classifier, piSpan) =>
@@ -67,8 +65,6 @@ object ValueQuote {
             case tt: ElabAst.TypeTerm => tt
             case other                => throw CannotQuoteValue(env(ref), s"$other is not a type term", Some(refSpan))
           }
-        case ElabAst.Term.Select(base, field, resultTy, selectSpan) =>
-          ElabAst.Term.Select(inlineTerm(base), field, inlineTypeTerm(resultTy), selectSpan)
         case ElabAst.Term.App(fn, args, appSpan) =>
           ElabAst.Term.App(inlineTerm(fn), args.map(inlineTerm), appSpan)
         case ElabAst.Term.Pi(binders, out, classifier, piSpan) =>
@@ -147,25 +143,17 @@ object ValueQuote {
         if (
           const.constType == Symbol &&
           const.tpe == KernelObject &&
-          (const.name.startsWith("select.") || const.name.startsWith("match#"))
+          const.name.startsWith("match#")
         ) throw CannotQuoteValue(const, "internal synthetic constant", Some(span))
         else ElabAst.Term.GlobalRef(name, span)
-
-      case VApp(VConst(name, Symbol, KernelObject), Vector(base), tpe)
-          if name.startsWith("select.") && name.length > "select.".length =>
-        quoteSelect(base, name.substring("select.".length), tpe, context, span)
 
       case VApp(head, args, _) =>
         val fn = quoteTerm(head, context, span)
         ElabAst.Term.App(fn, args.map(arg => quoteTerm(arg, context, span)), span)
 
-      case VBlockedThunk(ThunkBody.Select(base, field, _), _, tpe, _) =>
-        quoteSelect(base, field, tpe, context, span)
       case VBlockedThunk(ThunkBody.Match(term, env), _, _, _) =>
         quoteClosedMatch(term, env, context, span)
 
-      case VStuckThunk(ThunkBody.Select(base, field, _), _, tpe) =>
-        quoteSelect(base, field, tpe, context, span)
       case VStuckThunk(ThunkBody.Match(term, env), _, _) =>
         quoteClosedMatch(term, env, context, span)
 
@@ -185,15 +173,6 @@ object ValueQuote {
       case other => throw CannotQuoteValue(other, "no quoted syntax", Some(span))
     }
   }
-
-  private def quoteSelect(
-      base: Value,
-      field: String,
-      resultTy: Value,
-      context: QuoteContext,
-      span: Span
-  )(implicit eqStore: EqStore): ElabAst.Term.Select =
-    ElabAst.Term.Select(quoteTerm(base, context, span), field, quoteType(resultTy, context, span), span)
 
   private def quoteClosedMatch(
       term: ElabAst.Term.Match,

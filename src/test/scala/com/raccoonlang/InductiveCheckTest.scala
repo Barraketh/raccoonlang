@@ -34,7 +34,7 @@ class InductiveCheckTest extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Bad(A: Type) : A
-        | | mk(A: Type): Bad(A)
+        | | mk{A: Type}: Bad(A)
         |
         |""".stripMargin
 
@@ -76,23 +76,6 @@ class InductiveCheckTest extends munit.FunSuite {
         |""".stripMargin
 
     intercept[NonStrictlyPositive] { elabAndTypecheck(p) }
-  }
-
-  test("Strict positivity allows function-valued fields with no visible recursive occurrence") {
-    val p =
-      """
-        |struct Set(A: Type) : Type
-        | | mk {A: Type} (mem: A -> Prop) : Set(A)
-        |
-        |namespace Set {
-        |  def mem (x: $A in Type)(s: Set(A)): Prop := s.mem(x)
-        |
-        |  struct Subset(A: Type)(s: Set(A))(t: Set(A)) : Prop
-        |   | intro {A: Type}{s: Set(A)}{t: Set(A)} (apply: (x: A) -> mem(x, s) -> mem(x, t)) : Subset(A, s, t)
-        |}
-        |""".stripMargin
-
-    elabAndTypecheck(p)
   }
 
   test("Non-strict positivity: aligned universes under other constructor F args (Wrap u (Bad u))") {
@@ -161,6 +144,26 @@ class InductiveCheckTest extends munit.FunSuite {
         |
         |""".stripMargin
 
-    intercept[NonUniformInductiveParam] { elabAndTypecheck(p) }
+    intercept[InvalidErasedConstructorBinder] { elabAndTypecheck(p) }
+  }
+
+  test("Constructor param witness type is checked after elaboration") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Bad (A: Type) : Type
+        | | mk {A: Nat}: Bad(A)
+        |
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[TypeError] { Interpreter.run(core, Prelude.test) }
+      case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
   }
 }
