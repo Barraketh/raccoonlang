@@ -26,10 +26,10 @@ object TypeChecker {
   def checkType(value: Value, tyVal: Value, normalizerMap: Normalizers.NormalizerMap): Unit =
     checkFits(value.tpe, tyVal, normalizerMap)
 
-  def getUniverse(value: Value): Universe = {
+  def getUniverse(value: Value): VSort = {
     value.tpe match {
-      case u: Universe => u
-      case _           => throw NotAType(value.tpe)
+      case u: VSort => u
+      case _        => throw NotAType(value.tpe)
     }
   }
 

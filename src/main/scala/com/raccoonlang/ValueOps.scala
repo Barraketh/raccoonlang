@@ -63,10 +63,10 @@ object ValueOps {
         case other    => throw NotALevel(other)
       }
 
-    private def materializeUniverse(value: Universe)(implicit eqStore: EqStore): Universe =
+    private def materializeUniverse(value: VSort)(implicit eqStore: EqStore): VSort =
       materialize(value) match {
-        case u: Universe => u
-        case other       => throw NotAType(other)
+        case u: VSort => u
+        case other    => throw NotAType(other)
       }
 
     private def materializePi(pi: VPi)(implicit eqStore: EqStore): VPi =

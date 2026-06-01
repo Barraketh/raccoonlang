@@ -80,8 +80,6 @@ object Value {
     }
   }
 
-  sealed trait Universe extends Value
-
   case object LevelTpe extends TopLevelValue {
     override def tpe: Value = TypeTpe
   }
@@ -161,7 +159,7 @@ object Value {
 
   }
 
-  case class VSort(level: Level) extends Universe {
+  case class VSort(level: Level) extends Value {
     override def tpe: Value = VSort(Level.succ(level))
 
     override def synDeps: DepSet = level.synDeps
@@ -201,7 +199,7 @@ object Value {
       codomain: Env => Value,
       synDeps: DepSet,
       id: ValueId,
-      tpe: Universe
+      tpe: VSort
   ) extends Value
     with UpdatableType {
     require(binders.nonEmpty, "VPi requires at least one binder")
@@ -209,8 +207,8 @@ object Value {
     override def toString: String = "VPi"
 
     override def withTpe(tpe: Value): Value = tpe match {
-      case u: Universe => this.copy(tpe = u)
-      case _           => throw WTF(s"Cannot update Pi type to $tpe")
+      case u: VSort => this.copy(tpe = u)
+      case _        => throw WTF(s"Cannot update Pi type to $tpe")
     }
   }
 
