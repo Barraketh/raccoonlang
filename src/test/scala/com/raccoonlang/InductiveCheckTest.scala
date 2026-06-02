@@ -2,13 +2,21 @@ package com.raccoonlang
 
 class InductiveCheckTest extends munit.FunSuite {
 
-  private def elabAndTypecheck(src: String): Unit = {
+  private def elab(src: String): CoreAst.Program =
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value, Prelude.test)
-        Interpreter.run(core, Prelude.test)
+        Elaborator.elab(value, Prelude.test)
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
+
+  private def elabAndRun(src: String): Interpreter.Worlds =
+    elab(src).decls.foldLeft(Interpreter.initialWorlds(Prelude.test)) { case (curWorlds, decl) =>
+      Interpreter.evalDecl(decl, curWorlds)
+    }
+
+  private def elabAndTypecheck(src: String): Unit = {
+    Interpreter.run(elab(src), Prelude.test)
+    ()
   }
 
   test("Inductive type must be a Sort (no Pi): inductive Bad : Nat") {
@@ -165,5 +173,129 @@ class InductiveCheckTest extends munit.FunSuite {
         intercept[TypeError] { Interpreter.run(core, Prelude.test) }
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
+  }
+
+  test("Nested strictly positive: recursive occurrence under positive List parameter") {
+    val p =
+      """
+        |inductive List (A: Type) : Type
+        | | nil {A: Type} : List(A)
+        | | cons {A: Type} (head: A) (tail: List(A)) : List(A)
+        |
+        |inductive Tree : Type
+        | | node (children: List(Tree)) : Tree
+        |
+        |""".stripMargin
+
+    elabAndTypecheck(p)
+  }
+
+  test("Nested non-positive: recursive occurrence under forbidden container parameter") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive BadBox (A: Type) : Type
+        | | mk {A: Type} (f: A -> Nat) : BadBox(A)
+        |
+        |inductive BadTree : Type
+        | | node (children: BadBox(BadTree)) : BadTree
+        |
+        |""".stripMargin
+
+    intercept[NonStrictlyPositive] { elabAndTypecheck(p) }
+  }
+
+  test("Nested non-positive: container parameter contravariant in later family argument") {
+    val p =
+      """
+        |inductive Box (A: Type)(F: A -> Type) : Type
+        | | mk {A: Type}{F: A -> Type} : Box(A, F)
+        |
+        |inductive Bad : Type
+        | | con (x: Box(Bad, $F)) : Bad
+        |
+        |""".stripMargin
+
+    intercept[NonStrictlyPositive] { elabAndTypecheck(p) }
+  }
+
+  test("Nested metadata: dependent family argument tracks its own variable") {
+    val p =
+      """
+        |inductive Box (A: Type)(F: A -> Type) : Type
+        | | mk {A: Type}{F: A -> Type} : Box(A, F)
+        |
+        |""".stripMargin
+
+    elabAndRun(p).checkEnv("Box") match {
+      case Value.VConst(_, Value.Inductive(meta), _) =>
+        assertEquals(meta.positiveArgs, DepSet(1))
+      case other => fail(s"Expected Box to be an inductive head, got $other")
+    }
+  }
+
+  test("Nested non-positive: recursive occurrence in its own family argument") {
+    val p =
+      """
+        |inductive Bad (A: Type) : Type
+        | | con {A: Type} (x: Bad(Bad(A))) : Bad(A)
+        |
+        |""".stripMargin
+
+    intercept[NonStrictlyPositive] { elabAndTypecheck(p) }
+  }
+
+  test("Nested non-positive: recursive occurrence in constructor-valued family argument") {
+    val p =
+      """
+        |inductive BoxType : Sort(Level.succ(Level.one))
+        | | tag (A: Type) : BoxType
+        |
+        |inductive Bad indices (t: BoxType) : Type
+        | | con (anchor: Bad($t)) (x: Bad(BoxType.tag(Bad(t)))) : Bad(t)
+        |
+        |""".stripMargin
+
+    intercept[NonStrictlyPositive] { elabAndTypecheck(p) }
+  }
+
+  test("Nested metadata: unknown type-function head forbids dependent family argument") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        |
+        |inductive Higher (F: Type -> Type) : Type
+        | | mk {F: Type -> Type} (x: F(Nat)) : Higher(F)
+        |
+        |""".stripMargin
+
+    elabAndRun(p).checkEnv("Higher") match {
+      case Value.VConst(_, Value.Inductive(meta), _) =>
+        assertEquals(meta.positiveArgs, DepSet.empty)
+      case other => fail(s"Expected Higher to be an inductive head, got $other")
+    }
+  }
+
+  test("Nested non-positive: opaque dependent family argument type is conservative") {
+    val p =
+      """
+        |struct TypeBox (A: Type) : Sort(Level.succ(Level.one))
+        | | mk {A: Type} (T: Type) : TypeBox(A)
+        |
+        |opaque def typeBox (A: Type): TypeBox(A) := TypeBox.mk(A, A)
+        |
+        |inductive Box (A: Type)(F: (typeBox(A).T)) : Type
+        | | mk {A: Type}{F: (typeBox(A).T)} : Box(A, F)
+        |
+        |inductive Bad : Type
+        | | con (x: Box(Bad, $F)) : Bad
+        |
+        |""".stripMargin
+
+    intercept[NonStrictlyPositive] { elabAndTypecheck(p) }
   }
 }

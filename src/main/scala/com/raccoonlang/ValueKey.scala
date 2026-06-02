@@ -147,12 +147,10 @@ object ValueKey {
       valueIdKey(tag(Tag.StuckThunk), m.id)
     case p: Value.VPi =>
       mixLong(valueIdKey(tag(Tag.Pi), p.id), p.binders.length.toLong)
-    case av: Value.AppliedValue =>
-      mixValues(mixKey(tag(Tag.App), av.head.key), av.args)
     case Value.ConstructorHead(n, _, _, _) =>
       mixString(tag(Tag.ConstructorHead), n)
-    case Value.VCtor(h, args, tpe) =>
-      mixKey(mixValues(mixKey(tag(Tag.Ctor), h.key), args), tpe.key)
+    case av: Value.AppliedValue =>
+      mixKey(mixValues(mixKey(tag(Tag.App), av.head.key), av.args), av.tpe.key)
     case Value.NormalizerType =>
       tag(Tag.NormalizerType)
     case n: Value.Normalizer =>

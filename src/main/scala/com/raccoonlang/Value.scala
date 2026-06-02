@@ -60,9 +60,9 @@ object Value {
   private[raccoonlang] def needsStructuralDefEq(value: Value): Boolean =
     isKnownProof(value) || (value match {
       case _: VPi | _: VLam | _: VStuckThunk | _: VBlockedThunk => true
-      case app: AppliedValue   => app.head.needsStructuralDefEq || app.args.exists(_.needsStructuralDefEq)
-      case VCtor(_, args, tpe) => args.exists(_.needsStructuralDefEq) || tpe.needsStructuralDefEq
-      case _                   => false
+      case app: AppliedValue =>
+        app.head.needsStructuralDefEq || app.args.exists(_.needsStructuralDefEq) || app.tpe.needsStructuralDefEq
+      case _ => false
     })
 
   // A value that will block a computation - specifically, when trying to either match or apply it.
@@ -360,16 +360,8 @@ object Value {
   }
 
   // Constructor value. `args` contains the full constructor application spine, including erased binders.
-  case class VCtor(head: ConstructorHead, args: Vector[Value], tpe: Value) extends Value with UpdatableType {
+  case class VCtor(head: ConstructorHead, args: Vector[Value], tpe: Value) extends AppliedValue with UpdatableType {
     def fields: Vector[Value] = args.drop(head.numErased)
-
-    override lazy val synDeps: DepSet = {
-      val res = DepSet.newBuilder
-      res.unionInPlace(head.synDeps)
-      args.foreach(v => res.unionInPlace(v.synDeps))
-      res.unionInPlace(tpe.synDeps)
-      res.result()
-    }
 
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
@@ -395,8 +387,14 @@ object Value {
   final case class InductiveMeta(
       constructors: Vector[ConstructorMeta],
       familyArity: Int,
-      isStruct: Boolean
+      isStruct: Boolean,
+      positiveArgs: DepSet
   ) {
+    require(
+      positiveArgs.isEmpty || positiveArgs.max < familyArity,
+      "Inductive positive argument indexes must be in range"
+    )
+
     lazy val constructorNames: Vector[String] = constructors.map(_.canonicalName)
   }
 

@@ -137,7 +137,6 @@ object TerminationChecker {
           loop(app.head)
             .orElse(first(app.args))
             .orElse(loop(app.tpe))
-        case ctor: VCtor => first(ctor.args).orElse(loop(ctor.tpe))
         case neutral: NeutralThunk =>
           (neutral.body match {
             case ThunkBody.Match(_, env) => inRuntimeEnv(env)

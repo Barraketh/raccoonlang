@@ -349,6 +349,5 @@ runs GraalVM `native-image`.
 
 ## Next Planned Features
 
-- Less-conservative positivity checking
 - Mutually-recursive inductives
 - Full Prelude quotient API surface

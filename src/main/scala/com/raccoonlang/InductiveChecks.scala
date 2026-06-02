@@ -5,119 +5,168 @@ import com.raccoonlang.Interpreter.Worlds
 import com.raccoonlang.Value._
 import com.raccoonlang.telescope.BinderOps
 
-import scala.annotation.tailrec
-
 object InductiveChecks {
 
   // ------------ Occurrence and Positivity ------------
 
-  private def sameInductiveHead(v: Value, inductiveHead: VConst): Boolean =
-    v match {
-      case VConst(name, Inductive(_), _) => name == inductiveHead.name
-      case _                             => false
-    }
+  private final case class InductiveFamilyInstance(head: VConst, meta: InductiveMeta, args: Vector[Value])
 
-  @tailrec
-  private def collectBlocked(v: Value, acc: Vector[Value] = Vector.empty): (Value, Vector[Value]) =
-    v match {
-      case VBlockedApp(h, args, _, _) => collectBlocked(h, args ++ acc)
-      case h                          => (h, acc)
-    }
+  private object InductiveFamilyValue {
+    def unapply(value: Value): Option[InductiveFamilyInstance] =
+      value match {
+        case c @ VConst(_, Inductive(meta), _) if meta.familyArity == 0 =>
+          Some(InductiveFamilyInstance(c, meta, Vector.empty))
+        case VApp(c @ VConst(_, Inductive(meta), _), args, _) if args.length == meta.familyArity =>
+          Some(InductiveFamilyInstance(c, meta, args))
+        case _ => None
+      }
+  }
 
-  private def occursInductive(v: Value, inductiveHead: VConst)(implicit
-      eqStore: EqStore
-  ): Boolean =
-    v match {
-      // Be conservative: neutral eliminators may hide an occurrence
-      case _: NeutralThunk => true
+  // A positivity target is the thing whose occurrences we are checking.
+  // The traversal only needs two queries:
+  //
+  // - isDirectOccurrence identifies a value that is exactly the target.
+  // - mayOccurIn is the conservative fallback for values we do not inspect
+  //   structurally, such as neutral computations and opaque leaves.
+  private sealed trait PositivityTarget {
+    def isDirectOccurrence(value: Value): Boolean
+    def mayOccurIn(value: Value): Boolean
+  }
 
-      case vb @ VBlockedApp(_, _, resultTy, _) =>
-        val (head0, flatArgs) = collectBlocked(vb)
-        head0 match {
-          case _: Var =>
-            flatArgs.exists(arg => occursInductive(arg, inductiveHead)) || occursInductive(resultTy, inductiveHead)
-          case _ => true
+  private object PositivityTarget {
+    final case class InductiveHead(name: String) extends PositivityTarget {
+      override def isDirectOccurrence(value: Value): Boolean =
+        value match {
+          case VConst(valueName, Inductive(_), _) => valueName == name
+          case _                                  => false
         }
 
-      case h: VConst => sameInductiveHead(h, inductiveHead)
-      case VApp(h, args, _) =>
-        sameInductiveHead(h, inductiveHead) || args.exists(arg => occursInductive(arg, inductiveHead))
-      case pi: VPi =>
-        val freshEnv = BinderOps.freshen(pi)
-        val freshArgs = pi.binders.map(binder => freshEnv(binder.localRef))
-        val allTypes = freshArgs.map(_.tpe) :+ pi.codomain(freshEnv, eqStore)
-        allTypes.exists(v => occursInductive(v, inductiveHead))
-
-      case _: ConstructorHead | _: VCtor => false
-      case _: Level | LevelTpe | _: Normalizer | NormalizerType | _: VLam | _: VSort | _: Var | PropTpe |
-          KernelObject =>
-        false
+      override def mayOccurIn(value: Value): Boolean =
+        value match {
+          case _: NeutralThunk => true
+          case _               => false
+        }
     }
 
-  // Conservative strict positivity:
-  // - in Pi(x : A) -> B, the inductive may not occur in A, and must be strictly positive in B
-  // - a direct recursive occurrence I args is allowed, provided I does not occur in the args
-  // - under any other type constructor application F args, recursive occurrence in args is rejected
-  @tailrec
-  private def isStrictlyPositive(v: Value, inductiveHead: VConst)(implicit
+    final case class LocalVar(id: VarId) extends PositivityTarget {
+      override def isDirectOccurrence(value: Value): Boolean =
+        value match {
+          case Var(_, valueId, _) => valueId == id
+          case _                  => false
+        }
+
+      override def mayOccurIn(value: Value): Boolean = value.synDeps.contains(id)
+    }
+  }
+
+  private def doesNotOccur(target: PositivityTarget, value: Value)(implicit eqStore: EqStore): Boolean =
+    if (target.isDirectOccurrence(value)) false
+    else
+      value match {
+        case _: NeutralThunk => !target.mayOccurIn(value)
+
+        case InductiveFamilyValue(instance) =>
+          if (target.isDirectOccurrence(instance.head)) false
+          else instance.args.forall(arg => doesNotOccur(target, arg))
+
+        case app: AppliedValue =>
+          doesNotOccur(target, app.head) &&
+          app.args.forall(arg => doesNotOccur(target, arg)) &&
+          doesNotOccur(target, app.tpe)
+
+        case pi: VPi =>
+          val freshEnv = BinderOps.freshen(pi)
+          val freshArgs = pi.binders.map(binder => freshEnv(binder.localRef))
+          freshArgs.forall(arg => doesNotOccur(target, arg.tpe)) &&
+          doesNotOccur(target, pi.codomain(freshEnv, eqStore))
+
+        case _: ConstructorHead => !target.mayOccurIn(value)
+
+        case _: Level | LevelTpe | _: Normalizer | NormalizerType | _: VLam | _: VSort | _: Var | _: VConst | PropTpe |
+            KernelObject =>
+          !target.mayOccurIn(value)
+      }
+
+  /**
+   * Checks that the target only occurs positively in value: 1) Does not occur in the domain of any Pis 2) Only appears
+   * in positive args of Inductives
+   */
+  private def occursPositively(target: PositivityTarget, value: Value)(implicit eqStore: EqStore): Boolean =
+    if (target.isDirectOccurrence(value)) true
+    else
+      value match {
+        case _: NeutralThunk => !target.mayOccurIn(value)
+
+        case InductiveFamilyValue(instance) =>
+          if (target.isDirectOccurrence(instance.head)) true
+          else
+            instance.args.zipWithIndex.forall { case (arg, idx) =>
+              if (instance.meta.positiveArgs.contains(idx)) occursPositively(target, arg)
+              else doesNotOccur(target, arg)
+            }
+
+        case app: AppliedValue =>
+          doesNotOccur(target, app.head) &&
+          app.args.forall(arg => doesNotOccur(target, arg)) &&
+          occursPositively(target, app.tpe)
+
+        case pi: VPi =>
+          val freshEnv = BinderOps.freshen(pi)
+          val freshArgs = pi.binders.map(binder => freshEnv(binder.localRef))
+          freshArgs.forall(arg => doesNotOccur(target, arg.tpe)) &&
+          occursPositively(target, pi.codomain(freshEnv, eqStore))
+
+        case _: ConstructorHead => true
+
+        case _: Level | LevelTpe | _: Normalizer | NormalizerType | _: VLam | _: VSort | _: Var | _: VConst | PropTpe |
+            KernelObject =>
+          true
+      }
+
+  /**
+   * Checks that we don't have things of the shape Foo(Foo(A)) as a constructor field of Foo.
+   */
+  private def sameFamilyArgsDoNotContain(inductiveName: String, target: PositivityTarget, value: Value)(implicit
       eqStore: EqStore
   ): Boolean =
-    v match {
-      // Be conservative: neutral eliminators are not strictly positive
+    value match {
       case _: NeutralThunk => false
 
-      case vb @ VBlockedApp(_, _, resultTy, _) =>
-        val (head0, flatArgs) = collectBlocked(vb)
-        head0 match {
-          case _: Var =>
-            !flatArgs.exists(arg => occursInductive(arg, inductiveHead)) && isStrictlyPositive(resultTy, inductiveHead)
-          case _ => false
-        }
+      case InductiveFamilyValue(instance) =>
+        if (instance.head.name == inductiveName)
+          instance.args.forall(arg => doesNotOccur(target, arg))
+        else
+          instance.args.forall(arg => sameFamilyArgsDoNotContain(inductiveName, target, arg))
+
+      case app: AppliedValue =>
+        doesNotOccur(target, app.head) &&
+        app.args.forall(arg => sameFamilyArgsDoNotContain(inductiveName, target, arg)) &&
+        sameFamilyArgsDoNotContain(inductiveName, target, app.tpe)
 
       case pi: VPi =>
         val freshEnv = BinderOps.freshen(pi)
         val freshArgs = pi.binders.map(binder => freshEnv(binder.localRef))
-        !freshArgs.exists(v => occursInductive(v.tpe, inductiveHead)) &&
-        isStrictlyPositive(pi.codomain(freshEnv, eqStore), inductiveHead)
-      case VApp(_, args, _) =>
-        // For any head F (including the inductive), reject if I occurs in any argument.
-        !args.exists(arg => occursInductive(arg, inductiveHead))
+        freshArgs.forall(arg => sameFamilyArgsDoNotContain(inductiveName, target, arg.tpe)) &&
+        sameFamilyArgsDoNotContain(inductiveName, target, pi.codomain(freshEnv, eqStore))
 
-      case _: ConstructorHead | _: VCtor => true
-      case _: Level | LevelTpe | _: Normalizer | NormalizerType | _: VLam | _: VSort | _: Var | _: VConst | PropTpe |
-          KernelObject =>
+      case _: ConstructorHead | _: Level | LevelTpe | _: Normalizer | NormalizerType | _: VLam | _: VSort | _: Var |
+          _: VConst | PropTpe | KernelObject =>
         true
     }
 
-  private def checkParamUniformity(
-      header: InductiveHeader,
-      ctor: ConstructorDecl,
-      outputArgs: Vector[Value],
-      normalizers: Normalizers.NormalizerMap,
-      erasedBinders: Vector[VBinder],
-      erasedEnv: TypecheckEnv,
-      fieldBinders: Vector[VBinder],
-      fieldEnv: TypecheckEnv
-  )(implicit eqStore: EqStore): Unit =
-    header.params.zip(outputArgs).foreach { case (param, outputArg) =>
-      val erasedWitnesses =
-        erasedBinders.collect {
-          case binder if binder.name == param.name => erasedEnv(binder.localRef)
-        }
-      val captureWitnesses =
-        fieldBinders.flatMap { binder =>
-          binder.captures.collect {
-            case capture if capture.localRef.name == param.name => fieldEnv(capture.localRef)
-          }
-        }
-      val witnesses = erasedWitnesses ++ captureWitnesses
-
-      if (witnesses.length != 1)
-        throw NonUniformInductiveParam(header.name, ctor.canonicalName, param.name, outputArg, Some(ctor.resultTy.span))
-
-      if (!ValueEquivalence.defEq(outputArg, witnesses.head, normalizers, propIrrelevant = true))
-        throw NonUniformInductiveParam(header.name, ctor.canonicalName, param.name, outputArg, Some(ctor.resultTy.span))
+  private def positiveArgIndexes(args: Vector[Value], values: Vector[Value])(implicit eqStore: EqStore): DepSet = {
+    val positive = DepSet.newBuilder
+    args.zipWithIndex.foreach { case (arg, idx) =>
+      arg match {
+        case Var(_, id, _) =>
+          val target = PositivityTarget.LocalVar(id)
+          if (values.forall(value => occursPositively(target, value)))
+            positive.add(idx)
+        case _ =>
+      }
     }
+    positive.result()
+  }
 
   private def installInductive(
       decl: Decl.InductiveDecl,
@@ -159,14 +208,16 @@ object InductiveChecks {
     val inductiveTypeCheck = TypeChecker.getType(ty, worlds.checkEnv)
     val inductiveTypeRun = TypeChecker.getType(ty, worlds.runEnv)
 
-    val meta =
+    val initialPositiveArgs = DepSet.from(0 until header.arity)
+    val initialMeta =
       InductiveMeta(
         decl.ctors.map(ctor => ConstructorMeta(ctor.shortName, ctor.canonicalName)),
         decl.header.binders.length,
-        decl.isStruct
+        decl.isStruct,
+        initialPositiveArgs
       )
 
-    val inductivedHead = VConst(name, Inductive(meta), inductiveTypeCheck)
+    val inductivedHead = VConst(name, Inductive(initialMeta), inductiveTypeCheck)
 
     val checkEnvWithInductive = worlds.checkEnv.putGlobal(name, inductivedHead)
     val envWithFamilyBinders = {
@@ -192,12 +243,21 @@ object InductiveChecks {
 
     }
 
+    val recursiveTarget = PositivityTarget.InductiveHead(name)
+    val familyArgs =
+      inductiveTypeCheck match {
+        case pi: VPi => pi.binders.map(binder => envWithFamilyBinders(binder.localRef))
+        case _       => Vector.empty[Value]
+      }
+    var positiveArgs = positiveArgIndexes(familyArgs, familyArgs.map(_.tpe))
+
     decl.ctors.foreach { ctor =>
       val (erasedBinders, _) = BinderOps.toVBinders(ctor.erasedBinders, checkEnvWithInductive)
       val envWithErased = BinderOps.freshen(erasedBinders, checkEnvWithInductive)
       val (fieldBinders, _) = BinderOps.toVBinders(ctor.fields, envWithErased)
       val fieldsEnv = BinderOps.freshen(fieldBinders, envWithErased)
       val fieldVars = fieldBinders.map(binder => fieldsEnv(binder.localRef))
+      val fieldTypes = fieldVars.map(_.tpe)
 
       val outputTpe = TypeChecker.getType(ctor.resultTy, fieldsEnv)
 
@@ -210,16 +270,26 @@ object InductiveChecks {
       }
 
       if (outputArgs.length != header.arity) throw resultErr
-      checkParamUniformity(
-        header,
-        ctor,
-        outputArgs,
-        fieldsEnv.normalizers,
-        erasedBinders,
-        envWithErased,
-        fieldBinders,
-        fieldsEnv
-      )
+
+      // Check param uniformity
+      header.params.zip(outputArgs).foreach { case (param, outputArg) =>
+        val erasedWitnesses = erasedBinders.collect {
+          case binder if binder.name == param.name => envWithErased(binder.localRef)
+        }
+        val captureWitnesses = fieldBinders.flatMap { binder =>
+          binder.captures.collect {
+            case capture if capture.localRef.name == param.name => fieldsEnv(capture.localRef)
+          }
+        }
+        val witnesses = erasedWitnesses ++ captureWitnesses
+        val error =
+          NonUniformInductiveParam(header.name, ctor.canonicalName, param.name, outputArg, Some(ctor.resultTy.span))
+
+        if (witnesses.length != 1) throw error
+
+        if (!ValueEquivalence.defEq(outputArg, witnesses.head, fieldsEnv.normalizers, propIrrelevant = true))
+          throw error
+      }
 
       val constructorUniverse = TypeChecker.getUniverse(outputTpe)
 
@@ -245,7 +315,9 @@ object InductiveChecks {
         }
 
         // 3) Every stored constructor field type must be strictly positive in the inductive
-        if (!isStrictlyPositive(field.tpe, inductivedHead))
+        if (
+          !occursPositively(recursiveTarget, field.tpe) || !sameFamilyArgsDoNotContain(name, recursiveTarget, field.tpe)
+        )
           throw NonStrictlyPositive(
             inductive = name,
             ctor = ctor.canonicalName,
@@ -255,7 +327,11 @@ object InductiveChecks {
           )
       }
 
+      positiveArgs = positiveArgs & positiveArgIndexes(outputArgs, fieldTypes)
+
     }
+
+    val meta = initialMeta.copy(positiveArgs = positiveArgs)
 
     val inductiveHeadCheck = VConst(name, Inductive(meta), inductiveTypeCheck)
     val inductiveHeadRun = VConst(name, Inductive(meta), inductiveTypeRun)

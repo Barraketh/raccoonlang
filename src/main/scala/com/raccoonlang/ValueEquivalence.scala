@@ -129,12 +129,11 @@ object ValueEquivalence {
               case None => false
             }
           }
-        case (v1: AppliedValue, v2: AppliedValue) if v1.args.length == v2.args.length =>
-          defEq(v1.head, v2.head) && v1.args.zip(v2.args).forall { case (arg1, arg2) => defEq(arg1, arg2) }
 
-        case (c1: VCtor, c2: VCtor) if c1.args.length == c2.args.length =>
-          defEq(c1.head, c2.head) &&
-          c1.args.zip(c2.args).forall { case (a, b) => defEq(a, b) }
+        case (v1: AppliedValue, v2: AppliedValue) if v1.args.length == v2.args.length =>
+          defEq(v1.head, v2.head) &&
+          v1.args.zip(v2.args).forall { case (arg1, arg2) => defEq(arg1, arg2) } &&
+          defEq(v1.tpe, v2.tpe) // Important for constructors
 
         case (c1: ConstructorHead, c2: ConstructorHead) if c1.name == c2.name => true
 
@@ -252,17 +251,11 @@ object ValueEquivalence {
           val res2 = Interpreter.runLam(l2, sharedVars)(nextMeta)
           unify(res1, res2, nextMeta)
         case (v1: AppliedValue, v2: AppliedValue) if v1.args.length == v2.args.length =>
-          val startCtx = unify(v1.head, v2.head, meta)
-          v1.args.zip(v2.args).foldLeft(startCtx) { case (newCtx, (arg1, arg2)) =>
+          val m0 = unify(v1.head, v2.head, meta)
+          val m1 = v1.args.zip(v2.args).foldLeft(m0) { case (newCtx, (arg1, arg2)) =>
             unify(arg1, arg2, newCtx)
           }
-
-        case (c1: VCtor, c2: VCtor) if c1.args.length == c2.args.length =>
-          val m0 = unify(c1.head, c2.head, meta)
-          val m1 = c1.args.zip(c2.args).foldLeft(m0) { case (cur, (x, y)) =>
-            unify(x, y, cur)
-          }
-          unify(c1.tpe, c2.tpe, m1)
+          unify(v1.tpe, v2.tpe, m1) // Important for constructors
 
         case (v1: NeutralThunk, v2: NeutralThunk) if v1.id.nodeId == v2.id.nodeId =>
           unifyNeutralThunks(v1, v2, meta)
