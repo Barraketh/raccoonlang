@@ -93,7 +93,7 @@ object CoreAst {
     final case class Derive(goal: TypeTerm, span: Span) extends TypeTerm
 
     // Application in type position
-    final case class TApp(fn: Ref, args: Vector[TypeTerm], span: Span) extends TypeTerm {
+    final case class TApp(fn: TypeTerm, args: Vector[TypeTerm], span: Span) extends TypeTerm {
       require(args.nonEmpty, "Type application requires at least one argument")
     }
 
