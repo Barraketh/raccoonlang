@@ -17,7 +17,7 @@ class CapturedIndexesTests extends munit.FunSuite {
     val capturedRef = CoreAst.LocalRef(0, "captured")
     val binderRef = CoreAst.LocalRef(1, "x")
     val captured = FreshVar.freshVar("captured", valueType)
-    val env = TypecheckEnv.empty.putLocal(capturedRef, captured)
+    val env = Env.empty.putLocal(capturedRef, captured)
     val term = ETerm.Pi(
       Vector(ElabAst.Binder(binderRef, typeBinderType, span)),
       ETerm.App(
@@ -31,15 +31,17 @@ class CapturedIndexesTests extends munit.FunSuite {
 
     val indexes = CapturedIndexes.getCapturedIndexes(term, env)
 
-    assertEquals(env.getLocalsByIndexes(indexes), Vector(captured))
+    assert(indexes.contains(capturedRef.id))
+    assertEquals(indexes.getCardinality, 1)
+    assertEquals(env(capturedRef), captured)
   }
 
   test("captured indexes cannot be read from a smaller env than their cutoff") {
     val ref = CoreAst.LocalRef(0, "x")
     val value = FreshVar.freshVar("x", valueType)
-    val env = TypecheckEnv.empty.putLocal(ref, value)
+    val env = Env.empty.putLocal(ref, value)
     val indexes = CapturedIndexes.getCapturedIndexes(ETerm.LocalRef(ref, span), env)
 
-    intercept[WTF](TypecheckEnv.empty.getLocalsByIndexes(indexes))
+    intercept[WTF](RuntimeEnv.closeForEval(Env.empty, indexes))
   }
 }

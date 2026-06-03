@@ -7,7 +7,7 @@ import com.raccoonlang.telescope.{BinderOps, ConstructorOps}
 import com.raccoonlang.{CoreAst => CA, ElabAst => EA}
 
 object TypeChecker {
-  private final case class CheckedPi(vpi: VPi, bodyEnv: TypecheckEnv, outTy: Value)
+  private final case class CheckedPi(vpi: VPi, bodyEnv: Env, outTy: Value)
   private final case class InductiveFamily(name: String, meta: InductiveMeta)
 
   def sortLeq(a: Value, b: Value)(implicit eqStore: EqStore): Boolean = {
@@ -55,7 +55,7 @@ object TypeChecker {
         throw CannotApplyNonFunction(fn)
     }
 
-  private def checkPi(pi: CA.Term.Pi, env: TypecheckEnv)(implicit
+  private def checkPi(pi: CA.Term.Pi, env: Env)(implicit
       meta: EqStore
   ): CheckedPi = {
     val (vBinders, checkedBinders) = BinderOps.toVBinders(pi.binders, env)
@@ -79,7 +79,7 @@ object TypeChecker {
     CheckedPi(evalPi(checkedPi, env, vBinders), binderEnv, outV)
   }
 
-  def checkRef(ref: CA.Term.Ref, env: TypecheckEnv)(implicit
+  def checkRef(ref: CA.Term.Ref, env: Env)(implicit
       meta: EqStore
   ): Value = {
     val checkedRef = ref match {
@@ -89,7 +89,7 @@ object TypeChecker {
     Interpreter.evalTypeTerm(checkedRef, env)
   }
 
-  def checkTypeTerm(term: CA.TypeTerm, env: TypecheckEnv)(implicit
+  def checkTypeTerm(term: CA.TypeTerm, env: Env)(implicit
       meta: EqStore
   ): Value = term match {
     case t: CA.Term.TApp =>
@@ -106,13 +106,13 @@ object TypeChecker {
     case ref: CA.Term.Ref => checkRef(ref, env)
   }
 
-  def evalTypeTerm(term: CA.TypeTerm, env: TypecheckEnv)(implicit
+  def evalTypeTerm(term: CA.TypeTerm, env: Env)(implicit
       meta: EqStore
   ): Value = checkTypeTerm(term, env)
 
   // Returning (Value, EA.Term) allows us to maintain the 'let' structure while quoting the Body.
   // TODO: The returned term is used in top-level functions, but not in sub-expressions
-  private def checkBody(body: CA.Term.Body, env: TypecheckEnv)(implicit
+  private def checkBody(body: CA.Term.Body, env: Env)(implicit
       meta: EqStore
   ): (Value, EA.Term) = {
     val checkedLets = Vector.newBuilder[EA.Let]
@@ -146,7 +146,7 @@ object TypeChecker {
     (checkedRes, EA.Term.Body(checkedLets.result(), residualRes, body.span))
   }
 
-  private def checkBranch(br: CA.Case, args: Seq[Value], envWithScrut: TypecheckEnv, expectedTy: Value)(implicit
+  private def checkBranch(br: CA.Case, args: Seq[Value], envWithScrut: Env, expectedTy: Value)(implicit
       eqStore: EqStore
   ): EA.Case = {
     if (args.length != br.argRefs.length)
@@ -175,7 +175,7 @@ object TypeChecker {
       case _ => None
     }
 
-  private def checkSelect(baseValue: Value, field: String, span: Span, env: TypecheckEnv)(implicit
+  private def checkSelect(baseValue: Value, field: String, span: Span, env: Env)(implicit
       eqStore: EqStore
   ): Value = {
     val vType = Interpreter.resolveInEqStore(baseValue.tpe).value
@@ -184,7 +184,7 @@ object TypeChecker {
     if (!meta.isStruct) throw NotAStruct(indName)
 
     val selectorName = s"$indName.$field"
-    val selector = env.find(selectorName).getOrElse(throw NotFound(selectorName, Some(span)))
+    val selector = env(selectorName)
     checkApplyValue(selector, Vector(baseValue), env.normalizers)
   }
 
@@ -201,7 +201,7 @@ object TypeChecker {
       scrutTpe: Value,
       inductiveName: String,
       ctorNames: Vector[String],
-      env: TypecheckEnv
+      env: Env
   )(implicit eqStore: EqStore): Vector[ReachableCtor] = {
     def tryUnify(left: Value, right: Value, refinable: DepSet): Option[EqStore] =
       try Some(ValueEquivalence.unify(left, right, eqStore.allow(refinable), env.normalizers))
@@ -281,7 +281,7 @@ object TypeChecker {
         throw PropEliminationRestricted(inductiveName, motiveTy, Some(span))
     }
 
-  private def checkMatch(t: CA.Term.Match, env: TypecheckEnv)(implicit
+  private def checkMatch(t: CA.Term.Match, env: Env)(implicit
       eqStore: EqStore
   ): Value = {
     val scrutChecked = check(t.scrut, env)
@@ -378,7 +378,7 @@ object TypeChecker {
     Interpreter.evalTerm(checkedMatch, env)
   }
 
-  private def checkLam(l: CA.Term.Lam, env: TypecheckEnv)(implicit
+  private def checkLam(l: CA.Term.Lam, env: Env)(implicit
       eqStore: EqStore
   ): VLam = {
     val envWithNormalizers = l.uses.foldLeft(env) { case (curEnv, nextUse) =>
@@ -422,7 +422,7 @@ object TypeChecker {
     Interpreter.evalLam(checkedLam, vpi, env)
   }
 
-  def getType(term: CA.TypeTerm, env: TypecheckEnv)(implicit ctx: EqStore): Value = {
+  def getType(term: CA.TypeTerm, env: Env)(implicit ctx: EqStore): Value = {
     val res = checkTypeTerm(term, env)
     assertType(res)
     res
@@ -439,7 +439,7 @@ object TypeChecker {
     }
   }
 
-  def check(term: CA.Term, env: TypecheckEnv)(implicit
+  def check(term: CA.Term, env: Env)(implicit
       eqStore: EqStore
   ): Value = {
     try {

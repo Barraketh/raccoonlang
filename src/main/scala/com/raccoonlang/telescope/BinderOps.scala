@@ -4,7 +4,7 @@ import com.raccoonlang.Value.{VBinder, VPi}
 import com.raccoonlang._
 
 object BinderOps {
-  def freshen[E <: EnvLike[E]](binders: Vector[VBinder], baseEnv: E)(implicit eqStore: EqStore): E = {
+  def freshen(binders: Vector[VBinder], baseEnv: Env)(implicit eqStore: EqStore): Env = {
     var env = baseEnv
     binders.foreach { binder =>
       env = TypePatternOps.freshenBinder(env, binder)
@@ -13,9 +13,9 @@ object BinderOps {
     env
   }
 
-  def freshen(vpi: VPi)(implicit eqStore: EqStore): RuntimeEnv = freshen(vpi.binders, vpi.env)
+  def freshen(vpi: VPi)(implicit eqStore: EqStore): Env = freshen(vpi.binders, vpi.env)
 
-  def toVBinders(binders: Vector[CoreAst.Binder], baseEnv: TypecheckEnv)(implicit
+  def toVBinders(binders: Vector[CoreAst.Binder], baseEnv: Env)(implicit
       eqStore: EqStore
   ): (Vector[VBinder], Vector[ElabAst.Binder]) = {
     val vBinders = Vector.newBuilder[VBinder]
@@ -32,9 +32,9 @@ object BinderOps {
     (vBinders.result(), checkedBinders.result())
   }
 
-  def instantiateFull(binders: Vector[VBinder], baseEnv: RuntimeEnv, args: Vector[Value])(implicit
+  def instantiateFull(binders: Vector[VBinder], baseEnv: Env, args: Vector[Value])(implicit
       eqStore: EqStore
-  ): RuntimeEnv = {
+  ): Env = {
     if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
 
     binders.zip(args).foldLeft(baseEnv) { case (curEnv, (binder, value)) =>
@@ -44,12 +44,12 @@ object BinderOps {
 
   def checkAndInstantiate(
       binders: Vector[VBinder],
-      runtimeEnv: RuntimeEnv,
+      runtimeEnv: Env,
       args: Vector[Value],
       normalizerMap: Normalizers.NormalizerMap
   )(implicit
       eqStore: EqStore
-  ): RuntimeEnv = {
+  ): Env = {
     if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
 
     binders.zip(args).foldLeft(runtimeEnv) { case (curRuntimeEnv, (binder, value)) =>

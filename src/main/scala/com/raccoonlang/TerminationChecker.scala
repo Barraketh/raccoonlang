@@ -29,7 +29,7 @@ import com.raccoonlang.{CoreAst => CA}
  *     calls out.
  */
 object TerminationChecker {
-  def rawRecursiveSelf(name: String, vpi: VPi, spec: CA.DecreaseSpec, bodyEnv: TypecheckEnv, isStable: Boolean)(implicit
+  def rawRecursiveSelf(name: String, vpi: VPi, spec: CA.DecreaseSpec, bodyEnv: Env, isStable: Boolean)(implicit
       eqStore: EqStore
   ): VLam = {
     def requireInductiveMetric(value: Value, span: Span): Unit = value.tpe.caseOf {
@@ -117,7 +117,7 @@ object TerminationChecker {
       .map(loop)
       .collectFirst { case Some(name) => name }
 
-    def inRuntimeEnv(env: RuntimeEnv): Option[String] = first(env.locals.iterator.flatMap(_.valueOption))
+    def inEnv(env: Env): Option[String] = first(env.locals.iterator.flatMap(_.valueOption))
 
     def inId(id: ValueId): Option[String] = id match {
       case ValueId.LocalId(_, captures) => first(captures)
@@ -139,7 +139,7 @@ object TerminationChecker {
             .orElse(loop(app.tpe))
         case neutral: NeutralThunk =>
           (neutral.body match {
-            case ThunkBody.Match(_, env) => inRuntimeEnv(env)
+            case ThunkBody.Match(_, env) => inEnv(env)
           })
             .orElse(inId(neutral.id))
             .orElse(loop(neutral.tpe))
@@ -149,12 +149,12 @@ object TerminationChecker {
             .orElse(inId(lam.id))
             .orElse {
               lam.body match {
-                case LamBody.Core(_, env) => inRuntimeEnv(env)
+                case LamBody.Core(_, env) => inEnv(env)
                 case LamBody.Native(_, _) => None
               }
             }
         case pi: VPi =>
-          inRuntimeEnv(pi.env)
+          inEnv(pi.env)
             .orElse(inId(pi.id))
             .orElse(loop(pi.tpe))
         case ConstructorHead(_, _, _, tpe)                                     => loop(tpe)

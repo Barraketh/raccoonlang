@@ -76,7 +76,7 @@ object CapturedIndexes {
         }
     }
 
-  def getCapturedIndexes(term: ElabAst.Term, env: EnvLike[_]): RoaringBitmap = {
+  def getCapturedIndexes(term: ElabAst.Term, env: Env): RoaringBitmap = {
     val indexes = new RoaringBitmap
     if (env.locals.nonEmpty) {
       goTerm(term, env.locals.length, indexes)

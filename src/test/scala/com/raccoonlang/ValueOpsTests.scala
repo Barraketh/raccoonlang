@@ -19,6 +19,12 @@ class ValueOpsTests extends munit.FunSuite {
   private def symbolicValue(name: String): VConst =
     VConst(name, Symbol, valueType)
 
+  private final class MappingEnv(val base: Env, mapValue: Value => Value) extends DelegatingEnv {
+    override def updateBase(newBase: Env): Env = new MappingEnv(base = newBase, mapValue)
+
+    override def localBinding(ref: CoreAst.LocalRef): Binding = base.localBinding(ref).mapValue(mapValue)
+  }
+
   private def solve(v: Var, solution: Value): EqStore =
     EqStore.empty.allow(DepSet(v.id)).addLink(v.id, solution)
 
@@ -26,12 +32,11 @@ class ValueOpsTests extends munit.FunSuite {
     val ref = CoreAst.LocalRef(0, "x")
     val x = FreshVar.freshVar("x", valueType)
     val solution = symbolicValue("Solved")
-    val env = TypecheckEnv.empty.putLocal(ref, x, Some("candidate"))
+    val env = Env.empty.putLocal(ref, x, Some("candidate"))
 
     val materialized = ValueOps.materializeEnv(env, solve(x, solution))
 
     assertEquals(materialized(ref), solution)
-    assert(materialized.isInstanceOf[RuntimeEnv])
     assert(!materialized(ref).synDeps.contains(x.id))
   }
 
@@ -39,7 +44,7 @@ class ValueOpsTests extends munit.FunSuite {
     val ref = CoreAst.LocalRef(0, "x")
     val x = FreshVar.freshVar("x", valueType)
     val solution = symbolicValue("Solved")
-    val env = TypecheckEnv.empty.putLocal(ref, x)
+    val env = Env.empty.putLocal(ref, x)
 
     implicit val eqStore: EqStore = solve(x, solution)
     val context = ValueQuote.quoteContext(env)
@@ -54,16 +59,31 @@ class ValueOpsTests extends munit.FunSuite {
     assertQuotesToLocal(ValueQuote.quoteTerm(solution, context, span))
   }
 
+  test("env wrappers can remap locals through evaluation and closure capture") {
+    val ref = CoreAst.LocalRef(0, "x")
+    val original = symbolicValue("Original")
+    val mapped = symbolicValue("Mapped")
+    val base = Env.empty.putLocal(ref, original)
+    val env = new MappingEnv(base, value => if (value == original) mapped else value)
+
+    assertEquals(Interpreter.evalTerm(ETerm.LocalRef(ref, span), env)(EqStore.empty), mapped)
+
+    val capturedIndexes = CapturedIndexes.getCapturedIndexes(ETerm.LocalRef(ref, span), env)
+    val closed = RuntimeEnv.closeForEval(env, capturedIndexes)
+
+    assertEquals(closed(ref), mapped)
+  }
+
   test("closed runtime env prunes unused locals and materialization preserves pruned slots") {
     val keptRef = CoreAst.LocalRef(0, "kept")
     val prunedRef = CoreAst.LocalRef(1, "pruned")
     val kept = FreshVar.freshVar("kept", valueType)
     val pruned = FreshVar.freshVar("pruned", valueType)
     val solution = symbolicValue("KeptSolution")
-    val env = TypecheckEnv.empty.putLocal(keptRef, kept).putLocal(prunedRef, pruned)
+    val env = Env.empty.putLocal(keptRef, kept).putLocal(prunedRef, pruned)
     val capturedIndexes = CapturedIndexes.getCapturedIndexes(ETerm.LocalRef(keptRef, span), env)
 
-    val closed = env.closeForEval(Some(capturedIndexes))
+    val closed = RuntimeEnv.closeForEval(env, capturedIndexes)
 
     assertEquals(closed(keptRef), kept)
     intercept[WTF](closed(prunedRef))
@@ -78,8 +98,7 @@ class ValueOpsTests extends munit.FunSuite {
     val argRef = CoreAst.LocalRef(1, "arg")
     val captured = FreshVar.freshVar("captured", valueType)
     val solution = symbolicValue("CapturedSolution")
-    val env = TypecheckEnv.empty.putGlobal("Type", valueType).putLocal(capturedRef, captured)
-    val runtimeEnv = RuntimeEnv(env.globals, env.locals)
+    val runtimeEnv = Env.empty.putGlobal("Type", valueType).putLocal(capturedRef, captured)
 
     val binder = VBinder(argRef, binderType(typeRef), typeRef, Vector.empty)
     val pi = VPi(
@@ -122,8 +141,8 @@ class ValueOpsTests extends munit.FunSuite {
     val capturedRef = CoreAst.LocalRef(0, "captured")
     val argRef = CoreAst.LocalRef(1, "arg")
     val captured = symbolicValue("Captured")
-    val env = TypecheckEnv.empty.putGlobal("Type", valueType).putLocal(capturedRef, captured)
-    val runtimeEnv = env.closeForEval()
+    val env = Env.empty.putGlobal("Type", valueType).putLocal(capturedRef, captured)
+    val runtimeEnv = RuntimeEnv.closeForEval(env)
 
     val binder = VBinder(argRef, binderType(typeRef), typeRef, Vector.empty)
     val pi = VPi(
@@ -159,7 +178,7 @@ class ValueOpsTests extends munit.FunSuite {
     val capturedRef = CoreAst.LocalRef(0, "captured")
     val argRef = CoreAst.LocalRef(1, "arg")
     val captured = symbolicValue("Captured")
-    val env = TypecheckEnv.empty.putGlobal("Type", valueType).putLocal(capturedRef, captured)
+    val env = Env.empty.putGlobal("Type", valueType).putLocal(capturedRef, captured)
 
     val piTerm = ETerm.Pi(
       Vector(ElabAst.Binder(argRef, binderType(typeRef), span)),
@@ -192,8 +211,7 @@ class ValueOpsTests extends munit.FunSuite {
     val captured = FreshVar.freshVar("captured", valueType)
     val scrut = FreshVar.freshVar("scrut", valueType)
     val solution = symbolicValue("ThunkSolution")
-    val env = TypecheckEnv.empty.putLocal(capturedRef, captured).putLocal(scrutRef, scrut)
-    val runtimeEnv = RuntimeEnv(env.globals, env.locals)
+    val runtimeEnv = Env.empty.putLocal(capturedRef, captured).putLocal(scrutRef, scrut)
     val head = ConstructorHead("C", numErased = 0, totalArity = 0, valueType)
     val ctor = VCtor(head, Vector.empty, valueType)
     val matchTerm = ETerm.Match(
@@ -239,7 +257,7 @@ class ValueOpsTests extends munit.FunSuite {
     val captured = symbolicValue("Captured")
     val unused = FreshVar.freshVar("unused", valueType)
     val scrut = FreshVar.freshVar("scrut", valueType)
-    val env = TypecheckEnv.empty
+    val env = Env.empty
       .putLocal(capturedRef, captured)
       .putLocal(unusedRef, unused)
       .putLocal(scrutRef, scrut)
@@ -260,7 +278,7 @@ class ValueOpsTests extends munit.FunSuite {
     val blocked = Interpreter.evalTerm(matchTerm, env)(EqStore.empty).asInstanceOf[VBlockedThunk]
 
     blocked.body match {
-      case ThunkBody.Match(_, closed: RuntimeEnv) =>
+      case ThunkBody.Match(_, closed) =>
         assertEquals(closed(capturedRef), captured)
         intercept[WTF](closed(unusedRef))
         assertEquals(closed(scrutRef), scrut)

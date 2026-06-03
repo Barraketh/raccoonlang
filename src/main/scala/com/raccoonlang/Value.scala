@@ -91,7 +91,7 @@ object Value {
     final case class LocalId(nodeId: AstNodeId, captures: Vector[Value]) extends ValueId
   }
 
-  private[raccoonlang] def envDeps(env: RuntimeEnv): DepSet = {
+  private[raccoonlang] def envDeps(env: Env): DepSet = {
     val res = DepSet.newBuilder
     env.locals.foreach(_.valueOption.foreach(value => res.unionInPlace(value.synDeps)))
     res.result()
@@ -101,7 +101,7 @@ object Value {
     def synDeps: DepSet
   }
   object LamBody {
-    final case class Core(term: ElabAst.Term.Lam, env: RuntimeEnv) extends LamBody {
+    final case class Core(term: ElabAst.Term.Lam, env: Env) extends LamBody {
       override lazy val synDeps: DepSet = envDeps(env)
     }
     final case class Native(run: (Vector[Value], EqStore) => Value, isRawRecursive: Boolean = false) extends LamBody {
@@ -113,7 +113,7 @@ object Value {
     def synDeps: DepSet
   }
   object ThunkBody {
-    final case class Match(term: ElabAst.Term.Match, env: RuntimeEnv) extends ThunkBody {
+    final case class Match(term: ElabAst.Term.Match, env: Env) extends ThunkBody {
       override lazy val synDeps: DepSet = envDeps(env)
     }
   }
@@ -234,9 +234,9 @@ object Value {
   }
 
   case class VPi(
-      env: RuntimeEnv,
+      env: Env,
       binders: Vector[VBinder],
-      codomain: (RuntimeEnv, EqStore) => Value,
+      codomain: (Env, EqStore) => Value,
       synDeps: DepSet,
       id: ValueId,
       tpe: Universe

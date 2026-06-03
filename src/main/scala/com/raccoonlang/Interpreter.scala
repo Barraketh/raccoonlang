@@ -4,6 +4,7 @@ import com.raccoonlang.CoreAst.{Decl, Program}
 import com.raccoonlang.ElabAst.{Term => ETerm}
 import com.raccoonlang.Value._
 import com.raccoonlang.telescope.{BinderOps, ConstructorOps, TypePatternOps}
+import org.roaringbitmap.RoaringBitmap
 
 /**
  * Interpreter is responsible for evaluating ElabAst -> Value It also contains resolveInEqStore, which continues
@@ -71,16 +72,26 @@ object Interpreter {
 
   def resolveInEqStore(v: Value)(implicit eqStore: EqStore): ResolvedValue = ResolvedValue(resolve(v))
 
-  private def getEnvWithArgs(fnTpe: VPi, baseEnv: RuntimeEnv, args: Vector[Value])(implicit
+  private def getEnvWithArgs(fnTpe: VPi, baseEnv: Env, args: Vector[Value])(implicit
       eqStore: EqStore
-  ): RuntimeEnv =
+  ): Env =
     BinderOps.instantiateFull(fnTpe.binders, baseEnv, args)
 
-  def evalPi[E <: EnvLike[E]](pi: ETerm.Pi, env: E, vBinders: Vector[VBinder]): VPi = {
+  private def captureValues(env: Env, capturedIndexes: RoaringBitmap): Vector[Value] = {
+    val values = Vector.newBuilder[Value]
+    val it = capturedIndexes.getIntIterator
+    while (it.hasNext) {
+      val id = it.next()
+      values += env(CoreAst.LocalRef(id, s"#$id"))
+    }
+    values.result()
+  }
+
+  def evalPi(pi: ETerm.Pi, env: Env, vBinders: Vector[VBinder]): VPi = {
     val capturedIndexes = CapturedIndexes.getCapturedIndexes(pi, env)
-    val captureVals = env.getLocalsByIndexes(capturedIndexes)
+    val captureVals = captureValues(env, capturedIndexes)
     val id = ValueId.LocalId(pi.span.nodeId, captureVals)
-    val closedEnv = env.closeForEval(Some(capturedIndexes))
+    val closedEnv = RuntimeEnv.closeForEval(env, capturedIndexes)
 
     val synDeps = DepSet.newBuilder
     captureVals.foreach { v =>
@@ -97,16 +108,16 @@ object Interpreter {
     )
   }
 
-  private def evalPi[E <: EnvLike[E]](pi: ETerm.Pi, env: E): VPi =
+  private def evalPi(pi: ETerm.Pi, env: Env): VPi =
     evalPi(pi, env, pi.binders.map(TypePatternOps.toVBinder))
 
-  def evalTypeTerm[E <: EnvLike[E]](tt: ElabAst.TypeTerm, env: E)(implicit meta: EqStore): Value = tt match {
+  def evalTypeTerm(tt: ElabAst.TypeTerm, env: Env)(implicit meta: EqStore): Value = tt match {
     case ref: ETerm.Ref         => evalRef(ref, env)
     case ETerm.App(fn, args, _) => evalApplyTerm(fn, args, env)
     case pi: ETerm.Pi           => evalPi(pi, env)
   }
 
-  private def evalRef[E <: EnvLike[E]](ref: ETerm.Ref, env: E)(implicit eqStore: EqStore): Value = {
+  private def evalRef(ref: ETerm.Ref, env: Env)(implicit eqStore: EqStore): Value = {
     val res = ref match {
       case ETerm.GlobalRef(name, _) => env(name)
       case ETerm.LocalRef(local, _) => env(local)
@@ -122,7 +133,7 @@ object Interpreter {
 
     fn.tpe.caseOf {
       case pi: VPi =>
-        val envWithArgs: RuntimeEnv = getEnvWithArgs(pi, pi.env, vArgs)
+        val envWithArgs = getEnvWithArgs(pi, pi.env, vArgs)
         val fn0 = resolve(fn)
         fn0 match {
           case lam @ VLam(_, _, isStable, _) =>
@@ -151,7 +162,7 @@ object Interpreter {
     }
   }
 
-  private def evalApplyTerm[E <: EnvLike[E]](fn: ElabAst.Term, args: Vector[ElabAst.Term], env: E)(implicit
+  private def evalApplyTerm(fn: ElabAst.Term, args: Vector[ElabAst.Term], env: Env)(implicit
       eqStore: EqStore
   ): Value = {
     val vf = evalTerm(fn, env)
@@ -160,16 +171,16 @@ object Interpreter {
     evalApply(vf, vArgs)
   }
 
-  def evalLam[E <: EnvLike[E]](l: ETerm.Lam, vpi: VPi, env: E): VLam = {
+  def evalLam(l: ETerm.Lam, vpi: VPi, env: Env): VLam = {
     val capturedIndexes = CapturedIndexes.getCapturedIndexes(l, env)
     val id = l.name match {
       case Some(funcName) => ValueId.Const(funcName)
       case None =>
-        val captureVals = env.getLocalsByIndexes(capturedIndexes)
+        val captureVals = captureValues(env, capturedIndexes)
         ValueId.LocalId(l.span.nodeId, captureVals)
 
     }
-    VLam(vpi, id, l.isStable, LamBody.Core(l, env.closeForEval(Some(capturedIndexes))))
+    VLam(vpi, id, l.isStable, LamBody.Core(l, RuntimeEnv.closeForEval(env, capturedIndexes)))
   }
 
   def runLam(lam: VLam, args: Vector[Value])(implicit eqStore: EqStore): Value = {
@@ -198,7 +209,7 @@ object Interpreter {
       case ThunkBody.Match(term, env) => evalMatch(term, env)
     }
 
-  private def evalLam[E <: EnvLike[E]](l: ETerm.Lam, env: E)(implicit eqStore: EqStore): VLam = {
+  private def evalLam(l: ETerm.Lam, env: Env)(implicit eqStore: EqStore): VLam = {
     val vpi = evalPi(l.ty, env)
     evalLam(l, vpi, env)
   }
@@ -211,7 +222,7 @@ object Interpreter {
     }
   }
 
-  def evalTerm[E <: EnvLike[E]](term: ElabAst.Term, env: E)(implicit eqStore: EqStore): Value = {
+  def evalTerm(term: ElabAst.Term, env: Env)(implicit eqStore: EqStore): Value = {
     try {
       term match {
         case ETerm.App(fn, args, _) => evalApplyTerm(fn, args, env)
@@ -225,14 +236,14 @@ object Interpreter {
     }
   }
 
-  private def evalMatch[E <: EnvLike[E]](m: ETerm.Match, env: E)(implicit eqStore: EqStore): Value = {
+  private def evalMatch(m: ETerm.Match, env: Env)(implicit eqStore: EqStore): Value = {
     val (head, args) = evalTerm(m.scrut, env).use(scrut =>
       scrut.caseOf {
         case ctor @ VCtor(head, _, _) => (head, ctor.fields)
         case other                    =>
           // We are either blocked or stuck
           val capturedIndexes = CapturedIndexes.getCapturedIndexes(m, env)
-          val matchCaptures: Vector[Value] = env.getLocalsByIndexes(capturedIndexes)
+          val matchCaptures: Vector[Value] = captureValues(env, capturedIndexes)
           val outType: Value = m.motive match {
             case Some(motive) => evalTypeTerm(motive, env)
             case None         => scrut.value.tpe
@@ -240,10 +251,10 @@ object Interpreter {
           val lamId = ValueId.LocalId(m.span.nodeId, matchCaptures)
           other match {
             case b: Blocker =>
-              val thunkBody = ThunkBody.Match(m, env.closeForEval(Some(capturedIndexes)))
+              val thunkBody = ThunkBody.Match(m, RuntimeEnv.closeForEval(env, capturedIndexes))
               return VBlockedThunk(thunkBody, lamId, outType, b.blockerId)
             case _ =>
-              val thunkBody = ThunkBody.Match(m, env.closeForEval(Some(capturedIndexes)))
+              val thunkBody = ThunkBody.Match(m, RuntimeEnv.closeForEval(env, capturedIndexes))
               return VStuckThunk(thunkBody, lamId, outType)
           }
       }
@@ -263,7 +274,7 @@ object Interpreter {
     evalTerm(branch.body, newEnv)
   }
 
-  def evalBody[E <: EnvLike[E]](body: ETerm.Body, env: E)(implicit eqStore: EqStore): Value = {
+  def evalBody(body: ETerm.Body, env: Env)(implicit eqStore: EqStore): Value = {
     val newEnv = body.lets.foldLeft(env) { case (curEnv, l) =>
       val res = evalTerm(l.value, curEnv)
       val withTpe = (res, l.ty) match {
@@ -277,7 +288,7 @@ object Interpreter {
     evalTerm(body.res, newEnv)
   }
 
-  case class Worlds(checkEnv: TypecheckEnv, runEnv: TypecheckEnv)
+  case class Worlds(checkEnv: Env, runEnv: Env)
 
   def evalDecl(decl: Decl, worlds: Worlds): Worlds = {
     implicit val eqStore = EqStore.empty
@@ -347,7 +358,7 @@ object Interpreter {
 
   private[raccoonlang] def initialWorlds(prelude: Prelude.Config = Prelude.default): Worlds = {
     val baseEnv =
-      TypecheckEnv.empty
+      Env.empty
         .putGlobal("Type", TypeTpe)
         .putGlobal("Normalizer", NormalizerType)
         .putGlobal("Level", LevelTpe)

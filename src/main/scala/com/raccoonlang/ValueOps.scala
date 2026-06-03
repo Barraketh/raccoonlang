@@ -5,13 +5,17 @@ import com.raccoonlang.Value._
 object ValueOps {
   def materialize(value: Value, eqStore: EqStore): Value = Materialize.materialize(value)(eqStore)
 
-  def materializeEnv(env: EnvLike[_], eqStore: EqStore): RuntimeEnv = Materialize.materializeEnv(env)(eqStore)
+  def materializeEnv(env: Env, eqStore: EqStore): Env = Materialize.materializeEnv(env)(eqStore)
 
   private object Materialize {
-    def materializeEnv(env: EnvLike[_])(implicit eqStore: EqStore): RuntimeEnv = {
-      val locals = env.locals.map(_.mapValue(materialize(_)))
+    def materializeEnv(env: Env)(implicit eqStore: EqStore): Env = {
+      MappedEnv(env, materialize)
+    }
 
-      RuntimeEnv(env.globals, locals)
+    private final case class MappedEnv(base: Env, mapValue: Value => Value) extends DelegatingEnv {
+      override def updateBase(newBase: Env): Env = copy(base = newBase)
+
+      override def localBinding(ref: CoreAst.LocalRef): Binding = base.localBinding(ref).mapValue(mapValue)
     }
 
     def materialize(value: Value)(implicit eqStore: EqStore): Value = {

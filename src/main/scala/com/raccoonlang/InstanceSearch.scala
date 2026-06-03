@@ -43,14 +43,14 @@ object InstanceSearch {
     resultHeadKey(value.tpe, eqStore).getOrElse(throw InvalidInstance(name, value.tpe))
   }
 
-  def solve(goal: Value, searchEnv: TypecheckEnv)(implicit eqStore: EqStore): Value = {
+  def solve(goal: Value, searchEnv: Env)(implicit eqStore: EqStore): Value = {
     val ctx = new SearchContext
     solveInternal(goal, searchEnv, SearchState.empty, ctx)(
       eqStore.copy(refinable = DepSet.empty)
     )
   }
 
-  private def solveInternal(goal: Value, searchEnv: TypecheckEnv, state: SearchState, ctx: SearchContext)(implicit
+  private def solveInternal(goal: Value, searchEnv: Env, state: SearchState, ctx: SearchContext)(implicit
       eqStore: EqStore
   ): Value = {
     val (head, key) = goal.use(rv => headKeyResolved(rv).getOrElse(throw NoInstanceFound(goal)) -> rv.value.key)
@@ -86,7 +86,7 @@ object InstanceSearch {
   private def tryCandidates(
       candidates: Vector[InstanceCandidate],
       goal: Value,
-      searchEnv: TypecheckEnv,
+      searchEnv: Env,
       state: SearchState,
       ctx: SearchContext
   )(implicit eqStore: EqStore): CandidateSearch = {
@@ -114,7 +114,7 @@ object InstanceSearch {
   private def tryCandidate(
       candidate: InstanceCandidate,
       goal: Value,
-      searchEnv: TypecheckEnv,
+      searchEnv: Env,
       state: SearchState,
       ctx: SearchContext
   )(implicit

@@ -4,7 +4,7 @@ import com.raccoonlang.Value.{ConstructorHead, VBinder, VCtor, VPi}
 import com.raccoonlang._
 
 object ConstructorOps {
-  final case class FreshCtorSpine(head: ConstructorHead, args: Vector[Value], tpe: Value, env: RuntimeEnv) {
+  final case class FreshCtorSpine(head: ConstructorHead, args: Vector[Value], tpe: Value, env: Env) {
     def fields: Vector[Value] = args.drop(head.numErased)
 
     lazy val synDeps: DepSet = {
@@ -35,7 +35,7 @@ object ConstructorOps {
 
     def makeCtor(allArgs: Vector[Value], resultTy: Value): VCtor = VCtor(head, allArgs, resultTy)
 
-    def freshSpine(allArgs: Vector[Value], resultTy: Value, env: RuntimeEnv): FreshCtorSpine =
+    def freshSpine(allArgs: Vector[Value], resultTy: Value, env: Env): FreshCtorSpine =
       FreshCtorSpine(head, allArgs, resultTy, env)
   }
 
@@ -56,6 +56,6 @@ object ConstructorOps {
         val args = shape.pi.binders.map(binder => fresh(binder.localRef))
         shape.freshSpine(args, shape.pi.codomain(fresh, eqStore), fresh)
 
-      case None => FreshCtorSpine(head, Vector.empty, head.tpe, RuntimeEnv(Map.empty, Vector.empty))
+      case None => FreshCtorSpine(head, Vector.empty, head.tpe, Env.empty)
     }
 }

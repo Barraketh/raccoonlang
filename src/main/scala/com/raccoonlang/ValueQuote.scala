@@ -13,14 +13,14 @@ object ValueQuote {
       context: QuoteContext
   )
 
-  private final class ClosedEnvInliner(env: RuntimeEnv, context: QuoteContext)(implicit eqStore: EqStore) {
+  private final class ClosedEnvInliner(env: Env, context: QuoteContext)(implicit eqStore: EqStore) {
     private val envLength = env.locals.length
 
     def reindex(ref: CoreAst.LocalRef): CoreAst.LocalRef =
       ref.copy(id = ref.id - envLength + context.localEnvLength)
 
     private def inlineLocal(ref: CoreAst.LocalRef, refSpan: Span): ElabAst.Term =
-      if (ref.id < envLength) quoteTerm(env.locals(ref.id).value, context, refSpan)
+      if (ref.id < envLength) quoteTerm(env(ref), context, refSpan)
       else ElabAst.Term.LocalRef(reindex(ref), refSpan)
 
     def inlineTerm(t: ElabAst.Term): ElabAst.Term =
@@ -104,7 +104,7 @@ object ValueQuote {
       ElabAst.Case(c.ctorName, c.argRefs.map(_.map(reindex)), inlineTerm(c.body), c.span)
   }
 
-  def quoteContext(env: EnvLike[_])(implicit eqStore: EqStore): QuoteContext = {
+  def quoteContext(env: Env)(implicit eqStore: EqStore): QuoteContext = {
     val quote = env.locals.zipWithIndex.foldLeft(Map.empty[ValueKey.Key, ElabAst.Term]) {
       case (quote, (binding, idx)) =>
         binding.valueOption match {
@@ -176,7 +176,7 @@ object ValueQuote {
 
   private def quoteClosedMatch(
       term: ElabAst.Term.Match,
-      env: RuntimeEnv,
+      env: Env,
       context: QuoteContext,
       span: Span
   )(implicit eqStore: EqStore): ElabAst.Term.Match = {

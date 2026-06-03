@@ -18,11 +18,20 @@ class TypeClassTests extends munit.FunSuite {
       Interpreter.evalDecl(decl, worlds)
     }
 
-  private def namedValue(env: TypecheckEnv, name: String): Value =
+  private def namedValue(env: Env, name: String): Value =
     env(name) match {
       case h: Value.ConstructorHead if h.totalArity == 0 => Value.VCtor(h, Vector.empty, h.tpe)
       case other                                         => other
     }
+
+  private final class NoSearchEnv(val base: Env) extends DelegatingEnv {
+
+    override def updateBase(newBase: Env): Env = new NoSearchEnv(newBase)
+
+    override def localBinding(ref: CoreAst.LocalRef): Binding = base.localBinding(ref)
+
+    override def instanceSearchTiers(key: String): InstanceSearchTiers = InstanceSearchTiers(Vector.empty, Vector.empty)
+  }
 
   private def applyValue(fn: Value, args: Value*)(implicit eqStore: EqStore): Value =
     Interpreter.evalApply(fn, args.toVector)
@@ -123,7 +132,7 @@ class TypeClassTests extends munit.FunSuite {
     val checkedTerm =
       ValueQuote.quoteTerm(checkedV, ValueQuote.quoteContext(worlds.checkEnv), body.span)
 
-    val runEnvWithoutSearch = worlds.runEnv.copy(globalInstances = InstanceRegistry.empty)
+    val runEnvWithoutSearch = new NoSearchEnv(worlds.runEnv)
     assertEquals(ctorName(Interpreter.evalTerm(checkedTerm, runEnvWithoutSearch)), "DecEq.mk")
 
   }
