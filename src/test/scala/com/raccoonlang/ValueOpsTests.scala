@@ -224,7 +224,7 @@ class ValueOpsTests extends munit.FunSuite {
     assertEquals(Interpreter.evalApply(lam, Vector(symbolicValue("Arg"))), captured)
   }
 
-  test("materialize rewrites VBlockedThunk match environment before forcing") {
+  test("materialize rewrites VNeutralThunk match environment before forcing") {
     val capturedRef = CoreAst.LocalRef(0, "captured")
     val scrutRef = CoreAst.LocalRef(1, "scrut")
     val captured = FreshVar.freshVar("captured", valueType)
@@ -246,24 +246,23 @@ class ValueOpsTests extends munit.FunSuite {
       ),
       span
     )
-    val thunk = VBlockedThunk(
-      ThunkBody.Match(matchTerm, runtimeEnv),
+    val thunk = NeutralThunk(
+      matchTerm,
+      runtimeEnv,
       ValueId.LocalId(nodeId(3), Vector(scrut, captured)),
       valueType,
-      scrut.id
+      Some(scrut.id)
     )
 
     val eqCaptured = solve(captured, solution)
-    val materialized = ValueOps.materialize(thunk, eqCaptured).asInstanceOf[VBlockedThunk]
+    val materialized = ValueOps.materialize(thunk, eqCaptured).asInstanceOf[NeutralThunk]
 
-    materialized.body match {
-      case ThunkBody.Match(_, materializedEnv) =>
-        assertEquals(materializedEnv(capturedRef), solution)
-        assertEquals(materializedEnv(scrutRef), scrut)
-      case other => fail(s"Expected materialized match thunk body, got $other")
-    }
+    assertEquals(materialized.env(capturedRef), solution)
+    assertEquals(materialized.env(scrutRef), scrut)
+
     assert(!materialized.synDeps.contains(captured.id))
     assert(materialized.synDeps.contains(scrut.id))
+    assertEquals(materialized.blockerId, Some(scrut.id))
 
     val eqAll = eqCaptured.allow(DepSet(scrut.id)).addLink(scrut.id, ctor)
     assertEquals(Interpreter.resolveInEqStore(materialized, eqAll), solution)
@@ -294,17 +293,16 @@ class ValueOpsTests extends munit.FunSuite {
       span
     )
 
-    val blocked = Interpreter.evalTerm(matchTerm, env).asInstanceOf[VBlockedThunk]
+    val blocked = Interpreter.evalTerm(matchTerm, env).asInstanceOf[NeutralThunk]
+    val closed = blocked.env
 
-    blocked.body match {
-      case ThunkBody.Match(_, closed) =>
-        assertEquals(closed(capturedRef), captured)
-        intercept[WTF](closed(unusedRef))
-        assertEquals(closed(scrutRef), scrut)
-      case other => fail(s"Expected closed match thunk body, got $other")
-    }
+    assertEquals(closed(capturedRef), captured)
+    intercept[WTF](closed(unusedRef))
+    assertEquals(closed(scrutRef), scrut)
+
     assert(!blocked.synDeps.contains(unused.id))
     assert(blocked.synDeps.contains(scrut.id))
+    assertEquals(blocked.blockerId, Some(scrut.id))
   }
 
   test("constructor equality accounts for result type") {

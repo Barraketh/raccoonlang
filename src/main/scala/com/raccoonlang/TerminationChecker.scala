@@ -9,8 +9,7 @@ object TerminationChecker {
   def rawRecursiveSelf(name: String, vpi: VPi, spec: CA.DecreaseSpec, bodyEnv: Env, isStable: Boolean): VLam = {
     def requireInductiveMetric(value: Value, span: Span): Unit =
       value.tpe match {
-        case VConst(_, Inductive(_), _)             =>
-        case VApp(VConst(_, Inductive(_), _), _, _) =>
+        case ConstSpine(VConst(_, Inductive(_), _), _) =>
         case _ => throw InvalidDecreaseSpec(s"decrease metric ${value} must have an inductive type", Some(span))
       }
 

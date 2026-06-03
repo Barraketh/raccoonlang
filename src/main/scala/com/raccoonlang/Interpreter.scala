@@ -36,7 +36,7 @@ object Interpreter {
   def resolveInEqStore(v: Value, eqStore: EqStore): Value = {
     val v0 = eqStore.force(v)
     v0 match {
-      case v0: Blocked if eqStore.subst.contains(v0.blockerId) =>
+      case Blocked(blockerId) if eqStore.subst.contains(blockerId) =>
         v0 match {
           case VBlockedApp(h, args, tpe, _) =>
             val h0 = ValueOps.materialize(resolveInEqStore(h, eqStore), eqStore)
@@ -45,12 +45,13 @@ object Interpreter {
               case lam: VLam =>
                 val res = runLam(lam, materializedArgs)
                 resolveInEqStore(res, eqStore)
-              case b: Blocker =>
-                VBlockedApp(b, args, tpe, b.blockerId)
+              case nextHead @ Blocker(nextBlockerId) =>
+                VBlockedApp(nextHead, args, tpe, nextBlockerId)
               case other =>
                 resolveInEqStore(evalApply(other, materializedArgs), eqStore)
             }
-          case vm: VBlockedThunk => resolveInEqStore(forceThunk(vm, eqStore), eqStore)
+          case vm: NeutralThunk if vm.blockerId.nonEmpty => resolveInEqStore(forceThunk(vm, eqStore), eqStore)
+          case _                                         => throw WTF(s"Blocked extractor matched unexpected value $v0")
         }
 
       case l: Level if l.atoms.keySet.intersect(eqStore.subst.keySet).nonEmpty => normalizeLevel(l, eqStore)
@@ -123,12 +124,12 @@ object Interpreter {
           case lam @ VLam(_, _, isStable, _) =>
             val res = runLam(lam, vArgs)
             (isStable, res) match {
-              case (true, b: Blocked) =>
-                b match {
+              case (true, blocked @ Blocked(blockerId)) =>
+                blocked match {
                   case VBlockedApp(VLam(_, _, true, _), _, _, _) => res
-                  case _                                         => VBlockedApp(fn, vArgs, b.tpe, b.blockerId)
+                  case _                                         => VBlockedApp(fn, vArgs, blocked.tpe, blockerId)
                 }
-              case (true, stuck: VStuckThunk) =>
+              case (true, stuck: NeutralThunk) if stuck.blockerId.isEmpty =>
                 lam.id match {
                   case ValueId.Const(name) => VApp(VConst(name, Symbol, lam.tpe), vArgs, stuck.tpe)
                   case _                   => res
@@ -139,8 +140,8 @@ object Interpreter {
           case h: ConstructorHead =>
             val resultTy = pi.codomain(envWithArgs)
             ConstructorOps.ConstructorShape.require(h).makeCtor(vArgs, resultTy)
-          case b: Blocker => VBlockedApp(b, vArgs, pi.codomain(envWithArgs), b.blockerId)
-          case _          => throw CannotApplyNonFunction(fn)
+          case blocker @ Blocker(blockerId) => VBlockedApp(blocker, vArgs, pi.codomain(envWithArgs), blockerId)
+          case _                            => throw CannotApplyNonFunction(fn)
         }
       case _ => throw CannotApplyNonFunction(fn.tpe)
     }
@@ -186,10 +187,8 @@ object Interpreter {
     }
   }
 
-  private def forceThunk(thunk: VBlockedThunk, eqStore: EqStore): Value =
-    thunk.body match {
-      case ThunkBody.Match(term, env) => evalMatch(term, ValueOps.materializeEnv(env, eqStore))
-    }
+  private def forceThunk(thunk: NeutralThunk, eqStore: EqStore): Value =
+    evalMatch(thunk.term, ValueOps.materializeEnv(thunk.env, eqStore))
 
   private def evalLam(l: ETerm.Lam, env: Env): VLam = {
     val vpi = evalPi(l.ty, env)
@@ -231,13 +230,10 @@ object Interpreter {
           case None         => scrut.tpe
         }
         val lamId = ValueId.LocalId(m.span.nodeId, matchCaptures)
+        val closedEnv = RuntimeEnv.closeForEval(env, capturedIndexes)
         other match {
-          case b: Blocker =>
-            val thunkBody = ThunkBody.Match(m, RuntimeEnv.closeForEval(env, capturedIndexes))
-            return VBlockedThunk(thunkBody, lamId, outType, b.blockerId)
-          case _ =>
-            val thunkBody = ThunkBody.Match(m, RuntimeEnv.closeForEval(env, capturedIndexes))
-            return VStuckThunk(thunkBody, lamId, outType)
+          case Blocker(blockerId) => return NeutralThunk(m, closedEnv, lamId, outType, Some(blockerId))
+          case _                  => return NeutralThunk(m, closedEnv, lamId, outType, None)
         }
     }
 

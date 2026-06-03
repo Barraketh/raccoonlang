@@ -9,19 +9,6 @@ object InductiveChecks {
 
   // ------------ Occurrence and Positivity ------------
 
-  private final case class InductiveFamilyInstance(head: VConst, meta: InductiveMeta, args: Vector[Value])
-
-  private object InductiveFamilyValue {
-    def unapply(value: Value): Option[InductiveFamilyInstance] =
-      value match {
-        case c @ VConst(_, Inductive(meta), _) if meta.familyArity == 0 =>
-          Some(InductiveFamilyInstance(c, meta, Vector.empty))
-        case VApp(c @ VConst(_, Inductive(meta), _), args, _) if args.length == meta.familyArity =>
-          Some(InductiveFamilyInstance(c, meta, args))
-        case _ => None
-      }
-  }
-
   // A positivity target is the thing whose occurrences we are checking.
   // The traversal only needs two queries:
   //
@@ -258,9 +245,8 @@ object InductiveChecks {
       // 4) Constructor result must be the inductive family head applied to the full family arity.
       val resultErr = InvalidConstructorResult(ctor.canonicalName, name, outputTpe, Some(ctor.span))
       val outputArgs = outputTpe match {
-        case VApp(h, args, _) if h.name == name => args
-        case VConst(n, _, _) if n == name       => Vector.empty[Value]
-        case _                                  => throw resultErr
+        case ConstSpine(head, args) if head.name == name => args
+        case _                                           => throw resultErr
       }
 
       if (outputArgs.length != header.arity) throw resultErr

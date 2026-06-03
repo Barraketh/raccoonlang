@@ -37,7 +37,7 @@ object ValueKey {
     val Var = 7
     val App = 8
     val Lam = 9
-    val BlockedThunk = 10
+    val NeutralThunk = 10
     val Pi = 11
     val ConstructorHead = 12
     val Ctor = 13
@@ -45,7 +45,6 @@ object ValueKey {
     val Normalizer = 15
     val ConstId = 16
     val LocalId = 17
-    val StuckThunk = 18
   }
 
   private val SeedHi = -7046029254386353131L
@@ -141,10 +140,8 @@ object ValueKey {
       mixValues(mixKey(tag(Tag.App), h.key), args)
     case Value.VLam(_, id, _, _) =>
       valueIdKey(tag(Tag.Lam), id)
-    case m: Value.VBlockedThunk =>
-      valueIdKey(tag(Tag.BlockedThunk), m.id)
-    case m: Value.VStuckThunk =>
-      valueIdKey(tag(Tag.StuckThunk), m.id)
+    case m: Value.NeutralThunk =>
+      valueIdKey(tag(Tag.NeutralThunk), m.id)
     case p: Value.VPi =>
       mixLong(valueIdKey(tag(Tag.Pi), p.id), p.binders.length.toLong)
     case Value.ConstructorHead(n, _, _, _) =>

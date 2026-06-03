@@ -1,6 +1,6 @@
 package com.raccoonlang
 
-import com.raccoonlang.Value.{VApp, VBlockedApp, VConst, VarId}
+import com.raccoonlang.Value.{ConstSpine, VBlockedApp, VarId}
 
 object Normalizers {
 
@@ -14,10 +14,9 @@ object Normalizers {
   type NormalizerMap = Map[CarrierKey, Value.Normalizer]
 
   def getCarrierKey(v: Value): Option[CarrierKey] = v match {
-    case VConst(name, _, _)             => Some(CarrierKey.Head(name))
-    case VApp(VConst(name, _, _), _, _) => Some(CarrierKey.Head(name))
-    case Value.Var(_, id, _)            => Some(CarrierKey.VarKey(id))
-    case _                              => None
+    case ConstSpine(head, _) => Some(CarrierKey.Head(head.name))
+    case Value.Var(_, id, _) => Some(CarrierKey.VarKey(id))
+    case _                   => None
   }
 
   def add_normalizer(args: Vector[Value]): Value = {

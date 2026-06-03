@@ -159,11 +159,7 @@ object ValueQuote {
         val fn = quoteAppHead(head, context, span)
         ElabAst.Term.App(fn, args.map(arg => quoteTerm(arg, context, span)), span)
 
-      case VBlockedThunk(ThunkBody.Match(term, env), _, _, _) =>
-        quoteClosedMatch(term, env, context, span)
-
-      case VStuckThunk(ThunkBody.Match(term, env), _, _) =>
-        quoteClosedMatch(term, env, context, span)
+      case NeutralThunk(term, env, _, _, _) => quoteClosedMatch(term, env, context, span)
 
       case VBlockedApp(head, args, _, _) =>
         ElabAst.Term.App(quoteAppHead(head, context, span), args.map(arg => quoteTerm(arg, context, span)), span)

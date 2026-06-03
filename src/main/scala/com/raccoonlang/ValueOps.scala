@@ -44,18 +44,13 @@ object ValueOps {
             materialize(tpe),
             blockerId
           )
-        case VBlockedThunk(body, id, tpe, blockerId) =>
-          VBlockedThunk(
-            materializeThunkBody(body),
+        case NeutralThunk(term, env, id, tpe, blockerId) =>
+          NeutralThunk(
+            term,
+            materializeEnv(env),
             materializeLocalId(id),
             materialize(tpe),
             blockerId
-          )
-        case VStuckThunk(body, id, tpe) =>
-          VStuckThunk(
-            materializeThunkBody(body),
-            materializeLocalId(id),
-            materialize(tpe)
           )
         case ctor: ConstructorHead =>
           ctor.copy(tpe = materialize(ctor.tpe))
@@ -112,12 +107,6 @@ object ValueOps {
         case LamBody.Core(term, env) => LamBody.Core(term, materializeEnv(env))
         case LamBody.Native(run, env, isRawRecursive) =>
           LamBody.Native(run, materializeEnv(env), isRawRecursive)
-      }
-
-    private def materializeThunkBody(body: ThunkBody)(implicit eqStore: EqStore): ThunkBody =
-      body match {
-        case ThunkBody.Match(term, env) =>
-          ThunkBody.Match(term, materializeEnv(env))
       }
 
     private def materializeDeps(deps: DepSet)(implicit eqStore: EqStore): DepSet = {

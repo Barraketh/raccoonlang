@@ -161,9 +161,8 @@ object InstanceSearch {
 
   private def headKey(value: Value): Option[String] =
     value match {
-      case VApp(VConst(name, _, _), _, _) => Some(name)
-      case VConst(name, _, _)             => Some(name)
-      case _                              => None
+      case ConstSpine(head, _) => Some(head.name)
+      case _                   => None
     }
 
 }

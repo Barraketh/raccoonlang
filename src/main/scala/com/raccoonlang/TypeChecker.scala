@@ -8,7 +8,6 @@ import com.raccoonlang.{CoreAst => CA, ElabAst => EA}
 
 object TypeChecker {
   private final case class CheckedPi(vpi: VPi, bodyEnv: Env, outTy: Value)
-  private final case class InductiveFamily(name: String, meta: InductiveMeta)
 
   def sortLeq(a: Value, b: Value): Boolean = {
     (a, b) match {
@@ -149,17 +148,17 @@ object TypeChecker {
     )
   }
 
-  private def inductiveFamilyOf(value: Value): Option[InductiveFamily] =
+  private def inductiveFamilyOf(value: Value): Option[InductiveFamilyInstance] =
     value match {
-      case VConst(n, Inductive(meta), _) => Some(InductiveFamily(n, meta))
-      case VApp(VConst(n, Inductive(meta), _), args, _) if args.length == meta.familyArity =>
-        Some(InductiveFamily(n, meta))
-      case _ => None
+      case InductiveFamilyValue(instance) => Some(instance)
+      case _                              => None
     }
 
   private def checkSelect(baseValue: Value, field: String, span: Span, env: Env): Value = {
     val vType = baseValue.tpe
-    val InductiveFamily(indName, meta) = inductiveFamilyOf(vType).getOrElse(throw NotAType(vType))
+    val family = inductiveFamilyOf(vType).getOrElse(throw NotAType(vType))
+    val indName = family.head.name
+    val meta = family.meta
 
     if (!meta.isStruct) throw NotAStruct(indName)
 
@@ -189,8 +188,8 @@ object TypeChecker {
 
     def rootRefinable(value: Value): DepSet =
       value match {
-        case blocker: Blocker => DepSet(blocker.blockerId)
-        case _                => DepSet.empty
+        case Blocker(blockerId) => DepSet(blockerId)
+        case _                  => DepSet.empty
       }
 
     ctorNames.flatMap { ctorName =>
@@ -266,8 +265,9 @@ object TypeChecker {
     val scrut = scrutChecked
     val scrutTpe = scrut.tpe
 
-    val InductiveFamily(inductiveName, inductiveMeta) =
-      inductiveFamilyOf(scrutTpe).getOrElse(throw NonInductiveMatch(scrut.tpe))
+    val inductiveFamily = inductiveFamilyOf(scrutTpe).getOrElse(throw NonInductiveMatch(scrut.tpe))
+    val inductiveName = inductiveFamily.head.name
+    val inductiveMeta = inductiveFamily.meta
     val inductiveCtorNames = inductiveMeta.constructorNames
     val cases = t.cases.map { c =>
       val candidates =

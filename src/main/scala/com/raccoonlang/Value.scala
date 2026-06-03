@@ -39,20 +39,11 @@ object Value {
 
   private[raccoonlang] def needsStructuralDefEq(value: Value): Boolean =
     isKnownProof(value) || (value match {
-      case _: VPi | _: VLam | _: VStuckThunk | _: VBlockedThunk => true
+      case _: VPi | _: VLam | _: NeutralThunk => true
       case app: AppliedValue =>
         app.head.needsStructuralDefEq || app.args.exists(_.needsStructuralDefEq) || app.tpe.needsStructuralDefEq
       case _ => false
     })
-
-  // A value that will block a computation - specifically, when trying to either match or apply it.
-  // Specifically, Var, VBlockedApp, or VBlockedThunk
-  sealed trait Blocker extends Value {
-    def blockerId: VarId
-  }
-
-  // A computation that is blocked but could proceed when blockerId is resolved. VBlockedApp or VBlockedThunk
-  sealed trait Blocked extends Blocker
 
   sealed trait UpdatableType {
     def withTpe(tpe: Value): Value
@@ -85,15 +76,6 @@ object Value {
       override lazy val synDeps: DepSet = envDeps(env)
     }
     final case class Native(run: (Vector[Value], Env) => Value, env: Env, isRawRecursive: Boolean) extends LamBody {
-      override lazy val synDeps: DepSet = envDeps(env)
-    }
-  }
-
-  sealed trait ThunkBody {
-    def synDeps: DepSet
-  }
-  object ThunkBody {
-    final case class Match(term: ElabAst.Term.Match, env: Env) extends ThunkBody {
       override lazy val synDeps: DepSet = envDeps(env)
     }
   }
@@ -260,7 +242,6 @@ object Value {
 
   case class VBlockedApp(head: Value, args: Vector[Value], tpe: Value, blockerId: VarId)
     extends AppliedValue
-    with Blocked
     with UpdatableType {
     require(args.nonEmpty, "Blocked application requires at least one argument")
     require(synDeps.contains(blockerId), "Blocked application synDeps must include blockerId")
@@ -268,45 +249,23 @@ object Value {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
-  sealed trait NeutralThunk extends Value with UpdatableType {
-    def body: ThunkBody
-    def id: ValueId.LocalId
-    def tpe: Value
-  }
-
-  case class VBlockedThunk(body: ThunkBody, id: ValueId.LocalId, tpe: Value, blockerId: VarId)
-    extends Blocked
-    with NeutralThunk
+  case class NeutralThunk(term: ElabAst.Term.Match, env: Env, id: ValueId.LocalId, tpe: Value, blockerId: Option[VarId])
+    extends Value
     with UpdatableType {
-    require(synDeps.contains(blockerId), "Blocked thunk synDeps must include blockerId")
-
-    override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
-
-    override lazy val synDeps: DepSet = {
+    override val synDeps: DepSet = {
       val res = DepSet.newBuilder
-      res.unionInPlace(body.synDeps)
+      res.unionInPlace(envDeps(env))
       res.unionInPlace(tpe.synDeps)
       id.captures.foreach(v => res.unionInPlace(v.synDeps))
       res.result()
     }
-  }
 
-  case class VStuckThunk(body: ThunkBody, id: ValueId.LocalId, tpe: Value) extends NeutralThunk {
+    require(blockerId.forall(synDeps.contains), "Blocked thunk synDeps must include blockerId")
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
-
-    override lazy val synDeps: DepSet = {
-      val res = DepSet.newBuilder
-      res.unionInPlace(body.synDeps)
-      res.unionInPlace(tpe.synDeps)
-      id.captures.foreach(v => res.unionInPlace(v.synDeps))
-      res.result()
-    }
   }
 
-  case class Var(name: String, id: VarId, tpe: Value) extends Value with Blocker with UpdatableType {
+  case class Var(name: String, id: VarId, tpe: Value) extends Value with UpdatableType {
     override val synDeps: DepSet = tpe.synDeps + id
-
-    override val blockerId: VarId = id
 
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
@@ -381,5 +340,44 @@ object Value {
   sealed trait ConstType
   case class Inductive(meta: InductiveMeta) extends ConstType
   case object Symbol extends ConstType
+
+  object Blocker {
+    def unapply(value: Value): Option[VarId] =
+      value match {
+        case Var(_, id, _)                      => Some(id)
+        case VBlockedApp(_, _, _, id)           => Some(id)
+        case NeutralThunk(_, _, _, _, Some(id)) => Some(id)
+        case _                                  => None
+      }
+  }
+
+  object Blocked {
+    def unapply(value: Value): Option[VarId] =
+      value match {
+        case VBlockedApp(_, _, _, id)           => Some(id)
+        case NeutralThunk(_, _, _, _, Some(id)) => Some(id)
+        case _                                  => None
+      }
+  }
+
+  object ConstSpine {
+    def unapply(value: Value): Option[(VConst, Vector[Value])] =
+      value match {
+        case c: VConst           => Some((c, Vector.empty))
+        case VApp(head, args, _) => Some((head, args))
+        case _                   => None
+      }
+  }
+
+  final case class InductiveFamilyInstance(head: VConst, meta: InductiveMeta, args: Vector[Value])
+
+  object InductiveFamilyValue {
+    def unapply(value: Value): Option[InductiveFamilyInstance] =
+      value match {
+        case ConstSpine(head @ VConst(_, Inductive(meta), _), args) if args.length == meta.familyArity =>
+          Some(InductiveFamilyInstance(head, meta, args))
+        case _ => None
+      }
+  }
 
 }
