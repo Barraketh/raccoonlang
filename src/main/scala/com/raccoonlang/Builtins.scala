@@ -14,14 +14,14 @@ private object Builtins {
           val lRef = pi.binders.head.localRef
           val preciseType =
             pi.copy(
-              codomain = (env, eqStore) => VSort(Level.succ(Interpreter.getLevel(env(lRef))(eqStore))),
+              codomain = env => VSort(Level.succ(Interpreter.getLevel(env(lRef)))),
               id = ValueId.Const(name)
             )
           VLam(
             preciseType,
             ValueId.Const(name),
             isStable = true,
-            LamBody.Native((args, eqStore) => VSort(Interpreter.getLevel(args.head)(eqStore)))
+            LamBody.Native((args, _) => VSort(Interpreter.getLevel(args.head)), Env.empty, isRawRecursive = false)
           )
         case pi: VPi => throw ArityMismatch(1, pi.binders.length, Some(span))
         case other   => throw CannotApplyNonFunction(other, Some(span))
@@ -29,7 +29,7 @@ private object Builtins {
   }
 
   private final case class Native(
-      run: (VLam, VPi, Vector[Value], EqStore) => Value,
+      run: (VLam, VPi, Vector[Value]) => Value,
       isStable: Boolean = true
   ) extends Entry {
     override def instantiate(name: String, tpe: Value, span: Span): Value =
@@ -40,7 +40,7 @@ private object Builtins {
               pi,
               ValueId.Const(name),
               isStable,
-              LamBody.Native((args, eqStore) => run(self, pi, args, eqStore))
+              LamBody.Native((args, _) => run(self, pi, args), Env.empty, isRawRecursive = false)
             )
           self
         case other => throw CannotApplyNonFunction(other, Some(span))
@@ -65,12 +65,12 @@ private object Builtins {
   private val entries: Map[String, Entry] =
     Map(
       "Sort" -> SortEntry,
-      "add_normalizer" -> Native((_, _, args, _) => Normalizers.add_normalizer(args.head.tpe +: args)),
-      "Level.succ" -> Native { (_, _, args, eqStore) =>
-        Level.succ(Interpreter.getLevel(args.head)(eqStore))
+      "add_normalizer" -> Native((_, _, args) => Normalizers.add_normalizer(args.head.tpe +: args)),
+      "Level.succ" -> Native { (_, _, args) =>
+        Level.succ(Interpreter.getLevel(args.head))
       },
-      "Level.max" -> Native { (_, _, args, eqStore) =>
-        Level.max(args.map(arg => Interpreter.getLevel(arg)(eqStore)))
+      "Level.max" -> Native { (_, _, args) =>
+        Level.max(args.map(arg => Interpreter.getLevel(arg)))
       },
       MkName -> Constructor(numErased = 2),
       LiftName -> Native(runLift),
@@ -83,27 +83,25 @@ private object Builtins {
       case None        => throw WTF(s"Unknown builtin $name", Some(span))
     }
 
-  private def runLift(self: VLam, selfType: VPi, args: Vector[Value], store: EqStore): Value = {
-    implicit val eqStore: EqStore = store
+  private def runLift(self: VLam, selfType: VPi, args: Vector[Value]): Value = {
     val q = args(0)
     val resultTy = args(1)
     val f = args(2)
 
-    q.caseOf {
+    q match {
       case QuotientMk(rep) => Interpreter.evalApply(f, Vector(rep))
       case b: Blocker      => VBlockedApp(self, args, resultTy, b.blockerId)
       case _               => VApp(VConst(LiftName, Symbol, selfType), args, resultTy)
     }
   }
 
-  private def runInd(self: VLam, selfType: VPi, args: Vector[Value], store: EqStore): Value = {
-    implicit val eqStore: EqStore = store
+  private def runInd(self: VLam, selfType: VPi, args: Vector[Value]): Value = {
     val q = args(0)
     val motive = args(1)
     val mkCase = args(2)
     lazy val resultTy = Interpreter.evalApply(motive, Vector(q))
 
-    q.caseOf {
+    q match {
       case QuotientMk(rep) => Interpreter.evalApply(mkCase, Vector(rep))
       case b: Blocker      => VBlockedApp(self, args, resultTy, b.blockerId)
       case _               => VApp(VConst(IndName, Symbol, selfType), args, resultTy)
@@ -111,8 +109,8 @@ private object Builtins {
   }
 
   private object QuotientMk {
-    def unapply(value: Value)(implicit eqStore: EqStore): Option[Value] =
-      value.caseOf {
+    def unapply(value: Value): Option[Value] =
+      value match {
         case ctor @ VCtor(head, _, _) if head.name == MkName && ctor.fields.length == 1 => Some(ctor.fields.head)
         case _                                                                          => None
       }

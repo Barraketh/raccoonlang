@@ -59,7 +59,7 @@ object InductiveChecks {
     }
   }
 
-  private def doesNotOccur(target: PositivityTarget, value: Value)(implicit eqStore: EqStore): Boolean =
+  private def doesNotOccur(target: PositivityTarget, value: Value): Boolean =
     if (target.isDirectOccurrence(value)) false
     else
       value match {
@@ -78,7 +78,7 @@ object InductiveChecks {
           val freshEnv = BinderOps.freshen(pi)
           val freshArgs = pi.binders.map(binder => freshEnv(binder.localRef))
           freshArgs.forall(arg => doesNotOccur(target, arg.tpe)) &&
-          doesNotOccur(target, pi.codomain(freshEnv, eqStore))
+          doesNotOccur(target, pi.codomain(freshEnv))
 
         case _: ConstructorHead => !target.mayOccurIn(value)
 
@@ -91,7 +91,7 @@ object InductiveChecks {
    * Checks that the target only occurs positively in value: 1) Does not occur in the domain of any Pis 2) Only appears
    * in positive args of Inductives
    */
-  private def occursPositively(target: PositivityTarget, value: Value)(implicit eqStore: EqStore): Boolean =
+  private def occursPositively(target: PositivityTarget, value: Value): Boolean =
     if (target.isDirectOccurrence(value)) true
     else
       value match {
@@ -114,7 +114,7 @@ object InductiveChecks {
           val freshEnv = BinderOps.freshen(pi)
           val freshArgs = pi.binders.map(binder => freshEnv(binder.localRef))
           freshArgs.forall(arg => doesNotOccur(target, arg.tpe)) &&
-          occursPositively(target, pi.codomain(freshEnv, eqStore))
+          occursPositively(target, pi.codomain(freshEnv))
 
         case _: ConstructorHead => true
 
@@ -126,9 +126,7 @@ object InductiveChecks {
   /**
    * Checks that we don't have things of the shape Foo(Foo(A)) as a constructor field of Foo.
    */
-  private def sameFamilyArgsDoNotContain(inductiveName: String, target: PositivityTarget, value: Value)(implicit
-      eqStore: EqStore
-  ): Boolean =
+  private def sameFamilyArgsDoNotContain(inductiveName: String, target: PositivityTarget, value: Value): Boolean =
     value match {
       case _: NeutralThunk => false
 
@@ -147,14 +145,14 @@ object InductiveChecks {
         val freshEnv = BinderOps.freshen(pi)
         val freshArgs = pi.binders.map(binder => freshEnv(binder.localRef))
         freshArgs.forall(arg => sameFamilyArgsDoNotContain(inductiveName, target, arg.tpe)) &&
-        sameFamilyArgsDoNotContain(inductiveName, target, pi.codomain(freshEnv, eqStore))
+        sameFamilyArgsDoNotContain(inductiveName, target, pi.codomain(freshEnv))
 
       case _: ConstructorHead | _: Level | LevelTpe | _: Normalizer | NormalizerType | _: VLam | _: VSort | _: Var |
           _: VConst | PropTpe | KernelObject =>
         true
     }
 
-  private def positiveArgIndexes(args: Vector[Value], values: Vector[Value])(implicit eqStore: EqStore): DepSet = {
+  private def positiveArgIndexes(args: Vector[Value], values: Vector[Value]): DepSet = {
     val positive = DepSet.newBuilder
     args.zipWithIndex.foreach { case (arg, idx) =>
       arg match {
@@ -172,8 +170,6 @@ object InductiveChecks {
       decl: Decl.InductiveDecl,
       baseEnv: Env,
       inductiveHead: VConst
-  )(implicit
-      eqStore: EqStore
   ): Env = {
     val envWithInductive = baseEnv.putGlobal(decl.header.name, inductiveHead)
 
@@ -193,8 +189,6 @@ object InductiveChecks {
   }
 
   def evalInductiveDecl(decl: Decl.InductiveDecl, worlds: Worlds): Worlds = {
-    implicit val eqStore: EqStore = EqStore.empty
-
     // All direct Value matches in this function and its private helpers
     // rely on EqStore.empty: no Vars are solved in this pass.
 

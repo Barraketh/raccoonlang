@@ -44,4 +44,5 @@ class CapturedIndexesTests extends munit.FunSuite {
 
     intercept[WTF](RuntimeEnv.closeForEval(Env.empty, indexes))
   }
+
 }

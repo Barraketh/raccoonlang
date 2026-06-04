@@ -30,10 +30,12 @@ class TypeClassTests extends munit.FunSuite {
 
     override def localBinding(ref: CoreAst.LocalRef): Binding = base.localBinding(ref)
 
-    override def instanceSearchTiers(key: String): InstanceSearchTiers = InstanceSearchTiers(Vector.empty, Vector.empty)
+    override def localInstanceRefs(key: String): Vector[CoreAst.LocalRef] = Vector.empty
+
+    override def globalInstanceValues(key: String): Vector[Value] = Vector.empty
   }
 
-  private def applyValue(fn: Value, args: Value*)(implicit eqStore: EqStore): Value =
+  private def applyValue(fn: Value, args: Value*): Value =
     Interpreter.evalApply(fn, args.toVector)
 
   private def ctorName(v: Value): String = v match {
@@ -74,7 +76,6 @@ class TypeClassTests extends munit.FunSuite {
     ).body.getOrElse(fail("Program has no body"))
     assert(body.isInstanceOf[CoreAst.Term.Derive])
 
-    implicit val eqStore: EqStore = EqStore.empty
     val checkedV = TypeChecker.check(body, worlds.checkEnv)
     val ctx = ValueQuote.quoteContext(worlds.checkEnv)
     val term = ValueQuote.quoteTerm(checkedV, ctx, body.span)
@@ -126,8 +127,6 @@ class TypeClassTests extends munit.FunSuite {
           |{ useNatEq }
           |""".stripMargin
     ).body.getOrElse(fail("Program has no body"))
-    implicit val eqStore: EqStore = EqStore.empty
-
     val checkedV = TypeChecker.check(body, worlds.checkEnv)
     val checkedTerm =
       ValueQuote.quoteTerm(checkedV, ValueQuote.quoteContext(worlds.checkEnv), body.span)
@@ -510,7 +509,6 @@ class TypeClassTests extends munit.FunSuite {
     val env = worlds.runEnv
 
     val a = FreshVar.freshVar("A", Value.TypeTpe)
-    implicit val eqStore: EqStore = EqStore.empty.allow(DepSet(a.id))
     val aRef = CoreAst.LocalRef(env.locals.length, "A")
     val envWithA = env.putLocal(aRef, a)
 
@@ -522,10 +520,9 @@ class TypeClassTests extends munit.FunSuite {
 
     val eqA = Value.VConst("eqA", Value.Symbol, goal)
     val eqARef = CoreAst.LocalRef(envWithA.locals.length, "eqA")
-    val eqAKey = InstanceSearch.instanceKey("eqA", eqA, eqStore)
+    val eqAKey = InstanceSearch.instanceKey("eqA", eqA)
     val envWithEqA = envWithA.putLocal(eqARef, eqA, Some(eqAKey))
 
     assertEquals(InstanceSearch.solve(goal, envWithEqA), eqA)
-    assertEquals(eqStore.subst, Map.empty[Value.VarId, Value])
   }
 }

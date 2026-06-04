@@ -19,9 +19,22 @@ trait Env {
 
   def putGlobal(name: String, value: Value, instanceKey: Option[String] = None): Env
 
-  def putLocal(ref: CoreAst.LocalRef, value: Value, instanceKey: Option[String] = None): Env
+  def putLocal(
+      ref: CoreAst.LocalRef,
+      value: Value,
+      instanceKey: Option[String] = None,
+      quotePolicy: LocalQuotePolicy = LocalQuotePolicy.Residualizable
+  ): Env
 
-  def instanceSearchTiers(key: String): InstanceSearchTiers
+  def localInstanceRefs(key: String): Vector[CoreAst.LocalRef]
+
+  def globalInstanceValues(key: String): Vector[Value]
+
+  def instanceSearchTiers(key: String): InstanceSearchTiers =
+    InstanceSearchTiers(
+      localInstanceRefs(key).map(ref => localBinding(ref).value),
+      globalInstanceValues(key)
+    )
 
   def useNormalizer(n: Value.Normalizer): Env
 
@@ -45,7 +58,7 @@ final case class TypecheckEnv(
     globals: Map[String, Value],
     locals: Vector[Binding],
     globalInstances: InstanceRegistry,
-    localInstances: Map[String, Vector[InstanceCandidate]],
+    localInstances: Map[String, Vector[CoreAst.LocalRef]],
     normalizers: Normalizers.NormalizerMap
 ) extends Env {
   override def apply(name: String): Value = globals.getOrElse(name, throw NotFound(name))
@@ -57,7 +70,7 @@ final case class TypecheckEnv(
     else if (name == "_") throw WTF("Wildcards not allowed in global names")
     else {
       val nextInstances = instanceKey match {
-        case Some(key) => globalInstances.add(key, name, value)
+        case Some(key) => globalInstances.add(key, value)
         case None      => globalInstances
       }
       copy(
@@ -67,13 +80,17 @@ final case class TypecheckEnv(
     }
   }
 
-  override def putLocal(ref: CoreAst.LocalRef, value: Value, instanceKey: Option[String]): Env = {
+  override def putLocal(
+      ref: CoreAst.LocalRef,
+      value: Value,
+      instanceKey: Option[String],
+      quotePolicy: LocalQuotePolicy
+  ): Env = {
     if (ref.id == locals.length) {
-      val binding = Binding.live(ref, value)
+      val binding = Binding.live(ref, value, quotePolicy)
       val nextLocalInstances = instanceKey match {
         case Some(key) =>
-          val candidate = InstanceCandidate(ref.name, value)
-          localInstances + (key -> (candidate +: localInstances.getOrElse(key, Vector.empty)))
+          localInstances + (key -> (ref +: localInstances.getOrElse(key, Vector.empty)))
         case None => localInstances
       }
 
@@ -86,11 +103,11 @@ final case class TypecheckEnv(
     else throw WTF(s"Non-dense local ref ${ref.name}#${ref.id}; env has ${locals.length} slots")
   }
 
-  override def instanceSearchTiers(key: String): InstanceSearchTiers =
-    InstanceSearchTiers(
-      localInstances.getOrElse(key, Vector.empty),
-      globalInstances.get(key)
-    )
+  override def localInstanceRefs(key: String): Vector[CoreAst.LocalRef] =
+    localInstances.getOrElse(key, Vector.empty)
+
+  override def globalInstanceValues(key: String): Vector[Value] =
+    globalInstances.get(key)
 
   override def useNormalizer(n: Value.Normalizer): Env = {
     if (normalizers.contains(n.carrierKey)) throw DuplicateNormalizer(n.carrierKey)
@@ -112,12 +129,18 @@ trait DelegatingEnv extends Env {
 
   override def normalizers: NormalizerMap = base.normalizers
   override def apply(name: String): Value = base.apply(name)
-  override def instanceSearchTiers(key: String): InstanceSearchTiers = base.instanceSearchTiers(key)
+  override def localInstanceRefs(key: String): Vector[CoreAst.LocalRef] = base.localInstanceRefs(key)
+  override def globalInstanceValues(key: String): Vector[Value] = base.globalInstanceValues(key)
 
   override def putGlobal(name: String, value: Value, instanceKey: Option[String]): Env =
     updateBase(base.putGlobal(name, value, instanceKey))
-  override def putLocal(ref: CoreAst.LocalRef, value: Value, instanceKey: Option[String]): Env =
-    updateBase(base.putLocal(ref, value, instanceKey))
+  override def putLocal(
+      ref: CoreAst.LocalRef,
+      value: Value,
+      instanceKey: Option[String],
+      quotePolicy: LocalQuotePolicy
+  ): Env =
+    updateBase(base.putLocal(ref, value, instanceKey, quotePolicy))
   override def useNormalizer(n: Value.Normalizer): Env = updateBase(base.useNormalizer(n))
 
   override lazy val locals: Vector[Binding] = base.locals.map(b => localBinding(b.ref))
@@ -154,7 +177,13 @@ object RuntimeEnv {
   }
 }
 
-final case class Binding(ref: CoreAst.LocalRef, state: Binding.State) {
+sealed trait LocalQuotePolicy
+object LocalQuotePolicy {
+  case object Residualizable extends LocalQuotePolicy
+  final case class AppHeadOnly(name: String) extends LocalQuotePolicy
+}
+
+final case class Binding(ref: CoreAst.LocalRef, state: Binding.State, quotePolicy: LocalQuotePolicy) {
   def id: Int = ref.id
   def name: String = ref.name
 
@@ -172,7 +201,7 @@ final case class Binding(ref: CoreAst.LocalRef, state: Binding.State) {
 
   def mapValue(f: Value => Value): Binding =
     state match {
-      case Binding.Live(value) => Binding.live(ref, f(value))
+      case Binding.Live(value) => Binding.live(ref, f(value), quotePolicy)
       case Binding.Pruned      => this
     }
 
@@ -181,7 +210,7 @@ final case class Binding(ref: CoreAst.LocalRef, state: Binding.State) {
     case _                   =>
   }
 
-  def prune: Binding = Binding.pruned(ref)
+  def prune: Binding = Binding.pruned(ref, quotePolicy)
 }
 
 object Binding {
@@ -189,23 +218,27 @@ object Binding {
   final case class Live(value: Value) extends State
   case object Pruned extends State
 
-  def live(ref: CoreAst.LocalRef, value: Value): Binding = Binding(ref, Live(value))
+  def live(
+      ref: CoreAst.LocalRef,
+      value: Value,
+      quotePolicy: LocalQuotePolicy = LocalQuotePolicy.Residualizable
+  ): Binding =
+    Binding(ref, Live(value), quotePolicy)
 
-  def pruned(ref: CoreAst.LocalRef): Binding = Binding(ref, Pruned)
+  def pruned(
+      ref: CoreAst.LocalRef,
+      quotePolicy: LocalQuotePolicy = LocalQuotePolicy.Residualizable
+  ): Binding =
+    Binding(ref, Pruned, quotePolicy)
 }
 
-final case class InstanceCandidate(
-    name: String,
-    value: Value
-)
+final case class InstanceSearchTiers(locals: Vector[Value], globals: Vector[Value])
 
-final case class InstanceSearchTiers(locals: Vector[InstanceCandidate], globals: Vector[InstanceCandidate])
+final case class InstanceRegistry(buckets: Map[String, Vector[Value]]) {
+  def add(key: String, value: Value): InstanceRegistry =
+    copy(buckets = buckets + (key -> (buckets.getOrElse(key, Vector.empty) :+ value)))
 
-final case class InstanceRegistry(buckets: Map[String, Vector[InstanceCandidate]]) {
-  def add(key: String, name: String, value: Value): InstanceRegistry =
-    copy(buckets = buckets + (key -> (buckets.getOrElse(key, Vector.empty) :+ InstanceCandidate(name, value))))
-
-  def get(key: String): Vector[InstanceCandidate] = buckets.getOrElse(key, Vector.empty)
+  def get(key: String): Vector[Value] = buckets.getOrElse(key, Vector.empty)
 }
 
 object InstanceRegistry {

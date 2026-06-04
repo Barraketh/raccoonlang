@@ -51,15 +51,17 @@ object Elaborator {
    * Source-name resolution state.
    *
    * Locals are resolved outside the global trie and always win on the first path segment. Global names and namespace
-   * objects live in `root`. Open scopes are snapshots of resolved objects, so later declarations do not affect an
-   * earlier `open`.
+   * objects live in `root`. The recursive-self alias resolves qualified paths to a local ref while checking recursive
+   * bodies. Open scopes are snapshots of resolved objects, so later declarations do not affect an earlier `open`.
    */
   private final case class ResolveEnv(
       scopes: List[Map[String, CA.LocalRef]],
       nextLocal: Int,
       root: NameNode,
       namespace: GlobalName,
-      opens: List[OpenScope]
+      opens: List[OpenScope],
+      reservedLocals: Set[String],
+      recursiveSelfAlias: Option[(GlobalName, CA.LocalRef)]
   ) {
     def enterLocalScope: ResolveEnv = copy(scopes = Map.empty[String, CA.LocalRef] :: scopes)
 
@@ -74,6 +76,16 @@ object Elaborator {
       namespace.inits
         .map(prefix => prefix ++ parts)
         .collectFirst(Function.unlift(rootObject))
+
+    def resolveQualifiedLocal(path: SurfacePath): Option[CA.LocalRef] =
+      if (path.parts.isEmpty) None
+      else
+        recursiveSelfAlias.flatMap { case (fullName, ref) =>
+          val matches =
+            if (path.root) path.parts == fullName
+            else namespace.inits.exists(prefix => prefix ++ path.parts == fullName)
+          Option.when(matches)(ref)
+        }
 
     /**
      * Resolve the first segment, then commit to that object while descending the remaining path.
@@ -192,13 +204,29 @@ object Elaborator {
     def hasLocal(name: String): Boolean =
       scopes.exists(_.contains(name))
 
+    def reserveRecursiveSelfName(name: String): ResolveEnv =
+      copy(reservedLocals = reservedLocals + name)
+
     def allocate(name: String): (CA.LocalRef, ResolveEnv) = {
       val ref = CA.LocalRef(nextLocal, name)
       (ref, copy(nextLocal = nextLocal + 1))
     }
 
+    def bindRecursiveSelf(name: String, fullName: GlobalName): (CA.LocalRef, ResolveEnv) = {
+      if (!reservedLocals.contains(name)) throw WTF(s"$name is not reserved for recursive self binding")
+      val (ref, nextEnv) = allocate(name)
+      (
+        ref,
+        nextEnv.copy(
+          scopes = (scopes.head + (name -> ref)) :: scopes.tail,
+          recursiveSelfAlias = Some(fullName -> ref)
+        )
+      )
+    }
+
     def bindNamed(name: String, allowShadow: Boolean): (CA.LocalRef, ResolveEnv) =
-      if (!allowShadow && scopes.head.contains(name)) throw AlreadyDefined(name)
+      if (reservedLocals.contains(name)) throw AlreadyDefined(name)
+      else if (!allowShadow && scopes.head.contains(name)) throw AlreadyDefined(name)
       else {
         val (ref, nextEnv) = allocate(name)
         (ref, nextEnv.copy(scopes = (scopes.head + (name -> ref)) :: scopes.tail))
@@ -234,7 +262,15 @@ object Elaborator {
         .foldLeft(NameNode()) { case (root, name) => root.insertGlobal(name, name) }
 
     def empty: ResolveEnv =
-      ResolveEnv(List(Map.empty), 0, builtinRoot, Vector.empty, List(Map.empty[String, ResolvedObject]))
+      ResolveEnv(
+        List(Map.empty),
+        0,
+        builtinRoot,
+        Vector.empty,
+        List(Map.empty[String, ResolvedObject]),
+        Set.empty,
+        None
+      )
   }
 
   private final case class SurfacePath(root: Boolean, parts: Vector[String], span: Span)
@@ -568,13 +604,19 @@ object Elaborator {
     def selectTail(base: A, tail: Vector[String]): A =
       tail.foldLeft(base) { case (cur, field) => select(cur, field, path.span) }
 
+    def resolveNonLocalPath: A =
+      env.resolveQualifiedLocal(path) match {
+        case Some(ref) => local(ref, path.span)
+        case None      => env.resolvePath(path)(global, select)
+      }
+
     if (!path.root && path.parts.nonEmpty) {
       env.scopes.collectFirst(Function.unlift(_.get(path.parts.head))) match {
         case Some(ref) => selectTail(local(ref, path.span), path.parts.tail)
-        case None      => env.resolvePath(path)(global, select)
+        case None      => resolveNonLocalPath
       }
     } else {
-      env.resolvePath(path)(global, select)
+      resolveNonLocalPath
     }
   }
 
@@ -695,7 +737,7 @@ object Elaborator {
       body: SA.Term,
       name: Option[String],
       isStable: Boolean,
-      decreases: Option[CA.DecreaseSpec],
+      recursion: Option[CA.Recursion],
       span: Span,
       outerEnv: ResolveEnv
   ): CA.Term.Lam = {
@@ -720,7 +762,7 @@ object Elaborator {
       case _ => (Vector.empty[SA.Use], body)
     }
     val checkedUses = uses.map(use => CA.Use(elabTerm(use.normalizer, outerEnv), use.span))
-    CA.Term.Lam(pi, checkedUses, elabTerm(newBody, bodyEnv), span, name, isStable, decreases)
+    CA.Term.Lam(pi, checkedUses, elabTerm(newBody, bodyEnv), span, name, isStable, recursion)
   }
 
   private def elabDecreaseRef(name: String, span: Span, env: ResolveEnv): CA.LocalRef =
@@ -807,7 +849,11 @@ object Elaborator {
       case c: SurfaceAst.Command.Decl.ConstDecl =>
         val name = env.qualify(c.header.name)
         val nameText = globalName(name)
-        val header = elabHeader(c.header.funcHeader, env)
+        val headerEnv = c.decreases match {
+          case Some(_) => env.reserveRecursiveSelfName(c.header.name)
+          case None    => env
+        }
+        val header = elabHeader(c.header.funcHeader, headerEnv)
         val envWithSelf = env.addGlobal(name)
         val body = c.body match {
           case SA.ConstBody.Builtin(sp) =>
@@ -818,10 +864,14 @@ object Elaborator {
               )
             CA.ConstBody.Builtin(sp)
           case SA.ConstBody.TermBody(term) =>
-            val bodyHeaderEnv = header.bodyEnv.copy(root = envWithSelf.root)
             header.ty match {
               case pi: CA.Term.Pi =>
-                val decreases = c.decreases.map(elabDecreaseSpec(_, header.bodyEnv))
+                val (recursion, bodyHeaderEnv) = c.decreases match {
+                  case Some(decreases) =>
+                    val (selfRef, nextEnv) = header.bodyEnv.bindRecursiveSelf(c.header.name, name)
+                    (Some(CA.Recursion(selfRef, elabDecreaseSpec(decreases, header.bodyEnv))), nextEnv)
+                  case None => (None, header.bodyEnv.copy(root = envWithSelf.root))
+                }
                 CA.ConstBody.TermBody(
                   elabLam(
                     pi,
@@ -829,7 +879,7 @@ object Elaborator {
                     term,
                     Some(nameText),
                     c.unfoldStrategy.contains(UnfoldStrategy.Stable),
-                    decreases,
+                    recursion,
                     c.span,
                     envWithSelf
                   )

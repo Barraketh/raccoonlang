@@ -59,7 +59,8 @@ object ElabAst {
         body: Term,
         span: Span,
         name: Option[String],
-        isStable: Boolean
+        isStable: Boolean,
+        recursiveSelf: Option[CoreAst.LocalRef]
     ) extends Term
 
     final case class Match(

@@ -9,8 +9,8 @@ import com.raccoonlang._
 object TypePatternOps {
   private final case class OpenedApp(fn: Value, args: Vector[Value], env: Env)
 
-  private def requirePi(fn: Value)(implicit eqStore: EqStore): VPi =
-    fn.tpe.caseOf {
+  private def requirePi(fn: Value): VPi =
+    fn.tpe match {
       case pi: VPi => pi
       case other   => throw CannotApplyNonFunction(other)
     }
@@ -68,9 +68,7 @@ object TypePatternOps {
     case Term.LocalRef(ref, span)   => ElabAst.Term.LocalRef(ref, span)
   }
 
-  private[telescope] def toVBinder(binder: CoreAst.Binder, env: Env)(implicit
-      eqStore: EqStore
-  ): (VBinder, ElabAst.Binder) = {
+  private[telescope] def toVBinder(binder: CoreAst.Binder, env: Env): (VBinder, ElabAst.Binder) = {
     def checkPattern(pattern: CoreAst.TypePattern, env: Env): (ElabAst.TypePattern, Env) = {
       pattern match {
         case CPattern.Type(term) =>
@@ -157,9 +155,9 @@ object TypePatternOps {
     VBinder(binder.localRef, binder.ty, expectedTy, collectBinderCaptures(binder.ty), binder.isInstance)
   }
 
-  private def project(value: Value, path: List[Int])(implicit eqStore: EqStore): Value = {
+  private def project(value: Value, path: List[Int]): Value = {
     def projectStep(value: Value, idx: Int): Value =
-      value.caseOf {
+      value match {
         case VSort(level) if idx == 0 => level
         case VApp(_, args, _)         => args.lift(idx).getOrElse(throw FailedToOpenCapture(value, idx))
         case VBlockedApp(_, args, _, _) =>
@@ -171,7 +169,7 @@ object TypePatternOps {
     path.foldLeft(value) { case (cur, nextIdx) => projectStep(cur, nextIdx) }
   }
 
-  private def openCaptures(env: Env, captures: Vector[VCapture], actualTy: Value)(implicit eqStore: EqStore): Env = {
+  private def openCaptures(env: Env, captures: Vector[VCapture], actualTy: Value): Env = {
     captures.foldLeft(env) { (curEnv, capture) =>
       val root = capture.root match {
         case ActualType           => actualTy
@@ -188,9 +186,7 @@ object TypePatternOps {
     }
   }
 
-  private def openPatternPrefix(env: Env, app: EPattern.App, argCount: Int)(implicit
-      eqStore: EqStore
-  ): OpenedApp = {
+  private def openPatternPrefix(env: Env, app: EPattern.App, argCount: Int): OpenedApp = {
     val fnV = evalTypeTerm(app.fn, env)
     val pi = requirePi(fnV)
     val binders = pi.binders
@@ -223,7 +219,7 @@ object TypePatternOps {
     OpenedApp(fnV, argValues.result(), callerEnv)
   }
 
-  private def openPattern(env: Env, pattern: ElabAst.TypePattern)(implicit eqStore: EqStore): (Value, Env) =
+  private def openPattern(env: Env, pattern: ElabAst.TypePattern): (Value, Env) =
     pattern match {
       case app: EPattern.App =>
         val opened = openPatternPrefix(env, app, app.args.length)
@@ -232,9 +228,7 @@ object TypePatternOps {
       case EPattern.Type(term)         => (evalTypeTerm(term, env), env)
     }
 
-  private[telescope] def openBinderType(env: Env, binderType: ElabAst.BinderType)(implicit
-      eqStore: EqStore
-  ): (Value, Env) =
+  private[telescope] def openBinderType(env: Env, binderType: ElabAst.BinderType): (Value, Env) =
     binderType match {
       case EBinderType.TypePattern(tp, _) => openPattern(env, tp)
       case EBinderType.ConstrainedCapture(ref, constraint, _) =>
@@ -243,16 +237,16 @@ object TypePatternOps {
         (captureValue, constraintEnv.putLocal(ref, captureValue))
     }
 
-  private[telescope] def freshenBinder(env: Env, binder: VBinder)(implicit eqStore: EqStore): Env = {
+  private[telescope] def freshenBinder(env: Env, binder: VBinder): Env = {
     val (opened, openedEnv) = openBinderType(env, binder.ty)
     val value = FreshVar.freshVar(binder.name, opened)
     val instanceKey =
-      if (binder.isInstance) Some(InstanceSearch.instanceKey(binder.name, value, eqStore))
+      if (binder.isInstance) Some(InstanceSearch.instanceKey(binder.name, value))
       else None
     openedEnv.putLocal(binder.localRef, value, instanceKey)
   }
 
-  def bindValue(env: Env, binder: VBinder, actual: Value)(implicit eqStore: EqStore): Env = {
+  def bindValue(env: Env, binder: VBinder, actual: Value): Env = {
     val openedEnv = openCaptures(env, binder.captures, actual.tpe)
     openedEnv.putLocal(binder.localRef, actual)
   }
@@ -262,8 +256,6 @@ object TypePatternOps {
       binder: VBinder,
       actual: Value,
       normalizerMap: Normalizers.NormalizerMap
-  )(implicit
-      eqStore: EqStore
   ): Env = {
     val openedEnv = openCaptures(env, binder.captures, actual.tpe)
     val expectedTy = Interpreter.evalTypeTerm(binder.expectedTy, openedEnv)

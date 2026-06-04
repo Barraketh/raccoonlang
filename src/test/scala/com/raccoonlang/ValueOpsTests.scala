@@ -28,7 +28,7 @@ class ValueOpsTests extends munit.FunSuite {
   private def solve(v: Var, solution: Value): EqStore =
     EqStore.empty.allow(DepSet(v.id)).addLink(v.id, solution)
 
-  test("materializeEnv rewrites locals without carrying local instance candidates") {
+  test("materializeEnv rewrites locals and local instance candidates") {
     val ref = CoreAst.LocalRef(0, "x")
     val x = FreshVar.freshVar("x", valueType)
     val solution = symbolicValue("Solved")
@@ -37,17 +37,35 @@ class ValueOpsTests extends munit.FunSuite {
     val materialized = ValueOps.materializeEnv(env, solve(x, solution))
 
     assertEquals(materialized(ref), solution)
+    assertEquals(materialized.instanceSearchTiers("candidate").locals, Vector(solution))
     assert(!materialized(ref).synDeps.contains(x.id))
   }
 
-  test("quote context materializes locals at quote time") {
+  test("materializeEnv leaves globals and global instance candidates closed") {
+    val ref = CoreAst.LocalRef(0, "x")
+    val x = FreshVar.freshVar("x", valueType)
+    val solution = symbolicValue("Solved")
+    val global = symbolicValue("Global")
+    val base = Env.empty
+      .putGlobal("global", global, Some("candidate"))
+      .putLocal(ref, x, Some("candidate"))
+    val materialized = ValueOps.materializeEnv(base, solve(x, solution))
+    val tiers = materialized.instanceSearchTiers("candidate")
+
+    assertEquals(materialized("global"), global)
+    assertEquals(materialized(ref), solution)
+    assertEquals(tiers.locals, Vector(solution))
+    assertEquals(tiers.globals, Vector(global))
+  }
+
+  test("quote context uses materialized locals") {
     val ref = CoreAst.LocalRef(0, "x")
     val x = FreshVar.freshVar("x", valueType)
     val solution = symbolicValue("Solved")
     val env = Env.empty.putLocal(ref, x)
 
-    implicit val eqStore: EqStore = solve(x, solution)
-    val context = ValueQuote.quoteContext(env)
+    val materializedEnv = ValueOps.materializeEnv(env, solve(x, solution))
+    val context = ValueQuote.quoteContext(materializedEnv)
 
     def assertQuotesToLocal(term: ElabAst.Term): Unit =
       term match {
@@ -55,7 +73,7 @@ class ValueOpsTests extends munit.FunSuite {
         case other                        => fail(s"Expected local ref quote for $ref, got $other")
       }
 
-    assertQuotesToLocal(ValueQuote.quoteTerm(x, context, span))
+    assertQuotesToLocal(ValueQuote.quoteTerm(materializedEnv(ref), context, span))
     assertQuotesToLocal(ValueQuote.quoteTerm(solution, context, span))
   }
 
@@ -66,7 +84,7 @@ class ValueOpsTests extends munit.FunSuite {
     val base = Env.empty.putLocal(ref, original)
     val env = new MappingEnv(base, value => if (value == original) mapped else value)
 
-    assertEquals(Interpreter.evalTerm(ETerm.LocalRef(ref, span), env)(EqStore.empty), mapped)
+    assertEquals(Interpreter.evalTerm(ETerm.LocalRef(ref, span), env), mapped)
 
     val capturedIndexes = CapturedIndexes.getCapturedIndexes(ETerm.LocalRef(ref, span), env)
     val closed = RuntimeEnv.closeForEval(env, capturedIndexes)
@@ -104,7 +122,7 @@ class ValueOpsTests extends munit.FunSuite {
     val pi = VPi(
       runtimeEnv,
       Vector(binder),
-      (_, _) => valueType,
+      _ => valueType,
       captured.synDeps,
       ValueId.LocalId(nodeId(1), Vector(captured)),
       typeToTypeClassifier
@@ -121,7 +139,8 @@ class ValueOpsTests extends munit.FunSuite {
       ETerm.LocalRef(capturedRef, span),
       span,
       name = None,
-      isStable = false
+      isStable = false,
+      recursiveSelf = None
     )
     val lam =
       VLam(pi, ValueId.LocalId(nodeId(2), Vector(captured)), isStable = false, LamBody.Core(lamTerm, runtimeEnv))
@@ -134,7 +153,7 @@ class ValueOpsTests extends munit.FunSuite {
       case other                            => fail(s"Expected materialized core lambda body, got $other")
     }
     assert(!materialized.synDeps.contains(captured.id))
-    assertEquals(Interpreter.evalApply(materialized, Vector(symbolicValue("Arg")))(EqStore.empty), solution)
+    assertEquals(Interpreter.evalApply(materialized, Vector(symbolicValue("Arg"))), solution)
   }
 
   test("under-captured core lambda fails on pruned local access") {
@@ -148,7 +167,7 @@ class ValueOpsTests extends munit.FunSuite {
     val pi = VPi(
       runtimeEnv,
       Vector(binder),
-      (_, _) => valueType,
+      _ => valueType,
       DepSet.empty,
       ValueId.LocalId(nodeId(1), Vector.empty),
       typeToTypeClassifier
@@ -165,16 +184,15 @@ class ValueOpsTests extends munit.FunSuite {
       ETerm.LocalRef(capturedRef, span),
       span,
       name = None,
-      isStable = false
+      isStable = false,
+      recursiveSelf = None
     )
     val lam = VLam(pi, ValueId.LocalId(nodeId(2), Vector.empty), isStable = false, LamBody.Core(lamTerm, runtimeEnv))
 
-    intercept[WTF](Interpreter.evalApply(lam, Vector(symbolicValue("Arg")))(EqStore.empty))
+    intercept[WTF](Interpreter.evalApply(lam, Vector(symbolicValue("Arg"))))
   }
 
   test("core lambda execution uses the lambda body closure, not only the Pi closure") {
-    implicit val eqStore: EqStore = EqStore.empty
-
     val capturedRef = CoreAst.LocalRef(0, "captured")
     val argRef = CoreAst.LocalRef(1, "arg")
     val captured = symbolicValue("Captured")
@@ -193,7 +211,8 @@ class ValueOpsTests extends munit.FunSuite {
       ETerm.LocalRef(capturedRef, span),
       span,
       name = None,
-      isStable = false
+      isStable = false,
+      recursiveSelf = None
     )
     val lam = Interpreter.evalLam(lamTerm, vpi, env)
 
@@ -247,7 +266,7 @@ class ValueOpsTests extends munit.FunSuite {
     assert(materialized.synDeps.contains(scrut.id))
 
     val eqAll = eqCaptured.allow(DepSet(scrut.id)).addLink(scrut.id, ctor)
-    assertEquals(Interpreter.resolveInEqStore(materialized)(eqAll).value, solution)
+    assertEquals(Interpreter.resolveInEqStore(materialized, eqAll), solution)
   }
 
   test("blocked match closures rewrite locals to referenced runtime slots") {
@@ -275,7 +294,7 @@ class ValueOpsTests extends munit.FunSuite {
       span
     )
 
-    val blocked = Interpreter.evalTerm(matchTerm, env)(EqStore.empty).asInstanceOf[VBlockedThunk]
+    val blocked = Interpreter.evalTerm(matchTerm, env).asInstanceOf[VBlockedThunk]
 
     blocked.body match {
       case ThunkBody.Match(_, closed) =>
@@ -289,8 +308,6 @@ class ValueOpsTests extends munit.FunSuite {
   }
 
   test("constructor equality accounts for result type") {
-    implicit val eqStore: EqStore = EqStore.empty
-
     val head = ConstructorHead("C", numErased = 0, totalArity = 0, valueType)
     val resultA = symbolicValue("ResultA")
     val resultB = symbolicValue("ResultB")

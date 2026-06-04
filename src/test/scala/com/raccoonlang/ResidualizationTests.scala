@@ -13,7 +13,6 @@ class ResidualizationTests extends munit.FunSuite {
           Interpreter.evalDecl(decl, curWorlds)
         }
         val body = core.body.getOrElse(fail("Program has no body"))
-        implicit val eqStore: EqStore = EqStore.empty
         val resV = TypeChecker.check(body, worlds.checkEnv)
         val ctx = ValueQuote.quoteContext(worlds.checkEnv)
         val term = ValueQuote.quoteTerm(resV, ctx, body.span)
@@ -39,7 +38,7 @@ class ResidualizationTests extends munit.FunSuite {
       case EA.Term.Body(lets, res, _) =>
         lets.exists(l => l.ty.exists(ty => containsGlobal(ty, name)) || containsGlobal(l.value, name)) ||
         containsGlobal(res, name)
-      case EA.Term.Lam(ty, uses, body, _, _, _) =>
+      case EA.Term.Lam(ty, uses, body, _, _, _, _) =>
         containsGlobal(ty, name) ||
         uses.exists(use => containsGlobal(use.normalizer, name)) ||
         containsGlobal(body, name)
@@ -128,7 +127,7 @@ class ResidualizationTests extends munit.FunSuite {
           |""".stripMargin
 
     checkBody(p).term match {
-      case EA.Term.Lam(_, _, body, _, _, _) =>
+      case EA.Term.Lam(_, _, body, _, _, _, _) =>
         assertGlobal(body, "Nat.zero")
       case other => fail(s"Expected lambda body to residualize to Nat.zero, got $other")
     }

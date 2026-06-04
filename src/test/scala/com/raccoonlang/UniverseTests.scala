@@ -304,7 +304,7 @@ class UniverseTests extends munit.FunSuite {
 
   test("sort unification solves a plain level variable") {
     val u = freshLevel("u")
-    implicit val eqStore: EqStore = EqStore.empty.allow(DepSet(u.id))
+    val eqStore = EqStore.empty.allow(DepSet(u.id))
 
     val solved = ValueEquivalence.unify(
       VSort(Value.Level.mk(u.id)),
@@ -318,7 +318,7 @@ class UniverseTests extends munit.FunSuite {
 
   test("sort unification rejects solving u + 1 = 0") {
     val u = freshLevel("u")
-    implicit val eqStore: EqStore = EqStore.empty.allow(DepSet(u.id))
+    val eqStore = EqStore.empty.allow(DepSet(u.id))
 
     intercept[UnificationFailed] {
       ValueEquivalence.unify(

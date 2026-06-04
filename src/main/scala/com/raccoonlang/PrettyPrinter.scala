@@ -130,8 +130,8 @@ object PrettyPrinter {
   }
 
   private def printCoreTerm(t: CoreAst.Term): String = t match {
-    case CoreAst.Term.Lam(ty, _, body, _, _, _, decreases) =>
-      val decreaseStr = decreases.map(spec => s" ${printDecreaseSpec(spec)}").getOrElse("")
+    case CoreAst.Term.Lam(ty, _, body, _, _, _, recursion) =>
+      val decreaseStr = recursion.map(r => s" ${printDecreaseSpec(r.decreases)}").getOrElse("")
       s"fun ${printBinders(ty.binders)}: ${printTypeTerm(ty.out)}$decreaseStr => ${printCoreTerm(body)}"
     case m @ CoreAst.Term.Match(_, _, _, _)  => printMatch(m)
     case b: CoreAst.Term.Body                => printBody(b)
@@ -250,16 +250,16 @@ object PrettyPrinter {
   }
 
   private def printElabTermAtom(t: ElabAst.Term): String = t match {
-    case _: ElabAst.Term.Ref                => printElabTerm0(t)
-    case ElabAst.Term.App(_, _, _)          => printElabTerm0(t)
-    case ElabAst.Term.Lam(_, _, _, _, _, _) => s"(${printElabTerm0(t)})"
-    case ElabAst.Term.Match(_, _, _, _)     => s"(${printElabTerm0(t)})"
-    case ElabAst.Term.Body(_, _, _)         => s"(${printElabTerm0(t)})"
-    case ElabAst.Term.Pi(_, _, _, _)        => s"(${printElabTerm0(t)})"
+    case _: ElabAst.Term.Ref                   => printElabTerm0(t)
+    case ElabAst.Term.App(_, _, _)             => printElabTerm0(t)
+    case ElabAst.Term.Lam(_, _, _, _, _, _, _) => s"(${printElabTerm0(t)})"
+    case ElabAst.Term.Match(_, _, _, _)        => s"(${printElabTerm0(t)})"
+    case ElabAst.Term.Body(_, _, _)            => s"(${printElabTerm0(t)})"
+    case ElabAst.Term.Pi(_, _, _, _)           => s"(${printElabTerm0(t)})"
   }
 
   private def printElabTerm0(t: ElabAst.Term): String = t match {
-    case ElabAst.Term.Lam(ty, _, body, _, _, _) =>
+    case ElabAst.Term.Lam(ty, _, body, _, _, _, _) =>
       s"fun ${printElabBinders(ty.binders)}: ${printElabTypeTerm(ty.out)} => ${printElabTerm0(body)}"
     case m @ ElabAst.Term.Match(_, _, _, _) => printElabMatch(m)
     case b: ElabAst.Term.Body               => printElabBody(b)

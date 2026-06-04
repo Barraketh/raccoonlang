@@ -49,12 +49,12 @@ object ConstructorOps {
     def require(head: ConstructorHead): ConstructorShape = from(head).getOrElse(throw CannotApplyNonFunction(head.tpe))
   }
 
-  def freshSpine(head: ConstructorHead)(implicit eqStore: EqStore): FreshCtorSpine =
+  def freshSpine(head: ConstructorHead): FreshCtorSpine =
     ConstructorShape.from(head) match {
       case Some(shape) =>
         val fresh = BinderOps.freshen(shape.pi)
         val args = shape.pi.binders.map(binder => fresh(binder.localRef))
-        shape.freshSpine(args, shape.pi.codomain(fresh, eqStore), fresh)
+        shape.freshSpine(args, shape.pi.codomain(fresh), fresh)
 
       case None => FreshCtorSpine(head, Vector.empty, head.tpe, Env.empty)
     }

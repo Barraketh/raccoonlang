@@ -9,23 +9,27 @@ object ValueOps {
 
   private object Materialize {
     def materializeEnv(env: Env)(implicit eqStore: EqStore): Env = {
-      MappedEnv(env, materialize)
+      MappedEnv(env, value => materialize(value))
     }
 
     private final case class MappedEnv(base: Env, mapValue: Value => Value) extends DelegatingEnv {
       override def updateBase(newBase: Env): Env = copy(base = newBase)
 
-      override def localBinding(ref: CoreAst.LocalRef): Binding = base.localBinding(ref).mapValue(mapValue)
+      override lazy val locals: Vector[Binding] = base.locals.map(_.mapValue(mapValue))
+
+      override def localBinding(ref: CoreAst.LocalRef): Binding =
+        if (ref.id >= 0 && ref.id < locals.length) locals(ref.id)
+        else throw NotFound(s"${ref.name}#${ref.id}")
     }
 
     def materialize(value: Value)(implicit eqStore: EqStore): Value = {
       if (!mayNeedMaterialization(value)) return value
 
-      val resolved = Interpreter.resolveInEqStore(value)(eqStore)
-      if (!mayNeedMaterialization(resolved.value)) return resolved.value
+      val resolved = Interpreter.resolveInEqStore(value, eqStore)
+      if (!mayNeedMaterialization(resolved)) return resolved
 
-      resolved.caseOf {
-        case LevelTpe | KernelObject | PropTpe | NormalizerType => resolved.value
+      resolved match {
+        case LevelTpe | KernelObject | PropTpe | NormalizerType => resolved
         case n: Normalizer                                      => n
         case level: Level                                       => materializeLevel(level)
         case VSort(level)                                       => VSort(materializeLevel(level))
@@ -72,7 +76,7 @@ object ValueOps {
       value.synDeps.intersects(eqStore.solvedIds)
 
     private def materializeLevel(level: Level)(implicit eqStore: EqStore): Level =
-      level.caseOf {
+      Interpreter.resolveInEqStore(level, eqStore) match {
         case l: Level => l
         case other    => throw NotALevel(other)
       }
@@ -106,7 +110,8 @@ object ValueOps {
     private def materializeLamBody(body: LamBody)(implicit eqStore: EqStore): LamBody =
       body match {
         case LamBody.Core(term, env) => LamBody.Core(term, materializeEnv(env))
-        case native: LamBody.Native  => native
+        case LamBody.Native(run, env, isRawRecursive) =>
+          LamBody.Native(run, materializeEnv(env), isRawRecursive)
       }
 
     private def materializeThunkBody(body: ThunkBody)(implicit eqStore: EqStore): ThunkBody =

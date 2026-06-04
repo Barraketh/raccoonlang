@@ -40,17 +40,17 @@ object Normalizers {
         case _ => List(v)
       }
 
-      private def applyAdd(v1: Value, v2: Value)(implicit eqStore: EqStore): Value =
+      private def applyAdd(v1: Value, v2: Value): Value =
         Interpreter.evalApply(addFn, Vector(v1, v2))
 
-      override def normalize(v: Value, eqStore: EqStore): Value = {
+      override def normalize(v: Value): Value = {
         val flattened = flatten(v).filter(v => v != zero).sortBy(_.key)
         flattened match {
           case Nil         => zero
           case head :: Nil => head
           case h1 :: h2 :: tail =>
-            tail.foldLeft(applyAdd(h1, h2)(eqStore)) { case (curVal, nextVal) =>
-              applyAdd(curVal, nextVal)(eqStore)
+            tail.foldLeft(applyAdd(h1, h2)) { case (curVal, nextVal) =>
+              applyAdd(curVal, nextVal)
             }
         }
       }

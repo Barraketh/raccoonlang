@@ -64,7 +64,7 @@ object CapturedIndexes {
         }
         goTerm(res, cutoff, refs)
 
-      case Term.Lam(ty, _, body, _, _, _) =>
+      case Term.Lam(ty, _, body, _, _, _, _) =>
         goTerm(ty, cutoff, refs)
         goTerm(body, cutoff, refs)
 

@@ -79,7 +79,7 @@ class TerminationTests extends munit.FunSuite {
           |}
           |""".stripMargin
 
-    typeError[InvalidRecursiveOccurrence](p)
+    typeError[CannotQuoteValue](p)
   }
 
   test("structural recursion searches through transitive constructor fields") {
@@ -93,6 +93,26 @@ class TerminationTests extends munit.FunSuite {
           |    match x with
           |    | Nat.zero => Nat.zero
           |    | Nat.succ y => skipTwo(y)
+          |  }
+          |}
+          |""".stripMargin
+
+    runProgram(p)
+  }
+
+  test("recursive ref is available in nested binder types under match refinements") {
+    val p =
+      natDecls +
+        """
+          |inductive Box (n: Nat) : Type
+          | | mk {n: Nat} : Box(n)
+          |
+          |def f (n: Nat): Nat decreases structural(n) := {
+          |  match n with
+          |  | Nat.zero => Nat.zero
+          |  | Nat.succ k => {
+          |    let g := fun (x: Box(f(k))): Nat => Nat.zero
+          |    Nat.zero
           |  }
           |}
           |""".stripMargin
@@ -150,6 +170,77 @@ class TerminationTests extends munit.FunSuite {
           |""".stripMargin
 
     typeError[NotFound](p)
+  }
+
+  test("qualified recursive self references resolve to recursive local") {
+    val rootQualified =
+      natDecls +
+        """
+          |def pred (n: Nat): Nat decreases structural(n) := {
+          |  match n with
+          |  | Nat.zero => Nat.zero
+          |  | Nat.succ x => _root_.pred(x)
+          |}
+          |
+          |pred(Nat.succ(Nat.succ(Nat.zero)))
+          |""".stripMargin
+
+    assertEquals(toShape(runProgram(rootQualified).get), zeroS)
+
+    val namespaced =
+      natDecls +
+        """
+          |namespace Math {
+          |  def pred (n: Nat): Nat decreases structural(n) := {
+          |    match n with
+          |    | Nat.zero => Nat.zero
+          |    | Nat.succ x => _root_.Math.pred(x)
+          |  }
+          |}
+          |
+          |Math.pred(Nat.succ(Nat.succ(Nat.zero)))
+          |""".stripMargin
+
+    assertEquals(toShape(runProgram(namespaced).get), zeroS)
+
+    val namespaceQualified =
+      natDecls +
+        """
+          |namespace Math {
+          |  def pred (n: Nat): Nat decreases structural(n) := {
+          |    match n with
+          |    | Nat.zero => Nat.zero
+          |    | Nat.succ x => Math.pred(x)
+          |  }
+          |}
+          |
+          |Math.pred(Nat.succ(Nat.succ(Nat.zero)))
+          |""".stripMargin
+
+    assertEquals(toShape(runProgram(namespaceQualified).get), zeroS)
+  }
+
+  test("recursive function name cannot be shadowed by a parameter") {
+    val p =
+      natDecls +
+        """
+          |def bad (bad: Nat): Nat decreases structural(bad) := bad
+          |""".stripMargin
+
+    typeError[AlreadyDefined](p)
+  }
+
+  test("recursive function name cannot be shadowed by a local") {
+    val p =
+      natDecls +
+        """
+          |def bad (n: Nat): Nat decreases structural(n) := {
+          |  let bad := n
+          |  Nat.zero
+          |}
+          |""".stripMargin
+
+    typeError[AlreadyDefined](p)
   }
 
   test("non-decreasing structural recursion is rejected") {
@@ -221,7 +312,7 @@ class TerminationTests extends munit.FunSuite {
           |}
           |""".stripMargin
 
-    typeError[InvalidRecursiveOccurrence](p)
+    typeError[CannotQuoteValue](p)
   }
 
 
@@ -235,6 +326,6 @@ class TerminationTests extends munit.FunSuite {
           |}
           |""".stripMargin
 
-    typeError[InvalidRecursiveOccurrence](p)
+    typeError[CannotQuoteValue](p)
   }
 }

@@ -1,22 +1,9 @@
 package com.raccoonlang
 
-import com.raccoonlang.Value.ResolvedValue
-
 /**
  * Represents a typechecked value representation - the values that live in an Env. Values can contain Vars(), which
  * represent unknown values. Vars have a unique id, which means they can participate in equality. Thus values could be
- * thought of as a typed, maximally reduced representation of CoreAst / ElabAst.
- *
- * Values are meant to be interpreted in the context of an EqStore, which carries Var assignments. When we discover a
- * solution (Var1 = Foo), we do not rewrite the entire value, but instead just add it to EqStore. When traversing a
- * Value, if we encounter any Var, we need to check whether it's been resolved to anything, which is done through
- * [[Interpreter.resolveInEqStore]]
- *
- * IMPORTANT: DO NOT DIRECTLY PATTERN MATCH Values, unless they have already been resolved, or you know EqStore to be
- * empty (such as during type-checking of globals). Either call [[Interpreter.resolveInEqStore]] directly, or use
- * value.caseOf, which calls it automatically
- *
- * Invariants:
+ * thought of as a typed, maximally reduced representation of CoreAst / ElabAst. Invariants:
  *   - Every value is typed correctly. Types are themselves Values, and so are Sorts and Levels
  *   - synDeps is the set of all VarIds that this Value contains, including in its type. It is extremely important to
  * maintain this correctly
@@ -31,13 +18,6 @@ sealed trait Value {
   final lazy val needsStructuralDefEq: Boolean = Value.needsStructuralDefEq(this)
 
   override def toString: String = PrettyPrinter.print(this)
-
-  // Some convenience methods for resolving values
-  def caseOf[B](f: PartialFunction[Value, B])(implicit eqStore: EqStore): B =
-    Interpreter.resolveInEqStore(this).caseOf(f)
-
-  def use[B](f: ResolvedValue => B)(implicit eqStore: EqStore): B =
-    f(Interpreter.resolveInEqStore(this))
 }
 
 sealed trait TopLevelValue extends Value {
@@ -104,8 +84,8 @@ object Value {
     final case class Core(term: ElabAst.Term.Lam, env: Env) extends LamBody {
       override lazy val synDeps: DepSet = envDeps(env)
     }
-    final case class Native(run: (Vector[Value], EqStore) => Value, isRawRecursive: Boolean = false) extends LamBody {
-      override val synDeps: DepSet = DepSet.empty
+    final case class Native(run: (Vector[Value], Env) => Value, env: Env, isRawRecursive: Boolean) extends LamBody {
+      override lazy val synDeps: DepSet = envDeps(env)
     }
   }
 
@@ -236,7 +216,7 @@ object Value {
   case class VPi(
       env: Env,
       binders: Vector[VBinder],
-      codomain: (Env, EqStore) => Value,
+      codomain: Env => Value,
       synDeps: DepSet,
       id: ValueId,
       tpe: Universe
@@ -375,7 +355,7 @@ object Value {
 
     def dependencies: Vector[Value]
 
-    def normalize(v: Value, eqStore: EqStore): Value
+    def normalize(v: Value): Value
 
     def name: String
 
@@ -401,14 +381,5 @@ object Value {
   sealed trait ConstType
   case class Inductive(meta: InductiveMeta) extends ConstType
   case object Symbol extends ConstType
-
-  case class ResolvedValue(value: Value) {
-    def caseOf[B](f: PartialFunction[Value, B]): B = f(value)
-  }
-
-  implicit class RichValuePair(p: (Value, Value)) {
-    def caseOf[B](f: PartialFunction[(Value, Value), B])(implicit eqStore: EqStore): B =
-      f((Interpreter.resolveInEqStore(p._1).value, Interpreter.resolveInEqStore(p._2).value))
-  }
 
 }

@@ -9,8 +9,8 @@ object ValueEquivalence {
       v2: Value,
       normalizerMap: Normalizers.NormalizerMap,
       propIrrelevant: Boolean
-  )(implicit eqStore: EqStore): Boolean =
-    DefEq.defEq(v1, v2)(eqStore, normalizerMap, propIrrelevant)
+  ): Boolean =
+    DefEq.defEq(v1, v2)(normalizerMap, propIrrelevant)
 
   def unify(v1: Value, v2: Value, meta: EqStore, normalizerMap: Normalizers.NormalizerMap): EqStore =
     Unify.unify(v1, v2, meta)(normalizerMap)
@@ -19,7 +19,6 @@ object ValueEquivalence {
     case class RelatedPis(vars: Vector[Value], out1: Value, out2: Value)
 
     def relatePis(pi1: VPi, pi2: VPi)(implicit
-        eqStore: EqStore,
         normalizerMap: Normalizers.NormalizerMap,
         propIrrelevant: Boolean
     ): RelatedPis = {
@@ -30,14 +29,13 @@ object ValueEquivalence {
       val sharedVars = pi1.binders.map(binder => nextEnv1(binder.localRef))
       val nextEnv2 = BinderOps.checkAndInstantiate(pi2.binders, pi2.env, sharedVars, normalizerMap)
 
-      val out1 = pi1.codomain(nextEnv1, eqStore)
-      val out2 = pi2.codomain(nextEnv2, eqStore)
+      val out1 = pi1.codomain(nextEnv1)
+      val out2 = pi2.codomain(nextEnv2)
 
       RelatedPis(sharedVars, out1, out2)
     }
 
     private def defEqPi(pi1: VPi, pi2: VPi)(implicit
-        eqStore: EqStore,
         normalizerMap: Normalizers.NormalizerMap,
         propIrrelevant: Boolean
     ): Option[Vector[Value]] = {
@@ -51,7 +49,6 @@ object ValueEquivalence {
     }
 
     private def defEqLamId(id1: ValueId, id2: ValueId)(implicit
-        eqStore: EqStore,
         normalizerMap: Normalizers.NormalizerMap,
         propIrrelevant: Boolean
     ): Boolean = {
@@ -64,10 +61,7 @@ object ValueEquivalence {
       }
     }
 
-    def getNormalizerF(v1: Value, v2: Value)(implicit
-        eqStore: EqStore,
-        normalizerMap: Normalizers.NormalizerMap
-    ): Value => Value = {
+    def getNormalizerF(v1: Value, v2: Value)(implicit normalizerMap: Normalizers.NormalizerMap): Value => Value = {
       val key1 = Normalizers.getCarrierKey(v1.tpe)
       val key2 = Normalizers.getCarrierKey(v2.tpe)
       val normalizer =
@@ -75,7 +69,7 @@ object ValueEquivalence {
         else None
 
       normalizer match {
-        case Some(n) => (v: Value) => n.normalize(v, eqStore)
+        case Some(n) => (v: Value) => n.normalize(v)
         case None    => (v: Value) => v
       }
     }
@@ -83,30 +77,26 @@ object ValueEquivalence {
     private def sameValueObject(v1: Value, v2: Value): Boolean =
       v1.asInstanceOf[AnyRef] eq v2.asInstanceOf[AnyRef]
 
-    private def hasSolvedDeps(v: Value)(implicit eqStore: EqStore): Boolean = v.synDeps.intersects(eqStore.solvedIds)
+    private def shouldTryStructuralDefEq(a: Value, b: Value): Boolean =
+      a.needsStructuralDefEq || b.needsStructuralDefEq
 
-    private def shouldTryStructuralDefEq(a: Value, b: Value)(implicit eqStore: EqStore): Boolean =
-      hasSolvedDeps(a) || hasSolvedDeps(b) || a.needsStructuralDefEq || b.needsStructuralDefEq
-
-    private def typeLivesInProp(tpe: Value)(implicit eqStore: EqStore): Boolean =
-      tpe.caseOf {
+    private def typeLivesInProp(tpe: Value): Boolean =
+      tpe match {
         case PropTpe => false
         case tpe0 =>
-          tpe0.tpe.caseOf {
+          tpe0.tpe match {
             case PropTpe => true
             case _       => false
           }
       }
 
     private def proofIrrelevant(a: Value, b: Value)(implicit
-        eqStore: EqStore,
         normalizerMap: Normalizers.NormalizerMap,
         propIrrelevant: Boolean
     ): Boolean =
       propIrrelevant && typeLivesInProp(a.tpe) && defEq(a.tpe, b.tpe)
 
     private def defEqStructural(a: Value, b: Value)(implicit
-        eqStore: EqStore,
         normalizerMap: Normalizers.NormalizerMap,
         propIrrelevant: Boolean
     ): Boolean =
@@ -144,7 +134,6 @@ object ValueEquivalence {
       }
 
     def defEq(v1: Value, v2: Value)(implicit
-        eqStore: EqStore,
         normalizerMap: Normalizers.NormalizerMap,
         propIrrelevant: Boolean
     ): Boolean = {
@@ -153,8 +142,8 @@ object ValueEquivalence {
       else {
         val normalizerF = getNormalizerF(v1, v2)
 
-        val a = v1.use(rv => normalizerF(rv.value))
-        val b = v2.use(rv => normalizerF(rv.value))
+        val a = normalizerF(v1)
+        val b = normalizerF(v2)
 
         sameValueObject(a, b) || a.key == b.key || (shouldTryStructuralDefEq(a, b) && defEqStructural(a, b))
       }
@@ -166,7 +155,7 @@ object ValueEquivalence {
     private def unifyPis(pi1: VPi, pi2: VPi, eqStore: EqStore)(implicit
         normalizerMap: Normalizers.NormalizerMap
     ): (EqStore, Vector[Value]) = {
-      val related = DefEq.relatePis(pi1, pi2)(eqStore, normalizerMap, propIrrelevant = true)
+      val related = DefEq.relatePis(pi1, pi2)(normalizerMap, propIrrelevant = true)
       val nextEqStore = unify(related.out1, related.out2, eqStore)
       (nextEqStore, related.vars)
     }
@@ -193,20 +182,20 @@ object ValueEquivalence {
     }
 
     private def unifySorts(v1: VSort, v2: VSort, meta: EqStore): EqStore = {
-      (v1.level, v2.level).caseOf {
+      (v1.level, v2.level) match {
         case (l1: Level, l2: Level) =>
           unifyLevels(l1, l2, meta)
             .orElse(unifyLevels(l2, l1, meta))
             .getOrElse { throw UnificationFailed(l1, l2) }
         case _ => throw UnificationFailed(v1, v2)
-      }(meta)
+      }
 
     }
 
     private def linkVar(v: Var, other: Value, meta: EqStore)(implicit
         normalizerMap: Normalizers.NormalizerMap
     ): EqStore = {
-      val m1 = if (TypeChecker.sortLeq(other.tpe, v.tpe)(meta)) meta else unify(v.tpe, other.tpe, meta)
+      val m1 = if (TypeChecker.sortLeq(other.tpe, v.tpe)) meta else unify(v.tpe, other.tpe, meta)
       if (m1.occurs(v.id, other))
         throw OccursCheckFailed(v.id, other)
       m1.addLink(v.id, other)
@@ -233,12 +222,14 @@ object ValueEquivalence {
     def unify(v1: Value, v2: Value, meta: EqStore)(implicit
         normalizerMap: Normalizers.NormalizerMap
     ): EqStore = {
-      val normalizerF = DefEq.getNormalizerF(v1, v2)(meta, normalizerMap)
+      val resolved1 = ValueOps.materialize(v1, meta)
+      val resolved2 = ValueOps.materialize(v2, meta)
+      val normalizerF = DefEq.getNormalizerF(resolved1, resolved2)(normalizerMap)
 
-      val a = normalizerF(Interpreter.resolveInEqStore(v1)(meta).value)
-      val b = normalizerF(Interpreter.resolveInEqStore(v2)(meta).value)
+      val a = normalizerF(resolved1)
+      val b = normalizerF(resolved2)
 
-      if (DefEq.defEq(a, b)(meta, normalizerMap, propIrrelevant = true)) return meta
+      if (DefEq.defEq(a, b)(normalizerMap, propIrrelevant = true)) return meta
 
       (a, b) match {
 
@@ -247,8 +238,9 @@ object ValueEquivalence {
         case (l1: VLam, l2: VLam) if l1.tpe.binders.length == l2.tpe.binders.length =>
           // We know that the id check failed - falling back to extensional unification
           val (nextMeta, sharedVars) = unifyPis(l1.tpe, l2.tpe, meta)
-          val res1 = Interpreter.runLam(l1, sharedVars)(nextMeta)
-          val res2 = Interpreter.runLam(l2, sharedVars)(nextMeta)
+          val mappedVars = sharedVars.map(arg => ValueOps.materialize(arg, nextMeta))
+          val res1 = Interpreter.runLam(ValueOps.materialize(l1, nextMeta).asInstanceOf[VLam], mappedVars)
+          val res2 = Interpreter.runLam(ValueOps.materialize(l2, nextMeta).asInstanceOf[VLam], mappedVars)
           unify(res1, res2, nextMeta)
         case (v1: AppliedValue, v2: AppliedValue) if v1.args.length == v2.args.length =>
           val m0 = unify(v1.head, v2.head, meta)

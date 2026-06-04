@@ -51,6 +51,8 @@ object CoreAst {
     final case class Measure(term: Term, span: Span) extends DecreaseSpec
   }
 
+  final case class Recursion(selfRef: LocalRef, decreases: DecreaseSpec)
+
   // Terms that can appear in type expressions
   sealed trait TypeTerm extends Term
 
@@ -113,7 +115,7 @@ object CoreAst {
         span: Span,
         name: Option[String],
         isStable: Boolean,
-        decreases: Option[DecreaseSpec]
+        recursion: Option[Recursion]
     ) extends Term
 
     final case class Match(

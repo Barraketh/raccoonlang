@@ -1,6 +1,6 @@
 package com.raccoonlang
 import com.raccoonlang.Value._
-import com.raccoonlang.telescope.{BinderOps, TypePatternOps}
+import com.raccoonlang.telescope.BinderOps
 
 import scala.collection.mutable
 
@@ -34,26 +34,19 @@ object InstanceSearch {
       hasBudgetExceeded: Boolean = false
   )
 
-  def resultHeadKey(tpe: Value, eqStore: EqStore): Option[String] = {
-    implicit val meta: EqStore = eqStore
+  def resultHeadKey(tpe: Value): Option[String] =
     resultType(tpe).flatMap(headKey)
-  }
 
-  def instanceKey(name: String, value: Value, eqStore: EqStore): String = {
-    resultHeadKey(value.tpe, eqStore).getOrElse(throw InvalidInstance(name, value.tpe))
-  }
+  def instanceKey(name: String, value: Value): String =
+    resultHeadKey(value.tpe).getOrElse(throw InvalidInstance(name, value.tpe))
 
-  def solve(goal: Value, searchEnv: Env)(implicit eqStore: EqStore): Value = {
+  def solve(goal: Value, searchEnv: Env): Value = {
     val ctx = new SearchContext
-    solveInternal(goal, searchEnv, SearchState.empty, ctx)(
-      eqStore.copy(refinable = DepSet.empty)
-    )
+    solveInternal(goal, searchEnv, SearchState.empty, ctx)
   }
 
-  private def solveInternal(goal: Value, searchEnv: Env, state: SearchState, ctx: SearchContext)(implicit
-      eqStore: EqStore
-  ): Value = {
-    val (head, key) = goal.use(rv => headKeyResolved(rv).getOrElse(throw NoInstanceFound(goal)) -> rv.value.key)
+  private def solveInternal(goal: Value, searchEnv: Env, state: SearchState, ctx: SearchContext): Value = {
+    val (head, key) = headKey(goal).getOrElse(throw NoInstanceFound(goal)) -> goal.key
 
     ctx.get(key) match {
       case Some(cached) => return cached
@@ -84,12 +77,12 @@ object InstanceSearch {
   }
 
   private def tryCandidates(
-      candidates: Vector[InstanceCandidate],
+      candidates: Vector[Value],
       goal: Value,
       searchEnv: Env,
       state: SearchState,
       ctx: SearchContext
-  )(implicit eqStore: EqStore): CandidateSearch = {
+  ): CandidateSearch = {
     var hasCycle = false
     var hasBudgetExceeded = false
 
@@ -112,29 +105,26 @@ object InstanceSearch {
   }
 
   private def tryCandidate(
-      candidate: InstanceCandidate,
+      candidate: Value,
       goal: Value,
       searchEnv: Env,
       state: SearchState,
       ctx: SearchContext
-  )(implicit
-      eqStore: EqStore
   ): Value = {
-    candidate.value.tpe.caseOf {
+    candidate.tpe match {
       case pi: VPi =>
         val freshEnv = BinderOps.freshen(pi)
-        val resultTy = pi.codomain(freshEnv, eqStore)
+        val resultTy = pi.codomain(freshEnv)
 
         val candidateDeps = freshEnv.allDeps -- pi.env.allDeps
-        val candidateEq = ValueEquivalence.unify(resultTy, goal, eqStore.allow(candidateDeps), searchEnv.normalizers)
+        val candidateEq =
+          ValueEquivalence.unify(resultTy, goal, EqStore.empty.allow(candidateDeps), searchEnv.normalizers)
         val freshArgs = pi.binders.map(binder => freshEnv(binder.localRef))
 
         val values = Vector.newBuilder[Value]
         val binders = pi.binders
-        var telescopeEnv = pi.env
-        var idx = 0
 
-        while (idx < binders.length) {
+        binders.indices.foreach { idx =>
           val binder = binders(idx)
           val freshArg = freshArgs(idx)
           val inferred = ValueOps.materialize(freshArg, candidateEq)
@@ -149,35 +139,31 @@ object InstanceSearch {
               throw NoInstanceFound(goal)
             }
 
-          telescopeEnv = TypePatternOps.bindValue(telescopeEnv, binder, arg)(candidateEq)
           values += arg
-          idx += 1
         }
 
         val args = values.result()
-        if (args.isEmpty) throw WTF(s"Instance candidate ${candidate.name} has empty telescope")
-        Interpreter.evalApply(candidate.value, args)
+        Interpreter.evalApply(candidate, args)
 
       case resultTy =>
-        ValueEquivalence.unify(resultTy, goal, eqStore, searchEnv.normalizers)
-        candidate.value
+        ValueEquivalence.unify(resultTy, goal, EqStore.empty, searchEnv.normalizers)
+        candidate
     }
   }
 
-  private def resultType(tpe: Value)(implicit eqStore: EqStore): Option[Value] =
-    tpe.caseOf {
+  private def resultType(tpe: Value): Option[Value] =
+    tpe match {
       case pi: VPi =>
         val freshEnv = BinderOps.freshen(pi)
-        Some(pi.codomain(freshEnv, eqStore))
+        Some(pi.codomain(freshEnv))
       case other => Some(other)
     }
 
-  private def headKey(value: Value)(implicit eqStore: EqStore): Option[String] = value.use(headKeyResolved)
-
-  private def headKeyResolved(value: ResolvedValue): Option[String] = value.caseOf {
-    case VApp(VConst(name, _, _), _, _) => Some(name)
-    case VConst(name, _, _)             => Some(name)
-    case _                              => None
-  }
+  private def headKey(value: Value): Option[String] =
+    value match {
+      case VApp(VConst(name, _, _), _, _) => Some(name)
+      case VConst(name, _, _)             => Some(name)
+      case _                              => None
+    }
 
 }
