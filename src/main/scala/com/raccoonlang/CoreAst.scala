@@ -10,11 +10,11 @@ object CoreAst {
     case object Inline extends UnfoldStrategy
 
     // Try to unfold, but if the result is blocked and does not have a stable head then treat as opaque (which will
-    // return VBlockedApp(thisFn, args), which WILL have a stable head since thisFn is stable. The goal of this strategy
-    // is to allow normalizers to rewrite expressions - if foo calls bar calls baz, and the normalizers only knows about
-    // foo then even if baz gets blocked, I want to return VBlockedApp(foo, ...).  Technically this information should
-    // probably live on the normalizer itself, but that's more complicated to implement, so for now it will be a
-    // property of the function, and we'll see if it causes any trouble.
+    // return a blocked VApp(thisFn, args), with a stable head since thisFn is stable. The goal of this strategy is to
+    // allow normalizers to rewrite expressions - if foo calls bar calls baz, and the normalizer only knows about foo,
+    // then even if baz gets blocked, I want to return a blocked VApp(foo, ...). Technically this information should
+    // probably live on the normalizer itself, but that's more complicated to implement, so for now it will be a property
+    // of the function, and we'll see if it causes any trouble.
     case object Stable extends UnfoldStrategy
   }
 

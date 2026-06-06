@@ -120,7 +120,7 @@ object ValueEquivalence {
             }
           }
 
-        case (v1: AppliedValue, v2: AppliedValue) if v1.args.length == v2.args.length =>
+        case (v1: VApp, v2: VApp) if v1.args.length == v2.args.length =>
           defEq(v1.head, v2.head) &&
           v1.args.zip(v2.args).forall { case (arg1, arg2) => defEq(arg1, arg2) } &&
           defEq(v1.tpe, v2.tpe) // Important for constructors
@@ -242,7 +242,7 @@ object ValueEquivalence {
           val res1 = Interpreter.runLam(ValueOps.materialize(l1, nextMeta).asInstanceOf[VLam], mappedVars)
           val res2 = Interpreter.runLam(ValueOps.materialize(l2, nextMeta).asInstanceOf[VLam], mappedVars)
           unify(res1, res2, nextMeta)
-        case (v1: AppliedValue, v2: AppliedValue) if v1.args.length == v2.args.length =>
+        case (v1: VApp, v2: VApp) if v1.args.length == v2.args.length =>
           val m0 = unify(v1.head, v2.head, meta)
           val m1 = v1.args.zip(v2.args).foldLeft(m0) { case (newCtx, (arg1, arg2)) =>
             unify(arg1, arg2, newCtx)

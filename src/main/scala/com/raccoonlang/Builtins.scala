@@ -111,8 +111,8 @@ private object Builtins {
   private object QuotientMk {
     def unapply(value: Value): Option[Value] =
       value match {
-        case ctor @ VCtor(head, _, _) if head.name == MkName && ctor.fields.length == 1 => Some(ctor.fields.head)
-        case _                                                                          => None
+        case VCtor(head, fields, _) if head.name == MkName && fields.length == 1 => Some(fields.head)
+        case _                                                                   => None
       }
   }
 }

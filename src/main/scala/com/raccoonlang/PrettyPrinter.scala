@@ -294,12 +294,11 @@ object PrettyPrinter {
     case pi: Value.VPi                              => "VPi"
     case Value.VConst(name, _, _)                   => name
     case Value.ConstructorHead(name, _, _, _)       => name
-    case ctor @ Value.VCtor(head, _, _) =>
+    case Value.VCtor(head, fields, _) =>
       val headStr = print(head)
-      val fields = ctor.fields
       if (fields.isEmpty) headStr
       else s"$headStr(${fields.map(print).mkString(", ")})"
-    case v: Value.AppliedValue  => printApp(v.head, v.args)
+    case v: Value.VApp          => printApp(v.head, v.args)
     case v: Value.VLam          => s"func#${v.id}"
     case Value.Var(name, id, _) => s"$name#$id"
     case s: Value.NeutralThunk  => s"match#${s.id}"

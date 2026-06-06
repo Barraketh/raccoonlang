@@ -35,15 +35,8 @@ object ValueOps {
         case VSort(level)                                       => VSort(materializeLevel(level))
         case Var(name, id, tpe)                                 => Var(name, id, materialize(tpe))
         case VConst(name, constType, tpe)                       => VConst(name, constType, materialize(tpe))
-        case VApp(head, args, tpe) =>
-          VApp(materializeConst(head), args.map(materialize(_)), materialize(tpe))
-        case VBlockedApp(head, args, tpe, blockerId) =>
-          VBlockedApp(
-            materialize(head),
-            args.map(materialize(_)),
-            materialize(tpe),
-            blockerId
-          )
+        case VApp(head, args, tpe, blockerId) =>
+          VApp(materialize(head), args.map(materialize(_)), materialize(tpe), blockerId)
         case NeutralThunk(term, env, id, tpe, blockerId) =>
           NeutralThunk(
             term,
@@ -54,12 +47,6 @@ object ValueOps {
           )
         case ctor: ConstructorHead =>
           ctor.copy(tpe = materialize(ctor.tpe))
-        case VCtor(head, fields, tpe) =>
-          VCtor(
-            head.copy(tpe = materialize(head.tpe)),
-            fields.map(materialize(_)),
-            materialize(tpe)
-          )
         case pi: VPi =>
           materializePi(pi)
         case VLam(tpe, id, isStable, body) =>
@@ -89,9 +76,6 @@ object ValueOps {
         id = materializeId(pi.id),
         tpe = materializeUniverse(pi.tpe)
       )
-
-    private def materializeConst(value: VConst)(implicit eqStore: EqStore): VConst =
-      value.copy(tpe = materialize(value.tpe))
 
     private def materializeId(id: ValueId)(implicit eqStore: EqStore): ValueId =
       id match {

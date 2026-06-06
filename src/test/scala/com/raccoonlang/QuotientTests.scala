@@ -23,11 +23,10 @@ class QuotientTests extends munit.FunSuite {
 
   private def toShape(v: Value): Shape = v match {
     case Value.ConstructorHead(n, _, _, _) => SConst(n)
-    case ctor @ Value.VCtor(h, _, _) =>
-      val fields = ctor.fields
+    case Value.VCtor(h, fields, _) =>
       if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))
     case Value.VConst(n, _, _)  => SConst(n)
-    case Value.VApp(h, args, _) => SApp(toShape(h), args.toList.map(toShape))
+    case Value.VApp(h, args, _, _) => SApp(toShape(h), args.toList.map(toShape))
     case other                  => SConst(other.toString)
   }
 
@@ -50,9 +49,8 @@ class QuotientTests extends munit.FunSuite {
     )
 
     res match {
-      case ctor @ Value.VCtor(head, fields, _) =>
+      case Value.VCtor(head, fields, _) =>
         assertEquals(head.name, "Quot.mk")
-        assertEquals(ctor.fields.map(toShape), Vector(natZero))
         assertEquals(fields.map(toShape), Vector(natZero))
       case other =>
         fail(s"Expected Quot.mk constructor value, got $other")
@@ -118,7 +116,7 @@ class QuotientTests extends munit.FunSuite {
     )
 
     res.tpe match {
-      case Value.VApp(Value.VConst("Eq", _, _), Vector(quotTy, left, right), _) =>
+      case Value.VApp(Value.VConst("Eq", _, _), Vector(quotTy, left, right), _, _) =>
         assert(PrettyPrinter.print(quotTy).startsWith("Quot(Nat, "))
         assertEquals(toShape(left), SApp(SConst("Quot.mk"), List(natZero)))
         assertEquals(toShape(right), SApp(SConst("Quot.mk"), List(natZero)))

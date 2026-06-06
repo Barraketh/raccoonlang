@@ -75,8 +75,8 @@ object TerminationChecker {
 
   private def isStrictSubterm(candidate: Value, root: Value, normalizers: Normalizers.NormalizerMap): Boolean =
     root match {
-      case ctor: VCtor =>
-        ctor.fields.exists { field =>
+      case VCtor(_, fields, _) =>
+        fields.exists { field =>
           ValueEquivalence.defEq(candidate, field, normalizers, propIrrelevant = false) ||
           isStrictSubterm(candidate, field, normalizers)
         }

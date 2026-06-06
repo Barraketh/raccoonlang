@@ -155,22 +155,19 @@ object ValueQuote {
         ) throw CannotQuoteValue(const, "internal synthetic constant", Some(span))
         else ElabAst.Term.GlobalRef(name, span)
 
-      case VApp(head, args, _) =>
+      case VCtor(head, fields, tpe) => quoteCtor(head, fields, tpe, context, span)
+
+      case VApp(head, args, _, _) =>
         val fn = quoteAppHead(head, context, span)
         ElabAst.Term.App(fn, args.map(arg => quoteTerm(arg, context, span)), span)
 
       case NeutralThunk(term, env, _, _, _) => quoteClosedMatch(term, env, context, span)
-
-      case VBlockedApp(head, args, _, _) =>
-        ElabAst.Term.App(quoteAppHead(head, context, span), args.map(arg => quoteTerm(arg, context, span)), span)
 
       case lam: VLam => quoteLam(lam, context, span)
 
       case pi: VPi => quotePiOpened(pi, context, span).term
 
       case head: ConstructorHead => ElabAst.Term.GlobalRef(head.name, span)
-
-      case ctor: VCtor => quoteCtor(ctor, context, span)
 
       case level: Level => quoteLevel(level, context, span)
 
@@ -197,8 +194,13 @@ object ValueQuote {
     )
   }
 
-  private def quoteCtor(ctor: VCtor, context: QuoteContext, span: Span): ElabAst.Term = {
-    val VCtor(head, fields, tpe) = ctor
+  private def quoteCtor(
+      head: ConstructorHead,
+      fields: Vector[Value],
+      tpe: Value,
+      context: QuoteContext,
+      span: Span
+  ): ElabAst.Term = {
     val erasedArgs =
       if (head.erasedFamilyArgIndexes.isEmpty) Vector.empty
       else {

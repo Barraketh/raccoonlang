@@ -221,7 +221,7 @@ object Interpreter {
     val scrut = evalTerm(m.scrut, env)
     val (head, args) = scrut match {
       case VCtor(head, fields, _) => (head, fields)
-      case other                    =>
+      case other                  =>
         // We are either blocked or stuck
         val capturedIndexes = CapturedIndexes.getCapturedIndexes(m, env)
         val matchCaptures: Vector[Value] = captureValues(env, capturedIndexes)

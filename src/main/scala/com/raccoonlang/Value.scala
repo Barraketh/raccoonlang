@@ -40,7 +40,7 @@ object Value {
   private[raccoonlang] def needsStructuralDefEq(value: Value): Boolean =
     isKnownProof(value) || (value match {
       case _: VPi | _: VLam | _: NeutralThunk => true
-      case app: AppliedValue =>
+      case app: VApp =>
         app.head.needsStructuralDefEq || app.args.exists(_.needsStructuralDefEq) || app.tpe.needsStructuralDefEq
       case _ => false
     })
@@ -220,31 +220,28 @@ object Value {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
-  sealed trait AppliedValue extends Value {
-    def head: Value
-
-    def args: Seq[Value]
-
-    def tpe: Value
-
-    override lazy val synDeps: DepSet = {
+  case class VApp(head: Value, args: Vector[Value], tpe: Value, blockerId: Option[VarId] = None)
+    extends Value
+    with UpdatableType {
+    override val synDeps: DepSet = {
       val res = DepSet.newBuilder
       res.unionInPlace(head.synDeps)
       args.foreach(v => res.unionInPlace(v.synDeps))
       res.unionInPlace(tpe.synDeps)
       res.result()
     }
-  }
 
-  case class VApp(head: VConst, args: Vector[Value], tpe: Value) extends AppliedValue with UpdatableType {
-    override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
-  }
-
-  case class VBlockedApp(head: Value, args: Vector[Value], tpe: Value, blockerId: VarId)
-    extends AppliedValue
-    with UpdatableType {
-    require(args.nonEmpty, "Blocked application requires at least one argument")
-    require(synDeps.contains(blockerId), "Blocked application synDeps must include blockerId")
+    require(args.nonEmpty || blockerId.isEmpty, "Blocked application requires at least one argument")
+    require(blockerId.forall(synDeps.contains), "Blocked application synDeps must include blockerId")
+    head match {
+      case h: ConstructorHead =>
+        require(blockerId.isEmpty, s"Constructor ${h.name} cannot be blocked")
+        require(
+          args.length == h.totalArity - h.numErased,
+          s"Constructor ${h.name} stores ${args.length} fields, expected ${h.totalArity - h.numErased}"
+        )
+      case _ =>
+    }
 
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
@@ -306,18 +303,6 @@ object Value {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
-  // Constructor value. `fields` contains only stored constructor fields; erased params live in `tpe`.
-  case class VCtor(head: ConstructorHead, fields: Vector[Value], tpe: Value) extends AppliedValue with UpdatableType {
-    require(
-      fields.length == head.totalArity - head.numErased,
-      s"Constructor ${head.name} stores ${fields.length} fields, expected ${head.totalArity - head.numErased}"
-    )
-
-    override def args: Seq[Value] = fields
-
-    override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
-  }
-
   object NormalizerType extends TopLevelValue {
     override def tpe: Value = TypeTpe
   }
@@ -354,6 +339,31 @@ object Value {
   case class Inductive(meta: InductiveMeta) extends ConstType
   case object Symbol extends ConstType
 
+  /**
+   * Views over values.
+   */
+
+  object VBlockedApp {
+    def apply(head: Value, args: Vector[Value], tpe: Value, blockerId: VarId): VApp =
+      VApp(head, args, tpe, Some(blockerId))
+
+    def unapply(value: Value): Option[(Value, Vector[Value], Value, VarId)] =
+      value match {
+        case VApp(head, args, tpe, Some(blockerId)) => Some((head, args, tpe, blockerId))
+        case _                                      => None
+      }
+  }
+
+  object VCtor {
+    def apply(head: ConstructorHead, fields: Vector[Value], tpe: Value): VApp = VApp(head, fields, tpe)
+
+    def unapply(value: Value): Option[(ConstructorHead, Vector[Value], Value)] =
+      value match {
+        case VApp(head: ConstructorHead, fields, tpe, None) => Some((head, fields, tpe))
+        case _                                              => None
+      }
+  }
+
   object Blocker {
     def unapply(value: Value): Option[VarId] =
       value match {
@@ -376,9 +386,9 @@ object Value {
   object ConstSpine {
     def unapply(value: Value): Option[(VConst, Vector[Value])] =
       value match {
-        case c: VConst           => Some((c, Vector.empty))
-        case VApp(head, args, _) => Some((head, args))
-        case _                   => None
+        case c: VConst                         => Some((c, Vector.empty))
+        case VApp(head: VConst, args, _, None) => Some((head, args))
+        case _                                 => None
       }
   }
 

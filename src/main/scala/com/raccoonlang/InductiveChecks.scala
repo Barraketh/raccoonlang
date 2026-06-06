@@ -56,7 +56,7 @@ object InductiveChecks {
           if (target.isDirectOccurrence(instance.head)) false
           else instance.args.forall(arg => doesNotOccur(target, arg))
 
-        case app: AppliedValue =>
+        case app: VApp =>
           doesNotOccur(target, app.head) &&
           app.args.forall(arg => doesNotOccur(target, arg)) &&
           doesNotOccur(target, app.tpe)
@@ -92,7 +92,7 @@ object InductiveChecks {
               else doesNotOccur(target, arg)
             }
 
-        case app: AppliedValue =>
+        case app: VApp =>
           doesNotOccur(target, app.head) &&
           app.args.forall(arg => doesNotOccur(target, arg)) &&
           occursPositively(target, app.tpe)
@@ -123,7 +123,7 @@ object InductiveChecks {
         else
           instance.args.forall(arg => sameFamilyArgsDoNotContain(inductiveName, target, arg))
 
-      case app: AppliedValue =>
+      case app: VApp =>
         doesNotOccur(target, app.head) &&
         app.args.forall(arg => sameFamilyArgsDoNotContain(inductiveName, target, arg)) &&
         sameFamilyArgsDoNotContain(inductiveName, target, app.tpe)

@@ -329,13 +329,13 @@ object TypeChecker {
     var checkedByCtor = Map.empty[String, EA.Case]
 
     scrut match {
-      case ctor @ VCtor(h, _, _) =>
+      case VCtor(h, fields, _) =>
         cases.find(_.ctorName != h.name).foreach { c =>
           throw UnreachableCase(c.ctorName, Some(c.span))
         }
 
         val br = cases.find(_.ctorName == h.name).getOrElse(throw MissingCase(h.name))
-        checkedByCtor += h.name -> checkBranch(br, ctor.fields, env, motiveTy)
+        checkedByCtor += h.name -> checkBranch(br, fields, env, motiveTy)
 
       case _ =>
         val reachableMap = reachableByType.map(info => info.name -> info).toMap

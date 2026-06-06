@@ -18,11 +18,10 @@ class InterpreterTests extends munit.FunSuite {
 
   private def toShape(v: Value): Shape = v match {
     case Value.ConstructorHead(n, _, _, _) => SConst(n)
-    case ctor @ Value.VCtor(h, _, _) =>
-      val fields = ctor.fields
+    case Value.VCtor(h, fields, _) =>
       if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))
     case Value.VConst(n, _, _)  => SConst(n)
-    case Value.VApp(h, args, _) => SApp(toShape(h), args.toList.map(toShape))
+    case Value.VApp(h, args, _, _) => SApp(toShape(h), args.toList.map(toShape))
     case other                  => SConst(other.toString) // fallback, won't be used in this test
   }
 
@@ -52,7 +51,7 @@ class InterpreterTests extends munit.FunSuite {
 
   }
 
-  test("zero-arity constructor identifier evaluates to VCtor") {
+  test("zero-arity constructor identifier evaluates to constructor view") {
     val p =
       """
         |inductive Bool : Type
@@ -65,15 +64,15 @@ class InterpreterTests extends munit.FunSuite {
         |""".stripMargin
 
     InterpreterTests.this.getValue(p) match {
-      case ctor @ Value.VCtor(head, _, _) =>
+      case Value.VCtor(head, fields, _) =>
         assertEquals(head.name, "Bool.true")
-        assertEquals(ctor.fields, Vector.empty)
+        assertEquals(fields, Vector.empty)
       case other =>
-        fail(s"expected VCtor, got: $other")
+        fail(s"expected constructor view, got: $other")
     }
   }
 
-  test("nullary constructor with erased binder evaluates to VCtor after erased application") {
+  test("nullary constructor with erased binder evaluates to constructor view after erased application") {
     val p =
       """
         |inductive Nat : Type
@@ -90,12 +89,11 @@ class InterpreterTests extends munit.FunSuite {
         |""".stripMargin
 
     InterpreterTests.this.getValue(p) match {
-      case ctor @ Value.VCtor(head, fields, _) =>
+      case Value.VCtor(head, fields, _) =>
         assertEquals(head.name, "Vec.nil")
-        assertEquals(ctor.fields, Vector.empty)
         assertEquals(fields, Vector.empty)
       case other =>
-        fail(s"expected VCtor, got: $other")
+        fail(s"expected constructor view, got: $other")
     }
   }
 }
