@@ -54,10 +54,10 @@ object ValueOps {
           )
         case ctor: ConstructorHead =>
           ctor.copy(tpe = materialize(ctor.tpe))
-        case VCtor(head, args, tpe) =>
+        case VCtor(head, fields, tpe) =>
           VCtor(
             head.copy(tpe = materialize(head.tpe)),
-            args.map(materialize(_)),
+            fields.map(materialize(_)),
             materialize(tpe)
           )
         case pi: VPi =>

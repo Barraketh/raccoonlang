@@ -47,13 +47,13 @@ private object Builtins {
       }
   }
 
-  private final case class Constructor(numErased: Int) extends Entry {
+  private final case class Constructor(erasedFamilyArgIndexes: Vector[Int]) extends Entry {
     override def instantiate(name: String, tpe: Value, span: Span): Value =
       tpe match {
-        case pi: VPi if numErased <= pi.binders.length =>
-          ConstructorHead(name, numErased, pi.binders.length, pi)
         case pi: VPi =>
-          throw ArityMismatch(numErased, pi.binders.length, Some(span))
+          if (erasedFamilyArgIndexes.length > pi.binders.length)
+            throw ArityMismatch(erasedFamilyArgIndexes.length, pi.binders.length, Some(span))
+          ConstructorHead(name, erasedFamilyArgIndexes, pi.binders.length, pi)
         case other => throw CannotApplyNonFunction(other, Some(span))
       }
   }
@@ -72,7 +72,7 @@ private object Builtins {
       "Level.max" -> Native { (_, _, args) =>
         Level.max(args.map(arg => Interpreter.getLevel(arg)))
       },
-      MkName -> Constructor(numErased = 2),
+      MkName -> Constructor(Vector(0, 1)),
       LiftName -> Native(runLift),
       IndName -> Native(runInd)
     )
@@ -89,7 +89,7 @@ private object Builtins {
     val f = args(2)
 
     q match {
-      case QuotientMk(rep) => Interpreter.evalApply(f, Vector(rep))
+      case QuotientMk(rep)    => Interpreter.evalApply(f, Vector(rep))
       case Blocker(blockerId) => VBlockedApp(self, args, resultTy, blockerId)
       case _                  => VApp(VConst(LiftName, Symbol, selfType), args, resultTy)
     }
@@ -102,7 +102,7 @@ private object Builtins {
     lazy val resultTy = Interpreter.evalApply(motive, Vector(q))
 
     q match {
-      case QuotientMk(rep) => Interpreter.evalApply(mkCase, Vector(rep))
+      case QuotientMk(rep)    => Interpreter.evalApply(mkCase, Vector(rep))
       case Blocker(blockerId) => VBlockedApp(self, args, resultTy, blockerId)
       case _                  => VApp(VConst(IndName, Symbol, selfType), args, resultTy)
     }

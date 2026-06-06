@@ -167,10 +167,15 @@ object InductiveChecks {
         else Term.Pi(allBinders, ctor.resultTy, ctor.span)
 
       val fullType = TypeChecker.getType(fullTypeTerm, curEnv)
+      val erasedFamilyArgIndexes = ctor.erasedBinders.map { binder =>
+        val idx = decl.header.params.indexWhere(_.name == binder.name)
+        if (idx < 0) throw InvalidErasedConstructorBinder(ctor.canonicalName, binder.name, "expected inductive param")
+        idx
+      }
 
       curEnv.putGlobal(
         ctor.canonicalName,
-        ConstructorHead(ctor.canonicalName, ctor.erasedBinders.length, allBinders.length, fullType)
+        ConstructorHead(ctor.canonicalName, erasedFamilyArgIndexes, allBinders.length, fullType)
       )
     }
   }

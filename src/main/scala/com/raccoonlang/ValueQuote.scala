@@ -198,7 +198,17 @@ object ValueQuote {
   }
 
   private def quoteCtor(ctor: VCtor, context: QuoteContext, span: Span): ElabAst.Term = {
-    val VCtor(head, args, _) = ctor
+    val VCtor(head, fields, tpe) = ctor
+    val erasedArgs =
+      if (head.erasedFamilyArgIndexes.isEmpty) Vector.empty
+      else {
+        tpe match {
+          case ConstSpine(_, args) => head.erasedFamilyArgIndexes.map(idx => args(idx))
+          case _ => throw WTF(s"Cannot recover erased constructor args for ${head.name} from $tpe", Some(span))
+        }
+      }
+
+    val args = erasedArgs ++ fields
 
     if (args.length != head.totalArity)
       throw WTF(s"Constructor ${head.name} has ${args.length} args, expected ${head.totalArity}", Some(span))

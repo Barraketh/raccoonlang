@@ -3,7 +3,7 @@ package com.raccoonlang
 import com.raccoonlang.CoreAst.{Decl, Program}
 import com.raccoonlang.ElabAst.{Term => ETerm}
 import com.raccoonlang.Value._
-import com.raccoonlang.telescope.{BinderOps, ConstructorOps, TypePatternOps}
+import com.raccoonlang.telescope.{BinderOps, TypePatternOps}
 import org.roaringbitmap.RoaringBitmap
 
 /**
@@ -139,7 +139,7 @@ object Interpreter {
           case h: VConst => VApp(h, vArgs, pi.codomain(envWithArgs))
           case h: ConstructorHead =>
             val resultTy = pi.codomain(envWithArgs)
-            ConstructorOps.ConstructorShape.require(h).makeCtor(vArgs, resultTy)
+            VCtor(h, vArgs.drop(h.numErased), resultTy)
           case blocker @ Blocker(blockerId) => VBlockedApp(blocker, vArgs, pi.codomain(envWithArgs), blockerId)
           case _                            => throw CannotApplyNonFunction(fn)
         }
@@ -220,7 +220,7 @@ object Interpreter {
   private def evalMatch(m: ETerm.Match, env: Env): Value = {
     val scrut = evalTerm(m.scrut, env)
     val (head, args) = scrut match {
-      case ctor @ VCtor(head, _, _) => (head, ctor.fields)
+      case VCtor(head, fields, _) => (head, fields)
       case other                    =>
         // We are either blocked or stuck
         val capturedIndexes = CapturedIndexes.getCapturedIndexes(m, env)

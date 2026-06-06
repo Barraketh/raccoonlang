@@ -50,10 +50,10 @@ class QuotientTests extends munit.FunSuite {
     )
 
     res match {
-      case ctor @ Value.VCtor(head, args, _) =>
+      case ctor @ Value.VCtor(head, fields, _) =>
         assertEquals(head.name, "Quot.mk")
         assertEquals(ctor.fields.map(toShape), Vector(natZero))
-        assertEquals(args.length, 3)
+        assertEquals(fields.map(toShape), Vector(natZero))
       case other =>
         fail(s"Expected Quot.mk constructor value, got $other")
     }

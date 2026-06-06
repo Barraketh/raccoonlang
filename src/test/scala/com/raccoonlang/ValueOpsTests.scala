@@ -231,7 +231,7 @@ class ValueOpsTests extends munit.FunSuite {
     val scrut = FreshVar.freshVar("scrut", valueType)
     val solution = symbolicValue("ThunkSolution")
     val runtimeEnv = Env.empty.putLocal(capturedRef, captured).putLocal(scrutRef, scrut)
-    val head = ConstructorHead("C", numErased = 0, totalArity = 0, valueType)
+    val head = ConstructorHead("C", erasedFamilyArgIndexes = Vector.empty, totalArity = 0, valueType)
     val ctor = VCtor(head, Vector.empty, valueType)
     val matchTerm = ETerm.Match(
       ETerm.LocalRef(scrutRef, span),
@@ -306,7 +306,7 @@ class ValueOpsTests extends munit.FunSuite {
   }
 
   test("constructor equality accounts for result type") {
-    val head = ConstructorHead("C", numErased = 0, totalArity = 0, valueType)
+    val head = ConstructorHead("C", erasedFamilyArgIndexes = Vector.empty, totalArity = 0, valueType)
     val resultA = symbolicValue("ResultA")
     val resultB = symbolicValue("ResultB")
     val ctorA = VCtor(head, Vector.empty, resultA)

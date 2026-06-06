@@ -3,7 +3,7 @@ package com.raccoonlang
 import com.raccoonlang.Interpreter._
 import com.raccoonlang.Value._
 import com.raccoonlang.ValueQuote.{quoteContext, quoteTerm, quoteType}
-import com.raccoonlang.telescope.{BinderOps, ConstructorOps}
+import com.raccoonlang.telescope.BinderOps
 import com.raccoonlang.{CoreAst => CA, ElabAst => EA}
 
 object TypeChecker {
@@ -175,6 +175,16 @@ object TypeChecker {
       branchEqStore: EqStore
   )
 
+  private def freshCtorArgsAndResult(head: ConstructorHead): (Vector[Value], Value) =
+    head.tpe match {
+      case pi: VPi =>
+        val fresh = BinderOps.freshen(pi)
+        val args = pi.binders.map(binder => fresh(binder.localRef))
+        (args, pi.codomain(fresh))
+
+      case _ => (Vector.empty, head.tpe)
+    }
+
   private def computeReachableCtors(
       scrut: Value,
       scrutTpe: Value,
@@ -195,17 +205,19 @@ object TypeChecker {
     ctorNames.flatMap { ctorName =>
       env(ctorName) match {
         case h: ConstructorHead =>
-          val fresh = ConstructorOps.freshSpine(h)
-          val valueRefinable = rootRefinable(scrut) ++ fresh.synDeps
-          val typeRefinable = scrutTpe.synDeps ++ fresh.synDeps
+          val (freshArgs, resultTy) = freshCtorArgsAndResult(h)
+          val fieldArgs = freshArgs.drop(h.numErased)
+          val ctorValue = VCtor(h, fieldArgs, resultTy)
+          val valueRefinable = rootRefinable(scrut) ++ ctorValue.synDeps
+          val typeRefinable = scrutTpe.synDeps ++ ctorValue.synDeps
 
           val branchEqStore =
-            tryUnify(scrut, fresh.value, valueRefinable)
-              .orElse(tryUnify(fresh.tpe, scrutTpe, typeRefinable))
+            tryUnify(scrut, ctorValue, valueRefinable)
+              .orElse(tryUnify(resultTy, scrutTpe, typeRefinable))
 
           branchEqStore.map { branchStore =>
             val refinedResultTy = ValueOps.materialize(scrutTpe, branchStore)
-            ReachableCtor(ctorName, h, fresh.fields, refinedResultTy, branchStore)
+            ReachableCtor(ctorName, h, fieldArgs, refinedResultTy, branchStore)
           }
 
         case _ => throw UnknownConstructor(ctorName, inductiveName)
@@ -222,10 +234,10 @@ object TypeChecker {
     if (reachable.length > 1) return false
 
     val only = reachable.head
-    val copy1 = ConstructorOps.freshSpine(only.head)
-    val copy2 = ConstructorOps.freshSpine(only.head)
-    val (fields1, res1) = (copy1.fields, copy1.tpe)
-    val (fields2, res2) = (copy2.fields, copy2.tpe)
+    val (args1, res1) = freshCtorArgsAndResult(only.head)
+    val (args2, res2) = freshCtorArgsAndResult(only.head)
+    val fields1 = args1.drop(only.head.numErased)
+    val fields2 = args2.drop(only.head.numErased)
 
     val refinable0 = DepSet.unionAll(scrutTpe.synDeps, res1.synDeps, res2.synDeps)
 

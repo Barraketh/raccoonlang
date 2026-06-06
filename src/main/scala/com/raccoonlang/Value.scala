@@ -292,15 +292,28 @@ object Value {
     }
   }
 
-  case class ConstructorHead(name: String, numErased: Int, totalArity: Int, tpe: Value)
+  case class ConstructorHead(name: String, erasedFamilyArgIndexes: Vector[Int], totalArity: Int, tpe: Value)
     extends TopLevelValue
     with UpdatableType {
+    require(erasedFamilyArgIndexes.forall(_ >= 0), "Constructor erased family arg indexes must be non-negative")
+    require(
+      erasedFamilyArgIndexes.distinct.length == erasedFamilyArgIndexes.length,
+      "Constructor erased family arg indexes must be distinct"
+    )
+
+    def numErased: Int = erasedFamilyArgIndexes.length
+
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
-  // Constructor value. `args` contains the full constructor application spine, including erased binders.
-  case class VCtor(head: ConstructorHead, args: Vector[Value], tpe: Value) extends AppliedValue with UpdatableType {
-    def fields: Vector[Value] = args.drop(head.numErased)
+  // Constructor value. `fields` contains only stored constructor fields; erased params live in `tpe`.
+  case class VCtor(head: ConstructorHead, fields: Vector[Value], tpe: Value) extends AppliedValue with UpdatableType {
+    require(
+      fields.length == head.totalArity - head.numErased,
+      s"Constructor ${head.name} stores ${fields.length} fields, expected ${head.totalArity - head.numErased}"
+    )
+
+    override def args: Seq[Value] = fields
 
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }

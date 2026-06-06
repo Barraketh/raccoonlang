@@ -90,10 +90,10 @@ class InterpreterTests extends munit.FunSuite {
         |""".stripMargin
 
     InterpreterTests.this.getValue(p) match {
-      case ctor @ Value.VCtor(head, args, _) =>
+      case ctor @ Value.VCtor(head, fields, _) =>
         assertEquals(head.name, "Vec.nil")
         assertEquals(ctor.fields, Vector.empty)
-        assertEquals(args.map(toShape), Vector(SConst("Nat")))
+        assertEquals(fields, Vector.empty)
       case other =>
         fail(s"expected VCtor, got: $other")
     }

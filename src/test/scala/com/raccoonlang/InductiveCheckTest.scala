@@ -155,6 +155,17 @@ class InductiveCheckTest extends munit.FunSuite {
     intercept[InvalidErasedConstructorBinder] { elabAndTypecheck(p) }
   }
 
+  test("Constructor erased binders may target non-prefix inductive params") {
+    val p =
+      """
+        |inductive Bad (A: Type)(B: Type) : Sort(Level.one)
+        | | inl {B: Type} (a: $A in Type) : Bad(A, B)
+        |
+        |""".stripMargin
+
+    elabAndTypecheck(p)
+  }
+
   test("Constructor param witness type is checked after elaboration") {
     val p =
       """
