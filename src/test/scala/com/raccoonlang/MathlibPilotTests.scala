@@ -104,6 +104,34 @@ class MathlibPilotTests extends munit.FunSuite {
       |        x,
       |        And.intro(Set.mem(s)(x), Eq(B, f(x), f(x)), hx, Eq.refl(f(x)))
       |      )
+      |
+      |    def ext (s: Set($A))(t: Set(A))(h: (x: A) -> Iff(Set.mem(s)(x), Set.mem(t)(x))): Eq(Set(A), s, t) := {
+      |      match s returning Eq(Set(A), s, t) with
+      |      | Set.mk smem => {
+      |        match t returning Eq(Set(A), Set.mk(A, smem), t) with
+      |        | Set.mk tmem => {
+      |          let memEq := funext(
+      |            A,
+      |            Level.one,
+      |            fun (x: A): Type => Prop,
+      |            smem,
+      |            tmem,
+      |            fun (x: A): Eq(Prop, smem(x), tmem(x)) => propext(h(x))
+      |          )
+      |          match memEq returning Eq(Set(A), Set.mk(A, smem), Set.mk(A, tmem)) with
+      |          | Eq.refl pred => Eq.refl(Set.mk(A, pred))
+      |        }
+      |      }
+      |    }
+      |
+      |    def subsetAntisymm (h1: Subset($A, $s, $t))(h2: Subset(A, t, s)): Eq(Set(A), s, t) :=
+      |      ext(s, t, fun (x: A): Iff(Set.mem(s)(x), Set.mem(t)(x)) =>
+      |        Iff.intro(
+      |          Set.mem(s)(x),
+      |          Set.mem(t)(x),
+      |          fun (hs: (Set.mem(s)(x))): Set.mem(t)(x) => h1.apply(x, hs),
+      |          fun (ht: (Set.mem(t)(x))): Set.mem(s)(x) => h2.apply(x, ht)
+      |        ))
       |  }
       |}
       |""".stripMargin
@@ -142,6 +170,21 @@ class MathlibPilotTests extends munit.FunSuite {
           |
           |  def imageContainsZero : Set.mem(Set.image(Nat, Nat, idNat, natZeros))(Nat.zero) :=
           |    Set.imageIntro(Nat, Nat, idNat, natZeros, Nat.zero, Set.memSingletonSelf(Nat.zero))
+          |}
+          |""".stripMargin
+    )
+  }
+
+  test("Set extensionality and subset antisymmetry typecheck") {
+    typecheckDecls(
+      setCore +
+        """
+          |namespace MathlibPilot {
+          |  def sameSingletons : Eq(Set(Nat), Set.singleton(Nat.zero), Set.singleton(Nat.zero)) :=
+          |    Set.subsetAntisymm(
+          |      Set.subsetRefl(Nat, Set.singleton(Nat.zero)),
+          |      Set.subsetRefl(Nat, Set.singleton(Nat.zero))
+          |    )
           |}
           |""".stripMargin
     )
