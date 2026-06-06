@@ -1,7 +1,5 @@
 package com.raccoonlang
 
-import com.raccoonlang.Value.Level
-
 import java.nio.file.Path
 
 sealed trait TypeError extends RuntimeException {
@@ -36,9 +34,7 @@ object TypeError {
     case e: NonStrictlyPositive             => e.copy(span = Some(sp))
     case e: InductiveTypeNotASort           => e.copy(span = Some(sp))
     case e: PatternCaptureNeedsExpectedType => e.copy(span = Some(sp))
-    case e: FailedToOpenCapture             => e.copy(span = Some(sp))
     case e: PropEliminationRestricted       => e.copy(span = Some(sp))
-    case e: InvalidLevelSubtraction         => e.copy(span = Some(sp))
     case e: WTF                             => e.copy(span = Some(sp))
     case e: InvalidStruct                   => e.copy(span = Some(sp))
     case e: NotAStruct                      => e.copy(span = Some(sp))
@@ -169,10 +165,6 @@ final case class PatternCaptureNeedsExpectedType(name: String, span: Option[Span
   override def msg: String = s"Pattern capture $$$name needs an expected type"
 }
 
-final case class FailedToOpenCapture(v: Value, idx: Int, span: Option[Span] = None) extends TypeError {
-  override def msg: String = s"Cannot return idx $idx of $v"
-}
-
 final case class WTF(msg: String, span: Option[Span] = None) extends TypeError
 
 final case class InvalidConstructorResult(
@@ -240,10 +232,6 @@ final case class PropEliminationRestricted(
 ) extends TypeError {
   override def msg: String =
     s"Cannot eliminate proposition $inductive into non-Prop motive $motive"
-}
-
-final case class InvalidLevelSubtraction(l: Level, sub: Int, span: Option[Span] = None) extends TypeError {
-  override def msg: String = s"Tried to subtract $sub from $l"
 }
 
 final case class InvalidStruct(inductive: String, reason: String, span: Option[Span] = None) extends TypeError {

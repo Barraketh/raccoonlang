@@ -168,20 +168,7 @@ object Value {
   final val PropTpe: VSort = VSort(Level.zero)
   final val TypeTpe: VSort = VSort(Level.one)
 
-  sealed trait CaptureType
-  case object StructuralCapture extends CaptureType
-  case class LevelCapture(subtract: Int) extends CaptureType
-
-  sealed trait CaptureRoot
-  case object ActualType extends CaptureRoot
-  case object ActualTypeClassifier extends CaptureRoot
-
-  case class VCapture(
-      localRef: CoreAst.LocalRef,
-      path: List[Int],
-      captureType: CaptureType,
-      root: CaptureRoot = ActualType
-  )
+  case class VCapture(localRef: CoreAst.LocalRef)
 
   case class VBinder(
       localRef: CoreAst.LocalRef,

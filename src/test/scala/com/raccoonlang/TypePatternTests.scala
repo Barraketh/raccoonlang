@@ -198,6 +198,90 @@ class TypePatternTests extends munit.FunSuite {
     assertEquals(toShape(res), SConst("Nat"))
   }
 
+  test("positive: constrained captures accept cumulative universe upper bounds") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |def acceptHigh (x: $A in Sort(Level.succ(Level.one))): A := x
+        |
+        |{
+        |  acceptHigh(Nat.zero)
+        |}
+        |""".stripMargin
+
+    val res = runProgram(p)
+    assertEquals(toShape(res), zeroS)
+  }
+
+  test("positive: transparent type-pattern heads solve captures by unification") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |def Pred (A: Type): Type := (x: A) -> Nat
+        |def pickDomain (p: Pred($A))(x: A): A := x
+        |
+        |{
+        |  pickDomain(fun (n: Nat): Nat => n, Nat.zero)
+        |}
+        |""".stripMargin
+
+    val res = runProgram(p)
+    assertEquals(toShape(res), zeroS)
+  }
+
+  test("positive: transparent type-pattern heads solve captures in lambda ascriptions") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |def Pred (A: Type): Type := (x: A) -> Nat
+        |
+        |{
+        |  let f : (p: (x: Nat) -> Nat) -> Nat -> Nat := {
+        |    fun (p: Pred($A))(x: A): A => x
+        |  }
+        |  f(fun (n: Nat): Nat => n, Nat.zero)
+        |}
+        |""".stripMargin
+
+    val res = runProgram(p)
+    assertEquals(toShape(res), zeroS)
+  }
+
+  test("positive: type-pattern head binders with captures are opened once and solved") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
+        | | nil {A: Sort($u)} : Vec(A, Nat.zero)
+        | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
+        |
+        |inductive Tag indices (v: Vec(Nat, $n)) : Type
+        | | mk (v: Vec(Nat, $n)) : Tag(v)
+        |
+        |def Head (v: Vec(Nat, $n)): Type := Tag(v)
+        |def keepHead (x: Head($v)): Head(v) := x
+        |
+        |{
+        |  keepHead(Tag.mk(Vec.nil(Nat)))
+        |}
+        |""".stripMargin
+
+    val res = runProgram(p)
+    assertEquals(toShape(res), SApp(SConst("Tag.mk"), List(SConst("Vec.nil"))))
+  }
+
   test("negative: bare capture in binder type is rejected") {
     val p =
       """
@@ -235,7 +319,7 @@ class TypePatternTests extends munit.FunSuite {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[TypeMismatch] {
+        intercept[UnificationFailed] {
           Interpreter.run(core, Prelude.test)
         }
       case err: Failure =>
@@ -390,7 +474,7 @@ class TypePatternTests extends munit.FunSuite {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[FailedToOpenCapture] {
+        intercept[UnificationFailed] {
           Interpreter.run(core, Prelude.test)
         }
       case err: Failure =>
