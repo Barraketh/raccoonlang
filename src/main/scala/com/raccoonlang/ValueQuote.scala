@@ -4,7 +4,7 @@ import com.raccoonlang.Value._
 import com.raccoonlang.telescope.BinderOps
 
 object ValueQuote {
-  final case class QuoteEntry(term: ElabAst.Term, quotePolicy: LocalQuotePolicy)
+  final case class QuoteEntry(term: ElabAst.Term, residualPolicy: LocalResidualPolicy)
 
   type QuoteMap = Map[ValueKey.Key, QuoteEntry]
   final case class QuoteContext(quote: QuoteMap, localEnvLength: Int)
@@ -49,10 +49,9 @@ object ValueQuote {
             ElabAst.Let(reindex(l.localRef), l.ty.map(inlineTypeTerm), inlineTerm(l.value), l.span, l.isInstance)
           }
           ElabAst.Term.Body(nextLets, inlineTerm(res), bodySpan)
-        case ElabAst.Term.Lam(ty, uses, body, lamSpan, name, isStable, recursiveSelf) =>
+        case ElabAst.Term.Lam(ty, body, lamSpan, name, isStable, recursiveSelf) =>
           ElabAst.Term.Lam(
             inlineTypeTerm(ty).asInstanceOf[ElabAst.Term.Pi],
-            uses.map(u => u.copy(normalizer = inlineTerm(u.normalizer))),
             inlineTerm(body),
             lamSpan,
             name,
@@ -234,7 +233,7 @@ object ValueQuote {
           case ValueId.Const(globalName) => Some(globalName)
           case _                         => term.name
         }
-        ElabAst.Term.Lam(opened.term, term.uses, bodyTerm, span, name, lam.isStable, term.recursiveSelf)
+        ElabAst.Term.Lam(opened.term, bodyTerm, span, name, lam.isStable, term.recursiveSelf)
       case (_, LamBody.Native(_, _, _)) => throw CannotQuoteValue(lam, "native lambda has no quoted syntax", Some(span))
     }
   }
@@ -260,9 +259,9 @@ object ValueQuote {
       case Some(value) =>
         val ref = CoreAst.LocalRef(idx, binding.name)
         val term = ElabAst.Term.LocalRef(ref, Span(0, 0))
-        val withLocal = withQuotedValueInMap(quote, value, term, binding.quotePolicy)
+        val withLocal = withQuotedValueInMap(quote, value, term, binding.residualPolicy)
         rawRecursiveAlias(value) match {
-          case Some(alias) => withQuotedValueInMap(withLocal, alias, term, binding.quotePolicy)
+          case Some(alias) => withQuotedValueInMap(withLocal, alias, term, binding.residualPolicy)
           case None        => withLocal
         }
       case None => quote
@@ -276,7 +275,7 @@ object ValueQuote {
 
     val nextQuote = freshLocals.zipWithIndex.foldLeft(context.quote) { case (quote, (lb, idx)) =>
       val ref = CoreAst.LocalRef(context.localEnvLength + idx, lb.name)
-      withQuotedValueInMap(quote, lb.value, ElabAst.Term.LocalRef(ref, Span(0, 0)), LocalQuotePolicy.Residualizable)
+      withQuotedValueInMap(quote, lb.value, ElabAst.Term.LocalRef(ref, Span(0, 0)), LocalResidualPolicy.Residualizable)
     }
     val nextContext = QuoteContext(nextQuote, context.localEnvLength + freshLocals.length)
     val result = pi.codomain(freshEnv)
@@ -329,9 +328,9 @@ object ValueQuote {
       span: Span
   ): Option[ElabAst.Term] =
     quote.get(value.key).map { entry =>
-      entry.quotePolicy match {
-        case LocalQuotePolicy.Residualizable => entry.term
-        case LocalQuotePolicy.AppHeadOnly(name) =>
+      entry.residualPolicy match {
+        case LocalResidualPolicy.Residualizable => entry.term
+        case LocalResidualPolicy.AppHeadOnly(name) =>
           throw CannotQuoteValue(value, s"$name is only available as an application head", Some(span))
       }
     }
@@ -343,9 +342,9 @@ object ValueQuote {
       quote: QuoteMap,
       value: Value,
       term: ElabAst.Term,
-      quotePolicy: LocalQuotePolicy
+      residualPolicy: LocalResidualPolicy
   ): QuoteMap = {
-    val entry = QuoteEntry(term, quotePolicy)
+    val entry = QuoteEntry(term, residualPolicy)
     val withValue = quote + (value.key -> entry)
     value match {
       case Value.Var(_, id, Value.LevelTpe) => withValue + (Value.Level.mk(id).key -> entry)

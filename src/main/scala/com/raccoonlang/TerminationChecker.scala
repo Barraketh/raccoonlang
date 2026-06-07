@@ -44,9 +44,9 @@ object TerminationChecker {
         }
 
       case CA.DecreaseSpec.Measure(term, sp) =>
-        val initialMeasure = TypeChecker.check(term, bodyEnv)
-        requireInductiveMetric(initialMeasure, sp)
-        val quoted = ValueQuote.quoteTerm(initialMeasure, ValueQuote.quoteContext(bodyEnv), term.span)
+        val initialMeasure = TypeChecker.checkTerm(term, bodyEnv)
+        requireInductiveMetric(initialMeasure.value, sp)
+        val quoted = initialMeasure.residual
         (args, nativeEnv) => {
           val currentMeasure = Interpreter.evalTerm(quoted, nativeEnv)
           val callEnv = BinderOps.instantiateFull(vpi.binders, vpi.env, args)

@@ -57,7 +57,6 @@ object ElabAst {
 
     final case class Lam(
         ty: Pi,
-        uses: Vector[Use],
         body: Term,
         span: Span,
         name: Option[String],
@@ -93,8 +92,6 @@ object ElabAst {
   ) {
     def name: String = localRef.name
   }
-
-  final case class Use(normalizer: Term, span: Span)
 
   final case class Case(ctorName: String, argRefs: Vector[Option[CoreAst.LocalRef]], body: Term, span: Span)
 }

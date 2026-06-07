@@ -76,9 +76,7 @@ class TypeClassTests extends munit.FunSuite {
     ).body.getOrElse(fail("Program has no body"))
     assert(body.isInstanceOf[CoreAst.Term.Derive])
 
-    val checkedV = TypeChecker.check(body, worlds.checkEnv)
-    val ctx = ValueQuote.quoteContext(worlds.checkEnv)
-    val term = ValueQuote.quoteTerm(checkedV, ctx, body.span)
+    val term = TypeChecker.checkTerm(body, worlds.checkEnv).residual
 
     term match {
       case ElabAst.Term.App(ElabAst.Term.GlobalRef("DecEq.mk", _), args, _) if args.length == 2 =>
@@ -127,9 +125,7 @@ class TypeClassTests extends munit.FunSuite {
           |{ useNatEq }
           |""".stripMargin
     ).body.getOrElse(fail("Program has no body"))
-    val checkedV = TypeChecker.check(body, worlds.checkEnv)
-    val checkedTerm =
-      ValueQuote.quoteTerm(checkedV, ValueQuote.quoteContext(worlds.checkEnv), body.span)
+    val checkedTerm = TypeChecker.checkTerm(body, worlds.checkEnv).residual
 
     val runEnvWithoutSearch = new NoSearchEnv(worlds.runEnv)
     assertEquals(ctorName(Interpreter.evalTerm(checkedTerm, runEnvWithoutSearch)), "DecEq.mk")

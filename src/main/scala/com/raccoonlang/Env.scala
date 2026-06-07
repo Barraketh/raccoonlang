@@ -25,7 +25,7 @@ trait Env {
       ref: CoreAst.LocalRef,
       value: Value,
       instanceKey: Option[String] = None,
-      quotePolicy: LocalQuotePolicy = LocalQuotePolicy.Residualizable
+      residualPolicy: LocalResidualPolicy = LocalResidualPolicy.Residualizable
   ): Env
 
   def localInstanceRefs(key: String): Vector[CoreAst.LocalRef]
@@ -117,10 +117,10 @@ final case class TypecheckEnv(
       ref: CoreAst.LocalRef,
       value: Value,
       instanceKey: Option[String],
-      quotePolicy: LocalQuotePolicy
+      residualPolicy: LocalResidualPolicy
   ): Env = {
     if (ref.id == locals.length) {
-      val binding = Binding.live(ref, value, quotePolicy)
+      val binding = Binding.live(ref, value, residualPolicy)
       val nextLocalInstances = instanceKey match {
         case Some(key) =>
           localInstances + (key -> (ref +: localInstances.getOrElse(key, Vector.empty)))
@@ -173,9 +173,9 @@ trait DelegatingEnv extends Env {
       ref: CoreAst.LocalRef,
       value: Value,
       instanceKey: Option[String],
-      quotePolicy: LocalQuotePolicy
+      residualPolicy: LocalResidualPolicy
   ): Env =
-    updateBase(base.putLocal(ref, value, instanceKey, quotePolicy))
+    updateBase(base.putLocal(ref, value, instanceKey, residualPolicy))
   override def useNormalizer(n: Value.Normalizer): Env = updateBase(base.useNormalizer(n))
 
   override lazy val locals: Vector[Binding] = base.locals.map(b => localBinding(b.ref))
@@ -212,13 +212,13 @@ object RuntimeEnv {
   }
 }
 
-sealed trait LocalQuotePolicy
-object LocalQuotePolicy {
-  case object Residualizable extends LocalQuotePolicy
-  final case class AppHeadOnly(name: String) extends LocalQuotePolicy
+sealed trait LocalResidualPolicy
+object LocalResidualPolicy {
+  case object Residualizable extends LocalResidualPolicy
+  final case class AppHeadOnly(name: String) extends LocalResidualPolicy
 }
 
-final case class Binding(ref: CoreAst.LocalRef, state: Binding.State, quotePolicy: LocalQuotePolicy) {
+final case class Binding(ref: CoreAst.LocalRef, state: Binding.State, residualPolicy: LocalResidualPolicy) {
   def id: Int = ref.id
   def name: String = ref.name
 
@@ -236,7 +236,7 @@ final case class Binding(ref: CoreAst.LocalRef, state: Binding.State, quotePolic
 
   def mapValue(f: Value => Value): Binding =
     state match {
-      case Binding.Live(value) => Binding.live(ref, f(value), quotePolicy)
+      case Binding.Live(value) => Binding.live(ref, f(value), residualPolicy)
       case Binding.Pruned      => this
     }
 
@@ -245,7 +245,7 @@ final case class Binding(ref: CoreAst.LocalRef, state: Binding.State, quotePolic
     case _                   =>
   }
 
-  def prune: Binding = Binding.pruned(ref, quotePolicy)
+  def prune: Binding = Binding.pruned(ref, residualPolicy)
 }
 
 object Binding {
@@ -256,15 +256,15 @@ object Binding {
   def live(
       ref: CoreAst.LocalRef,
       value: Value,
-      quotePolicy: LocalQuotePolicy = LocalQuotePolicy.Residualizable
+      residualPolicy: LocalResidualPolicy = LocalResidualPolicy.Residualizable
   ): Binding =
-    Binding(ref, Live(value), quotePolicy)
+    Binding(ref, Live(value), residualPolicy)
 
   def pruned(
       ref: CoreAst.LocalRef,
-      quotePolicy: LocalQuotePolicy = LocalQuotePolicy.Residualizable
+      residualPolicy: LocalResidualPolicy = LocalResidualPolicy.Residualizable
   ): Binding =
-    Binding(ref, Pruned, quotePolicy)
+    Binding(ref, Pruned, residualPolicy)
 }
 
 final case class InstanceSearchTiers(locals: Vector[Value], globals: Vector[Value])

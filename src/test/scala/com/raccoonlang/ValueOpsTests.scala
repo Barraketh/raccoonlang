@@ -135,7 +135,6 @@ class ValueOpsTests extends munit.FunSuite {
     )
     val lamTerm = ETerm.Lam(
       piTerm,
-      Vector.empty,
       ETerm.LocalRef(capturedRef, span),
       span,
       name = None,
@@ -180,7 +179,6 @@ class ValueOpsTests extends munit.FunSuite {
     )
     val lamTerm = ETerm.Lam(
       piTerm,
-      Vector.empty,
       ETerm.LocalRef(capturedRef, span),
       span,
       name = None,
@@ -207,7 +205,6 @@ class ValueOpsTests extends munit.FunSuite {
     val vpi = Interpreter.evalPi(piTerm, env, piTerm.binders.map(com.raccoonlang.telescope.TypePatternOps.toVBinder))
     val lamTerm = ETerm.Lam(
       piTerm,
-      Vector.empty,
       ETerm.LocalRef(capturedRef, span),
       span,
       name = None,

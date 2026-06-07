@@ -283,6 +283,7 @@ object Value {
           }
       }
     }
+
   }
 
   case class ConstructorHead(name: String, erasedFamilyArgIndexes: Vector[Int], totalArity: Int, tpe: Value)

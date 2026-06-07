@@ -73,11 +73,10 @@ object TypePatternOps {
       pattern match {
         case CPattern.Type(term) =>
           val checked = TypeChecker.checkTypeTerm(term, env)
-          val quoteCtx = ValueQuote.quoteContext(env)
-          (EPattern.Type(ValueQuote.quoteType(checked, quoteCtx, term.span)), env)
+          (EPattern.Type(checked.residual), env)
         case CPattern.Capture(ref, span) => throw PatternCaptureNeedsExpectedType(ref.name, Some(span))
         case CPattern.App(fn, args, span) =>
-          val fnV = TypeChecker.checkRef(fn, env)
+          val fnV = TypeChecker.checkTypeTerm(fn, env).value
           val pi = requirePi(fnV)
           val binders = pi.binders
 
