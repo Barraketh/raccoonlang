@@ -33,8 +33,7 @@ object MatchChecker {
       env: Env
   ): Vector[ReachableCtor] = {
     def tryUnify(left: Value, right: Value, refinable: DepSet): Option[EqStore] =
-      try Some(ValueEquivalence.unify(left, right, EqStore.empty.allow(refinable), env.normalizers))
-      catch { case _: UnificationFailed | _: OccursCheckFailed => None }
+      ValueEquivalence.tryUnify(left, right, EqStore.empty.allow(refinable), env.normalizers).toOption
 
     def rootRefinable(value: Value): DepSet =
       value match {
@@ -81,13 +80,15 @@ object MatchChecker {
 
     val refinable0 = DepSet.unionAll(scrutTpe.synDeps, res1.synDeps, res2.synDeps)
 
-    val startEq =
-      try {
-        val eq1 = ValueEquivalence.unify(res1, scrutTpe, EqStore.empty.allow(refinable0), normalizerMap)
-        ValueEquivalence.unify(res2, scrutTpe, eq1, normalizerMap)
-      } catch {
-        case _: UnificationFailed | _: OccursCheckFailed => return false
+    val startEq = {
+      val start = EqStore.empty.allow(refinable0)
+      ValueEquivalence
+        .tryUnify(res1, scrutTpe, start, normalizerMap)
+        .flatMap(eq1 => ValueEquivalence.tryUnify(res2, scrutTpe, eq1, normalizerMap)) match {
+        case Right(eqStore) => eqStore
+        case Left(_)        => return false
       }
+    }
 
     fields1.zip(fields2).forall { case (f1, f2) =>
       val mf1 = ValueOps.materialize(f1, startEq)

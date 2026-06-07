@@ -13,7 +13,6 @@ sealed trait TypeError extends RuntimeException {
 object TypeError {
   def withSpan(err: TypeError, sp: Span): TypeError = err match {
     case e: UnificationFailed               => e.copy(span = Some(sp))
-    case e: OccursCheckFailed               => e.copy(span = Some(sp))
     case e: CannotApplyNonFunction          => e.copy(span = Some(sp))
     case e: ArityMismatch                   => e.copy(span = Some(sp))
     case e: UnknownConstructor              => e.copy(span = Some(sp))
@@ -65,10 +64,6 @@ object TypeError {
 
 final case class UnificationFailed(v1: Value, v2: Value, span: Option[Span] = None) extends TypeError {
   val msg: String = s"Failed to unify $v1 and $v2"
-}
-
-final case class OccursCheckFailed(id: Long, inVal: Value, span: Option[Span] = None) extends TypeError {
-  val msg: String = s"Occurs check failed: $id in $inVal"
 }
 
 final case class CannotApplyNonFunction(got: Value, span: Option[Span] = None) extends TypeError {
@@ -279,10 +274,9 @@ final case class InvalidInstance(
 final case class InstanceSearchBudgetExceeded(
     goal: Value,
     maxDepth: Int,
-    maxNodes: Int,
     span: Option[Span] = None
 ) extends TypeError {
-  override def msg: String = s"Instance search budget exceeded for $goal (depth $maxDepth, nodes $maxNodes)"
+  override def msg: String = s"Instance search depth exceeded for $goal (max depth $maxDepth)"
 }
 
 final case class CannotQuoteValue(value: Value, reason: String, span: Option[Span] = None) extends TypeError {

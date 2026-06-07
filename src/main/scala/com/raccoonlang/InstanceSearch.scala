@@ -6,72 +6,88 @@ import scala.collection.mutable
 
 object InstanceSearch {
   private val MaxDepth = 256
-  private val MaxNodes = 65536
 
-  private final class SearchContext {
-    private val cache = mutable.HashMap.empty[ValueKey.Key, Value]
-
-    def get(key: ValueKey.Key): Option[Value] = cache.get(key)
-
-    def put(key: ValueKey.Key, cached: Value): Unit = cache.update(key, cached)
-  }
-
-  private final case class SearchState(stack: List[ValueKey.Key], depth: Int, nodes: Int) {
+  private final case class SearchState(stack: List[ValueKey.Key], depth: Int) {
     def enter(goal: Value, key: ValueKey.Key): SearchState = {
       if (stack.contains(key)) throw CyclicInstanceSearch(goal)
-      if (depth >= MaxDepth || nodes >= MaxNodes) throw InstanceSearchBudgetExceeded(goal, MaxDepth, MaxNodes)
-      SearchState(key :: stack, depth + 1, nodes + 1)
+      if (depth >= MaxDepth) throw InstanceSearchBudgetExceeded(goal, MaxDepth)
+      SearchState(key :: stack, depth + 1)
     }
   }
 
-  private object SearchState {
-    val empty: SearchState = SearchState(Nil, 0, 0)
+  private sealed trait SearchResult
+
+  private object SearchResult {
+    final case class Found(value: Value) extends SearchResult
+    final case class Failed(hasCycle: Boolean, hitDepthLimit: Boolean) extends SearchResult
+
+    val failed: Failed = Failed(false, false)
+    val cycle: Failed = Failed(true, false)
+    val depthLimit: Failed = Failed(false, true)
+
+    def mergeFailures(a: Failed, b: Failed): Failed =
+      Failed(a.hasCycle || b.hasCycle, a.hitDepthLimit || b.hitDepthLimit)
   }
 
-  private final case class CandidateSearch(
-      success: Option[Value],
-      hasCycle: Boolean = false,
-      hasBudgetExceeded: Boolean = false
-  )
-
-  def resultHeadKey(tpe: Value): Option[String] =
-    resultType(tpe).flatMap(headKey)
+  def resultHeadKey(tpe: Value): Option[String] = {
+    val resultTy =
+      tpe match {
+        case pi: VPi =>
+          val freshEnv = BinderOps.freshen(pi)
+          pi.codomain(freshEnv)
+        case other => other
+      }
+    headKey(resultTy)
+  }
 
   def instanceKey(name: String, value: Value): String =
     resultHeadKey(value.tpe).getOrElse(throw InvalidInstance(name, value.tpe))
 
   def solve(goal: Value, searchEnv: Env): Value = {
-    val ctx = new SearchContext
-    solveInternal(goal, searchEnv, SearchState.empty, ctx)
+    val cache = mutable.HashMap.empty[ValueKey.Key, Value]
+    solveInternal(goal, searchEnv, SearchState(Nil, 0), cache) match {
+      case SearchResult.Found(value) => value
+      case failed: SearchResult.Failed =>
+        if (failed.hasCycle) throw CyclicInstanceSearch(goal)
+        if (failed.hitDepthLimit) throw InstanceSearchBudgetExceeded(goal, MaxDepth)
+        throw NoInstanceFound(goal)
+    }
   }
 
-  private def solveInternal(goal: Value, searchEnv: Env, state: SearchState, ctx: SearchContext): Value = {
-    val (head, key) = headKey(goal).getOrElse(throw NoInstanceFound(goal)) -> goal.key
+  private def solveInternal(
+      goal: Value,
+      searchEnv: Env,
+      state: SearchState,
+      cache: mutable.HashMap[ValueKey.Key, Value]
+  ): SearchResult = {
+    val head = headKey(goal).getOrElse(return SearchResult.failed)
+    val key = goal.key
 
-    ctx.get(key) match {
-      case Some(cached) => return cached
+    cache.get(key) match {
+      case Some(cached) => return SearchResult.Found(cached)
       case None         =>
     }
 
-    val entered = state.enter(goal, key)
+    val entered =
+      try state.enter(goal, key)
+      catch {
+        case _: CyclicInstanceSearch         => return SearchResult.cycle
+        case _: InstanceSearchBudgetExceeded => return SearchResult.depthLimit
+      }
 
     val tiers = searchEnv.instanceSearchTiers(head)
-    val local = tryCandidates(tiers.locals, goal, searchEnv, entered, ctx)
-    local.success match {
-      case Some(success) =>
-        ctx.put(key, success)
-        success
-      case None =>
-        val global = tryCandidates(tiers.globals, goal, searchEnv, entered, ctx)
-        global.success match {
-          case Some(success) =>
-            ctx.put(key, success)
-            success
-          case None =>
-            if (local.hasCycle || global.hasCycle) throw CyclicInstanceSearch(goal)
-            if (local.hasBudgetExceeded || global.hasBudgetExceeded)
-              throw InstanceSearchBudgetExceeded(goal, MaxDepth, MaxNodes)
-            throw NoInstanceFound(goal)
+    val local = tryCandidates(tiers.locals, goal, searchEnv, entered, cache)
+    local match {
+      case SearchResult.Found(success) =>
+        cache.update(key, success)
+        local
+      case localFailed: SearchResult.Failed =>
+        val global = tryCandidates(tiers.globals, goal, searchEnv, entered, cache)
+        global match {
+          case SearchResult.Found(success) =>
+            cache.update(key, success)
+            global
+          case globalFailed: SearchResult.Failed => SearchResult.mergeFailures(localFailed, globalFailed)
         }
     }
   }
@@ -81,27 +97,30 @@ object InstanceSearch {
       goal: Value,
       searchEnv: Env,
       state: SearchState,
-      ctx: SearchContext
-  ): CandidateSearch = {
+      cache: mutable.HashMap[ValueKey.Key, Value]
+  ): SearchResult = {
     var hasCycle = false
-    var hasBudgetExceeded = false
+    var hitDepthLimit = false
 
     val iter = candidates.iterator
     while (iter.hasNext) {
       val candidate = iter.next()
       try {
-        val result = tryCandidate(candidate, goal, searchEnv, state, ctx)
-        return CandidateSearch(Some(result), hasCycle, hasBudgetExceeded)
+        tryCandidate(candidate, goal, searchEnv, state, cache) match {
+          case found: SearchResult.Found => return found
+          case failed: SearchResult.Failed =>
+            hasCycle ||= failed.hasCycle
+            hitDepthLimit ||= failed.hitDepthLimit
+        }
       } catch {
         case _: CyclicInstanceSearch         => hasCycle = true
-        case _: InstanceSearchBudgetExceeded => hasBudgetExceeded = true
-        case _: UnificationFailed | _: OccursCheckFailed | _: TypeMismatch | _: CannotApplyNonFunction |
-            _: NoInstanceFound | _: InvalidInstance =>
+        case _: InstanceSearchBudgetExceeded => hitDepthLimit = true
+        case _: TypeMismatch | _: CannotApplyNonFunction | _: NoInstanceFound | _: InvalidInstance =>
           ()
       }
     }
 
-    CandidateSearch(None, hasCycle, hasBudgetExceeded)
+    SearchResult.Failed(hasCycle, hitDepthLimit)
   }
 
   private def tryCandidate(
@@ -109,8 +128,8 @@ object InstanceSearch {
       goal: Value,
       searchEnv: Env,
       state: SearchState,
-      ctx: SearchContext
-  ): Value = {
+      cache: mutable.HashMap[ValueKey.Key, Value]
+  ): SearchResult = {
     candidate.tpe match {
       case pi: VPi =>
         val freshEnv = BinderOps.freshen(pi)
@@ -118,13 +137,17 @@ object InstanceSearch {
 
         val candidateDeps = freshEnv.allDeps -- pi.env.allDeps
         val candidateEq =
-          ValueEquivalence.unify(resultTy, goal, EqStore.empty.allow(candidateDeps), searchEnv.normalizers)
+          ValueEquivalence.tryUnify(resultTy, goal, EqStore.empty.allow(candidateDeps), searchEnv.normalizers) match {
+            case Right(eqStore) => eqStore
+            case Left(_)        => return SearchResult.failed
+          }
         val freshArgs = pi.binders.map(binder => freshEnv(binder.localRef))
 
         val values = Vector.newBuilder[Value]
         val binders = pi.binders
 
-        binders.indices.foreach { idx =>
+        var idx = 0
+        while (idx < binders.length) {
           val binder = binders(idx)
           val freshArg = freshArgs(idx)
           val inferred = ValueOps.materialize(freshArg, candidateEq)
@@ -134,30 +157,28 @@ object InstanceSearch {
               inferred
             } else if (binder.isInstance) {
               val instanceGoal = ValueOps.materialize(freshArg.tpe, candidateEq)
-              solveInternal(instanceGoal, searchEnv, state, ctx)
+              solveInternal(instanceGoal, searchEnv, state, cache) match {
+                case SearchResult.Found(instance) => instance
+                case failed: SearchResult.Failed  => return failed
+              }
             } else {
-              throw NoInstanceFound(goal)
+              return SearchResult.failed
             }
 
           values += arg
+          idx += 1
         }
 
         val args = values.result()
-        Interpreter.evalApply(candidate, args)
+        SearchResult.Found(Interpreter.evalApply(candidate, args))
 
       case resultTy =>
-        ValueEquivalence.unify(resultTy, goal, EqStore.empty, searchEnv.normalizers)
-        candidate
+        ValueEquivalence.tryUnify(resultTy, goal, EqStore.empty, searchEnv.normalizers) match {
+          case Right(_) => SearchResult.Found(candidate)
+          case Left(_)  => SearchResult.failed
+        }
     }
   }
-
-  private def resultType(tpe: Value): Option[Value] =
-    tpe match {
-      case pi: VPi =>
-        val freshEnv = BinderOps.freshen(pi)
-        Some(pi.codomain(freshEnv))
-      case other => Some(other)
-    }
 
   private def headKey(value: Value): Option[String] =
     value match {
