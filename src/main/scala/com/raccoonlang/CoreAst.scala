@@ -195,7 +195,8 @@ object CoreAst {
         ty: TypeTerm,
         body: ConstBody,
         span: Span,
-        isInstance: Boolean = false
+        isInstance: Boolean = false,
+        lazyGlobal: Boolean = false
     ) extends Decl
 
     final case class AxiomDecl(

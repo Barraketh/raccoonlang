@@ -426,7 +426,8 @@ object Elaborator {
           selectorHeader,
           decreases = None,
           SA.ConstBody.TermBody(body),
-          field.span
+          field.span,
+          lazyGlobal = true
         )
       }
 
@@ -891,7 +892,7 @@ object Elaborator {
             }
         }
         (
-          CA.Decl.ConstDecl(c.unfoldStrategy, nameText, header.ty, body, c.span, c.isInstance),
+          CA.Decl.ConstDecl(c.unfoldStrategy, nameText, header.ty, body, c.span, c.isInstance, c.lazyGlobal),
           envWithSelf
         )
       case c: SurfaceAst.Command.Decl.AxiomDecl =>

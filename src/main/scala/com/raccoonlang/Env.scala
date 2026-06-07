@@ -19,6 +19,8 @@ trait Env {
 
   def putGlobal(name: String, value: Value, instanceKey: Option[String] = None): Env
 
+  def putLazyGlobal(name: String, force: () => Value): Env
+
   def putLocal(
       ref: CoreAst.LocalRef,
       value: Value,
@@ -52,16 +54,41 @@ object Env {
     )
 }
 
+sealed trait GlobalBinding {
+  def value(env: Env): Value
+}
+
+object GlobalBinding {
+  final case class Strict(value0: Value) extends GlobalBinding {
+    override def value(env: Env): Value = value0
+  }
+
+  final class Lazy(force: () => Value) extends GlobalBinding {
+    private[this] var cached: Option[Value] = None
+
+    override def value(env: Env): Value =
+      cached match {
+        case Some(value) => value
+        case None =>
+          val value = force()
+          assert(value.synDeps.isEmpty)
+          cached = Some(value)
+          value
+      }
+  }
+}
+
 // Runtime/checking environment for resolved terms. Local references are dense slots in `locals`;
 // source-name scoping is handled by the elaborator before terms reach this layer.
 final case class TypecheckEnv(
-    globals: Map[String, Value],
+    globals: Map[String, GlobalBinding],
     locals: Vector[Binding],
     globalInstances: InstanceRegistry,
     localInstances: Map[String, Vector[CoreAst.LocalRef]],
     normalizers: Normalizers.NormalizerMap
 ) extends Env {
-  override def apply(name: String): Value = globals.getOrElse(name, throw NotFound(name))
+  override def apply(name: String): Value =
+    globals.get(name).map(_.value(this)).getOrElse(throw NotFound(name))
 
   override def putGlobal(name: String, value: Value, instanceKey: Option[String]): Env = {
     assert(value.synDeps.isEmpty)
@@ -74,10 +101,16 @@ final case class TypecheckEnv(
         case None      => globalInstances
       }
       copy(
-        globals = globals + (name -> value),
+        globals = globals + (name -> GlobalBinding.Strict(value)),
         globalInstances = nextInstances
       )
     }
+  }
+
+  override def putLazyGlobal(name: String, force: () => Value): Env = {
+    if (globals.contains(name)) throw AlreadyDefined(name)
+    else if (name == "_") throw WTF("Wildcards not allowed in global names")
+    else copy(globals = globals + (name -> new GlobalBinding.Lazy(force)))
   }
 
   override def putLocal(
@@ -134,6 +167,8 @@ trait DelegatingEnv extends Env {
 
   override def putGlobal(name: String, value: Value, instanceKey: Option[String]): Env =
     updateBase(base.putGlobal(name, value, instanceKey))
+  override def putLazyGlobal(name: String, force: () => Value): Env =
+    updateBase(base.putLazyGlobal(name, force))
   override def putLocal(
       ref: CoreAst.LocalRef,
       value: Value,

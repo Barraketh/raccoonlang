@@ -267,40 +267,67 @@ object Interpreter {
 
   case class Worlds(checkEnv: Env, runEnv: Env)
 
+  private def evalConstValue(
+      unfoldStrategy: Option[CoreAst.UnfoldStrategy],
+      name: String,
+      ty: CoreAst.TypeTerm,
+      body: CoreAst.ConstBody,
+      span: Span,
+      isInstance: Boolean,
+      env: Env
+  ): Value = {
+    val tyV = TypeChecker.getType(ty, env)
+
+    body match {
+      case CoreAst.ConstBody.Builtin(_) =>
+        if (unfoldStrategy.nonEmpty) throw WTF("Builtin declarations cannot be stable", Some(span))
+        if (isInstance) throw WTF("Builtin declarations cannot be instances", Some(span))
+        Builtins.instantiate(name, tyV, span)
+
+      case CoreAst.ConstBody.TermBody(term) =>
+        val declConst = VConst(name, Symbol, tyV)
+        val bodyV0 = TypeChecker.check(term, env)
+
+        TypeChecker.checkType(bodyV0, tyV, env.normalizers)
+        val bodyV = Value.ascribe(bodyV0, tyV)
+
+        unfoldStrategy match {
+          case Some(_) => bodyV
+          case None    => declConst
+        }
+    }
+  }
+
   def evalDecl(decl: Decl, worlds: Worlds): Worlds = {
     decl match {
-      case Decl.ConstDecl(unfoldStrategy, name, ty, body, span, isInstance) =>
-        val tyV = TypeChecker.getType(ty, worlds.checkEnv)
-        val runtimeTyV = TypeChecker.getType(ty, worlds.runEnv)
+      case Decl.ConstDecl(unfoldStrategy, name, ty, body, span, isInstance, lazyGlobal) =>
+        if (lazyGlobal) {
+          if (isInstance) throw WTF("Lazy global instances are not supported", Some(span))
+          val checkEnv = worlds.checkEnv
+          val runEnv = worlds.runEnv
+          val nextCheckEnv =
+            checkEnv.putLazyGlobal(
+              name,
+              () => evalConstValue(unfoldStrategy, name, ty, body, span, isInstance, checkEnv)
+            )
+          val nextRunEnv =
+            runEnv.putLazyGlobal(
+              name,
+              () => evalConstValue(unfoldStrategy, name, ty, body, span, isInstance, runEnv)
+            )
+          Worlds(nextCheckEnv, nextRunEnv)
+        } else {
+          val checkValue = evalConstValue(unfoldStrategy, name, ty, body, span, isInstance, worlds.checkEnv)
+          val runtimeValue = evalConstValue(unfoldStrategy, name, ty, body, span, isInstance, worlds.runEnv)
 
-        val (checkValue, runtimeValue) = body match {
-          case CoreAst.ConstBody.Builtin(_) =>
-            if (unfoldStrategy.nonEmpty) throw WTF("Builtin declarations cannot be stable", Some(span))
-            if (isInstance) throw WTF("Builtin declarations cannot be instances", Some(span))
-            (Builtins.instantiate(name, tyV, span), Builtins.instantiate(name, runtimeTyV, span))
+          val checkInstanceKey = if (isInstance) Some(InstanceSearch.instanceKey(name, checkValue)) else None
+          val nextCheckEnv = worlds.checkEnv.putGlobal(name, checkValue, checkInstanceKey)
 
-          case CoreAst.ConstBody.TermBody(term) =>
-            val declConst = VConst(name, Symbol, tyV)
-            val bodyV0 = TypeChecker.check(term, worlds.checkEnv)
+          val runInstanceKey = if (isInstance) Some(InstanceSearch.instanceKey(name, runtimeValue)) else None
+          val nextRunEnv = worlds.runEnv.putGlobal(name, runtimeValue, runInstanceKey)
 
-            TypeChecker.checkType(bodyV0, tyV, worlds.checkEnv.normalizers)
-            val bodyV = Value.ascribe(bodyV0, tyV)
-
-            val checkValue: Value = unfoldStrategy match {
-              case Some(_) => bodyV
-              case None    => declConst
-            }
-            val runtimeBodyV = Value.ascribe(TypeChecker.check(term, worlds.runEnv), runtimeTyV)
-            (checkValue, runtimeBodyV)
+          Worlds(nextCheckEnv, nextRunEnv)
         }
-
-        val checkInstanceKey = if (isInstance) Some(InstanceSearch.instanceKey(name, checkValue)) else None
-        val nextCheckEnv = worlds.checkEnv.putGlobal(name, checkValue, checkInstanceKey)
-
-        val runInstanceKey = if (isInstance) Some(InstanceSearch.instanceKey(name, runtimeValue)) else None
-        val nextRunEnv = worlds.runEnv.putGlobal(name, runtimeValue, runInstanceKey)
-
-        Worlds(nextCheckEnv, nextRunEnv)
 
       case Decl.AxiomDecl(name, ty, _, isInstance) =>
         val tyV = TypeChecker.getType(ty, worlds.checkEnv)
