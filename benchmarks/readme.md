@@ -2,6 +2,12 @@
 
 This directory contains generated benchmarks for raccoon vs Lean.
 
+## Typechecker / Interpreter
+
+`checker_interpreter.py` generates generic typechecker/interpreter stress tests for conversion, local contexts, application spines, lambdas/Pis, match refinement, type-pattern capture, projections, transparent unfolding, and universe normalization.
+
+Current results are recorded in `checker_interpreter.md`.
+
 ## Nested Dependent Vec.zip
 
 `nested_zip.py` generates a family of raccoon and Lean programs with a custom indexed `Vec`, a polymorphic `Pair`, and a polymorphic dependent `zip`.

@@ -17,6 +17,27 @@ The benchmark generator follows the current Raccoon model where ordinary source 
 
 ## Results
 
+### RaccoonJVM Current High-Watermark Rerun
+
+Measured on June 7, 2026 on commit `b64349cd36e84cf0d57ec5c96bc171f2a2822d2d`, Oracle GraalVM/OpenJDK 21.0.11.
+
+| scenario | size | RaccoonJVM |
+|---|---:|---:|
+| branching | 60,000 | 16.101s |
+| chain | 64 | 0.401s |
+| defeq | 1,536 | 1.697s |
+| diamond | 28 | 0.512s |
+| explicit-control | 512 | 1.102s |
+| failures | 60,000 | 10.756s |
+| fanout | 25,000 | 7.128s |
+| implicit-arity | 768 | 2.639s |
+| instance-body | 1,200 | 0.530s |
+| local-instances | 60,000 | 4.835s |
+| overlap | 60,000 | 13.072s |
+| repeat-query | 10,000 | 2.642s |
+| shared-fanout | 15,000 | 6.466s |
+| width | 60,000 | 4.818s |
+
 ### Width
 
 | instances | RaccoonJVM | Lean no-prelude |

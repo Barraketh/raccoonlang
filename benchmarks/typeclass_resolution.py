@@ -98,23 +98,21 @@ def raccoon_prelude() -> str:
 def raccoon_struct(name: str, params: Iterable[str] = ()) -> str:
     param_list = list(params)
     param_str = "".join(f" ({param}: Sort($u{idx}))" for idx, param in enumerate(param_list))
+    ctor_param_str = "".join(f" {{{param}: Sort($u{idx})}}" for idx, param in enumerate(param_list))
     args = ", ".join(param_list)
     result = f"{name}({args})" if args else name
-    return f"""struct {name}{param_str} : {raccoon_sort(param_list)}
- | mk (val: BenchUnit) : {result}
+    return f"""struct {name}{param_str} : {raccoon_struct_sort(param_list)}
+ | mk{ctor_param_str} (val: BenchUnit) : {result}
 
 """
 
 
-def raccoon_sort(params: Iterable[str]) -> str:
+def raccoon_struct_sort(params: Iterable[str]) -> str:
     levels = [f"u{idx}" for idx, _ in enumerate(params)]
     if not levels:
         return "Type"
-    if len(levels) == 1:
-        return f"Sort({levels[0]})"
-
-    level = levels[-1]
-    for cur in reversed(levels[:-1]):
+    level = "Level.one"
+    for cur in reversed(levels):
         level = f"Level.max({cur}, {level})"
     return f"Sort({level})"
 
@@ -150,6 +148,13 @@ def raccoon_wrap_type(depth: int) -> str:
     return ty
 
 
+def raccoon_wrap_decl() -> str:
+    return """inductive Wrap (A: Sort($u0)) : Sort(u0)
+ | mk {A: Sort($u0)} : Wrap(A)
+
+"""
+
+
 def raccoon_bench(expressions: list[str]) -> str:
     if not expressions:
         expressions = ["BenchUnit.unit"]
@@ -167,6 +172,13 @@ def raccoon_payload_chain(size: int) -> str:
     for _ in range(size):
         expr = f"Payload.node({expr}, Payload.leaf)"
     return expr
+
+
+def raccoon_payload_decls(size: int) -> str:
+    decls = ["def payload0 : Payload := Payload.leaf\n"]
+    for idx in range(1, size + 1):
+        decls.append(f"def payload{idx} : Payload := Payload.node(payload{idx - 1}, Payload.leaf)\n")
+    return "".join(decls)
 
 
 def lean_universe_name(idx: int) -> str:
@@ -261,6 +273,13 @@ def lean_payload_chain(size: int) -> str:
     return expr
 
 
+def lean_payload_decls(size: int) -> str:
+    decls = ["noncomputable def payload0 : Payload := Payload.leaf\n"]
+    for idx in range(1, size + 1):
+        decls.append(f"noncomputable def payload{idx} : Payload := Payload.node payload{idx - 1} Payload.leaf\n")
+    return "".join(decls)
+
+
 def raccoon_width(size: int, calls: int, _branch_depth: int) -> str:
     decoys = [f"WidthDecoy{i}" for i in range(size)]
     targets = [f"WidthTarget{i}" for i in range(calls)]
@@ -324,10 +343,7 @@ def raccoon_chain(size: int, _calls: int, _branch_depth: int) -> str:
         raccoon_prelude(),
         raccoon_struct("TC", ["A"]),
         raccoon_type_decl("Base"),
-        """inductive Wrap (A: Sort($u0)) : Sort(u0)
- | mk : Wrap(A)
-
-""",
+        raccoon_wrap_decl(),
         f"def instance baseTC : TC(Base) := {raccoon_mk('TC', ['Base'])}\n\n",
         f"def instance wrapTC [inner: TC($A)]: TC(Wrap(A)) := {raccoon_mk('TC', ['Wrap(A)'])}\n\n",
         "def consume (A: Sort($u0))[tc: TC(A)]: BenchUnit := BenchUnit.unit\n\n",
@@ -401,10 +417,7 @@ def raccoon_branching(size: int, _calls: int, branch_depth: int) -> str:
     decls.extend(
         [
             raccoon_type_decl("Base"),
-            """inductive Wrap (A: Sort($u0)) : Sort(u0)
- | mk : Wrap(A)
-
-""",
+            raccoon_wrap_decl(),
         ]
     )
     for name in missing:
@@ -606,10 +619,7 @@ def raccoon_overlap(size: int, _calls: int, _branch_depth: int) -> str:
     decls.extend(
         [
             raccoon_type_decl("Base"),
-            """inductive Wrap (A: Sort($u0)) : Sort(u0)
- | mk : Wrap(A)
-
-""",
+            raccoon_wrap_decl(),
         ]
     )
     for name in missing:
@@ -693,10 +703,7 @@ def raccoon_defeq(size: int, _calls: int, _branch_depth: int) -> str:
         raccoon_prelude(),
         raccoon_struct("TC", ["A"]),
         raccoon_type_decl("Base"),
-        """inductive Wrap (A: Sort($u0)) : Sort(u0)
- | mk : Wrap(A)
-
-""",
+        raccoon_wrap_decl(),
     ]
     for idx in range(size):
         body = "Wrap(A)" if idx == 0 else f"Alias{idx - 1}(A)"
@@ -774,26 +781,25 @@ def lean_shared_fanout(size: int, _calls: int, _branch_depth: int, no_prelude: b
 
 
 def raccoon_instance_body(size: int, _calls: int, _branch_depth: int) -> str:
-    payload = raccoon_payload_chain(size)
     return (
         raccoon_prelude()
         + """inductive Payload : Type
  | leaf : Payload
  | node (left: Payload)(right: Payload) : Payload
 
-struct Need (A: Sort($u0)) : Sort(u0)
- | mk (payload: Payload) : Need(A)
+struct Need (A: Sort($u0)) : Sort(Level.max(Level.one, u0))
+ | mk {A: Sort($u0)} (payload: Payload) : Need(A)
 
 """
         + raccoon_type_decl("BodyTarget")
-        + f"def instance needInst : Need(BodyTarget) := Need.mk(BodyTarget, {payload})\n\n"
+        + raccoon_payload_decls(size)
+        + f"def instance needInst : Need(BodyTarget) := Need.mk(BodyTarget, payload{size})\n\n"
         + "def consume (A: Sort($u0))[need: Need(A)]: BenchUnit := BenchUnit.unit\n\n"
         + raccoon_bench([f"consume(BodyTarget, {raccoon_derive('Need(BodyTarget)')})"])
     )
 
 
 def lean_instance_body(size: int, _calls: int, _branch_depth: int, no_prelude: bool) -> str:
-    payload = lean_payload_chain(size)
     return (
         lean_header(no_prelude)
         + lean_unit_decl()
@@ -806,7 +812,8 @@ class Need (A : Type u0) : Type u0 where
 
 """
         + lean_type_decl("BodyTarget")
-        + f"noncomputable instance needInst : Need BodyTarget where\n  payload := {payload}\n\n"
+        + lean_payload_decls(size)
+        + f"noncomputable instance needInst : Need BodyTarget where\n  payload := payload{size}\n\n"
         + "axiom consume {A : Type u0} [Need A] : BenchUnit\n\n"
         + lean_bench(["consume (A := BodyTarget)"])
     )
@@ -1024,7 +1031,7 @@ def run_raccoon_jvm(args: argparse.Namespace, out_dir: Path, scenarios: Iterable
         for size in scenario_sizes(args, scenario):
             reps = reps_for_size(size, args.reps, args.large_reps, args.large_threshold)
             path = out_dir / f"typeclass_{scenario}_{size}.rac"
-            command = [args.java, "-cp", classpath, "com.raccoonlang.Main", str(path)]
+            command = [args.java, "-cp", classpath, "com.raccoonlang.Main", "--prelude", args.prelude, str(path)]
             print_summary(benchmark_command("raccoon-jvm", scenario, size, command, reps, args.timeout))
 
 
@@ -1097,6 +1104,7 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--java", default="java")
     parser.add_argument("--classpath", help="JVM classpath for com.raccoonlang.Main")
+    parser.add_argument("--prelude", default=str(REPO_ROOT / "src/main/resources/Init/TestPrelude.rac"))
     parser.add_argument("--native-bin", default=str(REPO_ROOT / "native/target/scala-2.13/raccoon-release-full"))
     parser.add_argument("--lean", default="lean")
     args = parser.parse_args()

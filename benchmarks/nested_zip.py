@@ -28,6 +28,7 @@ from typing import Iterable
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCALA_VERSION = "2.13.18"
+ROARING_BITMAP_VERSION = "1.3.0"
 DEFAULT_RACCOON_SIZES = [0, 100, 400, 800, 1600, 6400, 12800, 51200]
 DEFAULT_LEAN_SIZES = [0, 100, 400, 800, 1600, 3200, 6400]
 
@@ -58,20 +59,20 @@ def raccoon_source(size: int, transparent_zip: bool) -> str:
  | zero : Nat
  | succ (_: Nat) : Nat
 
-inductive Vec (A: Sort($u))(n: Nat) : Sort(u)
+inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(Level.max(Level.one, u))
  | nil {{A: Sort($u)}} : Vec(A, Nat.zero)
  | cons {{A: Sort($u)}} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
 
 inductive Pair (A: Sort($u1))(B: Sort($u2)): Sort(Level.max(u1, u2))
- | mk {{A: Sort($u1)}}{{B: Sort($u2)}} (a: A)(b: B): Pair(A, B)
+ | mk(a: $A in Sort($u1))(b: $B in Sort($u2)): Pair(A, B)
 
-{unfold} zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) := {{
+{unfold} zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) decreases measure(n) := {{
   let ResType := Vec(Pair(A, B), n)
   match va returning ResType with
   | Vec.nil => Vec.nil(Pair(A, B))
   | Vec.cons va0 a => {{
     match vb returning ResType with
-    | Vec.cons vb0 b => Vec.cons(Pair(A, B), zip(va0, vb0), Pair.mk(A, B, a, b))
+    | Vec.cons vb0 b => Vec.cons(Pair(A, B), zip(va0, vb0), Pair.mk(a, b))
   }}
 }}
 
@@ -135,20 +136,29 @@ def generate_lean(out_dir: Path, sizes: Iterable[int]) -> None:
         write_file(out_dir / f"nested_zip_raised_{size}.lean", lean_source(size, raised_limits=True))
 
 
-def find_scala_library() -> Path:
+def find_dependency_jar(group_path: str, artifact: str, version: str) -> Path:
     home = Path.home()
+    filename = f"{artifact}-{version}.jar"
+    ivy_group = group_path.replace("/", ".")
     candidates = [
         home
-        / "Library/Caches/Coursier/v1/https/repo1.maven.org/maven2/org/scala-lang/scala-library"
-        / SCALA_VERSION
-        / f"scala-library-{SCALA_VERSION}.jar",
+        / "Library/Caches/Coursier/v1/https/repo1.maven.org/maven2"
+        / group_path
+        / artifact
+        / version
+        / filename,
         home
-        / ".cache/coursier/v1/https/repo1.maven.org/maven2/org/scala-lang/scala-library"
-        / SCALA_VERSION
-        / f"scala-library-{SCALA_VERSION}.jar",
+        / ".cache/coursier/v1/https/repo1.maven.org/maven2"
+        / group_path
+        / artifact
+        / version
+        / filename,
         home
-        / ".ivy2/cache/org.scala-lang/scala-library/jars"
-        / f"scala-library-{SCALA_VERSION}.jar",
+        / ".ivy2/cache"
+        / ivy_group
+        / artifact
+        / "jars"
+        / filename,
     ]
     for candidate in candidates:
         if candidate.exists():
@@ -158,20 +168,27 @@ def find_scala_library() -> Path:
     for root in search_roots:
         if not root.exists():
             continue
-        matches = list(root.glob(f"**/scala-library-{SCALA_VERSION}.jar"))
+        matches = list(root.glob(f"**/{filename}"))
         if matches:
             return matches[0]
 
-    raise FileNotFoundError(
-        f"could not find scala-library-{SCALA_VERSION}.jar; run `sbt -no-colors compile` or pass --classpath"
-    )
+    raise FileNotFoundError(f"could not find {filename}; run `sbt -no-colors compile` or pass --classpath")
+
+
+def find_scala_library() -> Path:
+    return find_dependency_jar("org/scala-lang", "scala-library", SCALA_VERSION)
+
+
+def find_roaring_bitmap() -> Path:
+    return find_dependency_jar("org/roaringbitmap", "RoaringBitmap", ROARING_BITMAP_VERSION)
 
 
 def default_classpath() -> str:
     classes = REPO_ROOT / "target/scala-2.13/classes"
     if not classes.exists():
         raise FileNotFoundError("missing target/scala-2.13/classes; run `sbt -no-colors compile` first")
-    return f"{classes}:{find_scala_library()}"
+    jars = [str(find_scala_library()), str(find_roaring_bitmap())]
+    return ":".join([str(classes), *jars])
 
 
 @dataclass
@@ -249,7 +266,7 @@ def run_raccoon_jvm(args: argparse.Namespace, out_dir: Path) -> None:
         for size in args.raccoon_sizes:
             reps = reps_for_size(size, args.reps, args.large_reps, args.large_threshold)
             path = out_dir / f"nested_zip_{kind}_{size}.rac"
-            command = [args.java, "-cp", classpath, "com.raccoonlang.Main", str(path)]
+            command = [args.java, "-cp", classpath, "com.raccoonlang.Main", "--prelude", args.prelude, str(path)]
             print_summary(benchmark_command(f"raccoon-jvm-{kind}", size, command, reps, args.timeout))
 
 
@@ -299,6 +316,7 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--java", default="java")
     parser.add_argument("--classpath", help="JVM classpath for com.raccoonlang.Main")
+    parser.add_argument("--prelude", default=str(REPO_ROOT / "src/main/resources/Init/TestPrelude.rac"))
     parser.add_argument("--native-bin", default=str(REPO_ROOT / "native/target/scala-2.13/raccoon-release-full"))
     parser.add_argument("--lean", default="lean")
     args = parser.parse_args()
