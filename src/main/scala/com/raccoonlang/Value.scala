@@ -93,7 +93,7 @@ object Value {
   final class Level private (val atoms: Map[VarId, Int], val c: Int) extends Value {
     override val tpe: Value = LevelTpe
 
-    override val synDeps: DepSet = DepSet.from(atoms.keys)
+    override lazy val synDeps: DepSet = DepSet.from(atoms.keys)
 
     override def equals(obj: Any): Boolean =
       obj match {
@@ -162,7 +162,7 @@ object Value {
   case class VSort(level: Level) extends Value {
     override def tpe: Value = VSort(Level.succ(level))
 
-    override def synDeps: DepSet = level.synDeps
+    override lazy val synDeps: DepSet = level.synDeps
   }
 
   final val PropTpe: VSort = VSort(Level.zero)
@@ -213,7 +213,7 @@ object Value {
   }
 
   case class VConst(name: String, constType: ConstType, tpe: Value) extends Value with UpdatableType {
-    override val synDeps: DepSet = tpe.synDeps
+    override lazy val synDeps: DepSet = tpe.synDeps
 
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
@@ -221,7 +221,7 @@ object Value {
   case class VApp(head: Value, args: Vector[Value], tpe: Value, blockerId: Option[VarId] = None)
     extends Value
     with UpdatableType {
-    override val synDeps: DepSet = {
+    override lazy val synDeps: DepSet = {
       val res = DepSet.newBuilder
       res.unionInPlace(head.synDeps)
       args.foreach(v => res.unionInPlace(v.synDeps))
@@ -230,7 +230,6 @@ object Value {
     }
 
     require(args.nonEmpty || blockerId.isEmpty, "Blocked application requires at least one argument")
-    require(blockerId.forall(synDeps.contains), "Blocked application synDeps must include blockerId")
     head match {
       case h: ConstructorHead =>
         require(blockerId.isEmpty, s"Constructor ${h.name} cannot be blocked")
@@ -247,7 +246,7 @@ object Value {
   case class NeutralThunk(term: ElabAst.Term.Match, env: Env, id: ValueId.LocalId, tpe: Value, blockerId: Option[VarId])
     extends Value
     with UpdatableType {
-    override val synDeps: DepSet = {
+    override lazy val synDeps: DepSet = {
       val res = DepSet.newBuilder
       res.unionInPlace(envDeps(env))
       res.unionInPlace(tpe.synDeps)
@@ -255,12 +254,11 @@ object Value {
       res.result()
     }
 
-    require(blockerId.forall(synDeps.contains), "Blocked thunk synDeps must include blockerId")
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
   case class Var(name: String, id: VarId, tpe: Value) extends Value with UpdatableType {
-    override val synDeps: DepSet = tpe.synDeps + id
+    override lazy val synDeps: DepSet = tpe.synDeps + id
 
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }

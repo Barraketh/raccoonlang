@@ -1,13 +1,19 @@
 package com.raccoonlang
 
 import java.nio.file.{Path, Paths}
+import java.time.{Instant, ZoneId}
+import java.time.format.DateTimeFormatter
 import scala.util.control.NonFatal
 
 object Main {
+  private val LogTimestampFormat =
+    DateTimeFormatter.ofPattern("HH:mm:ss.SSS").withZone(ZoneId.systemDefault())
+
   private final case class CliArgs(
       roots: Vector[Path] = Vector.empty,
       preludePath: Option[Path] = None,
       noPrelude: Boolean = false,
+      waitForEnter: Boolean = false,
       entry: Option[Path] = None
   )
 
@@ -28,6 +34,8 @@ object Main {
             cur.copy(entry = None)
           case "--no-prelude" :: tail =>
             loop(tail, cur.copy(noPrelude = true))
+          case "--wait-for-enter" :: tail =>
+            loop(tail, cur.copy(waitForEnter = true))
           case file :: tail if cur.entry.isEmpty =>
             loop(tail, cur.copy(entry = Some(Paths.get(file))))
           case _ =>
@@ -38,19 +46,33 @@ object Main {
     }
 
     val entry = parsedArgs.entry.getOrElse {
-      System.err.println("Usage: raccoon-lang [--root <dir>] [--prelude <file> | --no-prelude] <file>")
+      System.err.println(
+        "Usage: raccoon-lang [--root <dir>] [--prelude <file> | --no-prelude] [--wait-for-enter] <file>"
+      )
       sys.exit(2)
       return
     }
 
     if (parsedArgs.noPrelude && parsedArgs.preludePath.nonEmpty) {
-      System.err.println("Usage: raccoon-lang [--root <dir>] [--prelude <file> | --no-prelude] <file>")
+      System.err.println(
+        "Usage: raccoon-lang [--root <dir>] [--prelude <file> | --no-prelude] [--wait-for-enter] <file>"
+      )
       sys.exit(2)
       return
     }
 
+    def log(s: String): Unit = {
+      val timestamp = LogTimestampFormat.format(Instant.ofEpochMilli(System.currentTimeMillis()))
+      println(s"$timestamp: $s")
+    }
+
     var loadedOpt = Option.empty[ModuleLoader.LoadedProgram]
     try {
+      if (parsedArgs.waitForEnter) {
+        System.err.println("JVM started. Press Enter to continue.")
+        scala.io.StdIn.readLine()
+      }
+      log("Starting")
       val prelude =
         parsedArgs.preludePath match {
           case Some(path)                   => Prelude.fromPath(path)
@@ -63,9 +85,12 @@ object Main {
       val loaded =
         ModuleLoader.load(entry, loadConfig)
       loadedOpt = Some(loaded)
+      log("Loaded")
       val core = Elaborator.elab(loaded.program, prelude)
+      log("Elaborated")
       val resOpt = Interpreter.run(core, prelude)
       resOpt.foreach { v => println(PrettyPrinter.print(v)) }
+      log("Done")
       sys.exit(0)
     } catch {
       case ModuleLoader.LoadFailure(error, sources) =>
