@@ -9,8 +9,7 @@ class MathlibPilotTests extends munit.FunSuite {
         try {
           val core = Elaborator.elab(value, Prelude.default)
           Interpreter.run(core, Prelude.default)
-        }
-        catch {
+        } catch {
           case t: TypeError => fail(ErrorReporter.pretty(t, Source(src)))
         }
       case err: Failure =>
@@ -20,92 +19,120 @@ class MathlibPilotTests extends munit.FunSuite {
   private val setCore =
     """
       |namespace MathlibPilot {
+      |  // Lean: def Set (A : Type u) := A -> Prop
       |  struct Set (A: Sort($u)) : Sort(u)
-      |   | mk {A: Sort($u)} (mem: A -> Prop) : Set(A)
+      |   | mk (apply: A -> Prop) : Set(A)
       |
       |  namespace Set {
+      |    // Lean: def mem (s : Set A) (x : A) : Prop := s x
+      |    def mem (s: Set($A))(x: A): Prop := s(x)
+      |
+      |    // Lean: def univ : Set A := fun _ => True
       |    def univ (A: Sort($u)): Set(A) :=
       |      Set.mk(A, fun (x: A): Prop => True)
       |
+      |    // Lean: def empty : Set A := fun _ => False
       |    def empty (A: Sort($u)): Set(A) :=
       |      Set.mk(A, fun (x: A): Prop => False)
       |
-      |    def inter (A: Sort($u))(s: Set(A))(t: Set(A)): Set(A) :=
-      |      Set.mk(A, fun (x: A): Prop => And(Set.mem(s)(x), Set.mem(t)(x)))
+      |    // Lean: def inter (s t : Set A) : Set A := fun x => And (s x) (t x)
+      |    def inter (s: Set($A))(t: Set(A)): Set(A) :=
+      |      Set.mk(A, fun (x: A): Prop => And(s(x), t(x)))
       |
-      |    def union (A: Sort($u))(s: Set(A))(t: Set(A)): Set(A) :=
-      |      Set.mk(A, fun (x: A): Prop => Or(Set.mem(s)(x), Set.mem(t)(x)))
+      |    // Lean: def union (s t : Set A) : Set A := fun x => Or (s x) (t x)
+      |    def union (s: Set($A))(t: Set(A)): Set(A) :=
+      |      Set.mk(A, fun (x: A): Prop => Or(s(x), t(x)))
       |
-      |    def compl (A: Sort($u))(s: Set(A)): Set(A) :=
-      |      Set.mk(A, fun (x: A): Prop => Not(Set.mem(s)(x)))
+      |    // Lean: def compl (s : Set A) : Set A := fun x => Not (s x)
+      |    def compl (s: Set($A)): Set(A) :=
+      |      Set.mk(A, fun (x: A): Prop => Not(s(x)))
       |
-      |    def diff (A: Sort($u))(s: Set(A))(t: Set(A)): Set(A) :=
-      |      Set.inter(A, s, Set.compl(A, t))
+      |    // Lean: def diff (s t : Set A) : Set A := inter s (compl t)
+      |    def diff (s: Set($A))(t: Set(A)): Set(A) :=
+      |      Set.inter(s, Set.compl(t))
       |
+      |    // Lean: def singleton (a : A) : Set A := fun x => Eq x a
       |    def singleton (a: $A in Sort($u)): Set(A) :=
       |      Set.mk(A, fun (x: A): Prop => Eq(A, x, a))
       |
+      |    // Lean: def preimage (f : A -> B) (s : Set B) : Set A := fun x => s (f x)
       |    def preimage (A: Sort($u))(B: Sort($v))(f: A -> B)(s: Set(B)): Set(A) :=
-      |      Set.mk(A, fun (x: A): Prop => Set.mem(s)(f(x)))
+      |      Set.mk(A, fun (x: A): Prop => s(f(x)))
       |
+      |    // Lean: def image (f : A -> B) (s : Set A) : Set B := fun y => Exists fun x => And (s x) (f x = y)
       |    def image (A: Sort($u))(B: Sort($v))(f: A -> B)(s: Set(A)): Set(B) :=
-      |      Set.mk(B, fun (y: B): Prop =>
-      |        Exists(A, fun (x: A): Prop => And(Set.mem(s)(x), Eq(B, f(x), y))))
+      |      Set.mk(B, fun (y: B): Prop => Exists(A, fun (x: A): Prop => And(s(x), Eq(B, f(x), y))))
       |
-      |    struct Subset (A: Sort($u))(s: Set(A))(t: Set(A)) : Prop
-      |     | intro {A: Sort($u)}{s: Set(A)}{t: Set(A)} (apply: (x: A) -> Set.mem(s)(x) -> Set.mem(t)(x)) : Subset(A, s, t)
+      |    // Lean: def Subset (s t : Set A) : Prop := forall x, s x -> t x
+      |    struct Subset (s: Set($A))(t: Set(A)) : Prop
+      |     | intro (apply: (x: A) -> s(x) -> t(x)) : Subset(s, t)
       |
-      |    def subsetRefl (A: Sort($u))(s: Set(A)): Subset(A, s, s) :=
-      |      Subset.intro(A, s, s, fun (x: A)(hx: (Set.mem(s)(x))): Set.mem(s)(x) => hx)
+      |    // Lean: theorem subsetRefl (s : Set A) : Subset s s := fun x hx => hx
+      |    def subsetRefl (s: Set($A)): Subset(s, s) :=
+      |      Subset.intro(s, s, fun (x: A)(hx: (s(x))): s(x) => hx)
       |
-      |    def subsetTrans (h1: Subset($A, $s, $t))(h2: Subset(A, t, $u)): Subset(A, s, u) :=
-      |      Subset.intro(A, s, u, fun (x: A)(hx: (Set.mem(s)(x))): Set.mem(u)(x) => h2.apply(x, h1.apply(x, hx)))
+      |    // Lean: theorem subsetTrans (h1 : Subset s t) (h2 : Subset t u) : Subset s u
+      |    def subsetTrans (h1: Subset($s, $t))(h2: Subset(t, $u)): Subset(s, u) :=
+      |      Subset.intro(s, u, fun (x: A)(hx: (s(x))): u(x) => h2(x, h1(x, hx)))
       |
-      |    def emptySubset (A: Sort($u))(s: Set(A)): Subset(A, empty(A), s) :=
-      |      Subset.intro(A, empty(A), s, fun (x: A)(hx: (Set.mem(empty(A))(x))): Set.mem(s)(x) => falseElim(hx, Set.mem(s)(x)))
+      |    // Lean: theorem emptySubset (s : Set A) : Subset empty s
+      |    def emptySubset (s: Set($A)): Subset(empty(A), s) :=
+      |      Subset.intro(empty(A), s, fun (x: A)(hx: (empty(A)(x))): s(x) => falseElim(hx, s(x)))
       |
-      |    def subsetUniv (A: Sort($u))(s: Set(A)): Subset(A, s, univ(A)) :=
-      |      Subset.intro(A, s, univ(A), fun (x: A)(hx: (Set.mem(s)(x))): Set.mem(univ(A))(x) => True.intro)
+      |    // Lean: theorem subsetUniv (s : Set A) : Subset s univ
+      |    def subsetUniv (s: Set($A)): Subset(s, univ(A)) :=
+      |      Subset.intro(s, univ(A), fun (x: A)(hx: (s(x))): univ(A)(x) => True.intro)
       |
-      |    def interSubsetLeft (A: Sort($u))(s: Set(A))(t: Set(A)): Subset(A, inter(A, s, t), s) :=
-      |      Subset.intro(A, inter(A, s, t), s, fun (x: A)(hx: (Set.mem(inter(A, s, t))(x))): Set.mem(s)(x) => And.left(hx))
+      |    // Lean: theorem interSubsetLeft (s t : Set A) : Subset (inter s t) s
+      |    def interSubsetLeft (s: Set($A))(t: Set(A)): Subset(inter(s, t), s) :=
+      |      Subset.intro(inter(s, t), s, fun (x: A)(hx: (inter(s, t)(x))): s(x) => And.left(hx))
       |
-      |    def interSubsetRight (A: Sort($u))(s: Set(A))(t: Set(A)): Subset(A, inter(A, s, t), t) :=
-      |      Subset.intro(A, inter(A, s, t), t, fun (x: A)(hx: (Set.mem(inter(A, s, t))(x))): Set.mem(t)(x) => And.right(hx))
+      |    // Lean: theorem interSubsetRight (s t : Set A) : Subset (inter s t) t
+      |    def interSubsetRight (s: Set($A))(t: Set(A)): Subset(inter(s, t), t) :=
+      |      Subset.intro(inter(s, t), t, fun (x: A)(hx: (inter(s, t)(x))): t(x) => And.right(hx))
       |
-      |    def subsetInter (h1: Subset($A, $u, $s))(h2: Subset(A, u, $t)): Subset(A, u, inter(A, s, t)) :=
-      |      Subset.intro(A, u, inter(A, s, t), fun (x: A)(hx: (Set.mem(u)(x))): Set.mem(inter(A, s, t))(x) =>
-      |        And.intro(Set.mem(s)(x), Set.mem(t)(x), h1.apply(x, hx), h2.apply(x, hx)))
+      |    // Lean: theorem subsetInter (h1 : Subset u s) (h2 : Subset u t) : Subset u (inter s t)
+      |    def subsetInter (h1: Subset($u, $s))(h2: Subset(u, $t)): Subset(u, inter(s, t)) :=
+      |      Subset.intro(u, inter(s, t), fun (x: A)(hx: (u(x))): inter(s, t)(x) =>
+      |        And.intro(s(x), t(x), h1(x, hx), h2(x, hx)))
       |
-      |    def subsetUnionLeft (A: Sort($u))(s: Set(A))(t: Set(A)): Subset(A, s, union(A, s, t)) :=
-      |      Subset.intro(A, s, union(A, s, t), fun (x: A)(hx: (Set.mem(s)(x))): Set.mem(union(A, s, t))(x) => Or.inl(Set.mem(t)(x), hx))
+      |    // Lean: theorem subsetUnionLeft (s t : Set A) : Subset s (union s t)
+      |    def subsetUnionLeft (s: Set($A))(t: Set(A)): Subset(s, union(s, t)) :=
+      |      Subset.intro(s, union(s, t), fun (x: A)(hx: (s(x))): union(s, t)(x) => Or.inl(t(x), hx))
       |
-      |    def subsetUnionRight (A: Sort($u))(s: Set(A))(t: Set(A)): Subset(A, t, union(A, s, t)) :=
-      |      Subset.intro(A, t, union(A, s, t), fun (x: A)(hx: (Set.mem(t)(x))): Set.mem(union(A, s, t))(x) => Or.inr(Set.mem(s)(x), hx))
+      |    // Lean: theorem subsetUnionRight (s t : Set A) : Subset t (union s t)
+      |    def subsetUnionRight (s: Set($A))(t: Set(A)): Subset(t, union(s, t)) :=
+      |      Subset.intro(t, union(s, t), fun (x: A)(hx: (t(x))): union(s, t)(x) => Or.inr(s(x), hx))
       |
-      |    def unionSubset (h1: Subset($A, $s, $u))(h2: Subset(A, $t, u)): Subset(A, union(A, s, t), u) :=
-      |      Subset.intro(A, union(A, s, t), u, fun (x: A)(hx: (Set.mem(union(A, s, t))(x))): Set.mem(u)(x) =>
-      |        Or.elim(hx, Set.mem(u)(x), fun (hs: (Set.mem(s)(x))): Set.mem(u)(x) => h1.apply(x, hs), fun (ht: (Set.mem(t)(x))): Set.mem(u)(x) => h2.apply(x, ht)))
+      |    // Lean: theorem unionSubset (h1 : Subset s u) (h2 : Subset t u) : Subset (union s t) u
+      |    def unionSubset (h1: Subset($s, $u))(h2: Subset($t, u)): Subset(union(s, t), u) :=
+      |      Subset.intro(union(s, t), u, fun (x: A)(hx: (union(s, t)(x))): u(x) =>
+      |        Or.elim(hx, u(x), fun (hs: (s(x))): u(x) => h1(x, hs), fun (ht: (t(x))): u(x) => h2(x, ht)))
       |
-      |    def diffSubset (A: Sort($u))(s: Set(A))(t: Set(A)): Subset(A, diff(A, s, t), s) :=
-      |      interSubsetLeft(A, s, compl(A, t))
+      |    // Lean: theorem diffSubset (s t : Set A) : Subset (diff s t) s
+      |    def diffSubset (s: Set($A))(t: Set(A)): Subset(diff(s, t), s) :=
+      |      interSubsetLeft(s, compl(t))
       |
-      |    def memSingletonSelf (a: $A in Sort($u)): Set.mem(singleton(a))(a) :=
+      |    // Lean: theorem memSingletonSelf (a : A) : singleton a a := Eq.refl a
+      |    def memSingletonSelf (a: $A in Sort($u)): singleton(a)(a) :=
       |      Eq.refl(a)
       |
-      |    def singletonSubset (a: $A in Sort($u))(s: Set(A))(h: (Set.mem(s)(a))): Subset(A, singleton(a), s) :=
-      |      Subset.intro(A, singleton(a), s, fun (x: A)(hx: (Set.mem(singleton(a))(x))): Set.mem(s)(x) =>
-      |        Eq.subst(Eq.symm(hx), Level.zero, fun (z: A): Prop => Set.mem(s)(z), h))
+      |    // Lean: theorem singletonSubset (h : s a) : Subset (singleton a) s
+      |    def singletonSubset (a: $A in Sort($u))(s: Set(A))(h: (s(a))): Subset(singleton(a), s) :=
+      |      Subset.intro(singleton(a), s, fun (x: A)(hx: (singleton(a)(x))): s(x) =>
+      |        Eq.subst(Eq.symm(hx), Level.zero, fun (z: A): Prop => s(z), h))
       |
-      |    def imageIntro (A: Sort($u))(B: Sort($v))(f: A -> B)(s: Set(A))(x: A)(hx: (Set.mem(s)(x))): Set.mem(image(A, B, f, s))(f(x)) :=
+      |    // Lean: theorem imageIntro (hx : s x) : image f s (f x)
+      |    def imageIntro (A: Sort($u))(B: Sort($v))(f: A -> B)(s: Set(A))(x: A)(hx: (s(x))): image(A, B, f, s)(f(x)) :=
       |      Exists.intro(
       |        A,
-      |        fun (w: A): Prop => And(Set.mem(s)(w), Eq(B, f(w), f(x))),
+      |        fun (w: A): Prop => And(s(w), Eq(B, f(w), f(x))),
       |        x,
-      |        And.intro(Set.mem(s)(x), Eq(B, f(x), f(x)), hx, Eq.refl(f(x)))
+      |        And.intro(s(x), Eq(B, f(x), f(x)), hx, Eq.refl(f(x)))
       |      )
       |
-      |    def ext (s: Set($A))(t: Set(A))(h: (x: A) -> Iff(Set.mem(s)(x), Set.mem(t)(x))): Eq(Set(A), s, t) := {
+      |    // Lean: theorem ext (h : forall x, Iff (s x) (t x)) : Eq s t
+      |    def ext (s: Set($A))(t: Set(A))(h: (x: A) -> Iff(s(x), t(x))): Eq(Set(A), s, t) :=
       |      match s returning Eq(Set(A), s, t) with
       |      | Set.mk smem => {
       |        match t returning Eq(Set(A), Set.mk(A, smem), t) with
@@ -122,15 +149,15 @@ class MathlibPilotTests extends munit.FunSuite {
       |          | Eq.refl pred => Eq.refl(Set.mk(A, pred))
       |        }
       |      }
-      |    }
       |
-      |    def subsetAntisymm (h1: Subset($A, $s, $t))(h2: Subset(A, t, s)): Eq(Set(A), s, t) :=
-      |      ext(s, t, fun (x: A): Iff(Set.mem(s)(x), Set.mem(t)(x)) =>
+      |    // Lean: theorem subsetAntisymm (h1 : Subset s t) (h2 : Subset t s) : Eq s t
+      |    def subsetAntisymm (h1: Subset($s, $t))(h2: Subset(t, s)): Eq(Set(A), s, t) :=
+      |      ext(s, t, fun (x: A): Iff(s(x), t(x)) =>
       |        Iff.intro(
-      |          Set.mem(s)(x),
-      |          Set.mem(t)(x),
-      |          fun (hs: (Set.mem(s)(x))): Set.mem(t)(x) => h1.apply(x, hs),
-      |          fun (ht: (Set.mem(t)(x))): Set.mem(s)(x) => h2.apply(x, ht)
+      |          s(x),
+      |          t(x),
+      |          fun (hs: (s(x))): t(x) => h1(x, hs),
+      |          fun (ht: (t(x))): s(x) => h2(x, ht)
       |        ))
       |  }
       |}
@@ -145,30 +172,40 @@ class MathlibPilotTests extends munit.FunSuite {
       setCore +
         """
           |namespace MathlibPilot {
+          |  // Lean: def natZeros : Set Nat := singleton Nat.zero
           |  def natZeros : Set(Nat) := Set.singleton(Nat.zero)
           |
-          |  def natZerosMem (x: Nat): Prop := Set.mem(natZeros)(x)
+          |  // Lean: def natZerosMem (x : Nat) : Prop := natZeros x
+          |  def natZerosMem (x: Nat): Prop := natZeros(x)
           |
+          |  // Lean: def idNat (n : Nat) : Nat := n
           |  def idNat (n: Nat): Nat := n
           |
-          |  def natUniverseContainsZero : Set.mem(Set.univ(Nat))(Nat.zero) := True.intro
+          |  // Lean: def natUniverseContainsZero : Set.mem Set.univ Nat.zero := True.intro
+          |  def natUniverseContainsZero : Set.mem(Set.univ(Nat), Nat.zero) := True.intro
           |
+          |  // Lean: def singletonIsNonempty : Exists natZerosMem := Exists.intro Nat.zero ...
           |  def singletonIsNonempty : Exists(Nat, natZerosMem) :=
           |    Exists.intro(Nat, natZerosMem, Nat.zero, Set.memSingletonSelf(Nat.zero))
           |
-          |  def zerosSubsetUniverse : Set.Subset(Nat, natZeros, Set.univ(Nat)) :=
-          |    Set.subsetUniv(Nat, natZeros)
+          |  // Lean: def zerosSubsetUniverse : Subset natZeros Set.univ := subsetUniv natZeros
+          |  def zerosSubsetUniverse : Set.Subset(natZeros, Set.univ(Nat)) :=
+          |    Set.subsetUniv(natZeros)
           |
-          |  def zerosSubsetUnion (s: Set(Nat)): Set.Subset(Nat, natZeros, Set.union(Nat, natZeros, s)) :=
-          |    Set.subsetUnionLeft(Nat, natZeros, s)
+          |  // Lean: def zerosSubsetUnion (s : Set Nat) : Subset natZeros (union natZeros s)
+          |  def zerosSubsetUnion (s: Set(Nat)): Set.Subset(natZeros, Set.union(natZeros, s)) :=
+          |    Set.subsetUnionLeft(natZeros, s)
           |
-          |  def interZerosLeft (s: Set(Nat)): Set.Subset(Nat, Set.inter(Nat, natZeros, s), natZeros) :=
-          |    Set.interSubsetLeft(Nat, natZeros, s)
+          |  // Lean: def interZerosLeft (s : Set Nat) : Subset (inter natZeros s) natZeros
+          |  def interZerosLeft (s: Set(Nat)): Set.Subset(Set.inter(natZeros, s), natZeros) :=
+          |    Set.interSubsetLeft(natZeros, s)
           |
-          |  def preimageContainsZero : Set.mem(Set.preimage(Nat, Nat, idNat, natZeros))(Nat.zero) :=
+          |  // Lean: def preimageContainsZero : Set.mem (preimage idNat natZeros) Nat.zero
+          |  def preimageContainsZero : Set.mem(Set.preimage(Nat, Nat, idNat, natZeros), Nat.zero) :=
           |    Set.memSingletonSelf(Nat.zero)
           |
-          |  def imageContainsZero : Set.mem(Set.image(Nat, Nat, idNat, natZeros))(Nat.zero) :=
+          |  // Lean: def imageContainsZero : Set.mem (image idNat natZeros) Nat.zero
+          |  def imageContainsZero : Set.mem(Set.image(Nat, Nat, idNat, natZeros), Nat.zero) :=
           |    Set.imageIntro(Nat, Nat, idNat, natZeros, Nat.zero, Set.memSingletonSelf(Nat.zero))
           |}
           |""".stripMargin
@@ -180,10 +217,11 @@ class MathlibPilotTests extends munit.FunSuite {
       setCore +
         """
           |namespace MathlibPilot {
+          |  // Lean: def sameSingletons : Eq (singleton Nat.zero) (singleton Nat.zero)
           |  def sameSingletons : Eq(Set(Nat), Set.singleton(Nat.zero), Set.singleton(Nat.zero)) :=
           |    Set.subsetAntisymm(
-          |      Set.subsetRefl(Nat, Set.singleton(Nat.zero)),
-          |      Set.subsetRefl(Nat, Set.singleton(Nat.zero))
+          |      Set.subsetRefl(Set.singleton(Nat.zero)),
+          |      Set.subsetRefl(Set.singleton(Nat.zero))
           |    )
           |}
           |""".stripMargin

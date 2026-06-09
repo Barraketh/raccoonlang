@@ -168,9 +168,9 @@ object InductiveChecks {
 
       val fullType = TypeChecker.getType(fullTypeTerm, curEnv)
       val erasedFamilyArgIndexes = ctor.erasedBinders.map { binder =>
-        val idx = decl.header.params.indexWhere(_.name == binder.name)
-        if (idx < 0) throw InvalidErasedConstructorBinder(ctor.canonicalName, binder.name, "expected inductive param")
-        idx
+        binder.familyParamIdx.getOrElse {
+          throw InvalidErasedConstructorBinder(ctor.canonicalName, binder.name, "expected inductive param")
+        }
       }
 
       curEnv.putGlobal(
@@ -257,18 +257,23 @@ object InductiveChecks {
       if (outputArgs.length != header.arity) throw resultErr
 
       // Check param uniformity
-      header.params.zip(outputArgs).foreach { case (param, outputArg) =>
+      header.params.zip(outputArgs).zipWithIndex.foreach { case ((param, outputArg), paramIdx) =>
+        val error =
+          NonUniformInductiveParam(header.name, ctor.canonicalName, param.name, outputArg, Some(ctor.resultTy.span))
         val erasedWitnesses = erasedBinders.collect {
-          case binder if binder.name == param.name => envWithErased(binder.localRef)
+          case binder if binder.familyParamIdx.contains(paramIdx) => envWithErased(binder.localRef)
         }
         val captureWitnesses = fieldBinders.flatMap { binder =>
-          binder.captures.collect {
-            case capture if capture.localRef.name == param.name => fieldsEnv(capture.localRef)
+          binder.familyParamIdx match {
+            case Some(`paramIdx`) =>
+              binder.captures.filter(_.localRef.name == param.name) match {
+                case Vector(capture) => Vector(fieldsEnv(capture.localRef))
+                case _               => throw error
+              }
+            case _ => Vector.empty
           }
         }
         val witnesses = erasedWitnesses ++ captureWitnesses
-        val error =
-          NonUniformInductiveParam(header.name, ctor.canonicalName, param.name, outputArg, Some(ctor.resultTy.span))
 
         if (witnesses.length != 1) throw error
 

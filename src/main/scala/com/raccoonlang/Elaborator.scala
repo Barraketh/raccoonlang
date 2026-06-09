@@ -314,51 +314,84 @@ object Elaborator {
       case other => Vector(other)
     }
 
-  private def checkConstructorParamDiscipline(
+  private final case class CompletedConstructor(
+      ctor: SA.Command.ConstructorDecl,
+      erasedFamilyParamIdxs: Vector[Int],
+      fieldFamilyParamIdxs: Vector[Option[Int]]
+  )
+
+  private def completeConstructorParamWitnesses(
       header: SA.Command.InductiveHeader,
       ctor: SA.Command.ConstructorDecl,
       ctorName: String
-  ): Unit = {
-    val paramNames = header.params.map(_.name).toSet
+  ): CompletedConstructor = {
+    val paramIdxs = header.params.zipWithIndex.map { case (param, idx) => param.name -> idx }.toMap
+    val paramNames = paramIdxs.keySet
     val indexNames = header.indices.map(_.name).toSet
 
-    ctor.erasedBinders.foldLeft(Set.empty[String]) { case (seen, binder) =>
-      if (!paramNames.contains(binder.name)) {
-        val reason =
-          if (indexNames.contains(binder.name)) "indices must be passed through constructor fields or type patterns"
-          else if (header.params.isEmpty) "this inductive has no params"
-          else s"expected one of ${header.params.map(_.name).mkString(", ")}"
-        throw InvalidErasedConstructorBinder(ctorName, binder.name, reason, Some(binder.span))
+    val explicitErased = ctor.erasedBinders.foldLeft(Map.empty[Int, SA.Binder]) { case (seen, binder) =>
+      paramIdxs.get(binder.name) match {
+        case Some(idx) if seen.contains(idx) =>
+          throw InvalidErasedConstructorBinder(ctorName, binder.name, "duplicate erased parameter", Some(binder.span))
+
+        case Some(idx) => seen + (idx -> binder)
+
+        case None =>
+          val reason =
+            if (indexNames.contains(binder.name)) "indices must be passed through constructor fields or type patterns"
+            else if (header.params.isEmpty) "this inductive has no params"
+            else s"expected one of ${header.params.map(_.name).mkString(", ")}"
+          throw InvalidErasedConstructorBinder(ctorName, binder.name, reason, Some(binder.span))
       }
-      if (seen.contains(binder.name))
-        throw InvalidErasedConstructorBinder(ctorName, binder.name, "duplicate erased parameter", Some(binder.span))
-      seen + binder.name
     }
 
-    ctor.fields.find(field => paramNames.contains(field.name)).foreach { field =>
-      throw InvalidErasedConstructorBinder(
-        ctorName,
-        field.name,
-        "constructor fields named like inductive params must be erased",
-        Some(field.span)
-      )
-    }
-
-    val fieldCaptures = ctor.fields.flatMap(field => binderTypeCaptureNames(field.ty))
-
-    header.params.foreach { param =>
-      val erasedWitnesses = ctor.erasedBinders.filter(_.name == param.name)
-      val captureWitnesses = fieldCaptures.filter(_ == param.name)
-
-      val witnessCount = erasedWitnesses.length + captureWitnesses.length
-      if (witnessCount != 1)
+    val fieldFamilyParamIdxs = ctor.fields.map { field =>
+      if (paramNames.contains(field.name))
         throw InvalidErasedConstructorBinder(
           ctorName,
-          param.name,
-          "expected exactly one erased binder or type-pattern capture for this inductive parameter",
+          field.name,
+          "constructor fields named like inductive params must be erased",
+          Some(field.span)
+        )
+
+      val capturedParams = binderTypeCaptureNames(field.ty).flatMap(paramIdxs.get).distinct
+      if (capturedParams.length > 1)
+        throw InvalidErasedConstructorBinder(
+          ctorName,
+          field.name,
+          "a constructor field can witness at most one inductive param",
+          Some(field.span)
+        )
+      capturedParams.headOption
+    }
+
+    val witnessCounts = Array.fill(header.params.length)(0)
+    explicitErased.keys.foreach(idx => witnessCounts(idx) += 1)
+    fieldFamilyParamIdxs.flatten.foreach(idx => witnessCounts(idx) += 1)
+
+    witnessCounts.zipWithIndex.collectFirst {
+      case (count, idx) if count > 1 =>
+        throw InvalidErasedConstructorBinder(
+          ctorName,
+          header.params(idx).name,
+          "expected one erased binder or type-pattern capture for this inductive parameter",
           Some(ctor.span)
         )
     }
+
+    val erasedWithIdxs = header.params.zipWithIndex.flatMap { case (param, idx) =>
+      explicitErased.get(idx) match {
+        case Some(binder)                    => Some(binder -> idx)
+        case None if witnessCounts(idx) == 0 => Some(param -> idx)
+        case None                            => None
+      }
+    }
+
+    CompletedConstructor(
+      ctor.copy(erasedBinders = erasedWithIdxs.map(_._1)),
+      erasedWithIdxs.map(_._2),
+      fieldFamilyParamIdxs
+    )
   }
 
   private def binderTypeCaptureNames(binderType: SA.BinderType): Vector[String] =
@@ -649,7 +682,7 @@ object Elaborator {
   private def elabTypePatternHead(fn: SA.TypeTerm, env: ResolveEnv): CA.Term.Ref =
     elabType(fn, env) match {
       case ref: CA.Term.Ref => ref
-      case other => throw WTF(s"Type pattern head must resolve to a reference, got $other", Some(fn.span))
+      case other            => throw WTF(s"Type pattern head must resolve to a reference, got $other", Some(fn.span))
     }
 
   private def elabType(ty: SA.TypeTerm, env: ResolveEnv): CA.TypeTerm = ty match {
@@ -708,7 +741,7 @@ object Elaborator {
     val (ref, nextEnv) =
       if (b.name == "_") envWithCaptures.allocate(b.name)
       else envWithCaptures.bindNamed(b.name, allowShadow = false)
-    (CA.Binder(ref, ty, b.span, b.isInstance), nextEnv)
+    (CA.Binder(ref, ty, b.span, b.isInstance, familyParamIdx = None), nextEnv)
   }
 
   private def elabBinders(binders: Vector[SA.Binder], env: ResolveEnv): (Vector[CA.Binder], ResolveEnv) =
@@ -906,9 +939,8 @@ object Elaborator {
       case c: SurfaceAst.Command.Decl.InductiveDecl =>
         val name = env.qualify(c.header.name)
         val nameText = globalName(name)
-        c.ctors.foreach { ctor =>
-          checkConstructorParamDiscipline(c.header, ctor, globalName(name :+ ctor.name))
-        }
+        val completedCtors =
+          c.ctors.map(ctor => completeConstructorParamWitnesses(c.header, ctor, globalName(name :+ ctor.name)))
         val headerEnv = env.enterLocalScope
         val (params, envWithParams) = elabBinders(c.header.params, headerEnv)
         val (indices, envWithIndices) = elabBinders(c.header.indices, envWithParams)
@@ -919,9 +951,16 @@ object Elaborator {
         val ctorBaseEnv = env.addGlobal(name)
         val ctorNames = c.ctors.map(ctor => name :+ ctor.name)
         val ctors =
-          c.ctors.zip(ctorNames).map { case (ctor, ctorName) =>
-            val (erasedBinders, envWithErased) = elabBinders(ctor.erasedBinders, ctorBaseEnv.enterLocalScope)
-            val (fields, envWithFields) = elabBinders(ctor.fields, envWithErased)
+          completedCtors.zip(ctorNames).map { case (completed, ctorName) =>
+            val ctor = completed.ctor
+            val (rawErasedBinders, envWithErased) = elabBinders(ctor.erasedBinders, ctorBaseEnv.enterLocalScope)
+            val erasedBinders = rawErasedBinders.zip(completed.erasedFamilyParamIdxs).map { case (binder, idx) =>
+              binder.copy(familyParamIdx = Some(idx))
+            }
+            val (rawFields, envWithFields) = elabBinders(ctor.fields, envWithErased)
+            val fields = rawFields.zip(completed.fieldFamilyParamIdxs).map { case (binder, idx) =>
+              binder.copy(familyParamIdx = idx)
+            }
             CA.ConstructorDecl(
               canonicalName = globalName(ctorName),
               shortName = ctor.name,

@@ -161,14 +161,14 @@ object TypePatternOps {
     val checkedBinder = ElabAst.Binder(binder.localRef, binderType, binder.span, binder.isInstance)
 
     (
-      VBinder(binder.localRef, binderType, resType, captures, binder.isInstance),
+      VBinder(binder.localRef, binderType, resType, captures, binder.isInstance, binder.familyParamIdx),
       checkedBinder
     )
   }
 
   def toVBinder(binder: ElabAst.Binder): VBinder = {
     val expectedTy = compileBinderType(binder.ty)
-    VBinder(binder.localRef, binder.ty, expectedTy, collectBinderCaptures(binder.ty), binder.isInstance)
+    VBinder(binder.localRef, binder.ty, expectedTy, collectBinderCaptures(binder.ty), binder.isInstance, None)
   }
 
   private def openPatternApp(env: Env, app: EPattern.App): OpenedPatternApp = {

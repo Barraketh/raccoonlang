@@ -175,7 +175,8 @@ object Value {
       ty: ElabAst.BinderType,
       expectedTy: ElabAst.TypeTerm,
       captures: Vector[Value.VCapture],
-      isInstance: Boolean = false
+      isInstance: Boolean,
+      familyParamIdx: Option[Int]
   ) {
     def name: String = localRef.name
   }

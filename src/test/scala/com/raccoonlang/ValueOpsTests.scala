@@ -118,7 +118,7 @@ class ValueOpsTests extends munit.FunSuite {
     val solution = symbolicValue("CapturedSolution")
     val runtimeEnv = Env.empty.putGlobal("Type", valueType).putLocal(capturedRef, captured)
 
-    val binder = VBinder(argRef, binderType(typeRef), typeRef, Vector.empty)
+    val binder = VBinder(argRef, binderType(typeRef), typeRef, Vector.empty, isInstance = false, familyParamIdx = None)
     val pi = VPi(
       runtimeEnv,
       Vector(binder),
@@ -162,7 +162,7 @@ class ValueOpsTests extends munit.FunSuite {
     val env = Env.empty.putGlobal("Type", valueType).putLocal(capturedRef, captured)
     val runtimeEnv = RuntimeEnv.closeForEval(env)
 
-    val binder = VBinder(argRef, binderType(typeRef), typeRef, Vector.empty)
+    val binder = VBinder(argRef, binderType(typeRef), typeRef, Vector.empty, isInstance = false, familyParamIdx = None)
     val pi = VPi(
       runtimeEnv,
       Vector(binder),

@@ -155,6 +155,49 @@ class InductiveCheckTest extends munit.FunSuite {
     intercept[InvalidErasedConstructorBinder] { elabAndTypecheck(p) }
   }
 
+  test("Constructor family params are inserted when no field captures them") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive List (A: Type) : Type
+        | | nil : List(A)
+        | | cons (head: $A in Type)(tail: List(A)) : List(A)
+        |
+        |def xs : List(Nat) := List.cons(Nat.zero, List.nil(Nat))
+        |
+        |""".stripMargin
+
+    val worlds = elabAndRun(p)
+    worlds.checkEnv("List.nil") match {
+      case head: Value.ConstructorHead => assertEquals(head.numErased, 1)
+      case other                       => fail(s"Expected List.nil constructor head, got $other")
+    }
+    worlds.checkEnv("List.cons") match {
+      case head: Value.ConstructorHead => assertEquals(head.numErased, 0)
+      case other                       => fail(s"Expected List.cons constructor head, got $other")
+    }
+  }
+
+  test("Inserted constructor params expose nested captures to later witnesses") {
+    val p =
+      """
+        |struct Set (A: Sort($u)) : Sort(u)
+        | | mk (apply: A -> Prop) : Set(A)
+        |
+        |struct Subset (s: Set($A))(t: Set(A)) : Prop
+        | | intro (apply: (x: A) -> s(x) -> t(x)) : Subset(s, t)
+        |
+        |def subsetRefl (s: Set($A)): Subset(s, s) :=
+        |  Subset.intro(s, s, fun (x: A)(hx: (s(x))): s(x) => hx)
+        |
+        |""".stripMargin
+
+    elabAndTypecheck(p)
+  }
+
   test("Constructor erased binders may target non-prefix inductive params") {
     val p =
       """

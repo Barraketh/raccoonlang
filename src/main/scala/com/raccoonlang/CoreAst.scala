@@ -145,7 +145,8 @@ object CoreAst {
       localRef: LocalRef,
       ty: BinderType,
       span: Span,
-      isInstance: Boolean = false
+      isInstance: Boolean,
+      familyParamIdx: Option[Int]
   ) {
     def name: String = localRef.name
 
