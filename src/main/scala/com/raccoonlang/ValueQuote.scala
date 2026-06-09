@@ -41,7 +41,7 @@ object ValueQuote {
           ElabAst.Term.App(inlineAppHead(fn), args.map(inlineTerm), appSpan)
         case ElabAst.Term.Pi(binders, out, classifier, piSpan) =>
           val nextBinders = binders.map { b =>
-            b.copy(localRef = reindex(b.localRef), ty = inlineBinderType(b.ty))
+            b.copy(localRef = reindex(b.localRef), ty = inlineTopLevelTP(b.ty))
           }
           ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, piSpan)
         case ElabAst.Term.Body(lets, res, bodySpan) =>
@@ -79,7 +79,7 @@ object ValueQuote {
           ElabAst.Term.App(inlineAppHead(fn), args.map(inlineTerm), appSpan)
         case ElabAst.Term.Pi(binders, out, classifier, piSpan) =>
           val nextBinders = binders.map { b =>
-            b.copy(localRef = reindex(b.localRef), ty = inlineBinderType(b.ty))
+            b.copy(localRef = reindex(b.localRef), ty = inlineTopLevelTP(b.ty))
           }
           ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, piSpan)
       }
@@ -90,7 +90,7 @@ object ValueQuote {
         case ElabAst.TypePattern.Capture(ref, captureSpan) => ElabAst.TypePattern.Capture(reindex(ref), captureSpan)
       }
 
-    private def inlineTopLevelTP(tp: ElabAst.TopLevelTP): ElabAst.TopLevelTP =
+    def inlineTopLevelTP(tp: ElabAst.TopLevelTP): ElabAst.TopLevelTP =
       tp match {
         case ElabAst.TypePattern.Type(tpe) => ElabAst.TypePattern.Type(inlineTypeTerm(tpe))
         case ElabAst.TypePattern.App(fn, args, appSpan) =>
@@ -100,14 +100,8 @@ object ValueQuote {
               case other                 => throw WTF(s"Failed to inline ref $fn, got $other")
             }
           ElabAst.TypePattern.App(nextFn, args.map(inlineTypePattern), appSpan)
-      }
-
-    def inlineBinderType(binderType: ElabAst.BinderType): ElabAst.BinderType =
-      binderType match {
-        case ElabAst.BinderType.TypePattern(tp, binderSpan) =>
-          ElabAst.BinderType.TypePattern(inlineTopLevelTP(tp), binderSpan)
-        case ElabAst.BinderType.ConstrainedCapture(ref, constraint, binderSpan) =>
-          ElabAst.BinderType.ConstrainedCapture(reindex(ref), inlineTopLevelTP(constraint), binderSpan)
+        case ElabAst.TypePattern.ConstrainedCapture(ref, constraint, captureSpan) =>
+          ElabAst.TypePattern.ConstrainedCapture(reindex(ref), inlineTopLevelTP(constraint), captureSpan)
       }
 
     def inlineCase(c: ElabAst.Case): ElabAst.Case =
@@ -283,7 +277,7 @@ object ValueQuote {
     val inliner = new ClosedEnvInliner(pi.env, context)
 
     val quotedBinders = pi.binders.map { b =>
-      ElabAst.Binder(inliner.reindex(b.localRef), inliner.inlineBinderType(b.ty), Span(0, 0), b.isInstance)
+      ElabAst.Binder(inliner.reindex(b.localRef), inliner.inlineTopLevelTP(b.ty), Span(0, 0), b.isInstance)
     }
 
     OpenedPi(ElabAst.Term.Pi(quotedBinders, quotedOut, pi.tpe, span), freshArgs, nextContext)

@@ -53,15 +53,7 @@ object SurfaceAst {
     }
 
     final case class Capture(name: String, span: Span) extends TypePattern
-  }
-
-  sealed trait BinderType {
-    def span: Span
-  }
-
-  object BinderType {
-    final case class TypePattern(tp: TopLevelTP, span: Span) extends BinderType
-    final case class ConstrainedCapture(name: String, constraint: TopLevelTP, span: Span) extends BinderType
+    final case class ConstrainedCapture(name: String, constraint: TopLevelTP, span: Span) extends TopLevelTP
   }
 
   object Term {
@@ -124,7 +116,7 @@ object SurfaceAst {
   // Use a first-class normalizer value within a body scope
   final case class Use(normalizer: Term, span: Span)
 
-  case class Binder(name: String, ty: BinderType, span: Span, isInstance: Boolean = false)
+  case class Binder(name: String, ty: TopLevelTP, span: Span, isInstance: Boolean = false)
 
   case class FuncHeader(params: Vector[Binder], ty: TypeTerm, span: Span)
 

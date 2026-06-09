@@ -32,7 +32,7 @@ class ResidualizationTests extends munit.FunSuite {
       case EA.Term.App(fn, args, _) =>
         containsGlobal(fn, name) || args.exists(arg => containsGlobal(arg, name))
       case EA.Term.Pi(binders, out, _, _) =>
-        binders.exists(binder => containsGlobalBinderType(binder.ty, name)) || containsGlobal(out, name)
+        binders.exists(binder => containsGlobalTypePattern(binder.ty, name)) || containsGlobal(out, name)
       case EA.Term.Body(lets, res, _) =>
         lets.exists(l => l.ty.exists(ty => containsGlobal(ty, name)) || containsGlobal(l.value, name)) ||
         containsGlobal(res, name)
@@ -45,18 +45,14 @@ class ResidualizationTests extends munit.FunSuite {
         cases.exists(c => containsGlobal(c.body, name))
     }
 
-  private def containsGlobalBinderType(ty: EA.BinderType, name: String): Boolean =
-    ty match {
-      case EA.BinderType.TypePattern(tp, _)                   => containsGlobalTypePattern(tp, name)
-      case EA.BinderType.ConstrainedCapture(_, constraint, _) => containsGlobalTypePattern(constraint, name)
-    }
-
   private def containsGlobalTypePattern(tp: EA.TypePattern, name: String): Boolean =
     tp match {
       case EA.TypePattern.Type(term) => containsGlobal(term, name)
       case EA.TypePattern.App(fn, args, _) =>
         containsGlobal(fn, name) || args.exists(arg => containsGlobalTypePattern(arg, name))
       case EA.TypePattern.Capture(_, _) => false
+      case EA.TypePattern.ConstrainedCapture(_, constraint, _) =>
+        containsGlobalTypePattern(constraint, name)
     }
 
   private val natDecls =
@@ -225,11 +221,7 @@ class ResidualizationTests extends munit.FunSuite {
 
     resultTerm(checkBody(p).term) match {
       case pi: EA.Term.Pi =>
-        pi.binders.head.ty match {
-          case EA.BinderType.TypePattern(pattern, _) =>
-            assertEquals(pattern.toString, "TyId(Nat)")
-          case other => fail(s"Expected Pi binder annotation to preserve TyId(Nat), got $other")
-        }
+        assertEquals(pi.binders.head.ty.toString, "TyId(Nat)")
       case other => fail(s"Expected residualized Pi, got $other")
     }
   }
@@ -247,10 +239,7 @@ class ResidualizationTests extends munit.FunSuite {
     resultTerm(checkBody(p).term) match {
       case pi: EA.Term.Pi =>
         pi.binders.head.ty match {
-          case EA.BinderType.TypePattern(
-                EA.TypePattern.App(EA.Term.GlobalRef("IdT", _), Vector(EA.TypePattern.Capture(aRef, _)), _),
-                _
-              ) =>
+          case EA.TypePattern.App(EA.Term.GlobalRef("IdT", _), Vector(EA.TypePattern.Capture(aRef, _)), _) =>
             pi.out match {
               case EA.Term.LocalRef(outRef, _) => assertEquals(outRef, aRef)
               case other                       => fail(s"Expected codomain to reuse captured A, got $other")
@@ -278,12 +267,9 @@ class ResidualizationTests extends munit.FunSuite {
       case pi: EA.Term.Pi =>
         assertEquals(pi.binders.length, 1)
         pi.binders.head.ty match {
-          case EA.BinderType.TypePattern(
-                EA.TypePattern.App(
-                  EA.Term.GlobalRef("Vec", _),
-                  Vector(EA.TypePattern.Type(EA.Term.GlobalRef("Nat", _)), EA.TypePattern.Capture(nRef, _)),
-                  _
-                ),
+          case EA.TypePattern.App(
+                EA.Term.GlobalRef("Vec", _),
+                Vector(EA.TypePattern.Type(EA.Term.GlobalRef("Nat", _)), EA.TypePattern.Capture(nRef, _)),
                 _
               ) =>
             pi.out match {
@@ -308,14 +294,14 @@ class ResidualizationTests extends munit.FunSuite {
     val p =
       """
         |{
-        |  (_: $A in Type) -> A
+        |  (_: $A of Type) -> A
         |}
         |""".stripMargin
 
     resultTerm(checkBody(p).term) match {
       case pi: EA.Term.Pi =>
         pi.binders.head.ty match {
-          case EA.BinderType.ConstrainedCapture(aRef, EA.TypePattern.Type(EA.Term.GlobalRef("Type", _)), _) =>
+          case EA.TypePattern.ConstrainedCapture(aRef, EA.TypePattern.Type(EA.Term.GlobalRef("Type", _)), _) =>
             pi.out match {
               case EA.Term.LocalRef(outRef, _) => assertEquals(outRef, aRef)
               case other                       => fail(s"Expected codomain to reuse constrained capture A, got $other")
@@ -338,13 +324,10 @@ class ResidualizationTests extends munit.FunSuite {
     resultTerm(checkBody(p).term) match {
       case pi: EA.Term.Pi =>
         pi.binders.head.ty match {
-          case EA.BinderType.TypePattern(
-                EA.TypePattern.App(
-                  EA.Term.GlobalRef("Sort", _),
-                  Vector(
-                    EA.TypePattern.App(EA.Term.GlobalRef("Level.succ", _), Vector(EA.TypePattern.Capture(uRef, _)), _)
-                  ),
-                  _
+          case EA.TypePattern.App(
+                EA.Term.GlobalRef("Sort", _),
+                Vector(
+                  EA.TypePattern.App(EA.Term.GlobalRef("Level.succ", _), Vector(EA.TypePattern.Capture(uRef, _)), _)
                 ),
                 _
               ) =>

@@ -172,7 +172,7 @@ object Value {
 
   case class VBinder(
       localRef: CoreAst.LocalRef,
-      ty: ElabAst.BinderType,
+      ty: ElabAst.TopLevelTP,
       expectedTy: ElabAst.TypeTerm,
       captures: Vector[Value.VCapture],
       isInstance: Boolean,

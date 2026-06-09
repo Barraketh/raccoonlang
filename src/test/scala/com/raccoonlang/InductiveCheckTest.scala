@@ -164,7 +164,7 @@ class InductiveCheckTest extends munit.FunSuite {
         |
         |inductive List (A: Type) : Type
         | | nil : List(A)
-        | | cons (head: $A in Type)(tail: List(A)) : List(A)
+        | | cons (head: $A of Type)(tail: List(A)) : List(A)
         |
         |def xs : List(Nat) := List.cons(Nat.zero, List.nil(Nat))
         |
@@ -202,7 +202,7 @@ class InductiveCheckTest extends munit.FunSuite {
     val p =
       """
         |inductive Bad (A: Type)(B: Type) : Sort(Level.one)
-        | | inl {B: Type} (a: $A in Type) : Bad(A, B)
+        | | inl {B: Type} (a: $A of Type) : Bad(A, B)
         |
         |""".stripMargin
 

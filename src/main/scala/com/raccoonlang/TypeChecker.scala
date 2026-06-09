@@ -80,7 +80,7 @@ object TypeChecker {
           loop(fn, appHead = true)
           args.foreach(arg => loop(arg, appHead = false))
         case EA.Term.Pi(binders, out, _, _) =>
-          binders.foreach(b => loopBinderType(b.ty))
+          binders.foreach(b => loopTypePattern(b.ty))
           loop(out, appHead = false)
         case EA.Term.Body(lets, res, _) =>
           lets.foreach { l =>
@@ -95,12 +95,6 @@ object TypeChecker {
           cases.foreach(c => loop(c.body, appHead = false))
       }
 
-    def loopBinderType(t: EA.BinderType): Unit =
-      t match {
-        case EA.BinderType.TypePattern(tp, _)                   => loopTypePattern(tp)
-        case EA.BinderType.ConstrainedCapture(_, constraint, _) => loopTypePattern(constraint)
-      }
-
     def loopTypePattern(t: EA.TypePattern): Unit =
       t match {
         case EA.TypePattern.Type(term) => loop(term, appHead = false)
@@ -108,6 +102,8 @@ object TypeChecker {
           loop(fn, appHead = true)
           args.foreach(loopTypePattern)
         case EA.TypePattern.Capture(_, _) =>
+        case EA.TypePattern.ConstrainedCapture(_, constraint, _) =>
+          loopTypePattern(constraint)
       }
 
     loop(term, appHead = false)

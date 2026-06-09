@@ -39,15 +39,35 @@ class TypePatternTests extends munit.FunSuite {
     case Value.ConstructorHead(n, _, _, _) => SConst(n)
     case Value.VCtor(h, fields, _) =>
       if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))
-    case Value.VConst(n, _, _)  => SConst(n)
+    case Value.VConst(n, _, _)     => SConst(n)
     case Value.VApp(h, args, _, _) => SApp(toShape(h), args.toList.map(toShape))
-    case other                  => SConst(other.toString)
+    case other                     => SConst(other.toString)
   }
 
   private val zeroS = SConst("Nat.zero")
   private def succS(s: Shape) = SApp(SConst("Nat.succ"), List(s))
   private def boxMkS(s: Shape) = SApp(SConst("Box.mk"), List(s))
   private def vecConsS(tail: Shape, head: Shape) = SApp(SConst("Vec.cons"), List(tail, head))
+
+  test("positive: constrained type-pattern capture aliases a nested pattern") {
+    val p =
+      """
+        |inductive Unit : Type
+        | | unit : Unit
+        |
+        |struct Set (A: Type) : Type
+        | | mk (apply: A -> Prop) : Set(A)
+        |
+        |struct Subset (s: Set($A))(t: Set(A)) : Type
+        | | intro (apply: (x: A) -> s(x) -> t(x)) : Subset(s, t)
+        |
+        |def source (h: Subset($s of Set($A), $t of Set(A))): Set(A) := s
+        |def idOf (x: $A of Type): A := x
+        |
+        |""".stripMargin
+
+    typecheckDecls(p)
+  }
 
   test("positive: capture family argument from binder and use it in codomain/body") {
     val p =
@@ -185,8 +205,8 @@ class TypePatternTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |def constrainedId (x: $A in Sort($u)): A := x
-        |def capturedType (x: $A in Sort($u)): Sort(u) := A
+        |def constrainedId (x: $A of Sort($u)): A := x
+        |def capturedType (x: $A of Sort($u)): Sort(u) := A
         |
         |{
         |  let z: Nat := constrainedId(Nat.zero)
@@ -198,6 +218,23 @@ class TypePatternTests extends munit.FunSuite {
     assertEquals(toShape(res), SConst("Nat"))
   }
 
+  test("positive: constrained capture solves a Prop universe") {
+    val p =
+      """
+        |inductive True : Prop
+        | | intro : True
+        |
+        |def capturedProp (x: $P of Sort($u)): Sort(u) := P
+        |
+        |{
+        |  capturedProp(True.intro)
+        |}
+        |""".stripMargin
+
+    val res = runProgram(p)
+    assertEquals(toShape(res), SConst("True"))
+  }
+
   test("positive: constrained captures accept cumulative universe upper bounds") {
     val p =
       """
@@ -205,7 +242,7 @@ class TypePatternTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |def acceptHigh (x: $A in Sort(Level.succ(Level.one))): A := x
+        |def acceptHigh (x: $A of Sort(Level.succ(Level.one))): A := x
         |
         |{
         |  acceptHigh(Nat.zero)
@@ -282,7 +319,7 @@ class TypePatternTests extends munit.FunSuite {
     assertEquals(toShape(res), SApp(SConst("Tag.mk"), List(SConst("Vec.nil"))))
   }
 
-  test("negative: bare capture in binder type is rejected") {
+  test("negative: bare capture in binder annotation is rejected") {
     val p =
       """
         |def bad (x: $A): Type := A
@@ -294,10 +331,10 @@ class TypePatternTests extends munit.FunSuite {
     }
   }
 
-  test("negative: constrained capture syntax is binder-only") {
+  test("negative: constrained captures are not ordinary types") {
     val p =
       """
-        |def bad : $A in Type := Type
+        |def bad : $A of Type := Type
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {
@@ -309,7 +346,7 @@ class TypePatternTests extends munit.FunSuite {
   test("negative: top-level constrained capture enforces constraint") {
     val p =
       """
-        |def bad (x: $A in Type): A := x
+        |def bad (x: $A of Type): A := x
         |
         |{
         |  bad(Type)

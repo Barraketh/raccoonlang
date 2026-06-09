@@ -43,7 +43,7 @@ object LanguageParser {
     "lexicographic",
     "measure",
     "indices",
-    "in"
+    "of"
   )
 
   private val identAtom =
@@ -135,12 +135,17 @@ object LanguageParser {
       case (first, others, sp) =>
         val pieces = first +: others
         pieces.init.foldRight(pieces.last: TypeTerm) { case (lhs, rhs) =>
-          Pi(Binder("_", BinderType.TypePattern(TypePattern.Type(lhs), lhs.span), lhs.span), rhs, sp)
+          Pi(Binder("_", TypePattern.Type(lhs), lhs.span), rhs, sp)
         }
     }
 
   private def typePatternCapture(implicit sourceId: Option[SourceId]): Parser[TypePattern.Capture] =
     (symTight("$") ~/ ident).flatSpanned(sourceId).map(TypePattern.Capture.tupled)
+
+  private def constrainedTypePattern(implicit sourceId: Option[SourceId]): Parser[TypePattern.ConstrainedCapture] =
+    (symTight("$") ~ ident ~ kw("of") ~/ topLevelTypePattern)
+      .flatSpanned(sourceId)
+      .map(TypePattern.ConstrainedCapture.tupled)
 
   private def typePatternHead(implicit sourceId: Option[SourceId]): Parser[TypeTerm] =
     ((rootTypeTerm | identTypeTerm) ~ (P(".") ~/ identAtom).flatSpanned(sourceId).rep(0)).map { case (base, fields) =>
@@ -151,33 +156,25 @@ object LanguageParser {
     (typePatternHead ~ nonEmptyParenArgs(typePattern)).flatSpanned(sourceId).map(TypePattern.App.tupled)
 
   private def topLevelTypePattern(implicit sourceId: Option[SourceId]): Parser[TopLevelTP] =
-    typePatternApp | typeTerm.map(TypePattern.Type.apply)
+    typePatternApp | constrainedTypePattern | typeTerm.map(TypePattern.Type.apply)
 
   private def typePattern(implicit sourceId: Option[SourceId]): Parser[TypePattern] =
-    typePatternApp | typePatternCapture | typeTerm.map(TypePattern.Type.apply)
-
-  private def constrainedCaptureBinderType(implicit sourceId: Option[SourceId]): Parser[BinderType] =
-    (symTight("$") ~/ ident ~ kw("in") ~/ topLevelTypePattern)
-      .flatSpanned(sourceId)
-      .map { case (name, constraint, span) => BinderType.ConstrainedCapture(name, constraint, span) }
-
-  private def binderType(implicit sourceId: Option[SourceId]): Parser[BinderType] =
-    constrainedCaptureBinderType | topLevelTypePattern.map(tp => BinderType.TypePattern(tp, tp.span))
+    typePatternApp | constrainedTypePattern | typePatternCapture | typeTerm.map(TypePattern.Type.apply)
 
   private def normalParam(implicit sourceId: Option[SourceId]): Parser[Binder] =
-    (sym('(') ~ argName ~ sym(':') ~/ skipAllWs ~ binderType ~ layoutSymTight(')')).flatSpanned(sourceId).map {
+    (sym('(') ~ argName ~ sym(':') ~/ skipAllWs ~ topLevelTypePattern ~ layoutSymTight(')')).flatSpanned(sourceId).map {
       case (name, ty, span) =>
         Binder(name, ty, span)
     }
 
   private def instanceParam(implicit sourceId: Option[SourceId]): Parser[Binder] =
-    (sym('[') ~ argName ~ sym(':') ~/ skipAllWs ~ binderType ~ layoutSymTight(']')).flatSpanned(sourceId).map {
+    (sym('[') ~ argName ~ sym(':') ~/ skipAllWs ~ topLevelTypePattern ~ layoutSymTight(']')).flatSpanned(sourceId).map {
       case (name, ty, span) =>
         Binder(name, ty, span, isInstance = true)
     }
 
   private def erasedParam(implicit sourceId: Option[SourceId]): Parser[Binder] =
-    (sym('{') ~ argName ~ sym(':') ~/ skipAllWs ~ binderType ~ layoutSymTight('}')).flatSpanned(sourceId).map {
+    (sym('{') ~ argName ~ sym(':') ~/ skipAllWs ~ topLevelTypePattern ~ layoutSymTight('}')).flatSpanned(sourceId).map {
       case (name, ty, span) =>
         Binder(name, ty, span)
     }

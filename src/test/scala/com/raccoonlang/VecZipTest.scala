@@ -65,7 +65,7 @@ class VecZipTest extends munit.FunSuite {
         |  | cons {A: Sort($u)} (v: Vec(A, $n))(elem: A): Vec(A, Nat.succ(n))
         |
         |inductive Pair (A: Sort($u1))(B: Sort($u2)): Sort(Level.max(u1, u2))
-        |  | mk(a: $A in Sort($u1))(b: $B in Sort($u2)): Pair(A, B)
+        |  | mk(a: $A of Sort($u1))(b: $B of Sort($u2)): Pair(A, B)
         |
         |def zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) decreases measure(n) := {
         |  let ResType := Vec(Pair(A, B), n)

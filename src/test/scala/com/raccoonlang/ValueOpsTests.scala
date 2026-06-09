@@ -9,10 +9,8 @@ class ValueOpsTests extends munit.FunSuite {
   private val typeRef: ElabAst.TypeTerm = ETerm.GlobalRef("Type", span)
   private val typeToTypeClassifier: Value.VSort = VSort(Level.succ(Level.one))
 
-  private def binderType(term: ElabAst.TypeTerm): ElabAst.BinderType = {
-    val pattern = ElabAst.TypePattern.Type(term)
-    ElabAst.BinderType.TypePattern(pattern, pattern.span)
-  }
+  private def typePattern(term: ElabAst.TypeTerm): ElabAst.TopLevelTP =
+    ElabAst.TypePattern.Type(term)
 
   private def nodeId(start: Int): AstNodeId = AstNodeId(None, start)
 
@@ -118,7 +116,7 @@ class ValueOpsTests extends munit.FunSuite {
     val solution = symbolicValue("CapturedSolution")
     val runtimeEnv = Env.empty.putGlobal("Type", valueType).putLocal(capturedRef, captured)
 
-    val binder = VBinder(argRef, binderType(typeRef), typeRef, Vector.empty, isInstance = false, familyParamIdx = None)
+    val binder = VBinder(argRef, typePattern(typeRef), typeRef, Vector.empty, isInstance = false, familyParamIdx = None)
     val pi = VPi(
       runtimeEnv,
       Vector(binder),
@@ -128,7 +126,7 @@ class ValueOpsTests extends munit.FunSuite {
       typeToTypeClassifier
     )
     val piTerm = ETerm.Pi(
-      Vector(ElabAst.Binder(argRef, binderType(typeRef), span)),
+      Vector(ElabAst.Binder(argRef, typePattern(typeRef), span)),
       typeRef,
       typeToTypeClassifier,
       span
@@ -162,7 +160,7 @@ class ValueOpsTests extends munit.FunSuite {
     val env = Env.empty.putGlobal("Type", valueType).putLocal(capturedRef, captured)
     val runtimeEnv = RuntimeEnv.closeForEval(env)
 
-    val binder = VBinder(argRef, binderType(typeRef), typeRef, Vector.empty, isInstance = false, familyParamIdx = None)
+    val binder = VBinder(argRef, typePattern(typeRef), typeRef, Vector.empty, isInstance = false, familyParamIdx = None)
     val pi = VPi(
       runtimeEnv,
       Vector(binder),
@@ -172,7 +170,7 @@ class ValueOpsTests extends munit.FunSuite {
       typeToTypeClassifier
     )
     val piTerm = ETerm.Pi(
-      Vector(ElabAst.Binder(argRef, binderType(typeRef), span)),
+      Vector(ElabAst.Binder(argRef, typePattern(typeRef), span)),
       typeRef,
       typeToTypeClassifier,
       span
@@ -197,7 +195,7 @@ class ValueOpsTests extends munit.FunSuite {
     val env = Env.empty.putGlobal("Type", valueType).putLocal(capturedRef, captured)
 
     val piTerm = ETerm.Pi(
-      Vector(ElabAst.Binder(argRef, binderType(typeRef), span)),
+      Vector(ElabAst.Binder(argRef, typePattern(typeRef), span)),
       typeRef,
       typeToTypeClassifier,
       span

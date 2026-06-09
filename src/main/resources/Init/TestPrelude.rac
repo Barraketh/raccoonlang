@@ -6,7 +6,7 @@ namespace Level {
   def max (l1: Level)(l2: Level): Level := builtin
 }
 
-def add_normalizer (zero: $A in Type)(add: A -> A -> A): Normalizer := builtin
+def add_normalizer (zero: $A of Type)(add: A -> A -> A): Normalizer := builtin
 
 inductive Eq (A: Sort($u)) indices (x: A)(y: A) : Prop
- | refl (x: $A in Sort($u)) : Eq(A, x, x)
+ | refl (x: $A of Sort($u)) : Eq(A, x, x)

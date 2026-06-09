@@ -28,14 +28,8 @@ object ElabAst {
     }
 
     final case class Capture(localRef: CoreAst.LocalRef, span: Span) extends TypePattern
-  }
-
-  sealed trait BinderType extends Ast
-
-  object BinderType {
-    final case class TypePattern(tp: TopLevelTP, span: Span) extends BinderType
     final case class ConstrainedCapture(localRef: CoreAst.LocalRef, constraint: TopLevelTP, span: Span)
-      extends BinderType
+      extends TopLevelTP
   }
 
   object Term {
@@ -74,7 +68,7 @@ object ElabAst {
 
   final case class Binder(
       localRef: CoreAst.LocalRef,
-      ty: BinderType,
+      ty: TopLevelTP,
       span: Span,
       isInstance: Boolean = false
   ) {

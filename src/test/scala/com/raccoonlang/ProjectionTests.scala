@@ -282,7 +282,7 @@ class ProjectionTests extends munit.FunSuite {
         | | zero : Nat
         |
         |inductive Pack : Type
-        | | mk (x: $A in Type) : Pack
+        | | mk (x: $A of Type) : Pack
         |
         |inductive Wrap (p: Pack) : Type
         | | intro {p: Pack} : Wrap(p)

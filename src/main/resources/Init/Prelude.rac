@@ -6,14 +6,14 @@ namespace Level {
   def max (l1: Level)(l2: Level): Level := builtin
 }
 
-def add_normalizer (zero: $A in Type)(add: A -> A -> A): Normalizer := builtin
+def add_normalizer (zero: $A of Type)(add: A -> A -> A): Normalizer := builtin
 
-def id (x: $A in Sort($u)): A := x
+def id (x: $A of Sort($u)): A := x
 
-def const (x: $A in Sort($u))(y: $B in Sort($v)): A := x
+def const (x: $A of Sort($u))(y: $B of Sort($v)): A := x
 
 inductive Eq (A: Sort($u)) indices (x: A)(y: A) : Prop
- | refl (x: $A in Sort($u)) : Eq(A, x, x)
+ | refl (x: $A of Sort($u)) : Eq(A, x, x)
 
 namespace Eq {
   def symm (p: Eq($A, $x, $y)): Eq(A, y, x) := {
@@ -65,14 +65,14 @@ def falseElim (h: False)(C: Sort($u)): C := False.elim(h, C)
 
 def notFalse : Not(False) := fun (h: False): False => h
 
-def absurd (h: $a in Prop)(hn: Not(a))(C: Sort($u)): C := False.elim(hn(h), C)
+def absurd (h: $a of Prop)(hn: Not(a))(C: Sort($u)): C := False.elim(hn(h), C)
 
 struct And (a: Prop)(b: Prop) : Prop
  | intro {a: Prop}{b: Prop} (left: a)(right: b) : And(a, b)
 
 inductive Or (a: Prop)(b: Prop) : Prop
- | inl {b: Prop} (left: $a in Prop) : Or(a, b)
- | inr {a: Prop} (right: $b in Prop) : Or(a, b)
+ | inl {b: Prop} (left: $a of Prop) : Or(a, b)
+ | inr {a: Prop} (right: $b of Prop) : Or(a, b)
 
 namespace Or {
   def elim (h: Or($a, $b))(C: Prop)(left: a -> C)(right: b -> C): C := {
@@ -144,7 +144,7 @@ namespace Bool {
 
 inductive Decidable (p: Prop) : Type
  | isFalse {p: Prop} (h: Not(p)) : Decidable(p)
- | isTrue (h: $p in Prop) : Decidable(p)
+ | isTrue (h: $p of Prop) : Decidable(p)
 
 namespace Decidable {
   def toBool (d: Decidable($p)): Bool := {
@@ -242,7 +242,7 @@ namespace Nat {
 
 inductive Option (A: Sort($u)) : Sort(u)
  | none {A: Sort($u)} : Option(A)
- | some (val: $A in Sort($u)) : Option(A)
+ | some (val: $A of Sort($u)) : Option(A)
 
 namespace Option {
   def elim (x: Option($A))(B: Sort($v))(none: B)(some: A -> B): B := {
@@ -279,8 +279,8 @@ namespace Option {
 }
 
 inductive Sum (A: Sort($u))(B: Sort($v)) : Sort(Level.max(u, v))
- | inl {B: Sort($v)} (val: $A in Sort($u)) : Sum(A, B)
- | inr {A: Sort($u)} (val: $B in Sort($v)) : Sum(A, B)
+ | inl {B: Sort($v)} (val: $A of Sort($u)) : Sum(A, B)
+ | inr {A: Sort($u)} (val: $B of Sort($v)) : Sum(A, B)
 
 namespace Sum {
   def elim (x: Sum($A, $B))(C: Sort($w))(left: A -> C)(right: B -> C): C := {
@@ -292,7 +292,7 @@ namespace Sum {
 
 inductive List (A: Sort($u)) : Sort(u)
  | nil {A: Sort($u)} : List(A)
- | cons (head: $A in Sort($u))(tail: List(A)) : List(A)
+ | cons (head: $A of Sort($u))(tail: List(A)) : List(A)
 
 namespace List {
   stable def foldr (xs: List($A))(B: Sort($v))(nil: B)(cons: A -> B -> B): B decreases structural(xs) := {
@@ -366,7 +366,7 @@ inductive Exists (A: Sort($u))(p: A -> Prop) : Prop
  | intro {A: Sort($u)}{p: A -> Prop} (witness: A)(proof: p(witness)) : Exists(A, p)
 
 inductive Nonempty (A: Sort($u)) : Prop
- | intro (val: $A in Sort($u)) : Nonempty(A)
+ | intro (val: $A of Sort($u)) : Nonempty(A)
 
 struct Inhabited (A: Sort($u)) : Sort(u)
  | mk {A: Sort($u)} (default: A) : Inhabited(A)
@@ -569,7 +569,7 @@ axiom Quot (A: Sort($u))(r: A -> A -> Prop): Sort(u)
 namespace Quot {
   def mk (A: Sort($u))(r: A -> A -> Prop)(a: A): Quot(A, r) := builtin
 
-  axiom sound (a: $A in Sort($u))(b: A)(r: A -> A -> Prop)(h: r(a, b)): Eq(Quot(A, r), Quot.mk(A, r, a), Quot.mk(A, r, b))
+  axiom sound (a: $A of Sort($u))(b: A)(r: A -> A -> Prop)(h: r(a, b)): Eq(Quot(A, r), Quot.mk(A, r, a), Quot.mk(A, r, b))
 
   def lift (q: Quot($A, $r))(B: Sort($v))(f: A -> B)(sound: (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b))): B := builtin
 

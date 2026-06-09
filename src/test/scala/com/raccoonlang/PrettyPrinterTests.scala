@@ -4,7 +4,7 @@ class PrettyPrinterTests extends munit.FunSuite {
   private def parseCore(src: String): CoreAst.Program =
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) => Elaborator.elab(value, Prelude.test)
-      case err: Failure        => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
+      case err: Failure         => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
 
   private def axiomType(src: String, name: String): CoreAst.TypeTerm =
@@ -13,19 +13,20 @@ class PrettyPrinterTests extends munit.FunSuite {
       .getOrElse(fail(s"Expected axiom $name"))
 
   test("anonymous constrained capture binder prints as explicit binder") {
-    val src = "axiom f : (_: $A in Type) -> A\n"
+    val src = "axiom f : (_: $A of Type) -> A\n"
     val printed = PrettyPrinter.printTerm(axiomType(src, "f"))
 
-    assertEquals(printed, "(_: $A in Type) -> A")
+    assertEquals(printed, "(_: $A of Type) -> A")
     parseCore(s"axiom g : $printed\n")
 
     val span = Span(0, 0)
     val ref = CoreAst.LocalRef(0, "A")
     val typeRef = ElabAst.Term.GlobalRef("Type", span)
     val constraint = ElabAst.TypePattern.Type(typeRef)
+    val pattern = ElabAst.TypePattern.ConstrainedCapture(ref, constraint, span)
     val binder = ElabAst.Binder(
       CoreAst.LocalRef(1, "_"),
-      ElabAst.BinderType.ConstrainedCapture(ref, constraint, span),
+      pattern,
       span
     )
     val pi = ElabAst.Term.Pi(Vector(binder), ElabAst.Term.LocalRef(ref, span), Value.VSort(Value.Level.zero), span)

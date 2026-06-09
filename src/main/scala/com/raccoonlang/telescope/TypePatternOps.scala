@@ -1,13 +1,13 @@
 package com.raccoonlang.telescope
 
-import com.raccoonlang.CoreAst.{Term, BinderType => CBinderType, TypePattern => CPattern}
-import com.raccoonlang.ElabAst.{BinderType => EBinderType, Term => ETerm, TypePattern => EPattern}
+import com.raccoonlang.CoreAst.{Term, TypePattern => CPattern}
+import com.raccoonlang.ElabAst.{Term => ETerm, TypePattern => EPattern}
 import com.raccoonlang.Interpreter._
 import com.raccoonlang.Value._
 import com.raccoonlang._
 
 /**
- * Type patterns are binder types that expose pieces of an actual argument type as ordinary locals. A binder such as
+ * Type patterns are binder annotations that expose pieces of an actual argument type as ordinary locals. A binder such as
  * `b: Box($A)` means: when an argument whose type is definitionally `Box(T)` is supplied, bind `A` to `T` and make it
  * available to later binders, the codomain, and the body. Pattern heads are general type-valued functions, so
  * `Pred($A)` is handled the same way as an inductive family application.
@@ -23,18 +23,21 @@ import com.raccoonlang._
  *     binding opens the expected type, unifies that opened type with `actual.tpe`, and materializes the opened
  *     environment with the resulting capture solutions.
  *
- * `OpenedBinderType` is the shared representation for this operation. Its `value` is the opened expected type; its
+ * `OpenedBinderPattern` is the shared representation for this operation. Its `value` is the opened expected type; its
  * `env` contains the capture locals created while opening; its `captureDeps` are the fresh dependencies reachable from
  * those captures and not already present in the input env. Only those deps are refinable while solving a type pattern.
  *
  * Invariants:
  *
- *   - A bare `$A` cannot be opened without an expected type. Captures are introduced only from binder types or from
+ *   - A bare `$A` cannot be opened without an expected type. Captures are introduced only from binder patterns or from
  *     arguments to a pattern head whose Pi binder supplies the expected type.
- *   - Each binder type is opened once at a binding site. The same opened value/env is used to create capture arguments
+ *   - Each binder pattern is opened once at a binding site. The same opened value/env is used to create capture arguments
  *     and to bind the binder, avoiding accidentally comparing against fresh copies of the same conceptual capture.
  *   - Solving starts from an empty `EqStore` and only allows `captureDeps`. Type-pattern inference must not mutate
  *     unrelated caller equality variables.
+ *   - Constrained captures solve like ordinary captures, then check their solved type against the constraint. This
+ *     happens after unifying the opened binder pattern with the actual argument type so aliases such as `$A of Sort($u)`
+ *     can solve both `A` and `u`.
  *   - After solving, every collected capture for a concrete argument must have changed from its fresh variable. If any
  *     remain unsolved, the pattern did not provide enough information and is rejected.
  *
@@ -45,7 +48,7 @@ import com.raccoonlang._
  */
 object TypePatternOps {
   private final case class OpenedPatternApp(fn: Value, args: Vector[Value], env: Env)
-  private[raccoonlang] final case class OpenedBinderType(value: Value, env: Env, captureDeps: DepSet)
+  private[raccoonlang] final case class OpenedBinderPattern(value: Value, env: Env, captureDeps: DepSet)
 
   private def requirePi(fn: Value): VPi =
     fn.tpe match {
@@ -54,29 +57,18 @@ object TypePatternOps {
     }
 
   private def compileType(pattern: ElabAst.TypePattern): ElabAst.TypeTerm = pattern match {
-    case EPattern.Type(term)          => term
-    case EPattern.Capture(ref, span)  => ETerm.LocalRef(ref, span)
-    case EPattern.App(fn, args, span) => ETerm.App(fn, args.map(compileType), span)
+    case EPattern.Type(term)                       => term
+    case EPattern.Capture(ref, span)               => ETerm.LocalRef(ref, span)
+    case EPattern.ConstrainedCapture(ref, _, span) => ETerm.LocalRef(ref, span)
+    case EPattern.App(fn, args, span)              => ETerm.App(fn, args.map(compileType), span)
   }
-
-  private def compileBinderType(binderType: ElabAst.BinderType): ElabAst.TypeTerm =
-    binderType match {
-      case EBinderType.TypePattern(tp, _)               => compileType(tp)
-      case EBinderType.ConstrainedCapture(ref, _, span) => ETerm.LocalRef(ref, span)
-    }
 
   private def collectCaptures(pattern: ElabAst.TypePattern): Vector[VCapture] =
     pattern match {
-      case EPattern.Type(_)         => Vector.empty
-      case EPattern.Capture(ref, _) => Vector(VCapture(ref))
-      case EPattern.App(_, args, _) => args.flatMap(collectCaptures)
-    }
-
-  private def collectBinderCaptures(binderType: ElabAst.BinderType): Vector[VCapture] =
-    binderType match {
-      case EBinderType.TypePattern(tp, _) => collectCaptures(tp)
-      case EBinderType.ConstrainedCapture(ref, constraint, _) =>
-        collectCaptures(constraint) :+ VCapture(ref)
+      case EPattern.Type(_)                                => Vector.empty
+      case EPattern.Capture(ref, _)                        => Vector(VCapture(ref))
+      case EPattern.ConstrainedCapture(ref, constraint, _) => collectCaptures(constraint) :+ VCapture(ref)
+      case EPattern.App(_, args, _)                        => args.flatMap(collectCaptures)
     }
 
   private def toElabRef(caRef: CoreAst.Term.Ref): ElabAst.Term.Ref = caRef match {
@@ -91,6 +83,14 @@ object TypePatternOps {
           val checked = TypeChecker.checkTypeTerm(term, env)
           (EPattern.Type(checked.residual), env)
         case CPattern.Capture(ref, span) => throw PatternCaptureNeedsExpectedType(ref.name, Some(span))
+        case CPattern.ConstrainedCapture(ref, constraint, span) =>
+          val (checkedConstraint, constraintEnv) = checkTopLevel(constraint, env)
+          val constraintTy = compileType(checkedConstraint)
+          val constraintValue = Interpreter.evalTypeTerm(constraintTy, constraintEnv)
+          TypeChecker.assertType(constraintValue)
+          val captureValue = FreshVar.freshVar(ref.name, constraintValue)
+          val checkedEnv = constraintEnv.putLocal(ref, captureValue)
+          (EPattern.ConstrainedCapture(ref, checkedConstraint, span), checkedEnv)
         case CPattern.App(fn, args, span) =>
           val fnV = TypeChecker.checkTypeTerm(fn, env).value
           val pi = requirePi(fnV)
@@ -103,7 +103,7 @@ object TypePatternOps {
           val argPatterns = Vector.newBuilder[ElabAst.TypePattern]
 
           binders.zip(args).foreach { case (paramBinder, arg) =>
-            val opened = openBinderType(telescopeEnv, paramBinder)
+            val opened = openBinderPattern(telescopeEnv, paramBinder)
             val (argPattern, bindAsOpened) =
               arg match {
                 case CPattern.Capture(ref, captureSpan) =>
@@ -138,37 +138,21 @@ object TypePatternOps {
       }
     }
 
-    def checkBinderType(binderType: CoreAst.BinderType, env: Env): (ElabAst.BinderType, Env) =
-      binderType match {
-        case CBinderType.TypePattern(tp, span) =>
-          val (checked, checkedEnv) = checkTopLevel(tp, env)
-          (EBinderType.TypePattern(checked, span), checkedEnv)
-
-        case CBinderType.ConstrainedCapture(ref, constraint, span) =>
-          val (checkedConstraint, constraintEnv) = checkTopLevel(constraint, env)
-          val constraintTy = compileType(checkedConstraint)
-          val constraintValue = Interpreter.evalTypeTerm(constraintTy, constraintEnv)
-          TypeChecker.assertType(constraintValue)
-          val captureValue = FreshVar.freshVar(ref.name, constraintValue)
-          val checkedEnv = constraintEnv.putLocal(ref, captureValue)
-          (EBinderType.ConstrainedCapture(ref, checkedConstraint, span), checkedEnv)
-      }
-
-    val (binderType, checkedEnv) = checkBinderType(binder.ty, env)
-    val captures = collectBinderCaptures(binderType)
-    val resType = compileBinderType(binderType)
+    val (checkedPattern, checkedEnv) = checkTopLevel(binder.ty, env)
+    val captures = collectCaptures(checkedPattern)
+    val resType = compileType(checkedPattern)
     TypeChecker.assertType(Interpreter.evalTypeTerm(resType, checkedEnv))
-    val checkedBinder = ElabAst.Binder(binder.localRef, binderType, binder.span, binder.isInstance)
+    val checkedBinder = ElabAst.Binder(binder.localRef, checkedPattern, binder.span, binder.isInstance)
 
     (
-      VBinder(binder.localRef, binderType, resType, captures, binder.isInstance, binder.familyParamIdx),
+      VBinder(binder.localRef, checkedPattern, resType, captures, binder.isInstance, binder.familyParamIdx),
       checkedBinder
     )
   }
 
   def toVBinder(binder: ElabAst.Binder): VBinder = {
-    val expectedTy = compileBinderType(binder.ty)
-    VBinder(binder.localRef, binder.ty, expectedTy, collectBinderCaptures(binder.ty), binder.isInstance, None)
+    val expectedTy = compileType(binder.ty)
+    VBinder(binder.localRef, binder.ty, expectedTy, collectCaptures(binder.ty), binder.isInstance, None)
   }
 
   private def openPatternApp(env: Env, app: EPattern.App): OpenedPatternApp = {
@@ -184,7 +168,7 @@ object TypePatternOps {
     val argValues = Vector.newBuilder[Value]
 
     binders.zip(args).foreach { case (binder, arg) =>
-      val opened = openBinderType(calleeEnv, binder)
+      val opened = openBinderPattern(calleeEnv, binder)
       val (argValue, bindAsOpened) = arg match {
         case EPattern.Capture(ref, _) =>
           val value = FreshVar.freshVar(ref.name, opened.value)
@@ -211,25 +195,20 @@ object TypePatternOps {
         val opened = openPatternApp(env, app)
         (Interpreter.evalApply(opened.fn, opened.args, opened.env), opened.env)
       case EPattern.Capture(ref, span) => throw PatternCaptureNeedsExpectedType(ref.name, Some(span))
-      case EPattern.Type(term)         => (evalTypeTerm(term, env), env)
-    }
-
-  private def openBinderTypeValue(env: Env, binderType: ElabAst.BinderType): (Value, Env) =
-    binderType match {
-      case EBinderType.TypePattern(tp, _) => openPattern(env, tp)
-      case EBinderType.ConstrainedCapture(ref, constraint, _) =>
+      case EPattern.ConstrainedCapture(ref, constraint, _) =>
         val (constraintValue, constraintEnv) = openPattern(env, constraint)
         val captureValue = FreshVar.freshVar(ref.name, constraintValue)
         (captureValue, constraintEnv.putLocal(ref, captureValue))
+      case EPattern.Type(term) => (evalTypeTerm(term, env), env)
     }
 
-  private[raccoonlang] def openBinderType(env: Env, binder: VBinder): OpenedBinderType = {
-    val (value, openedEnv) = openBinderTypeValue(env, binder.ty)
-    OpenedBinderType(value, openedEnv, captureDeps(openedEnv, binder.captures) -- env.allDeps)
+  private[raccoonlang] def openBinderPattern(env: Env, binder: VBinder): OpenedBinderPattern = {
+    val (value, openedEnv) = openPattern(env, binder.ty)
+    OpenedBinderPattern(value, openedEnv, captureDeps(openedEnv, binder.captures) -- env.allDeps)
   }
 
   private[telescope] def freshenBinder(env: Env, binder: VBinder): Env = {
-    val opened = openBinderType(env, binder)
+    val opened = openBinderPattern(env, binder)
     val value = FreshVar.freshVar(binder.name, opened.value)
     val instanceKey =
       if (binder.isInstance) Some(InstanceSearch.instanceKey(binder.name, value))
@@ -240,6 +219,38 @@ object TypePatternOps {
   private def captureDeps(env: Env, captures: Vector[VCapture]): DepSet =
     captures.foldLeft(DepSet.empty) { case (deps, capture) => deps ++ env(capture.localRef).synDeps }
 
+  private def solveTypePatternConstraints(
+      pattern: ElabAst.TypePattern,
+      env: Env,
+      eqStore: EqStore,
+      normalizerMap: Normalizers.NormalizerMap
+  ): EqStore = {
+    var curEqStore = eqStore
+
+    def loop(pattern: ElabAst.TypePattern): Unit =
+      pattern match {
+        case EPattern.Type(_)       =>
+        case EPattern.Capture(_, _) =>
+        case EPattern.App(_, args, _) =>
+          args.foreach(loop)
+        case EPattern.ConstrainedCapture(ref, constraint, _) =>
+          loop(constraint)
+          val materializedEnv = ValueOps.materializeEnv(env, curEqStore)
+          val originalCapture = env(ref)
+          val capture = materializedEnv(ref)
+          val constraintValue = ValueOps.materialize(originalCapture.tpe, curEqStore)
+          curEqStore = ValueEquivalence.tryUnify(constraintValue, capture.tpe, curEqStore, normalizerMap) match {
+            case Right(nextEqStore) => nextEqStore
+            case Left(_) =>
+              TypeChecker.checkFits(capture.tpe, constraintValue, normalizerMap)
+              curEqStore
+          }
+      }
+
+    loop(pattern)
+    curEqStore
+  }
+
   private def isUnsolvedCapture(before: Value, after: Value): Boolean =
     (before, after) match {
       case (Var(_, beforeId, _), Var(_, afterId, _)) => beforeId == afterId
@@ -247,26 +258,14 @@ object TypePatternOps {
     }
 
   private def solveOpenedCaptures(
-      opened: OpenedBinderType,
+      opened: OpenedBinderPattern,
       binder: VBinder,
       actual: Value,
       normalizerMap: Normalizers.NormalizerMap
   ): (Env, Value) = {
     val typeEqStore =
       ValueEquivalence.unify(opened.value, actual.tpe, EqStore.empty.allow(opened.captureDeps), normalizerMap)
-    val eqStore = binder.ty match {
-      case EBinderType.ConstrainedCapture(_, constraint, _) =>
-        val constraintTy = Interpreter.evalTypeTerm(compileType(constraint), opened.env)
-        try ValueEquivalence.unify(constraintTy, actual.tpe.tpe, typeEqStore, normalizerMap)
-        catch {
-          case _: UnificationFailed =>
-            val actualTy = ValueOps.materialize(actual.tpe.tpe, typeEqStore)
-            val expectedTy = ValueOps.materialize(constraintTy, typeEqStore)
-            TypeChecker.checkFits(actualTy, expectedTy, normalizerMap)
-            typeEqStore
-        }
-      case _ => typeEqStore
-    }
+    val eqStore = solveTypePatternConstraints(binder.ty, opened.env, typeEqStore, normalizerMap)
     val materializedEnv = ValueOps.materializeEnv(opened.env, eqStore)
 
     binder.captures.foreach { capture =>
@@ -278,26 +277,26 @@ object TypePatternOps {
     (materializedEnv, ValueOps.materialize(opened.value, eqStore))
   }
 
-  private def bindOpenedValue(opened: OpenedBinderType, binder: VBinder, actual: Value): Env =
+  private def bindOpenedValue(opened: OpenedBinderPattern, binder: VBinder, actual: Value): Env =
     if (binder.captures.isEmpty) opened.env.putLocal(binder.localRef, actual)
     else {
       val (openedEnv, expectedTy) = solveOpenedCaptures(opened, binder, actual, opened.env.normalizers)
       openedEnv.putLocal(binder.localRef, Value.ascribe(actual, expectedTy))
     }
 
-  private def bindOpenedAsExpected(opened: OpenedBinderType, binder: VBinder, actual: Value): Env =
+  private def bindOpenedAsExpected(opened: OpenedBinderPattern, binder: VBinder, actual: Value): Env =
     opened.env.putLocal(binder.localRef, Value.ascribe(actual, opened.value))
 
   def bindValue(env: Env, binder: VBinder, actual: Value): Env = {
     if (binder.captures.isEmpty) env.putLocal(binder.localRef, actual)
     else {
-      val (openedEnv, expectedTy) = solveOpenedCaptures(openBinderType(env, binder), binder, actual, env.normalizers)
+      val (openedEnv, expectedTy) = solveOpenedCaptures(openBinderPattern(env, binder), binder, actual, env.normalizers)
       openedEnv.putLocal(binder.localRef, Value.ascribe(actual, expectedTy))
     }
   }
 
   private def bindOpenedValueAndCheck(
-      opened: OpenedBinderType,
+      opened: OpenedBinderPattern,
       binder: VBinder,
       actual: Value,
       normalizerMap: Normalizers.NormalizerMap
@@ -305,12 +304,6 @@ object TypePatternOps {
     val (openedEnv, expectedTy) =
       if (binder.captures.isEmpty) (opened.env, opened.value)
       else solveOpenedCaptures(opened, binder, actual, normalizerMap)
-    binder.ty match {
-      case EBinderType.ConstrainedCapture(_, constraint, _) =>
-        val constraintTy = Interpreter.evalTypeTerm(compileType(constraint), openedEnv)
-        TypeChecker.checkType(expectedTy, constraintTy, normalizerMap)
-      case _ =>
-    }
     TypeChecker.checkType(actual, expectedTy, normalizerMap)
     openedEnv.putLocal(binder.localRef, Value.ascribe(actual, expectedTy))
   }
@@ -321,6 +314,6 @@ object TypePatternOps {
       actual: Value,
       normalizerMap: Normalizers.NormalizerMap
   ): Env =
-    bindOpenedValueAndCheck(openBinderType(env, binder), binder, actual, normalizerMap)
+    bindOpenedValueAndCheck(openBinderPattern(env, binder), binder, actual, normalizerMap)
 
 }

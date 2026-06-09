@@ -42,8 +42,8 @@ object ValueEquivalence {
     val sharedVars = Vector.newBuilder[Value]
 
     pi1.binders.zip(pi2.binders).foreach { case (binder1, binder2) =>
-      val opened1 = TypePatternOps.openBinderType(env1, binder1)
-      val opened2 = TypePatternOps.openBinderType(env2, binder2)
+      val opened1 = TypePatternOps.openBinderPattern(env1, binder1)
+      val opened2 = TypePatternOps.openBinderPattern(env2, binder2)
       val binderCaptureDeps = opened1.captureDeps ++ opened2.captureDeps
 
       Unify.tryUnify(opened1.value, opened2.value, meta.allow(binderCaptureDeps)) match {
