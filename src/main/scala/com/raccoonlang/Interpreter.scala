@@ -141,17 +141,26 @@ object Interpreter {
             val resultTy = pi.codomain(envWithArgs)
             VCtor(h, vArgs.drop(h.numErased), resultTy)
           case blocker @ Blocker(blockerId) => VBlockedApp(blocker, vArgs, pi.codomain(envWithArgs), blockerId)
-          case _                            => throw CannotApplyNonFunction(fn)
+          case _                            => VApp(fn, vArgs, pi.codomain(envWithArgs))
         }
       case _ => throw CannotApplyNonFunction(fn.tpe)
     }
   }
 
+  def evalApply(fn: Value, vArgs: Vector[Value], env: Env): Value =
+    fn.tpe match {
+      case _: VPi => evalApply(fn, vArgs)
+      case InductiveFamilyValue(family) if family.meta.isStruct =>
+        val applyField = evalApply(env(s"${family.head.name}.apply"), Vector(fn), env)
+        evalApply(applyField, vArgs, env)
+      case _ => throw CannotApplyNonFunction(fn.tpe)
+    }
+
   private def evalApplyTerm(fn: ElabAst.Term, args: Vector[ElabAst.Term], env: Env): Value = {
     val vf = evalTerm(fn, env)
     val vArgs = args.map(a => evalTerm(a, env))
     if (vArgs.isEmpty) throw CannotApplyNonFunction(vf.tpe)
-    evalApply(vf, vArgs)
+    evalApply(vf, vArgs, env)
   }
 
   def evalLam(l: ETerm.Lam, vpi: VPi, env: Env): VLam = {

@@ -206,6 +206,54 @@ class ProjectionTests extends munit.FunSuite {
     typecheckDecls(p)
   }
 
+  test("typecheck: struct apply field makes values callable") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |struct Endo : Type
+        | | mk (apply: Nat -> Nat) : Endo
+        |
+        |def run (f: Endo)(n: Nat): Nat := f(n)
+        |
+        |opaque def opaqueEndo : Endo :=
+        |  Endo.mk(fun (n: Nat): Nat => n)
+        |
+        |def runOpaque (n: Nat): Nat := opaqueEndo(n)
+        |
+        |{
+        |  let f : Endo := Endo.mk(fun (n: Nat): Nat => n)
+        |  run(f, Nat.succ(Nat.zero))
+        |}
+        |""".stripMargin
+
+    assertEquals(toShape(runProgram(p)), succS(zeroS))
+  }
+
+  test("negative: callable struct without apply field reports missing selector") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        |
+        |struct Box : Type
+        | | mk (value: Nat) : Box
+        |
+        |def bad (b: Box): Nat := b(Nat.zero)
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        val err = intercept[NotFound] { Interpreter.run(core, Prelude.test) }
+        assertEquals(err.name, "Box.apply")
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
+  }
+
   test("typecheck: projection can quote constructor value with erased argument in field type") {
     val p =
       """

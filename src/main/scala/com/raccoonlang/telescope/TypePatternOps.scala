@@ -209,7 +209,7 @@ object TypePatternOps {
     pattern match {
       case app: EPattern.App =>
         val opened = openPatternApp(env, app)
-        (Interpreter.evalApply(opened.fn, opened.args), opened.env)
+        (Interpreter.evalApply(opened.fn, opened.args, opened.env), opened.env)
       case EPattern.Capture(ref, span) => throw PatternCaptureNeedsExpectedType(ref.name, Some(span))
       case EPattern.Type(term)         => (evalTypeTerm(term, env), env)
     }

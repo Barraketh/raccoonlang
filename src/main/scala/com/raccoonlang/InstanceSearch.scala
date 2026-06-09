@@ -170,7 +170,7 @@ object InstanceSearch {
         }
 
         val args = values.result()
-        SearchResult.Found(Interpreter.evalApply(candidate, args))
+        SearchResult.Found(Interpreter.evalApply(candidate, args, searchEnv))
 
       case resultTy =>
         ValueEquivalence.tryUnify(resultTy, goal, EqStore.empty, searchEnv.normalizers) match {

@@ -43,12 +43,18 @@ object TypeChecker {
   def isPropValuedType(value: Value): Boolean =
     isPropValue(value) || getUniverse(value) == PropTpe
 
-  private def checkApplyValue(fn: Value, args: Vector[Value], normalizerMap: Normalizers.NormalizerMap): Value =
+  private def checkApplyValue(fn: Value, args: Vector[Value], env: Env): Value =
     fn.tpe match {
       case pi: VPi =>
-        BinderOps.checkAndInstantiate(pi.binders, pi.env, args, normalizerMap)
-        Interpreter.evalApply(fn, args)
-      case _ => throw CannotApplyNonFunction(fn)
+        BinderOps.checkAndInstantiate(pi.binders, pi.env, args, env.normalizers)
+        Interpreter.evalApply(fn, args, env)
+      case _ =>
+        val selectorName =
+          inductiveFamilyOf(fn.tpe)
+            .collect { case family if family.meta.isStruct => s"${family.head.name}.apply" }
+            .getOrElse(throw CannotApplyNonFunction(fn))
+        val applyField = checkApplyValue(env(selectorName), Vector(fn), env)
+        checkApplyValue(applyField, args, env)
     }
 
   private def elabRef(ref: CA.Term.Ref): EA.Term.Ref =
@@ -135,7 +141,7 @@ object TypeChecker {
       case t: CA.Term.TApp =>
         val fn = checkTypeTerm(t.fn, env)
         val args = t.args.map(arg => checkTypeTerm(arg, env))
-        val value = checkApplyValue(fn.value, args.map(_.value), env.normalizers)
+        val value = checkApplyValue(fn.value, args.map(_.value), env)
         val residual = EA.Term.App(fn.residual, args.map(_.residual), t.span)
         CheckedTypeTerm(value, residual)
       case CA.Term.TSelect(base, field, span) =>
@@ -199,7 +205,7 @@ object TypeChecker {
 
     val selectorName = s"$indName.$field"
     val selector = env(selectorName)
-    (selectorName, checkApplyValue(selector, Vector(baseValue), env.normalizers))
+    (selectorName, checkApplyValue(selector, Vector(baseValue), env))
   }
 
   private def checkLam(l: CA.Term.Lam, env: Env): CheckedTerm = {
@@ -277,7 +283,7 @@ object TypeChecker {
         case app: CA.Term.App =>
           val checkedFn = checkTerm(app.fn, env)
           val checkedArgs = app.args.map(arg => checkTerm(arg, env))
-          val value = checkApplyValue(checkedFn.value, checkedArgs.map(_.value), env.normalizers)
+          val value = checkApplyValue(checkedFn.value, checkedArgs.map(_.value), env)
           val residual = EA.Term.App(checkedFn.residual, checkedArgs.map(_.residual), app.span)
           CheckedTerm(value, residual)
         case derive: CA.Term.Derive =>
