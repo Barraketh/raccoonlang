@@ -168,6 +168,20 @@ object ValueQuote {
     }
   }
 
+  def quoteLambda(tpe: VPi, abstractedArgs: Vector[Value], body: Value, span: Span): VLam = {
+    if (tpe.binders.length != abstractedArgs.length) throw ArityMismatch(tpe.binders.length, abstractedArgs.length)
+
+    val opened = quotePiOpened(tpe, quoteContext(tpe.env), span)
+    val binderRefs = opened.term.binders.map(_.localRef)
+    val context = abstractedArgs.zip(binderRefs).foldLeft(opened.context) { case (curContext, (arg, ref)) =>
+      val term = ElabAst.Term.LocalRef(ref, span)
+      curContext.copy(quote = withQuotedValueInMap(curContext.quote, arg, term, LocalResidualPolicy.Residualizable))
+    }
+    val bodyTerm = quoteTerm(body, context, span)
+    val lamTerm = ElabAst.Term.Lam(opened.term, bodyTerm, span, None, isStable = false, recursiveSelf = None)
+    Interpreter.evalLam(lamTerm, tpe, tpe.env)
+  }
+
   private def quoteAppHead(value: Value, context: QuoteContext, span: Span): ElabAst.Term =
     quotedAppHeadFor(context.quote, value).getOrElse(quoteTerm(value, context, span))
 

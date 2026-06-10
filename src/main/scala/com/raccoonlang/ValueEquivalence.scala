@@ -187,6 +187,7 @@ object ValueEquivalence {
 
   private object Unify {
     private type Result = Either[Failed, EqStore]
+    private val SyntheticSpan = Span(0, 0)
 
     private def tryUnifyPis(pi1: VPi, pi2: VPi, eqStore: EqStore)(implicit
         normalizerMap: Normalizers.NormalizerMap
@@ -277,6 +278,70 @@ object ValueEquivalence {
       tryLinkVar(toLink, representative, meta)
     }
 
+    private def isRigidPatternSpine(args: Vector[Value], meta: EqStore): Boolean = {
+      var seen = Set.empty[VarId]
+      args.forall {
+        case arg: Var if !meta.isRefinable(arg.id) && !seen(arg.id) =>
+          seen += arg.id
+          true
+        case _ => false
+      }
+    }
+
+    private def trySolvePatternApp(app: VApp, fn: Var, other: Value, meta: EqStore)(implicit
+        normalizerMap: Normalizers.NormalizerMap
+    ): Option[Result] = {
+      if (!meta.isRefinable(fn.id)) return None
+      if (meta.occurs(fn.id, other)) return Some(Left((app, other)))
+
+      val pi =
+        fn.tpe match {
+          case pi: VPi => pi
+          case _       => return None
+        }
+
+      if (pi.binders.length != app.args.length) return None
+      if (!isRigidPatternSpine(app.args, meta)) return None
+
+      tryUnify(app.tpe, other.tpe, meta) match {
+        case Left(failed) => Some(Left(failed))
+        case Right(typedMeta) =>
+          val materializedPi =
+            ValueOps.materialize(pi, typedMeta) match {
+              case pi: VPi => pi
+              case _       => return None
+            }
+          val materializedOther = ValueOps.materialize(other, typedMeta)
+          if (typedMeta.occurs(fn.id, materializedOther)) Some(Left((app, other)))
+          else {
+            val materializedArgs = app.args.map(arg => ValueOps.materialize(arg, typedMeta))
+            try Some(tryLinkVar(fn, ValueQuote.quoteLambda(materializedPi, materializedArgs, materializedOther, SyntheticSpan), typedMeta))
+            catch {
+              case _: CannotQuoteValue => None
+            }
+          }
+      }
+    }
+
+    private def tryUnifyApps(v1: VApp, v2: VApp, meta: EqStore)(implicit
+        normalizerMap: Normalizers.NormalizerMap
+    ): Result =
+      tryUnify(v1.head, v2.head, meta) match {
+        case Left(failed) => Left(failed)
+        case Right(m0) =>
+          var curMeta = m0
+          val args = v1.args.zip(v2.args)
+          val iter = args.iterator
+          while (iter.hasNext) {
+            val (arg1, arg2) = iter.next()
+            tryUnify(arg1, arg2, curMeta) match {
+              case Left(failed) => return Left(failed)
+              case Right(next)  => curMeta = next
+            }
+          }
+          tryUnify(v1.tpe, v2.tpe, curMeta) // Important for constructors
+      }
+
     def tryUnify(v1: Value, v2: Value, meta: EqStore)(implicit
         normalizerMap: Normalizers.NormalizerMap
     ): Result = {
@@ -313,22 +378,22 @@ object ValueEquivalence {
               val res2 = Interpreter.runLam(ValueOps.materialize(l2, nextMeta).asInstanceOf[VLam], mappedVars)
               tryUnify(res1, res2, nextMeta)
           }
-        case (v1: VApp, v2: VApp) if v1.args.length == v2.args.length =>
-          tryUnify(v1.head, v2.head, meta) match {
-            case Left(failed) => Left(failed)
-            case Right(m0) =>
-              var curMeta = m0
-              val args = v1.args.zip(v2.args)
-              val iter = args.iterator
-              while (iter.hasNext) {
-                val (arg1, arg2) = iter.next()
-                tryUnify(arg1, arg2, curMeta) match {
-                  case Left(failed) => return Left(failed)
-                  case Right(next)  => curMeta = next
-                }
-              }
-              tryUnify(v1.tpe, v2.tpe, curMeta) // Important for constructors
+        case (app @ VApp(fn: Var, _, _, _), other) =>
+          trySolvePatternApp(app, fn, other, meta).getOrElse {
+            other match {
+              case otherApp: VApp if app.args.length == otherApp.args.length => tryUnifyApps(app, otherApp, meta)
+              case _                                                         => Left((a, b))
+            }
           }
+        case (other, app @ VApp(fn: Var, _, _, _)) =>
+          trySolvePatternApp(app, fn, other, meta).getOrElse {
+            other match {
+              case otherApp: VApp if otherApp.args.length == app.args.length => tryUnifyApps(otherApp, app, meta)
+              case _                                                         => Left((a, b))
+            }
+          }
+        case (v1: VApp, v2: VApp) if v1.args.length == v2.args.length =>
+          tryUnifyApps(v1, v2, meta)
 
         case (v1: NeutralThunk, v2: NeutralThunk) if v1.id.nodeId == v2.id.nodeId =>
           tryUnifyNeutralThunks(v1, v2, meta)

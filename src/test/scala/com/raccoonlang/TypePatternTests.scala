@@ -293,6 +293,30 @@ class TypePatternTests extends munit.FunSuite {
     assertEquals(toShape(res), zeroS)
   }
 
+  test("positive: transparent function patterns solve predicate captures by lambda abstraction") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |def Set (A: Type): Type := (x: A) -> Prop
+        |def Subset (s: Set($A))(t: Set(A)): Prop :=
+        |  (x: A) -> (hx: (s(x))) -> t(x)
+        |
+        |def singleton (a: $A of Type): Set(A) :=
+        |  fun (x: A): Prop => Eq(A, x, a)
+        |
+        |def subsetRefl (s: Set($A)): Subset(s, s) :=
+        |  fun (x: A)(hx: (s(x))): s(x) => hx
+        |
+        |def source (h: Subset($s of Set($A), $t of Set(A))): Set(A) := s
+        |def recovered : source(subsetRefl(singleton(Nat.zero)))(Nat.zero) := Eq.refl(Nat.zero)
+        |""".stripMargin
+
+    typecheckDecls(p)
+  }
+
   test("positive: type-pattern head binders with captures are opened once and solved") {
     val p =
       """
