@@ -35,7 +35,7 @@ class QuotientTests extends munit.FunSuite {
 
   private val natPrelude =
     """
-      |def Rel (a: Nat)(b: Nat): Prop := Eq(Nat, a, b)
+      |def Rel (a: Nat)(b: Nat): Prop := Eq(a, b)
       |""".stripMargin
 
   test("Quot.mk is a constructor head that stores only the representative") {
@@ -61,8 +61,8 @@ class QuotientTests extends munit.FunSuite {
     val res = runProgram(
       natPrelude +
         """
-          |def sound (a: Nat)(b: Nat)(h: Rel(a, b)): Eq(Nat, Nat.succ(a), Nat.succ(b)) := {
-          |  match h returning Eq(Nat, Nat.succ(a), Nat.succ(b)) with
+          |def sound (a: Nat)(b: Nat)(h: Rel(a, b)): Eq(Nat.succ(a), Nat.succ(b)) := {
+          |  match h returning Eq(Nat.succ(a), Nat.succ(b)) with
           |  | Eq.refl x => Eq.refl(Nat.succ(x))
           |}
           |
@@ -94,7 +94,7 @@ class QuotientTests extends munit.FunSuite {
     val res = runProgram(
       natPrelude +
         """
-          |def idSound (a: Nat)(b: Nat)(h: Rel(a, b)): Eq(Nat, a, b) := h
+          |def idSound (a: Nat)(b: Nat)(h: Rel(a, b)): Eq(a, b) := h
           |
           |{
           |  Quot.liftOn(Quot.mk(Nat, Rel, Nat.zero), Nat, fun (x: Nat): Nat => x, idSound)
@@ -116,8 +116,8 @@ class QuotientTests extends munit.FunSuite {
     )
 
     res.tpe match {
-      case Value.VApp(Value.VConst("Eq", _, _), Vector(quotTy, left, right), _, _) =>
-        assert(PrettyPrinter.print(quotTy).startsWith("Quot(Nat, "))
+      case Value.VApp(Value.VConst("Eq", _, _), Vector(left, right), _, _) =>
+        assert(PrettyPrinter.print(left.tpe).startsWith("Quot(Nat, "))
         assertEquals(toShape(left), SApp(SConst("Quot.mk"), List(natZero)))
         assertEquals(toShape(right), SApp(SConst("Quot.mk"), List(natZero)))
       case other =>

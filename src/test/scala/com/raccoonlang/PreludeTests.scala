@@ -38,7 +38,7 @@ class PreludeTests extends munit.FunSuite {
       runProgram(
         """
           |{
-          |  Prod.snd(Prod.mk(Nat, Bool, Nat.zero, Bool.true))
+          |  Prod.snd(Prod.mk(Nat.zero, Bool.true))
           |}
           |""".stripMargin
       )
@@ -49,7 +49,7 @@ class PreludeTests extends munit.FunSuite {
   test("Prelude logical convenience APIs typecheck and reduce") {
     typecheckDecls(
       """
-        |def andProof : And(True, True) := And.intro(True, True, True.intro, True.intro)
+        |def andProof : And(True, True) := And.intro(True.intro, True.intro)
         |def leftProof : True := And.left(andProof)
         |def rightProof : True := And.right(andProof)
         |
@@ -70,7 +70,7 @@ class PreludeTests extends munit.FunSuite {
       runProgram(
         """
           |{
-          |  id(Prod.fst(Prod.mk(Nat, Bool, Nat.zero, Bool.false)))
+          |  id(Prod.fst(Prod.mk(Nat.zero, Bool.false)))
           |}
           |""".stripMargin
       )
@@ -83,7 +83,7 @@ class PreludeTests extends munit.FunSuite {
         |def isTrue (b: Bool): Prop := True
         |def boolFamily (n: Nat): Type := Bool
         |
-        |def andProof : And(True, True) := And.intro(True, True, True.intro, True.intro)
+        |def andProof : And(True, True) := And.intro(True.intro, True.intro)
         |def iffProof : Iff(True, True) := Iff.intro(True, True, fun (h: True): True => h, fun (h: True): True => h)
         |def existsBool : Exists(Bool, isTrue) := Exists.intro(Bool, isTrue, Bool.true, True.intro)
         |def nonemptyNat : Nonempty(Nat) := Nonempty.intro(Nat.zero)
@@ -100,12 +100,12 @@ class PreludeTests extends munit.FunSuite {
           |def idNat (n: Nat): Nat := n
           |def succNat (n: Nat): Nat := Nat.succ(n)
           |def natFamily (n: Nat): Type := Nat
-          |def funEq : Eq((x: Nat) -> Nat, idNat, idNat) := Eq.refl(idNat)
+          |def funEq : Eq(idNat, idNat) := Eq.refl(idNat)
           |
-          |def symmProof : Eq(Nat, Nat.zero, Nat.zero) := Eq.symm(Eq.refl(Nat.zero))
-          |def transProof : Eq(Nat, Nat.zero, Nat.zero) := Eq.trans(Eq.refl(Nat.zero), Eq.refl(Nat.zero))
+          |def symmProof : Eq(Nat.zero, Nat.zero) := Eq.symm(Eq.refl(Nat.zero))
+          |def transProof : Eq(Nat.zero, Nat.zero) := Eq.trans(Eq.refl(Nat.zero), Eq.refl(Nat.zero))
           |def substValue : Nat := Eq.subst(Eq.refl(Nat.zero), Level.one, natFamily, Nat.zero)
-          |def congrArgProof : Eq(Nat, Nat.succ(Nat.zero), Nat.succ(Nat.zero)) := congrArg(Eq.refl(Nat.zero), Nat, succNat)
+          |def congrArgProof : Eq(Nat.succ(Nat.zero), Nat.succ(Nat.zero)) := congrArg(Eq.refl(Nat.zero), Nat, succNat)
           |
           |{
           |  congrFun(Nat, Nat, idNat, idNat, funEq, Nat.zero)
@@ -131,7 +131,7 @@ class PreludeTests extends munit.FunSuite {
       runProgram(
         """
           |{
-          |  ite(derive[Decidable(False)], Nat, Nat.succ(Nat.zero), Nat.zero)
+          |  ite(derive[Decidable(False)], Nat.succ(Nat.zero), Nat.zero)
           |}
           |""".stripMargin
       )
@@ -243,7 +243,7 @@ class PreludeTests extends munit.FunSuite {
       runProgram(
         """
           |{
-          |  Sum.elim(Sum.inr(Nat, Bool.true), Nat, fun (n: Nat): Nat => n, fun (b: Bool): Nat => Bool.cond(b, Nat, Nat.succ(Nat.zero), Nat.zero))
+          |  Sum.elim(Sum.inr(Nat, Bool.true), Nat, fun (n: Nat): Nat => n, fun (b: Bool): Nat => Bool.cond(b, Nat.succ(Nat.zero), Nat.zero))
           |}
           |""".stripMargin
       )
@@ -267,11 +267,11 @@ class PreludeTests extends munit.FunSuite {
           |
           |{
           |  let xs := List.cons(Nat.zero, List.cons(Nat.succ(Nat.zero), List.nil(Nat)))
-          |  let foldedRight := List.foldr(xs, Nat, Nat.zero, fun (head: Nat)(tail: Nat): Nat => Nat.succ(tail))
-          |  let foldedLeft := List.foldl(xs, Nat, Nat.zero, count)
+          |  let foldedRight := List.foldr(xs, Nat.zero, fun (head: Nat)(tail: Nat): Nat => Nat.succ(tail))
+          |  let foldedLeft := List.foldl(xs, Nat.zero, count)
           |  let kept := List.filter(xs, isZeroNat)
           |  let ok := Bool.and(List.any(xs, isZeroNat), Bool.not(List.all(xs, isZeroNat)))
-          |  Bool.cond(Bool.and(Nat.beq(foldedRight, foldedLeft), ok), Nat, List.length(List.reverse(kept)), Nat.zero)
+          |  Bool.cond(Bool.and(Nat.beq(foldedRight, foldedLeft), ok), List.length(List.reverse(kept)), Nat.zero)
           |}
           |""".stripMargin
       )
@@ -291,11 +291,11 @@ class PreludeTests extends munit.FunSuite {
   test("Prelude typeclass seed APIs derive and reduce") {
     typecheckDecls(
       """
-        |def zeroEqZero : Decidable(Eq(Nat, Nat.zero, Nat.zero)) := decEq(derive[DecidableEq(Nat)], Nat.zero, Nat.zero)
-        |def falseNeTrue : Decidable(Eq(Bool, Bool.false, Bool.true)) := decEq(derive[DecidableEq(Bool)], Bool.false, Bool.true)
+        |def zeroEqZero : Decidable(Eq(Nat.zero, Nat.zero)) := decEq(derive[DecidableEq(Nat)], Nat.zero, Nat.zero)
+        |def falseNeTrue : Decidable(Eq(Bool.false, Bool.true)) := decEq(derive[DecidableEq(Bool)], Bool.false, Bool.true)
         |
-        |def noZeroSucc (h: Eq(Nat, Nat.zero, Nat.succ(Nat.zero))): False := Nat.zeroNeSucc(Nat.zero, h)
-        |def succInjects (h: Eq(Nat, Nat.succ(Nat.zero), Nat.succ(Nat.zero))): Eq(Nat, Nat.zero, Nat.zero) := Nat.succInj(h)
+        |def noZeroSucc (h: Eq(Nat.zero, Nat.succ(Nat.zero))): False := Nat.zeroNeSucc(Nat.zero, h)
+        |def succInjects (h: Eq(Nat.succ(Nat.zero), Nat.succ(Nat.zero))): Eq(Nat.zero, Nat.zero) := Nat.succInj(h)
         |
         |def oneLeOne : le(derive[LE(Nat)], Nat.succ(Nat.zero), Nat.succ(Nat.zero)) := Eq.refl(Bool.true)
         |def zeroLtOne : lt(derive[LT(Nat)], Nat.zero, Nat.succ(Nat.zero)) := Eq.refl(Bool.true)
@@ -337,7 +337,7 @@ class PreludeTests extends munit.FunSuite {
       runProgram(
         """
           |{
-          |  let p := Prod.mk(Nat, Bool, Nat.zero, Bool.true)
+          |  let p := Prod.mk(Nat.zero, Bool.true)
           |  beq(derive[BEq(Prod(Nat, Bool))], p, p)
           |}
           |""".stripMargin

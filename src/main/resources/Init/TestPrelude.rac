@@ -8,5 +8,5 @@ namespace Level {
 
 def add_normalizer (zero: $A of Type)(add: A -> A -> A): Normalizer := builtin
 
-inductive Eq (A: Sort($u)) indices (x: A)(y: A) : Prop
- | refl (x: $A of Sort($u)) : Eq(A, x, x)
+inductive Eq indices (x: $A of Sort($u))(y: A) : Prop
+ | refl (x: $A of Sort($u)) : Eq(x, x)

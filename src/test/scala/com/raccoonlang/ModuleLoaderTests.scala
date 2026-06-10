@@ -401,7 +401,7 @@ class ModuleLoaderTests extends munit.FunSuite {
         |
         |open Common
         |
-        |def bad : Eq((x: Nat) -> Nat, A.make.f, B.make.f) := {
+        |def bad : Eq(A.make.f, B.make.f) := {
         |  Eq.refl(A.make.f)
         |}
         |""".stripMargin

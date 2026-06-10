@@ -17,8 +17,8 @@ class MatchRefinementTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (p: Nat) : Nat
         |
-        |def symmEq (a: Nat)(b: Nat)(p: Eq(Nat, a, b)): Eq(Nat, b, a) := {
-        |  match p returning Eq(Nat, b, a) with
+        |def symmEq (a: Nat)(b: Nat)(p: Eq(a, b)): Eq(b, a) := {
+        |  match p returning Eq(b, a) with
         |  | Eq.refl x => Eq.refl(x)
         |}
         |
@@ -34,8 +34,8 @@ class MatchRefinementTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (p: Nat) : Nat
         |
-        |def congSucc2 (a: Nat)(b: Nat)(p: Eq(Nat, a, b)): Eq(Nat, Nat.succ(a), Nat.succ(b)) := {
-        |  match p returning Eq(Nat, Nat.succ(a), Nat.succ(b)) with
+        |def congSucc2 (a: Nat)(b: Nat)(p: Eq(a, b)): Eq(Nat.succ(a), Nat.succ(b)) := {
+        |  match p returning Eq(Nat.succ(a), Nat.succ(b)) with
         |  | Eq.refl x => Eq.refl(Nat.succ(x))
         |}
         |
@@ -51,8 +51,8 @@ class MatchRefinementTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (p: Nat) : Nat
         |
-        |def badCongCtor (a: Nat): Eq(Nat, a, Nat.succ(a)) := {
-        |  match Eq.refl(a) returning Eq(Nat, a, Nat.succ(a)) with
+        |def badCongCtor (a: Nat): Eq(a, Nat.succ(a)) := {
+        |  match Eq.refl(a) returning Eq(a, Nat.succ(a)) with
         |  | Eq.refl x => Eq.refl(x)
         |}
         |

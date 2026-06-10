@@ -64,7 +64,7 @@ inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(Level.max(Level.one, u))
  | cons {{A: Sort($u)}} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
 
 inductive Pair (A: Sort($u1))(B: Sort($u2)): Sort(Level.max(u1, u2))
- | mk(a: $A in Sort($u1))(b: $B in Sort($u2)): Pair(A, B)
+ | mk(a: $A of Sort($u1))(b: $B of Sort($u2)): Pair(A, B)
 
 {unfold} zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) decreases measure(n) := {{
   let ResType := Vec(Pair(A, B), n)

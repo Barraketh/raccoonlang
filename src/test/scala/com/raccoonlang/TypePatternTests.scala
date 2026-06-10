@@ -305,7 +305,7 @@ class TypePatternTests extends munit.FunSuite {
         |  (x: A) -> (hx: (s(x))) -> t(x)
         |
         |def singleton (a: $A of Type): Set(A) :=
-        |  fun (x: A): Prop => Eq(A, x, a)
+        |  fun (x: A): Prop => Eq(x, a)
         |
         |def subsetRefl (s: Set($A)): Subset(s, s) :=
         |  fun (x: A)(hx: (s(x))): s(x) => hx

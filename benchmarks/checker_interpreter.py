@@ -98,14 +98,14 @@ def raccoon_base() -> str:
 
 def raccoon_wrap() -> str:
     return """inductive Wrap (A: Type) : Type
- | mk (x: $A in Type) : Wrap(A)
+ | mk (x: $A of Type) : Wrap(A)
 
 """
 
 
 def raccoon_box() -> str:
     return """struct Box (A: Type) : Type
- | mk (value: $A in Type) : Box(A)
+ | mk (value: $A of Type) : Box(A)
 
 """
 
@@ -341,7 +341,7 @@ def raccoon_dependent_match(size: int) -> str:
         raccoon_header()
         + raccoon_nat()
         + """inductive EqBench (A: Sort($u)) indices (x: A)(y: A) : Prop
- | refl (x: $A in Sort($u)) : EqBench(A, x, x)
+ | refl (x: $A of Sort($u)) : EqBench(A, x, x)
 
 """
         + "".join(defs)

@@ -276,9 +276,9 @@ stable def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
   | Nat.succ x => add(Nat.succ(a), x)
 }
 
-def nat_add_normalizer : Normalizer := add_normalizer(Nat, Nat.zero, add)
+def nat_add_normalizer : Normalizer := add_normalizer(Nat.zero, add)
 
-def addComm (a: Nat)(b: Nat): Eq(Nat, add(a, b), add(b, a)) := {
+def addComm (a: Nat)(b: Nat): Eq(add(a, b), add(b, a)) := {
   use nat_add_normalizer
   Eq.refl(add(a, b))
 }
