@@ -1,0 +1,188 @@
+namespace MathlibPilot {
+  // Lean:
+  // def Set (A : Type u) := A -> Prop
+  def Set (A: Sort($u)): Sort(u) := (x: A) -> Prop
+
+  namespace Set {
+    // Lean:
+    // def mem (s : Set A) (x : A) : Prop := s x
+    def mem (s: Set($A))(x: A): Prop := s(x)
+
+    // Lean:
+    // def univ {A : Type u} : Set A :=
+    //   fun _ => True
+    def univ (A: Sort($u)): Set(A) :=
+      fun (x: A): Prop => True
+
+    // Lean:
+    // def empty {A : Type u} : Set A :=
+    //   fun _ => False
+    def empty (A: Sort($u)): Set(A) :=
+      fun (x: A): Prop => False
+
+    // Lean:
+    // def inter (s t : Set A) : Set A :=
+    //   fun x => And (s x) (t x)
+    def inter (s: Set($A))(t: Set(A)): Set(A) :=
+      fun (x: A): Prop => And(s(x), t(x))
+
+    // Lean:
+    // def union (s t : Set A) : Set A :=
+    //   fun x => Or (s x) (t x)
+    def union (s: Set($A))(t: Set(A)): Set(A) :=
+      fun (x: A): Prop => Or(s(x), t(x))
+
+    // Lean:
+    // def compl (s : Set A) : Set A :=
+    //   fun x => Not (s x)
+    def compl (s: Set($A)): Set(A) :=
+      fun (x: A): Prop => Not(s(x))
+
+    // Lean:
+    // def diff (s t : Set A) : Set A :=
+    //   inter s (compl t)
+    def diff (s: Set($A))(t: Set(A)): Set(A) :=
+      Set.inter(s, Set.compl(t))
+
+    // Lean:
+    // def singleton (a : A) : Set A :=
+    //   fun x => Eq x a
+    def singleton (a: $A of Sort($u)): Set(A) :=
+      fun (x: A): Prop => Eq(A, x, a)
+
+    // Lean:
+    // def preimage (f : A -> B) (s : Set B) : Set A :=
+    //   fun x => s (f x)
+    def preimage (A: Sort($u))(B: Sort($v))(f: A -> B)(s: Set(B)): Set(A) :=
+      fun (x: A): Prop => s(f(x))
+
+    // Lean:
+    // def image (f : A -> B) (s : Set A) : Set B :=
+    //   fun y => Exists fun x => And (s x) (Eq (f x) y)
+    def image (A: Sort($u))(B: Sort($v))(f: A -> B)(s: Set(A)): Set(B) :=
+      fun (y: B): Prop => Exists(A, fun (x: A): Prop => And(s(x), Eq(B, f(x), y)))
+
+    // Lean:
+    // def Subset (s t : Set A) : Prop :=
+    //   forall x, s x -> t x
+    def Subset (s: Set($A))(t: Set(A)): Prop :=
+      (x: A) -> (hx: (s(x))) -> t(x)
+
+    // Lean:
+    // theorem subsetRefl (s : Set A) : Subset s s :=
+    //   fun x hx => hx
+    def subsetRefl (s: Set($A)): Subset(s, s) :=
+      fun (x: A)(hx: (s(x))): s(x) => hx
+
+    // Lean:
+    // theorem subsetTrans {s t u : Set A} (h1 : Subset s t) (h2 : Subset t u) : Subset s u :=
+    //   fun x hx => h2 x (h1 x hx)
+    def subsetTrans (h1: Subset($s of Set($A), $t of Set(A)))(h2: Subset(t, $u of Set(A))): Subset(s, u) :=
+      fun (x: A)(hx: (s(x))): u(x) => h2(x, h1(x, hx))
+
+    // Lean:
+    // theorem emptySubset (s : Set A) : Subset empty s :=
+    //   fun x hx => False.elim hx
+    def emptySubset (s: Set($A)): Subset(empty(A), s) :=
+      fun (x: A)(hx: (empty(A)(x))): s(x) => falseElim(hx, s(x))
+
+    // Lean:
+    // theorem subsetUniv (s : Set A) : Subset s univ :=
+    //   fun x hx => True.intro
+    def subsetUniv (s: Set($A)): Subset(s, univ(A)) :=
+      fun (x: A)(hx: (s(x))): univ(A)(x) => True.intro
+
+    // Lean:
+    // theorem interSubsetLeft (s t : Set A) : Subset (inter s t) s :=
+    //   fun x hx => hx.left
+    def interSubsetLeft (s: Set($A))(t: Set(A)): Subset(inter(s, t), s) :=
+      fun (x: A)(hx: (inter(s, t)(x))): s(x) => And.left(hx)
+
+    // Lean:
+    // theorem interSubsetRight (s t : Set A) : Subset (inter s t) t :=
+    //   fun x hx => hx.right
+    def interSubsetRight (s: Set($A))(t: Set(A)): Subset(inter(s, t), t) :=
+      fun (x: A)(hx: (inter(s, t)(x))): t(x) => And.right(hx)
+
+    // Lean:
+    // theorem subsetInter {u s t : Set A} (h1 : Subset u s) (h2 : Subset u t) : Subset u (inter s t) :=
+    //   fun x hx => And.intro (h1 x hx) (h2 x hx)
+    def subsetInter (h1: Subset($u of Set($A), $s of Set(A)))(h2: Subset(u, $t of Set(A))): Subset(u, inter(s, t)) :=
+      fun (x: A)(hx: (u(x))): inter(s, t)(x) =>
+        And.intro(s(x), t(x), h1(x, hx), h2(x, hx))
+
+    // Lean:
+    // theorem subsetUnionLeft (s t : Set A) : Subset s (union s t) :=
+    //   fun x hx => Or.inl hx
+    def subsetUnionLeft (s: Set($A))(t: Set(A)): Subset(s, union(s, t)) :=
+      fun (x: A)(hx: (s(x))): union(s, t)(x) => Or.inl(t(x), hx)
+
+    // Lean:
+    // theorem subsetUnionRight (s t : Set A) : Subset t (union s t) :=
+    //   fun x hx => Or.inr hx
+    def subsetUnionRight (s: Set($A))(t: Set(A)): Subset(t, union(s, t)) :=
+      fun (x: A)(hx: (t(x))): union(s, t)(x) => Or.inr(s(x), hx)
+
+    // Lean:
+    // theorem unionSubset {s t u : Set A} (h1 : Subset s u) (h2 : Subset t u) : Subset (union s t) u :=
+    //   fun x hx => Or.elim hx (fun hs => h1 x hs) (fun ht => h2 x ht)
+    def unionSubset (h1: Subset($s of Set($A), $u of Set(A)))(h2: Subset($t of Set(A), u)): Subset(union(s, t), u) :=
+      fun (x: A)(hx: (union(s, t)(x))): u(x) =>
+        Or.elim(hx, u(x), fun (hs: (s(x))): u(x) => h1(x, hs), fun (ht: (t(x))): u(x) => h2(x, ht))
+
+    // Lean:
+    // theorem diffSubset (s t : Set A) : Subset (diff s t) s :=
+    //   interSubsetLeft s (compl t)
+    def diffSubset (s: Set($A))(t: Set(A)): Subset(diff(s, t), s) :=
+      interSubsetLeft(s, compl(t))
+
+    // Lean:
+    // theorem memSingletonSelf (a : A) : singleton a a :=
+    //   rfl
+    def memSingletonSelf (a: $A of Sort($u)): singleton(a)(a) :=
+      Eq.refl(a)
+
+    // Lean:
+    // theorem singletonSubset (a : A) (s : Set A) (h : s a) : Subset (singleton a) s :=
+    //   fun x hx => Eq.subst (Eq.symm hx) h
+    def singletonSubset (a: $A of Sort($u))(s: Set(A))(h: (s(a))): Subset(singleton(a), s) :=
+      fun (x: A)(hx: (singleton(a)(x))): s(x) =>
+        Eq.subst(Eq.symm(hx), Level.zero, fun (z: A): Prop => s(z), h)
+
+    // Lean:
+    // theorem imageIntro (f : A -> B) (s : Set A) (x : A) (hx : s x) : image f s (f x) :=
+    //   Exists.intro x (And.intro hx rfl)
+    def imageIntro (A: Sort($u))(B: Sort($v))(f: A -> B)(s: Set(A))(x: A)(hx: (s(x))): image(A, B, f, s)(f(x)) :=
+      Exists.intro(
+        A,
+        fun (w: A): Prop => And(s(w), Eq(B, f(w), f(x))),
+        x,
+        And.intro(s(x), Eq(B, f(x), f(x)), hx, Eq.refl(f(x)))
+      )
+
+    // Lean:
+    // theorem ext {s t : Set A} (h : forall x, Iff (s x) (t x)) : Eq s t :=
+    //   funext (fun x => propext (h x))
+    def ext (s: Set($A))(t: Set(A))(h: (x: A) -> Iff(s(x), t(x))): Eq(Set(A), s, t) :=
+      funext(
+        A,
+        Level.one,
+        fun (x: A): Type => Prop,
+        s,
+        t,
+        fun (x: A): Eq(Prop, s(x), t(x)) => propext(h(x))
+      )
+
+    // Lean:
+    // theorem subsetAntisymm {s t : Set A} (h1 : Subset s t) (h2 : Subset t s) : Eq s t :=
+    //   ext (fun x => Iff.intro (fun hs => h1 x hs) (fun ht => h2 x ht))
+    def subsetAntisymm (h1: Subset($s of Set($A), $t of Set(A)))(h2: Subset(t, s)): Eq(Set(A), s, t) :=
+      ext(s, t, fun (x: A): Iff(s(x), t(x)) =>
+        Iff.intro(
+          s(x),
+          t(x),
+          fun (hs: (s(x))): t(x) => h1(x, hs),
+          fun (ht: (t(x))): s(x) => h2(x, ht)
+        ))
+  }
+}
