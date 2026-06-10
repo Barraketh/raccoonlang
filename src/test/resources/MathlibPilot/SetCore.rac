@@ -48,7 +48,7 @@ namespace MathlibPilot {
     // def singleton (a : A) : Set A :=
     //   fun x => Eq x a
     def singleton (a: $A of Sort($u)): Set(A) :=
-      fun (x: A): Prop => Eq(A, x, a)
+      fun (x: A): Prop => Eq(x, a)
 
     // Lean:
     // def preimage (f : A -> B) (s : Set B) : Set A :=
@@ -60,7 +60,7 @@ namespace MathlibPilot {
     // def image (f : A -> B) (s : Set A) : Set B :=
     //   fun y => Exists fun x => And (s x) (Eq (f x) y)
     def image (A: Sort($u))(B: Sort($v))(f: A -> B)(s: Set(A)): Set(B) :=
-      fun (y: B): Prop => Exists(A, fun (x: A): Prop => And(s(x), Eq(B, f(x), y)))
+      fun (y: B): Prop => Exists(A, fun (x: A): Prop => And(s(x), Eq(f(x), y)))
 
     // Lean:
     // def Subset (s t : Set A) : Prop :=
@@ -109,7 +109,7 @@ namespace MathlibPilot {
     //   fun x hx => And.intro (h1 x hx) (h2 x hx)
     def subsetInter (h1: Subset($u of Set($A), $s of Set(A)))(h2: Subset(u, $t of Set(A))): Subset(u, inter(s, t)) :=
       fun (x: A)(hx: (u(x))): inter(s, t)(x) =>
-        And.intro(s(x), t(x), h1(x, hx), h2(x, hx))
+        And.intro(h1(x, hx), h2(x, hx))
 
     // Lean:
     // theorem subsetUnionLeft (s t : Set A) : Subset s (union s t) :=
@@ -155,28 +155,28 @@ namespace MathlibPilot {
     def imageIntro (A: Sort($u))(B: Sort($v))(f: A -> B)(s: Set(A))(x: A)(hx: (s(x))): image(A, B, f, s)(f(x)) :=
       Exists.intro(
         A,
-        fun (w: A): Prop => And(s(w), Eq(B, f(w), f(x))),
+        fun (w: A): Prop => And(s(w), Eq(f(w), f(x))),
         x,
-        And.intro(s(x), Eq(B, f(x), f(x)), hx, Eq.refl(f(x)))
+        And.intro(hx, Eq.refl(f(x)))
       )
 
     // Lean:
     // theorem ext {s t : Set A} (h : forall x, Iff (s x) (t x)) : Eq s t :=
     //   funext (fun x => propext (h x))
-    def ext (s: Set($A))(t: Set(A))(h: (x: A) -> Iff(s(x), t(x))): Eq(Set(A), s, t) :=
+    def ext (s: Set($A))(t: Set(A))(h: (x: A) -> Iff(s(x), t(x))): Eq(s, t) :=
       funext(
         A,
         Level.one,
         fun (x: A): Type => Prop,
         s,
         t,
-        fun (x: A): Eq(Prop, s(x), t(x)) => propext(h(x))
+        fun (x: A): Eq(s(x), t(x)) => propext(h(x))
       )
 
     // Lean:
     // theorem subsetAntisymm {s t : Set A} (h1 : Subset s t) (h2 : Subset t s) : Eq s t :=
     //   ext (fun x => Iff.intro (fun hs => h1 x hs) (fun ht => h2 x ht))
-    def subsetAntisymm (h1: Subset($s of Set($A), $t of Set(A)))(h2: Subset(t, s)): Eq(Set(A), s, t) :=
+    def subsetAntisymm (h1: Subset($s of Set($A), $t of Set(A)))(h2: Subset(t, s)): Eq(s, t) :=
       ext(s, t, fun (x: A): Iff(s(x), t(x)) =>
         Iff.intro(
           s(x),

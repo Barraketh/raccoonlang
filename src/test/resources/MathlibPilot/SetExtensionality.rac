@@ -6,7 +6,7 @@ namespace MathlibPilot {
   //   Set.subsetAntisymm
   //     (Set.subsetRefl (Set.singleton Nat.zero))
   //     (Set.subsetRefl (Set.singleton Nat.zero))
-  def sameSingletons : Eq(Set(Nat), Set.singleton(Nat.zero), Set.singleton(Nat.zero)) :=
+  def sameSingletons : Eq(Set.singleton(Nat.zero), Set.singleton(Nat.zero)) :=
     Set.subsetAntisymm(
       Set.subsetRefl(Set.singleton(Nat.zero)),
       Set.subsetRefl(Set.singleton(Nat.zero))
