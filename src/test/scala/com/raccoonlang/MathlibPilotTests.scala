@@ -52,7 +52,7 @@ class MathlibPilotTests extends munit.FunSuite {
       |      Set.inter(s, Set.compl(t))
       |
       |    // Lean: def singleton (a : A) : Set A := fun x => Eq x a
-      |    def singleton (a: $A in Sort($u)): Set(A) :=
+      |    def singleton (a: $A of Sort($u)): Set(A) :=
       |      Set.mk(A, fun (x: A): Prop => Eq(A, x, a))
       |
       |    // Lean: def preimage (f : A -> B) (s : Set B) : Set A := fun x => s (f x)
@@ -72,7 +72,7 @@ class MathlibPilotTests extends munit.FunSuite {
       |      Subset.intro(s, s, fun (x: A)(hx: (s(x))): s(x) => hx)
       |
       |    // Lean: theorem subsetTrans (h1 : Subset s t) (h2 : Subset t u) : Subset s u
-      |    def subsetTrans (h1: Subset($s, $t))(h2: Subset(t, $u)): Subset(s, u) :=
+      |    def subsetTrans (h1: Subset($s of Set($A), $t of Set(A)))(h2: Subset(t, $u of Set(A))): Subset(s, u) :=
       |      Subset.intro(s, u, fun (x: A)(hx: (s(x))): u(x) => h2(x, h1(x, hx)))
       |
       |    // Lean: theorem emptySubset (s : Set A) : Subset empty s
@@ -92,7 +92,7 @@ class MathlibPilotTests extends munit.FunSuite {
       |      Subset.intro(inter(s, t), t, fun (x: A)(hx: (inter(s, t)(x))): t(x) => And.right(hx))
       |
       |    // Lean: theorem subsetInter (h1 : Subset u s) (h2 : Subset u t) : Subset u (inter s t)
-      |    def subsetInter (h1: Subset($u, $s))(h2: Subset(u, $t)): Subset(u, inter(s, t)) :=
+      |    def subsetInter (h1: Subset($u of Set($A), $s of Set(A)))(h2: Subset(u, $t of Set(A))): Subset(u, inter(s, t)) :=
       |      Subset.intro(u, inter(s, t), fun (x: A)(hx: (u(x))): inter(s, t)(x) =>
       |        And.intro(s(x), t(x), h1(x, hx), h2(x, hx)))
       |
@@ -105,7 +105,7 @@ class MathlibPilotTests extends munit.FunSuite {
       |      Subset.intro(t, union(s, t), fun (x: A)(hx: (t(x))): union(s, t)(x) => Or.inr(s(x), hx))
       |
       |    // Lean: theorem unionSubset (h1 : Subset s u) (h2 : Subset t u) : Subset (union s t) u
-      |    def unionSubset (h1: Subset($s, $u))(h2: Subset($t, u)): Subset(union(s, t), u) :=
+      |    def unionSubset (h1: Subset($s of Set($A), $u of Set(A)))(h2: Subset($t of Set(A), u)): Subset(union(s, t), u) :=
       |      Subset.intro(union(s, t), u, fun (x: A)(hx: (union(s, t)(x))): u(x) =>
       |        Or.elim(hx, u(x), fun (hs: (s(x))): u(x) => h1(x, hs), fun (ht: (t(x))): u(x) => h2(x, ht)))
       |
@@ -114,11 +114,11 @@ class MathlibPilotTests extends munit.FunSuite {
       |      interSubsetLeft(s, compl(t))
       |
       |    // Lean: theorem memSingletonSelf (a : A) : singleton a a := Eq.refl a
-      |    def memSingletonSelf (a: $A in Sort($u)): singleton(a)(a) :=
+      |    def memSingletonSelf (a: $A of Sort($u)): singleton(a)(a) :=
       |      Eq.refl(a)
       |
       |    // Lean: theorem singletonSubset (h : s a) : Subset (singleton a) s
-      |    def singletonSubset (a: $A in Sort($u))(s: Set(A))(h: (s(a))): Subset(singleton(a), s) :=
+      |    def singletonSubset (a: $A of Sort($u))(s: Set(A))(h: (s(a))): Subset(singleton(a), s) :=
       |      Subset.intro(singleton(a), s, fun (x: A)(hx: (singleton(a)(x))): s(x) =>
       |        Eq.subst(Eq.symm(hx), Level.zero, fun (z: A): Prop => s(z), h))
       |
@@ -151,7 +151,7 @@ class MathlibPilotTests extends munit.FunSuite {
       |      }
       |
       |    // Lean: theorem subsetAntisymm (h1 : Subset s t) (h2 : Subset t s) : Eq s t
-      |    def subsetAntisymm (h1: Subset($s, $t))(h2: Subset(t, s)): Eq(Set(A), s, t) :=
+      |    def subsetAntisymm (h1: Subset($s of Set($A), $t of Set(A)))(h2: Subset(t, s)): Eq(Set(A), s, t) :=
       |      ext(s, t, fun (x: A): Iff(s(x), t(x)) =>
       |        Iff.intro(
       |          s(x),
