@@ -1,0 +1,91 @@
+import MathlibPilot.SetCore
+import MathlibPilot.FunctionCore
+
+namespace MathlibPilot {
+  namespace Set {
+    // Lean:
+    // theorem preimageMono (h : Subset s t) : Subset (preimage f s) (preimage f t)
+    def preimageMono
+      (f: (_: $A of Sort($u)) -> $B of Sort($v))
+      (h: Subset($s of Set(B), $t of Set(B)))
+      : Subset(preimage(f, s), preimage(f, t)) :=
+      fun (x: A)(hx: (preimage(f, s)(x))): preimage(f, t)(x) =>
+        h(f(x), hx)
+
+    // Lean:
+    // theorem imageMono (h : Subset s t) : Subset (image f s) (image f t)
+    def imageMono
+      (f: (_: $A of Sort($u)) -> $B of Sort($v))
+      (h: Subset($s of Set(A), $t of Set(A)))
+      : Subset(image(f, s), image(f, t)) :=
+      fun (y: B)(hy: (image(f, s)(y))): image(f, t)(y) => {
+        match hy returning image(f, t)(y) with
+        | Exists.intro x proof =>
+          Exists.intro(
+            A,
+            fun (w: A): Prop => And(t(w), Eq(f(w), y)),
+            x,
+            And.intro(h(x, And.left(proof)), And.right(proof))
+          )
+      }
+
+    // Lean:
+    // theorem preimageInter : preimage f (inter s t) = inter (preimage f s) (preimage f t)
+    def preimageInter
+      (f: (_: $A of Sort($u)) -> $B of Sort($v))
+      (s: Set(B))
+      (t: Set(B))
+      : Eq(preimage(f, inter(s, t)), inter(preimage(f, s), preimage(f, t))) :=
+      ext(
+        preimage(f, inter(s, t)),
+        inter(preimage(f, s), preimage(f, t)),
+        fun (x: A): Iff(preimage(f, inter(s, t))(x), inter(preimage(f, s), preimage(f, t))(x)) =>
+          Iff.intro(
+            preimage(f, inter(s, t))(x),
+            inter(preimage(f, s), preimage(f, t))(x),
+            fun (h: (preimage(f, inter(s, t))(x))): inter(preimage(f, s), preimage(f, t))(x) => h,
+            fun (h: (inter(preimage(f, s), preimage(f, t))(x))): preimage(f, inter(s, t))(x) => h
+          )
+      )
+
+    // Lean:
+    // theorem preimageUnion : preimage f (union s t) = union (preimage f s) (preimage f t)
+    def preimageUnion
+      (f: (_: $A of Sort($u)) -> $B of Sort($v))
+      (s: Set(B))
+      (t: Set(B))
+      : Eq(preimage(f, union(s, t)), union(preimage(f, s), preimage(f, t))) :=
+      ext(
+        preimage(f, union(s, t)),
+        union(preimage(f, s), preimage(f, t)),
+        fun (x: A): Iff(preimage(f, union(s, t))(x), union(preimage(f, s), preimage(f, t))(x)) =>
+          Iff.intro(
+            preimage(f, union(s, t))(x),
+            union(preimage(f, s), preimage(f, t))(x),
+            fun (h: (preimage(f, union(s, t))(x))): union(preimage(f, s), preimage(f, t))(x) => h,
+            fun (h: (union(preimage(f, s), preimage(f, t))(x))): preimage(f, union(s, t))(x) => h
+          )
+      )
+
+    // Lean:
+    // theorem subsetPreimageImage (s : Set A) : Subset s (preimage f (image f s))
+    def subsetPreimageImage
+      (f: (_: $A of Sort($u)) -> $B of Sort($v))
+      (s: Set(A))
+      : Subset(s, preimage(f, image(f, s))) :=
+      fun (x: A)(hx: (s(x))): preimage(f, image(f, s))(x) =>
+        imageIntro(f, s, x, hx)
+
+    // Lean:
+    // theorem imagePreimageSubset (t : Set B) : Subset (image f (preimage f t)) t
+    def imagePreimageSubset
+      (f: (_: $A of Sort($u)) -> $B of Sort($v))
+      (t: Set(B))
+      : Subset(image(f, preimage(f, t)), t) :=
+      fun (y: B)(hy: (image(f, preimage(f, t))(y))): t(y) => {
+        match hy returning t(y) with
+        | Exists.intro x proof =>
+          Eq.subst(And.right(proof), Level.zero, fun (z: B): Prop => t(z), And.left(proof))
+      }
+  }
+}

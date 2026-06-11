@@ -1,0 +1,110 @@
+import MathlibPilot.RelationCore
+
+namespace MathlibPilot {
+  // Lean:
+  // class Setoid (A : Sort u) where
+  //   r : A -> A -> Prop
+  //   iseqv : Equivalence r
+  struct Setoid (A: Sort($u)) : Sort(u)
+   | mk {A: Sort($u)}
+      (r: A -> A -> Prop)
+      (iseqv: Relation.Equivalence(r)) : Setoid(A)
+
+  namespace Setoid {
+    // Lean:
+    // def rel (s : Setoid A) (a b : A) : Prop :=
+    //   s.r a b
+    def rel (s: Setoid($A))(a: A)(b: A): Prop :=
+      Setoid.r(s)(a, b)
+
+    // Lean:
+    // theorem refl (s : Setoid A) (a : A) : rel s a a :=
+    //   s.iseqv.refl a
+    def refl (s: Setoid($A))(a: A): rel(s, a, a) :=
+      Relation.Equivalence.refl(Setoid.iseqv(s))(a)
+
+    // Lean:
+    // theorem symm (s : Setoid A) (h : rel s a b) : rel s b a :=
+    //   s.iseqv.symm a b h
+    def symm (s: Setoid($A))(h: rel(s, $a of A, $b of A)): rel(s, b, a) :=
+      Relation.Equivalence.symm(Setoid.iseqv(s))(a, b, h)
+
+    // Lean:
+    // theorem trans (s : Setoid A) (h1 : rel s a b) (h2 : rel s b c) : rel s a c :=
+    //   s.iseqv.trans a b c h1 h2
+    def trans (s: Setoid($A))(h1: rel(s, $a of A, $b of A))(h2: rel(s, b, $c of A)): rel(s, a, c) :=
+      Relation.Equivalence.trans(Setoid.iseqv(s))(a, b, c, h1, h2)
+
+    // Lean:
+    // def eqSetoid (A : Sort u) : Setoid A
+    def eqSetoid (A: Sort($u)): Setoid(A) :=
+      Setoid.mk(A, Relation.eq(A), Relation.eqEquivalence(A))
+  }
+
+  // Lean:
+  // def Quotient (s : Setoid A) := Quot s.r
+  def Quotient (s: Setoid($A of Sort($u))): Sort(u) :=
+    Quot(A, Setoid.r(s))
+
+  namespace Quotient {
+    // Lean:
+    // def mk (s : Setoid A) (a : A) : Quotient s :=
+    //   Quot.mk s.r a
+    def mk (s: Setoid($A))(a: A): Quotient(s) :=
+      Quot.mk(A, Setoid.r(s), a)
+
+    // Lean:
+    // theorem sound (h : s.r a b) : Eq (mk s a) (mk s b)
+    def sound (s: Setoid($A))(h: Setoid.rel(s, $a of A, $b of A)): Eq(mk(s, a), mk(s, b)) :=
+      Quot.sound(a, b, Setoid.r(s), h)
+
+    // Lean:
+    // def lift (q : Quotient s) (f : A -> B) (sound : forall a b, s.r a b -> f a = f b) : B
+    def lift
+      (s: Setoid($A))
+      (q: Quotient(s))
+      (B: Sort($v))
+      (f: A -> B)
+      (sound: (a: A) -> (b: A) -> Setoid.r(s)(a, b) -> Eq(f(a), f(b)))
+      : B :=
+      Quot.lift(q, B, f, sound)
+
+    // Lean:
+    // def ind (q : Quotient s) (motive : Quotient s -> Prop) (mk : forall a, motive (mk s a)) : motive q
+    def ind
+      (s: Setoid($A))
+      (q: Quotient(s))
+      (motive: Quotient(s) -> Prop)
+      (mkCase: (a: A) -> motive(mk(s, a)))
+      : motive(q) :=
+      Quot.ind(q, motive, mkCase)
+  }
+
+  namespace QuotientExamples {
+    def natEqSetoid : Setoid(Nat) :=
+      Setoid.eqSetoid(Nat)
+
+    def zeroQuot : Quotient(natEqSetoid) :=
+      Quotient.mk(natEqSetoid, Nat.zero)
+
+    def zeroSound : Eq(Quotient.mk(natEqSetoid, Nat.zero), Quotient.mk(natEqSetoid, Nat.zero)) :=
+      Quotient.sound(natEqSetoid, Eq.refl(Nat.zero))
+
+    def liftZero : Nat :=
+      Quotient.lift(
+        natEqSetoid,
+        zeroQuot,
+        Nat,
+        fun (n: Nat): Nat => n,
+        fun (a: Nat)(b: Nat)(h: Setoid.r(natEqSetoid)(a, b)): Eq(a, b) => h
+      )
+
+    def indZero : True :=
+      Quotient.ind(
+        natEqSetoid,
+        zeroQuot,
+        fun (q: Quotient(natEqSetoid)): Prop => True,
+        fun (a: Nat): True => True.intro
+      )
+  }
+}

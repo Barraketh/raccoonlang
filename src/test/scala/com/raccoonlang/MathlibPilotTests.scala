@@ -32,4 +32,20 @@ class MathlibPilotTests extends munit.FunSuite {
   test("Set extensionality and subset antisymmetry typecheck") {
     typecheckModule("MathlibPilot/SetExtensionality.rac")
   }
+
+  test("Function-shaped predicates and inverse lemmas typecheck") {
+    typecheckModule("MathlibPilot/FunctionCore.rac")
+  }
+
+  test("Set image and preimage lemmas typecheck") {
+    typecheckModule("MathlibPilot/SetFunction.rac")
+  }
+
+  test("Relation predicates and equivalence helpers typecheck") {
+    typecheckModule("MathlibPilot/RelationCore.rac")
+  }
+
+  test("Setoid and quotient wrappers typecheck") {
+    typecheckModule("MathlibPilot/SetoidQuotient.rac")
+  }
 }

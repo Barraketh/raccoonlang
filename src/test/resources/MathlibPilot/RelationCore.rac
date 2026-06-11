@@ -1,0 +1,49 @@
+namespace MathlibPilot {
+  namespace Relation {
+    // Lean:
+    // def Reflexive (r : A -> A -> Prop) : Prop :=
+    //   forall a, r a a
+    def Reflexive (r: (_: $A of Sort($u)) -> A -> Prop): Prop :=
+      (a: A) -> r(a, a)
+
+    // Lean:
+    // def Symmetric (r : A -> A -> Prop) : Prop :=
+    //   forall a b, r a b -> r b a
+    def Symmetric (r: (_: $A of Sort($u)) -> A -> Prop): Prop :=
+      (a: A) -> (b: A) -> r(a, b) -> r(b, a)
+
+    // Lean:
+    // def Transitive (r : A -> A -> Prop) : Prop :=
+    //   forall a b c, r a b -> r b c -> r a c
+    def Transitive (r: (_: $A of Sort($u)) -> A -> Prop): Prop :=
+      (a: A) -> (b: A) -> (c: A) -> r(a, b) -> r(b, c) -> r(a, c)
+
+    // Lean:
+    // class Equivalence (r : A -> A -> Prop) : Prop where
+    //   refl : Reflexive r
+    //   symm : Symmetric r
+    //   trans : Transitive r
+    struct Equivalence (r: (_: $A of Sort($u)) -> A -> Prop) : Prop
+     | intro {r: (_: $A of Sort($u)) -> A -> Prop}
+        (refl: Reflexive(r))
+        (symm: Symmetric(r))
+        (trans: Transitive(r)) : Equivalence(r)
+
+    // Lean:
+    // def eq (A : Sort u) : A -> A -> Prop :=
+    //   fun a b => a = b
+    def eq (A: Sort($u)): A -> A -> Prop :=
+      fun (a: A)(b: A): Prop => Eq(a, b)
+
+    // Lean:
+    // theorem eqEquivalence : Equivalence (eq A)
+    def eqEquivalence (A: Sort($u)): Equivalence(eq(A)) :=
+      Equivalence.intro(
+        eq(A),
+        fun (a: A): Eq(a, a) => Eq.refl(a),
+        fun (a: A)(b: A)(h: Eq(a, b)): Eq(b, a) => Eq.symm(h),
+        fun (a: A)(b: A)(c: A)(hab: Eq(a, b))(hbc: Eq(b, c)): Eq(a, c) =>
+          Eq.trans(hab, hbc)
+      )
+  }
+}

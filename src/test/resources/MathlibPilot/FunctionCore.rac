@@ -1,0 +1,53 @@
+namespace MathlibPilot {
+  namespace Function {
+    // Lean:
+    // def comp (g : B -> C) (f : A -> B) : A -> C :=
+    //   fun x => g (f x)
+    def comp (g: (_: $B of Sort($v)) -> $C of Sort($w))(f: (_: $A of Sort($u)) -> B): A -> C :=
+      fun (x: A): C => g(f(x))
+
+    // Lean:
+    // def Injective (f : A -> B) : Prop :=
+    //   forall x y, f x = f y -> x = y
+    def Injective (f: (_: $A of Sort($u)) -> $B of Sort($v)): Prop :=
+      (x: A) -> (y: A) -> Eq(f(x), f(y)) -> Eq(x, y)
+
+    // Lean:
+    // def Surjective (f : A -> B) : Prop :=
+    //   forall y, Exists fun x => f x = y
+    def Surjective (f: (_: $A of Sort($u)) -> $B of Sort($v)): Prop :=
+      (y: B) -> Exists(A, fun (x: A): Prop => Eq(f(x), y))
+
+    // Lean:
+    // def LeftInverse (g : B -> A) (f : A -> B) : Prop :=
+    //   forall x, g (f x) = x
+    def LeftInverse (g: (_: $B of Sort($v)) -> $A of Sort($u))(f: A -> B): Prop :=
+      (x: A) -> Eq(g(f(x)), x)
+
+    // Lean:
+    // def RightInverse (g : B -> A) (f : A -> B) : Prop :=
+    //   forall y, f (g y) = y
+    def RightInverse (g: (_: $B of Sort($v)) -> $A of Sort($u))(f: A -> B): Prop :=
+      (y: B) -> Eq(f(g(y)), y)
+
+    // Lean:
+    // theorem injectiveOfLeftInverse (h : LeftInverse g f) : Injective f
+    def injectiveOfLeftInverse
+      (g: (_: $B of Sort($v)) -> $A of Sort($u))
+      (f: A -> B)
+      (h: LeftInverse(g, f))
+      : Injective(f) :=
+      fun (x: A)(y: A)(p: Eq(f(x), f(y))): Eq(x, y) =>
+        Eq.trans(Eq.symm(h(x)), Eq.trans(congrArg(p, g), h(y)))
+
+    // Lean:
+    // theorem surjectiveOfRightInverse (h : RightInverse g f) : Surjective f
+    def surjectiveOfRightInverse
+      (g: (_: $B of Sort($v)) -> $A of Sort($u))
+      (f: A -> B)
+      (h: RightInverse(g, f))
+      : Surjective(f) :=
+      fun (y: B): Exists(A, fun (x: A): Prop => Eq(f(x), y)) =>
+        Exists.intro(A, fun (x: A): Prop => Eq(f(x), y), g(y), h(y))
+  }
+}
