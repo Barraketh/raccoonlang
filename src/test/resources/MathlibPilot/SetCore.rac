@@ -53,13 +53,13 @@ namespace MathlibPilot {
     // Lean:
     // def preimage (f : A -> B) (s : Set B) : Set A :=
     //   fun x => s (f x)
-    def preimage (A: Sort($u))(B: Sort($v))(f: A -> B)(s: Set(B)): Set(A) :=
+    def preimage (f: (_: $A of Sort($u)) -> $B of Sort($v))(s: Set(B)): Set(A) :=
       fun (x: A): Prop => s(f(x))
 
     // Lean:
     // def image (f : A -> B) (s : Set A) : Set B :=
     //   fun y => Exists fun x => And (s x) (Eq (f x) y)
-    def image (A: Sort($u))(B: Sort($v))(f: A -> B)(s: Set(A)): Set(B) :=
+    def image (f: (_: $A of Sort($u)) -> $B of Sort($v))(s: Set(A)): Set(B) :=
       fun (y: B): Prop => Exists(A, fun (x: A): Prop => And(s(x), Eq(f(x), y)))
 
     // Lean:
@@ -152,7 +152,7 @@ namespace MathlibPilot {
     // Lean:
     // theorem imageIntro (f : A -> B) (s : Set A) (x : A) (hx : s x) : image f s (f x) :=
     //   Exists.intro x (And.intro hx rfl)
-    def imageIntro (A: Sort($u))(B: Sort($v))(f: A -> B)(s: Set(A))(x: A)(hx: (s(x))): image(A, B, f, s)(f(x)) :=
+    def imageIntro (f: (_: $A of Sort($u)) -> $B of Sort($v))(s: Set(A))(x: A)(hx: (s(x))): image(f, s)(f(x)) :=
       Exists.intro(
         A,
         fun (w: A): Prop => And(s(w), Eq(f(w), f(x))),

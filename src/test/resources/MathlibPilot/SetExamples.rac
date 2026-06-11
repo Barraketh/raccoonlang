@@ -48,12 +48,12 @@ namespace MathlibPilot {
   // Lean:
   // def preimageContainsZero : Set.mem (Set.preimage idNat natZeros) Nat.zero :=
   //   Set.memSingletonSelf Nat.zero
-  def preimageContainsZero : Set.mem(Set.preimage(Nat, Nat, idNat, natZeros), Nat.zero) :=
+  def preimageContainsZero : Set.mem(Set.preimage(idNat, natZeros), Nat.zero) :=
     Set.memSingletonSelf(Nat.zero)
 
   // Lean:
   // def imageContainsZero : Set.mem (Set.image idNat natZeros) Nat.zero :=
   //   Set.imageIntro idNat natZeros Nat.zero (Set.memSingletonSelf Nat.zero)
-  def imageContainsZero : Set.mem(Set.image(Nat, Nat, idNat, natZeros), Nat.zero) :=
-    Set.imageIntro(Nat, Nat, idNat, natZeros, Nat.zero, Set.memSingletonSelf(Nat.zero))
+  def imageContainsZero : Set.mem(Set.image(idNat, natZeros), Nat.zero) :=
+    Set.imageIntro(idNat, natZeros, Nat.zero, Set.memSingletonSelf(Nat.zero))
 }
