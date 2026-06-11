@@ -87,7 +87,7 @@ object Interpreter {
     VPi(
       closedEnv,
       vBinders,
-      codomain = env => evalTypeTerm(pi.out, env),
+      codomain = env => evalTerm(pi.out, env),
       synDeps.result(),
       id,
       pi.classifier
@@ -96,12 +96,6 @@ object Interpreter {
 
   private def evalPi(pi: ETerm.Pi, env: Env): VPi =
     evalPi(pi, env, pi.binders.map(TypePatternOps.toVBinder))
-
-  def evalTypeTerm(tt: ElabAst.TypeTerm, env: Env): Value = tt match {
-    case ref: ETerm.Ref         => evalRef(ref, env)
-    case ETerm.App(fn, args, _) => evalApplyTerm(fn, args, env)
-    case pi: ETerm.Pi           => evalPi(pi, env)
-  }
 
   private def evalRef(ref: ETerm.Ref, env: Env): Value = {
     val res = ref match {
@@ -216,8 +210,9 @@ object Interpreter {
     try {
       term match {
         case ETerm.App(fn, args, _) => evalApplyTerm(fn, args, env)
-        case tt: ElabAst.TypeTerm   => evalTypeTerm(tt, env)
         case l: ETerm.Lam           => evalLam(l, env)
+        case pi: ETerm.Pi           => evalPi(pi, env)
+        case ref: ETerm.Ref         => evalRef(ref, env)
         case m: ETerm.Match         => evalMatch(m, env)
         case b: ETerm.Body          => evalBody(b, env)
       }
@@ -235,7 +230,7 @@ object Interpreter {
         val capturedIndexes = CapturedIndexes.getCapturedIndexes(m, env)
         val matchCaptures: Vector[Value] = captureValues(env, capturedIndexes)
         val outType: Value = m.motive match {
-          case Some(motive) => evalTypeTerm(motive, env)
+          case Some(motive) => evalTerm(motive, env)
           case None         => scrut.tpe
         }
         val lamId = ValueId.LocalId(m.span.nodeId, matchCaptures)
@@ -265,7 +260,7 @@ object Interpreter {
       val res = evalTerm(l.value, curEnv)
       val withTpe = (res, l.ty) match {
         case (u: UpdatableType, Some(ty)) =>
-          u.withTpe(evalTypeTerm(ty, curEnv))
+          u.withTpe(evalTerm(ty, curEnv))
         case _ => res
       }
       val instanceKey = if (l.isInstance) Some(InstanceSearch.instanceKey(l.localRef.name, withTpe)) else None

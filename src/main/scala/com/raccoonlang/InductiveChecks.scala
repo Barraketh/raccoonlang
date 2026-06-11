@@ -162,11 +162,11 @@ object InductiveChecks {
 
     decl.ctors.foldLeft(envWithInductive) { case (curEnv, ctor) =>
       val allBinders = ctor.erasedBinders ++ ctor.fields
-      val fullTypeTerm =
+      val fullTypeExpr =
         if (allBinders.isEmpty) ctor.resultTy
         else Term.Pi(allBinders, ctor.resultTy, ctor.span)
 
-      val fullType = TypeChecker.getType(fullTypeTerm, curEnv)
+      val fullType = TypeChecker.getType(fullTypeExpr, curEnv)
       val erasedFamilyArgIndexes = ctor.erasedBinders.map { binder =>
         binder.familyParamIdx.getOrElse {
           throw InvalidErasedConstructorBinder(ctor.canonicalName, binder.name, "expected inductive param")

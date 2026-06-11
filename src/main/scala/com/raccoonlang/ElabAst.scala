@@ -16,10 +16,8 @@ object ElabAst {
 
   sealed trait TopLevelTP extends TypePattern
 
-  sealed trait TypeTerm extends Term
-
   object TypePattern {
-    final case class Type(term: TypeTerm) extends TopLevelTP {
+    final case class Type(term: Term) extends TopLevelTP {
       override def span: Span = term.span
     }
 
@@ -37,17 +35,15 @@ object ElabAst {
   }
 
   object Term {
-    sealed trait Ref extends Term with TypeTerm
+    sealed trait Ref extends Term
 
     final case class GlobalRef(name: String, span: Span) extends Ref
 
     final case class LocalRef(ref: CoreAst.LocalRef, span: Span) extends Ref
 
-    final case class App(fn: Term, args: Vector[Term], span: Span) extends Term with TypeTerm
+    final case class App(fn: Term, args: Vector[Term], span: Span) extends Term
 
-    final case class Pi(binders: Vector[Binder], out: TypeTerm, classifier: VSort, span: Span)
-      extends Term
-      with TypeTerm {
+    final case class Pi(binders: Vector[Binder], out: Term, classifier: VSort, span: Span) extends Term {
       require(binders.nonEmpty, "Pi requires at least one binder")
     }
 
@@ -64,7 +60,7 @@ object ElabAst {
 
     final case class Match(
         scrut: Term,
-        motive: Option[TypeTerm],
+        motive: Option[Term],
         cases: Vector[Case],
         span: Span
     ) extends Term
@@ -83,7 +79,7 @@ object ElabAst {
 
   final case class Let(
       localRef: CoreAst.LocalRef,
-      ty: Option[TypeTerm],
+      ty: Option[Term],
       value: Term,
       span: Span,
       isInstance: Boolean = false

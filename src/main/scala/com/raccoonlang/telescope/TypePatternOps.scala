@@ -60,7 +60,7 @@ object TypePatternOps {
   private def hasLocal(env: Env, ref: CoreAst.LocalRef): Boolean =
     ref.id < env.locals.length && env.locals(ref.id).ref == ref
 
-  private def compileType(pattern: ElabAst.TypePattern): ElabAst.TypeTerm = pattern match {
+  private def compileType(pattern: ElabAst.TypePattern): ElabAst.Term = pattern match {
     case EPattern.Type(term)                       => term
     case EPattern.Capture(ref, span)               => ETerm.LocalRef(ref, span)
     case EPattern.ConstrainedCapture(ref, _, span) => ETerm.LocalRef(ref, span)
@@ -98,7 +98,7 @@ object TypePatternOps {
 
           case CPattern.ConstrainedCapture(ref, constraint, _) =>
             val (checkedConstraint, constraintEnv) = checkTopLevel(constraint, curEnv)
-            val constraintValue = Interpreter.evalTypeTerm(compileType(checkedConstraint), constraintEnv)
+            val constraintValue = Interpreter.evalTerm(compileType(checkedConstraint), constraintEnv)
             TypeChecker.assertType(constraintValue)
             curEnv =
               if (hasLocal(constraintEnv, ref)) constraintEnv
@@ -119,13 +119,13 @@ object TypePatternOps {
     def checkPattern(pattern: CoreAst.TypePattern, env: Env): (ElabAst.TypePattern, Env) = {
       pattern match {
         case CPattern.Type(term) =>
-          val checked = TypeChecker.checkTypeTerm(term, env)
+          val checked = TypeChecker.checkTerm(term, env)
           (EPattern.Type(checked.residual), env)
         case CPattern.Capture(ref, span) => throw PatternCaptureNeedsExpectedType(ref.name, Some(span))
         case CPattern.ConstrainedCapture(ref, constraint, span) =>
           val (checkedConstraint, constraintEnv) = checkTopLevel(constraint, env)
           val constraintTy = compileType(checkedConstraint)
-          val constraintValue = Interpreter.evalTypeTerm(constraintTy, constraintEnv)
+          val constraintValue = Interpreter.evalTerm(constraintTy, constraintEnv)
           TypeChecker.assertType(constraintValue)
           val checkedEnv =
             if (hasLocal(constraintEnv, ref)) {
@@ -137,7 +137,7 @@ object TypePatternOps {
             }
           (EPattern.ConstrainedCapture(ref, checkedConstraint, span), checkedEnv)
         case CPattern.App(fn, args, span) =>
-          val fnV = TypeChecker.checkTypeTerm(fn, env).value
+          val fnV = TypeChecker.checkTerm(fn, env).value
           val pi = requirePi(fnV)
           val binders = pi.binders
 
@@ -170,7 +170,7 @@ object TypePatternOps {
                   (checkedPattern, false)
               }
 
-            val argValue = Interpreter.evalTypeTerm(compileType(argPattern), patternEnv)
+            val argValue = Interpreter.evalTerm(compileType(argPattern), patternEnv)
             telescopeEnv =
               if (bindAsOpened) bindOpenedAsExpected(opened, paramBinder, argValue)
               else bindOpenedValueAndCheck(opened, paramBinder, argValue, patternEnv.normalizers)
@@ -194,7 +194,7 @@ object TypePatternOps {
           }
 
           val (checkedOut, outEnv) = checkTopLevel(out, binderEnv)
-          val outValue = Interpreter.evalTypeTerm(compileType(checkedOut), outEnv)
+          val outValue = Interpreter.evalTerm(compileType(checkedOut), outEnv)
           val freshArgs = vBinders.result().map(b => binderEnv(b.localRef))
           val classifier =
             if (TypeChecker.isPropValuedType(outValue)) PropTpe
@@ -222,7 +222,7 @@ object TypePatternOps {
     val (checkedPattern, checkedEnv) = checkTopLevel(binder.ty, env)
     val captures = collectCaptures(checkedPattern)
     val resType = compileType(checkedPattern)
-    TypeChecker.assertType(Interpreter.evalTypeTerm(resType, checkedEnv))
+    TypeChecker.assertType(Interpreter.evalTerm(resType, checkedEnv))
     val checkedBinder = ElabAst.Binder(binder.localRef, checkedPattern, binder.span, binder.isInstance)
     val vBinder = VBinder(binder.localRef, checkedPattern, resType, captures, binder.isInstance, binder.familyParamIdx)
     if (captures.nonEmpty) validateMatchable(vBinder, env, binder.span)
@@ -255,7 +255,7 @@ object TypePatternOps {
   }
 
   private def openPatternApp(env: Env, app: EPattern.App): OpenedPatternApp = {
-    val fnV = evalTypeTerm(app.fn, env)
+    val fnV = evalTerm(app.fn, env)
     val pi = requirePi(fnV)
     val binders = pi.binders
     val args = app.args
@@ -333,10 +333,10 @@ object TypePatternOps {
         val captureValue = FreshVar.freshVar(ref.name, constraintValue)
         if (hasLocal(constraintEnv, ref)) (constraintEnv(ref), constraintEnv)
         else (captureValue, constraintEnv.putLocal(ref, captureValue))
-      case EPattern.Type(term) => (evalTypeTerm(term, env), env)
+      case EPattern.Type(term) => (evalTerm(term, env), env)
       case pi: EPattern.Pi =>
         val captureEnv = initializePiCaptures(pi, env)
-        (evalTypeTerm(compileType(pi), captureEnv), captureEnv)
+        (evalTerm(compileType(pi), captureEnv), captureEnv)
     }
 
   private[raccoonlang] def openBinderPattern(env: Env, binder: VBinder): OpenedBinderPattern = {

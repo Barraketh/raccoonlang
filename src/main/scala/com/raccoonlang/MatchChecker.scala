@@ -178,7 +178,7 @@ object MatchChecker {
       inferred
     }
 
-    val checkedMotive = t.motive.map(motiveSyntax => checkTypeTerm(motiveSyntax, env))
+    val checkedMotive = t.motive.map(motiveSyntax => checkTypeExpr(motiveSyntax, env))
     val motiveTy = checkedMotive match {
       case Some(motive) => motive.value
       case None         => inferMotiveFromReachable(reachableByType)

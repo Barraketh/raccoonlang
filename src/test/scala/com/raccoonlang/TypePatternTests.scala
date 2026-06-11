@@ -209,6 +209,68 @@ class TypePatternTests extends munit.FunSuite {
     assertEquals(toShape(res), zeroS)
   }
 
+  test("positive: Pi type pattern flattens non-capturing tail binders") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |def Rel (A: Type): Type := (x: A) -> (y: A) -> Prop
+        |def refl (r: (_: $A of Type) -> A -> Prop): Prop :=
+        |  (x: A) -> r(x, x)
+        |
+        |def natRel : Rel(Nat) :=
+        |  fun (x: Nat)(y: Nat): Prop => Eq(x, y)
+        |
+        |def natRefl : refl(natRel) :=
+        |  fun (x: Nat): natRel(x, x) => Eq.refl(x)
+        |""".stripMargin
+
+    typecheckDecls(p)
+  }
+
+  test("positive: lambda can appear as a type-position argument") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Exists (A: Type)(p: A -> Prop) : Prop
+        | | intro {A: Type}{p: A -> Prop} (witness: A)(proof: p(witness)) : Exists(A, p)
+        |
+        |def ex : Exists(Nat, fun (x: Nat): Prop => Eq(x, Nat.zero)) :=
+        |  Exists.intro(
+        |    Nat,
+        |    fun (x: Nat): Prop => Eq(x, Nat.zero),
+        |    Nat.zero,
+        |    Eq.refl(Nat.zero)
+        |  )
+        |""".stripMargin
+
+    typecheckDecls(p)
+  }
+
+  test("positive: computed type heads do not need parentheses in binder annotations") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |struct Wrap (A: Type) : Type
+        | | mk {A: Type} (rel: A -> A -> Prop) : Wrap(A)
+        |
+        |def natRel (x: Nat)(y: Nat): Prop := Eq(x, y)
+        |def wrapped : Wrap(Nat) := Wrap.mk(Nat, natRel)
+        |
+        |def keep (h: Wrap.rel(wrapped)(Nat.zero, Nat.zero)): Wrap.rel(wrapped)(Nat.zero, Nat.zero) := h
+        |""".stripMargin
+
+    typecheckDecls(p)
+  }
+
   test("negative: Pi type pattern rejects captures that depend on Pi binders") {
     val p =
       """

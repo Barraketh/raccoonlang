@@ -82,19 +82,19 @@ object LanguageParser {
   }
 
   private def deriveP(implicit sourceId: Option[SourceId]): Parser[Derive] =
-    (kwTight("derive") ~/ symTight("[") ~/ skipAllWs ~ typeTerm ~ layoutSymTight("]"))
+    (kwTight("derive") ~/ symTight("[") ~/ skipAllWs ~ typePositionTerm ~ layoutSymTight("]"))
       .flatSpanned(sourceId)
       .map(Derive.tupled)
 
   private def termAtom(implicit sourceId: Option[SourceId]): Parser[Term] =
     deriveP | (sym("(") ~/ skipAllWs ~ term ~ layoutSymTight(")")) | rootTerm | identTerm
 
-  // Type atoms: identifier or parenthesized type, with bracket selects as a postfix variant.
+  // Type-position expressions use the same term AST, but keep a separate parser to preserve arrow precedence.
   // `$name` captures are parsed only by binder-type pattern parsers below.
-  private def identTypeTerm(implicit sourceId: Option[SourceId]): Parser[TypeTerm] =
-    ident.flatSpanned(sourceId).map[TypeTerm](Ident.tupled)
-  private def rootTypeTerm(implicit sourceId: Option[SourceId]): Parser[TypeTerm] =
-    rootIdent.flatSpanned(sourceId).map[TypeTerm](Ident.tupled)
+  private def identTypeExpr(implicit sourceId: Option[SourceId]): Parser[Term] =
+    ident.flatSpanned(sourceId).map(Ident.tupled)
+  private def rootTypeExpr(implicit sourceId: Option[SourceId]): Parser[Term] =
+    rootIdent.flatSpanned(sourceId).map(Ident.tupled)
 
   private def parenArgs[A](arg: => Parser[A]): Parser[Vector[A]] =
     P('(') ~/ skipAllWs ~ arg.rep(0, layoutSym(',')) ~ layoutSymTight(')')
@@ -103,38 +103,39 @@ object LanguageParser {
     sym('(') ~/ skipAllWs ~ arg.rep(1, layoutSym(',')) ~ layoutSymTight(')')
 
   private def simplePi(implicit sourceId: Option[SourceId]): Parser[Pi] =
-    (param ~ skipAllWs ~ sym("->") ~/ skipAllWs ~ typeTerm).flatSpanned(sourceId).map { Pi.tupled }
+    (param ~ skipAllWs ~ sym("->") ~/ skipAllWs ~ typePositionTerm).flatSpanned(sourceId).map { Pi.tupled }
 
-  private def typeAtom(implicit sourceId: Option[SourceId]): Parser[TypeTerm] =
+  private def typePositionAtom(implicit sourceId: Option[SourceId]): Parser[Term] =
     simplePi |
+      lambda |
       deriveP |
-      sym('(') ~ skipAllWs ~ typeTerm ~ layoutSymTight(')') |
-      rootTypeTerm |
-      identTypeTerm
+      sym('(') ~ skipAllWs ~ typePositionTerm ~ layoutSymTight(')') |
+      rootTypeExpr |
+      identTypeExpr
 
   sealed trait TypeTrailer
   case class Dot(name: String, span: Span) extends TypeTrailer
-  case class AppTrailer(args: Vector[TypeTerm], span: Span) extends TypeTrailer
+  case class AppTrailer(args: Vector[Term], span: Span) extends TypeTrailer
 
   private def typeTrailers(implicit sourceId: Option[SourceId]): Parser[Vector[TypeTrailer]] =
     ((P(".") ~/ identAtom).flatSpanned(sourceId).map(Dot.tupled) |
-      nonEmptyParenArgs(typeTerm).flatSpanned(sourceId).map(AppTrailer.tupled)).rep(0)
+      nonEmptyParenArgs(typePositionTerm).flatSpanned(sourceId).map(AppTrailer.tupled)).rep(0)
 
-  private def typeExpr(implicit sourceId: Option[SourceId]): Parser[TypeTerm] =
-    (typeAtom ~ typeTrailers).map { case (ta, trailers) =>
-      trailers.foldLeft(ta) { case (curTypeTerm, nextTrailer) =>
+  private def typePositionExpr(implicit sourceId: Option[SourceId]): Parser[Term] =
+    (typePositionAtom ~ typeTrailers).map { case (ta, trailers) =>
+      trailers.foldLeft(ta) { case (cur, nextTrailer) =>
         nextTrailer match {
-          case Dot(name, sp)        => TSelect(curTypeTerm, name, sp)
-          case AppTrailer(args, sp) => TApp(curTypeTerm, args, sp)
+          case Dot(name, sp)        => Select(cur, name, sp)
+          case AppTrailer(args, sp) => App(cur, args, sp)
         }
       }
     }
 
-  private def typeTerm(implicit sourceId: Option[SourceId]): Parser[TypeTerm] =
-    (typeExpr ~ (skipAllWs ~ sym("->") ~/ skipAllWs ~ typeExpr).rep(0)).flatSpanned(sourceId).map {
+  private def typePositionTerm(implicit sourceId: Option[SourceId]): Parser[Term] =
+    (typePositionExpr ~ (skipAllWs ~ sym("->") ~/ skipAllWs ~ typePositionExpr).rep(0)).flatSpanned(sourceId).map {
       case (first, others, sp) =>
         val pieces = first +: others
-        pieces.init.foldRight(pieces.last: TypeTerm) { case (lhs, rhs) =>
+        pieces.init.foldRight(pieces.last) { case (lhs, rhs) =>
           Pi(Binder("_", TypePattern.Type(lhs), lhs.span), rhs, sp)
         }
     }
@@ -147,9 +148,9 @@ object LanguageParser {
       .flatSpanned(sourceId)
       .map(TypePattern.ConstrainedCapture.tupled)
 
-  private def typePatternHead(implicit sourceId: Option[SourceId]): Parser[TypeTerm] =
-    ((rootTypeTerm | identTypeTerm) ~ (P(".") ~/ identAtom).flatSpanned(sourceId).rep(0)).map { case (base, fields) =>
-      fields.foldLeft(base) { case (cur, (field, span)) => TSelect(cur, field, span) }
+  private def typePatternHead(implicit sourceId: Option[SourceId]): Parser[Term] =
+    ((rootTypeExpr | identTypeExpr) ~ (P(".") ~/ identAtom).flatSpanned(sourceId).rep(0)).map { case (base, fields) =>
+      fields.foldLeft(base) { case (cur, (field, span)) => Select(cur, field, span) }
     }
 
   private def notFollowedByArrow[A](p: Parser[A]): Parser[A] = new Parser[A] {
@@ -166,7 +167,7 @@ object LanguageParser {
   private def typePatternApp(implicit sourceId: Option[SourceId]): Parser[TypePattern.App] =
     notFollowedByArrow(
       (typePatternHead ~ nonEmptyParenArgs(typePattern)).flatSpanned(sourceId).map(TypePattern.App.tupled)
-    )
+    ).filter(hasCapture)
 
   private def hasCapture(pattern: TypePattern): Boolean =
     pattern match {
@@ -177,20 +178,39 @@ object LanguageParser {
       case TypePattern.Pi(binders, out, _) => binders.exists(binder => hasCapture(binder.ty)) || hasCapture(out)
     }
 
+  private def splitTypePi(term: Term): (Vector[Binder], Term) =
+    term match {
+      case Term.Pi(binder, body, _) =>
+        val (binders, out) = splitTypePi(body)
+        (binder +: binders, out)
+      case other => (Vector.empty, other)
+    }
+
+  private def splitPatternPi(pattern: TopLevelTP): (Vector[Binder], TopLevelTP) =
+    pattern match {
+      case TypePattern.Pi(binders, out, _) => (binders, out)
+      case TypePattern.Type(term) =>
+        val (binders, out) = splitTypePi(term)
+        (binders, TypePattern.Type(out))
+      case other => (Vector.empty, other)
+    }
+
   private def typePatternPi(implicit sourceId: Option[SourceId]): Parser[TypePattern.Pi] =
     (param ~ skipAllWs ~ sym("->") ~/ skipAllWs ~ topLevelTypePattern)
       .flatSpanned(sourceId)
       .map {
-        case (binder, TypePattern.Pi(binders, out, _), span) => TypePattern.Pi(binder +: binders, out, span)
-        case (binder, out, span)                             => TypePattern.Pi(Vector(binder), out, span)
+        case (binder, out, span) =>
+          val (tailBinders, tailOut) = splitPatternPi(out)
+          TypePattern.Pi(binder +: tailBinders, tailOut, span)
       }
       .filter(hasCapture)
 
   private def topLevelTypePattern(implicit sourceId: Option[SourceId]): Parser[TopLevelTP] =
-    typePatternPi | typePatternApp | constrainedTypePattern | typeTerm.map(TypePattern.Type.apply)
+    typePatternPi | typePatternApp | constrainedTypePattern | typePositionTerm.map(TypePattern.Type.apply)
 
   private def typePattern(implicit sourceId: Option[SourceId]): Parser[TypePattern] =
-    typePatternPi | typePatternApp | constrainedTypePattern | typePatternCapture | typeTerm.map(TypePattern.Type.apply)
+    typePatternPi | typePatternApp | constrainedTypePattern | typePatternCapture |
+      typePositionTerm.map(TypePattern.Type.apply)
 
   private def normalParam(implicit sourceId: Option[SourceId]): Parser[Binder] =
     (sym('(') ~ argName ~ sym(':') ~/ skipAllWs ~ topLevelTypePattern ~ layoutSymTight(')')).flatSpanned(sourceId).map {
@@ -215,7 +235,8 @@ object LanguageParser {
   private def layoutErasedParam(implicit sourceId: Option[SourceId]): Parser[Binder] = skipAllWs ~ erasedParam
 
   private def let(implicit sourceId: Option[SourceId]): Parser[Let] =
-    (kw("let") ~/ kw("instance").!.? ~ ident ~ (sym(':') ~ skipAllWs ~ typeTerm).? ~ sym(":=") ~/ skipAllWs ~ term)
+    (kw("let") ~/ kw("instance").!.? ~ ident ~
+      (sym(':') ~ skipAllWs ~ typePositionTerm).? ~ sym(":=") ~/ skipAllWs ~ term)
       .flatSpanned(sourceId)
       .map { case (instanceOpt, name, ty, value, span) =>
         Let(name, ty, value, span, isInstance = instanceOpt.isDefined)
@@ -242,10 +263,10 @@ object LanguageParser {
 
   // no longer support `using normalizer` in parser; replaced by `use` statements
 
-  private def lambda(implicit sourceId: Option[SourceId]): Parser[Term] =
+  private def lambda(implicit sourceId: Option[SourceId]): Parser[Lam] =
     (kw("fun") ~/ funcHeader ~ sym("=>") ~/ skipAllWs ~ term)
       .flatSpanned(sourceId)
-      .map[SurfaceAst.Term] { case (header, body, span) => Lam(header, body, span) }
+      .map { case (header, body, span) => Lam(header, body, span) }
 
   private def caseHead: Parser[(Vector[String], Boolean)] = {
     val shortName = (symTight(".") ~/ ident).map(name => (Vector(name), true))
@@ -262,7 +283,7 @@ object LanguageParser {
       .named("Case")
 
   private def matchP(implicit sourceId: Option[SourceId]): Parser[Match] = {
-    (kw("match") ~/ term ~ (kw("returning") ~/ typeTerm).? ~
+    (kw("match") ~/ term ~ (kw("returning") ~/ typePositionTerm).? ~
       (kwTight("with") ~/ lineSep) ~ matchCase.rep(0)).flatSpanned(sourceId).map { case (scrut, motive, cases, sp) =>
       Match(scrut, motive, cases, sp)
     }
@@ -285,7 +306,9 @@ object LanguageParser {
     }
 
   private def funcHeader(implicit sourceId: Option[SourceId]): Parser[FuncHeader] =
-    (layoutParam.rep(0) ~ skipAllWs ~ sym(':') ~/ skipAllWs ~ typeTerm).flatSpanned(sourceId).map(FuncHeader.tupled)
+    (layoutParam.rep(0) ~ skipAllWs ~ sym(':') ~/ skipAllWs ~ typePositionTerm)
+      .flatSpanned(sourceId)
+      .map(FuncHeader.tupled)
 
   private def declHeader(implicit sourceId: Option[SourceId]): Parser[DeclHeader] =
     (ident ~ funcHeader).flatSpanned(sourceId).map(DeclHeader.tupled)
@@ -294,14 +317,14 @@ object LanguageParser {
   private def inductiveHeader(implicit sourceId: Option[SourceId]): Parser[InductiveHeader] = {
     val paramsP = layoutParam.rep(0)
     val indicesP = (kw("indices") ~/ layoutParam.rep(0)).?.map(_.getOrElse(Vector.empty))
-    (ident ~ paramsP ~ indicesP ~ skipAllWs ~ sym(':') ~/ skipAllWs ~ typeTerm)
+    (ident ~ paramsP ~ indicesP ~ skipAllWs ~ sym(':') ~/ skipAllWs ~ typePositionTerm)
       .flatSpanned(sourceId)
       .map { case (name, params, indices, ty, sp) => InductiveHeader(name, params, indices, ty, sp) }
   }
 
   private def ctorDecl(implicit sourceId: Option[SourceId]): Parser[ConstructorDecl] = {
     (sym("|") ~/ ident ~ layoutErasedParam.rep(0) ~ layoutParam.rep(0) ~ skipAllWs ~ sym(':') ~/ skipAllWs ~
-      typeTerm ~ lineSep)
+      typePositionTerm ~ lineSep)
       .flatSpanned(sourceId)
       .map { case (name, erasedBinders, fields, resTy, sp) =>
         ConstructorDecl(name, erasedBinders, fields, resTy, sp)

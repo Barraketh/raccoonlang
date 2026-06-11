@@ -9,7 +9,6 @@ import com.raccoonlang.{CoreAst => CA, ElabAst => EA}
 object TypeChecker {
   private final case class CheckedPi(vpi: VPi, bodyEnv: Env, outTy: Value, residual: EA.Term.Pi)
   final case class CheckedTerm(value: Value, residual: EA.Term)
-  private[raccoonlang] final case class CheckedTypeTerm(value: Value, residual: EA.TypeTerm)
 
   def sortLeq(a: Value, b: Value): Boolean = {
     (a, b) match {
@@ -132,7 +131,7 @@ object TypeChecker {
   private def checkPi(pi: CA.Term.Pi, env: Env): CheckedPi = {
     val (vBinders, checkedBinders) = BinderOps.toVBinders(pi.binders, env)
     val binderEnv = BinderOps.freshen(vBinders, env)
-    val checkedOut = checkTypeTerm(pi.out, binderEnv)
+    val checkedOut = checkTypeExpr(pi.out, binderEnv)
     val outV = checkedOut.value
     val freshArgs = vBinders.map(binder => binderEnv(binder.localRef))
     val classifier =
@@ -152,29 +151,11 @@ object TypeChecker {
     CheckedPi(evalPi(checkedPi, env, vBinders), binderEnv, outV, checkedPi)
   }
 
-  private[raccoonlang] def checkTypeTerm(term: CA.TypeTerm, env: Env): CheckedTypeTerm =
-    term match {
-      case t: CA.Term.TApp =>
-        val fn = checkTypeTerm(t.fn, env)
-        val args = t.args.map(arg => checkTypeTerm(arg, env))
-        val value = checkApplyValue(fn.value, args.map(_.value), env)
-        val residual = EA.Term.App(fn.residual, args.map(_.residual), t.span)
-        CheckedTypeTerm(value, residual)
-      case CA.Term.TSelect(base, field, span) =>
-        val checkedBase = checkTypeTerm(base, env)
-        val (selectorName, value) = checkSelect(checkedBase.value, field, span, env)
-        CheckedTypeTerm(value, EA.Term.App(EA.Term.GlobalRef(selectorName, span), Vector(checkedBase.residual), span))
-      case derive: CA.Term.Derive =>
-        val goal = getType(derive.goal, env)
-        val value = InstanceSearch.solve(goal, env)
-        CheckedTypeTerm(value, quoteType(value, quoteContext(env), derive.span))
-      case pi: CA.Term.Pi =>
-        val checked = checkPi(pi, env)
-        CheckedTypeTerm(checked.vpi, checked.residual)
-      case ref: CA.Term.Ref =>
-        val residual = elabRef(ref)
-        CheckedTypeTerm(Interpreter.evalTypeTerm(residual, env), residual)
-    }
+  private[raccoonlang] def checkTypeExpr(term: CA.Term, env: Env): CheckedTerm = {
+    val checked = checkTerm(term, env)
+    assertType(checked.value)
+    checked
+  }
 
   // Returning the residual term lets callers preserve checked let/lambda structure instead of re-checking.
   private def checkBody(body: CA.Term.Body, env: Env): CheckedTerm = {
@@ -185,10 +166,10 @@ object TypeChecker {
       val checkedValue = checkTerm(l.value, curEnv)
       rejectStoredAppHeadOnlyRefs(checkedValue.residual, curEnv)
 
-      var resTyTerm: Option[EA.TypeTerm] = None
+      var resTyTerm: Option[EA.Term] = None
       val withType = l.ty
         .map { tyTerm =>
-          val checkedTy = checkTypeTerm(tyTerm, curEnv)
+          val checkedTy = checkTypeExpr(tyTerm, curEnv)
           val tyV = checkedTy.value
           checkType(checkedValue.value, tyV, curEnv.normalizers)
           resTyTerm = Some(checkedTy.residual)
@@ -271,11 +252,7 @@ object TypeChecker {
     CheckedTerm(Interpreter.evalLam(checkedLam, vpi, env), checkedLam)
   }
 
-  def getType(term: CA.TypeTerm, env: Env): Value = {
-    val res = checkTypeTerm(term, env).value
-    assertType(res)
-    res
-  }
+  def getType(term: CA.Term, env: Env): Value = checkTypeExpr(term, env).value
 
   def assertType(value: Value): Unit = {
     value match {
@@ -306,11 +283,14 @@ object TypeChecker {
           val goal = getType(derive.goal, env)
           val value = InstanceSearch.solve(goal, env)
           CheckedTerm(value, quoteTerm(value, quoteContext(env), derive.span))
+        case pi: CA.Term.Pi =>
+          val checked = checkPi(pi, env)
+          CheckedTerm(checked.vpi, checked.residual)
         case m: CA.Term.Match => MatchChecker.checkMatch(m, env)
         case b: CA.Term.Body  => checkBody(b, env)
-        case term: CA.TypeTerm =>
-          val checked = checkTypeTerm(term, env)
-          CheckedTerm(checked.value, checked.residual)
+        case ref: CA.Term.Ref =>
+          val residual = elabRef(ref)
+          CheckedTerm(Interpreter.evalTerm(residual, env), residual)
       }
     } catch {
       case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, term.span)

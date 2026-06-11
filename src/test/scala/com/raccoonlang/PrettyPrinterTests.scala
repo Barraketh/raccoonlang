@@ -7,7 +7,7 @@ class PrettyPrinterTests extends munit.FunSuite {
       case err: Failure         => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
 
-  private def axiomType(src: String, name: String): CoreAst.TypeTerm =
+  private def axiomType(src: String, name: String): CoreAst.Term =
     parseCore(src).decls
       .collectFirst { case CoreAst.Decl.AxiomDecl(n, ty, _, _) if n == name => ty }
       .getOrElse(fail(s"Expected axiom $name"))

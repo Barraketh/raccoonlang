@@ -13,8 +13,8 @@ object CoreAst {
     // return a blocked VApp(thisFn, args), with a stable head since thisFn is stable. The goal of this strategy is to
     // allow normalizers to rewrite expressions - if foo calls bar calls baz, and the normalizer only knows about foo,
     // then even if baz gets blocked, I want to return a blocked VApp(foo, ...). Technically this information should
-    // probably live on the normalizer itself, but that's more complicated to implement, so for now it will be a property
-    // of the function, and we'll see if it causes any trouble.
+    // probably live on the normalizer itself, but that's more complicated to implement. For now it is a property of
+    // the function, and we'll see if it causes any trouble.
     case object Stable extends UnfoldStrategy
   }
 
@@ -53,11 +53,8 @@ object CoreAst {
 
   final case class Recursion(selfRef: LocalRef, decreases: DecreaseSpec)
 
-  // Terms that can appear in type expressions
-  sealed trait TypeTerm extends Term
-
   object TypePattern {
-    final case class Type(term: TypeTerm) extends TopLevelTP {
+    final case class Type(term: Term) extends TopLevelTP {
       override def span: Span = term.span
     }
 
@@ -75,28 +72,20 @@ object CoreAst {
   }
 
   object Term {
-    sealed trait Ref extends Term with TypeTerm
+    sealed trait Ref extends Term
 
     final case class GlobalRef(name: String, span: Span) extends Ref
 
     final case class LocalRef(ref: CoreAst.LocalRef, span: Span) extends Ref
 
-    // Projection in type position: base[field]
-    final case class TSelect(base: TypeTerm, field: String, span: Span) extends TypeTerm
-
-    // Projection in term position: base[field]
+    // Projection: base[field]
     final case class Select(base: Term, field: String, span: Span) extends Term
 
     // Explicit instance search expression: derive[Goal]
-    final case class Derive(goal: TypeTerm, span: Span) extends TypeTerm
-
-    // Application in type position
-    final case class TApp(fn: TypeTerm, args: Vector[TypeTerm], span: Span) extends TypeTerm {
-      require(args.nonEmpty, "Type application requires at least one argument")
-    }
+    final case class Derive(goal: Term, span: Span) extends Term
 
     // Pi (x: A) -> B x
-    final case class Pi(binders: Vector[Binder], out: TypeTerm, span: Span) extends Term with TypeTerm {
+    final case class Pi(binders: Vector[Binder], out: Term, span: Span) extends Term {
       require(binders.nonEmpty, "Pi requires at least one binder")
     }
 
@@ -118,7 +107,7 @@ object CoreAst {
 
     final case class Match(
         scrut: Term,
-        motive: Option[TypeTerm],
+        motive: Option[Term],
         cases: Vector[Case],
         span: Span
     ) extends Term
@@ -128,7 +117,7 @@ object CoreAst {
   // Let: let x := foo
   final case class Let(
       localRef: LocalRef,
-      ty: Option[TypeTerm],
+      ty: Option[Term],
       value: Term,
       span: Span,
       isInstance: Boolean = false
@@ -155,7 +144,7 @@ object CoreAst {
       name: String,
       params: Vector[Binder],
       indices: Vector[Binder],
-      resultTy: TypeTerm,
+      resultTy: Term,
       span: Span
   ) {
     def binders: Vector[Binder] = params ++ indices
@@ -167,7 +156,7 @@ object CoreAst {
       shortName: String,
       erasedBinders: Vector[Binder],
       fields: Vector[Binder],
-      resultTy: TypeTerm,
+      resultTy: Term,
       span: Span
   ) {
     def name: String = canonicalName
@@ -191,7 +180,7 @@ object CoreAst {
     final case class ConstDecl(
         unfoldStrategy: Option[UnfoldStrategy],
         name: String,
-        ty: TypeTerm,
+        ty: Term,
         body: ConstBody,
         span: Span,
         isInstance: Boolean = false,
@@ -200,7 +189,7 @@ object CoreAst {
 
     final case class AxiomDecl(
         name: String,
-        ty: TypeTerm,
+        ty: Term,
         span: Span,
         isInstance: Boolean = false
     ) extends Decl

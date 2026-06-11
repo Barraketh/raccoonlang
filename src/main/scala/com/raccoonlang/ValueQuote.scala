@@ -33,6 +33,12 @@ object ValueQuote {
         case other => inlineTerm(other)
       }
 
+    private def inlinePiType(ty: ElabAst.Term.Pi): ElabAst.Term.Pi =
+      inlineTerm(ty) match {
+        case pi: ElabAst.Term.Pi => pi
+        case other               => throw WTF(s"Lambda type inlined to non-Pi type $other", Some(ty.span))
+      }
+
     def inlineTerm(t: ElabAst.Term): ElabAst.Term =
       t match {
         case ElabAst.Term.GlobalRef(_, _)        => t
@@ -43,15 +49,15 @@ object ValueQuote {
           val nextBinders = binders.map { b =>
             b.copy(localRef = reindex(b.localRef), ty = inlineTopLevelTP(b.ty))
           }
-          ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, piSpan)
+          ElabAst.Term.Pi(nextBinders, inlineTerm(out), classifier, piSpan)
         case ElabAst.Term.Body(lets, res, bodySpan) =>
           val nextLets = lets.map { l =>
-            ElabAst.Let(reindex(l.localRef), l.ty.map(inlineTypeTerm), inlineTerm(l.value), l.span, l.isInstance)
+            ElabAst.Let(reindex(l.localRef), l.ty.map(inlineTerm), inlineTerm(l.value), l.span, l.isInstance)
           }
           ElabAst.Term.Body(nextLets, inlineTerm(res), bodySpan)
         case ElabAst.Term.Lam(ty, body, lamSpan, name, isStable, recursiveSelf) =>
           ElabAst.Term.Lam(
-            inlineTypeTerm(ty).asInstanceOf[ElabAst.Term.Pi],
+            inlinePiType(ty),
             inlineTerm(body),
             lamSpan,
             name,
@@ -61,27 +67,10 @@ object ValueQuote {
         case ElabAst.Term.Match(scrut, motive, cases, matchSpan) =>
           ElabAst.Term.Match(
             inlineTerm(scrut),
-            motive.map(inlineTypeTerm),
+            motive.map(inlineTerm),
             cases.map(inlineCase),
             matchSpan
           )
-      }
-
-    def inlineTypeTerm(t: ElabAst.TypeTerm): ElabAst.TypeTerm =
-      t match {
-        case ElabAst.Term.GlobalRef(_, _) => t
-        case ElabAst.Term.LocalRef(ref, refSpan) =>
-          inlineLocal(ref, refSpan) match {
-            case tt: ElabAst.TypeTerm => tt
-            case other                => throw CannotQuoteValue(env(ref), s"$other is not a type term", Some(refSpan))
-          }
-        case ElabAst.Term.App(fn, args, appSpan) =>
-          ElabAst.Term.App(inlineAppHead(fn), args.map(inlineTerm), appSpan)
-        case ElabAst.Term.Pi(binders, out, classifier, piSpan) =>
-          val nextBinders = binders.map { b =>
-            b.copy(localRef = reindex(b.localRef), ty = inlineTopLevelTP(b.ty))
-          }
-          ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, piSpan)
       }
 
     private def inlineTypePattern(tp: ElabAst.TypePattern): ElabAst.TypePattern =
@@ -92,7 +81,7 @@ object ValueQuote {
 
     def inlineTopLevelTP(tp: ElabAst.TopLevelTP): ElabAst.TopLevelTP =
       tp match {
-        case ElabAst.TypePattern.Type(tpe) => ElabAst.TypePattern.Type(inlineTypeTerm(tpe))
+        case ElabAst.TypePattern.Type(tpe) => ElabAst.TypePattern.Type(inlineTerm(tpe))
         case ElabAst.TypePattern.App(fn, args, appSpan) =>
           val nextFn =
             inlineAppHead(fn) match {
@@ -120,11 +109,10 @@ object ValueQuote {
     QuoteContext(quote, env.locals.length)
   }
 
-  def quoteType(value: Value, context: QuoteContext, span: Span): ElabAst.TypeTerm =
-    quoteTerm(value, context, span) match {
-      case tpe: ElabAst.TypeTerm => tpe
-      case other                 => throw CannotQuoteValue(value, s"$other is not a type term", Some(span))
-    }
+  def quoteType(value: Value, context: QuoteContext, span: Span): ElabAst.Term = {
+    TypeChecker.assertType(value)
+    quoteTerm(value, context, span)
+  }
 
   def quoteTerm(value: Value, context: QuoteContext, span: Span): ElabAst.Term = {
     quotedTermFor(context.quote, value, span).foreach(return _)
@@ -200,7 +188,7 @@ object ValueQuote {
 
     ElabAst.Term.Match(
       quoteTerm(Interpreter.evalTerm(term.scrut, env), context, term.scrut.span),
-      term.motive.map(motive => quoteType(Interpreter.evalTypeTerm(motive, env), context, motive.span)),
+      term.motive.map(motive => quoteType(Interpreter.evalTerm(motive, env), context, motive.span)),
       term.cases.map(inliner.inlineCase),
       span
     )

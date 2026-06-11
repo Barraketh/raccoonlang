@@ -10,11 +10,6 @@ object SurfaceAst {
     def span: Span
   }
 
-  // Terms that can appear in type expressions
-  sealed trait TypeTerm {
-    def span: Span
-  }
-
   sealed trait TypePattern {
     def span: Span
   }
@@ -44,11 +39,11 @@ object SurfaceAst {
   }
 
   object TypePattern {
-    final case class Type(term: TypeTerm) extends TopLevelTP {
+    final case class Type(term: Term) extends TopLevelTP {
       override def span: Span = term.span
     }
 
-    final case class App(fn: TypeTerm, args: Vector[TypePattern], span: Span) extends TopLevelTP {
+    final case class App(fn: Term, args: Vector[TypePattern], span: Span) extends TopLevelTP {
       require(args.nonEmpty, "Type pattern application requires at least one argument")
     }
 
@@ -62,22 +57,16 @@ object SurfaceAst {
 
   object Term {
     // Identifier (either type or term)
-    final case class Ident(name: String, span: Span) extends Term with TypeTerm
+    final case class Ident(name: String, span: Span) extends Term
 
     // Projection: base[field]
-    final case class TSelect(base: TypeTerm, field: String, span: Span) extends TypeTerm
     final case class Select(base: Term, field: String, span: Span) extends Term
 
-    // Application in type position
-    final case class TApp(fn: TypeTerm, args: Vector[TypeTerm], span: Span) extends TypeTerm {
-      require(args.nonEmpty, "Type application requires at least one argument")
-    }
-
     // Pi (x: A) -> B x
-    final case class Pi(binder: Binder, body: TypeTerm, span: Span) extends Term with TypeTerm
+    final case class Pi(binder: Binder, body: Term, span: Span) extends Term
 
     // Explicit instance search expression: derive[Goal]
-    final case class Derive(goal: TypeTerm, span: Span) extends Term with TypeTerm
+    final case class Derive(goal: Term, span: Span) extends Term
 
     // Application: f(a) (term-level)
     final case class App(fn: Term, args: Vector[Term], span: Span) extends Term
@@ -87,13 +76,13 @@ object SurfaceAst {
 
     final case class Match(
         scrut: Term,
-        motive: Option[TypeTerm],
+        motive: Option[Term],
         cases: Vector[Case],
         span: Span
     ) extends Term
 
     // Let: let x := foo
-    final case class Let(name: String, ty: Option[TypeTerm], value: Term, span: Span, isInstance: Boolean = false)
+    final case class Let(name: String, ty: Option[Term], value: Term, span: Span, isInstance: Boolean = false)
 
     sealed trait BodyStmt {
       def span: Span
@@ -122,7 +111,7 @@ object SurfaceAst {
 
   case class Binder(name: String, ty: TopLevelTP, span: Span, isInstance: Boolean = false)
 
-  case class FuncHeader(params: Vector[Binder], ty: TypeTerm, span: Span)
+  case class FuncHeader(params: Vector[Binder], ty: Term, span: Span)
 
   case class Import(path: Vector[String], span: Span)
 
@@ -134,7 +123,7 @@ object SurfaceAst {
         name: String,
         params: Vector[Binder],
         indices: Vector[Binder],
-        resultTy: TypeTerm,
+        resultTy: Term,
         span: Span
     ) {
       def binders: Vector[Binder] = params ++ indices
@@ -144,7 +133,7 @@ object SurfaceAst {
         name: String,
         erasedBinders: Vector[Binder],
         fields: Vector[Binder],
-        resultTy: TypeTerm,
+        resultTy: Term,
         span: Span
     )
 
