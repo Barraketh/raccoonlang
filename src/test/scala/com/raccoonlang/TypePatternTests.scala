@@ -238,15 +238,14 @@ class TypePatternTests extends munit.FunSuite {
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
-        | | nil {A: Sort($u)} : Vec(A, Nat.zero)
-        | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
+        |inductive Box (A: Type) : Type
+        | | mk {A: Type} (value: A) : Box(A)
         |
-        |def anyVec (v: Vec($A, $n)): Nat := Nat.zero
+        |def anyBox (v: Box($A)): Nat := Nat.zero
         |def bad (f: (_: $D of Type) -> Nat): Type := D
         |
         |{
-        |  bad(anyVec)
+        |  bad(anyBox)
         |}
         |""".stripMargin
 
@@ -273,6 +272,118 @@ class TypePatternTests extends munit.FunSuite {
         |""".stripMargin
 
     assertTypeError[PatternCaptureEscapesScope](p)
+  }
+
+  test("positive: pattern Pi types are equal up to capture renaming") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
+        | | nil {A: Sort($u)} : Vec(A, Nat.zero)
+        | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
+        |
+        |def f (v: Vec($A, $n)): Nat := Nat.zero
+        |
+        |{
+        |  let g : (v: Vec($B, $k)) -> Nat := f
+        |  g(Vec.nil(Nat))
+        |}
+        |""".stripMargin
+
+    val res = runProgram(p)
+    assertEquals(toShape(res), zeroS)
+  }
+
+  test("positive: a pattern Pi type instantiates at a concrete Pi type") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
+        | | nil {A: Sort($u)} : Vec(A, Nat.zero)
+        | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
+        |
+        |def f (v: Vec($A, $n)): Nat := Nat.zero
+        |
+        |{
+        |  let g : (v: Vec(Nat, Nat.zero)) -> Nat := f
+        |  g(Vec.nil(Nat))
+        |}
+        |""".stripMargin
+
+    val res = runProgram(p)
+    assertEquals(toShape(res), zeroS)
+  }
+
+  test("negative: pattern Pi types with different capture placement are not equal") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
+        | | nil {A: Sort($u)} : Vec(A, Nat.zero)
+        | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
+        |
+        |def f (v: Vec($A, Nat.zero)): Nat := Nat.zero
+        |
+        |{
+        |  let g : (v: Vec(Nat, $m)) -> Nat := f
+        |  Nat.zero
+        |}
+        |""".stripMargin
+
+    assertTypeError[TypeMismatch](p)
+  }
+
+  test("negative: capture under a stuck match is rejected at declaration") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Vec (A: Type) indices (n: Nat) : Type
+        | | nil {A: Type} : Vec(A, Nat.zero)
+        | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
+        |
+        |def pred (n: Nat): Nat := {
+        |  match n with
+        |  | Nat.zero => Nat.zero
+        |  | Nat.succ x => x
+        |}
+        |
+        |def bad (v: Vec(Nat, pred($n))): Nat := Nat.zero
+        |
+        |{
+        |  Nat.zero
+        |}
+        |""".stripMargin
+
+    assertTypeError[UnmatchablePattern](p)
+  }
+
+  test("negative: capture under Level.max is rejected at declaration") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |def bad (A: Sort(Level.max(Level.one, $u))): Nat := Nat.zero
+        |
+        |{
+        |  Nat.zero
+        |}
+        |""".stripMargin
+
+    assertTypeError[UnmatchablePattern](p)
   }
 
   test("positive: type patterns work in inductive constructor fields") {
@@ -476,7 +587,7 @@ class TypePatternTests extends munit.FunSuite {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[UnificationFailed] {
+        intercept[TypeMismatch] {
           Interpreter.run(core, Prelude.test)
         }
       case err: Failure =>
@@ -631,7 +742,7 @@ class TypePatternTests extends munit.FunSuite {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[UnificationFailed] {
+        intercept[TypeMismatch] {
           Interpreter.run(core, Prelude.test)
         }
       case err: Failure =>

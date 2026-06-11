@@ -5,9 +5,16 @@ checking, freshening, and the matching performed at application sites. The imple
 `telescope/TypePatternOps.scala` (value level) and `Elaborator.scala` (name level); this document is written
 so that each implementation step can be audited against a rule here.
 
-Notation: `Γ`, `Δ` are value environments (`Env`). `α`, `β`, `s` are unification variables (`Var`) with
-globally unique ids. `deps(v)` is `v.synDeps` (every var id reachable from a value, including through its
-type); `deps(Γ)` is `Γ.allDeps`. "Type" below means a `Sort`-classified value.
+The central judgment is **matching, not unification**. A binder pattern is matched against the actual
+argument's type: the actual side is read-only input, captures are outputs, and solving is a single
+deterministic left-to-right traversal of the pattern. There is no constraint store, no postponement, and no
+search. Wherever two *rigid* values must agree, the pattern machinery delegates to definitional equality
+(`defEq`) — solving is structural, equality is semantic, and the two never mix.
+
+Notation: `Γ`, `Δ` are value environments (`Env`). `σ` is a finite map from captures to values. `deps(v)` is
+`v.synDeps` (every var id reachable from a value, including through its type); `deps(Γ)` is `Γ.allDeps`.
+`nf(A)` is the (normalizer-)normal form of a value — values in this kernel are maximally reduced, so this is
+how the value is already presented. "Type" below means a `Sort`-classified value.
 
 ## 1. Grammar
 
@@ -77,8 +84,8 @@ capture-extended env `Γ'` and a checked binder `B` recording `(b, Q, compile(Q)
 
 The rule has two phases.
 
-**D1 (capture initialization).** Extend `Γ` with a fresh variable `α_x` for each `x ∈ captures(Q)`, in
-order. The type of `α_x` is determined by the position of its binding occurrence:
+**D1 (capture initialization).** Extend `Γ` with a fresh neutral variable `α_x` for each `x ∈ captures(Q)`,
+in order. The type of `α_x` is determined by the position of its binding occurrence:
 
 - **CC**: in `$x of Q'`, first open `Q'` (rule O below, reusing already-introduced captures), require the
   result `V'` to be a type, and set `α_x : V'`.
@@ -109,129 +116,195 @@ reused and checked against the new constraint instead of rebinding.
   `Sort(max(domain levels, codomain level))`).
 - Finally `eval(compile(Q), Γ')` must be a type.
 
+**D3 (matchability).** The pattern must be *matchable*: every capture must sit in a position the matching
+judgment of section 5 can traverse. Captures under a stuck match (`Vec(Nat, pred($n))`), under level
+expressions outside the `u + k` fragment (`Sort(Level.max(Level.one, $u))`), or in application spines that
+are neither presentations nor higher-order patterns, can never be determined by any argument type, and the
+declaration is rejected with `UnmatchablePattern`. Operationally this is decided by matching the pattern
+against an independent fresh opening of itself (an α-renamed copy): the self-match exercises every rule on
+the pattern's own shape, so it succeeds exactly when some argument presentation could.
+
 D1 running to completion before D2 is what makes S3's forward references work: by the time any domain is
 checked, every capture of the whole pattern is already in the environment.
 
 ## 4. Opening and freshening
 
-**O (open)**: `open(Γ, Q) = (V, Γ', D)`:
+Capture *variables* exist only when a binder is **entered without an argument**. They are ordinary neutral
+atoms — opaque locals, exactly like a freshened term binder — not unification metavariables. Binding sites
+(section 6) never create capture variables: matching assigns capture *values* directly.
 
-- `Γ'` extends `Γ` with *fresh* variables `α_x` for `captures(Q)` not already present, typed exactly as in
+**O (open)**: `open(Γ, Q) = (V, Γ')`:
+
+- `Γ'` extends `Γ` with fresh neutral atoms `α_x` for `captures(Q)` not already present, typed exactly as in
   D1 (CC constraints are re-evaluated; App-argument captures are typed from freshly opened head telescopes;
   for [Pi], initialization walks the whole pattern first).
 - `V = eval(compile(Q), Γ')`.
-- `D = (⋃_x deps(Γ'(α_x))) \ deps(Γ)` — the ids created by this opening, i.e. the capture variables plus any
-  transitively reachable fresh structure. These are the only ids a subsequent match may solve.
 
-**F (freshen)**: `freshen(Γ, b: Q) = Γ', b := fresh β : V` where `(V, Γ', _) = open(Γ, Q)`. Used wherever a
+**F (freshen)**: `freshen(Γ, b: Q) = Γ', b := fresh β : V` where `(V, Γ') = open(Γ, Q)`. Used wherever a
 binder must be entered without an argument: codomain checking, body checking, Pi equality, instance search,
 inductive checks.
 
-Invariants:
+Invariant **O-fresh**: every opening creates brand-new atoms; two openings of the same pattern are
+α-equivalent but share nothing.
 
-- **O-fresh**: every opening creates brand-new ids; two openings of the same pattern are α-equivalent but
-  share nothing.
-- **O-once**: at a binding site the pattern is opened exactly once, and the same `(V, Γ', D)` is used both
-  to solve captures and to bind the binder. Solving against a second opening of the same pattern is a bug.
+## 5. The matching judgment
 
-## 5. Matching at applications
+`match(Q, A)` over an environment `Δσ` (the callee env extended with the solutions accumulated so far)
+either fails or extends `σ` with values for the captures whose binding occurrences lie in `Q`. `A` is a type
+value — the *presentation* the kernel already holds, in normal form.
+
+Three principles govern every rule:
+
+- **Directional**: `A` is input and is never refined. Only captures of `Q` receive values.
+- **Presentation-directed**: matching reads `nf(A)` structurally. It never searches for a decomposition and
+  never inverts a function; if the presentation does not exhibit the pattern's shape, the match fails. The
+  certificate check (M3 below) is what makes this safe: matching merely *proposes* capture values, and the
+  proposal is then verified by full definitional equality.
+- **Total traversal**: the traversal visits every capture position in `Q` left to right, so a successful
+  match assigns every capture exactly once — at its binding occurrence, or at an earlier reference position
+  when S3 forward references put a reference before the `$` occurrence. "The argument does not determine
+  this capture" can only surface as a structural failure or as a solution that mentions match-local
+  variables (V-closed).
+
+The rules, by case on `Q` (or argument pattern `P`):
+
+- **[Type] / rigid leaves**: `match(T, A)` succeeds iff `defEq(eval(T, Δσ), A)`. All semantic power
+  (normalizers, proof irrelevance, cumulative levels inside `defEq`) lives here; none of it solves anything.
+
+- **[Capture]**: `match($x, A)` assigns `x := A`. The assignment is then *classified*: the declared type of
+  `x` at this position (the head telescope's domain — see [App]) must accept `type(A)`, which recursively
+  matches if that domain is itself a pattern, or is a `≤` check (cumulativity) if it is rigid.
+
+- **[CC]**: `match($x of Q', A)` assigns `x := A`, then classifies the assignment against the constraint:
+  - if `captures(Q') = ∅`: require `type(A) ≤ eval(Q', Δσ)` — constraints *classify*, so cumulativity and
+    proof irrelevance apply;
+  - else: `match(Q', type(A))` — the constraint's own captures are read off the assignment's type. This is
+    one recursion, not a separate pass: `$x of $A of Sort($u)` solves `x`, then `A := type(x)`, then
+    `u := level of type(A)`, in that order, in place.
+
+- **[App]**: `match(h(P1...Pn), A)`:
+  1. `H = eval(h, Δσ)`; `H`'s type must be an n-ary Pi — its telescope `(t1: R1)...(tn: Rn)` over closure
+     env `Δh`.
+  2. `nf(A)` must be an application spine `H'(B1...Bn)` with `defEq(H, H')`; otherwise the match fails.
+     Matching never re-associates, η-expands, or unfolds `A` beyond its normal form to find such a spine.
+  3. For `i = 1..n`, threading `σ` and `Δh`:
+     - `match(Pi, Bi)` — bare captures assign, rigid arguments `defEq`-check, nested patterns recurse;
+     - bind `H`'s binder `(ti: Ri)` with `Bi` *by this same matching discipline* (rule M of section 6
+       restricted to a sub-position): if `Ri` has captures, `match(Ri, type(Bi))` solves `H`'s own hidden
+       captures (e.g. `$u` in `Vec`'s `(A: Sort($u))`) into `Δh`; otherwise `type(Bi) ≤ eval(Ri, Δh)`.
+  4. Finally `defEq(type(A), codomain of H's telescope at B̄)`.
+
+  Decomposition is by presentation, not by injectivity: for a non-injective head the spine `A` actually
+  exhibits is the one that is read, and the certificate check vouches for the result.
+
+  Note that `h` need not be opaque: a transparent head is evaluated like any pattern position, and matching
+  proceeds against whatever shape its expansion *presents* — `Set($A)` with `Set(A) = (x: A) -> Prop`
+  matches by the [Pi] rule, not by spine decomposition.
+
+- **[Flex-spine]**: a capture in *head* position applied to pairwise-distinct rigid variables —
+  `$F(x1, ..., xm)` arising from a transparent expansion, with each `xi` a binder variable — matches any
+  actual piece `B` whose free variables are permitted at `F`'s scope: `F := λx1...xm. B`, the unique
+  solution in the higher-order pattern fragment. This is higher-order *matching*, not unification: the head
+  must be a capture, the spine must be distinct rigid variables, and the abstraction either exists uniquely
+  or the rule does not apply. (`Subset($s of Set($A), $t of Set(A))` solves `s`, `t` this way: its expansion
+  presents `s(x)` and `t(x)` under the [Pi] rule's shared variable `x`.)
+
+- **[Pi]**: `match((y1: Q1)...(yk: Qk) -> Q0, A)`:
+  1. `nf(A)` must be a `VPi` with exactly `k` binders and pointwise equal instance flags; otherwise fail.
+  2. For `i = 1..k`:
+     - **skolemize** the actual binder: open it (rule O) with fresh atoms for any captures *it* declares —
+       the actual side is input, so its pattern structure is opaque; its atoms are match-local and may not
+       end up in any solution (V-closed);
+     - `match(Qi, actual domain_i)` — the pattern's domain reads the actual's domain; rigid domains
+       `defEq`-check, captures assign;
+     - create one fresh **shared atom** `s_i`, typed at the (now σ-instantiated) domain, and enter it as the
+       value of both sides' binders (registering instance keys for instance binders). `s_i` is match-local.
+  3. `match(Q0, actual codomain at s̄)`.
+
+  Every atom created in step 2 — the actual side's skolems and the shared `s̄`, at any nesting depth — is
+  match-local. A capture solution that mentions one has no meaning outside the match and is rejected by
+  V-closed. This is the entire soundness story for matching under binders.
+
+- **[Level]**: capture positions of type `Level` (reached through `Sort(...)` arguments or `Level`-typed
+  head arguments) admit one arithmetic form: a compiled level expression consisting of a single capture plus
+  a constant offset, `u + k`. It matches an actual level `ℓ` iff `ℓ ≥ k`, assigning `u := ℓ − k`. All other
+  level shapes in capture position (`max` forms, multiple captures) are not matchable and fail. Rigid level
+  expressions are `defEq` leaves like everything else.
+
+**Determinism.** For fixed `Δ`, `Q`, and `A`, `match(Q, A)` has at most one result, computed by one
+left-to-right traversal with no backtracking: each rule consumes a fixed position of `nf(A)`, and each
+capture is assigned exactly at its binding occurrence. This is a theorem of the rules above, not a property
+of an engine.
+
+## 6. Binding at applications
 
 Checking `f(a1, ..., an)` with `f : Π(b1: Q1)...(bn: Qn). T` processes binders left to right in the callee
 env `Δ` (the Pi's closure env), with each argument value `v` supplied by the caller.
 
 **M (bind)**: `bind(Δ, (b: Q), v) = Δ'`:
 
-1. If `captures(Q) = []`: check `type(v) ≤ eval(compile(Q), Δ)` (definitional equality with cumulativity;
-   the evaluation-only path may skip the check), and `Δ' = Δ, b := v`.
+1. If `captures(Q) = []`: check `type(v) ≤ eval(compile(Q), Δ)` (the evaluation-only path may skip the
+   check), and `Δ' = Δ, b := v`.
 2. Otherwise:
-   - **M1 (open)**: `(V, Δ1, D) = open(Δ, Q)`.
-   - **M2 (solve)**: `σ = pmatch(Q, V, type(v), ∅ allowing D)` — pattern unification (section 6), starting
-     from an *empty* equality store whose refinable set is exactly `D` (plus ids created transiently inside
-     `pmatch` itself).
-   - **M3 (constraints)**: for each `$x of Q'` in pattern order: let `C = σ(type-assigned-to-α_x)`; try to
-     *unify* `C` with `σ(α_x).tpe` (this may solve further capture variables, e.g. `$u` in `Sort($u)`);
-     if unification fails, require `σ(α_x).tpe ≤ C` (cumulativity / proof irrelevance), else fail.
-   - **M4 (validation)**: for every capture `x`:
-     - **V-solved**: `σ(α_x) ≠ α_x` — the argument's type must determine every capture; otherwise
-       `PatternCaptureNeedsExpectedType`.
-     - **V-closed**: `deps(σ(α_x)) ⊆ deps(Δ) ∪ deps(type(v))` — a capture's solution must be a value over
-       variables that exist outside the match. It must not mention *any* id created during M1–M3:
-       shared Pi-binder variables (`s̄` of section 6, at any depth — spine, domains, or inside constraint
-       unification), transient flex variables opened on the actual side (the argument type's own pattern
-       captures), or unsolved sibling captures. Otherwise `PatternCaptureEscapesScope`.
-       Given V-solved and monotonic variable ids, this is equivalent to: no id allocated after solving began
-       survives in a solution — which is how the implementation checks it (a fresh-id watermark taken at the
-       start of M2).
-   - **M5 (bind)**: `Δ' = σ(Δ1), b := ascribe(v, σ(V))`. The checking path additionally verifies
-     `type(v) ≤ σ(V)`.
+   - **M1 (match)**: `σ = match(Q, type(v))` over `Δ`. Failure is a type error at this binder — there is no
+     postponement (M-eager).
+   - **M2 (V-closed)**: for every capture `x`: `deps(σ(x)) ⊆ deps(Δ) ∪ deps(type(v))`. A solution must be a
+     value over variables that exist outside the match; the skolems and shared atoms of [Pi] (at any depth)
+     are match-local and may not survive into it. Otherwise `PatternCaptureEscapesScope`.
+     Since match-local atoms are exactly the variables allocated after matching began, and ids are
+     monotonic, this is checked as: no id in a solution exceeds a fresh-id watermark taken at the start of
+     M1.
+   - **M3 (certificate)**: `E = eval(compile(Q), Δ ∪ σ)`; the checking path verifies `type(v) ≤ E`. This
+     check carries the soundness of the whole judgment: matching only proposed `σ` from the presentation,
+     and `E` is re-derived from the pattern itself.
+   - **M4 (bind)**: `Δ' = Δ, captures := σ, b := ascribe(v, E)`.
 
 Invariants:
 
-- **M-local**: solving starts from an empty store and may refine only `D` (and `pmatch`-internal
-  transients). Ambient variables of `Δ` or of the caller are never refined by a type-pattern match.
-- **M-ascribe**: the binder is bound at the *solved expected type* `σ(V)`, not at `type(v)`. Later binders,
-  the codomain, and the caller therefore compute with the pattern's view of the argument. This is also what
-  makes the coarse Pi equality of section 7 sound: a function accepted at a more specific pattern type is
-  subsequently *used* at that more specific type.
-- **M-eager**: there is no constraint postponement. A pattern that the argument's type does not fully
-  determine is an error at this binder, not later.
-
-## 6. Pattern unification
-
-`pmatch(Q, expected, actual, σ)` unifies the opened expected type with the actual argument type, directed by
-the pattern:
-
-- **U-default**: if `Q` is not a [Pi], `pmatch = unify(expected, actual, σ)` — ordinary value unification
-  (definitional equality modulo the refinable set, normalizers, Miller pattern applications, level
-  equations). Captures solve here because `expected` literally contains the `α_x`.
-- **U-Pi**: if `Q = (y1: Q1) ... (yk: Qk) -> Q0`, then `expected` is a `VPi` (by construction), and the two
-  Pi values relate by the *generic* Pi unification rule:
-  1. `actual` must be a `VPi` with exactly `k` binders, with pointwise equal instance flags; otherwise the
-     match fails.
-  2. For `i = 1..k`:
-     - open the expected binder (compiled, so capture-free: it references the already-created `ᾱ`) and the
-       actual binder (which may itself be a pattern binder; its captures open as fresh transient flex
-       variables, added to the refinable set);
-     - `σ ← unify(expected domain_i, actual domain_i, σ)` — domains unify *invariantly*;
-     - create one fresh **shared variable** `s_i : σ(domain_i)` and bind both sides' binders to it
-       (registering instance keys for instance binders). `s_i` is transient: it must not appear in any
-       capture solution (V-closed).
-  3. `σ ← unify(σ(expected codomain at s̄), σ(actual codomain at s̄), σ)` — nested arrows (in codomains *and*
-     domains) relate by the same rule, so captures anywhere under binders solve through step 2/3, and every
-     shared variable introduced at any depth is transient and excluded by V-closed.
-
-  There is no pattern-directed dispatch in the solver: `compile(Q)` already placed the `ᾱ` inside rigid
-  structure, and ordinary unification of the opened pattern against the actual type solves them. V-closed is
-  the single rule that keeps binder-crossing sound.
-
-There is no contravariant subtyping anywhere in a match: domains and codomains unify; cumulativity is
-admitted only at the final `≤` checks (M3 constraint fit, M5 argument check).
+- **M-local**: matching never refines anything in `Δ` or in the caller; its only outputs are `σ`.
+- **M-ascribe**: the binder is bound at the *instantiated expected type* `E`, not at `type(v)`. Later
+  binders, the codomain, and the caller compute with the pattern's view of the argument. This is also what
+  makes instantiation (section 7) sound: a function accepted at a more specific type is subsequently *used*
+  at that more specific type.
+- **M-eager**: a pattern the argument's type does not fully determine is an error at this binder, not later.
+- **E-once**: `E` is computed once per binding event and used for both the certificate and the ascription.
 
 ## 7. Pattern types and definitional equality
 
-Two Pi values are definitionally equal iff they have the same binder count, pointwise equal instance flags,
-*related* binder patterns, and defEq codomains under shared fresh variables. Two binder patterns are related
-iff their openings unify **with both sides' capture variables refinable**.
+Pattern structure participates in equality in exactly two ways — neither involves solving both sides at
+once:
 
-This is deliberately coarse: it treats captures up to α-equivalence (`Vec($A, $n) -> ...` equals
-`Vec($B, $m) -> ...`), and it lets one side's rigid structure solve the other side's captures. The
-asymmetries this could introduce are neutralized by M-ascribe (values are used at the solved expected type)
-and by V-solved (capture-exporting positions reject arguments whose types leave captures undetermined).
+- **defEq (symmetric)**: two Pi values with pattern binders are definitionally equal iff they are
+  **α-equivalent as patterns**: same arity, pointwise equal instance flags, and pointwise α-equivalent
+  binder patterns — captures correspond by position, rigid parts are `defEq` under shared fresh atoms, and
+  codomains are `defEq` under shared atoms. Where flexibility *lies* is part of the type:
+  `Vec($A, zero) -> X` and `Vec(Nat, $m) -> X` are different types. α-equivalence is an equivalence
+  relation, so conversion stays transitive.
+- **Instantiation (directional)**: a value whose type is a pattern Pi may be used where a *more specific* Pi
+  is required: `v : Q-pattern-type` is accepted at expected type `T` iff `match(Q, T)` succeeds with closed
+  solutions, and `v` is then used at `T` (per M-ascribe). This is the matching judgment applied at the type
+  level, not a new mechanism. The reverse direction — supplying a value at a pattern-typed binder — is
+  ordinary binding (section 6). When *both* sides are patterns, only α-equivalence applies; one pattern is
+  never solved against another.
 
 ## 8. Soundness conditions (summary)
 
-1. **Locality** (M-local): a match refines only variables it created.
-2. **Freshness** (O-fresh, O-once): one opening per binding event; openings share nothing.
-3. **Determination** (V-solved): every capture is solved by the argument type.
-4. **Closedness** (V-closed): every capture solution — and hence everything the body computes with — is a
-   value over the pre-existing environment plus the argument's type. No variable created during matching
-   (shared Pi binders at any depth, actual-side transients, unsolved siblings) may leak.
-5. **Constraint fit** (M3): solved captures satisfy their declared constraints up to cumulativity.
-6. **Ascription** (M-ascribe): binders are bound at solved expected types.
+1. **Directionality** (M-local): matching reads the actual type and writes only capture solutions; nothing
+   pre-existing is ever refined.
+2. **Determinism** (section 5): at most one `σ` per (pattern, presentation) pair, by construction.
+3. **Freshness** (O-fresh): atoms from distinct openings are distinct; match-local atoms are distinct from
+   everything ambient.
+4. **Closedness** (V-closed): every capture solution is a value over the pre-existing environment plus the
+   argument's type; no match-local atom (skolem or shared binder atom, at any depth) leaks.
+5. **Certification** (M3): every accepted binding is re-checked against the pattern's own compiled type by
+   full definitional equality; matching proposes, `defEq` disposes.
+6. **Ascription** (M-ascribe): binders are bound at instantiated expected types.
 7. **Scope separation** (S3–S5): hoisted captures and their constraints live strictly outside the Pi's own
    binders.
+8. **Equality discipline** (section 7): pattern equality is α-equivalence; crossing flexibility is always
+   directional instantiation.
 
-## Appendix: implementation mapping
+## Appendix A: implementation mapping
 
 | Spec | Implementation |
 |---|---|
@@ -239,14 +312,30 @@ and by V-solved (capture-exporting positions reject arguments whose types leave 
 | `compile(Q)` | `TypePatternOps.compileType` |
 | S1–S4 | `Elaborator.elabPattern` / `elabBinder` (`fixedCaptures` implements S3 hoisting) |
 | D1/D2 | `TypePatternOps.toVBinder` (`initializePiCaptures` + `checkPattern`) |
+| D3 | `TypePatternOps.validateMatchable` (self-match against a fresh opening) |
 | O / F | `TypePatternOps.openPattern` / `openBinderPattern` / `freshenBinder` |
 | M | `TypePatternOps.bindValue` / `bindValueAndCheck` / `solveOpenedCaptures` |
-| M2 (incl. U-Pi) | `ValueEquivalence.unify` / `tryUnifyPis` / `tryRelatePiBinders` |
-| M3 | `TypePatternOps.solveTypePatternConstraints` |
-| M4 | V-solved and watermark V-closed loops in `solveOpenedCaptures` |
-| §7 | `ValueEquivalence.tryRelatePiBinders` / `defEqPi` / `tryUnifyPis` |
+| M1 (match) | `TypePatternMatcher.matchBinderPattern` — value-directed over the opened pattern: `matchValue` walks the opened presentation, `linkCapture` is [Capture]/[CC] with classification fused, `matchLevel` is [Level], `trySolveFlexSpine` is [Flex-spine], `matchPi` is [Pi] with skolemized actual binders |
+| M2 | watermark loop in `solveOpenedCaptures` |
+| M3/M4 | `bindOpenedValueAndCheck` / `bindOpenedValue` |
+| §7 α-equivalence | `ValueEquivalence.defEqPi` via `TypePatternMatcher.matchesUpToRenaming` (a match whose solutions form an injective atom renaming) |
+| §7 instantiation | `TypeChecker.checkFits` → `TypePatternMatcher.instantiates` (a match with watermark-closed solutions; tried in both directions, instantiating whichever side is the pattern) |
 
-## Appendix: known divergences (2026-06-11)
+The matcher is value-directed rather than pattern-directed: it walks the *opened* pattern value (capture
+atoms embedded in rigid structure) against the actual type, which realizes the section 5 rules without a
+separate pattern interpreter — a capture's declared type travels as its atom's type, so [App] step 3's
+telescope classification happens at `linkCapture`, and transparent heads are matched at whatever shape
+their expansion presents. Failures surface as `TypeMismatch`.
+
+## Appendix B: known divergences (2026-06-11)
+
+M1 is implemented by the directional matcher (`TypePatternMatcher`); the general unifier no longer runs at
+binding sites, and in particular the Interpreter's application path performs no unification. §7 is
+implemented as specified: `defEqPi` is α-equivalence (so conversion is transitive), and `checkFits` admits
+directional instantiation of whichever side is the pattern. The only remaining mutual-flex Pi relation is
+`tryRelatePiBinders`/`tryUnifyPis` inside the *unification* dispatch, which is no longer reachable from
+pattern matching or definitional equality — its remaining callers (match-branch refinement, instance
+search) are genuinely unification features. Remaining divergences:
 
 1. **S5 is not checked at elaboration.** `(n: Nat) -> $B of Eq(n, n)` elaborates (the constraint resolves
    `n` into the Pi binder scope) and then crashes at declaration checking with a raw `n#1 not found`.
@@ -255,6 +344,18 @@ and by V-solved (capture-exporting positions reject arguments whose types leave 
 3. **Pretty-printing does not round-trip**: pattern Pis print elided anonymous binders (`Nat -> $B`), which
    the parser only accepts in `(name: ...)` binder form.
 
-(Resolved 2026-06-11: V-closed was previously enforced only against the pattern's own Pi-spine binder
-variables, letting solutions capture transients from the actual side's patterns or from nested-domain
-unification. It is now the watermark check in `solveOpenedCaptures`.)
+Resolved earlier on this branch:
+
+- *V-closed under-enforcement* (2026-06-11): previously only the pattern's own Pi-spine binder variables
+  were forbidden; now the watermark check in `solveOpenedCaptures` covers every match-local variable.
+- *Unification at binding sites* (2026-06-11): M1 previously ran `ValueEquivalence.unify` restricted to the
+  capture atoms. The matcher replaced it; with that, the actual side is skolemized (its pattern type can no
+  longer be instantiated to satisfy the expected pattern's rigid structure — such programs now need an
+  explicit eta-wrapper), the [CC] classification is fused into assignment instead of a separate constraint
+  pass, match failures surface as `TypeMismatch` rather than `UnificationFailed`, and non-matchable shapes
+  are rejected at declaration (D3) instead of failing at every use site.
+- *Mutual-flex pattern-Pi equality* (2026-06-11): `defEqPi` previously unified both sides' openings with
+  both capture sets refinable — coarser than α-equivalence and non-transitive (`Vec($A, zero) -> X` equaled
+  both `Vec($B, $m) -> X` and, through it, `Vec(Nat, one) -> X`). It now requires an injective capture
+  renaming; pattern types with flexibility in different places are unequal, and the useful crossings are
+  carried by `checkFits` instantiation instead.

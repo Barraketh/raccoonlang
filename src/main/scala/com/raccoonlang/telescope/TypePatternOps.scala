@@ -224,11 +224,29 @@ object TypePatternOps {
     val resType = compileType(checkedPattern)
     TypeChecker.assertType(Interpreter.evalTypeTerm(resType, checkedEnv))
     val checkedBinder = ElabAst.Binder(binder.localRef, checkedPattern, binder.span, binder.isInstance)
+    val vBinder = VBinder(binder.localRef, checkedPattern, resType, captures, binder.isInstance, binder.familyParamIdx)
+    if (captures.nonEmpty) validateMatchable(vBinder, env, binder.span)
 
-    (
-      VBinder(binder.localRef, checkedPattern, resType, captures, binder.isInstance, binder.familyParamIdx),
-      checkedBinder
-    )
+    (vBinder, checkedBinder)
+  }
+
+  /**
+   * Declaration-time matchability: a pattern must be able to match an actual type presented exactly as the
+   * pattern's own opening. Matching the pattern against an independent fresh opening of itself (an α-renamed
+   * copy) exercises every rule of `TypePatternMatcher` on the pattern's shape; failure means some capture
+   * sits in a position the matcher cannot traverse (under a stuck match, a non-trivial level expression, a
+   * non-pattern application spine), so no argument type could ever determine it.
+   */
+  private def validateMatchable(binder: VBinder, env: Env, span: Span): Unit = {
+    val opened = openBinderPattern(env, binder)
+    val probe = openBinderPattern(env, binder)
+    try {
+      TypePatternMatcher.matchBinderPattern(opened, probe.value, env.normalizers)
+      ()
+    } catch {
+      case err: TypeError =>
+        throw UnmatchablePattern(PrettyPrinter.printElabTypePattern(binder.ty), err.msg, Some(span))
+    }
   }
 
   def toVBinder(binder: ElabAst.Binder): VBinder = {
@@ -338,41 +356,6 @@ object TypePatternOps {
   private def captureDeps(env: Env, captures: Vector[VCapture]): DepSet =
     captures.foldLeft(DepSet.empty) { case (deps, capture) => deps ++ env(capture.localRef).synDeps }
 
-  private def solveTypePatternConstraints(
-      pattern: ElabAst.TypePattern,
-      env: Env,
-      eqStore: EqStore,
-      normalizerMap: Normalizers.NormalizerMap
-  ): EqStore = {
-    var curEqStore = eqStore
-
-    def loop(pattern: ElabAst.TypePattern): Unit =
-      pattern match {
-        case EPattern.Type(_)       =>
-        case EPattern.Capture(_, _) =>
-        case EPattern.App(_, args, _) =>
-          args.foreach(loop)
-        case EPattern.Pi(binders, out, _, _) =>
-          binders.foreach(binder => loop(binder.ty))
-          loop(out)
-        case EPattern.ConstrainedCapture(ref, constraint, _) =>
-          loop(constraint)
-          val materializedEnv = ValueOps.materializeEnv(env, curEqStore)
-          val originalCapture = env(ref)
-          val capture = materializedEnv(ref)
-          val constraintValue = ValueOps.materialize(originalCapture.tpe, curEqStore)
-          curEqStore = ValueEquivalence.tryUnify(constraintValue, capture.tpe, curEqStore, normalizerMap) match {
-            case Right(nextEqStore) => nextEqStore
-            case Left(_) =>
-              TypeChecker.checkFits(capture.tpe, constraintValue, normalizerMap)
-              curEqStore
-          }
-      }
-
-    loop(pattern)
-    curEqStore
-  }
-
   private def isUnsolvedCapture(before: Value, after: Value): Boolean =
     (before, after) match {
       case (Var(_, beforeId, _), Var(_, afterId, _)) => beforeId == afterId
@@ -385,13 +368,11 @@ object TypePatternOps {
       actual: Value,
       normalizerMap: Normalizers.NormalizerMap
   ): (Env, Value) = {
-    // Everything created from here on (Pi binders opened while unifying under arrows, the actual type's own
-    // pattern captures, constraint-pass variables) is local to this match: ids are monotonic, so anything
-    // above the watermark must not survive into a capture solution.
+    // Everything created from here on (Pi binders opened while matching under arrows, the actual type's own
+    // pattern skolems) is local to this match: ids are monotonic, so anything above the watermark must not
+    // survive into a capture solution.
     val solveWatermark = FreshVar.currentId
-    val typeEqStore =
-      ValueEquivalence.unify(opened.value, actual.tpe, EqStore.empty.allow(opened.captureDeps), normalizerMap)
-    val eqStore = solveTypePatternConstraints(binder.ty, opened.env, typeEqStore, normalizerMap)
+    val eqStore = TypePatternMatcher.matchBinderPattern(opened, actual.tpe, normalizerMap)
     val materializedEnv = ValueOps.materializeEnv(opened.env, eqStore)
 
     binder.captures.foreach { capture =>

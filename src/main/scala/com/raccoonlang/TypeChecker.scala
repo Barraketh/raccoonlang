@@ -3,7 +3,7 @@ package com.raccoonlang
 import com.raccoonlang.Interpreter._
 import com.raccoonlang.Value._
 import com.raccoonlang.ValueQuote.{quoteContext, quoteTerm, quoteType}
-import com.raccoonlang.telescope.BinderOps
+import com.raccoonlang.telescope.{BinderOps, TypePatternMatcher}
 import com.raccoonlang.{CoreAst => CA, ElabAst => EA}
 
 object TypeChecker {
@@ -22,8 +22,25 @@ object TypeChecker {
   }
 
   def checkFits(actual: Value, expected: Value, normalizerMap: Normalizers.NormalizerMap): Unit =
-    if (!ValueEquivalence.defEq(actual, expected, normalizerMap, propIrrelevant = true) && !sortLeq(actual, expected))
+    if (
+      !ValueEquivalence.defEq(actual, expected, normalizerMap, propIrrelevant = true) &&
+      !sortLeq(actual, expected) &&
+      !patternInstantiates(actual, expected, normalizerMap)
+    )
       throw TypeMismatch(expected, actual)
+
+  // Directional instantiation (docs/type-patterns.md section 7): a pattern-typed value fits a more specific
+  // Pi, and a value fits a pattern-typed expectation, when the pattern side matches the other side with
+  // closed solutions. Both directions instantiate the pattern; neither solves into the non-pattern side.
+  private def patternInstantiates(actual: Value, expected: Value, normalizerMap: Normalizers.NormalizerMap): Boolean =
+    (actual, expected) match {
+      case (actualPi: VPi, expectedPi: VPi) if actualPi.binders.length == expectedPi.binders.length =>
+        (hasPatternBinders(actualPi) && TypePatternMatcher.instantiates(actualPi, expectedPi, normalizerMap)) ||
+        (hasPatternBinders(expectedPi) && TypePatternMatcher.instantiates(expectedPi, actualPi, normalizerMap))
+      case _ => false
+    }
+
+  private def hasPatternBinders(pi: VPi): Boolean = pi.binders.exists(_.captures.nonEmpty)
 
   def checkType(value: Value, tyVal: Value, normalizerMap: Normalizers.NormalizerMap): Unit =
     checkFits(value.tpe, tyVal, normalizerMap)

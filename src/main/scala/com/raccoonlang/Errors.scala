@@ -35,6 +35,7 @@ object TypeError {
     case e: InductiveTypeNotASort           => e.copy(span = Some(sp))
     case e: PatternCaptureNeedsExpectedType => e.copy(span = Some(sp))
     case e: PatternCaptureEscapesScope      => e.copy(span = Some(sp))
+    case e: UnmatchablePattern              => e.copy(span = Some(sp))
     case e: PropEliminationRestricted       => e.copy(span = Some(sp))
     case e: WTF                             => e.copy(span = Some(sp))
     case e: InvalidStruct                   => e.copy(span = Some(sp))
@@ -169,6 +170,10 @@ final case class PatternCaptureNeedsExpectedType(name: String, span: Option[Span
 final case class PatternCaptureEscapesScope(name: String, span: Option[Span] = None) extends TypeError {
   override def msg: String =
     s"Pattern capture $$$name solves to a value that mentions variables bound inside the matched type"
+}
+
+final case class UnmatchablePattern(pattern: String, reason: String, span: Option[Span] = None) extends TypeError {
+  override def msg: String = s"Type pattern $pattern is not matchable: $reason"
 }
 
 final case class WTF(msg: String, span: Option[Span] = None) extends TypeError

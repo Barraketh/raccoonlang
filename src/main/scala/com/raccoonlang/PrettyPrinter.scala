@@ -207,7 +207,7 @@ object PrettyPrinter {
     pt(tt)
   }
 
-  private def printElabTypePattern(tp: ElabAst.TypePattern): String = {
+  def printElabTypePattern(tp: ElabAst.TypePattern): String = {
     def pt(t: ElabAst.TypePattern): String = t match {
       case ElabAst.TypePattern.Type(term) => printElabTypeTerm(term)
       case ElabAst.TypePattern.App(fn, args, _) =>

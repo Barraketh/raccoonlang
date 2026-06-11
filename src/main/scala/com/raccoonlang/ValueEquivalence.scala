@@ -1,7 +1,7 @@
 package com.raccoonlang
 
 import com.raccoonlang.Value._
-import com.raccoonlang.telescope.TypePatternOps
+import com.raccoonlang.telescope.{TypePatternMatcher, TypePatternOps}
 
 object ValueEquivalence {
   private type Failed = (Value, Value)
@@ -29,6 +29,13 @@ object ValueEquivalence {
       normalizerMap: Normalizers.NormalizerMap
   ): Either[(Value, Value), EqStore] =
     Unify.tryUnify(v1, v2, meta)(normalizerMap)
+
+  private[raccoonlang] def normalizerFor(
+      v1: Value,
+      v2: Value,
+      normalizerMap: Normalizers.NormalizerMap
+  ): Value => Value =
+    DefEq.getNormalizerF(v1, v2)(normalizerMap)
 
   private def tryRelatePiBinders(pi1: VPi, pi2: VPi, eqStore: EqStore)(implicit
       normalizerMap: Normalizers.NormalizerMap
@@ -70,18 +77,51 @@ object ValueEquivalence {
   }
 
   private object DefEq {
+    // Pattern binders compare by α-equivalence (docs/type-patterns.md section 7): captures must correspond
+    // by position (a pure renaming), so where flexibility lies is part of the type and equality stays
+    // transitive. Using a pattern type at a more specific Pi is not equality but directional instantiation,
+    // handled at the fit sites (TypeChecker.checkFits).
     private def defEqPi(pi1: VPi, pi2: VPi)(implicit
         normalizerMap: Normalizers.NormalizerMap,
         propIrrelevant: Boolean
-    ): Option[Vector[Value]] =
-      tryRelatePiBinders(pi1, pi2, EqStore.empty) match {
-        case Right(related) =>
-          val out1 = ValueOps.materialize(pi1.codomain(related.env1), related.eqStore)
-          val out2 = ValueOps.materialize(pi2.codomain(related.env2), related.eqStore)
-          if (defEq(out1, out2)) Some(related.vars.map(arg => ValueOps.materialize(arg, related.eqStore)))
+    ): Option[Vector[Value]] = {
+      if (pi1.binders.zip(pi2.binders).exists { case (b1, b2) => b1.isInstance != b2.isInstance })
+        return None
+
+      var env1 = pi1.env
+      var env2 = pi2.env
+      val sharedVars = Vector.newBuilder[Value]
+
+      pi1.binders.zip(pi2.binders).foreach { case (binder1, binder2) =>
+        val opened1 = TypePatternOps.openBinderPattern(env1, binder1)
+        val opened2 = TypePatternOps.openBinderPattern(env2, binder2)
+
+        val renaming =
+          if (binder1.captures.isEmpty && binder2.captures.isEmpty) {
+            if (defEq(opened1.value, opened2.value)) Some(EqStore.empty) else None
+          } else if (binder1.captures.nonEmpty && binder2.captures.nonEmpty)
+            TypePatternMatcher.matchesUpToRenaming(opened1, opened2, normalizerMap)
           else None
-        case Left(_) => None
+
+        renaming match {
+          case None => return None
+          case Some(store) =>
+            val shared = FreshVar.freshVar(binder1.name, ValueOps.materialize(opened1.value, store))
+            val instanceKey1 =
+              if (binder1.isInstance) Some(InstanceSearch.instanceKey(binder1.name, shared))
+              else None
+            val instanceKey2 =
+              if (binder2.isInstance) Some(InstanceSearch.instanceKey(binder2.name, shared))
+              else None
+            env1 = ValueOps.materializeEnv(opened1.env, store).putLocal(binder1.localRef, shared, instanceKey1)
+            env2 = ValueOps.materializeEnv(opened2.env, store).putLocal(binder2.localRef, shared, instanceKey2)
+            sharedVars += shared
+        }
       }
+
+      if (defEq(pi1.codomain(env1), pi2.codomain(env2))) Some(sharedVars.result())
+      else None
+    }
 
     private def defEqLamId(id1: ValueId, id2: ValueId)(implicit
         normalizerMap: Normalizers.NormalizerMap,
