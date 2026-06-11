@@ -82,7 +82,39 @@ class QuotientTests extends munit.FunSuite {
           |def motive (q: Quot(Nat, Rel)): Prop := True
           |
           |{
-          |  Quot.inductionOn(Quot.mk(Nat, Rel, Nat.zero), motive, fun (a: Nat): motive(Quot.mk(Nat, Rel, a)) => True.intro)
+          |  Quot.inductionOn(
+          |    Quot.mk(Nat, Rel, Nat.zero),
+          |    motive,
+          |    fun (a: Nat): motive(Quot.mk(Nat, Rel, a)) => True.intro
+          |  )
+          |}
+          |""".stripMargin
+    )
+
+    assertEquals(toShape(res), SConst("True.intro"))
+  }
+
+  test("Quot eliminators reduce on generic Quot.mk in proof types") {
+    val res = runProgram(
+      natPrelude +
+        """
+          |def liftMk
+          |  (a: Nat)
+          |  (f: Nat -> Nat)
+          |  (sound: (x: Nat) -> (y: Nat) -> Rel(x, y) -> Eq(f(x), f(y)))
+          |  : Eq(Quot.lift(Quot.mk(Nat, Rel, a), Nat, f, sound), f(a)) :=
+          |  Eq.refl(f(a))
+          |
+          |def motive (q: Quot(Nat, Rel)): Prop := True
+          |
+          |def indMk
+          |  (a: Nat)
+          |  (mkCase: (x: Nat) -> motive(Quot.mk(Nat, Rel, x)))
+          |  : Eq(Quot.ind(Quot.mk(Nat, Rel, a), motive, mkCase), mkCase(a)) :=
+          |  Eq.refl(mkCase(a))
+          |
+          |{
+          |  True.intro
           |}
           |""".stripMargin
     )

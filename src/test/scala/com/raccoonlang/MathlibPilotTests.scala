@@ -48,4 +48,8 @@ class MathlibPilotTests extends munit.FunSuite {
   test("Setoid and quotient wrappers typecheck") {
     typecheckModule("MathlibPilot/SetoidQuotient.rac")
   }
+
+  test("Quotient API lemmas and examples typecheck") {
+    typecheckModule("MathlibPilot/QuotientApi.rac")
+  }
 }

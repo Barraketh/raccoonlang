@@ -1,0 +1,172 @@
+import MathlibPilot.SetoidQuotient
+
+namespace MathlibPilot {
+  namespace Quotient {
+    // Lean:
+    // def liftOn (q : Quotient s) (f : A -> B)
+    //     (sound : forall a b, s.r a b -> f a = f b) : B :=
+    //   Quotient.lift f sound q
+    def liftOn
+      (s: Setoid($A))
+      (q: Quotient(s))
+      (B: Sort($v))
+      (f: A -> B)
+      (sound: (a: A) -> (b: A) -> Setoid.r(s)(a, b) -> Eq(f(a), f(b)))
+      : B :=
+      lift(s, q, B, f, sound)
+
+    // Lean:
+    // theorem liftOn_mk (f : A -> B) (sound : forall a b, s.r a b -> f a = f b) :
+    //   liftOn (mk s a) f sound = f a :=
+    //   rfl
+    def liftOnMk
+      (s: Setoid($A))
+      (a: A)
+      (B: Sort($v))
+      (f: A -> B)
+      (sound: (x: A) -> (y: A) -> Setoid.r(s)(x, y) -> Eq(f(x), f(y)))
+      : Eq(liftOn(s, mk(s, a), B, f, sound), f(a)) :=
+      Eq.refl(f(a))
+
+    // Lean:
+    // theorem liftOn_sound (h : s.r a b) :
+    //   liftOn (mk s a) f sound = liftOn (mk s b) f sound :=
+    //   sound a b h
+    def liftOnSound
+      (s: Setoid($A))
+      (B: Sort($v))
+      (f: A -> B)
+      (sound: (x: A) -> (y: A) -> Setoid.r(s)(x, y) -> Eq(f(x), f(y)))
+      (h: Setoid.rel(s, $a of A, $b of A))
+      : Eq(liftOn(s, mk(s, a), B, f, sound), liftOn(s, mk(s, b), B, f, sound)) :=
+      sound(a, b, h)
+
+    // Lean:
+    // def inductionOn (q : Quotient s) (motive : Quotient s -> Prop)
+    //     (mk : forall a, motive (mk s a)) : motive q :=
+    //   Quotient.ind mk q
+    def inductionOn
+      (s: Setoid($A))
+      (q: Quotient(s))
+      (motive: Quotient(s) -> Prop)
+      (mkCase: (a: A) -> motive(mk(s, a)))
+      : motive(q) :=
+      ind(s, q, motive, mkCase)
+
+    // Lean:
+    // theorem inductionOn_mk (motive : Quotient s -> Prop) (mk : forall a, motive (mk s a)) :
+    //   inductionOn (mk s a) motive mk = mk a :=
+    //   rfl
+    def inductionOnMk
+      (s: Setoid($A))
+      (a: A)
+      (motive: Quotient(s) -> Prop)
+      (mkCase: (x: A) -> motive(mk(s, x)))
+      : Eq(inductionOn(s, mk(s, a), motive, mkCase), mkCase(a)) :=
+      Eq.refl(mkCase(a))
+
+    // Lean:
+    // theorem exact (h : mk s a = mk s b) : s.r a b
+    def exact
+      (s: Setoid($A))
+      (p: Eq(mk(s, $a of A), mk(s, $b of A)))
+      : Setoid.rel(s, a, b) :=
+      Eq.subst(
+        p,
+        Level.zero,
+        fun (q: Quotient(s)): Prop =>
+          liftOn(
+            s,
+            q,
+            Prop,
+            fun (x: A): Prop => Setoid.rel(s, a, x),
+            fun (x: A)(y: A)(hxy: Setoid.rel(s, x, y)): Eq(Setoid.rel(s, a, x), Setoid.rel(s, a, y)) =>
+              propext(
+                Iff.intro(
+                  Setoid.rel(s, a, x),
+                  Setoid.rel(s, a, y),
+                  fun (hax: Setoid.rel(s, a, x)): Setoid.rel(s, a, y) =>
+                    Setoid.trans(s, hax, hxy),
+                  fun (hay: Setoid.rel(s, a, y)): Setoid.rel(s, a, x) =>
+                    Setoid.trans(s, hay, Setoid.symm(s, hxy))
+                )
+              )
+          ),
+        Setoid.refl(s, a)
+      )
+  }
+
+  namespace QuotientApiExamples {
+    def natEqSetoid : Setoid(Nat) :=
+      Setoid.eqSetoid(Nat)
+
+    def zeroClass : Quotient(natEqSetoid) :=
+      Quotient.mk(natEqSetoid, Nat.zero)
+
+    def natIdSound (a: Nat)(b: Nat)(h: Setoid.rel(natEqSetoid, a, b)): Eq(a, b) :=
+      h
+
+    def liftOnZero : Nat :=
+      Quotient.liftOn(
+        natEqSetoid,
+        zeroClass,
+        Nat,
+        fun (n: Nat): Nat => n,
+        natIdSound
+      )
+
+    def liftOnZeroEq : Eq(liftOnZero, Nat.zero) :=
+      Quotient.liftOnMk(
+        natEqSetoid,
+        Nat.zero,
+        Nat,
+        fun (n: Nat): Nat => n,
+        natIdSound
+      )
+
+    def exactZero : Eq(Nat.zero, Nat.zero) :=
+      Quotient.exact(natEqSetoid, Quotient.sound(natEqSetoid, Eq.refl(Nat.zero)))
+
+    def liftOnRespectsSound : Eq(
+      Quotient.liftOn(natEqSetoid, zeroClass, Nat, fun (n: Nat): Nat => n, natIdSound),
+      Quotient.liftOn(
+        natEqSetoid,
+        Quotient.mk(natEqSetoid, Nat.zero),
+        Nat,
+        fun (n: Nat): Nat => n,
+        natIdSound
+      )
+    ) :=
+      Quotient.liftOnSound(
+        natEqSetoid,
+        Nat,
+        fun (n: Nat): Nat => n,
+        natIdSound,
+        Eq.refl(Nat.zero)
+      )
+
+    def indOnZero : True :=
+      Quotient.inductionOn(
+        natEqSetoid,
+        zeroClass,
+        fun (q: Quotient(natEqSetoid)): Prop => True,
+        fun (n: Nat): True => True.intro
+      )
+
+    def indOnMkZero : Eq(
+      Quotient.inductionOn(
+        natEqSetoid,
+        Quotient.mk(natEqSetoid, Nat.zero),
+        fun (q: Quotient(natEqSetoid)): Prop => True,
+        fun (n: Nat): True => True.intro
+      ),
+      True.intro
+    ) :=
+      Quotient.inductionOnMk(
+        natEqSetoid,
+        Nat.zero,
+        fun (q: Quotient(natEqSetoid)): Prop => True,
+        fun (n: Nat): True => True.intro
+      )
+  }
+}

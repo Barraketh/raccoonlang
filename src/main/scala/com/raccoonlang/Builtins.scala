@@ -73,8 +73,8 @@ private object Builtins {
         Level.max(args.map(arg => Interpreter.getLevel(arg)))
       },
       MkName -> Constructor(Vector(0, 1)),
-      LiftName -> Native(runLift),
-      IndName -> Native(runInd)
+      LiftName -> Native(runLift, isStable = false),
+      IndName -> Native(runInd, isStable = false)
     )
 
   def instantiate(name: String, tpe: Value, span: Span): Value =
