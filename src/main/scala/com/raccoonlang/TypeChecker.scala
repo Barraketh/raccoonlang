@@ -62,7 +62,7 @@ object TypeChecker {
   private def checkApplyValue(fn: Value, args: Vector[Value], env: Env): Value =
     fn.tpe match {
       case pi: VPi =>
-        BinderOps.checkAndInstantiate(pi.binders, pi.env, args, env.normalizers)
+        BinderOps.checkAndInstantiate(pi.binders, pi.env, args, env, env.normalizers)
         Interpreter.evalApply(fn, args, env)
       case _ =>
         val selectorName =

@@ -173,7 +173,7 @@ object TypePatternOps {
             val argValue = Interpreter.evalTerm(compileType(argPattern), patternEnv)
             telescopeEnv =
               if (bindAsOpened) bindOpenedAsExpected(opened, paramBinder, argValue)
-              else bindOpenedValueAndCheck(opened, paramBinder, argValue, patternEnv.normalizers)
+              else bindOpenedValueAndCheck(opened, paramBinder, argValue, patternEnv, patternEnv.normalizers)
             argPatterns += argPattern
           }
 
@@ -231,17 +231,17 @@ object TypePatternOps {
   }
 
   /**
-   * Declaration-time matchability: a pattern must be able to match an actual type presented exactly as the
-   * pattern's own opening. Matching the pattern against an independent fresh opening of itself (an α-renamed
-   * copy) exercises every rule of `TypePatternMatcher` on the pattern's shape; failure means some capture
-   * sits in a position the matcher cannot traverse (under a stuck match, a non-trivial level expression, a
-   * non-pattern application spine), so no argument type could ever determine it.
+   * Declaration-time matchability: a pattern must be able to match an actual type presented exactly as the pattern's
+   * own opening. Matching the pattern against an independent fresh opening of itself (an α-renamed copy) exercises
+   * every rule of `TypePatternMatcher` on the pattern's shape; failure means some capture sits in a position the
+   * matcher cannot traverse (under a stuck match, a non-trivial level expression, a non-pattern application spine), so
+   * no argument type could ever determine it.
    */
   private def validateMatchable(binder: VBinder, env: Env, span: Span): Unit = {
     val opened = openBinderPattern(env, binder)
     val probe = openBinderPattern(env, binder)
     try {
-      TypePatternMatcher.matchBinderPattern(opened, probe.value, env.normalizers)
+      TypePatternMatcher.matchBinderPattern(opened, probe.value, env.normalizers, opened.env)
       ()
     } catch {
       case err: TypeError =>
@@ -286,7 +286,7 @@ object TypePatternOps {
       }
       calleeEnv =
         if (bindAsOpened) bindOpenedAsExpected(opened, binder, argValue)
-        else bindOpenedValue(opened, binder, argValue)
+        else bindOpenedValue(opened, binder, argValue, callerEnv)
       argValues += argValue
     }
 
@@ -366,13 +366,14 @@ object TypePatternOps {
       opened: OpenedBinderPattern,
       binder: VBinder,
       actual: Value,
+      argEnv: Env,
       normalizerMap: Normalizers.NormalizerMap
   ): (Env, Value) = {
     // Everything created from here on (Pi binders opened while matching under arrows, the actual type's own
     // pattern skolems) is local to this match: ids are monotonic, so anything above the watermark must not
     // survive into a capture solution.
     val solveWatermark = FreshVar.currentId
-    val eqStore = TypePatternMatcher.matchBinderPattern(opened, actual.tpe, normalizerMap)
+    val eqStore = TypePatternMatcher.matchBinderPattern(opened, actual.tpe, normalizerMap, argEnv)
     val materializedEnv = ValueOps.materializeEnv(opened.env, eqStore)
 
     binder.captures.foreach { capture =>
@@ -390,20 +391,28 @@ object TypePatternOps {
     (materializedEnv, ValueOps.materialize(opened.value, eqStore))
   }
 
-  private def bindOpenedValue(opened: OpenedBinderPattern, binder: VBinder, actual: Value): Env =
+  private def bindOpenedValue(opened: OpenedBinderPattern, binder: VBinder, actual: Value, argEnv: Env): Env =
     if (binder.captures.isEmpty) opened.env.putLocal(binder.localRef, actual)
     else {
-      val (openedEnv, expectedTy) = solveOpenedCaptures(opened, binder, actual, opened.env.normalizers)
+      val (openedEnv, expectedTy) = solveOpenedCaptures(opened, binder, actual, argEnv, opened.env.normalizers)
       openedEnv.putLocal(binder.localRef, Value.ascribe(actual, expectedTy))
     }
 
   private def bindOpenedAsExpected(opened: OpenedBinderPattern, binder: VBinder, actual: Value): Env =
     opened.env.putLocal(binder.localRef, Value.ascribe(actual, opened.value))
 
-  def bindValue(env: Env, binder: VBinder, actual: Value): Env = {
+  /**
+   * `argEnv` is the environment the actual argument values live in. It is consulted only when solving captures from
+   * actual argument types: quoted higher-order solutions are expressed in it (their free variables are the argument's
+   * ambient locals, not the callee's). Pass the env in which `actual` was produced; callers without one (defEq's
+   * extensional comparison, termination checking) pass the callee env and conservatively cannot quote ambient-closing
+   * solutions.
+   */
+  def bindValue(env: Env, binder: VBinder, actual: Value, argEnv: Env): Env = {
     if (binder.captures.isEmpty) env.putLocal(binder.localRef, actual)
     else {
-      val (openedEnv, expectedTy) = solveOpenedCaptures(openBinderPattern(env, binder), binder, actual, env.normalizers)
+      val (openedEnv, expectedTy) =
+        solveOpenedCaptures(openBinderPattern(env, binder), binder, actual, argEnv, env.normalizers)
       openedEnv.putLocal(binder.localRef, Value.ascribe(actual, expectedTy))
     }
   }
@@ -412,11 +421,12 @@ object TypePatternOps {
       opened: OpenedBinderPattern,
       binder: VBinder,
       actual: Value,
+      argEnv: Env,
       normalizerMap: Normalizers.NormalizerMap
   ): Env = {
     val (openedEnv, expectedTy) =
       if (binder.captures.isEmpty) (opened.env, opened.value)
-      else solveOpenedCaptures(opened, binder, actual, normalizerMap)
+      else solveOpenedCaptures(opened, binder, actual, argEnv, normalizerMap)
     TypeChecker.checkType(actual, expectedTy, normalizerMap)
     openedEnv.putLocal(binder.localRef, Value.ascribe(actual, expectedTy))
   }
@@ -425,8 +435,9 @@ object TypePatternOps {
       env: Env,
       binder: VBinder,
       actual: Value,
+      argEnv: Env,
       normalizerMap: Normalizers.NormalizerMap
   ): Env =
-    bindOpenedValueAndCheck(openBinderPattern(env, binder), binder, actual, normalizerMap)
+    bindOpenedValueAndCheck(openBinderPattern(env, binder), binder, actual, argEnv, normalizerMap)
 
 }

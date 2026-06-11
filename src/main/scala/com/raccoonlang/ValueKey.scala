@@ -133,7 +133,7 @@ object ValueKey {
     case Value.KernelObject    => tag(Tag.KernelObject)
     case Value.VConst(n, _, _) => mixString(tag(Tag.Const), n)
     case Value.Var(_, id, _)   => mixLong(tag(Tag.Var), id.toLong)
-    case Value.VApp(h, args, tpe, _) =>
+    case Value.VApp(h, args, tpe, _, _) =>
       val appKey = mixValues(mixKey(tag(Tag.App), h.key), args)
       h match {
         case _: Value.ConstructorHead => mixKey(appKey, tpe.key)

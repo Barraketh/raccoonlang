@@ -206,18 +206,28 @@ object Value {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
-  case class VApp(head: Value, args: Vector[Value], tpe: Value, blockerId: Option[VarId] = None)
-    extends Value
+  // `stuckBody` is the precomputed stuck result of a stable application: presentation re-folds the call as a
+  // spine, but unblocking must resume the original instantiation (which solved the binder captures in the
+  // call site's env) rather than re-running it. It never participates in equality or keys.
+  case class VApp(
+      head: Value,
+      args: Vector[Value],
+      tpe: Value,
+      blockerId: Option[VarId] = None,
+      stuckBody: Option[Value] = None
+  ) extends Value
     with UpdatableType {
     override lazy val synDeps: DepSet = {
       val res = DepSet.newBuilder
       res.unionInPlace(head.synDeps)
       args.foreach(v => res.unionInPlace(v.synDeps))
       res.unionInPlace(tpe.synDeps)
+      stuckBody.foreach(v => res.unionInPlace(v.synDeps))
       res.result()
     }
 
     require(args.nonEmpty || blockerId.isEmpty, "Blocked application requires at least one argument")
+    require(stuckBody.isEmpty || blockerId.nonEmpty, "A stuck body requires a blocked application")
     head match {
       case h: ConstructorHead =>
         require(blockerId.isEmpty, s"Constructor ${h.name} cannot be blocked")
@@ -323,6 +333,9 @@ object Value {
   sealed trait ConstType
   case class Inductive(meta: InductiveMeta) extends ConstType
   case object Symbol extends ConstType
+  // The named presentation of a stable definition stuck without a blocker. Distinguished from Symbol so the
+  // matcher can tell an annotation-induced spine from a genuinely opaque one (axioms, builtins).
+  case object StuckDef extends ConstType
 
   /**
    * Views over values.
@@ -334,8 +347,8 @@ object Value {
 
     def unapply(value: Value): Option[(Value, Vector[Value], Value, VarId)] =
       value match {
-        case VApp(head, args, tpe, Some(blockerId)) => Some((head, args, tpe, blockerId))
-        case _                                      => None
+        case VApp(head, args, tpe, Some(blockerId), _) => Some((head, args, tpe, blockerId))
+        case _                                         => None
       }
   }
 
@@ -344,8 +357,8 @@ object Value {
 
     def unapply(value: Value): Option[(ConstructorHead, Vector[Value], Value)] =
       value match {
-        case VApp(head: ConstructorHead, fields, tpe, None) => Some((head, fields, tpe))
-        case _                                              => None
+        case VApp(head: ConstructorHead, fields, tpe, None, _) => Some((head, fields, tpe))
+        case _                                                 => None
       }
   }
 
@@ -371,9 +384,9 @@ object Value {
   object ConstSpine {
     def unapply(value: Value): Option[(VConst, Vector[Value])] =
       value match {
-        case c: VConst                         => Some((c, Vector.empty))
-        case VApp(head: VConst, args, _, None) => Some((head, args))
-        case _                                 => None
+        case c: VConst                            => Some((c, Vector.empty))
+        case VApp(head: VConst, args, _, None, _) => Some((head, args))
+        case _                                    => None
       }
   }
 

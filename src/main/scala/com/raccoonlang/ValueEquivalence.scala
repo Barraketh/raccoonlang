@@ -359,7 +359,13 @@ object ValueEquivalence {
               Some(
                 tryLinkVar(
                   fn,
-                  ValueQuote.quoteLambda(materializedPi, materializedArgs, materializedOther, SyntheticSpan),
+                  ValueQuote.quoteLambda(
+                    materializedPi,
+                    materializedArgs,
+                    materializedOther,
+                    materializedPi.env,
+                    SyntheticSpan
+                  ),
                   typedMeta
                 )
               )
@@ -425,14 +431,14 @@ object ValueEquivalence {
               val res2 = Interpreter.runLam(ValueOps.materialize(l2, nextMeta).asInstanceOf[VLam], mappedVars)
               tryUnify(res1, res2, nextMeta)
           }
-        case (app @ VApp(fn: Var, _, _, _), other) =>
+        case (app @ VApp(fn: Var, _, _, _, _), other) =>
           trySolvePatternApp(app, fn, other, meta).getOrElse {
             other match {
               case otherApp: VApp if app.args.length == otherApp.args.length => tryUnifyApps(app, otherApp, meta)
               case _                                                         => Left((a, b))
             }
           }
-        case (other, app @ VApp(fn: Var, _, _, _)) =>
+        case (other, app @ VApp(fn: Var, _, _, _, _)) =>
           trySolvePatternApp(app, fn, other, meta).getOrElse {
             other match {
               case otherApp: VApp if otherApp.args.length == app.args.length => tryUnifyApps(otherApp, app, meta)

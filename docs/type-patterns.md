@@ -201,13 +201,25 @@ The rules, by case on `Q` (or argument pattern `P`):
   proceeds against whatever shape its expansion *presents* — `Set($A)` with `Set(A) = (x: A) -> Prop`
   matches by the [Pi] rule, not by spine decomposition.
 
+  Spine decomposition for *solving* applies only to **intrinsically rigid** heads: inductive and struct
+  constants, constructors, axioms and builtins, and neutral variables (including flex capture heads). A
+  spine that exists only as the presentation of a stuck `stable` definition — a re-folded blocked
+  application, or the named form of a definition stuck on an opaque scrutinee — is not decomposable;
+  captures inside one are rejected at declaration (D3). Pattern legality and match outcomes therefore never
+  depend on the `stable` annotation, which keeps its equality role only: capture-free presentation spines
+  are ordinary `defEq` leaves, where keys and normalizers see them as named spines.
+
 - **[Flex-spine]**: a capture in *head* position applied to pairwise-distinct rigid variables —
   `$F(x1, ..., xm)` arising from a transparent expansion, with each `xi` a binder variable — matches any
   actual piece `B` whose free variables are permitted at `F`'s scope: `F := λx1...xm. B`, the unique
   solution in the higher-order pattern fragment. This is higher-order *matching*, not unification: the head
   must be a capture, the spine must be distinct rigid variables, and the abstraction either exists uniquely
   or the rule does not apply. (`Subset($s of Set($A), $t of Set(A))` solves `s`, `t` this way: its expansion
-  presents `s(x)` and `t(x)` under the [Pi] rule's shared variable `x`.)
+  presents `s(x)` and `t(x)` under the [Pi] rule's shared variable `x`.) The abstraction is quoted in the
+  environment the matched value lives in (`argEnv`), so solutions may close over the call site's ambient
+  locals — `s := λx. r(x, a)` with `r`, `a` caller binders is a legitimate solution. When an abstraction
+  exists but cannot be quoted, the failure reason is carried into the eventual error rather than swallowed
+  by the fallback spine rule.
 
 - **[Pi]**: `match((y1: Q1)...(yk: Qk) -> Q0, A)`:
   1. `nf(A)` must be a `VPi` with exactly `k` binders and pointwise equal instance flags; otherwise fail.
@@ -359,3 +371,15 @@ Resolved earlier on this branch:
   both `Vec($B, $m) -> X` and, through it, `Vec(Nat, one) -> X`). It now requires an injective capture
   renaming; pattern types with flexibility in different places are unequal, and the useful crossings are
   carried by `checkFits` instantiation instead.
+- *`stable` presentation sensitivity* (2026-06-11): the matcher previously decomposed spines created by
+  `stable` re-folding, so marking or unmarking `stable` on a definition changed which patterns were legal
+  and which stuck call sites matched. Solving now requires intrinsically rigid heads (spec section 5), and
+  blocked stable applications carry their stuck body so unblocking *resumes* the original instantiation —
+  with captures solved once, in the call site's environment — instead of re-running it. `stable` affects
+  equality strength (normalizers, stuck-spine comparison) and printing only.
+
+One residual is documented rather than fixed: callers of binder instantiation that have no call site in
+hand — `defEq`'s extensional lambda comparison and the termination checker — pass the callee's own env as
+`argEnv` and therefore cannot quote solutions that close over ambient locals. Their failure mode is
+conservative (equality answers false; the quote reason is surfaced if a match fails), and their arguments
+are checker-internal fresh atoms, so the case is not believed constructible from source programs.

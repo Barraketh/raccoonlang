@@ -143,7 +143,7 @@ object ValueQuote {
 
       case VCtor(head, fields, tpe) => quoteCtor(head, fields, tpe, context, span)
 
-      case VApp(head, args, _, _) =>
+      case VApp(head, args, _, _, _) =>
         val fn = quoteAppHead(head, context, span)
         ElabAst.Term.App(fn, args.map(arg => quoteTerm(arg, context, span)), span)
 
@@ -161,10 +161,12 @@ object ValueQuote {
     }
   }
 
-  def quoteLambda(tpe: VPi, abstractedArgs: Vector[Value], body: Value, span: Span): VLam = {
+  // `argEnv` is the environment the abstraction's free variables live in — the env of the value being
+  // matched, not the Pi type's closure env. Quoting against anything else loses ambient locals.
+  def quoteLambda(tpe: VPi, abstractedArgs: Vector[Value], body: Value, argEnv: Env, span: Span): VLam = {
     if (tpe.binders.length != abstractedArgs.length) throw ArityMismatch(tpe.binders.length, abstractedArgs.length)
 
-    val opened = quotePiOpened(tpe, quoteContext(tpe.env), span)
+    val opened = quotePiOpened(tpe, quoteContext(argEnv), span)
     val binderRefs = opened.term.binders.map(_.localRef)
     val context = abstractedArgs.zip(binderRefs).foldLeft(opened.context) { case (curContext, (arg, ref)) =>
       val term = ElabAst.Term.LocalRef(ref, span)
@@ -172,7 +174,12 @@ object ValueQuote {
     }
     val bodyTerm = quoteTerm(body, context, span)
     val lamTerm = ElabAst.Term.Lam(opened.term, bodyTerm, span, None, isStable = false, recursiveSelf = None)
-    Interpreter.evalLam(lamTerm, tpe, tpe.env)
+    val closureTpe =
+      Interpreter.evalTerm(opened.term, argEnv) match {
+        case pi: VPi => pi
+        case other   => throw WTF(s"Quoted lambda type evaluated to non-Pi type $other", Some(span))
+      }
+    Interpreter.evalLam(lamTerm, closureTpe, argEnv)
   }
 
   private def quoteAppHead(value: Value, context: QuoteContext, span: Span): ElabAst.Term =

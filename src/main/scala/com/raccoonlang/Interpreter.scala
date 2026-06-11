@@ -38,6 +38,10 @@ object Interpreter {
     v0 match {
       case Blocked(blockerId) if eqStore.subst.contains(blockerId) =>
         v0 match {
+          // A stable presentation spine: resume the stuck body computed at the original call site rather
+          // than re-running binder instantiation, which would re-solve captures without the call site's env.
+          case VApp(_, _, _, Some(_), Some(stuckBody)) =>
+            resolveInEqStore(ValueOps.materialize(stuckBody, eqStore), eqStore)
           case VBlockedApp(h, args, tpe, _) =>
             val h0 = ValueOps.materialize(resolveInEqStore(h, eqStore), eqStore)
             val materializedArgs = args.map(arg => ValueOps.materialize(arg, eqStore))
@@ -60,8 +64,8 @@ object Interpreter {
     }
   }
 
-  private def getEnvWithArgs(fnTpe: VPi, baseEnv: Env, args: Vector[Value]): Env =
-    BinderOps.instantiateFull(fnTpe.binders, baseEnv, args)
+  private def getEnvWithArgs(fnTpe: VPi, baseEnv: Env, args: Vector[Value], argEnv: Env): Env =
+    BinderOps.instantiateFull(fnTpe.binders, baseEnv, args, argEnv)
 
   private def captureValues(env: Env, capturedIndexes: RoaringBitmap): Vector[Value] = {
     val values = Vector.newBuilder[Value]
@@ -108,24 +112,24 @@ object Interpreter {
     }
   }
 
-  def evalApply(fn: Value, vArgs: Vector[Value]): Value = {
+  private def evalApplyWithClosure(fn: Value, vArgs: Vector[Value], argEnv: Env): Value = {
     require(vArgs.nonEmpty, "evalApply requires at least one argument")
 
     fn.tpe match {
       case pi: VPi =>
-        val envWithArgs = getEnvWithArgs(pi, pi.env, vArgs)
+        val envWithArgs = getEnvWithArgs(pi, pi.env, vArgs, argEnv)
         fn match {
           case lam @ VLam(_, _, isStable, _) =>
-            val res = runLam(lam, vArgs)
+            val res = runLam(lam, vArgs, argEnv)
             (isStable, res) match {
               case (true, blocked @ Blocked(blockerId)) =>
                 blocked match {
                   case VBlockedApp(VLam(_, _, true, _), _, _, _) => res
-                  case _                                         => VBlockedApp(fn, vArgs, blocked.tpe, blockerId)
+                  case _ => VApp(fn, vArgs, blocked.tpe, Some(blockerId), stuckBody = Some(blocked))
                 }
               case (true, stuck: NeutralThunk) if stuck.blockerId.isEmpty =>
                 lam.id match {
-                  case ValueId.Const(name) => VApp(VConst(name, Symbol, lam.tpe), vArgs, stuck.tpe)
+                  case ValueId.Const(name) => VApp(VConst(name, StuckDef, lam.tpe), vArgs, stuck.tpe)
                   case _                   => res
                 }
               case _ => res
@@ -141,9 +145,15 @@ object Interpreter {
     }
   }
 
+  def evalApply(fn: Value, vArgs: Vector[Value]): Value =
+    fn.tpe match {
+      case pi: VPi => evalApplyWithClosure(fn, vArgs, pi.env)
+      case _       => throw CannotApplyNonFunction(fn.tpe)
+    }
+
   def evalApply(fn: Value, vArgs: Vector[Value], env: Env): Value =
     fn.tpe match {
-      case _: VPi => evalApply(fn, vArgs)
+      case _: VPi => evalApplyWithClosure(fn, vArgs, env)
       case InductiveFamilyValue(family) if family.meta.isStruct =>
         val applyField = evalApply(env(s"${family.head.name}.apply"), Vector(fn), env)
         evalApply(applyField, vArgs, env)
@@ -169,11 +179,20 @@ object Interpreter {
     VLam(vpi, id, l.isStable, LamBody.Core(l, RuntimeEnv.closeForEval(env, capturedIndexes)))
   }
 
-  def runLam(lam: VLam, args: Vector[Value]): Value = {
+  private def defaultLamArgEnv(lam: VLam): Env =
+    lam.body match {
+      case LamBody.Native(_, nativeEnv, _) => nativeEnv
+      case LamBody.Core(_, coreEnv)        => coreEnv
+    }
+
+  def runLam(lam: VLam, args: Vector[Value]): Value =
+    runLam(lam, args, defaultLamArgEnv(lam))
+
+  def runLam(lam: VLam, args: Vector[Value], argEnv: Env): Value = {
     lam.body match {
       case LamBody.Native(run, nativeEnv, _) => run(args, nativeEnv)
       case LamBody.Core(term, coreEnv) =>
-        val bodyEnv = getEnvWithArgs(lam.tpe, coreEnv, args)
+        val bodyEnv = getEnvWithArgs(lam.tpe, coreEnv, args, argEnv)
 
         // Update env with recursive reference
         val recurEnv = term.recursiveSelf match {

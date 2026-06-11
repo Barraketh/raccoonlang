@@ -49,7 +49,7 @@ object TerminationChecker {
         val quoted = initialMeasure.residual
         (args, nativeEnv) => {
           val currentMeasure = Interpreter.evalTerm(quoted, nativeEnv)
-          val callEnv = BinderOps.instantiateFull(vpi.binders, vpi.env, args)
+          val callEnv = BinderOps.instantiateFull(vpi.binders, vpi.env, args, vpi.env)
           val candidate = Interpreter.evalTerm(quoted, callEnv)
           if (!isStrictSubterm(candidate, currentMeasure, nativeEnv.normalizers))
             throw NonDecreasingRecursiveCall(name, "measure does not structurally decrease", None)
@@ -63,7 +63,7 @@ object TerminationChecker {
       LamBody.Native(
         (args, nativeEnv) => {
           checkDecrease(args, nativeEnv)
-          val envWithArgs = BinderOps.instantiateFull(vpi.binders, vpi.env, args)
+          val envWithArgs = BinderOps.instantiateFull(vpi.binders, vpi.env, args, vpi.env)
           val resultTy = vpi.codomain(envWithArgs)
           VApp(VConst(name, Symbol, vpi), args, resultTy)
         },

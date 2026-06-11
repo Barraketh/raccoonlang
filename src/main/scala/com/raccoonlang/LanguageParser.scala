@@ -198,10 +198,9 @@ object LanguageParser {
   private def typePatternPi(implicit sourceId: Option[SourceId]): Parser[TypePattern.Pi] =
     (param ~ skipAllWs ~ sym("->") ~/ skipAllWs ~ topLevelTypePattern)
       .flatSpanned(sourceId)
-      .map {
-        case (binder, out, span) =>
-          val (tailBinders, tailOut) = splitPatternPi(out)
-          TypePattern.Pi(binder +: tailBinders, tailOut, span)
+      .map { case (binder, out, span) =>
+        val (tailBinders, tailOut) = splitPatternPi(out)
+        TypePattern.Pi(binder +: tailBinders, tailOut, span)
       }
       .filter(hasCapture)
 

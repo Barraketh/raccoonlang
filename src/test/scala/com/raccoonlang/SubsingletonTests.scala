@@ -55,7 +55,7 @@ class SubsingletonTests extends munit.FunSuite {
       )
 
     res.tpe match {
-      case Value.VApp(Value.VConst("Eq", _, _), Vector(left, right), _, _) =>
+      case Value.VApp(Value.VConst("Eq", _, _), Vector(left, right), _, _, _) =>
         assertEquals(PrettyPrinter.print(left), "True.intro")
         assertEquals(PrettyPrinter.print(right), "True.intro")
       case other => fail(s"Expected equality proof over True, got $other")

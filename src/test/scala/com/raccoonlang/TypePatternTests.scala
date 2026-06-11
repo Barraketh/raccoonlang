@@ -51,7 +51,7 @@ class TypePatternTests extends munit.FunSuite {
     case Value.VCtor(h, fields, _) =>
       if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))
     case Value.VConst(n, _, _)     => SConst(n)
-    case Value.VApp(h, args, _, _) => SApp(toShape(h), args.toList.map(toShape))
+    case Value.VApp(h, args, _, _, _) => SApp(toShape(h), args.toList.map(toShape))
     case other                     => SConst(other.toString)
   }
 
@@ -581,6 +581,156 @@ class TypePatternTests extends munit.FunSuite {
         |
         |def source (h: Subset($s of Set($A), $t of Set(A))): Set(A) := s
         |def recovered : source(subsetRefl(singleton(Nat.zero)))(Nat.zero) := Eq.refl(Nat.zero)
+        |""".stripMargin
+
+    typecheckDecls(p)
+  }
+
+  test("positive: function capture solutions may close over ambient locals") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |def Set (A: Type): Type := (x: A) -> Prop
+        |def fiber (r: Nat -> Nat -> Prop)(a: Nat): Set(Nat) :=
+        |  fun (x: Nat): Prop => r(x, a)
+        |
+        |def Subset (s: Set($A))(t: Set(A)): Prop :=
+        |  (x: A) -> (hx: (s(x))) -> t(x)
+        |
+        |def subsetRefl (s: Set($A)): Subset(s, s) :=
+        |  fun (x: A)(hx: (s(x))): s(x) => hx
+        |
+        |def source (h: Subset($s of Set($A), $t of Set(A))): Set(A) := s
+        |
+        |def recovered (r: Nat -> Nat -> Prop)(a: Nat): Eq(source(subsetRefl(fiber(r, a))), fiber(r, a)) :=
+        |  Eq.refl(fiber(r, a))
+        |""".stripMargin
+
+    typecheckDecls(p)
+  }
+
+  test("negative: captures under stuck definition applications are rejected regardless of stable") {
+    for (stableKeyword <- Vector("stable ", "")) {
+      val p =
+        s"""
+           |inductive Nat : Type
+           | | zero : Nat
+           | | succ (_: Nat) : Nat
+           |
+           |inductive Vec (A: Type) indices (n: Nat) : Type
+           | | nil {A: Type} : Vec(A, Nat.zero)
+           | | cons {A: Type} (tail: Vec(A, $$n)) (head: A) : Vec(A, Nat.succ(n))
+           |
+           |${stableKeyword}def double (n: Nat): Nat decreases structural(n) := {
+           |  match n with
+           |  | Nat.zero => Nat.zero
+           |  | Nat.succ x => Nat.succ(Nat.succ(double(x)))
+           |}
+           |
+           |def bad (v: Vec(Nat, double($$m))): Nat := Nat.zero
+           |
+           |{
+           |  Nat.zero
+           |}
+           |""".stripMargin
+
+      assertTypeError[UnmatchablePattern](p)
+    }
+  }
+
+  test("negative: captures under stuck-on-opaque applications are rejected regardless of stable") {
+    for (stableKeyword <- Vector("stable ", "")) {
+      val p =
+        s"""
+           |inductive Nat : Type
+           | | zero : Nat
+           | | succ (_: Nat) : Nat
+           |
+           |inductive Vec (A: Type) indices (n: Nat) : Type
+           | | nil {A: Type} : Vec(A, Nat.zero)
+           | | cons {A: Type} (tail: Vec(A, $$n)) (head: A) : Vec(A, Nat.succ(n))
+           |
+           |axiom mystery : Nat
+           |
+           |${stableKeyword}def weird (n: Nat): Nat := {
+           |  match mystery with
+           |  | Nat.zero => n
+           |  | Nat.succ x => n
+           |}
+           |
+           |def bad (v: Vec(Nat, weird($$m))): Nat := Nat.zero
+           |
+           |{
+           |  Nat.zero
+           |}
+           |""".stripMargin
+
+      assertTypeError[UnmatchablePattern](p)
+    }
+  }
+
+  test("positive: rigid stuck applications in binder types compare by definitional equality") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Vec (A: Type) indices (n: Nat) : Type
+        | | nil {A: Type} : Vec(A, Nat.zero)
+        | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
+        |
+        |stable def double (n: Nat): Nat decreases structural(n) := {
+        |  match n with
+        |  | Nat.zero => Nat.zero
+        |  | Nat.succ x => Nat.succ(Nat.succ(double(x)))
+        |}
+        |
+        |def halve (m: Nat)(v: Vec(Nat, double(m))): Nat := m
+        |def caller (k: Nat)(v: Vec(Nat, double(k))): Nat := halve(k, v)
+        |
+        |{
+        |  halve(Nat.succ(Nat.zero), Vec.cons(Nat, Vec.cons(Nat, Vec.nil(Nat), Nat.zero), Nat.zero))
+        |}
+        |""".stripMargin
+
+    val res = runProgram(p)
+    assertEquals(toShape(res), SApp(SConst("Nat.succ"), List(zeroS)))
+  }
+
+  test("positive: blocked stable applications resume with their original capture solutions") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Bool : Type
+        | | true : Bool
+        | | false : Bool
+        |
+        |def Set (A: Type): Type := (x: A) -> Prop
+        |def fiber (r: Nat -> Nat -> Prop)(a: Nat): Set(Nat) :=
+        |  fun (x: Nat): Prop => r(x, a)
+        |
+        |def Subset (s: Set($A))(t: Set(A)): Prop :=
+        |  (x: A) -> (hx: (s(x))) -> t(x)
+        |
+        |stable def pick (b: Bool)(h: Subset($s of Set($A), $t of Set(A))): Nat := {
+        |  match b returning Nat with
+        |  | Bool.true => Nat.zero
+        |  | Bool.false => Nat.zero
+        |}
+        |
+        |def caller (r: Nat -> Nat -> Prop)(a: Nat)(b: Bool)(hsub: Subset(fiber(r, a), fiber(r, a))): Nat := {
+        |  let n : Nat := pick(b, hsub)
+        |  match b returning Nat with
+        |  | Bool.true => n
+        |  | Bool.false => Nat.zero
+        |}
         |""".stripMargin
 
     typecheckDecls(p)

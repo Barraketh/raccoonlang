@@ -28,7 +28,7 @@ class TypingTests extends munit.FunSuite {
     case Value.VCtor(h, fields, _) =>
       if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))
     case Value.VConst(n, _, _)  => SConst(n)
-    case Value.VApp(h, args, _, _) => SApp(toShape(h), args.toList.map(toShape))
+    case Value.VApp(h, args, _, _, _) => SApp(toShape(h), args.toList.map(toShape))
     case other                  => SConst(other.toString) // fallback
   }
 

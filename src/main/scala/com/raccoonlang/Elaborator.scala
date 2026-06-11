@@ -490,10 +490,9 @@ object Elaborator {
         header.params.foreach(binder => rejectShadowingCapture(structName, binder, previousFields))
         SA.Term.Lam(
           header.copy(
-            params =
-              header.params.map(binder =>
-                binder.copy(ty = rewriteTopLevelPattern(structName, selfName, binder.ty, previousFields))
-              ),
+            params = header.params.map(binder =>
+              binder.copy(ty = rewriteTopLevelPattern(structName, selfName, binder.ty, previousFields))
+            ),
             ty = rewriteTerm(structName, selfName, header.ty, previousFields)
           ),
           rewriteTerm(structName, selfName, body, previousFields),
@@ -907,7 +906,7 @@ object Elaborator {
     case SA.Term.App(fn, args, sp) => CA.Term.App(elabTerm(fn, env), args.map(elabTerm(_, env)), sp)
     case SA.Term.Derive(goal, sp)  => CA.Term.Derive(elabTerm(goal, env), sp)
     case pi: SA.Term.Pi            => elabPi(pi, env)
-    case l: SA.Term.Lam => elabLamTerm(l, env)
+    case l: SA.Term.Lam            => elabLamTerm(l, env)
     case b: SA.Term.Body =>
       val checkedLets = Vector.newBuilder[CA.Let]
       val startEnv = env.enterOpenScope

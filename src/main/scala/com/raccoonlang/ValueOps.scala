@@ -35,8 +35,8 @@ object ValueOps {
         case VSort(level)                                       => VSort(materializeLevel(level))
         case Var(name, id, tpe)                                 => Var(name, id, materialize(tpe))
         case VConst(name, constType, tpe)                       => VConst(name, constType, materialize(tpe))
-        case VApp(head, args, tpe, blockerId) =>
-          VApp(materialize(head), args.map(materialize(_)), materialize(tpe), blockerId)
+        case VApp(head, args, tpe, blockerId, stuckBody) =>
+          VApp(materialize(head), args.map(materialize(_)), materialize(tpe), blockerId, stuckBody.map(materialize(_)))
         case NeutralThunk(term, env, id, tpe, blockerId) =>
           NeutralThunk(
             term,

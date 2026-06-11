@@ -36,6 +36,7 @@ object TypeError {
     case e: PatternCaptureNeedsExpectedType => e.copy(span = Some(sp))
     case e: PatternCaptureEscapesScope      => e.copy(span = Some(sp))
     case e: UnmatchablePattern              => e.copy(span = Some(sp))
+    case e: HigherOrderSolutionFailed       => e.copy(span = Some(sp))
     case e: PropEliminationRestricted       => e.copy(span = Some(sp))
     case e: WTF                             => e.copy(span = Some(sp))
     case e: InvalidStruct                   => e.copy(span = Some(sp))
@@ -174,6 +175,12 @@ final case class PatternCaptureEscapesScope(name: String, span: Option[Span] = N
 
 final case class UnmatchablePattern(pattern: String, reason: String, span: Option[Span] = None) extends TypeError {
   override def msg: String = s"Type pattern $pattern is not matchable: $reason"
+}
+
+final case class HigherOrderSolutionFailed(expected: Value, actual: Value, reason: String, span: Option[Span] = None)
+  extends TypeError {
+  override def msg: String =
+    s"Type mismatch: expected type: $expected, actual: $actual. A higher-order solution was found but could not be quoted: $reason"
 }
 
 final case class WTF(msg: String, span: Option[Span] = None) extends TypeError

@@ -106,7 +106,7 @@ object PrettyPrinter {
       def printPiBinder(b: CoreAst.Binder): String =
         b.ty match {
           case CoreAst.TypePattern.Type(term) if b.name == "_" && !b.isInstance => printTermAtom(term)
-          case _                                                               => printBinder(b)
+          case _                                                                => printBinder(b)
         }
       s"${binders.map(printPiBinder).mkString(" -> ")} -> ${printCoreTerm(out)}"
     case m @ CoreAst.Term.Match(_, _, _, _)  => printMatch(m)
@@ -214,7 +214,7 @@ object PrettyPrinter {
       def printElabPiBinder(b: ElabAst.Binder): String =
         b.ty match {
           case ElabAst.TypePattern.Type(term) if b.name == "_" && !b.isInstance => printElabTermAtom(term)
-          case _                                                               => printElabBinder(b)
+          case _                                                                => printElabBinder(b)
         }
       s"${binders.map(printElabPiBinder).mkString(" -> ")} -> ${printElabTerm0(out)}"
     case ElabAst.Term.App(fn, args, _) =>

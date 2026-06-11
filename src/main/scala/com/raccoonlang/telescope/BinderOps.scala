@@ -30,11 +30,11 @@ object BinderOps {
     (vBinders.result(), checkedBinders.result())
   }
 
-  def instantiateFull(binders: Vector[VBinder], baseEnv: Env, args: Vector[Value]): Env = {
+  def instantiateFull(binders: Vector[VBinder], baseEnv: Env, args: Vector[Value], argEnv: Env): Env = {
     if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
 
     binders.zip(args).foldLeft(baseEnv) { case (curEnv, (binder, value)) =>
-      TypePatternOps.bindValue(curEnv, binder, value)
+      TypePatternOps.bindValue(curEnv, binder, value, argEnv)
     }
   }
 
@@ -42,12 +42,13 @@ object BinderOps {
       binders: Vector[VBinder],
       runtimeEnv: Env,
       args: Vector[Value],
+      argEnv: Env,
       normalizerMap: Normalizers.NormalizerMap
   ): Env = {
     if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
 
     binders.zip(args).foldLeft(runtimeEnv) { case (curRuntimeEnv, (binder, value)) =>
-      TypePatternOps.bindValueAndCheck(curRuntimeEnv, binder, value, normalizerMap)
+      TypePatternOps.bindValueAndCheck(curRuntimeEnv, binder, value, argEnv, normalizerMap)
     }
   }
 }

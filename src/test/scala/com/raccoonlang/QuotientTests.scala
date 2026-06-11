@@ -26,7 +26,7 @@ class QuotientTests extends munit.FunSuite {
     case Value.VCtor(h, fields, _) =>
       if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))
     case Value.VConst(n, _, _)  => SConst(n)
-    case Value.VApp(h, args, _, _) => SApp(toShape(h), args.toList.map(toShape))
+    case Value.VApp(h, args, _, _, _) => SApp(toShape(h), args.toList.map(toShape))
     case other                  => SConst(other.toString)
   }
 
@@ -148,7 +148,7 @@ class QuotientTests extends munit.FunSuite {
     )
 
     res.tpe match {
-      case Value.VApp(Value.VConst("Eq", _, _), Vector(left, right), _, _) =>
+      case Value.VApp(Value.VConst("Eq", _, _), Vector(left, right), _, _, _) =>
         assert(PrettyPrinter.print(left.tpe).startsWith("Quot(Nat, "))
         assertEquals(toShape(left), SApp(SConst("Quot.mk"), List(natZero)))
         assertEquals(toShape(right), SApp(SConst("Quot.mk"), List(natZero)))
