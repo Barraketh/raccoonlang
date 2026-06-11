@@ -51,6 +51,9 @@ object PrettyPrinter {
         val headStr = printRef(fn)
         val argsStr = args.map(ptAtom).mkString(", ")
         s"$headStr($argsStr)"
+      case CoreAst.TypePattern.Pi(binders, out, _) =>
+        val bindersStr = binders.map(printPiPatternBinder).mkString(" -> ")
+        s"$bindersStr -> ${pt(out)}"
       case CoreAst.TypePattern.Capture(ref, _) => s"$$${ref.name}"
       case CoreAst.TypePattern.ConstrainedCapture(ref, constraint, _) =>
         s"$$${ref.name} of ${ptAtom(constraint)}"
@@ -58,8 +61,16 @@ object PrettyPrinter {
 
     def ptAtom(t: CoreAst.TypePattern): String = t match {
       case CoreAst.TypePattern.Type(term: CoreAst.Term.Pi) => s"(${printTypeTerm(term)})"
+      case CoreAst.TypePattern.Pi(_, _, _)                 => s"(${pt(t)})"
       case _                                               => pt(t)
     }
+
+    def printPiPatternBinder(b: CoreAst.Binder): String =
+      b.ty match {
+        case CoreAst.TypePattern.Type(term) if b.name == "_" && !b.isInstance =>
+          printTypeTerm(term)
+        case _ => printBinder(b)
+      }
 
     pt(tp)
   }
@@ -140,8 +151,8 @@ object PrettyPrinter {
   }
 
   def printTerm(t: CoreAst.Ast): String = t match {
-    case term: CoreAst.Term           => printCoreTerm(term)
-    case pattern: CoreAst.TypePattern => printTypePattern(pattern)
+    case term: CoreAst.Term             => printCoreTerm(term)
+    case pattern: CoreAst.TypePattern   => printTypePattern(pattern)
     case decrease: CoreAst.DecreaseSpec => printDecreaseSpec(decrease)
   }
 
@@ -203,6 +214,9 @@ object PrettyPrinter {
         val headStr = printElabRef(fn)
         val argsStr = args.map(ptAtom).mkString(", ")
         s"$headStr($argsStr)"
+      case ElabAst.TypePattern.Pi(binders, out, _, _) =>
+        val bindersStr = binders.map(printElabPiPatternBinder).mkString(" -> ")
+        s"$bindersStr -> ${pt(out)}"
       case ElabAst.TypePattern.Capture(ref, _) => s"$$${ref.name}"
       case ElabAst.TypePattern.ConstrainedCapture(ref, constraint, _) =>
         s"$$${ref.name} of ${ptAtom(constraint)}"
@@ -210,8 +224,16 @@ object PrettyPrinter {
 
     def ptAtom(t: ElabAst.TypePattern): String = t match {
       case ElabAst.TypePattern.Type(term: ElabAst.Term.Pi) => s"(${printElabTypeTerm(term)})"
+      case ElabAst.TypePattern.Pi(_, _, _, _)              => s"(${pt(t)})"
       case _                                               => pt(t)
     }
+
+    def printElabPiPatternBinder(b: ElabAst.Binder): String =
+      b.ty match {
+        case ElabAst.TypePattern.Type(term) if b.name == "_" && !b.isInstance =>
+          printElabTypeTerm(term)
+        case _ => printElabBinder(b)
+      }
 
     pt(tp)
   }

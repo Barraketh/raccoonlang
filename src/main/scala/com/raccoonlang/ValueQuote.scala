@@ -100,6 +100,11 @@ object ValueQuote {
               case other                 => throw WTF(s"Failed to inline ref $fn, got $other")
             }
           ElabAst.TypePattern.App(nextFn, args.map(inlineTypePattern), appSpan)
+        case ElabAst.TypePattern.Pi(binders, out, classifier, piSpan) =>
+          val nextBinders = binders.map { b =>
+            b.copy(localRef = reindex(b.localRef), ty = inlineTopLevelTP(b.ty))
+          }
+          ElabAst.TypePattern.Pi(nextBinders, inlineTopLevelTP(out), classifier, piSpan)
         case ElabAst.TypePattern.ConstrainedCapture(ref, constraint, captureSpan) =>
           ElabAst.TypePattern.ConstrainedCapture(reindex(ref), inlineTopLevelTP(constraint), captureSpan)
       }

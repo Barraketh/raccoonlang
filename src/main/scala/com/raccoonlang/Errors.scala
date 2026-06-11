@@ -34,6 +34,7 @@ object TypeError {
     case e: NonStrictlyPositive             => e.copy(span = Some(sp))
     case e: InductiveTypeNotASort           => e.copy(span = Some(sp))
     case e: PatternCaptureNeedsExpectedType => e.copy(span = Some(sp))
+    case e: PatternCaptureEscapesScope      => e.copy(span = Some(sp))
     case e: PropEliminationRestricted       => e.copy(span = Some(sp))
     case e: WTF                             => e.copy(span = Some(sp))
     case e: InvalidStruct                   => e.copy(span = Some(sp))
@@ -163,6 +164,11 @@ final case class NotALevel(v1: Value, span: Option[Span] = None) extends TypeErr
 
 final case class PatternCaptureNeedsExpectedType(name: String, span: Option[Span] = None) extends TypeError {
   override def msg: String = s"Pattern capture $$$name needs an expected type"
+}
+
+final case class PatternCaptureEscapesScope(name: String, span: Option[Span] = None) extends TypeError {
+  override def msg: String =
+    s"Pattern capture $$$name solves to a value that mentions variables bound inside the matched type"
 }
 
 final case class WTF(msg: String, span: Option[Span] = None) extends TypeError

@@ -30,6 +30,17 @@ class TypePatternTests extends munit.FunSuite {
     }
   }
 
+  private def assertTypeError[T <: TypeError](src: String)(implicit loc: munit.Location, ct: reflect.ClassTag[T]): T =
+    intercept[T] {
+      LanguageParser.parseProgram(src) match {
+        case Success(value, _, _) =>
+          val core = Elaborator.elab(value, Prelude.test)
+          Interpreter.run(core, Prelude.test)
+        case err: Failure =>
+          fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
+      }
+    }
+
   // Erased shape comparison helpers
   sealed trait Shape
   case class SConst(name: String) extends Shape
@@ -177,6 +188,91 @@ class TypePatternTests extends munit.FunSuite {
 
     val res = runProgram(p)
     assertEquals(toShape(res), vecConsS(SConst("Vec.nil"), zeroS))
+  }
+
+  test("positive: Pi type pattern captures domain and codomain") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |def idNat (n: Nat): Nat := n
+        |def applyCaptured (f: (_: $A of Type) -> $B of Type)(x: A): B := f(x)
+        |
+        |{
+        |  applyCaptured(idNat, Nat.zero)
+        |}
+        |""".stripMargin
+
+    val res = runProgram(p)
+    assertEquals(toShape(res), zeroS)
+  }
+
+  test("negative: Pi type pattern rejects captures that depend on Pi binders") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
+        | | nil {A: Sort($u)} : Vec(A, Nat.zero)
+        | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
+        |
+        |axiom dep (n: Nat): Vec(Nat, n)
+        |def bad (f: (n: Nat) -> $B of Type): Type := B
+        |
+        |{
+        |  bad(dep)
+        |}
+        |""".stripMargin
+
+    assertTypeError[PatternCaptureEscapesScope](p)
+  }
+
+  test("negative: capture cannot be solved from the argument's own type pattern") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
+        | | nil {A: Sort($u)} : Vec(A, Nat.zero)
+        | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
+        |
+        |def anyVec (v: Vec($A, $n)): Nat := Nat.zero
+        |def bad (f: (_: $D of Type) -> Nat): Type := D
+        |
+        |{
+        |  bad(anyVec)
+        |}
+        |""".stripMargin
+
+    assertTypeError[PatternCaptureEscapesScope](p)
+  }
+
+  test("negative: capture cannot depend on Pi binders nested inside a domain") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
+        | | nil {A: Sort($u)} : Vec(A, Nat.zero)
+        | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
+        |
+        |axiom takesDep (g: (y: Nat) -> Vec(Nat, y)): Nat
+        |def bad (gg: (h: (x: Nat) -> $B of Type) -> Nat): Type := B
+        |
+        |{
+        |  bad(takesDep)
+        |}
+        |""".stripMargin
+
+    assertTypeError[PatternCaptureEscapesScope](p)
   }
 
   test("positive: type patterns work in inductive constructor fields") {

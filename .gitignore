@@ -10,6 +10,7 @@ project/
 target/
 .bsp
 .idea
+temp
 
 out.txt
 scratch.txt

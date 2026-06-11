@@ -50,6 +50,9 @@ class ResidualizationTests extends munit.FunSuite {
       case EA.TypePattern.Type(term) => containsGlobal(term, name)
       case EA.TypePattern.App(fn, args, _) =>
         containsGlobal(fn, name) || args.exists(arg => containsGlobalTypePattern(arg, name))
+      case EA.TypePattern.Pi(binders, out, _, _) =>
+        binders.exists(binder => containsGlobalTypePattern(binder.ty, name)) ||
+        containsGlobalTypePattern(out, name)
       case EA.TypePattern.Capture(_, _) => false
       case EA.TypePattern.ConstrainedCapture(_, constraint, _) =>
         containsGlobalTypePattern(constraint, name)

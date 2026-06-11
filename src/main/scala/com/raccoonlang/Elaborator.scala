@@ -400,6 +400,8 @@ object Elaborator {
       case SA.TypePattern.Capture(name, _)                        => Vector(name)
       case SA.TypePattern.ConstrainedCapture(name, constraint, _) => typePatternCaptureNames(constraint) :+ name
       case SA.TypePattern.App(_, args, _)                         => args.flatMap(typePatternCaptureNames)
+      case SA.TypePattern.Pi(binders, out, _) =>
+        binders.flatMap(binder => typePatternCaptureNames(binder.ty)) ++ typePatternCaptureNames(out)
     }
 
   private def structSelectorNamespace(decl: SA.Command.Decl.InductiveDecl): Option[SA.Command.Namespace] = {
@@ -539,6 +541,16 @@ object Elaborator {
           span
         )
 
+      case SA.TypePattern.Pi(binders, out, span) =>
+        binders.foreach(binder => rejectShadowingCapture(structName, binder, previousFields))
+        SA.TypePattern.Pi(
+          binders.map(binder =>
+            binder.copy(ty = rewriteTopLevelPattern(structName, selfName, binder.ty, previousFields))
+          ),
+          rewriteTopLevelPattern(structName, selfName, out, previousFields),
+          span
+        )
+
       case SA.TypePattern.Capture(name, span) =>
         if (previousFields.contains(name))
           throw InvalidStruct(structName, s"type capture $name shadows an earlier field", Some(span))
@@ -571,6 +583,17 @@ object Elaborator {
           args.map(arg => typePatternAsType(structName, selfName, arg, previousFields, appSpan)),
           appSpan
         )
+
+      case SA.TypePattern.Pi(binders, out, piSpan) =>
+        binders.foreach(binder => rejectShadowingCapture(structName, binder, previousFields))
+        val body = typePatternAsType(structName, selfName, out, previousFields, piSpan)
+        binders.foldRight(body) { case (binder, cur) =>
+          SA.Term.Pi(
+            binder.copy(ty = rewriteTopLevelPattern(structName, selfName, binder.ty, previousFields)),
+            cur,
+            piSpan
+          )
+        }
 
       case SA.TypePattern.Capture(name, captureSpan) =>
         if (previousFields.contains(name))
@@ -674,29 +697,82 @@ object Elaborator {
   }
 
   private def elabPattern(pattern: SA.TypePattern, env: ResolveEnv): (CA.TypePattern, ResolveEnv) =
+    elabPattern(pattern, env, Map.empty)
+
+  private def elabPattern(
+      pattern: SA.TypePattern,
+      env: ResolveEnv,
+      fixedCaptures: Map[String, CA.LocalRef]
+  ): (CA.TypePattern, ResolveEnv) =
     pattern match {
       case SA.TypePattern.Type(term) =>
         (CA.TypePattern.Type(elabType(term, env)), env)
 
       case SA.TypePattern.App(fn, args, sp) =>
         val (nextArgs, nextEnv) = args.foldLeft((Vector.empty[CA.TypePattern], env)) { case ((curArgs, curEnv), arg) =>
-          val (nextArg, argEnv) = elabPattern(arg, curEnv)
+          val (nextArg, argEnv) = elabPattern(arg, curEnv, fixedCaptures)
           (curArgs :+ nextArg, argEnv)
         }
         (CA.TypePattern.App(elabTypePatternHead(fn, env), nextArgs, sp), nextEnv)
 
+      case pi @ SA.TypePattern.Pi(binders, out, sp) =>
+        val (piCaptures, envWithCaptures) =
+          typePatternCaptureNames(pi).foldLeft((fixedCaptures, env)) { case ((captures, curEnv), name) =>
+            if (fixedCaptures.contains(name)) (captures, curEnv)
+            else {
+              val (ref, nextEnv) = curEnv.bindRequired(name, sp)
+              (captures + (name -> ref), nextEnv)
+            }
+          }
+
+        binders.foreach { binder =>
+          if (binder.name != "_" && piCaptures.contains(binder.name))
+            throw AlreadyDefined(binder.name, Some(binder.span))
+        }
+
+        val piEnv = envWithCaptures.enterLocalScope
+        val (elabBinders, binderEnv) = binders.foldLeft((Vector.empty[CA.Binder], piEnv)) {
+          case ((curBinders, curEnv), binder) =>
+            val (nextBinder, nextEnv) = elabBinder(binder, curEnv, piCaptures)
+            (curBinders :+ nextBinder, nextEnv)
+        }
+        val (elabOut, _) = elabTopLevelPattern(out, binderEnv, piCaptures)
+
+        elabOut match {
+          case CA.TypePattern.Pi(outBinders, nestedOut, _) =>
+            (CA.TypePattern.Pi(elabBinders ++ outBinders, nestedOut, sp), envWithCaptures)
+          case other =>
+            (CA.TypePattern.Pi(elabBinders, other, sp), envWithCaptures)
+        }
+
       case SA.TypePattern.Capture(name, sp) =>
-        val (ref, nextEnv) = env.bindRequired(name, sp)
-        (CA.TypePattern.Capture(ref, sp), nextEnv)
+        fixedCaptures.get(name) match {
+          case Some(ref) => (CA.TypePattern.Capture(ref, sp), env)
+          case None =>
+            val (ref, nextEnv) = env.bindRequired(name, sp)
+            (CA.TypePattern.Capture(ref, sp), nextEnv)
+        }
 
       case SA.TypePattern.ConstrainedCapture(name, constraint, sp) =>
-        val (elabConstraint, envWithConstraintCaptures) = elabTopLevelPattern(constraint, env)
-        val (ref, nextEnv) = envWithConstraintCaptures.bindRequired(name, sp)
-        (CA.TypePattern.ConstrainedCapture(ref, elabConstraint, sp), nextEnv)
+        val (elabConstraint, envWithConstraintCaptures) = elabTopLevelPattern(constraint, env, fixedCaptures)
+        fixedCaptures.get(name) match {
+          case Some(ref) => (CA.TypePattern.ConstrainedCapture(ref, elabConstraint, sp), envWithConstraintCaptures)
+          case None =>
+            val (ref, nextEnv) = envWithConstraintCaptures.bindRequired(name, sp)
+            (CA.TypePattern.ConstrainedCapture(ref, elabConstraint, sp), nextEnv)
+        }
     }
 
   private def elabTopLevelPattern(pattern: SA.TopLevelTP, env: ResolveEnv): (CA.TopLevelTP, ResolveEnv) = {
-    val (elab, nextEnv) = elabPattern(pattern, env)
+    elabTopLevelPattern(pattern, env, Map.empty)
+  }
+
+  private def elabTopLevelPattern(
+      pattern: SA.TopLevelTP,
+      env: ResolveEnv,
+      fixedCaptures: Map[String, CA.LocalRef]
+  ): (CA.TopLevelTP, ResolveEnv) = {
+    val (elab, nextEnv) = elabPattern(pattern, env, fixedCaptures)
     elab match {
       case topLevel: CA.TopLevelTP => (topLevel, nextEnv)
       case CA.TypePattern.Capture(ref, span) =>
@@ -705,7 +781,15 @@ object Elaborator {
   }
 
   private def elabBinder(b: SA.Binder, env: ResolveEnv): (CA.Binder, ResolveEnv) = {
-    val (ty, envWithCaptures) = elabTopLevelPattern(b.ty, env)
+    elabBinder(b, env, Map.empty)
+  }
+
+  private def elabBinder(
+      b: SA.Binder,
+      env: ResolveEnv,
+      fixedCaptures: Map[String, CA.LocalRef]
+  ): (CA.Binder, ResolveEnv) = {
+    val (ty, envWithCaptures) = elabTopLevelPattern(b.ty, env, fixedCaptures)
     val (ref, nextEnv) =
       if (b.name == "_") envWithCaptures.allocate(b.name)
       else envWithCaptures.bindNamed(b.name, allowShadow = false)

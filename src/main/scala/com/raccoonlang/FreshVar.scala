@@ -10,4 +10,8 @@ object FreshVar {
     gensymId += 1
     Var(name, gensymId, tpe)
   }
+
+  // Ids are allocated monotonically, so a snapshot acts as a watermark: every var created after the
+  // snapshot has a larger id.
+  def currentId: VarId = gensymId
 }

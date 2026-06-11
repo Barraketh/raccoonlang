@@ -152,14 +152,45 @@ object LanguageParser {
       fields.foldLeft(base) { case (cur, (field, span)) => TSelect(cur, field, span) }
     }
 
+  private def notFollowedByArrow[A](p: Parser[A]): Parser[A] = new Parser[A] {
+    override def parse(input: String, startIdx: Int): ParseResult[A] =
+      p.parse(input, startIdx) match {
+        case s @ Success(_, _, endIdx) =>
+          var idx = endIdx
+          while (idx < input.length && input.charAt(idx).isWhitespace) idx += 1
+          if (input.startsWith("->", idx)) fail(startIdx, startIdx) else s
+        case f: Failure => f
+      }
+  }
+
   private def typePatternApp(implicit sourceId: Option[SourceId]): Parser[TypePattern.App] =
-    (typePatternHead ~ nonEmptyParenArgs(typePattern)).flatSpanned(sourceId).map(TypePattern.App.tupled)
+    notFollowedByArrow(
+      (typePatternHead ~ nonEmptyParenArgs(typePattern)).flatSpanned(sourceId).map(TypePattern.App.tupled)
+    )
+
+  private def hasCapture(pattern: TypePattern): Boolean =
+    pattern match {
+      case TypePattern.Type(_)                              => false
+      case TypePattern.Capture(_, _)                        => true
+      case TypePattern.ConstrainedCapture(_, constraint, _) => true
+      case TypePattern.App(_, args, _)                      => args.exists(hasCapture)
+      case TypePattern.Pi(binders, out, _) => binders.exists(binder => hasCapture(binder.ty)) || hasCapture(out)
+    }
+
+  private def typePatternPi(implicit sourceId: Option[SourceId]): Parser[TypePattern.Pi] =
+    (param ~ skipAllWs ~ sym("->") ~/ skipAllWs ~ topLevelTypePattern)
+      .flatSpanned(sourceId)
+      .map {
+        case (binder, TypePattern.Pi(binders, out, _), span) => TypePattern.Pi(binder +: binders, out, span)
+        case (binder, out, span)                             => TypePattern.Pi(Vector(binder), out, span)
+      }
+      .filter(hasCapture)
 
   private def topLevelTypePattern(implicit sourceId: Option[SourceId]): Parser[TopLevelTP] =
-    typePatternApp | constrainedTypePattern | typeTerm.map(TypePattern.Type.apply)
+    typePatternPi | typePatternApp | constrainedTypePattern | typeTerm.map(TypePattern.Type.apply)
 
   private def typePattern(implicit sourceId: Option[SourceId]): Parser[TypePattern] =
-    typePatternApp | constrainedTypePattern | typePatternCapture | typeTerm.map(TypePattern.Type.apply)
+    typePatternPi | typePatternApp | constrainedTypePattern | typePatternCapture | typeTerm.map(TypePattern.Type.apply)
 
   private def normalParam(implicit sourceId: Option[SourceId]): Parser[Binder] =
     (sym('(') ~ argName ~ sym(':') ~/ skipAllWs ~ topLevelTypePattern ~ layoutSymTight(')')).flatSpanned(sourceId).map {

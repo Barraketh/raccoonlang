@@ -27,6 +27,10 @@ object ElabAst {
       require(args.nonEmpty, "Type pattern application requires at least one argument")
     }
 
+    final case class Pi(binders: Vector[Binder], out: TopLevelTP, classifier: VSort, span: Span) extends TopLevelTP {
+      require(binders.nonEmpty, "Type pattern Pi requires at least one binder")
+    }
+
     final case class Capture(localRef: CoreAst.LocalRef, span: Span) extends TypePattern
     final case class ConstrainedCapture(localRef: CoreAst.LocalRef, constraint: TopLevelTP, span: Span)
       extends TopLevelTP

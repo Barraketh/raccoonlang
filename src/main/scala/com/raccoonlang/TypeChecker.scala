@@ -101,6 +101,9 @@ object TypeChecker {
         case EA.TypePattern.App(fn, args, _) =>
           loop(fn, appHead = true)
           args.foreach(loopTypePattern)
+        case EA.TypePattern.Pi(binders, out, _, _) =>
+          binders.foreach(b => loopTypePattern(b.ty))
+          loopTypePattern(out)
         case EA.TypePattern.Capture(_, _) =>
         case EA.TypePattern.ConstrainedCapture(_, constraint, _) =>
           loopTypePattern(constraint)

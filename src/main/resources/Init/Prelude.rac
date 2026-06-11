@@ -36,12 +36,12 @@ namespace Eq {
   def mpr (p: Eq($a of Prop, $b of Prop))(h: b): a := Eq.mp(Eq.symm(p), h)
 }
 
-def congrArg (p: Eq($x of $A of Sort($u), $y of A))(B: Sort($v))(f: A -> B): Eq(f(x), f(y)) := {
+def congrArg (p: Eq($x of $A of Sort($u), $y of A))(f: (_: A) -> $B of Sort($v)): Eq(f(x), f(y)) := {
   match p returning Eq(f(x), f(y)) with
   | Eq.refl z => Eq.refl(f(z))
 }
 
-def congrFun (A: Sort($u))(B: Sort($v))(f: A -> B)(g: A -> B)(p: Eq(f, g))(x: A): Eq(f(x), g(x)) := {
+def congrFun (f: (_: $A of Sort($u)) -> $B of Sort($v))(g: A -> B)(p: Eq(f, g))(x: A): Eq(f(x), g(x)) := {
   match p returning Eq(f(x), g(x)) with
   | Eq.refl h => Eq.refl(h(x))
 }
@@ -257,13 +257,13 @@ namespace Option {
     | Option.some val => val
   }
 
-  def map (x: Option($A))(B: Sort($v))(f: A -> B): Option(B) := {
+  def map (x: Option($A))(f: (_: A) -> $B of Sort($v)): Option(B) := {
     match x returning Option(B) with
     | Option.none => Option.none(B)
     | Option.some val => Option.some(f(val))
   }
 
-  def bind (x: Option($A))(B: Sort($v))(f: A -> Option(B)): Option(B) := {
+  def bind (x: Option($A))(f: (_: A) -> Option($B of Sort($v))): Option(B) := {
     match x returning Option(B) with
     | Option.none => Option.none(B)
     | Option.some val => f(val)
@@ -283,7 +283,7 @@ inductive Sum (A: Sort($u))(B: Sort($v)) : Sort(Level.max(u, v))
  | inr {A: Sort($u)} (val: $B of Sort($v)) : Sum(A, B)
 
 namespace Sum {
-  def elim (x: Sum($A, $B))(C: Sort($w))(left: A -> C)(right: B -> C): C := {
+  def elim (x: Sum($A, $B))(left: (_: A) -> $C of Sort($w))(right: B -> C): C := {
     match x returning C with
     | Sum.inl val => left(val)
     | Sum.inr val => right(val)
@@ -313,10 +313,10 @@ namespace List {
     | List.cons head tail => List.cons(head, List.append(tail, ys))
   }
 
-  stable def map (xs: List($A))(B: Sort($v))(f: A -> B): List(B) decreases structural(xs) := {
+  stable def map (xs: List($A))(f: (_: A) -> $B of Sort($v)): List(B) decreases structural(xs) := {
     match xs returning List(B) with
     | List.nil => List.nil(B)
-    | List.cons head tail => List.cons(f(head), List.map(tail, B, f))
+    | List.cons head tail => List.cons(f(head), List.map(tail, f))
   }
 
   stable def length (xs: List($A)): Nat decreases structural(xs) := {
@@ -536,7 +536,7 @@ namespace Nat {
       | Nat.zero => Decidable.isFalse(fun (h: Eq(Nat.succ(aTail), Nat.zero)): False => Nat.succNeZero(aTail, h))
       | Nat.succ bTail => {
         match Nat.decEq(aTail, bTail) returning Decidable(Eq(Nat.succ(aTail), Nat.succ(bTail))) with
-        | Decidable.isTrue h => Decidable.isTrue(congrArg(h, Nat, Nat.succ))
+        | Decidable.isTrue h => Decidable.isTrue(congrArg(h, Nat.succ))
         | Decidable.isFalse h => Decidable.isFalse(fun (p: Eq(Nat.succ(aTail), Nat.succ(bTail))): False => h(Nat.succInj(p)))
       }
     }

@@ -105,10 +105,10 @@ class PreludeTests extends munit.FunSuite {
           |def symmProof : Eq(Nat.zero, Nat.zero) := Eq.symm(Eq.refl(Nat.zero))
           |def transProof : Eq(Nat.zero, Nat.zero) := Eq.trans(Eq.refl(Nat.zero), Eq.refl(Nat.zero))
           |def substValue : Nat := Eq.subst(Eq.refl(Nat.zero), Level.one, natFamily, Nat.zero)
-          |def congrArgProof : Eq(Nat.succ(Nat.zero), Nat.succ(Nat.zero)) := congrArg(Eq.refl(Nat.zero), Nat, succNat)
+          |def congrArgProof : Eq(Nat.succ(Nat.zero), Nat.succ(Nat.zero)) := congrArg(Eq.refl(Nat.zero), succNat)
           |
           |{
-          |  congrFun(Nat, Nat, idNat, idNat, funEq, Nat.zero)
+          |  congrFun(idNat, idNat, funEq, Nat.zero)
           |}
           |""".stripMargin
       )
@@ -232,7 +232,7 @@ class PreludeTests extends munit.FunSuite {
       runProgram(
         """
           |{
-          |  let x := Option.bind(Option.some(Nat.zero), Nat, fun (n: Nat): Option(Nat) => Option.some(Nat.succ(n)))
+          |  let x := Option.bind(Option.some(Nat.zero), fun (n: Nat): Option(Nat) => Option.some(Nat.succ(n)))
           |  Option.getD(x, Nat.zero)
           |}
           |""".stripMargin
@@ -243,7 +243,7 @@ class PreludeTests extends munit.FunSuite {
       runProgram(
         """
           |{
-          |  Sum.elim(Sum.inr(Nat, Bool.true), Nat, fun (n: Nat): Nat => n, fun (b: Bool): Nat => Bool.cond(b, Nat.succ(Nat.zero), Nat.zero))
+          |  Sum.elim(Sum.inr(Nat, Bool.true), fun (n: Nat): Nat => n, fun (b: Bool): Nat => Bool.cond(b, Nat.succ(Nat.zero), Nat.zero))
           |}
           |""".stripMargin
       )

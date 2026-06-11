@@ -52,6 +52,10 @@ object SurfaceAst {
       require(args.nonEmpty, "Type pattern application requires at least one argument")
     }
 
+    final case class Pi(binders: Vector[Binder], out: TopLevelTP, span: Span) extends TopLevelTP {
+      require(binders.nonEmpty, "Type pattern Pi requires at least one binder")
+    }
+
     final case class Capture(name: String, span: Span) extends TypePattern
     final case class ConstrainedCapture(name: String, constraint: TopLevelTP, span: Span) extends TopLevelTP
   }

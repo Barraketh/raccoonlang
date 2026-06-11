@@ -32,6 +32,10 @@ object CapturedIndexes {
         goTerm(fn, cutoff, refs)
         goPatterns(args, cutoff, refs)
 
+      case ElabAst.TypePattern.Pi(binders, out, _, _) =>
+        binders.foreach(b => goPattern(b.ty, cutoff, refs))
+        goPattern(out, cutoff, refs)
+
       case ElabAst.TypePattern.Type(term) =>
         goTerm(term, cutoff, refs)
     }

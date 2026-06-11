@@ -315,7 +315,14 @@ object ValueEquivalence {
           if (typedMeta.occurs(fn.id, materializedOther)) Some(Left((app, other)))
           else {
             val materializedArgs = app.args.map(arg => ValueOps.materialize(arg, typedMeta))
-            try Some(tryLinkVar(fn, ValueQuote.quoteLambda(materializedPi, materializedArgs, materializedOther, SyntheticSpan), typedMeta))
+            try
+              Some(
+                tryLinkVar(
+                  fn,
+                  ValueQuote.quoteLambda(materializedPi, materializedArgs, materializedOther, SyntheticSpan),
+                  typedMeta
+                )
+              )
             catch {
               case _: CannotQuoteValue => None
             }
