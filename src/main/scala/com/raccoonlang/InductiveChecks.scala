@@ -46,8 +46,12 @@ object InductiveChecks {
     }
   }
 
+  // Occurrence analysis reads the named presentation when one exists: a stuck `stable` application is
+  // analyzed as its spine (head and arguments), exactly as when the spine was the value's structure.
+  // Without a spine a stuck value is opaque and treated conservatively.
   private def doesNotOccur(target: PositivityTarget, value: Value): Boolean =
     if (target.isDirectOccurrence(value)) false
+    else if (value.spine.isDefined) doesNotOccur(target, value.spine.get)
     else
       value match {
         case _: NeutralThunk => !target.mayOccurIn(value)
@@ -80,6 +84,7 @@ object InductiveChecks {
    */
   private def occursPositively(target: PositivityTarget, value: Value): Boolean =
     if (target.isDirectOccurrence(value)) true
+    else if (value.spine.isDefined) occursPositively(target, value.spine.get)
     else
       value match {
         case _: NeutralThunk => !target.mayOccurIn(value)
@@ -114,8 +119,10 @@ object InductiveChecks {
    * Checks that we don't have things of the shape Foo(Foo(A)) as a constructor field of Foo.
    */
   private def sameFamilyArgsDoNotContain(inductiveName: String, target: PositivityTarget, value: Value): Boolean =
-    value match {
-      case _: NeutralThunk => false
+    if (value.spine.isDefined) sameFamilyArgsDoNotContain(inductiveName, target, value.spine.get)
+    else
+      value match {
+        case _: NeutralThunk => false
 
       case InductiveFamilyValue(instance) =>
         if (instance.head.name == inductiveName)

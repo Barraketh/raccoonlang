@@ -14,6 +14,15 @@ sealed trait Value {
   def tpe: Value
   def synDeps: DepSet
 
+  /**
+   * Presentation metadata: the named `stable` application this stuck value returned through (the
+   * figure-ground inverse of the old re-folding — the value is always the maximally reduced stuck form,
+   * and the spine rides along as a view). Consumed by equality strength (normalizers), printing, and
+   * quoting; never read by inference (matching, unification, capture solving), which keeps the `stable`
+   * annotation invisible to typing in both directions. Dropped when the value unblocks.
+   */
+  def spine: Option[Value.VApp] = None
+
   final lazy val key: ValueKey.Key = ValueKey.orderKey(this)
   final lazy val needsStructuralDefEq: Boolean = Value.needsStructuralDefEq(this)
 
@@ -206,15 +215,12 @@ object Value {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
-  // `stuckBody` is the precomputed stuck result of a stable application: presentation re-folds the call as a
-  // spine, but unblocking must resume the original instantiation (which solved the binder captures in the
-  // call site's env) rather than re-running it. It never participates in equality or keys.
   case class VApp(
       head: Value,
       args: Vector[Value],
       tpe: Value,
       blockerId: Option[VarId] = None,
-      stuckBody: Option[Value] = None
+      override val spine: Option[VApp] = None
   ) extends Value
     with UpdatableType {
     override lazy val synDeps: DepSet = {
@@ -222,12 +228,12 @@ object Value {
       res.unionInPlace(head.synDeps)
       args.foreach(v => res.unionInPlace(v.synDeps))
       res.unionInPlace(tpe.synDeps)
-      stuckBody.foreach(v => res.unionInPlace(v.synDeps))
+      spine.foreach(v => res.unionInPlace(v.synDeps))
       res.result()
     }
 
     require(args.nonEmpty || blockerId.isEmpty, "Blocked application requires at least one argument")
-    require(stuckBody.isEmpty || blockerId.nonEmpty, "A stuck body requires a blocked application")
+    require(spine.isEmpty || blockerId.nonEmpty, "Only a blocked application can carry a presentation spine")
     head match {
       case h: ConstructorHead =>
         require(blockerId.isEmpty, s"Constructor ${h.name} cannot be blocked")
@@ -241,14 +247,21 @@ object Value {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
-  case class NeutralThunk(term: ElabAst.Term.Match, env: Env, id: ValueId.LocalId, tpe: Value, blockerId: Option[VarId])
-    extends Value
+  case class NeutralThunk(
+      term: ElabAst.Term.Match,
+      env: Env,
+      id: ValueId.LocalId,
+      tpe: Value,
+      blockerId: Option[VarId],
+      override val spine: Option[VApp] = None
+  ) extends Value
     with UpdatableType {
     override lazy val synDeps: DepSet = {
       val res = DepSet.newBuilder
       res.unionInPlace(envDeps(env))
       res.unionInPlace(tpe.synDeps)
       id.captures.foreach(v => res.unionInPlace(v.synDeps))
+      spine.foreach(v => res.unionInPlace(v.synDeps))
       res.result()
     }
 
@@ -333,8 +346,9 @@ object Value {
   sealed trait ConstType
   case class Inductive(meta: InductiveMeta) extends ConstType
   case object Symbol extends ConstType
-  // The named presentation of a stable definition stuck without a blocker. Distinguished from Symbol so the
-  // matcher can tell an annotation-induced spine from a genuinely opaque one (axioms, builtins).
+  // The named head of a stable definition stuck without a blocker. Appears only inside `spine`
+  // presentation metadata, never in a value's structural position. Distinguished from Symbol so
+  // consumers can tell an annotation-induced view from a genuinely opaque head (axioms, builtins).
   case object StuckDef extends ConstType
 
   /**
@@ -365,19 +379,19 @@ object Value {
   object Blocker {
     def unapply(value: Value): Option[VarId] =
       value match {
-        case Var(_, id, _)                      => Some(id)
-        case VBlockedApp(_, _, _, id)           => Some(id)
-        case NeutralThunk(_, _, _, _, Some(id)) => Some(id)
-        case _                                  => None
+        case Var(_, id, _)                         => Some(id)
+        case VBlockedApp(_, _, _, id)              => Some(id)
+        case NeutralThunk(_, _, _, _, Some(id), _) => Some(id)
+        case _                                     => None
       }
   }
 
   object Blocked {
     def unapply(value: Value): Option[VarId] =
       value match {
-        case VBlockedApp(_, _, _, id)           => Some(id)
-        case NeutralThunk(_, _, _, _, Some(id)) => Some(id)
-        case _                                  => None
+        case VBlockedApp(_, _, _, id)              => Some(id)
+        case NeutralThunk(_, _, _, _, Some(id), _) => Some(id)
+        case _                                     => None
       }
   }
 

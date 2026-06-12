@@ -256,10 +256,10 @@ object PrettyPrinter {
       val headStr = print(head)
       if (fields.isEmpty) headStr
       else s"$headStr(${fields.map(print).mkString(", ")})"
-    case v: Value.VApp          => printApp(v.head, v.args)
+    case v: Value.VApp          => v.spine.fold(printApp(v.head, v.args))(s => printApp(s.head, s.args))
     case v: Value.VLam          => s"func#${v.id}"
     case Value.Var(name, id, _) => s"$name#$id"
-    case s: Value.NeutralThunk  => s"match#${s.id}"
+    case s: Value.NeutralThunk  => s.spine.fold(s"match#${s.id}")(sp => printApp(sp.head, sp.args))
     case Value.NormalizerType   => "Normalizer"
     case n: Value.Normalizer    => s"Normalizer ${n.name}"
     case LevelTpe               => s"Level"

@@ -117,6 +117,10 @@ object ValueQuote {
   def quoteTerm(value: Value, context: QuoteContext, span: Span): ElabAst.Term = {
     quotedTermFor(context.quote, value, span).foreach(return _)
 
+    // A stuck value carrying a `stable` presentation quotes as the named application: smaller terms,
+    // and re-evaluation reproduces the same stuck value (with its spine) by construction.
+    value.spine.foreach(s => return quoteTerm(s, context, span))
+
     value match {
       case lam: VLam if isRawRecursive(lam) => throw CannotQuoteValue(lam, "raw recursive self", Some(span))
       case _                                =>
@@ -147,7 +151,7 @@ object ValueQuote {
         val fn = quoteAppHead(head, context, span)
         ElabAst.Term.App(fn, args.map(arg => quoteTerm(arg, context, span)), span)
 
-      case NeutralThunk(term, env, _, _, _) => quoteClosedMatch(term, env, context, span)
+      case NeutralThunk(term, env, _, _, _, _) => quoteClosedMatch(term, env, context, span)
 
       case lam: VLam => quoteLam(lam, context, span)
 

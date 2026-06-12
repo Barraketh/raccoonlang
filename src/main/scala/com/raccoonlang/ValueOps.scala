@@ -35,15 +35,16 @@ object ValueOps {
         case VSort(level)                                       => VSort(materializeLevel(level))
         case Var(name, id, tpe)                                 => Var(name, id, materialize(tpe))
         case VConst(name, constType, tpe)                       => VConst(name, constType, materialize(tpe))
-        case VApp(head, args, tpe, blockerId, stuckBody) =>
-          VApp(materialize(head), args.map(materialize(_)), materialize(tpe), blockerId, stuckBody.map(materialize(_)))
-        case NeutralThunk(term, env, id, tpe, blockerId) =>
+        case VApp(head, args, tpe, blockerId, spine) =>
+          VApp(materialize(head), args.map(materialize(_)), materialize(tpe), blockerId, spine.map(materializeSpine))
+        case NeutralThunk(term, env, id, tpe, blockerId, spine) =>
           NeutralThunk(
             term,
             materializeEnv(env),
             materializeLocalId(id),
             materialize(tpe),
-            blockerId
+            blockerId,
+            spine.map(materializeSpine)
           )
         case ctor: ConstructorHead =>
           ctor.copy(tpe = materialize(ctor.tpe))
@@ -56,6 +57,11 @@ object ValueOps {
 
     private def mayNeedMaterialization(value: Value)(implicit eqStore: EqStore): Boolean =
       value.synDeps.intersects(eqStore.solvedIds)
+
+    // Spines are views, not structure: rebuild positionally rather than re-entering `materialize`, which
+    // could reduce the named form away.
+    private def materializeSpine(s: VApp)(implicit eqStore: EqStore): VApp =
+      VApp(materialize(s.head), s.args.map(materialize(_)), materialize(s.tpe), s.blockerId, None)
 
     private def materializeLevel(level: Level)(implicit eqStore: EqStore): Level =
       Interpreter.resolveInEqStore(level, eqStore) match {

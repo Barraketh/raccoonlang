@@ -1,6 +1,6 @@
 package com.raccoonlang
 
-import com.raccoonlang.Value.{ConstSpine, VBlockedApp, VarId}
+import com.raccoonlang.Value.{ConstSpine, VApp, VarId}
 
 object Normalizers {
 
@@ -16,7 +16,8 @@ object Normalizers {
   def getCarrierKey(v: Value): Option[CarrierKey] = v match {
     case ConstSpine(head, _) => Some(CarrierKey.Head(head.name))
     case Value.Var(_, id, _) => Some(CarrierKey.VarKey(id))
-    case _                   => None
+    // A stuck value's named presentation can carry the head (e.g. a carrier defined by a stable function).
+    case _                   => v.spine.collect { case ConstSpine(head, _) => CarrierKey.Head(head.name) }
   }
 
   def add_normalizer(args: Vector[Value]): Value = {
@@ -31,8 +32,10 @@ object Normalizers {
 
       override def carrierKey: CarrierKey = ck
 
-      private def flatten(v: Value): List[Value] = v match {
-        case VBlockedApp(head, args, _, _) if head == addFn =>
+      // Normalizers consume presentation: a stuck application of the registered function carries the
+      // named call as its spine, while the value itself stays in reduced form.
+      private def flatten(v: Value): List[Value] = v.spine match {
+        case Some(VApp(head, args, _, _, _)) if head == addFn =>
           val l0 = flatten(args.head)
           val l1 = flatten(args.tail.head)
           l0 ++ l1

@@ -204,11 +204,13 @@ The rules, by case on `Q` (or argument pattern `P`):
 
   Spine decomposition for *solving* applies only to **intrinsically rigid** heads: inductive and struct
   constants, constructors, axioms and builtins, and neutral variables (including flex capture heads). A
-  spine that exists only as the presentation of a stuck `stable` definition — a re-folded blocked
-  application, or the named form of a definition stuck on an opaque scrutinee — is not decomposable;
-  captures inside one are rejected at declaration (D3). Pattern legality and match outcomes therefore never
-  depend on the `stable` annotation, which keeps its equality role only: capture-free presentation spines
-  are ordinary `defEq` leaves, where keys and normalizers see them as named spines.
+  stuck `stable` application never *presents* as a spine at all: the value is always the maximally reduced
+  stuck form (a stuck match or blocked application), and the named call rides along as presentation
+  metadata (`Value.spine`), consumed by equality strength (normalizers), printing, quoting, and structural
+  analyses (positivity) — never by matching. Captures inside such positions are rejected at declaration
+  (D3) because the stuck form itself is opaque to the traversal, so pattern legality and match outcomes
+  are independent of the `stable` annotation by construction, in both directions. A blocked application
+  of a lambda is likewise not decomposable: it is a suspended computation, not a spine.
 
 - **[Flex-spine]**: a capture in *head* position applied to pairwise-distinct rigid variables —
   `$F(x1, ..., xm)` arising from a transparent expansion, with each `xi` a binder variable — matches any
@@ -390,6 +392,16 @@ Resolved earlier on this branch:
   blocked stable applications carry their stuck body so unblocking *resumes* the original instantiation —
   with captures solved once, in the call site's environment — instead of re-running it. `stable` affects
   equality strength (normalizers, stuck-spine comparison) and printing only.
+- *Presentation in structural position* (2026-06-12): stuck `stable` applications previously re-folded
+  into named `VApp` spines (carrying the stuck body as an attachment), so every structural consumer saw
+  the annotation-dependent form by default, and annotation-independence had to be re-imposed consumer by
+  consumer (the matcher's presentation guard). The representation is now inverted: the value is always
+  the maximally reduced stuck form, and the named call is `Value.spine` metadata, attached per `stable`
+  frame as the stuck result unwinds (the innermost stable frame wins, so delegating to an unannotated
+  helper never changes any consumer's view). Inference never reads the field, so the annotation is
+  invisible to typing by construction; equality strength (normalizers), printing, quoting, and positivity
+  opt in explicitly. Resumption is now ordinary unblocking of the canonical value (`forceThunk` /
+  blocked-application resolution), and the matcher's guard reduces to blocked lambda applications.
 
 One residual is documented rather than fixed: callers of binder instantiation that have no call site in
 hand — `defEq`'s extensional lambda comparison and the termination checker — pass the callee's own env as

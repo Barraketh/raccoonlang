@@ -183,7 +183,7 @@ object InstanceSearch {
   private def headKey(value: Value): Option[String] =
     value match {
       case ConstSpine(head, _) => Some(head.name)
-      case _                   => None
+      case _                   => value.spine.collect { case ConstSpine(head, _) => head.name }
     }
 
 }

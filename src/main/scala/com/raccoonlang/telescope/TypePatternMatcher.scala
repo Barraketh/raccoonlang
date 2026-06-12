@@ -68,9 +68,11 @@ object TypePatternMatcher {
           }
 
         case app: VApp =>
-          // A spine that exists only as the presentation of a stuck `stable` definition is not solvable:
-          // pattern legality and match outcomes must not depend on the annotation (spec section 5).
-          if (isPresentationSpine(app)) matchFailed(e, a)
+          // A blocked application of a lambda is a suspended computation, not a decomposable spine:
+          // its head/argument structure says nothing an argument type could determine. (Stuck `stable`
+          // applications no longer present as spines at all — the named form is `spine` metadata, which
+          // matching never reads.)
+          if (isBlockedLambdaApp(app)) matchFailed(e, a)
           else
             trySolveFlexSpine(app, a, subst, argEnv) match {
               case Right(store) => store
@@ -144,11 +146,10 @@ object TypePatternMatcher {
         case _ => matchFailed(expected, actual)
       }
 
-  private def isPresentationSpine(app: VApp): Boolean =
+  private def isBlockedLambdaApp(app: VApp): Boolean =
     app match {
-      case VBlockedApp(_: VLam, _, _, _)            => true
-      case VApp(VConst(_, StuckDef, _), _, _, _, _) => true
-      case _                                        => false
+      case VBlockedApp(_: VLam, _, _, _) => true
+      case _                             => false
     }
 
   // A capture atom in head position applied to distinct rigid variables has a unique solution: the actual

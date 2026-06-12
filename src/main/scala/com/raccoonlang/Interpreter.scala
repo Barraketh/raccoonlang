@@ -38,11 +38,7 @@ object Interpreter {
     v0 match {
       case Blocked(blockerId) if eqStore.subst.contains(blockerId) =>
         v0 match {
-          // A stable presentation spine: resume the stuck body computed at the original call site rather
-          // than re-running binder instantiation, which would re-solve captures without the call site's env.
-          case VApp(_, _, _, Some(_), Some(stuckBody)) =>
-            resolveInEqStore(ValueOps.materialize(stuckBody, eqStore), eqStore)
-          case VBlockedApp(h, args, tpe, _) =>
+          case app @ VBlockedApp(h, args, tpe, _) =>
             val h0 = ValueOps.materialize(resolveInEqStore(h, eqStore), eqStore)
             val materializedArgs = args.map(arg => ValueOps.materialize(arg, eqStore))
             h0 match {
@@ -50,7 +46,7 @@ object Interpreter {
                 val res = runLam(lam, materializedArgs)
                 resolveInEqStore(res, eqStore)
               case nextHead @ Blocker(nextBlockerId) =>
-                VBlockedApp(nextHead, args, tpe, nextBlockerId)
+                VApp(nextHead, args, tpe, Some(nextBlockerId), app.spine)
               case other =>
                 resolveInEqStore(evalApply(other, materializedArgs), eqStore)
             }
@@ -66,6 +62,13 @@ object Interpreter {
 
   private def getEnvWithArgs(fnTpe: VPi, baseEnv: Env, args: Vector[Value], argEnv: Env): Env =
     BinderOps.instantiateFull(fnTpe.binders, baseEnv, args, argEnv)
+
+  private def withSpine(stuck: Value, spine: VApp): Value =
+    stuck match {
+      case app: VApp           => app.copy(spine = Some(spine))
+      case thunk: NeutralThunk => thunk.copy(spine = Some(spine))
+      case other               => other
+    }
 
   private def captureValues(env: Env, capturedIndexes: RoaringBitmap): Vector[Value] = {
     val values = Vector.newBuilder[Value]
@@ -121,16 +124,17 @@ object Interpreter {
         fn match {
           case lam @ VLam(_, _, isStable, _) =>
             val res = runLam(lam, vArgs, argEnv)
+            // A stuck stable application keeps its reduced form as the value and records the named call
+            // as presentation metadata. The innermost stable frame wins (an already-present spine is
+            // kept), so delegating to another stable definition preserves the delegate's view.
             (isStable, res) match {
-              case (true, blocked @ Blocked(blockerId)) =>
-                blocked match {
-                  case VBlockedApp(VLam(_, _, true, _), _, _, _) => res
-                  case _ => VApp(fn, vArgs, blocked.tpe, Some(blockerId), stuckBody = Some(blocked))
-                }
-              case (true, stuck: NeutralThunk) if stuck.blockerId.isEmpty =>
+              case (true, blocked @ Blocked(_)) if blocked.spine.isEmpty =>
+                withSpine(blocked, VApp(fn, vArgs, blocked.tpe))
+              case (true, stuck: NeutralThunk) if stuck.blockerId.isEmpty && stuck.spine.isEmpty =>
                 lam.id match {
-                  case ValueId.Const(name) => VApp(VConst(name, StuckDef, lam.tpe), vArgs, stuck.tpe)
-                  case _                   => res
+                  case ValueId.Const(name) =>
+                    stuck.copy(spine = Some(VApp(VConst(name, StuckDef, lam.tpe), vArgs, stuck.tpe)))
+                  case _ => res
                 }
               case _ => res
             }
