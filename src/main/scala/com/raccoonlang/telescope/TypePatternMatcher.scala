@@ -18,6 +18,9 @@ import com.raccoonlang._
  *   - Pi values relate binder-wise: the actual side's own pattern binders open as rigid skolems, both binders are
  *     entered at one shared fresh atom, and the codomains recurse. Skolems and shared atoms are match-local; the
  *     V-closed watermark in `solveOpenedCaptures` rejects solutions that mention them.
+ *   - Lambda values (arising from transparent heads whose expansion is a function, e.g. `Set`-valued definitions)
+ *     match extensionally: the Pi types relate binder-wise as above, then both bodies run at the shared atoms and
+ *     the results match. Same match-locality discipline as Pi.
  *
  * Unlike unification there is no refinement of the actual side, no flex-flex case, and no postponement: every rule
  * either consumes a fixed position of the presentation or fails. Patterns whose openings present shapes this matcher
@@ -99,6 +102,13 @@ object TypePatternMatcher {
           a match {
             case actualPi: VPi if actualPi.binders.length == pi.binders.length =>
               matchPi(pi, actualPi, subst, argEnv)
+            case _ => matchFailed(e, a)
+          }
+
+        case lam: VLam =>
+          a match {
+            case actualLam: VLam if actualLam.tpe.binders.length == lam.tpe.binders.length =>
+              matchLam(lam, actualLam, subst, argEnv)
             case _ => matchFailed(e, a)
           }
 
@@ -259,15 +269,18 @@ object TypePatternMatcher {
     }
   }
 
-  private def matchPi(expectedPi: VPi, actualPi: VPi, subst: EqStore, argEnv: Env)(implicit
+  private final case class RelatedPiBinders(store: EqStore, sharedVars: Vector[Value], expectedEnv: Env, actualEnv: Env)
+
+  private def matchPiBinders(expectedPi: VPi, actualPi: VPi, subst: EqStore, argEnv: Env)(implicit
       normalizerMap: Normalizers.NormalizerMap
-  ): EqStore = {
+  ): RelatedPiBinders = {
     if (expectedPi.binders.zip(actualPi.binders).exists { case (b1, b2) => b1.isInstance != b2.isInstance })
       matchFailed(expectedPi, actualPi)
 
     var cur = subst
     var expectedEnv = expectedPi.env
     var actualEnv = actualPi.env
+    val sharedVars = Vector.newBuilder[Value]
 
     expectedPi.binders.zip(actualPi.binders).foreach { case (expectedBinder, actualBinder) =>
       val openedExpected = TypePatternOps.openBinderPattern(expectedEnv, expectedBinder)
@@ -287,8 +300,35 @@ object TypePatternMatcher {
       expectedEnv =
         ValueOps.materializeEnv(openedExpected.env, cur).putLocal(expectedBinder.localRef, shared, expectedKey)
       actualEnv = ValueOps.materializeEnv(openedActual.env, cur).putLocal(actualBinder.localRef, shared, actualKey)
+      sharedVars += shared
     }
 
-    matchValue(expectedPi.codomain(expectedEnv), actualPi.codomain(actualEnv), cur, argEnv)
+    RelatedPiBinders(cur, sharedVars.result(), expectedEnv, actualEnv)
+  }
+
+  private def matchPi(expectedPi: VPi, actualPi: VPi, subst: EqStore, argEnv: Env)(implicit
+      normalizerMap: Normalizers.NormalizerMap
+  ): EqStore = {
+    val related = matchPiBinders(expectedPi, actualPi, subst, argEnv)
+    matchValue(expectedPi.codomain(related.expectedEnv), actualPi.codomain(related.actualEnv), related.store, argEnv)
+  }
+
+  // [Lam]: a lambda in pattern position arises only from a transparent head's expansion (the grammar has
+  // no lambda patterns), mirroring how such heads expand to Pis in the [Pi] rule. It matches another
+  // lambda extensionally: relate the Pi types binder-wise, then run both bodies at the shared atoms and
+  // match the results. The shared atoms are match-local, so a capture solution that mentions one is
+  // rejected by V-closed exactly as for [Pi].
+  private def matchLam(expected: VLam, actual: VLam, subst: EqStore, argEnv: Env)(implicit
+      normalizerMap: Normalizers.NormalizerMap
+  ): EqStore = {
+    val related = matchPiBinders(expected.tpe, actual.tpe, subst, argEnv)
+    val cur =
+      matchValue(expected.tpe.codomain(related.expectedEnv), actual.tpe.codomain(related.actualEnv), related.store, argEnv)
+
+    val sharedVars = related.sharedVars.map(v => ValueOps.materialize(v, cur))
+    val expectedLam = ValueOps.materialize(expected, cur).asInstanceOf[VLam]
+    val expectedBody = Interpreter.runLam(expectedLam, sharedVars)
+    val actualBody = Interpreter.runLam(actual, sharedVars)
+    matchValue(expectedBody, actualBody, cur, argEnv)
   }
 }

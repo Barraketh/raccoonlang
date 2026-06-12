@@ -1043,4 +1043,91 @@ class TypePatternTests extends munit.FunSuite {
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }
+
+  test("positive: captures inside a transparent definition's lambda solve extensionally") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Truthy : Prop
+        | | intro : Truthy
+        |
+        |inductive Wrap (A: Type)(p: (x: A) -> Prop) : Type
+        | | mk {A: Type}{p: (x: A) -> Prop} : Wrap(A, p)
+        |
+        |def NatPred : Type := (x: Nat) -> Prop
+        |
+        |def natId (n: Nat): Nat := n
+        |
+        |def preimage (f: (_: Nat) -> Nat)(s: NatPred): NatPred :=
+        |  fun (x: Nat): Prop => s(f(x))
+        |
+        |def getSource (f: (_: Nat) -> Nat)(w: Wrap(Nat, preimage(f, $t))): Prop := t(Nat.zero)
+        |
+        |def evens : NatPred := fun (x: Nat): Prop => Truthy
+        |
+        |{
+        |  getSource(natId, Wrap.mk(Nat, preimage(natId, evens)))
+        |}
+        |""".stripMargin
+
+    runProgram(p)
+  }
+
+  test("positive: lambda-body captures solve by spine decomposition") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Rel (a: Nat)(b: Nat) : Prop
+        | | mk {a: Nat}{b: Nat} : Rel(a, b)
+        |
+        |inductive Wrap (A: Type)(p: (x: A) -> Prop) : Type
+        | | mk {A: Type}{p: (x: A) -> Prop} : Wrap(A, p)
+        |
+        |def constPred (c: Nat): (x: Nat) -> Prop := fun (x: Nat): Prop => Rel(x, c)
+        |
+        |def getConst (w: Wrap(Nat, constPred($c))): Nat := c
+        |
+        |{
+        |  getConst(Wrap.mk(Nat, constPred(Nat.succ(Nat.zero))))
+        |}
+        |""".stripMargin
+
+    val res = runProgram(p)
+    assertEquals(toShape(res), succS(zeroS))
+  }
+
+  test("negative: lambda-body capture solutions may not mention the lambda's binder") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Rel (a: Nat)(b: Nat) : Prop
+        | | mk {a: Nat}{b: Nat} : Rel(a, b)
+        |
+        |inductive Wrap (A: Type)(p: (x: A) -> Prop) : Type
+        | | mk {A: Type}{p: (x: A) -> Prop} : Wrap(A, p)
+        |
+        |def NatPred : Type := (x: Nat) -> Prop
+        |
+        |def constPred (c: Nat): NatPred := fun (x: Nat): Prop => Rel(x, c)
+        |
+        |def getConst (w: Wrap(Nat, constPred($c))): Nat := c
+        |
+        |def diag : NatPred := fun (x: Nat): Prop => Rel(x, x)
+        |
+        |{
+        |  getConst(Wrap.mk(Nat, diag))
+        |}
+        |""".stripMargin
+
+    assertTypeError[PatternCaptureEscapesScope](p)
+  }
 }

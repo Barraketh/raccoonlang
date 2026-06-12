@@ -199,7 +199,8 @@ The rules, by case on `Q` (or argument pattern `P`):
 
   Note that `h` need not be opaque: a transparent head is evaluated like any pattern position, and matching
   proceeds against whatever shape its expansion *presents* — `Set($A)` with `Set(A) = (x: A) -> Prop`
-  matches by the [Pi] rule, not by spine decomposition.
+  matches by the [Pi] rule, not by spine decomposition, and a head whose expansion is a function *value*
+  (`preimage(f, $t) = λx. t(f(x))`) matches by the [Lam] rule.
 
   Spine decomposition for *solving* applies only to **intrinsically rigid** heads: inductive and struct
   constants, constructors, axioms and builtins, and neutral variables (including flex capture heads). A
@@ -236,6 +237,18 @@ The rules, by case on `Q` (or argument pattern `P`):
   Every atom created in step 2 — the actual side's skolems and the shared `s̄`, at any nesting depth — is
   match-local. A capture solution that mentions one has no meaning outside the match and is rejected by
   V-closed. This is the entire soundness story for matching under binders.
+
+- **[Lam]**: a lambda value in pattern position arises only from a transparent head's expansion (the
+  grammar has no lambda patterns) — e.g. `preimage(f, $t)` where `preimage(f, t) = λx. t(f(x))`, so the
+  capture sits inside a function value used as data. It matches an actual lambda of the same arity
+  extensionally:
+  1. the two Pi types relate exactly as [Pi] (skolemized actual binders, one shared atom `s_i` per
+     binder, domains and codomain matched);
+  2. both bodies are run at `s̄` and the results match — the pattern body `t(f(s))` reads the actual
+     body by the ordinary [App]/[Flex-spine] rules.
+
+  The shared atoms are match-local exactly as in [Pi]: a capture solution that mentions one (e.g.
+  matching `λx. Rel(x, $c)` against `λx. Rel(x, x)` would need `c := s`) is rejected by V-closed.
 
 - **[Level]**: capture positions of type `Level` (reached through `Sort(...)` arguments or `Level`-typed
   head arguments) admit one arithmetic form: a compiled level expression consisting of a single capture plus
@@ -327,7 +340,7 @@ once:
 | D3 | `TypePatternOps.validateMatchable` (self-match against a fresh opening) |
 | O / F | `TypePatternOps.openPattern` / `openBinderPattern` / `freshenBinder` |
 | M | `TypePatternOps.bindValue` / `bindValueAndCheck` / `solveOpenedCaptures` |
-| M1 (match) | `TypePatternMatcher.matchBinderPattern` — value-directed over the opened pattern: `matchValue` walks the opened presentation, `linkCapture` is [Capture]/[CC] with classification fused, `matchLevel` is [Level], `trySolveFlexSpine` is [Flex-spine], `matchPi` is [Pi] with skolemized actual binders |
+| M1 (match) | `TypePatternMatcher.matchBinderPattern` — value-directed over the opened pattern: `matchValue` walks the opened presentation, `linkCapture` is [Capture]/[CC] with classification fused, `matchLevel` is [Level], `trySolveFlexSpine` is [Flex-spine], `matchPi` is [Pi] with skolemized actual binders, `matchLam` is [Lam] (extensional body matching at the [Pi] rule's shared atoms) |
 | M2 | watermark loop in `solveOpenedCaptures` |
 | M3/M4 | `bindOpenedValueAndCheck` / `bindOpenedValue` |
 | §7 α-equivalence | `ValueEquivalence.defEqPi` via `TypePatternMatcher.matchesUpToRenaming` (a match whose solutions form an injective atom renaming) |
