@@ -45,6 +45,18 @@ class MathlibPilotTests extends munit.FunSuite {
     typecheckModule("MathlibPilot/RelationCore.rac")
   }
 
+  test("Order predicates and structures typecheck") {
+    typecheckModule("MathlibPilot/OrderCore.rac")
+  }
+
+  test("Set partial order and lattice-shaped lemmas typecheck") {
+    typecheckModule("MathlibPilot/SetOrder.rac")
+  }
+
+  test("Subtype-backed set elements typecheck") {
+    typecheckModule("MathlibPilot/SubtypeCore.rac")
+  }
+
   test("Setoid and quotient wrappers typecheck") {
     typecheckModule("MathlibPilot/SetoidQuotient.rac")
   }

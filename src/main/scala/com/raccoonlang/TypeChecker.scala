@@ -51,13 +51,11 @@ object TypeChecker {
     }
   }
 
-  def isPropValue(value: Value): Boolean = value match {
-    case PropTpe => true
-    case _       => false
-  }
-
-  def isPropValuedType(value: Value): Boolean =
-    isPropValue(value) || getUniverse(value) == PropTpe
+  // The value is a *proposition* — a type classified by Prop — as opposed to the sort Prop itself.
+  // Impredicativity applies only here: a Pi into a proposition is proof-valued and lives in Prop, but a
+  // Pi into the sort Prop is a predicate — observable data — and must live in Sort(max(...)) like any
+  // other Pi, or proof irrelevance would identify distinct predicates (collapsing all Sets/relations).
+  def isProposition(value: Value): Boolean = getUniverse(value) == PropTpe
 
   private def checkApplyValue(fn: Value, args: Vector[Value], env: Env): Value =
     fn.tpe match {
@@ -135,7 +133,7 @@ object TypeChecker {
     val outV = checkedOut.value
     val freshArgs = vBinders.map(binder => binderEnv(binder.localRef))
     val classifier =
-      if (isPropValuedType(outV)) PropTpe
+      if (isProposition(outV)) PropTpe
       else {
         getUniverse(outV) match {
           case VSort(outLevel) =>

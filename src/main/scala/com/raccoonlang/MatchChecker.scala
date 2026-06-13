@@ -108,7 +108,7 @@ object MatchChecker {
       normalizerMap: Normalizers.NormalizerMap,
       span: Span
   ): Unit =
-    if (getUniverse(scrutTpe) == PropTpe && !isPropValuedType(motiveTy)) {
+    if (getUniverse(scrutTpe) == PropTpe && !isProposition(motiveTy)) {
       if (!allowLargeElimination(scrutTpe, reachable, normalizerMap))
         throw PropEliminationRestricted(inductiveName, motiveTy, Some(span))
     }

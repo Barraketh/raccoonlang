@@ -184,7 +184,7 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Inserted constructor params expose nested captures to later witnesses") {
     val p =
       """
-        |struct Set (A: Sort($u)) : Sort(u)
+        |struct Set (A: Sort($u)) : Sort(Level.max(u, Level.one))
         | | mk (apply: A -> Prop) : Set(A)
         |
         |struct Subset (s: Set($A))(t: Set(A)) : Prop

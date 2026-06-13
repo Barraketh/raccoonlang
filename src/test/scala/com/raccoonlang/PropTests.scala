@@ -75,7 +75,7 @@ class PropTests extends munit.FunSuite {
     }
   }
 
-  test("Pi into Prop from Type stays in Prop (internal imax behavior)") {
+  test("Pi into the sort Prop from Type stays in Type hierarchy") {
     val res = runProgram(
       """
         |inductive Nat : Type
@@ -91,10 +91,13 @@ class PropTests extends munit.FunSuite {
       case other  => fail(s"Expected Pi value, got: $other")
     }
 
-    assertEquals(res.tpe, PropTpe)
+    res.tpe match {
+      case VSort(u) => assertEquals(u, Value.Level.succ(Value.Level.one))
+      case other    => fail(s"Expected predicate type to live in Sort 2, got: $other")
+    }
   }
 
-  test("Dependent Pi into Prop stays in Prop") {
+  test("Dependent Pi into the sort Prop stays in Type hierarchy") {
     val res = runProgram(
       """
         |inductive Nat : Type
@@ -110,7 +113,10 @@ class PropTests extends munit.FunSuite {
       case other  => fail(s"Expected Pi value, got: $other")
     }
 
-    assertEquals(res.tpe, PropTpe)
+    res.tpe match {
+      case VSort(u) => assertEquals(u, Value.Level.succ(Value.Level.one))
+      case other    => fail(s"Expected dependent predicate type to live in Sort 2, got: $other")
+    }
   }
 
   test("Pi over proof binder into Type stays in Type") {
@@ -247,19 +253,32 @@ class PropTests extends munit.FunSuite {
     typecheckDecls(p)
   }
 
-  test("Elimination from Prop into Prop is allowed (Exists returns a proposition)") {
+  test("Negative: elimination from Prop into the sort Prop is rejected") {
     val p =
       """
-        |inductive Exists (A: Type)(p: A -> Prop) : Prop
-        | | intro {A: Type}{p: A -> Prop} (w: A)(pw: p(w)) : Exists(A, p)
+        |inductive True : Prop
+        | | intro : True
         |
-        |def unpackToProp (A: Type)(p: A -> Prop)(h: Exists(A, p)): Prop := {
+        |inductive False : Prop
+        |
+        |inductive Or (P: Prop)(Q: Prop) : Prop
+        | | inl {P: Prop}{Q: Prop} (p: P) : Or(P, Q)
+        | | inr {P: Prop}{Q: Prop} (q: Q) : Or(P, Q)
+        |
+        |def choose (h: Or(True, True)): Prop := {
         |  match h returning Prop with
-        |  | Exists.intro w pw => p(w)
+        |  | Or.inl p => True
+        |  | Or.inr q => False
         |}
         |""".stripMargin
 
-    typecheckDecls(p)
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
   }
 
   test("Negative: elimination from Exists into Nat is rejected") {

@@ -197,7 +197,7 @@ object TypePatternOps {
           val outValue = Interpreter.evalTerm(compileType(checkedOut), outEnv)
           val freshArgs = vBinders.result().map(b => binderEnv(b.localRef))
           val classifier =
-            if (TypeChecker.isPropValuedType(outValue)) PropTpe
+            if (TypeChecker.isProposition(outValue)) PropTpe
             else {
               val outLevel = TypeChecker.getUniverse(outValue).level
               val domLevels = freshArgs
@@ -356,7 +356,7 @@ object TypePatternOps {
   private def captureDeps(env: Env, captures: Vector[VCapture]): DepSet =
     captures.foldLeft(DepSet.empty) { case (deps, capture) => deps ++ env(capture.localRef).synDeps }
 
-  private def isUnsolvedCapture(before: Value, after: Value): Boolean =
+  private[telescope] def isUnsolvedCapture(before: Value, after: Value): Boolean =
     (before, after) match {
       case (Var(_, beforeId, _), Var(_, afterId, _)) => beforeId == afterId
       case _                                         => false

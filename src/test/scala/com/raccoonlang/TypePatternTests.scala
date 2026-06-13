@@ -1102,6 +1102,72 @@ class TypePatternTests extends munit.FunSuite {
     assertEquals(toShape(res), succS(zeroS))
   }
 
+  test("positive: a polymorphic function solves at a pattern-typed function binder") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |def polyId (a: $A of Sort($u)): A := a
+        |
+        |def apply2 (f: (_: $A of Sort($u)) -> $B of Sort($v))(x: A): B := f(x)
+        |
+        |{
+        |  apply2(polyId, Nat.zero)
+        |}
+        |""".stripMargin
+
+    val res = runProgram(p)
+    assertEquals(toShape(res), zeroS)
+  }
+
+  test("positive: polymorphic higher-order arguments solve across binders") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Truthy : Prop
+        | | intro : Truthy
+        |
+        |def Set (A: Sort($u)): Sort(Level.max(u, Level.one)) := (x: A) -> Prop
+        |
+        |def polyId (a: $A of Sort($u)): A := a
+        |
+        |def preimage (f: (_: $A of Sort($u)) -> $B of Sort($v))(s: Set(B)): Set(A) :=
+        |  fun (x: A): Prop => s(f(x))
+        |
+        |def natSet : Set(Nat) := fun (x: Nat): Prop => Truthy
+        |
+        |{
+        |  preimage(polyId, natSet)
+        |}
+        |""".stripMargin
+
+    runProgram(p)
+  }
+
+  test("negative: a fully underdetermined polymorphic argument is rejected") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |def polyId (a: $A of Sort($u)): A := a
+        |
+        |def ignoreFn (f: (_: $A of Sort($u)) -> $B of Sort($v)): Nat := Nat.zero
+        |
+        |{
+        |  ignoreFn(polyId)
+        |}
+        |""".stripMargin
+
+    assertTypeError[PatternCaptureNeedsExpectedType](p)
+  }
+
   test("negative: lambda-body capture solutions may not mention the lambda's binder") {
     val p =
       """
