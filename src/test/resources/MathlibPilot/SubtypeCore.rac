@@ -1,0 +1,188 @@
+import MathlibPilot.SetCore
+
+namespace MathlibPilot {
+  namespace SubtypeApi {
+    // Lean:
+    // theorem ext {A : Sort u} {p : A -> Prop}
+    //     (x y : Subtype p) (h : x.val = y.val) :
+    //     x = y := by
+    //   cases x with
+    //   | mk xv xp =>
+    //     cases y with
+    //     | mk yv yp =>
+    //       cases h
+    //       rfl
+    def ext
+      (x: Subtype($A of Sort($u), $p))
+      (y: Subtype(A, p))
+      (h: Eq(Subtype.val(x), Subtype.val(y)))
+      : Eq(x, y) := {
+      match x returning Eq(x, y) with
+      | Subtype.mk xv xp => {
+        match y returning Eq(Subtype.mk(A, p, xv, xp), y) with
+        | Subtype.mk yv yp => {
+          match h returning Eq(Subtype.mk(A, p, xv, xp), Subtype.mk(A, p, yv, yp)) with
+          | Eq.refl z => Eq.refl(Subtype.mk(A, p, z, xp))
+        }
+      }
+    }
+  }
+
+  namespace Set {
+    // Lean:
+    // def Elem {A : Sort u} (s : Set A) : Sort u :=
+    //   Subtype s
+    def Elem (s: Set($A of Sort($u))): Sort(u) :=
+      Subtype(A, s)
+
+    // Lean:
+    // def elem {A : Sort u} (s : Set A) (x : A) (h : s x) : Elem s :=
+    //   ⟨x, h⟩
+    def elem (s: Set($A))(x: A)(h: s(x)): Elem(s) :=
+      Subtype.mk(A, s, x, h)
+
+    // Lean:
+    // def elemVal {A : Sort u} {s : Set A} (x : Elem s) : A :=
+    //   x.val
+    def elemVal (x: Elem($s of Set($A))): A :=
+      Subtype.val(x)
+
+    // Lean:
+    // theorem elemProperty {A : Sort u} {s : Set A} (x : Elem s) :
+    //     s (elemVal x) :=
+    //   x.property
+    def elemProperty (x: Elem($s of Set($A))): s(elemVal(x)) :=
+      Subtype.property(x)
+
+    // Lean:
+    // theorem elemExt {A : Sort u} {s : Set A} (x y : Elem s)
+    //     (h : elemVal x = elemVal y) :
+    //     x = y :=
+    //   SubtypeApi.ext x y h
+    def elemExt (x: Elem($s of Set($A)))(y: Elem(s))(h: Eq(elemVal(x), elemVal(y))): Eq(x, y) :=
+      SubtypeApi.ext(x, y, h)
+
+    // Lean:
+    // def inclusion {A : Sort u} {s t : Set A} (h : Subset s t)
+    //     (x : Elem s) : Elem t :=
+    //   ⟨x.val, h x.val x.property⟩
+    def inclusion (h: Subset($s of Set($A), $t of Set(A)))(x: Elem(s)): Elem(t) :=
+      elem(t, elemVal(x), h(elemVal(x), elemProperty(x)))
+
+    // Lean:
+    // def singletonElem {A : Sort u} (a : A) : Elem (singleton a) :=
+    //   ⟨a, memSingletonSelf a⟩
+    def singletonElem (a: $A of Sort($u)): Elem(singleton(a)) :=
+      elem(singleton(a), a, memSingletonSelf(a))
+
+    // Lean:
+    // def univElem {A : Sort u} (a : A) : Elem (univ A) :=
+    //   ⟨a, True.intro⟩
+    def univElem (a: $A of Sort($u)): Elem(univ(A)) :=
+      elem(univ(A), a, True.intro)
+
+    // Lean:
+    // theorem inclusionVal {A : Sort u} {s t : Set A}
+    //     (h : Subset s t) (x : Elem s) :
+    //     elemVal (inclusion h x) = elemVal x :=
+    //   rfl
+    def inclusionVal
+      (h: Subset($s of Set($A), $t of Set(A)))
+      (x: Elem(s))
+      : Eq(elemVal(inclusion(h, x)), elemVal(x)) :=
+      Eq.refl(elemVal(x))
+
+    // Lean:
+    // def imageElem {A : Sort u} {B : Sort v}
+    //     (f : A -> B) {s : Set A} (x : Elem s) :
+    //     Elem (image f s) :=
+    //   ⟨f x.val, imageIntro f s x.val x.property⟩
+    def imageElem
+      (f: (_: $A of Sort($u)) -> $B of Sort($v))
+      (x: Elem($s of Set(A)))
+      : Elem(image(f, s)) :=
+      elem(image(f, s), f(elemVal(x)), imageIntro(f, s, elemVal(x), elemProperty(x)))
+
+    // Lean:
+    // def preimageTargetElem {A : Sort u} {B : Sort v}
+    //     (f : A -> B) (t : Set B) (x : Elem (preimage f t)) :
+    //     Elem t :=
+    //   ⟨f x.val, x.property⟩
+    def preimageTargetElem
+      (f: (_: $A of Sort($u)) -> $B of Sort($v))
+      (t: Set(B))
+      (x: Elem(preimage(f, t)))
+      : Elem(t) :=
+      elem(t, f(elemVal(x)), elemProperty(x))
+  }
+
+  namespace SubtypeExamples {
+    // Lean:
+    // def natId (n : Nat) : Nat :=
+    //   n
+    def natId (n: Nat): Nat :=
+      n
+
+    // Lean:
+    // def zeroInSingleton : Set.Elem (Set.singleton Nat.zero) :=
+    //   Set.singletonElem Nat.zero
+    def zeroInSingleton : Set.Elem(Set.singleton(Nat.zero)) :=
+      Set.singletonElem(Nat.zero)
+
+    // Lean:
+    // def zeroInSingletonVal : Set.elemVal zeroInSingleton = Nat.zero :=
+    //   rfl
+    def zeroInSingletonVal : Eq(Set.elemVal(zeroInSingleton), Nat.zero) :=
+      Eq.refl(Nat.zero)
+
+    // Lean:
+    // def zeroInUniv : Set.Elem (Set.univ Nat) :=
+    //   Set.inclusion (Set.subsetUniv (Set.singleton Nat.zero)) zeroInSingleton
+    def zeroInUniv : Set.Elem(Set.univ(Nat)) :=
+      Set.inclusion(Set.subsetUniv(Set.singleton(Nat.zero)), zeroInSingleton)
+
+    // Lean:
+    // def zeroInUnivVal : Set.elemVal zeroInUniv = Nat.zero :=
+    //   Set.inclusionVal (Set.subsetUniv (Set.singleton Nat.zero)) zeroInSingleton
+    def zeroInUnivVal : Eq(Set.elemVal(zeroInUniv), Nat.zero) :=
+      Set.inclusionVal(Set.subsetUniv(Set.singleton(Nat.zero)), zeroInSingleton)
+
+    // Lean:
+    // def zeroSingletonExt :
+    //     zeroInSingleton =
+    //       Set.elem (Set.singleton Nat.zero) Nat.zero rfl :=
+    //   Set.elemExt zeroInSingleton
+    //     (Set.elem (Set.singleton Nat.zero) Nat.zero rfl)
+    //     rfl
+    def zeroSingletonExt : Eq(
+      zeroInSingleton,
+      Set.elem(Set.singleton(Nat.zero), Nat.zero, Eq.refl(Nat.zero))
+    ) :=
+      Set.elemExt(zeroInSingleton, Set.elem(Set.singleton(Nat.zero), Nat.zero, Eq.refl(Nat.zero)), Eq.refl(Nat.zero))
+
+    // Lean:
+    // def zeroImageSingleton : Set.Elem (Set.image Nat.succ (Set.singleton Nat.zero)) :=
+    //   Set.imageElem Nat.succ zeroInSingleton
+    def zeroImageSingleton : Set.Elem(Set.image(Nat.succ, Set.singleton(Nat.zero))) :=
+      Set.imageElem(Nat.succ, zeroInSingleton)
+
+    // Lean:
+    // def zeroImageSingletonVal :
+    //     Set.elemVal zeroImageSingleton = Nat.succ Nat.zero :=
+    //   rfl
+    def zeroImageSingletonVal : Eq(Set.elemVal(zeroImageSingleton), Nat.succ(Nat.zero)) :=
+      Eq.refl(Nat.succ(Nat.zero))
+
+    // Lean:
+    // def zeroInIdPreimage : Set.Elem (Set.preimage natId (Set.singleton Nat.zero)) :=
+    //   Set.elem (Set.preimage natId (Set.singleton Nat.zero)) Nat.zero rfl
+    def zeroInIdPreimage : Set.Elem(Set.preimage(natId, Set.singleton(Nat.zero))) :=
+      Set.elem(Set.preimage(natId, Set.singleton(Nat.zero)), Nat.zero, Eq.refl(Nat.zero))
+
+    // Lean:
+    // def zeroPreimageTarget : Set.Elem (Set.singleton Nat.zero) :=
+    //   Set.preimageTargetElem natId (Set.singleton Nat.zero) zeroInIdPreimage
+    def zeroPreimageTarget : Set.Elem(Set.singleton(Nat.zero)) :=
+      Set.preimageTargetElem(natId, Set.singleton(Nat.zero), zeroInIdPreimage)
+  }
+}

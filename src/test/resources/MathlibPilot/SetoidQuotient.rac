@@ -5,7 +5,7 @@ namespace MathlibPilot {
   // class Setoid (A : Sort u) where
   //   r : A -> A -> Prop
   //   iseqv : Equivalence r
-  struct Setoid (A: Sort($u)) : Sort(u)
+  struct Setoid (A: Sort($u)) : Sort(Level.max(u, Level.one))
    | mk {A: Sort($u)}
       (r: A -> A -> Prop)
       (iseqv: Relation.Equivalence(r)) : Setoid(A)

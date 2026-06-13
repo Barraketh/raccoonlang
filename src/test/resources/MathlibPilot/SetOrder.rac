@@ -1,0 +1,226 @@
+import MathlibPilot.SetCore
+import MathlibPilot.OrderCore
+
+namespace MathlibPilot {
+  namespace Set {
+    // Lean:
+    // def subsetRel (A : Sort u) : Set A -> Set A -> Prop :=
+    //   fun s t => Subset s t
+    def subsetRel (A: Sort($u)): Set(A) -> Set(A) -> Prop :=
+      fun (s: Set(A))(t: Set(A)): Prop => Subset(s, t)
+
+    // Lean:
+    // theorem subsetRelRefl (A : Sort u) : Relation.Reflexive (subsetRel A) :=
+    //   fun s => subsetRefl s
+    def subsetRelRefl (A: Sort($u)): Relation.Reflexive(subsetRel(A)) :=
+      fun (s: Set(A)): Subset(s, s) => subsetRefl(s)
+
+    // Lean:
+    // theorem subsetRelTrans (A : Sort u) : Relation.Transitive (subsetRel A) :=
+    //   fun s t u hst htu => subsetTrans hst htu
+    def subsetRelTrans (A: Sort($u)): Relation.Transitive(subsetRel(A)) :=
+      fun (s: Set(A))(t: Set(A))(u: Set(A))(hst: Subset(s, t))(htu: Subset(t, u)): Subset(s, u) =>
+        subsetTrans(hst, htu)
+
+    // Lean:
+    // theorem subsetRelAntisymm (A : Sort u) : Order.Antisymmetric (subsetRel A) :=
+    //   fun s t hst hts => subsetAntisymm hst hts
+    def subsetRelAntisymm (A: Sort($u)): Order.Antisymmetric(subsetRel(A)) :=
+      fun (s: Set(A))(t: Set(A))(hst: Subset(s, t))(hts: Subset(t, s)): Eq(s, t) =>
+        subsetAntisymm(hst, hts)
+
+    // Lean:
+    // def subsetPreorder (A : Sort u) : Order.Preorder (Set A) :=
+    //   { le := subsetRel A,
+    //     le_refl := subsetRelRefl A,
+    //     le_trans := subsetRelTrans A }
+    def subsetPreorder (A: Sort($u)): Order.Preorder(Set(A)) :=
+      Order.Preorder.mk(
+        Set(A),
+        subsetRel(A),
+        subsetRelRefl(A),
+        subsetRelTrans(A)
+      )
+
+    // Lean:
+    // def subsetPartialOrder (A : Sort u) : Order.PartialOrder (Set A) :=
+    //   { le := subsetRel A,
+    //     le_refl := subsetRelRefl A,
+    //     le_trans := subsetRelTrans A,
+    //     le_antisymm := subsetRelAntisymm A }
+    def subsetPartialOrder (A: Sort($u)): Order.PartialOrder(Set(A)) :=
+      Order.PartialOrder.mk(
+        Set(A),
+        subsetRel(A),
+        subsetRelRefl(A),
+        subsetRelTrans(A),
+        subsetRelAntisymm(A)
+      )
+
+    // Lean:
+    // theorem univIsTop (A : Sort u) : Order.IsTop (subsetRel A) (univ A) :=
+    //   fun s => subsetUniv s
+    def univIsTop (A: Sort($u)): Order.IsTop(subsetRel(A), univ(A)) :=
+      fun (s: Set(A)): Subset(s, univ(A)) => subsetUniv(s)
+
+    // Lean:
+    // theorem emptyIsBot (A : Sort u) : Order.IsBot (subsetRel A) (empty A) :=
+    //   fun s => emptySubset s
+    def emptyIsBot (A: Sort($u)): Order.IsBot(subsetRel(A), empty(A)) :=
+      fun (s: Set(A)): Subset(empty(A), s) => emptySubset(s)
+
+    // Lean:
+    // theorem interIsInf {A : Sort u} (s t : Set A) :
+    //     Order.IsInf (subsetRel A) s t (inter s t) :=
+    //   And.intro
+    //     (interSubsetLeft s t)
+    //     (And.intro
+    //       (interSubsetRight s t)
+    //       (fun u hus hut => subsetInter hus hut))
+    def interIsInf (s: Set($A))(t: Set(A)): Order.IsInf(subsetRel(A), s, t, inter(s, t)) :=
+      And.intro(
+        interSubsetLeft(s, t),
+        And.intro(
+          interSubsetRight(s, t),
+          fun (u: Set(A))(hus: Subset(u, s))(hut: Subset(u, t)): Subset(u, inter(s, t)) =>
+            subsetInter(hus, hut)
+        )
+      )
+
+    // Lean:
+    // theorem unionIsSup {A : Sort u} (s t : Set A) :
+    //     Order.IsSup (subsetRel A) s t (union s t) :=
+    //   And.intro
+    //     (subsetUnionLeft s t)
+    //     (And.intro
+    //       (subsetUnionRight s t)
+    //       (fun u hsu htu => unionSubset hsu htu))
+    def unionIsSup (s: Set($A))(t: Set(A)): Order.IsSup(subsetRel(A), s, t, union(s, t)) :=
+      And.intro(
+        subsetUnionLeft(s, t),
+        And.intro(
+          subsetUnionRight(s, t),
+          fun (u: Set(A))(hsu: Subset(s, u))(htu: Subset(t, u)): Subset(union(s, t), u) =>
+            unionSubset(hsu, htu)
+        )
+      )
+
+    // Lean:
+    // theorem interCommSubset {A : Sort u} (s t : Set A) :
+    //     Subset (inter s t) (inter t s) :=
+    //   fun x hx => And.intro (And.right hx) (And.left hx)
+    def interCommSubset (s: Set($A))(t: Set(A)): Subset(inter(s, t), inter(t, s)) :=
+      fun (x: A)(hx: (inter(s, t)(x))): inter(t, s)(x) =>
+        And.intro(And.right(hx), And.left(hx))
+
+    // Lean:
+    // theorem interComm {A : Sort u} (s t : Set A) :
+    //     inter s t = inter t s :=
+    //   subsetAntisymm (interCommSubset s t) (interCommSubset t s)
+    def interComm (s: Set($A))(t: Set(A)): Eq(inter(s, t), inter(t, s)) :=
+      subsetAntisymm(interCommSubset(s, t), interCommSubset(t, s))
+
+    // Lean:
+    // theorem unionCommSubset {A : Sort u} (s t : Set A) :
+    //     Subset (union s t) (union t s) :=
+    //   fun x hx =>
+    //     Or.elim hx
+    //       (fun hs => Or.inr hs)
+    //       (fun ht => Or.inl ht)
+    def unionCommSubset (s: Set($A))(t: Set(A)): Subset(union(s, t), union(t, s)) :=
+      fun (x: A)(hx: (union(s, t)(x))): union(t, s)(x) =>
+        Or.elim(
+          hx,
+          union(t, s)(x),
+          fun (hs: (s(x))): union(t, s)(x) => Or.inr(t(x), hs),
+          fun (ht: (t(x))): union(t, s)(x) => Or.inl(s(x), ht)
+        )
+
+    // Lean:
+    // theorem unionComm {A : Sort u} (s t : Set A) :
+    //     union s t = union t s :=
+    //   subsetAntisymm (unionCommSubset s t) (unionCommSubset t s)
+    def unionComm (s: Set($A))(t: Set(A)): Eq(union(s, t), union(t, s)) :=
+      subsetAntisymm(unionCommSubset(s, t), unionCommSubset(t, s))
+  }
+
+  namespace SetOrderExamples {
+    // Lean:
+    // def natSetOrder : Order.PartialOrder (Set Nat) :=
+    //   Set.subsetPartialOrder Nat
+    def natSetOrder : Order.PartialOrder(Set(Nat)) :=
+      Set.subsetPartialOrder(Nat)
+
+    // Lean:
+    // def singletonBelowUniv : Order.PartialOrder.rel
+    //     natSetOrder (Set.singleton Nat.zero) (Set.univ Nat) :=
+    //   Set.subsetUniv (Set.singleton Nat.zero)
+    def singletonBelowUniv : Order.PartialOrder.rel(
+      natSetOrder,
+      Set.singleton(Nat.zero),
+      Set.univ(Nat)
+    ) :=
+      Set.subsetUniv(Set.singleton(Nat.zero))
+
+    // Lean:
+    // def emptyBelowSingleton : Order.PartialOrder.rel
+    //     natSetOrder (Set.empty Nat) (Set.singleton Nat.zero) :=
+    //   Set.emptySubset (Set.singleton Nat.zero)
+    def emptyBelowSingleton : Order.PartialOrder.rel(
+      natSetOrder,
+      Set.empty(Nat),
+      Set.singleton(Nat.zero)
+    ) :=
+      Set.emptySubset(Set.singleton(Nat.zero))
+
+    // Lean:
+    // def interInfWitness : Order.IsInf
+    //     (Set.subsetRel Nat)
+    //     (Set.singleton Nat.zero)
+    //     (Set.univ Nat)
+    //     (Set.inter (Set.singleton Nat.zero) (Set.univ Nat)) :=
+    //   Set.interIsInf (Set.singleton Nat.zero) (Set.univ Nat)
+    def interInfWitness : Order.IsInf(
+      Set.subsetRel(Nat),
+      Set.singleton(Nat.zero),
+      Set.univ(Nat),
+      Set.inter(Set.singleton(Nat.zero), Set.univ(Nat))
+    ) :=
+      Set.interIsInf(Set.singleton(Nat.zero), Set.univ(Nat))
+
+    // Lean:
+    // def unionSupWitness : Order.IsSup
+    //     (Set.subsetRel Nat)
+    //     (Set.singleton Nat.zero)
+    //     (Set.empty Nat)
+    //     (Set.union (Set.singleton Nat.zero) (Set.empty Nat)) :=
+    //   Set.unionIsSup (Set.singleton Nat.zero) (Set.empty Nat)
+    def unionSupWitness : Order.IsSup(
+      Set.subsetRel(Nat),
+      Set.singleton(Nat.zero),
+      Set.empty(Nat),
+      Set.union(Set.singleton(Nat.zero), Set.empty(Nat))
+    ) :=
+      Set.unionIsSup(Set.singleton(Nat.zero), Set.empty(Nat))
+
+    // Lean:
+    // def interSelfEq :
+    //     Set.inter (Set.singleton Nat.zero) (Set.singleton Nat.zero) =
+    //       Set.singleton Nat.zero :=
+    //   Set.subsetAntisymm
+    //     (Set.interSubsetLeft (Set.singleton Nat.zero) (Set.singleton Nat.zero))
+    //     (fun x hx => And.intro hx hx)
+    def interSelfEq : Eq(
+      Set.inter(Set.singleton(Nat.zero), Set.singleton(Nat.zero)),
+      Set.singleton(Nat.zero)
+    ) :=
+      Set.subsetAntisymm(
+        Set.interSubsetLeft(Set.singleton(Nat.zero), Set.singleton(Nat.zero)),
+        fun (x: Nat)(hx: (Set.singleton(Nat.zero)(x))): Set.inter(
+          Set.singleton(Nat.zero),
+          Set.singleton(Nat.zero)
+        )(x) =>
+          And.intro(hx, hx)
+      )
+  }
+}

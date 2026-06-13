@@ -1,7 +1,7 @@
 namespace MathlibPilot {
   // Lean:
   // def Set (A : Type u) := A -> Prop
-  def Set (A: Sort($u)): Sort(u) := (x: A) -> Prop
+  def Set (A: Sort($u)): Sort(Level.max(u, Level.one)) := (x: A) -> Prop
 
   namespace Set {
     // Lean:

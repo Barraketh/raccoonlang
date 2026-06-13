@@ -1,0 +1,139 @@
+import MathlibPilot.RelationCore
+
+namespace MathlibPilot {
+  namespace Order {
+    // Lean:
+    // def Antisymmetric {A : Sort u} (r : A -> A -> Prop) : Prop :=
+    //   (a : A) -> (b : A) -> r a b -> r b a -> a = b
+    def Antisymmetric (r: (_: $A of Sort($u)) -> A -> Prop): Prop :=
+      (a: A) -> (b: A) -> r(a, b) -> r(b, a) -> Eq(a, b)
+
+    // Lean:
+    // class Preorder (A : Sort u) where
+    //   le : A -> A -> Prop
+    //   le_refl : Reflexive le
+    //   le_trans : Transitive le
+    struct Preorder (A: Sort($u)) : Sort(Level.max(u, Level.one))
+     | mk {A: Sort($u)}
+        (le: A -> A -> Prop)
+        (leRefl: Relation.Reflexive(le))
+        (leTrans: Relation.Transitive(le)) : Preorder(A)
+
+    namespace Preorder {
+      // Lean:
+      // def rel {A : Sort u} (self : Preorder A) (a b : A) : Prop :=
+      //   self.le a b
+      def rel (self: Preorder($A))(a: A)(b: A): Prop :=
+        Preorder.le(self)(a, b)
+
+      // Lean:
+      // theorem reflOf {A : Sort u} (self : Preorder A) (a : A) :
+      //     rel self a a :=
+      //   self.le_refl a
+      def reflOf (self: Preorder($A))(a: A): rel(self, a, a) :=
+        Preorder.leRefl(self)(a)
+
+      // Lean:
+      // theorem transOf {A : Sort u} (self : Preorder A)
+      //     (h1 : rel self a b) (h2 : rel self b c) :
+      //     rel self a c :=
+      //   self.le_trans a b c h1 h2
+      def transOf
+        (self: Preorder($A))
+        (h1: rel(self, $a of A, $b of A))
+        (h2: rel(self, b, $c of A))
+        : rel(self, a, c) :=
+        Preorder.leTrans(self)(a, b, c, h1, h2)
+    }
+
+    // Lean:
+    // class PartialOrder (A : Sort u) extends Preorder A where
+    //   le_antisymm : Antisymmetric le
+    struct PartialOrder (A: Sort($u)) : Sort(Level.max(u, Level.one))
+     | mk {A: Sort($u)}
+        (le: A -> A -> Prop)
+        (leRefl: Relation.Reflexive(le))
+        (leTrans: Relation.Transitive(le))
+        (leAntisymm: Antisymmetric(le)) : PartialOrder(A)
+
+    namespace PartialOrder {
+      // Lean:
+      // def toPreorder {A : Sort u} (self : PartialOrder A) : Preorder A :=
+      //   { le := self.le, le_refl := self.le_refl, le_trans := self.le_trans }
+      def toPreorder (self: PartialOrder($A)): Preorder(A) :=
+        Preorder.mk(
+          A,
+          PartialOrder.le(self),
+          PartialOrder.leRefl(self),
+          PartialOrder.leTrans(self)
+        )
+
+      // Lean:
+      // def rel {A : Sort u} (self : PartialOrder A) (a b : A) : Prop :=
+      //   self.le a b
+      def rel (self: PartialOrder($A))(a: A)(b: A): Prop :=
+        PartialOrder.le(self)(a, b)
+
+      // Lean:
+      // theorem reflOf {A : Sort u} (self : PartialOrder A) (a : A) :
+      //     rel self a a :=
+      //   self.le_refl a
+      def reflOf (self: PartialOrder($A))(a: A): rel(self, a, a) :=
+        PartialOrder.leRefl(self)(a)
+
+      // Lean:
+      // theorem transOf {A : Sort u} (self : PartialOrder A)
+      //     (h1 : rel self a b) (h2 : rel self b c) :
+      //     rel self a c :=
+      //   self.le_trans a b c h1 h2
+      def transOf
+        (self: PartialOrder($A))
+        (h1: rel(self, $a of A, $b of A))
+        (h2: rel(self, b, $c of A))
+        : rel(self, a, c) :=
+        PartialOrder.leTrans(self)(a, b, c, h1, h2)
+
+      // Lean:
+      // theorem antisymmOf {A : Sort u} (self : PartialOrder A)
+      //     (h1 : rel self a b) (h2 : rel self b a) :
+      //     a = b :=
+      //   self.le_antisymm a b h1 h2
+      def antisymmOf
+        (self: PartialOrder($A))
+        (h1: rel(self, $a of A, $b of A))
+        (h2: rel(self, b, a))
+        : Eq(a, b) :=
+        PartialOrder.leAntisymm(self)(a, b, h1, h2)
+    }
+
+    // Lean:
+    // def IsTop {A : Sort u} (le : A -> A -> Prop) (top : A) : Prop :=
+    //   (x : A) -> le x top
+    def IsTop (le: (_: $A of Sort($u)) -> A -> Prop)(top: A): Prop :=
+      (x: A) -> le(x, top)
+
+    // Lean:
+    // def IsBot {A : Sort u} (le : A -> A -> Prop) (bot : A) : Prop :=
+    //   (x : A) -> le bot x
+    def IsBot (le: (_: $A of Sort($u)) -> A -> Prop)(bot: A): Prop :=
+      (x: A) -> le(bot, x)
+
+    // Lean:
+    // def IsInf {A : Sort u} (le : A -> A -> Prop) (x y inf : A) : Prop :=
+    //   And (le inf x) (And (le inf y) ((z : A) -> le z x -> le z y -> le z inf))
+    def IsInf (le: (_: $A of Sort($u)) -> A -> Prop)(x: A)(y: A)(inf: A): Prop :=
+      And(
+        le(inf, x),
+        And(le(inf, y), (z: A) -> le(z, x) -> le(z, y) -> le(z, inf))
+      )
+
+    // Lean:
+    // def IsSup {A : Sort u} (le : A -> A -> Prop) (x y sup : A) : Prop :=
+    //   And (le x sup) (And (le y sup) ((z : A) -> le x z -> le y z -> le sup z))
+    def IsSup (le: (_: $A of Sort($u)) -> A -> Prop)(x: A)(y: A)(sup: A): Prop :=
+      And(
+        le(x, sup),
+        And(le(y, sup), (z: A) -> le(x, z) -> le(y, z) -> le(sup, z))
+      )
+  }
+}

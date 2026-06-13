@@ -1,0 +1,36 @@
+import MathlibPilot.SetCore
+
+namespace MathlibPilot {
+  // Polymorphic identity, the shape codex used
+  def polyId (a: $A of Sort($u)): A := a
+
+  // Monomorphic control: this should typecheck
+  def monoId (n: Nat): Nat := n
+
+  def monoPreimage : Set(Nat) := Set.preimage(monoId, Set.singleton(Nat.zero))
+
+  // Section 7 instantiation: pattern-typed value at a rigid expected Pi (argument position)
+  def applyToZero (f: (n: Nat) -> Nat): Nat := f(Nat.zero)
+  def instTest : Nat := applyToZero(polyId)
+
+  // Eta-wrapper workaround from appendix B
+  def etaPreimage : Set(Nat) := Set.preimage(fun (n: Nat): Nat => polyId(n), Set.singleton(Nat.zero))
+
+  // Codex's finding 1: a polymorphic function at a pattern-typed function binder. Solved by the
+  // application-scoped binding fallback (spec section 6, rule A): the second argument determines B,
+  // which flows through polyId's own captures back to A.
+  def polyPreimage : Set(Nat) := Set.preimage(polyId, Set.singleton(Nat.zero))
+
+  // Codex's finding 2 shape: recover $t from inside preimage's unfolding (a lambda value).
+  // Works via the [Lam] matching rule.
+  def getPreimageSet
+    (f: (_: $A of Sort($u)) -> $B of Sort($v))
+    (x: Subtype(A, Set.preimage(f, $t)))
+    : Set(B) := t
+
+  def recovered : Set(Nat) :=
+    getPreimageSet(
+      monoId,
+      Subtype.mk(Nat, Set.preimage(monoId, Set.singleton(Nat.zero)), Nat.zero, Eq.refl(Nat.zero))
+    )
+}
