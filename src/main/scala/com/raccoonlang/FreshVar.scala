@@ -6,6 +6,8 @@ object FreshVar {
 
   // Fresh symbol name helper
   private var gensymId: VarId = 0
+  def currentId: VarId = gensymId
+
   def freshVar(name: String, tpe: Value) = {
     gensymId += 1
     Var(name, gensymId, tpe)

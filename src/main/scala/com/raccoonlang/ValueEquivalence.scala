@@ -158,16 +158,25 @@ object ValueEquivalence {
 
   private object Unify {
     private type Result = Either[(Value, Value), EqStore]
+    private final case class PiUnification(eqStore: EqStore, vars: Vector[Value], watermark: Value.VarId)
+
+    private def newSolutionDependsOnFreshVar(start: EqStore, store: EqStore, watermark: Value.VarId): Boolean =
+      store.subst.exists { case (id, solution) =>
+        !start.subst.contains(id) && solution.synDeps.nonEmpty && solution.synDeps.max > watermark
+      }
 
     private def tryUnifyPis(pi1: VPi, pi2: VPi, eqStore: EqStore)(implicit
         normalizerMap: Normalizers.NormalizerMap
-    ): Either[(Value, Value), (EqStore, Vector[Value])] = {
+    ): Either[(Value, Value), PiUnification] = {
+      val watermark = FreshVar.currentId
       DefEq.relatePis(pi1, pi2) match {
         case None => Left((pi1, pi2))
         case Some(related) =>
           tryUnify(related.out1, related.out2, eqStore) match {
-            case Right(nextEqStore) => Right((nextEqStore, related.vars))
-            case Left(failed)       => Left(failed)
+            case Right(nextEqStore) =>
+              if (newSolutionDependsOnFreshVar(eqStore, nextEqStore, watermark)) Left((pi1, pi2))
+              else Right(PiUnification(nextEqStore, related.vars, watermark))
+            case Left(failed) => Left(failed)
           }
       }
     }
@@ -265,18 +274,21 @@ object ValueEquivalence {
 
         case (p1: VPi, p2: VPi) if p1.binders.length == p2.binders.length =>
           tryUnifyPis(p1, p2, meta) match {
-            case Right((nextMeta, _)) => Right(nextMeta)
-            case Left(failed)         => Left(failed)
+            case Right(unified) => Right(unified.eqStore)
+            case Left(failed)   => Left(failed)
           }
         case (l1: VLam, l2: VLam) if l1.tpe.binders.length == l2.tpe.binders.length =>
           // We know that the id check failed - falling back to extensional unification
           tryUnifyPis(l1.tpe, l2.tpe, meta) match {
             case Left(failed) => Left(failed)
-            case Right((nextMeta, sharedVars)) =>
+            case Right(PiUnification(nextMeta, sharedVars, watermark)) =>
               val mappedVars = sharedVars.map(arg => ValueOps.materialize(arg, nextMeta))
               val res1 = Interpreter.runLam(ValueOps.materialize(l1, nextMeta).asInstanceOf[VLam], mappedVars)
               val res2 = Interpreter.runLam(ValueOps.materialize(l2, nextMeta).asInstanceOf[VLam], mappedVars)
-              tryUnify(res1, res2, nextMeta)
+              tryUnify(res1, res2, nextMeta) match {
+                case Right(bodyMeta) if newSolutionDependsOnFreshVar(nextMeta, bodyMeta, watermark) => Left((l1, l2))
+                case other                                                                          => other
+              }
           }
         case (v1: VApp, v2: VApp) if v1.args.length == v2.args.length =>
           tryUnify(v1.head, v2.head, meta) match {
