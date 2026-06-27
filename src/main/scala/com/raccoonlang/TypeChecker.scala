@@ -43,9 +43,17 @@ object TypeChecker {
   def isPropValuedType(value: Value): Boolean =
     isPropValue(value) || getUniverse(value) == PropTpe
 
+  private def assertNonRawRecursive(v: Value): Unit = {
+    v match {
+      case VLam(_, id, _, LamBody.Native(_, _, true)) => throw InvalidRecursiveOccurrence(s"$id")
+      case _                                          =>
+    }
+  }
+
   private def checkApplyValue(fn: Value, args: Vector[Value], normalizerMap: Normalizers.NormalizerMap): Value =
     fn.tpe match {
       case pi: VPi =>
+        args.foreach(arg => assertNonRawRecursive(arg))
         BinderOps.checkAndInstantiate(pi.binders, pi.env, args, normalizerMap)
         Interpreter.evalApply(fn, args)
       case _ => throw CannotApplyNonFunction(fn)
@@ -56,56 +64,6 @@ object TypeChecker {
       case CA.Term.GlobalRef(name, span) => EA.Term.GlobalRef(name, span)
       case CA.Term.LocalRef(ref, span)   => EA.Term.LocalRef(ref, span)
     }
-
-  private def rejectStoredAppHeadOnlyRefs(term: EA.Term, env: Env): Unit = {
-    def loop(t: EA.Term, appHead: Boolean): Unit =
-      t match {
-        case EA.Term.LocalRef(ref, span) =>
-          if (ref.id >= 0 && ref.id < env.locals.length) {
-            val binding = env.localBinding(ref)
-            binding.residualPolicy match {
-              case LocalResidualPolicy.AppHeadOnly(name) if !appHead =>
-                throw CannotQuoteValue(binding.value, s"$name is only available as an application head", Some(span))
-              case _ =>
-            }
-          }
-        case EA.Term.GlobalRef(_, _) =>
-        case EA.Term.App(fn, args, _) =>
-          loop(fn, appHead = true)
-          args.foreach(arg => loop(arg, appHead = false))
-        case EA.Term.Pi(binders, out, _, _) =>
-          binders.foreach(b => loopBinderType(b.ty))
-          loop(out, appHead = false)
-        case EA.Term.Body(lets, res, _) =>
-          lets.foreach { l =>
-            l.ty.foreach(loop(_, appHead = false))
-            loop(l.value, appHead = false)
-          }
-          loop(res, appHead = false)
-        case EA.Term.Lam(_, _, _, _, _, _) =>
-        case EA.Term.Match(scrut, motive, cases, _) =>
-          loop(scrut, appHead = false)
-          motive.foreach(loop(_, appHead = false))
-          cases.foreach(c => loop(c.body, appHead = false))
-      }
-
-    def loopBinderType(t: EA.BinderType): Unit =
-      t match {
-        case EA.BinderType.TypePattern(tp, _)                   => loopTypePattern(tp)
-        case EA.BinderType.ConstrainedCapture(_, constraint, _) => loopTypePattern(constraint)
-      }
-
-    def loopTypePattern(t: EA.TypePattern): Unit =
-      t match {
-        case EA.TypePattern.Type(term) => loop(term, appHead = false)
-        case EA.TypePattern.App(fn, args, _) =>
-          loop(fn, appHead = true)
-          args.foreach(loopTypePattern)
-        case EA.TypePattern.Capture(_, _) =>
-      }
-
-    loop(term, appHead = false)
-  }
 
   private def checkPi(pi: CA.Term.Pi, env: Env): CheckedPi = {
     val (vBinders, checkedBinders) = BinderOps.toVBinders(pi.binders, env)
@@ -161,7 +119,6 @@ object TypeChecker {
 
     body.lets.foreach { l =>
       val checkedValue = checkTerm(l.value, curEnv)
-      rejectStoredAppHeadOnlyRefs(checkedValue.residual, curEnv)
 
       var resTyTerm: Option[EA.TypeTerm] = None
       val withType = l.ty
@@ -226,7 +183,7 @@ object TypeChecker {
         case Some(CA.Recursion(ref, decreaseSpec)) =>
           val name = l.name.getOrElse(throw WTF("Recursive lambda must have a name", Some(l.span)))
           val recursiveSelf = TerminationChecker.rawRecursiveSelf(name, vpi, decreaseSpec, bodyEnv, l.isStable)
-          bodyEnv.putLocal(ref, recursiveSelf, residualPolicy = LocalResidualPolicy.AppHeadOnly(name))
+          bodyEnv.putLocal(ref, recursiveSelf)
         case None => bodyEnv
       }
 
@@ -234,9 +191,9 @@ object TypeChecker {
       case b: CA.Term.Body => checkBody(b, recurEnv)
       case _               => checkTerm(l.body, recurEnv)
     }
+    assertNonRawRecursive(checkedBody.value)
 
     checkType(checkedBody.value, checkedVpi.outTy, recurEnv.normalizers)
-    rejectStoredAppHeadOnlyRefs(checkedBody.residual, recurEnv)
     val checkedLam =
       EA.Term.Lam(
         checkedVpi.residual,

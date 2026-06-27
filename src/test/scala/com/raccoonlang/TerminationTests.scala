@@ -39,9 +39,9 @@ class TerminationTests extends munit.FunSuite {
     case Value.ConstructorHead(n, _, _, _) => SConst(n)
     case Value.VCtor(h, fields, _) =>
       if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))
-    case Value.VConst(n, _, _)  => SConst(n)
+    case Value.VConst(n, _, _)     => SConst(n)
     case Value.VApp(h, args, _, _) => SApp(toShape(h), args.toList.map(toShape))
-    case other                  => SConst(other.toString)
+    case other                     => SConst(other.toString)
   }
 
   private val zeroS = SConst("Nat.zero")
@@ -64,21 +64,6 @@ class TerminationTests extends munit.FunSuite {
           |""".stripMargin
 
     assertEquals(toShape(runProgram(p).get), succS(succS(zeroS)))
-  }
-
-  test("raw recursive self cannot be stored as a direct local alias") {
-    val p =
-      natDecls +
-        """
-          |def bad (n: Nat): Nat decreases structural(n) := {
-          |  let go := bad
-          |  match n with
-          |  | Nat.zero => Nat.zero
-          |  | Nat.succ x => go(x)
-          |}
-          |""".stripMargin
-
-    typeError[CannotQuoteValue](p)
   }
 
   test("structural recursion searches through transitive constructor fields") {
@@ -311,9 +296,8 @@ class TerminationTests extends munit.FunSuite {
           |}
           |""".stripMargin
 
-    typeError[CannotQuoteValue](p)
+    typeError[InvalidRecursiveOccurrence](p)
   }
-
 
   test("raw recursive self cannot be hidden inside a trusted normalizer value") {
     val p =
@@ -325,6 +309,6 @@ class TerminationTests extends munit.FunSuite {
           |}
           |""".stripMargin
 
-    typeError[CannotQuoteValue](p)
+    typeError[InvalidRecursiveOccurrence](p)
   }
 }

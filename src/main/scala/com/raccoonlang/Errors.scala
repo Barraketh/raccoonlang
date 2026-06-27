@@ -296,7 +296,7 @@ final case class NonDecreasingRecursiveCall(function: String, reason: String, sp
   override def msg: String = s"Recursive call to $function is not decreasing: $reason"
 }
 
-final case class InvalidRecursiveOccurrence(function: String, reason: String, span: Option[Span] = None)
+final case class InvalidRecursiveOccurrence(function: String, span: Option[Span] = None)
   extends TypeError {
-  override def msg: String = s"Invalid recursive occurrence of $function: $reason"
+  override def msg: String = s"Invalid recursive occurrence of $function"
 }
