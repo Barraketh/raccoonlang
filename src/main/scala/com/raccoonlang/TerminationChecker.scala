@@ -6,7 +6,7 @@ import com.raccoonlang.{CoreAst => CA}
 
 /** Termination checking uses a temporary raw-recursive value installed as a local while checking the body. */
 object TerminationChecker {
-  def rawRecursiveSelf(name: String, vpi: VPi, spec: CA.DecreaseSpec, bodyEnv: Env, isStable: Boolean): VLam = {
+  def rawRecursiveSelf(name: String, vpi: VPi, spec: CA.DecreaseSpec, bodyEnv: Env): VLam = {
     def requireInductiveMetric(value: Value, span: Span): Unit =
       value.tpe match {
         case ConstSpine(VConst(_, Inductive(_), _), _) =>
@@ -31,8 +31,8 @@ object TerminationChecker {
           val decreasedAt = refsWithIndices.find { case (ref, idx) =>
             val root = nativeEnv.apply(ref)
             val candidate = callArgs(idx)
-            if (isStrictSubterm(candidate, root, nativeEnv.normalizers)) true
-            else if (ValueEquivalence.defEq(candidate, root, nativeEnv.normalizers, propIrrelevant = false)) false
+            if (isStrictSubterm(candidate, root)) true
+            else if (ValueEquivalence.defEq(candidate, root, propIrrelevant = false)) false
             else
               throw NonDecreasingRecursiveCall(
                 name,
@@ -51,7 +51,7 @@ object TerminationChecker {
           val currentMeasure = Interpreter.evalTerm(quoted, nativeEnv)
           val callEnv = BinderOps.instantiateFull(vpi.binders, vpi.env, args)
           val candidate = Interpreter.evalTerm(quoted, callEnv)
-          if (!isStrictSubterm(candidate, currentMeasure, nativeEnv.normalizers))
+          if (!isStrictSubterm(candidate, currentMeasure))
             throw NonDecreasingRecursiveCall(name, "measure does not structurally decrease", None)
         }
     }
@@ -59,7 +59,6 @@ object TerminationChecker {
     VLam(
       vpi,
       ValueId.Const(name),
-      isStable,
       LamBody.Native(
         (args, nativeEnv) => {
           checkDecrease(args, nativeEnv)
@@ -73,12 +72,12 @@ object TerminationChecker {
     )
   }
 
-  private def isStrictSubterm(candidate: Value, root: Value, normalizers: Normalizers.NormalizerMap): Boolean =
+  private def isStrictSubterm(candidate: Value, root: Value): Boolean =
     root match {
       case VCtor(_, fields, _) =>
         fields.exists { field =>
-          ValueEquivalence.defEq(candidate, field, normalizers, propIrrelevant = false) ||
-          isStrictSubterm(candidate, field, normalizers)
+          ValueEquivalence.defEq(candidate, field, propIrrelevant = false) ||
+          isStrictSubterm(candidate, field)
         }
       case _ => false
     }

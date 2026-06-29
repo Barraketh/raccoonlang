@@ -7,7 +7,7 @@ package com.raccoonlang
  *   - Every value is typed correctly. Types are themselves Values, and so are Sorts and Levels
  *   - synDeps is the set of all VarIds that this Value contains, including in its type. It is extremely important to
  * maintain this correctly
- *   - key - a structural hash key of this value. Lazily computed by ValueKey.orderKey(). Used by defEq and Normalizers
+ *   - key - a structural hash key of this value. Lazily computed by ValueKey.orderKey(). Used by defEq
  *   - needsStructuralDefEq: tracks values whose key may differ even when structural equality can still succeed
  */
 sealed trait Value {
@@ -82,10 +82,6 @@ object Value {
 
   case object LevelTpe extends TopLevelValue {
     override def tpe: Value = TypeTpe
-  }
-
-  case object KernelObject extends TopLevelValue {
-    override def tpe: Value = KernelObject
   }
 
   // Represents max(var1 + k1, var2 + k2... , c)
@@ -266,7 +262,6 @@ object Value {
   case class VLam(
       tpe: VPi,
       id: ValueId,
-      isStable: Boolean,
       body: LamBody
   ) extends Value {
     override lazy val synDeps: DepSet = {
@@ -298,22 +293,6 @@ object Value {
     def numErased: Int = erasedFamilyArgIndexes.length
 
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
-  }
-
-  object NormalizerType extends TopLevelValue {
-    override def tpe: Value = TypeTpe
-  }
-
-  trait Normalizer extends TopLevelValue {
-    def carrierKey: Normalizers.CarrierKey
-
-    def dependencies: Vector[Value]
-
-    def normalize(v: Value): Value
-
-    def name: String
-
-    override val tpe: Value = NormalizerType
   }
 
   final case class ConstructorMeta(shortName: String, canonicalName: String)

@@ -33,7 +33,7 @@ class CapturedIndexesTests extends munit.FunSuite {
 
     assert(indexes.contains(capturedRef.id))
     assertEquals(indexes.getCardinality, 1)
-    assertEquals(env(capturedRef), captured)
+    assert(ValueEquivalence.defEq(env(capturedRef), captured, propIrrelevant = true))
   }
 
   test("captured indexes cannot be read from a smaller env than their cutoff") {

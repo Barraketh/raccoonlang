@@ -289,7 +289,7 @@ class ProjectionTests extends munit.FunSuite {
     typecheckDecls(p)
   }
 
-  test("regression: projection can quote neutral select in a field type") {
+  test("negative: neutral projection in a constructor field type is rejected conservatively") {
     val p =
       """
         |inductive Nat : Type
@@ -307,7 +307,13 @@ class ProjectionTests extends munit.FunSuite {
         |def getX (u: UsesF): F.fst := u.x
         |""".stripMargin
 
-    typecheckDecls(p)
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[NonStrictlyPositive] { Interpreter.run(core, Prelude.test) }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
   }
 
   test("regression: projection from stuck match returning a struct stays neutral") {

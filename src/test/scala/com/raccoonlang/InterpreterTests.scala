@@ -34,7 +34,7 @@ class InterpreterTests extends munit.FunSuite {
               | | zero : Nat
               | | succ (_: Nat) : Nat
               |
-              |stable def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
+              |def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
               |  match b with
               |  | Nat.zero => a
               |  | Nat.succ x => add(Nat.succ(a), x)

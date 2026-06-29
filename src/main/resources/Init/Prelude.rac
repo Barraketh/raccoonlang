@@ -6,8 +6,6 @@ namespace Level {
   def max (l1: Level)(l2: Level): Level := builtin
 }
 
-def add_normalizer (zero: $A in Type)(add: A -> A -> A): Normalizer := builtin
-
 def id (x: $A in Sort($u)): A := x
 
 def const (x: $A in Sort($u))(y: $B in Sort($v)): A := x
@@ -193,25 +191,25 @@ namespace Nat {
     | Nat.succ p => Bool.false
   }
 
-  stable def sub (a: Nat)(b: Nat): Nat decreases structural(b) := {
+  def sub (a: Nat)(b: Nat): Nat decreases structural(b) := {
     match b returning Nat with
     | Nat.zero => a
     | Nat.succ p => Nat.pred(Nat.sub(a, p))
   }
 
-  stable def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
+  def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
     match b returning Nat with
     | Nat.zero => a
     | Nat.succ p => Nat.add(Nat.succ(a), p)
   }
 
-  stable def mul (a: Nat)(b: Nat): Nat decreases structural(b) := {
+  def mul (a: Nat)(b: Nat): Nat decreases structural(b) := {
     match b returning Nat with
     | Nat.zero => Nat.zero
     | Nat.succ p => Nat.add(a, Nat.mul(a, p))
   }
 
-  stable def beq (a: Nat)(b: Nat): Bool decreases structural(a) := {
+  def beq (a: Nat)(b: Nat): Bool decreases structural(a) := {
     match a returning Bool with
     | Nat.zero => Nat.isZero(b)
     | Nat.succ aTail => {
@@ -221,7 +219,7 @@ namespace Nat {
     }
   }
 
-  stable def ble (a: Nat)(b: Nat): Bool decreases structural(a) := {
+  def ble (a: Nat)(b: Nat): Bool decreases structural(a) := {
     match a returning Bool with
     | Nat.zero => Bool.true
     | Nat.succ aTail => {
@@ -291,55 +289,55 @@ inductive List (A: Sort($u)) : Sort(u)
  | cons (head: $A in Sort($u))(tail: List(A)) : List(A)
 
 namespace List {
-  stable def foldr (xs: List($A))(B: Sort($v))(nil: B)(cons: A -> B -> B): B decreases structural(xs) := {
+  def foldr (xs: List($A))(B: Sort($v))(nil: B)(cons: A -> B -> B): B decreases structural(xs) := {
     match xs returning B with
     | List.nil => nil
     | List.cons head tail => cons(head, List.foldr(tail, B, nil, cons))
   }
 
-  stable def foldl (xs: List($A))(B: Sort($v))(init: B)(f: B -> A -> B): B decreases structural(xs) := {
+  def foldl (xs: List($A))(B: Sort($v))(init: B)(f: B -> A -> B): B decreases structural(xs) := {
     match xs returning B with
     | List.nil => init
     | List.cons head tail => List.foldl(tail, B, f(init, head), f)
   }
 
-  stable def append (xs: List($A))(ys: List(A)): List(A) decreases structural(xs) := {
+  def append (xs: List($A))(ys: List(A)): List(A) decreases structural(xs) := {
     match xs returning List(A) with
     | List.nil => ys
     | List.cons head tail => List.cons(head, List.append(tail, ys))
   }
 
-  stable def map (xs: List($A))(B: Sort($v))(f: A -> B): List(B) decreases structural(xs) := {
+  def map (xs: List($A))(B: Sort($v))(f: A -> B): List(B) decreases structural(xs) := {
     match xs returning List(B) with
     | List.nil => List.nil(B)
     | List.cons head tail => List.cons(f(head), List.map(tail, B, f))
   }
 
-  stable def length (xs: List($A)): Nat decreases structural(xs) := {
+  def length (xs: List($A)): Nat decreases structural(xs) := {
     match xs returning Nat with
     | List.nil => Nat.zero
     | List.cons head tail => Nat.succ(List.length(tail))
   }
 
-  stable def reverse (xs: List($A)): List(A) decreases structural(xs) := {
+  def reverse (xs: List($A)): List(A) decreases structural(xs) := {
     match xs returning List(A) with
     | List.nil => List.nil(A)
     | List.cons head tail => List.append(List.reverse(tail), List.cons(head, List.nil(A)))
   }
 
-  stable def any (xs: List($A))(p: A -> Bool): Bool decreases structural(xs) := {
+  def any (xs: List($A))(p: A -> Bool): Bool decreases structural(xs) := {
     match xs returning Bool with
     | List.nil => Bool.false
     | List.cons head tail => Bool.or(p(head), List.any(tail, p))
   }
 
-  stable def all (xs: List($A))(p: A -> Bool): Bool decreases structural(xs) := {
+  def all (xs: List($A))(p: A -> Bool): Bool decreases structural(xs) := {
     match xs returning Bool with
     | List.nil => Bool.true
     | List.cons head tail => Bool.and(p(head), List.all(tail, p))
   }
 
-  stable def filter (xs: List($A))(p: A -> Bool): List(A) decreases structural(xs) := {
+  def filter (xs: List($A))(p: A -> Bool): List(A) decreases structural(xs) := {
     match xs returning List(A) with
     | List.nil => List.nil(A)
     | List.cons head tail => {
@@ -404,7 +402,7 @@ def instance optionBEq [beqA: BEq($A)]: BEq(Option(A)) :=
   )
 
 namespace List {
-  stable def beq [beqA: BEq($A)](xs: List(A))(ys: List(A)): Bool decreases structural(xs) := {
+  def beq [beqA: BEq($A)](xs: List(A))(ys: List(A)): Bool decreases structural(xs) := {
     match xs returning Bool with
     | List.nil => {
       match ys returning Bool with
@@ -520,7 +518,7 @@ namespace Nat {
     | Eq.refl z => Eq.refl(Nat.pred(z))
   }
 
-  stable def decEq (a: Nat)(b: Nat): Decidable(Eq(Nat, a, b)) decreases structural(a) := {
+  def decEq (a: Nat)(b: Nat): Decidable(Eq(Nat, a, b)) decreases structural(a) := {
     match a returning Decidable(Eq(Nat, a, b)) with
     | Nat.zero => {
       match b returning Decidable(Eq(Nat, Nat.zero, b)) with

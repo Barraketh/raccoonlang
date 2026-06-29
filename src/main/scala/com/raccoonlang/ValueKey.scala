@@ -40,8 +40,6 @@ object ValueKey {
     val NeutralThunk = 10
     val Pi = 11
     val ConstructorHead = 12
-    val NormalizerType = 14
-    val Normalizer = 15
     val ConstId = 16
     val LocalId = 17
   }
@@ -130,7 +128,6 @@ object ValueKey {
     case level: Value.Level    => levelKey(level.atoms, level.c)
     case Value.PropTpe         => tag(Tag.Prop)
     case Value.VSort(lvl)      => mixKey(tag(Tag.Sort), lvl.key)
-    case Value.KernelObject    => tag(Tag.KernelObject)
     case Value.VConst(n, _, _) => mixString(tag(Tag.Const), n)
     case Value.Var(_, id, _)   => mixLong(tag(Tag.Var), id.toLong)
     case Value.VApp(h, args, tpe, _) =>
@@ -139,17 +136,13 @@ object ValueKey {
         case _: Value.ConstructorHead => mixKey(appKey, tpe.key)
         case _                        => appKey
       }
-    case Value.VLam(_, id, _, _) =>
+    case Value.VLam(_, id, _) =>
       valueIdKey(tag(Tag.Lam), id)
     case m: Value.NeutralThunk =>
       valueIdKey(tag(Tag.NeutralThunk), m.id)
     case p: Value.VPi =>
       mixLong(valueIdKey(tag(Tag.Pi), p.id), p.binders.length.toLong)
-    case Value.ConstructorHead(n, _, _, _) =>
-      mixString(tag(Tag.ConstructorHead), n)
-    case Value.NormalizerType =>
-      tag(Tag.NormalizerType)
-    case n: Value.Normalizer =>
-      mixString(tag(Tag.Normalizer), n.name)
+    case head: Value.ConstructorHead =>
+      mixString(tag(Tag.ConstructorHead), head.name)
   }
 }

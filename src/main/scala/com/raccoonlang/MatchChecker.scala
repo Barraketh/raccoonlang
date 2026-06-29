@@ -33,7 +33,7 @@ object MatchChecker {
       env: Env
   ): Vector[ReachableCtor] = {
     def tryUnify(left: Value, right: Value, refinable: DepSet): Option[EqStore] =
-      ValueEquivalence.tryUnify(left, right, EqStore.empty.allow(refinable), env.normalizers).toOption
+      ValueEquivalence.tryUnify(left, right, EqStore.empty.allow(refinable)).toOption
 
     def rootRefinable(value: Value): DepSet =
       value match {
@@ -66,8 +66,7 @@ object MatchChecker {
 
   private def allowLargeElimination(
       scrutTpe: Value,
-      reachable: Vector[ReachableCtor],
-      normalizerMap: Normalizers.NormalizerMap
+      reachable: Vector[ReachableCtor]
   ): Boolean = {
     if (reachable.isEmpty) return true
     if (reachable.length > 1) return false
@@ -83,8 +82,8 @@ object MatchChecker {
     val startEq = {
       val start = EqStore.empty.allow(refinable0)
       ValueEquivalence
-        .tryUnify(res1, scrutTpe, start, normalizerMap)
-        .flatMap(eq1 => ValueEquivalence.tryUnify(res2, scrutTpe, eq1, normalizerMap)) match {
+        .tryUnify(res1, scrutTpe, start)
+        .flatMap(eq1 => ValueEquivalence.tryUnify(res2, scrutTpe, eq1)) match {
         case Right(eqStore) => eqStore
         case Left(_)        => return false
       }
@@ -95,7 +94,7 @@ object MatchChecker {
       val mf2 = ValueOps.materialize(f2, startEq)
       TypeChecker.getUniverse(mf1.tpe) match {
         case PropTpe => true
-        case _       => ValueEquivalence.defEq(mf1, mf2, normalizerMap, propIrrelevant = true)
+        case _       => ValueEquivalence.defEq(mf1, mf2, propIrrelevant = true)
       }
     }
   }
@@ -105,11 +104,10 @@ object MatchChecker {
       scrutTpe: Value,
       motiveTy: Value,
       reachable: => Vector[ReachableCtor],
-      normalizerMap: Normalizers.NormalizerMap,
       span: Span
   ): Unit =
     if (getUniverse(scrutTpe) == PropTpe && !isPropValuedType(motiveTy)) {
-      if (!allowLargeElimination(scrutTpe, reachable, normalizerMap))
+      if (!allowLargeElimination(scrutTpe, reachable))
         throw PropEliminationRestricted(inductiveName, motiveTy, Some(span))
     }
 
@@ -123,7 +121,7 @@ object MatchChecker {
       }
     }
     val branchRes = checkTerm(br.body, branchEnv)
-    checkType(branchRes.value, expectedTy, branchEnv.normalizers)
+    checkType(branchRes.value, expectedTy)
     EA.Case(
       br.ctorName,
       br.argRefs,
@@ -170,7 +168,7 @@ object MatchChecker {
       }
       val inferred = first.resultTy
       val allEqual = reachable.tail.forall { info =>
-        ValueEquivalence.defEq(inferred, info.resultTy, env.normalizers, propIrrelevant = true)
+        ValueEquivalence.defEq(inferred, info.resultTy, propIrrelevant = true)
       }
       if (!allEqual)
         throw MissingReturningClause("reachable constructors have different result types", Some(t.span))
@@ -184,7 +182,7 @@ object MatchChecker {
       case None         => inferMotiveFromReachable(reachableByType)
     }
 
-    checkPropElimination(inductiveName, scrutTpe, motiveTy, reachableByType, env.normalizers, t.span)
+    checkPropElimination(inductiveName, scrutTpe, motiveTy, reachableByType, t.span)
 
     var checkedByCtor = Map.empty[String, EA.Case]
 

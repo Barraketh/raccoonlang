@@ -29,12 +29,11 @@ object ValueOps {
       if (!mayNeedMaterialization(resolved)) return resolved
 
       resolved match {
-        case LevelTpe | KernelObject | PropTpe | NormalizerType => resolved
-        case n: Normalizer                                      => n
-        case level: Level                                       => materializeLevel(level)
-        case VSort(level)                                       => VSort(materializeLevel(level))
-        case Var(name, id, tpe)                                 => Var(name, id, materialize(tpe))
-        case VConst(name, constType, tpe)                       => VConst(name, constType, materialize(tpe))
+        case LevelTpe                     => resolved
+        case level: Level                 => materializeLevel(level)
+        case VSort(level)                 => VSort(materializeLevel(level))
+        case Var(name, id, tpe)           => Var(name, id, materialize(tpe))
+        case VConst(name, constType, tpe) => VConst(name, constType, materialize(tpe))
         case VApp(head, args, tpe, blockerId) =>
           VApp(materialize(head), args.map(materialize(_)), materialize(tpe), blockerId)
         case NeutralThunk(term, env, id, tpe, blockerId) =>
@@ -49,8 +48,8 @@ object ValueOps {
           ctor.copy(tpe = materialize(ctor.tpe))
         case pi: VPi =>
           materializePi(pi)
-        case VLam(tpe, id, isStable, body) =>
-          VLam(materializePi(tpe), materializeId(id), isStable, materializeLamBody(body))
+        case VLam(tpe, id, body) =>
+          VLam(materializePi(tpe), materializeId(id), materializeLamBody(body))
       }
     }
 

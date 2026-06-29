@@ -1,7 +1,5 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.UnfoldStrategy
-
 import scala.annotation.tailrec
 
 object Elaborator {
@@ -250,7 +248,6 @@ object Elaborator {
     private val BuiltinGlobals: Set[GlobalName] =
       Set(
         Vector("Type"),
-        Vector("Normalizer"),
         Vector("Level"),
         Vector("Level", "zero"),
         Vector("Level", "one"),
@@ -422,7 +419,7 @@ object Elaborator {
           )
 
         SA.Command.Decl.ConstDecl(
-          Some(UnfoldStrategy.Stable),
+          isOpaque = false,
           selectorHeader,
           decreases = None,
           SA.ConstBody.TermBody(body),
@@ -737,33 +734,10 @@ object Elaborator {
       bodyEnv: ResolveEnv,
       body: SA.Term,
       name: Option[String],
-      isStable: Boolean,
       recursion: Option[CA.Recursion],
-      span: Span,
-      outerEnv: ResolveEnv
+      span: Span
   ): CA.Term.Lam = {
-    val (uses, newBody) = body match {
-      case b: SA.Term.Body =>
-        val uses = Vector.newBuilder[SA.Use]
-        val rest = Vector.newBuilder[SA.Term.BodyStmt]
-        var seenBodyStatement = false
-
-        // Top-level use statements attach to the lambda; later use statements are ordinary body errors.
-        b.statements.foreach {
-          case SA.Term.UseStmt(use) if !seenBodyStatement =>
-            uses += use
-          case SA.Term.UseStmt(use) =>
-            throw WTF("Use statements only allowed before body statements", Some(use.span))
-          case other =>
-            seenBodyStatement = true
-            rest += other
-        }
-
-        (uses.result(), b.copy(statements = rest.result()))
-      case _ => (Vector.empty[SA.Use], body)
-    }
-    val checkedUses = uses.map(use => CA.Use(elabTerm(use.normalizer, outerEnv), use.span))
-    CA.Term.Lam(pi, checkedUses, elabTerm(newBody, bodyEnv), span, name, isStable, recursion)
+    CA.Term.Lam(pi, elabTerm(body, bodyEnv), span, name, recursion)
   }
 
   private def elabDecreaseRef(name: String, span: Span, env: ResolveEnv): CA.LocalRef =
@@ -798,7 +772,7 @@ object Elaborator {
       val header = elabHeader(l.header, env)
       header.ty match {
         case pi: CA.Term.Pi =>
-          elabLam(pi, header.bodyEnv, l.body, None, isStable = false, None, l.span, env)
+          elabLam(pi, header.bodyEnv, l.body, None, None, l.span)
         case _ => throw new RuntimeException("WTF")
       }
     case b: SA.Term.Body =>
@@ -807,8 +781,6 @@ object Elaborator {
       // Body-local opens and lets are ordered; each statement affects only what follows it.
       val bodyEnv = b.statements.foldLeft(startEnv) { case (curEnv, stmt) =>
         stmt match {
-          case SA.Term.UseStmt(use) =>
-            throw WTF("Use statements only allowed at top of fn declaration", Some(use.span))
           case SA.Term.OpenStmt(open) =>
             curEnv.addOpen(open)
           case SA.Term.LetStmt(l) =>
@@ -879,10 +851,8 @@ object Elaborator {
                     bodyHeaderEnv,
                     term,
                     Some(nameText),
-                    c.unfoldStrategy.contains(UnfoldStrategy.Stable),
                     recursion,
-                    c.span,
-                    envWithSelf
+                    c.span
                   )
                 )
               case _ =>
@@ -892,7 +862,7 @@ object Elaborator {
             }
         }
         (
-          CA.Decl.ConstDecl(c.unfoldStrategy, nameText, header.ty, body, c.span, c.isInstance, c.lazyGlobal),
+          CA.Decl.ConstDecl(c.isOpaque, nameText, header.ty, body, c.span, c.isInstance, c.lazyGlobal),
           envWithSelf
         )
       case c: SurfaceAst.Command.Decl.AxiomDecl =>

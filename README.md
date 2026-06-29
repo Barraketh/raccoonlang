@@ -11,7 +11,6 @@ as well as a research platform for exploring language features to make formally-
 - Small kernel core, with a bias toward keeping some traditionally elaborator-side mechanisms explicit in the kernel
   when that simplifies the overall system. Current examples:
     - Universe level normalization and unification
-    - Type-driven expression normalization (see `docs/normalizers.md`)
     - Type Patterns
 
 ## A motivating benchmark
@@ -51,7 +50,6 @@ Note that at this point I have done 0 optimization - these performance wins are 
 - Cumulative universes, first-class `Level`, `Sort(u)`, universe validation, and sort unification
     - `Prop` is `Sort(Level.zero)`; `Type` is `Sort(Level.one)`
     - Impredicative Prop with proof irrelevance and controlled large elimination
-- Extensible definitional equality through type-driven expression normalization
 - Namespaces, file imports, dotted names, and scoped `open`
 - Type patterns
 - Type classes with `def instance`, `let instance`, `[f: Foo]` instance binders, and explicit `derive[Foo]`
@@ -118,7 +116,7 @@ inductive Nat : Type
  | zero : Nat
  | succ (_: Nat) : Nat
 
-stable def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
+def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
   match b with
   | Nat.zero => a
   | Nat.succ x => add(Nat.succ(a), x)
@@ -257,32 +255,6 @@ Match case heads use normal global resolution. Prefix a case head with `.` to ma
 the scrutinee type: `| .zero => ...`.
 
 See [docs/namespaces.md](docs/namespaces.md) for the exact resolution and open rules.
-
-### Equality by computation with a normalizer
-
-A normalizer rewrites a blocked expression into a different (equivalent) form. For example, the 'add_normalizer'
-flattens all additions to a list, removes zeros and then sorts the list. Currently, for demonstration purposes, it
-can be used without providing the relevant proofs, but in a full implementation it would require proofs of standard
-monoid laws.
-
-```raccoon
-inductive Nat : Type
- | zero : Nat
- | succ (_: Nat) : Nat
-
-stable def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
-  match b with
-  | Nat.zero => a
-  | Nat.succ x => add(Nat.succ(a), x)
-}
-
-def nat_add_normalizer : Normalizer := add_normalizer(Nat, Nat.zero, add)
-
-def addComm (a: Nat)(b: Nat): Eq(Nat, add(a, b), add(b, a)) := {
-  use nat_add_normalizer
-  Eq.refl(add(a, b))
-}
-```
 
 ## Quickstart
 

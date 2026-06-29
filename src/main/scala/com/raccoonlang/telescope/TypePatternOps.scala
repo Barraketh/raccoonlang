@@ -103,7 +103,7 @@ object TypePatternOps {
               }
 
             val argValue = Interpreter.evalTypeTerm(compileType(argPattern), patternEnv)
-            telescopeEnv = bindValueAndCheck(telescopeEnv, paramBinder, argValue, patternEnv.normalizers)
+            telescopeEnv = bindValueAndCheck(telescopeEnv, paramBinder, argValue)
             argPatterns += argPattern
           }
 
@@ -250,18 +250,17 @@ object TypePatternOps {
   private[telescope] def bindValueAndCheck(
       env: Env,
       binder: VBinder,
-      actual: Value,
-      normalizerMap: Normalizers.NormalizerMap
+      actual: Value
   ): Env = {
     val openedEnv = openCaptures(env, binder.captures, actual.tpe)
     val expectedTy = Interpreter.evalTypeTerm(binder.expectedTy, openedEnv)
     binder.ty match {
       case EBinderType.ConstrainedCapture(_, constraint, _) =>
         val constraintTy = Interpreter.evalTypeTerm(compileType(constraint), openedEnv)
-        TypeChecker.checkType(expectedTy, constraintTy, normalizerMap)
+        TypeChecker.checkType(expectedTy, constraintTy)
       case _ =>
     }
-    TypeChecker.checkType(actual, expectedTy, normalizerMap)
+    TypeChecker.checkType(actual, expectedTy)
     openedEnv.putLocal(binder.localRef, Value.ascribe(actual, expectedTy))
   }
 

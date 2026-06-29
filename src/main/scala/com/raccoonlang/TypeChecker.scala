@@ -21,12 +21,12 @@ object TypeChecker {
     }
   }
 
-  def checkFits(actual: Value, expected: Value, normalizerMap: Normalizers.NormalizerMap): Unit =
-    if (!ValueEquivalence.defEq(actual, expected, normalizerMap, propIrrelevant = true) && !sortLeq(actual, expected))
+  def checkFits(actual: Value, expected: Value): Unit =
+    if (!ValueEquivalence.defEq(actual, expected, propIrrelevant = true) && !sortLeq(actual, expected))
       throw TypeMismatch(expected, actual)
 
-  def checkType(value: Value, tyVal: Value, normalizerMap: Normalizers.NormalizerMap): Unit =
-    checkFits(value.tpe, tyVal, normalizerMap)
+  def checkType(value: Value, tyVal: Value): Unit =
+    checkFits(value.tpe, tyVal)
 
   def getUniverse(value: Value): VSort = {
     value.tpe match {
@@ -45,16 +45,16 @@ object TypeChecker {
 
   private def assertNonRawRecursive(v: Value): Unit = {
     v match {
-      case VLam(_, id, _, LamBody.Native(_, _, true)) => throw InvalidRecursiveOccurrence(s"$id")
-      case _                                          =>
+      case VLam(_, id, LamBody.Native(_, _, true)) => throw InvalidRecursiveOccurrence(s"$id")
+      case _                                       =>
     }
   }
 
-  private def checkApplyValue(fn: Value, args: Vector[Value], normalizerMap: Normalizers.NormalizerMap): Value =
+  private def checkApplyValue(fn: Value, args: Vector[Value]): Value =
     fn.tpe match {
       case pi: VPi =>
         args.foreach(arg => assertNonRawRecursive(arg))
-        BinderOps.checkAndInstantiate(pi.binders, pi.env, args, normalizerMap)
+        BinderOps.checkAndInstantiate(pi.binders, pi.env, args)
         Interpreter.evalApply(fn, args)
       case _ => throw CannotApplyNonFunction(fn)
     }
@@ -93,7 +93,7 @@ object TypeChecker {
       case t: CA.Term.TApp =>
         val fn = checkTypeTerm(t.fn, env)
         val args = t.args.map(arg => checkTypeTerm(arg, env))
-        val value = checkApplyValue(fn.value, args.map(_.value), env.normalizers)
+        val value = checkApplyValue(fn.value, args.map(_.value))
         val residual = EA.Term.App(fn.residual, args.map(_.residual), t.span)
         CheckedTypeTerm(value, residual)
       case CA.Term.TSelect(base, field, span) =>
@@ -125,7 +125,7 @@ object TypeChecker {
         .map { tyTerm =>
           val checkedTy = checkTypeTerm(tyTerm, curEnv)
           val tyV = checkedTy.value
-          checkType(checkedValue.value, tyV, curEnv.normalizers)
+          checkType(checkedValue.value, tyV)
           resTyTerm = Some(checkedTy.residual)
           Value.ascribe(checkedValue.value, tyV)
         }
@@ -156,20 +156,11 @@ object TypeChecker {
 
     val selectorName = s"$indName.$field"
     val selector = env(selectorName)
-    (selectorName, checkApplyValue(selector, Vector(baseValue), env.normalizers))
+    (selectorName, checkApplyValue(selector, Vector(baseValue)))
   }
 
   private def checkLam(l: CA.Term.Lam, env: Env): CheckedTerm = {
-    val envWithNormalizers = l.uses.foldLeft(env) { case (curEnv, nextUse) =>
-      val normalizer = checkTerm(nextUse.normalizer, curEnv).value
-      normalizer match {
-        case n: Value.Normalizer => curEnv.useNormalizer(n)
-        case _ =>
-          throw TypeMismatch(normalizer, NormalizerType)
-      }
-    }
-
-    val checkedVpi = checkPi(l.ty, envWithNormalizers)
+    val checkedVpi = checkPi(l.ty, env)
     val vpi = checkedVpi.vpi
     val bodyEnv = checkedVpi.bodyEnv
 
@@ -182,7 +173,7 @@ object TypeChecker {
       l.recursion match {
         case Some(CA.Recursion(ref, decreaseSpec)) =>
           val name = l.name.getOrElse(throw WTF("Recursive lambda must have a name", Some(l.span)))
-          val recursiveSelf = TerminationChecker.rawRecursiveSelf(name, vpi, decreaseSpec, bodyEnv, l.isStable)
+          val recursiveSelf = TerminationChecker.rawRecursiveSelf(name, vpi, decreaseSpec, bodyEnv)
           bodyEnv.putLocal(ref, recursiveSelf)
         case None => bodyEnv
       }
@@ -193,14 +184,13 @@ object TypeChecker {
     }
     assertNonRawRecursive(checkedBody.value)
 
-    checkType(checkedBody.value, checkedVpi.outTy, recurEnv.normalizers)
+    checkType(checkedBody.value, checkedVpi.outTy)
     val checkedLam =
       EA.Term.Lam(
         checkedVpi.residual,
         checkedBody.residual,
         l.span,
         l.name,
-        l.isStable,
         l.recursion.map(_.selfRef)
       )
     CheckedTerm(Interpreter.evalLam(checkedLam, vpi, env), checkedLam)
@@ -234,7 +224,7 @@ object TypeChecker {
         case app: CA.Term.App =>
           val checkedFn = checkTerm(app.fn, env)
           val checkedArgs = app.args.map(arg => checkTerm(arg, env))
-          val value = checkApplyValue(checkedFn.value, checkedArgs.map(_.value), env.normalizers)
+          val value = checkApplyValue(checkedFn.value, checkedArgs.map(_.value))
           val residual = EA.Term.App(checkedFn.residual, checkedArgs.map(_.residual), app.span)
           CheckedTerm(value, residual)
         case derive: CA.Term.Derive =>

@@ -117,20 +117,20 @@ object PrettyPrinter {
   }
 
   private def printTermAtom(t: CoreAst.Term): String = t match {
-    case _: CoreAst.Term.Ref                   => printCoreTerm(t)
-    case CoreAst.Term.App(_, _, _)             => printCoreTerm(t)
-    case CoreAst.Term.Derive(_, _)             => printCoreTerm(t)
-    case CoreAst.Term.TApp(_, _, _)            => printCoreTerm(t)
-    case ts: CoreAst.Term.TSelect              => printTypeTerm(ts)
-    case CoreAst.Term.Select(base, field, _)   => s"${printTermAtom(base)}[$field]"
-    case CoreAst.Term.Lam(_, _, _, _, _, _, _) => s"(${printCoreTerm(t)})"
-    case CoreAst.Term.Match(_, _, _, _)        => s"(${printCoreTerm(t)})"
-    case CoreAst.Term.Body(_, _, _)            => s"(${printCoreTerm(t)})"
-    case CoreAst.Term.Pi(_, _, _)              => s"(${printCoreTerm(t)})"
+    case _: CoreAst.Term.Ref                 => printCoreTerm(t)
+    case CoreAst.Term.App(_, _, _)           => printCoreTerm(t)
+    case CoreAst.Term.Derive(_, _)           => printCoreTerm(t)
+    case CoreAst.Term.TApp(_, _, _)          => printCoreTerm(t)
+    case ts: CoreAst.Term.TSelect            => printTypeTerm(ts)
+    case CoreAst.Term.Select(base, field, _) => s"${printTermAtom(base)}[$field]"
+    case CoreAst.Term.Lam(_, _, _, _, _)     => s"(${printCoreTerm(t)})"
+    case CoreAst.Term.Match(_, _, _, _)      => s"(${printCoreTerm(t)})"
+    case CoreAst.Term.Body(_, _, _)          => s"(${printCoreTerm(t)})"
+    case CoreAst.Term.Pi(_, _, _)            => s"(${printCoreTerm(t)})"
   }
 
   private def printCoreTerm(t: CoreAst.Term): String = t match {
-    case CoreAst.Term.Lam(ty, _, body, _, _, _, recursion) =>
+    case CoreAst.Term.Lam(ty, body, _, _, recursion) =>
       val decreaseStr = recursion.map(r => s" ${printDecreaseSpec(r.decreases)}").getOrElse("")
       s"fun ${printBinders(ty.binders)}: ${printTypeTerm(ty.out)}$decreaseStr => ${printCoreTerm(body)}"
     case m @ CoreAst.Term.Match(_, _, _, _)  => printMatch(m)
@@ -250,16 +250,16 @@ object PrettyPrinter {
   }
 
   private def printElabTermAtom(t: ElabAst.Term): String = t match {
-    case _: ElabAst.Term.Ref                => printElabTerm0(t)
-    case ElabAst.Term.App(_, _, _)          => printElabTerm0(t)
-    case ElabAst.Term.Lam(_, _, _, _, _, _) => s"(${printElabTerm0(t)})"
-    case ElabAst.Term.Match(_, _, _, _)     => s"(${printElabTerm0(t)})"
-    case ElabAst.Term.Body(_, _, _)         => s"(${printElabTerm0(t)})"
-    case ElabAst.Term.Pi(_, _, _, _)        => s"(${printElabTerm0(t)})"
+    case _: ElabAst.Term.Ref             => printElabTerm0(t)
+    case ElabAst.Term.App(_, _, _)       => printElabTerm0(t)
+    case ElabAst.Term.Lam(_, _, _, _, _) => s"(${printElabTerm0(t)})"
+    case ElabAst.Term.Match(_, _, _, _)  => s"(${printElabTerm0(t)})"
+    case ElabAst.Term.Body(_, _, _)      => s"(${printElabTerm0(t)})"
+    case ElabAst.Term.Pi(_, _, _, _)     => s"(${printElabTerm0(t)})"
   }
 
   private def printElabTerm0(t: ElabAst.Term): String = t match {
-    case ElabAst.Term.Lam(ty, body, _, _, _, _) =>
+    case ElabAst.Term.Lam(ty, body, _, _, _) =>
       s"fun ${printElabBinders(ty.binders)}: ${printElabTypeTerm(ty.out)} => ${printElabTerm0(body)}"
     case m @ ElabAst.Term.Match(_, _, _, _) => printElabMatch(m)
     case b: ElabAst.Term.Body               => printElabBody(b)
@@ -289,7 +289,6 @@ object PrettyPrinter {
     case Value.PropTpe                              => "Prop"
     case Value.VSort(lvl) if lvl == Value.Level.one => "Type"
     case Value.VSort(lvl)                           => s"Sort($lvl)"
-    case Value.KernelObject                         => "KernelObject"
     case level: Value.Level                         => s"Level(${level.atoms}, ${level.c})"
     case pi: Value.VPi                              => "VPi"
     case Value.VConst(name, _, _)                   => name
@@ -298,13 +297,11 @@ object PrettyPrinter {
       val headStr = print(head)
       if (fields.isEmpty) headStr
       else s"$headStr(${fields.map(print).mkString(", ")})"
-    case v: Value.VApp          => printApp(v.head, v.args)
-    case v: Value.VLam          => s"func#${v.id}"
-    case Value.Var(name, id, _) => s"$name#$id"
-    case s: Value.NeutralThunk  => s"match#${s.id}"
-    case Value.NormalizerType   => "Normalizer"
-    case n: Value.Normalizer    => s"Normalizer ${n.name}"
-    case LevelTpe               => s"Level"
+    case v: Value.VApp         => printApp(v.head, v.args)
+    case v: Value.VLam         => s"func#${v.id}"
+    case v: Value.Var          => s"${v.name}#${v.id}"
+    case s: Value.NeutralThunk => s"match#${s.id}"
+    case LevelTpe              => s"Level"
   }
 
 }

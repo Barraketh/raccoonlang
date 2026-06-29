@@ -138,11 +138,9 @@ class ValueOpsTests extends munit.FunSuite {
       ETerm.LocalRef(capturedRef, span),
       span,
       name = None,
-      isStable = false,
       recursiveSelf = None
     )
-    val lam =
-      VLam(pi, ValueId.LocalId(nodeId(2), Vector(captured)), isStable = false, LamBody.Core(lamTerm, runtimeEnv))
+    val lam = VLam(pi, ValueId.LocalId(nodeId(2), Vector(captured)), LamBody.Core(lamTerm, runtimeEnv))
 
     val materialized = ValueOps.materialize(lam, solve(captured, solution)).asInstanceOf[VLam]
 
@@ -182,10 +180,9 @@ class ValueOpsTests extends munit.FunSuite {
       ETerm.LocalRef(capturedRef, span),
       span,
       name = None,
-      isStable = false,
       recursiveSelf = None
     )
-    val lam = VLam(pi, ValueId.LocalId(nodeId(2), Vector.empty), isStable = false, LamBody.Core(lamTerm, runtimeEnv))
+    val lam = VLam(pi, ValueId.LocalId(nodeId(2), Vector.empty), LamBody.Core(lamTerm, runtimeEnv))
 
     intercept[WTF](Interpreter.evalApply(lam, Vector(symbolicValue("Arg"))))
   }
@@ -208,7 +205,6 @@ class ValueOpsTests extends munit.FunSuite {
       ETerm.LocalRef(capturedRef, span),
       span,
       name = None,
-      isStable = false,
       recursiveSelf = None
     )
     val lam = Interpreter.evalLam(lamTerm, vpi, env)
@@ -310,6 +306,6 @@ class ValueOpsTests extends munit.FunSuite {
     val ctorB = VCtor(head, Vector.empty, resultB)
 
     assertNotEquals(ctorA.key, ctorB.key)
-    assert(!ValueEquivalence.defEq(ctorA, ctorB, Map.empty, propIrrelevant = true))
+    assert(!ValueEquivalence.defEq(ctorA, ctorB, propIrrelevant = true))
   }
 }

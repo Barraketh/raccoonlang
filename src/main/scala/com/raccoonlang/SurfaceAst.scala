@@ -1,7 +1,5 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.UnfoldStrategy
-
 // Surface AST for RaccoonLang.  Will be elaborated into CoareAst
 object SurfaceAst {
 
@@ -102,9 +100,6 @@ object SurfaceAst {
     sealed trait BodyStmt {
       def span: Span
     }
-    final case class UseStmt(use: Use) extends BodyStmt {
-      override def span: Span = use.span
-    }
     final case class OpenStmt(open: Command.Open) extends BodyStmt {
       override def span: Span = open.span
     }
@@ -120,9 +115,6 @@ object SurfaceAst {
         span: Span
     )
   }
-
-  // Use a first-class normalizer value within a body scope
-  final case class Use(normalizer: Term, span: Span)
 
   case class Binder(name: String, ty: BinderType, span: Span, isInstance: Boolean = false)
 
@@ -156,9 +148,9 @@ object SurfaceAst {
     sealed trait Decl extends Command
 
     object Decl {
-      // Constant: name : type [:= value]. None means explicitly opaque; term definitions otherwise default to Inline.
+      // Constant: name : type [:= value]. Opaque definitions keep only their symbolic head in the environment.
       final case class ConstDecl(
-          unfoldStrategy: Option[UnfoldStrategy],
+          isOpaque: Boolean,
           header: DeclHeader,
           decreases: Option[DecreaseSpec],
           body: ConstBody,

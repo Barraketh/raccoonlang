@@ -1,6 +1,5 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.UnfoldStrategy
 import com.raccoonlang.Parser._
 import com.raccoonlang.SurfaceAst.Command.Decl.{AxiomDecl, ConstDecl, InductiveDecl}
 import com.raccoonlang.SurfaceAst.Command._
@@ -21,7 +20,6 @@ object LanguageParser {
   private val keywords = List(
     "fun",
     "let",
-    "use",
     "match",
     "as",
     "returning",
@@ -33,7 +31,6 @@ object LanguageParser {
     "derive",
     "inductive",
     "struct",
-    "stable",
     "namespace",
     "open",
     "import",
@@ -193,11 +190,8 @@ object LanguageParser {
         Let(name, ty, value, span, isInstance = instanceOpt.isDefined)
       }
 
-  private def useStmt(implicit sourceId: Option[SourceId]): Parser[Use] =
-    (kw("use") ~/ term).flatSpanned(sourceId).map(Use.tupled)
-
   private def bodyStmt(implicit sourceId: Option[SourceId]): Parser[BodyStmt] =
-    useStmt.map(UseStmt.apply) | openP.map(OpenStmt.apply) | let.map(LetStmt.apply)
+    openP.map(OpenStmt.apply) | let.map(LetStmt.apply)
 
   private def body(implicit sourceId: Option[SourceId]): Parser[Body] = {
     val content = (bodyStmt.rep(0, lineSep) ~ skipOneLine ~ term)
@@ -211,8 +205,6 @@ object LanguageParser {
       }
       .named("Body")
   }
-
-  // no longer support `using normalizer` in parser; replaced by `use` statements
 
   private def lambda(implicit sourceId: Option[SourceId]): Parser[Term] =
     (kw("fun") ~/ funcHeader ~ sym("=>") ~/ skipAllWs ~ term)
@@ -280,8 +272,8 @@ object LanguageParser {
       }
   }
 
-  private def explicitUnfoldStrategy: Parser[Option[UnfoldStrategy]] =
-    kw("opaque").!.map(_ => None) | kw("stable").!.map(_ => Some(UnfoldStrategy.Stable))
+  private def opaqueP: Parser[Boolean] =
+    kw("opaque").!.?.map(_.isDefined)
 
   private def constBody(implicit sourceId: Option[SourceId]): Parser[ConstBody] =
     kwTight("builtin").!.flatSpanned(sourceId).map { case (_, span) => ConstBody.Builtin(span) } |
@@ -306,18 +298,14 @@ object LanguageParser {
     kw("decreases") ~/ (structural | lexicographic | measure)
   }
 
-  // (opaque | stable)? def instance? foo (a: A)[b: B](c : C): D := body
+  // opaque? def instance? foo (a: A)[b: B](c : C): D := body
   private def constP(implicit sourceId: Option[SourceId]): Parser[ConstDecl] =
-    (explicitUnfoldStrategy.? ~ kw("def") ~/ kw("instance").!.? ~ declHeader ~ decreasesP.? ~
+    (opaqueP ~ kw("def") ~/ kw("instance").!.? ~ declHeader ~ decreasesP.? ~
       (sym(":=") ~/ skipAllWs ~ constBody))
       .flatSpanned(sourceId)
-      .map { case (explicitStrategy, instanceOpt, header, decreases, body, span) =>
-        val default = body match {
-          case ConstBody.Builtin(_)  => None
-          case ConstBody.TermBody(_) => Some(UnfoldStrategy.Inline)
-        }
+      .map { case (isOpaque, instanceOpt, header, decreases, body, span) =>
         ConstDecl(
-          explicitStrategy.getOrElse(default),
+          isOpaque,
           header,
           decreases,
           body,

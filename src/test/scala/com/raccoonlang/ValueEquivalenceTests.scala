@@ -30,7 +30,7 @@ class ValueEquivalenceTests extends munit.FunSuite {
     val left = pi(Vector(hole), _ => hole, 1)
     val right = pi(Vector.empty, env => env(binderRef), 2)
 
-    assert(ValueEquivalence.tryUnify(left, right, meta, Map.empty).isLeft)
+    assert(ValueEquivalence.tryUnify(left, right, meta).isLeft)
   }
 
   test("Pi unification still allows closed solutions") {
@@ -40,8 +40,8 @@ class ValueEquivalenceTests extends munit.FunSuite {
     val left = pi(Vector(hole), _ => hole, 3)
     val right = pi(Vector(closed), _ => closed, 4)
 
-    val solved = ValueEquivalence.unify(left, right, meta, Map.empty)
+    val solved = ValueEquivalence.unify(left, right, meta)
 
-    assertEquals(solved.subst(hole.id), closed)
+    assert(ValueEquivalence.defEq(solved.subst(hole.id), closed, propIrrelevant = true))
   }
 }

@@ -69,8 +69,7 @@ object InductiveChecks {
 
         case _: ConstructorHead => !target.mayOccurIn(value)
 
-        case _: Level | LevelTpe | _: Normalizer | NormalizerType | _: VLam | _: VSort | _: Var | _: VConst | PropTpe |
-            KernelObject =>
+        case _: Level | LevelTpe | _: VLam | _: VSort | _: Var | _: VConst | PropTpe =>
           !target.mayOccurIn(value)
       }
 
@@ -105,8 +104,7 @@ object InductiveChecks {
 
         case _: ConstructorHead => true
 
-        case _: Level | LevelTpe | _: Normalizer | NormalizerType | _: VLam | _: VSort | _: Var | _: VConst | PropTpe |
-            KernelObject =>
+        case _: Level | LevelTpe | _: VLam | _: VSort | _: Var | _: VConst =>
           true
       }
 
@@ -134,8 +132,7 @@ object InductiveChecks {
         freshArgs.forall(arg => sameFamilyArgsDoNotContain(inductiveName, target, arg.tpe)) &&
         sameFamilyArgsDoNotContain(inductiveName, target, pi.codomain(freshEnv))
 
-      case _: ConstructorHead | _: Level | LevelTpe | _: Normalizer | NormalizerType | _: VLam | _: VSort | _: Var |
-          _: VConst | PropTpe | KernelObject =>
+      case _: ConstructorHead | _: Level | LevelTpe | _: VLam | _: VSort | _: Var | _: VConst =>
         true
     }
 
@@ -272,7 +269,7 @@ object InductiveChecks {
 
         if (witnesses.length != 1) throw error
 
-        if (!ValueEquivalence.defEq(outputArg, witnesses.head, fieldsEnv.normalizers, propIrrelevant = true))
+        if (!ValueEquivalence.defEq(outputArg, witnesses.head, propIrrelevant = true))
           throw error
       }
 

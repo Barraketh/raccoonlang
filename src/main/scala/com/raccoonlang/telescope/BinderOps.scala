@@ -41,13 +41,12 @@ object BinderOps {
   def checkAndInstantiate(
       binders: Vector[VBinder],
       runtimeEnv: Env,
-      args: Vector[Value],
-      normalizerMap: Normalizers.NormalizerMap
+      args: Vector[Value]
   ): Env = {
     if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
 
     binders.zip(args).foldLeft(runtimeEnv) { case (curRuntimeEnv, (binder, value)) =>
-      TypePatternOps.bindValueAndCheck(curRuntimeEnv, binder, value, normalizerMap)
+      TypePatternOps.bindValueAndCheck(curRuntimeEnv, binder, value)
     }
   }
 }

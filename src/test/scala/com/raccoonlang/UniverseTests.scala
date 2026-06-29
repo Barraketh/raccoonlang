@@ -168,7 +168,7 @@ class UniverseTests extends munit.FunSuite {
 
     val res = runProgram(p)
     res match {
-      case Value.VLam(pi, _, _, _) =>
+      case Value.VLam(pi, _, _) =>
         pi.tpe match {
           case Value.VSort(u) => assertEquals(u, Value.Level.zero)
           case other          => fail(s"Expected Pi type to live in Prop, got: $other")
@@ -309,8 +309,7 @@ class UniverseTests extends munit.FunSuite {
     val solved = ValueEquivalence.unify(
       VSort(Value.Level.mk(u.id)),
       VSort(Value.Level.const(1)),
-      eqStore,
-      Map.empty
+      eqStore
     )
 
     assertEquals(solved.subst(u.id), Value.Level.const(1))
@@ -324,8 +323,7 @@ class UniverseTests extends munit.FunSuite {
       ValueEquivalence.unify(
         Value.VSort(Value.Level.of(Map(u.id -> 1), 0)),
         Value.VSort(Value.Level.zero),
-        eqStore,
-        Map.empty
+        eqStore
       )
     }
   }

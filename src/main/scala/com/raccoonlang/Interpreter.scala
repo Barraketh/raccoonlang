@@ -121,21 +121,8 @@ object Interpreter {
       case pi: VPi =>
         val envWithArgs = getEnvWithArgs(pi, pi.env, vArgs)
         fn match {
-          case lam @ VLam(_, _, isStable, _) =>
-            val res = runLam(lam, vArgs)
-            (isStable, res) match {
-              case (true, blocked @ Blocked(blockerId)) =>
-                blocked match {
-                  case VBlockedApp(VLam(_, _, true, _), _, _, _) => res
-                  case _                                         => VBlockedApp(fn, vArgs, blocked.tpe, blockerId)
-                }
-              case (true, stuck: NeutralThunk) if stuck.blockerId.isEmpty =>
-                lam.id match {
-                  case ValueId.Const(name) => VApp(VConst(name, Symbol, lam.tpe), vArgs, stuck.tpe)
-                  case _                   => res
-                }
-              case _ => res
-            }
+          case lam: VLam =>
+            runLam(lam, vArgs)
           case h: VConst => VApp(h, vArgs, pi.codomain(envWithArgs))
           case h: ConstructorHead =>
             val resultTy = pi.codomain(envWithArgs)
@@ -163,7 +150,7 @@ object Interpreter {
         ValueId.LocalId(l.span.nodeId, captureVals)
 
     }
-    VLam(vpi, id, l.isStable, LamBody.Core(l, RuntimeEnv.closeForEval(env, capturedIndexes)))
+    VLam(vpi, id, LamBody.Core(l, RuntimeEnv.closeForEval(env, capturedIndexes)))
   }
 
   def runLam(lam: VLam, args: Vector[Value]): Value = {
@@ -272,10 +259,10 @@ object Interpreter {
 
   def evalDecl(decl: Decl, worlds: Worlds): Worlds = {
     decl match {
-      case Decl.ConstDecl(unfoldStrategy, name, ty, body, span, isInstance, lazyGlobal) =>
+      case Decl.ConstDecl(isOpaque, name, ty, body, span, isInstance, lazyGlobal) =>
         body match {
           case CoreAst.ConstBody.Builtin(_) =>
-            if (unfoldStrategy.nonEmpty) throw WTF("Builtin declarations cannot be stable", Some(span))
+            if (isOpaque) throw WTF("Builtin declarations cannot be opaque", Some(span))
             if (isInstance) throw WTF("Builtin declarations cannot be instances", Some(span))
             def value(env: Env): Value = Builtins.instantiate(name, TypeChecker.getType(ty, env), span)
             if (lazyGlobal)
@@ -296,19 +283,14 @@ object Interpreter {
             lazy val checked = TypeChecker.checkTerm(term, checkEnv)
             lazy val checkedTy = TypeChecker.getType(ty, checkEnv)
             lazy val checkValue = {
-              TypeChecker.checkType(checked.value, checkedTy, checkEnv.normalizers)
+              TypeChecker.checkType(checked.value, checkedTy)
               val bodyV = Value.ascribe(checked.value, checkedTy)
-              unfoldStrategy match {
-                case Some(_) => bodyV
-                case None    => VConst(name, Symbol, checkedTy)
-              }
+              if (isOpaque) VConst(name, Symbol, checkedTy) else bodyV
             }
             lazy val runTy = TypeChecker.getType(ty, runEnv)
             lazy val runtimeValue =
-              unfoldStrategy match {
-                case Some(_) => Value.ascribe(evalTerm(checked.residual, runEnv), runTy)
-                case None    => VConst(name, Symbol, runTy)
-              }
+              if (isOpaque) VConst(name, Symbol, runTy)
+              else Value.ascribe(evalTerm(checked.residual, runEnv), runTy)
             if (lazyGlobal)
               Worlds(checkEnv.putLazyGlobal(name, () => checkValue), runEnv.putLazyGlobal(name, () => runtimeValue))
             else
@@ -348,7 +330,6 @@ object Interpreter {
     val baseEnv =
       Env.empty
         .putGlobal("Type", TypeTpe)
-        .putGlobal("Normalizer", NormalizerType)
         .putGlobal("Level", LevelTpe)
         .putGlobal("Level.zero", Level.zero)
         .putGlobal("Level.one", Level.one)

@@ -60,7 +60,6 @@ object ElabAst {
         body: Term,
         span: Span,
         name: Option[String],
-        isStable: Boolean,
         recursiveSelf: Option[CoreAst.LocalRef]
     ) extends Term
 
