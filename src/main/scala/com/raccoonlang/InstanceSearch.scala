@@ -135,7 +135,7 @@ object InstanceSearch {
         val freshEnv = BinderOps.freshen(pi)
         val resultTy = pi.codomain(freshEnv)
 
-        val candidateDeps = freshEnv.allDeps -- pi.env.allDeps
+        val candidateDeps = Value.envDeps(freshEnv) -- Value.envDeps(pi.env)
         val candidateEq =
           ValueEquivalence.tryUnify(resultTy, goal, EqStore.empty.allow(candidateDeps)) match {
             case Right(eqStore) => eqStore

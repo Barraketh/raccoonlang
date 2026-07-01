@@ -20,7 +20,7 @@ object TerminationChecker {
           throw InvalidDecreaseSpec("lexicographic decreases arguments must be distinct", Some(sp))
 
         val indices = args.map { ref =>
-          vpi.binders.indices.find(idx => vpi.binders(idx).localRef.id == ref.id).getOrElse {
+          vpi.binders.indices.find(idx => vpi.binders(idx).localRef == ref).getOrElse {
             throw InvalidDecreaseSpec(s"${ref.name} is not a function parameter", Some(sp))
           }
         }

@@ -167,7 +167,7 @@ object TypeChecker {
     // Recursive self references stay local for the whole pipeline, even if the source used a qualified name.
     // While checking, the local contains a raw recursive value that enforces the decrease and can only appear as an
     // application head, so the body cannot store it as an ordinary value. The checked lambda keeps the same self ref;
-    // when the lambda runs, Interpreter.runLam patches that slot with the final VLam. The declaration is published to
+    // when the lambda runs, Interpreter.runLam binds that ref to the final VLam. The declaration is published to
     // globals separately after the body has checked.
     val recurEnv =
       l.recursion match {

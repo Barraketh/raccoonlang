@@ -4,7 +4,6 @@ import com.raccoonlang.CoreAst.{Decl, Program}
 import com.raccoonlang.ElabAst.{Term => ETerm}
 import com.raccoonlang.Value._
 import com.raccoonlang.telescope.{BinderOps, TypePatternOps}
-import org.roaringbitmap.RoaringBitmap
 
 /**
  * Interpreter evaluates ElabAst into ordinary WHNF Values in the Env it is given. EqStore-aware reduction is isolated
@@ -63,21 +62,11 @@ object Interpreter {
   private def getEnvWithArgs(fnTpe: VPi, baseEnv: Env, args: Vector[Value]): Env =
     BinderOps.instantiateFull(fnTpe.binders, baseEnv, args)
 
-  private def captureValues(env: Env, capturedIndexes: RoaringBitmap): Vector[Value] = {
-    val values = Vector.newBuilder[Value]
-    val it = capturedIndexes.getIntIterator
-    while (it.hasNext) {
-      val id = it.next()
-      values += env(CoreAst.LocalRef(id, s"#$id"))
-    }
-    values.result()
-  }
-
   def evalPi(pi: ETerm.Pi, env: Env, vBinders: Vector[VBinder]): VPi = {
-    val capturedIndexes = CapturedIndexes.getCapturedIndexes(pi, env)
-    val captureVals = captureValues(env, capturedIndexes)
+    val capturedRefs = CapturedRefs.getCapturedRefs(pi, env)
+    val closedEnv = env.closeForEval(capturedRefs)
+    val captureVals = closedEnv.locals.values.toVector
     val id = ValueId.LocalId(pi.span.nodeId, captureVals)
-    val closedEnv = RuntimeEnv.closeForEval(env, capturedIndexes)
 
     val synDeps = DepSet.newBuilder
     captureVals.foreach { v =>
@@ -142,15 +131,15 @@ object Interpreter {
   }
 
   def evalLam(l: ETerm.Lam, vpi: VPi, env: Env): VLam = {
-    val capturedIndexes = CapturedIndexes.getCapturedIndexes(l, env)
+    val capturedRefs = CapturedRefs.getCapturedRefs(l, env)
+    val closedEnv = env.closeForEval(capturedRefs)
     val id = l.name match {
       case Some(funcName) => ValueId.Const(funcName)
       case None =>
-        val captureVals = captureValues(env, capturedIndexes)
-        ValueId.LocalId(l.span.nodeId, captureVals)
+        ValueId.LocalId(l.span.nodeId, closedEnv.locals.values.toVector)
 
     }
-    VLam(vpi, id, LamBody.Core(l, RuntimeEnv.closeForEval(env, capturedIndexes)))
+    VLam(vpi, id, LamBody.Core(l, closedEnv))
   }
 
   def runLam(lam: VLam, args: Vector[Value]): Value = {
@@ -210,14 +199,14 @@ object Interpreter {
       case VCtor(head, fields, _) => (head, fields)
       case other                  =>
         // We are either blocked or stuck
-        val capturedIndexes = CapturedIndexes.getCapturedIndexes(m, env)
-        val matchCaptures: Vector[Value] = captureValues(env, capturedIndexes)
+        val capturedRefs = CapturedRefs.getCapturedRefs(m, env)
+        val closedEnv = env.closeForEval(capturedRefs)
+        val matchCaptures = closedEnv.locals.values.toVector
         val outType: Value = m.motive match {
           case Some(motive) => evalTypeTerm(motive, env)
           case None         => scrut.tpe
         }
         val lamId = ValueId.LocalId(m.span.nodeId, matchCaptures)
-        val closedEnv = RuntimeEnv.closeForEval(env, capturedIndexes)
         other match {
           case Blocker(blockerId) => return NeutralThunk(m, closedEnv, lamId, outType, Some(blockerId))
           case _                  => return NeutralThunk(m, closedEnv, lamId, outType, None)

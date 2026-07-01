@@ -2,7 +2,7 @@ package com.raccoonlang
 
 import com.raccoonlang.Value.VSort
 
-// Checked AST. Instance search expressions have already been resolved, and all local names are CoreAst.LocalRef slots.
+// Checked AST. Instance search expressions have already been resolved, and all local names are CoreAst.LocalRefs.
 object ElabAst {
   sealed trait Ast {
     def span: Span

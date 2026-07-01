@@ -24,17 +24,6 @@ class TypeClassTests extends munit.FunSuite {
       case other                                         => other
     }
 
-  private final class NoSearchEnv(val base: Env) extends DelegatingEnv {
-
-    override def updateBase(newBase: Env): Env = new NoSearchEnv(newBase)
-
-    override def localBinding(ref: CoreAst.LocalRef): Binding = base.localBinding(ref)
-
-    override def localInstanceRefs(key: String): Vector[CoreAst.LocalRef] = Vector.empty
-
-    override def globalInstanceValues(key: String): Vector[Value] = Vector.empty
-  }
-
   private def applyValue(fn: Value, args: Value*): Value =
     Interpreter.evalApply(fn, args.toVector)
 
@@ -127,7 +116,7 @@ class TypeClassTests extends munit.FunSuite {
     ).body.getOrElse(fail("Program has no body"))
     val checkedTerm = TypeChecker.checkTerm(body, worlds.checkEnv).residual
 
-    val runEnvWithoutSearch = new NoSearchEnv(worlds.runEnv)
+    val runEnvWithoutSearch = worlds.runEnv.copy(globalInstances = InstanceRegistry.empty, localInstances = Map.empty)
     assertEquals(ctorName(Interpreter.evalTerm(checkedTerm, runEnvWithoutSearch)), "DecEq.mk")
 
   }
@@ -505,7 +494,7 @@ class TypeClassTests extends munit.FunSuite {
     val env = worlds.runEnv
 
     val a = FreshVar.freshVar("A", Value.TypeTpe)
-    val aRef = CoreAst.LocalRef(env.locals.length, "A")
+    val aRef = CoreAst.LocalRef(env.locals.size, "A")
     val envWithA = env.putLocal(aRef, a)
 
     val goal = applyValue(namedValue(envWithA, "DecEq"), a)
@@ -515,7 +504,7 @@ class TypeClassTests extends munit.FunSuite {
     }
 
     val eqA = Value.VConst("eqA", Value.Symbol, goal)
-    val eqARef = CoreAst.LocalRef(envWithA.locals.length, "eqA")
+    val eqARef = CoreAst.LocalRef(envWithA.locals.size, "eqA")
     val eqAKey = InstanceSearch.instanceKey("eqA", eqA)
     val envWithEqA = envWithA.putLocal(eqARef, eqA, Some(eqAKey))
 

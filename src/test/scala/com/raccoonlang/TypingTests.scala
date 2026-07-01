@@ -103,7 +103,7 @@ class TypingTests extends munit.FunSuite {
     assertEquals(toShape(res), zeroS)
   }
 
-  test("nested lambda captures outer local slot") {
+  test("nested lambda captures outer local ref") {
     val p =
       """
         |inductive Nat : Type
@@ -121,7 +121,7 @@ class TypingTests extends munit.FunSuite {
     assertEquals(toShape(res), zeroS)
   }
 
-  test("later let shadowing allocates a new local slot") {
+  test("later let shadowing allocates a new local ref") {
     val p =
       """
         |inductive Nat : Type

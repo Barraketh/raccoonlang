@@ -3,7 +3,7 @@ package com.raccoonlang
 import com.raccoonlang.ElabAst.{Term => ETerm}
 import com.raccoonlang.Value._
 
-class CapturedIndexesTests extends munit.FunSuite {
+class CapturedRefsTests extends munit.FunSuite {
   private val span = Span(0, 0)
   private val valueType: Value = TypeTpe
   private val typeRef: ElabAst.TypeTerm = ETerm.GlobalRef("Type", span)
@@ -13,7 +13,7 @@ class CapturedIndexesTests extends munit.FunSuite {
     ElabAst.BinderType.TypePattern(pattern, pattern.span)
   }
 
-  test("getCapturedIndexes collects only local indexes below the current env cutoff") {
+  test("getCapturedRefs collects only local refs present in the current env") {
     val capturedRef = CoreAst.LocalRef(0, "captured")
     val binderRef = CoreAst.LocalRef(1, "x")
     val captured = FreshVar.freshVar("captured", valueType)
@@ -29,20 +29,20 @@ class CapturedIndexesTests extends munit.FunSuite {
       span
     )
 
-    val indexes = CapturedIndexes.getCapturedIndexes(term, env)
+    val refs = CapturedRefs.getCapturedRefs(term, env)
 
-    assert(indexes.contains(capturedRef.id))
-    assertEquals(indexes.getCardinality, 1)
+    assert(refs.contains(capturedRef))
+    assertEquals(refs.size, 1)
     assert(ValueEquivalence.defEq(env(capturedRef), captured, propIrrelevant = true))
   }
 
-  test("captured indexes cannot be read from a smaller env than their cutoff") {
+  test("captured refs cannot be read from an env that does not contain them") {
     val ref = CoreAst.LocalRef(0, "x")
     val value = FreshVar.freshVar("x", valueType)
     val env = Env.empty.putLocal(ref, value)
-    val indexes = CapturedIndexes.getCapturedIndexes(ETerm.LocalRef(ref, span), env)
+    val refs = CapturedRefs.getCapturedRefs(ETerm.LocalRef(ref, span), env)
 
-    intercept[WTF](RuntimeEnv.closeForEval(Env.empty, indexes))
+    intercept[WTF](Env.empty.closeForEval(refs))
   }
 
 }

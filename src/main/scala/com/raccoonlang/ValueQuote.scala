@@ -4,10 +4,8 @@ import com.raccoonlang.Value._
 import com.raccoonlang.telescope.BinderOps
 
 object ValueQuote {
-  final case class QuoteEntry(term: ElabAst.Term, residualPolicy: LocalResidualPolicy)
-
-  type QuoteMap = Map[ValueKey.Key, QuoteEntry]
-  final case class QuoteContext(quote: QuoteMap, localEnvLength: Int)
+  type QuoteMap = Map[ValueKey.Key, ElabAst.Term]
+  final case class QuoteContext(quote: QuoteMap)
 
   private final case class OpenedPi(
       term: ElabAst.Term.Pi,
@@ -16,20 +14,15 @@ object ValueQuote {
   )
 
   private final class ClosedEnvInliner(env: Env, context: QuoteContext) {
-    private val envLength = env.locals.length
-
-    def reindex(ref: CoreAst.LocalRef): CoreAst.LocalRef =
-      ref.copy(id = ref.id - envLength + context.localEnvLength)
-
     private def inlineLocal(ref: CoreAst.LocalRef, refSpan: Span): ElabAst.Term =
-      if (ref.id < envLength) quoteTerm(env(ref), context, refSpan)
-      else ElabAst.Term.LocalRef(reindex(ref), refSpan)
+      if (env.locals.contains(ref)) quoteTerm(env(ref), context, refSpan)
+      else ElabAst.Term.LocalRef(ref, refSpan)
 
     private def inlineAppHead(t: ElabAst.Term): ElabAst.Term =
       t match {
         case ElabAst.Term.LocalRef(ref, refSpan) =>
-          if (ref.id < envLength) quoteAppHead(env(ref), context, refSpan)
-          else ElabAst.Term.LocalRef(reindex(ref), refSpan)
+          if (env.locals.contains(ref)) quoteAppHead(env(ref), context, refSpan)
+          else ElabAst.Term.LocalRef(ref, refSpan)
         case other => inlineTerm(other)
       }
 
@@ -41,12 +34,12 @@ object ValueQuote {
           ElabAst.Term.App(inlineAppHead(fn), args.map(inlineTerm), appSpan)
         case ElabAst.Term.Pi(binders, out, classifier, piSpan) =>
           val nextBinders = binders.map { b =>
-            b.copy(localRef = reindex(b.localRef), ty = inlineBinderType(b.ty))
+            b.copy(ty = inlineBinderType(b.ty))
           }
           ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, piSpan)
         case ElabAst.Term.Body(lets, res, bodySpan) =>
           val nextLets = lets.map { l =>
-            ElabAst.Let(reindex(l.localRef), l.ty.map(inlineTypeTerm), inlineTerm(l.value), l.span, l.isInstance)
+            ElabAst.Let(l.localRef, l.ty.map(inlineTypeTerm), inlineTerm(l.value), l.span, l.isInstance)
           }
           ElabAst.Term.Body(nextLets, inlineTerm(res), bodySpan)
         case ElabAst.Term.Lam(ty, body, lamSpan, name, recursiveSelf) =>
@@ -78,7 +71,7 @@ object ValueQuote {
           ElabAst.Term.App(inlineAppHead(fn), args.map(inlineTerm), appSpan)
         case ElabAst.Term.Pi(binders, out, classifier, piSpan) =>
           val nextBinders = binders.map { b =>
-            b.copy(localRef = reindex(b.localRef), ty = inlineBinderType(b.ty))
+            b.copy(ty = inlineBinderType(b.ty))
           }
           ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, piSpan)
       }
@@ -86,7 +79,7 @@ object ValueQuote {
     private def inlineTypePattern(tp: ElabAst.TypePattern): ElabAst.TypePattern =
       tp match {
         case top: ElabAst.TopLevelTP                       => inlineTopLevelTP(top)
-        case ElabAst.TypePattern.Capture(ref, captureSpan) => ElabAst.TypePattern.Capture(reindex(ref), captureSpan)
+        case ElabAst.TypePattern.Capture(ref, captureSpan) => ElabAst.TypePattern.Capture(ref, captureSpan)
       }
 
     private def inlineTopLevelTP(tp: ElabAst.TopLevelTP): ElabAst.TopLevelTP =
@@ -106,18 +99,18 @@ object ValueQuote {
         case ElabAst.BinderType.TypePattern(tp, binderSpan) =>
           ElabAst.BinderType.TypePattern(inlineTopLevelTP(tp), binderSpan)
         case ElabAst.BinderType.ConstrainedCapture(ref, constraint, binderSpan) =>
-          ElabAst.BinderType.ConstrainedCapture(reindex(ref), inlineTopLevelTP(constraint), binderSpan)
+          ElabAst.BinderType.ConstrainedCapture(ref, inlineTopLevelTP(constraint), binderSpan)
       }
 
     def inlineCase(c: ElabAst.Case): ElabAst.Case =
-      ElabAst.Case(c.ctorName, c.argRefs.map(_.map(reindex)), inlineTerm(c.body), c.span)
+      ElabAst.Case(c.ctorName, c.argRefs, inlineTerm(c.body), c.span)
   }
 
   def quoteContext(env: Env): QuoteContext = {
-    val quote = env.locals.zipWithIndex.foldLeft(Map.empty[ValueKey.Key, QuoteEntry]) { case (quote, (binding, idx)) =>
-      withLocalQuote(quote, binding, idx)
+    val quote = env.locals.foldLeft(Map.empty[ValueKey.Key, ElabAst.Term]) { case (quote, (ref, value)) =>
+      withLocalQuote(quote, ref, value)
     }
-    QuoteContext(quote, env.locals.length)
+    QuoteContext(quote)
   }
 
   def quoteType(value: Value, context: QuoteContext, span: Span): ElabAst.TypeTerm =
@@ -127,7 +120,7 @@ object ValueQuote {
     }
 
   def quoteTerm(value: Value, context: QuoteContext, span: Span): ElabAst.Term = {
-    quotedTermFor(context.quote, value, span).foreach(return _)
+    context.quote.get(value.key).foreach(return _)
 
     value match {
       case lam: VLam if isRawRecursive(lam) => throw CannotQuoteValue(lam, "raw recursive self", Some(span))
@@ -167,7 +160,7 @@ object ValueQuote {
   }
 
   private def quoteAppHead(value: Value, context: QuoteContext, span: Span): ElabAst.Term =
-    quotedAppHeadFor(context.quote, value).getOrElse(quoteTerm(value, context, span))
+    context.quote.get(value.key).getOrElse(quoteTerm(value, context, span))
 
   private def quoteClosedMatch(
       term: ElabAst.Term.Match,
@@ -246,36 +239,34 @@ object ValueQuote {
       case _ => None
     }
 
-  private def withLocalQuote(quote: QuoteMap, binding: Binding, idx: Int): QuoteMap =
-    binding.valueOption match {
-      case Some(value) =>
-        val ref = CoreAst.LocalRef(idx, binding.name)
-        val term = ElabAst.Term.LocalRef(ref, Span(0, 0))
-        val withLocal = withQuotedValueInMap(quote, value, term, binding.residualPolicy)
-        rawRecursiveAlias(value) match {
-          case Some(alias) => withQuotedValueInMap(withLocal, alias, term, binding.residualPolicy)
-          case None        => withLocal
-        }
-      case None => quote
+  private def withLocalQuote(quote: QuoteMap, ref: CoreAst.LocalRef, value: Value): QuoteMap = {
+    val term = ElabAst.Term.LocalRef(ref, Span(0, 0))
+    val withLocal = withQuotedValueInMap(quote, value, term)
+    rawRecursiveAlias(value) match {
+      case Some(alias) => withQuotedValueInMap(withLocal, alias, term)
+      case None        => withLocal
     }
+  }
 
   private def quotePiOpened(pi: VPi, context: QuoteContext, span: Span): OpenedPi = {
     val freshEnv = BinderOps.freshen(pi)
     val freshArgs = pi.binders.map(b => freshEnv(b.localRef))
-    val piEnvLength = pi.env.locals.length
-    val freshLocals = freshEnv.locals.slice(piEnvLength, freshEnv.locals.length)
+    val freshLocals = freshEnv.locals.filterNot { case (ref, _) => pi.env.locals.contains(ref) }
 
-    val nextQuote = freshLocals.zipWithIndex.foldLeft(context.quote) { case (quote, (lb, idx)) =>
-      val ref = CoreAst.LocalRef(context.localEnvLength + idx, lb.name)
-      withQuotedValueInMap(quote, lb.value, ElabAst.Term.LocalRef(ref, Span(0, 0)), LocalResidualPolicy.Residualizable)
+    val nextQuote = freshLocals.foldLeft(context.quote) { case (quote, (ref, value)) =>
+      withQuotedValueInMap(
+        quote,
+        value,
+        ElabAst.Term.LocalRef(ref, Span(0, 0))
+      )
     }
-    val nextContext = QuoteContext(nextQuote, context.localEnvLength + freshLocals.length)
+    val nextContext = QuoteContext(nextQuote)
     val result = pi.codomain(freshEnv)
     val quotedOut = quoteType(result, nextContext, span)
     val inliner = new ClosedEnvInliner(pi.env, context)
 
     val quotedBinders = pi.binders.map { b =>
-      ElabAst.Binder(inliner.reindex(b.localRef), inliner.inlineBinderType(b.ty), Span(0, 0), b.isInstance)
+      ElabAst.Binder(b.localRef, inliner.inlineBinderType(b.ty), Span(0, 0), b.isInstance)
     }
 
     OpenedPi(ElabAst.Term.Pi(quotedBinders, quotedOut, pi.tpe, span), freshArgs, nextContext)
@@ -300,8 +291,9 @@ object ValueQuote {
       else succ(ElabAst.Term.GlobalRef("Level.zero", span), c)
 
     val atomTerms = level.atoms.toVector.sortBy(_._1).map { case (id, offset) =>
-      val base = quotedTermFor(context.quote, Level.mk(id), span)
-        .getOrElse(throw CannotQuoteValue(Level.mk(id), "escaping level variable", Some(span)))
+      val atom = Level.mk(id)
+      val base =
+        context.quote.get(atom.key).getOrElse(throw CannotQuoteValue(atom, "escaping level variable", Some(span)))
       succ(base, offset)
     }
 
@@ -314,32 +306,14 @@ object ValueQuote {
     }
   }
 
-  private def quotedTermFor(
-      quote: QuoteMap,
-      value: Value,
-      span: Span
-  ): Option[ElabAst.Term] =
-    quote.get(value.key).map { entry =>
-      entry.residualPolicy match {
-        case LocalResidualPolicy.Residualizable => entry.term
-        case LocalResidualPolicy.AppHeadOnly(name) =>
-          throw CannotQuoteValue(value, s"$name is only available as an application head", Some(span))
-      }
-    }
-
-  private def quotedAppHeadFor(quote: QuoteMap, value: Value): Option[ElabAst.Term] =
-    quote.get(value.key).map(_.term)
-
   private def withQuotedValueInMap(
       quote: QuoteMap,
       value: Value,
-      term: ElabAst.Term,
-      residualPolicy: LocalResidualPolicy
+      term: ElabAst.Term
   ): QuoteMap = {
-    val entry = QuoteEntry(term, residualPolicy)
-    val withValue = quote + (value.key -> entry)
+    val withValue = quote + (value.key -> term)
     value match {
-      case Value.Var(_, id, Value.LevelTpe) => withValue + (Value.Level.mk(id).key -> entry)
+      case Value.Var(_, id, Value.LevelTpe) => withValue + (Value.Level.mk(id).key -> term)
       case _                                => withValue
     }
   }

@@ -45,8 +45,8 @@ object BinderOps {
   ): Env = {
     if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
 
-    binders.zip(args).foldLeft(runtimeEnv) { case (curRuntimeEnv, (binder, value)) =>
-      TypePatternOps.bindValueAndCheck(curRuntimeEnv, binder, value)
+    binders.zip(args).foldLeft(runtimeEnv) { case (curEnv, (binder, value)) =>
+      TypePatternOps.bindValueAndCheck(curEnv, binder, value)
     }
   }
 }

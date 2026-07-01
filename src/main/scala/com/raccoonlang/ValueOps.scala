@@ -2,25 +2,16 @@ package com.raccoonlang
 
 import com.raccoonlang.Value._
 
+import scala.collection.immutable.VectorMap
+
 object ValueOps {
   def materialize(value: Value, eqStore: EqStore): Value = Materialize.materialize(value)(eqStore)
 
   def materializeEnv(env: Env, eqStore: EqStore): Env = Materialize.materializeEnv(env)(eqStore)
 
   private object Materialize {
-    def materializeEnv(env: Env)(implicit eqStore: EqStore): Env = {
-      MappedEnv(env, value => materialize(value))
-    }
-
-    private final case class MappedEnv(base: Env, mapValue: Value => Value) extends DelegatingEnv {
-      override def updateBase(newBase: Env): Env = copy(base = newBase)
-
-      override lazy val locals: Vector[Binding] = base.locals.map(_.mapValue(mapValue))
-
-      override def localBinding(ref: CoreAst.LocalRef): Binding =
-        if (ref.id >= 0 && ref.id < locals.length) locals(ref.id)
-        else throw NotFound(s"${ref.name}#${ref.id}")
-    }
+    def materializeEnv(env: Env)(implicit eqStore: EqStore): Env =
+      env.copy(locals = VectorMap.from(env.locals.iterator.map { case (ref, value) => ref -> materialize(value) }))
 
     def materialize(value: Value)(implicit eqStore: EqStore): Value = {
       if (!mayNeedMaterialization(value)) return value

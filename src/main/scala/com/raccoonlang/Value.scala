@@ -64,7 +64,7 @@ object Value {
 
   private[raccoonlang] def envDeps(env: Env): DepSet = {
     val res = DepSet.newBuilder
-    env.locals.foreach(_.valueOption.foreach(value => res.unionInPlace(value.synDeps)))
+    env.locals.values.foreach(value => res.unionInPlace(value.synDeps))
     res.result()
   }
 
