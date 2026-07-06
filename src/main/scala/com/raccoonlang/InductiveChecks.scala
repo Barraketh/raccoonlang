@@ -152,25 +152,25 @@ object InductiveChecks {
 
   private def installInductive(
       decl: Decl.InductiveDecl,
-      baseEnv: Env,
+      baseContext: TypingContext,
       inductiveHead: VConst
-  ): Env = {
-    val envWithInductive = baseEnv.putGlobal(decl.header.name, inductiveHead)
+  ): TypingContext = {
+    val contextWithInductive = baseContext.putGlobal(decl.header.name, inductiveHead)
 
-    decl.ctors.foldLeft(envWithInductive) { case (curEnv, ctor) =>
+    decl.ctors.foldLeft(contextWithInductive) { case (curContext, ctor) =>
       val allBinders = ctor.erasedBinders ++ ctor.fields
       val fullTypeTerm =
         if (allBinders.isEmpty) ctor.resultTy
         else Term.Pi(allBinders, ctor.resultTy, ctor.span)
 
-      val fullType = TypeChecker.getType(fullTypeTerm, curEnv)
+      val fullType = TypeChecker.getType(fullTypeTerm, curContext)
       val erasedFamilyArgIndexes = ctor.erasedBinders.map { binder =>
         val idx = decl.header.params.indexWhere(_.name == binder.name)
         if (idx < 0) throw InvalidErasedConstructorBinder(ctor.canonicalName, binder.name, "expected inductive param")
         idx
       }
 
-      curEnv.putGlobal(
+      curContext.putGlobal(
         ctor.canonicalName,
         ConstructorHead(ctor.canonicalName, erasedFamilyArgIndexes, allBinders.length, fullType)
       )
@@ -188,8 +188,8 @@ object InductiveChecks {
       else Term.Pi(header.binders, decl.header.resultTy, decl.header.span)
     }
 
-    val inductiveTypeCheck = TypeChecker.getType(ty, worlds.checkEnv)
-    val inductiveTypeRun = TypeChecker.getType(ty, worlds.runEnv)
+    val inductiveTypeCheck = TypeChecker.getType(ty, worlds.checkContext)
+    val inductiveTypeRun = TypeChecker.getType(ty, worlds.runContext)
 
     val initialPositiveArgs = DepSet.from(0 until header.arity)
     val initialMeta =
@@ -202,17 +202,18 @@ object InductiveChecks {
 
     val inductivedHead = VConst(name, Inductive(initialMeta), inductiveTypeCheck)
 
-    val checkEnvWithInductive = worlds.checkEnv.putGlobal(name, inductivedHead)
-    val envWithFamilyBinders = {
+    val checkContextWithInductive = worlds.checkContext.putGlobal(name, inductivedHead)
+    val contextWithFamilyBinders = {
       inductiveTypeCheck match {
         case pi: VPi =>
-          assert(checkEnvWithInductive.locals.isEmpty) // Sanity check
-          BinderOps.freshen(pi.binders, checkEnvWithInductive)
-        case _ => checkEnvWithInductive
+          assert(checkContextWithInductive.env.locals.isEmpty) // Sanity check
+          BinderOps.freshen(pi.binders, checkContextWithInductive)
+        case _ => checkContextWithInductive
       }
     }
+    val envWithFamilyBinders = contextWithFamilyBinders.env
 
-    TypeChecker.getType(header.resultTy, envWithFamilyBinders) match {
+    TypeChecker.getType(header.resultTy, contextWithFamilyBinders) match {
       case v: VSort => v
       case other    => throw InductiveTypeNotASort(other, Some(header.resultTy.span))
     }
@@ -235,14 +236,18 @@ object InductiveChecks {
     var positiveArgs = positiveArgIndexes(familyArgs, familyArgs.map(_.tpe))
 
     decl.ctors.foreach { ctor =>
-      val (erasedBinders, _) = BinderOps.toVBinders(ctor.erasedBinders, checkEnvWithInductive)
-      val envWithErased = BinderOps.freshen(erasedBinders, checkEnvWithInductive)
-      val (fieldBinders, _) = BinderOps.toVBinders(ctor.fields, envWithErased)
-      val fieldsEnv = BinderOps.freshen(fieldBinders, envWithErased)
+      val checkedErased = BinderOps.toVBinders(ctor.erasedBinders, checkContextWithInductive)
+      val erasedBinders = checkedErased.vBinders
+      val contextWithErased = checkedErased.context
+      val envWithErased = contextWithErased.env
+      val checkedFields = BinderOps.toVBinders(ctor.fields, contextWithErased)
+      val fieldBinders = checkedFields.vBinders
+      val contextWithFields = checkedFields.context
+      val fieldsEnv = contextWithFields.env
       val fieldVars = fieldBinders.map(binder => fieldsEnv(binder.localRef))
       val fieldTypes = fieldVars.map(_.tpe)
 
-      val outputTpe = TypeChecker.getType(ctor.resultTy, fieldsEnv)
+      val outputTpe = TypeChecker.getType(ctor.resultTy, contextWithFields)
 
       // 4) Constructor result must be the inductive family head applied to the full family arity.
       val resultErr = InvalidConstructorResult(ctor.canonicalName, name, outputTpe, Some(ctor.span))
@@ -319,9 +324,9 @@ object InductiveChecks {
     val inductiveHeadRun = VConst(name, Inductive(meta), inductiveTypeRun)
 
     // Only after all constructor checks succeed do we add the decl to the environments.
-    val nextCheckEnv = installInductive(decl, worlds.checkEnv, inductiveHeadCheck)
-    val nextRunEnv = installInductive(decl, worlds.runEnv, inductiveHeadRun)
+    val nextCheckContext = installInductive(decl, worlds.checkContext, inductiveHeadCheck)
+    val nextRunContext = installInductive(decl, worlds.runContext, inductiveHeadRun)
 
-    Worlds(nextCheckEnv, nextRunEnv)
+    Worlds(nextCheckContext, nextRunContext)
   }
 }

@@ -65,7 +65,7 @@ class TypeClassTests extends munit.FunSuite {
     ).body.getOrElse(fail("Program has no body"))
     assert(body.isInstanceOf[CoreAst.Term.Derive])
 
-    val term = TypeChecker.checkTerm(body, worlds.checkEnv).residual
+    val term = TypeChecker.checkTerm(body, worlds.checkContext).residual
 
     term match {
       case ElabAst.Term.App(ElabAst.Term.GlobalRef("DecEq.mk", _), args, _) if args.length == 2 =>
@@ -114,10 +114,9 @@ class TypeClassTests extends munit.FunSuite {
           |{ useNatEq }
           |""".stripMargin
     ).body.getOrElse(fail("Program has no body"))
-    val checkedTerm = TypeChecker.checkTerm(body, worlds.checkEnv).residual
+    val checkedTerm = TypeChecker.checkTerm(body, worlds.checkContext).residual
 
-    val runEnvWithoutSearch = worlds.runEnv.copy(globalInstances = InstanceRegistry.empty, localInstances = Map.empty)
-    assertEquals(ctorName(Interpreter.evalTerm(checkedTerm, runEnvWithoutSearch)), "DecEq.mk")
+    assertEquals(ctorName(Interpreter.evalTerm(checkedTerm, worlds.runEnv)), "DecEq.mk")
 
   }
 
@@ -491,23 +490,21 @@ class TypeClassTests extends munit.FunSuite {
           |def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |""".stripMargin
     )
-    val env = worlds.runEnv
-
     val a = FreshVar.freshVar("A", Value.TypeTpe)
-    val aRef = CoreAst.LocalRef(env.locals.size, "A")
-    val envWithA = env.putLocal(aRef, a)
+    val aRef = CoreAst.LocalRef(worlds.runEnv.locals.size, "A")
+    val contextWithA = worlds.runContext.putLocal(aRef, a)
+    val envWithA = contextWithA.env
 
     val goal = applyValue(namedValue(envWithA, "DecEq"), a)
 
     intercept[NoInstanceFound] {
-      InstanceSearch.solve(goal, envWithA)
+      InstanceSearch.solve(goal, contextWithA)
     }
 
     val eqA = Value.VConst("eqA", Value.Symbol, goal)
     val eqARef = CoreAst.LocalRef(envWithA.locals.size, "eqA")
-    val eqAKey = InstanceSearch.instanceKey("eqA", eqA)
-    val envWithEqA = envWithA.putLocal(eqARef, eqA, Some(eqAKey))
+    val contextWithEqA = contextWithA.putLocal(eqARef, eqA, isInstance = true)
 
-    assert(ValueEquivalence.defEq(InstanceSearch.solve(goal, envWithEqA), eqA, propIrrelevant = true))
+    assert(ValueEquivalence.defEq(InstanceSearch.solve(goal, contextWithEqA), eqA, propIrrelevant = true))
   }
 }

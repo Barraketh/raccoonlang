@@ -6,7 +6,14 @@ import com.raccoonlang.{CoreAst => CA}
 
 /** Termination checking uses a temporary raw-recursive value installed as a local while checking the body. */
 object TerminationChecker {
-  def rawRecursiveSelf(name: String, vpi: VPi, spec: CA.DecreaseSpec, bodyEnv: Env): VLam = {
+  def rawRecursiveSelf(
+      name: String,
+      vpi: VPi,
+      spec: CA.DecreaseSpec,
+      bodyContext: TypingContext
+  ): VLam = {
+    val bodyEnv = bodyContext.env
+
     def requireInductiveMetric(value: Value, span: Span): Unit =
       value.tpe match {
         case ConstSpine(VConst(_, Inductive(_), _), _) =>
@@ -44,7 +51,7 @@ object TerminationChecker {
         }
 
       case CA.DecreaseSpec.Measure(term, sp) =>
-        val initialMeasure = TypeChecker.checkTerm(term, bodyEnv)
+        val initialMeasure = TypeChecker.checkTerm(term, bodyContext)
         requireInductiveMetric(initialMeasure.value, sp)
         val quoted = initialMeasure.residual
         (args, nativeEnv) => {

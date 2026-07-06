@@ -235,16 +235,15 @@ object Interpreter {
           u.withTpe(evalTypeTerm(ty, curEnv))
         case _ => res
       }
-      val instanceKey = if (l.isInstance) Some(InstanceSearch.instanceKey(l.localRef.name, withTpe)) else None
-      curEnv.putLocal(l.localRef, withTpe, instanceKey)
+      curEnv.putLocal(l.localRef, withTpe)
     }
     evalTerm(body.res, newEnv)
   }
 
-  case class Worlds(checkEnv: Env, runEnv: Env)
-
-  private def putGlobal(env: Env, name: String, value: Value, isInstance: Boolean): Env =
-    env.putGlobal(name, value, if (isInstance) Some(InstanceSearch.instanceKey(name, value)) else None)
+  case class Worlds(checkContext: TypingContext, runContext: TypingContext) {
+    def checkEnv: Env = checkContext.env
+    def runEnv: Env = runContext.env
+  }
 
   def evalDecl(decl: Decl, worlds: Worlds): Worlds = {
     decl match {
@@ -253,52 +252,58 @@ object Interpreter {
           case CoreAst.ConstBody.Builtin(_) =>
             if (isOpaque) throw WTF("Builtin declarations cannot be opaque", Some(span))
             if (isInstance) throw WTF("Builtin declarations cannot be instances", Some(span))
-            def value(env: Env): Value = Builtins.instantiate(name, TypeChecker.getType(ty, env), span)
+            def value(context: TypingContext): Value =
+              Builtins.instantiate(name, TypeChecker.getType(ty, context), span)
             if (lazyGlobal)
               Worlds(
-                worlds.checkEnv.putLazyGlobal(name, () => value(worlds.checkEnv)),
-                worlds.runEnv.putLazyGlobal(name, () => value(worlds.runEnv))
+                worlds.checkContext.putLazyGlobal(name, () => value(worlds.checkContext)),
+                worlds.runContext.putLazyGlobal(name, () => value(worlds.runContext))
               )
-            else
+            else {
               Worlds(
-                putGlobal(worlds.checkEnv, name, value(worlds.checkEnv), isInstance),
-                putGlobal(worlds.runEnv, name, value(worlds.runEnv), isInstance)
+                worlds.checkContext.putGlobal(name, value(worlds.checkContext), isInstance = isInstance),
+                worlds.runContext.putGlobal(name, value(worlds.runContext), isInstance = isInstance)
               )
+            }
 
           case CoreAst.ConstBody.TermBody(term) =>
             if (lazyGlobal && isInstance) throw WTF("Lazy global instances are not supported", Some(span))
-            val checkEnv = worlds.checkEnv
-            val runEnv = worlds.runEnv
-            lazy val checked = TypeChecker.checkTerm(term, checkEnv)
-            lazy val checkedTy = TypeChecker.getType(ty, checkEnv)
+            val checkContext = worlds.checkContext
+            val runContext = worlds.runContext
+            lazy val checked = TypeChecker.checkTerm(term, checkContext)
+            lazy val checkedTy = TypeChecker.getType(ty, checkContext)
             lazy val checkValue = {
               TypeChecker.checkType(checked.value, checkedTy)
               val bodyV = Value.ascribe(checked.value, checkedTy)
               if (isOpaque) VConst(name, Symbol, checkedTy) else bodyV
             }
-            lazy val runTy = TypeChecker.getType(ty, runEnv)
+            lazy val runTy = TypeChecker.getType(ty, runContext)
             lazy val runtimeValue =
               if (isOpaque) VConst(name, Symbol, runTy)
-              else Value.ascribe(evalTerm(checked.residual, runEnv), runTy)
+              else Value.ascribe(evalTerm(checked.residual, runContext.env), runTy)
             if (lazyGlobal)
-              Worlds(checkEnv.putLazyGlobal(name, () => checkValue), runEnv.putLazyGlobal(name, () => runtimeValue))
-            else
               Worlds(
-                putGlobal(checkEnv, name, checkValue, isInstance),
-                putGlobal(runEnv, name, runtimeValue, isInstance)
+                checkContext.putLazyGlobal(name, () => checkValue),
+                runContext.putLazyGlobal(name, () => runtimeValue)
               )
+            else {
+              Worlds(
+                checkContext.putGlobal(name, checkValue, isInstance = isInstance),
+                runContext.putGlobal(name, runtimeValue, isInstance = isInstance)
+              )
+            }
         }
 
       case Decl.AxiomDecl(name, ty, _, isInstance) =>
-        val tyV = TypeChecker.getType(ty, worlds.checkEnv)
+        val tyV = TypeChecker.getType(ty, worlds.checkContext)
         val checkValue = VConst(name, Symbol, tyV)
-        val nextCheckEnv = putGlobal(worlds.checkEnv, name, checkValue, isInstance)
+        val nextCheckContext = worlds.checkContext.putGlobal(name, checkValue, isInstance = isInstance)
 
-        val runtimeTyV = TypeChecker.getType(ty, worlds.runEnv)
+        val runtimeTyV = TypeChecker.getType(ty, worlds.runContext)
         val runtimeValue = VConst(name, Symbol, runtimeTyV)
-        val nextRunEnv = putGlobal(worlds.runEnv, name, runtimeValue, isInstance)
+        val nextRunContext = worlds.runContext.putGlobal(name, runtimeValue, isInstance = isInstance)
 
-        Worlds(nextCheckEnv, nextRunEnv)
+        Worlds(nextCheckContext, nextRunContext)
 
       case d: Decl.InductiveDecl => InductiveChecks.evalInductiveDecl(d, worlds)
 
@@ -310,7 +315,7 @@ object Interpreter {
     val worlds =
       p.decls.foldLeft(initialWorlds(prelude)) { case (curWorlds, decl) => evalDecl(decl, curWorlds) }
     p.body.map { b =>
-      val checked = TypeChecker.checkTerm(b, worlds.checkEnv)
+      val checked = TypeChecker.checkTerm(b, worlds.checkContext)
       evalTerm(checked.residual, worlds.runEnv)
     }
   }
@@ -324,7 +329,9 @@ object Interpreter {
         .putGlobal("Level.one", Level.one)
         .putGlobal("Prop", PropTpe)
 
-    prelude.core.decls.foldLeft(Worlds(baseEnv, baseEnv)) { case (curWorlds, decl) =>
+    val baseContext = TypingContext.envOnly(baseEnv)
+
+    prelude.core.decls.foldLeft(Worlds(baseContext, baseContext)) { case (curWorlds, decl) =>
       evalDecl(decl, curWorlds)
     }
   }

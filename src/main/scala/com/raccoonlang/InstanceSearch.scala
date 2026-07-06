@@ -43,9 +43,9 @@ object InstanceSearch {
   def instanceKey(name: String, value: Value): String =
     resultHeadKey(value.tpe).getOrElse(throw InvalidInstance(name, value.tpe))
 
-  def solve(goal: Value, searchEnv: Env): Value = {
+  def solve(goal: Value, context: TypingContext): Value = {
     val cache = mutable.HashMap.empty[ValueKey.Key, Value]
-    solveInternal(goal, searchEnv, SearchState(Nil, 0), cache) match {
+    solveInternal(goal, context, SearchState(Nil, 0), cache) match {
       case SearchResult.Found(value) => value
       case failed: SearchResult.Failed =>
         if (failed.hasCycle) throw CyclicInstanceSearch(goal)
@@ -56,7 +56,7 @@ object InstanceSearch {
 
   private def solveInternal(
       goal: Value,
-      searchEnv: Env,
+      context: TypingContext,
       state: SearchState,
       cache: mutable.HashMap[ValueKey.Key, Value]
   ): SearchResult = {
@@ -75,14 +75,14 @@ object InstanceSearch {
         case _: InstanceSearchBudgetExceeded => return SearchResult.depthLimit
       }
 
-    val tiers = searchEnv.instanceSearchTiers(head)
-    val local = tryCandidates(tiers.locals, goal, searchEnv, entered, cache)
+    val tiers = context.instances.searchTiers(head, context.env)
+    val local = tryCandidates(tiers.locals, goal, context, entered, cache)
     local match {
       case SearchResult.Found(success) =>
         cache.update(key, success)
         local
       case localFailed: SearchResult.Failed =>
-        val global = tryCandidates(tiers.globals, goal, searchEnv, entered, cache)
+        val global = tryCandidates(tiers.globals, goal, context, entered, cache)
         global match {
           case SearchResult.Found(success) =>
             cache.update(key, success)
@@ -95,7 +95,7 @@ object InstanceSearch {
   private def tryCandidates(
       candidates: Vector[Value],
       goal: Value,
-      searchEnv: Env,
+      context: TypingContext,
       state: SearchState,
       cache: mutable.HashMap[ValueKey.Key, Value]
   ): SearchResult = {
@@ -106,7 +106,7 @@ object InstanceSearch {
     while (iter.hasNext) {
       val candidate = iter.next()
       try {
-        tryCandidate(candidate, goal, searchEnv, state, cache) match {
+        tryCandidate(candidate, goal, context, state, cache) match {
           case found: SearchResult.Found => return found
           case failed: SearchResult.Failed =>
             hasCycle ||= failed.hasCycle
@@ -126,7 +126,7 @@ object InstanceSearch {
   private def tryCandidate(
       candidate: Value,
       goal: Value,
-      searchEnv: Env,
+      context: TypingContext,
       state: SearchState,
       cache: mutable.HashMap[ValueKey.Key, Value]
   ): SearchResult = {
@@ -157,7 +157,7 @@ object InstanceSearch {
               inferred
             } else if (binder.isInstance) {
               val instanceGoal = ValueOps.materialize(freshArg.tpe, candidateEq)
-              solveInternal(instanceGoal, searchEnv, state, cache) match {
+              solveInternal(instanceGoal, context, state, cache) match {
                 case SearchResult.Found(instance) => instance
                 case failed: SearchResult.Failed  => return failed
               }

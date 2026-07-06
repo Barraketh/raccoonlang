@@ -4,6 +4,12 @@ import com.raccoonlang.Value.{VBinder, VPi}
 import com.raccoonlang._
 
 object BinderOps {
+  final case class CheckedBinders(
+      vBinders: Vector[VBinder],
+      elabBinders: Vector[ElabAst.Binder],
+      context: TypingContext
+  )
+
   def freshen(binders: Vector[VBinder], baseEnv: Env): Env = {
     var env = baseEnv
     binders.foreach { binder =>
@@ -13,21 +19,36 @@ object BinderOps {
     env
   }
 
-  def freshen(vpi: VPi): Env = freshen(vpi.binders, vpi.env)
-
-  def toVBinders(binders: Vector[CoreAst.Binder], baseEnv: Env): (Vector[VBinder], Vector[ElabAst.Binder]) = {
-    val vBinders = Vector.newBuilder[VBinder]
-    val checkedBinders = Vector.newBuilder[ElabAst.Binder]
-    var env = baseEnv
-
+  def freshen(binders: Vector[VBinder], baseContext: TypingContext): TypingContext = {
+    var context = baseContext
     binders.foreach { binder =>
-      val (vBinder, checkedBinder) = TypePatternOps.toVBinder(binder, env)
-      vBinders += vBinder
-      checkedBinders += checkedBinder
-      env = freshen(Vector(vBinder), env)
+      val env = TypePatternOps.freshenBinder(context.env, binder)
+      context = context.withEnv(env)
+      if (binder.isInstance)
+        context = context.registerLocalInstance(binder.localRef)
     }
 
-    (vBinders.result(), checkedBinders.result())
+    context
+  }
+
+  def freshen(vpi: VPi): Env = freshen(vpi.binders, vpi.env)
+
+  def toVBinders(
+      binders: Vector[CoreAst.Binder],
+      baseContext: TypingContext
+  ): CheckedBinders = {
+    val vBinders = Vector.newBuilder[VBinder]
+    val checkedBinders = Vector.newBuilder[ElabAst.Binder]
+    var context = baseContext
+
+    binders.foreach { binder =>
+      val (vBinder, checkedBinder) = TypePatternOps.toVBinder(binder, context)
+      vBinders += vBinder
+      checkedBinders += checkedBinder
+      context = freshen(Vector(vBinder), context)
+    }
+
+    CheckedBinders(vBinders.result(), checkedBinders.result(), context)
   }
 
   def instantiateFull(binders: Vector[VBinder], baseEnv: Env, args: Vector[Value]): Env = {

@@ -68,15 +68,18 @@ object TypePatternOps {
     case Term.LocalRef(ref, span)   => ElabAst.Term.LocalRef(ref, span)
   }
 
-  private[telescope] def toVBinder(binder: CoreAst.Binder, env: Env): (VBinder, ElabAst.Binder) = {
+  private[telescope] def toVBinder(
+      binder: CoreAst.Binder,
+      context: TypingContext
+  ): (VBinder, ElabAst.Binder) = {
     def checkPattern(pattern: CoreAst.TypePattern, env: Env): (ElabAst.TypePattern, Env) = {
       pattern match {
         case CPattern.Type(term) =>
-          val checked = TypeChecker.checkTypeTerm(term, env)
+          val checked = TypeChecker.checkTypeTerm(term, context.withEnv(env))
           (EPattern.Type(checked.residual), env)
         case CPattern.Capture(ref, span) => throw PatternCaptureNeedsExpectedType(ref.name, Some(span))
         case CPattern.App(fn, args, span) =>
-          val fnV = TypeChecker.checkTypeTerm(fn, env).value
+          val fnV = TypeChecker.checkTypeTerm(fn, context.withEnv(env)).value
           val pi = requirePi(fnV)
           val binders = pi.binders
 
@@ -137,7 +140,7 @@ object TypePatternOps {
           (EBinderType.ConstrainedCapture(ref, checkedConstraint, span), checkedEnv)
       }
 
-    val (binderType, checkedEnv) = checkBinderType(binder.ty, env)
+    val (binderType, checkedEnv) = checkBinderType(binder.ty, context.env)
     val captures = collectBinderCaptures(binderType)
     val resType = compileBinderType(binderType)
     TypeChecker.assertType(Interpreter.evalTypeTerm(resType, checkedEnv))
@@ -236,10 +239,7 @@ object TypePatternOps {
   private[telescope] def freshenBinder(env: Env, binder: VBinder): Env = {
     val (opened, openedEnv) = openBinderType(env, binder.ty)
     val value = FreshVar.freshVar(binder.name, opened)
-    val instanceKey =
-      if (binder.isInstance) Some(InstanceSearch.instanceKey(binder.name, value))
-      else None
-    openedEnv.putLocal(binder.localRef, value, instanceKey)
+    openedEnv.putLocal(binder.localRef, value)
   }
 
   def bindValue(env: Env, binder: VBinder, actual: Value): Env = {

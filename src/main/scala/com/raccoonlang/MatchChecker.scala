@@ -111,16 +111,21 @@ object MatchChecker {
         throw PropEliminationRestricted(inductiveName, motiveTy, Some(span))
     }
 
-  private def checkBranch(br: CA.Case, args: Seq[Value], envWithScrut: Env, expectedTy: Value): EA.Case = {
+  private def checkBranch(
+      br: CA.Case,
+      args: Seq[Value],
+      contextWithScrut: TypingContext,
+      expectedTy: Value
+  ): EA.Case = {
     if (args.length != br.argRefs.length)
       throw ArityMismatch(args.length, br.argRefs.length, Some(br.span))
-    val branchEnv = br.argRefs.zip(args).foldLeft(envWithScrut) { case (curEnv, (argRef, argVal)) =>
+    val branchContext = br.argRefs.zip(args).foldLeft(contextWithScrut) { case (curContext, (argRef, argVal)) =>
       argRef match {
-        case Some(ref) => curEnv.putLocal(ref, argVal)
-        case None      => curEnv
+        case Some(ref) => curContext.putLocal(ref, argVal)
+        case None      => curContext
       }
     }
-    val branchRes = checkTerm(br.body, branchEnv)
+    val branchRes = checkTerm(br.body, branchContext)
     checkType(branchRes.value, expectedTy)
     EA.Case(
       br.ctorName,
@@ -130,8 +135,9 @@ object MatchChecker {
     )
   }
 
-  def checkMatch(t: CA.Term.Match, env: Env): CheckedTerm = {
-    val scrutChecked = checkTerm(t.scrut, env)
+  def checkMatch(t: CA.Term.Match, context: TypingContext): CheckedTerm = {
+    val env = context.env
+    val scrutChecked = checkTerm(t.scrut, context)
     val scrut = scrutChecked.value
     val scrutTpe = scrut.tpe
 
@@ -176,7 +182,7 @@ object MatchChecker {
       inferred
     }
 
-    val checkedMotive = t.motive.map(motiveSyntax => checkTypeTerm(motiveSyntax, env))
+    val checkedMotive = t.motive.map(motiveSyntax => checkTypeTerm(motiveSyntax, context))
     val motiveTy = checkedMotive match {
       case Some(motive) => motive.value
       case None         => inferMotiveFromReachable(reachableByType)
@@ -193,7 +199,7 @@ object MatchChecker {
         }
 
         val br = cases.find(_.ctorName == h.name).getOrElse(throw MissingCase(h.name))
-        checkedByCtor += h.name -> checkBranch(br, fields, env, motiveTy)
+        checkedByCtor += h.name -> checkBranch(br, fields, context, motiveTy)
 
       case _ =>
         val reachableMap = reachableByType.map(info => info.name -> info).toMap
@@ -209,9 +215,10 @@ object MatchChecker {
               val br = cases.find(_.ctorName == ctorName).getOrElse(throw MissingCase(ctorName))
               val branchStore = info.branchEqStore
               val branchEnv = ValueOps.materializeEnv(env, branchStore)
+              val branchContext = context.withEnv(branchEnv)
               val branchArgs = info.fieldArgs.map(arg => ValueOps.materialize(arg, branchStore))
               val branchMotiveTy = ValueOps.materialize(motiveTy, branchStore)
-              checkedByCtor += ctorName -> checkBranch(br, branchArgs, branchEnv, branchMotiveTy)
+              checkedByCtor += ctorName -> checkBranch(br, branchArgs, branchContext, branchMotiveTy)
           }
         }
     }

@@ -7,7 +7,12 @@ import com.raccoonlang.telescope.BinderOps
 import com.raccoonlang.{CoreAst => CA, ElabAst => EA}
 
 object TypeChecker {
-  private final case class CheckedPi(vpi: VPi, bodyEnv: Env, outTy: Value, residual: EA.Term.Pi)
+  private final case class CheckedPi(
+      vpi: VPi,
+      bodyContext: TypingContext,
+      outTy: Value,
+      residual: EA.Term.Pi
+  )
   final case class CheckedTerm(value: Value, residual: EA.Term)
   private[raccoonlang] final case class CheckedTypeTerm(value: Value, residual: EA.TypeTerm)
 
@@ -65,10 +70,12 @@ object TypeChecker {
       case CA.Term.LocalRef(ref, span)   => EA.Term.LocalRef(ref, span)
     }
 
-  private def checkPi(pi: CA.Term.Pi, env: Env): CheckedPi = {
-    val (vBinders, checkedBinders) = BinderOps.toVBinders(pi.binders, env)
-    val binderEnv = BinderOps.freshen(vBinders, env)
-    val checkedOut = checkTypeTerm(pi.out, binderEnv)
+  private def checkPi(pi: CA.Term.Pi, context: TypingContext): CheckedPi = {
+    val checkedBinders = BinderOps.toVBinders(pi.binders, context)
+    val vBinders = checkedBinders.vBinders
+    val binderContext = checkedBinders.context
+    val binderEnv = binderContext.env
+    val checkedOut = checkTypeTerm(pi.out, binderContext)
     val outV = checkedOut.value
     val freshArgs = vBinders.map(binder => binderEnv(binder.localRef))
     val classifier =
@@ -84,46 +91,49 @@ object TypeChecker {
         }
       }
     val checkedPi =
-      EA.Term.Pi(checkedBinders, checkedOut.residual, classifier, pi.span)
-    CheckedPi(evalPi(checkedPi, env, vBinders), binderEnv, outV, checkedPi)
+      EA.Term.Pi(checkedBinders.elabBinders, checkedOut.residual, classifier, pi.span)
+    CheckedPi(evalPi(checkedPi, context.env, vBinders), binderContext, outV, checkedPi)
   }
 
-  private[raccoonlang] def checkTypeTerm(term: CA.TypeTerm, env: Env): CheckedTypeTerm =
+  private[raccoonlang] def checkTypeTerm(
+      term: CA.TypeTerm,
+      context: TypingContext
+  ): CheckedTypeTerm =
     term match {
       case t: CA.Term.TApp =>
-        val fn = checkTypeTerm(t.fn, env)
-        val args = t.args.map(arg => checkTypeTerm(arg, env))
+        val fn = checkTypeTerm(t.fn, context)
+        val args = t.args.map(arg => checkTypeTerm(arg, context))
         val value = checkApplyValue(fn.value, args.map(_.value))
         val residual = EA.Term.App(fn.residual, args.map(_.residual), t.span)
         CheckedTypeTerm(value, residual)
       case CA.Term.TSelect(base, field, span) =>
-        val checkedBase = checkTypeTerm(base, env)
-        val (selectorName, value) = checkSelect(checkedBase.value, field, span, env)
+        val checkedBase = checkTypeTerm(base, context)
+        val (selectorName, value) = checkSelect(checkedBase.value, field, span, context.env)
         CheckedTypeTerm(value, EA.Term.App(EA.Term.GlobalRef(selectorName, span), Vector(checkedBase.residual), span))
       case derive: CA.Term.Derive =>
-        val goal = getType(derive.goal, env)
-        val value = InstanceSearch.solve(goal, env)
-        CheckedTypeTerm(value, quoteType(value, quoteContext(env), derive.span))
+        val goal = getType(derive.goal, context)
+        val value = InstanceSearch.solve(goal, context)
+        CheckedTypeTerm(value, quoteType(value, quoteContext(context.env), derive.span))
       case pi: CA.Term.Pi =>
-        val checked = checkPi(pi, env)
+        val checked = checkPi(pi, context)
         CheckedTypeTerm(checked.vpi, checked.residual)
       case ref: CA.Term.Ref =>
         val residual = elabRef(ref)
-        CheckedTypeTerm(Interpreter.evalTypeTerm(residual, env), residual)
+        CheckedTypeTerm(Interpreter.evalTypeTerm(residual, context.env), residual)
     }
 
   // Returning the residual term lets callers preserve checked let/lambda structure instead of re-checking.
-  private def checkBody(body: CA.Term.Body, env: Env): CheckedTerm = {
+  private def checkBody(body: CA.Term.Body, context: TypingContext): CheckedTerm = {
     val checkedLets = Vector.newBuilder[EA.Let]
-    var curEnv = env
+    var curContext = context
 
     body.lets.foreach { l =>
-      val checkedValue = checkTerm(l.value, curEnv)
+      val checkedValue = checkTerm(l.value, curContext)
 
       var resTyTerm: Option[EA.TypeTerm] = None
       val withType = l.ty
         .map { tyTerm =>
-          val checkedTy = checkTypeTerm(tyTerm, curEnv)
+          val checkedTy = checkTypeTerm(tyTerm, curContext)
           val tyV = checkedTy.value
           checkType(checkedValue.value, tyV)
           resTyTerm = Some(checkedTy.residual)
@@ -132,11 +142,10 @@ object TypeChecker {
         .getOrElse(checkedValue.value)
 
       checkedLets += EA.Let(l.localRef, resTyTerm, checkedValue.residual, l.span, l.isInstance)
-      val instanceKey = if (l.isInstance) Some(InstanceSearch.instanceKey(l.name, withType)) else None
-      curEnv = curEnv.putLocal(l.localRef, withType, instanceKey)
+      curContext = curContext.putLocal(l.localRef, withType, isInstance = l.isInstance)
     }
 
-    val checkedRes = checkTerm(body.res, curEnv)
+    val checkedRes = checkTerm(body.res, curContext)
     CheckedTerm(checkedRes.value, EA.Term.Body(checkedLets.result(), checkedRes.residual, body.span))
   }
 
@@ -159,10 +168,11 @@ object TypeChecker {
     (selectorName, checkApplyValue(selector, Vector(baseValue)))
   }
 
-  private def checkLam(l: CA.Term.Lam, env: Env): CheckedTerm = {
-    val checkedVpi = checkPi(l.ty, env)
+  private def checkLam(l: CA.Term.Lam, context: TypingContext): CheckedTerm = {
+    val checkedVpi = checkPi(l.ty, context)
     val vpi = checkedVpi.vpi
-    val bodyEnv = checkedVpi.bodyEnv
+    val bodyContext = checkedVpi.bodyContext
+    val bodyEnv = bodyContext.env
 
     // Recursive self references stay local for the whole pipeline, even if the source used a qualified name.
     // While checking, the local contains a raw recursive value that enforces the decrease and can only appear as an
@@ -173,14 +183,15 @@ object TypeChecker {
       l.recursion match {
         case Some(CA.Recursion(ref, decreaseSpec)) =>
           val name = l.name.getOrElse(throw WTF("Recursive lambda must have a name", Some(l.span)))
-          val recursiveSelf = TerminationChecker.rawRecursiveSelf(name, vpi, decreaseSpec, bodyEnv)
+          val recursiveSelf = TerminationChecker.rawRecursiveSelf(name, vpi, decreaseSpec, bodyContext)
           bodyEnv.putLocal(ref, recursiveSelf)
         case None => bodyEnv
       }
+    val bodyContextWithRecursion = bodyContext.withEnv(recurEnv)
 
     val checkedBody = l.body match {
-      case b: CA.Term.Body => checkBody(b, recurEnv)
-      case _               => checkTerm(l.body, recurEnv)
+      case b: CA.Term.Body => checkBody(b, bodyContextWithRecursion)
+      case _               => checkTerm(l.body, bodyContextWithRecursion)
     }
     assertNonRawRecursive(checkedBody.value)
 
@@ -193,11 +204,11 @@ object TypeChecker {
         l.name,
         l.recursion.map(_.selfRef)
       )
-    CheckedTerm(Interpreter.evalLam(checkedLam, vpi, env), checkedLam)
+    CheckedTerm(Interpreter.evalLam(checkedLam, vpi, context.env), checkedLam)
   }
 
-  def getType(term: CA.TypeTerm, env: Env): Value = {
-    val res = checkTypeTerm(term, env).value
+  def getType(term: CA.TypeTerm, context: TypingContext): Value = {
+    val res = checkTypeTerm(term, context).value
     assertType(res)
     res
   }
@@ -213,28 +224,28 @@ object TypeChecker {
     }
   }
 
-  def checkTerm(term: CA.Term, env: Env): CheckedTerm =
+  def checkTerm(term: CA.Term, context: TypingContext): CheckedTerm =
     try {
       term match {
         case CA.Term.Select(base, field, span) =>
-          val checkedBase = checkTerm(base, env)
-          val (selectorName, value) = checkSelect(checkedBase.value, field, span, env)
+          val checkedBase = checkTerm(base, context)
+          val (selectorName, value) = checkSelect(checkedBase.value, field, span, context.env)
           CheckedTerm(value, EA.Term.App(EA.Term.GlobalRef(selectorName, span), Vector(checkedBase.residual), span))
-        case l: CA.Term.Lam => checkLam(l, env)
+        case l: CA.Term.Lam => checkLam(l, context)
         case app: CA.Term.App =>
-          val checkedFn = checkTerm(app.fn, env)
-          val checkedArgs = app.args.map(arg => checkTerm(arg, env))
+          val checkedFn = checkTerm(app.fn, context)
+          val checkedArgs = app.args.map(arg => checkTerm(arg, context))
           val value = checkApplyValue(checkedFn.value, checkedArgs.map(_.value))
           val residual = EA.Term.App(checkedFn.residual, checkedArgs.map(_.residual), app.span)
           CheckedTerm(value, residual)
         case derive: CA.Term.Derive =>
-          val goal = getType(derive.goal, env)
-          val value = InstanceSearch.solve(goal, env)
-          CheckedTerm(value, quoteTerm(value, quoteContext(env), derive.span))
-        case m: CA.Term.Match => MatchChecker.checkMatch(m, env)
-        case b: CA.Term.Body  => checkBody(b, env)
+          val goal = getType(derive.goal, context)
+          val value = InstanceSearch.solve(goal, context)
+          CheckedTerm(value, quoteTerm(value, quoteContext(context.env), derive.span))
+        case m: CA.Term.Match => MatchChecker.checkMatch(m, context)
+        case b: CA.Term.Body  => checkBody(b, context)
         case term: CA.TypeTerm =>
-          val checked = checkTypeTerm(term, env)
+          val checked = checkTypeTerm(term, context)
           CheckedTerm(checked.value, checked.residual)
       }
     } catch {

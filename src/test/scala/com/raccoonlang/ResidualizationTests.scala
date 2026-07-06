@@ -13,7 +13,7 @@ class ResidualizationTests extends munit.FunSuite {
           Interpreter.evalDecl(decl, curWorlds)
         }
         val body = core.body.getOrElse(fail("Program has no body"))
-        val checked = TypeChecker.checkTerm(body, worlds.checkEnv)
+        val checked = TypeChecker.checkTerm(body, worlds.checkContext)
         Checked(checked.value, checked.residual)
 
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
