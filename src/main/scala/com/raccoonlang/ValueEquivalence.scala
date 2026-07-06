@@ -210,7 +210,7 @@ object ValueEquivalence {
 
     /**
      * This specifically handles wildcard vars during pattern matching. The problem is that wildcard vars never actually
-     * get stored in Env, so they can't be properly quoted. This forces us to prefer the other var as the representative
+     * get stored in Env[Value], so they can't be properly quoted. This forces us to prefer the other var as the representative
      */
     private def tryLinkVarToPreferredRepresentative(v1: Var, v2: Var, meta: EqStore): Result = {
       val v1Anonymous = v1.name == "_"

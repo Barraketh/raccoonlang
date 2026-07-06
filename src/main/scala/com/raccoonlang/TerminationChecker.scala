@@ -20,7 +20,7 @@ object TerminationChecker {
         case _ => throw InvalidDecreaseSpec(s"decrease metric ${value} must have an inductive type", Some(span))
       }
 
-    val checkDecrease: (Vector[Value], Env) => Unit = spec match {
+    val checkDecrease: (Vector[Value], Env[Value]) => Unit = spec match {
       case CA.DecreaseSpec.Lexicographic(args, sp) =>
         if (args.isEmpty) throw InvalidDecreaseSpec("lexicographic decreases needs at least one argument", Some(sp))
         if (args.distinct.length != args.length)

@@ -3,31 +3,37 @@ package com.raccoonlang
 import scala.collection.immutable.VectorMap
 
 object Env {
-  val empty: Env =
+  def empty[V]: Env[V] =
     Env(
       globals = Map.empty,
       locals = VectorMap.empty
     )
+
+  private[raccoonlang] def assertClosedGlobal(value: Any): Unit =
+    value match {
+      case value: Value => assert(value.synDeps.isEmpty)
+      case _            =>
+    }
 }
 
-sealed trait GlobalBinding {
-  def value(env: Env): Value
+sealed trait GlobalBinding[V] {
+  def value(env: Env[V]): V
 }
 
 object GlobalBinding {
-  final case class Strict(value0: Value) extends GlobalBinding {
-    override def value(env: Env): Value = value0
+  final case class Strict[V](value0: V) extends GlobalBinding[V] {
+    override def value(env: Env[V]): V = value0
   }
 
-  final class Lazy(force: () => Value) extends GlobalBinding {
-    private[this] var cached: Option[Value] = None
+  final class Lazy[V](force: () => V) extends GlobalBinding[V] {
+    private[this] var cached: Option[V] = None
 
-    override def value(env: Env): Value =
+    override def value(env: Env[V]): V =
       cached match {
         case Some(value) => value
         case None =>
           val value = force()
-          assert(value.synDeps.isEmpty)
+          Env.assertClosedGlobal(value)
           cached = Some(value)
           value
       }
@@ -36,25 +42,25 @@ object GlobalBinding {
 
 // Runtime/checking environment for resolved terms. Source-name scoping is handled by the elaborator before terms
 // reach this layer; local lookup uses the resolved LocalRef as the map key.
-final case class Env(
-    globals: Map[String, GlobalBinding],
-    locals: VectorMap[CoreAst.LocalRef, Value]
+final case class Env[V](
+    globals: Map[String, GlobalBinding[V]],
+    locals: VectorMap[CoreAst.LocalRef, V]
 ) {
-  def apply(name: String): Value =
+  def apply(name: String): V =
     globals.get(name).map(_.value(this)).getOrElse(throw NotFound(name))
 
-  def apply(ref: CoreAst.LocalRef): Value =
+  def apply(ref: CoreAst.LocalRef): V =
     locals.getOrElse(ref, throw NotFound(ref.toString))
 
-  def putGlobal(name: String, value: Value): Env = {
-    assert(value.synDeps.isEmpty)
+  def putGlobal(name: String, value: V): Env[V] = {
+    Env.assertClosedGlobal(value)
 
     if (globals.contains(name)) throw AlreadyDefined(name)
     else if (name == "_") throw WTF("Wildcards not allowed in global names")
     else copy(globals = globals + (name -> GlobalBinding.Strict(value)))
   }
 
-  def putLazyGlobal(name: String, force: () => Value): Env = {
+  def putLazyGlobal(name: String, force: () => V): Env[V] = {
     if (globals.contains(name)) throw AlreadyDefined(name)
     else if (name == "_") throw WTF("Wildcards not allowed in global names")
     else copy(globals = globals + (name -> new GlobalBinding.Lazy(force)))
@@ -62,13 +68,13 @@ final case class Env(
 
   def putLocal(
       ref: CoreAst.LocalRef,
-      value: Value
-  ): Env = {
+      value: V
+  ): Env[V] = {
     if (locals.contains(ref)) throw WTF(s"Local ref $ref is already bound")
     else copy(locals = locals + (ref -> value))
   }
 
-  def closeForEval(capturedRefs: Set[CoreAst.LocalRef]): Env = {
+  def closeForEval(capturedRefs: Set[CoreAst.LocalRef]): Env[V] = {
     capturedRefs.foreach { ref =>
       if (!locals.contains(ref))
         throw WTF(s"Captured local $ref is outside env")

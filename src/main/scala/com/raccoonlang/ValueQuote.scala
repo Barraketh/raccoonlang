@@ -13,7 +13,7 @@ object ValueQuote {
       context: QuoteContext
   )
 
-  private final class ClosedEnvInliner(env: Env, context: QuoteContext) {
+  private final class ClosedEnvInliner(env: Env[Value], context: QuoteContext) {
     private def inlineLocal(ref: CoreAst.LocalRef, refSpan: Span): ElabAst.Term =
       if (env.locals.contains(ref)) quoteTerm(env(ref), context, refSpan)
       else ElabAst.Term.LocalRef(ref, refSpan)
@@ -106,7 +106,7 @@ object ValueQuote {
       ElabAst.Case(c.ctorName, c.argRefs, inlineTerm(c.body), c.span)
   }
 
-  def quoteContext(env: Env): QuoteContext = {
+  def quoteContext(env: Env[Value]): QuoteContext = {
     val quote = env.locals.foldLeft(Map.empty[ValueKey.Key, ElabAst.Term]) { case (quote, (ref, value)) =>
       withLocalQuote(quote, ref, value)
     }
@@ -164,7 +164,7 @@ object ValueQuote {
 
   private def quoteClosedMatch(
       term: ElabAst.Term.Match,
-      env: Env,
+      env: Env[Value],
       context: QuoteContext,
       span: Span
   ): ElabAst.Term.Match = {

@@ -30,7 +30,7 @@ object MatchChecker {
       scrutTpe: Value,
       inductiveName: String,
       ctorNames: Vector[String],
-      env: Env
+      env: Env[Value]
   ): Vector[ReachableCtor] = {
     def tryUnify(left: Value, right: Value, refinable: DepSet): Option[EqStore] =
       ValueEquivalence.tryUnify(left, right, EqStore.empty.allow(refinable)).toOption

@@ -7,10 +7,10 @@ import scala.collection.immutable.VectorMap
 object ValueOps {
   def materialize(value: Value, eqStore: EqStore): Value = Materialize.materialize(value)(eqStore)
 
-  def materializeEnv(env: Env, eqStore: EqStore): Env = Materialize.materializeEnv(env)(eqStore)
+  def materializeEnv(env: Env[Value], eqStore: EqStore): Env[Value] = Materialize.materializeEnv(env)(eqStore)
 
   private object Materialize {
-    def materializeEnv(env: Env)(implicit eqStore: EqStore): Env =
+    def materializeEnv(env: Env[Value])(implicit eqStore: EqStore): Env[Value] =
       env.copy(locals = VectorMap.from(env.locals.iterator.map { case (ref, value) => ref -> materialize(value) }))
 
     def materialize(value: Value)(implicit eqStore: EqStore): Value = {

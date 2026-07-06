@@ -7,7 +7,7 @@ import com.raccoonlang.Value._
 import com.raccoonlang._
 
 object TypePatternOps {
-  private final case class OpenedApp(fn: Value, args: Vector[Value], env: Env)
+  private final case class OpenedApp(fn: Value, args: Vector[Value], env: Env[Value])
 
   private def requirePi(fn: Value): VPi =
     fn.tpe match {
@@ -72,7 +72,7 @@ object TypePatternOps {
       binder: CoreAst.Binder,
       context: TypingContext
   ): (VBinder, ElabAst.Binder) = {
-    def checkPattern(pattern: CoreAst.TypePattern, env: Env): (ElabAst.TypePattern, Env) = {
+    def checkPattern(pattern: CoreAst.TypePattern, env: Env[Value]): (ElabAst.TypePattern, Env[Value]) = {
       pattern match {
         case CPattern.Type(term) =>
           val checked = TypeChecker.checkTypeTerm(term, context.withEnv(env))
@@ -116,7 +116,7 @@ object TypePatternOps {
       }
     }
 
-    def checkTopLevel(pattern: CoreAst.TopLevelTP, env: Env): (ElabAst.TopLevelTP, Env) = {
+    def checkTopLevel(pattern: CoreAst.TopLevelTP, env: Env[Value]): (ElabAst.TopLevelTP, Env[Value]) = {
       val (checked, checkedEnv) = checkPattern(pattern, env)
       checked match {
         case topLevel: ElabAst.TopLevelTP => (topLevel, checkedEnv)
@@ -124,7 +124,7 @@ object TypePatternOps {
       }
     }
 
-    def checkBinderType(binderType: CoreAst.BinderType, env: Env): (ElabAst.BinderType, Env) =
+    def checkBinderType(binderType: CoreAst.BinderType, env: Env[Value]): (ElabAst.BinderType, Env[Value]) =
       binderType match {
         case CBinderType.TypePattern(tp, span) =>
           val (checked, checkedEnv) = checkTopLevel(tp, env)
@@ -168,7 +168,7 @@ object TypePatternOps {
     path.foldLeft(value) { case (cur, nextIdx) => projectStep(cur, nextIdx) }
   }
 
-  private def openCaptures(env: Env, captures: Vector[VCapture], actualTy: Value): Env = {
+  private def openCaptures(env: Env[Value], captures: Vector[VCapture], actualTy: Value): Env[Value] = {
     captures.foldLeft(env) { (curEnv, capture) =>
       val root = capture.root match {
         case ActualType           => actualTy
@@ -185,7 +185,7 @@ object TypePatternOps {
     }
   }
 
-  private def openPatternPrefix(env: Env, app: EPattern.App, argCount: Int): OpenedApp = {
+  private def openPatternPrefix(env: Env[Value], app: EPattern.App, argCount: Int): OpenedApp = {
     val fnV = evalTypeTerm(app.fn, env)
     val pi = requirePi(fnV)
     val binders = pi.binders
@@ -218,7 +218,7 @@ object TypePatternOps {
     OpenedApp(fnV, argValues.result(), callerEnv)
   }
 
-  private def openPattern(env: Env, pattern: ElabAst.TypePattern): (Value, Env) =
+  private def openPattern(env: Env[Value], pattern: ElabAst.TypePattern): (Value, Env[Value]) =
     pattern match {
       case app: EPattern.App =>
         val opened = openPatternPrefix(env, app, app.args.length)
@@ -227,7 +227,7 @@ object TypePatternOps {
       case EPattern.Type(term)         => (evalTypeTerm(term, env), env)
     }
 
-  private[telescope] def openBinderType(env: Env, binderType: ElabAst.BinderType): (Value, Env) =
+  private[telescope] def openBinderType(env: Env[Value], binderType: ElabAst.BinderType): (Value, Env[Value]) =
     binderType match {
       case EBinderType.TypePattern(tp, _) => openPattern(env, tp)
       case EBinderType.ConstrainedCapture(ref, constraint, _) =>
@@ -236,22 +236,22 @@ object TypePatternOps {
         (captureValue, constraintEnv.putLocal(ref, captureValue))
     }
 
-  private[telescope] def freshenBinder(env: Env, binder: VBinder): Env = {
+  private[telescope] def freshenBinder(env: Env[Value], binder: VBinder): Env[Value] = {
     val (opened, openedEnv) = openBinderType(env, binder.ty)
     val value = FreshVar.freshVar(binder.name, opened)
     openedEnv.putLocal(binder.localRef, value)
   }
 
-  def bindValue(env: Env, binder: VBinder, actual: Value): Env = {
+  def bindValue(env: Env[Value], binder: VBinder, actual: Value): Env[Value] = {
     val openedEnv = openCaptures(env, binder.captures, actual.tpe)
     openedEnv.putLocal(binder.localRef, actual)
   }
 
   private[telescope] def bindValueAndCheck(
-      env: Env,
+      env: Env[Value],
       binder: VBinder,
       actual: Value
-  ): Env = {
+  ): Env[Value] = {
     val openedEnv = openCaptures(env, binder.captures, actual.tpe)
     val expectedTy = Interpreter.evalTypeTerm(binder.expectedTy, openedEnv)
     binder.ty match {

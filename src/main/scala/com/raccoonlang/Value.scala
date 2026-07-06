@@ -1,7 +1,7 @@
 package com.raccoonlang
 
 /**
- * Represents a typechecked value representation - the values that live in an Env. Values can contain Vars(), which
+ * Represents a typechecked value representation - the values that live in an Env[Value]. Values can contain Vars(), which
  * represent unknown values. Vars have a unique id, which means they can participate in equality. Thus values could be
  * thought of as a typed, maximally reduced representation of CoreAst / ElabAst. Invariants:
  *   - Every value is typed correctly. Types are themselves Values, and so are Sorts and Levels
@@ -62,7 +62,7 @@ object Value {
     final case class LocalId(nodeId: AstNodeId, captures: Vector[Value]) extends ValueId
   }
 
-  private[raccoonlang] def envDeps(env: Env): DepSet = {
+  private[raccoonlang] def envDeps(env: Env[Value]): DepSet = {
     val res = DepSet.newBuilder
     env.locals.values.foreach(value => res.unionInPlace(value.synDeps))
     res.result()
@@ -72,10 +72,11 @@ object Value {
     def synDeps: DepSet
   }
   object LamBody {
-    final case class Core(term: ElabAst.Term.Lam, env: Env) extends LamBody {
+    final case class Core(term: ElabAst.Term.Lam, env: Env[Value]) extends LamBody {
       override lazy val synDeps: DepSet = envDeps(env)
     }
-    final case class Native(run: (Vector[Value], Env) => Value, env: Env, isRawRecursive: Boolean) extends LamBody {
+    final case class Native(run: (Vector[Value], Env[Value]) => Value, env: Env[Value], isRawRecursive: Boolean)
+      extends LamBody {
       override lazy val synDeps: DepSet = envDeps(env)
     }
   }
@@ -190,9 +191,9 @@ object Value {
   }
 
   case class VPi(
-      env: Env,
+      env: Env[Value],
       binders: Vector[VBinder],
-      codomain: Env => Value,
+      codomain: Env[Value] => Value,
       synDeps: DepSet,
       id: ValueId,
       tpe: VSort
@@ -239,7 +240,13 @@ object Value {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
-  case class NeutralThunk(term: ElabAst.Term.Match, env: Env, id: ValueId.LocalId, tpe: Value, blockerId: Option[VarId])
+  case class NeutralThunk(
+      term: ElabAst.Term.Match,
+      env: Env[Value],
+      id: ValueId.LocalId,
+      tpe: Value,
+      blockerId: Option[VarId]
+  )
     extends Value
     with UpdatableType {
     override lazy val synDeps: DepSet = {

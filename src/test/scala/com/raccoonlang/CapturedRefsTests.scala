@@ -17,7 +17,7 @@ class CapturedRefsTests extends munit.FunSuite {
     val capturedRef = CoreAst.LocalRef(0, "captured")
     val binderRef = CoreAst.LocalRef(1, "x")
     val captured = FreshVar.freshVar("captured", valueType)
-    val env = Env.empty.putLocal(capturedRef, captured)
+    val env = Env.empty[Value].putLocal(capturedRef, captured)
     val term = ETerm.Pi(
       Vector(ElabAst.Binder(binderRef, typeBinderType, span)),
       ETerm.App(
@@ -39,10 +39,10 @@ class CapturedRefsTests extends munit.FunSuite {
   test("captured refs cannot be read from an env that does not contain them") {
     val ref = CoreAst.LocalRef(0, "x")
     val value = FreshVar.freshVar("x", valueType)
-    val env = Env.empty.putLocal(ref, value)
+    val env = Env.empty[Value].putLocal(ref, value)
     val refs = CapturedRefs.getCapturedRefs(ETerm.LocalRef(ref, span), env)
 
-    intercept[WTF](Env.empty.closeForEval(refs))
+    intercept[WTF](Env.empty[Value].closeForEval(refs))
   }
 
 }

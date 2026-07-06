@@ -26,7 +26,7 @@ class ValueOpsTests extends munit.FunSuite {
     val ref = CoreAst.LocalRef(0, "x")
     val x = FreshVar.freshVar("x", valueType)
     val solution = symbolicValue("Solved")
-    val env = Env.empty.putLocal(ref, x)
+    val env = Env.empty[Value].putLocal(ref, x)
     val instances = Instances.empty.addLocal("candidate", ref)
 
     val materialized = ValueOps.materializeEnv(env, solve(x, solution))
@@ -41,7 +41,7 @@ class ValueOpsTests extends munit.FunSuite {
     val x = FreshVar.freshVar("x", valueType)
     val solution = symbolicValue("Solved")
     val global = symbolicValue("Global")
-    val base = Env.empty
+    val base = Env.empty[Value]
       .putGlobal("global", global)
       .putLocal(ref, x)
     val instances = Instances.empty
@@ -60,7 +60,7 @@ class ValueOpsTests extends munit.FunSuite {
     val ref = CoreAst.LocalRef(0, "x")
     val x = FreshVar.freshVar("x", valueType)
     val solution = symbolicValue("Solved")
-    val env = Env.empty.putLocal(ref, x)
+    val env = Env.empty[Value].putLocal(ref, x)
 
     val materializedEnv = ValueOps.materializeEnv(env, solve(x, solution))
     val context = ValueQuote.quoteContext(materializedEnv)
@@ -82,7 +82,7 @@ class ValueOpsTests extends munit.FunSuite {
     val kept = symbolicValue("Kept")
     val uncaptured = symbolicValue("Uncaptured")
     val arg = symbolicValue("Arg")
-    val env = Env.empty.putLocal(keptRef, kept).putLocal(uncapturedRef, uncaptured)
+    val env = Env.empty[Value].putLocal(keptRef, kept).putLocal(uncapturedRef, uncaptured)
     val capturedRefs = CapturedRefs.getCapturedRefs(ETerm.LocalRef(keptRef, span), env)
 
     val closed = env.closeForEval(capturedRefs)
@@ -99,7 +99,7 @@ class ValueOpsTests extends munit.FunSuite {
     val kept = FreshVar.freshVar("kept", valueType)
     val uncaptured = FreshVar.freshVar("uncaptured", valueType)
     val solution = symbolicValue("KeptSolution")
-    val env = Env.empty.putLocal(keptRef, kept).putLocal(uncapturedRef, uncaptured)
+    val env = Env.empty[Value].putLocal(keptRef, kept).putLocal(uncapturedRef, uncaptured)
     val capturedRefs = CapturedRefs.getCapturedRefs(ETerm.LocalRef(keptRef, span), env)
 
     val closed = env.closeForEval(capturedRefs)
@@ -117,7 +117,7 @@ class ValueOpsTests extends munit.FunSuite {
     val argRef = CoreAst.LocalRef(1, "arg")
     val captured = FreshVar.freshVar("captured", valueType)
     val solution = symbolicValue("CapturedSolution")
-    val runtimeEnv = Env.empty.putGlobal("Type", valueType).putLocal(capturedRef, captured)
+    val runtimeEnv = Env.empty[Value].putGlobal("Type", valueType).putLocal(capturedRef, captured)
 
     val binder = VBinder(argRef, binderType(typeRef), typeRef, Vector.empty)
     val pi = VPi(
@@ -158,7 +158,7 @@ class ValueOpsTests extends munit.FunSuite {
     val capturedRef = CoreAst.LocalRef(0, "captured")
     val argRef = CoreAst.LocalRef(1, "arg")
     val captured = symbolicValue("Captured")
-    val env = Env.empty.putGlobal("Type", valueType).putLocal(capturedRef, captured)
+    val env = Env.empty[Value].putGlobal("Type", valueType).putLocal(capturedRef, captured)
     val runtimeEnv = env.closeForEval(Set.empty)
 
     val binder = VBinder(argRef, binderType(typeRef), typeRef, Vector.empty)
@@ -192,7 +192,7 @@ class ValueOpsTests extends munit.FunSuite {
     val capturedRef = CoreAst.LocalRef(0, "captured")
     val argRef = CoreAst.LocalRef(1, "arg")
     val captured = symbolicValue("Captured")
-    val env = Env.empty.putGlobal("Type", valueType).putLocal(capturedRef, captured)
+    val env = Env.empty[Value].putGlobal("Type", valueType).putLocal(capturedRef, captured)
 
     val piTerm = ETerm.Pi(
       Vector(ElabAst.Binder(argRef, binderType(typeRef), span)),
@@ -224,7 +224,7 @@ class ValueOpsTests extends munit.FunSuite {
     val captured = FreshVar.freshVar("captured", valueType)
     val scrut = FreshVar.freshVar("scrut", valueType)
     val solution = symbolicValue("ThunkSolution")
-    val runtimeEnv = Env.empty.putLocal(capturedRef, captured).putLocal(scrutRef, scrut)
+    val runtimeEnv = Env.empty[Value].putLocal(capturedRef, captured).putLocal(scrutRef, scrut)
     val head = ConstructorHead("C", erasedFamilyArgIndexes = Vector.empty, totalArity = 0, valueType)
     val ctor = VCtor(head, Vector.empty, valueType)
     val matchTerm = ETerm.Match(
@@ -269,7 +269,7 @@ class ValueOpsTests extends munit.FunSuite {
     val captured = symbolicValue("Captured")
     val unused = FreshVar.freshVar("unused", valueType)
     val scrut = FreshVar.freshVar("scrut", valueType)
-    val env = Env.empty
+    val env = Env.empty[Value]
       .putLocal(capturedRef, captured)
       .putLocal(unusedRef, unused)
       .putLocal(scrutRef, scrut)

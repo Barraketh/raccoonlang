@@ -1,6 +1,6 @@
 package com.raccoonlang
 
-final case class TypingContext(env: Env, instances: Instances) {
+final case class TypingContext(env: Env[Value], instances: Instances) {
   def putGlobal(name: String, value: Value, isInstance: Boolean = false): TypingContext = {
     val nextEnv = env.putGlobal(name, value)
     val nextInstances =
@@ -23,11 +23,11 @@ final case class TypingContext(env: Env, instances: Instances) {
   def registerLocalInstance(ref: CoreAst.LocalRef): TypingContext =
     copy(instances = instances.putLocal(ref, env(ref)))
 
-  def withEnv(nextEnv: Env): TypingContext =
+  def withEnv(nextEnv: Env[Value]): TypingContext =
     copy(env = nextEnv)
 }
 
 object TypingContext {
-  def envOnly(env: Env): TypingContext =
+  def envOnly(env: Env[Value]): TypingContext =
     TypingContext(env, Instances.empty)
 }

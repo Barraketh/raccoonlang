@@ -6,7 +6,7 @@ import com.raccoonlang.Value._
 import com.raccoonlang.telescope.{BinderOps, TypePatternOps}
 
 /**
- * Interpreter evaluates ElabAst into ordinary WHNF Values in the Env it is given. EqStore-aware reduction is isolated
+ * Interpreter evaluates ElabAst into ordinary WHNF Values in the Env[Value] it is given. EqStore-aware reduction is isolated
  * to resolveInEqStore and the materialization helpers in ValueOps.
  */
 object Interpreter {
@@ -59,10 +59,10 @@ object Interpreter {
     }
   }
 
-  private def getEnvWithArgs(fnTpe: VPi, baseEnv: Env, args: Vector[Value]): Env =
+  private def getEnvWithArgs(fnTpe: VPi, baseEnv: Env[Value], args: Vector[Value]): Env[Value] =
     BinderOps.instantiateFull(fnTpe.binders, baseEnv, args)
 
-  def evalPi(pi: ETerm.Pi, env: Env, vBinders: Vector[VBinder]): VPi = {
+  def evalPi(pi: ETerm.Pi, env: Env[Value], vBinders: Vector[VBinder]): VPi = {
     val capturedRefs = CapturedRefs.getCapturedRefs(pi, env)
     val closedEnv = env.closeForEval(capturedRefs)
     val captureVals = closedEnv.locals.values.toVector
@@ -83,16 +83,16 @@ object Interpreter {
     )
   }
 
-  private def evalPi(pi: ETerm.Pi, env: Env): VPi =
+  private def evalPi(pi: ETerm.Pi, env: Env[Value]): VPi =
     evalPi(pi, env, pi.binders.map(TypePatternOps.toVBinder))
 
-  def evalTypeTerm(tt: ElabAst.TypeTerm, env: Env): Value = tt match {
+  def evalTypeTerm(tt: ElabAst.TypeTerm, env: Env[Value]): Value = tt match {
     case ref: ETerm.Ref         => evalRef(ref, env)
     case ETerm.App(fn, args, _) => evalApplyTerm(fn, args, env)
     case pi: ETerm.Pi           => evalPi(pi, env)
   }
 
-  private def evalRef(ref: ETerm.Ref, env: Env): Value = {
+  private def evalRef(ref: ETerm.Ref, env: Env[Value]): Value = {
     val res = ref match {
       case ETerm.GlobalRef(name, _) => env(name)
       case ETerm.LocalRef(local, _) => env(local)
@@ -123,14 +123,14 @@ object Interpreter {
     }
   }
 
-  private def evalApplyTerm(fn: ElabAst.Term, args: Vector[ElabAst.Term], env: Env): Value = {
+  private def evalApplyTerm(fn: ElabAst.Term, args: Vector[ElabAst.Term], env: Env[Value]): Value = {
     val vf = evalTerm(fn, env)
     val vArgs = args.map(a => evalTerm(a, env))
     if (vArgs.isEmpty) throw CannotApplyNonFunction(vf.tpe)
     evalApply(vf, vArgs)
   }
 
-  def evalLam(l: ETerm.Lam, vpi: VPi, env: Env): VLam = {
+  def evalLam(l: ETerm.Lam, vpi: VPi, env: Env[Value]): VLam = {
     val capturedRefs = CapturedRefs.getCapturedRefs(l, env)
     val closedEnv = env.closeForEval(capturedRefs)
     val id = l.name match {
@@ -166,7 +166,7 @@ object Interpreter {
   private def forceThunk(thunk: NeutralThunk, eqStore: EqStore): Value =
     evalMatch(thunk.term, ValueOps.materializeEnv(thunk.env, eqStore))
 
-  private def evalLam(l: ETerm.Lam, env: Env): VLam = {
+  private def evalLam(l: ETerm.Lam, env: Env[Value]): VLam = {
     val vpi = evalPi(l.ty, env)
     evalLam(l, vpi, env)
   }
@@ -179,7 +179,7 @@ object Interpreter {
     }
   }
 
-  def evalTerm(term: ElabAst.Term, env: Env): Value = {
+  def evalTerm(term: ElabAst.Term, env: Env[Value]): Value = {
     try {
       term match {
         case ETerm.App(fn, args, _) => evalApplyTerm(fn, args, env)
@@ -193,7 +193,7 @@ object Interpreter {
     }
   }
 
-  private def evalMatch(m: ETerm.Match, env: Env): Value = {
+  private def evalMatch(m: ETerm.Match, env: Env[Value]): Value = {
     val scrut = evalTerm(m.scrut, env)
     val (head, args) = scrut match {
       case VCtor(head, fields, _) => (head, fields)
@@ -227,7 +227,7 @@ object Interpreter {
     evalTerm(branch.body, newEnv)
   }
 
-  def evalBody(body: ETerm.Body, env: Env): Value = {
+  def evalBody(body: ETerm.Body, env: Env[Value]): Value = {
     val newEnv = body.lets.foldLeft(env) { case (curEnv, l) =>
       val res = evalTerm(l.value, curEnv)
       val withTpe = (res, l.ty) match {
@@ -241,8 +241,8 @@ object Interpreter {
   }
 
   case class Worlds(checkContext: TypingContext, runContext: TypingContext) {
-    def checkEnv: Env = checkContext.env
-    def runEnv: Env = runContext.env
+    def checkEnv: Env[Value] = checkContext.env
+    def runEnv: Env[Value] = runContext.env
   }
 
   def evalDecl(decl: Decl, worlds: Worlds): Worlds = {
@@ -322,7 +322,7 @@ object Interpreter {
 
   private[raccoonlang] def initialWorlds(prelude: Prelude.Config = Prelude.default): Worlds = {
     val baseEnv =
-      Env.empty
+      Env.empty[Value]
         .putGlobal("Type", TypeTpe)
         .putGlobal("Level", LevelTpe)
         .putGlobal("Level.zero", Level.zero)

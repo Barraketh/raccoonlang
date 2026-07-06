@@ -10,7 +10,7 @@ object BinderOps {
       context: TypingContext
   )
 
-  def freshen(binders: Vector[VBinder], baseEnv: Env): Env = {
+  def freshen(binders: Vector[VBinder], baseEnv: Env[Value]): Env[Value] = {
     var env = baseEnv
     binders.foreach { binder =>
       env = TypePatternOps.freshenBinder(env, binder)
@@ -31,7 +31,7 @@ object BinderOps {
     context
   }
 
-  def freshen(vpi: VPi): Env = freshen(vpi.binders, vpi.env)
+  def freshen(vpi: VPi): Env[Value] = freshen(vpi.binders, vpi.env)
 
   def toVBinders(
       binders: Vector[CoreAst.Binder],
@@ -51,7 +51,7 @@ object BinderOps {
     CheckedBinders(vBinders.result(), checkedBinders.result(), context)
   }
 
-  def instantiateFull(binders: Vector[VBinder], baseEnv: Env, args: Vector[Value]): Env = {
+  def instantiateFull(binders: Vector[VBinder], baseEnv: Env[Value], args: Vector[Value]): Env[Value] = {
     if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
 
     binders.zip(args).foldLeft(baseEnv) { case (curEnv, (binder, value)) =>
@@ -61,9 +61,9 @@ object BinderOps {
 
   def checkAndInstantiate(
       binders: Vector[VBinder],
-      runtimeEnv: Env,
+      runtimeEnv: Env[Value],
       args: Vector[Value]
-  ): Env = {
+  ): Env[Value] = {
     if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
 
     binders.zip(args).foldLeft(runtimeEnv) { case (curEnv, (binder, value)) =>

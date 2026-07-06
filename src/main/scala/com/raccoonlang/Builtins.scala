@@ -20,7 +20,7 @@ private object Builtins {
           VLam(
             preciseType,
             ValueId.Const(name),
-            LamBody.Native((args, _) => VSort(Interpreter.getLevel(args.head)), Env.empty, isRawRecursive = false)
+            LamBody.Native((args, _) => VSort(Interpreter.getLevel(args.head)), Env.empty[Value], isRawRecursive = false)
           )
         case pi: VPi => throw ArityMismatch(1, pi.binders.length, Some(span))
         case other   => throw CannotApplyNonFunction(other, Some(span))
@@ -37,7 +37,7 @@ private object Builtins {
             VLam(
               pi,
               ValueId.Const(name),
-              LamBody.Native((args, _) => run(self, pi, args), Env.empty, isRawRecursive = false)
+              LamBody.Native((args, _) => run(self, pi, args), Env.empty[Value], isRawRecursive = false)
             )
           self
         case other => throw CannotApplyNonFunction(other, Some(span))

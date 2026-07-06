@@ -18,7 +18,7 @@ class TypeClassTests extends munit.FunSuite {
       Interpreter.evalDecl(decl, worlds)
     }
 
-  private def namedValue(env: Env, name: String): Value =
+  private def namedValue(env: Env[Value], name: String): Value =
     env(name) match {
       case h: Value.ConstructorHead if h.totalArity == 0 => Value.VCtor(h, Vector.empty, h.tpe)
       case other                                         => other

@@ -18,7 +18,7 @@ final case class Instances(
   def putLocal(ref: CoreAst.LocalRef, value: Value): Instances =
     addLocal(InstanceSearch.instanceKey(ref.name, value), ref)
 
-  def searchTiers(key: String, env: Env): InstanceSearchTiers =
+  def searchTiers(key: String, env: Env[Value]): InstanceSearchTiers =
     InstanceSearchTiers(
       locals.getOrElse(key, Vector.empty).map(env.locals),
       globals.get(key)

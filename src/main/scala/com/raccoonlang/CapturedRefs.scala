@@ -7,26 +7,26 @@ object CapturedRefs {
   // This is not lexical free-variable analysis. When a closure is built, refs that are present in the current
   // environment are captures. Refs introduced inside the term being closed over are not present yet and are ignored.
 
-  private def addRef(ref: CoreAst.LocalRef, env: Env, refs: Set[CoreAst.LocalRef]): Set[CoreAst.LocalRef] =
+  private def addRef(ref: CoreAst.LocalRef, env: Env[Value], refs: Set[CoreAst.LocalRef]): Set[CoreAst.LocalRef] =
     if (env.locals.contains(ref)) refs + ref else refs
 
   private def goTerms(
       terms: IterableOnce[ElabAst.Term],
-      env: Env,
+      env: Env[Value],
       refs: Set[CoreAst.LocalRef]
   ): Set[CoreAst.LocalRef] =
     terms.iterator.foldLeft(refs) { case (curRefs, term) => goTerm(term, env, curRefs) }
 
   private def goPatterns(
       terms: IterableOnce[ElabAst.TypePattern],
-      env: Env,
+      env: Env[Value],
       refs: Set[CoreAst.LocalRef]
   ): Set[CoreAst.LocalRef] =
     terms.iterator.foldLeft(refs) { case (curRefs, pattern) => goPattern(pattern, env, curRefs) }
 
   private def goPattern(
       pattern: ElabAst.TypePattern,
-      env: Env,
+      env: Env[Value],
       refs: Set[CoreAst.LocalRef]
   ): Set[CoreAst.LocalRef] =
     pattern match {
@@ -42,7 +42,7 @@ object CapturedRefs {
 
   private def goBinderType(
       binderType: ElabAst.BinderType,
-      env: Env,
+      env: Env[Value],
       refs: Set[CoreAst.LocalRef]
   ): Set[CoreAst.LocalRef] =
     binderType match {
@@ -53,7 +53,7 @@ object CapturedRefs {
         goPattern(constraint, env, addRef(ref, env, refs))
     }
 
-  private def goTerm(term: ElabAst.Term, env: Env, refs: Set[CoreAst.LocalRef]): Set[CoreAst.LocalRef] =
+  private def goTerm(term: ElabAst.Term, env: Env[Value], refs: Set[CoreAst.LocalRef]): Set[CoreAst.LocalRef] =
     term match {
       case Term.GlobalRef(_, _) =>
         refs
@@ -84,6 +84,6 @@ object CapturedRefs {
         cases.foldLeft(refsWithMotive) { case (curRefs, c) => goTerm(c.body, env, curRefs) }
     }
 
-  def getCapturedRefs(term: ElabAst.Term, env: Env): Set[CoreAst.LocalRef] =
+  def getCapturedRefs(term: ElabAst.Term, env: Env[Value]): Set[CoreAst.LocalRef] =
     if (env.locals.isEmpty) Set.empty else goTerm(term, env, Set.empty)
 }

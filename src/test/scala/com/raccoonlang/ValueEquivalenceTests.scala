@@ -10,7 +10,7 @@ class ValueEquivalenceTests extends munit.FunSuite {
     ElabAst.BinderType.TypePattern(ElabAst.TypePattern.Type(typeRef), span)
   private val binderRef = CoreAst.LocalRef(0, "x")
   private val binder = VBinder(binderRef, binderType, typeRef, Vector.empty)
-  private val env = Env.empty.putGlobal("Type", TypeTpe)
+  private val env = Env.empty[Value].putGlobal("Type", TypeTpe)
   private val typeToTypeClassifier = VSort(Level.succ(Level.one))
 
   private def nodeId(start: Int): AstNodeId = AstNodeId(None, start)
@@ -21,7 +21,7 @@ class ValueEquivalenceTests extends munit.FunSuite {
     res.result()
   }
 
-  private def pi(captures: Vector[Value], out: Env => Value, start: Int): VPi =
+  private def pi(captures: Vector[Value], out: Env[Value] => Value, start: Int): VPi =
     VPi(env, Vector(binder), out, deps(captures: _*), ValueId.LocalId(nodeId(start), captures), typeToTypeClassifier)
 
   test("Pi unification rejects solutions that depend on fresh binder vars") {

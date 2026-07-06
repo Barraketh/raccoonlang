@@ -155,7 +155,7 @@ object TypeChecker {
       case _                              => None
     }
 
-  private def checkSelect(baseValue: Value, field: String, span: Span, env: Env): (String, Value) = {
+  private def checkSelect(baseValue: Value, field: String, span: Span, env: Env[Value]): (String, Value) = {
     val vType = baseValue.tpe
     val family = inductiveFamilyOf(vType).getOrElse(throw NotAType(vType))
     val indName = family.head.name
