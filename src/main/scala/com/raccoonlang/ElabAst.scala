@@ -12,31 +12,7 @@ object ElabAst {
 
   sealed trait Term extends Ast
 
-  sealed trait TypePattern extends Ast
-
-  sealed trait TopLevelTP extends TypePattern
-
   sealed trait TypeTerm extends Term
-
-  object TypePattern {
-    final case class Type(term: TypeTerm) extends TopLevelTP {
-      override def span: Span = term.span
-    }
-
-    final case class App(fn: Term.Ref, args: Vector[TypePattern], span: Span) extends TopLevelTP {
-      require(args.nonEmpty, "Type pattern application requires at least one argument")
-    }
-
-    final case class Capture(localRef: CoreAst.LocalRef, span: Span) extends TypePattern
-  }
-
-  sealed trait BinderType extends Ast
-
-  object BinderType {
-    final case class TypePattern(tp: TopLevelTP, span: Span) extends BinderType
-    final case class ConstrainedCapture(localRef: CoreAst.LocalRef, constraint: TopLevelTP, span: Span)
-      extends BinderType
-  }
 
   object Term {
     sealed trait Ref extends Term with TypeTerm
@@ -73,7 +49,7 @@ object ElabAst {
 
   final case class Binder(
       localRef: CoreAst.LocalRef,
-      ty: BinderType,
+      ty: TypeTerm,
       span: Span,
       isInstance: Boolean = false
   ) {

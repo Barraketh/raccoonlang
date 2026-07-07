@@ -37,8 +37,9 @@ class TerminationTests extends munit.FunSuite {
 
   private def toShape(v: Value): Shape = v match {
     case Value.ConstructorHead(n, _, _, _) => SConst(n)
-    case Value.VCtor(h, fields, _) =>
-      if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))
+    case Value.VCtor(h, storedArgs, _) =>
+      val args = Value.constructorPatternArgs(h, storedArgs)
+      if (args.isEmpty) SConst(h.name) else SApp(SConst(h.name), args.toList.map(toShape))
     case Value.VConst(n, _, _)     => SConst(n)
     case Value.VApp(h, args, _, _) => SApp(toShape(h), args.toList.map(toShape))
     case other                     => SConst(other.toString)
@@ -89,7 +90,7 @@ class TerminationTests extends munit.FunSuite {
       natDecls +
         """
           |inductive Box (n: Nat) : Type
-          | | mk {n: Nat} : Box(n)
+          | | mk : Box(n)
           |
           |def f (n: Nat): Nat decreases structural(n) := {
           |  match n with
@@ -127,8 +128,8 @@ class TerminationTests extends munit.FunSuite {
       natDecls +
         """
           |inductive List (A: Type) : Type
-          | | nil {A: Type} : List(A)
-          | | cons {A: Type} (tail: List(A)) (head: A) : List(A)
+          | | nil : List(A)
+          | | cons (tail: List(A)) (head: A) : List(A)
           |
           |def length (A: Type)(xs: List(A)): Nat decreases structural(xs) := {
           |  match xs returning Nat with

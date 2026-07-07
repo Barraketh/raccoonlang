@@ -44,11 +44,12 @@ class PropTests extends munit.FunSuite {
 
   private def toShape(v: Value): Shape = v match {
     case Value.ConstructorHead(n, _, _, _) => SConst(n)
-    case Value.VCtor(h, fields, _) =>
-      if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))
-    case Value.VConst(n, _, _)  => SConst(n)
+    case Value.VCtor(h, storedArgs, _) =>
+      val args = Value.constructorPatternArgs(h, storedArgs)
+      if (args.isEmpty) SConst(h.name) else SApp(SConst(h.name), args.toList.map(toShape))
+    case Value.VConst(n, _, _)     => SConst(n)
     case Value.VApp(h, args, _, _) => SApp(toShape(h), args.toList.map(toShape))
-    case other                  => SConst(other.toString)
+    case other                     => SConst(other.toString)
   }
 
   private val zeroS = SConst("Nat.zero")
@@ -195,16 +196,16 @@ class PropTests extends munit.FunSuite {
         | | intro : True
         |
         |inductive And (P: Prop)(Q: Prop) : Prop
-        | | intro {P: Prop}{Q: Prop} (p: P)(q: Q) : And(P, Q)
+        | | intro (p: P)(q: Q) : And(P, Q)
         |
         |inductive Exists (A: Type)(p: A -> Prop) : Prop
-        | | intro {A: Type}{p: A -> Prop} (w: A)(pw: p(w)) : Exists(A, p)
+        | | intro (w: A)(pw: p(w)) : Exists(A, p)
         |
         |inductive HasCarrier : Prop
         | | intro (A: Type) : HasCarrier
         |
         |inductive HasSort (u: Level) : Prop
-        | | intro {u: Level} (A: Sort(u)) : HasSort(u)
+        | | intro (A: Sort(u)) : HasSort(u)
         |""".stripMargin
 
     typecheckDecls(p)
@@ -236,7 +237,7 @@ class PropTests extends munit.FunSuite {
     val p =
       """
         |inductive And (P: Prop)(Q: Prop) : Prop
-        | | intro {P: Prop}{Q: Prop} (p: P)(q: Q) : And(P, Q)
+        | | intro (p: P)(q: Q) : And(P, Q)
         |
         |def andLeft (P: Prop)(Q: Prop)(h: And(P, Q)): P := {
         |  match h returning P with
@@ -251,7 +252,7 @@ class PropTests extends munit.FunSuite {
     val p =
       """
         |inductive Exists (A: Type)(p: A -> Prop) : Prop
-        | | intro {A: Type}{p: A -> Prop} (w: A)(pw: p(w)) : Exists(A, p)
+        | | intro (w: A)(pw: p(w)) : Exists(A, p)
         |
         |def unpackToProp (A: Type)(p: A -> Prop)(h: Exists(A, p)): Prop := {
         |  match h returning Prop with
@@ -273,7 +274,7 @@ class PropTests extends munit.FunSuite {
         | | intro : True
         |
         |inductive Exists (A: Type)(p: A -> Prop) : Prop
-        | | intro {A: Type}{p: A -> Prop} (w: A)(pw: p(w)) : Exists(A, p)
+        | | intro (w: A)(pw: p(w)) : Exists(A, p)
         |
         |def alwaysTrue (x: Nat): Prop := True
         |
@@ -391,7 +392,7 @@ class PropTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive IdxWrap (A: Type) indices (x: A) : Prop
-        | | intro {A: Type} (y: A) : IdxWrap(A, y)
+        | | intro (y: A) : IdxWrap(A, y)
         |
         |def unwrapIdx (n: Nat)(h: IdxWrap(Nat, n)): Nat := {
         |  match h returning Nat with
@@ -465,8 +466,8 @@ class PropTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Or (P: Prop)(Q: Prop) : Prop
-        | | inl {P: Prop}{Q: Prop} (p: P) : Or(P, Q)
-        | | inr {P: Prop}{Q: Prop} (q: Q) : Or(P, Q)
+        | | inl (p: P) : Or(P, Q)
+        | | inr (q: Q) : Or(P, Q)
         |
         |inductive True : Prop
         | | intro : True

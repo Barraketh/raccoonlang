@@ -20,7 +20,11 @@ private object Builtins {
           VLam(
             preciseType,
             ValueId.Const(name),
-            LamBody.Native((args, _) => VSort(Interpreter.getLevel(args.head)), Env.empty[Value], isRawRecursive = false)
+            LamBody.Native(
+              (args, _) => VSort(Interpreter.getLevel(args.head)),
+              Env.empty[Value],
+              isRawRecursive = false
+            )
           )
         case pi: VPi => throw ArityMismatch(1, pi.binders.length, Some(span))
         case other   => throw CannotApplyNonFunction(other, Some(span))
@@ -44,13 +48,13 @@ private object Builtins {
       }
   }
 
-  private final case class Constructor(erasedFamilyArgIndexes: Vector[Int]) extends Entry {
+  private final case class Constructor(numErasedFamilyArgs: Int) extends Entry {
     override def instantiate(name: String, tpe: Value, span: Span): Value =
       tpe match {
         case pi: VPi =>
-          if (erasedFamilyArgIndexes.length > pi.binders.length)
-            throw ArityMismatch(erasedFamilyArgIndexes.length, pi.binders.length, Some(span))
-          ConstructorHead(name, erasedFamilyArgIndexes, pi.binders.length, pi)
+          if (numErasedFamilyArgs > pi.binders.length)
+            throw ArityMismatch(numErasedFamilyArgs, pi.binders.length, Some(span))
+          ConstructorHead(name, numErasedFamilyArgs, pi.binders.length, pi)
         case other => throw CannotApplyNonFunction(other, Some(span))
       }
   }
@@ -68,7 +72,7 @@ private object Builtins {
       "Level.max" -> Native { (_, _, args) =>
         Level.max(args.map(arg => Interpreter.getLevel(arg)))
       },
-      MkName -> Constructor(Vector(0, 1)),
+      MkName -> Constructor(3),
       LiftName -> Native(runLift),
       IndName -> Native(runInd)
     )
@@ -80,9 +84,9 @@ private object Builtins {
     }
 
   private def runLift(self: VLam, selfType: VPi, args: Vector[Value]): Value = {
-    val q = args(0)
-    val resultTy = args(1)
-    val f = args(2)
+    val q = args(4)
+    val resultTy = args(5)
+    val f = args(6)
 
     q match {
       case QuotientMk(rep)    => Interpreter.evalApply(f, Vector(rep))
@@ -92,9 +96,9 @@ private object Builtins {
   }
 
   private def runInd(self: VLam, selfType: VPi, args: Vector[Value]): Value = {
-    val q = args(0)
-    val motive = args(1)
-    val mkCase = args(2)
+    val q = args(3)
+    val motive = args(4)
+    val mkCase = args(5)
     lazy val resultTy = Interpreter.evalApply(motive, Vector(q))
 
     q match {
@@ -107,8 +111,12 @@ private object Builtins {
   private object QuotientMk {
     def unapply(value: Value): Option[Value] =
       value match {
-        case VCtor(head, fields, _) if head.name == MkName && fields.length == 1 => Some(fields.head)
-        case _                                                                   => None
+        case VCtor(head, storedArgs, _) if head.name == MkName =>
+          Value.constructorPatternArgs(head, storedArgs) match {
+            case Vector(rep) => Some(rep)
+            case _           => None
+          }
+        case _ => None
       }
   }
 }

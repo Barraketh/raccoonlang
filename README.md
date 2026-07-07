@@ -11,7 +11,7 @@ as well as a research platform for exploring language features to make formally-
 - Small kernel core, with a bias toward keeping some traditionally elaborator-side mechanisms explicit in the kernel
   when that simplifies the overall system. Current examples:
     - Universe level normalization and unification
-    - Type Patterns
+    - Explicit implicit-parameter insertion in checked terms
 
 ## A motivating benchmark
 
@@ -41,7 +41,7 @@ Note that at this point I have done 0 optimization - these performance wins are 
 
 ## Implemented today
 
-- Inductive families with explicit params, indices, and erased constructor binders
+- Inductive families with explicit params, indices, and erased family witnesses
     - Validates positivity, universes, constructor result shape, and uniform params
 - Termination checking of recursive functions
 - Dependent pattern matching
@@ -51,7 +51,7 @@ Note that at this point I have done 0 optimization - these performance wins are 
     - `Prop` is `Sort(Level.zero)`; `Type` is `Sort(Level.one)`
     - Impredicative Prop with proof irrelevance and controlled large elimination
 - Namespaces, file imports, dotted names, and scoped `open`
-- Type patterns
+- Implicit parameters
 - Type classes with `def instance`, `let instance`, `[f: Foo]` instance binders, and explicit `derive[Foo]`
   search
 - Structs / Projections
@@ -63,9 +63,10 @@ Note that at this point I have done 0 optimization - these performance wins are 
 ### Inductives and Pattern Matching
 
 Inductives can split family arguments into uniform params and non-uniform indices with `indices`, and their result
-can live in an explicit universe. Constructors can bind erased arguments with `{...}` for params that should be
-supplied but not stored as fields; indices are supplied by ordinary fields, fixed result expressions, or type-pattern
-captures. This includes universe-polymorphic inductives whose fields and result type are parameterized by a `Level`.
+can live in an explicit universe. Family params are supplied to constructors as implicit erased witnesses, while
+ordinary constructor binders, including `{...}` binders, are stored as fields. Indices are supplied by ordinary fields or
+fixed result expressions. This includes universe-polymorphic inductives whose fields and result type are parameterized
+by a `Level`.
 
 Pattern matches are checked for exhaustiveness. Required constructors must be present, duplicate cases are rejected,
 and constructors that are impossible at the scrutinee's family type can be omitted.
@@ -76,11 +77,11 @@ inductive Nat : Type
  | succ (_: Nat) : Nat
 
 inductive Box (u: Level)(A: Sort(u)) : Sort(u)
- | mk {u: Level}{A: Sort(u)} (value: A) : Box(u, A)
+ | mk (value: A) : Box(u, A)
 
 inductive Vec (u: Level)(A: Sort(u)) indices (n: Nat) : Sort(Level.max(Level.one, u))
- | nil {u: Level}{A: Sort(u)} : Vec(u, A, Nat.zero)
- | cons {u: Level}{A: Sort(u)} (n: Nat)(xs: Vec(u, A, n))(x: A) : Vec(u, A, Nat.succ(n))
+ | nil : Vec(u, A, Nat.zero)
+ | cons (n: Nat)(xs: Vec(u, A, n))(x: A) : Vec(u, A, Nat.succ(n))
 
 inductive NatShape indices (n: Nat) : Type
  | isZero : NatShape(Nat.zero)
@@ -133,33 +134,32 @@ def lex (a: Nat)(b: Nat): Nat decreases lexicographic(a, b) := {
 }
 ```
 
-### Type patterns
+### Implicit parameters
 
-An alternative to implicit parameters. A binder can contain captures in the type, and later parameters can reference
-these captures. See example below. You declare a capture with a '$'[name] . When applying a function,
-these patterns bind the incoming type like regular pattern matches in a language like Lean. A failure to match will
-result in a typecheck failure. This feature allows us to greatly reduce the number of function params - zip would
-otherwise have 7 params.
+Binders written with `{...}` are implicit. Calls may omit them when the type checker can infer the value from the
+surrounding application, while definitions can still refer to the bound names like ordinary parameters.
+Implicit binders must form a prefix of their telescope: after an explicit or instance binder appears, later binders
+must also be explicit or instance binders.
 
 ```raccoon
 inductive Nat : Type
   | zero : Nat
   | succ (_: Nat) : Nat
 
-inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(Level.max(Level.one, u))
-  | nil {A: Sort($u)}: Vec(A, Nat.zero)
-  | cons {A: Sort($u)} (v: Vec(A, $n))(elem: A): Vec(A, Nat.succ(n))
+inductive Vec {u: Level}(A: Sort(u)) indices (n: Nat) : Sort(Level.max(Level.one, u))
+  | nil : Vec(A, Nat.zero)
+  | cons (n: Nat)(v: Vec(A, n))(elem: A): Vec(A, Nat.succ(n))
 
-inductive Pair (A: Sort($u1))(B: Sort($u2)): Sort(Level.max(u1, u2))
-  | mk(a: $A in Sort($u1))(b: $B in Sort($u2)): Pair(A, B)
+inductive Pair {u1: Level}{u2: Level}(A: Sort(u1))(B: Sort(u2)): Sort(Level.max(u1, u2))
+  | mk (a: A)(b: B): Pair(A, B)
 
-def zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) decreases measure(n) := {
+def zip {A: Type}{B: Type}{n: Nat} (va: Vec(A, n))(vb: Vec(B, n)): Vec(Pair(A, B), n) decreases measure(n) := {
   let ResType := Vec(Pair(A, B), n)
   match va returning ResType with
   | Vec.nil => Vec.nil(Pair(A, B))
-  | Vec.cons va0 a => {
+  | Vec.cons n0 va0 a => {
     match vb returning ResType with
-    | Vec.cons vb0 b => Vec.cons(Pair(A, B), zip(va0, vb0), Pair.mk(a, b))
+    | Vec.cons _ vb0 b => Vec.cons(Pair(A, B), n0, zip(va0, vb0), Pair.mk(a, b))
   }
 }
 ```
@@ -172,7 +172,7 @@ Formation rules:
 
 - Exactly one constructor.
 - Params before `indices` must be returned uniformly by every constructor.
-- Indices may be fixed by the constructor result or recovered from stored fields and type-pattern captures.
+- Indices may be fixed by the constructor result or recovered from stored fields.
 - May live in `Type`/`Sort(u)` or `Prop`; projections from `Prop` structs obey Prop elimination restrictions.
 - All fields must be named (no anonymous `_` fields).
 
@@ -186,10 +186,10 @@ inductive Nat : Type
  | succ (_: Nat) : Nat
 
 struct Pair (A: Type)(B: Type) : Type
- | mk {A: Type}{B: Type} (fst: A)(snd: B) : Pair(A, B)
+ | mk (fst: A)(snd: B) : Pair(A, B)
 
-def first (p: Pair($A, $B)): A := p.fst
-def second (p: Pair($A, $B)): B := p.snd
+def first {A: Type}{B: Type} (p: Pair(A, B)): A := p.fst
+def second {A: Type}{B: Type} (p: Pair(A, B)): B := p.snd
 ```
 
 ### Type Classes
@@ -199,7 +199,7 @@ expression explicitly asks for it with `derive[Goal]`.
 
 Bracket binders such as `[x: T]` are instance-marked binders. They are still ordinary positional arguments at call
 sites, but the bound value is registered for local instance search while checking the binder's scope. This lets instance
-functions declare searchable dependencies with type-pattern captures, and lets function bodies call `derive[...]`
+functions declare searchable dependencies with implicit parameters, and lets function bodies call `derive[...]`
 against instance-marked parameters.
 
 Search uses lexical priority and stops at the first successful candidate in a tier. Local instance bindings are
@@ -210,14 +210,14 @@ ambiguity detection.
 
 ```raccoon
 struct DecEq (A: Type) : Type
- | mk {A: Type} (result: Bool) : DecEq(A)
+ | mk (result: Bool) : DecEq(A)
 
 inductive List (A: Type) : Type
  | nil : List(A)
 
 def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
 
-def instance listEq [ea: DecEq($A)]: DecEq(List(A)) := DecEq.mk(List(A), Bool.true)
+def instance listEq {A: Type} [ea: DecEq(A)]: DecEq(List(A)) := DecEq.mk(List(A), Bool.true)
 
 def useListEq [eqA: DecEq(List(Nat))]: DecEq(List(Nat)) := eqA
 

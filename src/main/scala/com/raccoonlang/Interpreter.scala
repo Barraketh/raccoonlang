@@ -3,11 +3,11 @@ package com.raccoonlang
 import com.raccoonlang.CoreAst.{Decl, Program}
 import com.raccoonlang.ElabAst.{Term => ETerm}
 import com.raccoonlang.Value._
-import com.raccoonlang.telescope.{BinderOps, TypePatternOps}
+import com.raccoonlang.telescope.BinderOps
 
 /**
- * Interpreter evaluates ElabAst into ordinary WHNF Values in the Env[Value] it is given. EqStore-aware reduction is isolated
- * to resolveInEqStore and the materialization helpers in ValueOps.
+ * Interpreter evaluates ElabAst into ordinary WHNF Values in the Env[Value] it is given. EqStore-aware reduction is
+ * isolated to resolveInEqStore and the materialization helpers in ValueOps.
  */
 object Interpreter {
   private def normalizeLevel(l: Level, eqStore: EqStore): Level = {
@@ -84,7 +84,7 @@ object Interpreter {
   }
 
   private def evalPi(pi: ETerm.Pi, env: Env[Value]): VPi =
-    evalPi(pi, env, pi.binders.map(TypePatternOps.toVBinder))
+    evalPi(pi, env, pi.binders.map(BinderOps.toVBinder))
 
   def evalTypeTerm(tt: ElabAst.TypeTerm, env: Env[Value]): Value = tt match {
     case ref: ETerm.Ref         => evalRef(ref, env)
@@ -115,7 +115,7 @@ object Interpreter {
           case h: VConst => VApp(h, vArgs, pi.codomain(envWithArgs))
           case h: ConstructorHead =>
             val resultTy = pi.codomain(envWithArgs)
-            VCtor(h, vArgs.drop(h.numErased), resultTy)
+            VCtor(h, Value.constructorStoredArgs(h, vArgs), resultTy)
           case blocker @ Blocker(blockerId) => VBlockedApp(blocker, vArgs, pi.codomain(envWithArgs), blockerId)
           case _                            => throw CannotApplyNonFunction(fn)
         }
@@ -196,8 +196,8 @@ object Interpreter {
   private def evalMatch(m: ETerm.Match, env: Env[Value]): Value = {
     val scrut = evalTerm(m.scrut, env)
     val (head, args) = scrut match {
-      case VCtor(head, fields, _) => (head, fields)
-      case other                  =>
+      case VCtor(head, storedArgs, _) => (head, Value.constructorPatternArgs(head, storedArgs))
+      case other                      =>
         // We are either blocked or stuck
         val capturedRefs = CapturedRefs.getCapturedRefs(m, env)
         val closedEnv = env.closeForEval(capturedRefs)
@@ -322,7 +322,8 @@ object Interpreter {
 
   private[raccoonlang] def initialWorlds(prelude: Prelude.Config = Prelude.default): Worlds = {
     val baseEnv =
-      Env.empty[Value]
+      Env
+        .empty[Value]
         .putGlobal("Type", TypeTpe)
         .putGlobal("Level", LevelTpe)
         .putGlobal("Level.zero", Level.zero)

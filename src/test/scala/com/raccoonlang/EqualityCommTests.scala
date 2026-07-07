@@ -31,17 +31,17 @@ class EqualityCommTests extends munit.FunSuite {
         |  | Nat.succ x => add(Nat.succ(a), x)
         |}
         |
-        |def trans (p: Eq($A, $x, $y))(q: Eq(A, y, $z)): Eq(A, x, z) := {
+        |def trans {A: Type}{x: A}{y: A}{z: A} (p: Eq(A, x, y))(q: Eq(A, y, z)): Eq(A, x, z) := {
         |  match p returning Eq(A, x, z) with
         |  | Eq.refl w => q
         |}
         |
-        |def symm (p: Eq($A, $x, $y)): Eq(A, y, x) := {
+        |def symm {A: Type}{x: A}{y: A} (p: Eq(A, x, y)): Eq(A, y, x) := {
         |  match p returning Eq(A, y, x) with
         |  | Eq.refl w => Eq.refl(w)
         |}
         |
-        |def congSucc(p: Eq(Nat, $a, $b)): Eq(Nat, Nat.succ(a), Nat.succ(b)) := {
+        |def congSucc {a: Nat}{b: Nat} (p: Eq(Nat, a, b)): Eq(Nat, Nat.succ(a), Nat.succ(b)) := {
         |  match p returning Eq(Nat, Nat.succ(a), Nat.succ(b)) with
         |  | Eq.refl x => Eq.refl(Nat.succ(x))
         |}

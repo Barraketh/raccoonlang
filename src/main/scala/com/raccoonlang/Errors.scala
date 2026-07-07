@@ -12,52 +12,52 @@ sealed trait TypeError extends RuntimeException {
 
 object TypeError {
   def withSpan(err: TypeError, sp: Span): TypeError = err match {
-    case e: UnificationFailed               => e.copy(span = Some(sp))
-    case e: CannotApplyNonFunction          => e.copy(span = Some(sp))
-    case e: ArityMismatch                   => e.copy(span = Some(sp))
-    case e: UnknownConstructor              => e.copy(span = Some(sp))
-    case e: DuplicateCase                   => e.copy(span = Some(sp))
-    case e: UnreachableCase                 => e.copy(span = Some(sp))
-    case e: MissingCase                     => e.copy(span = Some(sp))
-    case e: NotAType                        => e.copy(span = Some(sp))
-    case e: NonInductiveMatch               => e.copy(span = Some(sp))
-    case e: MissingReturningClause          => e.copy(span = Some(sp))
-    case e: NotFound                        => e.copy(span = Some(sp))
-    case e: AlreadyDefined                  => e.copy(span = Some(sp))
-    case e: CannotLinkToBottom              => e.copy(span = Some(sp))
-    case e: VarAlreadyLinked                => e.copy(span = Some(sp))
-    case e: TypeMismatch                    => e.copy(span = Some(sp))
-    case e: InvalidConstructorResult        => e.copy(span = Some(sp))
-    case e: InvalidErasedConstructorBinder  => e.copy(span = Some(sp))
-    case e: NonUniformInductiveParam        => e.copy(span = Some(sp))
-    case e: NotALevel                       => e.copy(span = Some(sp))
-    case e: InductiveUniverseTooSmall       => e.copy(span = Some(sp))
-    case e: NonStrictlyPositive             => e.copy(span = Some(sp))
-    case e: InductiveTypeNotASort           => e.copy(span = Some(sp))
-    case e: PatternCaptureNeedsExpectedType => e.copy(span = Some(sp))
-    case e: FailedToOpenCapture             => e.copy(span = Some(sp))
-    case e: PropEliminationRestricted       => e.copy(span = Some(sp))
-    case e: InvalidLevelSubtraction         => e.copy(span = Some(sp))
-    case e: WTF                             => e.copy(span = Some(sp))
-    case e: InvalidStruct                   => e.copy(span = Some(sp))
-    case e: NotAStruct                      => e.copy(span = Some(sp))
-    case e: NoInstanceFound                 => e.copy(span = Some(sp))
-    case e: CyclicInstanceSearch            => e.copy(span = Some(sp))
-    case e: InvalidInstance                 => e.copy(span = Some(sp))
-    case e: InstanceSearchBudgetExceeded    => e.copy(span = Some(sp))
-    case e: AmbiguousName                   => e.copy(span = Some(sp))
-    case e: UnsupportedImport               => e.copy(span = Some(sp))
-    case e: ModuleNotFound                  => e.copy(span = Some(sp))
-    case e: CyclicImport                    => e.copy(span = Some(sp))
-    case e: ModuleParseError                => e.copy(span = Some(sp))
-    case e: ImportedModuleHasBody           => e.copy(span = Some(sp))
-    case e: ModuleReadFailed                => e.copy(span = Some(sp))
-    case e: LocalCaseHead                   => e.copy(span = Some(sp))
-    case e: CannotQuoteValue                => e.copy(span = Some(sp))
-    case e: InvalidDecreaseSpec             => e.copy(span = Some(sp))
-    case e: MissingDecreaseSpec             => e.copy(span = Some(sp))
-    case e: NonDecreasingRecursiveCall      => e.copy(span = Some(sp))
-    case e: InvalidRecursiveOccurrence      => e.copy(span = Some(sp))
+    case e: UnificationFailed            => e.copy(span = Some(sp))
+    case e: CannotApplyNonFunction       => e.copy(span = Some(sp))
+    case e: ArityMismatch                => e.copy(span = Some(sp))
+    case e: UnknownConstructor           => e.copy(span = Some(sp))
+    case e: DuplicateCase                => e.copy(span = Some(sp))
+    case e: UnreachableCase              => e.copy(span = Some(sp))
+    case e: MissingCase                  => e.copy(span = Some(sp))
+    case e: NotAType                     => e.copy(span = Some(sp))
+    case e: NonInductiveMatch            => e.copy(span = Some(sp))
+    case e: MissingReturningClause       => e.copy(span = Some(sp))
+    case e: NotFound                     => e.copy(span = Some(sp))
+    case e: AlreadyDefined               => e.copy(span = Some(sp))
+    case e: CannotLinkToBottom           => e.copy(span = Some(sp))
+    case e: VarAlreadyLinked             => e.copy(span = Some(sp))
+    case e: TypeMismatch                 => e.copy(span = Some(sp))
+    case e: InvalidConstructorResult     => e.copy(span = Some(sp))
+    case e: NonLeadingImplicitParam      => e.copy(span = Some(sp))
+    case e: InvalidInductiveParam        => e.copy(span = Some(sp))
+    case e: NonUniformInductiveParam     => e.copy(span = Some(sp))
+    case e: NotALevel                    => e.copy(span = Some(sp))
+    case e: InductiveUniverseTooSmall    => e.copy(span = Some(sp))
+    case e: NonStrictlyPositive          => e.copy(span = Some(sp))
+    case e: InductiveTypeNotASort        => e.copy(span = Some(sp))
+    case e: FailedToOpenCapture          => e.copy(span = Some(sp))
+    case e: PropEliminationRestricted    => e.copy(span = Some(sp))
+    case e: InvalidLevelSubtraction      => e.copy(span = Some(sp))
+    case e: WTF                          => e.copy(span = Some(sp))
+    case e: InvalidStruct                => e.copy(span = Some(sp))
+    case e: NotAStruct                   => e.copy(span = Some(sp))
+    case e: NoInstanceFound              => e.copy(span = Some(sp))
+    case e: CyclicInstanceSearch         => e.copy(span = Some(sp))
+    case e: InvalidInstance              => e.copy(span = Some(sp))
+    case e: InstanceSearchBudgetExceeded => e.copy(span = Some(sp))
+    case e: AmbiguousName                => e.copy(span = Some(sp))
+    case e: UnsupportedImport            => e.copy(span = Some(sp))
+    case e: ModuleNotFound               => e.copy(span = Some(sp))
+    case e: CyclicImport                 => e.copy(span = Some(sp))
+    case e: ModuleParseError             => e.copy(span = Some(sp))
+    case e: ImportedModuleHasBody        => e.copy(span = Some(sp))
+    case e: ModuleReadFailed             => e.copy(span = Some(sp))
+    case e: LocalCaseHead                => e.copy(span = Some(sp))
+    case e: CannotQuoteValue             => e.copy(span = Some(sp))
+    case e: InvalidDecreaseSpec          => e.copy(span = Some(sp))
+    case e: MissingDecreaseSpec          => e.copy(span = Some(sp))
+    case e: NonDecreasingRecursiveCall   => e.copy(span = Some(sp))
+    case e: InvalidRecursiveOccurrence   => e.copy(span = Some(sp))
   }
 }
 
@@ -160,10 +160,6 @@ final case class NotALevel(v1: Value, span: Option[Span] = None) extends TypeErr
   override def msg: String = s"$v1 is not a Level"
 }
 
-final case class PatternCaptureNeedsExpectedType(name: String, span: Option[Span] = None) extends TypeError {
-  override def msg: String = s"Pattern capture $$$name needs an expected type"
-}
-
 final case class FailedToOpenCapture(v: Value, idx: Int, span: Option[Span] = None) extends TypeError {
   override def msg: String = s"Cannot return idx $idx of $v"
 }
@@ -180,14 +176,19 @@ final case class InvalidConstructorResult(
     s"Constructor $ctor must return $inductive but got $got"
 }
 
-final case class InvalidErasedConstructorBinder(
-    ctor: String,
-    binder: String,
+final case class NonLeadingImplicitParam(param: String, span: Option[Span] = None) extends TypeError {
+  override val msg: String =
+    s"Implicit parameter $param must appear before all explicit and instance parameters in its telescope"
+}
+
+final case class InvalidInductiveParam(
+    inductive: String,
+    param: String,
     reason: String,
     span: Option[Span] = None
 ) extends TypeError {
   override val msg: String =
-    s"Invalid erased constructor binder $binder in $ctor: $reason"
+    s"Invalid inductive parameter $param in $inductive: $reason"
 }
 
 final case class NonUniformInductiveParam(

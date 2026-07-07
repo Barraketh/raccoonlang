@@ -1,9 +1,9 @@
 package com.raccoonlang
 
 /**
- * Represents a typechecked value representation - the values that live in an Env[Value]. Values can contain Vars(), which
- * represent unknown values. Vars have a unique id, which means they can participate in equality. Thus values could be
- * thought of as a typed, maximally reduced representation of CoreAst / ElabAst. Invariants:
+ * Represents a typechecked value representation - the values that live in an Env[Value]. Values can contain Vars(),
+ * which represent unknown values. Vars have a unique id, which means they can participate in equality. Thus values
+ * could be thought of as a typed, maximally reduced representation of CoreAst / ElabAst. Invariants:
  *   - Every value is typed correctly. Types are themselves Values, and so are Sorts and Levels
  *   - synDeps is the set of all VarIds that this Value contains, including in its type. It is extremely important to
  * maintain this correctly
@@ -165,26 +165,10 @@ object Value {
   final val PropTpe: VSort = VSort(Level.zero)
   final val TypeTpe: VSort = VSort(Level.one)
 
-  sealed trait CaptureType
-  case object StructuralCapture extends CaptureType
-  case class LevelCapture(subtract: Int) extends CaptureType
-
-  sealed trait CaptureRoot
-  case object ActualType extends CaptureRoot
-  case object ActualTypeClassifier extends CaptureRoot
-
-  case class VCapture(
-      localRef: CoreAst.LocalRef,
-      path: List[Int],
-      captureType: CaptureType,
-      root: CaptureRoot = ActualType
-  )
-
   case class VBinder(
       localRef: CoreAst.LocalRef,
-      ty: ElabAst.BinderType,
-      expectedTy: ElabAst.TypeTerm,
-      captures: Vector[Value.VCapture],
+      ty: ElabAst.TypeTerm,
+      isImplicit: Boolean = false,
       isInstance: Boolean = false
   ) {
     def name: String = localRef.name
@@ -230,9 +214,10 @@ object Value {
     head match {
       case h: ConstructorHead =>
         require(blockerId.isEmpty, s"Constructor ${h.name} cannot be blocked")
+        val expectedArgs = h.totalArity - h.numErasedFamilyArgs
         require(
-          args.length == h.totalArity - h.numErased,
-          s"Constructor ${h.name} stores ${args.length} fields, expected ${h.totalArity - h.numErased}"
+          args.length == expectedArgs,
+          s"Constructor ${h.name} stores ${args.length} args, expected $expectedArgs"
         )
       case _ =>
     }
@@ -246,8 +231,7 @@ object Value {
       id: ValueId.LocalId,
       tpe: Value,
       blockerId: Option[VarId]
-  )
-    extends Value
+  ) extends Value
     with UpdatableType {
     override lazy val synDeps: DepSet = {
       val res = DepSet.newBuilder
@@ -270,7 +254,8 @@ object Value {
       tpe: VPi,
       id: ValueId,
       body: LamBody
-  ) extends Value {
+  ) extends Value
+    with UpdatableType {
     override lazy val synDeps: DepSet = {
       val res = DepSet.newBuilder
       res.unionInPlace(tpe.synDeps)
@@ -286,21 +271,43 @@ object Value {
       }
     }
 
+    override def withTpe(nextTpe: Value): Value = nextTpe match {
+      case pi: VPi if pi.binders.map(_.localRef) == tpe.binders.map(_.localRef) => this.copy(tpe = pi)
+      case _: VPi                                                               => this
+      case _ => throw WTF(s"Cannot update lambda type to $nextTpe")
+    }
+
   }
 
-  case class ConstructorHead(name: String, erasedFamilyArgIndexes: Vector[Int], totalArity: Int, tpe: Value)
+  case class ConstructorHead(name: String, numErasedFamilyArgs: Int, totalArity: Int, tpe: Value)
     extends TopLevelValue
     with UpdatableType {
-    require(erasedFamilyArgIndexes.forall(_ >= 0), "Constructor erased family arg indexes must be non-negative")
-    require(
-      erasedFamilyArgIndexes.distinct.length == erasedFamilyArgIndexes.length,
-      "Constructor erased family arg indexes must be distinct"
-    )
-
-    def numErased: Int = erasedFamilyArgIndexes.length
+    require(numErasedFamilyArgs >= 0, "Constructor erased family argument count must be non-negative")
+    require(numErasedFamilyArgs <= totalArity, "Constructor erased family argument count cannot exceed total arity")
 
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
+
+  private[raccoonlang] def constructorStoredArgs(head: ConstructorHead, args: Vector[Value]): Vector[Value] = {
+    if (args.length != head.totalArity)
+      throw WTF(s"Constructor ${head.name} was given ${args.length} args, expected ${head.totalArity}")
+    args.drop(head.numErasedFamilyArgs)
+  }
+
+  private[raccoonlang] def constructorPatternArgs(head: ConstructorHead, args: Vector[Value]): Vector[Value] =
+    head.tpe match {
+      case pi: VPi =>
+        val storedBinders = pi.binders.drop(head.numErasedFamilyArgs)
+        if (args.length != storedBinders.length)
+          throw WTF(s"Constructor ${head.name} stores ${args.length} args, expected ${storedBinders.length}")
+        args
+
+      case _ =>
+        val expectedArgs = head.totalArity - head.numErasedFamilyArgs
+        if (args.length != expectedArgs)
+          throw WTF(s"Constructor ${head.name} stores ${args.length} args, expected $expectedArgs")
+        args
+    }
 
   final case class ConstructorMeta(shortName: String, canonicalName: String)
 

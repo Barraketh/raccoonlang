@@ -54,8 +54,8 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
-        | | nil {A: Type} : Vec(A, Nat.zero)
-        | | cons {A: Type} (n: Nat) (xs: Vec(A, n)) (x: A): Vec(A, Nat.succ(n))
+        | | nil : Vec(A, Nat.zero)
+        | | cons (n: Nat) (xs: Vec(A, n)) (x: A): Vec(A, Nat.succ(n))
         |
         |def f (A: Type)(v: Vec(A, Nat.zero)): Nat := {
         |  match v returning Nat with
@@ -114,8 +114,8 @@ class MatchExhaustivenessTests extends munit.FunSuite {
     val p =
       """
         |inductive Wrap (A: Type) : Type
-        | | left {A: Type} (x: A) : Wrap(A)
-        | | right {A: Type} (x: A) : Wrap(A)
+        | | left (x: A) : Wrap(A)
+        | | right (x: A) : Wrap(A)
         |
         |def keepWrap (A: Type)(w: Wrap(A)): Wrap(A) := {
         |  match w with
@@ -128,7 +128,7 @@ class MatchExhaustivenessTests extends munit.FunSuite {
     typecheckDecls(p)
   }
 
-  test("omitted returning: rejected when no constructors are reachable") {
+  test("omitted returning: expected type permits empty unreachable match") {
     val p =
       """
         |inductive Nat : Type
@@ -144,10 +144,10 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         |
         |""".stripMargin
 
-    intercept[MissingReturningClause] { typecheckDecls(p) }
+    typecheckDecls(p)
   }
 
-  test("omitted returning: rejected when reachable constructor result types differ") {
+  test("omitted returning: expected type disambiguates differing reachable constructor results") {
     val p =
       """
         |inductive Nat : Type
@@ -166,6 +166,6 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         |
         |""".stripMargin
 
-    intercept[MissingReturningClause] { typecheckDecls(p) }
+    typecheckDecls(p)
   }
 }

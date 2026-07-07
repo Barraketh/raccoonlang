@@ -17,42 +17,6 @@ object CapturedRefs {
   ): Set[CoreAst.LocalRef] =
     terms.iterator.foldLeft(refs) { case (curRefs, term) => goTerm(term, env, curRefs) }
 
-  private def goPatterns(
-      terms: IterableOnce[ElabAst.TypePattern],
-      env: Env[Value],
-      refs: Set[CoreAst.LocalRef]
-  ): Set[CoreAst.LocalRef] =
-    terms.iterator.foldLeft(refs) { case (curRefs, pattern) => goPattern(pattern, env, curRefs) }
-
-  private def goPattern(
-      pattern: ElabAst.TypePattern,
-      env: Env[Value],
-      refs: Set[CoreAst.LocalRef]
-  ): Set[CoreAst.LocalRef] =
-    pattern match {
-      case ElabAst.TypePattern.Capture(ref, _) =>
-        addRef(ref, env, refs)
-
-      case ElabAst.TypePattern.App(fn, args, _) =>
-        goPatterns(args, env, goTerm(fn, env, refs))
-
-      case ElabAst.TypePattern.Type(term) =>
-        goTerm(term, env, refs)
-    }
-
-  private def goBinderType(
-      binderType: ElabAst.BinderType,
-      env: Env[Value],
-      refs: Set[CoreAst.LocalRef]
-  ): Set[CoreAst.LocalRef] =
-    binderType match {
-      case ElabAst.BinderType.TypePattern(tp, _) =>
-        goPattern(tp, env, refs)
-
-      case ElabAst.BinderType.ConstrainedCapture(ref, constraint, _) =>
-        goPattern(constraint, env, addRef(ref, env, refs))
-    }
-
   private def goTerm(term: ElabAst.Term, env: Env[Value], refs: Set[CoreAst.LocalRef]): Set[CoreAst.LocalRef] =
     term match {
       case Term.GlobalRef(_, _) =>
@@ -62,7 +26,7 @@ object CapturedRefs {
         addRef(ref, env, refs)
 
       case Term.Pi(binders, out, _, _) =>
-        val refsWithBinders = binders.foldLeft(refs) { case (curRefs, b) => goBinderType(b.ty, env, curRefs) }
+        val refsWithBinders = binders.foldLeft(refs) { case (curRefs, b) => goTerm(b.ty, env, curRefs) }
         goTerm(out, env, refsWithBinders)
 
       case Term.App(fn, args, _) =>

@@ -13,11 +13,6 @@ object CoreAst {
   // Terms that can appear in function bodies
   sealed trait Term extends Ast
 
-  // Terms that can appear in args
-  sealed trait TypePattern extends Ast
-
-  sealed trait TopLevelTP extends TypePattern
-
   sealed trait ConstBody {
     def span: Span
   }
@@ -41,26 +36,6 @@ object CoreAst {
 
   // Terms that can appear in type expressions
   sealed trait TypeTerm extends Term
-
-  object TypePattern {
-    final case class Type(term: TypeTerm) extends TopLevelTP {
-      override def span: Span = term.span
-    }
-
-    final case class App(fn: Term.Ref, args: Vector[TypePattern], span: Span) extends TopLevelTP {
-      require(args.nonEmpty, "Type pattern application requires at least one argument")
-    }
-
-    final case class Capture(localRef: CoreAst.LocalRef, span: Span) extends TypePattern
-  }
-
-  sealed trait BinderType extends Ast
-
-  object BinderType {
-    final case class TypePattern(tp: TopLevelTP, span: Span) extends BinderType
-    final case class ConstrainedCapture(localRef: CoreAst.LocalRef, constraint: TopLevelTP, span: Span)
-      extends BinderType
-  }
 
   object Term {
     sealed trait Ref extends Term with TypeTerm
@@ -124,8 +99,9 @@ object CoreAst {
 
   final case class Binder(
       localRef: LocalRef,
-      ty: BinderType,
+      ty: TypeTerm,
       span: Span,
+      isImplicit: Boolean = false,
       isInstance: Boolean = false
   ) {
     def name: String = localRef.name
@@ -147,8 +123,7 @@ object CoreAst {
   case class ConstructorDecl(
       canonicalName: String,
       shortName: String,
-      erasedBinders: Vector[Binder],
-      fields: Vector[Binder],
+      binders: Vector[Binder],
       resultTy: TypeTerm,
       span: Span
   ) {

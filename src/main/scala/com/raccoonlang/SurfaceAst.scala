@@ -13,12 +13,6 @@ object SurfaceAst {
     def span: Span
   }
 
-  sealed trait TypePattern {
-    def span: Span
-  }
-
-  sealed trait TopLevelTP extends TypePattern
-
   sealed trait ConstBody {
     def span: Span
   }
@@ -39,27 +33,6 @@ object SurfaceAst {
     final case class Structural(arg: String, span: Span) extends DecreaseSpec
     final case class Lexicographic(args: Vector[String], span: Span) extends DecreaseSpec
     final case class Measure(term: Term, span: Span) extends DecreaseSpec
-  }
-
-  object TypePattern {
-    final case class Type(term: TypeTerm) extends TopLevelTP {
-      override def span: Span = term.span
-    }
-
-    final case class App(fn: TypeTerm, args: Vector[TypePattern], span: Span) extends TopLevelTP {
-      require(args.nonEmpty, "Type pattern application requires at least one argument")
-    }
-
-    final case class Capture(name: String, span: Span) extends TypePattern
-  }
-
-  sealed trait BinderType {
-    def span: Span
-  }
-
-  object BinderType {
-    final case class TypePattern(tp: TopLevelTP, span: Span) extends BinderType
-    final case class ConstrainedCapture(name: String, constraint: TopLevelTP, span: Span) extends BinderType
   }
 
   object Term {
@@ -116,7 +89,13 @@ object SurfaceAst {
     )
   }
 
-  case class Binder(name: String, ty: BinderType, span: Span, isInstance: Boolean = false)
+  case class Binder(
+      name: String,
+      ty: TypeTerm,
+      span: Span,
+      isImplicit: Boolean = false,
+      isInstance: Boolean = false
+  )
 
   case class FuncHeader(params: Vector[Binder], ty: TypeTerm, span: Span)
 
@@ -138,8 +117,7 @@ object SurfaceAst {
 
     case class ConstructorDecl(
         name: String,
-        erasedBinders: Vector[Binder],
-        fields: Vector[Binder],
+        binders: Vector[Binder],
         resultTy: TypeTerm,
         span: Span
     )

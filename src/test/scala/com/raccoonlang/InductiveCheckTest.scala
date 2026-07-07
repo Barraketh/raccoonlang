@@ -42,7 +42,7 @@ class InductiveCheckTest extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Bad(A: Type) : A
-        | | mk{A: Type}: Bad(A)
+        | | mk: Bad(A)
         |
         |""".stripMargin
 
@@ -99,7 +99,7 @@ class InductiveCheckTest extends munit.FunSuite {
     intercept[NonStrictlyPositive] { elabAndTypecheck(p) }
   }
 
-  test("Constructor erased binders must be inductive params") {
+  test("Constructor result must use family params uniformly") {
     val p =
       """
         |inductive Nat : Type
@@ -111,7 +111,7 @@ class InductiveCheckTest extends munit.FunSuite {
         |
         |""".stripMargin
 
-    intercept[InvalidErasedConstructorBinder] { elabAndTypecheck(p) }
+    intercept[NonUniformInductiveParam] { elabAndTypecheck(p) }
   }
 
   test("Constructor result must have full family arity") {
@@ -122,14 +122,14 @@ class InductiveCheckTest extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
-        | | bad {A: Type}: Vec(A)
+        | | bad : Vec(A)
         |
         |""".stripMargin
 
     intercept[ArityMismatch] { elabAndTypecheck(p) }
   }
 
-  test("Constructor erased binders may not bind indices") {
+  test("Constructor implicit binders may bind indices after params") {
     val p =
       """
         |inductive Nat : Type
@@ -137,14 +137,48 @@ class InductiveCheckTest extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
-        | | bad {A: Type}{n: Nat}: Vec(A, n)
+        | | bad {n: Nat}: Vec(A, n)
         |
         |""".stripMargin
 
-    intercept[InvalidErasedConstructorBinder] { elabAndTypecheck(p) }
+    elabAndTypecheck(p)
   }
 
-  test("Constructor params must come from erased binders or type-pattern captures") {
+  test("Instance binders are rejected as family params") {
+    val p =
+      """
+        |inductive Bad [A: Type] : Type
+        | | mk : Bad(A)
+        |
+        |""".stripMargin
+
+    intercept[InvalidInductiveParam] { elabAndTypecheck(p) }
+  }
+
+  test("Core inductive checker rejects instance family params") {
+    val sp = Span(0, 0)
+    val aRef = CoreAst.LocalRef(0, "A")
+    val aBinder = CoreAst.Binder(aRef, CoreAst.Term.GlobalRef("Type", sp), sp, isInstance = true)
+    val header =
+      CoreAst.InductiveHeader("Bad", Vector(aBinder), Vector.empty, CoreAst.Term.GlobalRef("Type", sp), sp)
+    val ctor =
+      CoreAst.ConstructorDecl(
+        canonicalName = "Bad.mk",
+        shortName = "mk",
+        binders = Vector.empty,
+        resultTy = CoreAst.Term.TApp(
+          CoreAst.Term.GlobalRef("Bad", sp),
+          Vector(CoreAst.Term.LocalRef(aRef, sp)),
+          sp
+        ),
+        span = sp
+      )
+    val program = CoreAst.Program(Vector(CoreAst.Decl.InductiveDecl(header, Vector(ctor), isStruct = false, sp)), None)
+
+    intercept[InvalidInductiveParam] { Interpreter.run(program, Prelude.test) }
+  }
+
+  test("Constructor binders may not shadow family params") {
     val p =
       """
         |struct Bad (A: Type) : Sort(Level.succ(Level.one))
@@ -152,21 +186,21 @@ class InductiveCheckTest extends munit.FunSuite {
         |
         |""".stripMargin
 
-    intercept[InvalidErasedConstructorBinder] { elabAndTypecheck(p) }
+    intercept[AlreadyDefined] { elabAndTypecheck(p) }
   }
 
-  test("Constructor erased binders may target non-prefix inductive params") {
+  test("Constructor implicit binders include inductive params") {
     val p =
       """
         |inductive Bad (A: Type)(B: Type) : Sort(Level.one)
-        | | inl {B: Type} (a: $A in Type) : Bad(A, B)
+        | | inl (a: A) : Bad(A, B)
         |
         |""".stripMargin
 
     elabAndTypecheck(p)
   }
 
-  test("Constructor param witness type is checked after elaboration") {
+  test("Hidden constructor binders may not shadow family params") {
     val p =
       """
         |inductive Nat : Type
@@ -178,20 +212,15 @@ class InductiveCheckTest extends munit.FunSuite {
         |
         |""".stripMargin
 
-    LanguageParser.parseProgram(p) match {
-      case Success(value, _, _) =>
-        val core = Elaborator.elab(value, Prelude.test)
-        intercept[TypeError] { Interpreter.run(core, Prelude.test) }
-      case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
-    }
+    intercept[AlreadyDefined] { elabAndTypecheck(p) }
   }
 
   test("Nested strictly positive: recursive occurrence under positive List parameter") {
     val p =
       """
         |inductive List (A: Type) : Type
-        | | nil {A: Type} : List(A)
-        | | cons {A: Type} (head: A) (tail: List(A)) : List(A)
+        | | nil : List(A)
+        | | cons (head: A) (tail: List(A)) : List(A)
         |
         |inductive Tree : Type
         | | node (children: List(Tree)) : Tree
@@ -209,7 +238,7 @@ class InductiveCheckTest extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive BadBox (A: Type) : Type
-        | | mk {A: Type} (f: A -> Nat) : BadBox(A)
+        | | mk (f: A -> Nat) : BadBox(A)
         |
         |inductive BadTree : Type
         | | node (children: BadBox(BadTree)) : BadTree
@@ -222,11 +251,11 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Nested non-positive: container parameter contravariant in later family argument") {
     val p =
       """
-        |inductive Box (A: Type)(F: A -> Type) : Type
-        | | mk {A: Type}{F: A -> Type} : Box(A, F)
+        |inductive Box {u: Level}(A: Sort(u))(F: A -> Type) : Sort(Level.max(u, Level.one))
+        | | mk : Box(A, F)
         |
-        |inductive Bad : Type
-        | | con (x: Box(Bad, $F)) : Bad
+        |inductive Bad : Sort(Level.succ(Level.one))
+        | | con {F: Bad -> Type} (x: Box(Bad, F)) : Bad
         |
         |""".stripMargin
 
@@ -237,7 +266,7 @@ class InductiveCheckTest extends munit.FunSuite {
     val p =
       """
         |inductive Box (A: Type)(F: A -> Type) : Type
-        | | mk {A: Type}{F: A -> Type} : Box(A, F)
+        | | mk : Box(A, F)
         |
         |""".stripMargin
 
@@ -252,7 +281,7 @@ class InductiveCheckTest extends munit.FunSuite {
     val p =
       """
         |inductive Bad (A: Type) : Type
-        | | con {A: Type} (x: Bad(Bad(A))) : Bad(A)
+        | | con (x: Bad(Bad(A))) : Bad(A)
         |
         |""".stripMargin
 
@@ -262,11 +291,11 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Nested non-positive: recursive occurrence in constructor-valued family argument") {
     val p =
       """
-        |inductive BoxType : Sort(Level.succ(Level.one))
-        | | tag (A: Type) : BoxType
+        |inductive BoxType : Type
+        | | tag (P: Prop) : BoxType
         |
-        |inductive Bad indices (t: BoxType) : Type
-        | | con (anchor: Bad($t)) (x: Bad(BoxType.tag(Bad(t)))) : Bad(t)
+        |inductive Bad indices (t: BoxType) : Prop
+        | | con {t: BoxType} (anchor: Bad(t)) (x: Bad(BoxType.tag(Bad(t)))) : Bad(t)
         |
         |""".stripMargin
 
@@ -280,7 +309,7 @@ class InductiveCheckTest extends munit.FunSuite {
         | | zero : Nat
         |
         |inductive Higher (F: Type -> Type) : Type
-        | | mk {F: Type -> Type} (x: F(Nat)) : Higher(F)
+        | | mk (x: F(Nat)) : Higher(F)
         |
         |""".stripMargin
 
@@ -295,15 +324,15 @@ class InductiveCheckTest extends munit.FunSuite {
     val p =
       """
         |struct TypeBox (A: Type) : Sort(Level.succ(Level.one))
-        | | mk {A: Type} (T: Type) : TypeBox(A)
+        | | mk (T: Type) : TypeBox(A)
         |
         |opaque def typeBox (A: Type): TypeBox(A) := TypeBox.mk(A, A)
         |
         |inductive Box (A: Type)(F: (typeBox(A).T)) : Type
-        | | mk {A: Type}{F: (typeBox(A).T)} : Box(A, F)
+        | | mk : Box(A, F)
         |
         |inductive Bad : Type
-        | | con (x: Box(Bad, $F)) : Bad
+        | | con {F: typeBox(Bad).T} (x: Box(Bad, F)) : Bad
         |
         |""".stripMargin
 

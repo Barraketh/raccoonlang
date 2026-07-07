@@ -311,95 +311,42 @@ object Elaborator {
       case other => Vector(other)
     }
 
-  private def checkConstructorParamDiscipline(
-      header: SA.Command.InductiveHeader,
-      ctor: SA.Command.ConstructorDecl,
-      ctorName: String
-  ): Unit = {
-    val paramNames = header.params.map(_.name).toSet
-    val indexNames = header.indices.map(_.name).toSet
-
-    ctor.erasedBinders.foldLeft(Set.empty[String]) { case (seen, binder) =>
-      if (!paramNames.contains(binder.name)) {
-        val reason =
-          if (indexNames.contains(binder.name)) "indices must be passed through constructor fields or type patterns"
-          else if (header.params.isEmpty) "this inductive has no params"
-          else s"expected one of ${header.params.map(_.name).mkString(", ")}"
-        throw InvalidErasedConstructorBinder(ctorName, binder.name, reason, Some(binder.span))
-      }
-      if (seen.contains(binder.name))
-        throw InvalidErasedConstructorBinder(ctorName, binder.name, "duplicate erased parameter", Some(binder.span))
-      seen + binder.name
-    }
-
-    ctor.fields.find(field => paramNames.contains(field.name)).foreach { field =>
-      throw InvalidErasedConstructorBinder(
-        ctorName,
-        field.name,
-        "constructor fields named like inductive params must be erased",
-        Some(field.span)
-      )
-    }
-
-    val fieldCaptures = ctor.fields.flatMap(field => binderTypeCaptureNames(field.ty))
-
-    header.params.foreach { param =>
-      val erasedWitnesses = ctor.erasedBinders.filter(_.name == param.name)
-      val captureWitnesses = fieldCaptures.filter(_ == param.name)
-
-      val witnessCount = erasedWitnesses.length + captureWitnesses.length
-      if (witnessCount != 1)
-        throw InvalidErasedConstructorBinder(
-          ctorName,
-          param.name,
-          "expected exactly one erased binder or type-pattern capture for this inductive parameter",
-          Some(ctor.span)
-        )
-    }
-  }
-
-  private def binderTypeCaptureNames(binderType: SA.BinderType): Vector[String] =
-    binderType match {
-      case SA.BinderType.TypePattern(tp, _) => typePatternCaptureNames(tp)
-      case SA.BinderType.ConstrainedCapture(name, constraint, _) =>
-        typePatternCaptureNames(constraint) :+ name
-    }
-
-  private def typePatternCaptureNames(pattern: SA.TypePattern): Vector[String] =
-    pattern match {
-      case SA.TypePattern.Type(_)          => Vector.empty
-      case SA.TypePattern.Capture(name, _) => Vector(name)
-      case SA.TypePattern.App(_, args, _)  => args.flatMap(typePatternCaptureNames)
-    }
-
   private def structSelectorNamespace(decl: SA.Command.Decl.InductiveDecl): Option[SA.Command.Namespace] = {
     if (!decl.isStruct || decl.ctors.isEmpty) return None
 
     val header = decl.header
     val ctor = decl.ctors.head
-    val fields = ctor.fields.filter(_.name != "_")
+    val storedBinders = ctor.binders
+    val fields = storedBinders.filter(_.name != "_")
     if (fields.isEmpty) return None
 
-    val usedNames = (header.binders ++ ctor.erasedBinders ++ ctor.fields).map(_.name).toSet
+    val usedNames = (header.binders ++ ctor.binders).map(_.name).toSet
     val selfName = freshGeneratedName("__self", usedNames)
     val selfSpan = header.span
+    val familyArgs = header.binders.map(binder => SA.Term.Ident(binder.name, binder.span))
+    val implicitFamilyBinders = header.binders.map(binder => binder.copy(isImplicit = true, isInstance = false))
     val selfType = {
       val head = SA.Term.Ident(header.name, header.span)
-      val args = header.binders.map(binder => SA.TypePattern.Capture(binder.name, binder.span))
-      if (args.isEmpty) SA.TypePattern.Type(head)
-      else SA.TypePattern.App(head, args, header.span)
+      if (familyArgs.isEmpty) head
+      else SA.Term.TApp(head, familyArgs, header.span)
     }
     val selfBinder =
-      SA.Binder(selfName, SA.BinderType.TypePattern(selfType, selfSpan), selfSpan)
+      SA.Binder(selfName, selfType, selfSpan)
+    val familyFieldRewrites = directFamilyFieldRewrites(header, ctor)
 
     val selectors =
       fields.zipWithIndex.map { case (field, fieldIdx) =>
         val previousFields = fields.take(fieldIdx).map(_.name).toSet
-        val resultTy = selectorResultType(header.name, selfName, field.ty, previousFields, field.span)
+        val resultTy =
+          selectorResultType(header.name, selfName, field.ty, previousFields, familyFieldRewrites)
         val selectorHeader =
           SA.Command.DeclHeader(
             field.name,
-            SA.FuncHeader(Vector(selfBinder), resultTy, Span(selfSpan.start, resultTy.span.end, selfSpan.source)),
+            SA.FuncHeader(
+              implicitFamilyBinders :+ selfBinder,
+              resultTy,
+              Span(selfSpan.start, resultTy.span.end, selfSpan.source)
+            ),
             field.span
           )
         val body =
@@ -410,7 +357,7 @@ object Elaborator {
               SA.Term.Case(
                 Vector(header.name, ctor.name),
                 useShortName = false,
-                ctor.fields.map(_.name),
+                storedBinders.map(_.name),
                 SA.Term.Ident(field.name, field.span),
                 field.span
               )
@@ -440,53 +387,73 @@ object Elaborator {
   private def selectorResultType(
       structName: String,
       selfName: String,
-      binderType: SA.BinderType,
+      binderType: SA.TypeTerm,
       previousFields: Set[String],
-      span: Span
+      familyFieldRewrites: Map[String, SA.TypeTerm]
   ): SA.TypeTerm =
-    binderType match {
-      case SA.BinderType.TypePattern(tp, _) =>
-        typePatternAsType(structName, selfName, tp, previousFields, span)
-
-      case SA.BinderType.ConstrainedCapture(name, _, captureSpan) =>
-        if (previousFields.contains(name))
-          throw InvalidStruct(structName, s"type capture $name shadows an earlier field", Some(captureSpan))
-        SA.Term.Ident(name, captureSpan)
-    }
+    rewriteTypeTerm(structName, selfName, binderType, previousFields, familyFieldRewrites)
 
   private def rewriteTypeTerm(
       structName: String,
       selfName: String,
       term: SA.TypeTerm,
-      previousFields: Set[String]
+      previousFields: Set[String],
+      familyFieldRewrites: Map[String, SA.TypeTerm]
   ): SA.TypeTerm =
     term match {
+      case SA.Term.Ident(name, _) if familyFieldRewrites.contains(name) =>
+        familyFieldRewrites(name)
+
       case SA.Term.Ident(name, span) if previousFields.contains(name) =>
         selectorCall(structName, name, selfName, span)
 
       case i: SA.Term.Ident => i
 
       case SA.Term.TSelect(base, field, span) =>
-        SA.Term.TSelect(rewriteTypeTerm(structName, selfName, base, previousFields), field, span)
+        SA.Term.TSelect(rewriteTypeTerm(structName, selfName, base, previousFields, familyFieldRewrites), field, span)
 
       case SA.Term.TApp(fn, args, span) =>
         SA.Term.TApp(
-          rewriteTypeTerm(structName, selfName, fn, previousFields),
-          args.map(arg => rewriteTypeTerm(structName, selfName, arg, previousFields)),
+          rewriteTypeTerm(structName, selfName, fn, previousFields, familyFieldRewrites),
+          args.map(arg => rewriteTypeTerm(structName, selfName, arg, previousFields, familyFieldRewrites)),
           span
         )
 
       case SA.Term.Derive(goal, span) =>
-        SA.Term.Derive(rewriteTypeTerm(structName, selfName, goal, previousFields), span)
+        SA.Term.Derive(rewriteTypeTerm(structName, selfName, goal, previousFields, familyFieldRewrites), span)
 
       case SA.Term.Pi(binder, body, span) =>
-        rejectShadowingCapture(structName, binder, previousFields)
+        rejectShadowingBinder(structName, binder, previousFields)
         SA.Term.Pi(
-          binder.copy(ty = rewriteBinderType(structName, selfName, binder.ty, previousFields)),
-          rewriteTypeTerm(structName, selfName, body, previousFields),
+          binder.copy(ty = rewriteTypeTerm(structName, selfName, binder.ty, previousFields, familyFieldRewrites)),
+          rewriteTypeTerm(structName, selfName, body, previousFields, familyFieldRewrites - binder.name),
           span
         )
     }
+
+  private def directFamilyFieldRewrites(
+      header: SA.Command.InductiveHeader,
+      ctor: SA.Command.ConstructorDecl
+  ): Map[String, SA.TypeTerm] = {
+    val ctorFieldNames = ctor.binders.map(_.name).toSet - "_"
+    val resultArgs =
+      ctor.resultTy match {
+        case SA.Term.TApp(head, args, _) if flattenTypePath(head).exists(_.parts.lastOption.contains(header.name)) =>
+          args
+        case _ => Vector.empty
+      }
+
+    if (resultArgs.length != header.binders.length) Map.empty
+    else {
+      resultArgs
+        .zip(header.binders)
+        .collect {
+          case (SA.Term.Ident(fieldName, _), familyBinder) if ctorFieldNames.contains(fieldName) =>
+            fieldName -> SA.Term.Ident(familyBinder.name, familyBinder.span)
+        }
+        .toMap
+    }
+  }
 
   private def selectorCall(structName: String, fieldName: String, selfName: String, span: Span): SA.TypeTerm =
     SA.Term.TApp(
@@ -495,97 +462,13 @@ object Elaborator {
       span
     )
 
-  private def rewriteBinderType(
-      structName: String,
-      selfName: String,
-      binderType: SA.BinderType,
-      previousFields: Set[String]
-  ): SA.BinderType =
-    binderType match {
-      case SA.BinderType.TypePattern(tp, span) =>
-        SA.BinderType.TypePattern(rewriteTopLevelPattern(structName, selfName, tp, previousFields), span)
-
-      case SA.BinderType.ConstrainedCapture(name, constraint, span) =>
-        if (previousFields.contains(name))
-          throw InvalidStruct(structName, s"type capture $name shadows an earlier field", Some(span))
-        SA.BinderType.ConstrainedCapture(
-          name,
-          rewriteTopLevelPattern(structName, selfName, constraint, previousFields),
-          span
-        )
-    }
-
-  private def rewriteTopLevelPattern(
-      structName: String,
-      selfName: String,
-      pattern: SA.TopLevelTP,
-      previousFields: Set[String]
-  ): SA.TopLevelTP =
-    rewriteTypePattern(structName, selfName, pattern, previousFields) match {
-      case topLevel: SA.TopLevelTP => topLevel
-      case SA.TypePattern.Capture(name, span) =>
-        throw InvalidStruct(structName, s"type capture $name needs an expected type", Some(span))
-    }
-
-  private def rewriteTypePattern(
-      structName: String,
-      selfName: String,
-      pattern: SA.TypePattern,
-      previousFields: Set[String]
-  ): SA.TypePattern =
-    pattern match {
-      case SA.TypePattern.Type(term) =>
-        SA.TypePattern.Type(rewriteTypeTerm(structName, selfName, term, previousFields))
-
-      case SA.TypePattern.App(fn, args, span) =>
-        SA.TypePattern.App(
-          rewriteTypeTerm(structName, selfName, fn, previousFields),
-          args.map(arg => rewriteTypePattern(structName, selfName, arg, previousFields)),
-          span
-        )
-
-      case SA.TypePattern.Capture(name, span) =>
-        if (previousFields.contains(name))
-          throw InvalidStruct(structName, s"type capture $name shadows an earlier field", Some(span))
-        pattern
-    }
-
-  private def typePatternAsType(
-      structName: String,
-      selfName: String,
-      pattern: SA.TypePattern,
-      previousFields: Set[String],
-      span: Span
-  ): SA.TypeTerm =
-    pattern match {
-      case SA.TypePattern.Type(term) =>
-        rewriteTypeTerm(structName, selfName, term, previousFields)
-
-      case SA.TypePattern.App(fn, args, appSpan) =>
-        SA.Term.TApp(
-          rewriteTypeTerm(structName, selfName, fn, previousFields),
-          args.map(arg => typePatternAsType(structName, selfName, arg, previousFields, appSpan)),
-          appSpan
-        )
-
-      case SA.TypePattern.Capture(name, captureSpan) =>
-        if (previousFields.contains(name))
-          throw InvalidStruct(structName, s"type capture $name shadows an earlier field", Some(captureSpan))
-        SA.Term.Ident(name, captureSpan)
-    }
-
-  private def rejectShadowingCapture(
+  private def rejectShadowingBinder(
       structName: String,
       binder: SA.Binder,
       previousFields: Set[String]
   ): Unit = {
     if (previousFields.contains(binder.name))
       throw InvalidStruct(structName, s"Pi binder ${binder.name} shadows an earlier field", Some(binder.span))
-
-    val captured = binderTypeCaptureNames(binder.ty).toSet
-    captured.find(previousFields.contains).foreach { name =>
-      throw InvalidStruct(structName, s"type capture $name shadows an earlier field", Some(binder.span))
-    }
   }
 
   /**
@@ -662,50 +545,12 @@ object Elaborator {
     case pi: SA.Term.Pi             => elabPi(pi, env)
   }
 
-  private def elabPattern(pattern: SA.TypePattern, env: ResolveEnv): (CA.TypePattern, ResolveEnv) =
-    pattern match {
-      case SA.TypePattern.Type(term) =>
-        (CA.TypePattern.Type(elabType(term, env)), env)
-
-      case SA.TypePattern.App(fn, args, sp) =>
-        val (nextArgs, nextEnv) = args.foldLeft((Vector.empty[CA.TypePattern], env)) { case ((curArgs, curEnv), arg) =>
-          val (nextArg, argEnv) = elabPattern(arg, curEnv)
-          (curArgs :+ nextArg, argEnv)
-        }
-        (CA.TypePattern.App(elabTypeAppHead(fn, env), nextArgs, sp), nextEnv)
-
-      case SA.TypePattern.Capture(name, sp) =>
-        val (ref, nextEnv) = env.bindRequired(name, sp)
-        (CA.TypePattern.Capture(ref, sp), nextEnv)
-    }
-
-  private def elabTopLevelPattern(pattern: SA.TopLevelTP, env: ResolveEnv): (CA.TopLevelTP, ResolveEnv) = {
-    val (elab, nextEnv) = elabPattern(pattern, env)
-    elab match {
-      case topLevel: CA.TopLevelTP => (topLevel, nextEnv)
-      case CA.TypePattern.Capture(ref, span) =>
-        throw PatternCaptureNeedsExpectedType(ref.name, Some(span))
-    }
-  }
-
-  private def elabBinderType(ty: SA.BinderType, env: ResolveEnv): (CA.BinderType, ResolveEnv) =
-    ty match {
-      case SA.BinderType.TypePattern(tp, sp) =>
-        val (elab, nextEnv) = elabTopLevelPattern(tp, env)
-        (CA.BinderType.TypePattern(elab, sp), nextEnv)
-
-      case SA.BinderType.ConstrainedCapture(name, constraint, sp) =>
-        val (elabConstraint, envWithConstraintCaptures) = elabTopLevelPattern(constraint, env)
-        val (ref, nextEnv) = envWithConstraintCaptures.bindRequired(name, sp)
-        (CA.BinderType.ConstrainedCapture(ref, elabConstraint, sp), nextEnv)
-    }
-
   private def elabBinder(b: SA.Binder, env: ResolveEnv): (CA.Binder, ResolveEnv) = {
-    val (ty, envWithCaptures) = elabBinderType(b.ty, env)
+    val ty = elabType(b.ty, env)
     val (ref, nextEnv) =
-      if (b.name == "_") envWithCaptures.allocate(b.name)
-      else envWithCaptures.bindNamed(b.name, allowShadow = false)
-    (CA.Binder(ref, ty, b.span, b.isInstance), nextEnv)
+      if (b.name == "_") env.allocate(b.name)
+      else env.bindNamed(b.name, allowShadow = false)
+    (CA.Binder(ref, ty, b.span, b.isImplicit, b.isInstance), nextEnv)
   }
 
   private def elabBinders(binders: Vector[SA.Binder], env: ResolveEnv): (Vector[CA.Binder], ResolveEnv) =
@@ -876,28 +721,25 @@ object Elaborator {
       case c: SurfaceAst.Command.Decl.InductiveDecl =>
         val name = env.qualify(c.header.name)
         val nameText = globalName(name)
-        c.ctors.foreach { ctor =>
-          checkConstructorParamDiscipline(c.header, ctor, globalName(name :+ ctor.name))
-        }
+        rejectInstanceFamilyParams(nameText, c.header.params)
         val headerEnv = env.enterLocalScope
         val (params, envWithParams) = elabBinders(c.header.params, headerEnv)
         val (indices, envWithIndices) = elabBinders(c.header.indices, envWithParams)
         val resultTy = elabType(c.header.resultTy, envWithIndices)
         val header = CA.InductiveHeader(nameText, params, indices, resultTy, c.span)
 
-        // Constructors may refer to the inductive head, but not to sibling constructors yet.
+        // Constructors may refer to inductive parameters and the inductive head, but not to sibling constructors yet.
         val ctorBaseEnv = env.addGlobal(name)
+        val ctorParamEnv = envWithParams.copy(root = ctorBaseEnv.root)
         val ctorNames = c.ctors.map(ctor => name :+ ctor.name)
         val ctors =
           c.ctors.zip(ctorNames).map { case (ctor, ctorName) =>
-            val (erasedBinders, envWithErased) = elabBinders(ctor.erasedBinders, ctorBaseEnv.enterLocalScope)
-            val (fields, envWithFields) = elabBinders(ctor.fields, envWithErased)
+            val (binders, envWithBinders) = elabBinders(ctor.binders, ctorParamEnv)
             CA.ConstructorDecl(
               canonicalName = globalName(ctorName),
               shortName = ctor.name,
-              erasedBinders = erasedBinders,
-              fields = fields,
-              resultTy = elabType(ctor.resultTy, envWithFields),
+              binders = binders,
+              resultTy = elabType(ctor.resultTy, envWithBinders),
               span = ctor.span
             )
           }
@@ -905,6 +747,16 @@ object Elaborator {
           cur.addGlobal(ctorName)
         }
         (CA.Decl.InductiveDecl(header, ctors, c.isStruct, c.span), nextEnv)
+    }
+
+  private def rejectInstanceFamilyParams(inductiveName: String, params: Vector[SA.Binder]): Unit =
+    params.find(_.isInstance).foreach { binder =>
+      throw InvalidInductiveParam(
+        inductiveName,
+        binder.name,
+        "family parameters may be explicit or implicit, but not instance binders",
+        Some(binder.span)
+      )
     }
 
   private def elabCommands(commands: Vector[SA.Command], env: ResolveEnv): (Vector[CA.Decl], ResolveEnv) = {

@@ -28,7 +28,11 @@ object ValueEquivalence {
     case class RelatedPis(vars: Vector[Value], out1: Value, out2: Value)
 
     def relatePis(pi1: VPi, pi2: VPi): Option[RelatedPis] = {
-      if (pi1.binders.zip(pi2.binders).exists { case (b1, b2) => b1.isInstance != b2.isInstance })
+      if (
+        pi1.binders.zip(pi2.binders).exists { case (b1, b2) =>
+          b1.isInstance != b2.isInstance || b1.isImplicit != b2.isImplicit
+        }
+      )
         return None
 
       val nextEnv1 = BinderOps.freshen(pi1)
@@ -139,17 +143,48 @@ object ValueEquivalence {
         !start.subst.contains(id) && solution.synDeps.nonEmpty && solution.synDeps.max > watermark
       }
 
+    private def freshBinderValue(binder: VBinder, tpe: Value): Value = {
+      val fresh = FreshVar.freshVar(binder.name, tpe)
+      tpe match {
+        case LevelTpe => Level.mk(fresh.id)
+        case _        => fresh: Value
+      }
+    }
+
     private def tryUnifyPis(pi1: VPi, pi2: VPi, eqStore: EqStore): Either[(Value, Value), PiUnification] = {
+      if (
+        pi1.binders.length != pi2.binders.length ||
+        pi1.binders.zip(pi2.binders).exists { case (b1, b2) =>
+          b1.isInstance != b2.isInstance || b1.isImplicit != b2.isImplicit
+        }
+      )
+        return Left((pi1, pi2))
+
       val watermark = FreshVar.currentId
-      DefEq.relatePis(pi1, pi2) match {
-        case None => Left((pi1, pi2))
-        case Some(related) =>
-          tryUnify(related.out1, related.out2, eqStore) match {
-            case Right(nextEqStore) =>
-              if (newSolutionDependsOnFreshVar(eqStore, nextEqStore, watermark)) Left((pi1, pi2))
-              else Right(PiUnification(nextEqStore, related.vars, watermark))
-            case Left(failed) => Left(failed)
-          }
+      var curStore = eqStore
+      var env1 = pi1.env
+      var env2 = pi2.env
+      val sharedVars = Vector.newBuilder[Value]
+
+      pi1.binders.zip(pi2.binders).foreach { case (binder1, binder2) =>
+        val ty1 = ValueOps.materialize(Interpreter.evalTypeTerm(binder1.ty, env1), curStore)
+        val ty2 = ValueOps.materialize(Interpreter.evalTypeTerm(binder2.ty, env2), curStore)
+        tryUnify(ty1, ty2, curStore) match {
+          case Right(nextStore) => curStore = nextStore
+          case Left(failed)     => return Left(failed)
+        }
+
+        val shared = freshBinderValue(binder1, ValueOps.materialize(ty1, curStore))
+        env1 = BinderOps.bindValue(env1, binder1, shared)
+        env2 = BinderOps.bindValue(env2, binder2, shared)
+        sharedVars += shared
+      }
+
+      tryUnify(pi1.codomain(env1), pi2.codomain(env2), curStore) match {
+        case Right(nextEqStore) =>
+          if (newSolutionDependsOnFreshVar(eqStore, nextEqStore, watermark)) Left((pi1, pi2))
+          else Right(PiUnification(nextEqStore, sharedVars.result(), watermark))
+        case Left(failed) => Left(failed)
       }
     }
 
@@ -181,6 +216,15 @@ object ValueEquivalence {
           val other = Level.addOffset(l2, -k)
           Some(meta.addLink(varId, other))
         } else None
+      } else if (l1.atoms.nonEmpty && l2.atoms.isEmpty && l1.c <= l2.c) {
+        var cur = meta
+        val iter = l1.atoms.iterator
+        while (iter.hasNext) {
+          val (varId, k) = iter.next()
+          if (!cur.isRefinable(varId) || k > l2.c) return None
+          cur = cur.addLink(varId, Level.const(l2.c - k))
+        }
+        Some(cur)
       } else None
     }
 
@@ -198,7 +242,7 @@ object ValueEquivalence {
 
     private def tryLinkVar(v: Var, other: Value, meta: EqStore): Result = {
       val m1 =
-        if (TypeChecker.sortLeq(other.tpe, v.tpe)) meta
+        if (!v.tpe.synDeps.intersects(meta.refinable) && TypeChecker.sortLeq(other.tpe, v.tpe)) meta
         else
           tryUnify(v.tpe, other.tpe, meta) match {
             case Left(failed) => return Left(failed)
@@ -210,7 +254,8 @@ object ValueEquivalence {
 
     /**
      * This specifically handles wildcard vars during pattern matching. The problem is that wildcard vars never actually
-     * get stored in Env[Value], so they can't be properly quoted. This forces us to prefer the other var as the representative
+     * get stored in Env[Value], so they can't be properly quoted. This forces us to prefer the other var as the
+     * representative
      */
     private def tryLinkVarToPreferredRepresentative(v1: Var, v2: Var, meta: EqStore): Result = {
       val v1Anonymous = v1.name == "_"
@@ -228,7 +273,9 @@ object ValueEquivalence {
       val a = ValueOps.materialize(v1, meta)
       val b = ValueOps.materialize(v2, meta)
 
-      if (DefEq.defEq(a, b)(propIrrelevant = true)) return Right(meta)
+      val canUseProofIrrelevance =
+        !a.synDeps.intersects(meta.refinable) && !b.synDeps.intersects(meta.refinable)
+      if (DefEq.defEq(a, b)(propIrrelevant = canUseProofIrrelevance)) return Right(meta)
 
       (a, b) match {
         case (p1: VPi, p2: VPi) if p1.binders.length == p2.binders.length =>
@@ -268,6 +315,12 @@ object ValueEquivalence {
 
         case (v1: NeutralThunk, v2: NeutralThunk) if v1.id.nodeId == v2.id.nodeId =>
           tryUnifyNeutralThunks(v1, v2, meta)
+
+        case (l1: Level, l2: Level) =>
+          unifyLevels(l1, l2, meta)
+            .orElse(unifyLevels(l2, l1, meta))
+            .map(Right(_))
+            .getOrElse(Left((l1, l2)))
 
         case (s1: VSort, s2: VSort) => tryUnifySorts(s1, s2, meta)
 

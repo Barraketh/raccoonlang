@@ -6,10 +6,8 @@ import com.raccoonlang.Value._
 class ValueEquivalenceTests extends munit.FunSuite {
   private val span = Span(0, 0)
   private val typeRef: ElabAst.TypeTerm = ETerm.GlobalRef("Type", span)
-  private val binderType: ElabAst.BinderType =
-    ElabAst.BinderType.TypePattern(ElabAst.TypePattern.Type(typeRef), span)
   private val binderRef = CoreAst.LocalRef(0, "x")
-  private val binder = VBinder(binderRef, binderType, typeRef, Vector.empty)
+  private val binder = VBinder(binderRef, typeRef)
   private val env = Env.empty[Value].putGlobal("Type", TypeTpe)
   private val typeToTypeClassifier = VSort(Level.succ(Level.one))
 

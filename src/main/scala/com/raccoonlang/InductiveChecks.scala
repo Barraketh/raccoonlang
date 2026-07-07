@@ -150,6 +150,12 @@ object InductiveChecks {
     positive.result()
   }
 
+  private def constructorFamilyParams(header: InductiveHeader): Vector[Binder] =
+    header.params.map(_.copy(isImplicit = true, isInstance = false))
+
+  private def constructorBinders(header: InductiveHeader, ctor: ConstructorDecl): Vector[Binder] =
+    constructorFamilyParams(header) ++ ctor.binders
+
   private def installInductive(
       decl: Decl.InductiveDecl,
       baseContext: TypingContext,
@@ -158,24 +164,34 @@ object InductiveChecks {
     val contextWithInductive = baseContext.putGlobal(decl.header.name, inductiveHead)
 
     decl.ctors.foldLeft(contextWithInductive) { case (curContext, ctor) =>
-      val allBinders = ctor.erasedBinders ++ ctor.fields
+      val allBinders = constructorBinders(decl.header, ctor)
       val fullTypeTerm =
         if (allBinders.isEmpty) ctor.resultTy
         else Term.Pi(allBinders, ctor.resultTy, ctor.span)
 
       val fullType = TypeChecker.getType(fullTypeTerm, curContext)
-      val erasedFamilyArgIndexes = ctor.erasedBinders.map { binder =>
-        val idx = decl.header.params.indexWhere(_.name == binder.name)
-        if (idx < 0) throw InvalidErasedConstructorBinder(ctor.canonicalName, binder.name, "expected inductive param")
-        idx
-      }
-
       curContext.putGlobal(
         ctor.canonicalName,
-        ConstructorHead(ctor.canonicalName, erasedFamilyArgIndexes, allBinders.length, fullType)
+        ConstructorHead(ctor.canonicalName, decl.header.params.length, allBinders.length, fullType)
       )
     }
   }
+
+  private def checkConstructorParamDiscipline(
+      header: InductiveHeader,
+      ctor: ConstructorDecl,
+      envWithBinders: Env[Value],
+      outputArgs: Vector[Value]
+  ): Unit =
+    header.params.zipWithIndex.foreach { case (param, idx) =>
+      val paramValue = envWithBinders(param.localRef)
+      val outputArg = outputArgs(idx)
+      val error =
+        NonUniformInductiveParam(header.name, ctor.canonicalName, param.name, outputArg, Some(ctor.resultTy.span))
+
+      if (!ValueEquivalence.defEq(outputArg, paramValue, propIrrelevant = true))
+        throw error
+    }
 
   def evalInductiveDecl(decl: Decl.InductiveDecl, worlds: Worlds): Worlds = {
     // All direct Value matches in this function and its private helpers
@@ -183,6 +199,7 @@ object InductiveChecks {
 
     val header = decl.header
     val name = header.name
+    rejectInstanceFamilyParams(header)
     val ty = {
       if (header.binders.isEmpty) decl.header.resultTy
       else Term.Pi(header.binders, decl.header.resultTy, decl.header.span)
@@ -222,7 +239,7 @@ object InductiveChecks {
     if (decl.isStruct) {
       if (decl.ctors.length != 1)
         throw InvalidStruct(name, s"has ${decl.ctors.length} constructors (expected exactly 1)", Some(header.span))
-      if (decl.ctors.head.fields.exists(_.name == "_"))
+      if (decl.ctors.head.binders.exists(_.name == "_"))
         throw InvalidStruct(name, "constructor has anonymous '_' fields", Some(header.span))
 
     }
@@ -236,18 +253,15 @@ object InductiveChecks {
     var positiveArgs = positiveArgIndexes(familyArgs, familyArgs.map(_.tpe))
 
     decl.ctors.foreach { ctor =>
-      val checkedErased = BinderOps.toVBinders(ctor.erasedBinders, checkContextWithInductive)
-      val erasedBinders = checkedErased.vBinders
-      val contextWithErased = checkedErased.context
-      val envWithErased = contextWithErased.env
-      val checkedFields = BinderOps.toVBinders(ctor.fields, contextWithErased)
-      val fieldBinders = checkedFields.vBinders
-      val contextWithFields = checkedFields.context
-      val fieldsEnv = contextWithFields.env
-      val fieldVars = fieldBinders.map(binder => fieldsEnv(binder.localRef))
-      val fieldTypes = fieldVars.map(_.tpe)
+      val allConstructorBinders = constructorBinders(header, ctor)
+      val checkedBinders = BinderOps.toVBinders(allConstructorBinders, checkContextWithInductive)
+      val binders = checkedBinders.vBinders
+      val contextWithBinders = checkedBinders.context
+      val envWithBinders = contextWithBinders.env
+      val binderVars = binders.map(binder => envWithBinders(binder.localRef))
+      val ownBinderVars = binderVars.drop(header.params.length)
 
-      val outputTpe = TypeChecker.getType(ctor.resultTy, contextWithFields)
+      val outputTpe = TypeChecker.getType(ctor.resultTy, contextWithBinders)
 
       // 4) Constructor result must be the inductive family head applied to the full family arity.
       val resultErr = InvalidConstructorResult(ctor.canonicalName, name, outputTpe, Some(ctor.span))
@@ -258,29 +272,13 @@ object InductiveChecks {
 
       if (outputArgs.length != header.arity) throw resultErr
 
-      // Check param uniformity
-      header.params.zip(outputArgs).foreach { case (param, outputArg) =>
-        val erasedWitnesses = erasedBinders.collect {
-          case binder if binder.name == param.name => envWithErased(binder.localRef)
-        }
-        val captureWitnesses = fieldBinders.flatMap { binder =>
-          binder.captures.collect {
-            case capture if capture.localRef.name == param.name => fieldsEnv(capture.localRef)
-          }
-        }
-        val witnesses = erasedWitnesses ++ captureWitnesses
-        val error =
-          NonUniformInductiveParam(header.name, ctor.canonicalName, param.name, outputArg, Some(ctor.resultTy.span))
-
-        if (witnesses.length != 1) throw error
-
-        if (!ValueEquivalence.defEq(outputArg, witnesses.head, propIrrelevant = true))
-          throw error
-      }
+      checkConstructorParamDiscipline(header, ctor, envWithBinders, outputArgs)
 
       val constructorUniverse = TypeChecker.getUniverse(outputTpe)
+      val constructorArgs = ctor.binders.zip(ownBinderVars)
+      val constructorArgTypes = constructorArgs.map(_._2.tpe)
 
-      ctor.fields.zip(fieldVars).foreach { case (binder, field) =>
+      constructorArgs.foreach { case (binder, field) =>
         // 2) Universe bound: skip for Prop families; enforce for Sort families
         constructorUniverse match {
           case PropTpe => // no universe restriction
@@ -314,7 +312,7 @@ object InductiveChecks {
           )
       }
 
-      positiveArgs = positiveArgs & positiveArgIndexes(outputArgs, fieldTypes)
+      positiveArgs = positiveArgs & positiveArgIndexes(outputArgs, constructorArgTypes)
 
     }
 
@@ -329,4 +327,14 @@ object InductiveChecks {
 
     Worlds(nextCheckContext, nextRunContext)
   }
+
+  private def rejectInstanceFamilyParams(header: InductiveHeader): Unit =
+    header.params.find(_.isInstance).foreach { binder =>
+      throw InvalidInductiveParam(
+        header.name,
+        binder.name,
+        "family parameters may be explicit or implicit, but not instance binders",
+        Some(binder.span)
+      )
+    }
 }

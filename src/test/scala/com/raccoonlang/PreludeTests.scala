@@ -53,7 +53,7 @@ class PreludeTests extends munit.FunSuite {
         |def leftProof : True := And.left(andProof)
         |def rightProof : True := And.right(andProof)
         |
-        |def trueOr : Or(True, False) := Or.inl(False, True.intro)
+        |def trueOr : Or(True, False) := Or.inl(True, False, True.intro)
         |def fromOr : True := Or.elim(trueOr, True, fun (h: True): True => h, fun (h: False): True => falseElim(h, True))
         |
         |def trueIff : Iff(True, True) := Iff.intro(True, True, fun (h: True): True => h, fun (h: True): True => h)
@@ -213,8 +213,8 @@ class PreludeTests extends munit.FunSuite {
   test("Prelude Option, Sum, List, and Inhabited APIs typecheck and reduce") {
     typecheckDecls(
       """
-        |def leftSum : Sum(Nat, Bool) := Sum.inl(Bool, Nat.zero)
-        |def rightSum : Sum(Nat, Bool) := Sum.inr(Nat, Bool.true)
+        |def leftSum : Sum(Nat, Bool) := Sum.inl(Nat, Bool, Nat.zero)
+        |def rightSum : Sum(Nat, Bool) := Sum.inr(Nat, Bool, Bool.true)
         |""".stripMargin
     )
 
@@ -243,7 +243,7 @@ class PreludeTests extends munit.FunSuite {
       runProgram(
         """
           |{
-          |  Sum.elim(Sum.inr(Nat, Bool.true), Nat, fun (n: Nat): Nat => n, fun (b: Bool): Nat => Bool.cond(b, Nat, Nat.succ(Nat.zero), Nat.zero))
+          |  Sum.elim(Sum.inr(Nat, Bool, Bool.true), Nat, fun (n: Nat): Nat => n, fun (b: Bool): Nat => Bool.cond(b, Nat, Nat.succ(Nat.zero), Nat.zero))
           |}
           |""".stripMargin
       )
@@ -297,8 +297,8 @@ class PreludeTests extends munit.FunSuite {
         |def noZeroSucc (h: Eq(Nat, Nat.zero, Nat.succ(Nat.zero))): False := Nat.zeroNeSucc(Nat.zero, h)
         |def succInjects (h: Eq(Nat, Nat.succ(Nat.zero), Nat.succ(Nat.zero))): Eq(Nat, Nat.zero, Nat.zero) := Nat.succInj(h)
         |
-        |def oneLeOne : le(derive[LE(Nat)], Nat.succ(Nat.zero), Nat.succ(Nat.zero)) := Eq.refl(Bool.true)
-        |def zeroLtOne : lt(derive[LT(Nat)], Nat.zero, Nat.succ(Nat.zero)) := Eq.refl(Bool.true)
+        |def oneLeOne : Nat.le(Nat.succ(Nat.zero), Nat.succ(Nat.zero)) := Eq.refl(Bool.true)
+        |def zeroLtOne : Nat.lt(Nat.zero, Nat.succ(Nat.zero)) := Eq.refl(Bool.true)
         |""".stripMargin
     )
 

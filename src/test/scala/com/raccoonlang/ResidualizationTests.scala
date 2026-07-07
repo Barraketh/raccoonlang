@@ -25,6 +25,24 @@ class ResidualizationTests extends munit.FunSuite {
       case other                          => other
     }
 
+  private def checkLastDeclType(src: String): EA.TypeTerm =
+    LanguageParser.parseProgram(src) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        val last = core.decls.lastOption.getOrElse(fail("Program has no declarations"))
+        val worlds = core.decls.dropRight(1).foldLeft(Interpreter.initialWorlds(Prelude.test)) {
+          case (curWorlds, decl) => Interpreter.evalDecl(decl, curWorlds)
+        }
+        val ty = last match {
+          case CoreAst.Decl.AxiomDecl(_, ty, _, _)          => ty
+          case CoreAst.Decl.ConstDecl(_, _, ty, _, _, _, _) => ty
+          case other                                        => fail(s"Expected typed declaration, got $other")
+        }
+        TypeChecker.checkTypeTerm(ty, worlds.checkContext).residual
+
+      case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
+    }
+
   private def containsGlobal(term: EA.Term, name: String): Boolean =
     term match {
       case EA.Term.GlobalRef(n, _) => n == name
@@ -32,7 +50,7 @@ class ResidualizationTests extends munit.FunSuite {
       case EA.Term.App(fn, args, _) =>
         containsGlobal(fn, name) || args.exists(arg => containsGlobal(arg, name))
       case EA.Term.Pi(binders, out, _, _) =>
-        binders.exists(binder => containsGlobalBinderType(binder.ty, name)) || containsGlobal(out, name)
+        binders.exists(binder => containsGlobal(binder.ty, name)) || containsGlobal(out, name)
       case EA.Term.Body(lets, res, _) =>
         lets.exists(l => l.ty.exists(ty => containsGlobal(ty, name)) || containsGlobal(l.value, name)) ||
         containsGlobal(res, name)
@@ -43,20 +61,6 @@ class ResidualizationTests extends munit.FunSuite {
         containsGlobal(scrut, name) ||
         motive.exists(ty => containsGlobal(ty, name)) ||
         cases.exists(c => containsGlobal(c.body, name))
-    }
-
-  private def containsGlobalBinderType(ty: EA.BinderType, name: String): Boolean =
-    ty match {
-      case EA.BinderType.TypePattern(tp, _)                   => containsGlobalTypePattern(tp, name)
-      case EA.BinderType.ConstrainedCapture(_, constraint, _) => containsGlobalTypePattern(constraint, name)
-    }
-
-  private def containsGlobalTypePattern(tp: EA.TypePattern, name: String): Boolean =
-    tp match {
-      case EA.TypePattern.Type(term) => containsGlobal(term, name)
-      case EA.TypePattern.App(fn, args, _) =>
-        containsGlobal(fn, name) || args.exists(arg => containsGlobalTypePattern(arg, name))
-      case EA.TypePattern.Capture(_, _) => false
     }
 
   private val natDecls =
@@ -124,7 +128,7 @@ class ResidualizationTests extends munit.FunSuite {
       natDecls +
         """
           |struct Pair (A: Type)(B: Type) : Type
-          | | mk {A: Type}{B: Type} (fst: A)(snd: B) : Pair(A, B)
+          | | mk (fst: A)(snd: B) : Pair(A, B)
           |
           |{
           |  let p := Pair.mk(Nat, Nat, Nat.zero, Nat.succ(Nat.zero))
@@ -133,7 +137,15 @@ class ResidualizationTests extends munit.FunSuite {
           |""".stripMargin
 
     checkBody(p).term match {
-      case EA.Term.Body(lets, EA.Term.App(EA.Term.GlobalRef("Pair.fst", _), Vector(EA.Term.LocalRef(ref, _)), _), _) =>
+      case EA.Term.Body(
+            lets,
+            EA.Term.App(
+              EA.Term.GlobalRef("Pair.fst", _),
+              Vector(EA.Term.GlobalRef("Nat", _), EA.Term.GlobalRef("Nat", _), EA.Term.LocalRef(ref, _)),
+              _
+            ),
+            _
+          ) =>
         assertEquals(lets.length, 1)
         assertEquals(ref, lets.head.localRef)
         assert(containsGlobal(lets.head.value, "Pair.mk"))
@@ -225,136 +237,112 @@ class ResidualizationTests extends munit.FunSuite {
 
     resultTerm(checkBody(p).term) match {
       case pi: EA.Term.Pi =>
-        pi.binders.head.ty match {
-          case EA.BinderType.TypePattern(pattern, _) =>
-            assertEquals(pattern.toString, "TyId(Nat)")
-          case other => fail(s"Expected Pi binder annotation to preserve TyId(Nat), got $other")
-        }
+        assertEquals(pi.binders.head.ty.toString, "TyId(Nat)")
       case other => fail(s"Expected residualized Pi, got $other")
     }
   }
 
-  test("Pi binder residual preserves captures under reducible type-pattern heads") {
+  test("Pi binder residual preserves implicit binders as regular Elab binders") {
     val p =
       """
-        |def IdT (A: Type): Type := A
-        |
-        |{
-        |  (_: IdT($A)) -> A
-        |}
+        |axiom f : {A: Type} -> A
         |""".stripMargin
 
-    resultTerm(checkBody(p).term) match {
+    checkLastDeclType(p) match {
       case pi: EA.Term.Pi =>
         pi.binders.head.ty match {
-          case EA.BinderType.TypePattern(
-                EA.TypePattern.App(EA.Term.GlobalRef("IdT", _), Vector(EA.TypePattern.Capture(aRef, _)), _),
-                _
-              ) =>
-            pi.out match {
-              case EA.Term.LocalRef(outRef, _) => assertEquals(outRef, aRef)
-              case other                       => fail(s"Expected codomain to reuse captured A, got $other")
-            }
-          case other => fail(s"Expected IdT($${A}) binder pattern, got $other")
+          case EA.Term.GlobalRef("Type", _) =>
+          case other                        => fail(s"Expected Type binder annotation, got $other")
+        }
+        pi.out match {
+          case EA.Term.LocalRef(outRef, _) => assertEquals(outRef, pi.binders.head.localRef)
+          case other                       => fail(s"Expected codomain to reuse implicit A, got $other")
         }
       case other => fail(s"Expected residualized Pi, got $other")
     }
   }
 
-  test("Pi binder residual preserves type-pattern captures") {
+  test("Pi binder residual preserves implicit dependent binders") {
     val p =
       natDecls +
         """
-          |inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(u)
-          | | nil {A: Sort($u)} : Vec(A, Nat.zero)
-          | | cons {A: Sort($u)} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
+          |inductive Vec (A: Type) indices (n: Nat) : Type
+          | | nil : Vec(A, Nat.zero)
+          | | cons {n: Nat} (tail: Vec(A, n)) (head: A) : Vec(A, Nat.succ(n))
           |
-          |{
-          |  (v: Vec(Nat, $n)) -> Vec(Nat, n)
-          |}
+          |axiom f : {n: Nat} -> (v: Vec(Nat, n)) -> Vec(Nat, n)
           |""".stripMargin
 
-    resultTerm(checkBody(p).term) match {
+    checkLastDeclType(p) match {
       case pi: EA.Term.Pi =>
-        assertEquals(pi.binders.length, 1)
+        assertEquals(pi.binders.length, 2)
+        val nRef = pi.binders.head.localRef
         pi.binders.head.ty match {
-          case EA.BinderType.TypePattern(
-                EA.TypePattern.App(
-                  EA.Term.GlobalRef("Vec", _),
-                  Vector(EA.TypePattern.Type(EA.Term.GlobalRef("Nat", _)), EA.TypePattern.Capture(nRef, _)),
-                  _
-                ),
+          case EA.Term.GlobalRef("Nat", _) =>
+          case other                       => fail(s"Expected Nat implicit binder, got $other")
+        }
+        pi.binders(1).ty match {
+          case EA.Term.App(
+                EA.Term.GlobalRef("Vec", _),
+                Vector(EA.Term.GlobalRef("Nat", _), EA.Term.LocalRef(argRef, _)),
                 _
               ) =>
-            pi.out match {
-              case EA.Term.App(
-                    EA.Term.GlobalRef("Vec", _),
-                    Vector(EA.Term.GlobalRef("Nat", _), EA.Term.LocalRef(outRef, _)),
-                    _
-                  ) =>
-                assertEquals(outRef, nRef)
-
-              case other => fail(s"Expected Pi codomain to reuse captured n, got $other")
-            }
-
-          case other => fail(s"Expected Vec(Nat, $${n}) binder pattern, got $other")
+            assertEquals(argRef, nRef)
+          case other => fail(s"Expected Vec(Nat, n) binder annotation, got $other")
+        }
+        pi.out match {
+          case EA.Term.App(
+                EA.Term.GlobalRef("Vec", _),
+                Vector(EA.Term.GlobalRef("Nat", _), EA.Term.LocalRef(outRef, _)),
+                _
+              ) =>
+            assertEquals(outRef, nRef)
+          case other => fail(s"Expected Pi codomain to reuse n, got $other")
         }
 
       case other => fail(s"Expected residualized Pi, got $other")
     }
   }
 
-  test("Pi binder residual preserves constrained capture binders") {
+  test("Pi binder residual preserves explicit type binders") {
     val p =
       """
-        |{
-        |  (_: $A in Type) -> A
-        |}
+        |axiom f : {A: Type} -> A
         |""".stripMargin
 
-    resultTerm(checkBody(p).term) match {
+    checkLastDeclType(p) match {
       case pi: EA.Term.Pi =>
         pi.binders.head.ty match {
-          case EA.BinderType.ConstrainedCapture(aRef, EA.TypePattern.Type(EA.Term.GlobalRef("Type", _)), _) =>
-            pi.out match {
-              case EA.Term.LocalRef(outRef, _) => assertEquals(outRef, aRef)
-              case other                       => fail(s"Expected codomain to reuse constrained capture A, got $other")
-            }
-          case other => fail(s"Expected constrained capture binder, got $other")
+          case EA.Term.GlobalRef("Type", _) =>
+          case other                        => fail(s"Expected Type binder, got $other")
+        }
+        pi.out match {
+          case EA.Term.LocalRef(outRef, _) => assertEquals(outRef, pi.binders.head.localRef)
+          case other                       => fail(s"Expected codomain to reuse A, got $other")
         }
 
       case other => fail(s"Expected residualized Pi, got $other")
     }
   }
 
-  test("Pi binder residual preserves level captures") {
+  test("Pi binder residual preserves implicit level binders") {
     val p =
       """
-        |{
-        |  (_: Sort(Level.succ($u))) -> Sort(u)
-        |}
+        |axiom f : {u: Level} -> (_: Sort(Level.succ(u))) -> Sort(u)
         |""".stripMargin
 
-    resultTerm(checkBody(p).term) match {
+    checkLastDeclType(p) match {
       case pi: EA.Term.Pi =>
+        assertEquals(pi.binders.length, 2)
+        val uRef = pi.binders.head.localRef
         pi.binders.head.ty match {
-          case EA.BinderType.TypePattern(
-                EA.TypePattern.App(
-                  EA.Term.GlobalRef("Sort", _),
-                  Vector(
-                    EA.TypePattern.App(EA.Term.GlobalRef("Level.succ", _), Vector(EA.TypePattern.Capture(uRef, _)), _)
-                  ),
-                  _
-                ),
-                _
-              ) =>
-            pi.out match {
-              case EA.Term.App(EA.Term.GlobalRef("Sort", _), Vector(EA.Term.LocalRef(outRef, _)), _) =>
-                assertEquals(outRef, uRef)
-              case other => fail(s"Expected codomain to reuse captured universe level, got $other")
-            }
-
-          case other => fail(s"Expected Sort(Level.succ($${u})) binder pattern, got $other")
+          case EA.Term.GlobalRef("Level", _) =>
+          case other                         => fail(s"Expected Level binder, got $other")
+        }
+        pi.out match {
+          case EA.Term.App(EA.Term.GlobalRef("Sort", _), Vector(EA.Term.LocalRef(outRef, _)), _) =>
+            assertEquals(outRef, uRef)
+          case other => fail(s"Expected codomain to reuse universe level, got $other")
         }
 
       case other => fail(s"Expected residualized Pi, got $other")

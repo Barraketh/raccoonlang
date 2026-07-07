@@ -2,6 +2,7 @@ package com.raccoonlang
 
 import com.raccoonlang.TypeChecker._
 import com.raccoonlang.Value._
+import com.raccoonlang.ValueQuote.{quoteContext, quoteType}
 import com.raccoonlang.telescope.BinderOps
 import com.raccoonlang.{CoreAst => CA, ElabAst => EA}
 
@@ -45,8 +46,9 @@ object MatchChecker {
       env(ctorName) match {
         case h: ConstructorHead =>
           val (freshArgs, resultTy) = freshCtorArgsAndResult(h)
-          val fieldArgs = freshArgs.drop(h.numErased)
-          val ctorValue = VCtor(h, fieldArgs, resultTy)
+          val storedArgs = Value.constructorStoredArgs(h, freshArgs)
+          val patternArgs = Value.constructorPatternArgs(h, storedArgs)
+          val ctorValue = VCtor(h, storedArgs, resultTy)
           val valueRefinable = rootRefinable(scrut) ++ ctorValue.synDeps
           val typeRefinable = scrutTpe.synDeps ++ ctorValue.synDeps
 
@@ -56,7 +58,7 @@ object MatchChecker {
 
           branchEqStore.map { branchStore =>
             val refinedResultTy = ValueOps.materialize(scrutTpe, branchStore)
-            ReachableCtor(ctorName, h, fieldArgs, refinedResultTy, branchStore)
+            ReachableCtor(ctorName, h, patternArgs, refinedResultTy, branchStore)
           }
 
         case _ => throw UnknownConstructor(ctorName, inductiveName)
@@ -74,8 +76,8 @@ object MatchChecker {
     val only = reachable.head
     val (args1, res1) = freshCtorArgsAndResult(only.head)
     val (args2, res2) = freshCtorArgsAndResult(only.head)
-    val fields1 = args1.drop(only.head.numErased)
-    val fields2 = args2.drop(only.head.numErased)
+    val fields1 = Value.constructorPatternArgs(only.head, Value.constructorStoredArgs(only.head, args1))
+    val fields2 = Value.constructorPatternArgs(only.head, Value.constructorStoredArgs(only.head, args2))
 
     val refinable0 = DepSet.unionAll(scrutTpe.synDeps, res1.synDeps, res2.synDeps)
 
@@ -125,7 +127,7 @@ object MatchChecker {
         case None      => curContext
       }
     }
-    val branchRes = checkTerm(br.body, branchContext)
+    val branchRes = checkTerm(br.body, expectedTy, branchContext)
     checkType(branchRes.value, expectedTy)
     EA.Case(
       br.ctorName,
@@ -135,7 +137,7 @@ object MatchChecker {
     )
   }
 
-  def checkMatch(t: CA.Term.Match, context: TypingContext): CheckedTerm = {
+  def checkMatch(t: CA.Term.Match, context: TypingContext, expectedTy: Option[Value] = None): CheckedTerm = {
     val env = context.env
     val scrutChecked = checkTerm(t.scrut, context)
     val scrut = scrutChecked.value
@@ -183,23 +185,27 @@ object MatchChecker {
     }
 
     val checkedMotive = t.motive.map(motiveSyntax => checkTypeTerm(motiveSyntax, context))
+    val expectedMotive = expectedTy.map(expected => quoteType(expected, quoteContext(context.env), t.span))
     val motiveTy = checkedMotive match {
       case Some(motive) => motive.value
-      case None         => inferMotiveFromReachable(reachableByType)
+      case None if expectedTy.nonEmpty =>
+        expectedTy.get
+      case None => inferMotiveFromReachable(reachableByType)
     }
+    expectedTy.foreach(expected => checkFits(motiveTy, expected))
 
     checkPropElimination(inductiveName, scrutTpe, motiveTy, reachableByType, t.span)
 
     var checkedByCtor = Map.empty[String, EA.Case]
 
     scrut match {
-      case VCtor(h, fields, _) =>
+      case VCtor(h, storedArgs, _) =>
         cases.find(_.ctorName != h.name).foreach { c =>
           throw UnreachableCase(c.ctorName, Some(c.span))
         }
 
         val br = cases.find(_.ctorName == h.name).getOrElse(throw MissingCase(h.name))
-        checkedByCtor += h.name -> checkBranch(br, fields, context, motiveTy)
+        checkedByCtor += h.name -> checkBranch(br, Value.constructorPatternArgs(h, storedArgs), context, motiveTy)
 
       case _ =>
         val reachableMap = reachableByType.map(info => info.name -> info).toMap
@@ -228,11 +234,15 @@ object MatchChecker {
     }
     val checkedMatch = EA.Term.Match(
       scrutChecked.residual,
-      checkedMotive.map(_.residual),
+      checkedMotive.map(_.residual).orElse(expectedMotive),
       checkedCases,
       t.span
     )
-    CheckedTerm(Interpreter.evalTerm(checkedMatch, env), checkedMatch)
+    val value = expectedTy match {
+      case Some(expected) => Value.ascribe(Interpreter.evalTerm(checkedMatch, env), expected)
+      case None           => Interpreter.evalTerm(checkedMatch, env)
+    }
+    CheckedTerm(value, checkedMatch)
   }
 
 }

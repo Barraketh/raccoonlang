@@ -43,7 +43,7 @@ class TypeClassTests extends munit.FunSuite {
       | | false : Bool
       |
       |struct DecEq (A: Type) : Type
-      | | mk {A: Type} (ok: Bool) : DecEq(A)
+      | | mk (ok: Bool) : DecEq(A)
       |
       |""".stripMargin
 
@@ -125,11 +125,11 @@ class TypeClassTests extends munit.FunSuite {
       prelude +
         """
           |inductive List (A: Type) : Type
-          | | nil {A: Type} : List(A)
+          | | nil : List(A)
           |
           |def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |
-          |def instance listEq [ea: DecEq($A)]: DecEq(List(A)) := DecEq.mk(List(A), Bool.true)
+          |def instance listEq {A: Type} [ea: DecEq(A)]: DecEq(List(A)) := DecEq.mk(List(A), Bool.true)
           |
           |{
           |  derive[DecEq(List(Nat))]
@@ -158,11 +158,11 @@ class TypeClassTests extends munit.FunSuite {
       prelude +
         """
           |struct Wrap (A: Type)(eqA: DecEq(A)) : Type
-          | | mk {A: Type}{eqA: DecEq(A)} (ok: Bool) : Wrap(A, eqA)
+          | | mk (ok: Bool) : Wrap(A, eqA)
           |
           |def natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |
-          |def instance wrap [eqA: DecEq($A)]: Wrap(A, eqA) := Wrap.mk(A, eqA, Bool.true)
+          |def instance wrap {A: Type} [eqA: DecEq(A)]: Wrap(A, eqA) := Wrap.mk(A, eqA, Bool.true)
           |
           |{
           |  derive[Wrap(Nat, natEq)].ok
@@ -178,18 +178,18 @@ class TypeClassTests extends munit.FunSuite {
         |inductive BenchUnit : Type
         | | unit : BenchUnit
         |
-        |struct Dep (A: Sort($u0)) : Sort(Level.max(Level.one, u0))
-        | | mk {A: Sort($u0)} (val: BenchUnit) : Dep(A)
+        |struct Dep {u0: Level}(A: Sort(u0)) : Sort(Level.max(Level.one, u0))
+        | | mk (val: BenchUnit) : Dep(A)
         |
-        |struct TC (A: Sort($u0)) : Sort(Level.max(Level.one, u0))
-        | | mk {A: Sort($u0)} (val: BenchUnit) : TC(A)
+        |struct TC {u0: Level}(A: Sort(u0)) : Sort(Level.max(Level.one, u0))
+        | | mk (val: BenchUnit) : TC(A)
         |
         |inductive Target : Type
         | | mk : Target
         |
         |def instance depTarget : Dep(Target) := Dep.mk(Target, BenchUnit.unit)
         |
-        |def instance tcInst [dep: Dep($A)]: TC(A) := TC.mk(A, BenchUnit.unit)
+        |def instance tcInst {u0: Level}{A: Sort(u0)} [dep: Dep(A)]: TC(A) := TC.mk(A, BenchUnit.unit)
         |
         |{
         |  derive[TC(Target)]
@@ -238,7 +238,7 @@ class TypeClassTests extends munit.FunSuite {
       prelude +
         """
           |struct Box (A: Type) : Type
-          | | mk {A: Type} : Box(A)
+          | | mk : Box(A)
           |
           |def instance natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |
@@ -344,12 +344,12 @@ class TypeClassTests extends munit.FunSuite {
       prelude +
         """
           |struct TC (A: Type) : Type
-          | | mk {A: Type} (ok: Bool) : TC(A)
+          | | mk (ok: Bool) : TC(A)
           |
           |struct Need (A: Type) : Type
-          | | mk {A: Type} : Need(A)
+          | | mk : Need(A)
           |
-          |def instance bad [need: Need($A)]: TC(A) := TC.mk(A, Bool.false)
+          |def instance bad {A: Type} [need: Need(A)]: TC(A) := TC.mk(A, Bool.false)
           |def instance good : TC(Nat) := TC.mk(Nat, Bool.true)
           |
           |{
@@ -365,13 +365,13 @@ class TypeClassTests extends munit.FunSuite {
       prelude +
         """
           |struct Need (A: Sort(Level.one)) : Sort(Level.one)
-          | | mk {A: Sort(Level.one)} : Need(A)
+          | | mk : Need(A)
           |
           |struct TC (A: Sort(Level.one)) : Sort(Level.one)
-          | | mk {A: Sort(Level.one)} (ok: Bool) : TC(A)
+          | | mk (ok: Bool) : TC(A)
           |
           |def instance needNat : Need(Nat) := Need.mk(Nat)
-          |def instance high [need: Need($A)]: TC(A) := TC.mk(A, Bool.true)
+          |def instance high {A: Sort(Level.one)} [need: Need(A)]: TC(A) := TC.mk(A, Bool.true)
           |
           |{
           |  derive[TC(Nat)].ok

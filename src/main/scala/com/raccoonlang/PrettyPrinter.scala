@@ -35,39 +35,11 @@ object PrettyPrinter {
     }
 
     def printPiBinder(b: CoreAst.Binder): String =
-      b.ty match {
-        case CoreAst.BinderType.TypePattern(CoreAst.TypePattern.Type(term), _) if b.name == "_" && !b.isInstance =>
-          ptAtom(term)
-        case _ => printBinder(b)
-      }
+      if (b.name == "_" && !b.isInstance && !b.isImplicit) ptAtom(b.ty)
+      else printBinder(b)
 
     pt(tt)
   }
-
-  private def printTypePattern(tp: CoreAst.TypePattern): String = {
-    def pt(t: CoreAst.TypePattern): String = t match {
-      case CoreAst.TypePattern.Type(term) => printTypeTerm(term)
-      case CoreAst.TypePattern.App(fn, args, _) =>
-        val headStr = printRef(fn)
-        val argsStr = args.map(ptAtom).mkString(", ")
-        s"$headStr($argsStr)"
-      case CoreAst.TypePattern.Capture(ref, _) => s"$$${ref.name}"
-    }
-
-    def ptAtom(t: CoreAst.TypePattern): String = t match {
-      case CoreAst.TypePattern.Type(term: CoreAst.Term.Pi) => s"(${printTypeTerm(term)})"
-      case _                                               => pt(t)
-    }
-
-    pt(tp)
-  }
-
-  private def printBinderType(bt: CoreAst.BinderType): String =
-    bt match {
-      case CoreAst.BinderType.TypePattern(tp, _) => printTypePattern(tp)
-      case CoreAst.BinderType.ConstrainedCapture(ref, constraint, _) =>
-        s"$$${ref.name} in ${printTypePattern(constraint)}"
-    }
 
   private def printDecreaseSpec(spec: CoreAst.DecreaseSpec): String =
     spec match {
@@ -94,8 +66,8 @@ object PrettyPrinter {
   }
 
   def printBinder(b: CoreAst.Binder): String = {
-    val body = s"${b.name}: ${printBinderType(b.ty)}"
-    if (b.isInstance) s"[$body]" else s"($body)"
+    val body = s"${b.name}: ${printTypeTerm(b.ty)}"
+    if (b.isInstance) s"[$body]" else if (b.isImplicit) s"{$body}" else s"($body)"
   }
 
   private def printBinders(binders: Vector[CoreAst.Binder]): String =
@@ -146,8 +118,6 @@ object PrettyPrinter {
 
   def printTerm(t: CoreAst.Ast): String = t match {
     case term: CoreAst.Term             => printCoreTerm(term)
-    case pattern: CoreAst.TypePattern   => printTypePattern(pattern)
-    case binderType: CoreAst.BinderType => printBinderType(binderType)
     case decrease: CoreAst.DecreaseSpec => printDecreaseSpec(decrease)
   }
 
@@ -193,42 +163,14 @@ object PrettyPrinter {
     }
 
     def printElabPiBinder(b: ElabAst.Binder): String =
-      b.ty match {
-        case ElabAst.BinderType.TypePattern(ElabAst.TypePattern.Type(term), _) if b.name == "_" && !b.isInstance =>
-          ptAtom(term)
-        case _ => printElabBinder(b)
-      }
+      if (b.name == "_" && !b.isInstance) ptAtom(b.ty)
+      else printElabBinder(b)
 
     pt(tt)
   }
 
-  private def printElabTypePattern(tp: ElabAst.TypePattern): String = {
-    def pt(t: ElabAst.TypePattern): String = t match {
-      case ElabAst.TypePattern.Type(term) => printElabTypeTerm(term)
-      case ElabAst.TypePattern.App(fn, args, _) =>
-        val headStr = printElabRef(fn)
-        val argsStr = args.map(ptAtom).mkString(", ")
-        s"$headStr($argsStr)"
-      case ElabAst.TypePattern.Capture(ref, _) => s"$$${ref.name}"
-    }
-
-    def ptAtom(t: ElabAst.TypePattern): String = t match {
-      case ElabAst.TypePattern.Type(term: ElabAst.Term.Pi) => s"(${printElabTypeTerm(term)})"
-      case _                                               => pt(t)
-    }
-
-    pt(tp)
-  }
-
-  private def printElabBinderType(bt: ElabAst.BinderType): String =
-    bt match {
-      case ElabAst.BinderType.TypePattern(tp, _) => printElabTypePattern(tp)
-      case ElabAst.BinderType.ConstrainedCapture(ref, constraint, _) =>
-        s"$$${ref.name} in ${printElabTypePattern(constraint)}"
-    }
-
   def printElabBinder(b: ElabAst.Binder): String = {
-    val body = s"${b.name}: ${printElabBinderType(b.ty)}"
+    val body = s"${b.name}: ${printElabTypeTerm(b.ty)}"
     if (b.isInstance) s"(instance $body)" else s"($body)"
   }
 
@@ -267,9 +209,7 @@ object PrettyPrinter {
   }
 
   def printElabTerm(t: ElabAst.Ast): String = t match {
-    case term: ElabAst.Term             => printElabTerm0(term)
-    case pattern: ElabAst.TypePattern   => printElabTypePattern(pattern)
-    case binderType: ElabAst.BinderType => printElabBinderType(binderType)
+    case term: ElabAst.Term => printElabTerm0(term)
   }
 
   private def printElabCase(c: ElabAst.Case): String = {
@@ -293,10 +233,11 @@ object PrettyPrinter {
     case pi: Value.VPi                              => "VPi"
     case Value.VConst(name, _, _)                   => name
     case Value.ConstructorHead(name, _, _, _)       => name
-    case Value.VCtor(head, fields, _) =>
+    case Value.VCtor(head, storedArgs, _) =>
       val headStr = print(head)
-      if (fields.isEmpty) headStr
-      else s"$headStr(${fields.map(print).mkString(", ")})"
+      val patternArgs = Value.constructorPatternArgs(head, storedArgs)
+      if (patternArgs.isEmpty) headStr
+      else s"$headStr(${patternArgs.map(print).mkString(", ")})"
     case v: Value.VApp         => printApp(v.head, v.args)
     case v: Value.VLam         => s"func#${v.id}"
     case v: Value.Var          => s"${v.name}#${v.id}"

@@ -69,8 +69,8 @@ class MatchRefinementTests extends munit.FunSuite {
         | | succ (p: Nat) : Nat
         |
         |inductive Vec (u: Level)(A: Sort(u)) indices (n: Nat) : Sort(Level.max(Level.one, u))
-        | | nil {u: Level}{A: Sort(u)} : Vec(u, A, Nat.zero)
-        | | cons {u: Level}{A: Sort(u)} (n: Nat) (xs: Vec(u, A, n)) (x: A) : Vec(u, A, Nat.succ(n))
+        | | nil : Vec(u, A, Nat.zero)
+        | | cons (n: Nat) (xs: Vec(u, A, n)) (x: A) : Vec(u, A, Nat.succ(n))
         |
         |def keepVec (n: Nat)(v: Vec(Level.one, Nat, n)): Vec(Level.one, Nat, n) := {
         |  match v returning Vec(Level.one, Nat, n) with
@@ -83,7 +83,7 @@ class MatchRefinementTests extends munit.FunSuite {
     typecheckDecls(p)
   }
 
-  test("match refinement negative: non-param erased binders are rejected") {
+  test("match refinement negative: non-family hidden binder does not refine the requested index") {
     val p =
       """
         |inductive Nat : Type
@@ -91,18 +91,18 @@ class MatchRefinementTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Vec (A: Type) indices (n: Nat) : Type
-        | | nil {A: Type} : Vec(A, Nat.zero)
-        | | cons {A: Type} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
+        | | nil : Vec(A, Nat.zero)
+        | | cons {n: Nat} (tail: Vec(A, n)) (head: A) : Vec(A, Nat.succ(n))
         |
-        |inductive Hidden (n: Nat) : Type
+        |inductive Hidden indices (n: Nat) : Type
         | | mk {m: Nat} (x: Vec(Nat, m)) : Hidden(Nat.zero)
         |
         |def bad (w: Hidden(Nat.zero)): Vec(Nat, Nat.zero) := {
         |  match w returning Vec(Nat, Nat.zero) with
-        |  | Hidden.mk x => x
+        |  | Hidden.mk m x => x
         |}
         |""".stripMargin
 
-    intercept[InvalidErasedConstructorBinder] { typecheckDecls(p) }
+    intercept[TypeMismatch] { typecheckDecls(p) }
   }
 }

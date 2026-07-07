@@ -8,10 +8,6 @@ class CapturedRefsTests extends munit.FunSuite {
   private val valueType: Value = TypeTpe
   private val typeRef: ElabAst.TypeTerm = ETerm.GlobalRef("Type", span)
   private val classifier: Value.VSort = VSort(Level.succ(Level.one))
-  private val typeBinderType: ElabAst.BinderType = {
-    val pattern = ElabAst.TypePattern.Type(typeRef)
-    ElabAst.BinderType.TypePattern(pattern, pattern.span)
-  }
 
   test("getCapturedRefs collects only local refs present in the current env") {
     val capturedRef = CoreAst.LocalRef(0, "captured")
@@ -19,7 +15,7 @@ class CapturedRefsTests extends munit.FunSuite {
     val captured = FreshVar.freshVar("captured", valueType)
     val env = Env.empty[Value].putLocal(capturedRef, captured)
     val term = ETerm.Pi(
-      Vector(ElabAst.Binder(binderRef, typeBinderType, span)),
+      Vector(ElabAst.Binder(binderRef, typeRef, span)),
       ETerm.App(
         ETerm.LocalRef(binderRef, span),
         Vector(ETerm.LocalRef(capturedRef, span)),

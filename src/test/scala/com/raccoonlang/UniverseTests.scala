@@ -328,14 +328,14 @@ class UniverseTests extends munit.FunSuite {
     }
   }
 
-  test("positive: capture through Level.succ in a type pattern works") {
+  test("positive: implicit level through Level.succ works") {
     val p =
       """
         |inductive Nat : Type
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
-        |def idUp (A: Sort(Level.succ($u)))(x: A): A := x
+        |def idUp {u: Level} (A: Sort(Level.succ(u)))(x: A): A := x
         |
         |{
         |  idUp(Type, Nat)

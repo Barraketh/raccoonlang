@@ -9,11 +9,6 @@ class ValueOpsTests extends munit.FunSuite {
   private val typeRef: ElabAst.TypeTerm = ETerm.GlobalRef("Type", span)
   private val typeToTypeClassifier: Value.VSort = VSort(Level.succ(Level.one))
 
-  private def binderType(term: ElabAst.TypeTerm): ElabAst.BinderType = {
-    val pattern = ElabAst.TypePattern.Type(term)
-    ElabAst.BinderType.TypePattern(pattern, pattern.span)
-  }
-
   private def nodeId(start: Int): AstNodeId = AstNodeId(None, start)
 
   private def symbolicValue(name: String): VConst =
@@ -41,7 +36,8 @@ class ValueOpsTests extends munit.FunSuite {
     val x = FreshVar.freshVar("x", valueType)
     val solution = symbolicValue("Solved")
     val global = symbolicValue("Global")
-    val base = Env.empty[Value]
+    val base = Env
+      .empty[Value]
       .putGlobal("global", global)
       .putLocal(ref, x)
     val instances = Instances.empty
@@ -119,7 +115,7 @@ class ValueOpsTests extends munit.FunSuite {
     val solution = symbolicValue("CapturedSolution")
     val runtimeEnv = Env.empty[Value].putGlobal("Type", valueType).putLocal(capturedRef, captured)
 
-    val binder = VBinder(argRef, binderType(typeRef), typeRef, Vector.empty)
+    val binder = VBinder(argRef, typeRef)
     val pi = VPi(
       runtimeEnv,
       Vector(binder),
@@ -129,7 +125,7 @@ class ValueOpsTests extends munit.FunSuite {
       typeToTypeClassifier
     )
     val piTerm = ETerm.Pi(
-      Vector(ElabAst.Binder(argRef, binderType(typeRef), span)),
+      Vector(ElabAst.Binder(argRef, typeRef, span)),
       typeRef,
       typeToTypeClassifier,
       span
@@ -161,7 +157,7 @@ class ValueOpsTests extends munit.FunSuite {
     val env = Env.empty[Value].putGlobal("Type", valueType).putLocal(capturedRef, captured)
     val runtimeEnv = env.closeForEval(Set.empty)
 
-    val binder = VBinder(argRef, binderType(typeRef), typeRef, Vector.empty)
+    val binder = VBinder(argRef, typeRef)
     val pi = VPi(
       runtimeEnv,
       Vector(binder),
@@ -171,7 +167,7 @@ class ValueOpsTests extends munit.FunSuite {
       typeToTypeClassifier
     )
     val piTerm = ETerm.Pi(
-      Vector(ElabAst.Binder(argRef, binderType(typeRef), span)),
+      Vector(ElabAst.Binder(argRef, typeRef, span)),
       typeRef,
       typeToTypeClassifier,
       span
@@ -195,12 +191,12 @@ class ValueOpsTests extends munit.FunSuite {
     val env = Env.empty[Value].putGlobal("Type", valueType).putLocal(capturedRef, captured)
 
     val piTerm = ETerm.Pi(
-      Vector(ElabAst.Binder(argRef, binderType(typeRef), span)),
+      Vector(ElabAst.Binder(argRef, typeRef, span)),
       typeRef,
       typeToTypeClassifier,
       span
     )
-    val vpi = Interpreter.evalPi(piTerm, env, piTerm.binders.map(com.raccoonlang.telescope.TypePatternOps.toVBinder))
+    val vpi = Interpreter.evalPi(piTerm, env, piTerm.binders.map(com.raccoonlang.telescope.BinderOps.toVBinder))
     val lamTerm = ETerm.Lam(
       piTerm,
       ETerm.LocalRef(capturedRef, span),
@@ -225,7 +221,7 @@ class ValueOpsTests extends munit.FunSuite {
     val scrut = FreshVar.freshVar("scrut", valueType)
     val solution = symbolicValue("ThunkSolution")
     val runtimeEnv = Env.empty[Value].putLocal(capturedRef, captured).putLocal(scrutRef, scrut)
-    val head = ConstructorHead("C", erasedFamilyArgIndexes = Vector.empty, totalArity = 0, valueType)
+    val head = ConstructorHead("C", numErasedFamilyArgs = 0, totalArity = 0, valueType)
     val ctor = VCtor(head, Vector.empty, valueType)
     val matchTerm = ETerm.Match(
       ETerm.LocalRef(scrutRef, span),
@@ -269,7 +265,8 @@ class ValueOpsTests extends munit.FunSuite {
     val captured = symbolicValue("Captured")
     val unused = FreshVar.freshVar("unused", valueType)
     val scrut = FreshVar.freshVar("scrut", valueType)
-    val env = Env.empty[Value]
+    val env = Env
+      .empty[Value]
       .putLocal(capturedRef, captured)
       .putLocal(unusedRef, unused)
       .putLocal(scrutRef, scrut)
@@ -300,7 +297,7 @@ class ValueOpsTests extends munit.FunSuite {
   }
 
   test("constructor equality accounts for result type") {
-    val head = ConstructorHead("C", erasedFamilyArgIndexes = Vector.empty, totalArity = 0, valueType)
+    val head = ConstructorHead("C", numErasedFamilyArgs = 0, totalArity = 0, valueType)
     val resultA = symbolicValue("ResultA")
     val resultB = symbolicValue("ResultB")
     val ctorA = VCtor(head, Vector.empty, resultA)

@@ -6,40 +6,40 @@ namespace Level {
   def max (l1: Level)(l2: Level): Level := builtin
 }
 
-def id (x: $A in Sort($u)): A := x
+def id {u: Level}{A: Sort(u)} (x: A): A := x
 
-def const (x: $A in Sort($u))(y: $B in Sort($v)): A := x
+def const {u: Level}{A: Sort(u)}{v: Level}{B: Sort(v)} (x: A)(y: B): A := x
 
-inductive Eq (A: Sort($u)) indices (x: A)(y: A) : Prop
- | refl (x: $A in Sort($u)) : Eq(A, x, x)
+inductive Eq {u: Level}(A: Sort(u)) indices (x: A)(y: A) : Prop
+ | refl (x: A) : Eq(A, x, x)
 
 namespace Eq {
-  def symm (p: Eq($A, $x, $y)): Eq(A, y, x) := {
+  def symm {u: Level}{A: Sort(u)}{x: A}{y: A} (p: Eq(A, x, y)): Eq(A, y, x) := {
     match p returning Eq(A, y, x) with
     | Eq.refl z => Eq.refl(z)
   }
 
-  def trans (p: Eq($A, $x, $y))(q: Eq(A, y, $z)): Eq(A, x, z) := {
+  def trans {u: Level}{A: Sort(u)}{x: A}{y: A}{z: A} (p: Eq(A, x, y))(q: Eq(A, y, z)): Eq(A, x, z) := {
     match p returning Eq(A, x, z) with
     | Eq.refl w => q
   }
 
-  def subst (p: Eq($A, $x, $y))(v: Level)(motive: A -> Sort(v))(h: motive(x)): motive(y) := {
+  def subst {u: Level}{A: Sort(u)}{x: A}{y: A} (p: Eq(A, x, y))(v: Level)(motive: A -> Sort(v))(h: motive(x)): motive(y) := {
     match p returning motive(y) with
     | Eq.refl z => h
   }
 
-  def mp (p: Eq(Prop, $a, $b))(h: a): b := Eq.subst(p, Level.zero, fun (x: Prop): Prop => x, h)
+  def mp {a: Prop}{b: Prop} (p: Eq(Prop, a, b))(h: a): b := Eq.subst(p, Level.zero, fun (x: Prop): Prop => x, h)
 
-  def mpr (p: Eq(Prop, $a, $b))(h: b): a := Eq.mp(Eq.symm(p), h)
+  def mpr {a: Prop}{b: Prop} (p: Eq(Prop, a, b))(h: b): a := Eq.mp(Eq.symm(p), h)
 }
 
-def congrArg (p: Eq($A, $x, $y))(B: Sort($v))(f: A -> B): Eq(B, f(x), f(y)) := {
+def congrArg {u: Level}{A: Sort(u)}{x: A}{y: A}{v: Level} (p: Eq(A, x, y))(B: Sort(v))(f: A -> B): Eq(B, f(x), f(y)) := {
   match p returning Eq(B, f(x), f(y)) with
   | Eq.refl z => Eq.refl(f(z))
 }
 
-def congrFun (A: Sort($u))(B: Sort($v))(f: A -> B)(g: A -> B)(p: Eq((x: A) -> B, f, g))(x: A): Eq(B, f(x), g(x)) := {
+def congrFun {u: Level}{v: Level}(A: Sort(u))(B: Sort(v))(f: A -> B)(g: A -> B)(p: Eq((x: A) -> B, f, g))(x: A): Eq(B, f(x), g(x)) := {
   match p returning Eq(B, f(x), g(x)) with
   | Eq.refl h => Eq.refl(h(x))
 }
@@ -47,7 +47,7 @@ def congrFun (A: Sort($u))(B: Sort($v))(f: A -> B)(g: A -> B)(p: Eq((x: A) -> B,
 inductive False : Prop
 
 namespace False {
-  def elim (h: False)(C: Sort($u)): C := {
+  def elim {u: Level}(h: False)(C: Sort(u)): C := {
     match h returning C with
   }
 }
@@ -57,21 +57,21 @@ inductive True : Prop
 
 def Not (a: Prop): Prop := (h: a) -> False
 
-def falseElim (h: False)(C: Sort($u)): C := False.elim(h, C)
+def falseElim {u: Level}(h: False)(C: Sort(u)): C := False.elim(h, C)
 
 def notFalse : Not(False) := fun (h: False): False => h
 
-def absurd (h: $a in Prop)(hn: Not(a))(C: Sort($u)): C := False.elim(hn(h), C)
+def absurd {a: Prop}{u: Level} (h: a)(hn: Not(a))(C: Sort(u)): C := False.elim(hn(h), C)
 
 struct And (a: Prop)(b: Prop) : Prop
- | intro {a: Prop}{b: Prop} (left: a)(right: b) : And(a, b)
+ | intro (left: a)(right: b) : And(a, b)
 
 inductive Or (a: Prop)(b: Prop) : Prop
- | inl {b: Prop} (left: $a in Prop) : Or(a, b)
- | inr {a: Prop} (right: $b in Prop) : Or(a, b)
+ | inl (left: a) : Or(a, b)
+ | inr (right: b) : Or(a, b)
 
 namespace Or {
-  def elim (h: Or($a, $b))(C: Prop)(left: a -> C)(right: b -> C): C := {
+  def elim {a: Prop}{b: Prop} (h: Or(a, b))(C: Prop)(left: a -> C)(right: b -> C): C := {
     match h returning C with
     | Or.inl ha => left(ha)
     | Or.inr hb => right(hb)
@@ -79,17 +79,17 @@ namespace Or {
 }
 
 struct Iff (a: Prop)(b: Prop) : Prop
- | intro {a: Prop}{b: Prop} (mp: a -> b)(mpr: b -> a) : Iff(a, b)
+ | intro (mp: a -> b)(mpr: b -> a) : Iff(a, b)
 
 inductive Empty : Type
 
 namespace Empty {
-  def elim (h: Empty)(C: Sort($u)): C := {
+  def elim {u: Level}(h: Empty)(C: Sort(u)): C := {
     match h returning C with
   }
 }
 
-def emptyElim (h: Empty)(C: Sort($u)): C := Empty.elim(h, C)
+def emptyElim {u: Level}(h: Empty)(C: Sort(u)): C := Empty.elim(h, C)
 
 inductive Unit : Type
  | unit : Unit
@@ -99,7 +99,7 @@ inductive Bool : Type
  | true : Bool
 
 namespace Bool {
-  def cond (c: Bool)(A: Sort($u))(t: A)(f: A): A := {
+  def cond {u: Level}(c: Bool)(A: Sort(u))(t: A)(f: A): A := {
     match c returning A with
     | Bool.true => t
     | Bool.false => f
@@ -137,38 +137,38 @@ namespace Bool {
 }
 
 inductive Decidable (p: Prop) : Type
- | isFalse {p: Prop} (h: Not(p)) : Decidable(p)
- | isTrue (h: $p in Prop) : Decidable(p)
+ | isFalse (h: Not(p)) : Decidable(p)
+ | isTrue (h: p) : Decidable(p)
 
 namespace Decidable {
-  def toBool (d: Decidable($p)): Bool := {
+  def toBool {p: Prop} (d: Decidable(p)): Bool := {
     match d returning Bool with
     | Decidable.isFalse h => Bool.false
     | Decidable.isTrue h => Bool.true
   }
 
-  def ite (d: Decidable($p))(A: Sort($u))(t: A)(f: A): A := {
+  def ite {p: Prop}{u: Level} (d: Decidable(p))(A: Sort(u))(t: A)(f: A): A := {
     match d returning A with
     | Decidable.isFalse h => f
     | Decidable.isTrue h => t
   }
 
-  def casesOn (d: Decidable($p))(A: Sort($u))(isFalse: (Not(p) -> A))(isTrue: p -> A): A := {
+  def casesOn {p: Prop}{u: Level} (d: Decidable(p))(A: Sort(u))(isFalse: (Not(p) -> A))(isTrue: p -> A): A := {
     match d returning A with
     | Decidable.isFalse h => isFalse(h)
     | Decidable.isTrue h => isTrue(h)
   }
 
-  def not (d: Decidable($p)): Decidable(Not(p)) := {
+  def not {p: Prop} (d: Decidable(p)): Decidable(Not(p)) := {
     match d returning Decidable(Not(p)) with
     | Decidable.isFalse h => Decidable.isTrue(h)
     | Decidable.isTrue h => Decidable.isFalse(Not(p), fun (hn: Not(p)): False => hn(h))
   }
 }
 
-def decide [d: Decidable($p)]: Bool := Decidable.toBool(d)
+def decide {p: Prop} [d: Decidable(p)]: Bool := Decidable.toBool(d)
 
-def ite (d: Decidable($p))(A: Sort($u))(t: A)(f: A): A := Decidable.ite(d, A, t, f)
+def ite {p: Prop}{u: Level} (d: Decidable(p))(A: Sort(u))(t: A)(f: A): A := Decidable.ite(d, A, t, f)
 
 def instance trueDecidable : Decidable(True) := Decidable.isTrue(True.intro)
 
@@ -234,110 +234,110 @@ namespace Nat {
   def lt (a: Nat)(b: Nat): Prop := Nat.le(Nat.succ(a), b)
 }
 
-inductive Option (A: Sort($u)) : Sort(u)
- | none {A: Sort($u)} : Option(A)
- | some (val: $A in Sort($u)) : Option(A)
+inductive Option {u: Level}(A: Sort(u)) : Sort(u)
+ | none : Option(A)
+ | some (val: A) : Option(A)
 
 namespace Option {
-  def elim (x: Option($A))(B: Sort($v))(none: B)(some: A -> B): B := {
+  def elim {u: Level}{A: Sort(u)}{v: Level} (x: Option(A))(B: Sort(v))(none: B)(some: A -> B): B := {
     match x returning B with
     | Option.none => none
     | Option.some val => some(val)
   }
 
-  def getD (x: Option($A))(fallback: A): A := {
+  def getD {u: Level}{A: Sort(u)} (x: Option(A))(fallback: A): A := {
     match x returning A with
     | Option.none => fallback
     | Option.some val => val
   }
 
-  def map (x: Option($A))(B: Sort($v))(f: A -> B): Option(B) := {
+  def map {u: Level}{A: Sort(u)}{v: Level} (x: Option(A))(B: Sort(v))(f: A -> B): Option(B) := {
     match x returning Option(B) with
     | Option.none => Option.none(B)
     | Option.some val => Option.some(f(val))
   }
 
-  def bind (x: Option($A))(B: Sort($v))(f: A -> Option(B)): Option(B) := {
+  def bind {u: Level}{A: Sort(u)}{v: Level} (x: Option(A))(B: Sort(v))(f: A -> Option(B)): Option(B) := {
     match x returning Option(B) with
     | Option.none => Option.none(B)
     | Option.some val => f(val)
   }
 
-  def isSome (x: Option($A)): Bool := {
+  def isSome {u: Level}{A: Sort(u)} (x: Option(A)): Bool := {
     match x returning Bool with
     | Option.none => Bool.false
     | Option.some val => Bool.true
   }
 
-  def isNone (x: Option($A)): Bool := Bool.not(Option.isSome(x))
+  def isNone {u: Level}{A: Sort(u)} (x: Option(A)): Bool := Bool.not(Option.isSome(x))
 }
 
-inductive Sum (A: Sort($u))(B: Sort($v)) : Sort(Level.max(u, v))
- | inl {B: Sort($v)} (val: $A in Sort($u)) : Sum(A, B)
- | inr {A: Sort($u)} (val: $B in Sort($v)) : Sum(A, B)
+inductive Sum {u: Level}{v: Level}(A: Sort(u))(B: Sort(v)) : Sort(Level.max(u, v))
+ | inl (val: A) : Sum(A, B)
+ | inr (val: B) : Sum(A, B)
 
 namespace Sum {
-  def elim (x: Sum($A, $B))(C: Sort($w))(left: A -> C)(right: B -> C): C := {
+  def elim {u: Level}{A: Sort(u)}{v: Level}{B: Sort(v)}{w: Level} (x: Sum(A, B))(C: Sort(w))(left: A -> C)(right: B -> C): C := {
     match x returning C with
     | Sum.inl val => left(val)
     | Sum.inr val => right(val)
   }
 }
 
-inductive List (A: Sort($u)) : Sort(u)
- | nil {A: Sort($u)} : List(A)
- | cons (head: $A in Sort($u))(tail: List(A)) : List(A)
+inductive List {u: Level}(A: Sort(u)) : Sort(u)
+ | nil : List(A)
+ | cons (head: A)(tail: List(A)) : List(A)
 
 namespace List {
-  def foldr (xs: List($A))(B: Sort($v))(nil: B)(cons: A -> B -> B): B decreases structural(xs) := {
+  def foldr {u: Level}{A: Sort(u)}{v: Level} (xs: List(A))(B: Sort(v))(nil: B)(cons: A -> B -> B): B decreases structural(xs) := {
     match xs returning B with
     | List.nil => nil
     | List.cons head tail => cons(head, List.foldr(tail, B, nil, cons))
   }
 
-  def foldl (xs: List($A))(B: Sort($v))(init: B)(f: B -> A -> B): B decreases structural(xs) := {
+  def foldl {u: Level}{A: Sort(u)}{v: Level} (xs: List(A))(B: Sort(v))(init: B)(f: B -> A -> B): B decreases structural(xs) := {
     match xs returning B with
     | List.nil => init
     | List.cons head tail => List.foldl(tail, B, f(init, head), f)
   }
 
-  def append (xs: List($A))(ys: List(A)): List(A) decreases structural(xs) := {
+  def append {u: Level}{A: Sort(u)} (xs: List(A))(ys: List(A)): List(A) decreases structural(xs) := {
     match xs returning List(A) with
     | List.nil => ys
     | List.cons head tail => List.cons(head, List.append(tail, ys))
   }
 
-  def map (xs: List($A))(B: Sort($v))(f: A -> B): List(B) decreases structural(xs) := {
+  def map {u: Level}{A: Sort(u)}{v: Level} (xs: List(A))(B: Sort(v))(f: A -> B): List(B) decreases structural(xs) := {
     match xs returning List(B) with
     | List.nil => List.nil(B)
     | List.cons head tail => List.cons(f(head), List.map(tail, B, f))
   }
 
-  def length (xs: List($A)): Nat decreases structural(xs) := {
+  def length {u: Level}{A: Sort(u)} (xs: List(A)): Nat decreases structural(xs) := {
     match xs returning Nat with
     | List.nil => Nat.zero
     | List.cons head tail => Nat.succ(List.length(tail))
   }
 
-  def reverse (xs: List($A)): List(A) decreases structural(xs) := {
+  def reverse {u: Level}{A: Sort(u)} (xs: List(A)): List(A) decreases structural(xs) := {
     match xs returning List(A) with
     | List.nil => List.nil(A)
     | List.cons head tail => List.append(List.reverse(tail), List.cons(head, List.nil(A)))
   }
 
-  def any (xs: List($A))(p: A -> Bool): Bool decreases structural(xs) := {
+  def any {u: Level}{A: Sort(u)} (xs: List(A))(p: A -> Bool): Bool decreases structural(xs) := {
     match xs returning Bool with
     | List.nil => Bool.false
     | List.cons head tail => Bool.or(p(head), List.any(tail, p))
   }
 
-  def all (xs: List($A))(p: A -> Bool): Bool decreases structural(xs) := {
+  def all {u: Level}{A: Sort(u)} (xs: List(A))(p: A -> Bool): Bool decreases structural(xs) := {
     match xs returning Bool with
     | List.nil => Bool.true
     | List.cons head tail => Bool.and(p(head), List.all(tail, p))
   }
 
-  def filter (xs: List($A))(p: A -> Bool): List(A) decreases structural(xs) := {
+  def filter {u: Level}{A: Sort(u)} (xs: List(A))(p: A -> Bool): List(A) decreases structural(xs) := {
     match xs returning List(A) with
     | List.nil => List.nil(A)
     | List.cons head tail => {
@@ -347,23 +347,23 @@ namespace List {
   }
 }
 
-struct Prod (A: Sort($u))(B: Sort($v)) : Sort(Level.max(u, v))
- | mk {A: Sort($u)}{B: Sort($v)} (fst: A)(snd: B) : Prod(A, B)
+struct Prod {u: Level}{v: Level}(A: Sort(u))(B: Sort(v)) : Sort(Level.max(u, v))
+ | mk (fst: A)(snd: B) : Prod(A, B)
 
-struct Sigma (A: Sort($u))(v: Level)(B: A -> Sort(v)) : Sort(Level.max(u, v))
- | mk {A: Sort($u)}{v: Level}{B: A -> Sort(v)} (fst: A)(snd: B(fst)) : Sigma(A, v, B)
+struct Sigma {u: Level}(A: Sort(u))(v: Level)(B: A -> Sort(v)) : Sort(Level.max(u, v))
+ | mk (fst: A)(snd: B(fst)) : Sigma(A, v, B)
 
-struct Subtype (A: Sort($u))(p: A -> Prop) : Sort(u)
- | mk {A: Sort($u)}{p: A -> Prop} (val: A)(property: p(val)) : Subtype(A, p)
+struct Subtype {u: Level}(A: Sort(u))(p: A -> Prop) : Sort(u)
+ | mk (val: A)(property: p(val)) : Subtype(A, p)
 
-inductive Exists (A: Sort($u))(p: A -> Prop) : Prop
- | intro {A: Sort($u)}{p: A -> Prop} (witness: A)(proof: p(witness)) : Exists(A, p)
+inductive Exists {u: Level}(A: Sort(u))(p: A -> Prop) : Prop
+ | intro (witness: A)(proof: p(witness)) : Exists(A, p)
 
-inductive Nonempty (A: Sort($u)) : Prop
- | intro (val: $A in Sort($u)) : Nonempty(A)
+inductive Nonempty {u: Level}(A: Sort(u)) : Prop
+ | intro (val: A) : Nonempty(A)
 
-struct Inhabited (A: Sort($u)) : Sort(u)
- | mk {A: Sort($u)} (default: A) : Inhabited(A)
+struct Inhabited {u: Level}(A: Sort(u)) : Sort(u)
+ | mk (default: A) : Inhabited(A)
 
 def instance unitInhabited : Inhabited(Unit) := Inhabited.mk(Unit, Unit.unit)
 
@@ -371,10 +371,10 @@ def instance boolInhabited : Inhabited(Bool) := Inhabited.mk(Bool, Bool.false)
 
 def instance natInhabited : Inhabited(Nat) := Inhabited.mk(Nat, Nat.zero)
 
-struct BEq (A: Sort($u)) : Sort(Level.max(Level.one, u))
- | mk {A: Sort($u)} (beq: A -> A -> Bool) : BEq(A)
+struct BEq {u: Level}(A: Sort(u)) : Sort(Level.max(Level.one, u))
+ | mk (beq: A -> A -> Bool) : BEq(A)
 
-def beq [self: BEq($A)](a: A)(b: A): Bool := BEq.beq(self)(a, b)
+def beq {u: Level}{A: Sort(u)} [self: BEq(A)](a: A)(b: A): Bool := BEq.beq(self)(a, b)
 
 def instance unitBEq : BEq(Unit) := BEq.mk(Unit, fun (a: Unit)(b: Unit): Bool => Bool.true)
 
@@ -383,7 +383,7 @@ def instance boolBEq : BEq(Bool) := BEq.mk(Bool, Bool.beq)
 def instance natBEq : BEq(Nat) := BEq.mk(Nat, Nat.beq)
 
 namespace Option {
-  def beq [beqA: BEq($A)](x: Option(A))(y: Option(A)): Bool := {
+  def beq {u: Level}{A: Sort(u)} [beqA: BEq(A)](x: Option(A))(y: Option(A)): Bool := {
     match x returning Bool with
     | Option.none => Option.isNone(y)
     | Option.some xVal => {
@@ -394,7 +394,7 @@ namespace Option {
   }
 }
 
-def instance optionBEq [beqA: BEq($A)]: BEq(Option(A)) :=
+def instance optionBEq {u: Level}{A: Sort(u)} [beqA: BEq(A)]: BEq(Option(A)) :=
   BEq.mk(
     Option(A),
     fun (x: Option(A))(y: Option(A)): Bool =>
@@ -402,7 +402,7 @@ def instance optionBEq [beqA: BEq($A)]: BEq(Option(A)) :=
   )
 
 namespace List {
-  def beq [beqA: BEq($A)](xs: List(A))(ys: List(A)): Bool decreases structural(xs) := {
+  def beq {u: Level}{A: Sort(u)} [beqA: BEq(A)](xs: List(A))(ys: List(A)): Bool decreases structural(xs) := {
     match xs returning Bool with
     | List.nil => {
       match ys returning Bool with
@@ -417,7 +417,7 @@ namespace List {
   }
 }
 
-def instance listBEq [beqA: BEq($A)]: BEq(List(A)) :=
+def instance listBEq {u: Level}{A: Sort(u)} [beqA: BEq(A)]: BEq(List(A)) :=
   BEq.mk(
     List(A),
     fun (xs: List(A))(ys: List(A)): Bool =>
@@ -425,28 +425,28 @@ def instance listBEq [beqA: BEq($A)]: BEq(List(A)) :=
   )
 
 namespace Prod {
-  def beq [beqA: BEq($A)][beqB: BEq($B)](x: Prod(A, B))(y: Prod(A, B)): Bool :=
+  def beq {u: Level}{A: Sort(u)}{v: Level}{B: Sort(v)} [beqA: BEq(A)][beqB: BEq(B)](x: Prod(A, B))(y: Prod(A, B)): Bool :=
     Bool.and(
       BEq.beq(beqA)(Prod.fst(x), Prod.fst(y)),
       BEq.beq(beqB)(Prod.snd(x), Prod.snd(y))
     )
 }
 
-def instance prodBEq [beqA: BEq($A)][beqB: BEq($B)]: BEq(Prod(A, B)) :=
+def instance prodBEq {u: Level}{A: Sort(u)}{v: Level}{B: Sort(v)} [beqA: BEq(A)][beqB: BEq(B)]: BEq(Prod(A, B)) :=
   BEq.mk(
     Prod(A, B),
     fun (x: Prod(A, B))(y: Prod(A, B)): Bool =>
       Prod.beq(beqA, beqB, x, y)
   )
 
-struct DecidableEq (A: Sort($u)) : Sort(Level.max(Level.one, u))
- | mk {A: Sort($u)} (decEq: (a: A) -> (b: A) -> Decidable(Eq(A, a, b))) : DecidableEq(A)
+struct DecidableEq {u: Level}(A: Sort(u)) : Sort(Level.max(Level.one, u))
+ | mk (decEq: (a: A) -> (b: A) -> Decidable(Eq(A, a, b))) : DecidableEq(A)
 
 namespace DecidableEq {
-  def toBEq [self: DecidableEq($A)]: BEq(A) := BEq.mk(A, fun (a: A)(b: A): Bool => Decidable.toBool(DecidableEq.decEq(self)(a, b)))
+  def toBEq {u: Level}{A: Sort(u)} [self: DecidableEq(A)]: BEq(A) := BEq.mk(A, fun (a: A)(b: A): Bool => Decidable.toBool(DecidableEq.decEq(self)(a, b)))
 }
 
-def decEq [self: DecidableEq($A)](a: A)(b: A): Decidable(Eq(A, a, b)) := DecidableEq.decEq(self)(a, b)
+def decEq {u: Level}{A: Sort(u)} [self: DecidableEq(A)](a: A)(b: A): Decidable(Eq(A, a, b)) := DecidableEq.decEq(self)(a, b)
 
 namespace False {
   def decEq (a: False)(b: False): Decidable(Eq(False, a, b)) := falseElim(a, Decidable(Eq(False, a, b)))
@@ -513,7 +513,7 @@ namespace Nat {
     match h returning False with
   }
 
-  def succInj (h: Eq(Nat, Nat.succ($a), Nat.succ($b))): Eq(Nat, a, b) := {
+  def succInj {a: Nat}{b: Nat} (h: Eq(Nat, Nat.succ(a), Nat.succ(b))): Eq(Nat, a, b) := {
     match h returning Eq(Nat, Nat.pred(Nat.succ(a)), Nat.pred(Nat.succ(b))) with
     | Eq.refl z => Eq.refl(Nat.pred(z))
   }
@@ -539,37 +539,37 @@ namespace Nat {
 
 def instance natDecidableEq : DecidableEq(Nat) := DecidableEq.mk(Nat, Nat.decEq)
 
-struct LE (A: Sort($u)) : Sort(Level.max(Level.one, u))
- | mk {A: Sort($u)} (le: A -> A -> Prop) : LE(A)
+struct LE {u: Level}(A: Sort(u)) : Sort(Level.max(Level.one, u))
+ | mk (le: A -> A -> Prop) : LE(A)
 
-def le [self: LE($A)](a: A)(b: A): Prop := LE.le(self)(a, b)
+def le {u: Level}{A: Sort(u)} [self: LE(A)](a: A)(b: A): Prop := LE.le(self)(a, b)
 
-struct LT (A: Sort($u)) : Sort(Level.max(Level.one, u))
- | mk {A: Sort($u)} (lt: A -> A -> Prop) : LT(A)
+struct LT {u: Level}(A: Sort(u)) : Sort(Level.max(Level.one, u))
+ | mk (lt: A -> A -> Prop) : LT(A)
 
-def lt [self: LT($A)](a: A)(b: A): Prop := LT.lt(self)(a, b)
+def lt {u: Level}{A: Sort(u)} [self: LT(A)](a: A)(b: A): Prop := LT.lt(self)(a, b)
 
 def instance natLE : LE(Nat) := LE.mk(Nat, Nat.le)
 
 def instance natLT : LT(Nat) := LT.mk(Nat, Nat.lt)
 
-struct Subsingleton (A: Sort($u)) : Prop
- | intro {A: Sort($u)} (elim: (a: A) -> (b: A) -> Eq(A, a, b)) : Subsingleton(A)
+struct Subsingleton {u: Level}(A: Sort(u)) : Prop
+ | intro (elim: (a: A) -> (b: A) -> Eq(A, a, b)) : Subsingleton(A)
 
 def instance propSubsingleton (P: Prop): Subsingleton(P) := Subsingleton.intro(P, fun (a: P)(b: P): Eq(P, a, b) => Eq.refl(a))
 
-axiom Quot (A: Sort($u))(r: A -> A -> Prop): Sort(u)
+axiom Quot {u: Level}(A: Sort(u))(r: A -> A -> Prop): Sort(u)
 
 namespace Quot {
-  def mk (A: Sort($u))(r: A -> A -> Prop)(a: A): Quot(A, r) := builtin
+  def mk {u: Level}{A: Sort(u)}{r: A -> A -> Prop}(a: A): Quot(A, r) := builtin
 
-  axiom sound (a: $A in Sort($u))(b: A)(r: A -> A -> Prop)(h: r(a, b)): Eq(Quot(A, r), Quot.mk(A, r, a), Quot.mk(A, r, b))
+  axiom sound {u: Level}{A: Sort(u)} (a: A)(b: A)(r: A -> A -> Prop)(h: r(a, b)): Eq(Quot(A, r), Quot.mk(A, r, a), Quot.mk(A, r, b))
 
-  def lift (q: Quot($A, $r))(B: Sort($v))(f: A -> B)(sound: (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b))): B := builtin
+  def lift {u: Level}{A: Sort(u)}{r: A -> A -> Prop}{v: Level} (q: Quot(A, r))(B: Sort(v))(f: A -> B)(sound: (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b))): B := builtin
 
-  def liftOn (q: Quot($A, $r))(B: Sort($v))(f: A -> B)(sound: (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b))): B := Quot.lift(q, B, f, sound)
+  def liftOn {u: Level}{A: Sort(u)}{r: A -> A -> Prop}{v: Level} (q: Quot(A, r))(B: Sort(v))(f: A -> B)(sound: (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b))): B := Quot.lift(q, B, f, sound)
 
-  def ind (q: Quot($A, $r))(motive: (q: Quot(A, r)) -> Prop)(mk: (a: A) -> motive(Quot.mk(A, r, a))): motive(q) := builtin
+  def ind {u: Level}{A: Sort(u)}{r: A -> A -> Prop} (q: Quot(A, r))(motive: (q: Quot(A, r)) -> Prop)(mk: (a: A) -> motive(Quot.mk(A, r, a))): motive(q) := builtin
 
-  def inductionOn (q: Quot($A, $r))(motive: (q: Quot(A, r)) -> Prop)(mk: (a: A) -> motive(Quot.mk(A, r, a))): motive(q) := Quot.ind(q, motive, mk)
+  def inductionOn {u: Level}{A: Sort(u)}{r: A -> A -> Prop} (q: Quot(A, r))(motive: (q: Quot(A, r)) -> Prop)(mk: (a: A) -> motive(Quot.mk(A, r, a))): motive(q) := Quot.ind(q, motive, mk)
 }

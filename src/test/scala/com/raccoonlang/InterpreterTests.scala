@@ -11,18 +11,19 @@ class InterpreterTests extends munit.FunSuite {
 
   }
 
-  // Erased shape comparison helpers
+  // Shape comparison helpers use the ordinary pattern view of constructor arguments.
   sealed trait Shape
   case class SConst(name: String) extends Shape
   case class SApp(head: Shape, args: List[Shape]) extends Shape
 
   private def toShape(v: Value): Shape = v match {
     case Value.ConstructorHead(n, _, _, _) => SConst(n)
-    case Value.VCtor(h, fields, _) =>
-      if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))
-    case Value.VConst(n, _, _)  => SConst(n)
+    case Value.VCtor(h, storedArgs, _) =>
+      val args = Value.constructorPatternArgs(h, storedArgs)
+      if (args.isEmpty) SConst(h.name) else SApp(SConst(h.name), args.toList.map(toShape))
+    case Value.VConst(n, _, _)     => SConst(n)
     case Value.VApp(h, args, _, _) => SApp(toShape(h), args.toList.map(toShape))
-    case other                  => SConst(other.toString) // fallback, won't be used in this test
+    case other                     => SConst(other.toString) // fallback, won't be used in this test
   }
 
   private val zeroS = SConst("Nat.zero")
@@ -72,7 +73,7 @@ class InterpreterTests extends munit.FunSuite {
     }
   }
 
-  test("nullary constructor with erased binder evaluates to constructor view after erased application") {
+  test("nullary constructor with erased family binder evaluates to constructor view after application") {
     val p =
       """
         |inductive Nat : Type
@@ -80,8 +81,8 @@ class InterpreterTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
-        | | nil {A: Type} : Vec(A, Nat.zero)
-        | | cons {A: Type} (n: Nat) (xs: Vec(A, n)) (x: A): Vec(A, Nat.succ(n))
+        | | nil : Vec(A, Nat.zero)
+        | | cons (n: Nat) (xs: Vec(A, n)) (x: A): Vec(A, Nat.succ(n))
         |
         |{
         |  Vec.nil(Nat)
@@ -89,9 +90,10 @@ class InterpreterTests extends munit.FunSuite {
         |""".stripMargin
 
     InterpreterTests.this.getValue(p) match {
-      case Value.VCtor(head, fields, _) =>
+      case Value.VCtor(head, storedArgs, _) =>
         assertEquals(head.name, "Vec.nil")
-        assertEquals(fields, Vector.empty)
+        assertEquals(storedArgs.length, 0)
+        assertEquals(Value.constructorPatternArgs(head, storedArgs), Vector.empty)
       case other =>
         fail(s"expected constructor view, got: $other")
     }

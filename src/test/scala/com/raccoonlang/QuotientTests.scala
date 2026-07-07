@@ -23,11 +23,12 @@ class QuotientTests extends munit.FunSuite {
 
   private def toShape(v: Value): Shape = v match {
     case Value.ConstructorHead(n, _, _, _) => SConst(n)
-    case Value.VCtor(h, fields, _) =>
-      if (fields.isEmpty) SConst(h.name) else SApp(SConst(h.name), fields.toList.map(toShape))
-    case Value.VConst(n, _, _)  => SConst(n)
+    case Value.VCtor(h, storedArgs, _) =>
+      val args = Value.constructorPatternArgs(h, storedArgs)
+      if (args.isEmpty) SConst(h.name) else SApp(SConst(h.name), args.toList.map(toShape))
+    case Value.VConst(n, _, _)     => SConst(n)
     case Value.VApp(h, args, _, _) => SApp(toShape(h), args.toList.map(toShape))
-    case other                  => SConst(other.toString)
+    case other                     => SConst(other.toString)
   }
 
   private val natZero = SConst("Nat.zero")
@@ -49,9 +50,10 @@ class QuotientTests extends munit.FunSuite {
     )
 
     res match {
-      case Value.VCtor(head, fields, _) =>
+      case Value.VCtor(head, storedArgs, _) =>
         assertEquals(head.name, "Quot.mk")
-        assertEquals(fields.map(toShape), Vector(natZero))
+        assertEquals(storedArgs.length, 1)
+        assertEquals(Value.constructorPatternArgs(head, storedArgs).map(toShape), Vector(natZero))
       case other =>
         fail(s"Expected Quot.mk constructor value, got $other")
     }
@@ -90,7 +92,7 @@ class QuotientTests extends munit.FunSuite {
     assertEquals(toShape(res), SConst("True.intro"))
   }
 
-  test("type-pattern wrapper can recover quotient parameters") {
+  test("implicit wrapper can recover quotient parameters") {
     val res = runProgram(
       natPrelude +
         """
@@ -116,8 +118,10 @@ class QuotientTests extends munit.FunSuite {
     )
 
     res.tpe match {
-      case Value.VApp(Value.VConst("Eq", _, _), Vector(quotTy, left, right), _, _) =>
-        assert(PrettyPrinter.print(quotTy).startsWith("Quot(Nat, "))
+      case Value.VApp(Value.VConst("Eq", _, _), Vector(_, quotTy, left, right), _, _) =>
+        val printedQuot = PrettyPrinter.print(quotTy)
+        assert(printedQuot.startsWith("Quot("))
+        assert(printedQuot.contains("Nat"))
         assertEquals(toShape(left), SApp(SConst("Quot.mk"), List(natZero)))
         assertEquals(toShape(right), SApp(SConst("Quot.mk"), List(natZero)))
       case other =>

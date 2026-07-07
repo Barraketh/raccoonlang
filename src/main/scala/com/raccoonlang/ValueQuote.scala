@@ -34,7 +34,7 @@ object ValueQuote {
           ElabAst.Term.App(inlineAppHead(fn), args.map(inlineTerm), appSpan)
         case ElabAst.Term.Pi(binders, out, classifier, piSpan) =>
           val nextBinders = binders.map { b =>
-            b.copy(ty = inlineBinderType(b.ty))
+            b.copy(ty = inlineTypeTerm(b.ty))
           }
           ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, piSpan)
         case ElabAst.Term.Body(lets, res, bodySpan) =>
@@ -71,35 +71,9 @@ object ValueQuote {
           ElabAst.Term.App(inlineAppHead(fn), args.map(inlineTerm), appSpan)
         case ElabAst.Term.Pi(binders, out, classifier, piSpan) =>
           val nextBinders = binders.map { b =>
-            b.copy(ty = inlineBinderType(b.ty))
+            b.copy(ty = inlineTypeTerm(b.ty))
           }
           ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, piSpan)
-      }
-
-    private def inlineTypePattern(tp: ElabAst.TypePattern): ElabAst.TypePattern =
-      tp match {
-        case top: ElabAst.TopLevelTP                       => inlineTopLevelTP(top)
-        case ElabAst.TypePattern.Capture(ref, captureSpan) => ElabAst.TypePattern.Capture(ref, captureSpan)
-      }
-
-    private def inlineTopLevelTP(tp: ElabAst.TopLevelTP): ElabAst.TopLevelTP =
-      tp match {
-        case ElabAst.TypePattern.Type(tpe) => ElabAst.TypePattern.Type(inlineTypeTerm(tpe))
-        case ElabAst.TypePattern.App(fn, args, appSpan) =>
-          val nextFn =
-            inlineAppHead(fn) match {
-              case ref: ElabAst.Term.Ref => ref
-              case other                 => throw WTF(s"Failed to inline ref $fn, got $other")
-            }
-          ElabAst.TypePattern.App(nextFn, args.map(inlineTypePattern), appSpan)
-      }
-
-    def inlineBinderType(binderType: ElabAst.BinderType): ElabAst.BinderType =
-      binderType match {
-        case ElabAst.BinderType.TypePattern(tp, binderSpan) =>
-          ElabAst.BinderType.TypePattern(inlineTopLevelTP(tp), binderSpan)
-        case ElabAst.BinderType.ConstrainedCapture(ref, constraint, binderSpan) =>
-          ElabAst.BinderType.ConstrainedCapture(ref, inlineTopLevelTP(constraint), binderSpan)
       }
 
     def inlineCase(c: ElabAst.Case): ElabAst.Case =
@@ -118,6 +92,9 @@ object ValueQuote {
       case tpe: ElabAst.TypeTerm => tpe
       case other                 => throw CannotQuoteValue(value, s"$other is not a type term", Some(span))
     }
+
+  def quotePiType(pi: VPi, context: QuoteContext, span: Span): ElabAst.Term.Pi =
+    quotePiOpened(pi, context, span).term
 
   def quoteTerm(value: Value, context: QuoteContext, span: Span): ElabAst.Term = {
     context.quote.get(value.key).foreach(return _)
@@ -185,16 +162,7 @@ object ValueQuote {
       context: QuoteContext,
       span: Span
   ): ElabAst.Term = {
-    val erasedArgs =
-      if (head.erasedFamilyArgIndexes.isEmpty) Vector.empty
-      else {
-        tpe match {
-          case ConstSpine(_, args) => head.erasedFamilyArgIndexes.map(idx => args(idx))
-          case _ => throw WTF(s"Cannot recover erased constructor args for ${head.name} from $tpe", Some(span))
-        }
-      }
-
-    val args = erasedArgs ++ fields
+    val args = recoverConstructorArgs(head, fields, tpe, span)
 
     if (args.length != head.totalArity)
       throw WTF(s"Constructor ${head.name} has ${args.length} args, expected ${head.totalArity}", Some(span))
@@ -203,6 +171,48 @@ object ValueQuote {
     val fn = ElabAst.Term.GlobalRef(head.name, span)
     if (quotedArgs.isEmpty) fn else ElabAst.Term.App(fn, quotedArgs, span)
   }
+
+  private def recoverConstructorArgs(
+      head: ConstructorHead,
+      fields: Vector[Value],
+      tpe: Value,
+      span: Span
+  ): Vector[Value] =
+    head.tpe match {
+      case pi: VPi =>
+        val expectedFields = head.totalArity - head.numErasedFamilyArgs
+        if (fields.length != expectedFields)
+          throw WTF(s"Constructor ${head.name} stores ${fields.length} args, expected $expectedFields", Some(span))
+
+        val freshEnv = BinderOps.freshen(pi)
+        val refinable = Value.envDeps(freshEnv) -- Value.envDeps(pi.env)
+        var eqStore = EqStore.empty.allow(refinable)
+        var curEnv = pi.env
+        val args = Vector.newBuilder[Value]
+
+        pi.binders.zipWithIndex.foreach { case (binder, idx) =>
+          val arg =
+            if (idx < head.numErasedFamilyArgs) freshEnv(binder.localRef)
+            else fields(idx - head.numErasedFamilyArgs)
+
+          if (idx >= head.numErasedFamilyArgs) {
+            val expectedTy = Interpreter.evalTypeTerm(binder.ty, curEnv)
+            eqStore = TypeChecker.constrainFits(arg.tpe, expectedTy, eqStore)
+          }
+
+          curEnv = BinderOps.bindValue(curEnv, binder, arg)
+          args += arg
+        }
+
+        eqStore = TypeChecker.constrainFits(pi.codomain(curEnv), tpe, eqStore)
+        args.result().map(arg => ValueOps.materialize(arg, eqStore))
+
+      case _ =>
+        val expectedFields = head.totalArity - head.numErasedFamilyArgs
+        if (fields.length != expectedFields)
+          throw WTF(s"Constructor ${head.name} has non-function type $head", Some(span))
+        fields
+    }
 
   private def quoteLam(lam: VLam, context: QuoteContext, span: Span): ElabAst.Term = {
     (lam.id, lam.body) match {
@@ -266,7 +276,7 @@ object ValueQuote {
     val inliner = new ClosedEnvInliner(pi.env, context)
 
     val quotedBinders = pi.binders.map { b =>
-      ElabAst.Binder(b.localRef, inliner.inlineBinderType(b.ty), Span(0, 0), b.isInstance)
+      ElabAst.Binder(b.localRef, inliner.inlineTypeTerm(b.ty), Span(0, 0), b.isInstance)
     }
 
     OpenedPi(ElabAst.Term.Pi(quotedBinders, quotedOut, pi.tpe, span), freshArgs, nextContext)
