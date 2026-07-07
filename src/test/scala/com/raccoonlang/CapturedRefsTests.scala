@@ -22,6 +22,7 @@ class CapturedRefsTests extends munit.FunSuite {
         span
       ),
       classifier,
+      numLevelParams = 0,
       span
     )
 

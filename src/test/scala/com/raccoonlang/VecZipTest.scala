@@ -36,10 +36,10 @@ class VecZipTest extends munit.FunSuite {
         |  let R := Pair(u1, u2, A, B)
         |  let L := Level.max(u1, u2)
         |  match va returning Vec(L, R, n) with
-        |  | Vec.nil => Vec.nil(L, R)
+        |  | Vec.nil => Vec.nil(R)
         |  | Vec.cons x va0 a => {
         |    match vb returning Vec(L, R, n) with
-        |    | Vec.cons _ vb0 b => Vec.cons(L, R, x, zip(u1, u2, A, B, x, va0, vb0), Pair.mk(u1, u2, A, B, a, b))
+        |    | Vec.cons _ vb0 b => Vec.cons(R, x, zip(u1, u2, A, B, x, va0, vb0), Pair.mk(A, B, a, b))
         |  }
         |}
         |
@@ -67,7 +67,7 @@ class VecZipTest extends munit.FunSuite {
         |inductive Pair {u1: Level}{u2: Level}(A: Sort(u1))(B: Sort(u2)): Sort(Level.max(u1, u2))
         |  | mk (a: A)(b: B): Pair(A, B)
         |
-        |def zip {u1: Level}{A: Sort(u1)}{u2: Level}{B: Sort(u2)}{n: Nat} (va: Vec(A, n))(vb: Vec(B, n)): Vec(Pair(A, B), n) decreases measure(n) := {
+        |def zip {u1: Level}{u2: Level}{A: Sort(u1)}{B: Sort(u2)}{n: Nat} (va: Vec(A, n))(vb: Vec(B, n)): Vec(Pair(A, B), n) decreases measure(n) := {
         |  let ResType := Vec(Pair(A, B), n)
         |  match va returning ResType with
         |  | Vec.nil => Vec.nil(Pair(A, B))

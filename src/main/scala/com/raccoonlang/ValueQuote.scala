@@ -32,11 +32,11 @@ object ValueQuote {
         case ElabAst.Term.LocalRef(ref, refSpan) => inlineLocal(ref, refSpan)
         case ElabAst.Term.App(fn, args, appSpan) =>
           ElabAst.Term.App(inlineAppHead(fn), args.map(inlineTerm), appSpan)
-        case ElabAst.Term.Pi(binders, out, classifier, piSpan) =>
+        case ElabAst.Term.Pi(binders, out, classifier, numLevelParams, piSpan) =>
           val nextBinders = binders.map { b =>
             b.copy(ty = inlineTypeTerm(b.ty))
           }
-          ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, piSpan)
+          ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, numLevelParams, piSpan)
         case ElabAst.Term.Body(lets, res, bodySpan) =>
           val nextLets = lets.map { l =>
             ElabAst.Let(l.localRef, l.ty.map(inlineTypeTerm), inlineTerm(l.value), l.span, l.isInstance)
@@ -69,11 +69,11 @@ object ValueQuote {
           }
         case ElabAst.Term.App(fn, args, appSpan) =>
           ElabAst.Term.App(inlineAppHead(fn), args.map(inlineTerm), appSpan)
-        case ElabAst.Term.Pi(binders, out, classifier, piSpan) =>
+        case ElabAst.Term.Pi(binders, out, classifier, numLevelParams, piSpan) =>
           val nextBinders = binders.map { b =>
             b.copy(ty = inlineTypeTerm(b.ty))
           }
-          ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, piSpan)
+          ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, numLevelParams, piSpan)
       }
 
     def inlineCase(c: ElabAst.Case): ElabAst.Case =
@@ -279,7 +279,7 @@ object ValueQuote {
       ElabAst.Binder(b.localRef, inliner.inlineTypeTerm(b.ty), Span(0, 0), b.isInstance)
     }
 
-    OpenedPi(ElabAst.Term.Pi(quotedBinders, quotedOut, pi.tpe, span), freshArgs, nextContext)
+    OpenedPi(ElabAst.Term.Pi(quotedBinders, quotedOut, pi.tpe, pi.numLevelParams, span), freshArgs, nextContext)
   }
 
   private def quoteLevel(level: Level, context: QuoteContext, span: Span): ElabAst.Term = {

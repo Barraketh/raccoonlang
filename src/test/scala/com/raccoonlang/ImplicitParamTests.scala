@@ -42,7 +42,7 @@ class ImplicitParamTests extends munit.FunSuite {
   case class SApp(head: Shape, args: List[Shape]) extends Shape
 
   private def toShape(v: Value): Shape = v match {
-    case Value.ConstructorHead(n, _, _, _) => SConst(n)
+    case Value.ConstructorHead(n, _, _, _, _) => SConst(n)
     case Value.VCtor(h, storedArgs, _) =>
       val args = Value.constructorPatternArgs(h, storedArgs)
       if (args.isEmpty) SConst(h.name) else SApp(SConst(h.name), args.toList.map(toShape))
@@ -91,7 +91,7 @@ class ImplicitParamTests extends munit.FunSuite {
         |def len {n: Nat} (v: Vec(Nat, n)): Nat := n
         |
         |{
-        |  len(Vec.cons(Nat, Vec.nil(Nat), Nat.zero))
+        |  len(Vec.cons(Nat, Nat.zero, Vec.nil(Nat), Nat.zero))
         |}
         |""".stripMargin
 
@@ -325,5 +325,76 @@ class ImplicitParamTests extends munit.FunSuite {
         |""".stripMargin
 
     assertEquals(toShape(runProgram(p)), SConst("Vec.nil"))
+  }
+
+  test("implicit Level binders must come before other implicit binders") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        |
+        |def bad {A: Type}{u: Level} (x: A): A := x
+        |""".stripMargin
+
+    typeError[NonLeadingLevelParam](p)
+  }
+
+  test("supplying only some non-level implicits is an arity error") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Vec {u: Level}(A: Sort(u)) indices (n: Nat) : Sort(Level.max(Level.one, u))
+        | | nil : Vec(A, Nat.zero)
+        | | cons {n: Nat} (tail: Vec(A, n)) (head: A) : Vec(A, Nat.succ(n))
+        |
+        |{
+        |  Vec.cons(Nat, Vec.nil(Nat), Nat.zero)
+        |}
+        |""".stripMargin
+
+    // Vec.cons's telescope is {u}{A}{n}(tail)(head): callers supply 2 args (all
+    // implicits inferred) or 4 (all non-level implicits supplied), never 3.
+    typeError[ArityMismatch](p)
+  }
+
+  test("level implicits cannot be supplied positionally") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        |
+        |inductive Box {u: Level}(A: Sort(u)) : Sort(u)
+        | | mk (a: A) : Box(A)
+        |
+        |{
+        |  Box.mk(Level.one, Nat, Nat.zero)
+        |}
+        |""".stripMargin
+
+    typeError[ArityMismatch](p)
+  }
+
+  test("all implicits are inferred when only explicit args are supplied") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Vec {u: Level}(A: Sort(u)) indices (n: Nat) : Sort(Level.max(Level.one, u))
+        | | nil : Vec(A, Nat.zero)
+        | | cons {n: Nat} (tail: Vec(A, n)) (head: A) : Vec(A, Nat.succ(n))
+        |
+        |def len {n: Nat} (v: Vec(Nat, n)): Nat := n
+        |
+        |{
+        |  len(Vec.cons(Vec.nil(Nat), Nat.zero))
+        |}
+        |""".stripMargin
+
+    assertEquals(toShape(runProgram(p)), succS(zeroS))
   }
 }

@@ -42,7 +42,7 @@ class ProjectionTests extends munit.FunSuite {
   case class SApp(head: Shape, args: List[Shape]) extends Shape
 
   private def toShape(v: Value): Shape = v match {
-    case Value.ConstructorHead(n, _, _, _) => SConst(n)
+    case Value.ConstructorHead(n, _, _, _, _) => SConst(n)
     case Value.VCtor(h, storedArgs, _) =>
       val args = Value.constructorPatternArgs(h, storedArgs)
       if (args.isEmpty) SConst(h.name) else SApp(SConst(h.name), args.toList.map(toShape))
@@ -95,7 +95,7 @@ class ProjectionTests extends munit.FunSuite {
         |
         |{
         |  let v : Vec(Nat, Nat.zero) := Vec.nil(Nat)
-        |  let w : WrapIdx(Nat, Nat.zero) := WrapIdx.mk(Nat, v)
+        |  let w : WrapIdx(Nat, Nat.zero) := WrapIdx.mk(Nat, Nat.zero, v)
         |  get(Nat, Nat.zero, w)
         |}
         |""".stripMargin

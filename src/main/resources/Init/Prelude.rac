@@ -8,7 +8,7 @@ namespace Level {
 
 def id {u: Level}{A: Sort(u)} (x: A): A := x
 
-def const {u: Level}{A: Sort(u)}{v: Level}{B: Sort(v)} (x: A)(y: B): A := x
+def const {u: Level}{v: Level}{A: Sort(u)}{B: Sort(v)} (x: A)(y: B): A := x
 
 inductive Eq {u: Level}(A: Sort(u)) indices (x: A)(y: A) : Prop
  | refl (x: A) : Eq(A, x, x)
@@ -34,7 +34,7 @@ namespace Eq {
   def mpr {a: Prop}{b: Prop} (p: Eq(Prop, a, b))(h: b): a := Eq.mp(Eq.symm(p), h)
 }
 
-def congrArg {u: Level}{A: Sort(u)}{x: A}{y: A}{v: Level} (p: Eq(A, x, y))(B: Sort(v))(f: A -> B): Eq(B, f(x), f(y)) := {
+def congrArg {u: Level}{v: Level}{A: Sort(u)}{x: A}{y: A} (p: Eq(A, x, y))(B: Sort(v))(f: A -> B): Eq(B, f(x), f(y)) := {
   match p returning Eq(B, f(x), f(y)) with
   | Eq.refl z => Eq.refl(f(z))
 }
@@ -61,7 +61,7 @@ def falseElim {u: Level}(h: False)(C: Sort(u)): C := False.elim(h, C)
 
 def notFalse : Not(False) := fun (h: False): False => h
 
-def absurd {a: Prop}{u: Level} (h: a)(hn: Not(a))(C: Sort(u)): C := False.elim(hn(h), C)
+def absurd {u: Level}{a: Prop} (h: a)(hn: Not(a))(C: Sort(u)): C := False.elim(hn(h), C)
 
 struct And (a: Prop)(b: Prop) : Prop
  | intro (left: a)(right: b) : And(a, b)
@@ -147,13 +147,13 @@ namespace Decidable {
     | Decidable.isTrue h => Bool.true
   }
 
-  def ite {p: Prop}{u: Level} (d: Decidable(p))(A: Sort(u))(t: A)(f: A): A := {
+  def ite {u: Level}{p: Prop} (d: Decidable(p))(A: Sort(u))(t: A)(f: A): A := {
     match d returning A with
     | Decidable.isFalse h => f
     | Decidable.isTrue h => t
   }
 
-  def casesOn {p: Prop}{u: Level} (d: Decidable(p))(A: Sort(u))(isFalse: (Not(p) -> A))(isTrue: p -> A): A := {
+  def casesOn {u: Level}{p: Prop} (d: Decidable(p))(A: Sort(u))(isFalse: (Not(p) -> A))(isTrue: p -> A): A := {
     match d returning A with
     | Decidable.isFalse h => isFalse(h)
     | Decidable.isTrue h => isTrue(h)
@@ -168,7 +168,7 @@ namespace Decidable {
 
 def decide {p: Prop} [d: Decidable(p)]: Bool := Decidable.toBool(d)
 
-def ite {p: Prop}{u: Level} (d: Decidable(p))(A: Sort(u))(t: A)(f: A): A := Decidable.ite(d, A, t, f)
+def ite {u: Level}{p: Prop} (d: Decidable(p))(A: Sort(u))(t: A)(f: A): A := Decidable.ite(d, A, t, f)
 
 def instance trueDecidable : Decidable(True) := Decidable.isTrue(True.intro)
 
@@ -239,7 +239,7 @@ inductive Option {u: Level}(A: Sort(u)) : Sort(u)
  | some (val: A) : Option(A)
 
 namespace Option {
-  def elim {u: Level}{A: Sort(u)}{v: Level} (x: Option(A))(B: Sort(v))(none: B)(some: A -> B): B := {
+  def elim {u: Level}{v: Level}{A: Sort(u)} (x: Option(A))(B: Sort(v))(none: B)(some: A -> B): B := {
     match x returning B with
     | Option.none => none
     | Option.some val => some(val)
@@ -251,13 +251,13 @@ namespace Option {
     | Option.some val => val
   }
 
-  def map {u: Level}{A: Sort(u)}{v: Level} (x: Option(A))(B: Sort(v))(f: A -> B): Option(B) := {
+  def map {u: Level}{v: Level}{A: Sort(u)} (x: Option(A))(B: Sort(v))(f: A -> B): Option(B) := {
     match x returning Option(B) with
     | Option.none => Option.none(B)
     | Option.some val => Option.some(f(val))
   }
 
-  def bind {u: Level}{A: Sort(u)}{v: Level} (x: Option(A))(B: Sort(v))(f: A -> Option(B)): Option(B) := {
+  def bind {u: Level}{v: Level}{A: Sort(u)} (x: Option(A))(B: Sort(v))(f: A -> Option(B)): Option(B) := {
     match x returning Option(B) with
     | Option.none => Option.none(B)
     | Option.some val => f(val)
@@ -277,7 +277,7 @@ inductive Sum {u: Level}{v: Level}(A: Sort(u))(B: Sort(v)) : Sort(Level.max(u, v
  | inr (val: B) : Sum(A, B)
 
 namespace Sum {
-  def elim {u: Level}{A: Sort(u)}{v: Level}{B: Sort(v)}{w: Level} (x: Sum(A, B))(C: Sort(w))(left: A -> C)(right: B -> C): C := {
+  def elim {u: Level}{v: Level}{w: Level}{A: Sort(u)}{B: Sort(v)} (x: Sum(A, B))(C: Sort(w))(left: A -> C)(right: B -> C): C := {
     match x returning C with
     | Sum.inl val => left(val)
     | Sum.inr val => right(val)
@@ -289,13 +289,13 @@ inductive List {u: Level}(A: Sort(u)) : Sort(u)
  | cons (head: A)(tail: List(A)) : List(A)
 
 namespace List {
-  def foldr {u: Level}{A: Sort(u)}{v: Level} (xs: List(A))(B: Sort(v))(nil: B)(cons: A -> B -> B): B decreases structural(xs) := {
+  def foldr {u: Level}{v: Level}{A: Sort(u)} (xs: List(A))(B: Sort(v))(nil: B)(cons: A -> B -> B): B decreases structural(xs) := {
     match xs returning B with
     | List.nil => nil
     | List.cons head tail => cons(head, List.foldr(tail, B, nil, cons))
   }
 
-  def foldl {u: Level}{A: Sort(u)}{v: Level} (xs: List(A))(B: Sort(v))(init: B)(f: B -> A -> B): B decreases structural(xs) := {
+  def foldl {u: Level}{v: Level}{A: Sort(u)} (xs: List(A))(B: Sort(v))(init: B)(f: B -> A -> B): B decreases structural(xs) := {
     match xs returning B with
     | List.nil => init
     | List.cons head tail => List.foldl(tail, B, f(init, head), f)
@@ -307,7 +307,7 @@ namespace List {
     | List.cons head tail => List.cons(head, List.append(tail, ys))
   }
 
-  def map {u: Level}{A: Sort(u)}{v: Level} (xs: List(A))(B: Sort(v))(f: A -> B): List(B) decreases structural(xs) := {
+  def map {u: Level}{v: Level}{A: Sort(u)} (xs: List(A))(B: Sort(v))(f: A -> B): List(B) decreases structural(xs) := {
     match xs returning List(B) with
     | List.nil => List.nil(B)
     | List.cons head tail => List.cons(f(head), List.map(tail, B, f))
@@ -350,8 +350,8 @@ namespace List {
 struct Prod {u: Level}{v: Level}(A: Sort(u))(B: Sort(v)) : Sort(Level.max(u, v))
  | mk (fst: A)(snd: B) : Prod(A, B)
 
-struct Sigma {u: Level}(A: Sort(u))(v: Level)(B: A -> Sort(v)) : Sort(Level.max(u, v))
- | mk (fst: A)(snd: B(fst)) : Sigma(A, v, B)
+struct Sigma {u: Level}{v: Level}(A: Sort(u))(B: A -> Sort(v)) : Sort(Level.max(u, v))
+ | mk (fst: A)(snd: B(fst)) : Sigma(A, B)
 
 struct Subtype {u: Level}(A: Sort(u))(p: A -> Prop) : Sort(u)
  | mk (val: A)(property: p(val)) : Subtype(A, p)
@@ -425,14 +425,14 @@ def instance listBEq {u: Level}{A: Sort(u)} [beqA: BEq(A)]: BEq(List(A)) :=
   )
 
 namespace Prod {
-  def beq {u: Level}{A: Sort(u)}{v: Level}{B: Sort(v)} [beqA: BEq(A)][beqB: BEq(B)](x: Prod(A, B))(y: Prod(A, B)): Bool :=
+  def beq {u: Level}{v: Level}{A: Sort(u)}{B: Sort(v)} [beqA: BEq(A)][beqB: BEq(B)](x: Prod(A, B))(y: Prod(A, B)): Bool :=
     Bool.and(
       BEq.beq(beqA)(Prod.fst(x), Prod.fst(y)),
       BEq.beq(beqB)(Prod.snd(x), Prod.snd(y))
     )
 }
 
-def instance prodBEq {u: Level}{A: Sort(u)}{v: Level}{B: Sort(v)} [beqA: BEq(A)][beqB: BEq(B)]: BEq(Prod(A, B)) :=
+def instance prodBEq {u: Level}{v: Level}{A: Sort(u)}{B: Sort(v)} [beqA: BEq(A)][beqB: BEq(B)]: BEq(Prod(A, B)) :=
   BEq.mk(
     Prod(A, B),
     fun (x: Prod(A, B))(y: Prod(A, B)): Bool =>
@@ -565,9 +565,9 @@ namespace Quot {
 
   axiom sound {u: Level}{A: Sort(u)} (a: A)(b: A)(r: A -> A -> Prop)(h: r(a, b)): Eq(Quot(A, r), Quot.mk(A, r, a), Quot.mk(A, r, b))
 
-  def lift {u: Level}{A: Sort(u)}{r: A -> A -> Prop}{v: Level} (q: Quot(A, r))(B: Sort(v))(f: A -> B)(sound: (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b))): B := builtin
+  def lift {u: Level}{v: Level}{A: Sort(u)}{r: A -> A -> Prop} (q: Quot(A, r))(B: Sort(v))(f: A -> B)(sound: (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b))): B := builtin
 
-  def liftOn {u: Level}{A: Sort(u)}{r: A -> A -> Prop}{v: Level} (q: Quot(A, r))(B: Sort(v))(f: A -> B)(sound: (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b))): B := Quot.lift(q, B, f, sound)
+  def liftOn {u: Level}{v: Level}{A: Sort(u)}{r: A -> A -> Prop} (q: Quot(A, r))(B: Sort(v))(f: A -> B)(sound: (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b))): B := Quot.lift(q, B, f, sound)
 
   def ind {u: Level}{A: Sort(u)}{r: A -> A -> Prop} (q: Quot(A, r))(motive: (q: Quot(A, r)) -> Prop)(mk: (a: A) -> motive(Quot.mk(A, r, a))): motive(q) := builtin
 

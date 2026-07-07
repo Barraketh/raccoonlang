@@ -122,12 +122,14 @@ class ValueOpsTests extends munit.FunSuite {
       _ => valueType,
       captured.synDeps,
       ValueId.LocalId(nodeId(1), Vector(captured)),
-      typeToTypeClassifier
+      typeToTypeClassifier,
+      numLevelParams = 0
     )
     val piTerm = ETerm.Pi(
       Vector(ElabAst.Binder(argRef, typeRef, span)),
       typeRef,
       typeToTypeClassifier,
+      numLevelParams = 0,
       span
     )
     val lamTerm = ETerm.Lam(
@@ -164,12 +166,14 @@ class ValueOpsTests extends munit.FunSuite {
       _ => valueType,
       DepSet.empty,
       ValueId.LocalId(nodeId(1), Vector.empty),
-      typeToTypeClassifier
+      typeToTypeClassifier,
+      numLevelParams = 0
     )
     val piTerm = ETerm.Pi(
       Vector(ElabAst.Binder(argRef, typeRef, span)),
       typeRef,
       typeToTypeClassifier,
+      numLevelParams = 0,
       span
     )
     val lamTerm = ETerm.Lam(
@@ -194,6 +198,7 @@ class ValueOpsTests extends munit.FunSuite {
       Vector(ElabAst.Binder(argRef, typeRef, span)),
       typeRef,
       typeToTypeClassifier,
+      numLevelParams = 0,
       span
     )
     val vpi = Interpreter.evalPi(piTerm, env, piTerm.binders.map(com.raccoonlang.telescope.BinderOps.toVBinder))

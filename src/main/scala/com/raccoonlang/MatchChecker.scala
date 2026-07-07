@@ -33,8 +33,8 @@ object MatchChecker {
       ctorNames: Vector[String],
       env: Env[Value]
   ): Vector[ReachableCtor] = {
-    def tryUnify(left: Value, right: Value, refinable: DepSet): Option[EqStore] =
-      ValueEquivalence.tryUnify(left, right, EqStore.empty.allow(refinable)).toOption
+    def unify(left: Value, right: Value, refinable: DepSet): Either[ValueEquivalence.UnifyFailure, EqStore] =
+      ValueEquivalence.tryUnify(left, right, EqStore.empty.allow(refinable), ValueEquivalence.UnifyMode.Invert)
 
     def rootRefinable(value: Value): DepSet =
       value match {
@@ -52,9 +52,21 @@ object MatchChecker {
           val valueRefinable = rootRefinable(scrut) ++ ctorValue.synDeps
           val typeRefinable = scrutTpe.synDeps ++ ctorValue.synDeps
 
+          // A constructor may only be pruned on a provably-apart unification failure. A merely stuck
+          // failure keeps the branch required but yields no refinement: checking it with fewer
+          // equations is conservative, whereas pruning on it would refute equations that may hold
+          // propositionally (e.g. via Quot.sound).
           val branchEqStore =
-            tryUnify(scrut, ctorValue, valueRefinable)
-              .orElse(tryUnify(resultTy, scrutTpe, typeRefinable))
+            unify(scrut, ctorValue, valueRefinable) match {
+              case Right(store)       => Some(store)
+              case Left(f) if f.apart => None
+              case Left(_) =>
+                unify(resultTy, scrutTpe, typeRefinable) match {
+                  case Right(store)       => Some(store)
+                  case Left(f) if f.apart => None
+                  case Left(_)            => Some(EqStore.empty)
+                }
+            }
 
           branchEqStore.map { branchStore =>
             val refinedResultTy = ValueOps.materialize(scrutTpe, branchStore)
@@ -84,8 +96,8 @@ object MatchChecker {
     val startEq = {
       val start = EqStore.empty.allow(refinable0)
       ValueEquivalence
-        .tryUnify(res1, scrutTpe, start)
-        .flatMap(eq1 => ValueEquivalence.tryUnify(res2, scrutTpe, eq1)) match {
+        .tryUnify(res1, scrutTpe, start, ValueEquivalence.UnifyMode.Invert)
+        .flatMap(eq1 => ValueEquivalence.tryUnify(res2, scrutTpe, eq1, ValueEquivalence.UnifyMode.Invert)) match {
         case Right(eqStore) => eqStore
         case Left(_)        => return false
       }

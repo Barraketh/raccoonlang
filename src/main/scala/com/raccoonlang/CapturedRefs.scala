@@ -25,7 +25,7 @@ object CapturedRefs {
       case Term.LocalRef(ref, _) =>
         addRef(ref, env, refs)
 
-      case Term.Pi(binders, out, _, _) =>
+      case Term.Pi(binders, out, _, _, _) =>
         val refsWithBinders = binders.foldLeft(refs) { case (curRefs, b) => goTerm(b.ty, env, curRefs) }
         goTerm(out, env, refsWithBinders)
 

@@ -7,7 +7,8 @@ object BinderOps {
   final case class CheckedBinders(
       vBinders: Vector[VBinder],
       elabBinders: Vector[ElabAst.Binder],
-      context: TypingContext
+      context: TypingContext,
+      numLevelParams: Int
   )
 
   def freshen(binders: Vector[VBinder], baseEnv: Env[Value]): Env[Value] = {
@@ -41,9 +42,29 @@ object BinderOps {
     val checkedBinders = Vector.newBuilder[ElabAst.Binder]
     var context = baseContext
 
+    // Telescope discipline: binders come in three zones, in order —
+    // [implicit Level binders][other implicit binders][explicit binders].
+    val LevelZone = 0
+    val ImplicitZone = 1
+    val ExplicitZone = 2
+    var zone = LevelZone
+    var numLevelParams = 0
+
     binders.foreach { binder =>
       val checkedTy = TypeChecker.checkTypeTerm(binder.ty, context)
       TypeChecker.assertType(checkedTy.value)
+
+      val binderZone =
+        if (!binder.isImplicit) ExplicitZone
+        else if (checkedTy.value == Value.LevelTpe) LevelZone
+        else ImplicitZone
+      if (binderZone < zone) {
+        if (binderZone == LevelZone) throw NonLeadingLevelParam(binder.name, Some(binder.span))
+        else throw NonLeadingImplicitParam(binder.name, Some(binder.span))
+      }
+      zone = binderZone
+      if (binderZone == LevelZone) numLevelParams += 1
+
       val checkedBinder = ElabAst.Binder(binder.localRef, checkedTy.residual, binder.span, binder.isInstance)
       val vBinder = VBinder(binder.localRef, checkedTy.residual, binder.isImplicit, binder.isInstance)
       vBinders += vBinder
@@ -51,7 +72,7 @@ object BinderOps {
       context = freshen(Vector(vBinder), context)
     }
 
-    CheckedBinders(vBinders.result(), checkedBinders.result(), context)
+    CheckedBinders(vBinders.result(), checkedBinders.result(), context, numLevelParams)
   }
 
   def instantiateFull(binders: Vector[VBinder], baseEnv: Env[Value], args: Vector[Value]): Env[Value] = {
@@ -79,12 +100,7 @@ object BinderOps {
 
   private def freshenBinder(env: Env[Value], binder: VBinder): Env[Value] = {
     val expectedTy = Interpreter.evalTypeTerm(binder.ty, env)
-    val fresh = FreshVar.freshVar(binder.name, expectedTy)
-    val value =
-      expectedTy match {
-        case Value.LevelTpe => Value.Level.mk(fresh.id)
-        case _              => fresh
-      }
+    val (_, value) = FreshVar.freshValue(binder.name, expectedTy)
     env.putLocal(binder.localRef, value)
   }
 

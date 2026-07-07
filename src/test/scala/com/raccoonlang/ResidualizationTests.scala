@@ -49,7 +49,7 @@ class ResidualizationTests extends munit.FunSuite {
       case EA.Term.LocalRef(_, _)  => false
       case EA.Term.App(fn, args, _) =>
         containsGlobal(fn, name) || args.exists(arg => containsGlobal(arg, name))
-      case EA.Term.Pi(binders, out, _, _) =>
+      case EA.Term.Pi(binders, out, _, _, _) =>
         binders.exists(binder => containsGlobal(binder.ty, name)) || containsGlobal(out, name)
       case EA.Term.Body(lets, res, _) =>
         lets.exists(l => l.ty.exists(ty => containsGlobal(ty, name)) || containsGlobal(l.value, name)) ||

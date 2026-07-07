@@ -54,7 +54,9 @@ private object Builtins {
         case pi: VPi =>
           if (numErasedFamilyArgs > pi.binders.length)
             throw ArityMismatch(numErasedFamilyArgs, pi.binders.length, Some(span))
-          ConstructorHead(name, numErasedFamilyArgs, pi.binders.length, pi)
+          // Quot.sound identifies distinct Quot.mk applications, so unification must not assume
+          // injectivity or disjointness for builtin constructors.
+          ConstructorHead(name, numErasedFamilyArgs, pi.binders.length, pi, noConfusion = false)
         case other => throw CannotApplyNonFunction(other, Some(span))
       }
   }

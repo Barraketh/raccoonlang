@@ -174,16 +174,23 @@ object Value {
     def name: String = localRef.name
   }
 
+  // numLevelParams: the telescope is zoned [level implicits][other implicits][explicits];
+  // the first numLevelParams binders are the implicit Level binders.
   case class VPi(
       env: Env[Value],
       binders: Vector[VBinder],
       codomain: Env[Value] => Value,
       synDeps: DepSet,
       id: ValueId,
-      tpe: VSort
+      tpe: VSort,
+      numLevelParams: Int
   ) extends Value
     with UpdatableType {
     require(binders.nonEmpty, "VPi requires at least one binder")
+    require(
+      numLevelParams >= 0 && numLevelParams <= binders.length,
+      "VPi level parameter count must be within the telescope"
+    )
 
     override def toString: String = "VPi"
 
@@ -279,8 +286,18 @@ object Value {
 
   }
 
-  case class ConstructorHead(name: String, numErasedFamilyArgs: Int, totalArity: Int, tpe: Value)
-    extends TopLevelValue
+  /**
+   * `noConfusion`: whether unification may assume injectivity and disjointness for this head. True for constructors of
+   * genuine inductive types. False for quotient constructors: Quot.sound identifies distinct Quot.mk applications, so
+   * `Quot.mk a = Quot.mk b` neither implies `a = b` nor is refutable when `a` and `b` differ.
+   */
+  case class ConstructorHead(
+      name: String,
+      numErasedFamilyArgs: Int,
+      totalArity: Int,
+      tpe: Value,
+      noConfusion: Boolean = true
+  ) extends TopLevelValue
     with UpdatableType {
     require(numErasedFamilyArgs >= 0, "Constructor erased family argument count must be non-negative")
     require(numErasedFamilyArgs <= totalArity, "Constructor erased family argument count cannot exceed total arity")

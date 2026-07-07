@@ -88,7 +88,7 @@ class PreludeTests extends munit.FunSuite {
         |def existsBool : Exists(Bool, isTrue) := Exists.intro(Bool, isTrue, Bool.true, True.intro)
         |def nonemptyNat : Nonempty(Nat) := Nonempty.intro(Nat.zero)
         |def subtypeBool : Subtype(Bool, isTrue) := Subtype.mk(Bool, isTrue, Bool.true, True.intro)
-        |def sigmaNat : Sigma(Nat, Level.one, boolFamily) := Sigma.mk(Nat, Level.one, boolFamily, Nat.zero, Bool.true)
+        |def sigmaNat : Sigma(Nat, boolFamily) := Sigma.mk(Nat, boolFamily, Nat.zero, Bool.true)
         |""".stripMargin
     )
   }

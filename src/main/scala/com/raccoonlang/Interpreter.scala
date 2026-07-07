@@ -79,7 +79,8 @@ object Interpreter {
       codomain = env => evalTypeTerm(pi.out, env),
       synDeps.result(),
       id,
-      pi.classifier
+      pi.classifier,
+      pi.numLevelParams
     )
   }
 

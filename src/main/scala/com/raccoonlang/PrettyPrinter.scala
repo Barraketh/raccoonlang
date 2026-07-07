@@ -149,7 +149,7 @@ object PrettyPrinter {
         val headStr = printElabTermAtom(fn)
         val argsStr = args.map(printElabTermAtom).mkString(", ")
         s"$headStr($argsStr)"
-      case Term.Pi(binders, out, _, _) =>
+      case Term.Pi(binders, out, _, _, _) =>
         val bindersStr = binders
           .map(printElabPiBinder)
           .mkString(" -> ")
@@ -157,9 +157,9 @@ object PrettyPrinter {
     }
 
     def ptAtom(t: ElabAst.TypeTerm): String = t match {
-      case _: Term.Ref         => pt(t)
-      case Term.App(_, _, _)   => pt(t)
-      case Term.Pi(_, _, _, _) => s"(${pt(t)})"
+      case _: Term.Ref            => pt(t)
+      case Term.App(_, _, _)      => pt(t)
+      case Term.Pi(_, _, _, _, _) => s"(${pt(t)})"
     }
 
     def printElabPiBinder(b: ElabAst.Binder): String =
@@ -197,7 +197,7 @@ object PrettyPrinter {
     case ElabAst.Term.Lam(_, _, _, _, _) => s"(${printElabTerm0(t)})"
     case ElabAst.Term.Match(_, _, _, _)  => s"(${printElabTerm0(t)})"
     case ElabAst.Term.Body(_, _, _)      => s"(${printElabTerm0(t)})"
-    case ElabAst.Term.Pi(_, _, _, _)     => s"(${printElabTerm0(t)})"
+    case ElabAst.Term.Pi(_, _, _, _, _)  => s"(${printElabTerm0(t)})"
   }
 
   private def printElabTerm0(t: ElabAst.Term): String = t match {
@@ -232,7 +232,7 @@ object PrettyPrinter {
     case level: Value.Level                         => s"Level(${level.atoms}, ${level.c})"
     case pi: Value.VPi                              => "VPi"
     case Value.VConst(name, _, _)                   => name
-    case Value.ConstructorHead(name, _, _, _)       => name
+    case Value.ConstructorHead(name, _, _, _, _)    => name
     case Value.VCtor(head, storedArgs, _) =>
       val headStr = print(head)
       val patternArgs = Value.constructorPatternArgs(head, storedArgs)

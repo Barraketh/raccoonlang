@@ -1,7 +1,7 @@
 package com.raccoonlang
 
 import com.raccoonlang.ErrorReporter.Source
-import com.raccoonlang.Value.{PropTpe, VPi, VSort}
+import com.raccoonlang.Value.{Level, PropTpe, VPi, VSort}
 
 class PropTests extends munit.FunSuite {
 
@@ -43,7 +43,7 @@ class PropTests extends munit.FunSuite {
   case class SApp(head: Shape, args: List[Shape]) extends Shape
 
   private def toShape(v: Value): Shape = v match {
-    case Value.ConstructorHead(n, _, _, _) => SConst(n)
+    case Value.ConstructorHead(n, _, _, _, _) => SConst(n)
     case Value.VCtor(h, storedArgs, _) =>
       val args = Value.constructorPatternArgs(h, storedArgs)
       if (args.isEmpty) SConst(h.name) else SApp(SConst(h.name), args.toList.map(toShape))
@@ -76,7 +76,7 @@ class PropTests extends munit.FunSuite {
     }
   }
 
-  test("Pi into Prop from Type stays in Prop (internal imax behavior)") {
+  test("Pi into Prop-the-sort from Type lives in Sort 2 (Prop : Sort 1, not a proposition)") {
     val res = runProgram(
       """
         |inductive Nat : Type
@@ -92,10 +92,10 @@ class PropTests extends munit.FunSuite {
       case other  => fail(s"Expected Pi value, got: $other")
     }
 
-    assertEquals(res.tpe, PropTpe)
+    assertEquals(res.tpe, VSort(Level.const(2)))
   }
 
-  test("Dependent Pi into Prop stays in Prop") {
+  test("Dependent Pi into Prop-the-sort lives in Sort 2") {
     val res = runProgram(
       """
         |inductive Nat : Type
@@ -111,7 +111,7 @@ class PropTests extends munit.FunSuite {
       case other  => fail(s"Expected Pi value, got: $other")
     }
 
-    assertEquals(res.tpe, PropTpe)
+    assertEquals(res.tpe, VSort(Level.const(2)))
   }
 
   test("Pi over proof binder into Type stays in Type") {
@@ -183,6 +183,62 @@ class PropTests extends munit.FunSuite {
     typecheckDecls(p)
   }
 
+  test("Constructor apartness does not apply to proofs (irrelevance makes inl/inr proofs equal)") {
+    // Eq(Or(p,p), inl hp, inr hq) is provable by proof irrelevance (getH's body), so match
+    // reachability must not prune the refl case on the inl/inr constructor clash.
+    val p =
+      """
+        |inductive False : Prop
+        |
+        |inductive Or (a: Prop)(b: Prop) : Prop
+        | | inl (left: a) : Or(a, b)
+        | | inr (right: b) : Or(a, b)
+        |
+        |opaque def getH {p: Prop}(hp: p)(hq: p): Eq(Or(p, p), Or.inl(hp), Or.inr(hq)) := Eq.refl(Or.inl(hp))
+        |
+        |def boom {p: Prop}(hp: p)(hq: p): False := {
+        |  match getH(hp, hq) returning False with
+        |}
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[MissingCase] { Interpreter.run(core, Prelude.test) }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
+  }
+
+  test("Family-head clashes are not refutations (propext can equate Prop-valued families)") {
+    val p =
+      """
+        |inductive True : Prop
+        | | intro : True
+        |
+        |inductive False : Prop
+        |
+        |inductive And (a: Prop)(b: Prop) : Prop
+        | | intro (l: a)(r: b) : And(a, b)
+        |
+        |inductive Or (a: Prop)(b: Prop) : Prop
+        | | inl (left: a) : Or(a, b)
+        | | inr (right: b) : Or(a, b)
+        |
+        |def boomP (h: Eq(Prop, And(True, True), Or(True, True))): False := {
+        |  match h returning False with
+        |}
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[MissingCase] { Interpreter.run(core, Prelude.test) }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Prop-valued inductives and impredicative constructor fields
   // ---------------------------------------------------------------------------
@@ -248,7 +304,9 @@ class PropTests extends munit.FunSuite {
     typecheckDecls(p)
   }
 
-  test("Elimination from Prop into Prop is allowed (Exists returns a proposition)") {
+  test("Negative: elimination from Exists into Prop-the-sort is large elimination") {
+    // Prop is a sort, not a proposition: returning Prop extracts the witness into data,
+    // which proof irrelevance would then contradict.
     val p =
       """
         |inductive Exists (A: Type)(p: A -> Prop) : Prop
@@ -260,7 +318,55 @@ class PropTests extends munit.FunSuite {
         |}
         |""".stripMargin
 
-    typecheckDecls(p)
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
+  }
+
+  test("Negative: predicates are not proof-irrelevant") {
+    // trueP and falseP have type (n: Nat) -> Prop, which lives in Type: they are data,
+    // so refl does not identify them.
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        |
+        |inductive True : Prop
+        | | intro : True
+        |
+        |inductive False : Prop
+        |
+        |def trueP (n: Nat): Prop := True
+        |def falseP (n: Nat): Prop := False
+        |
+        |def bad : Eq((n: Nat) -> Prop, trueP, falseP) := Eq.refl(trueP)
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[TypeMismatch] { Interpreter.run(core, Prelude.test) }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
+  }
+
+  test("Pi into a proposition stays in Prop (impredicativity preserved)") {
+    val res = runProgram(
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |{ (n: Nat) -> Eq(Nat, n, n) }
+        |""".stripMargin
+    )
+
+    assertEquals(res.tpe, PropTpe)
   }
 
   test("Negative: elimination from Exists into Nat is rejected") {

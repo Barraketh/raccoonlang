@@ -137,7 +137,7 @@ object InstanceSearch {
 
         val candidateDeps = Value.envDeps(freshEnv) -- Value.envDeps(pi.env)
         val candidateEq =
-          ValueEquivalence.tryUnify(resultTy, goal, EqStore.empty.allow(candidateDeps)) match {
+          ValueEquivalence.tryUnify(resultTy, goal, EqStore.empty.allow(candidateDeps), ValueEquivalence.UnifyMode.Solve) match {
             case Right(eqStore) => eqStore
             case Left(_)        => return SearchResult.failed
           }
@@ -173,7 +173,7 @@ object InstanceSearch {
         SearchResult.Found(Interpreter.evalApply(candidate, args))
 
       case resultTy =>
-        ValueEquivalence.tryUnify(resultTy, goal, EqStore.empty) match {
+        ValueEquivalence.tryUnify(resultTy, goal, EqStore.empty, ValueEquivalence.UnifyMode.Solve) match {
           case Right(_) => SearchResult.Found(candidate)
           case Left(_)  => SearchResult.failed
         }
