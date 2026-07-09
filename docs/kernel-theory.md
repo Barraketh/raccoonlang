@@ -83,7 +83,7 @@ Every evidence rule in §5 must remain valid under all rows of this table.
 | Axiom / primitive | Status | What it coarsens or breaks |
 |---|---|---|
 | `Quot`, `Quot.mk`, `Quot.lift`, `Quot.ind` + `Quot.sound` | **Present** (builtins + axiom, Lean-style) | `=` at quotient types is coarser than structure: `mk a = mk b` without `a = b`. `Quot.mk` must never carry constructor no-confusion. Canonicity broken (§3). |
-| Proof irrelevance | **Present** (definitional) | `≡` at propositions is coarser than structure: constructor shape of proofs carries no evidence (inl/inr equal, Exists.intro not witness-injective). |
+| Proof irrelevance | **Present** (definitional) | `≡` at propositions is coarser than structure: constructor shape of proofs carries no evidence (inl/inr equal, Exists.intro not witness-injective). Planned: enforce by representation instead of by side-condition — collapse all proofs to a structureless `VProof` value (see `proof-collapse.md`). |
 | `propext` | **Planned** (Mathlib) | `=` at `Prop` coarser than structure: distinct true propositions become equal (`And T T = Or T T`). Kills: apartness between propositions-as-values, injectivity of Prop-valued family formers in index positions. Audited: §5 rules already exclude these; residual TODO on `noConfusionHead` (index-position decomposition of Prop-sorted family instances). |
 | `funext` | **Planned** (Mathlib) | `=` at function types coarser than intensional structure: extensionally equal, syntactically distinct functions become equal. Kills: any apartness between function values; makes "provable equations between stuck applications" constructible, which is why Invert-mode links under non-invertible frames had to be refused *before* funext lands. |
 | Choice / LEM | **Planned** (Mathlib) | Anti-classical assumptions become inconsistent: notably *injectivity of type formers with large parameters* (Cantor). Family-former injectivity must never be propositional evidence. |
@@ -110,16 +110,17 @@ without inventing values).
 | **Large elimination permit** | MatchChecker `checkPropElimination` | Prop scrutinee eliminating into non-Prop needs subsingleton criteria: ≤1 reachable ctor and every non-proof field forced by the indices. Motive `Prop`-the-sort counts as large (it is data). | `allowLargeElimination` (Invert-mode unification of two fresh ctor copies). |
 | **Prop classification** | TypeChecker `checkPi`, `checkPropElimination` | A type is a proposition iff it *lives in* `Prop`; the sort `Prop` never qualifies. | `isPropValuedType = getUniverse(v) == PropTpe`. |
 
-**Design debt, agreed direction:** head-shape classification (`noConfusionHead`, the per-constructor
-`noConfusion` flag) is a proxy for the real predicate "the corresponding no-confusion/injectivity
-theorem is derivable at the compared values' type" — Lean enforces this implicitly because its
-equation compiler must cite generated lemmas that simply don't exist for Prop inductives, type
-formers, or `Quot.mk`. Planned refactor: evidence grades (`Choices` /
+**Design debt, agreed direction:** head-shape classification (`definitionallyInjectiveHead`, the
+per-constructor `noConfusion` flag) is a proxy for the real predicate "the corresponding
+no-confusion/injectivity theorem is derivable at the compared values' type" — Lean enforces this
+implicitly because its equation compiler must cite generated lemmas that simply don't exist for Prop
+inductives, type formers, or `Quot.mk`. Planned refactor: evidence grades (`Choices` /
 `DefinitionalConsequences` / `PropositionalConsequences`) classified by the values' *type*;
 MatchChecker decomposes the root family instantiation itself (eliminator-justified) and requests
 only propositional-grade component evidence; the `noConfusion` flag is then derivable and deleted.
 This closes the `TODO(propext)` and makes probe B's type-former injectivity (anti-classical, §4)
-impossible to reintroduce.
+impossible to reintroduce. Sequencing: implement proof collapse (`proof-collapse.md`) first — it
+deletes the proof cases this refactor would otherwise carry.
 
 ## 6. Interaction checklist
 
