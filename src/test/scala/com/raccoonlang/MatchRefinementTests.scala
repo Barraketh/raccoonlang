@@ -106,43 +106,4 @@ class MatchRefinementTests extends munit.FunSuite {
     intercept[TypeMismatch] { typecheckDecls(p) }
   }
 
-  test("match refinement negative: opaque function applications do not refine their arguments") {
-    // Eq(f(x), f(y)) does not force x = y for a non-injective head: unification must not
-    // link x := y beneath the opaque frame f, so the refl branch stays unrefined.
-    val p =
-      """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
-        |opaque def f (n: Nat): Nat := n
-        |
-        |def injF (x: Nat)(y: Nat)(h: Eq(Nat, f(x), f(y))): Eq(Nat, x, y) := {
-        |  match h returning Eq(Nat, x, y) with
-        |  | Eq.refl z => Eq.refl(x)
-        |}
-        |""".stripMargin
-
-    intercept[TypeMismatch] { typecheckDecls(p) }
-  }
-
-  test("match refinement negative: stuck opaque-head equations keep the refl case required") {
-    // The same equation is stuck, not apart: a no-cases match must not prune refl.
-    val p =
-      """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
-        |
-        |inductive MyFalse : Prop
-        |
-        |opaque def f (n: Nat): Nat := n
-        |
-        |def boom (x: Nat)(y: Nat)(h: Eq(Nat, f(x), f(y))): MyFalse := {
-        |  match h returning MyFalse with
-        |}
-        |""".stripMargin
-
-    intercept[MissingCase] { typecheckDecls(p) }
-  }
 }

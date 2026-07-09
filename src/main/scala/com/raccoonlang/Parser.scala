@@ -19,12 +19,36 @@ case class ParseError(startIdx: Int, curIdx: Int, message: String) extends Runti
 
 case class SourceId(value: Int) extends AnyVal
 
+object SourceId {
+  // Like FreshVar, source-id allocation assumes parsing is single-threaded.
+  private var nextValue = 0
+
+  def fresh(): SourceId = {
+    val result = SourceId(nextValue)
+    nextValue += 1
+    result
+  }
+}
+
 case class AstNodeId(source: Option[SourceId], start: Int) {
   def stableName: String =
     source match {
       case Some(sourceId) => s"${sourceId.value}:$start"
       case None           => s"unknown:$start"
     }
+}
+
+object AstNodeId {
+  // Synthetic ids share the SourceId allocator with parses. This assumes single-threaded quoting,
+  // as does FreshVar; a unique offset within the reserved source makes every fabricated node distinct.
+  private lazy val syntheticSource = SourceId.fresh()
+  private var nextSyntheticStart = 0
+
+  def synthetic(): AstNodeId = {
+    val result = AstNodeId(Some(syntheticSource), nextSyntheticStart)
+    nextSyntheticStart += 1
+    result
+  }
 }
 
 case class Span(start: Int, end: Int, source: Option[SourceId] = None) {

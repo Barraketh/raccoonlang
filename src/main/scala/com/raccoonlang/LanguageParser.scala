@@ -354,7 +354,7 @@ object LanguageParser {
   }
 
   def parseProgram(input: String): ParseResult[Program] = {
-    implicit val sourceId: Option[SourceId] = None
+    implicit val sourceId: Option[SourceId] = Some(SourceId.fresh())
     tryParse(input, programP)
   }
 

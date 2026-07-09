@@ -23,7 +23,8 @@ class CapturedRefsTests extends munit.FunSuite {
       ),
       classifier,
       numLevelParams = 0,
-      span
+      span,
+      nodeId = AstNodeId.synthetic()
     )
 
     val refs = CapturedRefs.getCapturedRefs(term, env)

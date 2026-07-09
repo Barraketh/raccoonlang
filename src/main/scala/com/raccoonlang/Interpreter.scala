@@ -66,7 +66,7 @@ object Interpreter {
     val capturedRefs = CapturedRefs.getCapturedRefs(pi, env)
     val closedEnv = env.closeForEval(capturedRefs)
     val captureVals = closedEnv.locals.values.toVector
-    val id = ValueId.LocalId(pi.span.nodeId, captureVals)
+    val id = ValueId.LocalId(pi.nodeId, captureVals)
 
     val synDeps = DepSet.newBuilder
     captureVals.foreach { v =>
@@ -137,7 +137,7 @@ object Interpreter {
     val id = l.name match {
       case Some(funcName) => ValueId.Const(funcName)
       case None =>
-        ValueId.LocalId(l.span.nodeId, closedEnv.locals.values.toVector)
+        ValueId.LocalId(l.nodeId, closedEnv.locals.values.toVector)
 
     }
     VLam(vpi, id, LamBody.Core(l, closedEnv))
@@ -207,7 +207,7 @@ object Interpreter {
           case Some(motive) => evalTypeTerm(motive, env)
           case None         => scrut.tpe
         }
-        val lamId = ValueId.LocalId(m.span.nodeId, matchCaptures)
+        val lamId = ValueId.LocalId(m.nodeId, matchCaptures)
         other match {
           case Blocker(blockerId) => return NeutralThunk(m, closedEnv, lamId, outType, Some(blockerId))
           case _                  => return NeutralThunk(m, closedEnv, lamId, outType, None)

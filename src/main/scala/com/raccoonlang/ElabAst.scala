@@ -25,8 +25,14 @@ object ElabAst {
 
     // numLevelParams: the telescope is zoned [level implicits][other implicits][explicits];
     // the first numLevelParams binders are the implicit Level binders.
-    final case class Pi(binders: Vector[Binder], out: TypeTerm, classifier: VSort, numLevelParams: Int, span: Span)
-      extends Term
+    final case class Pi(
+        binders: Vector[Binder],
+        out: TypeTerm,
+        classifier: VSort,
+        numLevelParams: Int,
+        span: Span,
+        nodeId: AstNodeId
+    ) extends Term
       with TypeTerm {
       require(binders.nonEmpty, "Pi requires at least one binder")
       require(
@@ -42,14 +48,16 @@ object ElabAst {
         body: Term,
         span: Span,
         name: Option[String],
-        recursiveSelf: Option[CoreAst.LocalRef]
+        recursiveSelf: Option[CoreAst.LocalRef],
+        nodeId: AstNodeId
     ) extends Term
 
     final case class Match(
         scrut: Term,
         motive: Option[TypeTerm],
         cases: Vector[Case],
-        span: Span
+        span: Span,
+        nodeId: AstNodeId
     ) extends Term
   }
 

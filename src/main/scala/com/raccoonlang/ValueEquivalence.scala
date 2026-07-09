@@ -392,7 +392,9 @@ object ValueEquivalence {
           // the applications, and links made below are choices, not consequences (Invert mode refuses
           // them via argCtx).
           val invertible =
-            definitionallyInjectiveHead(v1.head) && definitionallyInjectiveHead(v2.head) && !isProofValue(v1) && !isProofValue(v2)
+            definitionallyInjectiveHead(v1.head) && definitionallyInjectiveHead(v2.head) && !isProofValue(
+              v1
+            ) && !isProofValue(v2)
           val argCtx = if (invertible) ctx else ctx.enterNonInvertibleFrame
           def frame(failed: UnifyFailure): UnifyFailure = if (invertible) failed else failed.asStuck
           tryUnify(v1.head, v2.head, meta, argCtx) match {

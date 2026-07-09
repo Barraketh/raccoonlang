@@ -112,7 +112,7 @@ object ModuleLoader {
                 fail(ModuleReadFailed(path, Option(e.getMessage).getOrElse(e.toString), readSpan))
             }
 
-          val sourceId = SourceId(sources.length)
+          val sourceId = SourceId.fresh()
           sources :+= LoadedSource(sourceId, path, source)
 
           LanguageParser.parseProgram(source, sourceId) match {

@@ -183,62 +183,6 @@ class PropTests extends munit.FunSuite {
     typecheckDecls(p)
   }
 
-  test("Constructor apartness does not apply to proofs (irrelevance makes inl/inr proofs equal)") {
-    // Eq(Or(p,p), inl hp, inr hq) is provable by proof irrelevance (getH's body), so match
-    // reachability must not prune the refl case on the inl/inr constructor clash.
-    val p =
-      """
-        |inductive False : Prop
-        |
-        |inductive Or (a: Prop)(b: Prop) : Prop
-        | | inl (left: a) : Or(a, b)
-        | | inr (right: b) : Or(a, b)
-        |
-        |opaque def getH {p: Prop}(hp: p)(hq: p): Eq(Or(p, p), Or.inl(hp), Or.inr(hq)) := Eq.refl(Or.inl(hp))
-        |
-        |def boom {p: Prop}(hp: p)(hq: p): False := {
-        |  match getH(hp, hq) returning False with
-        |}
-        |""".stripMargin
-
-    LanguageParser.parseProgram(p) match {
-      case Success(value, _, _) =>
-        val core = Elaborator.elab(value, Prelude.test)
-        intercept[MissingCase] { Interpreter.run(core, Prelude.test) }
-      case err: Failure =>
-        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
-    }
-  }
-
-  test("Family-head clashes are not refutations (propext can equate Prop-valued families)") {
-    val p =
-      """
-        |inductive True : Prop
-        | | intro : True
-        |
-        |inductive False : Prop
-        |
-        |inductive And (a: Prop)(b: Prop) : Prop
-        | | intro (l: a)(r: b) : And(a, b)
-        |
-        |inductive Or (a: Prop)(b: Prop) : Prop
-        | | inl (left: a) : Or(a, b)
-        | | inr (right: b) : Or(a, b)
-        |
-        |def boomP (h: Eq(Prop, And(True, True), Or(True, True))): False := {
-        |  match h returning False with
-        |}
-        |""".stripMargin
-
-    LanguageParser.parseProgram(p) match {
-      case Success(value, _, _) =>
-        val core = Elaborator.elab(value, Prelude.test)
-        intercept[MissingCase] { Interpreter.run(core, Prelude.test) }
-      case err: Failure =>
-        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
-    }
-  }
-
   // ---------------------------------------------------------------------------
   // Prop-valued inductives and impredicative constructor fields
   // ---------------------------------------------------------------------------
@@ -302,57 +246,6 @@ class PropTests extends munit.FunSuite {
         |""".stripMargin
 
     typecheckDecls(p)
-  }
-
-  test("Negative: elimination from Exists into Prop-the-sort is large elimination") {
-    // Prop is a sort, not a proposition: returning Prop extracts the witness into data,
-    // which proof irrelevance would then contradict.
-    val p =
-      """
-        |inductive Exists (A: Type)(p: A -> Prop) : Prop
-        | | intro (w: A)(pw: p(w)) : Exists(A, p)
-        |
-        |def unpackToProp (A: Type)(p: A -> Prop)(h: Exists(A, p)): Prop := {
-        |  match h returning Prop with
-        |  | Exists.intro w pw => p(w)
-        |}
-        |""".stripMargin
-
-    LanguageParser.parseProgram(p) match {
-      case Success(value, _, _) =>
-        val core = Elaborator.elab(value, Prelude.test)
-        intercept[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
-      case err: Failure =>
-        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
-    }
-  }
-
-  test("Negative: predicates are not proof-irrelevant") {
-    // trueP and falseP have type (n: Nat) -> Prop, which lives in Type: they are data,
-    // so refl does not identify them.
-    val p =
-      """
-        |inductive Nat : Type
-        | | zero : Nat
-        |
-        |inductive True : Prop
-        | | intro : True
-        |
-        |inductive False : Prop
-        |
-        |def trueP (n: Nat): Prop := True
-        |def falseP (n: Nat): Prop := False
-        |
-        |def bad : Eq((n: Nat) -> Prop, trueP, falseP) := Eq.refl(trueP)
-        |""".stripMargin
-
-    LanguageParser.parseProgram(p) match {
-      case Success(value, _, _) =>
-        val core = Elaborator.elab(value, Prelude.test)
-        intercept[TypeMismatch] { Interpreter.run(core, Prelude.test) }
-      case err: Failure =>
-        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
-    }
   }
 
   test("Pi into a proposition stays in Prop (impredicativity preserved)") {

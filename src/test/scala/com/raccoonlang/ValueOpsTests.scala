@@ -130,14 +130,16 @@ class ValueOpsTests extends munit.FunSuite {
       typeRef,
       typeToTypeClassifier,
       numLevelParams = 0,
-      span
+      span,
+      nodeId = AstNodeId.synthetic()
     )
     val lamTerm = ETerm.Lam(
       piTerm,
       ETerm.LocalRef(capturedRef, span),
       span,
       name = None,
-      recursiveSelf = None
+      recursiveSelf = None,
+      nodeId = AstNodeId.synthetic()
     )
     val lam = VLam(pi, ValueId.LocalId(nodeId(2), Vector(captured)), LamBody.Core(lamTerm, runtimeEnv))
 
@@ -174,14 +176,16 @@ class ValueOpsTests extends munit.FunSuite {
       typeRef,
       typeToTypeClassifier,
       numLevelParams = 0,
-      span
+      span,
+      nodeId = AstNodeId.synthetic()
     )
     val lamTerm = ETerm.Lam(
       piTerm,
       ETerm.LocalRef(capturedRef, span),
       span,
       name = None,
-      recursiveSelf = None
+      recursiveSelf = None,
+      nodeId = AstNodeId.synthetic()
     )
     val lam = VLam(pi, ValueId.LocalId(nodeId(2), Vector.empty), LamBody.Core(lamTerm, runtimeEnv))
 
@@ -199,7 +203,8 @@ class ValueOpsTests extends munit.FunSuite {
       typeRef,
       typeToTypeClassifier,
       numLevelParams = 0,
-      span
+      span,
+      nodeId = AstNodeId.synthetic()
     )
     val vpi = Interpreter.evalPi(piTerm, env, piTerm.binders.map(com.raccoonlang.telescope.BinderOps.toVBinder))
     val lamTerm = ETerm.Lam(
@@ -207,7 +212,8 @@ class ValueOpsTests extends munit.FunSuite {
       ETerm.LocalRef(capturedRef, span),
       span,
       name = None,
-      recursiveSelf = None
+      recursiveSelf = None,
+      nodeId = AstNodeId.synthetic()
     )
     val lam = Interpreter.evalLam(lamTerm, vpi, env)
 
@@ -239,7 +245,8 @@ class ValueOpsTests extends munit.FunSuite {
           span
         )
       ),
-      span
+      span,
+      AstNodeId.synthetic()
     )
     val thunk = NeutralThunk(
       matchTerm,
@@ -286,7 +293,8 @@ class ValueOpsTests extends munit.FunSuite {
           span
         )
       ),
-      span
+      span,
+      AstNodeId.synthetic()
     )
 
     val blocked = Interpreter.evalTerm(matchTerm, env).asInstanceOf[NeutralThunk]

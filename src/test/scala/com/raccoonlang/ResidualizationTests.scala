@@ -49,15 +49,15 @@ class ResidualizationTests extends munit.FunSuite {
       case EA.Term.LocalRef(_, _)  => false
       case EA.Term.App(fn, args, _) =>
         containsGlobal(fn, name) || args.exists(arg => containsGlobal(arg, name))
-      case EA.Term.Pi(binders, out, _, _, _) =>
+      case EA.Term.Pi(binders, out, _, _, _, _) =>
         binders.exists(binder => containsGlobal(binder.ty, name)) || containsGlobal(out, name)
       case EA.Term.Body(lets, res, _) =>
         lets.exists(l => l.ty.exists(ty => containsGlobal(ty, name)) || containsGlobal(l.value, name)) ||
         containsGlobal(res, name)
-      case EA.Term.Lam(ty, body, _, _, _) =>
+      case EA.Term.Lam(ty, body, _, _, _, _) =>
         containsGlobal(ty, name) ||
         containsGlobal(body, name)
-      case EA.Term.Match(scrut, motive, cases, _) =>
+      case EA.Term.Match(scrut, motive, cases, _, _) =>
         containsGlobal(scrut, name) ||
         motive.exists(ty => containsGlobal(ty, name)) ||
         cases.exists(c => containsGlobal(c.body, name))
@@ -165,7 +165,7 @@ class ResidualizationTests extends munit.FunSuite {
           |""".stripMargin
 
     resultTerm(checkBody(p).term) match {
-      case EA.Term.Lam(_, body, _, _, _) =>
+      case EA.Term.Lam(_, body, _, _, _, _) =>
         assert(containsGlobal(body, "id"))
         assert(containsGlobal(body, "Nat.zero"))
       case other => fail(s"Expected literal lambda body, got $other")
@@ -191,7 +191,7 @@ class ResidualizationTests extends munit.FunSuite {
           |""".stripMargin
 
     resultTerm(checkBody(p).term) match {
-      case EA.Term.Match(_, _, cases, _) =>
+      case EA.Term.Match(_, _, cases, _, _) =>
         assertEquals(cases.map(_.ctorName).toSet, Set("Bool.true", "Bool.false"))
         cases.foreach(c => assert(containsGlobal(c.body, "id")))
       case other => fail(s"Expected stuck match with literal branches, got $other")
@@ -217,7 +217,7 @@ class ResidualizationTests extends munit.FunSuite {
           |""".stripMargin
 
     resultTerm(checkBody(p).term) match {
-      case EA.Term.Match(scrut, _, _, _) =>
+      case EA.Term.Match(scrut, _, _, _, _) =>
         assert(containsGlobal(scrut, "idBool"))
         assert(containsGlobal(scrut, "opaqueBool"))
       case other => fail(s"Expected stuck match residual, got $other")

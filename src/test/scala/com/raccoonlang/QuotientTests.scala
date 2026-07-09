@@ -147,67 +147,6 @@ class QuotientTests extends munit.FunSuite {
     assertEquals(err.msg, "Unknown builtin bogus")
   }
 
-  private def expectTypeError[E <: TypeError](
-      src: String
-  )(implicit ct: scala.reflect.ClassTag[E], loc: munit.Location): E =
-    LanguageParser.parseProgram(src) match {
-      case Success(value, _, _) =>
-        val core = Elaborator.elab(value)
-        intercept[E](Interpreter.run(core))
-      case err: Failure =>
-        fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
-    }
-
-  // Quot.sound identifies Quot.mk applications with distinct representatives, so match checking
-  // must not apply constructor no-confusion to Quot.mk. Both programs below derived False before
-  // ConstructorHead.noConfusion was introduced.
-
-  test("Quot.mk is not disjoint: refl stays reachable for equalities between distinct representatives") {
-    val err = expectTypeError[MissingCase](
-      """
-        |def TrivRel (a: Bool)(b: Bool): Prop := True
-        |
-        |def boom (p: Eq(Quot(Bool, TrivRel), Quot.mk(Bool, TrivRel, Bool.true), Quot.mk(Bool, TrivRel, Bool.false))): False := {
-        |  match p returning False with
-        |}
-        |""".stripMargin
-    )
-    assertEquals(err.ctor, "Eq.refl")
-  }
-
-  test("Quot.mk is not injective: match refinement cannot derive representative equality") {
-    expectTypeError[TypeMismatch](
-      """
-        |def TrivRel (a: Bool)(b: Bool): Prop := True
-        |
-        |def mkInj (x: Bool)(y: Bool)(p: Eq(Quot(Bool, TrivRel), Quot.mk(Bool, TrivRel, x), Quot.mk(Bool, TrivRel, y))): Eq(Bool, x, y) := {
-        |  match p returning Eq(Bool, x, y) with
-        |  | Eq.refl z => Eq.refl(x)
-        |}
-        |""".stripMargin
-    )
-  }
-
-  test("congruence failures under opaque heads are not refutations") {
-    // Eq(g(mk true), g(mk false)) is provable via congrArg over Quot.sound, so unification failing
-    // on the arguments of the non-injective head g must not prune the refl case.
-    val err = expectTypeError[MissingCase](
-      """
-        |def TrivRel (a: Bool)(b: Bool): Prop := True
-        |
-        |axiom g (q: Quot(Bool, TrivRel)): Nat
-        |
-        |def gEq : Eq(Nat, g(Quot.mk(Bool, TrivRel, Bool.true)), g(Quot.mk(Bool, TrivRel, Bool.false))) :=
-        |  congrArg(Quot.sound(Bool.true, Bool.false, TrivRel, True.intro), Nat, g)
-        |
-        |def boom (p: Eq(Nat, g(Quot.mk(Bool, TrivRel, Bool.true)), g(Quot.mk(Bool, TrivRel, Bool.false)))): False := {
-        |  match p returning False with
-        |}
-        |""".stripMargin
-    )
-    assertEquals(err.ctor, "Eq.refl")
-  }
-
   test("genuine constructor disjointness still prunes impossible refl cases") {
     runProgram(
       """

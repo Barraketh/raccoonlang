@@ -1,0 +1,357 @@
+package com.raccoonlang
+
+import com.raccoonlang.ErrorReporter.Source
+
+// See docs/kernel-theory.md §8: these permanent must-reject programs are probes that once
+// derived False (or were one planned axiom away). A red test signals unsoundness, not staleness.
+// Each test names the corresponding §7 case-law entry.
+class ConsistencyTests extends munit.FunSuite {
+  private def runProgram(src: String): Value = {
+    LanguageParser.parseProgram(src) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value)
+        try {
+          Interpreter.run(core).getOrElse(fail("Program has no body"))
+        } catch {
+          case t: TypeError => fail(ErrorReporter.pretty(t, Source(src)))
+        }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
+    }
+  }
+
+  private def typecheckDecls(src: String): Unit = {
+    LanguageParser.parseProgram(src) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        Interpreter.run(core, Prelude.test)
+      case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
+    }
+  }
+
+  private def runTestProgram(src: String): Value = {
+    runTestProgramWithEnv(src)._1
+  }
+
+  private def runTestProgramWithEnv(src: String): (Value, Env[Value]) = {
+    LanguageParser.parseProgram(src) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        val worlds = core.decls.foldLeft(Interpreter.initialWorlds(Prelude.test)) { case (current, decl) =>
+          Interpreter.evalDecl(decl, current)
+        }
+        val body = core.body.getOrElse(fail("Program has no body"))
+        val checked = TypeChecker.checkTerm(body, worlds.checkContext)
+        (Interpreter.evalTerm(checked.residual, worlds.runEnv), worlds.runEnv)
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
+    }
+  }
+
+  private def expectTypeError[E <: TypeError](
+      src: String
+  )(implicit ct: scala.reflect.ClassTag[E], loc: munit.Location): E =
+    LanguageParser.parseProgram(src) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value)
+        intercept[E](Interpreter.run(core))
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
+    }
+
+  // §7.1 Quot no-confusion.
+  test("Quot.mk is not disjoint: refl stays reachable for equalities between distinct representatives") {
+    val err = expectTypeError[MissingCase](
+      """
+        |def TrivRel (a: Bool)(b: Bool): Prop := True
+        |
+        |def boom (p: Eq(Quot(Bool, TrivRel), Quot.mk(Bool, TrivRel, Bool.true), Quot.mk(Bool, TrivRel, Bool.false))): False := {
+        |  match p returning False with
+        |}
+        |""".stripMargin
+    )
+    assertEquals(err.ctor, "Eq.refl")
+  }
+
+  // §7.1 Quot no-confusion.
+  test("Quot.mk is not injective: match refinement cannot derive representative equality") {
+    expectTypeError[TypeMismatch](
+      """
+        |def TrivRel (a: Bool)(b: Bool): Prop := True
+        |
+        |def mkInj (x: Bool)(y: Bool)(p: Eq(Quot(Bool, TrivRel), Quot.mk(Bool, TrivRel, x), Quot.mk(Bool, TrivRel, y))): Eq(Bool, x, y) := {
+        |  match p returning Eq(Bool, x, y) with
+        |  | Eq.refl z => Eq.refl(x)
+        |}
+        |""".stripMargin
+    )
+  }
+
+  // §7.1 Quot no-confusion.
+  test("congruence failures under opaque heads are not refutations") {
+    // Eq(g(mk true), g(mk false)) is provable via congrArg over Quot.sound, so unification failing
+    // on the arguments of the non-injective head g must not prune the refl case.
+    val err = expectTypeError[MissingCase](
+      """
+        |def TrivRel (a: Bool)(b: Bool): Prop := True
+        |
+        |axiom g (q: Quot(Bool, TrivRel)): Nat
+        |
+        |def gEq : Eq(Nat, g(Quot.mk(Bool, TrivRel, Bool.true)), g(Quot.mk(Bool, TrivRel, Bool.false))) :=
+        |  congrArg(Quot.sound(Bool.true, Bool.false, TrivRel, True.intro), Nat, g)
+        |
+        |def boom (p: Eq(Nat, g(Quot.mk(Bool, TrivRel, Bool.true)), g(Quot.mk(Bool, TrivRel, Bool.false)))): False := {
+        |  match p returning False with
+        |}
+        |""".stripMargin
+    )
+    assertEquals(err.ctor, "Eq.refl")
+  }
+
+  // §7.2 Unification mode conflation.
+  test("match refinement negative: opaque function applications do not refine their arguments") {
+    // Eq(f(x), f(y)) does not force x = y for a non-injective head: unification must not
+    // link x := y beneath the opaque frame f, so the refl branch stays unrefined.
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |opaque def f (n: Nat): Nat := n
+        |
+        |def injF (x: Nat)(y: Nat)(h: Eq(Nat, f(x), f(y))): Eq(Nat, x, y) := {
+        |  match h returning Eq(Nat, x, y) with
+        |  | Eq.refl z => Eq.refl(x)
+        |}
+        |""".stripMargin
+
+    intercept[TypeMismatch] { typecheckDecls(p) }
+  }
+
+  // §7.2 Unification mode conflation.
+  test("match refinement negative: stuck opaque-head equations keep the refl case required") {
+    // The same equation is stuck, not apart: a no-cases match must not prune refl.
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive MyFalse : Prop
+        |
+        |opaque def f (n: Nat): Nat := n
+        |
+        |def boom (x: Nat)(y: Nat)(h: Eq(Nat, f(x), f(y))): MyFalse := {
+        |  match h returning MyFalse with
+        |}
+        |""".stripMargin
+
+    intercept[MissingCase] { typecheckDecls(p) }
+  }
+
+  // §7.3 Proof-constructor apartness versus irrelevance.
+  test("Constructor apartness does not apply to proofs (irrelevance makes inl/inr proofs equal)") {
+    // Eq(Or(p,p), inl hp, inr hq) is provable by proof irrelevance (getH's body), so match
+    // reachability must not prune the refl case on the inl/inr constructor clash.
+    val p =
+      """
+        |inductive False : Prop
+        |
+        |inductive Or (a: Prop)(b: Prop) : Prop
+        | | inl (left: a) : Or(a, b)
+        | | inr (right: b) : Or(a, b)
+        |
+        |opaque def getH {p: Prop}(hp: p)(hq: p): Eq(Or(p, p), Or.inl(hp), Or.inr(hq)) := Eq.refl(Or.inl(hp))
+        |
+        |def boom {p: Prop}(hp: p)(hq: p): False := {
+        |  match getH(hp, hq) returning False with
+        |}
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[MissingCase] { Interpreter.run(core, Prelude.test) }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
+  }
+
+  // §7.5 Family-head apartness.
+  test("Family-head clashes are not refutations (propext can equate Prop-valued families)") {
+    val p =
+      """
+        |inductive True : Prop
+        | | intro : True
+        |
+        |inductive False : Prop
+        |
+        |inductive And (a: Prop)(b: Prop) : Prop
+        | | intro (l: a)(r: b) : And(a, b)
+        |
+        |inductive Or (a: Prop)(b: Prop) : Prop
+        | | inl (left: a) : Or(a, b)
+        | | inr (right: b) : Or(a, b)
+        |
+        |def boomP (h: Eq(Prop, And(True, True), Or(True, True))): False := {
+        |  match h returning False with
+        |}
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[MissingCase] { Interpreter.run(core, Prelude.test) }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
+  }
+
+  // §7.4 Prop-sort conflation.
+  test("Negative: elimination from Exists into Prop-the-sort is large elimination") {
+    // Prop is a sort, not a proposition: returning Prop extracts the witness into data,
+    // which proof irrelevance would then contradict.
+    val p =
+      """
+        |inductive Exists (A: Type)(p: A -> Prop) : Prop
+        | | intro (w: A)(pw: p(w)) : Exists(A, p)
+        |
+        |def unpackToProp (A: Type)(p: A -> Prop)(h: Exists(A, p)): Prop := {
+        |  match h returning Prop with
+        |  | Exists.intro w pw => p(w)
+        |}
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
+  }
+
+  // §7.4 Prop-sort conflation.
+  test("Negative: predicates are not proof-irrelevant") {
+    // trueP and falseP have type (n: Nat) -> Prop, which lives in Type: they are data,
+    // so refl does not identify them.
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        |
+        |inductive True : Prop
+        | | intro : True
+        |
+        |inductive False : Prop
+        |
+        |def trueP (n: Nat): Prop := True
+        |def falseP (n: Nat): Prop := False
+        |
+        |def bad : Eq((n: Nat) -> Prop, trueP, falseP) := Eq.refl(trueP)
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[TypeMismatch] { Interpreter.run(core, Prelude.test) }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
+  }
+
+  // §7.4 Prop-sort conflation; default-prelude variant covering congrFun and Eq.mp.
+  test("predicates are not proof-irrelevant through congrFun and Eq.mp") {
+    val src =
+      """
+        |def trueP (n: Nat): Prop := True
+        |def falseP (n: Nat): Prop := False
+        |
+        |def bad : Eq((n: Nat) -> Prop, trueP, falseP) := Eq.refl(trueP)
+        |
+        |def boom : False := Eq.mp(congrFun(Nat, Prop, trueP, falseP, bad, Nat.zero), True.intro)
+        |
+        |{
+        |  boom
+        |}
+        |""".stripMargin
+    LanguageParser.parseProgram(src) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value)
+        intercept[TypeMismatch] { Interpreter.run(core) }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
+    }
+  }
+
+  // NOT a rejection yet: type-former injectivity is anti-classical (kernel-theory §4 choice/LEM
+  // row) and becomes a rejection with the §5 evidence-grades refactor.
+  test("currently allowed: inductive family head injectivity via match refinement") {
+    runProgram(
+      """
+        |inductive I (P: Type -> Type) : Type
+        | | mk : I(P)
+        |
+        |def injI (P: Type -> Type)(Q: Type -> Type)(h: Eq(Type, I(P), I(Q))): Eq((T: Type) -> Type, P, Q) := {
+        |  match h returning Eq((T: Type) -> Type, P, Q) with
+        |  | Eq.refl z => Eq.refl(P)
+        |}
+        |
+        |{
+        |  Bool.true
+        |}
+        |""".stripMargin
+    )
+  }
+
+  // §7.7 AstNodeId value identity.
+  test("separate parses give distinct local Pi identities") {
+    def piProgram(domain: String, binder: String): String =
+      s"""
+        |inductive Nat : Type
+        | | zero : Nat
+        |
+        |inductive Bool : Type
+        | | true : Bool
+        | | false : Bool
+        |
+        |{ ($binder: $domain) -> $domain }
+        |""".stripMargin
+
+    val natPi = runTestProgram(piProgram("Nat", "x"))
+    val boolPi = runTestProgram(piProgram("Bool", "b"))
+
+    assert(!ValueEquivalence.defEq(natPi, boolPi, propIrrelevant = false))
+  }
+
+  // §7.7 AstNodeId value identity.
+  test("quoted Pi siblings receive distinct identities while re-quotes remain definitionally equal") {
+    def piProgram(domain: String): String =
+      s"""
+        |inductive Nat : Type
+        | | zero : Nat
+        |
+        |inductive Bool : Type
+        | | true : Bool
+        | | false : Bool
+        |
+        |{ (x: $domain) -> $domain }
+        |""".stripMargin
+
+    val (natValue, env) = runTestProgramWithEnv(piProgram("Nat"))
+    val natPi = natValue.asInstanceOf[Value.VPi]
+    val boolPi = runTestProgram(piProgram("Bool")).asInstanceOf[Value.VPi]
+    val context = ValueQuote.QuoteContext(Map.empty)
+    val sharedSpan = Span(0, 0)
+    val quotedNat = ValueQuote.quoteTerm(natPi, context, sharedSpan)
+    val quotedBool = ValueQuote.quoteTerm(boolPi, context, sharedSpan)
+    val reQuotedNat = ValueQuote.quoteTerm(natPi, context, sharedSpan)
+    val evaluatedNat = Interpreter.evalTerm(quotedNat, env)
+    val evaluatedBool = Interpreter.evalTerm(quotedBool, env)
+    val evaluatedNatAgain = Interpreter.evalTerm(reQuotedNat, env)
+
+    assert(!ValueEquivalence.defEq(evaluatedNat, evaluatedBool, propIrrelevant = false))
+    assert(ValueEquivalence.defEq(evaluatedNat, evaluatedNatAgain, propIrrelevant = false))
+  }
+}

@@ -25,7 +25,7 @@ object CapturedRefs {
       case Term.LocalRef(ref, _) =>
         addRef(ref, env, refs)
 
-      case Term.Pi(binders, out, _, _, _) =>
+      case Term.Pi(binders, out, _, _, _, _) =>
         val refsWithBinders = binders.foldLeft(refs) { case (curRefs, b) => goTerm(b.ty, env, curRefs) }
         goTerm(out, env, refsWithBinders)
 
@@ -39,10 +39,10 @@ object CapturedRefs {
         }
         goTerm(res, env, refsWithLets)
 
-      case Term.Lam(ty, body, _, _, _) =>
+      case Term.Lam(ty, body, _, _, _, _) =>
         goTerm(body, env, goTerm(ty, env, refs))
 
-      case Match(scrut, motive, cases, _) =>
+      case Match(scrut, motive, cases, _, _) =>
         val refsWithScrut = goTerm(scrut, env, refs)
         val refsWithMotive = motive.fold(refsWithScrut)(goTerm(_, env, refsWithScrut))
         cases.foldLeft(refsWithMotive) { case (curRefs, c) => goTerm(c.body, env, curRefs) }

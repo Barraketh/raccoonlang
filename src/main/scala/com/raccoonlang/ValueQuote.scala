@@ -32,30 +32,32 @@ object ValueQuote {
         case ElabAst.Term.LocalRef(ref, refSpan) => inlineLocal(ref, refSpan)
         case ElabAst.Term.App(fn, args, appSpan) =>
           ElabAst.Term.App(inlineAppHead(fn), args.map(inlineTerm), appSpan)
-        case ElabAst.Term.Pi(binders, out, classifier, numLevelParams, piSpan) =>
+        case ElabAst.Term.Pi(binders, out, classifier, numLevelParams, piSpan, piNodeId) =>
           val nextBinders = binders.map { b =>
             b.copy(ty = inlineTypeTerm(b.ty))
           }
-          ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, numLevelParams, piSpan)
+          ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, numLevelParams, piSpan, piNodeId)
         case ElabAst.Term.Body(lets, res, bodySpan) =>
           val nextLets = lets.map { l =>
             ElabAst.Let(l.localRef, l.ty.map(inlineTypeTerm), inlineTerm(l.value), l.span, l.isInstance)
           }
           ElabAst.Term.Body(nextLets, inlineTerm(res), bodySpan)
-        case ElabAst.Term.Lam(ty, body, lamSpan, name, recursiveSelf) =>
+        case ElabAst.Term.Lam(ty, body, lamSpan, name, recursiveSelf, lamNodeId) =>
           ElabAst.Term.Lam(
             inlineTypeTerm(ty).asInstanceOf[ElabAst.Term.Pi],
             inlineTerm(body),
             lamSpan,
             name,
-            recursiveSelf
+            recursiveSelf,
+            lamNodeId
           )
-        case ElabAst.Term.Match(scrut, motive, cases, matchSpan) =>
+        case ElabAst.Term.Match(scrut, motive, cases, matchSpan, matchNodeId) =>
           ElabAst.Term.Match(
             inlineTerm(scrut),
             motive.map(inlineTypeTerm),
             cases.map(inlineCase),
-            matchSpan
+            matchSpan,
+            matchNodeId
           )
       }
 
@@ -69,11 +71,11 @@ object ValueQuote {
           }
         case ElabAst.Term.App(fn, args, appSpan) =>
           ElabAst.Term.App(inlineAppHead(fn), args.map(inlineTerm), appSpan)
-        case ElabAst.Term.Pi(binders, out, classifier, numLevelParams, piSpan) =>
+        case ElabAst.Term.Pi(binders, out, classifier, numLevelParams, piSpan, piNodeId) =>
           val nextBinders = binders.map { b =>
             b.copy(ty = inlineTypeTerm(b.ty))
           }
-          ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, numLevelParams, piSpan)
+          ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, numLevelParams, piSpan, piNodeId)
       }
 
     def inlineCase(c: ElabAst.Case): ElabAst.Case =
@@ -151,7 +153,8 @@ object ValueQuote {
       quoteTerm(Interpreter.evalTerm(term.scrut, env), context, term.scrut.span),
       term.motive.map(motive => quoteType(Interpreter.evalTypeTerm(motive, env), context, motive.span)),
       term.cases.map(inliner.inlineCase),
-      span
+      span,
+      AstNodeId.synthetic()
     )
   }
 
@@ -228,7 +231,7 @@ object ValueQuote {
           case ValueId.Const(globalName) => Some(globalName)
           case _                         => term.name
         }
-        ElabAst.Term.Lam(opened.term, bodyTerm, span, name, term.recursiveSelf)
+        ElabAst.Term.Lam(opened.term, bodyTerm, span, name, term.recursiveSelf, AstNodeId.synthetic())
       case (_, LamBody.Native(_, _, _)) => throw CannotQuoteValue(lam, "native lambda has no quoted syntax", Some(span))
     }
   }
@@ -279,7 +282,11 @@ object ValueQuote {
       ElabAst.Binder(b.localRef, inliner.inlineTypeTerm(b.ty), Span(0, 0), b.isInstance)
     }
 
-    OpenedPi(ElabAst.Term.Pi(quotedBinders, quotedOut, pi.tpe, pi.numLevelParams, span), freshArgs, nextContext)
+    OpenedPi(
+      ElabAst.Term.Pi(quotedBinders, quotedOut, pi.tpe, pi.numLevelParams, span, AstNodeId.synthetic()),
+      freshArgs,
+      nextContext
+    )
   }
 
   private def quoteLevel(level: Level, context: QuoteContext, span: Span): ElabAst.Term = {

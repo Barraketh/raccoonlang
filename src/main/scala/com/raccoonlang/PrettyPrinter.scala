@@ -149,7 +149,7 @@ object PrettyPrinter {
         val headStr = printElabTermAtom(fn)
         val argsStr = args.map(printElabTermAtom).mkString(", ")
         s"$headStr($argsStr)"
-      case Term.Pi(binders, out, _, _, _) =>
+      case Term.Pi(binders, out, _, _, _, _) =>
         val bindersStr = binders
           .map(printElabPiBinder)
           .mkString(" -> ")
@@ -157,9 +157,9 @@ object PrettyPrinter {
     }
 
     def ptAtom(t: ElabAst.TypeTerm): String = t match {
-      case _: Term.Ref            => pt(t)
-      case Term.App(_, _, _)      => pt(t)
-      case Term.Pi(_, _, _, _, _) => s"(${pt(t)})"
+      case _: Term.Ref               => pt(t)
+      case Term.App(_, _, _)         => pt(t)
+      case Term.Pi(_, _, _, _, _, _) => s"(${pt(t)})"
     }
 
     def printElabPiBinder(b: ElabAst.Binder): String =
@@ -192,20 +192,20 @@ object PrettyPrinter {
   }
 
   private def printElabTermAtom(t: ElabAst.Term): String = t match {
-    case _: ElabAst.Term.Ref             => printElabTerm0(t)
-    case ElabAst.Term.App(_, _, _)       => printElabTerm0(t)
-    case ElabAst.Term.Lam(_, _, _, _, _) => s"(${printElabTerm0(t)})"
-    case ElabAst.Term.Match(_, _, _, _)  => s"(${printElabTerm0(t)})"
-    case ElabAst.Term.Body(_, _, _)      => s"(${printElabTerm0(t)})"
-    case ElabAst.Term.Pi(_, _, _, _, _)  => s"(${printElabTerm0(t)})"
+    case _: ElabAst.Term.Ref                => printElabTerm0(t)
+    case ElabAst.Term.App(_, _, _)          => printElabTerm0(t)
+    case ElabAst.Term.Lam(_, _, _, _, _, _) => s"(${printElabTerm0(t)})"
+    case ElabAst.Term.Match(_, _, _, _, _)  => s"(${printElabTerm0(t)})"
+    case ElabAst.Term.Body(_, _, _)         => s"(${printElabTerm0(t)})"
+    case ElabAst.Term.Pi(_, _, _, _, _, _)  => s"(${printElabTerm0(t)})"
   }
 
   private def printElabTerm0(t: ElabAst.Term): String = t match {
-    case ElabAst.Term.Lam(ty, body, _, _, _) =>
+    case ElabAst.Term.Lam(ty, body, _, _, _, _) =>
       s"fun ${printElabBinders(ty.binders)}: ${printElabTypeTerm(ty.out)} => ${printElabTerm0(body)}"
-    case m @ ElabAst.Term.Match(_, _, _, _) => printElabMatch(m)
-    case b: ElabAst.Term.Body               => printElabBody(b)
-    case tt: ElabAst.TypeTerm               => printElabTypeTerm(tt)
+    case m @ ElabAst.Term.Match(_, _, _, _, _) => printElabMatch(m)
+    case b: ElabAst.Term.Body                  => printElabBody(b)
+    case tt: ElabAst.TypeTerm                  => printElabTypeTerm(tt)
   }
 
   def printElabTerm(t: ElabAst.Ast): String = t match {

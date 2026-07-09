@@ -282,7 +282,14 @@ object TypeChecker {
         }
       }
     val checkedPi =
-      EA.Term.Pi(checkedBinders.elabBinders, checkedOut.residual, classifier, checkedBinders.numLevelParams, pi.span)
+      EA.Term.Pi(
+        checkedBinders.elabBinders,
+        checkedOut.residual,
+        classifier,
+        checkedBinders.numLevelParams,
+        pi.span,
+        pi.span.nodeId
+      )
     CheckedPi(evalPi(checkedPi, context.env, vBinders), binderContext, outV, checkedPi)
   }
 
@@ -416,7 +423,8 @@ object TypeChecker {
         checkedBody.residual,
         l.span,
         l.name,
-        l.recursion.map(_.selfRef)
+        l.recursion.map(_.selfRef),
+        l.span.nodeId
       )
     CheckedTerm(Interpreter.evalLam(checkedLam, vpi, context.env), checkedLam)
   }
@@ -485,7 +493,8 @@ object TypeChecker {
                 span,
                 Some(expectedPi.codomain(bodyEnv))
               )
-            val lam = EA.Term.Lam(residualPi, app.residual, span, name = None, recursiveSelf = None)
+            val lam =
+              EA.Term.Lam(residualPi, app.residual, span, name = None, recursiveSelf = None, AstNodeId.synthetic())
             Some(CheckedTerm(Interpreter.evalLam(lam, expectedPi, context.env), lam))
           } catch {
             case _: TypeMismatch | _: UnificationFailed | _: ArityMismatch | _: CannotQuoteValue => None

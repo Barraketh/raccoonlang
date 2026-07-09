@@ -250,7 +250,8 @@ object MatchChecker {
         .map(_.residual)
         .orElse(expectedTy.map(expected => quoteType(expected, quoteContext(context.env), t.span))),
       checkedCases,
-      t.span
+      t.span,
+      t.span.nodeId
     )
     val value = expectedTy match {
       case Some(expected) => Value.ascribe(Interpreter.evalTerm(checkedMatch, env), expected)

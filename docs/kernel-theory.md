@@ -47,13 +47,13 @@ nothing at all (it is a choice).
   `c > all kᵢ`); equality is representation equality, which coincides with `leq` both ways.
 - **Cumulativity**: `checkFits` additionally accepts `Sort u ≤ Sort v` (`sortLeq`) — subsumption at
   the top level only, no deep/contravariant subtyping.
-- **Identity keys** (`ValueKey`): `key1 == key2 ⇒ defEq` is trusted outright. **KNOWN UNSOUND
-  INPUT** (open finding): keys for VPi/VLam/NeutralThunk derive from `AstNodeId = (Option[SourceId],
-  startOffset)` + captures; the prelude parses with `sourceId = None` and `ValueQuote` reuses one
-  caller span for all synthesized subterms, so distinct values can share keys. Also, a 128-bit hash
-  with public seeds is itself "hash as proof". Fix direction: reserved SourceId for every parse,
-  fresh synthetic node ids in ValueQuote, and/or demote key equality to a negative filter for
-  LocalId-keyed values.
+- **Identity keys** (`ValueKey`): `key1 == key2 ⇒ defEq` is trusted outright. The inputs for
+  `VPi`/`VLam`/`NeutralThunk` keys are therefore explicit, unique `AstNodeId`s plus captures, not
+  source spans alone. Every `parseProgram` call receives a fresh `SourceId` from the shared
+  allocator (including preludes and loaded modules); checked source terms preserve their
+  `span.nodeId`, while quoted or otherwise fabricated Pi/Lam/Match terms receive a fresh synthetic
+  id from a reserved source. `Span` remains diagnostic metadata and need not be unique. The only
+  accepted remaining identity risk is a 128-bit `ValueKey` hash collision.
 
 ### Universe rules
 
@@ -148,27 +148,29 @@ the probe into a must-reject test — is the standard procedure for anything on 
 
 1. **Quot no-confusion** (fixed): match pruning + `Quot.mk`-as-constructor derived `False` from
    `Quot.sound` (disjointness *and* injectivity directions). → `apart`/stuck split; `noConfusion`
-   flag. Tests: QuotientTests ("not disjoint", "not injective", "congruence failures under opaque
-   heads", "genuine constructor disjointness still prunes").
+   flag. Tests: ConsistencyTests ("Quot.mk is not disjoint", "Quot.mk is not injective",
+   "congruence failures under opaque heads"); QuotientTests ("genuine constructor disjointness
+   still prunes").
 2. **Unification mode conflation** (fixed): Solve-links consumed as refinement facts derived
    injectivity of arbitrary opaque functions. → `UnifyMode.Solve`/`Invert`, links refused under
-   non-invertible frames in Invert. Tests: MatchRefinementTests ("opaque function applications do
-   not refine their arguments", "stuck opaque-head equations keep the refl case required");
+   non-invertible frames in Invert. Tests: ConsistencyTests ("opaque function applications do not
+   refine their arguments", "stuck opaque-head equations keep the refl case required");
    QuotientTests ("elaboration solves implicit metas through Quot.mk arguments" — the completeness
    Solve regained).
 3. **Proof-constructor apartness vs irrelevance** (fixed): `Eq(Or(p,p), inl hp, inr hq)` is provable
    by irrelevance, yet reachability pruned refl on the inl/inr clash (irrelevance is gated off when
    the proofs are refinable) — axiom-free `False`. → proofs excluded from apartness and invertible
-   decomposition (`isProofValue`). Tests: PropTests ("Constructor apartness does not apply to
-   proofs", "Family-head clashes are not refutations").
+   decomposition (`isProofValue`). Test: ConsistencyTests ("Constructor apartness does not apply to
+   proofs").
 4. **Prop-sort conflation** (fixed): `isPropValuedType` counted the sort `Prop` as a proposition, so
    `(n: Nat) -> Prop : Prop`, predicates became proof-irrelevant, and `Eq.mp ∘ congrFunP` derived
    `False`; the same conflation permitted large elimination with motive `Prop`. → §2 universe rules.
-   Tests: PropTests ("predicates are not proof-irrelevant", "elimination from Exists into
-   Prop-the-sort is large elimination", Sort-2 classifier tests).
+   Tests: ConsistencyTests ("Negative: predicates are not proof-irrelevant", "predicates are not
+   proof-irrelevant through congrFun and Eq.mp", "Negative: elimination from Exists into
+   Prop-the-sort is large elimination"); PropTests (Sort-2 classifier tests).
 5. **Family-head apartness** (fixed pre-emptively): `Eq(Prop, And(T,T), Or(T,T))` pruned refl — one
-   `propext` away from `False`. → family-head clashes are stuck. Test: PropTests ("Family-head
-   clashes are not refutations").
+   `propext` away from `False`. → family-head clashes are stuck. Test: ConsistencyTests
+   ("Family-head clashes are not refutations").
 
 6. **Positivity VLam blind spot** (fixed pre-emptively): `PositivityTarget.InductiveHead.mayOccurIn`
    returned false for `VLam`, so an inductive hidden in a lambda body under a stuck head passed
@@ -177,10 +179,14 @@ the probe into a must-reject test — is the standard procedure for anything on 
    conservative for lambdas. (No language-level test is expressible until the grammar grows; the
    guard exists so that grammar growth cannot silently reopen the hole.)
 
+7. **AstNodeId value identity** (fixed): distinct local Pi/Lam/neutral-thunk values could share a
+   trusted `ValueKey` when separate parses reused a source-less offset namespace or quotation reused
+   one caller span. → per-parse `SourceId`s and fresh synthetic ids for fabricated checked terms.
+   Tests: ConsistencyTests ("separate parses give distinct local Pi identities", "quoted Pi siblings
+   receive distinct identities while re-quotes remain definitionally equal").
+
 **Open findings** (recorded, unfixed):
 
-- **AstNodeId value identity / key trust** (§2). Distinct values can be defEq via colliding node
-  ids; confirmed by probe at the API level.
 - **`TODO(propext)`** on `definitionallyInjectiveHead` (§5 design debt).
 
 ## 8. Consistency test policy
@@ -189,4 +195,5 @@ Every entry in §7 has a program that once derived `False` (or was one axiom awa
 permanent must-reject tests; they are the only test genre whose referent is the theory rather than
 the implementation, so they cannot enshrine a bug. When a new hole is found: probe first, confirm,
 fix, convert the probe. Do not delete or weaken these tests to make a feature land — a red
-consistency test means the feature is unsound, not that the test is stale.
+consistency test means the feature is unsound, not that the test is stale. The canonical suite is
+`src/test/scala/com/raccoonlang/ConsistencyTests.scala`.
