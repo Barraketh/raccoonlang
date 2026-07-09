@@ -33,23 +33,26 @@ object ValueEquivalence {
     case object Invert extends UnifyMode
   }
 
-  // The value's type is a proposition (not the sort Prop), i.e. the value is a proof.
-  private def typeLivesInProp(tpe: Value): Boolean =
-    tpe match {
-      case PropTpe => false
-      case tpe0 =>
-        tpe0.tpe match {
-          case PropTpe => true
-          case _       => false
-        }
-    }
+  def defEq(v1: Value, v2: Value): Boolean =
+    DefEq.defEq(v1, v2)
 
-  def defEq(
-      v1: Value,
-      v2: Value,
-      propIrrelevant: Boolean
-  ): Boolean =
-    DefEq.defEq(v1, v2)(propIrrelevant)
+  /**
+   * The proof equation reduces to the proposition equation (proof-collapse.md §2, §10): a collapsed
+   * proof equals any value whose type is a defEq proposition. The mixed (VProof vs non-VProof) side
+   * covers exactly the representatives the witness invariant deliberately keeps uncollapsed —
+   * refinable metas and unification's shared Pi binders. NOTE: tryUnify may consult the mixed side
+   * only *after* its Var-linking cases, or a refinable proof-typed meta would be equated by
+   * irrelevance instead of solved; its early VProof/VProof arm is safe because two VProofs contain
+   * no refinable var to link.
+   */
+  private object ProofEquation {
+    def unapply(pair: (Value, Value)): Option[(Value, Value)] =
+      pair match {
+        case (p: VProof, other) if Value.isPropositionType(other.tpe) => Some((p.tpe, other.tpe))
+        case (other, p: VProof) if Value.isPropositionType(other.tpe) => Some((other.tpe, p.tpe))
+        case _                                                        => None
+      }
+  }
 
   // Throwing convenience wrapper; only used by tests.
   def unify(v1: Value, v2: Value, meta: EqStore, mode: UnifyMode = UnifyMode.Solve): EqStore =
@@ -89,17 +92,13 @@ object ValueEquivalence {
       Some(RelatedPis(sharedVars, out1, out2))
     }
 
-    private def defEqPi(pi1: VPi, pi2: VPi)(implicit
-        propIrrelevant: Boolean
-    ): Option[Vector[Value]] =
+    private def defEqPi(pi1: VPi, pi2: VPi): Option[Vector[Value]] =
       relatePis(pi1, pi2) match {
         case Some(related) if defEq(related.out1, related.out2) => Some(related.vars)
         case _                                                  => None
       }
 
-    private def defEqLamId(id1: ValueId, id2: ValueId)(implicit
-        propIrrelevant: Boolean
-    ): Boolean = {
+    private def defEqLamId(id1: ValueId, id2: ValueId): Boolean = {
       (id1, id2) match {
         case (ValueId.Const(n1), ValueId.Const(n2)) if n1 == n2 => true
         case (l1: ValueId.LocalId, l2: ValueId.LocalId)
@@ -115,15 +114,11 @@ object ValueEquivalence {
     private def shouldTryStructuralDefEq(a: Value, b: Value): Boolean =
       a.needsStructuralDefEq || b.needsStructuralDefEq
 
-    private def proofIrrelevant(a: Value, b: Value)(implicit
-        propIrrelevant: Boolean
-    ): Boolean =
-      propIrrelevant && typeLivesInProp(a.tpe) && defEq(a.tpe, b.tpe)
-
-    private def defEqStructural(a: Value, b: Value)(implicit
-        propIrrelevant: Boolean
-    ): Boolean =
+    private def defEqStructural(a: Value, b: Value): Boolean =
       (a, b) match {
+        // Proof irrelevance as representation: proofs are equal exactly when their propositions
+        // are (ProofEquation).
+        case ProofEquation(t1, t2)                            => defEq(t1, t2)
         case (PropTpe, PropTpe)                               => true
         case (LevelTpe, LevelTpe)                             => true
         case (l1: Level, l2: Level)                           => l1 == l2 || Level.leq(l1, l2) && Level.leq(l2, l1)
@@ -155,11 +150,8 @@ object ValueEquivalence {
         case _                                              => false
       }
 
-    def defEq(v1: Value, v2: Value)(implicit
-        propIrrelevant: Boolean
-    ): Boolean = {
+    def defEq(v1: Value, v2: Value): Boolean = {
       if (sameValueObject(v1, v2)) true
-      else if (proofIrrelevant(v1, v2)) true
       else {
         v1.key == v2.key || (shouldTryStructuralDefEq(v1, v2) && defEqStructural(v1, v2))
       }
@@ -215,12 +207,6 @@ object ValueEquivalence {
         case VConst(_, Inductive(_), _) => true
         case _                          => false
       }
-
-    // Proof irrelevance makes all proofs of a proposition equal, so constructor shape carries no
-    // propositional evidence for proofs: inl/inr of the same Or are equal, and Exists.intro is not
-    // injective in its witness. Proofs are therefore excluded from apartness and from invertible
-    // decomposition.
-    private def isProofValue(value: Value): Boolean = typeLivesInProp(value.tpe)
 
     // Rejects solutions that let scope-local fresh vars escape. This also catches transitive
     // escapes (?a := f(?b), ?b := freshVar): every escape chain contains at least one link made
@@ -345,15 +331,16 @@ object ValueEquivalence {
       val a = ValueOps.materialize(v1, meta)
       val b = ValueOps.materialize(v2, meta)
 
-      // Prefer solving refinable vars over the irrelevance shortcut: equating two proofs without
-      // descending would leave metas inside them unsolved. Consequently, comparisons of proofs that
-      // mention refinable vars DO reach the structural cases below, which is why those cases must
-      // themselves respect irrelevance (no apartness or invertible decomposition for proofs).
-      val canUseProofIrrelevance =
-        !a.synDeps.intersects(meta.refinable) && !b.synDeps.intersects(meta.refinable)
-      if (DefEq.defEq(a, b)(propIrrelevant = canUseProofIrrelevance)) return Right(meta)
+      if (DefEq.defEq(a, b)) return Right(meta)
 
       (a, b) match {
+        // Proofs carry no structure: the equation between two proofs is exactly the equation
+        // between their propositions. The type equation is a consequence (equal values have equal
+        // types), so ctx is inherited; apartness of the propositions refutes the proof equation
+        // (homogeneous Eq cannot even be stated across provably distinct types), which is what
+        // match refinement's type probe consumes.
+        case (p1: VProof, p2: VProof) => tryUnify(p1.tpe, p2.tpe, meta, ctx)
+
         case (p1: VPi, p2: VPi) if p1.binders.length == p2.binders.length =>
           tryUnifyPis(p1, p2, meta, ctx).map(_.eqStore)
         case (l1: VLam, l2: VLam) if l1.tpe.binders.length == l2.tpe.binders.length =>
@@ -375,11 +362,12 @@ object ValueEquivalence {
               }
           }
 
-        // Different constructors of a genuine inductive are disjoint — for data. Proofs are excluded
-        // (proof irrelevance equates inl/inr proofs of the same Or), as are heads without no-confusion
-        // (e.g. Quot.mk): those can only be identified or separated by their propositional theory.
+        // Different constructors of a genuine inductive are disjoint — for data. Proof-typed
+        // constructor applications collapse to VProof at creation, so a VCtor here is data by
+        // construction; heads without no-confusion (e.g. Quot.mk) can still only be identified or
+        // separated by their propositional theory.
         case (VCtor(h1, _, _), VCtor(h2, _, _)) if h1.name != h2.name =>
-          if (h1.noConfusion && h2.noConfusion && !isProofValue(a) && !isProofValue(b)) apart(a, b)
+          if (h1.noConfusion && h2.noConfusion) apart(a, b)
           else stuck(a, b)
 
         // Deliberately NOT a refutation: different inductive family heads (bare or applied) are only
@@ -387,14 +375,13 @@ object ValueEquivalence {
         // Prop-valued families (And T T = Or T T), so head clashes fall through to stuck.
 
         case (v1: VApp, v2: VApp) if v1.args.length == v2.args.length =>
-          // Decomposition is invertible only for no-confusion heads applied to non-proofs. For any
+          // Decomposition is invertible only for no-confusion heads. Proof-typed applications no
+          // longer reach here (they collapse to VProof), so no proof exclusion is needed. For any
           // other head it is a solving heuristic: `f a ~ f b` failing on `a ~ b` proves nothing about
           // the applications, and links made below are choices, not consequences (Invert mode refuses
           // them via argCtx).
           val invertible =
-            definitionallyInjectiveHead(v1.head) && definitionallyInjectiveHead(v2.head) && !isProofValue(
-              v1
-            ) && !isProofValue(v2)
+            definitionallyInjectiveHead(v1.head) && definitionallyInjectiveHead(v2.head)
           val argCtx = if (invertible) ctx else ctx.enterNonInvertibleFrame
           def frame(failed: UnifyFailure): UnifyFailure = if (invertible) failed else failed.asStuck
           tryUnify(v1.head, v2.head, meta, argCtx) match {
@@ -456,6 +443,12 @@ object ValueEquivalence {
         // Symmetric: link unlinked Var (right) to non-Var value
         case (other, v: Var) if meta.isRefinable(v.id) =>
           if (ctx.canLinkForced) tryLinkVar(v, other, meta, ctx) else stuck(v, other)
+
+        // A collapsed proof against an uncollapsed proof representative (rigid prop-typed Vars —
+        // unification's shared Pi binders deliberately stay uncollapsed): by irrelevance the
+        // equation reduces to the propositions. Placed after the Var-linking cases (see
+        // ProofEquation), so this never bypasses solving a proof-typed meta.
+        case ProofEquation(t1, t2) => tryUnify(t1, t2, meta, ctx)
 
         // No no-confusion evidence: unsolvable, but not refutable.
         case _ => stuck(a, b)

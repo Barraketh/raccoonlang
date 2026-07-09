@@ -16,6 +16,19 @@ object Env {
           throw WTF(s"Global value must be closed, but has free vars ${value.synDeps}")
       case _ =>
     }
+
+  // Collapse invariant (A), proof-collapse.md §3: every value of known-propositional type is a
+  // VProof. Stated as "the value is a fixed point of collapseIfProof" so the exemption list
+  // (refinable Vars, constructor heads, the raw-recursive self lambda) lives only in the collapse
+  // helper itself. Every value enters an env through putLocal/putGlobal, so a missed collapse
+  // site fails loudly here instead of silently re-enabling structured-proof reads downstream.
+  private[raccoonlang] def assertCollapsed(value: Any): Unit =
+    value match {
+      case value: Value =>
+        if (!(Value.collapseIfProof(value) eq value))
+          throw WTF(s"Uncollapsed proof bound into env: value ${value} of type ${value.tpe}")
+      case _ =>
+    }
 }
 
 sealed trait GlobalBinding[V] {
@@ -36,6 +49,7 @@ object GlobalBinding {
         case None =>
           val value = force()
           Env.assertClosedGlobal(value)
+          Env.assertCollapsed(value)
           cached = Some(value)
           value
       }
@@ -56,6 +70,7 @@ final case class Env[V](
 
   def putGlobal(name: String, value: V): Env[V] = {
     Env.assertClosedGlobal(value)
+    Env.assertCollapsed(value)
 
     if (globals.contains(name)) throw AlreadyDefined(name)
     else if (name == "_") throw WTF("Wildcards not allowed in global names")
@@ -72,6 +87,7 @@ final case class Env[V](
       ref: CoreAst.LocalRef,
       value: V
   ): Env[V] = {
+    Env.assertCollapsed(value)
     if (locals.contains(ref)) throw WTF(s"Local ref $ref is already bound")
     else copy(locals = locals + (ref -> value))
   }

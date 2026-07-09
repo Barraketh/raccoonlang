@@ -40,6 +40,7 @@ object ValueKey {
     val NeutralThunk = 10
     val Pi = 11
     val ConstructorHead = 12
+    val Proof = 13
     val ConstId = 16
     val LocalId = 17
   }
@@ -144,5 +145,8 @@ object ValueKey {
       mixLong(valueIdKey(tag(Tag.Pi), p.id), p.binders.length.toLong)
     case head: Value.ConstructorHead =>
       mixString(tag(Tag.ConstructorHead), head.name)
+    // All proofs of defEq propositions share a key; the witness never contributes.
+    case p: Value.VProof =>
+      mixKey(tag(Tag.Proof), p.tpe.key)
   }
 }

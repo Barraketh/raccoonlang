@@ -40,6 +40,6 @@ class ValueEquivalenceTests extends munit.FunSuite {
 
     val solved = ValueEquivalence.unify(left, right, meta)
 
-    assert(ValueEquivalence.defEq(solved.subst(hole.id), closed, propIrrelevant = true))
+    assert(ValueEquivalence.defEq(solved.subst(hole.id), closed))
   }
 }

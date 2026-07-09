@@ -14,11 +14,20 @@ object TerminationChecker {
   ): VLam = {
     val bodyEnv = bodyContext.env
 
-    def requireInductiveMetric(value: Value, span: Span): Unit =
+    def requireInductiveMetric(value: Value, span: Span): Unit = {
+      // Collapsed proofs have no subterms, and "structurally smaller" is ill-defined up to an
+      // equality that identifies wrap(x) with base; well-founded recursion on proofs needs a
+      // dedicated Acc-style mechanism (proof-collapse.md §7.1).
+      if (Value.isPropositionType(value.tpe))
+        throw InvalidDecreaseSpec(
+          s"decrease metric ${value} is a proof; structural recursion on proofs is not supported",
+          Some(span)
+        )
       value.tpe match {
         case ConstSpine(VConst(_, Inductive(_), _), _) =>
         case _ => throw InvalidDecreaseSpec(s"decrease metric ${value} must have an inductive type", Some(span))
       }
+    }
 
     val checkDecrease: (Vector[Value], Env[Value]) => Unit = spec match {
       case CA.DecreaseSpec.Lexicographic(args, sp) =>
@@ -39,7 +48,7 @@ object TerminationChecker {
             val root = nativeEnv.apply(ref)
             val candidate = callArgs(idx)
             if (isStrictSubterm(candidate, root)) true
-            else if (ValueEquivalence.defEq(candidate, root, propIrrelevant = false)) false
+            else if (ValueEquivalence.defEq(candidate, root)) false
             else
               throw NonDecreasingRecursiveCall(
                 name,
@@ -71,7 +80,8 @@ object TerminationChecker {
           checkDecrease(args, nativeEnv)
           val envWithArgs = BinderOps.instantiateFull(vpi.binders, vpi.env, args)
           val resultTy = vpi.codomain(envWithArgs)
-          VApp(VConst(name, Symbol, vpi), args, resultTy)
+          // A recursive call in a proof-by-recursion produces a proof of the instantiated goal.
+          Value.collapseIfProof(VApp(VConst(name, Symbol, vpi), args, resultTy))
         },
         bodyEnv,
         isRawRecursive = true
@@ -83,7 +93,7 @@ object TerminationChecker {
     root match {
       case VCtor(_, fields, _) =>
         fields.exists { field =>
-          ValueEquivalence.defEq(candidate, field, propIrrelevant = false) ||
+          ValueEquivalence.defEq(candidate, field) ||
           isStrictSubterm(candidate, field)
         }
       case _ => false

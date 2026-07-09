@@ -19,7 +19,7 @@ object ValueOps {
       val resolved = Interpreter.resolveInEqStore(value, eqStore)
       if (!mayNeedMaterialization(resolved)) return resolved
 
-      resolved match {
+      val rebuilt = resolved match {
         case LevelTpe                     => resolved
         case level: Level                 => materializeLevel(level)
         case VSort(level)                 => VSort(materializeLevel(level))
@@ -41,11 +41,22 @@ object ValueOps {
           materializePi(pi)
         case VLam(tpe, id, body) =>
           VLam(materializePi(tpe), materializeId(id), materializeLamBody(body))
+        case p: VProof =>
+          VProof(materialize(p.tpe), materialize(p.witness))
       }
+      // Deferred collapse: a type may resolve to a proposition only once its metas solve
+      // (e.g. u := 0); the value collapses at that point (proof-collapse.md §4).
+      Value.collapseIfProof(rebuilt)
     }
 
     private def mayNeedMaterialization(value: Value)(implicit eqStore: EqStore): Boolean =
-      value.synDeps.intersects(eqStore.solvedIds)
+      value match {
+        // A proof's witness is excluded from synDeps (proof-collapse.md §10), so solved metas
+        // inside it are invisible here; always rebuild — the witness is re-materialized lazily
+        // under this store when (and only when) quoting forces it.
+        case _: VProof => true
+        case _         => value.synDeps.intersects(eqStore.solvedIds)
+      }
 
     private def materializeLevel(level: Level)(implicit eqStore: EqStore): Level =
       Interpreter.resolveInEqStore(level, eqStore) match {

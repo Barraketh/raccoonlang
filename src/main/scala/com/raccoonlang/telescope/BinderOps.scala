@@ -34,6 +34,18 @@ object BinderOps {
 
   def freshen(vpi: VPi): Env[Value] = freshen(vpi.binders, vpi.env)
 
+  // Fresh copy of a constructor's telescope: a fresh value per binder plus the instantiated result
+  // type. Shared by MatchChecker (reachability, the large-elimination permit) and
+  // Interpreter.reduceSubsingletonMatch — the runtime diagonal check is sound only because it
+  // re-derives exactly the telescope the checker validated (proof-collapse.md §10).
+  def freshCtorArgsAndResult(head: Value.ConstructorHead): (Vector[Value], Value) =
+    head.tpe match {
+      case pi: VPi =>
+        val fresh = freshen(pi)
+        (pi.binders.map(binder => fresh(binder.localRef)), pi.codomain(fresh))
+      case _ => (Vector.empty, head.tpe)
+    }
+
   def toVBinders(
       binders: Vector[CoreAst.Binder],
       baseContext: TypingContext
@@ -100,8 +112,8 @@ object BinderOps {
 
   private def freshenBinder(env: Env[Value], binder: VBinder): Env[Value] = {
     val expectedTy = Interpreter.evalTypeTerm(binder.ty, env)
-    val (_, value) = FreshVar.freshValue(binder.name, expectedTy)
-    env.putLocal(binder.localRef, value)
+    val (_, fresh) = FreshVar.freshValue(binder.name, expectedTy)
+    env.putLocal(binder.localRef, Value.collapseBinderWitness(expectedTy, fresh))
   }
 
   def bindValue(env: Env[Value], binder: VBinder, actual: Value): Env[Value] =

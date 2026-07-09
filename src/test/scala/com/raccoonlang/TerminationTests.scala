@@ -238,7 +238,11 @@ class TerminationTests extends munit.FunSuite {
     typeError[NonDecreasingRecursiveCall](p)
   }
 
-  test("proof irrelevance does not create fake structural decreases") {
+  test("structural decrease on a proof argument is rejected outright") {
+    // Collapsed proofs have no subterms, and "structurally smaller" is ill-defined up to an
+    // equality that identifies wrap(x) with base, so the declaration itself is invalid
+    // (proof-collapse.md §7.1). This subsumes the old pin that proof irrelevance cannot fake
+    // a structural decrease.
     val p =
       """
         |inductive P : Prop
@@ -252,7 +256,7 @@ class TerminationTests extends munit.FunSuite {
         |}
         |""".stripMargin
 
-    typeError[NonDecreasingRecursiveCall](p)
+    typeError[InvalidDecreaseSpec](p)
   }
 
   test("lexicographic recursion requires some component to decrease") {

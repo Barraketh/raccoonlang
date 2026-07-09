@@ -134,6 +134,12 @@ object ValueQuote {
 
       case level: Level => quoteLevel(level, context, span)
 
+      // A collapsed proof has no syntax of its own; all proofs of the proposition share a key, so
+      // the context lookup above already resolved it to any in-scope proof term. Otherwise fall
+      // back to the erased witness it was collapsed from (a global constant, a constructor
+      // application, ...). Materialization may have re-wrapped the witness; recursion unwraps.
+      case p: VProof => quoteTerm(p.witness, context, span)
+
       case other => throw CannotQuoteValue(other, "no quoted syntax", Some(span))
     }
   }

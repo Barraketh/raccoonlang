@@ -43,6 +43,11 @@ nothing at all (it is a choice).
 - **Proof irrelevance** (definitional): any two values whose type is a *proposition* are equal.
   A proposition is a type that lives in `Prop`; the sort `Prop` itself is NOT a proposition
   (`Prop : Sort 1`). See §5 "Prop classification" for the hole this distinction fixed.
+  Enforced by *representation*: every value of known-propositional type collapses to the
+  structureless `VProof`, and `defEq(VProof(A), VProof(B)) = defEq(A, B)` (`proof-collapse.md`).
+  Values the witness invariant keeps uncollapsed (refinable metas, unification's shared Pi
+  binders) are covered by the mixed rule `VProof(A) ≡ v ⇔ A ≡ tpe(v)` when `tpe(v)` is a
+  proposition.
 - **Levels**: semantically canonical representation `max(vᵢ + kᵢ, c)` (invariant: `c = 0` or
   `c > all kᵢ`); equality is representation equality, which coincides with `leq` both ways.
 - **Cumulativity**: `checkFits` additionally accepts `Sort u ≤ Sort v` (`sortLeq`) — subsumption at
@@ -83,7 +88,7 @@ Every evidence rule in §5 must remain valid under all rows of this table.
 | Axiom / primitive | Status | What it coarsens or breaks |
 |---|---|---|
 | `Quot`, `Quot.mk`, `Quot.lift`, `Quot.ind` + `Quot.sound` | **Present** (builtins + axiom, Lean-style) | `=` at quotient types is coarser than structure: `mk a = mk b` without `a = b`. `Quot.mk` must never carry constructor no-confusion. Canonicity broken (§3). |
-| Proof irrelevance | **Present** (definitional) | `≡` at propositions is coarser than structure: constructor shape of proofs carries no evidence (inl/inr equal, Exists.intro not witness-injective). Planned: enforce by representation instead of by side-condition — collapse all proofs to a structureless `VProof` value (see `proof-collapse.md`). |
+| Proof irrelevance | **Present** (definitional, by representation) | `≡` at propositions is coarser than structure: constructor shape of proofs carries no evidence (inl/inr equal, Exists.intro not witness-injective). Enforced by representation: all proofs collapse to the structureless `VProof` (see `proof-collapse.md`), making the §7.3 exploit class unrepresentable rather than guarded. |
 | `propext` | **Planned** (Mathlib) | `=` at `Prop` coarser than structure: distinct true propositions become equal (`And T T = Or T T`). Kills: apartness between propositions-as-values, injectivity of Prop-valued family formers in index positions. Audited: §5 rules already exclude these; residual TODO on `noConfusionHead` (index-position decomposition of Prop-sorted family instances). |
 | `funext` | **Planned** (Mathlib) | `=` at function types coarser than intensional structure: extensionally equal, syntactically distinct functions become equal. Kills: any apartness between function values; makes "provable equations between stuck applications" constructible, which is why Invert-mode links under non-invertible frames had to be refused *before* funext lands. |
 | Choice / LEM | **Planned** (Mathlib) | Anti-classical assumptions become inconsistent: notably *injectivity of type formers with large parameters* (Cantor). Family-former injectivity must never be propositional evidence. |
@@ -103,10 +108,10 @@ without inventing values).
 | Judgment | Consumer | Required justification | Current implementation |
 |---|---|---|---|
 | **Solve-mode link** | TypeChecker `constrainFits`, InstanceSearch | The link records a leaf equation; the vars are the elaborator's to instantiate, so sub-equations reached through non-invertible frames (sufficient but not necessary) are acceptable. | Links allowed under any frame in Solve. |
-| **Invert-mode link** (consequence) | MatchChecker refinement, `allowLargeElimination` | The link is forced when the scrutinee is literally this constructor: definitional invertibility of every enclosing frame. | `Ctx.invertibleFrame`; non-invertible: opaque/blocked heads, Pi binder/codomain, thunk captures, proof-valued applications. |
-| **Apartness** (`UnifyFailure.apart`) | MatchChecker pruning (a case may be omitted) | *Propositional* no-confusion must be **derivable**: only a constructor clash of a Type-valued inductive (large elimination constructs the discriminating family). | `VCtor ≠ VCtor` + both `noConfusion` + neither side a proof. Family-head clashes (any sort), proofs, quotient ctors, occurs-failures, level failures: **stuck**, never apart. |
+| **Invert-mode link** (consequence) | MatchChecker refinement, `allowLargeElimination`, `Interpreter.reduceSubsingletonMatch` (runtime forced-field derivation) | The link is forced when the scrutinee is literally this constructor: definitional invertibility of every enclosing frame. | `Ctx.invertibleFrame`; non-invertible: opaque/blocked heads, Pi binder/codomain, thunk captures. Proof-valued applications are unrepresentable (`VProof` has no frames). |
+| **Apartness** (`UnifyFailure.apart`) | MatchChecker pruning (a case may be omitted) | *Propositional* no-confusion must be **derivable**: only a constructor clash of a Type-valued inductive (large elimination constructs the discriminating family). | `VCtor ≠ VCtor` + both `noConfusion`; proof-typed VCtors are unrepresentable (collapsed at creation), and `VProof ~ VProof` reduces to the proposition equation. Family-head clashes (any sort), quotient ctors, occurs-failures, level failures: **stuck**, never apart. |
 | **Stuck** (`apart = false`) | — | Means only "this algorithm cannot solve it". Must never justify pruning or disequality. | MatchChecker treats stuck ctors as reachable-unrefined (`EqStore.empty`). |
-| **Frame invertibility** (failure pass-through & link transparency) | within tryUnify | Definitional injectivity: `≡` of two same-head applications forces component `≡`. True for inductive family formers and data constructors; false for proofs (irrelevance), arbitrary functions, Pi-former. | `noConfusionHead` + `isProofValue` exclusion. |
+| **Frame invertibility** (failure pass-through & link transparency) | within tryUnify | Definitional injectivity: `≡` of two same-head applications forces component `≡`. True for inductive family formers and data constructors; false for arbitrary functions and the Pi-former. Proofs have no frames to descend (`VProof`). | `definitionallyInjectiveHead`. |
 | **Large elimination permit** | MatchChecker `checkPropElimination` | Prop scrutinee eliminating into non-Prop needs subsingleton criteria: ≤1 reachable ctor and every non-proof field forced by the indices. Motive `Prop`-the-sort counts as large (it is data). | `allowLargeElimination` (Invert-mode unification of two fresh ctor copies). |
 | **Prop classification** | TypeChecker `checkPi`, `checkPropElimination` | A type is a proposition iff it *lives in* `Prop`; the sort `Prop` never qualifies. | `isPropValuedType = getUniverse(v) == PropTpe`. |
 
@@ -119,8 +124,8 @@ inductives, type formers, or `Quot.mk`. Planned refactor: evidence grades (`Choi
 MatchChecker decomposes the root family instantiation itself (eliminator-justified) and requests
 only propositional-grade component evidence; the `noConfusion` flag is then derivable and deleted.
 This closes the `TODO(propext)` and makes probe B's type-former injectivity (anti-classical, §4)
-impossible to reintroduce. Sequencing: implement proof collapse (`proof-collapse.md`) first — it
-deletes the proof cases this refactor would otherwise carry.
+impossible to reintroduce. Sequencing: proof collapse (`proof-collapse.md`) is **done** — the
+proof cases this refactor would otherwise carry are gone.
 
 ## 6. Interaction checklist
 
@@ -159,9 +164,10 @@ the probe into a must-reject test — is the standard procedure for anything on 
    Solve regained).
 3. **Proof-constructor apartness vs irrelevance** (fixed): `Eq(Or(p,p), inl hp, inr hq)` is provable
    by irrelevance, yet reachability pruned refl on the inl/inr clash (irrelevance is gated off when
-   the proofs are refinable) — axiom-free `False`. → proofs excluded from apartness and invertible
-   decomposition (`isProofValue`). Test: ConsistencyTests ("Constructor apartness does not apply to
-   proofs").
+   the proofs are refinable) — axiom-free `False`. → originally proofs excluded from apartness and
+   invertible decomposition (`isProofValue`); now unrepresentable — proof constructor applications
+   collapse to `VProof` at creation (`proof-collapse.md`). Test: ConsistencyTests ("Constructor
+   apartness does not apply to proofs").
 4. **Prop-sort conflation** (fixed): `isPropValuedType` counted the sort `Prop` as a proposition, so
    `(n: Nat) -> Prop : Prop`, predicates became proof-irrelevant, and `Eq.mp ∘ congrFunP` derived
    `False`; the same conflation permitted large elimination with motive `Prop`. → §2 universe rules.

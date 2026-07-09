@@ -113,7 +113,12 @@ class PreludeTests extends munit.FunSuite {
           |""".stripMargin
       )
 
-    assertEquals(ctorName(res), "Eq.refl")
+    // Proofs collapse: the result is a structureless proof of the equality proposition.
+    res match {
+      case p: Value.VProof =>
+        assertEquals(TypeChecker.inductiveFamilyOf(p.tpe).map(_.head.name), Some("Eq"))
+      case other => fail(s"Expected a collapsed proof of an Eq proposition, got $other")
+    }
   }
 
   test("Prelude Decidable and conditionals reduce") {

@@ -31,7 +31,7 @@ class CapturedRefsTests extends munit.FunSuite {
 
     assert(refs.contains(capturedRef))
     assertEquals(refs.size, 1)
-    assert(ValueEquivalence.defEq(env(capturedRef), captured, propIrrelevant = true))
+    assert(ValueEquivalence.defEq(env(capturedRef), captured))
   }
 
   test("captured refs cannot be read from an env that does not contain them") {

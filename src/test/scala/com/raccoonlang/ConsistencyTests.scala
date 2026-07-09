@@ -322,7 +322,7 @@ class ConsistencyTests extends munit.FunSuite {
     val natPi = runTestProgram(piProgram("Nat", "x"))
     val boolPi = runTestProgram(piProgram("Bool", "b"))
 
-    assert(!ValueEquivalence.defEq(natPi, boolPi, propIrrelevant = false))
+    assert(!ValueEquivalence.defEq(natPi, boolPi))
   }
 
   // §7.7 AstNodeId value identity.
@@ -351,7 +351,7 @@ class ConsistencyTests extends munit.FunSuite {
     val evaluatedBool = Interpreter.evalTerm(quotedBool, env)
     val evaluatedNatAgain = Interpreter.evalTerm(reQuotedNat, env)
 
-    assert(!ValueEquivalence.defEq(evaluatedNat, evaluatedBool, propIrrelevant = false))
-    assert(ValueEquivalence.defEq(evaluatedNat, evaluatedNatAgain, propIrrelevant = false))
+    assert(!ValueEquivalence.defEq(evaluatedNat, evaluatedBool))
+    assert(ValueEquivalence.defEq(evaluatedNat, evaluatedNatAgain))
   }
 }

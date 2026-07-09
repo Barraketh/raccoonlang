@@ -99,7 +99,7 @@ object Interpreter {
       case ETerm.LocalRef(local, _) => env(local)
     }
     res match {
-      case h: ConstructorHead if h.totalArity == 0 => VCtor(h, Vector.empty, h.tpe)
+      case h: ConstructorHead if h.totalArity == 0 => Value.collapseIfProof(VCtor(h, Vector.empty, h.tpe))
       case _                                       => res
     }
   }
@@ -113,12 +113,18 @@ object Interpreter {
         fn match {
           case lam: VLam =>
             runLam(lam, vArgs)
-          case h: VConst => VApp(h, vArgs, pi.codomain(envWithArgs))
+          case p: VProof =>
+            // By impredicativity, a Pi with a propositional codomain is itself a proposition, so a
+            // proof-valued function is a collapsed proof: its application is a proof of the
+            // instantiated codomain, with no body to run (proof-collapse.md §5).
+            VProof(pi.codomain(envWithArgs), evalApply(p.witness, vArgs))
+          case h: VConst => Value.collapseIfProof(VApp(h, vArgs, pi.codomain(envWithArgs)))
           case h: ConstructorHead =>
             val resultTy = pi.codomain(envWithArgs)
-            VCtor(h, Value.constructorStoredArgs(h, vArgs), resultTy)
-          case blocker @ Blocker(blockerId) => VBlockedApp(blocker, vArgs, pi.codomain(envWithArgs), blockerId)
-          case _                            => throw CannotApplyNonFunction(fn)
+            Value.collapseIfProof(VCtor(h, Value.constructorStoredArgs(h, vArgs), resultTy))
+          case blocker @ Blocker(blockerId) =>
+            Value.collapseIfProof(VBlockedApp(blocker, vArgs, pi.codomain(envWithArgs), blockerId))
+          case _ => throw CannotApplyNonFunction(fn)
         }
       case _ => throw CannotApplyNonFunction(fn.tpe)
     }
@@ -131,7 +137,7 @@ object Interpreter {
     evalApply(vf, vArgs)
   }
 
-  def evalLam(l: ETerm.Lam, vpi: VPi, env: Env[Value]): VLam = {
+  def evalLam(l: ETerm.Lam, vpi: VPi, env: Env[Value]): Value = {
     val capturedRefs = CapturedRefs.getCapturedRefs(l, env)
     val closedEnv = env.closeForEval(capturedRefs)
     val id = l.name match {
@@ -140,7 +146,8 @@ object Interpreter {
         ValueId.LocalId(l.nodeId, closedEnv.locals.values.toVector)
 
     }
-    VLam(vpi, id, LamBody.Core(l, closedEnv))
+    // A lambda whose Pi is classified in Prop is a proof of that implication and collapses.
+    Value.collapseIfProof(VLam(vpi, id, LamBody.Core(l, closedEnv)))
   }
 
   def runLam(lam: VLam, args: Vector[Value]): Value = {
@@ -158,7 +165,7 @@ object Interpreter {
         res match {
           case u: UpdatableType =>
             val tpe = lam.tpe.codomain(bodyEnv)
-            u.withTpe(tpe)
+            Value.ascribe(u, tpe)
           case _ => res
         }
     }
@@ -167,7 +174,7 @@ object Interpreter {
   private def forceThunk(thunk: NeutralThunk, eqStore: EqStore): Value =
     evalMatch(thunk.term, ValueOps.materializeEnv(thunk.env, eqStore))
 
-  private def evalLam(l: ETerm.Lam, env: Env[Value]): VLam = {
+  private def evalLam(l: ETerm.Lam, env: Env[Value]): Value = {
     val vpi = evalPi(l.ty, env)
     evalLam(l, vpi, env)
   }
@@ -198,25 +205,34 @@ object Interpreter {
     val scrut = evalTerm(m.scrut, env)
     val (head, args) = scrut match {
       case VCtor(head, storedArgs, _) => (head, Value.constructorPatternArgs(head, storedArgs))
+      case proof: VProof              => return evalProofMatch(m, proof, env)
       case other                      =>
         // We are either blocked or stuck
-        val capturedRefs = CapturedRefs.getCapturedRefs(m, env)
-        val closedEnv = env.closeForEval(capturedRefs)
-        val matchCaptures = closedEnv.locals.values.toVector
-        val outType: Value = m.motive match {
-          case Some(motive) => evalTypeTerm(motive, env)
-          case None         => scrut.tpe
+        val blockerId = other match {
+          case Blocker(id) => Some(id)
+          case _           => None
         }
-        val lamId = ValueId.LocalId(m.nodeId, matchCaptures)
-        other match {
-          case Blocker(blockerId) => return NeutralThunk(m, closedEnv, lamId, outType, Some(blockerId))
-          case _                  => return NeutralThunk(m, closedEnv, lamId, outType, None)
-        }
+        return Value.collapseIfProof(stuckMatchThunk(m, env, matchOutType(m, scrut, env), blockerId))
     }
 
     val ctorName = head.name
     val branch =
       m.cases.find(c => c.ctorName == ctorName).getOrElse(throw UnknownConstructor(ctorName, "", Some(m.span)))
+    evalBranch(branch, args, env)
+  }
+
+  private def matchOutType(m: ETerm.Match, scrut: Value, env: Env[Value]): Value =
+    m.motive match {
+      case Some(motive) => evalTypeTerm(motive, env)
+      case None         => scrut.tpe
+    }
+
+  private def stuckMatchThunk(m: ETerm.Match, env: Env[Value], outType: Value, blockerId: Option[VarId]): NeutralThunk = {
+    val closedEnv = env.closeForEval(CapturedRefs.getCapturedRefs(m, env))
+    NeutralThunk(m, closedEnv, ValueId.LocalId(m.nodeId, closedEnv.locals.values.toVector), outType, blockerId)
+  }
+
+  private def evalBranch(branch: ElabAst.Case, args: Vector[Value], env: Env[Value]): Value = {
     if (args.length != branch.argRefs.length)
       throw ArityMismatch(branch.argRefs.length, args.length, Some(branch.span))
     val newEnv = args.zip(branch.argRefs).foldLeft(env) { case (curEnv, (argV, argRef)) =>
@@ -228,15 +244,74 @@ object Interpreter {
     evalTerm(branch.body, newEnv)
   }
 
+  /**
+   * Elimination of a collapsed proof (docs/proof-collapse.md §5). Proofs store no fields, so the
+   * three shapes are handled without reading structure:
+   *   - Prop motive: every checked branch proves the same proposition, so the match itself
+   *     witnesses `VProof(motive)` immediately — no branch selection, no thunk.
+   *   - Subsingleton large elimination (a single case): reduce only when the scrutinee type's
+   *     indices are definitionally diagonal — the analogue of "Eq.rec reduces only on refl".
+   *     Reducing on non-diagonal indices would produce a value at the wrong type; this must never
+   *     be relaxed.
+   *   - Empty elimination, or a stuck/non-diagonal subsingleton: an unblockable NeutralThunk
+   *     (proofs never block-and-resume), matching axiom-stuck behavior.
+   */
+  private def evalProofMatch(m: ETerm.Match, scrut: VProof, env: Env[Value]): Value = {
+    val outType = matchOutType(m, scrut, env)
+    // Proofs never block-and-resume: the thunk is unblockable.
+    def thunk: NeutralThunk = stuckMatchThunk(m, env, outType, None)
+
+    if (Value.isPropositionType(outType)) VProof(outType, thunk)
+    else if (m.cases.length == 1) reduceSubsingletonMatch(m.cases.head, scrut, env).getOrElse(thunk)
+    else thunk
+  }
+
+  /**
+   * Large elimination of a proof: the match checker admitted this match only if every non-proof
+   * field of the single reachable constructor is forced by the scrutinee type's indices
+   * (MatchChecker.allowLargeElimination). Re-derive that forced-field mapping at the actual
+   * scrutinee type by Invert-unifying the constructor's result type against it: unification
+   * succeeding with every non-proof field solved is exactly "the indices are definitionally
+   * diagonal", and the solutions are the field values. Anything less leaves the match stuck.
+   */
+  private def reduceSubsingletonMatch(branch: ElabAst.Case, scrut: VProof, env: Env[Value]): Option[Value] = {
+    val head = env(branch.ctorName) match {
+      case h: ConstructorHead => h
+      case other              => throw WTF(s"Case head ${branch.ctorName} is not a constructor: $other", Some(branch.span))
+    }
+
+    val (freshArgs, resultTy) = BinderOps.freshCtorArgsAndResult(head)
+
+    // Only the constructor's own fresh unknowns are refinable: Invert-mode links are consequences
+    // of the type equation, so any solution is index-derived, never invented.
+    val refinable = DepSet.unionAll(freshArgs.map(_.synDeps): _*)
+
+    ValueEquivalence.tryUnify(
+      resultTy,
+      scrut.tpe,
+      EqStore.empty.allow(refinable),
+      ValueEquivalence.UnifyMode.Invert
+    ) match {
+      case Left(_) => None
+      case Right(store) =>
+        val patternArgs = Value.constructorPatternArgs(head, Value.constructorStoredArgs(head, freshArgs))
+        val bound = patternArgs.map(arg => ValueOps.materialize(arg, store))
+        val unsolved = refinable -- store.solvedIds
+        // Proof-typed fields are their own witnesses (their types must still be fully forced,
+        // which their synDeps track); any other leftover unknown means the match is stuck.
+        if (bound.exists(arg => arg.synDeps.intersects(unsolved))) None
+        else Some(evalBranch(branch, bound, env))
+    }
+  }
+
   def evalBody(body: ETerm.Body, env: Env[Value]): Value = {
     val newEnv = body.lets.foldLeft(env) { case (curEnv, l) =>
       val res = evalTerm(l.value, curEnv)
-      val withTpe = (res, l.ty) match {
-        case (u: UpdatableType, Some(ty)) =>
-          u.withTpe(evalTypeTerm(ty, curEnv))
-        case _ => res
+      val ascribed = l.ty match {
+        case Some(ty) => Value.ascribe(res, evalTypeTerm(ty, curEnv))
+        case None     => res
       }
-      curEnv.putLocal(l.localRef, withTpe)
+      curEnv.putLocal(l.localRef, ascribed)
     }
     evalTerm(body.res, newEnv)
   }
@@ -246,6 +321,12 @@ object Interpreter {
     def runEnv: Env[Value] = runContext.env
   }
 
+  // Publication collapse (proof-collapse.md §4): a global of propositional type is a proof; the
+  // constant itself is the witness, so proofs quote back as a reference to their global name.
+  private def publishedValue(name: String, value: Value, ty: Value): Value =
+    if (Value.isPropositionType(ty)) VProof(ty, VConst(name, Symbol, ty))
+    else value
+
   def evalDecl(decl: Decl, worlds: Worlds): Worlds = {
     decl match {
       case Decl.ConstDecl(isOpaque, name, ty, body, span, isInstance, lazyGlobal) =>
@@ -253,8 +334,10 @@ object Interpreter {
           case CoreAst.ConstBody.Builtin(_) =>
             if (isOpaque) throw WTF("Builtin declarations cannot be opaque", Some(span))
             if (isInstance) throw WTF("Builtin declarations cannot be instances", Some(span))
-            def value(context: TypingContext): Value =
-              Builtins.instantiate(name, TypeChecker.getType(ty, context), span)
+            def value(context: TypingContext): Value = {
+              val tyV = TypeChecker.getType(ty, context)
+              publishedValue(name, Builtins.instantiate(name, tyV, span), tyV)
+            }
             if (lazyGlobal)
               Worlds(
                 worlds.checkContext.putLazyGlobal(name, () => value(worlds.checkContext)),
@@ -276,12 +359,15 @@ object Interpreter {
             lazy val checkValue = {
               TypeChecker.checkType(checked.value, checkedTy)
               val bodyV = Value.ascribe(checked.value, checkedTy)
-              if (isOpaque) VConst(name, Symbol, checkedTy) else bodyV
+              publishedValue(name, if (isOpaque) VConst(name, Symbol, checkedTy) else bodyV, checkedTy)
             }
             lazy val runTy = TypeChecker.getType(ty, runContext)
-            lazy val runtimeValue =
-              if (isOpaque) VConst(name, Symbol, runTy)
-              else Value.ascribe(evalTerm(checked.residual, runContext.env), runTy)
+            lazy val runtimeValue = {
+              val bodyV =
+                if (isOpaque) VConst(name, Symbol, runTy)
+                else Value.ascribe(evalTerm(checked.residual, runContext.env), runTy)
+              publishedValue(name, bodyV, runTy)
+            }
             if (lazyGlobal)
               Worlds(
                 checkContext.putLazyGlobal(name, () => checkValue),
@@ -297,11 +383,11 @@ object Interpreter {
 
       case Decl.AxiomDecl(name, ty, _, isInstance) =>
         val tyV = TypeChecker.getType(ty, worlds.checkContext)
-        val checkValue = VConst(name, Symbol, tyV)
+        val checkValue = publishedValue(name, VConst(name, Symbol, tyV), tyV)
         val nextCheckContext = worlds.checkContext.putGlobal(name, checkValue, isInstance = isInstance)
 
         val runtimeTyV = TypeChecker.getType(ty, worlds.runContext)
-        val runtimeValue = VConst(name, Symbol, runtimeTyV)
+        val runtimeValue = publishedValue(name, VConst(name, Symbol, runtimeTyV), runtimeTyV)
         val nextRunContext = worlds.runContext.putGlobal(name, runtimeValue, isInstance = isInstance)
 
         Worlds(nextCheckContext, nextRunContext)

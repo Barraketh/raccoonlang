@@ -16,16 +16,6 @@ object MatchChecker {
       branchEqStore: EqStore
   )
 
-  private def freshCtorArgsAndResult(head: ConstructorHead): (Vector[Value], Value) =
-    head.tpe match {
-      case pi: VPi =>
-        val fresh = BinderOps.freshen(pi)
-        val args = pi.binders.map(binder => fresh(binder.localRef))
-        (args, pi.codomain(fresh))
-
-      case _ => (Vector.empty, head.tpe)
-    }
-
   private def computeReachableCtors(
       scrut: Value,
       scrutTpe: Value,
@@ -45,10 +35,12 @@ object MatchChecker {
     ctorNames.flatMap { ctorName =>
       env(ctorName) match {
         case h: ConstructorHead =>
-          val (freshArgs, resultTy) = freshCtorArgsAndResult(h)
+          val (freshArgs, resultTy) = BinderOps.freshCtorArgsAndResult(h)
           val storedArgs = Value.constructorStoredArgs(h, freshArgs)
           val patternArgs = Value.constructorPatternArgs(h, storedArgs)
-          val ctorValue = VCtor(h, storedArgs, resultTy)
+          // For a Prop scrutinee the ctor value collapses, so the value probe below degenerates
+          // to the type probe (proof-collapse.md §5).
+          val ctorValue = Value.collapseIfProof(VCtor(h, storedArgs, resultTy))
           val valueRefinable = rootRefinable(scrut) ++ ctorValue.synDeps
           val typeRefinable = scrutTpe.synDeps ++ ctorValue.synDeps
 
@@ -86,8 +78,8 @@ object MatchChecker {
     if (reachable.length > 1) return false
 
     val only = reachable.head
-    val (args1, res1) = freshCtorArgsAndResult(only.head)
-    val (args2, res2) = freshCtorArgsAndResult(only.head)
+    val (args1, res1) = BinderOps.freshCtorArgsAndResult(only.head)
+    val (args2, res2) = BinderOps.freshCtorArgsAndResult(only.head)
     val fields1 = Value.constructorPatternArgs(only.head, Value.constructorStoredArgs(only.head, args1))
     val fields2 = Value.constructorPatternArgs(only.head, Value.constructorStoredArgs(only.head, args2))
 
@@ -106,10 +98,7 @@ object MatchChecker {
     fields1.zip(fields2).forall { case (f1, f2) =>
       val mf1 = ValueOps.materialize(f1, startEq)
       val mf2 = ValueOps.materialize(f2, startEq)
-      TypeChecker.getUniverse(mf1.tpe) match {
-        case PropTpe => true
-        case _       => ValueEquivalence.defEq(mf1, mf2, propIrrelevant = true)
-      }
+      isPropValuedType(mf1.tpe) || ValueEquivalence.defEq(mf1, mf2)
     }
   }
 
@@ -120,7 +109,7 @@ object MatchChecker {
       reachable: => Vector[ReachableCtor],
       span: Span
   ): Unit =
-    if (getUniverse(scrutTpe) == PropTpe && !isPropValuedType(motiveTy)) {
+    if (isPropValuedType(scrutTpe) && !isPropValuedType(motiveTy)) {
       if (!allowLargeElimination(scrutTpe, reachable))
         throw PropEliminationRestricted(inductiveName, motiveTy, Some(span))
     }
@@ -188,7 +177,7 @@ object MatchChecker {
       }
       val inferred = first.resultTy
       val allEqual = reachable.tail.forall { info =>
-        ValueEquivalence.defEq(inferred, info.resultTy, propIrrelevant = true)
+        ValueEquivalence.defEq(inferred, info.resultTy)
       }
       if (!allEqual)
         throw MissingReturningClause("reachable constructors have different result types", Some(t.span))

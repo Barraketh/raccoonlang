@@ -215,7 +215,7 @@ class ValueOpsTests extends munit.FunSuite {
       recursiveSelf = None,
       nodeId = AstNodeId.synthetic()
     )
-    val lam = Interpreter.evalLam(lamTerm, vpi, env)
+    val lam = Interpreter.evalLam(lamTerm, vpi, env).asInstanceOf[VLam]
 
     intercept[NotFound](lam.tpe.env(capturedRef))
     lam.body match {
@@ -317,6 +317,6 @@ class ValueOpsTests extends munit.FunSuite {
     val ctorB = VCtor(head, Vector.empty, resultB)
 
     assertNotEquals(ctorA.key, ctorB.key)
-    assert(!ValueEquivalence.defEq(ctorA, ctorB, propIrrelevant = true))
+    assert(!ValueEquivalence.defEq(ctorA, ctorB))
   }
 }

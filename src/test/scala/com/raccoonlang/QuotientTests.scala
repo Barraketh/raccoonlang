@@ -77,7 +77,7 @@ class QuotientTests extends munit.FunSuite {
     assertEquals(toShape(res), natSucc(natZero))
   }
 
-  test("Quot.ind reduces on Quot.mk for Prop motives") {
+  test("Quot.ind collapses to a proof of the motive") {
     val res = runProgram(
       natPrelude +
         """
@@ -89,7 +89,12 @@ class QuotientTests extends munit.FunSuite {
           |""".stripMargin
     )
 
-    assertEquals(toShape(res), SConst("True.intro"))
+    // Proofs collapse: the induction result is a structureless proof of motive(q) = True; the
+    // mkCase body is never consulted (any proof of the motive is equal by irrelevance).
+    res match {
+      case p: Value.VProof => assertEquals(toShape(p.tpe), SConst("True"))
+      case other           => fail(s"Expected a collapsed proof of True, got $other")
+    }
   }
 
   test("implicit wrapper can recover quotient parameters") {

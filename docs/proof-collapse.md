@@ -1,7 +1,7 @@
 # Collapsed Proofs (`VProof`) — Design Spec
 
-Status: **proposed, not implemented**. Companion to `kernel-theory.md` (amends §2's proof
-irrelevance entry and deletes several §5 side-conditions when implemented).
+Status: **implemented** (see §10 for deviations chosen during implementation). Companion to
+`kernel-theory.md` (amends §2's proof irrelevance entry and deletes several §5 side-conditions).
 
 ## 1. Motivation
 
@@ -43,9 +43,10 @@ Collapse is erasure, never creation. In particular, `freshMetaValue`/placeholder
 proof-typed implicit binder must produce an ordinary refinable `Var`, NOT a `VProof` — otherwise the
 proof obligation silently vanishes. The meta becomes a `VProof` only by being linked to one.
 
-Invariant (A) is assertable at chokepoints (`putLocal`, `addLink`, value construction) in debug
-builds; invariant (B) is enforced by construction (the introduction rules below are the only
-producers).
+Invariant (A) is asserted at the env chokepoints `Env.putLocal`/`putGlobal` as "the value is a
+fixed point of `collapseIfProof`" — the exemption list (refinable metas, constructor heads, the
+raw-recursive self lambda) thereby lives only in the collapse helper itself; invariant (B) is
+enforced by construction (the introduction rules below are the only producers).
 
 ## 4. Introduction (collapse) points
 
@@ -138,7 +139,61 @@ kernel-theory §7.3's exploit class becomes unrepresentable rather than guarded.
 - **Global witness for quoting** (§7.3): erased-witness field vs. quote-context indexing of global
   proof constants. Recommendation: erased witness field (`witness: () => ElabAst.Term`, excluded
   from `equals`/`key`), because it also serves diagnostics and avoids growing the quote context.
+  *Resolved: erased witness field, carried as a lazy `Value` rather than a term — see §10.*
 - **Ordering vs. the evidence-grades refactor** (kernel-theory §5 design debt): collapse first —
   it deletes the proof cases the evidence refactor would otherwise have to carry.
 - **`Acc` / well-founded recursion**: out of scope here; requires its own spec when Mathlib porting
   reaches it. Collapse makes the need explicit rather than creating it.
+
+## 10. Implementation notes (deviations and additions)
+
+Implemented in one pass (no dual-running phase); the suite in
+`src/test/scala/com/raccoonlang/ProofCollapseTests.scala` pins the §8 new-test list. Deviations
+from the letter of this spec, none from its semantics:
+
+- **Witness is a lazy `Value`, not a term** (§9): `VProof(tpe)(witness: () => Value)`, excluded
+  from `equals`/`hashCode`/`key`/`synDeps`. Quoting a `VProof` first hits the key-indexed quote
+  context (locals), then quotes the witness value; global publication uses
+  `VConst(name)` as the witness so globals quote as their own name. Materialization rebuilds the
+  witness thunk under the same store, so a materialized proof may wrap a witness that is itself a
+  `VProof`; quoting unwraps recursively.
+- **Subsingleton elimination re-derives the forced fields at evaluation time** instead of
+  recording them in the residual: `Interpreter.reduceSubsingletonMatch` Invert-unifies the single
+  constructor's result type against the runtime scrutinee type with only the constructor's fresh
+  unknowns refinable. Invert-mode links are forced (unique), so this computes the same mapping
+  `allowLargeElimination` validated at check time; unification succeeding with every non-proof
+  field solved *is* the diagonal check. No quoting fragility, no new residual shape.
+- **Lambdas collapse too**: a `VLam` whose Pi is classified in `Prop` is a proof of the
+  implication and collapses at `evalLam` (§4's table omitted this producer; without it, proof
+  lambdas stored as constructor fields would have kept readable structure). Consequently
+  `evalApply` on a `VProof` of Pi type yields `VProof(codomain)` directly, and collapsed
+  proof-lemma globals never run their bodies.
+- **Two deliberate non-collapse sites** beyond metas/placeholders:
+  the raw-recursive self lambda (its native body enforces the decrease check; hiding it inside a
+  `VProof` would disable termination checking for recursive proofs — its call *results* do
+  collapse), and the shared fresh vars minted inside `Unify.tryUnifyPis` (a collapsed hypothesis
+  drops its var id from `synDeps`, which would blind `newSolutionDependsOnFreshVar` to a
+  hypothesis escaping its binder scope — the exact watermark hole §7.2 told us to audit).
+- **A mixed irrelevance rule remains in defEq** for exactly those uncollapsed representatives:
+  `VProof(A) ≡ v` when `v`'s type is a proposition defEq to `A` (and the unify analogue). This is
+  not a resurrected side-condition — it is the VProof equality rule extended to the values the
+  witness invariant deliberately keeps uncollapsed.
+- **InstanceSearch guard** (witness invariant): a freshened proof-typed binder of an instance
+  candidate is a `VProof` placeholder whose emptiness `synDeps` no longer reveals; passing it
+  through would derive an instance from an unproven premise. Non-instance proof binders now fail
+  the candidate; instance-typed ones still go through recursive search. Pinned by
+  "instance search does not discharge proof premises from thin air".
+- **Positivity traversal** gained `VProof` cases: occurrences are checked in the proposition
+  (the interior is erased); proof values embedded in types are held to the strict
+  "does not occur" standard even in positive argument slots.
+- **Reduction got stronger, soundly**: a *stuck* proof of `Eq(A, a, b)` with `a ≡ b` now reduces
+  subsingleton matches (irrelevance makes it definitionally `refl`), where the old evaluator
+  blocked on the proof's variable. Pinned by "subsingleton elimination reduces on definitionally
+  diagonal indices"; the non-diagonal case stays stuck ("casts along axiom-stuck proofs stay
+  stuck").
+- **Semantics changes visible in tests**: matches on literal proof constructors no longer select
+  a branch (all reachable cases required); `Quot.ind`/`Quot.inductionOn` collapse (their motive is
+  in Prop) so they never reduce structurally; `Quot.lift` on a `Prop`-level quotient (`u := 0`) is
+  stuck — the representative is erased, and any future need here is a completeness question, not
+  soundness. Structural decrease on a proof argument is now `InvalidDecreaseSpec` at declaration
+  (§7.1).

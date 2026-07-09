@@ -154,8 +154,14 @@ object InstanceSearch {
           val freshArg = freshArgs(idx)
           val inferred = ValueOps.materialize(freshArg, candidateEq)
 
+          // A proof-typed binder freshens to a VProof placeholder, which unification can never
+          // solve and whose synDeps no longer reveal it is unsolved. Passing it through would
+          // silently discharge a proof obligation with an assumption (witness invariant,
+          // proof-collapse.md §3); only an instance-search hit may fill it.
+          val unsolvedProofPlaceholder = freshArg.isInstanceOf[VProof]
+
           val arg =
-            if (!inferred.synDeps.intersects(candidateDeps)) {
+            if (!unsolvedProofPlaceholder && !inferred.synDeps.intersects(candidateDeps)) {
               inferred
             } else if (binder.isInstance) {
               val instanceGoal = ValueOps.materialize(freshArg.tpe, candidateEq)

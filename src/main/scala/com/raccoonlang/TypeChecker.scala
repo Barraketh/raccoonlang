@@ -55,7 +55,7 @@ object TypeChecker {
   }
 
   def checkFits(actual: Value, expected: Value): Unit =
-    if (!ValueEquivalence.defEq(actual, expected, propIrrelevant = true) && !sortLeq(actual, expected))
+    if (!ValueEquivalence.defEq(actual, expected) && !sortLeq(actual, expected))
       throw TypeMismatch(expected, actual)
 
   def checkType(value: Value, tyVal: Value): Unit =
@@ -71,8 +71,12 @@ object TypeChecker {
   // A type is Prop-valued when it is itself a proposition (lives in Prop). The sort Prop is NOT
   // Prop-valued: `Prop : Sort 1`, so e.g. `Nat -> Prop` lives in Type, and predicates are data,
   // not proofs. Conflating the two made predicates proof-irrelevant (derived False).
-  def isPropValuedType(value: Value): Boolean =
-    getUniverse(value) == PropTpe
+  // getUniverse validates that `value` is a type (throws NotAType); classification itself is the
+  // shared predicate, so the checker can never disagree with collapse (Value.isPropositionType).
+  def isPropValuedType(value: Value): Boolean = {
+    getUniverse(value)
+    Value.isPropositionType(value)
+  }
 
   private def assertNonRawRecursive(v: Value): Unit = {
     v match {

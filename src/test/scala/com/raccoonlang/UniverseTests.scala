@@ -167,13 +167,14 @@ class UniverseTests extends munit.FunSuite {
         |""".stripMargin
 
     val res = runProgram(p)
+    // The Pi is classified in Prop, so the lambda is itself a proof of it and collapses.
     res match {
-      case Value.VLam(pi, _, _) =>
+      case Value.VProof(pi: Value.VPi) =>
         pi.tpe match {
           case Value.VSort(u) => assertEquals(u, Value.Level.zero)
           case other          => fail(s"Expected Pi type to live in Prop, got: $other")
         }
-      case other => fail(s"Expected a lambda, got: $other")
+      case other => fail(s"Expected a collapsed proof of a Prop-classified Pi, got: $other")
     }
   }
 

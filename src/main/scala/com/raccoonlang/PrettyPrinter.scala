@@ -242,6 +242,7 @@ object PrettyPrinter {
     case v: Value.VLam         => s"func#${v.id}"
     case v: Value.Var          => s"${v.name}#${v.id}"
     case s: Value.NeutralThunk => s"match#${s.id}"
+    case p: Value.VProof       => s"‹proof of ${print(p.tpe)}›"
     case LevelTpe              => s"Level"
   }
 

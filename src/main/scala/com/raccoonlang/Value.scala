@@ -25,17 +25,63 @@ sealed trait TopLevelValue extends Value {
 }
 
 object Value {
+  /**
+   * Replace a neutral's remembered type with a defEq (or sort-cumulative) representative the
+   * context knows to be more informative — typically the declared/expected type winning over the
+   * inferred one. Canonical values determine their own types and pass through; neutrals
+   * (`UpdatableType`) only carry an annotation recorded at creation, and syntax-directed machinery
+   * (`evalApply`'s Pi dispatch, universe classification, keys) reads that annotation structurally,
+   * so the representative matters. Also the deferred proof-collapse point: the ascription is often
+   * the moment a value's type becomes *known* propositional (proof-collapse.md §3-4).
+   */
   def ascribe(value: Value, tpe: Value): Value =
     value match {
-      case u: UpdatableType => u.withTpe(tpe)
+      case u: UpdatableType => collapseIfProof(u.withTpe(tpe))
       case _                => value
     }
 
-  private def isKnownProof(value: Value): Boolean =
-    value.tpe match {
+  /**
+   * The value's type is a proposition: it lives in `Prop`. The sort `Prop` itself never qualifies
+   * (`Prop : Sort 1`) — predicates are data, not proofs (kernel-theory §2).
+   */
+  def isPropositionType(tpe: Value): Boolean =
+    tpe match {
       case PropTpe => false
       case tpe     => tpe.tpe == PropTpe
     }
+
+  private def isKnownProof(value: Value): Boolean = isPropositionType(value.tpe)
+
+  /**
+   * Collapse a value whose type is a known proposition into the structureless `VProof` form
+   * (docs/proof-collapse.md). Callers must present an existing inhabitant — collapse is erasure,
+   * never creation (witness invariant). Exemptions:
+   *   - `Var`: metas and unification unknowns must stay refinable — collapsing a placeholder would
+   *     silently discharge a proof obligation. Rigid hypotheses are collapsed at binder freshening
+   *     instead, where the binder itself is the witness (`collapseBinderWitness` below).
+   *   - `ConstructorHead`: heads must remain applicable and recognizable by match machinery;
+   *     their saturated applications collapse in `Interpreter.evalApply`.
+   *   - raw-recursive `VLam`: the native body enforces the decrease check on every application;
+   *     hiding it inside a `VProof` would disable termination checking for recursive proofs.
+   */
+  def collapseIfProof(value: Value): Value =
+    if (!isPropositionType(value.tpe)) value
+    else
+      value match {
+        case _: VProof | _: Var | _: ConstructorHead => value
+        case VLam(_, _, LamBody.Native(_, _, true))  => value
+        case _                                       => VProof(value.tpe, value)
+      }
+
+  /**
+   * Collapse a freshened *rigid* binder: the bound hypothesis is its own witness
+   * (proof-collapse.md §4). Counterpart to collapseIfProof's `Var` exemption — a bare fresh Var
+   * is a refinable meta there and must not collapse, but here the Var is a rigid hypothesis being
+   * bound, so it does. InstanceSearch's witness-invariant guard relies on rigid proof binders
+   * being observably `VProof`.
+   */
+  def collapseBinderWitness(tpe: Value, fresh: Value): Value =
+    if (isPropositionType(tpe)) VProof(tpe, fresh) else fresh
 
   private[raccoonlang] def needsStructuralDefEq(value: Value): Boolean =
     isKnownProof(value) || (value match {
@@ -284,6 +330,46 @@ object Value {
       case _ => throw WTF(s"Cannot update lambda type to $nextTpe")
     }
 
+  }
+
+  /**
+   * The single value form for proofs: every value whose type is *known* to be a proposition is a
+   * `VProof` (collapse invariant, docs/proof-collapse.md §3). Proofs have no structure to read, so
+   * proof-irrelevance violations are unrepresentable rather than guarded against; defEq of two
+   * proofs is defEq of their propositions.
+   *
+   * `witness0` is the erased inhabitant this proof was collapsed from. It is excluded from
+   * equality, keys and synDeps, and is consulted only for quoting and diagnostics — never for
+   * evaluation or comparison (reading it there would reintroduce irrelevance violations).
+   *
+   * A `VProof` is never a `Blocker`: matches on proofs do not block-and-resume.
+   */
+  final class VProof private (val tpe: Value, witness0: () => Value) extends Value with UpdatableType {
+    require(isPropositionType(tpe), s"VProof requires a proposition, got a value of $tpe")
+
+    override lazy val synDeps: DepSet = tpe.synDeps
+
+    lazy val witness: Value = witness0()
+
+    // Ascription may retype at a defEq type that is not *known* to be a proposition (e.g. a
+    // generic-universe binder type mid-elaboration); the proof keeps its proposition then,
+    // mirroring VLam.withTpe's leniency on mismatched binders.
+    override def withTpe(tpe: Value): Value =
+      if (isPropositionType(tpe)) new VProof(tpe, witness0) else this
+
+    override def equals(obj: Any): Boolean =
+      obj match {
+        case other: VProof => tpe == other.tpe
+        case _             => false
+      }
+
+    override def hashCode(): Int = 31 * tpe.hashCode() + 13
+  }
+
+  object VProof {
+    def apply(tpe: Value, witness: => Value): VProof = new VProof(tpe, () => witness)
+
+    def unapply(p: VProof): Some[Value] = Some(p.tpe)
   }
 
   /**

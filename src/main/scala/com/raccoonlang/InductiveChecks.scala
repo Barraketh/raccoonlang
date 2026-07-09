@@ -71,6 +71,9 @@ object InductiveChecks {
           freshArgs.forall(arg => doesNotOccur(target, arg.tpe)) &&
           doesNotOccur(target, pi.codomain(freshEnv))
 
+        // A proof's interior is erased; its type is all that can carry an occurrence.
+        case p: VProof => doesNotOccur(target, p.tpe)
+
         case _: ConstructorHead => !target.mayOccurIn(value)
 
         case _: Level | LevelTpe | _: VLam | _: VSort | _: Var | _: VConst | PropTpe =>
@@ -106,6 +109,10 @@ object InductiveChecks {
           freshArgs.forall(arg => doesNotOccur(target, arg.tpe)) &&
           occursPositively(target, pi.codomain(freshEnv))
 
+        // Strict: a proof value embedded in a type (e.g. an index) must not mention the target in
+        // its proposition at all — positivity through an erased interior is unjustifiable.
+        case p: VProof => doesNotOccur(target, p.tpe)
+
         case _: ConstructorHead => true
 
         case _: Level | LevelTpe | _: VLam | _: VSort | _: Var | _: VConst =>
@@ -135,6 +142,8 @@ object InductiveChecks {
         val freshArgs = pi.binders.map(binder => freshEnv(binder.localRef))
         freshArgs.forall(arg => sameFamilyArgsDoNotContain(inductiveName, target, arg.tpe)) &&
         sameFamilyArgsDoNotContain(inductiveName, target, pi.codomain(freshEnv))
+
+      case p: VProof => sameFamilyArgsDoNotContain(inductiveName, target, p.tpe)
 
       case _: ConstructorHead | _: Level | LevelTpe | _: VLam | _: VSort | _: Var | _: VConst =>
         true
@@ -193,7 +202,7 @@ object InductiveChecks {
       val error =
         NonUniformInductiveParam(header.name, ctor.canonicalName, param.name, outputArg, Some(ctor.resultTy.span))
 
-      if (!ValueEquivalence.defEq(outputArg, paramValue, propIrrelevant = true))
+      if (!ValueEquivalence.defEq(outputArg, paramValue))
         throw error
     }
 

@@ -505,6 +505,6 @@ class TypeClassTests extends munit.FunSuite {
     val eqARef = CoreAst.LocalRef(envWithA.locals.size, "eqA")
     val contextWithEqA = contextWithA.putLocal(eqARef, eqA, isInstance = true)
 
-    assert(ValueEquivalence.defEq(InstanceSearch.solve(goal, contextWithEqA), eqA, propIrrelevant = true))
+    assert(ValueEquivalence.defEq(InstanceSearch.solve(goal, contextWithEqA), eqA))
   }
 }
