@@ -197,7 +197,6 @@ object MatchChecker {
     }
 
     val checkedMotive = t.motive.map(motiveSyntax => checkTypeTerm(motiveSyntax, context))
-    val expectedMotive = expectedTy.map(expected => quoteType(expected, quoteContext(context.env), t.span))
     val motiveTy = checkedMotive match {
       case Some(motive) => motive.value
       case None if expectedTy.nonEmpty =>
@@ -246,7 +245,10 @@ object MatchChecker {
     }
     val checkedMatch = EA.Term.Match(
       scrutChecked.residual,
-      checkedMotive.map(_.residual).orElse(expectedMotive),
+      // orElse is by-name: the expected type is only quoted when there is no user motive.
+      checkedMotive
+        .map(_.residual)
+        .orElse(expectedTy.map(expected => quoteType(expected, quoteContext(context.env), t.span))),
       checkedCases,
       t.span
     )

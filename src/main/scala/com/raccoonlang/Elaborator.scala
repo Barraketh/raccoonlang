@@ -630,7 +630,7 @@ object Elaborator {
       header.ty match {
         case pi: CA.Term.Pi =>
           elabLam(pi, header.bodyEnv, l.body, None, None, l.span)
-        case _ => throw new RuntimeException("WTF")
+        case _ => throw WTF("Lambda header must produce a function type", Some(l.span))
       }
     case b: SA.Term.Body =>
       val checkedLets = Vector.newBuilder[CA.Let]

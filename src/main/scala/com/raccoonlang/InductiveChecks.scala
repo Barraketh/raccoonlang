@@ -30,7 +30,11 @@ object InductiveChecks {
 
       override def mayOccurIn(value: Value): Boolean =
         value match {
+          // A lambda's body (and a thunk's code) can mention the inductive without it showing
+          // anywhere the traversal looks; be conservative. The surface grammar cannot currently
+          // place a lambda in a field type, but that must not be what soundness rests on.
           case _: NeutralThunk => true
+          case _: VLam         => true
           case _               => false
         }
     }

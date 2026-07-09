@@ -519,7 +519,7 @@ object TypeChecker {
           CheckedTerm(checked.value, checked.residual)
       }
     } catch {
-      case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, term.span)
+      case e: TypeError if e.span.isEmpty => throw e.withSpan(term.span)
     }
 
   // Adapt a synthesized value to the expected type: instantiate leading implicit binders
@@ -557,7 +557,7 @@ object TypeChecker {
         case l: CA.Term.Lam => subsume(synthTerm(l, context), expectedTy, context, l.span)
       }
     } catch {
-      case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, term.span)
+      case e: TypeError if e.span.isEmpty => throw e.withSpan(term.span)
     }
 
 }

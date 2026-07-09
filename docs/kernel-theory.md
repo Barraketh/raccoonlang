@@ -170,15 +170,18 @@ the probe into a must-reject test — is the standard procedure for anything on 
    `propext` away from `False`. → family-head clashes are stuck. Test: PropTests ("Family-head
    clashes are not refutations").
 
+6. **Positivity VLam blind spot** (fixed pre-emptively): `PositivityTarget.InductiveHead.mayOccurIn`
+   returned false for `VLam`, so an inductive hidden in a lambda body under a stuck head passed
+   positivity. Unreachable only because the surface grammar has no lambdas in type-argument position
+   and no partial application — a grammar accident, not a justification. → `mayOccurIn` is now
+   conservative for lambdas. (No language-level test is expressible until the grammar grows; the
+   guard exists so that grammar growth cannot silently reopen the hole.)
+
 **Open findings** (recorded, unfixed):
 
 - **AstNodeId value identity / key trust** (§2). Distinct values can be defEq via colliding node
   ids; confirmed by probe at the API level.
-- **Positivity VLam blind spot**: `PositivityTarget.InductiveHead.mayOccurIn` returns false for
-  `VLam`, so an inductive hidden in a lambda body under a stuck head passes positivity. Currently
-  unreachable only because the surface grammar has no lambdas in type-argument position and no
-  partial application — a grammar accident, not a justification.
-- **`TODO(propext)`** on `noConfusionHead` (§5 design debt).
+- **`TODO(propext)`** on `definitionallyInjectiveHead` (§5 design debt).
 
 ## 8. Consistency test policy
 

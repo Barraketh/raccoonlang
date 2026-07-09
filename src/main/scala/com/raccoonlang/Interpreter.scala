@@ -190,7 +190,7 @@ object Interpreter {
         case b: ETerm.Body          => evalBody(b, env)
       }
     } catch {
-      case e: TypeError if e.span.isEmpty => throw TypeError.withSpan(e, term.span)
+      case e: TypeError if e.span.isEmpty => throw e.withSpan(term.span)
     }
   }
 

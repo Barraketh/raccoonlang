@@ -11,8 +11,10 @@ object Env {
 
   private[raccoonlang] def assertClosedGlobal(value: Any): Unit =
     value match {
-      case value: Value => assert(value.synDeps.isEmpty)
-      case _            =>
+      case value: Value =>
+        if (value.synDeps.nonEmpty)
+          throw WTF(s"Global value must be closed, but has free vars ${value.synDeps}")
+      case _ =>
     }
 }
 

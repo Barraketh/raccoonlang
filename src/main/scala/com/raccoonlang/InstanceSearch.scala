@@ -8,11 +8,10 @@ object InstanceSearch {
   private val MaxDepth = 256
 
   private final case class SearchState(stack: List[ValueKey.Key], depth: Int) {
-    def enter(goal: Value, key: ValueKey.Key): SearchState = {
-      if (stack.contains(key)) throw CyclicInstanceSearch(goal)
-      if (depth >= MaxDepth) throw InstanceSearchBudgetExceeded(goal, MaxDepth)
-      SearchState(key :: stack, depth + 1)
-    }
+    def enter(key: ValueKey.Key): Either[SearchResult.Failed, SearchState] =
+      if (stack.contains(key)) Left(SearchResult.cycle)
+      else if (depth >= MaxDepth) Left(SearchResult.depthLimit)
+      else Right(SearchState(key :: stack, depth + 1))
   }
 
   private sealed trait SearchResult
@@ -68,12 +67,10 @@ object InstanceSearch {
       case None         =>
     }
 
-    val entered =
-      try state.enter(goal, key)
-      catch {
-        case _: CyclicInstanceSearch         => return SearchResult.cycle
-        case _: InstanceSearchBudgetExceeded => return SearchResult.depthLimit
-      }
+    val entered = state.enter(key) match {
+      case Left(failed) => return failed
+      case Right(next)  => next
+    }
 
     val tiers = context.instances.searchTiers(head, context.env)
     val local = tryCandidates(tiers.locals, goal, context, entered, cache)
