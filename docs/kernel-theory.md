@@ -114,6 +114,7 @@ without inventing values).
 | **Frame invertibility** (failure pass-through & link transparency) | within tryUnify | Definitional injectivity: `≡` of two same-head applications forces component `≡`. True for inductive family formers and data constructors; false for arbitrary functions and the Pi-former. Proofs have no frames to descend (`VProof`). | `definitionallyInjectiveHead`. |
 | **Large elimination permit** | MatchChecker `checkPropElimination` | Prop scrutinee eliminating into non-Prop needs subsingleton criteria: ≤1 reachable ctor and every non-proof field forced by the indices. Motive `Prop`-the-sort counts as large (it is data). | `allowLargeElimination` (Invert-mode unification of two fresh ctor copies). |
 | **Prop classification** | TypeChecker `checkPi`, `checkPropElimination` | A type is a proposition iff it *lives in* `Prop`; the sort `Prop` never qualifies. | `isPropValuedType = getUniverse(v) == PropTpe`. |
+| **Structural decrease** (recursive call permitted) | TerminationChecker guard (`rawRecursiveSelf`) | The call's metric is strictly below the current one in the well-founded tree order of strictly positive inductive values: reachable by ≥1 constructor-field step, where an application of a function-typed field steps to a child (the field is its node's child-selector; Agda foetus / Coq guard precedent). Assumes values are well-founded trees: strict positivity (InductiveChecks) and no value-level self-capture (recursion requires a decreasing parameter). | `isStrictSubterm`: `VCtor` field descent plus `VApp`-spine stripping that must bottom out at a field (`applicationOfSubterm`); any other head (blocked match, lambda) must be defEq to the field itself. Proof metrics rejected at declaration (`InvalidDecreaseSpec`); axiom/quotient-typed metrics rejected (`requireInductiveMetric`). |
 
 **Design debt, agreed direction:** head-shape classification (`definitionallyInjectiveHead`, the
 per-constructor `noConfusion` flag) is a proxy for the real predicate "the corresponding
@@ -144,6 +145,10 @@ Walk this list before landing any feature that touches equality, universes, or e
 - **× cumulativity**: does it assume type equality where only `sortLeq` subsumption was checked?
 - **× identity keys**: does it mint values from synthesized/quoted terms? Node-id collisions are an
   open hole; do not extend key-trusted surfaces.
+- **× termination order**: does the feature introduce values that are not well-founded trees —
+  laziness, corecursion, value-level self-capture, weakened positivity? The structural-decrease
+  judgment (§5) descends constructor fields *and applications of function-typed fields*; both
+  premises are load-bearing.
 
 ## 7. Case law
 

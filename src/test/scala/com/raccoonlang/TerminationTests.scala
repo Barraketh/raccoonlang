@@ -289,6 +289,114 @@ class TerminationTests extends munit.FunSuite {
     typeError[InvalidDecreaseSpec](p)
   }
 
+  private val treeDecls =
+    natDecls +
+      """
+        |inductive Tree : Type
+        | | leaf : Tree
+        | | node (f: Nat -> Tree) : Tree
+        |""".stripMargin
+
+  test("structural recursion descends through applications of function-typed fields") {
+    // f is the node's child-selector: f(b) is a child of node(f) in the well-founded tree
+    // semantics of a strictly positive inductive, so recursing on it terminates (the rule that
+    // makes recursors for infinitary inductives like WType/PGame definable).
+    val p =
+      treeDecls +
+        """
+          |def leftDepth (t: Tree): Nat decreases structural(t) := {
+          |  match t with
+          |  | Tree.leaf => Nat.zero
+          |  | Tree.node f => Nat.succ(leftDepth(f(Nat.zero)))
+          |}
+          |
+          |leftDepth(Tree.node(fun (n: Nat): Tree => Tree.leaf))
+          |""".stripMargin
+
+    assertEquals(toShape(runProgram(p).get), succS(zeroS))
+  }
+
+  test("synthesized recursor shape: induction hypotheses apply selectors under binders") {
+    // The exact term shape a translator emits for Foo.rec on an infinitary inductive: the IH is a
+    // lambda applying the selector to a fresh binder.
+    val p =
+      natDecls +
+        """
+          |inductive Game : Type
+          | | halt : Game
+          | | mk (l: Nat -> Game)(r: Nat -> Game) : Game
+          |
+          |def score (g: Game): Nat decreases structural(g) := {
+          |  match g with
+          |  | Game.halt => Nat.zero
+          |  | Game.mk l r => {
+          |    let ihl := fun (b: Nat): Nat => score(l(b))
+          |    let ihr := fun (b: Nat): Nat => score(r(b))
+          |    Nat.succ(ihl(Nat.zero))
+          |  }
+          |}
+          |
+          |score(Game.mk(fun (n: Nat): Game => Game.halt, fun (n: Nat): Game => Game.halt))
+          |""".stripMargin
+
+    assertEquals(toShape(runProgram(p).get), succS(zeroS))
+  }
+
+  test("selector applications compose with transitive constructor-field descent") {
+    val p =
+      natDecls +
+        """
+          |inductive Tree : Type
+          | | leaf : Tree
+          | | node (f: Nat -> Tree) : Tree
+          | | wrap (t: Tree) : Tree
+          |
+          |def deep (t: Tree): Nat decreases structural(t) := {
+          |  match t with
+          |  | Tree.leaf => Nat.zero
+          |  | Tree.node f => deep(f(Nat.zero))
+          |  | Tree.wrap inner => {
+          |    match inner with
+          |    | Tree.leaf => Nat.zero
+          |    | Tree.node f => deep(f(Nat.zero))
+          |    | Tree.wrap t2 => Nat.zero
+          |  }
+          |}
+          |""".stripMargin
+
+    runProgram(p)
+  }
+
+  test("applications of non-subterm functions do not count as structural decrease") {
+    // The soundness boundary: stripping application frames may only bottom out at a field of the
+    // refined root. g is a parameter, not a field of t, so g(0) proves nothing about descent.
+    val p =
+      treeDecls +
+        """
+          |def bad (t: Tree)(g: Nat -> Tree): Nat decreases structural(t) := {
+          |  match t with
+          |  | Tree.leaf => Nat.zero
+          |  | Tree.node f => bad(g(Nat.zero), g)
+          |}
+          |""".stripMargin
+
+    typeError[NonDecreasingRecursiveCall](p)
+  }
+
+  test("decrease metric on an axiom-typed value is rejected") {
+    // Quot and user axioms are Symbol consts, not inductives: their values are not well-founded
+    // trees the structural order could descend.
+    val p =
+      natDecls +
+        """
+          |axiom Opaque : Type
+          |
+          |def bad (q: Opaque): Nat decreases structural(q) := Nat.zero
+          |""".stripMargin
+
+    typeError[InvalidDecreaseSpec](p)
+  }
+
   test("raw recursive self cannot be stored inside a residual let value") {
     val p =
       natDecls +

@@ -93,9 +93,24 @@ object TerminationChecker {
     root match {
       case VCtor(_, fields, _) =>
         fields.exists { field =>
-          ValueEquivalence.defEq(candidate, field) ||
+          applicationOfSubterm(candidate, field) ||
           isStrictSubterm(candidate, field)
         }
       case _ => false
     }
+
+  /**
+   * The candidate is the field itself, or an application spine whose head is the field. A function-typed field of a
+   * strictly positive inductive is its node's child-selector in the value's tree semantics, so any application of it is
+   * a child — one level down the well-founded tree (kernel-theory §5, structural decrease). The order is well-founded
+   * only while values are well-founded trees: strict positivity is enforced by InductiveChecks, and no value can
+   * capture itself (recursion requires a decreasing parameter, so there is no value-level recursion). Only `VApp`
+   * frames are stripped; any other candidate head must be defEq to the field itself, so descent never passes through a
+   * blocked match, which could reduce to anything once unblocked.
+   */
+  private def applicationOfSubterm(candidate: Value, field: Value): Boolean =
+    ValueEquivalence.defEq(candidate, field) || (candidate match {
+      case VApp(head, _, _, _) => applicationOfSubterm(head, field)
+      case _                   => false
+    })
 }
