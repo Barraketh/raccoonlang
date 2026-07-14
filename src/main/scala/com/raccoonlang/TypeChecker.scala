@@ -2,14 +2,14 @@ package com.raccoonlang
 
 import com.raccoonlang.Interpreter._
 import com.raccoonlang.Value._
-import com.raccoonlang.ValueQuote.{quoteContext, quotePiType, quoteTerm, quoteType}
+import com.raccoonlang.ValueQuote.{quoteContext, quotePiType}
 import com.raccoonlang.telescope.{BinderOps, Projection}
 import com.raccoonlang.{CoreAst => CA, ElabAst => EA}
 
 object TypeChecker {
   private final case class CheckedPi(
       vpi: VPi,
-      bodyContext: TypingContext,
+      bodyEnv: Env[Value],
       outTy: Value,
       residual: EA.Term.Pi
   )
@@ -19,26 +19,26 @@ object TypeChecker {
 
   // An argument whose elaboration is deferred until its binder's expected type is known.
   private final case class PendingArg(
-      synthArg: TypingContext => CheckedTerm,
-      checkArg: (Value, TypingContext) => CheckedTerm
+      synthArg: Env[Value] => CheckedTerm,
+      checkArg: (Value, Env[Value]) => CheckedTerm
   ) {
     // Push the expected type into checking only when it is closed over the caller's env;
     // open expected types cannot be quoted into residual motives (MatchChecker's inferred motive
     // is the one remaining quoting client fed from this path).
-    def check(expectedTy: Value, context: TypingContext): CheckedTerm =
-      if (canQuoteFromContext(expectedTy, context)) checkArg(expectedTy, context)
-      else synthArg(context)
+    def check(expectedTy: Value, env: Env[Value]): CheckedTerm =
+      if (canQuoteFromEnv(expectedTy, env)) checkArg(expectedTy, env)
+      else synthArg(env)
   }
 
   private object PendingArg {
     def term(t: CA.Term): PendingArg =
-      PendingArg(synthTerm(t, _), (expected, context) => checkTerm(t, expected, context))
+      PendingArg(synthTerm(t, _), (expected, env) => checkTerm(t, expected, env))
 
     def typeTerm(t: CA.TypeTerm): PendingArg = {
       def toTerm(checked: CheckedTypeTerm) = CheckedTerm(checked.value, checked.residual)
       PendingArg(
-        context => toTerm(checkTypeTerm(t, context)),
-        (expected, context) => toTerm(checkTypeTerm(t, context, Some(expected)))
+        env => toTerm(checkTypeTerm(t, env)),
+        (expected, env) => toTerm(checkTypeTerm(t, env, Some(expected)))
       )
     }
 
@@ -89,13 +89,13 @@ object TypeChecker {
     CheckedTypeTerm(Value.ascribe(checked.value, expectedTy), checked.residual)
   }
 
-  private def canQuoteFromContext(value: Value, context: TypingContext): Boolean =
-    (value.synDeps -- Value.envDeps(context.env)).isEmpty
+  private def canQuoteFromEnv(value: Value, env: Env[Value]): Boolean =
+    (value.synDeps -- Value.envDeps(env)).isEmpty
 
-  private def expectedPiResidual(expectedTy: Value, context: TypingContext, span: Span): Option[EA.Term.Pi] =
+  private def expectedPiResidual(expectedTy: Value, env: Env[Value], span: Span): Option[EA.Term.Pi] =
     try
       expectedTy match {
-        case pi: VPi => Some(quotePiType(pi, quoteContext(context.env), span))
+        case pi: VPi => Some(quotePiType(pi, quoteContext(env), span))
         case _       => None
       }
     catch {
@@ -120,7 +120,7 @@ object TypeChecker {
       fnValue: Value,
       fnResidual: EA.Term,
       providedArgs: Vector[PendingArg],
-      context: TypingContext,
+      env: Env[Value],
       span: Span,
       expectedResult: Option[Value] = None
   ): CheckedApply =
@@ -163,9 +163,9 @@ object TypeChecker {
             // known; otherwise the arg is synthesized and verified in the final pass.
             val checked =
               if (CapturedRefs.mentions(binder.ty, unknownRefs))
-                providedArgs(explicitIdx).synthArg(context)
+                providedArgs(explicitIdx).synthArg(env)
               else
-                providedArgs(explicitIdx).check(Interpreter.evalTypeTerm(binder.ty, knownEnv), context)
+                providedArgs(explicitIdx).check(Interpreter.evalTypeTerm(binder.ty, knownEnv), env)
             assertNonRawRecursive(checked.value)
             land(idx, checked.value)
             checkedResiduals += checked.residual
@@ -210,12 +210,12 @@ object TypeChecker {
       case CA.Term.LocalRef(ref, span)   => EA.Term.LocalRef(ref, span)
     }
 
-  private def checkPi(pi: CA.Term.Pi, context: TypingContext, familyParams: Int = 0): CheckedPi = {
+  private def checkPi(pi: CA.Term.Pi, env: Env[Value], familyParams: Int = 0): CheckedPi = {
     // Implicit legality (forced-by-later-binders) and projection specs come from BinderOps.toVBinders.
-    val checkedBinders = BinderOps.toVBinders(pi.binders, context, familyParams)
+    val checkedBinders = BinderOps.toVBinders(pi.binders, env, familyParams)
     val vBinders = checkedBinders.vBinders
-    val binderContext = checkedBinders.context
-    val checkedOut = checkTypeTerm(pi.out, binderContext)
+    val binderEnv = checkedBinders.env
+    val checkedOut = checkTypeTerm(pi.out, binderEnv)
     val outV = checkedOut.value
     val checkedPi =
       EA.Term.Pi(
@@ -224,85 +224,81 @@ object TypeChecker {
         pi.span,
         pi.span.nodeId
       )
-    val vpi = evalPi(checkedPi, context.env, vBinders)
+    val vpi = evalPi(checkedPi, env, vBinders)
     // Force the classifier at declaration: Interpreter.piClassifier IS the universe validation
     // (NotAType on a bad domain or codomain), memoized by the lazy val — one home for the rule.
     vpi.tpe
-    CheckedPi(vpi, binderContext, outV, checkedPi)
+    CheckedPi(vpi, binderEnv, outV, checkedPi)
   }
 
   /** Constructor telescopes route through here so unforced family params (the leading
     * `familyParams` binders) get demoted instead of rejected; see Projection.compile.
     */
-  private[raccoonlang] def getConstructorType(term: CA.TypeTerm, context: TypingContext, familyParams: Int): Value =
+  private[raccoonlang] def getConstructorType(term: CA.TypeTerm, env: Env[Value], familyParams: Int): Value =
     term match {
       case pi: CA.Term.Pi =>
-        val checked = checkPi(pi, context, familyParams)
+        val checked = checkPi(pi, env, familyParams)
         assertType(checked.vpi)
         checked.vpi
-      case other => getType(other, context)
+      case other => getType(other, env)
     }
 
   private[raccoonlang] def checkTypeTerm(
       term: CA.TypeTerm,
-      context: TypingContext
+      env: Env[Value]
   ): CheckedTypeTerm =
-    checkTypeTerm(term, context, expectedTy = None)
+    checkTypeTerm(term, env, expectedTy = None)
 
   private def checkTypeTerm(
       term: CA.TypeTerm,
-      context: TypingContext,
+      env: Env[Value],
       expectedTy: Option[Value]
   ): CheckedTypeTerm = {
     val checked =
       term match {
         case t: CA.Term.TApp =>
-          val fn = checkTypeTerm(t.fn, context)
+          val fn = checkTypeTerm(t.fn, env)
           val args = t.args.map(PendingArg.typeTerm)
-          val checkedApp = checkApplyChecked(fn.value, fn.residual, args, context, t.span, expectedTy)
+          val checkedApp = checkApplyChecked(fn.value, fn.residual, args, env, t.span, expectedTy)
           CheckedTypeTerm(checkedApp.value, checkedApp.residual)
         case CA.Term.TSelect(base, field, span) =>
-          val checkedBase = checkTypeTerm(base, context)
+          val checkedBase = checkTypeTerm(base, env)
           val checked =
-            checkSelect(CheckedTerm(checkedBase.value, checkedBase.residual), field, span, context, expectedTy)
+            checkSelect(CheckedTerm(checkedBase.value, checkedBase.residual), field, span, env, expectedTy)
           checked.residual match {
             case tt: EA.TypeTerm => CheckedTypeTerm(checked.value, tt)
             case other           => throw NotAType(checked.value, Some(other.span))
           }
-        case derive: CA.Term.Derive =>
-          val goal = getType(derive.goal, context)
-          val value = InstanceSearch.solve(goal, context)
-          CheckedTypeTerm(value, quoteType(value, quoteContext(context.env), derive.span))
         case pi: CA.Term.Pi =>
-          val checked = checkPi(pi, context)
+          val checked = checkPi(pi, env)
           CheckedTypeTerm(checked.vpi, checked.residual)
         case ref: CA.Term.Ref =>
           val residual = elabRef(ref)
-          CheckedTypeTerm(Interpreter.evalTypeTerm(residual, context.env), residual)
+          CheckedTypeTerm(Interpreter.evalTypeTerm(residual, env), residual)
       }
     expectedTy.map(expected => checkTypeTermFits(checked, expected)).getOrElse(checked)
   }
 
   // Returning the residual term lets callers preserve checked let/lambda structure instead of re-checking.
-  private def checkBody(body: CA.Term.Body, context: TypingContext, expectedTy: Option[Value] = None): CheckedTerm = {
+  private def checkBody(body: CA.Term.Body, env: Env[Value], expectedTy: Option[Value] = None): CheckedTerm = {
     val checkedLets = Vector.newBuilder[EA.Let]
-    var curContext = context
+    var curEnv = env
 
     body.lets.foreach { l =>
-      val checkedTy = l.ty.map(tyTerm => checkTypeTerm(tyTerm, curContext))
+      val checkedTy = l.ty.map(tyTerm => checkTypeTerm(tyTerm, curEnv))
       val checkedValue = checkedTy match {
-        case Some(ty) => checkTerm(l.value, ty.value, curContext)
-        case None     => checkTerm(l.value, curContext)
+        case Some(ty) => checkTerm(l.value, ty.value, curEnv)
+        case None     => checkTerm(l.value, curEnv)
       }
       val bound = checkedTy.fold(checkedValue.value)(ty => Value.ascribe(checkedValue.value, ty.value))
 
-      checkedLets += EA.Let(l.localRef, checkedTy.map(_.residual), checkedValue.residual, l.span, l.isInstance)
-      curContext = curContext.putLocal(l.localRef, bound, isInstance = l.isInstance)
+      checkedLets += EA.Let(l.localRef, checkedTy.map(_.residual), checkedValue.residual, l.span)
+      curEnv = curEnv.putLocal(l.localRef, bound)
     }
 
     val checkedRes = expectedTy match {
-      case Some(expected) => checkTerm(body.res, expected, curContext)
-      case None           => checkTerm(body.res, curContext)
+      case Some(expected) => checkTerm(body.res, expected, curEnv)
+      case None           => checkTerm(body.res, curEnv)
     }
     CheckedTerm(checkedRes.value, EA.Term.Body(checkedLets.result(), checkedRes.residual, body.span))
   }
@@ -317,7 +313,7 @@ object TypeChecker {
       base: CheckedTerm,
       field: String,
       span: Span,
-      context: TypingContext,
+      env: Env[Value],
       expectedTy: Option[Value] = None
   ): CheckedApply = {
     val vType = base.value.tpe
@@ -328,22 +324,21 @@ object TypeChecker {
     if (!meta.isStruct) throw NotAStruct(indName)
 
     val selectorName = s"$indName.$field"
-    val selector = context.env(selectorName)
+    val selector = env(selectorName)
     checkApplyChecked(
       selector,
       EA.Term.GlobalRef(selectorName, span),
       Vector(PendingArg.checked(base)),
-      context,
+      env,
       span,
       expectedTy
     )
   }
 
-  private def checkLam(l: CA.Term.Lam, context: TypingContext): CheckedTerm = {
-    val checkedVpi = checkPi(l.ty, context)
+  private def checkLam(l: CA.Term.Lam, env: Env[Value]): CheckedTerm = {
+    val checkedVpi = checkPi(l.ty, env)
     val vpi = checkedVpi.vpi
-    val bodyContext = checkedVpi.bodyContext
-    val bodyEnv = bodyContext.env
+    val bodyEnv = checkedVpi.bodyEnv
 
     // Recursive self references stay local for the whole pipeline, even if the source used a qualified name.
     // While checking, the local contains a raw recursive value that enforces the decrease and can only appear as an
@@ -354,15 +349,14 @@ object TypeChecker {
       l.recursion match {
         case Some(CA.Recursion(ref, decreaseSpec)) =>
           val name = l.name.getOrElse(throw WTF("Recursive lambda must have a name", Some(l.span)))
-          val recursiveSelf = TerminationChecker.rawRecursiveSelf(name, vpi, decreaseSpec, bodyContext)
+          val recursiveSelf = TerminationChecker.rawRecursiveSelf(name, vpi, decreaseSpec, bodyEnv)
           bodyEnv.putLocal(ref, recursiveSelf)
         case None => bodyEnv
       }
-    val bodyContextWithRecursion = bodyContext.withEnv(recurEnv)
 
     val checkedBody = l.body match {
-      case b: CA.Term.Body => checkBody(b, bodyContextWithRecursion, Some(checkedVpi.outTy))
-      case _               => checkTerm(l.body, checkedVpi.outTy, bodyContextWithRecursion)
+      case b: CA.Term.Body => checkBody(b, recurEnv, Some(checkedVpi.outTy))
+      case _               => checkTerm(l.body, checkedVpi.outTy, recurEnv)
     }
     assertNonRawRecursive(checkedBody.value)
 
@@ -376,11 +370,11 @@ object TypeChecker {
         l.recursion.map(_.selfRef),
         l.span.nodeId
       )
-    CheckedTerm(Interpreter.evalLam(checkedLam, vpi, context.env), checkedLam)
+    CheckedTerm(Interpreter.evalLam(checkedLam, vpi, env), checkedLam)
   }
 
-  def getType(term: CA.TypeTerm, context: TypingContext): Value = {
-    val res = checkTypeTerm(term, context).value
+  def getType(term: CA.TypeTerm, env: Env[Value]): Value = {
+    val res = checkTypeTerm(term, env).value
     assertType(res)
     res
   }
@@ -407,7 +401,7 @@ object TypeChecker {
   private def tryInstantiateImplicits(
       checked: CheckedTerm,
       expectedTy: Value,
-      context: TypingContext,
+      env: Env[Value],
       span: Span
   ): Option[CheckedTerm] =
     (checked.value.tpe, expectedTy) match {
@@ -415,15 +409,14 @@ object TypeChecker {
           if actualPi.binders.exists(_.isImplicit) &&
             actualPi.binders.length > expectedPi.binders.length &&
             actualPi.binders.count(!_.isImplicit) == expectedPi.binders.count(!_.isImplicit) =>
-        expectedPiResidual(expectedTy, context, span).flatMap { residualPi =>
+        expectedPiResidual(expectedTy, env, span).flatMap { residualPi =>
           try {
             // Freshen through the expected Pi's own closure — its binder types are syntax valid in
             // expectedPi.env, not in the caller's env — then expose the fresh binders to the body.
             val piFreshEnv = BinderOps.freshen(expectedPi)
-            val bodyEnv = expectedPi.binders.foldLeft(context.env) { (env, binder) =>
-              env.putLocal(binder.localRef, piFreshEnv(binder.localRef))
+            val bodyEnv = expectedPi.binders.foldLeft(env) { (curEnv, binder) =>
+              curEnv.putLocal(binder.localRef, piFreshEnv(binder.localRef))
             }
-            val bodyContext = context.withEnv(bodyEnv)
             val bodyArgs =
               expectedPi.binders.collect {
                 case binder if !binder.isImplicit =>
@@ -435,13 +428,13 @@ object TypeChecker {
                 checked.value,
                 checked.residual,
                 bodyArgs,
-                bodyContext,
+                bodyEnv,
                 span,
                 Some(expectedPi.codomain(piFreshEnv))
               )
             val lam =
               EA.Term.Lam(residualPi, app.residual, span, name = None, recursiveSelf = None, AstNodeId.synthetic())
-            Some(CheckedTerm(Interpreter.evalLam(lam, expectedPi, context.env), lam))
+            Some(CheckedTerm(Interpreter.evalLam(lam, expectedPi, env), lam))
           } catch {
             case _: TypeMismatch | _: ImplicitReconstructionFailed => None
           }
@@ -450,27 +443,23 @@ object TypeChecker {
       case _ => None
     }
 
-  private def synthTerm(term: CA.Term, context: TypingContext): CheckedTerm =
+  private def synthTerm(term: CA.Term, env: Env[Value]): CheckedTerm =
     try {
       term match {
         case CA.Term.Select(base, field, span) =>
-          val checkedBase = synthTerm(base, context)
-          val checked = checkSelect(CheckedTerm(checkedBase.value, checkedBase.residual), field, span, context)
+          val checkedBase = synthTerm(base, env)
+          val checked = checkSelect(CheckedTerm(checkedBase.value, checkedBase.residual), field, span, env)
           CheckedTerm(checked.value, checked.residual)
-        case l: CA.Term.Lam => checkLam(l, context)
+        case l: CA.Term.Lam => checkLam(l, env)
         case app: CA.Term.App =>
-          val checkedFn = synthTerm(app.fn, context)
+          val checkedFn = synthTerm(app.fn, env)
           val checkedArgs = app.args.map(PendingArg.term)
-          val checkedApp = checkApplyChecked(checkedFn.value, checkedFn.residual, checkedArgs, context, app.span)
+          val checkedApp = checkApplyChecked(checkedFn.value, checkedFn.residual, checkedArgs, env, app.span)
           CheckedTerm(checkedApp.value, checkedApp.residual)
-        case derive: CA.Term.Derive =>
-          val goal = getType(derive.goal, context)
-          val value = InstanceSearch.solve(goal, context)
-          CheckedTerm(value, quoteTerm(value, quoteContext(context.env), derive.span))
-        case m: CA.Term.Match => MatchChecker.checkMatch(m, context)
-        case b: CA.Term.Body  => checkBody(b, context)
+        case m: CA.Term.Match => MatchChecker.checkMatch(m, env)
+        case b: CA.Term.Body  => checkBody(b, env)
         case term: CA.TypeTerm =>
-          val checked = checkTypeTerm(term, context)
+          val checked = checkTypeTerm(term, env)
           CheckedTerm(checked.value, checked.residual)
       }
     } catch {
@@ -479,36 +468,36 @@ object TypeChecker {
 
   // Adapt a synthesized value to the expected type: eta-expand a polymorphic function against a
   // monomorphic expected Pi if that helps, otherwise plain subsumption.
-  private def subsume(checked: CheckedTerm, expectedTy: Value, context: TypingContext, span: Span): CheckedTerm =
-    tryInstantiateImplicits(checked, expectedTy, context, span)
+  private def subsume(checked: CheckedTerm, expectedTy: Value, env: Env[Value], span: Span): CheckedTerm =
+    tryInstantiateImplicits(checked, expectedTy, env, span)
       .getOrElse(checkTermFits(checked, expectedTy))
 
-  def checkTerm(term: CA.Term, context: TypingContext): CheckedTerm =
-    synthTerm(term, context)
+  def checkTerm(term: CA.Term, env: Env[Value]): CheckedTerm =
+    synthTerm(term, env)
 
-  def checkTerm(term: CA.Term, expectedTy: Value, context: TypingContext): CheckedTerm =
+  def checkTerm(term: CA.Term, expectedTy: Value, env: Env[Value]): CheckedTerm =
     try {
       term match {
         case CA.Term.Select(base, field, span) =>
-          val checkedBase = synthTerm(base, context)
+          val checkedBase = synthTerm(base, env)
           val checked =
-            checkSelect(CheckedTerm(checkedBase.value, checkedBase.residual), field, span, context, Some(expectedTy))
+            checkSelect(CheckedTerm(checkedBase.value, checkedBase.residual), field, span, env, Some(expectedTy))
           CheckedTerm(checked.value, checked.residual)
         case app: CA.Term.App =>
-          val checkedFn = synthTerm(app.fn, context)
+          val checkedFn = synthTerm(app.fn, env)
           val checkedArgs = app.args.map(PendingArg.term)
           val checkedApp =
-            checkApplyChecked(checkedFn.value, checkedFn.residual, checkedArgs, context, app.span, Some(expectedTy))
+            checkApplyChecked(checkedFn.value, checkedFn.residual, checkedArgs, env, app.span, Some(expectedTy))
           CheckedTerm(checkedApp.value, checkedApp.residual)
-        case m: CA.Term.Match => MatchChecker.checkMatch(m, context, Some(expectedTy))
-        case b: CA.Term.Body  => checkBody(b, context, Some(expectedTy))
+        case m: CA.Term.Match => MatchChecker.checkMatch(m, env, Some(expectedTy))
+        case b: CA.Term.Body  => checkBody(b, env, Some(expectedTy))
         // Refs are matched before the TypeTerm case (Ref <: TypeTerm) so bare references
         // get implicit instantiation / eta-adaptation against the expected type.
-        case ref: CA.Term.Ref => subsume(synthTerm(ref, context), expectedTy, context, ref.span)
+        case ref: CA.Term.Ref => subsume(synthTerm(ref, env), expectedTy, env, ref.span)
         case term: CA.TypeTerm =>
-          val checked = checkTypeTerm(term, context, Some(expectedTy))
+          val checked = checkTypeTerm(term, env, Some(expectedTy))
           CheckedTerm(checked.value, checked.residual)
-        case l: CA.Term.Lam => subsume(synthTerm(l, context), expectedTy, context, l.span)
+        case l: CA.Term.Lam => subsume(synthTerm(l, env), expectedTy, env, l.span)
       }
     } catch {
       case e: TypeError if e.span.isEmpty => throw e.withSpan(term.span)

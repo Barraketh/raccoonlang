@@ -174,17 +174,6 @@ final case class ImplicitReconstructionFailed(
     s"Cannot reconstruct implicit argument $param of $fn: $reason"
 }
 
-final case class InvalidInductiveParam(
-    inductive: String,
-    param: String,
-    reason: String,
-    span: Option[Span] = None
-) extends TypeError {
-  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
-  override val msg: String =
-    s"Invalid inductive parameter $param in $inductive: $reason"
-}
-
 final case class NonUniformInductiveParam(
     inductive: String,
     ctor: String,
@@ -250,35 +239,6 @@ final case class InvalidStruct(inductive: String, reason: String, span: Option[S
 final case class NotAStruct(inductive: String, span: Option[Span] = None) extends TypeError {
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
   override def msg: String = s"Cannot select field from non-struct $inductive"
-}
-
-final case class NoInstanceFound(goal: Value, span: Option[Span] = None) extends TypeError {
-  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
-  override def msg: String = s"No instance found for $goal"
-}
-
-final case class CyclicInstanceSearch(goal: Value, span: Option[Span] = None) extends TypeError {
-  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
-  override def msg: String = s"Cyclic instance search for $goal"
-}
-
-final case class InvalidInstance(
-    name: String,
-    tpe: Value,
-    reason: String = "non-searchable result type",
-    span: Option[Span] = None
-) extends TypeError {
-  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
-  override def msg: String = s"Invalid instance $name: $reason in $tpe"
-}
-
-final case class InstanceSearchBudgetExceeded(
-    goal: Value,
-    maxDepth: Int,
-    span: Option[Span] = None
-) extends TypeError {
-  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
-  override def msg: String = s"Instance search depth exceeded for $goal (max depth $maxDepth)"
 }
 
 final case class CannotQuoteValue(value: Value, reason: String, span: Option[Span] = None) extends TypeError {

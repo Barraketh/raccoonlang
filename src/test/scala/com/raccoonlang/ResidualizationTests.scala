@@ -9,11 +9,11 @@ class ResidualizationTests extends munit.FunSuite {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        val worlds = core.decls.foldLeft(Interpreter.initialWorlds(Prelude.test)) { case (curWorlds, decl) =>
-          Interpreter.evalDecl(decl, curWorlds)
+        val env = core.decls.foldLeft(Interpreter.initialEnv(Prelude.test)) { case (curEnv, decl) =>
+          Interpreter.evalDecl(decl, curEnv)
         }
         val body = core.body.getOrElse(fail("Program has no body"))
-        val checked = TypeChecker.checkTerm(body, worlds.checkContext)
+        val checked = TypeChecker.checkTerm(body, env)
         Checked(checked.value, checked.residual)
 
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
@@ -30,15 +30,15 @@ class ResidualizationTests extends munit.FunSuite {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
         val last = core.decls.lastOption.getOrElse(fail("Program has no declarations"))
-        val worlds = core.decls.dropRight(1).foldLeft(Interpreter.initialWorlds(Prelude.test)) {
-          case (curWorlds, decl) => Interpreter.evalDecl(decl, curWorlds)
+        val env = core.decls.dropRight(1).foldLeft(Interpreter.initialEnv(Prelude.test)) {
+          case (curEnv, decl) => Interpreter.evalDecl(decl, curEnv)
         }
         val ty = last match {
-          case CoreAst.Decl.AxiomDecl(_, ty, _, _)          => ty
-          case CoreAst.Decl.ConstDecl(_, _, ty, _, _, _, _) => ty
-          case other                                        => fail(s"Expected typed declaration, got $other")
+          case CoreAst.Decl.AxiomDecl(_, ty, _)          => ty
+          case CoreAst.Decl.ConstDecl(_, _, ty, _, _, _) => ty
+          case other                                     => fail(s"Expected typed declaration, got $other")
         }
-        TypeChecker.checkTypeTerm(ty, worlds.checkContext).residual
+        TypeChecker.checkTypeTerm(ty, env).residual
 
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }

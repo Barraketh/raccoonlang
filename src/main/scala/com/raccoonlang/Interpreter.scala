@@ -358,7 +358,7 @@ object Interpreter {
    * Large elimination of a proof: the match checker admitted this match only if every non-proof
    * field of the single reachable constructor is forced by the scrutinee type's indices
    * (MatchChecker.allowLargeElimination). Re-derive that forced-field mapping at the actual
-   * scrutinee type by Invert-unifying the constructor's result type against it: unification
+   * scrutinee type by unifying the constructor's result type against it: unification
    * succeeding with every non-proof field solved is exactly "the indices are definitionally
    * diagonal", and the solutions are the field values. Anything less leaves the match stuck.
    */
@@ -370,15 +370,14 @@ object Interpreter {
 
     val (freshArgs, resultTy) = BinderOps.freshCtorArgsAndResult(head)
 
-    // Only the constructor's own fresh unknowns are refinable: Invert-mode links are consequences
+    // Only the constructor's own fresh unknowns are refinable: links are consequences
     // of the type equation, so any solution is index-derived, never invented.
     val refinable = DepSet.unionAll(freshArgs.map(_.synDeps): _*)
 
     ValueEquivalence.tryUnify(
       resultTy,
       scrut.tpe,
-      EqStore.empty.allow(refinable),
-      ValueEquivalence.UnifyMode.Invert
+      EqStore.empty.allow(refinable)
     ) match {
       case Left(_) => None
       case Right(store) =>
@@ -404,98 +403,58 @@ object Interpreter {
     evalTerm(body.res, newEnv)
   }
 
-  case class Worlds(checkContext: TypingContext, runContext: TypingContext) {
-    def checkEnv: Env[Value] = checkContext.env
-    def runEnv: Env[Value] = runContext.env
-  }
-
   // Publication collapse (proof-collapse.md §4): a global of propositional type is a proof; the
   // constant itself is the witness, so proofs quote back as a reference to their global name.
   private def publishedValue(name: String, value: Value, ty: Value): Value =
     if (Value.isPropositionType(ty)) VProof(ty, VConst(name, Symbol, ty))
     else value
 
-  def evalDecl(decl: Decl, worlds: Worlds): Worlds = {
+  // A declaration is checked exactly once; the value the checker produced IS the published value.
+  // There is no separate run world: once a definition has made it into the env, it is trusted.
+  def evalDecl(decl: Decl, env: Env[Value]): Env[Value] = {
     decl match {
-      case Decl.ConstDecl(isOpaque, name, ty, body, span, isInstance, lazyGlobal) =>
+      case Decl.ConstDecl(isOpaque, name, ty, body, span, lazyGlobal) =>
         body match {
           case CoreAst.ConstBody.Builtin(_) =>
             if (isOpaque) throw WTF("Builtin declarations cannot be opaque", Some(span))
-            if (isInstance) throw WTF("Builtin declarations cannot be instances", Some(span))
-            def value(context: TypingContext): Value = {
-              val tyV = TypeChecker.getType(ty, context)
+            def value: Value = {
+              val tyV = TypeChecker.getType(ty, env)
               publishedValue(name, Builtins.instantiate(name, tyV, span), tyV)
             }
-            if (lazyGlobal)
-              Worlds(
-                worlds.checkContext.putLazyGlobal(name, () => value(worlds.checkContext)),
-                worlds.runContext.putLazyGlobal(name, () => value(worlds.runContext))
-              )
-            else {
-              Worlds(
-                worlds.checkContext.putGlobal(name, value(worlds.checkContext), isInstance = isInstance),
-                worlds.runContext.putGlobal(name, value(worlds.runContext), isInstance = isInstance)
-              )
-            }
+            if (lazyGlobal) env.putLazyGlobal(name, () => value)
+            else env.putGlobal(name, value)
 
           case CoreAst.ConstBody.TermBody(term) =>
-            if (lazyGlobal && isInstance) throw WTF("Lazy global instances are not supported", Some(span))
-            val checkContext = worlds.checkContext
-            val runContext = worlds.runContext
-            lazy val checked = TypeChecker.checkTerm(term, checkContext)
-            lazy val checkedTy = TypeChecker.getType(ty, checkContext)
-            lazy val checkValue = {
+            lazy val value = {
+              val checked = TypeChecker.checkTerm(term, env)
+              val checkedTy = TypeChecker.getType(ty, env)
               TypeChecker.checkType(checked.value, checkedTy)
               val bodyV = Value.ascribe(checked.value, checkedTy)
               publishedValue(name, if (isOpaque) VConst(name, Symbol, checkedTy) else bodyV, checkedTy)
             }
-            lazy val runTy = TypeChecker.getType(ty, runContext)
-            lazy val runtimeValue = {
-              val bodyV =
-                if (isOpaque) VConst(name, Symbol, runTy)
-                else Value.ascribe(evalTerm(checked.residual, runContext.env), runTy)
-              publishedValue(name, bodyV, runTy)
-            }
-            if (lazyGlobal)
-              Worlds(
-                checkContext.putLazyGlobal(name, () => checkValue),
-                runContext.putLazyGlobal(name, () => runtimeValue)
-              )
-            else {
-              Worlds(
-                checkContext.putGlobal(name, checkValue, isInstance = isInstance),
-                runContext.putGlobal(name, runtimeValue, isInstance = isInstance)
-              )
-            }
+            if (lazyGlobal) env.putLazyGlobal(name, () => value)
+            else env.putGlobal(name, value)
         }
 
-      case Decl.AxiomDecl(name, ty, _, isInstance) =>
-        val tyV = TypeChecker.getType(ty, worlds.checkContext)
-        val checkValue = publishedValue(name, VConst(name, Symbol, tyV), tyV)
-        val nextCheckContext = worlds.checkContext.putGlobal(name, checkValue, isInstance = isInstance)
+      case Decl.AxiomDecl(name, ty, _) =>
+        val tyV = TypeChecker.getType(ty, env)
+        env.putGlobal(name, publishedValue(name, VConst(name, Symbol, tyV), tyV))
 
-        val runtimeTyV = TypeChecker.getType(ty, worlds.runContext)
-        val runtimeValue = publishedValue(name, VConst(name, Symbol, runtimeTyV), runtimeTyV)
-        val nextRunContext = worlds.runContext.putGlobal(name, runtimeValue, isInstance = isInstance)
-
-        Worlds(nextCheckContext, nextRunContext)
-
-      case d: Decl.InductiveDecl => InductiveChecks.evalInductiveDecl(d, worlds)
+      case d: Decl.InductiveDecl => InductiveChecks.evalInductiveDecl(d, env)
 
     }
 
   }
 
   def run(p: Program, prelude: Prelude.Config = Prelude.default): Option[Value] = {
-    val worlds =
-      p.decls.foldLeft(initialWorlds(prelude)) { case (curWorlds, decl) => evalDecl(decl, curWorlds) }
+    val env =
+      p.decls.foldLeft(initialEnv(prelude)) { case (curEnv, decl) => evalDecl(decl, curEnv) }
     p.body.map { b =>
-      val checked = TypeChecker.checkTerm(b, worlds.checkContext)
-      evalTerm(checked.residual, worlds.runEnv)
+      TypeChecker.checkTerm(b, env).value
     }
   }
 
-  private[raccoonlang] def initialWorlds(prelude: Prelude.Config = Prelude.default): Worlds = {
+  private[raccoonlang] def initialEnv(prelude: Prelude.Config = Prelude.default): Env[Value] = {
     val baseEnv =
       Env
         .empty[Value]
@@ -505,10 +464,8 @@ object Interpreter {
         .putGlobal("Level.one", Level.one)
         .putGlobal("Prop", PropTpe)
 
-    val baseContext = TypingContext.envOnly(baseEnv)
-
-    prelude.core.decls.foldLeft(Worlds(baseContext, baseContext)) { case (curWorlds, decl) =>
-      evalDecl(decl, curWorlds)
+    prelude.core.decls.foldLeft(baseEnv) { case (curEnv, decl) =>
+      evalDecl(decl, curEnv)
     }
   }
 }

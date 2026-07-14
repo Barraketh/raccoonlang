@@ -9,7 +9,7 @@ class PrettyPrinterTests extends munit.FunSuite {
 
   private def axiomType(src: String, name: String): CoreAst.TypeTerm =
     parseCore(src).decls
-      .collectFirst { case CoreAst.Decl.AxiomDecl(n, ty, _, _) if n == name => ty }
+      .collectFirst { case CoreAst.Decl.AxiomDecl(n, ty, _) if n == name => ty }
       .getOrElse(fail(s"Expected axiom $name"))
 
   test("implicit binder prints with braces") {

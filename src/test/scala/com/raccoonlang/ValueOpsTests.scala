@@ -17,21 +17,19 @@ class ValueOpsTests extends munit.FunSuite {
   private def solve(v: Var, solution: Value): EqStore =
     EqStore.empty.allow(DepSet(v.id)).addLink(v.id, solution)
 
-  test("materializeEnv rewrites locals used by local instance candidates") {
+  test("materializeEnv rewrites solved locals") {
     val ref = CoreAst.LocalRef(0, "x")
     val x = FreshVar.freshVar("x", valueType)
     val solution = symbolicValue("Solved")
     val env = Env.empty[Value].putLocal(ref, x)
-    val instances = Instances.empty.addLocal("candidate", ref)
 
     val materialized = ValueOps.materializeEnv(env, solve(x, solution))
 
     assertEquals(materialized(ref), solution)
-    assertEquals(instances.searchTiers("candidate", materialized).locals, Vector(solution))
     assert(!materialized(ref).synDeps.contains(x.id))
   }
 
-  test("materializeEnv leaves globals and global instance candidates closed") {
+  test("materializeEnv leaves globals closed") {
     val ref = CoreAst.LocalRef(0, "x")
     val x = FreshVar.freshVar("x", valueType)
     val solution = symbolicValue("Solved")
@@ -40,16 +38,10 @@ class ValueOpsTests extends munit.FunSuite {
       .empty[Value]
       .putGlobal("global", global)
       .putLocal(ref, x)
-    val instances = Instances.empty
-      .addGlobal("candidate", global)
-      .addLocal("candidate", ref)
     val materialized = ValueOps.materializeEnv(base, solve(x, solution))
-    val tiers = instances.searchTiers("candidate", materialized)
 
     assertEquals(materialized("global"), global)
     assertEquals(materialized(ref), solution)
-    assertEquals(tiers.locals, Vector(solution))
-    assertEquals(tiers.globals, Vector(global))
   }
 
   test("quote context uses materialized locals") {

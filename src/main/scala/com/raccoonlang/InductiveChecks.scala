@@ -1,7 +1,6 @@
 package com.raccoonlang
 
 import com.raccoonlang.CoreAst._
-import com.raccoonlang.Interpreter.Worlds
 import com.raccoonlang.Value._
 import com.raccoonlang.telescope.BinderOps
 
@@ -164,26 +163,26 @@ object InductiveChecks {
   }
 
   private def constructorFamilyParams(header: InductiveHeader): Vector[Binder] =
-    header.params.map(_.copy(isImplicit = true, isInstance = false))
+    header.params.map(_.copy(isImplicit = true))
 
   private def constructorBinders(header: InductiveHeader, ctor: ConstructorDecl): Vector[Binder] =
     constructorFamilyParams(header) ++ ctor.binders
 
   private def installInductive(
       decl: Decl.InductiveDecl,
-      baseContext: TypingContext,
+      baseEnv: Env[Value],
       inductiveHead: VConst
-  ): TypingContext = {
-    val contextWithInductive = baseContext.putGlobal(decl.header.name, inductiveHead)
+  ): Env[Value] = {
+    val envWithInductive = baseEnv.putGlobal(decl.header.name, inductiveHead)
 
-    decl.ctors.foldLeft(contextWithInductive) { case (curContext, ctor) =>
+    decl.ctors.foldLeft(envWithInductive) { case (curEnv, ctor) =>
       val allBinders = constructorBinders(decl.header, ctor)
       val fullTypeTerm =
         if (allBinders.isEmpty) ctor.resultTy
         else Term.Pi(allBinders, ctor.resultTy, ctor.span)
 
-      val fullType = TypeChecker.getConstructorType(fullTypeTerm, curContext, decl.header.params.length)
-      curContext.putGlobal(
+      val fullType = TypeChecker.getConstructorType(fullTypeTerm, curEnv, decl.header.params.length)
+      curEnv.putGlobal(
         ctor.canonicalName,
         ConstructorHead(ctor.canonicalName, decl.header.params.length, allBinders.length, fullType)
       )
@@ -206,20 +205,18 @@ object InductiveChecks {
         throw error
     }
 
-  def evalInductiveDecl(decl: Decl.InductiveDecl, worlds: Worlds): Worlds = {
+  def evalInductiveDecl(decl: Decl.InductiveDecl, env: Env[Value]): Env[Value] = {
     // All direct Value matches in this function and its private helpers
     // rely on EqStore.empty: no Vars are solved in this pass.
 
     val header = decl.header
     val name = header.name
-    rejectInstanceFamilyParams(header)
     val ty = {
       if (header.binders.isEmpty) decl.header.resultTy
       else Term.Pi(header.binders, decl.header.resultTy, decl.header.span)
     }
 
-    val inductiveTypeCheck = TypeChecker.getType(ty, worlds.checkContext)
-    val inductiveTypeRun = TypeChecker.getType(ty, worlds.runContext)
+    val inductiveType = TypeChecker.getType(ty, env)
 
     val initialPositiveArgs = DepSet.from(0 until header.arity)
     val initialMeta =
@@ -230,20 +227,19 @@ object InductiveChecks {
         initialPositiveArgs
       )
 
-    val inductivedHead = VConst(name, Inductive(initialMeta), inductiveTypeCheck)
+    val inductivedHead = VConst(name, Inductive(initialMeta), inductiveType)
 
-    val checkContextWithInductive = worlds.checkContext.putGlobal(name, inductivedHead)
-    val contextWithFamilyBinders = {
-      inductiveTypeCheck match {
+    val envWithInductive = env.putGlobal(name, inductivedHead)
+    val envWithFamilyBinders = {
+      inductiveType match {
         case pi: VPi =>
-          assert(checkContextWithInductive.env.locals.isEmpty) // Sanity check
-          BinderOps.freshen(pi.binders, checkContextWithInductive)
-        case _ => checkContextWithInductive
+          assert(envWithInductive.locals.isEmpty) // Sanity check
+          BinderOps.freshen(pi.binders, envWithInductive)
+        case _ => envWithInductive
       }
     }
-    val envWithFamilyBinders = contextWithFamilyBinders.env
 
-    TypeChecker.getType(header.resultTy, contextWithFamilyBinders) match {
+    TypeChecker.getType(header.resultTy, envWithFamilyBinders) match {
       case v: VSort => v
       case other    => throw InductiveTypeNotASort(other, Some(header.resultTy.span))
     }
@@ -259,7 +255,7 @@ object InductiveChecks {
 
     val recursiveTarget = PositivityTarget.InductiveHead(name)
     val familyArgs =
-      inductiveTypeCheck match {
+      inductiveType match {
         case pi: VPi => pi.binders.map(binder => envWithFamilyBinders(binder.localRef))
         case _       => Vector.empty[Value]
       }
@@ -268,14 +264,13 @@ object InductiveChecks {
     decl.ctors.foreach { ctor =>
       val allConstructorBinders = constructorBinders(header, ctor)
       val checkedBinders =
-        BinderOps.toVBinders(allConstructorBinders, checkContextWithInductive, familyParams = header.params.length)
+        BinderOps.toVBinders(allConstructorBinders, envWithInductive, familyParams = header.params.length)
       val binders = checkedBinders.vBinders
-      val contextWithBinders = checkedBinders.context
-      val envWithBinders = contextWithBinders.env
+      val envWithBinders = checkedBinders.env
       val binderVars = binders.map(binder => envWithBinders(binder.localRef))
       val ownBinderVars = binderVars.drop(header.params.length)
 
-      val outputTpe = TypeChecker.getType(ctor.resultTy, contextWithBinders)
+      val outputTpe = TypeChecker.getType(ctor.resultTy, envWithBinders)
 
       // 4) Constructor result must be the inductive family head applied to the full family arity.
       val resultErr = InvalidConstructorResult(ctor.canonicalName, name, outputTpe, Some(ctor.span))
@@ -332,44 +327,9 @@ object InductiveChecks {
 
     val meta = initialMeta.copy(positiveArgs = positiveArgs)
 
-    val inductiveHeadCheck = VConst(name, Inductive(meta), inductiveTypeCheck)
-    val inductiveHeadRun = VConst(name, Inductive(meta), inductiveTypeRun)
+    val inductiveHead = VConst(name, Inductive(meta), inductiveType)
 
-    // Only after all constructor checks succeed do we add the decl to the environments.
-    val nextCheckContext = installInductive(decl, worlds.checkContext, inductiveHeadCheck)
-    val nextRunContext = installInductive(decl, worlds.runContext, inductiveHeadRun)
-
-    // Demotion (forced-vs-unforced) is recomputed per world from world-local values, and the
-    // residual/value contract requires both worlds to agree on every constructor's arity. The
-    // computation is deterministic on structurally equal telescopes, so a mismatch here means a
-    // cross-world value divergence upstream — fail loudly instead of misapplying residuals later.
-    def implicitFlags(context: TypingContext, ctorName: String): Vector[Boolean] =
-      context.env(ctorName) match {
-        case head: ConstructorHead =>
-          head.tpe match {
-            case pi: VPi => pi.binders.map(_.isImplicit)
-            case _       => Vector.empty
-          }
-        case _ => Vector.empty
-      }
-    decl.ctors.foreach { ctor =>
-      if (implicitFlags(nextCheckContext, ctor.canonicalName) != implicitFlags(nextRunContext, ctor.canonicalName))
-        throw WTF(
-          s"Constructor ${ctor.canonicalName}: implicit telescopes disagree between check and run worlds",
-          Some(ctor.span)
-        )
-    }
-
-    Worlds(nextCheckContext, nextRunContext)
+    // Only after all constructor checks succeed do we add the decl to the environment.
+    installInductive(decl, env, inductiveHead)
   }
-
-  private def rejectInstanceFamilyParams(header: InductiveHeader): Unit =
-    header.params.find(_.isInstance).foreach { binder =>
-      throw InvalidInductiveParam(
-        header.name,
-        binder.name,
-        "family parameters may be explicit or implicit, but not instance binders",
-        Some(binder.span)
-      )
-    }
 }

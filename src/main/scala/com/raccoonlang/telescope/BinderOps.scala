@@ -7,7 +7,7 @@ object BinderOps {
   final case class CheckedBinders(
       vBinders: Vector[VBinder],
       elabBinders: Vector[ElabAst.Binder],
-      context: TypingContext
+      env: Env[Value]
   )
 
   def freshen(binders: Vector[VBinder], baseEnv: Env[Value]): Env[Value] = {
@@ -17,18 +17,6 @@ object BinderOps {
     }
 
     env
-  }
-
-  def freshen(binders: Vector[VBinder], baseContext: TypingContext): TypingContext = {
-    var context = baseContext
-    binders.foreach { binder =>
-      val env = freshenBinder(context.env, binder)
-      context = context.withEnv(env)
-      if (binder.isInstance)
-        context = context.registerLocalInstance(binder.localRef)
-    }
-
-    context
   }
 
   def freshen(vpi: VPi): Env[Value] = freshen(vpi.binders, vpi.env)
@@ -52,19 +40,18 @@ object BinderOps {
    */
   def toVBinders(
       binders: Vector[CoreAst.Binder],
-      baseContext: TypingContext,
+      baseEnv: Env[Value],
       familyParams: Int = 0
   ): CheckedBinders = {
-    var context = baseContext
+    var env = baseEnv
     val checkedTys = binders.map { binder =>
-      val checkedTy = TypeChecker.checkTypeTerm(binder.ty, context)
+      val checkedTy = TypeChecker.checkTypeTerm(binder.ty, env)
       TypeChecker.assertType(checkedTy.value)
-      val provisional = VBinder(binder.localRef, checkedTy.residual, binder.isImplicit, binder.isInstance)
-      context = freshen(Vector(provisional), context)
+      val provisional = VBinder(binder.localRef, checkedTy.residual, binder.isImplicit)
+      env = freshen(Vector(provisional), env)
       checkedTy
     }
 
-    val env = context.env
     val inputs = binders.map { binder =>
       Projection.BinderInput(binder.name, binder.span, binder.isImplicit, env(binder.localRef))
     }
@@ -76,18 +63,17 @@ object BinderOps {
       val binder = binders(idx)
       val residualTy = checkedTys(idx).residual
       val result = compiled(idx)
-      vBinders += VBinder(binder.localRef, residualTy, result.isImplicit, binder.isInstance, result.projection)
+      vBinders += VBinder(binder.localRef, residualTy, result.isImplicit, result.projection)
       checkedBinders += ElabAst.Binder(
         binder.localRef,
         residualTy,
         binder.span,
-        binder.isInstance,
         result.isImplicit,
         result.projection
       )
     }
 
-    CheckedBinders(vBinders.result(), checkedBinders.result(), context)
+    CheckedBinders(vBinders.result(), checkedBinders.result(), env)
   }
 
   def instantiateFull(binders: Vector[VBinder], baseEnv: Env[Value], args: Vector[Value]): Env[Value] = {
@@ -112,7 +98,7 @@ object BinderOps {
   }
 
   def toVBinder(binder: ElabAst.Binder): VBinder =
-    VBinder(binder.localRef, binder.ty, binder.isImplicit, binder.isInstance, binder.projection)
+    VBinder(binder.localRef, binder.ty, binder.isImplicit, binder.projection)
 
   private def freshenBinder(env: Env[Value], binder: VBinder): Env[Value] = {
     val expectedTy = Interpreter.evalTypeTerm(binder.ty, env)

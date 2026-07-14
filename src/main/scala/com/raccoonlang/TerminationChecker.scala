@@ -10,10 +10,8 @@ object TerminationChecker {
       name: String,
       vpi: VPi,
       spec: CA.DecreaseSpec,
-      bodyContext: TypingContext
+      bodyEnv: Env[Value]
   ): VLam = {
-    val bodyEnv = bodyContext.env
-
     def requireInductiveMetric(value: Value, span: Span): Unit = {
       // Collapsed proofs have no subterms, and "structurally smaller" is ill-defined up to an
       // equality that identifies wrap(x) with base; well-founded recursion on proofs needs a
@@ -60,7 +58,7 @@ object TerminationChecker {
         }
 
       case CA.DecreaseSpec.Measure(term, sp) =>
-        val initialMeasure = TypeChecker.checkTerm(term, bodyContext)
+        val initialMeasure = TypeChecker.checkTerm(term, bodyEnv)
         requireInductiveMetric(initialMeasure.value, sp)
         val quoted = initialMeasure.residual
         (args, nativeEnv) => {

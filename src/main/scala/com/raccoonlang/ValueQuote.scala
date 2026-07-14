@@ -39,7 +39,7 @@ object ValueQuote {
           ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), piSpan, piNodeId)
         case ElabAst.Term.Body(lets, res, bodySpan) =>
           val nextLets = lets.map { l =>
-            ElabAst.Let(l.localRef, l.ty.map(inlineTypeTerm), inlineTerm(l.value), l.span, l.isInstance)
+            ElabAst.Let(l.localRef, l.ty.map(inlineTypeTerm), inlineTerm(l.value), l.span)
           }
           ElabAst.Term.Body(nextLets, inlineTerm(res), bodySpan)
         case ElabAst.Term.Lam(ty, body, lamSpan, name, recursiveSelf, lamNodeId) =>
@@ -268,7 +268,7 @@ object ValueQuote {
     val inliner = new ClosedEnvInliner(pi.env, context)
 
     val quotedBinders = pi.binders.map { b =>
-      ElabAst.Binder(b.localRef, inliner.inlineTypeTerm(b.ty), Span(0, 0), b.isInstance, b.isImplicit, b.projection)
+      ElabAst.Binder(b.localRef, inliner.inlineTypeTerm(b.ty), Span(0, 0), b.isImplicit, b.projection)
     }
 
     OpenedPi(

@@ -81,8 +81,7 @@ object Value {
    * Collapse a freshened *rigid* binder: the bound hypothesis is its own witness
    * (proof-collapse.md §4). Counterpart to collapseIfProof's `Var` exemption — a bare fresh Var
    * is a refinable meta there and must not collapse, but here the Var is a rigid hypothesis being
-   * bound, so it does. InstanceSearch's witness-invariant guard relies on rigid proof binders
-   * being observably `VProof`.
+   * bound, so it does.
    */
   def collapseBinderWitness(tpe: Value, fresh: Value): Value =
     if (isPropositionType(tpe)) VProof(tpe, fresh) else fresh
@@ -219,7 +218,6 @@ object Value {
       localRef: CoreAst.LocalRef,
       ty: ElabAst.TypeTerm,
       isImplicit: Boolean = false,
-      isInstance: Boolean = false,
       projection: Option[telescope.Projection.Spec] = None
   ) {
     def name: String = localRef.name

@@ -23,14 +23,15 @@ which relation it is about.
 
 | Relation | Meaning | Decided/used by |
 |---|---|---|
-| **Definitional conversion** `a ≡ b` | Interchangeable during type checking. Includes evaluation, congruence, proof irrelevance, level arithmetic. | `ValueEquivalence.defEq`, `checkFits`, Solve-mode unification residue |
-| **Eliminator consequence** | What is *forced* in a match branch, given that the scrutinee is literally this constructor. Justified by the family's recursor (J-style): whole parameters/indices are equated; decomposing *inside* index values needs derivable injectivity (§5). | MatchChecker refinement (Invert-mode links) |
+| **Definitional conversion** `a ≡ b` | Interchangeable during type checking. Includes evaluation, congruence, proof irrelevance, level arithmetic. | `ValueEquivalence.defEq`, `checkFits` |
+| **Eliminator consequence** | What is *forced* in a match branch, given that the scrutinee is literally this constructor. Justified by the family's recursor (J-style): whole parameters/indices are equated; decomposing *inside* index values needs derivable injectivity (§5). | MatchChecker refinement (unifier links) |
 | **Propositional equality** `Eq A a b` | Provable equality in the object theory. Coarser than ≡ wherever axioms speak (`Quot.sound` today; propext/funext later). | Reachability pruning (`apart`), any "this type is uninhabited" conclusion |
 
 Ordering: `≡` ⊆ eliminator-consequence ⊆ `=`. Evidence valid for a finer relation is **not**
 automatically valid for a coarser one. In particular: definitional distinctness does not imply
-propositional distinctness (pruning needs the latter), and a Solve-mode unifier solution implies
-nothing at all (it is a choice).
+propositional distinctness (pruning needs the latter). Choice-mode unification (Solve links,
+whose solutions implied nothing at all) was removed with its clients — every surviving unifier
+link is a consequence.
 
 ## 2. Definitional equality specification
 
@@ -127,12 +128,11 @@ without inventing values).
 
 | Judgment | Consumer | Required justification | Current implementation |
 |---|---|---|---|
-| **Solve-mode link** | TypeChecker `constrainFits`, InstanceSearch | The link records a leaf equation; the vars are the elaborator's to instantiate, so sub-equations reached through non-invertible frames (sufficient but not necessary) are acceptable. | Links allowed under any frame in Solve. |
-| **Invert-mode link** (consequence) | MatchChecker refinement, `allowLargeElimination`, `Interpreter.reduceSubsingletonMatch` (runtime forced-field derivation) | The link is forced when the scrutinee is literally this constructor: definitional invertibility of every enclosing frame. | `Ctx.invertibleFrame`; non-invertible: opaque/blocked heads, Pi binder/codomain, thunk captures. Proof-valued applications are unrepresentable (`VProof` has no frames). |
+| **Link** (consequence) | MatchChecker refinement, `allowLargeElimination`, `Interpreter.reduceSubsingletonMatch` (runtime forced-field derivation) | The link is forced when the scrutinee is literally this constructor: definitional invertibility of every enclosing frame. (Choice-mode Solve links — allowed under any frame — were removed with unification-based elaboration and instance search.) | `Ctx.invertibleFrame`; non-invertible: opaque/blocked heads, Pi binder/codomain, thunk captures. Proof-valued applications are unrepresentable (`VProof` has no frames). |
 | **Apartness** (`UnifyFailure.apart`) | MatchChecker pruning (a case may be omitted) | *Propositional* no-confusion must be **derivable**: only a constructor clash of a Type-valued inductive (large elimination constructs the discriminating family). | `VCtor ≠ VCtor` + both `noConfusion`; proof-typed VCtors are unrepresentable (collapsed at creation), and `VProof ~ VProof` reduces to the proposition equation. Family-head clashes (any sort), quotient ctors, occurs-failures, level failures: **stuck**, never apart. |
 | **Stuck** (`apart = false`) | — | Means only "this algorithm cannot solve it". Must never justify pruning or disequality. | MatchChecker treats stuck ctors as reachable-unrefined (`EqStore.empty`). |
 | **Frame invertibility** (failure pass-through & link transparency) | within tryUnify | Definitional injectivity: `≡` of two same-head applications forces component `≡`. True for inductive family formers and data constructors; false for arbitrary functions and the Pi-former. Proofs have no frames to descend (`VProof`). | `definitionallyInjectiveHead`. |
-| **Large elimination permit** | MatchChecker `checkPropElimination` | Prop scrutinee eliminating into non-Prop needs subsingleton criteria: ≤1 reachable ctor and every non-proof field forced by the indices. Motive `Prop`-the-sort counts as large (it is data). | `allowLargeElimination` (Invert-mode unification of two fresh ctor copies). |
+| **Large elimination permit** | MatchChecker `checkPropElimination` | Prop scrutinee eliminating into non-Prop needs subsingleton criteria: ≤1 reachable ctor and every non-proof field forced by the indices. Motive `Prop`-the-sort counts as large (it is data). | `allowLargeElimination` (unification of two fresh ctor copies). |
 | **Prop classification** | TypeChecker `checkPi`, `checkPropElimination` | A type is a proposition iff it *lives in* `Prop`; the sort `Prop` never qualifies. | `isPropValuedType = getUniverse(v) == PropTpe`. |
 | **Structural decrease** (recursive call permitted) | TerminationChecker guard (`rawRecursiveSelf`) | The call's metric is strictly below the current one in the well-founded tree order of strictly positive inductive values: reachable by ≥1 constructor-field step, where an application of a function-typed field steps to a child (the field is its node's child-selector; Agda foetus / Coq guard precedent). Assumes values are well-founded trees: strict positivity (InductiveChecks) and no value-level self-capture (recursion requires a decreasing parameter). | `isStrictSubterm`: `VCtor` field descent plus `VApp`-spine stripping that must bottom out at a field (`applicationOfSubterm`); any other head (blocked match, lambda) must be defEq to the field itself. Proof metrics rejected at declaration (`InvalidDecreaseSpec`); axiom/quotient-typed metrics rejected (`requireInductiveMetric`). |
 
@@ -184,8 +184,9 @@ the probe into a must-reject test — is the standard procedure for anything on 
    "congruence failures under opaque heads"); QuotientTests ("genuine constructor disjointness
    still prunes").
 2. **Unification mode conflation** (fixed): Solve-links consumed as refinement facts derived
-   injectivity of arbitrary opaque functions. → `UnifyMode.Solve`/`Invert`, links refused under
-   non-invertible frames in Invert. Tests: ConsistencyTests ("opaque function applications do not
+   injectivity of arbitrary opaque functions. → `UnifyMode.Solve`/`Invert` split, links refused
+   under non-invertible frames in Invert; Solve mode was later deleted outright with its clients,
+   so all links are consequences. Tests: ConsistencyTests ("opaque function applications do not
    refine their arguments", "stuck opaque-head equations keep the refl case required");
    QuotientTests ("Quot.mk fields do not force implicit parameters" — under forced-implicit
    projection the same discipline holds at declaration time: no-confusion-less heads are not

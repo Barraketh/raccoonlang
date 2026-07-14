@@ -59,7 +59,6 @@ object ElabAst {
       localRef: CoreAst.LocalRef,
       ty: TypeTerm,
       span: Span,
-      isInstance: Boolean = false,
       isImplicit: Boolean = false,
       projection: Option[telescope.Projection.Spec] = None
   ) {
@@ -72,8 +71,7 @@ object ElabAst {
       localRef: CoreAst.LocalRef,
       ty: Option[TypeTerm],
       value: Term,
-      span: Span,
-      isInstance: Boolean = false
+      span: Span
   ) {
     def name: String = localRef.name
   }

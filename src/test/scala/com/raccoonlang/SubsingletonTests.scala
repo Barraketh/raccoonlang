@@ -36,20 +36,12 @@ class SubsingletonTests extends munit.FunSuite {
     )
   }
 
-  test("generic proposition Subsingleton instance participates in derive") {
-    typecheckDecls(
-      """
-        |def derived : Subsingleton(True) := derive[Subsingleton(True)]
-        |""".stripMargin
-    )
-  }
-
   test("Subsingleton.elim proves equality between proofs of the same proposition") {
     val res =
       runProgram(
         """
           |{
-          |  Subsingleton.elim(derive[Subsingleton(True)])(True.intro, True.intro)
+          |  Subsingleton.elim(propSubsingleton(True))(True.intro, True.intro)
           |}
           |""".stripMargin
       )
@@ -58,13 +50,5 @@ class SubsingletonTests extends munit.FunSuite {
       case Value.VApp(Value.VConst("Eq", _, _), Vector(_, Value.VConst("True", _, _), _, _), _, _) =>
       case other => fail(s"Expected equality proof over True, got $other")
     }
-  }
-
-  test("ordinary data types are not subsingletons without an instance") {
-    assertTypeError[NoInstanceFound](
-      """
-        |def bad : Subsingleton(Nat) := derive[Subsingleton(Nat)]
-        |""".stripMargin
-    )
   }
 }

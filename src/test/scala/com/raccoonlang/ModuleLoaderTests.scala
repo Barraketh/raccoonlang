@@ -133,9 +133,9 @@ class ModuleLoaderTests extends munit.FunSuite {
       "Main.rac",
       """
         |namespace InitPilot {
-        |  def sameNat (a: Nat)(b: Nat): Bool := beq(derive[BEq(Nat)], a, b)
+        |  def sameNat (a: Nat)(b: Nat): Bool := beq(natBEq, a, b)
         |
-        |  def oneLeOne : le(derive[LE(Nat)], Nat.succ(Nat.zero), Nat.succ(Nat.zero)) := Eq.refl(Bool.true)
+        |  def oneLeOne : le(natLE, Nat.succ(Nat.zero), Nat.succ(Nat.zero)) := Eq.refl(Bool.true)
         |}
         |
         |{

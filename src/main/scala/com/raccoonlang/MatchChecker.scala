@@ -24,7 +24,7 @@ object MatchChecker {
       env: Env[Value]
   ): Vector[ReachableCtor] = {
     def unify(left: Value, right: Value, refinable: DepSet): Either[ValueEquivalence.UnifyFailure, EqStore] =
-      ValueEquivalence.tryUnify(left, right, EqStore.empty.allow(refinable), ValueEquivalence.UnifyMode.Invert)
+      ValueEquivalence.tryUnify(left, right, EqStore.empty.allow(refinable))
 
     def rootRefinable(value: Value): DepSet =
       value match {
@@ -88,8 +88,8 @@ object MatchChecker {
     val startEq = {
       val start = EqStore.empty.allow(refinable0)
       ValueEquivalence
-        .tryUnify(res1, scrutTpe, start, ValueEquivalence.UnifyMode.Invert)
-        .flatMap(eq1 => ValueEquivalence.tryUnify(res2, scrutTpe, eq1, ValueEquivalence.UnifyMode.Invert)) match {
+        .tryUnify(res1, scrutTpe, start)
+        .flatMap(eq1 => ValueEquivalence.tryUnify(res2, scrutTpe, eq1)) match {
         case Right(eqStore) => eqStore
         case Left(_)        => return false
       }
@@ -117,18 +117,18 @@ object MatchChecker {
   private def checkBranch(
       br: CA.Case,
       args: Seq[Value],
-      contextWithScrut: TypingContext,
+      envWithScrut: Env[Value],
       expectedTy: Value
   ): EA.Case = {
     if (args.length != br.argRefs.length)
       throw ArityMismatch(args.length, br.argRefs.length, Some(br.span))
-    val branchContext = br.argRefs.zip(args).foldLeft(contextWithScrut) { case (curContext, (argRef, argVal)) =>
+    val branchEnv = br.argRefs.zip(args).foldLeft(envWithScrut) { case (curEnv, (argRef, argVal)) =>
       argRef match {
-        case Some(ref) => curContext.putLocal(ref, argVal)
-        case None      => curContext
+        case Some(ref) => curEnv.putLocal(ref, argVal)
+        case None      => curEnv
       }
     }
-    val branchRes = checkTerm(br.body, expectedTy, branchContext)
+    val branchRes = checkTerm(br.body, expectedTy, branchEnv)
     checkType(branchRes.value, expectedTy)
     EA.Case(
       br.ctorName,
@@ -138,9 +138,8 @@ object MatchChecker {
     )
   }
 
-  def checkMatch(t: CA.Term.Match, context: TypingContext, expectedTy: Option[Value] = None): CheckedTerm = {
-    val env = context.env
-    val scrutChecked = checkTerm(t.scrut, context)
+  def checkMatch(t: CA.Term.Match, env: Env[Value], expectedTy: Option[Value] = None): CheckedTerm = {
+    val scrutChecked = checkTerm(t.scrut, env)
     val scrut = scrutChecked.value
     val scrutTpe = scrut.tpe
 
@@ -185,7 +184,7 @@ object MatchChecker {
       inferred
     }
 
-    val checkedMotive = t.motive.map(motiveSyntax => checkTypeTerm(motiveSyntax, context))
+    val checkedMotive = t.motive.map(motiveSyntax => checkTypeTerm(motiveSyntax, env))
     val motiveTy = checkedMotive match {
       case Some(motive) => motive.value
       case None if expectedTy.nonEmpty =>
@@ -205,7 +204,7 @@ object MatchChecker {
         }
 
         val br = cases.find(_.ctorName == h.name).getOrElse(throw MissingCase(h.name))
-        checkedByCtor += h.name -> checkBranch(br, Value.constructorPatternArgs(h, storedArgs), context, motiveTy)
+        checkedByCtor += h.name -> checkBranch(br, Value.constructorPatternArgs(h, storedArgs), env, motiveTy)
 
       case _ =>
         val reachableMap = reachableByType.map(info => info.name -> info).toMap
@@ -221,10 +220,9 @@ object MatchChecker {
               val br = cases.find(_.ctorName == ctorName).getOrElse(throw MissingCase(ctorName))
               val branchStore = info.branchEqStore
               val branchEnv = ValueOps.materializeEnv(env, branchStore)
-              val branchContext = context.withEnv(branchEnv)
               val branchArgs = info.fieldArgs.map(arg => ValueOps.materialize(arg, branchStore))
               val branchMotiveTy = ValueOps.materialize(motiveTy, branchStore)
-              checkedByCtor += ctorName -> checkBranch(br, branchArgs, branchContext, branchMotiveTy)
+              checkedByCtor += ctorName -> checkBranch(br, branchArgs, branchEnv, branchMotiveTy)
           }
         }
     }
@@ -237,7 +235,7 @@ object MatchChecker {
       // orElse is by-name: the expected type is only quoted when there is no user motive.
       checkedMotive
         .map(_.residual)
-        .orElse(expectedTy.map(expected => quoteType(expected, quoteContext(context.env), t.span))),
+        .orElse(expectedTy.map(expected => quoteType(expected, quoteContext(env), t.span))),
       checkedCases,
       t.span,
       t.span.nodeId

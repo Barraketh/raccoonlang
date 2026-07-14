@@ -50,9 +50,6 @@ object CoreAst {
     // Projection in term position: base[field]
     final case class Select(base: Term, field: String, span: Span) extends Term
 
-    // Explicit instance search expression: derive[Goal]
-    final case class Derive(goal: TypeTerm, span: Span) extends TypeTerm
-
     // Application in type position
     final case class TApp(fn: Ref, args: Vector[TypeTerm], span: Span) extends TypeTerm {
       require(args.nonEmpty, "Type application requires at least one argument")
@@ -91,8 +88,7 @@ object CoreAst {
       localRef: LocalRef,
       ty: Option[TypeTerm],
       value: Term,
-      span: Span,
-      isInstance: Boolean = false
+      span: Span
   ) {
     def name: String = localRef.name
   }
@@ -101,8 +97,7 @@ object CoreAst {
       localRef: LocalRef,
       ty: TypeTerm,
       span: Span,
-      isImplicit: Boolean = false,
-      isInstance: Boolean = false
+      isImplicit: Boolean = false
   ) {
     def name: String = localRef.name
 
@@ -151,15 +146,13 @@ object CoreAst {
         ty: TypeTerm,
         body: ConstBody,
         span: Span,
-        isInstance: Boolean = false,
         lazyGlobal: Boolean = false
     ) extends Decl
 
     final case class AxiomDecl(
         name: String,
         ty: TypeTerm,
-        span: Span,
-        isInstance: Boolean = false
+        span: Span
     ) extends Decl
 
     // Inductive type declaration (structured)

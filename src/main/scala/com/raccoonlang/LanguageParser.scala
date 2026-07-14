@@ -27,8 +27,6 @@ object LanguageParser {
     "opaque",
     "axiom",
     "def",
-    "instance",
-    "derive",
     "inductive",
     "struct",
     "namespace",
@@ -78,13 +76,8 @@ object LanguageParser {
     rootPath | scopedPath
   }
 
-  private def deriveP(implicit sourceId: Option[SourceId]): Parser[Derive] =
-    (kwTight("derive") ~/ symTight("[") ~/ skipAllWs ~ typeTerm ~ layoutSymTight("]"))
-      .flatSpanned(sourceId)
-      .map(Derive.tupled)
-
   private def termAtom(implicit sourceId: Option[SourceId]): Parser[Term] =
-    deriveP | (sym("(") ~/ skipAllWs ~ term ~ layoutSymTight(")")) | rootTerm | identTerm
+    (sym("(") ~/ skipAllWs ~ term ~ layoutSymTight(")")) | rootTerm | identTerm
 
   // Type atoms: identifier or parenthesized type, with bracket selects as a postfix variant.
   private def identTypeTerm(implicit sourceId: Option[SourceId]): Parser[TypeTerm] =
@@ -103,7 +96,6 @@ object LanguageParser {
 
   private def typeAtom(implicit sourceId: Option[SourceId]): Parser[TypeTerm] =
     simplePi |
-      deriveP |
       sym('(') ~ skipAllWs ~ typeTerm ~ layoutSymTight(')') |
       rootTypeTerm |
       identTypeTerm
@@ -141,12 +133,6 @@ object LanguageParser {
         Binder(name, ty, span)
     }
 
-  private def instanceParam(implicit sourceId: Option[SourceId]): Parser[Binder] =
-    (sym('[') ~ argName ~ sym(':') ~/ skipAllWs ~ typeTerm ~ layoutSymTight(']')).flatSpanned(sourceId).map {
-      case (name, ty, span) =>
-        Binder(name, ty, span, isInstance = true)
-    }
-
   private def implicitParam(implicit sourceId: Option[SourceId]): Parser[Binder] =
     (sym('{') ~ argName ~ sym(':') ~/ skipAllWs ~ typeTerm ~ layoutSymTight('}')).flatSpanned(sourceId).map {
       case (name, ty, span) =>
@@ -154,14 +140,14 @@ object LanguageParser {
     }
 
   private def param(implicit sourceId: Option[SourceId]): Parser[Binder] =
-    normalParam | instanceParam | implicitParam
+    normalParam | implicitParam
   private def layoutParam(implicit sourceId: Option[SourceId]): Parser[Binder] = skipAllWs ~ param
 
   private def let(implicit sourceId: Option[SourceId]): Parser[Let] =
-    (kw("let") ~/ kw("instance").!.? ~ ident ~ (sym(':') ~ skipAllWs ~ typeTerm).? ~ sym(":=") ~/ skipAllWs ~ term)
+    (kw("let") ~/ ident ~ (sym(':') ~ skipAllWs ~ typeTerm).? ~ sym(":=") ~/ skipAllWs ~ term)
       .flatSpanned(sourceId)
-      .map { case (instanceOpt, name, ty, value, span) =>
-        Let(name, ty, value, span, isInstance = instanceOpt.isDefined)
+      .map { case (name, ty, value, span) =>
+        Let(name, ty, value, span)
       }
 
   private def bodyStmt(implicit sourceId: Option[SourceId]): Parser[BodyStmt] =
@@ -272,27 +258,26 @@ object LanguageParser {
     kw("decreases") ~/ (structural | lexicographic | measure)
   }
 
-  // opaque? def instance? foo (a: A)[b: B](c : C): D := body
+  // opaque? def foo (a: A)(c : C): D := body
   private def constP(implicit sourceId: Option[SourceId]): Parser[ConstDecl] =
-    (opaqueP ~ kw("def") ~/ kw("instance").!.? ~ declHeader ~ decreasesP.? ~
+    (opaqueP ~ kw("def") ~/ declHeader ~ decreasesP.? ~
       (sym(":=") ~/ skipAllWs ~ constBody))
       .flatSpanned(sourceId)
-      .map { case (isOpaque, instanceOpt, header, decreases, body, span) =>
+      .map { case (isOpaque, header, decreases, body, span) =>
         ConstDecl(
           isOpaque,
           header,
           decreases,
           body,
-          span,
-          isInstance = instanceOpt.isDefined
+          span
         )
       }
 
   private def axiomP(implicit sourceId: Option[SourceId]): Parser[AxiomDecl] =
-    (kw("axiom") ~/ kw("instance").!.? ~ declHeader)
+    (kw("axiom") ~/ declHeader)
       .flatSpanned(sourceId)
-      .map { case (instanceOpt, header, span) =>
-        AxiomDecl(header, span, isInstance = instanceOpt.isDefined)
+      .map { case (header, span) =>
+        AxiomDecl(header, span)
       }
 
   private def inductiveP(implicit sourceId: Option[SourceId]): Parser[InductiveDecl] =

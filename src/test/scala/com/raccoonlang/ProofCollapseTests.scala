@@ -61,21 +61,6 @@ class ProofCollapseTests extends munit.FunSuite {
     )
   }
 
-  test("instance search does not discharge proof premises from thin air") {
-    // A candidate with a non-instance proof premise must not be applied to the freshened
-    // placeholder of that premise: that would derive Marker from an unproven False.
-    assertTypeError[NoInstanceFound](
-      """
-        |inductive Marker : Type
-        | | mk : Marker
-        |
-        |def instance markerFromFalse (h: False): Marker := falseElim(h, Marker)
-        |
-        |def bad : Marker := derive[Marker]
-        |""".stripMargin
-    )
-  }
-
   test("generic-universe bodies compare uncollapsed values correctly") {
     // At generic u, `x : A` with `A : Sort(u)` is not known to be a proof and stays an ordinary
     // value (irrelevance does not hold at generic u); instantiating at a proposition hands the

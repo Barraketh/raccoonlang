@@ -28,18 +28,18 @@ class ValueEquivalenceTests extends munit.FunSuite {
     val left = pi(Vector(hole), _ => hole, 1)
     val right = pi(Vector.empty, env => env(binderRef), 2)
 
-    assert(ValueEquivalence.tryUnify(left, right, meta, ValueEquivalence.UnifyMode.Solve).isLeft)
+    assert(ValueEquivalence.tryUnify(left, right, meta).isLeft)
   }
 
-  test("Pi unification still allows closed solutions") {
+  test("Pi unification does not link holes beneath the Pi frame") {
+    // Pi-former injectivity is not assumed, so codomain equations are not consequences of the
+    // Pi equation: even a closed solution must be refused, not chosen.
     val hole = FreshVar.freshVar("A", TypeTpe)
     val closed = FreshVar.freshVar("B", TypeTpe)
     val meta = EqStore.empty.allow(DepSet(hole.id))
     val left = pi(Vector(hole), _ => hole, 3)
     val right = pi(Vector(closed), _ => closed, 4)
 
-    val solved = ValueEquivalence.unify(left, right, meta)
-
-    assert(ValueEquivalence.defEq(solved.subst(hole.id), closed))
+    assert(ValueEquivalence.tryUnify(left, right, meta).isLeft)
   }
 }

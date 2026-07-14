@@ -57,24 +57,6 @@ class AxiomTests extends munit.FunSuite {
     assertEquals(PrettyPrinter.print(res.tpe), "Nat")
   }
 
-  test("axiom instance participates in derive") {
-    val res = runProgram(
-      natPrelude +
-        """
-          |struct DecEq (A: Type) : Type
-          | | mk (ok: Nat) : DecEq(A)
-          |
-          |axiom instance natEq : DecEq(Nat)
-          |
-          |{
-          |  derive[DecEq(Nat)]
-          |}
-          |""".stripMargin
-    )
-
-    assertEquals(PrettyPrinter.print(res), "natEq")
-  }
-
   test("axiom result must be a type") {
     val p =
       natPrelude +

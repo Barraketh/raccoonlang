@@ -51,9 +51,6 @@ object SurfaceAst {
     // Pi (x: A) -> B x
     final case class Pi(binder: Binder, body: TypeTerm, span: Span) extends Term with TypeTerm
 
-    // Explicit instance search expression: derive[Goal]
-    final case class Derive(goal: TypeTerm, span: Span) extends Term with TypeTerm
-
     // Application: f(a) (term-level)
     final case class App(fn: Term, args: Vector[Term], span: Span) extends Term
 
@@ -68,7 +65,7 @@ object SurfaceAst {
     ) extends Term
 
     // Let: let x := foo
-    final case class Let(name: String, ty: Option[TypeTerm], value: Term, span: Span, isInstance: Boolean = false)
+    final case class Let(name: String, ty: Option[TypeTerm], value: Term, span: Span)
 
     sealed trait BodyStmt {
       def span: Span
@@ -93,8 +90,7 @@ object SurfaceAst {
       name: String,
       ty: TypeTerm,
       span: Span,
-      isImplicit: Boolean = false,
-      isInstance: Boolean = false
+      isImplicit: Boolean = false
   )
 
   case class FuncHeader(params: Vector[Binder], ty: TypeTerm, span: Span)
@@ -133,14 +129,12 @@ object SurfaceAst {
           decreases: Option[DecreaseSpec],
           body: ConstBody,
           span: Span,
-          isInstance: Boolean = false,
           lazyGlobal: Boolean = false
       ) extends Decl
 
       final case class AxiomDecl(
           header: DeclHeader,
-          span: Span,
-          isInstance: Boolean = false
+          span: Span
       ) extends Decl
 
       // Inductive type declaration

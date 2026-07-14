@@ -16,23 +16,6 @@ object ValueEquivalence {
     def asStuck: UnifyFailure = if (apart) copy(apart = false) else this
   }
 
-  /**
-   * What a successful link is allowed to mean.
-   *
-   * `Solve`: links are choices — any store that makes the equation true is acceptable. Congruence makes linking sound
-   * under arbitrary frames (`?m := b` justifies `f ?m ~ f b` even for non-injective `f`). This is what elaboration and
-   * instance search need.
-   *
-   * `Invert`: links are consequences — the caller will treat every link as a fact forced by the equation (match
-   * refinement checks branches under them). A link made beneath a non-invertible frame is not a consequence (`f x = f
-   * y` does not force `x = y` for non-injective `f`), so Invert refuses it and reports the equation as stuck.
-   */
-  sealed trait UnifyMode
-  object UnifyMode {
-    case object Solve extends UnifyMode
-    case object Invert extends UnifyMode
-  }
-
   def defEq(v1: Value, v2: Value): Boolean =
     DefEq.defEq(v1, v2)
 
@@ -55,19 +38,26 @@ object ValueEquivalence {
   }
 
   // Throwing convenience wrapper; only used by tests.
-  def unify(v1: Value, v2: Value, meta: EqStore, mode: UnifyMode = UnifyMode.Solve): EqStore =
-    tryUnify(v1, v2, meta, mode) match {
+  def unify(v1: Value, v2: Value, meta: EqStore): EqStore =
+    tryUnify(v1, v2, meta) match {
       case Right(eqStore) => eqStore
       case Left(failed)   => throw UnificationFailed(failed.v1, failed.v2)
     }
 
+  /**
+   * Unification whose links are consequences: every caller treats a link as a fact forced by the
+   * root equation (match refinement checks branches under them, subsingleton reduction binds
+   * fields from them). A link made beneath a non-invertible frame is not a consequence (`f x = f
+   * y` does not force `x = y` for non-injective `f`), so it is refused and the equation reports
+   * stuck. Choice-mode solving (any store that makes the equation true) left with its last
+   * clients, unification-based elaboration and instance search.
+   */
   def tryUnify(
       v1: Value,
       v2: Value,
-      meta: EqStore,
-      mode: UnifyMode
+      meta: EqStore
   ): Either[UnifyFailure, EqStore] =
-    Unify.tryUnify(v1, v2, meta, Unify.Ctx(mode))
+    Unify.tryUnify(v1, v2, meta, Unify.Ctx())
 
   private object DefEq {
     case class RelatedPis(vars: Vector[Value], out1: Value, out2: Value)
@@ -75,7 +65,7 @@ object ValueEquivalence {
     def relatePis(pi1: VPi, pi2: VPi): Option[RelatedPis] = {
       if (
         pi1.binders.zip(pi2.binders).exists { case (b1, b2) =>
-          b1.isInstance != b2.isInstance || b1.isImplicit != b2.isImplicit
+          b1.isImplicit != b2.isImplicit
         }
       )
         return None
@@ -166,16 +156,16 @@ object ValueEquivalence {
     private final case class PiUnification(eqStore: EqStore, vars: Vector[Value], watermark: Value.VarId)
 
     /**
-     * Unification context: the mode plus whether every frame descended through so far is invertible.
+     * Unification context: whether every frame descended through so far is invertible.
      *
-     * In both modes a link records exactly the equation presented at the point of linking (or its unique forced
-     * solution) — the store never invents values. The modes differ in whether *decomposed sub-equations* are
-     * consequences of the original equation: descending through a non-invertible frame produces sub-equations that are
-     * sufficient but not necessary, so Invert mode (whose links are read as facts) refuses to link beneath one, while
-     * Solve mode (whose vars are the elaborator's to instantiate) may.
+     * A link records exactly the equation presented at the point of linking (or its unique forced
+     * solution) — the store never invents values. Since links are consumed as consequences of the
+     * root equation, linking is legal only while every enclosing frame is invertible: descending
+     * through a non-invertible frame produces sub-equations that are sufficient but not necessary,
+     * so links beneath one are refused.
      */
-    final case class Ctx(mode: UnifyMode, invertibleFrame: Boolean = true) {
-      def canLinkForced: Boolean = mode == UnifyMode.Solve || invertibleFrame
+    final case class Ctx(invertibleFrame: Boolean = true) {
+      def canLinkForced: Boolean = invertibleFrame
       def enterNonInvertibleFrame: Ctx = if (invertibleFrame) copy(invertibleFrame = false) else this
     }
 
@@ -223,7 +213,7 @@ object ValueEquivalence {
       if (
         pi1.binders.length != pi2.binders.length ||
         pi1.binders.zip(pi2.binders).exists { case (b1, b2) =>
-          b1.isInstance != b2.isInstance || b1.isImplicit != b2.isImplicit
+          b1.isImplicit != b2.isImplicit
         }
       )
         return Left(UnifyFailure(pi1, pi2, apart = false))

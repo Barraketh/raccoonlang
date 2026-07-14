@@ -329,7 +329,7 @@ object Elaborator {
       case binder if !binder.isImplicit =>
         SA.Term.Ident(binder.name, binder.span)
     }
-    val implicitFamilyBinders = header.binders.map(binder => binder.copy(isImplicit = true, isInstance = false))
+    val implicitFamilyBinders = header.binders.map(binder => binder.copy(isImplicit = true))
     val selfType = {
       val head = SA.Term.Ident(header.name, header.span)
       if (familyArgs.isEmpty) head
@@ -423,9 +423,6 @@ object Elaborator {
           args.map(arg => rewriteTypeTerm(structName, selfName, arg, previousFields, familyFieldRewrites)),
           span
         )
-
-      case SA.Term.Derive(goal, span) =>
-        SA.Term.Derive(rewriteTypeTerm(structName, selfName, goal, previousFields, familyFieldRewrites), span)
 
       case SA.Term.Pi(binder, body, span) =>
         rejectShadowingBinder(structName, binder, previousFields)
@@ -546,7 +543,6 @@ object Elaborator {
         case None       => CA.Term.TSelect(elabType(s.base, env), s.field, s.span)
       }
     case SA.Term.TApp(fn, args, sp) => CA.Term.TApp(elabTypeAppHead(fn, env), args.map(elabType(_, env)), sp)
-    case SA.Term.Derive(goal, sp)   => CA.Term.Derive(elabType(goal, env), sp)
     case pi: SA.Term.Pi             => elabPi(pi, env)
   }
 
@@ -555,7 +551,7 @@ object Elaborator {
     val (ref, nextEnv) =
       if (b.name == "_") env.allocate(b.name)
       else env.bindNamed(b.name, allowShadow = false)
-    (CA.Binder(ref, ty, b.span, b.isImplicit, b.isInstance), nextEnv)
+    (CA.Binder(ref, ty, b.span, b.isImplicit), nextEnv)
   }
 
   private def elabBinders(binders: Vector[SA.Binder], env: ResolveEnv): (Vector[CA.Binder], ResolveEnv) =
@@ -616,7 +612,6 @@ object Elaborator {
         case None       => CA.Term.Select(elabTerm(s.base, env), s.field, s.span)
       }
     case SA.Term.App(fn, args, sp) => CA.Term.App(elabTerm(fn, env), args.map(elabTerm(_, env)), sp)
-    case SA.Term.Derive(goal, sp)  => CA.Term.Derive(elabType(goal, env), sp)
     case pi: SA.Term.Pi            => elabPi(pi, env)
     case l: SA.Term.Lam =>
       val header = elabHeader(l.header, env)
@@ -637,7 +632,7 @@ object Elaborator {
             val ty = l.ty.map(elabType(_, curEnv))
             val value = elabTerm(l.value, curEnv)
             val (ref, nextEnv) = curEnv.bindRequired(l.name, l.span, allowShadow = true)
-            checkedLets += CA.Let(ref, ty, value, l.span, l.isInstance)
+            checkedLets += CA.Let(ref, ty, value, l.span)
             nextEnv
         }
       }
@@ -712,7 +707,7 @@ object Elaborator {
             }
         }
         (
-          CA.Decl.ConstDecl(c.isOpaque, nameText, header.ty, body, c.span, c.isInstance, c.lazyGlobal),
+          CA.Decl.ConstDecl(c.isOpaque, nameText, header.ty, body, c.span, c.lazyGlobal),
           envWithSelf
         )
       case c: SurfaceAst.Command.Decl.AxiomDecl =>
@@ -720,13 +715,12 @@ object Elaborator {
         val nameText = globalName(name)
         val header = elabHeader(c.header.funcHeader, env)
         (
-          CA.Decl.AxiomDecl(nameText, header.ty, c.span, c.isInstance),
+          CA.Decl.AxiomDecl(nameText, header.ty, c.span),
           env.addGlobal(name)
         )
       case c: SurfaceAst.Command.Decl.InductiveDecl =>
         val name = env.qualify(c.header.name)
         val nameText = globalName(name)
-        rejectInstanceFamilyParams(nameText, c.header.params)
         val headerEnv = env.enterLocalScope
         val (params, envWithParams) = elabBinders(c.header.params, headerEnv)
         val (indices, envWithIndices) = elabBinders(c.header.indices, envWithParams)
@@ -752,16 +746,6 @@ object Elaborator {
           cur.addGlobal(ctorName)
         }
         (CA.Decl.InductiveDecl(header, ctors, c.isStruct, c.span), nextEnv)
-    }
-
-  private def rejectInstanceFamilyParams(inductiveName: String, params: Vector[SA.Binder]): Unit =
-    params.find(_.isInstance).foreach { binder =>
-      throw InvalidInductiveParam(
-        inductiveName,
-        binder.name,
-        "family parameters may be explicit or implicit, but not instance binders",
-        Some(binder.span)
-      )
     }
 
   private def elabCommands(commands: Vector[SA.Command], env: ResolveEnv): (Vector[CA.Decl], ResolveEnv) = {

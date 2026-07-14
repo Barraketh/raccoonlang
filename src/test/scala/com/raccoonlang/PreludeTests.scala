@@ -126,7 +126,7 @@ class PreludeTests extends munit.FunSuite {
       runProgram(
         """
           |{
-          |  decide(derive[Decidable(True)])
+          |  decide(trueDecidable)
           |}
           |""".stripMargin
       )
@@ -136,7 +136,7 @@ class PreludeTests extends munit.FunSuite {
       runProgram(
         """
           |{
-          |  ite(derive[Decidable(False)], Nat, Nat.succ(Nat.zero), Nat.zero)
+          |  ite(falseDecidable, Nat, Nat.succ(Nat.zero), Nat.zero)
           |}
           |""".stripMargin
       )
@@ -146,7 +146,7 @@ class PreludeTests extends munit.FunSuite {
       runProgram(
         """
           |{
-          |  Decidable.toBool(Decidable.not(derive[Decidable(False)]))
+          |  Decidable.toBool(Decidable.not(falseDecidable))
           |}
           |""".stripMargin
       )
@@ -156,7 +156,7 @@ class PreludeTests extends munit.FunSuite {
       runProgram(
         """
           |{
-          |  Decidable.casesOn(derive[Decidable(False)], Nat, fun (h: Not(False)): Nat => Nat.zero, fun (h: False): Nat => falseElim(h, Nat))
+          |  Decidable.casesOn(falseDecidable, Nat, fun (h: Not(False)): Nat => Nat.zero, fun (h: False): Nat => falseElim(h, Nat))
           |}
           |""".stripMargin
       )
@@ -286,7 +286,7 @@ class PreludeTests extends munit.FunSuite {
       runProgram(
         """
           |{
-          |  derive[Inhabited(Nat)].default
+          |  natInhabited.default
           |}
           |""".stripMargin
       )
@@ -296,8 +296,8 @@ class PreludeTests extends munit.FunSuite {
   test("Prelude typeclass seed APIs derive and reduce") {
     typecheckDecls(
       """
-        |def zeroEqZero : Decidable(Eq(Nat, Nat.zero, Nat.zero)) := decEq(derive[DecidableEq(Nat)], Nat.zero, Nat.zero)
-        |def falseNeTrue : Decidable(Eq(Bool, Bool.false, Bool.true)) := decEq(derive[DecidableEq(Bool)], Bool.false, Bool.true)
+        |def zeroEqZero : Decidable(Eq(Nat, Nat.zero, Nat.zero)) := decEq(natDecidableEq, Nat.zero, Nat.zero)
+        |def falseNeTrue : Decidable(Eq(Bool, Bool.false, Bool.true)) := decEq(boolDecidableEq, Bool.false, Bool.true)
         |
         |def noZeroSucc (h: Eq(Nat, Nat.zero, Nat.succ(Nat.zero))): False := Nat.zeroNeSucc(Nat.zero, h)
         |def succInjects (h: Eq(Nat, Nat.succ(Nat.zero), Nat.succ(Nat.zero))): Eq(Nat, Nat.zero, Nat.zero) := Nat.succInj(h)
@@ -311,7 +311,7 @@ class PreludeTests extends munit.FunSuite {
       runProgram(
         """
           |{
-          |  beq(derive[BEq(Nat)], Nat.succ(Nat.zero), Nat.succ(Nat.zero))
+          |  beq(natBEq, Nat.succ(Nat.zero), Nat.succ(Nat.zero))
           |}
           |""".stripMargin
       )
@@ -321,7 +321,7 @@ class PreludeTests extends munit.FunSuite {
       runProgram(
         """
           |{
-          |  beq(derive[BEq(Option(Nat))], Option.some(Nat.zero), Option.some(Nat.zero))
+          |  beq(optionBEq(natBEq), Option.some(Nat.zero), Option.some(Nat.zero))
           |}
           |""".stripMargin
       )
@@ -332,7 +332,7 @@ class PreludeTests extends munit.FunSuite {
         """
           |{
           |  let xs := List.cons(Nat.zero, List.cons(Nat.succ(Nat.zero), List.nil(Nat)))
-          |  beq(derive[BEq(List(Nat))], xs, xs)
+          |  beq(listBEq(natBEq), xs, xs)
           |}
           |""".stripMargin
       )
@@ -343,7 +343,7 @@ class PreludeTests extends munit.FunSuite {
         """
           |{
           |  let p := Prod.mk(Nat.zero, Bool.true)
-          |  beq(derive[BEq(Prod(Nat, Bool))], p, p)
+          |  beq(prodBEq(natBEq, boolBEq), p, p)
           |}
           |""".stripMargin
       )
@@ -353,7 +353,7 @@ class PreludeTests extends munit.FunSuite {
       runProgram(
         """
           |{
-          |  Decidable.toBool(decEq(derive[DecidableEq(Nat)], Nat.succ(Nat.zero), Nat.zero))
+          |  Decidable.toBool(decEq(natDecidableEq, Nat.succ(Nat.zero), Nat.zero))
           |}
           |""".stripMargin
       )
@@ -363,7 +363,7 @@ class PreludeTests extends munit.FunSuite {
       runProgram(
         """
           |{
-          |  Decidable.toBool(decEq(derive[DecidableEq(Unit)], Unit.unit, Unit.unit))
+          |  Decidable.toBool(decEq(unitDecidableEq, Unit.unit, Unit.unit))
           |}
           |""".stripMargin
       )
@@ -373,7 +373,7 @@ class PreludeTests extends munit.FunSuite {
       runProgram(
         """
           |{
-          |  let natEq := derive[DecidableEq(Nat)]
+          |  let natEq := natDecidableEq
           |  beq(DecidableEq.toBEq(natEq), Nat.zero, Nat.succ(Nat.zero))
           |}
           |""".stripMargin

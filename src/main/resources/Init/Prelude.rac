@@ -166,13 +166,13 @@ namespace Decidable {
   }
 }
 
-def decide {p: Prop} [d: Decidable(p)]: Bool := Decidable.toBool(d)
+def decide {p: Prop} (d: Decidable(p)): Bool := Decidable.toBool(d)
 
 def ite {u: Level}{p: Prop} (d: Decidable(p))(A: Sort(u))(t: A)(f: A): A := Decidable.ite(d, A, t, f)
 
-def instance trueDecidable : Decidable(True) := Decidable.isTrue(True.intro)
+def trueDecidable : Decidable(True) := Decidable.isTrue(True.intro)
 
-def instance falseDecidable : Decidable(False) := Decidable.isFalse(notFalse)
+def falseDecidable : Decidable(False) := Decidable.isFalse(notFalse)
 
 inductive Nat : Type
  | zero : Nat
@@ -365,25 +365,25 @@ inductive Nonempty {u: Level}(A: Sort(u)) : Prop
 struct Inhabited {u: Level}(A: Sort(u)) : Sort(u)
  | mk (default: A) : Inhabited(A)
 
-def instance unitInhabited : Inhabited(Unit) := Inhabited.mk(Unit.unit)
+def unitInhabited : Inhabited(Unit) := Inhabited.mk(Unit.unit)
 
-def instance boolInhabited : Inhabited(Bool) := Inhabited.mk(Bool.false)
+def boolInhabited : Inhabited(Bool) := Inhabited.mk(Bool.false)
 
-def instance natInhabited : Inhabited(Nat) := Inhabited.mk(Nat.zero)
+def natInhabited : Inhabited(Nat) := Inhabited.mk(Nat.zero)
 
 struct BEq {u: Level}(A: Sort(u)) : Sort(Level.max(Level.one, u))
  | mk (beq: A -> A -> Bool) : BEq(A)
 
-def beq {u: Level}{A: Sort(u)} [self: BEq(A)](a: A)(b: A): Bool := BEq.beq(self)(a, b)
+def beq {u: Level}{A: Sort(u)} (self: BEq(A))(a: A)(b: A): Bool := BEq.beq(self)(a, b)
 
-def instance unitBEq : BEq(Unit) := BEq.mk(fun (a: Unit)(b: Unit): Bool => Bool.true)
+def unitBEq : BEq(Unit) := BEq.mk(fun (a: Unit)(b: Unit): Bool => Bool.true)
 
-def instance boolBEq : BEq(Bool) := BEq.mk(Bool.beq)
+def boolBEq : BEq(Bool) := BEq.mk(Bool.beq)
 
-def instance natBEq : BEq(Nat) := BEq.mk(Nat.beq)
+def natBEq : BEq(Nat) := BEq.mk(Nat.beq)
 
 namespace Option {
-  def beq {u: Level}{A: Sort(u)} [beqA: BEq(A)](x: Option(A))(y: Option(A)): Bool := {
+  def beq {u: Level}{A: Sort(u)} (beqA: BEq(A))(x: Option(A))(y: Option(A)): Bool := {
     match x returning Bool with
     | Option.none => Option.isNone(y)
     | Option.some xVal => {
@@ -394,14 +394,14 @@ namespace Option {
   }
 }
 
-def instance optionBEq {u: Level}{A: Sort(u)} [beqA: BEq(A)]: BEq(Option(A)) :=
+def optionBEq {u: Level}{A: Sort(u)} (beqA: BEq(A)): BEq(Option(A)) :=
   BEq.mk(
     fun (x: Option(A))(y: Option(A)): Bool =>
       Option.beq(beqA, x, y)
   )
 
 namespace List {
-  def beq {u: Level}{A: Sort(u)} [beqA: BEq(A)](xs: List(A))(ys: List(A)): Bool decreases structural(xs) := {
+  def beq {u: Level}{A: Sort(u)} (beqA: BEq(A))(xs: List(A))(ys: List(A)): Bool decreases structural(xs) := {
     match xs returning Bool with
     | List.nil => {
       match ys returning Bool with
@@ -416,21 +416,21 @@ namespace List {
   }
 }
 
-def instance listBEq {u: Level}{A: Sort(u)} [beqA: BEq(A)]: BEq(List(A)) :=
+def listBEq {u: Level}{A: Sort(u)} (beqA: BEq(A)): BEq(List(A)) :=
   BEq.mk(
     fun (xs: List(A))(ys: List(A)): Bool =>
       List.beq(beqA, xs, ys)
   )
 
 namespace Prod {
-  def beq {u: Level}{v: Level}{A: Sort(u)}{B: Sort(v)} [beqA: BEq(A)][beqB: BEq(B)](x: Prod(A, B))(y: Prod(A, B)): Bool :=
+  def beq {u: Level}{v: Level}{A: Sort(u)}{B: Sort(v)} (beqA: BEq(A))(beqB: BEq(B))(x: Prod(A, B))(y: Prod(A, B)): Bool :=
     Bool.and(
       BEq.beq(beqA)(Prod.fst(x), Prod.fst(y)),
       BEq.beq(beqB)(Prod.snd(x), Prod.snd(y))
     )
 }
 
-def instance prodBEq {u: Level}{v: Level}{A: Sort(u)}{B: Sort(v)} [beqA: BEq(A)][beqB: BEq(B)]: BEq(Prod(A, B)) :=
+def prodBEq {u: Level}{v: Level}{A: Sort(u)}{B: Sort(v)} (beqA: BEq(A))(beqB: BEq(B)): BEq(Prod(A, B)) :=
   BEq.mk(
     fun (x: Prod(A, B))(y: Prod(A, B)): Bool =>
       Prod.beq(beqA, beqB, x, y)
@@ -440,16 +440,16 @@ struct DecidableEq {u: Level}(A: Sort(u)) : Sort(Level.max(Level.one, u))
  | mk (decEq: (a: A) -> (b: A) -> Decidable(Eq(A, a, b))) : DecidableEq(A)
 
 namespace DecidableEq {
-  def toBEq {u: Level}{A: Sort(u)} [self: DecidableEq(A)]: BEq(A) := BEq.mk(fun (a: A)(b: A): Bool => Decidable.toBool(DecidableEq.decEq(self)(a, b)))
+  def toBEq {u: Level}{A: Sort(u)} (self: DecidableEq(A)): BEq(A) := BEq.mk(fun (a: A)(b: A): Bool => Decidable.toBool(DecidableEq.decEq(self)(a, b)))
 }
 
-def decEq {u: Level}{A: Sort(u)} [self: DecidableEq(A)](a: A)(b: A): Decidable(Eq(A, a, b)) := DecidableEq.decEq(self)(a, b)
+def decEq {u: Level}{A: Sort(u)} (self: DecidableEq(A))(a: A)(b: A): Decidable(Eq(A, a, b)) := DecidableEq.decEq(self)(a, b)
 
 namespace False {
   def decEq (a: False)(b: False): Decidable(Eq(False, a, b)) := falseElim(a, Decidable(Eq(False, a, b)))
 }
 
-def instance falseDecidableEq : DecidableEq(False) := DecidableEq.mk(False.decEq)
+def falseDecidableEq : DecidableEq(False) := DecidableEq.mk(False.decEq)
 
 namespace True {
   def decEq (a: True)(b: True): Decidable(Eq(True, a, b)) := {
@@ -461,7 +461,7 @@ namespace True {
   }
 }
 
-def instance trueDecidableEq : DecidableEq(True) := DecidableEq.mk(True.decEq)
+def trueDecidableEq : DecidableEq(True) := DecidableEq.mk(True.decEq)
 
 namespace Unit {
   def decEq (a: Unit)(b: Unit): Decidable(Eq(Unit, a, b)) := {
@@ -473,7 +473,7 @@ namespace Unit {
   }
 }
 
-def instance unitDecidableEq : DecidableEq(Unit) := DecidableEq.mk(Unit.decEq)
+def unitDecidableEq : DecidableEq(Unit) := DecidableEq.mk(Unit.decEq)
 
 namespace Bool {
   def falseNeTrue (h: Eq(Bool, Bool.false, Bool.true)): False := {
@@ -499,7 +499,7 @@ namespace Bool {
   }
 }
 
-def instance boolDecidableEq : DecidableEq(Bool) := DecidableEq.mk(Bool.decEq)
+def boolDecidableEq : DecidableEq(Bool) := DecidableEq.mk(Bool.decEq)
 
 namespace Nat {
   def zeroNeSucc (n: Nat)(h: Eq(Nat, Nat.zero, Nat.succ(n))): False := {
@@ -534,26 +534,26 @@ namespace Nat {
   }
 }
 
-def instance natDecidableEq : DecidableEq(Nat) := DecidableEq.mk(Nat.decEq)
+def natDecidableEq : DecidableEq(Nat) := DecidableEq.mk(Nat.decEq)
 
 struct LE {u: Level}(A: Sort(u)) : Sort(Level.max(Level.one, u))
  | mk (le: A -> A -> Prop) : LE(A)
 
-def le {u: Level}{A: Sort(u)} [self: LE(A)](a: A)(b: A): Prop := LE.le(self)(a, b)
+def le {u: Level}{A: Sort(u)} (self: LE(A))(a: A)(b: A): Prop := LE.le(self)(a, b)
 
 struct LT {u: Level}(A: Sort(u)) : Sort(Level.max(Level.one, u))
  | mk (lt: A -> A -> Prop) : LT(A)
 
-def lt {u: Level}{A: Sort(u)} [self: LT(A)](a: A)(b: A): Prop := LT.lt(self)(a, b)
+def lt {u: Level}{A: Sort(u)} (self: LT(A))(a: A)(b: A): Prop := LT.lt(self)(a, b)
 
-def instance natLE : LE(Nat) := LE.mk(Nat.le)
+def natLE : LE(Nat) := LE.mk(Nat.le)
 
-def instance natLT : LT(Nat) := LT.mk(Nat.lt)
+def natLT : LT(Nat) := LT.mk(Nat.lt)
 
 struct Subsingleton {u: Level}(A: Sort(u)) : Prop
  | intro (elim: (a: A) -> (b: A) -> Eq(A, a, b)) : Subsingleton(A)
 
-def instance propSubsingleton (P: Prop): Subsingleton(P) := Subsingleton.intro(fun (a: P)(b: P): Eq(P, a, b) => Eq.refl(a))
+def propSubsingleton (P: Prop): Subsingleton(P) := Subsingleton.intro(fun (a: P)(b: P): Eq(P, a, b) => Eq.refl(a))
 
 axiom Quot {u: Level}(A: Sort(u))(r: A -> A -> Prop): Sort(u)
 

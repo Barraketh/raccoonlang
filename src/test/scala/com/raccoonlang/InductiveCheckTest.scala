@@ -9,9 +9,9 @@ class InductiveCheckTest extends munit.FunSuite {
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
 
-  private def elabAndRun(src: String): Interpreter.Worlds =
-    elab(src).decls.foldLeft(Interpreter.initialWorlds(Prelude.test)) { case (curWorlds, decl) =>
-      Interpreter.evalDecl(decl, curWorlds)
+  private def elabAndRun(src: String): Env[Value] =
+    elab(src).decls.foldLeft(Interpreter.initialEnv(Prelude.test)) { case (curEnv, decl) =>
+      Interpreter.evalDecl(decl, curEnv)
     }
 
   private def elabAndTypecheck(src: String): Unit = {
@@ -160,40 +160,6 @@ class InductiveCheckTest extends munit.FunSuite {
     intercept[NonForcedImplicitParam] { elabAndTypecheck(p) }
   }
 
-  test("Instance binders are rejected as family params") {
-    val p =
-      """
-        |inductive Bad [A: Type] : Type
-        | | mk : Bad(A)
-        |
-        |""".stripMargin
-
-    intercept[InvalidInductiveParam] { elabAndTypecheck(p) }
-  }
-
-  test("Core inductive checker rejects instance family params") {
-    val sp = Span(0, 0)
-    val aRef = CoreAst.LocalRef(0, "A")
-    val aBinder = CoreAst.Binder(aRef, CoreAst.Term.GlobalRef("Type", sp), sp, isInstance = true)
-    val header =
-      CoreAst.InductiveHeader("Bad", Vector(aBinder), Vector.empty, CoreAst.Term.GlobalRef("Type", sp), sp)
-    val ctor =
-      CoreAst.ConstructorDecl(
-        canonicalName = "Bad.mk",
-        shortName = "mk",
-        binders = Vector.empty,
-        resultTy = CoreAst.Term.TApp(
-          CoreAst.Term.GlobalRef("Bad", sp),
-          Vector(CoreAst.Term.LocalRef(aRef, sp)),
-          sp
-        ),
-        span = sp
-      )
-    val program = CoreAst.Program(Vector(CoreAst.Decl.InductiveDecl(header, Vector(ctor), isStruct = false, sp)), None)
-
-    intercept[InvalidInductiveParam] { Interpreter.run(program, Prelude.test) }
-  }
-
   test("Constructor binders may not shadow family params") {
     val p =
       """
@@ -286,7 +252,7 @@ class InductiveCheckTest extends munit.FunSuite {
         |
         |""".stripMargin
 
-    elabAndRun(p).checkEnv("Box") match {
+    elabAndRun(p)("Box") match {
       case Value.VConst(_, Value.Inductive(meta), _) =>
         assertEquals(meta.positiveArgs, DepSet(1))
       case other => fail(s"Expected Box to be an inductive head, got $other")
@@ -329,7 +295,7 @@ class InductiveCheckTest extends munit.FunSuite {
         |
         |""".stripMargin
 
-    elabAndRun(p).checkEnv("Higher") match {
+    elabAndRun(p)("Higher") match {
       case Value.VConst(_, Value.Inductive(meta), _) =>
         assertEquals(meta.positiveArgs, DepSet.empty)
       case other => fail(s"Expected Higher to be an inductive head, got $other")

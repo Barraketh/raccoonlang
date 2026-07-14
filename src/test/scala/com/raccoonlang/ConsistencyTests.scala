@@ -37,12 +37,12 @@ class ConsistencyTests extends munit.FunSuite {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        val worlds = core.decls.foldLeft(Interpreter.initialWorlds(Prelude.test)) { case (current, decl) =>
+        val env = core.decls.foldLeft(Interpreter.initialEnv(Prelude.test)) { case (current, decl) =>
           Interpreter.evalDecl(decl, current)
         }
         val body = core.body.getOrElse(fail("Program has no body"))
-        val checked = TypeChecker.checkTerm(body, worlds.checkContext)
-        (Interpreter.evalTerm(checked.residual, worlds.runEnv), worlds.runEnv)
+        val checked = TypeChecker.checkTerm(body, env)
+        (checked.value, env)
       case err: Failure =>
         fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }

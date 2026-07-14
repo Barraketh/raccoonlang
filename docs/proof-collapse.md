@@ -158,9 +158,9 @@ from the letter of this spec, none from its semantics:
   witness thunk under the same store, so a materialized proof may wrap a witness that is itself a
   `VProof`; quoting unwraps recursively.
 - **Subsingleton elimination re-derives the forced fields at evaluation time** instead of
-  recording them in the residual: `Interpreter.reduceSubsingletonMatch` Invert-unifies the single
+  recording them in the residual: `Interpreter.reduceSubsingletonMatch` unifies the single
   constructor's result type against the runtime scrutinee type with only the constructor's fresh
-  unknowns refinable. Invert-mode links are forced (unique), so this computes the same mapping
+  unknowns refinable. Unifier links are forced (unique), so this computes the same mapping
   `allowLargeElimination` validated at check time; unification succeeding with every non-proof
   field solved *is* the diagonal check. No quoting fragility, no new residual shape.
 - **Lambdas collapse too**: a `VLam` whose Pi is classified in `Prop` is a proof of the
@@ -178,11 +178,12 @@ from the letter of this spec, none from its semantics:
   `VProof(A) ≡ v` when `v`'s type is a proposition defEq to `A` (and the unify analogue). This is
   not a resurrected side-condition — it is the VProof equality rule extended to the values the
   witness invariant deliberately keeps uncollapsed.
-- **InstanceSearch guard** (witness invariant): a freshened proof-typed binder of an instance
-  candidate is a `VProof` placeholder whose emptiness `synDeps` no longer reveals; passing it
-  through would derive an instance from an unproven premise. Non-instance proof binders now fail
-  the candidate; instance-typed ones still go through recursive search. Pinned by
-  "instance search does not discharge proof premises from thin air".
+- **InstanceSearch guard** (witness invariant, historical): while instance search existed, a
+  freshened proof-typed binder of a candidate was a `VProof` placeholder whose emptiness `synDeps`
+  no longer revealed; passing it through would have derived an instance from an unproven premise,
+  so such candidates failed. Instance search has since been removed (the Mathlib export arrives
+  with instances resolved), but the lesson stands for any future search-like machinery: a `VProof`
+  placeholder is not evidence.
 - **Positivity traversal** gained `VProof` cases: occurrences are checked in the proposition
   (the interior is erased); proof values embedded in types are held to the strict
   "does not occur" standard even in positive argument slots.
