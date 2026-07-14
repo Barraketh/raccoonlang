@@ -79,12 +79,6 @@ object LanguageParser {
   private def termAtom(implicit sourceId: Option[SourceId]): Parser[Term] =
     (sym("(") ~/ skipAllWs ~ term ~ layoutSymTight(")")) | rootTerm | identTerm
 
-  // Type atoms: identifier or parenthesized type, with bracket selects as a postfix variant.
-  private def identTypeTerm(implicit sourceId: Option[SourceId]): Parser[TypeTerm] =
-    ident.flatSpanned(sourceId).map[TypeTerm](Ident.tupled)
-  private def rootTypeTerm(implicit sourceId: Option[SourceId]): Parser[TypeTerm] =
-    rootIdent.flatSpanned(sourceId).map[TypeTerm](Ident.tupled)
-
   private def parenArgs[A](arg: => Parser[A]): Parser[Vector[A]] =
     P('(') ~/ skipAllWs ~ arg.rep(0, layoutSym(',')) ~ layoutSymTight(')')
 
@@ -94,35 +88,36 @@ object LanguageParser {
   private def simplePi(implicit sourceId: Option[SourceId]): Parser[Pi] =
     (param ~ skipAllWs ~ sym("->") ~/ skipAllWs ~ typeTerm).flatSpanned(sourceId).map { Pi.tupled }
 
-  private def typeAtom(implicit sourceId: Option[SourceId]): Parser[TypeTerm] =
+  // Type positions have their own grammar (arrows, no lambdas/matches) but produce ordinary Terms.
+  private def typeAtom(implicit sourceId: Option[SourceId]): Parser[Term] =
     simplePi |
       sym('(') ~ skipAllWs ~ typeTerm ~ layoutSymTight(')') |
-      rootTypeTerm |
-      identTypeTerm
+      rootTerm |
+      identTerm
 
   sealed trait TypeTrailer
   case class Dot(name: String, span: Span) extends TypeTrailer
-  case class AppTrailer(args: Vector[TypeTerm], span: Span) extends TypeTrailer
+  case class AppTrailer(args: Vector[Term], span: Span) extends TypeTrailer
 
   private def typeTrailers(implicit sourceId: Option[SourceId]): Parser[Vector[TypeTrailer]] =
     ((P(".") ~/ identAtom).flatSpanned(sourceId).map(Dot.tupled) |
       nonEmptyParenArgs(typeTerm).flatSpanned(sourceId).map(AppTrailer.tupled)).rep(0)
 
-  private def typeExpr(implicit sourceId: Option[SourceId]): Parser[TypeTerm] =
+  private def typeExpr(implicit sourceId: Option[SourceId]): Parser[Term] =
     (typeAtom ~ typeTrailers).map { case (ta, trailers) =>
-      trailers.foldLeft(ta) { case (curTypeTerm, nextTrailer) =>
+      trailers.foldLeft(ta) { case (curTerm, nextTrailer) =>
         nextTrailer match {
-          case Dot(name, sp)        => TSelect(curTypeTerm, name, sp)
-          case AppTrailer(args, sp) => TApp(curTypeTerm, args, sp)
+          case Dot(name, sp)        => Select(curTerm, name, sp)
+          case AppTrailer(args, sp) => App(curTerm, args, sp)
         }
       }
     }
 
-  private def typeTerm(implicit sourceId: Option[SourceId]): Parser[TypeTerm] =
+  private def typeTerm(implicit sourceId: Option[SourceId]): Parser[Term] =
     (typeExpr ~ (skipAllWs ~ sym("->") ~/ skipAllWs ~ typeExpr).rep(0)).flatSpanned(sourceId).map {
       case (first, others, sp) =>
         val pieces = first +: others
-        pieces.init.foldRight(pieces.last: TypeTerm) { case (lhs, rhs) =>
+        pieces.init.foldRight(pieces.last) { case (lhs, rhs) =>
           Pi(Binder("_", lhs, lhs.span), rhs, sp)
         }
     }

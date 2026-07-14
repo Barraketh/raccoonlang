@@ -1,6 +1,7 @@
 package com.raccoonlang
 
-// Checked AST. Instance search expressions have already been resolved, and all local names are CoreAst.LocalRefs.
+// Checked AST. All local names are CoreAst.LocalRefs. Types are terms — binder types, let
+// annotations, and match motives are ordinary Terms; "is a type" was verified by the checker.
 object ElabAst {
   sealed trait Ast {
     def span: Span
@@ -10,26 +11,23 @@ object ElabAst {
 
   sealed trait Term extends Ast
 
-  sealed trait TypeTerm extends Term
-
   object Term {
-    sealed trait Ref extends Term with TypeTerm
+    sealed trait Ref extends Term
 
     final case class GlobalRef(name: String, span: Span) extends Ref
 
     final case class LocalRef(ref: CoreAst.LocalRef, span: Span) extends Ref
 
-    final case class App(fn: Term, args: Vector[Term], span: Span) extends Term with TypeTerm
+    final case class App(fn: Term, args: Vector[Term], span: Span) extends Term
 
     // No classifier field: a Pi's universe is env-dependent (level-polymorphic binder types), so
     // it is derived at evaluation time (Interpreter.piClassifier), never baked into the residual.
     final case class Pi(
         binders: Vector[Binder],
-        out: TypeTerm,
+        out: Term,
         span: Span,
         nodeId: AstNodeId
-    ) extends Term
-      with TypeTerm {
+    ) extends Term {
       require(binders.nonEmpty, "Pi requires at least one binder")
     }
 
@@ -46,7 +44,7 @@ object ElabAst {
 
     final case class Match(
         scrut: Term,
-        motive: Option[TypeTerm],
+        motive: Option[Term],
         cases: Vector[Case],
         span: Span,
         nodeId: AstNodeId
@@ -57,7 +55,7 @@ object ElabAst {
   // explicit args, and evaluation reconstructs the implicits by running `projection` against them.
   final case class Binder(
       localRef: CoreAst.LocalRef,
-      ty: TypeTerm,
+      ty: Term,
       span: Span,
       isImplicit: Boolean = false,
       projection: Option[telescope.Projection.Spec] = None
@@ -69,7 +67,7 @@ object ElabAst {
 
   final case class Let(
       localRef: CoreAst.LocalRef,
-      ty: Option[TypeTerm],
+      ty: Option[Term],
       value: Term,
       span: Span
   ) {

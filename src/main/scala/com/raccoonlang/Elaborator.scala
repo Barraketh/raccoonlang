@@ -286,14 +286,6 @@ object Elaborator {
       case _ => None
     }
 
-  private def flattenTypePath(term: SA.TypeTerm): Option[SurfacePath] =
-    term match {
-      case SA.Term.Ident(name, span) => Some(identPath(name, span))
-      case SA.Term.TSelect(base, field, span) =>
-        flattenTypePath(base).map(appendPath(_, field, span))
-      case _ => None
-    }
-
   private def expandStructSelectors(commands: Vector[SA.Command]): Vector[SA.Command] =
     commands.flatMap {
       case decl: SA.Command.Decl.InductiveDecl =>
@@ -333,7 +325,7 @@ object Elaborator {
     val selfType = {
       val head = SA.Term.Ident(header.name, header.span)
       if (familyArgs.isEmpty) head
-      else SA.Term.TApp(head, familyArgs, header.span)
+      else SA.Term.App(head, familyArgs, header.span)
     }
     val selfBinder =
       SA.Binder(selfName, selfType, selfSpan)
@@ -343,7 +335,7 @@ object Elaborator {
       fields.zipWithIndex.map { case (field, fieldIdx) =>
         val previousFields = fields.take(fieldIdx).map(_.name).toSet
         val resultTy =
-          selectorResultType(header.name, selfName, field.ty, previousFields, familyFieldRewrites)
+          rewriteFieldType(header.name, selfName, field.ty, previousFields, familyFieldRewrites)
         val selectorHeader =
           SA.Command.DeclHeader(
             field.name,
@@ -389,22 +381,15 @@ object Elaborator {
     if (!used.contains(candidate)) candidate else freshGeneratedName(base, used, suffix + 1)
   }
 
-  private def selectorResultType(
+  // Rewrites the shapes the type grammar can produce (Ident/Select/App/Pi); anything else
+  // cannot mention fields and passes through.
+  private def rewriteFieldType(
       structName: String,
       selfName: String,
-      binderType: SA.TypeTerm,
+      term: SA.Term,
       previousFields: Set[String],
-      familyFieldRewrites: Map[String, SA.TypeTerm]
-  ): SA.TypeTerm =
-    rewriteTypeTerm(structName, selfName, binderType, previousFields, familyFieldRewrites)
-
-  private def rewriteTypeTerm(
-      structName: String,
-      selfName: String,
-      term: SA.TypeTerm,
-      previousFields: Set[String],
-      familyFieldRewrites: Map[String, SA.TypeTerm]
-  ): SA.TypeTerm =
+      familyFieldRewrites: Map[String, SA.Term]
+  ): SA.Term =
     term match {
       case SA.Term.Ident(name, _) if familyFieldRewrites.contains(name) =>
         familyFieldRewrites(name)
@@ -414,33 +399,35 @@ object Elaborator {
 
       case i: SA.Term.Ident => i
 
-      case SA.Term.TSelect(base, field, span) =>
-        SA.Term.TSelect(rewriteTypeTerm(structName, selfName, base, previousFields, familyFieldRewrites), field, span)
+      case SA.Term.Select(base, field, span) =>
+        SA.Term.Select(rewriteFieldType(structName, selfName, base, previousFields, familyFieldRewrites), field, span)
 
-      case SA.Term.TApp(fn, args, span) =>
-        SA.Term.TApp(
-          rewriteTypeTerm(structName, selfName, fn, previousFields, familyFieldRewrites),
-          args.map(arg => rewriteTypeTerm(structName, selfName, arg, previousFields, familyFieldRewrites)),
+      case SA.Term.App(fn, args, span) =>
+        SA.Term.App(
+          rewriteFieldType(structName, selfName, fn, previousFields, familyFieldRewrites),
+          args.map(arg => rewriteFieldType(structName, selfName, arg, previousFields, familyFieldRewrites)),
           span
         )
 
       case SA.Term.Pi(binder, body, span) =>
         rejectShadowingBinder(structName, binder, previousFields)
         SA.Term.Pi(
-          binder.copy(ty = rewriteTypeTerm(structName, selfName, binder.ty, previousFields, familyFieldRewrites)),
-          rewriteTypeTerm(structName, selfName, body, previousFields, familyFieldRewrites - binder.name),
+          binder.copy(ty = rewriteFieldType(structName, selfName, binder.ty, previousFields, familyFieldRewrites)),
+          rewriteFieldType(structName, selfName, body, previousFields, familyFieldRewrites - binder.name),
           span
         )
+
+      case other => other
     }
 
   private def directFamilyFieldRewrites(
       header: SA.Command.InductiveHeader,
       ctor: SA.Command.ConstructorDecl
-  ): Map[String, SA.TypeTerm] = {
+  ): Map[String, SA.Term] = {
     val ctorFieldNames = ctor.binders.map(_.name).toSet - "_"
     val resultArgs =
       ctor.resultTy match {
-        case SA.Term.TApp(head, args, _) if flattenTypePath(head).exists(_.parts.lastOption.contains(header.name)) =>
+        case SA.Term.App(head, args, _) if flattenTermPath(head).exists(_.parts.lastOption.contains(header.name)) =>
           args
         case _ => Vector.empty
       }
@@ -457,9 +444,9 @@ object Elaborator {
     }
   }
 
-  private def selectorCall(structName: String, fieldName: String, selfName: String, span: Span): SA.TypeTerm =
-    SA.Term.TApp(
-      SA.Term.TSelect(SA.Term.Ident(structName, span), fieldName, span),
+  private def selectorCall(structName: String, fieldName: String, selfName: String, span: Span): SA.Term =
+    SA.Term.App(
+      SA.Term.Select(SA.Term.Ident(structName, span), fieldName, span),
       Vector(SA.Term.Ident(selfName, span)),
       span
     )
@@ -510,17 +497,10 @@ object Elaborator {
       (base, field, span) => CA.Term.Select(base, field, span)
     )
 
-  private def elabPathType(path: SurfacePath, env: ResolveEnv): CA.TypeTerm =
-    elabPath[CA.TypeTerm](path, env)(
-      (ref, span) => CA.Term.LocalRef(ref, span),
-      (name, span) => CA.Term.GlobalRef(name, span),
-      (base, field, span) => CA.Term.TSelect(base, field, span)
-    )
-
   private def elabPi(pi: SA.Term.Pi, env: ResolveEnv): CA.Term.Pi = {
     val piEnv = env.enterLocalScope
     val (binder, binderEnv) = elabBinder(pi.binder, piEnv)
-    val body = elabType(pi.body, binderEnv)
+    val body = elabTerm(pi.body, binderEnv)
     val span = Span(binder.span.start, body.span.end, binder.span.source.orElse(body.span.source))
     body match {
       case pi: CA.Term.Pi => CA.Term.Pi(binder +: pi.binders, pi.out, span)
@@ -528,26 +508,8 @@ object Elaborator {
     }
   }
 
-  private def elabTypeAppHead(fn: SA.TypeTerm, env: ResolveEnv): CA.Term.Ref =
-    elabType(fn, env) match {
-      case ref: CA.Term.Ref => ref
-      case other => throw WTF(s"Type application head must resolve to a reference, got $other", Some(fn.span))
-    }
-
-  private def elabType(ty: SA.TypeTerm, env: ResolveEnv): CA.TypeTerm = ty match {
-    case i: SA.Term.Ident =>
-      elabPathType(identPath(i.name, i.span), env)
-    case s: SA.Term.TSelect =>
-      flattenTypePath(s) match {
-        case Some(path) => elabPathType(path, env)
-        case None       => CA.Term.TSelect(elabType(s.base, env), s.field, s.span)
-      }
-    case SA.Term.TApp(fn, args, sp) => CA.Term.TApp(elabTypeAppHead(fn, env), args.map(elabType(_, env)), sp)
-    case pi: SA.Term.Pi             => elabPi(pi, env)
-  }
-
   private def elabBinder(b: SA.Binder, env: ResolveEnv): (CA.Binder, ResolveEnv) = {
-    val ty = elabType(b.ty, env)
+    val ty = elabTerm(b.ty, env)
     val (ref, nextEnv) =
       if (b.name == "_") env.allocate(b.name)
       else env.bindNamed(b.name, allowShadow = false)
@@ -560,19 +522,19 @@ object Elaborator {
       (curBinders :+ nextBinder, nextEnv)
     }
 
-  private final case class HeaderResult(ty: CA.TypeTerm, bodyEnv: ResolveEnv)
+  private final case class HeaderResult(ty: CA.Term, bodyEnv: ResolveEnv)
 
   private def elabHeader(header: SA.FuncHeader, env: ResolveEnv): HeaderResult = {
     val headerEnv = env.enterLocalScope
     val (params, bodyEnv) = elabBinders(header.params, headerEnv)
-    val outTy = elabType(header.ty, bodyEnv)
+    val outTy = elabTerm(header.ty, bodyEnv)
     val ty =
       if (params.isEmpty) outTy
       else CA.Term.Pi(params, outTy, header.span)
     HeaderResult(ty, bodyEnv)
   }
 
-  def getType(header: SA.FuncHeader): CA.TypeTerm =
+  def getType(header: SA.FuncHeader): CA.Term =
     elabHeader(header, ResolveEnv.empty).ty
 
   private def elabLam(
@@ -629,7 +591,7 @@ object Elaborator {
           case SA.Term.OpenStmt(open) =>
             curEnv.addOpen(open)
           case SA.Term.LetStmt(l) =>
-            val ty = l.ty.map(elabType(_, curEnv))
+            val ty = l.ty.map(elabTerm(_, curEnv))
             val value = elabTerm(l.value, curEnv)
             val (ref, nextEnv) = curEnv.bindRequired(l.name, l.span, allowShadow = true)
             checkedLets += CA.Let(ref, ty, value, l.span)
@@ -640,7 +602,7 @@ object Elaborator {
     case SA.Term.Match(scrut, motive, cases, sp) =>
       CA.Term.Match(
         elabTerm(scrut, env),
-        motive.map(elabType(_, env)),
+        motive.map(elabTerm(_, env)),
         cases.map { c =>
           val caseEnv = env.enterLocalScope
           val (argRefs, bodyEnv) =
@@ -682,8 +644,11 @@ object Elaborator {
               )
             CA.ConstBody.Builtin(sp)
           case SA.ConstBody.TermBody(term) =>
+            // Only defs with header params become lambdas; a bare-body def (even one whose
+            // declared type is a Pi, e.g. `def alias : Nat -> Nat := myFn`) checks its body
+            // against the full declared type instead.
             header.ty match {
-              case pi: CA.Term.Pi =>
+              case pi: CA.Term.Pi if c.header.funcHeader.params.nonEmpty =>
                 val (recursion, bodyHeaderEnv) = c.decreases match {
                   case Some(decreases) =>
                     val (selfRef, nextEnv) = header.bodyEnv.bindRecursiveSelf(c.header.name, name)
@@ -724,7 +689,7 @@ object Elaborator {
         val headerEnv = env.enterLocalScope
         val (params, envWithParams) = elabBinders(c.header.params, headerEnv)
         val (indices, envWithIndices) = elabBinders(c.header.indices, envWithParams)
-        val resultTy = elabType(c.header.resultTy, envWithIndices)
+        val resultTy = elabTerm(c.header.resultTy, envWithIndices)
         val header = CA.InductiveHeader(nameText, params, indices, resultTy, c.span)
 
         // Constructors may refer to inductive parameters and the inductive head, but not to sibling constructors yet.
@@ -738,7 +703,7 @@ object Elaborator {
               canonicalName = globalName(ctorName),
               shortName = ctor.name,
               binders = binders,
-              resultTy = elabType(ctor.resultTy, envWithBinders),
+              resultTy = elabTerm(ctor.resultTy, envWithBinders),
               span = ctor.span
             )
           }
@@ -774,9 +739,12 @@ object Elaborator {
     (decls.result(), curEnv)
   }
 
-  private def preludeEnv(prelude: Prelude.Config): ResolveEnv = {
+  /** Resolved prelude name trie, built once per Prelude.Config (cached on Config.names). */
+  final class PreludeNames private[Elaborator] (private[Elaborator] val root: NameNode)
+
+  def preludeNames(prelude: Prelude.Config): PreludeNames = {
     val (_, env) = elabCommands(expandStructSelectors(prelude.surface.decls), ResolveEnv.empty)
-    ResolveEnv.empty.copy(root = env.root)
+    new PreludeNames(env.root)
   }
 
   private[raccoonlang] def elabWithoutPrelude(p: SA.Program): CA.Program =
@@ -786,7 +754,7 @@ object Elaborator {
     elab(p, Prelude.default)
 
   def elab(p: SA.Program, prelude: Prelude.Config): CA.Program =
-    elabProgram(p, preludeEnv(prelude))
+    elabProgram(p, ResolveEnv.empty.copy(root = prelude.names.root))
 
   private def elabProgram(p: SA.Program, startEnv: ResolveEnv): CA.Program = {
     p.imports.headOption.foreach { imp =>

@@ -214,7 +214,7 @@ object Projection {
   private def independentPiDomain(pi: VPi, idx: Int): Option[Value] = {
     val freshEnv = BinderOps.freshen(pi.binders.take(idx), pi.env)
     val freshIds = Value.envDeps(freshEnv) -- Value.envDeps(pi.env)
-    val domain = Interpreter.evalTypeTerm(pi.binders(idx).ty, freshEnv)
+    val domain = Interpreter.evalTerm(pi.binders(idx).ty, freshEnv)
     if (domain.synDeps.intersects(freshIds)) None else Some(domain)
   }
 
@@ -231,11 +231,7 @@ object Projection {
       return Left(s"projection root ${spec.rootArgIdx} out of range (${providedArgs.length} args)")
 
     def toLevel(v: Value): Either[String, Level] =
-      v match {
-        case l: Level              => Right(l)
-        case Var(_, id, LevelTpe)  => Right(Level.mk(id))
-        case other                 => Left(s"expected a level, got $other")
-      }
+      Level.fromValue(v).toRight(s"expected a level, got $v")
 
     spec.steps.foldLeft[Either[String, Value]](Right(providedArgs(spec.rootArgIdx))) {
       case (left @ Left(_), _) => left

@@ -10,7 +10,7 @@ object TerminationChecker {
       name: String,
       vpi: VPi,
       spec: CA.DecreaseSpec,
-      bodyEnv: Env[Value]
+      bodyEnv: Env
   ): VLam = {
     def requireInductiveMetric(value: Value, span: Span): Unit = {
       // Collapsed proofs have no subterms, and "structurally smaller" is ill-defined up to an
@@ -27,7 +27,7 @@ object TerminationChecker {
       }
     }
 
-    val checkDecrease: (Vector[Value], Env[Value]) => Unit = spec match {
+    val checkDecrease: (Vector[Value], Env) => Unit = spec match {
       case CA.DecreaseSpec.Lexicographic(args, sp) =>
         if (args.isEmpty) throw InvalidDecreaseSpec("lexicographic decreases needs at least one argument", Some(sp))
         if (args.distinct.length != args.length)

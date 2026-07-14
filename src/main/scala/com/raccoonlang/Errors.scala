@@ -14,11 +14,6 @@ sealed trait TypeError extends RuntimeException {
   override def getMessage: String = msg
 }
 
-final case class UnificationFailed(v1: Value, v2: Value, span: Option[Span] = None) extends TypeError {
-  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
-  val msg: String = s"Failed to unify $v1 and $v2"
-}
-
 final case class CannotApplyNonFunction(got: Value, span: Option[Span] = None) extends TypeError {
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
   val msg: String = s"Cannot apply non-fn type ${got}"
@@ -52,11 +47,6 @@ final case class MissingCase(ctor: String, span: Option[Span] = None) extends Ty
 final case class VarAlreadyLinked(id: Long, span: Option[Span] = None) extends TypeError {
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
   val msg: String = s"FreshVar $id already linked"
-}
-
-final case class CannotLinkToBottom(id: Long, span: Option[Span] = None) extends TypeError {
-  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
-  val msg: String = s"Cannot link to bottom of chain for var $id"
 }
 
 final case class NotAType(value: Value, span: Option[Span] = None) extends TypeError {
@@ -135,11 +125,6 @@ final case class TypeMismatch(expected: Value, actual: Value, span: Option[Span]
 final case class NotALevel(v1: Value, span: Option[Span] = None) extends TypeError {
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
   override def msg: String = s"$v1 is not a Level"
-}
-
-final case class FailedToOpenCapture(v: Value, idx: Int, span: Option[Span] = None) extends TypeError {
-  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
-  override def msg: String = s"Cannot return idx $idx of $v"
 }
 
 final case class WTF(msg: String, span: Option[Span] = None) extends TypeError {
@@ -226,11 +211,6 @@ final case class PropEliminationRestricted(
     s"Cannot eliminate proposition $inductive into non-Prop motive $motive"
 }
 
-final case class InvalidLevelSubtraction(l: Level, sub: Int, span: Option[Span] = None) extends TypeError {
-  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
-  override def msg: String = s"Tried to subtract $sub from $l"
-}
-
 final case class InvalidStruct(inductive: String, reason: String, span: Option[Span] = None) extends TypeError {
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
   override def msg: String = s"Invalid struct $inductive: $reason"
@@ -249,11 +229,6 @@ final case class CannotQuoteValue(value: Value, reason: String, span: Option[Spa
 final case class InvalidDecreaseSpec(reason: String, span: Option[Span] = None) extends TypeError {
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
   override def msg: String = s"Invalid decreases annotation: $reason"
-}
-
-final case class MissingDecreaseSpec(function: String, span: Option[Span] = None) extends TypeError {
-  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
-  override def msg: String = s"Recursive call to $function requires a decreases annotation"
 }
 
 final case class NonDecreasingRecursiveCall(function: String, reason: String, span: Option[Span] = None)

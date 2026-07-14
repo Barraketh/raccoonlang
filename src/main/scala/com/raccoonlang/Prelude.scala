@@ -16,6 +16,14 @@ object Prelude {
   ) {
     def ignoresImport(path: Vector[String]): Boolean =
       ignoredImports(path)
+
+    /** Checked prelude env, built once per Config and shared across programs. Sharing is sound:
+      * globals are closed values, and fresh-var ids keep increasing across programs.
+      */
+    lazy val checkedEnv: Env = Interpreter.buildPreludeEnv(core)
+
+    /** Resolved prelude name trie for the elaborator, built once per Config. */
+    lazy val names: Elaborator.PreludeNames = Elaborator.preludeNames(this)
   }
 
   lazy val default: Config =

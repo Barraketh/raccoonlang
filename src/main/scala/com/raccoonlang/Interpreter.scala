@@ -6,7 +6,7 @@ import com.raccoonlang.Value._
 import com.raccoonlang.telescope.BinderOps
 
 /**
- * Interpreter evaluates ElabAst into ordinary WHNF Values in the Env[Value] it is given. EqStore-aware reduction is
+ * Interpreter evaluates ElabAst into ordinary WHNF Values in the Env it is given. EqStore-aware reduction is
  * isolated to resolveInEqStore and the materialization helpers in ValueOps.
  */
 object Interpreter {
@@ -76,7 +76,7 @@ object Interpreter {
       val ascribed = value match {
         // Only neutrals carry a rewritable type annotation; skip the binder-type evaluation
         // for values (sorts, levels) whose ascription is the identity.
-        case _: UpdatableType => Value.ascribe(value, evalTypeTerm(binder.ty, tyEnv))
+        case _: UpdatableType => Value.ascribe(value, evalTerm(binder.ty, tyEnv))
         case _                => value
       }
       tyEnv = tyEnv.putLocal(binder.localRef, ascribed)
@@ -84,7 +84,7 @@ object Interpreter {
     }
   }
 
-  private def getEnvWithArgs(fnTpe: VPi, baseEnv: Env[Value], args: Vector[Value]): Env[Value] =
+  private def getEnvWithArgs(fnTpe: VPi, baseEnv: Env, args: Vector[Value]): Env =
     BinderOps.instantiateFull(fnTpe.binders, baseEnv, ascribeArgs(fnTpe, args))
 
   /**
@@ -93,9 +93,9 @@ object Interpreter {
    * This replicates what the checker validates at Pi formation, but per instance — a residual Pi
    * re-evaluated with concrete levels gets the concrete universe, not the declaration-time one.
    */
-  private def piClassifier(binders: Vector[VBinder], baseEnv: Env[Value], out: ElabAst.TypeTerm): VSort = {
+  private def piClassifier(binders: Vector[ElabAst.Binder], baseEnv: Env, out: ElabAst.Term): VSort = {
     val freshEnv = BinderOps.freshen(binders, baseEnv)
-    val outV = evalTypeTerm(out, freshEnv)
+    val outV = evalTerm(out, freshEnv)
     // Impredicative collapse first: Prop-valued codomains need no domain universe walk.
     if (TypeChecker.isPropValuedType(outV)) PropTpe
     else {
@@ -108,7 +108,7 @@ object Interpreter {
     }
   }
 
-  def evalPi(pi: ETerm.Pi, env: Env[Value], vBinders: Vector[VBinder]): VPi = {
+  def evalPi(pi: ETerm.Pi, env: Env): VPi = {
     val capturedRefs = CapturedRefs.getCapturedRefs(pi, env)
     val closedEnv = env.closeForEval(capturedRefs)
     val captureVals = closedEnv.locals.values.toVector
@@ -121,24 +121,15 @@ object Interpreter {
 
     VPi(
       closedEnv,
-      vBinders,
-      codomain = env => evalTypeTerm(pi.out, env),
+      pi.binders,
+      codomain = env => evalTerm(pi.out, env),
       synDeps.result(),
       id,
-      classifier0 = () => piClassifier(vBinders, closedEnv, pi.out)
+      classifier0 = () => piClassifier(pi.binders, closedEnv, pi.out)
     )
   }
 
-  private def evalPi(pi: ETerm.Pi, env: Env[Value]): VPi =
-    evalPi(pi, env, pi.binders.map(BinderOps.toVBinder))
-
-  def evalTypeTerm(tt: ElabAst.TypeTerm, env: Env[Value]): Value = tt match {
-    case ref: ETerm.Ref         => evalRef(ref, env)
-    case ETerm.App(fn, args, _) => evalApplyTerm(fn, args, env)
-    case pi: ETerm.Pi           => evalPi(pi, env)
-  }
-
-  private def evalRef(ref: ETerm.Ref, env: Env[Value]): Value = {
+  private def evalRef(ref: ETerm.Ref, env: Env): Value = {
     val res = ref match {
       case ETerm.GlobalRef(name, _) => env(name)
       case ETerm.LocalRef(local, _) => env(local)
@@ -176,7 +167,7 @@ object Interpreter {
     }
   }
 
-  private def evalApplyTerm(fn: ElabAst.Term, args: Vector[ElabAst.Term], env: Env[Value]): Value = {
+  private def evalApplyTerm(fn: ElabAst.Term, args: Vector[ElabAst.Term], env: Env): Value = {
     val vf = evalTerm(fn, env)
     val vArgs = args.map(a => evalTerm(a, env))
     if (vArgs.isEmpty) throw CannotApplyNonFunction(vf.tpe)
@@ -192,14 +183,14 @@ object Interpreter {
     }
 
   /**
-   * Two-arity dispatch for checked application syntax: quoted residuals (match motives, derive
-   * results) carry full value spines, while source applications carry only the explicit args —
-   * the implicit ones are re-derived here by running their projection specs against the provided
-   * args, exactly as application checking did (Projection.project is the shared implementation).
+   * Checked application syntax — source-checked and quoted alike — carries only the explicit
+   * args; the implicit ones are re-derived here by running their projection specs against the
+   * provided args, exactly as application checking did (Projection.project is the shared
+   * implementation).
    */
   private def reconstructImplicits(fn: Value, vArgs: Vector[Value], span: Span): Vector[Value] =
     fn.tpe match {
-      case pi: VPi if pi.binders.exists(_.isImplicit) && vArgs.length != pi.binders.length =>
+      case pi: VPi if pi.binders.exists(_.isImplicit) =>
         val numExplicit = pi.binders.count(!_.isImplicit)
         if (vArgs.length != numExplicit) throw ArityMismatch(numExplicit, vArgs.length, Some(span))
         var provided = 0
@@ -221,14 +212,12 @@ object Interpreter {
       case _ => vArgs
     }
 
-  def evalLam(l: ETerm.Lam, vpi: VPi, env: Env[Value]): Value = {
+  def evalLam(l: ETerm.Lam, vpi: VPi, env: Env): Value = {
     val capturedRefs = CapturedRefs.getCapturedRefs(l, env)
     val closedEnv = env.closeForEval(capturedRefs)
     val id = l.name match {
       case Some(funcName) => ValueId.Const(funcName)
-      case None =>
-        ValueId.LocalId(l.nodeId, closedEnv.locals.values.toVector)
-
+      case None           => ValueId.LocalId(l.nodeId, closedEnv.locals.values.toVector)
     }
     // A lambda whose Pi is classified in Prop is a proof of that implication and collapses.
     Value.collapseIfProof(VLam(vpi, id, LamBody.Core(l, closedEnv)))
@@ -262,24 +251,20 @@ object Interpreter {
   private def forceThunk(thunk: NeutralThunk, eqStore: EqStore): Value =
     evalMatch(thunk.term, ValueOps.materializeEnv(thunk.env, eqStore))
 
-  private def evalLam(l: ETerm.Lam, env: Env[Value]): Value = {
+  private def evalLam(l: ETerm.Lam, env: Env): Value = {
     val vpi = evalPi(l.ty, env)
     evalLam(l, vpi, env)
   }
 
-  def getLevel(v: Value): Level = {
-    v match {
-      case l: Level => l
-      case v: Var   => Level.mk(v.id)
-      case v        => throw NotALevel(v)
-    }
-  }
+  def getLevel(v: Value): Level =
+    Level.fromValue(v).getOrElse(throw NotALevel(v))
 
-  def evalTerm(term: ElabAst.Term, env: Env[Value]): Value = {
+  def evalTerm(term: ElabAst.Term, env: Env): Value = {
     try {
       term match {
+        case ref: ETerm.Ref         => evalRef(ref, env)
         case ETerm.App(fn, args, _) => evalApplyTerm(fn, args, env)
-        case tt: ElabAst.TypeTerm   => evalTypeTerm(tt, env)
+        case pi: ETerm.Pi           => evalPi(pi, env)
         case l: ETerm.Lam           => evalLam(l, env)
         case m: ETerm.Match         => evalMatch(m, env)
         case b: ETerm.Body          => evalBody(b, env)
@@ -289,10 +274,10 @@ object Interpreter {
     }
   }
 
-  private def evalMatch(m: ETerm.Match, env: Env[Value]): Value = {
+  private def evalMatch(m: ETerm.Match, env: Env): Value = {
     val scrut = evalTerm(m.scrut, env)
     val (head, args) = scrut match {
-      case VCtor(head, storedArgs, _) => (head, Value.constructorPatternArgs(head, storedArgs))
+      case VCtor(head, storedArgs, _) => (head, storedArgs)
       case proof: VProof              => return evalProofMatch(m, proof, env)
       case other                      =>
         // We are either blocked or stuck
@@ -309,18 +294,18 @@ object Interpreter {
     evalBranch(branch, args, env)
   }
 
-  private def matchOutType(m: ETerm.Match, scrut: Value, env: Env[Value]): Value =
+  private def matchOutType(m: ETerm.Match, scrut: Value, env: Env): Value =
     m.motive match {
-      case Some(motive) => evalTypeTerm(motive, env)
+      case Some(motive) => evalTerm(motive, env)
       case None         => scrut.tpe
     }
 
-  private def stuckMatchThunk(m: ETerm.Match, env: Env[Value], outType: Value, blockerId: Option[VarId]): NeutralThunk = {
+  private def stuckMatchThunk(m: ETerm.Match, env: Env, outType: Value, blockerId: Option[VarId]): NeutralThunk = {
     val closedEnv = env.closeForEval(CapturedRefs.getCapturedRefs(m, env))
     NeutralThunk(m, closedEnv, ValueId.LocalId(m.nodeId, closedEnv.locals.values.toVector), outType, blockerId)
   }
 
-  private def evalBranch(branch: ElabAst.Case, args: Vector[Value], env: Env[Value]): Value = {
+  private def evalBranch(branch: ElabAst.Case, args: Vector[Value], env: Env): Value = {
     if (args.length != branch.argRefs.length)
       throw ArityMismatch(branch.argRefs.length, args.length, Some(branch.span))
     val newEnv = args.zip(branch.argRefs).foldLeft(env) { case (curEnv, (argV, argRef)) =>
@@ -344,7 +329,7 @@ object Interpreter {
    *   - Empty elimination, or a stuck/non-diagonal subsingleton: an unblockable NeutralThunk
    *     (proofs never block-and-resume), matching axiom-stuck behavior.
    */
-  private def evalProofMatch(m: ETerm.Match, scrut: VProof, env: Env[Value]): Value = {
+  private def evalProofMatch(m: ETerm.Match, scrut: VProof, env: Env): Value = {
     val outType = matchOutType(m, scrut, env)
     // Proofs never block-and-resume: the thunk is unblockable.
     def thunk: NeutralThunk = stuckMatchThunk(m, env, outType, None)
@@ -362,7 +347,7 @@ object Interpreter {
    * succeeding with every non-proof field solved is exactly "the indices are definitionally
    * diagonal", and the solutions are the field values. Anything less leaves the match stuck.
    */
-  private def reduceSubsingletonMatch(branch: ElabAst.Case, scrut: VProof, env: Env[Value]): Option[Value] = {
+  private def reduceSubsingletonMatch(branch: ElabAst.Case, scrut: VProof, env: Env): Option[Value] = {
     val head = env(branch.ctorName) match {
       case h: ConstructorHead => h
       case other              => throw WTF(s"Case head ${branch.ctorName} is not a constructor: $other", Some(branch.span))
@@ -381,8 +366,8 @@ object Interpreter {
     ) match {
       case Left(_) => None
       case Right(store) =>
-        val patternArgs = Value.constructorPatternArgs(head, Value.constructorStoredArgs(head, freshArgs))
-        val bound = patternArgs.map(arg => ValueOps.materialize(arg, store))
+        val storedArgs = Value.constructorStoredArgs(head, freshArgs)
+        val bound = storedArgs.map(arg => ValueOps.materialize(arg, store))
         val unsolved = refinable -- store.solvedIds
         // Proof-typed fields are their own witnesses (their types must still be fully forced,
         // which their synDeps track); any other leftover unknown means the match is stuck.
@@ -391,11 +376,11 @@ object Interpreter {
     }
   }
 
-  def evalBody(body: ETerm.Body, env: Env[Value]): Value = {
+  def evalBody(body: ETerm.Body, env: Env): Value = {
     val newEnv = body.lets.foldLeft(env) { case (curEnv, l) =>
       val res = evalTerm(l.value, curEnv)
       val ascribed = l.ty match {
-        case Some(ty) => Value.ascribe(res, evalTypeTerm(ty, curEnv))
+        case Some(ty) => Value.ascribe(res, evalTerm(ty, curEnv))
         case None     => res
       }
       curEnv.putLocal(l.localRef, ascribed)
@@ -411,7 +396,7 @@ object Interpreter {
 
   // A declaration is checked exactly once; the value the checker produced IS the published value.
   // There is no separate run world: once a definition has made it into the env, it is trusted.
-  def evalDecl(decl: Decl, env: Env[Value]): Env[Value] = {
+  def evalDecl(decl: Decl, env: Env): Env = {
     decl match {
       case Decl.ConstDecl(isOpaque, name, ty, body, span, lazyGlobal) =>
         body match {
@@ -426,9 +411,10 @@ object Interpreter {
 
           case CoreAst.ConstBody.TermBody(term) =>
             lazy val value = {
-              val checked = TypeChecker.checkTerm(term, env)
               val checkedTy = TypeChecker.getType(ty, env)
-              TypeChecker.checkType(checked.value, checkedTy)
+              // Bidirectional: bare-body defs get the same subsumption (eta-adaptation of
+              // polymorphic functions) as let bindings.
+              val checked = TypeChecker.checkTerm(term, checkedTy, env)
               val bodyV = Value.ascribe(checked.value, checkedTy)
               publishedValue(name, if (isOpaque) VConst(name, Symbol, checkedTy) else bodyV, checkedTy)
             }
@@ -441,30 +427,27 @@ object Interpreter {
         env.putGlobal(name, publishedValue(name, VConst(name, Symbol, tyV), tyV))
 
       case d: Decl.InductiveDecl => InductiveChecks.evalInductiveDecl(d, env)
-
     }
-
   }
 
   def run(p: Program, prelude: Prelude.Config = Prelude.default): Option[Value] = {
     val env =
-      p.decls.foldLeft(initialEnv(prelude)) { case (curEnv, decl) => evalDecl(decl, curEnv) }
+      p.decls.foldLeft(prelude.checkedEnv) { case (curEnv, decl) => evalDecl(decl, curEnv) }
     p.body.map { b =>
       TypeChecker.checkTerm(b, env).value
     }
   }
 
-  private[raccoonlang] def initialEnv(prelude: Prelude.Config = Prelude.default): Env[Value] = {
+  private[raccoonlang] def buildPreludeEnv(core: Program): Env = {
     val baseEnv =
-      Env
-        .empty[Value]
+      Env.empty
         .putGlobal("Type", TypeTpe)
         .putGlobal("Level", LevelTpe)
         .putGlobal("Level.zero", Level.zero)
         .putGlobal("Level.one", Level.one)
         .putGlobal("Prop", PropTpe)
 
-    prelude.core.decls.foldLeft(baseEnv) { case (curEnv, decl) =>
+    core.decls.foldLeft(baseEnv) { case (curEnv, decl) =>
       evalDecl(decl, curEnv)
     }
   }

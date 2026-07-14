@@ -1,15 +1,11 @@
 package com.raccoonlang
 
-// Surface AST for RaccoonLang.  Will be elaborated into CoareAst
+// Surface AST for RaccoonLang.  Will be elaborated into CoreAst.
+// Types are terms: type positions have their own grammar in the parser, but produce ordinary
+// Term nodes — "is a type" is a semantic judgment, not a syntactic class.
 object SurfaceAst {
 
-  // Terms that can appear in function bodies
   sealed trait Term {
-    def span: Span
-  }
-
-  // Terms that can appear in type expressions
-  sealed trait TypeTerm {
     def span: Span
   }
 
@@ -36,22 +32,16 @@ object SurfaceAst {
   }
 
   object Term {
-    // Identifier (either type or term)
-    final case class Ident(name: String, span: Span) extends Term with TypeTerm
+    // Identifier
+    final case class Ident(name: String, span: Span) extends Term
 
-    // Projection: base[field]
-    final case class TSelect(base: TypeTerm, field: String, span: Span) extends TypeTerm
+    // Projection: base.field
     final case class Select(base: Term, field: String, span: Span) extends Term
 
-    // Application in type position
-    final case class TApp(fn: TypeTerm, args: Vector[TypeTerm], span: Span) extends TypeTerm {
-      require(args.nonEmpty, "Type application requires at least one argument")
-    }
-
     // Pi (x: A) -> B x
-    final case class Pi(binder: Binder, body: TypeTerm, span: Span) extends Term with TypeTerm
+    final case class Pi(binder: Binder, body: Term, span: Span) extends Term
 
-    // Application: f(a) (term-level)
+    // Application: f(a)
     final case class App(fn: Term, args: Vector[Term], span: Span) extends Term
 
     // Lambda: fun (x : A)(y: B): B => body
@@ -59,13 +49,13 @@ object SurfaceAst {
 
     final case class Match(
         scrut: Term,
-        motive: Option[TypeTerm],
+        motive: Option[Term],
         cases: Vector[Case],
         span: Span
     ) extends Term
 
     // Let: let x := foo
-    final case class Let(name: String, ty: Option[TypeTerm], value: Term, span: Span)
+    final case class Let(name: String, ty: Option[Term], value: Term, span: Span)
 
     sealed trait BodyStmt {
       def span: Span
@@ -88,12 +78,12 @@ object SurfaceAst {
 
   case class Binder(
       name: String,
-      ty: TypeTerm,
+      ty: Term,
       span: Span,
       isImplicit: Boolean = false
   )
 
-  case class FuncHeader(params: Vector[Binder], ty: TypeTerm, span: Span)
+  case class FuncHeader(params: Vector[Binder], ty: Term, span: Span)
 
   case class Import(path: Vector[String], span: Span)
 
@@ -105,7 +95,7 @@ object SurfaceAst {
         name: String,
         params: Vector[Binder],
         indices: Vector[Binder],
-        resultTy: TypeTerm,
+        resultTy: Term,
         span: Span
     ) {
       def binders: Vector[Binder] = params ++ indices
@@ -114,7 +104,7 @@ object SurfaceAst {
     case class ConstructorDecl(
         name: String,
         binders: Vector[Binder],
-        resultTy: TypeTerm,
+        resultTy: Term,
         span: Span
     )
 

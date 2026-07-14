@@ -13,7 +13,7 @@ object ValueQuote {
       context: QuoteContext
   )
 
-  private final class ClosedEnvInliner(env: Env[Value], context: QuoteContext) {
+  private final class ClosedEnvInliner(env: Env, context: QuoteContext) {
     private def inlineLocal(ref: CoreAst.LocalRef, refSpan: Span): ElabAst.Term =
       if (env.locals.contains(ref)) quoteTerm(env(ref), context, refSpan)
       else ElabAst.Term.LocalRef(ref, refSpan)
@@ -32,19 +32,15 @@ object ValueQuote {
         case ElabAst.Term.LocalRef(ref, refSpan) => inlineLocal(ref, refSpan)
         case ElabAst.Term.App(fn, args, appSpan) =>
           ElabAst.Term.App(inlineAppHead(fn), args.map(inlineTerm), appSpan)
-        case ElabAst.Term.Pi(binders, out, piSpan, piNodeId) =>
-          val nextBinders = binders.map { b =>
-            b.copy(ty = inlineTypeTerm(b.ty))
-          }
-          ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), piSpan, piNodeId)
+        case pi: ElabAst.Term.Pi => inlinePi(pi)
         case ElabAst.Term.Body(lets, res, bodySpan) =>
           val nextLets = lets.map { l =>
-            ElabAst.Let(l.localRef, l.ty.map(inlineTypeTerm), inlineTerm(l.value), l.span)
+            ElabAst.Let(l.localRef, l.ty.map(inlineTerm), inlineTerm(l.value), l.span)
           }
           ElabAst.Term.Body(nextLets, inlineTerm(res), bodySpan)
         case ElabAst.Term.Lam(ty, body, lamSpan, name, recursiveSelf, lamNodeId) =>
           ElabAst.Term.Lam(
-            inlineTypeTerm(ty).asInstanceOf[ElabAst.Term.Pi],
+            inlinePi(ty),
             inlineTerm(body),
             lamSpan,
             name,
@@ -54,48 +50,32 @@ object ValueQuote {
         case ElabAst.Term.Match(scrut, motive, cases, matchSpan, matchNodeId) =>
           ElabAst.Term.Match(
             inlineTerm(scrut),
-            motive.map(inlineTypeTerm),
+            motive.map(inlineTerm),
             cases.map(inlineCase),
             matchSpan,
             matchNodeId
           )
       }
 
-    def inlineTypeTerm(t: ElabAst.TypeTerm): ElabAst.TypeTerm =
-      t match {
-        case ElabAst.Term.GlobalRef(_, _) => t
-        case ElabAst.Term.LocalRef(ref, refSpan) =>
-          inlineLocal(ref, refSpan) match {
-            case tt: ElabAst.TypeTerm => tt
-            case other                => throw CannotQuoteValue(env(ref), s"$other is not a type term", Some(refSpan))
-          }
-        case ElabAst.Term.App(fn, args, appSpan) =>
-          ElabAst.Term.App(inlineAppHead(fn), args.map(inlineTerm), appSpan)
-        case ElabAst.Term.Pi(binders, out, piSpan, piNodeId) =>
-          val nextBinders = binders.map { b =>
-            b.copy(ty = inlineTypeTerm(b.ty))
-          }
-          ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), piSpan, piNodeId)
+    def inlinePi(pi: ElabAst.Term.Pi): ElabAst.Term.Pi = {
+      val nextBinders = pi.binders.map { b =>
+        b.copy(ty = inlineTerm(b.ty))
       }
+      ElabAst.Term.Pi(nextBinders, inlineTerm(pi.out), pi.span, pi.nodeId)
+    }
 
     def inlineCase(c: ElabAst.Case): ElabAst.Case =
       ElabAst.Case(c.ctorName, c.argRefs, inlineTerm(c.body), c.span)
   }
 
-  def quoteContext(env: Env[Value]): QuoteContext = {
+  def quoteContext(env: Env): QuoteContext = {
     val quote = env.locals.foldLeft(Map.empty[ValueKey.Key, ElabAst.Term]) { case (quote, (ref, value)) =>
       withLocalQuote(quote, ref, value)
     }
     QuoteContext(quote)
   }
 
-  def quoteType(value: Value, context: QuoteContext, span: Span): ElabAst.TypeTerm =
-    quoteTerm(value, context, span) match {
-      case tpe: ElabAst.TypeTerm => tpe
-      case other                 => throw CannotQuoteValue(value, s"$other is not a type term", Some(span))
-    }
-
-  def quotePiType(pi: VPi, context: QuoteContext, span: Span): ElabAst.Term.Pi =
+  def quotePi(pi: VPi, context: QuoteContext, span: Span): ElabAst.Term.Pi =
     quotePiOpened(pi, context, span).term
 
   def quoteTerm(value: Value, context: QuoteContext, span: Span): ElabAst.Term = {
@@ -122,7 +102,8 @@ object ValueQuote {
 
       case VApp(head, args, _, _) =>
         val fn = quoteAppHead(head, context, span)
-        ElabAst.Term.App(fn, args.map(arg => quoteTerm(arg, context, span)), span)
+        val explicit = explicitArgs(head.tpe, args)
+        ElabAst.Term.App(fn, explicit.map(arg => quoteTerm(arg, context, span)), span)
 
       case NeutralThunk(term, env, _, _, _) => quoteClosedMatch(term, env, context, span)
 
@@ -147,9 +128,21 @@ object ValueQuote {
   private def quoteAppHead(value: Value, context: QuoteContext, span: Span): ElabAst.Term =
     context.quote.get(value.key).getOrElse(quoteTerm(value, context, span))
 
+  /**
+   * Residual applications carry only the explicit args — the same arity convention as
+   * source-checked syntax — so evaluation has a single rule: implicit args are always
+   * reconstructed by projection (Interpreter.reconstructImplicits).
+   */
+  private def explicitArgs(headTpe: Value, args: Vector[Value]): Vector[Value] =
+    headTpe match {
+      case pi: VPi if pi.binders.length == args.length && pi.binders.exists(_.isImplicit) =>
+        pi.binders.zip(args).collect { case (binder, arg) if !binder.isImplicit => arg }
+      case _ => args
+    }
+
   private def quoteClosedMatch(
       term: ElabAst.Term.Match,
-      env: Env[Value],
+      env: Env,
       context: QuoteContext,
       span: Span
   ): ElabAst.Term.Match = {
@@ -157,7 +150,7 @@ object ValueQuote {
 
     ElabAst.Term.Match(
       quoteTerm(Interpreter.evalTerm(term.scrut, env), context, term.scrut.span),
-      term.motive.map(motive => quoteType(Interpreter.evalTypeTerm(motive, env), context, motive.span)),
+      term.motive.map(motive => quoteTerm(Interpreter.evalTerm(motive, env), context, motive.span)),
       term.cases.map(inliner.inlineCase),
       span,
       AstNodeId.synthetic()
@@ -176,7 +169,9 @@ object ValueQuote {
     if (args.length != head.totalArity)
       throw WTF(s"Constructor ${head.name} has ${args.length} args, expected ${head.totalArity}", Some(span))
 
-    val quotedArgs = args.map(arg => quoteTerm(arg, context, span))
+    // Erased-but-demoted (explicit) family args must appear in the spine, so recovery still runs;
+    // implicit positions are then dropped per the explicit-only residual convention.
+    val quotedArgs = explicitArgs(head.tpe, args).map(arg => quoteTerm(arg, context, span))
     val fn = ElabAst.Term.GlobalRef(head.name, span)
     if (quotedArgs.isEmpty) fn else ElabAst.Term.App(fn, quotedArgs, span)
   }
@@ -264,11 +259,11 @@ object ValueQuote {
     }
     val nextContext = QuoteContext(nextQuote)
     val result = pi.codomain(freshEnv)
-    val quotedOut = quoteType(result, nextContext, span)
+    val quotedOut = quoteTerm(result, nextContext, span)
     val inliner = new ClosedEnvInliner(pi.env, context)
 
     val quotedBinders = pi.binders.map { b =>
-      ElabAst.Binder(b.localRef, inliner.inlineTypeTerm(b.ty), Span(0, 0), b.isImplicit, b.projection)
+      b.copy(ty = inliner.inlineTerm(b.ty))
     }
 
     OpenedPi(

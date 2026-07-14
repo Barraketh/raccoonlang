@@ -37,13 +37,6 @@ object ValueEquivalence {
       }
   }
 
-  // Throwing convenience wrapper; only used by tests.
-  def unify(v1: Value, v2: Value, meta: EqStore): EqStore =
-    tryUnify(v1, v2, meta) match {
-      case Right(eqStore) => eqStore
-      case Left(failed)   => throw UnificationFailed(failed.v1, failed.v2)
-    }
-
   /**
    * Unification whose links are consequences: every caller treats a link as a fact forced by the
    * root equation (match refinement checks branches under them, subsingleton reduction binds
@@ -226,8 +219,8 @@ object ValueEquivalence {
       val sharedVars = Vector.newBuilder[Value]
 
       pi1.binders.zip(pi2.binders).foreach { case (binder1, binder2) =>
-        val ty1 = ValueOps.materialize(Interpreter.evalTypeTerm(binder1.ty, env1), curStore)
-        val ty2 = ValueOps.materialize(Interpreter.evalTypeTerm(binder2.ty, env2), curStore)
+        val ty1 = ValueOps.materialize(Interpreter.evalTerm(binder1.ty, env1), curStore)
+        val ty2 = ValueOps.materialize(Interpreter.evalTerm(binder2.ty, env2), curStore)
         tryUnify(ty1, ty2, curStore, innerCtx) match {
           case Right(nextStore) => curStore = nextStore
           case Left(failed)     => return Left(failed.asStuck)
@@ -302,7 +295,7 @@ object ValueEquivalence {
 
     /**
      * This specifically handles wildcard vars during pattern matching. The problem is that wildcard vars never actually
-     * get stored in Env[Value], so they can't be properly quoted. This forces us to prefer the other var as the
+     * get stored in Env, so they can't be properly quoted. This forces us to prefer the other var as the
      * representative
      */
     private def tryLinkVarToPreferredRepresentative(v1: Var, v2: Var, meta: EqStore, ctx: Ctx): Result = {

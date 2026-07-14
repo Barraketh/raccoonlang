@@ -1,5 +1,7 @@
 package com.raccoonlang
-// Core AST for RaccoonCore (trusted kernel language)
+// Core AST for RaccoonCore (trusted kernel language).
+// Types are terms: "is a type" is a semantic judgment (TypeChecker.assertType), not a syntactic
+// class, so binder types, motives, and declared types are ordinary Terms.
 
 object CoreAst {
   final case class LocalRef(id: Int, name: String)
@@ -10,7 +12,6 @@ object CoreAst {
     override def toString: String = PrettyPrinter.printTerm(this)
   }
 
-  // Terms that can appear in function bodies
   sealed trait Term extends Ast
 
   sealed trait ConstBody {
@@ -34,33 +35,22 @@ object CoreAst {
 
   final case class Recursion(selfRef: LocalRef, decreases: DecreaseSpec)
 
-  // Terms that can appear in type expressions
-  sealed trait TypeTerm extends Term
-
   object Term {
-    sealed trait Ref extends Term with TypeTerm
+    sealed trait Ref extends Term
 
     final case class GlobalRef(name: String, span: Span) extends Ref
 
     final case class LocalRef(ref: CoreAst.LocalRef, span: Span) extends Ref
 
-    // Projection in type position: base[field]
-    final case class TSelect(base: TypeTerm, field: String, span: Span) extends TypeTerm
-
-    // Projection in term position: base[field]
+    // Projection: base[field]
     final case class Select(base: Term, field: String, span: Span) extends Term
 
-    // Application in type position
-    final case class TApp(fn: Ref, args: Vector[TypeTerm], span: Span) extends TypeTerm {
-      require(args.nonEmpty, "Type application requires at least one argument")
-    }
-
     // Pi (x: A) -> B x
-    final case class Pi(binders: Vector[Binder], out: TypeTerm, span: Span) extends Term with TypeTerm {
+    final case class Pi(binders: Vector[Binder], out: Term, span: Span) extends Term {
       require(binders.nonEmpty, "Pi requires at least one binder")
     }
 
-    // Application: f(a) (term-level)
+    // Application: f(a)
     final case class App(fn: Term, args: Vector[Term], span: Span) extends Term
 
     final case class Body(lets: Vector[Let], res: Term, span: Span) extends Term
@@ -76,7 +66,7 @@ object CoreAst {
 
     final case class Match(
         scrut: Term,
-        motive: Option[TypeTerm],
+        motive: Option[Term],
         cases: Vector[Case],
         span: Span
     ) extends Term
@@ -86,7 +76,7 @@ object CoreAst {
   // Let: let x := foo
   final case class Let(
       localRef: LocalRef,
-      ty: Option[TypeTerm],
+      ty: Option[Term],
       value: Term,
       span: Span
   ) {
@@ -95,7 +85,7 @@ object CoreAst {
 
   final case class Binder(
       localRef: LocalRef,
-      ty: TypeTerm,
+      ty: Term,
       span: Span,
       isImplicit: Boolean = false
   ) {
@@ -108,7 +98,7 @@ object CoreAst {
       name: String,
       params: Vector[Binder],
       indices: Vector[Binder],
-      resultTy: TypeTerm,
+      resultTy: Term,
       span: Span
   ) {
     def binders: Vector[Binder] = params ++ indices
@@ -119,7 +109,7 @@ object CoreAst {
       canonicalName: String,
       shortName: String,
       binders: Vector[Binder],
-      resultTy: TypeTerm,
+      resultTy: Term,
       span: Span
   ) {
     def name: String = canonicalName
@@ -143,7 +133,7 @@ object CoreAst {
     final case class ConstDecl(
         isOpaque: Boolean,
         name: String,
-        ty: TypeTerm,
+        ty: Term,
         body: ConstBody,
         span: Span,
         lazyGlobal: Boolean = false
@@ -151,7 +141,7 @@ object CoreAst {
 
     final case class AxiomDecl(
         name: String,
-        ty: TypeTerm,
+        ty: Term,
         span: Span
     ) extends Decl
 

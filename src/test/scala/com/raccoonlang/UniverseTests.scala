@@ -307,11 +307,13 @@ class UniverseTests extends munit.FunSuite {
     val u = freshLevel("u")
     val eqStore = EqStore.empty.allow(DepSet(u.id))
 
-    val solved = ValueEquivalence.unify(
-      VSort(Value.Level.mk(u.id)),
-      VSort(Value.Level.const(1)),
-      eqStore
-    )
+    val solved = ValueEquivalence
+      .tryUnify(
+        VSort(Value.Level.mk(u.id)),
+        VSort(Value.Level.const(1)),
+        eqStore
+      )
+      .getOrElse(fail("expected sort unification to solve the level variable"))
 
     assertEquals(solved.subst(u.id), Value.Level.const(1))
   }
@@ -320,13 +322,15 @@ class UniverseTests extends munit.FunSuite {
     val u = freshLevel("u")
     val eqStore = EqStore.empty.allow(DepSet(u.id))
 
-    intercept[UnificationFailed] {
-      ValueEquivalence.unify(
-        Value.VSort(Value.Level.of(Map(u.id -> 1), 0)),
-        Value.VSort(Value.Level.zero),
-        eqStore
-      )
-    }
+    assert(
+      ValueEquivalence
+        .tryUnify(
+          Value.VSort(Value.Level.of(Map(u.id -> 1), 0)),
+          Value.VSort(Value.Level.zero),
+          eqStore
+        )
+        .isLeft
+    )
   }
 
   test("positive: implicit level through Level.succ works") {

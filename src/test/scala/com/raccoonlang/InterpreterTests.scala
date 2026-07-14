@@ -19,7 +19,7 @@ class InterpreterTests extends munit.FunSuite {
   private def toShape(v: Value): Shape = v match {
     case Value.ConstructorHead(n, _, _, _, _) => SConst(n)
     case Value.VCtor(h, storedArgs, _) =>
-      val args = Value.constructorPatternArgs(h, storedArgs)
+      val args = storedArgs
       if (args.isEmpty) SConst(h.name) else SApp(SConst(h.name), args.toList.map(toShape))
     case Value.VConst(n, _, _)     => SConst(n)
     case Value.VApp(h, args, _, _) => SApp(toShape(h), args.toList.map(toShape))
@@ -93,7 +93,7 @@ class InterpreterTests extends munit.FunSuite {
       case Value.VCtor(head, storedArgs, _) =>
         assertEquals(head.name, "Vec.nil")
         assertEquals(storedArgs.length, 0)
-        assertEquals(Value.constructorPatternArgs(head, storedArgs), Vector.empty)
+        assertEquals(storedArgs, Vector.empty)
       case other =>
         fail(s"expected constructor view, got: $other")
     }

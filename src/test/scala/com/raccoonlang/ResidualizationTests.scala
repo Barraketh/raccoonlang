@@ -9,7 +9,7 @@ class ResidualizationTests extends munit.FunSuite {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        val env = core.decls.foldLeft(Interpreter.initialEnv(Prelude.test)) { case (curEnv, decl) =>
+        val env = core.decls.foldLeft(Prelude.test.checkedEnv) { case (curEnv, decl) =>
           Interpreter.evalDecl(decl, curEnv)
         }
         val body = core.body.getOrElse(fail("Program has no body"))
@@ -25,12 +25,12 @@ class ResidualizationTests extends munit.FunSuite {
       case other                          => other
     }
 
-  private def checkLastDeclType(src: String): EA.TypeTerm =
+  private def checkLastDeclType(src: String): EA.Term =
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
         val last = core.decls.lastOption.getOrElse(fail("Program has no declarations"))
-        val env = core.decls.dropRight(1).foldLeft(Interpreter.initialEnv(Prelude.test)) {
+        val env = core.decls.dropRight(1).foldLeft(Prelude.test.checkedEnv) {
           case (curEnv, decl) => Interpreter.evalDecl(decl, curEnv)
         }
         val ty = last match {
@@ -38,7 +38,7 @@ class ResidualizationTests extends munit.FunSuite {
           case CoreAst.Decl.ConstDecl(_, _, ty, _, _, _) => ty
           case other                                     => fail(s"Expected typed declaration, got $other")
         }
-        TypeChecker.checkTypeTerm(ty, env).residual
+        TypeChecker.checkTerm(ty, env).residual
 
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }

@@ -5,10 +5,10 @@ import com.raccoonlang.Value._
 
 class ValueEquivalenceTests extends munit.FunSuite {
   private val span = Span(0, 0)
-  private val typeRef: ElabAst.TypeTerm = ETerm.GlobalRef("Type", span)
+  private val typeRef: ElabAst.Term = ETerm.GlobalRef("Type", span)
   private val binderRef = CoreAst.LocalRef(0, "x")
-  private val binder = VBinder(binderRef, typeRef)
-  private val env = Env.empty[Value].putGlobal("Type", TypeTpe)
+  private val binder = ElabAst.Binder(binderRef, typeRef, Span(0, 0))
+  private val env = Env.empty.putGlobal("Type", TypeTpe)
   private val typeToTypeClassifier = VSort(Level.succ(Level.one))
 
   private def nodeId(start: Int): AstNodeId = AstNodeId(None, start)
@@ -19,7 +19,7 @@ class ValueEquivalenceTests extends munit.FunSuite {
     res.result()
   }
 
-  private def pi(captures: Vector[Value], out: Env[Value] => Value, start: Int): VPi =
+  private def pi(captures: Vector[Value], out: Env => Value, start: Int): VPi =
     VPi(env, Vector(binder), out, deps(captures: _*), ValueId.LocalId(nodeId(start), captures), () => typeToTypeClassifier)
 
   test("Pi unification rejects solutions that depend on fresh binder vars") {

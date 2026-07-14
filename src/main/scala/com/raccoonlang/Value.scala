@@ -1,7 +1,7 @@
 package com.raccoonlang
 
 /**
- * Represents a typechecked value representation - the values that live in an Env[Value]. Values can contain Vars(),
+ * Represents a typechecked value representation - the values that live in an Env. Values can contain Vars(),
  * which represent unknown values. Vars have a unique id, which means they can participate in equality. Thus values
  * could be thought of as a typed, maximally reduced representation of CoreAst / ElabAst. Invariants:
  *   - Every value is typed correctly. Types are themselves Values, and so are Sorts and Levels
@@ -111,7 +111,7 @@ object Value {
     final case class LocalId(nodeId: AstNodeId, captures: Vector[Value]) extends ValueId
   }
 
-  private[raccoonlang] def envDeps(env: Env[Value]): DepSet = {
+  private[raccoonlang] def envDeps(env: Env): DepSet = {
     val res = DepSet.newBuilder
     env.locals.values.foreach(value => res.unionInPlace(value.synDeps))
     res.result()
@@ -121,10 +121,10 @@ object Value {
     def synDeps: DepSet
   }
   object LamBody {
-    final case class Core(term: ElabAst.Term.Lam, env: Env[Value]) extends LamBody {
+    final case class Core(term: ElabAst.Term.Lam, env: Env) extends LamBody {
       override lazy val synDeps: DepSet = envDeps(env)
     }
-    final case class Native(run: (Vector[Value], Env[Value]) => Value, env: Env[Value], isRawRecursive: Boolean)
+    final case class Native(run: (Vector[Value], Env) => Value, env: Env, isRawRecursive: Boolean)
       extends LamBody {
       override lazy val synDeps: DepSet = envDeps(env)
     }
@@ -200,6 +200,14 @@ object Value {
 
     def mk(varId: VarId): Level = of(Map(varId -> 0), 0)
 
+    /** The level a value denotes: a Level directly, or a Level-typed variable as its atom. */
+    def fromValue(v: Value): Option[Level] =
+      v match {
+        case l: Level             => Some(l)
+        case Var(_, id, LevelTpe) => Some(mk(id))
+        case _                    => None
+      }
+
     val zero = const(0)
     val one = const(1)
 
@@ -214,22 +222,14 @@ object Value {
   final val PropTpe: VSort = VSort(Level.zero)
   final val TypeTpe: VSort = VSort(Level.one)
 
-  case class VBinder(
-      localRef: CoreAst.LocalRef,
-      ty: ElabAst.TypeTerm,
-      isImplicit: Boolean = false,
-      projection: Option[telescope.Projection.Spec] = None
-  ) {
-    def name: String = localRef.name
-  }
-
   // The classifier is a thunk, not a stored sort: a Pi's universe depends on the env it is
   // evaluated in (level-polymorphic binder types), so residuals carry no classifier and each VPi
   // instance derives its own from its binders and codomain (Interpreter.piClassifier).
+  // Binders are the residual's own ElabAst.Binder nodes: a VPi is its syntax plus a closure.
   case class VPi(
-      env: Env[Value],
-      binders: Vector[VBinder],
-      codomain: Env[Value] => Value,
+      env: Env,
+      binders: Vector[ElabAst.Binder],
+      codomain: Env => Value,
       synDeps: DepSet,
       id: ValueId,
       classifier0: () => VSort
@@ -292,7 +292,7 @@ object Value {
 
   case class NeutralThunk(
       term: ElabAst.Term.Match,
-      env: Env[Value],
+      env: Env,
       id: ValueId.LocalId,
       tpe: Value,
       blockerId: Option[VarId]
@@ -326,14 +326,10 @@ object Value {
       res.unionInPlace(tpe.synDeps)
       res.unionInPlace(body.synDeps)
       id match {
-        case ValueId.Const(_) => res.result()
-        case ValueId.LocalId(_, params) =>
-          if (params.isEmpty) res.result()
-          else {
-            params.foreach(v => res.unionInPlace(v.synDeps))
-            res.result()
-          }
+        case ValueId.Const(_)           =>
+        case ValueId.LocalId(_, params) => params.foreach(v => res.unionInPlace(v.synDeps))
       }
+      res.result()
     }
 
     override def withTpe(nextTpe: Value): Value = nextTpe match {
@@ -403,26 +399,13 @@ object Value {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
+  // Pattern binders bind exactly the stored fields: erased family args have no pattern slots,
+  // so a VCtor's stored args ARE its pattern args.
   private[raccoonlang] def constructorStoredArgs(head: ConstructorHead, args: Vector[Value]): Vector[Value] = {
     if (args.length != head.totalArity)
       throw WTF(s"Constructor ${head.name} was given ${args.length} args, expected ${head.totalArity}")
     args.drop(head.numErasedFamilyArgs)
   }
-
-  private[raccoonlang] def constructorPatternArgs(head: ConstructorHead, args: Vector[Value]): Vector[Value] =
-    head.tpe match {
-      case pi: VPi =>
-        val storedBinders = pi.binders.drop(head.numErasedFamilyArgs)
-        if (args.length != storedBinders.length)
-          throw WTF(s"Constructor ${head.name} stores ${args.length} args, expected ${storedBinders.length}")
-        args
-
-      case _ =>
-        val expectedArgs = head.totalArity - head.numErasedFamilyArgs
-        if (args.length != expectedArgs)
-          throw WTF(s"Constructor ${head.name} stores ${args.length} args, expected $expectedArgs")
-        args
-    }
 
   final case class ConstructorMeta(shortName: String, canonicalName: String)
 

@@ -26,7 +26,7 @@ class TypingTests extends munit.FunSuite {
   private def toShape(v: Value): Shape = v match {
     case Value.ConstructorHead(n, _, _, _, _) => SConst(n)
     case Value.VCtor(h, storedArgs, _) =>
-      val args = Value.constructorPatternArgs(h, storedArgs)
+      val args = storedArgs
       if (args.isEmpty) SConst(h.name) else SApp(SConst(h.name), args.toList.map(toShape))
     case Value.VConst(n, _, _)     => SConst(n)
     case Value.VApp(h, args, _, _) => SApp(toShape(h), args.toList.map(toShape))
@@ -35,6 +35,44 @@ class TypingTests extends munit.FunSuite {
 
   private val zeroS = SConst("Nat.zero")
   private def succS(s: Shape) = SApp(SConst("Nat.succ"), List(s))
+
+  test("bare-body def of function type aliases a function without eta-expansion") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |def myFn (n: Nat): Nat := Nat.succ(n)
+        |
+        |def alias : Nat -> Nat := myFn
+        |
+        |{
+        |  alias(Nat.zero)
+        |}
+        |""".stripMargin
+
+    assertEquals(toShape(runProgram(p)), succS(zeroS))
+  }
+
+  test("bare-body def eta-adapts a polymorphic function like a let does") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |def polyId {u: Level}{A: Sort(u)} (x: A): A := x
+        |
+        |def monoId : Nat -> Nat := polyId
+        |
+        |{
+        |  monoId(Nat.zero)
+        |}
+        |""".stripMargin
+
+    assertEquals(toShape(runProgram(p)), zeroS)
+  }
 
   test("def typechecks and reduces by default") {
     val p =

@@ -12,23 +12,23 @@ object CapturedRefs {
     * "is this type evaluable yet".
     */
   def mentions(term: ElabAst.Term, candidates: Set[CoreAst.LocalRef]): Boolean = {
-    val env = candidates.foldLeft(Env.empty[Value]) { case (curEnv, ref) =>
+    val env = candidates.foldLeft(Env.empty) { case (curEnv, ref) =>
       curEnv.putLocal(ref, Value.PropTpe)
     }
     goTerm(term, env, Set.empty).nonEmpty
   }
 
-  private def addRef(ref: CoreAst.LocalRef, env: Env[Value], refs: Set[CoreAst.LocalRef]): Set[CoreAst.LocalRef] =
+  private def addRef(ref: CoreAst.LocalRef, env: Env, refs: Set[CoreAst.LocalRef]): Set[CoreAst.LocalRef] =
     if (env.locals.contains(ref)) refs + ref else refs
 
   private def goTerms(
       terms: IterableOnce[ElabAst.Term],
-      env: Env[Value],
+      env: Env,
       refs: Set[CoreAst.LocalRef]
   ): Set[CoreAst.LocalRef] =
     terms.iterator.foldLeft(refs) { case (curRefs, term) => goTerm(term, env, curRefs) }
 
-  private def goTerm(term: ElabAst.Term, env: Env[Value], refs: Set[CoreAst.LocalRef]): Set[CoreAst.LocalRef] =
+  private def goTerm(term: ElabAst.Term, env: Env, refs: Set[CoreAst.LocalRef]): Set[CoreAst.LocalRef] =
     term match {
       case Term.GlobalRef(_, _) =>
         refs
@@ -59,6 +59,6 @@ object CapturedRefs {
         cases.foldLeft(refsWithMotive) { case (curRefs, c) => goTerm(c.body, env, curRefs) }
     }
 
-  def getCapturedRefs(term: ElabAst.Term, env: Env[Value]): Set[CoreAst.LocalRef] =
+  def getCapturedRefs(term: ElabAst.Term, env: Env): Set[CoreAst.LocalRef] =
     if (env.locals.isEmpty) Set.empty else goTerm(term, env, Set.empty)
 }

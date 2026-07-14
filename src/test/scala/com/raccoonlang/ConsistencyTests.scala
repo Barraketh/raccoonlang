@@ -33,11 +33,11 @@ class ConsistencyTests extends munit.FunSuite {
     runTestProgramWithEnv(src)._1
   }
 
-  private def runTestProgramWithEnv(src: String): (Value, Env[Value]) = {
+  private def runTestProgramWithEnv(src: String): (Value, Env) = {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        val env = core.decls.foldLeft(Interpreter.initialEnv(Prelude.test)) { case (current, decl) =>
+        val env = core.decls.foldLeft(Prelude.test.checkedEnv) { case (current, decl) =>
           Interpreter.evalDecl(decl, current)
         }
         val body = core.body.getOrElse(fail("Program has no body"))

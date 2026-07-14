@@ -9,8 +9,8 @@ class InductiveCheckTest extends munit.FunSuite {
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
 
-  private def elabAndRun(src: String): Env[Value] =
-    elab(src).decls.foldLeft(Interpreter.initialEnv(Prelude.test)) { case (curEnv, decl) =>
+  private def elabAndRun(src: String): Env =
+    elab(src).decls.foldLeft(Prelude.test.checkedEnv) { case (curEnv, decl) =>
       Interpreter.evalDecl(decl, curEnv)
     }
 

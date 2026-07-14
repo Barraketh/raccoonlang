@@ -2,7 +2,7 @@ package com.raccoonlang
 
 import com.raccoonlang.TypeChecker._
 import com.raccoonlang.Value._
-import com.raccoonlang.ValueQuote.{quoteContext, quoteType}
+import com.raccoonlang.ValueQuote.{quoteContext, quoteTerm}
 import com.raccoonlang.telescope.BinderOps
 import com.raccoonlang.{CoreAst => CA, ElabAst => EA}
 
@@ -21,7 +21,7 @@ object MatchChecker {
       scrutTpe: Value,
       inductiveName: String,
       ctorNames: Vector[String],
-      env: Env[Value]
+      env: Env
   ): Vector[ReachableCtor] = {
     def unify(left: Value, right: Value, refinable: DepSet): Either[ValueEquivalence.UnifyFailure, EqStore] =
       ValueEquivalence.tryUnify(left, right, EqStore.empty.allow(refinable))
@@ -37,7 +37,6 @@ object MatchChecker {
         case h: ConstructorHead =>
           val (freshArgs, resultTy) = BinderOps.freshCtorArgsAndResult(h)
           val storedArgs = Value.constructorStoredArgs(h, freshArgs)
-          val patternArgs = Value.constructorPatternArgs(h, storedArgs)
           // For a Prop scrutinee the ctor value collapses, so the value probe below degenerates
           // to the type probe (proof-collapse.md §5).
           val ctorValue = Value.collapseIfProof(VCtor(h, storedArgs, resultTy))
@@ -62,7 +61,7 @@ object MatchChecker {
 
           branchEqStore.map { branchStore =>
             val refinedResultTy = ValueOps.materialize(scrutTpe, branchStore)
-            ReachableCtor(ctorName, h, patternArgs, refinedResultTy, branchStore)
+            ReachableCtor(ctorName, h, storedArgs, refinedResultTy, branchStore)
           }
 
         case _ => throw UnknownConstructor(ctorName, inductiveName)
@@ -80,8 +79,8 @@ object MatchChecker {
     val only = reachable.head
     val (args1, res1) = BinderOps.freshCtorArgsAndResult(only.head)
     val (args2, res2) = BinderOps.freshCtorArgsAndResult(only.head)
-    val fields1 = Value.constructorPatternArgs(only.head, Value.constructorStoredArgs(only.head, args1))
-    val fields2 = Value.constructorPatternArgs(only.head, Value.constructorStoredArgs(only.head, args2))
+    val fields1 = Value.constructorStoredArgs(only.head, args1)
+    val fields2 = Value.constructorStoredArgs(only.head, args2)
 
     val refinable0 = DepSet.unionAll(scrutTpe.synDeps, res1.synDeps, res2.synDeps)
 
@@ -117,7 +116,7 @@ object MatchChecker {
   private def checkBranch(
       br: CA.Case,
       args: Seq[Value],
-      envWithScrut: Env[Value],
+      envWithScrut: Env,
       expectedTy: Value
   ): EA.Case = {
     if (args.length != br.argRefs.length)
@@ -129,7 +128,6 @@ object MatchChecker {
       }
     }
     val branchRes = checkTerm(br.body, expectedTy, branchEnv)
-    checkType(branchRes.value, expectedTy)
     EA.Case(
       br.ctorName,
       br.argRefs,
@@ -138,7 +136,7 @@ object MatchChecker {
     )
   }
 
-  def checkMatch(t: CA.Term.Match, env: Env[Value], expectedTy: Option[Value] = None): CheckedTerm = {
+  def checkMatch(t: CA.Term.Match, env: Env, expectedTy: Option[Value] = None): CheckedTerm = {
     val scrutChecked = checkTerm(t.scrut, env)
     val scrut = scrutChecked.value
     val scrutTpe = scrut.tpe
@@ -184,7 +182,7 @@ object MatchChecker {
       inferred
     }
 
-    val checkedMotive = t.motive.map(motiveSyntax => checkTypeTerm(motiveSyntax, env))
+    val checkedMotive = t.motive.map(motiveSyntax => checkTerm(motiveSyntax, env))
     val motiveTy = checkedMotive match {
       case Some(motive) => motive.value
       case None if expectedTy.nonEmpty =>
@@ -204,7 +202,7 @@ object MatchChecker {
         }
 
         val br = cases.find(_.ctorName == h.name).getOrElse(throw MissingCase(h.name))
-        checkedByCtor += h.name -> checkBranch(br, Value.constructorPatternArgs(h, storedArgs), env, motiveTy)
+        checkedByCtor += h.name -> checkBranch(br, storedArgs, env, motiveTy)
 
       case _ =>
         val reachableMap = reachableByType.map(info => info.name -> info).toMap
@@ -235,7 +233,7 @@ object MatchChecker {
       // orElse is by-name: the expected type is only quoted when there is no user motive.
       checkedMotive
         .map(_.residual)
-        .orElse(expectedTy.map(expected => quoteType(expected, quoteContext(env), t.span))),
+        .orElse(expectedTy.map(expected => quoteTerm(expected, quoteContext(env), t.span))),
       checkedCases,
       t.span,
       t.span.nodeId

@@ -6,16 +6,16 @@ import com.raccoonlang.Value._
 class ValueQuoteTests extends munit.FunSuite {
   private val span = Span(0, 0)
 
-  private def constructorType(binderTy: ElabAst.TypeTerm, resultTy: Value): VPi = {
+  private def constructorType(binderTy: ElabAst.Term, resultTy: Value): VPi = {
     val ref = CoreAst.LocalRef(0, "x")
     val env = Env
-      .empty[Value]
+      .empty
       .putGlobal("Sort3", VSort(Level.const(3)))
       .putGlobal("Type", TypeTpe)
 
     VPi(
       env,
-      Vector(VBinder(ref, binderTy)),
+      Vector(ElabAst.Binder(ref, binderTy, Span(0, 0))),
       _ => resultTy,
       DepSet.empty,
       ValueId.Const("C.mk.type"),

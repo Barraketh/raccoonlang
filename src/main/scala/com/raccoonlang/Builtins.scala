@@ -22,7 +22,7 @@ private object Builtins {
             ValueId.Const(name),
             LamBody.Native(
               (args, _) => VSort(Interpreter.getLevel(args.head)),
-              Env.empty[Value],
+              Env.empty,
               isRawRecursive = false
             )
           )
@@ -41,7 +41,7 @@ private object Builtins {
             VLam(
               pi,
               ValueId.Const(name),
-              LamBody.Native((args, _) => run(self, pi, args), Env.empty[Value], isRawRecursive = false)
+              LamBody.Native((args, _) => run(self, pi, args), Env.empty, isRawRecursive = false)
             )
           self
         case other => throw CannotApplyNonFunction(other, Some(span))
@@ -114,7 +114,7 @@ private object Builtins {
     def unapply(value: Value): Option[Value] =
       value match {
         case VCtor(head, storedArgs, _) if head.name == MkName =>
-          Value.constructorPatternArgs(head, storedArgs) match {
+          storedArgs match {
             case Vector(rep) => Some(rep)
             case _           => None
           }

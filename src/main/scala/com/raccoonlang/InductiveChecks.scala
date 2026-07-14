@@ -170,9 +170,9 @@ object InductiveChecks {
 
   private def installInductive(
       decl: Decl.InductiveDecl,
-      baseEnv: Env[Value],
+      baseEnv: Env,
       inductiveHead: VConst
-  ): Env[Value] = {
+  ): Env = {
     val envWithInductive = baseEnv.putGlobal(decl.header.name, inductiveHead)
 
     decl.ctors.foldLeft(envWithInductive) { case (curEnv, ctor) =>
@@ -192,7 +192,7 @@ object InductiveChecks {
   private def checkConstructorParamDiscipline(
       header: InductiveHeader,
       ctor: ConstructorDecl,
-      envWithBinders: Env[Value],
+      envWithBinders: Env,
       outputArgs: Vector[Value]
   ): Unit =
     header.params.zipWithIndex.foreach { case (param, idx) =>
@@ -205,7 +205,7 @@ object InductiveChecks {
         throw error
     }
 
-  def evalInductiveDecl(decl: Decl.InductiveDecl, env: Env[Value]): Env[Value] = {
+  def evalInductiveDecl(decl: Decl.InductiveDecl, env: Env): Env = {
     // All direct Value matches in this function and its private helpers
     // rely on EqStore.empty: no Vars are solved in this pass.
 
@@ -227,9 +227,9 @@ object InductiveChecks {
         initialPositiveArgs
       )
 
-    val inductivedHead = VConst(name, Inductive(initialMeta), inductiveType)
+    val provisionalHead = VConst(name, Inductive(initialMeta), inductiveType)
 
-    val envWithInductive = env.putGlobal(name, inductivedHead)
+    val envWithInductive = env.putGlobal(name, provisionalHead)
     val envWithFamilyBinders = {
       inductiveType match {
         case pi: VPi =>
@@ -264,8 +264,8 @@ object InductiveChecks {
     decl.ctors.foreach { ctor =>
       val allConstructorBinders = constructorBinders(header, ctor)
       val checkedBinders =
-        BinderOps.toVBinders(allConstructorBinders, envWithInductive, familyParams = header.params.length)
-      val binders = checkedBinders.vBinders
+        BinderOps.checkBinders(allConstructorBinders, envWithInductive, familyParams = header.params.length)
+      val binders = checkedBinders.binders
       val envWithBinders = checkedBinders.env
       val binderVars = binders.map(binder => envWithBinders(binder.localRef))
       val ownBinderVars = binderVars.drop(header.params.length)
