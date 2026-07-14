@@ -39,7 +39,7 @@ class VecZipTest extends munit.FunSuite {
         |  | Vec.nil => Vec.nil(R)
         |  | Vec.cons x va0 a => {
         |    match vb returning Vec(L, R, n) with
-        |    | Vec.cons _ vb0 b => Vec.cons(R, x, zip(u1, u2, A, B, x, va0, vb0), Pair.mk(A, B, a, b))
+        |    | Vec.cons _ vb0 b => Vec.cons(x, zip(u1, u2, A, B, x, va0, vb0), Pair.mk(a, b))
         |  }
         |}
         |
@@ -73,7 +73,7 @@ class VecZipTest extends munit.FunSuite {
         |  | Vec.nil => Vec.nil(Pair(A, B))
         |  | Vec.cons n0 va0 a => {
         |    match vb returning ResType with
-        |    | Vec.cons _ vb0 b => Vec.cons(Pair(A, B), n0, zip(va0, vb0), Pair.mk(a, b))
+        |    | Vec.cons _ vb0 b => Vec.cons(n0, zip(va0, vb0), Pair.mk(a, b))
         |  }
         |}
         |""".stripMargin

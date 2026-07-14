@@ -49,7 +49,7 @@ class ResidualizationTests extends munit.FunSuite {
       case EA.Term.LocalRef(_, _)  => false
       case EA.Term.App(fn, args, _) =>
         containsGlobal(fn, name) || args.exists(arg => containsGlobal(arg, name))
-      case EA.Term.Pi(binders, out, _, _, _, _) =>
+      case EA.Term.Pi(binders, out, _, _) =>
         binders.exists(binder => containsGlobal(binder.ty, name)) || containsGlobal(out, name)
       case EA.Term.Body(lets, res, _) =>
         lets.exists(l => l.ty.exists(ty => containsGlobal(ty, name)) || containsGlobal(l.value, name)) ||
@@ -131,7 +131,7 @@ class ResidualizationTests extends munit.FunSuite {
           | | mk (fst: A)(snd: B) : Pair(A, B)
           |
           |{
-          |  let p := Pair.mk(Nat, Nat, Nat.zero, Nat.succ(Nat.zero))
+          |  let p := Pair.mk(Nat.zero, Nat.succ(Nat.zero))
           |  p.fst
           |}
           |""".stripMargin
@@ -141,7 +141,7 @@ class ResidualizationTests extends munit.FunSuite {
             lets,
             EA.Term.App(
               EA.Term.GlobalRef("Pair.fst", _),
-              Vector(EA.Term.GlobalRef("Nat", _), EA.Term.GlobalRef("Nat", _), EA.Term.LocalRef(ref, _)),
+              Vector(EA.Term.LocalRef(ref, _)),
               _
             ),
             _
@@ -242,20 +242,30 @@ class ResidualizationTests extends munit.FunSuite {
     }
   }
 
-  test("Pi binder residual preserves implicit binders as regular Elab binders") {
+  test("Pi binder residual preserves forced implicit binders with projection specs") {
     val p =
       """
-        |axiom f : {A: Type} -> A
+        |axiom f : {A: Type} -> (x: A) -> A
         |""".stripMargin
 
     checkLastDeclType(p) match {
       case pi: EA.Term.Pi =>
-        pi.binders.head.ty match {
+        assertEquals(pi.binders.length, 2)
+        val implicitBinder = pi.binders.head
+        assert(implicitBinder.isImplicit, "expected leading binder to stay implicit in the residual")
+        assert(implicitBinder.projection.isDefined, "expected forced implicit binder to carry a projection spec")
+        implicitBinder.ty match {
           case EA.Term.GlobalRef("Type", _) =>
           case other                        => fail(s"Expected Type binder annotation, got $other")
         }
+        val explicitBinder = pi.binders(1)
+        assert(!explicitBinder.isImplicit, "expected forcing binder to stay explicit in the residual")
+        explicitBinder.ty match {
+          case EA.Term.LocalRef(tyRef, _) => assertEquals(tyRef, implicitBinder.localRef)
+          case other                      => fail(s"Expected explicit binder typed by implicit A, got $other")
+        }
         pi.out match {
-          case EA.Term.LocalRef(outRef, _) => assertEquals(outRef, pi.binders.head.localRef)
+          case EA.Term.LocalRef(outRef, _) => assertEquals(outRef, implicitBinder.localRef)
           case other                       => fail(s"Expected codomain to reuse implicit A, got $other")
         }
       case other => fail(s"Expected residualized Pi, got $other")
@@ -307,11 +317,12 @@ class ResidualizationTests extends munit.FunSuite {
   test("Pi binder residual preserves explicit type binders") {
     val p =
       """
-        |axiom f : {A: Type} -> A
+        |axiom f : (A: Type) -> A
         |""".stripMargin
 
     checkLastDeclType(p) match {
       case pi: EA.Term.Pi =>
+        assert(!pi.binders.head.isImplicit, "expected explicit binder to stay explicit in the residual")
         pi.binders.head.ty match {
           case EA.Term.GlobalRef("Type", _) =>
           case other                        => fail(s"Expected Type binder, got $other")

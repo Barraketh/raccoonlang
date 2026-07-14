@@ -19,8 +19,7 @@ class ValueQuoteTests extends munit.FunSuite {
       _ => resultTy,
       DepSet.empty,
       ValueId.Const("C.mk.type"),
-      VSort(Level.const(4)),
-      numLevelParams = 0
+      () => VSort(Level.const(4))
     )
   }
 

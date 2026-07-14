@@ -21,8 +21,6 @@ class CapturedRefsTests extends munit.FunSuite {
         Vector(ETerm.LocalRef(capturedRef, span)),
         span
       ),
-      classifier,
-      numLevelParams = 0,
       span,
       nodeId = AstNodeId.synthetic()
     )

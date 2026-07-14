@@ -107,7 +107,7 @@ class InductiveCheckTest extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
-        | | mk {B: Type}{n: Nat}: Vec(B, n)
+        | | mk (B: Type)(n: Nat): Vec(B, n)
         |
         |""".stripMargin
 
@@ -129,7 +129,23 @@ class InductiveCheckTest extends munit.FunSuite {
     intercept[ArityMismatch] { elabAndTypecheck(p) }
   }
 
-  test("Constructor implicit binders may bind indices after params") {
+  test("Constructor implicit binders may bind indices after params when a field forces them") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
+        | | nil : Vec(A, Nat.zero)
+        | | cons {n: Nat}(tail: Vec(A, n))(head: A): Vec(A, Nat.succ(n))
+        |
+        |""".stripMargin
+
+    elabAndTypecheck(p)
+  }
+
+  test("Constructor-declared implicits must be forced by fields; family demotion does not apply") {
     val p =
       """
         |inductive Nat : Type
@@ -141,7 +157,7 @@ class InductiveCheckTest extends munit.FunSuite {
         |
         |""".stripMargin
 
-    elabAndTypecheck(p)
+    intercept[NonForcedImplicitParam] { elabAndTypecheck(p) }
   }
 
   test("Instance binders are rejected as family params") {

@@ -30,7 +30,7 @@ class NamespaceTests extends munit.FunSuite {
         | | cons (tail: List(A))(head: A) : List(A)
         |
         |namespace List {
-        |  def singleton (A: Type)(x: A): List(A) := cons(A, nil(A), x)
+        |  def singleton (A: Type)(x: A): List(A) := cons(nil(A), x)
         |}
         |
         |{
@@ -229,7 +229,7 @@ class NamespaceTests extends munit.FunSuite {
         |open Data
         |
         |{
-        |  Tree.leaf(Nat, Nat.zero)
+        |  Tree.leaf(Nat.zero)
         |}
         |""".stripMargin
 
@@ -248,7 +248,7 @@ class NamespaceTests extends munit.FunSuite {
         |open Data.{Tree}
         |
         |{
-        |  Tree.leaf(Nat, Nat.zero)
+        |  Tree.leaf(Nat.zero)
         |}
         |""".stripMargin
 
@@ -267,7 +267,7 @@ class NamespaceTests extends munit.FunSuite {
         |open Data.{Tree as DTree}
         |
         |{
-        |  DTree.leaf(Nat, Nat.zero)
+        |  DTree.leaf(Nat.zero)
         |}
         |""".stripMargin
 
@@ -285,7 +285,7 @@ class NamespaceTests extends munit.FunSuite {
         |
         |open Data.{*, -Tree}
         |
-        |def bad : Data.Tree(Nat) := Tree.leaf(Nat, Nat.zero)
+        |def bad : Data.Tree(Nat) := Tree.leaf(Nat.zero)
         |""".stripMargin
 
     intercept[NotFound] {
@@ -310,7 +310,7 @@ class NamespaceTests extends munit.FunSuite {
         |open A
         |open B
         |
-        |def bad : A.Tree(Nat) := Tree.leaf(Nat, Nat.zero)
+        |def bad : A.Tree(Nat) := Tree.leaf(Nat.zero)
         |""".stripMargin
 
     intercept[AmbiguousName] {

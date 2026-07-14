@@ -3,7 +3,7 @@ package com.raccoonlang
 import com.raccoonlang.Interpreter._
 import com.raccoonlang.Value._
 import com.raccoonlang.ValueQuote.{quoteContext, quotePiType, quoteTerm, quoteType}
-import com.raccoonlang.telescope.BinderOps
+import com.raccoonlang.telescope.{BinderOps, Projection}
 import com.raccoonlang.{CoreAst => CA, ElabAst => EA}
 
 object TypeChecker {
@@ -23,7 +23,8 @@ object TypeChecker {
       checkArg: (Value, TypingContext) => CheckedTerm
   ) {
     // Push the expected type into checking only when it is closed over the caller's env;
-    // open expected types cannot be quoted into residual motives or implicit arguments.
+    // open expected types cannot be quoted into residual motives (MatchChecker's inferred motive
+    // is the one remaining quoting client fed from this path).
     def check(expectedTy: Value, context: TypingContext): CheckedTerm =
       if (canQuoteFromContext(expectedTy, context)) checkArg(expectedTy, context)
       else synthArg(context)
@@ -44,18 +45,11 @@ object TypeChecker {
     def checked(c: CheckedTerm): PendingArg = PendingArg(_ => c, (_, _) => c)
   }
 
-  def sortLeq(a: Value, b: Value): Boolean = {
-    (a, b) match {
-      case (Value.VSort(u), Value.VSort(v)) => Level.leq(u, v)
-      case (l1: Level, l2: Level)           => Level.leq(l1, l2)
-      case (l1: Level, v: Var)              => Level.leq(l1, Level.mk(v.id))
-      case (v: Var, l2: Level)              => Level.leq(Level.mk(v.id), l2)
-      case _                                => false
-    }
-  }
-
+  // Universes are NOT cumulative (Lean-style): a type fits exactly the sorts defEq to its own.
+  // Non-cumulativity is what makes `.tpe` canonical enough for implicit projection — the level a
+  // spec reads is the only level the argument can carry.
   def checkFits(actual: Value, expected: Value): Unit =
-    if (!ValueEquivalence.defEq(actual, expected) && !sortLeq(actual, expected))
+    if (!ValueEquivalence.defEq(actual, expected))
       throw TypeMismatch(expected, actual)
 
   def checkType(value: Value, tyVal: Value): Unit =
@@ -85,17 +79,6 @@ object TypeChecker {
     }
   }
 
-  private[raccoonlang] def constrainFits(actual: Value, expected: Value, eqStore: EqStore): EqStore =
-    ValueEquivalence.tryUnify(actual, expected, eqStore, ValueEquivalence.UnifyMode.Solve) match {
-      case Right(next) => next
-      case Left(_) =>
-        checkFits(ValueOps.materialize(actual, eqStore), ValueOps.materialize(expected, eqStore))
-        eqStore
-    }
-
-  private def checkArgFits(actual: Value, expectedTy: Value, eqStore: EqStore): EqStore =
-    constrainFits(actual.tpe, expectedTy, eqStore)
-
   private def checkTermFits(checked: CheckedTerm, expectedTy: Value): CheckedTerm = {
     checkType(checked.value, expectedTy)
     CheckedTerm(Value.ascribe(checked.value, expectedTy), checked.residual)
@@ -119,64 +102,20 @@ object TypeChecker {
       case _: CannotQuoteValue => None
     }
 
-  private def quoteImplicitArg(
-      value: Value,
-      context: TypingContext,
-      eqStore: EqStore,
-      span: Span,
-      name: String
-  ): EA.Term =
-    try
-      ValueQuote.quoteTerm(
-        ValueOps.materialize(value, eqStore),
-        quoteContext(ValueOps.materializeEnv(context.env, eqStore)),
-        span
-      )
-    catch {
-      case e: CannotQuoteValue =>
-        throw e.copy(reason = s"${e.reason} while quoting implicit $name")
+  private def applyHeadName(fnResidual: EA.Term): String =
+    fnResidual match {
+      case EA.Term.GlobalRef(name, _)   => name
+      case EA.Term.LocalRef(ref, _)     => ref.name
+      case _                            => "function"
     }
 
-  private def freshMetaValue(name: String, tpe: Value, eqStore: EqStore): (Value, EqStore) = {
-    val (id, value) = FreshVar.freshValue(name, tpe)
-    (value, eqStore.allow(DepSet(id)))
-  }
-
-  private def freshPlaceholderValue(name: String, tpe: Value, deps: DepSet.Builder): Value = {
-    val (id, value) = FreshVar.freshValue(name, tpe)
-    deps.add(id)
-    value
-  }
-
-  private def refineFromExpectedResult(
-      pi: VPi,
-      binderIdx: Int,
-      calleeEnv: Env[Value],
-      eqStore: EqStore,
-      expected: Value
-  ): EqStore = {
-    val placeholderDepsBuilder = DepSet.newBuilder
-    var probeEnv = calleeEnv
-
-    pi.binders.drop(binderIdx).foreach { binder =>
-      val expectedTy = ValueOps.materialize(Interpreter.evalTypeTerm(binder.ty, probeEnv), eqStore)
-      val placeholder = freshPlaceholderValue(binder.name, expectedTy, placeholderDepsBuilder)
-      probeEnv = BinderOps.bindValue(probeEnv, binder, placeholder)
-    }
-
-    val placeholderDeps = placeholderDepsBuilder.result()
-    try {
-      val next = constrainFits(pi.codomain(probeEnv), expected, eqStore)
-      val invalidSolution =
-        next.subst.exists { case (id, solution) =>
-          !eqStore.subst.contains(id) && solution.synDeps.intersects(placeholderDeps)
-        }
-      if (invalidSolution) eqStore else next
-    } catch {
-      case _: TypeMismatch | _: UnificationFailed => eqStore
-    }
-  }
-
+  /**
+   * Application checking without unification: callers supply exactly the explicit args; every
+   * implicit binder carries a projection spec (compiled at Pi formation) that re-derives its value
+   * from those args. Elaboration order and verification are separate phases because implicits lead
+   * their forcing args in the telescope: an arg is checked against its binder type only once every
+   * binder that type mentions is known, and all fits are (re)verified in telescope order at the end.
+   */
   private def checkApplyChecked(
       fnValue: Value,
       fnResidual: EA.Term,
@@ -187,70 +126,77 @@ object TypeChecker {
   ): CheckedApply =
     fnValue.tpe match {
       case pi: VPi =>
-        // Telescope zones: [level implicits][other implicits][explicits].
-        // Level implicits are always inferred. Callers supply either just the
-        // explicit args (all implicits inferred) or all non-level args.
-        val numImplicit = pi.binders.count(_.isImplicit)
-        val numExplicit = pi.binders.length - numImplicit
-        val numFillable = numImplicit - pi.numLevelParams
-        val implicitsSupplied =
-          if (providedArgs.length == numExplicit) false
-          else if (providedArgs.length == numExplicit + numFillable) true
-          else {
-            val alt = Option.when(numFillable > 0)(numExplicit + numFillable)
-            throw ArityMismatch(numExplicit, providedArgs.length, Some(span), alt)
-          }
+        val binders = pi.binders
+        val numExplicit = binders.count(!_.isImplicit)
+        if (providedArgs.length != numExplicit)
+          throw ArityMismatch(numExplicit, providedArgs.length, Some(span))
 
-        val args = Vector.newBuilder[Value]
-        val residualArgs = Vector.newBuilder[Either[(String, Value), EA.Term]]
-        var calleeEnv = pi.env
-        var eqStore = EqStore.empty
-        var providedIdx = 0
-
-        pi.binders.zipWithIndex.foreach { case (binder, binderIdx) =>
-          val isLevelBinder = binderIdx < pi.numLevelParams
-          val consumesArg = !binder.isImplicit || (implicitsSupplied && !isLevelBinder)
-          val (arg, residualArg) =
-            if (!consumesArg) {
-              val expectedTy = ValueOps.materialize(Interpreter.evalTypeTerm(binder.ty, calleeEnv), eqStore)
-              val (value, nextEq) = freshMetaValue(binder.name, expectedTy, eqStore)
-              eqStore = nextEq
-              (value, Left(binder.name -> value))
-            } else {
-              val evaluatedTy = ValueOps.materialize(Interpreter.evalTypeTerm(binder.ty, calleeEnv), eqStore)
-              val expectedTy = expectedResult match {
-                // Probing the expected result can only sharpen this binder's type when it
-                // still mentions unsolved implicit metas.
-                case Some(expected) if evaluatedTy.synDeps.intersects(eqStore.refinable) =>
-                  eqStore = refineFromExpectedResult(pi, binderIdx, calleeEnv, eqStore, expected)
-                  ValueOps.materialize(evaluatedTy, eqStore)
-                case _ => evaluatedTy
-              }
-              val checked = providedArgs(providedIdx).check(expectedTy, context)
-              providedIdx += 1
-              eqStore = checkArgFits(checked.value, expectedTy, eqStore)
-              assertNonRawRecursive(checked.value)
-              (checked.value, Right(checked.residual))
+        // Implicit telescope indices grouped by the provided arg their spec projects from. Specs
+        // always root at a non-implicit binder, so every implicit lands during the arg walk below.
+        val specRoots: Map[Int, Vector[Int]] =
+          binders.zipWithIndex
+            .collect {
+              case (binder, idx) if binder.isImplicit =>
+                val spec = binder.projection.getOrElse(
+                  throw WTF(s"Implicit binder ${binder.name} has no projection spec", Some(span))
+                )
+                spec.rootArgIdx -> idx
             }
+            .groupMap(_._1)(_._2)
 
-          calleeEnv = BinderOps.bindValue(calleeEnv, binder, arg)
-          args += arg
-          residualArgs += residualArg
+        val known = new Array[Value](binders.length)
+        val checkedResiduals = Vector.newBuilder[EA.Term]
+        var providedValues = Vector.empty[Value]
+        var knownEnv = pi.env
+        var unknownRefs = binders.map(_.localRef).toSet
+
+        def land(idx: Int, value: Value): Unit = {
+          known(idx) = value
+          knownEnv = BinderOps.bindValue(knownEnv, binders(idx), value)
+          unknownRefs -= binders(idx).localRef
         }
 
-        expectedResult.foreach { expected =>
-          eqStore = constrainFits(pi.codomain(calleeEnv), expected, eqStore)
+        var explicitIdx = 0
+        binders.zipWithIndex.foreach { case (binder, idx) =>
+          if (!binder.isImplicit) {
+            // The binder type is evaluable only when every telescope ref it mentions is already
+            // known; otherwise the arg is synthesized and verified in the final pass.
+            val checked =
+              if (CapturedRefs.mentions(binder.ty, unknownRefs))
+                providedArgs(explicitIdx).synthArg(context)
+              else
+                providedArgs(explicitIdx).check(Interpreter.evalTypeTerm(binder.ty, knownEnv), context)
+            assertNonRawRecursive(checked.value)
+            land(idx, checked.value)
+            checkedResiduals += checked.residual
+            providedValues :+= checked.value
+            specRoots.getOrElse(explicitIdx, Vector.empty).foreach { implicitIdx =>
+              Projection.project(binders(implicitIdx).projection.get, providedValues) match {
+                case Right(value) => land(implicitIdx, value)
+                case Left(reason) =>
+                  throw ImplicitReconstructionFailed(
+                    binders(implicitIdx).name,
+                    applyHeadName(fnResidual),
+                    reason,
+                    Some(span)
+                  )
+              }
+            }
+            explicitIdx += 1
+          }
         }
 
-        val finalArgs = args.result().map(arg => ValueOps.materialize(arg, eqStore))
-        val finalResidualArgs = residualArgs.result().map {
-          case Left((name, value)) => quoteImplicitArg(value, context, eqStore, span, name)
-          case Right(term)         => term
-        }
-        val residual = EA.Term.App(fnResidual, finalResidualArgs, span)
+        // Verification pass: with the full telescope known, every binder type is evaluable in
+        // order; each arg (provided or projected) must fit it and is bound ascribed. Projection
+        // was only a choice — this pass is what makes the application well-typed.
+        val calleeEnv = BinderOps.checkAndInstantiate(binders, pi.env, binders.indices.map(known).toVector)
+        expectedResult.foreach(expected => checkFits(pi.codomain(calleeEnv), expected))
+
+        val finalArgs = binders.map(binder => calleeEnv(binder.localRef))
+        val residual = EA.Term.App(fnResidual, checkedResiduals.result(), span)
         val rawValue = Interpreter.evalApply(fnValue, finalArgs)
         val value = expectedResult match {
-          case Some(expected) => Value.ascribe(rawValue, ValueOps.materialize(expected, eqStore))
+          case Some(expected) => Value.ascribe(rawValue, expected)
           case None           => rawValue
         }
         CheckedApply(value, residual)
@@ -264,38 +210,38 @@ object TypeChecker {
       case CA.Term.LocalRef(ref, span)   => EA.Term.LocalRef(ref, span)
     }
 
-  private def checkPi(pi: CA.Term.Pi, context: TypingContext): CheckedPi = {
-    // Telescope discipline (zones + implicit prefix) is enforced by BinderOps.toVBinders.
-    val checkedBinders = BinderOps.toVBinders(pi.binders, context)
+  private def checkPi(pi: CA.Term.Pi, context: TypingContext, familyParams: Int = 0): CheckedPi = {
+    // Implicit legality (forced-by-later-binders) and projection specs come from BinderOps.toVBinders.
+    val checkedBinders = BinderOps.toVBinders(pi.binders, context, familyParams)
     val vBinders = checkedBinders.vBinders
     val binderContext = checkedBinders.context
-    val binderEnv = binderContext.env
     val checkedOut = checkTypeTerm(pi.out, binderContext)
     val outV = checkedOut.value
-    val freshArgs = vBinders.map(binder => binderEnv(binder.localRef))
-    val classifier =
-      if (isPropValuedType(outV)) PropTpe
-      else {
-        getUniverse(outV) match {
-          case VSort(outLevel) =>
-            val domLevels: Vector[Level] = freshArgs
-              .map(v => getUniverse(v.tpe))
-              .collect { case VSort(level) => level }
-
-            VSort(Level.max(domLevels :+ outLevel))
-        }
-      }
     val checkedPi =
       EA.Term.Pi(
         checkedBinders.elabBinders,
         checkedOut.residual,
-        classifier,
-        checkedBinders.numLevelParams,
         pi.span,
         pi.span.nodeId
       )
-    CheckedPi(evalPi(checkedPi, context.env, vBinders), binderContext, outV, checkedPi)
+    val vpi = evalPi(checkedPi, context.env, vBinders)
+    // Force the classifier at declaration: Interpreter.piClassifier IS the universe validation
+    // (NotAType on a bad domain or codomain), memoized by the lazy val — one home for the rule.
+    vpi.tpe
+    CheckedPi(vpi, binderContext, outV, checkedPi)
   }
+
+  /** Constructor telescopes route through here so unforced family params (the leading
+    * `familyParams` binders) get demoted instead of rejected; see Projection.compile.
+    */
+  private[raccoonlang] def getConstructorType(term: CA.TypeTerm, context: TypingContext, familyParams: Int): Value =
+    term match {
+      case pi: CA.Term.Pi =>
+        val checked = checkPi(pi, context, familyParams)
+        assertType(checked.vpi)
+        checked.vpi
+      case other => getType(other, context)
+    }
 
   private[raccoonlang] def checkTypeTerm(
       term: CA.TypeTerm,
@@ -450,25 +396,15 @@ object TypeChecker {
     }
   }
 
-  private def tryInstantiateImplicitOnly(
-      checked: CheckedTerm,
-      expectedTy: Value,
-      context: TypingContext,
-      span: Span
-  ): Option[CheckedTerm] =
-    checked.value.tpe match {
-      case pi: VPi if pi.binders.forall(_.isImplicit) =>
-        try {
-          val app = checkApplyChecked(checked.value, checked.residual, Vector.empty, context, span, Some(expectedTy))
-          Some(CheckedTerm(app.value, app.residual))
-        } catch {
-          case _: TypeMismatch | _: UnificationFailed => None
-        }
-      case _ => None
-    }
-
-  // The implicit-prefix discipline makes this the only eta-adaptation needed for bare polymorphic functions.
-  private def tryInstantiateLeadingImplicits(
+  /**
+   * Eta-adaptation of a bare polymorphic function against an expected Pi with fewer binders:
+   * `let f : Nat -> Nat := id` becomes `fun (x: Nat): Nat => id(x)`, and the inner application
+   * reconstructs the implicits from `x` by projection. Expected Pis may themselves have (forced)
+   * implicit binders — those become implicit binders of the synthetic lambda, reconstructed at its
+   * call sites; only the explicit ones are applied. The synthetic lambda's residual type is the
+   * quoted expected Pi — the one remaining quoting client on the application path.
+   */
+  private def tryInstantiateImplicits(
       checked: CheckedTerm,
       expectedTy: Value,
       context: TypingContext,
@@ -476,17 +412,23 @@ object TypeChecker {
   ): Option[CheckedTerm] =
     (checked.value.tpe, expectedTy) match {
       case (actualPi: VPi, expectedPi: VPi)
-          if actualPi.binders.headOption.exists(_.isImplicit) &&
-            !actualPi.binders.forall(_.isImplicit) =>
+          if actualPi.binders.exists(_.isImplicit) &&
+            actualPi.binders.length > expectedPi.binders.length &&
+            actualPi.binders.count(!_.isImplicit) == expectedPi.binders.count(!_.isImplicit) =>
         expectedPiResidual(expectedTy, context, span).flatMap { residualPi =>
           try {
-            val bodyContext = BinderOps.freshen(expectedPi.binders, context)
-            val bodyEnv = bodyContext.env
+            // Freshen through the expected Pi's own closure — its binder types are syntax valid in
+            // expectedPi.env, not in the caller's env — then expose the fresh binders to the body.
+            val piFreshEnv = BinderOps.freshen(expectedPi)
+            val bodyEnv = expectedPi.binders.foldLeft(context.env) { (env, binder) =>
+              env.putLocal(binder.localRef, piFreshEnv(binder.localRef))
+            }
+            val bodyContext = context.withEnv(bodyEnv)
             val bodyArgs =
-              expectedPi.binders.map { binder =>
-                val value = bodyEnv(binder.localRef)
-                val residual = EA.Term.LocalRef(binder.localRef, binder.ty.span)
-                PendingArg.checked(CheckedTerm(value, residual))
+              expectedPi.binders.collect {
+                case binder if !binder.isImplicit =>
+                  val value = piFreshEnv(binder.localRef)
+                  PendingArg.checked(CheckedTerm(value, EA.Term.LocalRef(binder.localRef, binder.ty.span)))
               }
             val app =
               checkApplyChecked(
@@ -495,13 +437,13 @@ object TypeChecker {
                 bodyArgs,
                 bodyContext,
                 span,
-                Some(expectedPi.codomain(bodyEnv))
+                Some(expectedPi.codomain(piFreshEnv))
               )
             val lam =
               EA.Term.Lam(residualPi, app.residual, span, name = None, recursiveSelf = None, AstNodeId.synthetic())
             Some(CheckedTerm(Interpreter.evalLam(lam, expectedPi, context.env), lam))
           } catch {
-            case _: TypeMismatch | _: UnificationFailed | _: ArityMismatch | _: CannotQuoteValue => None
+            case _: TypeMismatch | _: ImplicitReconstructionFailed => None
           }
         }
 
@@ -535,11 +477,10 @@ object TypeChecker {
       case e: TypeError if e.span.isEmpty => throw e.withSpan(term.span)
     }
 
-  // Adapt a synthesized value to the expected type: instantiate leading implicit binders
-  // (by application or eta-expansion) if that helps, otherwise plain subsumption.
+  // Adapt a synthesized value to the expected type: eta-expand a polymorphic function against a
+  // monomorphic expected Pi if that helps, otherwise plain subsumption.
   private def subsume(checked: CheckedTerm, expectedTy: Value, context: TypingContext, span: Span): CheckedTerm =
-    tryInstantiateImplicitOnly(checked, expectedTy, context, span)
-      .orElse(tryInstantiateLeadingImplicits(checked, expectedTy, context, span))
+    tryInstantiateImplicits(checked, expectedTy, context, span)
       .getOrElse(checkTermFits(checked, expectedTy))
 
   def checkTerm(term: CA.Term, context: TypingContext): CheckedTerm =

@@ -48,11 +48,11 @@ class ProofCollapseTests extends munit.FunSuite {
     }
   }
 
-  test("implicit proof-typed metas are not auto-discharged") {
-    // Witness invariant: a placeholder for a proof-typed implicit stays a refinable meta; a
-    // program that never supplies the proof must still fail rather than have the obligation
-    // silently vanish, even when the proposition is inhabited.
-    assertTypeError[CannotQuoteValue](
+  test("unforced implicit proof params are rejected, never auto-discharged") {
+    // Witness invariant: a proof-typed implicit that no later explicit argument type forces
+    // cannot be reconstructed at call sites, so the def is rejected at declaration; the proof
+    // obligation must never silently vanish, even when the proposition is inhabited.
+    assertTypeError[NonForcedImplicitParam](
       """
         |def useProof {x: Nat}{h: Eq(Nat, x, Nat.zero)} (n: Nat): Eq(Nat, x, Nat.zero) := h
         |
@@ -130,7 +130,7 @@ class ProofCollapseTests extends munit.FunSuite {
     assertTypeError[MissingCase](
       """
         |def oneSided (p: Prop)(hp: p): p := {
-        |  match Or.inl(p, p, hp) returning p with
+        |  match Or.inl(p, hp) returning p with
         |  | Or.inl l => l
         |}
         |""".stripMargin

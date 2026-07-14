@@ -162,7 +162,7 @@ class TypeClassTests extends munit.FunSuite {
           |
           |def natEq : DecEq(Nat) := DecEq.mk(Nat, Bool.true)
           |
-          |def instance wrap {A: Type} [eqA: DecEq(A)]: Wrap(A, eqA) := Wrap.mk(A, eqA, Bool.true)
+          |def instance wrap {A: Type} [eqA: DecEq(A)]: Wrap(A, eqA) := Wrap.mk(eqA, Bool.true)
           |
           |{
           |  derive[Wrap(Nat, natEq)].ok

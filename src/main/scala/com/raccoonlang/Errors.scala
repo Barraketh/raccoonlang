@@ -24,14 +24,9 @@ final case class CannotApplyNonFunction(got: Value, span: Option[Span] = None) e
   val msg: String = s"Cannot apply non-fn type ${got}"
 }
 
-final case class ArityMismatch(expected: Int, got: Int, span: Option[Span] = None, expectedAlt: Option[Int] = None)
-  extends TypeError {
+final case class ArityMismatch(expected: Int, got: Int, span: Option[Span] = None) extends TypeError {
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
-  val msg: String = expectedAlt match {
-    case Some(alt) =>
-      s"Cannot apply function - expected $expected params (or $alt supplying all non-level implicits), got $got"
-    case None => s"Cannot apply function - expected $expected params, got $got"
-  }
+  val msg: String = s"Cannot apply function - expected $expected params, got $got"
 }
 
 final case class UnknownConstructor(ctor: String, inductive: String, span: Option[Span] = None) extends TypeError {
@@ -162,16 +157,21 @@ final case class InvalidConstructorResult(
     s"Constructor $ctor must return $inductive but got $got"
 }
 
-final case class NonLeadingImplicitParam(param: String, span: Option[Span] = None) extends TypeError {
+final case class NonForcedImplicitParam(param: String, span: Option[Span] = None) extends TypeError {
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
   override val msg: String =
-    s"Implicit parameter $param must appear before all explicit and instance parameters in its telescope"
+    s"Parameter $param cannot be implicit: it is not forced by the type of any later non-implicit parameter"
 }
 
-final case class NonLeadingLevelParam(param: String, span: Option[Span] = None) extends TypeError {
+final case class ImplicitReconstructionFailed(
+    param: String,
+    fn: String,
+    reason: String,
+    span: Option[Span] = None
+) extends TypeError {
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
   override val msg: String =
-    s"Implicit Level parameter $param must appear before all other parameters in its telescope"
+    s"Cannot reconstruct implicit argument $param of $fn: $reason"
 }
 
 final case class InvalidInductiveParam(

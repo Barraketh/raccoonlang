@@ -32,11 +32,11 @@ object ValueQuote {
         case ElabAst.Term.LocalRef(ref, refSpan) => inlineLocal(ref, refSpan)
         case ElabAst.Term.App(fn, args, appSpan) =>
           ElabAst.Term.App(inlineAppHead(fn), args.map(inlineTerm), appSpan)
-        case ElabAst.Term.Pi(binders, out, classifier, numLevelParams, piSpan, piNodeId) =>
+        case ElabAst.Term.Pi(binders, out, piSpan, piNodeId) =>
           val nextBinders = binders.map { b =>
             b.copy(ty = inlineTypeTerm(b.ty))
           }
-          ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, numLevelParams, piSpan, piNodeId)
+          ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), piSpan, piNodeId)
         case ElabAst.Term.Body(lets, res, bodySpan) =>
           val nextLets = lets.map { l =>
             ElabAst.Let(l.localRef, l.ty.map(inlineTypeTerm), inlineTerm(l.value), l.span, l.isInstance)
@@ -71,11 +71,11 @@ object ValueQuote {
           }
         case ElabAst.Term.App(fn, args, appSpan) =>
           ElabAst.Term.App(inlineAppHead(fn), args.map(inlineTerm), appSpan)
-        case ElabAst.Term.Pi(binders, out, classifier, numLevelParams, piSpan, piNodeId) =>
+        case ElabAst.Term.Pi(binders, out, piSpan, piNodeId) =>
           val nextBinders = binders.map { b =>
             b.copy(ty = inlineTypeTerm(b.ty))
           }
-          ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), classifier, numLevelParams, piSpan, piNodeId)
+          ElabAst.Term.Pi(nextBinders, inlineTypeTerm(out), piSpan, piNodeId)
       }
 
     def inlineCase(c: ElabAst.Case): ElabAst.Case =
@@ -181,47 +181,30 @@ object ValueQuote {
     if (quotedArgs.isEmpty) fn else ElabAst.Term.App(fn, quotedArgs, span)
   }
 
+  /**
+   * Erased family args are recovered structurally from the stored result type: constructor param
+   * discipline (InductiveChecks.checkConstructorParamDiscipline) forces output param i to be binder
+   * var i, so spine slot i of the family instance *is* family arg i. No unification involved.
+   */
   private def recoverConstructorArgs(
       head: ConstructorHead,
       fields: Vector[Value],
       tpe: Value,
       span: Span
-  ): Vector[Value] =
-    head.tpe match {
-      case pi: VPi =>
-        val expectedFields = head.totalArity - head.numErasedFamilyArgs
-        if (fields.length != expectedFields)
-          throw WTF(s"Constructor ${head.name} stores ${fields.length} args, expected $expectedFields", Some(span))
+  ): Vector[Value] = {
+    val expectedFields = head.totalArity - head.numErasedFamilyArgs
+    if (fields.length != expectedFields)
+      throw WTF(s"Constructor ${head.name} stores ${fields.length} args, expected $expectedFields", Some(span))
 
-        val freshEnv = BinderOps.freshen(pi)
-        val refinable = Value.envDeps(freshEnv) -- Value.envDeps(pi.env)
-        var eqStore = EqStore.empty.allow(refinable)
-        var curEnv = pi.env
-        val args = Vector.newBuilder[Value]
-
-        pi.binders.zipWithIndex.foreach { case (binder, idx) =>
-          val arg =
-            if (idx < head.numErasedFamilyArgs) freshEnv(binder.localRef)
-            else fields(idx - head.numErasedFamilyArgs)
-
-          if (idx >= head.numErasedFamilyArgs) {
-            val expectedTy = Interpreter.evalTypeTerm(binder.ty, curEnv)
-            eqStore = TypeChecker.constrainFits(arg.tpe, expectedTy, eqStore)
-          }
-
-          curEnv = BinderOps.bindValue(curEnv, binder, arg)
-          args += arg
-        }
-
-        eqStore = TypeChecker.constrainFits(pi.codomain(curEnv), tpe, eqStore)
-        args.result().map(arg => ValueOps.materialize(arg, eqStore))
-
-      case _ =>
-        val expectedFields = head.totalArity - head.numErasedFamilyArgs
-        if (fields.length != expectedFields)
-          throw WTF(s"Constructor ${head.name} has non-function type $head", Some(span))
-        fields
-    }
+    if (head.numErasedFamilyArgs == 0) fields
+    else
+      tpe match {
+        case ConstSpine(_, args) if args.length >= head.numErasedFamilyArgs =>
+          args.take(head.numErasedFamilyArgs) ++ fields
+        case other =>
+          throw WTF(s"Constructor ${head.name} result type $other is not a family instance", Some(span))
+      }
+  }
 
   private def quoteLam(lam: VLam, context: QuoteContext, span: Span): ElabAst.Term = {
     (lam.id, lam.body) match {
@@ -285,11 +268,11 @@ object ValueQuote {
     val inliner = new ClosedEnvInliner(pi.env, context)
 
     val quotedBinders = pi.binders.map { b =>
-      ElabAst.Binder(b.localRef, inliner.inlineTypeTerm(b.ty), Span(0, 0), b.isInstance)
+      ElabAst.Binder(b.localRef, inliner.inlineTypeTerm(b.ty), Span(0, 0), b.isInstance, b.isImplicit, b.projection)
     }
 
     OpenedPi(
-      ElabAst.Term.Pi(quotedBinders, quotedOut, pi.tpe, pi.numLevelParams, span, AstNodeId.synthetic()),
+      ElabAst.Term.Pi(quotedBinders, quotedOut, span, AstNodeId.synthetic()),
       freshArgs,
       nextContext
     )

@@ -44,7 +44,7 @@ class QuotientTests extends munit.FunSuite {
       natPrelude +
         """
           |{
-          |  Quot.mk(Nat, Rel, Nat.zero)
+          |  Quot.mk(Rel, Nat.zero)
           |}
           |""".stripMargin
     )
@@ -69,7 +69,7 @@ class QuotientTests extends munit.FunSuite {
           |}
           |
           |{
-          |  Quot.lift(Quot.mk(Nat, Rel, Nat.zero), Nat, fun (x: Nat): Nat => Nat.succ(x), sound)
+          |  Quot.lift(Quot.mk(Rel, Nat.zero), Nat, fun (x: Nat): Nat => Nat.succ(x), sound)
           |}
           |""".stripMargin
     )
@@ -84,7 +84,7 @@ class QuotientTests extends munit.FunSuite {
           |def motive (q: Quot(Nat, Rel)): Prop := True
           |
           |{
-          |  Quot.inductionOn(Quot.mk(Nat, Rel, Nat.zero), motive, fun (a: Nat): motive(Quot.mk(Nat, Rel, a)) => True.intro)
+          |  Quot.inductionOn(Quot.mk(Rel, Nat.zero), motive, fun (a: Nat): motive(Quot.mk(Rel, a)) => True.intro)
           |}
           |""".stripMargin
     )
@@ -104,7 +104,7 @@ class QuotientTests extends munit.FunSuite {
           |def idSound (a: Nat)(b: Nat)(h: Rel(a, b)): Eq(Nat, a, b) := h
           |
           |{
-          |  Quot.liftOn(Quot.mk(Nat, Rel, Nat.zero), Nat, fun (x: Nat): Nat => x, idSound)
+          |  Quot.liftOn(Quot.mk(Rel, Nat.zero), Nat, fun (x: Nat): Nat => x, idSound)
           |}
           |""".stripMargin
     )
@@ -166,19 +166,26 @@ class QuotientTests extends munit.FunSuite {
     )
   }
 
-  test("elaboration solves implicit metas through Quot.mk arguments") {
-    // In Solve mode, decomposing same-head Quot.mk applications is a sound heuristic
-    // (links only need to make the equation true), so x is inferred as Bool.true here.
-    val res = runProgram(
+  test("Quot.mk fields do not force implicit parameters (no projection through soundness-quotiented heads)") {
+    // Quot.mk has noConfusion=false: Quot.sound identifies mk applications with distinct
+    // representatives, so projecting x out of a Quot.mk value appearing in h's index would not
+    // be well-defined on the quotient. The implicit is therefore unforced and the def is
+    // rejected at declaration instead of x being reconstructed from the Quot.mk field.
+    val src =
       natPrelude +
         """
-          |def extract {x: Nat}(h: Eq(Quot(Nat, Rel), Quot.mk(Nat, Rel, x), Quot.mk(Nat, Rel, Nat.zero))): Nat := x
+          |def extract {x: Nat}(h: Eq(Quot(Nat, Rel), Quot.mk(Rel, x), Quot.mk(Rel, Nat.zero))): Nat := x
           |
           |{
-          |  extract(Eq.refl(Quot.mk(Nat, Rel, Nat.zero)))
+          |  extract(Eq.refl(Quot.mk(Rel, Nat.zero)))
           |}
           |""".stripMargin
-    )
-    assertEquals(toShape(res), natZero)
+    LanguageParser.parseProgram(src) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value)
+        intercept[NonForcedImplicitParam] { Interpreter.run(core) }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
+    }
   }
 }

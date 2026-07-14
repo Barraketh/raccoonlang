@@ -7,6 +7,17 @@ object CapturedRefs {
   // This is not lexical free-variable analysis. When a closure is built, refs that are present in the current
   // environment are captures. Refs introduced inside the term being closed over are not present yet and are ignored.
 
+  /** Whether the term mentions any of the given refs. Same non-lexical convention as capture
+    * analysis: refs shadowed inside the term still count, which is conservative for callers asking
+    * "is this type evaluable yet".
+    */
+  def mentions(term: ElabAst.Term, candidates: Set[CoreAst.LocalRef]): Boolean = {
+    val env = candidates.foldLeft(Env.empty[Value]) { case (curEnv, ref) =>
+      curEnv.putLocal(ref, Value.PropTpe)
+    }
+    goTerm(term, env, Set.empty).nonEmpty
+  }
+
   private def addRef(ref: CoreAst.LocalRef, env: Env[Value], refs: Set[CoreAst.LocalRef]): Set[CoreAst.LocalRef] =
     if (env.locals.contains(ref)) refs + ref else refs
 
@@ -25,7 +36,7 @@ object CapturedRefs {
       case Term.LocalRef(ref, _) =>
         addRef(ref, env, refs)
 
-      case Term.Pi(binders, out, _, _, _, _) =>
+      case Term.Pi(binders, out, _, _) =>
         val refsWithBinders = binders.foldLeft(refs) { case (curRefs, b) => goTerm(b.ty, env, curRefs) }
         goTerm(out, env, refsWithBinders)
 

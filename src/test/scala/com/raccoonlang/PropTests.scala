@@ -399,7 +399,7 @@ class PropTests extends munit.FunSuite {
         |}
         |
         |{
-        |  unwrapIdx(Nat.zero, IdxWrap.intro(Nat, Nat.zero))
+        |  unwrapIdx(Nat.zero, IdxWrap.intro(Nat.zero))
         |}
         |""".stripMargin
 

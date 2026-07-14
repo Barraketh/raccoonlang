@@ -125,7 +125,7 @@ class UniverseTests extends munit.FunSuite {
 
   // Downward non-cumulativity is covered by: Type 1 does not fit in Type 0 (let x : Type := Type fails)
 
-  test("Function result at lower universe accepted by higher ascription (up by 2)") {
+  test("Reject lifting: universes are not cumulative (Sort u does not fit Sort (u+2))") {
     val p =
       """
         |inductive Nat : Type
@@ -137,11 +137,11 @@ class UniverseTests extends munit.FunSuite {
         |{ up2(Level.one, Nat) }
         |""".stripMargin
 
-    val res = runProgram(p)
-    // The application stays opaque. Just assert its type is Sort 3.
-    res.tpe match {
-      case Value.VSort(l) => assertEquals(l, Value.Level.succ(Value.Level.succ(Value.Level.one)))
-      case other          => fail(s"Expected result type Sort 3, got: $other")
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[TypeMismatch] { Interpreter.run(core, Prelude.test) }
+      case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }
 

@@ -59,8 +59,54 @@ object Interpreter {
     }
   }
 
+  /**
+   * Runtime arguments carry the checker's ascription discipline (checkApplyChecked's verification
+   * pass): each arg is retyped at its instantiated binder type, so type-directed work inside the
+   * body — implicit reconstruction above all — reads the binder-declared type, never the
+   * argument's construction-site type. The two are always defEq (sorts are not cumulative) but
+   * need not be structurally identical, and projection is structural: this keeps run-world
+   * projection reading exactly the shapes the checker read. Binder types are evaluated against
+   * the Pi's own closure — their syntax is valid there, not in the body env the values are later
+   * bound into.
+   */
+  private def ascribeArgs(fnTpe: VPi, args: Vector[Value]): Vector[Value] = {
+    if (fnTpe.binders.length != args.length) throw ArityMismatch(fnTpe.binders.length, args.length)
+    var tyEnv = fnTpe.env
+    fnTpe.binders.zip(args).map { case (binder, value) =>
+      val ascribed = value match {
+        // Only neutrals carry a rewritable type annotation; skip the binder-type evaluation
+        // for values (sorts, levels) whose ascription is the identity.
+        case _: UpdatableType => Value.ascribe(value, evalTypeTerm(binder.ty, tyEnv))
+        case _                => value
+      }
+      tyEnv = tyEnv.putLocal(binder.localRef, ascribed)
+      ascribed
+    }
+  }
+
   private def getEnvWithArgs(fnTpe: VPi, baseEnv: Env[Value], args: Vector[Value]): Env[Value] =
-    BinderOps.instantiateFull(fnTpe.binders, baseEnv, args)
+    BinderOps.instantiateFull(fnTpe.binders, baseEnv, ascribeArgs(fnTpe, args))
+
+  /**
+   * The universe of a Pi, derived from the env it closed over: max of the binder types' universes
+   * and the codomain's universe, with the impredicative collapse to Prop for Prop-valued codomains.
+   * This replicates what the checker validates at Pi formation, but per instance — a residual Pi
+   * re-evaluated with concrete levels gets the concrete universe, not the declaration-time one.
+   */
+  private def piClassifier(binders: Vector[VBinder], baseEnv: Env[Value], out: ElabAst.TypeTerm): VSort = {
+    val freshEnv = BinderOps.freshen(binders, baseEnv)
+    val outV = evalTypeTerm(out, freshEnv)
+    // Impredicative collapse first: Prop-valued codomains need no domain universe walk.
+    if (TypeChecker.isPropValuedType(outV)) PropTpe
+    else {
+      val VSort(outLevel) = TypeChecker.getUniverse(outV)
+      val domLevels = binders.map { binder =>
+        val VSort(level) = TypeChecker.getUniverse(freshEnv(binder.localRef).tpe)
+        level
+      }
+      VSort(Level.max(domLevels :+ outLevel))
+    }
+  }
 
   def evalPi(pi: ETerm.Pi, env: Env[Value], vBinders: Vector[VBinder]): VPi = {
     val capturedRefs = CapturedRefs.getCapturedRefs(pi, env)
@@ -79,8 +125,7 @@ object Interpreter {
       codomain = env => evalTypeTerm(pi.out, env),
       synDeps.result(),
       id,
-      pi.classifier,
-      pi.numLevelParams
+      classifier0 = () => piClassifier(vBinders, closedEnv, pi.out)
     )
   }
 
@@ -109,7 +154,8 @@ object Interpreter {
 
     fn.tpe match {
       case pi: VPi =>
-        val envWithArgs = getEnvWithArgs(pi, pi.env, vArgs)
+        // Lazy: the VLam branch delegates env construction to runLam.
+        lazy val envWithArgs = getEnvWithArgs(pi, pi.env, vArgs)
         fn match {
           case lam: VLam =>
             runLam(lam, vArgs)
@@ -134,8 +180,46 @@ object Interpreter {
     val vf = evalTerm(fn, env)
     val vArgs = args.map(a => evalTerm(a, env))
     if (vArgs.isEmpty) throw CannotApplyNonFunction(vf.tpe)
-    evalApply(vf, vArgs)
+    evalApply(vf, reconstructImplicits(vf, vArgs, fn.span))
   }
+
+  private def valueName(v: Value): String =
+    v match {
+      case VConst(name, _, _)                 => name
+      case VLam(_, ValueId.Const(name), _)    => name
+      case head: ConstructorHead              => head.name
+      case _                                  => "function"
+    }
+
+  /**
+   * Two-arity dispatch for checked application syntax: quoted residuals (match motives, derive
+   * results) carry full value spines, while source applications carry only the explicit args —
+   * the implicit ones are re-derived here by running their projection specs against the provided
+   * args, exactly as application checking did (Projection.project is the shared implementation).
+   */
+  private def reconstructImplicits(fn: Value, vArgs: Vector[Value], span: Span): Vector[Value] =
+    fn.tpe match {
+      case pi: VPi if pi.binders.exists(_.isImplicit) && vArgs.length != pi.binders.length =>
+        val numExplicit = pi.binders.count(!_.isImplicit)
+        if (vArgs.length != numExplicit) throw ArityMismatch(numExplicit, vArgs.length, Some(span))
+        var provided = 0
+        pi.binders.map { binder =>
+          if (!binder.isImplicit) {
+            val arg = vArgs(provided)
+            provided += 1
+            arg
+          } else {
+            val spec = binder.projection.getOrElse(
+              throw WTF(s"Implicit binder ${binder.name} of ${valueName(fn)} has no projection spec", Some(span))
+            )
+            telescope.Projection.project(spec, vArgs) match {
+              case Right(value) => value
+              case Left(reason) => throw ImplicitReconstructionFailed(binder.name, valueName(fn), reason, Some(span))
+            }
+          }
+        }
+      case _ => vArgs
+    }
 
   def evalLam(l: ETerm.Lam, vpi: VPi, env: Env[Value]): Value = {
     val capturedRefs = CapturedRefs.getCapturedRefs(l, env)
@@ -154,7 +238,8 @@ object Interpreter {
     lam.body match {
       case LamBody.Native(run, nativeEnv, _) => run(args, nativeEnv)
       case LamBody.Core(term, coreEnv) =>
-        val bodyEnv = getEnvWithArgs(lam.tpe, coreEnv, args)
+        val ascribedArgs = ascribeArgs(lam.tpe, args)
+        val bodyEnv = BinderOps.instantiateFull(lam.tpe.binders, coreEnv, ascribedArgs)
 
         // Update env with recursive reference
         val recurEnv = term.recursiveSelf match {
@@ -164,7 +249,10 @@ object Interpreter {
         val res = evalTerm(term.body, recurEnv)
         res match {
           case u: UpdatableType =>
-            val tpe = lam.tpe.codomain(bodyEnv)
+            // The codomain closure is applied over the Pi's OWN env, not the body env: ascription
+            // can install a ref-compatible Pi whose closure differs from the lambda's captures
+            // (VLam.withTpe), and codomain syntax is only evaluable in its own closure.
+            val tpe = lam.tpe.codomain(BinderOps.instantiateFull(lam.tpe.binders, lam.tpe.env, ascribedArgs))
             Value.ascribe(u, tpe)
           case _ => res
         }

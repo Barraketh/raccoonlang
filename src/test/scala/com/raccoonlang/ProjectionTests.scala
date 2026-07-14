@@ -68,7 +68,7 @@ class ProjectionTests extends munit.FunSuite {
         |def second {A2: Type}{B2: Type} (p: Pair(A2, B2)): B2 := p.snd
         |
         |{
-        |  let p : Pair(Nat, Nat) := Pair.mk(Nat, Nat, Nat.zero, Nat.succ(Nat.zero))
+        |  let p : Pair(Nat, Nat) := Pair.mk(Nat.zero, Nat.succ(Nat.zero))
         |  first(p)
         |}
         |""".stripMargin
@@ -95,7 +95,7 @@ class ProjectionTests extends munit.FunSuite {
         |
         |{
         |  let v : Vec(Nat, Nat.zero) := Vec.nil(Nat)
-        |  let w : WrapIdx(Nat, Nat.zero) := WrapIdx.mk(Nat, Nat.zero, v)
+        |  let w : WrapIdx(Nat, Nat.zero) := WrapIdx.mk(v)
         |  get(Nat, Nat.zero, w)
         |}
         |""".stripMargin
@@ -260,7 +260,7 @@ class ProjectionTests extends munit.FunSuite {
         | | mk (fst: A)(snd: B) : Pair(A, B)
         |
         |// Opaque on purpose
-        |opaque def mkPair (a: Nat)(b: Nat): Pair(Nat, Nat) := Pair.mk(Nat, Nat, a, b)
+        |opaque def mkPair (a: Nat)(b: Nat): Pair(Nat, Nat) := Pair.mk(a, b)
         |
         |def firstOpaque (a: Nat)(b: Nat): Nat := {
         |  let p := mkPair(a, b)
@@ -282,7 +282,7 @@ class ProjectionTests extends munit.FunSuite {
         | | mk (fst: A)(snd: B) : PairU(A, B)
         |
         |// Opaque on purpose
-        |opaque def F : PairU(Type, Type) := PairU.mk(Type, Type, Nat, Nat)
+        |opaque def F : PairU(Type, Type) := PairU.mk(Nat, Nat)
         |
         |def idF (x: F.fst): F.fst := x
         |""".stripMargin
@@ -300,7 +300,7 @@ class ProjectionTests extends munit.FunSuite {
         | | mk (fst: A)(snd: B) : PairU(A, B)
         |
         |// Opaque on purpose
-        |opaque def F : PairU(Type, Type) := PairU.mk(Type, Type, Nat, Nat)
+        |opaque def F : PairU(Type, Type) := PairU.mk(Nat, Nat)
         |
         |struct UsesF : Type
         | | mk (x: F.fst) : UsesF
@@ -332,8 +332,8 @@ class ProjectionTests extends munit.FunSuite {
         |
         |def choose (n: Nat): Pair(Nat, Nat) := {
         |  match step(n) returning Pair(Nat, Nat) with
-        |  | Nat.zero => Pair.mk(Nat, Nat, Nat.zero, Nat.zero)
-        |  | Nat.succ k => Pair.mk(Nat, Nat, Nat.succ(k), k)
+        |  | Nat.zero => Pair.mk(Nat.zero, Nat.zero)
+        |  | Nat.succ k => Pair.mk(Nat.succ(k), k)
         |}
         |
         |def fstChoose (n: Nat): Nat := {

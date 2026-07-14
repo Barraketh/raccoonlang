@@ -7,8 +7,7 @@ object BinderOps {
   final case class CheckedBinders(
       vBinders: Vector[VBinder],
       elabBinders: Vector[ElabAst.Binder],
-      context: TypingContext,
-      numLevelParams: Int
+      context: TypingContext
   )
 
   def freshen(binders: Vector[VBinder], baseEnv: Env[Value]): Env[Value] = {
@@ -46,45 +45,49 @@ object BinderOps {
       case _ => (Vector.empty, head.tpe)
     }
 
+  /**
+   * Check a telescope's binder types and compile the implicit projection specs (Projection.compile).
+   * Every implicit binder must be forced by later non-implicit binders; the leading `familyParams`
+   * binders of a constructor telescope are demoted to explicit instead of erroring when unforced.
+   */
   def toVBinders(
       binders: Vector[CoreAst.Binder],
-      baseContext: TypingContext
+      baseContext: TypingContext,
+      familyParams: Int = 0
   ): CheckedBinders = {
-    val vBinders = Vector.newBuilder[VBinder]
-    val checkedBinders = Vector.newBuilder[ElabAst.Binder]
     var context = baseContext
-
-    // Telescope discipline: binders come in three zones, in order —
-    // [implicit Level binders][other implicit binders][explicit binders].
-    val LevelZone = 0
-    val ImplicitZone = 1
-    val ExplicitZone = 2
-    var zone = LevelZone
-    var numLevelParams = 0
-
-    binders.foreach { binder =>
+    val checkedTys = binders.map { binder =>
       val checkedTy = TypeChecker.checkTypeTerm(binder.ty, context)
       TypeChecker.assertType(checkedTy.value)
-
-      val binderZone =
-        if (!binder.isImplicit) ExplicitZone
-        else if (checkedTy.value == Value.LevelTpe) LevelZone
-        else ImplicitZone
-      if (binderZone < zone) {
-        if (binderZone == LevelZone) throw NonLeadingLevelParam(binder.name, Some(binder.span))
-        else throw NonLeadingImplicitParam(binder.name, Some(binder.span))
-      }
-      zone = binderZone
-      if (binderZone == LevelZone) numLevelParams += 1
-
-      val checkedBinder = ElabAst.Binder(binder.localRef, checkedTy.residual, binder.span, binder.isInstance)
-      val vBinder = VBinder(binder.localRef, checkedTy.residual, binder.isImplicit, binder.isInstance)
-      vBinders += vBinder
-      checkedBinders += checkedBinder
-      context = freshen(Vector(vBinder), context)
+      val provisional = VBinder(binder.localRef, checkedTy.residual, binder.isImplicit, binder.isInstance)
+      context = freshen(Vector(provisional), context)
+      checkedTy
     }
 
-    CheckedBinders(vBinders.result(), checkedBinders.result(), context, numLevelParams)
+    val env = context.env
+    val inputs = binders.map { binder =>
+      Projection.BinderInput(binder.name, binder.span, binder.isImplicit, env(binder.localRef))
+    }
+    val compiled = Projection.compile(inputs, familyParams)
+
+    val vBinders = Vector.newBuilder[VBinder]
+    val checkedBinders = Vector.newBuilder[ElabAst.Binder]
+    binders.indices.foreach { idx =>
+      val binder = binders(idx)
+      val residualTy = checkedTys(idx).residual
+      val result = compiled(idx)
+      vBinders += VBinder(binder.localRef, residualTy, result.isImplicit, binder.isInstance, result.projection)
+      checkedBinders += ElabAst.Binder(
+        binder.localRef,
+        residualTy,
+        binder.span,
+        binder.isInstance,
+        result.isImplicit,
+        result.projection
+      )
+    }
+
+    CheckedBinders(vBinders.result(), checkedBinders.result(), context)
   }
 
   def instantiateFull(binders: Vector[VBinder], baseEnv: Env[Value], args: Vector[Value]): Env[Value] = {
@@ -94,6 +97,7 @@ object BinderOps {
       bindValue(curEnv, binder, value)
     }
   }
+
 
   def checkAndInstantiate(
       binders: Vector[VBinder],
@@ -108,7 +112,7 @@ object BinderOps {
   }
 
   def toVBinder(binder: ElabAst.Binder): VBinder =
-    VBinder(binder.localRef, binder.ty, isImplicit = false, binder.isInstance)
+    VBinder(binder.localRef, binder.ty, binder.isImplicit, binder.isInstance, binder.projection)
 
   private def freshenBinder(env: Env[Value], binder: VBinder): Env[Value] = {
     val expectedTy = Interpreter.evalTypeTerm(binder.ty, env)

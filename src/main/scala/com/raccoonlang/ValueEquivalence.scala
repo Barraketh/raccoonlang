@@ -297,7 +297,7 @@ object ValueEquivalence {
 
     private def tryLinkVar(v: Var, other: Value, meta: EqStore, ctx: Ctx): Result = {
       val m1 =
-        if (!v.tpe.synDeps.intersects(meta.refinable) && TypeChecker.sortLeq(other.tpe, v.tpe)) meta
+        if (!v.tpe.synDeps.intersects(meta.refinable) && DefEq.defEq(other.tpe, v.tpe)) meta
         else
           // Eq is homogeneous, so provably-apart types refute the value equation: propagate as-is.
           tryUnify(v.tpe, other.tpe, meta, ctx) match {

@@ -182,7 +182,7 @@ object InductiveChecks {
         if (allBinders.isEmpty) ctor.resultTy
         else Term.Pi(allBinders, ctor.resultTy, ctor.span)
 
-      val fullType = TypeChecker.getType(fullTypeTerm, curContext)
+      val fullType = TypeChecker.getConstructorType(fullTypeTerm, curContext, decl.header.params.length)
       curContext.putGlobal(
         ctor.canonicalName,
         ConstructorHead(ctor.canonicalName, decl.header.params.length, allBinders.length, fullType)
@@ -267,7 +267,8 @@ object InductiveChecks {
 
     decl.ctors.foreach { ctor =>
       val allConstructorBinders = constructorBinders(header, ctor)
-      val checkedBinders = BinderOps.toVBinders(allConstructorBinders, checkContextWithInductive)
+      val checkedBinders =
+        BinderOps.toVBinders(allConstructorBinders, checkContextWithInductive, familyParams = header.params.length)
       val binders = checkedBinders.vBinders
       val contextWithBinders = checkedBinders.context
       val envWithBinders = contextWithBinders.env
@@ -337,6 +338,27 @@ object InductiveChecks {
     // Only after all constructor checks succeed do we add the decl to the environments.
     val nextCheckContext = installInductive(decl, worlds.checkContext, inductiveHeadCheck)
     val nextRunContext = installInductive(decl, worlds.runContext, inductiveHeadRun)
+
+    // Demotion (forced-vs-unforced) is recomputed per world from world-local values, and the
+    // residual/value contract requires both worlds to agree on every constructor's arity. The
+    // computation is deterministic on structurally equal telescopes, so a mismatch here means a
+    // cross-world value divergence upstream — fail loudly instead of misapplying residuals later.
+    def implicitFlags(context: TypingContext, ctorName: String): Vector[Boolean] =
+      context.env(ctorName) match {
+        case head: ConstructorHead =>
+          head.tpe match {
+            case pi: VPi => pi.binders.map(_.isImplicit)
+            case _       => Vector.empty
+          }
+        case _ => Vector.empty
+      }
+    decl.ctors.foreach { ctor =>
+      if (implicitFlags(nextCheckContext, ctor.canonicalName) != implicitFlags(nextRunContext, ctor.canonicalName))
+        throw WTF(
+          s"Constructor ${ctor.canonicalName}: implicit telescopes disagree between check and run worlds",
+          Some(ctor.span)
+        )
+    }
 
     Worlds(nextCheckContext, nextRunContext)
   }

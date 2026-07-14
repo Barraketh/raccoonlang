@@ -66,9 +66,29 @@ nothing at all (it is a choice).
 - A Pi is impredicatively in `Prop` iff its **codomain is a proposition** (`getUniverse(out) ==
   Prop`). The sort `Prop` as codomain does NOT qualify: `(A: Type) -> Prop : Sort 2`. Conflating
   these made predicates proof-irrelevant → False (case law §7.4).
-- Otherwise a Pi lives in `Sort(max(dom sorts, codomain sort))`.
-- Telescopes are zoned `[implicit Levels][other implicits][explicits]` (`numLevelParams` recorded on
-  Pi); call sites supply all non-level implicits or none; level implicits are always inferred.
+- Otherwise a Pi lives in `Sort(max(dom sorts, codomain sort))`. The classifier is never stored in
+  checked syntax — it is env-dependent for level-polymorphic telescopes, so each `VPi` instance
+  derives it lazily (`Interpreter.piClassifier`).
+- **Forced implicits** (single call form): a binder may be implicit only if it is *forced* —
+  recoverable by structural projection from the type of a later non-implicit binder
+  (`telescope/Projection.scala`; positions: the whole type, rigid-constant spine args,
+  no-confusion constructor fields in indices, `Sort → level`, single-atom `u+k` levels,
+  independent Pi domains, non-dependent Pi codomains; saturating through forced implicits' own
+  types). Unforced ⇒ `NonForcedImplicitParam`; in constructor telescopes unforced implicits demote
+  to explicit instead (rightmost-first). Call sites supply exactly the explicit args; implicits are
+  never written and are reconstructed by running the compiled projection specs — at application
+  checking and again at residual evaluation (checked `App`s carry only explicit args). Projection
+  is a *choice*: the checker re-verifies every argument against its instantiated binder type, so
+  soundness never rests on injectivity of the projected positions. Coherence: runtime argument
+  binding ascribes args to their binder types exactly as the checker's verification pass does
+  (`Interpreter.ascribeArgs`), so run-world projection reads the same shapes the checker read.
+- **Universes are NOT cumulative** (Lean-style): `checkFits` is defEq-only; there is no `sortLeq`
+  subsumption. `Sort(1)` does not fit a `Sort(2)` binder. Non-cumulativity is load-bearing for
+  forced implicits: it makes a value's `.tpe` canonical up to defEq at exactly one sort, so the
+  level a projection spec reads is the only level the argument can carry (the earlier cumulative
+  regime let check world and run world project *different* levels from the same argument —
+  a checked equation `g(Nat) = 2` evaluated to `1`). Universe *bound* checks on constructor
+  fields (`Level.leq` in InductiveChecks) are a size rule, not subtyping, and remain.
 
 ## 3. Canonicity status
 
@@ -142,7 +162,9 @@ Walk this list before landing any feature that touches equality, universes, or e
   `Prop`? (7.4.)
 - **× planned axioms (§4)**: is the justification a theorem, or a "nobody can currently prove the
   premise" argument? The latter is a finding.
-- **× cumulativity**: does it assume type equality where only `sortLeq` subsumption was checked?
+- **× cumulativity**: none — fits are defEq-only (§2). If a feature wants subsumption between
+  sorts, that is a theory change, not a local convenience; it re-breaks `.tpe` canonicity and with
+  it implicit-projection coherence.
 - **× identity keys**: does it mint values from synthesized/quoted terms? Node-id collisions are an
   open hole; do not extend key-trusted surfaces.
 - **× termination order**: does the feature introduce values that are not well-founded trees —
@@ -165,8 +187,9 @@ the probe into a must-reject test — is the standard procedure for anything on 
    injectivity of arbitrary opaque functions. → `UnifyMode.Solve`/`Invert`, links refused under
    non-invertible frames in Invert. Tests: ConsistencyTests ("opaque function applications do not
    refine their arguments", "stuck opaque-head equations keep the refl case required");
-   QuotientTests ("elaboration solves implicit metas through Quot.mk arguments" — the completeness
-   Solve regained).
+   QuotientTests ("Quot.mk fields do not force implicit parameters" — under forced-implicit
+   projection the same discipline holds at declaration time: no-confusion-less heads are not
+   projection positions).
 3. **Proof-constructor apartness vs irrelevance** (fixed): `Eq(Or(p,p), inl hp, inr hq)` is provable
    by irrelevance, yet reachability pruned refl on the inl/inr clash (irrelevance is gated off when
    the proofs are refinable) — axiom-free `False`. → originally proofs excluded from apartness and

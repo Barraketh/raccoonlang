@@ -47,6 +47,9 @@ object Value {
   def isPropositionType(tpe: Value): Boolean =
     tpe match {
       case PropTpe => false
+      // Impredicativity: a Pi is a proposition exactly when its codomain is Prop-valued. Answered
+      // via the dedicated lazy val so proof-collapse checks skip the full classifier computation.
+      case pi: VPi => pi.isPropValued
       case tpe     => tpe.tpe == PropTpe
     }
 
@@ -65,13 +68,14 @@ object Value {
    *     hiding it inside a `VProof` would disable termination checking for recursive proofs.
    */
   def collapseIfProof(value: Value): Value =
-    if (!isPropositionType(value.tpe)) value
-    else
-      value match {
-        case _: VProof | _: Var | _: ConstructorHead => value
-        case VLam(_, _, LamBody.Native(_, _, true))  => value
-        case _                                       => VProof(value.tpe, value)
-      }
+    value match {
+      // A Pi's own type is a sort, never a proposition — skip without forcing its lazy classifier.
+      case _: VPi                                  => value
+      case _ if !isPropositionType(value.tpe)      => value
+      case _: VProof | _: Var | _: ConstructorHead => value
+      case VLam(_, _, LamBody.Native(_, _, true))  => value
+      case _                                       => VProof(value.tpe, value)
+    }
 
   /**
    * Collapse a freshened *rigid* binder: the bound hypothesis is its own witness
@@ -215,33 +219,43 @@ object Value {
       localRef: CoreAst.LocalRef,
       ty: ElabAst.TypeTerm,
       isImplicit: Boolean = false,
-      isInstance: Boolean = false
+      isInstance: Boolean = false,
+      projection: Option[telescope.Projection.Spec] = None
   ) {
     def name: String = localRef.name
   }
 
-  // numLevelParams: the telescope is zoned [level implicits][other implicits][explicits];
-  // the first numLevelParams binders are the implicit Level binders.
+  // The classifier is a thunk, not a stored sort: a Pi's universe depends on the env it is
+  // evaluated in (level-polymorphic binder types), so residuals carry no classifier and each VPi
+  // instance derives its own from its binders and codomain (Interpreter.piClassifier).
   case class VPi(
       env: Env[Value],
       binders: Vector[VBinder],
       codomain: Env[Value] => Value,
       synDeps: DepSet,
       id: ValueId,
-      tpe: VSort,
-      numLevelParams: Int
+      classifier0: () => VSort
   ) extends Value
     with UpdatableType {
     require(binders.nonEmpty, "VPi requires at least one binder")
-    require(
-      numLevelParams >= 0 && numLevelParams <= binders.length,
-      "VPi level parameter count must be within the telescope"
-    )
+
+    override lazy val tpe: VSort = classifier0()
+
+    /**
+     * Whether this Pi is itself a proposition — by impredicativity, exactly when its codomain is
+     * Prop-valued, which is also exactly when the classifier is Prop. Kept separate from `tpe` so
+     * the proof-collapse checks that run on every lambda creation and env binding need only a
+     * codomain evaluation, not the per-binder universe walk of the full classifier.
+     */
+    lazy val isPropValued: Boolean = {
+      val freshEnv = telescope.BinderOps.freshen(binders, env)
+      Value.isPropositionType(codomain(freshEnv))
+    }
 
     override def toString: String = "VPi"
 
     override def withTpe(tpe: Value): Value = tpe match {
-      case u: VSort => this.copy(tpe = u)
+      case u: VSort => this.copy(classifier0 = () => u)
       case _        => throw WTF(s"Cannot update Pi type to $tpe")
     }
   }

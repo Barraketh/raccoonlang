@@ -122,14 +122,11 @@ class ValueOpsTests extends munit.FunSuite {
       _ => valueType,
       captured.synDeps,
       ValueId.LocalId(nodeId(1), Vector(captured)),
-      typeToTypeClassifier,
-      numLevelParams = 0
+      () => typeToTypeClassifier
     )
     val piTerm = ETerm.Pi(
       Vector(ElabAst.Binder(argRef, typeRef, span)),
       typeRef,
-      typeToTypeClassifier,
-      numLevelParams = 0,
       span,
       nodeId = AstNodeId.synthetic()
     )
@@ -168,14 +165,11 @@ class ValueOpsTests extends munit.FunSuite {
       _ => valueType,
       DepSet.empty,
       ValueId.LocalId(nodeId(1), Vector.empty),
-      typeToTypeClassifier,
-      numLevelParams = 0
+      () => typeToTypeClassifier
     )
     val piTerm = ETerm.Pi(
       Vector(ElabAst.Binder(argRef, typeRef, span)),
       typeRef,
-      typeToTypeClassifier,
-      numLevelParams = 0,
       span,
       nodeId = AstNodeId.synthetic()
     )
@@ -201,8 +195,6 @@ class ValueOpsTests extends munit.FunSuite {
     val piTerm = ETerm.Pi(
       Vector(ElabAst.Binder(argRef, typeRef, span)),
       typeRef,
-      typeToTypeClassifier,
-      numLevelParams = 0,
       span,
       nodeId = AstNodeId.synthetic()
     )

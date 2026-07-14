@@ -70,13 +70,17 @@ object ValueOps {
         case other    => throw NotAType(other)
       }
 
-    private def materializePi(pi: VPi)(implicit eqStore: EqStore): VPi =
+    private def materializePi(pi: VPi)(implicit eqStore: EqStore): VPi = {
+      // The classifier stays lazy: force the original thunk only on demand, then rewrite solved
+      // metas under this (immutable) store.
+      val store = eqStore
       pi.copy(
         env = materializeEnv(pi.env),
         synDeps = materializeDeps(pi.synDeps),
         id = materializeId(pi.id),
-        tpe = materializeUniverse(pi.tpe)
+        classifier0 = () => materializeUniverse(pi.tpe)(store)
       )
+    }
 
     private def materializeId(id: ValueId)(implicit eqStore: EqStore): ValueId =
       id match {

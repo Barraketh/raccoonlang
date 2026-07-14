@@ -119,8 +119,8 @@ class MatchExhaustivenessTests extends munit.FunSuite {
         |
         |def keepWrap (A: Type)(w: Wrap(A)): Wrap(A) := {
         |  match w with
-        |  | Wrap.left x => Wrap.left(A, x)
-        |  | Wrap.right x => Wrap.right(A, x)
+        |  | Wrap.left x => Wrap.left(x)
+        |  | Wrap.right x => Wrap.right(x)
         |}
         |
         |""".stripMargin

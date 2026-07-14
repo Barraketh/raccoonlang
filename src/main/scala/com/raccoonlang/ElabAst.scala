@@ -1,7 +1,5 @@
 package com.raccoonlang
 
-import com.raccoonlang.Value.VSort
-
 // Checked AST. Instance search expressions have already been resolved, and all local names are CoreAst.LocalRefs.
 object ElabAst {
   sealed trait Ast {
@@ -23,22 +21,16 @@ object ElabAst {
 
     final case class App(fn: Term, args: Vector[Term], span: Span) extends Term with TypeTerm
 
-    // numLevelParams: the telescope is zoned [level implicits][other implicits][explicits];
-    // the first numLevelParams binders are the implicit Level binders.
+    // No classifier field: a Pi's universe is env-dependent (level-polymorphic binder types), so
+    // it is derived at evaluation time (Interpreter.piClassifier), never baked into the residual.
     final case class Pi(
         binders: Vector[Binder],
         out: TypeTerm,
-        classifier: VSort,
-        numLevelParams: Int,
         span: Span,
         nodeId: AstNodeId
     ) extends Term
       with TypeTerm {
       require(binders.nonEmpty, "Pi requires at least one binder")
-      require(
-        numLevelParams >= 0 && numLevelParams <= binders.length,
-        "Pi level parameter count must be within the telescope"
-      )
     }
 
     final case class Body(lets: Vector[Let], res: Term, span: Span) extends Term
@@ -61,11 +53,15 @@ object ElabAst {
     ) extends Term
   }
 
+  // isImplicit binders are never present in checked App syntax: applications carry only the
+  // explicit args, and evaluation reconstructs the implicits by running `projection` against them.
   final case class Binder(
       localRef: CoreAst.LocalRef,
       ty: TypeTerm,
       span: Span,
-      isInstance: Boolean = false
+      isInstance: Boolean = false,
+      isImplicit: Boolean = false,
+      projection: Option[telescope.Projection.Spec] = None
   ) {
     def name: String = localRef.name
 

@@ -323,11 +323,10 @@ object Elaborator {
     val usedNames = (header.binders ++ ctor.binders).map(_.name).toSet
     val selfName = freshGeneratedName("__self", usedNames)
     val selfSpan = header.span
-    // Implicit Level binders are never supplied positionally; the generated self type
-    // supplies all other family binders. The Level test is syntactic, so struct headers
-    // must spell the type as `Level` (aliases are not recognized here).
+    // The generated self type supplies exactly the explicit family binders; implicit ones are
+    // reconstructed by projection when the family application is checked.
     val familyArgs = header.binders.collect {
-      case binder if !(binder.isImplicit && isLevelIdent(binder.ty)) =>
+      case binder if !binder.isImplicit =>
         SA.Term.Ident(binder.name, binder.span)
     }
     val implicitFamilyBinders = header.binders.map(binder => binder.copy(isImplicit = true, isInstance = false))
@@ -383,12 +382,6 @@ object Elaborator {
 
     Some(SA.Command.Namespace(Vector(header.name), selectors, header.span))
   }
-
-  private def isLevelIdent(ty: SA.TypeTerm): Boolean =
-    ty match {
-      case SA.Term.Ident("Level", _) => true
-      case _                         => false
-    }
 
   @tailrec
   private def freshGeneratedName(base: String, used: Set[String], suffix: Int = 0): String = {

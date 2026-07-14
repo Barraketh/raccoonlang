@@ -65,7 +65,7 @@ class ConsistencyTests extends munit.FunSuite {
       """
         |def TrivRel (a: Bool)(b: Bool): Prop := True
         |
-        |def boom (p: Eq(Quot(Bool, TrivRel), Quot.mk(Bool, TrivRel, Bool.true), Quot.mk(Bool, TrivRel, Bool.false))): False := {
+        |def boom (p: Eq(Quot(Bool, TrivRel), Quot.mk(TrivRel, Bool.true), Quot.mk(TrivRel, Bool.false))): False := {
         |  match p returning False with
         |}
         |""".stripMargin
@@ -79,7 +79,7 @@ class ConsistencyTests extends munit.FunSuite {
       """
         |def TrivRel (a: Bool)(b: Bool): Prop := True
         |
-        |def mkInj (x: Bool)(y: Bool)(p: Eq(Quot(Bool, TrivRel), Quot.mk(Bool, TrivRel, x), Quot.mk(Bool, TrivRel, y))): Eq(Bool, x, y) := {
+        |def mkInj (x: Bool)(y: Bool)(p: Eq(Quot(Bool, TrivRel), Quot.mk(TrivRel, x), Quot.mk(TrivRel, y))): Eq(Bool, x, y) := {
         |  match p returning Eq(Bool, x, y) with
         |  | Eq.refl z => Eq.refl(x)
         |}
@@ -97,10 +97,10 @@ class ConsistencyTests extends munit.FunSuite {
         |
         |axiom g (q: Quot(Bool, TrivRel)): Nat
         |
-        |def gEq : Eq(Nat, g(Quot.mk(Bool, TrivRel, Bool.true)), g(Quot.mk(Bool, TrivRel, Bool.false))) :=
+        |def gEq : Eq(Nat, g(Quot.mk(TrivRel, Bool.true)), g(Quot.mk(TrivRel, Bool.false))) :=
         |  congrArg(Quot.sound(Bool.true, Bool.false, TrivRel, True.intro), Nat, g)
         |
-        |def boom (p: Eq(Nat, g(Quot.mk(Bool, TrivRel, Bool.true)), g(Quot.mk(Bool, TrivRel, Bool.false)))): False := {
+        |def boom (p: Eq(Nat, g(Quot.mk(TrivRel, Bool.true)), g(Quot.mk(TrivRel, Bool.false)))): False := {
         |  match p returning False with
         |}
         |""".stripMargin
@@ -162,7 +162,7 @@ class ConsistencyTests extends munit.FunSuite {
         | | inl (left: a) : Or(a, b)
         | | inr (right: b) : Or(a, b)
         |
-        |opaque def getH {p: Prop}(hp: p)(hq: p): Eq(Or(p, p), Or.inl(hp), Or.inr(hq)) := Eq.refl(Or.inl(hp))
+        |opaque def getH {p: Prop}(hp: p)(hq: p): Eq(Or(p, p), Or.inl(p, hp), Or.inr(p, hq)) := Eq.refl(Or.inl(p, hp))
         |
         |def boom {p: Prop}(hp: p)(hq: p): False := {
         |  match getH(hp, hq) returning False with

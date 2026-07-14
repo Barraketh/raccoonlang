@@ -20,7 +20,7 @@ class ValueEquivalenceTests extends munit.FunSuite {
   }
 
   private def pi(captures: Vector[Value], out: Env[Value] => Value, start: Int): VPi =
-    VPi(env, Vector(binder), out, deps(captures: _*), ValueId.LocalId(nodeId(start), captures), typeToTypeClassifier, numLevelParams = 0)
+    VPi(env, Vector(binder), out, deps(captures: _*), ValueId.LocalId(nodeId(start), captures), () => typeToTypeClassifier)
 
   test("Pi unification rejects solutions that depend on fresh binder vars") {
     val hole = FreshVar.freshVar("A", TypeTpe)

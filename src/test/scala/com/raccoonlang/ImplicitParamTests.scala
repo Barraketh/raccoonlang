@@ -70,7 +70,7 @@ class ImplicitParamTests extends munit.FunSuite {
         |}
         |
         |{
-        |  unbox(Box.mk(Nat, Nat.zero))
+        |  unbox(Box.mk(Nat.zero))
         |}
         |""".stripMargin
 
@@ -91,31 +91,46 @@ class ImplicitParamTests extends munit.FunSuite {
         |def len {n: Nat} (v: Vec(Nat, n)): Nat := n
         |
         |{
-        |  len(Vec.cons(Nat, Nat.zero, Vec.nil(Nat), Nat.zero))
+        |  len(Vec.cons(Vec.nil(Nat), Nat.zero))
         |}
         |""".stripMargin
 
     assertEquals(toShape(runProgram(p)), succS(zeroS))
   }
 
-  test("explicit hidden arguments can be supplied positionally") {
-    val p =
+  test("def implicits are reconstructed, never supplied positionally") {
+    val decls =
       """
         |inductive Nat : Type
         | | zero : Nat
         | | succ (_: Nat) : Nat
         |
         |def id {A: Type} (x: A): A := x
-        |
-        |{
-        |  id(Nat, Nat.succ(Nat.zero))
-        |}
         |""".stripMargin
 
-    assertEquals(toShape(runProgram(p)), succS(zeroS))
+    // Old positional supply of the implicit is now an arity error...
+    typeError[ArityMismatch](
+      decls +
+        """
+          |{
+          |  id(Nat, Nat.succ(Nat.zero))
+          |}
+          |""".stripMargin
+    )
+
+    // ...and the implicit is reconstructed from the explicit argument's type.
+    val ok =
+      decls +
+        """
+          |{
+          |  id(Nat.succ(Nat.zero))
+          |}
+          |""".stripMargin
+
+    assertEquals(toShape(runProgram(ok)), succS(zeroS))
   }
 
-  test("implicit binders must be a prefix of their telescope") {
+  test("implicit binder not forced by any later non-implicit binder is rejected") {
     val p =
       """
         |inductive Nat : Type
@@ -124,7 +139,28 @@ class ImplicitParamTests extends munit.FunSuite {
         |axiom bad : Nat -> {A: Type} -> A
         |""".stripMargin
 
-    typeError[NonLeadingImplicitParam](p)
+    typeError[NonForcedImplicitParam](p)
+  }
+
+  test("implicit binders may sit mid-telescope when forced by later binders") {
+    val p =
+      """
+        |inductive Nat : Type
+        | | zero : Nat
+        | | succ (_: Nat) : Nat
+        |
+        |def pick (n: Nat){A: Type}(x: A)(y: A): A := {
+        |  match n returning A with
+        |  | Nat.zero => x
+        |  | Nat.succ p => y
+        |}
+        |
+        |{
+        |  pick(Nat.zero, Nat.zero, Nat.succ(Nat.zero))
+        |}
+        |""".stripMargin
+
+    assertEquals(toShape(runProgram(p)), zeroS)
   }
 
   test("ordinary hidden constructor binders cannot stand in for family params") {
@@ -134,10 +170,13 @@ class ImplicitParamTests extends munit.FunSuite {
         | | mk {B: Type} : Bad(B)
         |""".stripMargin
 
+    // The unforced user-written {B} is rejected at Pi formation, before the uniformity check even
+    // runs (family demotion applies only to synthesized family params). The explicit-(B) variant
+    // of this smuggle is guarded by InductiveCheckTest's NonUniformInductiveParam test.
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[NonUniformInductiveParam] { Interpreter.run(core, Prelude.test) }
+        intercept[NonForcedImplicitParam] { Interpreter.run(core, Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
@@ -180,7 +219,9 @@ class ImplicitParamTests extends munit.FunSuite {
     assertEquals(toShape(runProgram(p)), SConst("Nat"))
   }
 
-  test("annotated let supplies expected type for omitted implicit result") {
+  test("implicit-only axiom has no forcing binder and is rejected") {
+    // Expected-type-driven instantiation is gone, so `arbitrary` could never be
+    // applied; the axiom itself is now rejected at declaration time.
     val p =
       """
         |inductive Nat : Type
@@ -188,17 +229,13 @@ class ImplicitParamTests extends munit.FunSuite {
         | | succ (_: Nat) : Nat
         |
         |axiom arbitrary : {A: Type} -> A
-        |
-        |{
-        |  let z : Nat := arbitrary()
-        |  z
-        |}
         |""".stripMargin
 
-    runProgram(p)
+    typeError[NonForcedImplicitParam](p)
   }
 
-  test("bare implicit-only constructor is instantiated from expected type") {
+  test("unforced constructor family param is demoted to an explicit argument") {
+    // No field of Vec.nil forces A, so A demotes to an explicit arg: Vec.nil(Nat).
     val p =
       """
         |inductive Nat : Type
@@ -210,7 +247,7 @@ class ImplicitParamTests extends munit.FunSuite {
         | | cons {n: Nat} (tail: Vec(A, n)) (head: A) : Vec(A, Nat.succ(n))
         |
         |{
-        |  let xs : Vec(Nat, Nat.zero) := Vec.nil
+        |  let xs : Vec(Nat, Nat.zero) := Vec.nil(Nat)
         |  xs
         |}
         |""".stripMargin
@@ -218,7 +255,7 @@ class ImplicitParamTests extends munit.FunSuite {
     assertEquals(toShape(runProgram(p)), SConst("Vec.nil"))
   }
 
-  test("application expected result refines omitted implicit before checking argument") {
+  test("def implicit is reconstructed by projection from the explicit argument's type") {
     val p =
       """
         |inductive Nat : Type
@@ -232,7 +269,7 @@ class ImplicitParamTests extends munit.FunSuite {
         |def use {A: Type} (v: Vec(A, Nat.zero)): Vec(A, Nat.zero) := v
         |
         |{
-        |  let xs : Vec(Nat, Nat.zero) := use(Vec.nil)
+        |  let xs : Vec(Nat, Nat.zero) := use(Vec.nil(Nat))
         |  xs
         |}
         |""".stripMargin
@@ -277,7 +314,7 @@ class ImplicitParamTests extends munit.FunSuite {
     assertEquals(toShape(runProgram(p)), succS(zeroS))
   }
 
-  test("explicit arguments are checked against binder types before implicit insertion is quoted") {
+  test("explicit arguments are checked against binder types") {
     val p =
       """
         |inductive Nat : Type
@@ -291,14 +328,14 @@ class ImplicitParamTests extends munit.FunSuite {
         |def useNil (v: Vec(Nat, Nat.zero)): Nat := Nat.zero
         |
         |{
-        |  useNil(Vec.nil)
+        |  useNil(Vec.nil(Nat))
         |}
         |""".stripMargin
 
     assertEquals(toShape(runProgram(p)), zeroS)
   }
 
-  test("lambda body and match branches use expected result type for implicit constructors") {
+  test("match branches check constructor results against the def result type") {
     val p =
       """
         |inductive Nat : Type
@@ -315,8 +352,8 @@ class ImplicitParamTests extends munit.FunSuite {
         |
         |def chooseNil (b: Bool): Vec(Nat, Nat.zero) := {
         |  match b with
-        |  | Bool.true => Vec.nil
-        |  | Bool.false => Vec.nil
+        |  | Bool.true => Vec.nil(Nat)
+        |  | Bool.false => Vec.nil(Nat)
         |}
         |
         |{
@@ -327,7 +364,7 @@ class ImplicitParamTests extends munit.FunSuite {
     assertEquals(toShape(runProgram(p)), SConst("Vec.nil"))
   }
 
-  test("implicit Level binders must come before other implicit binders") {
+  test("unused implicit level binder is rejected") {
     val p =
       """
         |inductive Nat : Type
@@ -336,10 +373,10 @@ class ImplicitParamTests extends munit.FunSuite {
         |def bad {A: Type}{u: Level} (x: A): A := x
         |""".stripMargin
 
-    typeError[NonLeadingLevelParam](p)
+    typeError[NonForcedImplicitParam](p)
   }
 
-  test("supplying only some non-level implicits is an arity error") {
+  test("supplying implicit args positionally is an arity error") {
     val p =
       """
         |inductive Nat : Type
@@ -355,8 +392,8 @@ class ImplicitParamTests extends munit.FunSuite {
         |}
         |""".stripMargin
 
-    // Vec.cons's telescope is {u}{A}{n}(tail)(head): callers supply 2 args (all
-    // implicits inferred) or 4 (all non-level implicits supplied), never 3.
+    // Vec.cons's telescope is {u}{A}{n}(tail)(head): callers supply exactly the
+    // 2 explicit args; every implicit is reconstructed.
     typeError[ArityMismatch](p)
   }
 
