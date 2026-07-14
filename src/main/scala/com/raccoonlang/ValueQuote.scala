@@ -315,7 +315,33 @@ object ValueQuote {
     val withValue = quote + (value.key -> term)
     value match {
       case Value.Var(_, id, Value.LevelTpe) => withValue + (Value.Level.mk(id).key -> term)
-      case _                                => withValue
+      case Value.VCtor(_, fields, tpe) =>
+        // An expanded struct binder (StructEta) carries fresh field witnesses with no syntax of
+        // their own; register each as a selector application of the parent term so field vars,
+        // proof fields, and nested expansions quote as projections. Strictly a fallback: fields
+        // whose key already has an entry keep it, and fields with syntax of their own (concrete
+        // data — no fresh vars, not proofs) are skipped entirely.
+        StructEta.eligibleInstance(tpe) match {
+          case Some((inst, info)) =>
+            info.fieldNames.zip(fields).foldLeft(withValue) { case (curQuote, (fieldName, field)) =>
+              val needsProjectionSyntax = field match {
+                case _: Value.VProof => true // the witness may be an unquotable fresh var
+                case _: Value.Var | _: Value.Level | Value.VCtor(_, _, _) => field.synDeps.nonEmpty
+                case _ => false
+              }
+              if (!needsProjectionSyntax || curQuote.contains(field.key)) curQuote
+              else {
+                val fieldTerm = ElabAst.Term.App(
+                  ElabAst.Term.GlobalRef(s"${inst.head.name}.$fieldName", term.span),
+                  Vector(term),
+                  term.span
+                )
+                withQuotedValueInMap(curQuote, field, fieldTerm)
+              }
+            }
+          case None => withValue
+        }
+      case _ => withValue
     }
   }
 }

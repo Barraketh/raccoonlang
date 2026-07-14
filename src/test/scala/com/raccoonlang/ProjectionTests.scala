@@ -290,7 +290,10 @@ class ProjectionTests extends munit.FunSuite {
     typecheckDecls(p)
   }
 
-  test("negative: neutral projection in a constructor field type is rejected conservatively") {
+  test("stuck projection in a constructor field type is transparent to positivity") {
+    // Before struct expansion (StructEta) this was rejected conservatively: F.fst was a blocked
+    // selector match, opaque to the positivity walker. An opaque struct global now publishes in
+    // constructor form, so F.fst is a structured stuck projection the walker can traverse.
     val p =
       """
         |inductive Nat : Type
@@ -308,13 +311,7 @@ class ProjectionTests extends munit.FunSuite {
         |def getX (u: UsesF): F.fst := u.x
         |""".stripMargin
 
-    LanguageParser.parseProgram(p) match {
-      case Success(value, _, _) =>
-        val core = Elaborator.elab(value, Prelude.test)
-        intercept[NonStrictlyPositive] { Interpreter.run(core, Prelude.test) }
-      case err: Failure =>
-        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
-    }
+    typecheckDecls(p)
   }
 
   test("regression: projection from stuck match returning a struct stays neutral") {

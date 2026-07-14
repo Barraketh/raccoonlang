@@ -219,12 +219,15 @@ object InductiveChecks {
     val inductiveType = TypeChecker.getType(ty, env)
 
     val initialPositiveArgs = DepSet.from(0 until header.arity)
+    // etaInfo stays None while this declaration's own constructors are being checked: the ctor
+    // head does not exist yet, so a self-referential field type must not trigger expansion.
     val initialMeta =
       InductiveMeta(
         decl.ctors.map(ctor => ConstructorMeta(ctor.shortName, ctor.canonicalName)),
         decl.header.binders.length,
         decl.isStruct,
-        initialPositiveArgs
+        initialPositiveArgs,
+        etaInfo = None
       )
 
     val provisionalHead = VConst(name, Inductive(initialMeta), inductiveType)
@@ -239,7 +242,7 @@ object InductiveChecks {
       }
     }
 
-    TypeChecker.getType(header.resultTy, envWithFamilyBinders) match {
+    val declaredSort = TypeChecker.getType(header.resultTy, envWithFamilyBinders) match {
       case v: VSort => v
       case other    => throw InductiveTypeNotASort(other, Some(header.resultTy.span))
     }
@@ -260,6 +263,7 @@ object InductiveChecks {
         case _       => Vector.empty[Value]
       }
     var positiveArgs = positiveArgIndexes(familyArgs, familyArgs.map(_.tpe))
+    var hasRecursiveField = false
 
     decl.ctors.foreach { ctor =>
       val allConstructorBinders = constructorBinders(header, ctor)
@@ -308,6 +312,8 @@ object InductiveChecks {
             }
         }
 
+        if (decl.isStruct && !doesNotOccur(recursiveTarget, field.tpe)) hasRecursiveField = true
+
         // 3) Every stored constructor field type must be strictly positive in the inductive
         if (
           !occursPositively(recursiveTarget, field.tpe) || !sameFamilyArgsDoNotContain(name, recursiveTarget, field.tpe)
@@ -325,11 +331,35 @@ object InductiveChecks {
 
     }
 
-    val meta = initialMeta.copy(positiveArgs = positiveArgs)
+    // Eta eligibility (StructEta): declared struct, one constructor, no indices, no recursive
+    // field, and not declared in Prop. NOT "single constructor" alone — that would admit Acc-like
+    // recursive singletons and quotient constructors, exactly what the gate must exclude
+    // (kernel-theory §2 "structure eta"). Declared-Prop structs are excluded because their values
+    // always collapse (and, lacking the Sort-family universe bound, they may store large fields);
+    // sort-polymorphic structs stay eligible — their Prop *instances* are filtered dynamically.
+    // The head is a promise resolved against the installed env: constructor types are checked
+    // against the installed family head, so the head cannot exist before installInductive runs.
+    var installedEnv: Option[Env] = None
+    val etaInfo =
+      if (
+        decl.isStruct && decl.ctors.length == 1 && header.indices.isEmpty && !hasRecursiveField &&
+        declaredSort != PropTpe
+      ) {
+        val ctorName = decl.ctors.head.canonicalName
+        val fieldNames = decl.ctors.head.binders.map(_.name)
+        Some(new StructEtaInfo(fieldNames, () => installedEnv.get(ctorName) match {
+          case h: ConstructorHead => h
+          case other              => throw WTF(s"Struct constructor $ctorName resolved to non-constructor $other")
+        }))
+      } else None
+
+    val meta = initialMeta.copy(positiveArgs = positiveArgs, etaInfo = etaInfo)
 
     val inductiveHead = VConst(name, Inductive(meta), inductiveType)
 
     // Only after all constructor checks succeed do we add the decl to the environment.
-    installInductive(decl, env, inductiveHead)
+    val finalEnv = installInductive(decl, env, inductiveHead)
+    installedEnv = Some(finalEnv)
+    finalEnv
   }
 }

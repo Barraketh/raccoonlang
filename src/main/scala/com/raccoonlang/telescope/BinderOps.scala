@@ -91,10 +91,16 @@ object BinderOps {
     }
   }
 
+  // A rigid binder enters in canonical form: struct-typed binders are the constructor applied to
+  // fresh field witnesses (StructEta — eta holds by representation), prop-typed ones collapse
+  // (the binder is its own witness), everything else is a bare fresh Var.
   private def freshenBinder(env: Env, binder: ElabAst.Binder): Env = {
     val expectedTy = Interpreter.evalTerm(binder.ty, env)
-    val (_, fresh) = FreshVar.freshValue(binder.name, expectedTy)
-    env.putLocal(binder.localRef, Value.collapseBinderWitness(expectedTy, fresh))
+    val witness = StructEta.freshStructWitness(expectedTy).getOrElse {
+      val (_, fresh) = FreshVar.freshValue(binder.name, expectedTy)
+      Value.collapseBinderWitness(expectedTy, fresh)
+    }
+    env.putLocal(binder.localRef, witness)
   }
 
   def bindValue(env: Env, binder: ElabAst.Binder, actual: Value): Env =

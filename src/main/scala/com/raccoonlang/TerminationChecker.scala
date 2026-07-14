@@ -78,8 +78,9 @@ object TerminationChecker {
           checkDecrease(args, nativeEnv)
           val envWithArgs = BinderOps.instantiateFull(vpi.binders, vpi.env, args)
           val resultTy = vpi.codomain(envWithArgs)
-          // A recursive call in a proof-by-recursion produces a proof of the instantiated goal.
-          Value.collapseIfProof(VApp(VConst(name, Symbol, vpi), args, resultTy))
+          // A recursive call in a proof-by-recursion produces a proof of the instantiated goal;
+          // a struct-returning one produces its residual in canonical constructor form.
+          StructEta.expandIfStruct(Value.collapseIfProof(VApp(VConst(name, Symbol, vpi), args, resultTy)))
         },
         bodyEnv,
         isRawRecursive = true

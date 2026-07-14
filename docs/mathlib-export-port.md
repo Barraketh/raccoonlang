@@ -52,7 +52,7 @@ explicit arguments per Raccoon's all-or-none implicit rule.
 | K1 | Higher-order subterm rule | — | **done** (commit 3355563) |
 | K2 | Sealed `Acc`/`WellFounded` primitives | — | spec review |
 | K3 | Native Nat/String literals | — | — |
-| K4 | Primitive projections + structure eta | — | — |
+| K4 | Primitive projections + structure eta | — | **done** |
 | K5 | `imax` levels | M0 stats | decision gate |
 | K6 | Mutual / nested inductives | M0 stats | decision gate |
 | K7 | Axioms: propext, choice | evidence-grades refactor | — |
@@ -89,11 +89,23 @@ decidability-benign). `StrLit` unfolds to `List Char` constructor form on demand
 string ops needed. Without K3, literal-arithmetic proofs are not slow but *infeasible* (unary
 numerals).
 
-**K4. Primitive projections + structure eta.** The export uses `proj` nodes, not recursor
-applications; extend the existing projection support to translate them, and add definitional eta
-for single-constructor non-Prop structures (`s ≡ ⟨s.1, …, s.n⟩`). Required for Mathlib's
-instance-diamond defeq. Standard and decidability-benign; interaction to check: eta vs. proof
-collapse for structures with proof fields (the proof components compare by `VProof` equality).
+**K4. Primitive projections + structure eta — done** (StructEta; kernel-theory §2 "structure
+eta"). Implemented as representation, not conversion rules: every value of an eta-eligible struct
+type (one ctor, no indices, non-recursive, non-Prop instance) is constructor-headed. Binders
+freshen expanded; neutrals — opaque constants, axioms, blocked applications/matches, stuck
+`Quot.lift/ind` — wrap into the constructor of their stuck projections (`StructField`-headed
+applications, defEq by head name + base). Eta is then fieldwise congruence, matches on struct
+scrutinees always fire, and the flagged interaction resolved itself: proof fields collapse at
+projection formation, so `⟨s.val, s.property⟩ ≡ s` lands in `VProof` equality; Prop
+*instantiations* of sort-polymorphic structs collapse wholesale and never expand. Notable
+consequences: opaque-by-default (P1) stays eta-compatible — an opaque instance constant gets eta
+without unfolding its body — and projections of opaque constants are transparent to positivity
+(previously rejected conservatively). Translator note for T1: `proj i` nodes map to `Select` /
+selector application; positional→named field mapping comes from ctor binder order
+(`StructEtaInfo.fieldNames`). Residual gaps for the T4 taxonomy: values created before their
+type is a *known* struct instance stay bare (rigid binders at then-blocked types; neutrals whose
+types reveal only under a later store — expansion is canonical-at-birth by design, see
+kernel-theory §2), and expansion cost on deep bundled-class hierarchies is a P1 measurement item.
 
 **K5. `imax`.** Raccoon's canonical `max(vᵢ+kᵢ, c)` form cannot express `Sort (imax u v)`, and
 translating `imax` as `max` silently reclassifies Prop-instantiations into `Sort u` — proofs stop

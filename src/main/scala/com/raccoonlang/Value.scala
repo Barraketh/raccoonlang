@@ -32,7 +32,12 @@ object Value {
    * (`UpdatableType`) only carry an annotation recorded at creation, and syntax-directed machinery
    * (`evalApply`'s Pi dispatch, universe classification, keys) reads that annotation structurally,
    * so the representative matters. Also the deferred proof-collapse point: the ascription is often
-   * the moment a value's type becomes *known* propositional (proof-collapse.md §3-4).
+   * the moment a value's type becomes *known* propositional (proof-collapse.md §3-4). Struct
+   * expansion (StructEta) deliberately does NOT run here: ascription retypes values that already
+   * circulate, and wrapping one copy while the bare original lives on in envs would leave two
+   * representations that never compare equal. Collapse tolerates that (the ProofEquation mixed
+   * rule relates VProof to bare proof representatives); expansion has no mixed rule by design, so
+   * struct values are canonicalized at creation only.
    */
   def ascribe(value: Value, tpe: Value): Value =
     value match {
@@ -409,16 +414,29 @@ object Value {
 
   final case class ConstructorMeta(shortName: String, canonicalName: String)
 
+  /**
+   * Expansion capability of an eta-eligible struct (StructEta): the field names in constructor
+   * order plus the constructor head. Carried on the meta — inside the type value itself — so
+   * expansion needs no environment (Builtins natives run under empty envs; `Value.ascribe` has
+   * none at all). The head is a promise: its type is checked against the installed family head,
+   * so it cannot exist yet when the meta is built (InductiveChecks wires it right after install).
+   */
+  final class StructEtaInfo(val fieldNames: Vector[String], ctorHead0: () => ConstructorHead) {
+    lazy val ctorHead: ConstructorHead = ctorHead0()
+  }
+
   final case class InductiveMeta(
       constructors: Vector[ConstructorMeta],
       familyArity: Int,
       isStruct: Boolean,
-      positiveArgs: DepSet
+      positiveArgs: DepSet,
+      etaInfo: Option[StructEtaInfo]
   ) {
     require(
       positiveArgs.isEmpty || positiveArgs.max < familyArity,
       "Inductive positive argument indexes must be in range"
     )
+    require(etaInfo.isEmpty || isStruct, "Only structs can be eta-eligible")
 
     lazy val constructorNames: Vector[String] = constructors.map(_.canonicalName)
   }
@@ -426,6 +444,14 @@ object Value {
   sealed trait ConstType
   case class Inductive(meta: InductiveMeta) extends ConstType
   case object Symbol extends ConstType
+
+  /**
+   * Head of a stuck struct projection: `VConst(\"S.field\", StructField(i), _)` applied to its
+   * base. Created only by StructEta on neutral bases; `Interpreter.evalApply` reduces it
+   * structurally (constructor-headed base → stored field), bypassing Pi dispatch. defEq and keys
+   * treat it like any VConst — by name — which is exactly projection congruence.
+   */
+  case class StructField(index: Int) extends ConstType
 
   /**
    * Views over values.

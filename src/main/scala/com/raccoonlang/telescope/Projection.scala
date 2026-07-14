@@ -106,6 +106,9 @@ object Projection {
       head.constType match {
         case Inductive(_) => true
         case Symbol       => true
+        // A stuck projection reduces once its base becomes constructor-headed, so its spine is
+        // not a stable pattern to project from.
+        case StructField(_) => false
       }
 
     def visit(root: Int, steps: Vector[Step], v: Value): Unit =

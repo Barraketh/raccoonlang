@@ -226,7 +226,10 @@ object ValueEquivalence {
           case Left(failed)     => return Left(failed.asStuck)
         }
 
-        val (_, shared) = FreshVar.freshValue(binder1.name, ValueOps.materialize(ty1, curStore))
+        // Struct-typed shared binders enter in canonical constructor form like any rigid binder
+        // (StructEta); prop-typed ones deliberately stay uncollapsed (see ProofEquation).
+        val sharedTy = ValueOps.materialize(ty1, curStore)
+        val shared = StructEta.freshStructWitness(sharedTy).getOrElse(FreshVar.freshValue(binder1.name, sharedTy)._2)
         env1 = BinderOps.bindValue(env1, binder1, shared)
         env2 = BinderOps.bindValue(env2, binder2, shared)
         sharedVars += shared

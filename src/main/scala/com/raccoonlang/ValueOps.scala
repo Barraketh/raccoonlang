@@ -45,7 +45,10 @@ object ValueOps {
           VProof(materialize(p.tpe), materialize(p.witness))
       }
       // Deferred collapse: a type may resolve to a proposition only once its metas solve
-      // (e.g. u := 0); the value collapses at that point (proof-collapse.md §4).
+      // (e.g. u := 0); the value collapses at that point (proof-collapse.md §4). Deferred struct
+      // expansion deliberately does NOT happen here: materialization reaches inside values
+      // (projection bases, thunk envs), and wrapping an interior copy while bare copies circulate
+      // would split the representation with no mixed defEq rule to reunite it (StructEta).
       Value.collapseIfProof(rebuilt)
     }
 

@@ -143,6 +143,15 @@ object Interpreter {
   def evalApply(fn: Value, vArgs: Vector[Value]): Value = {
     require(vArgs.nonEmpty, "evalApply requires at least one argument")
 
+    fn match {
+      // Stuck-projection heads (StructEta) reduce structurally and bypass Pi dispatch: their
+      // recorded type is never consulted, and a resolved base is projected or re-stuck directly.
+      case VConst(_, StructField(idx), _) =>
+        if (vArgs.length != 1) throw ArityMismatch(1, vArgs.length)
+        return StructEta.project(vArgs.head, idx)
+      case _ =>
+    }
+
     fn.tpe match {
       case pi: VPi =>
         // Lazy: the VLam branch delegates env construction to runLam.
@@ -155,12 +164,15 @@ object Interpreter {
             // proof-valued function is a collapsed proof: its application is a proof of the
             // instantiated codomain, with no body to run (proof-collapse.md §5).
             VProof(pi.codomain(envWithArgs), evalApply(p.witness, vArgs))
-          case h: VConst => Value.collapseIfProof(VApp(h, vArgs, pi.codomain(envWithArgs)))
+          case h: VConst =>
+            StructEta.expandIfStruct(Value.collapseIfProof(VApp(h, vArgs, pi.codomain(envWithArgs))))
           case h: ConstructorHead =>
             val resultTy = pi.codomain(envWithArgs)
             Value.collapseIfProof(VCtor(h, Value.constructorStoredArgs(h, vArgs), resultTy))
           case blocker @ Blocker(blockerId) =>
-            Value.collapseIfProof(VBlockedApp(blocker, vArgs, pi.codomain(envWithArgs), blockerId))
+            StructEta.expandIfStruct(
+              Value.collapseIfProof(VBlockedApp(blocker, vArgs, pi.codomain(envWithArgs), blockerId))
+            )
           case _ => throw CannotApplyNonFunction(fn)
         }
       case _ => throw CannotApplyNonFunction(fn.tpe)
@@ -285,7 +297,9 @@ object Interpreter {
           case Blocker(id) => Some(id)
           case _           => None
         }
-        return Value.collapseIfProof(stuckMatchThunk(m, env, matchOutType(m, scrut, env), blockerId))
+        return StructEta.expandIfStruct(
+          Value.collapseIfProof(stuckMatchThunk(m, env, matchOutType(m, scrut, env), blockerId))
+        )
     }
 
     val ctorName = head.name
@@ -333,10 +347,14 @@ object Interpreter {
     val outType = matchOutType(m, scrut, env)
     // Proofs never block-and-resume: the thunk is unblockable.
     def thunk: NeutralThunk = stuckMatchThunk(m, env, outType, None)
+    // A stuck struct-typed large elimination canonicalizes like any stuck match (StructEta);
+    // the Prop-motive witness below needs no expansion (witnesses never flow into comparison),
+    // and a successful subsingleton reduction is a branch value, canonical already.
+    def stuck: Value = StructEta.expandIfStruct(thunk)
 
     if (Value.isPropositionType(outType)) VProof(outType, thunk)
-    else if (m.cases.length == 1) reduceSubsingletonMatch(m.cases.head, scrut, env).getOrElse(thunk)
-    else thunk
+    else if (m.cases.length == 1) reduceSubsingletonMatch(m.cases.head, scrut, env).getOrElse(stuck)
+    else stuck
   }
 
   /**
@@ -390,9 +408,11 @@ object Interpreter {
 
   // Publication collapse (proof-collapse.md §4): a global of propositional type is a proof; the
   // constant itself is the witness, so proofs quote back as a reference to their global name.
+  // Its data-level dual: a symbolic global (opaque def, axiom) of struct type publishes in
+  // constructor form, its fields the stuck projections of the constant (StructEta).
   private def publishedValue(name: String, value: Value, ty: Value): Value =
     if (Value.isPropositionType(ty)) VProof(ty, VConst(name, Symbol, ty))
-    else value
+    else StructEta.expandIfStruct(value)
 
   // A declaration is checked exactly once; the value the checker produced IS the published value.
   // There is no separate run world: once a definition has made it into the env, it is trusted.

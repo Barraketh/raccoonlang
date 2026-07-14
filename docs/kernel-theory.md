@@ -49,6 +49,29 @@ link is a consequence.
   Values the witness invariant keeps uncollapsed (refinable metas, unification's shared Pi
   binders) are covered by the mixed rule `VProof(A) ≡ v ⇔ A ≡ tpe(v)` when `tpe(v)` is a
   proposition.
+- **Structure eta** (definitional): a value of an *eta-eligible* struct type equals the
+  constructor applied to its projections. Eligibility (`InductiveMeta.etaInfo`, computed by
+  InductiveChecks): declared struct, one constructor, no indices, no recursive field, not
+  declared in Prop. Prop instantiations of sort-polymorphic structs are proof-irrelevance
+  territory instead — collapse and expansion split the value space exactly. Enforced by
+  *representation*, not a conversion rule (`StructEta.scala`): every value of eligible struct
+  type is constructor-headed *from creation*. Binders freshen as the constructor of fresh field
+  witnesses; neutrals (opaque constants, axioms, blocked applications and matches, recursive-call
+  residuals, stuck builtins) wrap into the constructor of their stuck projections at creation.
+  Ascription and materialization deliberately do NOT expand: they retype circulating values, and
+  a late wrap would coexist with bare copies — collapse tolerates that split (ProofEquation's
+  mixed rule), expansion has no mixed rule by design. Fieldwise congruence then *is* eta, a match
+  on a struct scrutinee always fires (binding the branch to the scrutinee's projections), and the
+  stuck projection — a `StructField`-headed application, equal by head name + base — is the only
+  projection neutral form. The eligibility gate is load-bearing for decidability: "single
+  constructor" alone would admit `Acc` (destructuring neutral accessibility proofs is the
+  undecidability channel wf-recursion seals) and `Quot.mk` (expansion would invent a quotient
+  representative); other layers also exclude both, but the gate must never rest on that
+  coincidence. Known completeness gap: a value created before its type is a *known* struct
+  instance stays bare (rigid binders at then-blocked types, neutrals whose types reveal only
+  under a later store); rigid vars additionally cannot be expanded in place — rigid vs. refinable
+  is store-relative, and metas must stay linkable (the same reason `collapseIfProof` exempts
+  Vars).
 - **Levels**: semantically canonical representation `max(vᵢ + kᵢ, c)` (invariant: `c = 0` or
   `c > all kᵢ`); equality is representation equality, which coincides with `leq` both ways.
 - **Cumulativity**: `checkFits` additionally accepts `Sort u ≤ Sort v` (`sortLeq`) — subsumption at
@@ -171,6 +194,11 @@ Walk this list before landing any feature that touches equality, universes, or e
   laziness, corecursion, value-level self-capture, weakened positivity? The structural-decrease
   judgment (§5) descends constructor fields *and applications of function-typed fields*; both
   premises are load-bearing.
+- **× structure eta / expansion**: does the feature create struct-typed values off the expansion
+  seams (binder freshening and neutral creation — §2 structure eta), leaving two representations
+  of the same value? Does it expand a value that already circulates (the ascription/materialize
+  mistake §2 rules out)? Does it trigger single-constructor behavior keyed on constructor *count*
+  rather than `etaInfo`? Count-keyed triggers are the `Acc`/`Quot` trap.
 
 ## 7. Case law
 
