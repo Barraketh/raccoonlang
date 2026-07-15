@@ -297,11 +297,19 @@ object ValueQuote {
       else if (c == 1) ElabAst.Term.GlobalRef("Level.one", span)
       else succ(ElabAst.Term.GlobalRef("Level.zero", span), c)
 
-    val atomTerms = level.atoms.toVector.sortBy(_._1).map { case (id, offset) =>
-      val atom = Level.mk(id)
-      val base =
-        context.quote.get(atom.key).getOrElse(throw CannotQuoteValue(atom, "escaping level variable", Some(span)))
-      succ(base, offset)
+    val atomTerms = level.terms.toVector.sortBy { case (atom, _) => ValueKey.levelAtomKey(atom) }.map {
+      case (Level.ParamAtom(id), offset) =>
+        val atom = Level.mk(id)
+        val base =
+          context.quote.get(atom.key).getOrElse(throw CannotQuoteValue(atom, "escaping level variable", Some(span)))
+        succ(base, offset)
+      case (Level.IMaxAtom(lhs, rhs), offset) =>
+        val base = ElabAst.Term.App(
+          ElabAst.Term.GlobalRef("Level.imax", span),
+          Vector(quoteLevel(lhs, context, span), quoteLevel(rhs, context, span)),
+          span
+        )
+        succ(base, offset)
     }
 
     val pieces =

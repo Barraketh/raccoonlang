@@ -114,8 +114,6 @@ object ValueEquivalence {
         case ProofEquation(t1, t2)                            => defEq(t1, t2)
         case (PropTpe, PropTpe)                               => true
         case (LevelTpe, LevelTpe)                             => true
-        case (l1: Level, l2: Level)                           => l1 == l2 || Level.leq(l1, l2) && Level.leq(l2, l1)
-        case (s1: VSort, s2: VSort)                           => defEq(s1.level, s2.level)
         case (VConst(n1, _, _), VConst(n2, _, _)) if n1 == n2 => true
         case (p1: VPi, p2: VPi) if p1.binders.length == p2.binders.length => defEqPi(p1, p2).isDefined
         case (l1: VLam, l2: VLam) if l1.tpe.binders.length == l2.tpe.binders.length =>
@@ -287,14 +285,14 @@ object ValueEquivalence {
     // multiple level atoms (`max(u, v) = c`) have many solutions and are left stuck: a link must
     // record the equation in hand or its unique forced solution, never a chosen value.
     private def unifyLevels(l1: Level, l2: Level, meta: EqStore, ctx: Ctx): Option[EqStore] = {
-      if (l1.atoms.size == 1 && l1.c == 0) {
-        if (!ctx.canLinkForced) return None
-        val (varId, k) = l1.atoms.head
-        if (meta.isRefinable(varId) && !meta.occurs(varId, l2) && Level.geq(l2, k)) {
-          val other = Level.addOffset(l2, -k)
-          Some(meta.addLink(varId, other))
-        } else None
-      } else None
+      Level.singleVariableOffset(l1) match {
+        case Some((varId, k)) if ctx.canLinkForced =>
+          if (meta.isRefinable(varId) && !meta.occurs(varId, l2) && Level.geq(l2, k)) {
+            val other = Level.addOffset(l2, -k)
+            Some(meta.addLink(varId, other))
+          } else None
+        case _ => None
+      }
     }
 
     private def tryLinkVar(v: Var, other: Value, meta: EqStore, ctx: Ctx): Result = {

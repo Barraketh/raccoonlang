@@ -17,7 +17,7 @@ object FreshVar {
 
   /**
    * A fresh unknown as a Value. Level-typed unknowns must be Level atoms rather than Vars so that level arithmetic
-   * (Level.max/succ, unifyLevels) can see them; every producer of fresh unknowns must apply this rule, so it lives
+   * (Level.max/imax/succ, unifyLevels) can see them; every producer of fresh unknowns must apply this rule, so it lives
    * here.
    */
   def freshValue(name: String, tpe: Value): (VarId, Value) = {

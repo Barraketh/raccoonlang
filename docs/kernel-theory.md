@@ -83,8 +83,12 @@ link is a consequence.
   fallback. Their
   canonical names, plus `Nat` and its constructors, are reserved to the bundled Prelude, so a
   `ValueId.Const` table key cannot identify a user body (`native-literals.md` L7–L8).
-- **Levels**: semantically canonical representation `max(vᵢ + kᵢ, c)` (invariant: `c = 0` or
-  `c > all kᵢ`); equality is representation equality, which coincides with `leq` both ways.
+- **Levels**: normalized representation `max(aᵢ + kᵢ, c)`, where an atom is a level
+  variable or a normalized unresolved `imax(l, r)` (invariant: `c = 0` or `c > all kᵢ`). The
+  `imax` smart constructor reduces when `r` is always zero or always positive and otherwise
+  preserves the conditional atom; EqStore materialization recursively substitutes its operands
+  and re-runs the smart constructor. Equality is representation equality. `Level.leq`, used only
+  for inductive universe bounds, is sound and intentionally incomplete on `imax` atoms.
 - **Cumulativity**: `checkFits` additionally accepts `Sort u ≤ Sort v` (`sortLeq`) — subsumption at
   the top level only, no deep/contravariant subtyping.
 - **Identity keys** (`ValueKey`): `key1 == key2 ⇒ defEq` is trusted outright. The inputs for
@@ -103,9 +107,12 @@ link is a consequence.
 - A Pi is impredicatively in `Prop` iff its **codomain is a proposition** (`getUniverse(out) ==
   Prop`). The sort `Prop` as codomain does NOT qualify: `(A: Type) -> Prop : Sort 2`. Conflating
   these made predicates proof-irrelevant → False (case law §7.4).
-- Otherwise a Pi lives in `Sort(max(dom sorts, codomain sort))`. The classifier is never stored in
-  checked syntax — it is env-dependent for level-polymorphic telescopes, so each `VPi` instance
-  derives it lazily (`Interpreter.piClassifier`).
+- A telescope `(x₁ : A₁) … (xₙ : Aₙ) → B` lives in
+  `Sort(imax(u₁, … imax(uₙ, v)…))`, right-folding the domain sorts `uᵢ` over the codomain sort
+  `v`, as Lean does. This reduces immediately to `Prop` when `v` is zero and to the ordinary
+  maximum when `v` is definitely positive. The classifier is never stored in checked syntax — it
+  is env-dependent for level-polymorphic telescopes, so each `VPi` instance derives it lazily
+  (`Interpreter.piClassifier`).
 - **Forced implicits** (single call form): a binder may be implicit only if it is *forced* —
   recoverable by structural projection from the type of a later non-implicit binder
   (`telescope/Projection.scala`; positions: the whole type, rigid-constant spine args,

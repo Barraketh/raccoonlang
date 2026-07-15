@@ -136,40 +136,76 @@ object Value {
     override def tpe: Value = TypeTpe
   }
 
-  // Represents max(var1 + k1, var2 + k2... , c)
-  // Invariant: all offsets are non-negative, c is non-negative, and c is either 0 or c > k1...kn.
-  final class Level private (val atoms: Map[VarId, Int], val c: Int) extends Value {
+  // Represents max(atom1 + k1, atom2 + k2... , c), where an atom is either a level variable or an unresolved imax.
+  // Invariant: all offsets are non-negative, c is non-negative, and c is either 0 or c > k1...kn. IMax atoms are
+  // created only by the smart constructor below, so every level is normalized at birth.
+  final class Level private (val terms: Map[Level.Atom, Int], val c: Int) extends Value {
     override val tpe: Value = LevelTpe
 
-    override lazy val synDeps: DepSet = DepSet.from(atoms.keys)
+    // Levels are immutable and IMax atoms recursively contain Levels. Cache the Scala collection
+    // hash eagerly so using a nested atom as a Map key is O(1) in the nesting depth and does not
+    // recursively re-hash the entire level tree.
+    private val cachedHashCode: Int = 31 * terms.hashCode() + c
+
+    private lazy val neverZero: Boolean =
+      c > 0 || terms.exists {
+        case (_, offset) if offset > 0   => true
+        case (Level.IMaxAtom(_, rhs), _) => rhs.neverZero
+        case (_: Level.ParamAtom, _)     => false
+      }
+
+    private lazy val hasIMax: Boolean =
+      terms.keysIterator.exists {
+        case _: Level.IMaxAtom => true
+        case _                 => false
+      }
+
+    override lazy val synDeps: DepSet = {
+      val deps = DepSet.newBuilder
+      terms.keys.foreach {
+        case Level.ParamAtom(id) => deps.add(id)
+        case Level.IMaxAtom(lhs, rhs) =>
+          deps.unionInPlace(lhs.synDeps)
+          deps.unionInPlace(rhs.synDeps)
+      }
+      deps.result()
+    }
 
     override def equals(obj: Any): Boolean =
       obj match {
-        case other: Level => atoms == other.atoms && c == other.c
+        case other: Level => cachedHashCode == other.cachedHashCode && c == other.c && terms == other.terms
         case _            => false
       }
 
-    override def hashCode(): Int = 31 * atoms.hashCode() + c
+    override def hashCode(): Int = cachedHashCode
   }
   object Level {
-    def of(atoms: Map[VarId, Int], c: Int): Level = {
+    sealed trait Atom
+    final case class ParamAtom(id: VarId) extends Atom
+    final case class IMaxAtom(lhs: Level, rhs: Level) extends Atom
+
+    private def ofTerms(terms: Map[Atom, Int], c: Int): Level = {
       require(c >= 0, s"Level constant must be non-negative: $c")
-      require(atoms.values.forall(_ >= 0), s"Level atom offsets must be non-negative: $atoms")
+      require(terms.values.forall(_ >= 0), s"Level atom offsets must be non-negative: $terms")
 
       val nextC =
-        if (atoms.nonEmpty && c <= atoms.values.max) 0
+        if (terms.nonEmpty && c <= terms.values.max) 0
         else c
-      new Level(atoms, nextC)
+      new Level(terms, nextC)
     }
 
-    def const(c: Int): Level = of(Map.empty, c)
+    def of(atoms: Map[VarId, Int], c: Int): Level = {
+      ofTerms(atoms.map { case (id, offset) => ParamAtom(id) -> offset }, c)
+    }
+
+    def const(c: Int): Level = ofTerms(Map.empty, c)
 
     def addOffset(l: Level, offset: Int): Level = {
       if (offset == 0) l
       else {
-        val newAtoms = l.atoms.map { case (varId, k) => (varId, k + offset) }
-        val newC = if (l.c > 0 || l.atoms.isEmpty) l.c + offset else 0
-        of(newAtoms, newC)
+        val newTerms = l.terms.map { case (atom, k) => (atom, k + offset) }
+        val newC = if (l.c > 0 || l.terms.isEmpty) l.c + offset else 0
+        ofTerms(newTerms, newC)
       }
     }
 
@@ -177,30 +213,100 @@ object Value {
      * Check if Level covers offset - that is, is it safe to subtract offset from level.
      */
     def geq(l: Level, offset: Int): Boolean =
-      l.atoms.values.forall(k => k >= offset) && (l.c >= offset || (l.c == 0 && l.atoms.nonEmpty))
+      l.terms.values.forall(k => k >= offset) && (l.c >= offset || (l.c == 0 && l.terms.nonEmpty))
 
     def succ(l: Level): Level = addOffset(l, 1)
 
     def max(xs: Vector[Level]): Level = {
       require(xs.nonEmpty, "Level.max requires at least one level")
 
-      val flatAtoms = xs.flatMap(_.atoms)
-      val nextAtoms = flatAtoms.foldLeft(Map.empty[VarId, Int]) { case (curMap, (varId, k)) =>
-        val curK = curMap.getOrElse(varId, 0)
-        curMap + (varId -> math.max(curK, k))
+      val nextTerms = scala.collection.mutable.HashMap.empty[Atom, Int]
+      var cMax = 0
+      xs.foreach { level =>
+        cMax = math.max(cMax, level.c)
+        level.terms.foreach { case (atom, offset) =>
+          nextTerms.get(atom) match {
+            case Some(current) if offset > current => nextTerms.update(atom, offset)
+            case None                              => nextTerms.update(atom, offset)
+            case _                                 =>
+          }
+        }
       }
-      val cMax = xs.map(_.c).max
-      val kMax = if (nextAtoms.nonEmpty) nextAtoms.values.max else 0
-      val nextC = if (cMax > kMax) cMax else 0
-      of(nextAtoms, nextC)
+      ofTerms(nextTerms.toMap, cMax)
     }
 
+    /** True when the level is positive under every assignment of its variables. */
+    def isNeverZero(l: Level): Boolean = l.neverZero
+
+    /** Lean's impredicative maximum: zero when rhs is zero, max(lhs, rhs) otherwise. */
+    def imax(lhs: Level, rhs: Level): Level = {
+      if (rhs == zero) zero
+      else if (isNeverZero(rhs)) max(Vector(lhs, rhs))
+      else if (lhs == zero || lhs == one || lhs == rhs) rhs
+      else ofTerms(Map(IMaxAtom(lhs, rhs) -> 0), 0)
+    }
+
+    def containsIMax(l: Level): Boolean = l.hasIMax
+
+    /** The exact invertible shape accepted by level unification and forced-implicit projection. */
+    def singleVariableOffset(l: Level): Option[(VarId, Int)] =
+      if (l.c != 0 || l.terms.size != 1) None
+      else
+        l.terms.head match {
+          case (ParamAtom(id), offset) => Some((id, offset))
+          case _                       => None
+        }
+
+    private def regularLeq(l1: Level, l2: Level): Boolean =
+      (l1.c <= l2.c || l2.terms.values.exists(_ >= l1.c)) &&
+        l1.terms.forall { case (atom, k) => k <= l2.terms.getOrElse(atom, -1) }
+
+    /**
+     * A sound, intentionally incomplete pointwise level bound. Pure max-levels retain the old exact fast path; imax
+     * follows Lean's conservative rules: rhs <= imax(lhs, rhs), while proving imax(lhs, rhs) <= out may require both
+     * operands to fit out. This is a size check for inductives, never universe subtyping.
+     */
     def leq(l1: Level, l2: Level): Boolean = {
-      (l1.c <= l2.c || l2.atoms.values.exists(_ >= l1.c)) &&
-      l1.atoms.forall { case (varId, k) => k <= l2.atoms.getOrElse(varId, -1) }
+      if (!containsIMax(l1) && !containsIMax(l2)) return regularLeq(l1, l2)
+
+      val memo = scala.collection.mutable.Map.empty[(Level, Level), Boolean]
+      def constantCovered(c: Int, out: Level): Boolean =
+        c <= out.c || out.terms.values.exists(_ >= c)
+
+      def termAsLevel(atom: Atom, offset: Int): Level = ofTerms(Map(atom -> offset), 0)
+
+      def termLeq(atom: Atom, offset: Int, out: Level): Boolean = {
+        val exactOrRhs = out.terms.exists {
+          case (`atom`, outOffset) => offset <= outOffset
+          case (IMaxAtom(_, rhs), outOffset) =>
+            loop(termAsLevel(atom, offset), addOffset(rhs, outOffset))
+          case _ => false
+        }
+        exactOrRhs || (atom match {
+          case IMaxAtom(lhs, rhs) =>
+            constantCovered(offset, out) &&
+            loop(addOffset(lhs, offset), out) &&
+            loop(addOffset(rhs, offset), out)
+          case _: ParamAtom => false
+        })
+      }
+
+      def loop(lhs: Level, rhs: Level): Boolean =
+        if (lhs == rhs) true
+        else
+          memo.getOrElseUpdate(
+            (lhs, rhs),
+            if (!containsIMax(lhs) && !containsIMax(rhs)) regularLeq(lhs, rhs)
+            else
+              constantCovered(lhs.c, rhs) && lhs.terms.forall { case (atom, offset) =>
+                termLeq(atom, offset, rhs)
+              }
+          )
+
+      loop(l1, l2)
     }
 
-    def mk(varId: VarId): Level = of(Map(varId -> 0), 0)
+    def mk(varId: VarId): Level = ofTerms(Map(ParamAtom(varId) -> 0), 0)
 
     /** The level a value denotes: a Level directly, or a Level-typed variable as its atom. */
     def fromValue(v: Value): Option[Level] =

@@ -176,7 +176,7 @@ object PrettyPrinter {
     case Value.PropTpe                              => "Prop"
     case Value.VSort(lvl) if lvl == Value.Level.one => "Type"
     case Value.VSort(lvl)                           => s"Sort($lvl)"
-    case level: Value.Level                         => s"Level(${level.atoms}, ${level.c})"
+    case level: Value.Level                         => s"Level(${level.terms}, ${level.c})"
     case pi: Value.VPi                              => "VPi"
     case Value.VConst(name, _, _)                   => name
     case Value.ConstructorHead(name, _, _, _, _)    => name

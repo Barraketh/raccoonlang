@@ -44,6 +44,8 @@ object ValueKey {
     val ConstId = 16
     val LocalId = 17
     val Packed = 18
+    val LevelParamAtom = 19
+    val LevelIMaxAtom = 20
   }
 
   private val SeedHi = -7046029254386353131L
@@ -132,21 +134,31 @@ object ValueKey {
         mixValues(mixAstNodeId(mixKey(key, tag(Tag.LocalId)), nodeId), captures)
     }
 
-  private def levelKey(atoms: Map[Value.VarId, Int], c: Int): Key = {
+  private[raccoonlang] def levelAtomKey(atom: Value.Level.Atom): Key =
+    atom match {
+      case Value.Level.ParamAtom(id) => mixLong(tag(Tag.LevelParamAtom), id.toLong)
+      case Value.Level.IMaxAtom(lhs, rhs) =>
+        mixKey(mixKey(tag(Tag.LevelIMaxAtom), lhs.key), rhs.key)
+    }
+
+  private def levelKey(terms: Map[Value.Level.Atom, Int], c: Int): Key = {
     var cur = mixLong(tag(Tag.Level), c.toLong)
-    val sortedAtoms = atoms.toArray.sortBy(_._1)
+    val sortedTerms = terms.iterator
+      .map { case (atom, offset) => (levelAtomKey(atom), offset) }
+      .toArray
+      .sortBy(_._1)
     var idx = 0
-    while (idx < sortedAtoms.length) {
-      val (varId, offset) = sortedAtoms(idx)
-      cur = mixLong(mixLong(cur, varId.toLong), offset.toLong)
+    while (idx < sortedTerms.length) {
+      val (atomKey, offset) = sortedTerms(idx)
+      cur = mixLong(mixKey(cur, atomKey), offset.toLong)
       idx += 1
     }
-    mixLong(cur, sortedAtoms.length.toLong)
+    mixLong(cur, sortedTerms.length.toLong)
   }
 
   def orderKey(v: Value): Key = v match {
     case Value.LevelTpe        => tag(Tag.LevelTpe)
-    case level: Value.Level    => levelKey(level.atoms, level.c)
+    case level: Value.Level    => levelKey(level.terms, level.c)
     case Value.PropTpe         => tag(Tag.Prop)
     case Value.VSort(lvl)      => mixKey(tag(Tag.Sort), lvl.key)
     case Value.VConst(n, _, _) => mixString(tag(Tag.Const), n)

@@ -79,8 +79,8 @@ object Projection {
     def holeId(v: Value): Option[VarId] =
       v match {
         case Var(_, id, _) => Some(id)
-        case level: Level if level.atoms.sizeIs == 1 && level.c == 0 && level.atoms.head._2 == 0 =>
-          Some(level.atoms.head._1)
+        case level: Level =>
+          Level.singleVariableOffset(level).collect { case (id, 0) => id }
         case p: VProof =>
           p.witness match {
             case Var(_, id, _) => Some(id)
@@ -121,8 +121,7 @@ object Projection {
       v match {
         // Level occurrences have one path: single-atom `u + k` (k = 0 included) inverts to u.
         case level: Level =>
-          if (level.atoms.sizeIs == 1 && level.c == 0) {
-            val (id, k) = level.atoms.head
+          Level.singleVariableOffset(level).foreach { case (id, k) =>
             holeOfVar.get(id).foreach { hole =>
               val path = if (k == 0) steps else steps :+ Step.LevelOffset(k)
               solveHole(hole, root, path, LevelTpe)

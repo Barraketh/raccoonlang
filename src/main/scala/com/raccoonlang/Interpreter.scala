@@ -11,20 +11,26 @@ import com.raccoonlang.telescope.BinderOps
  */
 object Interpreter {
   private def normalizeLevel(l: Level, eqStore: EqStore): Level = {
-    val pieces = Vector(Level.const(l.c)) ++
-      l.atoms.toVector.map { case (atom, k) =>
-        val base = eqStore.subst.get(atom) match {
-          case Some(sol) =>
-            eqStore.force(sol) match {
-              case next: Level   => normalizeLevel(next, eqStore)
-              case Var(_, id, _) => Level.mk(id)
-              case other         => throw NotALevel(other)
-            }
-          case None => Level.mk(atom)
-        }
-        Level.addOffset(base, k)
+    val pieces = Vector.newBuilder[Level]
+    if (l.c > 0 || l.terms.isEmpty) pieces += Level.const(l.c)
+    l.terms.foreach { case (atom, k) =>
+      val base = atom match {
+        case Level.ParamAtom(id) =>
+          eqStore.subst.get(id) match {
+            case Some(sol) =>
+              eqStore.force(sol) match {
+                case next: Level       => normalizeLevel(next, eqStore)
+                case Var(_, nextId, _) => Level.mk(nextId)
+                case other             => throw NotALevel(other)
+              }
+            case None => Level.mk(id)
+          }
+        case Level.IMaxAtom(lhs, rhs) =>
+          Level.imax(normalizeLevel(lhs, eqStore), normalizeLevel(rhs, eqStore))
       }
-    Level.max(pieces)
+      pieces += Level.addOffset(base, k)
+    }
+    Level.max(pieces.result())
   }
 
   /**
@@ -53,7 +59,7 @@ object Interpreter {
           case _                                         => throw WTF(s"Blocked extractor matched unexpected value $v0")
         }
 
-      case l: Level if l.atoms.keySet.intersect(eqStore.subst.keySet).nonEmpty => normalizeLevel(l, eqStore)
+      case l: Level if l.synDeps.intersects(eqStore.solvedIds) => normalizeLevel(l, eqStore)
 
       case _ => v0
     }
@@ -86,23 +92,25 @@ object Interpreter {
     BinderOps.instantiateFull(fnTpe.binders, baseEnv, ascribeArgs(fnTpe, args))
 
   /**
-   * The universe of a Pi, derived from the env it closed over: max of the binder types' universes and the codomain's
-   * universe, with the impredicative collapse to Prop for Prop-valued codomains. This replicates what the checker
-   * validates at Pi formation, but per instance — a residual Pi re-evaluated with concrete levels gets the concrete
-   * universe, not the declaration-time one.
+   * The universe of a Pi, derived from the env it closed over: the binder types' universes are right-folded with imax
+   * over the codomain's universe. IMax reduces to Prop for a Prop-valued codomain and to ordinary max for a definitely
+   * positive codomain. Computing it per instance means a residual Pi re-evaluated with concrete levels gets the
+   * concrete universe, not the declaration-time one.
    */
   private def piClassifier(binders: Vector[ElabAst.Binder], baseEnv: Env, out: ElabAst.Term): VSort = {
     val freshEnv = BinderOps.freshen(binders, baseEnv)
     val outV = evalTerm(out, freshEnv)
-    // Impredicative collapse first: Prop-valued codomains need no domain universe walk.
-    if (TypeChecker.isPropValuedType(outV)) PropTpe
+    val VSort(outLevel) = TypeChecker.getUniverse(outV)
+    if (outLevel == Level.zero) PropTpe
     else {
-      val VSort(outLevel) = TypeChecker.getUniverse(outV)
       val domLevels = binders.map { binder =>
         val VSort(level) = TypeChecker.getUniverse(freshEnv(binder.localRef).tpe)
         level
       }
-      VSort(Level.max(domLevels :+ outLevel))
+      val classifier =
+        if (Level.isNeverZero(outLevel)) Level.max(domLevels :+ outLevel)
+        else domLevels.foldRight(outLevel)(Level.imax)
+      VSort(classifier)
     }
   }
 

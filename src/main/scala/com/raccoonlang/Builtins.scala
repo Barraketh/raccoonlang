@@ -74,6 +74,9 @@ private object Builtins {
       "Level.max" -> Native { (_, _, args) =>
         Level.max(args.map(arg => Interpreter.getLevel(arg)))
       },
+      "Level.imax" -> Native { (_, _, args) =>
+        Level.imax(Interpreter.getLevel(args(0)), Interpreter.getLevel(args(1)))
+      },
       MkName -> Constructor(3),
       LiftName -> Native(runLift),
       IndName -> Native(runInd)

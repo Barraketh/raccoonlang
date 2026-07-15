@@ -204,6 +204,151 @@ class UniverseTests extends munit.FunSuite {
     }
   }
 
+  test("Level.imax applies the kernel simplification rules") {
+    val u = Value.Level.mk(freshLevel("u").id)
+    val v = Value.Level.mk(freshLevel("v").id)
+
+    assertEquals(Value.Level.imax(u, Value.Level.zero), Value.Level.zero)
+    assertEquals(Value.Level.imax(Value.Level.zero, v), v)
+    assertEquals(Value.Level.imax(Value.Level.one, v), v)
+    assertEquals(Value.Level.imax(u, u), u)
+    assertEquals(
+      Value.Level.imax(u, Value.Level.succ(v)),
+      Value.Level.max(Vector(u, Value.Level.succ(v)))
+    )
+  }
+
+  test("unresolved imax is distinct from max and tracks nested dependencies") {
+    val u = freshLevel("u")
+    val v = freshLevel("v")
+    val imax = Value.Level.imax(Value.Level.mk(u.id), Value.Level.mk(v.id))
+
+    assert(Value.Level.containsIMax(imax))
+    assert(imax.synDeps.contains(u.id))
+    assert(imax.synDeps.contains(v.id))
+    assertEquals(Value.Level.singleVariableOffset(imax), None)
+    assertNotEquals(imax, Value.Level.max(Vector(Value.Level.mk(u.id), Value.Level.mk(v.id))))
+    assert(!ValueEquivalence.defEq(imax, Value.Level.max(Vector(Value.Level.mk(u.id), Value.Level.mk(v.id)))))
+  }
+
+  test("materialization reduces imax after its rhs level is solved") {
+    val u = freshLevel("u")
+    val v = freshLevel("v")
+    val imax = Value.Level.imax(Value.Level.mk(u.id), Value.Level.mk(v.id))
+
+    val atProp = ValueOps.materialize(imax, EqStore(Map(v.id -> Value.Level.zero), DepSet.empty))
+    assertEquals(atProp, Value.Level.zero)
+
+    val atType = ValueOps.materialize(imax, EqStore(Map(v.id -> Value.Level.one), DepSet.empty))
+    assertEquals(atType, Value.Level.max(Vector(Value.Level.mk(u.id), Value.Level.one)))
+  }
+
+  test("Level.leq handles conservative imax bounds") {
+    val u = Value.Level.mk(freshLevel("u").id)
+    val v = Value.Level.mk(freshLevel("v").id)
+    val imax = Value.Level.imax(u, v)
+    val ordinaryMax = Value.Level.max(Vector(u, v))
+
+    assert(Value.Level.leq(v, imax))
+    assert(Value.Level.leq(imax, ordinaryMax))
+    assert(!Value.Level.leq(u, imax))
+  }
+
+  test("imax normalization and successful bounds are sound on small assignments") {
+    val uId = freshLevel("u").id
+    val vId = freshLevel("v").id
+    val u = Value.Level.mk(uId)
+    val v = Value.Level.mk(vId)
+
+    def eval(level: Value.Level, assignment: Map[Value.VarId, Int]): Int = {
+      val termValues = level.terms.map { case (atom, offset) =>
+        val base = atom match {
+          case Value.Level.ParamAtom(id) => assignment(id)
+          case Value.Level.IMaxAtom(lhs, rhs) =>
+            val rhsValue = eval(rhs, assignment)
+            if (rhsValue == 0) 0 else math.max(eval(lhs, assignment), rhsValue)
+        }
+        base + offset
+      }
+      (termValues.iterator ++ Iterator.single(level.c)).max
+    }
+
+    val operands = Vector(
+      Value.Level.zero,
+      Value.Level.one,
+      u,
+      v,
+      Value.Level.succ(u),
+      Value.Level.max(Vector(u, v)),
+      Value.Level.imax(u, v),
+      Value.Level.succ(Value.Level.imax(u, v)),
+      Value.Level.imax(Value.Level.succ(u), v)
+    )
+    val assignments = for {
+      uValue <- 0 to 2
+      vValue <- 0 to 2
+    } yield Map(uId -> uValue, vId -> vValue)
+
+    operands.foreach { lhs =>
+      operands.foreach { rhs =>
+        val normalized = Value.Level.imax(lhs, rhs)
+        assignments.foreach { assignment =>
+          val rhsValue = eval(rhs, assignment)
+          val expected = if (rhsValue == 0) 0 else math.max(eval(lhs, assignment), rhsValue)
+          assertEquals(eval(normalized, assignment), expected)
+          if (Value.Level.leq(lhs, rhs))
+            assert(
+              eval(lhs, assignment) <= rhsValue,
+              s"unsound level bound $lhs <= $rhs under $assignment"
+            )
+        }
+      }
+    }
+  }
+
+  test("polymorphic Pi formation has an imax classifier") {
+    val p =
+      """
+        |def piType {u: Level}{v: Level}(A: Sort(u))(B: Sort(v)): Sort(Level.imax(u, v)) := (x: A) -> B
+        |{ Type }
+        |""".stripMargin
+
+    runProgram(p)
+  }
+
+  test("multi-binder Pi formation preserves right-nested imax classifiers") {
+    val p =
+      """
+        |def piType2 {u: Level}{v: Level}{w: Level}(A: Sort(u))(B: Sort(v))(C: Sort(w))
+        |  : Sort(Level.imax(u, Level.imax(v, w))) := (x: A) -> (y: B) -> C
+        |
+        |def piType3 {u: Level}{v: Level}{t: Level}{w: Level}
+        |  (A: Sort(u))(B: Sort(v))(C: Sort(t))(D: Sort(w))
+        |  : Sort(Level.imax(u, Level.imax(v, Level.imax(t, w)))) := (x: A) -> (y: B) -> (z: C) -> D
+        |{ Type }
+        |""".stripMargin
+
+    runProgram(p)
+  }
+
+  test("a polymorphic Pi inhabitant collapses when the codomain level resolves to Prop") {
+    val p =
+      """
+        |inductive Truth : Prop
+        | | intro : Truth
+        |
+        |def polyK {u: Level}{v: Level}(A: Sort(u))(B: Sort(v))(b: B): (x: A) -> B :=
+        |  fun (x: A): B => b
+        |
+        |{ polyK(Type, Truth, Truth.intro) }
+        |""".stripMargin
+
+    runProgram(p) match {
+      case _: Value.VProof =>
+      case other           => fail(s"Expected the Prop-instantiated function to collapse, got $other")
+    }
+  }
+
   // Instead of constructing Sort in term position, test level-parametric usage via a term at the appropriate level
   test("Level-parametric id at u=1 works for Peano") {
     val p =
@@ -331,6 +476,15 @@ class UniverseTests extends munit.FunSuite {
         )
         .isLeft
     )
+  }
+
+  test("sort unification does not invent a solution through imax") {
+    val u = freshLevel("u")
+    val v = freshLevel("v")
+    val eqStore = EqStore.empty.allow(DepSet(u.id, v.id))
+    val imax = Value.Level.imax(Value.Level.mk(u.id), Value.Level.mk(v.id))
+
+    assert(ValueEquivalence.tryUnify(VSort(imax), VSort(Value.Level.one), eqStore).isLeft)
   }
 
   test("positive: implicit level through Level.succ works") {

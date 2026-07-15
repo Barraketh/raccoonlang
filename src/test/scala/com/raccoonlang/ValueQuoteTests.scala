@@ -59,4 +59,19 @@ class ValueQuoteTests extends munit.FunSuite {
       case other => fail(s"Expected C.mk(arg), got $other")
     }
   }
+
+  test("imax levels quote and evaluate round-trip") {
+    val uRef = CoreAst.LocalRef(0, "u")
+    val vRef = CoreAst.LocalRef(1, "v")
+    val u = FreshVar.freshValue("u", LevelTpe)._2.asInstanceOf[Level]
+    val v = FreshVar.freshValue("v", LevelTpe)._2.asInstanceOf[Level]
+    val level = Level.succ(Level.imax(u, v))
+    val env = Prelude.test.checkedEnv.putLocal(uRef, u).putLocal(vRef, v)
+
+    val quoted = ValueQuote.quoteTerm(level, ValueQuote.quoteContext(env), span)
+    val evaluated = Interpreter.evalTerm(quoted, env)
+
+    assertEquals(evaluated, level)
+    assert(PrettyPrinter.printElabTerm(quoted).contains("Level.imax"))
+  }
 }

@@ -195,8 +195,7 @@ object StructEta {
       id = ValueId.LocalId(AstNodeId.synthetic(), Vector(instTpe)),
       classifier0 = () => {
         val outTy = codomain(BinderOps.freshen(binders, piEnv))
-        if (Value.isPropositionType(outTy)) PropTpe
-        else VSort(Level.max(Vector(TypeChecker.getUniverse(instTpe).level, TypeChecker.getUniverse(outTy).level)))
+        VSort(Level.imax(TypeChecker.getUniverse(instTpe).level, TypeChecker.getUniverse(outTy).level))
       }
     )
   }

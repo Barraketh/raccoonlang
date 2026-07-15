@@ -4,6 +4,8 @@ namespace Level {
   def succ (l: Level): Level := builtin
 
   def max (l1: Level)(l2: Level): Level := builtin
+
+  def imax (l1: Level)(l2: Level): Level := builtin
 }
 
 def id {u: Level}{A: Sort(u)} (x: A): A := x

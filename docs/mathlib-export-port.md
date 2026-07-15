@@ -53,7 +53,7 @@ explicit arguments per Raccoon's all-or-none implicit rule.
 | K2 | Sealed `Acc`/`WellFounded` primitives | — | spec review |
 | K3 | Native Nat/String literals | — | **Nat base done**; M0 requires every staged Nat op; String staged |
 | K4 | Primitive projections + structure eta | — | **done** |
-| K5 | `imax` levels | M0 stats | M0 decision: extend the level algebra |
+| K5 | `imax` levels | M0 stats | **done** |
 | K6 | Mutual / nested inductives | M0 stats | M0 decision: native kernel support |
 | K7 | Axioms: propext, choice | evidence-grades refactor | — |
 | T1 | Export reader + prelude alignment | — | M0 reader/stats done; translation pending |
@@ -109,15 +109,18 @@ type is a *known* struct instance stay bare (rigid binders at then-blocked types
 types reveal only under a later store — expansion is canonical-at-birth by design, see
 kernel-theory §2), and expansion cost on deep bundled-class hierarchies is a P1 measurement item.
 
-**K5. `imax`.** Raccoon's canonical `max(vᵢ+kᵢ, c)` form cannot express `Sort (imax u v)`, and
-translating `imax` as `max` silently reclassifies Prop-instantiations into `Sort u` — proofs stop
-collapsing, a semantic divergence. Options: (a) extend the level algebra with imax normal forms
-(case-split on `v = 0`; Lean's own level defeq is a sound-incomplete syntactic normalizer, so
-parity does not require completeness); (b) recompute binder sorts semantically during translation
-and fail loudly on declarations where genuine imax-polymorphism survives. M0 found genuine `imax`
-in declared types already in `Init` (`pi_congr`, `implies_congr`, and generated
-constructor-elimination types), so option (b) is not a viable general route. Decision: extend the
-level algebra as in option (a). Counts: `m0-export-stats.md`.
+**K5. `imax` — done.** Raccoon's canonical level form is generalized from
+`max(vᵢ+kᵢ, c)` to `max(aᵢ+kᵢ, c)`, where an atom is a variable or an unresolved normalized
+`imax`. The smart constructor implements Lean's zero/definitely-positive reductions and retains
+the conditional form otherwise; substitution recursively re-normalizes it. Pi classifiers now
+right-fold `imax` over the domains and codomain, matching Lean's telescope rule, so an open
+polymorphic Pi retains the conditional universe and a later Prop instantiation reduces to `Prop`
+and triggers proof collapse. Keys, quotation,
+Prelude builtins, conservative universe bounds, unification, and forced-implicit projection all
+handle the extended form; only an exact variable-plus-offset remains invertible. M0 found genuine
+`imax` in declared types already in `Init` (`pi_congr`, `implies_congr`, and generated
+constructor-elimination types). Tests pin normalization, substitution, bounds, quote round-trips,
+polymorphic Pi formation, and Prop-instantiated collapse. Counts: `m0-export-stats.md`.
 
 **K6. Mutual and nested inductives.** The Lean kernel accepts both natively; Raccoon has neither.
 Mutual: generalize positivity, the termination order (component-wise subterm across the block), and
