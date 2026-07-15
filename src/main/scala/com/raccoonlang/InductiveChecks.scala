@@ -73,6 +73,8 @@ object InductiveChecks {
         // A proof's interior is erased; its type is all that can carry an occurrence.
         case p: VProof => doesNotOccur(target, p.tpe)
 
+        case p: VPacked => doesNotOccur(target, p.tpe)
+
         case _: ConstructorHead => !target.mayOccurIn(value)
 
         case _: Level | LevelTpe | _: VLam | _: VSort | _: Var | _: VConst | PropTpe =>
@@ -112,6 +114,8 @@ object InductiveChecks {
         // its proposition at all — positivity through an erased interior is unjustifiable.
         case p: VProof => doesNotOccur(target, p.tpe)
 
+        case p: VPacked => doesNotOccur(target, p.tpe)
+
         case _: ConstructorHead => true
 
         case _: Level | LevelTpe | _: VLam | _: VSort | _: Var | _: VConst =>
@@ -143,6 +147,8 @@ object InductiveChecks {
         sameFamilyArgsDoNotContain(inductiveName, target, pi.codomain(freshEnv))
 
       case p: VProof => sameFamilyArgsDoNotContain(inductiveName, target, p.tpe)
+
+      case p: VPacked => sameFamilyArgsDoNotContain(inductiveName, target, p.tpe)
 
       case _: ConstructorHead | _: Level | LevelTpe | _: VLam | _: VSort | _: Var | _: VConst =>
         true
@@ -347,10 +353,16 @@ object InductiveChecks {
       ) {
         val ctorName = decl.ctors.head.canonicalName
         val fieldNames = decl.ctors.head.binders.map(_.name)
-        Some(new StructEtaInfo(fieldNames, () => installedEnv.get(ctorName) match {
-          case h: ConstructorHead => h
-          case other              => throw WTF(s"Struct constructor $ctorName resolved to non-constructor $other")
-        }))
+        Some(
+          new StructEtaInfo(
+            fieldNames,
+            () =>
+              installedEnv.get(ctorName) match {
+                case h: ConstructorHead => h
+                case other              => throw WTF(s"Struct constructor $ctorName resolved to non-constructor $other")
+              }
+          )
+        )
       } else None
 
     val meta = initialMeta.copy(positiveArgs = positiveArgs, etaInfo = etaInfo)

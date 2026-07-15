@@ -26,7 +26,16 @@ object ValueOps {
         case Var(name, id, tpe)           => Var(name, id, materialize(tpe))
         case VConst(name, constType, tpe) => VConst(name, constType, materialize(tpe))
         case VApp(head, args, tpe, blockerId) =>
-          VApp(materialize(head), args.map(materialize(_)), materialize(tpe), blockerId)
+          val materializedHead = materialize(head)
+          val materializedArgs = args.map(materialize(_))
+          val materializedTpe = materialize(tpe)
+          (materializedHead, blockerId) match {
+            case (h: ConstructorHead, None) =>
+              Packed
+                .foldCtor(h, materializedArgs, materializedTpe)
+                .getOrElse(VApp(materializedHead, materializedArgs, materializedTpe, blockerId))
+            case _ => VApp(materializedHead, materializedArgs, materializedTpe, blockerId)
+          }
         case NeutralThunk(term, env, id, tpe, blockerId) =>
           NeutralThunk(
             term,
@@ -43,6 +52,8 @@ object ValueOps {
           VLam(materializePi(tpe), materializeId(id), materializeLamBody(body))
         case p: VProof =>
           VProof(materialize(p.tpe), materialize(p.witness))
+        case p: VPacked =>
+          VPacked(p.codec, p.payload, materialize(p.tpe))
       }
       // Deferred collapse: a type may resolve to a proposition only once its metas solve
       // (e.g. u := 0); the value collapses at that point (proof-collapse.md §4). Deferred struct

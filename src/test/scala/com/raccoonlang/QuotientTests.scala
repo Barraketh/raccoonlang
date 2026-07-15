@@ -31,8 +31,8 @@ class QuotientTests extends munit.FunSuite {
     case other                     => SConst(other.toString)
   }
 
-  private val natZero = SConst("Nat.zero")
-  private def natSucc(value: Shape): Shape = SApp(SConst("Nat.succ"), List(value))
+  private val natZero = SConst("0")
+  private val natOne = SConst("1")
 
   private val natPrelude =
     """
@@ -74,7 +74,7 @@ class QuotientTests extends munit.FunSuite {
           |""".stripMargin
     )
 
-    assertEquals(toShape(res), natSucc(natZero))
+    assertEquals(toShape(res), natOne)
   }
 
   test("Quot.ind collapses to a proof of the motive") {

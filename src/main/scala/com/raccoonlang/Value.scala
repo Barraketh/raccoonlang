@@ -1,9 +1,9 @@
 package com.raccoonlang
 
 /**
- * Represents a typechecked value representation - the values that live in an Env. Values can contain Vars(),
- * which represent unknown values. Vars have a unique id, which means they can participate in equality. Thus values
- * could be thought of as a typed, maximally reduced representation of CoreAst / ElabAst. Invariants:
+ * Represents a typechecked value representation - the values that live in an Env. Values can contain Vars(), which
+ * represent unknown values. Vars have a unique id, which means they can participate in equality. Thus values could be
+ * thought of as a typed, maximally reduced representation of CoreAst / ElabAst. Invariants:
  *   - Every value is typed correctly. Types are themselves Values, and so are Sorts and Levels
  *   - synDeps is the set of all VarIds that this Value contains, including in its type. It is extremely important to
  * maintain this correctly
@@ -25,19 +25,18 @@ sealed trait TopLevelValue extends Value {
 }
 
 object Value {
+
   /**
-   * Replace a neutral's remembered type with a defEq (or sort-cumulative) representative the
-   * context knows to be more informative — typically the declared/expected type winning over the
-   * inferred one. Canonical values determine their own types and pass through; neutrals
-   * (`UpdatableType`) only carry an annotation recorded at creation, and syntax-directed machinery
-   * (`evalApply`'s Pi dispatch, universe classification, keys) reads that annotation structurally,
-   * so the representative matters. Also the deferred proof-collapse point: the ascription is often
-   * the moment a value's type becomes *known* propositional (proof-collapse.md §3-4). Struct
-   * expansion (StructEta) deliberately does NOT run here: ascription retypes values that already
-   * circulate, and wrapping one copy while the bare original lives on in envs would leave two
-   * representations that never compare equal. Collapse tolerates that (the ProofEquation mixed
-   * rule relates VProof to bare proof representatives); expansion has no mixed rule by design, so
-   * struct values are canonicalized at creation only.
+   * Replace a neutral's remembered type with a defEq (or sort-cumulative) representative the context knows to be more
+   * informative — typically the declared/expected type winning over the inferred one. Canonical values determine their
+   * own types and pass through; neutrals (`UpdatableType`) only carry an annotation recorded at creation, and
+   * syntax-directed machinery (`evalApply`'s Pi dispatch, universe classification, keys) reads that annotation
+   * structurally, so the representative matters. Also the deferred proof-collapse point: the ascription is often the
+   * moment a value's type becomes *known* propositional (proof-collapse.md §3-4). Struct expansion (StructEta)
+   * deliberately does NOT run here: ascription retypes values that already circulate, and wrapping one copy while the
+   * bare original lives on in envs would leave two representations that never compare equal. Collapse tolerates that
+   * (the ProofEquation mixed rule relates VProof to bare proof representatives); expansion has no mixed rule by design,
+   * so struct values are canonicalized at creation only.
    */
   def ascribe(value: Value, tpe: Value): Value =
     value match {
@@ -46,8 +45,8 @@ object Value {
     }
 
   /**
-   * The value's type is a proposition: it lives in `Prop`. The sort `Prop` itself never qualifies
-   * (`Prop : Sort 1`) — predicates are data, not proofs (kernel-theory §2).
+   * The value's type is a proposition: it lives in `Prop`. The sort `Prop` itself never qualifies (`Prop : Sort 1`) —
+   * predicates are data, not proofs (kernel-theory §2).
    */
   def isPropositionType(tpe: Value): Boolean =
     tpe match {
@@ -61,16 +60,15 @@ object Value {
   private def isKnownProof(value: Value): Boolean = isPropositionType(value.tpe)
 
   /**
-   * Collapse a value whose type is a known proposition into the structureless `VProof` form
-   * (docs/proof-collapse.md). Callers must present an existing inhabitant — collapse is erasure,
-   * never creation (witness invariant). Exemptions:
-   *   - `Var`: metas and unification unknowns must stay refinable — collapsing a placeholder would
-   *     silently discharge a proof obligation. Rigid hypotheses are collapsed at binder freshening
-   *     instead, where the binder itself is the witness (`collapseBinderWitness` below).
-   *   - `ConstructorHead`: heads must remain applicable and recognizable by match machinery;
-   *     their saturated applications collapse in `Interpreter.evalApply`.
-   *   - raw-recursive `VLam`: the native body enforces the decrease check on every application;
-   *     hiding it inside a `VProof` would disable termination checking for recursive proofs.
+   * Collapse a value whose type is a known proposition into the structureless `VProof` form (docs/proof-collapse.md).
+   * Callers must present an existing inhabitant — collapse is erasure, never creation (witness invariant). Exemptions:
+   *   - `Var`: metas and unification unknowns must stay refinable — collapsing a placeholder would silently discharge a
+   *     proof obligation. Rigid hypotheses are collapsed at binder freshening instead, where the binder itself is the
+   *     witness (`collapseBinderWitness` below).
+   *   - `ConstructorHead`: heads must remain applicable and recognizable by match machinery; their saturated
+   *     applications collapse in `Interpreter.evalApply`.
+   *   - raw-recursive `VLam`: the native body enforces the decrease check on every application; hiding it inside a
+   *     `VProof` would disable termination checking for recursive proofs.
    */
   def collapseIfProof(value: Value): Value =
     value match {
@@ -83,10 +81,9 @@ object Value {
     }
 
   /**
-   * Collapse a freshened *rigid* binder: the bound hypothesis is its own witness
-   * (proof-collapse.md §4). Counterpart to collapseIfProof's `Var` exemption — a bare fresh Var
-   * is a refinable meta there and must not collapse, but here the Var is a rigid hypothesis being
-   * bound, so it does.
+   * Collapse a freshened *rigid* binder: the bound hypothesis is its own witness (proof-collapse.md §4). Counterpart to
+   * collapseIfProof's `Var` exemption — a bare fresh Var is a refinable meta there and must not collapse, but here the
+   * Var is a rigid hypothesis being bound, so it does.
    */
   def collapseBinderWitness(tpe: Value, fresh: Value): Value =
     if (isPropositionType(tpe)) VProof(tpe, fresh) else fresh
@@ -96,7 +93,8 @@ object Value {
       case _: VPi | _: VLam | _: NeutralThunk => true
       case app: VApp =>
         app.head.needsStructuralDefEq || app.args.exists(_.needsStructuralDefEq) || app.tpe.needsStructuralDefEq
-      case _ => false
+      case p: VPacked => !p.codec.canonical
+      case _          => false
     })
 
   sealed trait UpdatableType {
@@ -129,8 +127,7 @@ object Value {
     final case class Core(term: ElabAst.Term.Lam, env: Env) extends LamBody {
       override lazy val synDeps: DepSet = envDeps(env)
     }
-    final case class Native(run: (Vector[Value], Env) => Value, env: Env, isRawRecursive: Boolean)
-      extends LamBody {
+    final case class Native(run: (Vector[Value], Env) => Value, env: Env, isRawRecursive: Boolean) extends LamBody {
       override lazy val synDeps: DepSet = envDeps(env)
     }
   }
@@ -245,10 +242,10 @@ object Value {
     override lazy val tpe: VSort = classifier0()
 
     /**
-     * Whether this Pi is itself a proposition — by impredicativity, exactly when its codomain is
-     * Prop-valued, which is also exactly when the classifier is Prop. Kept separate from `tpe` so
-     * the proof-collapse checks that run on every lambda creation and env binding need only a
-     * codomain evaluation, not the per-binder universe walk of the full classifier.
+     * Whether this Pi is itself a proposition — by impredicativity, exactly when its codomain is Prop-valued, which is
+     * also exactly when the classifier is Prop. Kept separate from `tpe` so the proof-collapse checks that run on every
+     * lambda creation and env binding need only a codomain evaluation, not the per-binder universe walk of the full
+     * classifier.
      */
     lazy val isPropValued: Boolean = {
       val freshEnv = telescope.BinderOps.freshen(binders, env)
@@ -346,14 +343,13 @@ object Value {
   }
 
   /**
-   * The single value form for proofs: every value whose type is *known* to be a proposition is a
-   * `VProof` (collapse invariant, docs/proof-collapse.md §3). Proofs have no structure to read, so
-   * proof-irrelevance violations are unrepresentable rather than guarded against; defEq of two
-   * proofs is defEq of their propositions.
+   * The single value form for proofs: every value whose type is *known* to be a proposition is a `VProof` (collapse
+   * invariant, docs/proof-collapse.md §3). Proofs have no structure to read, so proof-irrelevance violations are
+   * unrepresentable rather than guarded against; defEq of two proofs is defEq of their propositions.
    *
-   * `witness0` is the erased inhabitant this proof was collapsed from. It is excluded from
-   * equality, keys and synDeps, and is consulted only for quoting and diagnostics — never for
-   * evaluation or comparison (reading it there would reintroduce irrelevance violations).
+   * `witness0` is the erased inhabitant this proof was collapsed from. It is excluded from equality, keys and synDeps,
+   * and is consulted only for quoting and diagnostics — never for evaluation or comparison (reading it there would
+   * reintroduce irrelevance violations).
    *
    * A `VProof` is never a `Blocker`: matches on proofs do not block-and-resume.
    */
@@ -386,6 +382,59 @@ object Value {
   }
 
   /**
+   * A packed representation codec (K3, docs/native-literals.md §3): one type's compact host-side representation for
+   * ground data. The set is closed and kernel-curated by design — each codec is trusted code inside defeq. Laws L1–L9
+   * of the spec govern every instance.
+   */
+  sealed abstract class PackedCodec {
+
+    /** L5: every ground value of the type is packed; no ground constructor-headed value exists. */
+    def canonical: Boolean
+
+    /** One constructor layer of the payload: canonical constructor name plus stored arguments. */
+    def decodeHead(v: VPacked): (String, Vector[Value])
+
+    /** Strict order realized by constructor-field steps on decodings; well-founded (L6). */
+    def strictlyLess(candidate: VPacked, root: VPacked): Boolean
+
+    /** L9: unequal payloads decode to a derivable constructor clash at finite depth. */
+    def refutesUnequalPayloads: Boolean
+  }
+
+  /** Nat as arbitrary-precision integers (docs/native-literals.md §4). */
+  case object NatCodec extends PackedCodec {
+    val familyName = "Nat"
+    val zeroName = "Nat.zero"
+    val succName = "Nat.succ"
+
+    override def canonical: Boolean = true
+
+    override def decodeHead(v: VPacked): (String, Vector[Value]) =
+      if (v.payload == 0) (zeroName, Vector.empty)
+      else (succName, Vector(VPacked(NatCodec, v.payload - 1, v.tpe)))
+
+    override def strictlyLess(candidate: VPacked, root: VPacked): Boolean =
+      candidate.payload < root.payload
+
+    override def refutesUnequalPayloads: Boolean = true
+  }
+
+  /**
+   * A packed literal: ground, closed data whose host payload contains no `Value` s. Constructor form is derived on
+   * demand, one layer at a time, through the codec.
+   *
+   * The payload is `BigInt` while Nat is the only codec; it generalizes with the staged CharList codec.
+   */
+  final case class VPacked(codec: PackedCodec, payload: BigInt, tpe: Value) extends Value with UpdatableType {
+    require(payload >= 0, s"Packed payload must be non-negative: $payload")
+    require(!isPropositionType(tpe), s"VPacked requires a non-propositional type, got $tpe")
+
+    override lazy val synDeps: DepSet = tpe.synDeps
+
+    override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
+  }
+
+  /**
    * `noConfusion`: whether unification may assume injectivity and disjointness for this head. True for constructors of
    * genuine inductive types. False for quotient constructors: Quot.sound identifies distinct Quot.mk applications, so
    * `Quot.mk a = Quot.mk b` neither implies `a = b` nor is refutable when `a` and `b` differ.
@@ -415,11 +464,11 @@ object Value {
   final case class ConstructorMeta(shortName: String, canonicalName: String)
 
   /**
-   * Expansion capability of an eta-eligible struct (StructEta): the field names in constructor
-   * order plus the constructor head. Carried on the meta — inside the type value itself — so
-   * expansion needs no environment (Builtins natives run under empty envs; `Value.ascribe` has
-   * none at all). The head is a promise: its type is checked against the installed family head,
-   * so it cannot exist yet when the meta is built (InductiveChecks wires it right after install).
+   * Expansion capability of an eta-eligible struct (StructEta): the field names in constructor order plus the
+   * constructor head. Carried on the meta — inside the type value itself — so expansion needs no environment (Builtins
+   * natives run under empty envs; `Value.ascribe` has none at all). The head is a promise: its type is checked against
+   * the installed family head, so it cannot exist yet when the meta is built (InductiveChecks wires it right after
+   * install).
    */
   final class StructEtaInfo(val fieldNames: Vector[String], ctorHead0: () => ConstructorHead) {
     lazy val ctorHead: ConstructorHead = ctorHead0()
@@ -446,10 +495,10 @@ object Value {
   case object Symbol extends ConstType
 
   /**
-   * Head of a stuck struct projection: `VConst(\"S.field\", StructField(i), _)` applied to its
-   * base. Created only by StructEta on neutral bases; `Interpreter.evalApply` reduces it
-   * structurally (constructor-headed base → stored field), bypassing Pi dispatch. defEq and keys
-   * treat it like any VConst — by name — which is exactly projection congruence.
+   * Head of a stuck struct projection: `VConst(\"S.field\", StructField(i), _)` applied to its base. Created only by
+   * StructEta on neutral bases; `Interpreter.evalApply` reduces it structurally (constructor-headed base → stored
+   * field), bypassing Pi dispatch. defEq and keys treat it like any VConst — by name — which is exactly projection
+   * congruence.
    */
   case class StructField(index: Int) extends ConstType
 

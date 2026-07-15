@@ -3,10 +3,9 @@ package com.raccoonlang
 import com.raccoonlang.ErrorReporter.Source
 
 /**
- * Structure eta as representation (StructEta): every value of an eta-eligible struct type is
- * constructor-headed, so `s ≡ mk(s.f1, …, s.fn)` holds definitionally for binders, opaque
- * constants, axioms, and blocked matches alike — and never for recursive, indexed, or
- * Prop-instantiated structs.
+ * Structure eta as representation (StructEta): every value of an eta-eligible struct type is constructor-headed, so
+ * `s ≡ mk(s.f1, …, s.fn)` holds definitionally for binders, opaque constants, axioms, and blocked matches alike — and
+ * never for recursive, indexed, or Prop-instantiated structs.
  */
 class StructEtaTests extends munit.FunSuite {
 
@@ -54,9 +53,9 @@ class StructEtaTests extends munit.FunSuite {
 
   private val natAndPair =
     """
-      |inductive Nat : Type
-      | | zero : Nat
-      | | succ (_: Nat) : Nat
+      |inductive Peano : Type
+      | | zero : Peano
+      | | succ (_: Peano) : Peano
       |
       |struct Pair (A: Type)(B: Type) : Type
       | | mk (fst: A)(snd: B) : Pair(A, B)
@@ -104,9 +103,9 @@ class StructEtaTests extends munit.FunSuite {
     typecheckDecls(
       natAndPair +
         """
-          |opaque def c : Pair(Nat, Nat) := Pair.mk(Nat.zero, Nat.zero)
+          |opaque def c : Pair(Peano, Peano) := Pair.mk(Peano.zero, Peano.zero)
           |
-          |def eta : Eq(Pair(Nat, Nat), c, Pair.mk(c.fst, c.snd)) := Eq.refl(c)
+          |def eta : Eq(Pair(Peano, Peano), c, Pair.mk(c.fst, c.snd)) := Eq.refl(c)
           |""".stripMargin
     )
   }
@@ -115,9 +114,9 @@ class StructEtaTests extends munit.FunSuite {
     typecheckDecls(
       natAndPair +
         """
-          |axiom a : Pair(Nat, Nat)
+          |axiom a : Pair(Peano, Peano)
           |
-          |def eta : Eq(Pair(Nat, Nat), a, Pair.mk(a.fst, a.snd)) := Eq.refl(a)
+          |def eta : Eq(Pair(Peano, Peano), a, Pair.mk(a.fst, a.snd)) := Eq.refl(a)
           |""".stripMargin
     )
   }
@@ -137,13 +136,13 @@ class StructEtaTests extends munit.FunSuite {
     typecheckDecls(
       natAndPair +
         """
-          |def pick (n: Nat): Pair(Nat, Nat) := {
-          |  match n returning Pair(Nat, Nat) with
-          |  | Nat.zero => Pair.mk(Nat.zero, Nat.zero)
-          |  | Nat.succ k => Pair.mk(k, n)
+          |def pick (n: Peano): Pair(Peano, Peano) := {
+          |  match n returning Pair(Peano, Peano) with
+          |  | Peano.zero => Pair.mk(Peano.zero, Peano.zero)
+          |  | Peano.succ k => Pair.mk(k, n)
           |}
           |
-          |def eta (n: Nat): Eq(Pair(Nat, Nat), pick(n), Pair.mk(pick(n).fst, pick(n).snd)) :=
+          |def eta (n: Peano): Eq(Pair(Peano, Peano), pick(n), Pair.mk(pick(n).fst, pick(n).snd)) :=
           |  Eq.refl(pick(n))
           |""".stripMargin
     )
@@ -183,21 +182,21 @@ class StructEtaTests extends munit.FunSuite {
     val res = runProgram(
       natAndPair +
         """
-          |def pick (n: Nat): Pair(Nat, Nat) := {
-          |  match n returning Pair(Nat, Nat) with
-          |  | Nat.zero => Pair.mk(Nat.zero, Nat.succ(Nat.zero))
-          |  | Nat.succ k => Pair.mk(k, n)
+          |def pick (n: Peano): Pair(Peano, Peano) := {
+          |  match n returning Pair(Peano, Peano) with
+          |  | Peano.zero => Pair.mk(Peano.zero, Peano.succ(Peano.zero))
+          |  | Peano.succ k => Pair.mk(k, n)
           |}
           |
           |{
-          |  let p := pick(Nat.zero)
+          |  let p := pick(Peano.zero)
           |  p.snd
           |}
           |""".stripMargin
     )
     res match {
-      case Value.VCtor(head, _, _) => assertEquals(head.name, "Nat.succ")
-      case other                   => fail(s"Expected Nat.succ constructor value, got $other")
+      case Value.VCtor(head, _, _) => assertEquals(head.name, "Peano.succ")
+      case other                   => fail(s"Expected Peano.succ constructor value, got $other")
     }
   }
 
@@ -220,10 +219,10 @@ class StructEtaTests extends munit.FunSuite {
     val err = expectTypeError(
       natAndPair +
         """
-          |struct Tag (A: Type) indices (n: Nat) : Type
-          | | mk (k: Nat) : Tag(A, k)
+          |struct Tag (A: Type) indices (n: Peano) : Type
+          | | mk (k: Peano) : Tag(A, k)
           |
-          |def eta {A: Type}{n: Nat} (t: Tag(A, n)): Eq(Tag(A, n), t, Tag.mk(t.k)) := Eq.refl(t)
+          |def eta {A: Type}{n: Peano} (t: Tag(A, n)): Eq(Tag(A, n), t, Tag.mk(t.k)) := Eq.refl(t)
           |""".stripMargin
     )
     assert(err.isInstanceOf[TypeError], s"expected a type error, got $err")
@@ -247,10 +246,10 @@ class StructEtaTests extends munit.FunSuite {
     typecheckDecls(
       natAndPair +
         """
-          |def countdown (p: Pair(Nat, Nat)): Nat decreases measure(p.fst) := {
-          |  match p.fst returning Nat with
-          |  | Nat.zero => Nat.zero
-          |  | Nat.succ k => countdown(Pair.mk(k, p.snd))
+          |def countdown (p: Pair(Peano, Peano)): Peano decreases measure(p.fst) := {
+          |  match p.fst returning Peano with
+          |  | Peano.zero => Peano.zero
+          |  | Peano.succ k => countdown(Pair.mk(k, p.snd))
           |}
           |""".stripMargin
     )

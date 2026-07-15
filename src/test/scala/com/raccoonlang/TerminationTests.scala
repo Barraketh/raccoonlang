@@ -26,9 +26,9 @@ class TerminationTests extends munit.FunSuite {
 
   private val natDecls =
     """
-      |inductive Nat : Type
-      | | zero : Nat
-      | | succ (_: Nat) : Nat
+      |inductive Peano : Type
+      | | zero : Peano
+      | | succ (_: Peano) : Peano
       |""".stripMargin
 
   sealed trait Shape
@@ -45,21 +45,21 @@ class TerminationTests extends munit.FunSuite {
     case other                     => SConst(other.toString)
   }
 
-  private val zeroS = SConst("Nat.zero")
-  private def succS(s: Shape): Shape = SApp(SConst("Nat.succ"), List(s))
+  private val zeroS = SConst("Peano.zero")
+  private def succS(s: Shape): Shape = SApp(SConst("Peano.succ"), List(s))
 
   test("structural recursion accepts direct recursive calls") {
     val p =
       natDecls +
         """
-          |def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
+          |def add (a: Peano)(b: Peano): Peano decreases structural(b) := {
           |  match b with
-          |  | Nat.zero => a
-          |  | Nat.succ x => add(Nat.succ(a), x)
+          |  | Peano.zero => a
+          |  | Peano.succ x => add(Peano.succ(a), x)
           |}
           |
           |{
-          |  let one := Nat.succ(Nat.zero)
+          |  let one := Peano.succ(Peano.zero)
           |  add(one, one)
           |}
           |""".stripMargin
@@ -71,13 +71,13 @@ class TerminationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |def skipTwo (n: Nat): Nat decreases structural(n) := {
+          |def skipTwo (n: Peano): Peano decreases structural(n) := {
           |  match n with
-          |  | Nat.zero => Nat.zero
-          |  | Nat.succ x => {
+          |  | Peano.zero => Peano.zero
+          |  | Peano.succ x => {
           |    match x with
-          |    | Nat.zero => Nat.zero
-          |    | Nat.succ y => skipTwo(y)
+          |    | Peano.zero => Peano.zero
+          |    | Peano.succ y => skipTwo(y)
           |  }
           |}
           |""".stripMargin
@@ -89,15 +89,15 @@ class TerminationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |inductive Box (n: Nat) : Type
+          |inductive Box (n: Peano) : Type
           | | mk : Box(n)
           |
-          |def f (n: Nat): Nat decreases structural(n) := {
+          |def f (n: Peano): Peano decreases structural(n) := {
           |  match n with
-          |  | Nat.zero => Nat.zero
-          |  | Nat.succ k => {
-          |    let g := fun (x: Box(f(k))): Nat => Nat.zero
-          |    Nat.zero
+          |  | Peano.zero => Peano.zero
+          |  | Peano.succ k => {
+          |    let g := fun (x: Box(f(k))): Peano => Peano.zero
+          |    Peano.zero
           |  }
           |}
           |""".stripMargin
@@ -109,14 +109,14 @@ class TerminationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |def lex (a: Nat)(b: Nat): Nat decreases lexicographic(a, b) := {
+          |def lex (a: Peano)(b: Peano): Peano decreases lexicographic(a, b) := {
           |  match a with
-          |  | Nat.zero => {
+          |  | Peano.zero => {
           |    match b with
-          |    | Nat.zero => Nat.zero
-          |    | Nat.succ b0 => lex(Nat.zero, b0)
+          |    | Peano.zero => Peano.zero
+          |    | Peano.succ b0 => lex(Peano.zero, b0)
           |  }
-          |  | Nat.succ a0 => lex(a0, b)
+          |  | Peano.succ a0 => lex(a0, b)
           |}
           |""".stripMargin
 
@@ -131,15 +131,15 @@ class TerminationTests extends munit.FunSuite {
           | | nil : List(A)
           | | cons (tail: List(A)) (head: A) : List(A)
           |
-          |def length (A: Type)(xs: List(A)): Nat decreases structural(xs) := {
-          |  match xs returning Nat with
-          |  | List.nil => Nat.zero
-          |  | List.cons tail _ => Nat.succ(length(A, tail))
+          |def length (A: Type)(xs: List(A)): Peano decreases structural(xs) := {
+          |  match xs returning Peano with
+          |  | List.nil => Peano.zero
+          |  | List.cons tail _ => Peano.succ(length(A, tail))
           |}
           |
-          |def consume (A: Type)(xs: List(A)): Nat decreases measure(length(A, xs)) := {
-          |  match xs returning Nat with
-          |  | List.nil => Nat.zero
+          |def consume (A: Type)(xs: List(A)): Peano decreases measure(length(A, xs)) := {
+          |  match xs returning Peano with
+          |  | List.nil => Peano.zero
           |  | List.cons tail _ => consume(A, tail)
           |}
           |""".stripMargin
@@ -151,7 +151,7 @@ class TerminationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |def bad (n: Nat): Nat := bad(n)
+          |def bad (n: Peano): Peano := bad(n)
           |""".stripMargin
 
     typeError[NotFound](p)
@@ -161,13 +161,13 @@ class TerminationTests extends munit.FunSuite {
     val rootQualified =
       natDecls +
         """
-          |def pred (n: Nat): Nat decreases structural(n) := {
+          |def pred (n: Peano): Peano decreases structural(n) := {
           |  match n with
-          |  | Nat.zero => Nat.zero
-          |  | Nat.succ x => _root_.pred(x)
+          |  | Peano.zero => Peano.zero
+          |  | Peano.succ x => _root_.pred(x)
           |}
           |
-          |pred(Nat.succ(Nat.succ(Nat.zero)))
+          |pred(Peano.succ(Peano.succ(Peano.zero)))
           |""".stripMargin
 
     assertEquals(toShape(runProgram(rootQualified).get), zeroS)
@@ -176,14 +176,14 @@ class TerminationTests extends munit.FunSuite {
       natDecls +
         """
           |namespace Math {
-          |  def pred (n: Nat): Nat decreases structural(n) := {
+          |  def pred (n: Peano): Peano decreases structural(n) := {
           |    match n with
-          |    | Nat.zero => Nat.zero
-          |    | Nat.succ x => _root_.Math.pred(x)
+          |    | Peano.zero => Peano.zero
+          |    | Peano.succ x => _root_.Math.pred(x)
           |  }
           |}
           |
-          |Math.pred(Nat.succ(Nat.succ(Nat.zero)))
+          |Math.pred(Peano.succ(Peano.succ(Peano.zero)))
           |""".stripMargin
 
     assertEquals(toShape(runProgram(namespaced).get), zeroS)
@@ -192,14 +192,14 @@ class TerminationTests extends munit.FunSuite {
       natDecls +
         """
           |namespace Math {
-          |  def pred (n: Nat): Nat decreases structural(n) := {
+          |  def pred (n: Peano): Peano decreases structural(n) := {
           |    match n with
-          |    | Nat.zero => Nat.zero
-          |    | Nat.succ x => Math.pred(x)
+          |    | Peano.zero => Peano.zero
+          |    | Peano.succ x => Math.pred(x)
           |  }
           |}
           |
-          |Math.pred(Nat.succ(Nat.succ(Nat.zero)))
+          |Math.pred(Peano.succ(Peano.succ(Peano.zero)))
           |""".stripMargin
 
     assertEquals(toShape(runProgram(namespaceQualified).get), zeroS)
@@ -209,7 +209,7 @@ class TerminationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |def bad (bad: Nat): Nat decreases structural(bad) := bad
+          |def bad (bad: Peano): Peano decreases structural(bad) := bad
           |""".stripMargin
 
     typeError[AlreadyDefined](p)
@@ -219,9 +219,9 @@ class TerminationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |def bad (n: Nat): Nat decreases structural(n) := {
+          |def bad (n: Peano): Peano decreases structural(n) := {
           |  let bad := n
-          |  Nat.zero
+          |  Peano.zero
           |}
           |""".stripMargin
 
@@ -232,7 +232,7 @@ class TerminationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |def bad (n: Nat): Nat decreases structural(n) := bad(n)
+          |def bad (n: Peano): Peano decreases structural(n) := bad(n)
           |""".stripMargin
 
     typeError[NonDecreasingRecursiveCall](p)
@@ -263,7 +263,7 @@ class TerminationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |def bad (a: Nat)(b: Nat): Nat decreases lexicographic(a, b) := bad(a, b)
+          |def bad (a: Peano)(b: Peano): Peano decreases lexicographic(a, b) := bad(a, b)
           |""".stripMargin
 
     typeError[NonDecreasingRecursiveCall](p)
@@ -273,7 +273,7 @@ class TerminationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |def bad (n: Nat): Nat decreases structural(Nat) := n
+          |def bad (n: Peano): Peano decreases structural(Peano) := n
           |""".stripMargin
 
     typeError[InvalidDecreaseSpec](p)
@@ -283,7 +283,7 @@ class TerminationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |def bad (n: Nat): Nat decreases measure(Type) := n
+          |def bad (n: Peano): Peano decreases measure(Type) := n
           |""".stripMargin
 
     typeError[InvalidDecreaseSpec](p)
@@ -294,7 +294,7 @@ class TerminationTests extends munit.FunSuite {
       """
         |inductive Tree : Type
         | | leaf : Tree
-        | | node (f: Nat -> Tree) : Tree
+        | | node (f: Peano -> Tree) : Tree
         |""".stripMargin
 
   test("structural recursion descends through applications of function-typed fields") {
@@ -304,13 +304,13 @@ class TerminationTests extends munit.FunSuite {
     val p =
       treeDecls +
         """
-          |def leftDepth (t: Tree): Nat decreases structural(t) := {
+          |def leftDepth (t: Tree): Peano decreases structural(t) := {
           |  match t with
-          |  | Tree.leaf => Nat.zero
-          |  | Tree.node f => Nat.succ(leftDepth(f(Nat.zero)))
+          |  | Tree.leaf => Peano.zero
+          |  | Tree.node f => Peano.succ(leftDepth(f(Peano.zero)))
           |}
           |
-          |leftDepth(Tree.node(fun (n: Nat): Tree => Tree.leaf))
+          |leftDepth(Tree.node(fun (n: Peano): Tree => Tree.leaf))
           |""".stripMargin
 
     assertEquals(toShape(runProgram(p).get), succS(zeroS))
@@ -324,19 +324,19 @@ class TerminationTests extends munit.FunSuite {
         """
           |inductive Game : Type
           | | halt : Game
-          | | mk (l: Nat -> Game)(r: Nat -> Game) : Game
+          | | mk (l: Peano -> Game)(r: Peano -> Game) : Game
           |
-          |def score (g: Game): Nat decreases structural(g) := {
+          |def score (g: Game): Peano decreases structural(g) := {
           |  match g with
-          |  | Game.halt => Nat.zero
+          |  | Game.halt => Peano.zero
           |  | Game.mk l r => {
-          |    let ihl := fun (b: Nat): Nat => score(l(b))
-          |    let ihr := fun (b: Nat): Nat => score(r(b))
-          |    Nat.succ(ihl(Nat.zero))
+          |    let ihl := fun (b: Peano): Peano => score(l(b))
+          |    let ihr := fun (b: Peano): Peano => score(r(b))
+          |    Peano.succ(ihl(Peano.zero))
           |  }
           |}
           |
-          |score(Game.mk(fun (n: Nat): Game => Game.halt, fun (n: Nat): Game => Game.halt))
+          |score(Game.mk(fun (n: Peano): Game => Game.halt, fun (n: Peano): Game => Game.halt))
           |""".stripMargin
 
     assertEquals(toShape(runProgram(p).get), succS(zeroS))
@@ -348,18 +348,18 @@ class TerminationTests extends munit.FunSuite {
         """
           |inductive Tree : Type
           | | leaf : Tree
-          | | node (f: Nat -> Tree) : Tree
+          | | node (f: Peano -> Tree) : Tree
           | | wrap (t: Tree) : Tree
           |
-          |def deep (t: Tree): Nat decreases structural(t) := {
+          |def deep (t: Tree): Peano decreases structural(t) := {
           |  match t with
-          |  | Tree.leaf => Nat.zero
-          |  | Tree.node f => deep(f(Nat.zero))
+          |  | Tree.leaf => Peano.zero
+          |  | Tree.node f => deep(f(Peano.zero))
           |  | Tree.wrap inner => {
           |    match inner with
-          |    | Tree.leaf => Nat.zero
-          |    | Tree.node f => deep(f(Nat.zero))
-          |    | Tree.wrap t2 => Nat.zero
+          |    | Tree.leaf => Peano.zero
+          |    | Tree.node f => deep(f(Peano.zero))
+          |    | Tree.wrap t2 => Peano.zero
           |  }
           |}
           |""".stripMargin
@@ -373,10 +373,10 @@ class TerminationTests extends munit.FunSuite {
     val p =
       treeDecls +
         """
-          |def bad (t: Tree)(g: Nat -> Tree): Nat decreases structural(t) := {
+          |def bad (t: Tree)(g: Peano -> Tree): Peano decreases structural(t) := {
           |  match t with
-          |  | Tree.leaf => Nat.zero
-          |  | Tree.node f => bad(g(Nat.zero), g)
+          |  | Tree.leaf => Peano.zero
+          |  | Tree.node f => bad(g(Peano.zero), g)
           |}
           |""".stripMargin
 
@@ -391,7 +391,7 @@ class TerminationTests extends munit.FunSuite {
         """
           |axiom Opaque : Type
           |
-          |def bad (q: Opaque): Nat decreases structural(q) := Nat.zero
+          |def bad (q: Opaque): Peano decreases structural(q) := Peano.zero
           |""".stripMargin
 
     typeError[InvalidDecreaseSpec](p)
@@ -401,11 +401,11 @@ class TerminationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |opaque def opaqueApply (h: Nat -> Nat)(n: Nat): Nat := h(n)
+          |opaque def opaqueApply (h: Peano -> Peano)(n: Peano): Peano := h(n)
           |
-          |def bad (n: Nat): Nat decreases structural(n) := {
+          |def bad (n: Peano): Peano decreases structural(n) := {
           |  let x := opaqueApply(bad, n)
-          |  Nat.zero
+          |  Peano.zero
           |}
           |""".stripMargin
 

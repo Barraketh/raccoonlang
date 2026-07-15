@@ -52,7 +52,7 @@ class PropTests extends munit.FunSuite {
     case other                     => SConst(other.toString)
   }
 
-  private val zeroS = SConst("Nat.zero")
+  private val zeroS = SConst("Peano.zero")
 
   // ---------------------------------------------------------------------------
   // Universe / Pi-formation tests for Prop
@@ -79,9 +79,9 @@ class PropTests extends munit.FunSuite {
   test("Pi into Prop-the-sort from Type lives in Sort 2 (Prop : Sort 1, not a proposition)") {
     val res = runProgram(
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |{ (A: Type) -> Prop }
         |""".stripMargin
@@ -98,9 +98,9 @@ class PropTests extends munit.FunSuite {
   test("Dependent Pi into Prop-the-sort lives in Sort 2") {
     val res = runProgram(
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |{ (A: Type) -> (x: A) -> Prop }
         |""".stripMargin
@@ -117,12 +117,12 @@ class PropTests extends munit.FunSuite {
   test("Pi over proof binder into Type stays in Type") {
     val res = runProgram(
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |{
-        |  let F : Type := (P: Prop) -> Nat
+        |  let F : Type := (P: Prop) -> Peano
         |  F
         |}
         |""".stripMargin
@@ -135,16 +135,16 @@ class PropTests extends munit.FunSuite {
 
     res.tpe match {
       case VSort(u) => assertEquals(u, Value.Level.one)
-      case other    => fail(s"Expected (P: Prop) -> Nat to live in Type, got: $other")
+      case other    => fail(s"Expected (P: Prop) -> Peano to live in Type, got: $other")
     }
   }
 
   test("Negative: Pi into Type is not itself a proposition") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |{
         |  let bad : Prop := (A: Type) -> A
@@ -251,23 +251,23 @@ class PropTests extends munit.FunSuite {
   test("Pi into a proposition stays in Prop (impredicativity preserved)") {
     val res = runProgram(
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |{ (n: Nat) -> Eq(Nat, n, n) }
+        |{ (n: Peano) -> Eq(Peano, n, n) }
         |""".stripMargin
     )
 
     assertEquals(res.tpe, PropTpe)
   }
 
-  test("Negative: elimination from Exists into Nat is rejected") {
+  test("Negative: elimination from Exists into Peano is rejected") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |inductive True : Prop
         | | intro : True
@@ -275,11 +275,11 @@ class PropTests extends munit.FunSuite {
         |inductive Exists (A: Type)(p: A -> Prop) : Prop
         | | intro (w: A)(pw: p(w)) : Exists(A, p)
         |
-        |def alwaysTrue (x: Nat): Prop := True
+        |def alwaysTrue (x: Peano): Prop := True
         |
-        |def badExists (h: Exists(Nat, alwaysTrue)): Nat := {
-        |  match h returning Nat with
-        |  | Exists.intro w pw => Nat.zero
+        |def badExists (h: Exists(Peano, alwaysTrue)): Peano := {
+        |  match h returning Peano with
+        |  | Exists.intro w pw => Peano.zero
         |}
         |""".stripMargin
 
@@ -292,20 +292,20 @@ class PropTests extends munit.FunSuite {
     }
   }
 
-  test("Large elimination from Eq into Nat is allowed") {
+  test("Large elimination from Eq into Peano is allowed") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |def eqToNat (n: Nat)(p: Eq(Nat, n, Nat.zero)): Nat := {
-        |  match p returning Nat with
-        |  | Eq.refl x => Nat.zero
+        |def eqToNat (n: Peano)(p: Eq(Peano, n, Peano.zero)): Peano := {
+        |  match p returning Peano with
+        |  | Eq.refl x => Peano.zero
         |}
         |
         |{
-        |  eqToNat(Nat.zero, Eq.refl(Nat.zero))
+        |  eqToNat(Peano.zero, Eq.refl(Peano.zero))
         |}
         |""".stripMargin
 
@@ -316,49 +316,49 @@ class PropTests extends munit.FunSuite {
   test("Large elimination from Eq into a family in Type is allowed") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |def choose (n: Nat)(m: Nat)(p: Eq(Nat, n, m)): Type := {
+        |def choose (n: Peano)(m: Peano)(p: Eq(Peano, n, m)): Type := {
         |  match p returning Type with
-        |  | Eq.refl x => Nat
+        |  | Eq.refl x => Peano
         |}
         |""".stripMargin
 
     typecheckDecls(p)
   }
 
-  test("Large elimination from False into Nat is allowed") {
+  test("Large elimination from False into Peano is allowed") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |inductive False : Prop
         |
-        |def absurdNat (h: False): Nat := {
-        |  match h returning Nat with
+        |def absurdNat (h: False): Peano := {
+        |  match h returning Peano with
         |}
         |""".stripMargin
 
     typecheckDecls(p)
   }
 
-  test("Large elimination from True into Nat is allowed") {
+  test("Large elimination from True into Peano is allowed") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |inductive True : Prop
         | | intro : True
         |
-        |def trueToNat (h: True): Nat := {
-        |  match h returning Nat with
-        |  | True.intro => Nat.zero
+        |def trueToNat (h: True): Peano := {
+        |  match h returning Peano with
+        |  | True.intro => Peano.zero
         |}
         |""".stripMargin
 
@@ -368,15 +368,15 @@ class PropTests extends munit.FunSuite {
   test("Large elimination from indexed-empty Prop family is allowed") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |inductive IsZero indices (n: Nat) : Prop
-        | | intro : IsZero(Nat.zero)
+        |inductive IsZero indices (n: Peano) : Prop
+        | | intro : IsZero(Peano.zero)
         |
-        |def absurdSucc (n: Nat)(h: IsZero(Nat.succ(n))): Nat := {
-        |  match h returning Nat with
+        |def absurdSucc (n: Peano)(h: IsZero(Peano.succ(n))): Peano := {
+        |  match h returning Peano with
         |}
         |""".stripMargin
 
@@ -386,20 +386,20 @@ class PropTests extends munit.FunSuite {
   test("Large elimination is allowed when constructor field is uniquely forced by family arguments") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |inductive IdxWrap (A: Type) indices (x: A) : Prop
         | | intro (y: A) : IdxWrap(A, y)
         |
-        |def unwrapIdx (n: Nat)(h: IdxWrap(Nat, n)): Nat := {
-        |  match h returning Nat with
+        |def unwrapIdx (n: Peano)(h: IdxWrap(Peano, n)): Peano := {
+        |  match h returning Peano with
         |  | IdxWrap.intro y => y
         |}
         |
         |{
-        |  unwrapIdx(Nat.zero, IdxWrap.intro(Nat.zero))
+        |  unwrapIdx(Peano.zero, IdxWrap.intro(Peano.zero))
         |}
         |""".stripMargin
 
@@ -410,21 +410,21 @@ class PropTests extends munit.FunSuite {
   test("Large elimination is allowed when exactly one constructor is reachable at the given index") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |inductive Shape indices (n: Nat) : Prop
-        | | zeroCase : Shape(Nat.zero)
-        | | succCase (m: Nat) : Shape(Nat.succ(m))
+        |inductive Shape indices (n: Peano) : Prop
+        | | zeroCase : Shape(Peano.zero)
+        | | succCase (m: Peano) : Shape(Peano.succ(m))
         |
-        |def predFromShape (n: Nat)(h: Shape(Nat.succ(n))): Nat := {
-        |  match h returning Nat with
+        |def predFromShape (n: Peano)(h: Shape(Peano.succ(n))): Peano := {
+        |  match h returning Peano with
         |  | Shape.succCase m => m
         |}
         |
         |{
-        |  predFromShape(Nat.zero, Shape.succCase(Nat.zero))
+        |  predFromShape(Peano.zero, Shape.succCase(Peano.zero))
         |}
         |""".stripMargin
 
@@ -435,16 +435,16 @@ class PropTests extends munit.FunSuite {
   test("Negative: large elimination from Prop with unforced Type-valued field is rejected") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |inductive HasCarrier : Prop
         | | intro (A: Type) : HasCarrier
         |
-        |def badCarrier (h: HasCarrier): Nat := {
-        |  match h returning Nat with
-        |  | HasCarrier.intro A => Nat.zero
+        |def badCarrier (h: HasCarrier): Peano := {
+        |  match h returning Peano with
+        |  | HasCarrier.intro A => Peano.zero
         |}
         |""".stripMargin
 
@@ -460,9 +460,9 @@ class PropTests extends munit.FunSuite {
   test("Negative: large elimination is rejected when two constructors are reachable") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |inductive Or (P: Prop)(Q: Prop) : Prop
         | | inl (p: P) : Or(P, Q)
@@ -471,10 +471,10 @@ class PropTests extends munit.FunSuite {
         |inductive True : Prop
         | | intro : True
         |
-        |def badOr (h: Or(True, True)): Nat := {
-        |  match h returning Nat with
-        |  | Or.inl p => Nat.zero
-        |  | Or.inr q => Nat.zero
+        |def badOr (h: Or(True, True)): Peano := {
+        |  match h returning Peano with
+        |  | Or.inl p => Peano.zero
+        |  | Or.inr q => Peano.zero
         |}
         |""".stripMargin
 
@@ -494,9 +494,9 @@ class PropTests extends munit.FunSuite {
   test("Eq in Prop supports ordinary proof-level elimination") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |def symm (A: Type)(x: A)(y: A)(p: Eq(A, x, y)): Eq(A, y, x) := {
         |  match p returning Eq(A, y, x) with

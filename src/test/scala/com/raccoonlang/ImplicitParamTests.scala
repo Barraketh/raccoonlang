@@ -51,15 +51,15 @@ class ImplicitParamTests extends munit.FunSuite {
     case other                     => SConst(other.toString)
   }
 
-  private val zeroS = SConst("Nat.zero")
-  private def succS(s: Shape) = SApp(SConst("Nat.succ"), List(s))
+  private val zeroS = SConst("Peano.zero")
+  private def succS(s: Shape) = SApp(SConst("Peano.succ"), List(s))
 
   test("implicit family argument can be used in codomain and body") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |inductive Box {u: Level}(A: Sort(u)) : Sort(u)
         | | mk (a: A) : Box(A)
@@ -70,7 +70,7 @@ class ImplicitParamTests extends munit.FunSuite {
         |}
         |
         |{
-        |  unbox(Box.mk(Nat.zero))
+        |  unbox(Box.mk(Peano.zero))
         |}
         |""".stripMargin
 
@@ -80,18 +80,18 @@ class ImplicitParamTests extends munit.FunSuite {
   test("implicit index can be used as an ordinary term") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |inductive Vec {u: Level}(A: Sort(u)) indices (n: Nat) : Sort(Level.max(Level.one, u))
-        | | nil : Vec(A, Nat.zero)
-        | | cons {n: Nat} (tail: Vec(A, n)) (head: A) : Vec(A, Nat.succ(n))
+        |inductive Vec {u: Level}(A: Sort(u)) indices (n: Peano) : Sort(Level.max(Level.one, u))
+        | | nil : Vec(A, Peano.zero)
+        | | cons {n: Peano} (tail: Vec(A, n)) (head: A) : Vec(A, Peano.succ(n))
         |
-        |def len {n: Nat} (v: Vec(Nat, n)): Nat := n
+        |def len {n: Peano} (v: Vec(Peano, n)): Peano := n
         |
         |{
-        |  len(Vec.cons(Vec.nil(Nat), Nat.zero))
+        |  len(Vec.cons(Vec.nil(Peano), Peano.zero))
         |}
         |""".stripMargin
 
@@ -101,9 +101,9 @@ class ImplicitParamTests extends munit.FunSuite {
   test("def implicits are reconstructed, never supplied positionally") {
     val decls =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |def id {A: Type} (x: A): A := x
         |""".stripMargin
@@ -113,7 +113,7 @@ class ImplicitParamTests extends munit.FunSuite {
       decls +
         """
           |{
-          |  id(Nat, Nat.succ(Nat.zero))
+          |  id(Peano, Peano.succ(Peano.zero))
           |}
           |""".stripMargin
     )
@@ -123,7 +123,7 @@ class ImplicitParamTests extends munit.FunSuite {
       decls +
         """
           |{
-          |  id(Nat.succ(Nat.zero))
+          |  id(Peano.succ(Peano.zero))
           |}
           |""".stripMargin
 
@@ -133,10 +133,10 @@ class ImplicitParamTests extends munit.FunSuite {
   test("implicit binder not forced by any later non-implicit binder is rejected") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
+        |inductive Peano : Type
+        | | zero : Peano
         |
-        |axiom bad : Nat -> {A: Type} -> A
+        |axiom bad : Peano -> {A: Type} -> A
         |""".stripMargin
 
     typeError[NonForcedImplicitParam](p)
@@ -145,18 +145,18 @@ class ImplicitParamTests extends munit.FunSuite {
   test("implicit binders may sit mid-telescope when forced by later binders") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |def pick (n: Nat){A: Type}(x: A)(y: A): A := {
+        |def pick (n: Peano){A: Type}(x: A)(y: A): A := {
         |  match n returning A with
-        |  | Nat.zero => x
-        |  | Nat.succ p => y
+        |  | Peano.zero => x
+        |  | Peano.succ p => y
         |}
         |
         |{
-        |  pick(Nat.zero, Nat.zero, Nat.succ(Nat.zero))
+        |  pick(Peano.zero, Peano.zero, Peano.succ(Peano.zero))
         |}
         |""".stripMargin
 
@@ -185,13 +185,13 @@ class ImplicitParamTests extends munit.FunSuite {
   test("constructor implicit binders may include indices after family params") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Type
-        | | nil : Vec(A, Nat.zero)
-        | | cons {n: Nat} (tail: Vec(A, n)) (head: A) : Vec(A, Nat.succ(n))
+        |inductive Vec (A: Type) indices (n: Peano) : Type
+        | | nil : Vec(A, Peano.zero)
+        | | cons {n: Peano} (tail: Vec(A, n)) (head: A) : Vec(A, Peano.succ(n))
         |""".stripMargin
 
     typecheckDecls(p)
@@ -200,8 +200,8 @@ class ImplicitParamTests extends munit.FunSuite {
   test("match patterns bind implicit constructor fields") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
+        |inductive Peano : Type
+        | | zero : Peano
         |
         |inductive Pack : Sort(Level.succ(Level.one))
         | | mk {A: Type} (x: A) : Pack
@@ -212,11 +212,11 @@ class ImplicitParamTests extends munit.FunSuite {
         |}
         |
         |{
-        |  carrier(Pack.mk(Nat.zero))
+        |  carrier(Pack.mk(Peano.zero))
         |}
         |""".stripMargin
 
-    assertEquals(toShape(runProgram(p)), SConst("Nat"))
+    assertEquals(toShape(runProgram(p)), SConst("Peano"))
   }
 
   test("implicit-only axiom has no forcing binder and is rejected") {
@@ -224,9 +224,9 @@ class ImplicitParamTests extends munit.FunSuite {
     // applied; the axiom itself is now rejected at declaration time.
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |axiom arbitrary : {A: Type} -> A
         |""".stripMargin
@@ -235,19 +235,19 @@ class ImplicitParamTests extends munit.FunSuite {
   }
 
   test("unforced constructor family param is demoted to an explicit argument") {
-    // No field of Vec.nil forces A, so A demotes to an explicit arg: Vec.nil(Nat).
+    // No field of Vec.nil forces A, so A demotes to an explicit arg: Vec.nil(Peano).
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Type
-        | | nil : Vec(A, Nat.zero)
-        | | cons {n: Nat} (tail: Vec(A, n)) (head: A) : Vec(A, Nat.succ(n))
+        |inductive Vec (A: Type) indices (n: Peano) : Type
+        | | nil : Vec(A, Peano.zero)
+        | | cons {n: Peano} (tail: Vec(A, n)) (head: A) : Vec(A, Peano.succ(n))
         |
         |{
-        |  let xs : Vec(Nat, Nat.zero) := Vec.nil(Nat)
+        |  let xs : Vec(Peano, Peano.zero) := Vec.nil(Peano)
         |  xs
         |}
         |""".stripMargin
@@ -258,18 +258,18 @@ class ImplicitParamTests extends munit.FunSuite {
   test("def implicit is reconstructed by projection from the explicit argument's type") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Type
-        | | nil : Vec(A, Nat.zero)
-        | | cons {n: Nat} (tail: Vec(A, n)) (head: A) : Vec(A, Nat.succ(n))
+        |inductive Vec (A: Type) indices (n: Peano) : Type
+        | | nil : Vec(A, Peano.zero)
+        | | cons {n: Peano} (tail: Vec(A, n)) (head: A) : Vec(A, Peano.succ(n))
         |
-        |def use {A: Type} (v: Vec(A, Nat.zero)): Vec(A, Nat.zero) := v
+        |def use {A: Type} (v: Vec(A, Peano.zero)): Vec(A, Peano.zero) := v
         |
         |{
-        |  let xs : Vec(Nat, Nat.zero) := use(Vec.nil(Nat))
+        |  let xs : Vec(Peano, Peano.zero) := use(Vec.nil(Peano))
         |  xs
         |}
         |""".stripMargin
@@ -280,15 +280,15 @@ class ImplicitParamTests extends munit.FunSuite {
   test("expected function type instantiates leading implicit binders") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |def id {A: Type}(x: A): A := x
         |
         |{
-        |  let f : Nat -> Nat := id
-        |  f(Nat.succ(Nat.zero))
+        |  let f : Peano -> Peano := id
+        |  f(Peano.succ(Peano.zero))
         |}
         |""".stripMargin
 
@@ -298,16 +298,16 @@ class ImplicitParamTests extends munit.FunSuite {
   test("expected function type instantiates leading implicit binders through local alias") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |def id {A: Type}(x: A): A := x
         |
         |{
-        |  let t : Type := (_: Nat) -> Nat
+        |  let t : Type := (_: Peano) -> Peano
         |  let f : t := id
-        |  f(Nat.succ(Nat.zero))
+        |  f(Peano.succ(Peano.zero))
         |}
         |""".stripMargin
 
@@ -317,18 +317,18 @@ class ImplicitParamTests extends munit.FunSuite {
   test("explicit arguments are checked against binder types") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Type
-        | | nil : Vec(A, Nat.zero)
-        | | cons {n: Nat} (tail: Vec(A, n)) (head: A) : Vec(A, Nat.succ(n))
+        |inductive Vec (A: Type) indices (n: Peano) : Type
+        | | nil : Vec(A, Peano.zero)
+        | | cons {n: Peano} (tail: Vec(A, n)) (head: A) : Vec(A, Peano.succ(n))
         |
-        |def useNil (v: Vec(Nat, Nat.zero)): Nat := Nat.zero
+        |def useNil (v: Vec(Peano, Peano.zero)): Peano := Peano.zero
         |
         |{
-        |  useNil(Vec.nil(Nat))
+        |  useNil(Vec.nil(Peano))
         |}
         |""".stripMargin
 
@@ -338,22 +338,22 @@ class ImplicitParamTests extends munit.FunSuite {
   test("match branches check constructor results against the def result type") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |inductive Bool : Type
         | | true : Bool
         | | false : Bool
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Type
-        | | nil : Vec(A, Nat.zero)
-        | | cons {n: Nat} (tail: Vec(A, n)) (head: A) : Vec(A, Nat.succ(n))
+        |inductive Vec (A: Type) indices (n: Peano) : Type
+        | | nil : Vec(A, Peano.zero)
+        | | cons {n: Peano} (tail: Vec(A, n)) (head: A) : Vec(A, Peano.succ(n))
         |
-        |def chooseNil (b: Bool): Vec(Nat, Nat.zero) := {
+        |def chooseNil (b: Bool): Vec(Peano, Peano.zero) := {
         |  match b with
-        |  | Bool.true => Vec.nil(Nat)
-        |  | Bool.false => Vec.nil(Nat)
+        |  | Bool.true => Vec.nil(Peano)
+        |  | Bool.false => Vec.nil(Peano)
         |}
         |
         |{
@@ -367,8 +367,8 @@ class ImplicitParamTests extends munit.FunSuite {
   test("unused implicit level binder is rejected") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
+        |inductive Peano : Type
+        | | zero : Peano
         |
         |def bad {A: Type}{u: Level} (x: A): A := x
         |""".stripMargin
@@ -379,16 +379,16 @@ class ImplicitParamTests extends munit.FunSuite {
   test("supplying implicit args positionally is an arity error") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |inductive Vec {u: Level}(A: Sort(u)) indices (n: Nat) : Sort(Level.max(Level.one, u))
-        | | nil : Vec(A, Nat.zero)
-        | | cons {n: Nat} (tail: Vec(A, n)) (head: A) : Vec(A, Nat.succ(n))
+        |inductive Vec {u: Level}(A: Sort(u)) indices (n: Peano) : Sort(Level.max(Level.one, u))
+        | | nil : Vec(A, Peano.zero)
+        | | cons {n: Peano} (tail: Vec(A, n)) (head: A) : Vec(A, Peano.succ(n))
         |
         |{
-        |  Vec.cons(Nat, Vec.nil(Nat), Nat.zero)
+        |  Vec.cons(Peano, Vec.nil(Peano), Peano.zero)
         |}
         |""".stripMargin
 
@@ -400,14 +400,14 @@ class ImplicitParamTests extends munit.FunSuite {
   test("level implicits cannot be supplied positionally") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
+        |inductive Peano : Type
+        | | zero : Peano
         |
         |inductive Box {u: Level}(A: Sort(u)) : Sort(u)
         | | mk (a: A) : Box(A)
         |
         |{
-        |  Box.mk(Level.one, Nat, Nat.zero)
+        |  Box.mk(Level.one, Peano, Peano.zero)
         |}
         |""".stripMargin
 
@@ -417,18 +417,18 @@ class ImplicitParamTests extends munit.FunSuite {
   test("all implicits are inferred when only explicit args are supplied") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |inductive Vec {u: Level}(A: Sort(u)) indices (n: Nat) : Sort(Level.max(Level.one, u))
-        | | nil : Vec(A, Nat.zero)
-        | | cons {n: Nat} (tail: Vec(A, n)) (head: A) : Vec(A, Nat.succ(n))
+        |inductive Vec {u: Level}(A: Sort(u)) indices (n: Peano) : Sort(Level.max(Level.one, u))
+        | | nil : Vec(A, Peano.zero)
+        | | cons {n: Peano} (tail: Vec(A, n)) (head: A) : Vec(A, Peano.succ(n))
         |
-        |def len {n: Nat} (v: Vec(Nat, n)): Nat := n
+        |def len {n: Peano} (v: Vec(Peano, n)): Peano := n
         |
         |{
-        |  len(Vec.cons(Vec.nil(Nat), Nat.zero))
+        |  len(Vec.cons(Vec.nil(Peano), Peano.zero))
         |}
         |""".stripMargin
 

@@ -33,22 +33,22 @@ class TypingTests extends munit.FunSuite {
     case other                     => SConst(other.toString) // fallback
   }
 
-  private val zeroS = SConst("Nat.zero")
-  private def succS(s: Shape) = SApp(SConst("Nat.succ"), List(s))
+  private val zeroS = SConst("Peano.zero")
+  private def succS(s: Shape) = SApp(SConst("Peano.succ"), List(s))
 
   test("bare-body def of function type aliases a function without eta-expansion") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |def myFn (n: Nat): Nat := Nat.succ(n)
+        |def myFn (n: Peano): Peano := Peano.succ(n)
         |
-        |def alias : Nat -> Nat := myFn
+        |def alias : Peano -> Peano := myFn
         |
         |{
-        |  alias(Nat.zero)
+        |  alias(Peano.zero)
         |}
         |""".stripMargin
 
@@ -58,16 +58,16 @@ class TypingTests extends munit.FunSuite {
   test("bare-body def eta-adapts a polymorphic function like a let does") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |def polyId {u: Level}{A: Sort(u)} (x: A): A := x
         |
-        |def monoId : Nat -> Nat := polyId
+        |def monoId : Peano -> Peano := polyId
         |
         |{
-        |  monoId(Nat.zero)
+        |  monoId(Peano.zero)
         |}
         |""".stripMargin
 
@@ -77,14 +77,14 @@ class TypingTests extends munit.FunSuite {
   test("def typechecks and reduces by default") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |def id (A: Type)(x: A): A := x
         |
         |{
-        |  id(Nat, Nat.zero)
+        |  id(Peano, Peano.zero)
         |}
         |""".stripMargin
 
@@ -95,9 +95,9 @@ class TypingTests extends munit.FunSuite {
   test("def: declared return too large (A -> A) expected, value A") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |def bad (A: Type)(x: A): A -> A := x
         |""".stripMargin
@@ -107,15 +107,15 @@ class TypingTests extends munit.FunSuite {
     }
   }
 
-  test("let with mismatched ascription fails (constructor vs Nat)") {
+  test("let with mismatched ascription fails (constructor vs Peano)") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |{
-        |  let s : Nat := Nat.succ
+        |  let s : Peano := Peano.succ
         |  s
         |}
         |""".stripMargin
@@ -125,16 +125,16 @@ class TypingTests extends munit.FunSuite {
     }
   }
 
-  test("ascribed function type alpha-equals: (x: Nat)->Nat vs fun (y: Nat) => y") {
+  test("ascribed function type alpha-equals: (x: Peano)->Peano vs fun (y: Peano) => y") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |{
-        |  let f : (x: Nat) -> Nat := fun (y: Nat): Nat => y
-        |  f(Nat.zero)
+        |  let f : (x: Peano) -> Peano := fun (y: Peano): Peano => y
+        |  f(Peano.zero)
         |}
         |""".stripMargin
 
@@ -145,14 +145,14 @@ class TypingTests extends munit.FunSuite {
   test("nested lambda captures outer local ref") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |{
-        |  let k := fun (x: Nat): ((y: Nat) -> Nat) => fun (y: Nat): Nat => x
-        |  let h := k(Nat.zero)
-        |  h(Nat.succ(Nat.zero))
+        |  let k := fun (x: Peano): ((y: Peano) -> Peano) => fun (y: Peano): Peano => x
+        |  let h := k(Peano.zero)
+        |  h(Peano.succ(Peano.zero))
         |}
         |""".stripMargin
 
@@ -163,14 +163,14 @@ class TypingTests extends munit.FunSuite {
   test("later let shadowing allocates a new local ref") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |{
-        |  let x := Nat.zero
-        |  let f := fun (y: Nat): Nat => x
-        |  let x := Nat.succ(Nat.zero)
+        |  let x := Peano.zero
+        |  let f := fun (y: Peano): Peano => x
+        |  let x := Peano.succ(Peano.zero)
         |  f(x)
         |}
         |""".stripMargin
@@ -179,21 +179,21 @@ class TypingTests extends munit.FunSuite {
     assertEquals(toShape(res), zeroS)
   }
 
-  test("pred on Nat typechecks and reduces via match") {
+  test("pred on Peano typechecks and reduces via match") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |def pred (n: Nat): Nat := {
+        |def pred (n: Peano): Peano := {
         |  match n with
-        |  | Nat.zero => Nat.zero
-        |  | Nat.succ x => x
+        |  | Peano.zero => Peano.zero
+        |  | Peano.succ x => x
         |}
         |
         |{
-        |  pred(Nat.succ(Nat.zero))
+        |  pred(Peano.succ(Peano.zero))
         |}
         |""".stripMargin
 
@@ -201,17 +201,17 @@ class TypingTests extends munit.FunSuite {
     assertEquals(toShape(res), zeroS)
   }
 
-  test("def: declared result Type but branch returns Nat => mismatch") {
+  test("def: declared result Type but branch returns Peano => mismatch") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |def bad (n: Nat): Type := {
+        |def bad (n: Peano): Type := {
         |  match n with
-        |  | Nat.zero => Nat.zero
-        |  | Nat.succ x => x
+        |  | Peano.zero => Peano.zero
+        |  | Peano.succ x => x
         |}
         |""".stripMargin
 
@@ -223,14 +223,14 @@ class TypingTests extends munit.FunSuite {
   test("def: explicit match motive must fit declared result") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |def bad (n: Nat): Type := {
-        |  match n returning Nat with
-        |  | Nat.zero => Nat.zero
-        |  | Nat.succ x => x
+        |def bad (n: Peano): Type := {
+        |  match n returning Peano with
+        |  | Peano.zero => Peano.zero
+        |  | Peano.succ x => x
         |}
         |""".stripMargin
 
@@ -242,12 +242,12 @@ class TypingTests extends munit.FunSuite {
   test("unannotated let with constructor synthesizes type and reduces when applied") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |{
-        |  let one := Nat.succ(Nat.zero)
+        |  let one := Peano.succ(Peano.zero)
         |  one
         |}
         |""".stripMargin
@@ -259,15 +259,15 @@ class TypingTests extends munit.FunSuite {
   test("Bad metas") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
-        | | nil : Vec(A, Nat.zero)
-        | | cons (n: Nat) (xs: Vec(A, n)) (x: A): Vec(A, Nat.succ(n))
+        |inductive Vec (A: Type) indices (n: Peano) : Sort(Level.one)
+        | | nil : Vec(A, Peano.zero)
+        | | cons (n: Peano) (xs: Vec(A, n)) (x: A): Vec(A, Peano.succ(n))
         |
-        |def badVec (A: Type)(n: Nat)(v: Vec(A, n)): Vec(A, Nat.zero) := v
+        |def badVec (A: Type)(n: Peano)(v: Vec(A, n)): Vec(A, Peano.zero) := v
         |""".stripMargin
 
     intercept[TypeMismatch] {
@@ -278,15 +278,15 @@ class TypingTests extends munit.FunSuite {
   test("reachable nullary ctor branch refines scrutinee at instantiated result type") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
-        | | nil : Vec(A, Nat.zero)
-        | | cons (n: Nat) (xs: Vec(A, n)) (x: A): Vec(A, Nat.succ(n))
+        |inductive Vec (A: Type) indices (n: Peano) : Sort(Level.one)
+        | | nil : Vec(A, Peano.zero)
+        | | cons (n: Peano) (xs: Vec(A, n)) (x: A): Vec(A, Peano.succ(n))
         |
-        |def keepNil (A: Type)(v: Vec(A, Nat.zero)): Vec(A, Nat.zero) := {
+        |def keepNil (A: Type)(v: Vec(A, Peano.zero)): Vec(A, Peano.zero) := {
         |  match v with
         |  | Vec.nil => v
         |}
@@ -298,26 +298,26 @@ class TypingTests extends munit.FunSuite {
   test("definition body can start on next line and wrap applications") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |def apply
         |  (f:
-        |    Nat ->
-        |    Nat
+        |    Peano ->
+        |    Peano
         |  )
-        |  (x: Nat)
-        |  : Nat :=
+        |  (x: Peano)
+        |  : Peano :=
         |  f(
         |    x
         |  )
         |
-        |def useApply : Nat :=
+        |def useApply : Peano :=
         |  apply(
-        |    fun (n: Nat): Nat =>
+        |    fun (n: Peano): Peano =>
         |      n,
-        |    Nat.zero
+        |    Peano.zero
         |  )
         |
         |{
@@ -332,11 +332,11 @@ class TypingTests extends munit.FunSuite {
   test("nullary top-level def body must match declared type") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |def bad : Nat := Type
+        |def bad : Peano := Type
         |""".stripMargin
 
     intercept[TypeMismatch] {
@@ -347,11 +347,11 @@ class TypingTests extends munit.FunSuite {
   test("nullary top-level opaque def body must match declared type") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |opaque def bad : Nat := Type
+        |opaque def bad : Peano := Type
         |""".stripMargin
 
     intercept[TypeMismatch] {

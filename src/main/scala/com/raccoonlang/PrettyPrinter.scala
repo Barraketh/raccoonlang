@@ -52,6 +52,7 @@ object PrettyPrinter {
   }
 
   private def printTermAtom(t: CoreAst.Term): String = t match {
+    case CoreAst.Term.NatLit(value, _)       => value.toString
     case _: CoreAst.Term.Ref                 => printCoreTerm(t)
     case CoreAst.Term.App(_, _, _)           => printCoreTerm(t)
     case CoreAst.Term.Select(base, field, _) => s"${printTermAtom(base)}[$field]"
@@ -62,7 +63,8 @@ object PrettyPrinter {
   }
 
   private def printCoreTerm(t: CoreAst.Term): String = t match {
-    case ref: CoreAst.Term.Ref => printRef(ref)
+    case CoreAst.Term.NatLit(value, _) => value.toString
+    case ref: CoreAst.Term.Ref         => printRef(ref)
     case CoreAst.Term.Lam(ty, body, _, _, recursion) =>
       val decreaseStr = recursion.map(r => s" ${printDecreaseSpec(r.decreases)}").getOrElse("")
       s"fun ${printBinders(ty.binders)}: ${printCoreTerm(ty.out)}$decreaseStr => ${printCoreTerm(body)}"
@@ -128,6 +130,7 @@ object PrettyPrinter {
   }
 
   private def printElabTermAtom(t: ElabAst.Term): String = t match {
+    case ElabAst.Term.NatLit(value, _)      => value.toString
     case _: ElabAst.Term.Ref                => printElabTerm0(t)
     case ElabAst.Term.App(_, _, _)          => printElabTerm0(t)
     case ElabAst.Term.Lam(_, _, _, _, _, _) => s"(${printElabTerm0(t)})"
@@ -137,7 +140,8 @@ object PrettyPrinter {
   }
 
   private def printElabTerm0(t: ElabAst.Term): String = t match {
-    case ref: ElabAst.Term.Ref => printElabRef(ref)
+    case ElabAst.Term.NatLit(value, _) => value.toString
+    case ref: ElabAst.Term.Ref         => printElabRef(ref)
     case ElabAst.Term.Lam(ty, body, _, _, _, _) =>
       s"fun ${printElabBinders(ty.binders)}: ${printElabTerm0(ty.out)} => ${printElabTerm0(body)}"
     case m @ ElabAst.Term.Match(_, _, _, _, _) => printElabMatch(m)
@@ -185,6 +189,7 @@ object PrettyPrinter {
     case v: Value.Var          => s"${v.name}#${v.id}"
     case s: Value.NeutralThunk => s"match#${s.id}"
     case p: Value.VProof       => s"‹proof of ${print(p.tpe)}›"
+    case p: Value.VPacked      => p.payload.toString
     case LevelTpe              => s"Level"
   }
 

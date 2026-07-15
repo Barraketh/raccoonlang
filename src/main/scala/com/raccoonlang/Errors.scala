@@ -74,6 +74,26 @@ final case class AlreadyDefined(name: String, span: Option[Span] = None) extends
   val msg: String = s"$name already defined"
 }
 
+final case class ReservedKernelName(name: String, span: Option[Span] = None) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  override val msg: String = s"$name is reserved for the bundled kernel Prelude"
+}
+
+final case class NatLiteralUnavailable(reason: String, span: Option[Span] = None) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  override val msg: String = s"Nat literal unavailable: $reason"
+}
+
+final case class NativeOperationLimitExceeded(
+    operation: String,
+    argument: BigInt,
+    limit: BigInt,
+    span: Option[Span] = None
+) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  override val msg: String = s"$operation argument $argument exceeds native evaluation limit $limit"
+}
+
 final case class AmbiguousName(name: String, candidates: Vector[String], span: Option[Span] = None) extends TypeError {
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
   override val msg: String = s"$name is ambiguous: ${candidates.mkString(", ")}"

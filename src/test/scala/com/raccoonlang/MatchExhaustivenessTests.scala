@@ -10,16 +10,16 @@ class MatchExhaustivenessTests extends munit.FunSuite {
     }
   }
 
-  test("non-exhaustive: missing succ case on Nat") {
+  test("non-exhaustive: missing succ case on Peano") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |def onlyZero (n: Nat): Nat := {
+        |def onlyZero (n: Peano): Peano := {
         |  match n with
-        |  | Nat.zero => Nat.zero
+        |  | Peano.zero => Peano.zero
         |}
         |
         |""".stripMargin
@@ -27,18 +27,18 @@ class MatchExhaustivenessTests extends munit.FunSuite {
     intercept[MissingCase] { typecheckDecls(p) }
   }
 
-  test("duplicate case: two Nat.zero branches") {
+  test("duplicate case: two Peano.zero branches") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |def dup (n: Nat): Nat := {
+        |def dup (n: Peano): Peano := {
         |  match n with
-        |  | Nat.zero => Nat.zero
-        |  | Nat.zero => Nat.zero
-        |  | Nat.succ x => x
+        |  | Peano.zero => Peano.zero
+        |  | Peano.zero => Peano.zero
+        |  | Peano.succ x => x
         |}
         |
         |""".stripMargin
@@ -46,21 +46,21 @@ class MatchExhaustivenessTests extends munit.FunSuite {
     intercept[DuplicateCase] { typecheckDecls(p) }
   }
 
-  test("unreachable case: Vec.cons on Vec A Nat.zero") {
+  test("unreachable case: Vec.cons on Vec A Peano.zero") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
-        | | nil : Vec(A, Nat.zero)
-        | | cons (n: Nat) (xs: Vec(A, n)) (x: A): Vec(A, Nat.succ(n))
+        |inductive Vec (A: Type) indices (n: Peano) : Sort(Level.one)
+        | | nil : Vec(A, Peano.zero)
+        | | cons (n: Peano) (xs: Vec(A, n)) (x: A): Vec(A, Peano.succ(n))
         |
-        |def f (A: Type)(v: Vec(A, Nat.zero)): Nat := {
-        |  match v returning Nat with
-        |  | Vec.nil => Nat.zero
-        |  | Vec.cons n xs x => Nat.zero
+        |def f (A: Type)(v: Vec(A, Peano.zero)): Peano := {
+        |  match v returning Peano with
+        |  | Vec.nil => Peano.zero
+        |  | Vec.cons n xs x => Peano.zero
         |}
         |
         |""".stripMargin
@@ -71,17 +71,17 @@ class MatchExhaustivenessTests extends munit.FunSuite {
   test("non-exhaustive: opaque scrutinee application should still require succ case") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |// Opaque on purpose: evaluator will keep this as a Symbol head
-        |opaque def g (n: Nat): Nat := Nat.zero
+        |opaque def g (n: Peano): Peano := Peano.zero
         |
-        |def bad (n: Nat): Nat := {
+        |def bad (n: Peano): Peano := {
         |  // scrutinee is neutral/opaque application: g n
         |  match g(n) with
-        |  | Nat.zero => Nat.zero
+        |  | Peano.zero => Peano.zero
         |}
         |
         |""".stripMargin
@@ -92,16 +92,16 @@ class MatchExhaustivenessTests extends munit.FunSuite {
   test("exhaustive: opaque scrutinee application should typecheck") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |opaque def g (n: Nat): Nat := n
+        |opaque def g (n: Peano): Peano := n
         |
-        |def ok (n: Nat): Nat := {
+        |def ok (n: Peano): Peano := {
         |  match g(n) with
-        |  | Nat.zero => Nat.zero
-        |  | Nat.succ x => x
+        |  | Peano.zero => Peano.zero
+        |  | Peano.succ x => x
         |}
         |
         |""".stripMargin
@@ -131,14 +131,14 @@ class MatchExhaustivenessTests extends munit.FunSuite {
   test("omitted returning: expected type permits empty unreachable match") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |inductive IsZero indices (n: Nat) : Type
-        | | intro : IsZero(Nat.zero)
+        |inductive IsZero indices (n: Peano) : Type
+        | | intro : IsZero(Peano.zero)
         |
-        |def absurdSucc (n: Nat)(h: IsZero(Nat.succ(n))): Nat := {
+        |def absurdSucc (n: Peano)(h: IsZero(Peano.succ(n))): Peano := {
         |  match h with
         |}
         |
@@ -150,15 +150,15 @@ class MatchExhaustivenessTests extends munit.FunSuite {
   test("omitted returning: expected type disambiguates differing reachable constructor results") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |inductive Shape indices (n: Nat) : Type
-        | | zeroCase : Shape(Nat.zero)
-        | | succCase (m: Nat) : Shape(Nat.succ(m))
+        |inductive Shape indices (n: Peano) : Type
+        | | zeroCase : Shape(Peano.zero)
+        | | succCase (m: Peano) : Shape(Peano.succ(m))
         |
-        |def keepShape (n: Nat)(s: Shape(n)): Shape(n) := {
+        |def keepShape (n: Peano)(s: Shape(n)): Shape(n) := {
         |  match s with
         |  | Shape.zeroCase => s
         |  | Shape.succCase m => s

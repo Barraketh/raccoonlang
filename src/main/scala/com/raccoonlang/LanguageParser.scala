@@ -67,6 +67,10 @@ object LanguageParser {
     ident.flatSpanned(sourceId).map(Ident.tupled)
   private def rootTerm(implicit sourceId: Option[SourceId]): Parser[Term] =
     rootIdent.flatSpanned(sourceId).map(Ident.tupled)
+  private val natLitAtom: Parser[BigInt] =
+    (P(c => c.isDigit) ~ P(c => c.isDigit).rep(0)).!.map(BigInt(_))
+  private def natLitTerm(implicit sourceId: Option[SourceId]): Parser[Term] =
+    natLitAtom.flatSpanned(sourceId).map(NatLit.tupled)
 
   private def pathP: Parser[Vector[String]] = ident.rep(min = 1, sep = P('.'))
 
@@ -77,7 +81,7 @@ object LanguageParser {
   }
 
   private def termAtom(implicit sourceId: Option[SourceId]): Parser[Term] =
-    (sym("(") ~/ skipAllWs ~ term ~ layoutSymTight(")")) | rootTerm | identTerm
+    (sym("(") ~/ skipAllWs ~ term ~ layoutSymTight(")")) | rootTerm | identTerm | natLitTerm
 
   private def parenArgs[A](arg: => Parser[A]): Parser[Vector[A]] =
     P('(') ~/ skipAllWs ~ arg.rep(0, layoutSym(',')) ~ layoutSymTight(')')
@@ -93,7 +97,8 @@ object LanguageParser {
     simplePi |
       sym('(') ~ skipAllWs ~ typeTerm ~ layoutSymTight(')') |
       rootTerm |
-      identTerm
+      identTerm |
+      natLitTerm
 
   sealed trait TypeTrailer
   case class Dot(name: String, span: Span) extends TypeTrailer

@@ -95,6 +95,11 @@ object TerminationChecker {
           applicationOfSubterm(candidate, field) ||
           isStrictSubterm(candidate, field)
         }
+      case root: VPacked =>
+        candidate match {
+          case packed: VPacked if packed.codec == root.codec => root.codec.strictlyLess(packed, root)
+          case _                                             => false
+        }
       case _ => false
     }
 

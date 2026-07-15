@@ -229,6 +229,14 @@ namespace Nat {
     }
   }
 
+  def pow (a: Nat)(b: Nat): Nat decreases structural(b) := {
+    match b returning Nat with
+    | Nat.zero => Nat.succ(Nat.zero)
+    | Nat.succ p => Nat.mul(Nat.pow(a, p), a)
+  }
+
+  def blt (a: Nat)(b: Nat): Bool := Nat.ble(Nat.succ(a), b)
+
   def le (a: Nat)(b: Nat): Prop := Eq(Bool, Nat.ble(a, b), Bool.true)
 
   def lt (a: Nat)(b: Nat): Prop := Nat.le(Nat.succ(a), b)

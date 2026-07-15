@@ -21,14 +21,14 @@ class EqualityCommTests extends munit.FunSuite {
   test("prove add commutativity (a + b = b + a)") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ(_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ(_: Peano) : Peano
         |
-        |def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
+        |def add (a: Peano)(b: Peano): Peano decreases structural(b) := {
         |  match b with
-        |  | Nat.zero => a
-        |  | Nat.succ x => add(Nat.succ(a), x)
+        |  | Peano.zero => a
+        |  | Peano.succ x => add(Peano.succ(a), x)
         |}
         |
         |def trans {A: Type}{x: A}{y: A}{z: A} (p: Eq(A, x, y))(q: Eq(A, y, z)): Eq(A, x, z) := {
@@ -41,34 +41,34 @@ class EqualityCommTests extends munit.FunSuite {
         |  | Eq.refl w => Eq.refl(w)
         |}
         |
-        |def congSucc {a: Nat}{b: Nat} (p: Eq(Nat, a, b)): Eq(Nat, Nat.succ(a), Nat.succ(b)) := {
-        |  match p returning Eq(Nat, Nat.succ(a), Nat.succ(b)) with
-        |  | Eq.refl x => Eq.refl(Nat.succ(x))
+        |def congSucc {a: Peano}{b: Peano} (p: Eq(Peano, a, b)): Eq(Peano, Peano.succ(a), Peano.succ(b)) := {
+        |  match p returning Eq(Peano, Peano.succ(a), Peano.succ(b)) with
+        |  | Eq.refl x => Eq.refl(Peano.succ(x))
         |}
         |
-        |def succAdd (a: Nat)(b: Nat): Eq(Nat, add(Nat.succ(a), b), Nat.succ(add(a, b))) decreases structural(b) := {
-        |  match b returning Eq(Nat, add(Nat.succ(a), b), Nat.succ(add(a, b))) with
-        |  | Nat.zero => Eq.refl(Nat.succ(a))
-        |  | Nat.succ x => succAdd(Nat.succ(a), x)
+        |def succAdd (a: Peano)(b: Peano): Eq(Peano, add(Peano.succ(a), b), Peano.succ(add(a, b))) decreases structural(b) := {
+        |  match b returning Eq(Peano, add(Peano.succ(a), b), Peano.succ(add(a, b))) with
+        |  | Peano.zero => Eq.refl(Peano.succ(a))
+        |  | Peano.succ x => succAdd(Peano.succ(a), x)
         |}
         |
         |// add 0 b = b
-        |def zeroAdd (b: Nat): Eq(Nat, add(Nat.zero, b), b) decreases structural(b) := {
-        |  match b returning Eq(Nat, add(Nat.zero, b), b) with
-        |  | Nat.zero => Eq.refl(Nat.zero)
-        |  | Nat.succ x => {
+        |def zeroAdd (b: Peano): Eq(Peano, add(Peano.zero, b), b) decreases structural(b) := {
+        |  match b returning Eq(Peano, add(Peano.zero, b), b) with
+        |  | Peano.zero => Eq.refl(Peano.zero)
+        |  | Peano.succ x => {
         |    let ih := zeroAdd(x)
-        |    let step1 := succAdd(Nat.zero, x)
+        |    let step1 := succAdd(Peano.zero, x)
         |    let step2 := congSucc(ih)
         |    trans(step1, step2)
         |  }
         |}
         |
         |// add commutativity: a + b = b + a
-        |def addComm (a: Nat)(b: Nat): Eq(Nat, add(a, b), add(b, a)) decreases structural(b) := {
-        |  match b returning Eq(Nat, add(a, b), add(b, a)) with
-        |  | Nat.zero => symm(zeroAdd(a))
-        |  | Nat.succ x => {
+        |def addComm (a: Peano)(b: Peano): Eq(Peano, add(a, b), add(b, a)) decreases structural(b) := {
+        |  match b returning Eq(Peano, add(a, b), add(b, a)) with
+        |  | Peano.zero => symm(zeroAdd(a))
+        |  | Peano.succ x => {
         |    let ih := addComm(a, x)
         |    let step1 := succAdd(a, x)
         |    let stepCong := congSucc(ih)

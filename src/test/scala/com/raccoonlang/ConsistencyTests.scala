@@ -114,14 +114,14 @@ class ConsistencyTests extends munit.FunSuite {
     // link x := y beneath the opaque frame f, so the refl branch stays unrefined.
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |opaque def f (n: Nat): Nat := n
+        |opaque def f (n: Peano): Peano := n
         |
-        |def injF (x: Nat)(y: Nat)(h: Eq(Nat, f(x), f(y))): Eq(Nat, x, y) := {
-        |  match h returning Eq(Nat, x, y) with
+        |def injF (x: Peano)(y: Peano)(h: Eq(Peano, f(x), f(y))): Eq(Peano, x, y) := {
+        |  match h returning Eq(Peano, x, y) with
         |  | Eq.refl z => Eq.refl(x)
         |}
         |""".stripMargin
@@ -134,15 +134,15 @@ class ConsistencyTests extends munit.FunSuite {
     // The same equation is stuck, not apart: a no-cases match must not prune refl.
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |inductive MyFalse : Prop
         |
-        |opaque def f (n: Nat): Nat := n
+        |opaque def f (n: Peano): Peano := n
         |
-        |def boom (x: Nat)(y: Nat)(h: Eq(Nat, f(x), f(y))): MyFalse := {
+        |def boom (x: Peano)(y: Peano)(h: Eq(Peano, f(x), f(y))): MyFalse := {
         |  match h returning MyFalse with
         |}
         |""".stripMargin
@@ -234,22 +234,22 @@ class ConsistencyTests extends munit.FunSuite {
 
   // §7.4 Prop-sort conflation.
   test("Negative: predicates are not proof-irrelevant") {
-    // trueP and falseP have type (n: Nat) -> Prop, which lives in Type: they are data,
+    // trueP and falseP have type (n: Peano) -> Prop, which lives in Type: they are data,
     // so refl does not identify them.
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
+        |inductive Peano : Type
+        | | zero : Peano
         |
         |inductive True : Prop
         | | intro : True
         |
         |inductive False : Prop
         |
-        |def trueP (n: Nat): Prop := True
-        |def falseP (n: Nat): Prop := False
+        |def trueP (n: Peano): Prop := True
+        |def falseP (n: Peano): Prop := False
         |
-        |def bad : Eq((n: Nat) -> Prop, trueP, falseP) := Eq.refl(trueP)
+        |def bad : Eq((n: Peano) -> Prop, trueP, falseP) := Eq.refl(trueP)
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {
@@ -309,17 +309,17 @@ class ConsistencyTests extends munit.FunSuite {
   test("separate parses give distinct local Pi identities") {
     def piProgram(domain: String, binder: String): String =
       s"""
-        |inductive Nat : Type
-        | | zero : Nat
-        |
-        |inductive Bool : Type
-        | | true : Bool
-        | | false : Bool
-        |
-        |{ ($binder: $domain) -> $domain }
-        |""".stripMargin
+         |inductive Peano : Type
+         | | zero : Peano
+         |
+         |inductive Bool : Type
+         | | true : Bool
+         | | false : Bool
+         |
+         |{ ($binder: $domain) -> $domain }
+         |""".stripMargin
 
-    val natPi = runTestProgram(piProgram("Nat", "x"))
+    val natPi = runTestProgram(piProgram("Peano", "x"))
     val boolPi = runTestProgram(piProgram("Bool", "b"))
 
     assert(!ValueEquivalence.defEq(natPi, boolPi))
@@ -329,17 +329,17 @@ class ConsistencyTests extends munit.FunSuite {
   test("quoted Pi siblings receive distinct identities while re-quotes remain definitionally equal") {
     def piProgram(domain: String): String =
       s"""
-        |inductive Nat : Type
-        | | zero : Nat
-        |
-        |inductive Bool : Type
-        | | true : Bool
-        | | false : Bool
-        |
-        |{ (x: $domain) -> $domain }
-        |""".stripMargin
+         |inductive Peano : Type
+         | | zero : Peano
+         |
+         |inductive Bool : Type
+         | | true : Bool
+         | | false : Bool
+         |
+         |{ (x: $domain) -> $domain }
+         |""".stripMargin
 
-    val (natValue, env) = runTestProgramWithEnv(piProgram("Nat"))
+    val (natValue, env) = runTestProgramWithEnv(piProgram("Peano"))
     val natPi = natValue.asInstanceOf[Value.VPi]
     val boolPi = runTestProgram(piProgram("Bool")).asInstanceOf[Value.VPi]
     val context = ValueQuote.QuoteContext(Map.empty)

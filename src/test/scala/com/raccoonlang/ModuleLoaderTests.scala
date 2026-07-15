@@ -43,12 +43,12 @@ class ModuleLoaderTests extends munit.FunSuite {
     val root = Files.createTempDirectory("raccoon-modules")
     write(
       root,
-      "Lib/Nat.rac",
+      "Lib/Peano.rac",
       """
         |namespace Lib {
-        |  inductive Nat : Type
-        |   | zero : Nat
-        |   | succ (_: Nat) : Nat
+        |  inductive Peano : Type
+        |   | zero : Peano
+        |   | succ (_: Peano) : Peano
         |}
         |""".stripMargin
     )
@@ -56,15 +56,15 @@ class ModuleLoaderTests extends munit.FunSuite {
       root,
       "Main.rac",
       """
-        |import Lib.Nat
+        |import Lib.Peano
         |
         |{
-        |  Lib.Nat.zero
+        |  Lib.Peano.zero
         |}
         |""".stripMargin
     )
 
-    assertEquals(ctorName(run(entry)), "Lib.Nat.zero")
+    assertEquals(ctorName(run(entry)), "Lib.Peano.zero")
   }
 
   test("explicit Init.Prelude import is harmless because the prelude is automatic") {
@@ -75,11 +75,11 @@ class ModuleLoaderTests extends munit.FunSuite {
       """
         |import Init.Prelude
         |
-        |inductive Nat : Type
-        | | zero : Nat
+        |inductive Peano : Type
+        | | zero : Peano
         |
         |{
-        |  Eq.refl(Nat.zero)
+        |  Eq.refl(Peano.zero)
         |}
         |""".stripMargin
     )
@@ -151,11 +151,11 @@ class ModuleLoaderTests extends munit.FunSuite {
     val root = Files.createTempDirectory("raccoon-modules")
     write(
       root,
-      "Lib/Nat.rac",
+      "Lib/Peano.rac",
       """
         |namespace Lib {
-        |  inductive Nat : Type
-        |   | zero : Nat
+        |  inductive Peano : Type
+        |   | zero : Peano
         |}
         |""".stripMargin
     )
@@ -163,10 +163,10 @@ class ModuleLoaderTests extends munit.FunSuite {
       root,
       "Lib/Id.rac",
       """
-        |import Lib.Nat
+        |import Lib.Peano
         |
         |namespace Lib {
-        |  def idNat (n: Nat): Nat := n
+        |  def idNat (n: Peano): Peano := n
         |}
         |""".stripMargin
     )
@@ -177,23 +177,23 @@ class ModuleLoaderTests extends munit.FunSuite {
         |import Lib.Id
         |
         |{
-        |  Lib.idNat(Lib.Nat.zero)
+        |  Lib.idNat(Lib.Peano.zero)
         |}
         |""".stripMargin
     )
 
-    assertEquals(ctorName(run(entry)), "Lib.Nat.zero")
+    assertEquals(ctorName(run(entry)), "Lib.Peano.zero")
   }
 
   test("deduplicates modules reached through multiple imports") {
     val root = Files.createTempDirectory("raccoon-modules")
     write(
       root,
-      "Lib/Nat.rac",
+      "Lib/Peano.rac",
       """
         |namespace Lib {
-        |  inductive Nat : Type
-        |   | zero : Nat
+        |  inductive Peano : Type
+        |   | zero : Peano
         |}
         |""".stripMargin
     )
@@ -201,10 +201,10 @@ class ModuleLoaderTests extends munit.FunSuite {
       root,
       "Lib/UseNat.rac",
       """
-        |import Lib.Nat
+        |import Lib.Peano
         |
         |namespace Lib {
-        |  def useNat (n: Nat): Nat := n
+        |  def useNat (n: Peano): Peano := n
         |}
         |""".stripMargin
     )
@@ -212,27 +212,27 @@ class ModuleLoaderTests extends munit.FunSuite {
       root,
       "Main.rac",
       """
-        |import Lib.Nat
+        |import Lib.Peano
         |import Lib.UseNat
         |
         |{
-        |  Lib.useNat(Lib.Nat.zero)
+        |  Lib.useNat(Lib.Peano.zero)
         |}
         |""".stripMargin
     )
 
-    assertEquals(ctorName(run(entry)), "Lib.Nat.zero")
+    assertEquals(ctorName(run(entry)), "Lib.Peano.zero")
   }
 
   test("top-level opens in imported modules do not leak to importers") {
     val root = Files.createTempDirectory("raccoon-modules")
     write(
       root,
-      "Lib/Nat.rac",
+      "Lib/Peano.rac",
       """
         |namespace Lib {
-        |  inductive Nat : Type
-        |   | zero : Nat
+        |  inductive Peano : Type
+        |   | zero : Peano
         |}
         |""".stripMargin
     )
@@ -240,12 +240,12 @@ class ModuleLoaderTests extends munit.FunSuite {
       root,
       "Lib/Makers.rac",
       """
-        |import Lib.Nat
+        |import Lib.Peano
         |
-        |open Lib.Nat
+        |open Lib.Peano
         |
         |namespace Lib {
-        |  def makeNat : Nat := zero
+        |  def makeNat : Peano := zero
         |}
         |""".stripMargin
     )
@@ -260,7 +260,7 @@ class ModuleLoaderTests extends munit.FunSuite {
         |}
         |""".stripMargin
     )
-    assertEquals(ctorName(run(okEntry)), "Lib.Nat.zero")
+    assertEquals(ctorName(run(okEntry)), "Lib.Peano.zero")
 
     val leakingEntry = write(
       root,
@@ -307,11 +307,11 @@ class ModuleLoaderTests extends munit.FunSuite {
     val appRoot = root.resolve("app")
     write(
       srcRoot,
-      "Lib/Nat.rac",
+      "Lib/Peano.rac",
       """
         |namespace Lib {
-        |  inductive Nat : Type
-        |   | zero : Nat
+        |  inductive Peano : Type
+        |   | zero : Peano
         |}
         |""".stripMargin
     )
@@ -319,18 +319,22 @@ class ModuleLoaderTests extends munit.FunSuite {
       appRoot,
       "Main.rac",
       """
-        |import Lib.Nat
+        |import Lib.Peano
         |
         |{
-        |  Lib.Nat.zero
+        |  Lib.Peano.zero
         |}
         |""".stripMargin
     )
 
     val loaded = ModuleLoader.load(entry, ModuleLoader.LoadConfig(Vector(srcRoot), Prelude.test))
     assertEquals(
-      ctorName(Interpreter.run(Elaborator.elab(loaded.program, Prelude.test), Prelude.test).getOrElse(fail("Program has no body"))),
-      "Lib.Nat.zero"
+      ctorName(
+        Interpreter
+          .run(Elaborator.elab(loaded.program, Prelude.test), Prelude.test)
+          .getOrElse(fail("Program has no body"))
+      ),
+      "Lib.Peano.zero"
     )
   }
 
@@ -361,12 +365,12 @@ class ModuleLoaderTests extends munit.FunSuite {
       "Common.rac",
       """
         |namespace Common {
-        |  inductive Nat : Type
-        |   | zero : Nat
-        |   | succ (_: Nat) : Nat
+        |  inductive Peano : Type
+        |   | zero : Peano
+        |   | succ (_: Peano) : Peano
         |
         |  struct FunBox : Type
-        |   | mk (f: (x: Nat) -> Nat) : FunBox
+        |   | mk (f: (x: Peano) -> Peano) : FunBox
         |}
         |""".stripMargin
     )
@@ -379,7 +383,7 @@ class ModuleLoaderTests extends munit.FunSuite {
         |open Common
         |
         |namespace A {
-        |  def make : FunBox := FunBox.mk(fun (x: Nat): Nat => Nat.zero)
+        |  def make : FunBox := FunBox.mk(fun (x: Peano): Peano => Peano.zero)
         |}
         |""".stripMargin
     )
@@ -392,7 +396,7 @@ class ModuleLoaderTests extends munit.FunSuite {
         |open Common
         |
         |namespace B {
-        |  def make : FunBox := FunBox.mk(fun (x: Nat): Nat => x)
+        |  def make : FunBox := FunBox.mk(fun (x: Peano): Peano => x)
         |}
         |""".stripMargin
     )
@@ -406,7 +410,7 @@ class ModuleLoaderTests extends munit.FunSuite {
         |
         |open Common
         |
-        |def bad : Eq((x: Nat) -> Nat, A.make.f, B.make.f) := {
+        |def bad : Eq((x: Peano) -> Peano, A.make.f, B.make.f) := {
         |  Eq.refl(A.make.f)
         |}
         |""".stripMargin

@@ -6,8 +6,8 @@ import com.raccoonlang.Value._
 import com.raccoonlang.telescope.BinderOps
 
 /**
- * Interpreter evaluates ElabAst into ordinary WHNF Values in the Env it is given. EqStore-aware reduction is
- * isolated to resolveInEqStore and the materialization helpers in ValueOps.
+ * Interpreter evaluates ElabAst into ordinary WHNF Values in the Env it is given. EqStore-aware reduction is isolated
+ * to resolveInEqStore and the materialization helpers in ValueOps.
  */
 object Interpreter {
   private def normalizeLevel(l: Level, eqStore: EqStore): Level = {
@@ -60,14 +60,12 @@ object Interpreter {
   }
 
   /**
-   * Runtime arguments carry the checker's ascription discipline (checkApplyChecked's verification
-   * pass): each arg is retyped at its instantiated binder type, so type-directed work inside the
-   * body — implicit reconstruction above all — reads the binder-declared type, never the
-   * argument's construction-site type. The two are always defEq (sorts are not cumulative) but
-   * need not be structurally identical, and projection is structural: this keeps run-world
-   * projection reading exactly the shapes the checker read. Binder types are evaluated against
-   * the Pi's own closure — their syntax is valid there, not in the body env the values are later
-   * bound into.
+   * Runtime arguments carry the checker's ascription discipline (checkApplyChecked's verification pass): each arg is
+   * retyped at its instantiated binder type, so type-directed work inside the body — implicit reconstruction above all
+   * — reads the binder-declared type, never the argument's construction-site type. The two are always defEq (sorts are
+   * not cumulative) but need not be structurally identical, and projection is structural: this keeps run-world
+   * projection reading exactly the shapes the checker read. Binder types are evaluated against the Pi's own closure —
+   * their syntax is valid there, not in the body env the values are later bound into.
    */
   private def ascribeArgs(fnTpe: VPi, args: Vector[Value]): Vector[Value] = {
     if (fnTpe.binders.length != args.length) throw ArityMismatch(fnTpe.binders.length, args.length)
@@ -88,10 +86,10 @@ object Interpreter {
     BinderOps.instantiateFull(fnTpe.binders, baseEnv, ascribeArgs(fnTpe, args))
 
   /**
-   * The universe of a Pi, derived from the env it closed over: max of the binder types' universes
-   * and the codomain's universe, with the impredicative collapse to Prop for Prop-valued codomains.
-   * This replicates what the checker validates at Pi formation, but per instance — a residual Pi
-   * re-evaluated with concrete levels gets the concrete universe, not the declaration-time one.
+   * The universe of a Pi, derived from the env it closed over: max of the binder types' universes and the codomain's
+   * universe, with the impredicative collapse to Prop for Prop-valued codomains. This replicates what the checker
+   * validates at Pi formation, but per instance — a residual Pi re-evaluated with concrete levels gets the concrete
+   * universe, not the declaration-time one.
    */
   private def piClassifier(binders: Vector[ElabAst.Binder], baseEnv: Env, out: ElabAst.Term): VSort = {
     val freshEnv = BinderOps.freshen(binders, baseEnv)
@@ -135,8 +133,9 @@ object Interpreter {
       case ETerm.LocalRef(local, _) => env(local)
     }
     res match {
-      case h: ConstructorHead if h.totalArity == 0 => Value.collapseIfProof(VCtor(h, Vector.empty, h.tpe))
-      case _                                       => res
+      case h: ConstructorHead if h.totalArity == 0 =>
+        Value.collapseIfProof(Packed.foldCtor(h, Vector.empty, h.tpe).getOrElse(VCtor(h, Vector.empty, h.tpe)))
+      case _ => res
     }
   }
 
@@ -158,7 +157,7 @@ object Interpreter {
         lazy val envWithArgs = getEnvWithArgs(pi, pi.env, vArgs)
         fn match {
           case lam: VLam =>
-            runLam(lam, vArgs)
+            Packed.runOp(lam, vArgs, () => pi.codomain(envWithArgs)).getOrElse(runLam(lam, vArgs))
           case p: VProof =>
             // By impredicativity, a Pi with a propositional codomain is itself a proposition, so a
             // proof-valued function is a collapsed proof: its application is a proof of the
@@ -168,7 +167,8 @@ object Interpreter {
             StructEta.expandIfStruct(Value.collapseIfProof(VApp(h, vArgs, pi.codomain(envWithArgs))))
           case h: ConstructorHead =>
             val resultTy = pi.codomain(envWithArgs)
-            Value.collapseIfProof(VCtor(h, Value.constructorStoredArgs(h, vArgs), resultTy))
+            val storedArgs = Value.constructorStoredArgs(h, vArgs)
+            Value.collapseIfProof(Packed.foldCtor(h, storedArgs, resultTy).getOrElse(VCtor(h, storedArgs, resultTy)))
           case blocker @ Blocker(blockerId) =>
             StructEta.expandIfStruct(
               Value.collapseIfProof(VBlockedApp(blocker, vArgs, pi.codomain(envWithArgs), blockerId))
@@ -188,17 +188,16 @@ object Interpreter {
 
   private def valueName(v: Value): String =
     v match {
-      case VConst(name, _, _)                 => name
-      case VLam(_, ValueId.Const(name), _)    => name
-      case head: ConstructorHead              => head.name
-      case _                                  => "function"
+      case VConst(name, _, _)              => name
+      case VLam(_, ValueId.Const(name), _) => name
+      case head: ConstructorHead           => head.name
+      case _                               => "function"
     }
 
   /**
-   * Checked application syntax — source-checked and quoted alike — carries only the explicit
-   * args; the implicit ones are re-derived here by running their projection specs against the
-   * provided args, exactly as application checking did (Projection.project is the shared
-   * implementation).
+   * Checked application syntax — source-checked and quoted alike — carries only the explicit args; the implicit ones
+   * are re-derived here by running their projection specs against the provided args, exactly as application checking
+   * did (Projection.project is the shared implementation).
    */
   private def reconstructImplicits(fn: Value, vArgs: Vector[Value], span: Span): Vector[Value] =
     fn.tpe match {
@@ -274,6 +273,7 @@ object Interpreter {
   def evalTerm(term: ElabAst.Term, env: Env): Value = {
     try {
       term match {
+        case ETerm.NatLit(value, _) => Packed.evalNatLit(value, env)
         case ref: ETerm.Ref         => evalRef(ref, env)
         case ETerm.App(fn, args, _) => evalApplyTerm(fn, args, env)
         case pi: ETerm.Pi           => evalPi(pi, env)
@@ -288,8 +288,9 @@ object Interpreter {
 
   private def evalMatch(m: ETerm.Match, env: Env): Value = {
     val scrut = evalTerm(m.scrut, env)
-    val (head, args) = scrut match {
-      case VCtor(head, storedArgs, _) => (head, storedArgs)
+    val (ctorName, args) = scrut match {
+      case VCtor(head, storedArgs, _) => (head.name, storedArgs)
+      case p: VPacked                 => p.codec.decodeHead(p)
       case proof: VProof              => return evalProofMatch(m, proof, env)
       case other                      =>
         // We are either blocked or stuck
@@ -302,7 +303,6 @@ object Interpreter {
         )
     }
 
-    val ctorName = head.name
     val branch =
       m.cases.find(c => c.ctorName == ctorName).getOrElse(throw UnknownConstructor(ctorName, "", Some(m.span)))
     evalBranch(branch, args, env)
@@ -332,16 +332,15 @@ object Interpreter {
   }
 
   /**
-   * Elimination of a collapsed proof (docs/proof-collapse.md §5). Proofs store no fields, so the
-   * three shapes are handled without reading structure:
-   *   - Prop motive: every checked branch proves the same proposition, so the match itself
-   *     witnesses `VProof(motive)` immediately — no branch selection, no thunk.
-   *   - Subsingleton large elimination (a single case): reduce only when the scrutinee type's
-   *     indices are definitionally diagonal — the analogue of "Eq.rec reduces only on refl".
-   *     Reducing on non-diagonal indices would produce a value at the wrong type; this must never
-   *     be relaxed.
-   *   - Empty elimination, or a stuck/non-diagonal subsingleton: an unblockable NeutralThunk
-   *     (proofs never block-and-resume), matching axiom-stuck behavior.
+   * Elimination of a collapsed proof (docs/proof-collapse.md §5). Proofs store no fields, so the three shapes are
+   * handled without reading structure:
+   *   - Prop motive: every checked branch proves the same proposition, so the match itself witnesses `VProof(motive)`
+   *     immediately — no branch selection, no thunk.
+   *   - Subsingleton large elimination (a single case): reduce only when the scrutinee type's indices are
+   *     definitionally diagonal — the analogue of "Eq.rec reduces only on refl". Reducing on non-diagonal indices would
+   *     produce a value at the wrong type; this must never be relaxed.
+   *   - Empty elimination, or a stuck/non-diagonal subsingleton: an unblockable NeutralThunk (proofs never
+   *     block-and-resume), matching axiom-stuck behavior.
    */
   private def evalProofMatch(m: ETerm.Match, scrut: VProof, env: Env): Value = {
     val outType = matchOutType(m, scrut, env)
@@ -358,17 +357,16 @@ object Interpreter {
   }
 
   /**
-   * Large elimination of a proof: the match checker admitted this match only if every non-proof
-   * field of the single reachable constructor is forced by the scrutinee type's indices
-   * (MatchChecker.allowLargeElimination). Re-derive that forced-field mapping at the actual
-   * scrutinee type by unifying the constructor's result type against it: unification
-   * succeeding with every non-proof field solved is exactly "the indices are definitionally
-   * diagonal", and the solutions are the field values. Anything less leaves the match stuck.
+   * Large elimination of a proof: the match checker admitted this match only if every non-proof field of the single
+   * reachable constructor is forced by the scrutinee type's indices (MatchChecker.allowLargeElimination). Re-derive
+   * that forced-field mapping at the actual scrutinee type by unifying the constructor's result type against it:
+   * unification succeeding with every non-proof field solved is exactly "the indices are definitionally diagonal", and
+   * the solutions are the field values. Anything less leaves the match stuck.
    */
   private def reduceSubsingletonMatch(branch: ElabAst.Case, scrut: VProof, env: Env): Option[Value] = {
     val head = env(branch.ctorName) match {
       case h: ConstructorHead => h
-      case other              => throw WTF(s"Case head ${branch.ctorName} is not a constructor: $other", Some(branch.span))
+      case other => throw WTF(s"Case head ${branch.ctorName} is not a constructor: $other", Some(branch.span))
     }
 
     val (freshArgs, resultTy) = BinderOps.freshCtorArgsAndResult(head)
@@ -416,7 +414,19 @@ object Interpreter {
 
   // A declaration is checked exactly once; the value the checker produced IS the published value.
   // There is no separate run world: once a definition has made it into the env, it is trusted.
-  def evalDecl(decl: Decl, env: Env): Env = {
+  def evalDecl(decl: Decl, env: Env): Env = evalDecl(decl, env, allowReservedNativeDefinitions = false)
+
+  private def evalDecl(decl: Decl, env: Env, allowReservedNativeDefinitions: Boolean): Env = {
+    if (!allowReservedNativeDefinitions) {
+      val publishedNames = decl match {
+        case Decl.ConstDecl(_, name, _, _, _, _) => Vector(name)
+        case Decl.AxiomDecl(name, _, _)          => Vector(name)
+        case d: Decl.InductiveDecl               => d.header.name +: d.ctors.map(_.canonicalName)
+      }
+      publishedNames.find(Packed.reservedNames).foreach { name =>
+        throw ReservedKernelName(name, Some(decl.span))
+      }
+    }
     decl match {
       case Decl.ConstDecl(isOpaque, name, ty, body, span, lazyGlobal) =>
         body match {
@@ -458,7 +468,7 @@ object Interpreter {
     }
   }
 
-  private[raccoonlang] def buildPreludeEnv(core: Program): Env = {
+  private[raccoonlang] def buildPreludeEnv(core: Program, allowReservedNativeDefinitions: Boolean): Env = {
     val baseEnv =
       Env.empty
         .putGlobal("Type", TypeTpe)
@@ -467,8 +477,10 @@ object Interpreter {
         .putGlobal("Level.one", Level.one)
         .putGlobal("Prop", PropTpe)
 
-    core.decls.foldLeft(baseEnv) { case (curEnv, decl) =>
-      evalDecl(decl, curEnv)
+    val built = core.decls.foldLeft(baseEnv) { case (curEnv, decl) =>
+      evalDecl(decl, curEnv, allowReservedNativeDefinitions)
     }
+    if (allowReservedNativeDefinitions) Packed.validateNatFamily(built)
+    built
   }
 }

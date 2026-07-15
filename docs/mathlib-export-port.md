@@ -51,7 +51,7 @@ explicit arguments per Raccoon's all-or-none implicit rule.
 |---|---|---|---|
 | K1 | Higher-order subterm rule | — | **done** (commit 3355563) |
 | K2 | Sealed `Acc`/`WellFounded` primitives | — | spec review |
-| K3 | Native Nat/String literals | — | — |
+| K3 | Native Nat/String literals | — | **Nat done**; String staged on Prelude `String`, div-class ops on K2 |
 | K4 | Primitive projections + structure eta | — | **done** |
 | K5 | `imax` levels | M0 stats | decision gate |
 | K6 | Mutual / nested inductives | M0 stats | decision gate |
@@ -81,13 +81,14 @@ the primitive equation; the §1 invariant "no definitional recursion through col
 stated as case law. Cost accepted: WF-defined functions do not compute by defeq — identical to
 post-4.9 Lean practice (equation lemmas; native ops cover `Nat.div`-class literals).
 
-**K3. Native literals.** `NatLit` value form; ctor↔literal transparency (`Nat.rec`/match on a
-literal must fire; `succ`-of-literal folds back); the ~15 kernel-accelerated ops Lean has
-(add/sub/mul/div/mod/pow/gcd, beq/ble/blt, land/lor/lxor/shifts) as builtin defeq steps, each
-justified against the structural Prelude definitions (they are derived rules, not new axioms —
-decidability-benign). `StrLit` unfolds to `List Char` constructor form on demand; no accelerated
-string ops needed. Without K3, literal-arithmetic proofs are not slow but *infeasible* (unary
-numerals).
+**K3. Native literals — Nat done.** Spec: `native-literals.md` (the `VPacked` design — a packed
+value form with a closed, kernel-curated codec set; representation-not-rules, dual of K4).
+`NatLit`, constructor↔literal transparency, packed structural decrease, and the seven operations
+whose structural definitions exist today (`add/sub/mul/pow`, `beq/ble/blt`) are implemented and
+certified against the structural path. Native Nat names are reserved to the bundled Prelude.
+`div/mod/gcd` and bitwise operations remain K2/T1-gated; `StrLit` remains staged until the Prelude
+has `String`/`Char`. Container codecs (List-as-array, Vec-as-array+Nat) remain out of scope and
+deferred with the P1 caching decision (spec §1).
 
 **K4. Primitive projections + structure eta — done** (StructEta; kernel-theory §2 "structure
 eta"). Implemented as representation, not conversion rules: every value of an eta-eligible struct

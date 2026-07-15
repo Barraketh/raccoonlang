@@ -43,6 +43,7 @@ object ValueKey {
     val Proof = 13
     val ConstId = 16
     val LocalId = 17
+    val Packed = 18
   }
 
   private val SeedHi = -7046029254386353131L
@@ -75,6 +76,25 @@ object ValueKey {
       cur = mixLong(cur, value.charAt(idx).toLong)
       idx += 1
     }
+    cur
+  }
+
+  private def mixBytes(key: Key, bytes: Array[Byte]): Key = {
+    var cur = mixLong(key, bytes.length.toLong)
+    var acc = 0L
+    var n = 0
+    var idx = 0
+    while (idx < bytes.length) {
+      acc = (acc << 8) | (bytes(idx) & 0xffL)
+      n += 1
+      if (n == 8) {
+        cur = mixLong(cur, acc)
+        acc = 0L
+        n = 0
+      }
+      idx += 1
+    }
+    if (n > 0) cur = mixLong(cur, acc)
     cur
   }
 
@@ -143,6 +163,11 @@ object ValueKey {
       valueIdKey(tag(Tag.NeutralThunk), m.id)
     case p: Value.VPi =>
       mixLong(valueIdKey(tag(Tag.Pi), p.id), p.binders.length.toLong)
+    case p: Value.VPacked =>
+      val codecId = p.codec match {
+        case Value.NatCodec => 1L
+      }
+      mixKey(mixBytes(mixLong(tag(Tag.Packed), codecId), p.payload.toByteArray), p.tpe.key)
     case head: Value.ConstructorHead =>
       mixString(tag(Tag.ConstructorHead), head.name)
     // All proofs of defEq propositions share a key; the witness never contributes.

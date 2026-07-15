@@ -72,6 +72,17 @@ link is a consequence.
   under a later store); rigid vars additionally cannot be expanded in place — rigid vs. refinable
   is store-relative, and metas must stay linkable (the same reason `collapseIfProof` exempts
   Vars).
+- **Packed Nat representation** (definitional): every ground bundled-Prelude `Nat` is born as
+  `VPacked(NatCodec, payload, Nat)`; `decodeHead` exposes one constructor layer for matching,
+  projection, and mixed packed/constructor comparison, while all ground constructor-birth and
+  materialization seams fold back. Payload equality is Nat definitional equality (codec L3), and
+  the mixed peel is ordinary constructor congruence (L4). Native `add/sub/mul/pow/beq/ble/blt`
+  are sound bounded derived rules: admitted packed arguments return exactly the structural
+  Prelude result; ordinary dispatch mismatches fall through to that definition. `pow` raises an
+  explicit evaluator resource error above exponent `2²⁴`, rather than entering eager unary
+  fallback. Their
+  canonical names, plus `Nat` and its constructors, are reserved to the bundled Prelude, so a
+  `ValueId.Const` table key cannot identify a user body (`native-literals.md` L7–L8).
 - **Levels**: semantically canonical representation `max(vᵢ + kᵢ, c)` (invariant: `c = 0` or
   `c > all kᵢ`); equality is representation equality, which coincides with `leq` both ways.
 - **Cumulativity**: `checkFits` additionally accepts `Sort u ≤ Sort v` (`sortLeq`) — subsumption at
@@ -81,8 +92,10 @@ link is a consequence.
   source spans alone. Every `parseProgram` call receives a fresh `SourceId` from the shared
   allocator (including preludes and loaded modules); checked source terms preserve their
   `span.nodeId`, while quoted or otherwise fabricated Pi/Lam/Match terms receive a fresh synthetic
-  id from a reserved source. `Span` remains diagnostic metadata and need not be unique. The only
-  accepted remaining identity risk is a 128-bit `ValueKey` hash collision.
+  id from a reserved source. Packed keys mix the closed codec id, the full canonical payload
+  bytes, and the packed type; key trust there is codec injectivity (L3), with no node identity.
+  `Span` remains diagnostic metadata and need not be unique. The only accepted remaining
+  identity risk is a 128-bit `ValueKey` hash collision.
 
 ### Universe rules
 
@@ -138,6 +151,14 @@ Every evidence rule in §5 must remain valid under all rows of this table.
 | Choice / LEM | **Planned** (Mathlib) | Anti-classical assumptions become inconsistent: notably *injectivity of type formers with large parameters* (Cantor). Family-former injectivity must never be propositional evidence. |
 | Univalence | **Not planned** | Would kill generativity of Type-valued formers too. If this ever changes, re-audit §5 entirely. |
 
+Trusted derived rules adjacent to this ledger, but not axioms: the reserved-name native Nat
+operation table. Each admitted entry is extensionally the bundled structural definition;
+ordinary dispatch mismatches may decline to that definition: `add`, truncating `sub`, `mul`,
+`pow` with `pow(a, 0) = 1`, `beq`, `ble`, and `blt`. `pow` has an evaluator resource limit of
+`2²⁴` on its exponent. The differential certification suite pins every entry; adding an operation
+requires its structural equation, conventions, reserved canonical name, and a new certification
+case.
+
 ## 5. Evidence table (unifier & match checker)
 
 `ValueEquivalence.tryUnify` runs in a mode (`UnifyMode`) declaring what its output may be used for.
@@ -153,11 +174,13 @@ without inventing values).
 |---|---|---|---|
 | **Link** (consequence) | MatchChecker refinement, `allowLargeElimination`, `Interpreter.reduceSubsingletonMatch` (runtime forced-field derivation) | The link is forced when the scrutinee is literally this constructor: definitional invertibility of every enclosing frame. (Choice-mode Solve links — allowed under any frame — were removed with unification-based elaboration and instance search.) | `Ctx.invertibleFrame`; non-invertible: opaque/blocked heads, Pi binder/codomain, thunk captures. Proof-valued applications are unrepresentable (`VProof` has no frames). |
 | **Apartness** (`UnifyFailure.apart`) | MatchChecker pruning (a case may be omitted) | *Propositional* no-confusion must be **derivable**: only a constructor clash of a Type-valued inductive (large elimination constructs the discriminating family). | `VCtor ≠ VCtor` + both `noConfusion`; proof-typed VCtors are unrepresentable (collapsed at creation), and `VProof ~ VProof` reduces to the proposition equation. Family-head clashes (any sort), quotient ctors, occurs-failures, level failures: **stuck**, never apart. |
+| **Packed payload apartness** | MatchChecker pruning (a case may be omitted) | Unequal payloads may be refuted only when the closed codec claims L9: their finite decodings reach a constructor clash between derivable no-confusion heads. L3 definitional inequality alone is insufficient under planned funext. | Same-codec `VPacked` values with explicitly unequal payloads and `refutesUnequalPayloads`; Nat claims L9 because unequal unary decodings reach `zero`/`succ`. Equal payloads continue through the type equation; codecs without L9 and packed-vs-neutral comparisons are stuck. |
 | **Stuck** (`apart = false`) | — | Means only "this algorithm cannot solve it". Must never justify pruning or disequality. | MatchChecker treats stuck ctors as reachable-unrefined (`EqStore.empty`). |
 | **Frame invertibility** (failure pass-through & link transparency) | within tryUnify | Definitional injectivity: `≡` of two same-head applications forces component `≡`. True for inductive family formers and data constructors; false for arbitrary functions and the Pi-former. Proofs have no frames to descend (`VProof`). | `definitionallyInjectiveHead`. |
 | **Large elimination permit** | MatchChecker `checkPropElimination` | Prop scrutinee eliminating into non-Prop needs subsingleton criteria: ≤1 reachable ctor and every non-proof field forced by the indices. Motive `Prop`-the-sort counts as large (it is data). | `allowLargeElimination` (unification of two fresh ctor copies). |
 | **Prop classification** | TypeChecker `checkPi`, `checkPropElimination` | A type is a proposition iff it *lives in* `Prop`; the sort `Prop` never qualifies. | `isPropValuedType = getUniverse(v) == PropTpe`. |
 | **Structural decrease** (recursive call permitted) | TerminationChecker guard (`rawRecursiveSelf`) | The call's metric is strictly below the current one in the well-founded tree order of strictly positive inductive values: reachable by ≥1 constructor-field step, where an application of a function-typed field steps to a child (the field is its node's child-selector; Agda foetus / Coq guard precedent). Assumes values are well-founded trees: strict positivity (InductiveChecks) and no value-level self-capture (recursion requires a decreasing parameter). | `isStrictSubterm`: `VCtor` field descent plus `VApp`-spine stripping that must bottom out at a field (`applicationOfSubterm`); any other head (blocked match, lambda) must be defEq to the field itself. Proof metrics rejected at declaration (`InvalidDecreaseSpec`); axiom/quotient-typed metrics rejected (`requireInductiveMetric`). |
+| **Packed structural decrease** | TerminationChecker guard (`rawRecursiveSelf`) | Codec order L6 is exactly reachability by one or more constructor-field steps on decoded values and is well-founded, so it is the existing structural tree order rather than a new measure. | Same-codec packed metrics compare through `codec.strictlyLess`; Nat uses numeric `<`, which realizes repeated predecessor steps. Payloads are compared directly and never decoded recursively. |
 
 **Design debt, agreed direction:** head-shape classification (`definitionallyInjectiveHead`, the
 per-constructor `noConfusion` flag) is a proxy for the real predicate "the corresponding

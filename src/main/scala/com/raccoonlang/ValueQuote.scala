@@ -28,6 +28,7 @@ object ValueQuote {
 
     def inlineTerm(t: ElabAst.Term): ElabAst.Term =
       t match {
+        case _: ElabAst.Term.NatLit              => t
         case ElabAst.Term.GlobalRef(_, _)        => t
         case ElabAst.Term.LocalRef(ref, refSpan) => inlineLocal(ref, refSpan)
         case ElabAst.Term.App(fn, args, appSpan) =>
@@ -98,6 +99,11 @@ object ValueQuote {
 
       case VConst(name, _, _) => ElabAst.Term.GlobalRef(name, span)
 
+      case p: VPacked =>
+        p.codec match {
+          case NatCodec => ElabAst.Term.NatLit(p.payload, span)
+        }
+
       case VCtor(head, fields, tpe) => quoteCtor(head, fields, tpe, context, span)
 
       case VApp(head, args, _, _) =>
@@ -129,9 +135,9 @@ object ValueQuote {
     context.quote.get(value.key).getOrElse(quoteTerm(value, context, span))
 
   /**
-   * Residual applications carry only the explicit args — the same arity convention as
-   * source-checked syntax — so evaluation has a single rule: implicit args are always
-   * reconstructed by projection (Interpreter.reconstructImplicits).
+   * Residual applications carry only the explicit args — the same arity convention as source-checked syntax — so
+   * evaluation has a single rule: implicit args are always reconstructed by projection
+   * (Interpreter.reconstructImplicits).
    */
   private def explicitArgs(headTpe: Value, args: Vector[Value]): Vector[Value] =
     headTpe match {
@@ -177,9 +183,9 @@ object ValueQuote {
   }
 
   /**
-   * Erased family args are recovered structurally from the stored result type: constructor param
-   * discipline (InductiveChecks.checkConstructorParamDiscipline) forces output param i to be binder
-   * var i, so spine slot i of the family instance *is* family arg i. No unification involved.
+   * Erased family args are recovered structurally from the stored result type: constructor param discipline
+   * (InductiveChecks.checkConstructorParamDiscipline) forces output param i to be binder var i, so spine slot i of the
+   * family instance *is* family arg i. No unification involved.
    */
   private def recoverConstructorArgs(
       head: ConstructorHead,
@@ -315,7 +321,7 @@ object ValueQuote {
     val withValue = quote + (value.key -> term)
     value match {
       case Value.Var(_, id, Value.LevelTpe) => withValue + (Value.Level.mk(id).key -> term)
-      case Value.VCtor(_, fields, tpe) =>
+      case Value.VCtor(_, fields, tpe)      =>
         // An expanded struct binder (StructEta) carries fresh field witnesses with no syntax of
         // their own; register each as a selector application of the parent term so field vars,
         // proof fields, and nested expansions quote as projections. Strictly a fallback: fields
@@ -327,7 +333,7 @@ object ValueQuote {
               val needsProjectionSyntax = field match {
                 case _: Value.VProof => true // the witness may be an unquotable fresh var
                 case _: Value.Var | _: Value.Level | Value.VCtor(_, _, _) => field.synDeps.nonEmpty
-                case _ => false
+                case _                                                    => false
               }
               if (!needsProjectionSyntax || curQuote.contains(field.key)) curQuote
               else {

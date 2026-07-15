@@ -26,23 +26,23 @@ class InterpreterTests extends munit.FunSuite {
     case other                     => SConst(other.toString) // fallback, won't be used in this test
   }
 
-  private val zeroS = SConst("Nat.zero")
-  private def succS(s: Shape) = SApp(SConst("Nat.succ"), List(s))
+  private val zeroS = SConst("Peano.zero")
+  private def succS(s: Shape) = SApp(SConst("Peano.succ"), List(s))
 
   test("Nats compute") {
     val p = """
-              |inductive Nat : Type
-              | | zero : Nat
-              | | succ (_: Nat) : Nat
+              |inductive Peano : Type
+              | | zero : Peano
+              | | succ (_: Peano) : Peano
               |
-              |def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
+              |def add (a: Peano)(b: Peano): Peano decreases structural(b) := {
               |  match b with
-              |  | Nat.zero => a
-              |  | Nat.succ x => add(Nat.succ(a), x)
+              |  | Peano.zero => a
+              |  | Peano.succ x => add(Peano.succ(a), x)
               |}
               |
               |{
-              |  let a := Nat.succ(Nat.zero)
+              |  let a := Peano.succ(Peano.zero)
               |  add(a, a)
               |}
               |""".stripMargin
@@ -76,16 +76,16 @@ class InterpreterTests extends munit.FunSuite {
   test("nullary constructor with erased family binder evaluates to constructor view after application") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
-        | | nil : Vec(A, Nat.zero)
-        | | cons (n: Nat) (xs: Vec(A, n)) (x: A): Vec(A, Nat.succ(n))
+        |inductive Vec (A: Type) indices (n: Peano) : Sort(Level.one)
+        | | nil : Vec(A, Peano.zero)
+        | | cons (n: Peano) (xs: Vec(A, n)) (x: A): Vec(A, Peano.succ(n))
         |
         |{
-        |  Vec.nil(Nat)
+        |  Vec.nil(Peano)
         |}
         |""".stripMargin
 

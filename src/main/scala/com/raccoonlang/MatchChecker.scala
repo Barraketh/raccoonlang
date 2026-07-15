@@ -39,7 +39,9 @@ object MatchChecker {
           val storedArgs = Value.constructorStoredArgs(h, freshArgs)
           // For a Prop scrutinee the ctor value collapses, so the value probe below degenerates
           // to the type probe (proof-collapse.md §5).
-          val ctorValue = Value.collapseIfProof(VCtor(h, storedArgs, resultTy))
+          val ctorValue = Value.collapseIfProof(
+            Packed.foldCtor(h, storedArgs, resultTy).getOrElse(VCtor(h, storedArgs, resultTy))
+          )
           val valueRefinable = rootRefinable(scrut) ++ ctorValue.synDeps
           val typeRefinable = scrutTpe.synDeps ++ ctorValue.synDeps
 
@@ -203,6 +205,14 @@ object MatchChecker {
 
         val br = cases.find(_.ctorName == h.name).getOrElse(throw MissingCase(h.name))
         checkedByCtor += h.name -> checkBranch(br, storedArgs, env, motiveTy)
+
+      case p: VPacked =>
+        val (ctorName, decodedArgs) = p.codec.decodeHead(p)
+        cases.find(_.ctorName != ctorName).foreach { c =>
+          throw UnreachableCase(c.ctorName, Some(c.span))
+        }
+        val br = cases.find(_.ctorName == ctorName).getOrElse(throw MissingCase(ctorName))
+        checkedByCtor += ctorName -> checkBranch(br, decodedArgs, env, motiveTy)
 
       case _ =>
         val reachableMap = reachableByType.map(info => info.name -> info).toMap

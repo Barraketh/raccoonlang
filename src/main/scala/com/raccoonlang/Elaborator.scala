@@ -566,6 +566,7 @@ object Elaborator {
     }
 
   private def elabTerm(term: SurfaceAst.Term, env: ResolveEnv): CA.Term = term match {
+    case SA.Term.NatLit(value, span) => CA.Term.NatLit(value, span)
     case i: SA.Term.Ident =>
       elabPathTerm(identPath(i.name, i.span), env)
     case s: SA.Term.Select =>

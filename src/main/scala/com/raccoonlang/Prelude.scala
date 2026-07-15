@@ -12,31 +12,34 @@ object Prelude {
   final case class Config(
       surface: SurfaceAst.Program,
       core: CoreAst.Program,
-      ignoredImports: Set[Vector[String]]
+      ignoredImports: Set[Vector[String]],
+      private[raccoonlang] val allowReservedNativeDefinitions: Boolean
   ) {
     def ignoresImport(path: Vector[String]): Boolean =
       ignoredImports(path)
 
-    /** Checked prelude env, built once per Config and shared across programs. Sharing is sound:
-      * globals are closed values, and fresh-var ids keep increasing across programs.
-      */
-    lazy val checkedEnv: Env = Interpreter.buildPreludeEnv(core)
+    /**
+     * Checked prelude env, built once per Config and shared across programs. Sharing is sound: globals are closed
+     * values, and fresh-var ids keep increasing across programs.
+     */
+    lazy val checkedEnv: Env = Interpreter.buildPreludeEnv(core, allowReservedNativeDefinitions)
 
     /** Resolved prelude name trie for the elaborator, built once per Config. */
     lazy val names: Elaborator.PreludeNames = Elaborator.preludeNames(this)
   }
 
   lazy val default: Config =
-    fromResource(DefaultResourcePath, ignoredImports = Set(ImportPath))
+    fromResource(DefaultResourcePath, ignoredImports = Set(ImportPath), allowReservedNativeDefinitions = true)
 
   lazy val test: Config =
-    fromResource(TestResourcePath, ignoredImports = Set(ImportPath))
+    fromResource(TestResourcePath, ignoredImports = Set(ImportPath), allowReservedNativeDefinitions = false)
 
   val none: Config =
     Config(
       surface = SurfaceAst.Program(Vector.empty, Vector.empty, None),
       core = CoreAst.Program(Vector.empty, None),
-      ignoredImports = Set.empty
+      ignoredImports = Set.empty,
+      allowReservedNativeDefinitions = false
     )
 
   def fromPath(path: Path): Config = {
@@ -54,17 +57,30 @@ object Prelude {
   }
 
   def fromSource(sourceName: String, source: String, ignoredImports: Set[Vector[String]] = Set(ImportPath)): Config = {
+    fromSource(sourceName, source, ignoredImports, allowReservedNativeDefinitions = false)
+  }
+
+  private def fromSource(
+      sourceName: String,
+      source: String,
+      ignoredImports: Set[Vector[String]],
+      allowReservedNativeDefinitions: Boolean
+  ): Config = {
     val surface =
       LanguageParser.parseProgram(source) match {
         case Success(program, _, _) => program
         case Failure(_, curIdx, message) =>
           throw new RuntimeException(s"Failed to parse $sourceName at offset $curIdx: $message")
       }
-    Config(surface, Elaborator.elabWithoutPrelude(surface), ignoredImports)
+    Config(surface, Elaborator.elabWithoutPrelude(surface), ignoredImports, allowReservedNativeDefinitions)
   }
 
-  private def fromResource(resourcePath: String, ignoredImports: Set[Vector[String]]): Config =
-    fromSource(resourcePath, resourceSource(resourcePath), ignoredImports)
+  private def fromResource(
+      resourcePath: String,
+      ignoredImports: Set[Vector[String]],
+      allowReservedNativeDefinitions: Boolean
+  ): Config =
+    fromSource(resourcePath, resourceSource(resourcePath), ignoredImports, allowReservedNativeDefinitions)
 
   private def resourceSource(resourcePath: String): String = {
     val stream =

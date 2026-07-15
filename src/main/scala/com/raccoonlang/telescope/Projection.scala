@@ -6,62 +6,68 @@ import com.raccoonlang._
 import scala.collection.mutable
 
 /**
- * Implicit binders are legal only when *forced*: recoverable from the values of the non-implicit
- * binders by a structural projection compiled at Pi formation. This module owns both halves:
+ * Implicit binders are legal only when *forced*: recoverable from the values of the non-implicit binders by a
+ * structural projection compiled at Pi formation. This module owns both halves:
  *
- *   - `compile` pattern-matches the *evaluated* types of the non-implicit binders (as patterns over
- *     the implicits' fresh vars) and produces a per-implicit `Spec` — which provided argument to
- *     start from and the path to walk. Every position used is rigid (irreducible head applications,
- *     no-confusion constructor fields, sorts/levels, Pi domains), so following the same path on the
- *     actual arguments at any later time re-derives the value. Projection is a *choice*, not a
- *     proof: application checking re-verifies every argument against its instantiated binder type,
+ *   - `compile` pattern-matches the *evaluated* types of the non-implicit binders (as patterns over the implicits'
+ *     fresh vars) and produces a per-implicit `Spec` — which provided argument to start from and the path to walk.
+ *     Every position used is rigid (irreducible head applications, no-confusion constructor fields, sorts/levels, Pi
+ *     domains), so following the same path on the actual arguments at any later time re-derives the value. Projection
+ *     is a *choice*, not a proof: application checking re-verifies every argument against its instantiated binder type,
  *     so soundness never rests on injectivity of these positions.
+ *   - `project` follows a Spec against actual argument values. It is the single implementation used by check-time
+ *     application, run-world residual evaluation, and check-world evaluation of checked syntax (match motives,
+ *     termination measures, lambda-body quoting).
  *
- *   - `project` follows a Spec against actual argument values. It is the single implementation used
- *     by check-time application, run-world residual evaluation, and check-world evaluation of
- *     checked syntax (match motives, termination measures, lambda-body quoting).
- *
- * Determinism: roots are tried leftmost-first and within a root in discovery order; the first path
- * found for an implicit wins everywhere (both worlds compile from the same telescope).
+ * Determinism: roots are tried leftmost-first and within a root in discovery order; the first path found for an
+ * implicit wins everywhere (both worlds compile from the same telescope).
  */
 object Projection {
 
   sealed trait Step
   object Step {
+
     /** value -> its type. */
     case object Tpe extends Step
+
     /** Application of an irreducible constant head (inductive family, axiom, opaque symbol) -> arg. */
     final case class SpineArg(head: String, idx: Int) extends Step
+
     /** No-confusion constructor value -> stored field (family args are erased from storage). */
     final case class CtorField(ctor: String, idx: Int) extends Step
+
     /** VSort -> its level. */
     case object SortLevel extends Step
+
     /** Level of the exact shape u + k -> u (single atom, no constant), mirroring unifyLevels. */
     final case class LevelOffset(k: Int) extends Step
+
     /** VPi -> evaluated domain of binder idx; valid only when independent of earlier binders. */
     final case class PiDomain(idx: Int) extends Step
+
     /** VPi -> codomain; valid only when it does not depend on the Pi's own binders. */
     case object PiCodomain extends Step
   }
 
-  /** Path from provided argument `rootArgIdx` (an index into the explicit args of a call) to the
-    * value of one implicit binder.
-    */
+  /**
+   * Path from provided argument `rootArgIdx` (an index into the explicit args of a call) to the value of one implicit
+   * binder.
+   */
   final case class Spec(rootArgIdx: Int, steps: Vector[Step])
 
   final case class BinderInput(name: String, span: Span, isImplicit: Boolean, fresh: Value)
 
-  /** Final binder classification: family params of a constructor telescope that no field forces are
-    * demoted to explicit instead of erroring, so `isImplicit` may differ from the input.
-    */
+  /**
+   * Final binder classification: family params of a constructor telescope that no field forces are demoted to explicit
+   * instead of erroring, so `isImplicit` may differ from the input.
+   */
   final case class BinderResult(isImplicit: Boolean, projection: Option[Spec])
 
   /**
-   * Compile projection specs for a freshened telescope. The first `familyParams` binders are a
-   * constructor telescope's synthesized family params: their author never wrote the braces, so
-   * when unforced they are demoted to explicit instead of erroring. Everywhere else — defs,
-   * axioms, lambdas, and constructor binders the user wrote — an unforced implicit throws
-   * NonForcedImplicitParam.
+   * Compile projection specs for a freshened telescope. The first `familyParams` binders are a constructor telescope's
+   * synthesized family params: their author never wrote the braces, so when unforced they are demoted to explicit
+   * instead of erroring. Everywhere else — defs, axioms, lambdas, and constructor binders the user wrote — an unforced
+   * implicit throws NonForcedImplicitParam.
    */
   def compile(binders: Vector[BinderInput], familyParams: Int = 0): Vector[BinderResult] = {
     if (binders.forall(!_.isImplicit))
@@ -211,9 +217,10 @@ object Projection {
     }
   }
 
-  /** Domain of binder `idx`, evaluated under fresh earlier binders; None when it depends on them
-    * (such a position is not stable across instantiations).
-    */
+  /**
+   * Domain of binder `idx`, evaluated under fresh earlier binders; None when it depends on them (such a position is not
+   * stable across instantiations).
+   */
   private def independentPiDomain(pi: VPi, idx: Int): Option[Value] = {
     val freshEnv = BinderOps.freshen(pi.binders.take(idx), pi.env)
     val freshIds = Value.envDeps(freshEnv) -- Value.envDeps(pi.env)
@@ -251,6 +258,10 @@ object Projection {
           case Step.CtorField(ctor, idx) =>
             v match {
               case VCtor(h, stored, _) if h.name == ctor && idx < stored.length => Right(stored(idx))
+              case p: VPacked =>
+                val (name, decoded) = p.codec.decodeHead(p)
+                if (name == ctor && idx < decoded.length) Right(decoded(idx))
+                else Left(s"expected a $ctor value, got $p")
               case other => Left(s"expected a $ctor value, got $other")
             }
 

@@ -20,13 +20,12 @@ object ValueEquivalence {
     DefEq.defEq(v1, v2)
 
   /**
-   * The proof equation reduces to the proposition equation (proof-collapse.md §2, §10): a collapsed
-   * proof equals any value whose type is a defEq proposition. The mixed (VProof vs non-VProof) side
-   * covers exactly the representatives the witness invariant deliberately keeps uncollapsed —
-   * refinable metas and unification's shared Pi binders. NOTE: tryUnify may consult the mixed side
-   * only *after* its Var-linking cases, or a refinable proof-typed meta would be equated by
-   * irrelevance instead of solved; its early VProof/VProof arm is safe because two VProofs contain
-   * no refinable var to link.
+   * The proof equation reduces to the proposition equation (proof-collapse.md §2, §10): a collapsed proof equals any
+   * value whose type is a defEq proposition. The mixed (VProof vs non-VProof) side covers exactly the representatives
+   * the witness invariant deliberately keeps uncollapsed — refinable metas and unification's shared Pi binders. NOTE:
+   * tryUnify may consult the mixed side only *after* its Var-linking cases, or a refinable proof-typed meta would be
+   * equated by irrelevance instead of solved; its early VProof/VProof arm is safe because two VProofs contain no
+   * refinable var to link.
    */
   private object ProofEquation {
     def unapply(pair: (Value, Value)): Option[(Value, Value)] =
@@ -38,12 +37,11 @@ object ValueEquivalence {
   }
 
   /**
-   * Unification whose links are consequences: every caller treats a link as a fact forced by the
-   * root equation (match refinement checks branches under them, subsingleton reduction binds
-   * fields from them). A link made beneath a non-invertible frame is not a consequence (`f x = f
-   * y` does not force `x = y` for non-injective `f`), so it is refused and the equation reports
-   * stuck. Choice-mode solving (any store that makes the equation true) left with its last
-   * clients, unification-based elaboration and instance search.
+   * Unification whose links are consequences: every caller treats a link as a fact forced by the root equation (match
+   * refinement checks branches under them, subsingleton reduction binds fields from them). A link made beneath a
+   * non-invertible frame is not a consequence (`f x = f y` does not force `x = y` for non-injective `f`), so it is
+   * refused and the equation reports stuck. Choice-mode solving (any store that makes the equation true) left with its
+   * last clients, unification-based elaboration and instance search.
    */
   def tryUnify(
       v1: Value,
@@ -95,7 +93,19 @@ object ValueEquivalence {
       v1.asInstanceOf[AnyRef] eq v2.asInstanceOf[AnyRef]
 
     private def shouldTryStructuralDefEq(a: Value, b: Value): Boolean =
-      a.needsStructuralDefEq || b.needsStructuralDefEq
+      a.needsStructuralDefEq || b.needsStructuralDefEq || ((a, b) match {
+        // During construction of the bundled Prelude, closures can retain a constructor-form Nat
+        // created before all fold seams are active. Mixed packed/constructor comparison is the
+        // specified one-layer peel rule; canonical packed-vs-packed comparison remains key-only.
+        case (_: VPacked, VCtor(_, _, _)) | (VCtor(_, _, _), _: VPacked) => true
+        case _                                                           => false
+      })
+
+    private def defEqPeeled(p: VPacked, head: ConstructorHead, fields: Vector[Value], ctorTpe: Value): Boolean = {
+      val (name, decoded) = p.codec.decodeHead(p)
+      name == head.name && decoded.length == fields.length &&
+      decoded.zip(fields).forall { case (a, b) => defEq(a, b) } && defEq(p.tpe, ctorTpe)
+    }
 
     private def defEqStructural(a: Value, b: Value): Boolean =
       (a, b) match {
@@ -119,6 +129,13 @@ object ValueEquivalence {
               case None => false
             }
           }
+
+        case (p1: VPacked, p2: VPacked) =>
+          p1.codec == p2.codec && p1.payload == p2.payload && defEq(p1.tpe, p2.tpe)
+        case (p: VPacked, VCtor(head, fields, ctorTpe)) =>
+          defEqPeeled(p, head, fields, ctorTpe)
+        case (VCtor(head, fields, ctorTpe), p: VPacked) =>
+          defEqPeeled(p, head, fields, ctorTpe)
 
         case (v1: VApp, v2: VApp) if v1.args.length == v2.args.length =>
           defEq(v1.head, v2.head) &&
@@ -151,11 +168,10 @@ object ValueEquivalence {
     /**
      * Unification context: whether every frame descended through so far is invertible.
      *
-     * A link records exactly the equation presented at the point of linking (or its unique forced
-     * solution) — the store never invents values. Since links are consumed as consequences of the
-     * root equation, linking is legal only while every enclosing frame is invertible: descending
-     * through a non-invertible frame produces sub-equations that are sufficient but not necessary,
-     * so links beneath one are refused.
+     * A link records exactly the equation presented at the point of linking (or its unique forced solution) — the store
+     * never invents values. Since links are consumed as consequences of the root equation, linking is legal only while
+     * every enclosing frame is invertible: descending through a non-invertible frame produces sub-equations that are
+     * sufficient but not necessary, so links beneath one are refused.
      */
     final case class Ctx(invertibleFrame: Boolean = true) {
       def canLinkForced: Boolean = invertibleFrame
@@ -298,8 +314,7 @@ object ValueEquivalence {
 
     /**
      * This specifically handles wildcard vars during pattern matching. The problem is that wildcard vars never actually
-     * get stored in Env, so they can't be properly quoted. This forces us to prefer the other var as the
-     * representative
+     * get stored in Env, so they can't be properly quoted. This forces us to prefer the other var as the representative
      */
     private def tryLinkVarToPreferredRepresentative(v1: Var, v2: Var, meta: EqStore, ctx: Ctx): Result = {
       val v1Anonymous = v1.name == "_"
@@ -311,6 +326,25 @@ object ValueEquivalence {
         else (v2, v1)
 
       tryLinkVar(toLink, representative, meta, ctx)
+    }
+
+    private def unifyPeeled(
+        packed: VPacked,
+        head: ConstructorHead,
+        ctor: Value,
+        meta: EqStore,
+        ctx: Ctx,
+        packedOnLeft: Boolean
+    ): Result = {
+      val (name, decoded) = packed.codec.decodeHead(packed)
+      if (name != head.name) {
+        if (head.noConfusion) apart(packed, ctor) else stuck(packed, ctor)
+      } else if (decoded.length != head.totalArity - head.numErasedFamilyArgs) stuck(packed, ctor)
+      else {
+        val peeled = VCtor(head, decoded, packed.tpe)
+        if (packedOnLeft) tryUnify(peeled, ctor, meta, ctx)
+        else tryUnify(ctor, peeled, meta, ctx)
+      }
     }
 
     def tryUnify(v1: Value, v2: Value, meta: EqStore, ctx: Ctx): Result = {
@@ -355,6 +389,16 @@ object ValueEquivalence {
         case (VCtor(h1, _, _), VCtor(h2, _, _)) if h1.name != h2.name =>
           if (h1.noConfusion && h2.noConfusion) apart(a, b)
           else stuck(a, b)
+
+        case (p1: VPacked, p2: VPacked) if p1.codec == p2.codec =>
+          if (p1.payload == p2.payload) tryUnify(p1.tpe, p2.tpe, meta, ctx)
+          else if (p1.codec.refutesUnequalPayloads) apart(p1, p2)
+          else stuck(p1, p2)
+
+        case (p: VPacked, other @ VCtor(head, _, _)) =>
+          unifyPeeled(p, head, other, meta, ctx, packedOnLeft = true)
+        case (other @ VCtor(head, _, _), p: VPacked) =>
+          unifyPeeled(p, head, other, meta, ctx, packedOnLeft = false)
 
         // Deliberately NOT a refutation: different inductive family heads (bare or applied) are only
         // definitionally distinct. Propositional generativity is not assumed — propext can equate

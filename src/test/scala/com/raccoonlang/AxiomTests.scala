@@ -19,9 +19,9 @@ class AxiomTests extends munit.FunSuite {
 
   private val natPrelude =
     """
-      |inductive Nat : Type
-      | | zero : Nat
-      | | succ (_: Nat) : Nat
+      |inductive Peano : Type
+      | | zero : Peano
+      | | succ (_: Peano) : Peano
       |
       |""".stripMargin
 
@@ -29,7 +29,7 @@ class AxiomTests extends munit.FunSuite {
     val res = runProgram(
       natPrelude +
         """
-          |axiom magicNat : Nat
+          |axiom magicNat : Peano
           |
           |{
           |  magicNat
@@ -38,7 +38,7 @@ class AxiomTests extends munit.FunSuite {
     )
 
     assertEquals(PrettyPrinter.print(res), "magicNat")
-    assertEquals(PrettyPrinter.print(res.tpe), "Nat")
+    assertEquals(PrettyPrinter.print(res.tpe), "Peano")
   }
 
   test("parameterized axiom can be applied") {
@@ -48,20 +48,20 @@ class AxiomTests extends munit.FunSuite {
           |axiom choose (A: Type)(x: A): A
           |
           |{
-          |  choose(Nat, Nat.zero)
+          |  choose(Peano, Peano.zero)
           |}
           |""".stripMargin
     )
 
-    assertEquals(PrettyPrinter.print(res), "choose(Nat, Nat.zero)")
-    assertEquals(PrettyPrinter.print(res.tpe), "Nat")
+    assertEquals(PrettyPrinter.print(res), "choose(Peano, Peano.zero)")
+    assertEquals(PrettyPrinter.print(res.tpe), "Peano")
   }
 
   test("axiom result must be a type") {
     val p =
       natPrelude +
         """
-          |axiom bad : Nat.zero
+          |axiom bad : Peano.zero
           |""".stripMargin
 
     intercept[NotAType] {

@@ -2,11 +2,11 @@ package com.raccoonlang
 
 import com.raccoonlang.ErrorReporter.Source
 
-/** Coverage for the forced-implicit projection machinery: which positions force an implicit
-  * (Pi domains/codomains, sort levels with offsets), per-constructor demotion of unforced family
-  * params, and reconstruction at residual-evaluation time (the run world re-derives implicits from
-  * argument values; nothing is quoted into checked syntax).
-  */
+/**
+ * Coverage for the forced-implicit projection machinery: which positions force an implicit (Pi domains/codomains, sort
+ * levels with offsets), per-constructor demotion of unforced family params, and reconstruction at residual-evaluation
+ * time (the run world re-derives implicits from argument values; nothing is quoted into checked syntax).
+ */
 class ForcedImplicitTests extends munit.FunSuite {
 
   private def runProgram(src: String): Value =
@@ -38,9 +38,9 @@ class ForcedImplicitTests extends munit.FunSuite {
 
   private val natDecls =
     """
-      |inductive Nat : Type
-      | | zero : Nat
-      | | succ (_: Nat) : Nat
+      |inductive Peano : Type
+      | | zero : Peano
+      | | succ (_: Peano) : Peano
       |""".stripMargin
 
   test("Pi domain and codomain positions force implicits (compose)") {
@@ -50,11 +50,11 @@ class ForcedImplicitTests extends munit.FunSuite {
           |def compose {A: Type}{B: Type}{C: Type} (f: B -> C)(g: A -> B)(x: A): C := f(g(x))
           |
           |{
-          |  compose(Nat.succ, Nat.succ, Nat.zero)
+          |  compose(Peano.succ, Peano.succ, Peano.zero)
           |}
           |""".stripMargin
 
-    assertEquals(ctorName(runProgram(p)), "Nat.succ")
+    assertEquals(ctorName(runProgram(p)), "Peano.succ")
   }
 
   test("dependent Pi codomains do not force; the implicit must come from elsewhere") {
@@ -62,18 +62,18 @@ class ForcedImplicitTests extends munit.FunSuite {
     val ok =
       natDecls +
         """
-          |def ok {C: Type} (f: (n: Nat) -> C): Nat := Nat.zero
+          |def ok {C: Type} (f: (n: Peano) -> C): Peano := Peano.zero
           |""".stripMargin
 
     // …but a var-headed dependent codomain is not rigid, so `bad`'s implicit is rejected.
     val bad =
       natDecls +
         """
-          |def bad {C: Nat -> Type} (f: (n: Nat) -> C(n)): Nat := Nat.zero
+          |def bad {C: Peano -> Type} (f: (n: Peano) -> C(n)): Peano := Peano.zero
           |""".stripMargin
 
-    runProgram(ok + "\n{ Nat.zero }\n")
-    typeError[NonForcedImplicitParam](bad + "\n{ Nat.zero }\n")
+    runProgram(ok + "\n{ Peano.zero }\n")
+    typeError[NonForcedImplicitParam](bad + "\n{ Peano.zero }\n")
   }
 
   test("sort levels with offsets force level implicits (Sort(Level.succ(u)))") {
@@ -83,11 +83,11 @@ class ForcedImplicitTests extends munit.FunSuite {
           |def idUp {u: Level} (A: Sort(Level.succ(u)))(x: A): A := x
           |
           |{
-          |  idUp(Type, Nat)
+          |  idUp(Type, Peano)
           |}
           |""".stripMargin
 
-    // Returns the type Nat itself; just verifying it checks and evaluates.
+    // Returns the type Peano itself; just verifying it checks and evaluates.
     runProgram(p)
   }
 
@@ -106,7 +106,7 @@ class ForcedImplicitTests extends munit.FunSuite {
           |}
           |
           |{
-          |  swap(Nat, Nat, Either.inl(Nat, Nat.zero))
+          |  swap(Peano, Peano, Either.inl(Peano, Peano.zero))
           |}
           |""".stripMargin
 
@@ -122,7 +122,7 @@ class ForcedImplicitTests extends munit.FunSuite {
           | | inr (right: B) : Either(A, B)
           |
           |{
-          |  Either.inl(Nat.zero)
+          |  Either.inl(Peano.zero)
           |}
           |""".stripMargin
 
@@ -141,14 +141,14 @@ class ForcedImplicitTests extends munit.FunSuite {
           |  | Box.mk a => a
           |}
           |
-          |def twice (b: Box(Nat)): Nat := Nat.succ(Nat.succ(unbox(b)))
+          |def twice (b: Box(Peano)): Peano := Peano.succ(Peano.succ(unbox(b)))
           |
           |{
-          |  twice(Box.mk(Nat.zero))
+          |  twice(Box.mk(Peano.zero))
           |}
           |""".stripMargin
 
-    assertEquals(ctorName(runProgram(p)), "Nat.succ")
+    assertEquals(ctorName(runProgram(p)), "Peano.succ")
   }
 
   test("recursive definitions reconstruct implicits at every recursive call") {
@@ -159,24 +159,24 @@ class ForcedImplicitTests extends munit.FunSuite {
           | | nil : Lst(A)
           | | cons (head: A)(tail: Lst(A)) : Lst(A)
           |
-          |def len {u: Level}{A: Sort(u)} (xs: Lst(A)): Nat decreases structural(xs) := {
-          |  match xs returning Nat with
-          |  | Lst.nil => Nat.zero
-          |  | Lst.cons head tail => Nat.succ(len(tail))
+          |def len {u: Level}{A: Sort(u)} (xs: Lst(A)): Peano decreases structural(xs) := {
+          |  match xs returning Peano with
+          |  | Lst.nil => Peano.zero
+          |  | Lst.cons head tail => Peano.succ(len(tail))
           |}
           |
           |{
-          |  len(Lst.cons(Nat.zero, Lst.cons(Nat.zero, Lst.nil(Nat))))
+          |  len(Lst.cons(Peano.zero, Lst.cons(Peano.zero, Lst.nil(Peano))))
           |}
           |""".stripMargin
 
     val v = runProgram(p)
-    assertEquals(ctorName(v), "Nat.succ")
+    assertEquals(ctorName(v), "Peano.succ")
   }
 
   test("universes are not cumulative: Sort(1) does not fit a Sort(2) binder") {
     // This shape was the check/run coherence hazard when sorts were cumulative: the checker saw
-    // the binder-declared Sort(2) while the run world saw Nat's own Sort(1), so `levelOf`
+    // the binder-declared Sort(2) while the run world saw Peano's own Sort(1), so `levelOf`
     // projected different levels in the two worlds. Non-cumulative sorts reject it outright.
     val p =
       natDecls +
@@ -186,7 +186,7 @@ class ForcedImplicitTests extends munit.FunSuite {
           |def g (T: Sort(Level.succ(Level.one))): Level := levelOf(T)
           |
           |{
-          |  g(Nat)
+          |  g(Peano)
           |}
           |""".stripMargin
 
@@ -196,7 +196,7 @@ class ForcedImplicitTests extends munit.FunSuite {
   test("run-world level projection agrees with the checker through def bodies") {
     // Coherence regression: runtime binding ascribes args to binder types (Interpreter.ascribeArgs)
     // exactly like the checker's verification pass, so projection inside `g`'s body reads the same
-    // type in both worlds and the checked equation `g(Nat) = Level.one` holds at runtime.
+    // type in both worlds and the checked equation `g(Peano) = Level.one` holds at runtime.
     val p =
       natDecls +
         """
@@ -204,10 +204,10 @@ class ForcedImplicitTests extends munit.FunSuite {
           |
           |def g (T: Type): Level := levelOf(T)
           |
-          |def pf : Eq(Level, g(Nat), Level.one) := Eq.refl(g(Nat))
+          |def pf : Eq(Level, g(Peano), Level.one) := Eq.refl(g(Peano))
           |
           |{
-          |  g(Nat)
+          |  g(Peano)
           |}
           |""".stripMargin
 
@@ -225,11 +225,11 @@ class ForcedImplicitTests extends munit.FunSuite {
           | | mk (y: A) : S(x)
           |
           |{
-          |  S.y(S.mk(Nat.zero, Nat.succ(Nat.zero)))
+          |  S.y(S.mk(Peano.zero, Peano.succ(Peano.zero)))
           |}
           |""".stripMargin
 
-    assertEquals(ctorName(runProgram(p)), "Nat.succ")
+    assertEquals(ctorName(runProgram(p)), "Peano.succ")
   }
 
   test("polymorphic functions adapt to expected Pis that keep forced implicit binders") {
@@ -240,11 +240,11 @@ class ForcedImplicitTests extends munit.FunSuite {
           |
           |{
           |  let f : {A: Type} -> (x: A) -> A := idL
-          |  f(Nat.succ(Nat.zero))
+          |  f(Peano.succ(Peano.zero))
           |}
           |""".stripMargin
 
-    assertEquals(ctorName(runProgram(p)), "Nat.succ")
+    assertEquals(ctorName(runProgram(p)), "Peano.succ")
   }
 
   test("higher-order binder types close over the callee telescope during eta-adaptation") {
@@ -256,11 +256,11 @@ class ForcedImplicitTests extends munit.FunSuite {
           |def apply1 {A: Type}(a: A)(f: (x: A) -> A): A := f(a)
           |
           |{
-          |  apply1(Nat.zero, idL)
+          |  apply1(Peano.zero, idL)
           |}
           |""".stripMargin
 
-    assertEquals(ctorName(runProgram(p)), "Nat.zero")
+    assertEquals(ctorName(runProgram(p)), "Peano.zero")
   }
 
   test("Quot.mk takes the relation explicitly and the carrier by projection") {

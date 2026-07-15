@@ -25,12 +25,12 @@ class UniverseTests extends munit.FunSuite {
   test("Type 0 fits in Type 1 (simple ascription with inductive)") {
     val p =
       """
-        |inductive Nat : Type
-        |  | zero: Nat
-        |  | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        |  | zero: Peano
+        |  | succ (_: Peano) : Peano
         |
         |{
-        |  let x : Type := Nat
+        |  let x : Type := Peano
         |  x
         |}
         |""".stripMargin
@@ -89,21 +89,21 @@ class UniverseTests extends munit.FunSuite {
     }
   }
 
-  test("def f(u: Level)(A: Sort u)(x: A): A := x; apply at u=1, A=Nat, x=Nat.zero") {
+  test("def f(u: Level)(A: Sort u)(x: A): A := x; apply at u=1, A=Peano, x=Peano.zero") {
     val p =
       """
-        |inductive Nat : Type
-        |  | zero: Nat
-        |  | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        |  | zero: Peano
+        |  | succ (_: Peano) : Peano
         |
         |def f (u: Level)(A: Sort(u))(x: A): A := x
         |
-        |{ f(Level.one, Nat, Nat.zero) }
+        |{ f(Level.one, Peano, Peano.zero) }
         |""".stripMargin
 
     val res = runProgram(p)
     res match {
-      case v => assertEquals(PrettyPrinter.print(v), "Nat.zero")
+      case v => assertEquals(PrettyPrinter.print(v), "Peano.zero")
     }
   }
 
@@ -128,13 +128,13 @@ class UniverseTests extends munit.FunSuite {
   test("Reject lifting: universes are not cumulative (Sort u does not fit Sort (u+2))") {
     val p =
       """
-        |inductive Nat : Type
-        |  | zero: Nat
-        |  | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        |  | zero: Peano
+        |  | succ (_: Peano) : Peano
         |
         |opaque def up2 (u: Level)(A: Sort(u)): Sort(Level.succ(Level.succ(u))) := A
         |
-        |{ up2(Level.one, Nat) }
+        |{ up2(Level.one, Peano) }
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {
@@ -205,20 +205,20 @@ class UniverseTests extends munit.FunSuite {
   }
 
   // Instead of constructing Sort in term position, test level-parametric usage via a term at the appropriate level
-  test("Level-parametric id at u=1 works for Nat") {
+  test("Level-parametric id at u=1 works for Peano") {
     val p =
       """
-        |inductive Nat : Type
-        |  | zero: Nat
-        |  | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        |  | zero: Peano
+        |  | succ (_: Peano) : Peano
         |
         |def idAt (u: Level)(A: Sort(u))(x: A): A := x
         |
-        |{ idAt(Level.one, Nat, Nat.zero) }
+        |{ idAt(Level.one, Peano, Peano.zero) }
         |""".stripMargin
 
     val res = runProgram(p)
-    assertEquals(PrettyPrinter.print(res), "Nat.zero")
+    assertEquals(PrettyPrinter.print(res), "Peano.zero")
   }
 
   test("Level.leq: constant can be covered by RHS atom") {
@@ -336,14 +336,14 @@ class UniverseTests extends munit.FunSuite {
   test("positive: implicit level through Level.succ works") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |def idUp {u: Level} (A: Sort(Level.succ(u)))(x: A): A := x
         |
         |{
-        |  idUp(Type, Nat)
+        |  idUp(Type, Peano)
         |}
         |""".stripMargin
 

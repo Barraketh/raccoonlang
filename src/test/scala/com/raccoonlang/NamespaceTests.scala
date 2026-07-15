@@ -21,9 +21,9 @@ class NamespaceTests extends munit.FunSuite {
   test("inductive head can also be used as a namespace for functions") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |inductive List (A: Type) : Type
         | | nil : List(A)
@@ -34,7 +34,7 @@ class NamespaceTests extends munit.FunSuite {
         |}
         |
         |{
-        |  List.singleton(Nat, Nat.zero)
+        |  List.singleton(Peano, Peano.zero)
         |}
         |""".stripMargin
 
@@ -44,33 +44,33 @@ class NamespaceTests extends munit.FunSuite {
   test("open namespace snapshots known globals and checks namespace existence") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |namespace Nat {
-        |  def add (a: Nat)(b: Nat): Nat := a
+        |namespace Peano {
+        |  def add (a: Peano)(b: Peano): Peano := a
         |}
         |
-        |open Nat
+        |open Peano
         |
         |{
         |  add(succ(zero), zero)
         |}
         |""".stripMargin
 
-    assertEquals(ctorName(runProgram(p)), "Nat.succ")
+    assertEquals(ctorName(runProgram(p)), "Peano.succ")
 
     val late =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |open Nat
+        |open Peano
         |
-        |namespace Nat {
-        |  def add (a: Nat)(b: Nat): Nat := a
+        |namespace Peano {
+        |  def add (a: Peano)(b: Peano): Peano := a
         |}
         |
         |{
@@ -84,8 +84,8 @@ class NamespaceTests extends munit.FunSuite {
 
     val missing =
       """
-        |def Nat : Type := Type
-        |open Nat
+        |def Peano : Type := Type
+        |open Peano
         |""".stripMargin
 
     intercept[NotFound] {
@@ -96,18 +96,18 @@ class NamespaceTests extends munit.FunSuite {
   test("root-qualified open bypasses current namespace shadowing") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |namespace Shadow {
-        |  namespace Nat {
-        |    def decoy : _root_.Nat := _root_.Nat.zero
+        |  namespace Peano {
+        |    def decoy : _root_.Peano := _root_.Peano.zero
         |  }
         |
-        |  open _root_.Nat
+        |  open _root_.Peano
         |
-        |  def one : _root_.Nat := succ(zero)
+        |  def one : _root_.Peano := succ(zero)
         |}
         |
         |{
@@ -115,22 +115,22 @@ class NamespaceTests extends munit.FunSuite {
         |}
         |""".stripMargin
 
-    assertEquals(ctorName(runProgram(p)), "Nat.succ")
+    assertEquals(ctorName(runProgram(p)), "Peano.succ")
 
     val shadowed =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |namespace Shadow {
-        |  namespace Nat {
-        |    def decoy : _root_.Nat := _root_.Nat.zero
+        |  namespace Peano {
+        |    def decoy : _root_.Peano := _root_.Peano.zero
         |  }
         |
-        |  open Nat
+        |  open Peano
         |
-        |  def bad : _root_.Nat := succ(zero)
+        |  def bad : _root_.Peano := succ(zero)
         |}
         |""".stripMargin
 
@@ -156,58 +156,58 @@ class NamespaceTests extends munit.FunSuite {
   test("selected, renamed, and excluded open rules expose the requested aliases") {
     val selected =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |open Nat.{zero, succ}
+        |open Peano.{zero, succ}
         |
         |{
         |  succ(zero)
         |}
         |""".stripMargin
 
-    assertEquals(ctorName(runProgram(selected)), "Nat.succ")
+    assertEquals(ctorName(runProgram(selected)), "Peano.succ")
 
     val renamed =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |open Nat.{zero as natZero, succ as natSucc}
+        |open Peano.{zero as natZero, succ as natSucc}
         |
         |{
         |  natSucc(natZero)
         |}
         |""".stripMargin
 
-    assertEquals(ctorName(runProgram(renamed)), "Nat.succ")
+    assertEquals(ctorName(runProgram(renamed)), "Peano.succ")
 
     val excludedAndRenamed =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |open Nat.{*, -succ, succ as nsucc}
+        |open Peano.{*, -succ, succ as nsucc}
         |
         |{
         |  nsucc(zero)
         |}
         |""".stripMargin
 
-    assertEquals(ctorName(runProgram(excludedAndRenamed)), "Nat.succ")
+    assertEquals(ctorName(runProgram(excludedAndRenamed)), "Peano.succ")
 
     val excludedOriginal =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |open Nat.{*, -succ, succ as nsucc}
+        |open Peano.{*, -succ, succ as nsucc}
         |
-        |def bad : Nat := succ(zero)
+        |def bad : Peano := succ(zero)
         |""".stripMargin
 
     intercept[NotFound] {
@@ -218,8 +218,8 @@ class NamespaceTests extends munit.FunSuite {
   test("open aliases can be used as qualified namespace prefixes") {
     val wildcard =
       """
-        |inductive Nat : Type
-        | | zero : Nat
+        |inductive Peano : Type
+        | | zero : Peano
         |
         |namespace Data {
         |  inductive Tree (A: Type) : Type
@@ -229,7 +229,7 @@ class NamespaceTests extends munit.FunSuite {
         |open Data
         |
         |{
-        |  Tree.leaf(Nat.zero)
+        |  Tree.leaf(Peano.zero)
         |}
         |""".stripMargin
 
@@ -237,8 +237,8 @@ class NamespaceTests extends munit.FunSuite {
 
     val selected =
       """
-        |inductive Nat : Type
-        | | zero : Nat
+        |inductive Peano : Type
+        | | zero : Peano
         |
         |namespace Data {
         |  inductive Tree (A: Type) : Type
@@ -248,7 +248,7 @@ class NamespaceTests extends munit.FunSuite {
         |open Data.{Tree}
         |
         |{
-        |  Tree.leaf(Nat.zero)
+        |  Tree.leaf(Peano.zero)
         |}
         |""".stripMargin
 
@@ -256,8 +256,8 @@ class NamespaceTests extends munit.FunSuite {
 
     val renamed =
       """
-        |inductive Nat : Type
-        | | zero : Nat
+        |inductive Peano : Type
+        | | zero : Peano
         |
         |namespace Data {
         |  inductive Tree (A: Type) : Type
@@ -267,7 +267,7 @@ class NamespaceTests extends munit.FunSuite {
         |open Data.{Tree as DTree}
         |
         |{
-        |  DTree.leaf(Nat.zero)
+        |  DTree.leaf(Peano.zero)
         |}
         |""".stripMargin
 
@@ -275,8 +275,8 @@ class NamespaceTests extends munit.FunSuite {
 
     val excluded =
       """
-        |inductive Nat : Type
-        | | zero : Nat
+        |inductive Peano : Type
+        | | zero : Peano
         |
         |namespace Data {
         |  inductive Tree (A: Type) : Type
@@ -285,7 +285,7 @@ class NamespaceTests extends munit.FunSuite {
         |
         |open Data.{*, -Tree}
         |
-        |def bad : Data.Tree(Nat) := Tree.leaf(Nat.zero)
+        |def bad : Data.Tree(Peano) := Tree.leaf(Peano.zero)
         |""".stripMargin
 
     intercept[NotFound] {
@@ -294,8 +294,8 @@ class NamespaceTests extends munit.FunSuite {
 
     val ambiguous =
       """
-        |inductive Nat : Type
-        | | zero : Nat
+        |inductive Peano : Type
+        | | zero : Peano
         |
         |namespace A {
         |  inductive Tree (A: Type) : Type
@@ -310,7 +310,7 @@ class NamespaceTests extends munit.FunSuite {
         |open A
         |open B
         |
-        |def bad : A.Tree(Nat) := Tree.leaf(Nat.zero)
+        |def bad : A.Tree(Peano) := Tree.leaf(Peano.zero)
         |""".stripMargin
 
     intercept[AmbiguousName] {
@@ -321,15 +321,15 @@ class NamespaceTests extends munit.FunSuite {
   test("open conflicts are reported when opened") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
+        |inductive Peano : Type
+        | | zero : Peano
         |
         |namespace A {
-        |  def foo : Nat := Nat.zero
+        |  def foo : Peano := Peano.zero
         |}
         |
         |namespace B {
-        |  def foo : Nat := Nat.zero
+        |  def foo : Peano := Peano.zero
         |}
         |
         |open A
@@ -344,31 +344,31 @@ class NamespaceTests extends munit.FunSuite {
   test("anonymous command block scopes opens but keeps declarations") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |{
-        |  open Nat
-        |  def one : Nat := succ(zero)
+        |  open Peano
+        |  def one : Peano := succ(zero)
         |}
         |
-        |def two : Nat := Nat.succ(one)
+        |def two : Peano := Peano.succ(one)
         |""".stripMargin
 
     typecheckProgram(p)
 
     val scoped =
       """
-        |inductive Nat : Type
-        | | zero : Nat
+        |inductive Peano : Type
+        | | zero : Peano
         |
         |{
-        |  open Nat
-        |  def ok : Nat := zero
+        |  open Peano
+        |  def ok : Peano := zero
         |}
         |
-        |def bad : Nat := zero
+        |def bad : Peano := zero
         |""".stripMargin
 
     intercept[NotFound] {
@@ -379,14 +379,14 @@ class NamespaceTests extends munit.FunSuite {
   test("local dotted names project, root-qualified names bypass local shadowing") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
+        |inductive Peano : Type
+        | | zero : Peano
         |
         |struct NatOps : Type
-        | | mk (zero: Nat) : NatOps
+        | | mk (zero: Peano) : NatOps
         |
-        |def local (Nat: NatOps): _root_.Nat := Nat.zero
-        |def root (Nat: NatOps): _root_.Nat := _root_.Nat.zero
+        |def local (Peano: NatOps): _root_.Peano := Peano.zero
+        |def root (Peano: NatOps): _root_.Peano := _root_.Peano.zero
         |""".stripMargin
 
     typecheckProgram(p)
@@ -395,35 +395,35 @@ class NamespaceTests extends munit.FunSuite {
   test("match cases may use explicit short constructor names from scrutinee type") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (p: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (p: Peano) : Peano
         |
-        |def pred (n: Nat): Nat := {
+        |def pred (n: Peano): Peano := {
         |  match n with
-        |  | .zero => Nat.zero
+        |  | .zero => Peano.zero
         |  | .succ p => p
         |}
         |
         |{
-        |  pred(Nat.succ(Nat.zero))
+        |  pred(Peano.succ(Peano.zero))
         |}
         |""".stripMargin
 
-    assertEquals(ctorName(runProgram(p)), "Nat.zero")
+    assertEquals(ctorName(runProgram(p)), "Peano.zero")
   }
 
   test("plain case heads must resolve as globals, not locals") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (p: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (p: Peano) : Peano
         |
-        |def bad (zero: Nat)(n: Nat): Nat := {
+        |def bad (zero: Peano)(n: Peano): Peano := {
         |  match n with
-        |  | zero => Nat.zero
-        |  | Nat.succ p => p
+        |  | zero => Peano.zero
+        |  | Peano.succ p => p
         |}
         |""".stripMargin
 
@@ -486,9 +486,9 @@ class NamespaceTests extends munit.FunSuite {
   test("match cases for namespaced inductives may be fully qualified, partially qualified, and unqualified") {
     val fullyQualified =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |namespace Data {
         |  inductive Tree : Type
@@ -496,10 +496,10 @@ class NamespaceTests extends munit.FunSuite {
         |   | node (left: Tree)(right: Tree) : Tree
         |}
         |
-        |def classify (t: Data.Tree): Nat := {
-        |  match t returning Nat with
-        |  | Data.Tree.leaf => Nat.zero
-        |  | Data.Tree.node left right => Nat.succ(Nat.zero)
+        |def classify (t: Data.Tree): Peano := {
+        |  match t returning Peano with
+        |  | Data.Tree.leaf => Peano.zero
+        |  | Data.Tree.node left right => Peano.succ(Peano.zero)
         |}
         |
         |{
@@ -507,13 +507,13 @@ class NamespaceTests extends munit.FunSuite {
         |}
         |""".stripMargin
 
-    assertEquals(ctorName(runProgram(fullyQualified)), "Nat.succ")
+    assertEquals(ctorName(runProgram(fullyQualified)), "Peano.succ")
 
     val partiallyQualified =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |namespace Data {
         |  inductive Tree : Type
@@ -523,10 +523,10 @@ class NamespaceTests extends munit.FunSuite {
         |
         |open Data
         |
-        |def classify (t: Tree): Nat := {
-        |  match t returning Nat with
-        |  | Tree.leaf => Nat.zero
-        |  | Tree.node left right => Nat.succ(Nat.zero)
+        |def classify (t: Tree): Peano := {
+        |  match t returning Peano with
+        |  | Tree.leaf => Peano.zero
+        |  | Tree.node left right => Peano.succ(Peano.zero)
         |}
         |
         |{
@@ -534,13 +534,13 @@ class NamespaceTests extends munit.FunSuite {
         |}
         |""".stripMargin
 
-    assertEquals(ctorName(runProgram(partiallyQualified)), "Nat.succ")
+    assertEquals(ctorName(runProgram(partiallyQualified)), "Peano.succ")
 
     val unqualified =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |namespace Data {
         |  inductive Tree : Type
@@ -550,10 +550,10 @@ class NamespaceTests extends munit.FunSuite {
         |
         |open Data.Tree
         |
-        |def classify (t: Data.Tree): Nat := {
-        |  match t returning Nat with
-        |  | leaf => Nat.zero
-        |  | node left right => Nat.succ(Nat.zero)
+        |def classify (t: Data.Tree): Peano := {
+        |  match t returning Peano with
+        |  | leaf => Peano.zero
+        |  | node left right => Peano.succ(Peano.zero)
         |}
         |
         |{
@@ -561,19 +561,19 @@ class NamespaceTests extends munit.FunSuite {
         |}
         |""".stripMargin
 
-    assertEquals(ctorName(runProgram(unqualified)), "Nat.succ")
+    assertEquals(ctorName(runProgram(unqualified)), "Peano.succ")
 
     val renamedUnqualified =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |open Nat.{zero as z, succ as s}
+        |open Peano.{zero as z, succ as s}
         |
-        |def pred (n: Nat): Nat := {
-        |  match n returning Nat with
-        |  | z => Nat.zero
+        |def pred (n: Peano): Peano := {
+        |  match n returning Peano with
+        |  | z => Peano.zero
         |  | s p => p
         |}
         |
@@ -582,11 +582,11 @@ class NamespaceTests extends munit.FunSuite {
         |}
         |""".stripMargin
 
-    assertEquals(ctorName(runProgram(renamedUnqualified)), "Nat.zero")
+    assertEquals(ctorName(runProgram(renamedUnqualified)), "Peano.zero")
   }
 
   test("raw elaboration rejects unresolved imports") {
-    val p = "import Mathlib.Data.Nat.Basic\n"
+    val p = "import Mathlib.Data.Peano.Basic\n"
 
     intercept[UnsupportedImport] {
       parseCore(p)
@@ -596,10 +596,10 @@ class NamespaceTests extends munit.FunSuite {
   test("old double-colon qualified syntax is rejected") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
+        |inductive Peano : Type
+        | | zero : Peano
         |
-        |{ Nat::zero }
+        |{ Peano::zero }
         |""".stripMargin
 
     assert(LanguageParser.parseProgram(p).isInstanceOf[Failure])

@@ -90,17 +90,17 @@ object TypeChecker {
 
   private def applyHeadName(fnResidual: EA.Term): String =
     fnResidual match {
-      case EA.Term.GlobalRef(name, _)   => name
-      case EA.Term.LocalRef(ref, _)     => ref.name
-      case _                            => "function"
+      case EA.Term.GlobalRef(name, _) => name
+      case EA.Term.LocalRef(ref, _)   => ref.name
+      case _                          => "function"
     }
 
   /**
-   * Application checking without unification: callers supply exactly the explicit args; every
-   * implicit binder carries a projection spec (compiled at Pi formation) that re-derives its value
-   * from those args. Elaboration order and verification are separate phases because implicits lead
-   * their forcing args in the telescope: an arg is checked against its binder type only once every
-   * binder that type mentions is known, and all fits are (re)verified in telescope order at the end.
+   * Application checking without unification: callers supply exactly the explicit args; every implicit binder carries a
+   * projection spec (compiled at Pi formation) that re-derives its value from those args. Elaboration order and
+   * verification are separate phases because implicits lead their forcing args in the telescope: an arg is checked
+   * against its binder type only once every binder that type mentions is known, and all fits are (re)verified in
+   * telescope order at the end.
    */
   private def checkApplyChecked(
       fnValue: Value,
@@ -216,9 +216,10 @@ object TypeChecker {
     CheckedPi(vpi, binderEnv, outV, checkedPi)
   }
 
-  /** Constructor telescopes route through here so unforced family params (the leading
-    * `familyParams` binders) get demoted instead of rejected; see Projection.compile.
-    */
+  /**
+   * Constructor telescopes route through here so unforced family params (the leading `familyParams` binders) get
+   * demoted instead of rejected; see Projection.compile.
+   */
   private[raccoonlang] def getConstructorType(term: CA.Term, env: Env, familyParams: Int): Value =
     term match {
       case pi: CA.Term.Pi =>
@@ -333,11 +334,10 @@ object TypeChecker {
   }
 
   /**
-   * Eta-adaptation of a bare polymorphic function against an expected Pi with fewer binders:
-   * `let f : Nat -> Nat := id` becomes `fun (x: Nat): Nat => id(x)`, and the inner application
-   * reconstructs the implicits from `x` by projection. Expected Pis may themselves have (forced)
-   * implicit binders — those become implicit binders of the synthetic lambda, reconstructed at its
-   * call sites; only the explicit ones are applied. The synthetic lambda's residual type is the
+   * Eta-adaptation of a bare polymorphic function against an expected Pi with fewer binders: `let f : Nat -> Nat := id`
+   * becomes `fun (x: Nat): Nat => id(x)`, and the inner application reconstructs the implicits from `x` by projection.
+   * Expected Pis may themselves have (forced) implicit binders — those become implicit binders of the synthetic lambda,
+   * reconstructed at its call sites; only the explicit ones are applied. The synthetic lambda's residual type is the
    * quoted expected Pi — the one remaining quoting client on the application path.
    */
   private def tryInstantiateImplicits(
@@ -400,6 +400,10 @@ object TypeChecker {
   private def check(term: CA.Term, expectedTy: Option[Value], env: Env): CheckedTerm =
     try {
       term match {
+        case CA.Term.NatLit(value, span) =>
+          val family = Packed.natFamily(env, span)
+          val synthed = CheckedTerm(VPacked(NatCodec, value, family), EA.Term.NatLit(value, span))
+          expectedTy.fold(synthed)(expected => checkTermFits(synthed, expected))
         case CA.Term.Select(base, field, span) =>
           val checkedBase = checkTerm(base, env)
           val checked = checkSelect(checkedBase, field, span, env, expectedTy)

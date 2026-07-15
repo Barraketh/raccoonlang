@@ -19,14 +19,14 @@ class InductiveCheckTest extends munit.FunSuite {
     ()
   }
 
-  test("Inductive type must be a Sort (no Pi): inductive Bad : Nat") {
+  test("Inductive type must be a Sort (no Pi): inductive Bad : Peano") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |inductive Bad : Nat
+        |inductive Bad : Peano
         | | mk : Bad
         |
         |""".stripMargin
@@ -37,9 +37,9 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Inductive type must be a Sort (Pi case): inductive Bad(A: Type) : A") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |inductive Bad(A: Type) : A
         | | mk: Bad(A)
@@ -49,15 +49,15 @@ class InductiveCheckTest extends munit.FunSuite {
     intercept[InductiveTypeNotASort] { elabAndTypecheck(p) }
   }
 
-  test("Constructor result must be inductive head: ctor returns Nat, not Bad") {
+  test("Constructor result must be inductive head: ctor returns Peano, not Bad") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |inductive Bad : Type
-        | | mk : Nat
+        | | mk : Peano
         |
         |""".stripMargin
 
@@ -102,12 +102,12 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Constructor result must use family params uniformly") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
-        | | mk (B: Type)(n: Nat): Vec(B, n)
+        |inductive Vec (A: Type) indices (n: Peano) : Sort(Level.one)
+        | | mk (B: Type)(n: Peano): Vec(B, n)
         |
         |""".stripMargin
 
@@ -117,11 +117,11 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Constructor result must have full family arity") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
+        |inductive Vec (A: Type) indices (n: Peano) : Sort(Level.one)
         | | bad : Vec(A)
         |
         |""".stripMargin
@@ -132,13 +132,13 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Constructor implicit binders may bind indices after params when a field forces them") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
-        | | nil : Vec(A, Nat.zero)
-        | | cons {n: Nat}(tail: Vec(A, n))(head: A): Vec(A, Nat.succ(n))
+        |inductive Vec (A: Type) indices (n: Peano) : Sort(Level.one)
+        | | nil : Vec(A, Peano.zero)
+        | | cons {n: Peano}(tail: Vec(A, n))(head: A): Vec(A, Peano.succ(n))
         |
         |""".stripMargin
 
@@ -148,12 +148,12 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Constructor-declared implicits must be forced by fields; family demotion does not apply") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
-        | | bad {n: Nat}: Vec(A, n)
+        |inductive Vec (A: Type) indices (n: Peano) : Sort(Level.one)
+        | | bad {n: Peano}: Vec(A, n)
         |
         |""".stripMargin
 
@@ -185,12 +185,12 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Hidden constructor binders may not shadow family params") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |inductive Bad (A: Type) : Type
-        | | mk {A: Nat}: Bad(A)
+        | | mk {A: Peano}: Bad(A)
         |
         |""".stripMargin
 
@@ -215,12 +215,12 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Nested non-positive: recursive occurrence under forbidden container parameter") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (_: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
         |
         |inductive BadBox (A: Type) : Type
-        | | mk (f: A -> Nat) : BadBox(A)
+        | | mk (f: A -> Peano) : BadBox(A)
         |
         |inductive BadTree : Type
         | | node (children: BadBox(BadTree)) : BadTree
@@ -287,11 +287,11 @@ class InductiveCheckTest extends munit.FunSuite {
   test("Nested metadata: unknown type-function head forbids dependent family argument") {
     val p =
       """
-        |inductive Nat : Type
-        | | zero : Nat
+        |inductive Peano : Type
+        | | zero : Peano
         |
         |inductive Higher (F: Type -> Type) : Type
-        | | mk (x: F(Nat)) : Higher(F)
+        | | mk (x: F(Peano)) : Higher(F)
         |
         |""".stripMargin
 

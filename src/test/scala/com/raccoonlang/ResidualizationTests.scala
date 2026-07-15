@@ -30,8 +30,8 @@ class ResidualizationTests extends munit.FunSuite {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
         val last = core.decls.lastOption.getOrElse(fail("Program has no declarations"))
-        val env = core.decls.dropRight(1).foldLeft(Prelude.test.checkedEnv) {
-          case (curEnv, decl) => Interpreter.evalDecl(decl, curEnv)
+        val env = core.decls.dropRight(1).foldLeft(Prelude.test.checkedEnv) { case (curEnv, decl) =>
+          Interpreter.evalDecl(decl, curEnv)
         }
         val ty = last match {
           case CoreAst.Decl.AxiomDecl(_, ty, _)          => ty
@@ -45,6 +45,7 @@ class ResidualizationTests extends munit.FunSuite {
 
   private def containsGlobal(term: EA.Term, name: String): Boolean =
     term match {
+      case _: EA.Term.NatLit       => false
       case EA.Term.GlobalRef(n, _) => n == name
       case EA.Term.LocalRef(_, _)  => false
       case EA.Term.App(fn, args, _) =>
@@ -65,9 +66,9 @@ class ResidualizationTests extends munit.FunSuite {
 
   private val natDecls =
     """
-      |inductive Nat : Type
-      | | zero : Nat
-      | | succ (_: Nat) : Nat
+      |inductive Peano : Type
+      | | zero : Peano
+      | | succ (_: Peano) : Peano
       |""".stripMargin
 
   test("checked residual preserves transparent applications literally") {
@@ -78,16 +79,16 @@ class ResidualizationTests extends munit.FunSuite {
           | | true : Bool
           | | false : Bool
           |
-          |def expensive (n: Nat): Nat := n
+          |def expensive (n: Peano): Peano := n
           |
-          |def choose (b: Bool)(x: Nat): Nat := {
-          |  match b returning Nat with
+          |def choose (b: Bool)(x: Peano): Peano := {
+          |  match b returning Peano with
           |  | Bool.true => x
-          |  | Bool.false => Nat.zero
+          |  | Bool.false => Peano.zero
           |}
           |
           |{
-          |  choose(Bool.false, expensive(Nat.zero))
+          |  choose(Bool.false, expensive(Peano.zero))
           |}
           |""".stripMargin
 
@@ -107,10 +108,10 @@ class ResidualizationTests extends munit.FunSuite {
           |
           |opaque def opaqueBool (b: Bool): Bool := b
           |
-          |def choose (b: Bool): Nat := {
-          |  match b returning Nat with
-          |  | Bool.true => Nat.zero
-          |  | Bool.false => Nat.succ(Nat.zero)
+          |def choose (b: Bool): Peano := {
+          |  match b returning Peano with
+          |  | Bool.true => Peano.zero
+          |  | Bool.false => Peano.succ(Peano.zero)
           |}
           |
           |{
@@ -131,7 +132,7 @@ class ResidualizationTests extends munit.FunSuite {
           | | mk (fst: A)(snd: B) : Pair(A, B)
           |
           |{
-          |  let p := Pair.mk(Nat.zero, Nat.succ(Nat.zero))
+          |  let p := Pair.mk(Peano.zero, Peano.succ(Peano.zero))
           |  p.fst
           |}
           |""".stripMargin
@@ -157,17 +158,17 @@ class ResidualizationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |def id (n: Nat): Nat := n
+          |def id (n: Peano): Peano := n
           |
           |{
-          |  fun (n: Nat): Nat => id(Nat.zero)
+          |  fun (n: Peano): Peano => id(Peano.zero)
           |}
           |""".stripMargin
 
     resultTerm(checkBody(p).term) match {
       case EA.Term.Lam(_, body, _, _, _, _) =>
         assert(containsGlobal(body, "id"))
-        assert(containsGlobal(body, "Nat.zero"))
+        assert(containsGlobal(body, "Peano.zero"))
       case other => fail(s"Expected literal lambda body, got $other")
     }
   }
@@ -180,13 +181,13 @@ class ResidualizationTests extends munit.FunSuite {
           | | true : Bool
           | | false : Bool
           |
-          |def id (n: Nat): Nat := n
+          |def id (n: Peano): Peano := n
           |opaque def opaqueBool (b: Bool): Bool := b
           |
           |{
-          |  match opaqueBool(Bool.true) returning Nat with
-          |  | Bool.true => id(Nat.zero)
-          |  | Bool.false => id(Nat.zero)
+          |  match opaqueBool(Bool.true) returning Peano with
+          |  | Bool.true => id(Peano.zero)
+          |  | Bool.false => id(Peano.zero)
           |}
           |""".stripMargin
 
@@ -210,9 +211,9 @@ class ResidualizationTests extends munit.FunSuite {
           |opaque def opaqueBool (b: Bool): Bool := b
           |
           |{
-          |  match idBool(opaqueBool(Bool.true)) returning Nat with
-          |  | Bool.true => Nat.zero
-          |  | Bool.false => Nat.zero
+          |  match idBool(opaqueBool(Bool.true)) returning Peano with
+          |  | Bool.true => Peano.zero
+          |  | Bool.false => Peano.zero
           |}
           |""".stripMargin
 
@@ -231,13 +232,13 @@ class ResidualizationTests extends munit.FunSuite {
           |def TyId (A: Type): Type := A
           |
           |{
-          |  (_: TyId(Nat)) -> Nat
+          |  (_: TyId(Peano)) -> Peano
           |}
           |""".stripMargin
 
     resultTerm(checkBody(p).term) match {
       case pi: EA.Term.Pi =>
-        assertEquals(pi.binders.head.ty.toString, "TyId(Nat)")
+        assertEquals(pi.binders.head.ty.toString, "TyId(Peano)")
       case other => fail(s"Expected residualized Pi, got $other")
     }
   }
@@ -276,11 +277,11 @@ class ResidualizationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |inductive Vec (A: Type) indices (n: Nat) : Type
-          | | nil : Vec(A, Nat.zero)
-          | | cons {n: Nat} (tail: Vec(A, n)) (head: A) : Vec(A, Nat.succ(n))
+          |inductive Vec (A: Type) indices (n: Peano) : Type
+          | | nil : Vec(A, Peano.zero)
+          | | cons {n: Peano} (tail: Vec(A, n)) (head: A) : Vec(A, Peano.succ(n))
           |
-          |axiom f : {n: Nat} -> (v: Vec(Nat, n)) -> Vec(Nat, n)
+          |axiom f : {n: Peano} -> (v: Vec(Peano, n)) -> Vec(Peano, n)
           |""".stripMargin
 
     checkLastDeclType(p) match {
@@ -288,22 +289,22 @@ class ResidualizationTests extends munit.FunSuite {
         assertEquals(pi.binders.length, 2)
         val nRef = pi.binders.head.localRef
         pi.binders.head.ty match {
-          case EA.Term.GlobalRef("Nat", _) =>
-          case other                       => fail(s"Expected Nat implicit binder, got $other")
+          case EA.Term.GlobalRef("Peano", _) =>
+          case other                         => fail(s"Expected Peano implicit binder, got $other")
         }
         pi.binders(1).ty match {
           case EA.Term.App(
                 EA.Term.GlobalRef("Vec", _),
-                Vector(EA.Term.GlobalRef("Nat", _), EA.Term.LocalRef(argRef, _)),
+                Vector(EA.Term.GlobalRef("Peano", _), EA.Term.LocalRef(argRef, _)),
                 _
               ) =>
             assertEquals(argRef, nRef)
-          case other => fail(s"Expected Vec(Nat, n) binder annotation, got $other")
+          case other => fail(s"Expected Vec(Peano, n) binder annotation, got $other")
         }
         pi.out match {
           case EA.Term.App(
                 EA.Term.GlobalRef("Vec", _),
-                Vector(EA.Term.GlobalRef("Nat", _), EA.Term.LocalRef(outRef, _)),
+                Vector(EA.Term.GlobalRef("Peano", _), EA.Term.LocalRef(outRef, _)),
                 _
               ) =>
             assertEquals(outRef, nRef)

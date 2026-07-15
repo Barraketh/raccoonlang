@@ -42,6 +42,8 @@ object CoreAst {
 
     final case class LocalRef(ref: CoreAst.LocalRef, span: Span) extends Ref
 
+    final case class NatLit(value: BigInt, span: Span) extends Term
+
     // Projection: base[field]
     final case class Select(base: Term, field: String, span: Span) extends Term
 

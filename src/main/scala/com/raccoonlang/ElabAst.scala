@@ -18,6 +18,8 @@ object ElabAst {
 
     final case class LocalRef(ref: CoreAst.LocalRef, span: Span) extends Ref
 
+    final case class NatLit(value: BigInt, span: Span) extends Term
+
     final case class App(fn: Term, args: Vector[Term], span: Span) extends Term
 
     // No classifier field: a Pi's universe is env-dependent (level-polymorphic binder types), so
