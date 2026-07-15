@@ -305,6 +305,34 @@ class ConsistencyTests extends munit.FunSuite {
     )
   }
 
+  // mathlib-export-port M0 / Abel-Coquand, arXiv:1911.08174 §3.
+  test("Abel-Coquand Omega terminates because every impredicative proof function is collapsed") {
+    // Lean's proof-irrelevant K-like Eq.rec rule repeatedly unfolds acDelta(acOmega). Raccoon
+    // must never inspect that proof computation: ACTrue, its endofunctions, and Omega itself all
+    // live in Prop and therefore become structureless VProofs before reduction can start.
+    val result = runProgram(
+      """
+        |axiom acPropext (a: Prop)(b: Prop)(h: Iff(a, b)): Eq(Prop, a, b)
+        |
+        |def acTautext {A: Prop}{B: Prop}(a: A)(b: B): Eq(Prop, A, B) :=
+        |  acPropext(A, B, Iff.intro(fun (_: A): B => b, fun (_: B): A => a))
+        |
+        |def ACTrue : Prop := (A: Prop) -> A -> A
+        |def ACEndo : Prop := (x: ACTrue) -> ACTrue
+        |def acId (x: ACTrue): ACTrue := x
+        |def acDelta (z: ACTrue): ACTrue := z(ACEndo, acId)(z)
+        |def acOmega (A: Prop)(a: A): A := Eq.mp(acTautext(acId, a), acDelta)
+        |def acOmegaClosed : ACTrue := acDelta(acOmega)
+        |
+        |{
+        |  acOmegaClosed
+        |}
+        |""".stripMargin
+    )
+
+    assert(result.isInstanceOf[Value.VProof])
+  }
+
   // §7.7 AstNodeId value identity.
   test("separate parses give distinct local Pi identities") {
     def piProgram(domain: String, binder: String): String =

@@ -1,6 +1,6 @@
 # Mathlib Export Port Plan
 
-Status: **planning**. Companion to `kernel-theory.md` (the theory constraints every workstream must
+Status: **implementation** (**M0 done**). Companion to `kernel-theory.md` (the theory constraints every workstream must
 respect) and `proof-collapse.md`. Records the decisions from the 2026-07 decidability analysis;
 the workstream sections are the units of implementation, the milestones (§7) are the acceptance
 ladder.
@@ -51,12 +51,12 @@ explicit arguments per Raccoon's all-or-none implicit rule.
 |---|---|---|---|
 | K1 | Higher-order subterm rule | — | **done** (commit 3355563) |
 | K2 | Sealed `Acc`/`WellFounded` primitives | — | spec review |
-| K3 | Native Nat/String literals | — | **Nat done**; String staged on Prelude `String`, div-class ops on K2 |
+| K3 | Native Nat/String literals | — | **Nat base done**; M0 requires every staged Nat op; String staged |
 | K4 | Primitive projections + structure eta | — | **done** |
-| K5 | `imax` levels | M0 stats | decision gate |
-| K6 | Mutual / nested inductives | M0 stats | decision gate |
+| K5 | `imax` levels | M0 stats | M0 decision: extend the level algebra |
+| K6 | Mutual / nested inductives | M0 stats | M0 decision: native kernel support |
 | K7 | Axioms: propext, choice | evidence-grades refactor | — |
-| T1 | Export reader + prelude alignment | — | — |
+| T1 | Export reader + prelude alignment | — | M0 reader/stats done; translation pending |
 | T2 | Recursor synthesis | K1 | — |
 | T3 | `Acc`/WF cluster mapping | K2 | — |
 | T4 | Typecheck-and-patch loop | T1–T3 | — |
@@ -86,7 +86,8 @@ value form with a closed, kernel-curated codec set; representation-not-rules, du
 `NatLit`, constructor↔literal transparency, packed structural decrease, and the seven operations
 whose structural definitions exist today (`add/sub/mul/pow`, `beq/ble/blt`) are implemented and
 certified against the structural path. Native Nat names are reserved to the bundled Prelude.
-`div/mod/gcd` and bitwise operations remain K2/T1-gated; `StrLit` remains staged until the Prelude
+M0 found all staged Nat operations already in the `Init` export, so `div/mod/gcd` and the complete
+bitwise set are required for M1 (still K2/T1-gated); `StrLit` remains staged until the Prelude
 has `String`/`Char`. Container codecs (List-as-array, Vec-as-array+Nat) remain out of scope and
 deferred with the P1 caching decision (spec §1).
 
@@ -113,13 +114,18 @@ translating `imax` as `max` silently reclassifies Prop-instantiations into `Sort
 collapsing, a semantic divergence. Options: (a) extend the level algebra with imax normal forms
 (case-split on `v = 0`; Lean's own level defeq is a sound-incomplete syntactic normalizer, so
 parity does not require completeness); (b) recompute binder sorts semantically during translation
-and fail loudly on declarations where genuine imax-polymorphism survives. Decision gate: M0 counts.
+and fail loudly on declarations where genuine imax-polymorphism survives. M0 found genuine `imax`
+in declared types already in `Init` (`pi_congr`, `implies_congr`, and generated
+constructor-elimination types), so option (b) is not a viable general route. Decision: extend the
+level algebra as in option (a). Counts: `m0-export-stats.md`.
 
 **K6. Mutual and nested inductives.** The Lean kernel accepts both natively; Raccoon has neither.
 Mutual: generalize positivity, the termination order (component-wise subterm across the block), and
 recursor synthesis. Nested: prefer kernel support over an encoding pass (encodings change
-no-confusion/injectivity behavior downstream). Decision gate: M0 counts over the mathematical
-closure — if nested occurrences are rare, they may be deferred past M3.
+no-confusion/injectivity behavior downstream). M0 found mutual and nested blocks in the first raw
+Mathlib slice, including blocks in the imported Lean/Std closure. Since T1 consumes that raw export
+rather than a separately validated dependency-pruned artifact, the decision is native kernel
+support, not an encoding or deferral. Counts: `m0-export-stats.md`.
 
 **K7. Axioms.** `propext` and `Classical.choice` (with `Nonempty`); `funext` arrives as a theorem
 via `Quot.sound`. `propext` is safe under collapse (the Abel–Coquand trigger is erased — pin with
@@ -130,8 +136,11 @@ says current rules already exclude this; re-walk §6 when landing.
 
 ## 5. Translator workstreams
 
-**T1. Export reader + prelude alignment.** Parse the ndjson stream; intern names/levels/exprs;
-topological declaration order. Map Lean's `Eq`, `Nat`, `Quot`, `Bool`, … onto the Raccoon Prelude
+**T1. Export reader + prelude alignment.** The M0 reader-only portion is done
+(`LeanExportM0` / `MathlibExportStats`): it validates format 3.1.0 and intern-table order while
+retaining only packed transitive summaries, and was exercised on real `Init` and
+`Mathlib.Logic.Basic` exports. See `m0-export-stats.md`. Remaining work: translate the stream and
+retain topological declaration order. Map Lean's `Eq`, `Nat`, `Quot`, `Bool`, … onto the Raccoon Prelude
 (or import a fresh translated core and keep Raccoon's Prelude only for bootstrapping); mangle
 names into namespaces; insert explicit level arguments; translate `let` to `Body.lets`.
 `theorem`s publish as collapsed proofs — checked once, erased — so proof bodies are never retained
@@ -171,10 +180,11 @@ kernel-theory review — thunks must not weaken the §5 evidence rules).
 
 ## 7. Milestones
 
-- **M0 — stats.** A reader-only pass over a real export (root: core `Init`, then a Mathlib slice)
+- **M0 — stats — done.** A reader-only pass over real `Init` and `Mathlib.Logic.Basic` exports
   counting: `Sort (imax …)` in declared types, mutual blocks, nested inductives, Sort-motive
   `Acc.rec` uses outside the fix cluster, `proj` nodes, literal ops used, declarations flagged
-  irreducible. Resolves the K5/K6 gates. Also: land the Abel–Coquand Ω must-terminate probe.
+  irreducible. Results and resolved gates: `m0-export-stats.md`. The Abel–Coquand Ω
+  must-terminate probe is pinned in `ConsistencyTests`.
 - **M1 — core prelude.** The `Init` closure typechecks end-to-end (exercises T1/T2, K3, K4, K2 for
   `Nat.div`-class definitions). Acceptance: zero unpatched failures; perf baseline recorded.
 - **M2 — `Mathlib.Logic`.** K7 axioms live (post evidence-grades refactor); classical reasoning,
@@ -186,15 +196,15 @@ kernel-theory review — thunks must not weaken the §5 evidence rules).
 - **M5 — broad closure.** Grow toward the full mathematical closure; track the patch-rate and
   failure taxonomy as the health metric rather than a single pass/fail.
 
-## 8. Open decision gates
+## 8. Decision gates
 
-1. K5 route (extend level algebra vs. semantic recomputation) — decide on M0 numbers.
-2. K6 nested-inductive route (kernel support vs. defer) — M0 numbers.
-3. Prop-level `Quot.lift` stuckness (proof-collapse §10): completeness question — does Mathlib's
+1. **Resolved at M0:** K5 extends the level algebra; genuine `imax` occurs in `Init` declaration types.
+2. **Resolved at M0:** K6 gets native mutual/nested support; both occur in the first raw Mathlib slice.
+3. **Open:** Prop-level `Quot.lift` stuckness (proof-collapse §10): completeness question — does Mathlib's
    `Quotient` usage ever eliminate a Prop-level quotient into data? Check at M2.
-4. Native-op trust: builtin defeq steps trusted outright (Lean's stance) vs. certified against the
+4. **Open:** Native-op trust: builtin defeq steps trusted outright (Lean's stance) vs. certified against the
    structural definitions on first use. Default: trusted, documented in the §4 axiom ledger.
-5. P1 laziness — only if M3 measurements force it.
+5. **Open:** P1 laziness — only if M3 measurements force it.
 
 ## 9. Non-goals
 

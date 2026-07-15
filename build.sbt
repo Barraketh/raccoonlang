@@ -3,6 +3,7 @@ ThisBuild / version := "0.1.0-SNAPSHOT"
 ThisBuild / organization := "org.leanlite"
 
 val roaringBitmapVersion = "1.3.0"
+val jacksonVersion = "2.20.1"
 lazy val graalvmNativeImageClasspath = taskKey[File]("Writes the runtime classpath used by GraalVM native-image")
 
 lazy val root = (project in file(".")).settings(
@@ -15,6 +16,7 @@ lazy val root = (project in file(".")).settings(
   ),
   Test / fork := true,
   libraryDependencies ++= Seq(
+    "com.fasterxml.jackson.core" % "jackson-core" % jacksonVersion,
     "org.roaringbitmap" % "RoaringBitmap" % roaringBitmapVersion,
     "org.scalameta" %% "munit" % "0.7.29" % Test
     ),
