@@ -34,14 +34,13 @@ object Interpreter {
   }
 
   /**
-   * Continues the reduction of v if v is blocked by a variable that's been solved in EqStore The default call (if v
-   * cannot be further reduced) should be quite fast, so we can call it defensively (don't need to worry too much about
-   * the performance impact of calling it too often).
+   * Continues the reduction of v if any dependency that blocks it has been solved in EqStore. The default call (if v
+   * cannot be further reduced) is a fast empty/intersection check, so callers may use it defensively.
    */
   def resolveInEqStore(v: Value, eqStore: EqStore): Value = {
     val v0 = eqStore.force(v)
     v0 match {
-      case Blocked(blockerId) if eqStore.subst.contains(blockerId) =>
+      case Blocked(blockedOn) if blockedOn.intersects(eqStore.solvedIds) =>
         v0 match {
           case VBlockedApp(h, args, tpe, _) =>
             val h0 = ValueOps.materialize(resolveInEqStore(h, eqStore), eqStore)
@@ -50,13 +49,13 @@ object Interpreter {
               case lam: VLam =>
                 val res = runLam(lam, materializedArgs)
                 resolveInEqStore(res, eqStore)
-              case nextHead @ Blocker(nextBlockerId) =>
-                VBlockedApp(nextHead, args, tpe, nextBlockerId)
+              case nextHead @ Blocker(nextBlockedOn) =>
+                VBlockedApp(nextHead, args, tpe, nextBlockedOn)
               case other =>
                 resolveInEqStore(evalApply(other, materializedArgs), eqStore)
             }
-          case vm: NeutralThunk if vm.blockerId.nonEmpty => resolveInEqStore(forceThunk(vm, eqStore), eqStore)
-          case _                                         => throw WTF(s"Blocked extractor matched unexpected value $v0")
+          case vm: NeutralThunk => resolveInEqStore(forceThunk(vm, eqStore), eqStore)
+          case _                => throw WTF(s"Blocked extractor matched unexpected value $v0")
         }
 
       case l: Level if l.synDeps.intersects(eqStore.solvedIds) => normalizeLevel(l, eqStore)
@@ -172,9 +171,9 @@ object Interpreter {
             val resultTy = pi.codomain(envWithArgs)
             val storedArgs = Value.constructorStoredArgs(h, vArgs)
             Value.canonicalizeProof(Packed.foldCtor(h, storedArgs, resultTy).getOrElse(VCtor(h, storedArgs, resultTy)))
-          case blocker @ Blocker(blockerId) =>
+          case blocker @ Blocker(blockedOn) =>
             StructEta.expandIfStruct(
-              Value.canonicalizeProof(VBlockedApp(blocker, vArgs, pi.codomain(envWithArgs), blockerId))
+              Value.canonicalizeProof(VBlockedApp(blocker, vArgs, pi.codomain(envWithArgs), blockedOn))
             )
           // Preserve the existing neutral as the head of a new application layer. Flattening
           // would destroy positional-projection arity and make quotation ambiguous.
@@ -327,12 +326,13 @@ object Interpreter {
       case proof: VProof              => return evalProofMatch(m, proof, env)
       case other                      =>
         // We are either blocked or stuck
-        val blockerId = other match {
-          case Blocker(id) => Some(id)
-          case _           => None
+        val headBlockers = other match {
+          case Blocker(blockedOn) => blockedOn
+          case _                  => DepSet.empty
         }
+        val blockedOn = headBlockers ++ typeCollapseDeps(other.tpe)
         return StructEta.expandIfStruct(
-          Value.canonicalizeProof(stuckMatchThunk(m, env, matchOutType(m, scrut, env), blockerId))
+          Value.canonicalizeProof(stuckMatchThunk(m, env, matchOutType(m, scrut, env), blockedOn))
         )
     }
 
@@ -347,9 +347,14 @@ object Interpreter {
       case None         => scrut.tpe
     }
 
-  private def stuckMatchThunk(m: ETerm.Match, env: Env, outType: Value, blockerId: Option[VarId]): NeutralThunk = {
+  private def typeCollapseDeps(tpe: Value): DepSet = {
+    val classifierLevel = TypeChecker.getUniverse(tpe).level
+    if (Level.isNeverZero(classifierLevel)) DepSet.empty else classifierLevel.synDeps
+  }
+
+  private def stuckMatchThunk(m: ETerm.Match, env: Env, outType: Value, blockedOn: DepSet): NeutralThunk = {
     val closedEnv = env.closeForEval(CapturedRefs.getCapturedRefs(m, env))
-    NeutralThunk(m, closedEnv, ValueId.LocalId(m.nodeId, closedEnv.locals.values.toVector), outType, blockerId)
+    NeutralThunk(m, closedEnv, ValueId.LocalId(m.nodeId, closedEnv.locals.values.toVector), outType, blockedOn)
   }
 
   private def evalBranch(branch: ElabAst.Case, args: Vector[Value], env: Env): Value = {
@@ -371,7 +376,7 @@ object Interpreter {
   private def evalProofMatch(m: ETerm.Match, scrut: VProof, env: Env): Value = {
     val outType = matchOutType(m, scrut, env)
     if (Value.isPropositionType(outType)) Value.canonicalizeProof(VProof(outType))
-    else StructEta.expandIfStruct(stuckMatchThunk(m, env, outType, None))
+    else StructEta.expandIfStruct(stuckMatchThunk(m, env, outType, scrut.tpe.synDeps))
   }
 
   def evalBody(body: ETerm.Body, env: Env): Value = {

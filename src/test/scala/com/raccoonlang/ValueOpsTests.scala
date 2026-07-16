@@ -237,7 +237,7 @@ class ValueOpsTests extends munit.FunSuite {
       runtimeEnv,
       ValueId.LocalId(nodeId(3), Vector(scrut, captured)),
       valueType,
-      Some(scrut.id)
+      DepSet(scrut.id)
     )
 
     val eqCaptured = solve(captured, solution)
@@ -248,10 +248,53 @@ class ValueOpsTests extends munit.FunSuite {
 
     assert(!materialized.synDeps.contains(captured.id))
     assert(materialized.synDeps.contains(scrut.id))
-    assertEquals(materialized.blockerId, Some(scrut.id))
+    assertEquals(materialized.blockedOn, DepSet(scrut.id))
 
     val eqAll = eqCaptured.allow(DepSet(scrut.id)).addLink(scrut.id, ctor)
     assertEquals(Interpreter.resolveInEqStore(materialized, eqAll), solution)
+  }
+
+  test("resolveInEqStore uses the blocker set rather than all thunk dependencies") {
+    val capturedRef = CoreAst.LocalRef(0, "captured")
+    val scrutRef = CoreAst.LocalRef(1, "scrut")
+    val captured = FreshVar.freshVar("captured", valueType)
+    val scrut = FreshVar.freshVar("scrut", valueType)
+    val runtimeEnv = Env.empty.putLocal(capturedRef, captured).putLocal(scrutRef, scrut)
+    val matchTerm = ETerm.Match(
+      ETerm.LocalRef(scrutRef, span),
+      motive = None,
+      cases = Vector(ElabAst.Case("C", Vector.empty, ETerm.LocalRef(capturedRef, span), span)),
+      span,
+      AstNodeId.synthetic()
+    )
+    val thunk = NeutralThunk(
+      matchTerm,
+      runtimeEnv,
+      ValueId.LocalId(nodeId(4), Vector(scrut, captured)),
+      valueType,
+      DepSet(scrut.id)
+    )
+    val store = solve(captured, symbolicValue("CapturedSolution"))
+
+    assert(thunk.synDeps.contains(captured.id))
+    assert(!thunk.blockedOn.contains(captured.id))
+    assert(Interpreter.resolveInEqStore(thunk, store) eq thunk)
+  }
+
+  test("blocked application views preserve every blocker") {
+    val first = FreshVar.freshVar("first", valueType)
+    val second = FreshVar.freshVar("second", valueType)
+    val blockers = DepSet(first.id, second.id)
+    val app = VBlockedApp(symbolicValue("Head"), Vector(symbolicValue("Arg")), valueType, blockers)
+
+    app match {
+      case VBlockedApp(_, _, _, actual) => assertEquals(actual, blockers)
+      case other                        => fail(s"Expected a blocked application, got $other")
+    }
+    app match {
+      case Blocker(actual) => assertEquals(actual, blockers)
+      case other           => fail(s"Expected the application to expose its blocker set, got $other")
+    }
   }
 
   test("blocked match closures keep only referenced runtime locals") {
@@ -290,7 +333,7 @@ class ValueOpsTests extends munit.FunSuite {
 
     assert(!blocked.synDeps.contains(unused.id))
     assert(blocked.synDeps.contains(scrut.id))
-    assertEquals(blocked.blockerId, Some(scrut.id))
+    assertEquals(blocked.blockedOn, DepSet(scrut.id))
   }
 
   test("constructor equality accounts for result type") {

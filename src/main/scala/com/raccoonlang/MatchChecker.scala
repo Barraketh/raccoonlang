@@ -28,7 +28,7 @@ object MatchChecker {
 
     def rootRefinable(value: Value): DepSet =
       value match {
-        case Blocker(blockerId) => DepSet(blockerId)
+        case Blocker(blockedOn) => blockedOn
         case _                  => DepSet.empty
       }
 

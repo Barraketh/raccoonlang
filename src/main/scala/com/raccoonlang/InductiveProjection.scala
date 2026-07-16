@@ -177,7 +177,7 @@ object InductiveProjection {
       projectionPi(inst, info, idx, base.tpe)
     )
     val app = base match {
-      case Blocker(blockerId) => VBlockedApp(head, Vector(base), fieldTy, blockerId)
+      case Blocker(blockedOn) => VBlockedApp(head, Vector(base), fieldTy, blockedOn)
       case _                  => VApp(head, Vector(base), fieldTy)
     }
     StructEta.expandIfStruct(Value.canonicalizeProof(app))

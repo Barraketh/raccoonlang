@@ -86,6 +86,14 @@ link is a consequence.
   under a later store); rigid vars additionally cannot be expanded in place — rigid vs. refinable
   is store-relative, and metas must stay linkable (the same reason `canonicalizeProof` exempts
   Vars).
+- **Stuck reduction blockers**: `NeutralThunk` and blocked `VApp` values carry a `DepSet` that
+  over-approximates the store events that could make suspended re-evaluation productive. An empty
+  set means re-evaluation-rigid; a singleton records ordinary head blocking; a larger set records
+  a judgment-blocked computation such as proof reconstruction. Materialization may re-fire
+  reduction-blocked matches and applications when any blocker is solved, because the suspended
+  value and its reduct are convertible. It must not use this mechanism for creation-time
+  representation invariants: structure eta expansion remains creation-only, while proof
+  re-canonicalization from a resolved output type remains a separate type-directed channel.
 - **Packed Nat representation** (definitional): every ground bundled-Prelude `Nat` is born as
   `VPacked(NatCodec, payload, Nat)`; `decodeHead` exposes one constructor layer for matching,
   projection, and mixed packed/constructor comparison, while all ground constructor-birth and
@@ -310,6 +318,16 @@ the probe into a must-reject test — is the standard procedure for anything on 
    equation, and only result-checked `reconstruct` creates a branch-firing `VCtor`. Tests:
    ProjectionTests (indexed and result-only recovery cases); ProofCollapseTests (polymorphic Prop
    eligibility and constrained-match non-reduction).
+
+9. **Judgment-blocked match wakeup** (fixed): a data-valued match on `VProof(P)` was tagged rigid,
+   so solving an index in `P` could reconstruct the proof inside the thunk without re-running the
+   match. Hoisting the match above the refinement point then changed whether an otherwise identical
+   definition checked. → `blockedOn` is a dependency set: it over-approximates store events that can
+   make suspended re-evaluation productive, and empty asserts re-evaluation rigidity rather than
+   representation permanence. Proof matches track `P.synDeps`; other stuck matches track both head
+   blockers and possible scrutinee-sort collapse. Tests: ProofCollapseTests (`works`/`frozen`,
+   multi-dependency refinement, and function-valued propagation); ValueOpsTests (set propagation
+   and wakeup gates).
 
 **Open findings** (recorded, unfixed):
 

@@ -187,6 +187,228 @@ class ProofCollapseTests extends munit.FunSuite {
     }
   }
 
+  test("judgment-blocked proof matches re-fire after branch refinement") {
+    typecheckDecls(
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (pred: Peano) : Peano
+        |
+        |inductive Eq2 indices (left: Peano)(right: Peano) : Prop
+        | | refl (value: Peano) : Eq2(value, value)
+        |
+        |inductive IsZero indices (n: Peano) : Type
+        | | mk : IsZero(Peano.zero)
+        |
+        |def works (n: Peano)(h: Eq2(n, Peano.zero)): Peano := {
+        |  match n returning Peano with
+        |  | Peano.zero => {
+        |    let extracted : Peano := {
+        |      match h returning Peano with
+        |      | Eq2.refl v => v
+        |    }
+        |    let pin : IsZero(extracted) := IsZero.mk
+        |    extracted
+        |  }
+        |  | Peano.succ _ => Peano.zero
+        |}
+        |
+        |def frozen (n: Peano)(h: Eq2(n, Peano.zero)): Peano := {
+        |  let extracted : Peano := {
+        |    match h returning Peano with
+        |    | Eq2.refl v => v
+        |  }
+        |  match n returning Peano with
+        |  | Peano.zero => {
+        |    let pin : IsZero(extracted) := IsZero.mk
+        |    extracted
+        |  }
+        |  | Peano.succ _ => Peano.zero
+        |}
+        |""".stripMargin
+    )
+  }
+
+  test("judgment blockers wake on any proposition dependency") {
+    typecheckDecls(
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (pred: Peano) : Peano
+        |
+        |inductive Tag indices (t: Peano)(l: Peano)(r: Peano) : Prop
+        | | mk (u: Peano)(v: Peano) : Tag(u, v, v)
+        |
+        |inductive IsZero indices (n: Peano) : Type
+        | | mk : IsZero(Peano.zero)
+        |
+        |def wakeSecond (a: Peano)(b: Peano)(h: Tag(a, b, Peano.zero)): Peano := {
+        |  let extracted : Peano := {
+        |    match h returning Peano with
+        |    | Tag.mk _ v => v
+        |  }
+        |  match b returning Peano with
+        |  | Peano.zero => {
+        |    let pin : IsZero(extracted) := IsZero.mk
+        |    extracted
+        |  }
+        |  | Peano.succ _ => Peano.zero
+        |}
+        |""".stripMargin
+    )
+  }
+
+  test("one judgment-blocked thunk re-fires under either independent dependency solve") {
+    val program = parse(
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (pred: Peano) : Peano
+        |
+        |inductive Eq2 indices (left: Peano)(right: Peano) : Prop
+        | | refl (value: Peano) : Eq2(value, value)
+        |
+        |def probe (a: Peano)(b: Peano)(h: Eq2(a, b)): Peano := {
+        |  match h returning Peano with
+        |  | Eq2.refl v => v
+        |}
+        |""".stripMargin
+    )
+    val env = program.decls.foldLeft(Prelude.default.checkedEnv) { case (current, decl) =>
+      Interpreter.evalDecl(decl, current)
+    }
+    val peano = env("Peano")
+    val a = FreshVar.freshVar("a", peano)
+    val b = FreshVar.freshVar("b", peano)
+    val proposition = Interpreter.evalApply(env("Eq2"), Vector(a, b))
+    val h = Value.canonicalizeProof(Value.VProof(proposition))
+    val thunk = Interpreter.evalApply(env("probe"), Vector(a, b, h)).asInstanceOf[Value.NeutralThunk]
+
+    assertEquals(thunk.blockedOn, DepSet(a.id, b.id))
+
+    val solveA = EqStore.empty.allow(DepSet(a.id)).addLink(a.id, b)
+    val solveB = EqStore.empty.allow(DepSet(b.id)).addLink(b.id, a)
+    val firedA = Interpreter.resolveInEqStore(thunk, solveA)
+    val firedB = Interpreter.resolveInEqStore(thunk, solveB)
+
+    assert(!firedA.isInstanceOf[Value.NeutralThunk])
+    assert(!firedB.isInstanceOf[Value.NeutralThunk])
+    assert(ValueEquivalence.defEq(firedA, b))
+    assert(ValueEquivalence.defEq(firedB, a))
+  }
+
+  test("a judgment-blocked thunk re-sticks with only its remaining dependencies") {
+    val program = parse(
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (pred: Peano) : Peano
+        |
+        |inductive Eq2 indices (left: Peano)(right: Peano) : Prop
+        | | refl (value: Peano) : Eq2(value, value)
+        |
+        |def probe (a: Peano)(b: Peano)(h: Eq2(a, b)): Peano := {
+        |  match h returning Peano with
+        |  | Eq2.refl v => v
+        |}
+        |""".stripMargin
+    )
+    val env = program.decls.foldLeft(Prelude.default.checkedEnv) { case (current, decl) =>
+      Interpreter.evalDecl(decl, current)
+    }
+    val peano = env("Peano")
+    val a = FreshVar.freshVar("a", peano)
+    val b = FreshVar.freshVar("b", peano)
+    val c = FreshVar.freshVar("c", peano)
+    val proposition = Interpreter.evalApply(env("Eq2"), Vector(a, b))
+    val h = Value.canonicalizeProof(Value.VProof(proposition))
+    val thunk = Interpreter.evalApply(env("probe"), Vector(a, b, h)).asInstanceOf[Value.NeutralThunk]
+    val store = EqStore.empty.allow(DepSet(a.id)).addLink(a.id, c)
+
+    val restuck = Interpreter.resolveInEqStore(thunk, store).asInstanceOf[Value.NeutralThunk]
+
+    assert(!(restuck eq thunk))
+    assertEquals(restuck.blockedOn, DepSet(b.id, c.id))
+    assert(!restuck.blockedOn.contains(a.id))
+    assert(Interpreter.resolveInEqStore(restuck, store) eq restuck)
+  }
+
+  test("a rigid-neutral match wakes when its scrutinee sort collapses to Prop") {
+    val program = parse(
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (pred: Peano) : Peano
+        |
+        |inductive PolyUnit (u: Level) : Sort(u)
+        | | mk : PolyUnit(u)
+        |
+        |axiom makerType (u: Level): (n: Peano) -> PolyUnit(u)
+        |
+        |def probe (u: Level)(x: PolyUnit(u)): Peano := {
+        |  match x returning Peano with
+        |  | PolyUnit.mk => Peano.zero
+        |}
+        |""".stripMargin
+    )
+    val env = program.decls.foldLeft(Prelude.default.checkedEnv) { case (current, decl) =>
+      Interpreter.evalDecl(decl, current)
+    }
+    val u = FreshVar.freshVar("u", Value.LevelTpe)
+    val polyUnitAtU = Interpreter.evalApply(env("PolyUnit"), Vector(u))
+    val x = Value.VConst("x", Value.Symbol, polyUnitAtU)
+    val thunk = Interpreter.evalApply(env("probe"), Vector(u, x)).asInstanceOf[Value.NeutralThunk]
+
+    assertEquals(thunk.blockedOn, DepSet(u.id))
+
+    val store = EqStore.empty.allow(DepSet(u.id)).addLink(u.id, Value.Level.zero)
+    val fired = Interpreter.resolveInEqStore(thunk, store)
+    assertEquals(PrettyPrinter.print(fired), "Peano.zero")
+
+    val makerAtU = Interpreter.evalApply(env("makerType"), Vector(u))
+    val blockedHead = FreshVar.freshVar("blockedHead", makerAtU.tpe)
+    val zero = env("Peano.zero")
+    // Construct the blocked application directly: ordinary creation would structure-eta-expand
+    // this fieldless singleton before it can serve as a stuck scrutinee.
+    val blockedScrutinee = Value.VBlockedApp(blockedHead, Vector(zero), polyUnitAtU, DepSet(blockedHead.id))
+    val blockedThunk =
+      Interpreter.evalApply(env("probe"), Vector(u, blockedScrutinee)).asInstanceOf[Value.NeutralThunk]
+
+    assertEquals(blockedThunk.blockedOn, DepSet(blockedHead.id, u.id))
+    val firedThroughSortCollapse = Interpreter.resolveInEqStore(blockedThunk, store)
+    assertEquals(PrettyPrinter.print(firedThroughSortCollapse), "Peano.zero")
+  }
+
+  test("judgment blocker sets propagate through blocked applications") {
+    typecheckDecls(
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (pred: Peano) : Peano
+        |
+        |inductive Eq2 indices (left: Peano)(right: Peano) : Prop
+        | | refl (value: Peano) : Eq2(value, value)
+        |
+        |inductive IsZero indices (n: Peano) : Type
+        | | mk : IsZero(Peano.zero)
+        |
+        |def appliedFrozen (n: Peano)(h: Eq2(n, Peano.zero)): Peano := {
+        |  let f : (x: Peano) -> Peano := {
+        |    match h returning (x: Peano) -> Peano with
+        |    | Eq2.refl v => fun (_: Peano): Peano => v
+        |  }
+        |  let applied : Peano := f(Peano.zero)
+        |  match n returning Peano with
+        |  | Peano.zero => {
+        |    let pin : IsZero(applied) := IsZero.mk
+        |    applied
+        |  }
+        |  | Peano.succ _ => Peano.zero
+        |}
+        |""".stripMargin
+    )
+  }
+
   test("a diagonal equality axiom canonicalizes to refl and eliminates") {
     // Eq's declaration records that refl can be reconstructed exactly when the two endpoints
     // coincide. Runtime canonicalization follows that recipe; it does not run unification.

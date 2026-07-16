@@ -25,24 +25,24 @@ object ValueOps {
         case VSort(level)                 => VSort(materializeLevel(level))
         case Var(name, id, tpe)           => Var(name, id, materialize(tpe))
         case VConst(name, constType, tpe) => VConst(name, constType, materialize(tpe))
-        case VApp(head, args, tpe, blockerId) =>
+        case VApp(head, args, tpe, blockedOn) =>
           val materializedHead = materialize(head)
           val materializedArgs = args.map(materialize(_))
           val materializedTpe = materialize(tpe)
-          (materializedHead, blockerId) match {
-            case (h: ConstructorHead, None) =>
+          (materializedHead, blockedOn) match {
+            case (h: ConstructorHead, blockers) if blockers.isEmpty =>
               Packed
                 .foldCtor(h, materializedArgs, materializedTpe)
-                .getOrElse(VApp(materializedHead, materializedArgs, materializedTpe, blockerId))
-            case _ => VApp(materializedHead, materializedArgs, materializedTpe, blockerId)
+                .getOrElse(VApp(materializedHead, materializedArgs, materializedTpe, blockedOn))
+            case _ => VApp(materializedHead, materializedArgs, materializedTpe, blockedOn)
           }
-        case NeutralThunk(term, env, id, tpe, blockerId) =>
+        case NeutralThunk(term, env, id, tpe, blockedOn) =>
           NeutralThunk(
             term,
             materializeEnv(env),
             materializeLocalId(id),
             materialize(tpe),
-            blockerId
+            blockedOn
           )
         case ctor: ConstructorHead =>
           ctor.copy(tpe = materialize(ctor.tpe))

@@ -294,12 +294,12 @@ class ProjectionTests extends munit.FunSuite {
               Value.VConst(_, Value.StructField("FnBox", 0, _), _),
               Vector(Value.VConst("box", _, _)),
               _,
-              None
+              innerBlockedOn
             ),
             Vector(_),
             _,
-            None
-          ) =>
+            outerBlockedOn
+          ) if innerBlockedOn.isEmpty && outerBlockedOn.isEmpty =>
       case other => fail(s"Expected a nested application of the stuck projection, got $other")
     }
 

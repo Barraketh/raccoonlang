@@ -121,7 +121,8 @@ class InterpreterTests extends munit.FunSuite {
         |""".stripMargin
 
     getValue(p) match {
-      case Value.VApp(_: Value.NeutralThunk, Vector(_), _, None) =>
+      case Value.VApp(thunk: Value.NeutralThunk, Vector(_), _, blockedOn)
+          if thunk.blockedOn.isEmpty && blockedOn.isEmpty =>
       case other => fail(s"expected a nested application of the neutral match, got: $other")
     }
   }

@@ -416,7 +416,7 @@ object Value {
     override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
   }
 
-  case class VApp(head: Value, args: Vector[Value], tpe: Value, blockerId: Option[VarId] = None)
+  case class VApp(head: Value, args: Vector[Value], tpe: Value, blockedOn: DepSet = DepSet.empty)
     extends Value
     with UpdatableType {
     override lazy val synDeps: DepSet = {
@@ -427,10 +427,10 @@ object Value {
       res.result()
     }
 
-    require(args.nonEmpty || blockerId.isEmpty, "Blocked application requires at least one argument")
+    require(args.nonEmpty || blockedOn.isEmpty, "Blocked application requires at least one argument")
     head match {
       case h: ConstructorHead =>
-        require(blockerId.isEmpty, s"Constructor ${h.name} cannot be blocked")
+        require(blockedOn.isEmpty, s"Constructor ${h.name} cannot be blocked")
         val expectedArgs = h.totalArity - h.numErasedFamilyArgs
         require(
           args.length == expectedArgs,
@@ -447,7 +447,7 @@ object Value {
       env: Env,
       id: ValueId.LocalId,
       tpe: Value,
-      blockerId: Option[VarId]
+      blockedOn: DepSet
   ) extends Value
     with UpdatableType {
     override lazy val synDeps: DepSet = {
@@ -497,8 +497,8 @@ object Value {
    * DefEq still compares every pair of proof values solely through their propositions. There is deliberately no stored
    * witness: quotation is canonical as the residual-only `proof(tpe)` intrinsic.
    *
-   * A `VProof` is never a `Blocker`: matches on proofs do not block-and-resume. Proofs of Pi propositions instead use
-   * the canonical `VLam(_, _, ProofEta)` representation.
+   * A `VProof` is never a head `Blocker`. A data-valued match on one can nevertheless be judgment-blocked on the
+   * proposition's dependencies. Proofs of Pi propositions use the canonical `VLam(_, _, ProofEta)` representation.
    */
   final case class VProof(tpe: Value) extends Value with UpdatableType {
     require(isPropositionType(tpe), s"VProof requires a proposition, got a value of $tpe")
@@ -680,13 +680,15 @@ object Value {
    */
 
   object VBlockedApp {
-    def apply(head: Value, args: Vector[Value], tpe: Value, blockerId: VarId): VApp =
-      VApp(head, args, tpe, Some(blockerId))
+    def apply(head: Value, args: Vector[Value], tpe: Value, blockedOn: DepSet): VApp = {
+      require(blockedOn.nonEmpty, "Blocked application requires at least one blocker")
+      VApp(head, args, tpe, blockedOn)
+    }
 
-    def unapply(value: Value): Option[(Value, Vector[Value], Value, VarId)] =
+    def unapply(value: Value): Option[(Value, Vector[Value], Value, DepSet)] =
       value match {
-        case VApp(head, args, tpe, Some(blockerId)) => Some((head, args, tpe, blockerId))
-        case _                                      => None
+        case VApp(head, args, tpe, blockedOn) if blockedOn.nonEmpty => Some((head, args, tpe, blockedOn))
+        case _                                                           => None
       }
   }
 
@@ -695,36 +697,37 @@ object Value {
 
     def unapply(value: Value): Option[(ConstructorHead, Vector[Value], Value)] =
       value match {
-        case VApp(head: ConstructorHead, fields, tpe, None) => Some((head, fields, tpe))
-        case _                                              => None
+        case VApp(head: ConstructorHead, fields, tpe, blockedOn) if blockedOn.isEmpty =>
+          Some((head, fields, tpe))
+        case _ => None
       }
   }
 
   object Blocker {
-    def unapply(value: Value): Option[VarId] =
+    def unapply(value: Value): Option[DepSet] =
       value match {
-        case Var(_, id, _)                      => Some(id)
-        case VBlockedApp(_, _, _, id)           => Some(id)
-        case NeutralThunk(_, _, _, _, Some(id)) => Some(id)
-        case _                                  => None
+        case Var(_, id, _)                                            => Some(DepSet(id))
+        case VBlockedApp(_, _, _, blockedOn)                           => Some(blockedOn)
+        case NeutralThunk(_, _, _, _, blockedOn) if blockedOn.nonEmpty => Some(blockedOn)
+        case _                                                        => None
       }
   }
 
   object Blocked {
-    def unapply(value: Value): Option[VarId] =
+    def unapply(value: Value): Option[DepSet] =
       value match {
-        case VBlockedApp(_, _, _, id)           => Some(id)
-        case NeutralThunk(_, _, _, _, Some(id)) => Some(id)
-        case _                                  => None
+        case VBlockedApp(_, _, _, blockedOn)                           => Some(blockedOn)
+        case NeutralThunk(_, _, _, _, blockedOn) if blockedOn.nonEmpty => Some(blockedOn)
+        case _                                                        => None
       }
   }
 
   object ConstSpine {
     def unapply(value: Value): Option[(VConst, Vector[Value])] =
       value match {
-        case c: VConst                         => Some((c, Vector.empty))
-        case VApp(head: VConst, args, _, None) => Some((head, args))
-        case _                                 => None
+        case c: VConst => Some((c, Vector.empty))
+        case VApp(head: VConst, args, _, blockedOn) if blockedOn.isEmpty => Some((head, args))
+        case _ => None
       }
   }
 

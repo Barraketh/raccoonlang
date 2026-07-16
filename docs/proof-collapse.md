@@ -245,8 +245,13 @@ Evaluation sees canonical values:
 
 - a result-validated reconstructed `VCtor` selects its ordinary constructor branch;
 - a non-reconstructible `VProof` immediately produces a canonical proof for a Prop-valued result,
-  and leaves a data-valued match stuck;
+  and leaves a data-valued match stuck, blocked on the proposition's syntactic dependencies;
 - binding a stored proof field at a branch boundary canonicalizes one exposed layer.
+
+When materialization sees a store that solves any recorded dependency, it re-evaluates the stuck
+match. Reduction still occurs only if result-validated reconstruction now produces a `VCtor`; a
+failed result equation simply re-sticks the match with its remaining dependencies. This wakeup is
+reduction, not a new proof-recovery rule, and invokes no unification.
 
 For example:
 
