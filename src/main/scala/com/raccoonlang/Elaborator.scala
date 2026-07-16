@@ -304,12 +304,12 @@ object Elaborator {
     }
 
   private def structSelectorNamespace(decl: SA.Command.Decl.InductiveDecl): Option[SA.Command.Namespace] = {
-    if (!decl.isStruct || decl.ctors.isEmpty) return None
+    if (!decl.generateSelectors || decl.ctors.isEmpty) return None
 
     val header = decl.header
     val ctor = decl.ctors.head
     val storedBinders = ctor.binders
-    val fields = storedBinders.filter(_.name != "_")
+    val fields = storedBinders.zipWithIndex.filter(_._1.name != "_")
     if (fields.isEmpty) return None
 
     val usedNames = (header.binders ++ ctor.binders).map(_.name).toSet
@@ -329,13 +329,17 @@ object Elaborator {
     }
     val selfBinder =
       SA.Binder(selfName, selfType, selfSpan)
-    val familyFieldRewrites = directFamilyFieldRewrites(header, ctor)
-
     val selectors =
-      fields.zipWithIndex.map { case (field, fieldIdx) =>
-        val previousFields = fields.take(fieldIdx).map(_.name).toSet
+      fields.map { case (field, fieldIdx) =>
+        val previousFields = storedBinders
+          .take(fieldIdx)
+          .zipWithIndex
+          .collect {
+            case (previous, previousIdx) if previous.name != "_" => previous.name -> previousIdx
+          }
+          .toMap
         val resultTy =
-          rewriteFieldType(header.name, selfName, field.ty, previousFields, familyFieldRewrites)
+          rewriteFieldType(header.name, selfName, field.ty, previousFields)
         val selectorHeader =
           SA.Command.DeclHeader(
             field.name,
@@ -346,21 +350,13 @@ object Elaborator {
             ),
             field.span
           )
-        val body =
-          SA.Term.Match(
-            SA.Term.Ident(selfName, selfSpan),
-            Some(resultTy),
-            Vector(
-              SA.Term.Case(
-                Vector(header.name, ctor.name),
-                useShortName = false,
-                storedBinders.map(_.name),
-                SA.Term.Ident(field.name, field.span),
-                field.span
-              )
-            ),
-            field.span
-          )
+        val projection = SA.ProjectionAlias(header.name, fieldIdx)
+        val body = SA.Term.Proj(
+          projection.familyName,
+          projection.fieldIndex,
+          SA.Term.Ident(selfName, selfSpan),
+          field.span
+        )
 
         SA.Command.Decl.ConstDecl(
           isOpaque = false,
@@ -368,7 +364,8 @@ object Elaborator {
           decreases = None,
           SA.ConstBody.TermBody(body),
           field.span,
-          lazyGlobal = true
+          lazyGlobal = false,
+          projectionAlias = Some(projection)
         )
       }
 
@@ -387,78 +384,41 @@ object Elaborator {
       structName: String,
       selfName: String,
       term: SA.Term,
-      previousFields: Set[String],
-      familyFieldRewrites: Map[String, SA.Term]
+      previousFields: Map[String, Int]
   ): SA.Term =
     term match {
-      case SA.Term.Ident(name, _) if familyFieldRewrites.contains(name) =>
-        familyFieldRewrites(name)
-
       case SA.Term.Ident(name, span) if previousFields.contains(name) =>
-        selectorCall(structName, name, selfName, span)
+        SA.Term.Proj(structName, previousFields(name), SA.Term.Ident(selfName, span), span)
 
       case i: SA.Term.Ident => i
 
       case SA.Term.Select(base, field, span) =>
-        SA.Term.Select(rewriteFieldType(structName, selfName, base, previousFields, familyFieldRewrites), field, span)
+        SA.Term.Select(rewriteFieldType(structName, selfName, base, previousFields), field, span)
+
+      case SA.Term.Proj(familyName, fieldIndex, base, span) =>
+        SA.Term.Proj(
+          familyName,
+          fieldIndex,
+          rewriteFieldType(structName, selfName, base, previousFields),
+          span
+        )
 
       case SA.Term.App(fn, args, span) =>
         SA.Term.App(
-          rewriteFieldType(structName, selfName, fn, previousFields, familyFieldRewrites),
-          args.map(arg => rewriteFieldType(structName, selfName, arg, previousFields, familyFieldRewrites)),
+          rewriteFieldType(structName, selfName, fn, previousFields),
+          args.map(arg => rewriteFieldType(structName, selfName, arg, previousFields)),
           span
         )
 
       case SA.Term.Pi(binder, body, span) =>
-        rejectShadowingBinder(structName, binder, previousFields)
         SA.Term.Pi(
-          binder.copy(ty = rewriteFieldType(structName, selfName, binder.ty, previousFields, familyFieldRewrites)),
-          rewriteFieldType(structName, selfName, body, previousFields, familyFieldRewrites - binder.name),
+          binder.copy(ty = rewriteFieldType(structName, selfName, binder.ty, previousFields)),
+          rewriteFieldType(structName, selfName, body, previousFields - binder.name),
           span
         )
 
       case other => other
     }
-
-  private def directFamilyFieldRewrites(
-      header: SA.Command.InductiveHeader,
-      ctor: SA.Command.ConstructorDecl
-  ): Map[String, SA.Term] = {
-    val ctorFieldNames = ctor.binders.map(_.name).toSet - "_"
-    val resultArgs =
-      ctor.resultTy match {
-        case SA.Term.App(head, args, _) if flattenTermPath(head).exists(_.parts.lastOption.contains(header.name)) =>
-          args
-        case _ => Vector.empty
-      }
-
-    if (resultArgs.length != header.binders.length) Map.empty
-    else {
-      resultArgs
-        .zip(header.binders)
-        .collect {
-          case (SA.Term.Ident(fieldName, _), familyBinder) if ctorFieldNames.contains(fieldName) =>
-            fieldName -> SA.Term.Ident(familyBinder.name, familyBinder.span)
-        }
-        .toMap
-    }
-  }
-
-  private def selectorCall(structName: String, fieldName: String, selfName: String, span: Span): SA.Term =
-    SA.Term.App(
-      SA.Term.Select(SA.Term.Ident(structName, span), fieldName, span),
-      Vector(SA.Term.Ident(selfName, span)),
-      span
-    )
-
-  private def rejectShadowingBinder(
-      structName: String,
-      binder: SA.Binder,
-      previousFields: Set[String]
-  ): Unit = {
-    if (previousFields.contains(binder.name))
-      throw InvalidStruct(structName, s"Pi binder ${binder.name} shadows an earlier field", Some(binder.span))
-  }
 
   /**
    * Elaborate a dotted path using the local-first rule.
@@ -567,6 +527,9 @@ object Elaborator {
 
   private def elabTerm(term: SurfaceAst.Term, env: ResolveEnv): CA.Term = term match {
     case SA.Term.NatLit(value, span) => CA.Term.NatLit(value, span)
+    case SA.Term.Proj(familyName, fieldIndex, base, span) =>
+      val resolvedFamily = globalName(env.resolveGlobalBinding(Vector(familyName), span))
+      CA.Term.Proj(resolvedFamily, fieldIndex, elabTerm(base, env), span)
     case i: SA.Term.Ident =>
       elabPathTerm(identPath(i.name, i.span), env)
     case s: SA.Term.Select =>
@@ -672,8 +635,12 @@ object Elaborator {
                 CA.ConstBody.TermBody(elabTerm(term, envWithSelf))
             }
         }
+        val projectionAlias = c.projectionAlias.map { alias =>
+          val familyName = globalName(env.resolveGlobalBinding(Vector(alias.familyName), c.span))
+          CA.ProjectionAlias(familyName, alias.fieldIndex)
+        }
         (
-          CA.Decl.ConstDecl(c.isOpaque, nameText, header.ty, body, c.span, c.lazyGlobal),
+          CA.Decl.ConstDecl(c.isOpaque, nameText, header.ty, body, c.span, c.lazyGlobal, projectionAlias),
           envWithSelf
         )
       case c: SurfaceAst.Command.Decl.AxiomDecl =>
@@ -711,7 +678,7 @@ object Elaborator {
         val nextEnv = ctorNames.foldLeft(env.addGlobal(name)) { case (cur, ctorName) =>
           cur.addGlobal(ctorName)
         }
-        (CA.Decl.InductiveDecl(header, ctors, c.isStruct, c.span), nextEnv)
+        (CA.Decl.InductiveDecl(header, ctors, c.span), nextEnv)
     }
 
   private def elabCommands(commands: Vector[SA.Command], env: ResolveEnv): (Vector[CA.Decl], ResolveEnv) = {

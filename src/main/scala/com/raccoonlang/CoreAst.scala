@@ -6,6 +6,11 @@ package com.raccoonlang
 object CoreAst {
   final case class LocalRef(id: Int, name: String)
 
+  /** Metadata connecting a named selector definition to its primitive positional projection. */
+  final case class ProjectionAlias(familyName: String, fieldIndex: Int) {
+    require(fieldIndex >= 0, "Projection field index must be non-negative")
+  }
+
   sealed trait Ast {
     def span: Span
 
@@ -46,6 +51,14 @@ object CoreAst {
 
     // Projection: base[field]
     final case class Select(base: Term, field: String, span: Span) extends Term
+
+    /**
+     * Kernel positional projection. Surface field names resolve through selector metadata directly to this node;
+     * imported and generated terms also use it directly, so projection identity is independent of those names.
+     */
+    final case class Proj(familyName: String, fieldIndex: Int, base: Term, span: Span) extends Term {
+      require(fieldIndex >= 0, "Projection field index must be non-negative")
+    }
 
     // Pi (x: A) -> B x
     final case class Pi(binders: Vector[Binder], out: Term, span: Span) extends Term {
@@ -138,7 +151,8 @@ object CoreAst {
         ty: Term,
         body: ConstBody,
         span: Span,
-        lazyGlobal: Boolean = false
+        lazyGlobal: Boolean = false,
+        projectionAlias: Option[ProjectionAlias] = None
     ) extends Decl
 
     final case class AxiomDecl(
@@ -147,11 +161,10 @@ object CoreAst {
         span: Span
     ) extends Decl
 
-    // Inductive type declaration (structured)
+    // Inductive type declaration. Record syntax has already been lowered to ordinary selector definitions.
     final case class InductiveDecl(
         header: InductiveHeader,
         ctors: Vector[ConstructorDecl],
-        isStruct: Boolean,
         span: Span
     ) extends Decl
   }

@@ -71,6 +71,41 @@ class StructEtaTests extends munit.FunSuite {
     )
   }
 
+  test("plain one-constructor inductive receives eta without named selectors") {
+    typecheckDecls(
+      """
+        |inductive PlainPair (A: Type)(B: Type) : Type
+        | | mk (left: A)(right: B) : PlainPair(A, B)
+        |
+        |def getLeft {A: Type}{B: Type} (p: PlainPair(A, B)): A := {
+        |  match p returning A with
+        |  | PlainPair.mk left right => left
+        |}
+        |def getRight {A: Type}{B: Type} (p: PlainPair(A, B)): B := {
+        |  match p returning B with
+        |  | PlainPair.mk left right => right
+        |}
+        |def eta {A: Type}{B: Type} (p: PlainPair(A, B)):
+        |  Eq(PlainPair(A, B), p, PlainPair.mk(getLeft(p), getRight(p))) := Eq.refl(p)
+        |""".stripMargin
+    )
+  }
+
+  test("an implicit parameter at an automatically eta-expanded type remains forceable") {
+    typecheckDecls(
+      """
+        |inductive Tag : Type
+        | | mk (P: Prop) : Tag
+        |
+        |inductive Tagged indices (tag: Tag) : Type
+        | | mk (tag: Tag) : Tagged(tag)
+        |
+        |def recover {tag: Tag}(value: Tagged(tag)): Tag := tag
+        |def demo (P: Prop): Tag := recover(Tagged.mk(Tag.mk(P)))
+        |""".stripMargin
+    )
+  }
+
   test("binder eta: dependent fields (Sigma-like)") {
     typecheckDecls(
       natAndPair +

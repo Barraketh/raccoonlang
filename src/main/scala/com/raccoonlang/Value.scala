@@ -615,33 +615,44 @@ object Value {
   }
 
   /**
-   * Expansion capability of an eta-eligible struct (StructEta): the field names in constructor order plus the
-   * constructor head. Carried on the meta — inside the type value itself — so expansion needs no environment (Builtins
-   * natives run under empty envs; `Value.ascribe` has none at all). The head is a promise: its type is checked against
-   * the installed family head, so it cannot exist yet when the meta is built (InductiveChecks wires it right after
-   * install).
+   * Checked positional-projection capability of a one-constructor inductive family. `fieldNeededInSuffix(i)` records
+   * whether field `i` occurs in a later constructor binder type or the constructor result. It is compiled once from
+   * checked constructor syntax and drives both dependent telescope instantiation and Lean's Prop projection rule.
+   *
+   * Field spellings are deliberately absent: projections are kernel operations, while named selectors are ordinary
+   * frontend definitions. The constructor head is a promise completed after declaration installation.
    */
-  final class StructEtaInfo(val fieldNames: Vector[String], ctorHead0: () => ConstructorHead) {
-    lazy val ctorHead: ConstructorHead = ctorHead0()
+  final class ProjectionInfo(
+      val fieldNeededInSuffix: Vector[Boolean],
+      val etaEligible: Boolean,
+      ctorHead0: () => ConstructorHead
+  ) {
+    val fieldCount: Int = fieldNeededInSuffix.length
+    lazy val ctorHead: ConstructorHead = {
+      val head = ctorHead0()
+      val actualFieldCount = head.totalArity - head.numErasedFamilyArgs
+      if (actualFieldCount != fieldCount)
+        throw WTF(s"Projection metadata for ${head.name} has $fieldCount fields, constructor has $actualFieldCount")
+      head
+    }
   }
 
   final case class InductiveMeta(
       constructors: Vector[ConstructorMeta],
       familyArity: Int,
-      isStruct: Boolean,
       positiveArgs: DepSet,
-      etaInfo: Option[StructEtaInfo],
+      projectionInfo: Option[ProjectionInfo],
       proofStorage: ProofStorage
   ) {
     require(
       positiveArgs.isEmpty || positiveArgs.max < familyArity,
       "Inductive positive argument indexes must be in range"
     )
-    require(etaInfo.isEmpty || isStruct, "Only structs can be eta-eligible")
     require(
       !proofStorage.isInstanceOf[ProofStorage.Reconstruct] || constructors.length == 1,
       "Constructor-reconstructing proof families must have exactly one constructor"
     )
+    require(projectionInfo.isEmpty || constructors.length == 1, "Only one-constructor families can be projected")
 
     lazy val constructorNames: Vector[String] = constructors.map(_.canonicalName)
   }
@@ -651,12 +662,12 @@ object Value {
   case object Symbol extends ConstType
 
   /**
-   * Head of a stuck struct projection: `VConst(\"S.field\", StructField(i), _)` applied to its base. Created only by
-   * StructEta on neutral bases; `Interpreter.evalApply` reduces it structurally (constructor-headed base → stored
-   * field), bypassing Pi dispatch. defEq and keys treat it like any VConst — by name — which is exactly projection
-   * congruence.
+   * Head of a stuck positional projection. The family and field index are kernel identity; declaration-certified
+   * metadata lets a blocked projection reduce or re-stick without consulting a global environment.
    */
-  case class StructField(index: Int) extends ConstType
+  final case class StructField(familyName: String, index: Int, info: ProjectionInfo) extends ConstType {
+    require(index >= 0, "Projection field index must be non-negative")
+  }
 
   /**
    * Views over values.

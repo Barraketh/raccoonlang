@@ -36,6 +36,9 @@ object CapturedRefs {
       case Term.Proof(tpe, _) =>
         goTerm(tpe, env, refs)
 
+      case Term.Proj(_, _, base, _) =>
+        goTerm(base, env, refs)
+
       case Term.GlobalRef(_, _) =>
         refs
 

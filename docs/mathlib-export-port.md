@@ -95,7 +95,7 @@ has `String`/`Char`. Container codecs (List-as-array, Vec-as-array+Nat) remain o
 deferred with the P1 caching decision (spec §1).
 
 **K4. Primitive projections + structure eta — done** (StructEta; kernel-theory §2 "structure
-eta"). Implemented as representation, not conversion rules: every value of an eta-eligible struct
+eta"). Implemented as representation, not conversion rules: every value of an eta-eligible structure-like inductive
 type (one ctor, no indices, non-recursive, non-Prop instance) is constructor-headed. Binders
 freshen expanded; neutrals — opaque constants, axioms, blocked applications/matches, stuck
 `Quot.lift/ind` — wrap into the constructor of their stuck projections (`StructField`-headed
@@ -107,10 +107,11 @@ eta-expand; every inhabitant follows `proofStorage`, and layouts with unforced
 fields such as `PairU` erase wholesale. Notable
 consequences: opaque-by-default (P1) stays eta-compatible — an opaque instance constant gets eta
 without unfolding its body — and projections of opaque constants are transparent to positivity
-(previously rejected conservatively). Translator note for T1: `proj i` nodes map to `Select` /
-selector application; positional→named field mapping comes from ctor binder order
-(`StructEtaInfo.fieldNames`). Residual gaps for the T4 taxonomy: values created before their
-type is a *known* struct instance stay bare (rigid binders at then-blocked types; neutrals whose
+(previously rejected conservatively). Translator note for T1: exported `proj i` nodes map directly
+to `CoreAst.Term.Proj(family, i, base)`; named selector spellings are irrelevant. The block checker
+must recompute block recursion and validate any exported `isRec` claim rather than trusting it.
+Residual gaps for the T4 taxonomy: values created before their
+type is a *known* structure-like instance stay bare (rigid binders at then-blocked types; neutrals whose
 types reveal only under a later store — expansion is canonical-at-birth by design, see
 kernel-theory §2), and expansion cost on deep bundled-class hierarchies is a P1 measurement item.
 

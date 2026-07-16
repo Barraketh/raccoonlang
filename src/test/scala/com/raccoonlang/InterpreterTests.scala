@@ -98,4 +98,31 @@ class InterpreterTests extends munit.FunSuite {
         fail(s"expected constructor view, got: $other")
     }
   }
+
+  test("a function-valued neutral match can be applied") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
+        |
+        |inductive Bool : Type
+        | | true : Bool
+        | | false : Bool
+        |
+        |axiom b : Bool
+        |def choose : Peano -> Peano := {
+        |  match b returning Peano -> Peano with
+        |  | Bool.true => fun (n: Peano): Peano => n
+        |  | Bool.false => fun (n: Peano): Peano => n
+        |}
+        |
+        |{ choose(Peano.zero) }
+        |""".stripMargin
+
+    getValue(p) match {
+      case Value.VApp(_: Value.NeutralThunk, Vector(_), _, None) =>
+      case other => fail(s"expected a nested application of the neutral match, got: $other")
+    }
+  }
 }

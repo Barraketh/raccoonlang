@@ -55,7 +55,7 @@ A `VPacked` is a **ground, closed data value**: the payload is a host value (Sca
 the opposite side).
 
 The design is *representation, not conversion rules* — the dual of K4. StructEta keeps
-eta-eligible struct values constructor-headed from creation; `VPacked` keeps codec-type values
+eta-eligible structure-like values constructor-headed from creation; `VPacked` keeps codec-type values
 packed from creation and derives constructor form **on demand, one layer at a time**
 (`decodeHead`). Both make their equations hold by making the other representation (bare structs /
 ground spines) unrepresentable rather than converted.
@@ -78,10 +78,10 @@ A codec provides:
 Every codec must satisfy these; each is load-bearing for a specific judgment in §6.
 
 - **L1 (eligibility).** The type is a Type-valued inductive, all of whose constructors carry
-  derivable no-confusion (`noConfusion = true`), and which is *not* an eta-eligible struct.
+  derivable no-confusion (`noConfusion = true`), and which is *not* eta-eligible.
   Type-valued + no-confusion is a precondition of the apartness shortcut (with L9, §6
-  unification); non-struct keeps `VPacked` off StructEta's expansion seams — packed values and
-  canonical-at-birth struct expansion never compete for the same value (the "no mixed rule"
+  unification); non-eta-eligibility keeps `VPacked` off StructEta's expansion seams — packed values and
+  canonical-at-birth structure expansion never compete for the same value (the "no mixed rule"
   invariant, kernel-theory §2).
 - **L2 (groundness).** Payloads contain no `Value`s. Packed values therefore cannot capture vars,
   hide proofs, occur in positivity checks, or block; every invariant about proof flow and

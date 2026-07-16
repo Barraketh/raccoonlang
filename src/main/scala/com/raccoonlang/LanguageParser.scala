@@ -283,12 +283,12 @@ object LanguageParser {
   private def inductiveP(implicit sourceId: Option[SourceId]): Parser[InductiveDecl] =
     (kw("inductive") ~/ inductiveHeader ~ lineSep ~ ctorDecl.rep(0))
       .flatSpanned(sourceId)
-      .map { case (h, cs, sp) => InductiveDecl(h, cs, isStruct = false, sp) }
+      .map { case (h, cs, sp) => InductiveDecl(h, cs, generateSelectors = false, sp) }
 
   private def structP(implicit sourceId: Option[SourceId]): Parser[InductiveDecl] =
     (kw("struct") ~/ inductiveHeader ~ lineSep ~ ctorDecl)
       .flatSpanned(sourceId)
-      .map { case (h, cs, sp) => InductiveDecl(h, Vector(cs), isStruct = true, sp) }
+      .map { case (h, cs, sp) => InductiveDecl(h, Vector(cs), generateSelectors = true, sp) }
 
   private def commandP(implicit sourceId: Option[SourceId]): Parser[Command] = declP | namespaceP | openP | blockP
 

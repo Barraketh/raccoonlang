@@ -97,8 +97,9 @@ object BinderOps {
   // A rigid binder enters in canonical form: struct-typed binders are the constructor applied to
   // fresh field witnesses (StructEta — eta holds by representation), prop-typed ones enter their
   // type-determined canonical proof form, everything else is a bare fresh Var. Non-proof binders
-  // expose their fresh id to implicit-projection compilation; proof binders are recognized there
-  // by proposition instead, so runtime proof representation carries no witness metadata.
+  // expose either a fresh id or their whole eta-expanded pattern to implicit-projection
+  // compilation; proof binders are recognized there by proposition instead, so runtime proof
+  // representation carries no witness metadata.
   private def freshenBinder(env: Env, binder: ElabAst.Binder): FreshenedBinder = {
     val expectedTy = Interpreter.evalTerm(binder.ty, env)
     StructEta.freshStructWitness(expectedTy) match {

@@ -28,8 +28,10 @@ object ValueQuote {
 
     def inlineTerm(t: ElabAst.Term): ElabAst.Term =
       t match {
-        case _: ElabAst.Term.NatLit              => t
-        case ElabAst.Term.Proof(tpe, proofSpan)  => ElabAst.Term.Proof(inlineTerm(tpe), proofSpan)
+        case _: ElabAst.Term.NatLit             => t
+        case ElabAst.Term.Proof(tpe, proofSpan) => ElabAst.Term.Proof(inlineTerm(tpe), proofSpan)
+        case ElabAst.Term.Proj(familyName, fieldIndex, base, projSpan) =>
+          ElabAst.Term.Proj(familyName, fieldIndex, inlineTerm(base), projSpan)
         case ElabAst.Term.GlobalRef(_, _)        => t
         case ElabAst.Term.LocalRef(ref, refSpan) => inlineLocal(ref, refSpan)
         case ElabAst.Term.App(fn, args, appSpan) =>
@@ -114,6 +116,9 @@ object ValueQuote {
         }
 
       case VCtor(head, fields, tpe) => quoteCtor(head, fields, tpe, context, span)
+
+      case VApp(VConst(_, StructField(familyName, fieldIndex, _), _), Vector(base), _, _) =>
+        ElabAst.Term.Proj(familyName, fieldIndex, quoteTerm(base, context, span), span)
 
       case VApp(head, args, _, _) =>
         val fn = quoteAppHead(head, context, span)
@@ -337,14 +342,18 @@ object ValueQuote {
     value match {
       case Value.Var(_, id, Value.LevelTpe) => withValue + (Value.Level.mk(id).key -> term)
       case Value.VCtor(_, fields, tpe)      =>
-        // An expanded struct binder (StructEta) carries fresh field witnesses with no syntax of
-        // their own; register each as a selector application of the parent term so field vars,
+        // An expanded structure-like binder carries fresh field witnesses with no syntax of
+        // their own; register each as a positional projection of the parent term so field vars,
         // proof fields, and nested expansions quote as projections. Strictly a fallback: fields
         // whose key already has an entry keep it, and fields with syntax of their own (concrete
         // data — no fresh vars, not proofs) are skipped entirely.
         StructEta.eligibleInstance(tpe) match {
           case Some((inst, info)) =>
-            info.fieldNames.zip(fields).foldLeft(withValue) { case (curQuote, (fieldName, field)) =>
+            if (info.fieldCount != fields.length)
+              throw WTF(
+                s"Eta metadata for ${inst.head.name} has ${info.fieldCount} fields, value has ${fields.length}"
+              )
+            fields.zipWithIndex.foldLeft(withValue) { case (curQuote, (field, fieldIndex)) =>
               val needsProjectionSyntax = field match {
                 case _: Value.VProof => true // use canonical proof syntax rather than a fresh projection
                 case _: Value.Var | _: Value.Level | Value.VCtor(_, _, _) => field.synDeps.nonEmpty
@@ -352,11 +361,7 @@ object ValueQuote {
               }
               if (!needsProjectionSyntax || curQuote.contains(field.key)) curQuote
               else {
-                val fieldTerm = ElabAst.Term.App(
-                  ElabAst.Term.GlobalRef(s"${inst.head.name}.$fieldName", term.span),
-                  Vector(term),
-                  term.span
-                )
+                val fieldTerm = ElabAst.Term.Proj(inst.head.name, fieldIndex, term, term.span)
                 withQuotedValueInMap(curQuote, field, fieldTerm)
               }
             }

@@ -174,6 +174,54 @@ object InductiveChecks {
   private def constructorBinders(header: InductiveHeader, ctor: ConstructorDecl): Vector[Binder] =
     constructorFamilyParams(header) ++ ctor.binders
 
+  private def referencedLocals(term: Term): Set[LocalRef] = {
+    val refs = Set.newBuilder[LocalRef]
+
+    def go(term: Term): Unit =
+      term match {
+        case _: Term.NatLit | _: Term.GlobalRef =>
+        case Term.LocalRef(ref, _)              => refs += ref
+        case Term.Select(base, _, _)            => go(base)
+        case Term.Proj(_, _, base, _)           => go(base)
+        case Term.Pi(binders, out, _) =>
+          binders.foreach(binder => go(binder.ty))
+          go(out)
+        case Term.App(fn, args, _) =>
+          go(fn)
+          args.foreach(go)
+        case Term.Body(lets, res, _) =>
+          lets.foreach { let =>
+            let.ty.foreach(go)
+            go(let.value)
+          }
+          go(res)
+        case Term.Lam(ty, body, _, _, _) =>
+          go(ty)
+          go(body)
+        case Term.Match(scrut, motive, cases, _) =>
+          go(scrut)
+          motive.foreach(go)
+          cases.foreach(c => go(c.body))
+      }
+
+    go(term)
+    refs.result()
+  }
+
+  /** For each stored field, whether its local ref occurs anywhere in the remaining constructor telescope. */
+  private def constructorFieldDependencies(ctor: ConstructorDecl): Vector[Boolean] = {
+    var suffixRefs = referencedLocals(ctor.resultTy)
+    val result = new Array[Boolean](ctor.binders.length)
+    var idx = ctor.binders.length - 1
+    while (idx >= 0) {
+      val binder = ctor.binders(idx)
+      result(idx) = suffixRefs.contains(binder.localRef)
+      suffixRefs ++= referencedLocals(binder.ty)
+      idx -= 1
+    }
+    result.toVector
+  }
+
   private def installInductive(
       decl: Decl.InductiveDecl,
       baseEnv: Env,
@@ -225,15 +273,14 @@ object InductiveChecks {
     val inductiveType = TypeChecker.getType(ty, env)
 
     val initialPositiveArgs = DepSet.from(0 until header.arity)
-    // etaInfo stays None while this declaration's own constructors are being checked: the ctor
-    // head does not exist yet, so a self-referential field type must not trigger expansion.
+    // projectionInfo stays None while this declaration's own constructors are being checked: the
+    // constructor head does not exist yet, so a self-referential field type must not trigger expansion.
     val initialMeta =
       InductiveMeta(
         decl.ctors.map(ctor => ConstructorMeta(ctor.shortName, ctor.canonicalName)),
         decl.header.binders.length,
-        decl.isStruct,
         initialPositiveArgs,
-        etaInfo = None,
+        projectionInfo = None,
         proofStorage = ProofStorage.Erase
       )
 
@@ -252,15 +299,6 @@ object InductiveChecks {
     val declaredSort = TypeChecker.getType(header.resultTy, envWithFamilyBinders) match {
       case v: VSort => v
       case other    => throw InductiveTypeNotASort(other, Some(header.resultTy.span))
-    }
-
-    // Determine whether this inductive is a valid struct (after computing universe)
-    if (decl.isStruct) {
-      if (decl.ctors.length != 1)
-        throw InvalidStruct(name, s"has ${decl.ctors.length} constructors (expected exactly 1)", Some(header.span))
-      if (decl.ctors.head.binders.exists(_.name == "_"))
-        throw InvalidStruct(name, "constructor has anonymous '_' fields", Some(header.span))
-
     }
 
     val recursiveTarget = PositivityTarget.InductiveHead(name)
@@ -341,7 +379,7 @@ object InductiveChecks {
             }
         }
 
-        if (decl.isStruct && !doesNotOccur(recursiveTarget, field.tpe)) hasRecursiveField = true
+        if (!doesNotOccur(recursiveTarget, field.tpe)) hasRecursiveField = true
 
         // 3) Every stored constructor field type must be strictly positive in the inductive
         if (
@@ -360,30 +398,24 @@ object InductiveChecks {
 
     }
 
-    // Eta eligibility (StructEta): declared struct, one constructor, no indices, no recursive
-    // field, and not declared in Prop. NOT "single constructor" alone — that would admit Acc-like
-    // recursive singletons and quotient constructors, exactly what the gate must exclude
-    // (kernel-theory §2 "structure eta"). Declared-Prop structs are excluded because their values
-    // follow the independent proof representation policy (and, lacking the Sort-family universe
-    // bound, they may store large fields); sort-polymorphic structs stay eligible — their Prop
-    // *instances* are filtered dynamically.
-    // The head is a promise completed after installation: constructor types are checked against
-    // the installed family head, so the head cannot exist before installInductive runs. Retain the
-    // head itself rather than the complete environment snapshot.
+    // A one-constructor family gets positional projection metadata regardless of indices or recursion. Structure eta
+    // is the narrower Lean gate: zero indices and no recursive occurrence. Prop instances are filtered dynamically by
+    // StructEta.eligibleInstance and continue to follow ProofStorage.
+    //
+    // The constructor head is a promise completed after installation: constructor types are checked against the
+    // installed family head, so the head cannot exist before installInductive runs.
     var installedCtorHead: Option[ConstructorHead] = None
-    val etaInfo =
-      if (
-        decl.isStruct && decl.ctors.length == 1 && header.indices.isEmpty && !hasRecursiveField &&
-        declaredSort != PropTpe
-      ) {
+    val projectionInfo =
+      if (decl.ctors.length == 1) {
+        val ctor = decl.ctors.head
         val ctorName = decl.ctors.head.canonicalName
-        val fieldNames = decl.ctors.head.binders.map(_.name)
         Some(
-          new StructEtaInfo(
-            fieldNames,
+          new ProjectionInfo(
+            constructorFieldDependencies(ctor),
+            etaEligible = header.indices.isEmpty && !hasRecursiveField,
             () =>
               installedCtorHead.getOrElse(
-                throw WTF(s"Struct constructor $ctorName requested before declaration installation")
+                throw WTF(s"Projection constructor $ctorName requested before declaration installation")
               )
           )
         )
@@ -400,7 +432,11 @@ object InductiveChecks {
           )
         case None => ProofStorage.Erase
       }
-    val meta = initialMeta.copy(positiveArgs = positiveArgs, etaInfo = etaInfo, proofStorage = proofStorage)
+    val meta = initialMeta.copy(
+      positiveArgs = positiveArgs,
+      projectionInfo = projectionInfo,
+      proofStorage = proofStorage
+    )
 
     val inductiveHead = VConst(name, Inductive(meta), inductiveType)
 
@@ -414,6 +450,8 @@ object InductiveChecks {
           case other              => throw WTF(s"Constructor $ctorName resolved to non-constructor $other")
         }
       )
+      // Complete and validate the circular metadata/head link before publishing the environment.
+      projectionInfo.foreach(_.ctorHead)
     }
     finalEnv
   }

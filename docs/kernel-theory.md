@@ -53,26 +53,33 @@ link is a consequence.
   `InductiveMeta.proofStorage` recipe requires one constructor and every non-Prop stored field to
   occur directly in the result family arguments (`proof-collapse.md`). Operational structure
   never changes proof equality, and unification never structurally links or decomposes proofs.
-- **Structure eta** (definitional): a value of an *eta-eligible* struct type equals the
-  constructor applied to its projections. Eligibility (`InductiveMeta.etaInfo`, computed by
-  InductiveChecks): declared struct, one constructor, no indices, no recursive field, not
-  declared in Prop. Prop instantiations of sort-polymorphic structs are proof-representation
-  territory instead — they never eta-expand, and every inhabitant follows `proofStorage` based on
-  its exact proposition. Enforced by
-  *representation*, not a conversion rule (`StructEta.scala`): every value of eligible struct
+- **Structure eta** (definitional): a value of an *eta-eligible* structure-like inductive type equals the
+  constructor applied to its projections. Eligibility (`InductiveMeta.projectionInfo.etaEligible`, computed by
+  InductiveChecks) is derived from the checked declaration: exactly one constructor, no indices,
+  and no recursive constructor field. It does not depend on the surface keyword or declared
+  sort. Prop instances are proof-representation territory instead — they never eta-expand, and
+  every inhabitant follows `proofStorage` based on its exact proposition. Enforced by
+  *representation*, not a conversion rule (`StructEta.scala`): every value of an eligible structure-like
   type is constructor-headed *from creation*. Binders freshen as the constructor of fresh field
   witnesses; neutrals (opaque constants, axioms, blocked applications and matches, recursive-call
   residuals, stuck builtins) wrap into the constructor of their stuck projections at creation.
   Ascription and materialization deliberately do NOT expand: they retype circulating values, and
   a late wrap would coexist with bare copies — proof irrelevance tolerates mixed erased/retained
   proof values, while expansion has no analogous mixed rule. Fieldwise congruence then *is* eta, a match
-  on a struct scrutinee always fires (binding the branch to the scrutinee's projections), and the
-  stuck projection — a `StructField`-headed application, equal by head name + base — is the only
-  projection neutral form. The eligibility gate is load-bearing for decidability: "single
-  constructor" alone would admit `Acc` (destructuring neutral accessibility proofs is the
-  undecidability channel wf-recursion seals) and `Quot.mk` (expansion would invent a quotient
-  representative); other layers also exclude both, but the gate must never rest on that
-  coincidence. Known completeness gap: a value created before its type is a *known* struct
+  on a structure-like scrutinee always fires (binding the branch to the scrutinee's projections), and the
+  stuck projection — a `StructField`-headed application identified by family + field index and
+  equal by that head + base — is the only projection neutral form. Primitive `Proj` is broader
+  than eta: any one-constructor family may be projected, including indexed and recursive
+  singletons, subject to the extra Prop-elimination rule. Surface field names resolve through
+  declaration-level selector metadata directly to primitive projections and never enter kernel
+  inductive metadata. The eta eligibility gate is load-bearing for
+  decidability: constructor count alone would admit `Acc`, whose recursive field makes expansion
+  nonterminating and exposes the undecidability channel sealed by well-founded recursion.
+  Projection metadata also assumes genuine inductive constructors are injective up to definitional
+  equality. A quotient-like type whose constructor is identified by extra equations must remain an
+  axiom/builtin head and must never pass through `evalInductiveDecl`; the bundled `Quot` is represented
+  this way and has no `InductiveMeta` or primitive projections. Known completeness gap: a value
+  created before its type is a *known* structure-like
   instance stays bare (rigid binders at then-blocked types, neutrals whose types reveal only
   under a later store); rigid vars additionally cannot be expanded in place — rigid vs. refinable
   is store-relative, and metas must stay linkable (the same reason `canonicalizeProof` exempts
@@ -238,8 +245,10 @@ Walk this list before landing any feature that touches equality, universes, or e
 - **× structure eta / expansion**: does the feature create struct-typed values off the expansion
   seams (binder freshening and neutral creation — §2 structure eta), leaving two representations
   of the same value? Does it expand a value that already circulates (the ascription/materialize
-  mistake §2 rules out)? Does it trigger single-constructor behavior keyed on constructor *count*
-  rather than `etaInfo`? Count-keyed triggers are the `Acc`/`Quot` trap.
+  mistake §2 rules out)? Does it trigger eta behavior without checking `projectionInfo.etaEligible`?
+  Count-only eta triggers are the `Acc` trap. Does it attach `projectionInfo` to a quotient-like
+  axiom/builtin head whose constructor is not injective up to definitional equality? That is the
+  `Quot.sound` collapse; `Quot` must remain outside `evalInductiveDecl`.
 
 ## 7. Case law
 

@@ -151,11 +151,11 @@ object Interpreter {
     require(vArgs.nonEmpty, "evalApply requires at least one argument")
 
     fn match {
-      // Stuck-projection heads (StructEta) reduce structurally and bypass Pi dispatch: their
+      // Stuck positional-projection heads reduce structurally and bypass Pi dispatch: their
       // recorded type is never consulted, and a resolved base is projected or re-stuck directly.
-      case VConst(_, StructField(idx), _) =>
+      case VConst(_, StructField(familyName, idx, info), _) =>
         if (vArgs.length != 1) throw ArityMismatch(1, vArgs.length)
-        return StructEta.project(vArgs.head, idx)
+        return InductiveProjection.project(vArgs.head, familyName, info, idx)
       case _ =>
     }
 
@@ -175,6 +175,16 @@ object Interpreter {
           case blocker @ Blocker(blockerId) =>
             StructEta.expandIfStruct(
               Value.canonicalizeProof(VBlockedApp(blocker, vArgs, pi.codomain(envWithArgs), blockerId))
+            )
+          // Preserve the existing neutral as the head of a new application layer. Flattening
+          // would destroy positional-projection arity and make quotation ambiguous.
+          case neutral: VApp =>
+            StructEta.expandIfStruct(
+              Value.canonicalizeProof(VApp(neutral, vArgs, pi.codomain(envWithArgs)))
+            )
+          case neutral: NeutralThunk =>
+            StructEta.expandIfStruct(
+              Value.canonicalizeProof(VApp(neutral, vArgs, pi.codomain(envWithArgs)))
             )
           case _ => throw CannotApplyNonFunction(fn)
         }
@@ -287,6 +297,16 @@ object Interpreter {
       term match {
         case ETerm.NatLit(value, _) => Packed.evalNatLit(value, env)
         case ETerm.Proof(tpe, _)    => Value.canonicalizeProof(VProof(evalTerm(tpe, env)))
+        case ETerm.Proj(familyName, fieldIndex, base, _) =>
+          val baseValue = evalTerm(base, env)
+          val family = baseValue.tpe match {
+            case InductiveFamilyValue(inst) if inst.head.name == familyName => inst
+            case other => throw WTF(s"Checked projection for $familyName evaluated with major type $other")
+          }
+          val info = family.meta.projectionInfo.getOrElse {
+            throw WTF(s"Checked projection for $familyName evaluated without projection metadata")
+          }
+          InductiveProjection.project(baseValue, familyName, info, fieldIndex)
         case ref: ETerm.Ref         => evalRef(ref, env)
         case ETerm.App(fn, args, _) => evalApplyTerm(fn, args, env)
         case pi: ETerm.Pi           => evalPi(pi, env)
@@ -381,16 +401,22 @@ object Interpreter {
   private def evalDecl(decl: Decl, env: Env, allowReservedNativeDefinitions: Boolean): Env = {
     if (!allowReservedNativeDefinitions) {
       val publishedNames = decl match {
-        case Decl.ConstDecl(_, name, _, _, _, _) => Vector(name)
-        case Decl.AxiomDecl(name, _, _)          => Vector(name)
-        case d: Decl.InductiveDecl               => d.header.name +: d.ctors.map(_.canonicalName)
+        case Decl.ConstDecl(_, name, _, _, _, _, _) => Vector(name)
+        case Decl.AxiomDecl(name, _, _)             => Vector(name)
+        case d: Decl.InductiveDecl                  => d.header.name +: d.ctors.map(_.canonicalName)
       }
       publishedNames.find(Packed.reservedNames).foreach { name =>
         throw ReservedKernelName(name, Some(decl.span))
       }
     }
     decl match {
-      case Decl.ConstDecl(isOpaque, name, ty, body, span, lazyGlobal) =>
+      case Decl.ConstDecl(isOpaque, name, ty, body, span, lazyGlobal, projectionAlias) =>
+        projectionAlias.foreach { _ =>
+          body match {
+            case CoreAst.ConstBody.TermBody(_) if !isOpaque && !lazyGlobal =>
+            case _ => throw WTF("Projection aliases must be eager transparent term definitions", Some(span))
+          }
+        }
         body match {
           case CoreAst.ConstBody.Builtin(_) =>
             if (isOpaque) throw WTF("Builtin declarations cannot be opaque", Some(span))
@@ -399,7 +425,7 @@ object Interpreter {
               publishedValue(name, Builtins.instantiate(name, tyV, span), tyV)
             }
             if (lazyGlobal) env.putLazyGlobal(name, () => value)
-            else env.putGlobal(name, value)
+            else env.putGlobal(name, value, projectionAlias)
 
           case CoreAst.ConstBody.TermBody(term) =>
             lazy val value = {
@@ -411,7 +437,7 @@ object Interpreter {
               publishedValue(name, if (isOpaque) VConst(name, Symbol, checkedTy) else bodyV, checkedTy)
             }
             if (lazyGlobal) env.putLazyGlobal(name, () => value)
-            else env.putGlobal(name, value)
+            else env.putGlobal(name, value, projectionAlias)
         }
 
       case Decl.AxiomDecl(name, ty, _) =>

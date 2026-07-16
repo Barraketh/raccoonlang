@@ -36,6 +36,17 @@ class ProjectionTests extends munit.FunSuite {
     }
   }
 
+  private def evalDecls(src: String): Env = {
+    LanguageParser.parseProgram(src) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        core.decls.foldLeft(Prelude.test.checkedEnv) { case (cur, decl) =>
+          Interpreter.evalDecl(decl, cur)
+        }
+      case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
+    }
+  }
+
   // Simple shapes for results, using the ordinary pattern view of constructor arguments.
   sealed trait Shape
   case class SConst(name: String) extends Shape
@@ -77,6 +88,59 @@ class ProjectionTests extends munit.FunSuite {
     assertEquals(toShape(res), zeroS)
   }
 
+  test("struct syntax emits eager aliases backed by positional projections") {
+    val p =
+      """
+        |struct Pair (A: Type)(B: Type) : Type
+        | | mk (fst: A)(snd: B) : Pair(A, B)
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        val found = core.decls.exists {
+          case CoreAst.Decl.ConstDecl(
+                false,
+                "Pair.snd",
+                _,
+                CoreAst.ConstBody.TermBody(
+                  CoreAst.Term.Lam(
+                    _,
+                    CoreAst.Term.Proj("Pair", 1, _: CoreAst.Term.LocalRef, _),
+                    _,
+                    _,
+                    _
+                  )
+                ),
+                _,
+                false,
+                Some(CoreAst.ProjectionAlias("Pair", 1))
+              ) =>
+            true
+          case _ => false
+        }
+        assert(found, "expected Pair.snd to be an eager alias of positional projection Pair[1]")
+        Interpreter.run(core, Prelude.test)
+      case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
+  }
+
+  test("generated positional projections resolve a namespaced family canonically") {
+    typecheckDecls(
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        |
+        |namespace Data {
+        |  struct Box : Type
+        |   | mk (value: Peano) : Box
+        |
+        |  def get (box: Box): Peano := box.value
+        |}
+        |""".stripMargin
+    )
+  }
+
   test("dependent projections on family arguments: WrapIdx.x") {
     val p =
       """
@@ -91,7 +155,7 @@ class ProjectionTests extends munit.FunSuite {
         |struct WrapIdx (A: Type) indices (n: Peano) : Type
         | | mk {n: Peano} (x: Vec(A, n)) : WrapIdx(A, n)
         |
-        |def get (A: Type)(n: Peano)(w: WrapIdx(A, n)): Vec(A, n) := w.x
+        |def get (A: Type)(n: Peano)(w: WrapIdx(A, n)): Vec(A, w.n) := w.x
         |
         |{
         |  let v : Vec(Peano, Peano.zero) := Vec.nil(Peano)
@@ -118,7 +182,7 @@ class ProjectionTests extends munit.FunSuite {
         |struct WrapIdx (A: Type) indices (n: Peano) : Type
         | | mk {n: Peano} (x: Vec(A, n)) : WrapIdx(A, n)
         |
-        |def useGet (A: Type)(n: Peano)(w: WrapIdx(A, n)): Vec(A, n) := w.x
+        |def useGet (A: Type)(n: Peano)(w: WrapIdx(A, n)): Vec(A, w.n) := w.x
         |""".stripMargin
 
     typecheckDecls(p)
@@ -138,7 +202,7 @@ class ProjectionTests extends munit.FunSuite {
         |struct WrapIdx (A: Type) indices (n: Peano): Type
         | | mk {n: Peano} (x: Vec(A, n)) : WrapIdx(A, n)
         |
-        |def useGet {A: Type}{n: Peano} (w: WrapIdx(A, n)): Vec(A, n) := w.x
+        |def useGet {A: Type}{n: Peano} (w: WrapIdx(A, n)): Vec(A, w.n) := w.x
         |""".stripMargin
 
     typecheckDecls(p)
@@ -205,6 +269,48 @@ class ProjectionTests extends munit.FunSuite {
         |""".stripMargin
 
     typecheckDecls(p)
+  }
+
+  test("regression: a function-valued projection from a neutral base can be applied") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
+        |
+        |struct FnBox : Type
+        | | mk (f: (n: Peano) -> Peano) : FnBox
+        |
+        |axiom box : FnBox
+        |def use : Peano := box.f(Peano.zero)
+        |
+        |{ use }
+        |""".stripMargin
+
+    val result = runProgram(p)
+    result match {
+      case Value.VApp(
+            Value.VApp(
+              Value.VConst(_, Value.StructField("FnBox", 0, _), _),
+              Vector(Value.VConst("box", _, _)),
+              _,
+              None
+            ),
+            Vector(_),
+            _,
+            None
+          ) =>
+      case other => fail(s"Expected a nested application of the stuck projection, got $other")
+    }
+
+    ValueQuote.quoteTerm(result, ValueQuote.quoteContext(Env.empty), Span(0, 0)) match {
+      case ElabAst.Term.App(
+            ElabAst.Term.Proj("FnBox", 0, ElabAst.Term.GlobalRef("box", _), _),
+            Vector(_),
+            _
+          ) =>
+      case other => fail(s"Expected the nested application to quote through Proj, got $other")
+    }
   }
 
   test("typecheck: projection can quote constructor value with erased family argument in field type") {
@@ -403,7 +509,7 @@ class ProjectionTests extends munit.FunSuite {
     typecheckDecls(p)
   }
 
-  test("typecheck: selector family-field rewrites respect nested Pi binder scope") {
+  test("typecheck: selector field types respect nested Pi binder scope") {
     val p =
       """
         |inductive Peano : Type
@@ -421,6 +527,17 @@ class ProjectionTests extends munit.FunSuite {
         |""".stripMargin
 
     typecheckDecls(p)
+  }
+
+  test("typecheck: a nested Pi binder may shadow an earlier field name") {
+    typecheckDecls(
+      """
+        |struct Shadow (A: Type) : Type
+        | | mk (x: A)(f: (x: A) -> A) : Shadow(A)
+        |
+        |def getF {A: Type} (s: Shadow(A)): (x: A) -> A := s.f
+        |""".stripMargin
+    )
   }
 
   test("negative: projection does not infer unrelated hidden binders from family arguments") {
@@ -473,7 +590,7 @@ class ProjectionTests extends munit.FunSuite {
     typecheckDecls(p)
   }
 
-  test("negative: selecting from non-struct Prop family throws") {
+  test("plain inductives do not receive generated named selectors") {
     val p =
       """
         |inductive And (P: Prop)(Q: Prop) : Prop
@@ -485,12 +602,12 @@ class ProjectionTests extends munit.FunSuite {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[NotAStruct] { Interpreter.run(core, Prelude.test) }
+        intercept[NotFound] { Interpreter.run(core, Prelude.test) }
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }
 
-  test("negative: selecting from non-struct multi-ctor inductive throws") {
+  test("multi-constructor inductives do not receive generated named selectors") {
     val p =
       """
         |inductive Or (A: Type)(B: Type) : Type
@@ -503,7 +620,7 @@ class ProjectionTests extends munit.FunSuite {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[NotAStruct] { Interpreter.run(core, Prelude.test) }
+        intercept[NotFound] { Interpreter.run(core, Prelude.test) }
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }
@@ -552,28 +669,150 @@ class ProjectionTests extends munit.FunSuite {
     typecheckDecls(p)
   }
 
-  test("negative: Prop struct projection into Type is restricted when the field is not forced") {
+  test("primitive Prop projection permits an unused preceding data field") {
     val p =
       """
         |inductive Peano : Type
         | | zero : Peano
-        | | succ (_: Peano) : Peano
         |
+        |inductive True : Prop
+        | | intro : True
+        |
+        |inductive HasProof : Prop
+        | | intro (data: Peano)(proof: True) : HasProof
+        |
+        |axiom h : HasProof
+        |""".stripMargin
+
+    val span = Span(0, 0)
+    val checked = TypeChecker.checkTerm(
+      CoreAst.Term.Proj("HasProof", 1, CoreAst.Term.GlobalRef("h", span), span),
+      evalDecls(p)
+    )
+    assert(Value.isPropositionType(checked.value.tpe))
+    assert(checked.residual.isInstanceOf[ElabAst.Term.Proj])
+  }
+
+  test("primitive Prop projection rejects a preceding data field used by the selected field type") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        |
+        |inductive DepProof : Prop
+        | | intro (data: Peano)(proof: Eq(Peano, data, data)) : DepProof
+        |
+        |axiom h : DepProof
+        |""".stripMargin
+
+    val span = Span(0, 0)
+    intercept[InvalidProjection] {
+      TypeChecker.checkTerm(
+        CoreAst.Term.Proj("DepProof", 1, CoreAst.Term.GlobalRef("h", span), span),
+        evalDecls(p)
+      )
+    }
+  }
+
+  test("primitive Prop projection uses syntactic telescope dependencies") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        |
+        |inductive True : Prop
+        | | intro : True
+        |
+        |def Ignore (_: Peano): Prop := True
+        |
+        |inductive DepProof : Prop
+        | | intro (data: Peano)(proof: Ignore(data)) : DepProof
+        |
+        |axiom h : DepProof
+        |""".stripMargin
+
+    val span = Span(0, 0)
+    intercept[InvalidProjection] {
+      TypeChecker.checkTerm(
+        CoreAst.Term.Proj("DepProof", 1, CoreAst.Term.GlobalRef("h", span), span),
+        evalDecls(p)
+      )
+    }
+  }
+
+  test("primitive Prop projection counts dependencies in the constructor result") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        |
+        |inductive True : Prop
+        | | intro : True
+        |
+        |inductive IndexedProof indices (n: Peano) : Prop
+        | | intro (data: Peano)(proof: True) : IndexedProof(data)
+        |
+        |axiom h : IndexedProof(Peano.zero)
+        |""".stripMargin
+
+    val span = Span(0, 0)
+    intercept[InvalidProjection] {
+      TypeChecker.checkTerm(
+        CoreAst.Term.Proj("IndexedProof", 1, CoreAst.Term.GlobalRef("h", span), span),
+        evalDecls(p)
+      )
+    }
+  }
+
+  test("primitive projection validates the family shape and field index") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        |
+        |inductive Box : Type
+        | | mk (value: Peano) : Box
+        |
+        |inductive Choice : Type
+        | | left (value: Peano) : Choice
+        | | right (value: Peano) : Choice
+        |
+        |axiom box : Box
+        |axiom choice : Choice
+        |""".stripMargin
+
+    val env = evalDecls(p)
+    val span = Span(0, 0)
+    val box = CoreAst.Term.GlobalRef("box", span)
+    val choice = CoreAst.Term.GlobalRef("choice", span)
+
+    intercept[InvalidProjection] {
+      TypeChecker.checkTerm(CoreAst.Term.Proj("Box", 1, box, span), env)
+    }
+    intercept[InvalidProjection] {
+      TypeChecker.checkTerm(CoreAst.Term.Proj("Peano", 0, box, span), env)
+    }
+    intercept[InvalidProjection] {
+      TypeChecker.checkTerm(CoreAst.Term.Proj("Choice", 0, choice, span), env)
+    }
+  }
+
+  test("a Prop struct with a named data field is rejected while its selector is checked") {
+    val p =
+      """
         |struct Nonempty (A: Type) : Prop
         | | intro (val: A) : Nonempty(A)
-        |
-        |def bad (h: Nonempty(Peano)): Peano := h.val
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
+        intercept[InvalidProjection] { Interpreter.run(core, Prelude.test) }
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }
 
-  test("invalid: struct with '_' anonymous field is rejected") {
+  test("struct with anonymous field is accepted without a named selector") {
     val p =
       """
         |struct Bad (A: Type) : Type
@@ -583,7 +822,11 @@ class ProjectionTests extends munit.FunSuite {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[InvalidStruct] { Interpreter.run(core, Prelude.test) }
+        Interpreter.run(core, Prelude.test)
+        assert(!core.decls.exists {
+          case CoreAst.Decl.ConstDecl(_, "Bad._", _, _, _, _, _) => true
+          case _                                                 => false
+        })
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }

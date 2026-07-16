@@ -5,6 +5,11 @@ package com.raccoonlang
 // Term nodes — "is a type" is a semantic judgment, not a syntactic class.
 object SurfaceAst {
 
+  /** Frontend metadata connecting a generated named selector to its primitive positional projection. */
+  final case class ProjectionAlias(familyName: String, fieldIndex: Int) {
+    require(fieldIndex >= 0, "Projection field index must be non-negative")
+  }
+
   sealed trait Term {
     def span: Span
   }
@@ -39,6 +44,12 @@ object SurfaceAst {
 
     // Projection: base.field
     final case class Select(base: Term, field: String, span: Span) extends Term
+
+    /**
+     * Frontend-internal positional projection used when lowering generated named selectors. The parser never produces
+     * this node.
+     */
+    final case class Proj(familyName: String, fieldIndex: Int, base: Term, span: Span) extends Term
 
     // Pi (x: A) -> B x
     final case class Pi(binder: Binder, body: Term, span: Span) extends Term
@@ -121,7 +132,8 @@ object SurfaceAst {
           decreases: Option[DecreaseSpec],
           body: ConstBody,
           span: Span,
-          lazyGlobal: Boolean = false
+          lazyGlobal: Boolean = false,
+          projectionAlias: Option[ProjectionAlias] = None
       ) extends Decl
 
       final case class AxiomDecl(
@@ -133,7 +145,7 @@ object SurfaceAst {
       final case class InductiveDecl(
           header: InductiveHeader,
           ctors: Vector[ConstructorDecl],
-          isStruct: Boolean,
+          generateSelectors: Boolean,
           span: Span
       ) extends Decl
     }

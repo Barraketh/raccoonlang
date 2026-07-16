@@ -231,14 +231,14 @@ final case class PropEliminationRestricted(
     s"Cannot eliminate proposition $inductive into non-Prop motive $motive"
 }
 
-final case class InvalidStruct(inductive: String, reason: String, span: Option[Span] = None) extends TypeError {
+final case class InvalidProjection(
+    inductive: String,
+    fieldIndex: Int,
+    reason: String,
+    span: Option[Span] = None
+) extends TypeError {
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
-  override def msg: String = s"Invalid struct $inductive: $reason"
-}
-
-final case class NotAStruct(inductive: String, span: Option[Span] = None) extends TypeError {
-  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
-  override def msg: String = s"Cannot select field from non-struct $inductive"
+  override def msg: String = s"Invalid projection $inductive.$fieldIndex: $reason"
 }
 
 final case class CannotQuoteValue(value: Value, reason: String, span: Option[Span] = None) extends TypeError {

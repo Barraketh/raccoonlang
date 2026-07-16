@@ -52,14 +52,15 @@ object PrettyPrinter {
   }
 
   private def printTermAtom(t: CoreAst.Term): String = t match {
-    case CoreAst.Term.NatLit(value, _)       => value.toString
-    case _: CoreAst.Term.Ref                 => printCoreTerm(t)
-    case CoreAst.Term.App(_, _, _)           => printCoreTerm(t)
-    case CoreAst.Term.Select(base, field, _) => s"${printTermAtom(base)}[$field]"
-    case CoreAst.Term.Lam(_, _, _, _, _)     => s"(${printCoreTerm(t)})"
-    case CoreAst.Term.Match(_, _, _, _)      => s"(${printCoreTerm(t)})"
-    case CoreAst.Term.Body(_, _, _)          => s"(${printCoreTerm(t)})"
-    case CoreAst.Term.Pi(_, _, _)            => s"(${printCoreTerm(t)})"
+    case CoreAst.Term.NatLit(value, _)             => value.toString
+    case _: CoreAst.Term.Ref                       => printCoreTerm(t)
+    case CoreAst.Term.App(_, _, _)                 => printCoreTerm(t)
+    case CoreAst.Term.Select(base, field, _)       => s"${printTermAtom(base)}[$field]"
+    case CoreAst.Term.Proj(family, index, base, _) => s"proj[$family,$index](${printCoreTerm(base)})"
+    case CoreAst.Term.Lam(_, _, _, _, _)           => s"(${printCoreTerm(t)})"
+    case CoreAst.Term.Match(_, _, _, _)            => s"(${printCoreTerm(t)})"
+    case CoreAst.Term.Body(_, _, _)                => s"(${printCoreTerm(t)})"
+    case CoreAst.Term.Pi(_, _, _)                  => s"(${printCoreTerm(t)})"
   }
 
   private def printCoreTerm(t: CoreAst.Term): String = t match {
@@ -68,9 +69,10 @@ object PrettyPrinter {
     case CoreAst.Term.Lam(ty, body, _, _, recursion) =>
       val decreaseStr = recursion.map(r => s" ${printDecreaseSpec(r.decreases)}").getOrElse("")
       s"fun ${printBinders(ty.binders)}: ${printCoreTerm(ty.out)}$decreaseStr => ${printCoreTerm(body)}"
-    case m @ CoreAst.Term.Match(_, _, _, _)  => printMatch(m)
-    case b: CoreAst.Term.Body                => printBody(b)
-    case CoreAst.Term.Select(base, field, _) => s"${printTermAtom(base)}[$field]"
+    case m @ CoreAst.Term.Match(_, _, _, _)        => printMatch(m)
+    case b: CoreAst.Term.Body                      => printBody(b)
+    case CoreAst.Term.Select(base, field, _)       => s"${printTermAtom(base)}[$field]"
+    case CoreAst.Term.Proj(family, index, base, _) => s"proj[$family,$index](${printCoreTerm(base)})"
     case CoreAst.Term.App(fn, args, _) =>
       val headStr = printTermAtom(fn)
       val argsStr = args.map(printTermAtom).mkString(", ")
@@ -130,20 +132,22 @@ object PrettyPrinter {
   }
 
   private def printElabTermAtom(t: ElabAst.Term): String = t match {
-    case ElabAst.Term.NatLit(value, _)      => value.toString
-    case ElabAst.Term.Proof(tpe, _)         => s"proof(${printElabTerm0(tpe)})"
-    case _: ElabAst.Term.Ref                => printElabTerm0(t)
-    case ElabAst.Term.App(_, _, _)          => printElabTerm0(t)
-    case ElabAst.Term.Lam(_, _, _, _, _, _) => s"(${printElabTerm0(t)})"
-    case ElabAst.Term.Match(_, _, _, _, _)  => s"(${printElabTerm0(t)})"
-    case ElabAst.Term.Body(_, _, _)         => s"(${printElabTerm0(t)})"
-    case ElabAst.Term.Pi(_, _, _, _)        => s"(${printElabTerm0(t)})"
+    case ElabAst.Term.NatLit(value, _)             => value.toString
+    case ElabAst.Term.Proof(tpe, _)                => s"proof(${printElabTerm0(tpe)})"
+    case _: ElabAst.Term.Ref                       => printElabTerm0(t)
+    case ElabAst.Term.App(_, _, _)                 => printElabTerm0(t)
+    case ElabAst.Term.Proj(family, index, base, _) => s"proj[$family,$index](${printElabTerm0(base)})"
+    case ElabAst.Term.Lam(_, _, _, _, _, _)        => s"(${printElabTerm0(t)})"
+    case ElabAst.Term.Match(_, _, _, _, _)         => s"(${printElabTerm0(t)})"
+    case ElabAst.Term.Body(_, _, _)                => s"(${printElabTerm0(t)})"
+    case ElabAst.Term.Pi(_, _, _, _)               => s"(${printElabTerm0(t)})"
   }
 
   private def printElabTerm0(t: ElabAst.Term): String = t match {
-    case ElabAst.Term.NatLit(value, _) => value.toString
-    case ElabAst.Term.Proof(tpe, _)    => s"proof(${printElabTerm0(tpe)})"
-    case ref: ElabAst.Term.Ref         => printElabRef(ref)
+    case ElabAst.Term.NatLit(value, _)             => value.toString
+    case ElabAst.Term.Proof(tpe, _)                => s"proof(${printElabTerm0(tpe)})"
+    case ElabAst.Term.Proj(family, index, base, _) => s"proj[$family,$index](${printElabTerm0(base)})"
+    case ref: ElabAst.Term.Ref                     => printElabRef(ref)
     case ElabAst.Term.Lam(ty, body, _, _, _, _) =>
       s"fun ${printElabBinders(ty.binders)}: ${printElabTerm0(ty.out)} => ${printElabTerm0(body)}"
     case m @ ElabAst.Term.Match(_, _, _, _, _) => printElabMatch(m)

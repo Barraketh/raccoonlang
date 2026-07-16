@@ -30,15 +30,18 @@ object Env {
 
 sealed trait GlobalBinding {
   def value(env: Env): Value
+  def projectionAlias: Option[CoreAst.ProjectionAlias]
 }
 
 object GlobalBinding {
-  final case class Strict(value0: Value) extends GlobalBinding {
+  final case class Strict(value0: Value, projectionAlias: Option[CoreAst.ProjectionAlias]) extends GlobalBinding {
     override def value(env: Env): Value = value0
   }
 
   final class Lazy(force: () => Value) extends GlobalBinding {
     private[this] var cached: Option[Value] = None
+
+    override val projectionAlias: Option[CoreAst.ProjectionAlias] = None
 
     override def value(env: Env): Value =
       cached match {
@@ -65,13 +68,21 @@ final case class Env(
   def apply(ref: CoreAst.LocalRef): Value =
     locals.getOrElse(ref, throw NotFound(ref.toString))
 
-  def putGlobal(name: String, value: Value): Env = {
+  // Field notation reads this metadata without forcing the selector definition.
+  def projectionAlias(name: String): Option[CoreAst.ProjectionAlias] =
+    globals.get(name).flatMap(_.projectionAlias)
+
+  def putGlobal(
+      name: String,
+      value: Value,
+      projectionAlias: Option[CoreAst.ProjectionAlias] = None
+  ): Env = {
     Env.assertClosedGlobal(value)
     Env.assertCanonicalProof(value)
 
     if (globals.contains(name)) throw AlreadyDefined(name)
     else if (name == "_") throw WTF("Wildcards not allowed in global names")
-    else copy(globals = globals + (name -> GlobalBinding.Strict(value)))
+    else copy(globals = globals + (name -> GlobalBinding.Strict(value, projectionAlias)))
   }
 
   def putLazyGlobal(name: String, force: () => Value): Env = {

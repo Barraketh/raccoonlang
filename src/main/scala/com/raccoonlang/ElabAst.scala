@@ -27,6 +27,14 @@ object ElabAst {
      */
     final case class Proof(tpe: Term, span: Span) extends Term
 
+    /**
+     * Checked positional projection. Unlike a generated `S.field` definition, this is primitive syntax whose identity
+     * is the inductive family plus constructor-field index.
+     */
+    final case class Proj(familyName: String, fieldIndex: Int, base: Term, span: Span) extends Term {
+      require(fieldIndex >= 0, "Projection field index must be non-negative")
+    }
+
     final case class App(fn: Term, args: Vector[Term], span: Span) extends Term
 
     // No classifier field: a Pi's universe is env-dependent (level-polymorphic binder types), so

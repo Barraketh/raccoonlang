@@ -103,6 +103,18 @@ object Projection {
     val proofHoleIndexes = proofHolesByType.iterator.map(_._1).toSet
     var remainingProofHoles = proofHoleIndexes.size
 
+    // Eta-expanded structure-like binders have no top-level Var id: their rigid representation is already a VCtor of
+    // fresh fields. Retain the whole fresh pattern as their occurrence marker so an exact occurrence in a later root
+    // can still force the implicit. The key is only an index; defEq below verifies each candidate before trusting it.
+    val etaHolesByKey = binders.zipWithIndex
+      .collect {
+        case (b, idx)
+            if b.isImplicit && b.holeId.isEmpty && !Value.isPropositionType(b.fresh.tpe) &&
+              StructEta.eligibleInstance(b.fresh.tpe).nonEmpty =>
+          b.fresh.key -> (idx, b.fresh)
+      }
+      .groupMap(_._1)(_._2)
+
     val demoted = mutable.Set.empty[Int]
     val solved = mutable.LinkedHashMap.empty[Int, (Int, Vector[Step])]
     val queue = mutable.ArrayDeque.empty[(Int, Vector[Step], Value)]
@@ -124,10 +136,16 @@ object Projection {
         case Symbol       => true
         // A stuck projection reduces once its base becomes constructor-headed, so its spine is
         // not a stable pattern to project from.
-        case StructField(_) => false
+        case StructField(_, _, _) => false
       }
 
     def visit(root: Int, steps: Vector[Step], v: Value): Unit = {
+      etaHolesByKey.get(v.key).foreach { candidates =>
+        candidates.foreach { case (hole, pattern) =>
+          if (ValueEquivalence.defEq(pattern, v)) solveHole(hole, root, steps, v.tpe)
+        }
+      }
+
       // Proof binders carry no occurrence marker at runtime. Proof irrelevance makes any proof of
       // the same proposition a valid reconstruction, so a proof-valued position in a later
       // argument type forces every matching implicit proof binder through that projection path.

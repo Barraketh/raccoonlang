@@ -34,9 +34,9 @@ class ResidualizationTests extends munit.FunSuite {
           Interpreter.evalDecl(decl, curEnv)
         }
         val ty = last match {
-          case CoreAst.Decl.AxiomDecl(_, ty, _)          => ty
-          case CoreAst.Decl.ConstDecl(_, _, ty, _, _, _) => ty
-          case other                                     => fail(s"Expected typed declaration, got $other")
+          case CoreAst.Decl.AxiomDecl(_, ty, _)             => ty
+          case CoreAst.Decl.ConstDecl(_, _, ty, _, _, _, _) => ty
+          case other                                        => fail(s"Expected typed declaration, got $other")
         }
         TypeChecker.checkTerm(ty, env).residual
 
@@ -45,10 +45,11 @@ class ResidualizationTests extends munit.FunSuite {
 
   private def containsGlobal(term: EA.Term, name: String): Boolean =
     term match {
-      case _: EA.Term.NatLit       => false
-      case EA.Term.Proof(tpe, _)   => containsGlobal(tpe, name)
-      case EA.Term.GlobalRef(n, _) => n == name
-      case EA.Term.LocalRef(_, _)  => false
+      case _: EA.Term.NatLit           => false
+      case EA.Term.Proof(tpe, _)       => containsGlobal(tpe, name)
+      case EA.Term.Proj(_, _, base, _) => containsGlobal(base, name)
+      case EA.Term.GlobalRef(n, _)     => n == name
+      case EA.Term.LocalRef(_, _)      => false
       case EA.Term.App(fn, args, _) =>
         containsGlobal(fn, name) || args.exists(arg => containsGlobal(arg, name))
       case EA.Term.Pi(binders, out, _, _) =>
@@ -125,7 +126,7 @@ class ResidualizationTests extends munit.FunSuite {
     assert(containsGlobal(res, "opaqueBool"))
   }
 
-  test("checked residual elaborates projection syntax to selector application") {
+  test("checked residual elaborates projection syntax directly to primitive projection") {
     val p =
       natDecls +
         """
@@ -141,17 +142,37 @@ class ResidualizationTests extends munit.FunSuite {
     checkBody(p).term match {
       case EA.Term.Body(
             lets,
-            EA.Term.App(
-              EA.Term.GlobalRef("Pair.fst", _),
-              Vector(EA.Term.LocalRef(ref, _)),
-              _
-            ),
+            EA.Term.Proj("Pair", 0, EA.Term.LocalRef(ref, _), _),
             _
           ) =>
         assertEquals(lets.length, 1)
         assertEquals(ref, lets.head.localRef)
         assert(containsGlobal(lets.head.value, "Pair.mk"))
-      case other => fail(s"Expected selector application over local pair, got $other")
+      case other => fail(s"Expected primitive projection over local pair, got $other")
+    }
+  }
+
+  test("an explicit generated selector remains an ordinary function call") {
+    val p =
+      natDecls +
+        """
+          |struct Pair (A: Type)(B: Type) : Type
+          | | mk (fst: A)(snd: B) : Pair(A, B)
+          |
+          |{
+          |  let p := Pair.mk(Peano.zero, Peano.succ(Peano.zero))
+          |  Pair.fst(p)
+          |}
+          |""".stripMargin
+
+    checkBody(p).term match {
+      case EA.Term.Body(
+            Vector(let),
+            EA.Term.App(EA.Term.GlobalRef("Pair.fst", _), Vector(EA.Term.LocalRef(ref, _)), _),
+            _
+          ) =>
+        assertEquals(ref, let.localRef)
+      case other => fail(s"Expected an explicit selector call, got $other")
     }
   }
 

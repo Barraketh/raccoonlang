@@ -166,17 +166,24 @@ def zip {A: Type}{B: Type}{n: Nat} (va: Vec(A, n))(vb: Vec(B, n)): Vec(Pair(A, B
 
 ### Structs and Projections
 
-A struct is a special case of an inductive family with exactly one constructor and named fields. Structs are intended
-for record-like data where fields are directly projectable by name.
-Formation rules:
+A `struct` declaration is frontend sugar for an inductive family with one constructor plus ordinary named selector
+definitions in the family's namespace. The checked inductive declaration carries no struct flag; internally,
+projections are identified positionally by the family and constructor-field index.
 
-- Exactly one constructor.
+Rules and consequences:
+
+- `struct` syntax accepts exactly one constructor and generates a selector for each named field. Anonymous `_` fields
+  remain positional fields but receive no selector alias.
 - Params before `indices` must be returned uniformly by every constructor.
 - Indices may be fixed by the constructor result or recovered from stored fields.
 - May live in `Type`/`Sort(u)` or `Prop`; projections from `Prop` structs obey Prop elimination restrictions.
-- All fields must be named (no anonymous `_` fields).
+- Any checked inductive family—not only one written with `struct`—gets definitional structure eta when it has exactly
+  one constructor, zero indices, and no recursive constructor field. Indexed and recursive singleton families may
+  still be projected, but do not get eta.
 
-Projection syntax: `p.field` selects the named field from a value `p` of a struct family.
+Projection syntax `p.field` uses the generated selector metadata to elaborate directly to a positional projection;
+`Family.field(p)` remains an ordinary explicit call to the generated selector definition. Plain `inductive`
+declarations do not generate these aliases, even when they qualify for eta.
 
 Example: simple non-dependent projections
 

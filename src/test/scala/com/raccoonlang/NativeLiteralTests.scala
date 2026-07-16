@@ -164,6 +164,20 @@ class NativeLiteralTests extends munit.FunSuite {
     assertEquals(payload(runProgram(src)), BigInt(4))
   }
 
+  test("the positional projection evaluator decodes packed constructor fields") {
+    val env = Prelude.default.checkedEnv
+    val nat = env("Nat")
+    val instance = TypeChecker.inductiveFamilyOf(nat).getOrElse(fail("Nat is not an inductive family"))
+    val succ = env("Nat.succ") match {
+      case head: Value.ConstructorHead => head
+      case other                       => fail(s"Expected Nat.succ constructor, got $other")
+    }
+    val info = new Value.ProjectionInfo(Vector(false), etaEligible = false, () => succ)
+    val one = VPacked(NatCodec, 1, nat)
+
+    assertEquals(payload(InductiveProjection.check(one, instance, info, 0, Span(0, 0))), BigInt(0))
+  }
+
   test("packed versus an opaque neutral is stuck, never apart") {
     expectTypeError[MissingCase](
       """

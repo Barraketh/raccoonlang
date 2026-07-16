@@ -90,9 +90,10 @@ object TypeChecker {
 
   private def applyHeadName(fnResidual: EA.Term): String =
     fnResidual match {
-      case EA.Term.GlobalRef(name, _) => name
-      case EA.Term.LocalRef(ref, _)   => ref.name
-      case _                          => "function"
+      case EA.Term.GlobalRef(name, _)                 => name
+      case EA.Term.LocalRef(ref, _)                   => ref.name
+      case EA.Term.Proj(familyName, fieldIndex, _, _) => s"$familyName.$fieldIndex"
+      case _                                          => "function"
     }
 
   /**
@@ -262,24 +263,45 @@ object TypeChecker {
       span: Span,
       env: Env,
       expectedTy: Option[Value]
-  ): CheckedApply = {
+  ): CheckedTerm = {
     val vType = base.value.tpe
     val family = inductiveFamilyOf(vType).getOrElse(throw NotAType(vType))
     val indName = family.head.name
-    val meta = family.meta
-
-    if (!meta.isStruct) throw NotAStruct(indName)
-
     val selectorName = s"$indName.$field"
-    val selector = env(selectorName)
-    checkApplyChecked(
-      selector,
-      EA.Term.GlobalRef(selectorName, span),
-      Vector(PendingArg.checked(base)),
-      env,
-      span,
-      expectedTy
-    )
+    val alias = env.projectionAlias(selectorName).getOrElse(throw NotFound(selectorName))
+    if (alias.familyName != indName)
+      throw WTF(s"Selector $selectorName aliases a projection from ${alias.familyName}", Some(span))
+    checkProj(indName, alias.fieldIndex, base, span, expectedTy)
+  }
+
+  private def checkProj(
+      familyName: String,
+      fieldIndex: Int,
+      base: CheckedTerm,
+      span: Span,
+      expectedTy: Option[Value]
+  ): CheckedTerm = {
+    val family = inductiveFamilyOf(base.value.tpe).getOrElse {
+      throw InvalidProjection(familyName, fieldIndex, s"major premise has type ${base.value.tpe}", Some(span))
+    }
+    if (family.head.name != familyName)
+      throw InvalidProjection(
+        familyName,
+        fieldIndex,
+        s"major premise belongs to ${family.head.name}",
+        Some(span)
+      )
+    val info = family.meta.projectionInfo.getOrElse {
+      throw InvalidProjection(
+        familyName,
+        fieldIndex,
+        s"family has ${family.meta.constructors.length} constructors instead of one",
+        Some(span)
+      )
+    }
+    val projected = InductiveProjection.check(base.value, family, info, fieldIndex, span)
+    val synthed = CheckedTerm(projected, EA.Term.Proj(familyName, fieldIndex, base.residual, span))
+    expectedTy.fold(synthed)(expected => checkTermFits(synthed, expected))
   }
 
   private def checkLam(l: CA.Term.Lam, env: Env): CheckedTerm = {
@@ -406,8 +428,9 @@ object TypeChecker {
           expectedTy.fold(synthed)(expected => checkTermFits(synthed, expected))
         case CA.Term.Select(base, field, span) =>
           val checkedBase = checkTerm(base, env)
-          val checked = checkSelect(checkedBase, field, span, env, expectedTy)
-          CheckedTerm(checked.value, checked.residual)
+          checkSelect(checkedBase, field, span, env, expectedTy)
+        case CA.Term.Proj(familyName, fieldIndex, base, span) =>
+          checkProj(familyName, fieldIndex, checkTerm(base, env), span, expectedTy)
         case app: CA.Term.App =>
           val checkedFn = checkTerm(app.fn, env)
           val checkedArgs = app.args.map(PendingArg.term)

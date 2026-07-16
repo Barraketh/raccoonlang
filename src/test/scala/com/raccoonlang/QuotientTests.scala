@@ -17,6 +17,16 @@ class QuotientTests extends munit.FunSuite {
     }
   }
 
+  private def evalDecls(src: String): Env =
+    LanguageParser.parseProgram(src) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value)
+        core.decls.foldLeft(Prelude.default.checkedEnv) { case (env, decl) =>
+          Interpreter.evalDecl(decl, env)
+        }
+      case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
+    }
+
   sealed trait Shape
   case class SConst(name: String) extends Shape
   case class SApp(head: Shape, args: List[Shape]) extends Shape
@@ -189,6 +199,23 @@ class QuotientTests extends munit.FunSuite {
         intercept[NonForcedImplicitParam] { Interpreter.run(core) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
+    }
+  }
+
+  test("Quot never exposes primitive positional projections") {
+    val env = evalDecls(
+      natPrelude +
+        """
+          |axiom q : Quot(Nat, Rel)
+          |""".stripMargin
+    )
+    val span = Span(0, 0)
+
+    intercept[InvalidProjection] {
+      TypeChecker.checkTerm(
+        CoreAst.Term.Proj("Quot", 0, CoreAst.Term.GlobalRef("q", span), span),
+        env
+      )
     }
   }
 }
