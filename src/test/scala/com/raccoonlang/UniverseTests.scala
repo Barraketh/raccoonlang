@@ -167,14 +167,15 @@ class UniverseTests extends munit.FunSuite {
         |""".stripMargin
 
     val res = runProgram(p)
-    // The Pi is classified in Prop, so the lambda is itself a proof of it and collapses.
+    // The Pi is classified in Prop, so the checked body is discarded after validation and the
+    // whole function uses the canonical proof eta-lambda.
     res match {
-      case Value.VProof(pi: Value.VPi) =>
+      case Value.VLam(pi, _, Value.LamBody.ProofEta) =>
         pi.tpe match {
           case Value.VSort(u) => assertEquals(u, Value.Level.zero)
           case other          => fail(s"Expected Pi type to live in Prop, got: $other")
         }
-      case other => fail(s"Expected a collapsed proof of a Prop-classified Pi, got: $other")
+      case other => fail(s"Expected the canonical eta-lambda for the Prop-valued Pi, got: $other")
     }
   }
 
@@ -331,7 +332,7 @@ class UniverseTests extends munit.FunSuite {
     runProgram(p)
   }
 
-  test("a polymorphic Pi inhabitant collapses when the codomain level resolves to Prop") {
+  test("a polymorphic Pi inhabitant canonicalizes when its codomain resolves to Prop") {
     val p =
       """
         |inductive Truth : Prop
@@ -344,8 +345,8 @@ class UniverseTests extends munit.FunSuite {
         |""".stripMargin
 
     runProgram(p) match {
-      case _: Value.VProof =>
-      case other           => fail(s"Expected the Prop-instantiated function to collapse, got $other")
+      case Value.VLam(_, _, Value.LamBody.ProofEta) =>
+      case other => fail(s"Expected the Prop-instantiated function to canonicalize to an eta-lambda, got $other")
     }
   }
 

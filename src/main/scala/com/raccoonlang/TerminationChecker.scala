@@ -13,9 +13,9 @@ object TerminationChecker {
       bodyEnv: Env
   ): VLam = {
     def requireInductiveMetric(value: Value, span: Span): Unit = {
-      // Collapsed proofs have no subterms, and "structurally smaller" is ill-defined up to an
-      // equality that identifies wrap(x) with base; well-founded recursion on proofs needs a
-      // dedicated Acc-style mechanism (proof-collapse.md §7.1).
+      // Proof structure is not invariant under an equality that identifies wrap(x) with base;
+      // erased proofs also have no subterms. Well-founded recursion on proofs needs a
+      // dedicated Acc-style mechanism (proof-collapse.md §6).
       if (Value.isPropositionType(value.tpe))
         throw InvalidDecreaseSpec(
           s"decrease metric ${value} is a proof; structural recursion on proofs is not supported",
@@ -80,7 +80,7 @@ object TerminationChecker {
           val resultTy = vpi.codomain(envWithArgs)
           // A recursive call in a proof-by-recursion produces a proof of the instantiated goal;
           // a struct-returning one produces its residual in canonical constructor form.
-          StructEta.expandIfStruct(Value.collapseIfProof(VApp(VConst(name, Symbol, vpi), args, resultTy)))
+          StructEta.expandIfStruct(Value.canonicalizeProof(VApp(VConst(name, Symbol, vpi), args, resultTy)))
         },
         bodyEnv,
         isRawRecursive = true

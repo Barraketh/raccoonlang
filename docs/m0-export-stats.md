@@ -21,7 +21,8 @@ The JSON form contains complete declaration provenance for every count. Tests co
 expression summaries, mutual/nested blocks, the fix-cluster exclusion, literal operations,
 projections, irreducibility, unsupported versions, and invalid forward references.
 `ConsistencyTests` separately pins the Abel–Coquand Ω term: with a local `propext` axiom, the
-closed term evaluates immediately to a `VProof` rather than entering proof-driven reduction.
+closed proof function evaluates immediately to its canonical `ProofEta` lambda rather than
+entering proof-driven reduction.
 
 ## Inputs and results
 

@@ -20,6 +20,13 @@ object ElabAst {
 
     final case class NatLit(value: BigInt, span: Span) extends Term
 
+    /**
+     * Residual-only proof erasure intrinsic emitted by quotation for an already-validated `VProof`. It is deliberately
+     * absent from CoreAst so source programs cannot manufacture arbitrary proofs. Evaluation canonicalizes a proof of
+     * `eval(tpe)`, producing the exact type's reconstructed constructor, proof eta-lambda, or `VProof`.
+     */
+    final case class Proof(tpe: Term, span: Span) extends Term
+
     final case class App(fn: Term, args: Vector[Term], span: Span) extends Term
 
     // No classifier field: a Pi's universe is env-dependent (level-polymorphic binder types), so

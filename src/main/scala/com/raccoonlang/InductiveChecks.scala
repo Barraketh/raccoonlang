@@ -233,7 +233,8 @@ object InductiveChecks {
         decl.header.binders.length,
         decl.isStruct,
         initialPositiveArgs,
-        etaInfo = None
+        etaInfo = None,
+        proofStorage = ProofStorage.Erase
       )
 
     val provisionalHead = VConst(name, Inductive(initialMeta), inductiveType)
@@ -270,6 +271,12 @@ object InductiveChecks {
       }
     var positiveArgs = positiveArgIndexes(familyArgs, familyArgs.map(_.tpe))
     var hasRecursiveField = false
+    // A family whose declared universe is positive under every level assignment can never have a
+    // Prop instance, so proof representation metadata would be dead weight. Retain a candidate only
+    // for Prop and universe-polymorphic families whose result level may reduce to zero.
+    var proofFieldRecipes = Option.when(decl.ctors.length == 1 && !Level.isNeverZero(declaredSort.level)) {
+      Vector.empty[ProofFieldRecipe]
+    }
 
     decl.ctors.foreach { ctor =>
       val allConstructorBinders = constructorBinders(header, ctor)
@@ -292,6 +299,22 @@ object InductiveChecks {
       if (outputArgs.length != header.arity) throw resultErr
 
       checkConstructorParamDiscipline(header, ctor, envWithBinders, outputArgs)
+
+      // Compile the simple singleton reconstruction certificate once on the declaration. Prop
+      // fields are reconstructed shallowly; every other stored field records the direct result
+      // argument that fixes it. The instantiated constructor result is checked against the exact
+      // proposition when reconstruction runs, so repeated/constant indices become constraints
+      // rather than interpreter-time unification problems.
+      if (proofFieldRecipes.nonEmpty) {
+        val recipes = ownBinderVars.map { field =>
+          if (Value.isPropositionType(field.tpe)) Some(ProofFieldRecipe.ErasedProof)
+          else {
+            val resultIndex = outputArgs.indexWhere(arg => ValueEquivalence.defEq(arg, field))
+            Option.when(resultIndex >= 0)(ProofFieldRecipe.ResultArgument(resultIndex))
+          }
+        }
+        proofFieldRecipes = Option.when(recipes.forall(_.nonEmpty))(recipes.flatten)
+      }
 
       val constructorUniverse = TypeChecker.getUniverse(outputTpe)
       val constructorArgs = ctor.binders.zip(ownBinderVars)
@@ -341,11 +364,13 @@ object InductiveChecks {
     // field, and not declared in Prop. NOT "single constructor" alone — that would admit Acc-like
     // recursive singletons and quotient constructors, exactly what the gate must exclude
     // (kernel-theory §2 "structure eta"). Declared-Prop structs are excluded because their values
-    // always collapse (and, lacking the Sort-family universe bound, they may store large fields);
-    // sort-polymorphic structs stay eligible — their Prop *instances* are filtered dynamically.
-    // The head is a promise resolved against the installed env: constructor types are checked
-    // against the installed family head, so the head cannot exist before installInductive runs.
-    var installedEnv: Option[Env] = None
+    // follow the independent proof representation policy (and, lacking the Sort-family universe
+    // bound, they may store large fields); sort-polymorphic structs stay eligible — their Prop
+    // *instances* are filtered dynamically.
+    // The head is a promise completed after installation: constructor types are checked against
+    // the installed family head, so the head cannot exist before installInductive runs. Retain the
+    // head itself rather than the complete environment snapshot.
+    var installedCtorHead: Option[ConstructorHead] = None
     val etaInfo =
       if (
         decl.isStruct && decl.ctors.length == 1 && header.indices.isEmpty && !hasRecursiveField &&
@@ -357,21 +382,39 @@ object InductiveChecks {
           new StructEtaInfo(
             fieldNames,
             () =>
-              installedEnv.get(ctorName) match {
-                case h: ConstructorHead => h
-                case other              => throw WTF(s"Struct constructor $ctorName resolved to non-constructor $other")
-              }
+              installedCtorHead.getOrElse(
+                throw WTF(s"Struct constructor $ctorName requested before declaration installation")
+              )
           )
         )
       } else None
 
-    val meta = initialMeta.copy(positiveArgs = positiveArgs, etaInfo = etaInfo)
+    val proofStorage =
+      proofFieldRecipes match {
+        case Some(recipes) =>
+          ProofStorage.Reconstruct(
+            new ProofConstructorInfo(
+              recipes,
+              () => installedCtorHead
+            )
+          )
+        case None => ProofStorage.Erase
+      }
+    val meta = initialMeta.copy(positiveArgs = positiveArgs, etaInfo = etaInfo, proofStorage = proofStorage)
 
     val inductiveHead = VConst(name, Inductive(meta), inductiveType)
 
     // Only after all constructor checks succeed do we add the decl to the environment.
     val finalEnv = installInductive(decl, env, inductiveHead)
-    installedEnv = Some(finalEnv)
+    if (decl.ctors.length == 1) {
+      val ctorName = decl.ctors.head.canonicalName
+      installedCtorHead = Some(
+        finalEnv(ctorName) match {
+          case h: ConstructorHead => h
+          case other              => throw WTF(s"Constructor $ctorName resolved to non-constructor $other")
+        }
+      )
+    }
     finalEnv
   }
 }

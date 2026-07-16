@@ -407,7 +407,32 @@ class PropTests extends munit.FunSuite {
     assertEquals(toShape(res), zeroS)
   }
 
-  test("Large elimination is allowed when exactly one constructor is reachable at the given index") {
+  test("Negative: injectively nested index is outside the simple storage certificate") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
+        |
+        |inductive SuccIdx indices (n: Peano) : Prop
+        | | intro (k: Peano) : SuccIdx(Peano.succ(k))
+        |
+        |def predecessor (n: Peano)(h: SuccIdx(Peano.succ(n))): Peano := {
+        |  match h returning Peano with
+        |  | SuccIdx.intro k => k
+        |}
+        |""".stripMargin
+
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
+  }
+
+  test("Negative: one reachable constructor does not bypass the declaration-time storage policy") {
     val p =
       """
         |inductive Peano : Type
@@ -428,8 +453,13 @@ class PropTests extends munit.FunSuite {
         |}
         |""".stripMargin
 
-    val res = runProgram(p)
-    assertEquals(toShape(res), zeroS)
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
   }
 
   test("Negative: large elimination from Prop with unforced Type-valued field is rejected") {

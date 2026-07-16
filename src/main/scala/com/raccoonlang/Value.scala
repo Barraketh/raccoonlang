@@ -32,15 +32,15 @@ object Value {
    * own types and pass through; neutrals (`UpdatableType`) only carry an annotation recorded at creation, and
    * syntax-directed machinery (`evalApply`'s Pi dispatch, universe classification, keys) reads that annotation
    * structurally, so the representative matters. Also the deferred proof-collapse point: the ascription is often the
-   * moment a value's type becomes *known* propositional (proof-collapse.md §3-4). Struct expansion (StructEta)
+   * moment a value's type becomes *known* propositional (proof-collapse.md §§2-3). Struct expansion (StructEta)
    * deliberately does NOT run here: ascription retypes values that already circulate, and wrapping one copy while the
-   * bare original lives on in envs would leave two representations that never compare equal. Collapse tolerates that
-   * (the ProofEquation mixed rule relates VProof to bare proof representatives); expansion has no mixed rule by design,
-   * so struct values are canonicalized at creation only.
+   * bare original lives on in envs would leave two representations that never compare equal. Proof representation
+   * tolerates that (`ProofEquation` relates every proof form); expansion has no mixed rule by design, so struct values
+   * are canonicalized at creation only.
    */
   def ascribe(value: Value, tpe: Value): Value =
     value match {
-      case u: UpdatableType => collapseIfProof(u.withTpe(tpe))
+      case u: UpdatableType => canonicalizeProof(u.withTpe(tpe))
       case _                => value
     }
 
@@ -60,33 +60,60 @@ object Value {
   private def isKnownProof(value: Value): Boolean = isPropositionType(value.tpe)
 
   /**
-   * Collapse a value whose type is a known proposition into the structureless `VProof` form (docs/proof-collapse.md).
-   * Callers must present an existing inhabitant — collapse is erasure, never creation (witness invariant). Exemptions:
+   * Put a proof into the canonical representation determined solely by its exact proposition (docs/proof-collapse.md).
+   * If the proposition's declaration-time recipe reconstructs a constructor at that exact type, every inhabitant uses
+   * constructor form. Otherwise a Pi proposition reconstructs its eta-lambda and every other ordinary inhabitant erases
+   * to `VProof`. Exemptions:
    *   - `Var`: metas and unification unknowns must stay refinable — collapsing a placeholder would silently discharge a
-   *     proof obligation. Rigid hypotheses are collapsed at binder freshening instead, where the binder itself is the
-   *     witness (`collapseBinderWitness` below).
-   *   - `ConstructorHead`: heads must remain applicable and recognizable by match machinery; their saturated
-   *     applications collapse in `Interpreter.evalApply`.
-   *   - raw-recursive `VLam`: the native body enforces the decrease check on every application; hiding it inside a
-   *     `VProof` would disable termination checking for recursive proofs.
+   *     proof obligation. Rigid hypotheses are erased at binder freshening only after the source binder has established
+   *     that an inhabitant is in scope (`canonicalizeRigidBinder` below).
+   *   - `ConstructorHead`: heads must remain applicable and recognizable by match machinery.
+   *   - a raw-recursive `VLam`: this checker-only stub must execute its decrease guard. The checked published proof
+   *     lambda is replaced by the canonical proof eta-lambda after its body has passed checking.
    */
-  def collapseIfProof(value: Value): Value =
+  def canonicalizeProof(value: Value): Value =
     value match {
       // A Pi's own type is a sort, never a proposition — skip without forcing its lazy classifier.
-      case _: VPi                                  => value
-      case _ if !isPropositionType(value.tpe)      => value
-      case _: VProof | _: Var | _: ConstructorHead => value
-      case VLam(_, _, LamBody.Native(_, _, true))  => value
-      case _                                       => VProof(value.tpe, value)
+      // Metas remain linkable, constructor heads remain applicable, and the raw recursive lambda
+      // remains executable until checking has validated every recursive call.
+      case _: VPi | _: Var | _: ConstructorHead   => value
+      case VLam(_, _, LamBody.Native(_, _, true)) => value
+      case _ if !isPropositionType(value.tpe)     => value
+      // A trusted application of the declaration-certified constructor already carries the
+      // result-forced data fields. Check this before running the recipe so repeated canonicalization
+      // at environment boundaries is constant-time.
+      case VCtor(actualHead, _, _) if ProofReconstruction.isCertifiedConstructor(value.tpe, actualHead) => value
+      case _ =>
+        ProofReconstruction.reconstruct(value.tpe) match {
+          case Some(reconstructed) =>
+            VCtor(reconstructed.head, reconstructed.fields, value.tpe)
+          case None =>
+            value.tpe match {
+              case pi: VPi =>
+                value match {
+                  case VLam(_, _, LamBody.ProofEta) => value
+                  case _                            => canonicalProofLambda(pi)
+                }
+              case _ =>
+                value match {
+                  case proof: VProof => proof
+                  case _             => VProof(value.tpe)
+                }
+            }
+        }
     }
 
+  /** The unique operational shape reconstructed for every proof of a Pi proposition. */
+  private def canonicalProofLambda(pi: VPi): VLam =
+    VLam(pi, ValueId.LocalId(AstNodeId.synthetic(), Vector.empty), LamBody.ProofEta)
+
   /**
-   * Collapse a freshened *rigid* binder: the bound hypothesis is its own witness (proof-collapse.md §4). Counterpart to
-   * collapseIfProof's `Var` exemption — a bare fresh Var is a refinable meta there and must not collapse, but here the
-   * Var is a rigid hypothesis being bound, so it does.
+   * Canonicalize a freshened *rigid* binder (proof-collapse.md §5). Counterpart to canonicalizeProof's `Var` exemption
+   * — a bare fresh Var is a refinable meta there and must not collapse, but here the Var is a rigid hypothesis being
+   * bound, so its identity is checking metadata rather than runtime proof representation.
    */
-  def collapseBinderWitness(tpe: Value, fresh: Value): Value =
-    if (isPropositionType(tpe)) VProof(tpe, fresh) else fresh
+  def canonicalizeRigidBinder(tpe: Value, fresh: Value): Value =
+    if (isPropositionType(tpe)) canonicalizeProof(VProof(tpe)) else fresh
 
   private[raccoonlang] def needsStructuralDefEq(value: Value): Boolean =
     isKnownProof(value) || (value match {
@@ -129,6 +156,11 @@ object Value {
     }
     final case class Native(run: (Vector[Value], Env) => Value, env: Env, isRawRecursive: Boolean) extends LamBody {
       override lazy val synDeps: DepSet = envDeps(env)
+    }
+
+    /** Type-directed eta expansion of a proof of Pi; its result is reconstructed from the instantiated codomain. */
+    case object ProofEta extends LamBody {
+      override val synDeps: DepSet = DepSet.empty
     }
   }
 
@@ -449,42 +481,23 @@ object Value {
   }
 
   /**
-   * The single value form for proofs: every value whose type is *known* to be a proposition is a `VProof` (collapse
-   * invariant, docs/proof-collapse.md §3). Proofs have no structure to read, so proof-irrelevance violations are
-   * unrepresentable rather than guarded against; defEq of two proofs is defEq of their propositions.
+   * The erased value form for proofs whose exact proposition reconstructs neither a constructor nor a Pi eta-lambda.
+   * DefEq still compares every pair of proof values solely through their propositions. There is deliberately no stored
+   * witness: quotation is canonical as the residual-only `proof(tpe)` intrinsic.
    *
-   * `witness0` is the erased inhabitant this proof was collapsed from. It is excluded from equality, keys and synDeps,
-   * and is consulted only for quoting and diagnostics — never for evaluation or comparison (reading it there would
-   * reintroduce irrelevance violations).
-   *
-   * A `VProof` is never a `Blocker`: matches on proofs do not block-and-resume.
+   * A `VProof` is never a `Blocker`: matches on proofs do not block-and-resume. Proofs of Pi propositions instead use
+   * the canonical `VLam(_, _, ProofEta)` representation.
    */
-  final class VProof private (val tpe: Value, witness0: () => Value) extends Value with UpdatableType {
+  final case class VProof(tpe: Value) extends Value with UpdatableType {
     require(isPropositionType(tpe), s"VProof requires a proposition, got a value of $tpe")
 
     override lazy val synDeps: DepSet = tpe.synDeps
-
-    lazy val witness: Value = witness0()
 
     // Ascription may retype at a defEq type that is not *known* to be a proposition (e.g. a
     // generic-universe binder type mid-elaboration); the proof keeps its proposition then,
     // mirroring VLam.withTpe's leniency on mismatched binders.
     override def withTpe(tpe: Value): Value =
-      if (isPropositionType(tpe)) new VProof(tpe, witness0) else this
-
-    override def equals(obj: Any): Boolean =
-      obj match {
-        case other: VProof => tpe == other.tpe
-        case _             => false
-      }
-
-    override def hashCode(): Int = 31 * tpe.hashCode() + 13
-  }
-
-  object VProof {
-    def apply(tpe: Value, witness: => Value): VProof = new VProof(tpe, () => witness)
-
-    def unapply(p: VProof): Some[Value] = Some(p.tpe)
+      if (isPropositionType(tpe)) copy(tpe = tpe) else this
   }
 
   /**
@@ -570,6 +583,38 @@ object Value {
   final case class ConstructorMeta(shortName: String, canonicalName: String)
 
   /**
+   * A stored constructor field's declaration-time reconstruction recipe. Data fields name the direct family-result
+   * argument that fixes them. Proposition fields are reconstructed shallowly as erased proofs of their instantiated
+   * binder types.
+   */
+  sealed trait ProofFieldRecipe
+  object ProofFieldRecipe {
+    final case class ResultArgument(index: Int) extends ProofFieldRecipe
+    case object ErasedProof extends ProofFieldRecipe
+  }
+
+  /**
+   * Constructor reconstruction capability carried by an inductive family. The head is a promise resolved only after the
+   * checked family and its constructor have been installed in the environment.
+   */
+  final class ProofConstructorInfo(
+      val fields: Vector[ProofFieldRecipe],
+      ctorHead0: () => Option[ConstructorHead]
+  ) {
+    // Family metadata exists while its constructor heads are still being checked. During that
+    // interval reconstruction is unavailable; it becomes available once the declaration's final
+    // environment has been installed.
+    def ctorHead: Option[ConstructorHead] = ctorHead0()
+  }
+
+  /** Declaration-time proof representation policy. */
+  sealed trait ProofStorage
+  object ProofStorage {
+    case object Erase extends ProofStorage
+    final case class Reconstruct(info: ProofConstructorInfo) extends ProofStorage
+  }
+
+  /**
    * Expansion capability of an eta-eligible struct (StructEta): the field names in constructor order plus the
    * constructor head. Carried on the meta — inside the type value itself — so expansion needs no environment (Builtins
    * natives run under empty envs; `Value.ascribe` has none at all). The head is a promise: its type is checked against
@@ -585,13 +630,18 @@ object Value {
       familyArity: Int,
       isStruct: Boolean,
       positiveArgs: DepSet,
-      etaInfo: Option[StructEtaInfo]
+      etaInfo: Option[StructEtaInfo],
+      proofStorage: ProofStorage
   ) {
     require(
       positiveArgs.isEmpty || positiveArgs.max < familyArity,
       "Inductive positive argument indexes must be in range"
     )
     require(etaInfo.isEmpty || isStruct, "Only structs can be eta-eligible")
+    require(
+      !proofStorage.isInstanceOf[ProofStorage.Reconstruct] || constructors.length == 1,
+      "Constructor-reconstructing proof families must have exactly one constructor"
+    )
 
     lazy val constructorNames: Vector[String] = constructors.map(_.canonicalName)
   }

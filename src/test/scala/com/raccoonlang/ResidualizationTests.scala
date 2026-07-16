@@ -46,6 +46,7 @@ class ResidualizationTests extends munit.FunSuite {
   private def containsGlobal(term: EA.Term, name: String): Boolean =
     term match {
       case _: EA.Term.NatLit       => false
+      case EA.Term.Proof(tpe, _)   => containsGlobal(tpe, name)
       case EA.Term.GlobalRef(n, _) => n == name
       case EA.Term.LocalRef(_, _)  => false
       case EA.Term.App(fn, args, _) =>

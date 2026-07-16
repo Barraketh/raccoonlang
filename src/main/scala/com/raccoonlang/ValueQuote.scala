@@ -29,6 +29,7 @@ object ValueQuote {
     def inlineTerm(t: ElabAst.Term): ElabAst.Term =
       t match {
         case _: ElabAst.Term.NatLit              => t
+        case ElabAst.Term.Proof(tpe, proofSpan)  => ElabAst.Term.Proof(inlineTerm(tpe), proofSpan)
         case ElabAst.Term.GlobalRef(_, _)        => t
         case ElabAst.Term.LocalRef(ref, refSpan) => inlineLocal(ref, refSpan)
         case ElabAst.Term.App(fn, args, appSpan) =>
@@ -80,6 +81,14 @@ object ValueQuote {
     quotePiOpened(pi, context, span).term
 
   def quoteTerm(value: Value, context: QuoteContext, span: Span): ElabAst.Term = {
+    // Erased proofs have a canonical residual independent of the local quote map. In particular,
+    // a proof hypothesis quotes as `proof(P)`, never by recovering a discarded witness or by
+    // choosing an arbitrary proof-irrelevant local representative.
+    value match {
+      case p: VProof => return ElabAst.Term.Proof(quoteTerm(p.tpe, context, span), span)
+      case _         =>
+    }
+
     context.quote.get(value.key).foreach(return _)
 
     value match {
@@ -120,12 +129,6 @@ object ValueQuote {
       case head: ConstructorHead => ElabAst.Term.GlobalRef(head.name, span)
 
       case level: Level => quoteLevel(level, context, span)
-
-      // A collapsed proof has no syntax of its own; all proofs of the proposition share a key, so
-      // the context lookup above already resolved it to any in-scope proof term. Otherwise fall
-      // back to the erased witness it was collapsed from (a global constant, a constructor
-      // application, ...). Materialization may have re-wrapped the witness; recursion unwraps.
-      case p: VProof => quoteTerm(p.witness, context, span)
 
       case other => throw CannotQuoteValue(other, "no quoted syntax", Some(span))
     }
@@ -222,6 +225,10 @@ object ValueQuote {
           case _                         => term.name
         }
         ElabAst.Term.Lam(opened.term, bodyTerm, span, name, term.recursiveSelf, AstNodeId.synthetic())
+      case (_, LamBody.ProofEta) =>
+        val opened = quotePiOpened(lam.tpe, context, span)
+        val bodyTerm = quoteTerm(Interpreter.runLam(lam, opened.freshArgs), opened.context, span)
+        ElabAst.Term.Lam(opened.term, bodyTerm, span, None, None, AstNodeId.synthetic())
       case (_, LamBody.Native(_, _, _)) => throw CannotQuoteValue(lam, "native lambda has no quoted syntax", Some(span))
     }
   }
@@ -339,7 +346,7 @@ object ValueQuote {
           case Some((inst, info)) =>
             info.fieldNames.zip(fields).foldLeft(withValue) { case (curQuote, (fieldName, field)) =>
               val needsProjectionSyntax = field match {
-                case _: Value.VProof => true // the witness may be an unquotable fresh var
+                case _: Value.VProof => true // use canonical proof syntax rather than a fresh projection
                 case _: Value.Var | _: Value.Level | Value.VCtor(_, _, _) => field.synDeps.nonEmpty
                 case _                                                    => false
               }

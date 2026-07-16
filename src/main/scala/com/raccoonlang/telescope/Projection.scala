@@ -55,7 +55,13 @@ object Projection {
    */
   final case class Spec(rootArgIdx: Int, steps: Vector[Step])
 
-  final case class BinderInput(name: String, span: Span, isImplicit: Boolean, fresh: Value)
+  final case class BinderInput(
+      name: String,
+      span: Span,
+      isImplicit: Boolean,
+      fresh: Value,
+      holeId: Option[VarId]
+  )
 
   /**
    * Final binder classification: family params of a constructor telescope that no field forces are demoted to explicit
@@ -73,26 +79,29 @@ object Projection {
     if (binders.forall(!_.isImplicit))
       return binders.map(_ => BinderResult(isImplicit = false, projection = None))
 
-    // The identifying var of each implicit binder's fresh value. Prop-typed binders freshen to a
-    // VProof around the var (collapseBinderWitness); Level-typed binders freshen to single-atom
-    // Level values rather than Vars (FreshVar.freshValue).
-    def holeId(v: Value): Option[VarId] =
+    // Recognize non-proof fresh ids inside visited values. Proof binders are handled separately by
+    // proposition below: VProof deliberately contains no hidden witness to recover an id from.
+    def valueHoleId(v: Value): Option[VarId] =
       v match {
         case Var(_, id, _) => Some(id)
         case level: Level =>
           Level.singleVariableOffset(level).collect { case (id, 0) => id }
-        case p: VProof =>
-          p.witness match {
-            case Var(_, id, _) => Some(id)
-            case _             => None
-          }
         case _ => None
       }
 
     val holeOfVar = mutable.Map.empty[VarId, Int]
+    val proofHoles = Vector.newBuilder[(Int, Value)]
     binders.zipWithIndex.foreach { case (b, idx) =>
-      if (b.isImplicit) holeId(b.fresh).foreach(id => holeOfVar.update(id, idx))
+      if (b.isImplicit) {
+        if (Value.isPropositionType(b.fresh.tpe)) proofHoles += idx -> b.fresh.tpe
+        else b.holeId.foreach(id => holeOfVar.update(id, idx))
+      }
     }
+    val proofHolesByType = proofHoles.result()
+    val proofHolesByKey = proofHolesByType.groupBy(_._2.key)
+    val structurallyComparableProofHoles = proofHolesByType.filter(_._2.needsStructuralDefEq)
+    val proofHoleIndexes = proofHolesByType.iterator.map(_._1).toSet
+    var remainingProofHoles = proofHoleIndexes.size
 
     val demoted = mutable.Set.empty[Int]
     val solved = mutable.LinkedHashMap.empty[Int, (Int, Vector[Step])]
@@ -103,6 +112,7 @@ object Projection {
     def solveHole(hole: Int, root: Int, steps: Vector[Step], tpe: Value): Unit =
       if (!isRoot(hole) && !solved.contains(hole)) {
         solved.update(hole, (root, steps))
+        if (proofHoleIndexes(hole)) remainingProofHoles -= 1
         // Saturation: the hole's own declared type is a pattern over earlier implicits,
         // reachable from the projected value by one more Tpe step.
         queue.append((root, steps :+ Step.Tpe, tpe))
@@ -117,7 +127,25 @@ object Projection {
         case StructField(_) => false
       }
 
-    def visit(root: Int, steps: Vector[Step], v: Value): Unit =
+    def visit(root: Int, steps: Vector[Step], v: Value): Unit = {
+      // Proof binders carry no occurrence marker at runtime. Proof irrelevance makes any proof of
+      // the same proposition a valid reconstruction, so a proof-valued position in a later
+      // argument type forces every matching implicit proof binder through that projection path.
+      // This is checker-only analysis; no witness is added to VProof and runtime merely follows
+      // the compiled structural path.
+      if (remainingProofHoles > 0 && Value.isPropositionType(v.tpe)) {
+        // Key-equal propositions cover the ordinary case. Structural propositions (notably Pis)
+        // can be defEq despite different identity-based keys, so retain that narrow fallback.
+        val keyed = proofHolesByKey.getOrElse(v.tpe.key, Vector.empty)
+        val structural =
+          if (v.tpe.needsStructuralDefEq) proofHolesByType
+          else structurallyComparableProofHoles
+        (keyed.iterator ++ structural.iterator).foreach { case (hole, proposition) =>
+          if (!solved.contains(hole) && ValueEquivalence.defEq(proposition, v.tpe))
+            solveHole(hole, root, steps, v.tpe)
+        }
+      }
+
       v match {
         // Level occurrences have one path: single-atom `u + k` (k = 0 included) inverts to u.
         case level: Level =>
@@ -129,7 +157,7 @@ object Projection {
           }
 
         case _ =>
-          holeId(v).flatMap(holeOfVar.get) match {
+          valueHoleId(v).flatMap(holeOfVar.get) match {
             case Some(hole) => solveHole(hole, root, steps, v.tpe)
             case None =>
               v match {
@@ -166,6 +194,7 @@ object Projection {
               }
           }
       }
+    }
 
     def drain(): Unit =
       while (queue.nonEmpty) {
@@ -192,6 +221,7 @@ object Projection {
         rightmostUnforced match {
           case Some(idx) =>
             demoted.add(idx)
+            if (proofHoleIndexes(idx)) remainingProofHoles -= 1
             queue.append((idx, Vector(Step.Tpe), binders(idx).fresh.tpe))
             drain()
           case None => progress = false

@@ -44,23 +44,28 @@ link is a consequence.
 - **Proof irrelevance** (definitional): any two values whose type is a *proposition* are equal.
   A proposition is a type that lives in `Prop`; the sort `Prop` itself is NOT a proposition
   (`Prop : Sort 1`). See §5 "Prop classification" for the hole this distinction fixed.
-  Enforced by *representation*: every value of known-propositional type collapses to the
-  structureless `VProof`, and `defEq(VProof(A), VProof(B)) = defEq(A, B)` (`proof-collapse.md`).
-  Values the witness invariant keeps uncollapsed (refinable metas, unification's shared Pi
-  binders) are covered by the mixed rule `VProof(A) ≡ v ⇔ A ≡ tpe(v)` when `tpe(v)` is a
-  proposition.
+  Conversion applies the uniform proof equation
+  `p ≡ q ⇔ tpe(p) ≡ tpe(q)` to every proof representation, including proof-typed variables. An
+  erased proof is the structureless `VProof(tpe)`. Exact-type canonicalization reconstructs a
+  `VCtor` when the family carries a declaration-checked recipe that succeeds at that proposition,
+  and reconstructs a synthetic eta `VLam` for every proof of a Pi proposition. Checked source
+  proof-lambda bodies are discarded after validation, not rewritten or executed. The stored
+  `InductiveMeta.proofStorage` recipe requires one constructor and every non-Prop stored field to
+  occur directly in the result family arguments (`proof-collapse.md`). Operational structure
+  never changes proof equality, and unification never structurally links or decomposes proofs.
 - **Structure eta** (definitional): a value of an *eta-eligible* struct type equals the
   constructor applied to its projections. Eligibility (`InductiveMeta.etaInfo`, computed by
   InductiveChecks): declared struct, one constructor, no indices, no recursive field, not
-  declared in Prop. Prop instantiations of sort-polymorphic structs are proof-irrelevance
-  territory instead — collapse and expansion split the value space exactly. Enforced by
+  declared in Prop. Prop instantiations of sort-polymorphic structs are proof-representation
+  territory instead — they never eta-expand, and every inhabitant follows `proofStorage` based on
+  its exact proposition. Enforced by
   *representation*, not a conversion rule (`StructEta.scala`): every value of eligible struct
   type is constructor-headed *from creation*. Binders freshen as the constructor of fresh field
   witnesses; neutrals (opaque constants, axioms, blocked applications and matches, recursive-call
   residuals, stuck builtins) wrap into the constructor of their stuck projections at creation.
   Ascription and materialization deliberately do NOT expand: they retype circulating values, and
-  a late wrap would coexist with bare copies — collapse tolerates that split (ProofEquation's
-  mixed rule), expansion has no mixed rule by design. Fieldwise congruence then *is* eta, a match
+  a late wrap would coexist with bare copies — proof irrelevance tolerates mixed erased/retained
+  proof values, while expansion has no analogous mixed rule. Fieldwise congruence then *is* eta, a match
   on a struct scrutinee always fires (binding the branch to the scrutinee's projections), and the
   stuck projection — a `StructField`-headed application, equal by head name + base — is the only
   projection neutral form. The eligibility gate is load-bearing for decidability: "single
@@ -70,7 +75,7 @@ link is a consequence.
   coincidence. Known completeness gap: a value created before its type is a *known* struct
   instance stays bare (rigid binders at then-blocked types, neutrals whose types reveal only
   under a later store); rigid vars additionally cannot be expanded in place — rigid vs. refinable
-  is store-relative, and metas must stay linkable (the same reason `collapseIfProof` exempts
+  is store-relative, and metas must stay linkable (the same reason `canonicalizeProof` exempts
   Vars).
 - **Packed Nat representation** (definitional): every ground bundled-Prelude `Nat` is born as
   `VPacked(NatCodec, payload, Nat)`; `decodeHead` exposes one constructor layer for matching,
@@ -123,7 +128,9 @@ link is a consequence.
   never written and are reconstructed by running the compiled projection specs — at application
   checking and again at residual evaluation (checked `App`s carry only explicit args). Projection
   is a *choice*: the checker re-verifies every argument against its instantiated binder type, so
-  soundness never rests on injectivity of the projected positions. Coherence: runtime argument
+  soundness never rests on injectivity of the projected positions. A proof implicit is recognized
+  checker-side by a proof-valued position of the same proposition; any proof projected there is a
+  valid choice by irrelevance, without storing a witness in `VProof`. Coherence: runtime argument
   binding ascribes args to their binder types exactly as the checker's verification pass does
   (`Interpreter.ascribeArgs`), so run-world projection reads the same shapes the checker read.
 - **Universes are NOT cumulative** (Lean-style): `checkFits` is defEq-only; there is no `sortLeq`
@@ -152,10 +159,11 @@ Every evidence rule in §5 must remain valid under all rows of this table.
 | Axiom / primitive | Status | What it coarsens or breaks |
 |---|---|---|
 | `Quot`, `Quot.mk`, `Quot.lift`, `Quot.ind` + `Quot.sound` | **Present** (builtins + axiom, Lean-style) | `=` at quotient types is coarser than structure: `mk a = mk b` without `a = b`. `Quot.mk` must never carry constructor no-confusion. Canonicity broken (§3). |
-| Proof irrelevance | **Present** (definitional, by representation) | `≡` at propositions is coarser than structure: constructor shape of proofs carries no evidence (inl/inr equal, Exists.intro not witness-injective). Enforced by representation: all proofs collapse to the structureless `VProof` (see `proof-collapse.md`), making the §7.3 exploit class unrepresentable rather than guarded. |
+| Proof irrelevance | **Present** (definitional) | `≡` at propositions is coarser than structure: constructor shape and fields carry no equality evidence (inl/inr equal, `Exists.intro` not witness-injective). The exact proposition chooses one operational form: a declaration-reconstructed `VCtor`, a type-directed eta `VLam` for Pi propositions, or witness-free `VProof(tpe)`. `ProofEquation` compares every proof value through its proposition and intercepts proof constructors before no-confusion (`proof-collapse.md`). |
 | `propext` | **Planned** (Mathlib) | `=` at `Prop` coarser than structure: distinct true propositions become equal (`And T T = Or T T`). Kills: apartness between propositions-as-values, injectivity of Prop-valued family formers in index positions. Audited: §5 rules already exclude these; residual TODO on `noConfusionHead` (index-position decomposition of Prop-sorted family instances). |
 | `funext` | **Planned** (Mathlib) | `=` at function types coarser than intensional structure: extensionally equal, syntactically distinct functions become equal. Kills: any apartness between function values; makes "provable equations between stuck applications" constructible, which is why Invert-mode links under non-invertible frames had to be refused *before* funext lands. |
 | Choice / LEM | **Planned** (Mathlib) | Anti-classical assumptions become inconsistent: notably *injectivity of type formers with large parameters* (Cantor). Family-former injectivity must never be propositional evidence. |
+| Checked Prop induction principles | **Planned** (K6, kernel-generated) | Adds no executable proof recursion: the principle is Pi-shaped and publishes as the canonical proof eta-lambda, which reconstructs only the instantiated conclusion. Its proposition must be derived mechanically from a kernel-checked strictly-positive inductive block—including its logical nested extension—and validated against the export; trusting an exported type would permit arbitrary false theorems. Sort-motive recursive principles such as `Acc.rec` remain K2 because proof metrics are forbidden, independently of constructor reconstruction. |
 | Univalence | **Not planned** | Would kill generativity of Type-valued formers too. If this ever changes, re-audit §5 entirely. |
 
 Trusted derived rules adjacent to this ledger, but not axioms: the reserved-name native Nat
@@ -179,12 +187,12 @@ without inventing values).
 
 | Judgment | Consumer | Required justification | Current implementation |
 |---|---|---|---|
-| **Link** (consequence) | MatchChecker refinement, `allowLargeElimination`, `Interpreter.reduceSubsingletonMatch` (runtime forced-field derivation) | The link is forced when the scrutinee is literally this constructor: definitional invertibility of every enclosing frame. (Choice-mode Solve links — allowed under any frame — were removed with unification-based elaboration and instance search.) | `Ctx.invertibleFrame`; non-invertible: opaque/blocked heads, Pi binder/codomain, thunk captures. Proof-valued applications are unrepresentable (`VProof` has no frames). |
-| **Apartness** (`UnifyFailure.apart`) | MatchChecker pruning (a case may be omitted) | *Propositional* no-confusion must be **derivable**: only a constructor clash of a Type-valued inductive (large elimination constructs the discriminating family). | `VCtor ≠ VCtor` + both `noConfusion`; proof-typed VCtors are unrepresentable (collapsed at creation), and `VProof ~ VProof` reduces to the proposition equation. Family-head clashes (any sort), quotient ctors, occurs-failures, level failures: **stuck**, never apart. |
+| **Link** (consequence) | MatchChecker reachability and branch refinement | The link is forced when the scrutinee is literally this constructor: definitional invertibility of every enclosing frame. (Choice-mode Solve links — allowed under any frame — were removed with unification-based elaboration and instance search.) | `Ctx.invertibleFrame`; non-invertible: opaque/blocked heads, Pi binder/codomain, thunk captures. No evaluator consumes links. |
+| **Apartness** (`UnifyFailure.apart`) | MatchChecker pruning (a case may be omitted) | *Propositional* no-confusion must be **derivable**: only a constructor clash of a Type-valued inductive (large elimination constructs the discriminating family). | `VCtor ≠ VCtor` + both `noConfusion`, after `ProofEquation` has intercepted all proof-typed values. Family-head clashes (any sort), proof equations, quotient ctors, occurs-failures, and level failures are **stuck**, never apart. |
 | **Packed payload apartness** | MatchChecker pruning (a case may be omitted) | Unequal payloads may be refuted only when the closed codec claims L9: their finite decodings reach a constructor clash between derivable no-confusion heads. L3 definitional inequality alone is insufficient under planned funext. | Same-codec `VPacked` values with explicitly unequal payloads and `refutesUnequalPayloads`; Nat claims L9 because unequal unary decodings reach `zero`/`succ`. Equal payloads continue through the type equation; codecs without L9 and packed-vs-neutral comparisons are stuck. |
 | **Stuck** (`apart = false`) | — | Means only "this algorithm cannot solve it". Must never justify pruning or disequality. | MatchChecker treats stuck ctors as reachable-unrefined (`EqStore.empty`). |
-| **Frame invertibility** (failure pass-through & link transparency) | within tryUnify | Definitional injectivity: `≡` of two same-head applications forces component `≡`. True for inductive family formers and data constructors; false for arbitrary functions and the Pi-former. Proofs have no frames to descend (`VProof`). | `definitionallyInjectiveHead`. |
-| **Large elimination permit** | MatchChecker `checkPropElimination` | Prop scrutinee eliminating into non-Prop needs subsingleton criteria: ≤1 reachable ctor and every non-proof field forced by the indices. Motive `Prop`-the-sort counts as large (it is data). | `allowLargeElimination` (unification of two fresh ctor copies). |
+| **Frame invertibility** (failure pass-through & link transparency) | within tryUnify | Definitional injectivity: `≡` of two same-head applications forces component `≡`. True for inductive family formers and data constructors; false for arbitrary functions and the Pi-former. Proof applications are handled by `ProofEquation` before frame decomposition. | `definitionallyInjectiveHead`. |
+| **Large elimination permit** | MatchChecker `checkPropElimination` | A Prop scrutinee may eliminate into non-Prop only when no constructor is reachable or its family carries the declaration-time `Reconstruct` recipe: one constructor and each non-Prop field directly present in the result arguments. Motive `Prop`-the-sort counts as large (it is data). | `InductiveMeta.proofStorage`; `allowLargeElimination` consults metadata plus empty reachability. At runtime the exact proposition either reconstructs an ordinary `VCtor` or remains `VProof`; no unification runs. |
 | **Prop classification** | TypeChecker `checkPi`, `checkPropElimination` | A type is a proposition iff it *lives in* `Prop`; the sort `Prop` never qualifies. | `isPropValuedType = getUniverse(v) == PropTpe`. |
 | **Structural decrease** (recursive call permitted) | TerminationChecker guard (`rawRecursiveSelf`) | The call's metric is strictly below the current one in the well-founded tree order of strictly positive inductive values: reachable by ≥1 constructor-field step, where an application of a function-typed field steps to a child (the field is its node's child-selector; Agda foetus / Coq guard precedent). Assumes values are well-founded trees: strict positivity (InductiveChecks) and no value-level self-capture (recursion requires a decreasing parameter). | `isStrictSubterm`: `VCtor` field descent plus `VApp`-spine stripping that must bottom out at a field (`applicationOfSubterm`); any other head (blocked match, lambda) must be defEq to the field itself. Proof metrics rejected at declaration (`InvalidDecreaseSpec`); axiom/quotient-typed metrics rejected (`requireInductiveMetric`). |
 | **Packed structural decrease** | TerminationChecker guard (`rawRecursiveSelf`) | Codec order L6 is exactly reachability by one or more constructor-field steps on decoded values and is well-founded, so it is the existing structural tree order rather than a new measure. | Same-codec packed metrics compare through `codec.strictlyLess`; Nat uses numeric `<`, which realizes repeated predecessor steps. Payloads are compared directly and never decoded recursively. |
@@ -198,8 +206,9 @@ inductives, type formers, or `Quot.mk`. Planned refactor: evidence grades (`Choi
 MatchChecker decomposes the root family instantiation itself (eliminator-justified) and requests
 only propositional-grade component evidence; the `noConfusion` flag is then derivable and deleted.
 This closes the `TODO(propext)` and makes probe B's type-former injectivity (anti-classical, §4)
-impossible to reintroduce. Sequencing: proof collapse (`proof-collapse.md`) is **done** — the
-proof cases this refactor would otherwise carry are gone.
+impossible to reintroduce. Sequencing: the proof representation policy (`proof-collapse.md`) is
+**done**. The refactor must preserve `ProofEquation`'s interception of reconstructed proof constructors;
+it cannot assume that every proof is physically `VProof`.
 
 ## 6. Interaction checklist
 
@@ -218,8 +227,10 @@ Walk this list before landing any feature that touches equality, universes, or e
 - **× cumulativity**: none — fits are defEq-only (§2). If a feature wants subsumption between
   sorts, that is a theory change, not a local convenience; it re-breaks `.tpe` canonicity and with
   it implicit-projection coherence.
-- **× identity keys**: does it mint values from synthesized/quoted terms? Node-id collisions are an
-  open hole; do not extend key-trusted surfaces.
+- **× identity keys**: does it mint values from synthesized/quoted terms? The collision described
+  in §7.7 is fixed, but the surviving discipline is load-bearing: every fabricated Pi/Lam/Match
+  receives a fresh `AstNodeId.synthetic()`; do not extend key-trusted surfaces without preserving
+  it.
 - **× termination order**: does the feature introduce values that are not well-founded trees —
   laziness, corecursion, value-level self-capture, weakened positivity? The structural-decrease
   judgment (§5) descends constructor fields *and applications of function-typed fields*; both
@@ -251,10 +262,11 @@ the probe into a must-reject test — is the standard procedure for anything on 
    projection positions).
 3. **Proof-constructor apartness vs irrelevance** (fixed): `Eq(Or(p,p), inl hp, inr hq)` is provable
    by irrelevance, yet reachability pruned refl on the inl/inr clash (irrelevance is gated off when
-   the proofs are refinable) — axiom-free `False`. → originally proofs excluded from apartness and
-   invertible decomposition (`isProofValue`); now unrepresentable — proof constructor applications
-   collapse to `VProof` at creation (`proof-collapse.md`). Test: ConsistencyTests ("Constructor
-   apartness does not apply to proofs").
+   the proofs are refinable) — axiom-free `False`. → `ProofEquation` now intercepts every proof
+   representation before constructor apartness or invertible decomposition. Non-certified proofs
+   erase to `VProof`; certified singleton constructors may remain operational but still provide no
+   equality evidence (`proof-collapse.md`). Test: ConsistencyTests ("Constructor apartness does
+   not apply to proofs").
 4. **Prop-sort conflation** (fixed): `isPropValuedType` counted the sort `Prop` as a proposition, so
    `(n: Nat) -> Prop : Prop`, predicates became proof-irrelevant, and `Eq.mp ∘ congrFunP` derived
    `False`; the same conflation permitted large elimination with motive `Prop`. → §2 universe rules.

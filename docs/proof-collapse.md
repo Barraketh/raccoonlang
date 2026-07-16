@@ -1,200 +1,313 @@
-# Collapsed Proofs (`VProof`) — Design Spec
+# Canonical Proof Representation
 
-Status: **implemented** (see §10 for deviations chosen during implementation). Companion to
-`kernel-theory.md` (amends §2's proof irrelevance entry and deletes several §5 side-conditions).
+Status: **implemented** (2026-07-15). Companion to `kernel-theory.md` and
+`mathlib-export-port.md`.
 
-## 1. Motivation
+## 1. Decision
 
-Proof irrelevance is currently a *semantic side-condition* scattered through the algorithms:
-`proofIrrelevant` in defEq, the `canUseProofIrrelevance` gate in tryUnify, `isProofValue` exclusions
-in apartness and frame invertibility. Each of those is a place where an algorithm holds structured
-proof values and must remember not to read their structure — and forgetting was a derived-`False`
-(kernel-theory §7.3).
+Proof irrelevance requires more than making all proofs definitionally equal. Evaluation must also
+be congruent with that equality: two equal proofs cannot expose different computations merely
+because one arrived as a constructor and the other as an axiom or neutral.
 
-This spec replaces the side-condition with a *representation invariant*: proofs have no structure to
-read. A single value form represents every proof, so irrelevance violations become unrepresentable
-rather than guarded against. This is Agda's `Prop` design (structureless, definitionally irrelevant
-proofs) rather than Lean's (structured proofs + irrelevance in the conversion checker); this kernel
-already chose definitional irrelevance, and collapse is its consistent endpoint.
+Raccoon therefore chooses a proof's runtime representation solely from its exact proposition. It
+keeps everything that the proposition itself reconstructs and erases everything else:
 
-## 2. The value form
+1. If a declaration-certified constructor can be reconstructed at the exact proposition, the
+   canonical value is that `VCtor`.
+2. If the proposition is a Pi, the canonical value is a synthetic eta `VLam`. Applying it
+   reconstructs the canonical proof of the instantiated codomain.
+3. Otherwise the canonical value is the structureless `VProof(proposition)`.
+
+For example, every inhabitant of `Eq(Nat, Nat.zero, Nat.zero)` is represented as
+`Eq.refl(Nat.zero)`, including an axiom. An inhabitant of `Eq(Type, Nat, Bool)` remains `VProof`:
+the exact type does not determine a valid `refl` constructor.
+
+This is canonicalization, not proof search. The inductive checker compiles a finite reconstruction
+recipe into family metadata. Runtime executes that recipe and validates its result; it never runs
+unification, searches constructors, or solves indices.
+
+## 2. Declaration-time constructor recipes
+
+The relevant metadata is:
 
 ```scala
-case class VProof(tpe: Value) extends Value
+sealed trait ProofStorage
+object ProofStorage {
+  case object Erase extends ProofStorage
+  final case class Reconstruct(info: ProofConstructorInfo) extends ProofStorage
+}
+
+sealed trait ProofFieldRecipe
+object ProofFieldRecipe {
+  final case class ResultArgument(index: Int) extends ProofFieldRecipe
+  case object ErasedProof extends ProofFieldRecipe
+}
 ```
 
-- **Well-formedness**: `tpe` is a proposition (`tpe` lives in `Prop`; the sort `Prop` itself never
-  qualifies — kernel-theory §2).
-- **Equality**: `defEq(VProof(A), VProof(B)) = defEq(A, B)`. This *is* proof irrelevance; the
-  `proofIrrelevant` special case in DefEq is deleted.
-- **`synDeps`** = `tpe.synDeps`. Proof interiors contribute no dependencies (see §7).
-- **`key`** = fresh tag mixed with `tpe.key`. All proofs of defEq propositions share a key.
-- **Never a `Blocker`**: matches on proofs do not block-and-resume (see §5).
+`Reconstruct` is recorded exactly when:
 
-## 3. The two invariants
+1. the family's declared result universe may reduce to `Prop` (its level is not provably positive);
+2. the family has one constructor; and
+3. every stored constructor field is either:
+   - known to be Prop-valued, producing `ErasedProof`; or
+   - definitionally equal to a direct argument of the constructor's result-family application,
+     producing `ResultArgument(index)`.
 
-**(A) Collapse invariant** — *every value whose type is known to be a proposition is a `VProof`.*
-"Known" is load-bearing: in a universe-polymorphic body, `x : A` with `A : Sort(u)` for generic `u`
-is not known to be a proof and remains an ordinary value — which is *correct*, because irrelevance
-does not hold at generic `u`. Collapse happens exactly when knowledge arrives (§4).
+Leading family parameters are not stored fields. A fixed positive-universe family can never have a
+Prop instance, so it records `Erase` without retaining a dead reconstruction recipe. A field that
+is not known to be Prop-valued at a generic universe is conservatively treated as data and must
+occur directly in the result.
 
-**(B) Witness invariant** — *`VProof(A)` is only ever created from an existing inhabitant of `A`.*
-Collapse is erasure, never creation. In particular, `freshMetaValue`/placeholder creation for a
-proof-typed implicit binder must produce an ordinary refinable `Var`, NOT a `VProof` — otherwise the
-proof obligation silently vanishes. The meta becomes a `VProof` only by being linked to one.
+This is intentionally the simple singleton rule:
 
-Invariant (A) is asserted at the env chokepoints `Env.putLocal`/`putGlobal` as "the value is a
-fixed point of `collapseIfProof`" — the exemption list (refinable metas, constructor heads, the
-raw-recursive self lambda) thereby lives only in the collapse helper itself; invariant (B) is
-enforced by construction (the introduction rules below are the only producers).
+| Family shape | Metadata | Reason |
+|---|---|---|
+| `Eq.refl (x : A) : Eq A x x` | reconstruct | `x` occurs directly in the result |
+| `True.intro : True` | reconstruct | one constructor, no fields |
+| `And.intro (p : P) (q : Q)` | reconstruct | both fields are proofs |
+| `Idx.intro (y : A) : Idx y` | reconstruct | `y` is a direct result argument |
+| `Exists.intro (w : A) (h : P w)` | erase | the data witness is not in the result |
+| `Nonempty.intro (w : A)` | erase | the data witness is unforced |
+| `Or.inl` / `Or.inr` | erase | more than one constructor |
+| `Wrapped.intro (n : Nat) : Wrapped (Nat.succ n)` | erase | `n` occurs only under `Nat.succ` |
 
-## 4. Introduction (collapse) points
+Empty propositions use `Erase`; empty large elimination is justified separately by reachability.
+The metadata may be computed for a family declared in `Sort u`, but affects only instances that
+are actually known to live in `Prop`.
 
-Each rule names its witness, discharging invariant (B):
+## 3. Exact-type reconstruction
 
-| Site | Witness |
-|---|---|
-| Constructor application whose result type is a proposition (`evalApply` VCtor case) | the application itself |
-| Binder freshening when the binder type is a proposition (`BinderOps.freshenBinder`, match branch args for proof fields) | the bound hypothesis |
-| Global publication of an axiom / def / opaque def of propositional type | the constant |
-| `materialize` / `ascribe` when a value's type *resolves* to a proposition (deferred collapse after level/type metas solve, e.g. `u := 0`) | the value being collapsed |
-| Match evaluation with a Prop motive (§5) | the match term (its branches were checked) |
+`ProofReconstruction.reconstruct(P)` interprets the recorded recipe at an exact proposition `P`:
 
-Non-producers, deliberately: fresh metas, placeholders, unification.
+1. Read the family parameters from the family instance in `P`.
+2. Instantiate the constructor telescope from left to right.
+3. For each data field, copy its recorded result argument.
+4. For each proof field, construct a shallow `VProof` at its instantiated binder type.
+5. Check each argument against its binder type and check that the instantiated constructor result
+   is definitionally equal to `P`.
 
-## 5. Elimination (matches on proofs)
+Any failed check means that the constructor is not reconstructible at that exact type. There is no
+fallback search.
 
-Evaluation currently reads stored constructor fields of proof values; collapse removes them, so the
-three elimination shapes are handled separately:
+For `Eq.refl`, the recipe copies the first endpoint into the stored `x` field. Instantiating its
+result gives `Eq(A, x, x)`. Thus:
 
-- **Motive in Prop** (small elimination): every branch returns a proof of the same proposition, so
-  evaluation returns `VProof(motive)` immediately — no branch selection, no thunk. (Type checking
-  still checks every reachable branch, unchanged.)
-- **Subsingleton large elimination** (motive in Type, ≤1 reachable ctor, fields forced): the
-  forced-field mapping that `allowLargeElimination` already computes at check time is **recorded in
-  the residual** (per-case bindings of pattern vars to index-derived terms). Evaluation reduces only
-  when the scrutinee type's indices are definitionally diagonal (a runtime defEq check — the
-  analogue of "Eq.rec reduces only on refl"); otherwise the match is stuck. Reducing on non-diagonal
-  indices would produce a value at the wrong type; this must never be relaxed.
-- **Empty elimination** (no reachable ctors): always stuck on a `VProof` scrutinee (an unblockable
-  `NeutralThunk`), same as today's axiom-stuck behavior.
+```text
+reconstruct(Eq(Nat, zero, zero)) = Eq.refl(zero)
+reconstruct(Eq(Type, Nat, Bool)) = failure
+```
 
-Check-time simplifications that fall out: the value probe in `computeReachableCtors` degenerates to
-the type probe for Prop scrutinees (a Prop `ctorValue` is itself a `VProof`); the literal-VCtor
-scrutinee fast path in `checkMatch` no longer arises for proofs.
+Repeated or constant indices are therefore constraints checked by ordinary conversion, not
+unknowns solved by runtime unification.
 
-**Application of proof-valued functions**: by impredicativity, `(a: A) -> P` with `P` a proposition
-is itself a proposition, so functions returning proofs collapse too. `evalApply` gains a `VProof`
-case: applying `VProof(pi)` returns `VProof(pi.codomain(args))`. (Quot.lift's `sound` argument is
-such a value; `lift` never inspects it.)
+Proof fields are deliberately shallow. For a recursive proposition such as:
 
-## 6. What gets deleted
+```raccoon
+inductive Loop : Prop
+  | mk (next : Loop) : Loop
+```
 
-- `DefEq.proofIrrelevant` and the `propIrrelevant` flag threading (defEq's signature loses the
-  parameter).
-- The `canUseProofIrrelevance` gate in `tryUnify` — `VProof(A) ~ VProof(B)` simply unifies the
-  types, so the solve-vs-shortcut tension disappears.
-- `isProofValue` guards in apartness and frame invertibility (proofs have no heads to clash and no
-  frames to descend).
-- The Prop-scrutinee blocking/unblocking machinery in match evaluation for Prop motives.
+canonicalizing a `Loop` produces one `Loop.mk(VProof(Loop))` layer. Binding `next` in a match
+canonicalizes that exposed field and produces the next layer. This permits any finite observation
+without constructing an infinite value eagerly.
 
-kernel-theory §7.3's exploit class becomes unrepresentable rather than guarded.
+The recipe's constructor head is temporarily unavailable while that constructor is itself being
+installed. Reconstruction simply declines during this interval and becomes available when the
+declaration completes its small constructor-head promise; family metadata retains no environment
+snapshot for this lookup.
 
-## 7. Consequences to accept (decide before implementing)
+## 4. Canonical proof functions
 
-1. **Structural recursion on proofs is removed.** `decreases structural(p)` on a Prop-typed argument
-   currently inspects proof structure (TerminationTests pins only that irrelevance can't fake a
-   decrease). Under collapse, proofs have no subterms; reject the declaration with
-   `InvalidDecreaseSpec`. This is a semantic improvement — "structurally smaller" is ill-defined up
-   to an equality that identifies `wrap x` with `base` — and well-founded recursion (`Acc`, needed
-   for Mathlib) requires a dedicated mechanism in any case (cf. Lean's special-cased `Acc.rec`).
-2. **Proof interiors vanish from `synDeps`.** A witness inside an `Exists` proof no longer
-   contributes dependencies. Semantically fine (the interior can never matter), but escape/watermark
-   checks lose visibility into proofs, and quoting changes (next item). Audit
-   `canQuoteFromContext`, `newSolutionDependsOnFreshVar` during implementation.
-3. **Quoting.** A `VProof(A)` has no syntax of its own. Since all proofs of `A` share a key, the
-   quote map resolves it to *any in-scope proof term of `A`* — for locals this works today via the
-   key-indexed quote context. Open question (§9): globals — either index global proof constants in
-   the quote context, or carry an erased witness term on `VProof` (excluded from equality/key,
-   used only for quoting and diagnostics).
-4. **Diagnostics**: proofs print as `‹proof of A›`; error messages lose proof structure.
+A Pi whose codomain is Prop-valued is itself a proposition. Every proof of such a Pi canonicalizes
+to an actual `VLam(_, _, LamBody.ProofEta)`, whether it originated as a source lambda, an axiom, an
+opaque constant, or `VProof(Pi)`.
 
-## 8. Implementation plan
+The source body is still fully checked, including termination checking. It is discarded only after
+validation; the checked residual syntax is not rewritten. Applying the canonical eta-lambda:
 
-- **Phase 1 (dual-running)**: add `VProof` + defEq/key/synDeps; collapse at constructor application,
-  global publication, and binder freshening; keep the existing irrelevance paths and *assert
-  agreement* wherever both apply. All 287 tests must stay green.
-- **Phase 2 (elimination)**: Prop-motive fast path; forced-field recording in the residual +
-  diagonal-check reduction for subsingleton elimination; empty-elim stuckness. This is the bulk of
-  the work (MatchChecker, ElabAst.Case, Interpreter.evalMatch).
-- **Phase 3 (cutover)**: deferred collapse in `materialize`/`ascribe`; delete the §6 list; reject
-  structural decrease on proofs; quoting strategy.
-- **New tests**: implicit proof-typed metas are NOT auto-discharged (witness invariant — a program
-  needing an unprovided proof must still fail); generic-`u` bodies compare uncollapsed values
-  correctly; casts along axiom-stuck proofs stay stuck; existing ConsistencyTests and irrelevance
-  tests unchanged in outcome.
+1. checks/ascribes its arguments against the Pi telescope;
+2. evaluates the instantiated codomain type; and
+3. canonicalizes a proof of that codomain by the same rules in this document.
 
-## 9. Open questions
+Consequently a result such as `Eq(Nat, n, n)` becomes `Eq.refl(n)`, a nested proof Pi becomes
+another eta-lambda, and a non-reconstructible proposition becomes `VProof`. The original theorem
+body never executes at runtime.
 
-- **Global witness for quoting** (§7.3): erased-witness field vs. quote-context indexing of global
-  proof constants. Recommendation: erased witness field (`witness: () => ElabAst.Term`, excluded
-  from `equals`/`key`), because it also serves diagnostics and avoids growing the quote context.
-  *Resolved: erased witness field, carried as a lazy `Value` rather than a term — see §10.*
-- **Ordering vs. the evidence-grades refactor** (kernel-theory §5 design debt): collapse first —
-  it deletes the proof cases the evidence refactor would otherwise have to carry.
-- **`Acc` / well-founded recursion**: out of scope here; requires its own spec when Mathlib porting
-  reaches it. Collapse makes the need explicit rather than creating it.
+This removes the former checker-time proof-body rewriting pass. There is no special evaluator rule
+that treats `VProof(Pi)` as an applicable neutral; canonical values of Pi propositions are ordinary
+`VLam`s.
 
-## 10. Implementation notes (deviations and additions)
+## 5. Canonical erased values and quotation
 
-Implemented in one pass (no dual-running phase); the suite in
-`src/test/scala/com/raccoonlang/ProofCollapseTests.scala` pins the §8 new-test list. Deviations
-from the letter of this spec, none from its semantics:
+`VProof` contains only its proposition. It carries no erased witness, local variable, or original
+body. Quotation is canonical:
 
-- **Witness is a lazy `Value`, not a term** (§9): `VProof(tpe)(witness: () => Value)`, excluded
-  from `equals`/`hashCode`/`key`/`synDeps`. Quoting a `VProof` first hits the key-indexed quote
-  context (locals), then quotes the witness value; global publication uses
-  `VConst(name)` as the witness so globals quote as their own name. Materialization rebuilds the
-  witness thunk under the same store, so a materialized proof may wrap a witness that is itself a
-  `VProof`; quoting unwraps recursively.
-- **Subsingleton elimination re-derives the forced fields at evaluation time** instead of
-  recording them in the residual: `Interpreter.reduceSubsingletonMatch` unifies the single
-  constructor's result type against the runtime scrutinee type with only the constructor's fresh
-  unknowns refinable. Unifier links are forced (unique), so this computes the same mapping
-  `allowLargeElimination` validated at check time; unification succeeding with every non-proof
-  field solved *is* the diagonal check. No quoting fragility, no new residual shape.
-- **Lambdas collapse too**: a `VLam` whose Pi is classified in `Prop` is a proof of the
-  implication and collapses at `evalLam` (§4's table omitted this producer; without it, proof
-  lambdas stored as constructor fields would have kept readable structure). Consequently
-  `evalApply` on a `VProof` of Pi type yields `VProof(codomain)` directly, and collapsed
-  proof-lemma globals never run their bodies.
-- **Two deliberate non-collapse sites** beyond metas/placeholders:
-  the raw-recursive self lambda (its native body enforces the decrease check; hiding it inside a
-  `VProof` would disable termination checking for recursive proofs — its call *results* do
-  collapse), and the shared fresh vars minted inside `Unify.tryUnifyPis` (a collapsed hypothesis
-  drops its var id from `synDeps`, which would blind `newSolutionDependsOnFreshVar` to a
-  hypothesis escaping its binder scope — the exact watermark hole §7.2 told us to audit).
-- **A mixed irrelevance rule remains in defEq** for exactly those uncollapsed representatives:
-  `VProof(A) ≡ v` when `v`'s type is a proposition defEq to `A` (and the unify analogue). This is
-  not a resurrected side-condition — it is the VProof equality rule extended to the values the
-  witness invariant deliberately keeps uncollapsed.
-- **InstanceSearch guard** (witness invariant, historical): while instance search existed, a
-  freshened proof-typed binder of a candidate was a `VProof` placeholder whose emptiness `synDeps`
-  no longer revealed; passing it through would have derived an instance from an unproven premise,
-  so such candidates failed. Instance search has since been removed (the Mathlib export arrives
-  with instances resolved), but the lesson stands for any future search-like machinery: a `VProof`
-  placeholder is not evidence.
-- **Positivity traversal** gained `VProof` cases: occurrences are checked in the proposition
-  (the interior is erased); proof values embedded in types are held to the strict
-  "does not occur" standard even in positive argument slots.
-- **Reduction got stronger, soundly**: a *stuck* proof of `Eq(A, a, b)` with `a ≡ b` now reduces
-  subsingleton matches (irrelevance makes it definitionally `refl`), where the old evaluator
-  blocked on the proof's variable. Pinned by "subsingleton elimination reduces on definitionally
-  diagonal indices"; the non-diagonal case stays stuck ("casts along axiom-stuck proofs stay
-  stuck").
-- **Semantics changes visible in tests**: matches on literal proof constructors no longer select
-  a branch (all reachable cases required); `Quot.ind`/`Quot.inductionOn` collapse (their motive is
-  in Prop) so they never reduce structurally; `Quot.lift` on a `Prop`-level quotient (`u := 0`) is
-  stuck — the representative is erased, and any future need here is a completeness question, not
-  soundness. Structural decrease on a proof argument is now `InvalidDecreaseSpec` at declaration
-  (§7.1).
+```text
+quote(VProof(P)) = proof(quote(P))
+```
+
+`proof(P)` is a residual-only `ElabAst` intrinsic of type `P`. It is absent from source `CoreAst`,
+so source programs cannot use erasure to synthesize an obligation. Evaluating it constructs a
+proof and immediately canonicalizes by exact type; a quoted `proof(Pi)` therefore evaluates to the
+canonical eta-lambda rather than preserving `VProof(Pi)`.
+
+Refinable metas remain `Var`s. Erasing a placeholder would silently discharge an unsolved proof
+obligation. A rigid proof binder is canonicalized only after binder checking establishes that an
+inhabitant is in scope. Constructor heads and raw recursive checker lambdas are also temporarily
+exempt because they must remain applicable; the validated result later crosses the ordinary
+canonicalization boundary.
+
+Forced-implicit compilation needs no exception to this representation. When a later explicit
+argument type contains a proof-valued position of the implicit binder's proposition, the checker
+records the structural projection path to that position. At a call, any proof recovered there is
+a valid argument by proof irrelevance. No proof identity or witness is stored in `VProof`.
+
+## 6. Proof irrelevance and conversion
+
+Representation does not define proof equality. The conversion rule remains uniform:
+
+```text
+p : P, q : Q, P and Q propositions
+-----------------------------------
+p ≡ q  iff  P ≡ Q
+```
+
+Therefore proof constructor fields provide neither injectivity nor apartness; different proof
+constructors of the same proposition are equal; and unification compares proofs only through
+their propositions. Canonicalization adds operational congruence: equal proof values at the same
+exact type also expose the same reconstructible outer form.
+
+The latter property is what fixes the bad split:
+
+```text
+p ≡ q by proof irrelevance
+match Eq.refl ... computes
+match erasedProof ... stays stuck
+```
+
+If the exact proposition reconstructs `Eq.refl`, both values are now `Eq.refl`. If it does not,
+both are `VProof`.
+
+## 7. Elimination
+
+### 7.1 Check time
+
+A match from a proposition into a non-Prop motive is accepted when either:
+
+- no constructor is reachable at the scrutinee type; or
+- the family carries a `Reconstruct` certificate.
+
+Reachability may use checker unification to establish impossible indexed cases and refine branch
+types. That is separate from runtime representation and never upgrades an `Erase` family.
+
+A Prop-valued motive is ordinary small elimination and remains available for every proposition.
+
+### 7.2 Evaluation
+
+Evaluation sees canonical values:
+
+- a reconstructed `VCtor` selects its ordinary constructor branch;
+- a non-reconstructible `VProof` immediately produces a canonical proof for a Prop-valued result,
+  and leaves a data-valued match stuck;
+- binding a stored proof field at a branch boundary canonicalizes one exposed layer.
+
+For example:
+
+```raccoon
+axiom zeroEq : Eq(Nat, Nat.zero, Nat.zero)
+axiom natIsBool : Eq(Type, Nat, Bool)
+
+def diagonal : Bool :=
+  Eq.subst(zeroEq, Level.one, fun (_ : Nat): Type => Bool, Bool.true)
+
+def impossibleCast : Bool :=
+  Eq.subst(natIsBool, Level.one, fun (A : Type): Type => A, Nat.zero)
+```
+
+`diagonal` reduces to `Bool.true`, because `zeroEq` canonicalizes to `Eq.refl(Nat.zero)`.
+`impossibleCast` stays stuck, because the type cannot reconstruct `refl`.
+
+No interpreter path invokes `tryUnify`.
+
+## 8. Interaction with recursion and polymorphism
+
+Structural and measure recursion still reject proof-valued metrics. Canonical constructor form is
+not termination evidence, and proof constructor structure never participates in the strict
+subterm relation.
+
+The canonical eta-lambda is particularly important for the Abel–Coquand loop: after its source
+body is checked, applications compute only the instantiated proposition and its canonical proof.
+They never re-enter the discarded self-referential proof computation.
+
+For a `Sort u` family, the declaration certificate is universe-independent and conservative. At a
+non-Prop instance it has no effect. Once an instance is known to live in `Prop`, exact-type
+canonicalization applies uniformly to constructors, neutrals, axioms, and functions. Generic code
+does not gain a runtime unification rule after level substitution.
+
+Generated K6 Prop induction principles are bodiless proofs of Pi propositions. Publication turns
+them into canonical eta-lambdas; applying one produces the canonical proof of its instantiated
+conclusion without executing proof recursion.
+
+## 9. Consequences
+
+- An explicit `Eq.refl` and an axiom at the same diagonal equality have the same `VCtor` form.
+- Equality elimination computes on both diagonal values and stays stuck on non-diagonal axioms.
+- Proof functions have one type-directed `VLam` form and never execute their checked source bodies.
+- `And`, `True`, `Eq`, and directly indexed one-constructor propositions reconstruct constructors.
+- `Exists`, `Nonempty`, `Or`, and similar propositions retain no constructor data.
+- A Prop-level `Quot` instance erases its representative, so data-valued `Quot.lift` remains stuck;
+  this is a known completeness question for the Mathlib port.
+- Proof irrelevance remains definitional for every representation.
+- The evaluator performs only recorded reconstruction and conversion checks, never unification.
+
+The implementation is pinned by `ProofCollapseTests`, the Prop large-elimination tests, the
+constructor-apartness consistency probes, the Abel–Coquand regression, and the full kernel suite.
+
+## 10. Possible extensions
+
+These are deliberately not part of the current rule.
+
+### 10.1 Pairwise overlap analysis
+
+A more permissive declaration-time certificate could use this rule:
+
+> For every pair of constructor instances whose result types can coincide, the constructors have
+> the same identity and every non-Prop field is forced equal by the common result type.
+
+This could support injectively nested indices such as
+`Wrapped.intro n : Wrapped (Nat.succ n)` and disjoint indexed constructors such as
+`zeroCase : Shape zero` / `succCase n : Shape (succ n)`. It would still produce a finite recorded
+recipe and would not restore interpreter-time unification.
+
+Mathlib has proposition shapes where this could shorten Raccoon-side bridges, including indexed
+relations such as `List.IsChain` and `Sum.LiftRel`. It is not required for faithful translation:
+Lean does not grant general Sort elimination to arbitrary multi-constructor propositions.
+
+The cost is a substantially more complex trusted certificate: declaration checking must compare
+fresh constructor pairs, distinguish apart from stuck failures, prove field correspondence, handle
+mutual blocks, and preserve the result through universe substitution.
+
+### 10.2 Partial data-field erasure
+
+Another extension would introduce a typed `Erased(T)` field value. A one-constructor proposition
+could then retain its constructor and forced fields while replacing only unforced data fields.
+That could permit constant data eliminations that do not inspect those fields, but still could not
+extract an `Exists` or `Nonempty` witness.
+
+Soundness requires an explicit relevance discipline: branch checking must prevent erased fields
+from flowing into data results; dependent later field types must remain meaningful; and quotation,
+materialization, projections, native values, and unification must all understand field relevance.
+The expected program payoff is modest, so this should be designed as a general relevance system
+rather than a local evaluator exception.
+
+## 11. Non-negotiable invariants for extensions
+
+Any future relaxation must preserve all of the following:
+
+1. Reconstruction decisions and recipes are produced at inductive checking time.
+2. The evaluator never invokes unification or searches for proof constructors.
+3. A proof's canonical outer representation depends only on its exact proposition.
+4. Proof constructor structure never provides apartness, injectivity, or termination evidence.
+5. Proof irrelevance never manufactures source obligations; `proof(P)` is residual-only.
+6. Recursive proof fields are exposed finitely rather than expanded into infinite values.
+7. Generic-universe code cannot gain unchecked proof-driven data reduction at `u := 0`.

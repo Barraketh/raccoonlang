@@ -96,9 +96,9 @@ private object Builtins {
     q match {
       case QuotientMk(rep) => Interpreter.evalApply(f, Vector(rep))
       case Blocker(blockerId) =>
-        StructEta.expandIfStruct(Value.collapseIfProof(VBlockedApp(self, args, resultTy, blockerId)))
+        StructEta.expandIfStruct(Value.canonicalizeProof(VBlockedApp(self, args, resultTy, blockerId)))
       case _ =>
-        StructEta.expandIfStruct(Value.collapseIfProof(VApp(VConst(LiftName, Symbol, selfType), args, resultTy)))
+        StructEta.expandIfStruct(Value.canonicalizeProof(VApp(VConst(LiftName, Symbol, selfType), args, resultTy)))
     }
   }
 
@@ -111,9 +111,9 @@ private object Builtins {
     q match {
       case QuotientMk(rep) => Interpreter.evalApply(mkCase, Vector(rep))
       case Blocker(blockerId) =>
-        StructEta.expandIfStruct(Value.collapseIfProof(VBlockedApp(self, args, resultTy, blockerId)))
+        StructEta.expandIfStruct(Value.canonicalizeProof(VBlockedApp(self, args, resultTy, blockerId)))
       case _ =>
-        StructEta.expandIfStruct(Value.collapseIfProof(VApp(VConst(IndName, Symbol, selfType), args, resultTy)))
+        StructEta.expandIfStruct(Value.canonicalizeProof(VApp(VConst(IndName, Symbol, selfType), args, resultTy)))
     }
   }
 

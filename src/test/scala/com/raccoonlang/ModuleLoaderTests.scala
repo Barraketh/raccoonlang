@@ -84,11 +84,9 @@ class ModuleLoaderTests extends munit.FunSuite {
         |""".stripMargin
     )
 
-    // Proofs collapse: the Eq.refl application evaluates to a structureless proof of Eq.
     run(entry) match {
-      case p: Value.VProof =>
-        assertEquals(TypeChecker.inductiveFamilyOf(p.tpe).map(_.head.name), Some("Eq"))
-      case other => fail(s"Expected a collapsed proof of an Eq proposition, got $other")
+      case Value.VCtor(head, _, _) => assertEquals(head.name, "Eq.refl")
+      case other                   => fail(s"Expected a retained Eq.refl constructor, got $other")
     }
   }
 

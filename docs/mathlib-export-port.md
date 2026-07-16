@@ -22,19 +22,22 @@ undecidable through exactly two rules, both instances of "an irrelevant term dri
    impredicative Prop and propext yields a closed term with no whnf (Abel–Coquand,
    arXiv:1911.08174).
 
-Both channels are already closed here: there is no recursion through proofs (collapsed proofs have
-no subterms; `Acc` will be sealed, §4.K2), and collapse erases proof-level reduction entirely, so
-the Abel–Coquand term collapses to a `VProof` before it can step (its every subterm is
-impredicatively in Prop). The export's references to the poison rules get **primitivized or
-patched, never implemented**. Mathlib fits in the complement empirically: since Lean 4.9
+Both channels are already closed here: proof-valued metrics are forbidden (`Acc` will be sealed,
+§4.K2), and proof structure is reconstructed only from declaration-certified exact-type recipes.
+The evaluator never runs unification or a K-like diagonal rule. For the Abel–Coquand term, every
+checked proof of a Pi canonicalizes to a type-directed eta-lambda whose application reconstructs
+only the instantiated result proposition; the original proof body never executes. The export's references to the
+poison rules get **primitivized or patched, never implemented**. Mathlib fits in the complement empirically: since Lean 4.9
 (leanprover/lean4#4061) well-founded definitions are irreducible by default and Mathlib proves
 through equation lemmas, and kernel arithmetic runs on native literals, not `Nat.rec` unfolding.
 
 Invariants the whole plan must preserve (kernel-theory §5–§6):
 
-- Collapsed proofs never drive unfolding; no fixpoint ever recurses through a proof.
-- `VProof` witnesses never flow into evaluation or conversion (quoting/diagnostics only).
-- Reduction gates are type-level only (the diagonal rule); never gate on proof structure.
+- No fixpoint ever recurses through a proof-valued metric.
+- `VProof` contains only its proposition and quotes canonically as `proof(A)`; no erased witness
+  exists to flow into evaluation, conversion, or diagnostics.
+- Proof constructor reconstruction is certified at inductive checking time; the exact proposition
+  supplies every retained field, and the interpreter never invokes unification.
 
 ## 2. Input format
 
@@ -69,15 +72,15 @@ as strict subterms (`TerminationChecker.applicationOfSubterm`; kernel-theory §5
 item). This makes translator-synthesized recursors definable for infinitary inductives (`WType`,
 `PGame`).
 
-**K2. Sealed `Acc`/`WellFounded` cluster.** Needs its own spec (`wf-recursion.md`), but the shape
-is forced: collapse erases `Acc.intro` heads, so ctor-gated unfolding (Coq/Lean style) is
-inexpressible, and the diagonal subsingleton rule must never apply to a recursive singleton (for
-`Acc` it would fire unconditionally — its only field is a proof and its index forces nothing).
+**K2. Sealed `Acc`/`WellFounded` cluster.** Needs its own spec (`wf-recursion.md`). The
+declaration-time singleton policy may retain an actual `Acc.intro`, so a literal value can take one
+ordinary match step. That does not define `Acc.rec`: accessibility hypotheses are erased neutral
+proofs, and proof-valued metrics are rejected, so no fixpoint can recurse through the child proof.
 Design: a primitive constant with the Sort-motive `Acc.rec` type that **never unfolds
 definitionally**, plus its unfolding equation as a primitive *propositional* lemma (model-justified
 by well-founded induction; same trust genre as `Quot.sound`). Prop-motive `Acc.rec` is ordinary
 small elimination via match — already supported. Ledger obligations: an axiom-table row (§4) for
-the primitive equation; the §1 invariant "no definitional recursion through collapsed proofs"
+the primitive equation; the §1 invariant "no definitional recursion through proof metrics"
 stated as case law. Cost accepted: WF-defined functions do not compute by defeq — identical to
 post-4.9 Lean practice (equation lemmas; native ops cover `Nat.div`-class literals).
 
@@ -97,9 +100,11 @@ type (one ctor, no indices, non-recursive, non-Prop instance) is constructor-hea
 freshen expanded; neutrals — opaque constants, axioms, blocked applications/matches, stuck
 `Quot.lift/ind` — wrap into the constructor of their stuck projections (`StructField`-headed
 applications, defEq by head name + base). Eta is then fieldwise congruence, matches on struct
-scrutinees always fire, and the flagged interaction resolved itself: proof fields collapse at
-projection formation, so `⟨s.val, s.property⟩ ≡ s` lands in `VProof` equality; Prop
-*instantiations* of sort-polymorphic structs collapse wholesale and never expand. Notable
+scrutinees always fire, and the flagged interaction resolved itself: proof fields follow the proof
+representation policy at projection formation, and proof irrelevance equates reconstructed and erased
+forms in `⟨s.val, s.property⟩ ≡ s`. Prop *instantiations* of sort-polymorphic structs never
+eta-expand; every inhabitant follows `proofStorage`, and layouts with unforced
+fields such as `PairU` erase wholesale. Notable
 consequences: opaque-by-default (P1) stays eta-compatible — an opaque instance constant gets eta
 without unfolding its body — and projections of opaque constants are transparent to positivity
 (previously rejected conservatively). Translator note for T1: `proj i` nodes map to `Select` /
@@ -115,24 +120,32 @@ kernel-theory §2), and expansion cost on deep bundled-class hierarchies is a P1
 the conditional form otherwise; substitution recursively re-normalizes it. Pi classifiers now
 right-fold `imax` over the domains and codomain, matching Lean's telescope rule, so an open
 polymorphic Pi retains the conditional universe and a later Prop instantiation reduces to `Prop`
-and triggers proof collapse. Keys, quotation,
+and triggers the proof representation policy. Keys, quotation,
 Prelude builtins, conservative universe bounds, unification, and forced-implicit projection all
 handle the extended form; only an exact variable-plus-offset remains invertible. M0 found genuine
 `imax` in declared types already in `Init` (`pi_congr`, `implies_congr`, and generated
 constructor-elimination types). Tests pin normalization, substitution, bounds, quote round-trips,
-polymorphic Pi formation, and Prop-instantiated collapse. Counts: `m0-export-stats.md`.
+polymorphic Pi formation, and Prop-instantiated proof-lambda canonicalization. Counts:
+`m0-export-stats.md`.
 
-**K6. Mutual and nested inductives.** The Lean kernel accepts both natively; Raccoon has neither.
+**K6. Mutual and nested inductives.** Draft design: `k6-mutual-nested-inductives.md`. The Lean
+kernel accepts both natively; Raccoon has neither as a complete declaration/recursor pipeline.
 Mutual: generalize positivity, the termination order (component-wise subterm across the block), and
 recursor synthesis. Nested: prefer kernel support over an encoding pass (encodings change
-no-confusion/injectivity behavior downstream). M0 found mutual and nested blocks in the first raw
-Mathlib slice, including blocks in the imported Lean/Std closure. Since T1 consumes that raw export
-rather than a separately validated dependency-pruned artifact, the decision is native kernel
-support, not an encoding or deferral. Counts: `m0-export-stats.md`.
+no-confusion/injectivity behavior downstream). Public nested values stay direct, but recursor
+validation must build Lean's logical extended block so specialized container motives and minors
+appear in the telescope; nested containers must share the block universe. M0 found mutual and
+nested blocks in the first raw Mathlib slice, including blocks in the imported Lean/Std closure.
+Since T1 consumes that raw export rather than a separately validated dependency-pruned artifact,
+the decision is native kernel support, not an encoding or deferral. Counts: `m0-export-stats.md`.
+K6 also generalizes the existing per-family `proofStorage` certificate to block checking; neither
+mutual membership nor recursiveness introduces a runtime proof-unification rule.
 
 **K7. Axioms.** `propext` and `Classical.choice` (with `Nonempty`); `funext` arrives as a theorem
-via `Quot.sound`. `propext` is safe under collapse (the Abel–Coquand trigger is erased — pin with
-the Ω must-terminate probe before landing), but it is *gated on the evidence-grades refactor*
+via `Quot.sound`. `propext` is safe under the proof representation policy: after checking, every
+proof-valued lambda becomes the type-directed proof eta-lambda, so the Abel–Coquand trigger never
+executes its discarded source body. Pin this with the Ω must-terminate probe before landing. The
+axiom is still *gated on the evidence-grades refactor*
 (kernel-theory §5 design debt / `TODO(propext)` on `definitionallyInjectiveHead`). `choice`
 coarsens per the §4 axiom ledger (Cantor kills large-parameter former injectivity) — the ledger
 says current rules already exclude this; re-walk §6 when landing.
@@ -146,21 +159,36 @@ retaining only packed transitive summaries, and was exercised on real `Init` and
 retain topological declaration order. Map Lean's `Eq`, `Nat`, `Quot`, `Bool`, … onto the Raccoon Prelude
 (or import a fresh translated core and keep Raccoon's Prelude only for bootstrapping); mangle
 names into namespaces; insert explicit level arguments; translate `let` to `Body.lets`.
-`theorem`s publish as collapsed proofs — checked once, erased — so proof bodies are never retained
-(the memory-scaling win of collapse).
+`theorem`s are checked once and passed through the proof representation policy. Every proof of a
+Pi proposition publishes as the same type-directed eta-lambda, regardless of transparency; its
+checked source body is discarded. Other proofs publish as a constructor reconstructed from their
+exact proposition when the family recipe succeeds, and as `VProof` otherwise. This removes
+operational theorem bodies while preserving all constructor computation forced by the type.
 
-**T2. Recursor synthesis.** Per inductive, emit `Foo.rec` as an ordinary definition: match +
-`decreases structural(major)`, IHs as lambdas applying selector fields (the K1 shape, pinned by
-"synthesized recursor shape" in TerminationTests). Prop-motive recursors likewise (Prop-match).
-Derived constants (`casesOn`, `brecOn`, `below`, `noConfusion`, …) are ordinary definitions in the
-export and translate as-is once `rec` exists. The export's ι-rules serve as the spec: match
-evaluation + fix unfolding must reproduce them definitionally on constructor-headed majors.
+**T2. Recursor synthesis.** For logical blocks that are not definitely Prop, emit ordinary match
+definitions; recursive SCCs use `decreases structural(major)`, with IHs as lambdas applying
+selector fields (the K1 shape, pinned by "synthesized recursor shape" in TerminationTests).
+Permitted non-recursive Prop eliminators are ordinary matches without a metric. Nested telescopes
+are derived from K6's complete logical extended block—one motive per declared or specialized
+family and one minor per corresponding constructor—with a fresh motive-result universe for
+ordinary non-Prop recursors (non-recursive Prop uses the recomputed large-elimination result).
+Every recursor in a recursive definitely-Prop logical block, including a
+nested-container auxiliary, has a proof-valued major and cannot use it as a structural metric:
+K6 derives the Prop induction-principle types in the kernel, validates the exported types, and
+publishes bodiless principles in canonical eta-lambda form. Ordinary large elimination instead
+follows each family's declaration-time `proofStorage`: exact propositions that reconstruct a
+constructor match normally, while other proofs stay stuck for data motives, including after a
+generic `Sort u` term lands at `u = 0`. Derived constants (`casesOn`, `brecOn`, `below`, `noConfusion`, …) are
+ordinary definitions in the export and translate as-is once `rec` exists. For ordinary match
+recursors, the export's ι-rules are the spec at non-collapsed instances: match evaluation + fix
+unfolding must reproduce them definitionally on constructor-headed majors. For bodiless Prop
+principles the ι-rules are proof-irrelevant; the generated type is the load-bearing validation.
 
 **T3. `Acc`/WF cluster mapping.** A fixed table: Sort-motive `Acc.rec` occurrences and
 `WellFounded.fixF`/`fix` map to the K2 primitives; their Lean equation-lemma *proofs* are replaced
-by the primitive lemma (untranslatable in principle — they typecheck only via `Acc.rec` ι on the
-minor premise's literal `Acc.intro`, which collapse erases). Everything downstream that merely
-*uses* `fix_eq` translates unchanged.
+by the primitive lemma. Retaining a literal `Acc.intro` does not install recursive ι-reduction,
+because the recursive child is proof-valued and cannot be a metric. Everything downstream that
+merely *uses* `fix_eq` translates unchanged.
 
 **T4. Typecheck-and-patch loop.** The safety net for defeq divergence (prior art: Lean4Less, which
 re-typechecks and inserts casts to eliminate definitional irrelevance/K from real libraries).
@@ -174,7 +202,7 @@ K-tail corner cases.
 
 Raccoon eagerly normalizes values at construction in a Scala tree-walker; Lean is lazy
 whnf-on-demand in C++ precisely because fully normalizing Mathlib's instance forest explodes.
-Collapse removes proof bodies from the equation, so the risk concentrates in Type-level definition
+Proof erasure removes most proof bodies from the equation, so the risk concentrates in Type-level definition
 bodies (instances). Plan: measure at M1/M3 (wall-clock, peak values allocated, per-declaration
 histograms — extend `benchmarks/`); mitigations in escalation order: opaque-by-default for
 translated definitions Lean marked irreducible, hash-consing via existing `ValueKey`s, and only if
@@ -203,7 +231,7 @@ kernel-theory review — thunks must not weaken the §5 evidence rules).
 
 1. **Resolved at M0:** K5 extends the level algebra; genuine `imax` occurs in `Init` declaration types.
 2. **Resolved at M0:** K6 gets native mutual/nested support; both occur in the first raw Mathlib slice.
-3. **Open:** Prop-level `Quot.lift` stuckness (proof-collapse §10): completeness question — does Mathlib's
+3. **Open:** Prop-level `Quot.lift` stuckness (proof-collapse §7): completeness question — does Mathlib's
    `Quotient` usage ever eliminate a Prop-level quotient into data? Check at M2.
 4. **Open:** Native-op trust: builtin defeq steps trusted outright (Lean's stance) vs. certified against the
    structural definitions on first use. Default: trusted, documented in the §4 axiom ledger.
@@ -213,5 +241,5 @@ kernel-theory review — thunks must not weaken the §5 evidence rules).
 
 Surface-source porting, tactics, `simp`, elaborator compatibility; a live-development Mathlib
 (the translated artifact is a frozen library — new development happens in Raccoon proper);
-kernel-level `Acc` ι-reduction and K-on-structured-proofs (excluded *by design* — they are the
-undecidability); univalence (kernel-theory §4: not planned).
+kernel-level recursive `Acc` ι-reduction and K-like reduction on neutral proofs (excluded *by
+design* — they are the undecidability channels); univalence (kernel-theory §4: not planned).

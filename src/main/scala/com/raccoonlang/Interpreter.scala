@@ -142,7 +142,7 @@ object Interpreter {
     }
     res match {
       case h: ConstructorHead if h.totalArity == 0 =>
-        Value.collapseIfProof(Packed.foldCtor(h, Vector.empty, h.tpe).getOrElse(VCtor(h, Vector.empty, h.tpe)))
+        Value.canonicalizeProof(Packed.foldCtor(h, Vector.empty, h.tpe).getOrElse(VCtor(h, Vector.empty, h.tpe)))
       case _ => res
     }
   }
@@ -166,20 +166,15 @@ object Interpreter {
         fn match {
           case lam: VLam =>
             Packed.runOp(lam, vArgs, () => pi.codomain(envWithArgs)).getOrElse(runLam(lam, vArgs))
-          case p: VProof =>
-            // By impredicativity, a Pi with a propositional codomain is itself a proposition, so a
-            // proof-valued function is a collapsed proof: its application is a proof of the
-            // instantiated codomain, with no body to run (proof-collapse.md §5).
-            VProof(pi.codomain(envWithArgs), evalApply(p.witness, vArgs))
           case h: VConst =>
-            StructEta.expandIfStruct(Value.collapseIfProof(VApp(h, vArgs, pi.codomain(envWithArgs))))
+            StructEta.expandIfStruct(Value.canonicalizeProof(VApp(h, vArgs, pi.codomain(envWithArgs))))
           case h: ConstructorHead =>
             val resultTy = pi.codomain(envWithArgs)
             val storedArgs = Value.constructorStoredArgs(h, vArgs)
-            Value.collapseIfProof(Packed.foldCtor(h, storedArgs, resultTy).getOrElse(VCtor(h, storedArgs, resultTy)))
+            Value.canonicalizeProof(Packed.foldCtor(h, storedArgs, resultTy).getOrElse(VCtor(h, storedArgs, resultTy)))
           case blocker @ Blocker(blockerId) =>
             StructEta.expandIfStruct(
-              Value.collapseIfProof(VBlockedApp(blocker, vArgs, pi.codomain(envWithArgs), blockerId))
+              Value.canonicalizeProof(VBlockedApp(blocker, vArgs, pi.codomain(envWithArgs), blockerId))
             )
           case _ => throw CannotApplyNonFunction(fn)
         }
@@ -232,19 +227,28 @@ object Interpreter {
     }
 
   def evalLam(l: ETerm.Lam, vpi: VPi, env: Env): Value = {
-    val capturedRefs = CapturedRefs.getCapturedRefs(l, env)
-    val closedEnv = env.closeForEval(capturedRefs)
-    val id = l.name match {
-      case Some(funcName) => ValueId.Const(funcName)
-      case None           => ValueId.LocalId(l.nodeId, closedEnv.locals.values.toVector)
+    // The body has already checked (including termination). Do not even build a closure for a
+    // proof-valued lambda: its canonical eta-lambda depends only on the checked Pi, and the source
+    // body would be discarded immediately.
+    if (vpi.isPropValued) Value.canonicalizeProof(VProof(vpi))
+    else {
+      val capturedRefs = CapturedRefs.getCapturedRefs(l, env)
+      val closedEnv = env.closeForEval(capturedRefs)
+      val id = l.name match {
+        case Some(funcName) => ValueId.Const(funcName)
+        case None           => ValueId.LocalId(l.nodeId, closedEnv.locals.values.toVector)
+      }
+      Value.canonicalizeProof(VLam(vpi, id, LamBody.Core(l, closedEnv)))
     }
-    // A lambda whose Pi is classified in Prop is a proof of that implication and collapses.
-    Value.collapseIfProof(VLam(vpi, id, LamBody.Core(l, closedEnv)))
   }
 
   def runLam(lam: VLam, args: Vector[Value]): Value = {
     lam.body match {
       case LamBody.Native(run, nativeEnv, _) => run(args, nativeEnv)
+      case LamBody.ProofEta =>
+        val ascribedArgs = ascribeArgs(lam.tpe, args)
+        val piEnv = BinderOps.instantiateFull(lam.tpe.binders, lam.tpe.env, ascribedArgs)
+        Value.canonicalizeProof(VProof(lam.tpe.codomain(piEnv)))
       case LamBody.Core(term, coreEnv) =>
         val ascribedArgs = ascribeArgs(lam.tpe, args)
         val bodyEnv = BinderOps.instantiateFull(lam.tpe.binders, coreEnv, ascribedArgs)
@@ -282,6 +286,7 @@ object Interpreter {
     try {
       term match {
         case ETerm.NatLit(value, _) => Packed.evalNatLit(value, env)
+        case ETerm.Proof(tpe, _)    => Value.canonicalizeProof(VProof(evalTerm(tpe, env)))
         case ref: ETerm.Ref         => evalRef(ref, env)
         case ETerm.App(fn, args, _) => evalApplyTerm(fn, args, env)
         case pi: ETerm.Pi           => evalPi(pi, env)
@@ -307,7 +312,7 @@ object Interpreter {
           case _           => None
         }
         return StructEta.expandIfStruct(
-          Value.collapseIfProof(stuckMatchThunk(m, env, matchOutType(m, scrut, env), blockerId))
+          Value.canonicalizeProof(stuckMatchThunk(m, env, matchOutType(m, scrut, env), blockerId))
         )
     }
 
@@ -332,7 +337,7 @@ object Interpreter {
       throw ArityMismatch(branch.argRefs.length, args.length, Some(branch.span))
     val newEnv = args.zip(branch.argRefs).foldLeft(env) { case (curEnv, (argV, argRef)) =>
       argRef match {
-        case Some(ref) => curEnv.putLocal(ref, argV)
+        case Some(ref) => curEnv.putLocal(ref, Value.canonicalizeProof(argV))
         case None      => curEnv
       }
     }
@@ -340,64 +345,13 @@ object Interpreter {
   }
 
   /**
-   * Elimination of a collapsed proof (docs/proof-collapse.md §5). Proofs store no fields, so the three shapes are
-   * handled without reading structure:
-   *   - Prop motive: every checked branch proves the same proposition, so the match itself witnesses `VProof(motive)`
-   *     immediately — no branch selection, no thunk.
-   *   - Subsingleton large elimination (a single case): reduce only when the scrutinee type's indices are
-   *     definitionally diagonal — the analogue of "Eq.rec reduces only on refl". Reducing on non-diagonal indices would
-   *     produce a value at the wrong type; this must never be relaxed.
-   *   - Empty elimination, or a stuck/non-diagonal subsingleton: an unblockable NeutralThunk (proofs never
-   *     block-and-resume), matching axiom-stuck behavior.
+   * Elimination of an erased proof (docs/proof-collapse.md). A Prop-valued result can erase immediately. A data-valued
+   * result is stuck: reconstructible propositions have already canonicalized to `VCtor` and use the ordinary path.
    */
   private def evalProofMatch(m: ETerm.Match, scrut: VProof, env: Env): Value = {
     val outType = matchOutType(m, scrut, env)
-    // Proofs never block-and-resume: the thunk is unblockable.
-    def thunk: NeutralThunk = stuckMatchThunk(m, env, outType, None)
-    // A stuck struct-typed large elimination canonicalizes like any stuck match (StructEta);
-    // the Prop-motive witness below needs no expansion (witnesses never flow into comparison),
-    // and a successful subsingleton reduction is a branch value, canonical already.
-    def stuck: Value = StructEta.expandIfStruct(thunk)
-
-    if (Value.isPropositionType(outType)) VProof(outType, thunk)
-    else if (m.cases.length == 1) reduceSubsingletonMatch(m.cases.head, scrut, env).getOrElse(stuck)
-    else stuck
-  }
-
-  /**
-   * Large elimination of a proof: the match checker admitted this match only if every non-proof field of the single
-   * reachable constructor is forced by the scrutinee type's indices (MatchChecker.allowLargeElimination). Re-derive
-   * that forced-field mapping at the actual scrutinee type by unifying the constructor's result type against it:
-   * unification succeeding with every non-proof field solved is exactly "the indices are definitionally diagonal", and
-   * the solutions are the field values. Anything less leaves the match stuck.
-   */
-  private def reduceSubsingletonMatch(branch: ElabAst.Case, scrut: VProof, env: Env): Option[Value] = {
-    val head = env(branch.ctorName) match {
-      case h: ConstructorHead => h
-      case other => throw WTF(s"Case head ${branch.ctorName} is not a constructor: $other", Some(branch.span))
-    }
-
-    val (freshArgs, resultTy) = BinderOps.freshCtorArgsAndResult(head)
-
-    // Only the constructor's own fresh unknowns are refinable: links are consequences
-    // of the type equation, so any solution is index-derived, never invented.
-    val refinable = DepSet.unionAll(freshArgs.map(_.synDeps): _*)
-
-    ValueEquivalence.tryUnify(
-      resultTy,
-      scrut.tpe,
-      EqStore.empty.allow(refinable)
-    ) match {
-      case Left(_) => None
-      case Right(store) =>
-        val storedArgs = Value.constructorStoredArgs(head, freshArgs)
-        val bound = storedArgs.map(arg => ValueOps.materialize(arg, store))
-        val unsolved = refinable -- store.solvedIds
-        // Proof-typed fields are their own witnesses (their types must still be fully forced,
-        // which their synDeps track); any other leftover unknown means the match is stuck.
-        if (bound.exists(arg => arg.synDeps.intersects(unsolved))) None
-        else Some(evalBranch(branch, bound, env))
-    }
+    if (Value.isPropositionType(outType)) Value.canonicalizeProof(VProof(outType))
+    else StructEta.expandIfStruct(stuckMatchThunk(m, env, outType, None))
   }
 
   def evalBody(body: ETerm.Body, env: Env): Value = {
@@ -412,12 +366,12 @@ object Interpreter {
     evalTerm(body.res, newEnv)
   }
 
-  // Publication collapse (proof-collapse.md §4): a global of propositional type is a proof; the
-  // constant itself is the witness, so proofs quote back as a reference to their global name.
+  // Proof publication (proof-collapse.md): exact type alone chooses a reconstructed constructor,
+  // a proof eta-lambda, or `VProof`; transparency and the value's origin are irrelevant.
   // Its data-level dual: a symbolic global (opaque def, axiom) of struct type publishes in
   // constructor form, its fields the stuck projections of the constant (StructEta).
   private def publishedValue(name: String, value: Value, ty: Value): Value =
-    if (Value.isPropositionType(ty)) VProof(ty, VConst(name, Symbol, ty))
+    if (Value.isPropositionType(ty)) Value.canonicalizeProof(value)
     else StructEta.expandIfStruct(value)
 
   // A declaration is checked exactly once; the value the checker produced IS the published value.

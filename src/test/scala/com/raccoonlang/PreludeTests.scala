@@ -114,11 +114,10 @@ class PreludeTests extends munit.FunSuite {
           |""".stripMargin
       )
 
-    // Proofs collapse: the result is a structureless proof of the equality proposition.
+    // The helper's canonical proof eta-lambda reconstructs the certified Eq constructor.
     res match {
-      case p: Value.VProof =>
-        assertEquals(TypeChecker.inductiveFamilyOf(p.tpe).map(_.head.name), Some("Eq"))
-      case other => fail(s"Expected a collapsed proof of an Eq proposition, got $other")
+      case Value.VCtor(head, _, _) => assertEquals(head.name, "Eq.refl")
+      case other                   => fail(s"Expected a canonical Eq.refl proof, got $other")
     }
   }
 

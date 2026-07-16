@@ -131,6 +131,7 @@ object PrettyPrinter {
 
   private def printElabTermAtom(t: ElabAst.Term): String = t match {
     case ElabAst.Term.NatLit(value, _)      => value.toString
+    case ElabAst.Term.Proof(tpe, _)         => s"proof(${printElabTerm0(tpe)})"
     case _: ElabAst.Term.Ref                => printElabTerm0(t)
     case ElabAst.Term.App(_, _, _)          => printElabTerm0(t)
     case ElabAst.Term.Lam(_, _, _, _, _, _) => s"(${printElabTerm0(t)})"
@@ -141,6 +142,7 @@ object PrettyPrinter {
 
   private def printElabTerm0(t: ElabAst.Term): String = t match {
     case ElabAst.Term.NatLit(value, _) => value.toString
+    case ElabAst.Term.Proof(tpe, _)    => s"proof(${printElabTerm0(tpe)})"
     case ref: ElabAst.Term.Ref         => printElabRef(ref)
     case ElabAst.Term.Lam(ty, body, _, _, _, _) =>
       s"fun ${printElabBinders(ty.binders)}: ${printElabTerm0(ty.out)} => ${printElabTerm0(body)}"

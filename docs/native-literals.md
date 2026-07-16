@@ -94,7 +94,7 @@ Every codec must satisfy these; each is load-bearing for a specific judgment in 
   `decodeHead(p) ≡ (c, args)` fieldwise. `decodeHead` is total on payloads. Decoded fields are
   built **through the standard value seams** (`evalApply`/`evalRef`), never as raw `VApp`s — so
   proof-collapse and StructEta apply to decoded structure automatically (a decoded `Char`'s
-  validity proof collapses to `VProof` on its own).
+  validity proof enters its exact type's canonical proof representation on its own).
 - **L5 (canonicity, per-codec).** *Canonical* means every ground value of the type is packed:
   all value-birth seams fold, so no ground constructor-headed value of the type exists. Canonical
   codecs get key-only defEq. Non-canonical codecs (CharList: structurally built ground char lists
@@ -259,7 +259,7 @@ the certification harness (§10) as the engineering backstop — differential te
   spine (a 10⁶ literal must not quote to a 10⁶-deep term). Round trip: quote → eval → same
   payload, same key.
 - **Proof collapse:** no interaction by construction — `VPacked` requires a non-propositional
-  type (L1/L2), `collapseIfProof` passes it through, decoded proof fields collapse at their own
+  type (L1/L2), `canonicalizeProof` passes it through, decoded proof fields canonicalize at their own
   seams (L4). Positivity: payloads contain no values (L2), so `mayOccurIn` is untouched.
 - **Implicit projection** (`telescope/Projection.project`): the `CtorField` step reads stored
   fields of constructor values; against a packed value it reads the decoded field instead, so

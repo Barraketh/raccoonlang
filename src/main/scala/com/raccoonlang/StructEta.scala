@@ -5,36 +5,32 @@ import com.raccoonlang.Value._
 import com.raccoonlang.telescope.BinderOps
 
 /**
- * Structure eta as representation (K4, docs/mathlib-export-port.md §4): every value of an
- * eta-eligible struct type is constructor-headed *from creation*. The data-level dual of proof
- * collapse — where proofs lose all structure (`VProof`), struct values always expose theirs —
- * enforced at binder freshening and at every neutral-creation seam (stuck applications and
- * matches, published opaque/axiom globals, recursive-call residuals, stuck builtins).
+ * Structure eta as representation (K4, docs/mathlib-export-port.md §4): every value of an eta-eligible struct type is
+ * constructor-headed *from creation*. Proof representation instead exposes a declaration-certified constructor for
+ * every inhabitant whose exact proposition reconstructs it, and erases other non-Pi inhabitants. Struct values always
+ * expose their fields. Expansion is enforced at binder freshening and at every neutral-creation seam (stuck
+ * applications and matches, published opaque/axiom globals, recursive-call residuals, stuck builtins).
  *
- * Canonical-at-birth is deliberate: ascription and materialization do NOT expand. They retype
- * values that already circulate, and wrapping one copy while the bare original lives on (in envs,
- * inside other values) would split the representation — and unlike collapse, which the
- * ProofEquation mixed rule reunites, expansion has no mixed defEq rule.
+ * Canonical-at-birth is deliberate: ascription and materialization do NOT expand. They retype values that already
+ * circulate, and wrapping one copy while the bare original lives on (in envs, inside other values) would split the
+ * representation — and unlike proof forms, which `ProofEquation` reunites, expansion has no mixed defEq rule.
  *
- * With the invariant in force, eta needs no conversion rule: `c ≡ mk(c.a, c.b)` is VCtor-vs-VCtor
- * for the existing fieldwise defEq, and a match on a struct scrutinee always fires (binding the
- * branch to the scrutinee's projections — "assume the single constructor" as a consequence, not a
- * reduction rule).
+ * With the invariant in force, eta needs no conversion rule: `c ≡ mk(c.a, c.b)` is VCtor-vs-VCtor for the existing
+ * fieldwise defEq, and a match on a struct scrutinee always fires (binding the branch to the scrutinee's projections —
+ * "assume the single constructor" as a consequence, not a reduction rule).
  *
- * Eligibility (`InductiveMeta.etaInfo`, computed in InductiveChecks): a declared struct with one
- * constructor, no indices, no recursive field, not declared in Prop. The gate is load-bearing for
- * decidability, not a heuristic: "single constructor" alone would admit `Acc` (destructuring
- * neutral accessibility proofs is the undecidability channel K2 seals) and `Quot.mk` (expansion
- * would invent a representative for a quotient). Both are also excluded by other layers (Prop
- * collapse, recursion, not being declared structs), but eligibility must never rest on that
- * coincidence. Prop *instantiations* of eligible sort-polymorphic structs collapse to `VProof`
- * instead; the two invariants split the value space exactly.
+ * Eligibility (`InductiveMeta.etaInfo`, computed in InductiveChecks): a declared struct with one constructor, no
+ * indices, no recursive field, not declared in Prop. The gate is load-bearing for decidability, not a heuristic:
+ * "single constructor" alone would admit `Acc` (destructuring neutral accessibility proofs is the undecidability
+ * channel K2 seals) and `Quot.mk` (expansion would invent a representative for a quotient). Both are also excluded by
+ * other layers (Prop collapse, recursion, not being declared structs), but eligibility must never rest on that
+ * coincidence. Prop *instantiations* never eta-expand; every inhabitant follows the family's independent `ProofStorage`
+ * policy, reconstructing the certified constructor when possible and otherwise using proof eta or `VProof`.
  *
- * Known gap (completeness only, never soundness): a value created before its type is a *known*
- * struct instance stays bare — a rigid binder frozen at a then-blocked type, or a neutral whose
- * type reveals only under a later store. Rigid vars additionally cannot be expanded in place:
- * rigid and refinable are store-relative, and expanding a meta would break unification's
- * Var-linking (the same reason `collapseIfProof` exempts Vars).
+ * Known gap (completeness only, never soundness): a value created before its type is a *known* struct instance stays
+ * bare — a rigid binder frozen at a then-blocked type, or a neutral whose type reveals only under a later store. Rigid
+ * vars additionally cannot be expanded in place: rigid and refinable are store-relative, and expanding a meta would
+ * break unification's Var-linking (the same reason `canonicalizeProof` exempts Vars).
  */
 object StructEta {
 
@@ -49,23 +45,27 @@ object StructEta {
     ref
   }
 
-  /** The instance behind `tpe` when it is an application of a struct family with eta capability,
-    * regardless of sort. Callers that create values must use `eligibleInstance`. */
+  /**
+   * The instance behind `tpe` when it is an application of a struct family with eta capability, regardless of sort.
+   * Callers that create values must use `eligibleInstance`.
+   */
   private def anyInstance(tpe: Value): Option[(InductiveFamilyInstance, StructEtaInfo)] =
     tpe match {
       case InductiveFamilyValue(inst) => inst.meta.etaInfo.map(info => (inst, info))
       case _                          => None
     }
 
-  /** The instance behind `tpe` when it is an eta-eligible struct instance at a non-propositional
-    * sort. Prop instantiations are proof territory: their values collapse, never expand. */
+  /**
+   * The instance behind `tpe` when it is an eta-eligible struct instance at a non-propositional sort. Prop
+   * instantiations are proof territory: they follow `ProofStorage` and never eta-expand.
+   */
   def eligibleInstance(tpe: Value): Option[(InductiveFamilyInstance, StructEtaInfo)] =
     anyInstance(tpe).filter(_ => !Value.isPropositionType(tpe))
 
   /**
-   * A fresh rigid witness at `tpe`: for an eligible struct instance, the constructor applied to
-   * fresh field witnesses — recursively, via ordinary binder freshening, so nested struct fields
-   * expand and proof fields collapse. None for non-struct types (callers fall back to a bare Var).
+   * A fresh rigid witness at `tpe`: for an eligible struct instance, the constructor applied to fresh field witnesses —
+   * recursively, via ordinary binder freshening, so nested struct fields expand and proof fields collapse. None for
+   * non-struct types (callers fall back to a bare Var).
    */
   def freshStructWitness(tpe: Value): Option[Value] =
     eligibleInstance(tpe).map { case (inst, info) =>
@@ -82,10 +82,9 @@ object StructEta {
     }
 
   /**
-   * Enforce the representation invariant on a just-created value: a neutral at an eligible struct
-   * type wraps into constructor form, its fields the stuck projections of the base. Idempotent.
-   * Exemptions mirror `collapseIfProof`: VCtor/VProof are already canonical, and Vars stay bare so
-   * refinable metas remain linkable.
+   * Enforce the representation invariant on a just-created value: a neutral at an eligible struct type wraps into
+   * constructor form, its fields the stuck projections of the base. Idempotent. Exemptions mirror `canonicalizeProof`:
+   * VCtor/VProof are already canonical, and Vars stay bare so refinable metas remain linkable.
    */
   def expandIfStruct(value: Value): Value =
     value match {
@@ -101,12 +100,11 @@ object StructEta {
     }
 
   /**
-   * Reduce `field idx of base` (the `StructField` application rule, called from
-   * `Interpreter.evalApply`): a constructor-headed base gives the stored field; a base that is
-   * still neutral after resolution re-sticks at its (possibly refined) type; a base that
-   * *collapsed* under a solved store — its sort resolved to Prop — projects to a proof of the
-   * instantiated field type. That last arm is sound because every field of a struct fits in the
-   * struct's own sort (InductiveUniverseTooSmall), so at a Prop instance every field is a proof.
+   * Reduce `field idx of base` (the `StructField` application rule, called from `Interpreter.evalApply`): a
+   * constructor-headed base gives the stored field; a base that is still neutral after resolution re-sticks at its
+   * (possibly refined) type; a base that *collapsed* under a solved store — its sort resolved to Prop — projects to a
+   * proof of the instantiated field type. That last arm is sound because every field of a struct fits in the struct's
+   * own sort (InductiveUniverseTooSmall), so at a Prop instance every field is a proof.
    */
   def project(base: Value, idx: Int): Value =
     base match {
@@ -119,8 +117,10 @@ object StructEta {
         }
     }
 
-  /** The first `count` projections of `base`, built left-to-right so each dependent field type is
-    * instantiated with the earlier projections. */
+  /**
+   * The first `count` projections of `base`, built left-to-right so each dependent field type is instantiated with the
+   * earlier projections.
+   */
   private def projections(
       base: Value,
       inst: InductiveFamilyInstance,
@@ -159,17 +159,16 @@ object StructEta {
       case Blocker(blockerId) => VBlockedApp(head, Vector(base), fieldTy, blockerId)
       case _                  => VApp(head, Vector(base), fieldTy)
     }
-    // Proof fields collapse at formation (witness: the stuck projection itself); struct fields
+    // Proof fields erase at formation; struct fields
     // expand recursively — bounded by the nesting depth, since eligible structs are non-recursive.
-    expandIfStruct(Value.collapseIfProof(app))
+    expandIfStruct(Value.canonicalizeProof(app))
   }
 
   /**
-   * The projection head's own type: `(self: <instance>) -> <field type at self>`. Nothing on the
-   * kernel path evaluates it — StructField applications are built and reduced directly, and
-   * `runLam` is never involved — but the head must carry an honest type for keys/synDeps and
-   * diagnostics. The binder's type syntax is a LocalRef bound in the Pi's closure env, so the Pi
-   * is freshenable and its codomain evaluable without any global environment. Named heads quote
+   * The projection head's own type: `(self: <instance>) -> <field type at self>`. Nothing on the kernel path evaluates
+   * it — StructField applications are built and reduced directly, and `runLam` is never involved — but the head must
+   * carry an honest type for keys/synDeps and diagnostics. The binder's type syntax is a LocalRef bound in the Pi's
+   * closure env, so the Pi is freshenable and its codomain evaluable without any global environment. Named heads quote
    * as `GlobalRef("S.field")`, deliberately aliasing the generated selector of the same name.
    */
   private def projectionPi(
@@ -200,8 +199,10 @@ object StructEta {
     )
   }
 
-  /** The type of field `idx` at a concrete `self` (constructor-headed by the invariant, so the
-    * dependent prefix reads stored fields directly). */
+  /**
+   * The type of field `idx` at a concrete `self` (constructor-headed by the invariant, so the dependent prefix reads
+   * stored fields directly).
+   */
   private def fieldTypeOf(self: Value, inst: InductiveFamilyInstance, info: StructEtaInfo, idx: Int): Value = {
     val head = info.ctorHead
     val pi = head.tpe match {

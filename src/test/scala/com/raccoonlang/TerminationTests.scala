@@ -239,9 +239,9 @@ class TerminationTests extends munit.FunSuite {
   }
 
   test("structural decrease on a proof argument is rejected outright") {
-    // Collapsed proofs have no subterms, and "structurally smaller" is ill-defined up to an
-    // equality that identifies wrap(x) with base, so the declaration itself is invalid
-    // (proof-collapse.md §7.1). This subsumes the old pin that proof irrelevance cannot fake
+    // Proof structure is not invariant under an equality that identifies wrap(x) with base, and
+    // erased proofs have no subterms, so the declaration itself is invalid
+    // (proof-collapse.md §6). This subsumes the old pin that proof irrelevance cannot fake
     // a structural decrease.
     val p =
       """

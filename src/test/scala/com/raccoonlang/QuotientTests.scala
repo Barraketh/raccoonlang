@@ -77,7 +77,7 @@ class QuotientTests extends munit.FunSuite {
     assertEquals(toShape(res), natOne)
   }
 
-  test("Quot.ind collapses to a proof of the motive") {
+  test("Quot.ind canonicalizes the proof of its motive") {
     val res = runProgram(
       natPrelude +
         """
@@ -89,11 +89,14 @@ class QuotientTests extends munit.FunSuite {
           |""".stripMargin
     )
 
-    // Proofs collapse: the induction result is a structureless proof of motive(q) = True; the
-    // mkCase body is never consulted (any proof of the motive is equal by irrelevance).
+    // The mkCase body is never consulted. Exact-type canonicalization reconstructs True.intro
+    // from motive(q) = True.
     res match {
-      case p: Value.VProof => assertEquals(toShape(p.tpe), SConst("True"))
-      case other           => fail(s"Expected a collapsed proof of True, got $other")
+      case Value.VCtor(head, fields, tpe) =>
+        assertEquals(head.name, "True.intro")
+        assertEquals(fields, Vector.empty)
+        assertEquals(toShape(tpe), SConst("True"))
+      case other => fail(s"Expected the canonical True.intro proof, got $other")
     }
   }
 

@@ -306,10 +306,11 @@ class ConsistencyTests extends munit.FunSuite {
   }
 
   // mathlib-export-port M0 / Abel-Coquand, arXiv:1911.08174 §3.
-  test("Abel-Coquand Omega terminates because every impredicative proof function is collapsed") {
+  test("Abel-Coquand Omega terminates because erased proof bodies never execute") {
     // Lean's proof-irrelevant K-like Eq.rec rule repeatedly unfolds acDelta(acOmega). Raccoon
-    // must never inspect that proof computation: ACTrue, its endofunctions, and Omega itself all
-    // live in Prop and therefore become structureless VProofs before reduction can start.
+    // must never inspect that proof computation. Once checked, every proof of a Pi proposition is
+    // replaced by the type-directed eta-lambda, whose applications reconstruct only their result
+    // proposition rather than re-entering the discarded source body.
     val result = runProgram(
       """
         |axiom acPropext (a: Prop)(b: Prop)(h: Iff(a, b)): Eq(Prop, a, b)
@@ -330,7 +331,10 @@ class ConsistencyTests extends munit.FunSuite {
         |""".stripMargin
     )
 
-    assert(result.isInstanceOf[Value.VProof])
+    result match {
+      case Value.VLam(_, _, Value.LamBody.ProofEta) =>
+      case other                                    => fail(s"Expected the canonical proof eta-lambda, got $other")
+    }
   }
 
   // §7.7 AstNodeId value identity.

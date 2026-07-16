@@ -33,6 +33,9 @@ object CapturedRefs {
       case _: Term.NatLit =>
         refs
 
+      case Term.Proof(tpe, _) =>
+        goTerm(tpe, env, refs)
+
       case Term.GlobalRef(_, _) =>
         refs
 

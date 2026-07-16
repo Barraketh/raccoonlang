@@ -92,6 +92,7 @@ object Packed {
     val env = lam.body match {
       case LamBody.Core(_, env)      => env
       case LamBody.Native(_, env, _) => env
+      case LamBody.ProofEta          => Env.empty
     }
     env.globals.get(name).map(_.value(env)) match {
       case Some(h: ConstructorHead) if h.totalArity == 0 && h.noConfusion && ValueEquivalence.defEq(h.tpe, resultTy) =>

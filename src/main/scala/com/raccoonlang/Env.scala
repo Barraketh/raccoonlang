@@ -19,14 +19,13 @@ object Env {
     if (assertionsEnabled && value.synDeps.nonEmpty)
       throw WTF(s"Global value must be closed, but has free vars ${value.synDeps}")
 
-  // Collapse invariant (A), proof-collapse.md §3: every value of known-propositional type is a
-  // VProof. Stated as "the value is a fixed point of collapseIfProof" so the exemption list
-  // (refinable Vars, constructor heads, the raw-recursive self lambda) lives only in the collapse
-  // helper itself. Every value enters an env through putLocal/putGlobal, so a missed collapse
-  // site fails loudly here instead of silently re-enabling structured-proof reads downstream.
-  private[raccoonlang] def assertCollapsed(value: Value): Unit =
-    if (assertionsEnabled && !(Value.collapseIfProof(value) eq value))
-      throw WTF(s"Uncollapsed proof bound into env: value ${value} of type ${value.tpe}")
+  // Proof-representation invariant (proof-collapse.md): every value of known-propositional type
+  // is a fixed point of canonicalizeProof. This includes reconstructed constructors as well as
+  // the helper's explicit exemptions. Every value enters an env through putLocal/putGlobal, so a
+  // missed representation step fails loudly here.
+  private[raccoonlang] def assertCanonicalProof(value: Value): Unit =
+    if (assertionsEnabled && !(Value.canonicalizeProof(value) eq value))
+      throw WTF(s"Non-canonical proof bound into env: value ${value} of type ${value.tpe}")
 }
 
 sealed trait GlobalBinding {
@@ -47,7 +46,7 @@ object GlobalBinding {
         case None =>
           val value = force()
           Env.assertClosedGlobal(value)
-          Env.assertCollapsed(value)
+          Env.assertCanonicalProof(value)
           cached = Some(value)
           value
       }
@@ -68,7 +67,7 @@ final case class Env(
 
   def putGlobal(name: String, value: Value): Env = {
     Env.assertClosedGlobal(value)
-    Env.assertCollapsed(value)
+    Env.assertCanonicalProof(value)
 
     if (globals.contains(name)) throw AlreadyDefined(name)
     else if (name == "_") throw WTF("Wildcards not allowed in global names")
@@ -85,7 +84,16 @@ final case class Env(
       ref: CoreAst.LocalRef,
       value: Value
   ): Env = {
-    Env.assertCollapsed(value)
+    Env.assertCanonicalProof(value)
+    if (locals.contains(ref)) throw WTF(s"Local ref $ref is already bound")
+    else copy(locals = locals + (ref -> value))
+  }
+
+  /**
+   * Temporary constructor-instantiation environment used only by declaration-certified proof reconstruction. Stored
+   * proof fields are intentionally reconstructed one layer at a time and may therefore be raw `VProof` s here.
+   */
+  private[raccoonlang] def putLocalUnchecked(ref: CoreAst.LocalRef, value: Value): Env = {
     if (locals.contains(ref)) throw WTF(s"Local ref $ref is already bound")
     else copy(locals = locals + (ref -> value))
   }

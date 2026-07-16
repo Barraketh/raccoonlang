@@ -51,26 +51,20 @@ object ValueOps {
         case VLam(tpe, id, body) =>
           VLam(materializePi(tpe), materializeId(id), materializeLamBody(body))
         case p: VProof =>
-          VProof(materialize(p.tpe), materialize(p.witness))
+          VProof(materialize(p.tpe))
         case p: VPacked =>
           VPacked(p.codec, p.payload, materialize(p.tpe))
       }
       // Deferred collapse: a type may resolve to a proposition only once its metas solve
-      // (e.g. u := 0); the value collapses at that point (proof-collapse.md §4). Deferred struct
+      // (e.g. u := 0); the proof policy applies at that point (proof-collapse.md §3). Deferred struct
       // expansion deliberately does NOT happen here: materialization reaches inside values
       // (projection bases, thunk envs), and wrapping an interior copy while bare copies circulate
       // would split the representation with no mixed defEq rule to reunite it (StructEta).
-      Value.collapseIfProof(rebuilt)
+      Value.canonicalizeProof(rebuilt)
     }
 
     private def mayNeedMaterialization(value: Value)(implicit eqStore: EqStore): Boolean =
-      value match {
-        // A proof's witness is excluded from synDeps (proof-collapse.md §10), so solved metas
-        // inside it are invisible here; always rebuild — the witness is re-materialized lazily
-        // under this store when (and only when) quoting forces it.
-        case _: VProof => true
-        case _         => value.synDeps.intersects(eqStore.solvedIds)
-      }
+      value.synDeps.intersects(eqStore.solvedIds)
 
     private def materializeLevel(level: Level)(implicit eqStore: EqStore): Level =
       Interpreter.resolveInEqStore(level, eqStore) match {
@@ -110,6 +104,7 @@ object ValueOps {
         case LamBody.Core(term, env) => LamBody.Core(term, materializeEnv(env))
         case LamBody.Native(run, env, isRawRecursive) =>
           LamBody.Native(run, materializeEnv(env), isRawRecursive)
+        case LamBody.ProofEta => LamBody.ProofEta
       }
 
     private def materializeDeps(deps: DepSet)(implicit eqStore: EqStore): DepSet = {

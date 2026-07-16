@@ -182,7 +182,7 @@ object ValueKey {
       mixKey(mixBytes(mixLong(tag(Tag.Packed), codecId), p.payload.toByteArray), p.tpe.key)
     case head: Value.ConstructorHead =>
       mixString(tag(Tag.ConstructorHead), head.name)
-    // All proofs of defEq propositions share a key; the witness never contributes.
+    // All erased proofs of defEq propositions share a key; VProof contains only its proposition.
     case p: Value.VProof =>
       mixKey(tag(Tag.Proof), p.tpe.key)
   }

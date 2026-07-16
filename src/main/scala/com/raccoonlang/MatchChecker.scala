@@ -37,9 +37,7 @@ object MatchChecker {
         case h: ConstructorHead =>
           val (freshArgs, resultTy) = BinderOps.freshCtorArgsAndResult(h)
           val storedArgs = Value.constructorStoredArgs(h, freshArgs)
-          // For a Prop scrutinee the ctor value collapses, so the value probe below degenerates
-          // to the type probe (proof-collapse.md §5).
-          val ctorValue = Value.collapseIfProof(
+          val ctorValue = Value.canonicalizeProof(
             Packed.foldCtor(h, storedArgs, resultTy).getOrElse(VCtor(h, storedArgs, resultTy))
           )
           val valueRefinable = rootRefinable(scrut) ++ ctorValue.synDeps
@@ -71,47 +69,19 @@ object MatchChecker {
     }
   }
 
-  private def allowLargeElimination(
-      scrutTpe: Value,
-      reachable: Vector[ReachableCtor]
-  ): Boolean = {
-    if (reachable.isEmpty) return true
-    if (reachable.length > 1) return false
-
-    val only = reachable.head
-    val (args1, res1) = BinderOps.freshCtorArgsAndResult(only.head)
-    val (args2, res2) = BinderOps.freshCtorArgsAndResult(only.head)
-    val fields1 = Value.constructorStoredArgs(only.head, args1)
-    val fields2 = Value.constructorStoredArgs(only.head, args2)
-
-    val refinable0 = DepSet.unionAll(scrutTpe.synDeps, res1.synDeps, res2.synDeps)
-
-    val startEq = {
-      val start = EqStore.empty.allow(refinable0)
-      ValueEquivalence
-        .tryUnify(res1, scrutTpe, start)
-        .flatMap(eq1 => ValueEquivalence.tryUnify(res2, scrutTpe, eq1)) match {
-        case Right(eqStore) => eqStore
-        case Left(_)        => return false
-      }
-    }
-
-    fields1.zip(fields2).forall { case (f1, f2) =>
-      val mf1 = ValueOps.materialize(f1, startEq)
-      val mf2 = ValueOps.materialize(f2, startEq)
-      isPropValuedType(mf1.tpe) || ValueEquivalence.defEq(mf1, mf2)
-    }
-  }
+  private def allowLargeElimination(meta: InductiveMeta, reachable: Vector[ReachableCtor]): Boolean =
+    reachable.isEmpty || meta.proofStorage.isInstanceOf[ProofStorage.Reconstruct]
 
   private def checkPropElimination(
       inductiveName: String,
       scrutTpe: Value,
       motiveTy: Value,
+      inductiveMeta: InductiveMeta,
       reachable: => Vector[ReachableCtor],
       span: Span
   ): Unit =
     if (isPropValuedType(scrutTpe) && !isPropValuedType(motiveTy)) {
-      if (!allowLargeElimination(scrutTpe, reachable))
+      if (!allowLargeElimination(inductiveMeta, reachable))
         throw PropEliminationRestricted(inductiveName, motiveTy, Some(span))
     }
 
@@ -125,7 +95,9 @@ object MatchChecker {
       throw ArityMismatch(args.length, br.argRefs.length, Some(br.span))
     val branchEnv = br.argRefs.zip(args).foldLeft(envWithScrut) { case (curEnv, (argRef, argVal)) =>
       argRef match {
-        case Some(ref) => curEnv.putLocal(ref, argVal)
+        // A reconstruction recipe stores recursive proof fields shallowly. Crossing the pattern
+        // boundary exposes one such field, so put it into the canonical form for its exact type.
+        case Some(ref) => curEnv.putLocal(ref, Value.canonicalizeProof(argVal))
         case None      => curEnv
       }
     }
@@ -193,7 +165,7 @@ object MatchChecker {
     }
     expectedTy.foreach(expected => checkFits(motiveTy, expected))
 
-    checkPropElimination(inductiveName, scrutTpe, motiveTy, reachableByType, t.span)
+    checkPropElimination(inductiveName, scrutTpe, motiveTy, inductiveMeta, reachableByType, t.span)
 
     var checkedByCtor = Map.empty[String, EA.Case]
 
