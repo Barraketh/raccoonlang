@@ -1,5 +1,7 @@
 package com.raccoonlang
 
+import scala.collection.immutable.BitSet
+
 import com.raccoonlang.ErrorReporter.Source
 import com.raccoonlang.Value.{NatCodec, VPacked}
 
@@ -172,7 +174,7 @@ class NativeLiteralTests extends munit.FunSuite {
       case head: Value.ConstructorHead => head
       case other                       => fail(s"Expected Nat.succ constructor, got $other")
     }
-    val info = new Value.ProjectionInfo(Vector(false), etaEligible = false, () => succ)
+    val info = new Value.ProjectionInfo(Vector(BitSet.empty), etaEligible = false, () => Some(succ))
     val one = VPacked(NatCodec, 1, nat)
 
     assertEquals(payload(InductiveProjection.check(one, instance, info, 0, Span(0, 0))), BigInt(0))

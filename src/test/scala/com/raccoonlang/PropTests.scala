@@ -407,7 +407,7 @@ class PropTests extends munit.FunSuite {
     assertEquals(toShape(res), zeroS)
   }
 
-  test("Negative: injectively nested index is outside the simple storage certificate") {
+  test("Negative: injectively nested index is outside the simple recovery plan") {
     val p =
       """
         |inductive Peano : Type
@@ -432,7 +432,7 @@ class PropTests extends munit.FunSuite {
     }
   }
 
-  test("Negative: one reachable constructor does not bypass the declaration-time storage policy") {
+  test("Negative: one reachable constructor does not bypass the recovery policy") {
     val p =
       """
         |inductive Peano : Type

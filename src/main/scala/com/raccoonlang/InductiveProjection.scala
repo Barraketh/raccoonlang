@@ -80,61 +80,60 @@ object InductiveProjection {
     Value.ascribe(raw, fieldTy)
   }
 
-  /**
-   * Typecheck and evaluate one projection in a single left-to-right constructor-telescope pass. A preceding field is
-   * projected only when the remaining telescope actually mentions it; this is both Lean's typing rule for Prop majors
-   * and what keeps forbidden data projections from being fabricated internally.
-   */
+  /** Typecheck and evaluate one positional projection. */
   def check(
       base: Value,
       inst: InductiveFamilyInstance,
       info: ProjectionInfo,
       idx: Int,
       span: Span
-  ): Value =
-    projectOne(base, inst, info, idx, enforcePropRules = true, span = Some(span))
+  ): Value = {
+    validateIndex(inst.head.name, info, idx, Some(span))
+    if (Value.isPropositionType(base.tpe))
+      ProofReconstruction.recoverField(base.tpe, idx).getOrElse {
+        throw InvalidProjection(
+          inst.head.name,
+          idx,
+          "field value or type is not recoverable from the exact proposition",
+          Some(span)
+        )
+      }
+    else projectOne(base, inst, info, idx)
+  }
 
   /** Evaluate a previously checked positional projection. */
   def project(base: Value, familyName: String, info: ProjectionInfo, idx: Int): Value = {
     val inst = projectionInstance(base, familyName, info)
-    projectOne(base, inst, info, idx, enforcePropRules = false, span = None)
+    validateIndex(familyName, info, idx, None)
+    if (Value.isPropositionType(base.tpe))
+      ProofReconstruction.recoverField(base.tpe, idx).getOrElse {
+        throw WTF(s"Checked projection $familyName.$idx is not recoverable at runtime from ${base.tpe}")
+      }
+    else projectOne(base, inst, info, idx)
   }
 
   private def projectOne(
       base: Value,
       inst: InductiveFamilyInstance,
       info: ProjectionInfo,
-      idx: Int,
-      enforcePropRules: Boolean,
-      span: Option[Span]
+      idx: Int
   ): Value = {
-    val familyName = inst.head.name
-    validateIndex(familyName, info, idx, span)
     val pi = constructorPi(info)
     val fields = pi.binders.drop(info.ctorHead.numErasedFamilyArgs)
     var env = parameterEnv(inst, info, pi)
-    val propMajor = enforcePropRules && Value.isPropositionType(base.tpe)
+    val dependencies = info.fieldDependencies(idx)
 
     var fieldIdx = 0
     while (fieldIdx < idx) {
-      if (info.fieldNeededInSuffix(fieldIdx)) {
+      if (dependencies.contains(fieldIdx)) {
         val binder = fields(fieldIdx)
         val fieldTy = Interpreter.evalTerm(binder.ty, env)
-        if (propMajor && !Value.isPropositionType(fieldTy))
-          throw InvalidProjection(
-            familyName,
-            idx,
-            s"preceding dependent field $fieldIdx is not a proposition",
-            span
-          )
         env = BinderOps.bindValue(env, binder, projectedField(base, inst, info, fieldIdx, fieldTy))
       }
       fieldIdx += 1
     }
 
     val fieldTy = Interpreter.evalTerm(fields(idx).ty, env)
-    if (propMajor && !Value.isPropositionType(fieldTy))
-      throw InvalidProjection(familyName, idx, "selected field is not a proposition", span)
     projectedField(base, inst, info, idx, fieldTy)
   }
 

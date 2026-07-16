@@ -83,7 +83,7 @@ class ProofCollapseTests extends munit.FunSuite {
     )
   }
 
-  test("fixed positive-universe families carry no proof reconstruction metadata") {
+  test("fixed positive-universe families carry no proof recovery metadata") {
     val program = parse(
       """
         |inductive Box : Type
@@ -96,7 +96,7 @@ class ProofCollapseTests extends munit.FunSuite {
 
     env("Box") match {
       case Value.VConst(_, Value.Inductive(meta), _) =>
-        assertEquals(meta.proofStorage, Value.ProofStorage.Erase)
+        assertEquals(meta.proofRecovery, None)
       case other => fail(s"Expected the Box inductive family, got $other")
     }
   }
@@ -112,6 +112,25 @@ class ProofCollapseTests extends munit.FunSuite {
         |def atProp (P: Prop)(h: P): Eq(P, h, id(h)) := genRefl(h)
         |""".stripMargin
     )
+  }
+
+  test("large elimination eligibility classifies polymorphic fields at the Prop instance") {
+    val res = runProgram(
+      """
+        |inductive PolyBox {u: Level}(A: Sort(u)) : Sort(u)
+        | | mk (value: A) : PolyBox(A)
+        |
+        |axiom boxedTrue : PolyBox(True)
+        |
+        |def observe (P: Prop)(box: PolyBox(P)): Nat := {
+        |  match box returning Nat with
+        |  | PolyBox.mk _ => Nat.zero
+        |}
+        |
+        |{ observe(True, boxedTrue) }
+        |""".stripMargin
+    )
+    assertEquals(PrettyPrinter.print(res), "0")
   }
 
   test("proof irrelevance is unchanged by constructor canonicalization") {
@@ -141,6 +160,30 @@ class ProofCollapseTests extends munit.FunSuite {
     res match {
       case _: Value.NeutralThunk =>
       case other                 => fail(s"Expected the cast to stay stuck, got $other")
+    }
+  }
+
+  test("large-match reduction still requires the constructor result to match the exact proposition") {
+    val res = runProgram(
+      """
+        |inductive Eq2 (A: Type) indices (left: A)(right: A) : Prop
+        | | refl (value: A) : Eq2(A, value, value)
+        |
+        |axiom a : Nat
+        |axiom b : Nat
+        |axiom h : Eq2(Nat, a, b)
+        |
+        |def inspect (proof: Eq2(Nat, a, b)): Bool := {
+        |  match proof returning Bool with
+        |  | Eq2.refl _ => Bool.true
+        |}
+        |
+        |{ inspect(h) }
+        |""".stripMargin
+    )
+    res match {
+      case _: Value.NeutralThunk =>
+      case other                 => fail(s"Expected the constrained match to stay stuck, got $other")
     }
   }
 

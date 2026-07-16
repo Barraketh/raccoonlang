@@ -69,19 +69,18 @@ object MatchChecker {
     }
   }
 
-  private def allowLargeElimination(meta: InductiveMeta, reachable: Vector[ReachableCtor]): Boolean =
-    reachable.isEmpty || meta.proofStorage.isInstanceOf[ProofStorage.Reconstruct]
+  private def allowLargeElimination(scrutTpe: Value, reachable: Vector[ReachableCtor]): Boolean =
+    reachable.isEmpty || ProofReconstruction.canRecoverAll(scrutTpe)
 
   private def checkPropElimination(
       inductiveName: String,
       scrutTpe: Value,
       motiveTy: Value,
-      inductiveMeta: InductiveMeta,
       reachable: => Vector[ReachableCtor],
       span: Span
   ): Unit =
     if (isPropValuedType(scrutTpe) && !isPropValuedType(motiveTy)) {
-      if (!allowLargeElimination(inductiveMeta, reachable))
+      if (!allowLargeElimination(scrutTpe, reachable))
         throw PropEliminationRestricted(inductiveName, motiveTy, Some(span))
     }
 
@@ -95,7 +94,7 @@ object MatchChecker {
       throw ArityMismatch(args.length, br.argRefs.length, Some(br.span))
     val branchEnv = br.argRefs.zip(args).foldLeft(envWithScrut) { case (curEnv, (argRef, argVal)) =>
       argRef match {
-        // A reconstruction recipe stores recursive proof fields shallowly. Crossing the pattern
+        // Proof recovery stores recursive proof fields shallowly. Crossing the pattern
         // boundary exposes one such field, so put it into the canonical form for its exact type.
         case Some(ref) => curEnv.putLocal(ref, Value.canonicalizeProof(argVal))
         case None      => curEnv
@@ -165,7 +164,7 @@ object MatchChecker {
     }
     expectedTy.foreach(expected => checkFits(motiveTy, expected))
 
-    checkPropElimination(inductiveName, scrutTpe, motiveTy, inductiveMeta, reachableByType, t.span)
+    checkPropElimination(inductiveName, scrutTpe, motiveTy, reachableByType, t.span)
 
     var checkedByCtor = Map.empty[String, EA.Case]
 

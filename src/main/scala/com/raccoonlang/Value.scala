@@ -1,5 +1,7 @@
 package com.raccoonlang
 
+import scala.collection.immutable.BitSet
+
 /**
  * Represents a typechecked value representation - the values that live in an Env. Values can contain Vars(), which
  * represent unknown values. Vars have a unique id, which means they can participate in equality. Thus values could be
@@ -61,9 +63,9 @@ object Value {
 
   /**
    * Put a proof into the canonical representation determined solely by its exact proposition (docs/proof-collapse.md).
-   * If the proposition's declaration-time recipe reconstructs a constructor at that exact type, every inhabitant uses
-   * constructor form. Otherwise a Pi proposition reconstructs its eta-lambda and every other ordinary inhabitant erases
-   * to `VProof`. Exemptions:
+   * If the proposition's recovery plan reconstructs a constructor at that exact type, every inhabitant uses constructor
+   * form. Otherwise a Pi proposition reconstructs its eta-lambda and every other ordinary inhabitant erases to
+   * `VProof`. Exemptions:
    *   - `Var`: metas and unification unknowns must stay refinable — collapsing a placeholder would silently discharge a
    *     proof obligation. Rigid hypotheses are erased at binder freshening only after the source binder has established
    *     that an inhabitant is in scope (`canonicalizeRigidBinder` below).
@@ -80,9 +82,19 @@ object Value {
       case VLam(_, _, LamBody.Native(_, _, true)) => value
       case _ if !isPropositionType(value.tpe)     => value
       // A trusted application of the declaration-certified constructor already carries the
-      // result-forced data fields. Check this before running the recipe so repeated canonicalization
+      // result-forced data fields. Check this before running recovery so repeated canonicalization
       // at environment boundaries is constant-time.
-      case VCtor(actualHead, _, _) if ProofReconstruction.isCertifiedConstructor(value.tpe, actualHead) => value
+      case VCtor(actualHead, _, _) if ProofReconstruction.isDefinitelyCertifiedConstructor(value.tpe, actualHead) =>
+        value
+      // A universe-polymorphic field may become a proof only at this exact instance, so it cannot
+      // use the declaration-wide fast path. Validate recovery once and preserve the already-
+      // constructor-headed value when it is the canonical head.
+      case VCtor(actualHead, _, _) =>
+        ProofReconstruction.reconstruct(value.tpe) match {
+          case Some(reconstructed) if reconstructed.head.name == actualHead.name => value
+          case Some(reconstructed) => VCtor(reconstructed.head, reconstructed.fields, value.tpe)
+          case None                => VProof(value.tpe)
+        }
       case _ =>
         ProofReconstruction.reconstruct(value.tpe) match {
           case Some(reconstructed) =>
@@ -582,54 +594,34 @@ object Value {
 
   final case class ConstructorMeta(shortName: String, canonicalName: String)
 
-  /**
-   * A stored constructor field's declaration-time reconstruction recipe. Data fields name the direct family-result
-   * argument that fixes them. Proposition fields are reconstructed shallowly as erased proofs of their instantiated
-   * binder types.
-   */
-  sealed trait ProofFieldRecipe
-  object ProofFieldRecipe {
-    final case class ResultArgument(index: Int) extends ProofFieldRecipe
-    case object ErasedProof extends ProofFieldRecipe
+  /** A stored data field's declaration-time source in the family result. */
+  sealed trait ProofFieldSource
+  object ProofFieldSource {
+    final case class ResultArgument(index: Int) extends ProofFieldSource {
+      require(index >= 0, "Proof field result-argument index must be non-negative")
+    }
+    case object Unavailable extends ProofFieldSource
   }
 
   /**
-   * Constructor reconstruction capability carried by an inductive family. The head is a promise resolved only after the
-   * checked family and its constructor have been installed in the environment.
-   */
-  final class ProofConstructorInfo(
-      val fields: Vector[ProofFieldRecipe],
-      ctorHead0: () => Option[ConstructorHead]
-  ) {
-    // Family metadata exists while its constructor heads are still being checked. During that
-    // interval reconstruction is unavailable; it becomes available once the declaration's final
-    // environment has been installed.
-    def ctorHead: Option[ConstructorHead] = ctorHead0()
-  }
-
-  /** Declaration-time proof representation policy. */
-  sealed trait ProofStorage
-  object ProofStorage {
-    case object Erase extends ProofStorage
-    final case class Reconstruct(info: ProofConstructorInfo) extends ProofStorage
-  }
-
-  /**
-   * Checked positional-projection capability of a one-constructor inductive family. `fieldNeededInSuffix(i)` records
-   * whether field `i` occurs in a later constructor binder type or the constructor result. It is compiled once from
-   * checked constructor syntax and drives both dependent telescope instantiation and Lean's Prop projection rule.
+   * Checked positional-projection capability of a one-constructor inductive family. `fieldDependencies(i)` is the
+   * precise transitive set of preceding fields needed to instantiate the type of field `i`.
    *
    * Field spellings are deliberately absent: projections are kernel operations, while named selectors are ordinary
    * frontend definitions. The constructor head is a promise completed after declaration installation.
    */
   final class ProjectionInfo(
-      val fieldNeededInSuffix: Vector[Boolean],
+      val fieldDependencies: Vector[BitSet],
       val etaEligible: Boolean,
-      ctorHead0: () => ConstructorHead
+      ctorHead0: () => Option[ConstructorHead]
   ) {
-    val fieldCount: Int = fieldNeededInSuffix.length
+    val fieldCount: Int = fieldDependencies.length
+    fieldDependencies.zipWithIndex.foreach { case (dependencies, fieldIndex) =>
+      require(dependencies.forall(_ < fieldIndex), "Projection fields may depend only on preceding fields")
+    }
+    def ctorHeadOption: Option[ConstructorHead] = ctorHead0()
     lazy val ctorHead: ConstructorHead = {
-      val head = ctorHead0()
+      val head = ctorHeadOption.getOrElse(throw WTF("Projection constructor requested before declaration installation"))
       val actualFieldCount = head.totalArity - head.numErasedFamilyArgs
       if (actualFieldCount != fieldCount)
         throw WTF(s"Projection metadata for ${head.name} has $fieldCount fields, constructor has $actualFieldCount")
@@ -637,22 +629,36 @@ object Value {
     }
   }
 
+  /**
+   * Declaration-compiled plan for recovering fields from a Prop instance without consulting its proof value. Field
+   * propness is deliberately classified at the actual instance; the stored sources describe only data recovery.
+   */
+  final class ProofRecoveryInfo(
+      val fieldSources: Vector[ProofFieldSource],
+      val projectionInfo: ProjectionInfo,
+      val definitelyComplete: Boolean
+  ) {
+    require(fieldSources.length == projectionInfo.fieldCount, "Proof recovery and projection field counts must agree")
+    val allFields: BitSet = BitSet.fromSpecific(fieldSources.indices)
+  }
+
   final case class InductiveMeta(
       constructors: Vector[ConstructorMeta],
       familyArity: Int,
       positiveArgs: DepSet,
       projectionInfo: Option[ProjectionInfo],
-      proofStorage: ProofStorage
+      proofRecovery: Option[ProofRecoveryInfo]
   ) {
     require(
       positiveArgs.isEmpty || positiveArgs.max < familyArity,
       "Inductive positive argument indexes must be in range"
     )
-    require(
-      !proofStorage.isInstanceOf[ProofStorage.Reconstruct] || constructors.length == 1,
-      "Constructor-reconstructing proof families must have exactly one constructor"
-    )
     require(projectionInfo.isEmpty || constructors.length == 1, "Only one-constructor families can be projected")
+    require(proofRecovery.isEmpty || constructors.length == 1, "Only one-constructor families can recover proof fields")
+    require(
+      proofRecovery.forall(info => projectionInfo.contains(info.projectionInfo)),
+      "Proof recovery must share its family's projection metadata"
+    )
 
     lazy val constructorNames: Vector[String] = constructors.map(_.canonicalName)
   }

@@ -669,6 +669,24 @@ class ProjectionTests extends munit.FunSuite {
     typecheckDecls(p)
   }
 
+  test("a generic struct projection remains valid when its instance specializes to Prop") {
+    val p =
+      """
+        |inductive True : Prop
+        | | intro : True
+        |
+        |struct PolyBox {u: Level}(A: Sort(u)) : Sort(u)
+        | | mk (value: A) : PolyBox(A)
+        |
+        |def get {u: Level}{A: Sort(u)} (box: PolyBox(A)): A := box.value
+        |
+        |axiom boxedTrue : PolyBox(True)
+        |def gotTrue : True := get(boxedTrue)
+        |""".stripMargin
+
+    typecheckDecls(p)
+  }
+
   test("primitive Prop projection permits an unused preceding data field") {
     val p =
       """
@@ -740,7 +758,7 @@ class ProjectionTests extends munit.FunSuite {
     }
   }
 
-  test("primitive Prop projection counts dependencies in the constructor result") {
+  test("primitive Prop projection recovers fields forced by an index") {
     val p =
       """
         |inductive Peano : Type
@@ -756,12 +774,88 @@ class ProjectionTests extends munit.FunSuite {
         |""".stripMargin
 
     val span = Span(0, 0)
+    val env = evalDecls(p)
+    val data = TypeChecker.checkTerm(
+      CoreAst.Term.Proj("IndexedProof", 0, CoreAst.Term.GlobalRef("h", span), span),
+      env
+    )
+    val proof = TypeChecker.checkTerm(
+      CoreAst.Term.Proj("IndexedProof", 1, CoreAst.Term.GlobalRef("h", span), span),
+      env
+    )
+
+    assertEquals(PrettyPrinter.print(data.value), "Peano.zero")
+    assert(Value.isPropositionType(proof.value.tpe))
+  }
+
+  test("a Prop struct may generate a selector for an index-forced data field") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        |
+        |struct IndexedProp indices (n: Peano) : Prop
+        | | intro (value: Peano) : IndexedProp(value)
+        |
+        |axiom h : IndexedProp(Peano.zero)
+        |def recovered : Peano := h.value
+        |""".stripMargin
+
+    typecheckDecls(p)
+  }
+
+  test("Prop field recovery does not assert the constructor result equation") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (pred: Peano) : Peano
+        |
+        |inductive Eq2 indices (left: Peano)(right: Peano) : Prop
+        | | refl (value: Peano) : Eq2(value, value)
+        |
+        |axiom a : Peano
+        |axiom b : Peano
+        |axiom h : Eq2(a, b)
+        |""".stripMargin
+
+    val span = Span(0, 0)
+    val recovered = TypeChecker.checkTerm(
+      CoreAst.Term.Proj("Eq2", 0, CoreAst.Term.GlobalRef("h", span), span),
+      evalDecls(p)
+    )
+    assertEquals(PrettyPrinter.print(recovered.value), "a")
+  }
+
+  test("primitive Prop projection ignores result-only dependencies of an independent proof field") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (pred: Peano) : Peano
+        |
+        |inductive True : Prop
+        | | intro : True
+        |
+        |inductive NestedProof indices (n: Peano) : Prop
+        | | intro (data: Peano)(proof: True) : NestedProof(Peano.succ(data))
+        |
+        |axiom h : NestedProof(Peano.succ(Peano.zero))
+        |""".stripMargin
+
+    val span = Span(0, 0)
+    val env = evalDecls(p)
     intercept[InvalidProjection] {
       TypeChecker.checkTerm(
-        CoreAst.Term.Proj("IndexedProof", 1, CoreAst.Term.GlobalRef("h", span), span),
-        evalDecls(p)
+        CoreAst.Term.Proj("NestedProof", 0, CoreAst.Term.GlobalRef("h", span), span),
+        env
       )
     }
+    val proof = TypeChecker.checkTerm(
+      CoreAst.Term.Proj("NestedProof", 1, CoreAst.Term.GlobalRef("h", span), span),
+      env
+    )
+    assert(Value.isPropositionType(proof.value.tpe))
   }
 
   test("primitive projection validates the family shape and field index") {

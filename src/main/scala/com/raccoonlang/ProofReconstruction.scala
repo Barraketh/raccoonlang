@@ -2,50 +2,83 @@ package com.raccoonlang
 
 import com.raccoonlang.Value._
 
-/** Declaration-certified, type-directed canonical constructor reconstruction for proofs. */
+import scala.collection.immutable.BitSet
+
+/** Type-directed field recovery and canonical constructor reconstruction for proofs. */
 object ProofReconstruction {
 
   final case class Result(head: ConstructorHead, fields: Vector[Value])
 
+  private final case class Recovered(
+      head: ConstructorHead,
+      fields: Vector[Option[Value]],
+      resultType: Option[Value]
+  )
+
+  private def recoveryInfo(tpe: Value): Option[(InductiveFamilyInstance, ProofRecoveryInfo)] =
+    if (!Value.isPropositionType(tpe)) None
+    else
+      tpe match {
+        case InductiveFamilyValue(instance) => instance.meta.proofRecovery.map(info => instance -> info)
+        case _                              => None
+      }
+
   /**
-   * Whether `head` is the declaration-certified constructor for `tpe`. A well-typed application of that head already
-   * carries every data field forced by its result type, so canonicalization can preserve it without re-executing the
-   * reconstruction recipe.
+   * A trusted constructor application is already canonical when its declaration guarantees recovery. Other
+   * instance-sensitive families revalidate recovery at the exact proposition. The hint changes cost, never semantics.
    */
-  def isCertifiedConstructor(tpe: Value, head: ConstructorHead): Boolean =
-    tpe match {
-      case InductiveFamilyValue(instance) =>
-        instance.meta.proofStorage match {
-          case ProofStorage.Reconstruct(info) => info.ctorHead.exists(_.name == head.name)
-          case ProofStorage.Erase             => false
+  def isDefinitelyCertifiedConstructor(tpe: Value, head: ConstructorHead): Boolean =
+    recoveryInfo(tpe).exists { case (_, info) =>
+      info.definitelyComplete && info.projectionInfo.ctorHeadOption.exists(_.name == head.name)
+    }
+
+  /** Recover one field and exactly the preceding fields needed to instantiate its type. */
+  def recoverField(tpe: Value, fieldIndex: Int): Option[Value] =
+    recoveryInfo(tpe).flatMap { case (instance, info) =>
+      val projection = info.projectionInfo
+      if (fieldIndex < 0 || fieldIndex >= projection.fieldCount) None
+      else {
+        val required = projection.fieldDependencies(fieldIndex) + fieldIndex
+        recover(instance, info, required, includeResultType = false).flatMap(_.fields(fieldIndex)).map { field =>
+          // Full reconstruction keeps recursive proof fields shallow. A projected field crosses an
+          // observation boundary, so put that selected field into its own canonical representation.
+          Value.canonicalizeProof(field)
         }
-      case _ => false
+      }
     }
 
   /**
-   * Reconstruct one constructor layer at the exact proposition `tpe`. This performs no search or unification: the
-   * declaration records the sole constructor and the source of every stored field. The final result-type comparison is
-   * what distinguishes a diagonal instance such as `Eq Nat zero zero` from a non-diagonal one such as
-   * `Eq Type Nat Bool`.
+   * Whether every constructor field can be recovered from this exact family instance. No result equation is assumed.
+   */
+  def canRecoverAll(tpe: Value): Boolean =
+    recoveryInfo(tpe).exists { case (instance, info) =>
+      recover(instance, info, info.allFields, includeResultType = false).nonEmpty
+    }
+
+  /**
+   * Reconstruct one validated constructor layer at the exact proposition `tpe`. Field recovery performs no search or
+   * unification; this final result comparison is what prevents a constrained instance from manufacturing a branch-
+   * firing constructor.
    */
   def reconstruct(tpe: Value): Option[Result] =
-    tpe match {
-      case InductiveFamilyValue(instance) =>
-        instance.meta.proofStorage match {
-          case ProofStorage.Reconstruct(info) => reconstruct(instance, info, tpe)
-          case ProofStorage.Erase             => None
-        }
-      case _ => None
+    recoveryInfo(tpe).flatMap { case (instance, info) =>
+      recover(instance, info, info.allFields, includeResultType = true).flatMap { recovered =>
+        val fields = recovered.fields.flatten
+        if (fields.length != info.fieldSources.length || !recovered.resultType.exists(ValueEquivalence.defEq(_, tpe)))
+          None
+        else Some(Result(recovered.head, fields))
+      }
     }
 
-  private def reconstruct(
+  private def recover(
       instance: InductiveFamilyInstance,
-      info: ProofConstructorInfo,
-      exactType: Value
-  ): Option[Result] = {
-    val head = info.ctorHead.getOrElse(return None)
+      info: ProofRecoveryInfo,
+      required: BitSet,
+      includeResultType: Boolean
+  ): Option[Recovered] = {
+    val head = info.projectionInfo.ctorHeadOption.getOrElse(return None)
     val numParams = head.numErasedFamilyArgs
-    if (instance.args.length < numParams || info.fields.length != head.totalArity - numParams)
+    if (instance.args.length < numParams || info.fieldSources.length != head.totalArity - numParams)
       return None
 
     head.tpe match {
@@ -53,48 +86,55 @@ object ProofReconstruction {
         if (pi.binders.length != head.totalArity) return None
 
         var env = pi.env
-        val fullArgs = Vector.newBuilder[Value]
-        var idx = 0
-
-        while (idx < pi.binders.length) {
-          val binder = pi.binders(idx)
+        var parameterIndex = 0
+        while (parameterIndex < numParams) {
+          val binder = pi.binders(parameterIndex)
           val expectedType = Interpreter.evalTerm(binder.ty, env)
-          val fieldRecipe = if (idx < numParams) None else Some(info.fields(idx - numParams))
-          val arg =
-            fieldRecipe match {
-              case None => instance.args(idx)
-              case Some(ProofFieldRecipe.ResultArgument(resultIndex)) =>
-                if (resultIndex < 0 || resultIndex >= instance.args.length) return None
-                instance.args(resultIndex)
-              case Some(ProofFieldRecipe.ErasedProof) =>
-                if (!Value.isPropositionType(expectedType)) return None
-                // Deliberately shallow: a recursive proof field canonicalizes when it is later
-                // exposed as a binder, rather than constructing an infinite proof tree now.
-                // Do not pass this through `ascribe`: that would immediately reconstruct the
-                // same recursive constructor layer again.
-                VProof(expectedType)
-            }
-
-          if (!ValueEquivalence.defEq(arg.tpe, expectedType)) return None
-          val storedArg = fieldRecipe match {
-            case Some(ProofFieldRecipe.ErasedProof) => arg
-            case _ =>
-              arg match {
-                case _: UpdatableType => Value.ascribe(arg, expectedType)
-                case _                => arg
-              }
+          val argument = instance.args(parameterIndex)
+          if (!ValueEquivalence.defEq(argument.tpe, expectedType)) return None
+          val storedArgument = argument match {
+            case _: UpdatableType => Value.ascribe(argument, expectedType)
+            case _                => argument
           }
-          fullArgs += storedArg
-          env = env.putLocalUnchecked(binder.localRef, storedArg)
-          idx += 1
+          env = env.putLocalUnchecked(binder.localRef, storedArgument)
+          parameterIndex += 1
+        }
+        val fieldBinders = pi.binders.drop(numParams)
+        val recoveredFields = Array.fill[Option[Value]](fieldBinders.length)(None)
+        var fieldIndex = 0
+
+        while (fieldIndex < fieldBinders.length) {
+          if (required.contains(fieldIndex)) {
+            val binder = fieldBinders(fieldIndex)
+            val expectedType = Interpreter.evalTerm(binder.ty, env)
+            val recovered =
+              if (Value.isPropositionType(expectedType)) VProof(expectedType)
+              else
+                info.fieldSources(fieldIndex) match {
+                  case ProofFieldSource.ResultArgument(resultIndex) =>
+                    if (resultIndex < 0 || resultIndex >= instance.args.length) return None
+                    val argument = instance.args(resultIndex)
+                    if (!ValueEquivalence.defEq(argument.tpe, expectedType)) return None
+                    argument match {
+                      case _: UpdatableType => Value.ascribe(argument, expectedType)
+                      case _                => argument
+                    }
+                  case ProofFieldSource.Unavailable => return None
+                }
+
+            recoveredFields(fieldIndex) = Some(recovered)
+            // Keep proof fields shallow here. Recursive proof reconstruction canonicalizes one
+            // exposed layer at a time rather than building an infinite constructor tree.
+            env = env.putLocalUnchecked(binder.localRef, recovered)
+          }
+          fieldIndex += 1
         }
 
-        val resultType = pi.codomain(env)
-        if (!ValueEquivalence.defEq(resultType, exactType)) None
-        else Some(Result(head, fullArgs.result().drop(numParams)))
+        val resultType = Option.when(includeResultType)(pi.codomain(env))
+        Some(Recovered(head, recoveredFields.toVector, resultType))
 
-      case resultType if head.totalArity == 0 && ValueEquivalence.defEq(resultType, exactType) =>
-        Some(Result(head, Vector.empty))
+      case resultType if head.totalArity == 0 && required.isEmpty =>
+        Some(Recovered(head, Vector.empty, Option.when(includeResultType)(resultType)))
 
       case _ => None
     }

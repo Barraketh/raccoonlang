@@ -4,6 +4,8 @@ import com.raccoonlang.CoreAst._
 import com.raccoonlang.Value._
 import com.raccoonlang.telescope.BinderOps
 
+import scala.collection.immutable.BitSet
+
 object InductiveChecks {
 
   // ------------ Occurrence and Positivity ------------
@@ -208,16 +210,17 @@ object InductiveChecks {
     refs.result()
   }
 
-  /** For each stored field, whether its local ref occurs anywhere in the remaining constructor telescope. */
-  private def constructorFieldDependencies(ctor: ConstructorDecl): Vector[Boolean] = {
-    var suffixRefs = referencedLocals(ctor.resultTy)
-    val result = new Array[Boolean](ctor.binders.length)
-    var idx = ctor.binders.length - 1
-    while (idx >= 0) {
-      val binder = ctor.binders(idx)
-      result(idx) = suffixRefs.contains(binder.localRef)
-      suffixRefs ++= referencedLocals(binder.ty)
-      idx -= 1
+  /** Precise transitive preceding-field dependencies of each stored field type. */
+  private def constructorFieldDependencies(ctor: ConstructorDecl): Vector[BitSet] = {
+    val fieldIndex = ctor.binders.zipWithIndex.map { case (binder, idx) => binder.localRef -> idx }.toMap
+    val result = Array.fill(ctor.binders.length)(BitSet.empty)
+    var idx = 0
+    while (idx < ctor.binders.length) {
+      val direct = BitSet.fromSpecific(referencedLocals(ctor.binders(idx).ty).flatMap(fieldIndex.get).filter(_ < idx))
+      result(idx) = direct.foldLeft(direct) { case (dependencies, dependency) =>
+        dependencies ++ result(dependency)
+      }
+      idx += 1
     }
     result.toVector
   }
@@ -281,7 +284,7 @@ object InductiveChecks {
         decl.header.binders.length,
         initialPositiveArgs,
         projectionInfo = None,
-        proofStorage = ProofStorage.Erase
+        proofRecovery = None
       )
 
     val provisionalHead = VConst(name, Inductive(initialMeta), inductiveType)
@@ -312,8 +315,8 @@ object InductiveChecks {
     // A family whose declared universe is positive under every level assignment can never have a
     // Prop instance, so proof representation metadata would be dead weight. Retain a candidate only
     // for Prop and universe-polymorphic families whose result level may reduce to zero.
-    var proofFieldRecipes = Option.when(decl.ctors.length == 1 && !Level.isNeverZero(declaredSort.level)) {
-      Vector.empty[ProofFieldRecipe]
+    var proofFieldPlan = Option.when(decl.ctors.length == 1 && !Level.isNeverZero(declaredSort.level)) {
+      (Vector.empty[ProofFieldSource], false)
     }
 
     decl.ctors.foreach { ctor =>
@@ -338,20 +341,19 @@ object InductiveChecks {
 
       checkConstructorParamDiscipline(header, ctor, envWithBinders, outputArgs)
 
-      // Compile the simple singleton reconstruction certificate once on the declaration. Prop
-      // fields are reconstructed shallowly; every other stored field records the direct result
-      // argument that fixes it. The instantiated constructor result is checked against the exact
-      // proposition when reconstruction runs, so repeated/constant indices become constraints
-      // rather than interpreter-time unification problems.
-      if (proofFieldRecipes.nonEmpty) {
-        val recipes = ownBinderVars.map { field =>
-          if (Value.isPropositionType(field.tpe)) Some(ProofFieldRecipe.ErasedProof)
-          else {
-            val resultIndex = outputArgs.indexWhere(arg => ValueEquivalence.defEq(arg, field))
-            Option.when(resultIndex >= 0)(ProofFieldRecipe.ResultArgument(resultIndex))
-          }
+      // Compile data sources for the one-constructor family's proof-recovery plan. Whether a
+      // field is a proof is classified later at the actual family instance, so universe-polymorphic
+      // fields that become proofs at u := 0 need no declaration-time special case.
+      if (proofFieldPlan.nonEmpty) {
+        val sources = ownBinderVars.map { field =>
+          val resultIndex = outputArgs.indexWhere(arg => ValueEquivalence.defEq(arg, field))
+          if (resultIndex >= 0) ProofFieldSource.ResultArgument(resultIndex)
+          else ProofFieldSource.Unavailable
         }
-        proofFieldRecipes = Option.when(recipes.forall(_.nonEmpty))(recipes.flatten)
+        val definitelyComplete = ownBinderVars.zip(sources).forall { case (field, source) =>
+          Value.isPropositionType(field.tpe) || source != ProofFieldSource.Unavailable
+        }
+        proofFieldPlan = Some((sources, definitelyComplete))
       }
 
       val constructorUniverse = TypeChecker.getUniverse(outputTpe)
@@ -400,7 +402,7 @@ object InductiveChecks {
 
     // A one-constructor family gets positional projection metadata regardless of indices or recursion. Structure eta
     // is the narrower Lean gate: zero indices and no recursive occurrence. Prop instances are filtered dynamically by
-    // StructEta.eligibleInstance and continue to follow ProofStorage.
+    // StructEta.eligibleInstance and follow their declaration-compiled recovery plan.
     //
     // The constructor head is a promise completed after installation: constructor types are checked against the
     // installed family head, so the head cannot exist before installInductive runs.
@@ -408,34 +410,23 @@ object InductiveChecks {
     val projectionInfo =
       if (decl.ctors.length == 1) {
         val ctor = decl.ctors.head
-        val ctorName = decl.ctors.head.canonicalName
         Some(
           new ProjectionInfo(
             constructorFieldDependencies(ctor),
             etaEligible = header.indices.isEmpty && !hasRecursiveField,
-            () =>
-              installedCtorHead.getOrElse(
-                throw WTF(s"Projection constructor $ctorName requested before declaration installation")
-              )
+            () => installedCtorHead
           )
         )
       } else None
 
-    val proofStorage =
-      proofFieldRecipes match {
-        case Some(recipes) =>
-          ProofStorage.Reconstruct(
-            new ProofConstructorInfo(
-              recipes,
-              () => installedCtorHead
-            )
-          )
-        case None => ProofStorage.Erase
-      }
+    val proofRecovery = for {
+      (fields, definitelyComplete) <- proofFieldPlan
+      info <- projectionInfo
+    } yield new ProofRecoveryInfo(fields, info, definitelyComplete)
     val meta = initialMeta.copy(
       positiveArgs = positiveArgs,
       projectionInfo = projectionInfo,
-      proofStorage = proofStorage
+      proofRecovery = proofRecovery
     )
 
     val inductiveHead = VConst(name, Inductive(meta), inductiveType)

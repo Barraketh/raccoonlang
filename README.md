@@ -176,7 +176,8 @@ Rules and consequences:
   remain positional fields but receive no selector alias.
 - Params before `indices` must be returned uniformly by every constructor.
 - Indices may be fixed by the constructor result or recovered from stored fields.
-- May live in `Type`/`Sort(u)` or `Prop`; projections from `Prop` structs obey Prop elimination restrictions.
+- May live in `Type`/`Sort(u)` or `Prop`; a projection from a `Prop` instance recovers only fields whose value and type
+  dependencies are determined by the exact proposition, without inspecting the proof value.
 - Any checked inductive family—not only one written with `struct`—gets definitional structure eta when it has exactly
   one constructor, zero indices, and no recursive constructor field. Indexed and recursive singleton families may
   still be projected, but do not get eta.

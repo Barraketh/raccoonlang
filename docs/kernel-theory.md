@@ -50,15 +50,16 @@ link is a consequence.
   `VCtor` when the family carries a declaration-checked recipe that succeeds at that proposition,
   and reconstructs a synthetic eta `VLam` for every proof of a Pi proposition. Checked source
   proof-lambda bodies are discarded after validation, not rewritten or executed. The stored
-  `InductiveMeta.proofStorage` recipe requires one constructor and every non-Prop stored field to
-  occur directly in the result family arguments (`proof-collapse.md`). Operational structure
-  never changes proof equality, and unification never structurally links or decomposes proofs.
+  `InductiveMeta.proofRecovery` plan records direct result-argument sources for a one-constructor
+  family that may live in Prop; field propness is classified at the actual instance
+  (`proof-collapse.md`). Operational structure never changes proof equality, and unification never
+  structurally links or decomposes proofs.
 - **Structure eta** (definitional): a value of an *eta-eligible* structure-like inductive type equals the
   constructor applied to its projections. Eligibility (`InductiveMeta.projectionInfo.etaEligible`, computed by
   InductiveChecks) is derived from the checked declaration: exactly one constructor, no indices,
   and no recursive constructor field. It does not depend on the surface keyword or declared
   sort. Prop instances are proof-representation territory instead — they never eta-expand, and
-  every inhabitant follows `proofStorage` based on its exact proposition. Enforced by
+  every inhabitant follows its recovery plan based on its exact proposition. Enforced by
   *representation*, not a conversion rule (`StructEta.scala`): every value of an eligible structure-like
   type is constructor-headed *from creation*. Binders freshen as the constructor of fresh field
   witnesses; neutrals (opaque constants, axioms, blocked applications and matches, recursive-call
@@ -70,7 +71,8 @@ link is a consequence.
   stuck projection — a `StructField`-headed application identified by family + field index and
   equal by that head + base — is the only projection neutral form. Primitive `Proj` is broader
   than eta: any one-constructor family may be projected, including indexed and recursive
-  singletons, subject to the extra Prop-elimination rule. Surface field names resolve through
+  singletons. For a Prop major, a field is recovered only from the exact proposition—never from the
+  proof value—and only when its value and precise type dependencies are recoverable. Surface field names resolve through
   declaration-level selector metadata directly to primitive projections and never enter kernel
   inductive metadata. The eta eligibility gate is load-bearing for
   decidability: constructor count alone would admit `Acc`, whose recursive field makes expansion
@@ -199,7 +201,7 @@ without inventing values).
 | **Packed payload apartness** | MatchChecker pruning (a case may be omitted) | Unequal payloads may be refuted only when the closed codec claims L9: their finite decodings reach a constructor clash between derivable no-confusion heads. L3 definitional inequality alone is insufficient under planned funext. | Same-codec `VPacked` values with explicitly unequal payloads and `refutesUnequalPayloads`; Nat claims L9 because unequal unary decodings reach `zero`/`succ`. Equal payloads continue through the type equation; codecs without L9 and packed-vs-neutral comparisons are stuck. |
 | **Stuck** (`apart = false`) | — | Means only "this algorithm cannot solve it". Must never justify pruning or disequality. | MatchChecker treats stuck ctors as reachable-unrefined (`EqStore.empty`). |
 | **Frame invertibility** (failure pass-through & link transparency) | within tryUnify | Definitional injectivity: `≡` of two same-head applications forces component `≡`. True for inductive family formers and data constructors; false for arbitrary functions and the Pi-former. Proof applications are handled by `ProofEquation` before frame decomposition. | `definitionallyInjectiveHead`. |
-| **Large elimination permit** | MatchChecker `checkPropElimination` | A Prop scrutinee may eliminate into non-Prop only when no constructor is reachable or its family carries the declaration-time `Reconstruct` recipe: one constructor and each non-Prop field directly present in the result arguments. Motive `Prop`-the-sort counts as large (it is data). | `InductiveMeta.proofStorage`; `allowLargeElimination` consults metadata plus empty reachability. At runtime the exact proposition either reconstructs an ordinary `VCtor` or remains `VProof`; no unification runs. |
+| **Large elimination permit** | MatchChecker `checkPropElimination` | A Prop scrutinee may eliminate into non-Prop only when no constructor is reachable or every constructor field is recoverable at the actual instance. Eligibility does not assert the constructor result equation. Motive `Prop`-the-sort counts as large (it is data). | `ProofReconstruction.canRecoverAll` uses `InductiveMeta.proofRecovery`; only result-validated `reconstruct` manufactures the `VCtor` on which match reduction may fire. A failed result check remains `VProof` and a data-valued match stays stuck. |
 | **Prop classification** | TypeChecker `checkPi`, `checkPropElimination` | A type is a proposition iff it *lives in* `Prop`; the sort `Prop` never qualifies. | `isPropValuedType = getUniverse(v) == PropTpe`. |
 | **Structural decrease** (recursive call permitted) | TerminationChecker guard (`rawRecursiveSelf`) | The call's metric is strictly below the current one in the well-founded tree order of strictly positive inductive values: reachable by ≥1 constructor-field step, where an application of a function-typed field steps to a child (the field is its node's child-selector; Agda foetus / Coq guard precedent). Assumes values are well-founded trees: strict positivity (InductiveChecks) and no value-level self-capture (recursion requires a decreasing parameter). | `isStrictSubterm`: `VCtor` field descent plus `VApp`-spine stripping that must bottom out at a field (`applicationOfSubterm`); any other head (blocked match, lambda) must be defEq to the field itself. Proof metrics rejected at declaration (`InvalidDecreaseSpec`); axiom/quotient-typed metrics rejected (`requireInductiveMetric`). |
 | **Packed structural decrease** | TerminationChecker guard (`rawRecursiveSelf`) | Codec order L6 is exactly reachability by one or more constructor-field steps on decoded values and is well-founded, so it is the existing structural tree order rather than a new measure. | Same-codec packed metrics compare through `codec.strictlyLess`; Nat uses numeric `<`, which realizes repeated predecessor steps. Payloads are compared directly and never decoded recursively. |
@@ -298,6 +300,16 @@ the probe into a must-reject test — is the standard procedure for anything on 
    one caller span. → per-parse `SourceId`s and fresh synthetic ids for fabricated checked terms.
    Tests: ConsistencyTests ("separate parses give distinct local Pi identities", "quoted Pi siblings
    receive distinct identities while re-quotes remain definitionally equal").
+
+8. **Proof recovery vs match reduction** (fixed by construction): projection and large-elimination
+   eligibility need only recover information already determined by the exact proposition, but firing
+   a match branch also asserts that the recovered fields instantiate the constructor at that exact
+   proposition. Conflating those judgments would let a constrained proof such as `Eq2(a, b)` execute
+   a branch checked under `Eq2(n, n)`, breaking subject reduction. → `recoverField` validates one
+   precise dependency slice, `canRecoverAll` validates the whole telescope without the result
+   equation, and only result-checked `reconstruct` creates a branch-firing `VCtor`. Tests:
+   ProjectionTests (indexed and result-only recovery cases); ProofCollapseTests (polymorphic Prop
+   eligibility and constrained-match non-reduction).
 
 **Open findings** (recorded, unfixed):
 

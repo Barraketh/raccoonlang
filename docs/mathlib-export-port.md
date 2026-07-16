@@ -103,8 +103,9 @@ applications, defEq by head name + base). Eta is then fieldwise congruence, matc
 scrutinees always fire, and the flagged interaction resolved itself: proof fields follow the proof
 representation policy at projection formation, and proof irrelevance equates reconstructed and erased
 forms in `⟨s.val, s.property⟩ ≡ s`. Prop *instantiations* of sort-polymorphic structs never
-eta-expand; every inhabitant follows `proofStorage`, and layouts with unforced
-fields such as `PairU` erase wholesale. Notable
+eta-expand; every inhabitant follows the shared field-recovery plan, and layouts with unforced
+fields such as `PairU` cannot reconstruct a constructor (though independently recoverable fields
+may still project). Notable
 consequences: opaque-by-default (P1) stays eta-compatible — an opaque instance constant gets eta
 without unfolding its body — and projections of opaque constants are transparent to positivity
 (previously rejected conservatively). Translator note for T1: exported `proj i` nodes map directly
@@ -139,7 +140,7 @@ appear in the telescope; nested containers must share the block universe. M0 fou
 nested blocks in the first raw Mathlib slice, including blocks in the imported Lean/Std closure.
 Since T1 consumes that raw export rather than a separately validated dependency-pruned artifact,
 the decision is native kernel support, not an encoding or deferral. Counts: `m0-export-stats.md`.
-K6 also generalizes the existing per-family `proofStorage` certificate to block checking; neither
+K6 also generalizes the existing per-family proof-recovery plan to block checking; neither
 mutual membership nor recursiveness introduces a runtime proof-unification rule.
 
 **K7. Axioms.** `propext` and `Classical.choice` (with `Nonempty`); `funext` arrives as a theorem
@@ -177,9 +178,10 @@ Every recursor in a recursive definitely-Prop logical block, including a
 nested-container auxiliary, has a proof-valued major and cannot use it as a structural metric:
 K6 derives the Prop induction-principle types in the kernel, validates the exported types, and
 publishes bodiless principles in canonical eta-lambda form. Ordinary large elimination instead
-follows each family's declaration-time `proofStorage`: exact propositions that reconstruct a
-constructor match normally, while other proofs stay stuck for data motives, including after a
-generic `Sort u` term lands at `u = 0`. Derived constants (`casesOn`, `brecOn`, `below`, `noConfusion`, …) are
+requires every constructor field to be recoverable at the actual Prop instance. Exact propositions
+whose recovered constructor also passes the result check match normally; other proofs stay stuck
+for data motives. Instance-sensitive proof classification preserves generic `Sort u` terms that
+land at `u = 0` without permitting an unvalidated branch reduction. Derived constants (`casesOn`, `brecOn`, `below`, `noConfusion`, …) are
 ordinary definitions in the export and translate as-is once `rec` exists. For ordinary match
 recursors, the export's ι-rules are the spec at non-collapsed instances: match evaluation + fix
 unfolding must reproduce them definitionally on constructor-headed majors. For bodiless Prop
