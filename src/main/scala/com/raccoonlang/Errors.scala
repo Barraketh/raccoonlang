@@ -76,7 +76,13 @@ final case class AlreadyDefined(name: String, span: Option[Span] = None) extends
 
 final case class ReservedKernelName(name: String, span: Option[Span] = None) extends TypeError {
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
-  override val msg: String = s"$name is reserved for the bundled kernel Prelude"
+  override val msg: String = s"$name is reserved for kernel-owned installation"
+}
+
+final case class UnsupportedWfExportShape(declaration: String, reason: String, span: Option[Span] = None)
+  extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  override val msg: String = s"Unsupported well-founded export shape for $declaration: $reason"
 }
 
 final case class NatLiteralUnavailable(reason: String, span: Option[Span] = None) extends TypeError {

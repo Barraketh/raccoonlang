@@ -51,9 +51,11 @@ object Packed {
     "Nat.blt" -> CmpOp(_ < _)
   )
 
+  private[raccoonlang] val opNames: Set[String] = ops.keySet
+
   /** Names whose meaning is trusted by the packed representation or native-operation table. */
   private[raccoonlang] val reservedNames: Set[String] =
-    ops.keySet ++ Set(NatCodec.familyName, NatCodec.zeroName, NatCodec.succName)
+    opNames ++ Set(NatCodec.familyName, NatCodec.zeroName, NatCodec.succName)
 
   private val opsEnabled = new DynamicVariable[Boolean](true)
 

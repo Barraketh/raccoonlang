@@ -82,6 +82,8 @@ private object Builtins {
       IndName -> Native(runInd)
     )
 
+  private[raccoonlang] val entryNames: Set[String] = entries.keySet
+
   def instantiate(name: String, tpe: Value, span: Span): Value =
     entries.get(name) match {
       case Some(entry) => entry.instantiate(name, tpe, span)

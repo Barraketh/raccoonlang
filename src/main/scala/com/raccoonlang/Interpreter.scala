@@ -401,18 +401,16 @@ object Interpreter {
 
   // A declaration is checked exactly once; the value the checker produced IS the published value.
   // There is no separate run world: once a definition has made it into the env, it is trusted.
-  def evalDecl(decl: Decl, env: Env): Env = evalDecl(decl, env, allowReservedNativeDefinitions = false)
+  def evalDecl(decl: Decl, env: Env): Env = evalDecl(decl, env, ReservedNamePermit.empty)
 
-  private def evalDecl(decl: Decl, env: Env, allowReservedNativeDefinitions: Boolean): Env = {
-    if (!allowReservedNativeDefinitions) {
-      val publishedNames = decl match {
-        case Decl.ConstDecl(_, name, _, _, _, _, _) => Vector(name)
-        case Decl.AxiomDecl(name, _, _)             => Vector(name)
-        case d: Decl.InductiveDecl                  => d.header.name +: d.ctors.map(_.canonicalName)
-      }
-      publishedNames.find(Packed.reservedNames).foreach { name =>
-        throw ReservedKernelName(name, Some(decl.span))
-      }
+  private[raccoonlang] def evalDecl(decl: Decl, env: Env, permit: ReservedNamePermit): Env = {
+    val publishedNames = decl match {
+      case Decl.ConstDecl(_, name, _, _, _, _, _) => Vector(name)
+      case Decl.AxiomDecl(name, _, _)             => Vector(name)
+      case d: Decl.InductiveDecl                  => d.header.name +: d.ctors.map(_.canonicalName)
+    }
+    ReservedNames.unauthorized(publishedNames, permit).foreach { name =>
+      throw ReservedKernelName(name, Some(decl.span))
     }
     decl match {
       case Decl.ConstDecl(isOpaque, name, ty, body, span, lazyGlobal, projectionAlias) =>
@@ -461,7 +459,7 @@ object Interpreter {
     }
   }
 
-  private[raccoonlang] def buildPreludeEnv(core: Program, allowReservedNativeDefinitions: Boolean): Env = {
+  private[raccoonlang] def buildPreludeEnv(core: Program, permit: ReservedNamePermit): Env = {
     val baseEnv =
       Env.empty
         .putGlobal("Type", TypeTpe)
@@ -471,9 +469,9 @@ object Interpreter {
         .putGlobal("Prop", PropTpe)
 
     val built = core.decls.foldLeft(baseEnv) { case (curEnv, decl) =>
-      evalDecl(decl, curEnv, allowReservedNativeDefinitions)
+      evalDecl(decl, curEnv, permit)
     }
-    if (allowReservedNativeDefinitions) Packed.validateNatFamily(built)
+    if (permit.names.contains(NatCodec.familyName)) Packed.validateNatFamily(built)
     built
   }
 }

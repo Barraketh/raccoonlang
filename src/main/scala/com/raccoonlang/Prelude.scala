@@ -13,7 +13,7 @@ object Prelude {
       surface: SurfaceAst.Program,
       core: CoreAst.Program,
       ignoredImports: Set[Vector[String]],
-      private[raccoonlang] val allowReservedNativeDefinitions: Boolean
+      private[raccoonlang] val reservedNamePermit: ReservedNamePermit
   ) {
     def ignoresImport(path: Vector[String]): Boolean =
       ignoredImports(path)
@@ -22,24 +22,24 @@ object Prelude {
      * Checked prelude env, built once per Config and shared across programs. Sharing is sound: globals are closed
      * values, and fresh-var ids keep increasing across programs.
      */
-    lazy val checkedEnv: Env = Interpreter.buildPreludeEnv(core, allowReservedNativeDefinitions)
+    lazy val checkedEnv: Env = Interpreter.buildPreludeEnv(core, reservedNamePermit)
 
     /** Resolved prelude name trie for the elaborator, built once per Config. */
     lazy val names: Elaborator.PreludeNames = Elaborator.preludeNames(this)
   }
 
   lazy val default: Config =
-    fromResource(DefaultResourcePath, ignoredImports = Set(ImportPath), allowReservedNativeDefinitions = true)
+    fromResource(DefaultResourcePath, ignoredImports = Set(ImportPath), ReservedNamePermit.nativePrelude)
 
   lazy val test: Config =
-    fromResource(TestResourcePath, ignoredImports = Set(ImportPath), allowReservedNativeDefinitions = false)
+    fromResource(TestResourcePath, ignoredImports = Set(ImportPath), ReservedNamePermit.empty)
 
   val none: Config =
     Config(
       surface = SurfaceAst.Program(Vector.empty, Vector.empty, None),
       core = CoreAst.Program(Vector.empty, None),
       ignoredImports = Set.empty,
-      allowReservedNativeDefinitions = false
+      reservedNamePermit = ReservedNamePermit.empty
     )
 
   def fromPath(path: Path): Config = {
@@ -57,14 +57,14 @@ object Prelude {
   }
 
   def fromSource(sourceName: String, source: String, ignoredImports: Set[Vector[String]] = Set(ImportPath)): Config = {
-    fromSource(sourceName, source, ignoredImports, allowReservedNativeDefinitions = false)
+    fromSource(sourceName, source, ignoredImports, ReservedNamePermit.empty)
   }
 
   private def fromSource(
       sourceName: String,
       source: String,
       ignoredImports: Set[Vector[String]],
-      allowReservedNativeDefinitions: Boolean
+      reservedNamePermit: ReservedNamePermit
   ): Config = {
     val surface =
       LanguageParser.parseProgram(source) match {
@@ -72,15 +72,15 @@ object Prelude {
         case Failure(_, curIdx, message) =>
           throw new RuntimeException(s"Failed to parse $sourceName at offset $curIdx: $message")
       }
-    Config(surface, Elaborator.elabWithoutPrelude(surface), ignoredImports, allowReservedNativeDefinitions)
+    Config(surface, Elaborator.elabWithoutPrelude(surface), ignoredImports, reservedNamePermit)
   }
 
   private def fromResource(
       resourcePath: String,
       ignoredImports: Set[Vector[String]],
-      allowReservedNativeDefinitions: Boolean
+      reservedNamePermit: ReservedNamePermit
   ): Config =
-    fromSource(resourcePath, resourceSource(resourcePath), ignoredImports, allowReservedNativeDefinitions)
+    fromSource(resourcePath, resourceSource(resourcePath), ignoredImports, reservedNamePermit)
 
   private def resourceSource(resourcePath: String): String = {
     val stream =

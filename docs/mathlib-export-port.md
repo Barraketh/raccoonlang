@@ -5,6 +5,10 @@ respect) and `proof-collapse.md`. Records the decisions from the 2026-07 decidab
 the workstream sections are the units of implementation, the milestones (§7) are the acceptance
 ladder.
 
+The M0/M1 parity target is lean4export 3.1.0 against Lean 4.24.0-rc1 at commit
+`919e297292280cdb27598edd4e03437be5850221`; a producer-version change reopens the shape assumptions recorded by T1,
+K2, and K6.
+
 ## 1. Goal and strategy
 
 Typecheck a post-elaboration export of Mathlib (lean4export ndjson: kernel-level declarations and
@@ -53,7 +57,7 @@ explicit arguments per Raccoon's all-or-none implicit rule.
 | # | Workstream | Depends on | Gate |
 |---|---|---|---|
 | K1 | Higher-order subterm rule | — | **done** (commit 3355563) |
-| K2 | Sealed `Acc`/`WellFounded` primitives | — | spec review |
+| K2 | Sealed `Acc`/`WellFounded` primitives | — | **kernel complete; kernel §13 pins green**; T3 mapping/tests pending |
 | K3 | Native Nat/String literals | — | **Nat base done**; M0 requires every staged Nat op; String staged |
 | K4 | Primitive projections + structure eta | — | **done** |
 | K5 | `imax` levels | M0 stats | **done** |
@@ -76,13 +80,19 @@ item). This makes translator-synthesized recursors definable for infinitary indu
 declaration-time singleton policy may retain an actual `Acc.intro`, so a literal value can take one
 ordinary match step. That does not define `Acc.rec`: accessibility hypotheses are erased neutral
 proofs, and proof-valued metrics are rejected, so no fixpoint can recurse through the child proof.
-Design: a primitive constant with the Sort-motive `Acc.rec` type that **never unfolds
+Design: a primitive constant with the full universe-polymorphic `Acc.rec` type that **never unfolds
 definitionally**, plus its unfolding equation as a primitive *propositional* lemma (model-justified
-by well-founded induction; same trust genre as `Quot.sound`). Prop-motive `Acc.rec` is ordinary
-small elimination via match — already supported. Ledger obligations: an axiom-table row (§4) for
-the primitive equation; the §1 invariant "no definitional recursion through proof metrics"
-stated as case law. Cost accepted: WF-defined functions do not compute by defeq — identical to
-post-4.9 Lean practice (equation lemmas; native ops cover `Nat.div`-class literals).
+by well-founded induction; same trust genre as `Quot.sound`). This seal is uniform: T3 eta-expands each exported partial
+application into a saturated Core call; at a Prop motive the resulting wrapper is a proof of a Pi proposition and
+existing proof canonicalization erases the distinction. A separate Prop-recursion
+implementation would add trust without observable behavior. The
+non-recursive `Acc.casesOn` is the explicit exception: T3 synthesizes it as a direct ordinary match so its safe iota
+behavior is retained; `Acc.recOn`, `ndrec`, and `ndrecOn` remain sealed wrappers. Ledger obligations: rows for the
+sealed recursor and generic recursor equation only; `fixF_eq` / `fix_eq` are synthesized checked applications before
+wrapper opacity takes effect. The equation builder additionally requires a structurally validated Lean `Eq` block—an
+exported name and a proposition-valued application do not authenticate equality. The §1 invariant "no definitional
+recursion through proof metrics" is stated as case law. Cost accepted: WF-defined functions do not compute by defeq —
+identical to post-4.9 Lean practice (equation lemmas; native ops cover `Nat.div`-class literals).
 
 **K3. Native literals — Nat done.** Spec: `native-literals.md` (the `VPacked` design — a packed
 value form with a closed, kernel-curated codec set; representation-not-rules, dual of K4).
@@ -160,7 +170,11 @@ retaining only packed transitive summaries, and was exercised on real `Init` and
 `Mathlib.Logic.Basic` exports. See `m0-export-stats.md`. Remaining work: translate the stream and
 retain topological declaration order. Map Lean's `Eq`, `Nat`, `Quot`, `Bool`, … onto the Raccoon Prelude
 (or import a fresh translated core and keep Raccoon's Prelude only for bootstrapping); mangle
-names into namespaces; insert explicit level arguments; translate `let` to `Body.lets`.
+names into namespaces; retain each primitive's validated implicit/explicit calling convention while supplying export
+level arguments; translate `let` to `Body.lets`. For equality specifically, retain Lean metadata's two-parameter,
+one-index split while lowering the checked Raccoon family to `{u}`, `A` parameters and `x`, `y` indices. Any equality
+selected by either alignment mode must pass the shared structural `ValidatedEquality` check before K2 or another
+primitive-proposition builder may use it.
 `theorem`s are checked once and passed through the proof representation policy. Every proof of a
 Pi proposition publishes as the same type-directed eta-lambda, regardless of transparency; its
 checked source body is discarded. Other proofs publish as a constructor reconstructed from their
@@ -181,17 +195,22 @@ publishes bodiless principles in canonical eta-lambda form. Ordinary large elimi
 requires every constructor field to be recoverable at the actual Prop instance. Exact propositions
 whose recovered constructor also passes the result check match normally; other proofs stay stuck
 for data motives. Instance-sensitive proof classification preserves generic `Sort u` terms that
-land at `u = 0` without permitting an unvalidated branch reduction. Derived constants (`casesOn`, `brecOn`, `below`, `noConfusion`, …) are
-ordinary definitions in the export and translate as-is once `rec` exists. For ordinary match
+land at `u = 0` without permitting an unvalidated branch reduction. Derived constants (`casesOn`, `brecOn`, `below`,
+`noConfusion`, …) are ordinary definitions in the export and translate as-is once `rec` exists, except for K2's
+explicitly synthesized non-recursive `Acc.casesOn`. For ordinary match
 recursors, the export's ι-rules are the spec at non-collapsed instances: match evaluation + fix
 unfolding must reproduce them definitionally on constructor-headed majors. For bodiless Prop
 principles the ι-rules are proof-irrelevant; the generated type is the load-bearing validation.
 
-**T3. `Acc`/WF cluster mapping.** A fixed table: Sort-motive `Acc.rec` occurrences and
-`WellFounded.fixF`/`fix` map to the K2 primitives; their Lean equation-lemma *proofs* are replaced
-by the primitive lemma. Retaining a literal `Acc.intro` does not install recursive ι-reduction,
-because the recursive child is proof-valued and cannot be a metric. Everything downstream that
-merely *uses* `fix_eq` translates unchanged.
+**T3. `Acc`/WF cluster mapping.** Follow the fixed table in `wf-recursion.md`: every `Acc.rec`
+occurrence maps to the uniformly sealed primitive; `Acc.casesOn` is separately validated and synthesized as a direct
+non-recursive match; `Acc.recOn`, `ndrec`, and `ndrecOn` remain wrappers over the sealed head. Translate and typecheck
+`WellFounded.recursion`, `fixF`, and `fix` in an atomic staging transaction before applying exported opacity. Synthesize
+`fixF_eq` and `fix_eq` as checked applications of the generic primitive equation, extracting their minor and
+accessibility arguments from the checked wrapper-body patterns rather than resolving helper names. Require the proofs
+to check against the exported theorem types, then publish them through ordinary proof canonicalization. Retaining a
+literal `Acc.intro` does not install recursive ι-reduction, because the recursive child is proof-valued and cannot be a
+metric. Everything downstream that merely uses the equation lemmas translates unchanged.
 
 **T4. Typecheck-and-patch loop.** The safety net for defeq divergence (prior art: Lean4Less, which
 re-typechecks and inserts casts to eliminate definitional irrelevance/K from real libraries).

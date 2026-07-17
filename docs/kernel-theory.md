@@ -160,14 +160,18 @@ link is a consequence.
 
 ## 3. Canonicity status
 
-The original core had canonicity: closed values reduce to constructor forms. **Axioms break it** —
-a closed proof may be stuck on `Quot.sound` (or any user axiom) forever. Consequences that kernel
-code must not assume:
+The original core had canonicity: closed values reduce to constructor forms. **Axioms and opaque symbolic heads break
+it** — a closed proof may be stuck on `Quot.sound` (or any user axiom), and a data-valued application may remain a
+closed neutral. K2 makes the latter routine: sealed `Acc.rec` at a data motive can produce a closed `Bool`,
+`Nat`, or other inductive value that is neither constructor-headed nor reducible. Consequences that kernel code must
+not assume:
 
-- "Every inhabitant of an inductive type is constructor-headed" is FALSE for open terms and for
-  closed proofs behind axioms/opaque defs. Empty-match justification therefore cannot be "no
-  constructor value fits"; it must be propositional (the type is provably empty — `apart` evidence).
-- Evaluation may return `NeutralThunk`/blocked applications for closed programs that use axioms.
+- "Every inhabitant of an inductive type is constructor-headed" is FALSE for open terms, closed proofs behind
+  axioms/opaque defs, and closed data behind a symbolic or sealed application. Empty-match justification therefore
+  cannot be "no constructor value fits"; it must be propositional (the type is provably empty — `apart` evidence).
+- Evaluation may return `VApp`, `NeutralThunk`, or blocked applications for closed programs that use axioms, opacity,
+  or sealed primitives. Native dispatch must decline mismatched/stuck arguments to its ordinary fallback rather than
+  assuming that closed data has a packed or constructor form.
 
 ## 4. Axiom ledger
 
@@ -177,6 +181,8 @@ Every evidence rule in §5 must remain valid under all rows of this table.
 |---|---|---|
 | `Quot`, `Quot.mk`, `Quot.lift`, `Quot.ind` + `Quot.sound` | **Present** (builtins + axiom, Lean-style) | `=` at quotient types is coarser than structure: `mk a = mk b` without `a = b`. `Quot.mk` must never carry constructor no-confusion. Canonicity broken (§3). |
 | Proof irrelevance | **Present** (definitional) | `≡` at propositions is coarser than structure: constructor shape and fields carry no equality evidence (inl/inr equal, `Exists.intro` not witness-injective). The exact proposition chooses one operational form: a declaration-reconstructed `VCtor`, a type-directed eta `VLam` for Pi propositions, or witness-free `VProof(tpe)`. `ProofEquation` compares every proof value through its proposition and intercepts proof constructors before no-confusion (`proof-collapse.md`). |
+| Sealed `Acc.rec` | **Present** (K2 symbolic primitive) | A polymorphic inhabitant of the mechanically derived recursive `Acc` eliminator type exists. Admission requires a checked standard `Acc`/`Acc.intro` block, matching export metadata/rule header, and exact agreement between the exported and derived recursor types. It is a symbolic data head with no evaluator, match, fixpoint, or native reduction rule, so data canonicity is broken (§3). |
+| `$raccoon.wf.Acc.rec_eq` | **Present** (K2 propositional primitive) | The sealed inhabitant satisfies the constructor equation in `wf-recursion.md` §8.1. Under proof collapse this applies to the canonical child proof at the exact `Acc` proposition, independently of the source accessibility witness; the rank/well-founded-recursion model justifies that strength. Admission requires `AccRecursorShape` plus a structurally checked standard `ValidatedEquality`, and the generated dependent equation type must check as a proposition. Its proof is canonical and never participates in conversion, unification, reachability, native dispatch, or implicit rewriting. |
 | `propext` | **Planned** (Mathlib) | `=` at `Prop` coarser than structure: distinct true propositions become equal (`And T T = Or T T`). Kills: apartness between propositions-as-values, injectivity of Prop-valued family formers in index positions. Audited: §5 rules already exclude these; residual TODO on `noConfusionHead` (index-position decomposition of Prop-sorted family instances). |
 | `funext` | **Planned** (Mathlib) | `=` at function types coarser than intensional structure: extensionally equal, syntactically distinct functions become equal. Kills: any apartness between function values; makes "provable equations between stuck applications" constructible, which is why Invert-mode links under non-invertible frames had to be refused *before* funext lands. |
 | Choice / LEM | **Planned** (Mathlib) | Anti-classical assumptions become inconsistent: notably *injectivity of type formers with large parameters* (Cantor). Family-former injectivity must never be propositional evidence. |
@@ -328,6 +334,16 @@ the probe into a must-reject test — is the standard procedure for anything on 
    blockers and possible scrutinee-sort collapse. Tests: ProofCollapseTests (`works`/`frozen`,
    multi-dependency refinement, and function-valued propagation); ValueOpsTests (set propagation
    and wakeup gates).
+
+10. **Well-founded recursion through collapsed proofs** (forbidden by construction): proof reconstruction may expose
+    one constructor layer for an ordinary non-recursive match, but it is not a structural-recursion certificate.
+    `Acc.rec` therefore remains sealed even on a reconstructed `Acc.intro`; its constructor equation is only
+    propositional. Proof-valued structural, lexicographic, and measure components remain rejected without exception.
+    Axiom-headed neutrals and the two sides of the primitive equation are stuck rather than apart, so they cannot prune
+    a match branch. Tests: WfRecursionTests (must-terminate minor, reconstructed/axiom/blocked sealing, direct
+    non-recursive elimination, equation application/non-defeq/not-apart/reachability, generic opaque reachability,
+    native fall-through, reserved names, evaluator/native dispatch-table exclusion); TerminationTests (proof metric
+    rejection).
 
 **Open findings** (recorded, unfixed):
 
