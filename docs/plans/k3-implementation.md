@@ -1,21 +1,334 @@
 # K3 Implementation Plan — `VPacked` native literals
 
-Status: **implemented 2026-07-14** for the scoped Nat codec, literal syntax, and seven current
-operations. CharList/`StrLit` and K2-gated operations remain deferred as specified.
+Status: **implemented** (first slice 2026-07-14; full-K3 continuation and simplification pass
+2026-07-20). The remaining eight Nat rows and CharList/`StrLit` are exercised against a
+kernel-owned synthetic bootstrap. Production acceptance of the checked translated `Init`
+definitions and String layout remains a T1 integration gate.
 
-Handoff document. The **design spec is `docs/native-literals.md`** — read it first, then this;
-this document is its code-level companion, produced after a full survey of the integration
+**T1 trust-model addendum (2026-07-17).** The implementation below originally had one trusted
+bootstrap producer, the bundled default Prelude. T1 adds a second kernel-owned path: the explicit
+pinned translated-`Init` bootstrap. Both follow Lean's model—exact reserved native-operation
+identities receive the kernel table's equations outright; their declarations and types are checked,
+but no semantic body recognizer, declaration fingerprint, or per-operation capability is required.
+Ordinary imports and all custom/prelude-less source paths remain unprivileged. References below to
+“the bundled Prelude” describe the first implementation and should be read as “the selected trusted
+bootstrap” when applying this plan to T1.
+
+Implementation record. The **design spec is `docs/native-literals.md`**; this document retains the
+code-level decisions and historical first-slice handoff after a full survey of the integration
 points. Also read `STYLE.md` and the preamble + §6 of `docs/kernel-theory.md` (the design spec's
 §8 walks the interaction checklist; nothing here changes those answers).
 
-Scope of this implementation: the **Nat codec, `NatLit` syntax, and the seven currently-definable
-accelerated ops** (`add/sub/mul/pow`, `beq/ble/blt`). Explicitly deferred, per the design spec:
-the CharList/`StrLit` codec (§7, gated on Prelude `String`), `div/mod/gcd` and bitwise ops (their
-structural definitions are WF-recursive — K2-gated), and any container codecs.
+The original landed scope was the **Nat codec, `NatLit` syntax, and seven then-definable
+accelerated ops** (`add/sub/mul/pow`, `beq/ble/blt`). Sections 1–7 retain that first-slice handoff
+and should be read as implementation history where they show a `BigInt`-only `VPacked`. Section 0
+below records the implemented full-K3 continuation and supersedes those staged notes. Container codecs remain out of
+scope.
 
 Build: Scala 2.13, sbt, `-Xfatal-warnings` (exhaustivity warnings are fatal — the compiler will
 point at every `match` that needs a new case; treat each one deliberately, don't blanket-default).
 Tests: munit, `sbt test`, single suite via `sbt 'testOnly com.raccoonlang.NativeLiteralTests'`.
+
+## 0. Full-K3 continuation — implemented decisions (fixed 2026-07-17, landed 2026-07-20)
+
+These are implementation requirements, not remaining options.
+
+### 0.1 Native Nat table and resource behavior
+
+- Extend the table with `Nat.div`, `Nat.mod`, `Nat.gcd`, `Nat.land`, `Nat.lor`, `Nat.xor`,
+  `Nat.shiftLeft`, and `Nat.shiftRight`. Division and modulus by zero return `0` and the dividend;
+  `gcd(0, b) = b`. Bitwise operations use non-negative `BigInt` semantics.
+- The resulting fifteen entries comprise Lean's fourteen pinned binary native identities plus
+  `Nat.blt`. Keep `Nat.blt` because M0 found it in `Init` and the first slice already implements
+  it, but label it in code comments, the ledger, and T1's manifest as the deliberate Raccoon
+  extension—not as a Lean kernel entry. It receives the same exact-name, trusted-bootstrap rule.
+- Add `MaxShiftLeft: BigInt = BigInt(1) << 24`. For `a != 0`, a larger count raises
+  `NativeOperationLimitExceeded("Nat.shiftLeft", count, MaxShiftLeft)` and never attempts host
+  allocation or structural fallback. `0 << count` returns packed zero for every count.
+  `shiftRight` has no count limit: compare the arbitrary-precision count with `a.bitLength` first;
+  return zero when it is at least that length, and convert to `Int` only in the smaller case.
+- Replace the former dispatch-only `Map[String, NatOp]` with one authoritative immutable
+  `NativeNatOpSpec` table. Each row owns the exact name, host implementation, and typed result
+  subtype (`NatOpSpec` or `BoolOpSpec`), origin (`LeanKernel` or `RaccoonExtension`), and required bootstrap
+  profiles (`BundledSourcePrelude`, `PinnedTranslatedInit`, `SyntheticFullK3`). Dispatch, `opNames`,
+  `reservedNames`, expected-type validation, future manifest metadata, extension labeling, and missing-operation
+  checks all derive from this table. The private typed subtype exposes the derived read-only
+  `returnsBool` classification used by T1's manifest; there is no second handwritten list of native
+  names, result types, or origins. `Nat.blt` is the sole `RaccoonExtension` row; the bundled
+  profile selects the existing seven rows, and each full profile selects all fifteen.
+- Add `Packed.validateNativeOpDeclaration(name, value, env)`. Ordinary checking first produces an
+  immutable candidate environment; before the loader commits that candidate to the bootstrap fold,
+  it validates the declaration's applicable transparent `VLam` carrying
+  `ValueId.Const(name)`, two explicit `Nat` binders, and the exact checked telescope
+  `Nat → Nat → Nat` for
+  `add/sub/mul/pow/gcd/mod/div/land/lor/xor/shiftLeft/shiftRight`, or `Nat → Nat → Bool` for
+  `beq/ble/blt`, modulo only Raccoon's already-validated implicit/explicit calling-convention
+  representation. Requiring the `VLam` is an implementation-representation check, not semantic
+  body recognition: current `Interpreter.evalApply` intercepts native operations only on that
+  value form. An opaque/symbolic value under a native name fails validation rather than silently
+  becoming an operation that can never fire. Any identity, value-form, or telescope failure is the
+  typed `NativeOperationDeclarationMismatch(name, reason, span)`; T1 wraps it with export
+  provenance rather than exposing a checker or pattern-match exception.
+- Add `Packed.validateRequiredNativeOps(env, profile)`. The bundled source Prelude installer passes
+  `BundledSourcePrelude`, so the eight T1-gated definitions may remain absent there. T1 passes
+  `PinnedTranslatedInit` and reports `MissingNativeOperation` for any of its fifteen absent rows;
+  the synthetic fixture passes `SyntheticFullK3`. The closed profile value is a bootstrap
+  completeness selector only: it is not stored in `Env`, attached to a lambda, or consulted by
+  dispatch. Missing rows are returned in stable table order and reported as the typed
+  `MissingNativeOperation(name, profile)` failure at the first absent row.
+- Define `NativeOperationDeclarationMismatch` and `MissingNativeOperation` in `Errors.scala` with
+  the same `TypeError`/span conventions as the existing native-literal errors. Importers translate
+  them into provenance-bearing diagnostics; neither validator may leak `MatchError`, `WTF`, or a
+  host arithmetic exception for malformed declarations.
+- Arithmetic results are still checked per call against the instantiated Nat codomain before
+  packing, and comparison constructors are checked against the instantiated Bool codomain. The
+  declaration check above is the loud admission check; these per-call checks remain local invariant
+  defenses and may fall through. Once a declaration passes and enters a private bootstrap stage,
+  its exact reserved identity may reduce while later declarations are checked. A failed stage is
+  discarded atomically. No runtime enablement bit, per-operation capability, semantic body
+  recognizer, or fingerprint is added; the trusted-bootstrap agreement is the chosen Lean-style
+  TCB assumption.
+
+### 0.2 Sealed payloads and codec API
+
+Replace the landed `BigInt` field with a sealed sum whose constructors and codec factories are
+kernel-private. Use non-case classes (or equivalently restricted `copy`/`apply` methods) so generated
+case-class APIs cannot bypass validation:
+
+```scala
+sealed trait PackedPayload
+final class NatPayload private (val value: BigInt) extends PackedPayload
+final class CharListPayload private (private val scalars0: Vector[Int]) extends PackedPayload {
+  private[raccoonlang] def scalars: Vector[Int] = scalars0
+}
+
+final class VPacked private (
+    val codec: PackedCodec,
+    private[raccoonlang] val payload: PackedPayload,
+    val tpe: Value
+) extends Value with UpdatableType
+```
+
+The only construction surface is the private `VPacked` companion/factory API:
+
+```scala
+private[raccoonlang] def nat(value: BigInt, tpe: Value): VPacked
+private[raccoonlang] def charList(codec: CharListCodec, scalars: Vector[Int]): VPacked
+private[raccoonlang] def charListTail(parent: VPacked): VPacked
+private[raccoonlang] def retype(packed: VPacked, defEqTpe: Value): VPacked
+```
+
+`nat` rejects negative values and a type with syntactic dependencies. `charList` scans once and
+rejects every non-Unicode scalar (anything outside `0..0xd7ff` and `0xe000..0x10ffff`), fixes the
+packed type to the closed `codec.listCharTpe`, and is the only entry point from AST/import data.
+`charListTail` is callable only by `CharListCodec.decodeHead`; it drops one element from an
+already-validated persistent vector without rescanning the suffix. This makes peeling a string
+linear overall rather than accidentally quadratic.
+
+`retype` is the `UpdatableType.withTpe`/materialization seam. It requires the requested replacement
+to be `defEq` the old type (and, for CharList, `defEq codec.listCharTpe`) but returns the original
+packed value without replacing its authenticated closed type. This deliberate exception to
+“expected type wins” keeps `ValueKey` and quote/evaluate round trips stable when two defEq type
+representatives have different keys. Since every permitted packed type is closed, materialization
+has no legitimate type substitution to perform. No public `copy`, raw payload constructor, or
+generic `(codec, payload, tpe)` factory exists.
+
+Add codec methods `acceptsPayload`, `payloadEquals`, and `mixPayloadKey` (the last may feed the
+existing key builder directly rather than allocate bytes). They match exhaustively on the sealed
+payload sum and reject codec/payload mismatches. The CharList implementation hashes/compares the
+remaining scalar sequence by content, so a decoded tail is identical to an independently
+introduced equal suffix. Update every payload match exhaustively: `ValueKey`, defeq/unification,
+termination, quoting, pretty-printing, tests, and the native-op table.
+
+For `ValueKey`, retain Nat's signed-magnitude `BigInt.toByteArray` encoding under the Nat codec
+tag. Under the distinct stable CharList codec tag, first mix `codec.listCharTpe.key`, then the scalar
+count and each scalar as an unsigned 32-bit integer in order. After either codec-specific payload,
+always mix the packed value's actual `p.tpe.key`, preserving the current `VPacked`/constructor-key
+invariant and `docs/native-literals.md` §6. The CharList factory fixes that actual type to the
+descriptor's `listCharTpe`, and `retype` preserves it. Do not hash a host `String`, collection node,
+layout object identity, or cached JVM hash code.
+
+Split the old informal fold law into total decode correctness plus optional fold round trip.
+`NatCodec` remains canonical and fold-capable. `CharListCodec` is non-canonical, decode-only, and
+does not claim L9; there is no global CharList fold or codec registry.
+
+### 0.3 Validated String layout and environment-independent peeling
+
+Add a kernel-private `ValidatedStringLayout` produced only by a trusted bootstrap after the
+following exact checks. “Expected constructor” is not a name-only check:
+
+- Resolve the already-validated `Nat`, plus `Char`, `List`, `String`, `String.mk`, `List.nil`,
+  `List.cons`, and `Char.ofNat` from the private trusted stage. `Char`, the instantiated `List Char`,
+  and `String` must be non-propositional, Type-valued inductive instances.
+- `String` has family arity zero, constructor list exactly `[String.mk]`, and an installed
+  `ProjectionInfo` for which `etaEligible = true`, `fieldCount = 1`, and projection index `0` is the
+  sole field. Its `ctorHead` is the exact resolved `String.mk`, has no-confusion, has no erased
+  family arguments and exactly one stored argument, whose instantiated type is `defEq List Char`;
+  its instantiated result is `defEq String`.
+- Resolve the exact `List Char` family instance and require constructor list exactly
+  `[List.nil, List.cons]`; it is therefore not eta-eligible. Instantiate each constructor's erased
+  family binders with the arguments of that same family instance and require their
+  `numErasedFamilyArgs` to consume exactly those family arguments. `List.nil` has no stored fields
+  and result `defEq List Char`. `List.cons` has exactly two stored fields, first `defEq Char` and
+  second `defEq List Char`, and result `defEq List Char`. Both heads have no-confusion and are the
+  exact resolved globals with those canonical names.
+- `Char.ofNat` has exactly the checked callable type `Nat → Char`; its argument family is the
+  already-validated Nat representation. The retained `natTpe`, `charTpe`, `listCharTpe`,
+  `charOfNat`, `stringTpe`, and `stringMk` values have empty syntactic dependencies and contain no
+  stage-local references. Validation failure raises `StringLiteralUnavailable` with the failed
+  condition; it never issues a partial layout.
+
+The layout owns one immutable private `CharListCodec` plus the checked closed values needed to
+apply `Char.ofNat`. This descriptor is deliberately per bootstrap: `decodeHead` is called from
+defeq, unification, matching, and termination code that has no `Env`. It may retain closed checked
+bootstrap values, but the `CharListPayload` itself contains no `Value`s and `synDeps` remains only
+the packed field type's dependencies.
+
+The concrete ownership shape is:
+
+```scala
+final class CharListCodec private[raccoonlang] (
+    val natTpe: Value,
+    val charTpe: Value,
+    val listCharTpe: Value,
+    val charOfNat: Value
+) extends PackedCodec
+
+final class ValidatedStringLayout private[raccoonlang] (
+    val stringTpe: Value,
+    val stringMk: ConstructorHead,
+    val charListCodec: CharListCodec
+)
+```
+
+All constructor parameters are closed and are created only by
+`Packed.validateStringLayout(env)`. `CharListCodec` equality for packed-value compatibility is
+descriptor identity within the selected immutable environment; its `ValueKey` codec tag is the
+stable kernel CharList tag combined with `listCharTpe.key`, never a JVM identity hash. Environments
+and their layout instances are not mixed.
+
+Store the issued layout in immutable environment state, not a global registry:
+
+```scala
+final case class NativeLiteralState private[raccoonlang] (
+    stringLayout: Option[ValidatedStringLayout]
+)
+
+final case class Env(
+    globals: Map[String, GlobalBinding],
+    locals: VectorMap[CoreAst.LocalRef, Value],
+    nativeLiterals: NativeLiteralState
+)
+```
+
+`Env.empty` starts with no layout; every existing `copy`-based global/local/closure operation
+preserves the field. A private trusted-bootstrap installer atomically replaces `None` with the one
+validated layout after the String block and `Char.ofNat` have checked; a second installation is an
+internal error. T1 stages this state change with the String transaction so rollback cannot leak a
+layout. Typechecking and evaluation of `StrLit` read `env.nativeLiterals.stringLayout` or raise
+`StringLiteralUnavailable`; decoded `VPacked` fields carry the descriptor and need no environment.
+Ordinary imports have no installer permit.
+
+Following the selected Lean trust model, layout issuance trusts the exact bootstrap `Char.ofNat`
+identity to map valid scalars injectively to the intended `Char`. Its declaration and type are
+checked, but no semantic body recognizer or fingerprint is added. Record this assumption in T1's
+manifest and add Unicode/injectivity differential tests as engineering alarms. Ordinary imports
+cannot construct a `ValidatedStringLayout` from a same-named declaration.
+
+For scalar vector `s`, the codec implements:
+
+```text
+decodeHead([])        = (List.nil, [])
+decodeHead(c +: rest) = (List.cons, [evalApply(Char.ofNat, VPacked.nat(c, natTpe)),
+                                    VPacked.charListTail(current)])
+strictlyLess(xs, ys)  = xs is a proper suffix of ys
+canonical             = false
+refutesUnequalPayloads = false
+```
+
+The descriptor returns constructor names and ordinary checked field values; it never fabricates a
+`ConstructorHead`. Mixed packed/constructor equality and unification use the existing peel paths.
+
+### 0.4 `StrLit`, quotation, and Unicode boundary
+
+- Add `StrLit(scalars: Vector[Int], span: Span)` to SurfaceAst, CoreAst, and ElabAst. T1's matching
+  export-IR node is exactly `StrVal(scalars: Vector[Int])`, never a host-`String` payload. Evaluation
+  passes the AST payload to `VPacked.charList(layout.charListCodec, scalars)`; no raw
+  `CharListPayload` construction is available. The surface parser accepts double-quoted literals
+  with the JSON-style escapes fixed below; it combines a valid `\uXXXX` surrogate pair into one
+  supplementary scalar and rejects an unpaired escape. The export reader/parser converts without
+  normalization to validated Unicode scalars and rejects invalid UTF-8, unpaired host UTF-16
+  surrogates, and non-scalar code points before constructing the node. Elaborator lowering is
+  one-to-one.
+- Typechecking requires the current trusted bootstrap's `ValidatedStringLayout` and assigns its
+  `String` type. Evaluation constructs the canonical outer `String.mk` value with one packed
+  `List Char` field through the ordinary constructor application seam.
+- Quote the exact layout `String.mk` head with exactly one field using that layout's
+  `CharListCodec` directly as `StrLit`; leave every other constructor on generic quotation. Quote
+  a standalone packed field as
+  `ElabAst.Term.Proj("String", 0, ElabAst.Term.StrLit(scalars, span), span)`. This residual has type
+  `List Char`, re-evaluates to the same packed field/key, and avoids an O(n) constructor expansion.
+- Add all exhaustive AST traversal, captured-reference, inliner, pretty-printer, and typechecker
+  cases. Pretty-print strings with deterministic scalar-based escaping; never normalize through a
+  host locale or Unicode normalization library. Escape quote, backslash, backspace, form feed,
+  newline, carriage return, and tab with standard JSON-style escapes; encode other C0 controls as
+  four-hex-digit `\uXXXX`; emit every other scalar literally.
+  The exact layout `String.mk` over its packed field prints as the quoted literal; a standalone
+  CharList payload prints as `proj[String,0]("...")`, while Nat payloads remain bare numerals.
+- Mirror `NatLiteralUnavailable` with a typed `StringLiteralUnavailable` when no validated layout
+  is installed. Reader/parser malformed-Unicode failures remain provenance-bearing input
+  diagnostics and must not escape as a JSON-library exception, `MatchError`, or host encoding
+  replacement character.
+
+### 0.5 Continuation tests and completion gate
+
+Landed K3 coverage:
+
+- [x] Equation examples for all eight new Nat operations, including zero divisors, gcd zero cases,
+      bitwise identities, and shifts; large random host-oracle tests cover the native wiring.
+- [x] Resource pins: `shiftLeft(1, 2²⁴)` succeeds; `shiftLeft(1, 2²⁴ + 1)` raises without fallback;
+      `shiftLeft(0, 2²⁴ + 1) = 0`; `shiftRight(1, 2²⁴ + 1) = 0` without host-`Int` conversion.
+- [x] String pins for empty, ASCII, BMP, and supplementary-plane literals; one-layer list/Char
+      matching; standalone field projection quote/re-evaluation; suffix key equality;
+      malformed-Unicode rejection; and layout preservation through environment materialization.
+- [x] Table/profile/admission pins distinguish `Nat.blt`, require all fifteen synthetic-profile
+      rows, reject a missing row, reject a wrong Nat-result telescope, and reject opaque or
+      misidentified declarations. Layout negatives cover field type, arity, projection,
+      no-confusion, and closure.
+- [x] Direct hardening pins cover all fifteen reserved operation names, derived Bool-result
+      classification, implicit native binders, a wrong Bool-result telescope, distinct
+      scalar/`Char.ofNat` behavior, remaining String result/constructor corruptions, a
+      20,000-scalar peel, and atomic streamed-bootstrap finalization.
+
+Remaining T1 integration (not required to use the landed synthetic K3 path):
+
+- [ ] T1 must run equation/differential alarms against the actual checked translated-`Init`
+      definitions, then validate the `PinnedTranslatedInit` profile and emit the table-derived
+      manifest. The synthetic fixture intentionally supplies only type-correct trusted bodies, so
+      it cannot serve as a structural oracle for those eight operations.
+
+### 0.6 Post-landing simplification shape (2026-07-20)
+
+- `Prelude.Config` carries one sealed `BootstrapAuthority`, not an independently selectable
+  reserved-name permit and native profile. `Interpreter.trustedBootstrap` derives both from the
+  authority, and `buildTrustedBootstrapEnv` folds a complete program through that context. Native
+  authority constructors are closed; the bundled, synthetic, and pinned values are kernel-owned,
+  and ordinary callers receive `Unprivileged`.
+- Native result classification is represented by the private `NatOpSpec`/`BoolOpSpec` row subtype,
+  eliminating the former `NativeResultKind` plus `NativeNatResult` duplication and per-call result
+  wrapper. The shared row exposes name, origin, required profiles, and the subtype-derived
+  read-only `returnsBool` classification needed by T1's manifest.
+- Sealed-payload destructuring is centralized in `Value.PackedPayload`. Codec-internal hot paths
+  use direct authenticated extractors; the `VPacked` observation helpers return `Option` only at
+  call sites that do not already know the codec.
+- `UnicodeScalarString` is the shared scalar validator/parser/renderer. `LanguageParser` translates
+  its committed decode failures into `ParseError`, and `PrettyPrinter` uses the same scalar-aware
+  escaping path.
+- Synthetic source assembly (`bundled Prelude + full-K3 addendum`) lives in
+  `NativeLiteralTests`. Production exposes only the narrow package-private trusted-source entry
+  point accepting a native `BootstrapAuthority`. `Interpreter.trustedBootstrap` now exposes the
+  same authority-bound `initialEnv`, `add`, and `finish` operations to a streaming T1 caller
+  without exposing the raw permit; the whole-program loader is a fold over that context.
 
 ## 1. Survey findings the implementation relies on
 
@@ -64,30 +377,33 @@ Facts verified in the current tree (line numbers approximate but recently accura
 
 **D1 — No install hook, registry state, or `ConstructorHead` field; reserve native Nat names.**
 This is the design spec's L8 model. `NatCodec` is a static `case object`, and the kernel reserves
-`Nat`, `Nat.zero`, `Nat.succ`, and every canonical name in the accelerated-op table. Only the
-bundled default Prelude may declare them. Ordinary program declarations, `Prelude.none`, the
-minimal test Prelude, and path/source-provided custom preludes fail with
+`Nat`, `Nat.zero`, `Nat.succ`, and every canonical name in the accelerated-op table. The landed
+sealed `BootstrapAuthority` has unprivileged, bundled-source, synthetic-full-K3, and pinned-
+translated-`Init` modes; only the native modes derive the reserved-name permit and validation
+profile. The pinned mode is ready for T1 to consume but is not an ordinary importer entry point. Ordinary program/import
+declarations, `Prelude.none`, the minimal test Prelude, and path/source-provided custom preludes fail with
 `ReservedKernelName`. This makes canonical-name dispatch authenticated without per-lambda state:
-checked source cannot attach `ValueId.Const("Nat.add")` to a different body.
+unprivileged checked source cannot attach `ValueId.Const("Nat.add")` to a different body.
 
 Implement the exception as an immutable declaration-loading capability used only while building
-the bundled default Prelude — never as a global flag and never retained in `Env`. Fold seams still
+a trusted bootstrap—never as a global flag and never retained in `Env`. Fold seams still
 self-validate exact stored arity, `noConfusion`, already-packed arguments, and a
 non-propositional result type, protecting the value invariant during Prelude construction and
 against malformed trusted values. A `ConstructorHead` field would break positional patterns and
 case-class equality; a mutable registry is unnecessary.
 
 **D2 — Reserved-name ops self-validate per call and fall through, never error.** Interception
-happens in `evalApply` keyed on `ValueId.Const(name)`; D1 proves that a matching id denotes the
-bundled Prelude definition. The op fires only when every argument is a packed Nat
+happens in `evalApply` keyed on `ValueId.Const(name)`; D1 proves that a matching id denotes a
+trusted-bootstrap definition. The op fires only when every argument is a packed Nat
 *and* the result type checks out (`defEq` of the instantiated codomain against the argument's own
 Nat family for arithmetic; a resolvable nullary `Bool` constructor whose type is `defEq` the
 codomain for comparisons). Any mismatch silently falls back to the structural body — the op only
-ever *shortcuts* it, which is L7 by construction. Loudness is provided by the transparency pins
-(§8): if a Prelude edit desyncs an op, the pinned tests catch the perf/behavior cliff.
+ever *shortcuts* it, which is L7 by construction. This describes the landed per-call defense; full
+K3 additionally performs the loud name/value/type/profile admission checks in §0.1. Differential
+and transparency pins remain semantic-desynchronization alarms.
 
-**D3 — Deep validation once, when the bundled Prelude is built.** After the privileged bundled
-Prelude environment is complete, `Packed.validateNatFamily(env)` validates that `Nat` is a
+**D3 — Deep validation once, when the trusted bootstrap is built.** After the privileged
+bootstrap environment is complete, `Packed.validateNatFamily(env)` validates that `Nat` is a
 **Type-valued** `familyArity == 0`
 inductive with constructors exactly `[Nat.zero, Nat.succ]`; zero nullary, `noConfusion`, type
 `defEq` the family; succ unary, zero erased args, `noConfusion`, field type **and result type**
@@ -107,9 +423,11 @@ constructor has a `require` that would throw).
 **D5 — The termination rule never decodes.** Packed-vs-packed strict subterm is a direct payload
 comparison (`strictlyLess`); decode-recursion on a 10⁹ payload is a hang.
 
-**D6 — `VPacked` is `UpdatableType`** (`withTpe = copy`) so `Value.ascribe` stays uniform; its
-`require(!isPropositionType(tpe))` can never fire from ascription because ascription types are
-defEq representatives and Nat is never defEq a proposition.
+**D6 — `VPacked` is `UpdatableType`.** The first slice used `withTpe = copy`; full K3 replaced that
+with the checked, identity-preserving `VPacked.retype` factory in §0.2. `Value.ascribe` still uses
+the uniform interface, but a packed value retains its authenticated closed type after checking the
+requested representative is defEq. This prevents both codec/type mismatch and key drift across
+quote/evaluate round trips; packed data can never be defEq a proposition.
 
 ## 3. Changes by file
 
@@ -190,8 +508,8 @@ block is ready to paste:
    * (`codec.decodeHead`) — the dual of StructEta, which maintains constructor form eagerly.
    * Never propositional (packed types are Type-valued inductives, L1).
    *
-   * The payload is `BigInt` because Nat is the only codec today; when the staged CharList codec
-   * lands (spec §7) the field generalizes with it.
+   * Historical first-slice shape: the payload was `BigInt` because Nat was the only codec.
+   * Full K3 replaced this field with the sealed sum and private factories in §0.2.
    */
   final case class VPacked(codec: PackedCodec, payload: BigInt, tpe: Value) extends Value with UpdatableType {
     require(payload >= 0, s"Packed payload must be non-negative: $payload")
@@ -267,7 +585,7 @@ object Packed {
     * arity, no-confusion, already-packed fields, and a non-propositional result type (a
     * Prop-declared lookalike must collapse, never pack; `VPacked`'s require would throw) — so a
     * same-named constructor of a different shape never folds. Deep family validation happens
-    * once after the bundled Prelude is built (`validateNatFamily`); checked syntax is trusted
+    * once after the selected trusted bootstrap is built (`validateNatFamily`); checked syntax is trusted
     * downstream (kernel-theory preamble).
     */
   private[raccoonlang] def foldCtor(
@@ -313,7 +631,7 @@ object Packed {
   )
 
   /** Names whose meaning is trusted by the packed representation or native-op table. Checked
-    * source may declare them only while the bundled default Prelude is being built (L8).
+    * source may declare them only while a kernel-owned trusted bootstrap is being built (L8).
     */
   private[raccoonlang] val reservedNames: Set[String] =
     ops.keySet ++ Set(NatCodec.familyName, NatCodec.zeroName, NatCodec.succName)
@@ -375,7 +693,7 @@ object Packed {
       .map(_.value(env))
       .getOrElse(throw NatLiteralUnavailable("no `Nat` in scope", Some(span)))
 
-  /** One-time bundled Prelude validation (L8(a)). */
+  /** One-time trusted-bootstrap Nat validation (L8(a)). */
   private[raccoonlang] def validateNatFamily(env: Env): Unit = {
     def fail(reason: String): Nothing = throw NatLiteralUnavailable(reason)
     def global(name: String): Option[Value] = env.globals.get(name).map(_.value(env))
@@ -419,6 +737,11 @@ object Packed {
 
 ### 3.3a `Prelude.scala`, `Interpreter.scala`, `Errors.scala` — reserve native Nat names
 
+Historical first-slice shape. Full K3 replaced the boolean/capability sketch below with one sealed
+`BootstrapAuthority` carried by `Prelude.Config`; `Interpreter.buildTrustedBootstrapEnv` derives
+the permit and optional native profile from that single authority, making mismatched combinations
+unrepresentable at the loader boundary. The public `evalDecl` path remains unprivileged.
+
 Native-op dispatch is keyed by `ValueId.Const(name)`, so the declarations carrying those names
 must be the bundled definitions whose equations the op table implements. Enforce that at the
 single declaration-publication boundary; no runtime registry or per-value provenance is needed.
@@ -429,6 +752,9 @@ single declaration-publication boundary; no runtime registry or per-value proven
 - Pass that capability only into `Interpreter.buildPreludeEnv`. Keep the public
   `Interpreter.evalDecl(decl, env)` path unprivileged; `Interpreter.run` and tests that call
   `evalDecl` directly therefore cannot publish reserved declarations.
+- T1 generalizes this landed source-Prelude-only path with a distinct caller-authorized
+  translated-`Init` bootstrap installer. Do not expose its permit through the general export API;
+  a stream cannot grant itself authority through its module name or version header.
 - Before evaluating a declaration, enumerate the canonical names it publishes (one for a const
   or axiom; the family plus constructor names for an inductive). If an unprivileged declaration
   intersects `Packed.reservedNames`, throw:
@@ -576,7 +902,7 @@ In `Unify.tryUnify`, insert directly after the `VCtor ≠ VCtor` clash arm (`:35
       val (name, decoded) = p.codec.decodeHead(p)
       if (name != h.name) {
         // Mirrors the VCtor clash arm: the codec side's constructors carry no-confusion by the
-        // bundled-Prelude validation; refutation additionally needs it on the concrete head.
+        // trusted-bootstrap validation; refutation additionally needs it on the concrete head.
         if (h.noConfusion) apart(p, ctor) else stuck(p, ctor)
       } else if (decoded.length != h.totalArity - h.numErasedFamilyArgs) stuck(p, ctor)
       else {
@@ -687,7 +1013,8 @@ In `project`'s `Step.CtorField` case (`:251-255`):
   `ClosedEnvInliner.inlineTerm` add `case lit: ElabAst.Term.NatLit => lit`.
 - **`PrettyPrinter.scala`**: `NatLit → value.toString` in the CoreAst atom + term printers
   (`:55-61`, `:65-76`) and the ElabAst pair (`:131-136`, `:140-149`); in the `Value` printer add
-  `case p: Value.VPacked => p.payload.toString` (Nat is the only codec; revisit with CharList).
+  `case p: Value.VPacked => p.payload.toString` (historical first-slice case; full K3 replaced it
+  with the exhaustive payload-specific printers in §0.2/§0.4).
 - **`Errors.scala`**:
   ```scala
   final case class NatLiteralUnavailable(reason: String, span: Option[Span] = None) extends TypeError {
@@ -722,10 +1049,10 @@ canonical names:
   def blt (a: Nat)(b: Nat): Bool := Nat.ble(Nat.succ(a), b)
 ```
 
-### 3.12 Docs (at landing)
+### 3.12 Docs (at the first-slice landing)
 
-- `docs/mathlib-export-port.md`: flip the K3 gate cell to **done** for the Nat half; note the
-  String half stays staged on Prelude `String`, and div-class ops on K2.
+- `docs/mathlib-export-port.md`: the first slice flipped the K3 gate cell to **done** for the Nat
+  base and left String/div-class work staged; §0 now specifies that continuation.
 - `docs/native-literals.md` §9 ledger obligations: apply them — kernel-theory §2 defeq-component
   bullet, §5 rows (payload apartness, packed structural decrease), and the reserved-name
   authentication rule for native ops. Follow the K4 precedent for wording.
@@ -742,7 +1069,7 @@ canonical names:
    `Projection.compile.visit` (packed values contain no holes), `Interpreter.valueName`,
    `defEqStructural`/`tryUnify` defaults (covered by the new arms), and
    `TerminationChecker.isStrictSubterm`'s `case _ => false`.
-2. **Ops fire during bundled Prelude declaration checking too** (eager normalization evaluates
+2. **Ops fire during trusted-bootstrap declaration checking too** (eager normalization evaluates
    bodies) — that's intended; while checking `Nat.add` itself its args are fresh Vars, so no
    self-interception. Reserved-name enforcement prevents any later/custom declaration from
    reaching this path with a different body.
@@ -834,9 +1161,11 @@ Follow `PreludeTests`' harness (`LanguageParser.parseProgram` → `Elaborator.el
 13. **Reserved identity**: under `Prelude.none`, `Prelude.test`, and a path-provided custom
     Prelude, attempts to declare `Nat`, `Nat.zero`/`Nat.succ`, or an accelerated name such as
     `Nat.add` fail with `ReservedKernelName`. The bundled default Prelude loads successfully and
-    its `Nat.add` still takes the native path.
+    its `Nat.add` still takes the native path. T1 must add a parallel pin: the exact same identity is
+    accepted through the caller-authorized pinned translated-`Init` bootstrap and rejected through
+    ordinary import mode.
 
-## 7. Acceptance checklist
+## 7. First-slice acceptance checklist
 
 - [x] `sbt compile` clean (fatal warnings resolved deliberately, not defaulted away).
 - [x] Full `sbt test` green; `ConsistencyTests`/`QuotientTests` logical probes are not weakened
@@ -845,8 +1174,10 @@ Follow `PreludeTests`' harness (`LanguageParser.parseProgram` → `Elaborator.el
 - [x] Docs updated per 3.12.
 - [x] No new mutable global state except the `DynamicVariable` kill-switch; no `ConstructorHead`
       shape change; codec set sealed with no public constructor.
-- [x] Reserved Nat family/constructor/op names can be published only while building the bundled
-      default Prelude; the capability is immutable and is not retained in `Env`.
+- [x] Reserved Nat family/constructor/op names can be published only under a sealed native
+      `BootstrapAuthority`; the derived permit/profile is immutable and is not retained in `Env`.
+      T1 receives the pinned authority only through its caller-selected trusted-bootstrap entry
+      point, while ordinary import mode remains unprivileged.
 - [x] Payload apartness in unification requires explicit payload inequality and
       `refutesUnequalPayloads` (L9), never `canonical` or L3 alone.
 - [x] `foldCtor` declines propositional result types and no-confusion-less heads.

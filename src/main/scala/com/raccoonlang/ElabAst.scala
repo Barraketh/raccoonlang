@@ -20,6 +20,8 @@ object ElabAst {
 
     final case class NatLit(value: BigInt, span: Span) extends Term
 
+    final case class StrLit(scalars: Vector[Int], span: Span) extends Term
+
     /**
      * Residual-only proof erasure intrinsic emitted by quotation for an already-validated `VProof`. It is deliberately
      * absent from CoreAst so source programs cannot manufacture arbitrary proofs. Evaluation canonicalizes a proof of

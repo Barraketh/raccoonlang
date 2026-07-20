@@ -424,7 +424,15 @@ object TypeChecker {
       term match {
         case CA.Term.NatLit(value, span) =>
           val family = Packed.natFamily(env, span)
-          val synthed = CheckedTerm(VPacked(NatCodec, value, family), EA.Term.NatLit(value, span))
+          val synthed = CheckedTerm(VPacked.nat(value, family), EA.Term.NatLit(value, span))
+          expectedTy.fold(synthed)(expected => checkTermFits(synthed, expected))
+        case CA.Term.StrLit(scalars, span) =>
+          val layout = env.nativeLiterals.stringLayout.getOrElse(
+            throw StringLiteralUnavailable("no validated String layout", Some(span))
+          )
+          val synthed = CheckedTerm(Packed.evalStrLit(scalars, env), EA.Term.StrLit(scalars, span))
+          if (!ValueEquivalence.defEq(synthed.value.tpe, layout.stringTpe))
+            throw WTF("String literal evaluator returned the wrong type", Some(span))
           expectedTy.fold(synthed)(expected => checkTermFits(synthed, expected))
         case CA.Term.Select(base, field, span) =>
           val checkedBase = checkTerm(base, env)

@@ -3,6 +3,8 @@ package com.raccoonlang
 import com.raccoonlang.Value.LevelTpe
 
 object PrettyPrinter {
+  private def printString(scalars: Vector[Int]): String = UnicodeScalarString.renderQuoted(scalars)
+
   private def printRef(ref: CoreAst.Term.Ref): String = ref match {
     case CoreAst.Term.GlobalRef(name, _) => name
     case CoreAst.Term.LocalRef(ref, _)   => ref.name
@@ -53,6 +55,7 @@ object PrettyPrinter {
 
   private def printTermAtom(t: CoreAst.Term): String = t match {
     case CoreAst.Term.NatLit(value, _)             => value.toString
+    case CoreAst.Term.StrLit(scalars, _)           => printString(scalars)
     case _: CoreAst.Term.Ref                       => printCoreTerm(t)
     case CoreAst.Term.App(_, _, _)                 => printCoreTerm(t)
     case CoreAst.Term.Select(base, field, _)       => s"${printTermAtom(base)}[$field]"
@@ -64,8 +67,9 @@ object PrettyPrinter {
   }
 
   private def printCoreTerm(t: CoreAst.Term): String = t match {
-    case CoreAst.Term.NatLit(value, _) => value.toString
-    case ref: CoreAst.Term.Ref         => printRef(ref)
+    case CoreAst.Term.NatLit(value, _)   => value.toString
+    case CoreAst.Term.StrLit(scalars, _) => printString(scalars)
+    case ref: CoreAst.Term.Ref           => printRef(ref)
     case CoreAst.Term.Lam(ty, body, _, _, recursion) =>
       val decreaseStr = recursion.map(r => s" ${printDecreaseSpec(r.decreases)}").getOrElse("")
       s"fun ${printBinders(ty.binders)}: ${printCoreTerm(ty.out)}$decreaseStr => ${printCoreTerm(body)}"
@@ -133,6 +137,7 @@ object PrettyPrinter {
 
   private def printElabTermAtom(t: ElabAst.Term): String = t match {
     case ElabAst.Term.NatLit(value, _)             => value.toString
+    case ElabAst.Term.StrLit(scalars, _)           => printString(scalars)
     case ElabAst.Term.Proof(tpe, _)                => s"proof(${printElabTerm0(tpe)})"
     case _: ElabAst.Term.Ref                       => printElabTerm0(t)
     case ElabAst.Term.App(_, _, _)                 => printElabTerm0(t)
@@ -145,6 +150,7 @@ object PrettyPrinter {
 
   private def printElabTerm0(t: ElabAst.Term): String = t match {
     case ElabAst.Term.NatLit(value, _)             => value.toString
+    case ElabAst.Term.StrLit(scalars, _)           => printString(scalars)
     case ElabAst.Term.Proof(tpe, _)                => s"proof(${printElabTerm0(tpe)})"
     case ElabAst.Term.Proj(family, index, base, _) => s"proj[$family,$index](${printElabTerm0(base)})"
     case ref: ElabAst.Term.Ref                     => printElabRef(ref)
@@ -186,6 +192,9 @@ object PrettyPrinter {
     case pi: Value.VPi                              => "VPi"
     case Value.VConst(name, _, _)                   => name
     case Value.ConstructorHead(name, _, _, _, _)    => name
+    case Value.VCtor(head, Vector(field: Value.VPacked), _)
+        if head.name == "String.mk" && field.codec.isInstanceOf[Value.CharListCodec] =>
+      printString(field.charScalars.getOrElse(throw WTF("Invalid packed String field")))
     case Value.VCtor(head, storedArgs, _) =>
       val headStr = print(head)
       if (storedArgs.isEmpty) headStr
@@ -195,8 +204,12 @@ object PrettyPrinter {
     case v: Value.Var          => s"${v.name}#${v.id}"
     case s: Value.NeutralThunk => s"match#${s.id}"
     case p: Value.VProof       => s"‹proof of ${print(p.tpe)}›"
-    case p: Value.VPacked      => p.payload.toString
-    case LevelTpe              => s"Level"
+    case p: Value.VPacked =>
+      p.natValue
+        .map(_.toString)
+        .orElse(p.charScalars.map(scalars => s"proj[String,0](${printString(scalars)})"))
+        .getOrElse(throw WTF("Unknown packed payload"))
+    case LevelTpe => s"Level"
   }
 
 }

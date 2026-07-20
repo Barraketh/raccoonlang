@@ -42,6 +42,8 @@ object SurfaceAst {
 
     final case class NatLit(value: BigInt, span: Span) extends Term
 
+    final case class StrLit(scalars: Vector[Int], span: Span) extends Term
+
     // Projection: base.field
     final case class Select(base: Term, field: String, span: Span) extends Term
 

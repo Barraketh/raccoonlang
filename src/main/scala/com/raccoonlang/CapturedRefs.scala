@@ -30,7 +30,7 @@ object CapturedRefs {
 
   private def goTerm(term: ElabAst.Term, env: Env, refs: Set[CoreAst.LocalRef]): Set[CoreAst.LocalRef] =
     term match {
-      case _: Term.NatLit =>
+      case _: Term.NatLit | _: Term.StrLit =>
         refs
 
       case Term.Proof(tpe, _) =>

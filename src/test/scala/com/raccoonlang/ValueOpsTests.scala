@@ -34,8 +34,7 @@ class ValueOpsTests extends munit.FunSuite {
     val x = FreshVar.freshVar("x", valueType)
     val solution = symbolicValue("Solved")
     val global = symbolicValue("Global")
-    val base = Env
-      .empty
+    val base = Env.empty
       .putGlobal("global", global)
       .putLocal(ref, x)
     val materialized = ValueOps.materializeEnv(base, solve(x, solution))
@@ -304,8 +303,7 @@ class ValueOpsTests extends munit.FunSuite {
     val captured = symbolicValue("Captured")
     val unused = FreshVar.freshVar("unused", valueType)
     val scrut = FreshVar.freshVar("scrut", valueType)
-    val env = Env
-      .empty
+    val env = Env.empty
       .putLocal(capturedRef, captured)
       .putLocal(unusedRef, unused)
       .putLocal(scrutRef, scrut)

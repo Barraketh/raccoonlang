@@ -126,7 +126,7 @@ object ValueEquivalence {
           }
 
         case (p1: VPacked, p2: VPacked) =>
-          p1.codec == p2.codec && p1.payload == p2.payload && defEq(p1.tpe, p2.tpe)
+          p1.codec == p2.codec && p1.codec.payloadEquals(p1.payload, p2.payload) && defEq(p1.tpe, p2.tpe)
         case (p: VPacked, VCtor(head, fields, ctorTpe)) =>
           defEqPeeled(p, head, fields, ctorTpe)
         case (VCtor(head, fields, ctorTpe), p: VPacked) =>
@@ -383,7 +383,7 @@ object ValueEquivalence {
           else stuck(a, b)
 
         case (p1: VPacked, p2: VPacked) if p1.codec == p2.codec =>
-          if (p1.payload == p2.payload) tryUnify(p1.tpe, p2.tpe, meta, ctx)
+          if (p1.codec.payloadEquals(p1.payload, p2.payload)) tryUnify(p1.tpe, p2.tpe, meta, ctx)
           else if (p1.codec.refutesUnequalPayloads) apart(p1, p2)
           else stuck(p1, p2)
 

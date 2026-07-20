@@ -58,7 +58,7 @@ explicit arguments per Raccoon's all-or-none implicit rule.
 |---|---|---|---|
 | K1 | Higher-order subterm rule | — | **done** (commit 3355563) |
 | K2 | Sealed `Acc`/`WellFounded` primitives | — | **kernel complete; kernel §13 pins green**; T3 mapping/tests pending |
-| K3 | Native Nat/String literals | — | **Nat base done**; M0 requires every staged Nat op; String staged |
+| K3 | Native Nat/String literals | — | **kernel implementation complete**; translated-`Init` activation/manifest is T1-gated |
 | K4 | Primitive projections + structure eta | — | **done** |
 | K5 | `imax` levels | M0 stats | **done** |
 | K6 | Mutual / nested inductives | M0 stats | M0 decision: native kernel support |
@@ -94,15 +94,31 @@ exported name and a proposition-valued application do not authenticate equality.
 recursion through proof metrics" is stated as case law. Cost accepted: WF-defined functions do not compute by defeq —
 identical to post-4.9 Lean practice (equation lemmas; native ops cover `Nat.div`-class literals).
 
-**K3. Native literals — Nat done.** Spec: `native-literals.md` (the `VPacked` design — a packed
+**K3. Native literals — kernel implementation complete.** Spec: `native-literals.md` (the `VPacked` design — a packed
 value form with a closed, kernel-curated codec set; representation-not-rules, dual of K4).
 `NatLit`, constructor↔literal transparency, packed structural decrease, and the seven operations
 whose structural definitions exist today (`add/sub/mul/pow`, `beq/ble/blt`) are implemented and
-certified against the structural path. Native Nat names are reserved to the bundled Prelude.
-M0 found all staged Nat operations already in the `Init` export, so `div/mod/gcd` and the complete
-bitwise set are required for M1 (still K2/T1-gated); `StrLit` remains staged until the Prelude
-has `String`/`Char`. Container codecs (List-as-array, Vec-as-array+Nat) remain out of scope and
-deferred with the P1 caching decision (spec §1).
+certified against the structural path. Native Nat names are reserved to kernel-owned bootstrap
+installers: the bundled Prelude and T1's pinned translated-`Init` mode. Following Lean's kernel
+trust model, an exact native-operation identity installed by either trusted bootstrap receives its
+kernel defeq rule outright; the definition is typechecked, but T1 does not attempt to prove or
+fingerprint its agreement with the host arithmetic implementation. Ordinary imports can never
+install those identities.
+M0 found all staged Nat operations already in the `Init` export. K3 implements the native rows for
+`div/mod/gcd` and the complete bitwise set; their checked structural definitions and production
+activation remain K2/T1-gated for M1. The final fifteen-entry table is Lean's
+fourteen pinned binary native identities plus `Nat.blt`, retained as an explicitly ledgered
+Raccoon extension using the same trusted-bootstrap isolation. Nonzero `shiftLeft` has the same
+`2²⁴` evaluator limit as `pow`; zero left-shift and sufficiently large right-shift return zero
+without allocation. `StrLit` and its validated layout are implemented and exercised through the
+synthetic full-K3 bootstrap. The bundled source Prelude intentionally has no `String`/`Char` layout,
+and production activation waits for T1's checked translated `Init`. The representation keeps
+`String.mk` constructor-headed and packs only its `List Char` field as a
+validated Unicode-scalar sequence in a private immutable, decode-only CharList codec. Standalone
+field quotation uses `Proj("String", 0, StrLit(...))`. As in Lean's literal expansion, the exact
+bootstrap `Char.ofNat` scalar mapping is part of the TCB after its type and surrounding String/Char
+shape validate; there is no semantic body recognizer. Container codecs (List-as-array,
+Vec-as-array+Nat) remain out of scope and deferred with the P1 caching decision (spec §1).
 
 **K4. Primitive projections + structure eta — done** (StructEta; kernel-theory §2 "structure
 eta"). Implemented as representation, not conversion rules: every value of an eta-eligible structure-like inductive
@@ -164,16 +180,18 @@ says current rules already exclude this; re-walk §6 when landing.
 
 ## 5. Translator workstreams
 
-**T1. Export reader + prelude alignment.** The M0 reader-only portion is done
+**T1. Export reader + prelude alignment.** Implementation spec: `t1-lean-export-importer.md`.
+The M0 reader-only portion is done
 (`LeanExportM0` / `MathlibExportStats`): it validates format 3.1.0 and intern-table order while
 retaining only packed transitive summaries, and was exercised on real `Init` and
 `Mathlib.Logic.Basic` exports. See `m0-export-stats.md`. Remaining work: translate the stream and
-retain topological declaration order. Map Lean's `Eq`, `Nat`, `Quot`, `Bool`, … onto the Raccoon Prelude
-(or import a fresh translated core and keep Raccoon's Prelude only for bootstrapping); mangle
-names into namespaces; retain each primitive's validated implicit/explicit calling convention while supplying export
-level arguments; translate `let` to `Body.lets`. For equality specifically, retain Lean metadata's two-parameter,
+retain topological declaration order. The benchmark starts from a minimal kernel-owned `Sort`/`Level` bootstrap and
+imports a fresh translated Lean `Init`; it does not load Raccoon's source Prelude. Preserve ordinary safe Lean names
+and use an injective encoding only for numerical/exotic names. Retain each primitive's validated implicit/explicit
+calling convention while supplying and validating every exported level and term argument; translate `let` to
+`Body.lets`. For equality specifically, retain Lean metadata's two-parameter,
 one-index split while lowering the checked Raccoon family to `{u}`, `A` parameters and `x`, `y` indices. Any equality
-selected by either alignment mode must pass the shared structural `ValidatedEquality` check before K2 or another
+selected for primitive use must pass the shared structural `ValidatedEquality` check before K2 or another
 primitive-proposition builder may use it.
 `theorem`s are checked once and passed through the proof representation policy. Every proof of a
 Pi proposition publishes as the same type-directed eta-lambda, regardless of transparency; its
@@ -238,9 +256,10 @@ kernel-theory review — thunks must not weaken the §5 evidence rules).
   `Acc.rec` uses outside the fix cluster, `proj` nodes, literal ops used, declarations flagged
   irreducible. Results and resolved gates: `m0-export-stats.md`. The Abel–Coquand Ω
   must-terminate probe is pinned in `ConsistencyTests`.
-- **M1 — core prelude.** The `Init` closure typechecks end-to-end (exercises T1/T2, K3, K4, K2 for
-  `Nat.div`-class definitions). Acceptance: zero unpatched failures; perf baseline recorded.
-- **M2 — `Mathlib.Logic`.** K7 axioms live (post evidence-grades refactor); classical reasoning,
+- **M1 — core prelude.** The `Init` closure typechecks end-to-end (exercises T1/T2/T3, K2, K3, K4,
+  K6, and the K7 capability required by exported `propext`/choice assumptions). Acceptance: zero
+  unpatched failures; perf baseline recorded.
+- **M2 — `Mathlib.Logic`.** K7 axioms are exercised at Mathlib scale; classical reasoning,
   `Decidable` machinery, `decide`-style proofs.
 - **M3 — `Mathlib.Order` + `Algebra` roots.** Instance diamonds at scale — the K4 and P1 stress
   test. Acceptance: diamond-heavy files check with defeq parity and acceptable wall-clock.
@@ -255,8 +274,11 @@ kernel-theory review — thunks must not weaken the §5 evidence rules).
 2. **Resolved at M0:** K6 gets native mutual/nested support; both occur in the first raw Mathlib slice.
 3. **Open:** Prop-level `Quot.lift` stuckness (proof-collapse §7): completeness question — does Mathlib's
    `Quotient` usage ever eliminate a Prop-level quotient into data? Check at M2.
-4. **Open:** Native-op trust: builtin defeq steps trusted outright (Lean's stance) vs. certified against the
-   structural definitions on first use. Default: trusted, documented in the §4 axiom ledger.
+4. **Resolved:** Native-op defeq steps are trusted outright, following Lean's kernel stance. The
+   trust applies only to exact reserved identities installed by the bundled Prelude or T1's
+   explicit pinned translated-`Init` bootstrap mode; ordinary export streams receive no such
+   authority. Structural differential/equation tests remain engineering backstops, not admission
+   checks or proofs.
 5. **Open:** P1 laziness — only if M3 measurements force it.
 
 ## 9. Non-goals

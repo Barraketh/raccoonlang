@@ -90,6 +90,26 @@ final case class NatLiteralUnavailable(reason: String, span: Option[Span] = None
   override val msg: String = s"Nat literal unavailable: $reason"
 }
 
+final case class StringLiteralUnavailable(reason: String, span: Option[Span] = None) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  override val msg: String = s"String literal unavailable: $reason"
+}
+
+final case class NativeOperationDeclarationMismatch(name: String, reason: String, span: Option[Span] = None)
+  extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  override val msg: String = s"Native operation declaration mismatch for $name: $reason"
+}
+
+final case class MissingNativeOperation(
+    name: String,
+    profile: Packed.NativeBootstrapProfile,
+    span: Option[Span] = None
+) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  override val msg: String = s"Missing native operation $name required by $profile"
+}
+
 final case class NativeOperationLimitExceeded(
     operation: String,
     argument: BigInt,

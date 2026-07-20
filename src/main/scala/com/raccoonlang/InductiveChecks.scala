@@ -181,10 +181,10 @@ object InductiveChecks {
 
     def go(term: Term): Unit =
       term match {
-        case _: Term.NatLit | _: Term.GlobalRef =>
-        case Term.LocalRef(ref, _)              => refs += ref
-        case Term.Select(base, _, _)            => go(base)
-        case Term.Proj(_, _, base, _)           => go(base)
+        case _: Term.NatLit | _: Term.StrLit | _: Term.GlobalRef =>
+        case Term.LocalRef(ref, _)                               => refs += ref
+        case Term.Select(base, _, _)                             => go(base)
+        case Term.Proj(_, _, base, _)                            => go(base)
         case Term.Pi(binders, out, _) =>
           binders.foreach(binder => go(binder.ty))
           go(out)

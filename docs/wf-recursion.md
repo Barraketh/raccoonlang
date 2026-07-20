@@ -498,9 +498,10 @@ recursor type but never select an operational route: every universe instantiatio
 
 ### Native literals
 
-K2 enables the planned trusted native implementations of `Nat.div`-class operations to cite propositional equation
-lemmas rather than unfold well-founded definitions. Native operation interception remains separately reserved and
-authenticated; it is not part of `Acc.rec` evaluation. Existing `Packed.runOp` dispatch accepts only the expected
+K2 enables the implemented trusted native equations for `Nat.div`-class operations to cite propositional equation
+lemmas rather than unfold well-founded definitions. Native operation interception remains separately reserved and is
+admitted only by K3's Lean-style trusted bootstrap rule; it is not part of `Acc.rec` evaluation and does not consume a
+K2 capability. Existing `Packed.runOp` dispatch accepts only the expected
 `VPacked` arguments and returns `None` for a sealed neutral, after which the structural fallback may remain stuck. K2
 must preserve that fall-through behavior rather than treating a closed non-literal argument as an evaluator error.
 
@@ -539,9 +540,9 @@ recognition failure as a general Lean/Raccoon defeq gap.
 - Add `ValidatedEquality` (shared with future propositional primitives) and `WfPrimitives.scala` with canonical
   internal/public names, the singleton `Acc` shape descriptor, expected recursor/equation-type builders, and the
   checked installer. The equation builder requires the equality capability as an explicit argument.
-- Generalize the actual `allowReservedNativeDefinitions` Boolean on `Interpreter.evalDecl`/`Prelude.Config` into a
-  shared reserved-name registry plus narrow permit set. `Packed.reservedNames` remains the Nat subset registered with
-  it. Preserve the current default Prelude behavior through an explicit Nat permit.
+- Use the shared reserved-name registry and narrow `ReservedNamePermit`s. `Packed.reservedNames` remains the Nat subset;
+  K3 derives its native permit and validation profile from one sealed `BootstrapAuthority`, while K2 receives only
+  `ReservedNamePermit.wellFounded` at its installer boundary.
 - Reuse existing `AxiomDecl` publication: symbolic for the data-valued recursor, proof-canonicalized for the equations.
   Do not add a `Builtins` entry or evaluator case.
 

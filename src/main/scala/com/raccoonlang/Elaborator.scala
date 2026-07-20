@@ -526,7 +526,8 @@ object Elaborator {
     }
 
   private def elabTerm(term: SurfaceAst.Term, env: ResolveEnv): CA.Term = term match {
-    case SA.Term.NatLit(value, span) => CA.Term.NatLit(value, span)
+    case SA.Term.NatLit(value, span)   => CA.Term.NatLit(value, span)
+    case SA.Term.StrLit(scalars, span) => CA.Term.StrLit(scalars, span)
     case SA.Term.Proj(familyName, fieldIndex, base, span) =>
       val resolvedFamily = globalName(env.resolveGlobalBinding(Vector(familyName), span))
       CA.Term.Proj(resolvedFamily, fieldIndex, elabTerm(base, env), span)

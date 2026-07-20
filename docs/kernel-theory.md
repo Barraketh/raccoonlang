@@ -94,17 +94,38 @@ link is a consequence.
   value and its reduct are convertible. It must not use this mechanism for creation-time
   representation invariants: structure eta expansion remains creation-only, while proof
   re-canonicalization from a resolved output type remains a separate type-directed channel.
-- **Packed Nat representation** (definitional): every ground bundled-Prelude `Nat` is born as
-  `VPacked(NatCodec, payload, Nat)`; `decodeHead` exposes one constructor layer for matching,
+- **Packed Nat representation** (definitional): every ground trusted-bootstrap `Nat` is born as
+  `VPacked(NatCodec, NatPayload(payload), Nat)`; `decodeHead` exposes one constructor layer for matching,
   projection, and mixed packed/constructor comparison, while all ground constructor-birth and
   materialization seams fold back. Payload equality is Nat definitional equality (codec L3), and
-  the mixed peel is ordinary constructor congruence (L4). Native `add/sub/mul/pow/beq/ble/blt`
-  are sound bounded derived rules: admitted packed arguments return exactly the structural
-  Prelude result; ordinary dispatch mismatches fall through to that definition. `pow` raises an
-  explicit evaluator resource error above exponent `2²⁴`, rather than entering eager unary
-  fallback. Their
-  canonical names, plus `Nat` and its constructors, are reserved to the bundled Prelude, so a
-  `ValueId.Const` table key cannot identify a user body (`native-literals.md` L7–L8).
+  the mixed peel is ordinary constructor congruence (L4). The native table contains Lean's
+  fourteen binary Nat operations plus the explicitly ledgered Raccoon extension `blt`; admitted
+  packed arguments return exactly the trusted bootstrap definition's ground result, while
+  ordinary dispatch mismatches fall through to that checked definition. `pow` raises an explicit
+  evaluator resource error above exponent `2²⁴`; `shiftLeft` uses the same bound for a nonzero
+  operand, with zero special-cased; an arbitrarily large `shiftRight` returns zero once its count
+  reaches the operand bit length. These cases never enter eager unary fallback. Their
+  canonical names, plus `Nat` and its constructors, are reserved to kernel-owned bootstrap
+  installers—the bundled Prelude and T1's explicit pinned translated-`Init` mode—so a
+  `ValueId.Const` table key cannot identify a user body or ordinary imported declaration
+  (`native-literals.md` L7–L8). Following Lean's kernel trust model, agreement between those exact
+  bootstrap definitions and the host arithmetic table is part of the TCB: declarations and types
+  are checked, but there is no semantic body recognizer, fingerprint admission check, or
+  per-operation capability. Differential/equation tests are desynchronization alarms, not proofs.
+- **Packed String field representation** (definitional): a checked `StrLit` is always the
+  constructor-headed eta-canonical `String.mk` whose sole `List Char` field is a
+  `VPacked(CharListCodec, CharListPayload, List Char)`. The private codec belongs to an immutable
+  structurally validated bootstrap layout, is decode-only and non-canonical, and exposes
+  `List.nil`/`List.cons(Char.ofNat scalar, tail)` one layer at a time through ordinary value
+  construction seams. Its payload is a closed validated Unicode-scalar sequence. Mixed packed/
+  constructor judgments peel; unequal scalar payloads are definitionally unequal under the
+  trusted `Char.ofNat` injectivity assumption, while unification remains conservatively stuck
+  because the codec does not claim L9. Quotation of a standalone field is
+  `Proj("String", 0, StrLit(payload))`, so
+  residualization preserves its type and compact representation without introducing a second
+  canonical String value form. As in Lean, the selected bootstrap's exact checked `Char.ofNat`
+  identity is trusted to map valid scalars injectively; K3 validates its type and surrounding
+  representation but performs no semantic body recognition (`native-literals.md` §7).
 - **Levels**: normalized representation `max(aᵢ + kᵢ, c)`, where an atom is a level
   variable or a normalized unresolved `imax(l, r)` (invariant: `c = 0` or `c > all kᵢ`). The
   `imax` smart constructor reduces when `r` is always zero or always positive and otherwise
@@ -190,12 +211,30 @@ Every evidence rule in §5 must remain valid under all rows of this table.
 | Univalence | **Not planned** | Would kill generativity of Type-valued formers too. If this ever changes, re-audit §5 entirely. |
 
 Trusted derived rules adjacent to this ledger, but not axioms: the reserved-name native Nat
-operation table. Each admitted entry is extensionally the bundled structural definition;
-ordinary dispatch mismatches may decline to that definition: `add`, truncating `sub`, `mul`,
-`pow` with `pow(a, 0) = 1`, `beq`, `ble`, and `blt`. `pow` has an evaluator resource limit of
-`2²⁴` on its exponent. The differential certification suite pins every entry; adding an operation
-requires its structural equation, conventions, reserved canonical name, and a new certification
-case.
+operation table. Lean's pinned kernel identities are `add`, truncating `sub`, `mul`, `pow`, `gcd`,
+`mod`, `div`, `beq`, `ble`, `land`, `lor`, `xor`, `shiftLeft`, and `shiftRight`; Raccoon's
+fifteenth entry `blt` is a deliberate extension using the same trusted-bootstrap isolation, not a
+claim about Lean's table. Each identity's agreement with its checked bootstrap definition is part
+of the TCB. `pow(a, 0) = 1`, division and modulus by zero produce `0` and the dividend respectively,
+and `gcd(0, b) = b`. `pow` and nonzero `shiftLeft` have evaluator limits of `2²⁴` on the exponent/
+shift count; zero left-shift and sufficiently large right-shift return zero without allocation.
+The differential certification suite pins every entry as an engineering alarm; adding an operation
+requires its conventions, expected checked type, reserved canonical name, ledger update, and a new
+certification case. One immutable K3 specification table owns those names, typed Nat-result or
+Bool-result rows, Lean-vs-Raccoon origin, and required bootstrap profiles; reservation, admission,
+and missing-operation checks derive from it. The private typed subtype derives a read-only
+`returnsBool` surface for T1's manifest, avoiding a second classification table. A checked
+declaration must also publish as the exact
+transparent `VLam` identity consumed by the current evaluator interception seam. That is a
+representation/admission check, not semantic body recognition, and no profile is retained as
+runtime authority.
+
+String literal expansion is a second trusted derived representation rule adjacent to the ledger.
+The selected bootstrap validates the complete `String.mk`/`List Char` shape and the checked type of
+`Char.ofNat`, then trusts that exact identity to map valid Unicode scalars injectively to the
+intended characters, matching Lean's coordinated kernel/`Init` assumption. Ordinary imports cannot
+issue `ValidatedStringLayout`. Scalar round-trip and unequal-scalar tests are desynchronization
+alarms, not a semantic admission proof.
 
 ## 5. Evidence table (unifier & match checker)
 

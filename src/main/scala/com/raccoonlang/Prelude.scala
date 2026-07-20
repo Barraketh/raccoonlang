@@ -13,7 +13,7 @@ object Prelude {
       surface: SurfaceAst.Program,
       core: CoreAst.Program,
       ignoredImports: Set[Vector[String]],
-      private[raccoonlang] val reservedNamePermit: ReservedNamePermit
+      private[raccoonlang] val bootstrapAuthority: BootstrapAuthority
   ) {
     def ignoresImport(path: Vector[String]): Boolean =
       ignoredImports(path)
@@ -22,24 +22,33 @@ object Prelude {
      * Checked prelude env, built once per Config and shared across programs. Sharing is sound: globals are closed
      * values, and fresh-var ids keep increasing across programs.
      */
-    lazy val checkedEnv: Env = Interpreter.buildPreludeEnv(core, reservedNamePermit)
+    lazy val checkedEnv: Env =
+      Interpreter.buildTrustedBootstrapEnv(core, bootstrapAuthority)
 
     /** Resolved prelude name trie for the elaborator, built once per Config. */
     lazy val names: Elaborator.PreludeNames = Elaborator.preludeNames(this)
   }
 
   lazy val default: Config =
-    fromResource(DefaultResourcePath, ignoredImports = Set(ImportPath), ReservedNamePermit.nativePrelude)
+    fromResource(
+      DefaultResourcePath,
+      ignoredImports = Set(ImportPath),
+      BootstrapAuthority.bundledSourcePrelude
+    )
 
   lazy val test: Config =
-    fromResource(TestResourcePath, ignoredImports = Set(ImportPath), ReservedNamePermit.empty)
+    fromResource(
+      TestResourcePath,
+      ignoredImports = Set(ImportPath),
+      BootstrapAuthority.Unprivileged
+    )
 
   val none: Config =
     Config(
       surface = SurfaceAst.Program(Vector.empty, Vector.empty, None),
       core = CoreAst.Program(Vector.empty, None),
       ignoredImports = Set.empty,
-      reservedNamePermit = ReservedNamePermit.empty
+      bootstrapAuthority = BootstrapAuthority.Unprivileged
     )
 
   def fromPath(path: Path): Config = {
@@ -57,14 +66,21 @@ object Prelude {
   }
 
   def fromSource(sourceName: String, source: String, ignoredImports: Set[Vector[String]] = Set(ImportPath)): Config = {
-    fromSource(sourceName, source, ignoredImports, ReservedNamePermit.empty)
+    fromSource(sourceName, source, ignoredImports, BootstrapAuthority.Unprivileged)
   }
+
+  private[raccoonlang] def fromTrustedSource(
+      sourceName: String,
+      source: String,
+      ignoredImports: Set[Vector[String]],
+      authority: BootstrapAuthority.Native
+  ): Config = fromSource(sourceName, source, ignoredImports, authority)
 
   private def fromSource(
       sourceName: String,
       source: String,
       ignoredImports: Set[Vector[String]],
-      reservedNamePermit: ReservedNamePermit
+      bootstrapAuthority: BootstrapAuthority
   ): Config = {
     val surface =
       LanguageParser.parseProgram(source) match {
@@ -72,15 +88,25 @@ object Prelude {
         case Failure(_, curIdx, message) =>
           throw new RuntimeException(s"Failed to parse $sourceName at offset $curIdx: $message")
       }
-    Config(surface, Elaborator.elabWithoutPrelude(surface), ignoredImports, reservedNamePermit)
+    Config(
+      surface,
+      Elaborator.elabWithoutPrelude(surface),
+      ignoredImports,
+      bootstrapAuthority
+    )
   }
 
   private def fromResource(
       resourcePath: String,
       ignoredImports: Set[Vector[String]],
-      reservedNamePermit: ReservedNamePermit
+      bootstrapAuthority: BootstrapAuthority
   ): Config =
-    fromSource(resourcePath, resourceSource(resourcePath), ignoredImports, reservedNamePermit)
+    fromSource(
+      resourcePath,
+      resourceSource(resourcePath),
+      ignoredImports,
+      bootstrapAuthority
+    )
 
   private def resourceSource(resourcePath: String): String = {
     val stream =

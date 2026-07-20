@@ -6,7 +6,8 @@ object Env {
   val empty: Env =
     Env(
       globals = Map.empty,
-      locals = VectorMap.empty
+      locals = VectorMap.empty,
+      nativeLiterals = NativeLiteralState.empty
     )
 
   // Internal-invariant assertions run on every env bind — the hottest path in the system — and
@@ -26,6 +27,12 @@ object Env {
   private[raccoonlang] def assertCanonicalProof(value: Value): Unit =
     if (assertionsEnabled && !(Value.canonicalizeProof(value) eq value))
       throw WTF(s"Non-canonical proof bound into env: value ${value} of type ${value.tpe}")
+}
+
+final case class NativeLiteralState private[raccoonlang] (stringLayout: Option[Value.ValidatedStringLayout])
+
+object NativeLiteralState {
+  private[raccoonlang] val empty: NativeLiteralState = NativeLiteralState(None)
 }
 
 sealed trait GlobalBinding {
@@ -60,7 +67,8 @@ object GlobalBinding {
 // reach this layer; local lookup uses the resolved LocalRef as the map key.
 final case class Env(
     globals: Map[String, GlobalBinding],
-    locals: VectorMap[CoreAst.LocalRef, Value]
+    locals: VectorMap[CoreAst.LocalRef, Value],
+    nativeLiterals: NativeLiteralState
 ) {
   def apply(name: String): Value =
     globals.get(name).map(_.value(this)).getOrElse(throw NotFound(name))
@@ -119,4 +127,10 @@ final case class Env(
 
     copy(locals = capturedLocals)
   }
+
+  private[raccoonlang] def installStringLayout(layout: Value.ValidatedStringLayout): Env =
+    nativeLiterals.stringLayout match {
+      case Some(_) => throw WTF("Validated String layout is already installed")
+      case None    => copy(nativeLiterals = NativeLiteralState(Some(layout)))
+    }
 }

@@ -42,17 +42,19 @@ as a raw module export it includes its imported Lean and Std declarations.
 | Sort-motive `Acc.rec` users outside the fix cluster | 4 | 4 |
 | Projection nodes | 2,434 | 13,326 |
 | Nat / String literal nodes | 214 / 1,547 | 573 / 10,512 |
-| Distinct planned native Nat operations | 15 | 15 |
+| Distinct K3 Nat-operation candidates | 15 | 15 |
 | Irreducible declarations | 458 | 3,407 |
 
 The four `Acc.rec` users are `Acc.recOn`, `Acc.ndrecOn`, `Acc.casesOn`, and `Acc.ndrec`. T3 must
 translate these derived recursors against the K2 primitive in addition to mapping
 `WellFounded.fixF`/`fix` and their equations.
 
-Every staged native Nat operation occurs already in `Init`: `add`, `sub`, `mul`, `pow`, `beq`,
-`ble`, `blt`, `div`, `mod`, `gcd`, `land`, `lor`, `xor`, `shiftLeft`, and `shiftRight`. T1 maps
-Lean's last three spellings to the Raccoon plan's `lxor`, `shiftl`, and `shiftr` names. This makes
-the full table, rather than a usage-selected subset, the M1 requirement.
+Every staged K3 Nat operation occurs already in `Init`: `add`, `sub`, `mul`, `pow`, `beq`,
+`ble`, `blt`, `div`, `mod`, `gcd`, `land`, `lor`, `xor`, `shiftLeft`, and `shiftRight`. T1
+preserves these producer spellings and K3 reserves the exact corresponding `Nat.*` identities.
+Fourteen are in Lean's pinned kernel reduction table; `blt` is K3's deliberate Raccoon extension
+using the same trusted-bootstrap isolation. This makes the full fifteen-entry K3 table, rather than
+a usage-selected subset, the M1 requirement.
 
 ## Gate decisions
 

@@ -28,8 +28,8 @@ object ValueQuote {
 
     def inlineTerm(t: ElabAst.Term): ElabAst.Term =
       t match {
-        case _: ElabAst.Term.NatLit             => t
-        case ElabAst.Term.Proof(tpe, proofSpan) => ElabAst.Term.Proof(inlineTerm(tpe), proofSpan)
+        case _: ElabAst.Term.NatLit | _: ElabAst.Term.StrLit => t
+        case ElabAst.Term.Proof(tpe, proofSpan)              => ElabAst.Term.Proof(inlineTerm(tpe), proofSpan)
         case ElabAst.Term.Proj(familyName, fieldIndex, base, projSpan) =>
           ElabAst.Term.Proj(familyName, fieldIndex, inlineTerm(base), projSpan)
         case ElabAst.Term.GlobalRef(_, _)        => t
@@ -112,8 +112,19 @@ object ValueQuote {
 
       case p: VPacked =>
         p.codec match {
-          case NatCodec => ElabAst.Term.NatLit(p.payload, span)
+          case NatCodec =>
+            ElabAst.Term.NatLit(p.natValue.getOrElse(throw WTF("Invalid packed Nat")), span)
+          case _: CharListCodec =>
+            val literal = ElabAst.Term.StrLit(
+              p.charScalars.getOrElse(throw WTF("Invalid packed CharList")),
+              span
+            )
+            ElabAst.Term.Proj("String", 0, literal, span)
         }
+
+      case VCtor(head, Vector(field: VPacked), _)
+          if head.name == "String.mk" && field.codec.isInstanceOf[CharListCodec] =>
+        ElabAst.Term.StrLit(field.charScalars.getOrElse(throw WTF("Invalid packed String field")), span)
 
       case VCtor(head, fields, tpe) => quoteCtor(head, fields, tpe, context, span)
 

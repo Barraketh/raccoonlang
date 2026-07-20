@@ -65,7 +65,7 @@ object ValueKey {
   private def tag(id: Int): Key =
     Key(avalanche(SeedHi ^ id.toLong), avalanche(SeedLo + id.toLong))
 
-  private def mixLong(key: Key, value: Long): Key =
+  private[raccoonlang] def mixLong(key: Key, value: Long): Key =
     Key(
       avalanche(key.hi ^ (value + SeedHi)),
       avalanche(key.lo + java.lang.Long.rotateLeft(value ^ SeedLo, 31))
@@ -81,7 +81,7 @@ object ValueKey {
     cur
   }
 
-  private def mixBytes(key: Key, bytes: Array[Byte]): Key = {
+  private[raccoonlang] def mixBytes(key: Key, bytes: Array[Byte]): Key = {
     var cur = mixLong(key, bytes.length.toLong)
     var acc = 0L
     var n = 0
@@ -100,7 +100,7 @@ object ValueKey {
     cur
   }
 
-  private def mixKey(key: Key, value: Key): Key =
+  private[raccoonlang] def mixKey(key: Key, value: Key): Key =
     Key(
       avalanche(key.hi ^ value.hi),
       avalanche(key.lo + java.lang.Long.rotateLeft(value.lo, 27))
@@ -177,9 +177,10 @@ object ValueKey {
       mixLong(valueIdKey(tag(Tag.Pi), p.id), p.binders.length.toLong)
     case p: Value.VPacked =>
       val codecId = p.codec match {
-        case Value.NatCodec => 1L
+        case Value.NatCodec         => 1L
+        case _: Value.CharListCodec => 2L
       }
-      mixKey(mixBytes(mixLong(tag(Tag.Packed), codecId), p.payload.toByteArray), p.tpe.key)
+      mixKey(p.codec.mixPayloadKey(mixLong(tag(Tag.Packed), codecId), p.payload), p.tpe.key)
     case head: Value.ConstructorHead =>
       mixString(tag(Tag.ConstructorHead), head.name)
     // All erased proofs of defEq propositions share a key; VProof contains only its proposition.

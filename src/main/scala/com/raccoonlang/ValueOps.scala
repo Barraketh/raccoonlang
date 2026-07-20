@@ -53,7 +53,7 @@ object ValueOps {
         case p: VProof =>
           VProof(materialize(p.tpe))
         case p: VPacked =>
-          VPacked(p.codec, p.payload, materialize(p.tpe))
+          VPacked.retype(p, materialize(p.tpe))
       }
       // Deferred collapse: a type may resolve to a proposition only once its metas solve
       // (e.g. u := 0); the proof policy applies at that point (proof-collapse.md §3). Deferred struct

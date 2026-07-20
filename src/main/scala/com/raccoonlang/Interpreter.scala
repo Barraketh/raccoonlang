@@ -294,8 +294,9 @@ object Interpreter {
   def evalTerm(term: ElabAst.Term, env: Env): Value = {
     try {
       term match {
-        case ETerm.NatLit(value, _) => Packed.evalNatLit(value, env)
-        case ETerm.Proof(tpe, _)    => Value.canonicalizeProof(VProof(evalTerm(tpe, env)))
+        case ETerm.NatLit(value, _)   => Packed.evalNatLit(value, env)
+        case ETerm.StrLit(scalars, _) => Packed.evalStrLit(scalars, env)
+        case ETerm.Proof(tpe, _)      => Value.canonicalizeProof(VProof(evalTerm(tpe, env)))
         case ETerm.Proj(familyName, fieldIndex, base, _) =>
           val baseValue = evalTerm(base, env)
           val family = baseValue.tpe match {
@@ -401,9 +402,21 @@ object Interpreter {
 
   // A declaration is checked exactly once; the value the checker produced IS the published value.
   // There is no separate run world: once a definition has made it into the env, it is trusted.
-  def evalDecl(decl: Decl, env: Env): Env = evalDecl(decl, env, ReservedNamePermit.empty)
+  def evalDecl(decl: Decl, env: Env): Env = evalDecl(decl, env, ReservedNamePermit.empty, validateNative = false)
 
+  /** Non-native kernel installers (currently K2 well-founded primitives) may publish their own reserved names. */
   private[raccoonlang] def evalDecl(decl: Decl, env: Env, permit: ReservedNamePermit): Env = {
+    if (permit.names.exists(Packed.reservedNames))
+      throw WTF("Native bootstrap declarations require an explicit admission profile", Some(decl.span))
+    evalDecl(decl, env, permit, validateNative = false)
+  }
+
+  private def evalDecl(
+      decl: Decl,
+      env: Env,
+      permit: ReservedNamePermit,
+      validateNative: Boolean
+  ): Env = {
     val publishedNames = decl match {
       case Decl.ConstDecl(_, name, _, _, _, _, _) => Vector(name)
       case Decl.AxiomDecl(name, _, _)             => Vector(name)
@@ -412,7 +425,7 @@ object Interpreter {
     ReservedNames.unauthorized(publishedNames, permit).foreach { name =>
       throw ReservedKernelName(name, Some(decl.span))
     }
-    decl match {
+    val nextEnv = decl match {
       case Decl.ConstDecl(isOpaque, name, ty, body, span, lazyGlobal, projectionAlias) =>
         projectionAlias.foreach { _ =>
           body match {
@@ -449,6 +462,16 @@ object Interpreter {
 
       case d: Decl.InductiveDecl => InductiveChecks.evalInductiveDecl(d, env)
     }
+    if (validateNative) {
+      publishedNames.filter(Packed.opNames).foreach { name =>
+        try Packed.validateNativeOpDeclaration(name, nextEnv(name), nextEnv)
+        catch {
+          case mismatch: NativeOperationDeclarationMismatch if mismatch.span.isEmpty =>
+            throw mismatch.withSpan(decl.span)
+        }
+      }
+    }
+    nextEnv
   }
 
   def run(p: Program, prelude: Prelude.Config = Prelude.default): Option[Value] = {
@@ -459,8 +482,12 @@ object Interpreter {
     }
   }
 
-  private[raccoonlang] def buildPreludeEnv(core: Program, permit: ReservedNamePermit): Env = {
-    val baseEnv =
+  private[raccoonlang] final class TrustedBootstrap private[Interpreter] (
+      profile: Option[Packed.NativeBootstrapProfile]
+  ) {
+    private val permit = if (profile.isDefined) ReservedNamePermit.nativePrelude else ReservedNamePermit.empty
+
+    val initialEnv: Env =
       Env.empty
         .putGlobal("Type", TypeTpe)
         .putGlobal("Level", LevelTpe)
@@ -468,10 +495,30 @@ object Interpreter {
         .putGlobal("Level.one", Level.one)
         .putGlobal("Prop", PropTpe)
 
-    val built = core.decls.foldLeft(baseEnv) { case (curEnv, decl) =>
-      evalDecl(decl, curEnv, permit)
+    def add(env: Env, decl: Decl): Env =
+      evalDecl(decl, env, permit, validateNative = profile.nonEmpty)
+
+    def finish(env: Env): Env = {
+      if (profile.isDefined) Packed.validateNatFamily(env)
+      profile.foreach(Packed.validateRequiredNativeOps(env, _))
+      profile match {
+        case Some(Packed.PinnedTranslatedInit | Packed.SyntheticFullK3) =>
+          env.installStringLayout(Packed.validateStringLayout(env))
+        case _ => env
+      }
     }
-    if (permit.names.contains(NatCodec.familyName)) Packed.validateNatFamily(built)
-    built
+  }
+
+  private[raccoonlang] def trustedBootstrap(authority: BootstrapAuthority): TrustedBootstrap = {
+    val profile = authority match {
+      case BootstrapAuthority.Unprivileged   => None
+      case native: BootstrapAuthority.Native => Some(native.profile)
+    }
+    new TrustedBootstrap(profile)
+  }
+
+  private[raccoonlang] def buildTrustedBootstrapEnv(core: Program, authority: BootstrapAuthority): Env = {
+    val bootstrap = trustedBootstrap(authority)
+    bootstrap.finish(core.decls.foldLeft(bootstrap.initialEnv)(bootstrap.add))
   }
 }

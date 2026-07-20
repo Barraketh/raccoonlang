@@ -72,6 +72,24 @@ object LanguageParser {
   private def natLitTerm(implicit sourceId: Option[SourceId]): Parser[Term] =
     natLitAtom.flatSpanned(sourceId).map(NatLit.tupled)
 
+  private val strLitAtom: Parser[Vector[Int]] = new Parser[Vector[Int]] {
+    override def parse(input: String, startIdx: Int): ParseResult[Vector[Int]] = {
+      if (startIdx >= input.length || input.charAt(startIdx) != '"') return fail(startIdx, startIdx)
+      try {
+        val decoded = UnicodeScalarString.decodeQuoted(input, startIdx)
+        Success(decoded.scalars, startIdx, decoded.endIdx)
+      } catch {
+        case invalid: UnicodeScalarString.Invalid =>
+          throw ParseError(startIdx, invalid.offset, invalid.message)
+      }
+    }
+
+    override def toString: String = "StringLiteral"
+  }
+
+  private def strLitTerm(implicit sourceId: Option[SourceId]): Parser[Term] =
+    strLitAtom.flatSpanned(sourceId).map(StrLit.tupled)
+
   private def pathP: Parser[Vector[String]] = ident.rep(min = 1, sep = P('.'))
 
   private def openPathP: Parser[(Vector[String], Boolean)] = {
@@ -81,7 +99,7 @@ object LanguageParser {
   }
 
   private def termAtom(implicit sourceId: Option[SourceId]): Parser[Term] =
-    (sym("(") ~/ skipAllWs ~ term ~ layoutSymTight(")")) | rootTerm | identTerm | natLitTerm
+    (sym("(") ~/ skipAllWs ~ term ~ layoutSymTight(")")) | rootTerm | identTerm | natLitTerm | strLitTerm
 
   private def parenArgs[A](arg: => Parser[A]): Parser[Vector[A]] =
     P('(') ~/ skipAllWs ~ arg.rep(0, layoutSym(',')) ~ layoutSymTight(')')
@@ -98,7 +116,8 @@ object LanguageParser {
       sym('(') ~ skipAllWs ~ typeTerm ~ layoutSymTight(')') |
       rootTerm |
       identTerm |
-      natLitTerm
+      natLitTerm |
+      strLitTerm
 
   sealed trait TypeTrailer
   case class Dot(name: String, span: Span) extends TypeTrailer

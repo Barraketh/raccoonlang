@@ -530,6 +530,35 @@ object Value {
 
     /** L9: unequal payloads decode to a derivable constructor clash at finite depth. */
     def refutesUnequalPayloads: Boolean
+
+    /** Whether this codec owns this sealed payload variant. */
+    private[raccoonlang] def acceptsPayload(payload: PackedPayload): Boolean
+
+    /** Semantic payload equality. Codec compatibility is checked by the caller. */
+    private[raccoonlang] def payloadEquals(left: PackedPayload, right: PackedPayload): Boolean
+
+    /** Mix the complete payload into a trusted value key. */
+    private[raccoonlang] def mixPayloadKey(key: ValueKey.Key, payload: PackedPayload): ValueKey.Key
+  }
+
+  sealed trait PackedPayload
+
+  final class NatPayload private[Value] (val value: BigInt) extends PackedPayload
+
+  final class CharListPayload private[Value] (private val scalars0: Vector[Int]) extends PackedPayload {
+    private[raccoonlang] def scalars: Vector[Int] = scalars0
+  }
+
+  private[raccoonlang] object PackedPayload {
+    def natValue(payload: PackedPayload): BigInt = payload match {
+      case nat: NatPayload    => nat.value
+      case _: CharListPayload => throw WTF("Nat codec received a CharList payload")
+    }
+
+    def charScalars(payload: PackedPayload): Vector[Int] = payload match {
+      case _: NatPayload          => throw WTF("CharList codec received a Nat payload")
+      case chars: CharListPayload => chars.scalars
+    }
   }
 
   /** Nat as arbitrary-precision integers (docs/native-literals.md §4). */
@@ -540,29 +569,136 @@ object Value {
 
     override def canonical: Boolean = true
 
-    override def decodeHead(v: VPacked): (String, Vector[Value]) =
-      if (v.payload == 0) (zeroName, Vector.empty)
-      else (succName, Vector(VPacked(NatCodec, v.payload - 1, v.tpe)))
+    override def decodeHead(v: VPacked): (String, Vector[Value]) = {
+      val value = PackedPayload.natValue(v.payload)
+      if (value == 0) (zeroName, Vector.empty)
+      else (succName, Vector(VPacked.nat(value - 1, v.tpe)))
+    }
 
     override def strictlyLess(candidate: VPacked, root: VPacked): Boolean =
-      candidate.payload < root.payload
+      PackedPayload.natValue(candidate.payload) < PackedPayload.natValue(root.payload)
 
     override def refutesUnequalPayloads: Boolean = true
+
+    override private[raccoonlang] def acceptsPayload(payload: PackedPayload): Boolean =
+      payload match {
+        case _: NatPayload      => true
+        case _: CharListPayload => false
+      }
+
+    override private[raccoonlang] def payloadEquals(left: PackedPayload, right: PackedPayload): Boolean =
+      PackedPayload.natValue(left) == PackedPayload.natValue(right)
+
+    override private[raccoonlang] def mixPayloadKey(key: ValueKey.Key, payload: PackedPayload): ValueKey.Key =
+      ValueKey.mixBytes(key, PackedPayload.natValue(payload).toByteArray)
   }
 
-  /**
-   * A packed literal: ground, closed data whose host payload contains no `Value` s. Constructor form is derived on
-   * demand, one layer at a time, through the codec.
-   *
-   * The payload is `BigInt` while Nat is the only codec; it generalizes with the staged CharList codec.
-   */
-  final case class VPacked(codec: PackedCodec, payload: BigInt, tpe: Value) extends Value with UpdatableType {
-    require(payload >= 0, s"Packed payload must be non-negative: $payload")
+  final class CharListCodec private[raccoonlang] (
+      val natTpe: Value,
+      val charTpe: Value,
+      val listCharTpe: Value,
+      val charOfNat: Value
+  ) extends PackedCodec {
+    require(Vector(natTpe, charTpe, listCharTpe, charOfNat).forall(_.synDeps.isEmpty), "String layout must be closed")
+
+    override def canonical: Boolean = false
+
+    override def decodeHead(v: VPacked): (String, Vector[Value]) =
+      PackedPayload.charScalars(v.payload) match {
+        case head +: _ =>
+          val char = Interpreter.evalApply(charOfNat, Vector(VPacked.nat(BigInt(head), natTpe)))
+          ("List.cons", Vector(char, VPacked.charListTail(v)))
+        case _ => ("List.nil", Vector.empty)
+      }
+
+    override def strictlyLess(candidate: VPacked, root: VPacked): Boolean = {
+      val left = PackedPayload.charScalars(candidate.payload)
+      val right = PackedPayload.charScalars(root.payload)
+      left.length < right.length && right.endsWith(left)
+    }
+
+    override def refutesUnequalPayloads: Boolean = false
+
+    override private[raccoonlang] def acceptsPayload(payload: PackedPayload): Boolean =
+      payload match {
+        case _: NatPayload      => false
+        case _: CharListPayload => true
+      }
+
+    override private[raccoonlang] def payloadEquals(left: PackedPayload, right: PackedPayload): Boolean =
+      PackedPayload.charScalars(left) == PackedPayload.charScalars(right)
+
+    override private[raccoonlang] def mixPayloadKey(key: ValueKey.Key, payload: PackedPayload): ValueKey.Key = {
+      val scalars = PackedPayload.charScalars(payload)
+      var cur = ValueKey.mixKey(key, listCharTpe.key)
+      cur = ValueKey.mixLong(cur, scalars.length.toLong)
+      scalars.foreach(scalar => cur = ValueKey.mixLong(cur, scalar.toLong & 0xffffffffL))
+      cur
+    }
+  }
+
+  final class ValidatedStringLayout private[raccoonlang] (
+      val stringTpe: Value,
+      val stringMk: ConstructorHead,
+      val charListCodec: CharListCodec
+  )
+
+  /** A closed packed literal. Construction is restricted to the validated factories below. */
+  final class VPacked private (
+      val codec: PackedCodec,
+      private[raccoonlang] val payload: PackedPayload,
+      val tpe: Value
+  ) extends Value
+    with UpdatableType {
+    require(codec.acceptsPayload(payload), "Packed codec/payload mismatch")
+    require(tpe.synDeps.isEmpty, s"VPacked requires a closed type, got dependencies ${tpe.synDeps}")
     require(!isPropositionType(tpe), s"VPacked requires a non-propositional type, got $tpe")
 
     override lazy val synDeps: DepSet = tpe.synDeps
 
-    override def withTpe(tpe: Value): Value = this.copy(tpe = tpe)
+    private[raccoonlang] def natValue: Option[BigInt] = codec match {
+      case NatCodec         => Some(PackedPayload.natValue(payload))
+      case _: CharListCodec => None
+    }
+
+    private[raccoonlang] def charScalars: Option[Vector[Int]] = codec match {
+      case NatCodec         => None
+      case _: CharListCodec => Some(PackedPayload.charScalars(payload))
+    }
+
+    override def withTpe(tpe: Value): Value = VPacked.retype(this, tpe)
+  }
+
+  object VPacked {
+    private[raccoonlang] def nat(value: BigInt, tpe: Value): VPacked = {
+      require(value >= 0, s"Packed Nat payload must be non-negative: $value")
+      require(tpe.synDeps.isEmpty, s"Packed Nat type must be closed, got dependencies ${tpe.synDeps}")
+      new VPacked(NatCodec, new NatPayload(value), tpe)
+    }
+
+    private[raccoonlang] def charList(codec: CharListCodec, scalars: Vector[Int]): VPacked = {
+      require(scalars.forall(UnicodeScalarString.isScalar), "Packed string contains a non-Unicode scalar")
+      new VPacked(codec, new CharListPayload(scalars), codec.listCharTpe)
+    }
+
+    private[raccoonlang] def charListTail(parent: VPacked): VPacked =
+      parent.codec match {
+        case codec: CharListCodec =>
+          val scalars = PackedPayload.charScalars(parent.payload)
+          if (scalars.nonEmpty) new VPacked(codec, new CharListPayload(scalars.tail), codec.listCharTpe)
+          else throw WTF("Cannot decode the tail of an empty packed CharList")
+        case NatCodec => throw WTF("CharList tail requested from a packed Nat")
+      }
+
+    private[raccoonlang] def retype(packed: VPacked, defEqTpe: Value): VPacked = {
+      require(ValueEquivalence.defEq(packed.tpe, defEqTpe), "Packed value may only be retyped at a defEq type")
+      packed.codec match {
+        case codec: CharListCodec =>
+          require(ValueEquivalence.defEq(defEqTpe, codec.listCharTpe), "Packed CharList must retain its layout type")
+        case NatCodec =>
+      }
+      packed
+    }
   }
 
   /**
@@ -688,7 +824,7 @@ object Value {
     def unapply(value: Value): Option[(Value, Vector[Value], Value, DepSet)] =
       value match {
         case VApp(head, args, tpe, blockedOn) if blockedOn.nonEmpty => Some((head, args, tpe, blockedOn))
-        case _                                                           => None
+        case _                                                      => None
       }
   }
 
@@ -706,10 +842,10 @@ object Value {
   object Blocker {
     def unapply(value: Value): Option[DepSet] =
       value match {
-        case Var(_, id, _)                                            => Some(DepSet(id))
+        case Var(_, id, _)                                             => Some(DepSet(id))
         case VBlockedApp(_, _, _, blockedOn)                           => Some(blockedOn)
         case NeutralThunk(_, _, _, _, blockedOn) if blockedOn.nonEmpty => Some(blockedOn)
-        case _                                                        => None
+        case _                                                         => None
       }
   }
 
@@ -718,16 +854,16 @@ object Value {
       value match {
         case VBlockedApp(_, _, _, blockedOn)                           => Some(blockedOn)
         case NeutralThunk(_, _, _, _, blockedOn) if blockedOn.nonEmpty => Some(blockedOn)
-        case _                                                        => None
+        case _                                                         => None
       }
   }
 
   object ConstSpine {
     def unapply(value: Value): Option[(VConst, Vector[Value])] =
       value match {
-        case c: VConst => Some((c, Vector.empty))
+        case c: VConst                                                   => Some((c, Vector.empty))
         case VApp(head: VConst, args, _, blockedOn) if blockedOn.isEmpty => Some((head, args))
-        case _ => None
+        case _                                                           => None
       }
   }
 

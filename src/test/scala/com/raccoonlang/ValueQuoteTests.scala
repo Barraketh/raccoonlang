@@ -8,8 +8,7 @@ class ValueQuoteTests extends munit.FunSuite {
 
   private def constructorType(binderTy: ElabAst.Term, resultTy: Value): VPi = {
     val ref = CoreAst.LocalRef(0, "x")
-    val env = Env
-      .empty
+    val env = Env.empty
       .putGlobal("Sort3", VSort(Level.const(3)))
       .putGlobal("Type", TypeTpe)
 
