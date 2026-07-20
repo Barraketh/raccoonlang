@@ -5,7 +5,7 @@ import java.nio.charset.StandardCharsets
 
 class LeanExportM0Tests extends munit.FunSuite {
   private val meta =
-    """{"meta":{"exporter":{"name":"lean4export","version":"3.1.0"},"lean":{"githash":"abc123","version":"4.24.0"},"format":{"version":"3.1.0"}}}"""
+    """{"meta":{"exporter":{"name":"lean4export","version":"3.1.0"},"lean":{"githash":"919e297292280cdb27598edd4e03437be5850221","version":"4.24.0-rc1"},"format":{"version":"3.1.0"}}}"""
 
   private val fixture =
     Vector(
@@ -34,11 +34,11 @@ class LeanExportM0Tests extends munit.FunSuite {
       """{"natVal":"42","ie":6}""",
       """{"strVal":"raccoon","ie":7}""",
       """{"sort":0,"ie":8}""",
-      """{"def":{"name":6,"levelParams":[9],"type":0,"value":6,"hints":"opaque","safety":"safe","all":[]}}""",
-      """{"def":{"name":7,"levelParams":[],"type":8,"value":3,"hints":{"regular":1},"safety":"safe","all":[]}}""",
-      """{"opaque":{"name":8,"levelParams":[],"type":8,"value":4,"isUnsafe":false,"all":[]}}""",
-      """{"def":{"name":13,"levelParams":[],"type":8,"value":3,"hints":{"regular":1},"safety":"safe","all":[]}}""",
-      """{"inductive":{"types":[{"name":10,"levelParams":[],"type":8,"numParams":0,"numIndices":0,"all":[],"ctors":[],"numNested":1,"isRec":true,"isUnsafe":false,"isReflexive":false},{"name":11,"levelParams":[],"type":8,"numParams":0,"numIndices":0,"all":[],"ctors":[],"numNested":0,"isRec":true,"isUnsafe":false,"isReflexive":false}],"ctors":[],"recs":[]}}"""
+      """{"def":{"name":6,"levelParams":[9],"type":0,"value":6,"hints":"opaque","safety":"safe","all":[6]}}""",
+      """{"def":{"name":7,"levelParams":[],"type":8,"value":3,"hints":{"regular":1},"safety":"safe","all":[7]}}""",
+      """{"opaque":{"name":8,"levelParams":[],"type":8,"value":4,"isUnsafe":false,"all":[8]}}""",
+      """{"def":{"name":13,"levelParams":[],"type":8,"value":3,"hints":{"regular":1},"safety":"safe","all":[13]}}""",
+      """{"inductive":{"types":[{"name":10,"levelParams":[],"type":8,"numParams":0,"numIndices":0,"all":[10,11],"ctors":[],"numNested":1,"isRec":true,"isUnsafe":false,"isReflexive":false},{"name":11,"levelParams":[],"type":8,"numParams":0,"numIndices":0,"all":[10,11],"ctors":[],"numNested":0,"isRec":true,"isUnsafe":false,"isReflexive":false}],"ctors":[],"recs":[]}}"""
     ).mkString("\n")
 
   private def scan(text: String): LeanExportM0.Report =
@@ -86,5 +86,33 @@ class LeanExportM0Tests extends munit.FunSuite {
     val input = s"$meta\n" + """{"app":{"fn":0,"arg":0},"ie":0}"""
     val error = intercept[LeanExportM0.ScanError](scan(input))
     assert(error.detail.contains("expression reference 0 has not been defined"))
+  }
+
+  test("shared reader exposes compact semantic nodes and heap counters") {
+    var seen = Vector.empty[LeanExportIr.ExportDecl]
+    val consumer = new LeanExportIr.LeanExportConsumer {
+      def onMeta(meta: LeanExportIr.ExportMeta): Unit = ()
+      def onDeclaration(decl: LeanExportIr.ExportDecl, tables: LeanExportIr.ExportTables): Unit = seen :+= decl
+      def finish(tables: LeanExportIr.ExportTables): Unit = ()
+    }
+    val result = LeanExportReader.read(
+      new ByteArrayInputStream(fixture.getBytes(StandardCharsets.UTF_8)), "fixture.ndjson", consumer
+    )
+    assertEquals(result.tables.nameNode(LeanExportIr.NameId(1)),
+      LeanExportIr.NameStr(LeanExportIr.NameId(0), "Acc"))
+    assertEquals(result.tables.exprNode(LeanExportIr.ExprId(6)), LeanExportIr.NatVal(BigInt(42)))
+    assert(result.tables.currentBytes > 0L)
+    assert(result.tables.highWaterBytes >= result.tables.currentBytes)
+    assertEquals(seen.length, 5)
+  }
+
+  test("shared reader rejects duplicate fields with structured provenance") {
+    val input = s"$meta\n" + """{"bvar":0,"bvar":1,"ie":0}"""
+    val error = intercept[MalformedExport](
+      LeanExportReader.read(new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)), "bad.ndjson",
+        LeanExportIr.LeanExportConsumer.ignore)
+    )
+    assertEquals(error.provenance.objectOrdinal, 2L)
+    assert(error.message.contains("duplicate field 'bvar'"))
   }
 }
