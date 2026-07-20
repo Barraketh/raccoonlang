@@ -66,13 +66,8 @@ object WfPrimitives {
   private val NoSpan = Span(0, 0)
   private final class RefSupply {
     // Generated terms are checked in environments containing elaborator locals; negative ids keep these synthetic
-    // binders disjoint without depending on the process-global fresh-variable supply.
-    private var nextId = -1
-    def fresh(name: String): LocalRef = {
-      val result = LocalRef(nextId, name)
-      nextId -= 1
-      result
-    }
+    // binders disjoint from parser-assigned refs.
+    def fresh(name: String): LocalRef = SyntheticLocalRef.fresh(name)
   }
 
   private def fail(declaration: String, reason: String, span: Span): Nothing =

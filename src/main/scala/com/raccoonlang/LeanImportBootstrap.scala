@@ -1,6 +1,6 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.{Binder, ConstBody, Decl, LocalRef}
+import com.raccoonlang.CoreAst.{Binder, ConstBody, Decl}
 import com.raccoonlang.CoreAst.Term
 import com.raccoonlang.LeanExportIr.ExportProvenance
 
@@ -12,7 +12,7 @@ object LeanImportBootstrap {
   private def span(): Span = { val value = Span(nextOffset, nextOffset + 1, Some(source)); nextOffset += 1; value }
 
   private def builtin(name: String, binders: Vector[(String, Term)], result: Term): Decl.ConstDecl = {
-    val coreBinders = binders.map { case (binderName, tpe) => Binder(LocalRef(nextOffset, binderName), tpe, span()) }
+    val coreBinders = binders.map { case (binderName, tpe) => Binder(SyntheticLocalRef.fresh(binderName), tpe, span()) }
     val tpe = Term.Pi(coreBinders, result, span())
     Decl.ConstDecl(isOpaque = false, name, tpe, ConstBody.Builtin(span()), span())
   }
@@ -32,9 +32,13 @@ object LeanImportBootstrap {
     val provenance = ExportProvenance(Paths.get("<lean-import-bootstrap>"), 1L, 1, 0L, "bootstrap", None, None)
     try {
       val base = Interpreter.trustedBootstrap(BootstrapAuthority.Unprivileged).initialEnv
-      Right(declarations.foldLeft(base)((env, decl) => Interpreter.evalDecl(decl, env, ReservedNamePermit.leanImportBootstrap)))
+      Right(
+        declarations.foldLeft(base)((env, decl) =>
+          Interpreter.evalDecl(decl, env, ReservedNamePermit.leanImportBootstrap)
+        )
+      )
     } catch {
-      case error: TypeError => Left(Vector(DeclarationTypeError(provenance, error.getMessage)))
+      case error: TypeError        => Left(Vector(DeclarationTypeError(provenance, error.getMessage)))
       case error: RuntimeException => Left(Vector(DeclarationTypeError(provenance, error.getMessage)))
     }
   }

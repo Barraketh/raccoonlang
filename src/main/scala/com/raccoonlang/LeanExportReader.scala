@@ -23,6 +23,8 @@ object LeanExportReader {
     try reader.read()
     catch {
       case diagnostic: LeanImportDiagnostic => throw diagnostic
+      case _: StackOverflowError =>
+        throw MalformedExport(reader.provenance("json"), "export nesting exceeds the supported depth")
       case NonFatal(error) =>
         throw MalformedExport(
           reader.provenance("json"),
@@ -44,7 +46,8 @@ object LeanExportReader {
     private val declarationNames = mutable.HashSet.empty[Vector[Either[String, BigInt]]]
     private val ordinaryDeclarationNames = mutable.HashSet.empty[Vector[Either[String, BigInt]]]
     private val ordinaryGroupClaims = mutable.HashMap.empty[
-      Vector[Either[String, BigInt]], Vector[Vector[Either[String, BigInt]]]
+      Vector[Either[String, BigInt]],
+      Vector[Vector[Either[String, BigInt]]]
     ]
 
     def provenance(kind: String, internId: Option[Int] = None, declaration: Option[String] = None): ExportProvenance = {
@@ -118,21 +121,24 @@ object LeanExportReader {
             payloadCount += 1; payloadKind = "expression"
             pending = Some(PendingExpr(Sort(requireLevel(readNonNegativeInt("sort")))))
           case "const" => payloadCount += 1; payloadKind = "expression"; pending = Some(PendingExpr(parseConst()))
-          case "app" => payloadCount += 1; payloadKind = "expression"; pending = Some(PendingExpr(parseApp()))
-          case "lam" => payloadCount += 1; payloadKind = "expression"; pending = Some(PendingExpr(parseBinder(isPi = false)))
-          case "forallE" => payloadCount += 1; payloadKind = "expression"; pending = Some(PendingExpr(parseBinder(isPi = true)))
-          case "letE" => payloadCount += 1; payloadKind = "expression"; pending = Some(PendingExpr(parseLet()))
-          case "proj" => payloadCount += 1; payloadKind = "expression"; pending = Some(PendingExpr(parseProj()))
+          case "app"   => payloadCount += 1; payloadKind = "expression"; pending = Some(PendingExpr(parseApp()))
+          case "lam" =>
+            payloadCount += 1; payloadKind = "expression"; pending = Some(PendingExpr(parseBinder(isPi = false)))
+          case "forallE" =>
+            payloadCount += 1; payloadKind = "expression"; pending = Some(PendingExpr(parseBinder(isPi = true)))
+          case "letE"   => payloadCount += 1; payloadKind = "expression"; pending = Some(PendingExpr(parseLet()))
+          case "proj"   => payloadCount += 1; payloadKind = "expression"; pending = Some(PendingExpr(parseProj()))
           case "natVal" => payloadCount += 1; payloadKind = "expression"; pending = Some(PendingExpr(parseNat()))
-          case "strVal" => payloadCount += 1; payloadKind = "expression"; pending = Some(PendingExpr(parseStringValue()))
-          case "mdata" => payloadCount += 1; payloadKind = "expression"; pending = Some(PendingExpr(parseMData()))
-          case "axiom" => payloadCount += 1; payloadKind = field; decl = Some(parseAxiom())
-          case "def" => payloadCount += 1; payloadKind = field; decl = Some(parseDef())
-          case "opaque" => payloadCount += 1; payloadKind = field; decl = Some(parseOpaque())
-          case "thm" => payloadCount += 1; payloadKind = field; decl = Some(parseTheorem())
-          case "quot" => payloadCount += 1; payloadKind = field; decl = Some(parseQuot())
+          case "strVal" =>
+            payloadCount += 1; payloadKind = "expression"; pending = Some(PendingExpr(parseStringValue()))
+          case "mdata"     => payloadCount += 1; payloadKind = "expression"; pending = Some(PendingExpr(parseMData()))
+          case "axiom"     => payloadCount += 1; payloadKind = field; decl = Some(parseAxiom())
+          case "def"       => payloadCount += 1; payloadKind = field; decl = Some(parseDef())
+          case "opaque"    => payloadCount += 1; payloadKind = field; decl = Some(parseOpaque())
+          case "thm"       => payloadCount += 1; payloadKind = field; decl = Some(parseTheorem())
+          case "quot"      => payloadCount += 1; payloadKind = field; decl = Some(parseQuot())
           case "inductive" => payloadCount += 1; payloadKind = field; decl = Some(parseInductive())
-          case other => fail(s"unknown top-level export field '$other'")
+          case other       => fail(s"unknown top-level export field '$other'")
         }
       }
 
@@ -155,7 +161,7 @@ object LeanExportReader {
               tables.appendExpr(node, provenance("expression", Some(actual)))
           }
         case None if index.nonEmpty => fail("declaration or metadata object contains a primitive index")
-        case None =>
+        case None                   =>
       }
       decl.foreach(registerDeclaration(_, payloadKind))
     }
@@ -183,20 +189,20 @@ object LeanExportReader {
       objectFields("meta") {
         case "exporter" =>
           objectFields("meta.exporter") {
-            case "name" => exporterName = Some(readString("meta.exporter.name"))
+            case "name"    => exporterName = Some(readString("meta.exporter.name"))
             case "version" => exporterVersion = Some(readString("meta.exporter.version"))
-            case field => fail(s"unknown meta.exporter field '$field'")
+            case field     => fail(s"unknown meta.exporter field '$field'")
           }
         case "lean" =>
           objectFields("meta.lean") {
             case "version" => leanVersion = Some(readString("meta.lean.version"))
             case "githash" => leanHash = Some(readString("meta.lean.githash"))
-            case field => fail(s"unknown meta.lean field '$field'")
+            case field     => fail(s"unknown meta.lean field '$field'")
           }
         case "format" =>
           objectFields("meta.format") {
             case "version" => formatVersion = Some(readString("meta.format.version"))
-            case field => fail(s"unknown meta.format field '$field'")
+            case field     => fail(s"unknown meta.format field '$field'")
           }
         case field => fail(s"unknown meta field '$field'")
       }
@@ -225,7 +231,7 @@ object LeanExportReader {
       var value: Option[BigInt] = None
       objectFields("Name.num") {
         case "pre" => pre = Some(requireName(readNonNegativeInt("Name.num.pre")))
-        case "i" => value = Some(readNonNegativeBigInt("Name.num.i"))
+        case "i"   => value = Some(readNonNegativeNumber("Name.num.i"))
         case field => fail(s"unknown Name.num field '$field'")
       }
       NameNum(required(pre, "Name.num.pre"), required(value, "Name.num.i"))
@@ -236,8 +242,8 @@ object LeanExportReader {
       var levels: Option[Vector[LevelId]] = None
       objectFields("Expr.const") {
         case "name" => name = Some(requireName(readNonNegativeInt("Expr.const.name")))
-        case "us" => levels = Some(readIntArray("Expr.const.us").map(requireLevel))
-        case field => fail(s"unknown Expr.const field '$field'")
+        case "us"   => levels = Some(readIntArray("Expr.const.us").map(requireLevel))
+        case field  => fail(s"unknown Expr.const field '$field'")
       }
       Const(required(name, "Expr.const.name"), required(levels, "Expr.const.us"))
     }
@@ -246,7 +252,7 @@ object LeanExportReader {
       var fn: Option[ExprId] = None
       var arg: Option[ExprId] = None
       objectFields("Expr.app") {
-        case "fn" => fn = Some(requireExpr(readNonNegativeInt("Expr.app.fn")))
+        case "fn"  => fn = Some(requireExpr(readNonNegativeInt("Expr.app.fn")))
         case "arg" => arg = Some(requireExpr(readNonNegativeInt("Expr.app.arg")))
         case field => fail(s"unknown Expr.app field '$field'")
       }
@@ -260,11 +266,11 @@ object LeanExportReader {
       var body: Option[ExprId] = None
       var info: Option[BinderInfo] = None
       objectFields(label) {
-        case "name" => name = Some(requireName(readNonNegativeInt(s"$label.name")))
-        case "type" => tpe = Some(requireExpr(readNonNegativeInt(s"$label.type")))
-        case "body" => body = Some(requireExpr(readNonNegativeInt(s"$label.body")))
+        case "name"       => name = Some(requireName(readNonNegativeInt(s"$label.name")))
+        case "type"       => tpe = Some(requireExpr(readNonNegativeInt(s"$label.type")))
+        case "body"       => body = Some(requireExpr(readNonNegativeInt(s"$label.body")))
         case "binderInfo" => info = Some(parseBinderInfo(readString(s"$label.binderInfo")))
-        case field => fail(s"unknown $label field '$field'")
+        case field        => fail(s"unknown $label field '$field'")
       }
       val values = (required(name, s"$label.name"), required(tpe, s"$label.type"), required(body, s"$label.body"))
       if (isPi) ForallE(values._1, values._2, values._3, required(info, s"$label.binderInfo"))
@@ -278,16 +284,18 @@ object LeanExportReader {
       var body: Option[ExprId] = None
       var nonDep: Option[Boolean] = None
       objectFields("Expr.letE") {
-        case "name" => name = Some(requireName(readNonNegativeInt("Expr.letE.name")))
-        case "type" => tpe = Some(requireExpr(readNonNegativeInt("Expr.letE.type")))
-        case "value" => value = Some(requireExpr(readNonNegativeInt("Expr.letE.value")))
-        case "body" => body = Some(requireExpr(readNonNegativeInt("Expr.letE.body")))
+        case "name"   => name = Some(requireName(readNonNegativeInt("Expr.letE.name")))
+        case "type"   => tpe = Some(requireExpr(readNonNegativeInt("Expr.letE.type")))
+        case "value"  => value = Some(requireExpr(readNonNegativeInt("Expr.letE.value")))
+        case "body"   => body = Some(requireExpr(readNonNegativeInt("Expr.letE.body")))
         case "nondep" => nonDep = Some(readBoolean("Expr.letE.nondep"))
-        case field => fail(s"unknown Expr.letE field '$field'")
+        case field    => fail(s"unknown Expr.letE field '$field'")
       }
       LetE(
-        required(name, "Expr.letE.name"), required(tpe, "Expr.letE.type"),
-        required(value, "Expr.letE.value"), required(body, "Expr.letE.body"),
+        required(name, "Expr.letE.name"),
+        required(tpe, "Expr.letE.type"),
+        required(value, "Expr.letE.value"),
+        required(body, "Expr.letE.body"),
         required(nonDep, "Expr.letE.nondep")
       )
     }
@@ -298,14 +306,18 @@ object LeanExportReader {
       var struct: Option[ExprId] = None
       objectFields("Expr.proj") {
         case "typeName" => typeName = Some(requireName(readNonNegativeInt("Expr.proj.typeName")))
-        case "idx" => idx = Some(readNonNegativeInt("Expr.proj.idx"))
-        case "struct" => struct = Some(requireExpr(readNonNegativeInt("Expr.proj.struct")))
-        case field => fail(s"unknown Expr.proj field '$field'")
+        case "idx"      => idx = Some(readNonNegativeInt("Expr.proj.idx"))
+        case "struct"   => struct = Some(requireExpr(readNonNegativeInt("Expr.proj.struct")))
+        case field      => fail(s"unknown Expr.proj field '$field'")
       }
-      Proj(required(typeName, "Expr.proj.typeName"), required(idx, "Expr.proj.idx"), required(struct, "Expr.proj.struct"))
+      Proj(
+        required(typeName, "Expr.proj.typeName"),
+        required(idx, "Expr.proj.idx"),
+        required(struct, "Expr.proj.struct")
+      )
     }
 
-    private def parseNat(): ExprNode = NatVal(readNonNegativeBigInt("Expr.natVal"))
+    private def parseNat(): ExprNode = NatVal(readNonNegativeDecimalString("Expr.natVal"))
 
     private def parseStringValue(): ExprNode = {
       val text = validateUnicodeString(readString("Expr.strVal"), "Expr.strVal")
@@ -344,7 +356,7 @@ object LeanExportReader {
       objectFields("Expr.mdata") {
         case "expr" => expr = Some(requireExpr(readNonNegativeInt("Expr.mdata.expr")))
         case "data" => parser.skipChildren()
-        case field => fail(s"unknown Expr.mdata field '$field'")
+        case field  => fail(s"unknown Expr.mdata field '$field'")
       }
       MData(required(expr, "Expr.mdata.expr"))
     }
@@ -353,15 +365,20 @@ object LeanExportReader {
       var name: Option[NameId] = None; var params: Option[Vector[NameId]] = None
       var tpe: Option[ExprId] = None; var unsafe: Option[Boolean] = None
       objectFields("axiom") {
-        case "name" => name = Some(requireName(readNonNegativeInt("axiom.name")))
+        case "name"        => name = Some(requireName(readNonNegativeInt("axiom.name")))
         case "levelParams" => params = Some(readIntArray("axiom.levelParams").map(requireName))
-        case "type" => tpe = Some(requireExpr(readNonNegativeInt("axiom.type")))
-        case "isUnsafe" => unsafe = Some(readBoolean("axiom.isUnsafe"))
-        case field => fail(s"unknown axiom field '$field'")
+        case "type"        => tpe = Some(requireExpr(readNonNegativeInt("axiom.type")))
+        case "isUnsafe"    => unsafe = Some(readBoolean("axiom.isUnsafe"))
+        case field         => fail(s"unknown axiom field '$field'")
       }
       val n = required(name, "axiom.name")
-      ExportAxiom(n, required(params, "axiom.levelParams"), required(tpe, "axiom.type"),
-        required(unsafe, "axiom.isUnsafe"), declarationProvenance("axiom", n))
+      ExportAxiom(
+        n,
+        required(params, "axiom.levelParams"),
+        required(tpe, "axiom.type"),
+        required(unsafe, "axiom.isUnsafe"),
+        declarationProvenance("axiom", n)
+      )
     }
 
     private def parseDef(): ExportDecl = {
@@ -369,68 +386,95 @@ object LeanExportReader {
       var value: Option[ExprId] = None; var hint: Option[ExportDefHint] = None; var safety: Option[ExportSafety] = None
       var all: Option[Vector[NameId]] = None
       objectFields("def") {
-        case "name" => name = Some(requireName(readNonNegativeInt("def.name")))
+        case "name"        => name = Some(requireName(readNonNegativeInt("def.name")))
         case "levelParams" => params = Some(readIntArray("def.levelParams").map(requireName))
-        case "type" => tpe = Some(requireExpr(readNonNegativeInt("def.type")))
-        case "value" => value = Some(requireExpr(readNonNegativeInt("def.value")))
-        case "hints" => hint = Some(parseHint())
-        case "safety" => safety = Some(parseSafety(readString("def.safety")))
-        case "all" => all = Some(readIntArray("def.all").map(requireName))
-        case field => fail(s"unknown def field '$field'")
+        case "type"        => tpe = Some(requireExpr(readNonNegativeInt("def.type")))
+        case "value"       => value = Some(requireExpr(readNonNegativeInt("def.value")))
+        case "hints"       => hint = Some(parseHint())
+        case "safety"      => safety = Some(parseSafety(readString("def.safety")))
+        case "all"         => all = Some(readIntArray("def.all").map(requireName))
+        case field         => fail(s"unknown def field '$field'")
       }
       val n = required(name, "def.name")
       val group = required(all, "def.all")
       requireSelfInAll(n, group, "def")
-      ExportDef(n, required(params, "def.levelParams"), required(tpe, "def.type"), required(value, "def.value"),
-        required(hint, "def.hints"), required(safety, "def.safety"), group, declarationProvenance("def", n))
+      ExportDef(
+        n,
+        required(params, "def.levelParams"),
+        required(tpe, "def.type"),
+        required(value, "def.value"),
+        required(hint, "def.hints"),
+        required(safety, "def.safety"),
+        group,
+        declarationProvenance("def", n)
+      )
     }
 
     private def parseOpaque(): ExportDecl = {
       var name: Option[NameId] = None; var params: Option[Vector[NameId]] = None; var tpe: Option[ExprId] = None
       var value: Option[ExprId] = None; var unsafe: Option[Boolean] = None; var all: Option[Vector[NameId]] = None
       objectFields("opaque") {
-        case "name" => name = Some(requireName(readNonNegativeInt("opaque.name")))
+        case "name"        => name = Some(requireName(readNonNegativeInt("opaque.name")))
         case "levelParams" => params = Some(readIntArray("opaque.levelParams").map(requireName))
-        case "type" => tpe = Some(requireExpr(readNonNegativeInt("opaque.type")))
-        case "value" => value = Some(requireExpr(readNonNegativeInt("opaque.value")))
-        case "isUnsafe" => unsafe = Some(readBoolean("opaque.isUnsafe"))
-        case "all" => all = Some(readIntArray("opaque.all").map(requireName))
-        case field => fail(s"unknown opaque field '$field'")
+        case "type"        => tpe = Some(requireExpr(readNonNegativeInt("opaque.type")))
+        case "value"       => value = Some(requireExpr(readNonNegativeInt("opaque.value")))
+        case "isUnsafe"    => unsafe = Some(readBoolean("opaque.isUnsafe"))
+        case "all"         => all = Some(readIntArray("opaque.all").map(requireName))
+        case field         => fail(s"unknown opaque field '$field'")
       }
-      val n = required(name, "opaque.name"); val group = required(all, "opaque.all"); requireSelfInAll(n, group, "opaque")
-      ExportOpaque(n, required(params, "opaque.levelParams"), required(tpe, "opaque.type"),
-        required(value, "opaque.value"), required(unsafe, "opaque.isUnsafe"), group, declarationProvenance("opaque", n))
+      val n = required(name, "opaque.name"); val group = required(all, "opaque.all");
+      requireSelfInAll(n, group, "opaque")
+      ExportOpaque(
+        n,
+        required(params, "opaque.levelParams"),
+        required(tpe, "opaque.type"),
+        required(value, "opaque.value"),
+        required(unsafe, "opaque.isUnsafe"),
+        group,
+        declarationProvenance("opaque", n)
+      )
     }
 
     private def parseTheorem(): ExportDecl = {
       var name: Option[NameId] = None; var params: Option[Vector[NameId]] = None; var tpe: Option[ExprId] = None
       var value: Option[ExprId] = None; var all: Option[Vector[NameId]] = None
       objectFields("thm") {
-        case "name" => name = Some(requireName(readNonNegativeInt("thm.name")))
+        case "name"        => name = Some(requireName(readNonNegativeInt("thm.name")))
         case "levelParams" => params = Some(readIntArray("thm.levelParams").map(requireName))
-        case "type" => tpe = Some(requireExpr(readNonNegativeInt("thm.type")))
-        case "value" => value = Some(requireExpr(readNonNegativeInt("thm.value")))
-        case "all" => all = Some(readIntArray("thm.all").map(requireName))
-        case field => fail(s"unknown thm field '$field'")
+        case "type"        => tpe = Some(requireExpr(readNonNegativeInt("thm.type")))
+        case "value"       => value = Some(requireExpr(readNonNegativeInt("thm.value")))
+        case "all"         => all = Some(readIntArray("thm.all").map(requireName))
+        case field         => fail(s"unknown thm field '$field'")
       }
       val n = required(name, "thm.name"); val group = required(all, "thm.all"); requireSelfInAll(n, group, "thm")
-      ExportTheorem(n, required(params, "thm.levelParams"), required(tpe, "thm.type"),
-        required(value, "thm.value"), group, declarationProvenance("thm", n))
+      ExportTheorem(
+        n,
+        required(params, "thm.levelParams"),
+        required(tpe, "thm.type"),
+        required(value, "thm.value"),
+        group,
+        declarationProvenance("thm", n)
+      )
     }
 
     private def parseQuot(): ExportDecl = {
       var name: Option[NameId] = None; var params: Option[Vector[NameId]] = None
       var tpe: Option[ExprId] = None; var kind: Option[ExportQuotKind] = None
       objectFields("quot") {
-        case "name" => name = Some(requireName(readNonNegativeInt("quot.name")))
+        case "name"        => name = Some(requireName(readNonNegativeInt("quot.name")))
         case "levelParams" => params = Some(readIntArray("quot.levelParams").map(requireName))
-        case "type" => tpe = Some(requireExpr(readNonNegativeInt("quot.type")))
-        case "kind" => kind = Some(parseQuotKind(readString("quot.kind")))
-        case field => fail(s"unknown quot field '$field'")
+        case "type"        => tpe = Some(requireExpr(readNonNegativeInt("quot.type")))
+        case "kind"        => kind = Some(parseQuotKind(readString("quot.kind")))
+        case field         => fail(s"unknown quot field '$field'")
       }
       val n = required(name, "quot.name")
-      ExportQuot(n, required(params, "quot.levelParams"), required(tpe, "quot.type"),
-        required(kind, "quot.kind"), declarationProvenance("quot", n))
+      ExportQuot(
+        n,
+        required(params, "quot.levelParams"),
+        required(tpe, "quot.type"),
+        required(kind, "quot.kind"),
+        declarationProvenance("quot", n)
+      )
     }
 
     private def parseInductive(): ExportDecl = {
@@ -440,8 +484,8 @@ object LeanExportReader {
       objectFields("inductive") {
         case "types" => types = Some(readObjectArray("inductive.types")(parseInductiveValue()))
         case "ctors" => ctors = Some(readObjectArray("inductive.ctors")(parseConstructorValue()))
-        case "recs" => recs = Some(readObjectArray("inductive.recs")(parseRecursorValue()))
-        case field => fail(s"unknown inductive field '$field'")
+        case "recs"  => recs = Some(readObjectArray("inductive.recs")(parseRecursorValue()))
+        case field   => fail(s"unknown inductive field '$field'")
       }
       val typeValues = required(types, "inductive.types")
       if (typeValues.isEmpty) fail("inductive block contains no types")
@@ -463,8 +507,12 @@ object LeanExportReader {
         if (value.all != familyNames)
           fail(s"${tables.dottedName(value.name)}.all does not equal the inductive block's ordered family list")
       }
-      ExportInductive(typeValues, ctorValues, recValues,
-        provenance("inductive", declaration = Some(tables.dottedName(typeValues.head.name))))
+      ExportInductive(
+        typeValues,
+        ctorValues,
+        recValues,
+        provenance("inductive", declaration = Some(tables.dottedName(typeValues.head.name)))
+      )
     }
 
     private def parseInductiveValue(): ExportInductiveValue = {
@@ -473,25 +521,32 @@ object LeanExportReader {
       var ctors: Option[Vector[NameId]] = None; var nested: Option[Int] = None; var rec: Option[Boolean] = None
       var unsafe: Option[Boolean] = None; var reflexive: Option[Boolean] = None
       objectFields("InductiveVal") {
-        case "name" => name = Some(requireName(readNonNegativeInt("InductiveVal.name")))
+        case "name"        => name = Some(requireName(readNonNegativeInt("InductiveVal.name")))
         case "levelParams" => params = Some(readIntArray("InductiveVal.levelParams").map(requireName))
-        case "type" => tpe = Some(requireExpr(readNonNegativeInt("InductiveVal.type")))
-        case "numParams" => numParams = Some(readNonNegativeInt("InductiveVal.numParams"))
-        case "numIndices" => numIndices = Some(readNonNegativeInt("InductiveVal.numIndices"))
-        case "all" => all = Some(readIntArray("InductiveVal.all").map(requireName))
-        case "ctors" => ctors = Some(readIntArray("InductiveVal.ctors").map(requireName))
-        case "numNested" => nested = Some(readNonNegativeInt("InductiveVal.numNested"))
-        case "isRec" => rec = Some(readBoolean("InductiveVal.isRec"))
-        case "isUnsafe" => unsafe = Some(readBoolean("InductiveVal.isUnsafe"))
+        case "type"        => tpe = Some(requireExpr(readNonNegativeInt("InductiveVal.type")))
+        case "numParams"   => numParams = Some(readNonNegativeInt("InductiveVal.numParams"))
+        case "numIndices"  => numIndices = Some(readNonNegativeInt("InductiveVal.numIndices"))
+        case "all"         => all = Some(readIntArray("InductiveVal.all").map(requireName))
+        case "ctors"       => ctors = Some(readIntArray("InductiveVal.ctors").map(requireName))
+        case "numNested"   => nested = Some(readNonNegativeInt("InductiveVal.numNested"))
+        case "isRec"       => rec = Some(readBoolean("InductiveVal.isRec"))
+        case "isUnsafe"    => unsafe = Some(readBoolean("InductiveVal.isUnsafe"))
         case "isReflexive" => reflexive = Some(readBoolean("InductiveVal.isReflexive"))
-        case field => fail(s"unknown InductiveVal field '$field'")
+        case field         => fail(s"unknown InductiveVal field '$field'")
       }
-      ExportInductiveValue(required(name,"InductiveVal.name"), required(params,"InductiveVal.levelParams"),
-        required(tpe,"InductiveVal.type"), required(numParams,"InductiveVal.numParams"),
-        required(numIndices,"InductiveVal.numIndices"), required(all,"InductiveVal.all"),
-        required(ctors,"InductiveVal.ctors"), required(nested,"InductiveVal.numNested"),
-        required(rec,"InductiveVal.isRec"), required(unsafe,"InductiveVal.isUnsafe"),
-        required(reflexive,"InductiveVal.isReflexive"))
+      ExportInductiveValue(
+        required(name, "InductiveVal.name"),
+        required(params, "InductiveVal.levelParams"),
+        required(tpe, "InductiveVal.type"),
+        required(numParams, "InductiveVal.numParams"),
+        required(numIndices, "InductiveVal.numIndices"),
+        required(all, "InductiveVal.all"),
+        required(ctors, "InductiveVal.ctors"),
+        required(nested, "InductiveVal.numNested"),
+        required(rec, "InductiveVal.isRec"),
+        required(unsafe, "InductiveVal.isUnsafe"),
+        required(reflexive, "InductiveVal.isReflexive")
+      )
     }
 
     private def parseConstructorValue(): ExportConstructorValue = {
@@ -499,20 +554,26 @@ object LeanExportReader {
       var owner: Option[NameId] = None; var cidx: Option[Int] = None; var numParams: Option[Int] = None
       var numFields: Option[Int] = None; var unsafe: Option[Boolean] = None
       objectFields("ConstructorVal") {
-        case "name" => name = Some(requireName(readNonNegativeInt("ConstructorVal.name")))
+        case "name"        => name = Some(requireName(readNonNegativeInt("ConstructorVal.name")))
         case "levelParams" => params = Some(readIntArray("ConstructorVal.levelParams").map(requireName))
-        case "type" => tpe = Some(requireExpr(readNonNegativeInt("ConstructorVal.type")))
-        case "induct" | "inductive" => owner = Some(requireName(readNonNegativeInt("ConstructorVal.induct")))
-        case "cidx" => cidx = Some(readNonNegativeInt("ConstructorVal.cidx"))
-        case "numParams" => numParams = Some(readNonNegativeInt("ConstructorVal.numParams"))
-        case "numFields" => numFields = Some(readNonNegativeInt("ConstructorVal.numFields"))
-        case "isUnsafe" => unsafe = Some(readBoolean("ConstructorVal.isUnsafe"))
-        case field => fail(s"unknown ConstructorVal field '$field'")
+        case "type"        => tpe = Some(requireExpr(readNonNegativeInt("ConstructorVal.type")))
+        case "induct"      => owner = Some(requireName(readNonNegativeInt("ConstructorVal.induct")))
+        case "cidx"        => cidx = Some(readNonNegativeInt("ConstructorVal.cidx"))
+        case "numParams"   => numParams = Some(readNonNegativeInt("ConstructorVal.numParams"))
+        case "numFields"   => numFields = Some(readNonNegativeInt("ConstructorVal.numFields"))
+        case "isUnsafe"    => unsafe = Some(readBoolean("ConstructorVal.isUnsafe"))
+        case field         => fail(s"unknown ConstructorVal field '$field'")
       }
-      ExportConstructorValue(required(name,"ConstructorVal.name"), required(params,"ConstructorVal.levelParams"),
-        required(tpe,"ConstructorVal.type"), required(owner,"ConstructorVal.induct"),
-        required(cidx,"ConstructorVal.cidx"), required(numParams,"ConstructorVal.numParams"),
-        required(numFields,"ConstructorVal.numFields"), required(unsafe,"ConstructorVal.isUnsafe"))
+      ExportConstructorValue(
+        required(name, "ConstructorVal.name"),
+        required(params, "ConstructorVal.levelParams"),
+        required(tpe, "ConstructorVal.type"),
+        required(owner, "ConstructorVal.induct"),
+        required(cidx, "ConstructorVal.cidx"),
+        required(numParams, "ConstructorVal.numParams"),
+        required(numFields, "ConstructorVal.numFields"),
+        required(unsafe, "ConstructorVal.isUnsafe")
+      )
     }
 
     private def parseRecursorValue(): ExportRecursorValue = {
@@ -521,46 +582,58 @@ object LeanExportReader {
       var nm: Option[Int] = None; var nmin: Option[Int] = None; var rules: Option[Vector[ExportRecursorRule]] = None
       var k: Option[Boolean] = None; var unsafe: Option[Boolean] = None
       objectFields("RecursorVal") {
-        case "name" => name = Some(requireName(readNonNegativeInt("RecursorVal.name")))
+        case "name"        => name = Some(requireName(readNonNegativeInt("RecursorVal.name")))
         case "levelParams" => params = Some(readIntArray("RecursorVal.levelParams").map(requireName))
-        case "type" => tpe = Some(requireExpr(readNonNegativeInt("RecursorVal.type")))
-        case "all" => all = Some(readIntArray("RecursorVal.all").map(requireName))
-        case "numParams" => np = Some(readNonNegativeInt("RecursorVal.numParams"))
-        case "numIndices" => ni = Some(readNonNegativeInt("RecursorVal.numIndices"))
-        case "numMotives" => nm = Some(readNonNegativeInt("RecursorVal.numMotives"))
-        case "numMinors" => nmin = Some(readNonNegativeInt("RecursorVal.numMinors"))
-        case "rules" => rules = Some(readObjectArray("RecursorVal.rules")(parseRecursorRule()))
-        case "k" => k = Some(readBoolean("RecursorVal.k"))
-        case "isUnsafe" => unsafe = Some(readBoolean("RecursorVal.isUnsafe"))
-        case field => fail(s"unknown RecursorVal field '$field'")
+        case "type"        => tpe = Some(requireExpr(readNonNegativeInt("RecursorVal.type")))
+        case "all"         => all = Some(readIntArray("RecursorVal.all").map(requireName))
+        case "numParams"   => np = Some(readNonNegativeInt("RecursorVal.numParams"))
+        case "numIndices"  => ni = Some(readNonNegativeInt("RecursorVal.numIndices"))
+        case "numMotives"  => nm = Some(readNonNegativeInt("RecursorVal.numMotives"))
+        case "numMinors"   => nmin = Some(readNonNegativeInt("RecursorVal.numMinors"))
+        case "rules"       => rules = Some(readObjectArray("RecursorVal.rules")(parseRecursorRule()))
+        case "k"           => k = Some(readBoolean("RecursorVal.k"))
+        case "isUnsafe"    => unsafe = Some(readBoolean("RecursorVal.isUnsafe"))
+        case field         => fail(s"unknown RecursorVal field '$field'")
       }
-      ExportRecursorValue(required(name,"RecursorVal.name"), required(params,"RecursorVal.levelParams"),
-        required(tpe,"RecursorVal.type"), required(all,"RecursorVal.all"), required(np,"RecursorVal.numParams"),
-        required(ni,"RecursorVal.numIndices"), required(nm,"RecursorVal.numMotives"),
-        required(nmin,"RecursorVal.numMinors"), required(rules,"RecursorVal.rules"),
-        required(k,"RecursorVal.k"), required(unsafe,"RecursorVal.isUnsafe"))
+      ExportRecursorValue(
+        required(name, "RecursorVal.name"),
+        required(params, "RecursorVal.levelParams"),
+        required(tpe, "RecursorVal.type"),
+        required(all, "RecursorVal.all"),
+        required(np, "RecursorVal.numParams"),
+        required(ni, "RecursorVal.numIndices"),
+        required(nm, "RecursorVal.numMotives"),
+        required(nmin, "RecursorVal.numMinors"),
+        required(rules, "RecursorVal.rules"),
+        required(k, "RecursorVal.k"),
+        required(unsafe, "RecursorVal.isUnsafe")
+      )
     }
 
     private def parseRecursorRule(): ExportRecursorRule = {
       var ctor: Option[NameId] = None; var fields: Option[Int] = None; var rhs: Option[ExprId] = None
       objectFields("RecursorRule") {
-        case "ctor" => ctor = Some(requireName(readNonNegativeInt("RecursorRule.ctor")))
+        case "ctor"    => ctor = Some(requireName(readNonNegativeInt("RecursorRule.ctor")))
         case "nfields" => fields = Some(readNonNegativeInt("RecursorRule.nfields"))
-        case "rhs" => rhs = Some(requireExpr(readNonNegativeInt("RecursorRule.rhs")))
-        case field => fail(s"unknown RecursorRule field '$field'")
+        case "rhs"     => rhs = Some(requireExpr(readNonNegativeInt("RecursorRule.rhs")))
+        case field     => fail(s"unknown RecursorRule field '$field'")
       }
-      ExportRecursorRule(required(ctor,"RecursorRule.ctor"), required(fields,"RecursorRule.nfields"),
-        required(rhs,"RecursorRule.rhs"))
+      ExportRecursorRule(
+        required(ctor, "RecursorRule.ctor"),
+        required(fields, "RecursorRule.nfields"),
+        required(rhs, "RecursorRule.rhs")
+      )
     }
 
     private def registerDeclaration(decl: ExportDecl, kind: String): Unit = {
       val names: Vector[NameId] = decl match {
-        case value: ExportAxiom => Vector(value.name)
-        case value: ExportDef => Vector(value.name)
-        case value: ExportOpaque => Vector(value.name)
+        case value: ExportAxiom   => Vector(value.name)
+        case value: ExportDef     => Vector(value.name)
+        case value: ExportOpaque  => Vector(value.name)
         case value: ExportTheorem => Vector(value.name)
-        case value: ExportQuot => Vector(value.name)
-        case value: ExportInductive => value.types.map(_.name) ++ value.constructors.map(_.name) ++ value.recursors.map(_.name)
+        case value: ExportQuot    => Vector(value.name)
+        case value: ExportInductive =>
+          value.types.map(_.name) ++ value.constructors.map(_.name) ++ value.recursors.map(_.name)
       }
       names.foreach { id =>
         val name = tables.dottedName(id)
@@ -575,10 +648,10 @@ object LeanExportReader {
           fail(s"declaration ${tables.dottedName(id)} was previously claimed by an ordinary all group")
       }
       decl match {
-        case value: ExportDef => validateOrdinaryGroup(value.name, value.all)
-        case value: ExportOpaque => validateOrdinaryGroup(value.name, value.all)
+        case value: ExportDef     => validateOrdinaryGroup(value.name, value.all)
+        case value: ExportOpaque  => validateOrdinaryGroup(value.name, value.all)
         case value: ExportTheorem => validateOrdinaryGroup(value.name, value.all)
-        case _ =>
+        case _                    =>
       }
       declarationCount += names.length
       consumer.onDeclaration(decl, tables)
@@ -596,25 +669,25 @@ object LeanExportReader {
           fail("ordinary declaration all group claims a non-ordinary declaration")
         ordinaryGroupClaims.get(member) match {
           case Some(expected) if expected != group => fail("ordinary declaration all groups disagree")
-          case Some(_) =>
-          case None => ordinaryGroupClaims.update(member, group)
+          case Some(_)                             =>
+          case None                                => ordinaryGroupClaims.update(member, group)
         }
       }
     }
 
     private def parseBinderInfo(value: String): BinderInfo = value match {
-      case "default" => Default
-      case "implicit" => Implicit
+      case "default"        => Default
+      case "implicit"       => Implicit
       case "strictImplicit" => StrictImplicit
-      case "instImplicit" => InstImplicit
-      case other => fail(s"unknown binderInfo '$other'")
+      case "instImplicit"   => InstImplicit
+      case other            => fail(s"unknown binderInfo '$other'")
     }
 
     private def parseSafety(value: String): ExportSafety = value match {
-      case "safe" => Safe
-      case "unsafe" => Unsafe
+      case "safe"    => Safe
+      case "unsafe"  => Unsafe
       case "partial" => Partial
-      case other => fail(s"unknown definition safety '$other'")
+      case other     => fail(s"unknown definition safety '$other'")
     }
 
     private def parseHint(): ExportDefHint = parser.currentToken() match {
@@ -622,13 +695,13 @@ object LeanExportReader {
         readString("def.hints") match {
           case "opaque" => HintOpaque
           case "abbrev" => HintAbbrev
-          case other => fail(s"unknown definition hint '$other'")
+          case other    => fail(s"unknown definition hint '$other'")
         }
       case JsonToken.START_OBJECT =>
         var height: Option[BigInt] = None
         objectFields("def.hints") {
-          case "regular" => height = Some(readNonNegativeBigInt("def.hints.regular"))
-          case field => fail(s"unknown definition hint field '$field'")
+          case "regular" => height = Some(readNonNegativeNumber("def.hints.regular"))
+          case field     => fail(s"unknown definition hint field '$field'")
         }
         HintRegular(required(height, "def.hints.regular"))
       case _ => fail("def.hints must be a string or regular-height object")
@@ -638,8 +711,8 @@ object LeanExportReader {
       case "type" => QuotType
       case "ctor" => QuotCtor
       case "lift" => QuotLift
-      case "ind" => QuotInd
-      case other => fail(s"unknown quotient declaration kind '$other'")
+      case "ind"  => QuotInd
+      case other  => fail(s"unknown quotient declaration kind '$other'")
     }
 
     private def declarationProvenance(kind: String, name: NameId): ExportProvenance =
@@ -698,47 +771,63 @@ object LeanExportReader {
 
     private def readNonNegativeInt(label: String): Int = {
       expect(JsonToken.VALUE_NUMBER_INT)
-      val value = try BigInt(parser.getText) catch { case NonFatal(_) => fail(s"$label is not an integer") }
+      val value =
+        try BigInt(parser.getText)
+        catch { case NonFatal(_) => fail(s"$label is not an integer") }
       if (value < 0) fail(s"$label must be non-negative")
       if (!value.isValidInt) throw IndexOverflow(provenance(label), s"$label is outside the 32-bit index range: $value")
       value.toInt
     }
 
-    private def readNonNegativeBigInt(label: String): BigInt = {
-      parser.currentToken() match {
-        case JsonToken.VALUE_NUMBER_INT | JsonToken.VALUE_STRING =>
-        case _ => fail(s"$label must be an integer or decimal string")
-      }
-      val value = try BigInt(parser.getText) catch { case NonFatal(_) => fail(s"$label is not a decimal integer") }
+    private def readNonNegativeNumber(label: String): BigInt = {
+      expect(JsonToken.VALUE_NUMBER_INT)
+      val value =
+        try BigInt(parser.getText)
+        catch { case NonFatal(_) => fail(s"$label is not a decimal integer") }
+      if (value < 0) fail(s"$label must be non-negative")
+      value
+    }
+
+    private def readNonNegativeDecimalString(label: String): BigInt = {
+      expect(JsonToken.VALUE_STRING)
+      val value =
+        try BigInt(parser.getText)
+        catch { case NonFatal(_) => fail(s"$label is not a decimal integer") }
       if (value < 0) fail(s"$label must be non-negative")
       value
     }
 
     private def readString(label: String): String = { expect(JsonToken.VALUE_STRING); parser.getText }
     private def readBoolean(label: String): Boolean = parser.currentToken() match {
-      case JsonToken.VALUE_TRUE => true
+      case JsonToken.VALUE_TRUE  => true
       case JsonToken.VALUE_FALSE => false
-      case _ => fail(s"$label must be a boolean")
+      case _                     => fail(s"$label must be a boolean")
     }
 
     private def requireName(index: Int): NameId = {
-      if (index >= tables.nameCount) throw MissingIntern(provenance("name", Some(index)), s"name reference $index has not been defined")
+      if (index >= tables.nameCount)
+        throw MissingIntern(provenance("name", Some(index)), s"name reference $index has not been defined")
       NameId(index)
     }
     private def requireLevel(index: Int): LevelId = {
-      if (index >= tables.levelCount) throw MissingIntern(provenance("level", Some(index)), s"level reference $index has not been defined")
+      if (index >= tables.levelCount)
+        throw MissingIntern(provenance("level", Some(index)), s"level reference $index has not been defined")
       LevelId(index)
     }
     private def requireExpr(index: Int): ExprId = {
-      if (index >= tables.expressionCount) throw MissingIntern(provenance("expression", Some(index)), s"expression reference $index has not been defined")
+      if (index >= tables.expressionCount)
+        throw MissingIntern(provenance("expression", Some(index)), s"expression reference $index has not been defined")
       ExprId(index)
     }
     private def requireNextIndex(kind: String, actual: Int, expected: Int): Unit =
-      if (actual != expected) throw InternOrder(provenance(kind, Some(actual)), s"$kind index $actual is out of sequence; expected $expected")
+      if (actual != expected)
+        throw InternOrder(provenance(kind, Some(actual)), s"$kind index $actual is out of sequence; expected $expected")
 
-    private def required[A](value: Option[A], field: String): A = value.getOrElse(fail(s"required field '$field' is missing"))
+    private def required[A](value: Option[A], field: String): A =
+      value.getOrElse(fail(s"required field '$field' is missing"))
     private def expect(token: JsonToken): Unit =
-      if (parser.currentToken() != token) fail(s"expected $token, found ${Option(parser.currentToken()).getOrElse("end of input")}")
+      if (parser.currentToken() != token)
+        fail(s"expected $token, found ${Option(parser.currentToken()).getOrElse("end of input")}")
     private def fail(message: String): Nothing = throw MalformedExport(provenance("parse"), message)
   }
 }

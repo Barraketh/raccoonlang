@@ -96,10 +96,11 @@ class LeanExportM0Tests extends munit.FunSuite {
       def finish(tables: LeanExportIr.ExportTables): Unit = ()
     }
     val result = LeanExportReader.read(
-      new ByteArrayInputStream(fixture.getBytes(StandardCharsets.UTF_8)), "fixture.ndjson", consumer
+      new ByteArrayInputStream(fixture.getBytes(StandardCharsets.UTF_8)),
+      "fixture.ndjson",
+      consumer
     )
-    assertEquals(result.tables.nameNode(LeanExportIr.NameId(1)),
-      LeanExportIr.NameStr(LeanExportIr.NameId(0), "Acc"))
+    assertEquals(result.tables.nameNode(LeanExportIr.NameId(1)), LeanExportIr.NameStr(LeanExportIr.NameId(0), "Acc"))
     assertEquals(result.tables.exprNode(LeanExportIr.ExprId(6)), LeanExportIr.NatVal(BigInt(42)))
     assert(result.tables.currentBytes > 0L)
     assert(result.tables.highWaterBytes >= result.tables.currentBytes)
@@ -109,10 +110,44 @@ class LeanExportM0Tests extends munit.FunSuite {
   test("shared reader rejects duplicate fields with structured provenance") {
     val input = s"$meta\n" + """{"bvar":0,"bvar":1,"ie":0}"""
     val error = intercept[MalformedExport](
-      LeanExportReader.read(new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)), "bad.ndjson",
-        LeanExportIr.LeanExportConsumer.ignore)
+      LeanExportReader.read(
+        new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)),
+        "bad.ndjson",
+        LeanExportIr.LeanExportConsumer.ignore
+      )
     )
     assertEquals(error.provenance.objectOrdinal, 2L)
     assert(error.message.contains("duplicate field 'bvar'"))
+  }
+
+  test("shared reader enforces pinned numeric token kinds") {
+    val numericNat = s"$meta\n" + """{"natVal":42,"ie":0}"""
+    assert(intercept[LeanExportM0.ScanError](scan(numericNat)).detail.contains("VALUE_STRING"))
+
+    val stringNameNumber = Vector(
+      meta,
+      """{"num":{"pre":0,"i":"1"},"in":1}"""
+    ).mkString("\n")
+    assert(intercept[LeanExportM0.ScanError](scan(stringNameNumber)).detail.contains("VALUE_NUMBER_INT"))
+
+    val stringRegularHeight = Vector(
+      meta,
+      """{"str":{"pre":0,"str":"d"},"in":1}""",
+      """{"sort":0,"ie":0}""",
+      """{"def":{"name":1,"levelParams":[],"type":0,"value":0,"hints":{"regular":"1"},"safety":"unsafe","all":[1]}}"""
+    ).mkString("\n")
+    assert(intercept[LeanExportM0.ScanError](scan(stringRegularHeight)).detail.contains("VALUE_NUMBER_INT"))
+  }
+
+  test("shared reader rejects the non-format constructor owner alias") {
+    val input = Vector(
+      meta,
+      """{"str":{"pre":0,"str":"Even"},"in":1}""",
+      """{"str":{"pre":1,"str":"mk"},"in":2}""",
+      """{"sort":0,"ie":0}""",
+      """{"inductive":{"types":[{"name":1,"levelParams":[],"type":0,"numParams":0,"numIndices":0,"all":[1],"ctors":[2],"numNested":0,"isRec":false,"isUnsafe":false,"isReflexive":false}],"ctors":[{"name":2,"levelParams":[],"type":0,"induct":1,"inductive":1,"cidx":0,"numParams":0,"numFields":0,"isUnsafe":false}],"recs":[]}}"""
+    ).mkString("\n")
+    val error = intercept[LeanExportM0.ScanError](scan(input))
+    assert(error.detail.contains("unknown ConstructorVal field 'inductive'"))
   }
 }

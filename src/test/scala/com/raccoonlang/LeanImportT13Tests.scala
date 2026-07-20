@@ -81,57 +81,140 @@ class LeanImportT13Tests extends munit.FunSuite {
     assert(ValueEquivalence.defEq(result.env("useIgnore"), result.env("carrierValue")))
 
     val span = Span(0, 1)
-    val aliasApplied = TypeChecker.checkTerm(
-      CoreAst.Term.App(CoreAst.Term.GlobalRef("polyAlias", span),
-        Vector(CoreAst.Term.GlobalRef("carrierValue", span)), span),
-      result.env
-    ).value
+    val aliasApplied = TypeChecker
+      .checkTerm(
+        CoreAst.Term
+          .App(CoreAst.Term.GlobalRef("polyAlias", span), Vector(CoreAst.Term.GlobalRef("carrierValue", span)), span),
+        result.env
+      )
+      .value
     assert(ValueEquivalence.defEq(aliasApplied, result.env("carrierValue")))
 
     val idConvention = result.manifest.installed.find(_.name == "polyId").flatMap(_.callingConvention).get
     assertEquals(idConvention.universeCount, 1)
-    assertEquals(idConvention.telescopes.head.binders.map(b => b.requestedImplicit -> b.checkedImplicit),
-      Vector(true -> true, true -> true, false -> false))
+    assertEquals(
+      idConvention.telescopes.head.binders.map(b => b.requestedImplicit -> b.checkedImplicit),
+      Vector(true -> true, true -> true, false -> false)
+    )
     assertEquals(result.manifest.installed.find(_.name == "PolyPair").flatMap(_.callingConvention).get.universeCount, 2)
 
     val ignored = result.manifest.installed.find(_.name == "ignoreA").flatMap(_.callingConvention).get
-    assertEquals(ignored.telescopes.head.binders.map(b => b.requestedImplicit -> b.checkedImplicit),
-      Vector(true -> false, false -> false))
+    assertEquals(
+      ignored.telescopes.head.binders.map(b => b.requestedImplicit -> b.checkedImplicit),
+      Vector(true -> false, false -> false)
+    )
   }
 
   test("underapplications before and after an implicit eta-expand to checked functions") {
     val result = imported().fold(errors => fail(errors.map(_.message).mkString("; ")), identity)
     val span = Span(0, 1)
-    val idApplied = TypeChecker.checkTerm(
-      CoreAst.Term.App(CoreAst.Term.GlobalRef("idAtCarrier", span), Vector(CoreAst.Term.GlobalRef("carrierValue", span)), span),
-      result.env
-    ).value
+    val idApplied = TypeChecker
+      .checkTerm(
+        CoreAst.Term
+          .App(CoreAst.Term.GlobalRef("idAtCarrier", span), Vector(CoreAst.Term.GlobalRef("carrierValue", span)), span),
+        result.env
+      )
+      .value
     assert(ValueEquivalence.defEq(idApplied, result.env("carrierValue")))
 
-    val partialApplied = TypeChecker.checkTerm(
-      CoreAst.Term.App(CoreAst.Term.GlobalRef("ignoreAPartial", span),
-        Vector(CoreAst.Term.GlobalRef("Carrier", span), CoreAst.Term.GlobalRef("carrierValue", span)), span),
-      result.env
-    ).value
+    val partialApplied = TypeChecker
+      .checkTerm(
+        CoreAst.Term.App(
+          CoreAst.Term.GlobalRef("ignoreAPartial", span),
+          Vector(CoreAst.Term.GlobalRef("Carrier", span), CoreAst.Term.GlobalRef("carrierValue", span)),
+          span
+        ),
+        result.env
+      )
+      .value
     assert(ValueEquivalence.defEq(partialApplied, result.env("carrierValue")))
   }
 
   test("strict and instance implicits retain source metadata but demote when unforced") {
     val result = imported().fold(errors => fail(errors.map(_.message).mkString("; ")), identity)
-    val strict = result.manifest.installed.find(_.name == "strictArg").flatMap(_.callingConvention).get.telescopes.head.binders.head
-    val instance = result.manifest.installed.find(_.name == "instanceArg").flatMap(_.callingConvention).get.telescopes.head.binders.head
+    val strict = result.manifest.installed
+      .find(_.name == "strictArg")
+      .flatMap(_.callingConvention)
+      .get
+      .telescopes
+      .head
+      .binders
+      .head
+    val instance = result.manifest.installed
+      .find(_.name == "instanceArg")
+      .flatMap(_.callingConvention)
+      .get
+      .telescopes
+      .head
+      .binders
+      .head
     assertEquals(strict.sourceInfo, SourceTermBinder(StrictImplicit))
     assertEquals(instance.sourceInfo, SourceTermBinder(InstImplicit))
     assert(!strict.checkedImplicit && !instance.checkedImplicit)
   }
 
   test("wrong universe arity and inconsistent supplied arguments fail before publication") {
-    val wrongArity = fixture.replace("""{"const":{"name":4,"us":[2]},"ie":10}""",
-      """{"const":{"name":4,"us":[]},"ie":10}""")
+    val wrongArity =
+      fixture.replace("""{"const":{"name":4,"us":[2]},"ie":10}""", """{"const":{"name":4,"us":[]},"ie":10}""")
     assert(imported(wrongArity).swap.toOption.get.exists(_.isInstanceOf[ApplicationConventionMismatch]))
 
-    val wrongUniverse = fixture.replace("""{"const":{"name":4,"us":[2]},"ie":10}""",
-      """{"const":{"name":4,"us":[0]},"ie":10}""")
+    val wrongUniverse =
+      fixture.replace("""{"const":{"name":4,"us":[2]},"ie":10}""", """{"const":{"name":4,"us":[0]},"ie":10}""")
     assert(imported(wrongUniverse).isLeft)
+  }
+
+  test("supplied implicit validation rejects a projected value after both arguments typecheck") {
+    var tables: ExportTables = null
+    val input = s"$meta\n" + """{"sort":0,"ie":0}"""
+    LeanExportReader.read(
+      new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)),
+      "implicit-mismatch.ndjson",
+      new LeanExportConsumer {
+        def onMeta(meta: ExportMeta): Unit = ()
+        def onDeclaration(decl: ExportDecl, current: ExportTables): Unit = ()
+        def finish(current: ExportTables): Unit = tables = current
+      }
+    )
+
+    val base = LeanImportBootstrap.build().fold(errors => fail(errors.map(_.message).mkString("; ")), identity)
+    val env = base
+      .putGlobal("B", Value.VConst("B", Value.Symbol, Value.TypeTpe))
+      .putGlobal("C", Value.VConst("C", Value.Symbol, Value.TypeTpe))
+    val span = Span(0, 1)
+    val aRef = CoreAst.LocalRef(10000, "A")
+    val xRef = CoreAst.LocalRef(10001, "X")
+    val typeTerm = ElabAst.Term.GlobalRef("Type", span)
+    val binders = Vector(
+      ElabAst.Binder(
+        aRef,
+        typeTerm,
+        span,
+        isImplicit = true,
+        projection = Some(com.raccoonlang.telescope.Projection.Spec(0, Vector.empty))
+      ),
+      ElabAst.Binder(xRef, typeTerm, span)
+    )
+    val pi = Value.VPi(
+      env,
+      binders,
+      _ => Value.TypeTpe,
+      DepSet.empty,
+      Value.ValueId.Const("mismatch.pi"),
+      () => Value.VSort(Value.Level.const(2))
+    )
+    val lowerer = new LeanTermLowerer(tables, env, LeanGlobalRegistry.empty, "mismatch")
+    val context = LeanTermLowerer.Context(Vector.empty, Map.empty, env)
+    intercept[SuppliedImplicitMismatch](
+      lowerer.checkSourceArguments(
+        pi,
+        Vector(
+          Left(CoreAst.Term.GlobalRef("B", span)),
+          Left(CoreAst.Term.GlobalRef("C", span))
+        ),
+        context,
+        ExprId(0),
+        requireAllProjections = true
+      )
+    )
   }
 }

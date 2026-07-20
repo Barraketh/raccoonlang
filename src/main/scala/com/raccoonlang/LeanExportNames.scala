@@ -6,28 +6,26 @@ import java.nio.charset.StandardCharsets
 
 object LeanExportNames {
   private val EncodedPrefix = "$lean.name"
-  private val SafeComponent = "[\\p{L}][\\p{L}\\p{N}_]*".r
-  private val Keywords = Set(
-    "fun", "let", "match", "as", "returning", "with", "opaque", "axiom", "def", "inductive", "struct",
-    "namespace", "open", "import", "builtin", "decreases", "structural", "lexicographic", "measure", "indices",
-    "in"
-  )
 
   def encode(id: NameId, tables: ExportTables): String = encode(tables.nameComponents(id))
 
   def encode(components: Vector[Either[String, BigInt]]): String = {
     if (components.isEmpty) ""
-    else if (components.forall {
-      case Left(value) => SafeComponent.pattern.matcher(value).matches() &&
-          !Keywords(value) && !value.startsWith("$lean") && !value.startsWith("$raccoon")
-      case Right(_) => false
-    }) components.collect { case Left(value) => value }.mkString(".")
-    else EncodedPrefix + components.map {
-      case Left(value) =>
-        val bytes = value.getBytes(StandardCharsets.UTF_8)
-        s".s${bytes.length}_${bytes.map(b => f"${b & 0xff}%02x").mkString}"
-      case Right(value) => s".n${value.toString.length}_${value}"
-    }.mkString
+    else if (
+      components.forall {
+        case Left(value) =>
+          IdentifierSyntax.isAtom(value) &&
+          !value.startsWith("$lean") && !value.startsWith("$raccoon")
+        case Right(_) => false
+      }
+    ) components.collect { case Left(value) => value }.mkString(".")
+    else
+      EncodedPrefix + components.map {
+        case Left(value) =>
+          val bytes = value.getBytes(StandardCharsets.UTF_8)
+          s".s${bytes.length}_${bytes.map(b => f"${b & 0xff}%02x").mkString}"
+        case Right(value) => s".n${value.toString.length}_${value}"
+      }.mkString
   }
 
   def decode(name: String): Option[Vector[Either[String, BigInt]]] = {

@@ -56,6 +56,10 @@ class LeanImportT12Tests extends munit.FunSuite {
     assertEquals(LeanExportNames.encode(examples.head), "Nat.add")
     assertNotEquals(LeanExportNames.encode(examples(2)), LeanExportNames.encode(examples(3)))
     assert(LeanExportNames.encode(examples(4)).startsWith("$lean.name"))
+    Vector("x²", "h₁", "x½").foreach { component =>
+      assert(!IdentifierSyntax.isAtom(component))
+      assert(LeanExportNames.encode(Vector(Left(component))).startsWith("$lean.name"))
+    }
   }
 
   test("minimal Lean bootstrap installs only the universe machinery and reserves its identities") {
@@ -63,8 +67,11 @@ class LeanImportT12Tests extends munit.FunSuite {
     Vector("Type", "Level", "Level.zero", "Level.one", "Prop", "Sort", "Level.succ", "Level.max", "Level.imax")
       .foreach(name => assert(env.globals.contains(name)))
     assert(!env.globals.contains("Nat"))
-    assertEquals(ReservedNamePermit.leanImportBootstrap.names,
-      Set("Sort", "Level.succ", "Level.max", "Level.imax"))
+    assertEquals(ReservedNamePermit.leanImportBootstrap.names, Set("Sort", "Level.succ", "Level.max", "Level.imax"))
+    val bootstrapBinder = env("Sort").tpe.asInstanceOf[Value.VPi].binders.head.localRef
+    val importerBinder = LeanTermLowerer.freshLocal(bootstrapBinder.name)
+    assert(bootstrapBinder.id < 0 && importerBinder.id < 0)
+    assertNotEquals(bootstrapBinder, importerBinder)
 
     val span = Span(0, 1)
     val replacement = CoreAst.Decl.AxiomDecl("Sort", Term.GlobalRef("Type", span), span)
@@ -73,15 +80,23 @@ class LeanImportT12Tests extends munit.FunSuite {
 
   test("synthetic polymorphic axioms, definitions, and theorems import without Prelude.default") {
     val result = importText().fold(errors => fail(errors.map(_.message).mkString("; ")), identity)
-    assertEquals(result.manifest.installed.map(_.name),
-      Vector("Carrier", "carrierValue", "carrierAlias", "polyId", "polyIdTheorem"))
+    assertEquals(
+      result.manifest.installed.map(_.name),
+      Vector("Carrier", "carrierValue", "carrierAlias", "polyId", "polyIdTheorem")
+    )
     assert(!result.env.globals.contains("Nat"))
 
     val span = Span(0, 1)
-    val applied = TypeChecker.checkTerm(
-      Term.App(Term.GlobalRef("polyId", span), Vector(Term.GlobalRef("Carrier", span), Term.GlobalRef("carrierValue", span)), span),
-      result.env
-    ).value
+    val applied = TypeChecker
+      .checkTerm(
+        Term.App(
+          Term.GlobalRef("polyId", span),
+          Vector(Term.GlobalRef("Carrier", span), Term.GlobalRef("carrierValue", span)),
+          span
+        ),
+        result.env
+      )
+      .value
     assert(ValueEquivalence.defEq(applied, result.env("carrierValue")))
   }
 

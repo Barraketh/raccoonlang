@@ -87,14 +87,17 @@ class LeanImportT14Tests extends munit.FunSuite {
 
   test("Nat and String literal lowering is gated by validated representation state") {
     var tables: ExportTables = null
-    val input = Vector(meta, """{"natVal":"12345678901234567890","ie":0}""",
-      """{"strVal":"raccoon 🦝","ie":1}""").mkString("\n")
-    LeanExportReader.read(new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)), "literals.ndjson",
+    val input =
+      Vector(meta, """{"natVal":"12345678901234567890","ie":0}""", """{"strVal":"raccoon 🦝","ie":1}""").mkString("\n")
+    LeanExportReader.read(
+      new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)),
+      "literals.ndjson",
       new LeanExportConsumer {
         def onMeta(meta: ExportMeta): Unit = ()
         def onDeclaration(decl: ExportDecl, current: ExportTables): Unit = ()
         def finish(current: ExportTables): Unit = tables = current
-      })
+      }
+    )
 
     val natLowerer = new LeanTermLowerer(tables, Prelude.default.checkedEnv, LeanGlobalRegistry.empty, "literal")
     val nat = TypeChecker.checkTerm(natLowerer.lowerTerm(ExprId(0)), Prelude.default.checkedEnv).value
@@ -104,6 +107,13 @@ class LeanImportT14Tests extends munit.FunSuite {
     val gated = new LeanTermLowerer(tables, bootstrap, LeanGlobalRegistry.empty, "literal")
     intercept[MissingKernelGate](gated.lowerTerm(ExprId(0)))
     intercept[MissingKernelGate](gated.lowerTerm(ExprId(1)))
+
+    val nameOnlyNat = bootstrap.putGlobal("Nat", Value.VConst("Nat", Value.Symbol, Value.TypeTpe))
+    val nameOnlyGated = new LeanTermLowerer(tables, nameOnlyNat, LeanGlobalRegistry.empty, "literal")
+    intercept[MissingKernelGate](nameOnlyGated.lowerTerm(ExprId(0)))
+    intercept[NatLiteralUnavailable](
+      TypeChecker.checkTerm(CoreAst.Term.NatLit(BigInt(1), Span(0, 1)), nameOnlyNat)
+    )
   }
 
   test("exported projection nodes lower directly to positional Core projections") {
@@ -124,12 +134,15 @@ class LeanImportT14Tests extends munit.FunSuite {
       """{"app":{"fn":5,"arg":6},"ie":7}""",
       """{"proj":{"typeName":1,"idx":0,"struct":7},"ie":8}"""
     ).mkString("\n")
-    LeanExportReader.read(new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)), "projection.ndjson",
+    LeanExportReader.read(
+      new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)),
+      "projection.ndjson",
       new LeanExportConsumer {
         def onMeta(meta: ExportMeta): Unit = ()
         def onDeclaration(decl: ExportDecl, current: ExportTables): Unit = ()
         def finish(current: ExportTables): Unit = tables = current
-      })
+      }
+    )
     val provenance = tables.exprProvenance(ExprId(0))
     val registry = LeanGlobalRegistry.empty
       .add(ImportedGlobal(NameId(1), "Prod", provenance, Installed, Vector(NameId(0), NameId(0))), tables)
@@ -160,12 +173,15 @@ class LeanImportT14Tests extends munit.FunSuite {
       """{"lam":{"name":1,"type":0,"body":2,"binderInfo":"implicit"},"ie":3}""",
       """{"letE":{"name":2,"type":1,"value":3,"body":3,"nondep":true},"ie":4}"""
     ).mkString("\n")
-    LeanExportReader.read(new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)), "let-lambda.ndjson",
+    LeanExportReader.read(
+      new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)),
+      "let-lambda.ndjson",
       new LeanExportConsumer {
         def onMeta(meta: ExportMeta): Unit = ()
         def onDeclaration(decl: ExportDecl, current: ExportTables): Unit = ()
         def finish(current: ExportTables): Unit = tables = current
-      })
+      }
+    )
     val env = Prelude.default.checkedEnv
     val provenance = tables.exprProvenance(ExprId(0))
     val registry = LeanGlobalRegistry.empty
@@ -187,9 +203,31 @@ class LeanImportT14Tests extends munit.FunSuite {
     assertEquals(oversized.getMessage.length, 4096)
   }
 
+  test("reserved and bootstrap name collisions fail before declaration lowering") {
+    val reserved = Vector(
+      meta,
+      """{"str":{"pre":0,"str":"Nat"},"in":1}""",
+      """{"str":{"pre":1,"str":"add"},"in":2}""",
+      """{"bvar":99,"ie":0}""",
+      """{"axiom":{"name":2,"levelParams":[],"type":0,"isUnsafe":false}}"""
+    ).mkString("\n")
+    val reservedErrors = imported(reserved).swap.getOrElse(fail("reserved name unexpectedly imported"))
+    assert(reservedErrors.exists(_.isInstanceOf[ReservedNameViolation]))
+
+    val bootstrapCollision = Vector(
+      meta,
+      """{"str":{"pre":0,"str":"Type"},"in":1}""",
+      """{"bvar":99,"ie":0}""",
+      """{"axiom":{"name":1,"levelParams":[],"type":0,"isUnsafe":false}}"""
+    ).mkString("\n")
+    val bootstrapErrors = imported(bootstrapCollision).swap.getOrElse(fail("bootstrap collision unexpectedly imported"))
+    assert(bootstrapErrors.exists(_.isInstanceOf[ReservedNameViolation]))
+  }
+
   test("ordinary all groups cannot claim non-ordinary declarations in either order") {
     val groupName = """{"str":{"pre":0,"str":"grouped"},"in":10}"""
-    val grouped = """{"def":{"name":10,"levelParams":[],"type":1,"value":2,"hints":"abbrev","safety":"safe","all":[1,10]}}"""
+    val grouped =
+      """{"def":{"name":10,"levelParams":[],"type":1,"value":2,"hints":"abbrev","safety":"safe","all":[1,10]}}"""
     val afterAxiom = Vector(meta, fixture.split('\n').slice(1, 18).mkString("\n"), groupName, grouped).mkString("\n")
     assert(imported(afterAxiom).swap.toOption.get.exists(_.isInstanceOf[MalformedExport]))
 

@@ -468,7 +468,9 @@ class WfRecursionTests extends munit.FunSuite {
 
   test("export metadata, universe order, rules, and recursor type are all authenticated") {
     val (equality, acc, env) = fixture()
-    assertEquals(expectedRecursorType(acc), expectedRecursorType(acc))
+    val firstExpected = TypeChecker.getType(expectedRecursorType(acc), env)
+    val secondExpected = TypeChecker.getType(expectedRecursorType(acc), env)
+    assert(ValueEquivalence.defEq(firstExpected, secondExpected))
     intercept[UnsupportedWfExportShape] {
       validateEquality(eqDecl(Prelude.test), Prelude.test.checkedEnv, equalityMetadata.copy(numIndices = 2))
     }

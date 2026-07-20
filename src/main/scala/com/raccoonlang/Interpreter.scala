@@ -499,12 +499,15 @@ object Interpreter {
       evalDecl(decl, env, permit, validateNative = profile.nonEmpty)
 
     def finish(env: Env): Env = {
-      if (profile.isDefined) Packed.validateNatFamily(env)
-      profile.foreach(Packed.validateRequiredNativeOps(env, _))
+      val withNat = profile match {
+        case Some(_) => env.installNatLayout(Packed.validateNatFamily(env))
+        case None    => env
+      }
+      profile.foreach(Packed.validateRequiredNativeOps(withNat, _))
       profile match {
         case Some(Packed.PinnedTranslatedInit | Packed.SyntheticFullK3) =>
-          env.installStringLayout(Packed.validateStringLayout(env))
-        case _ => env
+          withNat.installStringLayout(Packed.validateStringLayout(withNat))
+        case _ => withNat
       }
     }
   }

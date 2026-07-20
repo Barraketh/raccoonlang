@@ -4,17 +4,12 @@ import com.raccoonlang.ElabAst.{Term => ETerm}
 import com.raccoonlang.Value._
 import com.raccoonlang.telescope.BinderOps
 
-import java.util.concurrent.atomic.AtomicInteger
-
 /** Primitive positional projection for one-constructor inductive families. */
 object InductiveProjection {
   private val NoSpan = Span(0, 0)
 
   // Projection-head Pis are internal checked syntax. Parser-assigned refs are non-negative.
-  private val syntheticRefId = new AtomicInteger(-1)
-  private def syntheticRef(name: String): CoreAst.LocalRef = {
-    CoreAst.LocalRef(syntheticRefId.getAndDecrement(), name)
-  }
+  private def syntheticRef(name: String): CoreAst.LocalRef = SyntheticLocalRef.fresh(name)
 
   private def projectionInstance(
       base: Value,

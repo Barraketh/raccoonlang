@@ -171,13 +171,7 @@ object Packed {
     }
   }
 
-  private[raccoonlang] def natFamily(env: Env, span: Span): Value =
-    env.globals
-      .get(NatCodec.familyName)
-      .map(_.value(env))
-      .getOrElse(throw NatLiteralUnavailable("no `Nat` in scope", Some(span)))
-
-  private[raccoonlang] def validateNatFamily(env: Env): Unit = {
+  private[raccoonlang] def validateNatFamily(env: Env): ValidatedNatLayout = {
     def fail(reason: String): Nothing = throw NatLiteralUnavailable(reason)
     def global(name: String): Option[Value] = env.globals.get(name).map(_.value(env))
 
@@ -188,13 +182,14 @@ object Packed {
       case _ => fail("`Nat` in scope is not the two-constructor unary inductive")
     }
     if (!ValueEquivalence.defEq(family.tpe, TypeTpe)) fail("`Nat` in scope is not Type-valued")
-    global(NatCodec.zeroName) match {
+    val zero = global(NatCodec.zeroName) match {
       case Some(h: ConstructorHead)
           if h.name == NatCodec.zeroName && h.totalArity == 0 && h.noConfusion &&
             ValueEquivalence.defEq(h.tpe, family) =>
+        h
       case _ => fail(s"`${NatCodec.zeroName}` is not a nullary `Nat` constructor")
     }
-    global(NatCodec.succName) match {
+    val succ = global(NatCodec.succName) match {
       case Some(h: ConstructorHead)
           if h.name == NatCodec.succName && h.totalArity == 1 && h.numErasedFamilyArgs == 0 && h.noConfusion =>
         h.tpe match {
@@ -206,8 +201,10 @@ object Packed {
               fail(s"`${NatCodec.succName}` is not `Nat -> Nat`")
           case _ => fail(s"`${NatCodec.succName}` is not `Nat -> Nat`")
         }
+        h
       case _ => fail(s"`${NatCodec.succName}` is not a unary `Nat` constructor")
     }
+    new ValidatedNatLayout(family, zero, succ)
   }
 
   private[raccoonlang] def validateNativeOpDeclaration(name: String, value: Value, env: Env): Unit =

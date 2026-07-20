@@ -423,8 +423,10 @@ object TypeChecker {
     try {
       term match {
         case CA.Term.NatLit(value, span) =>
-          val family = Packed.natFamily(env, span)
-          val synthed = CheckedTerm(VPacked.nat(value, family), EA.Term.NatLit(value, span))
+          val layout = env.nativeLiterals.natLayout.getOrElse(
+            throw NatLiteralUnavailable("no validated Nat layout", Some(span))
+          )
+          val synthed = CheckedTerm(VPacked.nat(value, layout.natTpe), EA.Term.NatLit(value, span))
           expectedTy.fold(synthed)(expected => checkTermFits(synthed, expected))
         case CA.Term.StrLit(scalars, span) =>
           val layout = env.nativeLiterals.stringLayout.getOrElse(

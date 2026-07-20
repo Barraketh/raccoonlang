@@ -30,20 +30,38 @@ final case class LeanImportMetrics(
 final case class LeanImportResult(env: Env, manifest: LeanImportManifest, metrics: LeanImportMetrics)
 
 object LeanImportSession {
-  def importStream(input: InputStream, source: String = "<input>"): Either[Vector[LeanImportDiagnostic], LeanImportResult] =
+  def importStream(
+      input: InputStream,
+      source: String = "<input>"
+  ): Either[Vector[LeanImportDiagnostic], LeanImportResult] =
     LeanImportBootstrap.build().flatMap { bootstrap =>
       val session = new Session(bootstrap)
       try {
         val read = LeanExportReader.read(input, source, session)
         val installed = session.installed
         val binders = installed.flatMap(_.callingConvention.toVector.flatMap(_.telescopes).flatMap(_.binders))
-        Right(LeanImportResult(session.env, LeanImportManifest(installed, session.skipped),
-          LeanImportMetrics(read.objects, read.declarations, read.tables.currentBytes, read.tables.highWaterBytes,
-            binders.count(_.requestedImplicit), binders.count(_.checkedImplicit),
-            binders.count(b => b.requestedImplicit && !b.checkedImplicit), installed.count(!_.opaque),
-            installed.count(_.opaque))))
+        Right(
+          LeanImportResult(
+            session.env,
+            LeanImportManifest(installed, session.skipped),
+            LeanImportMetrics(
+              read.objects,
+              read.declarations,
+              read.tables.currentBytes,
+              read.tables.highWaterBytes,
+              binders.count(_.requestedImplicit),
+              binders.count(_.checkedImplicit),
+              binders.count(b => b.requestedImplicit && !b.checkedImplicit),
+              installed.count(!_.opaque),
+              installed.count(_.opaque)
+            )
+          )
+        )
       } catch {
         case diagnostic: LeanImportDiagnostic => Left(Vector(diagnostic))
+        case _: StackOverflowError =>
+          val provenance = ExportProvenance(java.nio.file.Paths.get(source), 0L, 0, 0L, "import", None, None)
+          Left(Vector(DeclarationTypeError(provenance, "export nesting exceeds the supported depth")))
         case NonFatal(error) =>
           val provenance = ExportProvenance(java.nio.file.Paths.get(source), 0L, 0, 0L, "import", None, None)
           Left(Vector(DeclarationTypeError(provenance, bounded(Option(error.getMessage).getOrElse(error.toString)))))
@@ -67,49 +85,78 @@ object LeanImportSession {
         val coreName = LeanExportNames.encode(value.name, tables)
         if (coreName == "propext" || coreName == "Classical.choice")
           throw MissingKernelGate(value.provenance, s"$coreName requires K7", Some(coreName))
-        publish(value.name, value.levelParams, value.provenance, "axiom", opaque = true, tables,
-          safety = Some(Safe)) { (name, lowerer) =>
-          val lowered = lowerer.lowerDeclarationType(value.levelParams, value.tpe)
-          Decl.AxiomDecl(name, lowered.term, coreSpan(value.provenance)) -> lowered.convention
+        publish(value.name, value.levelParams, value.provenance, "axiom", opaque = true, tables, safety = Some(Safe)) {
+          (name, lowerer) =>
+            val lowered = lowerer.lowerDeclarationType(value.levelParams, value.tpe)
+            Decl.AxiomDecl(name, lowered.term, coreSpan(value.provenance)) -> lowered.convention
         }
       case value: ExportDef if value.safety == Safe =>
-        publish(value.name, value.levelParams, value.provenance, "def", value.hint == HintOpaque, tables,
-          hint = Some(value.hint), safety = Some(value.safety)) { (name, lowerer) =>
+        publish(
+          value.name,
+          value.levelParams,
+          value.provenance,
+          "def",
+          value.hint == HintOpaque,
+          tables,
+          hint = Some(value.hint),
+          safety = Some(value.safety)
+        ) { (name, lowerer) =>
           val lowered = lowerer.lowerDeclarationType(value.levelParams, value.tpe)
           val body = lowerer.lowerDeclarationBody(value.value, lowered, name)
-          Decl.ConstDecl(value.hint == HintOpaque, name, lowered.term, ConstBody.TermBody(body), coreSpan(value.provenance)) ->
+          Decl.ConstDecl(
+            value.hint == HintOpaque,
+            name,
+            lowered.term,
+            ConstBody.TermBody(body),
+            coreSpan(value.provenance)
+          ) ->
             lowered.convention
         }
       case value: ExportTheorem =>
-        publish(value.name, value.levelParams, value.provenance, "theorem", opaque = true, tables,
-          safety = Some(Safe)) { (name, lowerer) =>
+        publish(
+          value.name,
+          value.levelParams,
+          value.provenance,
+          "theorem",
+          opaque = true,
+          tables,
+          safety = Some(Safe)
+        ) { (name, lowerer) =>
           val lowered = lowerer.lowerDeclarationType(value.levelParams, value.tpe)
           val body = lowerer.lowerDeclarationBody(value.value, lowered, name)
           Decl.ConstDecl(isOpaque = true, name, lowered.term, ConstBody.TermBody(body), coreSpan(value.provenance)) ->
             lowered.convention
         }
       case value: ExportOpaque if !value.isUnsafe =>
-        publish(value.name, value.levelParams, value.provenance, "opaque", opaque = true, tables,
-          safety = Some(Safe)) { (name, lowerer) =>
-          val lowered = lowerer.lowerDeclarationType(value.levelParams, value.tpe)
-          val body = lowerer.lowerDeclarationBody(value.value, lowered, name)
-          Decl.ConstDecl(isOpaque = true, name, lowered.term, ConstBody.TermBody(body), coreSpan(value.provenance)) ->
-            lowered.convention
+        publish(value.name, value.levelParams, value.provenance, "opaque", opaque = true, tables, safety = Some(Safe)) {
+          (name, lowerer) =>
+            val lowered = lowerer.lowerDeclarationType(value.levelParams, value.tpe)
+            val body = lowerer.lowerDeclarationBody(value.value, lowered, name)
+            Decl.ConstDecl(isOpaque = true, name, lowered.term, ConstBody.TermBody(body), coreSpan(value.provenance)) ->
+              lowered.convention
         }
-      case value: ExportAxiom => skip(value.name, value.levelParams, value.provenance, "axiom", tables, Unsafe)
-      case value: ExportDef => skip(value.name, value.levelParams, value.provenance, "def", tables, value.safety)
+      case value: ExportAxiom  => skip(value.name, value.levelParams, value.provenance, "axiom", tables, Unsafe)
+      case value: ExportDef    => skip(value.name, value.levelParams, value.provenance, "def", tables, value.safety)
       case value: ExportOpaque => skip(value.name, value.levelParams, value.provenance, "opaque", tables, Unsafe)
       case value: ExportQuot => unsupported(value.name, value.provenance, tables, "quotient declarations require T1.5")
       case value: ExportInductive =>
         val flags = value.types.map(_.isUnsafe) ++ value.constructors.map(_.isUnsafe) ++ value.recursors.map(_.isUnsafe)
         if (flags.distinct.length > 1)
-          throw MalformedExport(value.provenance, "inductive block mixes safe and unsafe member flags",
-            value.provenance.declaration)
+          throw MalformedExport(
+            value.provenance,
+            "inductive block mixes safe and unsafe member flags",
+            value.provenance.declaration
+          )
         if (flags.headOption.contains(true)) {
           value.types.foreach(v => skip(v.name, v.levelParams, value.provenance, "inductive", tables, Unsafe))
           value.constructors.foreach(v => skip(v.name, v.levelParams, value.provenance, "constructor", tables, Unsafe))
           value.recursors.foreach(v => skip(v.name, v.levelParams, value.provenance, "recursor", tables, Unsafe))
-        } else throw UnsupportedFeature(value.provenance, "inductive blocks require T1.5/K6/T2", value.provenance.declaration)
+        } else
+          throw UnsupportedFeature(
+            value.provenance,
+            "inductive blocks require T1.5/K6/T2",
+            value.provenance.declaration
+          )
     }
 
     private def publish(
@@ -124,6 +171,10 @@ object LeanImportSession {
     )(build: (String, LeanTermLowerer) => (Decl, Option[ImportedCallingConvention])): Unit = {
       val name = LeanExportNames.encode(sourceName, tables)
       if (name.isEmpty) throw TypeLowering(provenance, "anonymous declaration name", Some(name))
+      if (ReservedNames.all(name))
+        throw ReservedNameViolation(provenance, s"$name is reserved for authenticated kernel installation", Some(name))
+      if (currentEnv.globals.contains(name))
+        throw ReservedNameViolation(provenance, s"$name collides with an existing bootstrap global", Some(name))
       val lowerer = new LeanTermLowerer(tables, currentEnv, registry, name)
       try {
         val (decl, convention) = build(name, lowerer)

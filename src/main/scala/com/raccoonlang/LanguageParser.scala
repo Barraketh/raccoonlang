@@ -17,32 +17,10 @@ object LanguageParser {
   private val skipAllWs = (emptyLine.rep(0) ~ skipWS).named("AllWS")
   private val skipOneLine = emptyLine.? ~ skipWS
 
-  private val keywords = List(
-    "fun",
-    "let",
-    "match",
-    "as",
-    "returning",
-    "with",
-    "opaque",
-    "axiom",
-    "def",
-    "inductive",
-    "struct",
-    "namespace",
-    "open",
-    "import",
-    "builtin",
-    "decreases",
-    "structural",
-    "lexicographic",
-    "measure",
-    "indices",
-    "in"
-  )
-
   private val identAtom =
-    (P(c => c.isLetter) ~ P(c => c.isLetterOrDigit || c == '_').rep(0)).!.filter(s => !keywords.contains(s))
+    (P(c => IdentifierSyntax.isStart(c)) ~ P(c => IdentifierSyntax.isContinue(c)).rep(0)).!.filter(value =>
+      IdentifierSyntax.isAtom(value)
+    )
 
   private val rootName = "_root_"
   private val rootIdent: Parser[String] = P(rootName).!

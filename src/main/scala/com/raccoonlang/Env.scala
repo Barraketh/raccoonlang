@@ -29,10 +29,13 @@ object Env {
       throw WTF(s"Non-canonical proof bound into env: value ${value} of type ${value.tpe}")
 }
 
-final case class NativeLiteralState private[raccoonlang] (stringLayout: Option[Value.ValidatedStringLayout])
+final case class NativeLiteralState private[raccoonlang] (
+    natLayout: Option[Value.ValidatedNatLayout],
+    stringLayout: Option[Value.ValidatedStringLayout]
+)
 
 object NativeLiteralState {
-  private[raccoonlang] val empty: NativeLiteralState = NativeLiteralState(None)
+  private[raccoonlang] val empty: NativeLiteralState = NativeLiteralState(None, None)
 }
 
 sealed trait GlobalBinding {
@@ -131,6 +134,12 @@ final case class Env(
   private[raccoonlang] def installStringLayout(layout: Value.ValidatedStringLayout): Env =
     nativeLiterals.stringLayout match {
       case Some(_) => throw WTF("Validated String layout is already installed")
-      case None    => copy(nativeLiterals = NativeLiteralState(Some(layout)))
+      case None    => copy(nativeLiterals = nativeLiterals.copy(stringLayout = Some(layout)))
+    }
+
+  private[raccoonlang] def installNatLayout(layout: Value.ValidatedNatLayout): Env =
+    nativeLiterals.natLayout match {
+      case Some(_) => throw WTF("Validated Nat layout is already installed")
+      case None    => copy(nativeLiterals = nativeLiterals.copy(natLayout = Some(layout)))
     }
 }
