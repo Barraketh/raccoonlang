@@ -485,7 +485,7 @@ object Interpreter {
   private[raccoonlang] final class TrustedBootstrap private[Interpreter] (
       profile: Option[Packed.NativeBootstrapProfile]
   ) {
-    private val permit = if (profile.isDefined) ReservedNamePermit.nativePrelude else ReservedNamePermit.empty
+    private val permit = if (profile.isDefined) ReservedNamePermit.nativePrelude else ReservedNamePermit.sourcePrelude
 
     val initialEnv: Env =
       Env.empty

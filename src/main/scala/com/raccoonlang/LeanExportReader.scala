@@ -210,7 +210,7 @@ object LeanExportReader {
       var value: Option[String] = None
       objectFields("Name.str") {
         case "pre" => pre = Some(requireName(readNonNegativeInt("Name.str.pre")))
-        case "str" => value = Some(readString("Name.str.str"))
+        case "str" => value = Some(validateUnicodeString(readString("Name.str.str"), "Name.str.str"))
         case field => fail(s"unknown Name.str field '$field'")
       }
       NameStr(required(pre, "Name.str.pre"), required(value, "Name.str.str"))
@@ -304,24 +304,35 @@ object LeanExportReader {
     private def parseNat(): ExprNode = NatVal(readNonNegativeBigInt("Expr.natVal"))
 
     private def parseStringValue(): ExprNode = {
-      val text = readString("Expr.strVal")
+      val text = validateUnicodeString(readString("Expr.strVal"), "Expr.strVal")
       val scalars = Vector.newBuilder[Int]
       var offset = 0
       while (offset < text.length) {
         val ch = text.charAt(offset)
         if (Character.isHighSurrogate(ch)) {
-          if (offset + 1 >= text.length || !Character.isLowSurrogate(text.charAt(offset + 1)))
-            fail(s"Expr.strVal contains an unpaired high surrogate at UTF-16 offset $offset")
           scalars += Character.toCodePoint(ch, text.charAt(offset + 1))
           offset += 2
-        } else if (Character.isLowSurrogate(ch)) {
-          fail(s"Expr.strVal contains an unpaired low surrogate at UTF-16 offset $offset")
         } else {
           scalars += ch.toInt
           offset += 1
         }
       }
       StrVal(scalars.result())
+    }
+
+    private def validateUnicodeString(text: String, label: String): String = {
+      var offset = 0
+      while (offset < text.length) {
+        val ch = text.charAt(offset)
+        if (Character.isHighSurrogate(ch)) {
+          if (offset + 1 >= text.length || !Character.isLowSurrogate(text.charAt(offset + 1)))
+            fail(s"$label contains an unpaired high surrogate at UTF-16 offset $offset")
+          offset += 2
+        } else if (Character.isLowSurrogate(ch)) {
+          fail(s"$label contains an unpaired low surrogate at UTF-16 offset $offset")
+        } else offset += 1
+      }
+      text
     }
 
     private def parseMData(): ExprNode = {
