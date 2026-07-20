@@ -59,9 +59,10 @@ an ordinary-match certificate, not a structural-recursion certificate.
 K2 retains the logical theorem that well-founded recursion exists and satisfies its equation while declining to make
 that theorem a definitional computation rule.
 
-## 3. Lean 4.24 export facts
+## 3. Lean 4.30 export facts
 
-The parity target used by M0 is Lean 4.24.0-rc1. `Init/WF.lean` contains:
+The parity target used by M0 is Lean 4.30.0 at
+`d024af099ca4bf2c86f649261ebf59565dc8c622`. `Init/WF.lean` contains:
 
 - the recursive proposition `Acc` and constructor `Acc.intro`;
 - the non-recursive proposition `WellFounded` and constructor `WellFounded.intro`;
@@ -70,17 +71,28 @@ The parity target used by M0 is Lean 4.24.0-rc1. `Init/WF.lean` contains:
 - `WellFounded.recursion`, `fixF`, and `fix` definitions;
 - `WellFounded.fixF_eq` and `fix_eq` theorem statements.
 
+Lean 4.30 also imports `Init/WFComputable.lean`, which adds computable `Acc.recC`, `ndrecC`, and
+`ndrecOnC` variants, `WellFounded.fixFC`/`fixC`, and public `[csimp]` equality bridges between the
+logical and computable operations. These declarations were not covered by the 4.24 cluster policy.
+
 For `Acc.rec.{v,u}`, the first exported universe argument is the motive-result universe `v`; the second is the carrier
 universe `u`. T3 retains and validates this order, but it does not select different operational heads by universe:
 every `Acc.rec` occurrence is sealed.
 
-M0 found exactly four Sort-motive `Acc.rec` users outside the fix cluster in both real inputs:
+M0 now finds eleven Sort-motive `Acc.rec` users outside the old fix cluster in `Init`:
 
 ```text
 Acc.recOn
 Acc.ndrecOn
-Acc.casesOn
+Acc.ndrecOn.eq_1
+Acc.rec_eq_recC
+Acc.ndrecOn_eq_ndrecOnC
+WellFounded.fixF.eq_1
 Acc.ndrec
+Acc.ndrec.eq_1
+Acc.ndrec_eq_ndrecC
+Acc.casesOn
+WellFounded.fixF_eq_fixFC
 ```
 
 The fixed cluster recognized by the scanner is:
@@ -94,7 +106,9 @@ WellFounded.fix
 WellFounded.fix_eq
 ```
 
-K2 defines the trusted semantic boundary. T3 owns recognition and translation of these exported names.
+K2 defines the trusted semantic boundary. T3 owns recognition and translation of these exported names. The 4.30
+bridge and generated-equation declarations require an explicit compatibility case; none may become a definitional
+rewrite or bypass the sealed `Acc.rec` boundary.
 
 ## 4. Kernel invariants
 
@@ -441,6 +455,7 @@ K2 supplies the primitive identities and type/equation builders. T3 performs the
 | first-class or partial `Acc.rec` occurrence | eta-expand to a lambda containing one saturated call to sealed `Acc.rec` |
 | `Acc.casesOn` | validate its exported type/rule and synthesize a direct non-recursive ordinary match |
 | `Acc.recOn`, `ndrec`, `ndrecOn` | translate as recursive wrappers over sealed `Acc.rec` |
+| 4.30 `recC`/`ndrecC`/`ndrecOnC` bridge declarations and generated `.eq_1` theorems | validate and classify explicitly in T3; never install as definitional rewrites merely because they are `[csimp]` bridges in Lean |
 | `WellFounded` / `WellFounded.intro` | ordinary inductive block and constructor |
 | `WellFounded.recursion`, `fixF`, `fix` | typecheck bodies in the atomic K2 staging transaction, then publish with exported opacity |
 | `WellFounded.fixF_eq`, `fix_eq` | synthesize the checked proof applications from §8.4; publish through ordinary proof canonicalization |
@@ -532,8 +547,8 @@ recognition failure as a general Lean/Raccoon defeq gap.
 - `docs/kernel-theory.md`: add the K2 ledger entries from §8.5 and a case-law entry stating that proof metrics and
   recursive proof ι-reduction remain forbidden.
 - `docs/mathlib-export-port.md`: change the K2 gate from spec review to implementation/complete as phases land.
-- `docs/mathlib-export-port.md`: retain the M0/M1 parity pin to lean4export 3.1.0, Lean 4.24.0-rc1 commit
-  `919e297292280cdb27598edd4e03437be5850221`; changing it reopens the K2 and K6 shape assumptions.
+- `docs/mathlib-export-port.md`: retain the M0/M1 parity pin to lean4export 3.1.0 tag `v4.30.0`, Lean 4.30.0 commit
+  `d024af099ca4bf2c86f649261ebf59565dc8c622`; future changes reopen the K2, K3, and K6 shape assumptions.
 
 ### Reserved identities and installation
 
@@ -647,9 +662,9 @@ recognition failure as a general Lean/Raccoon defeq gap.
 
 ### Real-export gate (T3)
 
-- Validate the real Lean 4.24 `Eq` block and issue `ValidatedEquality` before any primitive equation is generated.
-- Validate and install the real Lean 4.24 `Acc` block and `Acc.rec` declaration.
-- Translate all four M0 out-of-cluster users.
+- Validate the real Lean 4.30 `Eq` block and issue `ValidatedEquality` before any primitive equation is generated.
+- Validate and install the real Lean 4.30 `Acc` block and `Acc.rec` declaration.
+- Classify and translate all eleven M0 out-of-old-cluster users, including the `WFComputable` bridges.
 - Translate `WellFounded.recursion`, `fixF`, `fix`, and their equation lemmas.
 - Require zero unclassified K2 failures in `Init` and `Mathlib.Logic.Basic`.
 - Report every sealed `Acc.rec` occurrence and direct-match `Acc.casesOn` synthesis by declaration.
@@ -679,7 +694,7 @@ At this point the kernel portion of K2 is complete independently of the NDJSON t
 
 ### Phase T3.1 — real export mapping
 
-- Recognize and validate the Lean 4.24 `Eq` dependency and WF cluster in declaration order.
+- Recognize and validate the Lean 4.30 `Eq` dependency and expanded WF/WFComputable cluster in declaration order.
 - Seal all `Acc.rec` occurrences, synthesize direct `Acc.casesOn`, and translate the recursive wrappers.
 - Add atomic wrapper/equation staging, extract the minor/accessibility terms from checked wrapper bodies, and
   synthesize/check `fixF_eq`/`fix_eq` from the generic equation before applying wrapper opacity.

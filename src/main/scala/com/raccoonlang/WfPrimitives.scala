@@ -18,7 +18,11 @@ object WfPrimitives {
 
   final case class ProducerVersion(lean4Export: String, lean: String, leanCommit: String)
   val SupportedProducer: ProducerVersion =
-    ProducerVersion("3.1.0", "4.24.0-rc1", "919e297292280cdb27598edd4e03437be5850221")
+    ProducerVersion(
+      LeanExportReader.ExporterVersion,
+      LeanExportReader.LeanVersion,
+      LeanExportReader.LeanGitHash
+    )
 
   final case class RecursorRule(constructorName: String, fieldCount: Int) {
     require(fieldCount >= 0, "Recursor rule field count must be non-negative")

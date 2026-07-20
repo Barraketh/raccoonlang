@@ -478,7 +478,7 @@ class WfRecursionTests extends munit.FunSuite {
       validateEquality(
         eqDecl(Prelude.test),
         Prelude.test.checkedEnv,
-        equalityMetadata.copy(producer = ProducerVersion("3.2.0", "4.24.0-rc1", SupportedProducer.leanCommit))
+        equalityMetadata.copy(producer = ProducerVersion("3.2.0", SupportedProducer.lean, SupportedProducer.leanCommit))
       )
     }
     val accDecl = elaborate(accSource, Prelude.test).decls.collectFirst { case decl: Decl.InductiveDecl => decl }.get
@@ -493,7 +493,7 @@ class WfRecursionTests extends munit.FunSuite {
       validateAcc(
         accDecl,
         env,
-        accMetadata.copy(producer = ProducerVersion("3.2.0", "4.24.0-rc1", SupportedProducer.leanCommit))
+        accMetadata.copy(producer = ProducerVersion("3.2.0", SupportedProducer.lean, SupportedProducer.leanCommit))
       )
     }
     intercept[UnsupportedWfExportShape] {

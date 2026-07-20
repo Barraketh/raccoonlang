@@ -112,7 +112,7 @@ link is a consequence.
   bootstrap definitions and the host arithmetic table is part of the TCB: declarations and types
   are checked, but there is no semantic body recognizer, fingerprint admission check, or
   per-operation capability. Differential/equation tests are desynchronization alarms, not proofs.
-- **Packed String field representation** (definitional): a checked `StrLit` is always the
+- **Packed String field representation (source/synthetic bootstrap only)** (definitional): a checked `StrLit` is always the
   constructor-headed eta-canonical `String.mk` whose sole `List Char` field is a
   `VPacked(CharListCodec, CharListPayload, List Char)`. The private codec belongs to an immutable
   structurally validated bootstrap layout, is decode-only and non-canonical, and exposes
@@ -126,6 +126,10 @@ link is a consequence.
   canonical String value form. As in Lean, the selected bootstrap's exact checked `Char.ofNat`
   identity is trusted to map valid scalars injectively; K3 validates its type and surrounding
   representation but performs no semantic body recognition (`native-literals.md` §7).
+  This rule is not yet available in translated-Init mode: Lean 4.30 uses
+  `String.ofByteArray` with a ByteArray and validity proof, while literals reduce through
+  `String.ofList`. Its producer-specific representation requires a separate validated adapter;
+  the old `String.mk` capability must reject that export shape.
 - **Levels**: normalized representation `max(aᵢ + kᵢ, c)`, where an atom is a level
   variable or a normalized unresolved `imax(l, r)` (invariant: `c = 0` or `c > all kᵢ`). The
   `imax` smart constructor reduces when `r` is always zero or always positive and otherwise
@@ -230,11 +234,12 @@ representation/admission check, not semantic body recognition, and no profile is
 runtime authority.
 
 String literal expansion is a second trusted derived representation rule adjacent to the ledger.
-The selected bootstrap validates the complete `String.mk`/`List Char` shape and the checked type of
-`Char.ofNat`, then trusts that exact identity to map valid Unicode scalars injectively to the
-intended characters, matching Lean's coordinated kernel/`Init` assumption. Ordinary imports cannot
-issue `ValidatedStringLayout`. Scalar round-trip and unequal-scalar tests are desynchronization
-alarms, not a semantic admission proof.
+The source/synthetic bootstrap validates the complete `String.mk`/`List Char` shape and the checked
+type of `Char.ofNat`, then trusts that exact identity to map valid Unicode scalars injectively to
+the intended characters. Ordinary imports cannot issue `ValidatedStringLayout`. Lean 4.30
+translated-Init mode must instead validate `String.ofByteArray`/`String.ofList` before receiving
+literal authority. Scalar round-trip and unequal-scalar tests are desynchronization alarms, not a
+semantic admission proof.
 
 ## 5. Evidence table (unifier & match checker)
 

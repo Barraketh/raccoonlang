@@ -5,9 +5,10 @@ respect) and `proof-collapse.md`. Records the decisions from the 2026-07 decidab
 the workstream sections are the units of implementation, the milestones (§7) are the acceptance
 ladder.
 
-The M0/M1 parity target is lean4export 3.1.0 against Lean 4.24.0-rc1 at commit
-`919e297292280cdb27598edd4e03437be5850221`; a producer-version change reopens the shape assumptions recorded by T1,
-K2, and K6.
+The M0/M1 parity target is lean4export 3.1.0 tag `v4.30.0` against Lean 4.30.0 at commit
+`d024af099ca4bf2c86f649261ebf59565dc8c622`. The 2026-07-20 producer refresh reopened the shape
+assumptions recorded by T1, K2, K3, and K6: full `Init` has been rescanned, while a matching
+Mathlib slice still needs regeneration before M1.
 
 ## 1. Goal and strategy
 
@@ -110,15 +111,13 @@ activation remain K2/T1-gated for M1. The final fifteen-entry table is Lean's
 fourteen pinned binary native identities plus `Nat.blt`, retained as an explicitly ledgered
 Raccoon extension using the same trusted-bootstrap isolation. Nonzero `shiftLeft` has the same
 `2²⁴` evaluator limit as `pow`; zero left-shift and sufficiently large right-shift return zero
-without allocation. `StrLit` and its validated layout are implemented and exercised through the
-synthetic full-K3 bootstrap. The bundled source Prelude intentionally has no `String`/`Char` layout,
-and production activation waits for T1's checked translated `Init`. The representation keeps
-`String.mk` constructor-headed and packs only its `List Char` field as a
-validated Unicode-scalar sequence in a private immutable, decode-only CharList codec. Standalone
-field quotation uses `Proj("String", 0, StrLit(...))`. As in Lean's literal expansion, the exact
-bootstrap `Char.ofNat` scalar mapping is part of the TCB after its type and surrounding String/Char
-shape validate; there is no semantic body recognizer. Container codecs (List-as-array,
-Vec-as-array+Nat) remain out of scope and deferred with the P1 caching decision (spec §1).
+without allocation. `StrLit` and the original `String.mk (List Char)` validated layout are
+implemented and exercised through the synthetic full-K3 bootstrap. That layout is no longer the
+production Lean layout: Lean 4.30 defines `String` with constructor `String.ofByteArray`, storing a
+`ByteArray` plus a UTF-8 validity proof, and kernel literals reduce through `String.ofList`.
+T1.5/K3 must add and validate this producer shape before translated-`Init` String activation; the
+importer must not issue the old CharList capability for a 4.30 export. The bundled source Prelude
+may retain its existing layout.
 
 **K4. Primitive projections + structure eta — done** (StructEta; kernel-theory §2 "structure
 eta"). Implemented as representation, not conversion rules: every value of an eta-eligible structure-like inductive

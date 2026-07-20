@@ -11,8 +11,8 @@ import scala.util.control.NonFatal
 object LeanExportReader {
   final val ExporterName = "lean4export"
   final val ExporterVersion = "3.1.0"
-  final val LeanVersion = "4.24.0-rc1"
-  final val LeanGitHash = "919e297292280cdb27598edd4e03437be5850221"
+  final val LeanVersion = "4.30.0"
+  final val LeanGitHash = "d024af099ca4bf2c86f649261ebf59565dc8c622"
   final val FormatVersion = "3.1.0"
 
   final case class ReadResult(meta: ExportMeta, tables: ExportTables, objects: Long, declarations: Long)

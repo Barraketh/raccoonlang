@@ -1,9 +1,10 @@
 # K3: Native Literals — Packed Values (`VPacked`)
 
-Status: **implemented** (Nat base 2026-07-14; full fifteen-op table and CharList/`StrLit`
-2026-07-20). The bundled source Prelude activates its seven available operations; the full
-fifteen-op and String path is exercised through the kernel-owned synthetic bootstrap. Production
-activation from translated `Init` remains a T1 integration task. Companion to
+Status: **Nat implemented; source-layout String implemented; Lean 4.30 String adapter pending**
+(2026-07-20). The bundled source Prelude activates its seven available operations; the full
+fifteen-op and old `String.mk (List Char)` path is exercised through the kernel-owned synthetic
+bootstrap. Production activation from translated `Init` now requires the 4.30
+`String.ofByteArray`/`String.ofList` adapter described in §7. Companion to
 `mathlib-export-port.md` (workstream K3) and
 `kernel-theory.md` (every judgment below must trace to a ledger entry; the §6 checklist walk is
 in §8 of this document). Records the 2026-07-14 base design and the 2026-07-17 full-K3 decisions.
@@ -23,7 +24,9 @@ infeasible (plan §4.K3). Deliverables:
 3. Fifteen kernel-accelerated ops as builtin defeq steps: the fourteen binary operations in
    Lean's pinned kernel table plus `Nat.blt`, a deliberate Raccoon extension justified against
    its checked structural definition.
-4. `StrLit`, unfolding to `List Char` constructor form on demand; no accelerated string ops.
+4. `StrLit`, unfolding to the selected bootstrap's validated String representation on demand; no
+   accelerated string ops. The existing CharList implementation covers the source/synthetic
+   layout, not Lean 4.30's translated `Init` layout.
 
 **Scope decision (2026-07-14).** The machinery is shaped generically — a `VPacked` value form
 plus a *codec* describing one type's packed representation — but the codec set is **closed and
@@ -291,8 +294,8 @@ still ordinarily typechecked, but K3 neither recognizes their bodies nor issues 
 semantic capability. The certification harness (§10) is the engineering backstop—differential/
 equation tests, not admission checks or proofs.
 
-Pinned Lean precedent: at `919e297292280cdb27598edd4e03437be5850221`,
-[`type_checker.cpp`](https://github.com/leanprover/lean4/blob/919e297292280cdb27598edd4e03437be5850221/src/kernel/type_checker.cpp#L633-L659)
+Pinned Lean precedent: at `d024af099ca4bf2c86f649261ebf59565dc8c622`,
+[`type_checker.cpp`](https://github.com/leanprover/lean4/blob/d024af099ca4bf2c86f649261ebf59565dc8c622/src/kernel/type_checker.cpp#L619-L635)
 dispatches the fourteen binary operations on fixed constant identities before ordinary definition
 unfolding; it does not inspect or fingerprint their declaration bodies. Lean's private,
 append-only kernel environment and preinstalled `Init` keep later user declarations from replacing
@@ -371,7 +374,16 @@ Raccoon extension.
   `proj[String,0]("...")`, matching its residual type rather than pretending the list is itself a
   String. These are diagnostics only.
 
-## 7. String literals (implemented; production bootstrap activation is T1-gated)
+## 7. String literals (source layout implemented; Lean 4.30 adapter pending)
+
+The implementation below is the existing Raccoon source/synthetic layout. It cannot be activated
+for the pinned 4.30 export: that producer defines `String` with constructor
+`String.ofByteArray (toByteArray : ByteArray) (isValidUTF8 : ...)`, and defines
+`String.ofList : List Char → String` by UTF-8 encoding into that constructor. The kernel expands a
+String literal to `String.ofList` applied to the familiar `List.cons (Char.ofNat ...)` spine. A
+production adapter must therefore validate the ByteArray representation and proof field, preserve
+the observable `String.ofList` reduction, and select an appropriate packed payload. Treating the
+4.30 block as `[String.mk]` is a typed compatibility failure, not a fallback.
 
 Implemented and exercised against a kernel-owned synthetic bootstrap containing validated
 `Char`/`String` declarations. The bundled source Prelude intentionally has no String layout;
@@ -454,11 +466,11 @@ situation K4 forbids. So the packed value lives **at the field**:
   scalars are emitted literally.
 
 Pinned Lean precedent: at the selected commit,
-[`inductive.cpp`](https://github.com/leanprover/lean4/blob/919e297292280cdb27598edd4e03437be5850221/src/kernel/inductive.cpp#L1195-L1206)
-UTF-8-decodes a String literal and expands it to `String.mk` over `List.cons` applications whose
-heads are `Char.ofNat` code points, ending in `List.nil Char`. K3 preserves that observable
-constructor behavior and the same coordinated-bootstrap trust assumption while keeping the list
-spine packed.
+[`inductive.cpp`](https://github.com/leanprover/lean4/blob/d024af099ca4bf2c86f649261ebf59565dc8c622/src/kernel/inductive.cpp#L1200-L1212)
+UTF-8-decodes a String literal and expands it to `String.ofList` over `List.cons` applications whose
+heads are `Char.ofNat` code points, ending in `List.nil Char`. The source/synthetic implementation
+preserves only the list-spine portion of that behavior; the outer 4.30 representation remains the
+T1.5/K3 compatibility task above.
 
 ## 8. Interaction checklist walk (kernel-theory §6)
 

@@ -8,7 +8,7 @@ Authoritative producer references: the
 [lean4export 3.1.0 wire format](https://github.com/leanprover/lean4export/blob/master/format_ndjson.md),
 the [exporter implementation](https://github.com/leanprover/lean4export/blob/master/Export.lean),
 and the pinned
-[Lean declaration model](https://github.com/leanprover/lean4/blob/v4.24.0-rc1/src/Lean/Declaration.lean).
+[Lean declaration model](https://github.com/leanprover/lean4/blob/d024af099ca4bf2c86f649261ebf59565dc8c622/src/Lean/Declaration.lean).
 
 ## 1. Outcome
 
@@ -71,8 +71,8 @@ The following are decisions, not implementation options:
 1. **Translated Init is the benchmark prelude.** A benchmark import starts from the minimal
    kernel bootstrap in §5, not from Prelude.default. Lean's Eq, Nat, Bool, Quot, and the rest of
    Init are installed from the export.
-2. **The producer is pinned.** The accepted target is lean4export 3.1.0 built against Lean
-   4.24.0-rc1 at commit 919e297292280cdb27598edd4e03437be5850221. Another producer version is a
+2. **The producer is pinned.** The accepted target is lean4export 3.1.0 tag `v4.30.0` built against
+   Lean 4.30.0 at commit d024af099ca4bf2c86f649261ebf59565dc8c622. Another producer version is a
    hard error until its schema and declaration shapes have been reviewed.
 3. **Safe declarations are checked.** The importer has no “already checked by Lean” publication
    path. Source bodies for definitions, opaque declarations, and theorems are checked once before
@@ -990,37 +990,19 @@ equation construction receive the capability object directly.
 
 ### 13.2 Nat, String, and native operations
 
-The checked Nat and String blocks issue K3 representation capabilities only after their
-kernel-defined shapes validate. The String capability is the private immutable
-`ValidatedStringLayout`: it retains only closed checked values and runs K3's complete structural
-check, not a name-only adapter. `String` is the non-propositional, Type-valued, family-arity-zero,
-eta-eligible one-constructor family `[String.mk]`; its projection metadata has exactly field zero,
-and the exact no-confusion constructor has one stored `List Char` field and result `String`.
-For the same instantiated `List Char`, the exact constructor list is `[List.nil, List.cons]`; after
-instantiating exactly their erased family arguments, nil has no stored fields and result
-`List Char`, while the no-confusion cons fields/results are `(Char, List Char) → List Char`.
-`Char.ofNat` has checked callable type `Nat → Char`, and the already validated Nat representation
-supplies its argument. Every retained value is closed and contains no stage-local reference.
-It constructs the environment-independent, decode-only `CharListCodec` used by defeq, unification,
-matching, and termination. These capabilities gate literal lowering and codec construction; they
-do not assert the semantics of an arithmetic definition.
+The checked Nat block issues K3's Nat representation capability only after its kernel-defined
+shape validates. String requires a new producer-specific adapter for the 4.30 target. Lean 4.30's
+`String` is a one-constructor structure headed by `String.ofByteArray`; it stores a `ByteArray` and
+a proof that the bytes are valid UTF-8. `String.ofList : List Char → String` encodes its input and
+constructs that representation, and the kernel expands a String literal through `String.ofList`
+over `List.cons (Char.ofNat ...)`/`List.nil`.
 
-Issuing the layout also activates one narrow Lean-style bootstrap assumption: the exact checked
-`Char.ofNat` identity maps valid Unicode scalars injectively to their intended `Char`s. T1 checks
-its type and body ordinarily but neither recognizes nor fingerprints that semantic behavior. An
-ordinary import can define a similar function but cannot issue the layout. The manifest records
-this String-literal assumption separately from the native Nat-operation table.
-
-`StrLit` evaluation creates the canonical `String.mk` value with a packed Unicode-scalar field.
-The CharList codec never folds structural lists. Quotation of that field uses
-`Proj("String", 0, StrLit(scalars))`, while quotation of the canonical outer constructor uses
-`StrLit` directly. This rule is part of K3's representation contract and T1 must preserve the
-String field's exact family and projection index when issuing the layout.
-
-The layout is published in `Env.nativeLiterals.stringLayout` as part of the same atomic String
-transaction. Failed validation or publication leaves it absent; later immutable environment
-extensions and closed evaluator environments preserve it. T1 cannot install a second layout, and
-ordinary import mode has no permit for the private installer.
+The existing private `ValidatedStringLayout` validates Raccoon's synthetic/source-Prelude
+`String.mk (List Char)` representation. It must not be issued for the 4.30 export. T1.5/K3 must
+choose and validate a packed representation compatible with `String.ofByteArray`, including its
+proof field and observable `String.ofList` reduction, before enabling `StrLit` in translated-Init
+mode. Until that adapter lands, reaching the String block is a typed missing-kernel-gate failure;
+falling back to the old CharList layout would silently assert a false producer shape.
 
 Native operation declarations are admitted only in the dedicated trusted translated-`Init`
 bootstrap mode. K3 owns one authoritative `NativeNatOpSpec` table from which T1 derives exact
@@ -1289,6 +1271,8 @@ Exit: all ordinary declaration kinds have synthetic positive and adversarial tes
 
 - emit complete ExportedInductiveBlock records;
 - connect K6/T2, ValidatedEquality, quotient, K3, and T3 adapters;
+- replace the old `String.mk (List Char)` translated-Init assumption with a validated Lean 4.30
+  `String.ofByteArray`/`String.ofList` adapter;
 - reserve every privileged identity;
 - add hostile same-name/wrong-shape tests for Eq, Quot, Nat, String, and Acc.
 
@@ -1319,7 +1303,7 @@ implemented because their failure modes are explicit. T1.6 requires them.
 - invalid UTF-8/JSON string cases;
 - malformed every declaration kind;
 - bounded failure on a deliberately deep App and Pi chain;
-- M0 golden parity on real Init and Mathlib.Logic.Basic.
+- M0 golden parity on real Init, and on Mathlib.Logic.Basic once its 4.30-matched export is generated.
 
 ### 19.2 Lowering
 
@@ -1329,9 +1313,9 @@ implemented because their failure modes are explicit. T1.6 requires them.
 - dependent Pi/lambda and let specialization;
 - projection by family/index;
 - metadata erasure;
-- Nat/String validated-representation-state success and failure, including the exact
-  `ValidatedStringLayout` shape, ASCII/BMP/supplementary scalar round trips, malformed-Unicode
-  rejection, and packed-field projection quote/re-evaluation;
+- Nat/String validated-representation-state success and failure, including rejection of the old
+  `String.mk (List Char)` layout for translated 4.30 Init and round trips for the replacement
+  `String.ofByteArray`/`String.ofList` adapter;
 - application tests from §11.4.
 
 ### 19.3 Declarations and transactions
@@ -1348,7 +1332,8 @@ implemented because their failure modes are explicit. T1.6 requires them.
 
 - empty or wrong Eq under the canonical name;
 - malformed Quot package with individually well-typed members;
-- wrong Nat/String constructors under familiar names;
+- wrong Nat/String constructors under familiar names, including a 4.30 stream presenting the old
+  `String.mk (List Char)` shape;
 - a reserved K3 operation in ordinary import mode, even with the right name and type;
 - a K3 operation with the wrong checked type in trusted-bootstrap mode;
 - manifest separation of Lean's fourteen pinned Nat identities from the `Nat.blt` Raccoon
@@ -1377,8 +1362,8 @@ implemented because their failure modes are explicit. T1.6 requires them.
 
 T1's translation implementation is accepted when:
 
-1. the shared reader accepts the real pinned Init and Mathlib.Logic.Basic files and preserves M0
-   statistics;
+1. the shared reader accepts the real pinned Init file and preserves its M0 statistics; the same
+   applies to Mathlib.Logic.Basic after a producer-matched export is generated;
 2. malformed or unsupported producer input fails deterministically with provenance;
 3. the importer starts from LeanImportBootstrap and never loads Prelude.default;
 4. every kernel-safe ordinary declaration is checked in export order, while unsafe/partial
@@ -1388,7 +1373,8 @@ T1's translation implementation is accepted when:
 6. all emitted Core applications saturate one complete checked telescope;
 7. inductive objects reach K6/T2 without metadata loss and publish atomically;
 8. Eq, quotient, Nat/String representation, and Acc/WF behavior is issued only after structural
-   validation; the String capability is the immutable closed `ValidatedStringLayout`; K3
+   validation; the String capability validates the 4.30 `String.ofByteArray`/`String.ofList`
+   representation and cannot be confused with the old synthetic `ValidatedStringLayout`; K3
    native-operation equations are confined to the explicit trusted-bootstrap path, the
    `PinnedTranslatedInit` all-fifteen profile passes before the Env is returned, and the identities
    are separately identified in the manifest, with `Nat.blt` labeled as the Raccoon extension;

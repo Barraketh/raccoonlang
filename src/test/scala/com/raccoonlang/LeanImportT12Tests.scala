@@ -5,6 +5,8 @@ import com.raccoonlang.LeanExportIr._
 
 import java.io.ByteArrayInputStream
 import java.nio.charset.StandardCharsets
+import java.util.zip.GZIPInputStream
+import scala.util.Using
 
 class LeanImportT12Tests extends munit.FunSuite {
   private val meta =
@@ -98,6 +100,21 @@ class LeanImportT12Tests extends munit.FunSuite {
       )
       .value
     assert(ValueEquivalence.defEq(applied, result.env("carrierValue")))
+  }
+
+  test("pinned Init.Prelude reaches the first planned inductive gate") {
+    val resource = "/lean/v4.30.0/Init.Prelude.ndjson.gz"
+    val result = Using.resource(
+      new GZIPInputStream(
+        Option(getClass.getResourceAsStream(resource)).getOrElse(fail(s"missing test resource $resource"))
+      )
+    )(LeanImportSession.importStream(_, resource))
+    val errors = result.swap.getOrElse(fail("Init.Prelude unexpectedly imported past T1.5"))
+
+    assertEquals(errors.length, 1)
+    val unsupported = errors.head.asInstanceOf[UnsupportedFeature]
+    assertEquals(unsupported.declaration, Some("Nat"))
+    assert(unsupported.message.contains("inductive blocks require T1.5/K6/T2"))
   }
 
   test("lambda binder annotations are validated against the declared type") {

@@ -2,10 +2,12 @@ package com.raccoonlang
 
 import java.io.ByteArrayInputStream
 import java.nio.charset.StandardCharsets
+import java.util.zip.GZIPInputStream
+import scala.util.Using
 
 class LeanExportM0Tests extends munit.FunSuite {
   private val meta =
-    """{"meta":{"exporter":{"name":"lean4export","version":"3.1.0"},"lean":{"githash":"919e297292280cdb27598edd4e03437be5850221","version":"4.24.0-rc1"},"format":{"version":"3.1.0"}}}"""
+    s"""{"meta":{"exporter":{"name":"${LeanExportReader.ExporterName}","version":"${LeanExportReader.ExporterVersion}"},"lean":{"githash":"${LeanExportReader.LeanGitHash}","version":"${LeanExportReader.LeanVersion}"},"format":{"version":"${LeanExportReader.FormatVersion}"}}}"""
 
   private val fixture =
     Vector(
@@ -63,6 +65,24 @@ class LeanExportM0Tests extends munit.FunSuite {
     assertEquals(report.stringLiteralNodes, 1L)
     assertEquals(report.nativeNatOps, Vector("Nat.add" -> 1L))
     assertEquals(report.irreducibleDeclarations, Vector("Demo.imax", "Demo.irred"))
+  }
+
+  test("M0 scanner accepts the complete pinned Lean Init.Prelude artifact") {
+    val resource = "/lean/v4.30.0/Init.Prelude.ndjson.gz"
+    val report = Using.resource(
+      new GZIPInputStream(
+        Option(getClass.getResourceAsStream(resource)).getOrElse(fail(s"missing test resource $resource"))
+      )
+    )(LeanExportM0.scan(_, resource))
+
+    assertEquals(report.metadata.leanVersion, LeanExportReader.LeanVersion)
+    assertEquals(report.metadata.leanGitHash, LeanExportReader.LeanGitHash)
+    assertEquals(report.metadata.exporterVersion, LeanExportReader.ExporterVersion)
+    assertEquals(report.metadata.formatVersion, LeanExportReader.FormatVersion)
+    assertEquals(report.objects, 64112L)
+    assertEquals(report.declarations, 2102L)
+    assertEquals(report.inductiveBlocks, 126L)
+    assertEquals(report.nestedInductives, Vector(LeanExportM0.NestedInductive("Lean.Syntax", 2)))
   }
 
   test("M0 report renderers retain counts and declaration provenance") {
