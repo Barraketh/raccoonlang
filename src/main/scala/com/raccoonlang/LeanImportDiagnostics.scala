@@ -7,8 +7,10 @@ sealed trait LeanImportDiagnostic extends RuntimeException {
   def declaration: Option[String]
   def path: Vector[String]
   def message: String
-  final override def getMessage: String =
-    s"${provenance.source}:${provenance.line}:${provenance.column}: $message"
+  final override def getMessage: String = {
+    val rendered = s"${provenance.source}:${provenance.line}:${provenance.column}: $message"
+    if (rendered.length <= 4096) rendered else rendered.take(4093) + "..."
+  }
 }
 
 final case class MalformedExport(
@@ -66,6 +68,16 @@ final case class UnknownGlobal(
     path: Vector[String] = Vector.empty
 ) extends LeanImportDiagnostic
 
+final case class ForwardGlobal(
+    provenance: ExportProvenance, message: String, declaration: Option[String] = None,
+    path: Vector[String] = Vector.empty
+) extends LeanImportDiagnostic
+
+final case class UnsafeDependency(
+    provenance: ExportProvenance, message: String, declaration: Option[String] = None,
+    path: Vector[String] = Vector.empty
+) extends LeanImportDiagnostic
+
 final case class TypeLowering(
     provenance: ExportProvenance, message: String, declaration: Option[String] = None,
     path: Vector[String] = Vector.empty
@@ -97,6 +109,11 @@ final case class SuppliedImplicitMismatch(
 ) extends LeanImportDiagnostic
 
 final case class UnsaturatedCoreApplication(
+    provenance: ExportProvenance, message: String, declaration: Option[String] = None,
+    path: Vector[String] = Vector.empty
+) extends LeanImportDiagnostic
+
+final case class MissingKernelGate(
     provenance: ExportProvenance, message: String, declaration: Option[String] = None,
     path: Vector[String] = Vector.empty
 ) extends LeanImportDiagnostic

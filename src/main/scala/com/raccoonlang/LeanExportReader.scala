@@ -42,6 +42,10 @@ object LeanExportReader {
     private var declarationCount = 0L
     private var meta: Option[ExportMeta] = None
     private val declarationNames = mutable.HashSet.empty[Vector[Either[String, BigInt]]]
+    private val ordinaryDeclarationNames = mutable.HashSet.empty[Vector[Either[String, BigInt]]]
+    private val ordinaryGroupClaims = mutable.HashMap.empty[
+      Vector[Either[String, BigInt]], Vector[Vector[Either[String, BigInt]]]
+    ]
 
     def provenance(kind: String, internId: Option[Int] = None, declaration: Option[String] = None): ExportProvenance = {
       val location = parser.currentLocation()
@@ -563,8 +567,39 @@ object LeanExportReader {
         if (name.isEmpty) fail("a declaration cannot use the anonymous name")
         if (!declarationNames.add(tables.nameComponents(id))) fail(s"duplicate declaration '$name'")
       }
+      val isOrdinaryGroupMember = decl.isInstanceOf[ExportDef] || decl.isInstanceOf[ExportOpaque] ||
+        decl.isInstanceOf[ExportTheorem]
+      if (isOrdinaryGroupMember) names.foreach(id => ordinaryDeclarationNames += tables.nameComponents(id))
+      if (!isOrdinaryGroupMember) names.foreach { id =>
+        if (ordinaryGroupClaims.contains(tables.nameComponents(id)))
+          fail(s"declaration ${tables.dottedName(id)} was previously claimed by an ordinary all group")
+      }
+      decl match {
+        case value: ExportDef => validateOrdinaryGroup(value.name, value.all)
+        case value: ExportOpaque => validateOrdinaryGroup(value.name, value.all)
+        case value: ExportTheorem => validateOrdinaryGroup(value.name, value.all)
+        case _ =>
+      }
       declarationCount += names.length
       consumer.onDeclaration(decl, tables)
+    }
+
+    private def validateOrdinaryGroup(name: NameId, all: Vector[NameId]): Unit = {
+      val group = all.map(tables.nameComponents)
+      val own = tables.nameComponents(name)
+      ordinaryGroupClaims.get(own).foreach { expected =>
+        if (expected != group)
+          fail(s"declaration ${tables.dottedName(name)} reports an inconsistent all group")
+      }
+      group.foreach { member =>
+        if (declarationNames.contains(member) && !ordinaryDeclarationNames.contains(member))
+          fail("ordinary declaration all group claims a non-ordinary declaration")
+        ordinaryGroupClaims.get(member) match {
+          case Some(expected) if expected != group => fail("ordinary declaration all groups disagree")
+          case Some(_) =>
+          case None => ordinaryGroupClaims.update(member, group)
+        }
+      }
     }
 
     private def parseBinderInfo(value: String): BinderInfo = value match {
