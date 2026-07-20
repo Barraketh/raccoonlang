@@ -3,16 +3,28 @@ package com.raccoonlang
 import com.raccoonlang.CoreAst.{Binder, LocalRef}
 import com.raccoonlang.CoreAst.Term
 import com.raccoonlang.LeanExportIr._
+import com.raccoonlang.Value.{LevelTpe, VPi}
+import com.raccoonlang.telescope.{BinderOps, Projection}
 
 private[raccoonlang] object LeanTermLowerer {
+  private var nextLocalId = Int.MinValue
+  def freshLocal(name: String): LocalRef = {
+    if (nextLocalId == Int.MaxValue) throw new IllegalStateException("Lean importer exhausted local identifiers")
+    val ref = LocalRef(nextLocalId, name)
+    nextLocalId += 1
+    ref
+  }
   final case class LoweredDeclarationType(
       term: Term,
       pi: Option[Term.Pi],
       universeBinders: Int,
       sourceBinders: Int,
-      levelRefs: Map[NameId, LocalRef]
+      levelRefs: Map[NameId, LocalRef],
+      sourceInfos: Vector[BinderInfo],
+      convention: Option[ImportedCallingConvention]
   )
-  final case class Context(locals: Vector[LocalRef], levels: Map[NameId, LocalRef])
+  final case class Context(locals: Vector[LocalRef], levels: Map[NameId, LocalRef], env: Env)
+  final case class CheckedSourceArgs(core: Vector[Term], explicitCore: Vector[Term])
 }
 
 private[raccoonlang] final class LeanTermLowerer(
@@ -21,68 +33,106 @@ private[raccoonlang] final class LeanTermLowerer(
     registry: LeanGlobalRegistry,
     declaration: String
 ) {
-  import LeanTermLowerer.{Context, LoweredDeclarationType}
+  import LeanTermLowerer.{CheckedSourceArgs, Context, LoweredDeclarationType}
 
   private val sourceId = SourceId.fresh()
-  private var nextLocal = 0
   private var nextSpan = 0
 
-  private val BootstrapNames = Set("Sort", "Level.succ", "Level.max", "Level.imax", "Type", "Level", "Level.zero", "Level.one", "Prop")
+  private val BootstrapNames = Set(
+    "Sort", "Level.succ", "Level.max", "Level.imax", "Type", "Level", "Level.zero", "Level.one", "Prop"
+  )
 
   def lowerDeclarationType(levelParams: Vector[NameId], expr: ExprId): LoweredDeclarationType = {
     if (levelParams.distinct.length != levelParams.length)
       throw UnknownLevelParameter(atExpr(expr), s"declaration $declaration has duplicate universe parameters", Some(declaration))
 
-    val levelBinders = levelParams.map { id =>
-      val ref = freshLocal(displayName(id, "u"))
-      id -> Binder(ref, Term.GlobalRef("Level", span()), span(), isImplicit = true)
-    }
-    var context = Context(Vector.empty, levelBinders.iterator.map { case (id, binder) => id -> binder.localRef }.toMap)
+    var context = Context(Vector.empty, Map.empty, kernelEnv)
     val binders = Vector.newBuilder[Binder]
-    levelBinders.foreach(pair => binders += pair._2)
+    val sourceDescriptors = Vector.newBuilder[ImportedSourceBinder]
+    val levelPairs = levelParams.map { id =>
+      val binder = Binder(LeanTermLowerer.freshLocal(displayName(id, "u")), Term.GlobalRef("Level", span()), span(), isImplicit = true)
+      binders += binder
+      sourceDescriptors += SourceUniverseParameter
+      context = bindFresh(context.copy(levels = context.levels + (id -> binder.localRef)), binder)
+      id -> binder.localRef
+    }
 
     var current = expr
-    var sourceCount = 0
+    val sourceInfos = Vector.newBuilder[BinderInfo]
     var continue = true
     while (continue) {
       tables.exprNode(current) match {
         case ForallE(name, binderType, body, info) =>
-          val ref = freshLocal(displayName(name, "x"))
-          binders += Binder(ref, lowerTerm(binderType, context), span(), requestedImplicit(info))
-          context = context.copy(locals = ref +: context.locals)
-          sourceCount += 1
+          val binder = Binder(LeanTermLowerer.freshLocal(displayName(name, "x")), lowerTerm(binderType, context), span(), requestedImplicit(info))
+          binders += binder
+          sourceDescriptors += SourceTermBinder(info)
+          sourceInfos += info
+          context = bindFresh(context.copy(locals = binder.localRef +: context.locals), binder)
           current = body
         case _ => continue = false
       }
     }
     val out = lowerTerm(current, context)
-    val allBinders = binders.result()
-    val term = if (allBinders.nonEmpty) Term.Pi(allBinders, out, span()) else out
-    LoweredDeclarationType(term, term match { case pi: Term.Pi => Some(pi); case _ => None },
-      levelBinders.length, sourceCount, context.levels)
+    val requestedBinders = binders.result()
+    if (requestedBinders.isEmpty)
+      LoweredDeclarationType(out, None, 0, 0, Map.empty, Vector.empty, None)
+    else {
+      val checked = BinderOps.checkImportedBinders(requestedBinders, kernelEnv)
+      val finalBinders = requestedBinders.zip(checked.binders).map { case (core, result) =>
+        core.copy(isImplicit = result.isImplicit)
+      }
+      val pi = Term.Pi(finalBinders, out, span())
+      val descriptors = sourceDescriptors.result()
+      val infos = sourceInfos.result()
+      val importedBinders = finalBinders.indices.map { idx =>
+        ImportedBinder(idx, descriptors(idx), finalBinders(idx).localRef,
+          requestedBinders(idx).isImplicit, finalBinders(idx).isImplicit)
+      }.toVector
+      val convention = ImportedCallingConvention(levelParams.length, Vector(ImportedTelescope(importedBinders, pi)))
+      LoweredDeclarationType(pi, Some(pi), levelParams.length, infos.length, levelPairs.toMap,
+        infos, Some(convention))
+    }
   }
 
   def lowerDeclarationBody(expr: ExprId, declared: LoweredDeclarationType, name: String): Term = {
     declared.pi match {
+      case Some(_) if !tables.exprNode(expr).isInstanceOf[Lam] && declared.universeBinders == 0 =>
+        lowerTerm(expr, Context(Vector.empty, declared.levelRefs, kernelEnv))
+      case Some(pi) if !tables.exprNode(expr).isInstanceOf[Lam] =>
+        val checkedBinderEnv = BinderOps.checkBinders(pi.binders, kernelEnv).env
+        val sourceBinders = pi.binders.drop(declared.universeBinders)
+        val context = Context(sourceBinders.map(_.localRef).reverse, declared.levelRefs, checkedBinderEnv)
+        val function = lowerTerm(expr, context)
+        val functionType = TypeChecker.checkTerm(function, checkedBinderEnv).value.tpe match {
+          case value: VPi => value
+          case other => throw BodyLowering(atExpr(expr), s"polymorphic body has non-function type $other", Some(declaration))
+        }
+        if (functionType.binders.length != sourceBinders.length)
+          throw BodyLowering(atExpr(expr),
+            s"polymorphic body exposes ${functionType.binders.length} term binders; expected ${sourceBinders.length}",
+            Some(declaration))
+        val explicitArgs = sourceBinders.zip(functionType.binders).collect {
+          case (source, target) if !target.isImplicit => Term.LocalRef(source.localRef, span())
+        }
+        val body = Term.App(function, explicitArgs, span())
+        val lambda = Term.Lam(pi, body, span(), Some(name), recursion = None)
+        TypeChecker.checkTerm(lambda, kernelEnv)
+        lambda
       case Some(pi) =>
         var current = expr
         var consumed = 0
-        var context = Context(Vector.empty, declared.levelRefs)
+        val checkedBinderEnv = BinderOps.checkBinders(pi.binders, kernelEnv).env
+        var context = Context(Vector.empty, declared.levelRefs, checkedBinderEnv)
         val sourceRefs = pi.binders.drop(declared.universeBinders).map(_.localRef)
-        val checkedBinderEnv = com.raccoonlang.telescope.BinderOps.checkBinders(pi.binders, kernelEnv).env
         while (consumed < sourceRefs.length) {
           tables.exprNode(current) match {
             case Lam(_, binderType, body, info) =>
               val expectedBinder = pi.binders(declared.universeBinders + consumed)
-              if (requestedImplicit(info) != expectedBinder.isImplicit)
+              if (info != declared.sourceInfos(consumed))
                 throw InvalidBinderMetadata(atExpr(current),
-                  s"lambda binder $consumed implicitness disagrees with its declared Pi binder", Some(declaration))
-              val annotation = lowerTerm(binderType, context)
-              val annotationValue = TypeChecker.getType(annotation, checkedBinderEnv)
-              val expectedValue = Interpreter.evalTerm(
-                TypeChecker.checkTerm(expectedBinder.ty, checkedBinderEnv).residual,
-                checkedBinderEnv
-              )
+                  s"lambda binder $consumed metadata disagrees with its declared Pi binder", Some(declaration))
+              val annotationValue = TypeChecker.getType(lowerTerm(binderType, context), checkedBinderEnv)
+              val expectedValue = TypeChecker.checkTerm(expectedBinder.ty, checkedBinderEnv).value
               if (!ValueEquivalence.defEq(annotationValue, expectedValue))
                 throw InvalidBinderMetadata(atExpr(current),
                   s"lambda binder $consumed type disagrees with its declared Pi binder", Some(declaration))
@@ -98,13 +148,12 @@ private[raccoonlang] final class LeanTermLowerer(
           case _: Lam => throw BodyLowering(atExpr(current), s"function body for $declaration has extra lambdas", Some(declaration))
           case _ =>
         }
-        val body = lowerTerm(current, context)
-        Term.Lam(pi, body, span(), Some(name), recursion = None)
-      case None => lowerTerm(expr, Context(Vector.empty, declared.levelRefs))
+        Term.Lam(pi, lowerTerm(current, context), span(), Some(name), recursion = None)
+      case None => lowerTerm(expr, Context(Vector.empty, declared.levelRefs, kernelEnv))
     }
   }
 
-  def lowerTerm(expr: ExprId): Term = lowerTerm(expr, Context(Vector.empty, Map.empty))
+  def lowerTerm(expr: ExprId): Term = lowerTerm(expr, Context(Vector.empty, Map.empty, kernelEnv))
 
   private def lowerTerm(expr: ExprId, context: Context): Term = tables.exprNode(expr) match {
     case BVar(index) =>
@@ -113,25 +162,11 @@ private[raccoonlang] final class LeanTermLowerer(
           Some(declaration))
       Term.LocalRef(context.locals(index), span())
     case Sort(level) => builtinApp("Sort", Vector(lowerLevel(level, context)))
-    case Const(name, levels) =>
-      val coreName = LeanExportNames.encode(name, tables)
-      val expectedUniverses =
-        if (BootstrapNames(coreName)) 0
-        else registry.get(name, tables) match {
-          case Some(global) if global.status == Installed => global.levelParameters.length
-          case Some(_) => throw UnknownGlobal(atExpr(expr), s"$coreName was skipped and cannot be referenced", Some(declaration))
-          case None => throw UnknownGlobal(atExpr(expr), s"global $coreName has not been installed", Some(declaration))
-        }
-      if (levels.length != expectedUniverses)
-        throw TypeLowering(atExpr(expr),
-          s"constant $coreName supplies ${levels.length} universe arguments; expected $expectedUniverses", Some(declaration))
-      if (levels.nonEmpty)
-        throw UnsupportedFeature(atExpr(expr), s"polymorphic constant application for $coreName requires T1.3", Some(declaration))
-      Term.GlobalRef(coreName, span())
+    case _: Const => lowerApplication(expr, context)
     case ForallE(_, _, _, _) => lowerPi(expr, context)
     case Lam(_, _, _, _) =>
-      throw UnsupportedFeature(atExpr(expr), "a lambda outside a declaration's expected Pi requires T1.3", Some(declaration))
-    case App(_, _) => throw UnsupportedFeature(atExpr(expr), "application lowering requires T1.3", Some(declaration))
+      throw UnsupportedFeature(atExpr(expr), "a lambda without an expected function type is unsupported", Some(declaration))
+    case App(_, _) => lowerApplication(expr, context)
     case LetE(_, _, _, _, _) | Proj(_, _, _) | NatVal(_) | StrVal(_) | MData(_) =>
       throw UnsupportedFeature(atExpr(expr), "expression form requires T1.4", Some(declaration))
   }
@@ -144,14 +179,146 @@ private[raccoonlang] final class LeanTermLowerer(
     while (continue) {
       tables.exprNode(current) match {
         case ForallE(name, binderType, body, info) =>
-          val ref = freshLocal(displayName(name, "x"))
-          binders += Binder(ref, lowerTerm(binderType, context), span(), requestedImplicit(info))
-          context = context.copy(locals = ref +: context.locals)
+          val binder = Binder(LeanTermLowerer.freshLocal(displayName(name, "x")), lowerTerm(binderType, context), span(), requestedImplicit(info))
+          binders += binder
+          context = bindFresh(context.copy(locals = binder.localRef +: context.locals), binder)
           current = body
         case _ => continue = false
       }
     }
-    Term.Pi(binders.result(), lowerTerm(current, context), span())
+    val requested = binders.result()
+    val checked = BinderOps.checkImportedBinders(requested, initial.env)
+    val finalBinders = requested.zip(checked.binders).map { case (core, result) => core.copy(isImplicit = result.isImplicit) }
+    Term.Pi(finalBinders, lowerTerm(current, context), span())
+  }
+
+  private def lowerApplication(start: ExprId, context: Context): Term = {
+    val termArgsReversed = Vector.newBuilder[ExprId]
+    var headId = start
+    var flatten = true
+    while (flatten) tables.exprNode(headId) match {
+      case App(fn, arg) => termArgsReversed += arg; headId = fn
+      case _ => flatten = false
+    }
+    val termArgs = termArgsReversed.result().reverse
+
+    val (headCore, universeArgs, convention) = tables.exprNode(headId) match {
+      case Const(name, levels) =>
+        val coreName = LeanExportNames.encode(name, tables)
+        val global = registry.get(name, tables)
+        val expectedUniverses = if (BootstrapNames(coreName)) 0 else global match {
+          case Some(value) if value.status == Installed => value.levelParameters.length
+          case Some(_) => throw UnknownGlobal(atExpr(headId), s"$coreName was skipped and cannot be referenced", Some(declaration))
+          case None => throw UnknownGlobal(atExpr(headId), s"global $coreName has not been installed", Some(declaration))
+        }
+        if (levels.length != expectedUniverses)
+          throw ApplicationConventionMismatch(atExpr(headId),
+            s"constant $coreName supplies ${levels.length} universe arguments; expected $expectedUniverses", Some(declaration))
+        (Term.GlobalRef(coreName, span()), levels.map(level => lowerLevel(level, context)), global.flatMap(_.callingConvention))
+      case _ => (lowerTerm(headId, context), Vector.empty[Term], None)
+    }
+
+    var coreHead = headCore
+    var checkedHead = TypeChecker.checkTerm(coreHead, context.env)
+    var remaining: Vector[Either[Term, ExprId]] = universeArgs.map(Left(_)) ++ termArgs.map(Right(_))
+    var telescopeIndex = 0
+
+    while (remaining.nonEmpty || checkedHead.value.tpe.isInstanceOf[VPi]) {
+      val pi = checkedHead.value.tpe match {
+        case value: VPi => value
+        case _ =>
+          if (remaining.nonEmpty)
+            throw ApplicationConventionMismatch(atExpr(start), s"application has ${remaining.length} extra source arguments", Some(declaration))
+          return coreHead
+      }
+      val corePi = convention.flatMap(_.telescopes.lift(telescopeIndex)).map(_.corePi)
+      val consume = math.min(remaining.length, pi.binders.length)
+      if (consume < pi.binders.length) {
+        val sourcePi = corePi.getOrElse(throw UnsaturatedCoreApplication(atExpr(start),
+          "cannot eta-expand a function without its source telescope", Some(declaration)))
+        return etaExpand(coreHead, pi, sourcePi, remaining.take(consume), context, start)
+      }
+
+      val lowered = checkSourceArguments(pi, remaining.take(consume), context, start, requireAllProjections = true)
+      val app = Term.App(coreHead, lowered.explicitCore, span())
+      checkedHead = TypeChecker.checkTerm(app, context.env)
+      coreHead = app
+      remaining = remaining.drop(consume)
+      telescopeIndex += 1
+      if (remaining.isEmpty) return coreHead
+    }
+    coreHead
+  }
+
+  private def checkSourceArguments(
+      pi: VPi,
+      args: Vector[Either[Term, ExprId]],
+      context: Context,
+      expr: ExprId,
+      requireAllProjections: Boolean
+  ): CheckedSourceArgs = {
+    var calleeEnv = pi.env
+    val core = Vector.newBuilder[Term]
+    val explicitCore = Vector.newBuilder[Term]
+    var explicitValues = Vector.empty[Value]
+    val suppliedValues = Array.ofDim[Value](args.length)
+
+    args.indices.foreach { idx =>
+      val binder = pi.binders(idx)
+      val expected = Interpreter.evalTerm(binder.ty, calleeEnv)
+      val term = args(idx).fold(identity, id => lowerTerm(id, context))
+      val checked = TypeChecker.checkTerm(term, expected, context.env)
+      core += term; suppliedValues(idx) = checked.value
+      calleeEnv = BinderOps.bindValueAndCheck(calleeEnv, binder, checked.value)
+      if (!binder.isImplicit) { explicitCore += term; explicitValues :+= checked.value }
+    }
+
+    args.indices.foreach { idx =>
+      val binder = pi.binders(idx)
+      if (binder.isImplicit) {
+        val spec = binder.projection.getOrElse(throw UnsaturatedCoreApplication(atExpr(expr),
+          s"checked implicit binder ${binder.name} has no projection", Some(declaration)))
+        if (spec.rootArgIdx < explicitValues.length) {
+          Projection.project(spec, explicitValues) match {
+            case Right(projected) if ValueEquivalence.defEq(projected, suppliedValues(idx)) =>
+            case Right(projected) => throw SuppliedImplicitMismatch(atExpr(expr),
+              s"supplied implicit ${binder.name} does not match its reconstructed value", Some(declaration))
+            case Left(reason) => throw ApplicationConventionMismatch(atExpr(expr), reason, Some(declaration))
+          }
+        } else if (requireAllProjections)
+          throw ApplicationConventionMismatch(atExpr(expr),
+            s"implicit ${binder.name} projects from missing explicit argument ${spec.rootArgIdx}", Some(declaration))
+      }
+    }
+    CheckedSourceArgs(core.result(), explicitCore.result())
+  }
+
+  private def etaExpand(
+      head: Term,
+      pi: VPi,
+      sourcePi: Term.Pi,
+      supplied: Vector[Either[Term, ExprId]],
+      context: Context,
+      expr: ExprId
+  ): Term = {
+    val checkedSupplied = checkSourceArguments(pi, supplied, context, expr, requireAllProjections = false)
+    val suppliedMap = sourcePi.binders.take(supplied.length).map(_.localRef).zip(checkedSupplied.core).toMap
+    val missingRequested = sourcePi.binders.drop(supplied.length).map { binder =>
+      binder.copy(ty = CoreSubstitution.substitute(binder.ty, suppliedMap))
+    }
+    val classified = BinderOps.checkImportedBinders(missingRequested, context.env)
+    val missing = missingRequested.zip(classified.binders).map { case (core, checked) => core.copy(isImplicit = checked.isImplicit) }
+    val allCore = checkedSupplied.core ++ missing.map(b => Term.LocalRef(b.localRef, span()))
+    val resultType = CoreSubstitution.substitute(
+      sourcePi.out,
+      sourcePi.binders.map(_.localRef).zip(allCore).toMap
+    )
+    val wrapper = Term.Pi(missing, resultType, span())
+    val explicitArgs = allCore.zip(pi.binders).collect { case (term, binder) if !binder.isImplicit => term }
+    val body = Term.App(head, explicitArgs, span())
+    val lambda = Term.Lam(wrapper, body, span(), name = None, recursion = None)
+    TypeChecker.checkTerm(lambda, context.env)
+    lambda
   }
 
   private def lowerLevel(id: LevelId, context: Context): Term = tables.levelNode(id) match {
@@ -166,11 +333,19 @@ private[raccoonlang] final class LeanTermLowerer(
     }
   }
 
+  private def bindFresh(context: Context, binder: Binder): Context = {
+    val tpe = TypeChecker.getType(binder.ty, context.env)
+    val fresh = StructEta.freshStructWitness(tpe).getOrElse {
+      val (_, value) = FreshVar.freshValue(binder.name, tpe)
+      Value.canonicalizeRigidBinder(tpe, value)
+    }
+    context.copy(env = context.env.putLocal(binder.localRef, fresh))
+  }
+
   private def builtinApp(name: String, args: Vector[Term]): Term =
     if (args.isEmpty) Term.GlobalRef(name, span()) else Term.App(Term.GlobalRef(name, span()), args, span())
 
   private def requestedImplicit(info: BinderInfo): Boolean = info != Default
-  private def freshLocal(name: String): LocalRef = { val ref = LocalRef(nextLocal, name); nextLocal += 1; ref }
   private def span(): Span = { val result = Span(nextSpan, nextSpan + 1, Some(sourceId)); nextSpan += 1; result }
   private def atExpr(id: ExprId): ExportProvenance = tables.exprProvenance(id)
   private def displayName(id: NameId, fallback: String): String = {

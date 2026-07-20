@@ -6,7 +6,13 @@ import com.raccoonlang.LeanExportIr._
 import java.io.InputStream
 import scala.util.control.NonFatal
 
-final case class LeanManifestEntry(name: String, kind: String, opaque: Boolean, provenance: ExportProvenance)
+final case class LeanManifestEntry(
+    name: String,
+    kind: String,
+    opaque: Boolean,
+    provenance: ExportProvenance,
+    callingConvention: Option[ImportedCallingConvention]
+)
 final case class LeanImportManifest(installed: Vector[LeanManifestEntry], skipped: Vector[LeanManifestEntry])
 final case class LeanImportMetrics(objects: Long, declarations: Long, nodeStoreBytes: Long, nodeStoreHighWaterBytes: Long)
 final case class LeanImportResult(env: Env, manifest: LeanImportManifest, metrics: LeanImportMetrics)
@@ -43,19 +49,21 @@ object LeanImportSession {
       case value: ExportAxiom if !value.isUnsafe =>
         publish(value.name, value.levelParams, value.provenance, "axiom", opaque = true, tables) { (name, lowerer) =>
           val lowered = lowerer.lowerDeclarationType(value.levelParams, value.tpe)
-          Decl.AxiomDecl(name, lowered.term, coreSpan(value.provenance))
+          Decl.AxiomDecl(name, lowered.term, coreSpan(value.provenance)) -> lowered.convention
         }
       case value: ExportDef if value.safety == Safe =>
         publish(value.name, value.levelParams, value.provenance, "def", value.hint == HintOpaque, tables) { (name, lowerer) =>
           val lowered = lowerer.lowerDeclarationType(value.levelParams, value.tpe)
           val body = lowerer.lowerDeclarationBody(value.value, lowered, name)
-          Decl.ConstDecl(value.hint == HintOpaque, name, lowered.term, ConstBody.TermBody(body), coreSpan(value.provenance))
+          Decl.ConstDecl(value.hint == HintOpaque, name, lowered.term, ConstBody.TermBody(body), coreSpan(value.provenance)) ->
+            lowered.convention
         }
       case value: ExportTheorem =>
         publish(value.name, value.levelParams, value.provenance, "theorem", opaque = true, tables) { (name, lowerer) =>
           val lowered = lowerer.lowerDeclarationType(value.levelParams, value.tpe)
           val body = lowerer.lowerDeclarationBody(value.value, lowered, name)
-          Decl.ConstDecl(isOpaque = true, name, lowered.term, ConstBody.TermBody(body), coreSpan(value.provenance))
+          Decl.ConstDecl(isOpaque = true, name, lowered.term, ConstBody.TermBody(body), coreSpan(value.provenance)) ->
+            lowered.convention
         }
       case value: ExportAxiom => unsupported(value.name, value.provenance, tables, "unsafe filtering requires T1.4")
       case value: ExportDef => unsupported(value.name, value.provenance, tables, "unsafe/partial filtering requires T1.4")
@@ -72,16 +80,17 @@ object LeanImportSession {
         kind: String,
         opaque: Boolean,
         tables: ExportTables
-    )(build: (String, LeanTermLowerer) => Decl): Unit = {
+    )(build: (String, LeanTermLowerer) => (Decl, Option[ImportedCallingConvention])): Unit = {
       val name = LeanExportNames.encode(sourceName, tables)
       if (name.isEmpty) throw TypeLowering(provenance, "anonymous declaration name", Some(name))
       val lowerer = new LeanTermLowerer(tables, currentEnv, registry, name)
       try {
-        val next = Interpreter.evalDecl(build(name, lowerer), currentEnv)
-        val global = ImportedGlobal(sourceName, name, provenance, Installed, levelParams)
+        val (decl, convention) = build(name, lowerer)
+        val next = Interpreter.evalDecl(decl, currentEnv)
+        val global = ImportedGlobal(sourceName, name, provenance, Installed, levelParams, convention)
         currentEnv = next
         registry = registry.add(global, tables)
-        installed0 :+= LeanManifestEntry(name, kind, opaque, provenance)
+        installed0 :+= LeanManifestEntry(name, kind, opaque, provenance, convention)
       } catch {
         case diagnostic: LeanImportDiagnostic => throw diagnostic
         case error: TypeError => throw DeclarationTypeError(provenance, error.getMessage, Some(name))

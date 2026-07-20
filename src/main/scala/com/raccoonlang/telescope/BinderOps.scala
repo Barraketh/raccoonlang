@@ -59,6 +59,38 @@ object BinderOps {
     }
     val compiled = Projection.compile(inputs, familyParams)
 
+    checked(compiled, binders, checkedTys, env)
+  }
+
+  /** Classify a fully explicit imported telescope, demoting any source implicit that cannot be reconstructed. */
+  private[raccoonlang] def checkImportedBinders(
+      binders: Vector[CoreAst.Binder],
+      baseEnv: Env
+  ): CheckedBinders = {
+    var env = baseEnv
+    val holeIds = Vector.newBuilder[Option[Value.VarId]]
+    val checkedTys = binders.map { binder =>
+      val checkedTy = TypeChecker.checkTerm(binder.ty, env)
+      TypeChecker.assertType(checkedTy.value)
+      val provisional = ElabAst.Binder(binder.localRef, checkedTy.residual, binder.span, binder.isImplicit)
+      val freshened = freshenBinder(env, provisional)
+      env = env.putLocal(binder.localRef, freshened.value)
+      holeIds += freshened.holeId
+      checkedTy
+    }
+    val inputs = binders.zip(holeIds.result()).map { case (binder, holeId) =>
+      Projection.BinderInput(binder.name, binder.span, binder.isImplicit, env(binder.localRef), holeId)
+    }
+    checked(Projection.compileImported(inputs), binders, checkedTys, env)
+  }
+
+  private def checked(
+      compiled: Vector[Projection.BinderResult],
+      binders: Vector[CoreAst.Binder],
+      checkedTys: Vector[TypeChecker.CheckedTerm],
+      env: Env
+  ): CheckedBinders = {
+
     val checkedBinders = binders.indices.toVector.map { idx =>
       val binder = binders(idx)
       val result = compiled(idx)

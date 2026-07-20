@@ -85,3 +85,18 @@ final case class UnsupportedFeature(
     provenance: ExportProvenance, message: String, declaration: Option[String] = None,
     path: Vector[String] = Vector.empty
 ) extends LeanImportDiagnostic
+
+final case class ApplicationConventionMismatch(
+    provenance: ExportProvenance, message: String, declaration: Option[String] = None,
+    path: Vector[String] = Vector.empty
+) extends LeanImportDiagnostic
+
+final case class SuppliedImplicitMismatch(
+    provenance: ExportProvenance, message: String, declaration: Option[String] = None,
+    path: Vector[String] = Vector.empty
+) extends LeanImportDiagnostic
+
+final case class UnsaturatedCoreApplication(
+    provenance: ExportProvenance, message: String, declaration: Option[String] = None,
+    path: Vector[String] = Vector.empty
+) extends LeanImportDiagnostic

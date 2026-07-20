@@ -75,7 +75,14 @@ object Projection {
    * instead of erroring. Everywhere else — defs, axioms, lambdas, and constructor binders the user wrote — an unforced
    * implicit throws NonForcedImplicitParam.
    */
-  def compile(binders: Vector[BinderInput], familyParams: Int = 0): Vector[BinderResult] = {
+  def compile(binders: Vector[BinderInput], familyParams: Int = 0): Vector[BinderResult] =
+    compileDemotable(binders, (0 until familyParams).toSet)
+
+  /** Import-only policy: the export supplies every argument, so every requested implicit may be demoted. */
+  private[raccoonlang] def compileImported(binders: Vector[BinderInput]): Vector[BinderResult] =
+    compileDemotable(binders, binders.indices.filter(idx => binders(idx).isImplicit).toSet)
+
+  private def compileDemotable(binders: Vector[BinderInput], demotable: Set[Int]): Vector[BinderResult] = {
     if (binders.forall(!_.isImplicit))
       return binders.map(_ => BinderResult(isImplicit = false, projection = None))
 
@@ -230,10 +237,11 @@ object Projection {
     // param first. Binder types only mention earlier binders, so forcing flows right-to-left and
     // this order never demotes a param a later demotion would have forced. Demotion only adds a
     // root — existing solutions stay valid — so saturation resumes with just the new root.
-    if (familyParams > 0) {
+    if (demotable.nonEmpty) {
       var progress = true
       while (progress) {
-        val rightmostUnforced = ((familyParams - 1) to 0 by -1).find { idx =>
+        val rightmostUnforced = binders.indices.reverse.find { idx =>
+          demotable(idx) &&
           binders(idx).isImplicit && !demoted(idx) && !solved.contains(idx)
         }
         rightmostUnforced match {
