@@ -4,6 +4,7 @@ import com.raccoonlang.CoreAst.Decl
 import com.raccoonlang.Value._
 import com.raccoonlang.WfPrimitives._
 import com.raccoonlang.telescope.BinderOps
+import com.raccoonlang.translator.LeanExportReader
 
 class WfRecursionTests extends munit.FunSuite {
   test("K2's reviewed producer pin stays independent and synchronized with the reader") {

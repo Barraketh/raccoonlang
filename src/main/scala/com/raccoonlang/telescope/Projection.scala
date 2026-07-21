@@ -78,11 +78,10 @@ object Projection {
   def compile(binders: Vector[BinderInput], familyParams: Int = 0): Vector[BinderResult] =
     compileDemotable(binders, (0 until familyParams).toSet)
 
-  /** Import-only policy: the export supplies every argument, so every requested implicit may be demoted. */
-  private[raccoonlang] def compileImported(binders: Vector[BinderInput]): Vector[BinderResult] =
-    compileDemotable(binders, binders.indices.filter(idx => binders(idx).isImplicit).toSet)
-
-  private def compileDemotable(binders: Vector[BinderInput], demotable: Set[Int]): Vector[BinderResult] = {
+  private[raccoonlang] def compileDemotable(
+      binders: Vector[BinderInput],
+      demotable: Set[Int]
+  ): Vector[BinderResult] = {
     if (binders.forall(!_.isImplicit))
       return binders.map(_ => BinderResult(isImplicit = false, projection = None))
 

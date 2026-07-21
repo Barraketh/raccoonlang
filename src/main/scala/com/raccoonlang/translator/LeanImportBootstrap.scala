@@ -1,8 +1,9 @@
-package com.raccoonlang
+package com.raccoonlang.translator
 
+import com.raccoonlang._
 import com.raccoonlang.CoreAst.{Binder, ConstBody, Decl}
 import com.raccoonlang.CoreAst.Term
-import com.raccoonlang.LeanExportIr.ExportProvenance
+import com.raccoonlang.translator.LeanExportIr.ExportProvenance
 
 import java.nio.file.Paths
 

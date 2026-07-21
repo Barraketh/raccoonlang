@@ -13,8 +13,8 @@ containing `Sort (imax ...)` and declarations using a Sort-motive `Acc.rec`.
 Run it with:
 
 ```text
-sbt "runMain com.raccoonlang.MathlibExportStats export.ndjson"
-sbt "runMain com.raccoonlang.MathlibExportStats --json export.ndjson"
+sbt "runMain com.raccoonlang.translator.MathlibExportStats export.ndjson"
+sbt "runMain com.raccoonlang.translator.MathlibExportStats --json export.ndjson"
 ```
 
 The JSON form contains complete declaration provenance for every count. Tests cover transitive

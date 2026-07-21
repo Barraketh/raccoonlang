@@ -1,6 +1,6 @@
-package com.raccoonlang
+package com.raccoonlang.translator
 
-import com.raccoonlang.LeanExportIr.ExportProvenance
+import com.raccoonlang.translator.LeanExportIr.ExportProvenance
 
 sealed trait LeanImportDiagnostic extends RuntimeException {
   def provenance: ExportProvenance

@@ -1,4 +1,4 @@
-package com.raccoonlang
+package com.raccoonlang.translator
 
 import java.nio.file.Path
 import scala.collection.mutable
@@ -192,7 +192,7 @@ object LeanExportIr {
    * payloads (strings, argument slices, big integers) allocate objects. Cursor methods materialize semantic nodes on
    * demand, so a full export does not retain a recursive Scala object graph.
    */
-  final class ExportTables private[raccoonlang] (val source: Path) {
+  final class ExportTables private[translator] (val source: Path) {
     private val nameTags = mutable.ArrayBuffer[Byte](0)
     private val namePrefix = mutable.ArrayBuffer[Int](0)
     private val namePayload = mutable.ArrayBuffer[AnyRef]("")
@@ -269,11 +269,11 @@ object LeanExportIr {
     def levelNode(id: LevelId): LevelNode = {
       requireLevel(id)
       levelTags(id.value) match {
-        case 0 => LevelZero
-        case 1 => LevelSucc(LevelId(levelLeft(id.value)))
-        case 2 => LevelMax(LevelId(levelLeft(id.value)), LevelId(levelRight(id.value)))
-        case 3 => LevelIMax(LevelId(levelLeft(id.value)), LevelId(levelRight(id.value)))
-        case 4 => LevelParam(NameId(levelLeft(id.value)))
+        case 0   => LevelZero
+        case 1   => LevelSucc(LevelId(levelLeft(id.value)))
+        case 2   => LevelMax(LevelId(levelLeft(id.value)), LevelId(levelRight(id.value)))
+        case 3   => LevelIMax(LevelId(levelLeft(id.value)), LevelId(levelRight(id.value)))
+        case 4   => LevelParam(NameId(levelLeft(id.value)))
         case tag => throw new IllegalStateException(s"invalid level tag $tag")
       }
     }
@@ -282,24 +282,24 @@ object LeanExportIr {
       requireExpr(id)
       val i = id.value
       exprTags(i) match {
-        case 0  => BVar(exprA(i))
-        case 1  => Sort(LevelId(exprA(i)))
-        case 2  => Const(NameId(exprA(i)), exprPayload(i).asInstanceOf[Vector[LevelId]])
-        case 3  => App(ExprId(exprA(i)), ExprId(exprB(i)))
-        case 4  => Lam(NameId(exprA(i)), ExprId(exprB(i)), ExprId(exprC(i)), exprPayload(i).asInstanceOf[BinderInfo])
-        case 5  => ForallE(NameId(exprA(i)), ExprId(exprB(i)), ExprId(exprC(i)), exprPayload(i).asInstanceOf[BinderInfo])
-        case 6  =>
+        case 0 => BVar(exprA(i))
+        case 1 => Sort(LevelId(exprA(i)))
+        case 2 => Const(NameId(exprA(i)), exprPayload(i).asInstanceOf[Vector[LevelId]])
+        case 3 => App(ExprId(exprA(i)), ExprId(exprB(i)))
+        case 4 => Lam(NameId(exprA(i)), ExprId(exprB(i)), ExprId(exprC(i)), exprPayload(i).asInstanceOf[BinderInfo])
+        case 5 => ForallE(NameId(exprA(i)), ExprId(exprB(i)), ExprId(exprC(i)), exprPayload(i).asInstanceOf[BinderInfo])
+        case 6 =>
           val pair = exprPayload(i).asInstanceOf[(Int, Boolean)]
           LetE(NameId(exprA(i)), ExprId(exprB(i)), ExprId(exprC(i)), ExprId(pair._1), pair._2)
-        case 7  => Proj(NameId(exprA(i)), exprB(i), ExprId(exprC(i)))
-        case 8  => NatVal(exprPayload(i).asInstanceOf[BigInt])
-        case 9  => StrVal(exprPayload(i).asInstanceOf[Vector[Int]])
-        case 10 => MData(ExprId(exprA(i)))
+        case 7   => Proj(NameId(exprA(i)), exprB(i), ExprId(exprC(i)))
+        case 8   => NatVal(exprPayload(i).asInstanceOf[BigInt])
+        case 9   => StrVal(exprPayload(i).asInstanceOf[Vector[Int]])
+        case 10  => MData(ExprId(exprA(i)))
         case tag => throw new IllegalStateException(s"invalid expression tag $tag")
       }
     }
 
-    private[raccoonlang] def appendName(node: NameNode, at: ExportProvenance): NameId = {
+    private[translator] def appendName(node: NameNode, at: ExportProvenance): NameId = {
       val id = NameId(nameTags.length)
       node match {
         case NameStr(prefix, value) =>
@@ -312,21 +312,21 @@ object LeanExportIr {
       id
     }
 
-    private[raccoonlang] def appendLevel(node: LevelNode, at: ExportProvenance): LevelId = {
+    private[translator] def appendLevel(node: LevelNode, at: ExportProvenance): LevelId = {
       val id = LevelId(levelTags.length)
       node match {
-        case LevelSucc(of)         => levelTags += 1; levelLeft += of.value; levelRight += 0
-        case LevelMax(left, right) => levelTags += 2; levelLeft += left.value; levelRight += right.value
+        case LevelSucc(of)          => levelTags += 1; levelLeft += of.value; levelRight += 0
+        case LevelMax(left, right)  => levelTags += 2; levelLeft += left.value; levelRight += right.value
         case LevelIMax(left, right) => levelTags += 3; levelLeft += left.value; levelRight += right.value
-        case LevelParam(name)      => levelTags += 4; levelLeft += name.value; levelRight += 0
-        case LevelZero             => throw new IllegalArgumentException("level zero is pre-seeded")
+        case LevelParam(name)       => levelTags += 4; levelLeft += name.value; levelRight += 0
+        case LevelZero              => throw new IllegalArgumentException("level zero is pre-seeded")
       }
       levelLine += at.line; levelColumn += at.column; levelOrdinal += at.objectOrdinal
       updateHighWater()
       id
     }
 
-    private[raccoonlang] def appendExpr(node: ExprNode, at: ExportProvenance): ExprId = {
+    private[translator] def appendExpr(node: ExprNode, at: ExportProvenance): ExprId = {
       val id = ExprId(exprTags.length)
       var tag: Byte = 0
       var a = 0
@@ -334,18 +334,18 @@ object LeanExportIr {
       var c = 0
       var payload: AnyRef = null
       node match {
-        case BVar(index)                 => tag = 0; a = index
-        case Sort(level)                 => tag = 1; a = level.value
-        case Const(name, levels)         => tag = 2; a = name.value; payload = levels; payloadBytes += levels.length.toLong * 4L
-        case App(fn, arg)                => tag = 3; a = fn.value; b = arg.value
-        case Lam(name, ty, body, info)   => tag = 4; a = name.value; b = ty.value; c = body.value; payload = info
+        case BVar(index)         => tag = 0; a = index
+        case Sort(level)         => tag = 1; a = level.value
+        case Const(name, levels) => tag = 2; a = name.value; payload = levels; payloadBytes += levels.length.toLong * 4L
+        case App(fn, arg)        => tag = 3; a = fn.value; b = arg.value
+        case Lam(name, ty, body, info)     => tag = 4; a = name.value; b = ty.value; c = body.value; payload = info
         case ForallE(name, ty, body, info) => tag = 5; a = name.value; b = ty.value; c = body.value; payload = info
         case LetE(name, ty, value, body, nonDep) =>
           tag = 6; a = name.value; b = ty.value; c = value.value; payload = (body.value, nonDep)
         case Proj(typeName, index, struct) => tag = 7; a = typeName.value; b = index; c = struct.value
-        case NatVal(value)               => tag = 8; payload = value; payloadBytes += value.toByteArray.length
-        case StrVal(scalars)             => tag = 9; payload = scalars; payloadBytes += scalars.length.toLong * 4L
-        case MData(expr)                 => tag = 10; a = expr.value
+        case NatVal(value)                 => tag = 8; payload = value; payloadBytes += value.toByteArray.length
+        case StrVal(scalars)               => tag = 9; payload = scalars; payloadBytes += scalars.length.toLong * 4L
+        case MData(expr)                   => tag = 10; a = expr.value
       }
       exprTags += tag; exprA += a; exprB += b; exprC += c; exprPayload += payload
       exprLine += at.line; exprColumn += at.column; exprOrdinal += at.objectOrdinal

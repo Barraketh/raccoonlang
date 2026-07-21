@@ -1,7 +1,8 @@
-package com.raccoonlang
+package com.raccoonlang.translator
 
-import com.raccoonlang.LeanExportIr._
+import com.raccoonlang._
 import com.raccoonlang.Value.VPacked
+import com.raccoonlang.translator.LeanExportIr._
 
 import java.io.ByteArrayInputStream
 import java.nio.charset.StandardCharsets

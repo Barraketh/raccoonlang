@@ -1,12 +1,13 @@
-package com.raccoonlang
+package com.raccoonlang.translator
 
+import com.raccoonlang._
 import com.raccoonlang.CoreAst.{Binder, LocalRef}
 import com.raccoonlang.CoreAst.Term
-import com.raccoonlang.LeanExportIr._
 import com.raccoonlang.Value.{LevelTpe, VPi}
 import com.raccoonlang.telescope.{BinderOps, Projection}
+import com.raccoonlang.translator.LeanExportIr._
 
-private[raccoonlang] object LeanTermLowerer {
+private[translator] object LeanTermLowerer {
   def freshLocal(name: String): LocalRef = SyntheticLocalRef.fresh(name)
   final case class LoweredDeclarationType(
       term: Term,
@@ -21,7 +22,7 @@ private[raccoonlang] object LeanTermLowerer {
   final case class CheckedSourceArgs(core: Vector[Term], explicitCore: Vector[Term])
 }
 
-private[raccoonlang] final class LeanTermLowerer(
+private[translator] final class LeanTermLowerer(
     tables: ExportTables,
     kernelEnv: Env,
     registry: LeanGlobalRegistry,
@@ -94,7 +95,7 @@ private[raccoonlang] final class LeanTermLowerer(
     if (requestedBinders.isEmpty)
       LoweredDeclarationType(out, None, 0, 0, Map.empty, Vector.empty, None)
     else {
-      val checked = BinderOps.checkImportedBinders(requestedBinders, kernelEnv)
+      val checked = ImportedBinderOps.checkBinders(requestedBinders, kernelEnv)
       val finalBinders = requestedBinders.zip(checked.binders).map { case (core, result) =>
         core.copy(isImplicit = result.isImplicit)
       }
@@ -419,7 +420,7 @@ private[raccoonlang] final class LeanTermLowerer(
       }
     }
     val requested = binders.result()
-    val checked = BinderOps.checkImportedBinders(requested, initial.env)
+    val checked = ImportedBinderOps.checkBinders(requested, initial.env)
     val finalBinders =
       requested.zip(checked.binders).map { case (core, result) => core.copy(isImplicit = result.isImplicit) }
     Term.Pi(finalBinders, lowerTerm(current, context), span())
@@ -489,7 +490,7 @@ private[raccoonlang] final class LeanTermLowerer(
     coreHead
   }
 
-  private[raccoonlang] def checkSourceArguments(
+  private[translator] def checkSourceArguments(
       pi: VPi,
       args: Vector[Either[Term, ExprId]],
       context: Context,
@@ -557,7 +558,7 @@ private[raccoonlang] final class LeanTermLowerer(
     val missingRequested = sourcePi.binders.drop(supplied.length).map { binder =>
       binder.copy(ty = CoreSubstitution.substitute(binder.ty, suppliedMap))
     }
-    val classified = BinderOps.checkImportedBinders(missingRequested, context.env)
+    val classified = ImportedBinderOps.checkBinders(missingRequested, context.env)
     val missing = missingRequested.zip(classified.binders).map { case (core, checked) =>
       core.copy(isImplicit = checked.isImplicit)
     }

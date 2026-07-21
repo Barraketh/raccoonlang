@@ -1,7 +1,8 @@
-package com.raccoonlang
+package com.raccoonlang.translator
 
+import com.raccoonlang.CoreAst
 import com.raccoonlang.CoreAst.LocalRef
-import com.raccoonlang.LeanExportIr.BinderInfo
+import com.raccoonlang.translator.LeanExportIr.BinderInfo
 
 sealed trait ImportedSourceBinder
 final case class SourceTermBinder(info: BinderInfo) extends ImportedSourceBinder

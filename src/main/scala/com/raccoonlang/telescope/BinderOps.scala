@@ -62,10 +62,11 @@ object BinderOps {
     checked(compiled, binders, checkedTys, env)
   }
 
-  /** Classify a fully explicit imported telescope, demoting any source implicit that cannot be reconstructed. */
-  private[raccoonlang] def checkImportedBinders(
+  /** Check a telescope while allowing the caller-selected implicit binders to be demoted. */
+  private[raccoonlang] def checkBindersDemoting(
       binders: Vector[CoreAst.Binder],
-      baseEnv: Env
+      baseEnv: Env,
+      demotable: Set[Int]
   ): CheckedBinders = {
     var env = baseEnv
     val holeIds = Vector.newBuilder[Option[Value.VarId]]
@@ -81,7 +82,7 @@ object BinderOps {
     val inputs = binders.zip(holeIds.result()).map { case (binder, holeId) =>
       Projection.BinderInput(binder.name, binder.span, binder.isImplicit, env(binder.localRef), holeId)
     }
-    checked(Projection.compileImported(inputs), binders, checkedTys, env)
+    checked(Projection.compileDemotable(inputs, demotable), binders, checkedTys, env)
   }
 
   private def checked(

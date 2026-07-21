@@ -1,4 +1,6 @@
-package com.raccoonlang
+package com.raccoonlang.translator
+
+import com.raccoonlang._
 
 import java.io.ByteArrayInputStream
 import java.nio.charset.StandardCharsets

@@ -1191,12 +1191,16 @@ The deterministic manifest digest covers semantic names, declaration order, chec
 policy choices, capabilities, and the input digest. It excludes absolute host paths, timestamps,
 timings, heap measurements, and other machine-specific metric fields.
 
-## 17. Planned code layout
+## 17. Code layout
 
-The implementation is expected to separate these responsibilities:
+All Lean export/import translation code lives in `com.raccoonlang.translator`. Production dependencies point from that
+package into the kernel; kernel code does not depend on the translator. Kernel-owned trust gates and generic telescope
+mechanics remain in `com.raccoonlang` and expose only narrow package-scoped adapters.
+
+The implementation separates these responsibilities:
 
 ~~~text
-src/main/scala/com/raccoonlang/
+src/main/scala/com/raccoonlang/translator/
   LeanExportIr.scala             compact stores and semantic cursors
   LeanExportReader.scala         versioned NDJSON decoder
   LeanExportNames.scala          injective name encoding and registry

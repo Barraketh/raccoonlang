@@ -1,7 +1,7 @@
-package com.raccoonlang
+package com.raccoonlang.translator
 
 import com.fasterxml.jackson.core.{JsonFactory, JsonGenerator}
-import com.raccoonlang.LeanExportIr._
+import com.raccoonlang.translator.LeanExportIr._
 
 import java.io.{ByteArrayOutputStream, InputStream}
 import java.nio.charset.StandardCharsets
@@ -16,12 +16,31 @@ object LeanExportM0 {
   type Metadata = ExportMeta
 
   private val NativeNatOps = Set(
-    "Nat.add", "Nat.sub", "Nat.mul", "Nat.pow", "Nat.beq", "Nat.ble", "Nat.blt", "Nat.div", "Nat.mod",
-    "Nat.gcd", "Nat.land", "Nat.lor", "Nat.xor", "Nat.shiftLeft", "Nat.shiftRight", "Nat.lxor", "Nat.shiftl",
+    "Nat.add",
+    "Nat.sub",
+    "Nat.mul",
+    "Nat.pow",
+    "Nat.beq",
+    "Nat.ble",
+    "Nat.blt",
+    "Nat.div",
+    "Nat.mod",
+    "Nat.gcd",
+    "Nat.land",
+    "Nat.lor",
+    "Nat.xor",
+    "Nat.shiftLeft",
+    "Nat.shiftRight",
+    "Nat.lxor",
+    "Nat.shiftl",
     "Nat.shiftr"
   )
   private val AccFixCluster = Set(
-    "Acc.rec", "WellFounded.recursion", "WellFounded.fixF", "WellFounded.fixF_eq", "WellFounded.fix",
+    "Acc.rec",
+    "WellFounded.recursion",
+    "WellFounded.fixF",
+    "WellFounded.fixF_eq",
+    "WellFounded.fix",
     "WellFounded.fix_eq"
   )
 
@@ -52,15 +71,19 @@ object LeanExportM0 {
     def renderText: String = {
       val out = new StringBuilder
       out.append(s"M0 Mathlib-export statistics: $source\n")
-      out.append(s"  format ${metadata.formatVersion}; Lean ${metadata.leanVersion} (${metadata.leanGitHash}); " +
-        s"${metadata.exporterName} ${metadata.exporterVersion}\n")
+      out.append(
+        s"  format ${metadata.formatVersion}; Lean ${metadata.leanVersion} (${metadata.leanGitHash}); " +
+          s"${metadata.exporterName} ${metadata.exporterVersion}\n"
+      )
       out.append(s"  objects: $objects; names: $names; levels: $levels; expressions: $expressions\n")
       out.append(s"  declarations: $declarations; inductive blocks: $inductiveBlocks\n")
       appendNames(out, "declared types containing Sort(imax ...)", sortImaxDeclaredTypes)
       appendGroups(out, "mutual inductive blocks", mutualBlocks.map(_.typeNames))
       appendNames(out, "nested inductives", nestedInductives.map(i => s"${i.name} (${i.nestedOccurrences})"))
       appendNames(out, "Sort-motive Acc.rec outside the fix cluster", sortMotiveAccRecOutsideFixCluster)
-      out.append(s"  expression nodes: proj=$projectionNodes; Nat literals=$natLiteralNodes; String literals=$stringLiteralNodes\n")
+      out.append(
+        s"  expression nodes: proj=$projectionNodes; Nat literals=$natLiteralNodes; String literals=$stringLiteralNodes\n"
+      )
       appendNames(out, "native Nat operations", nativeNatOps.map { case (name, count) => s"$name ($count)" })
       appendNames(out, "irreducible declarations", irreducibleDeclarations)
       out.result()
@@ -69,7 +92,8 @@ object LeanExportM0 {
     def renderJson: String = {
       val bytes = new ByteArrayOutputStream
       val generator = new JsonFactory().createGenerator(bytes)
-      try writeJson(generator) finally generator.close()
+      try writeJson(generator)
+      finally generator.close()
       bytes.toString(StandardCharsets.UTF_8.name())
     }
 
@@ -83,15 +107,22 @@ object LeanExportM0 {
     }
     private def writeJson(g: JsonGenerator): Unit = {
       g.writeStartObject(); g.writeStringField("source", source); g.writeObjectFieldStart("metadata")
-      g.writeStringField("exporterName", metadata.exporterName); g.writeStringField("exporterVersion", metadata.exporterVersion)
+      g.writeStringField("exporterName", metadata.exporterName);
+      g.writeStringField("exporterVersion", metadata.exporterVersion)
       g.writeStringField("leanVersion", metadata.leanVersion); g.writeStringField("leanGitHash", metadata.leanGitHash)
       g.writeStringField("formatVersion", metadata.formatVersion); g.writeEndObject()
       g.writeNumberField("objects", objects); g.writeNumberField("names", names); g.writeNumberField("levels", levels)
       g.writeNumberField("expressions", expressions); g.writeNumberField("declarations", declarations)
       g.writeNumberField("inductiveBlocks", inductiveBlocks)
       writeStrings(g, "sortImaxDeclaredTypes", sortImaxDeclaredTypes)
-      g.writeArrayFieldStart("mutualBlocks"); mutualBlocks.foreach { b => g.writeStartArray(); b.typeNames.foreach(g.writeString); g.writeEndArray() }; g.writeEndArray()
-      g.writeArrayFieldStart("nestedInductives"); nestedInductives.foreach { i => g.writeStartObject(); g.writeStringField("name", i.name); g.writeNumberField("nestedOccurrences", i.nestedOccurrences); g.writeEndObject() }; g.writeEndArray()
+      g.writeArrayFieldStart("mutualBlocks");
+      mutualBlocks.foreach { b => g.writeStartArray(); b.typeNames.foreach(g.writeString); g.writeEndArray() };
+      g.writeEndArray()
+      g.writeArrayFieldStart("nestedInductives");
+      nestedInductives.foreach { i =>
+        g.writeStartObject(); g.writeStringField("name", i.name);
+        g.writeNumberField("nestedOccurrences", i.nestedOccurrences); g.writeEndObject()
+      }; g.writeEndArray()
       writeStrings(g, "sortMotiveAccRecOutsideFixCluster", sortMotiveAccRecOutsideFixCluster)
       g.writeNumberField("projectionNodes", projectionNodes); g.writeNumberField("natLiteralNodes", natLiteralNodes)
       g.writeNumberField("stringLiteralNodes", stringLiteralNodes); g.writeObjectFieldStart("nativeNatOps")
@@ -134,17 +165,17 @@ object LeanExportM0 {
       while (level < tables.levelCount) {
         val node = tables.levelNode(LevelId(level))
         val has = node match {
-          case LevelIMax(_, _) => true
-          case LevelSucc(of) => levelImax(of.value)
-          case LevelMax(left, right) => levelImax(left.value) || levelImax(right.value)
+          case LevelIMax(_, _)           => true
+          case LevelSucc(of)             => levelImax(of.value)
+          case LevelMax(left, right)     => levelImax(left.value) || levelImax(right.value)
           case LevelParam(_) | LevelZero => false
         }
         if (has) levelImax += level
         val isZero = node match {
           case LevelMax(left, right) => levelZero(left.value) && levelZero(right.value)
-          case LevelIMax(_, right) => levelZero(right.value)
-          case LevelZero => true
-          case _ => false
+          case LevelIMax(_, right)   => levelZero(right.value)
+          case LevelZero             => true
+          case _                     => false
         }
         if (isZero) levelZero += level
         level += 1
@@ -158,15 +189,15 @@ object LeanExportM0 {
       while (expr < tables.expressionCount) {
         val node = tables.exprNode(ExprId(expr))
         val children: Vector[ExprId] = node match {
-          case App(fn,arg) => Vector(fn,arg)
-          case Lam(_,ty,body,_) => Vector(ty,body)
-          case ForallE(_,ty,body,_) => Vector(ty,body)
-          case LetE(_,ty,value,body,_) => Vector(ty,value,body)
-          case Proj(_,_,struct) => projections += 1; Vector(struct)
-          case MData(child) => Vector(child)
-          case NatVal(_) => natLiterals += 1; Vector.empty
-          case StrVal(_) => stringLiterals += 1; Vector.empty
-          case _ => Vector.empty
+          case App(fn, arg)                => Vector(fn, arg)
+          case Lam(_, ty, body, _)         => Vector(ty, body)
+          case ForallE(_, ty, body, _)     => Vector(ty, body)
+          case LetE(_, ty, value, body, _) => Vector(ty, value, body)
+          case Proj(_, _, struct)          => projections += 1; Vector(struct)
+          case MData(child)                => Vector(child)
+          case NatVal(_)                   => natLiterals += 1; Vector.empty
+          case StrVal(_)                   => stringLiterals += 1; Vector.empty
+          case _                           => Vector.empty
         }
         val directImax = node match { case Sort(l) => levelImax(l.value); case _ => false }
         if (directImax || children.exists(id => exprImax(id.value))) exprImax += expr
@@ -189,16 +220,17 @@ object LeanExportM0 {
       def inspect(name: NameId, tpe: ExprId, bodies: Vector[ExprId], opaque: Boolean): Unit = {
         val decoded = tables.dottedName(name)
         if (exprImax(tpe.value)) imaxDecls += decoded
-        if (!AccFixCluster(decoded) && (exprAcc(tpe.value) || bodies.exists(id => exprAcc(id.value)))) outsideAcc += decoded
+        if (!AccFixCluster(decoded) && (exprAcc(tpe.value) || bodies.exists(id => exprAcc(id.value))))
+          outsideAcc += decoded
         if (opaque) irreducible += decoded
       }
 
       declarations.foreach {
-        case d: ExportAxiom => inspect(d.name, d.tpe, Vector.empty, opaque = false)
-        case d: ExportDef => inspect(d.name, d.tpe, Vector(d.value), d.hint == HintOpaque)
-        case d: ExportOpaque => inspect(d.name, d.tpe, Vector(d.value), opaque = true)
+        case d: ExportAxiom   => inspect(d.name, d.tpe, Vector.empty, opaque = false)
+        case d: ExportDef     => inspect(d.name, d.tpe, Vector(d.value), d.hint == HintOpaque)
+        case d: ExportOpaque  => inspect(d.name, d.tpe, Vector(d.value), opaque = true)
         case d: ExportTheorem => inspect(d.name, d.tpe, Vector(d.value), opaque = false)
-        case d: ExportQuot => inspect(d.name, d.tpe, Vector.empty, opaque = false)
+        case d: ExportQuot    => inspect(d.name, d.tpe, Vector.empty, opaque = false)
         case d: ExportInductive =>
           blocks += 1
           if (d.types.length > 1) mutual += MutualBlock(d.types.map(t => tables.dottedName(t.name)))
@@ -210,10 +242,27 @@ object LeanExportM0 {
           d.recursors.foreach(r => inspect(r.name, r.tpe, r.rules.map(_.rhs), opaque = false))
       }
 
-      Report(source, metadata.getOrElse(result.meta), result.objects, tables.nameCount, tables.levelCount,
-        tables.expressionCount, result.declarations, blocks, imaxDecls.result(), mutual.result(), nested.result(),
-        outsideAcc.result(), projections, natLiterals, stringLiterals, nativeCounts.toVector.sortBy(_._1),
-        irreducible.result(), tables.currentBytes, tables.highWaterBytes)
+      Report(
+        source,
+        metadata.getOrElse(result.meta),
+        result.objects,
+        tables.nameCount,
+        tables.levelCount,
+        tables.expressionCount,
+        result.declarations,
+        blocks,
+        imaxDecls.result(),
+        mutual.result(),
+        nested.result(),
+        outsideAcc.result(),
+        projections,
+        natLiterals,
+        stringLiterals,
+        nativeCounts.toVector.sortBy(_._1),
+        irreducible.result(),
+        tables.currentBytes,
+        tables.highWaterBytes
+      )
     }
   }
 }

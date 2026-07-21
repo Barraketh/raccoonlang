@@ -1,7 +1,7 @@
-package com.raccoonlang
+package com.raccoonlang.translator
 
 import com.fasterxml.jackson.core.{JsonFactory, JsonParser, JsonToken}
-import com.raccoonlang.LeanExportIr._
+import com.raccoonlang.translator.LeanExportIr._
 
 import java.io.InputStream
 import java.nio.file.{Path, Paths}

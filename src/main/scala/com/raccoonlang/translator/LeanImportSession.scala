@@ -1,7 +1,8 @@
-package com.raccoonlang
+package com.raccoonlang.translator
 
+import com.raccoonlang._
 import com.raccoonlang.CoreAst.{ConstBody, Decl}
-import com.raccoonlang.LeanExportIr._
+import com.raccoonlang.translator.LeanExportIr._
 
 import java.io.InputStream
 import scala.util.control.NonFatal
