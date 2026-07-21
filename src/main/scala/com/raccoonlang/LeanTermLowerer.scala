@@ -150,7 +150,7 @@ private[raccoonlang] final class LeanTermLowerer(
         )
       case None =>
         val expected = TypeChecker.checkTerm(declared.term, kernelEnv).value
-        lowerExpected(expr, expected, Context(Vector.empty, declared.levelRefs, kernelEnv))
+        lowerExpected(expr, expected, Context(Vector.empty, declared.levelRefs, kernelEnv), Vector.empty, Some(name))
     }
   }
 

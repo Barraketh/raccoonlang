@@ -96,7 +96,7 @@ exported name and a proposition-valued application do not authenticate equality.
 recursion through proof metrics" is stated as case law. Cost accepted: WF-defined functions do not compute by defeq —
 identical to post-4.9 Lean practice (equation lemmas; native ops cover `Nat.div`-class literals).
 
-**K3. Native literals — kernel implementation complete.** Spec: `native-literals.md` (the `VPacked` design — a packed
+**K3. Native literals — Nat implementation complete; Lean 4.30 String adapter pending.** Spec: `native-literals.md` (the `VPacked` design — a packed
 value form with a closed, kernel-curated codec set; representation-not-rules, dual of K4).
 `NatLit`, constructor↔literal transparency, packed structural decrease, and the seven operations
 whose structural definitions exist today (`add/sub/mul/pow`, `beq/ble/blt`) are implemented and

@@ -65,7 +65,7 @@ fi
 
 mkdir -p "${artifact_dir}"
 
-generate_artifact() {
+generate_artifact() (
   local module_name=$1
   local expected_sha256=$2
   local destination="${artifact_dir}/${module_name}.ndjson"
@@ -83,6 +83,7 @@ generate_artifact() {
 
   local temporary_file
   temporary_file=$(mktemp "${artifact_dir}/.${module_name}.ndjson.XXXXXX")
+  trap 'rm -f -- "${temporary_file}"' EXIT
   (
     cd "${exporter_dir}"
     elan run "${lean_toolchain}" lake env .lake/build/bin/lean4export "${module_name}" >"${temporary_file}"
@@ -95,13 +96,14 @@ generate_artifact() {
     exit 1
   fi
   mv "${temporary_file}" "${destination}"
+  trap - EXIT
   echo "wrote ${destination}"
-}
+)
 
 generate_artifact "Init.Prelude" "${init_prelude_sha256}"
 generate_artifact "Init" "${init_sha256}"
 
-generate_mathlib_artifact() {
+generate_mathlib_artifact() (
   local module_name=$1
   local expected_sha256=$2
   local destination="${artifact_dir}/${module_name}.ndjson"
@@ -124,6 +126,7 @@ generate_mathlib_artifact() {
 
   local temporary_file
   temporary_file=$(mktemp "${artifact_dir}/.${module_name}.ndjson.XXXXXX")
+  trap 'rm -f -- "${temporary_file}"' EXIT
   (
     cd "${mathlib_dir}"
     elan run "${lean_toolchain}" lake env "${exporter_dir}/.lake/build/bin/lean4export" \
@@ -137,8 +140,9 @@ generate_mathlib_artifact() {
     exit 1
   fi
   mv "${temporary_file}" "${destination}"
+  trap - EXIT
   echo "wrote ${destination}"
-}
+)
 
 generate_mathlib_artifact "Mathlib.Logic.Basic" "${mathlib_logic_basic_sha256}"
 

@@ -59,8 +59,9 @@ class LeanImportLoweringRegressionTests extends munit.FunSuite {
             ","
           )}],"type":$tpe,"value":$value,"hints":"abbrev","safety":"safe","all":[$name]}}"""
 
+    def bytes: Array[Byte] = lines.mkString("\n").getBytes(StandardCharsets.UTF_8)
+
     def result: Either[Vector[LeanImportDiagnostic], LeanImportResult] = {
-      val bytes = lines.mkString("\n").getBytes(StandardCharsets.UTF_8)
       LeanImportSession.importStream(new ByteArrayInputStream(bytes), "lowering-regression.ndjson")
     }
   }
@@ -246,6 +247,48 @@ class LeanImportLoweringRegressionTests extends munit.FunSuite {
       case Value.VLam(_, Value.ValueId.Const("metadataId"), _) =>
       case other => fail(s"monomorphic declaration lambda lost its name: $other")
     }
+  }
+
+  test("a lambda retains its declaration name when the declared function type is an alias") {
+    val f = new ExportBuilder
+    val bName = f.name("B")
+    val xName = f.name("x")
+    val aliasName = f.name("Fn")
+    val idName = f.name("aliasNamedId")
+    val sort1 = f.sort(f.levelSucc(0))
+    val b = f.const(bName)
+    val unary = f.forall(xName, b, b)
+    val identity = f.lam(xName, b, f.bvar(0))
+    f.axiom(bName, sort1)
+    f.definition(aliasName, sort1, unary)
+    f.definition(idName, f.const(aliasName), identity)
+
+    val result = imported(f)
+    result.env("aliasNamedId") match {
+      case Value.VLam(_, Value.ValueId.Const("aliasNamedId"), _) =>
+      case other => fail(s"alias-typed declaration lambda lost its name: $other")
+    }
+  }
+
+  test("a failure after reading does not blame the last installed declaration") {
+    val f = new ExportBuilder
+    val bName = f.name("B")
+    val sort1 = f.sort(f.levelSucc(0))
+    f.axiom(bName, sort1)
+    val input = new ByteArrayInputStream(f.bytes) {
+      override def close(): Unit = throw new java.io.IOException("synthetic close failure")
+    }
+
+    val errors = LeanImportSession
+      .importStream(input, "post-read-failure.ndjson")
+      .swap
+      .getOrElse(fail("post-read stream failure unexpectedly imported"))
+    assertEquals(errors.length, 1)
+    val error = errors.head
+    assert(error.isInstanceOf[DeclarationTypeError])
+    assertEquals(error.provenance.line, 0L)
+    assertEquals(error.provenance.kind, "import")
+    assertEquals(error.declaration, None)
   }
 
   test("deep right-nested arguments fail with a bounded diagnostic instead of overflowing") {

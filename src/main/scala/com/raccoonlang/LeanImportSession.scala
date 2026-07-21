@@ -60,10 +60,10 @@ object LeanImportSession {
       } catch {
         case diagnostic: LeanImportDiagnostic => Left(Vector(diagnostic))
         case _: StackOverflowError =>
-          val provenance = session.failureProvenance(source)
+          val provenance = importProvenance(source)
           Left(Vector(DeclarationTypeError(provenance, "export nesting exceeds the supported depth")))
         case NonFatal(error) =>
-          val provenance = session.failureProvenance(source)
+          val provenance = importProvenance(source)
           Left(Vector(DeclarationTypeError(provenance, bounded(Option(error.getMessage).getOrElse(error.toString)))))
       }
     }
@@ -72,28 +72,31 @@ object LeanImportSession {
     private var registry = LeanGlobalRegistry.empty
     private var installed0 = Vector.empty[LeanManifestEntry]
     private var skipped0 = Vector.empty[LeanManifestEntry]
-    private var activeProvenance: Option[ExportProvenance] = None
-    private var lastProvenance: Option[ExportProvenance] = None
 
     def env: Env = currentEnv
     def installed: Vector[LeanManifestEntry] = installed0
     def skipped: Vector[LeanManifestEntry] = skipped0
-    def failureProvenance(source: String): ExportProvenance =
-      activeProvenance
-        .orElse(lastProvenance)
-        .getOrElse(
-          ExportProvenance(java.nio.file.Paths.get(source), 0L, 0, 0L, "import", None, None)
-        )
 
     override def onMeta(meta: ExportMeta): Unit = ()
     override def finish(tables: ExportTables): Unit = ()
 
-    override def onDeclaration(decl: ExportDecl, tables: ExportTables): Unit = {
-      activeProvenance = Some(decl.provenance)
-      lastProvenance = activeProvenance
-      handleDeclaration(decl, tables)
-      activeProvenance = None
-    }
+    override def onDeclaration(decl: ExportDecl, tables: ExportTables): Unit =
+      try handleDeclaration(decl, tables)
+      catch {
+        case diagnostic: LeanImportDiagnostic => throw diagnostic
+        case _: StackOverflowError =>
+          throw DeclarationTypeError(
+            decl.provenance,
+            "export nesting exceeds the supported depth",
+            decl.provenance.declaration
+          )
+        case NonFatal(error) =>
+          throw DeclarationTypeError(
+            decl.provenance,
+            bounded(Option(error.getMessage).getOrElse(error.toString)),
+            decl.provenance.declaration
+          )
+      }
 
     private def handleDeclaration(decl: ExportDecl, tables: ExportTables): Unit = decl match {
       case value: ExportAxiom if !value.isUnsafe =>
@@ -238,4 +241,7 @@ object LeanImportSession {
     val rendered = Option(message).getOrElse("type checking failed")
     if (rendered.length <= 4096) rendered else rendered.take(4093) + "..."
   }
+
+  private def importProvenance(source: String): ExportProvenance =
+    ExportProvenance(java.nio.file.Paths.get(source), 0L, 0, 0L, "import", None, None)
 }
