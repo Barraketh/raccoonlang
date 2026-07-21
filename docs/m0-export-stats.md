@@ -1,6 +1,6 @@
 # M0 Mathlib Export Statistics
 
-Status: **done; Lean 4.30 evidence refreshed** (2026-07-20). This is the evidence record for
+Status: **done; both Lean 4.30 inputs refreshed** (2026-07-20). This is the evidence record for
 `mathlib-export-port.md` milestone M0 and the K5/K6 decisions.
 
 ## Scanner
@@ -29,25 +29,24 @@ entering proof-driven reduction.
 The current input was generated with lean4export 3.1.0 tag `v4.30.0` against Lean 4.30.0
 (`d024af099ca4bf2c86f649261ebf59565dc8c622`). The exact toolchain, exporter commit, checksums,
 and regeneration command are recorded under `artifacts/lean/v4.30.0/`. The earlier 4.24
-`Mathlib.Logic.Basic` sample is retired because mixing it with the current producer would make the
-comparison misleading; a matching Mathlib slice must be regenerated before the K6 counts are
-refreshed.
+`Mathlib.Logic.Basic` sample is retired; the table below uses the matching Mathlib `v4.30.0` tag at
+`c5ea00351c28e24afc9f0f84379aa41082b1188f`.
 
-| Statistic | `Init` |
-|---|---:|
-| Export size | 324 MB |
-| Objects | 6,354,855 |
-| Interned names / levels / expressions | 288,269 / 576 / 6,009,998 |
-| Declarations | 57,425 |
-| Inductive blocks | 598 |
-| Declared types containing `Sort (imax ...)` | 22 |
-| Mutual inductive blocks | 0 |
-| Inductive values flagged nested | 1 |
-| Sort-motive `Acc.rec` users outside the old fix cluster | 11 |
-| Projection nodes | 3,385 |
-| Nat / String literal nodes | 247 / 1,764 |
-| Distinct K3 Nat-operation candidates | 15 |
-| Irreducible declarations | 465 |
+| Statistic | `Init` | `Mathlib.Logic.Basic` closure |
+|---|---:|---:|
+| Export size | 324 MB | 524 MB |
+| Objects | 6,354,855 | 9,927,630 |
+| Interned names / levels / expressions | 288,269 / 576 / 6,009,998 | 646,629 / 954 / 9,166,175 |
+| Declarations | 57,425 | 118,254 |
+| Inductive blocks | 598 | 1,662 |
+| Declared types containing `Sort (imax ...)` | 22 | 36 |
+| Mutual inductive blocks | 0 | 2 |
+| Inductive values flagged nested | 1 | 31 (86 occurrences) |
+| Sort-motive `Acc.rec` users outside the old fix cluster | 11 | 11 |
+| Projection nodes | 3,385 | 7,805 |
+| Nat / String literal nodes | 247 / 1,764 | 556 / 6,808 |
+| Distinct K3 Nat-operation candidates | 15 | 15 |
+| Irreducible declarations | 465 | 2,749 |
 
 The eleven `Acc.rec` users are `Acc.recOn`, `Acc.ndrecOn`, `Acc.ndrecOn.eq_1`,
 `Acc.rec_eq_recC`, `Acc.ndrecOn_eq_ndrecOnC`, `WellFounded.fixF.eq_1`, `Acc.ndrec`,
@@ -70,10 +69,11 @@ constructor-elimination types. Genuine `imax` therefore survives in declaration 
 Mathlib proper; semantic recomputation with failure on surviving polymorphism is not a general
 translation strategy.
 
-**K6 — implement mutual and nested inductives in the kernel.** The 4.30 `Init` export still has no
-mutual blocks and has one nested inductive (`Lean.Syntax`, with two nested occurrences). The prior
-Mathlib sample established that an unpruned Mathlib stream needs native mutual/nested support, but
-its exact counts must be revalidated with a producer-matched Mathlib export.
+**K6 — implement mutual and nested inductives in the kernel.** The 4.30 `Init` export has no mutual
+blocks and has one nested inductive (`Lean.Syntax`, with two nested occurrences). The matching
+`Mathlib.Logic.Basic` closure has 2 mutual blocks and 31 nested inductive values with 86 nested
+occurrences. Current-producer evidence therefore confirms native mutual/nested support as a real
+raw-export requirement and closes the K6 M0 evidence gate.
 
 The high irreducibility and projection counts also confirm the existing P1 opaque-by-default plan
 and make K4's representation-based projections a prerequisite rather than a tail optimization.

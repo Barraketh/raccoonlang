@@ -62,6 +62,16 @@ class LeanImportT12Tests extends munit.FunSuite {
       assert(!IdentifierSyntax.isAtom(component))
       assert(LeanExportNames.encode(Vector(Left(component))).startsWith("$lean.name"))
     }
+    Vector(
+      "a.",
+      ".a",
+      "a..b",
+      "$lean.name",
+      "$lean.name.s-1_",
+      "$lean.name.s01_61",
+      "$lean.name.n01_1",
+      "$lean.name.s1_ff"
+    ).foreach(name => assertEquals(LeanExportNames.decode(name), None, name))
   }
 
   test("minimal Lean bootstrap installs only the universe machinery and reserves its identities") {

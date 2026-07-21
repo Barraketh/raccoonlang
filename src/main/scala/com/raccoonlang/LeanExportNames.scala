@@ -29,19 +29,34 @@ object LeanExportNames {
   }
 
   def decode(name: String): Option[Vector[Either[String, BigInt]]] = {
-    if (!name.startsWith(EncodedPrefix))
-      if (name.isEmpty) Some(Vector.empty) else Some(name.split('.').toVector.map(Left(_)))
-    else {
+    if (!name.startsWith(EncodedPrefix)) {
+      if (name.isEmpty) Some(Vector.empty)
+      else {
+        val components = name.split("\\.", -1).toVector
+        if (
+          components.forall(component =>
+            IdentifierSyntax.isAtom(component) && !component.startsWith("$lean") && !component.startsWith("$raccoon")
+          )
+        ) Some(components.map(Left(_)))
+        else None
+      }
+    } else {
       var offset = EncodedPrefix.length
       val result = Vector.newBuilder[Either[String, BigInt]]
       try {
         while (offset < name.length) {
           if (name.charAt(offset) != '.') return None
           offset += 1
+          if (offset >= name.length) return None
           val tag = name.charAt(offset); offset += 1
           val underscore = name.indexOf('_', offset)
           if (underscore < 0) return None
-          val length = name.substring(offset, underscore).toInt
+          val lengthDigits = name.substring(offset, underscore)
+          if (
+            lengthDigits.isEmpty || !lengthDigits.forall(_.isDigit) ||
+            (lengthDigits.length > 1 && lengthDigits.head == '0')
+          ) return None
+          val length = lengthDigits.toInt
           offset = underscore + 1
           tag match {
             case 's' =>
@@ -62,9 +77,12 @@ object LeanExportNames {
             case _ => return None
           }
         }
-        Some(result.result())
+        val decoded = result.result()
+        if (encode(decoded) == name) Some(decoded) else None
       } catch {
-        case _: ArithmeticException | _: NumberFormatException | _: IndexOutOfBoundsException => None
+        case _: ArithmeticException | _: NumberFormatException | _: IndexOutOfBoundsException |
+            _: NegativeArraySizeException =>
+          None
       }
     }
   }

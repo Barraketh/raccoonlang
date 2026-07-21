@@ -11,10 +11,14 @@ lean_toolchain="leanprover/lean4:v${lean_version}"
 exporter_tag="v${lean_version}"
 exporter_commit="a3e35a584f59b390667db7269cd37fca8575e4bf"
 exporter_dir="${repo_root}/temp/lean4export-${exporter_tag}"
+mathlib_tag="v${lean_version}"
+mathlib_commit="c5ea00351c28e24afc9f0f84379aa41082b1188f"
+mathlib_dir="${repo_root}/temp/mathlib-${mathlib_tag}"
 artifact_dir="${repo_root}/artifacts/lean/${exporter_tag}"
 
 init_prelude_sha256="802e80820fe7b48f475182851f6c2385e647691596a45a8ed312b3e8e3ce452f"
 init_sha256="75b2cb000d698aac2946ea76d3401d5939c9274ebd7849d1b46f25ee2fcd28d9"
+mathlib_logic_basic_sha256="be0803746160ed431cc077e7af6c3c7bc5831a5df3623a1da23ad8ac2a7c58dd"
 
 for command_name in elan git shasum; do
   if ! command -v "${command_name}" >/dev/null 2>&1; then
@@ -40,6 +44,17 @@ fi
 actual_exporter_commit=$(git -C "${exporter_dir}" rev-parse HEAD)
 if [[ "${actual_exporter_commit}" != "${exporter_commit}" ]]; then
   echo "${exporter_dir} is at ${actual_exporter_commit}; expected ${exporter_commit}" >&2
+  exit 1
+fi
+
+if [[ ! -d "${mathlib_dir}/.git" ]]; then
+  git clone --depth 1 --branch "${mathlib_tag}" \
+    https://github.com/leanprover-community/mathlib4.git "${mathlib_dir}"
+fi
+
+actual_mathlib_commit=$(git -C "${mathlib_dir}" rev-parse HEAD)
+if [[ "${actual_mathlib_commit}" != "${mathlib_commit}" ]]; then
+  echo "${mathlib_dir} is at ${actual_mathlib_commit}; expected ${mathlib_commit}" >&2
   exit 1
 fi
 
@@ -86,4 +101,45 @@ generate_artifact() {
 generate_artifact "Init.Prelude" "${init_prelude_sha256}"
 generate_artifact "Init" "${init_sha256}"
 
-echo "Lean artifacts are verified for ${lean_toolchain} (${lean_commit})."
+generate_mathlib_artifact() {
+  local module_name=$1
+  local expected_sha256=$2
+  local destination="${artifact_dir}/${module_name}.ndjson"
+
+  if [[ -f "${destination}" ]]; then
+    local existing_sha256
+    existing_sha256=$(shasum -a 256 "${destination}" | awk '{print $1}')
+    if [[ "${existing_sha256}" == "${expected_sha256}" ]]; then
+      echo "reusing verified ${destination}"
+      return
+    fi
+    echo "refusing to overwrite ${destination}: SHA-256 is ${existing_sha256}, expected ${expected_sha256}" >&2
+    exit 1
+  fi
+
+  (
+    cd "${mathlib_dir}"
+    elan run "${lean_toolchain}" lake exe cache get "${module_name//.//}.lean"
+  )
+
+  local temporary_file
+  temporary_file=$(mktemp "${artifact_dir}/.${module_name}.ndjson.XXXXXX")
+  (
+    cd "${mathlib_dir}"
+    elan run "${lean_toolchain}" lake env "${exporter_dir}/.lake/build/bin/lean4export" \
+      "${module_name}" >"${temporary_file}"
+  )
+
+  local actual_sha256
+  actual_sha256=$(shasum -a 256 "${temporary_file}" | awk '{print $1}')
+  if [[ "${actual_sha256}" != "${expected_sha256}" ]]; then
+    echo "${module_name} SHA-256 is ${actual_sha256}, expected ${expected_sha256}" >&2
+    exit 1
+  fi
+  mv "${temporary_file}" "${destination}"
+  echo "wrote ${destination}"
+}
+
+generate_mathlib_artifact "Mathlib.Logic.Basic" "${mathlib_logic_basic_sha256}"
+
+echo "Lean and Mathlib artifacts are verified for ${lean_toolchain} (${lean_commit})."

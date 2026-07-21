@@ -30,7 +30,7 @@ object Env {
 }
 
 final case class NativeLiteralState private[raccoonlang] (
-    natLayout: Option[Value.ValidatedNatLayout],
+    natLayout: Option[Packed.ValidatedNatLayout],
     stringLayout: Option[Value.ValidatedStringLayout]
 )
 
@@ -137,7 +137,7 @@ final case class Env(
       case None    => copy(nativeLiterals = nativeLiterals.copy(stringLayout = Some(layout)))
     }
 
-  private[raccoonlang] def installNatLayout(layout: Value.ValidatedNatLayout): Env =
+  private[raccoonlang] def installNatLayout(layout: Packed.ValidatedNatLayout): Env =
     nativeLiterals.natLayout match {
       case Some(_) => throw WTF("Validated Nat layout is already installed")
       case None    => copy(nativeLiterals = nativeLiterals.copy(natLayout = Some(layout)))

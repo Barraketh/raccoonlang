@@ -241,7 +241,11 @@ class LeanImportLoweringRegressionTests extends munit.FunSuite {
     f.axiom(bName, sort1)
     f.definition(idName, f.mdata(unary), f.mdata(identity))
 
-    imported(f)
+    val result = imported(f)
+    result.env("metadataId") match {
+      case Value.VLam(_, Value.ValueId.Const("metadataId"), _) =>
+      case other => fail(s"monomorphic declaration lambda lost its name: $other")
+    }
   }
 
   test("deep right-nested arguments fail with a bounded diagnostic instead of overflowing") {
@@ -268,6 +272,29 @@ class LeanImportLoweringRegressionTests extends munit.FunSuite {
     val errors = f.result.swap.getOrElse(fail("deep expression unexpectedly imported"))
     assert(errors.exists(error => error.isInstanceOf[BodyLowering] && error.message.contains("nesting exceeds")))
     assert(errors.forall(_.getMessage.length <= 4096))
+  }
+
+  test("deep expected-type recursion through let values consumes the lowering depth budget") {
+    val f = new ExportBuilder
+    val bName = f.name("B")
+    val valueName = f.name("value")
+    val letName = f.name("nested")
+    val deepName = f.name("deepLetValue")
+    val sort1 = f.sort(f.levelSucc(0))
+    val b = f.const(bName)
+    val value = f.const(valueName)
+    var nested = value
+    var depth = 0
+    while (depth < 600) {
+      nested = f.let(letName, b, nested, value, nonDependent = true)
+      depth += 1
+    }
+    f.axiom(bName, sort1)
+    f.axiom(valueName, b)
+    f.definition(deepName, b, nested)
+
+    val errors = f.result.swap.getOrElse(fail("deep expected-type recursion unexpectedly imported"))
+    assert(errors.exists(error => error.isInstanceOf[BodyLowering] && error.message.contains("nesting exceeds")))
   }
 
   test("nondependent-let analysis visits shared expression nodes once per binder depth") {
@@ -302,7 +329,7 @@ class LeanImportLoweringRegressionTests extends munit.FunSuite {
       CoreAst.Term.LocalRef(x, span),
       span
     )
-    intercept[IllegalArgumentException](
+    intercept[WTF](
       CoreSubstitution.substitute(
         term,
         Map(x -> CoreAst.Term.LocalRef(y, span))

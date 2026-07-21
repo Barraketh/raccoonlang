@@ -60,10 +60,10 @@ object LeanImportSession {
       } catch {
         case diagnostic: LeanImportDiagnostic => Left(Vector(diagnostic))
         case _: StackOverflowError =>
-          val provenance = ExportProvenance(java.nio.file.Paths.get(source), 0L, 0, 0L, "import", None, None)
+          val provenance = session.failureProvenance(source)
           Left(Vector(DeclarationTypeError(provenance, "export nesting exceeds the supported depth")))
         case NonFatal(error) =>
-          val provenance = ExportProvenance(java.nio.file.Paths.get(source), 0L, 0, 0L, "import", None, None)
+          val provenance = session.failureProvenance(source)
           Left(Vector(DeclarationTypeError(provenance, bounded(Option(error.getMessage).getOrElse(error.toString)))))
       }
     }
@@ -72,15 +72,30 @@ object LeanImportSession {
     private var registry = LeanGlobalRegistry.empty
     private var installed0 = Vector.empty[LeanManifestEntry]
     private var skipped0 = Vector.empty[LeanManifestEntry]
+    private var activeProvenance: Option[ExportProvenance] = None
+    private var lastProvenance: Option[ExportProvenance] = None
 
     def env: Env = currentEnv
     def installed: Vector[LeanManifestEntry] = installed0
     def skipped: Vector[LeanManifestEntry] = skipped0
+    def failureProvenance(source: String): ExportProvenance =
+      activeProvenance
+        .orElse(lastProvenance)
+        .getOrElse(
+          ExportProvenance(java.nio.file.Paths.get(source), 0L, 0, 0L, "import", None, None)
+        )
 
     override def onMeta(meta: ExportMeta): Unit = ()
     override def finish(tables: ExportTables): Unit = ()
 
-    override def onDeclaration(decl: ExportDecl, tables: ExportTables): Unit = decl match {
+    override def onDeclaration(decl: ExportDecl, tables: ExportTables): Unit = {
+      activeProvenance = Some(decl.provenance)
+      lastProvenance = activeProvenance
+      handleDeclaration(decl, tables)
+      activeProvenance = None
+    }
+
+    private def handleDeclaration(decl: ExportDecl, tables: ExportTables): Unit = decl match {
       case value: ExportAxiom if !value.isUnsafe =>
         val coreName = LeanExportNames.encode(value.name, tables)
         if (coreName == "propext" || coreName == "Classical.choice")
@@ -170,11 +185,7 @@ object LeanImportSession {
         safety: Option[ExportSafety] = None
     )(build: (String, LeanTermLowerer) => (Decl, Option[ImportedCallingConvention])): Unit = {
       val name = LeanExportNames.encode(sourceName, tables)
-      if (name.isEmpty) throw TypeLowering(provenance, "anonymous declaration name", Some(name))
-      if (ReservedNames.all(name))
-        throw ReservedNameViolation(provenance, s"$name is reserved for authenticated kernel installation", Some(name))
-      if (currentEnv.globals.contains(name))
-        throw ReservedNameViolation(provenance, s"$name collides with an existing bootstrap global", Some(name))
+      validateNameAvailability(name, provenance)
       val lowerer = new LeanTermLowerer(tables, currentEnv, registry, name)
       try {
         val (decl, convention) = build(name, lowerer)
@@ -200,11 +211,20 @@ object LeanImportSession {
         safety: ExportSafety
     ): Unit = {
       val name = LeanExportNames.encode(sourceName, tables)
+      validateNameAvailability(name, provenance)
       val global = ImportedGlobal(sourceName, name, provenance, SkippedUnsafe, levelParams)
       val nextRegistry = registry.add(global, tables)
       val entry = LeanManifestEntry(name, kind, opaque = true, provenance, None, None, Some(safety))
       registry = nextRegistry
       skipped0 :+= entry
+    }
+
+    private def validateNameAvailability(name: String, provenance: ExportProvenance): Unit = {
+      if (name.isEmpty) throw TypeLowering(provenance, "anonymous declaration name", Some(name))
+      if (ReservedNames.all(name))
+        throw ReservedNameViolation(provenance, s"$name is reserved for authenticated kernel installation", Some(name))
+      if (currentEnv.globals.contains(name))
+        throw ReservedNameViolation(provenance, s"$name collides with an existing bootstrap global", Some(name))
     }
 
     private def unsupported(name: NameId, provenance: ExportProvenance, tables: ExportTables, reason: String): Nothing =

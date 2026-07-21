@@ -1,14 +1,15 @@
 # Mathlib Export Port Plan
 
-Status: **implementation** (**M0 done**). Companion to `kernel-theory.md` (the theory constraints every workstream must
+Status: **implementation** (**M0 refreshed on both Lean 4.30 inputs**). Companion to
+`kernel-theory.md` (the theory constraints every workstream must
 respect) and `proof-collapse.md`. Records the decisions from the 2026-07 decidability analysis;
 the workstream sections are the units of implementation, the milestones (§7) are the acceptance
 ladder.
 
 The M0/M1 parity target is lean4export 3.1.0 tag `v4.30.0` against Lean 4.30.0 at commit
 `d024af099ca4bf2c86f649261ebf59565dc8c622`. The 2026-07-20 producer refresh reopened the shape
-assumptions recorded by T1, K2, K3, and K6: full `Init` has been rescanned, while a matching
-Mathlib slice still needs regeneration before M1.
+assumptions recorded by T1, K2, K3, and K6: full `Init` and `Mathlib.Logic.Basic` have both been
+rescanned with the matching producer.
 
 ## 1. Goal and strategy
 
@@ -59,12 +60,12 @@ explicit arguments per Raccoon's all-or-none implicit rule.
 |---|---|---|---|
 | K1 | Higher-order subterm rule | — | **done** (commit 3355563) |
 | K2 | Sealed `Acc`/`WellFounded` primitives | — | **kernel complete; kernel §13 pins green**; T3 mapping/tests pending |
-| K3 | Native Nat/String literals | — | **kernel implementation complete**; translated-`Init` activation/manifest is T1-gated |
+| K3 | Native Nat/String literals | — | Nat kernel path complete; Lean 4.30 String adapter and translated-`Init` activation/manifest are T1-gated |
 | K4 | Primitive projections + structure eta | — | **done** |
 | K5 | `imax` levels | M0 stats | **done** |
-| K6 | Mutual / nested inductives | M0 stats | M0 decision: native kernel support |
+| K6 | Mutual / nested inductives | M0 stats | native kernel support confirmed on 4.30 Mathlib evidence |
 | K7 | Axioms: propext, choice | evidence-grades refactor | — |
-| T1 | Export reader + prelude alignment | — | M0 reader/stats done; translation pending |
+| T1 | Export reader + prelude alignment | — | T1.1–T1.4 landed; reader parity has both inputs; T1.5 pending |
 | T2 | Recursor synthesis | K1 | — |
 | T3 | `Acc`/WF cluster mapping | K2 | — |
 | T4 | Typecheck-and-patch loop | T1–T3 | — |
@@ -161,10 +162,11 @@ Mutual: generalize positivity, the termination order (component-wise subterm acr
 recursor synthesis. Nested: prefer kernel support over an encoding pass (encodings change
 no-confusion/injectivity behavior downstream). Public nested values stay direct, but recursor
 validation must build Lean's logical extended block so specialized container motives and minors
-appear in the telescope; nested containers must share the block universe. M0 found mutual and
-nested blocks in the first raw Mathlib slice, including blocks in the imported Lean/Std closure.
-Since T1 consumes that raw export rather than a separately validated dependency-pruned artifact,
-the decision is native kernel support, not an encoding or deferral. Counts: `m0-export-stats.md`.
+appear in the telescope; nested containers must share the block universe. The producer-matched Lean
+4.30 `Mathlib.Logic.Basic` export contains 2 mutual blocks and 31 nested inductive values with 86
+nested occurrences, including blocks in the imported Lean/Std closure. Since T1 consumes that raw
+export rather than a dependency-pruned artifact, the decision is native kernel support, not an
+encoding or deferral. Counts: `m0-export-stats.md`.
 K6 also generalizes the existing per-family proof-recovery plan to block checking; neither
 mutual membership nor recursiveness introduces a runtime proof-unification rule.
 
@@ -182,8 +184,8 @@ says current rules already exclude this; re-walk §6 when landing.
 **T1. Export reader + prelude alignment.** Implementation spec: `t1-lean-export-importer.md`.
 The M0 reader-only portion is done
 (`LeanExportM0` / `MathlibExportStats`): it validates format 3.1.0 and intern-table order while
-retaining only packed transitive summaries, and was exercised on real `Init` and
-`Mathlib.Logic.Basic` exports. See `m0-export-stats.md`. Remaining work: translate the stream and
+retaining only packed transitive summaries, and has been refreshed on real producer-matched Lean
+4.30 `Init` and `Mathlib.Logic.Basic` exports. See `m0-export-stats.md`. Remaining work: translate the stream and
 retain topological declaration order. The benchmark starts from a minimal kernel-owned `Sort`/`Level` bootstrap and
 imports a fresh translated Lean `Init`; it does not load Raccoon's source Prelude. Preserve ordinary safe Lean names
 and use an injective encoding only for numerical/exotic names. Retain each primitive's validated implicit/explicit
@@ -250,10 +252,10 @@ kernel-theory review — thunks must not weaken the §5 evidence rules).
 
 ## 7. Milestones
 
-- **M0 — stats — done.** A reader-only pass over real `Init` and `Mathlib.Logic.Basic` exports
-  counting: `Sort (imax …)` in declared types, mutual blocks, nested inductives, Sort-motive
-  `Acc.rec` uses outside the fix cluster, `proj` nodes, literal ops used, declarations flagged
-  irreducible. Results and resolved gates: `m0-export-stats.md`. The Abel–Coquand Ω
+- **M0 — stats — done on both Lean 4.30 inputs.** Reader-only passes over real producer-matched
+  `Init` and `Mathlib.Logic.Basic` count `Sort (imax …)` in declared types, mutual blocks, nested
+  inductives, Sort-motive `Acc.rec` uses outside the fix cluster, `proj` nodes, literal ops used,
+  and declarations flagged irreducible. Results: `m0-export-stats.md`. The Abel–Coquand Ω
   must-terminate probe is pinned in `ConsistencyTests`.
 - **M1 — core prelude.** The `Init` closure typechecks end-to-end (exercises T1/T2/T3, K2, K3, K4,
   K6, and the K7 capability required by exported `propext`/choice assumptions). Acceptance: zero
@@ -270,7 +272,9 @@ kernel-theory review — thunks must not weaken the §5 evidence rules).
 ## 8. Decision gates
 
 1. **Resolved at M0:** K5 extends the level algebra; genuine `imax` occurs in `Init` declaration types.
-2. **Resolved at M0:** K6 gets native mutual/nested support; both occur in the first raw Mathlib slice.
+2. **Resolved at refreshed M0:** K6 gets native mutual/nested support. The producer-matched Lean
+   4.30 `Mathlib.Logic.Basic` export contains 2 mutual blocks and 31 nested inductive values (86
+   nested occurrences) in the raw dependency closure.
 3. **Open:** Prop-level `Quot.lift` stuckness (proof-collapse §7): completeness question — does Mathlib's
    `Quotient` usage ever eliminate a Prop-level quotient into data? Check at M2.
 4. **Resolved:** Native-op defeq steps are trusted outright, following Lean's kernel stance. The

@@ -222,6 +222,59 @@ class LeanImportT14Tests extends munit.FunSuite {
     ).mkString("\n")
     val bootstrapErrors = imported(bootstrapCollision).swap.getOrElse(fail("bootstrap collision unexpectedly imported"))
     assert(bootstrapErrors.exists(_.isInstanceOf[ReservedNameViolation]))
+
+    val skippedReserved = Vector(
+      meta,
+      """{"str":{"pre":0,"str":"Nat"},"in":1}""",
+      """{"str":{"pre":1,"str":"add"},"in":2}""",
+      """{"bvar":99,"ie":0}""",
+      """{"axiom":{"name":2,"levelParams":[],"type":0,"isUnsafe":true}}"""
+    ).mkString("\n")
+    val skippedReservedErrors = imported(skippedReserved).swap.getOrElse(fail("reserved unsafe name was skipped"))
+    assert(skippedReservedErrors.exists(_.isInstanceOf[ReservedNameViolation]))
+
+    val skippedBootstrap = Vector(
+      meta,
+      """{"str":{"pre":0,"str":"Type"},"in":1}""",
+      """{"bvar":99,"ie":0}""",
+      """{"axiom":{"name":1,"levelParams":[],"type":0,"isUnsafe":true}}"""
+    ).mkString("\n")
+    val skippedBootstrapErrors = imported(skippedBootstrap).swap.getOrElse(fail("bootstrap collision was skipped"))
+    assert(skippedBootstrapErrors.exists(_.isInstanceOf[ReservedNameViolation]))
+  }
+
+  test("application flattening treats metadata in function position as transparent") {
+    var tables: ExportTables = null
+    val input = Vector(
+      meta,
+      """{"str":{"pre":0,"str":"Nat"},"in":1}""",
+      """{"str":{"pre":1,"str":"add"},"in":2}""",
+      """{"const":{"name":2,"us":[]},"ie":0}""",
+      """{"mdata":{"expr":0,"data":{"synthetic":true}},"ie":1}""",
+      """{"natVal":"7","ie":2}""",
+      """{"app":{"fn":1,"arg":2},"ie":3}""",
+      """{"natVal":"9","ie":4}""",
+      """{"app":{"fn":3,"arg":4},"ie":5}"""
+    ).mkString("\n")
+    LeanExportReader.read(
+      new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)),
+      "mdata-app.ndjson",
+      new LeanExportConsumer {
+        def onMeta(meta: ExportMeta): Unit = ()
+        def onDeclaration(decl: ExportDecl, current: ExportTables): Unit = ()
+        def finish(current: ExportTables): Unit = tables = current
+      }
+    )
+    val provenance = tables.exprProvenance(ExprId(0))
+    val registry = LeanGlobalRegistry.empty.add(
+      ImportedGlobal(NameId(2), "Nat.add", provenance, Installed, Vector.empty),
+      tables
+    )
+    val lowered = new LeanTermLowerer(tables, Prelude.default.checkedEnv, registry, "mdataApp").lowerTerm(ExprId(5))
+    lowered match {
+      case CoreAst.Term.App(CoreAst.Term.GlobalRef("Nat.add", _), args, _) => assertEquals(args.length, 2)
+      case other => fail(s"metadata split the application spine: $other")
+    }
   }
 
   test("ordinary all groups cannot claim non-ordinary declarations in either order") {

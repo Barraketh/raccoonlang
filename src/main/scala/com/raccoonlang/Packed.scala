@@ -8,6 +8,10 @@ import scala.util.control.NonFatal
 
 /** K3 native literals: constructor folding, native Nat operations, and trusted-bootstrap validation. */
 object Packed {
+
+  /** Issued only after this object validates the complete native Nat family. */
+  final class ValidatedNatLayout private[Packed] (val natTpe: Value)
+
   sealed trait NativeOpOrigin
   case object LeanKernel extends NativeOpOrigin
   case object RaccoonExtension extends NativeOpOrigin
@@ -204,7 +208,9 @@ object Packed {
         h
       case _ => fail(s"`${NatCodec.succName}` is not a unary `Nat` constructor")
     }
-    new ValidatedNatLayout(family, zero, succ)
+    // Force both constructor validations before issuing the otherwise opaque capability.
+    val _ = (zero, succ)
+    new ValidatedNatLayout(family)
   }
 
   private[raccoonlang] def validateNativeOpDeclaration(name: String, value: Value, env: Env): Unit =
@@ -394,7 +400,10 @@ object Packed {
   }
 
   private[raccoonlang] def evalNatLit(value: BigInt, env: Env): Value =
-    VPacked.nat(value, env(NatCodec.familyName))
+    VPacked.nat(
+      value,
+      env.nativeLiterals.natLayout.getOrElse(throw NatLiteralUnavailable("no validated Nat layout")).natTpe
+    )
 
   private[raccoonlang] def evalStrLit(scalars: Vector[Int], env: Env): Value = {
     val layout = env.nativeLiterals.stringLayout.getOrElse(throw StringLiteralUnavailable("no validated String layout"))

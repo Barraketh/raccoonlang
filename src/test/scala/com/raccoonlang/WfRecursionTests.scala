@@ -6,6 +6,19 @@ import com.raccoonlang.WfPrimitives._
 import com.raccoonlang.telescope.BinderOps
 
 class WfRecursionTests extends munit.FunSuite {
+  test("K2's reviewed producer pin stays independent and synchronized with the reader") {
+    val reviewed = ProducerVersion(
+      lean4Export = "3.1.0",
+      lean = "4.30.0",
+      leanCommit = "d024af099ca4bf2c86f649261ebf59565dc8c622"
+    )
+    assertEquals(SupportedProducer, reviewed)
+    assertEquals(
+      ProducerVersion(LeanExportReader.ExporterVersion, LeanExportReader.LeanVersion, LeanExportReader.LeanGitHash),
+      reviewed
+    )
+  }
+
   private val accSource =
     """
       |inductive Acc {u: Level}(A: Sort(u))(r: A -> A -> Prop) indices (a: A) : Prop

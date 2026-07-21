@@ -4,49 +4,83 @@ import com.raccoonlang.CoreAst.Term
 
 private[raccoonlang] object CoreSubstitution {
   def substitute(term: Term, replacements: Map[CoreAst.LocalRef, Term]): Term = {
-    def freeRefs(current: Term, bound: Set[CoreAst.LocalRef] = Set.empty): Set[CoreAst.LocalRef] = current match {
-      case Term.LocalRef(local, _)                             => if (bound(local)) Set.empty else Set(local)
-      case _: Term.GlobalRef | _: Term.NatLit | _: Term.StrLit => Set.empty
-      case Term.Select(base, _, _)                             => freeRefs(base, bound)
-      case Term.Proj(_, _, base, _)                            => freeRefs(base, bound)
-      case Term.App(fn, args, _) =>
-        args.foldLeft(freeRefs(fn, bound)) { case (refs, arg) => refs ++ freeRefs(arg, bound) }
-      case Term.Pi(binders, out, _) =>
-        var currentBound = bound
-        val inBinders = binders.foldLeft(Set.empty[CoreAst.LocalRef]) { case (refs, binder) =>
-          val next = refs ++ freeRefs(binder.ty, currentBound)
-          currentBound += binder.localRef
-          next
+    def freeRefs(root: Term): Set[CoreAst.LocalRef] = {
+      val result = scala.collection.mutable.HashSet.empty[CoreAst.LocalRef]
+      val pending = scala.collection.mutable.ArrayDeque((root, Set.empty[CoreAst.LocalRef]))
+      while (pending.nonEmpty) {
+        val (current, bound) = pending.removeLast()
+        current match {
+          case Term.LocalRef(local, _)                             => if (!bound(local)) result += local
+          case _: Term.GlobalRef | _: Term.NatLit | _: Term.StrLit =>
+          case Term.Select(base, _, _)                             => pending.append((base, bound))
+          case Term.Proj(_, _, base, _)                            => pending.append((base, bound))
+          case Term.App(fn, args, _) =>
+            pending.append((fn, bound))
+            args.foreach(arg => pending.append((arg, bound)))
+          case Term.Pi(binders, out, _) =>
+            var currentBound = bound
+            binders.foreach { binder =>
+              pending.append((binder.ty, currentBound))
+              currentBound += binder.localRef
+            }
+            pending.append((out, currentBound))
+          case Term.Lam(ty, body, _, _, recursion) =>
+            pending.append((ty, bound))
+            pending.append((body, bound ++ ty.binders.map(_.localRef) ++ recursion.map(_.selfRef)))
+          case Term.Body(lets, res, _) =>
+            var currentBound = bound
+            lets.foreach { let =>
+              let.ty.foreach(tpe => pending.append((tpe, currentBound)))
+              pending.append((let.value, currentBound))
+              currentBound += let.localRef
+            }
+            pending.append((res, currentBound))
+          case Term.Match(scrut, motive, cases, _) =>
+            pending.append((scrut, bound))
+            motive.foreach(value => pending.append((value, bound)))
+            cases.foreach(branch => pending.append((branch.body, bound ++ branch.argRefs.flatten)))
         }
-        inBinders ++ freeRefs(out, currentBound)
-      case Term.Lam(ty, body, _, _, recursion) =>
-        val lambdaBound = bound ++ ty.binders.map(_.localRef) ++ recursion.map(_.selfRef)
-        freeRefs(ty, bound) ++ freeRefs(body, lambdaBound)
-      case Term.Body(lets, res, _) =>
-        var currentBound = bound
-        val inLets = lets.foldLeft(Set.empty[CoreAst.LocalRef]) { case (refs, let) =>
-          val next = refs ++ let.ty.fold(Set.empty[CoreAst.LocalRef])(ty => freeRefs(ty, currentBound)) ++
-            freeRefs(let.value, currentBound)
-          currentBound += let.localRef
-          next
-        }
-        inLets ++ freeRefs(res, currentBound)
-      case Term.Match(scrut, motive, cases, _) =>
-        val roots = freeRefs(scrut, bound) ++ motive.fold(Set.empty[CoreAst.LocalRef])(term => freeRefs(term, bound))
-        cases.foldLeft(roots) { case (refs, branch) =>
-          refs ++ freeRefs(branch.body, bound ++ branch.argRefs.flatten)
-        }
+      }
+      result.toSet
     }
 
-    def assertNoCapture(bound: Iterable[CoreAst.LocalRef], active: Map[CoreAst.LocalRef, Term]): Unit = {
-      val free = active.valuesIterator.flatMap(term => freeRefs(term)).toSet
-      bound.find(ref => free(ref)).foreach { ref =>
-        throw new IllegalArgumentException(s"substitution would capture local ref $ref")
+    val replacementFreeRefs = replacements.iterator.map { case (ref, replacement) =>
+      ref -> freeRefs(replacement)
+    }.toMap
+
+    final case class Active(
+        terms: Map[CoreAst.LocalRef, Term],
+        freeRefCounts: Map[CoreAst.LocalRef, Int]
+    ) {
+      def without(refs: Iterable[CoreAst.LocalRef]): Active = {
+        var nextTerms = terms
+        var nextCounts = freeRefCounts
+        refs.foreach { ref =>
+          if (nextTerms.contains(ref)) {
+            nextTerms -= ref
+            replacementFreeRefs(ref).foreach { free =>
+              val count = nextCounts(free)
+              if (count == 1) nextCounts -= free else nextCounts += free -> (count - 1)
+            }
+          }
+        }
+        Active(nextTerms, nextCounts)
       }
     }
 
-    def loop(current: Term, subst: Map[CoreAst.LocalRef, Term]): Term = current match {
-      case ref @ Term.LocalRef(local, _)        => subst.getOrElse(local, ref)
+    val initialCounts = replacementFreeRefs.valuesIterator.flatten.foldLeft(Map.empty[CoreAst.LocalRef, Int]) {
+      case (counts, ref) => counts.updated(ref, counts.getOrElse(ref, 0) + 1)
+    }
+    val initial = Active(replacements, initialCounts)
+
+    def assertNoCapture(bound: Iterable[CoreAst.LocalRef], active: Active): Unit = {
+      bound.find(active.freeRefCounts.contains).foreach { ref =>
+        throw WTF(s"substitution would capture local ref $ref")
+      }
+    }
+
+    def loop(current: Term, subst: Active): Term = current match {
+      case ref @ Term.LocalRef(local, _)        => subst.terms.getOrElse(local, ref)
       case ref: Term.GlobalRef                  => ref
       case lit: Term.NatLit                     => lit
       case lit: Term.StrLit                     => lit
@@ -57,7 +91,7 @@ private[raccoonlang] object CoreSubstitution {
         var active = subst
         val nextBinders = binders.map { binder =>
           val next = binder.copy(ty = loop(binder.ty, active))
-          active -= binder.localRef
+          active = active.without(Vector(binder.localRef))
           assertNoCapture(Vector(binder.localRef), active)
           next
         }
@@ -65,14 +99,14 @@ private[raccoonlang] object CoreSubstitution {
       case Term.Lam(ty, body, span, name, recursion) =>
         val nextTy = loop(ty, subst).asInstanceOf[Term.Pi]
         val bound = ty.binders.iterator.map(_.localRef).toSet ++ recursion.iterator.map(_.selfRef)
-        val active = subst -- bound
+        val active = subst.without(bound)
         assertNoCapture(bound, active)
         Term.Lam(nextTy, loop(body, active), span, name, recursion)
       case Term.Body(lets, res, span) =>
         var active = subst
         val nextLets = lets.map { let =>
           val next = let.copy(ty = let.ty.map(loop(_, active)), value = loop(let.value, active))
-          active -= let.localRef
+          active = active.without(Vector(let.localRef))
           assertNoCapture(Vector(let.localRef), active)
           next
         }
@@ -83,13 +117,13 @@ private[raccoonlang] object CoreSubstitution {
           motive.map(loop(_, subst)),
           cases.map { c =>
             val bound = c.argRefs.flatten.toSet
-            val active = subst -- bound
+            val active = subst.without(bound)
             assertNoCapture(bound, active)
             c.copy(body = loop(c.body, active))
           },
           span
         )
     }
-    loop(term, replacements)
+    loop(term, initial)
   }
 }

@@ -1303,7 +1303,8 @@ implemented because their failure modes are explicit. T1.6 requires them.
 - invalid UTF-8/JSON string cases;
 - malformed every declaration kind;
 - bounded failure on a deliberately deep App and Pi chain;
-- M0 golden parity on real Init, and on Mathlib.Logic.Basic once its 4.30-matched export is generated.
+- M0 golden parity on both real Lean 4.30 inputs: `Init` and the producer-matched
+  `Mathlib.Logic.Basic` artifact recorded under `artifacts/lean/v4.30.0/`.
 
 ### 19.2 Lowering
 
@@ -1362,8 +1363,8 @@ implemented because their failure modes are explicit. T1.6 requires them.
 
 T1's translation implementation is accepted when:
 
-1. the shared reader accepts the real pinned Init file and preserves its M0 statistics; the same
-   applies to Mathlib.Logic.Basic after a producer-matched export is generated;
+1. the shared reader accepts both real pinned inputs—`Init` and the producer-matched
+   `Mathlib.Logic.Basic`—and preserves their M0 statistics;
 2. malformed or unsupported producer input fails deterministically with provenance;
 3. the importer starts from LeanImportBootstrap and never loads Prelude.default;
 4. every kernel-safe ordinary declaration is checked in export order, while unsafe/partial

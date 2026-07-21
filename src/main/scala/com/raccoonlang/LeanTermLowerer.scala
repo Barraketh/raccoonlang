@@ -141,7 +141,13 @@ private[raccoonlang] final class LeanTermLowerer(
         lambda
       case Some(pi) =>
         val expected = TypeChecker.checkTerm(pi, kernelEnv).value
-        lowerExpected(expr, expected, Context(Vector.empty, declared.levelRefs, kernelEnv), declared.sourceInfos)
+        lowerExpected(
+          expr,
+          expected,
+          Context(Vector.empty, declared.levelRefs, kernelEnv),
+          declared.sourceInfos,
+          Some(name)
+        )
       case None =>
         val expected = TypeChecker.checkTerm(declared.term, kernelEnv).value
         lowerExpected(expr, expected, Context(Vector.empty, declared.levelRefs, kernelEnv))
@@ -151,13 +157,18 @@ private[raccoonlang] final class LeanTermLowerer(
   def lowerTerm(expr: ExprId): Term = lowerTerm(expr, Context(Vector.empty, Map.empty, kernelEnv))
 
   private def lowerTerm(expr: ExprId, context: Context): Term = {
+    val nested = enter(expr, context)
+    lowerTermAt(stripMData(expr), nested)
+  }
+
+  private def enter(expr: ExprId, context: Context): Context = {
     if (context.depth >= MaxLoweringDepth)
       throw BodyLowering(
         atExpr(expr),
         s"expression nesting exceeds the $MaxLoweringDepth-node lowering limit",
         Some(declaration)
       )
-    lowerTermAt(stripMData(expr), context.copy(depth = context.depth + 1))
+    context.copy(depth = context.depth + 1)
   }
 
   private def lowerTermAt(expr: ExprId, context: Context): Term = tables.exprNode(expr) match {
@@ -194,16 +205,18 @@ private[raccoonlang] final class LeanTermLowerer(
       expr: ExprId,
       expected: Value,
       context: Context,
-      expectedInfos: Vector[BinderInfo] = Vector.empty
+      expectedInfos: Vector[BinderInfo] = Vector.empty,
+      lambdaName: Option[String] = None
   ): Term = {
     val current = stripMData(expr)
     tables.exprNode(current) match {
       case _: Lam =>
         expected match {
-          case pi: VPi => lowerLambda(current, pi, context, expectedInfos)
+          case pi: VPi => lowerLambda(current, pi, enter(current, context), expectedInfos, lambdaName)
           case _ => throw BodyLowering(atExpr(expr), "lambda is checked against a non-function type", Some(declaration))
         }
-      case LetE(_, _, _, _, _) => lowerLets(current, context, Some(expected -> expectedInfos))
+      case LetE(_, _, _, _, _) =>
+        lowerLets(current, enter(current, context), Some((expected, expectedInfos, lambdaName)))
       case _ =>
         val term = lowerTerm(current, context)
         TypeChecker.checkTerm(term, expected, context.env)
@@ -215,7 +228,8 @@ private[raccoonlang] final class LeanTermLowerer(
       start: ExprId,
       expected: VPi,
       context: Context,
-      expectedInfos: Vector[BinderInfo]
+      expectedInfos: Vector[BinderInfo],
+      lambdaName: Option[String]
   ): Term = {
     val pi = quoteFreshPi(expected, context)
     var current = stripMData(start)
@@ -250,7 +264,7 @@ private[raccoonlang] final class LeanTermLowerer(
         pi,
         lowerExpected(current, bodyExpected, nextContext, expectedInfos.drop(idx)),
         span(),
-        name = None,
+        name = lambdaName,
         recursion = None
       )
     } else {
@@ -266,14 +280,14 @@ private[raccoonlang] final class LeanTermLowerer(
       }
       val body = Term.App(function, explicit, span())
       TypeChecker.checkTerm(body, TypeChecker.checkTerm(pi.out, bodyContext.env).value, bodyContext.env)
-      Term.Lam(pi, body, span(), name = None, recursion = None)
+      Term.Lam(pi, body, span(), name = lambdaName, recursion = None)
     }
   }
 
   private def lowerLets(
       start: ExprId,
       initial: Context,
-      expectedResult: Option[(Value, Vector[BinderInfo])]
+      expectedResult: Option[(Value, Vector[BinderInfo], Option[String])]
   ): Term.Body = {
     val lets = Vector.newBuilder[CoreAst.Let]
     var context = initial
@@ -301,8 +315,8 @@ private[raccoonlang] final class LeanTermLowerer(
       case _ => continue = false
     }
     val result = expectedResult match {
-      case Some((expected, infos)) => lowerExpected(current, expected, context, infos)
-      case None                    => lowerTerm(current, context)
+      case Some((expected, infos, name)) => lowerExpected(current, expected, context, infos, name)
+      case None                          => lowerTerm(current, context)
     }
     Term.Body(lets.result(), result, span())
   }
@@ -417,6 +431,7 @@ private[raccoonlang] final class LeanTermLowerer(
     var flatten = true
     while (flatten) tables.exprNode(headId) match {
       case App(fn, arg) => termArgsReversed += arg; headId = fn
+      case MData(child) => headId = child
       case _            => flatten = false
     }
     val termArgs = termArgsReversed.result().reverse

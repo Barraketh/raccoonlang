@@ -17,11 +17,15 @@ object LeanExportReader {
 
   final case class ReadResult(meta: ExportMeta, tables: ExportTables, objects: Long, declarations: Long)
 
+  /** Keeps importer/consumer failures outside the malformed-wire diagnostic boundary. */
+  private final class ConsumerFailure(val failure: Throwable) extends RuntimeException(null, failure, false, false)
+
   def read(input: InputStream, source: String, consumer: LeanExportConsumer): ReadResult = {
     val parser = new JsonFactory().createParser(input)
     val reader = new Reader(parser, Paths.get(source), consumer)
     try reader.read()
     catch {
+      case failure: ConsumerFailure         => throw failure.failure
       case diagnostic: LeanImportDiagnostic => throw diagnostic
       case _: StackOverflowError =>
         throw MalformedExport(reader.provenance("json"), "export nesting exceeds the supported depth")
@@ -72,7 +76,7 @@ object LeanExportReader {
         token = parser.nextToken()
       }
       val metadata = meta.getOrElse(fail("export is missing its initial metadata object"))
-      consumer.finish(tables)
+      notifyConsumer(consumer.finish(tables))
       ReadResult(metadata, tables, objectOrdinal, declarationCount)
     }
 
@@ -97,7 +101,7 @@ object LeanExportReader {
             val parsed = parseMeta()
             validateMeta(parsed)
             meta = Some(parsed)
-            consumer.onMeta(parsed)
+            notifyConsumer(consumer.onMeta(parsed))
           case "str" => payloadCount += 1; payloadKind = "name"; pending = Some(PendingName(parseNameStr()))
           case "num" => payloadCount += 1; payloadKind = "name"; pending = Some(PendingName(parseNameNum()))
           case "succ" =>
@@ -654,8 +658,15 @@ object LeanExportReader {
         case _                    =>
       }
       declarationCount += names.length
-      consumer.onDeclaration(decl, tables)
+      notifyConsumer(consumer.onDeclaration(decl, tables))
     }
+
+    private def notifyConsumer(callback: => Unit): Unit =
+      try callback
+      catch {
+        case error: StackOverflowError => throw new ConsumerFailure(error)
+        case NonFatal(error)           => throw new ConsumerFailure(error)
+      }
 
     private def validateOrdinaryGroup(name: NameId, all: Vector[NameId]): Unit = {
       val group = all.map(tables.nameComponents)

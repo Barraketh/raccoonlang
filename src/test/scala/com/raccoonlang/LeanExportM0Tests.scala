@@ -140,6 +140,23 @@ class LeanExportM0Tests extends munit.FunSuite {
     assert(error.message.contains("duplicate field 'bvar'"))
   }
 
+  test("shared reader does not misclassify consumer failures as malformed exports") {
+    val sentinel = new IllegalStateException("consumer failed")
+    val failing = new LeanExportIr.LeanExportConsumer {
+      def onMeta(meta: LeanExportIr.ExportMeta): Unit = throw sentinel
+      def onDeclaration(decl: LeanExportIr.ExportDecl, tables: LeanExportIr.ExportTables): Unit = ()
+      def finish(tables: LeanExportIr.ExportTables): Unit = ()
+    }
+    val thrown = intercept[IllegalStateException](
+      LeanExportReader.read(
+        new ByteArrayInputStream(meta.getBytes(StandardCharsets.UTF_8)),
+        "consumer.ndjson",
+        failing
+      )
+    )
+    assert(thrown eq sentinel)
+  }
+
   test("shared reader enforces pinned numeric token kinds") {
     val numericNat = s"$meta\n" + """{"natVal":42,"ie":0}"""
     assert(intercept[LeanExportM0.ScanError](scan(numericNat)).detail.contains("VALUE_STRING"))

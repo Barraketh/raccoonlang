@@ -643,12 +643,6 @@ object Value {
       val charListCodec: CharListCodec
   )
 
-  final class ValidatedNatLayout private[raccoonlang] (
-      val natTpe: Value,
-      val zero: ConstructorHead,
-      val succ: ConstructorHead
-  )
-
   /** A closed packed literal. Construction is restricted to the validated factories below. */
   final class VPacked private (
       val codec: PackedCodec,
