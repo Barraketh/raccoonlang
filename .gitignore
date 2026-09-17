@@ -1,0 +1,22 @@
+*.class
+*.log
+.DS_Store
+__pycache__/
+*.py[cod]
+
+# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
+hs_err_pid*
+.metals
+.bloop
+.vscode
+project/
+target/
+.bsp
+.idea
+
+out.txt
+scratch.txt
+temp/
+
+# Reproducible Lean export artifacts (see scripts/fetch-lean-artifacts.sh).
+artifacts/lean/*/*.ndjson
