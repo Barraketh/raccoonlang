@@ -1,0 +1,262 @@
+package com.raccoonlang
+
+import com.raccoonlang.Value._
+
+/** Definitional equality and consequence-preserving unification for the C05 value forms. */
+object ValueEquivalence {
+  final case class UnifyFailure(v1: Value, v2: Value, apart: Boolean = false) {
+    def asStuck: UnifyFailure = if (apart) copy(apart = false) else this
+  }
+
+  final case class Ctx(invertibleFrame: Boolean = true) {
+    def canLinkForced: Boolean = invertibleFrame
+    def enterNonInvertibleFrame: Ctx = if (invertibleFrame) copy(invertibleFrame = false) else this
+  }
+
+  def defEq(left: Value, right: Value): Boolean = tryUnify(left, right, EqStore.empty).isRight
+
+  def tryUnify(left: Value, right: Value, store: EqStore): Either[UnifyFailure, EqStore] =
+    unify(left, right, store, Ctx())
+
+  private def stuck(left: Value, right: Value): Left[UnifyFailure, EqStore] =
+    Left(UnifyFailure(left, right))
+
+  private def apart(left: Value, right: Value): Left[UnifyFailure, EqStore] =
+    Left(UnifyFailure(left, right, apart = true))
+
+  private def constructorForm(value: Value): Value = value match {
+    case head: ConstructorHead if head.totalArity == 0 => VCtor(head, Vector.empty, head.tpe)
+    case other                                         => other
+  }
+
+  private def definitionallyInjectiveHead(head: Value): Boolean = head match {
+    case h: ConstructorHead         => h.noConfusion
+    case VConst(_, Inductive(_), _) => true
+    case _                          => false
+  }
+
+  private def unify(left0: Value, right0: Value, store: EqStore, ctx: Ctx): Either[UnifyFailure, EqStore] =
+    unify(left0, right0, store, ctx, normalizeNullary = true)
+
+  private def unify(
+      left0: Value,
+      right0: Value,
+      store: EqStore,
+      ctx: Ctx,
+      normalizeNullary: Boolean
+  ): Either[UnifyFailure, EqStore] = {
+    val materializedLeft = ValueOps.materialize(left0, store)
+    val materializedRight = ValueOps.materialize(right0, store)
+    val left = if (normalizeNullary) constructorForm(materializedLeft) else materializedLeft
+    val right = if (normalizeNullary) constructorForm(materializedRight) else materializedRight
+    if (left.asInstanceOf[AnyRef] eq right.asInstanceOf[AnyRef]) Right(store)
+    else if (!left.needsStructuralDefEq && !right.needsStructuralDefEq && left.key == right.key)
+      Right(store)
+    else if (store.refinable.isEmpty && !left.needsStructuralDefEq && !right.needsStructuralDefEq)
+      stuck(left, right)
+    else
+      (left, right) match {
+        case (lv: Var, rv: Var) if lv.id == rv.id       => unify(lv.tpe, rv.tpe, store, ctx)
+        case (v: Var, other) if store.isRefinable(v.id) => link(v, other, store, ctx)
+        case (other, v: Var) if store.isRefinable(v.id) => link(v, other, store, ctx)
+        case (VSort(a), VSort(b)) if a == b             => Right(store)
+        case (VConst(ln, lk, lt), VConst(rn, rk, rt)) if ln == rn && lk == rk =>
+          unify(lt, rt, store, ctx)
+        case (lp: VPi, rp: VPi)   => unifyPis(lp, rp, store, ctx)
+        case (ll: VLam, rr: VLam) => unifyLambdas(ll, rr, store, ctx)
+        case (leftThunk: NeutralThunk, rightThunk: NeutralThunk) =>
+          unifyThunks(leftThunk, rightThunk, store, ctx)
+        case (leftHead: ConstructorHead, rightHead: ConstructorHead)
+            if leftHead.name == rightHead.name &&
+              leftHead.numErasedFamilyArgs == rightHead.numErasedFamilyArgs &&
+              leftHead.totalArity == rightHead.totalArity =>
+          unify(leftHead.tpe, rightHead.tpe, store, ctx)
+        case (leftHead: ConstructorHead, rightHead: ConstructorHead) if leftHead.name != rightHead.name =>
+          stuck(leftHead, rightHead)
+        case (leftApp: VApp, rightApp: VApp) if leftApp.args.length == rightApp.args.length =>
+          unifyApps(leftApp, rightApp, store, ctx)
+        case _ => stuck(left, right)
+      }
+  }
+
+  private def unifyApps(left: VApp, right: VApp, store: EqStore, ctx: Ctx): Either[UnifyFailure, EqStore] = {
+    (left.head, right.head) match {
+      case (a: ConstructorHead, b: ConstructorHead) if a.name != b.name && a.noConfusion && b.noConfusion =>
+        return apart(left, right)
+      case _ =>
+    }
+    val invertible = definitionallyInjectiveHead(left.head) && definitionallyInjectiveHead(right.head)
+    val argCtx = if (invertible) ctx else ctx.enterNonInvertibleFrame
+    val frame: UnifyFailure => UnifyFailure = if (invertible) identity else _.asStuck
+    unify(left.head, right.head, store, argCtx, normalizeNullary = false) match {
+      case Left(failure) => Left(frame(failure))
+      case Right(headStore) =>
+        var current = headStore
+        var apartFailure: Option[UnifyFailure] = None
+        val deferred = Vector.newBuilder[(Value, Value)]
+        left.args.zip(right.args).foreach { case (leftArg, rightArg) =>
+          if (current != null) {
+            unify(leftArg, rightArg, current, argCtx) match {
+              case Right(next)                    => current = next
+              case Left(failure) if failure.apart => apartFailure = Some(failure); current = null
+              case Left(_)                        => deferred += leftArg -> rightArg
+            }
+          }
+        }
+        if (current == null) Left(frame(apartFailure.get))
+        else {
+          unify(left.tpe, right.tpe, current, ctx) match {
+            case Left(failure) => Left(frame(failure))
+            case Right(next) =>
+              deferred.result().foldLeft[Either[UnifyFailure, EqStore]](Right(next)) {
+                case (Right(existing), (a, b)) => unify(a, b, existing, argCtx).left.map(frame)
+                case (failed @ Left(_), _)     => failed
+              }
+          }
+        }
+    }
+  }
+
+  private def link(variable: Var, other: Value, store: EqStore, ctx: Ctx): Either[UnifyFailure, EqStore] = {
+    if (!ctx.canLinkForced) stuck(variable, other)
+    else {
+      val result = for {
+        typed <- unify(variable.tpe, other.tpe, store, ctx)
+        candidate = ValueOps.materialize(other, typed)
+        next <-
+          if (typed.occurs(variable.id, candidate)) Left(UnifyFailure(variable, other))
+          else Right(typed)
+      } yield next
+      result.map { typed =>
+        other match {
+          case otherVar: Var if typed.isRefinable(otherVar.id) && otherVar.id < variable.id =>
+            typed.addLink(variable.id, otherVar)
+          case otherVar: Var if typed.isRefinable(otherVar.id) =>
+            typed.addLink(otherVar.id, variable)
+          case _ => typed.addLink(variable.id, ValueOps.materialize(other, typed))
+        }
+      }
+    }
+  }
+
+  private def unifyPis(left: VPi, right: VPi, store: EqStore, ctx: Ctx): Either[UnifyFailure, EqStore] = {
+    if (
+      left.binders.length != right.binders.length || left.binders.map(_.isImplicit) != right.binders.map(_.isImplicit)
+    )
+      stuck(left, right)
+    else {
+      val inner = ctx.enterNonInvertibleFrame
+      var current = store
+      var leftEnv = left.env
+      var rightEnv = right.env
+      val watermark = FreshVar.currentId
+      var failed: Option[UnifyFailure] = None
+      left.binders.zip(right.binders).foreach { case (lb, rb) =>
+        if (failed.isEmpty) {
+          unify(Interpreter.evalTerm(lb.ty, leftEnv), Interpreter.evalTerm(rb.ty, rightEnv), current, inner) match {
+            case Left(error) => failed = Some(error.asStuck)
+            case Right(next) =>
+              current = next
+              val shared =
+                FreshVar.freshVar(lb.name, ValueOps.materialize(Interpreter.evalTerm(lb.ty, leftEnv), current))
+              leftEnv = leftEnv.putLocal(lb.localRef, shared)
+              rightEnv = rightEnv.putLocal(rb.localRef, shared)
+          }
+        }
+      }
+      failed match {
+        case Some(error) => Left(error)
+        case None =>
+          unify(left.codomain(leftEnv), right.codomain(rightEnv), current, inner).flatMap { next =>
+            val escaped = next.subst.exists { case (id, solution) =>
+              !store.subst.contains(id) && solution.synDeps.nonEmpty && solution.synDeps.max > watermark
+            }
+            if (escaped) stuck(left, right) else Right(next)
+          }
+      }
+    }
+  }
+
+  private def unifyLambdas(left: VLam, right: VLam, store: EqStore, ctx: Ctx): Either[UnifyFailure, EqStore] =
+    (left.body, right.body) match {
+      case (LamBody.Core(lt, le), LamBody.Core(rt, re)) =>
+        if (sameLambdaId(left.id, right.id)) Right(store)
+        else
+          alignLambdaPis(left.tpe, right.tpe, store, ctx, le, re).flatMap { case (next, leftEnv, rightEnv, watermark) =>
+            unify(Interpreter.evalTerm(lt.body, leftEnv), Interpreter.evalTerm(rt.body, rightEnv), next, ctx).left
+              .map(_.asStuck)
+              .flatMap { result =>
+                val escaped = result.subst.exists { case (id, solution) =>
+                  !store.subst.contains(id) && solution.synDeps.nonEmpty && solution.synDeps.max > watermark
+                }
+                if (escaped) stuck(left, right) else Right(result)
+              }
+          }
+    }
+
+  private def alignLambdaPis(
+      left: VPi,
+      right: VPi,
+      store: EqStore,
+      ctx: Ctx,
+      leftBase: Env,
+      rightBase: Env
+  ): Either[UnifyFailure, (EqStore, Env, Env, Value.VarId)] = {
+    if (
+      left.binders.length != right.binders.length || left.binders.map(_.isImplicit) != right.binders.map(_.isImplicit)
+    )
+      return Left(UnifyFailure(left, right))
+    val inner = ctx.enterNonInvertibleFrame
+    val watermark = FreshVar.currentId
+    var current = store
+    var leftEnv = leftBase
+    var rightEnv = rightBase
+    left.binders.zip(right.binders).foreach { case (lb, rb) =>
+      unify(Interpreter.evalTerm(lb.ty, leftEnv), Interpreter.evalTerm(rb.ty, rightEnv), current, inner) match {
+        case Left(error) => return Left(error.asStuck)
+        case Right(next) =>
+          current = next
+          val shared = FreshVar.freshVar(lb.name, Interpreter.evalTerm(lb.ty, leftEnv))
+          leftEnv = leftEnv.putLocal(lb.localRef, shared)
+          rightEnv = rightEnv.putLocal(rb.localRef, shared)
+      }
+    }
+    unify(left.codomain(leftEnv), right.codomain(rightEnv), current, inner)
+      .map(next => (next, leftEnv, rightEnv, watermark))
+  }
+
+  private def sameLambdaId(left: ValueId, right: ValueId): Boolean = (left, right) match {
+    case (ValueId.Const(a), ValueId.Const(b)) => a == b
+    case (ValueId.LocalId(ln, lc), ValueId.LocalId(rn, rc)) if ln == rn && lc.length == rc.length =>
+      lc.zip(rc).forall { case (a, b) => defEq(a, b) }
+    case _ => false
+  }
+
+  private def unifyThunks(
+      left: NeutralThunk,
+      right: NeutralThunk,
+      store: EqStore,
+      ctx: Ctx
+  ): Either[UnifyFailure, EqStore] = {
+    if (left.id.nodeId != right.id.nodeId || left.id.captures.length != right.id.captures.length)
+      stuck(left, right)
+    else {
+      val inner = ctx.enterNonInvertibleFrame
+      unify(left.tpe, right.tpe, store, ctx).flatMap { typed =>
+        left.id.captures.zip(right.id.captures).foldLeft[Either[UnifyFailure, EqStore]](Right(typed)) {
+          case (Right(current), (a, b)) => unify(a, b, current, inner).left.map(_.asStuck)
+          case (failed @ Left(_), _)    => failed
+        }
+      }
+    }
+  }
+
+  def whnf(value: Value): Value = value match {
+    case VApp(fn, args, tpe, blocked) =>
+      whnf(fn) match {
+        case lambda: VLam => whnf(Interpreter.evalApply(lambda, args))
+        case head => if (head.asInstanceOf[AnyRef] eq fn.asInstanceOf[AnyRef]) value else VApp(head, args, tpe, blocked)
+      }
+    case other => other
+  }
+}

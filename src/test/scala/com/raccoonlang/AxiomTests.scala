@@ -29,4 +29,10 @@ class AxiomTests extends munit.FunSuite {
       case other => fail(s"Expected applied symbolic axiom, got $other")
     }
   }
+
+  test("an axiom result must itself be a type") {
+    intercept[NotAType] {
+      TestSupport.check("axiom A : Type\naxiom x : A\naxiom bad : x\n")
+    }
+  }
 }

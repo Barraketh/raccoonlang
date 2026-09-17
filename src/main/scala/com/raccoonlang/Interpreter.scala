@@ -12,6 +12,12 @@ object Interpreter {
     evalPiClosed(pi, closed)
   }
 
+  def rigidBinderValue(ref: CoreAst.LocalRef, tpe: Value): Value =
+    FreshVar.freshVar(ref.name, tpe)
+
+  /** Resolve only the outer variable substitution; structural rebuilding belongs to ValueOps. */
+  def resolveInEqStore(value: Value, store: EqStore): Value = store.force(value)
+
   def evalPiClosed(pi: Term.Pi, env: Env): VPi = {
     val classifier = VSort(0)
     val captures = env.locals.values.toVector

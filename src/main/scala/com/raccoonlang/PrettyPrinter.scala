@@ -30,6 +30,7 @@ object PrettyPrinter {
     case Value.VApp(head, args, _, _)            => s"${print(head)}(${args.map(print).mkString(", ")})"
     case Value.VConst(name, _, _)                => name
     case Value.NeutralThunk(_, _, _, _, _)       => "<match>"
+    case Value.Var(name, id, _)                  => s"$name#$id"
     case Value.ConstructorHead(name, _, _, _, _) => name
   }
 }

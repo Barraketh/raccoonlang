@@ -3,6 +3,8 @@ package com.raccoonlang
 sealed trait Value {
   def tpe: Value
   def synDeps: DepSet
+  def needsStructuralDefEq: Boolean = false
+  lazy val key: ValueKey.Key = ValueKey.orderKey(this)
   override def toString: String = PrettyPrinter.print(this)
 }
 
@@ -55,11 +57,13 @@ object Value {
       classifier0: () => VSort,
       knownPropValued: Option[Boolean] = None
   ) extends Value {
+    override val needsStructuralDefEq: Boolean = true
     require(binders.nonEmpty, "VPi requires at least one binder")
     override lazy val tpe: VSort = classifier0()
   }
 
   final case class VLam(tpe: VPi, id: ValueId, body: LamBody) extends Value {
+    override val needsStructuralDefEq: Boolean = true
     override lazy val synDeps: DepSet = {
       val deps = DepSet.newBuilder
       deps.unionInPlace(tpe.synDeps)
@@ -73,6 +77,8 @@ object Value {
   }
 
   final case class VApp(head: Value, args: Vector[Value], tpe: Value, blockedOn: DepSet = DepSet.empty) extends Value {
+    override lazy val needsStructuralDefEq: Boolean =
+      head.needsStructuralDefEq || args.exists(_.needsStructuralDefEq) || tpe.needsStructuralDefEq
     override lazy val synDeps: DepSet = {
       val deps = DepSet.newBuilder
       deps.unionInPlace(head.synDeps)
@@ -99,6 +105,7 @@ object Value {
       tpe: Value,
       blockedOn: DepSet
   ) extends Value {
+    override val needsStructuralDefEq: Boolean = true
     override lazy val synDeps: DepSet = {
       val deps = DepSet.newBuilder
       deps.unionInPlace(env.dependencies)
@@ -106,6 +113,10 @@ object Value {
       id.captures.foreach(value => deps.unionInPlace(value.synDeps))
       deps.result()
     }
+  }
+
+  final case class Var(name: String, id: VarId, tpe: Value) extends Value {
+    override lazy val synDeps: DepSet = tpe.synDeps + id
   }
 
   sealed trait ConstType
