@@ -106,16 +106,11 @@ class SurfaceParserTests extends munit.FunSuite {
     rejected("0 @")
   }
 
-  test("later language constructs are rejected by the base grammar") {
+  test("later unsupported language constructs are rejected by the evaluator grammar") {
     rejected("import Init.Prelude\n")
     rejected("namespace N {}")
     rejected("open N")
-    rejected("{ def x : Type := 0 }")
-    rejected("axiom choice : Type")
-    rejected("inductive Nat : Type\n | zero : Nat\n")
     rejected("struct Pair : Type\n | mk : Pair\n")
-    rejected("match x with\n")
-    rejected("def f : Type := 0 decreases structural(x)")
     rejected("def f : Type := builtin")
   }
 }
