@@ -175,7 +175,10 @@ object Projection {
           case Step.CtorField(c, i) =>
             v match {
               case ConstructorForm(name, fs) if name == c && i < fs.length => Right(fs(i));
-              case x                                                       => Left(s"expected a $c value, got $x")
+              case packed: VPacked =>
+                val (name, fs) = packed.codec.decodeHead(packed)
+                if (name == c && i < fs.length) Right(fs(i)) else Left(s"expected a $c value, got $v")
+              case x => Left(s"expected a $c value, got $x")
             }
           case Step.SortLevel => v match { case VSort(l) => Right(l); case x => Left(s"expected a sort, got $x") }
           case Step.LevelOffset(k) =>

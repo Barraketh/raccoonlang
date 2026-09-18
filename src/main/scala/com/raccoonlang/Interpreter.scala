@@ -179,12 +179,14 @@ object Interpreter {
     case Term.GlobalRef(name, _) =>
       env(name) match {
         case head: ConstructorHead if head.totalArity == 0 =>
-          Value.canonicalizeProof(VCtor(head, Vector.empty, head.tpe))
+          Value.canonicalizeProof(
+            Packed.foldCtor(head, Vector.empty, head.tpe).getOrElse(VCtor(head, Vector.empty, head.tpe))
+          )
         case value => value
       }
     case Term.LocalRef(ref, _)          => env(ref)
-    case Term.NatLit(_, span)           => throw WTF(s"Natural literals are unavailable at $span")
-    case Term.StrLit(_, span)           => throw WTF(s"String literals are unavailable at $span")
+    case Term.NatLit(value, _)          => Packed.evalNatLit(value, env)
+    case Term.StrLit(scalars, _)        => Packed.evalStrLit(scalars, env)
     case Term.Select(base, field, span) => evalSelect(evalTerm(base, env), field, env, span)
     case pi: Term.Pi                    => evalPi(pi, env)
     case lam: Term.Lam                  => evalLam(lam, env)
@@ -219,7 +221,12 @@ object Interpreter {
       case _             =>
     }
     val cases = matchTerm.cases
-    val selected = Value.ConstructorForm.unapply(scrut)
+    val selected = Value.ConstructorForm
+      .unapply(scrut)
+      .orElse(scrut match {
+        case p: VPacked => Some(p.codec.decodeHead(p))
+        case _          => None
+      })
     selected match {
       case Some((name, fields)) =>
         cases.find(c => c.ctorName == name || c.ctorName == name.split('.').last) match {
@@ -299,7 +306,10 @@ object Interpreter {
         fn match {
           case lam: VLam => Value.canonicalizeProof(runLam(lam, canonicalArgs))
           case head: ConstructorHead =>
-            Value.canonicalizeProof(VCtor(head, Value.constructorStoredArgs(head, canonicalArgs), pi.codomain(applied)))
+            val stored = Value.constructorStoredArgs(head, canonicalArgs)
+            Value.canonicalizeProof(
+              Packed.foldCtor(head, stored, pi.codomain(applied)).getOrElse(VCtor(head, stored, pi.codomain(applied)))
+            )
           case value @ (_: VConst | _: VApp | _: NeutralThunk | _: Var) =>
             val blocked = Blocker.unapply(value).getOrElse(DepSet.empty)
             Value.canonicalizeProof(VApp(value, canonicalArgs, pi.codomain(applied), blocked))

@@ -334,6 +334,6 @@ class ResidualizationTests extends munit.FunSuite {
       case other => fail(s"expected checked recursive core closure, got $other")
     }
     assert(checked.nonEmpty)
-    assert(TestSupport.eval(source).toString.contains("Nat.succ"))
+    assertEquals(PrettyPrinter.print(TestSupport.eval(source)), "1")
   }
 }

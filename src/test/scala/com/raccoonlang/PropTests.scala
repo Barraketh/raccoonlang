@@ -232,7 +232,7 @@ class PropTests extends munit.FunSuite {
         "}\n"
     TestSupport.check(source)
     val result = TestSupport.eval(source + "\n{ trueToNat(True.intro) }\n")
-    assertEquals(PrettyPrinter.print(result), "Nat.zero()")
+    assertEquals(PrettyPrinter.print(result), "0")
   }
 
   test("canonical proof functions discard native bodies before application") {

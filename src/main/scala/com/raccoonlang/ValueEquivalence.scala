@@ -68,13 +68,24 @@ object ValueEquivalence {
     if (left.asInstanceOf[AnyRef] eq right.asInstanceOf[AnyRef]) Right(store)
     else if (!left.needsStructuralDefEq && !right.needsStructuralDefEq && left.key == right.key)
       Right(store)
-    else if (store.refinable.isEmpty && !left.needsStructuralDefEq && !right.needsStructuralDefEq)
+    else if (
+      store.refinable.isEmpty && !left.needsStructuralDefEq && !right.needsStructuralDefEq &&
+      !left.isInstanceOf[VPacked] && !right.isInstanceOf[VPacked]
+    )
       stuck(left, right)
     else {
       (left, right) match {
         // Proof irrelevance is type-directed and must precede every Var rule: proof representatives
         // supply neither witness links nor constructor apartness.
-        case ProofEquation(leftType, rightType)         => unify(leftType, rightType, store, ctx)
+        case ProofEquation(leftType, rightType) => unify(leftType, rightType, store, ctx)
+        case (lp: VPacked, rp: VPacked) if lp.codec == rp.codec =>
+          if (lp.codec.payloadEquals(lp.payload, rp.payload)) unify(lp.tpe, rp.tpe, store, ctx)
+          else if (lp.codec.refutesUnequalPayloads) apart(lp, rp)
+          else stuck(lp, rp)
+        case (packed: VPacked, other @ VCtor(head, _, _)) =>
+          unifyPeeled(packed, head, other, store, ctx, packedOnLeft = true)
+        case (other @ VCtor(head, _, _), packed: VPacked) =>
+          unifyPeeled(packed, head, other, store, ctx, packedOnLeft = false)
         case (lv: Var, rv: Var) if lv.id == rv.id       => unify(lv.tpe, rv.tpe, store, ctx)
         case (v: Var, other) if store.isRefinable(v.id) => link(v, other, store, ctx)
         case (other, v: Var) if store.isRefinable(v.id) => link(v, other, store, ctx)
@@ -112,6 +123,26 @@ object ValueEquivalence {
           }
         case _ => stuck(left, right)
       }
+    }
+  }
+
+  /** Peel exactly one packed constructor layer, then reuse ordinary constructor unification. */
+  private def unifyPeeled(
+      packed: VPacked,
+      head: ConstructorHead,
+      ctor: Value,
+      store: EqStore,
+      ctx: Ctx,
+      packedOnLeft: Boolean
+  ): Either[UnifyFailure, EqStore] = {
+    val (name, decoded) = packed.codec.decodeHead(packed)
+    if (name != head.name) {
+      if (head.noConfusion) apart(packed, ctor) else stuck(packed, ctor)
+    } else if (decoded.length != head.totalArity - head.numErasedFamilyArgs) {
+      stuck(packed, ctor)
+    } else {
+      val peeled = VCtor(head, decoded, packed.tpe)
+      if (packedOnLeft) unify(peeled, ctor, store, ctx) else unify(ctor, peeled, store, ctx)
     }
   }
 

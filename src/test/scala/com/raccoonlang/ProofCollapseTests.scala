@@ -39,7 +39,7 @@ class ProofCollapseTests extends munit.FunSuite {
         |{ inspect(h) }
         |""".stripMargin
     )
-    assertEquals(PrettyPrinter.print(result), "Nat.zero()")
+    assertEquals(PrettyPrinter.print(result), "0")
   }
 
   test("unforced data fields still reject large elimination") {
@@ -101,7 +101,7 @@ class ProofCollapseTests extends munit.FunSuite {
         |{ observe(True, boxedTrue) }
         |""".stripMargin
     )
-    assertEquals(PrettyPrinter.print(result), "Nat.zero()")
+    assertEquals(PrettyPrinter.print(result), "0")
   }
 
   test("recursive proof fields reconstruct only one shallow layer") {
@@ -121,7 +121,7 @@ class ProofCollapseTests extends munit.FunSuite {
         |{ inspect(loop) }
         |""".stripMargin
     )
-    assertEquals(PrettyPrinter.print(result), "Nat.zero()")
+    assertEquals(PrettyPrinter.print(result), "0")
   }
 
   test("fixed positive-universe families carry no recovery metadata") {
@@ -230,7 +230,7 @@ class ProofCollapseTests extends munit.FunSuite {
         |{ inspect(reflFn(Nat.zero)) }
         |""".stripMargin
     )
-    assertEquals(PrettyPrinter.print(result), "Nat.zero()")
+    assertEquals(PrettyPrinter.print(result), "0")
   }
 
   test("returned proof functions reconstruct their instantiated Eq result") {
@@ -251,7 +251,7 @@ class ProofCollapseTests extends munit.FunSuite {
         |{ inspect(makeRefl(Nat.zero)(Nat.zero)) }
         |""".stripMargin
     )
-    assertEquals(PrettyPrinter.print(result), "Nat.zero()")
+    assertEquals(PrettyPrinter.print(result), "0")
   }
 
   test("axiom, transparent, opaque, let, and match proof boundaries canonicalize") {
@@ -282,7 +282,7 @@ class ProofCollapseTests extends munit.FunSuite {
         |}
         |""".stripMargin
     )
-    assertEquals(PrettyPrinter.print(result), "Nat.zero()")
+    assertEquals(PrettyPrinter.print(result), "0")
   }
 
   test("recursive proof constructors reconstruct two finite layers") {
@@ -305,7 +305,7 @@ class ProofCollapseTests extends munit.FunSuite {
         |{ inspect(loop) }
         |""".stripMargin
     )
-    assertEquals(PrettyPrinter.print(result), "Nat.zero()")
+    assertEquals(PrettyPrinter.print(result), "0")
   }
 
   test("dependent Pi proof fields remain applicable after shallow recovery") {
@@ -331,7 +331,7 @@ class ProofCollapseTests extends munit.FunSuite {
         |{ observe(recovered) }
         |""".stripMargin
     )
-    assertEquals(PrettyPrinter.print(result), "Nat.zero()")
+    assertEquals(PrettyPrinter.print(result), "0")
   }
 
   test("one reachable constructor does not bypass certified large elimination") {
@@ -416,13 +416,13 @@ class ProofCollapseTests extends munit.FunSuite {
     val thunk = Interpreter.evalApply(env("probe"), Vector(u, x)).asInstanceOf[Value.NeutralThunk]
     assertEquals(thunk.blockedOn, DepSet(u.id))
     val solved = EqStore.empty.allow(DepSet(u.id)).addLink(u.id, Value.Level.zero)
-    assertEquals(PrettyPrinter.print(Interpreter.resolveInEqStore(thunk, solved)), "Peano.zero()")
+    assertEquals(PrettyPrinter.print(Interpreter.resolveInEqStore(thunk, solved)), "Peano.zero")
 
     val maker = Interpreter.evalApply(env("makerType"), Vector(u))
     val blockedHead = FreshVar.freshVar("blockedHead", maker.tpe)
     val blocked = Value.VApp(blockedHead, Vector(zero), family, DepSet(blockedHead.id))
     val blockedThunk = Interpreter.evalApply(env("probe"), Vector(u, blocked)).asInstanceOf[Value.NeutralThunk]
     assertEquals(blockedThunk.blockedOn, DepSet(blockedHead.id, u.id))
-    assertEquals(PrettyPrinter.print(Interpreter.resolveInEqStore(blockedThunk, solved)), "Peano.zero()")
+    assertEquals(PrettyPrinter.print(Interpreter.resolveInEqStore(blockedThunk, solved)), "Peano.zero")
   }
 }

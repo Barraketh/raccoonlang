@@ -157,6 +157,7 @@ class InterpreterTests extends munit.FunSuite {
       case VApp(head: ConstructorHead, args, _, _) =>
         assertEquals(head.name, "Nat.zero")
         assert(args.isEmpty)
+      case packed: Value.VPacked if packed.natValue.contains(BigInt(0)) =>
       case other => fail(s"Expected recursive result, got $other")
     }
   }

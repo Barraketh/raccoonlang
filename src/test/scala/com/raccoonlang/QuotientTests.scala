@@ -95,12 +95,12 @@ class QuotientTests extends munit.FunSuite {
   test("Quot.mk stores only its representative") {
     val value = eval(
       """
-        |inductive Nat : Type
-        | | zero : Nat
+        |inductive Peano : Type
+        | | zero : Peano
         |
-        |def Rel (a: Nat)(b: Nat): Prop := Eq(Nat, a, b)
+        |def Rel (a: Peano)(b: Peano): Prop := Eq(Peano, a, b)
         |
-        |{ Quot.mk(Rel, Nat.zero) }
+        |{ Quot.mk(Rel, Peano.zero) }
         |""".stripMargin
     )
     value match {
@@ -108,7 +108,7 @@ class QuotientTests extends munit.FunSuite {
         assertEquals(head.name, "Quot.mk")
         assert(!head.noConfusion)
         assertEquals(fields.length, 1)
-        assertEquals(shape(fields.head), "Nat.zero()")
+        assertEquals(shape(fields.head), "Peano.zero()")
       case other => fail(s"Expected quotient constructor, got $other")
     }
   }
@@ -116,36 +116,36 @@ class QuotientTests extends munit.FunSuite {
   test("Quot.lift reduces on Quot.mk") {
     val value = eval(
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (n: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (n: Peano) : Peano
         |
-        |def Rel (a: Nat)(b: Nat): Prop := Eq(Nat, a, b)
+        |def Rel (a: Peano)(b: Peano): Prop := Eq(Peano, a, b)
         |
-        |def liftSound (a: Nat)(b: Nat)(h: Rel(a, b)): Eq(Nat, Nat.succ(a), Nat.succ(b)) := {
-        |  match h returning Eq(Nat, Nat.succ(a), Nat.succ(b)) with
-        |  | Eq.refl x => Eq.refl(Nat.succ(x))
+        |def liftSound (a: Peano)(b: Peano)(h: Rel(a, b)): Eq(Peano, Peano.succ(a), Peano.succ(b)) := {
+        |  match h returning Eq(Peano, Peano.succ(a), Peano.succ(b)) with
+        |  | Eq.refl x => Eq.refl(Peano.succ(x))
         |}
-        |{ Quot.lift(Quot.mk(Rel, Nat.zero), Nat, fun (x: Nat): Nat => Nat.succ(x), liftSound) }
+        |{ Quot.lift(Quot.mk(Rel, Peano.zero), Peano, fun (x: Peano): Peano => Peano.succ(x), liftSound) }
         |""".stripMargin
     )
-    assertEquals(shape(value), "Nat.succ(Nat.zero())")
+    assertEquals(shape(value), "Peano.succ(Peano.zero())")
   }
 
   test("the inductionOn wrapper canonicalizes a proof motive") {
     val value = eval(
       """
-        |inductive Nat : Type
-        | | zero : Nat
+        |inductive Peano : Type
+        | | zero : Peano
         |
-        |def Rel (a: Nat)(b: Nat): Prop := Eq(Nat, a, b)
+        |def Rel (a: Peano)(b: Peano): Prop := Eq(Peano, a, b)
         |
         |inductive True : Prop
         | | intro : True
         |
-        |def motive (q: Quot(Nat, Rel)): Prop := True
+        |def motive (q: Quot(Peano, Rel)): Prop := True
         |
-        |{ inductionOn(Quot.mk(Rel, Nat.zero), motive, fun (a: Nat): motive(Quot.mk(Rel, a)) => True.intro) }
+        |{ inductionOn(Quot.mk(Rel, Peano.zero), motive, fun (a: Peano): motive(Quot.mk(Rel, a)) => True.intro) }
         |""".stripMargin
     )
     value match {
@@ -157,27 +157,27 @@ class QuotientTests extends munit.FunSuite {
   test("the implicit liftOn wrapper recovers quotient parameters") {
     val value = eval(
       """
-        |inductive Nat : Type
-        | | zero : Nat
+        |inductive Peano : Type
+        | | zero : Peano
         |
-        |def Rel (a: Nat)(b: Nat): Prop := Eq(Nat, a, b)
-        |def idSound (a: Nat)(b: Nat)(h: Rel(a, b)): Eq(Nat, a, b) := h
+        |def Rel (a: Peano)(b: Peano): Prop := Eq(Peano, a, b)
+        |def idSound (a: Peano)(b: Peano)(h: Rel(a, b)): Eq(Peano, a, b) := h
         |
-        |{ liftOn(Quot.mk(Rel, Nat.zero), Nat, fun (x: Nat): Nat => x, idSound) }
+        |{ liftOn(Quot.mk(Rel, Peano.zero), Peano, fun (x: Peano): Peano => x, idSound) }
         |""".stripMargin
     )
-    assertEquals(shape(value), "Nat.zero()")
+    assertEquals(shape(value), "Peano.zero()")
   }
 
   test("Quot.sound has equality of quotient representatives as its type") {
     val value = eval(
       """
-        |inductive Nat : Type
-        | | zero : Nat
+        |inductive Peano : Type
+        | | zero : Peano
         |
-        |def Rel (a: Nat)(b: Nat): Prop := Eq(Nat, a, b)
+        |def Rel (a: Peano)(b: Peano): Prop := Eq(Peano, a, b)
         |
-        |{ sound(Nat.zero, Nat.zero, Rel, Eq.refl(Nat.zero)) }
+        |{ sound(Peano.zero, Peano.zero, Rel, Eq.refl(Peano.zero)) }
         |""".stripMargin
     )
     assert(PrettyPrinter.print(value.tpe).contains("Quot"))
@@ -187,16 +187,16 @@ class QuotientTests extends munit.FunSuite {
   test("ordinary constructor disjointness remains available") {
     eval(
       """
-        |inductive Nat : Type
-        | | zero : Nat
-        | | succ (n: Nat) : Nat
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (n: Peano) : Peano
         |
         |inductive False : Prop
         |
-        |def noConf (n: Nat)(h: Eq(Nat, Nat.zero, Nat.succ(n))): False := {
+        |def noConf (n: Peano)(h: Eq(Peano, Peano.zero, Peano.succ(n))): False := {
         |  match h returning False with
         |}
-        |{ Nat.zero }
+        |{ Peano.zero }
         |""".stripMargin
     )
   }
@@ -205,13 +205,13 @@ class QuotientTests extends munit.FunSuite {
     intercept[NonForcedImplicitParam] {
       checkTrustedSource(
         """
-          |inductive Nat : Type
-          | | zero : Nat
+          |inductive Peano : Type
+          | | zero : Peano
           |
-          |def Rel (a: Nat)(b: Nat): Prop := Eq(Nat, a, b)
+          |def Rel (a: Peano)(b: Peano): Prop := Eq(Peano, a, b)
           |
-          |def extract {x: Nat}
-          |  (h: Eq(Quot(Nat, Rel), Quot.mk(Rel, x), Quot.mk(Rel, Nat.zero))): Nat := x
+          |def extract {x: Peano}
+          |  (h: Eq(Quot(Peano, Rel), Quot.mk(Rel, x), Quot.mk(Rel, Peano.zero))): Peano := x
           |""".stripMargin
       )
     }
@@ -220,12 +220,12 @@ class QuotientTests extends munit.FunSuite {
   test("Quot exposes no generated field selectors") {
     val env = trustedEnv(
       """
-        |inductive Nat : Type
-        | | zero : Nat
+        |inductive Peano : Type
+        | | zero : Peano
         |
-        |def Rel (a: Nat)(b: Nat): Prop := Eq(Nat, a, b)
+        |def Rel (a: Peano)(b: Peano): Prop := Eq(Peano, a, b)
         |
-        |axiom q : Quot(Nat, Rel)
+        |axiom q : Quot(Peano, Rel)
         |""".stripMargin
     )
     val span = Span(0, 0)

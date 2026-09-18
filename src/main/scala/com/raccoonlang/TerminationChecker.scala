@@ -136,6 +136,11 @@ object TerminationChecker {
   }
 
   private[raccoonlang] def isStrictSubterm(candidate: Value, root: Value): Boolean = root match {
+    case packed: VPacked =>
+      candidate match {
+        case child: VPacked if child.codec == packed.codec => packed.codec.strictlyLess(child, packed)
+        case _                                             => false
+      }
     case VCtor(_, fields, _) =>
       fields.exists(field => applicationOfSubterm(candidate, field) || isStrictSubterm(candidate, field))
     case _ =>

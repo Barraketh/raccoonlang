@@ -1,6 +1,8 @@
 package com.raccoonlang
 
 object PrettyPrinter {
+  private def printString(scalars: Vector[Int]): String = UnicodeScalarString.renderQuoted(scalars)
+
   def printTerm(term: CoreAst.Ast): String = term match {
     case CoreAst.Term.GlobalRef(name, _)          => name
     case CoreAst.Term.LocalRef(ref, _)            => ref.name
@@ -23,12 +25,22 @@ object PrettyPrinter {
   }
 
   def print(value: Value): String = value match {
-    case Value.VSort(level)                      => if (level == Value.Level.one) "Type" else s"Sort($level)"
-    case _: Value.Level                          => "Level"
-    case Value.LevelTpe                          => "Level"
-    case Value.VPi(_, _, _, _, _, _, _)          => "Pi"
-    case Value.VLam(_, _, _)                     => "<lambda>"
-    case Value.VProof(_)                         => "<proof>"
+    case Value.VSort(level)             => if (level == Value.Level.one) "Type" else s"Sort($level)"
+    case _: Value.Level                 => "Level"
+    case Value.LevelTpe                 => "Level"
+    case Value.VPi(_, _, _, _, _, _, _) => "Pi"
+    case Value.VLam(_, _, _)            => "<lambda>"
+    case Value.VProof(_)                => "<proof>"
+    case packed: Value.VPacked =>
+      packed.natValue
+        .map(_.toString)
+        .orElse(packed.charScalars.map(scalars => s"proj[String,0](${printString(scalars)})"))
+        .getOrElse(throw WTF("Unknown packed payload"))
+    case Value.VCtor(head, Vector(field: Value.VPacked), _)
+        if head.name == "String.mk" && field.codec.isInstanceOf[Value.CharListCodec] =>
+      printString(field.charScalars.getOrElse(throw WTF("Invalid packed String field")))
+    case Value.VCtor(head, fields, _) =>
+      if (fields.isEmpty) head.name else s"${head.name}(${fields.map(print).mkString(", ")})"
     case Value.VApp(head, args, _, _)            => s"${print(head)}(${args.map(print).mkString(", ")})"
     case Value.VConst(name, _, _)                => name
     case Value.NeutralThunk(_, _, _, _, _)       => "<match>"

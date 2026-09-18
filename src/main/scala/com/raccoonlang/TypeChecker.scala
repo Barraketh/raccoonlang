@@ -47,10 +47,12 @@ object TypeChecker {
   private def sortOf(value: Value): VSort = assertType(value)
 
   def checkTerm(term: CTerm, env: Env): CheckedTerm = term match {
-    case CTerm.GlobalRef(name, _) => CheckedTerm(env(name), term)
-    case CTerm.LocalRef(ref, _)   => CheckedTerm(env(ref), term)
-    case CTerm.NatLit(_, span)    => throw WTF(s"Natural literals are unavailable at $span")
-    case CTerm.StrLit(_, span)    => throw WTF(s"String literals are unavailable at $span")
+    case CTerm.GlobalRef(name, _) =>
+      CheckedTerm(Interpreter.evalTerm(term, env), term)
+    case CTerm.LocalRef(ref, _) => CheckedTerm(env(ref), term)
+    case CTerm.NatLit(value, _) => CheckedTerm(Packed.evalNatLit(value, env), term)
+    case CTerm.StrLit(scalars, _) =>
+      CheckedTerm(Packed.evalStrLit(scalars, env), term)
     case CTerm.Select(base, field, span) =>
       val checkedBase = checkTerm(base, env)
       checkSelect(checkedBase, field, span, env)
@@ -296,10 +298,22 @@ object TypeChecker {
       val checkedTy = checkTerm(ty, env)
       sortOf(checkedTy.value)
       val checkedBody = check(body, Some(Expected(checkedTy.value, Some(checkedTy.residual))), env)
-      if (isOpaque) env.putOpaque(name, checkedTy.value) else env.putGlobal(name, checkedBody.value)
+      if (isOpaque) {
+        if (trusted && Packed.nativeNatOpNames(name).nonEmpty)
+          throw NativeOperationDeclarationMismatch(name, "reserved native declaration must be transparent")
+        env.putOpaque(name, checkedTy.value)
+      } else {
+        val value =
+          if (trusted)
+            Packed.nativeNatOpNames(name).fold(checkedBody.value)(n => Packed.nativeOp(n, checkedBody.value, env))
+          else checkedBody.value
+        env.putGlobal(name, value)
+      }
     case Decl.ConstDecl(isOpaque, name, ty, CoreAst.ConstBody.Builtin(span), _) =>
       if (isOpaque) throw WTF(s"Builtin declarations cannot be opaque at $span")
       if (!trusted) throw ReservedKernelName(name, Some(span))
+      if (Packed.nativeNatOpNames(name).nonEmpty)
+        throw NativeOperationDeclarationMismatch(name, "reserved native declaration cannot use a builtin body")
       val checkedTy = checkTerm(ty, env)
       sortOf(checkedTy.value)
       env.putGlobal(name, Value.canonicalizeProof(Builtins.instantiate(name, checkedTy.value, span)))
@@ -373,7 +387,8 @@ object TypeChecker {
       program: Program,
       initial: Env = Interpreter.builtins
   ): (Env, Option[CheckedTerm]) = {
-    val env = program.decls.foldLeft(initial) { case (current, decl) => checkDeclTrusted(decl, current) }
+    val declarations = program.decls.foldLeft(initial) { case (current, decl) => checkDeclTrusted(decl, current) }
+    val env = Packed.finalizeTrustedBootstrap(declarations)
     (env, program.body.map(checkTerm(_, env)))
   }
 }

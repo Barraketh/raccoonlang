@@ -24,9 +24,9 @@ object Elaborator {
     }
 
   private def elabTerm(term: STerm, scope: Scope): (Scope, C.Term) = term match {
-    case STerm.Ident(name, span) => (scope, refTerm(name, span, scope))
-    case STerm.NatLit(_, span)   => throw WTF(s"Natural literals are not available in the C04 core at $span")
-    case STerm.StrLit(_, span)   => throw WTF(s"String literals are not available in the C04 core at $span")
+    case STerm.Ident(name, span)     => (scope, refTerm(name, span, scope))
+    case STerm.NatLit(value, span)   => (scope, C.Term.NatLit(value, span))
+    case STerm.StrLit(scalars, span) => (scope, C.Term.StrLit(scalars, span))
     case STerm.Select(base, field, span) =>
       dottedName(base, scope)
         .filter(name => scope.globals.contains(s"$name.$field"))

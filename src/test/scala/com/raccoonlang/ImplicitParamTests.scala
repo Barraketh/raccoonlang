@@ -14,7 +14,7 @@ class ImplicitParamTests extends munit.FunSuite {
                              |def id {A: Type}(x: A): A := x
                              |{ id(Nat.succ(Nat.zero)) }
                              |""".stripMargin
-    assert(checked(src).toString.contains("Nat.succ"))
+    assertEquals(PrettyPrinter.print(checked(src)), "1")
   }
 
   test("supplying a forced implicit positionally is an arity error") {
@@ -35,7 +35,7 @@ class ImplicitParamTests extends munit.FunSuite {
                              |def choose (n: Nat){A: Type}(x: A)(y: A): A := x
                              |{ choose(Nat.zero, Nat.zero, Nat.succ(Nat.zero)) }
                              |""".stripMargin
-    assert(checked(src).toString.contains("Nat.zero"))
+    assertEquals(PrettyPrinter.print(checked(src)), "0")
   }
 
   test("a polymorphic function adapts to an expected monomorphic Pi") {
@@ -46,7 +46,7 @@ class ImplicitParamTests extends munit.FunSuite {
                              |  f(Nat.succ(Nat.zero))
                              |}
                              |""".stripMargin
-    assert(checked(src).toString.contains("Nat.succ"))
+    assertEquals(PrettyPrinter.print(checked(src)), "1")
   }
 
   test("runtime evaluation reconstructs the same implicit") {
@@ -54,7 +54,7 @@ class ImplicitParamTests extends munit.FunSuite {
                              |def id {A: Type}(x: A): A := x
                              |{ id(Nat.zero) }
                              |""".stripMargin
-    assert(TestSupport.eval(src).toString.contains("Nat.zero"))
+    assertEquals(PrettyPrinter.print(TestSupport.eval(src)), "0")
   }
 
   test("dependent constructor indices reconstruct from a later field") {
@@ -68,7 +68,7 @@ class ImplicitParamTests extends munit.FunSuite {
                              |  len(Vec.cons(Vec.nil(Nat), Nat.zero))
                              |}
                              |""".stripMargin
-    assert(checked(src).toString.contains("Nat.succ"))
+    assertEquals(PrettyPrinter.print(checked(src)), "1")
   }
 
   test("implicit family arguments can be used in codomains and bodies") {
@@ -77,7 +77,7 @@ class ImplicitParamTests extends munit.FunSuite {
       " | mk (a: A) : Box(A)\n\n" +
       "def unbox {u: Level}{A: Sort(u)} (b: Box(A)): A := {\n match b returning A with\n | Box.mk a => a\n}\n" +
       "{ unbox(Box.mk(Nat.zero)) }\n"
-    assert(checked(src).toString.contains("Nat.zero"))
+    assertEquals(PrettyPrinter.print(checked(src)), "0")
   }
 
   test("implicit indices remain available as ordinary terms") {
@@ -87,7 +87,7 @@ class ImplicitParamTests extends munit.FunSuite {
       " | cons {n: Nat} (tail: Vec(A, n)) (head: A) : Vec(A, Nat.succ(n))\n\n" +
       "def len {n: Nat} (v: Vec(Nat, n)): Nat := n\n" +
       "{ len(Vec.cons(Vec.nil(Nat), Nat.zero)) }\n"
-    assert(checked(src).toString.contains("Nat.succ"))
+    assertEquals(PrettyPrinter.print(checked(src)), "1")
   }
 
   test("ordinary hidden constructor binders are not family-parameter inference") {

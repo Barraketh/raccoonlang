@@ -26,6 +26,8 @@ class TerminationTests extends munit.FunSuite {
         " | Nat.succ x => add(Nat.succ(a), x)\n\n" +
         "add(Nat.succ(Nat.zero), Nat.succ(Nat.zero))"
     eval(source) match {
+      case packed: Value.VPacked if packed.natValue.contains(BigInt(2)) =>
+        assertEquals(packed.natValue, Some(BigInt(2)))
       case Value.VCtor(head, Vector(Value.VCtor(inner, Vector(_), _)), _) =>
         assertEquals(head.name, "Nat.succ")
         assertEquals(inner.name, "Nat.succ")

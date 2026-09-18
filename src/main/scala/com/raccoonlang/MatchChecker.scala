@@ -159,6 +159,11 @@ object MatchChecker {
         cases.filterNot(_.ctorName == ctorName).foreach(c => throw UnreachableCase(c.ctorName, Some(c.span)))
         val branch = cases.find(_.ctorName == ctorName).getOrElse(throw MissingCase(ctorName, Some(term.span)))
         checkedByCtor += ctorName -> checkBranch(branch, fields, env, motiveValue)
+      case packed: VPacked =>
+        val (ctorName, fields) = packed.codec.decodeHead(packed)
+        cases.filterNot(_.ctorName == ctorName).foreach(c => throw UnreachableCase(c.ctorName, Some(c.span)))
+        val branch = cases.find(_.ctorName == ctorName).getOrElse(throw MissingCase(ctorName, Some(term.span)))
+        checkedByCtor += ctorName -> checkBranch(branch, fields, env, motiveValue)
       case _ =>
         val reachableByName = reachable.map(info => info.name -> info).toMap
         family.meta.constructors.foreach { ctor =>

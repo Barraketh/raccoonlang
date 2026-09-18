@@ -86,7 +86,7 @@ class StructEtaTests extends munit.FunSuite {
       " | Nat.zero => Pair.mk(Nat.zero, Nat.succ(Nat.zero))\n" +
       " | Nat.succ k => Pair.mk(k, n)\n}\n"
     val value = TestSupport.eval(src + "\n{ let p := pick(Nat.zero) p.snd }\n")
-    assertEquals(PrettyPrinter.print(value), "Nat.succ(Nat.zero())")
+    assertEquals(PrettyPrinter.print(value), "1")
   }
 
   test("recursive structures are not eta-eligible") {

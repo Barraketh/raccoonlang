@@ -30,7 +30,8 @@ object ValueOps {
           VApp(materialize(head), args.map(materialize), materialize(tpe), blocked)
         case NeutralThunk(term, env, id, tpe, blocked) =>
           NeutralThunk(term, materializeEnv(env), materializeLocalId(id), materialize(tpe), blocked)
-        case VProof(tpe) => VProof(materialize(tpe))
+        case VProof(tpe)     => VProof(materialize(tpe))
+        case packed: VPacked => packed
         case pi: VPi =>
           val originalStore = eqStore
           pi.copy(

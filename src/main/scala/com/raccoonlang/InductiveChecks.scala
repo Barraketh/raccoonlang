@@ -74,6 +74,7 @@ object InductiveChecks {
     if (target.isDirectOccurrence(value)) false
     else
       value match {
+        case packed: VPacked => !target.mayOccurIn(packed)
         case _: NeutralThunk => !target.mayOccurIn(value)
 
         case InductiveFamilyValue(instance) =>
@@ -177,6 +178,7 @@ object InductiveChecks {
     if (target.isDirectOccurrence(value)) true
     else
       value match {
+        case packed: VPacked => target.mayOccurIn(packed)
         case _: NeutralThunk => !target.mayOccurIn(value)
 
         case InductiveFamilyValue(instance) =>
@@ -223,6 +225,7 @@ object InductiveChecks {
       value: Value
   ): Boolean =
     value match {
+      case _: VPacked      => true
       case VProof(tpe)     => blockFamilyApplicationsAreUniform(blockNames, target, expectedParams, tpe)
       case _: NeutralThunk => false
 

@@ -22,7 +22,7 @@ object GlobalBinding {
 }
 
 object Env {
-  val empty: Env = Env(Map.empty, VectorMap.empty, Set.empty)
+  val empty: Env = Env(Map.empty, VectorMap.empty, NativeLiteralState.empty, Set.empty)
 
   private val assertionsEnabled: Boolean =
     java.lang.Boolean.parseBoolean(System.getProperty("raccoon.envAssertions", "true"))
@@ -36,9 +36,19 @@ object Env {
       throw CoreInvariant(s"Non-canonical proof bound into env: $value")
 }
 
+final case class NativeLiteralState private[raccoonlang] (
+    natLayout: Option[Packed.ValidatedNatLayout],
+    stringLayout: Option[Value.ValidatedStringLayout]
+)
+
+object NativeLiteralState {
+  private[raccoonlang] val empty: NativeLiteralState = NativeLiteralState(None, None)
+}
+
 final case class Env(
     globals: Map[String, GlobalBinding],
     locals: VectorMap[CoreAst.LocalRef, Value],
+    nativeLiterals: NativeLiteralState,
     private[raccoonlang] val localRefs: Set[CoreAst.LocalRef]
 ) {
   require(localRefs.size == locals.size, "local-ref index size disagrees with locals")
@@ -53,6 +63,18 @@ final case class Env(
     else if (name == "_") throw WTF("Wildcards not allowed in global names")
     else copy(globals = globals.updated(name, GlobalBinding.Strict(value)))
   }
+
+  private[raccoonlang] def installNatLayout(layout: Packed.ValidatedNatLayout): Env =
+    nativeLiterals.natLayout match {
+      case Some(_) => throw WTF("Validated Nat layout is already installed")
+      case None    => copy(nativeLiterals = nativeLiterals.copy(natLayout = Some(layout)))
+    }
+
+  private[raccoonlang] def installStringLayout(layout: Value.ValidatedStringLayout): Env =
+    nativeLiterals.stringLayout match {
+      case Some(_) => throw WTF("Validated String layout is already installed")
+      case None    => copy(nativeLiterals = nativeLiterals.copy(stringLayout = Some(layout)))
+    }
 
   def putOpaque(name: String, ty: Value): Env = {
     if (globals.contains(name)) throw AlreadyDefined(name)

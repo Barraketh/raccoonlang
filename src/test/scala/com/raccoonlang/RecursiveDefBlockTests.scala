@@ -72,8 +72,9 @@ class RecursiveDefBlockTests extends munit.FunSuite {
     TypeChecker.checkTerm(app(global("walkA"), app(global("Nat.succ"), global("Nat.zero"))), env)
     val result = Interpreter.evalApply(env("walkA"), Vector(one))
     result match {
-      case Value.VCtor(head, _, _) => assertEquals(head.name, "Nat.zero")
-      case other                   => fail(s"expected Nat.zero, got $other")
+      case Value.VCtor(head, _, _)                                      => assertEquals(head.name, "Nat.zero")
+      case packed: Value.VPacked if packed.natValue.contains(BigInt(0)) =>
+      case other                                                        => fail(s"expected Nat.zero, got $other")
     }
   }
 

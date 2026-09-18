@@ -48,6 +48,13 @@ object ValueKey {
     value.foreach(ch => current = mix(current, ch.toLong))
     current
   }
+  private[raccoonlang] def mixLong(key: Key, value: Long): Key = mix(key, value)
+  private[raccoonlang] def mixKey(key: Key, value: Key): Key = mix(key, value)
+  private[raccoonlang] def mixBytes(key: Key, bytes: Array[Byte]): Key = {
+    var out = mix(key, bytes.length.toLong)
+    bytes.foreach(b => out = mix(out, b.toLong & 0xffL))
+    out
+  }
 
   // Level atoms need a structural key of their own.  In particular, using the
   // level's pretty-printed form here would make ordering depend on presentation
@@ -99,6 +106,7 @@ object ValueKey {
       }
     case Value.VLam(_, id, _)      => idKey(tag(9), id)
     case Value.VProof(tpe)         => mix(tag(13), tpe.key)
+    case packed: Value.VPacked     => packed.codec.mixPayloadKey(mix(tag(14), packed.tpe.key), packed.payload)
     case thunk: Value.NeutralThunk => idKey(tag(10), thunk.id)
     case pi: Value.VPi             => mix(idKey(tag(11), pi.id), pi.binders.length.toLong)
     case head: Value.ConstructorHead if head.totalArity == 0 =>

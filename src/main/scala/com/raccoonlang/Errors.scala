@@ -18,6 +18,31 @@ final case class ReservedKernelName(name: String, override val span: Option[Span
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
   override val msg: String = s"$name has a builtin body, which only a prelude may declare"
 }
+final case class NatLiteralUnavailable(reason: String, override val span: Option[Span] = None) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  override val msg: String = s"Native Nat literals unavailable: $reason"
+}
+final case class StringLiteralUnavailable(reason: String, override val span: Option[Span] = None) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  override val msg: String = s"Native String literals unavailable: $reason"
+}
+final case class NativeOperationDeclarationMismatch(
+    operation: String,
+    reason: String,
+    override val span: Option[Span] = None
+) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  override val msg: String = s"Native operation $operation has an invalid declaration: $reason"
+}
+final case class NativeOperationLimitExceeded(
+    operation: String,
+    argument: BigInt,
+    limit: BigInt,
+    override val span: Option[Span] = None
+) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  override val msg: String = s"$operation argument $argument exceeds native limit $limit"
+}
 final case class TypeMismatch(expected: Value, actual: Value, override val span: Option[Span] = None)
   extends TypeError {
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
