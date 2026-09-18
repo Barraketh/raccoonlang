@@ -29,7 +29,7 @@ class ProjectionTests extends munit.FunSuite {
     val source =
       "struct Pair (A: Type)(B: Type) : Type\n" +
         " | mk (fst: A)(snd: B) : Pair(A, B)\n\n" +
-        "{ let p : Pair(Type, Type) := Pair.mk(Type, Type, Type, Type)\n" +
+        "{ let p : Pair(Type, Type) := Pair.mk(Type, Type)\n" +
         "  p.fst }"
     assertEquals(PrettyPrinter.print(TestSupport.eval(source)), "Type")
   }
@@ -38,7 +38,7 @@ class ProjectionTests extends munit.FunSuite {
     val source =
       "struct Pair (A: Type)(B: Type) : Type\n" +
         " | mk (fst: A)(snd: B) : Pair(A, B)\n\n" +
-        "{ let p : Pair(Type, Type) := Pair.mk(Type, Type, Type, Type)\n" +
+        "{ let p : Pair(Type, Type) := Pair.mk(Type, Type)\n" +
         "  p.snd }"
     assertEquals(PrettyPrinter.print(TestSupport.eval(source)), "Type")
   }
@@ -96,7 +96,7 @@ class ProjectionTests extends munit.FunSuite {
       "inductive Nat : Type\n | zero : Nat\n\n" +
         "struct Fn (A: Type) : Type\n" +
         " | mk (run: A -> A) : Fn(A)\n\n" +
-        "opaque def hidden : Fn(Nat) := Fn.mk(Nat, fun (x: Nat): Nat => x)\n" +
+        "opaque def hidden : Fn(Nat) := Fn.mk(fun (x: Nat): Nat => x)\n" +
         "def applyHidden : Nat := hidden.run(Nat.zero)\n"
     val (env, _) = TestSupport.check(source)
     assert(env.globals.contains("Fn.run"))
@@ -120,9 +120,9 @@ class ProjectionTests extends munit.FunSuite {
       "inductive Nat : Type\n" +
         " | zero : Nat\n\n" +
         "struct PairU {u1: Level}{u2: Level}(A: Sort(u1))(B: Sort(u2)) : Sort(Level.max(u1, u2))\n" +
-        " | mk (fst: A)(snd: B) : PairU(u1, u2, A, B)\n\n" +
-        "opaque def F : PairU(Level.succ(Level.one), Level.succ(Level.one), Type, Type) := " +
-        "PairU.mk(Level.succ(Level.one), Level.succ(Level.one), Type, Type, Nat, Nat)\n\n" +
+        " | mk (fst: A)(snd: B) : PairU(A, B)\n\n" +
+        "opaque def F : PairU(Type, Type) := " +
+        "PairU.mk(Nat, Nat)\n\n" +
         "def idF (x: F.fst): F.fst := x\n"
     TestSupport.check(source)
   }
@@ -137,8 +137,8 @@ class ProjectionTests extends munit.FunSuite {
         "opaque def step (n: Nat): Nat := n\n" +
         "def choose (n: Nat): Pair(Nat, Nat) := {\n" +
         "  match step(n) returning Pair(Nat, Nat) with\n" +
-        "  | Nat.zero => Pair.mk(Nat, Nat, Nat.zero, Nat.zero)\n" +
-        "  | Nat.succ k => Pair.mk(Nat, Nat, Nat.succ(k), k)\n" +
+        "  | Nat.zero => Pair.mk(Nat.zero, Nat.zero)\n" +
+        "  | Nat.succ k => Pair.mk(Nat.succ(k), k)\n" +
         "}\n" +
         "def first (n: Nat): Nat := { let p := choose(n) p.fst }\n"
     TestSupport.check(source)
@@ -191,7 +191,7 @@ class ProjectionTests extends munit.FunSuite {
     val source =
       "struct Pair (A: Type)(B: Type) : Type\n" +
         " | mk (fst: A)(snd: B) : Pair(A, B)\n\n" +
-        "Pair.fst(Type, Type, Pair.mk(Type, Type, Type, Type))"
+        "Pair.fst(Pair.mk(Type, Type))"
     assertEquals(PrettyPrinter.print(TestSupport.eval(source)), "Type")
   }
 

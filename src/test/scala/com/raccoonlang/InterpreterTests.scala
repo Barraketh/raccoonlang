@@ -51,7 +51,7 @@ class InterpreterTests extends munit.FunSuite {
   }
 
   test("parameterized families and constructors compute their applications") {
-    val value = run("inductive Box (A: Type) : Type\n | mk (value: A) : Box(A)\n\nBox.mk(Type, Type)")
+    val value = run("inductive Box (A: Type) : Type\n | mk (value: A) : Box(A)\n\nBox.mk(Type)")
     value match {
       case VApp(head: ConstructorHead, args, _, _) =>
         assertEquals(head.name, "Box.mk")

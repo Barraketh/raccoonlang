@@ -176,7 +176,7 @@ class MatchCheckerTests extends munit.FunSuite {
       "inductive Eq (A: Type) indices (a: A)(b: A) : Type\n" +
         " | refl (x: A) : Eq(A, x, x)\n\n" +
         "def symm (A: Type)(a: A)(b: A)(p: Eq(A, a, b)): Eq(A, b, a) := match p returning Eq(A, b, a) with\n" +
-        " | Eq.refl x => Eq.refl(A, x)\n"
+        " | Eq.refl x => Eq.refl(x)\n"
     )
   }
 
@@ -189,7 +189,7 @@ class MatchCheckerTests extends munit.FunSuite {
           "inductive Eq (A: Type) indices (a: A)(b: A) : Type\n" +
           " | refl (x: A) : Eq(A, x, x)\n\n" +
           "def bad (a: Nat)(p: Eq(Nat, a, a)): Eq(Nat, a, Nat.succ(a)) := match p returning Eq(Nat, a, Nat.succ(a)) with\n" +
-          " | Eq.refl x => Eq.refl(Nat, x)\n"
+          " | Eq.refl x => Eq.refl(x)\n"
       )
     }
   }

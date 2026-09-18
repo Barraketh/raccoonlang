@@ -181,7 +181,7 @@ object Elaborator {
       else
         C.Term.App(
           C.Term.GlobalRef(header.name, header.span),
-          header.binders.map(b => C.Term.LocalRef(b.localRef, b.span)),
+          header.binders.collect { case b if !b.isImplicit => C.Term.LocalRef(b.localRef, b.span) },
           header.span
         )
     val selectors = ctor.binders.zipWithIndex.collect { case (field, idx) if field.name != "_" => (field, idx) }
@@ -190,7 +190,7 @@ object Elaborator {
     def rewrite(term: C.Term, self: C.LocalRef, previous: Map[C.LocalRef, String]): C.Term = term match {
       case C.Term.LocalRef(ref, span) if previous.contains(ref) =>
         val call = C.Term.GlobalRef(previous(ref), span)
-        val args = header.binders.map(b => C.Term.LocalRef(b.localRef, b.span)) :+ C.Term.LocalRef(self, span)
+        val args = Vector(C.Term.LocalRef(self, span))
         C.Term.App(call, args, span)
       case C.Term.App(fn, args, span) =>
         C.Term.App(rewrite(fn, self, previous), args.map(rewrite(_, self, previous)), span)
@@ -228,7 +228,9 @@ object Elaborator {
       }
       val fieldTy = rewrite(field.ty, selfRef, previous)
       val selfBinder = C.Binder(selfRef, selfTy, field.span)
-      val allBinders = header.binders ++ Vector(selfBinder)
+      // Selector parameters include indices as well as family parameters.  All are reconstructed
+      // from the structure value at a selector call; keep the exact telescope grouping here.
+      val allBinders = header.binders.map(_.copy(isImplicit = true)) ++ Vector(selfBinder)
       val resultTy = fieldTy
       val pi = C.Term.Pi(allBinders, resultTy, field.span)
       val argRefs = ctor.binders.map(b => Some(b.localRef))

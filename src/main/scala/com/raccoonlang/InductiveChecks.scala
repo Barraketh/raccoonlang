@@ -7,8 +7,8 @@ import com.raccoonlang.telescope.BinderOps
 import scala.collection.immutable.BitSet
 
 object InductiveChecks {
-  private def getType(term: Term, env: Env): Value = {
-    val checked = TypeChecker.checkTerm(term, env)
+  private def getType(term: Term, env: Env, familyParams: Int): Value = {
+    val checked = TypeChecker.checkTypeWithFamilyParams(term, env, familyParams)
     TypeChecker.assertType(checked.value)
     checked.value
   }
@@ -254,9 +254,12 @@ object InductiveChecks {
         true
     }
 
-  /** C08 keeps the C07 constructor telescope: family parameters remain explicit binders. */
+  /** C12 synthesizes implicit constructor family parameters before appending constructor binders. */
+  private def constructorFamilyParams(header: InductiveHeader): Vector[Binder] =
+    header.params.map(_.copy(isImplicit = true))
+
   private def constructorBinders(header: InductiveHeader, ctor: ConstructorDecl): Vector[Binder] =
-    header.params ++ ctor.binders
+    constructorFamilyParams(header) ++ ctor.binders
 
   /**
    * Every local this term references. Non-lexical, like capture analysis: a ref bound inside the term still counts,
@@ -297,18 +300,11 @@ object InductiveChecks {
         if (allBinders.isEmpty) ctor.resultTy
         else Term.Pi(allBinders, ctor.resultTy, ctor.span)
 
-      val fullType = getType(fullTypeTerm, curEnv)
+      val fullType = TypeChecker.getConstructorType(fullTypeTerm, curEnv, decl.header.params.length)
       curEnv.putGlobal(
         ctor.canonicalName,
         ConstructorHead(ctor.canonicalName, decl.header.params.length, allBinders.length, fullType)
       )
-    }
-
-  private def checkBinders(binders: Vector[Binder], env: Env): Env =
-    binders.foldLeft(env) { case (scope, binder) =>
-      val checked = TypeChecker.checkTerm(binder.ty, scope)
-      TypeChecker.assertType(checked.value)
-      scope.putLocal(binder.localRef, Interpreter.rigidBinderValue(binder.localRef, checked.value))
     }
 
   private def checkConstructorParamDiscipline(
@@ -323,9 +319,18 @@ object InductiveChecks {
       val error =
         NonUniformInductiveParam(header.name, ctor.canonicalName, param.name, outputArg, Some(ctor.resultTy.span))
 
-      if (!ValueEquivalence.defEq(outputArg, paramValue))
+      if (!sameConstructorParam(outputArg, paramValue))
         throw error
     }
+
+  private def sameConstructorParam(actual: Value, expected: Value): Boolean = {
+    val sameLevel =
+      (Level.fromValue(actual), Level.fromValue(expected)) match {
+        case (Some(left), Some(right)) => left == right
+        case _                         => false
+      }
+    ValueEquivalence.defEq(actual, expected) || sameLevel
+  }
 
   private final case class FamilySignature(
       decl: Decl.InductiveDecl,
@@ -396,7 +401,8 @@ object InductiveChecks {
     else Term.Pi(decl.header.binders, decl.header.resultTy, decl.header.span)
 
   private def checkFamilySignatures(block: Decl.InductiveBlock, env: Env): Vector[FamilySignature] = {
-    val typedFamilies = block.families.map(decl => (decl, getType(familyTypeTerm(decl), env)))
+    val typedFamilies =
+      block.families.map(decl => (decl, getType(familyTypeTerm(decl), env, decl.header.params.length)))
     val coreParamCount = block.families.head.header.params.length
     val expectedImplicitness = block.families.head.header.params.map(_.isImplicit)
     val canonicalParams =
@@ -501,8 +507,10 @@ object InductiveChecks {
     )
     decl.ctors.foreach { ctor =>
       val allConstructorBinders = constructorBinders(header, ctor)
-      val envWithBinders = checkBinders(allConstructorBinders, provisionalEnv)
-      val binders = allConstructorBinders
+      val checkedBinders =
+        BinderOps.checkBinders(allConstructorBinders, provisionalEnv, familyParams = header.params.length)
+      val binders = checkedBinders.binders
+      val envWithBinders = checkedBinders.env
       val binderVars = binders.map(binder => envWithBinders(binder.localRef))
       val commonParamValues = binderVars.take(header.params.length)
       val ownBinderVars = binderVars.drop(header.params.length)
@@ -524,7 +532,7 @@ object InductiveChecks {
       checkConstructorParamDiscipline(header, ctor, envWithBinders, outputArgs)
       if (
         outputArgs.take(sourceParamValues.length).zip(sourceParamValues).exists { case (actual, expected) =>
-          !ValueEquivalence.defEq(actual, expected)
+          !sameConstructorParam(actual, expected)
         }
       )
         throw InvalidInductiveBlock(

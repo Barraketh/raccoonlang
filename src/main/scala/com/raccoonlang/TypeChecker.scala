@@ -2,7 +2,7 @@ package com.raccoonlang
 
 import com.raccoonlang.CoreAst.{Decl, Program, Term => CTerm}
 import com.raccoonlang.Value._
-import com.raccoonlang.telescope.BinderOps
+import com.raccoonlang.telescope.{BinderOps, Projection}
 
 /** Bidirectional checker: unification is the conversion and refinement mechanism. */
 object TypeChecker {
@@ -22,6 +22,19 @@ object TypeChecker {
     case sort: VSort => sort
     case _           => throw NotAType(value.tpe)
   }
+  private[raccoonlang] def checkTypeWithFamilyParams(term: CTerm, env: Env, familyParams: Int): CheckedTerm =
+    term match {
+      case pi: CTerm.Pi =>
+        val checked = checkPi(pi, env, familyParams)
+        CheckedTerm(checked.vpi, checked.residual)
+      case other => checkTerm(other, env)
+    }
+
+  private[raccoonlang] def getConstructorType(term: CTerm, env: Env, familyParams: Int): Value = {
+    val checked = checkTypeWithFamilyParams(term, env, familyParams)
+    assertType(checked.value)
+    checked.value
+  }
   private def sortOf(value: Value): VSort = assertType(value)
 
   def checkTerm(term: CTerm, env: Env): CheckedTerm = term match {
@@ -31,7 +44,7 @@ object TypeChecker {
     case CTerm.StrLit(_, span)    => throw WTF(s"String literals are unavailable at $span")
     case CTerm.Select(base, field, span) =>
       val checkedBase = checkTerm(base, env)
-      CheckedTerm(select(checkedBase.value, field, env, span), CTerm.Select(checkedBase.residual, field, span))
+      checkSelect(checkedBase, field, span, env)
     case pi: CTerm.Pi => {
       val checked = checkPi(pi, env)
       CheckedTerm(checked.vpi, checked.residual)
@@ -44,33 +57,31 @@ object TypeChecker {
     case matchTerm: CTerm.Match => MatchChecker.checkMatch(matchTerm, env, None)
   }
 
-  /** Resolve a selector through the structure's ordinary generated definition. */
-  private def select(base: Value, field: String, env: Env, span: Span): Value = {
-    val normalized = base match {
-      case head: ConstructorHead if head.totalArity == 0 => VCtor(head, Vector.empty, head.tpe)
-      case value                                         => value
+  private def checkSelect(base: CheckedTerm, field: String, span: Span, env: Env): CheckedTerm = {
+    val family = base.value.tpe match {
+      case InductiveFamilyValue(instance) => instance
+      case other                          => throw NotAType(other)
     }
-    normalized.tpe match {
-      case InductiveFamilyValue(instance) =>
-        // C09 has no value-to-core quoting, so a residual Select is retained here; resolve it
-        // through the ordinary generated Family.field definition with explicit family arguments.
-        val fn = env(s"${instance.head.name}.$field")
-        Interpreter.evalApply(fn, instance.args :+ normalized)
-      case _ => throw NotFound(field, Some(span))
-    }
+    val selectorName = s"${family.head.name}.$field"
+    if (!env.globals.contains(selectorName)) throw NotFound(selectorName, Some(span))
+    val selector = env(selectorName)
+    checkApply(
+      CheckedTerm(selector, CTerm.GlobalRef(selectorName, span)),
+      Vector(PendingArg.Checked(base)),
+      env,
+      span,
+      None
+    )
   }
 
   def checkTerm(term: CTerm, expected: Value, env: Env): CheckedTerm = {
     check(term, Some(Expected(expected, None)), env)
   }
 
-  private def checkPi(pi: CTerm.Pi, env: Env): CheckedPi = {
-    val (scope, binders) = pi.binders.foldLeft((env, Vector.empty[CoreAst.Binder])) { case ((current, out), binder) =>
-      val checkedTy = checkTerm(binder.ty, current)
-      sortOf(checkedTy.value)
-      val bound = current.putLocal(binder.localRef, Interpreter.rigidBinderValue(binder.localRef, checkedTy.value))
-      (bound, out :+ binder.copy(ty = checkedTy.residual))
-    }
+  private def checkPi(pi: CTerm.Pi, env: Env, familyParams: Int = 0): CheckedPi = {
+    val checkedBinders = BinderOps.checkBinders(pi.binders, env, familyParams)
+    val scope = checkedBinders.env
+    val binders = checkedBinders.binders
     val checkedOut = checkTerm(pi.out, scope)
     sortOf(checkedOut.value)
     val residual = pi.copy(binders = binders, out = checkedOut.residual)
@@ -86,9 +97,49 @@ object TypeChecker {
       case _                      =>
     }
     val checked = checkTerm(term, env)
-    expected.foreach(exp => checkFits(checked.value.tpe, exp.value))
-    checked
+    expected match {
+      case None => checked
+      case Some(exp) =>
+        term match {
+          case _: CTerm.Ref | _: CTerm.Lam =>
+            tryInstantiateImplicits(checked, exp, env, term.span).getOrElse {
+              checkFits(checked.value.tpe, exp.value); checked
+            }
+          case _ => checkFits(checked.value.tpe, exp.value); checked
+        }
+    }
   }
+
+  private def tryInstantiateImplicits(
+      checked: CheckedTerm,
+      expected: Expected,
+      env: Env,
+      span: Span
+  ): Option[CheckedTerm] =
+    (checked.value.tpe, expected.value) match {
+      case (actual: VPi, target: VPi)
+          if actual.binders.exists(_.isImplicit) && actual.binders.length > target.binders.length &&
+            actual.numExplicit == target.numExplicit =>
+        expected.syntax.flatMap {
+          case syntax: CTerm.Pi =>
+            val residualPi = syntax.copy(span = Span.synthetic(), binders = target.binders)
+            val fresh = BinderOps.freshen(target)
+            val bodyEnv = target.binders.foldLeft(env) { case (cur, b) => cur.putLocal(b.localRef, fresh(b.localRef)) }
+            val bodyArgs = target.binders.collect {
+              case b if !b.isImplicit =>
+                PendingArg.Checked(CheckedTerm(fresh(b.localRef), CTerm.LocalRef(b.localRef, b.ty.span)))
+            }
+            try {
+              val applied = checkApply(checked, bodyArgs, bodyEnv, span, Some(target.codomain(fresh)))
+              val lam = CTerm.Lam(residualPi, applied.residual, Span.synthetic(), None, None)
+              Some(CheckedTerm(Interpreter.evalLam(lam, target, env), lam))
+            } catch {
+              case _: TypeMismatch | _: ArityMismatch | _: ImplicitReconstructionFailed => None
+            }
+          case _ => None
+        }
+      case _ => None
+    }
 
   private def checkBody(body: CTerm.Body, env: Env, expected: Option[Expected]): CheckedTerm = {
     val (bodyEnv, checkedLets) = body.lets.foldLeft((env, Vector.empty[CoreAst.Let])) { case ((current, out), let) =>
@@ -163,21 +214,67 @@ object TypeChecker {
 
   private def checkApp(fn: CTerm, args: Vector[CTerm], env: Env, span: Span): CheckedTerm = {
     val checkedFn = checkTerm(fn, env)
-    checkedFn.value.tpe match {
-      case pi: VPi =>
-        if (args.length != pi.binders.length) throw ArityMismatch(pi.binders.length, args.length)
-        val (_, checkedArgs, values) =
-          args.zip(pi.binders).foldLeft((pi.env, Vector.empty[CTerm], Vector.empty[Value])) {
-            case ((scope, out, vals), (arg, binder)) =>
-              val binderType = Interpreter.evalTerm(binder.ty, scope)
-              val checked = checkTerm(arg, binderType, env)
-              TerminationChecker.assertNonRawRecursive(checked.value, arg.span)
-              (scope.putLocal(binder.localRef, checked.value), out :+ checked.residual, vals :+ checked.value)
+    checkApply(checkedFn, args.map(PendingArg.Term), env, span, None)
+  }
+
+  private sealed trait PendingArg { def synth(env: Env): CheckedTerm }
+  private object PendingArg {
+    final case class Term(term: CTerm) extends PendingArg { def synth(env: Env): CheckedTerm = checkTerm(term, env) }
+    final case class Checked(value: CheckedTerm) extends PendingArg { def synth(env: Env): CheckedTerm = value }
+  }
+
+  private def checkApply(
+      checkedFn: CheckedTerm,
+      args: Vector[PendingArg],
+      env: Env,
+      span: Span,
+      expectedResult: Option[Value]
+  ): CheckedTerm = checkedFn.value.tpe match {
+    case pi: VPi =>
+      if (args.length != pi.numExplicit) throw ArityMismatch(pi.numExplicit, args.length, Some(span))
+      val known = new Array[Value](pi.binders.length)
+      val residuals = Vector.newBuilder[CTerm]
+      var provided = Vector.empty[Value]
+      var explicit = 0
+      pi.binders.zipWithIndex.foreach { case (binder, idx) =>
+        if (!binder.isImplicit) {
+          val checked = args(explicit).synth(env)
+          TerminationChecker.assertNonRawRecursive(
+            checked.value,
+            args(explicit) match {
+              case PendingArg.Term(t) => t.span
+              case _                  => span
+            }
+          )
+          known(idx) = checked.value
+          residuals += checked.residual
+          provided :+= checked.value
+          pi.implicitRoots.getOrElse(explicit, Vector.empty).foreach { implicitIdx =>
+            Projection.project(pi.binders(implicitIdx).projection.get, provided) match {
+              case Right(value) => known(implicitIdx) = value
+              case Left(reason) =>
+                throw ImplicitReconstructionFailed(
+                  pi.binders(implicitIdx).name,
+                  fnName(checkedFn.residual),
+                  reason,
+                  Some(span)
+                )
+            }
           }
-        BinderOps.checkAndInstantiate(pi.binders, pi.env, values)
-        CheckedTerm(Interpreter.evalApply(checkedFn.value, values), CTerm.App(checkedFn.residual, checkedArgs, span))
-      case other => throw CannotApplyNonFunction(other)
-    }
+          explicit += 1
+        }
+      }
+      val calleeEnv = BinderOps.checkAndInstantiate(pi.binders, pi.env, known.toVector)
+      expectedResult.foreach(expected => checkFits(pi.codomain(calleeEnv), expected))
+      val all = pi.binders.map(b => calleeEnv(b.localRef))
+      CheckedTerm(Interpreter.evalApply(checkedFn.value, all), CTerm.App(checkedFn.residual, residuals.result(), span))
+    case other => throw CannotApplyNonFunction(other)
+  }
+
+  private def fnName(term: CTerm): String = term match {
+    case CTerm.GlobalRef(name, _) => name
+    case CTerm.LocalRef(ref, _)   => ref.name
+    case _                        => "function"
   }
 
   def checkDecl(decl: Decl, env: Env): Env = decl match {

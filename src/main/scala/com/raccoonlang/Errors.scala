@@ -35,6 +35,19 @@ final case class ArityMismatch(expected: Int, got: Int, override val span: Optio
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
   val msg = s"Expected $expected arguments, got $got"
 }
+final case class NonForcedImplicitParam(param: String, override val span: Option[Span] = None) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  val msg = s"Parameter $param cannot be implicit: it is not forced by a later explicit parameter"
+}
+final case class ImplicitReconstructionFailed(
+    param: String,
+    fn: String,
+    reason: String,
+    override val span: Option[Span] = None
+) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  val msg = s"Cannot reconstruct implicit argument $param of $fn: $reason"
+}
 final case class CoreInvariant(msg: String, override val span: Option[Span] = None) extends TypeError {
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
 }

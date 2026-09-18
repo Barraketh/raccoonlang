@@ -2,6 +2,7 @@ package com.raccoonlang
 
 import com.raccoonlang.CoreAst.{Decl, Program, Term}
 import com.raccoonlang.Value._
+import com.raccoonlang.telescope.{BinderOps, Projection}
 
 /** The runtime evaluator; static validation is performed by TypeChecker. */
 object Interpreter {
@@ -82,14 +83,22 @@ object Interpreter {
   def rigidBinderValue(ref: CoreAst.LocalRef, tpe: Value): Value =
     FreshVar.freshVar(ref.name, tpe)
 
-  private def piClassifier(binders: Vector[CoreAst.Binder], baseEnv: Env, out: CoreAst.Term): VSort = {
-    val freshEnv = com.raccoonlang.telescope.BinderOps.freshen(binders, baseEnv)
-    val outLevel = TypeChecker.getUniverse(evalTerm(out, freshEnv)).level
+  private[raccoonlang] def piClassifierFromChecked(
+      binders: Vector[CoreAst.Binder],
+      freshEnv: Env,
+      outValue: Value
+  ): VSort = {
+    val outLevel = TypeChecker.getUniverse(outValue).level
     val domLevels = binders.map(b => TypeChecker.getUniverse(freshEnv(b.localRef).tpe).level)
     val level =
       if (Level.isNeverZero(outLevel)) Level.max(domLevels :+ outLevel)
       else domLevels.foldRight(outLevel)(Level.imax)
     VSort(level)
+  }
+
+  private def piClassifier(binders: Vector[CoreAst.Binder], baseEnv: Env, out: CoreAst.Term): VSort = {
+    val freshEnv = com.raccoonlang.telescope.BinderOps.freshen(binders, baseEnv)
+    piClassifierFromChecked(binders, freshEnv, evalTerm(out, freshEnv))
   }
 
   /** Continue reduction when an EqStore solved a value's blocker. */
@@ -136,11 +145,14 @@ object Interpreter {
   }
 
   def evalPiClosed(pi: Term.Pi, env: Env): VPi = {
+    val runtimeBinders =
+      if (pi.binders.exists(b => b.isImplicit && b.projection.isEmpty)) BinderOps.compileRuntime(pi.binders, env)
+      else pi.binders
     val classifier = () => piClassifier(pi.binders, env, pi.out)
     val captures = env.locals.values.toVector
     VPi(
       env,
-      pi.binders,
+      runtimeBinders,
       bodyEnv => evalTerm(pi.out, bodyEnv),
       env.dependencies,
       Value.ValueId.LocalId(pi.nodeId, captures),
@@ -160,9 +172,10 @@ object Interpreter {
     case Term.Select(base, field, span) => evalSelect(evalTerm(base, env), field, env, span)
     case pi: Term.Pi                    => evalPi(pi, env)
     case lam: Term.Lam                  => evalLam(lam, env)
-    case Term.App(fn, args, _) =>
+    case Term.App(fn, args, span) =>
       val values = args.map(arg => evalTerm(arg, env))
-      evalApply(evalTerm(fn, env), values)
+      val vf = evalTerm(fn, env)
+      evalApply(vf, reconstructImplicits(vf, values, span))
     case Term.Body(lets, result, _) =>
       evalBody(lets, result, env)
     case matchTerm: Term.Match => evalMatch(matchTerm, env)
@@ -178,7 +191,7 @@ object Interpreter {
     base.tpe match {
       case InductiveFamilyValue(instance) =>
         val fn = env(s"${instance.head.name}.$field")
-        evalApply(fn, instance.args :+ base)
+        evalApply(fn, reconstructImplicits(fn, Vector(base), span))
       case _ => throw NotFound(field, Some(span))
     }
   }
@@ -235,26 +248,44 @@ object Interpreter {
   }
 
   def evalApply(fn: Value, args: Vector[Value]): Value = {
-    fn match {
-      case lam: VLam => runLam(lam, args)
-      case head: ConstructorHead =>
-        if (args.length != head.totalArity) throw ArityMismatch(head.totalArity, args.length)
-        val result = resultType(head.tpe, args)
-        VCtor(head, Value.constructorStoredArgs(head, args), result)
-      case value =>
-        value.tpe match {
-          case pi: VPi =>
-            if (args.length != pi.binders.length) throw ArityMismatch(pi.binders.length, args.length)
+    fn.tpe match {
+      case pi: VPi =>
+        if (args.length != pi.binders.length) throw ArityMismatch(pi.binders.length, args.length)
+        // The checked evaluator has already validated these arguments.  Runtime application also
+        // serves the deliberately unchecked evaluator, where inferred constructor/family values
+        // need only be threaded through the telescope; type validation belongs to TypeChecker.
+        val applied = BinderOps.instantiateFull(pi.binders, pi.env, args)
+        fn match {
+          case lam: VLam => runLam(lam, args)
+          case head: ConstructorHead =>
+            VCtor(head, Value.constructorStoredArgs(head, args), pi.codomain(applied))
+          case value =>
             val blocked = Blocker.unapply(value).getOrElse(DepSet.empty)
-            VApp(value, args, resultType(pi, args), blocked)
-          case _ => throw CannotApplyNonFunction(value)
+            VApp(value, args, pi.codomain(applied), blocked)
         }
+      case _ => throw CannotApplyNonFunction(fn)
     }
   }
 
-  private def resultType(tpe: Value, args: Vector[Value]): Value = tpe match {
-    case pi: VPi => resultType(pi, args)
-    case _       => throw CannotApplyNonFunction(tpe)
+  /** Runtime Core applications retain only explicit arguments; reconstruct the same projections as checking. */
+  private def reconstructImplicits(fn: Value, provided: Vector[Value], span: Span): Vector[Value] = fn.tpe match {
+    case pi: VPi if pi.binders.exists(_.isImplicit) =>
+      if (provided.length != pi.numExplicit) throw ArityMismatch(pi.numExplicit, provided.length, Some(span))
+      var explicit = 0
+      pi.binders.map { binder =>
+        if (!binder.isImplicit) { val value = provided(explicit); explicit += 1; value }
+        else {
+          binder.projection match {
+            case None => throw WTF(s"Implicit binder ${binder.name} has no projection spec", Some(span))
+            case Some(spec) =>
+              Projection.project(spec, provided) match {
+                case Right(value) => value
+                case Left(reason) => throw ImplicitReconstructionFailed(binder.name, "application", reason, Some(span))
+              }
+          }
+        }
+      }
+    case _ => provided
   }
 
   def resultType(pi: VPi, args: Vector[Value]): Value = {
@@ -265,11 +296,18 @@ object Interpreter {
     pi.codomain(applied)
   }
 
-  private def evalLam(lam: Term.Lam, env: Env): VLam = {
+  private[raccoonlang] def evalLam(lam: Term.Lam, env: Env): VLam = {
     val closure = env.closeForEval(CapturedRefs.getCapturedRefs(lam, env))
     val id =
       lam.name.map(Value.ValueId.Const).getOrElse(Value.ValueId.LocalId(lam.nodeId, closure.locals.values.toVector))
     VLam(evalPiClosed(lam.ty, closure), id, Value.LamBody.Core(lam, closure))
+  }
+
+  private[raccoonlang] def evalLam(lam: Term.Lam, vpi: VPi, env: Env): VLam = {
+    val closure = env.closeForEval(CapturedRefs.getCapturedRefs(lam, env))
+    val id =
+      lam.name.map(Value.ValueId.Const).getOrElse(Value.ValueId.LocalId(lam.nodeId, closure.locals.values.toVector))
+    VLam(vpi, id, Value.LamBody.Core(lam, closure))
   }
 
   def runLam(lam: VLam, args: Vector[Value]): Value = lam.body match {

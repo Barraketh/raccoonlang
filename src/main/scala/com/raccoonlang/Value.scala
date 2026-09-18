@@ -233,6 +233,16 @@ object Value {
   ) extends Value {
     override val needsStructuralDefEq: Boolean = true
     require(binders.nonEmpty, "VPi requires at least one binder")
+    lazy val numExplicit: Int = binders.count(!_.isImplicit)
+    lazy val implicitRoots: Map[Int, Vector[Int]] = {
+      val roots = scala.collection.mutable.Map.empty[Int, Vector[Int]]
+      binders.zipWithIndex.foreach { case (binder, idx) =>
+        binder.projection.foreach { spec =>
+          roots.update(spec.rootArgIdx, roots.getOrElse(spec.rootArgIdx, Vector.empty) :+ idx)
+        }
+      }
+      roots.toMap
+    }
     override lazy val tpe: VSort = classifier0()
   }
 
