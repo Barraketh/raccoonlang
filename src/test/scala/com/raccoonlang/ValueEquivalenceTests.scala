@@ -206,7 +206,13 @@ class ValueEquivalenceTests extends munit.FunSuite {
   test("inductive family applications refine invertible arguments") {
     val family = Value.VConst(
       "F",
-      Value.Inductive(Value.InductiveMeta(Vector.empty, 1)),
+      Value.Inductive(
+        Value.InductiveMeta(
+          Vector.empty,
+          1,
+          Value.ProvisionalInductiveBlockInfo(Value.InductiveBlockKey(Vector("F"), 0), DepSet.empty)
+        )
+      ),
       Value.VPi(
         Env.empty,
         Vector(CoreAst.Binder(CoreAst.LocalRef(30, "A"), CoreAst.Term.GlobalRef("Type", Span(0, 1)), Span(0, 1))),

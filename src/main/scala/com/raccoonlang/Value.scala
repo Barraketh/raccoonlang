@@ -247,7 +247,42 @@ object Value {
   case object Symbol extends ConstType
 
   final case class ConstructorMeta(shortName: String, canonicalName: String)
-  final case class InductiveMeta(constructors: Vector[ConstructorMeta], familyArity: Int)
+
+  final case class InductiveBlockKey(members: Vector[String], numParams: Int) {
+    require(members.nonEmpty, "An inductive block must contain at least one family")
+    require(members.distinct.length == members.length, "Inductive block family names must be unique")
+    require(numParams >= 0, "Inductive block parameter count must be non-negative")
+  }
+
+  sealed trait InductiveBlockDescriptor {
+    def key: InductiveBlockKey
+    def positiveParams: DepSet
+    protected final def validatePositiveParams(): Unit =
+      require(
+        positiveParams.isEmpty || positiveParams.max < key.numParams,
+        "Inductive positive source-parameter indexes must be in range"
+      )
+    final def isPositiveCoreArgument(index: Int): Boolean = positiveParams.contains(index)
+  }
+
+  final case class ProvisionalInductiveBlockInfo(key: InductiveBlockKey, positiveParams: DepSet)
+    extends InductiveBlockDescriptor { validatePositiveParams() }
+
+  final case class CheckedInductiveBlockSchema(
+      key: InductiveBlockKey,
+      positiveParams: DepSet
+  ) extends InductiveBlockDescriptor {
+    validatePositiveParams()
+  }
+
+  final case class InductiveMeta(
+      constructors: Vector[ConstructorMeta],
+      familyArity: Int,
+      block: InductiveBlockDescriptor
+  ) {
+    require(familyArity >= block.key.numParams, "Inductive family arity must contain common parameters")
+    lazy val constructorNames: Vector[String] = constructors.map(_.canonicalName)
+  }
 
   final case class VConst(name: String, constType: ConstType, tpe: Value) extends Value {
     override lazy val synDeps: DepSet = tpe.synDeps

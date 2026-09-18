@@ -285,7 +285,7 @@ object Interpreter {
         }
     case Decl.AxiomDecl(name, ty, _)            => env.putOpaque(name, evalTerm(ty, env))
     case d: Decl.InductiveDecl                  => InductiveChecks.evalInductive(d, env)
-    case Decl.InductiveBlock(families, _)       => InductiveChecks.evalInductiveBlock(families, env)
+    case block: Decl.InductiveBlock             => InductiveChecks.evalInductiveBlock(block, env)
     case Decl.RecursiveDefBlock(definitions, _) => evalRecursive(definitions, env)
   }
 

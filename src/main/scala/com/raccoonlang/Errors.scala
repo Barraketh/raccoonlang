@@ -72,3 +72,52 @@ final case class AmbiguousName(name: String, candidates: Vector[String], overrid
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
   val msg = s"$name is ambiguous: ${candidates.mkString(", ")}"
 }
+
+final case class InvalidConstructorResult(
+    ctor: String,
+    inductive: String,
+    got: Value,
+    override val span: Option[Span] = None
+) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  val msg = s"Constructor $ctor must return $inductive but got $got"
+}
+final case class NonUniformInductiveParam(
+    inductive: String,
+    ctor: String,
+    param: String,
+    got: Value,
+    override val span: Option[Span] = None
+) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  val msg = s"Constructor $ctor of $inductive returns non-uniform parameter $param as $got"
+}
+final case class InductiveUniverseTooSmall(
+    inductive: String,
+    where: String,
+    fieldTy: Value,
+    fieldUniverse: Value.Level,
+    inductiveUniverse: Value.Level,
+    override val span: Option[Span] = None
+) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  val msg = s"Inductive $inductive lives in Sort $inductiveUniverse, but $where has type $fieldTy : Sort $fieldUniverse"
+}
+final case class InductiveTypeNotASort(tpe: Value, override val span: Option[Span] = None) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  val msg = s"Inductive type must be a Sort, got $tpe instead"
+}
+final case class InvalidInductiveBlock(reason: String, override val span: Option[Span] = None) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  val msg = s"Invalid inductive block: $reason"
+}
+final case class NonStrictlyPositive(
+    inductive: String,
+    ctor: String,
+    field: String,
+    fieldTy: Value,
+    override val span: Option[Span] = None
+) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  val msg = s"Constructor $ctor of $inductive is not strictly positive in field $field : $fieldTy"
+}

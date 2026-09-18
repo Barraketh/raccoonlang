@@ -162,7 +162,7 @@ object TypeChecker {
       val checked = checkTerm(ty, env); sortOf(checked.value); env.putOpaque(name, checked.value)
     case d: Decl.InductiveDecl => InductiveChecks.checkInductive(d, env)
     case Decl.InductiveBlock(families, span) =>
-      InductiveChecks.checkInductiveBlock(families, env)
+      InductiveChecks.checkInductiveBlock(Decl.InductiveBlock(families, span), env)
     case Decl.RecursiveDefBlock(defs, span) =>
       checkRecursiveDefBlock(Decl.RecursiveDefBlock(defs, span), env)
   }
