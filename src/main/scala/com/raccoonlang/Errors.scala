@@ -1,5 +1,7 @@
 package com.raccoonlang
 
+import java.nio.file.Path
+
 sealed trait TypeError extends RuntimeException {
   def msg: String
   def span: Option[Span]
@@ -127,7 +129,35 @@ final case class LocalCaseHead(name: String, override val span: Option[Span] = N
 
 final case class UnsupportedImport(name: String, override val span: Option[Span] = None) extends TypeError {
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
-  val msg = s"Import $name is not supported"
+  val msg = s"Unresolved import $name; load files through ModuleLoader before elaboration"
+}
+
+final case class ModuleNotFound(importPath: String, searchedPaths: Vector[Path], override val span: Option[Span] = None)
+  extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  val msg = s"Module $importPath not found. Searched: ${searchedPaths.mkString(", ")}"
+}
+
+final case class CyclicImport(cycle: Vector[Path], override val span: Option[Span] = None) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  val msg = s"Cyclic import: ${cycle.map(_.toString).mkString(" -> ")}"
+}
+
+final case class ModuleParseError(path: Path, message: String, offset: Int, override val span: Option[Span] = None)
+  extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  val msg = s"Failed to parse module ${path.toString}: $message"
+}
+
+final case class ImportedModuleHasBody(path: Path, override val span: Option[Span] = None) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  val msg = s"Imported module ${path.toString} must not contain a program body"
+}
+
+final case class ModuleReadFailed(path: Path, reason: String, override val span: Option[Span] = None)
+  extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  val msg = s"Failed to read module ${path.toString}: $reason"
 }
 
 final case class InvalidConstructorResult(
