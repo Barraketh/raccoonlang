@@ -48,6 +48,27 @@ object ValueKey {
     value.foreach(ch => current = mix(current, ch.toLong))
     current
   }
+
+  // Level atoms need a structural key of their own.  In particular, using the
+  // level's pretty-printed form here would make ordering depend on presentation
+  // and (more seriously) the old Level case below collapsed every level to one
+  // key.  Keep nested imax atoms in the key so the key fast path cannot equate
+  // unresolved imax with an ordinary max.
+  private val LevelParamAtomTag = 19
+  private val LevelIMaxAtomTag = 20
+
+  private def levelAtomKey(atom: Value.Level.Atom): Key = atom match {
+    case Value.Level.ParamAtom(id) => mix(tag(LevelParamAtomTag), id.toLong)
+    case Value.Level.IMaxAtom(lhs, rhs) =>
+      mix(mix(tag(LevelIMaxAtomTag), lhs.key), rhs.key)
+  }
+
+  private def levelKey(terms: Map[Value.Level.Atom, Int], c: Int): Key = {
+    var current = mix(tag(2), c.toLong)
+    val sorted = terms.iterator.map { case (atom, offset) => levelAtomKey(atom) -> offset }.toArray.sortBy(_._1)
+    sorted.foreach { case (atom, offset) => current = mix(mix(current, atom), offset.toLong) }
+    mix(current, sorted.length.toLong)
+  }
   private def values(key: Key, items: Iterable[Value]): Key = {
     var current = key
     var count = 0L
@@ -66,7 +87,8 @@ object ValueKey {
 
   def orderKey(value: Value): Key = value match {
     case Value.LevelTpe           => tag(1)
-    case Value.VSort(level)       => mix(tag(3), level.toLong)
+    case level: Value.Level       => levelKey(level.terms, level.c)
+    case Value.VSort(level)       => mix(tag(3), level.key)
     case Value.VConst(name, _, _) => text(tag(6), name)
     case Value.Var(_, id, _)      => mix(tag(7), id.toLong)
     case Value.VApp(head, args, tpe, _) =>

@@ -61,7 +61,11 @@ object ValueEquivalence {
         case (lv: Var, rv: Var) if lv.id == rv.id       => unify(lv.tpe, rv.tpe, store, ctx)
         case (v: Var, other) if store.isRefinable(v.id) => link(v, other, store, ctx)
         case (other, v: Var) if store.isRefinable(v.id) => link(v, other, store, ctx)
-        case (VSort(a), VSort(b)) if a == b             => Right(store)
+        // Levels occur both directly (e.g. a builtin result) and underneath
+        // VSort.  Keep this case separate so direct level equations get the
+        // same forced-offset solving as sort equations.
+        case (l1: Level, l2: Level) => unifyLevels(l1, l2, store, ctx)
+        case (VSort(a), VSort(b))   => unifyLevels(a, b, store, ctx)
         case (VConst(ln, lk, lt), VConst(rn, rk, rt)) if ln == rn && lk == rk =>
           unify(lt, rt, store, ctx)
         case (lp: VPi, rp: VPi)   => unifyPis(lp, rp, store, ctx)
@@ -79,6 +83,23 @@ object ValueEquivalence {
           unifyApps(leftApp, rightApp, store, ctx)
         case _ => stuck(left, right)
       }
+    }
+  }
+
+  private def unifyLevels(left: Level, right: Level, store: EqStore, ctx: Ctx): Either[UnifyFailure, EqStore] = {
+    if (left == right) Right(store)
+    else {
+      def solve(variable: VarId, offset: Int, other: Level): Either[UnifyFailure, EqStore] =
+        if (ctx.canLinkForced && store.isRefinable(variable) && Level.geq(other, offset)) {
+          val candidate = Level.addOffset(other, -offset)
+          if (store.occurs(variable, candidate)) stuck(VSort(left), VSort(right))
+          else Right(store.addLink(variable, candidate))
+        } else stuck(VSort(left), VSort(right))
+      Level
+        .singleVariableOffset(left)
+        .map { case (id, k) => solve(id, k, right) }
+        .orElse(Level.singleVariableOffset(right).map { case (id, k) => solve(id, k, left) })
+        .getOrElse(stuck(VSort(left), VSort(right)))
     }
   }
 
@@ -196,6 +217,8 @@ object ValueEquivalence {
                 if (escaped) stuck(left, right) else Right(result)
               }
           }
+      case (LamBody.Native(_, _, _), LamBody.Native(_, _, _)) if sameLambdaId(left.id, right.id) => Right(store)
+      case _                                                                                     => stuck(left, right)
     }
 
   private def alignLambdaPis(

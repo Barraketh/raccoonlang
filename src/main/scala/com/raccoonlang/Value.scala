@@ -24,6 +24,9 @@ object Value {
     final case class Core(term: CoreAst.Term.Lam, env: Env) extends LamBody {
       override lazy val synDeps: DepSet = env.dependencies
     }
+    final case class Native(run: (Vector[Value], Env) => Value, env: Env, isRawRecursive: Boolean) extends LamBody {
+      override lazy val synDeps: DepSet = env.dependencies
+    }
   }
 
   private[raccoonlang] def envDeps(env: Env): DepSet = {
@@ -32,20 +35,139 @@ object Value {
     deps.result()
   }
 
-  final case class VSort(level: Int) extends TopLevelValue {
-    require(level >= 0, "Sort level must be non-negative")
-    // This early runtime deliberately has one universe: Type and every sort are self-typed.
-    override val tpe: Value = this
+  case object LevelTpe extends TopLevelValue { override def tpe: Value = TypeTpe }
+
+  final class Level private (val terms: Map[Level.Atom, Int], val c: Int) extends Value {
+    override val tpe: Value = LevelTpe
+    private val cachedHashCode: Int = 31 * terms.hashCode() + c
+    private lazy val neverZero: Boolean = c > 0 || terms.exists {
+      case (_, offset) if offset > 0   => true
+      case (Level.IMaxAtom(_, rhs), _) => rhs.neverZero
+      case (_: Level.ParamAtom, _)     => false
+    }
+    private lazy val hasIMax: Boolean = terms.keysIterator.exists(_.isInstanceOf[Level.IMaxAtom])
+    override lazy val synDeps: DepSet = {
+      val deps = DepSet.newBuilder
+      terms.keys.foreach {
+        case Level.ParamAtom(id)      => deps.add(id)
+        case Level.IMaxAtom(lhs, rhs) => deps.unionInPlace(lhs.synDeps); deps.unionInPlace(rhs.synDeps)
+      }
+      deps.result()
+    }
+    override def equals(obj: Any): Boolean = obj match {
+      case other: Level => cachedHashCode == other.cachedHashCode && c == other.c && terms == other.terms
+      case _            => false
+    }
+    override def hashCode(): Int = cachedHashCode
+    override def toString: String = {
+      if (terms.isEmpty) return c.toString
+      val atoms = terms.toVector.sortBy(_._1.toString).map { case (atom, offset) =>
+        val base = atom match {
+          case Level.ParamAtom(id)      => s"u$id"
+          case Level.IMaxAtom(lhs, rhs) => s"imax($lhs, $rhs)"
+        }
+        if (offset == 0) base else s"$base+$offset"
+      }
+      (atoms ++ (if (c > 0) Vector(c.toString) else Vector.empty)).mkString("max(", ", ", ")")
+    }
+  }
+  object Level {
+    sealed trait Atom
+    final case class ParamAtom(id: VarId) extends Atom
+    final case class IMaxAtom(lhs: Level, rhs: Level) extends Atom
+    private def ofTerms(terms: Map[Atom, Int], c: Int): Level = {
+      require(c >= 0 && terms.values.forall(_ >= 0), "Level components must be non-negative")
+      new Level(terms, if (terms.nonEmpty && c <= terms.values.max) 0 else c)
+    }
+    def of(atoms: Map[VarId, Int], c: Int): Level = ofTerms(atoms.map { case (id, k) => ParamAtom(id) -> k }, c)
+    def const(c: Int): Level = ofTerms(Map.empty, c)
+    def addOffset(l: Level, offset: Int): Level = {
+      if (offset == 0) l
+      else {
+        val terms = l.terms.map { case (a, k) => a -> (k + offset) }
+        ofTerms(terms, if (l.c > 0 || l.terms.isEmpty) l.c + offset else 0)
+      }
+    }
+    def succ(l: Level): Level = addOffset(l, 1)
+    def geq(l: Level, offset: Int): Boolean =
+      l.terms.values.forall(_ >= offset) && (l.c >= offset || (l.c == 0 && l.terms.nonEmpty))
+    def max(xs: Vector[Level]): Level = {
+      require(xs.nonEmpty, "Level.max requires at least one level")
+      val terms = scala.collection.mutable.HashMap.empty[Atom, Int]
+      var c = 0
+      xs.foreach { l =>
+        c = math.max(c, l.c)
+        l.terms.foreach { case (a, k) => if (k > terms.getOrElse(a, -1)) terms.update(a, k) }
+      }
+      ofTerms(terms.toMap, c)
+    }
+    def isNeverZero(l: Level): Boolean = l.neverZero
+    def imax(lhs: Level, rhs: Level): Level =
+      if (rhs == zero) zero
+      else if (isNeverZero(rhs)) max(Vector(lhs, rhs))
+      else if (lhs == zero || lhs == one || lhs == rhs) rhs
+      else ofTerms(Map(IMaxAtom(lhs, rhs) -> 0), 0)
+    def containsIMax(l: Level): Boolean = l.hasIMax
+    def singleVariableOffset(l: Level): Option[(VarId, Int)] =
+      if (l.c != 0 || l.terms.size != 1) None
+      else
+        l.terms.head match {
+          case (ParamAtom(id), k) => Some(id -> k)
+          case _                  => None
+        }
+    private def regularLeq(a: Level, b: Level): Boolean =
+      (a.c <= b.c || b.terms.values.exists(_ >= a.c)) && a.terms.forall { case (atom, k) =>
+        k <= b.terms.getOrElse(atom, -1)
+      }
+    def leq(a: Level, b: Level): Boolean = {
+      if (!containsIMax(a) && !containsIMax(b)) regularLeq(a, b)
+      else {
+        val memo = scala.collection.mutable.Map.empty[(Level, Level), Boolean]
+        def covered(c: Int, out: Level): Boolean = c <= out.c || out.terms.values.exists(_ >= c)
+        def atomLevel(atom: Atom, offset: Int): Level = ofTerms(Map(atom -> offset), 0)
+        def termLeq(atom: Atom, offset: Int, out: Level): Boolean = {
+          val direct = out.terms.exists {
+            case (`atom`, outOffset)           => offset <= outOffset
+            case (IMaxAtom(_, rhs), outOffset) => loop(atomLevel(atom, offset), addOffset(rhs, outOffset))
+            case _                             => false
+          }
+          direct || (atom match {
+            case IMaxAtom(lhs, rhs) =>
+              covered(offset, out) && loop(addOffset(lhs, offset), out) && loop(addOffset(rhs, offset), out)
+            case _: ParamAtom => false
+          })
+        }
+        def loop(lhs: Level, rhs: Level): Boolean =
+          if (lhs == rhs) true
+          else
+            memo.getOrElseUpdate(
+              (lhs, rhs),
+              if (!containsIMax(lhs) && !containsIMax(rhs)) regularLeq(lhs, rhs)
+              else covered(lhs.c, rhs) && lhs.terms.forall { case (atom, offset) => termLeq(atom, offset, rhs) }
+            )
+        loop(a, b)
+      }
+    }
+    def mk(id: VarId): Level = ofTerms(Map(ParamAtom(id) -> 0), 0)
+    def fromValue(v: Value): Option[Level] = v match {
+      case l: Level             => Some(l)
+      case Var(_, id, LevelTpe) => Some(mk(id))
+      case _                    => None
+    }
+    val zero: Level = const(0)
+    val one: Level = const(1)
   }
 
-  case object LevelTpe extends TopLevelValue { override val tpe: Value = TypeValue }
-  val TypeValue: Value = VSort(0)
-  val TypeTpe: Value = TypeValue
-  val PropTpe: Value = TypeValue
+  case class VSort(level: Level) extends Value {
+    override def tpe: Value = VSort(Level.succ(level))
+    override lazy val synDeps: DepSet = level.synDeps
+  }
+  val TypeTpe: VSort = VSort(Level.one)
+  val TypeValue: VSort = TypeTpe
+  val PropTpe: VSort = VSort(Level.zero)
 
   def sortOf(value: Value): VSort = value match {
-    case sort: VSort => sort
-    case other       => other.tpe match { case sort: VSort => sort; case _ => throw NotAType(other) }
+    case other => other.tpe match { case sort: VSort => sort; case _ => throw NotAType(other) }
   }
 
   final case class VPi(

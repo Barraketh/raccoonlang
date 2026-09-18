@@ -3,15 +3,19 @@ package com.raccoonlang
 class TypingTests extends munit.FunSuite {
   test("functions and dependent applications typecheck") {
     val (_, result) = TestSupport.check(
-      "def id (A: Type)(x: A): A := x\n\nid(Type, Type)"
+      "inductive Bool : Type\n | true : Bool\n | false : Bool\n\n" +
+        "def id (A: Type)(x: A): A := x\n\nid(Bool, Bool.true)"
     )
     assert(result.nonEmpty)
-    assert(result.get.value.tpe == Value.TypeValue)
+    assertEquals(PrettyPrinter.print(result.get.value), "Bool.true")
   }
 
   test("wrong dependent function arguments are rejected") {
     intercept[TypeMismatch] {
-      TestSupport.check("def id (A: Type)(x: A): A := x\n\nid(Type, id)")
+      TestSupport.check(
+        "inductive Bool : Type\n | true : Bool\n | false : Bool\n\n" +
+          "def id (A: Type)(x: A): A := x\n\nid(Bool, Type)"
+      )
     }
   }
 
@@ -22,7 +26,10 @@ class TypingTests extends munit.FunSuite {
   }
 
   test("opaque and transparent definitions publish checked values") {
-    val (env, _) = TestSupport.check("opaque def hidden : Type := Type\n\ndef visible : Type := Type\n")
+    val (env, _) = TestSupport.check(
+      "inductive Bool : Type\n | true : Bool\n | false : Bool\n\n" +
+        "opaque def hidden : Bool := Bool.true\n\ndef visible : Bool := Bool.false\n"
+    )
     assert(env.globals.contains("hidden"))
     assert(env.globals.contains("visible"))
   }

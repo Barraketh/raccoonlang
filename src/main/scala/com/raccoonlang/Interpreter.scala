@@ -5,7 +5,74 @@ import com.raccoonlang.Value._
 
 /** The runtime evaluator; static validation is performed by TypeChecker. */
 object Interpreter {
-  val builtins: Env = Env.empty.putGlobal("Type", TypeValue).putGlobal("Level", LevelTpe)
+  val builtins: Env = {
+    val base = Env.empty
+      .putGlobal("Type", TypeTpe)
+      .putGlobal("Level", LevelTpe)
+      .putGlobal("Level.zero", Level.zero)
+      .putGlobal("Level.one", Level.one)
+    base
+      .putGlobal("Sort", sortBuiltin)
+      .putGlobal("Level.succ", unaryLevelBuiltin("Level.succ", Level.succ))
+      .putGlobal("Level.max", binaryLevelBuiltin("Level.max", (a, b) => Level.max(Vector(a, b))))
+      .putGlobal("Level.imax", binaryLevelBuiltin("Level.imax", Level.imax))
+  }
+
+  private def builtinPi(ref: CoreAst.LocalRef, ty: Value, out: Env => Value): VPi =
+    VPi(
+      Env.empty.putGlobal("Type", TypeTpe).putGlobal("Level", LevelTpe),
+      Vector(
+        CoreAst.Binder(ref, CoreAst.Term.GlobalRef(if (ty == LevelTpe) "Level" else "Type", Span(0, 0)), Span(0, 0))
+      ),
+      out,
+      DepSet.empty,
+      ValueId.Const(ref.name),
+      () => TypeTpe
+    )
+
+  private def unaryLevelBuiltin(name: String, f: Level => Level): Value = {
+    val ref = CoreAst.LocalRef(-1001, "u")
+    val pi = builtinPi(ref, LevelTpe, _ => LevelTpe)
+    VLam(
+      pi,
+      ValueId.Const(name),
+      LamBody.Native((args, _) => f(getLevel(args.head)), Env.empty, isRawRecursive = false)
+    )
+  }
+
+  private def binaryLevelBuiltin(name: String, f: (Level, Level) => Level): Value = {
+    val a = CoreAst.LocalRef(-1002, "u")
+    val b = CoreAst.LocalRef(-1003, "v")
+    val binderA = CoreAst.Binder(a, CoreAst.Term.GlobalRef("Level", Span(0, 0)), Span(0, 0))
+    val binderB = CoreAst.Binder(b, CoreAst.Term.GlobalRef("Level", Span(0, 0)), Span(0, 0))
+    val pi = VPi(
+      Env.empty.putGlobal("Type", TypeTpe).putGlobal("Level", LevelTpe),
+      Vector(binderA, binderB),
+      _ => LevelTpe,
+      DepSet.empty,
+      ValueId.Const(name),
+      () => TypeTpe
+    )
+    VLam(
+      pi,
+      ValueId.Const(name),
+      LamBody.Native((args, _) => f(getLevel(args(0)), getLevel(args(1))), Env.empty, false)
+    )
+  }
+
+  private lazy val sortBuiltin: Value = {
+    val ref = CoreAst.LocalRef(-1004, "u")
+    val binder = CoreAst.Binder(ref, CoreAst.Term.GlobalRef("Level", Span(0, 0)), Span(0, 0))
+    val pi = VPi(
+      Env.empty.putGlobal("Type", TypeTpe).putGlobal("Level", LevelTpe),
+      Vector(binder),
+      applied => VSort(Level.succ(getLevel(applied(ref)))),
+      DepSet.empty,
+      ValueId.Const("Sort"),
+      () => TypeTpe
+    )
+    VLam(pi, ValueId.Const("Sort"), LamBody.Native((args, _) => VSort(getLevel(args.head)), Env.empty, false))
+  }
 
   def evalPi(pi: Term.Pi, env: Env): VPi = {
     val closed = env.closeForEval(CapturedRefs.getCapturedRefs(pi, env))
@@ -14,6 +81,16 @@ object Interpreter {
 
   def rigidBinderValue(ref: CoreAst.LocalRef, tpe: Value): Value =
     FreshVar.freshVar(ref.name, tpe)
+
+  private def piClassifier(binders: Vector[CoreAst.Binder], baseEnv: Env, out: CoreAst.Term): VSort = {
+    val freshEnv = com.raccoonlang.telescope.BinderOps.freshen(binders, baseEnv)
+    val outLevel = TypeChecker.getUniverse(evalTerm(out, freshEnv)).level
+    val domLevels = binders.map(b => TypeChecker.getUniverse(freshEnv(b.localRef).tpe).level)
+    val level =
+      if (Level.isNeverZero(outLevel)) Level.max(domLevels :+ outLevel)
+      else domLevels.foldRight(outLevel)(Level.imax)
+    VSort(level)
+  }
 
   /** Continue reduction when an EqStore solved a value's blocker. */
   def resolveInEqStore(value: Value, store: EqStore): Value = {
@@ -29,12 +106,37 @@ object Interpreter {
         }
       case thunk: NeutralThunk if thunk.blockedOn.intersects(store.solvedIds) =>
         resolveInEqStore(evalTerm(thunk.term, ValueOps.materializeEnv(thunk.env, store)), store)
+      case level: Level if level.synDeps.intersects(store.solvedIds) =>
+        val pieces = Vector.newBuilder[Level]
+        if (level.c > 0 || level.terms.isEmpty) pieces += Level.const(level.c)
+        level.terms.foreach { case (atom, offset) =>
+          val base = atom match {
+            case Level.ParamAtom(id) =>
+              store.subst
+                .get(id)
+                .map(v =>
+                  resolveInEqStore(v, store) match {
+                    case l: Level        => l
+                    case Var(_, next, _) => Level.mk(next)
+                    case other           => throw NotALevel(other)
+                  }
+                )
+                .getOrElse(Level.mk(id))
+            case Level.IMaxAtom(lhs, rhs) =>
+              Level.imax(
+                resolveInEqStore(lhs, store).asInstanceOf[Level],
+                resolveInEqStore(rhs, store).asInstanceOf[Level]
+              )
+          }
+          pieces += Level.addOffset(base, offset)
+        }
+        Level.max(pieces.result())
       case _ => forced
     }
   }
 
   def evalPiClosed(pi: Term.Pi, env: Env): VPi = {
-    val classifier = VSort(0)
+    val classifier = () => piClassifier(pi.binders, env, pi.out)
     val captures = env.locals.values.toVector
     VPi(
       env,
@@ -42,7 +144,7 @@ object Interpreter {
       bodyEnv => evalTerm(pi.out, bodyEnv),
       env.dependencies,
       Value.ValueId.LocalId(pi.nodeId, captures),
-      () => classifier
+      classifier
     )
   }
 
@@ -65,6 +167,8 @@ object Interpreter {
       evalBody(lets, result, env)
     case matchTerm: Term.Match => evalMatch(matchTerm, env)
   }
+
+  def getLevel(v: Value): Level = Level.fromValue(v).getOrElse(throw NotALevel(v))
 
   private def evalMatch(matchTerm: Term.Match, env: Env): Value = {
     val scrut = evalTerm(matchTerm.scrut, env)
@@ -164,6 +268,9 @@ object Interpreter {
         else current.putLocal(ref, closure(name))
       }
       evalTerm(term.body, withPeers)
+    case LamBody.Native(run, nativeEnv, _) =>
+      if (args.length != lam.tpe.binders.length) throw ArityMismatch(lam.tpe.binders.length, args.length)
+      run(args, nativeEnv)
   }
 
   def evalDecl(decl: Decl, env: Env): Env = decl match {

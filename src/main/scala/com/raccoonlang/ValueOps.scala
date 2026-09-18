@@ -20,7 +20,8 @@ object ValueOps {
       if (!mayNeedMaterialization(resolved)) return resolved
       val rebuilt = resolved match {
         case LevelTpe                => resolved
-        case VSort(level)            => VSort(level)
+        case VSort(level)            => VSort(Interpreter.resolveInEqStore(level, eqStore).asInstanceOf[Level])
+        case level: Level            => level
         case Var(name, id, tpe)      => Var(name, id, materialize(tpe))
         case VConst(name, kind, tpe) => VConst(name, kind, materialize(tpe))
         case ConstructorHead(name, erased, arity, tpe, confusion) =>
@@ -40,6 +41,7 @@ object ValueOps {
         case lam: VLam =>
           val body = lam.body match {
             case LamBody.Core(term, env) => LamBody.Core(term, materializeEnv(env))
+            case native: LamBody.Native  => native.copy(env = materializeEnv(native.env))
           }
           lam.copy(tpe = materialize(lam.tpe).asInstanceOf[VPi], body = body, id = materializeId(lam.id))
       }

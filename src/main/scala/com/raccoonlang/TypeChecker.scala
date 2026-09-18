@@ -17,7 +17,11 @@ object TypeChecker {
     }
 
   def checkType(value: Value, expectedType: Value): Unit = checkFits(value.tpe, expectedType)
-  def assertType(value: Value): VSort = Value.sortOf(value)
+  def assertType(value: Value): VSort = getUniverse(value)
+  def getUniverse(value: Value): VSort = value.tpe match {
+    case sort: VSort => sort
+    case _           => throw NotAType(value.tpe)
+  }
   private def sortOf(value: Value): VSort = assertType(value)
 
   def checkTerm(term: CTerm, env: Env): CheckedTerm = term match {
@@ -52,7 +56,9 @@ object TypeChecker {
     val checkedOut = checkTerm(pi.out, scope)
     sortOf(checkedOut.value)
     val residual = pi.copy(binders = binders, out = checkedOut.residual)
-    CheckedPi(Interpreter.evalPi(residual, env), scope, checkedOut.value, residual)
+    val checkedPi = Interpreter.evalPi(residual, env)
+    checkedPi.tpe
+    CheckedPi(checkedPi, scope, checkedOut.value, residual)
   }
 
   private[raccoonlang] def check(term: CTerm, expected: Option[Expected], env: Env): CheckedTerm = {

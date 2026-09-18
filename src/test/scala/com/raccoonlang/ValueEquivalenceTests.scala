@@ -14,22 +14,24 @@ class ValueEquivalenceTests extends munit.FunSuite {
   }
 
   test("refinable metas link and occurs checks reject cycles") {
-    val meta = Value.Var("u", 1001, Value.TypeValue)
+    val meta = Value.Var("u", 1001, Value.TypeValue.tpe)
     val store = EqStore.empty.allow(DepSet(1001))
     val linked = ValueEquivalence.tryUnify(meta, Value.TypeValue, store)
     assert(linked.isRight)
     assert(linked.toOption.get.force(meta) == Value.TypeValue)
-    assert(ValueEquivalence.tryUnify(meta, Value.VApp(meta, Vector(Value.TypeValue), Value.TypeValue), store).isLeft)
+    assert(
+      ValueEquivalence.tryUnify(meta, Value.VApp(meta, Vector(Value.TypeValue), Value.TypeValue.tpe), store).isLeft
+    )
   }
 
   test("linking a value meta first solves its refinable type meta") {
-    val typeMeta = Value.Var("T", 1002, Value.TypeValue)
+    val typeMeta = Value.Var("T", 1002, Value.TypeValue.tpe.tpe)
     val valueMeta = Value.Var("x", 1003, typeMeta)
     val store = EqStore.empty.allow(DepSet(1002, 1003))
 
     val solved = ValueEquivalence.tryUnify(valueMeta, Value.TypeValue, store).toOption.get
 
-    assert(solved.force(typeMeta) == Value.TypeValue)
+    assert(solved.force(typeMeta) == Value.TypeValue.tpe)
     assert(solved.force(valueMeta) == Value.TypeValue)
   }
 
@@ -214,7 +216,7 @@ class ValueEquivalenceTests extends munit.FunSuite {
         () => Value.TypeValue.asInstanceOf[Value.VSort]
       )
     )
-    val meta = Value.Var("A", 5100, Value.TypeValue)
+    val meta = Value.Var("A", 5100, Value.TypeValue.tpe)
     val result = ValueEquivalence.tryUnify(
       Value.VApp(family, Vector(meta), Value.TypeValue),
       Value.VApp(family, Vector(Value.TypeValue), Value.TypeValue),

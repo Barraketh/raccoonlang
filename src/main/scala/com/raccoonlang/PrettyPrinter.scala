@@ -23,7 +23,8 @@ object PrettyPrinter {
   }
 
   def print(value: Value): String = value match {
-    case Value.VSort(level)                      => if (level == 0) "Type" else s"Sort($level)"
+    case Value.VSort(level)                      => if (level == Value.Level.one) "Type" else s"Sort($level)"
+    case _: Value.Level                          => "Level"
     case Value.LevelTpe                          => "Level"
     case Value.VPi(_, _, _, _, _, _, _)          => "Pi"
     case Value.VLam(_, _, _)                     => "<lambda>"

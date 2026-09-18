@@ -53,9 +53,9 @@ class MatchCheckerTests extends munit.FunSuite {
       "inductive Bool : Type\n" +
         " | true : Bool\n" +
         " | false : Bool\n\n" +
-        "def classify (b: Bool): Type := match b with\n" +
-        " | Bool.true => Type\n" +
-        " | Bool.false => Type\n"
+        "def classify (b: Bool): Bool := match b with\n" +
+        " | Bool.true => Bool.true\n" +
+        " | Bool.false => Bool.false\n"
     )
     assert(env.globals.contains("classify"))
   }

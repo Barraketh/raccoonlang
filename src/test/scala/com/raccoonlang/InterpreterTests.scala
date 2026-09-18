@@ -10,12 +10,12 @@ class InterpreterTests extends munit.FunSuite {
 
   private def run(source: String): Value = Interpreter.run(program(source)).getOrElse(fail("Expected a result"))
 
-  test("the first evaluator deliberately models Type as Type") {
+  test("Type lives in the next predicative universe") {
     run("Type") match {
       case sort: VSort => assert(sort == Value.TypeValue)
       case other       => fail(s"Expected Type, got $other")
     }
-    assertEquals(Value.TypeValue.tpe, Value.TypeValue)
+    assertEquals(Value.TypeValue.tpe, Value.VSort(Value.Level.succ(Value.Level.one)))
   }
 
   test("dependent closures retain their captured binder environment") {

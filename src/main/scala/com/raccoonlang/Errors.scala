@@ -23,6 +23,10 @@ final case class NotAType(value: Value, override val span: Option[Span] = None) 
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
   val msg = s"$value is not a type"
 }
+final case class NotALevel(value: Value, override val span: Option[Span] = None) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  val msg = s"$value is not a universe level"
+}
 final case class CannotApplyNonFunction(got: Value, override val span: Option[Span] = None) extends TypeError {
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
   val msg = s"Cannot apply non-function type $got"

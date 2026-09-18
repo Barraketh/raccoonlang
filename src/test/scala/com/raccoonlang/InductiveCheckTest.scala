@@ -88,7 +88,10 @@ class InductiveCheckTest extends munit.FunSuite {
     val param = CoreAst.Binder(CoreAst.LocalRef(40, "A"), CoreAst.Term.GlobalRef("Type", span), span)
     val wrongResult = CoreAst.Term.App(
       CoreAst.Term.GlobalRef("Box", span),
-      Vector(CoreAst.Term.GlobalRef("Type", span)),
+      // Level is a well-typed value of Type, but it is not the declared
+      // parameter A.  This reaches the constructor-parameter discipline check
+      // instead of failing because the argument is itself ill-typed.
+      Vector(CoreAst.Term.GlobalRef("Level", span)),
       span
     )
     val decl = CoreAst.Decl.InductiveDecl(
