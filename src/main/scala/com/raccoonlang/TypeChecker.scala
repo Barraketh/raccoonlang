@@ -78,12 +78,14 @@ object TypeChecker {
       checkedTy.foreach(ty => sortOf(ty.value))
       val checkedValue = check(let.value, checkedTy.map(ty => Expected(ty.value, let.ty)), current)
       checkedTy.foreach(ty => checkFits(checkedValue.value.tpe, ty.value))
+      TerminationChecker.assertNonRawRecursive(checkedValue.value, let.span)
       (
         current.putLocal(let.localRef, checkedValue.value),
         out :+ let.copy(ty = checkedTy.map(_.residual), value = checkedValue.residual)
       )
     }
     val checkedResult = check(body.res, expected, bodyEnv)
+    TerminationChecker.assertNonRawRecursive(checkedResult.value, body.res.span)
     CheckedTerm(checkedResult.value, CTerm.Body(checkedLets, checkedResult.residual, body.span))
   }
 
@@ -99,16 +101,25 @@ object TypeChecker {
     val checkedPi = checkPi(pi, env)
     val vpi = checkedPi.vpi
     val bodyEnv0 = bindPi(vpi, vpi.env)
-    val bodyEnv = recursion.foldLeft(bodyEnv0) { case (current, rec) =>
-      current.putLocal(rec.selfRef, VConst(name.getOrElse(rec.selfRef.name), Symbol, vpi))
+    val bodyEnvWithSelf = recursion match {
+      case Some(rec) =>
+        val recursive = TerminationChecker.rawRecursiveSelf(
+          name.getOrElse(rec.selfRef.name),
+          vpi,
+          rec.decreases,
+          bodyEnv0
+        )
+        bodyEnv0.putLocal(rec.selfRef, recursive)
+      case None => bodyEnv0
     }
-    val bodyEnvWithPeers = peers.foldLeft(bodyEnv) { case (current, (ref, peerName)) =>
+    val bodyEnvWithPeers = peers.foldLeft(bodyEnvWithSelf) { case (current, (ref, peerName)) =>
       if (current.locals.contains(ref)) current
       else
         current.globals.get(peerName).map(binding => current.putLocal(ref, binding.value(current))).getOrElse(current)
     }
     val checkedBody =
       check(body, Some(Expected(vpi.codomain(bodyEnvWithPeers), Some(checkedPi.residual.out))), bodyEnvWithPeers)
+    TerminationChecker.assertNonRawRecursive(checkedBody.value, body.span)
     val residualPi = checkedPi.residual
     val residualLam = CTerm.Lam(residualPi, checkedBody.residual, span, name, recursion, peers)
     val closure = env.closeForEval(CapturedRefs.getCapturedRefs(residualLam, env))
@@ -142,6 +153,7 @@ object TypeChecker {
             case ((scope, out, vals), (arg, binder)) =>
               val binderType = Interpreter.evalTerm(binder.ty, scope)
               val checked = checkTerm(arg, binderType, env)
+              TerminationChecker.assertNonRawRecursive(checked.value, arg.span)
               (scope.putLocal(binder.localRef, checked.value), out :+ checked.residual, vals :+ checked.value)
           }
         BinderOps.checkAndInstantiate(pi.binders, pi.env, values)
@@ -169,12 +181,15 @@ object TypeChecker {
 
   private def checkRecursiveDefBlock(block: Decl.RecursiveDefBlock, env: Env): Env = {
     val defs = block.definitions
-    if (defs.isEmpty) throw WTF("Recursive group must not be empty")
-    if (defs.map(_.name).distinct.length != defs.length) throw AlreadyDefined("duplicate recursive name")
+    if (defs.isEmpty) throw InvalidRecursiveGroup("recursive group must not be empty", Some(block.span))
+    if (defs.map(_.name).distinct.length != defs.length)
+      throw InvalidRecursiveGroup("recursive names must be distinct", Some(block.span))
     defs.foreach(definition => if (env.globals.contains(definition.name)) throw AlreadyDefined(definition.name))
-    if (defs.map(_.peerRef).distinct.length != defs.length) throw WTF("Recursive peer refs must be distinct")
+    if (defs.map(_.peerRef).distinct.length != defs.length)
+      throw InvalidRecursiveGroup("recursive peer refs must be distinct", Some(block.span))
     val collisions = defs.map(_.peerRef).filter(env.locals.contains)
-    if (collisions.nonEmpty) throw WTF(s"Recursive peer ref collides with local ${collisions.head.name}")
+    if (collisions.nonEmpty)
+      throw InvalidRecursiveGroup(s"recursive peer ref collides with local ${collisions.head.name}", Some(block.span))
     val typed = defs.map { definition =>
       val checked = checkTerm(definition.ty, env)
       sortOf(checked.value)
@@ -183,10 +198,30 @@ object TypeChecker {
     val peerEnv = typed.foldLeft(env) { case (current, (definition, (ty, _))) =>
       current.putLocal(definition.peerRef, VConst(definition.name, Symbol, ty))
     }
+    val checkedMetrics = typed.map { case (definition, (ty, _)) =>
+      definition -> TerminationChecker.checkLexicographic(
+        ty.asInstanceOf[VPi],
+        definition.decreases,
+        bindPi(ty.asInstanceOf[VPi], peerEnv)
+      )
+    }.toMap
     val residual = typed.map { case (definition, (ty, checkedTy)) =>
       val pi = ty.asInstanceOf[VPi]
-      val scoped = bindPi(pi, peerEnv)
+      val callerEnv = bindPi(pi, env)
+      val checkedPeerEnv = typed.foldLeft(callerEnv) { case (current, (callee, (calleeTy, _))) =>
+        val calleePi = calleeTy.asInstanceOf[VPi]
+        val raw = TerminationChecker.rawRecursivePeer(
+          callee.name,
+          calleePi,
+          checkedMetrics(callee),
+          checkedMetrics(definition),
+          callerEnv
+        )
+        current.putLocal(callee.peerRef, raw)
+      }
+      val scoped = checkedPeerEnv
       val body = check(definition.body, Some(Expected(pi.codomain(scoped), Some(checkedTy.out))), scoped)
+      TerminationChecker.assertNonRawRecursive(body.value, definition.body.span)
       definition.copy(ty = checkedTy, body = body.residual)
     }
     Interpreter.evalDecl(Decl.RecursiveDefBlock(residual, block.span), env)

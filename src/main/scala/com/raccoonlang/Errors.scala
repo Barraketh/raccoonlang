@@ -111,6 +111,24 @@ final case class InvalidInductiveBlock(reason: String, override val span: Option
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
   val msg = s"Invalid inductive block: $reason"
 }
+final case class InvalidRecursiveGroup(reason: String, override val span: Option[Span] = None) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  val msg = s"Invalid recursive definition group: $reason"
+}
+final case class InvalidDecreaseSpec(reason: String, override val span: Option[Span] = None) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  val msg = s"Invalid decreases annotation: $reason"
+}
+final case class NonDecreasingRecursiveCall(function: String, reason: String, override val span: Option[Span] = None)
+  extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  val msg = s"Recursive call to $function is not decreasing: $reason"
+}
+final case class InvalidRecursiveOccurrence(function: String, override val span: Option[Span] = None)
+  extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  val msg = s"Invalid recursive occurrence of $function"
+}
 final case class NonStrictlyPositive(
     inductive: String,
     ctor: String,

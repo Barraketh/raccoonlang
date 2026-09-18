@@ -97,9 +97,9 @@ object Elaborator {
     val (measureScope, decreaseSpec): (Scope, Option[C.DecreaseSpec]) = decl.decreases match {
       case None => (bodyScope, None)
       case Some(SurfaceAst.DecreaseSpec.Structural(arg, sp)) =>
-        (bodyScope, Some(C.DecreaseSpec.Lexicographic(Vector(paramRef(arg, params)), sp)))
+        (bodyScope, Some(C.DecreaseSpec.Lexicographic(Vector(paramRef(arg, params, sp)), sp)))
       case Some(SurfaceAst.DecreaseSpec.Lexicographic(args, sp)) =>
-        (bodyScope, Some(C.DecreaseSpec.Lexicographic(args.map(paramRef(_, params)), sp)))
+        (bodyScope, Some(C.DecreaseSpec.Lexicographic(args.map(paramRef(_, params, sp)), sp)))
       case Some(SurfaceAst.DecreaseSpec.Measure(measure, sp)) =>
         val (afterMeasure, coreMeasure) = elabTerm(measure, bodyScope)
         (afterMeasure, Some(C.DecreaseSpec.Measure(coreMeasure, sp)))
@@ -128,8 +128,10 @@ object Elaborator {
     )
   }
 
-  private def paramRef(name: String, params: Vector[C.Binder]): C.LocalRef =
-    params.find(_.name == name).map(_.localRef).getOrElse(throw WTF(s"Unknown recursive parameter $name"))
+  private def paramRef(name: String, params: Vector[C.Binder], span: Span): C.LocalRef =
+    params.find(_.name == name).map(_.localRef).getOrElse {
+      throw InvalidDecreaseSpec(s"$name is not a function parameter", Some(span))
+    }
 
   private def elabAxiom(decl: Command.Decl.AxiomDecl, scope: Scope): (Scope, C.Decl) = {
     val (typed, params) = binders(decl.header.funcHeader.params, scope)

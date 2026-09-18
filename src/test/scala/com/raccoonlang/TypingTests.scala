@@ -40,17 +40,19 @@ class TypingTests extends munit.FunSuite {
     }
   }
 
-  test("recursive groups are checked against their declared Pis without termination evidence") {
-    val (env, _) = TestSupport.check("def loop (n: Type): Type decreases structural(n) := n\n")
+  test("recursive groups are checked against their declared Pis and decreases evidence") {
+    val (env, _) = TestSupport.check(
+      "inductive Nat : Type\n | zero : Nat\n\n" +
+        "def loop (n: Nat): Nat decreases structural(n) := n\n"
+    )
     assert(env.globals.contains("loop"))
   }
 
   test("checked recursive definitions remain transparent to later declarations") {
     val (env, _) = TestSupport.check(
-      "axiom A : Type\n" +
-        "axiom x : A\n" +
-        "def choose (T: Type): Type decreases structural(T) := T\n" +
-        "def y : choose(A) := x\n"
+      "inductive Nat : Type\n | zero : Nat\n\n" +
+        "def choose (n: Nat): Type decreases structural(n) := Nat\n" +
+        "def y : choose(Nat.zero) := Nat.zero\n"
     )
     assert(env.globals.contains("y"))
   }
@@ -61,12 +63,12 @@ class TypingTests extends munit.FunSuite {
     val fPeer = CoreAst.LocalRef(20, "f")
     val gPeer = CoreAst.LocalRef(21, "g")
     val pi = CoreAst.Term.Pi(
-      Vector(CoreAst.Binder(n, CoreAst.Term.GlobalRef("Type", span), span)),
-      CoreAst.Term.GlobalRef("Type", span),
+      Vector(CoreAst.Binder(n, CoreAst.Term.GlobalRef("Nat", span), span)),
+      CoreAst.Term.GlobalRef("Nat", span),
       span
     )
     val decrease = CoreAst.DecreaseSpec.Lexicographic(Vector(n), span)
-    val fBody = CoreAst.Term.App(CoreAst.Term.LocalRef(gPeer, span), Vector(CoreAst.Term.LocalRef(n, span)), span)
+    val fBody = CoreAst.Term.LocalRef(n, span)
     val gBody = CoreAst.Term.LocalRef(n, span)
     val block = CoreAst.Decl.RecursiveDefBlock(
       Vector(
@@ -75,7 +77,12 @@ class TypingTests extends munit.FunSuite {
       ),
       span
     )
-    val (env, _) = TypeChecker.checkProgram(CoreAst.Program(Vector(block), None))
+    val nat = CoreAst.Decl.InductiveDecl(
+      CoreAst.InductiveHeader("Nat", Vector.empty, Vector.empty, CoreAst.Term.GlobalRef("Type", span), span),
+      Vector(CoreAst.ConstructorDecl("Nat.zero", "zero", Vector.empty, CoreAst.Term.GlobalRef("Nat", span), span)),
+      span
+    )
+    val (env, _) = TypeChecker.checkProgram(CoreAst.Program(Vector(nat, block), None))
     assert(env("f").isInstanceOf[Value.VLam])
     assert(env("g").isInstanceOf[Value.VLam])
   }
