@@ -12,6 +12,15 @@ object BinderOps {
 
   def freshen(pi: VPi): Env = freshen(pi.binders, pi.env)
 
+  /** Fresh constructor telescope arguments and its result, including erased family parameters. */
+  def freshCtorArgsAndResult(head: Value.ConstructorHead): (Vector[Value], Value) =
+    head.tpe match {
+      case pi: VPi =>
+        val fresh = freshen(pi)
+        (pi.binders.map(binder => fresh(binder.localRef)), pi.codomain(fresh))
+      case _ => (Vector.empty, head.tpe)
+    }
+
   def freshBinderValue(name: String, expectedType: Value): Value =
     FreshVar.freshValue(name, expectedType)._2
 

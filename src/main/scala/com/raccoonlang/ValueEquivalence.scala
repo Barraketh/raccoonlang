@@ -2,7 +2,9 @@ package com.raccoonlang
 
 import com.raccoonlang.Value._
 
-/** Definitional equality and consequence-preserving unification for the C05 value forms. */
+import scala.util.control.NonFatal
+
+/** Definitional equality and consequence-preserving unification for the currently available value forms. */
 object ValueEquivalence {
   final case class UnifyFailure(v1: Value, v2: Value, apart: Boolean = false) {
     def asStuck: UnifyFailure = if (apart) copy(apart = false) else this
@@ -54,7 +56,7 @@ object ValueEquivalence {
       Right(store)
     else if (store.refinable.isEmpty && !left.needsStructuralDefEq && !right.needsStructuralDefEq)
       stuck(left, right)
-    else
+    else {
       (left, right) match {
         case (lv: Var, rv: Var) if lv.id == rv.id       => unify(lv.tpe, rv.tpe, store, ctx)
         case (v: Var, other) if store.isRefinable(v.id) => link(v, other, store, ctx)
@@ -73,10 +75,11 @@ object ValueEquivalence {
           unify(leftHead.tpe, rightHead.tpe, store, ctx)
         case (leftHead: ConstructorHead, rightHead: ConstructorHead) if leftHead.name != rightHead.name =>
           stuck(leftHead, rightHead)
-        case (leftApp: VApp, rightApp: VApp) if leftApp.args.length == rightApp.args.length =>
+        case (leftApp: VApp, rightApp: VApp) =>
           unifyApps(leftApp, rightApp, store, ctx)
         case _ => stuck(left, right)
       }
+    }
   }
 
   private def unifyApps(left: VApp, right: VApp, store: EqStore, ctx: Ctx): Either[UnifyFailure, EqStore] = {
@@ -85,6 +88,7 @@ object ValueEquivalence {
         return apart(left, right)
       case _ =>
     }
+    if (left.args.length != right.args.length) return stuck(left, right)
     val invertible = definitionallyInjectiveHead(left.head) && definitionallyInjectiveHead(right.head)
     val argCtx = if (invertible) ctx else ctx.enterNonInvertibleFrame
     val frame: UnifyFailure => UnifyFailure = if (invertible) identity else _.asStuck
@@ -238,16 +242,67 @@ object ValueEquivalence {
       store: EqStore,
       ctx: Ctx
   ): Either[UnifyFailure, EqStore] = {
-    if (left.id.nodeId != right.id.nodeId || left.id.captures.length != right.id.captures.length)
-      stuck(left, right)
-    else {
+    if (left.id.nodeId == right.id.nodeId && left.id.captures.length == right.id.captures.length) {
       val inner = ctx.enterNonInvertibleFrame
-      unify(left.tpe, right.tpe, store, ctx).flatMap { typed =>
+      val direct = unify(left.tpe, right.tpe, store, ctx).flatMap { typed =>
         left.id.captures.zip(right.id.captures).foldLeft[Either[UnifyFailure, EqStore]](Right(typed)) {
           case (Right(current), (a, b)) => unify(a, b, current, inner).left.map(_.asStuck)
           case (failed @ Left(_), _)    => failed
         }
       }
+      direct match {
+        case success @ Right(_) => success
+        case Left(_)            => tryUnifyNeutralMatches(left, right, store, ctx)
+      }
+    } else tryUnifyNeutralMatches(left, right, store, ctx)
+  }
+
+  private val neutralComparisonDepth = new ThreadLocal[Int] {
+    override def initialValue(): Int = 0
+  }
+
+  private def tryUnifyNeutralMatches(
+      left: NeutralThunk,
+      right: NeutralThunk,
+      store: EqStore,
+      ctx: Ctx
+  ): Either[UnifyFailure, EqStore] = {
+    val depth = neutralComparisonDepth.get()
+    if (depth >= 16) return stuck(left, right)
+    neutralComparisonDepth.set(depth + 1)
+    try {
+      val inner = ctx.enterNonInvertibleFrame
+      val leftScrut = Interpreter.evalTerm(left.term.scrut, left.env)
+      val rightScrut = Interpreter.evalTerm(right.term.scrut, right.env)
+      val sameShape = left.term.cases.length == right.term.cases.length &&
+        left.term.cases.zip(right.term.cases).forall { case (a, b) =>
+          a.ctorName == b.ctorName && a.argRefs.length == b.argRefs.length
+        }
+      if (!sameShape) stuck(left, right)
+      else {
+        var current = store
+        def step(a: Value, b: Value): Boolean = unify(a, b, current, inner) match {
+          case Right(next) => current = next; true
+          case Left(_)     => false
+        }
+        if (!step(left.tpe, right.tpe) || !step(leftScrut, rightScrut)) stuck(left, right)
+        else {
+          val agreed = left.term.cases.zip(right.term.cases).forall { case (lc, rc) =>
+            left.env(lc.ctorName) match {
+              case head: ConstructorHead =>
+                val (args, result) = com.raccoonlang.telescope.BinderOps.freshCtorArgsAndResult(head)
+                val fields = constructorStoredArgs(head, args)
+                step(result, leftScrut.tpe) && step(result, rightScrut.tpe) &&
+                step(Interpreter.evalBranch(lc, fields, left.env), Interpreter.evalBranch(rc, fields, right.env))
+              case _ => false
+            }
+          }
+          if (agreed) Right(current) else stuck(left, right)
+        }
+      }
+    } catch { case NonFatal(_) => stuck(left, right) }
+    finally {
+      if (depth == 0) neutralComparisonDepth.remove() else neutralComparisonDepth.set(depth)
     }
   }
 

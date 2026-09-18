@@ -3,7 +3,7 @@ package com.raccoonlang
 import com.raccoonlang.CoreAst.{Decl, Program, Term}
 import com.raccoonlang.Value._
 
-/** The C04 evaluator.  It intentionally performs no static validation. */
+/** The runtime evaluator; static validation is performed by TypeChecker. */
 object Interpreter {
   val builtins: Env = Env.empty.putGlobal("Type", TypeValue).putGlobal("Level", LevelTpe)
 
@@ -15,8 +15,23 @@ object Interpreter {
   def rigidBinderValue(ref: CoreAst.LocalRef, tpe: Value): Value =
     FreshVar.freshVar(ref.name, tpe)
 
-  /** Resolve only the outer variable substitution; structural rebuilding belongs to ValueOps. */
-  def resolveInEqStore(value: Value, store: EqStore): Value = store.force(value)
+  /** Continue reduction when an EqStore solved a value's blocker. */
+  def resolveInEqStore(value: Value, store: EqStore): Value = {
+    val forced = store.force(value)
+    forced match {
+      case VApp(head, args, tpe, blocked) if blocked.intersects(store.solvedIds) =>
+        val resolvedHead = ValueOps.materialize(resolveInEqStore(head, store), store)
+        val resolvedArgs = args.map(ValueOps.materialize(_, store))
+        resolvedHead match {
+          case lambda: VLam                => resolveInEqStore(evalApply(lambda, resolvedArgs), store)
+          case next @ Blocker(nextBlocked) => VApp(next, resolvedArgs, ValueOps.materialize(tpe, store), nextBlocked)
+          case other                       => resolveInEqStore(evalApply(other, resolvedArgs), store)
+        }
+      case thunk: NeutralThunk if thunk.blockedOn.intersects(store.solvedIds) =>
+        resolveInEqStore(evalTerm(thunk.term, ValueOps.materializeEnv(thunk.env, store)), store)
+      case _ => forced
+    }
+  }
 
   def evalPiClosed(pi: Term.Pi, env: Env): VPi = {
     val classifier = VSort(0)
@@ -38,9 +53,9 @@ object Interpreter {
         case value                                         => value
       }
     case Term.LocalRef(ref, _)   => env(ref)
-    case Term.NatLit(_, span)    => throw WTF(s"Natural literals are not available in the C04 core at $span")
-    case Term.StrLit(_, span)    => throw WTF(s"String literals are not available in the C04 core at $span")
-    case Term.Select(_, _, span) => throw WTF(s"Projections are not available in the C04 core at $span")
+    case Term.NatLit(_, span)    => throw WTF(s"Natural literals are unavailable at $span")
+    case Term.StrLit(_, span)    => throw WTF(s"String literals are unavailable at $span")
+    case Term.Select(_, _, span) => throw WTF(s"Projections are unavailable at $span")
     case pi: Term.Pi             => evalPi(pi, env)
     case lam: Term.Lam           => evalLam(lam, env)
     case Term.App(fn, args, _) =>
@@ -66,20 +81,21 @@ object Interpreter {
       case None =>
         val outType = matchOutType(matchTerm, scrut, env)
         val closed = env.closeForEval(CapturedRefs.getCapturedRefs(matchTerm, env))
+        val blockedOn = Blocker.unapply(scrut).getOrElse(DepSet.empty)
         NeutralThunk(
           matchTerm,
           closed,
           ValueId.LocalId(matchTerm.nodeId, closed.locals.values.toVector),
           outType,
-          DepSet.empty
+          blockedOn
         )
     }
   }
 
-  private def matchOutType(matchTerm: Term.Match, scrut: Value, env: Env): Value =
+  private[raccoonlang] def matchOutType(matchTerm: Term.Match, scrut: Value, env: Env): Value =
     matchTerm.motive.map(evalTerm(_, env)).getOrElse(scrut.tpe)
 
-  private def evalBranch(branch: CoreAst.Case, fields: Vector[Value], env: Env): Value = {
+  private[raccoonlang] def evalBranch(branch: CoreAst.Case, fields: Vector[Value], env: Env): Value = {
     if (branch.argRefs.length != fields.length) throw ArityMismatch(fields.length, branch.argRefs.length)
     val branchEnv = branch.argRefs.zip(fields).foldLeft(env) {
       case (current, (Some(ref), value)) => current.putLocal(ref, value)
@@ -106,10 +122,7 @@ object Interpreter {
         value.tpe match {
           case pi: VPi =>
             if (args.length != pi.binders.length) throw ArityMismatch(pi.binders.length, args.length)
-            val blocked = value match {
-              case thunk: NeutralThunk => thunk.blockedOn
-              case _                   => DepSet.empty
-            }
+            val blocked = Blocker.unapply(value).getOrElse(DepSet.empty)
             VApp(value, args, resultType(pi, args), blocked)
           case _ => throw CannotApplyNonFunction(value)
         }
@@ -161,7 +174,7 @@ object Interpreter {
         body match {
           case CoreAst.ConstBody.TermBody(term) => env.putGlobal(name, evalTerm(term, env))
           case CoreAst.ConstBody.Builtin(span) =>
-            throw WTF(s"Builtin bodies are not available in the C04 core at $span")
+            throw WTF(s"Builtin bodies are unavailable at $span")
         }
     case Decl.AxiomDecl(name, ty, _)            => env.putOpaque(name, evalTerm(ty, env))
     case d: Decl.InductiveDecl                  => InductiveChecks.evalInductive(d, env)

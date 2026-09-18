@@ -223,4 +223,30 @@ class ValueEquivalenceTests extends munit.FunSuite {
     assert(result.isRight)
     assertEquals(result.toOption.get.force(meta), Value.TypeValue)
   }
+
+  test("compatible stuck match eliminators compare extensionally") {
+    def function(trueBranch: String): Value =
+      TestSupport.eval(
+        "inductive Bool : Type\n" +
+          " | true : Bool\n" +
+          " | false : Bool\n\n" +
+          "fun (b: Bool): Bool => match b returning Bool with\n" +
+          s" | Bool.true => $trueBranch\n" +
+          " | Bool.false => Bool.false\n"
+      )
+    val leftFn = function("Bool.true")
+    val rightFn = function("Bool.true")
+    val differentFn = function("Bool.false")
+    val neutral = FreshVar.freshVar(
+      "b",
+      TestSupport.eval("inductive Bool : Type\n | true : Bool\n | false : Bool\n\nBool.true").tpe
+    )
+    val left = Interpreter.evalApply(leftFn, Vector(neutral))
+    val right = Interpreter.evalApply(rightFn, Vector(neutral))
+    val different = Interpreter.evalApply(differentFn, Vector(neutral))
+    assert(ValueEquivalence.defEq(left, right))
+    assert(!ValueEquivalence.defEq(left, different))
+    val mismatch = ValueEquivalence.tryUnify(left, different, EqStore.empty.allow(DepSet(9999)))
+    assert(mismatch.left.toOption.exists(!_.apart))
+  }
 }

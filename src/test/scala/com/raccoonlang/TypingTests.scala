@@ -27,8 +27,8 @@ class TypingTests extends munit.FunSuite {
     assert(env.globals.contains("visible"))
   }
 
-  test("match checking is explicitly deferred") {
-    intercept[WTF] {
+  test("matching requires an inductive scrutinee") {
+    intercept[NonInductiveMatch] {
       TestSupport.check("axiom b : Type\n\nmatch b with\n")
     }
   }

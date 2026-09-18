@@ -34,7 +34,7 @@ object Value {
 
   final case class VSort(level: Int) extends TopLevelValue {
     require(level >= 0, "Sort level must be non-negative")
-    // C04 intentionally has one universe: Type and every sort are self-typed.
+    // This early runtime deliberately has one universe: Type and every sort are self-typed.
     override val tpe: Value = this
   }
 
@@ -111,6 +111,7 @@ object Value {
       deps.unionInPlace(env.dependencies)
       deps.unionInPlace(tpe.synDeps)
       id.captures.foreach(value => deps.unionInPlace(value.synDeps))
+      deps.unionInPlace(blockedOn)
       deps.result()
     }
   }
@@ -151,6 +152,41 @@ object Value {
     def unapply(value: Value): Option[(String, Vector[Value])] = value match {
       case VCtor(head, fields, _) => Some(head.name -> fields)
       case _                      => None
+    }
+  }
+
+  object Blocker {
+    def unapply(value: Value): Option[DepSet] = value match {
+      case Var(_, id, _)                                             => Some(DepSet(id))
+      case VApp(_, _, _, blockedOn) if blockedOn.nonEmpty            => Some(blockedOn)
+      case NeutralThunk(_, _, _, _, blockedOn) if blockedOn.nonEmpty => Some(blockedOn)
+      case _                                                         => None
+    }
+  }
+
+  object Blocked {
+    def unapply(value: Value): Option[DepSet] = value match {
+      case VApp(_, _, _, blockedOn) if blockedOn.nonEmpty            => Some(blockedOn)
+      case NeutralThunk(_, _, _, _, blockedOn) if blockedOn.nonEmpty => Some(blockedOn)
+      case _                                                         => None
+    }
+  }
+
+  object ConstSpine {
+    def unapply(value: Value): Option[(VConst, Vector[Value])] = value match {
+      case c: VConst                                                   => Some(c -> Vector.empty)
+      case VApp(head: VConst, args, _, blockedOn) if blockedOn.isEmpty => Some(head -> args)
+      case _                                                           => None
+    }
+  }
+
+  final case class InductiveFamilyInstance(head: VConst, meta: InductiveMeta, args: Vector[Value])
+
+  object InductiveFamilyValue {
+    def unapply(value: Value): Option[InductiveFamilyInstance] = value match {
+      case ConstSpine(head @ VConst(_, Inductive(meta), _), args) if args.length == meta.familyArity =>
+        Some(InductiveFamilyInstance(head, meta, args))
+      case _ => None
     }
   }
 

@@ -4,7 +4,7 @@ import com.raccoonlang.CoreAst.{Decl, Program, Term => CTerm}
 import com.raccoonlang.Value._
 import com.raccoonlang.telescope.BinderOps
 
-/** First bidirectional checker: unification is the conversion and refinement mechanism. */
+/** Bidirectional checker: unification is the conversion and refinement mechanism. */
 object TypeChecker {
   private final case class CheckedPi(vpi: VPi, bodyEnv: Env, outTy: Value, residual: CTerm.Pi)
   final case class CheckedTerm(value: Value, residual: CTerm)
@@ -17,14 +17,15 @@ object TypeChecker {
     }
 
   def checkType(value: Value, expectedType: Value): Unit = checkFits(value.tpe, expectedType)
-  private def sortOf(value: Value): VSort = Value.sortOf(value)
+  def assertType(value: Value): VSort = Value.sortOf(value)
+  private def sortOf(value: Value): VSort = assertType(value)
 
   def checkTerm(term: CTerm, env: Env): CheckedTerm = term match {
     case CTerm.GlobalRef(name, _) => CheckedTerm(env(name), term)
     case CTerm.LocalRef(ref, _)   => CheckedTerm(env(ref), term)
-    case CTerm.NatLit(_, span)    => throw WTF(s"Natural literals are not available in C05 at $span")
-    case CTerm.StrLit(_, span)    => throw WTF(s"String literals are not available in C05 at $span")
-    case CTerm.Select(_, _, span) => throw WTF(s"Projections are not available in C05 at $span")
+    case CTerm.NatLit(_, span)    => throw WTF(s"Natural literals are unavailable at $span")
+    case CTerm.StrLit(_, span)    => throw WTF(s"String literals are unavailable at $span")
+    case CTerm.Select(_, _, span) => throw WTF(s"Projections are unavailable at $span")
     case pi: CTerm.Pi => {
       val checked = checkPi(pi, env)
       CheckedTerm(checked.vpi, checked.residual)
@@ -34,7 +35,7 @@ object TypeChecker {
     case CTerm.App(fn, args, span) => checkApp(fn, args, env, span)
     case CTerm.Body(lets, result, span) =>
       checkBody(CTerm.Body(lets, result, span), env, None)
-    case CTerm.Match(_, _, _, span) => throw WTF(s"Match checking is not available until C06 at $span")
+    case matchTerm: CTerm.Match => MatchChecker.checkMatch(matchTerm, env, None)
   }
 
   def checkTerm(term: CTerm, expected: Value, env: Env): CheckedTerm = {
@@ -54,10 +55,11 @@ object TypeChecker {
     CheckedPi(Interpreter.evalPi(residual, env), scope, checkedOut.value, residual)
   }
 
-  private def check(term: CTerm, expected: Option[Expected], env: Env): CheckedTerm = {
+  private[raccoonlang] def check(term: CTerm, expected: Option[Expected], env: Env): CheckedTerm = {
     term match {
-      case body: CTerm.Body => return checkBody(body, env, expected)
-      case _                =>
+      case body: CTerm.Body       => return checkBody(body, env, expected)
+      case matchTerm: CTerm.Match => return MatchChecker.checkMatch(matchTerm, env, expected)
+      case _                      =>
     }
     val checked = checkTerm(term, env)
     expected.foreach(exp => checkFits(checked.value.tpe, exp.value))
