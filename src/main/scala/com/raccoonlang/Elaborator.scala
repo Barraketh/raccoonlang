@@ -121,18 +121,19 @@ object Elaborator {
       def globalRef(name: GlobalName): A =
         global(globalName(name), path.span)
 
-      resolveObjectPrefix(path) match {
-        case None => throw NotFound(path.parts.headOption.getOrElse(RootName), Some(path.span))
-        case Some((obj, tail)) if tail.isEmpty =>
-          obj.node.binding match {
-            case Some(name) => globalRef(name)
-            case None       => throw NotFound(globalName(obj.path), Some(path.span))
-          }
-        case Some((obj, tail)) =>
-          obj.node.binding match {
-            case Some(name) => selectTail(globalRef(name), tail)
-            case None       => throw NotFound(globalName(obj.path :+ tail.head), Some(path.span))
-          }
+      val (obj, tail) = resolveObjectPrefix(path).getOrElse {
+        throw NotFound(path.parts.headOption.getOrElse(RootName), Some(path.span))
+      }
+      if (tail.isEmpty) {
+        obj.node.binding match {
+          case Some(name) => globalRef(name)
+          case None       => throw NotFound(globalName(obj.path), Some(path.span))
+        }
+      } else {
+        obj.node.binding match {
+          case Some(name) => selectTail(globalRef(name), tail)
+          case None       => throw NotFound(globalName(obj.path :+ tail.head), Some(path.span))
+        }
       }
     }
 
@@ -244,7 +245,7 @@ object Elaborator {
   }
 
   private object ResolveEnv {
-    private val BootstrapGlobals: Set[GlobalName] =
+    private val BuiltinGlobals: Set[GlobalName] =
       Set(
         Vector("Type"),
         Vector("Level"),
@@ -253,32 +254,20 @@ object Elaborator {
         Vector("Prop")
       )
 
-    private val KernelGlobals: Set[GlobalName] = BootstrapGlobals ++ Set(
-      Vector("Sort"),
-      Vector("Level", "succ"),
-      Vector("Level", "max"),
-      Vector("Level", "imax")
-    )
-
-    private val bootstrapRoot: NameNode =
-      BootstrapGlobals
+    private val builtinRoot: NameNode =
+      BuiltinGlobals
         .foldLeft(NameNode()) { case (root, name) => root.insertGlobal(name, name) }
-
-    private val kernelRoot: NameNode =
-      KernelGlobals.foldLeft(NameNode()) { case (root, name) => root.insertGlobal(name, name) }
 
     def empty: ResolveEnv =
       ResolveEnv(
         List(Map.empty),
         0,
-        bootstrapRoot,
+        builtinRoot,
         Vector.empty,
         List(Map.empty[String, ResolvedObject]),
         Set.empty,
         None
       )
-
-    def kernelEmpty: ResolveEnv = empty.copy(root = kernelRoot)
   }
 
   private final case class SurfacePath(root: Boolean, parts: Vector[String], span: Span)
@@ -297,7 +286,6 @@ object Elaborator {
       case _ => None
     }
 
-  @SuppressWarnings(Array("unused"))
   private def expandStructSelectors(commands: Vector[SA.Command]): Vector[SA.Command] =
     commands.flatMap {
       case decl: SA.Command.Decl.InductiveDecl =>
@@ -682,20 +670,18 @@ object Elaborator {
         val ctorBaseEnv = env.addGlobal(name)
         val ctorParamEnv = envWithParams.copy(root = ctorBaseEnv.root)
         val ctorNames = c.ctors.map(ctor => name :+ ctor.name)
-        var ctorEnv = ctorParamEnv
-        val ctors = c.ctors.zip(ctorNames).map { case (ctor, ctorName) =>
-          val (binders, envWithBinders) = elabBinders(ctor.binders, ctorEnv)
-          val resultTy = elabTerm(ctor.resultTy, envWithBinders)
-          ctorEnv = ctorParamEnv.copy(nextLocal = envWithBinders.nextLocal)
-          CA.ConstructorDecl(
-            canonicalName = globalName(ctorName),
-            shortName = ctor.name,
-            binders = binders,
-            resultTy = resultTy,
-            span = ctor.span
-          )
-        }
-        val nextEnv = ctorNames.foldLeft(ctorBaseEnv) { case (cur, ctorName) =>
+        val ctors =
+          c.ctors.zip(ctorNames).map { case (ctor, ctorName) =>
+            val (binders, envWithBinders) = elabBinders(ctor.binders, ctorParamEnv)
+            CA.ConstructorDecl(
+              canonicalName = globalName(ctorName),
+              shortName = ctor.name,
+              binders = binders,
+              resultTy = elabTerm(ctor.resultTy, envWithBinders),
+              span = ctor.span
+            )
+          }
+        val nextEnv = ctorNames.foldLeft(env.addGlobal(name)) { case (cur, ctorName) =>
           cur.addGlobal(ctorName)
         }
         (CA.Decl.InductiveDecl(header, ctors, c.span), nextEnv)
@@ -731,11 +717,7 @@ object Elaborator {
   final class PreludeNames private[Elaborator] (private[Elaborator] val root: NameNode)
 
   def preludeNames(prelude: Prelude.Config): PreludeNames = {
-    val sourceDecls = expandStructSelectors(prelude.surface.decls)
-    val base =
-      if (prelude.surface.decls.isEmpty && prelude.core.decls.isEmpty) ResolveEnv.kernelEmpty
-      else ResolveEnv.empty
-    val (_, env) = elabCommands(sourceDecls, base)
+    val (_, env) = elabCommands(expandStructSelectors(prelude.surface.decls), ResolveEnv.empty)
     new PreludeNames(env.root)
   }
 

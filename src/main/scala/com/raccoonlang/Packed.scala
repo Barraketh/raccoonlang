@@ -66,7 +66,6 @@ object Packed {
   private val opsByName: Map[String, NativeNatOpSpec] = nativeNatOpSpecs.map(spec => spec.name -> spec).toMap
   require(opsByName.size == nativeNatOpSpecs.size, "Native Nat operation names must be unique")
   private[raccoonlang] val opNames: Set[String] = opsByName.keySet
-  private[raccoonlang] def nativeNatOpNames(name: String): Option[String] = opsByName.get(name).map(_.name)
 
   private val opsEnabled = new DynamicVariable[Boolean](true)
   private[raccoonlang] def withOpsDisabled[A](body: => A): A = opsEnabled.withValue(false)(body)
@@ -114,14 +113,13 @@ object Packed {
         val (yes, no) = (boolCtor("Bool.true"), boolCtor("Bool.false"))
         (a, b) => if (boolOp.run(a, b)) yes else no
     }
-    val run: (Vector[Value], Env) => Value = (args, _) => {
+    val run: (Vector[Value], Env) => Value = (args, _) =>
       args match {
         case Vector(left: VPacked, right: VPacked)
             if opsEnabled.value && left.natValue.nonEmpty && right.natValue.nonEmpty =>
           compute(left.natValue.get, right.natValue.get)
         case _ => Interpreter.runLam(source, args)
       }
-    }
     VLam(source.tpe, source.id, LamBody.Native(run, Env.empty, isRawRecursive = false))
   }
 
@@ -224,13 +222,10 @@ object Packed {
   ): ConstructorShape =
     head.tpe match {
       case pi: VPi if pi.binders.length == head.totalArity && familyArgs.length == head.numErasedFamilyArgs =>
-        // Not head.fieldEnv: this validates a candidate bootstrap declaration, so each family
-        // parameter is checked against the telescope before it is bound.
+        // Not head.fieldEnv: this validates a candidate prelude declaration, so each family
+        // parameter is bound checked (bindValueAndCheck) rather than trusted.
         var env = head.paramBinders.zip(familyArgs).foldLeft(pi.env) { case (curEnv, (binder, arg)) =>
-          val expected = Interpreter.evalTerm(binder.ty, curEnv)
-          if (!ValueEquivalence.defEq(arg.tpe, expected))
-            fail(s"family argument for `${head.name}` has the wrong type")
-          BinderOps.bindValue(curEnv, binder, arg)
+          BinderOps.bindValueAndCheck(curEnv, binder, arg)
         }
         val fields = Vector.newBuilder[Value]
         // Bare fresh Vars, deliberately: this is a purely structural shape check comparing field
@@ -368,16 +363,6 @@ object Packed {
     ).foreach { case (name, value) => requireClosed(name, value) }
 
     new SourceStringLayout(string, stringMk, inputs.charListCodec)
-  }
-
-  /** Finish the trusted bootstrap by publishing each validated capability exactly once. */
-  private[raccoonlang] def finalizeTrustedBootstrap(env: Env): Env = {
-    var finished = env
-    if (finished.nativeLiterals.natLayout.isEmpty && finished.globals.contains(NatCodec.familyName))
-      finished = finished.installNatLayout(validateNatFamily(finished))
-    if (finished.nativeLiterals.stringLayout.isEmpty && finished.globals.contains("String"))
-      finished = finished.installStringLayout(validateStringLayout(finished))
-    finished
   }
 
   private[raccoonlang] def evalNatLit(value: BigInt, env: Env): Value =

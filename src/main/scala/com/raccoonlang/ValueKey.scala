@@ -1,27 +1,51 @@
 package com.raccoonlang
 
-/** Stable structural keys for the value forms available before universes and proofs. */
 object ValueKey {
   final class Key private[ValueKey] (val hi: Long, val lo: Long) {
-    override def equals(other: Any): Boolean = other match {
-      case that: Key => hi == that.hi && lo == that.lo
-      case _         => false
-    }
+    override def equals(other: Any): Boolean =
+      other match {
+        case that: Key => hi == that.hi && lo == that.lo
+        case _         => false
+      }
+
     override def hashCode(): Int = {
       val h = hi ^ java.lang.Long.rotateLeft(lo, 32)
       (h ^ (h >>> 32)).toInt
     }
+
     override def toString: String = s"Key($hi,$lo)"
   }
 
   object Key {
     def apply(hi: Long, lo: Long): Key = new Key(hi, lo)
+
     implicit val ordering: Ordering[Key] = new Ordering[Key] {
       override def compare(x: Key, y: Key): Int = {
-        val high = java.lang.Long.compareUnsigned(x.hi, y.hi)
-        if (high != 0) high else java.lang.Long.compareUnsigned(x.lo, y.lo)
+        val hi = java.lang.Long.compareUnsigned(x.hi, y.hi)
+        if (hi != 0) hi else java.lang.Long.compareUnsigned(x.lo, y.lo)
       }
     }
+  }
+
+  private object Tag {
+    val LevelTpe = 1
+    val Level = 2
+    val Sort = 3
+    val Prop = 4
+    val KernelObject = 5
+    val Const = 6
+    val Var = 7
+    val App = 8
+    val Lam = 9
+    val NeutralThunk = 10
+    val Pi = 11
+    val ConstructorHead = 12
+    val Proof = 13
+    val ConstId = 16
+    val LocalId = 17
+    val Packed = 18
+    val LevelParamAtom = 19
+    val LevelIMaxAtom = 20
   }
 
   private val SeedHi = -7046029254386353131L
@@ -29,88 +53,150 @@ object ValueKey {
   private val Mul1 = -49064778989728563L
   private val Mul2 = -4265267296055464877L
 
-  private def avalanche(value0: Long): Long = {
-    var value = value0
-    value ^= value >>> 33
-    value *= Mul1
-    value ^= value >>> 33
-    value *= Mul2
-    value ^ (value >>> 33)
+  private def avalanche(x0: Long): Long = {
+    var x = x0
+    x ^= x >>> 33
+    x *= Mul1
+    x ^= x >>> 33
+    x *= Mul2
+    x ^ (x >>> 33)
   }
 
-  private def tag(tag: Int): Key = Key(avalanche(SeedHi ^ tag.toLong), avalanche(SeedLo + tag.toLong))
-  private def mix(key: Key, value: Long): Key =
-    Key(avalanche(key.hi ^ (value + SeedHi)), avalanche(key.lo + java.lang.Long.rotateLeft(value ^ SeedLo, 31)))
-  private def mix(key: Key, value: Key): Key =
-    Key(avalanche(key.hi ^ value.hi), avalanche(key.lo + java.lang.Long.rotateLeft(value.lo, 27)))
-  private def text(key: Key, value: String): Key = {
-    var current = mix(key, value.length.toLong)
-    value.foreach(ch => current = mix(current, ch.toLong))
-    current
+  private def tag(id: Int): Key =
+    Key(avalanche(SeedHi ^ id.toLong), avalanche(SeedLo + id.toLong))
+
+  private[raccoonlang] def mixLong(key: Key, value: Long): Key =
+    Key(
+      avalanche(key.hi ^ (value + SeedHi)),
+      avalanche(key.lo + java.lang.Long.rotateLeft(value ^ SeedLo, 31))
+    )
+
+  private def mixString(key: Key, value: String): Key = {
+    var cur = mixLong(key, value.length.toLong)
+    var idx = 0
+    while (idx < value.length) {
+      cur = mixLong(cur, value.charAt(idx).toLong)
+      idx += 1
+    }
+    cur
   }
-  private[raccoonlang] def mixLong(key: Key, value: Long): Key = mix(key, value)
-  private[raccoonlang] def mixKey(key: Key, value: Key): Key = mix(key, value)
+
   private[raccoonlang] def mixBytes(key: Key, bytes: Array[Byte]): Key = {
-    var out = mix(key, bytes.length.toLong)
-    bytes.foreach(b => out = mix(out, b.toLong & 0xffL))
-    out
+    var cur = mixLong(key, bytes.length.toLong)
+    var acc = 0L
+    var n = 0
+    var idx = 0
+    while (idx < bytes.length) {
+      acc = (acc << 8) | (bytes(idx) & 0xffL)
+      n += 1
+      if (n == 8) {
+        cur = mixLong(cur, acc)
+        acc = 0L
+        n = 0
+      }
+      idx += 1
+    }
+    if (n > 0) cur = mixLong(cur, acc)
+    cur
   }
 
-  // Level atoms need a structural key of their own.  In particular, using the
-  // level's pretty-printed form here would make ordering depend on presentation
-  // and (more seriously) the old Level case below collapsed every level to one
-  // key.  Keep nested imax atoms in the key so the key fast path cannot equate
-  // unresolved imax with an ordinary max.
-  private val LevelParamAtomTag = 19
-  private val LevelIMaxAtomTag = 20
+  private[raccoonlang] def mixKey(key: Key, value: Key): Key =
+    Key(
+      avalanche(key.hi ^ value.hi),
+      avalanche(key.lo + java.lang.Long.rotateLeft(value.lo, 27))
+    )
 
-  private def levelAtomKey(atom: Value.Level.Atom): Key = atom match {
-    case Value.Level.ParamAtom(id) => mix(tag(LevelParamAtomTag), id.toLong)
-    case Value.Level.IMaxAtom(lhs, rhs) =>
-      mix(mix(tag(LevelIMaxAtomTag), lhs.key), rhs.key)
+  /** The identity of a constructor head itself, independent of whether it stands alone or heads an application. */
+  private def headKey(head: Value): Key =
+    head match {
+      case h: Value.ConstructorHead => mixString(tag(Tag.ConstructorHead), h.name)
+      case other                    => other.key
+    }
+
+  private def mixValues(key: Key, values: Iterable[Value]): Key = {
+    val iter = values.iterator
+    var cur = key
+    var count = 0
+    while (iter.hasNext) {
+      cur = mixKey(cur, iter.next().key)
+      count += 1
+    }
+    mixLong(cur, count.toLong)
   }
+
+  private def mixAstNodeId(key: Key, nodeId: AstNodeId): Key = {
+    val withSource =
+      nodeId.source match {
+        case Some(sourceId) => mixLong(mixLong(key, 1L), sourceId.value.toLong)
+        case None           => mixLong(key, 0L)
+      }
+    mixLong(withSource, nodeId.start.toLong)
+  }
+
+  private def valueIdKey(key: Key, id: Value.ValueId): Key =
+    id match {
+      case Value.ValueId.Const(name) =>
+        mixString(mixKey(key, tag(Tag.ConstId)), name)
+      case Value.ValueId.LocalId(nodeId, captures) =>
+        mixValues(mixAstNodeId(mixKey(key, tag(Tag.LocalId)), nodeId), captures)
+    }
+
+  private[raccoonlang] def levelAtomKey(atom: Value.Level.Atom): Key =
+    atom match {
+      case Value.Level.ParamAtom(id) => mixLong(tag(Tag.LevelParamAtom), id.toLong)
+      case Value.Level.IMaxAtom(lhs, rhs) =>
+        mixKey(mixKey(tag(Tag.LevelIMaxAtom), lhs.key), rhs.key)
+    }
 
   private def levelKey(terms: Map[Value.Level.Atom, Int], c: Int): Key = {
-    var current = mix(tag(2), c.toLong)
-    val sorted = terms.iterator.map { case (atom, offset) => levelAtomKey(atom) -> offset }.toArray.sortBy(_._1)
-    sorted.foreach { case (atom, offset) => current = mix(mix(current, atom), offset.toLong) }
-    mix(current, sorted.length.toLong)
-  }
-  private def values(key: Key, items: Iterable[Value]): Key = {
-    var current = key
-    var count = 0L
-    items.foreach { item => current = mix(current, item.key); count += 1 }
-    mix(current, count)
-  }
-  private def idKey(key: Key, id: Value.ValueId): Key = id match {
-    case Value.ValueId.Const(name) => text(mix(key, 16L), name)
-    case Value.ValueId.LocalId(node, captures) =>
-      values(mix(mix(key, 17L), node.start.toLong), captures)
-  }
-  private def headKey(head: Value): Key = head match {
-    case constructor: Value.ConstructorHead => text(tag(12), constructor.name)
-    case other                              => other.key
+    var cur = mixLong(tag(Tag.Level), c.toLong)
+    val sortedTerms = terms.iterator
+      .map { case (atom, offset) => (levelAtomKey(atom), offset) }
+      .toArray
+      .sortBy(_._1)
+    var idx = 0
+    while (idx < sortedTerms.length) {
+      val (atomKey, offset) = sortedTerms(idx)
+      cur = mixLong(mixKey(cur, atomKey), offset.toLong)
+      idx += 1
+    }
+    mixLong(cur, sortedTerms.length.toLong)
   }
 
-  def orderKey(value: Value): Key = value match {
-    case Value.LevelTpe           => tag(1)
-    case level: Value.Level       => levelKey(level.terms, level.c)
-    case Value.VSort(level)       => mix(tag(3), level.key)
-    case Value.VConst(name, _, _) => text(tag(6), name)
-    case Value.Var(_, id, _)      => mix(tag(7), id.toLong)
-    case Value.VApp(head, args, tpe, _) =>
-      val base = values(mix(tag(8), headKey(head)), args)
-      head match {
-        case _: Value.ConstructorHead => mix(base, tpe.key)
-        case _                        => base
+  def orderKey(v: Value): Key = v match {
+    case Value.LevelTpe        => tag(Tag.LevelTpe)
+    case level: Value.Level    => levelKey(level.terms, level.c)
+    case Value.PropTpe         => tag(Tag.Prop)
+    case Value.VSort(lvl)      => mixKey(tag(Tag.Sort), lvl.key)
+    case Value.VConst(n, _, _) => mixString(tag(Tag.Const), n)
+    case Value.Var(_, id, _)   => mixLong(tag(Tag.Var), id.toLong)
+    case Value.VApp(h, args, tpe, _) =>
+      val appKey = mixValues(mixKey(tag(Tag.App), headKey(h)), args)
+      h match {
+        case _: Value.ConstructorHead => mixKey(appKey, tpe.key)
+        case _                        => appKey
       }
-    case Value.VLam(_, id, _)      => idKey(tag(9), id)
-    case Value.VProof(tpe)         => mix(tag(13), tpe.key)
-    case packed: Value.VPacked     => packed.codec.mixPayloadKey(mix(tag(14), packed.tpe.key), packed.payload)
-    case thunk: Value.NeutralThunk => idKey(tag(10), thunk.id)
-    case pi: Value.VPi             => mix(idKey(tag(11), pi.id), pi.binders.length.toLong)
+    case Value.VLam(_, id, _) =>
+      valueIdKey(tag(Tag.Lam), id)
+    case m: Value.NeutralThunk =>
+      valueIdKey(tag(Tag.NeutralThunk), m.id)
+    case p: Value.VPi =>
+      mixLong(valueIdKey(tag(Tag.Pi), p.id), p.binders.length.toLong)
+    case p: Value.VPacked =>
+      val codecId = p.codec match {
+        case Value.NatCodec         => 1L
+        case _: Value.CharListCodec => 2L
+      }
+      mixKey(p.codec.mixPayloadKey(mixLong(tag(Tag.Packed), codecId), p.payload), p.tpe.key)
+    // A nullary constructor is already a value in constructor form: a global lookup hands back the
+    // bare head where `evalRef` hands back `VCtor(h, [], tpe)`. Both spellings denote the same
+    // value, so the bare head keys exactly as that application would, or defEq's key fast path
+    // would call one unequal to the other.
     case head: Value.ConstructorHead if head.totalArity == 0 =>
-      mix(values(mix(tag(8), headKey(head)), Vector.empty), head.tpe.key)
+      mixKey(mixValues(mixKey(tag(Tag.App), headKey(head)), Vector.empty), head.tpe.key)
     case head: Value.ConstructorHead => headKey(head)
+    // All erased proofs of defEq propositions share a key; VProof contains only its proposition.
+    case p: Value.VProof =>
+      mixKey(tag(Tag.Proof), p.tpe.key)
   }
 }

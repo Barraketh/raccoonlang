@@ -1,39 +1,42 @@
 package com.raccoonlang.telescope
 
-import com.raccoonlang.{ArityMismatch, CoreAst, Env, FreshVar, Interpreter, TypeMismatch, Value, ValueEquivalence}
 import com.raccoonlang.Value.VPi
+import com.raccoonlang._
 
-/** Telescope operations shared by checking and later projection/refinement passes. */
 object BinderOps {
   private final case class FreshenedBinder(value: Value, holeId: Option[Value.VarId])
+
+  final case class CheckedBinders(
+      binders: Vector[CoreAst.Binder],
+      env: Env
+  )
 
   def freshen(binders: Vector[CoreAst.Binder], baseEnv: Env): Env = {
     var env = baseEnv
     binders.foreach { binder =>
       env = env.putLocal(binder.localRef, freshenBinder(env, binder).value)
     }
+
     env
   }
 
-  def freshen(pi: VPi): Env = freshen(pi.binders, pi.env)
+  def freshen(vpi: VPi): Env = freshen(vpi.binders, vpi.env)
 
-  final case class CheckedBinders(binders: Vector[CoreAst.Binder], env: Env)
-
-  /** Compile projections for runtime-only values produced by the deliberately unchecked evaluator. */
-  def compileRuntime(binders: Vector[CoreAst.Binder], baseEnv: Env): Vector[CoreAst.Binder] = {
-    var env = baseEnv
-    val inputs = binders.map { binder =>
-      val freshened = freshenBinder(env, binder)
-      env = env.putLocal(binder.localRef, freshened.value)
-      Projection.BinderInput(binder.name, binder.span, binder.isImplicit, freshened.value, freshened.holeId)
+  // Fresh copy of a constructor's telescope: a fresh value per binder plus the instantiated result
+  // type. Used by MatchChecker for reachability and branch refinement.
+  def freshCtorArgsAndResult(head: Value.ConstructorHead): (Vector[Value], Value) =
+    head.pi match {
+      case Some(pi) =>
+        val fresh = freshen(pi)
+        (pi.binders.map(binder => fresh(binder.localRef)), pi.codomain(fresh))
+      case None => (Vector.empty, head.tpe)
     }
-    val compiled = Projection.compile(inputs)
-    binders.indices
-      .map(i => binders(i).copy(isImplicit = compiled(i).isImplicit, projection = compiled(i).projection))
-      .toVector
-  }
 
-  /** Check binder types and compile forced-implicit projection specifications. */
+  /**
+   * Check a telescope's binder types and compile the implicit projection specs (Projection.compile). Every implicit
+   * binder must be forced by later non-implicit binders; the leading `familyParams` binders of a constructor telescope
+   * are demoted to explicit instead of erroring when unforced.
+   */
   def checkBinders(
       binders: Vector[CoreAst.Binder],
       baseEnv: Env,
@@ -42,49 +45,51 @@ object BinderOps {
     var env = baseEnv
     val holeIds = Vector.newBuilder[Option[Value.VarId]]
     val checkedTys = binders.map { binder =>
-      val checked = com.raccoonlang.TypeChecker.checkTerm(binder.ty, env)
-      com.raccoonlang.TypeChecker.assertType(checked.value)
-      val provisional = binder.copy(ty = checked.residual, projection = None)
+      val checkedTy = TypeChecker.checkTerm(binder.ty, env)
+      TypeChecker.assertType(checkedTy.value)
+      val provisional = CoreAst.Binder(binder.localRef, checkedTy.residual, binder.span, binder.isImplicit)
       val freshened = freshenBinder(env, provisional)
       env = env.putLocal(binder.localRef, freshened.value)
       holeIds += freshened.holeId
-      provisional -> checked
+      checkedTy
     }
+
     val inputs = binders.zip(holeIds.result()).map { case (binder, holeId) =>
       Projection.BinderInput(binder.name, binder.span, binder.isImplicit, env(binder.localRef), holeId)
     }
     val compiled = Projection.compile(inputs, familyParams)
-    val result = binders.indices.map { i =>
-      val (binder, checked) = checkedTys(i)
-      binder.copy(ty = checked.residual, isImplicit = compiled(i).isImplicit, projection = compiled(i).projection)
-    }.toVector
-    CheckedBinders(result, env)
+
+    checked(compiled, binders, checkedTys, env)
   }
 
-  /** Fresh constructor telescope arguments and its result, including erased family parameters. */
-  def freshCtorArgsAndResult(head: Value.ConstructorHead): (Vector[Value], Value) =
-    head.tpe match {
-      case pi: VPi =>
-        val fresh = freshen(pi)
-        (pi.binders.map(binder => fresh(binder.localRef)), pi.codomain(fresh))
-      case _ => (Vector.empty, head.tpe)
+  private def checked(
+      compiled: Vector[Projection.BinderResult],
+      binders: Vector[CoreAst.Binder],
+      checkedTys: Vector[TypeChecker.CheckedTerm],
+      env: Env
+  ): CheckedBinders = {
+
+    val checkedBinders = binders.indices.toVector.map { idx =>
+      val binder = binders(idx)
+      val result = compiled(idx)
+      CoreAst.Binder(
+        binder.localRef,
+        checkedTys(idx).residual,
+        binder.span,
+        result.isImplicit,
+        result.projection
+      )
     }
 
-  private def freshenBinder(env: Env, binder: CoreAst.Binder): FreshenedBinder = {
-    val expectedType = Interpreter.evalTerm(binder.ty, env)
-    val (id, fresh) = FreshVar.freshValue(binder.name, expectedType)
-    val canonical = Value.canonicalizeRigidBinder(expectedType, fresh)
-    FreshenedBinder(canonical, Option.when(!Value.isPropositionType(expectedType))(id))
-  }
-
-  def freshBinderValue(name: String, expectedType: Value): Value = {
-    val (_, fresh) = FreshVar.freshValue(name, expectedType)
-    Value.canonicalizeRigidBinder(expectedType, fresh)
+    CheckedBinders(checkedBinders, env)
   }
 
   def instantiateFull(binders: Vector[CoreAst.Binder], baseEnv: Env, args: Vector[Value]): Env = {
     if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
-    binders.zip(args).foldLeft(baseEnv) { case (env, (binder, value)) => bindValue(env, binder, value) }
+
+    binders.zip(args).foldLeft(baseEnv) { case (curEnv, (binder, value)) =>
+      bindValue(curEnv, binder, value)
+    }
   }
 
   def checkAndInstantiate(
@@ -93,13 +98,40 @@ object BinderOps {
       args: Vector[Value]
   ): Env = {
     if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
-    binders.zip(args).foldLeft(runtimeEnv) { case (env, (binder, value)) =>
-      val expected = Interpreter.evalTerm(binder.ty, env)
-      if (!ValueEquivalence.defEq(value.tpe, expected)) throw TypeMismatch(expected, value.tpe)
-      bindValue(env, binder, value)
+
+    binders.zip(args).foldLeft(runtimeEnv) { case (curEnv, (binder, value)) =>
+      bindValueAndCheck(curEnv, binder, value)
     }
+  }
+
+  // A rigid binder enters as a bare fresh Var, or — when its type is a proposition — as the
+  // type-determined canonical proof form. Struct-typed binders are ordinary Vars: structure eta is
+  // a rule over them, not a representation they have to be built in. Non-proof binders expose
+  // their fresh id to implicit-projection compilation; proof binders are recognized there by
+  // proposition instead, so runtime proof representation carries no witness metadata.
+  private def freshenBinder(env: Env, binder: CoreAst.Binder): FreshenedBinder = {
+    val expectedTy = Interpreter.evalTerm(binder.ty, env)
+    val (id, fresh) = FreshVar.freshValue(binder.name, expectedTy)
+    val canonical = Value.canonicalizeRigidBinder(expectedTy, fresh)
+    // A proof binder exposes no hole: VProof carries no witness id to project from.
+    FreshenedBinder(canonical, Option.when(!Value.isPropositionType(expectedTy))(id))
+  }
+
+  /**
+   * The rigid value a binder of this already-evaluated type enters with, without binding it anywhere. Same canonical
+   * form `freshenBinder` produces; callers that walk two telescopes in lockstep need the value alone so they can share
+   * one witness between both sides.
+   */
+  def freshBinderValue(name: String, expectedTy: Value): Value = {
+    val (_, fresh) = FreshVar.freshValue(name, expectedTy)
+    Value.canonicalizeRigidBinder(expectedTy, fresh)
   }
 
   def bindValue(env: Env, binder: CoreAst.Binder, actual: Value): Env =
     env.putLocal(binder.localRef, Value.canonicalizeProof(actual))
+
+  def bindValueAndCheck(env: Env, binder: CoreAst.Binder, actual: Value): Env = {
+    TypeChecker.checkType(actual, Interpreter.evalTerm(binder.ty, env))
+    bindValue(env, binder, actual)
+  }
 }

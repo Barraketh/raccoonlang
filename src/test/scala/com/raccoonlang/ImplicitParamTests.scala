@@ -1,137 +1,418 @@
 package com.raccoonlang
 
-class ImplicitParamTests extends munit.FunSuite {
-  private def checked(src: String): Value = TestSupport.check(src)._2.map(_.value).getOrElse(fail("Expected result"))
-  private val nat =
-    """
-      |inductive Nat : Type
-      | | zero : Nat
-      | | succ (n: Nat) : Nat
-      |""".stripMargin
+class ImplicitParamTests extends munit.FunSuite with TestSupport {
+  override protected val suitePrelude: Prelude.Config = Prelude.test
 
-  test("implicit binders reconstruct from later explicit argument types") {
-    val src = nat + "\n" + """
-                             |def id {A: Type}(x: A): A := x
-                             |{ id(Nat.succ(Nat.zero)) }
-                             |""".stripMargin
-    assertEquals(PrettyPrinter.print(checked(src)), "1")
+  /** Like `runProgram`, but lets a TypeError escape so a test can assert on it. */
+  private def runProgramRaw(src: String): Value =
+    LanguageParser.parseProgram(src) match {
+      case Success(value, _, _) =>
+        Interpreter.run(Elaborator.elab(value, Prelude.test), Prelude.test).getOrElse(fail("Program has no body"))
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
+    }
+
+  sealed trait Shape
+  case class SConst(name: String) extends Shape
+  case class SApp(head: Shape, args: List[Shape]) extends Shape
+
+  private def toShape(v: Value): Shape = v match {
+    case Value.ConstructorHead(n, _, _, _, _) => SConst(n)
+    case Value.VCtor(h, storedArgs, _) =>
+      val args = storedArgs
+      if (args.isEmpty) SConst(h.name) else SApp(SConst(h.name), args.toList.map(toShape))
+    case Value.VConst(n, _, _)     => SConst(n)
+    case Value.VApp(h, args, _, _) => SApp(toShape(h), args.toList.map(toShape))
+    case other                     => SConst(other.toString)
   }
 
-  test("supplying a forced implicit positionally is an arity error") {
-    val src = nat + "\n" + """
-                             |def id {A: Type}(x: A): A := x
-                             |{ id(Nat, Nat.zero) }
-                             |""".stripMargin
-    intercept[ArityMismatch](checked(src))
+  private val zeroS = SConst("Peano.zero")
+  private def succS(s: Shape) = SApp(SConst("Peano.succ"), List(s))
+
+  test("implicit family argument can be used in codomain and body") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
+        |
+        |inductive Box {u: Level}(A: Sort(u)) : Sort(u)
+        | | mk (a: A) : Box(A)
+        |
+        |def unbox {u: Level}{A: Sort(u)} (b: Box(A)): A := {
+        |  match b returning A with
+        |  | Box.mk a => a
+        |}
+        |
+        |{
+        |  unbox(Box.mk(Peano.zero))
+        |}
+        |""".stripMargin
+
+    assertEquals(toShape(runProgram(p)), zeroS)
   }
 
-  test("unforced implicit binders are rejected") {
-    val src = nat + "\naxiom bad : Nat -> {A: Type} -> A\n"
-    intercept[NonForcedImplicitParam](TestSupport.check(src))
+  test("implicit index can be used as an ordinary term") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
+        |
+        |inductive Vec {u: Level}(A: Sort(u)) indices (n: Peano) : Sort(Level.max(Level.one, u))
+        | | nil : Vec(A, Peano.zero)
+        | | cons {n: Peano} (tail: Vec(A, n)) (head: A) : Vec(A, Peano.succ(n))
+        |
+        |def len {n: Peano} (v: Vec(Peano, n)): Peano := n
+        |
+        |{
+        |  len(Vec.cons(Vec.nil(Peano), Peano.zero))
+        |}
+        |""".stripMargin
+
+    assertEquals(toShape(runProgram(p)), succS(zeroS))
   }
 
-  test("implicit binders can occur in the middle of a telescope") {
-    val src = nat + "\n" + """
-                             |def choose (n: Nat){A: Type}(x: A)(y: A): A := x
-                             |{ choose(Nat.zero, Nat.zero, Nat.succ(Nat.zero)) }
-                             |""".stripMargin
-    assertEquals(PrettyPrinter.print(checked(src)), "0")
+  test("def implicits are reconstructed, never supplied positionally") {
+    val decls =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
+        |
+        |def id {A: Type} (x: A): A := x
+        |""".stripMargin
+
+    // Positional supply of the implicit is an arity error: a call supplies exactly the Pi's own
+    // explicit binders, and `id` has one.
+    expectTypeError[ArityMismatch](
+      decls +
+        """
+          |{
+          |  id(Peano, Peano.succ(Peano.zero))
+          |}
+          |""".stripMargin
+    )
+
+    // ...and the implicit is reconstructed from the explicit argument's type.
+    val ok =
+      decls +
+        """
+          |{
+          |  id(Peano.succ(Peano.zero))
+          |}
+          |""".stripMargin
+
+    assertEquals(toShape(runProgram(ok)), succS(zeroS))
   }
 
-  test("a polymorphic function adapts to an expected monomorphic Pi") {
-    val src = nat + "\n" + """
-                             |def id {A: Type}(x: A): A := x
-                             |{
-                             |  let f : Nat -> Nat := id
-                             |  f(Nat.succ(Nat.zero))
-                             |}
-                             |""".stripMargin
-    assertEquals(PrettyPrinter.print(checked(src)), "1")
+  test("implicit binder not forced by any later non-implicit binder is rejected") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        |
+        |axiom bad : Peano -> {A: Type} -> A
+        |""".stripMargin
+
+    expectTypeError[NonForcedImplicitParam](p)
   }
 
-  test("runtime evaluation reconstructs the same implicit") {
-    val src = nat + "\n" + """
-                             |def id {A: Type}(x: A): A := x
-                             |{ id(Nat.zero) }
-                             |""".stripMargin
-    assertEquals(PrettyPrinter.print(TestSupport.eval(src)), "0")
+  test("implicit binders may sit mid-telescope when forced by later binders") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
+        |
+        |def pick (n: Peano){A: Type}(x: A)(y: A): A := {
+        |  match n returning A with
+        |  | Peano.zero => x
+        |  | Peano.succ p => y
+        |}
+        |
+        |{
+        |  pick(Peano.zero, Peano.zero, Peano.succ(Peano.zero))
+        |}
+        |""".stripMargin
+
+    assertEquals(toShape(runProgram(p)), zeroS)
   }
 
-  test("dependent constructor indices reconstruct from a later field") {
-    val src = nat + "\n" + """
-                             |inductive Vec (A: Type) indices (n: Nat) : Type
-                             | | nil : Vec(A, Nat.zero)
-                             | | cons {n: Nat} (tail: Vec(A, n)) (head: A) : Vec(A, Nat.succ(n))
-                             |
-                             |def len {n: Nat} (v: Vec(Nat, n)): Nat := n
-                             |{
-                             |  len(Vec.cons(Vec.nil(Nat), Nat.zero))
-                             |}
-                             |""".stripMargin
-    assertEquals(PrettyPrinter.print(checked(src)), "1")
+  test("ordinary hidden constructor binders cannot stand in for family params") {
+    val p =
+      """
+        |inductive Bad (A: Type) : Type
+        | | mk {B: Type} : Bad(B)
+        |""".stripMargin
+
+    // The unforced user-written {B} is rejected at Pi formation, before the uniformity check even
+    // runs (family demotion applies only to synthesized family params). The explicit-(B) variant
+    // of this smuggle is guarded by InductiveCheckTest's NonUniformInductiveParam test.
+    LanguageParser.parseProgram(p) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        intercept[NonForcedImplicitParam] { Interpreter.run(core, Prelude.test) }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
+    }
   }
 
-  test("implicit family arguments can be used in codomains and bodies") {
-    val src = nat + "\n" +
-      "inductive Box {u: Level}(A: Sort(u)) : Sort(u)\n" +
-      " | mk (a: A) : Box(A)\n\n" +
-      "def unbox {u: Level}{A: Sort(u)} (b: Box(A)): A := {\n match b returning A with\n | Box.mk a => a\n}\n" +
-      "{ unbox(Box.mk(Nat.zero)) }\n"
-    assertEquals(PrettyPrinter.print(checked(src)), "0")
-  }
+  test("constructor implicit binders may include indices after family params") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
+        |
+        |inductive Vec (A: Type) indices (n: Peano) : Type
+        | | nil : Vec(A, Peano.zero)
+        | | cons {n: Peano} (tail: Vec(A, n)) (head: A) : Vec(A, Peano.succ(n))
+        |""".stripMargin
 
-  test("implicit indices remain available as ordinary terms") {
-    val src = nat + "\n" +
-      "inductive Vec (A: Type) indices (n: Nat) : Type\n" +
-      " | nil : Vec(A, Nat.zero)\n" +
-      " | cons {n: Nat} (tail: Vec(A, n)) (head: A) : Vec(A, Nat.succ(n))\n\n" +
-      "def len {n: Nat} (v: Vec(Nat, n)): Nat := n\n" +
-      "{ len(Vec.cons(Vec.nil(Nat), Nat.zero)) }\n"
-    assertEquals(PrettyPrinter.print(checked(src)), "1")
-  }
-
-  test("ordinary hidden constructor binders are not family-parameter inference") {
-    val src = "inductive Bad (A: Type) : Type\n | mk {B: Type} : Bad(B)\n"
-    intercept[NonForcedImplicitParam](TestSupport.check(src))
+    typecheckDecls(p)
   }
 
   test("match patterns bind implicit constructor fields") {
-    val src =
-      "inductive Nat : Type\n | zero : Nat\n\n" +
-        "inductive Pack : Sort(Level.succ(Level.one))\n | mk {A: Type} (x: A) : Pack\n\n" +
-        "def carrier (p: Pack): Type := {\n match p returning Type with\n | Pack.mk A x => A\n}\n" +
-        "{ carrier(Pack.mk(Nat.zero)) }\n"
-    checked(src)
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        |
+        |inductive Pack : Sort(Level.succ(Level.one))
+        | | mk {A: Type} (x: A) : Pack
+        |
+        |def carrier (p: Pack): Type := {
+        |  match p returning Type with
+        |  | Pack.mk A x => A
+        |}
+        |
+        |{
+        |  carrier(Pack.mk(Peano.zero))
+        |}
+        |""".stripMargin
+
+    assertEquals(toShape(runProgram(p)), SConst("Peano"))
   }
 
-  test("explicit arguments are still checked against their binder types") {
-    val src = nat + "\ndef id {A: Type}(x: A): A := x\n{ id(Type) }\n"
-    intercept[TypeMismatch](TestSupport.check(src))
+  test("implicit-only axiom has no forcing binder and is rejected") {
+    // Expected-type-driven instantiation is gone, so `arbitrary` could never be
+    // applied; the axiom itself is now rejected at declaration time.
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
+        |
+        |axiom arbitrary : {A: Type} -> A
+        |""".stripMargin
+
+    expectTypeError[NonForcedImplicitParam](p)
   }
 
-  test("dependent Pi codomains do not force an implicit, while nondependent ones do") {
-    val ok = nat +
-      "\ndef ok {C: Type} (f: (n: Nat) -> C): Nat := Nat.zero\n"
-    TestSupport.check(ok)
-    val bad = nat +
-      "\ndef bad {C: Nat -> Type} (f: (n: Nat) -> C(n)): Nat := Nat.zero\n"
-    intercept[NonForcedImplicitParam](TestSupport.check(bad))
+  test("unforced constructor family param is demoted to an explicit argument") {
+    // No field of Vec.nil forces A, so A demotes to an explicit arg: Vec.nil(Peano).
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
+        |
+        |inductive Vec (A: Type) indices (n: Peano) : Type
+        | | nil : Vec(A, Peano.zero)
+        | | cons {n: Peano} (tail: Vec(A, n)) (head: A) : Vec(A, Peano.succ(n))
+        |
+        |{
+        |  let xs : Vec(Peano, Peano.zero) := Vec.nil(Peano)
+        |  xs
+        |}
+        |""".stripMargin
+
+    assertEquals(toShape(runProgram(p)), SConst("Vec.nil"))
   }
 
-  test("unused implicit level binders are rejected") {
-    intercept[NonForcedImplicitParam](TestSupport.check("axiom bad : {u: Level} -> Type\n"))
+  test("def implicit is reconstructed by projection from the explicit argument's type") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
+        |
+        |inductive Vec (A: Type) indices (n: Peano) : Type
+        | | nil : Vec(A, Peano.zero)
+        | | cons {n: Peano} (tail: Vec(A, n)) (head: A) : Vec(A, Peano.succ(n))
+        |
+        |def use {A: Type} (v: Vec(A, Peano.zero)): Vec(A, Peano.zero) := v
+        |
+        |{
+        |  let xs : Vec(Peano, Peano.zero) := use(Vec.nil(Peano))
+        |  xs
+        |}
+        |""".stripMargin
+
+    assertEquals(toShape(runProgram(p)), SConst("Vec.nil"))
   }
 
-  test("implicit-only axioms are rejected") {
-    intercept[NonForcedImplicitParam](TestSupport.check("axiom arbitrary : {A: Type} -> A\n"))
+  test("expected function type instantiates leading implicit binders") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
+        |
+        |def id {A: Type}(x: A): A := x
+        |
+        |{
+        |  let f : Peano -> Peano := id
+        |  f(Peano.succ(Peano.zero))
+        |}
+        |""".stripMargin
+
+    assertEquals(toShape(runProgram(p)), succS(zeroS))
   }
 
-  test("positional constructor and level implicits are rejected") {
-    val ctor = nat +
-      "\ninductive Box (A: Type) : Type\n | mk (x: A) : Box(A)\n\n{ Box.mk(Nat, Nat.zero) }\n"
-    intercept[ArityMismatch](TestSupport.check(ctor))
-    val level = nat +
-      "\ndef idUp {u: Level}(A: Sort(Level.succ(u)))(x: A): A := x\n{ idUp(Level.one, Type, Nat) }\n"
-    intercept[ArityMismatch](TestSupport.check(level))
+  // Eta-adaptation re-states the expected Pi as the synthetic lambda's residual type, so the
+  // expectation has to have been written as a literal Pi term. A local alias denotes the same Pi
+  // value but is only a LocalRef in syntax, so the adaptation declines and plain subsumption
+  // rejects the mismatch; writing the Pi inline adapts as usual.
+  test("expected function type instantiates leading implicit binders only from literal Pi syntax") {
+    def program(declaredTy: String): String =
+      s"""
+         |inductive Peano : Type
+         | | zero : Peano
+         | | succ (_: Peano) : Peano
+         |
+         |def id {A: Type}(x: A): A := x
+         |
+         |{
+         |  let t : Type := (_: Peano) -> Peano
+         |  let f : $declaredTy := id
+         |  f(Peano.succ(Peano.zero))
+         |}
+         |""".stripMargin
+
+    assertEquals(toShape(runProgram(program("(_: Peano) -> Peano"))), succS(zeroS))
+    intercept[TypeMismatch](runProgramRaw(program("t")))
+  }
+
+  test("explicit arguments are checked against binder types") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
+        |
+        |inductive Vec (A: Type) indices (n: Peano) : Type
+        | | nil : Vec(A, Peano.zero)
+        | | cons {n: Peano} (tail: Vec(A, n)) (head: A) : Vec(A, Peano.succ(n))
+        |
+        |def useNil (v: Vec(Peano, Peano.zero)): Peano := Peano.zero
+        |
+        |{
+        |  useNil(Vec.nil(Peano))
+        |}
+        |""".stripMargin
+
+    assertEquals(toShape(runProgram(p)), zeroS)
+  }
+
+  test("match branches check constructor results against the def result type") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
+        |
+        |inductive Bool : Type
+        | | true : Bool
+        | | false : Bool
+        |
+        |inductive Vec (A: Type) indices (n: Peano) : Type
+        | | nil : Vec(A, Peano.zero)
+        | | cons {n: Peano} (tail: Vec(A, n)) (head: A) : Vec(A, Peano.succ(n))
+        |
+        |def chooseNil (b: Bool): Vec(Peano, Peano.zero) := {
+        |  match b with
+        |  | Bool.true => Vec.nil(Peano)
+        |  | Bool.false => Vec.nil(Peano)
+        |}
+        |
+        |{
+        |  chooseNil(Bool.true)
+        |}
+        |""".stripMargin
+
+    assertEquals(toShape(runProgram(p)), SConst("Vec.nil"))
+  }
+
+  test("unused implicit level binder is rejected") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        |
+        |def bad {A: Type}{u: Level} (x: A): A := x
+        |""".stripMargin
+
+    expectTypeError[NonForcedImplicitParam](p)
+  }
+
+  test("supplying implicit args positionally is an arity error") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
+        |
+        |inductive Vec {u: Level}(A: Sort(u)) indices (n: Peano) : Sort(Level.max(Level.one, u))
+        | | nil : Vec(A, Peano.zero)
+        | | cons {n: Peano} (tail: Vec(A, n)) (head: A) : Vec(A, Peano.succ(n))
+        |
+        |{
+        |  Vec.cons(Peano, Vec.nil(Peano), Peano.zero)
+        |}
+        |""".stripMargin
+
+    // Vec.cons's telescope is {u}{A}{n}(tail)(head): callers supply exactly the
+    // 2 explicit args; every implicit is reconstructed.
+    expectTypeError[ArityMismatch](p)
+  }
+
+  test("level implicits cannot be supplied positionally") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        |
+        |inductive Box {u: Level}(A: Sort(u)) : Sort(u)
+        | | mk (a: A) : Box(A)
+        |
+        |{
+        |  Box.mk(Level.one, Peano, Peano.zero)
+        |}
+        |""".stripMargin
+
+    expectTypeError[ArityMismatch](p)
+  }
+
+  test("all implicits are inferred when only explicit args are supplied") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
+        |
+        |inductive Vec {u: Level}(A: Sort(u)) indices (n: Peano) : Sort(Level.max(Level.one, u))
+        | | nil : Vec(A, Peano.zero)
+        | | cons {n: Peano} (tail: Vec(A, n)) (head: A) : Vec(A, Peano.succ(n))
+        |
+        |def len {n: Peano} (v: Vec(Peano, n)): Peano := n
+        |
+        |{
+        |  len(Vec.cons(Vec.nil(Peano), Peano.zero))
+        |}
+        |""".stripMargin
+
+    assertEquals(toShape(runProgram(p)), succS(zeroS))
   }
 }

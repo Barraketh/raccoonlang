@@ -1,149 +1,404 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.{Decl, Program, Term => CTerm}
+import com.raccoonlang.Interpreter._
 import com.raccoonlang.Value._
 import com.raccoonlang.telescope.{BinderOps, Projection}
-import scala.util.DynamicVariable
+import com.raccoonlang.{CoreAst => CA}
 
-/** Bidirectional checker: unification is the conversion and refinement mechanism. */
 object TypeChecker {
-  private val trustedBootstrap = new DynamicVariable[Boolean](false)
-  private final case class CheckedPi(vpi: VPi, bodyEnv: Env, outTy: Value, residual: CTerm.Pi)
-  final case class CheckedTerm(value: Value, residual: CTerm)
-  private[raccoonlang] final case class Expected(value: Value, syntax: Option[CTerm])
+  private final case class CheckedPi(
+      vpi: VPi,
+      bodyEnv: Env,
+      outTy: Value,
+      residual: CA.Term.Pi
+  )
+  final case class CheckedTerm(value: Value, residual: CA.Term)
 
-  def checkFits(actual: Value, expected: Value): Unit =
-    ValueEquivalence.tryUnify(actual, expected, EqStore.empty) match {
-      case Right(_) =>
-      case Left(_)  => throw TypeMismatch(expected, actual)
+  /**
+   * An expected type, optionally paired with the *syntax* that denotes it.
+   *
+   * `syntax`, when present, is a term valid in the env the expectation is pushed into — the same local references — so
+   * it can be placed verbatim into a residual. That is what a `match` without a `returning` clause needs: its residual
+   * motive has to be syntax, and the only syntax available is whatever the enclosing declaration wrote down. A declared
+   * return type qualifies (a lambda's `pi.out`, an annotated let's type, a bare-body def's declared type); a type that
+   * only exists as a checked value does not, and a match under such an expectation is rejected with
+   * `MissingReturningClause`.
+   */
+  private[raccoonlang] final case class Expected(value: Value, syntax: Option[CA.Term])
+
+  private[raccoonlang] object Expected {
+    def valueOnly(value: Value): Expected = Expected(value, None)
+  }
+  private final case class CheckedApply(value: Value, residual: CA.Term.App)
+  private[raccoonlang] final case class CheckedRecursiveDef(name: String, vpi: VPi, residual: CA.Term.Lam)
+
+  /**
+   * An argument whose elaboration is deferred until its binder's expected type is known.
+   *
+   * An argument is never a place where expected-type *syntax* is available: the binder type it would come from is
+   * syntax in the callee's telescope env, not in the caller's. So the expectation pushed here could only ever be a bare
+   * value, and a value-only expectation changes nothing that the final verification pass does not already do — the
+   * check performed by `checkTermFits` happens there too (the telescope walk checks each arg against its binder type),
+   * and both remaining consumers of a pushed expectation need syntax: subsumption's eta-adaptation needs a Pi *term*
+   * for the synthetic lambda's type, and a motive-less `match` needs a motive term. Arguments are therefore always
+   * synthesized, and `PendingArg` is either the argument's own syntax or an already-checked value (the eta-adaptation
+   * path builds those).
+   */
+  private sealed trait PendingArg {
+    def synth(env: Env): CheckedTerm
+  }
+
+  private object PendingArg {
+    final case class Term(term: CA.Term) extends PendingArg {
+      def synth(env: Env): CheckedTerm = checkTerm(term, env)
     }
 
-  def checkType(value: Value, expectedType: Value): Unit = checkFits(value.tpe, expectedType)
-  private def checkTermFits(checked: CheckedTerm, expectedType: Value): CheckedTerm = {
-    checkType(checked.value, expectedType)
-    checked
-  }
-  def assertType(value: Value): VSort = getUniverse(value)
-  def getUniverse(value: Value): VSort = value.tpe match {
-    case sort: VSort => sort
-    case _           => throw NotAType(value.tpe)
+    final case class Checked(checked: CheckedTerm) extends PendingArg {
+      def synth(env: Env): CheckedTerm = checked
+    }
+
+    def term(t: CA.Term): PendingArg = Term(t)
+
+    def checked(c: CheckedTerm): PendingArg = Checked(c)
   }
 
+  // Universes are NOT cumulative (Lean-style): a type fits exactly the sorts defEq to its own.
+  // Non-cumulativity is what makes `.tpe` canonical enough for implicit projection — the level a
+  // spec reads is the only level the argument can carry.
+  def checkFits(actual: Value, expected: Value): Unit =
+    if (!ValueEquivalence.defEq(actual, expected))
+      throw TypeMismatch(expected, actual)
+
+  def checkType(value: Value, tyVal: Value): Unit =
+    checkFits(value.tpe, tyVal)
+
+  def getUniverse(value: Value): VSort = {
+    value.tpe match {
+      case u: VSort => u
+      case _        => throw NotAType(value.tpe)
+    }
+  }
+
+  /**
+   * `Value.isPropositionType` plus the validation that `value` is a type at all.
+   *
+   * The classification itself is deliberately not duplicated — it is the one shared predicate, so the checker can never
+   * disagree with proof collapse. What this adds is the `NotAType` check in `getUniverse`, and the one caller,
+   * `MatchChecker.checkPropElimination`, needs it: its `motiveTy` can be a user-written motive or an inherited
+   * expectation, neither of which has been asserted to be a type by the time elimination is classified. (A type is
+   * Prop-valued when it is itself a proposition. The sort `Prop` is not: `Prop : Sort 1`, so `Nat -> Prop` lives in
+   * Type, and predicates are data, not proofs — conflating the two made predicates proof-irrelevant and derived False.)
+   */
   def isPropValuedType(value: Value): Boolean = {
     getUniverse(value)
     Value.isPropositionType(value)
   }
-  private[raccoonlang] def checkTypeWithFamilyParams(term: CTerm, env: Env, familyParams: Int): CheckedTerm =
-    term match {
-      case pi: CTerm.Pi =>
-        val checked = checkPi(pi, env, familyParams)
-        CheckedTerm(checked.vpi, checked.residual)
-      case other => checkTerm(other, env)
-    }
 
-  private[raccoonlang] def getConstructorType(term: CTerm, env: Env, familyParams: Int): Value = {
-    val checked = checkTypeWithFamilyParams(term, env, familyParams)
-    assertType(checked.value)
-    checked.value
-  }
-  private def sortOf(value: Value): VSort = assertType(value)
-
-  def checkTerm(term: CTerm, env: Env): CheckedTerm = term match {
-    case CTerm.GlobalRef(name, _) =>
-      CheckedTerm(Interpreter.evalTerm(term, env), term)
-    case CTerm.LocalRef(ref, _) => CheckedTerm(env(ref), term)
-    case CTerm.NatLit(value, _) => CheckedTerm(Packed.evalNatLit(value, env), term)
-    case CTerm.StrLit(scalars, _) =>
-      CheckedTerm(Packed.evalStrLit(scalars, env), term)
-    case CTerm.Select(base, field, span) =>
-      val checkedBase = checkTerm(base, env)
-      checkSelect(checkedBase, field, span, env)
-    case pi: CTerm.Pi => {
-      val checked = checkPi(pi, env)
-      CheckedTerm(checked.vpi, checked.residual)
+  private def assertNonRawRecursive(v: Value): Unit = {
+    v match {
+      case VLam(_, id, LamBody.Native(_, _, true)) => throw InvalidRecursiveOccurrence(s"$id")
+      case _                                       =>
     }
-    case CTerm.Lam(pi, body, span, name, recursion, peers) =>
-      checkLam(pi, body, env, span, name, recursion, peers)
-    case CTerm.App(fn, args, span) => checkApp(fn, args, env, span)
-    case CTerm.Body(lets, result, span) =>
-      checkBody(CTerm.Body(lets, result, span), env, None)
-    case matchTerm: CTerm.Match => MatchChecker.checkMatch(matchTerm, env, None)
   }
 
-  private def checkSelect(base: CheckedTerm, field: String, span: Span, env: Env): CheckedTerm = {
-    base.residual match {
-      case CTerm.GlobalRef(name, _) if env.globals.contains(s"$name.$field") =>
-        val qualified = s"$name.$field"
-        return CheckedTerm(
-          Interpreter.evalTerm(CTerm.GlobalRef(qualified, span), env),
-          CTerm.GlobalRef(qualified, span)
-        )
-      case CTerm.GlobalRef(name, _) =>
-        // During trusted recursive admission the current canonical definition is a local peer
-        // until publication; resolve only that narrow self/peer shape here.
-        env.locals.collectFirst {
-          case (ref, value) if ref.name == s"$name.$field" =>
-            return CheckedTerm(value, CTerm.LocalRef(ref, span))
+  private def checkTermFits(checked: CheckedTerm, expectedTy: Value): CheckedTerm = {
+    checkType(checked.value, expectedTy)
+    checked
+  }
+
+  /**
+   * A synthesized term under an optional expectation: unconstrained it is returned as synthesized, and under an
+   * expectation it must fit. This is plain subsumption — the syntax-directed forms that can also eta-adapt (refs,
+   * lambdas) go through `subsume` instead.
+   */
+  private def fitsExpected(synthed: CheckedTerm, expected: Option[Expected]): CheckedTerm =
+    expected.fold(synthed)(exp => checkTermFits(synthed, exp.value))
+
+  private def applyHeadName(fnResidual: CA.Term): String =
+    fnResidual match {
+      case CA.Term.GlobalRef(name, _) => name
+      case CA.Term.LocalRef(ref, _)   => ref.name
+      case _                          => "function"
+    }
+
+  /**
+   * Application checking without unification: callers supply exactly the explicit args; every implicit binder carries a
+   * projection spec (compiled at Pi formation) that re-derives its value from those args. Elaboration order and
+   * verification are separate phases because implicits lead their forcing args in the telescope: an arg is checked
+   * against its binder type only once every binder that type mentions is known, and all fits are (re)verified in
+   * telescope order at the end.
+   */
+  private def checkApplyChecked(
+      fnValue: Value,
+      fnResidual: CA.Term,
+      providedArgs: Vector[PendingArg],
+      env: Env,
+      span: Span,
+      expectedResult: Option[Value]
+  ): CheckedApply =
+    fnValue.tpe match {
+      case pi: VPi =>
+        val binders = pi.binders
+        // Grouping is part of a function type's identity: a call supplies exactly this Pi's own
+        // explicit binders. `(a:A) -> (b:B) -> C` takes one argument and returns a function;
+        // `(a:A)(b:B) -> C` takes two. Supplying the wrong number is an arity error here, not a
+        // descent into the codomain — `f(x)(y)` is how a nested group is reached.
+        if (providedArgs.length != pi.numExplicit)
+          throw ArityMismatch(pi.numExplicit, providedArgs.length, Some(span))
+
+        val known = new Array[Value](binders.length)
+        val checkedResiduals = Vector.newBuilder[CA.Term]
+        var providedValues = Vector.empty[Value]
+
+        var explicitIdx = 0
+        binders.zipWithIndex.foreach { case (binder, idx) =>
+          if (!binder.isImplicit) {
+            // Arguments are synthesized and verified in the final pass; see PendingArg.
+            val checked = providedArgs(explicitIdx).synth(env)
+            assertNonRawRecursive(checked.value)
+            known(idx) = checked.value
+            checkedResiduals += checked.residual
+            providedValues :+= checked.value
+            // Specs always root at a non-implicit binder, so every implicit lands during this walk.
+            pi.implicitRoots.getOrElse(explicitIdx, Vector.empty).foreach { implicitIdx =>
+              Projection.project(binders(implicitIdx).projection.get, providedValues) match {
+                case Right(value) => known(implicitIdx) = value
+                case Left(reason) =>
+                  throw ImplicitReconstructionFailed(
+                    binders(implicitIdx).name,
+                    applyHeadName(fnResidual),
+                    reason,
+                    Some(span)
+                  )
+              }
+            }
+            explicitIdx += 1
+          }
         }
-      case _ =>
+
+        // Verification pass: with the full group known, every binder type is evaluable in order
+        // and each arg (provided or projected) must fit it. Projection was only a choice — this
+        // pass is what makes the application well-typed. Arguments are bound as supplied.
+        val calleeEnv = BinderOps.checkAndInstantiate(binders, pi.env, binders.indices.map(known).toVector)
+        expectedResult.foreach(expected => checkFits(pi.codomain(calleeEnv), expected))
+
+        val finalArgs = binders.map(binder => calleeEnv(binder.localRef))
+        val residual = CA.Term.App(fnResidual, checkedResiduals.result(), span)
+        CheckedApply(Interpreter.evalApply(fnValue, finalArgs), residual)
+
+      case _ => throw CannotApplyNonFunction(fnValue)
     }
-    val family = base.value.tpe match {
+
+  private def checkPi(pi: CA.Term.Pi, env: Env, familyParams: Int = 0): CheckedPi = {
+    // Implicit legality (forced-by-later-binders) and projection specs come from BinderOps.checkBinders.
+    val checkedBinders = BinderOps.checkBinders(pi.binders, env, familyParams)
+    val binderEnv = checkedBinders.env
+    val checkedOut = checkTerm(pi.out, binderEnv)
+    val outV = checkedOut.value
+    val classifier = Interpreter.piClassifierFromChecked(checkedBinders.binders, binderEnv, outV)
+    val checkedPi =
+      CA.Term.Pi(
+        checkedBinders.binders,
+        checkedOut.residual,
+        pi.span,
+        knownPropValued = Interpreter.stablePiPropClassification(outV)
+      )
+    val vpi = evalPi(checkedPi, env).copy(classifier0 = () => classifier)
+    // Force the classifier at declaration. Reuse the already checked fresh telescope instead of eta-expanding every
+    // binder a second time; this is the universe validation (NotAType on a bad domain or codomain).
+    vpi.tpe
+    CheckedPi(vpi, binderEnv, outV, checkedPi)
+  }
+
+  /**
+   * Constructor telescopes route through here so unforced family params (the leading `familyParams` binders) get
+   * demoted instead of rejected; see Projection.compile.
+   */
+  private[raccoonlang] def getConstructorType(term: CA.Term, env: Env, familyParams: Int): Value =
+    term match {
+      case pi: CA.Term.Pi =>
+        val checked = checkPi(pi, env, familyParams)
+        assertType(checked.vpi)
+        checked.vpi
+      case other => getType(other, env)
+    }
+
+  // Returning the residual term lets callers preserve checked let/lambda structure instead of re-checking.
+  private def checkBody(body: CA.Term.Body, env: Env, expected: Option[Expected]): CheckedTerm = {
+    val checkedLets = Vector.newBuilder[CA.Let]
+    var curEnv = env
+
+    body.lets.foreach { l =>
+      val checkedTy = l.ty.map(tyTerm => checkTerm(tyTerm, curEnv))
+      val checkedValue = checkedTy match {
+        // An annotated let carries its own syntax: `l.ty` is a term in `curEnv`, so it can serve as
+        // the residual motive of a `match` in the let's value.
+        case Some(ty) => check(l.value, Some(Expected(ty.value, l.ty)), curEnv)
+        case None     => checkTerm(l.value, curEnv)
+      }
+      checkedLets += CA.Let(l.localRef, checkedTy.map(_.residual), checkedValue.residual, l.span)
+      curEnv = curEnv.putLocal(l.localRef, checkedValue.value)
+    }
+
+    // The lets only add locals, so both the enclosing expectation's value and its syntax stay valid.
+    val checkedRes = check(body.res, expected, curEnv)
+    CheckedTerm(checkedRes.value, CA.Term.Body(checkedLets.result(), checkedRes.residual, body.span))
+  }
+
+  /**
+   * Named field access is an ordinary call of the family's selector global: `base.f` is `Family.f(base)`, with the
+   * selector's implicit family parameters forced by `self`. There is no projection node and no selector metadata — the
+   * residual is a plain application, and the selector's own body is the match that does the work.
+   */
+  private def checkSelect(
+      base: CheckedTerm,
+      field: String,
+      span: Span,
+      env: Env,
+      expected: Option[Expected]
+  ): CheckedTerm = {
+    val vType = base.value.tpe
+    val family = vType match {
       case InductiveFamilyValue(instance) => instance
-      case other                          => throw NotAType(other)
+      case _                              => throw NotAType(vType)
     }
     val selectorName = s"${family.head.name}.$field"
-    if (!env.globals.contains(selectorName)) throw NotFound(selectorName, Some(span))
+    if (!env.globals.contains(selectorName)) throw NotFound(selectorName)
     val selector = env(selectorName)
-    checkApply(
-      CheckedTerm(selector, CTerm.GlobalRef(selectorName, span)),
-      Vector(PendingArg.Checked(base)),
-      env,
-      span,
-      None
-    )
+    val applied =
+      checkApplyChecked(
+        selector,
+        CA.Term.GlobalRef(selectorName, span),
+        Vector(PendingArg.checked(base)),
+        env,
+        span,
+        expected.map(_.value)
+      )
+    CheckedTerm(applied.value, applied.residual)
   }
 
-  def checkTerm(term: CTerm, expected: Value, env: Env): CheckedTerm = {
-    check(term, Some(Expected(expected, None)), env)
+  private def checkLam(l: CA.Term.Lam, env: Env): CheckedTerm = {
+    val checkedVpi = checkPi(l.ty, env)
+    val vpi = checkedVpi.vpi
+    val bodyEnv = checkedVpi.bodyEnv
+
+    // Recursive self references stay local for the whole pipeline, even if the source used a qualified name.
+    // While checking, the local contains a raw recursive value that enforces the decrease and can only appear as an
+    // application head, so the body cannot store it as an ordinary value. The checked lambda keeps the same self ref;
+    // when the lambda runs, Interpreter.runLam binds that ref to the final VLam. The declaration is published to
+    // globals separately after the body has checked.
+    val recurEnv =
+      l.recursion match {
+        case Some(CA.Recursion(ref, decreaseSpec)) =>
+          val name = l.name.getOrElse(throw WTF("Recursive lambda must have a name", Some(l.span)))
+          val recursiveSelf = TerminationChecker.rawRecursiveSelf(name, vpi, decreaseSpec, bodyEnv)
+          bodyEnv.putLocal(ref, recursiveSelf)
+        case None => bodyEnv
+      }
+
+    // The Pi's `out` is syntax in the body's own scope — `checkPi` binds exactly the binder refs
+    // `out` mentions, and the residual Pi reuses them — so the declared return type can be the
+    // residual motive of a `match` body with no `returning` clause.
+    val checkedBody =
+      check(l.body, Some(Expected(checkedVpi.outTy, Some(checkedVpi.residual.out))), recurEnv)
+    assertNonRawRecursive(checkedBody.value)
+
+    val checkedLam =
+      CA.Term.Lam(
+        checkedVpi.residual,
+        checkedBody.residual,
+        l.span,
+        l.name,
+        l.recursion,
+        recursivePeers = l.recursion.map(recursion => recursion.selfRef -> l.name.get).toVector
+      )
+    CheckedTerm(Interpreter.evalLam(checkedLam, vpi, env), checkedLam)
   }
 
-  private def checkPi(pi: CTerm.Pi, env: Env, familyParams: Int = 0): CheckedPi = {
-    val checkedBinders = BinderOps.checkBinders(pi.binders, env, familyParams)
-    val scope = checkedBinders.env
-    val binders = checkedBinders.binders
-    val checkedOut = checkTerm(pi.out, scope)
-    sortOf(checkedOut.value)
-    val residual = pi.copy(
-      binders = binders,
-      out = checkedOut.residual,
-      knownPropValued = Interpreter.stablePiPropClassification(checkedOut.value)
-    )
-    val checkedPi = Interpreter.evalPi(residual, env)
-    checkedPi.tpe
-    CheckedPi(checkedPi, scope, checkedOut.value, residual)
-  }
+  private[raccoonlang] def checkRecursiveDefBlock(
+      block: CA.Decl.RecursiveDefBlock,
+      env: Env
+  ): Vector[CheckedRecursiveDef] = {
+    val definitions = block.definitions
+    if (definitions.isEmpty)
+      throw InvalidRecursiveGroup("the group must not be empty", Some(block.span))
+    if (definitions.map(_.name).distinct.length != definitions.length)
+      throw InvalidRecursiveGroup("global names must be distinct", Some(block.span))
+    if (definitions.map(_.peerRef).distinct.length != definitions.length)
+      throw InvalidRecursiveGroup("peer refs must be distinct", Some(block.span))
 
-  private[raccoonlang] def check(term: CTerm, expected: Option[Expected], env: Env): CheckedTerm = {
-    term match {
-      case body: CTerm.Body       => return checkBody(body, env, expected)
-      case matchTerm: CTerm.Match => return MatchChecker.checkMatch(matchTerm, env, expected)
-      case _                      =>
+    val peers = definitions.map(definition => definition.peerRef -> definition.name)
+    val peerRefs = definitions.iterator.map(_.peerRef).toSet
+    val ambientPeerRefs = peerRefs.intersect(env.locals.keySet)
+    if (ambientPeerRefs.nonEmpty)
+      throw InvalidRecursiveGroup(
+        s"peer refs collide with the incoming environment: ${ambientPeerRefs.mkString(", ")}",
+        Some(block.span)
+      )
+    val headers = definitions.map { definition =>
+      val checkedPi = checkPi(definition.ty, env)
+      val metric = TerminationChecker.checkLexicographic(checkedPi.vpi, definition.decreases, checkedPi.bodyEnv)
+      (definition, checkedPi, metric)
     }
-    val checked = checkTerm(term, env)
-    expected match {
-      case None => checked
-      case Some(exp) =>
-        term match {
-          case _: CTerm.Ref | _: CTerm.Lam =>
-            tryInstantiateImplicits(checked, exp, env, term.span).getOrElse {
-              checkTermFits(checked, exp.value)
-            }
-          case _ =>
-            checkTermFits(checked, exp.value)
-        }
+    val referenceMetric = headers.head._3
+    headers.tail.foreach { case (_, _, metric) =>
+      TerminationChecker.requireCompatible(referenceMetric, metric)
+    }
+
+    headers.map { case (definition, checkedPi, callerMetric) =>
+      val bodyEnv = headers.foldLeft(checkedPi.bodyEnv) { case (current, (callee, calleePi, calleeMetric)) =>
+        current.putLocal(
+          callee.peerRef,
+          TerminationChecker.rawRecursivePeer(
+            callee.name,
+            calleePi.vpi,
+            calleeMetric,
+            callerMetric,
+            checkedPi.bodyEnv
+          )
+        )
+      }
+      val checkedBody =
+        check(definition.body, Some(Expected(checkedPi.outTy, Some(checkedPi.residual.out))), bodyEnv)
+      assertNonRawRecursive(checkedBody.value)
+      val residual = CA.Term.Lam(
+        checkedPi.residual,
+        checkedBody.residual,
+        definition.span,
+        Some(definition.name),
+        // A group member has no source `recursion` of its own: the whole group's peer table is
+        // what its body's recursive calls resolve through.
+        recursion = None,
+        recursivePeers = peers
+      )
+      CheckedRecursiveDef(definition.name, checkedPi.vpi, residual)
     }
   }
 
+  def getType(term: CA.Term, env: Env): Value = {
+    val res = checkTerm(term, env).value
+    assertType(res)
+    res
+  }
+
+  def assertType(value: Value): Unit =
+    value.tpe match {
+      case _: VSort =>
+      case _        => throw NotAType(value)
+    }
+
+  /**
+   * Eta-adaptation of a bare polymorphic function against an expected Pi with fewer binders: `let f : Nat -> Nat := id`
+   * becomes `fun (x: Nat): Nat => id(x)`, and the inner application reconstructs the implicits from `x` by projection.
+   * Expected Pis may themselves have (forced) implicit binders — those become implicit binders of the synthetic lambda,
+   * reconstructed at its call sites; only the explicit ones are applied.
+   *
+   * The synthetic lambda needs a *type* in residual syntax, and the only such syntax is the expectation's own: the
+   * expected type must have been written down as a literal `Pi` term valid in the caller's env. That is exactly the
+   * declared-type positions (`let f : Nat -> Nat := id`, a def's declared type). When the expectation carries no
+   * syntax, or its syntax is not literally a Pi node (a reference to a let-bound type alias, say), the adaptation is
+   * declined and plain subsumption applies.
+   */
   private def tryInstantiateImplicits(
       checked: CheckedTerm,
       expected: Expected,
@@ -151,276 +406,124 @@ object TypeChecker {
       span: Span
   ): Option[CheckedTerm] =
     (checked.value.tpe, expected.value) match {
-      case (actual: VPi, target: VPi)
-          if actual.binders.exists(_.isImplicit) && actual.binders.length > target.binders.length &&
-            actual.numExplicit == target.numExplicit =>
-        expected.syntax.flatMap {
-          case syntax: CTerm.Pi =>
-            val residualPi = syntax.copy(span = Span.synthetic(), binders = target.binders)
-            val fresh = BinderOps.freshen(target)
-            val bodyEnv = target.binders.foldLeft(env) { case (cur, b) => cur.putLocal(b.localRef, fresh(b.localRef)) }
-            val bodyArgs = target.binders.collect {
-              case b if !b.isImplicit =>
-                PendingArg.Checked(CheckedTerm(fresh(b.localRef), CTerm.LocalRef(b.localRef, b.ty.span)))
-            }
-            try {
-              val applied = checkApply(checked, bodyArgs, bodyEnv, span, Some(target.codomain(fresh)))
-              val lam = CTerm.Lam(residualPi, applied.residual, Span.synthetic(), None, None)
-              Some(CheckedTerm(Interpreter.evalLam(lam, target, env), lam))
-            } catch {
-              case _: TypeMismatch | _: ArityMismatch | _: ImplicitReconstructionFailed => None
-            }
-          case _ => None
+      case (actualPi: VPi, expectedPi: VPi)
+          if actualPi.binders.exists(_.isImplicit) &&
+            actualPi.binders.length > expectedPi.binders.length &&
+            actualPi.numExplicit == expectedPi.numExplicit =>
+        // Freshen through the expected Pi's own closure — its binder types are syntax valid in
+        // expectedPi.env, not in the caller's env — then expose the fresh binders to the body.
+        val piFreshEnv = BinderOps.freshen(expectedPi)
+        val bodyEnv = expectedPi.binders.foldLeft(env) { (curEnv, binder) =>
+          curEnv.putLocal(binder.localRef, piFreshEnv(binder.localRef))
         }
+        expectedPiSyntax(expected, expectedPi).flatMap { residualPi =>
+          try {
+            val bodyArgs =
+              expectedPi.binders.collect {
+                case binder if !binder.isImplicit =>
+                  val value = piFreshEnv(binder.localRef)
+                  PendingArg.checked(CheckedTerm(value, CA.Term.LocalRef(binder.localRef, binder.ty.span)))
+              }
+            val app =
+              checkApplyChecked(
+                checked.value,
+                checked.residual,
+                bodyArgs,
+                bodyEnv,
+                span,
+                Some(expectedPi.codomain(piFreshEnv))
+              )
+            val lam =
+              CA.Term.Lam(
+                residualPi,
+                app.residual,
+                // A fabricated lambda needs a node identity of its own (docs/kernel.md#value-identity);
+                // its span carries one.
+                Span.synthetic(),
+                name = None,
+                recursion = None
+              )
+            Some(CheckedTerm(Interpreter.evalLam(lam, expectedPi, env), lam))
+          } catch {
+            case _: TypeMismatch | _: ArityMismatch | _: ImplicitReconstructionFailed => None
+          }
+        }
+
       case _ => None
     }
 
-  private def checkBody(body: CTerm.Body, env: Env, expected: Option[Expected]): CheckedTerm = {
-    val (bodyEnv, checkedLets) = body.lets.foldLeft((env, Vector.empty[CoreAst.Let])) { case ((current, out), let) =>
-      val checkedTy = let.ty.map(ty => checkTerm(ty, current))
-      checkedTy.foreach(ty => sortOf(ty.value))
-      val checkedValue = check(let.value, checkedTy.map(ty => Expected(ty.value, let.ty)), current)
-      checkedTy.foreach(ty => checkFits(checkedValue.value.tpe, ty.value))
-      TerminationChecker.assertNonRawRecursive(checkedValue.value, let.span)
-      (
-        current.putLocal(let.localRef, checkedValue.value),
-        out :+ let.copy(ty = checkedTy.map(_.residual), value = checkedValue.residual)
-      )
-    }
-    val checkedResult = check(body.res, expected, bodyEnv)
-    TerminationChecker.assertNonRawRecursive(checkedResult.value, body.res.span)
-    CheckedTerm(checkedResult.value, CTerm.Body(checkedLets, checkedResult.residual, body.span))
-  }
-
-  private def checkLam(
-      pi: CTerm.Pi,
-      body: CTerm,
-      env: Env,
-      span: Span,
-      name: Option[String],
-      recursion: Option[CoreAst.Recursion],
-      peers: Vector[(CoreAst.LocalRef, String)]
-  ): CheckedTerm = {
-    val checkedPi = checkPi(pi, env)
-    val vpi = checkedPi.vpi
-    // The Pi closure is formed from references in its type; a lambda body can additionally
-    // capture locals mentioned only by the body (notably proof-producing Decidable branches).
-    // Preserve exactly those outer bindings while retaining the closed-closure invariant.
-    val bodyCaptures =
-      if (trustedBootstrap.value) CapturedRefs.getCapturedRefs(body, env) else Set.empty[CoreAst.LocalRef]
-    val bodyBase = bodyCaptures.foldLeft(vpi.env) { case (current, ref) =>
-      if (current.locals.contains(ref)) current else current.putLocalUnchecked(ref, env(ref))
-    }
-    val bodyEnv0 = bindPi(vpi, bodyBase)
-    val bodyEnvWithSelf = recursion match {
-      case Some(rec) =>
-        val recursive = TerminationChecker.rawRecursiveSelf(
-          name.getOrElse(rec.selfRef.name),
-          vpi,
-          rec.decreases,
-          bodyEnv0
-        )
-        bodyEnv0.putLocal(rec.selfRef, recursive)
-      case None => bodyEnv0
-    }
-    val bodyEnvWithPeers = peers.foldLeft(bodyEnvWithSelf) { case (current, (ref, peerName)) =>
-      if (current.locals.contains(ref)) current
-      else
-        current.globals.get(peerName).map(binding => current.putLocal(ref, binding.value(current))).getOrElse(current)
-    }
-    val checkedBody =
-      check(body, Some(Expected(vpi.codomain(bodyEnvWithPeers), Some(checkedPi.residual.out))), bodyEnvWithPeers)
-    TerminationChecker.assertNonRawRecursive(checkedBody.value, body.span)
-    val residualPi = checkedPi.residual
-    val residualLam = CTerm.Lam(residualPi, checkedBody.residual, span, name, recursion, peers)
-    CheckedTerm(
-      Interpreter.evalLam(residualLam, checkedPi.vpi, env),
-      residualLam
-    )
-  }
-
-  private def bindPi(pi: VPi, env: Env): Env =
-    pi.binders.foldLeft(env) { case (current, binder) =>
-      current.putLocal(
-        binder.localRef, {
-          val tpe = Interpreter.evalTerm(binder.ty, current)
-          BinderOps.freshBinderValue(binder.name, tpe)
-        }
-      )
+  /**
+   * The expectation's syntax as a Pi term for the synthetic eta-adaptation lambda's type.
+   *
+   * The binders are the *expected Pi value's* own, so local refs, implicit flags, and compiled projection specs are
+   * preserved exactly; only the surrounding node identity is fresh. A fabricated Pi needs an identity of its own, or
+   * two sibling adaptations checked at one caller span would mint values sharing a trusted ValueKey
+   * (docs/kernel.md#value-identity).
+   */
+  private def expectedPiSyntax(expected: Expected, expectedPi: VPi): Option[CA.Term.Pi] =
+    expected.syntax.collect { case pi: CA.Term.Pi =>
+      CA.Term.Pi(pi.binders, pi.out, Span.synthetic(), knownPropValued = expectedPi.knownPropValued)
     }
 
-  private def checkApp(fn: CTerm, args: Vector[CTerm], env: Env, span: Span): CheckedTerm = {
-    val checkedFn = checkTerm(fn, env)
-    checkApply(checkedFn, args.map(PendingArg.Term), env, span, None)
-  }
+  // Adapt a synthesized value to the expected type: eta-expand a polymorphic function against a
+  // monomorphic expected Pi if that helps, otherwise plain subsumption.
+  private def subsume(checked: CheckedTerm, expected: Expected, env: Env, span: Span): CheckedTerm =
+    tryInstantiateImplicits(checked, expected, env, span)
+      .getOrElse(checkTermFits(checked, expected.value))
 
-  private sealed trait PendingArg { def synth(env: Env): CheckedTerm }
-  private object PendingArg {
-    final case class Term(term: CTerm) extends PendingArg { def synth(env: Env): CheckedTerm = checkTerm(term, env) }
-    final case class Checked(value: CheckedTerm) extends PendingArg { def synth(env: Env): CheckedTerm = value }
-  }
+  def checkTerm(term: CA.Term, env: Env): CheckedTerm =
+    check(term, None, env)
 
-  private def checkApply(
-      checkedFn: CheckedTerm,
-      args: Vector[PendingArg],
-      env: Env,
-      span: Span,
-      expectedResult: Option[Value]
-  ): CheckedTerm = checkedFn.value.tpe match {
-    case pi: VPi =>
-      if (args.length != pi.numExplicit) throw ArityMismatch(pi.numExplicit, args.length, Some(span))
-      val known = new Array[Value](pi.binders.length)
-      val residuals = Vector.newBuilder[CTerm]
-      var provided = Vector.empty[Value]
-      var explicit = 0
-      pi.binders.zipWithIndex.foreach { case (binder, idx) =>
-        if (!binder.isImplicit) {
-          val checked = args(explicit).synth(env)
-          TerminationChecker.assertNonRawRecursive(
-            checked.value,
-            args(explicit) match {
-              case PendingArg.Term(t) => t.span
-              case _                  => span
-            }
+  /** Check against an expected type with no syntax for it; a motive-less `match` under it is rejected. */
+  def checkTerm(term: CA.Term, expectedTy: Value, env: Env): CheckedTerm =
+    check(term, Some(Expected.valueOnly(expectedTy)), env)
+
+  private[raccoonlang] def checkTerm(term: CA.Term, expected: Expected, env: Env): CheckedTerm =
+    check(term, Some(expected), env)
+
+  private def check(term: CA.Term, expected: Option[Expected], env: Env): CheckedTerm =
+    try {
+      term match {
+        case CA.Term.NatLit(value, span) =>
+          val layout = env.nativeLiterals.natLayout.getOrElse(
+            throw NatLiteralUnavailable("no validated Nat layout", Some(span))
           )
-          known(idx) = checked.value
-          residuals += checked.residual
-          provided :+= checked.value
-          pi.implicitRoots.getOrElse(explicit, Vector.empty).foreach { implicitIdx =>
-            Projection.project(pi.binders(implicitIdx).projection.get, provided) match {
-              case Right(value) => known(implicitIdx) = value
-              case Left(reason) =>
-                throw ImplicitReconstructionFailed(
-                  pi.binders(implicitIdx).name,
-                  fnName(checkedFn.residual),
-                  reason,
-                  Some(span)
-                )
-            }
-          }
-          explicit += 1
-        }
+          val synthed = CheckedTerm(VPacked.nat(value, layout.natTpe), CA.Term.NatLit(value, span))
+          fitsExpected(synthed, expected)
+        case CA.Term.StrLit(scalars, span) =>
+          val layout = env.nativeLiterals.stringLayout.getOrElse(
+            throw StringLiteralUnavailable("no validated String layout", Some(span))
+          )
+          val synthed = CheckedTerm(Packed.evalStrLit(scalars, env), CA.Term.StrLit(scalars, span))
+          if (!ValueEquivalence.defEq(synthed.value.tpe, layout.stringTpe))
+            throw WTF("String literal evaluator returned the wrong type", Some(span))
+          fitsExpected(synthed, expected)
+        case CA.Term.Select(base, field, span) =>
+          val checkedBase = checkTerm(base, env)
+          checkSelect(checkedBase, field, span, env, expected)
+        case app: CA.Term.App =>
+          val checkedFn = checkTerm(app.fn, env)
+          val checkedArgs = app.args.map(PendingArg.term)
+          val checkedApp =
+            checkApplyChecked(checkedFn.value, checkedFn.residual, checkedArgs, env, app.span, expected.map(_.value))
+          CheckedTerm(checkedApp.value, checkedApp.residual)
+        case m: CA.Term.Match => MatchChecker.checkMatch(m, env, expected)
+        case b: CA.Term.Body  => checkBody(b, env, expected)
+        case pi: CA.Term.Pi =>
+          val checked = checkPi(pi, env)
+          val checkedTerm = CheckedTerm(checked.vpi, checked.residual)
+          fitsExpected(checkedTerm, expected)
+        // Refs evaluate directly; against an expected type they get subsumption
+        // (eta-adaptation of polymorphic functions).
+        case ref: CA.Term.Ref =>
+          val synthed = CheckedTerm(Interpreter.evalTerm(ref, env), ref)
+          expected.fold(synthed)(exp => subsume(synthed, exp, env, ref.span))
+        case l: CA.Term.Lam =>
+          val synthed = checkLam(l, env)
+          expected.fold(synthed)(exp => subsume(synthed, exp, env, l.span))
       }
-      val calleeEnv = BinderOps.checkAndInstantiate(pi.binders, pi.env, known.toVector)
-      expectedResult.foreach(expected => checkFits(pi.codomain(calleeEnv), expected))
-      val all = pi.binders.map(b => calleeEnv(b.localRef))
-      CheckedTerm(Interpreter.evalApply(checkedFn.value, all), CTerm.App(checkedFn.residual, residuals.result(), span))
-    case other => throw CannotApplyNonFunction(other)
-  }
-
-  private def fnName(term: CTerm): String = term match {
-    case CTerm.GlobalRef(name, _) => name
-    case CTerm.LocalRef(ref, _)   => ref.name
-    case _                        => "function"
-  }
-
-  def checkDecl(decl: Decl, env: Env): Env = checkDeclInternal(decl, env, trusted = false)
-
-  private[raccoonlang] def checkDeclTrusted(decl: Decl, env: Env): Env =
-    checkDeclInternal(decl, env, trusted = true)
-
-  private def checkDeclInternal(decl: Decl, env: Env, trusted: Boolean): Env = decl match {
-    case Decl.ConstDecl(isOpaque, name, ty, CoreAst.ConstBody.TermBody(body), _) =>
-      val checkedTy = checkTerm(ty, env)
-      sortOf(checkedTy.value)
-      val checkedBody = check(body, Some(Expected(checkedTy.value, Some(checkedTy.residual))), env)
-      if (isOpaque) {
-        if (trusted && Packed.nativeNatOpNames(name).nonEmpty)
-          throw NativeOperationDeclarationMismatch(name, "reserved native declaration must be transparent")
-        env.putOpaque(name, checkedTy.value)
-      } else {
-        val value =
-          if (trusted)
-            Packed.nativeNatOpNames(name).fold(checkedBody.value)(n => Packed.nativeOp(n, checkedBody.value, env))
-          else checkedBody.value
-        env.putGlobal(name, value)
-      }
-    case Decl.ConstDecl(isOpaque, name, ty, CoreAst.ConstBody.Builtin(span), _) =>
-      if (isOpaque) throw WTF(s"Builtin declarations cannot be opaque at $span")
-      if (!trusted) throw ReservedKernelName(name, Some(span))
-      if (Packed.nativeNatOpNames(name).nonEmpty)
-        throw NativeOperationDeclarationMismatch(name, "reserved native declaration cannot use a builtin body")
-      val checkedTy = checkTerm(ty, env)
-      sortOf(checkedTy.value)
-      env.putGlobal(name, Value.canonicalizeProof(Builtins.instantiate(name, checkedTy.value, span)))
-    case Decl.AxiomDecl(name, ty, _) =>
-      val checked = checkTerm(ty, env); sortOf(checked.value); env.putOpaque(name, checked.value)
-    case d: Decl.InductiveDecl => InductiveChecks.checkInductive(d, env)
-    case Decl.InductiveBlock(families, span) =>
-      InductiveChecks.checkInductiveBlock(Decl.InductiveBlock(families, span), env)
-    case Decl.RecursiveDefBlock(defs, span) =>
-      checkRecursiveDefBlock(Decl.RecursiveDefBlock(defs, span), env)
-  }
-
-  private def checkRecursiveDefBlock(block: Decl.RecursiveDefBlock, env: Env): Env = {
-    val defs = block.definitions
-    if (defs.isEmpty) throw InvalidRecursiveGroup("recursive group must not be empty", Some(block.span))
-    if (defs.map(_.name).distinct.length != defs.length)
-      throw InvalidRecursiveGroup("recursive names must be distinct", Some(block.span))
-    defs.foreach(definition => if (env.globals.contains(definition.name)) throw AlreadyDefined(definition.name))
-    if (defs.map(_.peerRef).distinct.length != defs.length)
-      throw InvalidRecursiveGroup("recursive peer refs must be distinct", Some(block.span))
-    val collisions = defs.map(_.peerRef).filter(env.locals.contains)
-    if (collisions.nonEmpty)
-      throw InvalidRecursiveGroup(s"recursive peer ref collides with local ${collisions.head.name}", Some(block.span))
-    val typed = defs.map { definition =>
-      val checked = checkTerm(definition.ty, env)
-      sortOf(checked.value)
-      definition -> (checked.value, checked.residual.asInstanceOf[CTerm.Pi])
+    } catch {
+      case e: TypeError if e.span.isEmpty => throw e.withSpan(term.span)
     }
-    val peerEnv = typed.foldLeft(env) { case (current, (definition, (ty, _))) =>
-      current.putLocal(definition.peerRef, VConst(definition.name, Symbol, ty))
-    }
-    val checkedMetrics = typed.map { case (definition, (ty, _)) =>
-      definition -> TerminationChecker.checkLexicographic(
-        ty.asInstanceOf[VPi],
-        definition.decreases,
-        bindPi(ty.asInstanceOf[VPi], peerEnv)
-      )
-    }.toMap
-    val residual = typed.map { case (definition, (ty, checkedTy)) =>
-      val pi = ty.asInstanceOf[VPi]
-      val callerEnv = bindPi(pi, env)
-      val checkedPeerEnv = typed.foldLeft(callerEnv) { case (current, (callee, (calleeTy, _))) =>
-        val calleePi = calleeTy.asInstanceOf[VPi]
-        val raw = TerminationChecker.rawRecursivePeer(
-          callee.name,
-          calleePi,
-          checkedMetrics(callee),
-          checkedMetrics(definition),
-          callerEnv
-        )
-        current.putLocal(callee.peerRef, raw)
-      }
-      val scoped = checkedPeerEnv
-      val body = check(definition.body, Some(Expected(pi.codomain(scoped), Some(checkedTy.out))), scoped)
-      TerminationChecker.assertNonRawRecursive(body.value, definition.body.span)
-      definition.copy(ty = checkedTy, body = body.residual)
-    }
-    // The residual and checked Pi above are authoritative.  Do not send the residual back
-    // through Interpreter.evalDecl: that would re-check the declaration and can observe a
-    // different elaboration environment from the one in which it was certified.
-    val checkedValues = typed.map { case (definition, (ty, _)) => definition.name -> ty.asInstanceOf[VPi] }.toMap
-    Interpreter.publishCheckedRecursive(residual.map(definition => definition -> checkedValues(definition.name)), env)
-  }
 
-  def checkProgram(program: Program, initial: Env = Interpreter.builtins): (Env, Option[CheckedTerm]) = {
-    val env = program.decls.foldLeft(initial) { case (current, decl) => checkDecl(decl, current) }
-    (env, program.body.map(checkTerm(_, env)))
-  }
-
-  /** Check ordinary source declarations against one already-checked selected prelude. */
-  def checkProgram(program: Program, prelude: Prelude.Config): (Env, Option[CheckedTerm]) =
-    checkProgram(program, prelude.checkedEnv)
-
-  private[raccoonlang] def checkProgramTrusted(
-      program: Program,
-      initial: Env = Interpreter.builtins
-  ): (Env, Option[CheckedTerm]) = {
-    trustedBootstrap.withValue(true) {
-      val declarations = program.decls.foldLeft(initial) { case (current, decl) => checkDeclTrusted(decl, current) }
-      val env = Packed.finalizeTrustedBootstrap(declarations)
-      (env, program.body.map(checkTerm(_, env)))
-    }
-  }
 }

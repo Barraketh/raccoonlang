@@ -1,274 +1,129 @@
 package com.raccoonlang
 
-import com.raccoonlang.Value.{ConstructorHead, Inductive, NeutralThunk, VApp, VConst, VLam, VPi, VSort}
-
 class InterpreterTests extends munit.FunSuite {
-  private def program(source: String): CoreAst.Program = LanguageParser.parseProgram(source) match {
-    case Success(surface, _, _) => Elaborator.elab(surface, Prelude.none)
-    case failure                => fail(s"Expected parse success, got $failure")
-  }
-
-  private def run(source: String): Value = Interpreter.run(program(source)).getOrElse(fail("Expected a result"))
-
-  test("Type lives in the next predicative universe") {
-    run("Type") match {
-      case sort: VSort => assert(sort == Value.TypeValue)
-      case other       => fail(s"Expected Type, got $other")
+  private def getValue(s: String): Value = {
+    LanguageParser.parseProgram(s) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value, Prelude.test)
+        Interpreter.run(core, Prelude.test).getOrElse(fail("Program has no body"))
+      case err: Failure => fail(s"Failed to parse: $err, ${s.substring(err.curIdx)}")
     }
-    assertEquals(Value.TypeValue.tpe, Value.VSort(Value.Level.succ(Value.Level.one)))
+
   }
 
-  test("dependent closures retain their captured binder environment") {
-    run("(fun (A: Type)(x: A): A => x)(Type, Type)") match {
-      case sort: VSort => assert(sort == Value.TypeValue)
-      case other       => fail(s"Expected the dependent identity result Type, got $other")
-    }
+  // Shape comparison helpers use the ordinary pattern view of constructor arguments.
+  sealed trait Shape
+  case class SConst(name: String) extends Shape
+  case class SApp(head: Shape, args: List[Shape]) extends Shape
+
+  private def toShape(v: Value): Shape = v match {
+    case Value.ConstructorHead(n, _, _, _, _) => SConst(n)
+    case Value.VCtor(h, storedArgs, _) =>
+      val args = storedArgs
+      if (args.isEmpty) SConst(h.name) else SApp(SConst(h.name), args.toList.map(toShape))
+    case Value.VConst(n, _, _)     => SConst(n)
+    case Value.VApp(h, args, _, _) => SApp(toShape(h), args.toList.map(toShape))
+    case other                     => SConst(other.toString) // fallback, won't be used in this test
   }
 
-  test("ordinary function declarations publish named lambdas") {
-    run("def id (A: Type): Type := A\n\nid") match {
-      case VLam(_, Value.ValueId.Const(name), _) => assertEquals(name, "id")
-      case other                                 => fail(s"Expected a named lambda, got $other")
-    }
+  private val zeroS = SConst("Peano.zero")
+  private def succS(s: Shape) = SApp(SConst("Peano.succ"), List(s))
+
+  test("Nats compute") {
+    val p = """
+              |inductive Peano : Type
+              | | zero : Peano
+              | | succ (_: Peano) : Peano
+              |
+              |def add (a: Peano)(b: Peano): Peano decreases structural(b) := {
+              |  match b with
+              |  | Peano.zero => a
+              |  | Peano.succ x => add(Peano.succ(a), x)
+              |}
+              |
+              |{
+              |  let a := Peano.succ(Peano.zero)
+              |  add(a, a)
+              |}
+              |""".stripMargin
+
+    val res = getValue(p)
+    assertEquals(toShape(res), succS(succS(zeroS)))
+
   }
 
-  test("surface brace blocks flatten into ordinary declarations") {
-    val core = program("{\ndef first : Type := Type\n\ndef second : Type := first\n}\n")
-    assertEquals(core.decls.map(_.getClass), Vector(classOf[CoreAst.Decl.ConstDecl], classOf[CoreAst.Decl.ConstDecl]))
-  }
+  test("zero-arity constructor identifier evaluates to constructor view") {
+    val p =
+      """
+        |inductive Bool : Type
+        | | true : Bool
+        | | false : Bool
+        |
+        |{
+        |  Bool.true
+        |}
+        |""".stripMargin
 
-  test("nullary inductive constructors are published and usable") {
-    run("inductive Bool : Type\n | true : Bool\n | false : Bool\n\nBool.true") match {
-      case VApp(head: ConstructorHead, args, _, _) =>
+    InterpreterTests.this.getValue(p) match {
+      case Value.VCtor(head, fields, _) =>
         assertEquals(head.name, "Bool.true")
-        assert(args.isEmpty)
-        assertEquals(
-          Value.ConstructorForm.unapply(run("inductive Bool : Type\n | true : Bool\n\nBool.true")),
-          Some("Bool.true" -> Vector.empty)
-        )
-      case other => fail(s"Expected constructor head, got $other")
+        assertEquals(fields, Vector.empty)
+      case other =>
+        fail(s"expected constructor view, got: $other")
     }
   }
 
-  test("parameterized families and constructors compute their applications") {
-    val value = run("inductive Box (A: Type) : Type\n | mk (value: A) : Box(A)\n\nBox.mk(Type)")
-    value match {
-      case VApp(head: ConstructorHead, args, _, _) =>
-        assertEquals(head.name, "Box.mk")
-        assertEquals(args.length, 1)
-      case other => fail(s"Expected applied constructor, got $other")
-    }
-    Value.VCtor.unapply(value) match {
-      case Some((head, fields, _)) =>
-        assertEquals(head.name, "Box.mk")
-        assertEquals(fields.length, 1)
-      case other => fail(s"Expected constructor view, got $other")
+  test("nullary constructor with erased family binder evaluates to constructor view after application") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
+        |
+        |inductive Vec (A: Type) indices (n: Peano) : Sort(Level.one)
+        | | nil : Vec(A, Peano.zero)
+        | | cons (n: Peano) (xs: Vec(A, n)) (x: A): Vec(A, Peano.succ(n))
+        |
+        |{
+        |  Vec.nil(Peano)
+        |}
+        |""".stripMargin
+
+    InterpreterTests.this.getValue(p) match {
+      case Value.VCtor(head, storedArgs, _) =>
+        assertEquals(head.name, "Vec.nil")
+        assertEquals(storedArgs.length, 0)
+        assertEquals(storedArgs, Vector.empty)
+      case other =>
+        fail(s"expected constructor view, got: $other")
     }
   }
 
-  test("generic nullary constructors remain applicable until their family parameter is supplied") {
-    run("inductive Box (A: Type) : Type\n | nil : Box(A)\n\nBox.nil") match {
-      case head: ConstructorHead => assertEquals(head.name, "Box.nil")
-      case other                 => fail(s"Expected unapplied constructor head, got $other")
-    }
-    run("inductive Box (A: Type) : Type\n | nil : Box(A)\n\nBox.nil(Type)") match {
-      case VApp(head: ConstructorHead, args, _, _) =>
-        assertEquals(head.name, "Box.nil")
-        assert(args.isEmpty)
-      case other => fail(s"Expected family-specialized nullary constructor, got $other")
-    }
-  }
+  test("a function-valued neutral match can be applied") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
+        |
+        |inductive Bool : Type
+        | | true : Bool
+        | | false : Bool
+        |
+        |axiom b : Bool
+        |def choose : Peano -> Peano := {
+        |  match b returning Peano -> Peano with
+        |  | Bool.true => fun (n: Peano): Peano => n
+        |  | Bool.false => fun (n: Peano): Peano => n
+        |}
+        |
+        |{ choose(Peano.zero) }
+        |""".stripMargin
 
-  test("indexed family applications include every parameter and index") {
-    val core = program("inductive Eq (A: Type) indices (x: A) : Type\n").decls.head
-    val env = Interpreter.evalDecl(core, Interpreter.builtins)
-    env("Eq") match {
-      case VConst(_, Inductive(meta), familyType: VPi) =>
-        assertEquals(meta.familyArity, 2)
-        val applied = Interpreter.evalApply(env("Eq"), Vector(Value.TypeValue, Value.TypeValue))
-        applied match {
-          case VApp(_, args, tpe, _) =>
-            assertEquals(args.length, 2)
-            assert(tpe == Value.TypeValue)
-          case other => fail(s"Expected fully applied indexed family, got $other")
-        }
-        assertEquals(familyType.binders.length, 2)
-      case other => fail(s"Expected indexed family, got $other")
-    }
-  }
-
-  test("explicit mutual inductive CoreAst blocks publish atomically") {
-    val span = Span(0, 1)
-    val left = CoreAst.Decl.InductiveDecl(
-      CoreAst.InductiveHeader("Left", Vector.empty, Vector.empty, CoreAst.Term.GlobalRef("Type", span), span),
-      Vector(
-        CoreAst.ConstructorDecl(
-          "Left.left",
-          "left",
-          Vector(CoreAst.Binder(CoreAst.LocalRef(1, "right"), CoreAst.Term.GlobalRef("Right", span), span)),
-          CoreAst.Term.GlobalRef("Left", span),
-          span
-        )
-      ),
-      span
-    )
-    val right = CoreAst.Decl.InductiveDecl(
-      CoreAst.InductiveHeader("Right", Vector.empty, Vector.empty, CoreAst.Term.GlobalRef("Type", span), span),
-      Vector(
-        CoreAst.ConstructorDecl(
-          "Right.right",
-          "right",
-          Vector(CoreAst.Binder(CoreAst.LocalRef(2, "left"), CoreAst.Term.GlobalRef("Left", span), span)),
-          CoreAst.Term.GlobalRef("Right", span),
-          span
-        )
-      ),
-      span
-    )
-    val env = Interpreter.evalDecl(CoreAst.Decl.InductiveBlock(Vector(left, right), span), Interpreter.builtins)
-    assert(env.globals.keySet.contains("Left"))
-    assert(env.globals.keySet.contains("Right"))
-    assert(env.globals.keySet.contains("Left.left"))
-    assert(env.globals.keySet.contains("Right.right"))
-    val leftType = env("Left.left").tpe
-    val rightType = env("Right.right").tpe
-    assert(leftType.isInstanceOf[VPi])
-    assert(rightType.isInstanceOf[VPi])
-  }
-
-  test("sibling constructor telescopes receive distinct local identities") {
-    program("inductive Sum : Type\n | left (a: Type) : Sum\n | right (b: Type) : Sum\n") match {
-      case CoreAst.Program(Vector(CoreAst.Decl.InductiveDecl(_, ctors, _)), _) =>
-        assertNotEquals(ctors(0).binders.head.localRef.id, ctors(1).binders.head.localRef.id)
-      case other => fail(s"Expected inductive declaration, got $other")
-    }
-  }
-
-  test("runtime matching selects a constructor branch") {
-    run(
-      "inductive Bool : Type\n | true : Bool\n | false : Bool\n\nmatch Bool.true with\n | Bool.true => Type\n | Bool.false => Bool.true\n"
-    ) match {
-      case sort: VSort => assert(sort == Value.TypeValue)
-      case other       => fail(s"Expected Type branch, got $other")
-    }
-  }
-
-  test("recursive definitions execute unchecked decreases annotations") {
-    val source =
-      "inductive Nat : Type\n | zero : Nat\n | succ (n: Nat) : Nat\n\n" +
-        "def loop (n: Nat): Nat decreases structural(n) := match n with\n" +
-        " | Nat.zero => Nat.zero\n" +
-        " | Nat.succ k => loop(k)\n\n" +
-        "loop(Nat.succ(Nat.zero))"
-    program(source).decls(1) match {
-      case CoreAst.Decl.ConstDecl(_, "loop", _, CoreAst.ConstBody.TermBody(lam: CoreAst.Term.Lam), _) =>
-        val self = lam.recursion.get.selfRef
-        assert(CoreAst.mentionedRefs(lam.body).contains(self))
-      case other => fail(s"Expected named recursive lambda, got $other")
-    }
-    run(source) match {
-      case VApp(head: ConstructorHead, args, _, _) =>
-        assertEquals(head.name, "Nat.zero")
-        assert(args.isEmpty)
-      case packed: Value.VPacked if packed.natValue.contains(BigInt(0)) =>
-      case other => fail(s"Expected recursive result, got $other")
-    }
-  }
-
-  test("recursive measure and body allocation use disjoint local identities") {
-    val core = program(
-      "def loop (n: Type): Type decreases measure (fun (m: Type): Type => m) :=\n" +
-        "(fun (b: Type): Type => b)(n)"
-    )
-    core.decls(0) match {
-      case CoreAst.Decl.ConstDecl(_, _, _, CoreAst.ConstBody.TermBody(lam: CoreAst.Term.Lam), _) =>
-        val measured = lam.recursion.get.decreases match {
-          case CoreAst.DecreaseSpec.Measure(term, _) => CoreAst.mentionedRefs(term).map(_.id)
-          case other                                 => fail(s"Expected a measure, got $other")
-        }
-        val body = CoreAst.mentionedRefs(lam.body).map(_.id)
-        assert(measured.intersect(body).isEmpty)
-      case other => fail(s"Expected recursive named lambda, got $other")
-    }
-  }
-
-  test("explicit recursive CoreAst groups publish a knot with local peers") {
-    val span = Span(0, 1)
-    val firstArg = CoreAst.LocalRef(10, "n")
-    val secondArg = CoreAst.LocalRef(11, "n")
-    val firstPeer = CoreAst.LocalRef(20, "first")
-    val secondPeer = CoreAst.LocalRef(21, "second")
-    def functionType(arg: CoreAst.LocalRef): CoreAst.Term.Pi =
-      CoreAst.Term.Pi(
-        Vector(CoreAst.Binder(arg, CoreAst.Term.GlobalRef("Type", span), span)),
-        CoreAst.Term.GlobalRef("Type", span),
-        span
-      )
-    val decrease = CoreAst.DecreaseSpec.Lexicographic(Vector(firstArg), span)
-    val first = CoreAst.RecursiveDef(
-      "first",
-      firstPeer,
-      functionType(firstArg),
-      CoreAst.Term.LocalRef(secondPeer, span),
-      decrease,
-      span
-    )
-    val second = CoreAst.RecursiveDef(
-      "second",
-      secondPeer,
-      functionType(secondArg),
-      CoreAst.Term.LocalRef(firstPeer, span),
-      decrease,
-      span
-    )
-    val env = Interpreter.evalDecl(CoreAst.Decl.RecursiveDefBlock(Vector(first, second), span), Interpreter.builtins)
-    Interpreter.evalApply(env("first"), Vector(Value.TypeValue)) match {
-      case _: VLam => ()
-      case other   => fail(s"Expected the peer lambda from the recursive knot, got $other")
-    }
-  }
-
-  test("a neutral match retains its motive type and can be applied") {
-    val source = "axiom choice (A: Type): Type\n\nmatch choice returning (A: Type) -> Type with\n"
-    val core = program(source)
-    val value = Interpreter.run(core).get
-    value match {
-      case stuck: NeutralThunk =>
-        stuck.tpe match {
-          case pi: VPi => assertEquals(pi.binders.length, 1)
-          case other   => fail(s"Expected evaluated function motive, got $other")
-        }
-        assert(stuck.env.globals.contains("Type"))
-        val applied = Interpreter.evalApply(stuck, Vector(Value.TypeValue))
-        applied match {
-          case VApp(head, args, _, _) =>
-            assertEquals(head, stuck)
-            assertEquals(args.length, 1)
-          case other => fail(s"Expected applied neutral match, got $other")
-        }
-      case other => fail(s"Expected retained neutral match, got $other")
-    }
-  }
-
-  test("each function application consumes one complete Pi binder group") {
-    intercept[ArityMismatch] {
-      run("axiom f (A: Type)(B: Type): Type\n\nf(Type)")
-    }
-  }
-
-  test("an empty application cannot bypass Pi-group arity") {
-    val core = program("axiom f (A: Type): Type\n")
-    val env = Interpreter.evalDecl(core.decls.head, Interpreter.builtins)
-    intercept[ArityMismatch] {
-      Interpreter.evalApply(env("f"), Vector.empty)
-    }
-  }
-
-  test("local environment insertion exposes identity collisions") {
-    val ref = CoreAst.LocalRef(17, "x")
-    val env = Env.empty.putLocal(ref, Value.TypeValue)
-    intercept[AlreadyDefined] {
-      env.putLocal(ref, Value.TypeValue)
+    getValue(p) match {
+      case Value.VApp(thunk: Value.NeutralThunk, Vector(_), _, blockedOn)
+          if thunk.blockedOn.isEmpty && blockedOn.isEmpty =>
+      case other => fail(s"expected a nested application of the neutral match, got: $other")
     }
   }
 }

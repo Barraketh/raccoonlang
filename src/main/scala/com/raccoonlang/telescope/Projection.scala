@@ -2,132 +2,278 @@ package com.raccoonlang.telescope
 
 import com.raccoonlang.Value._
 import com.raccoonlang._
+
 import scala.collection.mutable
 
-/** Structural, deterministic reconstruction of forced implicit binders. */
+/**
+ * Implicit binders are legal only when *forced*: recoverable from the values of the non-implicit binders by a
+ * structural projection compiled at Pi formation. This module owns both halves:
+ *
+ *   - `compile` pattern-matches the *evaluated* types of the non-implicit binders (as patterns over the implicits'
+ *     fresh vars) and produces a per-implicit `Spec` — which provided argument to start from and the path to walk.
+ *     Every position used is rigid (irreducible head applications, no-confusion constructor fields, sorts/levels, Pi
+ *     domains), so following the same path on the actual arguments at any later time re-derives the value. Projection
+ *     is a *choice*, not a proof: application checking re-verifies every argument against its instantiated binder type,
+ *     so soundness never rests on injectivity of these positions.
+ *   - `project` follows a Spec against actual argument values. It is the single implementation used by check-time
+ *     application, run-world residual evaluation, and check-world evaluation of checked syntax (match motives,
+ *     termination measures, lambda-body quoting).
+ *
+ * Determinism: roots are tried leftmost-first and within a root in discovery order; the first path found for an
+ * implicit wins everywhere (both worlds compile from the same telescope).
+ */
 object Projection {
+
   sealed trait Step
   object Step {
+
+    /** value -> its type. */
     case object Tpe extends Step
+
+    /** Application of an irreducible constant head (inductive family, axiom, opaque symbol) -> arg. */
     final case class SpineArg(head: String, idx: Int) extends Step
+
+    /** No-confusion constructor value -> stored field (family args are erased from storage). */
     final case class CtorField(ctor: String, idx: Int) extends Step
+
+    /** VSort -> its level. */
     case object SortLevel extends Step
+
+    /** Level of the exact shape u + k -> u (single atom, no constant), mirroring unifyLevels. */
     final case class LevelOffset(k: Int) extends Step
+
+    /** VPi -> evaluated domain of binder idx; valid only when independent of earlier binders. */
     final case class PiDomain(idx: Int) extends Step
+
+    /** VPi -> codomain after one binder; valid only when that tail does not depend on the removed binder. */
     case object PiCodomain extends Step
+
+    /** VPi -> final result after every binder; valid only when the result is independent of all binders. */
     case object PiResult extends Step
   }
+
+  /**
+   * Path from provided argument `rootArgIdx` (an index into the explicit args of a call) to the value of one implicit
+   * binder.
+   */
   final case class Spec(rootArgIdx: Int, steps: Vector[Step])
-  final case class BinderInput(name: String, span: Span, isImplicit: Boolean, fresh: Value, holeId: Option[Value.VarId])
+
+  final case class BinderInput(
+      name: String,
+      span: Span,
+      isImplicit: Boolean,
+      fresh: Value,
+      holeId: Option[VarId]
+  )
+
+  /**
+   * Final binder classification: family params of a constructor telescope that no field forces are demoted to explicit
+   * instead of erroring, so `isImplicit` may differ from the input.
+   */
   final case class BinderResult(isImplicit: Boolean, projection: Option[Spec])
 
-  def compile(binders: Vector[BinderInput], familyParams: Int = 0): Vector[BinderResult] = {
-    val demotable = (0 until familyParams).toSet
-    if (binders.forall(!_.isImplicit)) return binders.map(_ => BinderResult(false, None))
-    val holes = mutable.Map.empty[Value.VarId, Int]
-    binders.zipWithIndex.foreach { case (b, i) => if (b.isImplicit) b.holeId.foreach(id => holes.update(id, i)) }
+  /**
+   * Compile projection specs for a freshened telescope. The first `familyParams` binders are a constructor telescope's
+   * synthesized family params: their author never wrote the braces, so when unforced they are demoted to explicit
+   * instead of erroring. Everywhere else — defs, axioms, lambdas, and constructor binders the user wrote — an unforced
+   * implicit throws NonForcedImplicitParam.
+   */
+  def compile(binders: Vector[BinderInput], familyParams: Int = 0): Vector[BinderResult] =
+    compileDemotable(binders, (0 until familyParams).toSet)
+
+  private def compileDemotable(
+      binders: Vector[BinderInput],
+      demotable: Set[Int]
+  ): Vector[BinderResult] = {
+    if (binders.forall(!_.isImplicit))
+      return binders.map(_ => BinderResult(isImplicit = false, projection = None))
+
+    // Recognize non-proof fresh ids inside visited values. Proof binders are handled separately by
+    // proposition below: VProof deliberately contains no hidden witness to recover an id from.
+    def valueHoleId(v: Value): Option[VarId] =
+      v match {
+        case Var(_, id, _) => Some(id)
+        case level: Level =>
+          Level.singleVariableOffset(level).collect { case (id, 0) => id }
+        case _ => None
+      }
+
+    val holeOfVar = mutable.Map.empty[VarId, Int]
+    val proofHoles = Vector.newBuilder[(Int, Value)]
+    binders.zipWithIndex.foreach { case (b, idx) =>
+      if (b.isImplicit) {
+        if (Value.isPropositionType(b.fresh.tpe)) proofHoles += idx -> b.fresh.tpe
+        else b.holeId.foreach(id => holeOfVar.update(id, idx))
+      }
+    }
+    val proofHolesByType = proofHoles.result()
+    val proofHolesByKey = proofHolesByType.groupBy(_._2.key)
+    val structurallyComparableProofHoles = proofHolesByType.filter(_._2.needsStructuralDefEq)
+    val proofHoleIndexes = proofHolesByType.iterator.map(_._1).toSet
+    var remainingProofHoles = proofHoleIndexes.size
+
     val demoted = mutable.Set.empty[Int]
     val solved = mutable.LinkedHashMap.empty[Int, (Int, Vector[Step])]
     val queue = mutable.ArrayDeque.empty[(Int, Vector[Step], Value)]
-    def isRoot(i: Int): Boolean = !binders(i).isImplicit || demoted(i)
-    def solve(hole: Int, root: Int, path: Vector[Step], tpe: Value): Unit =
-      if (!isRoot(hole) && !solved.contains(hole)) {
-        solved.update(hole, root -> path)
-        queue.append((root, path :+ Step.Tpe, tpe))
-      }
-    def rigid(head: VConst): Boolean = head.constType match { case Inductive(_) | Symbol => true }
-    def valueHoleId(value: Value): Option[Value.VarId] = value match {
-      case Var(_, id, _) => Some(id)
-      case _             => None
-    }
-    val proofHoles = binders.zipWithIndex.collect {
-      case (b, i) if b.isImplicit && Value.isPropositionType(b.fresh.tpe) => i -> b.fresh.tpe
-    }
-    val proofHolesByKey = proofHoles.groupBy(_._2.key)
-    val structurallyComparableProofHoles = proofHoles.filter(_._2.needsStructuralDefEq)
-    val proofHoleIndexes = proofHoles.iterator.map(_._1).toSet
-    var remainingProofHoles = proofHoleIndexes.size
 
-    def solveProof(hole: Int, root: Int, path: Vector[Step], tpe: Value): Unit =
+    def isRoot(idx: Int): Boolean = !binders(idx).isImplicit || demoted(idx)
+
+    def solveHole(hole: Int, root: Int, steps: Vector[Step], tpe: Value): Unit =
       if (!isRoot(hole) && !solved.contains(hole)) {
-        solved.update(hole, root -> path)
-        remainingProofHoles -= 1
-        queue.append((root, path :+ Step.Tpe, tpe))
+        solved.update(hole, (root, steps))
+        if (proofHoleIndexes(hole)) remainingProofHoles -= 1
+        // Saturation: the hole's own declared type is a pattern over earlier implicits,
+        // reachable from the projected value by one more Tpe step.
+        queue.append((root, steps :+ Step.Tpe, tpe))
       }
 
-    def visit(root: Int, path: Vector[Step], value: Value): Unit = {
-      if (remainingProofHoles > 0 && Value.isPropositionType(value.tpe)) {
-        val keyed = proofHolesByKey.getOrElse(value.tpe.key, Vector.empty)
-        val structural = if (value.tpe.needsStructuralDefEq) proofHoles else structurallyComparableProofHoles
+    def rigidHead(head: VConst): Boolean =
+      head.constType match {
+        case Inductive(_) => true
+        case Symbol       => true
+      }
+
+    def visit(root: Int, steps: Vector[Step], v: Value): Unit = {
+      // Proof binders carry no occurrence marker at runtime. Proof irrelevance makes any proof of
+      // the same proposition a valid reconstruction, so a proof-valued position in a later
+      // argument type forces every matching implicit proof binder through that projection path.
+      // This is checker-only analysis; no witness is added to VProof and runtime merely follows
+      // the compiled structural path.
+      if (remainingProofHoles > 0 && Value.isPropositionType(v.tpe)) {
+        // Key-equal propositions cover the ordinary case. Structural propositions (notably Pis)
+        // can be defEq despite different identity-based keys, so retain that narrow fallback.
+        val keyed = proofHolesByKey.getOrElse(v.tpe.key, Vector.empty)
+        val structural =
+          if (v.tpe.needsStructuralDefEq) proofHolesByType
+          else structurallyComparableProofHoles
         (keyed.iterator ++ structural.iterator).foreach { case (hole, proposition) =>
-          if (!solved.contains(hole) && ValueEquivalence.defEq(proposition, value.tpe))
-            solveProof(hole, root, path, value.tpe)
+          if (!solved.contains(hole) && ValueEquivalence.defEq(proposition, v.tpe))
+            solveHole(hole, root, steps, v.tpe)
         }
       }
 
-      value match {
+      v match {
+        // Level occurrences have one path: single-atom `u + k` (k = 0 included) inverts to u.
         case level: Level =>
           Level.singleVariableOffset(level).foreach { case (id, k) =>
-            holes.get(id).foreach(h => solve(h, root, if (k == 0) path else path :+ Step.LevelOffset(k), LevelTpe))
+            holeOfVar.get(id).foreach { hole =>
+              val path = if (k == 0) steps else steps :+ Step.LevelOffset(k)
+              solveHole(hole, root, path, LevelTpe)
+            }
           }
-        case _ if valueHoleId(value).exists(holes.contains) =>
-          solve(holes(valueHoleId(value).get), root, path, value.tpe)
-        case VSort(level) => queue.append((root, path :+ Step.SortLevel, level))
-        case VCtor(head, fields, tpe) =>
-          if (head.noConfusion) fields.zipWithIndex.foreach { case (field, i) =>
-            queue.append((root, path :+ Step.CtorField(head.name, i), field))
-          }
-          queue.append((root, path :+ Step.Tpe, tpe))
-        case ConstSpine(head, args) if args.nonEmpty && rigid(head) =>
-          args.zipWithIndex.foreach { case (arg, i) => queue.append((root, path :+ Step.SpineArg(head.name, i), arg)) }
-        case pi: VPi =>
-          pi.binders.indices.foreach(i =>
-            independentPiDomain(pi, i).foreach(v => queue.append((root, path :+ Step.PiDomain(i), v)))
-          )
-          independentPiCodomain(pi) match {
-            case Some(v) => queue.append((root, path :+ Step.PiCodomain, v))
-            case None if pi.binders.length > 1 =>
-              independentPiResult(pi).foreach(v => queue.append((root, path :+ Step.PiResult, v)))
-            case _ =>
-          }
-        case p: VProof =>
-          queue.append((root, path :+ Step.Tpe, p.tpe))
+
         case _ =>
+          valueHoleId(v).flatMap(holeOfVar.get) match {
+            case Some(hole) => solveHole(hole, root, steps, v.tpe)
+            case None =>
+              v match {
+                case VSort(level) =>
+                  queue.append((root, steps :+ Step.SortLevel, level))
+
+                case VCtor(head, stored, tpe) =>
+                  if (head.noConfusion)
+                    stored.zipWithIndex.foreach { case (field, idx) =>
+                      queue.append((root, steps :+ Step.CtorField(head.name, idx), field))
+                    }
+                  // Erased family args live only in the constructor value's type.
+                  queue.append((root, steps :+ Step.Tpe, tpe))
+
+                case ConstSpine(head, args) if args.nonEmpty && rigidHead(head) =>
+                  args.zipWithIndex.foreach { case (arg, idx) =>
+                    queue.append((root, steps :+ Step.SpineArg(head.name, idx), arg))
+                  }
+
+                case p: VProof =>
+                  queue.append((root, steps :+ Step.Tpe, p.tpe))
+
+                case pi: VPi =>
+                  pi.binders.indices.foreach { idx =>
+                    independentPiDomain(pi, idx).foreach { domain =>
+                      queue.append((root, steps :+ Step.PiDomain(idx), domain))
+                    }
+                  }
+                  independentPiCodomain(pi) match {
+                    case Some(out) => queue.append((root, steps :+ Step.PiCodomain, out))
+                    case None if pi.binders.length > 1 =>
+                      independentPiResult(pi).foreach { out =>
+                        queue.append((root, steps :+ Step.PiResult, out))
+                      }
+                    case None =>
+                  }
+
+                case _ => ()
+              }
+          }
       }
     }
-    def drain(): Unit = while (queue.nonEmpty) { val (r, p, v) = queue.removeHead(); visit(r, p, v) }
-    binders.indices.foreach(i => if (isRoot(i)) queue.append((i, Vector(Step.Tpe), binders(i).fresh.tpe)))
+
+    def drain(): Unit =
+      while (queue.nonEmpty) {
+        val (root, steps, v) = queue.removeHead()
+        visit(root, steps, v)
+      }
+
+    binders.zipWithIndex.foreach { case (b, idx) =>
+      if (isRoot(idx)) queue.append((idx, Vector(Step.Tpe), b.fresh.tpe))
+    }
     drain()
-    var more = true
-    while (more) {
-      binders.indices.reverse.find(i =>
-        demotable(i) && binders(i).isImplicit && !demoted(i) && !solved.contains(i)
-      ) match {
-        case Some(i) =>
-          demoted += i
-          if (proofHoleIndexes(i)) remainingProofHoles -= 1
-          queue.append((i, Vector(Step.Tpe), binders(i).fresh.tpe))
-          drain()
-        case None => more = false
+
+    // Demoting a family param turns it into a root, which can force further implicits (demoting A
+    // in `Option {u}(A)` forces u through `A : Sort(u)`), so demote minimally: rightmost unforced
+    // param first. Binder types only mention earlier binders, so forcing flows right-to-left and
+    // this order never demotes a param a later demotion would have forced. Demotion only adds a
+    // root — existing solutions stay valid — so saturation resumes with just the new root.
+    if (demotable.nonEmpty) {
+      var progress = true
+      while (progress) {
+        val rightmostUnforced = binders.indices.reverse.find { idx =>
+          demotable(idx) &&
+          binders(idx).isImplicit && !demoted(idx) && !solved.contains(idx)
+        }
+        rightmostUnforced match {
+          case Some(idx) =>
+            demoted.add(idx)
+            if (proofHoleIndexes(idx)) remainingProofHoles -= 1
+            queue.append((idx, Vector(Step.Tpe), binders(idx).fresh.tpe))
+            drain()
+          case None => progress = false
+        }
       }
     }
-    binders.zipWithIndex.map { case (b, i) =>
-      if (!b.isImplicit || demoted(i)) BinderResult(false, None)
+
+    binders.zipWithIndex.map { case (b, idx) =>
+      val implicitNow = b.isImplicit && !demoted(idx)
+      if (!implicitNow) BinderResult(isImplicit = false, projection = None)
       else
-        solved.get(i) match {
-          case Some((root, path)) =>
-            BinderResult(true, Some(Spec((0 until root).count(j => !binders(j).isImplicit || demoted(j)), path)))
-          case None => throw NonForcedImplicitParam(b.name, Some(b.span))
+        solved.get(idx) match {
+          case Some((rootTelescopeIdx, steps)) =>
+            // Convert the telescope index of the root into its position among provided args.
+            val rootArgIdx = (0 until rootTelescopeIdx).count { j =>
+              !binders(j).isImplicit || demoted(j)
+            }
+            BinderResult(isImplicit = true, projection = Some(Spec(rootArgIdx, steps)))
+          case None =>
+            throw NonForcedImplicitParam(b.name, Some(b.span))
         }
     }
   }
 
+  /**
+   * Domain of binder `idx`, evaluated under fresh earlier binders; None when it depends on them (such a position is not
+   * stable across instantiations). Indices are into the Pi's own binder group: grouping is part of the type's identity,
+   * so a curried and an uncurried spelling are different types and project differently.
+   */
   private def independentPiDomain(pi: VPi, idx: Int): Option[Value] = {
-    val env = BinderOps.freshen(pi.binders.take(idx), pi.env)
-    val ids = Value.envDeps(env) -- Value.envDeps(pi.env)
-    val domain = Interpreter.evalTerm(pi.binders(idx).ty, env)
-    Option.when(!domain.synDeps.intersects(ids))(domain)
+    val freshEnv = BinderOps.freshen(pi.binders.take(idx), pi.env)
+    val freshIds = Value.envDeps(freshEnv) -- Value.envDeps(pi.env)
+    val domain = Interpreter.evalTerm(pi.binders(idx).ty, freshEnv)
+    if (domain.synDeps.intersects(freshIds)) None else Some(domain)
   }
+
+  /**
+   * The type that remains after removing the Pi group's *first* binder; None when anything left depends on it. With a
+   * single binder that is the codomain itself; otherwise it is a Pi over the remaining binders.
+   */
   private def independentPiCodomain(pi: VPi): Option[Value] = {
     val firstEnv = BinderOps.freshen(pi.binders.take(1), pi.env)
     val firstIds = Value.envDeps(firstEnv) -- Value.envDeps(pi.env)
@@ -140,7 +286,7 @@ object Projection {
       val binderTypes = remaining.map(binder => fullEnv(binder.localRef).tpe)
       val out = pi.codomain(fullEnv)
       if ((binderTypes :+ out).exists(_.synDeps.intersects(firstIds))) None
-      else
+      else {
         Some(
           pi.copy(
             env = firstEnv,
@@ -149,59 +295,75 @@ object Projection {
             classifier0 = () => Interpreter.piClassifierFromChecked(remaining, fullEnv, out)
           )
         )
+      }
     }
   }
+
+  /** The Pi's result, past its own binder group; None when it depends on any of them. */
   private def independentPiResult(pi: VPi): Option[Value] = {
-    val env = BinderOps.freshen(pi)
-    val ids = Value.envDeps(env) -- Value.envDeps(pi.env)
-    val out = pi.codomain(env)
-    Option.when(!out.synDeps.intersects(ids))(out)
+    val freshEnv = BinderOps.freshen(pi)
+    val freshIds = Value.envDeps(freshEnv) -- Value.envDeps(pi.env)
+    val out = pi.codomain(freshEnv)
+    Option.when(!out.synDeps.intersects(freshIds))(out)
   }
 
-  def project(spec: Spec, args: Vector[Value]): Either[String, Value] = {
-    if (spec.rootArgIdx >= args.length)
-      return Left(s"projection root ${spec.rootArgIdx} out of range (${args.length} args)")
-    def asLevel(v: Value): Either[String, Level] = Level.fromValue(v).toRight(s"expected a level, got $v")
-    spec.steps.foldLeft[Either[String, Value]](Right(args(spec.rootArgIdx))) {
+  /** Follow a compiled spec against the provided (explicit) arguments of a call. */
+  def project(spec: Spec, providedArgs: Vector[Value]): Either[String, Value] = {
+    if (spec.rootArgIdx >= providedArgs.length)
+      return Left(s"projection root ${spec.rootArgIdx} out of range (${providedArgs.length} args)")
+
+    def toLevel(v: Value): Either[String, Level] =
+      Level.fromValue(v).toRight(s"expected a level, got $v")
+
+    spec.steps.foldLeft[Either[String, Value]](Right(providedArgs(spec.rootArgIdx))) {
       case (left @ Left(_), _) => left
       case (Right(v), step) =>
         step match {
           case Step.Tpe => Right(v.tpe)
-          case Step.SpineArg(h, i) =>
+
+          case Step.SpineArg(head, idx) =>
             v match {
-              case ConstSpine(c, as) if c.name == h && i < as.length => Right(as(i));
-              case x                                                 => Left(s"expected an application of $h, got $x")
+              case ConstSpine(c, args) if c.name == head && idx < args.length => Right(args(idx))
+              case other => Left(s"expected an application of $head, got $other")
             }
-          case Step.CtorField(c, i) =>
+
+          case Step.CtorField(ctor, idx) =>
             v match {
-              case ConstructorForm(name, fs) if name == c && i < fs.length => Right(fs(i));
-              case packed: VPacked =>
-                val (name, fs) = packed.codec.decodeHead(packed)
-                if (name == c && i < fs.length) Right(fs(i)) else Left(s"expected a $c value, got $v")
-              case x => Left(s"expected a $c value, got $x")
+              case ConstructorForm(name, stored) if name == ctor && idx < stored.length => Right(stored(idx))
+              case other => Left(s"expected a $ctor value, got $other")
             }
-          case Step.SortLevel => v match { case VSort(l) => Right(l); case x => Left(s"expected a sort, got $x") }
+
+          case Step.SortLevel =>
+            v match {
+              case VSort(level) => Right(level)
+              case other        => Left(s"expected a sort, got $other")
+            }
+
           case Step.LevelOffset(k) =>
-            asLevel(v).flatMap(l =>
+            toLevel(v).flatMap { l =>
               if (k == 0) Right(l)
               else if (Level.geq(l, k)) Right(Level.addOffset(l, -k))
               else Left(s"level $l does not cover offset $k")
-            )
-          case Step.PiDomain(i) =>
-            v match {
-              case pi: VPi if i < pi.binders.length =>
-                independentPiDomain(pi, i).toRight(s"domain $i depends on earlier binders");
-              case x => Left(s"expected a function type, got $x")
             }
+
+          case Step.PiDomain(idx) =>
+            v match {
+              case pi: VPi if idx < pi.binders.length =>
+                independentPiDomain(pi, idx).toRight(s"domain $idx of $pi depends on earlier binders")
+              case other => Left(s"expected a function type, got $other")
+            }
+
           case Step.PiCodomain =>
             v match {
-              case pi: VPi => independentPiCodomain(pi).toRight(s"codomain depends on its binders");
-              case x       => Left(s"expected a function type, got $x")
+              case pi: VPi =>
+                independentPiCodomain(pi).toRight(s"codomain of $pi depends on its binders")
+              case other => Left(s"expected a function type, got $other")
             }
+
           case Step.PiResult =>
             v match {
-              case pi: VPi => independentPiResult(pi).toRight(s"result depends on its binders");
-              case x       => Left(s"expected a function type, got $x")
+              case pi: VPi => independentPiResult(pi).toRight(s"result of $pi depends on its binders")
+              case other   => Left(s"expected a function type, got $other")
             }
         }
     }

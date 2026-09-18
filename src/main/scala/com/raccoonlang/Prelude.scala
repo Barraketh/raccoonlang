@@ -4,37 +4,41 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
 import scala.util.control.NonFatal
 
-/** Bundled, checked source prelude and the explicit bootstrap selection boundary. */
 object Prelude {
   private val DefaultResourcePath = "/Init/Prelude.rac"
   private val TestResourcePath = "/Init/TestPrelude.rac"
   val ImportPath: Vector[String] = Vector("Init", "Prelude")
 
-  /** A selected prelude is trusted by construction; its declarations are checked exactly once. */
+  /** A prelude is trusted by construction: choosing one (bundled or `--prelude`) is choosing the kernel's bootstrap. */
   final case class Config(
       surface: SurfaceAst.Program,
       core: CoreAst.Program,
       ignoredImports: Set[Vector[String]]
   ) {
-    def ignoresImport(path: Vector[String]): Boolean = ignoredImports(path)
+    def ignoresImport(path: Vector[String]): Boolean =
+      ignoredImports(path)
 
-    /** Immutable checked environment shared by all programs using this configuration. */
+    /**
+     * Checked prelude env, built once per Config and shared across programs. Sharing is sound: globals are closed
+     * values, and fresh-var ids keep increasing across programs.
+     */
     lazy val checkedEnv: Env =
-      if (core.decls.isEmpty) Interpreter.buildEmptyPreludeEnv(core) else Interpreter.buildPreludeEnv(core)
+      Interpreter.buildPreludeEnv(core)
 
-    /** Resolved names from this selected prelude, shared by elaboration of all programs using it. */
+    /** Resolved prelude name trie for the elaborator, built once per Config. */
     lazy val names: Elaborator.PreludeNames = Elaborator.preludeNames(this)
   }
 
-  lazy val default: Config = fromResource(DefaultResourcePath, Set(ImportPath))
-  lazy val test: Config = fromResource(TestResourcePath, Set(ImportPath))
+  lazy val default: Config = fromResource(DefaultResourcePath, ignoredImports = Set(ImportPath))
 
-  /** Empty source configuration: kernel primitives remain available, but no source prelude names are admitted. */
-  val none: Config = Config(
-    SurfaceAst.Program(Vector.empty, Vector.empty, None),
-    CoreAst.Program(Vector.empty, None),
-    Set.empty
-  )
+  lazy val test: Config = fromResource(TestResourcePath, ignoredImports = Set(ImportPath))
+
+  val none: Config =
+    Config(
+      surface = SurfaceAst.Program(Vector.empty, Vector.empty, None),
+      core = CoreAst.Program(Vector.empty, None),
+      ignoredImports = Set.empty
+    )
 
   def fromPath(path: Path): Config = {
     val canonical = path.toAbsolutePath.normalize
@@ -47,28 +51,26 @@ object Prelude {
             e
           )
       }
-    fromSource(canonical.toString, source)
+    fromSource(canonical.toString, source, ignoredImports = Set(ImportPath))
   }
 
-  def fromSource(
-      sourceName: String,
-      source: String,
-      ignoredImports: Set[Vector[String]] = Set(ImportPath)
-  ): Config = {
-    val surface = LanguageParser.parseProgram(source) match {
-      case Success(program, _, _) => program
-      case Failure(_, offset, message) =>
-        throw new RuntimeException(s"Failed to parse $sourceName at offset $offset: $message")
-    }
+  def fromSource(sourceName: String, source: String, ignoredImports: Set[Vector[String]] = Set(ImportPath)): Config = {
+    val surface =
+      LanguageParser.parseProgram(source) match {
+        case Success(program, _, _) => program
+        case Failure(_, curIdx, message) =>
+          throw new RuntimeException(s"Failed to parse $sourceName at offset $curIdx: $message")
+      }
     Config(surface, Elaborator.elabWithoutPrelude(surface), ignoredImports)
   }
 
-  private def fromResource(path: String, ignoredImports: Set[Vector[String]]): Config =
-    fromSource(path, resourceSource(path), ignoredImports)
+  private def fromResource(resourcePath: String, ignoredImports: Set[Vector[String]]): Config =
+    fromSource(resourcePath, resourceSource(resourcePath), ignoredImports)
 
-  private def resourceSource(path: String): String = {
-    val stream = Option(getClass.getResourceAsStream(path))
-      .getOrElse(throw new RuntimeException(s"Missing bundled resource $path"))
+  private def resourceSource(resourcePath: String): String = {
+    val stream =
+      Option(getClass.getResourceAsStream(resourcePath))
+        .getOrElse(throw new RuntimeException(s"Missing bundled resource $resourcePath"))
     try new String(stream.readAllBytes(), StandardCharsets.UTF_8)
     finally stream.close()
   }

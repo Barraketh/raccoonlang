@@ -7,6 +7,7 @@ namespace Level {
 
   def imax (l1: Level)(l2: Level): Level := builtin
 }
+
 def id {u: Level}{A: Sort(u)} (x: A): A := x
 
 def const {u: Level}{v: Level}{A: Sort(u)}{B: Sort(v)} (x: A)(y: B): A := x

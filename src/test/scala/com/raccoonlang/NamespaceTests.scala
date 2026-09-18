@@ -1,13 +1,6 @@
 package com.raccoonlang
 
 class NamespaceTests extends munit.FunSuite with TestSupport {
-  private def parse(src: String): CoreAst.Program = LanguageParser.parseProgram(src) match {
-    case Success(program, _, _) => Elaborator.elab(program, Prelude.test)
-    case failure                => throw new AssertionError(s"Expected parse success, got $failure")
-  }
-
-  private def expectTypeError[T <: TypeError: scala.reflect.ClassTag](src: String): Unit =
-    intercept[T] { typecheckProgram(src) }
   override protected val suitePrelude: Prelude.Config = Prelude.test
 
   private def typecheckProgram(src: String): Unit =
@@ -582,29 +575,6 @@ class NamespaceTests extends munit.FunSuite with TestSupport {
     val p = "import Mathlib.Data.Peano.Basic\n"
 
     intercept[UnsupportedImport] {
-      parse(p)
-    }
-  }
-
-  test("unresolved ordinary names fail during elaboration") {
-    intercept[NotFound] {
-      parse("{ missingName }")
-    }
-  }
-
-  test("unresolved qualified match heads fail during elaboration") {
-    val p =
-      """
-        |inductive Peano : Type
-        | | zero : Peano
-        |
-        |def bad (n: Peano): Peano := {
-        |  match n returning Peano with
-        |  | Peano.missing => Peano.zero
-        |}
-        |""".stripMargin
-
-    intercept[NotFound] {
       parse(p)
     }
   }

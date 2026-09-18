@@ -115,7 +115,7 @@ class ModuleLoaderTests extends munit.FunSuite {
   test("can run without an automatic prelude") {
     val root = Files.createTempDirectory("raccoon-modules")
     val noImportEntry = write(root, "NoImport.rac", "{ Prop }\n")
-    assertEquals(PrettyPrinter.print(run(noImportEntry, Prelude.none)), "Sort(0)")
+    assertEquals(PrettyPrinter.print(run(noImportEntry, Prelude.none)), "Prop")
 
     val explicitImportEntry = write(root, "ExplicitImport.rac", "import Init.Prelude\n{ Prop }\n")
     assert(loadError(explicitImportEntry, Prelude.none).isInstanceOf[ModuleNotFound])
@@ -415,7 +415,7 @@ class ModuleLoaderTests extends munit.FunSuite {
     val core = Elaborator.elab(loaded.program, Prelude.test)
 
     intercept[TypeError] {
-      TypeChecker.checkProgram(core, Prelude.test)
+      Interpreter.run(core, Prelude.test)
     }
   }
 }

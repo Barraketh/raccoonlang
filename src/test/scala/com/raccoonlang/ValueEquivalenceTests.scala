@@ -1,293 +1,228 @@
 package com.raccoonlang
 
+import com.raccoonlang.CoreAst.{Term => CTerm}
+import com.raccoonlang.Value._
+
 class ValueEquivalenceTests extends munit.FunSuite {
-  test("alpha-equivalent Pi values compare equal") {
-    val left = TestSupport.eval("(A: Type) -> A")
-    val right = TestSupport.eval("(B: Type) -> B")
-    assert(ValueEquivalence.defEq(left, right))
+  private val span = Span(0, 0)
+  private val typeRef: CoreAst.Term = CTerm.GlobalRef("Type", span)
+  private val binderRef = CoreAst.LocalRef(0, "x")
+  private val binder = CoreAst.Binder(binderRef, typeRef, Span(0, 0))
+  private val env = Env.empty.putGlobal("Type", TypeTpe)
+  private val typeToTypeClassifier = VSort(Level.succ(Level.one))
+
+  private def nodeId(start: Int): AstNodeId = AstNodeId(None, start)
+
+  private def parseBody(source: String): CoreAst.Term =
+    LanguageParser.parseProgram(source) match {
+      case Success(value, _, _) => Elaborator.elab(value).body.getOrElse(fail("program has no body"))
+      case failure: Failure     => fail(s"failed to parse test program: $failure")
+    }
+
+  private def deps(values: Value*): DepSet = {
+    val res = DepSet.newBuilder
+    values.foreach(value => res.unionInPlace(value.synDeps))
+    res.result()
   }
 
-  test("alpha-equivalent lambda values compare equal") {
-    val left = TestSupport.eval("fun (A: Type): Type => A")
-    val right = TestSupport.eval("fun (B: Type): Type => B")
-    assert(ValueEquivalence.defEq(left, right))
-  }
-
-  test("refinable metas link and occurs checks reject cycles") {
-    val meta = Value.Var("u", 1001, Value.TypeValue.tpe)
-    val store = EqStore.empty.allow(DepSet(1001))
-    val linked = ValueEquivalence.tryUnify(meta, Value.TypeValue, store)
-    assert(linked.isRight)
-    assert(linked.toOption.get.force(meta) == Value.TypeValue)
-    assert(
-      ValueEquivalence.tryUnify(meta, Value.VApp(meta, Vector(Value.TypeValue), Value.TypeValue.tpe), store).isLeft
-    )
-  }
-
-  test("linking a value meta first solves its refinable type meta") {
-    val typeMeta = Value.Var("T", 1002, Value.TypeValue.tpe.tpe)
-    val valueMeta = Value.Var("x", 1003, typeMeta)
-    val store = EqStore.empty.allow(DepSet(1002, 1003))
-
-    val solved = ValueEquivalence.tryUnify(valueMeta, Value.TypeValue, store).toOption.get
-
-    assert(solved.force(typeMeta) == Value.TypeValue.tpe)
-    assert(solved.force(valueMeta) == Value.TypeValue)
-  }
-
-  test("variable linking chooses the lower id as representative") {
-    val lower = Value.Var("a", 1100, Value.TypeValue)
-    val higher = Value.Var("b", 1101, Value.TypeValue)
-    val solved = ValueEquivalence.tryUnify(higher, lower, EqStore.empty.allow(DepSet(1100, 1101))).toOption.get
-    assertEquals(solved.subst.keySet, Set(1101))
-    assertEquals(solved.force(higher), lower)
-  }
-
-  test("different Pi binder arity is not definitionally equal") {
-    val one = TestSupport.eval("(A: Type) -> Type")
-    val two = TestSupport.eval("(A: Type) -> (B: Type) -> Type")
-    assert(!ValueEquivalence.defEq(one, two))
-  }
-
-  test("dependent Pi unification shares binders and rolls back failed links") {
-    val span = Span(0, 1, None)
-    val meta = Value.Var("A", 3001, Value.TypeValue)
-    val leftRef = CoreAst.LocalRef(1, "x")
-    val rightRef = CoreAst.LocalRef(2, "y")
-    val leftOuter = CoreAst.LocalRef(10, "A")
-    val rightOuter = CoreAst.LocalRef(11, "A")
-    val leftEnv = Env.empty.putLocal(leftOuter, meta)
-    val rightEnv = Env.empty.putLocal(rightOuter, Value.TypeValue)
-    val leftBinderTy = CoreAst.Term.LocalRef(leftOuter, span)
-    val rightBinderTy = CoreAst.Term.LocalRef(rightOuter, span)
-    val left = Value.VPi(
-      leftEnv,
-      Vector(CoreAst.Binder(leftRef, leftBinderTy, span)),
-      _.apply(leftRef),
-      leftEnv.dependencies,
-      Value.ValueId.LocalId(AstNodeId.synthetic(), Vector.empty),
-      () => Value.TypeValue.asInstanceOf[Value.VSort]
-    )
-    val right = Value.VPi(
-      rightEnv,
-      Vector(CoreAst.Binder(rightRef, rightBinderTy, span)),
-      _.apply(rightRef),
-      rightEnv.dependencies,
-      Value.ValueId.LocalId(AstNodeId.synthetic(), Vector.empty),
-      () => Value.TypeValue.asInstanceOf[Value.VSort]
-    )
-    val initial = EqStore.empty.allow(DepSet(3001))
-    val linked = ValueEquivalence.tryUnify(left, right, initial)
-    assert(linked.isLeft)
-    assert(initial.subst.isEmpty)
-    val failingRight = right.copy(codomain = _ => Value.TypeValue)
-    val failed = ValueEquivalence.tryUnify(left, failingRight, initial)
-    assert(failed.isLeft)
-    assert(initial.subst.isEmpty)
-  }
-
-  test("neutral thunks compare their identity and captures") {
-    val span = Span(0, 1, None)
-    val term = CoreAst.Term.Match(CoreAst.Term.GlobalRef("scrut", span), None, Vector.empty, span)
-    val ref = CoreAst.LocalRef(4, "captured")
-    val env = Env.empty.putLocal(ref, Value.TypeValue)
-    val same = Value.NeutralThunk(
-      term,
+  private def pi(captures: Vector[Value], out: Env => Value, start: Int): VPi =
+    VPi(
       env,
-      Value.ValueId.LocalId(term.nodeId, Vector(Value.TypeValue)),
-      Value.TypeValue,
-      DepSet.empty
+      Vector(binder),
+      out,
+      deps(captures: _*),
+      ValueId.LocalId(nodeId(start), captures),
+      () => typeToTypeClassifier
     )
-    val differentCapture = Value.NeutralThunk(
-      term,
-      env.putLocal(ref.copy(id = 5), Value.Var("other", 4001, Value.TypeValue)),
-      Value.ValueId.LocalId(term.nodeId, Vector(Value.Var("other", 4001, Value.TypeValue))),
-      Value.TypeValue,
-      DepSet.empty
-    )
-    assert(!ValueEquivalence.defEq(same, differentCapture))
-    assert(
-      ValueEquivalence.defEq(
-        same,
-        same.copy(env = env.copy(globals = Map("x" -> GlobalBinding.Strict(Value.TypeValue))))
-      )
-    )
+
+  test("Pi unification rejects solutions that depend on fresh binder vars") {
+    val hole = FreshVar.freshVar("A", TypeTpe)
+    val meta = EqStore.empty.allow(DepSet(hole.id))
+    val left = pi(Vector(hole), _ => hole, 1)
+    val right = pi(Vector.empty, env => env(binderRef), 2)
+
+    assert(ValueEquivalence.tryUnify(left, right, meta).isLeft)
   }
 
-  test("opaque applications do not refine their arguments") {
-    val typeRef = CoreAst.LocalRef(21, "Type")
-    val fnEnv = Env.empty.putLocal(typeRef, Value.TypeValue)
-    val fnType = Value.VPi(
-      fnEnv,
-      Vector(CoreAst.Binder(CoreAst.LocalRef(20, "x"), CoreAst.Term.LocalRef(typeRef, Span(0, 1)), Span(0, 1))),
-      _ => Value.TypeValue,
+  test("Pi unification does not link holes beneath the Pi frame") {
+    // Pi-former injectivity is not assumed, so codomain equations are not consequences of the
+    // Pi equation: even a closed solution must be refused, not chosen.
+    val hole = FreshVar.freshVar("A", TypeTpe)
+    val closed = FreshVar.freshVar("B", TypeTpe)
+    val meta = EqStore.empty.allow(DepSet(hole.id))
+    val left = pi(Vector(hole), _ => hole, 3)
+    val right = pi(Vector(closed), _ => closed, 4)
+
+    assert(ValueEquivalence.tryUnify(left, right, meta).isLeft)
+  }
+
+  test("Pi definitional equality distinguishes telescope grouping") {
+    val yRef = CoreAst.LocalRef(1, "y")
+    val yBinder = CoreAst.Binder(yRef, typeRef, span)
+    val grouped = VPi(
+      env,
+      Vector(binder, yBinder),
+      _ => TypeTpe,
       DepSet.empty,
-      Value.ValueId.LocalId(AstNodeId.synthetic(), Vector.empty),
-      () => Value.TypeValue.asInstanceOf[Value.VSort]
+      ValueId.LocalId(nodeId(5), Vector.empty),
+      () => typeToTypeClassifier
     )
-    val f = Value.VConst("f", Value.Symbol, fnType)
-    val meta = Value.Var("x", 5001, Value.TypeValue)
-    val left = Value.VApp(f, Vector(meta), Value.TypeValue)
-    val right = Value.VApp(f, Vector(Value.TypeValue), Value.TypeValue)
-    val solved = ValueEquivalence.tryUnify(left, right, EqStore.empty.allow(DepSet(5001)))
-    assert(solved.isLeft)
-    assert(solved.left.toOption.exists(!_.apart))
-  }
-
-  test("opaque applications do not propagate constructor apartness") {
-    val c1 = Value.ConstructorHead("C1", 0, 0, Value.TypeValue)
-    val c2 = Value.ConstructorHead("C2", 0, 0, Value.TypeValue)
-    val f = Value.VConst("opaque", Value.Symbol, Value.TypeValue)
-    val left = Value.VApp(f, Vector(Value.VCtor(c1, Vector.empty, Value.TypeValue)), Value.TypeValue)
-    val right = Value.VApp(f, Vector(Value.VCtor(c2, Vector.empty, Value.TypeValue)), Value.TypeValue)
-    val result = ValueEquivalence.tryUnify(left, right, EqStore.empty)
-    assert(result.left.toOption.exists(!_.apart))
-  }
-
-  test("same-id variables unify even when represented by distinct values") {
-    val left = Value.Var("x", 5200, Value.TypeValue)
-    val right = Value.Var("y", 5200, Value.TypeValue)
-    assert(ValueEquivalence.tryUnify(left, right, EqStore.empty).isRight)
-  }
-
-  test("proof variables unify by proposition without witness links") {
-    val proposition = Value.VConst("P", Value.Symbol, Value.PropTpe)
-    val proof = Value.Var("p", 5210, proposition)
-    val store = EqStore.empty.allow(DepSet(5210))
-    val result = ValueEquivalence.tryUnify(proof, Value.VProof(proposition), store)
-    assert(result.isRight)
-    assert(result.toOption.exists(_.subst.isEmpty))
-  }
-
-  test("different proposition proofs fail without linking the witness") {
-    val leftType = Value.VConst("P", Value.Symbol, Value.PropTpe)
-    val rightType = Value.VConst("Q", Value.Symbol, Value.PropTpe)
-    val proof = Value.Var("p", 5211, leftType)
-    val store = EqStore.empty.allow(DepSet(5211))
-    val result = ValueEquivalence.tryUnify(proof, Value.VProof(rightType), store)
-    assert(result.isLeft)
-    assert(store.subst.isEmpty)
-    assert(result.left.toOption.exists(!_.apart))
-  }
-
-  test("distinct constructors of one proposition do not yield apartness") {
-    val (env, _) = TestSupport.check(
-      "inductive Amb : Prop\n" +
-        " | left : Amb\n" +
-        " | right : Amb\n"
+    val nested = VPi(
+      env,
+      Vector(binder),
+      outerEnv =>
+        VPi(
+          outerEnv,
+          Vector(yBinder),
+          _ => TypeTpe,
+          DepSet.empty,
+          ValueId.LocalId(nodeId(6), Vector.empty),
+          () => typeToTypeClassifier
+        ),
+      DepSet.empty,
+      ValueId.LocalId(nodeId(7), Vector.empty),
+      () => typeToTypeClassifier
     )
-    val left = Interpreter.evalTerm(CoreAst.Term.GlobalRef("Amb.left", Span(0, 1)), env)
-    val right = Interpreter.evalTerm(CoreAst.Term.GlobalRef("Amb.right", Span(0, 1)), env)
-    val result = ValueEquivalence.tryUnify(left, right, EqStore.empty)
-    assert(result.isRight)
-    assert(result.toOption.exists(_.subst.isEmpty))
+
+    // Grouping is part of a function type's identity: `(x: A)(y: A) -> Type` is a 2-ary function
+    // type and `(x: A) -> ((y: A) -> Type)` a 1-ary one returning a function. They are not
+    // convertible. The failure is stuck, never apart — Pi-former injectivity is not assumed.
+    assert(!ValueEquivalence.defEq(grouped, nested))
+    assert(!ValueEquivalence.defEq(nested, grouped))
+    assertEquals(ValueEquivalence.tryUnify(grouped, nested, EqStore.empty).left.map(_.apart), Left(false))
   }
 
-  test("only genuine constructor clashes produce apartness") {
-    val leftHead = Value.ConstructorHead("Left", 0, 0, Value.TypeValue)
-    val rightHead = Value.ConstructorHead("Right", 0, 0, Value.TypeValue)
-    val failure = ValueEquivalence.tryUnify(
-      Value.VCtor(leftHead, Vector.empty, Value.TypeValue),
-      Value.VCtor(rightHead, Vector.empty, Value.TypeValue),
-      EqStore.empty.allow(DepSet(9998))
+  test("checked and residual applications cross nested Pi groups") {
+    val yRef = CoreAst.LocalRef(2, "y")
+    val yBinder = CoreAst.Binder(yRef, typeRef, span)
+    val nested = VPi(
+      env,
+      Vector(binder),
+      outerEnv =>
+        VPi(
+          outerEnv,
+          Vector(yBinder),
+          _ => TypeTpe,
+          DepSet.empty,
+          ValueId.LocalId(nodeId(8), Vector.empty),
+          () => typeToTypeClassifier
+        ),
+      DepSet.empty,
+      ValueId.LocalId(nodeId(9), Vector.empty),
+      () => typeToTypeClassifier
     )
-    assert(failure.left.toOption.exists(_.apart))
+    val applicationEnv = env.putGlobal("Prop", PropTpe).putGlobal("nested", VConst("nested", Symbol, nested))
+    val ref = CoreAst.Term.GlobalRef("Prop", span)
+    val first = CoreAst.Term.App(CoreAst.Term.GlobalRef("nested", span), Vector(ref), span)
+    val application = CoreAst.Term.App(first, Vector(ref), span)
+
+    val checked = TypeChecker.checkTerm(application, applicationEnv)
+    assert(ValueEquivalence.defEq(checked.value.tpe, TypeTpe))
+    assert(ValueEquivalence.defEq(Interpreter.evalTerm(checked.residual, applicationEnv), checked.value))
   }
 
-  test("constructors without no-confusion are only stuck") {
-    val leftHead = Value.ConstructorHead("QuotL", 0, 0, Value.TypeValue, noConfusion = false)
-    val rightHead = Value.ConstructorHead("QuotR", 0, 0, Value.TypeValue, noConfusion = false)
-    val failure = ValueEquivalence.tryUnify(
-      Value.VCtor(leftHead, Vector.empty, Value.TypeValue),
-      Value.VCtor(rightHead, Vector.empty, Value.TypeValue),
-      EqStore.empty.allow(DepSet(9997))
-    )
-    assert(failure.left.toOption.exists(!_.apart))
-  }
-
-  test("lambda comparison rejects metas escaping through a fresh binder") {
-    val span = Span(0, 1)
-    val outer = CoreAst.LocalRef(5300, "outer")
-    val leftBinder = CoreAst.LocalRef(5301, "x")
-    val rightBinder = CoreAst.LocalRef(5302, "y")
-    val leftPi = CoreAst.Term.Pi(
-      Vector(CoreAst.Binder(leftBinder, CoreAst.Term.GlobalRef("Type", span), span)),
-      CoreAst.Term.GlobalRef("Type", span),
-      span
-    )
-    val rightPi = leftPi.copy(binders = Vector(CoreAst.Binder(rightBinder, CoreAst.Term.GlobalRef("Type", span), span)))
-    val meta = Value.Var("outer", 5300, Value.TypeValue)
-    val leftEnv = Interpreter.builtins.putLocal(outer, meta)
-    val rightEnv = Interpreter.builtins
-    val leftTerm = CoreAst.Term.Lam(leftPi, CoreAst.Term.LocalRef(outer, span), span, None, None)
-    val rightTerm = CoreAst.Term.Lam(rightPi, CoreAst.Term.LocalRef(rightBinder, span), span, None, None)
-    val left = Value.VLam(
-      Interpreter.evalPiClosed(leftPi, leftEnv),
-      Value.ValueId.LocalId(leftTerm.nodeId, Vector(meta)),
-      Value.LamBody.Core(leftTerm, leftEnv)
-    )
-    val right = Value.VLam(
-      Interpreter.evalPiClosed(rightPi, rightEnv),
-      Value.ValueId.LocalId(rightTerm.nodeId, Vector.empty),
-      Value.LamBody.Core(rightTerm, rightEnv)
-    )
-    val initial = EqStore.empty.allow(DepSet(5300))
-    assert(ValueEquivalence.tryUnify(left, right, initial).isLeft)
-    assert(initial.subst.isEmpty)
-  }
-
-  test("inductive family applications refine invertible arguments") {
-    val family = Value.VConst(
-      "F",
-      Value.Inductive(
-        Value.InductiveMeta(
-          Vector.empty,
-          1,
-          Value.ProvisionalInductiveBlockInfo(Value.InductiveBlockKey(Vector("F"), 0), DepSet.empty)
-        )
-      ),
-      Value.VPi(
-        Interpreter.builtins,
-        Vector(CoreAst.Binder(CoreAst.LocalRef(30, "A"), CoreAst.Term.GlobalRef("Type", Span(0, 1)), Span(0, 1))),
-        _ => Value.TypeValue,
-        DepSet.empty,
-        Value.ValueId.LocalId(AstNodeId.synthetic(), Vector.empty),
-        () => Value.TypeValue.asInstanceOf[Value.VSort]
+  test("definitionally equal neutral matches ignore source identity and closure capture shape") {
+    val source =
+      """{
+        |  fun (b: Bool): Bool =>
+        |    match b with
+        |    | Bool.false => Bool.true
+        |    | Bool.true => Bool.false
+        |}
+        |""".stripMargin
+    val checkedEnv = Prelude.default.checkedEnv
+    val left = TypeChecker.checkTerm(parseBody(source), checkedEnv).value
+    val right = TypeChecker.checkTerm(parseBody(source), checkedEnv).value
+    val different = TypeChecker
+      .checkTerm(
+        parseBody(
+          """{
+            |  fun (b: Bool): Bool =>
+            |    match b with
+            |    | Bool.false => Bool.false
+            |    | Bool.true => Bool.false
+            |}
+            |""".stripMargin
+        ),
+        checkedEnv
       )
-    )
-    val meta = Value.Var("A", 5100, Value.TypeValue.tpe)
-    val result = ValueEquivalence.tryUnify(
-      Value.VApp(family, Vector(meta), Value.TypeValue),
-      Value.VApp(family, Vector(Value.TypeValue), Value.TypeValue),
-      EqStore.empty.allow(DepSet(5100))
-    )
-    assert(result.isRight)
-    assertEquals(result.toOption.get.force(meta), Value.TypeValue)
-  }
+      .value
 
-  test("compatible stuck match eliminators compare extensionally") {
-    def function(trueBranch: String): Value =
-      TestSupport.eval(
-        "inductive Bool : Type\n" +
-          " | true : Bool\n" +
-          " | false : Bool\n\n" +
-          "fun (b: Bool): Bool => match b returning Bool with\n" +
-          s" | Bool.true => $trueBranch\n" +
-          " | Bool.false => Bool.false\n"
-      )
-    val leftFn = function("Bool.true")
-    val rightFn = function("Bool.true")
-    val differentFn = function("Bool.false")
-    val neutral = FreshVar.freshVar(
-      "b",
-      TestSupport.eval("inductive Bool : Type\n | true : Bool\n | false : Bool\n\nBool.true").tpe
-    )
-    val left = Interpreter.evalApply(leftFn, Vector(neutral))
-    val right = Interpreter.evalApply(rightFn, Vector(neutral))
-    val different = Interpreter.evalApply(differentFn, Vector(neutral))
     assert(ValueEquivalence.defEq(left, right))
     assert(!ValueEquivalence.defEq(left, different))
-    val mismatch = ValueEquivalence.tryUnify(left, different, EqStore.empty.allow(DepSet(9999)))
-    assert(mismatch.left.toOption.exists(!_.apart))
+  }
+
+  test("neutral match congruence rejects a different scrutinee") {
+    def checked(source: String): Value = TypeChecker.checkTerm(parseBody(source), Prelude.default.checkedEnv).value
+    val onFirst = checked(
+      """{
+        |  fun (first: Bool)(second: Bool): Bool =>
+        |    match first with
+        |    | Bool.false => Bool.true
+        |    | Bool.true => Bool.false
+        |}
+        |""".stripMargin
+    )
+    val onSecond = checked(
+      """{
+        |  fun (first: Bool)(second: Bool): Bool =>
+        |    match second with
+        |    | Bool.false => Bool.true
+        |    | Bool.true => Bool.false
+        |}
+        |""".stripMargin
+    )
+
+    assert(!ValueEquivalence.defEq(onFirst, onSecond))
+  }
+
+  test("neutral match congruence conservatively rejects different case ordering") {
+    def checked(source: String): Value = TypeChecker.checkTerm(parseBody(source), Prelude.default.checkedEnv).value
+    val inSourceOrder = checked(
+      """{
+        |  fun (b: Bool): Bool =>
+        |    match b with
+        |    | Bool.false => Bool.true
+        |    | Bool.true => Bool.false
+        |}
+        |""".stripMargin
+    )
+    val reversed = checked(
+      """{
+        |  fun (b: Bool): Bool =>
+        |    match b with
+        |    | Bool.true => Bool.false
+        |    | Bool.false => Bool.true
+        |}
+        |""".stripMargin
+    )
+
+    assert(!ValueEquivalence.defEq(inSourceOrder, reversed))
+  }
+
+  test("neutral match congruence fails closed on a forged instantiated result type") {
+    val checkedEnv = Prelude.default.checkedEnv
+    val function = TypeChecker
+      .checkTerm(
+        parseBody(
+          """{
+            |  fun (b: Bool): Bool =>
+            |    match b with
+            |    | Bool.false => Bool.true
+            |    | Bool.true => Bool.false
+            |}
+            |""".stripMargin
+        ),
+        checkedEnv
+      )
+      .value
+    val scrutinee = FreshVar.freshVar("b", checkedEnv("Bool"))
+    val neutral = Interpreter.evalApply(function, Vector(scrutinee)).asInstanceOf[NeutralThunk]
+    val wrongType = neutral.copy(
+      id = ValueId.LocalId(nodeId(100), neutral.id.captures),
+      tpe = checkedEnv("Nat")
+    )
+
+    assert(!ValueEquivalence.defEq(neutral, wrongType))
   }
 }

@@ -7,11 +7,6 @@ import com.raccoonlang.telescope.BinderOps
 import scala.collection.immutable.BitSet
 
 object InductiveChecks {
-  private def getType(term: Term, env: Env, familyParams: Int): Value = {
-    val checked = TypeChecker.checkTypeWithFamilyParams(term, env, familyParams)
-    TypeChecker.assertType(checked.value)
-    checked.value
-  }
   private val activeClosureScans = new ThreadLocal[java.util.IdentityHashMap[Value, java.lang.Boolean]] {
     override def initialValue(): java.util.IdentityHashMap[Value, java.lang.Boolean] =
       new java.util.IdentityHashMap[Value, java.lang.Boolean]()
@@ -334,18 +329,9 @@ object InductiveChecks {
       val error =
         NonUniformInductiveParam(header.name, ctor.canonicalName, param.name, outputArg, Some(ctor.resultTy.span))
 
-      if (!sameConstructorParam(outputArg, paramValue))
+      if (!ValueEquivalence.defEq(outputArg, paramValue))
         throw error
     }
-
-  private def sameConstructorParam(actual: Value, expected: Value): Boolean = {
-    val sameLevel =
-      (Level.fromValue(actual), Level.fromValue(expected)) match {
-        case (Some(left), Some(right)) => left.c == right.c && left.terms == right.terms
-        case _                         => false
-      }
-    ValueEquivalence.defEq(actual, expected) || sameLevel
-  }
 
   private final case class FamilySignature(
       decl: Decl.InductiveDecl,
@@ -417,8 +403,7 @@ object InductiveChecks {
     else Term.Pi(decl.header.binders, decl.header.resultTy, decl.header.span)
 
   private def checkFamilySignatures(block: Decl.InductiveBlock, env: Env): Vector[FamilySignature] = {
-    val typedFamilies =
-      block.families.map(decl => (decl, getType(familyTypeTerm(decl), env, decl.header.params.length)))
+    val typedFamilies = block.families.map(decl => (decl, TypeChecker.getType(familyTypeTerm(decl), env)))
     val coreParamCount = block.families.head.header.params.length
     val expectedImplicitness = block.families.head.header.params.map(_.isImplicit)
     val canonicalParams =
@@ -454,7 +439,7 @@ object InductiveChecks {
                     s"family ${decl.header.name} has a different type for common parameter $index",
                     Some(decl.header.params(index).span)
                   )
-                familyEnv = familyEnv.putLocal(binder.localRef, canonical)
+                familyEnv = BinderOps.bindValue(familyEnv, binder, canonical)
             }
             familyEnv = BinderOps.freshen(pi.binders.drop(coreParamCount), familyEnv)
             (pi.binders.map(binder => familyEnv(binder.localRef)), pi.codomain(familyEnv))
@@ -493,7 +478,7 @@ object InductiveChecks {
     val decl = signature.decl
     InductiveMeta(
       decl.ctors.map(ctor => ConstructorMeta(ctor.shortName, ctor.canonicalName)),
-      decl.header.arity,
+      decl.header.binders.length,
       provisionalBlock,
       projectionInfo = None,
       proofRecovery = None
@@ -541,9 +526,7 @@ object InductiveChecks {
       val ownBinderVars = binderVars.drop(header.params.length)
       val sourceParamValues = commonParamValues
       val trueFieldVars = ownBinderVars
-      // Keep malformed constructor results classified as InvalidConstructorResult rather than
-      // leaking the generic NotAType from the telescope checker.
-      val outputTpe = TypeChecker.checkTypeWithFamilyParams(ctor.resultTy, envWithBinders, header.params.length).value
+      val outputTpe = TypeChecker.getType(ctor.resultTy, envWithBinders)
 
       // 4) Constructor result must be the inductive family head applied to the full family arity.
       val resultErr = InvalidConstructorResult(ctor.canonicalName, name, outputTpe, Some(ctor.span))
@@ -557,7 +540,7 @@ object InductiveChecks {
       checkConstructorParamDiscipline(header, ctor, envWithBinders, outputArgs)
       if (
         outputArgs.take(sourceParamValues.length).zip(sourceParamValues).exists { case (actual, expected) =>
-          !sameConstructorParam(actual, expected)
+          !ValueEquivalence.defEq(actual, expected)
         }
       )
         throw InvalidInductiveBlock(
@@ -627,10 +610,10 @@ object InductiveChecks {
         if (!doesNotOccur(recursiveTarget, field.tpe)) hasRecursiveField = true
 
         // 3) Every true source field type must be strictly positive in every block family.
-        val positive = occursPositively(recursiveTarget, field.tpe)
         if (
           syntacticallyRecursive(sourceFieldIndex) &&
-          (!positive || !blockFamilyApplicationsAreUniform(blockNames, recursiveTarget, sourceParamValues, field.tpe))
+          (!occursPositively(recursiveTarget, field.tpe) ||
+            !blockFamilyApplicationsAreUniform(blockNames, recursiveTarget, sourceParamValues, field.tpe))
         )
           throw NonStrictlyPositive(
             inductive = name,
@@ -731,15 +714,6 @@ object InductiveChecks {
       }
 
     PreparedFamily(decl, inductiveHead, completeConstructorLink)
-  }
-
-  def checkInductive(decl: Decl.InductiveDecl, env: Env): Env = evalInductiveBlock(Vector(decl), env)
-  def checkInductiveBlock(decls: Vector[Decl.InductiveDecl], env: Env): Env = evalInductiveBlock(decls, env)
-  def checkInductiveBlock(block: Decl.InductiveBlock, env: Env): Env = evalInductiveBlock(block, env)
-  def evalInductive(decl: Decl.InductiveDecl, env: Env): Env = evalInductiveBlock(Vector(decl), env)
-  def evalInductiveBlock(decls: Vector[Decl.InductiveDecl], env: Env): Env = {
-    val block = Decl.InductiveBlock(decls, decls.headOption.map(_.span).getOrElse(Span(0, 0)))
-    evalInductiveBlock(block, env)
   }
 
   def evalInductiveBlock(block: Decl.InductiveBlock, env: Env): Env = {

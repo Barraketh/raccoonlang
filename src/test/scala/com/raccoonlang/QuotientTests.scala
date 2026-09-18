@@ -1,256 +1,209 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.{ConstBody, Decl, Program}
+class QuotientTests extends munit.FunSuite with TestSupport {
 
-/** Quotient primitives are installed through the builtin admission boundary; this fixture supplies only their types. */
-class QuotientTests extends munit.FunSuite {
-  private val bootstrap =
+  private def evalDecls(src: String): Env =
+    LanguageParser.parseProgram(src) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value)
+        core.decls.foldLeft(Prelude.default.checkedEnv) { case (env, decl) =>
+          Interpreter.evalDecl(decl, env)
+        }
+      case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
+    }
+
+  sealed trait Shape
+  case class SConst(name: String) extends Shape
+  case class SApp(head: Shape, args: List[Shape]) extends Shape
+
+  private def toShape(v: Value): Shape = v match {
+    case Value.ConstructorHead(n, _, _, _, _) => SConst(n)
+    case Value.VCtor(h, storedArgs, _) =>
+      val args = storedArgs
+      if (args.isEmpty) SConst(h.name) else SApp(SConst(h.name), args.toList.map(toShape))
+    case Value.VConst(n, _, _)     => SConst(n)
+    case Value.VApp(h, args, _, _) => SApp(toShape(h), args.toList.map(toShape))
+    case other                     => SConst(other.toString)
+  }
+
+  private val natZero = SConst("0")
+  private val natOne = SConst("1")
+
+  private val natPrelude =
     """
-      |axiom Quot {u: Level}(A: Sort(u))(r: (x: A) -> (y: A) -> Prop): Sort(u)
-      |
-      |inductive Eq {u: Level}(A: Sort(u)) indices (x: A)(y: A) : Prop
-      | | refl (x: A) : Eq(A, x, x)
-      |
-      |axiom QuotMkType {u: Level}{A: Sort(u)}(r: (x: A) -> (y: A) -> Prop)(a: A): Quot(A, r)
-      |
-      |axiom QuotLiftType {u: Level}{v: Level}{A: Sort(u)}{r: (x: A) -> (y: A) -> Prop}
-      |  (q: Quot(A, r))(B: Sort(v))(f: A -> B)
-      |  (sound: (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b))): B
-      |
-      |axiom QuotIndType {u: Level}{A: Sort(u)}{r: (x: A) -> (y: A) -> Prop}
-      |  (q: Quot(A, r))(motive: (q: Quot(A, r)) -> Prop)
-      |  (mk: (a: A) -> motive(Quot.mk(r, a))): motive(q)
-      |
-      |def liftOn {u: Level}{v: Level}{A: Sort(u)}{r: (x: A) -> (y: A) -> Prop}
-      |  (q: Quot(A, r))(B: Sort(v))(f: A -> B)
-      |  (sound: (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b))): B :=
-      |  Quot.lift(q, B, f, sound)
-      |
-      |def inductionOn {u: Level}{A: Sort(u)}{r: (x: A) -> (y: A) -> Prop}
-      |  (q: Quot(A, r))(motive: (q: Quot(A, r)) -> Prop)
-      |  (mk: (a: A) -> motive(Quot.mk(r, a))): motive(q) :=
-      |  Quot.ind(q, motive, mk)
-      |
-      |axiom sound {u: Level}{A: Sort(u)}
-      |  (a: A)(b: A)(r: (x: A) -> (y: A) -> Prop)(h: r(a, b)):
-      |  Eq(Quot(A, r), Quot.mk(r, a), Quot.mk(r, b))
-      |
+      |def Rel (a: Nat)(b: Nat): Prop := Eq(Nat, a, b)
       |""".stripMargin
 
-  private def core(source: String): Program = LanguageParser.parseProgram(bootstrap + source) match {
-    case Success(program, _, _) =>
-      val elaborated = Elaborator.elab(program, Prelude.none)
-      Program(
-        elaborated.decls.map {
-          case Decl.AxiomDecl("QuotMkType", ty, span) =>
-            Decl.ConstDecl(false, "Quot.mk", ty, ConstBody.Builtin(span), span)
-          case Decl.AxiomDecl("QuotLiftType", ty, span) =>
-            Decl.ConstDecl(false, "Quot.lift", ty, ConstBody.Builtin(span), span)
-          case Decl.AxiomDecl("QuotIndType", ty, span) =>
-            Decl.ConstDecl(false, "Quot.ind", ty, ConstBody.Builtin(span), span)
-          case other => other
-        },
-        elaborated.body
-      )
-    case Failure(_, idx, message) =>
-      fail(s"Failed to parse at $idx: $message; near=${(bootstrap + source).drop(idx).take(80)}")
-  }
-
-  private def checked(source: String): (Env, Value) = {
-    val (env, body) = TypeChecker.checkProgramTrusted(core(source))
-    env -> body.map(_.value).getOrElse(fail("Program has no body"))
-  }
-
-  private def eval(source: String): Value = checked(source)._2
-
-  private def evalRaw(source: String): Value = LanguageParser.parseProgram(source) match {
-    case Success(program, _, _) =>
-      Interpreter.run(Elaborator.elabWithoutPrelude(program)).getOrElse(fail("Program has no body"))
-    case Failure(_, idx, message) => fail(s"Failed to parse at $idx: $message")
-  }
-
-  private def evalTrustedRaw(source: String): Value = LanguageParser.parseProgram(source) match {
-    case Success(program, _, _) =>
-      val (_, body) = TypeChecker.checkProgramTrusted(Elaborator.elab(program, Prelude.none))
-      body.map(_.value).getOrElse(fail("Program has no body"))
-    case Failure(_, idx, message) => fail(s"Failed to parse at $idx: $message")
-  }
-
-  private def checkRaw(source: String): Unit = LanguageParser.parseProgram(source) match {
-    case Success(program, _, _)   => TypeChecker.checkProgram(Elaborator.elabWithoutPrelude(program))
-    case Failure(_, idx, message) => fail(s"Failed to parse at $idx: $message")
-  }
-
-  private def trustedEnv(source: String): Env = TypeChecker.checkProgramTrusted(core(source))._1
-
-  private def checkTrustedSource(source: String): Env = TypeChecker.checkProgramTrusted(core(source))._1
-
-  private def shape(value: Value): String = value match {
-    case Value.VCtor(head, fields, _)            => head.name + fields.map(shape).mkString("(", ",", ")")
-    case Value.VApp(head, args, _, _)            => shape(head) + args.map(shape).mkString("(", ",", ")")
-    case Value.VConst(name, _, _)                => name
-    case Value.ConstructorHead(name, _, _, _, _) => name + "()"
-    case other                                   => other.toString
-  }
-
-  test("Quot.mk stores only its representative") {
-    val value = eval(
-      """
-        |inductive Peano : Type
-        | | zero : Peano
-        |
-        |def Rel (a: Peano)(b: Peano): Prop := Eq(Peano, a, b)
-        |
-        |{ Quot.mk(Rel, Peano.zero) }
-        |""".stripMargin
+  test("Quot.mk is a constructor head that stores only the representative") {
+    val res = runProgram(
+      natPrelude +
+        """
+          |{
+          |  Quot.mk(Rel, Nat.zero)
+          |}
+          |""".stripMargin
     )
-    value match {
-      case Value.VCtor(head, fields, _) =>
+
+    res match {
+      case Value.VCtor(head, storedArgs, _) =>
         assertEquals(head.name, "Quot.mk")
-        assert(!head.noConfusion)
-        assertEquals(fields.length, 1)
-        assertEquals(shape(fields.head), "Peano.zero()")
-      case other => fail(s"Expected quotient constructor, got $other")
+        assertEquals(storedArgs.length, 1)
+        assertEquals(storedArgs.map(toShape), Vector(natZero))
+      case other =>
+        fail(s"Expected Quot.mk constructor value, got $other")
     }
   }
 
   test("Quot.lift reduces on Quot.mk") {
-    val value = eval(
-      """
-        |inductive Peano : Type
-        | | zero : Peano
-        | | succ (n: Peano) : Peano
-        |
-        |def Rel (a: Peano)(b: Peano): Prop := Eq(Peano, a, b)
-        |
-        |def liftSound (a: Peano)(b: Peano)(h: Rel(a, b)): Eq(Peano, Peano.succ(a), Peano.succ(b)) := {
-        |  match h returning Eq(Peano, Peano.succ(a), Peano.succ(b)) with
-        |  | Eq.refl x => Eq.refl(Peano.succ(x))
-        |}
-        |{ Quot.lift(Quot.mk(Rel, Peano.zero), Peano, fun (x: Peano): Peano => Peano.succ(x), liftSound) }
-        |""".stripMargin
+    val res = runProgram(
+      natPrelude +
+        """
+          |def sound (a: Nat)(b: Nat)(h: Rel(a, b)): Eq(Nat, Nat.succ(a), Nat.succ(b)) := {
+          |  match h returning Eq(Nat, Nat.succ(a), Nat.succ(b)) with
+          |  | Eq.refl x => Eq.refl(Nat.succ(x))
+          |}
+          |
+          |{
+          |  Quot.lift(Quot.mk(Rel, Nat.zero), Nat, fun (x: Nat): Nat => Nat.succ(x), sound)
+          |}
+          |""".stripMargin
     )
-    assertEquals(shape(value), "Peano.succ(Peano.zero())")
+
+    assertEquals(toShape(res), natOne)
   }
 
-  test("the inductionOn wrapper canonicalizes a proof motive") {
-    val value = eval(
-      """
-        |inductive Peano : Type
-        | | zero : Peano
-        |
-        |def Rel (a: Peano)(b: Peano): Prop := Eq(Peano, a, b)
-        |
-        |inductive True : Prop
-        | | intro : True
-        |
-        |def motive (q: Quot(Peano, Rel)): Prop := True
-        |
-        |{ inductionOn(Quot.mk(Rel, Peano.zero), motive, fun (a: Peano): motive(Quot.mk(Rel, a)) => True.intro) }
-        |""".stripMargin
+  test("Quot.ind canonicalizes the proof of its motive") {
+    val res = runProgram(
+      natPrelude +
+        """
+          |def motive (q: Quot(Nat, Rel)): Prop := True
+          |
+          |{
+          |  Quot.inductionOn(Quot.mk(Rel, Nat.zero), motive, fun (a: Nat): motive(Quot.mk(Rel, a)) => True.intro)
+          |}
+          |""".stripMargin
     )
-    value match {
-      case Value.VCtor(head, _, _) => assertEquals(head.name, "True.intro")
-      case other                   => fail(s"Expected canonical proof, got $other")
+
+    // The mkCase body is never consulted. Exact-type canonicalization reconstructs True.intro
+    // from motive(q) = True.
+    res match {
+      case Value.VCtor(head, fields, tpe) =>
+        assertEquals(head.name, "True.intro")
+        assertEquals(fields, Vector.empty)
+        assertEquals(toShape(tpe), SConst("True"))
+      case other => fail(s"Expected the canonical True.intro proof, got $other")
     }
   }
 
-  test("the implicit liftOn wrapper recovers quotient parameters") {
-    val value = eval(
-      """
-        |inductive Peano : Type
-        | | zero : Peano
-        |
-        |def Rel (a: Peano)(b: Peano): Prop := Eq(Peano, a, b)
-        |def idSound (a: Peano)(b: Peano)(h: Rel(a, b)): Eq(Peano, a, b) := h
-        |
-        |{ liftOn(Quot.mk(Rel, Peano.zero), Peano, fun (x: Peano): Peano => x, idSound) }
-        |""".stripMargin
+  test("implicit wrapper can recover quotient parameters") {
+    val res = runProgram(
+      natPrelude +
+        """
+          |def idSound (a: Nat)(b: Nat)(h: Rel(a, b)): Eq(Nat, a, b) := h
+          |
+          |{
+          |  Quot.liftOn(Quot.mk(Rel, Nat.zero), Nat, fun (x: Nat): Nat => x, idSound)
+          |}
+          |""".stripMargin
     )
-    assertEquals(shape(value), "Peano.zero()")
+
+    assertEquals(toShape(res), natZero)
   }
 
-  test("Quot.sound has equality of quotient representatives as its type") {
-    val value = eval(
-      """
-        |inductive Peano : Type
-        | | zero : Peano
-        |
-        |def Rel (a: Peano)(b: Peano): Prop := Eq(Peano, a, b)
-        |
-        |{ sound(Peano.zero, Peano.zero, Rel, Eq.refl(Peano.zero)) }
-        |""".stripMargin
+  test("Quot.sound proves related representatives equal in the quotient") {
+    val res = runProgram(
+      natPrelude +
+        """
+          |{
+          |  Quot.sound(Nat.zero, Nat.zero, Rel, Eq.refl(Nat.zero))
+          |}
+          |""".stripMargin
     )
-    assert(PrettyPrinter.print(value.tpe).contains("Quot"))
-    assert(PrettyPrinter.print(value.tpe).contains("Quot.mk"))
+
+    res.tpe match {
+      case Value.VApp(Value.VConst("Eq", _, _), Vector(_, quotTy, left, right), _, _) =>
+        val printedQuot = PrettyPrinter.print(quotTy)
+        assert(printedQuot.startsWith("Quot("))
+        assert(printedQuot.contains("Nat"))
+        assertEquals(toShape(left), SApp(SConst("Quot.mk"), List(natZero)))
+        assertEquals(toShape(right), SApp(SConst("Quot.mk"), List(natZero)))
+      case other =>
+        fail(s"Expected quotient equality proof, got $other")
+    }
   }
 
-  test("ordinary constructor disjointness remains available") {
-    eval(
+  test("unknown builtin declaration is rejected") {
+    val src =
       """
-        |inductive Peano : Type
-        | | zero : Peano
-        | | succ (n: Peano) : Peano
-        |
-        |inductive False : Prop
-        |
-        |def noConf (n: Peano)(h: Eq(Peano, Peano.zero, Peano.succ(n))): False := {
+        |def bogus : Type := builtin
+        |""".stripMargin
+
+    // A program may not declare builtins at all; a prelude may, but only known ones.
+    intercept[ReservedKernelName] {
+      LanguageParser.parseProgram(src) match {
+        case Success(value, _, _) =>
+          Interpreter.run(Elaborator.elab(value))
+        case parseErr: Failure =>
+          fail(s"Failed to parse: $parseErr, ${src.substring(parseErr.curIdx)}")
+      }
+    }
+    val err = intercept[WTF](Prelude.fromSource("bogus-prelude", src).checkedEnv)
+
+    assertEquals(err.msg, "Unknown builtin bogus")
+  }
+
+  test("genuine constructor disjointness still prunes impossible refl cases") {
+    runProgram(
+      """
+        |def noConf (n: Nat)(h: Eq(Nat, Nat.zero, Nat.succ(n))): False := {
         |  match h returning False with
         |}
-        |{ Peano.zero }
+        |
+        |{
+        |  Bool.true
+        |}
         |""".stripMargin
     )
   }
 
-  test("Quot.mk fields do not force implicit parameters") {
-    intercept[NonForcedImplicitParam] {
-      checkTrustedSource(
+  test("Quot.mk fields do not force implicit parameters (no projection through soundness-quotiented heads)") {
+    // Quot.mk has noConfusion=false: Quot.sound identifies mk applications with distinct
+    // representatives, so projecting x out of a Quot.mk value appearing in h's index would not
+    // be well-defined on the quotient. The implicit is therefore unforced and the def is
+    // rejected at declaration instead of x being reconstructed from the Quot.mk field.
+    val src =
+      natPrelude +
         """
-          |inductive Peano : Type
-          | | zero : Peano
+          |def extract {x: Nat}(h: Eq(Quot(Nat, Rel), Quot.mk(Rel, x), Quot.mk(Rel, Nat.zero))): Nat := x
           |
-          |def Rel (a: Peano)(b: Peano): Prop := Eq(Peano, a, b)
-          |
-          |def extract {x: Peano}
-          |  (h: Eq(Quot(Peano, Rel), Quot.mk(Rel, x), Quot.mk(Rel, Peano.zero))): Peano := x
+          |{
+          |  extract(Eq.refl(Quot.mk(Rel, Nat.zero)))
+          |}
           |""".stripMargin
-      )
+    LanguageParser.parseProgram(src) match {
+      case Success(value, _, _) =>
+        val core = Elaborator.elab(value)
+        intercept[NonForcedImplicitParam] { Interpreter.run(core) }
+      case err: Failure =>
+        fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
   }
 
   test("Quot exposes no generated field selectors") {
-    val env = trustedEnv(
-      """
-        |inductive Peano : Type
-        | | zero : Peano
-        |
-        |def Rel (a: Peano)(b: Peano): Prop := Eq(Peano, a, b)
-        |
-        |axiom q : Quot(Peano, Rel)
-        |""".stripMargin
+    val env = evalDecls(
+      natPrelude +
+        """
+          |axiom q : Quot(Nat, Rel)
+          |""".stripMargin
     )
     val span = Span(0, 0)
+
+    // Quot is not a struct: field syntax has no selector to resolve to on a quotient.
     intercept[TypeError] {
       TypeChecker.checkTerm(
         CoreAst.Term.Select(CoreAst.Term.GlobalRef("q", span), "value", span),
         env
       )
     }
-  }
-
-  test("unknown builtin declarations are rejected") {
-    intercept[ReservedKernelName] {
-      evalRaw("def bogus : Type := builtin\n{ Type }")
-    }
-    intercept[ReservedKernelName] {
-      evalRaw("def Sort : Type := builtin\n{ Type }")
-    }
-    intercept[ReservedKernelName] {
-      checkRaw("def Sort : Type := builtin\n{ Type }")
-    }
-    val error = intercept[WTF] {
-      evalTrustedRaw("def bogus : Type := builtin\n{ Type }")
-    }
-    assertEquals(error.msg, "Unknown builtin bogus")
   }
 }

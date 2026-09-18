@@ -1,255 +1,321 @@
 package com.raccoonlang
 
+import com.raccoonlang.CoreAst.{Term => CTerm}
+import com.raccoonlang.Value._
+
 class ValueOpsTests extends munit.FunSuite {
-  test("materialization follows immutable variable substitutions") {
-    val meta = Value.Var("u", 2001, Value.TypeValue)
-    val store = EqStore.empty.allow(DepSet(2001))
-    val solved = store.addLink(2001, Value.TypeValue)
-    assert(ValueOps.materialize(meta, solved) == Value.TypeValue)
+  private val span = Span(0, 0)
+  private val valueType: Value = TypeTpe
+  private val typeRef: CoreAst.Term = CTerm.GlobalRef("Type", span)
+  private val typeToTypeClassifier: Value.VSort = VSort(Level.succ(Level.one))
+
+  private def nodeId(start: Int): AstNodeId = AstNodeId(None, start)
+
+  private def symbolicValue(name: String): VConst =
+    VConst(name, Symbol, valueType)
+
+  private def solve(v: Var, solution: Value): EqStore =
+    EqStore.empty.allow(DepSet(v.id)).addLink(v.id, solution)
+
+  test("materializeEnv rewrites solved locals") {
+    val ref = CoreAst.LocalRef(0, "x")
+    val x = FreshVar.freshVar("x", valueType)
+    val solution = symbolicValue("Solved")
+    val env = Env.empty.putLocal(ref, x)
+
+    val materialized = ValueOps.materializeEnv(env, solve(x, solution))
+
+    assertEquals(materialized(ref), solution)
+    assert(!materialized(ref).synDeps.contains(x.id))
   }
 
-  test("materialization preserves unaffected value identity") {
-    val value = Value.VConst("closed", Value.Symbol, Value.TypeValue)
-    val store = EqStore.empty.allow(DepSet(9999)).addLink(9999, Value.TypeValue)
-    assert(ValueOps.materialize(value, store).asInstanceOf[AnyRef] eq value.asInstanceOf[AnyRef])
+  test("materializeEnv leaves globals closed") {
+    val ref = CoreAst.LocalRef(0, "x")
+    val x = FreshVar.freshVar("x", valueType)
+    val solution = symbolicValue("Solved")
+    val global = symbolicValue("Global")
+    val base = Env.empty
+      .putGlobal("global", global)
+      .putLocal(ref, x)
+    val materialized = ValueOps.materializeEnv(base, solve(x, solution))
+
+    assertEquals(materialized("global"), global)
+    assertEquals(materialized(ref), solution)
   }
 
-  test("materialization follows substitutions inside neutral-thunk captures") {
-    val span = Span(0, 1, None)
-    val term = CoreAst.Term.Match(CoreAst.Term.GlobalRef("x", span), None, Vector.empty, span)
-    val meta = Value.Var("u", 2002, Value.TypeValue)
-    val thunk = Value.NeutralThunk(
-      term,
-      Env.empty,
-      Value.ValueId.LocalId(term.nodeId, Vector(meta)),
-      Value.TypeValue,
-      DepSet.empty
-    )
-    val solved = EqStore.empty.allow(DepSet(2002)).addLink(2002, Value.TypeValue)
-    val materialized = ValueOps.materialize(thunk, solved).asInstanceOf[Value.NeutralThunk]
-    assert(materialized.id.captures == Vector(Value.TypeValue))
+  test("closeForEval returns an ordinary env containing only captured locals") {
+    val keptRef = CoreAst.LocalRef(0, "kept")
+    val uncapturedRef = CoreAst.LocalRef(1, "uncaptured")
+    val argRef = CoreAst.LocalRef(2, "arg")
+    val kept = symbolicValue("Kept")
+    val uncaptured = symbolicValue("Uncaptured")
+    val arg = symbolicValue("Arg")
+    val env = Env.empty.putLocal(keptRef, kept).putLocal(uncapturedRef, uncaptured)
+    val capturedRefs = CapturedRefs.getCapturedRefs(CTerm.LocalRef(keptRef, span), env)
+
+    val closed = env.closeForEval(capturedRefs)
+
+    assertEquals(closed.locals.keySet, Set(keptRef))
+    assertEquals(closed(keptRef), kept)
+    intercept[NotFound](closed(uncapturedRef))
+    assertEquals(closed.putLocal(argRef, arg)(argRef), arg)
   }
 
-  test("solving a neutral match blocker re-evaluates its closed match") {
-    val program = TestSupport.core("inductive Bool : Type\n | true : Bool\n | false : Bool\n")
-    val env = program.decls.foldLeft(Interpreter.builtins) { case (current, decl) =>
-      Interpreter.evalDecl(decl, current)
-    }
-    val ref = CoreAst.LocalRef(2100, "b")
-    val scrut = FreshVar.freshVar("b", env("Bool"))
-    val withLocal = env.putLocal(ref, scrut)
-    val span = Span(0, 1, None)
-    val term = CoreAst.Term.Match(
-      CoreAst.Term.LocalRef(ref, span),
-      Some(CoreAst.Term.GlobalRef("Bool", span)),
-      Vector(
-        CoreAst
-          .Case("Bool.true", isFullyQualified = true, Vector.empty, CoreAst.Term.GlobalRef("Bool.true", span), span),
-        CoreAst
-          .Case("Bool.false", isFullyQualified = true, Vector.empty, CoreAst.Term.GlobalRef("Bool.false", span), span)
-      ),
-      span
-    )
-    val thunk = Interpreter.evalTerm(term, withLocal).asInstanceOf[Value.NeutralThunk]
-    val solved = EqStore.empty
-      .allow(DepSet(scrut.id))
-      .addLink(scrut.id, Interpreter.evalTerm(CoreAst.Term.GlobalRef("Bool.true", span), env))
-    assertEquals(
-      ValueOps.materialize(thunk, solved),
-      Interpreter.evalTerm(CoreAst.Term.GlobalRef("Bool.true", span), env)
-    )
+  test("closed env omits uncaptured locals and materialization preserves that boundary") {
+    val keptRef = CoreAst.LocalRef(0, "kept")
+    val uncapturedRef = CoreAst.LocalRef(1, "uncaptured")
+    val kept = FreshVar.freshVar("kept", valueType)
+    val uncaptured = FreshVar.freshVar("uncaptured", valueType)
+    val solution = symbolicValue("KeptSolution")
+    val env = Env.empty.putLocal(keptRef, kept).putLocal(uncapturedRef, uncaptured)
+    val capturedRefs = CapturedRefs.getCapturedRefs(CTerm.LocalRef(keptRef, span), env)
+
+    val closed = env.closeForEval(capturedRefs)
+
+    assertEquals(closed(keptRef), kept)
+    intercept[NotFound](closed(uncapturedRef))
+
+    val materialized = ValueOps.materializeEnv(closed, solve(kept, solution))
+    assertEquals(materialized(keptRef), solution)
+    intercept[NotFound](materialized(uncapturedRef))
   }
 
-  test("materialization canonicalizes a generic constructor after its universe becomes Prop") {
-    val (env, _) = TestSupport.check(
-      """
-        |inductive Peano : Type
-        | | zero : Peano
-        |
-        |inductive PolyUnit (u: Level) indices (n: Peano) : Sort(u)
-        | | mk : PolyUnit(u, Peano.zero)
-        |""".stripMargin
-    )
-    val u = FreshVar.freshVar("u", Value.LevelTpe)
-    val zero = env("Peano.zero")
-    val family = Interpreter.evalApply(env("PolyUnit"), Vector(u, zero))
-    val head = env("PolyUnit.mk").asInstanceOf[Value.ConstructorHead]
-    val generic = Value.VCtor(head, Vector.empty, family)
-    val solved = EqStore.empty.allow(DepSet(u.id)).addLink(u.id, Value.Level.zero)
-    ValueOps.materialize(generic, solved) match {
-      case Value.VCtor(head, _, _) => assertEquals(head.name, "PolyUnit.mk")
-      case other                   => fail(s"Expected materialization to canonicalize the Prop constructor, got $other")
-    }
-  }
+  test("materialize rewrites VLam core environment used by execution") {
+    val capturedRef = CoreAst.LocalRef(0, "captured")
+    val argRef = CoreAst.LocalRef(1, "arg")
+    val captured = FreshVar.freshVar("captured", valueType)
+    val solution = symbolicValue("CapturedSolution")
+    val runtimeEnv = Env.empty.putGlobal("Type", valueType).putLocal(capturedRef, captured)
 
-  test("materialization rewrites applications, Pi closures, and lambda closures") {
-    val span = Span(0, 1, None)
-    val captured = Value.Var("A", 2101, Value.TypeTpe)
-    val capturedRef = CoreAst.LocalRef(2101, "A")
-    val binderRef = CoreAst.LocalRef(2102, "x")
-    val base = Interpreter.builtins.putLocal(capturedRef, captured)
-    val piTerm = CoreAst.Term.Pi(
-      Vector(CoreAst.Binder(binderRef, CoreAst.Term.GlobalRef("Type", span), span)),
-      CoreAst.Term.LocalRef(capturedRef, span),
-      span
-    )
-    val pi = Interpreter.evalPi(piTerm, base)
-    val lambdaTerm = CoreAst.Term.Lam(
-      piTerm,
-      CoreAst.Term.LocalRef(capturedRef, span),
-      span,
-      None,
-      None
-    )
-    val lambda = Interpreter.evalLam(lambdaTerm, base)
-    val fn = Value.VConst("f", Value.Symbol, pi)
-    val app = Value.VApp(fn, Vector(captured), captured)
-    val solution = Value.VConst("Solved", Value.Symbol, Value.TypeTpe)
-    val store = EqStore.empty.allow(DepSet(captured.id)).addLink(captured.id, solution)
-
-    val materializedApp = ValueOps.materialize(app, store).asInstanceOf[Value.VApp]
-    assertEquals(materializedApp.args, Vector(solution))
-    val materializedPi = ValueOps.materialize(pi, store).asInstanceOf[Value.VPi]
-    assertEquals(materializedPi.env(capturedRef), solution)
-    val materializedLambda = ValueOps.materialize(lambda, store).asInstanceOf[Value.VLam]
-    assertEquals(Interpreter.evalApply(materializedLambda, Vector(Value.TypeValue)), solution)
-  }
-
-  test("unrelated substitutions preserve blocked neutral identity") {
-    val span = Span(0, 1, None)
-    val term = CoreAst.Term.Match(CoreAst.Term.GlobalRef("x", span), None, Vector.empty, span)
-    val blocked = Value.Var("scrut", 2201, Value.TypeValue)
-    val thunk = Value.NeutralThunk(
-      term,
-      Env.empty,
-      Value.ValueId.LocalId(term.nodeId, Vector(blocked)),
-      Value.TypeValue,
-      DepSet(2201)
-    )
-    val unrelated = EqStore.empty.allow(DepSet(2202)).addLink(2202, Value.TypeValue)
-    assert(ValueOps.materialize(thunk, unrelated).asInstanceOf[AnyRef] eq thunk.asInstanceOf[AnyRef])
-  }
-
-  test("materializeEnv changes affected locals while preserving globals and the local-ref index") {
-    val affectedRef = CoreAst.LocalRef(2203, "affected")
-    val untouchedRef = CoreAst.LocalRef(2204, "untouched")
-    val affected = Value.Var("affected", 2203, Value.TypeValue)
-    val untouched = Value.VConst("untouched", Value.Symbol, Value.TypeValue)
-    val global = Value.VConst("g", Value.Symbol, Value.TypeValue)
-    val env = Env.empty.putGlobal("g", global).putLocal(affectedRef, affected).putLocal(untouchedRef, untouched)
-    val solved = EqStore.empty.allow(DepSet(2203)).addLink(2203, Value.TypeValue)
-    val materialized = ValueOps.materializeEnv(env, solved)
-    assertEquals(materialized("g"), global)
-    assertEquals(materialized(affectedRef), Value.TypeValue)
-    assertEquals(materialized(untouchedRef), untouched)
-    assertEquals(materialized.localRefs, env.localRefs)
-    assert(materialized.locals(untouchedRef).asInstanceOf[AnyRef] eq untouched.asInstanceOf[AnyRef])
-  }
-
-  test("materialize rewrites constant, constructor-head, application arguments, and result types") {
-    val meta = Value.Var("T", 2205, Value.TypeValue.tpe)
-    val solved = Value.VConst("SolvedType", Value.Symbol, Value.TypeValue)
-    val store = EqStore.empty.allow(DepSet(2205)).addLink(2205, solved)
-    val constant = Value.VConst("c", Value.Symbol, meta)
-    val head = Value.ConstructorHead("C", 0, 1, Value.TypeValue)
-    val app = Value.VApp(head, Vector(meta), meta)
-    assertEquals(ValueOps.materialize(constant, store).tpe, solved)
-    assertEquals(ValueOps.materialize(head, store).asInstanceOf[Value.ConstructorHead].tpe, Value.TypeValue)
-    val materializedApp = ValueOps.materialize(app, store).asInstanceOf[Value.VApp]
-    assertEquals(materializedApp.args, Vector(solved))
-    assertEquals(materializedApp.tpe, solved)
-  }
-
-  test("materialize rewrites neutral-thunk environment, captures, type, and solved blocker") {
-    val span = Span(0, 1, None)
-    val capturedRef = CoreAst.LocalRef(2206, "captured")
-    val scrutRef = CoreAst.LocalRef(2207, "scrut")
-    val captured = Value.Var("captured", 2206, Value.TypeValue)
-    val scrut = Value.Var("scrut", 2207, Value.TypeValue)
-    val boolProgram = TestSupport.core("inductive Bool : Type\n | true : Bool\n | false : Bool\n")
-    val boolEnv = boolProgram.decls.foldLeft(Interpreter.builtins) { case (current, decl) =>
-      Interpreter.evalDecl(decl, current)
-    }
-    val env = boolEnv.putLocal(capturedRef, captured).putLocal(scrutRef, scrut)
-    val matchTerm = CoreAst.Term.Match(
-      CoreAst.Term.LocalRef(scrutRef, span),
-      Some(CoreAst.Term.GlobalRef("Bool", span)),
-      Vector(
-        CoreAst
-          .Case("Bool.true", isFullyQualified = true, Vector.empty, CoreAst.Term.LocalRef(capturedRef, span), span),
-        CoreAst
-          .Case("Bool.false", isFullyQualified = true, Vector.empty, CoreAst.Term.LocalRef(capturedRef, span), span)
-      ),
-      span
-    )
-    val thunk = Value.NeutralThunk(
-      matchTerm,
-      env.closeForEval(Set(capturedRef, scrutRef)),
-      Value.ValueId.LocalId(matchTerm.nodeId, Vector(captured, scrut)),
-      captured,
-      DepSet(2207)
-    )
-    val replacement = Value.VConst("replacement", Value.Symbol, Value.TypeValue)
-    val captureStore = EqStore.empty.allow(DepSet(2206)).addLink(2206, replacement)
-    val capturedThunk = ValueOps.materialize(thunk, captureStore).asInstanceOf[Value.NeutralThunk]
-    assertEquals(capturedThunk.env(capturedRef), replacement)
-    assertEquals(capturedThunk.id.captures.head, replacement)
-    assertEquals(capturedThunk.tpe, replacement)
-    val solvedScrut = Interpreter.evalTerm(CoreAst.Term.GlobalRef("Bool.true", span), boolEnv)
-    val solved = EqStore.empty.allow(DepSet(2206, 2207)).addLink(2206, replacement).addLink(2207, solvedScrut)
-    val materialized = ValueOps.materialize(thunk, solved)
-    assertEquals(materialized, replacement)
-  }
-
-  test("Pi materialization rewrites deps and keeps classifier evaluation lazy") {
-    val span = Span(0, 1, None)
-    val capturedRef = CoreAst.LocalRef(2208, "captured")
-    val captured = Value.Var("captured", 2208, Value.TypeValue)
-    val binderRef = CoreAst.LocalRef(2209, "x")
-    val env = Interpreter.builtins.putLocal(capturedRef, captured)
-    val term = CoreAst.Term.Pi(
-      Vector(CoreAst.Binder(binderRef, CoreAst.Term.GlobalRef("Type", span), span)),
-      CoreAst.Term.LocalRef(capturedRef, span),
-      span
-    )
-    val pi = Value.VPi(
-      env,
-      term.binders,
-      _ => captured,
-      captured.synDeps,
-      Value.ValueId.LocalId(term.nodeId, Vector(captured)),
-      () => Value.TypeValue
-    )
-    val replacement = Value.VConst("replacement", Value.Symbol, Value.TypeValue)
-    val solved = EqStore.empty.allow(DepSet(2208)).addLink(2208, replacement)
-    val materialized = ValueOps.materialize(pi, solved).asInstanceOf[Value.VPi]
-    assertEquals(materialized.env(capturedRef), replacement)
-    assert(!materialized.synDeps.contains(2208))
-    assertEquals(materialized.tpe, Value.TypeValue)
-  }
-
-  test("native lambda body environments materialize without changing the callable") {
-    val capturedRef = CoreAst.LocalRef(2210, "captured")
-    val captured = Value.Var("captured", 2210, Value.TypeValue)
-    val replacement = Value.VConst("replacement", Value.Symbol, Value.TypeValue)
-    val env = Interpreter.builtins.putLocal(capturedRef, captured)
-    val binderRef = CoreAst.LocalRef(2211, "x")
-    val binder = CoreAst.Binder(binderRef, CoreAst.Term.GlobalRef("Type", Span(0, 1)), Span(0, 1))
-    val pi = Value.VPi(
-      env,
+    val binder = CoreAst.Binder(argRef, typeRef, span)
+    val pi = VPi(
+      runtimeEnv,
       Vector(binder),
-      _ => Value.TypeValue,
+      _ => valueType,
       captured.synDeps,
-      Value.ValueId.LocalId(AstNodeId.synthetic(), Vector(captured)),
-      () => Value.TypeValue.asInstanceOf[Value.VSort]
+      ValueId.LocalId(nodeId(1), Vector(captured)),
+      () => typeToTypeClassifier
     )
-    val lambda = Value.VLam(
-      pi,
-      Value.ValueId.LocalId(AstNodeId.synthetic(), Vector(captured)),
-      Value.LamBody.Native((_, nativeEnv) => nativeEnv(capturedRef), env, isRawRecursive = false)
+    val piTerm = CTerm.Pi(
+      Vector(CoreAst.Binder(argRef, typeRef, span)),
+      typeRef,
+      Span.synthetic()
     )
-    val solved = EqStore.empty.allow(DepSet(2210)).addLink(2210, replacement)
-    val materialized = ValueOps.materialize(lambda, solved).asInstanceOf[Value.VLam]
-    assertEquals(Interpreter.evalApply(materialized, Vector(Value.TypeValue)), replacement)
+    val lamTerm = CTerm.Lam(
+      piTerm,
+      CTerm.LocalRef(capturedRef, span),
+      span,
+      name = None,
+      recursion = None
+    )
+    val lam = VLam(pi, ValueId.LocalId(nodeId(2), Vector(captured)), LamBody.Core(lamTerm, runtimeEnv))
+
+    val materialized = ValueOps.materialize(lam, solve(captured, solution)).asInstanceOf[VLam]
+
+    assertEquals(materialized.tpe.env(capturedRef), solution)
+    materialized.body match {
+      case LamBody.Core(_, materializedEnv) => assertEquals(materializedEnv(capturedRef), solution)
+      case other                            => fail(s"Expected materialized core lambda body, got $other")
+    }
+    assert(!materialized.synDeps.contains(captured.id))
+    assertEquals(Interpreter.evalApply(materialized, Vector(symbolicValue("Arg"))), solution)
+  }
+
+  test("under-captured core lambda fails on uncaptured local access") {
+    val capturedRef = CoreAst.LocalRef(0, "captured")
+    val argRef = CoreAst.LocalRef(1, "arg")
+    val captured = symbolicValue("Captured")
+    val env = Env.empty.putGlobal("Type", valueType).putLocal(capturedRef, captured)
+    val runtimeEnv = env.closeForEval(Set.empty)
+
+    val binder = CoreAst.Binder(argRef, typeRef, span)
+    val pi = VPi(
+      runtimeEnv,
+      Vector(binder),
+      _ => valueType,
+      DepSet.empty,
+      ValueId.LocalId(nodeId(1), Vector.empty),
+      () => typeToTypeClassifier
+    )
+    val piTerm = CTerm.Pi(
+      Vector(CoreAst.Binder(argRef, typeRef, span)),
+      typeRef,
+      Span.synthetic()
+    )
+    val lamTerm = CTerm.Lam(
+      piTerm,
+      CTerm.LocalRef(capturedRef, span),
+      span,
+      name = None,
+      recursion = None
+    )
+    val lam = VLam(pi, ValueId.LocalId(nodeId(2), Vector.empty), LamBody.Core(lamTerm, runtimeEnv))
+
+    intercept[NotFound](Interpreter.evalApply(lam, Vector(symbolicValue("Arg"))))
+  }
+
+  test("core lambda execution uses the lambda body closure, not only the Pi closure") {
+    val capturedRef = CoreAst.LocalRef(0, "captured")
+    val argRef = CoreAst.LocalRef(1, "arg")
+    val captured = symbolicValue("Captured")
+    val env = Env.empty.putGlobal("Type", valueType).putLocal(capturedRef, captured)
+
+    val piTerm = CTerm.Pi(
+      Vector(CoreAst.Binder(argRef, typeRef, span)),
+      typeRef,
+      Span.synthetic()
+    )
+    val vpi = Interpreter.evalPi(piTerm, env)
+    val lamTerm = CTerm.Lam(
+      piTerm,
+      CTerm.LocalRef(capturedRef, span),
+      span,
+      name = None,
+      recursion = None
+    )
+    val lam = Interpreter.evalLam(lamTerm, vpi, env).asInstanceOf[VLam]
+
+    intercept[NotFound](lam.tpe.env(capturedRef))
+    lam.body match {
+      case LamBody.Core(_, bodyEnv) => assertEquals(bodyEnv(capturedRef), captured)
+      case other                    => fail(s"Expected core lambda body, got $other")
+    }
+    assertEquals(Interpreter.evalApply(lam, Vector(symbolicValue("Arg"))), captured)
+  }
+
+  test("materialize rewrites VNeutralThunk match environment before forcing") {
+    val capturedRef = CoreAst.LocalRef(0, "captured")
+    val scrutRef = CoreAst.LocalRef(1, "scrut")
+    val captured = FreshVar.freshVar("captured", valueType)
+    val scrut = FreshVar.freshVar("scrut", valueType)
+    val solution = symbolicValue("ThunkSolution")
+    val runtimeEnv = Env.empty.putLocal(capturedRef, captured).putLocal(scrutRef, scrut)
+    val head = ConstructorHead("C", numErasedFamilyArgs = 0, totalArity = 0, valueType)
+    val ctor = VCtor(head, Vector.empty, valueType)
+    val matchTerm = CTerm.Match(
+      CTerm.LocalRef(scrutRef, span),
+      motive = None,
+      cases = Vector(
+        CoreAst.Case(
+          "C",
+          isFullyQualified = true,
+          Vector.empty,
+          CTerm.LocalRef(capturedRef, span),
+          span
+        )
+      ),
+      Span.synthetic()
+    )
+    val thunk = NeutralThunk(
+      matchTerm,
+      runtimeEnv,
+      ValueId.LocalId(nodeId(3), Vector(scrut, captured)),
+      valueType,
+      DepSet(scrut.id)
+    )
+
+    val eqCaptured = solve(captured, solution)
+    val materialized = ValueOps.materialize(thunk, eqCaptured).asInstanceOf[NeutralThunk]
+
+    assertEquals(materialized.env(capturedRef), solution)
+    assertEquals(materialized.env(scrutRef), scrut)
+
+    assert(!materialized.synDeps.contains(captured.id))
+    assert(materialized.synDeps.contains(scrut.id))
+    assertEquals(materialized.blockedOn, DepSet(scrut.id))
+
+    val eqAll = eqCaptured.allow(DepSet(scrut.id)).addLink(scrut.id, ctor)
+    assertEquals(Interpreter.resolveInEqStore(materialized, eqAll), solution)
+  }
+
+  test("resolveInEqStore uses the blocker set rather than all thunk dependencies") {
+    val capturedRef = CoreAst.LocalRef(0, "captured")
+    val scrutRef = CoreAst.LocalRef(1, "scrut")
+    val captured = FreshVar.freshVar("captured", valueType)
+    val scrut = FreshVar.freshVar("scrut", valueType)
+    val runtimeEnv = Env.empty.putLocal(capturedRef, captured).putLocal(scrutRef, scrut)
+    val matchTerm = CTerm.Match(
+      CTerm.LocalRef(scrutRef, span),
+      motive = None,
+      cases = Vector(CoreAst.Case("C", isFullyQualified = true, Vector.empty, CTerm.LocalRef(capturedRef, span), span)),
+      Span.synthetic()
+    )
+    val thunk = NeutralThunk(
+      matchTerm,
+      runtimeEnv,
+      ValueId.LocalId(nodeId(4), Vector(scrut, captured)),
+      valueType,
+      DepSet(scrut.id)
+    )
+    val store = solve(captured, symbolicValue("CapturedSolution"))
+
+    assert(thunk.synDeps.contains(captured.id))
+    assert(!thunk.blockedOn.contains(captured.id))
+    assert(Interpreter.resolveInEqStore(thunk, store) eq thunk)
+  }
+
+  test("blocked application views preserve every blocker") {
+    val first = FreshVar.freshVar("first", valueType)
+    val second = FreshVar.freshVar("second", valueType)
+    val blockers = DepSet(first.id, second.id)
+    val app = VBlockedApp(symbolicValue("Head"), Vector(symbolicValue("Arg")), valueType, blockers)
+
+    app match {
+      case VBlockedApp(_, _, _, actual) => assertEquals(actual, blockers)
+      case other                        => fail(s"Expected a blocked application, got $other")
+    }
+    app match {
+      case Blocker(actual) => assertEquals(actual, blockers)
+      case other           => fail(s"Expected the application to expose its blocker set, got $other")
+    }
+  }
+
+  test("blocked match closures keep only referenced runtime locals") {
+    val capturedRef = CoreAst.LocalRef(0, "captured")
+    val unusedRef = CoreAst.LocalRef(1, "unused")
+    val scrutRef = CoreAst.LocalRef(2, "scrut")
+    val captured = symbolicValue("Captured")
+    val unused = FreshVar.freshVar("unused", valueType)
+    val scrut = FreshVar.freshVar("scrut", valueType)
+    val env = Env.empty
+      .putLocal(capturedRef, captured)
+      .putLocal(unusedRef, unused)
+      .putLocal(scrutRef, scrut)
+    val matchTerm = CTerm.Match(
+      CTerm.LocalRef(scrutRef, span),
+      motive = None,
+      cases = Vector(
+        CoreAst.Case(
+          "C",
+          isFullyQualified = true,
+          Vector.empty,
+          CTerm.LocalRef(capturedRef, span),
+          span
+        )
+      ),
+      Span.synthetic()
+    )
+
+    val blocked = Interpreter.evalTerm(matchTerm, env).asInstanceOf[NeutralThunk]
+    val closed = blocked.env
+
+    assertEquals(closed(capturedRef), captured)
+    intercept[NotFound](closed(unusedRef))
+    assertEquals(closed(scrutRef), scrut)
+
+    assert(!blocked.synDeps.contains(unused.id))
+    assert(blocked.synDeps.contains(scrut.id))
+    assertEquals(blocked.blockedOn, DepSet(scrut.id))
+  }
+
+  test("constructor equality accounts for result type") {
+    val head = ConstructorHead("C", numErasedFamilyArgs = 0, totalArity = 0, valueType)
+    val resultA = symbolicValue("ResultA")
+    val resultB = symbolicValue("ResultB")
+    val ctorA = VCtor(head, Vector.empty, resultA)
+    val ctorB = VCtor(head, Vector.empty, resultB)
+
+    assertNotEquals(ctorA.key, ctorB.key)
+    assert(!ValueEquivalence.defEq(ctorA, ctorB))
   }
 }
