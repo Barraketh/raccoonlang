@@ -86,9 +86,11 @@ object Main {
         ModuleLoader.load(entry, loadConfig)
       loadedOpt = Some(loaded)
       log("Loaded")
-      val core = Elaborator.elab(loaded.program, prelude)
+      val elaborated = Elaborator.elaborate(loaded.program, prelude)
       log("Elaborated")
-      val resOpt = Interpreter.run(core, prelude)
+      val checked = TypeChecker.check(elaborated)
+      log("Checked")
+      val resOpt = Interpreter.run(checked)
       resOpt.foreach { v => println(PrettyPrinter.print(v)) }
       log("Done")
       sys.exit(0)

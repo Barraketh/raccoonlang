@@ -37,6 +37,21 @@ representation and proof irrelevance.
 `:= builtin` is reserved for declarations in the trusted prelude. Ordinary
 programs cannot acquire builtin behavior.
 
+## Checking and execution
+
+The supported embedding pipeline is staged:
+
+```text
+surface program -> elaborated program -> checked program -> result
+```
+
+Elaboration resolves names and lowers surface syntax. Checking typechecks and
+publishes declarations while computing the final body value. Execution accepts
+only the resulting checked artifact; there is no second unchecked evaluation
+pass. Core-AST evaluation helpers and trusted-prelude construction are internal
+implementation operations; public prelude loaders only select a prelude for the
+staged pipeline.
+
 Identifiers begin with a letter and continue with letters, digits, or `_`.
 `_` may be used for an anonymous binder or ignored pattern field.
 

@@ -6,6 +6,12 @@ import com.raccoonlang.ErrorReporter.Source
 trait TestSupport { this: munit.FunSuite =>
   protected def suitePrelude: Prelude.Config = Prelude.default
 
+  protected def parseSurface(source: String): SurfaceAst.Program =
+    LanguageParser.parseProgram(source) match {
+      case Success(value, _, _)        => value
+      case Failure(_, curIdx, message) => fail(s"Failed to parse: $message, ${source.substring(curIdx)}")
+    }
+
   protected def parse(source: String, prelude: Prelude.Config): CoreAst.Program =
     LanguageParser.parseProgram(source) match {
       case Success(value, _, _) => Elaborator.elab(value, prelude)
@@ -15,25 +21,29 @@ trait TestSupport { this: munit.FunSuite =>
   protected def parse(source: String): CoreAst.Program = parse(source, suitePrelude)
 
   protected def runProgram(source: String, prelude: Prelude.Config): Value =
-    try Interpreter.run(parse(source, prelude), prelude).getOrElse(fail("Program has no body"))
-    catch {
+    try {
+      val checked = TypeChecker.check(Elaborator.elaborate(parseSurface(source), prelude))
+      Interpreter.run(checked).getOrElse(fail("Program has no body"))
+    } catch {
       case error: TypeError => fail(ErrorReporter.pretty(error, Source(source)))
     }
 
   protected def runProgram(source: String): Value = runProgram(source, suitePrelude)
 
   protected def typecheckDecls(source: String, prelude: Prelude.Config): Unit =
-    Interpreter.run(parse(source, prelude), prelude)
+    TypeChecker.check(Elaborator.elaborate(parseSurface(source), prelude))
 
   protected def typecheckDecls(source: String): Unit = typecheckDecls(source, suitePrelude)
 
   protected def expectTypeError[E <: TypeError](source: String, prelude: Prelude.Config)(implicit
       tag: reflect.ClassTag[E],
       loc: munit.Location
-  ): E = intercept[E](Interpreter.run(parse(source, prelude), prelude))
+  ): E = intercept[E](TypeChecker.check(Elaborator.elaborate(parseSurface(source), prelude)))
 
   protected def expectAnyTypeError(source: String)(implicit loc: munit.Location): TypeError =
-    intercept[TypeError](Interpreter.run(parse(source, suitePrelude), suitePrelude))
+    intercept[TypeError] {
+      TypeChecker.check(Elaborator.elaborate(parseSurface(source), suitePrelude))
+    }
 
   protected def expectTypeError[E <: TypeError](source: String)(implicit
       tag: reflect.ClassTag[E],

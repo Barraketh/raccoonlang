@@ -12,7 +12,23 @@ object TypeChecker {
       outTy: Value,
       residual: CA.Term.Pi
   )
-  final case class CheckedTerm(value: Value, residual: CA.Term)
+
+  /** A checker-produced term; callers cannot construct or copy one themselves. */
+  final class CheckedTerm private (val value: Value, val residual: CA.Term)
+
+  private[raccoonlang] object CheckedTerm {
+    def apply(value: Value, residual: CA.Term): CheckedTerm = new CheckedTerm(value, residual)
+  }
+
+  /** Check an elaborated program, retaining the value computed by the checking pass for the public runner. */
+  def check(program: Execution.ElaboratedProgram): Execution.CheckedProgram =
+    Execution.check(program)
+
+  private[raccoonlang] def checkRaw(program: CA.Program, prelude: Prelude.Config): Option[Value] = {
+    val env =
+      program.decls.foldLeft(prelude.checkedEnv) { case (curEnv, decl) => Interpreter.evalDecl(decl, curEnv) }
+    program.body.map(body => checkTerm(body, env).value)
+  }
 
   /**
    * An expected type, optionally paired with the *syntax* that denotes it.

@@ -37,7 +37,7 @@ object Interpreter {
    * Continues the reduction of v if any dependency that blocks it has been solved in EqStore. The default call (if v
    * cannot be further reduced) is a fast empty/intersection check, so callers may use it defensively.
    */
-  def resolveInEqStore(v: Value, eqStore: EqStore): Value = {
+  private[raccoonlang] def resolveInEqStore(v: Value, eqStore: EqStore): Value = {
     val v0 = eqStore.force(v)
     v0 match {
       case Blocked(blockedOn) if blockedOn.intersects(eqStore.solvedIds) =>
@@ -110,7 +110,7 @@ object Interpreter {
     piClassifierFromChecked(binders, freshEnv, evalTerm(out, freshEnv))
   }
 
-  def evalPi(pi: CTerm.Pi, env: Env): VPi = {
+  private[raccoonlang] def evalPi(pi: CTerm.Pi, env: Env): VPi = {
     val capturedRefs = CapturedRefs.getCapturedRefs(pi, env)
     val closedEnv = env.closeForEval(capturedRefs)
     val captureVals = closedEnv.locals.values.toVector
@@ -144,7 +144,7 @@ object Interpreter {
     }
   }
 
-  def evalApply(fn: Value, vArgs: Vector[Value]): Value = {
+  private[raccoonlang] def evalApply(fn: Value, vArgs: Vector[Value]): Value = {
     fn.tpe match {
       case pi: VPi =>
         // Grouping is part of a function type's identity, so an application supplies exactly this
@@ -217,7 +217,7 @@ object Interpreter {
       case _ => vArgs
     }
 
-  def evalLam(l: CTerm.Lam, vpi: VPi, env: Env): Value = {
+  private[raccoonlang] def evalLam(l: CTerm.Lam, vpi: VPi, env: Env): Value = {
     // The body has already checked (including termination). Do not even build a closure for a
     // proof-valued lambda: its canonical eta-lambda depends only on the checked Pi, and the source
     // body would be discarded immediately.
@@ -233,7 +233,7 @@ object Interpreter {
     }
   }
 
-  def runLam(lam: VLam, args: Vector[Value]): Value = {
+  private[raccoonlang] def runLam(lam: VLam, args: Vector[Value]): Value = {
     // Arguments are bound as supplied. A lambda's Pi is the one it was created with, so its binders
     // are exactly the ones its body expects.
     lazy val piEnv = BinderOps.instantiateFull(lam.tpe.binders, lam.tpe.env, args)
@@ -268,10 +268,10 @@ object Interpreter {
     evalLam(l, vpi, env)
   }
 
-  def getLevel(v: Value): Level =
+  private[raccoonlang] def getLevel(v: Value): Level =
     Level.fromValue(v).getOrElse(throw NotALevel(v))
 
-  def evalTerm(term: CoreAst.Term, env: Env): Value = {
+  private[raccoonlang] def evalTerm(term: CoreAst.Term, env: Env): Value = {
     try {
       term match {
         case CTerm.NatLit(value, _)   => Packed.evalNatLit(value, env)
@@ -364,7 +364,7 @@ object Interpreter {
     else stuckMatchThunk(m, env, outType, scrut.tpe.synDeps)
   }
 
-  def evalBody(body: CTerm.Body, env: Env): Value = {
+  private[raccoonlang] def evalBody(body: CTerm.Body, env: Env): Value = {
     val newEnv = body.lets.foldLeft(env) { case (curEnv, l) =>
       curEnv.putLocal(l.localRef, evalTerm(l.value, curEnv))
     }
@@ -381,7 +381,7 @@ object Interpreter {
 
   // A declaration is checked exactly once; the value the checker produced IS the published value.
   // There is no separate run world: once a definition has made it into the env, it is trusted.
-  def evalDecl(decl: Decl, env: Env): Env = evalDecl(decl, env, trusted = false)
+  private[raccoonlang] def evalDecl(decl: Decl, env: Env): Env = evalDecl(decl, env, trusted = false)
 
   /**
    * `trusted` is the one bootstrap privilege: a prelude may declare builtin bodies and the native Nat operations. A
@@ -438,13 +438,12 @@ object Interpreter {
         )
     }
 
-  def run(p: Program, prelude: Prelude.Config = Prelude.default): Option[Value] = {
-    val env =
-      p.decls.foldLeft(prelude.checkedEnv) { case (curEnv, decl) => evalDecl(decl, curEnv) }
-    p.body.map { b =>
-      TypeChecker.checkTerm(b, env).value
-    }
-  }
+  /** Execute a checked program. Checking and declaration publication have already happened. */
+  def run(program: Execution.CheckedProgram): Option[Value] = program.result
+
+  /** Compatibility entry point for implementation code and same-package kernel tests. */
+  private[raccoonlang] def run(p: Program, prelude: Prelude.Config = Prelude.default): Option[Value] =
+    TypeChecker.checkRaw(p, prelude)
 
   private[raccoonlang] val preludeInitialEnv: Env =
     Env.empty

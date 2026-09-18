@@ -10,10 +10,10 @@ object Prelude {
   val ImportPath: Vector[String] = Vector("Init", "Prelude")
 
   /** A prelude is trusted by construction: choosing one (bundled or `--prelude`) is choosing the kernel's bootstrap. */
-  final case class Config(
-      surface: SurfaceAst.Program,
-      core: CoreAst.Program,
-      ignoredImports: Set[Vector[String]]
+  final class Config private (
+      private[raccoonlang] val surface: SurfaceAst.Program,
+      private[raccoonlang] val core: CoreAst.Program,
+      private[raccoonlang] val ignoredImports: Set[Vector[String]]
   ) {
     def ignoresImport(path: Vector[String]): Boolean =
       ignoredImports(path)
@@ -27,6 +27,14 @@ object Prelude {
 
     /** Resolved prelude name trie for the elaborator, built once per Config. */
     lazy val names: Elaborator.PreludeNames = Elaborator.preludeNames(this)
+  }
+
+  private[raccoonlang] object Config {
+    def apply(
+        surface: SurfaceAst.Program,
+        core: CoreAst.Program,
+        ignoredImports: Set[Vector[String]]
+    ): Config = new Config(surface, core, ignoredImports)
   }
 
   lazy val default: Config = fromResource(DefaultResourcePath, ignoredImports = Set(ImportPath))

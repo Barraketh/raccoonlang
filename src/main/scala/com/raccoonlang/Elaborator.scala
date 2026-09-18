@@ -724,11 +724,15 @@ object Elaborator {
   private[raccoonlang] def elabWithoutPrelude(p: SA.Program): CA.Program =
     elabProgram(p, ResolveEnv.empty)
 
-  def elab(p: SA.Program): CA.Program =
+  private[raccoonlang] def elab(p: SA.Program): CA.Program =
     elab(p, Prelude.default)
 
-  def elab(p: SA.Program, prelude: Prelude.Config): CA.Program =
+  private[raccoonlang] def elab(p: SA.Program, prelude: Prelude.Config): CA.Program =
     elabProgram(p, ResolveEnv.empty.copy(root = prelude.names.root))
+
+  /** Elaborate a surface program into the opaque input accepted by [[TypeChecker.check]]. */
+  def elaborate(p: SA.Program, prelude: Prelude.Config = Prelude.default): Execution.ElaboratedProgram =
+    Execution.elaborate(p, prelude)
 
   private def elabProgram(p: SA.Program, startEnv: ResolveEnv): CA.Program = {
     p.imports.headOption.foreach { imp =>
