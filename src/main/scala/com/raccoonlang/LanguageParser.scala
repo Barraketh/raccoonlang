@@ -6,6 +6,8 @@ import com.raccoonlang.SurfaceAst.Command._
 import com.raccoonlang.SurfaceAst.Term._
 import com.raccoonlang.SurfaceAst._
 
+import scala.util.DynamicVariable
+
 /** Parser for the base surface language. Later commits extend `commandP` and `term` with additional constructs. */
 object LanguageParser {
   private val skipWS = CharsWhile(c => c == ' ' || c == '\t').named("SkipWS")
@@ -25,6 +27,14 @@ object LanguageParser {
   private val rootName = "_root_"
   private val rootIdent: Parser[String] = P(rootName).!
   private val ident: Parser[String] = identAtom
+  private val trustedPreludeParse = new DynamicVariable(false)
+  private val declIdent: Parser[String] = new Parser[String] {
+    override def parse(input: String, startIdx: Int): ParseResult[String] = {
+      val parser = if (trustedPreludeParse.value) identAtom.rep(1, sep = P('.')).map(_.mkString(".")) else ident
+      parser.parse(input, startIdx)
+    }
+    override def toString: String = "DeclarationIdentifier"
+  }
   private val argName: Parser[String] = ident | P("_").!
 
   private def sym(c: Char) = (skipWS ~ P(c) ~/ skipWS).named(s"Sym($c)")
@@ -206,7 +216,7 @@ object LanguageParser {
     (layoutParam.rep(0) ~ skipAllWs ~ sym(':') ~/ skipAllWs ~ typeTerm).flatSpanned(sourceId).map(FuncHeader.tupled)
 
   private def declHeader(implicit sourceId: Option[SourceId]): Parser[DeclHeader] =
-    (ident ~ funcHeader).flatSpanned(sourceId).map(DeclHeader.tupled)
+    (declIdent ~ funcHeader).flatSpanned(sourceId).map(DeclHeader.tupled)
 
   private def inductiveHeader(implicit sourceId: Option[SourceId]): Parser[InductiveHeader] = {
     val paramsP = layoutParam.rep(0)
@@ -293,5 +303,11 @@ object LanguageParser {
   def parseProgram(input: String, id: SourceId): ParseResult[Program] = {
     implicit val sourceId: Option[SourceId] = Some(id)
     tryParse(input, programP)
+  }
+
+  /** Parse the bundled resource after its namespace blocks have been privately flattened. */
+  private[raccoonlang] def parseTrustedPrelude(input: String): ParseResult[Program] = {
+    implicit val sourceId: Option[SourceId] = Some(SourceId.fresh())
+    trustedPreludeParse.withValue(true)(tryParse(input, programP))
   }
 }

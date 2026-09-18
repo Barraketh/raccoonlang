@@ -114,13 +114,14 @@ object Packed {
         val (yes, no) = (boolCtor("Bool.true"), boolCtor("Bool.false"))
         (a, b) => if (boolOp.run(a, b)) yes else no
     }
-    val run: (Vector[Value], Env) => Value = (args, _) =>
+    val run: (Vector[Value], Env) => Value = (args, _) => {
       args match {
         case Vector(left: VPacked, right: VPacked)
             if opsEnabled.value && left.natValue.nonEmpty && right.natValue.nonEmpty =>
           compute(left.natValue.get, right.natValue.get)
         case _ => Interpreter.runLam(source, args)
       }
+    }
     VLam(source.tpe, source.id, LamBody.Native(run, Env.empty, isRawRecursive = false))
   }
 

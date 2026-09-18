@@ -74,7 +74,6 @@ object InductiveChecks {
     if (target.isDirectOccurrence(value)) false
     else
       value match {
-        case packed: VPacked => !target.mayOccurIn(packed)
         case _: NeutralThunk => !target.mayOccurIn(value)
 
         case InductiveFamilyValue(instance) =>
@@ -92,9 +91,12 @@ object InductiveChecks {
           freshArgs.forall(arg => doesNotOccur(target, arg.tpe)) &&
           doesNotOccur(target, pi.codomain(freshEnv))
 
-        case _: ConstructorHead => !target.mayOccurIn(value)
+        // A proof's interior is erased; its type is all that can carry an occurrence.
+        case p: VProof => doesNotOccur(target, p.tpe)
 
-        case VProof(tpe) => doesNotOccur(target, tpe)
+        case p: VPacked => doesNotOccur(target, p.tpe)
+
+        case _: ConstructorHead => !target.mayOccurIn(value)
 
         case _: Level | LevelTpe | _: VLam | _: VSort | _: Var | _: VConst | PropTpe =>
           !target.mayOccurIn(value)
@@ -178,7 +180,6 @@ object InductiveChecks {
     if (target.isDirectOccurrence(value)) true
     else
       value match {
-        case packed: VPacked => target.mayOccurIn(packed)
         case _: NeutralThunk => !target.mayOccurIn(value)
 
         case InductiveFamilyValue(instance) =>
@@ -203,6 +204,12 @@ object InductiveChecks {
           freshArgs.forall(arg => doesNotOccur(target, arg.tpe)) &&
           occursPositively(target, pi.codomain(freshEnv), currentBlock)
 
+        // Strict: a proof value embedded in a type (e.g. an index) must not mention the target in
+        // its proposition at all — positivity through an erased interior is unjustifiable.
+        case p: VProof => doesNotOccur(target, p.tpe)
+
+        case p: VPacked => doesNotOccur(target, p.tpe)
+
         case lam: VLam =>
           inspectLambda(lam) { (freshArgs, result) =>
             freshArgs.forall(arg => doesNotOccur(target, arg.tpe)) &&
@@ -210,8 +217,6 @@ object InductiveChecks {
           }
 
         case _: ConstructorHead => true
-
-        case VProof(tpe) => occursPositively(target, tpe, currentBlock)
 
         case _: Level | LevelTpe | _: VSort | _: Var | _: VConst =>
           true
@@ -225,8 +230,6 @@ object InductiveChecks {
       value: Value
   ): Boolean =
     value match {
-      case _: VPacked      => true
-      case VProof(tpe)     => blockFamilyApplicationsAreUniform(blockNames, target, expectedParams, tpe)
       case _: NeutralThunk => false
 
       case InductiveFamilyValue(instance) =>
@@ -250,6 +253,10 @@ object InductiveChecks {
         freshArgs.forall(arg => blockFamilyApplicationsAreUniform(blockNames, target, expectedParams, arg.tpe)) &&
         blockFamilyApplicationsAreUniform(blockNames, target, expectedParams, pi.codomain(freshEnv))
 
+      case p: VProof => blockFamilyApplicationsAreUniform(blockNames, target, expectedParams, p.tpe)
+
+      case p: VPacked => blockFamilyApplicationsAreUniform(blockNames, target, expectedParams, p.tpe)
+
       case lam: VLam =>
         inspectLambda(lam) { (freshArgs, result) =>
           freshArgs.forall(arg =>
@@ -263,7 +270,6 @@ object InductiveChecks {
         true
     }
 
-  /** C12 synthesizes implicit constructor family parameters before appending constructor binders. */
   private def constructorFamilyParams(header: InductiveHeader): Vector[Binder] =
     header.params.map(_.copy(isImplicit = true))
 
@@ -335,7 +341,7 @@ object InductiveChecks {
   private def sameConstructorParam(actual: Value, expected: Value): Boolean = {
     val sameLevel =
       (Level.fromValue(actual), Level.fromValue(expected)) match {
-        case (Some(left), Some(right)) => left == right
+        case (Some(left), Some(right)) => left.c == right.c && left.terms == right.terms
         case _                         => false
       }
     ValueEquivalence.defEq(actual, expected) || sameLevel
@@ -382,7 +388,7 @@ object InductiveChecks {
   private final case class PreparedFamily(
       decl: Decl.InductiveDecl,
       head: VConst,
-      completeProjection: Env => Unit
+      completeConstructorLink: Env => Unit
   )
 
   private def validateBlockLayout(block: Decl.InductiveBlock, env: Env): Unit = {
@@ -488,7 +494,9 @@ object InductiveChecks {
     InductiveMeta(
       decl.ctors.map(ctor => ConstructorMeta(ctor.shortName, ctor.canonicalName)),
       decl.header.arity,
-      provisionalBlock
+      provisionalBlock,
+      projectionInfo = None,
+      proofRecovery = None
     )
   }
 
@@ -509,17 +517,19 @@ object InductiveChecks {
     val sourcePrefixCount = block.numParams
     val sourceParams = signature.familyArgs.take(sourcePrefixCount)
     val positivityContexts = Vector.newBuilder[PositiveParamContext]
-    var familyHasRecursiveField = false
-    // Retain a declaration-level recovery candidate for Prop and universe-polymorphic families.
-    // Fields that become proofs are classified at the exact instantiated family type.
-    var proofFieldPlan = Option.when(decl.ctors.length == 1 && !Level.isNeverZero(signature.declaredSort.level)) {
-      (Vector.empty[ProofFieldSource], false)
-    }
     positivityContexts += PositiveParamContext(
       sourceParams,
       signature.familyArgs.drop(sourcePrefixCount).map(_.tpe) :+ signature.declaredSort,
       signature.familyArgs.take(sourcePrefixCount).map(_.tpe)
     )
+    var hasRecursiveField = false
+    // A family whose declared universe is positive under every level assignment can never have a
+    // Prop instance, so proof representation metadata would be dead weight. Retain a candidate only
+    // for Prop and universe-polymorphic families whose result level may reduce to zero.
+    var proofFieldPlan = Option.when(decl.ctors.length == 1 && !Level.isNeverZero(signature.declaredSort.level)) {
+      (Vector.empty[ProofFieldSource], false)
+    }
+
     decl.ctors.foreach { ctor =>
       val allConstructorBinders = constructorBinders(header, ctor)
       val checkedBinders =
@@ -531,9 +541,9 @@ object InductiveChecks {
       val ownBinderVars = binderVars.drop(header.params.length)
       val sourceParamValues = commonParamValues
       val trueFieldVars = ownBinderVars
-      // Keep the raw checked value here so an incomplete family spine can report the
-      // specialized constructor-result error rather than an incidental NotAType.
-      val outputTpe = TypeChecker.checkTerm(ctor.resultTy, envWithBinders).value
+      // Keep malformed constructor results classified as InvalidConstructorResult rather than
+      // leaking the generic NotAType from the telescope checker.
+      val outputTpe = TypeChecker.checkTypeWithFamilyParams(ctor.resultTy, envWithBinders, header.params.length).value
 
       // 4) Constructor result must be the inductive family head applied to the full family arity.
       val resultErr = InvalidConstructorResult(ctor.canonicalName, name, outputTpe, Some(ctor.span))
@@ -563,6 +573,9 @@ object InductiveChecks {
           span = Some(ctor.resultTy.span)
         )
 
+      // Compile data sources for the one-constructor family's proof-recovery plan. Whether a
+      // field is a proof is classified later at the actual family instance, so universe-polymorphic
+      // fields that become proofs at u := 0 need no declaration-time special case.
       if (proofFieldPlan.nonEmpty) {
         val sources = ownBinderVars.map { field =>
           val resultIndex = outputArgs.indexWhere(arg => ValueEquivalence.defEq(arg, field))
@@ -591,35 +604,33 @@ object InductiveChecks {
       )
 
       constructorArgs.zipWithIndex.foreach { case ((binder, field), sourceFieldIndex) =>
-        // Eta eligibility follows the checked field type, not merely the source syntax.  A
-        // recursive occurrence can be exposed after elaboration/evaluation even when the raw
-        // binder is not syntactically recursive.
-        familyHasRecursiveField = familyHasRecursiveField || !doesNotOccur(recursiveTarget, field.tpe)
-
-        // Universe bounds are checked before strict positivity, matching the formation pipeline.
+        // 2) Universe bound: skip for Prop families; enforce for Sort families
         constructorUniverse match {
           case PropTpe => // no universe restriction
           case VSort(inductiveLevel) =>
             TypeChecker.getUniverse(field.tpe) match {
               case Value.PropTpe =>
-              case VSort(tpeLevel) if !Level.leq(tpeLevel, inductiveLevel) =>
-                throw InductiveUniverseTooSmall(
-                  name,
-                  s"${ctor.canonicalName}.${binder.name}",
-                  field.tpe,
-                  tpeLevel,
-                  inductiveLevel,
-                  Some(binder.span)
-                )
-              case _ =>
+
+              case VSort(tpeLevel) =>
+                if (!Level.leq(tpeLevel, inductiveLevel))
+                  throw InductiveUniverseTooSmall(
+                    name,
+                    s"${ctor.canonicalName}.${binder.name}",
+                    field.tpe,
+                    tpeLevel,
+                    inductiveLevel,
+                    Some(binder.span)
+                  )
             }
         }
 
-        // Every recursive source field must be strictly positive in every block family.
+        if (!doesNotOccur(recursiveTarget, field.tpe)) hasRecursiveField = true
+
+        // 3) Every true source field type must be strictly positive in every block family.
+        val positive = occursPositively(recursiveTarget, field.tpe)
         if (
           syntacticallyRecursive(sourceFieldIndex) &&
-          (!occursPositively(recursiveTarget, field.tpe) ||
-            !blockFamilyApplicationsAreUniform(blockNames, recursiveTarget, sourceParamValues, field.tpe))
+          (!positive || !blockFamilyApplicationsAreUniform(blockNames, recursiveTarget, sourceParamValues, field.tpe))
         )
           throw NonStrictlyPositive(
             inductive = name,
@@ -636,7 +647,7 @@ object InductiveChecks {
       signature,
       meta,
       PositiveParamInputs(positivityContexts.result()),
-      familyHasRecursiveField,
+      hasRecursiveField,
       proofFieldPlan
     )
   }
@@ -673,19 +684,28 @@ object InductiveChecks {
       blockHasRecursiveField: Boolean
   ): PreparedFamily = {
     val decl = check.signature.decl
-    var installedCtor: Option[ConstructorHead] = None
+    val header = decl.header
+
+    // A one-constructor family gets positional projection metadata regardless of indices or recursion. Structure eta
+    // is the narrower Lean gate: zero true source indices and no recursive occurrence. Prop instances are filtered
+    // dynamically by StructEta.eligibleInstance and follow their declaration-compiled recovery plan.
+    //
+    // The constructor head is a promise completed after installation: constructor types are checked against the
+    // installed family head, so the head cannot exist before installConstructors runs.
+    var installedCtorHead: Option[ConstructorHead] = None
     val projectionInfo =
       if (decl.ctors.length == 1) {
         val ctor = decl.ctors.head
         Some(
           new ProjectionInfo(
-            decl.ctors.head.canonicalName,
+            ctor.canonicalName,
             constructorFieldDependencies(ctor),
-            etaEligible = decl.header.indices.isEmpty && !blockHasRecursiveField,
-            () => installedCtor
+            etaEligible = header.indices.isEmpty && !blockHasRecursiveField,
+            () => installedCtorHead
           )
         )
       } else None
+
     val proofRecovery = for {
       (fields, definitelyComplete) <- check.proofFieldPlan
       info <- projectionInfo
@@ -695,16 +715,22 @@ object InductiveChecks {
       projectionInfo = projectionInfo,
       proofRecovery = proofRecovery
     )
-    val head = VConst(decl.header.name, Inductive(meta), check.signature.familyType)
-    val complete = (finalEnv: Env) =>
+
+    val inductiveHead = VConst(header.name, Inductive(meta), check.signature.familyType)
+    val completeConstructorLink = (finalEnv: Env) =>
       if (decl.ctors.length == 1) {
-        installedCtor = finalEnv(decl.ctors.head.canonicalName) match {
-          case h: ConstructorHead => Some(h)
-          case other => throw WTF(s"Constructor ${decl.ctors.head.canonicalName} resolved to non-constructor $other")
-        }
+        val ctorName = decl.ctors.head.canonicalName
+        installedCtorHead = Some(
+          finalEnv(ctorName) match {
+            case h: ConstructorHead => h
+            case other              => throw WTF(s"Constructor $ctorName resolved to non-constructor $other")
+          }
+        )
+        // Complete and validate the circular metadata/head link before publishing the environment.
         projectionInfo.foreach(_.ctorHead)
       }
-    PreparedFamily(decl, head, complete)
+
+    PreparedFamily(decl, inductiveHead, completeConstructorLink)
   }
 
   def checkInductive(decl: Decl.InductiveDecl, env: Env): Env = evalInductiveBlock(Vector(decl), env)
@@ -732,16 +758,17 @@ object InductiveChecks {
     val checked = provisional.map { case (signature, meta, _) =>
       checkFamilyConstructors(signature, meta, provisionalEnv, block, blockNames)
     }
+    val blockHasRecursiveField = checked.exists(_.hasRecursiveField)
     val positiveParams = computePositiveParams(block, blockKey, checked)
     val checkedBlock = CheckedInductiveBlockSchema(blockKey, positiveParams)
-    val prepared = checked.map(check => prepareFamily(check, checkedBlock, checked.exists(_.hasRecursiveField)))
+    val prepared = checked.map(check => prepareFamily(check, checkedBlock, blockHasRecursiveField))
     val envWithFinalHeads = prepared.foldLeft(env) { case (curEnv, family) =>
       curEnv.putGlobal(family.decl.header.name, family.head)
     }
     val finalEnv = prepared.foldLeft(envWithFinalHeads) { case (curEnv, family) =>
       installConstructors(family.decl, curEnv)
     }
-    prepared.foreach(_.completeProjection(finalEnv))
+    prepared.foreach(_.completeConstructorLink(finalEnv))
     finalEnv
   }
 }

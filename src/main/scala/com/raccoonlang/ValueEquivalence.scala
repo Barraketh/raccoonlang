@@ -15,7 +15,11 @@ object ValueEquivalence {
     def enterNonInvertibleFrame: Ctx = if (invertibleFrame) copy(invertibleFrame = false) else this
   }
 
-  def defEq(left: Value, right: Value): Boolean = tryUnify(left, right, EqStore.empty).isRight
+  def defEq(left: Value, right: Value): Boolean =
+    (Level.fromValue(left), Level.fromValue(right)) match {
+      case (Some(lhs), Some(rhs)) => lhs.c == rhs.c && lhs.terms == rhs.terms
+      case _                      => tryUnify(left, right, EqStore.empty).isRight
+    }
 
   def tryUnify(left: Value, right: Value, store: EqStore): Either[UnifyFailure, EqStore] =
     unify(left, right, store, Ctx())
@@ -68,11 +72,6 @@ object ValueEquivalence {
     if (left.asInstanceOf[AnyRef] eq right.asInstanceOf[AnyRef]) Right(store)
     else if (!left.needsStructuralDefEq && !right.needsStructuralDefEq && left.key == right.key)
       Right(store)
-    else if (
-      store.refinable.isEmpty && !left.needsStructuralDefEq && !right.needsStructuralDefEq &&
-      !left.isInstanceOf[VPacked] && !right.isInstanceOf[VPacked]
-    )
-      stuck(left, right)
     else {
       (left, right) match {
         // Proof irrelevance is type-directed and must precede every Var rule: proof representatives

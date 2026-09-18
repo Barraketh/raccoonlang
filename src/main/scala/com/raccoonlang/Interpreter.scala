@@ -20,6 +20,22 @@ object Interpreter {
       .putGlobal("Level.imax", binaryLevelBuiltin("Level.imax", Level.imax))
   }
 
+  /** Bootstrap constants available before the source prelude itself is admitted. */
+  private[raccoonlang] val preludeInitialEnv: Env =
+    Env.empty
+      .putGlobal("Type", TypeTpe)
+      .putGlobal("Prop", PropTpe)
+      .putGlobal("Level", LevelTpe)
+      .putGlobal("Level.zero", Level.zero)
+      .putGlobal("Level.one", Level.one)
+
+  private[raccoonlang] def buildEmptyPreludeEnv(program: Program): Env =
+    Packed.finalizeTrustedBootstrap(TypeChecker.checkProgramTrusted(program, builtins)._1)
+
+  /** Check and publish the selected source prelude once, including packed literal capabilities. */
+  private[raccoonlang] def buildPreludeEnv(program: Program): Env =
+    Packed.finalizeTrustedBootstrap(TypeChecker.checkProgramTrusted(program, preludeInitialEnv)._1)
+
   private def builtinPi(ref: CoreAst.LocalRef, ty: Value, out: Env => Value): VPi =
     VPi(
       Env.empty.putGlobal("Type", TypeTpe).putGlobal("Level", LevelTpe),
@@ -215,7 +231,10 @@ object Interpreter {
   }
 
   private def evalMatch(matchTerm: Term.Match, env: Env): Value = {
-    val scrut = evalTerm(matchTerm.scrut, env)
+    val scrut = evalTerm(matchTerm.scrut, env) match {
+      case head: ConstructorHead if head.totalArity == 0 => VCtor(head, Vector.empty, head.tpe)
+      case value                                         => value
+    }
     scrut match {
       case proof: VProof => return evalProofMatch(matchTerm, proof, env)
       case _             =>
@@ -307,9 +326,11 @@ object Interpreter {
           case lam: VLam => Value.canonicalizeProof(runLam(lam, canonicalArgs))
           case head: ConstructorHead =>
             val stored = Value.constructorStoredArgs(head, canonicalArgs)
-            Value.canonicalizeProof(
+            val folded =
               Packed.foldCtor(head, stored, pi.codomain(applied)).getOrElse(VCtor(head, stored, pi.codomain(applied)))
-            )
+            Value.canonicalizeProof(folded)
+          case _: VProof =>
+            Value.canonicalizeProof(VProof(pi.codomain(applied)))
           case value @ (_: VConst | _: VApp | _: NeutralThunk | _: Var) =>
             val blocked = Blocker.unapply(value).getOrElse(DepSet.empty)
             Value.canonicalizeProof(VApp(value, canonicalArgs, pi.codomain(applied), blocked))
@@ -467,4 +488,8 @@ object Interpreter {
     val env = program.decls.foldLeft(initial) { case (current, decl) => evalDecl(decl, current) }
     program.body.map(evalTerm(_, env))
   }
+
+  /** Source-facing entry point: ordinary declarations start from the selected checked prelude. */
+  def run(program: Program, prelude: Prelude.Config): Option[Value] =
+    run(program, prelude.checkedEnv)
 }

@@ -1,0 +1,10 @@
+def Sort (l: Level): Type := builtin
+
+  def Level.succ (l: Level): Level := builtin
+
+  def Level.max (l1: Level)(l2: Level): Level := builtin
+
+  def Level.imax (l1: Level)(l2: Level): Level := builtin
+
+inductive Eq {u: Level}(A: Sort(u)) indices (x: A)(y: A) : Prop
+ | refl (x: A) : Eq(A, x, x)

@@ -306,4 +306,7 @@ object Elaborator {
     val body = program.body.map(t => elabTerm(t, scope)._2)
     C.Program(decls, body)
   }
+
+  /** Elaborate a selected prelude without implicitly importing another prelude. */
+  private[raccoonlang] def elabWithoutPrelude(program: SurfaceAst.Program): C.Program = elab(program)
 }

@@ -201,6 +201,7 @@ object Value {
       l.terms.values.forall(_ >= offset) && (l.c >= offset || (l.c == 0 && l.terms.nonEmpty))
     def max(xs: Vector[Level]): Level = {
       require(xs.nonEmpty, "Level.max requires at least one level")
+      if (xs.length == 1 || xs.tail.forall(l => l.terms == xs.head.terms && l.c == xs.head.c)) return xs.head
       val terms = scala.collection.mutable.HashMap.empty[Atom, Int]
       var c = 0
       xs.foreach { l =>

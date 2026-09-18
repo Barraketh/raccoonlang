@@ -50,6 +50,31 @@ class InductiveCheckTest extends munit.FunSuite {
     }
   }
 
+  test("non-uniform recursive family parameters are rejected by positivity") {
+    intercept[NonStrictlyPositive] {
+      TestSupport.check(
+        """
+          |inductive Bool : Type
+          | | true : Bool
+          |
+          |inductive Bad(A: Type) : Type
+          | | mk (tail: Bad(Bool)) : Bad(A)
+          |""".stripMargin + "\n"
+      )
+    }
+  }
+
+  test("partial recursive family applications are rejected") {
+    intercept[TypeError] {
+      TestSupport.check(
+        """
+          |inductive Partial(A: Type) : Type
+          | | mk (f: Partial -> Type) : Partial(A)
+          |""".stripMargin + "\n"
+      )
+    }
+  }
+
   test("duplicate constructors are rejected before publication") {
     intercept[AlreadyDefined] {
       TestSupport.check("inductive Bool : Type\n | same : Bool\n | same : Bool\n")

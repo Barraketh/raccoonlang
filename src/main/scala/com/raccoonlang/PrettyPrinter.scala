@@ -39,6 +39,9 @@ object PrettyPrinter {
     case Value.VCtor(head, Vector(field: Value.VPacked), _)
         if head.name == "String.mk" && field.codec.isInstanceOf[Value.CharListCodec] =>
       printString(field.charScalars.getOrElse(throw WTF("Invalid packed String field")))
+    case Value.VCtor(head, Vector(field), _) if head.name == "Nat.succ" =>
+      natValue(field).map(_.toString).getOrElse(s"${head.name}(${print(field)})")
+    case Value.VCtor(head, Vector(), _) if head.name == "Nat.zero" => "0"
     case Value.VCtor(head, fields, _) =>
       if (fields.isEmpty) head.name else s"${head.name}(${fields.map(print).mkString(", ")})"
     case Value.VApp(head, args, _, _)            => s"${print(head)}(${args.map(print).mkString(", ")})"
@@ -46,5 +49,13 @@ object PrettyPrinter {
     case Value.NeutralThunk(_, _, _, _, _)       => "<match>"
     case Value.Var(name, id, _)                  => s"$name#$id"
     case Value.ConstructorHead(name, _, _, _, _) => name
+  }
+
+  private def natValue(value: Value): Option[BigInt] = value match {
+    case p: Value.VPacked                                              => p.natValue
+    case head: Value.ConstructorHead if head.name == "Nat.zero"        => Some(BigInt(0))
+    case Value.VCtor(head, Vector(), _) if head.name == "Nat.zero"     => Some(BigInt(0))
+    case Value.VCtor(head, Vector(tail), _) if head.name == "Nat.succ" => natValue(tail).map(_ + 1)
+    case _                                                             => None
   }
 }

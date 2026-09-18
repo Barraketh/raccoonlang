@@ -3,9 +3,11 @@ package com.raccoonlang
 import com.raccoonlang.CoreAst.{Decl, Program, Term => CTerm}
 import com.raccoonlang.Value._
 import com.raccoonlang.telescope.{BinderOps, Projection}
+import scala.util.DynamicVariable
 
 /** Bidirectional checker: unification is the conversion and refinement mechanism. */
 object TypeChecker {
+  private val trustedBootstrap = new DynamicVariable[Boolean](false)
   private final case class CheckedPi(vpi: VPi, bodyEnv: Env, outTy: Value, residual: CTerm.Pi)
   final case class CheckedTerm(value: Value, residual: CTerm)
   private[raccoonlang] final case class Expected(value: Value, syntax: Option[CTerm])
@@ -69,6 +71,22 @@ object TypeChecker {
   }
 
   private def checkSelect(base: CheckedTerm, field: String, span: Span, env: Env): CheckedTerm = {
+    base.residual match {
+      case CTerm.GlobalRef(name, _) if env.globals.contains(s"$name.$field") =>
+        val qualified = s"$name.$field"
+        return CheckedTerm(
+          Interpreter.evalTerm(CTerm.GlobalRef(qualified, span), env),
+          CTerm.GlobalRef(qualified, span)
+        )
+      case CTerm.GlobalRef(name, _) =>
+        // During trusted recursive admission the current canonical definition is a local peer
+        // until publication; resolve only that narrow self/peer shape here.
+        env.locals.collectFirst {
+          case (ref, value) if ref.name == s"$name.$field" =>
+            return CheckedTerm(value, CTerm.LocalRef(ref, span))
+        }
+      case _ =>
+    }
     val family = base.value.tpe match {
       case InductiveFamilyValue(instance) => instance
       case other                          => throw NotAType(other)
@@ -185,7 +203,15 @@ object TypeChecker {
   ): CheckedTerm = {
     val checkedPi = checkPi(pi, env)
     val vpi = checkedPi.vpi
-    val bodyEnv0 = bindPi(vpi, vpi.env)
+    // The Pi closure is formed from references in its type; a lambda body can additionally
+    // capture locals mentioned only by the body (notably proof-producing Decidable branches).
+    // Preserve exactly those outer bindings while retaining the closed-closure invariant.
+    val bodyCaptures =
+      if (trustedBootstrap.value) CapturedRefs.getCapturedRefs(body, env) else Set.empty[CoreAst.LocalRef]
+    val bodyBase = bodyCaptures.foldLeft(vpi.env) { case (current, ref) =>
+      if (current.locals.contains(ref)) current else current.putLocalUnchecked(ref, env(ref))
+    }
+    val bodyEnv0 = bindPi(vpi, bodyBase)
     val bodyEnvWithSelf = recursion match {
       case Some(rec) =>
         val recursive = TerminationChecker.rawRecursiveSelf(
@@ -383,12 +409,18 @@ object TypeChecker {
     (env, program.body.map(checkTerm(_, env)))
   }
 
+  /** Check ordinary source declarations against one already-checked selected prelude. */
+  def checkProgram(program: Program, prelude: Prelude.Config): (Env, Option[CheckedTerm]) =
+    checkProgram(program, prelude.checkedEnv)
+
   private[raccoonlang] def checkProgramTrusted(
       program: Program,
       initial: Env = Interpreter.builtins
   ): (Env, Option[CheckedTerm]) = {
-    val declarations = program.decls.foldLeft(initial) { case (current, decl) => checkDeclTrusted(decl, current) }
-    val env = Packed.finalizeTrustedBootstrap(declarations)
-    (env, program.body.map(checkTerm(_, env)))
+    trustedBootstrap.withValue(true) {
+      val declarations = program.decls.foldLeft(initial) { case (current, decl) => checkDeclTrusted(decl, current) }
+      val env = Packed.finalizeTrustedBootstrap(declarations)
+      (env, program.body.map(checkTerm(_, env)))
+    }
   }
 }

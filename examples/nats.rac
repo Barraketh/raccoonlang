@@ -1,0 +1,14 @@
+inductive Nat : Type
+ | zero : Nat
+ | succ (_: Nat) : Nat
+
+def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
+  match b with
+  | Nat.zero => a
+  | Nat.succ x => add(Nat.succ(a), x)
+}
+
+{
+  let a := Nat.succ(Nat.zero)
+  add(a, a)
+}

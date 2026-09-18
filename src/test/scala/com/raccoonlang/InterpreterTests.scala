@@ -66,6 +66,19 @@ class InterpreterTests extends munit.FunSuite {
     }
   }
 
+  test("generic nullary constructors remain applicable until their family parameter is supplied") {
+    run("inductive Box (A: Type) : Type\n | nil : Box(A)\n\nBox.nil") match {
+      case head: ConstructorHead => assertEquals(head.name, "Box.nil")
+      case other                 => fail(s"Expected unapplied constructor head, got $other")
+    }
+    run("inductive Box (A: Type) : Type\n | nil : Box(A)\n\nBox.nil(Type)") match {
+      case VApp(head: ConstructorHead, args, _, _) =>
+        assertEquals(head.name, "Box.nil")
+        assert(args.isEmpty)
+      case other => fail(s"Expected family-specialized nullary constructor, got $other")
+    }
+  }
+
   test("indexed family applications include every parameter and index") {
     val core = program("inductive Eq (A: Type) indices (x: A) : Type\n").decls.head
     val env = Interpreter.evalDecl(core, Interpreter.builtins)
