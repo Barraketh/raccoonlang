@@ -14,6 +14,29 @@ final case class EqStore(subst: Map[VarId, Value], refinable: DepSet) {
   }
   def isRefinable(id: VarId): Boolean = refinable.contains(id)
   def allow(ids: DepSet): EqStore = copy(refinable = refinable ++ ids)
+
+  /** Admit match-root variables and expand every eta-eligible structure variable at that boundary. */
+  def allowEta(ids: DepSet, vars: Vector[Value.Var]): EqStore = {
+    var current = allow(ids)
+    var frontier = vars
+    while (frontier.nonEmpty) {
+      val next = Vector.newBuilder[Value.Var]
+      frontier.foreach { variable =>
+        if (current.isRefinable(variable.id) && !current.subst.contains(variable.id)) {
+          StructEta.eligibleInstance(variable.tpe).foreach { case (instance, info) =>
+            val head = info.ctorHead
+            val fieldEnv = telescope.BinderOps.freshen(head.fieldBinders, head.fieldEnv(instance.args))
+            val fields = head.fieldBinders.map(binder => fieldEnv(binder.localRef))
+            val witness = Value.VCtor(head, fields, variable.tpe)
+            current = current.allow(witness.synDeps).addLink(variable.id, witness)
+            fields.foreach { case field: Value.Var => next += field; case _ => }
+          }
+        }
+      }
+      frontier = next.result()
+    }
+    current
+  }
   def addLink(id: VarId, value: Value): EqStore = {
     if (subst.contains(id)) throw WTF(s"Variable $id is already solved")
     if (!refinable.contains(id)) throw WTF(s"Variable $id is not refinable")

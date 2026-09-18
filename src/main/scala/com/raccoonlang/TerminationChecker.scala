@@ -138,7 +138,10 @@ object TerminationChecker {
   private[raccoonlang] def isStrictSubterm(candidate: Value, root: Value): Boolean = root match {
     case VCtor(_, fields, _) =>
       fields.exists(field => applicationOfSubterm(candidate, field) || isStrictSubterm(candidate, field))
-    case _ => false
+    case _ =>
+      StructEta
+        .fields(root)
+        .exists(_.exists(field => applicationOfSubterm(candidate, field) || isStrictSubterm(candidate, field)))
   }
 
   private def applicationOfSubterm(candidate: Value, field: Value): Boolean =

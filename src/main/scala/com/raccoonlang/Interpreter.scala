@@ -196,16 +196,22 @@ object Interpreter {
             evalBranch(branch, fields, env)
         }
       case None =>
-        val outType = matchOutType(matchTerm, scrut, env)
-        val closed = env.closeForEval(CapturedRefs.getCapturedRefs(matchTerm, env))
-        val blockedOn = Blocker.unapply(scrut).getOrElse(DepSet.empty)
-        NeutralThunk(
-          matchTerm,
-          closed,
-          ValueId.LocalId(matchTerm.nodeId, closed.locals.values.toVector),
-          outType,
-          blockedOn
-        )
+        StructEta.fields(scrut) match {
+          case Some(fields) if cases.length == 1 =>
+            evalBranch(cases.head, fields, env)
+          case Some(_) => throw WTF(s"Eta-eligible struct match has ${cases.length} cases at ${matchTerm.span}")
+          case None =>
+            val outType = matchOutType(matchTerm, scrut, env)
+            val closed = env.closeForEval(CapturedRefs.getCapturedRefs(matchTerm, env))
+            val blockedOn = Blocker.unapply(scrut).getOrElse(DepSet.empty)
+            NeutralThunk(
+              matchTerm,
+              closed,
+              ValueId.LocalId(matchTerm.nodeId, closed.locals.values.toVector),
+              outType,
+              blockedOn
+            )
+        }
     }
   }
 

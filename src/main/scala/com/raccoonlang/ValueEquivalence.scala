@@ -37,6 +37,12 @@ object ValueEquivalence {
     case _                          => false
   }
 
+  /** Eta can decompose a constructor (or any fieldless eligible value), but never two fieldful neutrals. */
+  private def etaDecomposable(value: Value): Boolean =
+    StructEta.eligibleInstance(value.tpe).exists { case (_, info) =>
+      info.fieldCount == 0 || ConstructorForm.unapply(value).nonEmpty
+    }
+
   private def unify(left0: Value, right0: Value, store: EqStore, ctx: Ctx): Either[UnifyFailure, EqStore] =
     unify(left0, right0, store, ctx, normalizeNullary = true)
 
@@ -81,6 +87,18 @@ object ValueEquivalence {
           stuck(leftHead, rightHead)
         case (leftApp: VApp, rightApp: VApp) =>
           unifyApps(leftApp, rightApp, store, ctx)
+        case _ if etaDecomposable(left) || etaDecomposable(right) =>
+          (StructEta.fields(left), StructEta.fields(right)) match {
+            case (Some(lfields), Some(rfields)) if lfields.length == rfields.length =>
+              lfields
+                .zip(rfields)
+                .foldLeft[Either[UnifyFailure, EqStore]](Right(store)) {
+                  case (Right(current), (l, r)) => unify(l, r, current, ctx)
+                  case (failed @ Left(_), _)    => failed
+                }
+                .flatMap(next => unify(left.tpe, right.tpe, next, ctx))
+            case _ => stuck(left, right)
+          }
         case _ => stuck(left, right)
       }
     }

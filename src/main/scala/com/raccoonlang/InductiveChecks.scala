@@ -337,7 +337,8 @@ object InductiveChecks {
   private final case class CheckedFamily(
       signature: FamilySignature,
       initialMeta: InductiveMeta,
-      positivityInputs: PositiveParamInputs
+      positivityInputs: PositiveParamInputs,
+      hasRecursiveField: Boolean
   )
 
   private final case class PositiveParamInputs(
@@ -365,7 +366,8 @@ object InductiveChecks {
 
   private final case class PreparedFamily(
       decl: Decl.InductiveDecl,
-      head: VConst
+      head: VConst,
+      completeProjection: Env => Unit
   )
 
   private def validateBlockLayout(block: Decl.InductiveBlock, env: Env): Unit = {
@@ -491,6 +493,7 @@ object InductiveChecks {
     val sourcePrefixCount = block.numParams
     val sourceParams = signature.familyArgs.take(sourcePrefixCount)
     val positivityContexts = Vector.newBuilder[PositiveParamContext]
+    var familyHasRecursiveField = false
     positivityContexts += PositiveParamContext(
       sourceParams,
       signature.familyArgs.drop(sourcePrefixCount).map(_.tpe) :+ signature.declaredSort,
@@ -553,6 +556,11 @@ object InductiveChecks {
       )
 
       constructorArgs.zipWithIndex.foreach { case ((binder, field), sourceFieldIndex) =>
+        // Eta eligibility follows the checked field type, not merely the source syntax.  A
+        // recursive occurrence can be exposed after elaboration/evaluation even when the raw
+        // binder is not syntactically recursive.
+        familyHasRecursiveField = familyHasRecursiveField || !doesNotOccur(recursiveTarget, field.tpe)
+
         // Universe bounds are checked before strict positivity, matching the formation pipeline.
         constructorUniverse match {
           case PropTpe => // no universe restriction
@@ -592,7 +600,8 @@ object InductiveChecks {
     CheckedFamily(
       signature,
       meta,
-      PositiveParamInputs(positivityContexts.result())
+      PositiveParamInputs(positivityContexts.result()),
+      familyHasRecursiveField
     )
   }
 
@@ -624,12 +633,34 @@ object InductiveChecks {
 
   private def prepareFamily(
       check: CheckedFamily,
-      checkedBlock: CheckedInductiveBlockSchema
+      checkedBlock: CheckedInductiveBlockSchema,
+      blockHasRecursiveField: Boolean
   ): PreparedFamily = {
     val decl = check.signature.decl
-    val meta = check.initialMeta.copy(block = checkedBlock)
+    var installedCtor: Option[ConstructorHead] = None
+    val projectionInfo =
+      if (decl.ctors.length == 1) {
+        val ctor = decl.ctors.head
+        Some(
+          new ProjectionInfo(
+            decl.ctors.head.canonicalName,
+            constructorFieldDependencies(ctor),
+            etaEligible = decl.header.indices.isEmpty && !blockHasRecursiveField,
+            () => installedCtor
+          )
+        )
+      } else None
+    val meta = check.initialMeta.copy(block = checkedBlock, projectionInfo = projectionInfo)
     val head = VConst(decl.header.name, Inductive(meta), check.signature.familyType)
-    PreparedFamily(decl, head)
+    val complete = (finalEnv: Env) =>
+      if (decl.ctors.length == 1) {
+        installedCtor = finalEnv(decl.ctors.head.canonicalName) match {
+          case h: ConstructorHead => Some(h)
+          case other => throw WTF(s"Constructor ${decl.ctors.head.canonicalName} resolved to non-constructor $other")
+        }
+        projectionInfo.foreach(_.ctorHead)
+      }
+    PreparedFamily(decl, head, complete)
   }
 
   def checkInductive(decl: Decl.InductiveDecl, env: Env): Env = evalInductiveBlock(Vector(decl), env)
@@ -659,13 +690,14 @@ object InductiveChecks {
     }
     val positiveParams = computePositiveParams(block, blockKey, checked)
     val checkedBlock = CheckedInductiveBlockSchema(blockKey, positiveParams)
-    val prepared = checked.map(check => prepareFamily(check, checkedBlock))
+    val prepared = checked.map(check => prepareFamily(check, checkedBlock, checked.exists(_.hasRecursiveField)))
     val envWithFinalHeads = prepared.foldLeft(env) { case (curEnv, family) =>
       curEnv.putGlobal(family.decl.header.name, family.head)
     }
     val finalEnv = prepared.foldLeft(envWithFinalHeads) { case (curEnv, family) =>
       installConstructors(family.decl, curEnv)
     }
+    prepared.foreach(_.completeProjection(finalEnv))
     finalEnv
   }
 }

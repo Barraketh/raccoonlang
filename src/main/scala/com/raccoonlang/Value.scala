@@ -1,9 +1,14 @@
 package com.raccoonlang
 
+import com.raccoonlang.telescope.BinderOps
+
+import scala.collection.immutable.BitSet
+
 sealed trait Value {
   def tpe: Value
   def synDeps: DepSet
-  def needsStructuralDefEq: Boolean = false
+  def needsStructuralDefEq: Boolean =
+    StructEta.eligibleInstance(tpe).nonEmpty
   lazy val key: ValueKey.Key = ValueKey.orderKey(this)
   override def toString: String = PrettyPrinter.print(this)
 }
@@ -33,6 +38,53 @@ object Value {
     val deps = DepSet.newBuilder
     env.locals.values.foreach(value => deps.unionInPlace(value.synDeps))
     deps.result()
+  }
+
+  /** Recover the variables occurring in a value at a selected dependency boundary. */
+  private[raccoonlang] def varsIn(value: Value, ids: DepSet): Vector[Var] = {
+    if (ids.isEmpty || !value.synDeps.intersects(ids)) return Vector.empty
+    val found = Vector.newBuilder[Var]
+    var seen = DepSet.empty
+
+    def walkEnv(env: Env): Unit = env.locals.values.foreach(walk)
+
+    def walk(current: Value): Unit = {
+      if (!current.synDeps.intersects(ids)) return
+      current match {
+        case variable: Var =>
+          if (ids.contains(variable.id) && !seen.contains(variable.id)) {
+            seen = seen + variable.id
+            found += variable
+          }
+          walk(variable.tpe)
+        case VApp(head, args, tpe, _) =>
+          walk(head)
+          args.foreach(walk)
+          walk(tpe)
+        case NeutralThunk(_, env, id, tpe, _) =>
+          walkEnv(env)
+          id.captures.foreach(walk)
+          walk(tpe)
+        case pi: VPi =>
+          walkEnv(pi.env)
+        case lam: VLam =>
+          walk(lam.tpe)
+          lam.body match {
+            case LamBody.Core(_, env)      => walkEnv(env)
+            case LamBody.Native(_, env, _) => walkEnv(env)
+          }
+          lam.id match {
+            case ValueId.Const(_)           =>
+            case ValueId.LocalId(_, values) => values.foreach(walk)
+          }
+        // VSort.tpe ascends forever; leaves are safe to ignore after the dependency prune.
+        case _: VSort | LevelTpe | _: Level | _: ConstructorHead =>
+        case other                                               => walk(other.tpe)
+      }
+    }
+
+    walk(value)
+    found.result()
   }
 
   case object LevelTpe extends TopLevelValue { override def tpe: Value = TypeTpe }
@@ -248,6 +300,31 @@ object Value {
 
   final case class ConstructorMeta(shortName: String, canonicalName: String)
 
+  /** Positional constructor metadata consumed by structure eta. */
+  final class ProjectionInfo(
+      val ctorName: String,
+      val fieldDependencies: Vector[BitSet],
+      val etaEligible: Boolean,
+      ctorHead0: () => Option[ConstructorHead]
+  ) {
+    val fieldCount: Int = fieldDependencies.length
+    fieldDependencies.zipWithIndex.foreach { case (deps, idx) =>
+      require(deps.forall(_ < idx), "Projection fields may depend only on preceding fields")
+    }
+    lazy val projectors: Vector[StructEta.Projector] =
+      Vector.tabulate(fieldCount)(idx => StructEta.buildProjector(ctorName, fieldCount, idx))
+    def ctorHeadOption: Option[ConstructorHead] = ctorHead0()
+    lazy val ctorHead: ConstructorHead = {
+      val head = ctorHeadOption.getOrElse(throw WTF("Projection constructor requested before declaration installation"))
+      if (head.name != ctorName)
+        throw WTF(s"Projection metadata for $ctorName was completed with constructor ${head.name}")
+      val actual = head.totalArity - head.numErasedFamilyArgs
+      if (actual != fieldCount)
+        throw WTF(s"Projection metadata for ${head.name} has $fieldCount fields, constructor has $actual")
+      head
+    }
+  }
+
   final case class InductiveBlockKey(members: Vector[String], numParams: Int) {
     require(members.nonEmpty, "An inductive block must contain at least one family")
     require(members.distinct.length == members.length, "Inductive block family names must be unique")
@@ -278,9 +355,11 @@ object Value {
   final case class InductiveMeta(
       constructors: Vector[ConstructorMeta],
       familyArity: Int,
-      block: InductiveBlockDescriptor
+      block: InductiveBlockDescriptor,
+      projectionInfo: Option[ProjectionInfo] = None
   ) {
     require(familyArity >= block.key.numParams, "Inductive family arity must contain common parameters")
+    require(projectionInfo.isEmpty || constructors.length == 1, "Only one-constructor families can be projected")
     lazy val constructorNames: Vector[String] = constructors.map(_.canonicalName)
   }
 
@@ -294,7 +373,19 @@ object Value {
       totalArity: Int,
       tpe: Value,
       noConfusion: Boolean = true
-  ) extends TopLevelValue
+  ) extends TopLevelValue {
+    lazy val pi: Option[VPi] = tpe match { case p: VPi => Some(p); case _ => None }
+    lazy val paramBinders: Vector[CoreAst.Binder] =
+      pi.fold(Vector.empty[CoreAst.Binder])(_.binders.take(numErasedFamilyArgs))
+    lazy val fieldBinders: Vector[CoreAst.Binder] =
+      pi.fold(Vector.empty[CoreAst.Binder])(_.binders.drop(numErasedFamilyArgs))
+    def fieldEnv(familyArgs: Vector[Value]): Env = {
+      val piEnv = pi.map(_.env).getOrElse(Env.empty)
+      if (familyArgs.length < paramBinders.length)
+        throw WTF(s"Constructor $name needs ${paramBinders.length} family parameters, got ${familyArgs.length}")
+      BinderOps.instantiateFull(paramBinders, piEnv, familyArgs.take(paramBinders.length))
+    }
+  }
 
   object VCtor {
     def apply(head: ConstructorHead, fields: Vector[Value], tpe: Value): VApp = VApp(head, fields, tpe)

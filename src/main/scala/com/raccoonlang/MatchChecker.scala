@@ -20,6 +20,15 @@ object MatchChecker {
       family: InductiveFamilyInstance,
       env: Env
   ): Vector[ReachableCtor] = {
+    final case class Refinable(ids: DepSet, vars: Vector[Var]) {
+      def ++(other: Refinable): Refinable = Refinable(ids ++ other.ids, vars ++ other.vars)
+    }
+    def refinableIn(value: Value, ids: DepSet): Refinable = Refinable(ids, Value.varsIn(value, ids))
+    def rootRefinable(value: Value): Refinable = value match {
+      case Blocker(blockedOn) => refinableIn(value, blockedOn)
+      case _                  => Refinable(DepSet.empty, Vector.empty)
+    }
+
     family.meta.constructors.flatMap { ctorMeta =>
       val head = env(ctorMeta.canonicalName) match {
         case value: ConstructorHead => value
@@ -28,15 +37,22 @@ object MatchChecker {
       val (allArgs, resultTy) = BinderOps.freshCtorArgsAndResult(head)
       val fields = Value.constructorStoredArgs(head, allArgs)
       val ctorValue = VCtor(head, fields, resultTy)
-      // Only the scrutinee's root blocker is authoritative for value refinement.  Captures and
-      // dependencies of a composite scrutinee are not equations implied by matching it.
-      val valueIds = Blocker.unapply(scrut).getOrElse(DepSet.empty) ++ ctorValue.synDeps
-      val typeIds = scrutTpe.synDeps ++ ctorValue.synDeps
-      val branchStore = ValueEquivalence.tryUnify(scrut, ctorValue, EqStore.empty.allow(valueIds)) match {
+      val ctorRefinable = refinableIn(ctorValue, ctorValue.synDeps)
+      val valueRefinable = rootRefinable(scrut) ++ ctorRefinable
+      val typeRefinable = refinableIn(scrutTpe, scrutTpe.synDeps) ++ ctorRefinable
+      val branchStore = ValueEquivalence.tryUnify(
+        scrut,
+        ctorValue,
+        EqStore.empty.allowEta(valueRefinable.ids, valueRefinable.vars)
+      ) match {
         case Right(store)                   => Some(store)
         case Left(failure) if failure.apart => None
         case Left(_) =>
-          ValueEquivalence.tryUnify(resultTy, scrutTpe, EqStore.empty.allow(typeIds)) match {
+          ValueEquivalence.tryUnify(
+            resultTy,
+            scrutTpe,
+            EqStore.empty.allowEta(typeRefinable.ids, typeRefinable.vars)
+          ) match {
             case Right(store)                   => Some(store)
             case Left(failure) if failure.apart => None
             case Left(_)                        => Some(EqStore.empty)
