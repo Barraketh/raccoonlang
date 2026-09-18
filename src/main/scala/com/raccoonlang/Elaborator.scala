@@ -110,23 +110,25 @@ object Elaborator {
       case Some(_) => val (next, ref) = measureScope.fresh(decl.header.name); (next, Some(ref))
       case None    => (measureScope, None)
     }
-    val (afterBody, bodyTerm) = decl.body match {
-      case SurfaceAst.ConstBody.TermBody(t) => elabTerm(t, bodyScopeForElab)
-      case SurfaceAst.ConstBody.Builtin(s)  => throw WTF(s"Builtin bodies are not available in the C04 core at $s")
+    val (afterBody, coreBody) = decl.body match {
+      case SurfaceAst.ConstBody.Builtin(s) => (bodyScope, C.ConstBody.Builtin(s): C.ConstBody)
+      case SurfaceAst.ConstBody.TermBody(t) =>
+        val (after, bodyTerm) = elabTerm(t, bodyScopeForElab)
+        val body =
+          if (params.nonEmpty) {
+            val recursion = decreaseSpec.map { decreases =>
+              C.Recursion(selfRef.getOrElse(throw WTF(s"Missing recursive self ref at $decl.span")), decreases)
+            }
+            C.Term.Lam(fullType.asInstanceOf[C.Term.Pi], bodyTerm, decl.span, Some(decl.header.name), recursion)
+          } else {
+            if (decl.decreases.nonEmpty) throw WTF(s"Recursive definitions require parameters at ${decl.span}")
+            bodyTerm
+          }
+        (after, C.ConstBody.TermBody(body): C.ConstBody)
     }
-    val body =
-      if (params.nonEmpty) {
-        val recursion = decreaseSpec.map { decreases =>
-          C.Recursion(selfRef.getOrElse(throw WTF(s"Missing recursive self ref at $decl.span")), decreases)
-        }
-        C.Term.Lam(fullType.asInstanceOf[C.Term.Pi], bodyTerm, decl.span, Some(decl.header.name), recursion)
-      } else {
-        if (decl.decreases.nonEmpty) throw WTF(s"Recursive definitions require parameters at ${decl.span}")
-        bodyTerm
-      }
     (
       scope.restore(afterBody),
-      C.Decl.ConstDecl(decl.isOpaque, decl.header.name, fullType, C.ConstBody.TermBody(body), decl.span)
+      C.Decl.ConstDecl(decl.isOpaque, decl.header.name, fullType, coreBody, decl.span)
     )
   }
 
@@ -286,8 +288,20 @@ object Elaborator {
     }
 
   def elab(program: SurfaceAst.Program): C.Program = {
-    val builtins =
-      Set("Type", "Prop", "Level", "Level.zero", "Level.one", "Level.succ", "Level.max", "Level.imax", "Sort")
+    val builtins = Set(
+      "Type",
+      "Prop",
+      "Level",
+      "Level.zero",
+      "Level.one",
+      "Level.succ",
+      "Level.max",
+      "Level.imax",
+      "Sort",
+      "Quot.mk",
+      "Quot.lift",
+      "Quot.ind"
+    )
     val (scope, decls) = elabCommands(program.decls, Scope(Map.empty, 0, builtins))
     val body = program.body.map(t => elabTerm(t, scope)._2)
     C.Program(decls, body)

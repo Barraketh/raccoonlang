@@ -110,6 +110,9 @@ class SurfaceParserTests extends munit.FunSuite {
     rejected("import Init.Prelude\n")
     rejected("namespace N {}")
     rejected("open N")
-    rejected("def f : Type := builtin")
+    parsed("def f : Type := builtin").decls match {
+      case Vector(ConstDecl(false, _, _, SurfaceAst.ConstBody.Builtin(_), _)) =>
+      case other => fail(s"Expected builtin declaration, got $other")
+    }
   }
 }

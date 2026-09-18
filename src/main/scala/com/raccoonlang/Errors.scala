@@ -14,6 +14,10 @@ final case class AlreadyDefined(name: String, override val span: Option[Span] = 
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
   val msg = s"$name already defined"
 }
+final case class ReservedKernelName(name: String, override val span: Option[Span] = None) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  override val msg: String = s"$name has a builtin body, which only a prelude may declare"
+}
 final case class TypeMismatch(expected: Value, actual: Value, override val span: Option[Span] = None)
   extends TypeError {
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))

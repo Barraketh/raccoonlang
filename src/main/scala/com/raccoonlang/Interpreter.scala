@@ -382,14 +382,13 @@ object Interpreter {
 
   def evalDecl(decl: Decl, env: Env): Env = decl match {
     case Decl.ConstDecl(isOpaque, name, ty, body, _) =>
-      val valueType = evalTerm(ty, env)
-      if (isOpaque) env.putOpaque(name, valueType)
-      else
-        body match {
-          case CoreAst.ConstBody.TermBody(term) => env.putGlobal(name, evalTerm(term, env))
-          case CoreAst.ConstBody.Builtin(span) =>
-            throw WTF(s"Builtin bodies are unavailable at $span")
-        }
+      body match {
+        case CoreAst.ConstBody.Builtin(span) =>
+          throw ReservedKernelName(name, Some(span))
+        case CoreAst.ConstBody.TermBody(term) =>
+          val valueType = evalTerm(ty, env)
+          if (isOpaque) env.putOpaque(name, valueType) else env.putGlobal(name, evalTerm(term, env))
+      }
     case Decl.AxiomDecl(name, ty, _)            => env.putOpaque(name, evalTerm(ty, env))
     case d: Decl.InductiveDecl                  => InductiveChecks.evalInductive(d, env)
     case block: Decl.InductiveBlock             => InductiveChecks.evalInductiveBlock(block, env)

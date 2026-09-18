@@ -240,11 +240,13 @@ object LanguageParser {
   }
 
   private def constP(implicit sourceId: Option[SourceId]): Parser[ConstDecl] =
-    (opaqueP ~ kw("def") ~/ declHeader ~ decreasesP.? ~ (sym(":=") ~/ skipAllWs ~ term))
+    (opaqueP ~ kw("def") ~/ declHeader ~ decreasesP.? ~ (sym(":=") ~/ skipAllWs ~ constBody))
       .flatSpanned(sourceId)
-      .map { case (isOpaque, header, decreases, body, span) =>
-        ConstDecl(isOpaque, header, decreases, ConstBody.TermBody(body), span)
-      }
+      .map { case (isOpaque, header, decreases, body, span) => ConstDecl(isOpaque, header, decreases, body, span) }
+
+  private def constBody(implicit sourceId: Option[SourceId]): Parser[ConstBody] =
+    kwTight("builtin").!.flatSpanned(sourceId).map { case (_, span) => ConstBody.Builtin(span) } |
+      term.map(ConstBody.TermBody.apply)
 
   private def axiomP(implicit sourceId: Option[SourceId]): Parser[AxiomDecl] =
     (kw("axiom") ~/ declHeader).flatSpanned(sourceId).map { case (header, span) => AxiomDecl(header, span) }

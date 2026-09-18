@@ -286,14 +286,23 @@ object TypeChecker {
     case _                        => "function"
   }
 
-  def checkDecl(decl: Decl, env: Env): Env = decl match {
+  def checkDecl(decl: Decl, env: Env): Env = checkDeclInternal(decl, env, trusted = false)
+
+  private[raccoonlang] def checkDeclTrusted(decl: Decl, env: Env): Env =
+    checkDeclInternal(decl, env, trusted = true)
+
+  private def checkDeclInternal(decl: Decl, env: Env, trusted: Boolean): Env = decl match {
     case Decl.ConstDecl(isOpaque, name, ty, CoreAst.ConstBody.TermBody(body), _) =>
       val checkedTy = checkTerm(ty, env)
       sortOf(checkedTy.value)
       val checkedBody = check(body, Some(Expected(checkedTy.value, Some(checkedTy.residual))), env)
       if (isOpaque) env.putOpaque(name, checkedTy.value) else env.putGlobal(name, checkedBody.value)
-    case Decl.ConstDecl(_, _, _, CoreAst.ConstBody.Builtin(span), _) =>
-      throw WTF(s"Builtin bodies are unavailable at $span")
+    case Decl.ConstDecl(isOpaque, name, ty, CoreAst.ConstBody.Builtin(span), _) =>
+      if (isOpaque) throw WTF(s"Builtin declarations cannot be opaque at $span")
+      if (!trusted) throw ReservedKernelName(name, Some(span))
+      val checkedTy = checkTerm(ty, env)
+      sortOf(checkedTy.value)
+      env.putGlobal(name, Value.canonicalizeProof(Builtins.instantiate(name, checkedTy.value, span)))
     case Decl.AxiomDecl(name, ty, _) =>
       val checked = checkTerm(ty, env); sortOf(checked.value); env.putOpaque(name, checked.value)
     case d: Decl.InductiveDecl => InductiveChecks.checkInductive(d, env)
@@ -357,6 +366,14 @@ object TypeChecker {
 
   def checkProgram(program: Program, initial: Env = Interpreter.builtins): (Env, Option[CheckedTerm]) = {
     val env = program.decls.foldLeft(initial) { case (current, decl) => checkDecl(decl, current) }
+    (env, program.body.map(checkTerm(_, env)))
+  }
+
+  private[raccoonlang] def checkProgramTrusted(
+      program: Program,
+      initial: Env = Interpreter.builtins
+  ): (Env, Option[CheckedTerm]) = {
+    val env = program.decls.foldLeft(initial) { case (current, decl) => checkDeclTrusted(decl, current) }
     (env, program.body.map(checkTerm(_, env)))
   }
 }
