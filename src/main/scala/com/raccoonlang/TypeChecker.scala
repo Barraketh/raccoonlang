@@ -17,6 +17,10 @@ object TypeChecker {
     }
 
   def checkType(value: Value, expectedType: Value): Unit = checkFits(value.tpe, expectedType)
+  private def checkTermFits(checked: CheckedTerm, expectedType: Value): CheckedTerm = {
+    checkType(checked.value, expectedType)
+    checked
+  }
   def assertType(value: Value): VSort = getUniverse(value)
   def getUniverse(value: Value): VSort = value.tpe match {
     case sort: VSort => sort
@@ -103,9 +107,10 @@ object TypeChecker {
         term match {
           case _: CTerm.Ref | _: CTerm.Lam =>
             tryInstantiateImplicits(checked, exp, env, term.span).getOrElse {
-              checkFits(checked.value.tpe, exp.value); checked
+              checkTermFits(checked, exp.value)
             }
-          case _ => checkFits(checked.value.tpe, exp.value); checked
+          case _ =>
+            checkTermFits(checked, exp.value)
         }
     }
   }
@@ -339,7 +344,11 @@ object TypeChecker {
       TerminationChecker.assertNonRawRecursive(body.value, definition.body.span)
       definition.copy(ty = checkedTy, body = body.residual)
     }
-    Interpreter.evalDecl(Decl.RecursiveDefBlock(residual, block.span), env)
+    // The residual and checked Pi above are authoritative.  Do not send the residual back
+    // through Interpreter.evalDecl: that would re-check the declaration and can observe a
+    // different elaboration environment from the one in which it was certified.
+    val checkedValues = typed.map { case (definition, (ty, _)) => definition.name -> ty.asInstanceOf[VPi] }.toMap
+    Interpreter.publishCheckedRecursive(residual.map(definition => definition -> checkedValues(definition.name)), env)
   }
 
   def checkProgram(program: Program, initial: Env = Interpreter.builtins): (Env, Option[CheckedTerm]) = {

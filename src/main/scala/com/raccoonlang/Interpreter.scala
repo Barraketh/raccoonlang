@@ -145,16 +145,21 @@ object Interpreter {
   }
 
   def evalPiClosed(pi: Term.Pi, env: Env): VPi = {
+    // Keep the closure contract at this boundary as well as in evalPi.  A caller may have
+    // constructed an Env containing more locals than this Pi mentions (notably while publishing
+    // a checked lambda); retaining those locals would make closure identity and dependencies
+    // depend on evaluation history rather than on the residual syntax.
+    val closedEnv = env.closeForEval(CapturedRefs.getCapturedRefs(pi, env))
     val runtimeBinders =
-      if (pi.binders.exists(b => b.isImplicit && b.projection.isEmpty)) BinderOps.compileRuntime(pi.binders, env)
+      if (pi.binders.exists(b => b.isImplicit && b.projection.isEmpty)) BinderOps.compileRuntime(pi.binders, closedEnv)
       else pi.binders
-    val classifier = () => piClassifier(pi.binders, env, pi.out)
-    val captures = env.locals.values.toVector
+    val classifier = () => piClassifier(pi.binders, closedEnv, pi.out)
+    val captures = closedEnv.locals.values.toVector
     VPi(
-      env,
+      closedEnv,
       runtimeBinders,
       bodyEnv => evalTerm(pi.out, bodyEnv),
-      env.dependencies,
+      closedEnv.dependencies,
       Value.ValueId.LocalId(pi.nodeId, captures),
       classifier
     )
@@ -368,6 +373,39 @@ object Interpreter {
           }
         }
       }
+    )
+  }
+
+  /**
+   * Publish a recursive group whose Pi types and lambda residuals have already been checked.
+   *
+   * The ordinary [[evalRecursive]] path is intentionally still available for the unchecked interpreter. The checker
+   * must use this path instead: evaluating a checked declaration by feeding its residual back through declaration
+   * evaluation would run the checker a second time and make the source syntax, rather than the checked residual/value,
+   * authoritative.
+   */
+  private[raccoonlang] def publishCheckedRecursive(
+      definitions: Vector[(CoreAst.RecursiveDef, VPi)],
+      env: Env
+  ): Env = {
+    val names = definitions.map(_._1.name)
+    env.putRecursiveGroup(
+      names,
+      groupEnv =>
+        definitions.map { case (definition, vpi) =>
+          val lambda = Term.Lam(
+            definition.ty,
+            definition.body,
+            definition.span,
+            Some(definition.name),
+            recursion = None,
+            recursivePeers = definitions.map { case (peer, _) => peer.peerRef -> peer.name }
+          )
+          evalLam(lambda, vpi, groupEnv) match {
+            case value: VLam => value
+            case other       => throw WTF(s"Checked recursive definition ${definition.name} produced $other")
+          }
+        }
     )
   }
 
