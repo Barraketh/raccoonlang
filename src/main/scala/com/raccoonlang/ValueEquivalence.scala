@@ -43,6 +43,14 @@ object ValueEquivalence {
       info.fieldCount == 0 || ConstructorForm.unapply(value).nonEmpty
     }
 
+  private object ProofEquation {
+    def unapply(pair: (Value, Value)): Option[(Value, Value)] = pair match {
+      case (left, right) if Value.isPropositionType(left.tpe) && Value.isPropositionType(right.tpe) =>
+        Some(left.tpe -> right.tpe)
+      case _ => None
+    }
+  }
+
   private def unify(left0: Value, right0: Value, store: EqStore, ctx: Ctx): Either[UnifyFailure, EqStore] =
     unify(left0, right0, store, ctx, normalizeNullary = true)
 
@@ -64,6 +72,9 @@ object ValueEquivalence {
       stuck(left, right)
     else {
       (left, right) match {
+        // Proof irrelevance is type-directed and must precede every Var rule: proof representatives
+        // supply neither witness links nor constructor apartness.
+        case ProofEquation(leftType, rightType)         => unify(leftType, rightType, store, ctx)
         case (lv: Var, rv: Var) if lv.id == rv.id       => unify(lv.tpe, rv.tpe, store, ctx)
         case (v: Var, other) if store.isRefinable(v.id) => link(v, other, store, ctx)
         case (other, v: Var) if store.isRefinable(v.id) => link(v, other, store, ctx)
@@ -200,8 +211,8 @@ object ValueEquivalence {
             case Left(error) => failed = Some(error.asStuck)
             case Right(next) =>
               current = next
-              val shared =
-                FreshVar.freshVar(lb.name, ValueOps.materialize(Interpreter.evalTerm(lb.ty, leftEnv), current))
+              val sharedType = ValueOps.materialize(Interpreter.evalTerm(lb.ty, leftEnv), current)
+              val shared = Value.canonicalizeRigidBinder(sharedType, FreshVar.freshVar(lb.name, sharedType))
               leftEnv = leftEnv.putLocal(lb.localRef, shared)
               rightEnv = rightEnv.putLocal(rb.localRef, shared)
           }
@@ -236,7 +247,8 @@ object ValueEquivalence {
               }
           }
       case (LamBody.Native(_, _, _), LamBody.Native(_, _, _)) if sameLambdaId(left.id, right.id) => Right(store)
-      case _                                                                                     => stuck(left, right)
+      case (LamBody.ProofEta, LamBody.ProofEta) => unify(left.tpe, right.tpe, store, ctx)
+      case _                                    => stuck(left, right)
     }
 
   private def alignLambdaPis(
@@ -261,7 +273,8 @@ object ValueEquivalence {
         case Left(error) => return Left(error.asStuck)
         case Right(next) =>
           current = next
-          val shared = FreshVar.freshVar(lb.name, Interpreter.evalTerm(lb.ty, leftEnv))
+          val sharedType = Interpreter.evalTerm(lb.ty, leftEnv)
+          val shared = Value.canonicalizeRigidBinder(sharedType, FreshVar.freshVar(lb.name, sharedType))
           leftEnv = leftEnv.putLocal(lb.localRef, shared)
           rightEnv = rightEnv.putLocal(rb.localRef, shared)
       }

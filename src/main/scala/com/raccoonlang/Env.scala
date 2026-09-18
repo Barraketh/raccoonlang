@@ -14,6 +14,7 @@ object GlobalBinding {
       case None =>
         val value = force()
         Env.assertClosedGlobal(value)
+        Env.assertCanonicalProof(value)
         cached = Some(value)
         value
     }
@@ -29,6 +30,10 @@ object Env {
   private[raccoonlang] def assertClosedGlobal(value: Value): Unit =
     if (assertionsEnabled && value.synDeps.nonEmpty)
       throw CoreInvariant(s"Global value must be closed, but has free vars ${value.synDeps}")
+
+  private[raccoonlang] def assertCanonicalProof(value: Value): Unit =
+    if (assertionsEnabled && !(Value.canonicalizeProof(value) eq value))
+      throw CoreInvariant(s"Non-canonical proof bound into env: $value")
 }
 
 final case class Env(
@@ -43,6 +48,7 @@ final case class Env(
 
   def putGlobal(name: String, value: Value): Env = {
     Env.assertClosedGlobal(value)
+    Env.assertCanonicalProof(value)
     if (globals.contains(name)) throw AlreadyDefined(name)
     else if (name == "_") throw WTF("Wildcards not allowed in global names")
     else copy(globals = globals.updated(name, GlobalBinding.Strict(value)))
@@ -50,10 +56,11 @@ final case class Env(
 
   def putOpaque(name: String, ty: Value): Env = {
     if (globals.contains(name)) throw AlreadyDefined(name)
-    putGlobal(name, Value.VConst(name, Value.Symbol, ty))
+    putGlobal(name, Value.canonicalizeProof(Value.VConst(name, Value.Symbol, ty)))
   }
 
   def putLocal(ref: CoreAst.LocalRef, value: Value): Env = {
+    Env.assertCanonicalProof(value)
     if (locals.contains(ref)) throw AlreadyDefined(ref.name)
     copy(locals = locals.updated(ref, value), localRefs = localRefs + ref)
   }

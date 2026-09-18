@@ -36,7 +36,7 @@ object MatchChecker {
       }
       val (allArgs, resultTy) = BinderOps.freshCtorArgsAndResult(head)
       val fields = Value.constructorStoredArgs(head, allArgs)
-      val ctorValue = VCtor(head, fields, resultTy)
+      val ctorValue = Value.canonicalizeProof(VCtor(head, fields, resultTy))
       val ctorRefinable = refinableIn(ctorValue, ctorValue.synDeps)
       val valueRefinable = rootRefinable(scrut) ++ ctorRefinable
       val typeRefinable = refinableIn(scrutTpe, scrutTpe.synDeps) ++ ctorRefinable
@@ -70,6 +70,23 @@ object MatchChecker {
     }
   }
 
+  /** C14 has no declaration-compiled proof-field recovery; only empty/impossible Prop matches may eliminate to data. */
+  private def allowLargeElimination(reachable: Vector[ReachableCtor]): Boolean =
+    reachable.isEmpty || (reachable.length == 1 && reachable.head.fieldArgs.isEmpty)
+
+  private def checkPropElimination(
+      family: InductiveFamilyInstance,
+      scrutTpe: Value,
+      motive: Value,
+      reachable: => Vector[ReachableCtor],
+      span: Span
+  ): Unit =
+    if (
+      TypeChecker.isPropValuedType(scrutTpe) && !TypeChecker.isPropValuedType(motive) &&
+      !allowLargeElimination(reachable)
+    )
+      throw PropEliminationRestricted(family.head.name, motive, Some(span))
+
   private def resolveCase(c: Case, family: InductiveFamilyInstance): Case = {
     val candidates =
       if (c.isFullyQualified)
@@ -85,8 +102,9 @@ object MatchChecker {
   private def checkBranch(br: Case, args: Vector[Value], env: Env, expected: Value): Case = {
     if (args.length != br.argRefs.length) throw ArityMismatch(args.length, br.argRefs.length, Some(br.span))
     val branchEnv = br.argRefs.zip(args).foldLeft(env) {
-      case (current, (Some(ref), value)) => current.putLocal(ref, ValueOps.materialize(value, EqStore.empty))
-      case (current, (None, _))          => current
+      case (current, (Some(ref), value)) =>
+        current.putLocal(ref, Value.canonicalizeProof(ValueOps.materialize(value, EqStore.empty)))
+      case (current, (None, _)) => current
     }
     val checked = TypeChecker.check(br.body, Some(TypeChecker.Expected(expected, None)), branchEnv)
     br.copy(body = checked.residual)
@@ -97,7 +115,7 @@ object MatchChecker {
     // Nullary constructors are values at runtime even though their global
     // binding is published as a constructor head.
     val scrut = checkedScrut.value match {
-      case head: ConstructorHead if head.totalArity == 0 => VCtor(head, Vector.empty, head.tpe)
+      case head: ConstructorHead if head.totalArity == 0 => Value.canonicalizeProof(VCtor(head, Vector.empty, head.tpe))
       case value                                         => value
     }
     val family = scrut.tpe match {
@@ -133,6 +151,7 @@ object MatchChecker {
     }
     val motiveValue = explicitMotive.map(_.value).orElse(inherited.map(_._1)).getOrElse(inferred)
     expected.foreach(exp => TypeChecker.checkFits(motiveValue, exp.value))
+    checkPropElimination(family, scrut.tpe, motiveValue, reachable, term.span)
 
     var checkedByCtor = Map.empty[String, Case]
     scrut match {

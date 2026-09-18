@@ -40,32 +40,60 @@ object Projection {
       case Var(_, id, _) => Some(id)
       case _             => None
     }
-    def visit(root: Int, path: Vector[Step], value: Value): Unit = value match {
-      case level: Level =>
-        Level.singleVariableOffset(level).foreach { case (id, k) =>
-          holes.get(id).foreach(h => solve(h, root, if (k == 0) path else path :+ Step.LevelOffset(k), LevelTpe))
-        }
-      case _ if valueHoleId(value).exists(holes.contains) =>
-        solve(holes(valueHoleId(value).get), root, path, value.tpe)
-      case VSort(level) => queue.append((root, path :+ Step.SortLevel, level))
-      case VCtor(head, fields, tpe) =>
-        if (head.noConfusion) fields.zipWithIndex.foreach { case (field, i) =>
-          queue.append((root, path :+ Step.CtorField(head.name, i), field))
-        }
+    val proofHoles = binders.zipWithIndex.collect {
+      case (b, i) if b.isImplicit && Value.isPropositionType(b.fresh.tpe) => i -> b.fresh.tpe
+    }
+    val proofHolesByKey = proofHoles.groupBy(_._2.key)
+    val structurallyComparableProofHoles = proofHoles.filter(_._2.needsStructuralDefEq)
+    val proofHoleIndexes = proofHoles.iterator.map(_._1).toSet
+    var remainingProofHoles = proofHoleIndexes.size
+
+    def solveProof(hole: Int, root: Int, path: Vector[Step], tpe: Value): Unit =
+      if (!isRoot(hole) && !solved.contains(hole)) {
+        solved.update(hole, root -> path)
+        remainingProofHoles -= 1
         queue.append((root, path :+ Step.Tpe, tpe))
-      case ConstSpine(head, args) if args.nonEmpty && rigid(head) =>
-        args.zipWithIndex.foreach { case (arg, i) => queue.append((root, path :+ Step.SpineArg(head.name, i), arg)) }
-      case pi: VPi =>
-        pi.binders.indices.foreach(i =>
-          independentPiDomain(pi, i).foreach(v => queue.append((root, path :+ Step.PiDomain(i), v)))
-        )
-        independentPiCodomain(pi) match {
-          case Some(v) => queue.append((root, path :+ Step.PiCodomain, v))
-          case None if pi.binders.length > 1 =>
-            independentPiResult(pi).foreach(v => queue.append((root, path :+ Step.PiResult, v)))
-          case _ =>
+      }
+
+    def visit(root: Int, path: Vector[Step], value: Value): Unit = {
+      if (remainingProofHoles > 0 && Value.isPropositionType(value.tpe)) {
+        val keyed = proofHolesByKey.getOrElse(value.tpe.key, Vector.empty)
+        val structural = if (value.tpe.needsStructuralDefEq) proofHoles else structurallyComparableProofHoles
+        (keyed.iterator ++ structural.iterator).foreach { case (hole, proposition) =>
+          if (!solved.contains(hole) && ValueEquivalence.defEq(proposition, value.tpe))
+            solveProof(hole, root, path, value.tpe)
         }
-      case _ =>
+      }
+
+      value match {
+        case level: Level =>
+          Level.singleVariableOffset(level).foreach { case (id, k) =>
+            holes.get(id).foreach(h => solve(h, root, if (k == 0) path else path :+ Step.LevelOffset(k), LevelTpe))
+          }
+        case _ if valueHoleId(value).exists(holes.contains) =>
+          solve(holes(valueHoleId(value).get), root, path, value.tpe)
+        case VSort(level) => queue.append((root, path :+ Step.SortLevel, level))
+        case VCtor(head, fields, tpe) =>
+          if (head.noConfusion) fields.zipWithIndex.foreach { case (field, i) =>
+            queue.append((root, path :+ Step.CtorField(head.name, i), field))
+          }
+          queue.append((root, path :+ Step.Tpe, tpe))
+        case ConstSpine(head, args) if args.nonEmpty && rigid(head) =>
+          args.zipWithIndex.foreach { case (arg, i) => queue.append((root, path :+ Step.SpineArg(head.name, i), arg)) }
+        case pi: VPi =>
+          pi.binders.indices.foreach(i =>
+            independentPiDomain(pi, i).foreach(v => queue.append((root, path :+ Step.PiDomain(i), v)))
+          )
+          independentPiCodomain(pi) match {
+            case Some(v) => queue.append((root, path :+ Step.PiCodomain, v))
+            case None if pi.binders.length > 1 =>
+              independentPiResult(pi).foreach(v => queue.append((root, path :+ Step.PiResult, v)))
+            case _ =>
+          }
+        case p: VProof =>
+          queue.append((root, path :+ Step.Tpe, p.tpe))
+        case _ =>
+      }
     }
     def drain(): Unit = while (queue.nonEmpty) { val (r, p, v) = queue.removeHead(); visit(r, p, v) }
     binders.indices.foreach(i => if (isRoot(i)) queue.append((i, Vector(Step.Tpe), binders(i).fresh.tpe)))
@@ -75,8 +103,12 @@ object Projection {
       binders.indices.reverse.find(i =>
         demotable(i) && binders(i).isImplicit && !demoted(i) && !solved.contains(i)
       ) match {
-        case Some(i) => demoted += i; queue.append((i, Vector(Step.Tpe), binders(i).fresh.tpe)); drain()
-        case None    => more = false
+        case Some(i) =>
+          demoted += i
+          if (proofHoleIndexes(i)) remainingProofHoles -= 1
+          queue.append((i, Vector(Step.Tpe), binders(i).fresh.tpe))
+          drain()
+        case None => more = false
       }
     }
     binders.zipWithIndex.map { case (b, i) =>

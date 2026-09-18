@@ -8,7 +8,7 @@ sealed trait Value {
   def tpe: Value
   def synDeps: DepSet
   def needsStructuralDefEq: Boolean =
-    StructEta.eligibleInstance(tpe).nonEmpty
+    Value.isPropositionType(tpe) || StructEta.eligibleInstance(tpe).nonEmpty
   lazy val key: ValueKey.Key = ValueKey.orderKey(this)
   override def toString: String = PrettyPrinter.print(this)
 }
@@ -24,6 +24,45 @@ object Value {
     final case class LocalId(nodeId: AstNodeId, captures: Vector[Value]) extends ValueId
   }
 
+  /** A type is a proposition exactly when it lives in Prop; Prop itself is a sort, not a proof type. */
+  def isPropositionType(tpe: Value): Boolean = tpe match {
+    case PropTpe => false
+    // Impredicativity: a function type is a proposition when its codomain is one.
+    case pi: VPi => pi.isPropValued
+    case other   => other.tpe == PropTpe
+  }
+
+  private def canonicalProofLambda(pi: VPi): VLam =
+    VLam(pi, ValueId.LocalId(AstNodeId.synthetic(), Vector.empty), LamBody.ProofEta)
+
+  /** Canonical proof boundary used whenever a checked value enters evaluation or an environment. */
+  def canonicalizeProof(value: Value): Value = value match {
+    case _: VPi | _: Var | _: ConstructorHead   => value
+    case VLam(_, _, LamBody.Native(_, _, true)) => value
+    case _ if !isPropositionType(value.tpe)     => value
+    case VLam(_, _, LamBody.ProofEta)           => value
+    case VProof(tpe) =>
+      tpe match {
+        case pi: VPi => canonicalProofLambda(pi)
+        case _       => value
+      }
+    case _ =>
+      value.tpe match {
+        case pi: VPi => canonicalProofLambda(pi)
+        case _       => VProof(value.tpe)
+      }
+  }
+
+  /** The canonical operational representative of a proof result, retaining eta behavior for Pi propositions. */
+  private[raccoonlang] def shallowProof(tpe: Value): Value = tpe match {
+    case pi: VPi => canonicalProofLambda(pi)
+    case _       => VProof(tpe)
+  }
+
+  /** Fresh rigid hypotheses may be erased; refinable metas must remain Vars until solved. */
+  def canonicalizeRigidBinder(tpe: Value, fresh: Value): Value =
+    if (isPropositionType(tpe)) canonicalizeProof(VProof(tpe)) else fresh
+
   sealed trait LamBody { def synDeps: DepSet }
   object LamBody {
     final case class Core(term: CoreAst.Term.Lam, env: Env) extends LamBody {
@@ -32,6 +71,7 @@ object Value {
     final case class Native(run: (Vector[Value], Env) => Value, env: Env, isRawRecursive: Boolean) extends LamBody {
       override lazy val synDeps: DepSet = env.dependencies
     }
+    case object ProofEta extends LamBody { override val synDeps: DepSet = DepSet.empty }
   }
 
   private[raccoonlang] def envDeps(env: Env): DepSet = {
@@ -72,6 +112,7 @@ object Value {
           lam.body match {
             case LamBody.Core(_, env)      => walkEnv(env)
             case LamBody.Native(_, env, _) => walkEnv(env)
+            case LamBody.ProofEta          =>
           }
           lam.id match {
             case ValueId.Const(_)           =>
@@ -244,6 +285,10 @@ object Value {
       roots.toMap
     }
     override lazy val tpe: VSort = classifier0()
+    lazy val isPropValued: Boolean = knownPropValued.getOrElse {
+      val freshEnv = BinderOps.freshen(binders, env)
+      Value.isPropositionType(codomain(freshEnv))
+    }
   }
 
   final case class VLam(tpe: VPi, id: ValueId, body: LamBody) extends Value {
@@ -258,6 +303,13 @@ object Value {
       }
       deps.result()
     }
+  }
+
+  /** Erased representative for an inhabitant of an ordinary proposition. */
+  final case class VProof(tpe: Value) extends Value {
+    require(isPropositionType(tpe), s"VProof requires a proposition, got $tpe")
+    override lazy val synDeps: DepSet = tpe.synDeps
+    override val needsStructuralDefEq: Boolean = true
   }
 
   final case class VApp(head: Value, args: Vector[Value], tpe: Value, blockedOn: DepSet = DepSet.empty) extends Value {

@@ -150,6 +150,39 @@ class ValueEquivalenceTests extends munit.FunSuite {
     assert(ValueEquivalence.tryUnify(left, right, EqStore.empty).isRight)
   }
 
+  test("proof variables unify by proposition without witness links") {
+    val proposition = Value.VConst("P", Value.Symbol, Value.PropTpe)
+    val proof = Value.Var("p", 5210, proposition)
+    val store = EqStore.empty.allow(DepSet(5210))
+    val result = ValueEquivalence.tryUnify(proof, Value.VProof(proposition), store)
+    assert(result.isRight)
+    assert(result.toOption.exists(_.subst.isEmpty))
+  }
+
+  test("different proposition proofs fail without linking the witness") {
+    val leftType = Value.VConst("P", Value.Symbol, Value.PropTpe)
+    val rightType = Value.VConst("Q", Value.Symbol, Value.PropTpe)
+    val proof = Value.Var("p", 5211, leftType)
+    val store = EqStore.empty.allow(DepSet(5211))
+    val result = ValueEquivalence.tryUnify(proof, Value.VProof(rightType), store)
+    assert(result.isLeft)
+    assert(store.subst.isEmpty)
+    assert(result.left.toOption.exists(!_.apart))
+  }
+
+  test("distinct constructors of one proposition do not yield apartness") {
+    val (env, _) = TestSupport.check(
+      "inductive Amb : Prop\n" +
+        " | left : Amb\n" +
+        " | right : Amb\n"
+    )
+    val left = Interpreter.evalTerm(CoreAst.Term.GlobalRef("Amb.left", Span(0, 1)), env)
+    val right = Interpreter.evalTerm(CoreAst.Term.GlobalRef("Amb.right", Span(0, 1)), env)
+    val result = ValueEquivalence.tryUnify(left, right, EqStore.empty)
+    assert(result.isRight)
+    assert(result.toOption.exists(_.subst.isEmpty))
+  }
+
   test("only genuine constructor clashes produce apartness") {
     val leftHead = Value.ConstructorHead("Left", 0, 0, Value.TypeValue)
     val rightHead = Value.ConstructorHead("Right", 0, 0, Value.TypeValue)
@@ -214,7 +247,7 @@ class ValueEquivalenceTests extends munit.FunSuite {
         )
       ),
       Value.VPi(
-        Env.empty,
+        Interpreter.builtins,
         Vector(CoreAst.Binder(CoreAst.LocalRef(30, "A"), CoreAst.Term.GlobalRef("Type", Span(0, 1)), Span(0, 1))),
         _ => Value.TypeValue,
         DepSet.empty,

@@ -286,7 +286,8 @@ object Elaborator {
     }
 
   def elab(program: SurfaceAst.Program): C.Program = {
-    val builtins = Set("Type", "Level", "Level.zero", "Level.one", "Level.succ", "Level.max", "Level.imax", "Sort")
+    val builtins =
+      Set("Type", "Prop", "Level", "Level.zero", "Level.one", "Level.succ", "Level.max", "Level.imax", "Sort")
     val (scope, decls) = elabCommands(program.decls, Scope(Map.empty, 0, builtins))
     val body = program.body.map(t => elabTerm(t, scope)._2)
     C.Program(decls, body)

@@ -184,7 +184,7 @@ class ValueOpsTests extends munit.FunSuite {
     val capturedRef = CoreAst.LocalRef(2208, "captured")
     val captured = Value.Var("captured", 2208, Value.TypeValue)
     val binderRef = CoreAst.LocalRef(2209, "x")
-    val env = Env.empty.putLocal(capturedRef, captured)
+    val env = Interpreter.builtins.putLocal(capturedRef, captured)
     val term = CoreAst.Term.Pi(
       Vector(CoreAst.Binder(binderRef, CoreAst.Term.GlobalRef("Type", span), span)),
       CoreAst.Term.LocalRef(capturedRef, span),
@@ -210,7 +210,7 @@ class ValueOpsTests extends munit.FunSuite {
     val capturedRef = CoreAst.LocalRef(2210, "captured")
     val captured = Value.Var("captured", 2210, Value.TypeValue)
     val replacement = Value.VConst("replacement", Value.Symbol, Value.TypeValue)
-    val env = Env.empty.putLocal(capturedRef, captured)
+    val env = Interpreter.builtins.putLocal(capturedRef, captured)
     val binderRef = CoreAst.LocalRef(2211, "x")
     val binder = CoreAst.Binder(binderRef, CoreAst.Term.GlobalRef("Type", Span(0, 1)), Span(0, 1))
     val pi = Value.VPi(

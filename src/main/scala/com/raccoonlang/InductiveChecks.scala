@@ -93,6 +93,8 @@ object InductiveChecks {
 
         case _: ConstructorHead => !target.mayOccurIn(value)
 
+        case VProof(tpe) => doesNotOccur(target, tpe)
+
         case _: Level | LevelTpe | _: VLam | _: VSort | _: Var | _: VConst | PropTpe =>
           !target.mayOccurIn(value)
       }
@@ -109,6 +111,7 @@ object InductiveChecks {
         case LamBody.Core(term, bodyEnv) =>
           bodyEnv.locals.values.exists(value => !doesNotOccur(target, value)) || checkedTermContainsAny(term, names)
         case _: LamBody.Native => true
+        case LamBody.ProofEta  => false
       })
     }
   }
@@ -206,6 +209,8 @@ object InductiveChecks {
 
         case _: ConstructorHead => true
 
+        case VProof(tpe) => occursPositively(target, tpe, currentBlock)
+
         case _: Level | LevelTpe | _: VSort | _: Var | _: VConst =>
           true
       }
@@ -218,6 +223,7 @@ object InductiveChecks {
       value: Value
   ): Boolean =
     value match {
+      case VProof(tpe)     => blockFamilyApplicationsAreUniform(blockNames, target, expectedParams, tpe)
       case _: NeutralThunk => false
 
       case InductiveFamilyValue(instance) =>

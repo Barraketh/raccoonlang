@@ -12,7 +12,7 @@ object StructEta {
     }
 
   def eligibleInstance(tpe: Value): Option[(InductiveFamilyInstance, ProjectionInfo)] =
-    anyInstance(tpe).filterNot { case _ => tpe.tpe == PropTpe }
+    anyInstance(tpe).filterNot { case _ => Value.isPropositionType(tpe) }
 
   def fields(value: Value): Option[Vector[Value]] = value match {
     case _ =>

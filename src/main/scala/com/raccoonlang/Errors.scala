@@ -80,6 +80,11 @@ final case class MissingReturningClause(reason: String, override val span: Optio
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
   val msg = s"Match requires a returning clause: $reason"
 }
+final case class PropEliminationRestricted(inductive: String, motive: Value, override val span: Option[Span] = None)
+  extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  val msg = s"Cannot eliminate proposition $inductive into data motive $motive without proof recovery"
+}
 final case class AmbiguousName(name: String, candidates: Vector[String], override val span: Option[Span] = None)
   extends TypeError {
   override def withSpan(sp: Span): TypeError = copy(span = Some(sp))

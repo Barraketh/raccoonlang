@@ -26,6 +26,11 @@ object TypeChecker {
     case sort: VSort => sort
     case _           => throw NotAType(value.tpe)
   }
+
+  def isPropValuedType(value: Value): Boolean = {
+    getUniverse(value)
+    Value.isPropositionType(value)
+  }
   private[raccoonlang] def checkTypeWithFamilyParams(term: CTerm, env: Env, familyParams: Int): CheckedTerm =
     term match {
       case pi: CTerm.Pi =>
@@ -88,7 +93,11 @@ object TypeChecker {
     val binders = checkedBinders.binders
     val checkedOut = checkTerm(pi.out, scope)
     sortOf(checkedOut.value)
-    val residual = pi.copy(binders = binders, out = checkedOut.residual)
+    val residual = pi.copy(
+      binders = binders,
+      out = checkedOut.residual,
+      knownPropValued = Interpreter.stablePiPropClassification(checkedOut.value)
+    )
     val checkedPi = Interpreter.evalPi(residual, env)
     checkedPi.tpe
     CheckedPi(checkedPi, scope, checkedOut.value, residual)
@@ -196,15 +205,8 @@ object TypeChecker {
     TerminationChecker.assertNonRawRecursive(checkedBody.value, body.span)
     val residualPi = checkedPi.residual
     val residualLam = CTerm.Lam(residualPi, checkedBody.residual, span, name, recursion, peers)
-    val closure = env.closeForEval(CapturedRefs.getCapturedRefs(residualLam, env))
     CheckedTerm(
-      VLam(
-        Interpreter.evalPiClosed(residualPi, closure),
-        name
-          .map(Value.ValueId.Const)
-          .getOrElse(Value.ValueId.LocalId(residualLam.nodeId, closure.locals.values.toVector)),
-        Value.LamBody.Core(residualLam, closure)
-      ),
+      Interpreter.evalLam(residualLam, checkedPi.vpi, env),
       residualLam
     )
   }
@@ -212,8 +214,10 @@ object TypeChecker {
   private def bindPi(pi: VPi, env: Env): Env =
     pi.binders.foldLeft(env) { case (current, binder) =>
       current.putLocal(
-        binder.localRef,
-        Interpreter.rigidBinderValue(binder.localRef, Interpreter.evalTerm(binder.ty, current))
+        binder.localRef, {
+          val tpe = Interpreter.evalTerm(binder.ty, current)
+          BinderOps.freshBinderValue(binder.name, tpe)
+        }
       )
     }
 

@@ -30,6 +30,7 @@ object ValueOps {
           VApp(materialize(head), args.map(materialize), materialize(tpe), blocked)
         case NeutralThunk(term, env, id, tpe, blocked) =>
           NeutralThunk(term, materializeEnv(env), materializeLocalId(id), materialize(tpe), blocked)
+        case VProof(tpe) => VProof(materialize(tpe))
         case pi: VPi =>
           val originalStore = eqStore
           pi.copy(
@@ -42,10 +43,11 @@ object ValueOps {
           val body = lam.body match {
             case LamBody.Core(term, env) => LamBody.Core(term, materializeEnv(env))
             case native: LamBody.Native  => native.copy(env = materializeEnv(native.env))
+            case LamBody.ProofEta        => LamBody.ProofEta
           }
           lam.copy(tpe = materialize(lam.tpe).asInstanceOf[VPi], body = body, id = materializeId(lam.id))
       }
-      rebuilt
+      Value.canonicalizeProof(rebuilt)
     }
 
     private def mayNeedMaterialization(value: Value)(implicit eqStore: EqStore): Boolean =

@@ -9,6 +9,7 @@ object Interpreter {
   val builtins: Env = {
     val base = Env.empty
       .putGlobal("Type", TypeTpe)
+      .putGlobal("Prop", PropTpe)
       .putGlobal("Level", LevelTpe)
       .putGlobal("Level.zero", Level.zero)
       .putGlobal("Level.one", Level.one)
@@ -91,9 +92,17 @@ object Interpreter {
     val outLevel = TypeChecker.getUniverse(outValue).level
     val domLevels = binders.map(b => TypeChecker.getUniverse(freshEnv(b.localRef).tpe).level)
     val level =
-      if (Level.isNeverZero(outLevel)) Level.max(domLevels :+ outLevel)
+      if (outLevel == Level.zero) Level.zero
+      else if (Level.isNeverZero(outLevel)) Level.max(domLevels :+ outLevel)
       else domLevels.foldRight(outLevel)(Level.imax)
     VSort(level)
+  }
+
+  private[raccoonlang] def stablePiPropClassification(outValue: Value): Option[Boolean] = {
+    val VSort(level) = TypeChecker.getUniverse(outValue)
+    if (level == Level.zero) Some(true)
+    else if (Level.isNeverZero(level)) Some(false)
+    else None
   }
 
   private def piClassifier(binders: Vector[CoreAst.Binder], baseEnv: Env, out: CoreAst.Term): VSort = {
@@ -161,15 +170,17 @@ object Interpreter {
       bodyEnv => evalTerm(pi.out, bodyEnv),
       closedEnv.dependencies,
       Value.ValueId.LocalId(pi.nodeId, captures),
-      classifier
+      classifier,
+      pi.knownPropValued
     )
   }
 
   def evalTerm(term: Term, env: Env): Value = term match {
     case Term.GlobalRef(name, _) =>
       env(name) match {
-        case head: ConstructorHead if head.totalArity == 0 => VCtor(head, Vector.empty, head.tpe)
-        case value                                         => value
+        case head: ConstructorHead if head.totalArity == 0 =>
+          Value.canonicalizeProof(VCtor(head, Vector.empty, head.tpe))
+        case value => value
       }
     case Term.LocalRef(ref, _)          => env(ref)
     case Term.NatLit(_, span)           => throw WTF(s"Natural literals are unavailable at $span")
@@ -203,6 +214,10 @@ object Interpreter {
 
   private def evalMatch(matchTerm: Term.Match, env: Env): Value = {
     val scrut = evalTerm(matchTerm.scrut, env)
+    scrut match {
+      case proof: VProof => return evalProofMatch(matchTerm, proof, env)
+      case _             =>
+    }
     val cases = matchTerm.cases
     val selected = Value.ConstructorForm.unapply(scrut)
     selected match {
@@ -233,13 +248,32 @@ object Interpreter {
     }
   }
 
+  /** Erased proof elimination. C14 can reduce Prop motives and fieldless constructors only. */
+  private def evalProofMatch(matchTerm: Term.Match, scrut: VProof, env: Env): Value = {
+    val outType = matchOutType(matchTerm, scrut, env)
+    if (Value.isPropositionType(outType)) Value.canonicalizeProof(VProof(outType))
+    else if (matchTerm.cases.length == 1) {
+      val branch = matchTerm.cases.head
+      env(branch.ctorName) match {
+        case head: ConstructorHead if head.totalArity == head.numErasedFamilyArgs && branch.argRefs.isEmpty =>
+          evalBranch(branch, Vector.empty, env)
+        case _ => stuckProofMatch(matchTerm, env, outType)
+      }
+    } else stuckProofMatch(matchTerm, env, outType)
+  }
+
+  private def stuckProofMatch(term: Term.Match, env: Env, outType: Value): NeutralThunk = {
+    val closed = env.closeForEval(CapturedRefs.getCapturedRefs(term, env))
+    NeutralThunk(term, closed, ValueId.LocalId(term.nodeId, closed.locals.values.toVector), outType, DepSet.empty)
+  }
+
   private[raccoonlang] def matchOutType(matchTerm: Term.Match, scrut: Value, env: Env): Value =
     matchTerm.motive.map(evalTerm(_, env)).getOrElse(scrut.tpe)
 
   private[raccoonlang] def evalBranch(branch: CoreAst.Case, fields: Vector[Value], env: Env): Value = {
     if (branch.argRefs.length != fields.length) throw ArityMismatch(fields.length, branch.argRefs.length)
     val branchEnv = branch.argRefs.zip(fields).foldLeft(env) {
-      case (current, (Some(ref), value)) => current.putLocal(ref, value)
+      case (current, (Some(ref), value)) => current.putLocal(ref, Value.canonicalizeProof(value))
       case (current, (None, _))          => current
     }
     evalTerm(branch.body, branchEnv)
@@ -247,26 +281,28 @@ object Interpreter {
 
   private def evalBody(lets: Vector[CoreAst.Let], result: Term, env: Env): Value = {
     val bodyEnv = lets.foldLeft(env) { case (current, let) =>
-      current.putLocal(let.localRef, evalTerm(let.value, current))
+      current.putLocal(let.localRef, Value.canonicalizeProof(evalTerm(let.value, current)))
     }
     evalTerm(result, bodyEnv)
   }
 
   def evalApply(fn: Value, args: Vector[Value]): Value = {
+    val canonicalArgs = args.map(Value.canonicalizeProof)
     fn.tpe match {
       case pi: VPi =>
-        if (args.length != pi.binders.length) throw ArityMismatch(pi.binders.length, args.length)
+        if (canonicalArgs.length != pi.binders.length) throw ArityMismatch(pi.binders.length, canonicalArgs.length)
         // The checked evaluator has already validated these arguments.  Runtime application also
         // serves the deliberately unchecked evaluator, where inferred constructor/family values
         // need only be threaded through the telescope; type validation belongs to TypeChecker.
-        val applied = BinderOps.instantiateFull(pi.binders, pi.env, args)
+        val applied = BinderOps.instantiateFull(pi.binders, pi.env, canonicalArgs)
         fn match {
-          case lam: VLam => runLam(lam, args)
+          case lam: VLam => Value.canonicalizeProof(runLam(lam, canonicalArgs))
           case head: ConstructorHead =>
-            VCtor(head, Value.constructorStoredArgs(head, args), pi.codomain(applied))
+            Value.canonicalizeProof(VCtor(head, Value.constructorStoredArgs(head, canonicalArgs), pi.codomain(applied)))
+          case _: VProof => Value.shallowProof(pi.codomain(applied))
           case value =>
             val blocked = Blocker.unapply(value).getOrElse(DepSet.empty)
-            VApp(value, args, pi.codomain(applied), blocked)
+            Value.canonicalizeProof(VApp(value, canonicalArgs, pi.codomain(applied), blocked))
         }
       case _ => throw CannotApplyNonFunction(fn)
     }
@@ -296,19 +332,22 @@ object Interpreter {
   def resultType(pi: VPi, args: Vector[Value]): Value = {
     if (args.length != pi.binders.length) throw ArityMismatch(pi.binders.length, args.length)
     val applied = pi.binders.zip(args).foldLeft(pi.env) { case (current, (binder, value)) =>
-      current.putLocal(binder.localRef, value)
+      current.putLocal(binder.localRef, Value.canonicalizeProof(value))
     }
     pi.codomain(applied)
   }
 
   private[raccoonlang] def evalLam(lam: Term.Lam, env: Env): VLam = {
+    val vpi = evalPiClosed(lam.ty, env)
+    if (vpi.isPropValued) return Value.canonicalizeProof(VProof(vpi)).asInstanceOf[VLam]
     val closure = env.closeForEval(CapturedRefs.getCapturedRefs(lam, env))
     val id =
       lam.name.map(Value.ValueId.Const).getOrElse(Value.ValueId.LocalId(lam.nodeId, closure.locals.values.toVector))
-    VLam(evalPiClosed(lam.ty, closure), id, Value.LamBody.Core(lam, closure))
+    VLam(vpi, id, Value.LamBody.Core(lam, closure))
   }
 
   private[raccoonlang] def evalLam(lam: Term.Lam, vpi: VPi, env: Env): VLam = {
+    if (vpi.isPropValued) return Value.canonicalizeProof(VProof(vpi)).asInstanceOf[VLam]
     val closure = env.closeForEval(CapturedRefs.getCapturedRefs(lam, env))
     val id =
       lam.name.map(Value.ValueId.Const).getOrElse(Value.ValueId.LocalId(lam.nodeId, closure.locals.values.toVector))
@@ -316,6 +355,11 @@ object Interpreter {
   }
 
   def runLam(lam: VLam, args: Vector[Value]): Value = lam.body match {
+    case Value.LamBody.ProofEta =>
+      val applied = lam.tpe.binders.zip(args).foldLeft(lam.tpe.env) { case (current, (binder, value)) =>
+        current.putLocal(binder.localRef, Value.canonicalizeProof(value))
+      }
+      Value.shallowProof(lam.tpe.codomain(applied))
     case Value.LamBody.Core(term, closure) =>
       if (args.length != lam.tpe.binders.length) throw ArityMismatch(lam.tpe.binders.length, args.length)
       val applied = lam.tpe.binders.zip(args).foldLeft(closure) { case (current, (binder, value)) =>
@@ -329,10 +373,10 @@ object Interpreter {
         else if (term.recursion.exists(_.selfRef == ref)) current.putLocal(ref, lam)
         else current.putLocal(ref, closure(name))
       }
-      evalTerm(term.body, withPeers)
+      Value.canonicalizeProof(evalTerm(term.body, withPeers))
     case LamBody.Native(run, nativeEnv, _) =>
       if (args.length != lam.tpe.binders.length) throw ArityMismatch(lam.tpe.binders.length, args.length)
-      run(args, nativeEnv)
+      Value.canonicalizeProof(run(args, nativeEnv))
   }
 
   def evalDecl(decl: Decl, env: Env): Env = decl match {

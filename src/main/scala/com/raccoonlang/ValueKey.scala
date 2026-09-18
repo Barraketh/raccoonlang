@@ -98,6 +98,7 @@ object ValueKey {
         case _                        => base
       }
     case Value.VLam(_, id, _)      => idKey(tag(9), id)
+    case Value.VProof(tpe)         => mix(tag(13), tpe.key)
     case thunk: Value.NeutralThunk => idKey(tag(10), thunk.id)
     case pi: Value.VPi             => mix(idKey(tag(11), pi.id), pi.binders.length.toLong)
     case head: Value.ConstructorHead if head.totalArity == 0 =>

@@ -5,10 +5,15 @@ import com.raccoonlang.Value.VPi
 
 /** Telescope operations shared by checking and later projection/refinement passes. */
 object BinderOps {
-  def freshen(binders: Vector[CoreAst.Binder], baseEnv: Env): Env =
-    binders.foldLeft(baseEnv) { case (env, binder) =>
-      env.putLocal(binder.localRef, freshBinderValue(binder.name, Interpreter.evalTerm(binder.ty, env)))
+  private final case class FreshenedBinder(value: Value, holeId: Option[Value.VarId])
+
+  def freshen(binders: Vector[CoreAst.Binder], baseEnv: Env): Env = {
+    var env = baseEnv
+    binders.foreach { binder =>
+      env = env.putLocal(binder.localRef, freshenBinder(env, binder).value)
     }
+    env
+  }
 
   def freshen(pi: VPi): Env = freshen(pi.binders, pi.env)
 
@@ -18,10 +23,9 @@ object BinderOps {
   def compileRuntime(binders: Vector[CoreAst.Binder], baseEnv: Env): Vector[CoreAst.Binder] = {
     var env = baseEnv
     val inputs = binders.map { binder =>
-      val value = freshBinderValue(binder.name, Interpreter.evalTerm(binder.ty, env))
-      env = env.putLocal(binder.localRef, value)
-      val hole = value match { case Value.Var(_, id, _) => Some(id); case _ => None }
-      Projection.BinderInput(binder.name, binder.span, binder.isImplicit, value, hole)
+      val freshened = freshenBinder(env, binder)
+      env = env.putLocal(binder.localRef, freshened.value)
+      Projection.BinderInput(binder.name, binder.span, binder.isImplicit, freshened.value, freshened.holeId)
     }
     val compiled = Projection.compile(inputs)
     binders.indices
@@ -36,18 +40,18 @@ object BinderOps {
       familyParams: Int = 0
   ): CheckedBinders = {
     var env = baseEnv
+    val holeIds = Vector.newBuilder[Option[Value.VarId]]
     val checkedTys = binders.map { binder =>
       val checked = com.raccoonlang.TypeChecker.checkTerm(binder.ty, env)
       com.raccoonlang.TypeChecker.assertType(checked.value)
       val provisional = binder.copy(ty = checked.residual, projection = None)
-      val fresh = freshBinderValue(binder.name, checked.value)
-      env = env.putLocal(binder.localRef, fresh)
+      val freshened = freshenBinder(env, provisional)
+      env = env.putLocal(binder.localRef, freshened.value)
+      holeIds += freshened.holeId
       provisional -> checked
     }
-    val inputs = checkedTys.map { case (binder, _) =>
-      val fresh = env(binder.localRef)
-      val hole = fresh match { case Value.Var(_, id, _) => Some(id); case _ => None }
-      Projection.BinderInput(binder.name, binder.span, binder.isImplicit, fresh, hole)
+    val inputs = binders.zip(holeIds.result()).map { case (binder, holeId) =>
+      Projection.BinderInput(binder.name, binder.span, binder.isImplicit, env(binder.localRef), holeId)
     }
     val compiled = Projection.compile(inputs, familyParams)
     val result = binders.indices.map { i =>
@@ -66,12 +70,21 @@ object BinderOps {
       case _ => (Vector.empty, head.tpe)
     }
 
-  def freshBinderValue(name: String, expectedType: Value): Value =
-    FreshVar.freshValue(name, expectedType)._2
+  private def freshenBinder(env: Env, binder: CoreAst.Binder): FreshenedBinder = {
+    val expectedType = Interpreter.evalTerm(binder.ty, env)
+    val (id, fresh) = FreshVar.freshValue(binder.name, expectedType)
+    val canonical = Value.canonicalizeRigidBinder(expectedType, fresh)
+    FreshenedBinder(canonical, Option.when(!Value.isPropositionType(expectedType))(id))
+  }
+
+  def freshBinderValue(name: String, expectedType: Value): Value = {
+    val (_, fresh) = FreshVar.freshValue(name, expectedType)
+    Value.canonicalizeRigidBinder(expectedType, fresh)
+  }
 
   def instantiateFull(binders: Vector[CoreAst.Binder], baseEnv: Env, args: Vector[Value]): Env = {
     if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
-    binders.zip(args).foldLeft(baseEnv) { case (env, (binder, value)) => env.putLocal(binder.localRef, value) }
+    binders.zip(args).foldLeft(baseEnv) { case (env, (binder, value)) => bindValue(env, binder, value) }
   }
 
   def checkAndInstantiate(
@@ -83,7 +96,10 @@ object BinderOps {
     binders.zip(args).foldLeft(runtimeEnv) { case (env, (binder, value)) =>
       val expected = Interpreter.evalTerm(binder.ty, env)
       if (!ValueEquivalence.defEq(value.tpe, expected)) throw TypeMismatch(expected, value.tpe)
-      env.putLocal(binder.localRef, value)
+      bindValue(env, binder, value)
     }
   }
+
+  def bindValue(env: Env, binder: CoreAst.Binder, actual: Value): Env =
+    env.putLocal(binder.localRef, Value.canonicalizeProof(actual))
 }

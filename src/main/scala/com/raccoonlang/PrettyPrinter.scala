@@ -28,6 +28,7 @@ object PrettyPrinter {
     case Value.LevelTpe                          => "Level"
     case Value.VPi(_, _, _, _, _, _, _)          => "Pi"
     case Value.VLam(_, _, _)                     => "<lambda>"
+    case Value.VProof(_)                         => "<proof>"
     case Value.VApp(head, args, _, _)            => s"${print(head)}(${args.map(print).mkString(", ")})"
     case Value.VConst(name, _, _)                => name
     case Value.NeutralThunk(_, _, _, _, _)       => "<match>"

@@ -50,6 +50,11 @@ class StructEtaTests extends munit.FunSuite {
     TypeChecker.checkProgram(TestSupport.core(src))
   }
 
+  test("Prop-valued structure instances are excluded from eta") {
+    val (env, _) = TestSupport.check("struct ProofCell : Prop\n | mk : ProofCell\n")
+    assert(StructEta.eligibleInstance(env("ProofCell")).isEmpty)
+  }
+
   test("blocked struct-valued match eta") {
     val src = eq + nat + pair +
       "opaque def step (n: Nat): Nat := n\n" +
