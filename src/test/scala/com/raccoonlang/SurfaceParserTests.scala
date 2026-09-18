@@ -106,10 +106,9 @@ class SurfaceParserTests extends munit.FunSuite {
     rejected("0 @")
   }
 
-  test("later unsupported language constructs are rejected by the evaluator grammar") {
-    rejected("import Init.Prelude\n")
-    rejected("namespace N {}")
-    rejected("open N")
+  test("imports remain unsupported while namespaces and opens parse") {
+    parsed("import Init.Prelude\n")
+    parsed("namespace N { def x : Type := Type }\nopen N")
     parsed("def f : Type := builtin").decls match {
       case Vector(ConstDecl(false, _, _, SurfaceAst.ConstBody.Builtin(_), _)) =>
       case other => fail(s"Expected builtin declaration, got $other")

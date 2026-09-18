@@ -120,6 +120,16 @@ final case class AmbiguousName(name: String, candidates: Vector[String], overrid
   val msg = s"$name is ambiguous: ${candidates.mkString(", ")}"
 }
 
+final case class LocalCaseHead(name: String, override val span: Option[Span] = None) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  val msg = s"Match case head $name cannot be a local"
+}
+
+final case class UnsupportedImport(name: String, override val span: Option[Span] = None) extends TypeError {
+  override def withSpan(sp: Span): TypeError = copy(span = Some(sp))
+  val msg = s"Import $name is not supported"
+}
+
 final case class InvalidConstructorResult(
     ctor: String,
     inductive: String,

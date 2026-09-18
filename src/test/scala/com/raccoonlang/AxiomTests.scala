@@ -8,7 +8,7 @@ class AxiomTests extends munit.FunSuite {
       case Success(program, _, _) => program
       case failure                => fail(s"Expected parse success, got $failure")
     }
-    Interpreter.run(Elaborator.elab(surface)).getOrElse(fail("Expected a result"))
+    Interpreter.run(Elaborator.elab(surface, Prelude.none)).getOrElse(fail("Expected a result"))
   }
 
   test("a nullary axiom is an opaque symbolic constant") {

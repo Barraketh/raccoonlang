@@ -26,7 +26,7 @@ class MatchCheckerTests extends munit.FunSuite {
         prefix + "def f (b: Bool): Bool := match b returning Bool with\n | Bool.true => Bool.true\n | Bool.true => Bool.true\n | Bool.false => Bool.false\n"
       )
     }
-    intercept[UnknownConstructor] {
+    intercept[NotFound] {
       checked(prefix + "def f (b: Bool): Bool := match b returning Bool with\n | Bool.nope => Bool.true\n")
     }
     intercept[ArityMismatch] {

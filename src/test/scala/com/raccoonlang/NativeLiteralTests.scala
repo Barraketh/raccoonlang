@@ -21,7 +21,7 @@ class NativeLiteralTests extends munit.FunSuite {
 
   private def core(source: String): CoreAst.Program = LanguageParser.parseProgram(source) match {
     case Success(program, _, _) =>
-      val elaborated = Elaborator.elab(program)
+      val elaborated = Elaborator.elab(program, Prelude.none)
       // C17 has no namespace/module loader yet.  The checked bootstrap fixture nevertheless
       // installs the authoritative Char.ofNat identity expected by String layout admission.
       val nativeNames = Set(
@@ -491,10 +491,13 @@ class NativeLiteralTests extends munit.FunSuite {
     val layout = env.nativeLiterals.stringLayout.getOrElse(fail("missing String layout"))
     val materialized = ValueOps.materializeEnv(env, EqStore.empty)
     assert(materialized.nativeLiterals.stringLayout.get eq layout)
-    val (checkedEnv, body) = TypeChecker.checkProgram(
-      core("def closed : (n: Nat) -> String := fun (n: Nat): String => \"closed\"\n\nclosed(0)"),
-      env
-    )
+    val extension = LanguageParser.parseProgram(
+      "def closed : (n: Nat) -> String := fun (n: Nat): String => \"closed\"\n\nclosed(0)"
+    ) match {
+      case Success(program, _, _) => Elaborator.elab(program, Prelude.fromSource("<string-layout>", stringSource))
+      case failure                => fail(s"parse failed: $failure")
+    }
+    val (checkedEnv, body) = TypeChecker.checkProgram(extension, env)
     assert(checkedEnv.nativeLiterals.stringLayout.get eq layout)
     val value = body.map(_.value).getOrElse(fail("missing closure result"))
     assertEquals(PrettyPrinter.print(value), "\"closed\"")

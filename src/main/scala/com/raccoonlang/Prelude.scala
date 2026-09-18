@@ -21,11 +21,15 @@ object Prelude {
     /** Immutable checked environment shared by all programs using this configuration. */
     lazy val checkedEnv: Env =
       if (core.decls.isEmpty) Interpreter.buildEmptyPreludeEnv(core) else Interpreter.buildPreludeEnv(core)
+
+    /** Resolved names from this selected prelude, shared by elaboration of all programs using it. */
+    lazy val names: Elaborator.PreludeNames = Elaborator.preludeNames(this)
   }
 
   lazy val default: Config = fromResource(DefaultResourcePath, Set(ImportPath))
   lazy val test: Config = fromResource(TestResourcePath, Set(ImportPath))
 
+  /** Empty source configuration: kernel primitives remain available, but no source prelude names are admitted. */
   val none: Config = Config(
     SurfaceAst.Program(Vector.empty, Vector.empty, None),
     CoreAst.Program(Vector.empty, None),
@@ -51,7 +55,7 @@ object Prelude {
       source: String,
       ignoredImports: Set[Vector[String]] = Set(ImportPath)
   ): Config = {
-    val surface = LanguageParser.parseTrustedPrelude(source) match {
+    val surface = LanguageParser.parseProgram(source) match {
       case Success(program, _, _) => program
       case Failure(_, offset, message) =>
         throw new RuntimeException(s"Failed to parse $sourceName at offset $offset: $message")

@@ -2,7 +2,7 @@ package com.raccoonlang
 
 object TestSupport {
   def core(source: String): CoreAst.Program = LanguageParser.parseProgram(source) match {
-    case Success(program, _, _) => Elaborator.elab(program)
+    case Success(program, _, _) => Elaborator.elab(program, Prelude.none)
     case failure                => throw new AssertionError(s"Expected parse success, got $failure")
   }
 
@@ -16,7 +16,7 @@ trait TestSupport {
   protected val suitePrelude: Prelude.Config = Prelude.default
 
   protected def suiteCore(source: String): CoreAst.Program = LanguageParser.parseProgram(source) match {
-    case Success(program, _, _) => Elaborator.elab(program)
+    case Success(program, _, _) => Elaborator.elab(program, suitePrelude)
     case failure                => throw new AssertionError(s"Expected parse success, got $failure")
   }
 

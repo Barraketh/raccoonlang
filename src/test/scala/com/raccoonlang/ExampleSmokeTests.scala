@@ -9,7 +9,10 @@ class ExampleSmokeTests extends munit.FunSuite with TestSupport {
 
   private def smoke(path: String, prelude: Prelude.Config = Prelude.none): Value = {
     val source = Files.readString(Paths.get(path))
-    val program = suiteCore(source)
+    val program = LanguageParser.parseProgram(source) match {
+      case Success(surface, _, _) => Elaborator.elab(surface, prelude)
+      case failure                => throw new AssertionError(failure.toString)
+    }
     val (env, checked) = TypeChecker.checkProgram(program, prelude.checkedEnv)
     checked match {
       case Some(term) => Interpreter.evalTerm(term.residual, env)
@@ -44,6 +47,51 @@ class ExampleSmokeTests extends munit.FunSuite with TestSupport {
         case failure                => throw new AssertionError(failure.toString)
       }
       TypeChecker.checkProgram(source, Prelude.default.checkedEnv)
+    }
+  }
+
+  test("no-arg elaboration uses bundled Prelude while Prelude.none remains isolated") {
+    assert(Prelude.none.surface.decls.isEmpty)
+    assert(Prelude.none.surface.imports.isEmpty)
+    assert(Prelude.none.core.decls.isEmpty)
+    assert(Prelude.none.core.body.isEmpty)
+    val kernel = Prelude.none.checkedEnv
+    assert(
+      kernel.globals.keySet == Set(
+        "Type",
+        "Prop",
+        "Level",
+        "Level.zero",
+        "Level.one",
+        "Sort",
+        "Level.succ",
+        "Level.max",
+        "Level.imax"
+      )
+    )
+    assert(kernel.nativeLiterals.natLayout.isEmpty)
+
+    val sortProgram = LanguageParser.parseProgram("Sort(Level.zero)") match {
+      case Success(program, _, _) => Elaborator.elab(program, Prelude.none)
+      case failure                => fail(failure.toString)
+    }
+    assert(TypeChecker.checkProgram(sortProgram, Prelude.none)._2.nonEmpty)
+    val maxProgram = LanguageParser.parseProgram("Level.max(Level.zero, Level.one)") match {
+      case Success(program, _, _) => Elaborator.elab(program, Prelude.none)
+      case failure                => fail(failure.toString)
+    }
+    assert(TypeChecker.checkProgram(maxProgram, Prelude.none)._2.nonEmpty)
+
+    val program = LanguageParser.parseProgram("Nat.zero") match {
+      case Success(program, _, _) => program
+      case failure                => fail(failure.toString)
+    }
+    Elaborator.elab(program).body match {
+      case Some(CoreAst.Term.GlobalRef("Nat.zero", _)) => ()
+      case other                                       => fail(s"Expected bundled Prelude resolution, got $other")
+    }
+    intercept[NotFound] {
+      Elaborator.elab(program, Prelude.none)
     }
   }
 }

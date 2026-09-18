@@ -1,11 +1,12 @@
 def Sort (l: Level): Type := builtin
 
-  def Level.succ (l: Level): Level := builtin
+namespace Level {
+  def succ (l: Level): Level := builtin
 
-  def Level.max (l1: Level)(l2: Level): Level := builtin
+  def max (l1: Level)(l2: Level): Level := builtin
 
-  def Level.imax (l1: Level)(l2: Level): Level := builtin
-
+  def imax (l1: Level)(l2: Level): Level := builtin
+}
 def id {u: Level}{A: Sort(u)} (x: A): A := x
 
 def const {u: Level}{v: Level}{A: Sort(u)}{B: Sort(v)} (x: A)(y: B): A := x
@@ -13,24 +14,26 @@ def const {u: Level}{v: Level}{A: Sort(u)}{B: Sort(v)} (x: A)(y: B): A := x
 inductive Eq {u: Level}(A: Sort(u)) indices (x: A)(y: A) : Prop
  | refl (x: A) : Eq(A, x, x)
 
-  def Eq.symm {u: Level}{A: Sort(u)}{x: A}{y: A} (p: Eq(A, x, y)): Eq(A, y, x) := {
+namespace Eq {
+  def symm {u: Level}{A: Sort(u)}{x: A}{y: A} (p: Eq(A, x, y)): Eq(A, y, x) := {
     match p returning Eq(A, y, x) with
     | Eq.refl z => Eq.refl(z)
   }
 
-  def Eq.trans {u: Level}{A: Sort(u)}{x: A}{y: A}{z: A} (p: Eq(A, x, y))(q: Eq(A, y, z)): Eq(A, x, z) := {
+  def trans {u: Level}{A: Sort(u)}{x: A}{y: A}{z: A} (p: Eq(A, x, y))(q: Eq(A, y, z)): Eq(A, x, z) := {
     match p returning Eq(A, x, z) with
     | Eq.refl w => q
   }
 
-  def Eq.subst {u: Level}{A: Sort(u)}{x: A}{y: A} (p: Eq(A, x, y))(v: Level)(motive: A -> Sort(v))(h: motive(x)): motive(y) := {
+  def subst {u: Level}{A: Sort(u)}{x: A}{y: A} (p: Eq(A, x, y))(v: Level)(motive: A -> Sort(v))(h: motive(x)): motive(y) := {
     match p returning motive(y) with
     | Eq.refl z => h
   }
 
-  def Eq.mp {a: Prop}{b: Prop} (p: Eq(Prop, a, b))(h: a): b := Eq.subst(p, Level.zero, fun (x: Prop): Prop => x, h)
+  def mp {a: Prop}{b: Prop} (p: Eq(Prop, a, b))(h: a): b := Eq.subst(p, Level.zero, fun (x: Prop): Prop => x, h)
 
-  def Eq.mpr {a: Prop}{b: Prop} (p: Eq(Prop, a, b))(h: b): a := Eq.mp(Eq.symm(p), h)
+  def mpr {a: Prop}{b: Prop} (p: Eq(Prop, a, b))(h: b): a := Eq.mp(Eq.symm(p), h)
+}
 
 def congrArg {u: Level}{v: Level}{A: Sort(u)}{x: A}{y: A} (p: Eq(A, x, y))(B: Sort(v))(f: A -> B): Eq(B, f(x), f(y)) := {
   match p returning Eq(B, f(x), f(y)) with
@@ -44,9 +47,11 @@ def congrFun {u: Level}{v: Level}(A: Sort(u))(B: Sort(v))(f: A -> B)(g: A -> B)(
 
 inductive False : Prop
 
-  def False.elim {u: Level}(h: False)(C: Sort(u)): C := {
+namespace False {
+  def elim {u: Level}(h: False)(C: Sort(u)): C := {
     match h returning C with
   }
+}
 
 inductive True : Prop
  | intro : True
@@ -66,20 +71,24 @@ inductive Or (a: Prop)(b: Prop) : Prop
  | inl (left: a) : Or(a, b)
  | inr (right: b) : Or(a, b)
 
-  def Or.elim {a: Prop}{b: Prop} (h: Or(a, b))(C: Prop)(left: a -> C)(right: b -> C): C := {
+namespace Or {
+  def elim {a: Prop}{b: Prop} (h: Or(a, b))(C: Prop)(left: a -> C)(right: b -> C): C := {
     match h returning C with
     | Or.inl ha => left(ha)
     | Or.inr hb => right(hb)
   }
+}
 
 struct Iff (a: Prop)(b: Prop) : Prop
  | intro (mp: a -> b)(mpr: b -> a) : Iff(a, b)
 
 inductive Empty : Type
 
-  def Empty.elim {u: Level}(h: Empty)(C: Sort(u)): C := {
+namespace Empty {
+  def elim {u: Level}(h: Empty)(C: Sort(u)): C := {
     match h returning C with
   }
+}
 
 def emptyElim {u: Level}(h: Empty)(C: Sort(u)): C := Empty.elim(h, C)
 
@@ -90,69 +99,73 @@ inductive Bool : Type
  | false : Bool
  | true : Bool
 
-  def Bool.cond {u: Level}(c: Bool)(A: Sort(u))(t: A)(f: A): A := {
+namespace Bool {
+  def cond {u: Level}(c: Bool)(A: Sort(u))(t: A)(f: A): A := {
     match c returning A with
     | Bool.true => t
     | Bool.false => f
   }
 
-  def Bool.not (b: Bool): Bool := {
+  def not (b: Bool): Bool := {
     match b returning Bool with
     | Bool.true => Bool.false
     | Bool.false => Bool.true
   }
 
-  def Bool.and (a: Bool)(b: Bool): Bool := {
+  def and (a: Bool)(b: Bool): Bool := {
     match a returning Bool with
     | Bool.true => b
     | Bool.false => Bool.false
   }
 
-  def Bool.or (a: Bool)(b: Bool): Bool := {
+  def or (a: Bool)(b: Bool): Bool := {
     match a returning Bool with
     | Bool.true => Bool.true
     | Bool.false => b
   }
 
-  def Bool.beq (a: Bool)(b: Bool): Bool := {
+  def beq (a: Bool)(b: Bool): Bool := {
     match a returning Bool with
     | Bool.true => b
     | Bool.false => Bool.not(b)
   }
 
-  def Bool.xor (a: Bool)(b: Bool): Bool := {
+  def xor (a: Bool)(b: Bool): Bool := {
     match a returning Bool with
     | Bool.true => Bool.not(b)
     | Bool.false => b
   }
+}
 
 inductive Decidable (p: Prop) : Type
  | isFalse (h: Not(p)) : Decidable(p)
  | isTrue (h: p) : Decidable(p)
 
-  def Decidable.toBool {p: Prop} (d: Decidable(p)): Bool := {
+namespace Decidable {
+  def toBool {p: Prop} (d: Decidable(p)): Bool := {
     match d returning Bool with
     | Decidable.isFalse h => Bool.false
     | Decidable.isTrue h => Bool.true
   }
 
-  def Decidable.ite {u: Level}{p: Prop} (d: Decidable(p))(A: Sort(u))(t: A)(f: A): A := {
+  def ite {u: Level}{p: Prop} (d: Decidable(p))(A: Sort(u))(t: A)(f: A): A := {
     match d returning A with
     | Decidable.isFalse h => f
     | Decidable.isTrue h => t
   }
 
-  def Decidable.casesOn {u: Level}{p: Prop} (d: Decidable(p))(A: Sort(u))(isFalse: (Not(p) -> A))(isTrue: p -> A): A := {
+  def casesOn {u: Level}{p: Prop} (d: Decidable(p))(A: Sort(u))(isFalse: (Not(p) -> A))(isTrue: p -> A): A := {
     match d returning A with
-    | Decidable.isFalse proof => isFalse(proof)
-    | Decidable.isTrue proof => isTrue(proof)
+    | Decidable.isFalse h => isFalse(h)
+    | Decidable.isTrue h => isTrue(h)
   }
 
-  def Decidable.not {p: Prop} (d: Decidable(p)): Decidable(Not(p)) := {
+  def not {p: Prop} (d: Decidable(p)): Decidable(Not(p)) := {
     match d returning Decidable(Not(p)) with
     | Decidable.isFalse h => Decidable.isTrue(h)
     | Decidable.isTrue h => Decidable.isFalse(fun (hn: Not(p)): False => hn(h))
   }
+}
 
 def decide {p: Prop} (d: Decidable(p)): Bool := Decidable.toBool(d)
 
@@ -166,37 +179,38 @@ inductive Nat : Type
  | zero : Nat
  | succ (_: Nat) : Nat
 
-  def Nat.pred (n: Nat): Nat := {
+namespace Nat {
+  def pred (n: Nat): Nat := {
     match n returning Nat with
     | Nat.zero => Nat.zero
     | Nat.succ p => p
   }
 
-  def Nat.isZero (n: Nat): Bool := {
+  def isZero (n: Nat): Bool := {
     match n returning Bool with
     | Nat.zero => Bool.true
     | Nat.succ p => Bool.false
   }
 
-  def Nat.sub (a: Nat)(b: Nat): Nat decreases structural(b) := {
+  def sub (a: Nat)(b: Nat): Nat decreases structural(b) := {
     match b returning Nat with
     | Nat.zero => a
     | Nat.succ p => Nat.pred(Nat.sub(a, p))
   }
 
-  def Nat.add (a: Nat)(b: Nat): Nat decreases structural(b) := {
+  def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
     match b returning Nat with
     | Nat.zero => a
     | Nat.succ p => Nat.add(Nat.succ(a), p)
   }
 
-  def Nat.mul (a: Nat)(b: Nat): Nat decreases structural(b) := {
+  def mul (a: Nat)(b: Nat): Nat decreases structural(b) := {
     match b returning Nat with
     | Nat.zero => Nat.zero
     | Nat.succ p => Nat.add(a, Nat.mul(a, p))
   }
 
-  def Nat.beq (a: Nat)(b: Nat): Bool decreases structural(a) := {
+  def beq (a: Nat)(b: Nat): Bool decreases structural(a) := {
     match a returning Bool with
     | Nat.zero => Nat.isZero(b)
     | Nat.succ aTail => {
@@ -206,7 +220,7 @@ inductive Nat : Type
     }
   }
 
-  def Nat.ble (a: Nat)(b: Nat): Bool decreases structural(a) := {
+  def ble (a: Nat)(b: Nat): Bool decreases structural(a) := {
     match a returning Bool with
     | Nat.zero => Bool.true
     | Nat.succ aTail => {
@@ -216,117 +230,123 @@ inductive Nat : Type
     }
   }
 
-  def Nat.pow (a: Nat)(b: Nat): Nat decreases structural(b) := {
+  def pow (a: Nat)(b: Nat): Nat decreases structural(b) := {
     match b returning Nat with
     | Nat.zero => Nat.succ(Nat.zero)
     | Nat.succ p => Nat.mul(Nat.pow(a, p), a)
   }
 
-  def Nat.blt (a: Nat)(b: Nat): Bool := Nat.ble(Nat.succ(a), b)
+  def blt (a: Nat)(b: Nat): Bool := Nat.ble(Nat.succ(a), b)
 
-  def Nat.le (a: Nat)(b: Nat): Prop := Eq(Bool, Nat.ble(a, b), Bool.true)
+  def le (a: Nat)(b: Nat): Prop := Eq(Bool, Nat.ble(a, b), Bool.true)
 
-  def Nat.lt (a: Nat)(b: Nat): Prop := Nat.le(Nat.succ(a), b)
+  def lt (a: Nat)(b: Nat): Prop := Nat.le(Nat.succ(a), b)
+}
 
 inductive Option {u: Level}(A: Sort(u)) : Sort(u)
  | none : Option(A)
  | some (val: A) : Option(A)
 
-  def Option.elim {u: Level}{v: Level}{A: Sort(u)} (x: Option(A))(B: Sort(v))(none: B)(some: A -> B): B := {
+namespace Option {
+  def elim {u: Level}{v: Level}{A: Sort(u)} (x: Option(A))(B: Sort(v))(none: B)(some: A -> B): B := {
     match x returning B with
     | Option.none => none
     | Option.some val => some(val)
   }
 
-  def Option.getD {u: Level}{A: Sort(u)} (x: Option(A))(fallback: A): A := {
+  def getD {u: Level}{A: Sort(u)} (x: Option(A))(fallback: A): A := {
     match x returning A with
     | Option.none => fallback
     | Option.some val => val
   }
 
-  def Option.map {u: Level}{v: Level}{A: Sort(u)} (x: Option(A))(B: Sort(v))(f: A -> B): Option(B) := {
+  def map {u: Level}{v: Level}{A: Sort(u)} (x: Option(A))(B: Sort(v))(f: A -> B): Option(B) := {
     match x returning Option(B) with
     | Option.none => Option.none(B)
     | Option.some val => Option.some(f(val))
   }
 
-  def Option.bind {u: Level}{v: Level}{A: Sort(u)} (x: Option(A))(B: Sort(v))(f: A -> Option(B)): Option(B) := {
+  def bind {u: Level}{v: Level}{A: Sort(u)} (x: Option(A))(B: Sort(v))(f: A -> Option(B)): Option(B) := {
     match x returning Option(B) with
     | Option.none => Option.none(B)
     | Option.some val => f(val)
   }
 
-  def Option.isSome {u: Level}{A: Sort(u)} (x: Option(A)): Bool := {
+  def isSome {u: Level}{A: Sort(u)} (x: Option(A)): Bool := {
     match x returning Bool with
     | Option.none => Bool.false
     | Option.some val => Bool.true
   }
 
-  def Option.isNone {u: Level}{A: Sort(u)} (x: Option(A)): Bool := Bool.not(Option.isSome(x))
+  def isNone {u: Level}{A: Sort(u)} (x: Option(A)): Bool := Bool.not(Option.isSome(x))
+}
 
 inductive Sum {u: Level}{v: Level}(A: Sort(u))(B: Sort(v)) : Sort(Level.max(u, v))
  | inl (val: A) : Sum(A, B)
  | inr (val: B) : Sum(A, B)
 
-  def Sum.elim {u: Level}{v: Level}{w: Level}{A: Sort(u)}{B: Sort(v)} (x: Sum(A, B))(C: Sort(w))(left: A -> C)(right: B -> C): C := {
+namespace Sum {
+  def elim {u: Level}{v: Level}{w: Level}{A: Sort(u)}{B: Sort(v)} (x: Sum(A, B))(C: Sort(w))(left: A -> C)(right: B -> C): C := {
     match x returning C with
     | Sum.inl val => left(val)
     | Sum.inr val => right(val)
   }
+}
 
 inductive List {u: Level}(A: Sort(u)) : Sort(u)
  | nil : List(A)
  | cons (head: A)(tail: List(A)) : List(A)
 
-  def List.foldr {u: Level}{v: Level}{A: Sort(u)} (xs: List(A))(B: Sort(v))(nil: B)(cons: A -> B -> B): B decreases structural(xs) := {
+namespace List {
+  def foldr {u: Level}{v: Level}{A: Sort(u)} (xs: List(A))(B: Sort(v))(nil: B)(cons: A -> B -> B): B decreases structural(xs) := {
     match xs returning B with
     | List.nil => nil
     | List.cons head tail => cons(head, List.foldr(tail, B, nil, cons))
   }
 
-  def List.foldl {u: Level}{v: Level}{A: Sort(u)} (xs: List(A))(B: Sort(v))(init: B)(f: B -> A -> B): B decreases structural(xs) := {
+  def foldl {u: Level}{v: Level}{A: Sort(u)} (xs: List(A))(B: Sort(v))(init: B)(f: B -> A -> B): B decreases structural(xs) := {
     match xs returning B with
     | List.nil => init
     | List.cons head tail => List.foldl(tail, B, f(init, head), f)
   }
 
-  def List.append {u: Level}{A: Sort(u)} (xs: List(A))(ys: List(A)): List(A) decreases structural(xs) := {
+  def append {u: Level}{A: Sort(u)} (xs: List(A))(ys: List(A)): List(A) decreases structural(xs) := {
     match xs returning List(A) with
     | List.nil => ys
     | List.cons head tail => List.cons(head, List.append(tail, ys))
   }
 
-  def List.map {u: Level}{v: Level}{A: Sort(u)} (xs: List(A))(B: Sort(v))(f: A -> B): List(B) decreases structural(xs) := {
+  def map {u: Level}{v: Level}{A: Sort(u)} (xs: List(A))(B: Sort(v))(f: A -> B): List(B) decreases structural(xs) := {
     match xs returning List(B) with
     | List.nil => List.nil(B)
     | List.cons head tail => List.cons(f(head), List.map(tail, B, f))
   }
 
-  def List.length {u: Level}{A: Sort(u)} (xs: List(A)): Nat decreases structural(xs) := {
+  def length {u: Level}{A: Sort(u)} (xs: List(A)): Nat decreases structural(xs) := {
     match xs returning Nat with
     | List.nil => Nat.zero
     | List.cons head tail => Nat.succ(List.length(tail))
   }
 
-  def List.reverse {u: Level}{A: Sort(u)} (xs: List(A)): List(A) decreases structural(xs) := {
+  def reverse {u: Level}{A: Sort(u)} (xs: List(A)): List(A) decreases structural(xs) := {
     match xs returning List(A) with
     | List.nil => List.nil(A)
     | List.cons head tail => List.append(List.reverse(tail), List.cons(head, List.nil(A)))
   }
 
-  def List.any {u: Level}{A: Sort(u)} (xs: List(A))(p: A -> Bool): Bool decreases structural(xs) := {
+  def any {u: Level}{A: Sort(u)} (xs: List(A))(p: A -> Bool): Bool decreases structural(xs) := {
     match xs returning Bool with
     | List.nil => Bool.false
     | List.cons head tail => Bool.or(p(head), List.any(tail, p))
   }
 
-  def List.all {u: Level}{A: Sort(u)} (xs: List(A))(p: A -> Bool): Bool decreases structural(xs) := {
+  def all {u: Level}{A: Sort(u)} (xs: List(A))(p: A -> Bool): Bool decreases structural(xs) := {
     match xs returning Bool with
     | List.nil => Bool.true
     | List.cons head tail => Bool.and(p(head), List.all(tail, p))
   }
 
-  def List.filter {u: Level}{A: Sort(u)} (xs: List(A))(p: A -> Bool): List(A) decreases structural(xs) := {
+  def filter {u: Level}{A: Sort(u)} (xs: List(A))(p: A -> Bool): List(A) decreases structural(xs) := {
     match xs returning List(A) with
     | List.nil => List.nil(A)
     | List.cons head tail => {
@@ -334,6 +354,7 @@ inductive List {u: Level}(A: Sort(u)) : Sort(u)
       Bool.cond(p(head), List(A), List.cons(head, rest), rest)
     }
   }
+}
 
 struct Prod {u: Level}{v: Level}(A: Sort(u))(B: Sort(v)) : Sort(Level.max(u, v))
  | mk (fst: A)(snd: B) : Prod(A, B)
@@ -370,7 +391,8 @@ def boolBEq : BEq(Bool) := BEq.mk(Bool.beq)
 
 def natBEq : BEq(Nat) := BEq.mk(Nat.beq)
 
-  def Option.beq {u: Level}{A: Sort(u)} (beqA: BEq(A))(x: Option(A))(y: Option(A)): Bool := {
+namespace Option {
+  def beq {u: Level}{A: Sort(u)} (beqA: BEq(A))(x: Option(A))(y: Option(A)): Bool := {
     match x returning Bool with
     | Option.none => Option.isNone(y)
     | Option.some xVal => {
@@ -379,6 +401,7 @@ def natBEq : BEq(Nat) := BEq.mk(Nat.beq)
       | Option.some yVal => BEq.beq(beqA)(xVal, yVal)
     }
   }
+}
 
 def optionBEq {u: Level}{A: Sort(u)} (beqA: BEq(A)): BEq(Option(A)) :=
   BEq.mk(
@@ -386,7 +409,8 @@ def optionBEq {u: Level}{A: Sort(u)} (beqA: BEq(A)): BEq(Option(A)) :=
       Option.beq(beqA, x, y)
   )
 
-  def List.beq {u: Level}{A: Sort(u)} (beqA: BEq(A))(xs: List(A))(ys: List(A)): Bool decreases structural(xs) := {
+namespace List {
+  def beq {u: Level}{A: Sort(u)} (beqA: BEq(A))(xs: List(A))(ys: List(A)): Bool decreases structural(xs) := {
     match xs returning Bool with
     | List.nil => {
       match ys returning Bool with
@@ -399,6 +423,7 @@ def optionBEq {u: Level}{A: Sort(u)} (beqA: BEq(A)): BEq(Option(A)) :=
       | List.cons y ysTail => Bool.and(BEq.beq(beqA)(x, y), List.beq(beqA, xsTail, ysTail))
     }
   }
+}
 
 def listBEq {u: Level}{A: Sort(u)} (beqA: BEq(A)): BEq(List(A)) :=
   BEq.mk(
@@ -406,11 +431,13 @@ def listBEq {u: Level}{A: Sort(u)} (beqA: BEq(A)): BEq(List(A)) :=
       List.beq(beqA, xs, ys)
   )
 
-  def Prod.beq {u: Level}{v: Level}{A: Sort(u)}{B: Sort(v)} (beqA: BEq(A))(beqB: BEq(B))(x: Prod(A, B))(y: Prod(A, B)): Bool :=
+namespace Prod {
+  def beq {u: Level}{v: Level}{A: Sort(u)}{B: Sort(v)} (beqA: BEq(A))(beqB: BEq(B))(x: Prod(A, B))(y: Prod(A, B)): Bool :=
     Bool.and(
       BEq.beq(beqA)(Prod.fst(x), Prod.fst(y)),
       BEq.beq(beqB)(Prod.snd(x), Prod.snd(y))
     )
+}
 
 def prodBEq {u: Level}{v: Level}{A: Sort(u)}{B: Sort(v)} (beqA: BEq(A))(beqB: BEq(B)): BEq(Prod(A, B)) :=
   BEq.mk(
@@ -421,43 +448,52 @@ def prodBEq {u: Level}{v: Level}{A: Sort(u)}{B: Sort(v)} (beqA: BEq(A))(beqB: BE
 struct DecidableEq {u: Level}(A: Sort(u)) : Sort(Level.max(Level.one, u))
  | mk (decEq: (a: A) -> (b: A) -> Decidable(Eq(A, a, b))) : DecidableEq(A)
 
-  def DecidableEq.toBEq {u: Level}{A: Sort(u)} (self: DecidableEq(A)): BEq(A) := BEq.mk(fun (a: A)(b: A): Bool => Decidable.toBool(DecidableEq.decEq(self)(a, b)))
+namespace DecidableEq {
+  def toBEq {u: Level}{A: Sort(u)} (self: DecidableEq(A)): BEq(A) := BEq.mk(fun (a: A)(b: A): Bool => Decidable.toBool(DecidableEq.decEq(self)(a, b)))
+}
 
 def decEq {u: Level}{A: Sort(u)} (self: DecidableEq(A))(a: A)(b: A): Decidable(Eq(A, a, b)) := DecidableEq.decEq(self)(a, b)
 
-  def False.decEq (a: False)(b: False): Decidable(Eq(False, a, b)) := falseElim(a, Decidable(Eq(False, a, b)))
+namespace False {
+  def decEq (a: False)(b: False): Decidable(Eq(False, a, b)) := falseElim(a, Decidable(Eq(False, a, b)))
+}
 
 def falseDecidableEq : DecidableEq(False) := DecidableEq.mk(False.decEq)
 
-  def True.decEq (a: True)(b: True): Decidable(Eq(True, a, b)) := {
+namespace True {
+  def decEq (a: True)(b: True): Decidable(Eq(True, a, b)) := {
     match a returning Decidable(Eq(True, a, b)) with
     | True.intro => {
       match b returning Decidable(Eq(True, True.intro, b)) with
       | True.intro => Decidable.isTrue(Eq.refl(True.intro))
     }
   }
+}
 
 def trueDecidableEq : DecidableEq(True) := DecidableEq.mk(True.decEq)
 
-  def Unit.decEq (a: Unit)(b: Unit): Decidable(Eq(Unit, a, b)) := {
+namespace Unit {
+  def decEq (a: Unit)(b: Unit): Decidable(Eq(Unit, a, b)) := {
     match a returning Decidable(Eq(Unit, a, b)) with
     | Unit.unit => {
       match b returning Decidable(Eq(Unit, Unit.unit, b)) with
       | Unit.unit => Decidable.isTrue(Eq.refl(Unit.unit))
     }
   }
+}
 
 def unitDecidableEq : DecidableEq(Unit) := DecidableEq.mk(Unit.decEq)
 
-  def Bool.falseNeTrue (h: Eq(Bool, Bool.false, Bool.true)): False := {
+namespace Bool {
+  def falseNeTrue (h: Eq(Bool, Bool.false, Bool.true)): False := {
     match h returning False with
   }
 
-  def Bool.trueNeFalse (h: Eq(Bool, Bool.true, Bool.false)): False := {
+  def trueNeFalse (h: Eq(Bool, Bool.true, Bool.false)): False := {
     match h returning False with
   }
 
-  def Bool.decEq (a: Bool)(b: Bool): Decidable(Eq(Bool, a, b)) := {
+  def decEq (a: Bool)(b: Bool): Decidable(Eq(Bool, a, b)) := {
     match a returning Decidable(Eq(Bool, a, b)) with
     | Bool.false => {
       match b returning Decidable(Eq(Bool, Bool.false, b)) with
@@ -470,23 +506,25 @@ def unitDecidableEq : DecidableEq(Unit) := DecidableEq.mk(Unit.decEq)
       | Bool.true => Decidable.isTrue(Eq.refl(Bool.true))
     }
   }
+}
 
 def boolDecidableEq : DecidableEq(Bool) := DecidableEq.mk(Bool.decEq)
 
-  def Nat.zeroNeSucc (n: Nat)(h: Eq(Nat, Nat.zero, Nat.succ(n))): False := {
+namespace Nat {
+  def zeroNeSucc (n: Nat)(h: Eq(Nat, Nat.zero, Nat.succ(n))): False := {
     match h returning False with
   }
 
-  def Nat.succNeZero (n: Nat)(h: Eq(Nat, Nat.succ(n), Nat.zero)): False := {
+  def succNeZero (n: Nat)(h: Eq(Nat, Nat.succ(n), Nat.zero)): False := {
     match h returning False with
   }
 
-  def Nat.succInj {a: Nat}{b: Nat} (h: Eq(Nat, Nat.succ(a), Nat.succ(b))): Eq(Nat, a, b) := {
+  def succInj {a: Nat}{b: Nat} (h: Eq(Nat, Nat.succ(a), Nat.succ(b))): Eq(Nat, a, b) := {
     match h returning Eq(Nat, Nat.pred(Nat.succ(a)), Nat.pred(Nat.succ(b))) with
     | Eq.refl z => Eq.refl(Nat.pred(z))
   }
 
-  def Nat.decEq (a: Nat)(b: Nat): Decidable(Eq(Nat, a, b)) decreases structural(a) := {
+  def decEq (a: Nat)(b: Nat): Decidable(Eq(Nat, a, b)) decreases structural(a) := {
     match a returning Decidable(Eq(Nat, a, b)) with
     | Nat.zero => {
       match b returning Decidable(Eq(Nat, Nat.zero, b)) with
@@ -503,6 +541,7 @@ def boolDecidableEq : DecidableEq(Bool) := DecidableEq.mk(Bool.decEq)
       }
     }
   }
+}
 
 def natDecidableEq : DecidableEq(Nat) := DecidableEq.mk(Nat.decEq)
 
@@ -527,14 +566,16 @@ def propSubsingleton (P: Prop): Subsingleton(P) := Subsingleton.intro(fun (a: P)
 
 axiom Quot {u: Level}(A: Sort(u))(r: A -> A -> Prop): Sort(u)
 
-  def Quot.mk {u: Level}{A: Sort(u)}(r: A -> A -> Prop)(a: A): Quot(A, r) := builtin
+namespace Quot {
+  def mk {u: Level}{A: Sort(u)}(r: A -> A -> Prop)(a: A): Quot(A, r) := builtin
 
-  axiom Quot.sound {u: Level}{A: Sort(u)} (a: A)(b: A)(r: A -> A -> Prop)(h: r(a, b)): Eq(Quot(A, r), Quot.mk(r, a), Quot.mk(r, b))
+  axiom sound {u: Level}{A: Sort(u)} (a: A)(b: A)(r: A -> A -> Prop)(h: r(a, b)): Eq(Quot(A, r), Quot.mk(r, a), Quot.mk(r, b))
 
-  def Quot.lift {u: Level}{v: Level}{A: Sort(u)}{r: A -> A -> Prop} (q: Quot(A, r))(B: Sort(v))(f: A -> B)(sound: (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b))): B := builtin
+  def lift {u: Level}{v: Level}{A: Sort(u)}{r: A -> A -> Prop} (q: Quot(A, r))(B: Sort(v))(f: A -> B)(sound: (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b))): B := builtin
 
-  def Quot.liftOn {u: Level}{v: Level}{A: Sort(u)}{r: A -> A -> Prop} (q: Quot(A, r))(B: Sort(v))(f: A -> B)(sound: (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b))): B := Quot.lift(q, B, f, sound)
+  def liftOn {u: Level}{v: Level}{A: Sort(u)}{r: A -> A -> Prop} (q: Quot(A, r))(B: Sort(v))(f: A -> B)(sound: (a: A) -> (b: A) -> (h: r(a, b)) -> Eq(B, f(a), f(b))): B := Quot.lift(q, B, f, sound)
 
-  def Quot.ind {u: Level}{A: Sort(u)}{r: A -> A -> Prop} (q: Quot(A, r))(motive: (q: Quot(A, r)) -> Prop)(mk: (a: A) -> motive(Quot.mk(r, a))): motive(q) := builtin
+  def ind {u: Level}{A: Sort(u)}{r: A -> A -> Prop} (q: Quot(A, r))(motive: (q: Quot(A, r)) -> Prop)(mk: (a: A) -> motive(Quot.mk(r, a))): motive(q) := builtin
 
-  def Quot.inductionOn {u: Level}{A: Sort(u)}{r: A -> A -> Prop} (q: Quot(A, r))(motive: (q: Quot(A, r)) -> Prop)(mk: (a: A) -> motive(Quot.mk(r, a))): motive(q) := Quot.ind(q, motive, mk)
+  def inductionOn {u: Level}{A: Sort(u)}{r: A -> A -> Prop} (q: Quot(A, r))(motive: (q: Quot(A, r)) -> Prop)(mk: (a: A) -> motive(Quot.mk(r, a))): motive(q) := Quot.ind(q, motive, mk)
+}

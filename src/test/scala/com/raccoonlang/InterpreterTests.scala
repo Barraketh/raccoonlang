@@ -4,7 +4,7 @@ import com.raccoonlang.Value.{ConstructorHead, Inductive, NeutralThunk, VApp, VC
 
 class InterpreterTests extends munit.FunSuite {
   private def program(source: String): CoreAst.Program = LanguageParser.parseProgram(source) match {
-    case Success(surface, _, _) => Elaborator.elab(surface)
+    case Success(surface, _, _) => Elaborator.elab(surface, Prelude.none)
     case failure                => fail(s"Expected parse success, got $failure")
   }
 

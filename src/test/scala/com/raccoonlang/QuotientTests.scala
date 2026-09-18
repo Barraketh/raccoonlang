@@ -39,7 +39,7 @@ class QuotientTests extends munit.FunSuite {
 
   private def core(source: String): Program = LanguageParser.parseProgram(bootstrap + source) match {
     case Success(program, _, _) =>
-      val elaborated = Elaborator.elab(program)
+      val elaborated = Elaborator.elab(program, Prelude.none)
       Program(
         elaborated.decls.map {
           case Decl.AxiomDecl("QuotMkType", ty, span) =>
@@ -64,19 +64,20 @@ class QuotientTests extends munit.FunSuite {
   private def eval(source: String): Value = checked(source)._2
 
   private def evalRaw(source: String): Value = LanguageParser.parseProgram(source) match {
-    case Success(program, _, _)   => Interpreter.run(Elaborator.elab(program)).getOrElse(fail("Program has no body"))
+    case Success(program, _, _) =>
+      Interpreter.run(Elaborator.elabWithoutPrelude(program)).getOrElse(fail("Program has no body"))
     case Failure(_, idx, message) => fail(s"Failed to parse at $idx: $message")
   }
 
   private def evalTrustedRaw(source: String): Value = LanguageParser.parseProgram(source) match {
     case Success(program, _, _) =>
-      val (_, body) = TypeChecker.checkProgramTrusted(Elaborator.elab(program))
+      val (_, body) = TypeChecker.checkProgramTrusted(Elaborator.elab(program, Prelude.none))
       body.map(_.value).getOrElse(fail("Program has no body"))
     case Failure(_, idx, message) => fail(s"Failed to parse at $idx: $message")
   }
 
   private def checkRaw(source: String): Unit = LanguageParser.parseProgram(source) match {
-    case Success(program, _, _)   => TypeChecker.checkProgram(Elaborator.elab(program))
+    case Success(program, _, _)   => TypeChecker.checkProgram(Elaborator.elabWithoutPrelude(program))
     case Failure(_, idx, message) => fail(s"Failed to parse at $idx: $message")
   }
 
