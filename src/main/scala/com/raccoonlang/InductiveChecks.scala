@@ -349,7 +349,8 @@ object InductiveChecks {
       signature: FamilySignature,
       initialMeta: InductiveMeta,
       positivityInputs: PositiveParamInputs,
-      hasRecursiveField: Boolean
+      hasRecursiveField: Boolean,
+      proofFieldPlan: Option[(Vector[ProofFieldSource], Boolean)]
   )
 
   private final case class PositiveParamInputs(
@@ -506,6 +507,11 @@ object InductiveChecks {
     val sourceParams = signature.familyArgs.take(sourcePrefixCount)
     val positivityContexts = Vector.newBuilder[PositiveParamContext]
     var familyHasRecursiveField = false
+    // Retain a declaration-level recovery candidate for Prop and universe-polymorphic families.
+    // Fields that become proofs are classified at the exact instantiated family type.
+    var proofFieldPlan = Option.when(decl.ctors.length == 1 && !Level.isNeverZero(signature.declaredSort.level)) {
+      (Vector.empty[ProofFieldSource], false)
+    }
     positivityContexts += PositiveParamContext(
       sourceParams,
       signature.familyArgs.drop(sourcePrefixCount).map(_.tpe) :+ signature.declaredSort,
@@ -553,6 +559,18 @@ object InductiveChecks {
           fieldTy = outputTpe,
           span = Some(ctor.resultTy.span)
         )
+
+      if (proofFieldPlan.nonEmpty) {
+        val sources = ownBinderVars.map { field =>
+          val resultIndex = outputArgs.indexWhere(arg => ValueEquivalence.defEq(arg, field))
+          if (resultIndex >= 0) ProofFieldSource.ResultArgument(resultIndex)
+          else ProofFieldSource.Unavailable
+        }
+        val definitelyComplete = ownBinderVars.zip(sources).forall { case (field, source) =>
+          Value.isPropositionType(field.tpe) || source != ProofFieldSource.Unavailable
+        }
+        proofFieldPlan = Some((sources, definitelyComplete))
+      }
 
       val constructorUniverse = TypeChecker.getUniverse(outputTpe)
       val constructorArgs = ctor.binders.zip(trueFieldVars)
@@ -615,7 +633,8 @@ object InductiveChecks {
       signature,
       meta,
       PositiveParamInputs(positivityContexts.result()),
-      familyHasRecursiveField
+      familyHasRecursiveField,
+      proofFieldPlan
     )
   }
 
@@ -664,7 +683,15 @@ object InductiveChecks {
           )
         )
       } else None
-    val meta = check.initialMeta.copy(block = checkedBlock, projectionInfo = projectionInfo)
+    val proofRecovery = for {
+      (fields, definitelyComplete) <- check.proofFieldPlan
+      info <- projectionInfo
+    } yield new ProofRecoveryInfo(fields, info, definitelyComplete)
+    val meta = check.initialMeta.copy(
+      block = checkedBlock,
+      projectionInfo = projectionInfo,
+      proofRecovery = proofRecovery
+    )
     val head = VConst(decl.header.name, Inductive(meta), check.signature.familyType)
     val complete = (finalEnv: Env) =>
       if (decl.ctors.length == 1) {

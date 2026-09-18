@@ -60,6 +60,28 @@ class ValueOpsTests extends munit.FunSuite {
     )
   }
 
+  test("materialization canonicalizes a generic constructor after its universe becomes Prop") {
+    val (env, _) = TestSupport.check(
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        |
+        |inductive PolyUnit (u: Level) indices (n: Peano) : Sort(u)
+        | | mk : PolyUnit(u, Peano.zero)
+        |""".stripMargin
+    )
+    val u = FreshVar.freshVar("u", Value.LevelTpe)
+    val zero = env("Peano.zero")
+    val family = Interpreter.evalApply(env("PolyUnit"), Vector(u, zero))
+    val head = env("PolyUnit.mk").asInstanceOf[Value.ConstructorHead]
+    val generic = Value.VCtor(head, Vector.empty, family)
+    val solved = EqStore.empty.allow(DepSet(u.id)).addLink(u.id, Value.Level.zero)
+    ValueOps.materialize(generic, solved) match {
+      case Value.VCtor(head, _, _) => assertEquals(head.name, "PolyUnit.mk")
+      case other                   => fail(s"Expected materialization to canonicalize the Prop constructor, got $other")
+    }
+  }
+
   test("materialization rewrites applications, Pi closures, and lambda closures") {
     val span = Span(0, 1, None)
     val captured = Value.Var("A", 2101, Value.TypeTpe)

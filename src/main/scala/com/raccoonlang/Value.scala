@@ -41,15 +41,30 @@ object Value {
     case VLam(_, _, LamBody.Native(_, _, true)) => value
     case _ if !isPropositionType(value.tpe)     => value
     case VLam(_, _, LamBody.ProofEta)           => value
-    case VProof(tpe) =>
-      tpe match {
-        case pi: VPi => canonicalProofLambda(pi)
-        case _       => value
+    case VCtor(actualHead, _, _) if ProofReconstruction.isDefinitelyCertifiedConstructor(value.tpe, actualHead) =>
+      value
+    case VCtor(actualHead, _, _) =>
+      ProofReconstruction.reconstruct(value.tpe) match {
+        case Some(reconstructed) if reconstructed.head.name == actualHead.name => value
+        case Some(reconstructed) => VCtor(reconstructed.head, reconstructed.fields, value.tpe)
+        case None                => VProof(value.tpe)
       }
     case _ =>
-      value.tpe match {
-        case pi: VPi => canonicalProofLambda(pi)
-        case _       => VProof(value.tpe)
+      ProofReconstruction.reconstruct(value.tpe) match {
+        case Some(reconstructed) => VCtor(reconstructed.head, reconstructed.fields, value.tpe)
+        case None =>
+          value match {
+            case proof: VProof =>
+              proof.tpe match {
+                case pi: VPi => canonicalProofLambda(pi)
+                case _       => proof
+              }
+            case _ =>
+              value.tpe match {
+                case pi: VPi => canonicalProofLambda(pi)
+                case _       => VProof(value.tpe)
+              }
+          }
       }
   }
 
@@ -314,7 +329,9 @@ object Value {
 
   final case class VApp(head: Value, args: Vector[Value], tpe: Value, blockedOn: DepSet = DepSet.empty) extends Value {
     override lazy val needsStructuralDefEq: Boolean =
-      head.needsStructuralDefEq || args.exists(_.needsStructuralDefEq) || tpe.needsStructuralDefEq
+      Value.isPropositionType(tpe) || head.needsStructuralDefEq || args.exists(
+        _.needsStructuralDefEq
+      ) || tpe.needsStructuralDefEq
     override lazy val synDeps: DepSet = {
       val deps = DepSet.newBuilder
       deps.unionInPlace(head.synDeps)
@@ -362,6 +379,15 @@ object Value {
 
   final case class ConstructorMeta(shortName: String, canonicalName: String)
 
+  /** A stored data field's declaration-time source in the family result. */
+  sealed trait ProofFieldSource
+  object ProofFieldSource {
+    final case class ResultArgument(index: Int) extends ProofFieldSource {
+      require(index >= 0, "Proof field result-argument index must be non-negative")
+    }
+    case object Unavailable extends ProofFieldSource
+  }
+
   /** Positional constructor metadata consumed by structure eta. */
   final class ProjectionInfo(
       val ctorName: String,
@@ -385,6 +411,15 @@ object Value {
         throw WTF(s"Projection metadata for ${head.name} has $fieldCount fields, constructor has $actual")
       head
     }
+  }
+
+  /** Declaration-compiled plan for recovering fields from a Prop instance. */
+  final class ProofRecoveryInfo(
+      val fieldSources: Vector[ProofFieldSource],
+      val projectionInfo: ProjectionInfo,
+      val definitelyComplete: Boolean
+  ) {
+    require(fieldSources.length == projectionInfo.fieldCount, "Proof recovery and projection field counts must agree")
   }
 
   final case class InductiveBlockKey(members: Vector[String], numParams: Int) {
@@ -418,10 +453,16 @@ object Value {
       constructors: Vector[ConstructorMeta],
       familyArity: Int,
       block: InductiveBlockDescriptor,
-      projectionInfo: Option[ProjectionInfo] = None
+      projectionInfo: Option[ProjectionInfo] = None,
+      proofRecovery: Option[ProofRecoveryInfo] = None
   ) {
     require(familyArity >= block.key.numParams, "Inductive family arity must contain common parameters")
     require(projectionInfo.isEmpty || constructors.length == 1, "Only one-constructor families can be projected")
+    require(proofRecovery.isEmpty || constructors.length == 1, "Only one-constructor families can recover proof fields")
+    require(
+      proofRecovery.forall(info => projectionInfo.contains(info.projectionInfo)),
+      "Proof recovery must share its family's projection metadata"
+    )
     lazy val constructorNames: Vector[String] = constructors.map(_.canonicalName)
   }
 

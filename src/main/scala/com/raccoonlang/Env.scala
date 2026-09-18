@@ -65,6 +65,12 @@ final case class Env(
     copy(locals = locals.updated(ref, value), localRefs = localRefs + ref)
   }
 
+  /** Bind a declaration-recovered field without recursively rebuilding nested proof constructors. */
+  private[raccoonlang] def putLocalUnchecked(ref: CoreAst.LocalRef, value: Value): Env = {
+    if (locals.contains(ref)) throw AlreadyDefined(ref.name)
+    copy(locals = locals.updated(ref, value), localRefs = localRefs + ref)
+  }
+
   private[raccoonlang] def putRecursiveGroup(names: Vector[String], build: Env => Vector[Value.VLam]): Env = {
     if (names.isEmpty) throw WTF("Recursive group must not be empty")
     if (names.distinct.length != names.length) throw WTF("Recursive group names must be distinct")

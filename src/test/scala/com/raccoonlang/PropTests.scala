@@ -89,7 +89,10 @@ class PropTests extends munit.FunSuite {
                                     | | intro : True
                                     |{ True.intro }
                                     |""".stripMargin)
-    assert(result.isInstanceOf[Value.VProof])
+    result match {
+      case Value.VCtor(head, _, _) => assertEquals(head.name, "True.intro")
+      case other                   => fail(s"Expected a certified True.intro constructor, got $other")
+    }
     val proposition = Value.VConst("P", Value.Symbol, Value.PropTpe)
     assert(ValueEquivalence.defEq(Value.VProof(proposition), Value.VProof(proposition.copy())))
   }
@@ -117,7 +120,10 @@ class PropTests extends munit.FunSuite {
         "def use (p: (Q: Prop) -> Q): True := p(True)\n\n" +
         "{ use(proofFun) }"
     )
-    assert(result.isInstanceOf[Value.VProof])
+    result match {
+      case Value.VCtor(head, _, _) => assertEquals(head.name, "True.intro")
+      case other                   => fail(s"Expected returned proof function to reconstruct True.intro, got $other")
+    }
   }
 
   test("Prop inductives with proof, data, and large-universe fields pass positivity") {

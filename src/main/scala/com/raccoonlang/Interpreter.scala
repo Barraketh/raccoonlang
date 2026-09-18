@@ -236,39 +236,40 @@ object Interpreter {
           case None =>
             val outType = matchOutType(matchTerm, scrut, env)
             val closed = env.closeForEval(CapturedRefs.getCapturedRefs(matchTerm, env))
-            val blockedOn = Blocker.unapply(scrut).getOrElse(DepSet.empty)
-            NeutralThunk(
-              matchTerm,
-              closed,
-              ValueId.LocalId(matchTerm.nodeId, closed.locals.values.toVector),
-              outType,
-              blockedOn
+            val blockedOn = Blocker.unapply(scrut).getOrElse(DepSet.empty) ++ typeCollapseDeps(scrut.tpe)
+            Value.canonicalizeProof(
+              NeutralThunk(
+                matchTerm,
+                closed,
+                ValueId.LocalId(matchTerm.nodeId, closed.locals.values.toVector),
+                outType,
+                blockedOn
+              )
             )
         }
     }
   }
 
-  /** Erased proof elimination. C14 can reduce Prop motives and fieldless constructors only. */
+  /** Erased proof elimination with declaration-certified recovery for safe large elimination. */
   private def evalProofMatch(matchTerm: Term.Match, scrut: VProof, env: Env): Value = {
     val outType = matchOutType(matchTerm, scrut, env)
     if (Value.isPropositionType(outType)) Value.canonicalizeProof(VProof(outType))
-    else if (matchTerm.cases.length == 1) {
-      val branch = matchTerm.cases.head
-      env(branch.ctorName) match {
-        case head: ConstructorHead if head.totalArity == head.numErasedFamilyArgs && branch.argRefs.isEmpty =>
-          evalBranch(branch, Vector.empty, env)
-        case _ => stuckProofMatch(matchTerm, env, outType)
-      }
-    } else stuckProofMatch(matchTerm, env, outType)
+    else stuckProofMatch(matchTerm, env, outType, scrut.tpe.synDeps)
   }
 
-  private def stuckProofMatch(term: Term.Match, env: Env, outType: Value): NeutralThunk = {
+  private def stuckProofMatch(term: Term.Match, env: Env, outType: Value, blockedOn: DepSet): NeutralThunk = {
     val closed = env.closeForEval(CapturedRefs.getCapturedRefs(term, env))
-    NeutralThunk(term, closed, ValueId.LocalId(term.nodeId, closed.locals.values.toVector), outType, DepSet.empty)
+    NeutralThunk(term, closed, ValueId.LocalId(term.nodeId, closed.locals.values.toVector), outType, blockedOn)
   }
 
   private[raccoonlang] def matchOutType(matchTerm: Term.Match, scrut: Value, env: Env): Value =
     matchTerm.motive.map(evalTerm(_, env)).getOrElse(scrut.tpe)
+
+  /** Dependencies whose universe can still collapse a generic type into Prop. */
+  private[raccoonlang] def typeCollapseDeps(tpe: Value): DepSet = {
+    val classifierLevel = TypeChecker.getUniverse(tpe).level
+    if (Level.isNeverZero(classifierLevel)) DepSet.empty else classifierLevel.synDeps
+  }
 
   private[raccoonlang] def evalBranch(branch: CoreAst.Case, fields: Vector[Value], env: Env): Value = {
     if (branch.argRefs.length != fields.length) throw ArityMismatch(fields.length, branch.argRefs.length)
@@ -299,10 +300,10 @@ object Interpreter {
           case lam: VLam => Value.canonicalizeProof(runLam(lam, canonicalArgs))
           case head: ConstructorHead =>
             Value.canonicalizeProof(VCtor(head, Value.constructorStoredArgs(head, canonicalArgs), pi.codomain(applied)))
-          case _: VProof => Value.shallowProof(pi.codomain(applied))
-          case value =>
+          case value @ (_: VConst | _: VApp | _: NeutralThunk | _: Var) =>
             val blocked = Blocker.unapply(value).getOrElse(DepSet.empty)
             Value.canonicalizeProof(VApp(value, canonicalArgs, pi.codomain(applied), blocked))
+          case _ => throw CannotApplyNonFunction(fn)
         }
       case _ => throw CannotApplyNonFunction(fn)
     }
@@ -359,7 +360,7 @@ object Interpreter {
       val applied = lam.tpe.binders.zip(args).foldLeft(lam.tpe.env) { case (current, (binder, value)) =>
         current.putLocal(binder.localRef, Value.canonicalizeProof(value))
       }
-      Value.shallowProof(lam.tpe.codomain(applied))
+      Value.canonicalizeProof(VProof(lam.tpe.codomain(applied)))
     case Value.LamBody.Core(term, closure) =>
       if (args.length != lam.tpe.binders.length) throw ArityMismatch(lam.tpe.binders.length, args.length)
       val applied = lam.tpe.binders.zip(args).foldLeft(closure) { case (current, (binder, value)) =>

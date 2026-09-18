@@ -70,9 +70,9 @@ object MatchChecker {
     }
   }
 
-  /** C14 has no declaration-compiled proof-field recovery; only empty/impossible Prop matches may eliminate to data. */
-  private def allowLargeElimination(reachable: Vector[ReachableCtor]): Boolean =
-    reachable.isEmpty || (reachable.length == 1 && reachable.head.fieldArgs.isEmpty)
+  /** Prop-to-data elimination is safe only for impossible families or certified field recovery. */
+  private def allowLargeElimination(scrutTpe: Value, reachable: Vector[ReachableCtor]): Boolean =
+    reachable.isEmpty || ProofReconstruction.canRecoverAll(scrutTpe)
 
   private def checkPropElimination(
       family: InductiveFamilyInstance,
@@ -83,7 +83,7 @@ object MatchChecker {
   ): Unit =
     if (
       TypeChecker.isPropValuedType(scrutTpe) && !TypeChecker.isPropValuedType(motive) &&
-      !allowLargeElimination(reachable)
+      !allowLargeElimination(scrutTpe, reachable)
     )
       throw PropEliminationRestricted(family.head.name, motive, Some(span))
 
