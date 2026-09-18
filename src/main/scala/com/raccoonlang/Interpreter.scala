@@ -154,12 +154,12 @@ object Interpreter {
         case head: ConstructorHead if head.totalArity == 0 => VCtor(head, Vector.empty, head.tpe)
         case value                                         => value
       }
-    case Term.LocalRef(ref, _)   => env(ref)
-    case Term.NatLit(_, span)    => throw WTF(s"Natural literals are unavailable at $span")
-    case Term.StrLit(_, span)    => throw WTF(s"String literals are unavailable at $span")
-    case Term.Select(_, _, span) => throw WTF(s"Projections are unavailable at $span")
-    case pi: Term.Pi             => evalPi(pi, env)
-    case lam: Term.Lam           => evalLam(lam, env)
+    case Term.LocalRef(ref, _)          => env(ref)
+    case Term.NatLit(_, span)           => throw WTF(s"Natural literals are unavailable at $span")
+    case Term.StrLit(_, span)           => throw WTF(s"String literals are unavailable at $span")
+    case Term.Select(base, field, span) => evalSelect(evalTerm(base, env), field, env, span)
+    case pi: Term.Pi                    => evalPi(pi, env)
+    case lam: Term.Lam                  => evalLam(lam, env)
     case Term.App(fn, args, _) =>
       val values = args.map(arg => evalTerm(arg, env))
       evalApply(evalTerm(fn, env), values)
@@ -169,6 +169,19 @@ object Interpreter {
   }
 
   def getLevel(v: Value): Level = Level.fromValue(v).getOrElse(throw NotALevel(v))
+
+  private def evalSelect(base0: Value, field: String, env: Env, span: Span): Value = {
+    val base = base0 match {
+      case head: ConstructorHead if head.totalArity == 0 => VCtor(head, Vector.empty, head.tpe)
+      case value                                         => value
+    }
+    base.tpe match {
+      case InductiveFamilyValue(instance) =>
+        val fn = env(s"${instance.head.name}.$field")
+        evalApply(fn, instance.args :+ base)
+      case _ => throw NotFound(field, Some(span))
+    }
+  }
 
   private def evalMatch(matchTerm: Term.Match, env: Env): Value = {
     val scrut = evalTerm(matchTerm.scrut, env)

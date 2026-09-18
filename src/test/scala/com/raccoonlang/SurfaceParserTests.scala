@@ -110,7 +110,6 @@ class SurfaceParserTests extends munit.FunSuite {
     rejected("import Init.Prelude\n")
     rejected("namespace N {}")
     rejected("open N")
-    rejected("struct Pair : Type\n | mk : Pair\n")
     rejected("def f : Type := builtin")
   }
 }

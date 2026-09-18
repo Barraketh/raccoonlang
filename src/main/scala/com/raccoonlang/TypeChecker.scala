@@ -29,7 +29,9 @@ object TypeChecker {
     case CTerm.LocalRef(ref, _)   => CheckedTerm(env(ref), term)
     case CTerm.NatLit(_, span)    => throw WTF(s"Natural literals are unavailable at $span")
     case CTerm.StrLit(_, span)    => throw WTF(s"String literals are unavailable at $span")
-    case CTerm.Select(_, _, span) => throw WTF(s"Projections are unavailable at $span")
+    case CTerm.Select(base, field, span) =>
+      val checkedBase = checkTerm(base, env)
+      CheckedTerm(select(checkedBase.value, field, env, span), CTerm.Select(checkedBase.residual, field, span))
     case pi: CTerm.Pi => {
       val checked = checkPi(pi, env)
       CheckedTerm(checked.vpi, checked.residual)
@@ -40,6 +42,22 @@ object TypeChecker {
     case CTerm.Body(lets, result, span) =>
       checkBody(CTerm.Body(lets, result, span), env, None)
     case matchTerm: CTerm.Match => MatchChecker.checkMatch(matchTerm, env, None)
+  }
+
+  /** Resolve a selector through the structure's ordinary generated definition. */
+  private def select(base: Value, field: String, env: Env, span: Span): Value = {
+    val normalized = base match {
+      case head: ConstructorHead if head.totalArity == 0 => VCtor(head, Vector.empty, head.tpe)
+      case value                                         => value
+    }
+    normalized.tpe match {
+      case InductiveFamilyValue(instance) =>
+        // C09 has no value-to-core quoting, so a residual Select is retained here; resolve it
+        // through the ordinary generated Family.field definition with explicit family arguments.
+        val fn = env(s"${instance.head.name}.$field")
+        Interpreter.evalApply(fn, instance.args :+ normalized)
+      case _ => throw NotFound(field, Some(span))
+    }
   }
 
   def checkTerm(term: CTerm, expected: Value, env: Env): CheckedTerm = {

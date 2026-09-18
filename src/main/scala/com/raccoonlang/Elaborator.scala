@@ -5,7 +5,7 @@ import com.raccoonlang.{CoreAst => C}
 
 /** Name resolution and surface-to-core translation for the deliberately unchecked evaluator. */
 object Elaborator {
-  private final case class Scope(locals: Map[String, C.LocalRef], next: Int) {
+  private final case class Scope(locals: Map[String, C.LocalRef], next: Int, globals: Set[String] = Set.empty) {
     def fresh(name: String): (Scope, C.LocalRef) = {
       val ref = C.LocalRef(next, name)
       (copy(locals = locals.updated(name, ref), next = next + 1), ref)
@@ -28,11 +28,13 @@ object Elaborator {
     case STerm.NatLit(_, span)   => throw WTF(s"Natural literals are not available in the C04 core at $span")
     case STerm.StrLit(_, span)   => throw WTF(s"String literals are not available in the C04 core at $span")
     case STerm.Select(base, field, span) =>
-      dottedName(base)
+      dottedName(base, scope)
+        .filter(name => scope.globals.contains(s"$name.$field"))
         .map(name => (scope, C.Term.GlobalRef(s"$name.$field", span)))
-        .getOrElse(
-          throw WTF(s"Projections are not available in the C04 core at $span")
-        )
+        .getOrElse {
+          val (nested, coreBase) = elabTerm(base, scope)
+          (nested, C.Term.Select(coreBase, field, span))
+        }
     case STerm.App(fn, args, span) =>
       val (afterFn, coreFn) = elabTerm(fn, scope)
       val (afterArgs, coreArgs) = args.foldLeft((scope.restore(afterFn), Vector.empty[C.Term])) {
@@ -83,10 +85,10 @@ object Elaborator {
       (nextScope, C.Term.Match(coreScrut, coreMotive, coreCases, span))
   }
 
-  private def dottedName(term: STerm): Option[String] = term match {
-    case STerm.Ident(name, _)         => Some(name)
-    case STerm.Select(base, field, _) => dottedName(base).map(name => s"$name.$field")
-    case _                            => None
+  private def dottedName(term: STerm, scope: Scope): Option[String] = term match {
+    case STerm.Ident(name, _) if !scope.locals.contains(name) => Some(name)
+    case STerm.Select(base, field, _)                         => dottedName(base, scope).map(name => s"$name.$field")
+    case _                                                    => None
   }
 
   private def elabDecl(decl: Command.Decl.ConstDecl, scope: Scope): (Scope, C.Decl) = {
@@ -140,7 +142,7 @@ object Elaborator {
     (scope.restore(afterType), C.Decl.AxiomDecl(decl.header.name, fullType, decl.span))
   }
 
-  private def elabInductive(decl: Command.Decl.InductiveDecl, scope: Scope): (Scope, C.Decl) = {
+  private def elabInductive(decl: Command.Decl.InductiveDecl, scope: Scope): (Scope, Vector[C.Decl]) = {
     val (paramScope, params) = binders(decl.header.params, scope)
     val (indexScope, indices) = binders(decl.header.indices, paramScope)
     val (typedHeader, resultTy) = elabTerm(decl.header.resultTy, indexScope)
@@ -154,20 +156,127 @@ object Elaborator {
       next = next.copy(next = afterResult.next)
       C.ConstructorDecl(s"${decl.header.name}.${c.name}", c.name, binders, result, c.span)
     }
-    (next, C.Decl.InductiveDecl(header, ctors, decl.span))
+    val inductive = C.Decl.InductiveDecl(header, ctors, decl.span)
+    val (withFreshSelf, selfRef) = next.fresh("__self")
+    val generated =
+      if (decl.generateSelectors) ctors match {
+        case Vector(ctor) => generatedSelectors(header, ctor, selfRef)
+        case _            => Vector.empty
+      }
+      else Vector.empty
+    (next.copy(next = withFreshSelf.next), inductive +: generated)
+  }
+
+  /**
+   * Build ordinary definitions for structure fields. Their bodies are matches on the self argument; projection
+   * checking/evaluation therefore uses exactly the same checked definition path as user code.
+   */
+  private def generatedSelectors(
+      header: C.InductiveHeader,
+      ctor: C.ConstructorDecl,
+      selfRef: C.LocalRef
+  ): Vector[C.Decl] = {
+    val selfTy =
+      if (header.binders.isEmpty) C.Term.GlobalRef(header.name, header.span)
+      else
+        C.Term.App(
+          C.Term.GlobalRef(header.name, header.span),
+          header.binders.map(b => C.Term.LocalRef(b.localRef, b.span)),
+          header.span
+        )
+    val selectors = ctor.binders.zipWithIndex.collect { case (field, idx) if field.name != "_" => (field, idx) }
+    val selectorNames = selectors.map { case (field, _) => field.localRef -> s"${header.name}.${field.name}" }.toMap
+
+    def rewrite(term: C.Term, self: C.LocalRef, previous: Map[C.LocalRef, String]): C.Term = term match {
+      case C.Term.LocalRef(ref, span) if previous.contains(ref) =>
+        val call = C.Term.GlobalRef(previous(ref), span)
+        val args = header.binders.map(b => C.Term.LocalRef(b.localRef, b.span)) :+ C.Term.LocalRef(self, span)
+        C.Term.App(call, args, span)
+      case C.Term.App(fn, args, span) =>
+        C.Term.App(rewrite(fn, self, previous), args.map(rewrite(_, self, previous)), span)
+      case C.Term.Select(base, field, span) => C.Term.Select(rewrite(base, self, previous), field, span)
+      case C.Term.Pi(bs, out, span, prop) =>
+        C.Term.Pi(bs.map(b => b.copy(ty = rewrite(b.ty, self, previous))), rewrite(out, self, previous), span, prop)
+      case C.Term.Lam(pi, body, span, name, rec, peers) =>
+        C.Term.Lam(
+          rewrite(pi, self, previous).asInstanceOf[C.Term.Pi],
+          rewrite(body, self, previous),
+          span,
+          name,
+          rec,
+          peers
+        )
+      case C.Term.Body(lets, res, span) =>
+        C.Term.Body(
+          lets.map(l => l.copy(ty = l.ty.map(rewrite(_, self, previous)), value = rewrite(l.value, self, previous))),
+          rewrite(res, self, previous),
+          span
+        )
+      case C.Term.Match(scrut, motive, cases, span) =>
+        C.Term.Match(
+          rewrite(scrut, self, previous),
+          motive.map(rewrite(_, self, previous)),
+          cases.map(c => c.copy(body = rewrite(c.body, self, previous))),
+          span
+        )
+      case other => other
+    }
+
+    selectors.map { case (field, _) =>
+      val previous = selectorNames.filter { case (ref, _) =>
+        ctor.binders.indexWhere(_.localRef == ref) < ctor.binders.indexWhere(_.localRef == field.localRef)
+      }
+      val fieldTy = rewrite(field.ty, selfRef, previous)
+      val selfBinder = C.Binder(selfRef, selfTy, field.span)
+      val allBinders = header.binders ++ Vector(selfBinder)
+      val resultTy = fieldTy
+      val pi = C.Term.Pi(allBinders, resultTy, field.span)
+      val argRefs = ctor.binders.map(b => Some(b.localRef))
+      val body = C.Term.Match(
+        C.Term.LocalRef(selfRef, field.span),
+        // A neutral structure's type is the family application, not the selected field type. Without
+        // this motive the residual match cannot retain a function-valued field's Pi type.
+        Some(fieldTy),
+        Vector(
+          C.Case(
+            ctor.canonicalName,
+            isFullyQualified = true,
+            argRefs,
+            C.Term.LocalRef(field.localRef, field.span),
+            field.span
+          )
+        ),
+        field.span
+      )
+      C.Decl.ConstDecl(
+        isOpaque = false,
+        name = s"${header.name}.${field.name}",
+        ty = pi,
+        body = C.ConstBody.TermBody(C.Term.Lam(pi, body, field.span, Some(s"${header.name}.${field.name}"), None)),
+        span = field.span
+      )
+    }
   }
 
   private def elabCommands(commands: Vector[Command], scope: Scope): (Scope, Vector[C.Decl]) =
     commands.foldLeft((scope, Vector.empty[C.Decl])) {
       case ((s, out), d: Command.Decl.ConstDecl) =>
         val (n, c) = elabDecl(d, s)
-        (n, out :+ c)
+        (n.copy(globals = n.globals + d.header.name), out :+ c)
       case ((s, out), d: Command.Decl.AxiomDecl) =>
         val (n, c) = elabAxiom(d, s)
-        (n, out :+ c)
+        (n.copy(globals = n.globals + d.header.name), out :+ c)
       case ((s, out), d: Command.Decl.InductiveDecl) =>
-        val (n, c) = elabInductive(d, s)
-        (n, out :+ c)
+        val (n, cs) = elabInductive(d, s)
+        (
+          n.copy(
+            globals = n.globals ++
+              cs.collect { case C.Decl.ConstDecl(_, name, _, _, _) => name } ++
+              Vector(d.header.name) ++
+              d.ctors.map(c => s"${d.header.name}.${c.name}")
+          ),
+          out ++ cs
+        )
       case ((s, out), Command.Block(body, _)) =>
         val (n, nested) = elabCommands(body, s)
         (n, out ++ nested)
@@ -175,7 +284,8 @@ object Elaborator {
     }
 
   def elab(program: SurfaceAst.Program): C.Program = {
-    val (scope, decls) = elabCommands(program.decls, Scope(Map.empty, 0))
+    val builtins = Set("Type", "Level", "Level.zero", "Level.one", "Level.succ", "Level.max", "Level.imax", "Sort")
+    val (scope, decls) = elabCommands(program.decls, Scope(Map.empty, 0, builtins))
     val body = program.body.map(t => elabTerm(t, scope)._2)
     C.Program(decls, body)
   }

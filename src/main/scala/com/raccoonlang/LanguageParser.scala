@@ -254,7 +254,12 @@ object LanguageParser {
       .flatSpanned(sourceId)
       .map { case (header, ctors, span) => InductiveDecl(header, ctors, generateSelectors = false, span) }
 
-  private def declP(implicit sourceId: Option[SourceId]): Parser[Decl] = constP | axiomP | inductiveP
+  private def structP(implicit sourceId: Option[SourceId]): Parser[InductiveDecl] =
+    (kw("struct") ~/ inductiveHeader ~ lineSep ~ ctorDecl)
+      .flatSpanned(sourceId)
+      .map { case (header, ctor, span) => InductiveDecl(header, Vector(ctor), generateSelectors = true, span) }
+
+  private def declP(implicit sourceId: Option[SourceId]): Parser[Decl] = constP | axiomP | structP | inductiveP
 
   private def blockP(implicit sourceId: Option[SourceId]): Parser[Block] =
     (sym('{') ~ commandsP ~ sym('}')).flatSpanned(sourceId).map(Block.tupled)
