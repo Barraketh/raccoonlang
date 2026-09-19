@@ -331,7 +331,8 @@ object LanguageParser {
       .flatSpanned(sourceId)
       .map { case (h, cs, sp) => InductiveDecl(h, Vector(cs), generateSelectors = true, sp) }
 
-  private def commandP(implicit sourceId: Option[SourceId]): Parser[Command] = declP | namespaceP | openP | blockP
+  private def commandP(implicit sourceId: Option[SourceId]): Parser[Command] =
+    declP | namespaceP | openP | mutualP | blockP
 
   private def commandsP(implicit sourceId: Option[SourceId]): Parser[Vector[Command]] =
     skipAllWs ~ commandP.rep(0, lineSep.rep(1)) ~ skipAllWs
@@ -360,6 +361,12 @@ object LanguageParser {
 
   private def blockP(implicit sourceId: Option[SourceId]): Parser[Block] =
     (sym("{") ~ commandsP ~ symTight("}")).flatSpanned(sourceId).map(Block.tupled)
+
+  /** Mutual groups use the ordinary command-block layout and are lowered atomically by the elaborator. */
+  private def mutualP(implicit sourceId: Option[SourceId]): Parser[Mutual] =
+    (kw("mutual") ~/ skipAllWs ~ sym("{") ~ commandsP ~ symTight("}"))
+      .flatSpanned(sourceId)
+      .map(Mutual.tupled)
 
   private def importP(implicit sourceId: Option[SourceId]): Parser[Import] =
     (kw("import") ~/ pathP ~/ emptyLine).flatSpanned(sourceId).map(Import.tupled)

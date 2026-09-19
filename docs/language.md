@@ -25,8 +25,45 @@ opaque def name (parameters): Result := term
 axiom name (parameters): Result
 inductive Family (parameters) indices (indices): Sort
 struct Family (parameters) indices (indices): Sort
+mutual { declarations }
 namespace Path { declarations }
 open Path
+```
+
+A `mutual` block is atomic and must contain either only function definitions or
+only inductive or structure declarations. Function bodies can refer to every
+peer, and constructors can refer to every family head. Mutual function members
+must be ordinary transparent definitions with a function parameter list, a
+`decreases` annotation, and no builtin or opaque body. For example:
+
+```raccoon
+mutual {
+  def even (n: Nat): Bool decreases structural(n) := {
+    match n with
+    | Nat.zero => Bool.true
+    | Nat.succ k => odd(k)
+  }
+  def odd (n: Nat): Bool decreases structural(n) := {
+    match n with
+    | Nat.zero => Bool.false
+    | Nat.succ k => even(k)
+  }
+}
+```
+
+Mutually recursive inductives use the same block form. Their declarations must
+share the common parameter telescope required by the kernel; sibling family
+heads are available in constructor fields and results:
+
+```raccoon
+mutual {
+  inductive Even : Type
+   | zero : Even
+   | succ (odd: Odd) : Even
+
+  inductive Odd : Type
+   | succ (even: Even) : Odd
+}
 ```
 
 A transparent `def` reduces during checking and evaluation. An `opaque def`
@@ -187,9 +224,12 @@ own family using all parameters uniformly. The checker validates:
 Constructor pattern fields correspond to stored constructor fields. Erased
 family parameters are not pattern fields.
 
-The source language declares one inductive family at a time. The trusted Core
-AST also has atomic mutual-inductive blocks, but the current parser has no
-surface syntax for them.
+A `mutual` block may contain several inductive families or structures. The
+families are checked and published atomically; all sibling family heads are
+available while constructor fields and results are elaborated. They must share
+the same common parameter telescope and universe, as required by the trusted
+Core block. Generated structure selectors are declared immediately after the
+family block.
 
 ## Pattern matching
 
@@ -290,10 +330,11 @@ checking the body. It cannot be stored, returned, passed to another function,
 or hidden inside another value. A recursive call must supply the exact current
 binder group.
 
-The surface language exposes singly recursive definitions. The trusted Core
-AST additionally supports mutually recursive definition blocks whose members
-have compatible lexicographic metrics. Measure expressions are currently
-supported only for singly recursive definitions.
+A `mutual` block exposes mutually recursive definitions whose members have
+compatible lexicographic metrics. Every member must carry `decreases
+structural(...)` or `decreases lexicographic(...)`; measure specifications are
+supported only for singly recursive definitions. Mutual groups are checked and
+published atomically, and cross-member calls obey the caller's metric.
 
 ## Structs and projections
 

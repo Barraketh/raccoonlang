@@ -256,7 +256,7 @@ object CoreAst {
       def numParams: Int = families.headOption.fold(0)(_.header.params.length)
     }
 
-    /** An internally generated structural-recursion group. Its peer table is derived from `definitions`. */
+    /** An atomic structural-recursion group. Its peer table is derived from `definitions`. */
     final case class RecursiveDefBlock(definitions: Vector[RecursiveDef], span: Span) extends Decl
   }
 

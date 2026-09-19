@@ -149,6 +149,12 @@ object SurfaceAst {
 
     case class Block(body: Vector[Command], span: Span) extends Command
 
+    /**
+     * An atomic group of mutually recursive declarations. The elaborator lowers the group either to one recursive
+     * definition block or one inductive block.
+     */
+    case class Mutual(body: Vector[Command], span: Span) extends Command
+
     sealed trait AliasRule
     object AliasRule {
       case object Wildcard extends AliasRule

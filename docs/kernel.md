@@ -147,11 +147,11 @@ An inductive declaration is installed only after checking:
 - nested positivity only through parameters that the referenced inductive
   block certifies as positive.
 
-The Core AST supports atomic mutual-inductive blocks. Every family in a block
-has the same parameter telescope and universe. All provisional family heads
-are visible while constructors are checked, but the block publishes only after
-every family succeeds. Positivity and recursion metadata are computed for the
-whole block. The surface parser currently emits singleton blocks only.
+Atomic mutual-inductive blocks are available through the surface `mutual { ... }`
+form. Every family in a block has the same parameter telescope and universe.
+All provisional family heads are visible while constructors are checked, but
+the block publishes only after every family succeeds. Positivity and recursion
+metadata are computed for the whole block.
 
 Constructor values erase family parameters and retain ordinary constructor
 fields. Each family records only its own constructors for match
@@ -275,11 +275,11 @@ closure, constructor field, argument, return value, or opaque application.
 Runtime recursion uses the already checked lambda and performs no further
 decrease test.
 
-Core mutually recursive definition blocks are published atomically. Their
-members have compatible lexicographic metric shapes, and every cross-component
-call must decrease from the caller's current metric. Measure specifications are
-not supported for recursive definition blocks. The surface parser currently
-emits only singleton recursive definitions.
+Mutually recursive definition blocks are available through the surface
+`mutual { ... }` form and are published atomically. Their members have
+compatible lexicographic metric shapes, and every cross-component call must
+decrease from the caller's current metric. Measure specifications are not
+supported for recursive definition blocks.
 
 ## Axioms, opacity, and quotients
 
