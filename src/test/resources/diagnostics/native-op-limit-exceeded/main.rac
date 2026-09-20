@@ -1,0 +1,3 @@
+def huge : Nat := Nat.pow(2, 100000000000)
+
+{ huge }

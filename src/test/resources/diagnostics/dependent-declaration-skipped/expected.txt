@@ -1,0 +1,14 @@
+
+<root>/main.rac:1:21: error: type mismatch
+def broken : Nat := Bool.true
+                    ^^^^^^^^^
+  expected: Nat
+  actual:   Bool
+note: in definition broken
+
+<root>/main.rac:7:22: error: type mismatch
+def alsoBad : Nat := Bool.false
+                     ^^^^^^^^^^
+  expected: Nat
+  actual:   Bool
+note: in definition alsoBad

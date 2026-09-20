@@ -16,13 +16,10 @@ object TerminationChecker {
     // erased proofs also have no subterms. Well-founded recursion on proofs needs a
     // dedicated Acc-style mechanism (docs/kernel.md#termination).
     if (Value.isPropositionType(value.tpe))
-      throw InvalidDecreaseSpec(
-        s"decrease metric ${value} is a proof; structural recursion on proofs is not supported",
-        Some(span)
-      )
+      at(span) { fail(NonInductiveDecreaseMetric(value, isProof = true)) }
     value.tpe match {
       case ConstSpine(VConst(_, Inductive(_), _), _) =>
-      case _ => throw InvalidDecreaseSpec(s"decrease metric ${value} must have an inductive type", Some(span))
+      case _ => at(span) { fail(NonInductiveDecreaseMetric(value, isProof = false)) }
     }
   }
 
@@ -33,13 +30,13 @@ object TerminationChecker {
   ): CheckedLexicographic =
     spec match {
       case CA.DecreaseSpec.Lexicographic(args, sp) =>
-        if (args.isEmpty) throw InvalidDecreaseSpec("lexicographic decreases needs at least one argument", Some(sp))
+        if (args.isEmpty) at(sp) { fail(InvalidDecreaseSpec("lexicographic decreases needs at least one argument")) }
         if (args.distinct.length != args.length)
-          throw InvalidDecreaseSpec("lexicographic decreases arguments must be distinct", Some(sp))
+          at(sp) { fail(InvalidDecreaseSpec("lexicographic decreases arguments must be distinct")) }
 
         val components = args.map { ref =>
           val idx = vpi.binders.indices.find(idx => vpi.binders(idx).localRef == ref).getOrElse {
-            throw InvalidDecreaseSpec(s"${ref.name} is not a function parameter", Some(sp))
+            at(sp) { fail(InvalidDecreaseSpec(s"${ref.name} is not a function parameter")) }
           }
           requireInductiveMetric(bodyEnv(ref), sp)
           (ref, idx, vpi.binders(idx).name)
@@ -47,7 +44,7 @@ object TerminationChecker {
         CheckedLexicographic(components, sp)
 
       case CA.DecreaseSpec.Measure(_, sp) =>
-        throw InvalidDecreaseSpec("measure decreases are not supported for recursive definition groups", Some(sp))
+        at(sp) { fail(InvalidDecreaseSpec("measure decreases are not supported for recursive definition groups")) }
     }
 
   private[raccoonlang] def requireCompatible(
@@ -55,10 +52,13 @@ object TerminationChecker {
       callee: CheckedLexicographic
   ): Unit =
     if (caller.components.length != callee.components.length)
-      throw InvalidDecreaseSpec(
-        s"recursive peers have incompatible metric lengths ${caller.components.length} and ${callee.components.length}",
-        Some(callee.span)
-      )
+      at(callee.span) {
+        fail(
+          InvalidDecreaseSpec(
+            s"recursive peers have incompatible metric lengths ${caller.components.length} and ${callee.components.length}"
+          )
+        )
+      }
 
   private def checkLexicographicCall(
       name: String,
@@ -74,14 +74,15 @@ object TerminationChecker {
         if (isStrictSubterm(candidate, root)) true
         else if (ValueEquivalence.defEq(candidate, root)) false
         else
-          throw NonDecreasingRecursiveCall(
-            name,
-            s"$calleeName is neither equal to nor smaller than the corresponding current argument",
-            None
+          fail(
+            NonDecreasingRecursiveCall(
+              name,
+              s"$calleeName is neither equal to nor smaller than the corresponding current argument"
+            )
           )
       }
     if (decreasedAt.isEmpty)
-      throw NonDecreasingRecursiveCall(name, "no lexicographic component decreases", None)
+      fail(NonDecreasingRecursiveCall(name, "no lexicographic component decreases"))
   }
 
   /**
@@ -154,7 +155,7 @@ object TerminationChecker {
             val callEnv = BinderOps.instantiateFull(vpi.binders, vpi.env, args)
             val candidate = Interpreter.evalTerm(measureTerm, callEnv)
             if (!isStrictSubterm(candidate, currentMeasure))
-              throw NonDecreasingRecursiveCall(name, "measure does not structurally decrease", None)
+              fail(NonDecreasingRecursiveCall(name, "measure does not structurally decrease"))
           }
         )
     }

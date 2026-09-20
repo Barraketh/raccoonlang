@@ -36,6 +36,15 @@ object Execution {
     def make(result: Option[Value]): CheckedProgram = new CheckedProgram(result)
   }
 
+  /** Checking rejected the program: one diagnostic per independent failure, in source order. */
+  final case class CheckFailure(diagnostics: Vector[Diagnostic])
+    extends RuntimeException
+    with scala.util.control.NoStackTrace {
+    require(diagnostics.nonEmpty, "a check failure must carry at least one diagnostic")
+
+    override def getMessage: String = diagnostics.map(_.getMessage).mkString("\n")
+  }
+
   /** Elaborate a surface program while binding its selected prelude to the resulting phase artifact. */
   def elaborate(p: SurfaceAst.Program, prelude: Prelude.Config = Prelude.default): ElaboratedProgram =
     ElaboratedProgram.make(Elaborator.elab(p, prelude), prelude)

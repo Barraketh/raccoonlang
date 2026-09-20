@@ -73,7 +73,28 @@ Other CLI options are:
 --prelude <file>   use a custom trusted prelude
 --no-prelude       run without a source prelude
 --wait-for-enter   pause after JVM startup
+--json             print diagnostics as JSON on stdout, and nothing else
 ```
+
+Checking reports every independent error a program has, not only the first. A
+declaration that uses one that failed is skipped rather than reported again, and
+the program's final expression is evaluated only when there are no errors.
+
+With `--json`, stdout carries a single JSON array and nothing else — no progress
+log and no program result — so a tool can read it directly:
+
+```json
+[
+  {"path": "main.rac", "startLine": 1, "startColumn": 20, "endLine": 1,
+   "endColumn": 29, "severity": "error", "kind": "TypeMismatch",
+   "message": "type mismatch\n  expected: Nat\n  actual:   Bool",
+   "notes": ["in definition first"]}
+]
+```
+
+Lines and columns are 1-based, matching the `file:line:column` positions the
+human-readable report prints. A run that finds nothing prints `[]`, so stdout is
+always a JSON document.
 
 Choosing a custom prelude changes the trusted bootstrap. See the
 [kernel reference](docs/kernel.md#trusted-bootstrap-and-native-values).

@@ -1,0 +1,11 @@
+inductive Hidden : Prop
+ | yes : Hidden
+ | no : Hidden
+
+def reveal (h: Hidden): Nat := {
+  match h returning Nat with
+  | Hidden.yes => Nat.zero
+  | Hidden.no => Nat.succ(Nat.zero)
+}
+
+{ reveal(Hidden.yes) }

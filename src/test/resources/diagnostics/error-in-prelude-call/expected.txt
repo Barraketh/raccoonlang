@@ -1,0 +1,8 @@
+
+<root>/main.rac:1:25: error: type mismatch
+def bad : Nat := Nat.add(Nat.zero, Bool.true)
+                        ^^^^^^^^^^^^^^^^^^^^^
+  expected: Nat
+  actual:   Bool
+note: in argument 2 (b) of Nat.add
+note: in definition bad

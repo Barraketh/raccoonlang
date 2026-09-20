@@ -1,0 +1,8 @@
+namespace Left { def shared : Nat := Nat.zero }
+
+namespace Right { def shared : Nat := Nat.succ(Nat.zero) }
+
+open Left
+open Right
+
+{ shared }

@@ -1,0 +1,4 @@
+
+<root>/main.rac:4:3: error: Case head zero is local; unqualified case heads must resolve to globals. Use .zero for short-name matching.
+  | zero => Nat.zero
+  ^^^^^^^^^^^^^^^^^^

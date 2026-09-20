@@ -1,0 +1,8 @@
+
+<root>/main.rac:7:48: error: type mismatch
+def wrong (n: Nat): Eq(Nat, g(n), 0) := Eq.refl(0)
+                                               ^^^
+  expected: Eq(Nat, Nat.succ(match n returning Nat with | Nat.zero => 0 | Nat.succ k => g(k)), 0)
+  actual:   Eq(Nat, 0, 0)
+  differ at: Nat.succ(match n returning Nat with | Nat.zero => 0 | Nat.succ k => g(k))  vs  0   (provably different)
+note: in definition wrong

@@ -1,0 +1,4 @@
+inductive Bad : Type
+ | mk (f: (h: Bad) -> Bad) : Bad
+
+{ Nat.zero }

@@ -16,8 +16,9 @@ object ModuleLoader {
   final case class LoadedSource(sourceId: SourceId, path: Path, source: String)
   final case class LoadedProgram(program: SA.Program, sources: Vector[LoadedSource])
 
-  final case class LoadFailure(error: TypeError, sources: Vector[LoadedSource])
-    extends RuntimeException(error.getMessage)
+  /** A failed load, with the sources read so far so the report has something to quote. */
+  final case class LoadFailure(diagnostic: Diagnostic, sources: Vector[LoadedSource])
+    extends RuntimeException(diagnostic.getMessage)
 
   private final case class ParsedModule(path: Path, sourceId: SourceId, program: SA.Program)
 
@@ -62,7 +63,7 @@ object ModuleLoader {
         case -1 =>
         case idx =>
           val cycle = visiting.drop(idx) :+ canonical
-          fail(CyclicImport(cycle, importSpan))
+          failLoad(CyclicImport(cycle), importSpan)
       }
 
       parsed.get(canonical) match {
@@ -73,7 +74,7 @@ object ModuleLoader {
           visiting :+= canonical
           try {
             if (!isEntry)
-              module.program.body.foreach(body => fail(ImportedModuleHasBody(module.path, Some(body.span))))
+              module.program.body.foreach(body => failLoad(ImportedModuleHasBody(module.path), Some(body.span)))
 
             module.program.imports.foreach { imp =>
               if (!config.prelude.ignoresImport(imp.path)) {
@@ -97,9 +98,9 @@ object ModuleLoader {
       try path.toRealPath()
       catch {
         case _: NoSuchFileException =>
-          fail(ModuleNotFound(importName, Vector(path), span))
+          failLoad(ModuleNotFound(importName, Vector(path)), span)
         case NonFatal(e) =>
-          fail(ModuleReadFailed(path, Option(e.getMessage).getOrElse(e.toString), span))
+          failLoad(ModuleReadFailed(path, Option(e.getMessage).getOrElse(e.toString)), span)
       }
 
     private def parseModule(path: Path, readSpan: Option[Span]): ParsedModule =
@@ -109,7 +110,7 @@ object ModuleLoader {
             try Files.readString(path)
             catch {
               case NonFatal(e) =>
-                fail(ModuleReadFailed(path, Option(e.getMessage).getOrElse(e.toString), readSpan))
+                failLoad(ModuleReadFailed(path, Option(e.getMessage).getOrElse(e.toString)), readSpan)
             }
 
           val sourceId = SourceId.fresh()
@@ -119,7 +120,7 @@ object ModuleLoader {
             case Success(program, _, _) =>
               ParsedModule(path, sourceId, program)
             case Failure(_, curIdx, message) =>
-              fail(ModuleParseError(path, message, curIdx, Some(Span(curIdx, curIdx, Some(sourceId)))))
+              failLoad(ModuleParseError(path, message, curIdx), Some(Span(curIdx, curIdx, Some(sourceId))))
           }
         }
       )
@@ -134,11 +135,11 @@ object ModuleLoader {
       candidates
         .find(Files.isRegularFile(_))
         .map(_.toRealPath())
-        .getOrElse(fail(ModuleNotFound(imp.path.mkString("."), candidates, Some(imp.span))))
+        .getOrElse(failLoad(ModuleNotFound(imp.path.mkString("."), candidates), Some(imp.span)))
     }
 
-    private def fail(error: TypeError): Nothing =
-      throw LoadFailure(error, sources)
+    private def failLoad(error: TypeError, span: Option[Span]): Nothing =
+      throw LoadFailure(Diagnostic(error, span, Vector.empty), sources)
   }
 
   private def moduleSpan(module: ParsedModule): Span =

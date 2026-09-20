@@ -1,0 +1,9 @@
+inductive Bad : Type
+ | good : Bad
+ | bad : Nat
+
+def usesBad : Bad := Bad.good
+
+def independent : Nat := Bool.true
+
+{ Nat.zero }

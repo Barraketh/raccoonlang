@@ -1,0 +1,4 @@
+
+<root>/main.rac:1:1: error: Module Missing.Module not found. Searched: <root>/Missing/Module.rac
+import Missing.Module
+^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,9 @@
+
+<root>/main.rac:4:24: error: type mismatch
+  | .succ k => congrArg(zeroAdd(k), Nat, Nat.succ)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  expected: Eq(Nat, Nat.add(1, k), Nat.succ(k))
+  actual:   Eq(Nat, Nat.succ(Nat.add(0, k)), Nat.succ(k))
+  differ at: Nat.add(1, k)  vs  Nat.succ(Nat.add(0, k))   (not reducible: stuck)
+note: in branch Nat.succ k
+note: in definition zeroAdd

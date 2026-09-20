@@ -1,0 +1,3 @@
+import Broken
+
+{ Broken.wrong }

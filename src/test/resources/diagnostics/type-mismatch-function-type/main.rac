@@ -1,0 +1,5 @@
+def id2 (n: Nat): Nat := n
+
+def bad : Nat := id2
+
+{ Nat.zero }

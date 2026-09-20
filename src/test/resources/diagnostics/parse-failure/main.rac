@@ -1,0 +1,3 @@
+def broken (n: Nat): Nat := Nat.succ(
+
+{ Nat.zero }

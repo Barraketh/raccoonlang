@@ -50,7 +50,7 @@ class AxiomTests extends munit.FunSuite with TestSupport {
           |axiom bad : Peano.zero
           |""".stripMargin
 
-    intercept[NotAType] {
+    interceptError[NotAType] {
       typecheckDecls(p, Prelude.test)
     }
   }

@@ -167,6 +167,13 @@ object CoreAst {
   private def childRefs(term: Term): Set[CoreAst.LocalRef] =
     children(term).foldLeft(Set.empty[CoreAst.LocalRef])((acc, child) => acc | mentionedRefs(child))
 
+  /** Whether the term mentions any of `names` as a global, at any depth. */
+  private[raccoonlang] def mentionsGlobal(term: Term, names: Set[String]): Boolean =
+    term match {
+      case Term.GlobalRef(name, _) => names(name)
+      case other                   => children(other).exists(mentionsGlobal(_, names))
+    }
+
   // Let: let x := foo
   final case class Let(
       localRef: LocalRef,
@@ -226,7 +233,55 @@ object CoreAst {
   // Global declarations and environment entries
   sealed trait Decl {
     def span: Span
+
+    /** Every global name this declaration publishes, in source order. A block publishes all of its members. */
+    def definedNames: Vector[String] =
+      this match {
+        case decl: Decl.ConstDecl          => Vector(decl.name)
+        case decl: Decl.AxiomDecl          => Vector(decl.name)
+        case decl: Decl.InductiveDecl      => inductiveNames(decl)
+        case block: Decl.InductiveBlock    => block.families.flatMap(inductiveNames)
+        case block: Decl.RecursiveDefBlock => block.definitions.map(_.name)
+      }
+
+    /** The name a report uses: top-level names only, without a family's constructors. */
+    def label: String =
+      (this match {
+        case decl: Decl.InductiveDecl   => Vector(decl.header.name)
+        case block: Decl.InductiveBlock => block.families.map(_.header.name)
+        case other                      => other.definedNames
+      }).mkString(", ")
+
+    /** Whether this declaration's terms mention any of `names` as a global. */
+    def references(names: Set[String]): Boolean =
+      this match {
+        case decl: Decl.ConstDecl =>
+          mentionsGlobal(decl.ty, names) || (decl.body match {
+            case ConstBody.TermBody(term) => mentionsGlobal(term, names)
+            case _: ConstBody.Builtin     => false
+          })
+        case decl: Decl.AxiomDecl          => mentionsGlobal(decl.ty, names)
+        case decl: Decl.InductiveDecl      => inductiveReferences(decl, names)
+        case block: Decl.InductiveBlock    => block.families.exists(inductiveReferences(_, names))
+        case block: Decl.RecursiveDefBlock => block.definitions.exists(recursiveDefReferences(_, names))
+      }
   }
+
+  /** A family publishes its own name and each of its constructors'; all of them vanish together if it fails. */
+  private def inductiveNames(decl: Decl.InductiveDecl): Vector[String] =
+    decl.header.name +: decl.ctors.map(_.canonicalName)
+
+  private def inductiveReferences(decl: Decl.InductiveDecl, names: Set[String]): Boolean = {
+    val headerTerms = decl.header.binders.map(_.ty) :+ decl.header.resultTy
+    val ctorTerms = decl.ctors.flatMap(ctor => ctor.binders.map(_.ty) :+ ctor.resultTy)
+    (headerTerms ++ ctorTerms).exists(mentionsGlobal(_, names))
+  }
+
+  private def recursiveDefReferences(definition: RecursiveDef, names: Set[String]): Boolean =
+    mentionsGlobal(definition.ty, names) || mentionsGlobal(definition.body, names) || (definition.decreases match {
+      case DecreaseSpec.Measure(term, _) => mentionsGlobal(term, names)
+      case _: DecreaseSpec.Lexicographic => false
+    })
 
   object Decl {
     // Constant: name : type [:= value]. Opaque definitions keep only their symbolic head in the environment.

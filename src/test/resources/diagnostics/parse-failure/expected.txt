@@ -1,0 +1,4 @@
+
+<root>/main.rac:3:13: error: Failed to parse module <root>/main.rac: Failed to parse LayoutSymTight())
+{ Nat.zero }
+            ^

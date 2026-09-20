@@ -1,0 +1,5 @@
+
+<root>/main.rac:1:26: error: Nat.pow argument 100000000000 exceeds native evaluation limit 16777216
+def huge : Nat := Nat.pow(2, 100000000000)
+                         ^^^^^^^^^^^^^^^^^
+note: in definition huge

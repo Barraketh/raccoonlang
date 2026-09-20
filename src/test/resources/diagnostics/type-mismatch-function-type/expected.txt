@@ -1,0 +1,7 @@
+
+<root>/main.rac:3:18: error: type mismatch
+def bad : Nat := id2
+                 ^^^
+  expected: Nat
+  actual:   (n: Nat) -> Nat
+note: in definition bad

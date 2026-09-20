@@ -276,7 +276,7 @@ class ForcedImplicitTests extends munit.FunSuite with TestSupport {
         val core = Elaborator.elab(value, Prelude.default)
         try Interpreter.run(core, Prelude.default)
         catch {
-          case t: TypeError => fail(ErrorReporter.pretty(t, Source(p)))
+          case diagnostic: Diagnostic => fail(ErrorReporter.pretty(diagnostic, Source(p)))
         }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")

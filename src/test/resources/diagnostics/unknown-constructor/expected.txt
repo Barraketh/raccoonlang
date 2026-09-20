@@ -1,0 +1,4 @@
+
+<root>/main.rac:4:3: error: Bool.maybe not found
+  | Bool.maybe => Nat.zero
+  ^^^^^^^^^^^^^^^^^^^^^^^^

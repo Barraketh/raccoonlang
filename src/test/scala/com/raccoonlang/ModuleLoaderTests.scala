@@ -3,7 +3,7 @@ package com.raccoonlang
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
 
-class ModuleLoaderTests extends munit.FunSuite {
+class ModuleLoaderTests extends munit.FunSuite with DiagnosticAssertions {
   private def write(root: Path, relative: String, source: String): Path = {
     val path = root.resolve(relative)
     Files.createDirectories(path.getParent)
@@ -34,7 +34,7 @@ class ModuleLoaderTests extends munit.FunSuite {
   private def loadError(entry: Path, prelude: Prelude.Config): TypeError =
     intercept[ModuleLoader.LoadFailure] {
       ModuleLoader.load(entry, ModuleLoader.LoadConfig.forEntry(entry, prelude))
-    }.error
+    }.diagnostic.error
 
   test("loads an entry-relative module and exposes canonical names") {
     val root = Files.createTempDirectory("raccoon-modules")
@@ -269,7 +269,7 @@ class ModuleLoaderTests extends munit.FunSuite {
         |""".stripMargin
     )
     val loaded = ModuleLoader.load(leakingEntry, ModuleLoader.LoadConfig.forEntry(leakingEntry, Prelude.test))
-    intercept[NotFound] {
+    interceptError[NotFound] {
       Elaborator.elab(loaded.program, Prelude.test)
     }
   }
@@ -347,10 +347,11 @@ class ModuleLoaderTests extends munit.FunSuite {
     val entry = write(root, "Main.rac", "import Lib.Bad\n")
 
     val loaded = ModuleLoader.load(entry, ModuleLoader.LoadConfig.forEntry(entry, Prelude.test))
-    val error = intercept[NotFound] {
+    val diagnostic = interceptDiagnostic {
       Elaborator.elab(loaded.program, Prelude.test)
     }
-    assert(ErrorReporter.pretty(error, loaded).contains(badPath.toRealPath().toString))
+    assert(diagnostic.error.isInstanceOf[NotFound], s"expected NotFound, got ${diagnostic.error}")
+    assert(ErrorReporter.pretty(diagnostic, loaded).contains(badPath.toRealPath().toString))
   }
 
   test("same-offset local value ids remain distinct across imported modules") {
@@ -414,7 +415,7 @@ class ModuleLoaderTests extends munit.FunSuite {
     val loaded = ModuleLoader.load(entry, ModuleLoader.LoadConfig.forEntry(entry, Prelude.test))
     val core = Elaborator.elab(loaded.program, Prelude.test)
 
-    intercept[TypeError] {
+    interceptDiagnostic {
       Interpreter.run(core, Prelude.test)
     }
   }

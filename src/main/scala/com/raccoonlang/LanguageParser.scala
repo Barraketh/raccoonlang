@@ -94,7 +94,7 @@ object LanguageParser {
     (namedSegment.rep(1) ~ typeExpr ~ chainRest).flatSpanned(sourceId).map { case (named, body, rest, sp) =>
       buildChain(named, body, rest, sp) match {
         case pi: Pi => pi
-        case other  => throw WTF("named binders always form a Pi", Some(other.span))
+        case other  => at(other.span) { wtf("named binders always form a Pi") }
       }
     }
 

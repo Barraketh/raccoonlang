@@ -253,7 +253,7 @@ object Projection {
             }
             BinderResult(isImplicit = true, projection = Some(Spec(rootArgIdx, steps)))
           case None =>
-            throw NonForcedImplicitParam(b.name, Some(b.span))
+            at(b.span) { fail(NonForcedImplicitParam(b.name)) }
         }
     }
   }

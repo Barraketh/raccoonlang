@@ -1,0 +1,5 @@
+def apply2 (f: (a: Nat)(b: Nat) -> Nat): Nat := f(Nat.zero, Nat.zero)
+
+def bad : Nat := apply2(Nat.zero)
+
+{ Nat.zero }

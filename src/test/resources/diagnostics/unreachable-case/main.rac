@@ -1,0 +1,11 @@
+inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
+ | nil : Vec(A, Nat.zero)
+ | cons (n: Nat)(xs: Vec(A, n))(x: A) : Vec(A, Nat.succ(n))
+
+def emptyLength (A: Type)(v: Vec(A, Nat.zero)): Nat := {
+  match v returning Nat with
+  | Vec.nil => Nat.zero
+  | Vec.cons n xs x => Nat.zero
+}
+
+{ Nat.zero }

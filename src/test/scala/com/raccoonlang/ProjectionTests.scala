@@ -485,7 +485,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[TypeMismatch] { Interpreter.run(core, Prelude.test) }
+        interceptError[TypeMismatch] { Interpreter.run(core, Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
@@ -560,7 +560,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[TypeMismatch] { Interpreter.run(core, Prelude.test) }
+        interceptError[TypeMismatch] { Interpreter.run(core, Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
@@ -602,7 +602,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[NotFound] { Interpreter.run(core, Prelude.test) }
+        interceptError[NotFound] { Interpreter.run(core, Prelude.test) }
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }
@@ -620,7 +620,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[NotFound] { Interpreter.run(core, Prelude.test) }
+        interceptError[NotFound] { Interpreter.run(core, Prelude.test) }
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }
@@ -637,7 +637,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[NotFound] { Interpreter.run(core, Prelude.test) }
+        interceptError[NotFound] { Interpreter.run(core, Prelude.test) }
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }
@@ -860,10 +860,10 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
     val env = evalDecls(p)
     val span = Span(0, 0)
     // A plain inductive gets no generated selectors at all, so any field name is NotFound.
-    intercept[NotFound] {
+    interceptError[NotFound] {
       TypeChecker.checkTerm(CoreAst.Term.Select(CoreAst.Term.GlobalRef("box", span), "value", span), env)
     }
-    intercept[NotFound] {
+    interceptError[NotFound] {
       TypeChecker.checkTerm(CoreAst.Term.Select(CoreAst.Term.GlobalRef("choice", span), "value", span), env)
     }
   }
@@ -880,7 +880,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         val core = Elaborator.elab(value, Prelude.test)
         // The generated selector is a large elimination out of a Prop whose data field is not
         // recoverable from the proposition, which is exactly what the Prop-elimination gate refuses.
-        intercept[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
+        interceptError[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
   }

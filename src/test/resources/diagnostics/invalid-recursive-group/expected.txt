@@ -1,0 +1,4 @@
+
+<root>/main.rac:2:3: error: Invalid decreases annotation: every mutual definition requires a decreases annotation
+  def even (n: Nat): Bool := odd(n)
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

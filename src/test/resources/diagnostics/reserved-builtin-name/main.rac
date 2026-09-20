@@ -1,0 +1,3 @@
+def MySort (l: Level): Type := builtin
+
+{ Nat.zero }

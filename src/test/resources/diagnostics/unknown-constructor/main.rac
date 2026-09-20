@@ -1,0 +1,7 @@
+def bad (b: Bool): Nat := {
+  match b returning Nat with
+  | Bool.true => Nat.zero
+  | Bool.maybe => Nat.zero
+}
+
+{ bad(Bool.true) }

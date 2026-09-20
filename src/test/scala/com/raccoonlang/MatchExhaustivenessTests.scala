@@ -17,7 +17,7 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
         |
         |""".stripMargin
 
-    intercept[MissingCase] { typecheckDecls(p) }
+    interceptError[MissingCase] { typecheckDecls(p) }
   }
 
   test("duplicate case: two Peano.zero branches") {
@@ -36,7 +36,7 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
         |
         |""".stripMargin
 
-    intercept[DuplicateCase] { typecheckDecls(p) }
+    interceptError[DuplicateCase] { typecheckDecls(p) }
   }
 
   test("unreachable case: Vec.cons on Vec A Peano.zero") {
@@ -58,7 +58,7 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
         |
         |""".stripMargin
 
-    intercept[UnreachableCase] { typecheckDecls(p) }
+    interceptError[UnreachableCase] { typecheckDecls(p) }
   }
 
   test("non-exhaustive: opaque scrutinee application should still require succ case") {
@@ -79,7 +79,7 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
         |
         |""".stripMargin
 
-    intercept[MissingCase] { typecheckDecls(p) }
+    interceptError[MissingCase] { typecheckDecls(p) }
   }
 
   test("exhaustive: opaque scrutinee application should typecheck") {
@@ -218,7 +218,7 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
          |}
          |""".stripMargin
 
-    intercept[MissingReturningClause] { typecheckDecls(program("")) }
+    interceptError[MissingReturningClause] { typecheckDecls(program("")) }
     typecheckDecls(program(" returning Shape(n)"))
   }
 }

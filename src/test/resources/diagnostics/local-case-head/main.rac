@@ -1,0 +1,8 @@
+def bad (b: Bool): Nat := {
+  let zero := Nat.zero
+  match b returning Nat with
+  | zero => Nat.zero
+  | Bool.false => Nat.zero
+}
+
+{ bad(Bool.true) }

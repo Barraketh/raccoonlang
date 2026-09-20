@@ -1,0 +1,5 @@
+def twice (a: Nat)(b: Nat): Nat := a
+
+def bad : Nat := twice(Nat.zero)
+
+{ bad }

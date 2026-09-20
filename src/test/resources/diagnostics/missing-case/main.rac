@@ -1,0 +1,6 @@
+def partial (b: Bool): Nat := {
+  match b returning Nat with
+  | Bool.true => Nat.zero
+}
+
+{ partial(Bool.false) }

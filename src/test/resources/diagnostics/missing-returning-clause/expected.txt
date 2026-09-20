@@ -1,0 +1,6 @@
+
+<root>/main.rac:9:5: error: Match requires a returning clause: the match's result type is not syntactically in scope; add a returning clause
+    match c with
+    ^^^^^^^^^^^^
+note: in branch Nat.succ p
+note: in definition f

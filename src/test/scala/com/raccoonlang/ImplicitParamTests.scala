@@ -152,7 +152,7 @@ class ImplicitParamTests extends munit.FunSuite with TestSupport {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[NonForcedImplicitParam] { Interpreter.run(core, Prelude.test) }
+        interceptError[NonForcedImplicitParam] { Interpreter.run(core, Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
@@ -292,7 +292,7 @@ class ImplicitParamTests extends munit.FunSuite with TestSupport {
          |""".stripMargin
 
     assertEquals(toShape(runProgram(program("(_: Peano) -> Peano"))), succS(zeroS))
-    intercept[TypeMismatch](runProgramRaw(program("t")))
+    interceptError[TypeMismatch](runProgramRaw(program("t")))
   }
 
   test("explicit arguments are checked against binder types") {

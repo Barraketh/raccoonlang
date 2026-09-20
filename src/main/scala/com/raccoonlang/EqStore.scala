@@ -65,8 +65,8 @@ final case class EqStore(subst: Map[VarId, Value], refinable: DepSet) {
   }
 
   def addLink(id: VarId, v: Value): EqStore = {
-    if (subst.contains(id)) throw VarAlreadyLinked(id)
-    if (!refinable.contains(id)) throw WTF("Tried to solve a var not in refinable set")
+    if (subst.contains(id)) fail(VarAlreadyLinked(id))
+    if (!refinable.contains(id)) wtf("Tried to solve a var not in refinable set")
     copy(subst = subst + (id -> v))
   }
 

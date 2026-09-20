@@ -1,0 +1,5 @@
+
+<root>/main.rac:2:2: error: Constructor Wrong.mk must return Wrong but got Nat
+ | mk : Nat
+ ^^^^^^^^^^
+note: in definition Wrong

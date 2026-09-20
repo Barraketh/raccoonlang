@@ -1,0 +1,3 @@
+import Missing.Module
+
+{ Nat.zero }

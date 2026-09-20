@@ -1,0 +1,4 @@
+inductive Twist (A: Type) : Type
+ | mk : Twist(Nat)
+
+{ Nat.zero }

@@ -74,10 +74,10 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
     val one = Value.Level.one
 
     assertEquals(Interpreter.evalApply(levelMax, Vector(zero, one)), one)
-    val error = intercept[ArityMismatch](Interpreter.evalApply(levelMax, Vector(zero)))
+    val error = interceptError[ArityMismatch](Interpreter.evalApply(levelMax, Vector(zero)))
     assertEquals(error.expected, 2)
     assertEquals(error.got, 1)
-    val emptyError = intercept[ArityMismatch](Interpreter.evalApply(levelMax, Vector.empty))
+    val emptyError = interceptError[ArityMismatch](Interpreter.evalApply(levelMax, Vector.empty))
     assertEquals(emptyError.expected, 2)
     assertEquals(emptyError.got, 0)
   }
@@ -542,7 +542,7 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
       "  def div (a: Nat): Nat := a"
     )
     assertEquals(
-      intercept[NativeOperationDeclarationMismatch](
+      interceptError[NativeOperationDeclarationMismatch](
         syntheticFullNative("wrong-div", wrongTelescope).checkedEnv
       ).name,
       "Nat.div"
@@ -553,7 +553,7 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
       "  opaque def div (a: Nat)(b: Nat): Nat := a"
     )
     assertEquals(
-      intercept[NativeOperationDeclarationMismatch](syntheticFullNative("opaque-div", opaque).checkedEnv).name,
+      interceptError[NativeOperationDeclarationMismatch](syntheticFullNative("opaque-div", opaque).checkedEnv).name,
       "Nat.div"
     )
 
@@ -562,7 +562,7 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
       "  def div : Nat -> Nat -> Nat := Nat.add"
     )
     assertEquals(
-      intercept[NativeOperationDeclarationMismatch](
+      interceptError[NativeOperationDeclarationMismatch](
         syntheticFullNative("wrong-identity", wrongIdentity).checkedEnv
       ).name,
       "Nat.div"
@@ -576,7 +576,9 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
     val implicitDiv =
       div.copy(tpe = div.tpe.copy(binders = div.tpe.binders.updated(0, div.tpe.binders.head.copy(isImplicit = true))))
     val implicitError =
-      intercept[NativeOperationDeclarationMismatch](Packed.validateNativeOpDeclaration("Nat.div", implicitDiv, env))
+      interceptError[NativeOperationDeclarationMismatch](
+        Packed.validateNativeOpDeclaration("Nat.div", implicitDiv, env)
+      )
     assert(implicitError.reason.contains("explicit"), implicitError.reason)
 
     val beq = env("Nat.beq") match {
@@ -585,19 +587,21 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
     }
     val natResultBeq = beq.copy(tpe = beq.tpe.copy(codomain = _ => env("Nat")))
     val boolResultError =
-      intercept[NativeOperationDeclarationMismatch](Packed.validateNativeOpDeclaration("Nat.beq", natResultBeq, env))
+      interceptError[NativeOperationDeclarationMismatch](
+        Packed.validateNativeOpDeclaration("Nat.beq", natResultBeq, env)
+      )
     assert(boolResultError.reason.contains("Bool"), boolResultError.reason)
   }
 
   test("String layout admission rejects every malformed representation component") {
     val wrongField = fullNativeAddendum.replace(" | mk (data: List(Char)) : String", " | mk (data: Nat) : String")
-    intercept[StringLiteralUnavailable](syntheticFullNative("wrong-string-field", wrongField).checkedEnv)
+    interceptError[StringLiteralUnavailable](syntheticFullNative("wrong-string-field", wrongField).checkedEnv)
 
     val wrongArity = fullNativeAddendum.replace(
       " | mk (data: List(Char)) : String",
       " | mk (data: List(Char))(extra: Nat) : String"
     )
-    intercept[StringLiteralUnavailable](syntheticFullNative("wrong-string-arity", wrongArity).checkedEnv)
+    interceptError[StringLiteralUnavailable](syntheticFullNative("wrong-string-arity", wrongArity).checkedEnv)
 
     val env = fullNativePrelude.checkedEnv
     val stringMk = env("String.mk") match {
@@ -605,7 +609,7 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
       case other                       => fail(s"Expected String.mk constructor, got $other")
     }
     val withoutNoConfusion = replaceGlobal(env, "String.mk", stringMk.copy(noConfusion = false))
-    intercept[StringLiteralUnavailable](Packed.validateStringLayout(withoutNoConfusion))
+    interceptError[StringLiteralUnavailable](Packed.validateStringLayout(withoutNoConfusion))
 
     val string = env("String") match {
       case value @ Value.VConst(_, Value.Inductive(_), _) => value
@@ -620,7 +624,7 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
         stringMeta.copy(constructors = Vector(Value.ConstructorMeta("other", "String.other")))
       )
     )
-    val wrongStringConstructorError = intercept[StringLiteralUnavailable](
+    val wrongStringConstructorError = interceptError[StringLiteralUnavailable](
       Packed.validateStringLayout(replaceGlobal(env, "String", wrongStringConstructor))
     )
     assert(wrongStringConstructorError.reason.contains("exactly"), wrongStringConstructorError.reason)
@@ -641,7 +645,7 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
     val wrongStringResultEnv =
       replaceGlobal(replaceGlobal(env, "String", wrongResultString), "String.mk", wrongStringMk)
     val wrongStringResultError =
-      intercept[StringLiteralUnavailable](Packed.validateStringLayout(wrongStringResultEnv))
+      interceptError[StringLiteralUnavailable](Packed.validateStringLayout(wrongStringResultEnv))
     assert(wrongStringResultError.reason.contains("result is not `String`"), wrongStringResultError.reason)
 
     val withoutProjection = string.constType match {
@@ -649,7 +653,7 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
       case _                     => fail("Expected String inductive metadata")
     }
     val projectionEnv = replaceGlobal(env, "String", withoutProjection)
-    intercept[StringLiteralUnavailable](Packed.validateStringLayout(projectionEnv))
+    interceptError[StringLiteralUnavailable](Packed.validateStringLayout(projectionEnv))
 
     val list = env("List") match {
       case value @ Value.VConst(_, Value.Inductive(_), _) => value
@@ -664,7 +668,7 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
         )
       case _ => fail("Expected List inductive metadata")
     }
-    val wrongListConstructorsError = intercept[StringLiteralUnavailable](
+    val wrongListConstructorsError = interceptError[StringLiteralUnavailable](
       Packed.validateStringLayout(replaceGlobal(env, "List", wrongListConstructors))
     )
     assert(wrongListConstructorsError.reason.contains("exactly"), wrongListConstructorsError.reason)
@@ -677,7 +681,7 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
       case pi: Value.VPi => pi.copy(codomain = _ => env("Nat"))
       case other         => fail(s"Expected List.cons Pi type, got $other")
     }
-    val wrongListConsResultError = intercept[StringLiteralUnavailable](
+    val wrongListConsResultError = interceptError[StringLiteralUnavailable](
       Packed.validateStringLayout(replaceGlobal(env, "List.cons", listCons.copy(tpe = wrongListConsTpe)))
     )
     assert(wrongListConsResultError.reason.contains("does not instantiate"), wrongListConsResultError.reason)
@@ -687,7 +691,7 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
       case other           => fail(s"Expected Char.ofNat lambda, got $other")
     }
     val wrongCharOfNat = charOfNat.copy(tpe = charOfNat.tpe.copy(codomain = _ => env("Nat")))
-    val wrongCharOfNatError = intercept[StringLiteralUnavailable](
+    val wrongCharOfNatError = interceptError[StringLiteralUnavailable](
       Packed.validateStringLayout(replaceGlobal(env, "Char.ofNat", wrongCharOfNat))
     )
     assert(wrongCharOfNatError.reason.contains("Nat -> Char"), wrongCharOfNatError.reason)
@@ -699,7 +703,7 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
       case other                             => fail(s"Expected source Char.ofNat body, got $other")
     }
     val openEnv = replaceGlobal(env, "Char.ofNat", charOfNat.copy(body = openBody))
-    intercept[StringLiteralUnavailable](Packed.validateStringLayout(openEnv))
+    interceptError[StringLiteralUnavailable](Packed.validateStringLayout(openEnv))
   }
 
   test("trusted bootstrap finalization is atomic and reusable for streamed declarations") {
@@ -718,7 +722,7 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
       )
     val failedCandidate = malformedString.core.decls.foldLeft(Interpreter.preludeInitialEnv)(Interpreter.addPreludeDecl)
     assert(failedCandidate.nativeLiterals.stringLayout.isEmpty)
-    intercept[StringLiteralUnavailable](Interpreter.finishPrelude(failedCandidate))
+    interceptError[StringLiteralUnavailable](Interpreter.finishPrelude(failedCandidate))
     assert(Interpreter.preludeInitialEnv.nativeLiterals.stringLayout.isEmpty)
     assert(failedCandidate.nativeLiterals.stringLayout.isEmpty)
   }

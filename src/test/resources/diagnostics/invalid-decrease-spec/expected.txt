@@ -1,0 +1,4 @@
+
+<root>/main.rac:1:33: error: m not found
+def bad (n: Nat): Nat decreases structural(m) := n
+                                ^^^^^^^^^^^^^

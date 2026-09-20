@@ -14,8 +14,12 @@ object Main {
       preludePath: Option[Path] = None,
       noPrelude: Boolean = false,
       waitForEnter: Boolean = false,
+      json: Boolean = false,
       entry: Option[Path] = None
   )
+
+  private val Usage =
+    "Usage: raccoon-lang [--root <dir>] [--prelude <file> | --no-prelude] [--wait-for-enter] [--json] <file>"
 
   def main(args: Array[String]): Unit = {
     val parsedArgs = {
@@ -36,6 +40,8 @@ object Main {
             loop(tail, cur.copy(noPrelude = true))
           case "--wait-for-enter" :: tail =>
             loop(tail, cur.copy(waitForEnter = true))
+          case "--json" :: tail =>
+            loop(tail, cur.copy(json = true))
           case file :: tail if cur.entry.isEmpty =>
             loop(tail, cur.copy(entry = Some(Paths.get(file))))
           case _ =>
@@ -46,27 +52,33 @@ object Main {
     }
 
     val entry = parsedArgs.entry.getOrElse {
-      System.err.println(
-        "Usage: raccoon-lang [--root <dir>] [--prelude <file> | --no-prelude] [--wait-for-enter] <file>"
-      )
+      System.err.println(Usage)
       sys.exit(2)
       return
     }
 
     if (parsedArgs.noPrelude && parsedArgs.preludePath.nonEmpty) {
-      System.err.println(
-        "Usage: raccoon-lang [--root <dir>] [--prelude <file> | --no-prelude] [--wait-for-enter] <file>"
-      )
+      System.err.println(Usage)
       sys.exit(2)
       return
     }
 
-    def log(s: String): Unit = {
-      val timestamp = LogTimestampFormat.format(Instant.ofEpochMilli(System.currentTimeMillis()))
-      println(s"$timestamp: $s")
-    }
+    // Under --json, stdout carries the diagnostics array and nothing else.
+    def log(s: String): Unit =
+      if (!parsedArgs.json) {
+        val timestamp = LogTimestampFormat.format(Instant.ofEpochMilli(System.currentTimeMillis()))
+        println(s"$timestamp: $s")
+      }
 
     var loadedOpt = Option.empty[ModuleLoader.LoadedProgram]
+
+    /** Report every diagnostic of the run, as the array a tool reads or as the text a reader reads. */
+    def report(diagnostics: Vector[Diagnostic], sources: Vector[ModuleLoader.LoadedSource]): Nothing = {
+      if (parsedArgs.json) println(DiagnosticJson.render(diagnostics, sources))
+      else System.err.println(ErrorReporter.pretty(diagnostics, sources))
+      sys.exit(1)
+    }
+
     try {
       if (parsedArgs.waitForEnter) {
         System.err.println("JVM started. Press Enter to continue.")
@@ -91,19 +103,22 @@ object Main {
       val checked = TypeChecker.check(elaborated)
       log("Checked")
       val resOpt = Interpreter.run(checked)
-      resOpt.foreach { v => println(PrettyPrinter.print(v)) }
+      if (parsedArgs.json) println(DiagnosticJson.render(Vector.empty, Vector.empty))
+      else resOpt.foreach { v => println(PrettyPrinter.print(v)) }
       log("Done")
       sys.exit(0)
     } catch {
-      case ModuleLoader.LoadFailure(error, sources) =>
-        System.err.println(ErrorReporter.pretty(error, sources))
-        sys.exit(1)
-      case te: TypeError =>
-        loadedOpt match {
-          case Some(loaded) => System.err.println(ErrorReporter.pretty(te, loaded))
-          case None         => System.err.println(te.getMessage)
-        }
-        sys.exit(1)
+      case ModuleLoader.LoadFailure(diagnostic, sources) =>
+        report(Vector(diagnostic), sources)
+      case Execution.CheckFailure(diagnostics) =>
+        report(diagnostics, loadedOpt.map(_.sources).getOrElse(Vector.empty))
+      // Elaboration fails fast with a lone diagnostic.
+      case diagnostic: Diagnostic =>
+        report(Vector(diagnostic), loadedOpt.map(_.sources).getOrElse(Vector.empty))
+      case internal: InternalError =>
+        System.err.println(ErrorReporter.pretty(internal, loadedOpt.map(_.sources).getOrElse(Vector.empty)))
+        internal.printStackTrace()
+        sys.exit(70)
       case NonFatal(e) =>
         System.err.println(Option(e.getMessage).getOrElse(e.toString))
         sys.exit(1)

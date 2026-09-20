@@ -41,7 +41,7 @@ object StructEta {
           value match {
             case ConstructorForm(ctorName, stored) if ctorName == info.ctorName =>
               if (stored.length != info.fieldCount)
-                throw WTF(s"Constructor $ctorName supplied ${stored.length} fields, expected ${info.fieldCount}")
+                wtf(s"Constructor $ctorName supplied ${stored.length} fields, expected ${info.fieldCount}")
               stored
             case _ =>
               Vector.tabulate(info.fieldCount)(idx => fieldProjection(value, inst, info, idx))
@@ -55,11 +55,11 @@ object StructEta {
    */
   def fieldProjection(base: Value, inst: InductiveFamilyInstance, info: ProjectionInfo, idx: Int): Value = {
     if (idx < 0 || idx >= info.fieldCount)
-      throw InvalidProjection(inst.head.name, idx, s"field index is out of range (${info.fieldCount} fields)", None)
+      fail(InvalidProjection(inst.head.name, idx, s"field index is out of range (${info.fieldCount} fields)"))
     base match {
       case ConstructorForm(ctorName, stored) if ctorName == info.ctorName =>
         if (stored.length != info.fieldCount)
-          throw WTF(s"Constructor $ctorName supplied ${stored.length} fields, expected ${info.fieldCount}")
+          wtf(s"Constructor $ctorName supplied ${stored.length} fields, expected ${info.fieldCount}")
         stored(idx)
       case _ =>
         val program = info.projectors(idx)
@@ -89,7 +89,7 @@ object StructEta {
   private def fieldType(base: Value, inst: InductiveFamilyInstance, info: ProjectionInfo, idx: Int): Value = {
     val head = info.ctorHead
     if (info.fieldCount > 0 && head.pi.isEmpty)
-      throw WTF(s"Constructor ${head.name} has fields but non-Pi type ${head.tpe}")
+      wtf(s"Constructor ${head.name} has fields but non-Pi type ${head.tpe}")
     val binders = head.fieldBinders
     var env = head.fieldEnv(inst.args)
     val dependencies = info.fieldDependencies(idx)

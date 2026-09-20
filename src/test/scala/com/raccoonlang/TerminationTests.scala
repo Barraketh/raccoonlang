@@ -11,7 +11,7 @@ class TerminationTests extends munit.FunSuite with TestSupport {
         val core = Elaborator.elab(value, Prelude.test)
         try Interpreter.run(core, Prelude.test)
         catch {
-          case t: TypeError => fail(ErrorReporter.pretty(t, Source(src)))
+          case diagnostic: Diagnostic => fail(ErrorReporter.pretty(diagnostic, Source(src)))
         }
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
@@ -248,7 +248,7 @@ class TerminationTests extends munit.FunSuite with TestSupport {
         |}
         |""".stripMargin
 
-    expectTypeError[InvalidDecreaseSpec](p)
+    assert(expectTypeError[NonInductiveDecreaseMetric](p).isProof)
   }
 
   test("lexicographic recursion requires some component to decrease") {
@@ -278,7 +278,7 @@ class TerminationTests extends munit.FunSuite with TestSupport {
           |def bad (n: Peano): Peano decreases measure(Type) := n
           |""".stripMargin
 
-    expectTypeError[InvalidDecreaseSpec](p)
+    assert(!expectTypeError[NonInductiveDecreaseMetric](p).isProof)
   }
 
   private val treeDecls =
@@ -386,7 +386,7 @@ class TerminationTests extends munit.FunSuite with TestSupport {
           |def bad (q: Opaque): Peano decreases structural(q) := Peano.zero
           |""".stripMargin
 
-    expectTypeError[InvalidDecreaseSpec](p)
+    assert(!expectTypeError[NonInductiveDecreaseMetric](p).isProof)
   }
 
   test("raw recursive self cannot be stored inside a residual let value") {

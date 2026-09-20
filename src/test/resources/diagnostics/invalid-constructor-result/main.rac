@@ -1,0 +1,4 @@
+inductive Wrong : Type
+ | mk : Nat
+
+{ Nat.zero }

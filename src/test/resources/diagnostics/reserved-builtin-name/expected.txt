@@ -1,0 +1,5 @@
+
+<root>/main.rac:1:1: error: MySort has a builtin body, which only a prelude may declare
+def MySort (l: Level): Type := builtin
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: in definition MySort

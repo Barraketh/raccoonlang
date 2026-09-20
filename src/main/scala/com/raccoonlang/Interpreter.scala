@@ -21,7 +21,7 @@ object Interpreter {
               eqStore.force(sol) match {
                 case next: Level       => normalizeLevel(next, eqStore)
                 case Var(_, nextId, _) => Level.mk(nextId)
-                case other             => throw NotALevel(other)
+                case other             => fail(NotALevel(other))
               }
             case None => Level.mk(id)
           }
@@ -55,7 +55,7 @@ object Interpreter {
                 resolveInEqStore(evalApply(other, materializedArgs), eqStore)
             }
           case vm: NeutralThunk => resolveInEqStore(forceThunk(vm, eqStore), eqStore)
-          case _                => throw WTF(s"Blocked extractor matched unexpected value $v0")
+          case _                => wtf(s"Blocked extractor matched unexpected value $v0")
         }
 
       case l: Level if l.synDeps.intersects(eqStore.solvedIds) => normalizeLevel(l, eqStore)
@@ -151,7 +151,7 @@ object Interpreter {
         // Pi's own binders. A nested group is reached by a second application, which arrives here
         // as its own call. Keep this boundary checked because native lambdas bypass Core evaluation.
         if (vArgs.length != pi.binders.length)
-          throw ArityMismatch(pi.binders.length, vArgs.length)
+          fail(ArityMismatch(pi.binders.length, vArgs.length))
         // Lazy: the VLam branch delegates env construction to runLam.
         lazy val envWithArgs = getEnvWithArgs(pi, pi.env, vArgs)
         fn match {
@@ -168,17 +168,17 @@ object Interpreter {
           case head @ (_: VConst | _: VApp | _: NeutralThunk | _: Var) =>
             val blockedOn = Blocker.unapply(head).getOrElse(DepSet.empty)
             Value.canonicalizeProof(VApp(head, vArgs, pi.codomain(envWithArgs), blockedOn))
-          case _ => throw CannotApplyNonFunction(fn)
+          case _ => fail(CannotApplyNonFunction(fn))
         }
-      case _ => throw CannotApplyNonFunction(fn.tpe)
+      case _ => fail(CannotApplyNonFunction(fn.tpe))
     }
   }
 
   private def evalApplyTerm(fn: CoreAst.Term, args: Vector[CoreAst.Term], env: Env): Value = {
     val vf = evalTerm(fn, env)
     val vArgs = args.map(a => evalTerm(a, env))
-    if (vArgs.isEmpty) throw CannotApplyNonFunction(vf.tpe)
-    evalApply(vf, reconstructImplicits(vf, vArgs, fn.span))
+    if (vArgs.isEmpty) fail(CannotApplyNonFunction(vf.tpe))
+    evalApply(vf, reconstructImplicits(vf, vArgs))
   }
 
   private def valueName(v: Value): String =
@@ -194,10 +194,13 @@ object Interpreter {
    * projection specs against the provided args, exactly as application checking did (Projection.project is the shared
    * implementation).
    */
-  private def reconstructImplicits(fn: Value, vArgs: Vector[Value], span: Span): Vector[Value] =
+  private def reconstructImplicits(fn: Value, vArgs: Vector[Value]): Vector[Value] =
     fn.tpe match {
       case pi: VPi if pi.binders.exists(_.isImplicit) =>
-        if (vArgs.length != pi.numExplicit) throw ArityMismatch(pi.numExplicit, vArgs.length, Some(span))
+        // A binder type is evaluated before the application inside it has been checked, so both of
+        // these are reachable from a program and stay ordinary errors, located by whichever term the
+        // checker was working on.
+        if (vArgs.length != pi.numExplicit) fail(ArityMismatch(pi.numExplicit, vArgs.length))
         var provided = 0
         pi.binders.map { binder =>
           if (!binder.isImplicit) {
@@ -205,12 +208,14 @@ object Interpreter {
             provided += 1
             arg
           } else {
+            // Pi formation compiles a spec for every binder that stays implicit; one without is a
+            // broken invariant, not a program's fault.
             val spec = binder.projection.getOrElse(
-              throw WTF(s"Implicit binder ${binder.name} of ${valueName(fn)} has no projection spec", Some(span))
+              wtf(s"Implicit binder ${binder.name} of ${valueName(fn)} has no projection spec")
             )
             telescope.Projection.project(spec, vArgs) match {
               case Right(value) => value
-              case Left(reason) => throw ImplicitReconstructionFailed(binder.name, valueName(fn), reason, Some(span))
+              case Left(reason) => fail(ImplicitReconstructionFailed(binder.name, valueName(fn), reason))
             }
           }
         }
@@ -251,9 +256,10 @@ object Interpreter {
           val peer =
             if (term.recursivePeers.length == 1 && term.name.contains(name)) lam
             else
-              coreEnv.globals.get(name).map(_.value(coreEnv)).getOrElse {
-                throw WTF(s"Checked recursive peer $name is absent from its group", Some(term.span))
-              }
+              coreEnv.globals
+                .get(name)
+                .map(_.value(coreEnv))
+                .getOrElse(wtf(s"Checked recursive peer $name is absent from its group"))
           current.putLocal(ref, peer)
         }
         evalTerm(term.body, recurEnv)
@@ -269,28 +275,27 @@ object Interpreter {
   }
 
   private[raccoonlang] def getLevel(v: Value): Level =
-    Level.fromValue(v).getOrElse(throw NotALevel(v))
+    Level.fromValue(v).getOrElse(fail(NotALevel(v)))
 
-  private[raccoonlang] def evalTerm(term: CoreAst.Term, env: Env): Value = {
-    try {
-      term match {
-        case CTerm.NatLit(value, _)   => Packed.evalNatLit(value, env)
-        case CTerm.StrLit(scalars, _) => Packed.evalStrLit(scalars, env)
-        case ref: CTerm.Ref           => evalRef(ref, env)
-        case CTerm.App(fn, args, _)   => evalApplyTerm(fn, args, env)
-        case pi: CTerm.Pi             => evalPi(pi, env)
-        case l: CTerm.Lam             => evalLam(l, env)
-        case m: CTerm.Match           => evalMatch(m, env)
-        case b: CTerm.Body            => evalBody(b, env)
-        // Named field syntax is resolved to a selector application by checkSelect, so a Select can
-        // only reach evaluation if something published unchecked syntax.
-        case CTerm.Select(_, field, span) =>
-          throw WTF(s"Unresolved field selection .$field reached evaluation", Some(span))
-      }
-    } catch {
-      case e: TypeError if e.span.isEmpty => throw e.withSpan(term.span)
+  /**
+   * Evaluation attaches no location: reduction runs inside callee bodies the user did not write, so a failure here
+   * belongs to the term the checker was working on.
+   */
+  private[raccoonlang] def evalTerm(term: CoreAst.Term, env: Env): Value =
+    term match {
+      case CTerm.NatLit(value, _)   => Packed.evalNatLit(value, env)
+      case CTerm.StrLit(scalars, _) => Packed.evalStrLit(scalars, env)
+      case ref: CTerm.Ref           => evalRef(ref, env)
+      case CTerm.App(fn, args, _)   => evalApplyTerm(fn, args, env)
+      case pi: CTerm.Pi             => evalPi(pi, env)
+      case l: CTerm.Lam             => evalLam(l, env)
+      case m: CTerm.Match           => evalMatch(m, env)
+      case b: CTerm.Body            => evalBody(b, env)
+      // Named field syntax is resolved to a selector application by checkSelect, so a Select can
+      // only reach evaluation if something published unchecked syntax.
+      case CTerm.Select(_, field, _) =>
+        wtf(s"Unresolved field selection .$field reached evaluation")
     }
-  }
 
   private def evalMatch(m: CTerm.Match, env: Env): Value = {
     val scrut = evalTerm(m.scrut, env)
@@ -306,7 +311,7 @@ object Interpreter {
           case Some(etaFields) =>
             val branch = m.cases match {
               case Vector(single) => single
-              case _              => throw WTF(s"Eta-eligible struct match has ${m.cases.length} cases", Some(m.span))
+              case _              => wtf(s"Eta-eligible struct match has ${m.cases.length} cases")
             }
             return evalBranch(branch, etaFields, env)
           case None =>
@@ -320,8 +325,9 @@ object Interpreter {
         return Value.canonicalizeProof(stuckMatchThunk(m, env, matchOutType(m, scrut, env), blockedOn))
     }
 
+    // Exhaustiveness is settled by MatchChecker: a constructor-form scrutinee always has a branch.
     val branch =
-      m.cases.find(c => c.ctorName == ctorName).getOrElse(throw UnknownConstructor(ctorName, "", Some(m.span)))
+      m.cases.find(c => c.ctorName == ctorName).getOrElse(wtf(s"Checked match has no branch for constructor $ctorName"))
     evalBranch(branch, args, env)
   }
 
@@ -342,8 +348,10 @@ object Interpreter {
   }
 
   private[raccoonlang] def evalBranch(branch: CoreAst.Case, args: Vector[Value], env: Env): Value = {
+    // Every caller supplies a scrutinee's stored fields to a branch MatchChecker already matched
+    // against that constructor's arity.
     if (args.length != branch.argRefs.length)
-      throw ArityMismatch(branch.argRefs.length, args.length, Some(branch.span))
+      wtf(s"Checked branch for ${branch.ctorName} binds ${branch.argRefs.length} fields, got ${args.length}")
     val newEnv = args.zip(branch.argRefs).foldLeft(env) { case (curEnv, (argV, argRef)) =>
       argRef match {
         case Some(ref) => curEnv.putLocal(ref, Value.canonicalizeProof(argV))
@@ -384,58 +392,68 @@ object Interpreter {
   private[raccoonlang] def evalDecl(decl: Decl, env: Env): Env = evalDecl(decl, env, trusted = false)
 
   /**
+   * The per-declaration boundary: locates what happens between a declaration's terms (name collisions, block layout,
+   * bootstrap privilege) and appends the outermost context frame.
+   *
    * `trusted` is the one bootstrap privilege: a prelude may declare builtin bodies and the native Nat operations. A
    * program cannot, so nothing it declares can acquire kernel semantics it did not write.
    */
   private[raccoonlang] def evalDecl(decl: Decl, env: Env, trusted: Boolean): Env =
-    decl match {
-      case Decl.ConstDecl(isOpaque, name, ty, body, span) =>
-        body match {
-          case CoreAst.ConstBody.Builtin(_) =>
-            if (isOpaque) throw WTF("Builtin declarations cannot be opaque", Some(span))
-            if (!trusted) throw ReservedKernelName(name, Some(span))
+    framed(Frame.InDefinition(decl.label)) {
+      at(decl.span) {
+        decl match {
+          case Decl.ConstDecl(isOpaque, name, ty, body, _) =>
+            body match {
+              case CoreAst.ConstBody.Builtin(_) =>
+                if (isOpaque) wtf("Builtin declarations cannot be opaque")
+                if (!trusted) fail(ReservedKernelName(name))
+                val tyV = TypeChecker.getType(ty, env)
+                env.putGlobal(name, publishedValue(Builtins.instantiate(name, tyV), tyV))
+
+              case CoreAst.ConstBody.TermBody(term) =>
+                val checkedTy = TypeChecker.getType(ty, env)
+                // Bidirectional: bare-body defs get the same subsumption (eta-adaptation of
+                // polymorphic functions) as let bindings. The declared type is also syntax valid here —
+                // a decl's type mentions no locals — so a motive-less `match` body can residualize it.
+                val checked =
+                  TypeChecker.checkTerm(term, TypeChecker.Expected(checkedTy, Some(ty)), env)
+                val value = if (isOpaque) VConst(name, Symbol, checkedTy) else checked.value
+                val published =
+                  if (trusted && Packed.opNames(name)) Packed.nativeOp(name, value, env)
+                  else publishedValue(value, checkedTy)
+                env.putGlobal(name, published)
+            }
+
+          case Decl.AxiomDecl(name, ty, _) =>
             val tyV = TypeChecker.getType(ty, env)
-            env.putGlobal(name, publishedValue(Builtins.instantiate(name, tyV, span), tyV))
+            env.putGlobal(name, publishedValue(VConst(name, Symbol, tyV), tyV))
 
-          case CoreAst.ConstBody.TermBody(term) =>
-            val checkedTy = TypeChecker.getType(ty, env)
-            // Bidirectional: bare-body defs get the same subsumption (eta-adaptation of
-            // polymorphic functions) as let bindings. The declared type is also syntax valid here —
-            // a decl's type mentions no locals — so a motive-less `match` body can residualize it.
-            val checked =
-              TypeChecker.checkTerm(term, TypeChecker.Expected(checkedTy, Some(ty)), env)
-            val value = if (isOpaque) VConst(name, Symbol, checkedTy) else checked.value
-            val published =
-              if (trusted && Packed.opNames(name)) Packed.nativeOp(name, value, env)
-              else publishedValue(value, checkedTy)
-            env.putGlobal(name, published)
-        }
+          case d: Decl.InductiveDecl =>
+            InductiveChecks.evalInductiveBlock(Decl.InductiveBlock(Vector(d), d.span), env)
 
-      case Decl.AxiomDecl(name, ty, _) =>
-        val tyV = TypeChecker.getType(ty, env)
-        env.putGlobal(name, publishedValue(VConst(name, Symbol, tyV), tyV))
+          case b: Decl.InductiveBlock => InductiveChecks.evalInductiveBlock(b, env)
 
-      case d: Decl.InductiveDecl =>
-        InductiveChecks.evalInductiveBlock(Decl.InductiveBlock(Vector(d), d.span), env)
-
-      case b: Decl.InductiveBlock => InductiveChecks.evalInductiveBlock(b, env)
-
-      case b: Decl.RecursiveDefBlock =>
-        b.definitions.foreach { definition =>
-          if (env.globals.contains(definition.name)) throw AlreadyDefined(definition.name)
-          if (definition.name == "_") throw WTF("Wildcards not allowed in global names", Some(definition.span))
-        }
-        val checked = TypeChecker.checkRecursiveDefBlock(b, env)
-        env.putRecursiveGroup(
-          checked.map(_.name),
-          groupEnv =>
-            checked.map { definition =>
-              evalLam(definition.residual, definition.vpi, groupEnv) match {
-                case lambda: VLam => lambda
-                case other        => throw WTF(s"Checked recursive definition ${definition.name} produced $other")
+          case b: Decl.RecursiveDefBlock =>
+            b.definitions.foreach { definition =>
+              // One member of a group: more precise than the group's own span.
+              at(definition.span) {
+                if (env.globals.contains(definition.name)) fail(AlreadyDefined(definition.name))
+                if (definition.name == "_") wtf("Wildcards not allowed in global names")
               }
             }
-        )
+            val checked = TypeChecker.checkRecursiveDefBlock(b, env)
+            env.putRecursiveGroup(
+              checked.map(_.name),
+              groupEnv =>
+                checked.map { definition =>
+                  evalLam(definition.residual, definition.vpi, groupEnv) match {
+                    case lambda: VLam => lambda
+                    case other        => wtf(s"Checked recursive definition ${definition.name} produced $other")
+                  }
+                }
+            )
+        }
+      }
     }
 
   /** Execute a checked program. Checking and declaration publication have already happened. */

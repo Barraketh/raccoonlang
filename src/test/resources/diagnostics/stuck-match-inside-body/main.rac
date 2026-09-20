@@ -1,0 +1,7 @@
+def g (n: Nat): Nat decreases structural(n) := Nat.succ({
+  match n returning Nat with
+  | .zero => 0
+  | .succ k => g(k)
+})
+
+def wrong (n: Nat): Eq(Nat, g(n), 0) := Eq.refl(0)

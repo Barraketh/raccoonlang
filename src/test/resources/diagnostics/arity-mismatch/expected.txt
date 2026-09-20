@@ -1,0 +1,5 @@
+
+<root>/main.rac:3:23: error: Cannot apply function - expected 2 params, got 1
+def bad : Nat := twice(Nat.zero)
+                      ^^^^^^^^^^
+note: in definition bad

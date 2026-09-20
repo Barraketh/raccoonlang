@@ -1,0 +1,8 @@
+
+<root>/main.rac:1:84: error: type mismatch
+def stuck (n: Nat): Eq(Nat, Nat.add(Nat.succ(Nat.zero), n), Nat.succ(n)) := Eq.refl(Nat.succ(n))
+                                                                                   ^^^^^^^^^^^^^
+  expected: Eq(Nat, Nat.add(1, n), Nat.succ(n))
+  actual:   Eq(Nat, Nat.succ(n), Nat.succ(n))
+  differ at: Nat.add(1, n)  vs  Nat.succ(n)   (not reducible: stuck)
+note: in definition stuck

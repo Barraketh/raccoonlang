@@ -217,7 +217,7 @@ class TypingTests extends munit.FunSuite with TestSupport {
         |}
         |""".stripMargin
 
-    intercept[TypeMismatch] {
+    interceptError[TypeMismatch] {
       typecheckDecls(p)
     }
   }
@@ -253,7 +253,7 @@ class TypingTests extends munit.FunSuite with TestSupport {
         |def badVec (A: Type)(n: Peano)(v: Vec(A, n)): Vec(A, Peano.zero) := v
         |""".stripMargin
 
-    intercept[TypeMismatch] {
+    interceptError[TypeMismatch] {
       typecheckDecls(p)
     }
   }
@@ -322,7 +322,7 @@ class TypingTests extends munit.FunSuite with TestSupport {
         |def bad : Peano := Type
         |""".stripMargin
 
-    intercept[TypeMismatch] {
+    interceptError[TypeMismatch] {
       typecheckDecls(p)
     }
   }
@@ -337,7 +337,7 @@ class TypingTests extends munit.FunSuite with TestSupport {
         |opaque def bad : Peano := Type
         |""".stripMargin
 
-    intercept[TypeMismatch] {
+    interceptError[TypeMismatch] {
       typecheckDecls(p)
     }
   }

@@ -1,0 +1,8 @@
+
+<root>/main.rac:3:24: error: type mismatch
+def bad : Nat := apply2(Nat.zero)
+                       ^^^^^^^^^^
+  expected: (a: Nat) -> (b: Nat) -> Nat
+  actual:   Nat
+note: in argument 1 (f) of apply2
+note: in definition bad

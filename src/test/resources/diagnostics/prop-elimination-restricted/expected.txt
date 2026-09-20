@@ -1,0 +1,5 @@
+
+<root>/main.rac:6:3: error: Cannot eliminate proposition Hidden into non-Prop motive Nat
+  match h returning Nat with
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: in definition reveal

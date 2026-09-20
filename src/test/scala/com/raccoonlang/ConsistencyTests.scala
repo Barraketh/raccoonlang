@@ -91,7 +91,7 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
         |}
         |""".stripMargin
 
-    intercept[TypeMismatch] { typecheckDecls(p, Prelude.test) }
+    interceptError[TypeMismatch] { typecheckDecls(p, Prelude.test) }
   }
 
   // Opaque applications are not invertible refinement frames (docs/kernel.md#refinement-unification).
@@ -112,7 +112,7 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
         |}
         |""".stripMargin
 
-    intercept[MissingCase] { typecheckDecls(p, Prelude.test) }
+    interceptError[MissingCase] { typecheckDecls(p, Prelude.test) }
   }
 
   // Proof constructors provide no apartness evidence (docs/kernel.md#proofs-and-elimination).
@@ -137,7 +137,7 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[MissingCase] { Interpreter.run(core, Prelude.test) }
+        interceptError[MissingCase] { Interpreter.run(core, Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
@@ -167,7 +167,7 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[MissingCase] { Interpreter.run(core, Prelude.test) }
+        interceptError[MissingCase] { Interpreter.run(core, Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
@@ -191,7 +191,7 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
+        interceptError[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
@@ -220,7 +220,7 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[TypeMismatch] { Interpreter.run(core, Prelude.test) }
+        interceptError[TypeMismatch] { Interpreter.run(core, Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
@@ -244,7 +244,7 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
-        intercept[TypeMismatch] { Interpreter.run(core) }
+        interceptError[TypeMismatch] { Interpreter.run(core) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }

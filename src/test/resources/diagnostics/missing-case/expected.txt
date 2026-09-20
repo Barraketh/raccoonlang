@@ -1,0 +1,5 @@
+
+<root>/main.rac:2:3: error: Missing case : Bool.false
+  match b returning Nat with
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: in definition partial

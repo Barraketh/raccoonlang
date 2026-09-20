@@ -139,7 +139,7 @@ class QuotientTests extends munit.FunSuite with TestSupport {
         |""".stripMargin
 
     // A program may not declare builtins at all; a prelude may, but only known ones.
-    intercept[ReservedKernelName] {
+    interceptError[ReservedKernelName] {
       LanguageParser.parseProgram(src) match {
         case Success(value, _, _) =>
           Interpreter.run(Elaborator.elab(value))
@@ -147,9 +147,9 @@ class QuotientTests extends munit.FunSuite with TestSupport {
           fail(s"Failed to parse: $parseErr, ${src.substring(parseErr.curIdx)}")
       }
     }
-    val err = intercept[WTF](Prelude.fromSource("bogus-prelude", src).checkedEnv)
+    val err = intercept[InternalError](Prelude.fromSource("bogus-prelude", src).checkedEnv)
 
-    assertEquals(err.msg, "Unknown builtin bogus")
+    assertEquals(err.reason, "Unknown builtin bogus")
   }
 
   test("genuine constructor disjointness still prunes impossible refl cases") {
@@ -183,7 +183,7 @@ class QuotientTests extends munit.FunSuite with TestSupport {
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value)
-        intercept[NonForcedImplicitParam] { Interpreter.run(core) }
+        interceptError[NonForcedImplicitParam] { Interpreter.run(core) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
@@ -199,7 +199,7 @@ class QuotientTests extends munit.FunSuite with TestSupport {
     val span = Span(0, 0)
 
     // Quot is not a struct: field syntax has no selector to resolve to on a quotient.
-    intercept[TypeError] {
+    interceptDiagnostic {
       TypeChecker.checkTerm(
         CoreAst.Term.Select(CoreAst.Term.GlobalRef("q", span), "value", span),
         env

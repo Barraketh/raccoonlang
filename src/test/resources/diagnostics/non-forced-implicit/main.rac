@@ -1,0 +1,3 @@
+def phantom {A: Type} (n: Nat): Nat := n
+
+{ phantom(Nat.zero) }

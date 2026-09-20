@@ -14,7 +14,7 @@ object BinderOps {
   def freshen(binders: Vector[CoreAst.Binder], baseEnv: Env): Env = {
     var env = baseEnv
     binders.foreach { binder =>
-      env = env.putLocal(binder.localRef, freshenBinder(env, binder).value)
+      env = env.putLocal(binder.localRef, freshenBinder(env, binder, binder.name).value)
     }
 
     env
@@ -23,11 +23,18 @@ object BinderOps {
   def freshen(vpi: VPi): Env = freshen(vpi.binders, vpi.env)
 
   // Fresh copy of a constructor's telescope: a fresh value per binder plus the instantiated result
-  // type. Used by MatchChecker for reachability and branch refinement.
-  def freshCtorArgsAndResult(head: Value.ConstructorHead): (Vector[Value], Value) =
+  // type. Used by MatchChecker for reachability and branch refinement. `fieldNames` are a pattern's
+  // names for the stored fields, so a branch's variables print as the user wrote them.
+  def freshCtorArgsAndResult(
+      head: Value.ConstructorHead,
+      fieldNames: Vector[Option[String]]
+  ): (Vector[Value], Value) =
     head.pi match {
       case Some(pi) =>
-        val fresh = freshen(pi)
+        val fresh = pi.binders.zipWithIndex.foldLeft(pi.env) { case (env, (binder, idx)) =>
+          val name = fieldNames.lift(idx - head.numErasedFamilyArgs).flatten.getOrElse(binder.name)
+          env.putLocal(binder.localRef, freshenBinder(env, binder, name).value)
+        }
         (pi.binders.map(binder => fresh(binder.localRef)), pi.codomain(fresh))
       case None => (Vector.empty, head.tpe)
     }
@@ -48,7 +55,7 @@ object BinderOps {
       val checkedTy = TypeChecker.checkTerm(binder.ty, env)
       TypeChecker.assertType(checkedTy.value)
       val provisional = CoreAst.Binder(binder.localRef, checkedTy.residual, binder.span, binder.isImplicit)
-      val freshened = freshenBinder(env, provisional)
+      val freshened = freshenBinder(env, provisional, provisional.name)
       env = env.putLocal(binder.localRef, freshened.value)
       holeIds += freshened.holeId
       checkedTy
@@ -85,22 +92,10 @@ object BinderOps {
   }
 
   def instantiateFull(binders: Vector[CoreAst.Binder], baseEnv: Env, args: Vector[Value]): Env = {
-    if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
+    if (binders.length != args.length) fail(ArityMismatch(binders.length, args.length))
 
     binders.zip(args).foldLeft(baseEnv) { case (curEnv, (binder, value)) =>
       bindValue(curEnv, binder, value)
-    }
-  }
-
-  def checkAndInstantiate(
-      binders: Vector[CoreAst.Binder],
-      runtimeEnv: Env,
-      args: Vector[Value]
-  ): Env = {
-    if (binders.length != args.length) throw ArityMismatch(binders.length, args.length)
-
-    binders.zip(args).foldLeft(runtimeEnv) { case (curEnv, (binder, value)) =>
-      bindValueAndCheck(curEnv, binder, value)
     }
   }
 
@@ -109,9 +104,9 @@ object BinderOps {
   // a rule over them, not a representation they have to be built in. Non-proof binders expose
   // their fresh id to implicit-projection compilation; proof binders are recognized there by
   // proposition instead, so runtime proof representation carries no witness metadata.
-  private def freshenBinder(env: Env, binder: CoreAst.Binder): FreshenedBinder = {
+  private def freshenBinder(env: Env, binder: CoreAst.Binder, name: String): FreshenedBinder = {
     val expectedTy = Interpreter.evalTerm(binder.ty, env)
-    val (id, fresh) = FreshVar.freshValue(binder.name, expectedTy)
+    val (id, fresh) = FreshVar.freshValue(name, expectedTy)
     val canonical = Value.canonicalizeRigidBinder(expectedTy, fresh)
     // A proof binder exposes no hole: VProof carries no witness id to project from.
     FreshenedBinder(canonical, Option.when(!Value.isPropositionType(expectedTy))(id))

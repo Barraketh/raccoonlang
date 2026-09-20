@@ -1,0 +1,3 @@
+namespace Broken {
+  def wrong : Nat := Bool.true
+}

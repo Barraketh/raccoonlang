@@ -3,7 +3,7 @@ package com.raccoonlang
 import com.raccoonlang.ErrorReporter.Source
 
 /** Shared source-level test plumbing. Specialized environment and residual helpers stay with their suites. */
-trait TestSupport { this: munit.FunSuite =>
+trait TestSupport extends DiagnosticAssertions { this: munit.FunSuite =>
   protected def suitePrelude: Prelude.Config = Prelude.default
 
   protected def parseSurface(source: String): SurfaceAst.Program =
@@ -25,7 +25,9 @@ trait TestSupport { this: munit.FunSuite =>
       val checked = TypeChecker.check(Elaborator.elaborate(parseSurface(source), prelude))
       Interpreter.run(checked).getOrElse(fail("Program has no body"))
     } catch {
-      case error: TypeError => fail(ErrorReporter.pretty(error, Source(source)))
+      case Execution.CheckFailure(diagnostics) =>
+        fail(diagnostics.map(ErrorReporter.pretty(_, Source(source))).mkString)
+      case diagnostic: Diagnostic => fail(ErrorReporter.pretty(diagnostic, Source(source)))
     }
 
   protected def runProgram(source: String): Value = runProgram(source, suitePrelude)
@@ -38,12 +40,12 @@ trait TestSupport { this: munit.FunSuite =>
   protected def expectTypeError[E <: TypeError](source: String, prelude: Prelude.Config)(implicit
       tag: reflect.ClassTag[E],
       loc: munit.Location
-  ): E = intercept[E](TypeChecker.check(Elaborator.elaborate(parseSurface(source), prelude)))
+  ): E = interceptError[E](TypeChecker.check(Elaborator.elaborate(parseSurface(source), prelude)))
 
   protected def expectAnyTypeError(source: String)(implicit loc: munit.Location): TypeError =
-    intercept[TypeError] {
+    interceptDiagnostic {
       TypeChecker.check(Elaborator.elaborate(parseSurface(source), suitePrelude))
-    }
+    }.error
 
   protected def expectTypeError[E <: TypeError](source: String)(implicit
       tag: reflect.ClassTag[E],

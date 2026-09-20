@@ -1,0 +1,6 @@
+mutual {
+  def even (n: Nat): Bool := odd(n)
+  def odd (n: Nat): Bool := even(n)
+}
+
+{ even(Nat.zero) }

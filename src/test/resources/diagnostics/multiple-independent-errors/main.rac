@@ -1,0 +1,7 @@
+def first : Nat := Bool.true
+
+def second : Nat := Bool.false
+
+def fine : Nat := Nat.zero
+
+{ fine }

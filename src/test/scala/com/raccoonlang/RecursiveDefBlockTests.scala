@@ -2,7 +2,7 @@ package com.raccoonlang
 
 import com.raccoonlang.CoreAst.{Decl, DecreaseSpec, RecursiveDef, Term}
 
-class RecursiveDefBlockTests extends munit.FunSuite {
+class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
   private val span = Span(0, 0)
 
   private def global(name: String): Term.GlobalRef = Term.GlobalRef(name, span)
@@ -140,7 +140,7 @@ class RecursiveDefBlockTests extends munit.FunSuite {
 
   test("cross-component calls must descend from the caller metric") {
     val base = installMutualFamilies()
-    intercept[NonDecreasingRecursiveCall] {
+    interceptError[NonDecreasingRecursiveCall] {
       Interpreter.evalDecl(mutualFunctions(nonDecreasing = true), base)
     }
     val recovered = Interpreter.evalDecl(mutualFunctions(), base)
@@ -160,7 +160,7 @@ class RecursiveDefBlockTests extends munit.FunSuite {
     }
     val malformed = block.copy(definitions = block.definitions.updated(0, first.copy(body = bypass)))
 
-    intercept[NotFound](Interpreter.evalDecl(malformed, installMutualFamilies()))
+    interceptError[NotFound](Interpreter.evalDecl(malformed, installMutualFamilies()))
   }
 
   test("recursive groups reject a raw peer stored inside a result") {
@@ -207,7 +207,7 @@ class RecursiveDefBlockTests extends munit.FunSuite {
       span
     )
 
-    intercept[InvalidRecursiveOccurrence](Interpreter.evalDecl(leaking, holderEnv))
+    interceptError[InvalidRecursiveOccurrence](Interpreter.evalDecl(leaking, holderEnv))
   }
 
   test("recursive groups reject incompatible metric vectors before checking bodies") {
@@ -222,7 +222,7 @@ class RecursiveDefBlockTests extends munit.FunSuite {
         first.copy(ty = extendedType, decreases = DecreaseSpec.Lexicographic(Vector(metric, extra), span))
       )
     )
-    intercept[InvalidDecreaseSpec](Interpreter.evalDecl(malformed, installMutualFamilies()))
+    interceptError[InvalidDecreaseSpec](Interpreter.evalDecl(malformed, installMutualFamilies()))
   }
 
   test("a later member failure leaves the whole recursive group unpublished and retryable") {
@@ -238,7 +238,7 @@ class RecursiveDefBlockTests extends munit.FunSuite {
     }
     val malformed = block.copy(definitions = block.definitions.updated(1, second.copy(body = malformedBody)))
 
-    intercept[NonDecreasingRecursiveCall](Interpreter.evalDecl(malformed, base))
+    interceptError[NonDecreasingRecursiveCall](Interpreter.evalDecl(malformed, base))
     val recovered = Interpreter.evalDecl(block, base)
     assert(recovered.globals("walkA").isInstanceOf[GlobalBinding.Lazy])
     assert(recovered.globals("walkB").isInstanceOf[GlobalBinding.Lazy])
@@ -312,18 +312,18 @@ class RecursiveDefBlockTests extends munit.FunSuite {
 
   test("recursive group shape and lexical scope are validated before publication") {
     val base = installMutualFamilies()
-    intercept[InvalidRecursiveGroup](Interpreter.evalDecl(Decl.RecursiveDefBlock(Vector.empty, span), base))
+    interceptError[InvalidRecursiveGroup](Interpreter.evalDecl(Decl.RecursiveDefBlock(Vector.empty, span), base))
 
     val block = mutualFunctions()
     val duplicateName = block.copy(
       definitions = block.definitions.updated(1, block.definitions(1).copy(name = block.definitions.head.name))
     )
-    intercept[InvalidRecursiveGroup](Interpreter.evalDecl(duplicateName, base))
+    interceptError[InvalidRecursiveGroup](Interpreter.evalDecl(duplicateName, base))
 
     val duplicateRef = block.copy(
       definitions = block.definitions.updated(1, block.definitions(1).copy(peerRef = block.definitions.head.peerRef))
     )
-    intercept[InvalidRecursiveGroup](Interpreter.evalDecl(duplicateRef, base))
+    interceptError[InvalidRecursiveGroup](Interpreter.evalDecl(duplicateRef, base))
 
     val recovered = Interpreter.evalDecl(block, base)
     assert(recovered.globals("walkA").isInstanceOf[GlobalBinding.Lazy])
@@ -339,7 +339,7 @@ class RecursiveDefBlockTests extends munit.FunSuite {
         first.copy(decreases = DecreaseSpec.Measure(local(first.ty.binders.head.localRef), span))
       )
     )
-    intercept[InvalidDecreaseSpec](Interpreter.evalDecl(malformed, installMutualFamilies()))
+    interceptError[InvalidDecreaseSpec](Interpreter.evalDecl(malformed, installMutualFamilies()))
   }
 
   test("recursive groups descend through a specialized nested container") {

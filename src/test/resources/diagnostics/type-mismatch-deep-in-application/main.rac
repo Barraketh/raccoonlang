@@ -1,0 +1,5 @@
+def apply3 (f: Nat -> Nat)(a: Nat)(b: Nat)(c: Nat): Nat := f(Nat.add(a, Nat.add(b, c)))
+
+def bad : Nat := apply3(Nat.pred, Nat.zero, Bool.true, Nat.zero)
+
+{ bad }

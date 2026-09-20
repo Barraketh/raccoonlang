@@ -18,12 +18,23 @@ object PrettyPrinter {
         s"decreases measure(${printCoreTerm(term)})"
     }
 
+  /**
+   * Implicit arguments are never written in source, so a saturated call prints only its explicit ones. Anything that is
+   * not a plain saturated call keeps every argument.
+   */
+  private def explicitArgs(head: Value, args: Seq[Value]): Seq[Value] =
+    head.tpe match {
+      case pi: Value.VPi if pi.binders.length == args.length =>
+        args.zip(pi.binders).collect { case (arg, binder) if !binder.isImplicit => arg }
+      case _ => args
+    }
+
   private def printApp(head: Value, args: Seq[Value]): String = {
     val headStr = head match {
       case _: Value.VApp | _: Value.VConst | _: Value.Var | _: Value.VSort => print(head)
       case _                                                               => s"(${print(head)})"
     }
-    val argsStr = args.toList.map(print).mkString(", ")
+    val argsStr = explicitArgs(head, args).map(print).mkString(", ")
     s"$headStr($argsStr)"
   }
 
@@ -103,31 +114,97 @@ object PrettyPrinter {
     s"match $scrutStr$motiveStr with $casesStr"
   }
 
+  /** A level as source syntax (`Level.succ`, `Level.max`), not its normalized `max(atom+k, …, c)` form. */
+  private def printLevel(level: Value.Level): String = {
+    def succs(base: String, offset: Int): String =
+      if (offset == 0) base else s"Level.succ(${succs(base, offset - 1)})"
+
+    // A level atom does not keep its binder's name, so it prints by id.
+    def atom(a: Value.Level.Atom): String =
+      a match {
+        case Value.Level.ParamAtom(id)      => s"u#$id"
+        case Value.Level.IMaxAtom(lhs, rhs) => s"Level.imax(${printLevel(lhs)}, ${printLevel(rhs)})"
+      }
+
+    val terms = level.terms.toVector.map { case (a, offset) => succs(atom(a), offset) }
+    val parts = if (level.c > 0 || terms.isEmpty) terms :+ level.c.toString else terms
+    parts match {
+      case Vector(single) => single
+      case several        => s"Level.max(${several.mkString(", ")})"
+    }
+  }
+
+  /**
+   * Opens the telescope at fresh variables to print the codomain. Binders are joined by arrows because that is the
+   * spelling the parser folds back into this one binder group.
+   */
+  private def printPi(pi: Value.VPi): String = {
+    val bodyEnv = telescope.BinderOps.freshen(pi)
+    val bindersStr = pi.binders.map(printPiBinder).mkString(" -> ")
+    s"$bindersStr -> ${print(pi.codomain(bodyEnv))}"
+  }
+
+  /** A variable prints as its binder name; the id only disambiguates the nameless `_`. */
+  private def varName(v: Value.Var): String =
+    if (v.name.nonEmpty && v.name != "_") v.name else s"_#${v.id}"
+
+  private def printLam(lam: Value.VLam): String =
+    lam.id match {
+      case Value.ValueId.Const(name) => name
+      case _: Value.ValueId.LocalId  => s"fun ${printBinders(lam.tpe.binders)} => …"
+    }
+
+  /**
+   * The call a stuck match came from. A recursive function's body env binds its self reference, which is the only thing
+   * in a thunk that names the call; the match equals that call only when it is the body's result, so a match nested
+   * deeper (or a non-recursive body, which binds no name) prints as the eliminator it is.
+   */
+  private def blockedCall(thunk: Value.NeutralThunk): Option[String] = {
+    @annotation.tailrec
+    def isResult(term: CoreAst.Term): Boolean =
+      term match {
+        case body: CoreAst.Term.Body => isResult(body.res)
+        case m: CoreAst.Term.Match   => m.nodeId == thunk.term.nodeId
+        case _                       => false
+      }
+
+    val callers = thunk.env.locals.valuesIterator.collect {
+      case Value.VLam(pi, Value.ValueId.Const(name), Value.LamBody.Core(lam, _)) if isResult(lam.body) => (name, pi)
+    }.toVector
+    callers match {
+      case Vector((name, pi)) =>
+        val args = pi.binders.filter(!_.isImplicit).map(binder => thunk.env.locals.get(binder.localRef))
+        Option.when(args.forall(_.isDefined))(s"$name(${args.map(arg => print(arg.get)).mkString(", ")})")
+      case _ => None
+    }
+  }
+
   def print(value: Value): String = value match {
     case Value.PropTpe                              => "Prop"
     case Value.VSort(lvl) if lvl == Value.Level.one => "Type"
-    case Value.VSort(lvl)                           => s"Sort($lvl)"
-    case level: Value.Level                         => s"Level(${level.terms}, ${level.c})"
-    case _: Value.VPi                               => "VPi"
+    case Value.VSort(lvl)                           => s"Sort(${printLevel(lvl)})"
+    case level: Value.Level                         => printLevel(level)
+    case pi: Value.VPi                              => printPi(pi)
     case Value.VConst(name, _, _)                   => name
     case Value.ConstructorHead(name, _, _, _, _)    => name
     case Value.VCtor(head, Vector(field: Value.VPacked), _)
         if head.name == "String.mk" && field.codec.isInstanceOf[Value.CharListCodec] =>
-      printString(field.charScalars.getOrElse(throw WTF("Invalid packed String field")))
+      printString(field.charScalars.getOrElse(wtf("Invalid packed String field")))
     case Value.VCtor(head, storedArgs, _) =>
       val headStr = print(head)
       if (storedArgs.isEmpty) headStr
       else s"$headStr(${storedArgs.map(print).mkString(", ")})"
-    case v: Value.VApp         => printApp(v.head, v.args)
-    case v: Value.VLam         => s"func#${v.id}"
-    case v: Value.Var          => s"${v.name}#${v.id}"
-    case s: Value.NeutralThunk => s"match#${s.id}"
-    case p: Value.VProof       => s"‹proof of ${print(p.tpe)}›"
+    case v: Value.VApp => printApp(v.head, v.args)
+    case v: Value.VLam => printLam(v)
+    case v: Value.Var  => varName(v)
+    case s: Value.NeutralThunk =>
+      blockedCall(s).getOrElse(printMatch(s.term))
+    case p: Value.VProof => s"‹proof of ${print(p.tpe)}›"
     case p: Value.VPacked =>
       p.natValue
         .map(_.toString)
         .orElse(p.charScalars.map(scalars => s"proj[String,0](${printString(scalars)})"))
-        .getOrElse(throw WTF("Unknown packed payload"))
+        .getOrElse(wtf("Unknown packed payload"))
     case LevelTpe => s"Level"
   }
 

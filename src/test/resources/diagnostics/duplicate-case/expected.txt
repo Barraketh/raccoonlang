@@ -1,0 +1,5 @@
+
+<root>/main.rac:5:3: error: Duplicate case for constructor Bool.true
+  | Bool.true => Nat.zero
+  ^^^^^^^^^^^^^^^^^^^^^^^
+note: in definition twice

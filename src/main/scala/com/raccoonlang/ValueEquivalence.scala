@@ -256,7 +256,8 @@ object ValueEquivalence {
           val branchesAgree = left.term.cases.zip(right.term.cases).forall { case (leftCase, rightCase) =>
             left.env(leftCase.ctorName) match {
               case head: ConstructorHead =>
-                val (arguments, resultType) = BinderOps.freshCtorArgsAndResult(head)
+                val (arguments, resultType) =
+                  BinderOps.freshCtorArgsAndResult(head, leftCase.argRefs.map(_.map(_.name)))
                 if (!step(resultType, leftScrutinee.tpe) || !step(resultType, rightScrutinee.tpe)) false
                 else {
                   val stored = Value.constructorStoredArgs(head, arguments)
@@ -274,7 +275,10 @@ object ValueEquivalence {
 
       try run()
       catch {
-        case NonFatal(_) => stuck(left, right)
+        // A broken kernel invariant is not a comparison that did not work out; it must not be
+        // absorbed into "these two are stuck".
+        case internal: InternalError => throw internal
+        case NonFatal(_)             => stuck(left, right)
       } finally {
         if (depth == 0) neutralComparisonDepth.remove()
         else neutralComparisonDepth.set(depth)

@@ -3,7 +3,7 @@ package com.raccoonlang
 import com.raccoonlang.CoreAst.{Term => CTerm}
 import com.raccoonlang.Value._
 
-class ValueOpsTests extends munit.FunSuite {
+class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
   private val span = Span(0, 0)
   private val valueType: Value = TypeTpe
   private val typeRef: CoreAst.Term = CTerm.GlobalRef("Type", span)
@@ -57,7 +57,7 @@ class ValueOpsTests extends munit.FunSuite {
 
     assertEquals(closed.locals.keySet, Set(keptRef))
     assertEquals(closed(keptRef), kept)
-    intercept[NotFound](closed(uncapturedRef))
+    interceptError[NotFound](closed(uncapturedRef))
     assertEquals(closed.putLocal(argRef, arg)(argRef), arg)
   }
 
@@ -73,11 +73,11 @@ class ValueOpsTests extends munit.FunSuite {
     val closed = env.closeForEval(capturedRefs)
 
     assertEquals(closed(keptRef), kept)
-    intercept[NotFound](closed(uncapturedRef))
+    interceptError[NotFound](closed(uncapturedRef))
 
     val materialized = ValueOps.materializeEnv(closed, solve(kept, solution))
     assertEquals(materialized(keptRef), solution)
-    intercept[NotFound](materialized(uncapturedRef))
+    interceptError[NotFound](materialized(uncapturedRef))
   }
 
   test("materialize rewrites VLam core environment used by execution") {
@@ -151,7 +151,7 @@ class ValueOpsTests extends munit.FunSuite {
     )
     val lam = VLam(pi, ValueId.LocalId(nodeId(2), Vector.empty), LamBody.Core(lamTerm, runtimeEnv))
 
-    intercept[NotFound](Interpreter.evalApply(lam, Vector(symbolicValue("Arg"))))
+    interceptError[NotFound](Interpreter.evalApply(lam, Vector(symbolicValue("Arg"))))
   }
 
   test("core lambda execution uses the lambda body closure, not only the Pi closure") {
@@ -175,7 +175,7 @@ class ValueOpsTests extends munit.FunSuite {
     )
     val lam = Interpreter.evalLam(lamTerm, vpi, env).asInstanceOf[VLam]
 
-    intercept[NotFound](lam.tpe.env(capturedRef))
+    interceptError[NotFound](lam.tpe.env(capturedRef))
     lam.body match {
       case LamBody.Core(_, bodyEnv) => assertEquals(bodyEnv(capturedRef), captured)
       case other                    => fail(s"Expected core lambda body, got $other")
@@ -300,7 +300,7 @@ class ValueOpsTests extends munit.FunSuite {
     val closed = blocked.env
 
     assertEquals(closed(capturedRef), captured)
-    intercept[NotFound](closed(unusedRef))
+    interceptError[NotFound](closed(unusedRef))
     assertEquals(closed(scrutRef), scrut)
 
     assert(!blocked.synDeps.contains(unused.id))

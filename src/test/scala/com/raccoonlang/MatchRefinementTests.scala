@@ -51,7 +51,7 @@ class MatchRefinementTests extends munit.FunSuite with TestSupport {
         |
         |""".stripMargin
 
-    intercept[TypeMismatch] { typecheckDecls(p) }
+    interceptError[TypeMismatch] { typecheckDecls(p) }
   }
 
   test("match refinement: cumulative family parameter on neutral Vec scrut succeeds") {
@@ -96,7 +96,7 @@ class MatchRefinementTests extends munit.FunSuite with TestSupport {
         |}
         |""".stripMargin
 
-    intercept[TypeMismatch] { typecheckDecls(p) }
+    interceptError[TypeMismatch] { typecheckDecls(p) }
   }
 
 }

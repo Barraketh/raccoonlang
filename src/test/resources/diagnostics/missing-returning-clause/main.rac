@@ -1,0 +1,15 @@
+inductive Vec (A: Type) indices (n: Nat) : Sort(Level.one)
+ | nil : Vec(A, Nat.zero)
+ | cons (n: Nat)(xs: Vec(A, n))(x: A) : Vec(A, Nat.succ(n))
+
+def f (A: Type)(a: A)(n: Nat)(v: Vec(A, n))(b: Nat)(c: Nat): Vec(A, n) := {
+  match b returning Vec(A, n) with
+  | Nat.zero => v
+  | Nat.succ p => {
+    match c with
+    | Nat.zero => v
+    | Nat.succ q => v
+  }
+}
+
+{ Nat.zero }

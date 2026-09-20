@@ -1,0 +1,3 @@
+def loop (n: Nat): Nat decreases structural(n) := loop(n)
+
+{ loop(Nat.zero) }

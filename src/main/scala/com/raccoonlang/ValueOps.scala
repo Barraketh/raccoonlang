@@ -70,13 +70,13 @@ object ValueOps {
     private def materializeLevel(level: Level)(implicit eqStore: EqStore): Level =
       Interpreter.resolveInEqStore(level, eqStore) match {
         case l: Level => l
-        case other    => throw NotALevel(other)
+        case other    => fail(NotALevel(other))
       }
 
     private def materializeUniverse(value: VSort)(implicit eqStore: EqStore): VSort =
       materialize(value) match {
         case u: VSort => u
-        case other    => throw NotAType(other)
+        case other    => fail(NotAType(other))
       }
 
     private def materializePi(pi: VPi)(implicit eqStore: EqStore): VPi = {

@@ -1,0 +1,5 @@
+def zeroAdd (n: Nat): Eq(Nat, Nat.add(0, n), n) decreases structural(n) := {
+  match n with
+  | .zero => Eq.refl(0)
+  | .succ k => congrArg(zeroAdd(k), Nat, Nat.succ)
+}

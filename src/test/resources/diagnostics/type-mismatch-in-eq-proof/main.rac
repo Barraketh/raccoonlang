@@ -1,0 +1,3 @@
+def stuck (n: Nat): Eq(Nat, Nat.add(Nat.succ(Nat.zero), n), Nat.succ(n)) := Eq.refl(Nat.succ(n))
+
+{ Nat.zero }

@@ -1,0 +1,4 @@
+
+<root>/main.rac:6:1: error: shared is ambiguous: Left.shared, Right.shared
+open Right
+^^^^^^^^^^

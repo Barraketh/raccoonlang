@@ -1,0 +1,4 @@
+
+<root>/main.rac:1:18: error: missingName not found
+def bad : Nat := missingName
+                 ^^^^^^^^^^^

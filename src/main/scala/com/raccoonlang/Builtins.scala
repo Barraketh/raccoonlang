@@ -4,11 +4,11 @@ import com.raccoonlang.Value._
 
 private object Builtins {
   private sealed trait Entry {
-    def instantiate(name: String, tpe: Value, span: Span): Value
+    def instantiate(name: String, tpe: Value): Value
   }
 
   private case object SortEntry extends Entry {
-    override def instantiate(name: String, tpe: Value, span: Span): Value =
+    override def instantiate(name: String, tpe: Value): Value =
       tpe match {
         case pi: VPi if pi.binders.length == 1 =>
           val lRef = pi.binders.head.localRef
@@ -26,15 +26,15 @@ private object Builtins {
               isRawRecursive = false
             )
           )
-        case pi: VPi => throw ArityMismatch(1, pi.binders.length, Some(span))
-        case other   => throw CannotApplyNonFunction(other, Some(span))
+        case pi: VPi => fail(ArityMismatch(1, pi.binders.length))
+        case other   => fail(CannotApplyNonFunction(other))
       }
   }
 
   private final case class Native(
       run: (VLam, VPi, Vector[Value]) => Value
   ) extends Entry {
-    override def instantiate(name: String, tpe: Value, span: Span): Value =
+    override def instantiate(name: String, tpe: Value): Value =
       tpe match {
         case pi: VPi =>
           lazy val self: VLam =
@@ -44,20 +44,20 @@ private object Builtins {
               LamBody.Native((args, _) => run(self, pi, args), Env.empty, isRawRecursive = false)
             )
           self
-        case other => throw CannotApplyNonFunction(other, Some(span))
+        case other => fail(CannotApplyNonFunction(other))
       }
   }
 
   private final case class Constructor(numErasedFamilyArgs: Int) extends Entry {
-    override def instantiate(name: String, tpe: Value, span: Span): Value =
+    override def instantiate(name: String, tpe: Value): Value =
       tpe match {
         case pi: VPi =>
           if (numErasedFamilyArgs > pi.binders.length)
-            throw ArityMismatch(numErasedFamilyArgs, pi.binders.length, Some(span))
+            fail(ArityMismatch(numErasedFamilyArgs, pi.binders.length))
           // Quot.sound identifies distinct Quot.mk applications, so unification must not assume
           // injectivity or disjointness for builtin constructors.
           ConstructorHead(name, numErasedFamilyArgs, pi.binders.length, pi, noConfusion = false)
-        case other => throw CannotApplyNonFunction(other, Some(span))
+        case other => fail(CannotApplyNonFunction(other))
       }
   }
 
@@ -82,10 +82,10 @@ private object Builtins {
       IndName -> Native(runInd)
     )
 
-  def instantiate(name: String, tpe: Value, span: Span): Value =
+  def instantiate(name: String, tpe: Value): Value =
     entries.get(name) match {
-      case Some(entry) => entry.instantiate(name, tpe, span)
-      case None        => throw WTF(s"Unknown builtin $name", Some(span))
+      case Some(entry) => entry.instantiate(name, tpe)
+      case None        => wtf(s"Unknown builtin $name")
     }
 
   private def runLift(self: VLam, selfType: VPi, args: Vector[Value]): Value = {

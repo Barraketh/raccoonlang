@@ -24,10 +24,32 @@ object TypeChecker {
   def check(program: Execution.ElaboratedProgram): Execution.CheckedProgram =
     Execution.check(program)
 
+  /**
+   * Check every declaration, collecting one diagnostic per independent failure. A declaration that names a failed (or
+   * skipped) one is skipped silently; the body is checked only when nothing failed. Every rejection leaves as one
+   * `CheckFailure`. An `InternalError` is never collected: it aborts.
+   */
   private[raccoonlang] def checkRaw(program: CA.Program, prelude: Prelude.Config): Option[Value] = {
-    val env =
-      program.decls.foldLeft(prelude.checkedEnv) { case (curEnv, decl) => Interpreter.evalDecl(decl, curEnv) }
-    program.body.map(body => checkTerm(body, env).value)
+    var env = prelude.checkedEnv
+    var unavailable = Set.empty[String]
+    val diagnostics = Vector.newBuilder[Diagnostic]
+
+    program.decls.foreach { decl =>
+      // The scan is a full traversal; skip it while nothing has failed.
+      if (unavailable.nonEmpty && decl.references(unavailable)) unavailable ++= decl.definedNames
+      else
+        try env = Interpreter.evalDecl(decl, env)
+        catch {
+          case diagnostic: Diagnostic =>
+            diagnostics += diagnostic
+            unavailable ++= decl.definedNames
+        }
+    }
+
+    val collected = diagnostics.result()
+    if (collected.nonEmpty) throw Execution.CheckFailure(collected)
+    try program.body.map(body => checkTerm(body, env).value)
+    catch { case diagnostic: Diagnostic => throw Execution.CheckFailure(Vector(diagnostic)) }
   }
 
   /**
@@ -81,9 +103,12 @@ object TypeChecker {
   // Universes are NOT cumulative (Lean-style): a type fits exactly the sorts defEq to its own.
   // Non-cumulativity is what makes `.tpe` canonical enough for implicit projection — the level a
   // spec reads is the only level the argument can carry.
+  // This is `defEq`, keeping the unifier's failure for the report instead of re-deriving it.
   def checkFits(actual: Value, expected: Value): Unit =
-    if (!ValueEquivalence.defEq(actual, expected))
-      throw TypeMismatch(expected, actual)
+    ValueEquivalence.tryUnify(actual, expected, EqStore.empty) match {
+      case Right(_)     =>
+      case Left(failed) => fail(TypeMismatch(expected, actual, Some(failed)))
+    }
 
   def checkType(value: Value, tyVal: Value): Unit =
     checkFits(value.tpe, tyVal)
@@ -91,7 +116,7 @@ object TypeChecker {
   def getUniverse(value: Value): VSort = {
     value.tpe match {
       case u: VSort => u
-      case _        => throw NotAType(value.tpe)
+      case _        => fail(NotAType(value.tpe))
     }
   }
 
@@ -112,8 +137,10 @@ object TypeChecker {
 
   private def assertNonRawRecursive(v: Value): Unit = {
     v match {
-      case VLam(_, id, LamBody.Native(_, _, true)) => throw InvalidRecursiveOccurrence(s"$id")
-      case _                                       =>
+      // TerminationChecker.rawRecursiveStub always names its stubs `ValueId.Const(name)`.
+      case VLam(_, ValueId.Const(name), LamBody.Native(_, _, true)) => fail(InvalidRecursiveOccurrence(name))
+      case VLam(_, _, LamBody.Native(_, _, true))                   => wtf("raw-recursive stub without a constant name")
+      case _                                                        =>
     }
   }
 
@@ -143,6 +170,8 @@ object TypeChecker {
    * verification are separate phases because implicits lead their forcing args in the telescope: an arg is checked
    * against its binder type only once every binder that type mentions is known, and all fits are (re)verified in
    * telescope order at the end.
+   *
+   * `span` only goes onto the residual; failures are located by the enclosing `check`.
    */
   private def checkApplyChecked(
       fnValue: Value,
@@ -160,17 +189,24 @@ object TypeChecker {
         // `(a:A)(b:B) -> C` takes two. Supplying the wrong number is an arity error here, not a
         // descent into the codomain — `f(x)(y)` is how a nested group is reached.
         if (providedArgs.length != pi.numExplicit)
-          throw ArityMismatch(pi.numExplicit, providedArgs.length, Some(span))
+          fail(ArityMismatch(pi.numExplicit, providedArgs.length))
 
         val known = new Array[Value](binders.length)
         val checkedResiduals = Vector.newBuilder[CA.Term]
         var providedValues = Vector.empty[Value]
+        // Each binder's written-argument position from 1, or 0 for a projected implicit. Kept as ints
+        // so that frames are only built on failure.
+        val argumentPositions = new Array[Int](binders.length)
 
         var explicitIdx = 0
         binders.zipWithIndex.foreach { case (binder, idx) =>
           if (!binder.isImplicit) {
+            argumentPositions(idx) = explicitIdx + 1
             // Arguments are synthesized and verified in the final pass; see PendingArg.
-            val checked = providedArgs(explicitIdx).synth(env)
+            val checked =
+              framed(Frame.InArgument(argumentPositions(idx), binder.name, applyHeadName(fnResidual)))(
+                providedArgs(explicitIdx).synth(env)
+              )
             assertNonRawRecursive(checked.value)
             known(idx) = checked.value
             checkedResiduals += checked.residual
@@ -180,12 +216,7 @@ object TypeChecker {
               Projection.project(binders(implicitIdx).projection.get, providedValues) match {
                 case Right(value) => known(implicitIdx) = value
                 case Left(reason) =>
-                  throw ImplicitReconstructionFailed(
-                    binders(implicitIdx).name,
-                    applyHeadName(fnResidual),
-                    reason,
-                    Some(span)
-                  )
+                  fail(ImplicitReconstructionFailed(binders(implicitIdx).name, applyHeadName(fnResidual), reason))
               }
             }
             explicitIdx += 1
@@ -195,14 +226,20 @@ object TypeChecker {
         // Verification pass: with the full group known, every binder type is evaluable in order
         // and each arg (provided or projected) must fit it. Projection was only a choice — this
         // pass is what makes the application well-typed. Arguments are bound as supplied.
-        val calleeEnv = BinderOps.checkAndInstantiate(binders, pi.env, binders.indices.map(known).toVector)
+        val calleeEnv =
+          binders.indices.foldLeft(pi.env) { case (curEnv, idx) =>
+            def bind: Env = BinderOps.bindValueAndCheck(curEnv, binders(idx), known(idx))
+            val position = argumentPositions(idx)
+            if (position == 0) bind
+            else framed(Frame.InArgument(position, binders(idx).name, applyHeadName(fnResidual)))(bind)
+          }
         expectedResult.foreach(expected => checkFits(pi.codomain(calleeEnv), expected))
 
         val finalArgs = binders.map(binder => calleeEnv(binder.localRef))
         val residual = CA.Term.App(fnResidual, checkedResiduals.result(), span)
         CheckedApply(Interpreter.evalApply(fnValue, finalArgs), residual)
 
-      case _ => throw CannotApplyNonFunction(fnValue)
+      case _ => fail(CannotApplyNonFunction(fnValue))
     }
 
   private def checkPi(pi: CA.Term.Pi, env: Env, familyParams: Int = 0): CheckedPi = {
@@ -276,10 +313,10 @@ object TypeChecker {
     val vType = base.value.tpe
     val family = vType match {
       case InductiveFamilyValue(instance) => instance
-      case _                              => throw NotAType(vType)
+      case _                              => fail(NotAType(vType))
     }
     val selectorName = s"${family.head.name}.$field"
-    if (!env.globals.contains(selectorName)) throw NotFound(selectorName)
+    if (!env.globals.contains(selectorName)) fail(NotFound(selectorName))
     val selector = env(selectorName)
     val applied =
       checkApplyChecked(
@@ -306,7 +343,7 @@ object TypeChecker {
     val recurEnv =
       l.recursion match {
         case Some(CA.Recursion(ref, decreaseSpec)) =>
-          val name = l.name.getOrElse(throw WTF("Recursive lambda must have a name", Some(l.span)))
+          val name = l.name.getOrElse(wtf("Recursive lambda must have a name"))
           val recursiveSelf = TerminationChecker.rawRecursiveSelf(name, vpi, decreaseSpec, bodyEnv)
           bodyEnv.putLocal(ref, recursiveSelf)
         case None => bodyEnv
@@ -336,21 +373,17 @@ object TypeChecker {
       env: Env
   ): Vector[CheckedRecursiveDef] = {
     val definitions = block.definitions
-    if (definitions.isEmpty)
-      throw InvalidRecursiveGroup("the group must not be empty", Some(block.span))
+    if (definitions.isEmpty) fail(InvalidRecursiveGroup("the group must not be empty"))
     if (definitions.map(_.name).distinct.length != definitions.length)
-      throw InvalidRecursiveGroup("global names must be distinct", Some(block.span))
+      fail(InvalidRecursiveGroup("global names must be distinct"))
     if (definitions.map(_.peerRef).distinct.length != definitions.length)
-      throw InvalidRecursiveGroup("peer refs must be distinct", Some(block.span))
+      fail(InvalidRecursiveGroup("peer refs must be distinct"))
 
     val peers = definitions.map(definition => definition.peerRef -> definition.name)
     val peerRefs = definitions.iterator.map(_.peerRef).toSet
     val ambientPeerRefs = peerRefs.intersect(env.locals.keySet)
     if (ambientPeerRefs.nonEmpty)
-      throw InvalidRecursiveGroup(
-        s"peer refs collide with the incoming environment: ${ambientPeerRefs.mkString(", ")}",
-        Some(block.span)
-      )
+      fail(InvalidRecursiveGroup(s"peer refs collide with the incoming environment: ${ambientPeerRefs.mkString(", ")}"))
     val headers = definitions.map { definition =>
       val checkedPi = checkPi(definition.ty, env)
       val metric = TerminationChecker.checkLexicographic(checkedPi.vpi, definition.decreases, checkedPi.bodyEnv)
@@ -400,7 +433,7 @@ object TypeChecker {
   def assertType(value: Value): Unit =
     value.tpe match {
       case _: VSort =>
-      case _        => throw NotAType(value)
+      case _        => fail(NotAType(value))
     }
 
   /**
@@ -461,7 +494,9 @@ object TypeChecker {
               )
             Some(CheckedTerm(Interpreter.evalLam(lam, expectedPi, env), lam))
           } catch {
-            case _: TypeMismatch | _: ArityMismatch | _: ImplicitReconstructionFailed => None
+            // Adaptation is a guess. These three say the guess did not fit, so decline and let plain
+            // subsumption report the real mismatch; anything else is a genuine failure and propagates.
+            case Diagnostic(_: TypeMismatch | _: ArityMismatch | _: ImplicitReconstructionFailed, _, _) => None
           }
         }
 
@@ -497,22 +532,20 @@ object TypeChecker {
   private[raccoonlang] def checkTerm(term: CA.Term, expected: Expected, env: Env): CheckedTerm =
     check(term, Some(expected), env)
 
+  /** The checker's locating boundary: an unlocated failure raised while checking `term` belongs to `term`. */
   private def check(term: CA.Term, expected: Option[Expected], env: Env): CheckedTerm =
-    try {
+    at(term.span) {
       term match {
         case CA.Term.NatLit(value, span) =>
-          val layout = env.nativeLiterals.natLayout.getOrElse(
-            throw NatLiteralUnavailable("no validated Nat layout", Some(span))
-          )
+          val layout = env.nativeLiterals.natLayout.getOrElse(fail(NatLiteralUnavailable("no validated Nat layout")))
           val synthed = CheckedTerm(VPacked.nat(value, layout.natTpe), CA.Term.NatLit(value, span))
           fitsExpected(synthed, expected)
         case CA.Term.StrLit(scalars, span) =>
-          val layout = env.nativeLiterals.stringLayout.getOrElse(
-            throw StringLiteralUnavailable("no validated String layout", Some(span))
-          )
+          val layout =
+            env.nativeLiterals.stringLayout.getOrElse(fail(StringLiteralUnavailable("no validated String layout")))
           val synthed = CheckedTerm(Packed.evalStrLit(scalars, env), CA.Term.StrLit(scalars, span))
           if (!ValueEquivalence.defEq(synthed.value.tpe, layout.stringTpe))
-            throw WTF("String literal evaluator returned the wrong type", Some(span))
+            wtf("String literal evaluator returned the wrong type")
           fitsExpected(synthed, expected)
         case CA.Term.Select(base, field, span) =>
           val checkedBase = checkTerm(base, env)
@@ -538,8 +571,6 @@ object TypeChecker {
           val synthed = checkLam(l, env)
           expected.fold(synthed)(exp => subsume(synthed, exp, env, l.span))
       }
-    } catch {
-      case e: TypeError if e.span.isEmpty => throw e.withSpan(term.span)
     }
 
 }

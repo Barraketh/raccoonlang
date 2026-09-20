@@ -32,7 +32,7 @@ object Elaborator {
     def insertGlobal(parts: GlobalName, fullName: GlobalName): NameNode =
       if (parts.isEmpty) {
         binding match {
-          case Some(_) => throw AlreadyDefined(globalName(fullName))
+          case Some(_) => fail(AlreadyDefined(globalName(fullName)))
           case None    => copy(binding = Some(fullName))
         }
       } else {
@@ -117,30 +117,30 @@ object Elaborator {
         global(globalName(name), path.span)
 
       val (obj, tail) = resolveObjectPrefix(path).getOrElse {
-        throw NotFound(path.parts.headOption.getOrElse(RootName), Some(path.span))
+        at(path.span) { fail(NotFound(path.parts.headOption.getOrElse(RootName))) }
       }
       if (tail.isEmpty) {
         obj.node.binding match {
           case Some(name) => globalRef(name)
-          case None       => throw NotFound(globalName(obj.path), Some(path.span))
+          case None       => at(path.span) { fail(NotFound(globalName(obj.path))) }
         }
       } else {
         obj.node.binding match {
           case Some(name) => selectTail(globalRef(name), tail)
-          case None       => throw NotFound(globalName(obj.path :+ tail.head), Some(path.span))
+          case None       => at(path.span) { fail(NotFound(globalName(obj.path :+ tail.head))) }
         }
       }
     }
 
     def resolveGlobalBinding(parts: GlobalName, span: Span): GlobalName = {
       val (obj, tail) = resolveObjectPrefix(SurfacePath(root = false, parts, span)).getOrElse {
-        throw NotFound(parts.headOption.getOrElse(RootName), Some(span))
+        at(span) { fail(NotFound(parts.headOption.getOrElse(RootName))) }
       }
       if (tail.nonEmpty)
-        throw NotFound(globalName(obj.path :+ tail.head), Some(span))
+        at(span) { fail(NotFound(globalName(obj.path :+ tail.head))) }
       obj.node.binding match {
         case Some(name) => name
-        case None       => throw NotFound(globalName(obj.path), Some(span))
+        case None       => at(span) { fail(NotFound(globalName(obj.path))) }
       }
     }
 
@@ -152,7 +152,7 @@ object Elaborator {
       val namespace =
         resolveObjectPrefix(SurfacePath(open.root, open.namespace, open.span))
           .collect { case (obj, tail) if tail.isEmpty && obj.node.children.nonEmpty => obj }
-          .getOrElse(throw NotFound(openName, Some(open.span)))
+          .getOrElse(at(open.span) { fail(NotFound(openName)) })
 
       val excludes = open.rules.collect { case SA.Command.AliasRule.Exclude(name) => name }.toSet
       val aliases = Vector.newBuilder[(String, ResolvedObject)]
@@ -170,7 +170,7 @@ object Elaborator {
             case Some(child) =>
               aliases += as.getOrElse(name) -> ResolvedObject(namespace.path :+ name, child)
             case None =>
-              throw NotFound(globalName(namespace.path :+ name), Some(open.span))
+              at(open.span) { fail(NotFound(globalName(namespace.path :+ name))) }
           }
         case SA.Command.AliasRule.Wildcard | SA.Command.AliasRule.Exclude(_) =>
       }
@@ -181,7 +181,7 @@ object Elaborator {
             case Some(existing) if existing.path == obj.path =>
               scope + (alias -> obj)
             case Some(existing) =>
-              throw AmbiguousName(alias, Vector(globalName(existing.path), globalName(obj.path)), Some(open.span))
+              at(open.span) { fail(AmbiguousName(alias, Vector(globalName(existing.path), globalName(obj.path)))) }
             case None =>
               scope + (alias -> obj)
           }
@@ -217,8 +217,8 @@ object Elaborator {
      */
     def bindRecursivePeers(peers: Vector[(String, GlobalName)]): (Vector[CA.LocalRef], ResolveEnv) = {
       peers.foldLeft((Vector.empty[CA.LocalRef], this)) { case ((refs, cur), (name, fullName)) =>
-        if (!cur.reservedLocals.contains(name)) throw WTF(s"$name is not reserved for recursive peer binding")
-        if (cur.scopes.head.contains(name)) throw AlreadyDefined(name)
+        if (!cur.reservedLocals.contains(name)) wtf(s"$name is not reserved for recursive peer binding")
+        if (cur.scopes.head.contains(name)) fail(AlreadyDefined(name))
         val (ref, next) = cur.allocate(name)
         val bound = next.copy(
           scopes = (next.scopes.head + (name -> ref)) :: next.scopes.tail,
@@ -229,8 +229,8 @@ object Elaborator {
     }
 
     def bindNamed(name: String, allowShadow: Boolean): (CA.LocalRef, ResolveEnv) =
-      if (reservedLocals.contains(name)) throw AlreadyDefined(name)
-      else if (!allowShadow && scopes.head.contains(name)) throw AlreadyDefined(name)
+      if (reservedLocals.contains(name)) fail(AlreadyDefined(name))
+      else if (!allowShadow && scopes.head.contains(name)) fail(AlreadyDefined(name))
       else {
         val (ref, nextEnv) = allocate(name)
         (ref, nextEnv.copy(scopes = (scopes.head + (name -> ref)) :: scopes.tail))
@@ -246,7 +246,7 @@ object Elaborator {
     def bindRequired(name: String, span: Span, allowShadow: Boolean = false): (CA.LocalRef, ResolveEnv) =
       bind(name, allowShadow) match {
         case (Some(ref), nextEnv) => (ref, nextEnv)
-        case (None, _)            => throw WTF("Anonymous binding is not supported here", Some(span))
+        case (None, _)            => at(span) { wtf("Anonymous binding is not supported here") }
       }
   }
 
@@ -560,7 +560,7 @@ object Elaborator {
     elabTerm(SA.Term.Ident(name, span), env) match {
       case CA.Term.LocalRef(ref, _) => ref
       case _ =>
-        throw InvalidDecreaseSpec(s"$name is not a function parameter", Some(span))
+        at(span) { fail(InvalidDecreaseSpec(s"$name is not a function parameter")) }
     }
 
   private def elabDecreaseSpec(spec: SA.DecreaseSpec, env: ResolveEnv): CA.DecreaseSpec =
@@ -590,7 +590,7 @@ object Elaborator {
       header.ty match {
         case pi: CA.Term.Pi =>
           elabLam(pi, header.bodyEnv, l.body, None, None, l.span)
-        case _ => throw WTF("Lambda header must produce a function type", Some(l.span))
+        case _ => at(l.span) { wtf("Lambda header must produce a function type") }
       }
     case b: SA.Term.Body =>
       val checkedLets = Vector.newBuilder[CA.Let]
@@ -625,7 +625,7 @@ object Elaborator {
             else {
               val first = c.ctorPath.head
               if (env.hasLocal(first))
-                throw LocalCaseHead(first, Some(c.span))
+                at(c.span) { fail(LocalCaseHead(first)) }
               (globalName(env.resolveGlobalBinding(c.ctorPath, c.span)), true)
             }
           CA.Case(ctorName, isFullyQualified, argRefs, elabTerm(c.body, bodyEnv), c.span)
@@ -652,21 +652,21 @@ object Elaborator {
     var allocator = reserved
     val headers = defs.zip(names).map { case (defn, name) =>
       if (defn.isOpaque)
-        throw InvalidRecursiveGroup("mutual definitions cannot be opaque", Some(defn.span))
+        at(defn.span) { fail(InvalidRecursiveGroup("mutual definitions cannot be opaque")) }
       defn.body match {
         case SA.ConstBody.TermBody(_) =>
         case SA.ConstBody.Builtin(_) =>
-          throw InvalidRecursiveGroup("mutual definitions cannot have builtin bodies", Some(defn.span))
+          at(defn.span) { fail(InvalidRecursiveGroup("mutual definitions cannot have builtin bodies")) }
       }
       val decrease = defn.decreases.getOrElse {
-        throw InvalidDecreaseSpec("every mutual definition requires a decreases annotation", Some(defn.span))
+        at(defn.span) { fail(InvalidDecreaseSpec("every mutual definition requires a decreases annotation")) }
       }
       val header = elabHeader(defn.header.funcHeader, allocator)
       allocator = allocator.copy(nextLocal = header.bodyEnv.nextLocal)
       header.ty match {
         case pi: CA.Term.Pi => PreparedRecursiveDefinition(defn, name, header, pi, decrease)
         case _ =>
-          throw InvalidDecreaseSpec("decreases requires a function definition", Some(defn.span))
+          at(defn.span) { fail(InvalidDecreaseSpec("decreases requires a function definition")) }
       }
     }
 
@@ -686,7 +686,7 @@ object Elaborator {
       val body = definition.surface.body match {
         case SA.ConstBody.TermBody(term) => elabTerm(term, bodyBase)
         case SA.ConstBody.Builtin(_) =>
-          throw WTF("builtin body reached mutual elaboration", Some(definition.surface.span))
+          at(definition.surface.span) { wtf("builtin body reached mutual elaboration") }
       }
       CA.RecursiveDef(
         globalName(definition.name),
@@ -761,7 +761,7 @@ object Elaborator {
 
   private def elabMutual(mutual: SA.Command.Mutual, env: ResolveEnv): (CA.Decl, ResolveEnv) = {
     if (mutual.body.isEmpty)
-      throw InvalidRecursiveGroup("the group must not be empty", Some(mutual.span))
+      at(mutual.span) { fail(InvalidRecursiveGroup("the group must not be empty")) }
 
     val definitions = mutual.body.collect { case definition: SA.Command.Decl.ConstDecl => definition }
     val families = mutual.body.collect { case family: SA.Command.Decl.InductiveDecl => family }
@@ -770,10 +770,9 @@ object Elaborator {
     else if (families.length == mutual.body.length)
       elabMutualInductives(families, env, mutual.span)
     else
-      throw InvalidRecursiveGroup(
-        "a mutual group must contain only definitions or only inductive declarations",
-        Some(mutual.span)
-      )
+      at(mutual.span) {
+        fail(InvalidRecursiveGroup("a mutual group must contain only definitions or only inductive declarations"))
+      }
   }
 
   private def elabDecl(surface: SurfaceAst.Command.Decl, env: ResolveEnv): (CoreAst.Decl, ResolveEnv) =
@@ -790,10 +789,9 @@ object Elaborator {
         val body = c.body match {
           case SA.ConstBody.Builtin(sp) =>
             if (c.decreases.nonEmpty)
-              throw InvalidDecreaseSpec(
-                "builtin definitions cannot have decreases annotations",
-                Some(c.decreases.get.span)
-              )
+              at(c.decreases.get.span) {
+                fail(InvalidDecreaseSpec("builtin definitions cannot have decreases annotations"))
+              }
             CA.ConstBody.Builtin(sp)
           case SA.ConstBody.TermBody(term) =>
             // Only defs with header params become lambdas; a bare-body def (even one whose
@@ -819,7 +817,7 @@ object Elaborator {
                 )
               case _ =>
                 if (c.decreases.nonEmpty)
-                  throw InvalidDecreaseSpec("decreases requires a function definition", Some(c.decreases.get.span))
+                  at(c.decreases.get.span) { fail(InvalidDecreaseSpec("decreases requires a function definition")) }
                 CA.ConstBody.TermBody(elabTerm(term, envWithSelf))
             }
         }
@@ -893,7 +891,7 @@ object Elaborator {
 
   private def elabProgram(p: SA.Program, startEnv: ResolveEnv): CA.Program = {
     p.imports.headOption.foreach { imp =>
-      throw UnsupportedImport(imp.path.mkString("."), Some(imp.span))
+      at(imp.span) { fail(UnsupportedImport(imp.path.mkString("."))) }
     }
 
     val (decls, env) = elabCommands(expandStructSelectors(p.decls), startEnv)

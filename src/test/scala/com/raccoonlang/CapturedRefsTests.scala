@@ -3,7 +3,7 @@ package com.raccoonlang
 import com.raccoonlang.CoreAst.{Term => CTerm}
 import com.raccoonlang.Value._
 
-class CapturedRefsTests extends munit.FunSuite {
+class CapturedRefsTests extends munit.FunSuite with DiagnosticAssertions {
   private val span = Span(0, 0)
   private val valueType: Value = TypeTpe
   private val typeRef: CoreAst.Term = CTerm.GlobalRef("Type", span)
@@ -36,7 +36,7 @@ class CapturedRefsTests extends munit.FunSuite {
     val env = Env.empty.putLocal(ref, value)
     val refs = CapturedRefs.getCapturedRefs(CTerm.LocalRef(ref, span), env)
 
-    intercept[WTF](Env.empty.closeForEval(refs))
+    intercept[InternalError](Env.empty.closeForEval(refs))
   }
 
 }

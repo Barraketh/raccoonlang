@@ -20,6 +20,7 @@ object MatchChecker {
       scrutTpe: Value,
       inductiveName: String,
       ctorNames: Vector[String],
+      cases: Vector[CA.Case],
       env: Env
   ): Vector[ReachableCtor] = {
     def unify(left: Value, right: Value, refinable: Refinable): Either[ValueEquivalence.UnifyFailure, EqStore] =
@@ -45,7 +46,9 @@ object MatchChecker {
     ctorNames.flatMap { ctorName =>
       env(ctorName) match {
         case h: ConstructorHead =>
-          val (freshArgs, resultTy) = BinderOps.freshCtorArgsAndResult(h)
+          val fieldNames =
+            cases.find(_.ctorName == ctorName).fold(Vector.empty[Option[String]])(_.argRefs.map(_.map(_.name)))
+          val (freshArgs, resultTy) = BinderOps.freshCtorArgsAndResult(h, fieldNames)
           val storedArgs = Value.constructorStoredArgs(h, freshArgs)
           val ctorValue = Value.canonicalizeProof(
             Packed.foldCtor(h, storedArgs, resultTy).getOrElse(VCtor(h, storedArgs, resultTy))
@@ -75,7 +78,7 @@ object MatchChecker {
             ReachableCtor(ctorName, h, storedArgs, refinedResultTy, branchStore)
           }
 
-        case _ => throw UnknownConstructor(ctorName, inductiveName)
+        case _ => fail(UnknownConstructor(ctorName, inductiveName))
       }
     }
   }
@@ -87,33 +90,33 @@ object MatchChecker {
       inductiveName: String,
       scrutTpe: Value,
       motiveTy: Value,
-      reachable: => Vector[ReachableCtor],
-      span: Span
+      reachable: => Vector[ReachableCtor]
   ): Unit =
-    if (isPropValuedType(scrutTpe) && !isPropValuedType(motiveTy)) {
-      if (!allowLargeElimination(scrutTpe, reachable))
-        throw PropEliminationRestricted(inductiveName, motiveTy, Some(span))
-    }
+    if (isPropValuedType(scrutTpe) && !isPropValuedType(motiveTy) && !allowLargeElimination(scrutTpe, reachable))
+      fail(PropEliminationRestricted(inductiveName, motiveTy))
 
+  /** The branch boundary: locates and frames failures in the pattern and the refined environment around the body. */
   private def checkBranch(
       br: CA.Case,
       args: Seq[Value],
       envWithScrut: Env,
       expectedTy: Value
-  ): CA.Case = {
-    if (args.length != br.argRefs.length)
-      throw ArityMismatch(args.length, br.argRefs.length, Some(br.span))
-    val branchEnv = br.argRefs.zip(args).foldLeft(envWithScrut) { case (curEnv, (argRef, argVal)) =>
-      argRef match {
-        // Proof recovery stores recursive proof fields shallowly. Crossing the pattern
-        // boundary exposes one such field, so put it into the canonical form for its exact type.
-        case Some(ref) => curEnv.putLocal(ref, Value.canonicalizeProof(argVal))
-        case None      => curEnv
+  ): CA.Case =
+    framed(Frame.InBranch(br.ctorName, br.argRefs.map(_.fold("_")(_.name)))) {
+      at(br.span) {
+        if (args.length != br.argRefs.length) fail(ArityMismatch(args.length, br.argRefs.length))
+        val branchEnv = br.argRefs.zip(args).foldLeft(envWithScrut) { case (curEnv, (argRef, argVal)) =>
+          argRef match {
+            // Proof recovery stores recursive proof fields shallowly. Crossing the pattern
+            // boundary exposes one such field, so put it into the canonical form for its exact type.
+            case Some(ref) => curEnv.putLocal(ref, Value.canonicalizeProof(argVal))
+            case None      => curEnv
+          }
+        }
+        val branchRes = checkTerm(br.body, expectedTy, branchEnv)
+        br.copy(body = branchRes.residual)
       }
     }
-    val branchRes = checkTerm(br.body, expectedTy, branchEnv)
-    br.copy(body = branchRes.residual)
-  }
 
   def checkMatch(t: CA.Term.Match, env: Env, expected: Option[Expected] = None): CheckedTerm = {
     val scrutChecked = checkTerm(t.scrut, env)
@@ -122,7 +125,7 @@ object MatchChecker {
 
     val inductiveFamily = scrutTpe match {
       case InductiveFamilyValue(instance) => instance
-      case _                              => throw NonInductiveMatch(scrut.tpe)
+      case _                              => fail(NonInductiveMatch(scrut.tpe))
     }
     val inductiveName = inductiveFamily.head.name
     val inductiveMeta = inductiveFamily.meta
@@ -137,29 +140,26 @@ object MatchChecker {
             case ctor if ctor.shortName == c.ctorName => ctor.canonicalName
           }
       candidates match {
-        case Vector(name) => c.copy(ctorName = name)
-        case Vector()     => throw UnknownConstructor(c.ctorName, inductiveName, Some(c.span))
-        case many         => throw AmbiguousName(c.ctorName, many, Some(c.span))
+        case Vector(name) => c.copy(ctorName = name, isFullyQualified = true)
+        case Vector()     => at(c.span) { fail(UnknownConstructor(c.ctorName, inductiveName)) }
+        case many         => at(c.span) { fail(AmbiguousName(c.ctorName, many)) }
       }
     }
 
     cases.groupBy(_.ctorName).find(_._2.length > 1).foreach { case (ctor, duplicateCases) =>
-      throw DuplicateCase(ctor, Some(duplicateCases(1).span))
+      at(duplicateCases(1).span) { fail(DuplicateCase(ctor)) }
     }
 
     lazy val reachableByType: Vector[ReachableCtor] =
-      computeReachableCtors(scrut, scrutTpe, inductiveName, inductiveCtorNames, env)
+      computeReachableCtors(scrut, scrutTpe, inductiveName, inductiveCtorNames, cases, env)
 
     def inferMotiveFromReachable(reachable: Vector[ReachableCtor]): Value = {
-      val first = reachable.headOption.getOrElse {
-        throw MissingReturningClause("no constructors are reachable", Some(t.span))
-      }
+      val first = reachable.headOption.getOrElse(fail(MissingReturningClause("no constructors are reachable")))
       val inferred = first.resultTy
       val allEqual = reachable.tail.forall { info =>
         ValueEquivalence.defEq(inferred, info.resultTy)
       }
-      if (!allEqual)
-        throw MissingReturningClause("reachable constructors have different result types", Some(t.span))
+      if (!allEqual) fail(MissingReturningClause("reachable constructors have different result types"))
       assertType(inferred)
       inferred
     }
@@ -177,10 +177,7 @@ object MatchChecker {
     lazy val inheritedMotive: Option[(Value, CA.Term)] =
       expected.map { exp =>
         val syntax = exp.syntax.getOrElse(
-          throw MissingReturningClause(
-            "the match's result type is not syntactically in scope; add a returning clause",
-            Some(t.span)
-          )
+          fail(MissingReturningClause("the match's result type is not syntactically in scope; add a returning clause"))
         )
         (exp.value, syntax)
       }
@@ -197,17 +194,17 @@ object MatchChecker {
     }
     expected.foreach(exp => checkFits(motiveTy, exp.value))
 
-    checkPropElimination(inductiveName, scrutTpe, motiveTy, reachableByType, t.span)
+    checkPropElimination(inductiveName, scrutTpe, motiveTy, reachableByType)
 
     var checkedByCtor = Map.empty[String, CA.Case]
 
     scrut match {
       case ConstructorForm(ctorName, storedArgs) =>
         cases.find(_.ctorName != ctorName).foreach { c =>
-          throw UnreachableCase(c.ctorName, Some(c.span))
+          at(c.span) { fail(UnreachableCase(c.ctorName)) }
         }
 
-        val br = cases.find(_.ctorName == ctorName).getOrElse(throw MissingCase(ctorName))
+        val br = cases.find(_.ctorName == ctorName).getOrElse(fail(MissingCase(ctorName)))
         checkedByCtor += ctorName -> checkBranch(br, storedArgs, env, motiveTy)
 
       case _ =>
@@ -217,11 +214,11 @@ object MatchChecker {
           reachableMap.get(ctorName) match {
             case None =>
               cases.find(_.ctorName == ctorName).foreach { c =>
-                throw UnreachableCase(ctorName, Some(c.span))
+                at(c.span) { fail(UnreachableCase(ctorName)) }
               }
 
             case Some(info) =>
-              val br = cases.find(_.ctorName == ctorName).getOrElse(throw MissingCase(ctorName))
+              val br = cases.find(_.ctorName == ctorName).getOrElse(fail(MissingCase(ctorName)))
               val branchStore = info.branchEqStore
               val branchEnv = ValueOps.materializeEnv(env, branchStore)
               val branchArgs = info.fieldArgs.map(arg => ValueOps.materialize(arg, branchStore))
@@ -232,7 +229,7 @@ object MatchChecker {
     }
 
     val checkedCases = cases.map { c =>
-      checkedByCtor.getOrElse(c.ctorName, throw WTF(s"Unchecked reachable case ${c.ctorName}"))
+      checkedByCtor.getOrElse(c.ctorName, wtf(s"Unchecked reachable case ${c.ctorName}"))
     }
     val checkedMatch = CA.Term.Match(
       scrutChecked.residual,

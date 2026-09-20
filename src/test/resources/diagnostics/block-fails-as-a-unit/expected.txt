@@ -1,0 +1,12 @@
+
+<root>/main.rac:3:2: error: Constructor Bad.bad must return Bad but got Nat
+ | bad : Nat
+ ^^^^^^^^^^^
+note: in definition Bad
+
+<root>/main.rac:7:26: error: type mismatch
+def independent : Nat := Bool.true
+                         ^^^^^^^^^
+  expected: Nat
+  actual:   Bool
+note: in definition independent

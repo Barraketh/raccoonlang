@@ -1,0 +1,3 @@
+def bad : Nat := Nat.add(Nat.zero, Bool.true)
+
+{ bad }

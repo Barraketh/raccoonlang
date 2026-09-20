@@ -1,0 +1,5 @@
+
+<root>/main.rac:8:3: error: Unreachable case for constructor Vec.cons
+  | Vec.cons n xs x => Nat.zero
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: in definition emptyLength

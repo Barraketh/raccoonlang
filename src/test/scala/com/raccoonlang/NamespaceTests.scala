@@ -74,7 +74,7 @@ class NamespaceTests extends munit.FunSuite with TestSupport {
         |open Peano
         |""".stripMargin
 
-    intercept[NotFound] {
+    interceptError[NotFound] {
       parse(missing)
     }
   }
@@ -120,7 +120,7 @@ class NamespaceTests extends munit.FunSuite with TestSupport {
         |}
         |""".stripMargin
 
-    intercept[NotFound] {
+    interceptError[NotFound] {
       typecheckProgram(shadowed)
     }
   }
@@ -134,7 +134,7 @@ class NamespaceTests extends munit.FunSuite with TestSupport {
         |open Empty
         |""".stripMargin
 
-    intercept[NotFound] {
+    interceptError[NotFound] {
       parse(p)
     }
   }
@@ -196,7 +196,7 @@ class NamespaceTests extends munit.FunSuite with TestSupport {
         |def bad : Peano := succ(zero)
         |""".stripMargin
 
-    intercept[NotFound] {
+    interceptError[NotFound] {
       typecheckProgram(excludedOriginal)
     }
   }
@@ -274,7 +274,7 @@ class NamespaceTests extends munit.FunSuite with TestSupport {
         |def bad : Data.Tree(Peano) := Tree.leaf(Peano.zero)
         |""".stripMargin
 
-    intercept[NotFound] {
+    interceptError[NotFound] {
       typecheckProgram(excluded)
     }
 
@@ -299,7 +299,7 @@ class NamespaceTests extends munit.FunSuite with TestSupport {
         |def bad : A.Tree(Peano) := Tree.leaf(Peano.zero)
         |""".stripMargin
 
-    intercept[AmbiguousName] {
+    interceptError[AmbiguousName] {
       parse(ambiguous)
     }
   }
@@ -322,7 +322,7 @@ class NamespaceTests extends munit.FunSuite with TestSupport {
         |open B
         |""".stripMargin
 
-    intercept[AmbiguousName] {
+    interceptError[AmbiguousName] {
       parse(p)
     }
   }
@@ -357,7 +357,7 @@ class NamespaceTests extends munit.FunSuite with TestSupport {
         |def bad : Peano := zero
         |""".stripMargin
 
-    intercept[NotFound] {
+    interceptError[NotFound] {
       typecheckProgram(scoped)
     }
   }
@@ -413,7 +413,7 @@ class NamespaceTests extends munit.FunSuite with TestSupport {
         |}
         |""".stripMargin
 
-    intercept[LocalCaseHead] {
+    interceptError[LocalCaseHead] {
       typecheckProgram(p)
     }
   }
@@ -574,7 +574,7 @@ class NamespaceTests extends munit.FunSuite with TestSupport {
   test("raw elaboration rejects unresolved imports") {
     val p = "import Mathlib.Data.Peano.Basic\n"
 
-    intercept[UnsupportedImport] {
+    interceptError[UnsupportedImport] {
       parse(p)
     }
   }

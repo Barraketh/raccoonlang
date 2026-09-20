@@ -107,7 +107,7 @@ object InductiveChecks {
       !doesNotOccur(target, lambda.tpe) || captured.exists(value => !doesNotOccur(target, value)) ||
       (lambda.body match {
         case LamBody.Core(term, bodyEnv) =>
-          bodyEnv.locals.values.exists(value => !doesNotOccur(target, value)) || checkedTermContainsAny(term, names)
+          bodyEnv.locals.values.exists(value => !doesNotOccur(target, value)) || CoreAst.mentionsGlobal(term, names)
         case _: LamBody.Native => true
         case LamBody.ProofEta  => false
       })
@@ -119,7 +119,7 @@ object InductiveChecks {
       val target = PositivityTarget.InductiveHeads(names)
       !doesNotOccur(target, thunk.tpe) || thunk.id.captures.exists(value => !doesNotOccur(target, value)) ||
       thunk.env.locals.values.exists(value => !doesNotOccur(target, value)) ||
-      checkedTermContainsAny(thunk.term, names)
+      CoreAst.mentionsGlobal(thunk.term, names)
     }
   }
 
@@ -152,15 +152,6 @@ object InductiveChecks {
         if (active.isEmpty) activePositivityLambdas.remove()
       }
     }
-  }
-
-  /**
-   * Whether a checked term mentions any of `names` as a global. Only the two nodes that can carry an occurrence are
-   * named; every other node delegates to the shared child enumeration.
-   */
-  private def checkedTermContainsAny(term: CoreAst.Term, names: Set[String]): Boolean = term match {
-    case CoreAst.Term.GlobalRef(name, _) => names(name)
-    case other                           => CoreAst.children(other).exists(checkedTermContainsAny(_, names))
   }
 
   /**
@@ -326,11 +317,10 @@ object InductiveChecks {
     header.params.zipWithIndex.foreach { case (param, idx) =>
       val paramValue = envWithBinders(param.localRef)
       val outputArg = outputArgs(idx)
-      val error =
-        NonUniformInductiveParam(header.name, ctor.canonicalName, param.name, outputArg, Some(ctor.resultTy.span))
-
       if (!ValueEquivalence.defEq(outputArg, paramValue))
-        throw error
+        at(ctor.resultTy.span) {
+          fail(NonUniformInductiveParam(header.name, ctor.canonicalName, param.name, outputArg))
+        }
     }
 
   private final case class FamilySignature(
@@ -378,21 +368,23 @@ object InductiveChecks {
   )
 
   private def validateBlockLayout(block: Decl.InductiveBlock, env: Env): Unit = {
-    if (block.families.isEmpty)
-      throw InvalidInductiveBlock("a block must contain at least one family", Some(block.span))
+    if (block.families.isEmpty) fail(InvalidInductiveBlock("a block must contain at least one family"))
     val numParams = block.numParams
     block.families.foreach { decl =>
       if (decl.header.params.length != numParams)
-        throw InvalidInductiveBlock(
-          s"family ${decl.header.name} has ${decl.header.params.length} common parameters; expected $numParams",
-          Some(decl.header.span)
-        )
+        at(decl.header.span) {
+          fail(
+            InvalidInductiveBlock(
+              s"family ${decl.header.name} has ${decl.header.params.length} common parameters; expected $numParams"
+            )
+          )
+        }
     }
     var seen = Set.empty[String]
     block.families.foreach { decl =>
       val names = (decl.header.name, decl.header.span) +: decl.ctors.map(ctor => (ctor.canonicalName, ctor.span))
       names.foreach { case (name, span) =>
-        if (seen(name) || env.globals.contains(name)) throw AlreadyDefined(name, Some(span))
+        if (seen(name) || env.globals.contains(name)) at(span) { fail(AlreadyDefined(name)) }
         seen += name
       }
     }
@@ -414,10 +406,13 @@ object InductiveChecks {
             val canonicalEnv = BinderOps.freshen(pi.binders.take(coreParamCount), pi.env)
             pi.binders.take(coreParamCount).map(binder => canonicalEnv(binder.localRef))
           case _ =>
-            throw InvalidInductiveBlock(
-              s"family ${typedFamilies.head._1.header.name} does not expose its declared parameter telescope",
-              Some(typedFamilies.head._1.header.span)
-            )
+            at(typedFamilies.head._1.header.span) {
+              fail(
+                InvalidInductiveBlock(
+                  s"family ${typedFamilies.head._1.header.name} does not expose its declared parameter telescope"
+                )
+              )
+            }
         }
     val signatures = typedFamilies.map { case (decl, familyType) =>
       val (familyArgs, result) =
@@ -425,20 +420,22 @@ object InductiveChecks {
           case pi: VPi if pi.binders.length == decl.header.arity =>
             val actualImplicitness = decl.header.params.map(_.isImplicit)
             if (actualImplicitness != expectedImplicitness)
-              throw InvalidInductiveBlock(
-                s"family ${decl.header.name} has a different common-parameter binder mode",
-                Some(decl.header.span)
-              )
+              at(decl.header.span) {
+                fail(InvalidInductiveBlock(s"family ${decl.header.name} has a different common-parameter binder mode"))
+              }
 
             var familyEnv = pi.env
             pi.binders.take(coreParamCount).zip(canonicalParams).zipWithIndex.foreach {
               case ((binder, canonical), index) =>
                 val expectedType = Interpreter.evalTerm(binder.ty, familyEnv)
                 if (!ValueEquivalence.defEq(canonical.tpe, expectedType))
-                  throw InvalidInductiveBlock(
-                    s"family ${decl.header.name} has a different type for common parameter $index",
-                    Some(decl.header.params(index).span)
-                  )
+                  at(decl.header.params(index).span) {
+                    fail(
+                      InvalidInductiveBlock(
+                        s"family ${decl.header.name} has a different type for common parameter $index"
+                      )
+                    )
+                  }
                 familyEnv = BinderOps.bindValue(familyEnv, binder, canonical)
             }
             familyEnv = BinderOps.freshen(pi.binders.drop(coreParamCount), familyEnv)
@@ -447,15 +444,14 @@ object InductiveChecks {
           case value if decl.header.arity == 0 => (Vector.empty, value)
 
           case _ =>
-            throw InvalidInductiveBlock(
-              s"family ${decl.header.name} does not expose its declared telescope",
-              Some(decl.header.span)
-            )
+            at(decl.header.span) {
+              fail(InvalidInductiveBlock(s"family ${decl.header.name} does not expose its declared telescope"))
+            }
         }
 
       val declaredSort = result match {
         case sort: VSort => sort
-        case other       => throw InductiveTypeNotASort(other, Some(decl.header.resultTy.span))
+        case other       => at(decl.header.resultTy.span) { fail(InductiveTypeNotASort(other)) }
       }
       FamilySignature(decl, familyType, declaredSort, familyArgs)
     }
@@ -463,10 +459,9 @@ object InductiveChecks {
     val commonSort = signatures.head.declaredSort
     signatures.tail.foreach { signature =>
       if (!ValueEquivalence.defEq(signature.declaredSort, commonSort))
-        throw InvalidInductiveBlock(
-          s"family ${signature.decl.header.name} lives in ${signature.declaredSort}, expected $commonSort",
-          Some(signature.decl.header.resultTy.span)
-        )
+        at(signature.decl.header.resultTy.span) {
+          fail(MutualBlockSortMismatch(signature.decl.header.name, signature.declaredSort, commonSort))
+        }
     }
     signatures
   }
@@ -529,13 +524,14 @@ object InductiveChecks {
       val outputTpe = TypeChecker.getType(ctor.resultTy, envWithBinders)
 
       // 4) Constructor result must be the inductive family head applied to the full family arity.
-      val resultErr = InvalidConstructorResult(ctor.canonicalName, name, outputTpe, Some(ctor.span))
+      def badResult: Nothing =
+        at(ctor.span) { fail(InvalidConstructorResult(ctor.canonicalName, name, outputTpe)) }
       val outputArgs = outputTpe match {
         case ConstSpine(head, args) if head.name == name => args
-        case _                                           => throw resultErr
+        case _                                           => badResult
       }
 
-      if (outputArgs.length != header.arity) throw resultErr
+      if (outputArgs.length != header.arity) badResult
 
       checkConstructorParamDiscipline(header, ctor, envWithBinders, outputArgs)
       if (
@@ -543,18 +539,24 @@ object InductiveChecks {
           !ValueEquivalence.defEq(actual, expected)
         }
       )
-        throw InvalidInductiveBlock(
-          s"constructor ${ctor.canonicalName} does not preserve the complete source parameter prefix",
-          Some(ctor.resultTy.span)
-        )
+        at(ctor.resultTy.span) {
+          fail(
+            InvalidInductiveBlock(
+              s"constructor ${ctor.canonicalName} does not preserve the complete source parameter prefix"
+            )
+          )
+        }
       if (outputArgs.drop(sourceParamValues.length).exists(arg => !doesNotOccur(recursiveTarget, arg)))
-        throw NonStrictlyPositive(
-          inductive = name,
-          ctor = ctor.canonicalName,
-          field = "<result index>",
-          fieldTy = outputTpe,
-          span = Some(ctor.resultTy.span)
-        )
+        at(ctor.resultTy.span) {
+          fail(
+            NonStrictlyPositive(
+              inductive = name,
+              ctor = ctor.canonicalName,
+              field = "<result index>",
+              fieldTy = outputTpe
+            )
+          )
+        }
 
       // Compile data sources for the one-constructor family's proof-recovery plan. Whether a
       // field is a proof is classified later at the actual family instance, so universe-polymorphic
@@ -577,7 +579,7 @@ object InductiveChecks {
       val fieldDependencies = constructorFieldDependencies(ctor)
       val syntacticallyRecursive = Array.fill(ctor.binders.length)(false)
       ctor.binders.indices.foreach { index =>
-        syntacticallyRecursive(index) = referencesAnyGlobal(ctor.binders(index).ty, blockNames) ||
+        syntacticallyRecursive(index) = CoreAst.mentionsGlobal(ctor.binders(index).ty, blockNames) ||
           fieldDependencies(index).exists(syntacticallyRecursive)
       }
       positivityContexts += PositiveParamContext(
@@ -596,14 +598,17 @@ object InductiveChecks {
 
               case VSort(tpeLevel) =>
                 if (!Level.leq(tpeLevel, inductiveLevel))
-                  throw InductiveUniverseTooSmall(
-                    name,
-                    s"${ctor.canonicalName}.${binder.name}",
-                    field.tpe,
-                    tpeLevel,
-                    inductiveLevel,
-                    Some(binder.span)
-                  )
+                  at(binder.span) {
+                    fail(
+                      InductiveUniverseTooSmall(
+                        name,
+                        s"${ctor.canonicalName}.${binder.name}",
+                        field.tpe,
+                        tpeLevel,
+                        inductiveLevel
+                      )
+                    )
+                  }
             }
         }
 
@@ -615,13 +620,11 @@ object InductiveChecks {
           (!occursPositively(recursiveTarget, field.tpe) ||
             !blockFamilyApplicationsAreUniform(blockNames, recursiveTarget, sourceParamValues, field.tpe))
         )
-          throw NonStrictlyPositive(
-            inductive = name,
-            ctor = ctor.canonicalName,
-            field = binder.name,
-            fieldTy = field.tpe,
-            span = Some(binder.span)
-          )
+          at(binder.span) {
+            fail(
+              NonStrictlyPositive(inductive = name, ctor = ctor.canonicalName, field = binder.name, fieldTy = field.tpe)
+            )
+          }
       }
 
     }
@@ -633,12 +636,6 @@ object InductiveChecks {
       hasRecursiveField,
       proofFieldPlan
     )
-  }
-
-  /** Whether an unchecked term names any of `names` as a global. */
-  private def referencesAnyGlobal(term: Term, names: Set[String]): Boolean = term match {
-    case Term.GlobalRef(name, _) => names(name)
-    case other                   => CoreAst.children(other).exists(referencesAnyGlobal(_, names))
   }
 
   private def computePositiveParams(
@@ -706,7 +703,7 @@ object InductiveChecks {
         installedCtorHead = Some(
           finalEnv(ctorName) match {
             case h: ConstructorHead => h
-            case other              => throw WTF(s"Constructor $ctorName resolved to non-constructor $other")
+            case other              => wtf(s"Constructor $ctorName resolved to non-constructor $other")
           }
         )
         // Complete and validate the circular metadata/head link before publishing the environment.

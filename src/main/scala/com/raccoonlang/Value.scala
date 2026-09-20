@@ -482,13 +482,11 @@ object Value {
         .collect {
           case (binder, idx) if binder.isImplicit =>
             val spec = binder.projection.getOrElse(
-              throw WTF(s"Implicit binder ${binder.name} has no projection spec")
+              wtf(s"Implicit binder ${binder.name} has no projection spec")
             )
             spec.rootArgIdx -> idx
         }
         .groupMap(_._1)(_._2)
-
-    override def toString: String = "VPi"
   }
 
   case class VConst(name: String, constType: ConstType, tpe: Value) extends Value {
@@ -608,11 +606,11 @@ object Value {
   private[raccoonlang] object PackedPayload {
     def natValue(payload: PackedPayload): BigInt = payload match {
       case nat: NatPayload    => nat.value
-      case _: CharListPayload => throw WTF("Nat codec received a CharList payload")
+      case _: CharListPayload => wtf("Nat codec received a CharList payload")
     }
 
     def charScalars(payload: PackedPayload): Vector[Int] = payload match {
-      case _: NatPayload          => throw WTF("CharList codec received a Nat payload")
+      case _: NatPayload          => wtf("CharList codec received a Nat payload")
       case chars: CharListPayload => chars.scalars
     }
   }
@@ -748,8 +746,8 @@ object Value {
         case codec: CharListCodec =>
           val scalars = PackedPayload.charScalars(parent.payload)
           if (scalars.nonEmpty) new VPacked(codec, new CharListPayload(scalars.tail), codec.listCharTpe)
-          else throw WTF("Cannot decode the tail of an empty packed CharList")
-        case NatCodec => throw WTF("CharList tail requested from a packed Nat")
+          else wtf("Cannot decode the tail of an empty packed CharList")
+        case NatCodec => wtf("CharList tail requested from a packed Nat")
       }
 
   }
@@ -794,9 +792,7 @@ object Value {
     def fieldEnv(familyArgs: Vector[Value]): Env = {
       val piEnv = pi.map(_.env).getOrElse(Env.empty)
       if (familyArgs.length < paramBinders.length)
-        throw WTF(
-          s"Constructor $name needs ${paramBinders.length} family parameters, got ${familyArgs.length}"
-        )
+        wtf(s"Constructor $name needs ${paramBinders.length} family parameters, got ${familyArgs.length}")
       BinderOps.instantiateFull(paramBinders, piEnv, familyArgs.take(paramBinders.length))
     }
   }
@@ -805,7 +801,7 @@ object Value {
   // so a VCtor's stored args ARE its pattern args.
   private[raccoonlang] def constructorStoredArgs(head: ConstructorHead, args: Vector[Value]): Vector[Value] = {
     if (args.length != head.totalArity)
-      throw WTF(s"Constructor ${head.name} was given ${args.length} args, expected ${head.totalArity}")
+      wtf(s"Constructor ${head.name} was given ${args.length} args, expected ${head.totalArity}")
     args.drop(head.numErasedFamilyArgs)
   }
 
@@ -851,12 +847,12 @@ object Value {
       Vector.tabulate(fieldCount)(idx => StructEta.buildProjector(ctorName, fieldCount, idx))
     def ctorHeadOption: Option[ConstructorHead] = ctorHead0()
     lazy val ctorHead: ConstructorHead = {
-      val head = ctorHeadOption.getOrElse(throw WTF("Projection constructor requested before declaration installation"))
+      val head = ctorHeadOption.getOrElse(wtf("Projection constructor requested before declaration installation"))
       if (head.name != ctorName)
-        throw WTF(s"Projection metadata for $ctorName was completed with constructor ${head.name}")
+        wtf(s"Projection metadata for $ctorName was completed with constructor ${head.name}")
       val actualFieldCount = head.totalArity - head.numErasedFamilyArgs
       if (actualFieldCount != fieldCount)
-        throw WTF(s"Projection metadata for ${head.name} has $fieldCount fields, constructor has $actualFieldCount")
+        wtf(s"Projection metadata for ${head.name} has $fieldCount fields, constructor has $actualFieldCount")
       head
     }
   }

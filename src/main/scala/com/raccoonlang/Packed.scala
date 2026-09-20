@@ -38,7 +38,7 @@ object Packed {
     natSpec("Nat.sub")((a, b) => (a - b).max(0)),
     natSpec("Nat.mul")(_ * _),
     natSpec("Nat.pow") { (a, b) =>
-      if (b > MaxPowExponent) throw NativeOperationLimitExceeded("Nat.pow", b, MaxPowExponent)
+      if (b > MaxPowExponent) fail(NativeOperationLimitExceeded("Nat.pow", b, MaxPowExponent))
       a.pow(b.toInt)
     },
     boolSpec("Nat.beq")(_ == _),
@@ -54,7 +54,7 @@ object Packed {
       if (a == 0) BigInt(0)
       else {
         if (count > MaxShiftLeft)
-          throw NativeOperationLimitExceeded("Nat.shiftLeft", count, MaxShiftLeft)
+          fail(NativeOperationLimitExceeded("Nat.shiftLeft", count, MaxShiftLeft))
         a << count.toInt
       }
     },
@@ -101,11 +101,11 @@ object Packed {
     val spec = opsByName(name)
     val source = value.asInstanceOf[VLam]
     val nat = env(NatCodec.familyName)
-    def fail(reason: String): Nothing = throw NativeOperationDeclarationMismatch(name, reason)
+    def reject(reason: String): Nothing = fail(NativeOperationDeclarationMismatch(name, reason))
     def boolCtor(ctorName: String): Value =
       env.globals.get(ctorName).map(_.value(env)) match {
         case Some(h: ConstructorHead) if h.totalArity == 0 && h.noConfusion => VCtor(h, Vector.empty, h.tpe)
-        case _ => fail(s"`$ctorName` is not a nullary constructor")
+        case _ => reject(s"`$ctorName` is not a nullary constructor")
       }
     val compute: (BigInt, BigInt) => Value = spec match {
       case natOp: NatOpSpec => (a, b) => VPacked.nat(natOp.run(a, b), nat)
@@ -124,22 +124,22 @@ object Packed {
   }
 
   private[raccoonlang] def validateNatFamily(env: Env): ValidatedNatLayout = {
-    def fail(reason: String): Nothing = throw NatLiteralUnavailable(reason)
+    def reject(reason: String): Nothing = fail(NatLiteralUnavailable(reason))
     def global(name: String): Option[Value] = env.globals.get(name).map(_.value(env))
 
-    val family = global(NatCodec.familyName).getOrElse(fail("no `Nat` in scope"))
+    val family = global(NatCodec.familyName).getOrElse(reject("no `Nat` in scope"))
     family match {
       case VConst(NatCodec.familyName, Inductive(meta), _)
           if meta.familyArity == 0 && meta.constructorNames == Vector(NatCodec.zeroName, NatCodec.succName) =>
-      case _ => fail("`Nat` in scope is not the two-constructor unary inductive")
+      case _ => reject("`Nat` in scope is not the two-constructor unary inductive")
     }
-    if (!ValueEquivalence.defEq(family.tpe, TypeTpe)) fail("`Nat` in scope is not Type-valued")
+    if (!ValueEquivalence.defEq(family.tpe, TypeTpe)) reject("`Nat` in scope is not Type-valued")
     val zero = global(NatCodec.zeroName) match {
       case Some(h: ConstructorHead)
           if h.name == NatCodec.zeroName && h.totalArity == 0 && h.noConfusion &&
             ValueEquivalence.defEq(h.tpe, family) =>
         h
-      case _ => fail(s"`${NatCodec.zeroName}` is not a nullary `Nat` constructor")
+      case _ => reject(s"`${NatCodec.zeroName}` is not a nullary `Nat` constructor")
     }
     val succ = global(NatCodec.succName) match {
       case Some(h: ConstructorHead)
@@ -150,11 +150,11 @@ object Packed {
             val fieldTy = Interpreter.evalTerm(pi.binders.head.ty, pi.env)
             val outTy = pi.codomain(fresh)
             if (!ValueEquivalence.defEq(fieldTy, family) || !ValueEquivalence.defEq(outTy, family))
-              fail(s"`${NatCodec.succName}` is not `Nat -> Nat`")
-          case _ => fail(s"`${NatCodec.succName}` is not `Nat -> Nat`")
+              reject(s"`${NatCodec.succName}` is not `Nat -> Nat`")
+          case _ => reject(s"`${NatCodec.succName}` is not `Nat -> Nat`")
         }
         h
-      case _ => fail(s"`${NatCodec.succName}` is not a unary `Nat` constructor")
+      case _ => reject(s"`${NatCodec.succName}` is not a unary `Nat` constructor")
     }
     // Force both constructor validations before issuing the otherwise opaque capability.
     val _ = (zero, succ)
@@ -164,28 +164,35 @@ object Packed {
   private[raccoonlang] def validateNativeOpDeclaration(name: String, value: Value, env: Env): Unit =
     try validateNativeOpDeclaration0(name, value, env)
     catch {
-      case mismatch: NativeOperationDeclarationMismatch => throw mismatch
-      case error: TypeError =>
-        throw NativeOperationDeclarationMismatch(name, error.msg, error.span)
+      // Anything that goes wrong while validating this declaration is a fact about the declaration, so it is reported
+      // as one mismatch. A mismatch raised inside is already that, and keeps its own location.
+      case diagnostic: Diagnostic =>
+        diagnostic.error match {
+          case _: NativeOperationDeclarationMismatch => throw diagnostic
+          case error =>
+            throw diagnostic.copy(error = NativeOperationDeclarationMismatch(name, ErrorRendering.render(error)))
+        }
+      // A broken kernel invariant is not a fact about this declaration; let it through untouched.
+      case internal: InternalError => throw internal
       case NonFatal(error) =>
-        throw NativeOperationDeclarationMismatch(name, Option(error.getMessage).getOrElse(error.toString))
+        fail(NativeOperationDeclarationMismatch(name, Option(error.getMessage).getOrElse(error.toString)))
     }
 
   private def validateNativeOpDeclaration0(name: String, value: Value, env: Env): Unit = {
     val spec = opsByName.getOrElse(name, return)
-    def fail(reason: String): Nothing = throw NativeOperationDeclarationMismatch(name, reason)
+    def reject(reason: String): Nothing = fail(NativeOperationDeclarationMismatch(name, reason))
     val lam = value match {
       case actual: VLam => actual
-      case _            => fail("declaration is not a transparent applicable lambda")
+      case _            => reject("declaration is not a transparent applicable lambda")
     }
     lam.id match {
       case ValueId.Const(actual) if actual == name =>
-      case _                                       => fail("lambda identity is not the exact reserved name")
+      case _                                       => reject("lambda identity is not the exact reserved name")
     }
-    val nat = env.globals.get(NatCodec.familyName).map(_.value(env)).getOrElse(fail("Nat is unavailable"))
+    val nat = env.globals.get(NatCodec.familyName).map(_.value(env)).getOrElse(reject("Nat is unavailable"))
     val (expectedResult, resultName) =
       if (spec.returnsBool)
-        (env.globals.get("Bool").map(_.value(env)).getOrElse(fail("Bool is unavailable")), "Bool")
+        (env.globals.get("Bool").map(_.value(env)).getOrElse(reject("Bool is unavailable")), "Bool")
       else (nat, "Nat")
     lam.tpe match {
       case pi: VPi if pi.binders.length == 2 =>
@@ -194,19 +201,19 @@ object Packed {
         // produces the same bare fresh Var this validation used to build by hand.
         var telescopeEnv = pi.env
         pi.binders.foreach { binder =>
-          if (binder.isImplicit) fail("expected two explicit telescope binders")
+          if (binder.isImplicit) reject("expected two explicit telescope binders")
           val binderTy = Interpreter.evalTerm(binder.ty, telescopeEnv)
-          if (!ValueEquivalence.defEq(binderTy, nat)) fail("expected telescope domain Nat -> Nat")
+          if (!ValueEquivalence.defEq(binderTy, nat)) reject("expected telescope domain Nat -> Nat")
           telescopeEnv = BinderOps.freshen(Vector(binder), telescopeEnv)
         }
         if (!ValueEquivalence.defEq(pi.codomain(telescopeEnv), expectedResult))
-          fail(s"expected $resultName codomain")
-      case _ => fail("expected a two-argument telescope")
+          reject(s"expected $resultName codomain")
+      case _ => reject("expected a two-argument telescope")
     }
   }
 
-  private def exactGlobal(env: Env, name: String, fail: String => Nothing): Value =
-    env.globals.get(name).map(_.value(env)).getOrElse(fail(s"missing `$name`"))
+  private def exactGlobal(env: Env, name: String, reject: String => Nothing): Value =
+    env.globals.get(name).map(_.value(env)).getOrElse(reject(s"missing `$name`"))
 
   private final case class ConstructorShape(fieldTypes: Vector[Value], resultTy: Value)
 
@@ -218,7 +225,7 @@ object Packed {
   private def constructorShape(
       head: ConstructorHead,
       familyArgs: Vector[Value],
-      fail: String => Nothing
+      reject: String => Nothing
   ): ConstructorShape =
     head.tpe match {
       case pi: VPi if pi.binders.length == head.totalArity && familyArgs.length == head.numErasedFamilyArgs =>
@@ -238,37 +245,37 @@ object Packed {
           env = env.putLocal(binder.localRef, fresh)
         }
         ConstructorShape(fields.result(), pi.codomain(env))
-      case _ => fail(s"`${head.name}` has an invalid constructor telescope")
+      case _ => reject(s"`${head.name}` has an invalid constructor telescope")
     }
 
   private def inductive(
       label: String,
       expectedName: String,
       value: Value,
-      fail: String => Nothing
+      reject: String => Nothing
   ): InductiveMeta =
     value match {
       case InductiveFamilyValue(instance)
           if instance.head.name == expectedName && !isPropositionType(value) &&
             ValueEquivalence.defEq(value.tpe, TypeTpe) =>
         instance.meta
-      case _ => fail(s"`$label` is not the expected non-propositional Type-valued inductive instance")
+      case _ => reject(s"`$label` is not the expected non-propositional Type-valued inductive instance")
     }
 
-  private def constructorHead(env: Env, name: String, fail: String => Nothing): ConstructorHead =
-    exactGlobal(env, name, fail) match {
+  private def constructorHead(env: Env, name: String, reject: String => Nothing): ConstructorHead =
+    exactGlobal(env, name, reject) match {
       case actual: ConstructorHead if actual.name == name && actual.noConfusion => actual
-      case _ => fail(s"`$name` is not the expected no-confusion constructor")
+      case _ => reject(s"`$name` is not the expected no-confusion constructor")
     }
 
-  private def validateCharListInputs(env: Env, fail: String => Nothing): CharListInputs = {
+  private def validateCharListInputs(env: Env, reject: String => Nothing): CharListInputs = {
     def requireClosed(name: String, value: Value): Unit =
-      if (value.synDeps.nonEmpty) fail(s"`$name` is not closed")
+      if (value.synDeps.nonEmpty) reject(s"`$name` is not closed")
 
-    val nat = exactGlobal(env, NatCodec.familyName, fail)
-    val char = exactGlobal(env, "Char", fail)
-    val list = exactGlobal(env, "List", fail)
-    inductive("Char", "Char", char, fail)
+    val nat = exactGlobal(env, NatCodec.familyName, reject)
+    val char = exactGlobal(env, "Char", reject)
+    val list = exactGlobal(env, "List", reject)
+    inductive("Char", "Char", char, reject)
     val syntheticSpan = Span(0, 0)
     val listChar = TypeChecker
       .checkTerm(
@@ -280,44 +287,44 @@ object Packed {
         env
       )
       .value
-    val listMeta = inductive("List Char", "List", listChar, fail)
+    val listMeta = inductive("List Char", "List", listChar, reject)
     if (listMeta.constructorNames != Vector("List.nil", "List.cons"))
-      fail("`List Char` does not have exactly `List.nil` and `List.cons`")
-    if (listMeta.projectionInfo.exists(_.etaEligible)) fail("`List Char` is eta-eligible")
+      reject("`List Char` does not have exactly `List.nil` and `List.cons`")
+    if (listMeta.projectionInfo.exists(_.etaEligible)) reject("`List Char` is eta-eligible")
     val familyArgs = listChar match {
       case ConstSpine(head, args) if (head eq list) && args.length == listMeta.familyArity => args
-      case _ => fail("`List Char` is not an exact family instance")
+      case _ => reject("`List Char` is not an exact family instance")
     }
-    val nil = constructorHead(env, "List.nil", fail)
-    val cons = constructorHead(env, "List.cons", fail)
+    val nil = constructorHead(env, "List.nil", reject)
+    val cons = constructorHead(env, "List.cons", reject)
     if (nil.numErasedFamilyArgs != familyArgs.length || cons.numErasedFamilyArgs != familyArgs.length)
-      fail("List constructors do not erase exactly the family arguments")
-    val nilShape = constructorShape(nil, familyArgs, fail)
+      reject("List constructors do not erase exactly the family arguments")
+    val nilShape = constructorShape(nil, familyArgs, reject)
     if (nilShape.fieldTypes.nonEmpty || !ValueEquivalence.defEq(nilShape.resultTy, listChar))
-      fail("`List.nil` does not instantiate to `List Char`")
-    val consShape = constructorShape(cons, familyArgs, fail)
+      reject("`List.nil` does not instantiate to `List Char`")
+    val consShape = constructorShape(cons, familyArgs, reject)
     if (
       consShape.fieldTypes.length != 2 || !ValueEquivalence.defEq(consShape.fieldTypes(0), char) ||
       !ValueEquivalence
         .defEq(consShape.fieldTypes(1), listChar) || !ValueEquivalence.defEq(consShape.resultTy, listChar)
-    ) fail("`List.cons` does not instantiate to `Char -> List Char -> List Char`")
+    ) reject("`List.cons` does not instantiate to `Char -> List Char -> List Char`")
 
-    val charOfNat = exactGlobal(env, "Char.ofNat", fail)
+    val charOfNat = exactGlobal(env, "Char.ofNat", reject)
     charOfNat match {
       case lam: VLam =>
         lam.id match {
           case ValueId.Const("Char.ofNat") =>
-          case _                           => fail("`Char.ofNat` has the wrong identity")
+          case _                           => reject("`Char.ofNat` has the wrong identity")
         }
         lam.tpe match {
           case pi: VPi if pi.binders.length == 1 =>
             val domain = Interpreter.evalTerm(pi.binders.head.ty, pi.env)
             val fresh = BinderOps.freshen(pi)
             if (!ValueEquivalence.defEq(domain, nat) || !ValueEquivalence.defEq(pi.codomain(fresh), char))
-              fail("`Char.ofNat` is not `Nat -> Char`")
-          case _ => fail("`Char.ofNat` is not `Nat -> Char`")
+              reject("`Char.ofNat` is not `Nat -> Char`")
+          case _ => reject("`Char.ofNat` is not `Nat -> Char`")
         }
-      case _ => fail("`Char.ofNat` is not a transparent applicable lambda")
+      case _ => reject("`Char.ofNat` is not a transparent applicable lambda")
     }
 
     Vector("Nat" -> nat, "Char" -> char, "List Char" -> listChar, "Char.ofNat" -> charOfNat).foreach {
@@ -330,32 +337,39 @@ object Packed {
   private[raccoonlang] def validateStringLayout(env: Env): ValidatedStringLayout =
     try validateStringLayout0(env)
     catch {
-      case unavailable: StringLiteralUnavailable => throw unavailable
-      case error: TypeError                      => throw StringLiteralUnavailable(error.msg, error.span)
+      // Any failure here means the same thing to a program: this environment has no usable String layout.
+      case diagnostic: Diagnostic =>
+        diagnostic.error match {
+          case _: StringLiteralUnavailable => throw diagnostic
+          case error =>
+            throw diagnostic.copy(error = StringLiteralUnavailable(ErrorRendering.render(error)))
+        }
+      // A broken kernel invariant is not a fact about the layout; let it through untouched.
+      case internal: InternalError => throw internal
       case NonFatal(error) =>
-        throw StringLiteralUnavailable(Option(error.getMessage).getOrElse(error.toString))
+        fail(StringLiteralUnavailable(Option(error.getMessage).getOrElse(error.toString)))
     }
 
   private def validateStringLayout0(env: Env): ValidatedStringLayout = {
-    def fail(reason: String): Nothing = throw StringLiteralUnavailable(reason)
+    def reject(reason: String): Nothing = fail(StringLiteralUnavailable(reason))
     def requireClosed(name: String, value: Value): Unit =
-      if (value.synDeps.nonEmpty) fail(s"`$name` is not closed")
-    val inputs = validateCharListInputs(env, fail)
-    val string = exactGlobal(env, "String", fail)
-    val stringMeta = inductive("String", "String", string, fail)
+      if (value.synDeps.nonEmpty) reject(s"`$name` is not closed")
+    val inputs = validateCharListInputs(env, reject)
+    val string = exactGlobal(env, "String", reject)
+    val stringMeta = inductive("String", "String", string, reject)
 
     if (stringMeta.familyArity != 0 || stringMeta.constructorNames != Vector("String.mk"))
-      fail("`String` does not have exactly the nullary family and `String.mk` constructor")
-    val projection = stringMeta.projectionInfo.getOrElse(fail("`String` has no projection metadata"))
+      reject("`String` does not have exactly the nullary family and `String.mk` constructor")
+    val projection = stringMeta.projectionInfo.getOrElse(reject("`String` has no projection metadata"))
     if (!projection.etaEligible || projection.fieldCount != 1)
-      fail("`String` is not an eta-eligible one-field structure")
-    val stringMk = constructorHead(env, "String.mk", fail)
+      reject("`String` is not an eta-eligible one-field structure")
+    val stringMk = constructorHead(env, "String.mk", reject)
     if (!(projection.ctorHead eq stringMk) || stringMk.numErasedFamilyArgs != 0 || stringMk.totalArity != 1)
-      fail("`String.mk` is not the installed sole one-field constructor")
-    val stringShape = constructorShape(stringMk, Vector.empty, fail)
+      reject("`String.mk` is not the installed sole one-field constructor")
+    val stringShape = constructorShape(stringMk, Vector.empty, reject)
     if (stringShape.fieldTypes.length != 1 || !ValueEquivalence.defEq(stringShape.fieldTypes.head, inputs.listChar))
-      fail("`String.mk` field is not `List Char`")
-    if (!ValueEquivalence.defEq(stringShape.resultTy, string)) fail("`String.mk` result is not `String`")
+      reject("`String.mk` field is not `List Char`")
+    if (!ValueEquivalence.defEq(stringShape.resultTy, string)) reject("`String.mk` result is not `String`")
 
     Vector(
       "String" -> string,
@@ -368,11 +382,11 @@ object Packed {
   private[raccoonlang] def evalNatLit(value: BigInt, env: Env): Value =
     VPacked.nat(
       value,
-      env.nativeLiterals.natLayout.getOrElse(throw NatLiteralUnavailable("no validated Nat layout")).natTpe
+      env.nativeLiterals.natLayout.getOrElse(fail(NatLiteralUnavailable("no validated Nat layout"))).natTpe
     )
 
   private[raccoonlang] def evalStrLit(scalars: Vector[Int], env: Env): Value = {
-    val layout = env.nativeLiterals.stringLayout.getOrElse(throw StringLiteralUnavailable("no validated String layout"))
+    val layout = env.nativeLiterals.stringLayout.getOrElse(fail(StringLiteralUnavailable("no validated String layout")))
     layout.eval(scalars)
   }
 }

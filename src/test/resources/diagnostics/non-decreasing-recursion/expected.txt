@@ -1,0 +1,5 @@
+
+<root>/main.rac:1:55: error: Recursive call to loop is not decreasing: no lexicographic component decreases
+def loop (n: Nat): Nat decreases structural(n) := loop(n)
+                                                      ^^^
+note: in definition loop

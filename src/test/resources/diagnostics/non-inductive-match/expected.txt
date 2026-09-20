@@ -1,0 +1,5 @@
+
+<root>/main.rac:2:3: error: Cannot match on non-inductive type Nat -> Nat
+  match f returning Nat with
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: in definition bad

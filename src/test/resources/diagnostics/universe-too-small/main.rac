@@ -1,0 +1,4 @@
+inductive Small : Type
+ | mk (t: Type) : Small
+
+{ Nat.zero }

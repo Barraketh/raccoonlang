@@ -1,0 +1,5 @@
+def dup : Nat := Nat.zero
+
+def dup : Nat := Nat.succ(Nat.zero)
+
+{ dup }

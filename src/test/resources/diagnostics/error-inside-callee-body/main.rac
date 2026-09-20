@@ -1,0 +1,5 @@
+def blowUp (n: Nat): Nat := Nat.pow(2, n)
+
+def huge : Nat := blowUp(100000000000)
+
+{ huge }

@@ -1,0 +1,5 @@
+
+<root>/main.rac:1:26: error: Cannot apply non-fn type 0
+def bad : Nat := Nat.zero(Nat.zero)
+                         ^^^^^^^^^^
+note: in definition bad

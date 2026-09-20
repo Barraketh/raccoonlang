@@ -1,0 +1,3 @@
+def bad (x: Nat.zero): Nat := Nat.zero
+
+{ bad(Nat.zero) }

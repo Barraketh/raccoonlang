@@ -1,0 +1,4 @@
+inductive Odd : Nat
+ | mk : Odd
+
+{ Nat.zero }

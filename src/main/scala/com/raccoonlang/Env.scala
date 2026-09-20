@@ -19,7 +19,7 @@ object Env {
 
   private[raccoonlang] def assertClosedGlobal(value: Value): Unit =
     if (assertionsEnabled && value.synDeps.nonEmpty)
-      throw WTF(s"Global value must be closed, but has free vars ${value.synDeps}")
+      wtf(s"Global value must be closed, but has free vars ${value.synDeps}")
 
   // Proof-representation invariant (docs/kernel.md#proofs-and-elimination): every value of known-propositional type
   // is a fixed point of canonicalizeProof. This includes reconstructed constructors as well as
@@ -27,7 +27,7 @@ object Env {
   // missed representation step fails loudly here.
   private[raccoonlang] def assertCanonicalProof(value: Value): Unit =
     if (assertionsEnabled && !(Value.canonicalizeProof(value) eq value))
-      throw WTF(s"Non-canonical proof bound into env: value ${value} of type ${value.tpe}")
+      wtf(s"Non-canonical proof bound into env: value ${value} of type ${value.tpe}")
 }
 
 final case class NativeLiteralState private[raccoonlang] (
@@ -76,17 +76,17 @@ final case class Env(
   require(localRefs.size == locals.size, "local-ref index size disagrees with locals")
 
   def apply(name: String): Value =
-    globals.get(name).map(_.value(this)).getOrElse(throw NotFound(name))
+    globals.get(name).map(_.value(this)).getOrElse(fail(NotFound(name)))
 
   def apply(ref: CoreAst.LocalRef): Value =
-    locals.getOrElse(ref, throw NotFound(ref.toString))
+    locals.getOrElse(ref, fail(NotFound(ref.toString)))
 
   def putGlobal(name: String, value: Value): Env = {
     Env.assertClosedGlobal(value)
     Env.assertCanonicalProof(value)
 
-    if (globals.contains(name)) throw AlreadyDefined(name)
-    else if (name == "_") throw WTF("Wildcards not allowed in global names")
+    if (globals.contains(name)) fail(AlreadyDefined(name))
+    else if (name == "_") wtf("Wildcards not allowed in global names")
     else copy(globals = globals + (name -> GlobalBinding.Strict(value)))
   }
 
@@ -96,17 +96,17 @@ final case class Env(
    * member body is evaluated while the knot forms: recursive calls have already passed the structural judgment.
    */
   private[raccoonlang] def putRecursiveGroup(names: Vector[String], build: Env => Vector[Value.VLam]): Env = {
-    if (names.isEmpty) throw WTF("Recursive group must not be empty")
-    if (names.distinct.length != names.length) throw WTF("Recursive group names must be distinct")
+    if (names.isEmpty) wtf("Recursive group must not be empty")
+    if (names.distinct.length != names.length) wtf("Recursive group names must be distinct")
     names.foreach { name =>
-      if (globals.contains(name)) throw AlreadyDefined(name)
-      if (name == "_") throw WTF("Wildcards not allowed in global names")
+      if (globals.contains(name)) fail(AlreadyDefined(name))
+      if (name == "_") wtf("Wildcards not allowed in global names")
     }
     var result: Env = null
     lazy val values: Vector[Value.VLam] = {
       val built = build(result)
       if (built.length != names.length)
-        throw WTF(s"Recursive group built ${built.length} values for ${names.length} members")
+        wtf(s"Recursive group built ${built.length} values for ${names.length} members")
       built
     }
     val bindings = names.zipWithIndex.map { case (name, index) => name -> new GlobalBinding.Lazy(() => values(index)) }
@@ -119,7 +119,7 @@ final case class Env(
       value: Value
   ): Env = {
     Env.assertCanonicalProof(value)
-    if (locals.contains(ref)) throw WTF(s"Local ref $ref is already bound")
+    if (locals.contains(ref)) wtf(s"Local ref $ref is already bound")
     else copy(locals = locals + (ref -> value), localRefs = localRefs + ref)
   }
 
@@ -128,14 +128,14 @@ final case class Env(
    * proof fields are intentionally reconstructed one layer at a time and may therefore be raw `VProof` values here.
    */
   private[raccoonlang] def putLocalUnchecked(ref: CoreAst.LocalRef, value: Value): Env = {
-    if (locals.contains(ref)) throw WTF(s"Local ref $ref is already bound")
+    if (locals.contains(ref)) wtf(s"Local ref $ref is already bound")
     else copy(locals = locals + (ref -> value), localRefs = localRefs + ref)
   }
 
   def closeForEval(capturedRefs: Set[CoreAst.LocalRef]): Env = {
     capturedRefs.foreach { ref =>
       if (!locals.contains(ref))
-        throw WTF(s"Captured local $ref is outside env")
+        wtf(s"Captured local $ref is outside env")
     }
 
     val capturedLocals = VectorMap.from(locals.iterator.filter { case (ref, _) => capturedRefs(ref) })
@@ -145,13 +145,13 @@ final case class Env(
 
   private[raccoonlang] def installStringLayout(layout: Value.ValidatedStringLayout): Env =
     nativeLiterals.stringLayout match {
-      case Some(_) => throw WTF("Validated String layout is already installed")
+      case Some(_) => wtf("Validated String layout is already installed")
       case None    => copy(nativeLiterals = nativeLiterals.copy(stringLayout = Some(layout)))
     }
 
   private[raccoonlang] def installNatLayout(layout: Packed.ValidatedNatLayout): Env =
     nativeLiterals.natLayout match {
-      case Some(_) => throw WTF("Validated Nat layout is already installed")
+      case Some(_) => wtf("Validated Nat layout is already installed")
       case None    => copy(nativeLiterals = nativeLiterals.copy(natLayout = Some(layout)))
     }
 }

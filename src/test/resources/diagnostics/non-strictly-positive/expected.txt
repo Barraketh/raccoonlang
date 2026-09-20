@@ -1,0 +1,5 @@
+
+<root>/main.rac:2:7: error: Constructor Bad.mk of Bad is not strictly positive in field f : (h: Bad) -> Bad
+ | mk (f: (h: Bad) -> Bad) : Bad
+      ^^^^^^^^^^^^^^^^^^^^
+note: in definition Bad

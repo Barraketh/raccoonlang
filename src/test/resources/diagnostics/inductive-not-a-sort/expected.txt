@@ -1,0 +1,5 @@
+
+<root>/main.rac:1:17: error: Inductive type must be a Sort, got Nat instead
+inductive Odd : Nat
+                ^^^
+note: in definition Odd

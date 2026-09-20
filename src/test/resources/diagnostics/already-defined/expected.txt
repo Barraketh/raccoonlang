@@ -1,0 +1,4 @@
+
+<root>/main.rac:1:1: error: dup already defined
+def dup : Nat := Nat.zero
+^

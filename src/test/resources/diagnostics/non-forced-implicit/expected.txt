@@ -1,0 +1,5 @@
+
+<root>/main.rac:1:13: error: Parameter A cannot be implicit: it is not forced by the type of any later non-implicit parameter
+def phantom {A: Type} (n: Nat): Nat := n
+            ^^^^^^^^^
+note: in definition phantom

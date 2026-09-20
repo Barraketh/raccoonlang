@@ -1,0 +1,9 @@
+def broken : Nat := Bool.true
+
+def usesBroken : Nat := broken
+
+def usesUsesBroken : Nat := usesBroken
+
+def alsoBad : Nat := Bool.false
+
+{ Nat.zero }

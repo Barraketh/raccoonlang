@@ -123,7 +123,7 @@ class PropTests extends munit.FunSuite with TestSupport {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[TypeMismatch] { Interpreter.run(core, Prelude.test) }
+        interceptError[TypeMismatch] { Interpreter.run(core, Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
@@ -191,7 +191,7 @@ class PropTests extends munit.FunSuite with TestSupport {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[NonStrictlyPositive] { Interpreter.run(core, Prelude.test) }
+        interceptError[NonStrictlyPositive] { Interpreter.run(core, Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
@@ -254,7 +254,7 @@ class PropTests extends munit.FunSuite with TestSupport {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
+        interceptError[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
@@ -394,7 +394,7 @@ class PropTests extends munit.FunSuite with TestSupport {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
+        interceptError[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
@@ -424,7 +424,7 @@ class PropTests extends munit.FunSuite with TestSupport {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
+        interceptError[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
@@ -449,7 +449,7 @@ class PropTests extends munit.FunSuite with TestSupport {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
+        interceptError[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
@@ -479,7 +479,7 @@ class PropTests extends munit.FunSuite with TestSupport {
     LanguageParser.parseProgram(p) match {
       case Success(value, _, _) =>
         val core = Elaborator.elab(value, Prelude.test)
-        intercept[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
+        interceptError[PropEliminationRestricted] { Interpreter.run(core, Prelude.test) }
       case err: Failure =>
         fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }

@@ -1,0 +1,5 @@
+
+<root>/main.rac:2:14: error: Constructor Twist.mk of Twist returns non-uniform parameter A as Nat
+ | mk : Twist(Nat)
+             ^^^^^
+note: in definition Twist

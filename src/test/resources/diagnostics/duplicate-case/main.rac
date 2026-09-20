@@ -1,0 +1,8 @@
+def twice (b: Bool): Nat := {
+  match b returning Nat with
+  | Bool.true => Nat.zero
+  | Bool.false => Nat.zero
+  | Bool.true => Nat.zero
+}
+
+{ twice(Bool.true) }
