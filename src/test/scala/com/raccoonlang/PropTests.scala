@@ -1,6 +1,6 @@
 package com.raccoonlang
 
-import com.raccoonlang.Value.{Level, PropTpe, VPi, VSort}
+import com.raccoonlang.Value.{Level, VPi, VSort}
 
 class PropTests extends munit.FunSuite with TestSupport {
   override protected val suitePrelude: Prelude.Config = Prelude.test
@@ -34,13 +34,13 @@ class PropTests extends munit.FunSuite with TestSupport {
     )
 
     res match {
-      case PropTpe => ()
-      case other   => fail(s"Expected Prop classifier, got: $other")
+      case sort: VSort if Sorts.isProp(sort) => ()
+      case other                             => fail(s"Expected Prop classifier, got: $other")
     }
 
     res.tpe match {
-      case VSort(u) => assertEquals(u, Value.Level.one)
-      case other    => fail(s"Expected Prop : Type, got: $other")
+      case sort: VSort => assertEquals(sort.level, Value.Level.one)
+      case other       => fail(s"Expected Prop : Type, got: $other")
     }
   }
 
@@ -60,7 +60,7 @@ class PropTests extends munit.FunSuite with TestSupport {
       case other  => fail(s"Expected Pi value, got: $other")
     }
 
-    assertEquals(res.tpe, VSort(Level.const(2)))
+    assert(ValueEquivalence.defEq(res.tpe, Sorts.sort(Level.const(2))))
   }
 
   test("Dependent Pi into Prop-the-sort lives in Sort 2") {
@@ -79,7 +79,7 @@ class PropTests extends munit.FunSuite with TestSupport {
       case other  => fail(s"Expected Pi value, got: $other")
     }
 
-    assertEquals(res.tpe, VSort(Level.const(2)))
+    assert(ValueEquivalence.defEq(res.tpe, Sorts.sort(Level.const(2))))
   }
 
   test("Pi over proof binder into Type stays in Type") {
@@ -102,8 +102,8 @@ class PropTests extends munit.FunSuite with TestSupport {
     }
 
     res.tpe match {
-      case VSort(u) => assertEquals(u, Value.Level.one)
-      case other    => fail(s"Expected (P: Prop) -> Peano to live in Type, got: $other")
+      case sort: VSort => assertEquals(sort.level, Value.Level.one)
+      case other       => fail(s"Expected (P: Prop) -> Peano to live in Type, got: $other")
     }
   }
 
@@ -227,7 +227,7 @@ class PropTests extends munit.FunSuite with TestSupport {
         |""".stripMargin
     )
 
-    assertEquals(res.tpe, PropTpe)
+    assert(ValueEquivalence.defEq(res.tpe, Sorts.Prop))
   }
 
   test("Negative: elimination from Exists into Peano is rejected") {

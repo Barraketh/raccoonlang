@@ -31,7 +31,6 @@ object ValueKey {
     val LevelTpe = 1
     val Level = 2
     val Sort = 3
-    val Prop = 4
     val KernelObject = 5
     val Const = 6
     val Var = 7
@@ -166,8 +165,7 @@ object ValueKey {
   def orderKey(v: Value): Key = v match {
     case Value.LevelTpe        => tag(Tag.LevelTpe)
     case level: Value.Level    => levelKey(level.terms, level.c)
-    case Value.PropTpe         => tag(Tag.Prop)
-    case Value.VSort(lvl)      => mixKey(tag(Tag.Sort), lvl.key)
+    case sort: Value.VSort     => mixKey(tag(Tag.Sort), sort.level.key)
     case Value.VConst(n, _, _) => mixString(tag(Tag.Const), n)
     case Value.Var(_, id, _)   => mixLong(tag(Tag.Var), id.toLong)
     case Value.VApp(h, args, tpe, _) =>

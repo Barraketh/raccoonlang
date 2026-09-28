@@ -30,20 +30,7 @@ sealed trait TopLevelValue extends Value {
 
 object Value {
 
-  /**
-   * The value's type is a proposition: it lives in `Prop`. The sort `Prop` itself never qualifies (`Prop : Sort 1`) —
-   * predicates are data, not proofs (docs/kernel.md#universes-and-function-types).
-   */
-  def isPropositionType(tpe: Value): Boolean =
-    tpe match {
-      case PropTpe => false
-      // Impredicativity: a Pi is a proposition exactly when its codomain is Prop-valued. Answered
-      // via the dedicated lazy val so proof canonicalization checks skip the full classifier computation.
-      case pi: VPi => pi.isPropValued
-      case tpe     => tpe.tpe == PropTpe
-    }
-
-  private def isKnownProof(value: Value): Boolean = isPropositionType(value.tpe)
+  private def isKnownProof(value: Value): Boolean = Sorts.isProposition(value.tpe)
 
   /**
    * Put a proof into the canonical representation determined solely by its exact proposition
@@ -64,7 +51,7 @@ object Value {
       // remains executable until checking has validated every recursive call.
       case _: VPi | _: Var | _: ConstructorHead   => value
       case VLam(_, _, LamBody.Native(_, _, true)) => value
-      case _ if !isPropositionType(value.tpe)     => value
+      case _ if !Sorts.isProposition(value.tpe)   => value
       // A trusted application of the declaration-certified constructor already carries the
       // result-forced data fields. Check this before running recovery so repeated canonicalization
       // at environment boundaries is constant-time.
@@ -119,7 +106,7 @@ object Value {
    * hypothesis being bound, so its identity is checking metadata rather than runtime proof representation.
    */
   def canonicalizeRigidBinder(tpe: Value, fresh: Value): Value =
-    if (isPropositionType(tpe)) canonicalizeProof(VProof(tpe)) else fresh
+    if (Sorts.isProposition(tpe)) canonicalizeProof(VProof(tpe)) else fresh
 
   /**
    * Whether structure eta may decompose an equation with this value on one side: the value is a constructor at an
@@ -213,7 +200,7 @@ object Value {
             case ValueId.LocalId(_, params) => params.foreach(walk)
           }
         // Everything else is either leaf-like or reaches vars only through its type. Sorts are
-        // excluded explicitly: `VSort(u).tpe` is `VSort(u+1)`, an infinite ascent with the same deps.
+        // excluded explicitly: the type of a sort at `u` is the sort at `u+1`, an infinite ascent with the same deps.
         case _: VSort | LevelTpe | _: Level | _: ConstructorHead =>
         case other                                               => walk(other.tpe)
       }
@@ -241,7 +228,7 @@ object Value {
   }
 
   case object LevelTpe extends TopLevelValue {
-    override def tpe: Value = TypeTpe
+    override def tpe: Value = Sorts.Type
   }
 
   // Represents max(atom1 + k1, atom2 + k2... , c), where an atom is either a level variable or an unresolved imax.
@@ -429,14 +416,19 @@ object Value {
 
   }
 
-  case class VSort(level: Level) extends Value {
-    override def tpe: Value = VSort(Level.succ(level))
+  /**
+   * A sort, built only by `Sorts`, which also answers every question about which sort it is. There is no extractor and
+   * no structural equality: two sorts are compared only by conversion, so `==` on a sort is a kernel bug and throws
+   * rather than silently answering false.
+   */
+  final class VSort private[raccoonlang] (val level: Level) extends Value {
+    override def tpe: Value = Sorts.sort(Level.succ(level))
 
     override lazy val synDeps: DepSet = level.synDeps
-  }
 
-  final val PropTpe: VSort = VSort(Level.zero)
-  final val TypeTpe: VSort = VSort(Level.one)
+    override def equals(obj: Any): Boolean = wtf(s"Sort $this compared structurally; compare sorts by conversion")
+    override def hashCode(): Int = wtf(s"Sort $this hashed structurally; sorts are never collection keys")
+  }
 
   // The classifier is a thunk, not a stored sort: a Pi's universe depends on the env it is
   // evaluated in (level-polymorphic binder types), so residuals carry no classifier and each VPi
@@ -464,7 +456,7 @@ object Value {
     lazy val isPropValued: Boolean = {
       knownPropValued.getOrElse {
         val freshEnv = telescope.BinderOps.freshen(binders, env)
-        Value.isPropositionType(codomain(freshEnv))
+        Sorts.isProposition(codomain(freshEnv))
       }
     }
 
@@ -561,7 +553,7 @@ object Value {
    * proposition's dependencies. Proofs of Pi propositions use the canonical `VLam(_, _, ProofEta)` representation.
    */
   final case class VProof(tpe: Value) extends Value {
-    require(isPropositionType(tpe), s"VProof requires a proposition, got a value of $tpe")
+    require(Sorts.isProposition(tpe), s"VProof requires a proposition, got a value of $tpe")
 
     override lazy val synDeps: DepSet = tpe.synDeps
   }
@@ -714,7 +706,7 @@ object Value {
   ) extends Value {
     require(codec.acceptsPayload(payload), "Packed codec/payload mismatch")
     require(tpe.synDeps.isEmpty, s"VPacked requires a closed type, got dependencies ${tpe.synDeps}")
-    require(!isPropositionType(tpe), s"VPacked requires a non-propositional type, got $tpe")
+    require(!Sorts.isProposition(tpe), s"VPacked requires a non-propositional type, got $tpe")
 
     override lazy val synDeps: DepSet = tpe.synDeps
 

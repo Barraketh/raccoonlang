@@ -35,7 +35,7 @@ object ValueEquivalence {
   private object ProofEquation {
     def unapply(pair: (Value, Value)): Option[(Value, Value)] =
       pair match {
-        case (left, right) if Value.isPropositionType(left.tpe) && Value.isPropositionType(right.tpe) =>
+        case (left, right) if Sorts.isProposition(left.tpe) && Sorts.isProposition(right.tpe) =>
           Some((left.tpe, right.tpe))
         case _ => None
       }
@@ -77,6 +77,27 @@ object ValueEquivalence {
 
     private def sameValueObject(v1: Value, v2: Value): Boolean =
       v1.asInstanceOf[AnyRef] eq v2.asInstanceOf[AnyRef]
+
+    /**
+     * Key-coherence assertions (docs/kernel.md#value-identity): wherever the fast path decides an equation by key
+     * alone, the rules below must reach the same verdict. On by default so the whole test suite checks the key rule;
+     * disable for benchmarking with -Draccoon.keyAssertions=false.
+     */
+    private val keyAssertionsEnabled: Boolean =
+      java.lang.Boolean.parseBoolean(System.getProperty("raccoon.keyAssertions", "true"))
+
+    /**
+     * The exemption list of the key-coherence assertion: the atoms whose key is their identity, so the key is the whole
+     * of their equality and no rule below restates it. A variable is its id, a constant or constructor head its name,
+     * and a level its normal form (the level rule below only links).
+     */
+    private def keyIsIdentity(a: Value, b: Value): Boolean =
+      (a, b) match {
+        case (_: Var, _: Var) | (_: VConst, _: VConst) | (_: ConstructorHead, _: ConstructorHead) |
+            (_: Level, _: Level) =>
+          true
+        case _ => false
+      }
 
     /**
      * Whether a key mismatch leaves the equation open. `Value.needsStructuralDefEq` is the one enumeration of the value
@@ -364,9 +385,27 @@ object ValueEquivalence {
       // once one links to the other, and no key mismatch survives that. When the keys are conclusive
       // the answer is `stuck` rather than `apart` — a key mismatch is a failure to derive `≡`, not
       // no-confusion evidence, and only the VCtor clash below produces the latter.
-      if (sameValueObject(a, b) || a.key == b.key) return Right(meta)
-      if (meta.refinable.isEmpty && !keysAreInconclusive(a, b)) return stuck(a, b)
+      if (sameValueObject(a, b)) return Right(meta)
+      if (a.key == b.key) {
+        if (keyAssertionsEnabled && !keyIsIdentity(a, b)) assertKeyVerdict(a, b, meta, ctx, keysEqual = true)
+        return Right(meta)
+      }
+      if (meta.refinable.isEmpty && !keysAreInconclusive(a, b)) {
+        if (keyAssertionsEnabled) assertKeyVerdict(a, b, meta, ctx, keysEqual = false)
+        return stuck(a, b)
+      }
+      structurally(a, b, meta, ctx)
+    }
 
+    private def assertKeyVerdict(a: Value, b: Value, meta: EqStore, ctx: Ctx, keysEqual: Boolean): Unit =
+      if (structurally(a, b, meta, ctx).isRight != keysEqual)
+        wtf(
+          s"ValueKey disagrees with conversion: keys ${if (keysEqual) "equal" else "differ"} but the structural " +
+            s"comparison ${if (keysEqual) "fails" else "succeeds"} for $a and $b"
+        )
+
+    /** The rules below the key fast path: decomposition, whose leaves are decided by the fast path again. */
+    private def structurally(a: Value, b: Value, meta: EqStore, ctx: Ctx): Result = {
       (a, b) match {
         // Proof structure supplies neither links nor apartness. Reduce to the proposition equation
         // before lambda extensionality, constructor no-confusion, application decomposition, or
@@ -431,7 +470,13 @@ object ValueEquivalence {
             definitionallyInjectiveHead(v1.head) && definitionallyInjectiveHead(v2.head)
           val argCtx = if (invertible) ctx else ctx.enterNonInvertibleFrame
           def frame(failed: UnifyFailure): UnifyFailure = if (invertible) failed else failed.asStuck
-          tryUnify(v1.head, v2.head, meta, argCtx) match {
+          val headsUnified = (v1.head, v2.head) match {
+            // A constructor head is its name. Through `tryUnify`, a nullary head would be put back into
+            // constructor form: the very application being decomposed.
+            case (h1: ConstructorHead, h2: ConstructorHead) if h1.name == h2.name => Right(meta)
+            case (h1, h2)                                                         => tryUnify(h1, h2, meta, argCtx)
+          }
+          headsUnified match {
             case Left(failed) => Left(frame(failed))
             case Right(m0) =>
               var curMeta = m0

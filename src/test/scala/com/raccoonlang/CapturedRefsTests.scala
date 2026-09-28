@@ -1,11 +1,10 @@
 package com.raccoonlang
 
 import com.raccoonlang.CoreAst.{Term => CTerm}
-import com.raccoonlang.Value._
 
 class CapturedRefsTests extends munit.FunSuite with DiagnosticAssertions {
   private val span = Span(0, 0)
-  private val valueType: Value = TypeTpe
+  private val valueType: Value = Sorts.Type
   private val typeRef: CoreAst.Term = CTerm.GlobalRef("Type", span)
 
   test("getCapturedRefs collects only local refs present in the current env") {

@@ -180,13 +180,13 @@ object PrettyPrinter {
   }
 
   def print(value: Value): String = value match {
-    case Value.PropTpe                              => "Prop"
-    case Value.VSort(lvl) if lvl == Value.Level.one => "Type"
-    case Value.VSort(lvl)                           => s"Sort(${printLevel(lvl)})"
-    case level: Value.Level                         => printLevel(level)
-    case pi: Value.VPi                              => printPi(pi)
-    case Value.VConst(name, _, _)                   => name
-    case Value.ConstructorHead(name, _, _, _, _)    => name
+    case sort: Value.VSort if Sorts.isProp(sort)            => "Prop"
+    case sort: Value.VSort if sort.level == Value.Level.one => "Type"
+    case sort: Value.VSort                                  => s"Sort(${printLevel(sort.level)})"
+    case level: Value.Level                                 => printLevel(level)
+    case pi: Value.VPi                                      => printPi(pi)
+    case Value.VConst(name, _, _)                           => name
+    case Value.ConstructorHead(name, _, _, _, _)            => name
     case Value.VCtor(head, Vector(field: Value.VPacked), _)
         if head.name == "String.mk" && field.codec.isInstanceOf[Value.CharListCodec] =>
       printString(field.charScalars.getOrElse(wtf("Invalid packed String field")))
