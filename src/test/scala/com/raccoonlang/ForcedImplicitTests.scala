@@ -50,11 +50,11 @@ class ForcedImplicitTests extends munit.FunSuite with TestSupport {
     expectTypeError[NonForcedImplicitParam](bad + "\n{ Peano.zero }\n")
   }
 
-  test("sort levels with offsets force level implicits (Sort(Level.succ(u)))") {
+  test("sort levels with offsets force level implicits (Sort { level = succ(u) })") {
     val p =
       natDecls +
         """
-          |def idUp {u: Level} (A: Sort(Level.succ(u)))(x: A): A := x
+          |def idUp {u: Level} (A: Sort { level = succ(u) })(x: A): A := x
           |
           |{
           |  idUp(Type, Peano)
@@ -107,10 +107,10 @@ class ForcedImplicitTests extends munit.FunSuite with TestSupport {
     val p =
       natDecls +
         """
-          |inductive Box {u: Level}(A: Sort(u)) : Sort(u)
+          |inductive Box {u: Level}(A: Sort { level = u }) : Sort { level = u }
           | | mk (a: A) : Box(A)
           |
-          |def unbox {u: Level}{A: Sort(u)} (b: Box(A)): A := {
+          |def unbox {u: Level}{A: Sort { level = u }} (b: Box(A)): A := {
           |  match b returning A with
           |  | Box.mk a => a
           |}
@@ -129,11 +129,11 @@ class ForcedImplicitTests extends munit.FunSuite with TestSupport {
     val p =
       natDecls +
         """
-          |inductive Lst {u: Level}(A: Sort(u)) : Sort(u)
+          |inductive Lst {u: Level}(A: Sort { level = u }) : Sort { level = u }
           | | nil : Lst(A)
           | | cons (head: A)(tail: Lst(A)) : Lst(A)
           |
-          |def len {u: Level}{A: Sort(u)} (xs: Lst(A)): Peano decreases structural(xs) := {
+          |def len {u: Level}{A: Sort { level = u }} (xs: Lst(A)): Peano decreases structural(xs) := {
           |  match xs returning Peano with
           |  | Lst.nil => Peano.zero
           |  | Lst.cons head tail => Peano.succ(len(tail))
@@ -148,16 +148,16 @@ class ForcedImplicitTests extends munit.FunSuite with TestSupport {
     assertEquals(ctorName(v), "Peano.succ")
   }
 
-  test("universes are not cumulative: Sort(1) does not fit a Sort(2) binder") {
+  test("universes are not cumulative: Type does not fit a Sort { level = succ(one) } binder") {
     // This shape was the check/run coherence hazard when sorts were cumulative: the checker saw
-    // the binder-declared Sort(2) while the run world saw Peano's own Sort(1), so `levelOf`
+    // the binder-declared level 2 while the run world saw Peano's own level 1, so `levelOf`
     // projected different levels in the two worlds. Non-cumulative sorts reject it outright.
     val p =
       natDecls +
         """
-          |def levelOf {u: Level}(A: Sort(u)): Level := u
+          |def levelOf {u: Level}(A: Sort { level = u }): Level := u
           |
-          |def g (T: Sort(Level.succ(Level.one))): Level := levelOf(T)
+          |def g (T: Sort { level = succ(one) }): Level := levelOf(T)
           |
           |{
           |  g(Peano)
@@ -174,7 +174,7 @@ class ForcedImplicitTests extends munit.FunSuite with TestSupport {
     val p =
       natDecls +
         """
-          |def levelOf {u: Level}(A: Sort(u)): Level := u
+          |def levelOf {u: Level}(A: Sort { level = u }): Level := u
           |
           |def g (T: Type): Level := levelOf(T)
           |
@@ -212,7 +212,7 @@ class ForcedImplicitTests extends munit.FunSuite with TestSupport {
     def program(value: String): String =
       natDecls +
         s"""
-           |def idL {u: Level}{A: Sort(u)}(x: A): A := x
+           |def idL {u: Level}{A: Sort { level = u }}(x: A): A := x
            |
            |{
            |  let f : {A: Type} -> (x: A) -> A := $value
@@ -230,7 +230,7 @@ class ForcedImplicitTests extends munit.FunSuite with TestSupport {
     def program(argument: String): String =
       natDecls +
         s"""
-           |def idL {u: Level}{A: Sort(u)}(x: A): A := x
+           |def idL {u: Level}{A: Sort { level = u }}(x: A): A := x
            |
            |def apply1 {A: Type}(a: A)(f: (x: A) -> A): A := f(a)
            |

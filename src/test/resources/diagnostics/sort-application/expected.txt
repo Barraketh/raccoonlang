@@ -1,0 +1,4 @@
+
+<root>/main.rac:1:25: error: Failed to parse module <root>/main.rac: Failed to parse sort field list
+def f {u: Level}(A: Sort(u))(x: A): A := x
+                        ^

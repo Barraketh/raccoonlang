@@ -7,30 +7,6 @@ private object Builtins {
     def instantiate(name: String, tpe: Value): Value
   }
 
-  private case object SortEntry extends Entry {
-    override def instantiate(name: String, tpe: Value): Value =
-      tpe match {
-        case pi: VPi if pi.binders.length == 1 =>
-          val lRef = pi.binders.head.localRef
-          val preciseType =
-            pi.copy(
-              codomain = env => Sorts.sort(Level.succ(Interpreter.getLevel(env(lRef)))),
-              id = ValueId.Const(name)
-            )
-          VLam(
-            preciseType,
-            ValueId.Const(name),
-            LamBody.Native(
-              (args, _) => Sorts.sort(Interpreter.getLevel(args.head)),
-              Env.empty,
-              isRawRecursive = false
-            )
-          )
-        case pi: VPi => fail(ArityMismatch(1, pi.binders.length))
-        case other   => fail(CannotApplyNonFunction(other))
-      }
-  }
-
   private final case class Native(
       run: (VLam, VPi, Vector[Value]) => Value
   ) extends Entry {
@@ -67,16 +43,6 @@ private object Builtins {
 
   private val entries: Map[String, Entry] =
     Map(
-      "Sort" -> SortEntry,
-      "Level.succ" -> Native { (_, _, args) =>
-        Level.succ(Interpreter.getLevel(args.head))
-      },
-      "Level.max" -> Native { (_, _, args) =>
-        Level.max(args.map(arg => Interpreter.getLevel(arg)))
-      },
-      "Level.imax" -> Native { (_, _, args) =>
-        Level.imax(Interpreter.getLevel(args(0)), Interpreter.getLevel(args(1)))
-      },
       MkName -> Constructor(3),
       LiftName -> Native(runLift),
       IndName -> Native(runInd)

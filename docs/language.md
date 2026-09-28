@@ -94,26 +94,40 @@ Identifiers begin with a letter and continue with letters, digits, or `_`.
 
 ## Universes
 
-Types are terms. The primitive universe values are:
+Types are terms. `Sort`, `Type` and `Prop` are the sort formers, and they are
+keywords:
 
 ```text
-Prop       = Sort(Level.zero)
-Type       = Sort(Level.one)
+Sort { level = e }   -- the sort at level e
+Type                 -- Sort { level = Level.one }
+Prop                 -- Sort { level = Level.zero }
 ```
 
-`Level` is a first-class type. The bundled prelude provides `Sort`,
-`Level.succ`, `Level.max`, and `Level.imax`:
+`Sort` is not a function, so `Sort(u)` does not parse. A sort takes its level
+as a named field. A field list is nonempty, and an unknown or repeated field is
+a parse error. `Type` and `Prop` fix the level, so a `level` field on either is
+a parse error too.
+
+`Level` is a first-class type. A level is a level variable or one of the level
+forms `Level.zero`, `Level.one`, `Level.succ(e)`, `Level.max(e, e)` and
+`Level.imax(e, e)`. The forms belong to the language, not to the prelude: they
+are not functions, and `Level.succ` without its argument names nothing. A name
+in a `level` field resolves to a local first, then to one of the forms
+unqualified, and only then as usual. So `level = succ(u)` means
+`Level.succ(u)`, even inside `namespace Nat`:
 
 ```raccoon
-def id {u: Level}{A: Sort(u)}(x: A): A := x
+def id {u: Level}{A: Sort { level = u }}(x: A): A := x
 
-inductive Box (u: Level)(A: Sort(u)) : Sort(u)
+inductive Box (u: Level)(A: Sort { level = u }) : Sort { level = u }
  | mk (value: A) : Box(u, A)
+
+def lift {u: Level}(A: Sort { level = succ(u) })(x: A): A := x
 ```
 
-Universes are not cumulative. A value in `Sort(u)` does not automatically fit
-a position expecting a larger sort. Universe expressions must be
-definitionally equal where types are compared.
+Universes are not cumulative. A value in `Sort { level = u }` does not
+automatically fit a position expecting a larger sort. Universe expressions must
+be definitionally equal where types are compared.
 
 `Prop` is impredicative: a dependent function whose result is a proposition is
 itself a proposition regardless of the parameter universes. The sort `Prop` is
@@ -217,8 +231,8 @@ inductive Nat : Type
  | zero : Nat
  | succ (pred: Nat) : Nat
 
-inductive Vec {u: Level}(A: Sort(u)) indices (n: Nat)
-    : Sort(Level.max(Level.one, u))
+inductive Vec {u: Level}(A: Sort { level = u }) indices (n: Nat)
+    : Sort { level = max(one, u) }
  | nil : Vec(A, Nat.zero)
  | cons (n: Nat)(tail: Vec(A, n))(head: A) : Vec(A, Nat.succ(n))
 ```
@@ -313,10 +327,10 @@ passed directly as constructor fields. The same measure expression is
 evaluated for the current call and for each recursive call:
 
 ```raccoon
-struct Cursor {u: Level}(A: Sort(u)) : Sort(u)
+struct Cursor {u: Level}(A: Sort { level = u }) : Sort { level = u }
  | mk (remaining: List(A)) : Cursor(A)
 
-def countRemaining {u: Level}{A: Sort(u)}(cursor: Cursor(A)): Nat decreases measure(cursor.remaining) := {
+def countRemaining {u: Level}{A: Sort { level = u }}(cursor: Cursor(A)): Nat decreases measure(cursor.remaining) := {
   match cursor.remaining returning Nat with
   | List.nil => 0
   | List.cons _ tail =>

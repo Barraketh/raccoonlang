@@ -49,7 +49,7 @@ class TypingTests extends munit.FunSuite with TestSupport {
          | | zero : Peano
          | | succ (_: Peano) : Peano
          |
-         |def polyId {u: Level}{A: Sort(u)} (x: A): A := x
+         |def polyId {u: Level}{A: Sort { level = u }} (x: A): A := x
          |
          |def monoId : Peano -> Peano := $body
          |
@@ -269,7 +269,7 @@ class TypingTests extends munit.FunSuite with TestSupport {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Peano) : Sort(Level.one)
+        |inductive Vec (A: Type) indices (n: Peano) : Sort { level = one }
         | | nil : Vec(A, Peano.zero)
         | | cons (n: Peano) (xs: Vec(A, n)) (x: A): Vec(A, Peano.succ(n))
         |
@@ -288,7 +288,7 @@ class TypingTests extends munit.FunSuite with TestSupport {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Peano) : Sort(Level.one)
+        |inductive Vec (A: Type) indices (n: Peano) : Sort { level = one }
         | | nil : Vec(A, Peano.zero)
         | | cons (n: Peano) (xs: Vec(A, n)) (x: A): Vec(A, Peano.succ(n))
         |

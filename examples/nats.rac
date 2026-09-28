@@ -1,14 +1,14 @@
-inductive Nat : Type
- | zero : Nat
- | succ (_: Nat) : Nat
+inductive Peano : Type
+ | zero : Peano
+ | succ (_: Peano) : Peano
 
-def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
-  match b returning Nat with
-  | Nat.zero => a
-  | Nat.succ x => add(Nat.succ(a), x)
+def add (a: Peano)(b: Peano): Peano decreases structural(b) := {
+  match b returning Peano with
+  | Peano.zero => a
+  | Peano.succ x => add(Peano.succ(a), x)
 }
 
 {
-  let a := Nat.succ(Nat.zero)
+  let a := Peano.succ(Peano.zero)
   add(a, a)
 }

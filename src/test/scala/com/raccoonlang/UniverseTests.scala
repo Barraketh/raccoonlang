@@ -6,6 +6,103 @@ class UniverseTests extends munit.FunSuite with TestSupport {
   private def freshLevel(name: String): Value.Var =
     FreshVar.freshVar(name, Value.LevelTpe)
 
+  private def parseFailure(source: String): String =
+    LanguageParser.parseProgram(source) match {
+      case Failure(_, _, message) => message
+      case _: Success[_]          => fail("expected a parse error")
+    }
+
+  test("Type and Prop are the sorts at levels one and zero") {
+    val p =
+      """
+        |def typeIsSortOne : Eq(Sort { level = succ(one) }, Type, Sort { level = one }) := Eq.refl(Type)
+        |def propIsSortZero : Eq(Type, Prop, Sort { level = Level.zero }) := Eq.refl(Prop)
+        |{ Type }
+        |""".stripMargin
+
+    runProgram(p)
+  }
+
+  test("Sort is not a function: Sort(u) does not parse") {
+    def program(sort: String): String = s"def f {u: Level}(A: $sort)(x: A): A := x\n"
+
+    typecheckDecls(program("Sort { level = u }"))
+    assertEquals(parseFailure(program("Sort(u)")), "Failed to parse sort field list")
+    assertEquals(parseFailure(program("Sort")), "Failed to parse sort field list")
+  }
+
+  test("a sort's field list is nonempty and names each known field once") {
+    def program(sort: String): String = s"def f {u: Level}(A: $sort)(x: A): A := x\n"
+
+    typecheckDecls(program("Sort { level = u }"))
+    assertEquals(parseFailure(program("Sort {}")), "Empty field list")
+    assertEquals(parseFailure(program("Sort { level = u, level = u }")), "Repeated field level")
+    assertEquals(parseFailure(program("Sort { level = u, kind = u }")), "Unknown field kind")
+    assertEquals(parseFailure(program("Sort { scope = u, level = u }")), "Unknown field scope")
+  }
+
+  test("Type and Prop fix the level, so a level field on them is misplaced") {
+    def program(sort: String): String = s"def f (A: $sort)(x: A): A := x\n"
+
+    typecheckDecls(program("Type"))
+    typecheckDecls(program("Prop"))
+    val misplaced = "Misplaced field level: Type and Prop fix the level"
+    assertEquals(parseFailure(program("Type { level = one }")), misplaced)
+    assertEquals(parseFailure(program("Prop { level = zero }")), misplaced)
+    assertEquals(parseFailure(program("Type {}")), "Empty field list")
+  }
+
+  // A name in a sort field resolves to a local, then to one of the field's forms, then as usual.
+  test("a level field resolves its forms ahead of the current namespace") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
+        |
+        |namespace Peano {
+        |  def keep (A: Sort { level = succ(zero) })(x: A): A := x
+        |  def two : Peano := succ(succ(zero))
+        |}
+        |
+        |{ Peano.keep(Peano, Peano.two) }
+        |""".stripMargin
+
+    assertEquals(PrettyPrinter.print(runProgram(p)), "Peano.succ(Peano.succ(Peano.zero))")
+  }
+
+  test("a local shadows a level form in a sort field") {
+    def program(name: String): String =
+      s"""
+         |inductive Peano : Type
+         | | zero : Peano
+         |
+         |def keep ($name: Peano)(A: Sort { level = succ(zero) })(x: A): A := x
+         |""".stripMargin
+
+    typecheckDecls(program("p"))
+    expectOnly[TypeMismatch](typecheckDecls(program("zero")))
+  }
+
+  // The level forms are forms of the language, not functions: one exists only applied to all of its arguments.
+  test("a level form is written applied to all of its arguments") {
+    def program(level: String): String = s"def l : Level := $level\n"
+
+    typecheckDecls(program("Level.succ(Level.zero)"))
+    expectOnly[NotFound](typecheckDecls(program("Level.succ")))
+    expectOnly[ArityMismatch](typecheckDecls(program("Level.max(Level.zero)")))
+  }
+
+  test("the kernel owns the sort formers and level forms; the prelude declares none") {
+    Vector("Sort", "Type", "Prop", "Level.zero", "Level.one", "Level.succ", "Level.max", "Level.imax").foreach { name =>
+      assert(!Prelude.default.checkedEnv.globals.contains(name), s"the prelude declares $name")
+    }
+    def program(name: String): String = s"namespace Level {\n  def $name (l: Level): Level := succ(l)\n}\n"
+
+    typecheckDecls(program("next"))
+    expectOnly[AlreadyDefined](typecheckDecls(program("succ")))
+  }
+
   test("Type 0 fits in Type 1 (simple ascription with inductive)") {
     val p =
       """
@@ -61,7 +158,7 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     val p =
       """
         |{
-        |  let s : Sort(Level.succ(Level.succ(Level.zero))) := Type
+        |  let s : Sort { level = succ(succ(zero)) } := Type
         |  s
         |}
         |""".stripMargin
@@ -80,7 +177,7 @@ class UniverseTests extends munit.FunSuite with TestSupport {
         |  | zero: Peano
         |  | succ (_: Peano) : Peano
         |
-        |def f (u: Level)(A: Sort(u))(x: A): A := x
+        |def f (u: Level)(A: Sort { level = u })(x: A): A := x
         |
         |{ f(Level.one, Peano, Peano.zero) }
         |""".stripMargin
@@ -95,7 +192,7 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     val p =
       """
         |{
-        |  let s : Sort(Level.succ(Level.succ(Level.zero))) := Type
+        |  let s : Sort { level = succ(succ(zero)) } := Type
         |  s
         |}
         |""".stripMargin
@@ -116,7 +213,7 @@ class UniverseTests extends munit.FunSuite with TestSupport {
         |  | zero: Peano
         |  | succ (_: Peano) : Peano
         |
-        |opaque def up2 (u: Level)(A: Sort(u)): Sort(Level.succ(Level.succ(u))) := A
+        |opaque def up2 (u: Level)(A: Sort { level = u }): Sort { level = succ(succ(u)) } := A
         |
         |{ up2(Level.one, Peano) }
         |""".stripMargin
@@ -132,7 +229,7 @@ class UniverseTests extends munit.FunSuite with TestSupport {
   test("Reject lowering: cannot return Sort (succ u) where Sort u is expected") {
     val p =
       """
-        |def badDown (u: Level)(A: Sort(Level.succ(u))): Sort(u) := A
+        |def badDown (u: Level)(A: Sort { level = succ(u) }): Sort { level = u } := A
         |
         |""".stripMargin
 
@@ -147,7 +244,7 @@ class UniverseTests extends munit.FunSuite with TestSupport {
   test("Pi formation level: (A: Prop)(x: A) -> A has type Prop") {
     val p =
       """
-        |{ fun (A: Sort(Level.zero))(x: A): A => x }
+        |{ fun (A: Sort { level = zero })(x: A): A => x }
         |""".stripMargin
 
     val res = runProgram(p)
@@ -294,7 +391,7 @@ class UniverseTests extends munit.FunSuite with TestSupport {
   test("polymorphic Pi formation has an imax classifier") {
     val p =
       """
-        |def piType {u: Level}{v: Level}(A: Sort(u))(B: Sort(v)): Sort(Level.imax(u, v)) := (x: A) -> B
+        |def piType {u: Level}{v: Level}(A: Sort { level = u })(B: Sort { level = v }): Sort { level = imax(u, v) } := (x: A) -> B
         |{ Type }
         |""".stripMargin
 
@@ -304,12 +401,12 @@ class UniverseTests extends munit.FunSuite with TestSupport {
   test("multi-binder Pi formation preserves right-nested imax classifiers") {
     val p =
       """
-        |def piType2 {u: Level}{v: Level}{w: Level}(A: Sort(u))(B: Sort(v))(C: Sort(w))
-        |  : Sort(Level.imax(u, Level.imax(v, w))) := (x: A) -> (y: B) -> C
+        |def piType2 {u: Level}{v: Level}{w: Level}(A: Sort { level = u })(B: Sort { level = v })(C: Sort { level = w })
+        |  : Sort { level = imax(u, imax(v, w)) } := (x: A) -> (y: B) -> C
         |
         |def piType3 {u: Level}{v: Level}{t: Level}{w: Level}
-        |  (A: Sort(u))(B: Sort(v))(C: Sort(t))(D: Sort(w))
-        |  : Sort(Level.imax(u, Level.imax(v, Level.imax(t, w)))) := (x: A) -> (y: B) -> (z: C) -> D
+        |  (A: Sort { level = u })(B: Sort { level = v })(C: Sort { level = t })(D: Sort { level = w })
+        |  : Sort { level = imax(u, imax(v, imax(t, w))) } := (x: A) -> (y: B) -> (z: C) -> D
         |{ Type }
         |""".stripMargin
 
@@ -322,7 +419,7 @@ class UniverseTests extends munit.FunSuite with TestSupport {
         |inductive Truth : Prop
         | | intro : Truth
         |
-        |def polyK {u: Level}{v: Level}(A: Sort(u))(B: Sort(v))(b: B): (x: A) -> B :=
+        |def polyK {u: Level}{v: Level}(A: Sort { level = u })(B: Sort { level = v })(b: B): (x: A) -> B :=
         |  fun (x: A): B => b
         |
         |{ polyK(Type, Truth, Truth.intro) }
@@ -342,7 +439,7 @@ class UniverseTests extends munit.FunSuite with TestSupport {
         |  | zero: Peano
         |  | succ (_: Peano) : Peano
         |
-        |def idAt (u: Level)(A: Sort(u))(x: A): A := x
+        |def idAt (u: Level)(A: Sort { level = u })(x: A): A := x
         |
         |{ idAt(Level.one, Peano, Peano.zero) }
         |""".stripMargin
@@ -479,7 +576,7 @@ class UniverseTests extends munit.FunSuite with TestSupport {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |def idUp {u: Level} (A: Sort(Level.succ(u)))(x: A): A := x
+        |def idUp {u: Level} (A: Sort { level = succ(u) })(x: A): A := x
         |
         |{
         |  idUp(Type, Peano)

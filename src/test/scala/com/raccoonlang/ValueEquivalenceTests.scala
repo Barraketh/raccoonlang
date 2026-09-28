@@ -5,10 +5,10 @@ import com.raccoonlang.Value._
 
 class ValueEquivalenceTests extends munit.FunSuite {
   private val span = Span(0, 0)
-  private val typeRef: CoreAst.Term = CTerm.GlobalRef("Type", span)
+  private val typeSort: CoreAst.Term = CTerm.Sort(CTerm.LevelOp(CoreAst.LevelForm.One, Vector.empty, span), span)
   private val binderRef = CoreAst.LocalRef(0, "x")
-  private val binder = CoreAst.Binder(binderRef, typeRef, Span(0, 0))
-  private val env = Env.empty.putGlobal("Type", Sorts.Type)
+  private val binder = CoreAst.Binder(binderRef, typeSort, Span(0, 0))
+  private val env = Env.empty
   private val typeToTypeClassifier = Sorts.sort(Level.succ(Level.one))
 
   private def nodeId(start: Int): AstNodeId = AstNodeId(None, start)
@@ -64,7 +64,7 @@ class ValueEquivalenceTests extends munit.FunSuite {
 
   test("Pi definitional equality distinguishes telescope grouping") {
     val yRef = CoreAst.LocalRef(1, "y")
-    val yBinder = CoreAst.Binder(yRef, typeRef, span)
+    val yBinder = CoreAst.Binder(yRef, typeSort, span)
     val grouped = VPi(
       env,
       Vector(binder, yBinder),
@@ -100,7 +100,7 @@ class ValueEquivalenceTests extends munit.FunSuite {
 
   test("checked and residual applications cross nested Pi groups") {
     val yRef = CoreAst.LocalRef(2, "y")
-    val yBinder = CoreAst.Binder(yRef, typeRef, span)
+    val yBinder = CoreAst.Binder(yRef, typeSort, span)
     val nested = VPi(
       env,
       Vector(binder),
@@ -117,8 +117,8 @@ class ValueEquivalenceTests extends munit.FunSuite {
       ValueId.LocalId(nodeId(9), Vector.empty),
       () => typeToTypeClassifier
     )
-    val applicationEnv = env.putGlobal("Prop", Sorts.Prop).putGlobal("nested", VConst("nested", Symbol, nested))
-    val ref = CoreAst.Term.GlobalRef("Prop", span)
+    val applicationEnv = env.putGlobal("nested", VConst("nested", Symbol, nested))
+    val ref = CTerm.Sort(CTerm.LevelOp(CoreAst.LevelForm.Zero, Vector.empty, span), span)
     val first = CoreAst.Term.App(CoreAst.Term.GlobalRef("nested", span), Vector(ref), span)
     val application = CoreAst.Term.App(first, Vector(ref), span)
 

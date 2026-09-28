@@ -1,12 +1,2 @@
-def Sort (l: Level): Type := builtin
-
-namespace Level {
-  def succ (l: Level): Level := builtin
-
-  def max (l1: Level)(l2: Level): Level := builtin
-
-  def imax (l1: Level)(l2: Level): Level := builtin
-}
-
-inductive Eq {u: Level}(A: Sort(u)) indices (x: A)(y: A) : Prop
+inductive Eq {u: Level}(A: Sort { level = u }) indices (x: A)(y: A) : Prop
  | refl (x: A) : Eq(A, x, x)

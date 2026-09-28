@@ -1,0 +1,3 @@
+def f (A: Type { level = Level.one })(x: A): A := x
+
+{ Nat.zero }
