@@ -29,6 +29,19 @@ class PrettyPrinterTests extends munit.FunSuite with TestSupport {
     parse(prelude + s"axiom g : $printed\n")
   }
 
+  test("sorts print as their formers") {
+    val src = "axiom f : {u: Level} -> (A: Sort { level = succ(u) }) -> (P: Prop) -> Sort { level = max(u, one) }\n"
+    val printed = PrettyPrinter.printTerm(axiomType(src, "f"))
+
+    assertEquals(
+      printed,
+      "{u: Level} -> (A: Sort { level = Level.succ(u) }) -> (P: Prop) -> Sort { level = Level.max(u, Level.one) }"
+    )
+    parse(s"axiom g : $printed\n")
+    assertEquals(PrettyPrinter.print(runProgram("{ Sort { level = succ(one) } }")), "Sort { level = 2 }")
+    assertEquals(PrettyPrinter.print(runProgram("{ Sort { level = one } }")), "Type")
+  }
+
   test("anonymous function domain remains parenthesized in arrow shorthand") {
     val printed = PrettyPrinter.printTerm(axiomType("axiom f : (_: Type -> Type) -> Type\n", "f"))
 

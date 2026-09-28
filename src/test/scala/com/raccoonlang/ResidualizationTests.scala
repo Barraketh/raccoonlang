@@ -277,8 +277,8 @@ class ResidualizationTests extends munit.FunSuite {
         assert(implicitBinder.isImplicit, "expected leading binder to stay implicit in the residual")
         assert(implicitBinder.projection.isDefined, "expected forced implicit binder to carry a projection spec")
         implicitBinder.ty match {
-          case CA.Term.GlobalRef("Type", _) =>
-          case other                        => fail(s"Expected Type binder annotation, got $other")
+          case CA.Term.Sort(CA.Term.LevelOp(CA.LevelForm.One, _, _), _) =>
+          case other => fail(s"Expected Type binder annotation, got $other")
         }
         val explicitBinder = pi.binders(1)
         assert(!explicitBinder.isImplicit, "expected forcing binder to stay explicit in the residual")
@@ -346,8 +346,8 @@ class ResidualizationTests extends munit.FunSuite {
       case pi: CA.Term.Pi =>
         assert(!pi.binders.head.isImplicit, "expected explicit binder to stay explicit in the residual")
         pi.binders.head.ty match {
-          case CA.Term.GlobalRef("Type", _) =>
-          case other                        => fail(s"Expected Type binder, got $other")
+          case CA.Term.Sort(CA.Term.LevelOp(CA.LevelForm.One, _, _), _) =>
+          case other                                                    => fail(s"Expected Type binder, got $other")
         }
         pi.out match {
           case CA.Term.LocalRef(outRef, _) => assertEquals(outRef, pi.binders.head.localRef)
@@ -361,7 +361,7 @@ class ResidualizationTests extends munit.FunSuite {
   test("Pi binder residual preserves implicit level binders") {
     val p =
       """
-        |axiom f : {u: Level} -> (_: Sort(Level.succ(u))) -> Sort(u)
+        |axiom f : {u: Level} -> (_: Sort { level = succ(u) }) -> Sort { level = u }
         |""".stripMargin
 
     checkLastDeclType(p) match {
@@ -373,7 +373,7 @@ class ResidualizationTests extends munit.FunSuite {
           case other                         => fail(s"Expected Level binder, got $other")
         }
         pi.out match {
-          case CA.Term.App(CA.Term.GlobalRef("Sort", _), Vector(CA.Term.LocalRef(outRef, _)), _) =>
+          case CA.Term.Sort(CA.Term.LocalRef(outRef, _), _) =>
             assertEquals(outRef, uRef)
           case other => fail(s"Expected codomain to reuse universe level, got $other")
         }
@@ -387,7 +387,7 @@ class ResidualizationTests extends munit.FunSuite {
   test("a generated selector's match residualizes its rewritten field type as its motive") {
     val p =
       """
-        |struct Boxed : Sort(Level.succ(Level.one))
+        |struct Boxed : Sort { level = succ(one) }
         | | mk (T: Type)(x: T) : Boxed
         |""".stripMargin
 

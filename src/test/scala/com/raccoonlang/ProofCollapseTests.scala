@@ -76,12 +76,12 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
   }
 
   test("generic-universe bodies compare uncollapsed values correctly") {
-    // At generic u, `x : A` with `A : Sort(u)` is not known to be a proof and stays an ordinary
+    // At generic u, `x : A` with `A : Sort { level = u }` is not known to be a proof and stays an ordinary
     // value (irrelevance does not hold at generic u); instantiating at a proposition hands the
     // same body collapsed VProofs. Both must check.
     typecheckDecls(
       """
-        |def genRefl {u: Level}{A: Sort(u)} (x: A): Eq(A, x, id(x)) := Eq.refl(x)
+        |def genRefl {u: Level}{A: Sort { level = u }} (x: A): Eq(A, x, id(x)) := Eq.refl(x)
         |
         |def atProp (P: Prop)(h: P): Eq(P, h, id(h)) := genRefl(h)
         |""".stripMargin
@@ -91,7 +91,7 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
   test("large elimination eligibility classifies polymorphic fields at the Prop instance") {
     val res = runProgram(
       """
-        |inductive PolyBox {u: Level}(A: Sort(u)) : Sort(u)
+        |inductive PolyBox {u: Level}(A: Sort { level = u }) : Sort { level = u }
         | | mk (value: A) : PolyBox(A)
         |
         |axiom boxedTrue : PolyBox(True)
@@ -314,7 +314,7 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
         | | zero : Peano
         | | succ (pred: Peano) : Peano
         |
-        |inductive PolyUnit (u: Level) indices (n: Peano) : Sort(u)
+        |inductive PolyUnit (u: Level) indices (n: Peano) : Sort { level = u }
         | | mk : PolyUnit(u, Peano.zero)
         |
         |axiom makerType (u: Level): (n: Peano) -> PolyUnit(u, Peano.zero)

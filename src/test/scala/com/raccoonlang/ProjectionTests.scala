@@ -8,9 +8,10 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
 
   test("Pi-codomain projection peels one binder from a grouped telescope") {
     val span = Span(0, 0)
-    val env = Env.empty.putGlobal("Type", Sorts.Type)
-    val x = CoreAst.Binder(CoreAst.LocalRef(0, "x"), CoreAst.Term.GlobalRef("Type", span), span)
-    val y = CoreAst.Binder(CoreAst.LocalRef(1, "y"), CoreAst.Term.GlobalRef("Type", span), span)
+    val env = Env.empty
+    val typeSort = CoreAst.Term.Sort(CoreAst.Term.LevelOp(CoreAst.LevelForm.One, Vector.empty, span), span)
+    val x = CoreAst.Binder(CoreAst.LocalRef(0, "x"), typeSort, span)
+    val y = CoreAst.Binder(CoreAst.LocalRef(1, "y"), typeSort, span)
     val grouped = VPi(
       env,
       Vector(x, y),
@@ -34,8 +35,9 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
 
   test("Pi-result projection crosses dependent grouped binders") {
     val span = Span(0, 0)
-    val env = Env.empty.putGlobal("Type", Sorts.Type)
-    val x = CoreAst.Binder(CoreAst.LocalRef(0, "x"), CoreAst.Term.GlobalRef("Type", span), span)
+    val env = Env.empty
+    val typeSort = CoreAst.Term.Sort(CoreAst.Term.LevelOp(CoreAst.LevelForm.One, Vector.empty, span), span)
+    val x = CoreAst.Binder(CoreAst.LocalRef(0, "x"), typeSort, span)
     val y = CoreAst.Binder(CoreAst.LocalRef(1, "y"), CoreAst.Term.LocalRef(x.localRef, span), span)
     val grouped = VPi(
       env,
@@ -342,7 +344,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |inductive Peano : Type
         | | zero : Peano
         |
-        |inductive Pack : Sort(Level.succ(Level.one))
+        |inductive Pack : Sort { level = succ(one) }
         | | mk {A: Type} (x: A) : Pack
         |
         |inductive Wrap (p: Pack) : Type
@@ -386,7 +388,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |struct PairU {u1: Level}{u2: Level}(A: Sort(u1))(B: Sort(u2)) : Sort(Level.max(u1, u2))
+        |struct PairU {u1: Level}{u2: Level}(A: Sort { level = u1 })(B: Sort { level = u2 }) : Sort { level = max(u1, u2) }
         | | mk (fst: A)(snd: B) : PairU(A, B)
         |
         |// Opaque on purpose
@@ -407,7 +409,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |inductive Peano : Type
         | | zero : Peano
         |
-        |struct PairU {u1: Level}{u2: Level}(A: Sort(u1))(B: Sort(u2)) : Sort(Level.max(u1, u2))
+        |struct PairU {u1: Level}{u2: Level}(A: Sort { level = u1 })(B: Sort { level = u2 }) : Sort { level = max(u1, u2) }
         | | mk (fst: A)(snd: B) : PairU(A, B)
         |
         |// Opaque on purpose
@@ -677,10 +679,10 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |inductive True : Prop
         | | intro : True
         |
-        |struct PolyBox {u: Level}(A: Sort(u)) : Sort(u)
+        |struct PolyBox {u: Level}(A: Sort { level = u }) : Sort { level = u }
         | | mk (value: A) : PolyBox(A)
         |
-        |def get {u: Level}{A: Sort(u)} (box: PolyBox(A)): A := box.value
+        |def get {u: Level}{A: Sort { level = u }} (box: PolyBox(A)): A := box.value
         |
         |axiom boxedTrue : PolyBox(True)
         |def gotTrue : True := get(boxedTrue)

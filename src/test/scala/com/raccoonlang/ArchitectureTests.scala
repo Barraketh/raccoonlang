@@ -22,6 +22,11 @@ class ArchitectureTests extends munit.FunSuite {
       Set("Sorts.scala")
     ),
     Rule(
+      "sort formers and level forms are syntax the kernel owns, never names of globals or builtins",
+      "\"(Sort|Type|Prop|Level\\.(zero|one|succ|max|imax))\"".r,
+      Set("IdentifierSyntax.scala", "LanguageParser.scala", "PrettyPrinter.scala")
+    ),
+    Rule(
       "checking is synthesis plus equality: only TypeChecker.check takes an optional expected type",
       raw"\bexpected\w*\s*:\s*Option\[".r,
       Set("TypeChecker.scala")

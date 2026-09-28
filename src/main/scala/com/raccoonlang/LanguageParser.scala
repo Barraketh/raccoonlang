@@ -17,10 +17,8 @@ object LanguageParser {
   private val skipAllWs = (emptyLine.rep(0) ~ skipWS).named("AllWS")
   private val skipOneLine = emptyLine.? ~ skipWS
 
-  private val identAtom =
-    (P(c => IdentifierSyntax.isStart(c)) ~ P(c => IdentifierSyntax.isContinue(c)).rep(0)).!.filter(value =>
-      IdentifierSyntax.isAtom(value)
-    )
+  private val wordAtom = (P(c => IdentifierSyntax.isStart(c)) ~ P(c => IdentifierSyntax.isContinue(c)).rep(0)).!
+  private val identAtom = wordAtom.filter(value => IdentifierSyntax.isAtom(value))
 
   private val rootName = "_root_"
   private val rootIdent: Parser[String] = P(rootName).!
@@ -77,7 +75,54 @@ object LanguageParser {
   }
 
   private def termAtom(implicit sourceId: Option[SourceId]): Parser[Term] =
-    (sym("(") ~/ skipAllWs ~ term ~ layoutSymTight(")")) | rootTerm | identTerm | natLitTerm | strLitTerm
+    (sym("(") ~/ skipAllWs ~ term ~ layoutSymTight(")")) | rootTerm | identTerm | sortFormer | natLitTerm | strLitTerm
+
+  /** A sort former's keyword as a whole word, so that `Types` stays an identifier. */
+  private def former(name: String): Parser[NoValue.type] = wordAtom.filter(_ == name).map(_ => NoValue)
+
+  /** The fields a sort takes by name. */
+  private val sortFieldNames: Set[String] = Set("level")
+
+  private def sortField(implicit sourceId: Option[SourceId]): Parser[(String, Term, Span)] =
+    (wordAtom ~ sym('=') ~/ skipAllWs ~ term).flatSpanned(sourceId)
+
+  /**
+   * A sort's field list `{ name = e, ... }`. An empty list, an unknown or repeated field, and a `level` field on a
+   * former that fixes the level are parse errors.
+   */
+  private def sortFields(fixesLevel: Boolean)(implicit sourceId: Option[SourceId]): Parser[Map[String, Term]] =
+    (P('{') ~/ skipAllWs ~ sortField.rep(0, layoutSym(',')) ~ layoutSymTight('}'))
+      .flatSpanned(sourceId)
+      .map { case (fields, span) =>
+        if (fields.isEmpty) throw ParseError(span.start, span.start, "Empty field list")
+        fields.foldLeft(Map.empty[String, Term]) { case (seen, (name, value, fieldSpan)) =>
+          def reject(message: String): Nothing = throw ParseError(fieldSpan.start, fieldSpan.start, message)
+          if (!sortFieldNames(name)) reject(s"Unknown field $name")
+          if (fixesLevel && name == "level") reject("Misplaced field level: Type and Prop fix the level")
+          if (seen.contains(name)) reject(s"Repeated field $name")
+          seen + (name -> value)
+        }
+      }
+      .named("sort field list")
+
+  /**
+   * `Sort { level = e }`, `Type` and `Prop`. `level` is the only sort field, and `Type` and `Prop` fix it, so a field
+   * list after either is always rejected.
+   */
+  private def sortFormer(implicit sourceId: Option[SourceId]): Parser[Term] = {
+    def fixed(name: String, level: SortLevel): Parser[Term] =
+      (former(name) ~ (skipWS ~ sortFields(fixesLevel = true)).?).flatSpanned(sourceId).map { case (_, span) =>
+        Sort(level, span)
+      }
+    val written =
+      (former("Sort") ~/ skipWS ~ sortFields(fixesLevel = false)).flatSpanned(sourceId).map { case (fields, span) =>
+        fields.get("level") match {
+          case Some(level) => Sort(SortLevel.Written(level), span)
+          case None        => throw ParseError(span.start, span.start, "Sort requires a level field")
+        }
+      }
+    written | fixed("Type", SortLevel.One) | fixed("Prop", SortLevel.Zero)
+  }
 
   private def parenArgs[A](arg: => Parser[A]): Parser[Vector[A]] =
     P('(') ~/ skipAllWs ~ arg.rep(0, layoutSym(',')) ~ layoutSymTight(')')
@@ -105,6 +150,7 @@ object LanguageParser {
     sym('(') ~ skipAllWs ~ typeTerm ~ layoutSymTight(')') |
       rootTerm |
       identTerm |
+      sortFormer |
       natLitTerm |
       strLitTerm
 

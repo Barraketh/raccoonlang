@@ -70,7 +70,7 @@ object PrettyPrinter {
    */
   private def printTermAtom(t: CoreAst.Term): String = t match {
     case _: CoreAst.Term.NatLit | _: CoreAst.Term.StrLit | _: CoreAst.Term.Ref | _: CoreAst.Term.App |
-        _: CoreAst.Term.Select =>
+        _: CoreAst.Term.Select | _: CoreAst.Term.Sort | _: CoreAst.Term.LevelOp =>
       printCoreTerm(t)
     case _: CoreAst.Term.Lam | _: CoreAst.Term.Match | _: CoreAst.Term.Body | _: CoreAst.Term.Pi =>
       s"(${printCoreTerm(t)})"
@@ -93,6 +93,12 @@ object PrettyPrinter {
     case CoreAst.Term.Pi(binders, out, _, _) =>
       val bindersStr = binders.map(printPiBinder).mkString(" -> ")
       s"$bindersStr -> ${printCoreTerm(out)}"
+    case CoreAst.Term.Sort(CoreAst.Term.LevelOp(CoreAst.LevelForm.Zero, _, _), _) => "Prop"
+    case CoreAst.Term.Sort(CoreAst.Term.LevelOp(CoreAst.LevelForm.One, _, _), _)  => "Type"
+    case CoreAst.Term.Sort(level, _) => s"Sort { level = ${printCoreTerm(level)} }"
+    case CoreAst.Term.LevelOp(form, args, _) =>
+      val argsStr = if (args.isEmpty) "" else args.map(printCoreTerm).mkString("(", ", ", ")")
+      s"Level.${form.name}$argsStr"
   }
 
   def printTerm(t: CoreAst.Ast): String = t match {
@@ -181,7 +187,7 @@ object PrettyPrinter {
   def print(value: Value): String = value match {
     case sort: Value.VSort if Sorts.isProp(sort)            => "Prop"
     case sort: Value.VSort if sort.level == Value.Level.one => "Type"
-    case sort: Value.VSort                                  => s"Sort(${printLevel(sort.level)})"
+    case sort: Value.VSort                                  => s"Sort { level = ${printLevel(sort.level)} }"
     case level: Value.Level                                 => printLevel(level)
     case pi: Value.VPi                                      => printPi(pi)
     case Value.VConst(name, _, _)                           => name

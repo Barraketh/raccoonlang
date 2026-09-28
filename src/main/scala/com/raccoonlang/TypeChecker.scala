@@ -426,6 +426,15 @@ object TypeChecker {
           CheckedTerm(checked.vpi, checked.residual)
         case ref: CA.Term.Ref => CheckedTerm(Interpreter.evalTerm(ref, env), ref)
         case l: CA.Term.Lam   => checkLam(l, env)
+        case CA.Term.Sort(level, span) =>
+          val checkedLevel = checkTerm(level, LevelTpe, env)
+          CheckedTerm(Interpreter.evalSort(checkedLevel.value), CA.Term.Sort(checkedLevel.residual, span))
+        case CA.Term.LevelOp(form, args, span) =>
+          val checkedArgs = args.map(checkTerm(_, LevelTpe, env))
+          CheckedTerm(
+            Interpreter.evalLevelOp(form, checkedArgs.map(_.value)),
+            CA.Term.LevelOp(form, checkedArgs.map(_.residual), span)
+          )
       }
       expected.foreach(expectedTy => at(typeSite(term))(checkType(synthed.value, expectedTy)))
       synthed

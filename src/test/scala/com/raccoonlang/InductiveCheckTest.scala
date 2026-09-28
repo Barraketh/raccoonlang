@@ -31,11 +31,17 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
 
   private def global(name: String): CoreAst.Term = CoreAst.Term.GlobalRef(name, blockSpan)
 
+  private def sortAt(level: CoreAst.LevelForm): CoreAst.Term =
+    CoreAst.Term.Sort(CoreAst.Term.LevelOp(level, Vector.empty, blockSpan), blockSpan)
+
+  private val typeSort: CoreAst.Term = sortAt(CoreAst.LevelForm.One)
+  private val propSort: CoreAst.Term = sortAt(CoreAst.LevelForm.Zero)
+
   private def mutualEvenOdd(evenRecursiveFieldType: CoreAst.Term = global("Odd")): CoreAst.Decl.InductiveBlock = {
     val oddField = CoreAst.Binder(CoreAst.LocalRef(1001, "odd"), evenRecursiveFieldType, blockSpan)
     val evenField = CoreAst.Binder(CoreAst.LocalRef(1002, "even"), global("Even"), blockSpan)
     val even = CoreAst.Decl.InductiveDecl(
-      CoreAst.InductiveHeader("Even", Vector.empty, Vector.empty, global("Type"), blockSpan),
+      CoreAst.InductiveHeader("Even", Vector.empty, Vector.empty, typeSort, blockSpan),
       Vector(
         CoreAst.ConstructorDecl("Even.zero", "zero", Vector.empty, global("Even"), blockSpan),
         CoreAst.ConstructorDecl("Even.succ", "succ", Vector(oddField), global("Even"), blockSpan)
@@ -43,7 +49,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
       blockSpan
     )
     val odd = CoreAst.Decl.InductiveDecl(
-      CoreAst.InductiveHeader("Odd", Vector.empty, Vector.empty, global("Type"), blockSpan),
+      CoreAst.InductiveHeader("Odd", Vector.empty, Vector.empty, typeSort, blockSpan),
       Vector(CoreAst.ConstructorDecl("Odd.succ", "succ", Vector(evenField), global("Odd"), blockSpan)),
       blockSpan
     )
@@ -51,13 +57,13 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   }
 
   private def parameterizedMutual(secondParamType: CoreAst.Term): CoreAst.Decl.InductiveBlock = {
-    val firstParam = CoreAst.Binder(CoreAst.LocalRef(1010, "A"), global("Type"), blockSpan)
+    val firstParam = CoreAst.Binder(CoreAst.LocalRef(1010, "A"), typeSort, blockSpan)
     val secondParam = CoreAst.Binder(CoreAst.LocalRef(1011, "B"), secondParamType, blockSpan)
 
     def family(name: String, param: CoreAst.Binder): CoreAst.Decl.InductiveDecl = {
       val result = CoreAst.Term.App(global(name), Vector(CoreAst.Term.LocalRef(param.localRef, blockSpan)), blockSpan)
       CoreAst.Decl.InductiveDecl(
-        CoreAst.InductiveHeader(name, Vector(param), Vector.empty, global("Type"), blockSpan),
+        CoreAst.InductiveHeader(name, Vector(param), Vector.empty, typeSort, blockSpan),
         Vector(CoreAst.ConstructorDecl(s"$name.mk", "mk", Vector.empty, result, blockSpan)),
         blockSpan
       )
@@ -67,8 +73,8 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   }
 
   private def parameterizedMutualWithStrictlyNegativeParam: CoreAst.Decl.InductiveBlock = {
-    val firstParam = CoreAst.Binder(CoreAst.LocalRef(1012, "A"), global("Type"), blockSpan)
-    val secondParam = CoreAst.Binder(CoreAst.LocalRef(1013, "B"), global("Type"), blockSpan)
+    val firstParam = CoreAst.Binder(CoreAst.LocalRef(1012, "A"), typeSort, blockSpan)
+    val secondParam = CoreAst.Binder(CoreAst.LocalRef(1013, "B"), typeSort, blockSpan)
     val innerArg = CoreAst.Binder(
       CoreAst.LocalRef(1014, "a"),
       CoreAst.Term.LocalRef(firstParam.localRef, blockSpan),
@@ -87,12 +93,12 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
       CoreAst.Term.App(global(name), Vector(CoreAst.Term.LocalRef(param.localRef, blockSpan)), blockSpan)
 
     val first = CoreAst.Decl.InductiveDecl(
-      CoreAst.InductiveHeader("First", Vector(firstParam), Vector.empty, global("Type"), blockSpan),
+      CoreAst.InductiveHeader("First", Vector(firstParam), Vector.empty, typeSort, blockSpan),
       Vector(CoreAst.ConstructorDecl("First.mk", "mk", Vector(field), result("First", firstParam), blockSpan)),
       blockSpan
     )
     val second = CoreAst.Decl.InductiveDecl(
-      CoreAst.InductiveHeader("Second", Vector(secondParam), Vector.empty, global("Type"), blockSpan),
+      CoreAst.InductiveHeader("Second", Vector(secondParam), Vector.empty, typeSort, blockSpan),
       Vector(CoreAst.ConstructorDecl("Second.mk", "mk", Vector.empty, result("Second", secondParam), blockSpan)),
       blockSpan
     )
@@ -100,21 +106,21 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   }
 
   private def nonUniformRecursiveMutual: CoreAst.Decl.InductiveBlock = {
-    val firstParam = CoreAst.Binder(CoreAst.LocalRef(1030, "A"), global("Type"), blockSpan)
-    val secondParam = CoreAst.Binder(CoreAst.LocalRef(1031, "B"), global("Type"), blockSpan)
+    val firstParam = CoreAst.Binder(CoreAst.LocalRef(1030, "A"), typeSort, blockSpan)
+    val secondParam = CoreAst.Binder(CoreAst.LocalRef(1031, "B"), typeSort, blockSpan)
     val firstResult =
       CoreAst.Term.App(global("First"), Vector(CoreAst.Term.LocalRef(firstParam.localRef, blockSpan)), blockSpan)
     val secondAtCarrier = CoreAst.Term.App(global("Second"), Vector(global("Carrier")), blockSpan)
     val recursiveField = CoreAst.Binder(CoreAst.LocalRef(1032, "child"), secondAtCarrier, blockSpan)
     val first = CoreAst.Decl.InductiveDecl(
-      CoreAst.InductiveHeader("First", Vector(firstParam), Vector.empty, global("Type"), blockSpan),
+      CoreAst.InductiveHeader("First", Vector(firstParam), Vector.empty, typeSort, blockSpan),
       Vector(CoreAst.ConstructorDecl("First.mk", "mk", Vector(recursiveField), firstResult, blockSpan)),
       blockSpan
     )
     val secondResult =
       CoreAst.Term.App(global("Second"), Vector(CoreAst.Term.LocalRef(secondParam.localRef, blockSpan)), blockSpan)
     val second = CoreAst.Decl.InductiveDecl(
-      CoreAst.InductiveHeader("Second", Vector(secondParam), Vector.empty, global("Type"), blockSpan),
+      CoreAst.InductiveHeader("Second", Vector(secondParam), Vector.empty, typeSort, blockSpan),
       Vector(CoreAst.ConstructorDecl("Second.mk", "mk", Vector.empty, secondResult, blockSpan)),
       blockSpan
     )
@@ -122,15 +128,15 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   }
 
   private def recursiveResultIndexMutual: CoreAst.Decl.InductiveBlock = {
-    val index = CoreAst.Binder(CoreAst.LocalRef(1040, "X"), global("Type"), blockSpan)
+    val index = CoreAst.Binder(CoreAst.LocalRef(1040, "X"), typeSort, blockSpan)
     val firstAtSecond = CoreAst.Term.App(global("First"), Vector(global("Second")), blockSpan)
     val first = CoreAst.Decl.InductiveDecl(
-      CoreAst.InductiveHeader("First", Vector.empty, Vector(index), global("Type"), blockSpan),
+      CoreAst.InductiveHeader("First", Vector.empty, Vector(index), typeSort, blockSpan),
       Vector(CoreAst.ConstructorDecl("First.mk", "mk", Vector.empty, firstAtSecond, blockSpan)),
       blockSpan
     )
     val second = CoreAst.Decl.InductiveDecl(
-      CoreAst.InductiveHeader("Second", Vector.empty, Vector.empty, global("Type"), blockSpan),
+      CoreAst.InductiveHeader("Second", Vector.empty, Vector.empty, typeSort, blockSpan),
       Vector(CoreAst.ConstructorDecl("Second.mk", "mk", Vector.empty, global("Second"), blockSpan)),
       blockSpan
     )
@@ -150,7 +156,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   test("native singleton declarations never infer source universe coordinates") {
     val universe = CoreAst.Binder(CoreAst.LocalRef(1060, "u"), global("Level"), blockSpan)
     val universeTerm = CoreAst.Term.LocalRef(universe.localRef, blockSpan)
-    val sort = CoreAst.Term.App(global("Sort"), Vector(universeTerm), blockSpan)
+    val sort = CoreAst.Term.Sort(universeTerm, blockSpan)
     val result = CoreAst.Term.App(global("Poly"), Vector(universeTerm), blockSpan)
     val declaration = CoreAst.Decl.InductiveDecl(
       CoreAst.InductiveHeader("Poly", Vector(universe), Vector.empty, sort, blockSpan),
@@ -210,7 +216,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   }
 
   test("mutual blocks alpha-canonicalize common parameter binders") {
-    val env = Interpreter.evalDecl(parameterizedMutual(global("Type")), Prelude.test.checkedEnv)
+    val env = Interpreter.evalDecl(parameterizedMutual(typeSort), Prelude.test.checkedEnv)
 
     assert(env.globals.contains("First.mk"))
     assert(env.globals.contains("Second.mk"))
@@ -232,7 +238,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   test("mutual blocks reject mismatched common parameter types without publication") {
     val base = Prelude.test.checkedEnv
     val error = interceptError[InvalidInductiveBlock] {
-      Interpreter.evalDecl(parameterizedMutual(global("Prop")), base)
+      Interpreter.evalDecl(parameterizedMutual(propSort), base)
     }
 
     assert(error.reason.contains("different type for common parameter 0"))
@@ -256,7 +262,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
 
   test("mutual blocks reject non-uniform parameters on recursive sibling fields") {
     val base = Interpreter.evalDecl(
-      CoreAst.Decl.AxiomDecl("Carrier", global("Type"), blockSpan),
+      CoreAst.Decl.AxiomDecl("Carrier", typeSort, blockSpan),
       Prelude.test.checkedEnv
     )
 
@@ -283,7 +289,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
     val block = mutualEvenOdd()
     val odd = block.families(1)
     val mismatched = block.copy(
-      families = block.families.updated(1, odd.copy(header = odd.header.copy(resultTy = global("Prop"))))
+      families = block.families.updated(1, odd.copy(header = odd.header.copy(resultTy = propSort)))
     )
     val base = Prelude.test.checkedEnv
     val error = interceptError[MutualBlockSortMismatch] {
@@ -350,7 +356,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
     val p =
       """
         |inductive Small : Type
-        | | mk (A: Sort(Level.one)): Small
+        | | mk (A: Sort { level = one }): Small
         |
         |""".stripMargin
 
@@ -371,9 +377,9 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   test("Non-strict positivity: aligned universes under other constructor F args (Wrap u (Bad u))") {
     val p =
       """
-        |opaque def Wrap(A: Sort(Level.zero)): Sort(Level.zero) := A
+        |opaque def Wrap(A: Sort { level = zero }): Sort { level = zero } := A
         |
-        |inductive Bad : Sort(Level.zero)
+        |inductive Bad : Sort { level = zero }
         | | con(x: Wrap(Bad)): Bad
         |
         |""".stripMargin
@@ -388,7 +394,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Peano) : Sort(Level.one)
+        |inductive Vec (A: Type) indices (n: Peano) : Sort { level = one }
         | | mk (B: Type)(n: Peano): Vec(B, n)
         |
         |""".stripMargin
@@ -403,7 +409,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Peano) : Sort(Level.one)
+        |inductive Vec (A: Type) indices (n: Peano) : Sort { level = one }
         | | bad : Vec(A)
         |
         |""".stripMargin
@@ -418,7 +424,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Peano) : Sort(Level.one)
+        |inductive Vec (A: Type) indices (n: Peano) : Sort { level = one }
         | | nil : Vec(A, Peano.zero)
         | | cons {n: Peano}(tail: Vec(A, n))(head: A): Vec(A, Peano.succ(n))
         |
@@ -434,7 +440,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Peano) : Sort(Level.one)
+        |inductive Vec (A: Type) indices (n: Peano) : Sort { level = one }
         | | bad {n: Peano}: Vec(A, n)
         |
         |""".stripMargin
@@ -445,7 +451,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   test("Constructor binders may not shadow family params") {
     val p =
       """
-        |struct Bad (A: Type) : Sort(Level.succ(Level.one))
+        |struct Bad (A: Type) : Sort { level = succ(one) }
         | | mk (A: Type): Bad(A)
         |
         |""".stripMargin
@@ -456,7 +462,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   test("Constructor implicit binders include inductive params") {
     val p =
       """
-        |inductive Bad (A: Type)(B: Type) : Sort(Level.one)
+        |inductive Bad (A: Type)(B: Type) : Sort { level = one }
         | | inl (a: A) : Bad(A, B)
         |
         |""".stripMargin
@@ -515,10 +521,10 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   test("Nested non-positive: container parameter contravariant in later family argument") {
     val p =
       """
-        |inductive Box {u: Level}(A: Sort(u))(F: A -> Type) : Sort(Level.max(u, Level.one))
+        |inductive Box {u: Level}(A: Sort { level = u })(F: A -> Type) : Sort { level = max(u, one) }
         | | mk : Box(A, F)
         |
-        |inductive Bad : Sort(Level.succ(Level.one))
+        |inductive Bad : Sort { level = succ(one) }
         | | con {F: Bad -> Type} (x: Box(Bad, F)) : Bad
         |
         |""".stripMargin
@@ -544,7 +550,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   test("Nested metadata: true source indices never become positivity capabilities") {
     val p =
       """
-        |inductive Indexed (A: Type) indices (F: Type -> A) : Sort(Level.succ(Level.one))
+        |inductive Indexed (A: Type) indices (F: Type -> A) : Sort { level = succ(one) }
         | | mk (F: Type -> A): Indexed(A, F)
         |""".stripMargin
 
@@ -601,7 +607,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   test("Nested non-positive: opaque dependent family argument type is conservative") {
     val p =
       """
-        |struct TypeBox (A: Type) : Sort(Level.succ(Level.one))
+        |struct TypeBox (A: Type) : Sort { level = succ(one) }
         | | mk (T: Type) : TypeBox(A)
         |
         |opaque def typeBox (A: Type): TypeBox(A) := TypeBox.mk(A, A)

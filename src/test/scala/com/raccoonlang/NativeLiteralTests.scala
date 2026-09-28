@@ -69,15 +69,15 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
     env.copy(globals = env.globals.updated(name, GlobalBinding.Strict(value)))
 
   test("native grouped applications enforce exact arity") {
-    val levelMax = Prelude.default.checkedEnv("Level.max")
-    val zero = Value.Level.zero
-    val one = Value.Level.one
+    val natAdd = Prelude.default.checkedEnv("Nat.add")
+    val zero = runProgram("{ 0 }")
+    val one = runProgram("{ 1 }")
 
-    assertEquals(Interpreter.evalApply(levelMax, Vector(zero, one)), one)
-    val error = interceptError[ArityMismatch](Interpreter.evalApply(levelMax, Vector(zero)))
+    assertEquals(payload(Interpreter.evalApply(natAdd, Vector(zero, one))), BigInt(1))
+    val error = interceptError[ArityMismatch](Interpreter.evalApply(natAdd, Vector(zero)))
     assertEquals(error.expected, 2)
     assertEquals(error.got, 1)
-    val emptyError = interceptError[ArityMismatch](Interpreter.evalApply(levelMax, Vector.empty))
+    val emptyError = interceptError[ArityMismatch](Interpreter.evalApply(natAdd, Vector.empty))
     assertEquals(emptyError.expected, 2)
     assertEquals(emptyError.got, 0)
   }

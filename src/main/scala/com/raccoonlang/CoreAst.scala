@@ -91,6 +91,14 @@ object CoreAst {
 
     final case class Body(lets: Vector[Let], res: Term, span: Span) extends Term
 
+    /** The sort at `level`. `Type` and `Prop` elaborate to it at `Level.one` and `Level.zero`. */
+    final case class Sort(level: Term, span: Span) extends Term
+
+    /** A level form applied to all of its arguments, as `Level.succ(u)`; a nullary form has none. */
+    final case class LevelOp(form: LevelForm, args: Vector[Term], span: Span) extends Term {
+      require(args.length == form.arity, s"Level.${form.name} takes ${form.arity} arguments")
+    }
+
     // Lambda: fun (x : A): B => body
     //
     // `recursion` is what the source declared; `recursivePeers` is the runtime peer table the checker fills — a
@@ -123,6 +131,22 @@ object CoreAst {
   }
 
   /**
+   * The level forms. They are forms of the language, not functions: the kernel owns them, no declaration introduces
+   * them, and one is only ever written applied to all of its arguments.
+   */
+  sealed abstract class LevelForm(val name: String, val arity: Int)
+
+  object LevelForm {
+    case object Zero extends LevelForm("zero", 0)
+    case object One extends LevelForm("one", 0)
+    case object Succ extends LevelForm("succ", 1)
+    case object Max extends LevelForm("max", 2)
+    case object IMax extends LevelForm("imax", 2)
+
+    val all: Vector[LevelForm] = Vector(Zero, One, Succ, Max, IMax)
+  }
+
+  /**
    * The immediate subterms of a term, in source order.
    *
    * Every structural walk over the AST (capture analysis, local-reference collection, global-reference scans) shares
@@ -134,6 +158,8 @@ object CoreAst {
       case _: Term.GlobalRef | _: Term.LocalRef | _: Term.NatLit | _: Term.StrLit =>
         Vector.empty
       case Term.Select(base, _, _)     => Vector(base)
+      case Term.Sort(level, _)         => Vector(level)
+      case Term.LevelOp(_, args, _)    => args
       case Term.App(fn, args, _)       => fn +: args
       case Term.Pi(binders, out, _, _) => binders.map(_.ty) :+ out
       case Term.Body(lets, res, _) =>

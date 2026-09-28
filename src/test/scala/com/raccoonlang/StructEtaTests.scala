@@ -225,7 +225,7 @@ class StructEtaTests extends munit.FunSuite with TestSupport {
     // VProofs and equality is proof irrelevance — expansion must never fire there.
     typecheckDecls(
       """
-        |struct PairU {u1: Level}{u2: Level}(A: Sort(u1))(B: Sort(u2)) : Sort(Level.max(u1, u2))
+        |struct PairU {u1: Level}{u2: Level}(A: Sort { level = u1 })(B: Sort { level = u2 }) : Sort { level = max(u1, u2) }
         | | mk (fst: A)(snd: B) : PairU(A, B)
         |
         |def irr (p: Prop)(q: Prop)(h1: PairU(p, q))(h2: PairU(p, q)): Eq(PairU(p, q), h1, h2) :=
