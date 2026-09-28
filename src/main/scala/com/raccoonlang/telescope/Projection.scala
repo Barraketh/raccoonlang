@@ -219,7 +219,7 @@ object Projection {
     drain()
 
     // Demoting a family param turns it into a root, which can force further implicits (demoting A
-    // in `Option {u}(A)` forces u through `A : Sort(u)`), so demote minimally: rightmost unforced
+    // in `Option {u}(A)` forces u through `A : Sort { level = u }`), so demote minimally: rightmost unforced
     // param first. Binder types only mention earlier binders, so forcing flows right-to-left and
     // this order never demotes a param a later demotion would have forced. Demotion only adds a
     // root — existing solutions stay valid — so saturation resumes with just the new root.

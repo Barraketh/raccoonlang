@@ -6,6 +6,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
   private val span = Span(0, 0)
 
   private def global(name: String): Term.GlobalRef = Term.GlobalRef(name, span)
+  private val typeSort: Term = Term.Sort(Term.LevelOp(CoreAst.LevelForm.One, Vector.empty, span), span)
   private def local(ref: CoreAst.LocalRef): Term.LocalRef = Term.LocalRef(ref, span)
   private def app(fn: Term, args: Term*): Term.App = Term.App(fn, args.toVector, span)
   private def binder(ref: CoreAst.LocalRef, tpe: Term): CoreAst.Binder = CoreAst.Binder(ref, tpe, span)
@@ -27,7 +28,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
     val aToB = CoreAst.LocalRef(1, "b")
     val bToA = CoreAst.LocalRef(2, "a")
     val familyA = Decl.InductiveDecl(
-      CoreAst.InductiveHeader("GroupA", Vector.empty, Vector.empty, global("Type"), span),
+      CoreAst.InductiveHeader("GroupA", Vector.empty, Vector.empty, typeSort, span),
       Vector(
         CoreAst.ConstructorDecl("GroupA.leaf", "leaf", Vector.empty, global("GroupA"), span),
         CoreAst.ConstructorDecl(
@@ -41,7 +42,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
       span
     )
     val familyB = Decl.InductiveDecl(
-      CoreAst.InductiveHeader("GroupB", Vector.empty, Vector.empty, global("Type"), span),
+      CoreAst.InductiveHeader("GroupB", Vector.empty, Vector.empty, typeSort, span),
       Vector(
         CoreAst.ConstructorDecl("GroupB.leaf", "leaf", Vector.empty, global("GroupB"), span),
         CoreAst.ConstructorDecl(
@@ -55,7 +56,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
       span
     )
     val result = Decl.InductiveDecl(
-      CoreAst.InductiveHeader("GroupResult", Vector.empty, Vector.empty, global("Type"), span),
+      CoreAst.InductiveHeader("GroupResult", Vector.empty, Vector.empty, typeSort, span),
       Vector(CoreAst.ConstructorDecl("GroupResult.zero", "zero", Vector.empty, global("GroupResult"), span)),
       span
     )
@@ -168,7 +169,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
     val functionField = CoreAst.LocalRef(120, "function")
     val argument = CoreAst.LocalRef(121, "argument")
     val holder = Decl.InductiveDecl(
-      CoreAst.InductiveHeader("GroupHolder", Vector.empty, Vector.empty, global("Type"), span),
+      CoreAst.InductiveHeader("GroupHolder", Vector.empty, Vector.empty, typeSort, span),
       Vector(
         CoreAst.ConstructorDecl(
           "GroupHolder.mk",

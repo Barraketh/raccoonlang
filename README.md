@@ -16,7 +16,7 @@ The implementation favors:
 Raccoon currently provides:
 
 - dependent functions with forced implicit parameters;
-- first-class universe levels, `Prop`, `Type`, and `Sort(u)`;
+- first-class universe levels, `Prop`, `Type`, and `Sort { level = u }`;
 - strictly positive inductive families with parameters and indices;
 - dependent, exhaustive pattern matching with an explicit `returning` motive;
 - checking by synthesis and definitional equality: a term's type never depends
@@ -29,14 +29,14 @@ Raccoon currently provides:
 - compact natural-number literals and trusted native natural-number reduction.
 
 ```raccoon
-inductive Vec {u: Level}(A: Sort(u)) indices (n: Nat)
-    : Sort(Level.max(Level.one, u))
+inductive Vec {u: Level}(A: Sort { level = u }) indices (n: Nat)
+    : Sort { level = max(one, u) }
  | nil : Vec(A, Nat.zero)
  | cons (n: Nat)(tail: Vec(A, n))(head: A) : Vec(A, Nat.succ(n))
 
-def length {u: Level}{A: Sort(u)}{n: Nat}(xs: Vec(A, n)): Nat := n
+def length {u: Level}{A: Sort { level = u }}{n: Nat}(xs: Vec(A, n)): Nat := n
 
-def appendOne {u: Level}{A: Sort(u)}{n: Nat}(xs: Vec(A, n))(x: A)
+def appendOne {u: Level}{A: Sort { level = u }}{n: Nat}(xs: Vec(A, n))(x: A)
     : Vec(A, Nat.succ(n)) := Vec.cons(n, xs, x)
 
 { length(appendOne(Vec.nil(Nat), 0)) }

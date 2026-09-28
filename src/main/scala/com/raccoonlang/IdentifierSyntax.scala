@@ -22,7 +22,10 @@ private[raccoonlang] object IdentifierSyntax {
     "lexicographic",
     "measure",
     "indices",
-    "in"
+    "in",
+    "Sort",
+    "Type",
+    "Prop"
   )
 
   def isStart(char: Char): Boolean = char.isLetter

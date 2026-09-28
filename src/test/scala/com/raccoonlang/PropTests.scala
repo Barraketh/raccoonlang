@@ -173,7 +173,7 @@ class PropTests extends munit.FunSuite with TestSupport {
         | | intro (A: Type) : HasCarrier
         |
         |inductive HasSort (u: Level) : Prop
-        | | intro (A: Sort(u)) : HasSort(u)
+        | | intro (A: Sort { level = u }) : HasSort(u)
         |""".stripMargin
 
     typecheckDecls(p)

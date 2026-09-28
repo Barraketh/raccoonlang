@@ -94,19 +94,26 @@ level failures, and ordinary unification failures do not produce apartness.
 
 ## Universes and function types
 
-The primitive universe equations are:
+A sort is a Core term of its own, `Sort { level = e }`, and `Type` and `Prop`
+elaborate to it at `Level.one` and `Level.zero`. The primitive universe
+equations are:
 
 ```text
-Prop = Sort(Level.zero)
-Type = Sort(Level.one)
+Prop = Sort { level = Level.zero }
+Type = Sort { level = Level.one }
 Prop : Type
+Sort { level = u } : Sort { level = Level.succ(u) }
 ```
 
-Levels normalize to maxima of offset atoms plus an optional constant.
-`Level.succ`, `Level.max`, and `Level.imax` construct normalized levels.
-`imax(a, b)` reduces when `b` is known to be zero or positive and otherwise
-remains a conditional atom. Normalized representation equality is level
-equality.
+The level forms `Level.zero`, `Level.one`, `Level.succ`, `Level.max` and
+`Level.imax` are Core terms too, always applied to all of their arguments. The
+kernel owns them and the sort formers: no declaration introduces them, the
+prelude declares none of them, and no global or builtin carries their names.
+
+Levels normalize to maxima of offset atoms plus an optional constant, and the
+level forms construct normalized levels. `imax(a, b)` reduces when `b` is known
+to be zero or positive and otherwise remains a conditional atom. Normalized
+representation equality is level equality.
 
 A telescope
 
@@ -120,8 +127,9 @@ has universe
 imax(u1, ... imax(un, v) ...)
 ```
 
-where each `Ai : Sort(ui)` and `B : Sort(v)`. Consequently, a Pi whose
-codomain is a proposition lives in `Prop`, regardless of its domain universes.
+where each `Ai : Sort { level = ui }` and `B : Sort { level = v }`. Consequently,
+a Pi whose codomain is a proposition lives in `Prop`, regardless of its domain
+universes.
 A codomain equal to the sort `Prop` is different: `Prop` itself lives in
 `Type`.
 
@@ -422,3 +430,5 @@ Changes to the checker or evaluator must preserve these rules:
 12. Whether a sort is `Prop` or a type is a proposition has one definition.
 13. A term's type never depends on where it stands: checking is synthesis
     followed by definitional equality with the expected type.
+14. Sorts and levels are built only by the kernel's own sort and level forms;
+    no global, builtin or prelude declaration names one.

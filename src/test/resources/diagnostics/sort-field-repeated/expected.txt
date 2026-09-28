@@ -1,0 +1,4 @@
+
+<root>/main.rac:1:39: error: Failed to parse module <root>/main.rac: Repeated field level
+def f {u: Level}(A: Sort { level = u, level = u })(x: A): A := x
+                                      ^

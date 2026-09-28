@@ -52,6 +52,16 @@ object SurfaceAst {
     // Application: f(a)
     final case class App(fn: Term, args: Vector[Term], span: Span) extends Term
 
+    /** A sort former: `Sort { level = e }`, or `Type`/`Prop`, which fix the level. */
+    final case class Sort(level: SortLevel, span: Span) extends Term
+
+    sealed trait SortLevel
+    object SortLevel {
+      case object Zero extends SortLevel
+      case object One extends SortLevel
+      final case class Written(level: Term) extends SortLevel
+    }
+
     // Lambda: fun (x : A)(y: B): B => body
     final case class Lam(header: FuncHeader, body: Term, span: Span) extends Term
 

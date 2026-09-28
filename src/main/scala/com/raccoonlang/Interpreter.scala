@@ -275,20 +275,35 @@ object Interpreter {
   private[raccoonlang] def getLevel(v: Value): Level =
     Level.fromValue(v).getOrElse(fail(NotALevel(v)))
 
+  private[raccoonlang] def evalSort(level: Value): VSort = Sorts.sort(getLevel(level))
+
+  private[raccoonlang] def evalLevelOp(form: CoreAst.LevelForm, args: Vector[Value]): Level = {
+    val levels = args.map(getLevel)
+    form match {
+      case CoreAst.LevelForm.Zero => Level.zero
+      case CoreAst.LevelForm.One  => Level.one
+      case CoreAst.LevelForm.Succ => Level.succ(levels(0))
+      case CoreAst.LevelForm.Max  => Level.max(levels)
+      case CoreAst.LevelForm.IMax => Level.imax(levels(0), levels(1))
+    }
+  }
+
   /**
    * Evaluation attaches no location: reduction runs inside callee bodies the user did not write, so a failure here
    * belongs to the term the checker was working on.
    */
   private[raccoonlang] def evalTerm(term: CoreAst.Term, env: Env): Value =
     term match {
-      case CTerm.NatLit(value, _)   => Packed.evalNatLit(value, env)
-      case CTerm.StrLit(scalars, _) => Packed.evalStrLit(scalars, env)
-      case ref: CTerm.Ref           => evalRef(ref, env)
-      case CTerm.App(fn, args, _)   => evalApplyTerm(fn, args, env)
-      case pi: CTerm.Pi             => evalPi(pi, env)
-      case l: CTerm.Lam             => evalLam(l, env)
-      case m: CTerm.Match           => evalMatch(m, env)
-      case b: CTerm.Body            => evalBody(b, env)
+      case CTerm.NatLit(value, _)       => Packed.evalNatLit(value, env)
+      case CTerm.StrLit(scalars, _)     => Packed.evalStrLit(scalars, env)
+      case ref: CTerm.Ref               => evalRef(ref, env)
+      case CTerm.App(fn, args, _)       => evalApplyTerm(fn, args, env)
+      case pi: CTerm.Pi                 => evalPi(pi, env)
+      case l: CTerm.Lam                 => evalLam(l, env)
+      case m: CTerm.Match               => evalMatch(m, env)
+      case b: CTerm.Body                => evalBody(b, env)
+      case CTerm.Sort(level, _)         => evalSort(evalTerm(level, env))
+      case CTerm.LevelOp(form, args, _) => evalLevelOp(form, args.map(evalTerm(_, env)))
       // Named field syntax is resolved to a selector application by checkSelect, so a Select can
       // only reach evaluation if something published unchecked syntax.
       case CTerm.Select(_, field, _) =>
@@ -457,12 +472,7 @@ object Interpreter {
     TypeChecker.checkRaw(p, prelude)
 
   private[raccoonlang] val preludeInitialEnv: Env =
-    Env.empty
-      .putGlobal("Type", Sorts.Type)
-      .putGlobal("Level", LevelTpe)
-      .putGlobal("Level.zero", Level.zero)
-      .putGlobal("Level.one", Level.one)
-      .putGlobal("Prop", Sorts.Prop)
+    Env.empty.putGlobal("Level", LevelTpe)
 
   private[raccoonlang] def addPreludeDecl(env: Env, decl: Decl): Env = evalDecl(decl, env, trusted = true)
 
