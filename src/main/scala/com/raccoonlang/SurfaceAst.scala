@@ -57,7 +57,7 @@ object SurfaceAst {
 
     final case class Match(
         scrut: Term,
-        motive: Option[Term],
+        motive: Term,
         cases: Vector[Case],
         span: Span
     ) extends Term

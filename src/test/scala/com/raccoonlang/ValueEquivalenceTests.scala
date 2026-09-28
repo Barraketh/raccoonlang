@@ -131,7 +131,7 @@ class ValueEquivalenceTests extends munit.FunSuite {
     val source =
       """{
         |  fun (b: Bool): Bool =>
-        |    match b with
+        |    match b returning Bool with
         |    | Bool.false => Bool.true
         |    | Bool.true => Bool.false
         |}
@@ -144,7 +144,7 @@ class ValueEquivalenceTests extends munit.FunSuite {
         parseBody(
           """{
             |  fun (b: Bool): Bool =>
-            |    match b with
+            |    match b returning Bool with
             |    | Bool.false => Bool.false
             |    | Bool.true => Bool.false
             |}
@@ -163,7 +163,7 @@ class ValueEquivalenceTests extends munit.FunSuite {
     val onFirst = checked(
       """{
         |  fun (first: Bool)(second: Bool): Bool =>
-        |    match first with
+        |    match first returning Bool with
         |    | Bool.false => Bool.true
         |    | Bool.true => Bool.false
         |}
@@ -172,7 +172,7 @@ class ValueEquivalenceTests extends munit.FunSuite {
     val onSecond = checked(
       """{
         |  fun (first: Bool)(second: Bool): Bool =>
-        |    match second with
+        |    match second returning Bool with
         |    | Bool.false => Bool.true
         |    | Bool.true => Bool.false
         |}
@@ -187,7 +187,7 @@ class ValueEquivalenceTests extends munit.FunSuite {
     val inSourceOrder = checked(
       """{
         |  fun (b: Bool): Bool =>
-        |    match b with
+        |    match b returning Bool with
         |    | Bool.false => Bool.true
         |    | Bool.true => Bool.false
         |}
@@ -196,7 +196,7 @@ class ValueEquivalenceTests extends munit.FunSuite {
     val reversed = checked(
       """{
         |  fun (b: Bool): Bool =>
-        |    match b with
+        |    match b returning Bool with
         |    | Bool.true => Bool.false
         |    | Bool.false => Bool.true
         |}
@@ -213,7 +213,7 @@ class ValueEquivalenceTests extends munit.FunSuite {
         parseBody(
           """{
             |  fun (b: Bool): Bool =>
-            |    match b with
+            |    match b returning Bool with
             |    | Bool.false => Bool.true
             |    | Bool.true => Bool.false
             |}

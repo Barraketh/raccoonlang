@@ -1,0 +1,7 @@
+
+<root>/main.rac:3:3: error: type mismatch
+  m
+  ^
+  expected: Bool
+  actual:   Nat
+note: in definition wrong

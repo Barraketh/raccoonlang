@@ -109,9 +109,8 @@ object PrettyPrinter {
 
   private def printMatch(m: CoreAst.Term.Match): String = {
     val scrutStr = printTermAtom(m.scrut)
-    val motiveStr = m.motive.map(motive => s" returning ${printCoreTerm(motive)}").getOrElse("")
     val casesStr = m.cases.map(printCase).mkString(" ")
-    s"match $scrutStr$motiveStr with $casesStr"
+    s"match $scrutStr returning ${printCoreTerm(m.motive)} with $casesStr"
   }
 
   /** A level as source syntax (`Level.succ`, `Level.max`), not its normalized `max(atom+k, …, c)` form. */

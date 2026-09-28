@@ -320,7 +320,7 @@ object Interpreter {
           case _                  => DepSet.empty
         }
         val blockedOn = headBlockers ++ typeCollapseDeps(other.tpe)
-        return Value.canonicalizeProof(stuckMatchThunk(m, env, matchOutType(m, scrut, env), blockedOn))
+        return Value.canonicalizeProof(stuckMatchThunk(m, env, evalTerm(m.motive, env), blockedOn))
     }
 
     // Exhaustiveness is settled by MatchChecker: a constructor-form scrutinee always has a branch.
@@ -329,18 +329,17 @@ object Interpreter {
     evalBranch(branch, args, env)
   }
 
-  private def matchOutType(m: CTerm.Match, scrut: Value, env: Env): Value =
-    m.motive match {
-      case Some(motive) => evalTerm(motive, env)
-      case None         => scrut.tpe
-    }
-
   private[raccoonlang] def typeCollapseDeps(tpe: Value): DepSet = {
     val classifierLevel = TypeChecker.getUniverse(tpe).level
     if (Level.isNeverZero(classifierLevel)) DepSet.empty else classifierLevel.synDeps
   }
 
-  private def stuckMatchThunk(m: CTerm.Match, env: Env, outType: Value, blockedOn: DepSet): NeutralThunk = {
+  private[raccoonlang] def stuckMatchThunk(
+      m: CTerm.Match,
+      env: Env,
+      outType: Value,
+      blockedOn: DepSet
+  ): NeutralThunk = {
     val closedEnv = env.closeForEval(CapturedRefs.getCapturedRefs(m, env))
     NeutralThunk(m, closedEnv, ValueId.LocalId(m.nodeId, closedEnv.locals.values.toVector), outType, blockedOn)
   }
@@ -365,7 +364,7 @@ object Interpreter {
    * ordinary path.
    */
   private def evalProofMatch(m: CTerm.Match, scrut: VProof, env: Env): Value = {
-    val outType = matchOutType(m, scrut, env)
+    val outType = evalTerm(m.motive, env)
     if (Sorts.isProposition(outType)) Value.canonicalizeProof(VProof(outType))
     else stuckMatchThunk(m, env, outType, scrut.tpe.synDeps)
   }
@@ -410,11 +409,7 @@ object Interpreter {
 
               case CoreAst.ConstBody.TermBody(term) =>
                 val checkedTy = TypeChecker.getType(ty, env)
-                // Bidirectional: bare-body defs get the same subsumption (eta-adaptation of
-                // polymorphic functions) as let bindings. The declared type is also syntax valid here —
-                // a decl's type mentions no locals — so a motive-less `match` body can residualize it.
-                val checked =
-                  TypeChecker.checkTerm(term, TypeChecker.Expected(checkedTy, Some(ty)), env)
+                val checked = TypeChecker.checkTerm(term, checkedTy, env)
                 val value = if (isOpaque) VConst(name, Symbol, checkedTy) else checked.value
                 val published =
                   if (trusted && Packed.opNames(name)) Packed.nativeOp(name, value, env)

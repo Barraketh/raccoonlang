@@ -51,7 +51,8 @@ object StructEta {
 
   /**
    * The canonical projection of field `idx` out of `base`. When `base` is constructor-headed this is the stored field;
-   * otherwise it is the stuck evaluation of the canonical match term `match self with | mk x0 … xn => x_idx`.
+   * otherwise it is the stuck evaluation of the canonical match term
+   * `match self returning motive with | mk x0 … xn => x_idx`, with `motive` bound to the field's type at `base`.
    */
   def fieldProjection(base: Value, inst: InductiveFamilyInstance, info: ProjectionInfo, idx: Int): Value = {
     if (idx < 0 || idx >= info.fieldCount)
@@ -63,22 +64,17 @@ object StructEta {
         stored(idx)
       case _ =>
         val program = info.projectors(idx)
-        // The projection term is self-contained: besides `self` it names only its own constructor,
-        // which is bound here so the term evaluates (and compares, via tryUnifyNeutralMatches) without
-        // a surrounding global environment.
+        val motive = fieldType(base, inst, info, idx)
+        // The projection term is self-contained: besides `self` and `motive` it names only its own
+        // constructor, which is bound here so the term evaluates (and compares, via
+        // tryUnifyNeutralMatches) without a surrounding global environment.
         val env = Env.empty
           .putGlobal(info.ctorHead.name, info.ctorHead)
           .putLocalUnchecked(program.self, base)
+          .putLocal(program.motive, motive)
         val blockedOn = Blocker.unapply(base).getOrElse(DepSet.empty) ++ Interpreter.typeCollapseDeps(base.tpe)
-        Value.canonicalizeProof(
-          NeutralThunk(
-            program.term,
-            env,
-            ValueId.LocalId(program.term.nodeId, Vector(base)),
-            fieldType(base, inst, info, idx),
-            blockedOn
-          )
-        )
+        // The thunk a stuck evaluation of the same term would build, so re-sticking it keeps its identity.
+        Value.canonicalizeProof(Interpreter.stuckMatchThunk(program.term, env, motive, blockedOn))
     }
   }
 
@@ -103,21 +99,28 @@ object StructEta {
   }
 
   /**
-   * The canonical projection program for one field of one family: `match self with | mk x0 … xn => x_idx`. Each field
-   * index gets its own synthetic span, so its `nodeId` is stable across every projection of that field and distinct
-   * from every other field's — which is exactly what makes two projections of defEq bases compare equal by id.
+   * The canonical projection program for one field of one family:
+   * `match self returning motive with | mk x0 … xn => x_idx`. Each field index gets its own synthetic span, so its
+   * `nodeId` is stable across every projection of that field and distinct from every other field's — which is exactly
+   * what makes two projections of defEq bases compare equal by id.
+   *
+   * Every match writes its motive, and a field's type has no syntax in terms of `self` alone, so the motive is a local
+   * that `fieldProjection` binds to the field's type at the base. Being a function of the base, it adds nothing to the
+   * projection's identity that `self` does not already determine.
    *
    * The whole program is determined by the constructor's canonical name and the field count, so it is built once with
    * the family's `ProjectionInfo` (`ProjectionInfo.projectors`) rather than cached against it.
    */
-  final case class Projector(self: CoreAst.LocalRef, term: CTerm.Match)
+  final case class Projector(self: CoreAst.LocalRef, motive: CoreAst.LocalRef, term: CTerm.Match)
 
   private[raccoonlang] def buildProjector(ctorName: String, fieldCount: Int, idx: Int): Projector = {
     val selfRef = SyntheticLocalRef.fresh("self")
+    val motiveRef = SyntheticLocalRef.fresh("motive")
     val fieldRefs = Vector.tabulate(fieldCount)(i => SyntheticLocalRef.fresh(s"x$i"))
     val span = Span.synthetic()
     val body = CTerm.LocalRef(fieldRefs(idx), span)
     val branch = CoreAst.Case(ctorName, isFullyQualified = true, fieldRefs.map(Some(_)), body, span)
-    Projector(selfRef, CTerm.Match(CTerm.LocalRef(selfRef, span), None, Vector(branch), span))
+    val term = CTerm.Match(CTerm.LocalRef(selfRef, span), CTerm.LocalRef(motiveRef, span), Vector(branch), span)
+    Projector(selfRef, motiveRef, term)
   }
 }

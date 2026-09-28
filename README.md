@@ -18,7 +18,9 @@ Raccoon currently provides:
 - dependent functions with forced implicit parameters;
 - first-class universe levels, `Prop`, `Type`, and `Sort(u)`;
 - strictly positive inductive families with parameters and indices;
-- dependent, exhaustive pattern matching;
+- dependent, exhaustive pattern matching with an explicit `returning` motive;
+- checking by synthesis and definitional equality: a term's type never depends
+  on where it stands;
 - structural, lexicographic, and measure-based termination checking;
 - single-constructor `struct` declarations, named projections, and structure eta;
 - proof irrelevance and controlled elimination from `Prop`;

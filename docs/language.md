@@ -39,12 +39,12 @@ must be ordinary transparent definitions with a function parameter list, a
 ```raccoon
 mutual {
   def even (n: Nat): Bool decreases structural(n) := {
-    match n with
+    match n returning Bool with
     | Nat.zero => Bool.true
     | Nat.succ k => odd(k)
   }
   def odd (n: Nat): Bool decreases structural(n) := {
-    match n with
+    match n returning Bool with
     | Nat.zero => Bool.false
     | Nat.succ k => even(k)
   }
@@ -161,6 +161,18 @@ Implicit and explicit binders may be interleaved. Reconstruction must still
 come from a later explicit argument, and call sites supply all explicit
 arguments in their source order.
 
+A term's type never depends on where it stands. Checking a term against an
+expected type synthesizes the term's own type and requires the two to be
+definitionally equal. So a polymorphic function named without arguments keeps
+its implicit binders, and does not fit a function type without them. Write the
+lambda instead:
+
+```raccoon
+def polyId {A: Type}(x: A): A := x
+
+def natId : Nat -> Nat := fun (x: Nat): Nat => polyId(x)
+```
+
 Inductive family parameters are erased from constructor values. At a
 constructor call, a family parameter is inferred when later stored fields
 force it; otherwise it becomes an explicit constructor argument. Implicits
@@ -185,8 +197,8 @@ term:
 }
 ```
 
-A type annotation on `let` supplies an expected type to its value. Local
-bindings may shadow earlier names.
+A type annotation on `let` must equal the value's own type. Local bindings may
+shadow earlier names.
 
 Natural-number literals are arbitrary non-negative integers. They require the
 active prelude to provide the validated unary `Nat` layout used by the bundled
@@ -235,7 +247,7 @@ family block.
 
 ```raccoon
 def pred (n: Nat): Nat := {
-  match n with
+  match n returning Nat with
   | Nat.zero => Nat.zero
   | Nat.succ p => p
 }
@@ -250,14 +262,15 @@ Use `.constructor` to select a constructor by short name from the scrutinee's
 family:
 
 ```raccoon
-match n with
+match n returning Nat with
 | .zero => Nat.zero
 | .succ p => p
 ```
 
 ### Result types and `returning`
 
-A match result type is its motive. Write it explicitly when needed:
+A match result type is its motive, which every match writes with
+`returning`:
 
 ```raccoon
 match xs returning Vec(A, n) with
@@ -265,14 +278,9 @@ match xs returning Vec(A, n) with
 | Vec.cons k tail head => xs
 ```
 
-Without `returning`, the checker uses syntax for the expected type when one is
-available, including a definition or lambda result type, an annotated `let`,
-or a surrounding block result. With no syntactic expected type, the result
-defaults to the scrutinee's type.
-
-If neither rule expresses the intended result, `returning` is required. This
-commonly occurs in a match nested inside another branch: the outer branch has
-an expected semantic value but no reusable type syntax.
+A match without `returning` is a parse error. Each branch is checked against
+the motive under the branch's refinements. The match's type is the motive,
+evaluated where the match stands, whether or not the match reduces.
 
 Elimination from `Prop` is restricted. A Prop-valued result is always allowed.
 A data-valued result is allowed only for an empty reachable constructor set or
@@ -285,7 +293,7 @@ A recursive function must carry a `decreases` clause:
 
 ```raccoon
 def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
-  match b with
+  match b returning Nat with
   | Nat.zero => a
   | Nat.succ p => add(Nat.succ(a), p)
 }
@@ -350,8 +358,9 @@ def first {A: Type}{B: Type}(p: Pair(A, B)): A := p.fst
 
 A struct declaration has exactly one constructor. Every named stored field
 gets a selector in the family namespace, so `p.fst` and `Pair.fst(p)` are the
-same ordinary function application. An `_` field remains stored but gets no
-selector.
+same ordinary function application. A selector is a match on its argument that
+returns the field, with the field's type as its `returning` clause. An `_`
+field remains stored but gets no selector.
 
 Structure eta is based on the checked family shape, not the `struct` keyword.
 Any non-Prop family instance is eta-eligible when it has exactly one
