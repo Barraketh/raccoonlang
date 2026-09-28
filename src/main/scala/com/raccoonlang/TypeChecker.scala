@@ -121,7 +121,7 @@ object TypeChecker {
   }
 
   /**
-   * `Value.isPropositionType` plus the validation that `value` is a type at all.
+   * `Sorts.isProposition` plus the validation that `value` is a type at all.
    *
    * The classification itself is deliberately not duplicated — it is the one shared predicate, so the checker can never
    * disagree with proof collapse. What this adds is the `NotAType` check in `getUniverse`, and the one caller,
@@ -132,7 +132,7 @@ object TypeChecker {
    */
   def isPropValuedType(value: Value): Boolean = {
     getUniverse(value)
-    Value.isPropositionType(value)
+    Sorts.isProposition(value)
   }
 
   private def assertNonRawRecursive(v: Value): Unit = {

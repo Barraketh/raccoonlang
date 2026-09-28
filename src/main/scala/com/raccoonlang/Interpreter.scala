@@ -83,25 +83,23 @@ object Interpreter {
       freshEnv: Env,
       outV: Value
   ): VSort = {
-    val VSort(outLevel) = TypeChecker.getUniverse(outV)
-    if (outLevel == Level.zero) PropTpe
+    val outSort = TypeChecker.getUniverse(outV)
+    if (Sorts.isProp(outSort)) outSort
     else {
-      val domLevels = binders.map { binder =>
-        val VSort(level) = TypeChecker.getUniverse(freshEnv(binder.localRef).tpe)
-        level
-      }
+      val outLevel = outSort.level
+      val domLevels = binders.map(binder => TypeChecker.getUniverse(freshEnv(binder.localRef).tpe).level)
       val classifier =
         if (Level.isNeverZero(outLevel)) Level.max(domLevels :+ outLevel)
         else domLevels.foldRight(outLevel)(Level.imax)
-      VSort(classifier)
+      Sorts.sort(classifier)
     }
   }
 
   /** Cache only proposition classifications that cannot change when level parameters are instantiated. */
   private[raccoonlang] def stablePiPropClassification(outV: Value): Option[Boolean] = {
-    val VSort(outLevel) = TypeChecker.getUniverse(outV)
-    if (outLevel == Level.zero) Some(true)
-    else if (Level.isNeverZero(outLevel)) Some(false)
+    val outSort = TypeChecker.getUniverse(outV)
+    if (Sorts.isProp(outSort)) Some(true)
+    else if (Level.isNeverZero(outSort.level)) Some(false)
     else None
   }
 
@@ -368,7 +366,7 @@ object Interpreter {
    */
   private def evalProofMatch(m: CTerm.Match, scrut: VProof, env: Env): Value = {
     val outType = matchOutType(m, scrut, env)
-    if (Value.isPropositionType(outType)) Value.canonicalizeProof(VProof(outType))
+    if (Sorts.isProposition(outType)) Value.canonicalizeProof(VProof(outType))
     else stuckMatchThunk(m, env, outType, scrut.tpe.synDeps)
   }
 
@@ -384,7 +382,7 @@ object Interpreter {
   // no such policy: an opaque def or axiom of struct type publishes as the plain symbol, and
   // structure eta reaches it through the rules rather than through its representation.
   private def publishedValue(value: Value, ty: Value): Value =
-    if (Value.isPropositionType(ty)) Value.canonicalizeProof(value)
+    if (Sorts.isProposition(ty)) Value.canonicalizeProof(value)
     else value
 
   // A declaration is checked exactly once; the value the checker produced IS the published value.
@@ -465,11 +463,11 @@ object Interpreter {
 
   private[raccoonlang] val preludeInitialEnv: Env =
     Env.empty
-      .putGlobal("Type", TypeTpe)
+      .putGlobal("Type", Sorts.Type)
       .putGlobal("Level", LevelTpe)
       .putGlobal("Level.zero", Level.zero)
       .putGlobal("Level.one", Level.one)
-      .putGlobal("Prop", PropTpe)
+      .putGlobal("Prop", Sorts.Prop)
 
   private[raccoonlang] def addPreludeDecl(env: Env, decl: Decl): Env = evalDecl(decl, env, trusted = true)
 

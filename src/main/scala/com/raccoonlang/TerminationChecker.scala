@@ -15,7 +15,7 @@ object TerminationChecker {
     // Proof structure is not invariant under an equality that identifies wrap(x) with base;
     // erased proofs also have no subterms. Well-founded recursion on proofs needs a
     // dedicated Acc-style mechanism (docs/kernel.md#termination).
-    if (Value.isPropositionType(value.tpe))
+    if (Sorts.isProposition(value.tpe))
       at(span) { fail(NonInductiveDecreaseMetric(value, isProof = true)) }
     value.tpe match {
       case ConstSpine(VConst(_, Inductive(_), _), _) =>

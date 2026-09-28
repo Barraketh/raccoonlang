@@ -14,7 +14,7 @@ object ProofReconstruction {
   )
 
   private def recoveryInfo(tpe: Value): Option[(InductiveFamilyInstance, ProofRecoveryInfo)] =
-    if (!Value.isPropositionType(tpe)) None
+    if (!Sorts.isProposition(tpe)) None
     else
       tpe match {
         case InductiveFamilyValue(instance) => instance.meta.proofRecovery.map(info => instance -> info)
@@ -87,7 +87,7 @@ object ProofReconstruction {
           val binder = fieldBinders(fieldIndex)
           val expectedType = Interpreter.evalTerm(binder.ty, env)
           val recovered =
-            if (Value.isPropositionType(expectedType)) Value.shallowProof(expectedType)
+            if (Sorts.isProposition(expectedType)) Value.shallowProof(expectedType)
             else
               info.fieldSources(fieldIndex) match {
                 case ProofFieldSource.ResultArgument(resultIndex) =>

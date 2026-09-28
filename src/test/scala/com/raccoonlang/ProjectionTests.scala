@@ -8,16 +8,16 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
 
   test("Pi-codomain projection peels one binder from a grouped telescope") {
     val span = Span(0, 0)
-    val env = Env.empty.putGlobal("Type", TypeTpe)
+    val env = Env.empty.putGlobal("Type", Sorts.Type)
     val x = CoreAst.Binder(CoreAst.LocalRef(0, "x"), CoreAst.Term.GlobalRef("Type", span), span)
     val y = CoreAst.Binder(CoreAst.LocalRef(1, "y"), CoreAst.Term.GlobalRef("Type", span), span)
     val grouped = VPi(
       env,
       Vector(x, y),
-      _ => TypeTpe,
+      _ => Sorts.Type,
       DepSet.empty,
       ValueId.LocalId(AstNodeId(None, 0), Vector.empty),
-      () => VSort(Level.succ(Level.one))
+      () => Sorts.sort(Level.succ(Level.one))
     )
     val root = VConst("f", Symbol, grouped)
     val tail = Projection
@@ -25,29 +25,31 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
       .fold(fail(_), identity)
 
     assertEquals(tail.asInstanceOf[VPi].binders.map(_.localRef), Vector(y.localRef))
-    assertEquals(
-      Projection.project(Projection.Spec(0, Vector(Projection.Step.PiCodomain)), Vector(tail)),
-      Right(TypeTpe)
+    assert(
+      Projection
+        .project(Projection.Spec(0, Vector(Projection.Step.PiCodomain)), Vector(tail))
+        .exists(ValueEquivalence.defEq(_, Sorts.Type))
     )
   }
 
   test("Pi-result projection crosses dependent grouped binders") {
     val span = Span(0, 0)
-    val env = Env.empty.putGlobal("Type", TypeTpe)
+    val env = Env.empty.putGlobal("Type", Sorts.Type)
     val x = CoreAst.Binder(CoreAst.LocalRef(0, "x"), CoreAst.Term.GlobalRef("Type", span), span)
     val y = CoreAst.Binder(CoreAst.LocalRef(1, "y"), CoreAst.Term.LocalRef(x.localRef, span), span)
     val grouped = VPi(
       env,
       Vector(x, y),
-      _ => TypeTpe,
+      _ => Sorts.Type,
       DepSet.empty,
       ValueId.LocalId(AstNodeId(None, 0), Vector.empty),
-      () => VSort(Level.succ(Level.one))
+      () => Sorts.sort(Level.succ(Level.one))
     )
 
-    assertEquals(
-      Projection.project(Projection.Spec(0, Vector(Projection.Step.PiResult)), Vector(grouped)),
-      Right(TypeTpe)
+    assert(
+      Projection
+        .project(Projection.Spec(0, Vector(Projection.Step.PiResult)), Vector(grouped))
+        .exists(ValueEquivalence.defEq(_, Sorts.Type))
     )
     assert(
       Projection.project(Projection.Spec(0, Vector(Projection.Step.PiCodomain)), Vector(grouped)).isLeft

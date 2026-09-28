@@ -109,7 +109,7 @@ object BinderOps {
     val (id, fresh) = FreshVar.freshValue(name, expectedTy)
     val canonical = Value.canonicalizeRigidBinder(expectedTy, fresh)
     // A proof binder exposes no hole: VProof carries no witness id to project from.
-    FreshenedBinder(canonical, Option.when(!Value.isPropositionType(expectedTy))(id))
+    FreshenedBinder(canonical, Option.when(!Sorts.isProposition(expectedTy))(id))
   }
 
   /**
