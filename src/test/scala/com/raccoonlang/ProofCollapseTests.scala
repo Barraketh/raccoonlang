@@ -627,7 +627,7 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
     )
 
     res match {
-      case p: Value.VProof => assert(Value.isPropositionType(p.tpe))
+      case p: Value.VProof => assert(Sorts.isProposition(p.tpe))
       case other           => fail(s"Expected a proof of P, got $other")
     }
   }

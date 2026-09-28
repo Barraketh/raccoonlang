@@ -102,7 +102,7 @@ object Projection {
     val proofHoles = Vector.newBuilder[(Int, Value)]
     binders.zipWithIndex.foreach { case (b, idx) =>
       if (b.isImplicit) {
-        if (Value.isPropositionType(b.fresh.tpe)) proofHoles += idx -> b.fresh.tpe
+        if (Sorts.isProposition(b.fresh.tpe)) proofHoles += idx -> b.fresh.tpe
         else b.holeId.foreach(id => holeOfVar.update(id, idx))
       }
     }
@@ -139,7 +139,7 @@ object Projection {
       // argument type forces every matching implicit proof binder through that projection path.
       // This is checker-only analysis; no witness is added to VProof and runtime merely follows
       // the compiled structural path.
-      if (remainingProofHoles > 0 && Value.isPropositionType(v.tpe)) {
+      if (remainingProofHoles > 0 && Sorts.isProposition(v.tpe)) {
         // Key-equal propositions cover the ordinary case. Structural propositions (notably Pis)
         // can be defEq despite different identity-based keys, so retain that narrow fallback.
         val keyed = proofHolesByKey.getOrElse(v.tpe.key, Vector.empty)
@@ -167,8 +167,8 @@ object Projection {
             case Some(hole) => solveHole(hole, root, steps, v.tpe)
             case None =>
               v match {
-                case VSort(level) =>
-                  queue.append((root, steps :+ Step.SortLevel, level))
+                case sort: VSort =>
+                  queue.append((root, steps :+ Step.SortLevel, sort.level))
 
                 case VCtor(head, stored, tpe) =>
                   if (head.noConfusion)
@@ -335,8 +335,8 @@ object Projection {
 
           case Step.SortLevel =>
             v match {
-              case VSort(level) => Right(level)
-              case other        => Left(s"expected a sort, got $other")
+              case sort: VSort => Right(sort.level)
+              case other       => Left(s"expected a sort, got $other")
             }
 
           case Step.LevelOffset(k) =>

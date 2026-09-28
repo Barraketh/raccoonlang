@@ -128,6 +128,11 @@ Universes are non-cumulative. Constructor-field universe checks enforce the
 declared inductive's size bound, but they do not introduce general sort
 subsumption.
 
+A sort is `Prop` exactly when its level is zero, and a type is a proposition
+exactly when its sort is `Prop` (a Pi by its codomain). The kernel has one
+definition of each, which the checker and proof irrelevance share. Sorts are
+compared only by conversion.
+
 An implicit binder is accepted only with a compiled projection that recovers
 it from later explicit arguments. Checked applications retain only explicit
 arguments. Checking and evaluation reconstruct every implicit with the same
@@ -376,6 +381,14 @@ captured values are part of closure identity. Packed keys include the codec,
 canonical payload, and packed type. Source spans are diagnostic metadata and
 are not identities.
 
+A key only accelerates conversion. Equal keys must be convertible, and a key
+mismatch that conversion treats as conclusive must be unconvertible. The
+key-coherence assertion (`-Draccoon.keyAssertions`, on by default and off for
+benchmarking) runs the conversion rules beneath every equation a key decides
+and fails loudly on disagreement. Only atoms whose key is their identity are
+exempt: variables (by id), constants and constructor heads (by name), and
+levels (by normal form).
+
 Blocked applications and matches carry dependency sets describing which
 refinement-store events could make reevaluation productive. An empty dependency
 set means the computation is rigid. Materialization may rerun a blocked
@@ -399,3 +412,6 @@ Changes to the checker or evaluator must preserve these rules:
 9. Axiom, opaque, and quotient values are allowed to remain closed neutrals.
 10. Native equations and literal layouts are installed only by a selected
     trusted prelude and remain attached to validated values, not global names.
+11. A value key never decides an equation the conversion rules would decide
+    differently.
+12. Whether a sort is `Prop` or a type is a proposition has one definition.

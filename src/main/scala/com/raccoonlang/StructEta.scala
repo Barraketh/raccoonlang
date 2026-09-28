@@ -24,7 +24,7 @@ object StructEta {
 
   /** The eta-eligible family instance behind `tpe`, excluding proposition-valued instances. */
   def eligibleInstance(tpe: Value): Option[(InductiveFamilyInstance, ProjectionInfo)] =
-    anyInstance(tpe).filter(_ => !Value.isPropositionType(tpe))
+    anyInstance(tpe).filter(_ => !Sorts.isProposition(tpe))
 
   /**
    * The eta view of a value at an eta-eligible structure type: the constructor's stored fields when it is already in

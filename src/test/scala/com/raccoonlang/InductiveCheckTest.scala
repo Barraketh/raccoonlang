@@ -291,8 +291,8 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
     }
 
     assertEquals(error.family, "Odd")
-    assertEquals(error.declared, Value.PropTpe)
-    assertEquals(error.expected, Value.VSort(Value.Level.one))
+    assert(Sorts.isProp(error.declared))
+    assertEquals(error.expected.level, Value.Level.one)
     assertEquals(
       ErrorRendering.render(error),
       "Invalid inductive block: family Odd lives in Prop, expected Type"

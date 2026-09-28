@@ -22,7 +22,7 @@ object ValueOps {
       val rebuilt = resolved match {
         case LevelTpe                     => resolved
         case level: Level                 => materializeLevel(level)
-        case VSort(level)                 => VSort(materializeLevel(level))
+        case sort: VSort                  => Sorts.sort(materializeLevel(sort.level))
         case Var(name, id, tpe)           => Var(name, id, materialize(tpe))
         case VConst(name, constType, tpe) => VConst(name, constType, materialize(tpe))
         case VApp(head, args, tpe, blockedOn) =>

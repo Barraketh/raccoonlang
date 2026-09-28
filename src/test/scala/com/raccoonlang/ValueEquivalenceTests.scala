@@ -8,8 +8,8 @@ class ValueEquivalenceTests extends munit.FunSuite {
   private val typeRef: CoreAst.Term = CTerm.GlobalRef("Type", span)
   private val binderRef = CoreAst.LocalRef(0, "x")
   private val binder = CoreAst.Binder(binderRef, typeRef, Span(0, 0))
-  private val env = Env.empty.putGlobal("Type", TypeTpe)
-  private val typeToTypeClassifier = VSort(Level.succ(Level.one))
+  private val env = Env.empty.putGlobal("Type", Sorts.Type)
+  private val typeToTypeClassifier = Sorts.sort(Level.succ(Level.one))
 
   private def nodeId(start: Int): AstNodeId = AstNodeId(None, start)
 
@@ -35,8 +35,14 @@ class ValueEquivalenceTests extends munit.FunSuite {
       () => typeToTypeClassifier
     )
 
+  test("sorts compare only by conversion, never structurally") {
+    assert(ValueEquivalence.defEq(Sorts.sort(Level.one), Sorts.Type))
+    intercept[InternalError](Sorts.Type == Sorts.sort(Level.one))
+    intercept[InternalError](Sorts.Prop.hashCode())
+  }
+
   test("Pi unification rejects solutions that depend on fresh binder vars") {
-    val hole = FreshVar.freshVar("A", TypeTpe)
+    val hole = FreshVar.freshVar("A", Sorts.Type)
     val meta = EqStore.empty.allow(DepSet(hole.id))
     val left = pi(Vector(hole), _ => hole, 1)
     val right = pi(Vector.empty, env => env(binderRef), 2)
@@ -47,8 +53,8 @@ class ValueEquivalenceTests extends munit.FunSuite {
   test("Pi unification does not link holes beneath the Pi frame") {
     // Pi-former injectivity is not assumed, so codomain equations are not consequences of the
     // Pi equation: even a closed solution must be refused, not chosen.
-    val hole = FreshVar.freshVar("A", TypeTpe)
-    val closed = FreshVar.freshVar("B", TypeTpe)
+    val hole = FreshVar.freshVar("A", Sorts.Type)
+    val closed = FreshVar.freshVar("B", Sorts.Type)
     val meta = EqStore.empty.allow(DepSet(hole.id))
     val left = pi(Vector(hole), _ => hole, 3)
     val right = pi(Vector(closed), _ => closed, 4)
@@ -62,7 +68,7 @@ class ValueEquivalenceTests extends munit.FunSuite {
     val grouped = VPi(
       env,
       Vector(binder, yBinder),
-      _ => TypeTpe,
+      _ => Sorts.Type,
       DepSet.empty,
       ValueId.LocalId(nodeId(5), Vector.empty),
       () => typeToTypeClassifier
@@ -74,7 +80,7 @@ class ValueEquivalenceTests extends munit.FunSuite {
         VPi(
           outerEnv,
           Vector(yBinder),
-          _ => TypeTpe,
+          _ => Sorts.Type,
           DepSet.empty,
           ValueId.LocalId(nodeId(6), Vector.empty),
           () => typeToTypeClassifier
@@ -102,7 +108,7 @@ class ValueEquivalenceTests extends munit.FunSuite {
         VPi(
           outerEnv,
           Vector(yBinder),
-          _ => TypeTpe,
+          _ => Sorts.Type,
           DepSet.empty,
           ValueId.LocalId(nodeId(8), Vector.empty),
           () => typeToTypeClassifier
@@ -111,13 +117,13 @@ class ValueEquivalenceTests extends munit.FunSuite {
       ValueId.LocalId(nodeId(9), Vector.empty),
       () => typeToTypeClassifier
     )
-    val applicationEnv = env.putGlobal("Prop", PropTpe).putGlobal("nested", VConst("nested", Symbol, nested))
+    val applicationEnv = env.putGlobal("Prop", Sorts.Prop).putGlobal("nested", VConst("nested", Symbol, nested))
     val ref = CoreAst.Term.GlobalRef("Prop", span)
     val first = CoreAst.Term.App(CoreAst.Term.GlobalRef("nested", span), Vector(ref), span)
     val application = CoreAst.Term.App(first, Vector(ref), span)
 
     val checked = TypeChecker.checkTerm(application, applicationEnv)
-    assert(ValueEquivalence.defEq(checked.value.tpe, TypeTpe))
+    assert(ValueEquivalence.defEq(checked.value.tpe, Sorts.Type))
     assert(ValueEquivalence.defEq(Interpreter.evalTerm(checked.residual, applicationEnv), checked.value))
   }
 

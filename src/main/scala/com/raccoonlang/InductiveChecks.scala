@@ -93,7 +93,7 @@ object InductiveChecks {
 
         case _: ConstructorHead => !target.mayOccurIn(value)
 
-        case _: Level | LevelTpe | _: VLam | _: VSort | _: Var | _: VConst | PropTpe =>
+        case _: Level | LevelTpe | _: VLam | _: VSort | _: Var | _: VConst =>
           !target.mayOccurIn(value)
       }
 
@@ -568,7 +568,7 @@ object InductiveChecks {
           else ProofFieldSource.Unavailable
         }
         val definitelyComplete = ownBinderVars.zip(sources).forall { case (field, source) =>
-          Value.isPropositionType(field.tpe) || source != ProofFieldSource.Unavailable
+          Sorts.isProposition(field.tpe) || source != ProofFieldSource.Unavailable
         }
         proofFieldPlan = Some((sources, definitelyComplete))
       }
@@ -590,25 +590,19 @@ object InductiveChecks {
 
       constructorArgs.zipWithIndex.foreach { case ((binder, field), sourceFieldIndex) =>
         // 2) Universe bound: skip for Prop families; enforce for Sort families
-        constructorUniverse match {
-          case PropTpe => // no universe restriction
-          case VSort(inductiveLevel) =>
-            TypeChecker.getUniverse(field.tpe) match {
-              case Value.PropTpe =>
-
-              case VSort(tpeLevel) =>
-                if (!Level.leq(tpeLevel, inductiveLevel))
-                  at(binder.span) {
-                    fail(
-                      InductiveUniverseTooSmall(
-                        name,
-                        s"${ctor.canonicalName}.${binder.name}",
-                        field.tpe,
-                        tpeLevel,
-                        inductiveLevel
-                      )
-                    )
-                  }
+        if (!Sorts.isProp(constructorUniverse)) {
+          val fieldLevel = TypeChecker.getUniverse(field.tpe).level
+          if (!Level.leq(fieldLevel, constructorUniverse.level))
+            at(binder.span) {
+              fail(
+                InductiveUniverseTooSmall(
+                  name,
+                  s"${ctor.canonicalName}.${binder.name}",
+                  field.tpe,
+                  fieldLevel,
+                  constructorUniverse.level
+                )
+              )
             }
         }
 

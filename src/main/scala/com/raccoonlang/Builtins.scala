@@ -14,14 +14,14 @@ private object Builtins {
           val lRef = pi.binders.head.localRef
           val preciseType =
             pi.copy(
-              codomain = env => VSort(Level.succ(Interpreter.getLevel(env(lRef)))),
+              codomain = env => Sorts.sort(Level.succ(Interpreter.getLevel(env(lRef)))),
               id = ValueId.Const(name)
             )
           VLam(
             preciseType,
             ValueId.Const(name),
             LamBody.Native(
-              (args, _) => VSort(Interpreter.getLevel(args.head)),
+              (args, _) => Sorts.sort(Interpreter.getLevel(args.head)),
               Env.empty,
               isRawRecursive = false
             )

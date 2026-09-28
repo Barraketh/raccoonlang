@@ -93,7 +93,7 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
   test("Nat literal checking and evaluation use the same validated layout capability") {
     val original = Prelude.default.checkedEnv
     val expectedNat = original("Nat")
-    val impostor = Value.VConst("Nat", Value.Symbol, Value.TypeTpe)
+    val impostor = Value.VConst("Nat", Value.Symbol, Sorts.Type)
     val tampered = replaceGlobal(original, "Nat", impostor)
     val checked = TypeChecker.checkTerm(CoreAst.Term.NatLit(BigInt(7), Span(0, 1)), tampered)
     val evaluated = Interpreter.evalTerm(checked.residual, tampered)

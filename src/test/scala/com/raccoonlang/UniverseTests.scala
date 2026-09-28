@@ -1,7 +1,5 @@
 package com.raccoonlang
 
-import com.raccoonlang.Value.VSort
-
 class UniverseTests extends munit.FunSuite with TestSupport {
   override protected val suitePrelude: Prelude.Config = Prelude.test
 
@@ -49,13 +47,13 @@ class UniverseTests extends munit.FunSuite with TestSupport {
 
     val res = runProgram(p)
     res match {
-      case Value.VSort(lvl) => assertEquals(lvl, Value.Level.one)
-      case other            => fail(s"Expected Type (Sort 1), got: $other")
+      case sort: Value.VSort => assertEquals(sort.level, Value.Level.one)
+      case other             => fail(s"Expected Type (Sort 1), got: $other")
     }
 
     res.tpe match {
-      case Value.VSort(u1) => assertEquals(u1, Value.Level.succ(Value.Level.one))
-      case other           => fail(s"Expected the type of Type to be Sort 2, got: $other")
+      case sort: Value.VSort => assertEquals(sort.level, Value.Level.succ(Value.Level.one))
+      case other             => fail(s"Expected the type of Type to be Sort 2, got: $other")
     }
   }
 
@@ -70,8 +68,8 @@ class UniverseTests extends munit.FunSuite with TestSupport {
 
     val res = runProgram(p)
     res match {
-      case Value.VSort(lvl) => assertEquals(lvl, Value.Level.one)
-      case other            => fail(s"Expected Sort 1 value (Type), got: $other")
+      case sort: Value.VSort => assertEquals(sort.level, Value.Level.one)
+      case other             => fail(s"Expected Sort 1 value (Type), got: $other")
     }
   }
 
@@ -104,8 +102,8 @@ class UniverseTests extends munit.FunSuite with TestSupport {
 
     val res = runProgram(p)
     res match {
-      case Value.VSort(lvl) => assertEquals(lvl, Value.Level.one)
-      case other            => fail(s"Expected Sort 1 value, got: $other")
+      case sort: Value.VSort => assertEquals(sort.level, Value.Level.one)
+      case other             => fail(s"Expected Sort 1 value, got: $other")
     }
   }
 
@@ -158,8 +156,8 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     res match {
       case Value.VLam(pi, _, Value.LamBody.ProofEta) =>
         pi.tpe match {
-          case Value.VSort(u) => assertEquals(u, Value.Level.zero)
-          case other          => fail(s"Expected Pi type to live in Prop, got: $other")
+          case sort: Value.VSort => assert(Sorts.isProp(sort))
+          case other             => fail(s"Expected Pi type to live in Prop, got: $other")
         }
       case other => fail(s"Expected the canonical eta-lambda for the Prop-valued Pi, got: $other")
     }
@@ -174,7 +172,7 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     val res = runProgram(p)
     res match {
       case Value.LevelTpe =>
-        assertEquals(res.tpe, VSort(Value.Level.one))
+        assert(ValueEquivalence.defEq(res.tpe, Sorts.Type))
       case other => fail(s"Expected Level type, got: $other")
     }
   }
@@ -441,8 +439,8 @@ class UniverseTests extends munit.FunSuite with TestSupport {
 
     val solved = ValueEquivalence
       .tryUnify(
-        VSort(Value.Level.mk(u.id)),
-        VSort(Value.Level.const(1)),
+        Sorts.sort(Value.Level.mk(u.id)),
+        Sorts.sort(Value.Level.const(1)),
         eqStore
       )
       .getOrElse(fail("expected sort unification to solve the level variable"))
@@ -457,8 +455,8 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     assert(
       ValueEquivalence
         .tryUnify(
-          Value.VSort(Value.Level.of(Map(u.id -> 1), 0)),
-          Value.VSort(Value.Level.zero),
+          Sorts.sort(Value.Level.of(Map(u.id -> 1), 0)),
+          Sorts.sort(Value.Level.zero),
           eqStore
         )
         .isLeft
@@ -471,7 +469,7 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     val eqStore = EqStore.empty.allow(DepSet(u.id, v.id))
     val imax = Value.Level.imax(Value.Level.mk(u.id), Value.Level.mk(v.id))
 
-    assert(ValueEquivalence.tryUnify(VSort(imax), VSort(Value.Level.one), eqStore).isLeft)
+    assert(ValueEquivalence.tryUnify(Sorts.sort(imax), Sorts.sort(Value.Level.one), eqStore).isLeft)
   }
 
   test("positive: implicit level through Level.succ works") {

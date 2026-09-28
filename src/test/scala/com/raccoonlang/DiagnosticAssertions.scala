@@ -22,6 +22,16 @@ trait DiagnosticAssertions { this: munit.FunSuite =>
     else fail(s"expected ${tag.runtimeClass.getSimpleName}, got $error")
   }
 
+  /** Run `body`, require it to fail with exactly one diagnostic, an `E`, and hand back that error. */
+  protected def expectOnly[E <: TypeError](
+      body: => Any
+  )(implicit tag: reflect.ClassTag[E], loc: munit.Location): E =
+    interceptDiagnostics(body) match {
+      case Vector(diagnostic) if tag.runtimeClass.isInstance(diagnostic.error) => diagnostic.error.asInstanceOf[E]
+      case diagnostics =>
+        fail(s"expected exactly one ${tag.runtimeClass.getSimpleName}, got ${diagnostics.map(_.error).mkString(", ")}")
+    }
+
   /** Run `body` and require it to fail, whatever the error is; the first diagnostic when there are several. */
   protected def interceptDiagnostic(body: => Any)(implicit loc: munit.Location): Diagnostic =
     interceptDiagnostics(body).head

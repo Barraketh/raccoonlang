@@ -78,11 +78,11 @@ object Packed {
     head.name match {
       case NatCodec.zeroName
           if head.totalArity == 0 && storedArgs.isEmpty && head.noConfusion &&
-            !isPropositionType(tpe) && tpe.synDeps.isEmpty =>
+            !Sorts.isProposition(tpe) && tpe.synDeps.isEmpty =>
         Some(VPacked.nat(0, tpe))
       case NatCodec.succName
           if head.totalArity == 1 && head.numErasedFamilyArgs == 0 && head.noConfusion &&
-            !isPropositionType(tpe) && tpe.synDeps.isEmpty =>
+            !Sorts.isProposition(tpe) && tpe.synDeps.isEmpty =>
         storedArgs match {
           case Vector(p: VPacked) if p.codec == NatCodec && ValueEquivalence.defEq(p.tpe, tpe) =>
             p.natValue.map(value => VPacked.nat(value + 1, tpe))
@@ -133,7 +133,7 @@ object Packed {
           if meta.familyArity == 0 && meta.constructorNames == Vector(NatCodec.zeroName, NatCodec.succName) =>
       case _ => reject("`Nat` in scope is not the two-constructor unary inductive")
     }
-    if (!ValueEquivalence.defEq(family.tpe, TypeTpe)) reject("`Nat` in scope is not Type-valued")
+    if (!ValueEquivalence.defEq(family.tpe, Sorts.Type)) reject("`Nat` in scope is not Type-valued")
     val zero = global(NatCodec.zeroName) match {
       case Some(h: ConstructorHead)
           if h.name == NatCodec.zeroName && h.totalArity == 0 && h.noConfusion &&
@@ -256,8 +256,8 @@ object Packed {
   ): InductiveMeta =
     value match {
       case InductiveFamilyValue(instance)
-          if instance.head.name == expectedName && !isPropositionType(value) &&
-            ValueEquivalence.defEq(value.tpe, TypeTpe) =>
+          if instance.head.name == expectedName && !Sorts.isProposition(value) &&
+            ValueEquivalence.defEq(value.tpe, Sorts.Type) =>
         instance.meta
       case _ => reject(s"`$label` is not the expected non-propositional Type-valued inductive instance")
     }
