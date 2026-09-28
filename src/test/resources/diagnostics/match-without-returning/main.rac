@@ -1,0 +1,7 @@
+def pred (n: Nat): Nat := {
+  match n with
+  | Nat.zero => Nat.zero
+  | Nat.succ p => p
+}
+
+{ pred(Nat.zero) }

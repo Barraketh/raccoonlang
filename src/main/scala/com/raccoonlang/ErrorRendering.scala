@@ -15,7 +15,6 @@ object ErrorRendering {
       case VarAlreadyLinked(id)                => s"FreshVar $id already linked"
       case NotAType(value)                     => s"$value is not a type"
       case NonInductiveMatch(tpe)              => s"Cannot match on non-inductive type $tpe"
-      case MissingReturningClause(reason)      => s"Match requires a returning clause: $reason"
       case NotFound(name)                      => s"$name not found"
       case AlreadyDefined(name)                => s"$name already defined"
       case ReservedKernelName(name)            => s"$name has a builtin body, which only a prelude may declare"

@@ -118,7 +118,8 @@ object MatchChecker {
       }
     }
 
-  def checkMatch(t: CA.Term.Match, env: Env, expected: Option[Expected] = None): CheckedTerm = {
+  /** A match's type is its written motive, whatever the match is checked against; `TypeChecker.check` compares. */
+  def checkMatch(t: CA.Term.Match, env: Env): CheckedTerm = {
     val scrutChecked = checkTerm(t.scrut, env)
     val scrut = scrutChecked.value
     val scrutTpe = scrut.tpe
@@ -153,46 +154,8 @@ object MatchChecker {
     lazy val reachableByType: Vector[ReachableCtor] =
       computeReachableCtors(scrut, scrutTpe, inductiveName, inductiveCtorNames, cases, env)
 
-    def inferMotiveFromReachable(reachable: Vector[ReachableCtor]): Value = {
-      val first = reachable.headOption.getOrElse(fail(MissingReturningClause("no constructors are reachable")))
-      val inferred = first.resultTy
-      val allEqual = reachable.tail.forall { info =>
-        ValueEquivalence.defEq(inferred, info.resultTy)
-      }
-      if (!allEqual) fail(MissingReturningClause("reachable constructors have different result types"))
-      assertType(inferred)
-      inferred
-    }
-
-    val checkedMotive = t.motive.map(motiveSyntax => checkTerm(motiveSyntax, env))
-
-    // The motive inherited from the expectation, for a match with no `returning` clause.
-    //
-    // A residual is re-evaluated later, so the motive must be *syntax* valid in this env. Under an
-    // expectation, the only such syntax is the one the expectation carries — a declared return type
-    // the program wrote down. When the expectation is a bare value (an application argument's binder
-    // type, a branch's own motive), there is nothing to write into the residual, so the program must
-    // supply a `returning` clause itself. Lazy, because a user-written clause supersedes the
-    // expectation entirely: a syntax-less expectation is only an error when no clause was given.
-    lazy val inheritedMotive: Option[(Value, CA.Term)] =
-      expected.map { exp =>
-        val syntax = exp.syntax.getOrElse(
-          fail(MissingReturningClause("the match's result type is not syntactically in scope; add a returning clause"))
-        )
-        (exp.value, syntax)
-      }
-
-    val motiveTy = checkedMotive match {
-      case Some(motive) => motive.value
-      case None =>
-        inheritedMotive match {
-          case Some((value, _)) => value
-          // No expectation at all: the branches must all agree on the scrutinee's own type, and the
-          // residual motive stays `None`, which means exactly that (Interpreter.matchOutType).
-          case None => inferMotiveFromReachable(reachableByType)
-        }
-    }
-    expected.foreach(exp => checkFits(motiveTy, exp.value))
+    val checkedMotive = checkTerm(t.motive, env)
+    val motiveTy = checkedMotive.value
 
     checkPropElimination(inductiveName, scrutTpe, motiveTy, reachableByType)
 
@@ -231,18 +194,8 @@ object MatchChecker {
     val checkedCases = cases.map { c =>
       checkedByCtor.getOrElse(c.ctorName, wtf(s"Unchecked reachable case ${c.ctorName}"))
     }
-    val checkedMatch = CA.Term.Match(
-      scrutChecked.residual,
-      // orElse is by-name: `inheritedMotive` is only forced when there is no user clause.
-      checkedMotive.map(_.residual).orElse(inheritedMotive.map(_._2)),
-      checkedCases,
-      t.span
-    )
-    val value = expected match {
-      case Some(_) => Interpreter.evalTerm(checkedMatch, env)
-      case None    => Interpreter.evalTerm(checkedMatch, env)
-    }
-    CheckedTerm(value, checkedMatch)
+    val checkedMatch = CA.Term.Match(scrutChecked.residual, checkedMotive.residual, checkedCases, t.span)
+    CheckedTerm(Interpreter.evalTerm(checkedMatch, env), checkedMatch)
   }
 
 }

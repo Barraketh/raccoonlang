@@ -40,23 +40,46 @@ class TypingTests extends munit.FunSuite with TestSupport {
     assertEquals(toShape(runProgram(p)), succS(zeroS))
   }
 
-  test("bare-body def eta-adapts a polymorphic function like a let does") {
-    val p =
-      """
-        |inductive Peano : Type
-        | | zero : Peano
-        | | succ (_: Peano) : Peano
-        |
-        |def polyId {u: Level}{A: Sort(u)} (x: A): A := x
-        |
-        |def monoId : Peano -> Peano := polyId
-        |
-        |{
-        |  monoId(Peano.zero)
-        |}
-        |""".stripMargin
+  // Checking is synthesis plus equality: a polymorphic function's name has its own type wherever
+  // it stands, and is not adapted to a monomorphic declared type. The program writes the lambda.
+  test("a polymorphic function name does not fit a monomorphic declared type") {
+    def program(body: String): String =
+      s"""
+         |inductive Peano : Type
+         | | zero : Peano
+         | | succ (_: Peano) : Peano
+         |
+         |def polyId {u: Level}{A: Sort(u)} (x: A): A := x
+         |
+         |def monoId : Peano -> Peano := $body
+         |
+         |{
+         |  monoId(Peano.zero)
+         |}
+         |""".stripMargin
 
-    assertEquals(toShape(runProgram(p)), zeroS)
+    assertEquals(toShape(runProgram(program("fun (x: Peano): Peano => polyId(x)"))), zeroS)
+    expectOnly[TypeMismatch](typecheckDecls(program("polyId")))
+  }
+
+  // A lambda's type is its own binders and result, wherever it stands: one that binds an implicit
+  // does not fit a function type without it.
+  test("a lambda with an implicit binder does not fit a function type without it") {
+    def program(lambda: String): String =
+      s"""
+         |inductive Peano : Type
+         | | zero : Peano
+         | | succ (_: Peano) : Peano
+         |
+         |def monoId : Peano -> Peano := $lambda
+         |
+         |{
+         |  monoId(Peano.zero)
+         |}
+         |""".stripMargin
+
+    assertEquals(toShape(runProgram(program("fun (x: Peano): Peano => x"))), zeroS)
+    expectOnly[TypeMismatch](typecheckDecls(program("fun {A: Type}(x: A): A => x")))
   }
 
   test("def typechecks and reduces by default") {
@@ -170,7 +193,7 @@ class TypingTests extends munit.FunSuite with TestSupport {
         | | succ (_: Peano) : Peano
         |
         |def pred (n: Peano): Peano := {
-        |  match n with
+        |  match n returning Peano with
         |  | Peano.zero => Peano.zero
         |  | Peano.succ x => x
         |}
@@ -192,7 +215,7 @@ class TypingTests extends munit.FunSuite with TestSupport {
         | | succ (_: Peano) : Peano
         |
         |def bad (n: Peano): Type := {
-        |  match n with
+        |  match n returning Type with
         |  | Peano.zero => Peano.zero
         |  | Peano.succ x => x
         |}
@@ -270,7 +293,7 @@ class TypingTests extends munit.FunSuite with TestSupport {
         | | cons (n: Peano) (xs: Vec(A, n)) (x: A): Vec(A, Peano.succ(n))
         |
         |def keepNil (A: Type)(v: Vec(A, Peano.zero)): Vec(A, Peano.zero) := {
-        |  match v with
+        |  match v returning Vec(A, Peano.zero) with
         |  | Vec.nil => v
         |}
         |""".stripMargin

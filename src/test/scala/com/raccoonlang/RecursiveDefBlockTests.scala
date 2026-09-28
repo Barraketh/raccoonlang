@@ -75,7 +75,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
     val bField = CoreAst.LocalRef(15, "a")
     val fBody = Term.Match(
       local(a),
-      Some(global("GroupResult")),
+      global("GroupResult"),
       Vector(
         CoreAst.Case("GroupA.leaf", true, Vector.empty, global("GroupResult.zero"), span),
         CoreAst.Case(
@@ -90,7 +90,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
     )
     val gBody = Term.Match(
       local(b),
-      Some(global("GroupResult")),
+      global("GroupResult"),
       Vector(
         CoreAst.Case("GroupB.leaf", true, Vector.empty, global("GroupResult.zero"), span),
         CoreAst.Case(
@@ -255,7 +255,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
     val aField = CoreAst.LocalRef(47, "a")
     val fBody = Term.Match(
       local(a),
-      Some(global("GroupResult")),
+      global("GroupResult"),
       Vector(
         CoreAst.Case("GroupA.leaf", true, Vector.empty, global("GroupResult.zero"), span),
         CoreAst.Case(
@@ -270,7 +270,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
     )
     val gBody = Term.Match(
       local(b),
-      Some(global("GroupResult")),
+      global("GroupResult"),
       Vector(
         CoreAst.Case("GroupB.leaf", true, Vector.empty, global("GroupResult.zero"), span),
         CoreAst.Case(
@@ -365,7 +365,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
     val listTree = app(global("K6List"), global("K6Tree"))
     val treeBody = Term.Match(
       local(tree),
-      Some(global("GroupResult")),
+      global("GroupResult"),
       Vector(
         CoreAst.Case("K6Tree.leaf", true, Vector.empty, global("GroupResult.zero"), span),
         CoreAst.Case(
@@ -380,7 +380,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
     )
     val listBody = Term.Match(
       local(list),
-      Some(global("GroupResult")),
+      global("GroupResult"),
       Vector(
         CoreAst.Case("K6List.nil", true, Vector.empty, global("GroupResult.zero"), span),
         CoreAst.Case(
@@ -428,7 +428,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
         | | succ (n: QuoteNat) : QuoteNat
         |
         |def quotedPred (n: QuoteNat): QuoteNat decreases structural(n) := {
-        |  match n with
+        |  match n returning QuoteNat with
         |  | QuoteNat.zero => QuoteNat.zero
         |  | QuoteNat.succ k => quotedPred(k)
         |}

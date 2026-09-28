@@ -206,57 +206,41 @@ class ForcedImplicitTests extends munit.FunSuite with TestSupport {
     assertEquals(ctorName(runProgram(p)), "Peano.succ")
   }
 
-  test("polymorphic functions adapt to expected Pis that keep forced implicit binders") {
-    val p =
+  // A declared Pi with fewer implicit binders than a polymorphic function does not adapt it; a
+  // lambda at exactly that type, forcing its own implicit, is written instead.
+  test("a polymorphic function fits only its own type, not one with fewer forced implicits") {
+    def program(value: String): String =
       natDecls +
-        """
-          |def idL {u: Level}{A: Sort(u)}(x: A): A := x
-          |
-          |{
-          |  let f : {A: Type} -> (x: A) -> A := idL
-          |  f(Peano.succ(Peano.zero))
-          |}
-          |""".stripMargin
+        s"""
+           |def idL {u: Level}{A: Sort(u)}(x: A): A := x
+           |
+           |{
+           |  let f : {A: Type} -> (x: A) -> A := $value
+           |  f(Peano.succ(Peano.zero))
+           |}
+           |""".stripMargin
 
-    assertEquals(ctorName(runProgram(p)), "Peano.succ")
+    assertEquals(ctorName(runProgram(program("fun {A: Type}(x: A): A => idL(x)"))), "Peano.succ")
+    expectOnly[TypeMismatch](typecheckDecls(program("idL")))
   }
 
-  // Eta-adaptation needs the expected Pi as syntax valid in the *caller's* env, to serve as the
-  // synthetic lambda's residual type. An argument's expected type is its binder's type, whose
-  // syntax lives in the callee's telescope env and names the callee's own LocalRefs, so it can
-  // never be placed in the caller's residual. Arguments therefore do not adapt; naming the
-  // adapted function in a declared-type position first does.
-  test("eta-adaptation needs declared-type syntax, which an argument position cannot supply") {
-    val p =
+  // An argument is synthesized and compared with its binder type like any checked term, so a
+  // polymorphic function passed bare does not fit a monomorphic parameter; a lambda does.
+  test("a polymorphic function argument is not adapted to its parameter's type") {
+    def program(argument: String): String =
       natDecls +
-        """
-          |def idL {u: Level}{A: Sort(u)}(x: A): A := x
-          |
-          |def apply1 {A: Type}(a: A)(f: (x: A) -> A): A := f(a)
-          |
-          |{
-          |  apply1(Peano.zero, idL)
-          |}
-          |""".stripMargin
+        s"""
+           |def idL {u: Level}{A: Sort(u)}(x: A): A := x
+           |
+           |def apply1 {A: Type}(a: A)(f: (x: A) -> A): A := f(a)
+           |
+           |{
+           |  apply1(Peano.zero, $argument)
+           |}
+           |""".stripMargin
 
-    expectTypeError[TypeMismatch](p)
-
-    // The same adaptation goes through once the expected Pi is written down as a declared type.
-    val adapted =
-      natDecls +
-        """
-          |def idL {u: Level}{A: Sort(u)}(x: A): A := x
-          |
-          |def apply1 {A: Type}(a: A)(f: (x: A) -> A): A := f(a)
-          |
-          |def idPeano : (x: Peano) -> Peano := idL
-          |
-          |{
-          |  apply1(Peano.zero, idPeano)
-          |}
-          |""".stripMargin
-
-    assertEquals(ctorName(runProgram(adapted)), "Peano.zero")
+    assertEquals(ctorName(runProgram(program("fun (x: Peano): Peano => idL(x)"))), "Peano.zero")
+    expectOnly[TypeMismatch](typecheckDecls(program("idL")))
   }
 
   test("Quot.mk takes the relation explicitly and the carrier by projection") {
@@ -331,7 +315,7 @@ class ForcedImplicitTests extends munit.FunSuite with TestSupport {
           | | true : Bool
           |
           |def F (b: Bool): Type := {
-          |  match b with
+          |  match b returning Type with
           |  | Bool.true => (n: Peano) -> Peano
           |  | Bool.false => Peano
           |}

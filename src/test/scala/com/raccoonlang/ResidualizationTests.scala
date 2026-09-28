@@ -382,34 +382,28 @@ class ResidualizationTests extends munit.FunSuite {
     }
   }
 
-  // The language rule: a `match` with no `returning` clause residualizes the declared return type
-  // it inherited, verbatim, as its motive. Before, this position held a value-carrying node.
-  test("a motive-less match residualizes the declared return type as its motive") {
+  // Every match writes its motive. A generated selector's match writes the selector's declared
+  // result type, with an earlier field rewritten to that field's selector applied to `self`.
+  test("a generated selector's match residualizes its rewritten field type as its motive") {
     val p =
-      natDecls +
-        """
-          |inductive Bool : Type
-          | | true : Bool
-          | | false : Bool
-          |
-          |opaque def opaqueBool (b: Bool): Bool := b
-          |
-          |def pick (b: Bool): Peano := {
-          |  match opaqueBool(b) with
-          |  | Bool.true => Peano.zero
-          |  | Bool.false => Peano.zero
-          |}
-          |""".stripMargin
+      """
+        |struct Boxed : Sort(Level.succ(Level.one))
+        | | mk (T: Type)(x: T) : Boxed
+        |""".stripMargin
 
-    val lam = checkLastDeclBody(p) match {
+    val body = checkLastDeclBody(p) match {
       case CA.Term.Lam(_, body, _, _, _, _) => resultTerm(body)
       case other                            => fail(s"Expected a checked lambda, got $other")
     }
-    lam match {
-      case CA.Term.Match(_, Some(motive), _, _) =>
-        // The declared return type itself, as written, not a value carried in syntax.
-        assertEquals(motive, CA.Term.GlobalRef("Peano", motive.span))
-      case other => fail(s"Expected a match with an inherited motive, got $other")
+    body match {
+      case CA.Term.Match(
+            CA.Term.LocalRef(scrut, _),
+            CA.Term.App(CA.Term.GlobalRef("Boxed.T", _), Vector(CA.Term.LocalRef(self, _)), _),
+            _,
+            _
+          ) =>
+        assertEquals(self, scrut)
+      case other => fail(s"Expected the selector match to return Boxed.T(self), got $other")
     }
   }
 
@@ -426,7 +420,7 @@ class ResidualizationTests extends munit.FunSuite {
           |opaque def opaqueBool (b: Bool): Bool := b
           |
           |def pick (b: Bool): Peano := {
-          |  match opaqueBool(b) with
+          |  match opaqueBool(b) returning Peano with
           |  | Bool.true => Peano.zero
           |  | Bool.false => Peano.zero
           |}

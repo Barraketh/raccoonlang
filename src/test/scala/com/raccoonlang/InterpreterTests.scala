@@ -36,7 +36,7 @@ class InterpreterTests extends munit.FunSuite {
               | | succ (_: Peano) : Peano
               |
               |def add (a: Peano)(b: Peano): Peano decreases structural(b) := {
-              |  match b with
+              |  match b returning Peano with
               |  | Peano.zero => a
               |  | Peano.succ x => add(Peano.succ(a), x)
               |}

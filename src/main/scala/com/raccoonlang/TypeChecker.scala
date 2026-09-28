@@ -52,35 +52,13 @@ object TypeChecker {
     catch { case diagnostic: Diagnostic => throw Execution.CheckFailure(Vector(diagnostic)) }
   }
 
-  /**
-   * An expected type, optionally paired with the *syntax* that denotes it.
-   *
-   * `syntax`, when present, is a term valid in the env the expectation is pushed into — the same local references — so
-   * it can be placed verbatim into a residual. That is what a `match` without a `returning` clause needs: its residual
-   * motive has to be syntax, and the only syntax available is whatever the enclosing declaration wrote down. A declared
-   * return type qualifies (a lambda's `pi.out`, an annotated let's type, a bare-body def's declared type); a type that
-   * only exists as a checked value does not, and a match under such an expectation is rejected with
-   * `MissingReturningClause`.
-   */
-  private[raccoonlang] final case class Expected(value: Value, syntax: Option[CA.Term])
-
-  private[raccoonlang] object Expected {
-    def valueOnly(value: Value): Expected = Expected(value, None)
-  }
   private final case class CheckedApply(value: Value, residual: CA.Term.App)
   private[raccoonlang] final case class CheckedRecursiveDef(name: String, vpi: VPi, residual: CA.Term.Lam)
 
   /**
-   * An argument whose elaboration is deferred until its binder's expected type is known.
-   *
-   * An argument is never a place where expected-type *syntax* is available: the binder type it would come from is
-   * syntax in the callee's telescope env, not in the caller's. So the expectation pushed here could only ever be a bare
-   * value, and a value-only expectation changes nothing that the final verification pass does not already do — the
-   * check performed by `checkTermFits` happens there too (the telescope walk checks each arg against its binder type),
-   * and both remaining consumers of a pushed expectation need syntax: subsumption's eta-adaptation needs a Pi *term*
-   * for the synthetic lambda's type, and a motive-less `match` needs a motive term. Arguments are therefore always
-   * synthesized, and `PendingArg` is either the argument's own syntax or an already-checked value (the eta-adaptation
-   * path builds those).
+   * An argument of a checked application: its own syntax, synthesized inside the application's argument frame, or a
+   * value the caller has already checked (a selected field's base). Arguments are always synthesized; the verification
+   * pass then checks each one against its binder type, as any check is synthesis followed by equality.
    */
   private sealed trait PendingArg {
     def synth(env: Env): CheckedTerm
@@ -125,10 +103,10 @@ object TypeChecker {
    *
    * The classification itself is deliberately not duplicated — it is the one shared predicate, so the checker can never
    * disagree with proof collapse. What this adds is the `NotAType` check in `getUniverse`, and the one caller,
-   * `MatchChecker.checkPropElimination`, needs it: its `motiveTy` can be a user-written motive or an inherited
-   * expectation, neither of which has been asserted to be a type by the time elimination is classified. (A type is
-   * Prop-valued when it is itself a proposition. The sort `Prop` is not: `Prop : Sort 1`, so `Nat -> Prop` lives in
-   * Type, and predicates are data, not proofs — conflating the two made predicates proof-irrelevant and derived False.)
+   * `MatchChecker.checkPropElimination`, needs it: its `motiveTy` is the written `returning` clause, which has not been
+   * asserted to be a type by the time elimination is classified. (A type is Prop-valued when it is itself a
+   * proposition. The sort `Prop` is not: `Prop : Sort 1`, so `Nat -> Prop` lives in Type, and predicates are data, not
+   * proofs — conflating the two made predicates proof-irrelevant and derived False.)
    */
   def isPropValuedType(value: Value): Boolean = {
     getUniverse(value)
@@ -143,19 +121,6 @@ object TypeChecker {
       case _                                                        =>
     }
   }
-
-  private def checkTermFits(checked: CheckedTerm, expectedTy: Value): CheckedTerm = {
-    checkType(checked.value, expectedTy)
-    checked
-  }
-
-  /**
-   * A synthesized term under an optional expectation: unconstrained it is returned as synthesized, and under an
-   * expectation it must fit. This is plain subsumption — the syntax-directed forms that can also eta-adapt (refs,
-   * lambdas) go through `subsume` instead.
-   */
-  private def fitsExpected(synthed: CheckedTerm, expected: Option[Expected]): CheckedTerm =
-    expected.fold(synthed)(exp => checkTermFits(synthed, exp.value))
 
   private def applyHeadName(fnResidual: CA.Term): String =
     fnResidual match {
@@ -178,8 +143,7 @@ object TypeChecker {
       fnResidual: CA.Term,
       providedArgs: Vector[PendingArg],
       env: Env,
-      span: Span,
-      expectedResult: Option[Value]
+      span: Span
   ): CheckedApply =
     fnValue.tpe match {
       case pi: VPi =>
@@ -233,8 +197,6 @@ object TypeChecker {
             if (position == 0) bind
             else framed(Frame.InArgument(position, binders(idx).name, applyHeadName(fnResidual)))(bind)
           }
-        expectedResult.foreach(expected => checkFits(pi.codomain(calleeEnv), expected))
-
         val finalArgs = binders.map(binder => calleeEnv(binder.localRef))
         val residual = CA.Term.App(fnResidual, checkedResiduals.result(), span)
         CheckedApply(Interpreter.evalApply(fnValue, finalArgs), residual)
@@ -277,24 +239,21 @@ object TypeChecker {
     }
 
   // Returning the residual term lets callers preserve checked let/lambda structure instead of re-checking.
-  private def checkBody(body: CA.Term.Body, env: Env, expected: Option[Expected]): CheckedTerm = {
+  private def checkBody(body: CA.Term.Body, env: Env): CheckedTerm = {
     val checkedLets = Vector.newBuilder[CA.Let]
     var curEnv = env
 
     body.lets.foreach { l =>
       val checkedTy = l.ty.map(tyTerm => checkTerm(tyTerm, curEnv))
       val checkedValue = checkedTy match {
-        // An annotated let carries its own syntax: `l.ty` is a term in `curEnv`, so it can serve as
-        // the residual motive of a `match` in the let's value.
-        case Some(ty) => check(l.value, Some(Expected(ty.value, l.ty)), curEnv)
+        case Some(ty) => checkTerm(l.value, ty.value, curEnv)
         case None     => checkTerm(l.value, curEnv)
       }
       checkedLets += CA.Let(l.localRef, checkedTy.map(_.residual), checkedValue.residual, l.span)
       curEnv = curEnv.putLocal(l.localRef, checkedValue.value)
     }
 
-    // The lets only add locals, so both the enclosing expectation's value and its syntax stay valid.
-    val checkedRes = check(body.res, expected, curEnv)
+    val checkedRes = checkTerm(body.res, curEnv)
     CheckedTerm(checkedRes.value, CA.Term.Body(checkedLets.result(), checkedRes.residual, body.span))
   }
 
@@ -307,8 +266,7 @@ object TypeChecker {
       base: CheckedTerm,
       field: String,
       span: Span,
-      env: Env,
-      expected: Option[Expected]
+      env: Env
   ): CheckedTerm = {
     val vType = base.value.tpe
     val family = vType match {
@@ -324,8 +282,7 @@ object TypeChecker {
         CA.Term.GlobalRef(selectorName, span),
         Vector(PendingArg.checked(base)),
         env,
-        span,
-        expected.map(_.value)
+        span
       )
     CheckedTerm(applied.value, applied.residual)
   }
@@ -349,11 +306,7 @@ object TypeChecker {
         case None => bodyEnv
       }
 
-    // The Pi's `out` is syntax in the body's own scope — `checkPi` binds exactly the binder refs
-    // `out` mentions, and the residual Pi reuses them — so the declared return type can be the
-    // residual motive of a `match` body with no `returning` clause.
-    val checkedBody =
-      check(l.body, Some(Expected(checkedVpi.outTy, Some(checkedVpi.residual.out))), recurEnv)
+    val checkedBody = checkTerm(l.body, checkedVpi.outTy, recurEnv)
     assertNonRawRecursive(checkedBody.value)
 
     val checkedLam =
@@ -407,8 +360,7 @@ object TypeChecker {
           )
         )
       }
-      val checkedBody =
-        check(definition.body, Some(Expected(checkedPi.outTy, Some(checkedPi.residual.out))), bodyEnv)
+      val checkedBody = checkTerm(definition.body, checkedPi.outTy, bodyEnv)
       assertNonRawRecursive(checkedBody.value)
       val residual = CA.Term.Lam(
         checkedPi.residual,
@@ -436,141 +388,55 @@ object TypeChecker {
       case _        => fail(NotAType(value))
     }
 
-  /**
-   * Eta-adaptation of a bare polymorphic function against an expected Pi with fewer binders: `let f : Nat -> Nat := id`
-   * becomes `fun (x: Nat): Nat => id(x)`, and the inner application reconstructs the implicits from `x` by projection.
-   * Expected Pis may themselves have (forced) implicit binders — those become implicit binders of the synthetic lambda,
-   * reconstructed at its call sites; only the explicit ones are applied.
-   *
-   * The synthetic lambda needs a *type* in residual syntax, and the only such syntax is the expectation's own: the
-   * expected type must have been written down as a literal `Pi` term valid in the caller's env. That is exactly the
-   * declared-type positions (`let f : Nat -> Nat := id`, a def's declared type). When the expectation carries no
-   * syntax, or its syntax is not literally a Pi node (a reference to a let-bound type alias, say), the adaptation is
-   * declined and plain subsumption applies.
-   */
-  private def tryInstantiateImplicits(
-      checked: CheckedTerm,
-      expected: Expected,
-      env: Env,
-      span: Span
-  ): Option[CheckedTerm] =
-    (checked.value.tpe, expected.value) match {
-      case (actualPi: VPi, expectedPi: VPi)
-          if actualPi.binders.exists(_.isImplicit) &&
-            actualPi.binders.length > expectedPi.binders.length &&
-            actualPi.numExplicit == expectedPi.numExplicit =>
-        // Freshen through the expected Pi's own closure — its binder types are syntax valid in
-        // expectedPi.env, not in the caller's env — then expose the fresh binders to the body.
-        val piFreshEnv = BinderOps.freshen(expectedPi)
-        val bodyEnv = expectedPi.binders.foldLeft(env) { (curEnv, binder) =>
-          curEnv.putLocal(binder.localRef, piFreshEnv(binder.localRef))
-        }
-        expectedPiSyntax(expected, expectedPi).flatMap { residualPi =>
-          try {
-            val bodyArgs =
-              expectedPi.binders.collect {
-                case binder if !binder.isImplicit =>
-                  val value = piFreshEnv(binder.localRef)
-                  PendingArg.checked(CheckedTerm(value, CA.Term.LocalRef(binder.localRef, binder.ty.span)))
-              }
-            val app =
-              checkApplyChecked(
-                checked.value,
-                checked.residual,
-                bodyArgs,
-                bodyEnv,
-                span,
-                Some(expectedPi.codomain(piFreshEnv))
-              )
-            val lam =
-              CA.Term.Lam(
-                residualPi,
-                app.residual,
-                // A fabricated lambda needs a node identity of its own (docs/kernel.md#value-identity);
-                // its span carries one.
-                Span.synthetic(),
-                name = None,
-                recursion = None
-              )
-            Some(CheckedTerm(Interpreter.evalLam(lam, expectedPi, env), lam))
-          } catch {
-            // Adaptation is a guess. These three say the guess did not fit, so decline and let plain
-            // subsumption report the real mismatch; anything else is a genuine failure and propagates.
-            case Diagnostic(_: TypeMismatch | _: ArityMismatch | _: ImplicitReconstructionFailed, _, _) => None
-          }
-        }
-
-      case _ => None
-    }
-
-  /**
-   * The expectation's syntax as a Pi term for the synthetic eta-adaptation lambda's type.
-   *
-   * The binders are the *expected Pi value's* own, so local refs, implicit flags, and compiled projection specs are
-   * preserved exactly; only the surrounding node identity is fresh. A fabricated Pi needs an identity of its own, or
-   * two sibling adaptations checked at one caller span would mint values sharing a trusted ValueKey
-   * (docs/kernel.md#value-identity).
-   */
-  private def expectedPiSyntax(expected: Expected, expectedPi: VPi): Option[CA.Term.Pi] =
-    expected.syntax.collect { case pi: CA.Term.Pi =>
-      CA.Term.Pi(pi.binders, pi.out, Span.synthetic(), knownPropValued = expectedPi.knownPropValued)
-    }
-
-  // Adapt a synthesized value to the expected type: eta-expand a polymorphic function against a
-  // monomorphic expected Pi if that helps, otherwise plain subsumption.
-  private def subsume(checked: CheckedTerm, expected: Expected, env: Env, span: Span): CheckedTerm =
-    tryInstantiateImplicits(checked, expected, env, span)
-      .getOrElse(checkTermFits(checked, expected.value))
-
   def checkTerm(term: CA.Term, env: Env): CheckedTerm =
     check(term, None, env)
 
-  /** Check against an expected type with no syntax for it; a motive-less `match` under it is rejected. */
   def checkTerm(term: CA.Term, expectedTy: Value, env: Env): CheckedTerm =
-    check(term, Some(Expected.valueOnly(expectedTy)), env)
+    check(term, Some(expectedTy), env)
 
-  private[raccoonlang] def checkTerm(term: CA.Term, expected: Expected, env: Env): CheckedTerm =
-    check(term, Some(expected), env)
-
-  /** The checker's locating boundary: an unlocated failure raised while checking `term` belongs to `term`. */
-  private def check(term: CA.Term, expected: Option[Expected], env: Env): CheckedTerm =
+  /**
+   * The checker's locating boundary: an unlocated failure raised while checking `term` belongs to `term`.
+   *
+   * Checking is synthesis followed by equality. Every case synthesizes without looking at the expectation, and the
+   * synthesized type must then equal the expected one: a term's type never depends on where it stands.
+   */
+  private def check(term: CA.Term, expected: Option[Value], env: Env): CheckedTerm =
     at(term.span) {
-      term match {
+      val synthed = term match {
         case CA.Term.NatLit(value, span) =>
           val layout = env.nativeLiterals.natLayout.getOrElse(fail(NatLiteralUnavailable("no validated Nat layout")))
-          val synthed = CheckedTerm(VPacked.nat(value, layout.natTpe), CA.Term.NatLit(value, span))
-          fitsExpected(synthed, expected)
+          CheckedTerm(VPacked.nat(value, layout.natTpe), CA.Term.NatLit(value, span))
         case CA.Term.StrLit(scalars, span) =>
           val layout =
             env.nativeLiterals.stringLayout.getOrElse(fail(StringLiteralUnavailable("no validated String layout")))
-          val synthed = CheckedTerm(Packed.evalStrLit(scalars, env), CA.Term.StrLit(scalars, span))
-          if (!ValueEquivalence.defEq(synthed.value.tpe, layout.stringTpe))
+          val checked = CheckedTerm(Packed.evalStrLit(scalars, env), CA.Term.StrLit(scalars, span))
+          if (!ValueEquivalence.defEq(checked.value.tpe, layout.stringTpe))
             wtf("String literal evaluator returned the wrong type")
-          fitsExpected(synthed, expected)
-        case CA.Term.Select(base, field, span) =>
-          val checkedBase = checkTerm(base, env)
-          checkSelect(checkedBase, field, span, env, expected)
+          checked
+        case CA.Term.Select(base, field, span) => checkSelect(checkTerm(base, env), field, span, env)
         case app: CA.Term.App =>
           val checkedFn = checkTerm(app.fn, env)
-          val checkedArgs = app.args.map(PendingArg.term)
           val checkedApp =
-            checkApplyChecked(checkedFn.value, checkedFn.residual, checkedArgs, env, app.span, expected.map(_.value))
+            checkApplyChecked(checkedFn.value, checkedFn.residual, app.args.map(PendingArg.term), env, app.span)
           CheckedTerm(checkedApp.value, checkedApp.residual)
-        case m: CA.Term.Match => MatchChecker.checkMatch(m, env, expected)
-        case b: CA.Term.Body  => checkBody(b, env, expected)
+        case m: CA.Term.Match => MatchChecker.checkMatch(m, env)
+        case b: CA.Term.Body  => checkBody(b, env)
         case pi: CA.Term.Pi =>
           val checked = checkPi(pi, env)
-          val checkedTerm = CheckedTerm(checked.vpi, checked.residual)
-          fitsExpected(checkedTerm, expected)
-        // Refs evaluate directly; against an expected type they get subsumption
-        // (eta-adaptation of polymorphic functions).
-        case ref: CA.Term.Ref =>
-          val synthed = CheckedTerm(Interpreter.evalTerm(ref, env), ref)
-          expected.fold(synthed)(exp => subsume(synthed, exp, env, ref.span))
-        case l: CA.Term.Lam =>
-          val synthed = checkLam(l, env)
-          expected.fold(synthed)(exp => subsume(synthed, exp, env, l.span))
+          CheckedTerm(checked.vpi, checked.residual)
+        case ref: CA.Term.Ref => CheckedTerm(Interpreter.evalTerm(ref, env), ref)
+        case l: CA.Term.Lam   => checkLam(l, env)
       }
+      expected.foreach(expectedTy => at(typeSite(term))(checkType(synthed.value, expectedTy)))
+      synthed
+    }
+
+  /** Where a term's type comes from, for locating a mismatch: a block's type is its result's. */
+  @annotation.tailrec
+  private def typeSite(term: CA.Term): Span =
+    term match {
+      case body: CA.Term.Body => typeSite(body.res)
+      case other              => other.span
     }
 
 }

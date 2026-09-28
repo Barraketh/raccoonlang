@@ -20,6 +20,11 @@ class ArchitectureTests extends munit.FunSuite {
       "only Sorts asks whether a sort is Prop",
       raw"[=!]=\s*Level\.zero\b|\bLevel\.zero\s*[=!]=".r,
       Set("Sorts.scala")
+    ),
+    Rule(
+      "checking is synthesis plus equality: only TypeChecker.check takes an optional expected type",
+      raw"\bexpected\w*\s*:\s*Option\[".r,
+      Set("TypeChecker.scala")
     )
   )
 

@@ -11,7 +11,7 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
         | | succ (_: Peano) : Peano
         |
         |def onlyZero (n: Peano): Peano := {
-        |  match n with
+        |  match n returning Peano with
         |  | Peano.zero => Peano.zero
         |}
         |
@@ -28,7 +28,7 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
         | | succ (_: Peano) : Peano
         |
         |def dup (n: Peano): Peano := {
-        |  match n with
+        |  match n returning Peano with
         |  | Peano.zero => Peano.zero
         |  | Peano.zero => Peano.zero
         |  | Peano.succ x => x
@@ -73,7 +73,7 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
         |
         |def bad (n: Peano): Peano := {
         |  // scrutinee is neutral/opaque application: g n
-        |  match g(n) with
+        |  match g(n) returning Peano with
         |  | Peano.zero => Peano.zero
         |}
         |
@@ -92,7 +92,7 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
         |opaque def g (n: Peano): Peano := n
         |
         |def ok (n: Peano): Peano := {
-        |  match g(n) with
+        |  match g(n) returning Peano with
         |  | Peano.zero => Peano.zero
         |  | Peano.succ x => x
         |}
@@ -111,7 +111,7 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
         | | right (x: A) : Wrap(A)
         |
         |def keepWrap (A: Type)(w: Wrap(A)): Wrap(A) := {
-        |  match w with
+        |  match w returning Wrap(A) with
         |  | Wrap.left x => Wrap.left(x)
         |  | Wrap.right x => Wrap.right(x)
         |}
@@ -132,7 +132,7 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
         | | intro : IsZero(Peano.zero)
         |
         |def absurdSucc (n: Peano)(h: IsZero(Peano.succ(n))): Peano := {
-        |  match h with
+        |  match h returning Peano with
         |}
         |
         |""".stripMargin
@@ -152,7 +152,7 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
         | | succCase (m: Peano) : Shape(Peano.succ(m))
         |
         |def keepShape (n: Peano)(s: Shape(n)): Shape(n) := {
-        |  match s with
+        |  match s returning Shape(n) with
         |  | Shape.zeroCase => s
         |  | Shape.succCase m => s
         |}
@@ -162,9 +162,8 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
     typecheckDecls(p)
   }
 
-  // A def body's `match` inherits the declared return type, which is syntax in the body's own
-  // scope (the Pi's `out`), so it needs no `returning` clause even when it mentions a parameter.
-  test("match with no returning clause inherits a declared return type that mentions a parameter") {
+  // A stuck match's type is its written motive, evaluated where the match stands.
+  test("a stuck match has its returning clause as its type, instantiated at the call") {
     val p =
       """
         |inductive Peano : Type
@@ -172,7 +171,7 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
         | | succ (_: Peano) : Peano
         |
         |def f {A: Type}(x: Peano)(y: A): A := {
-        |  match x with
+        |  match x returning A with
         |  | Peano.zero => y
         |  | Peano.succ _ => y
         |}
@@ -183,8 +182,8 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
         |{ f(n, a) }
         |""".stripMargin
 
-    // Applied to a neutral scrutinee the match is stuck, and its type is the declared return type
-    // instantiated at the call: A := Peano.
+    // Applied to a neutral scrutinee the match is stuck, and its type is the motive instantiated
+    // at the call: A := Peano.
     val result = runProgram(p)
     result match {
       case Value.VCtor(head, _, _) => fail(s"Expected a stuck match, got constructor ${head.name}")
@@ -193,10 +192,8 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
     assertEquals(PrettyPrinter.print(result.tpe), "Peano")
   }
 
-  // A branch body is checked against a bare motive *value* (materialized per branch), so a nested
-  // `match` there inherits no syntax. It is accepted only when it can infer its own motive from
-  // the scrutinee's type; a result type that differs per branch cannot, and needs `returning`.
-  test("nested match under a dependent motive needs a returning clause of its own") {
+  // Every match writes its motive: a match without `returning` does not parse, wherever it stands.
+  test("a match without a returning clause is a parse error") {
     def program(returning: String): String =
       s"""
          |inductive Peano : Type
@@ -218,7 +215,7 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
          |}
          |""".stripMargin
 
-    interceptError[MissingReturningClause] { typecheckDecls(program("")) }
     typecheckDecls(program(" returning Shape(n)"))
+    assert(LanguageParser.parseProgram(program("")).isInstanceOf[Failure])
   }
 }
