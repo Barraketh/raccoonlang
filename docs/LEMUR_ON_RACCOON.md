@@ -41,8 +41,10 @@ every program written without fields keeps its meaning.
 
 A field's value is a level, kind or lifetime expression (§2.2), elaborated with
 that parameter's namespace open: `level = succ(u)`, `kind = lin`,
-`scope = union(a, b)`. Locals shadow the opened names, as under `open`. In this
-document `{}` and `{l, m}` are prose for the sets a lifetime denotes.
+`scope = union(a, b)`. A name in a field resolves to a local first, then to one
+of the field's forms, and only then by ordinary resolution. So inside
+`namespace Nat`, `level = succ(u)` still means `Level.succ(u)`. In this document
+`{}` and `{l, m}` are prose for the sets a lifetime denotes.
 
 A closure is the field list of a function type or a lambda, and supplies its
 closure kind and closure scope. A closure prefixes a whole group, so it is a
@@ -103,7 +105,11 @@ anywhere else is `NotAType`, because there its type must be a type.
 | a function type or lambda binder | no | no | yes |
 | `scope l =>` | – | – | yes |
 
-A header binder may be explicit or a forced implicit, as today.
+A header is the binders written before a declaration's `:`. A header binder
+may be explicit or a forced implicit, as today. A function type written after
+the `:` is a function type like any other. So
+`axiom f : {u: Level} -> Sort { level = u } -> Nat` is `NotAType`, and is written
+`axiom f {u: Level}(A: Sort { level = u }): Nat`.
 
 The asymmetry has a reason:
 - A level binder changes the universe of everything after it. So a function type
@@ -180,14 +186,15 @@ last row reads the sort off that type:
 | a family instance `D(p*, i*)` | the declared classifier of §5.1 under `p*`, and nothing else |
 | any other neutral type | the sort its type states: a type variable `A: Type { kind = k, scope = S }`, or `F(e*)` for a local `F`, states it under the arguments; an `opaque def` or `axiom` application and a blocked `match` state the sort of the declared result or motive |
 
-Every builtin type is at `Type`.
-
 `Large` is internal to the kernel. A program cannot write it or bind a variable
 of it, and it is not a sort, so a large type fits no position that requires a
 type. `Large` classifies itself. That is harmless, because Girard's paradox
 needs something that quantifies over the universe, and nothing can quantify
 over `Large`. Since only a declaration's own type is ever large (§2.2), no
-hierarchy above `Large` is needed.
+hierarchy above `Large` is needed. A large function type whose codomain is a
+proposition is proof-valued, as a small one is. Each of its instances is a
+proposition. So a level-polymorphic lemma such as `Eq.symm` is published and
+applied as a proof, as today, and its body never runs.
 
 A type's scope counts every atom a value of it can hand over. A value can hand
 over an atom in three ways: by holding it, by producing it, or by carrying it
@@ -356,8 +363,11 @@ never tracked: a `def` or `opaque def` whose type is linear is `LinearGlobal`,
 and an axiom is §7.3's.
 
 Types and proofs hold no tokens. A term whose type is a sort or a proposition
-may not contain a subterm of linear type (`LinearInType(e)`); this applies to a
-type in a type position, a type computed as a value, and a proof alike. A type
+may not contain a subterm of linear type (`LinearInType(e)`, where `e` is that
+subterm). This applies to a type in a type position, a type computed as a
+value, and a proof alike. It also applies to a lambda inside one that consumes
+its own linear parameter. Such a function is named by a definition and referred
+to by name instead. A type
 or a proof is never consumed as a token. A token inside one would be copied
 with it, or dropped without its module's consent, since a proof is never run.
 Consequences:
@@ -419,9 +429,10 @@ selector when another field's type is linear, a kind variable included, with
 `LinearUnused` naming that field. A selector of a linear struct whose field's
 type mentions an earlier field is also rejected. Its generated result type
 names that earlier field's selector applied to the struct value, so the result
-type contains a token, which is `LinearInType` (§3.2). Either way the struct
-declaration fails, just as a struct in `Prop` fails today when a selector would
-eliminate it into data. A family with such a field is declared with `inductive`
+type contains a token, which is `LinearInType` (§3.2). Either way that
+selector's declaration fails, reported at its field, and the family itself is
+still published. This is what happens today when a selector of a struct in
+`Prop` would eliminate it into data. A family with such a field is declared with `inductive`
 and matched on directly, or given hand-written selectors where they are
 admissible.
 
