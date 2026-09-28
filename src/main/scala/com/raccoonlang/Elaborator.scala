@@ -366,13 +366,13 @@ object Elaborator {
             field.span
           )
         // The selector is an ordinary match on `self` binding every stored field and returning the
-        // selected one; no motive clause, since the declared result type supplies the motive syntax.
+        // selected one, at the selector's declared result type.
         val argNames = storedBinders.zipWithIndex.map { case (binder, idx) =>
           if (idx == fieldIdx) field.name else if (binder.name == "_") "_" else binder.name
         }
         val body = SA.Term.Match(
           SA.Term.Ident(selfName, selfSpan),
-          motive = None,
+          motive = resultTy,
           Vector(
             SA.Term.Case(
               Vector(ctor.name),
@@ -612,7 +612,7 @@ object Elaborator {
     case SA.Term.Match(scrut, motive, cases, sp) =>
       CA.Term.Match(
         elabTerm(scrut, env),
-        motive.map(elabTerm(_, env)),
+        elabTerm(motive, env),
         cases.map { c =>
           val caseEnv = env.enterLocalScope
           val (argRefs, bodyEnv) =

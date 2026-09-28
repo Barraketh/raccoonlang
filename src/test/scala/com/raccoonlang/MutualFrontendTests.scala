@@ -6,12 +6,12 @@ class MutualFrontendTests extends munit.FunSuite with TestSupport {
       """
         |mutual {
         |  def even (n: Nat): Bool decreases structural(n) := {
-        |    match n with
+        |    match n returning Bool with
         |    | Nat.zero => Bool.true
         |    | Nat.succ k => odd(k)
         |  }
         |  def odd (n: Nat): Bool decreases structural(n) := {
-        |    match n with
+        |    match n returning Bool with
         |    | Nat.zero => Bool.false
         |    | Nat.succ k => even(k)
         |  }
@@ -89,12 +89,12 @@ class MutualFrontendTests extends munit.FunSuite with TestSupport {
         |namespace Qualified {
         |  mutual {
         |    def even (n: Nat): Bool decreases structural(n) := {
-        |      match n with
+        |      match n returning Bool with
         |      | Nat.zero => Bool.true
         |      | Nat.succ k => Qualified.odd(k)
         |    }
         |    def odd (n: Nat): Bool decreases structural(n) := {
-        |      match n with
+        |      match n returning Bool with
         |      | Nat.zero => Bool.false
         |      | Nat.succ k => _root_.Qualified.even(k)
         |    }
@@ -112,7 +112,7 @@ class MutualFrontendTests extends munit.FunSuite with TestSupport {
       """
         |mutual {
         |  def first (n: Nat): Nat decreases structural(n) := {
-        |    match n with
+        |    match n returning Nat with
         |    | Nat.zero => Nat.zero
         |    | Nat.succ k => second(k)
         |  }
@@ -139,7 +139,7 @@ class MutualFrontendTests extends munit.FunSuite with TestSupport {
       """
         |mutual {
         |  def even (n: Nat): Bool decreases structural(n) := {
-        |    match n with
+        |    match n returning Bool with
         |    | Nat.zero => Bool.true
         |    | Nat.succ k => odd(n)
         |  }

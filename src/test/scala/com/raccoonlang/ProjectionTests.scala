@@ -704,7 +704,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |
         |axiom h : HasProof
         |def theProof : True := {
-        |  match h with
+        |  match h returning True with
         |  | HasProof.intro data proof => proof
         |}
         |""".stripMargin

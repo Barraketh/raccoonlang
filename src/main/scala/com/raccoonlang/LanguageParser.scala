@@ -227,7 +227,7 @@ object LanguageParser {
       .named("Case")
 
   private def matchP(implicit sourceId: Option[SourceId]): Parser[Match] = {
-    (kw("match") ~/ term ~ (kw("returning") ~/ typeTerm).? ~
+    (kw("match") ~/ term ~ (kw("returning") ~/ typeTerm).named("returning clause") ~
       (kwTight("with") ~/ lineSep) ~ matchCase.rep(0)).flatSpanned(sourceId).map { case (scrut, motive, cases, sp) =>
       Match(scrut, motive, cases, sp)
     }

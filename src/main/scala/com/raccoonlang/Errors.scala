@@ -50,8 +50,6 @@ final case class NotAType(value: Value) extends TypeError
 
 final case class NonInductiveMatch(tpe: Value) extends TypeError
 
-final case class MissingReturningClause(reason: String) extends TypeError
-
 final case class NotFound(name: String) extends TypeError
 
 final case class AlreadyDefined(name: String) extends TypeError

@@ -386,7 +386,7 @@ class NamespaceTests extends munit.FunSuite with TestSupport {
         | | succ (p: Peano) : Peano
         |
         |def pred (n: Peano): Peano := {
-        |  match n with
+        |  match n returning Peano with
         |  | .zero => Peano.zero
         |  | .succ p => p
         |}
@@ -407,7 +407,7 @@ class NamespaceTests extends munit.FunSuite with TestSupport {
         | | succ (p: Peano) : Peano
         |
         |def bad (zero: Peano)(n: Peano): Peano := {
-        |  match n with
+        |  match n returning Peano with
         |  | zero => Peano.zero
         |  | Peano.succ p => p
         |}

@@ -45,7 +45,7 @@ class TerminationTests extends munit.FunSuite with TestSupport {
       natDecls +
         """
           |def add (a: Peano)(b: Peano): Peano decreases structural(b) := {
-          |  match b with
+          |  match b returning Peano with
           |  | Peano.zero => a
           |  | Peano.succ x => add(Peano.succ(a), x)
           |}
@@ -64,7 +64,7 @@ class TerminationTests extends munit.FunSuite with TestSupport {
       natDecls +
         """
           |def skipTwo (n: Peano): Peano decreases structural(n) := {
-          |  match n with
+          |  match n returning Peano with
           |  | Peano.zero => Peano.zero
           |  | Peano.succ x => {
           |    match x returning Peano with
@@ -85,7 +85,7 @@ class TerminationTests extends munit.FunSuite with TestSupport {
           | | mk : Box(n)
           |
           |def f (n: Peano): Peano decreases structural(n) := {
-          |  match n with
+          |  match n returning Peano with
           |  | Peano.zero => Peano.zero
           |  | Peano.succ k => {
           |    let g := fun (x: Box(f(k))): Peano => Peano.zero
@@ -102,7 +102,7 @@ class TerminationTests extends munit.FunSuite with TestSupport {
       natDecls +
         """
           |def lex (a: Peano)(b: Peano): Peano decreases lexicographic(a, b) := {
-          |  match a with
+          |  match a returning Peano with
           |  | Peano.zero => {
           |    match b returning Peano with
           |    | Peano.zero => Peano.zero
@@ -154,7 +154,7 @@ class TerminationTests extends munit.FunSuite with TestSupport {
       natDecls +
         """
           |def pred (n: Peano): Peano decreases structural(n) := {
-          |  match n with
+          |  match n returning Peano with
           |  | Peano.zero => Peano.zero
           |  | Peano.succ x => _root_.pred(x)
           |}
@@ -169,7 +169,7 @@ class TerminationTests extends munit.FunSuite with TestSupport {
         """
           |namespace Math {
           |  def pred (n: Peano): Peano decreases structural(n) := {
-          |    match n with
+          |    match n returning Peano with
           |    | Peano.zero => Peano.zero
           |    | Peano.succ x => _root_.Math.pred(x)
           |  }
@@ -185,7 +185,7 @@ class TerminationTests extends munit.FunSuite with TestSupport {
         """
           |namespace Math {
           |  def pred (n: Peano): Peano decreases structural(n) := {
-          |    match n with
+          |    match n returning Peano with
           |    | Peano.zero => Peano.zero
           |    | Peano.succ x => Math.pred(x)
           |  }
@@ -297,7 +297,7 @@ class TerminationTests extends munit.FunSuite with TestSupport {
       treeDecls +
         """
           |def leftDepth (t: Tree): Peano decreases structural(t) := {
-          |  match t with
+          |  match t returning Peano with
           |  | Tree.leaf => Peano.zero
           |  | Tree.node f => Peano.succ(leftDepth(f(Peano.zero)))
           |}
@@ -319,7 +319,7 @@ class TerminationTests extends munit.FunSuite with TestSupport {
           | | mk (l: Peano -> Game)(r: Peano -> Game) : Game
           |
           |def score (g: Game): Peano decreases structural(g) := {
-          |  match g with
+          |  match g returning Peano with
           |  | Game.halt => Peano.zero
           |  | Game.mk l r => {
           |    let ihl := fun (b: Peano): Peano => score(l(b))
@@ -344,7 +344,7 @@ class TerminationTests extends munit.FunSuite with TestSupport {
           | | wrap (t: Tree) : Tree
           |
           |def deep (t: Tree): Peano decreases structural(t) := {
-          |  match t with
+          |  match t returning Peano with
           |  | Tree.leaf => Peano.zero
           |  | Tree.node f => deep(f(Peano.zero))
           |  | Tree.wrap inner => {
@@ -366,7 +366,7 @@ class TerminationTests extends munit.FunSuite with TestSupport {
       treeDecls +
         """
           |def bad (t: Tree)(g: Peano -> Tree): Peano decreases structural(t) := {
-          |  match t with
+          |  match t returning Peano with
           |  | Tree.leaf => Peano.zero
           |  | Tree.node f => bad(g(Peano.zero), g)
           |}

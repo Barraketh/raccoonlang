@@ -1,0 +1,4 @@
+
+<root>/main.rac:2:10: error: Failed to parse module <root>/main.rac: Failed to parse returning clause
+  match n with
+         ^

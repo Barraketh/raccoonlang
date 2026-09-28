@@ -111,8 +111,7 @@ object CoreAst {
 
     final case class Match(
         scrut: Term,
-        // `None` means the match's result type is the scrutinee's own type (Interpreter.matchOutType).
-        motive: Option[Term],
+        motive: Term,
         cases: Vector[Case],
         span: Span
     ) extends Term {
@@ -141,7 +140,7 @@ object CoreAst {
         lets.flatMap(let => let.ty.toVector :+ let.value) :+ res
       case Term.Lam(ty, body, _, _, _, _) => Vector(ty, body)
       case Term.Match(scrut, motive, cases, _) =>
-        (scrut +: motive.toVector) ++ cases.map(_.body)
+        Vector(scrut, motive) ++ cases.map(_.body)
     }
 
   /**

@@ -192,7 +192,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
     )
     val evenMatch = CoreAst.Term.Match(
       global("evenWitness"),
-      motive = None,
+      motive = global("Even"),
       cases = Vector(
         CoreAst.Case("Even.zero", isFullyQualified = true, Vector.empty, global("evenWitness"), blockSpan),
         CoreAst.Case("Even.succ", isFullyQualified = true, Vector(None), global("evenWitness"), blockSpan)
@@ -201,7 +201,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
     )
     val oddMatch = CoreAst.Term.Match(
       global("oddWitness"),
-      motive = None,
+      motive = global("Odd"),
       cases = Vector(CoreAst.Case("Odd.succ", isFullyQualified = true, Vector(None), global("oddWitness"), blockSpan)),
       blockSpan
     )

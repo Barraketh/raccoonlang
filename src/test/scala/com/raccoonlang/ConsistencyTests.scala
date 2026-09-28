@@ -321,36 +321,4 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
 
     assert(!ValueEquivalence.defEq(natPi, boolPi))
   }
-
-  // Synthesized nodes retain distinct identities (docs/kernel.md#value-identity).
-  // Eta-adaptation is the only construct that fabricates a Pi node the source did not write. Two
-  // sibling adaptations checked at one caller span must still mint distinct identities, or they
-  // would share a trusted ValueKey; adapting the same declared type twice must stay defEq.
-  test("eta-adapted Pi siblings receive distinct identities while re-adaptations remain definitionally equal") {
-    val src =
-      """
-        |inductive Peano : Type
-        | | zero : Peano
-        |
-        |inductive Bool : Type
-        | | true : Bool
-        | | false : Bool
-        |
-        |def id {A: Type}(a: A): A := a
-        |
-        |def adaptedNat : (x: Peano) -> Peano := id
-        |def adaptedNatAgain : (x: Peano) -> Peano := id
-        |def adaptedBool : (x: Bool) -> Bool := id
-        |
-        |{ Peano.zero }
-        |""".stripMargin
-
-    val (_, env) = runTestProgramWithEnv(src)
-    val adaptedNat = env("adaptedNat")
-    val adaptedNatAgain = env("adaptedNatAgain")
-    val adaptedBool = env("adaptedBool")
-
-    assert(!ValueEquivalence.defEq(adaptedNat.tpe, adaptedBool.tpe))
-    assert(ValueEquivalence.defEq(adaptedNat.tpe, adaptedNatAgain.tpe))
-  }
 }

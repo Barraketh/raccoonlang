@@ -3,15 +3,6 @@ package com.raccoonlang
 class ImplicitParamTests extends munit.FunSuite with TestSupport {
   override protected val suitePrelude: Prelude.Config = Prelude.test
 
-  /** Like `runProgram`, but lets a TypeError escape so a test can assert on it. */
-  private def runProgramRaw(src: String): Value =
-    LanguageParser.parseProgram(src) match {
-      case Success(value, _, _) =>
-        Interpreter.run(Elaborator.elab(value, Prelude.test), Prelude.test).getOrElse(fail("Program has no body"))
-      case err: Failure =>
-        fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
-    }
-
   sealed trait Shape
   case class SConst(name: String) extends Shape
   case class SApp(head: Shape, args: List[Shape]) extends Shape
@@ -253,30 +244,10 @@ class ImplicitParamTests extends munit.FunSuite with TestSupport {
     assertEquals(toShape(runProgram(p)), SConst("Vec.nil"))
   }
 
-  test("expected function type instantiates leading implicit binders") {
-    val p =
-      """
-        |inductive Peano : Type
-        | | zero : Peano
-        | | succ (_: Peano) : Peano
-        |
-        |def id {A: Type}(x: A): A := x
-        |
-        |{
-        |  let f : Peano -> Peano := id
-        |  f(Peano.succ(Peano.zero))
-        |}
-        |""".stripMargin
-
-    assertEquals(toShape(runProgram(p)), succS(zeroS))
-  }
-
-  // Eta-adaptation re-states the expected Pi as the synthetic lambda's residual type, so the
-  // expectation has to have been written as a literal Pi term. A local alias denotes the same Pi
-  // value but is only a LocalRef in syntax, so the adaptation declines and plain subsumption
-  // rejects the mismatch; writing the Pi inline adapts as usual.
-  test("expected function type instantiates leading implicit binders only from literal Pi syntax") {
-    def program(declaredTy: String): String =
+  // Neither a written Pi nor an alias of one adapts a polymorphic function: the let's value is
+  // synthesized and compared by equality, so the syntax of its declared type is never read.
+  test("a let's declared function type does not adapt a polymorphic function") {
+    def program(declaredTy: String, value: String): String =
       s"""
          |inductive Peano : Type
          | | zero : Peano
@@ -286,13 +257,16 @@ class ImplicitParamTests extends munit.FunSuite with TestSupport {
          |
          |{
          |  let t : Type := (_: Peano) -> Peano
-         |  let f : $declaredTy := id
+         |  let f : $declaredTy := $value
          |  f(Peano.succ(Peano.zero))
          |}
          |""".stripMargin
 
-    assertEquals(toShape(runProgram(program("(_: Peano) -> Peano"))), succS(zeroS))
-    interceptError[TypeMismatch](runProgramRaw(program("t")))
+    val lambda = "fun (x: Peano): Peano => id(x)"
+    assertEquals(toShape(runProgram(program("(_: Peano) -> Peano", lambda))), succS(zeroS))
+    assertEquals(toShape(runProgram(program("t", lambda))), succS(zeroS))
+    expectOnly[TypeMismatch](typecheckDecls(program("(_: Peano) -> Peano", "id")))
+    expectOnly[TypeMismatch](typecheckDecls(program("t", "id")))
   }
 
   test("explicit arguments are checked against binder types") {
@@ -332,7 +306,7 @@ class ImplicitParamTests extends munit.FunSuite with TestSupport {
         | | cons {n: Peano} (tail: Vec(A, n)) (head: A) : Vec(A, Peano.succ(n))
         |
         |def chooseNil (b: Bool): Vec(Peano, Peano.zero) := {
-        |  match b with
+        |  match b returning Vec(Peano, Peano.zero) with
         |  | Bool.true => Vec.nil(Peano)
         |  | Bool.false => Vec.nil(Peano)
         |}

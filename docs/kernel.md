@@ -57,8 +57,9 @@ must have the same binder count and implicitness within the current group.
 `(a: A) -> ((b: B) -> C)`.
 
 Conversion does not include universe cumulativity. Type fitting succeeds by
-definitional equality, with eta adaptation for the supported implicit-function
-case, not by a general subtyping relation.
+definitional equality, not by a general subtyping relation. Checking a term
+against an expected type is synthesis followed by that equality: no check reads
+the expected type, or its syntax, to decide the term's type.
 
 ### Refinement unification
 
@@ -170,7 +171,8 @@ A checked match establishes all of the following:
 - no constructor is duplicated;
 - every reachable constructor is present;
 - constructor-result equations provide only justified branch refinements;
-- every branch has the instantiated motive.
+- every branch has the instantiated motive, which the match writes as its
+  `returning` clause.
 
 An omitted constructor is valid only when its result is apart from the exact
 scrutinee type. A stuck equation keeps the constructor reachable and provides
@@ -178,7 +180,8 @@ no refinement.
 
 Evaluation reduces a match only when the scrutinee exposes a justified
 constructor view. Otherwise it retains a blocked match with the dependencies
-that could make reevaluation productive.
+that could make reevaluation productive, whose type is the motive evaluated in
+the match's environment.
 
 ## Proofs and elimination
 
@@ -248,8 +251,10 @@ field projections. Conversion, match evaluation, and structural-subterm
 checking all use the same eta view.
 
 There is no primitive projection value. A positional projection is the
-ordinary one-branch match that returns the chosen field. Surface `struct`
-selectors are generated definitions containing those matches. Therefore a
+ordinary one-branch match that returns the chosen field. Like every match, it
+has a motive: a synthetic local bound to the field's type at the projected
+value. Surface `struct` selectors are generated definitions containing those
+matches, with the selector's declared result type as motive. Therefore a
 projection from `Prop` is governed by the proof-elimination rules above.
 
 ## Termination
@@ -415,3 +420,5 @@ Changes to the checker or evaluator must preserve these rules:
 11. A value key never decides an equation the conversion rules would decide
     differently.
 12. Whether a sort is `Prop` or a type is a proposition has one definition.
+13. A term's type never depends on where it stands: checking is synthesis
+    followed by definitional equality with the expected type.

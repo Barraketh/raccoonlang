@@ -1,0 +1,6 @@
+def wrong (n: Nat): Bool := {
+  let m := Nat.succ(n)
+  m
+}
+
+{ wrong(0) }

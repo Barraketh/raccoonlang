@@ -194,7 +194,7 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
     val ctor = VCtor(head, Vector.empty, valueType)
     val matchTerm = CTerm.Match(
       CTerm.LocalRef(scrutRef, span),
-      motive = None,
+      motive = typeRef,
       cases = Vector(
         CoreAst.Case(
           "C",
@@ -236,7 +236,7 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
     val runtimeEnv = Env.empty.putLocal(capturedRef, captured).putLocal(scrutRef, scrut)
     val matchTerm = CTerm.Match(
       CTerm.LocalRef(scrutRef, span),
-      motive = None,
+      motive = typeRef,
       cases = Vector(CoreAst.Case("C", isFullyQualified = true, Vector.empty, CTerm.LocalRef(capturedRef, span), span)),
       Span.synthetic()
     )
@@ -278,12 +278,13 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
     val unused = FreshVar.freshVar("unused", valueType)
     val scrut = FreshVar.freshVar("scrut", valueType)
     val env = Env.empty
+      .putGlobal("Type", valueType)
       .putLocal(capturedRef, captured)
       .putLocal(unusedRef, unused)
       .putLocal(scrutRef, scrut)
     val matchTerm = CTerm.Match(
       CTerm.LocalRef(scrutRef, span),
-      motive = None,
+      motive = typeRef,
       cases = Vector(
         CoreAst.Case(
           "C",
