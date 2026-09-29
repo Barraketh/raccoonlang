@@ -1,0 +1,15 @@
+
+<root>/main.rac:3:19: error: The sealed family Box keeps its constructors and selectors to the module that declares it, so naming Box.mk is not allowed here
+def made : Box := Box.mk(1)
+                  ^^^^^^
+note: in definition made
+
+<root>/main.rac:5:29: error: The sealed family Box keeps its constructors and selectors to the module that declares it, so matching on a value of it is not allowed here
+def opened (b: Box): Nat := match b returning Nat with
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: in definition opened
+
+<root>/main.rac:8:31: error: The sealed family Box keeps its constructors and selectors to the module that declares it, so naming Box.n is not allowed here
+def selected (b: Box): Nat := b.n
+                              ^^^
+note: in definition selected

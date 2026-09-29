@@ -454,7 +454,8 @@ instance is structure-eta eligible exactly when the checked family has:
 
 - one constructor;
 - no indices;
-- no recursive constructor field in its inductive block.
+- no recursive constructor field in its inductive block;
+- no seal (see Sealing).
 
 Eligibility depends on the checked family, not on whether the source used
 `struct`. Prop instances use canonical proof representation and never structure
@@ -472,6 +473,40 @@ has a motive: a synthetic local bound to the field's type at the projected
 value. Surface `struct` selectors are generated definitions containing those
 matches, with the selector's declared result type as motive. Therefore a
 projection from `Prop` is governed by the proof-elimination rules above.
+
+## Sealing
+
+A `sealed` family exports its head, parameters, indices and classifier, but
+its constructors and selectors only to its module, the source file its
+declaration was read from. Outside that module each of these is
+`SealedConstructor`:
+
+- a global reference to one of its constructors or selectors, applied or not,
+  under any name that resolves to it;
+- selecting one of its fields;
+- a match whose scrutinee is an instance of it. A case's `.short` form resolves
+  only against the scrutinee's family, so this covers it.
+
+The names still resolve, so each such use reaches this diagnostic. A term the
+checker fabricates belongs to no module and is exempt.
+
+Implicit projection reads a sealed constructor's field only when the telescope
+it compiles is written in the family's module; elsewhere an implicit that only
+that field would force is `NonForcedImplicitParam`. A path compiled inside the
+module is followed wherever its definition is applied, and a reconstructed
+implicit may be a sealed constructor application: neither is written by the
+program that applies it.
+
+A sealed family is never structure-eta eligible. Eta would let a match in its
+module open a neutral of it, such as an axiom's result or a blocked
+computation, as a constructor application the module never built.
+
+Sealing restricts what a program may write, not what the checker knows.
+Kinds, scopes, coverage, apartness and the conversion of values read the full
+declaration in every module, and evaluation makes no sealing check. One
+function decides whether a position may use a sealed family's constructors;
+the checker asks it at those name resolutions and match scrutinees, and
+implicit projection asks it before reading a constructor's field.
 
 ## Termination
 
@@ -641,7 +676,7 @@ Changes to the checker or evaluator must preserve these rules:
 5. Runtime proof reconstruction is finite and never invokes unification.
 6. Proof structure supplies no no-confusion or termination evidence.
 7. Structure eta applies only to checked non-Prop, nonrecursive,
-   zero-index singleton families.
+   zero-index, unsealed singleton families.
 8. Recursive calls are accepted only from genuine structural descent.
 9. Axiom, opaque, and quotient values are allowed to remain closed neutrals.
 10. Native equations and literal layouts are installed only by a selected
@@ -679,3 +714,7 @@ Changes to the checker or evaluator must preserve these rules:
     type.
 22. No term whose type is a sort or a proposition contains a subterm of linear
     type, and no implicit binder of linear type is forced.
+23. Outside a sealed family's module, no checked term names its constructors
+    or selectors, matches on a value of it, or forces an implicit through its
+    constructors' fields; sealing never changes what conversion, coverage or
+    apartness decide.

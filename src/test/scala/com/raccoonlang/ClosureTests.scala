@@ -252,8 +252,8 @@ class ClosureTests extends munit.FunSuite with TestSupport {
     val env =
       core.decls.dropRight(1).foldLeft(Prelude.default.checkedEnv)((env, decl) => Interpreter.evalDecl(decl, env))
     core.decls.last match {
-      case CA.Decl.ConstDecl(_, _, _, CA.ConstBody.TermBody(lam: CA.Term.Lam), _) =>
-        val bodyEnv = telescope.BinderOps.checkBinders(lam.ty.binders, env).env
+      case CA.Decl.ConstDecl(_, _, _, CA.ConstBody.TermBody(lam: CA.Term.Lam), _, _) =>
+        val bodyEnv = telescope.BinderOps.checkBinders(lam.ty.binders, env, familyParams = 0, lam.ty.span).env
         (bodyEnv, TypeChecker.checkTerm(lam.body, bodyEnv))
       case other => fail(s"Expected a definition with header binders, got $other")
     }

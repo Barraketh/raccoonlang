@@ -69,6 +69,10 @@ object ErrorRendering {
         s"Definition $name has the linear type $tpe; a global is never linear, since every reference to it is a use"
       case LifetimeEscapes(lifetime, tpe) =>
         s"Lifetime $lifetime escapes its scope: the type $tpe names it outside `scope $lifetime`"
+      case SealedConstructor(family, member) =>
+        val use = member.fold("matching on a value of it")(name => s"naming $name")
+        s"The sealed family $family keeps its constructors and selectors to the module that declares it, so $use " +
+          "is not allowed here"
       case InvalidInductiveBlock(reason) => s"Invalid inductive block: $reason"
       case MutualBlockSortMismatch(family, declared, expected) =>
         s"Invalid inductive block: family $family lives in $declared, expected $expected"

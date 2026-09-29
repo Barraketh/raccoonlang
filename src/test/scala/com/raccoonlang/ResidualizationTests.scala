@@ -34,7 +34,7 @@ class ResidualizationTests extends munit.FunSuite {
           Interpreter.evalDecl(decl, curEnv)
         }
         last match {
-          case CoreAst.Decl.ConstDecl(_, _, ty, CoreAst.ConstBody.TermBody(term), _) =>
+          case CoreAst.Decl.ConstDecl(_, _, ty, CoreAst.ConstBody.TermBody(term), _, _) =>
             TypeChecker.checkTerm(term, TypeChecker.checkDeclType(ty, env).value, env).residual
           case other => fail(s"Expected a term definition, got $other")
         }
@@ -50,9 +50,9 @@ class ResidualizationTests extends munit.FunSuite {
           Interpreter.evalDecl(decl, curEnv)
         }
         val ty = last match {
-          case CoreAst.Decl.AxiomDecl(_, ty, _)       => ty
-          case CoreAst.Decl.ConstDecl(_, _, ty, _, _) => ty
-          case other                                  => fail(s"Expected typed declaration, got $other")
+          case CoreAst.Decl.AxiomDecl(_, ty, _)          => ty
+          case CoreAst.Decl.ConstDecl(_, _, ty, _, _, _) => ty
+          case other                                     => fail(s"Expected typed declaration, got $other")
         }
         TypeChecker.checkDeclType(ty, env).residual
 

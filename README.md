@@ -32,6 +32,7 @@ Raccoon currently provides:
   on where it stands;
 - structural, lexicographic, and measure-based termination checking;
 - single-constructor `struct` declarations, named projections, and structure eta;
+- sealed families, whose constructors and selectors only their own file may use;
 - proof irrelevance and controlled elimination from `Prop`;
 - namespaces, scoped `open`, and file imports;
 - opaque definitions, axioms, and quotients;

@@ -429,6 +429,7 @@ object LanguageParser {
           header,
           decreases,
           body,
+          isSelector = false,
           span
         )
       }
@@ -440,15 +441,18 @@ object LanguageParser {
         AxiomDecl(header, span)
       }
 
+  private def sealedP: Parser[Boolean] =
+    kw("sealed").!.?.map(_.isDefined)
+
   private def inductiveP(implicit sourceId: Option[SourceId]): Parser[InductiveDecl] =
-    (kw("inductive") ~/ inductiveHeader ~ lineSep ~ ctorDecl.rep(0))
+    (sealedP ~ kw("inductive") ~/ inductiveHeader ~ lineSep ~ ctorDecl.rep(0))
       .flatSpanned(sourceId)
-      .map { case (h, cs, sp) => InductiveDecl(h, cs, generateSelectors = false, sp) }
+      .map { case (isSealed, h, cs, sp) => InductiveDecl(h, cs, generateSelectors = false, isSealed, sp) }
 
   private def structP(implicit sourceId: Option[SourceId]): Parser[InductiveDecl] =
-    (kw("struct") ~/ inductiveHeader ~ lineSep ~ ctorDecl)
+    (sealedP ~ kw("struct") ~/ inductiveHeader ~ lineSep ~ ctorDecl)
       .flatSpanned(sourceId)
-      .map { case (h, cs, sp) => InductiveDecl(h, Vector(cs), generateSelectors = true, sp) }
+      .map { case (isSealed, h, cs, sp) => InductiveDecl(h, Vector(cs), generateSelectors = true, isSealed, sp) }
 
   private def commandP(implicit sourceId: Option[SourceId]): Parser[Command] =
     declP | namespaceP | openP | mutualP | blockP
