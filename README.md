@@ -71,6 +71,10 @@ The CLI accepts one entry file:
 sbt "run examples/nats.rac"
 ```
 
+`examples/leases/main.rac` imports the module `examples/leases/Lease.rac` and
+shows scoped leases and linear tokens: what a callback may capture and return,
+what may leave a scope, and the variants the checker rejects.
+
 The bundled `Init/Prelude.rac` is loaded automatically. A program may end in an
 expression; if it does, the CLI evaluates and prints the result.
 
