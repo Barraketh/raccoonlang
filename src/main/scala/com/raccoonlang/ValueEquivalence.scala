@@ -286,7 +286,7 @@ object ValueEquivalence {
             left.env(leftCase.ctorName) match {
               case head: ConstructorHead =>
                 val (arguments, resultType) =
-                  BinderOps.freshCtorArgsAndResult(head, leftCase.argRefs.map(_.map(_.name)))
+                  BinderOps.freshCtorArgsAndResult(head, leftCase.argRefs)
                 if (!step(resultType, leftScrutinee.tpe) || !step(resultType, rightScrutinee.tpe)) false
                 else {
                   val stored = Value.constructorStoredArgs(head, arguments)

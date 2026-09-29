@@ -46,9 +46,8 @@ object MatchChecker {
     ctorNames.flatMap { ctorName =>
       env(ctorName) match {
         case h: ConstructorHead =>
-          val fieldNames =
-            cases.find(_.ctorName == ctorName).fold(Vector.empty[Option[String]])(_.argRefs.map(_.map(_.name)))
-          val (freshArgs, resultTy) = BinderOps.freshCtorArgsAndResult(h, fieldNames)
+          val fieldRefs = cases.find(_.ctorName == ctorName).fold(Vector.empty[CA.LocalRef])(_.argRefs)
+          val (freshArgs, resultTy) = BinderOps.freshCtorArgsAndResult(h, fieldRefs)
           val storedArgs = Value.constructorStoredArgs(h, freshArgs)
           val ctorValue = Value.canonicalizeProof(
             Packed.foldCtor(h, storedArgs, resultTy).getOrElse(VCtor(h, storedArgs, resultTy))
@@ -102,21 +101,21 @@ object MatchChecker {
       envWithScrut: Env,
       expectedTy: Value
   ): CA.Case =
-    framed(Frame.InBranch(br.ctorName, br.argRefs.map(_.fold("_")(_.name)))) {
+    framed(Frame.InBranch(br.ctorName, br.argRefs.map(_.name))) {
       at(br.span) {
         if (args.length != br.argRefs.length) fail(ArityMismatch(args.length, br.argRefs.length))
-        val branchEnv = br.argRefs.zip(args).foldLeft(envWithScrut) { case (curEnv, (argRef, argVal)) =>
-          argRef match {
-            // Proof recovery stores recursive proof fields shallowly. Crossing the pattern
-            // boundary exposes one such field, so put it into the canonical form for its exact type.
-            // A field's type is its local's type at its binder, so it is confined there (spec §4.2).
-            case Some(ref) =>
-              requireInScope(argVal.tpe, curEnv)
-              curEnv.putLocal(ref, Value.canonicalizeProof(argVal))
-            case None => curEnv
-          }
+        // Proof recovery stores recursive proof fields shallowly. Crossing the pattern boundary exposes one such
+        // field, so put it into the canonical form for its exact type. A field's type is its local's type at its
+        // binder, so it is confined there (spec §4.2).
+        val branchEnv = br.argRefs.zip(args).foldLeft(envWithScrut) { case (curEnv, (ref, argVal)) =>
+          requireInScope(argVal.tpe, curEnv)
+          curEnv.putLocal(ref, Value.canonicalizeProof(argVal))
         }
         val branchRes = checkTerm(br.body, expectedTy, branchEnv)
+        // Each field is released to the ledger at the branch's extent (spec §6.1), a wildcard's included.
+        br.argRefs.zip(args).foreach { case (ref, argVal) =>
+          Ledger.requireUsedOnce(ref, argVal.tpe, br.span, Vector(branchRes.residual))
+        }
         br.copy(body = branchRes.residual)
       }
     }

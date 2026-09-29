@@ -129,6 +129,17 @@ final case class KindExceeded(declaration: String, declared: Value.Kind, part: S
 final case class ScopeExceeded(declaration: String, declared: Value.Lifetime, part: String, partScope: Value.Lifetime)
   extends TypeError
 
+/** A local of linear type that some path through its binder's extent does not use (spec §3.2). */
+final case class LinearUnused(local: String) extends TypeError
+
+/** A second use of a local of linear type on some path through its binder's extent (spec §3.2). */
+final case class LinearReused(local: String) extends TypeError
+
+/**
+ * A definition whose type is linear: a global is never tracked, so it could be used any number of times (spec §3.2).
+ */
+final case class LinearGlobal(name: String, tpe: Value) extends TypeError
+
 /** A type that names the atom of a `scope` whose binder `lifetime` does not enclose it (spec §4.2). */
 final case class LifetimeEscapes(lifetime: String, tpe: Value) extends TypeError
 
