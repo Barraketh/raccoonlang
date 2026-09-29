@@ -128,6 +128,19 @@ class LineLayoutTests extends munit.FunSuite with TestSupport {
     assertEquals(PrettyPrinter.print(runProgram(program)), "2")
   }
 
+  // A case after a nested match's cases is the nested match's, however many lines stand between them, leaving the
+  // outer match without it.
+  test("a blank line does not end a nested match; a block around it does") {
+    def program(inner: String, gap: String): String =
+      s"def f (a: Bool)(b: Bool): Nat := match a returning Nat with\n  | .true => $inner$gap  | .false => 3\n" +
+        "{ f(Bool.false, Bool.true) }\n"
+    val nested = "match b returning Nat with\n    | .true => 1\n    | .false => 2"
+    ("\n" +: gaps).foreach { gap =>
+      assertEquals(expectTypeError[MissingCase](program(nested, gap)), MissingCase("Bool.false"))
+      assertEquals(PrettyPrinter.print(runProgram(program(s"{\n    $nested\n  }", gap))), "3")
+    }
+  }
+
   test("imports may be separated by blank and comment lines") {
     val program = "import A\n\n// the other\nimport B\n\n{ 0 }\n"
     assert(LanguageParser.parseProgram(program).isInstanceOf[Success[_]], program)
