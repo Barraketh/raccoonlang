@@ -46,11 +46,12 @@ class AxiomTests extends munit.FunSuite with TestSupport {
   }
 
   test("an axiom outside the prelude is UntrustedAxiom whatever its type, spec §7.3's examples and harmless ones") {
-    val wrap = "inductive Wrap (l: Lifetime) : Type\n | mk : Wrap(l)\n\n"
+    val pair = "inductive Pair (l: Lifetime)(m: Lifetime) : Type { scope = union(l, m) }\n | mk : Pair(l, m)\n\n"
     Vector(
       "axiom excludedMiddle (P: Prop): Or(P, Not(P))\n" -> "excludedMiddle",
       "axiom eat {A: Type { kind = lin }}(x: A): Unit\n" -> "eat",
-      wrap + "axiom wrapEq (a: Lifetime)(b: Lifetime): Eq(Type, Wrap(a), Wrap(b))\n" -> "wrapEq",
+      pair + "axiom pairEq (a: Lifetime)(b: Lifetime): Eq(Type { scope = union(a, b) }, Pair(a, b), Pair(b, a))\n" ->
+        "pairEq",
       "axiom a : List(Nat)\n" -> "a"
     ).foreach { case (program, axiom) =>
       assertEquals(expectOnly[UntrustedAxiom](typecheckDecls(program)), UntrustedAxiom(axiom))
@@ -68,7 +69,7 @@ class AxiomTests extends munit.FunSuite with TestSupport {
   /** A sealed permit its module redeems for a token, and a module function returning one (spec §7.1). */
   private val permitModule =
     """
-      |sealed inductive Permit (l: Lifetime) : Prop
+      |sealed inductive Permit (l: Lifetime) : Prop { scope = l }
       | | mk : Permit(l)
       |
       |sealed inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }

@@ -108,7 +108,8 @@ class ClosureTests extends munit.FunSuite with TestSupport {
 
     typecheckDecls(program("Type { kind = lin, scope = l }"))
     expectOnly[KindExceeded](typecheckDecls(program("Type { scope = l }")))
-    expectOnly[ScopeExceeded](typecheckDecls(program("Type { kind = lin }")))
+    // The closure's scope can name only a lifetime parameter, which the family must name in any case (spec §5.1).
+    assert(expectOnly[ScopeExceeded](typecheckDecls(program("Type { kind = lin }"))).part.startsWith("lifetime"))
   }
 
   test("a linear closure into a proposition is LinearProp") {
@@ -158,14 +159,15 @@ class ClosureTests extends munit.FunSuite with TestSupport {
     def program(motive: String): String =
       withFamilies(
         s"""
-           |inductive W (l: Lifetime) : Type
-           | | mk : W(l)
+           |inductive Two (l: Lifetime)(m: Lifetime) : Type { scope = union(l, m) }
+           | | mk : Two(l, m)
            |
-           |def f (l: Lifetime)(m: Lifetime)(v: V(m))(p: Eq(Type, W(l), W(m))): $motive :=
+           |def f (l: Lifetime)(m: Lifetime)(v: V(m))(p: Eq(Type { scope = union(l, m) }, Two(l, m), Two(m, l)))
+           |    : $motive :=
            |  match p returning $motive with
            |  | Eq.refl x => fun (u: Unit): Nat => useV(v)
            |
-           |def g (l: Lifetime)(v: V(l)): Nat := f(l, l, v, Eq.refl(W(l)))(Unit.unit)
+           |def g (l: Lifetime)(v: V(l)): Nat := f(l, l, v, Eq.refl(Two(l, l)))(Unit.unit)
            |
            |{ g(Lifetime.empty, V.mk(Lifetime.empty)) }
            |""".stripMargin

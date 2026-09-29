@@ -387,17 +387,20 @@ The atom is unique to the `scope` term: two `scope` terms open two atoms, while
 running one term twice, a recursive call included, opens the same one. Printed
 output spells an atom as its binder.
 
-Outside its `scope`, an atom cannot be named in a type. A type whose value
-mentions an atom whose `scope` does not enclose it is `LifetimeEscapes`. That is
-checked on every type a term has or is checked against, on the type of every
-local at its binder, and on every argument that is a type. So
-`use(scope l => Lease.mk(l))` is rejected: the `scope`'s own type `Lease(l)`
-names its atom where `l` is no longer bound. A value whose type does not name
-the atom may leave, even when its code does: in
+Outside its `scope`, an atom cannot be named in a type. A type whose sort's
+scope names an atom whose `scope` does not enclose it is `LifetimeEscapes`. That
+is checked on every type a term has or is checked against, on the type of every
+local at its binder, and on every argument that is a type, which is confined
+through its own sort. So `use(scope l => Lease.mk(l))` is rejected: the
+`scope`'s own type `Lease(l)` is at `Type { scope = l }`, which names its atom
+where `l` is no longer bound. So is `def T : Type := scope l => Lease(l)`,
+whose body's type is that sort. A value whose type's sort does not name the
+atom may leave, even when its code does: in
 `scope l => fun (u: Unit): Nat => use(Lease.mk(l))`, the lambda has type
 `Unit -> Nat`, since a lifetime is not a value and the lambda captures nothing
 scoped. Capturing a local of type `Lease(l)` instead would give the lambda type
-`{ scope = l } Unit -> Nat`, which cannot leave.
+`{ scope = l } Unit -> Nat`, which cannot leave. A proposition about the first
+lambda, such as `Eq(Unit -> Nat, f, f)`, is at `Prop` and may leave too.
 
 An atom is not a variable: matching never links it to another lifetime, while a
 lifetime variable may be linked to it. Nothing checks a `scope` at run time.
@@ -436,14 +439,16 @@ account for everything a value of the family can hand over:
 - the declared kind contains each constructor field's kind, else
   `KindExceeded` naming the field. A family whose fields are linear only
   through a kind variable is declared at that variable;
-- the declared scope contains each constructor field's scope, else
-  `ScopeExceeded` naming the field;
-- the declared scope contains the scope of each parameter's and index's type,
-  else `ScopeExceeded` naming it, since that value can be read off an
-  instance's type. A type parameter counts at its sort's scope, and a `Level`,
-  `Kind` or `Lifetime` parameter counts nothing;
-- a family at a kind other than `Kind.unr` names each of its lifetime
-  parameters in its scope, else `ScopeExceeded` naming it.
+- the declared scope names exactly the family's lifetime parameters: it may
+  mention only parameters, and must name each lifetime parameter, else
+  `ScopeExceeded` naming it, since a forced implicit reads the lifetime off an
+  instance's type. So `inductive Wrap (l: Lifetime) : Type` is rejected, and
+  declares `Type { scope = l }` instead.
+
+Only a parameter binds a lifetime, so each constructor field's scope, and the
+scope of each parameter's and index's type, lies within the declared scope and
+needs no check of its own. A type parameter counts at its sort's scope, which
+names a lifetime parameter.
 
 ```raccoon
 inductive Lease (l: Lifetime) : Type { scope = l }
