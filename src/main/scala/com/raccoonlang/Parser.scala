@@ -11,6 +11,11 @@ sealed trait ParseResult[+T] {
 case class Success[T](value: T, startIdx: Int, endIdx: Int) extends ParseResult[T] {
   override def map[B](f: T => B): ParseResult[B] = Success(f(value), startIdx, endIdx)
 }
+
+/**
+ * A parser that did not match. `message` names what was expected where it stopped: the innermost named parser around
+ * the failure, or else the leaf that failed. It never prints a parser's structure, so it is the same on every run.
+ */
 case class Failure(startIdx: Int, curIdx: Int, message: String) extends ParseResult[Nothing] {
   override def map[B](f: Nothing => B): ParseResult[B] = this
 }
@@ -89,11 +94,12 @@ trait Parser[+A] {
 
   def log(name: String): Parser[A] = LogParser(this, name)
 
+  /** A leaf's failure, named by the leaf: a leaf's `toString` is its name. */
   def fail(startIdx: Int, curIdx: Int): Failure = Failure(startIdx, curIdx, message = s"$this")
 
   def map[B](f: A => B): Parser[B] = new Parser.Map[A, B](this, f)
 
-  def filter(f: A => Boolean): Parser[A] = new FilterParser[A](this, f)
+  def filter(name: String, f: A => Boolean): Parser[A] = new FilterParser[A](this, name, f)
 
   def spanned: Parser[Spanned[A]] = spanned(None)
 
@@ -135,8 +141,8 @@ object Parser {
   private type MatchParser = Parser[NoValueT]
 
   def P(s: String) = Exact(s)
-  def P(c: Char) = CharPred(_ == c)
-  def P(pred: Char => Boolean) = CharPred(pred)
+  def P(c: Char) = Exact(c.toString)
+  def P(name: String, pred: Char => Boolean) = CharPred(name, pred)
 
   implicit class MatchParserOps(p: MatchParser) {
     def ! : Parser[String] = Parser.Capture(p)
@@ -158,11 +164,14 @@ object Parser {
     }
   }
 
-  case class CharPred(pred: Char => Boolean) extends MatchParser {
+  /** One character `pred` accepts, named for its failure message: a function prints as its identity hash. */
+  case class CharPred(name: String, pred: Char => Boolean) extends MatchParser {
     override def parse(input: String, startIdx: Int): ParseResult[NoValueT] = {
       if (startIdx < input.length && pred(input.charAt(startIdx))) success(startIdx, startIdx + 1)
       else fail(startIdx, startIdx)
     }
+
+    override def toString: String = name
   }
 
   case class CharsWhile(pred: Char => Boolean) extends MatchParser {
@@ -180,10 +189,17 @@ object Parser {
       if (startIdx == input.length) success(startIdx, startIdx)
       else fail(startIdx, startIdx)
     }
+
+    override def toString: String = "end of input"
   }
 
+  /** Names what `p` expects: a failure inside it reports this name. */
   private case class NamedParser[T](p: Parser[T], name: String) extends Parser[T] {
-    override def parse(input: String, startIdx: Int): ParseResult[T] = p.parse(input, startIdx)
+    override def parse(input: String, startIdx: Int): ParseResult[T] =
+      p.parse(input, startIdx) match {
+        case success: Success[T] => success
+        case failure: Failure    => Failure(failure.startIdx, failure.curIdx, name)
+      }
 
     override def toString: String = name
   }
@@ -198,28 +214,16 @@ object Parser {
       }
       res
     }
-
-    override def toString: String = s"($p).log($name)"
   }
 
-  class FilterParser[T](p: Parser[T], f: T => Boolean) extends Parser[T] {
+  /** What `p` parses when `f` accepts it; `name` names what was expected when it does not. */
+  class FilterParser[T](p: Parser[T], name: String, f: T => Boolean) extends Parser[T] {
     override def parse(input: String, startIdx: Int): ParseResult[T] = p.parse(input, startIdx) match {
       case s @ Success(value, _, _) if f(value) => s
       case _                                    => fail(startIdx, startIdx)
     }
-  }
 
-  /**
-   * Makes `p` fully backtrackable: a cut inside it (`~/`, which throws `ParseError`) becomes an ordinary failure at the
-   * starting position. Needed where a prefix that commits internally is only a *candidate* — a parameter list shares
-   * its prefix `(x: T)` with a Pi binder, and only the `->` after it decides which was written.
-   */
-  case class Attempt[T](p: Parser[T]) extends Parser[T] {
-    override def parse(input: String, startIdx: Int): ParseResult[T] =
-      try p.parse(input, startIdx)
-      catch { case e: ParseError => Failure(startIdx, e.curIdx, e.message) }
-
-    override def toString: String = s"($p).attempt"
+    override def toString: String = name
   }
 
   // Wraps a parser to propagate fatal behavior to all subsequent ~ / ~/
@@ -231,8 +235,6 @@ object Parser {
 
     override def ~/[B](p2: => Parser[B])(implicit C: Sequence.Combine[T, B] @uncheckedVariance): Parser[C.Out] =
       FatalRight(Sequence.seqParser[T, B](this, p2, fatal = true, C))
-
-    override def toString: String = s"FatalRight($p)"
   }
 
   private object Sequence {
@@ -310,14 +312,12 @@ object Parser {
                 case Success(b, _, endIdx) => Success(C.combine(a, b), sIdx, endIdx)
                 case f: Failure =>
                   if (fatal)
-                    throw ParseError(startIdx, midIdx, s"Failed to parse ${p2}")
+                    throw ParseError(startIdx, midIdx, s"Failed to parse ${f.message}")
                   else f
               }
             case f: Failure => f
           }
         }
-
-        override def toString: String = s"$p1 ~ $p2"
       }
   }
 
@@ -334,8 +334,6 @@ object Parser {
     override def parse(input: String, startIdx: Int): ParseResult[B] = {
       v.parse(input, startIdx).map(f)
     }
-
-    override def toString: String = s"$v.map()"
   }
 
   object Rep {
@@ -413,13 +411,10 @@ object Parser {
         }
 
         // Falling short of `min` reports the failure that ended the repetition: it already says
-        // where `p` stopped, and building a fresh message from this parser's printed tree would be
-        // paid on every speculative alternative that turns out not to apply.
+        // where `p` stopped and what it expected there.
         if (inst.length >= min) Success(inst.res, startIdx, curIdx)
         else Failure(startIdx, stopped.curIdx, stopped.message)
       }
-
-      override def toString: String = s"${p}.rep(${min})"
     }
 
   }

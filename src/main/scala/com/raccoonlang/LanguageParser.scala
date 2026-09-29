@@ -9,7 +9,7 @@ import com.raccoonlang.SurfaceAst._
 object LanguageParser {
   // Whitespace handling
   private val skipWS = CharsWhile(c => c == ' ' || c == '\t').named("SkipWS")
-  private val wsSep = P(c => c == ' ' || c == '\t').rep(1).named("WsSep")
+  private val wsSep = P("WS", c => c == ' ' || c == '\t').rep(1).named("WsSep")
   private val comment = P("//") ~ CharsWhile(c => c != '\n')
 
   private val emptyLine = (skipWS ~ comment.? ~ Exact("\n")).named("EmptyLine")
@@ -17,8 +17,9 @@ object LanguageParser {
   private val skipAllWs = (emptyLine.rep(0) ~ skipWS).named("AllWS")
   private val skipOneLine = emptyLine.? ~ skipWS
 
-  private val wordAtom = (P(c => IdentifierSyntax.isStart(c)) ~ P(c => IdentifierSyntax.isContinue(c)).rep(0)).!
-  private val identAtom = wordAtom.filter(value => IdentifierSyntax.isAtom(value))
+  private val wordAtom =
+    (P("Word", c => IdentifierSyntax.isStart(c)) ~ P("WordPart", c => IdentifierSyntax.isContinue(c)).rep(0)).!
+  private val identAtom = wordAtom.filter("Identifier", value => IdentifierSyntax.isAtom(value))
 
   private val rootName = "_root_"
   private val rootIdent: Parser[String] = P(rootName).!
@@ -44,7 +45,7 @@ object LanguageParser {
   private def rootTerm(implicit sourceId: Option[SourceId]): Parser[Term] =
     rootIdent.flatSpanned(sourceId).map(Ident.tupled)
   private val natLitAtom: Parser[BigInt] =
-    (P(c => c.isDigit) ~ P(c => c.isDigit).rep(0)).!.map(BigInt(_))
+    (P("Digit", c => c.isDigit) ~ P("Digit", c => c.isDigit).rep(0)).!.map(BigInt(_))
   private def natLitTerm(implicit sourceId: Option[SourceId]): Parser[Term] =
     natLitAtom.flatSpanned(sourceId).map(NatLit.tupled)
 
@@ -77,47 +78,49 @@ object LanguageParser {
   private def termAtom(implicit sourceId: Option[SourceId]): Parser[Term] =
     (sym("(") ~/ skipAllWs ~ term ~ layoutSymTight(")")) | rootTerm | identTerm | sortFormer | natLitTerm | strLitTerm
 
-  /** A sort former's keyword as a whole word, so that `Types` stays an identifier. */
-  private def former(name: String): Parser[NoValue.type] = wordAtom.filter(_ == name).map(_ => NoValue)
-
   /** The fields a sort takes by name. */
   private val sortFieldNames: Set[String] = Set("level", "kind", "scope")
 
   private def sortField(implicit sourceId: Option[SourceId]): Parser[(String, Term, Span)] =
     (wordAtom ~ sym('=') ~/ skipAllWs ~ term).flatSpanned(sourceId)
 
-  /**
-   * A sort's or closure's field list `{ name = e, ... }`. An empty list, an unknown or repeated field, and a `level`
-   * field where none belongs (`levelMisplaced` says why) are parse errors.
-   */
-  private def sortFields(
-      levelMisplaced: Option[String]
-  )(implicit sourceId: Option[SourceId]): Parser[Map[String, Term]] =
+  /** A sort's or closure's field list `{ name = e, ... }` as written, with its span. */
+  private def fieldList(implicit sourceId: Option[SourceId]): Parser[(Vector[(String, Term, Span)], Span)] =
     (P('{') ~/ skipAllWs ~ sortField.rep(0, layoutSym(',')) ~ layoutSymTight('}'))
       .flatSpanned(sourceId)
-      .map { case (fields, span) =>
-        if (fields.isEmpty) throw ParseError(span.start, span.start, "Empty field list")
-        fields.foldLeft(Map.empty[String, Term]) { case (seen, (name, value, fieldSpan)) =>
-          def reject(message: String): Nothing = throw ParseError(fieldSpan.start, fieldSpan.start, message)
-          if (!sortFieldNames(name)) reject(s"Unknown field $name")
-          if (name == "level") levelMisplaced.foreach(reason => reject(s"Misplaced field level: $reason"))
-          if (seen.contains(name)) reject(s"Repeated field $name")
-          seen + (name -> value)
-        }
-      }
-      .named("sort field list")
+      .named("FieldList")
 
   /**
-   * The start of a closure `{ name = ...`, recognized without consuming it: the token after the first name tells a
-   * closure from an implicit binder `{ name: ... }`. It is tried at the start of every term and type and almost always
-   * fails at the first character, so that failure is checked first and reported with a constant message.
+   * A written field list's fields by name. An empty list, an unknown or repeated field, and a `level` field where none
+   * belongs (`levelMisplaced` says why) are parse errors, the first in source order reported.
+   */
+  private def fieldsByName(
+      written: (Vector[(String, Term, Span)], Span),
+      levelMisplaced: Option[String]
+  ): Map[String, Term] = {
+    val (fields, span) = written
+    if (fields.isEmpty) throw ParseError(span.start, span.start, "Empty field list")
+    fields.foldLeft(Map.empty[String, Term]) { case (seen, (name, value, fieldSpan)) =>
+      def reject(message: String): Nothing = throw ParseError(fieldSpan.start, fieldSpan.start, message)
+      if (!sortFieldNames(name)) reject(s"Unknown field $name")
+      if (name == "level") levelMisplaced.foreach(reason => reject(s"Misplaced field level: $reason"))
+      if (seen.contains(name)) reject(s"Repeated field $name")
+      seen + (name -> value)
+    }
+  }
+
+  /**
+   * The start of a closure, `{ name = ...` or an empty `{ }`, recognized without consuming it: the token after the
+   * first name tells a closure from an implicit binder `{ name: ... }`, and an empty list is a closure's error to
+   * report. It is tried at the start of every term and type and almost always fails at the first character, so that
+   * failure is checked first and reported with a constant message.
    */
   private val closureStart: Parser[NoValue.type] = new Parser[NoValue.type] {
-    private val nameAndEquals = skipAllWs ~ wordAtom ~ skipWS ~ P('=')
+    private val fieldOrEnd = skipAllWs ~ ((wordAtom ~ skipWS ~ P('=')) | P('}'))
 
     override def parse(input: String, startIdx: Int): ParseResult[NoValue.type] =
       if (startIdx < input.length && input.charAt(startIdx) == '{')
-        nameAndEquals.parse(input, startIdx + 1) match {
+        fieldOrEnd.parse(input, startIdx + 1) match {
           case _: Success[_] => Success(NoValue, startIdx, startIdx)
           case _: Failure    => fail(startIdx, startIdx)
         }
@@ -131,7 +134,8 @@ object LanguageParser {
    * build it only once `closureStart` has recognized one, so ruling a closure out stays cheap.
    */
   private def closureFields(implicit sourceId: Option[SourceId]): Parser[Closure] =
-    sortFields(levelMisplaced = Some("a closure has no level")).map { fields =>
+    fieldList.map { written =>
+      val fields = fieldsByName(written, levelMisplaced = Some("a closure has no level"))
       Closure(fields.get("kind"), fields.get("scope"))
     }
 
@@ -149,26 +153,29 @@ object LanguageParser {
     }
 
   /**
-   * `Sort { level = e, ... }`, `Type` and `Prop`. `Sort` requires its `level`; `Type` and `Prop` fix it, so a `level`
-   * field after either is rejected. An omitted `kind` or `scope` is `Kind.unr` or `Lifetime.empty`.
+   * The sort formers (spec §1), each with the level it fixes. `Sort` fixes none, so it requires a `level` field; `Type`
+   * and `Prop` fix theirs, so a `level` field after either is misplaced.
    */
-  private def sortFormer(implicit sourceId: Option[SourceId]): Parser[Term] = {
-    def fixed(name: String, level: SortLevel): Parser[Term] =
-      (former(name) ~ (skipWS ~ sortFields(levelMisplaced = Some("Type and Prop fix the level"))).?)
-        .flatSpanned(sourceId)
-        .map { case (fields, span) =>
-          val written = fields.getOrElse(Map.empty)
-          Sort(level, written.get("kind"), written.get("scope"), span)
+  private val sortFormers: Map[String, Option[SortLevel]] =
+    Map("Sort" -> None, "Type" -> Some(SortLevel.One), "Prop" -> Some(SortLevel.Zero))
+
+  /**
+   * A sort former, as a whole word so that `Types` stays an identifier, and its field list if it has one. Its name
+   * decides its level and whether a `level` field belongs. An omitted `kind` or `scope` is `Kind.unr` or
+   * `Lifetime.empty`.
+   */
+  private def sortFormer(implicit sourceId: Option[SourceId]): Parser[Term] =
+    (wordAtom.filter("SortFormer", sortFormers.contains) ~ (skipWS ~ fieldList).?).flatSpanned(sourceId).map {
+      case (former, written, span) =>
+        val fixed = sortFormers(former)
+        val fields = written.fold(Map.empty[String, Term]) { list =>
+          fieldsByName(list, levelMisplaced = fixed.map(_ => s"$former fixes the level"))
         }
-    val written =
-      (former("Sort") ~/ skipWS ~ sortFields(levelMisplaced = None)).flatSpanned(sourceId).map { case (fields, span) =>
-        fields.get("level") match {
-          case Some(level) => Sort(SortLevel.Written(level), fields.get("kind"), fields.get("scope"), span)
-          case None        => throw ParseError(span.start, span.start, "Sort requires a level field")
-        }
-      }
-    written | fixed("Type", SortLevel.One) | fixed("Prop", SortLevel.Zero)
-  }
+        val level = fixed
+          .orElse(fields.get("level").map(SortLevel.Written))
+          .getOrElse(throw ParseError(span.start, span.start, s"$former requires a level field"))
+        Sort(level, fields.get("kind"), fields.get("scope"), span)
+    }
 
   private def parenArgs[A](arg: => Parser[A]): Parser[Vector[A]] =
     P('(') ~/ skipAllWs ~ arg.rep(0, layoutSym(',')) ~ layoutSymTight(')')
@@ -215,8 +222,11 @@ object LanguageParser {
       strLitTerm |
       misplacedClosure
 
-  /** An application covers its head as well as its argument list, so a diagnostic about it underlines the call. */
-  private def applicationSpan(head: Term, arguments: Span): Span = arguments.copy(start = head.span.start)
+  /**
+   * A trailer's term covers its base as well as the trailer: an application its head, and a selection the path it
+   * extends. So a diagnostic about `Nat.add(…)` underlines the whole call, from `Nat`.
+   */
+  private def trailerSpan(base: Term, trailer: Span): Span = trailer.copy(start = base.span.start)
 
   sealed trait TypeTrailer
   case class Dot(name: String, span: Span) extends TypeTrailer
@@ -230,20 +240,19 @@ object LanguageParser {
     (typeAtom ~ typeTrailers).map { case (ta, trailers) =>
       trailers.foldLeft(ta) { case (curTerm, nextTrailer) =>
         nextTrailer match {
-          case Dot(name, sp)        => Select(curTerm, name, sp)
-          case AppTrailer(args, sp) => App(curTerm, args, applicationSpan(curTerm, sp))
+          case Dot(name, sp)        => Select(curTerm, name, trailerSpan(curTerm, sp))
+          case AppTrailer(args, sp) => App(curTerm, args, trailerSpan(curTerm, sp))
         }
       }
     }
 
-  /** Named binder groups that open an arrow chain: `(a: A) ->`, `(a: A)(b: B) ->`. */
+  /**
+   * Named binder groups that open an arrow chain: `(a: A) ->`, `(a: A)(b: B) ->`. A binder commits once its `(name :`
+   * or `{name :` is read, since nothing else in a type or term starts that way: a parenthesised type or term cannot be
+   * a name followed by a colon, and a closure is `{name =`. So an error inside a binder's type is reported as itself.
+   */
   private def namedSegment(implicit sourceId: Option[SourceId]): Parser[Vector[Binder]] =
-    // `Attempt`: a binder shares its prefix with a parenthesised type, and `param` cuts after the
-    // `:`. Only the arrow decides, so the whole candidate backtracks. Cheap when it fails: the
-    // first character already rules it out unless the type starts with a parenthesis or brace.
-    // Named, so that the failure message a `rep` builds from this parser's `toString` — on every
-    // term that turns out not to be a Pi — is a short constant rather than the printed parser tree.
-    Attempt(param.rep(1) ~ skipAllWs ~ sym("->") ~ skipAllWs).named("PiBinders")
+    (param.rep(1) ~ skipAllWs ~ sym("->") ~ skipAllWs).named("PiBinders")
 
   /** The arrow-separated pieces after the first: each is leading named segments plus one type, parsed ONCE. */
   private def chainRest(implicit sourceId: Option[SourceId]): Parser[Vector[(Vector[Vector[Binder]], Term)]] =
@@ -349,8 +358,9 @@ object LanguageParser {
       }
       .named("Case")
 
+  /** `returning` continues the header, so it may start the next line, as an arrow or a parameter group may. */
   private def matchP(implicit sourceId: Option[SourceId]): Parser[Match] = {
-    (kw("match") ~/ term ~ (kw("returning") ~/ typeTerm).named("returning clause") ~
+    (kw("match") ~/ term ~ (skipAllWs ~ kw("returning") ~/ typeTerm).named("returning clause") ~
       (kwTight("with") ~/ lineSep) ~ matchCase.rep(0)).flatSpanned(sourceId).map { case (scrut, motive, cases, sp) =>
       Match(scrut, motive, cases, sp)
     }
@@ -367,8 +377,8 @@ object LanguageParser {
   private def term(implicit sourceId: Option[SourceId]): Parser[Term] =
     ((lambda | scopeP | matchP | closedPi | body | simplePi | termAtom) ~ termTrailers).map { case (base, trailers) =>
       trailers.foldLeft(base) {
-        case (cur, TermDot(name, sp)) => Select(cur, name, sp)
-        case (cur, TermApp(args, sp)) => App(cur, args, applicationSpan(cur, sp))
+        case (cur, TermDot(name, sp)) => Select(cur, name, trailerSpan(cur, sp))
+        case (cur, TermApp(args, sp)) => App(cur, args, trailerSpan(cur, sp))
       }
     }
 
@@ -499,7 +509,7 @@ object LanguageParser {
     (kw("import") ~/ pathP ~/ emptyLine).flatSpanned(sourceId).map(Import.tupled)
 
   private def programP(implicit sourceId: Option[SourceId]): Parser[Program] = {
-    (skipAllWs ~ importP.rep(0) ~ commandsP ~ term.? ~ skipAllWs ~ End).map(Program.tupled)
+    (skipAllWs ~ importP.rep(0) ~ commandsP ~ term.? ~ skipAllWs ~/ End).map(Program.tupled)
   }
 
   private def tryParse[A](input: String, parser: Parser[A]): ParseResult[A] = try {
