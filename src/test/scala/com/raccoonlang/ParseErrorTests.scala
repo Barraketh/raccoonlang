@@ -104,6 +104,23 @@ class ParseErrorTests extends munit.FunSuite {
     )
   }
 
+  // Blank and comment lines may separate cases and constructors (LineLayoutTests), but each still ends its line.
+  test("a case or constructor on another's line is a parse error where it stands") {
+    val cases = Vector(
+      "def f (n: Nat): Nat := match n returning Nat with@ | .zero => 0\n",
+      "def f (n: Nat): Nat := match n returning Nat with\n  | .zero => 0@ | .succ k => k\n",
+      "def f (n: Nat): Nat := {\n  let m := match n returning Nat with@ | .zero => 0\n  m\n}\n",
+      "def f (n: Nat): Nat := {\n  match n returning Nat with\n  | .zero => 0\n  | .succ k => k@ }\n"
+    )
+    cases.foreach(expectParseError(_, "Failed to parse end of line"))
+    val constructors = Vector(
+      "inductive Color : Type@ | red : Color\n",
+      "inductive Color : Type\n  | red : Color@ | green : Color\n",
+      "struct Point : Type@ | mk (x: Nat) : Point\n"
+    )
+    constructors.foreach(expectParseError(_, "Failed to parse end of line"))
+  }
+
   test("a parse failure names what was expected, never a parser object") {
     expectParseError("def f : Nat := 0\n@)\n", "Failed to parse end of input")
     expectParseError("def f (n: Nat): Nat := Nat.add(n@\n", "Failed to parse LayoutSymTight())")
