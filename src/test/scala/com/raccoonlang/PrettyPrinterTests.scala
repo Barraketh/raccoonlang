@@ -128,8 +128,8 @@ class PrettyPrinterTests extends munit.FunSuite with TestSupport {
     )
     // The binder groups down a chain of codomains.
     def groups(term: CoreAst.Term): Vector[Int] = term match {
-      case CoreAst.Term.Pi(binders, out, _, _, _) => binders.length +: groups(out)
-      case _                                      => Vector.empty
+      case CoreAst.Term.Pi(binders, out, _, _, _, _) => binders.length +: groups(out)
+      case _                                         => Vector.empty
     }
     types.foreach { case (written, printed) =>
       val core = axiomType(s"axiom f : $written\n", "f")

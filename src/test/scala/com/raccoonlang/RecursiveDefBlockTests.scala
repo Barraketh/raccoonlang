@@ -15,13 +15,14 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
   private def param(ref: CoreAst.LocalRef, tpe: Term): CoreAst.Binder = binder(ref, tpe, CoreAst.BinderSite.Parameter)
   // A definition's header.
   private def pi(ref: CoreAst.LocalRef, input: Term, output: Term): Term.Pi =
-    Term.Pi(Vector(param(ref, input)), output, CoreAst.Closure.unrestricted(span), span)
+    Term.Pi(Vector(param(ref, input)), output, CoreAst.Closure.unrestricted(span), span, NodeId.fresh())
   private def pi2(first: CoreAst.LocalRef, firstType: Term, second: CoreAst.LocalRef, secondType: Term): Term.Pi =
     Term.Pi(
       Vector(param(first, firstType), param(second, secondType)),
       global("GroupResult"),
       CoreAst.Closure.unrestricted(span),
-      span
+      span,
+      NodeId.fresh()
     )
 
   private def installSource(source: String, initial: Env): Env =
@@ -99,7 +100,8 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           span
         )
       ),
-      span
+      span,
+      NodeId.fresh()
     )
     val gBody = Term.Match(
       local(b),
@@ -114,7 +116,8 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           span
         )
       ),
-      span
+      span,
+      NodeId.fresh()
     )
     Decl.RecursiveDefBlock(
       Vector(
@@ -124,7 +127,8 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           pi(a, global("GroupA"), global("GroupResult")),
           fBody,
           DecreaseSpec.Lexicographic(Vector(a), span),
-          span
+          span,
+          NodeId.fresh()
         ),
         RecursiveDef(
           "walkB",
@@ -132,7 +136,8 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           pi(b, global("GroupB"), global("GroupResult")),
           gBody,
           DecreaseSpec.Lexicographic(Vector(b), span),
-          span
+          span,
+          NodeId.fresh()
         )
       ),
       span
@@ -193,7 +198,8 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
                 Vector(binder(argument, global("GroupA"), CoreAst.BinderSite.Function)),
                 global("GroupResult"),
                 CoreAst.Closure.unrestricted(span),
-                span
+                span,
+                NodeId.fresh()
               )
             )
           ),
@@ -217,7 +223,8 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           pi(firstArg, global("GroupA"), global("GroupHolder")),
           app(global("GroupHolder.mk"), local(secondPeer)),
           DecreaseSpec.Lexicographic(Vector(firstArg), span),
-          span
+          span,
+          NodeId.fresh()
         ),
         RecursiveDef(
           "leakB",
@@ -225,7 +232,8 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           pi(secondArg, global("GroupA"), global("GroupHolder")),
           app(global("GroupHolder.mk"), local(firstPeer)),
           DecreaseSpec.Lexicographic(Vector(secondArg), span),
-          span
+          span,
+          NodeId.fresh()
         )
       ),
       span
@@ -290,7 +298,8 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           span
         )
       ),
-      span
+      span,
+      NodeId.fresh()
     )
     val gBody = Term.Match(
       local(b),
@@ -305,7 +314,8 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           span
         )
       ),
-      span
+      span,
+      NodeId.fresh()
     )
     val block = Decl.RecursiveDefBlock(
       Vector(
@@ -315,7 +325,8 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           pi2(fPrefix, global("GroupA"), a, global("GroupA")),
           fBody,
           DecreaseSpec.Lexicographic(Vector(fPrefix, a), span),
-          span
+          span,
+          NodeId.fresh()
         ),
         RecursiveDef(
           "lexB",
@@ -323,7 +334,8 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           pi2(gPrefix, global("GroupA"), b, global("GroupB")),
           gBody,
           DecreaseSpec.Lexicographic(Vector(gPrefix, b), span),
-          span
+          span,
+          NodeId.fresh()
         )
       ),
       span
@@ -400,7 +412,8 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           span
         )
       ),
-      span
+      span,
+      NodeId.fresh()
     )
     val listBody = Term.Match(
       local(list),
@@ -415,7 +428,8 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           span
         )
       ),
-      span
+      span,
+      NodeId.fresh()
     )
     val block = Decl.RecursiveDefBlock(
       Vector(
@@ -425,7 +439,8 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           pi(tree, global("K6Tree"), global("GroupResult")),
           treeBody,
           DecreaseSpec.Lexicographic(Vector(tree), span),
-          span
+          span,
+          NodeId.fresh()
         ),
         RecursiveDef(
           "walkList",
@@ -433,7 +448,8 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           pi(list, listTree, global("GroupResult")),
           listBody,
           DecreaseSpec.Lexicographic(Vector(list), span),
-          span
+          span,
+          NodeId.fresh()
         )
       ),
       span

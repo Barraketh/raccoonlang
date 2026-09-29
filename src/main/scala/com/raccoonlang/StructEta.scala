@@ -100,9 +100,9 @@ object StructEta {
 
   /**
    * The canonical projection program for one field of one family:
-   * `match self returning motive with | mk x0 … xn => x_idx`. Each field index gets its own synthetic span, so its
-   * `nodeId` is stable across every projection of that field and distinct from every other field's — which is exactly
-   * what makes two projections of defEq bases compare equal by id.
+   * `match self returning motive with | mk x0 … xn => x_idx`. Each field index gets a match node of its own, so its
+   * identity is stable across every projection of that field and distinct from every other field's — which is exactly
+   * what makes two projections of defEq bases compare equal by id. It was written nowhere, so its span is in no source.
    *
    * Every match writes its motive, and a field's type has no syntax in terms of `self` alone, so the motive is a local
    * that `fieldProjection` binds to the field's type at the base. Being a function of the base, it adds nothing to the
@@ -117,11 +117,12 @@ object StructEta {
     val selfRef = SyntheticLocalRef.fresh("self")
     val motiveRef = SyntheticLocalRef.fresh("motive")
     val fieldRefs = Vector.tabulate(fieldCount)(i => SyntheticLocalRef.fresh(s"x$i"))
-    val span = Span.synthetic()
+    val span = Span(0, 0, None)
     val body = CTerm.LocalRef(fieldRefs(idx), span)
     val branch =
       CoreAst.Case(ctorName, isFullyQualified = true, fieldRefs.map(CoreAst.PatternVar(_, span)), body, span)
-    val term = CTerm.Match(CTerm.LocalRef(selfRef, span), CTerm.LocalRef(motiveRef, span), Vector(branch), span)
+    val term =
+      CTerm.Match(CTerm.LocalRef(selfRef, span), CTerm.LocalRef(motiveRef, span), Vector(branch), span, NodeId.fresh())
     Projector(selfRef, motiveRef, term)
   }
 }

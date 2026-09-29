@@ -97,7 +97,7 @@ object Ledger {
       case pi: CA.Term.Pi => boundary(ref, pi, pi.refs)
       // A lambda's children are its type and body: its `decreases` clause is not a use (spec §3.2).
       case lam: CA.Term.Lam => boundary(ref, lam, lam.refs)
-      case CA.Term.Match(scrut, motive, cases, _) =>
+      case CA.Term.Match(scrut, motive, cases, _, _) =>
         val branches = if (cases.isEmpty) ended else cases.map(c => uses(ref, c.body)).reduceLeft(_ or _)
         uses(ref, scrut).andThen(uses(ref, motive)).andThen(branches)
     }

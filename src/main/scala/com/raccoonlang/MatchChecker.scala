@@ -201,7 +201,7 @@ object MatchChecker {
     val checkedCases = cases.map { c =>
       checkedByCtor.getOrElse(c.ctorName, wtf(s"Unchecked reachable case ${c.ctorName}"))
     }
-    val checkedMatch = CA.Term.Match(scrutChecked.residual, checkedMotive.residual, checkedCases, t.span)
+    val checkedMatch = CA.Term.Match(scrutChecked.residual, checkedMotive.residual, checkedCases, t.span, t.id)
     CheckedTerm(Interpreter.evalTerm(checkedMatch, env), checkedMatch)
   }
 

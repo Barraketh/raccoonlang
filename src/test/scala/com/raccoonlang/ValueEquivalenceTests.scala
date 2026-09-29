@@ -13,8 +13,6 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
   private val env = Env.empty
   private val typeToTypeClassifier = Sorts.sort(Level.succ(Level.one), Value.Kind.unr, Value.Lifetime.empty)
 
-  private def nodeId(start: Int): AstNodeId = AstNodeId(None, start)
-
   private def parseBody(source: String): CoreAst.Term =
     LanguageParser.parseProgram(source) match {
       case Success(value, _, _) => Elaborator.elab(value).body.getOrElse(fail("program has no body"))
@@ -27,7 +25,7 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
     res.result()
   }
 
-  private def pi(captures: Vector[Value], out: Env => Value, start: Int): VPi =
+  private def pi(captures: Vector[Value], out: Env => Value, id: NodeId): VPi =
     VPi(
       env,
       Vector(binder),
@@ -35,7 +33,7 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
       Value.Kind.unr,
       Value.Lifetime.empty,
       deps(captures: _*),
-      ValueId.LocalId(nodeId(start), captures),
+      ValueId.LocalId(id, captures),
       () => typeToTypeClassifier
     )
 
@@ -48,8 +46,8 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
   test("Pi unification rejects solutions that depend on fresh binder vars") {
     val hole = FreshVar.freshVar("A", Sorts.Type)
     val meta = EqStore.empty.allow(DepSet(hole.id))
-    val left = pi(Vector(hole), _ => hole, 1)
-    val right = pi(Vector.empty, env => env(binderRef), 2)
+    val left = pi(Vector(hole), _ => hole, NodeId.fresh())
+    val right = pi(Vector.empty, env => env(binderRef), NodeId.fresh())
 
     assert(ValueEquivalence.tryUnify(left, right, meta).isLeft)
   }
@@ -60,8 +58,8 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
     val hole = FreshVar.freshVar("A", Sorts.Type)
     val closed = FreshVar.freshVar("B", Sorts.Type)
     val meta = EqStore.empty.allow(DepSet(hole.id))
-    val left = pi(Vector(hole), _ => hole, 3)
-    val right = pi(Vector(closed), _ => closed, 4)
+    val left = pi(Vector(hole), _ => hole, NodeId.fresh())
+    val right = pi(Vector(closed), _ => closed, NodeId.fresh())
 
     assert(ValueEquivalence.tryUnify(left, right, meta).isLeft)
   }
@@ -76,7 +74,7 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
       Value.Kind.unr,
       Value.Lifetime.empty,
       DepSet.empty,
-      ValueId.LocalId(nodeId(5), Vector.empty),
+      ValueId.LocalId(NodeId.fresh(), Vector.empty),
       () => typeToTypeClassifier
     )
     val nested = VPi(
@@ -90,13 +88,13 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
           Value.Kind.unr,
           Value.Lifetime.empty,
           DepSet.empty,
-          ValueId.LocalId(nodeId(6), Vector.empty),
+          ValueId.LocalId(NodeId.fresh(), Vector.empty),
           () => typeToTypeClassifier
         ),
       Value.Kind.unr,
       Value.Lifetime.empty,
       DepSet.empty,
-      ValueId.LocalId(nodeId(7), Vector.empty),
+      ValueId.LocalId(NodeId.fresh(), Vector.empty),
       () => typeToTypeClassifier
     )
 
@@ -122,13 +120,13 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
           Value.Kind.unr,
           Value.Lifetime.empty,
           DepSet.empty,
-          ValueId.LocalId(nodeId(8), Vector.empty),
+          ValueId.LocalId(NodeId.fresh(), Vector.empty),
           () => typeToTypeClassifier
         ),
       Value.Kind.unr,
       Value.Lifetime.empty,
       DepSet.empty,
-      ValueId.LocalId(nodeId(9), Vector.empty),
+      ValueId.LocalId(NodeId.fresh(), Vector.empty),
       () => typeToTypeClassifier
     )
     val applicationEnv = env.putGlobal("nested", VConst("nested", Symbol, nested))
@@ -258,7 +256,7 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
     val scrutinee = FreshVar.freshVar("b", checkedEnv("Bool"))
     val neutral = Interpreter.evalApply(function, Vector(scrutinee)).asInstanceOf[NeutralThunk]
     val wrongType = neutral.copy(
-      id = ValueId.LocalId(nodeId(100), neutral.id.captures),
+      id = ValueId.LocalId(NodeId.fresh(), neutral.id.captures),
       tpe = checkedEnv("Nat")
     )
 
@@ -289,13 +287,15 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
     Await.result(Future(typecheckDecls(program))(ExecutionContext.global), 60.seconds)
   }
 
-  // Two function types of different syntax that share a node identity share a key (the F2 bug class). Beneath a
+  // Two function types of different syntax that share a node identity share a key (the F2 bug class, which no checked
+  // term can reach now that only a rebuilt node shares an identity: the values here are made by hand). Beneath a
   // family application their keys make the applications' keys agree too, so only the assertion beneath the outer
   // verdict reaches the collision.
   test("the key-coherence assertion reaches a key collision beneath an agreeing parent") {
     assert(ValueEquivalence.keyAssertionsEnabled)
-    val toProp = pi(Vector.empty, _ => Sorts.Prop, 20)
-    val toType = pi(Vector.empty, _ => Sorts.Type, 20)
+    val shared = NodeId.fresh()
+    val toProp = pi(Vector.empty, _ => Sorts.Prop, shared)
+    val toType = pi(Vector.empty, _ => Sorts.Type, shared)
     assertEquals(toProp.key, toType.key)
     val list = Prelude.default.checkedEnv("List")
     def listOf(elem: Value): Value = Interpreter.evalApply(list, Vector(Level.succ(Level.one), Lifetime.empty, elem))

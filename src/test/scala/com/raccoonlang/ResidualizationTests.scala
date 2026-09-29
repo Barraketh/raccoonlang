@@ -186,7 +186,7 @@ class ResidualizationTests extends munit.FunSuite {
           |""".stripMargin
 
     resultTerm(checkBody(p).term) match {
-      case CA.Term.Lam(_, body, _, _, _, _) =>
+      case CA.Term.Lam(_, body, _, _, _, _, _) =>
         assert(containsGlobal(body, "id"))
         assert(containsGlobal(body, "Peano.zero"))
       case other => fail(s"Expected literal lambda body, got $other")
@@ -212,7 +212,7 @@ class ResidualizationTests extends munit.FunSuite {
           |""".stripMargin
 
     resultTerm(checkBody(p).term) match {
-      case CA.Term.Match(_, _, cases, _) =>
+      case CA.Term.Match(_, _, cases, _, _) =>
         assertEquals(cases.map(_.ctorName).toSet, Set("Bool.true", "Bool.false"))
         cases.foreach(c => assert(containsGlobal(c.body, "id")))
       case other => fail(s"Expected stuck match with literal branches, got $other")
@@ -238,7 +238,7 @@ class ResidualizationTests extends munit.FunSuite {
           |""".stripMargin
 
     resultTerm(checkBody(p).term) match {
-      case CA.Term.Match(scrut, _, _, _) =>
+      case CA.Term.Match(scrut, _, _, _, _) =>
         assert(containsGlobal(scrut, "idBool"))
         assert(containsGlobal(scrut, "opaqueBool"))
       case other => fail(s"Expected stuck match residual, got $other")
@@ -392,8 +392,8 @@ class ResidualizationTests extends munit.FunSuite {
         |""".stripMargin
 
     val body = checkLastDeclBody(p) match {
-      case CA.Term.Lam(_, body, _, _, _, _) => resultTerm(body)
-      case other                            => fail(s"Expected a checked lambda, got $other")
+      case CA.Term.Lam(_, body, _, _, _, _, _) => resultTerm(body)
+      case other                               => fail(s"Expected a checked lambda, got $other")
     }
     body match {
       case CA.Term.Match(
@@ -405,6 +405,7 @@ class ResidualizationTests extends munit.FunSuite {
               CA.Term.LocalRef(fieldType, _),
               _
             ),
+            _,
             _,
             _
           ) =>

@@ -19,7 +19,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
       Value.Kind.unr,
       Value.Lifetime.empty,
       DepSet.empty,
-      ValueId.LocalId(AstNodeId(None, 0), Vector.empty),
+      ValueId.LocalId(NodeId.fresh(), Vector.empty),
       () => Sorts.sort(Level.succ(Level.one), Value.Kind.unr, Value.Lifetime.empty)
     )
     val root = VConst("f", Symbol, grouped)
@@ -53,7 +53,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
       Value.Kind.unr,
       Value.Lifetime.empty,
       DepSet.empty,
-      ValueId.LocalId(AstNodeId(None, 0), Vector.empty),
+      ValueId.LocalId(NodeId.fresh(), Vector.empty),
       () => Sorts.sort(Level.succ(Level.one), Value.Kind.unr, Value.Lifetime.empty)
     )
 
@@ -133,7 +133,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
                 "Pair.snd",
                 _,
                 CoreAst.ConstBody.TermBody(
-                  CoreAst.Term.Lam(_, m: CoreAst.Term.Match, _, _, _, _)
+                  CoreAst.Term.Lam(_, m: CoreAst.Term.Match, _, _, _, _, _)
                 ),
                 None,
                 _

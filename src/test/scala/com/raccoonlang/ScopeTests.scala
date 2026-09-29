@@ -231,7 +231,7 @@ class ScopeTests extends munit.FunSuite with TestSupport {
       case (source: CA.Term.Scope, residual: CA.Term.Scope) => (source, residual)
       case other                                            => fail(s"Expected scope terms, got $other")
     }
-    assertEquals(residual.nodeId, source.nodeId)
+    assertEquals(residual.id, source.id)
     assertEquals(Atoms.of(residual), Atoms.of(source))
     val first = Interpreter.evalTerm(residual, env)
     val second = Interpreter.evalTerm(residual, env)
