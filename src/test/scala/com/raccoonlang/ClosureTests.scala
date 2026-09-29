@@ -327,11 +327,15 @@ class ClosureTests extends munit.FunSuite with TestSupport {
         |    (g: { kind = kf, scope = Sf } Unit -> A): A := g(Unit.unit)
         |""".stripMargin
     )
-    def closure(result: String): (Value.Kind, Value.Lifetime) =
-      runProgram(delay + s"\n{ $result }\n").tpe match {
+    // Checked where it stands after the declarations, since a program's result may not be linear.
+    def closure(term: String): (Value.Kind, Value.Lifetime) = {
+      val core = Elaborator.elab(parseSurface(delay + s"\n{ $term }\n"), Prelude.default)
+      val env = core.decls.foldLeft(Prelude.default.checkedEnv)((env, decl) => Interpreter.evalDecl(decl, env))
+      TypeChecker.checkTerm(core.body.getOrElse(fail("Expected a body")), env).value.tpe match {
         case pi: Value.VPi => (pi.closureKind, pi.closureScope)
         case other         => fail(s"Expected a function type, got $other")
       }
+    }
 
     // One residual, evaluated at a linear and at an unrestricted capture.
     assertEquals(closure("delay(Tok.mk(Lifetime.empty))"), (Value.Kind.lin, Value.Lifetime.empty))

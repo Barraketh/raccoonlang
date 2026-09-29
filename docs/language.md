@@ -588,10 +588,12 @@ def apply {kf: Kind}{Sf: Lifetime}(f: { kind = kf, scope = Sf } Unit -> Nat): Na
 token and of one that captures nothing. A definition that drops or copies its
 argument exists only at `Kind.unr`.
 
-A global is never tracked, so a definition or opaque definition whose type is
-linear is `LinearGlobal`, and axioms belong to the trusted prelude. A
-definition's own function type is unrestricted, so a definition that takes or
-returns tokens is an ordinary global.
+A value outside every binder is never tracked, so a definition or opaque
+definition whose type is linear is `LinearGlobal`, and so is a program whose
+final `{ … }` result has a linear type: nothing would ever use it, so a client
+could end the program holding a module's token. Axioms belong to the trusted
+prelude. A definition's own function type is unrestricted, so a definition that
+takes or returns tokens is an ordinary global.
 
 Types and proofs hold no tokens. A term whose type is a sort or a proposition
 may not contain a subterm of linear type, which is `LinearInType`, reported at

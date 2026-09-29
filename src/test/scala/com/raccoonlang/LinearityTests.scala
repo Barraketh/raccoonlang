@@ -316,13 +316,41 @@ class LinearityTests extends munit.FunSuite with TestSupport {
     typecheckDecls(withFamilies("def mint (l: Lifetime): Tok(l) := Tok.mk(l)\n"))
     val global =
       expectOnly[LinearGlobal](typecheckDecls(withFamilies("def t : Tok(Lifetime.empty) := Tok.mk(Lifetime.empty)\n")))
-    assertEquals(global.name, "t")
+    assertEquals(global.definition, Some("t"))
     expectOnly[LinearGlobal](
       typecheckDecls(withFamilies("opaque def t : Tok(Lifetime.empty) := Tok.mk(Lifetime.empty)\n"))
     )
     expectOnly[LinearGlobal](
       typecheckDecls("def g : { kind = lin } Unit -> Nat := fun { kind = lin } (u: Unit): Nat => 0\n")
     )
+  }
+
+  test("the program's result is outside every binder, so a linear one is LinearGlobal") {
+    // A module whose protocol is that every handle it opens is closed.
+    val file =
+      """
+        |sealed inductive Handle : Type { kind = lin }
+        | | mk : Handle
+        |
+        |def openFile (u: Unit): Handle := Handle.mk
+        |
+        |def closeFile (h: Handle): Nat := match h returning Nat with
+        | | .mk => 0
+        |""".stripMargin
+
+    def evaluatesTo(client: String, expected: String): Unit =
+      assert(outside(file, client).exists(ValueEquivalence.defEq(_, runProgram(expected))))
+
+    evaluatesTo("{ closeFile(openFile(Unit.unit)) }", "{ 0 }")
+    // Built from a token it consumed, the result is unrestricted.
+    evaluatesTo("{\n  let h := openFile(Unit.unit)\n  Nat.succ(closeFile(h))\n}", "{ 1 }")
+    val handle = expectOnly[LinearGlobal](outside(file, "{ openFile(Unit.unit) }"))
+    assertEquals(handle.definition, None)
+    // A linear closure that would close the handle, never applied.
+    val closure = "{\n  let h := openFile(Unit.unit)\n  fun (u: Unit): Nat => closeFile(h)\n}"
+    val diagnostic = interceptDiagnostic(outside(file, closure))
+    assert(diagnostic.error.isInstanceOf[LinearGlobal], diagnostic)
+    assertEquals(diagnostic.span.map(_.start), Some("import Module\n".length + closure.indexOf("fun")))
   }
 
   test("one kind-polymorphic definition serves linear and unrestricted instantiations") {

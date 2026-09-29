@@ -65,8 +65,10 @@ object ErrorRendering {
       case LinearInType(term, tpe) =>
         s"${PrettyPrinter.printTerm(term)} has the linear type $tpe, so it cannot stand inside a type or a proof: " +
           "types and proofs hold no tokens"
-      case LinearGlobal(name, tpe) =>
-        s"Definition $name has the linear type $tpe; a global is never linear, since every reference to it is a use"
+      case LinearGlobal(definition, tpe) =>
+        val value = definition.fold("The program's result")(name => s"Definition $name")
+        s"$value has the linear type $tpe; a value outside every binder is never linear, since only a local's uses " +
+          "are counted"
       case LifetimeEscapes(lifetime, tpe) =>
         s"Lifetime $lifetime escapes its scope: the type $tpe names it outside `scope $lifetime`"
       case SealedConstructor(family, member) =>

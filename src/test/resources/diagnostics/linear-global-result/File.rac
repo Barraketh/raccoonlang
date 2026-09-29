@@ -1,0 +1,8 @@
+// Every handle this module opens is closed, exactly once.
+sealed inductive Handle : Type { kind = lin }
+ | mk : Handle
+
+def openFile (u: Unit): Handle := Handle.mk
+
+def closeFile (h: Handle): Nat := match h returning Nat with
+ | .mk => 0
