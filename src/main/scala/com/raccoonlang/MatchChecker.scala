@@ -113,9 +113,10 @@ object MatchChecker {
           curEnv.putLocal(ref, Value.canonicalizeProof(argVal))
         }
         val branchRes = checkTerm(br.body, expectedTy, branchEnv)
-        // Each field is released to the ledger at the branch's extent (spec §6.1), a wildcard's included.
-        br.argRefs.zip(args).foreach { case (ref, argVal) =>
-          Ledger.requireUsedOnce(ref, argVal.tpe, br.span, Vector(branchRes.residual))
+        // Each field is released to the ledger at the branch's extent (spec §6.1), a wildcard's included, and an unused
+        // one is reported at its pattern variable.
+        br.patternVars.zip(args).foreach { case (patternVar, argVal) =>
+          Ledger.requireUsedOnce(patternVar.ref, argVal.tpe, patternVar.span, Vector(branchRes.residual))
         }
         br.copy(body = branchRes.residual)
       }

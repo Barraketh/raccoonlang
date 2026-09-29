@@ -225,7 +225,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         CoreAst.Case(
           "Even.succ",
           isFullyQualified = true,
-          Vector(CoreAst.LocalRef(1020, "_")),
+          Vector(CoreAst.PatternVar(CoreAst.LocalRef(1020, "_"), blockSpan)),
           global("evenWitness"),
           blockSpan
         )
@@ -239,7 +239,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         CoreAst.Case(
           "Odd.succ",
           isFullyQualified = true,
-          Vector(CoreAst.LocalRef(1021, "_")),
+          Vector(CoreAst.PatternVar(CoreAst.LocalRef(1021, "_"), blockSpan)),
           global("oddWitness"),
           blockSpan
         )
