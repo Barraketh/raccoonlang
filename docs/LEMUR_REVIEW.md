@@ -18,12 +18,11 @@ present at `bfd5196`; the rest were introduced or exposed by the Lemur work.
 | S6 Sealing cleanup | F7, F8, F9 | done | `bbb24db` |
 | S7a Parser and printer diagnostics | F10, F12, F13 | done | `973ae20` |
 | S7b Elaborator field resolution and pattern spans | F11, F14 | done | `0d0f789` |
-| S8 Confinement by sort scope | F6 (D1, decided) | in progress | |
+| S8 Confinement by sort scope | F6 (D1, decided) | done | `5035a69`, `b8c5f6f` |
 
-S1–S7b are done; the branch validates (714 tests), and every finding's repro
-was rerun against the final build. D1 was decided on 2026-09-29 and is S8.
-Open decisions, not scheduled: D2, D3 and the proposals under "Follow-ups"
-below.
+All steps are done, S8 included; the branch validates (710 tests), and every
+finding's repro was rerun against the final build. Open decisions, not
+scheduled: D2, D3, D4 and the proposals under "Follow-ups" below.
 
 ## Findings
 
@@ -192,6 +191,13 @@ neither mentions l … may leave". It is over-conservative, not unsound. See D1.
   so `Wrap(atom)` would escape. The alternative is to keep the dependency-set
   rule and say in §4.2 that a type mentioning a value computed under a scope is
   confined to it.
+- **D4 (from S8).** A family's declared scope is now fully determined: it may
+  mention only the family's parameters and must name every lifetime parameter,
+  so it is exactly their union. Writing it is checked ceremony. Keep writing it
+  (explicit; `Lease (l: Lifetime) : Type { scope = l }` tells a reader it is
+  confined), or derive it and disallow writing it (less to write, but it drops
+  "kind and scope are declared, never derived" for scopes while kinds stay
+  declared, and changes surface syntax across the prelude and tests).
 - **D2.** The program's final `{ … }` result may have a linear type and is not
   tracked. §3.2 is silent: treat it as a global (reject), or say the runtime
   consumes it.
@@ -385,6 +391,22 @@ carry spans, and `LinearUnused` for one points at it.
   `Type { kind = lin }` is required, which is rightly `TypeMismatch`; the test
   uses a linear type. The merged branch validates (714 tests), and every
   finding's repro behaves as expected on the final build.
+
+- 2026-09-29: S8 landed (`5035a69`, `b8c5f6f`). `requireInScope` reads the
+  type's sort's scope and nothing else (a dependency-set pre-filter was dropped
+  on review: it saved about 3% but made confinement rest on a second
+  invariant). Every family names each lifetime parameter in its scope. With
+  that, a family's scope is exactly its lifetime parameters, so the field-scope
+  and parameter/index-type-scope containment checks could no longer fail and
+  were deleted, with §5.1 stating why; field kind containment stays. Now
+  accepted: `Eq.refl(later)`, a proposition about `withLease(f)` used as a
+  type, and `congrArg` over `withLease`. Still `LifetimeEscapes`: every rule
+  that computes a sort scope has an escape test (`ScopeTests`). Newly rejected:
+  an unscoped lifetime-parameterized family, and `scope l => Wrap(l)` at the
+  `scope`. Spec §2.4, §4.2, §5.1, §6.2 (`Pair` example) and §7.3 (`pairEq`)
+  rewritten. The fixtures `scope-exceeded-parameter` and
+  `scope-exceeded-lifetime-parameter` merged into `scope-exceeded`. The merged
+  branch validates (710 tests).
 
 ## Follow-ups (proposed, not scheduled)
 
