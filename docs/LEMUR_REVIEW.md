@@ -24,7 +24,7 @@ present at `bfd5196`; the rest were introduced or exposed by the Lemur work.
 
 All steps are done, S8 included; the branch validates (710 tests), and every
 finding's repro was rerun against the final build. Open decisions, not
-scheduled: D4 and the proposals under "Follow-ups" below.
+scheduled: the proposals under "Follow-ups" below.
 
 ## Findings
 
@@ -193,7 +193,7 @@ neither mentions l … may leave". It is over-conservative, not unsound. See D1.
   so `Wrap(atom)` would escape. The alternative is to keep the dependency-set
   rule and say in §4.2 that a type mentioning a value computed under a scope is
   confined to it.
-- **D4 (from S8).** A family's declared scope is now fully determined: it may
+- **D4 (from S8). Decided 2026-09-29: keep writing it, for now.** A family's declared scope is now fully determined: it may
   mention only the family's parameters and must name every lifetime parameter,
   so it is exactly their union. Writing it is checked ceremony. Keep writing it
   (explicit; `Lease (l: Lifetime) : Type { scope = l }` tells a reader it is
@@ -461,6 +461,11 @@ carry spans, and `LinearUnused` for one points at it.
   `{A: Type} -> A -> A` as a term is read as a block.
 - **`with` on the next line** (from S7a). `returning` may start the next line;
   `with` still may not.
+- **Family scope error message** (from D4). "Family Wrap is declared at scope
+  Lifetime.empty, which does not contain the scope l of lifetime parameter l,
+  which every family must name" could say what to write: "declare it at
+  `Type { scope = l }`", the whole union when there are several. Optionally,
+  n-ary `union`/`join`/`max` forms, so `Sigma` reads `union(S, T, Sb)`.
 - **Duplicated `parseFailure` helper** in `ClosureTests`, `UniverseTests` and
   `ScopeTests`.
 - **Materializing shared values** (from S5 review). `ValueOps.materialize`
