@@ -219,11 +219,25 @@ An inductive declaration is installed only after checking:
 
 - that the family result is a sort;
 - universe bounds for every constructor field;
+- kind and scope bounds: the family's declared kind and scope, which are never
+  derived, contain every constructor field's kind and scope, `Prop` families
+  included; the declared scope also contains the scope of every parameter's
+  and index's type, a sort parameter's contributing nothing; and a family at a
+  kind other than `Kind.unr` names each of its lifetime parameters in its
+  scope;
 - that every constructor result is the declared family with uniform
   parameters and well-typed indices;
 - strict positivity of recursive occurrences;
 - nested positivity only through parameters that the referenced inductive
   block certifies as positive.
+
+A family instance's sort is the declared result sort under the instance's
+arguments, never something read off the arguments' values, so it commutes with
+substitution. A family at a kind variable is therefore linear exactly at the
+instances whose kind argument is. A field of a sibling or of the family itself
+is read by that declared sort, so the bounds need no fixed point. A variable in
+the declared sort can only be a parameter, since no index binds a sort
+parameter.
 
 Atomic mutual-inductive blocks are available through the surface `mutual { ... }`
 form. Every family in a block has the same parameter telescope and sort, level,
@@ -510,3 +524,6 @@ Changes to the checker or evaluator must preserve these rules:
 16. Kinds and lifetimes exist only in normal form, so their structural
     equality is definitional equality; no two of them are apart.
 17. A sort whose kind is not `Kind.unr` has a level that is never zero.
+18. A family's kind and scope are declared, never derived. An instance's sort
+    is the declared sort under its arguments, and its declared kind and scope
+    contain whatever a value of it holds or carries in its type.

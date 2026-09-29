@@ -319,11 +319,50 @@ Constructors are global declarations inside the family namespace, such as
 `Nat.zero` and `Vec.cons`. A constructor result must be an application of its
 own family using all parameters uniformly. The checker validates:
 
-- the family and constructor universes;
+- the family and constructor universes, kinds and scopes;
 - constructor result shape and parameter uniformity;
 - strict positivity, including occurrences nested through parameters already
   certified as positive;
 - the parameter/index split used by matching and reconstruction.
+
+A family's sort is declared, level, kind and scope alike, and never derived
+from its constructors. An instance `D(p*, i*)` is at exactly the declared sort
+with the arguments substituted for the parameters. The declaration must
+account for everything a value of the family can hand over:
+
+- the declared kind contains each constructor field's kind, else
+  `KindExceeded` naming the field. A family whose fields are linear only
+  through a kind variable is declared at that variable;
+- the declared scope contains each constructor field's scope, else
+  `ScopeExceeded` naming the field;
+- the declared scope contains the scope of each parameter's and index's type,
+  else `ScopeExceeded` naming it, since that value can be read off an
+  instance's type. A type parameter counts at its sort's scope, and a `Level`,
+  `Kind` or `Lifetime` parameter counts nothing;
+- a family at a kind other than `Kind.unr` names each of its lifetime
+  parameters in its scope, else `ScopeExceeded` naming it.
+
+```raccoon
+inductive Lease (l: Lifetime) : Type { scope = l }
+ | mk : Lease(l)
+
+inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }
+ | mk : Tok(l)
+
+inductive Holder {k: Kind}{S: Lifetime}(A: Type { kind = k, scope = S })
+    : Type { kind = k, scope = S }
+ | mk (held: A) : Holder(A)
+
+inductive Phantom {S: Lifetime}(A: Type { scope = S }) : Type { scope = S }
+ | mk : Phantom(A)
+```
+
+`Holder(Tok(m))` is at `Type { kind = lin, scope = m }` and `Holder(Nat)` at
+`Type`. `Phantom` holds no `A`, but `A` can be read off its type, so it
+declares `A`'s scope. A field of function type is at its own kind, `Kind.unr`
+for an arrow, and at its scope, which counts its domains' and result's scopes.
+A proposition obeys the same rules, so a family in `Prop` holds no linear
+field. A sibling in a `mutual` block is read by its declared sort.
 
 Constructor pattern fields correspond to stored constructor fields. Erased
 family parameters are not pattern fields.

@@ -594,7 +594,8 @@ Linearity is declared, as the scope is. A family whose fields are linear only
 through a kind variable is declared at that variable, as `Holder` is. That
 makes it linear at exactly the instances whose argument is linear. A field
 type in which the parameter holds no value, such as `A -> Nat`, is at its own
-kind (`Kind.unr` for that arrow), so it contributes nothing. A sibling in a
+kind, its closure kind (§2.4). So it adds nothing to the family's kind, though
+its scope still counts `A`'s. A sibling in a
 `mutual` block is read by its declared classifier, so no fixed point is
 computed. Strict positivity, uniform parameters, `mutual` blocks and structs
 are unchanged.

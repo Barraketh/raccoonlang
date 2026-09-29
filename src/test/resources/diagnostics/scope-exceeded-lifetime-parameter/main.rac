@@ -1,0 +1,4 @@
+inductive Tok (l: Lifetime) : Type { kind = lin }
+ | mk : Tok(l)
+
+{ Nat.zero }
