@@ -614,9 +614,9 @@ two instances of a family at different lifetime or kind arguments. Matching a
 proof of `Eq(Type, Wrap(l), Wrap(m))`, for a family `Wrap (l: Lifetime) : Type`,
 is one such case. The equation is solved over the normal forms of §2.3, as
 level and variable equations are today:
-- A variable alone on one side, not occurring in the other, is linked to the
-  other side. When both sides are variables, the later-bound is linked to the
-  earlier-bound.
+- A refinable variable alone on one side, not occurring in the other, is linked
+  to the other side. When both sides are refinable variables, the later-bound is
+  linked to the earlier-bound.
 - An atom is not a variable and is never linked.
 - Every other equation, a join or union on both sides included, is stuck.
 
