@@ -79,8 +79,6 @@ object ErrorRendering {
         s"Axiom $axiom is declared outside the trusted prelude; only the prelude declares axioms, so an assumption " +
           "goes in a custom prelude (--prelude)"
       case InvalidInductiveBlock(reason) => s"Invalid inductive block: $reason"
-      case MutualBlockSortMismatch(family, declared, expected) =>
-        s"Invalid inductive block: family $family lives in $declared, expected $expected"
       case NonStrictlyPositive(inductive, ctor, field, fieldTy) =>
         s"Constructor $ctor of $inductive is not strictly positive in field $field : $fieldTy"
       case PropEliminationRestricted(inductive, motive) =>

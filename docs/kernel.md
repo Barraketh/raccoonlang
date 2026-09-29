@@ -398,9 +398,11 @@ the declared sort can only be a parameter, since no index binds a sort
 parameter.
 
 Atomic mutual-inductive blocks are available through the surface `mutual { ... }`
-form. Every family in a block has the same parameter telescope and sort, level,
-kind and scope alike; since each scope is the union of the shared lifetime
-parameters, only the level or kind can differ. All provisional family heads are visible while
+form. Every family in a block has the same parameter telescope, so every
+family's scope is the union of the same lifetime parameters. Its level and kind
+are its own: each family is checked against its own declared sort, and a
+sibling's field is read by the sibling's. Where siblings hold each other, the
+field bounds force compatible sorts. All provisional family heads are visible while
 constructors are checked, but the block publishes only after every family
 succeeds. Positivity and recursion metadata are computed for the whole block.
 
@@ -778,7 +780,8 @@ Changes to the checker or evaluator must preserve these rules:
 18. A family's kind and scope are declared, never derived. An instance's sort
     is the declared sort under its arguments, and its declared kind and scope
     contain whatever a value of it holds or carries in its type; its scope names
-    every lifetime parameter.
+    every lifetime parameter. Each family of a mutual block is checked against
+    its own declared sort, and a sibling is read by its declared sort.
 19. A function type's closure is part of its identity and its sort. A lambda's
     closure is written or derived from its captures' types alone, never from
     where the lambda stands, and its residual carries a derived field as those
