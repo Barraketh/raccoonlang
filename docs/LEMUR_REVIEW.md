@@ -20,10 +20,11 @@ present at `bfd5196`; the rest were introduced or exposed by the Lemur work.
 | S7b Elaborator field resolution and pattern spans | F11, F14 | done | `0d0f789` |
 | S8 Confinement by sort scope | F6 (D1, decided) | done | `5035a69`, `b8c5f6f` |
 | S9 The program's result is never linear | D2 (decided) | in progress | |
+| S10 Mutual siblings at their own sorts | D3 (decided) | in progress | |
 
 All steps are done, S8 included; the branch validates (710 tests), and every
 finding's repro was rerun against the final build. Open decisions, not
-scheduled: D3, D4 and the proposals under "Follow-ups" below.
+scheduled: D4 and the proposals under "Follow-ups" below.
 
 ## Findings
 
@@ -205,9 +206,15 @@ neither mentions l … may leave". It is over-conservative, not unsound. See D1.
   closure that would close it), the one place a token can be dropped outside its
   module; and `def main : Handle := …` is `LinearGlobal` while the same
   expression as the result is accepted.
-- **D3.** Every family in a `mutual` block must have the same sort, kind and
-  scope included (`InductiveChecks.scala:485`). `kernel.md` documents it; the
-  spec only says a sibling is read by its declared classifier.
+- **D3. Decided 2026-09-29: drop the rule, as S10.** Every family in a `mutual`
+  block must have the same sort, kind and scope included
+  (`MutualBlockSortMismatch`). The rule predates Lemur, when a sort was a level
+  (Lean's one-universe rule, which serves Lean's single recursor; Raccoon has
+  none), and Lemur widened it silently. After S8 the scope part cannot fail. It
+  rejects a linear token family defined with an unrestricted factory of them
+  (`Factory | mk (make: Unit -> Tok)`) and a `Prop` sibling holding data, both
+  sound, and it preempts the per-field `KindExceeded`/`InductiveUniverseTooSmall`
+  that name the real problem where siblings hold each other.
 
 ## Fix plan
 
@@ -319,6 +326,18 @@ definition to any value outside every binder, so §9's list is unchanged. §3.2
 says so. Tests: against a sealed module whose protocol is "every handle it opens
 is closed", `{ openFile(Unit.unit) }` and a result that is a linear closure are
 rejected, and `{ closeFile(openFile(Unit.unit)) }` is accepted.
+
+### S10. Mutual siblings at their own sorts (D3)
+
+Delete the block-wide sort equality and `MutualBlockSortMismatch`: each family
+is checked against its own declared sort, and a sibling is read by its declared
+classifier, as §5.1 already says. Audit everything block-wide for a silent
+assumption that siblings share a sort (proof reconstruction and the `Prop`
+elimination rule for a `Prop` sibling that holds data, struct-eta eligibility,
+termination across a mixed block, packed layouts), with a test for each.
+Tests: a linear `Tok` with an unrestricted `Factory` of them, and a `Tree : Type`
+with a `Balanced : Prop` holding a `Tree`, are accepted; siblings holding each
+other at different kinds or levels get the per-field diagnostic.
 
 ### S7b. Elaborator field resolution and pattern spans (F11, F14)
 
