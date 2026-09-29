@@ -304,12 +304,20 @@ The ledger checks the residual of each tracked binder's extent once that
 extent has checked. It counts uses along every path that takes one branch at
 each `match`, and a use is any occurrence of the local. A match's scrutinee and
 motive lie on every path through it; a match with no branch ends every path
-through it, so it uses every linear local live at it. A lambda's body lies on
-the paths at the lambda's position, so a use of a captured local inside a
-lambda is one use, by the lambda, there, and the lambda uses it on every path
-through its body or on none. Such a lambda is itself linear, since it captures
-a local of a linear type, and is tracked like any linear value: applying it is
-its use. A lambda's `decreases` clause is not in its body and is not a use.
+through it, so it uses every linear local live at it, and nothing after it
+lies on those paths. A lambda or function type is a path boundary: its body
+runs only when it is applied, so a path through its body neither continues nor
+ends a path around it. One whose cached references do not mention the local is
+no use and is not walked. One that does is one use, by the lambda, at its
+position, and its body must use the local exactly once on every path through
+it, where a match with no branch ends a path as anywhere else. A term's paths
+are summarized by whether one continues unused, the first use on a path that
+continues, the first use on any path and the first second use, so a use on a
+path that a match with no branch ends is never counted against a use after
+that match. A lambda that uses a captured local is itself linear, since it
+captures a local of a linear type, and is tracked like any linear value:
+applying it is its use. A lambda's `decreases` clause is not in its body and is
+not a use.
 
 A second use on some path is `LinearReused`, located at that use; otherwise no
 use on some path is `LinearUnused`, located at the binder. So matching a

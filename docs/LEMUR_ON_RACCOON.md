@@ -356,15 +356,21 @@ is therefore `TypeMismatch`.
 **3.2 The ledger.** A local of linear type is used exactly once within the
 extent of its binder, whether a lambda, a definition's parameters, a `let` or
 a match pattern binds it, `_` included. Uses are counted along each path
-through that extent that takes one branch at every `match`. A lambda's body
-lies on those paths at the lambda's position, so a closure that uses a
-captured linear local must use it on every path through its body. A use is any
+through that extent that takes one branch at every `match`. A use is any
 occurrence.
+
+The body of a lambda or function type runs only when it is applied, if ever,
+so it is not on those paths. A lambda that mentions the local is one use of
+it, at the lambda's position (§3.3), and one that does not is none. A closure
+that uses a captured linear local must use it exactly once along every path
+through its body, counted the same way.
 
 No use on some path is `LinearUnused(x)`, which is also what a wildcard over a
 linear field reports. A second use on some path is `LinearReused(x)`. A match
-with no branch ends every path through it and so uses every linear local live
-at it; no evaluation reaches it.
+with no branch ends every path through it, since no evaluation reaches it. It
+uses every linear local live at it, and nothing after it lies on those paths.
+It ends only paths through the body it stands in: inside a lambda or function
+type, it ends none of the paths that enclose that lambda or function type.
 
 Whether a local is tracked is decided once, from its type as it reads at its
 binder. Refinement in a branch never changes that for a local bound outside the
