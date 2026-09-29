@@ -54,8 +54,9 @@ T1 subsumes nothing: a consistent axiom can still break T2–T4.
 
 **1.3 What stays checked.** Unchanged:
 
-- only a trusted prelude declares axioms, builtins, native operations and
-  native literal layouts (`UntrustedAxiom`, `ReservedKernelName`);
+- only a trusted prelude declares axioms and builtins (`UntrustedAxiom`,
+  `ReservedKernelName`), and only its declarations receive native operations
+  and native literal layouts;
 - a native literal layout refuses a sealed family;
 - no prelude declaration's type names an atom, since `LifetimeEscapes` already
   refuses a global whose type does. The bundled prelude's "every declaration at
