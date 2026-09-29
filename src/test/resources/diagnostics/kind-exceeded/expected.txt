@@ -1,0 +1,5 @@
+
+<root>/main.rac:2:7: error: Family Holder is declared at kind Kind.unr, which does not contain the kind k#N of field Holder.mk.held : A
+ | mk (held: A) : Holder(A)
+      ^^^^^^^^^
+note: in definition Holder

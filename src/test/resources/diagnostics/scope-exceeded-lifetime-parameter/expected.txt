@@ -1,0 +1,5 @@
+
+<root>/main.rac:1:15: error: Family Tok is declared at scope Lifetime.empty, which does not contain the scope l#N of lifetime parameter l, which a family at kind Kind.lin must name
+inductive Tok (l: Lifetime) : Type { kind = lin }
+              ^^^^^^^^^^^^^
+note: in definition Tok

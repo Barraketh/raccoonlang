@@ -31,7 +31,9 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
     typecheckDecls(
       "opaque def f (k: Kind)(S: Lifetime): Sort { level = succ(one), scope = S } := Type { kind = k, scope = S }\n"
     )
-    typecheckDecls("inductive Box {k: Kind}{S: Lifetime}(A: Type { kind = k, scope = S }) : Type\n | mk : Box(A)\n")
+    typecheckDecls(
+      "inductive Box {k: Kind}{S: Lifetime}(A: Type { kind = k, scope = S }) : Type { scope = S }\n | mk : Box(A)\n"
+    )
   }
 
   test("a family index cannot bind a kind or a lifetime") {
@@ -224,8 +226,10 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
     typecheckDecls(program("Type { kind = lin }"))
     typecheckDecls(program("Sort { level = succ(u), kind = k }"))
     typecheckDecls(program("Sort { level = max(u, one), kind = k }"))
-    expectOnly[LinearProp](typecheckDecls(program("Prop { kind = lin }")))
-    expectOnly[LinearProp](typecheckDecls(program("Sort { level = u, kind = k }")))
+    val zero = expectOnly[LinearProp](typecheckDecls(program("Prop { kind = lin }")))
+    assert(ErrorRendering.render(zero).contains("its level is zero"), ErrorRendering.render(zero))
+    val variable = expectOnly[LinearProp](typecheckDecls(program("Sort { level = u, kind = k }")))
+    assert(ErrorRendering.render(variable).contains("may be zero"), ErrorRendering.render(variable))
     expectOnly[LinearProp](typecheckDecls(program("Sort { level = u, kind = lin }")))
   }
 
