@@ -762,14 +762,14 @@ A library that needs a container of tokens declares its own.
   one non-dependent type omit `returning`. That would only relax this rule, so
   no program written under it would break.
 - **Residuals.** A residual carries a lambda's closure fields: written ones as
-  written, and derived ones as the kind and lifetime expressions that §4.3
-  derived. Those name only variables and atoms in the lambda's scope (§2.3),
-  with an atom written as its `scope` binder. Evaluation re-evaluates them in
-  the lambda's environment. Because sorts commute with substitution (§2.4),
-  that agrees with deriving them again. Implicit arguments stay out of
-  residuals and are re-derived from the arguments' types when a residual is
-  evaluated, as today. Exact sorts (§2.6) are what make that derivation agree
-  with checking.
+  written, and derived ones as the captures §4.3 derives them from. Evaluation
+  reads those captures in the lambda's environment and derives each field from
+  their values' types' sorts, exactly as §4.3 defines it. Because sorts commute
+  with substitution (§2.4), that agrees with what checking derived. A printed
+  residual shows a derived field as omitted, as it was written. Implicit
+  arguments stay out of residuals and are re-derived from the arguments' types
+  when a residual is evaluated, as today. Exact sorts (§2.6) are what make that
+  derivation agree with checking.
 - **Runtime.** The interpreter makes none of the checks of `scope`, sealing
   and linearity.
   - Lifetimes and kinds are never program data (§2.2). At run time they occur

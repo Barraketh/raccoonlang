@@ -83,8 +83,8 @@ class LeaseTests extends munit.FunSuite with TestSupport {
       val reevaluated = Interpreter.evalTerm(checked.residual, env)
       assertEquals(reevaluated.key, checked.value.key, caller)
       assert(ValueEquivalence.defEq(reevaluated, checked.value), caller)
-      // Evaluating the callback's residual re-derives its closure from its captures (asserted under keyAssertions) and
-      // gives the type checking the source gave.
+      // Evaluating the callback's residual derives its closure from the captures it carries, and gives the type
+      // checking the source gave.
       val callbackType = Interpreter.evalTerm(callbackResidual(checked), env).tpe
       val checkedType = TypeChecker.checkTerm(call.args.head, env).value.tpe
       assertEquals(callbackType.key, checkedType.key, caller)

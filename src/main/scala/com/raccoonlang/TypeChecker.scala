@@ -258,7 +258,8 @@ object TypeChecker {
     def written(field: CA.ClosureField, parameter: ParameterTpe): CA.ClosureField =
       field match {
         case CA.ClosureField.Written(term) => CA.ClosureField.Written(checkTerm(term, parameter, env).residual)
-        case _: CA.ClosureField.Derived    => wtf(s"The function type $pi has a derived closure field")
+        case CA.ClosureField.Omitted | _: CA.ClosureField.Derived =>
+          wtf(s"The function type $pi has an omitted closure field")
       }
     finishPi(
       telescope,
@@ -340,67 +341,35 @@ object TypeChecker {
   }
 
   /**
-   * A derived closure field as an expression (spec §8, G9): each variable or atom of the normal form is written as a
-   * local of `env` bound to exactly it. Only a header's, lambda's or function type's binder binds a kind or lifetime
-   * variable, and only a `scope` binder an atom, and each binds a local. A capture's type names only atoms whose
-   * `scope` encloses the lambda (spec §4.2), so every element has one; in a refined branch two locals may denote one
-   * element, and either is correct.
-   */
-  private def quoteParameter(vars: DepSet, form: CA.Form, env: Env, span: Span): CA.Term = {
-    val locals = env.locals.iterator.flatMap { case (ref, value) =>
-      val variable = value match {
-        case kind: Kind         => Kind.singleVariable(kind)
-        case lifetime: Lifetime => Lifetime.singleVariable(lifetime)
-        case _                  => None
-      }
-      variable.filter(vars.contains).map(_ -> ref)
-    }.toMap
-    val refs = Vector.newBuilder[CA.Term]
-    vars.foreach { id =>
-      refs += CA.Term.LocalRef(locals.getOrElse(id, wtf(s"No local binds the variable $id of a derived closure")), span)
-    }
-    refs.result().reduceLeft((acc, ref) => CA.Term.FormOp(form, Vector(acc, ref), span))
-  }
-
-  private def quoteKind(kind: Kind, env: Env, span: Span): CA.Term =
-    if (kind.isLin) CA.Term.FormOp(CA.Form.KindLin, Vector.empty, span)
-    else if (kind.isUnr) CA.Term.FormOp(CA.Form.KindUnr, Vector.empty, span)
-    else quoteParameter(kind.vars, CA.Form.KindJoin, env, span)
-
-  private def quoteLifetime(lifetime: Lifetime, env: Env, span: Span): CA.Term =
-    if (lifetime.isEmpty) CA.Term.FormOp(CA.Form.LifetimeEmpty, Vector.empty, span)
-    else quoteParameter(lifetime.vars, CA.Form.LifetimeUnion, env, span)
-
-  /**
-   * A lambda's closure is what it captures (spec §4.3): an omitted field is derived as the join of its captures' kinds
-   * or scopes, and a written one must contain that join, else `KindExceeded` or `ScopeExceeded` naming a capture it
-   * does not contain. Only the lambda and its captures' types decide it, never where the lambda stands.
+   * A lambda's closure is what it captures (spec §4.3). A written field must contain each capture's kind or scope, else
+   * `KindExceeded` or `ScopeExceeded` naming the capture. An omitted field is derived: the residual carries the
+   * captures it is derived from, and evaluating the residual derives it (spec §8), here as anywhere. Only the lambda
+   * and its captures' types decide it, never where the lambda stands.
    */
   private def checkLamClosure(l: CA.Term.Lam, env: Env): CA.Closure = {
     val captures = Interpreter.lambdaCaptures(l, env)
-    val (derivedKind, derivedScope) = Interpreter.derivedClosure(captures)
-    def part(capture: Interpreter.Capture): String = s"capture ${capture.ref.name} : ${capture.value.tpe}"
-    val kind = l.ty.closure.kind match {
-      case CA.ClosureField.Written(term) =>
-        val checked = checkTerm(term, KindTpe, env)
-        val written = Interpreter.getKind(checked.value)
-        captures.find(capture => !Kind.contains(written, capture.sort.kind)).foreach { capture =>
-          at(term.span) { fail(KindExceeded("Lambda", written, part(capture), capture.sort.kind)) }
-        }
-        CA.ClosureField.Written(checked.residual)
-      case _: CA.ClosureField.Derived => CA.ClosureField.Derived(Some(quoteKind(derivedKind, env, l.span)))
-    }
-    val scope = l.ty.closure.scope match {
-      case CA.ClosureField.Written(term) =>
-        val checked = checkTerm(term, LifetimeTpe, env)
-        val written = Interpreter.getLifetime(checked.value)
-        captures.find(capture => !Lifetime.contains(written, capture.sort.scope)).foreach { capture =>
-          at(term.span) { fail(ScopeExceeded("Lambda", written, part(capture), capture.sort.scope)) }
-        }
-        CA.ClosureField.Written(checked.residual)
-      case _: CA.ClosureField.Derived => CA.ClosureField.Derived(Some(quoteLifetime(derivedScope, env, l.span)))
-    }
-    CA.Closure(kind, scope)
+    def checkField[P <: Value](field: CA.ClosureField, part: Sorts.Field[P]): CA.ClosureField =
+      field match {
+        case CA.ClosureField.Written(term) =>
+          val checked = checkTerm(term, part.parameter, env)
+          val written = part.normalForm(checked.value)
+          captures.foreach { capture =>
+            Sorts.requireContains(
+              part,
+              "Lambda",
+              written,
+              s"capture ${capture.ref.name} : ${capture.value.tpe}",
+              part.of(capture.sort),
+              term.span
+            )
+          }
+          CA.ClosureField.Written(checked.residual)
+        // A capture whose field is least contributes nothing under any instantiation, so the residual leaves it out.
+        case CA.ClosureField.Omitted =>
+          CA.ClosureField.Derived(captures.filterNot(capture => part.isLeast(part.of(capture.sort))).map(_.ref))
+        case _: CA.ClosureField.Derived => wtf(s"The lambda ${l.name.getOrElse("fun")} was already checked")
+      }
+    CA.Closure(checkField(l.ty.closure.kind, Sorts.KindField), checkField(l.ty.closure.scope, Sorts.ScopeField))
   }
 
   /**
@@ -698,11 +667,12 @@ object TypeChecker {
         val checkedLevel = checkTerm(level, LevelTpe, env)
         val checkedKind = checkTerm(kind, KindTpe, env)
         val checkedScope = checkTerm(scope, LifetimeTpe, env)
-        val levelV = Interpreter.getLevel(checkedLevel.value)
-        val kindV = Interpreter.getKind(checkedKind.value)
-        if (!Sorts.admitsKind(levelV, kindV)) fail(LinearProp(kindV, levelV))
         CheckedTerm(
-          Interpreter.evalSort(checkedLevel.value, checkedKind.value, checkedScope.value),
+          Sorts.checkedSort(
+            Interpreter.getLevel(checkedLevel.value),
+            Interpreter.getKind(checkedKind.value),
+            Interpreter.getLifetime(checkedScope.value)
+          ),
           CA.Term.Sort(checkedLevel.residual, checkedKind.residual, checkedScope.residual, span)
         )
       case CA.Term.FormOp(form, args, span) =>
