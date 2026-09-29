@@ -60,6 +60,12 @@ class ClosureTests extends munit.FunSuite with TestSupport {
     )
   }
 
+  test("a lambda binds a parameter, so one with none is a parse error") {
+    typecheckDecls("def f : Nat -> Nat := fun (n: Nat): Nat => 0\n")
+    assertEquals(parseFailure("def f : Nat -> Nat := fun : Nat => 0\n"), "A lambda binds a parameter")
+    assertEquals(parseFailure("def f : Nat -> Nat := fun { kind = unr } : Nat => 0\n"), "A lambda binds a parameter")
+  }
+
   test("a function type's closure is part of its type, compared exactly") {
     def program(result: String): String =
       withFamilies(s"def f (l: Lifetime)(g: { scope = l } Unit -> Nat): $result := g\n")
@@ -69,6 +75,29 @@ class ClosureTests extends munit.FunSuite with TestSupport {
     expectOnly[TypeMismatch](typecheckDecls(program("{ kind = lin, scope = l } Unit -> Nat")))
     typecheckDecls("def f {k: Kind}(g: { kind = k } Unit -> Nat): { kind = k } Unit -> Nat := g\n")
     expectOnly[TypeMismatch](typecheckDecls("def f {k: Kind}(g: { kind = k } Unit -> Nat): Unit -> Nat := g\n"))
+  }
+
+  test("a mismatch between function types that differ in their closures names the closure fields that differ") {
+    def rendered(source: String): String = ErrorRendering.render(expectOnly[TypeMismatch](typecheckDecls(source)))
+
+    assertEquals(
+      rendered("def f (l: Lifetime)(g: { scope = l } Unit -> Nat): { kind = lin } Unit -> Nat := g\n"),
+      "type mismatch\n  expected: { kind = Kind.lin } Unit -> Nat\n  actual:   { scope = l } Unit -> Nat\n" +
+        "  closures differ in kind Kind.lin  vs  Kind.unr\n  closures differ in scope Lifetime.empty  vs  l"
+    )
+    // Inside a family instance, at the function types rather than at the instances' sorts.
+    assertEquals(
+      rendered("def f (l: Lifetime)(xs: List(({ scope = l } Unit -> Nat))): List((Unit -> Nat)) := xs\n"),
+      "type mismatch\n  expected: List(Unit -> Nat)\n  actual:   List({ scope = l } Unit -> Nat)\n" +
+        "  differ at: Unit -> Nat  vs  { scope = l } Unit -> Nat\n  closures differ in scope Lifetime.empty  vs  l"
+    )
+    // An implicit forced both by a closure and by a sort is read off the sort, so a lambda written without the closure
+    // its parameter declares is itself the mismatch, rather than the sort of whatever else the implicit governs.
+    assertEquals(
+      rendered("def f {S: Lifetime}(A: Type { scope = S }): BEq(A) := BEq.mk(fun (a: A)(b: A): Bool => Bool.true)\n"),
+      "type mismatch\n  expected: { scope = S } A -> A -> Bool\n  actual:   (a: A) -> (b: A) -> Bool\n" +
+        "  closures differ in scope S  vs  Lifetime.empty"
+    )
   }
 
   test("a function type's sort takes its closure's kind and adds its closure's scope") {

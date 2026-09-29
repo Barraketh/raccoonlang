@@ -75,8 +75,8 @@ Only the trusted prelude declares axioms. An `axiom` in any other module is
 `UntrustedAxiom`, whatever its type:
 
 ```raccoon
-axiom excludedMiddle (P: Prop): Or(P, Not(P))       -- UntrustedAxiom
-axiom eat {A: Type { kind = lin }}(x: A): Unit      -- UntrustedAxiom
+axiom excludedMiddle (P: Prop): Or(P, Not(P))       // UntrustedAxiom
+axiom eat {A: Type { kind = lin }}(x: A): Unit      // UntrustedAxiom
 ```
 
 No rule on an axiom's type could keep it from breaking sealing, linearity or
@@ -106,8 +106,9 @@ implementation operations; public prelude loaders only select a prelude for the
 staged pipeline.
 
 Identifiers begin with a letter and continue with letters, digits, or `_`.
-`_` binds an anonymous local wherever a local is bound: a binder, a pattern
-field, `let _ := e` or `scope _ => e`. No name refers to it.
+`//` starts a comment that runs to the end of the line. `_` binds an anonymous
+local wherever a local is bound: a binder, a pattern field, `let _ := e` or
+`scope _ => e`. No name refers to it.
 
 ## Universes
 
@@ -115,16 +116,16 @@ Types are terms. `Sort`, `Type` and `Prop` are the sort formers, and they are
 keywords:
 
 ```text
-Sort { level = e, kind = k, scope = S }   -- the sort at level e, kind k, scope S
-Type { kind = k, scope = S }              -- level is Level.one
-Prop { kind = k, scope = S }              -- level is Level.zero
+Sort { level = e, kind = k, scope = S }   // the sort at level e, kind k, scope S
+Type { kind = k, scope = S }              // level is Level.one
+Prop { kind = k, scope = S }              // level is Level.zero
 ```
 
 A sort has three parameters, supplied by name in any order: its `level`, its
 `kind`, which says how the values of its types may be used, and its `scope`, a
 lifetime: the set of atoms and lifetime variables its types' values may depend
 on (see [Scopes](#scopes)).
-`Sort` is not a function, so `Sort(u)` does not parse, and `Sort` requires its
+`Sort` is not a function: it always takes a field list, which must give its
 `level`. An omitted `kind` is `Kind.unr` and an omitted `scope` is
 `Lifetime.empty`; that is what the shorter spelling means. So `Type` is
 `Sort { level = Level.one, kind = Kind.unr, scope = Lifetime.empty }`. A field
@@ -237,7 +238,8 @@ not itself a proposition; it has type `Type`.
 
 ## Functions and binder groups
 
-Explicit parameters use parentheses. Lambdas include an explicit result type:
+Explicit parameters use parentheses. A lambda binds at least one parameter and
+writes its result type:
 
 ```raccoon
 def apply (f: Nat -> Nat)(x: Nat): Nat := f(x)
@@ -677,9 +679,9 @@ def first {A: Type}{B: Type}(p: Pair(A, B)): A := p.fst
 
 A struct declaration has exactly one constructor. Every named stored field
 gets a selector in the family namespace, so `p.fst` and `Pair.fst(p)` are the
-same ordinary function application. A selector is a match on its argument that
-returns the field, with the field's type as its `returning` clause. An `_`
-field remains stored but gets no selector.
+same ordinary function application. A selector is a match on its parameter
+`self` that returns the field, with the field's type as its `returning` clause.
+An `_` field remains stored but gets no selector.
 
 Structure eta is based on the checked family shape, not the `struct` keyword.
 Any non-Prop family instance is eta-eligible when it has exactly one
@@ -708,7 +710,7 @@ an unknown name. A value of a sealed family is therefore made and taken apart
 only by its module, which is what makes a capability confine anything:
 
 ```raccoon
--- Lease.rac
+// Lease.rac
 sealed inductive Lease (l: Lifetime) : Type { scope = l }
  | mk : Lease(l)
 
@@ -718,7 +720,13 @@ def withLease {k: Kind}{S: Lifetime}{A: Type { kind = k, scope = S }}{kf: Kind}{
 ```
 
 Another module calls `withLease(fun (l: Lifetime)(h: Lease(l)): Nat => 0)`, but
-`Lease.mk(l)` there is `SealedConstructor`.
+`Lease.mk(l)` there is `SealedConstructor`. `withLease` serves every callback:
+`A`, `k` and `S` are read off the callback's result type, and `kf` and `Sf` off
+its closure, so a callback that captures a token is linear and one that
+captures nothing is not. Since `A` is bound outside the callback's lifetime
+binder, a callback cannot return anything whose type names `l`, such as the
+lease itself: its result type depends on the binder, so `A` cannot be
+reconstructed. `examples/leases` is a runnable module and client that use it.
 
 An implicit parameter may be forced through a sealed constructor's field only
 inside the family's module; elsewhere it is `NonForcedImplicitParam`. The
@@ -732,7 +740,7 @@ eta and proof reconstruction apply to a sealed family as to any other, and open
 nothing its module did not build.
 
 ```raccoon
--- Permit.rac
+// Permit.rac
 sealed inductive Permit (l: Lifetime) : Prop
  | mk : Permit(l)
 

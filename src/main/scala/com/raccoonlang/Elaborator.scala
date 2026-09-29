@@ -333,8 +333,10 @@ object Elaborator {
     val fields = storedBinders.zipWithIndex.filter(_._1.name != "_")
     if (fields.isEmpty) return None
 
-    val usedNames = (header.binders ++ ctor.binders).map(_.name).toSet
-    val selfName = freshGeneratedName("__self", usedNames)
+    // The selector's parameter must not capture a name its header or result type mentions.
+    val binders = header.binders ++ ctor.binders
+    val usedNames = binders.map(_.name).toSet ++ binders.flatMap(binder => typeNames(binder.ty)) + header.name
+    val selfName = (Iterator.single("self") ++ Iterator.from(1).map(suffix => s"self$suffix")).find(!usedNames(_)).get
     val selfSpan = header.span
     // The generated self type supplies exactly the explicit family binders; implicit ones are
     // reconstructed by projection when the family application is checked.
@@ -403,11 +405,23 @@ object Elaborator {
     Some(SA.Command.Namespace(Vector(header.name), selectors, header.span))
   }
 
-  @tailrec
-  private def freshGeneratedName(base: String, used: Set[String], suffix: Int = 0): String = {
-    val candidate = if (suffix == 0) base else s"$base$suffix"
-    if (!used.contains(candidate)) candidate else freshGeneratedName(base, used, suffix + 1)
-  }
+  /** The names a term of the type grammar mentions, by the shapes `rewriteFieldType` walks. */
+  private def typeNames(term: SA.Term): Set[String] =
+    term match {
+      case SA.Term.Ident(name, _)     => Set(name)
+      case SA.Term.Select(base, _, _) => typeNames(base)
+      case SA.Term.App(fn, args, _)   => args.foldLeft(typeNames(fn))(_ | typeNames(_))
+      case SA.Term.Sort(level, kind, scope, _) =>
+        val written = level match {
+          case SA.Term.SortLevel.Written(written)             => Set(written)
+          case SA.Term.SortLevel.Zero | SA.Term.SortLevel.One => Set.empty
+        }
+        (written ++ kind ++ scope).flatMap(typeNames)
+      case SA.Term.Pi(closure, binders, body, _) =>
+        (closure.kind.toVector ++ closure.scope ++ binders.map(_.ty) :+ body).flatMap(typeNames).toSet ++
+          binders.map(_.name)
+      case _ => Set.empty
+    }
 
   // Rewrites the shapes the type grammar can produce (Ident/Select/App/Pi); anything else
   // cannot mention fields and passes through.

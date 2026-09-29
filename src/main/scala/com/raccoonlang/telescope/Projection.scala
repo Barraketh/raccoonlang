@@ -19,8 +19,8 @@ import scala.collection.mutable
  *     application, run-world residual evaluation, and check-world evaluation of checked syntax (match motives,
  *     termination measures, lambda-body quoting).
  *
- * Determinism: roots are tried leftmost-first and within a root in discovery order; the first path found for an
- * implicit wins everywhere (both worlds compile from the same telescope).
+ * Determinism: positions are visited breadth-first from the roots, leftmost root first, with closures last; the first
+ * path found for an implicit wins everywhere (both worlds compile from the same telescope).
  */
 object Projection {
 
@@ -135,6 +135,11 @@ object Projection {
     val demoted = mutable.Set.empty[Int]
     val solved = mutable.LinkedHashMap.empty[Int, (Int, Vector[Step])]
     val queue = mutable.ArrayDeque.empty[(Int, Vector[Step], Value)]
+    // A closure is read only once nothing else is left to visit. It is the one part of a function type that a lambda
+    // derives from its captures, so it is the part an argument most often gets wrong; an implicit read there would turn
+    // that into a mismatch wherever else the implicit occurs, while one read elsewhere leaves the argument's own check
+    // to report the closure.
+    val closures = mutable.ArrayDeque.empty[(Int, Vector[Step], Value)]
 
     def isRoot(idx: Int): Boolean = !binders(idx).isImplicit || demoted(idx)
 
@@ -209,8 +214,8 @@ object Projection {
                   queue.append((root, steps :+ Step.Tpe, p.tpe))
 
                 case pi: VPi =>
-                  queue.append((root, steps :+ Step.PiClosureKind, pi.closureKind))
-                  queue.append((root, steps :+ Step.PiClosureScope, pi.closureScope))
+                  closures.append((root, steps :+ Step.PiClosureKind, pi.closureKind))
+                  closures.append((root, steps :+ Step.PiClosureScope, pi.closureScope))
                   pi.binders.indices.foreach { idx =>
                     independentPiDomain(pi, idx).foreach { domain =>
                       queue.append((root, steps :+ Step.PiDomain(idx), domain))
@@ -232,8 +237,8 @@ object Projection {
     }
 
     def drain(): Unit =
-      while (queue.nonEmpty) {
-        val (root, steps, v) = queue.removeHead()
+      while (queue.nonEmpty || closures.nonEmpty) {
+        val (root, steps, v) = if (queue.nonEmpty) queue.removeHead() else closures.removeHead()
         visit(root, steps, v)
       }
 

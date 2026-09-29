@@ -215,6 +215,9 @@ object LanguageParser {
       strLitTerm |
       misplacedClosure
 
+  /** An application covers its head as well as its argument list, so a diagnostic about it underlines the call. */
+  private def applicationSpan(head: Term, arguments: Span): Span = arguments.copy(start = head.span.start)
+
   sealed trait TypeTrailer
   case class Dot(name: String, span: Span) extends TypeTrailer
   case class AppTrailer(args: Vector[Term], span: Span) extends TypeTrailer
@@ -228,7 +231,7 @@ object LanguageParser {
       trailers.foldLeft(ta) { case (curTerm, nextTrailer) =>
         nextTrailer match {
           case Dot(name, sp)        => Select(curTerm, name, sp)
-          case AppTrailer(args, sp) => App(curTerm, args, sp)
+          case AppTrailer(args, sp) => App(curTerm, args, applicationSpan(curTerm, sp))
         }
       }
     }
@@ -319,6 +322,7 @@ object LanguageParser {
     (kw("fun") ~/ (closureStart ~ closureFields).? ~ funcHeader ~ sym("=>") ~/ skipAllWs ~ term)
       .flatSpanned(sourceId)
       .map[SurfaceAst.Term] { case (written, header, body, span) =>
+        if (header.params.isEmpty) throw ParseError(header.span.start, header.span.start, "A lambda binds a parameter")
         Lam(written.getOrElse(Closure.omitted), header, body, span)
       }
 
@@ -364,7 +368,7 @@ object LanguageParser {
     ((lambda | scopeP | matchP | closedPi | body | simplePi | termAtom) ~ termTrailers).map { case (base, trailers) =>
       trailers.foldLeft(base) {
         case (cur, TermDot(name, sp)) => Select(cur, name, sp)
-        case (cur, TermApp(args, sp)) => App(cur, args, sp)
+        case (cur, TermApp(args, sp)) => App(cur, args, applicationSpan(cur, sp))
       }
     }
 
