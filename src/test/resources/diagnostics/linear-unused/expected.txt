@@ -1,0 +1,5 @@
+
+<root>/main.rac:7:32: error: t has a linear type, so it must be used exactly once, but some path does not use it
+def pick {l: Lifetime}(b: Bool)(t: Tok(l)): Nat := match b returning Nat with
+                               ^^^^^^^^^^^
+note: in definition pick

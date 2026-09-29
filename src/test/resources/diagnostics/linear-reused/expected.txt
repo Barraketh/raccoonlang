@@ -1,0 +1,5 @@
+
+<root>/main.rac:9:31: error: delayed has a linear type, so it must be used exactly once, but this is a second use on some path
+  Nat.add(delayed(Unit.unit), delayed(Unit.unit))
+                              ^^^^^^^
+note: in definition twice

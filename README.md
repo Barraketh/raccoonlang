@@ -25,6 +25,8 @@ Raccoon currently provides:
   declared kind and scope bound what their values hold;
 - `scope l => e`, which opens a fresh lifetime atom that no type may name
   outside it;
+- linear types: every local of a type whose kind is not `Kind.unr` is used
+  exactly once on every path through its scope;
 - dependent, exhaustive pattern matching with an explicit `returning` motive;
 - checking by synthesis and definitional equality: a term's type never depends
   on where it stands;

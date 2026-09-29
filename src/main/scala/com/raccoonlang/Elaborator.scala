@@ -249,25 +249,14 @@ object Elaborator {
       }
     }
 
-    def bindNamed(name: String, allowShadow: Boolean): (CA.LocalRef, ResolveEnv) =
-      if (reservedLocals.contains(name)) fail(AlreadyDefined(name))
+    /** `_` binds an anonymous local (spec §1): it has a ref, as every local does, but no name resolves to it. */
+    def bind(name: String, allowShadow: Boolean): (CA.LocalRef, ResolveEnv) =
+      if (name == "_") allocate(name)
+      else if (reservedLocals.contains(name)) fail(AlreadyDefined(name))
       else if (!allowShadow && scopes.head.contains(name)) fail(AlreadyDefined(name))
       else {
         val (ref, nextEnv) = allocate(name)
         (ref, nextEnv.copy(scopes = (scopes.head + (name -> ref)) :: scopes.tail))
-      }
-
-    def bind(name: String, allowShadow: Boolean = false): (Option[CA.LocalRef], ResolveEnv) =
-      if (name == "_") (None, this)
-      else {
-        val (ref, nextEnv) = bindNamed(name, allowShadow)
-        (Some(ref), nextEnv)
-      }
-
-    def bindRequired(name: String, span: Span, allowShadow: Boolean = false): (CA.LocalRef, ResolveEnv) =
-      bind(name, allowShadow) match {
-        case (Some(ref), nextEnv) => (ref, nextEnv)
-        case (None, _)            => at(span) { wtf("Anonymous binding is not supported here") }
       }
   }
 
@@ -560,9 +549,7 @@ object Elaborator {
 
   private def elabBinder(b: SA.Binder, site: CA.BinderSite, env: ResolveEnv): (CA.Binder, ResolveEnv) = {
     val ty = elabTerm(b.ty, env)
-    val (ref, nextEnv) =
-      if (b.name == "_") env.allocate(b.name)
-      else env.bindNamed(b.name, allowShadow = false)
+    val (ref, nextEnv) = env.bind(b.name, allowShadow = false)
     (CA.Binder(ref, ty, b.span, site, b.isImplicit), nextEnv)
   }
 
@@ -702,7 +689,7 @@ object Elaborator {
         case _ => at(l.span) { wtf("Lambda header must produce a function type") }
       }
     case SA.Term.Scope(name, body, span) =>
-      val (ref, bodyEnv) = env.enterLocalScope.bindNamed(name, allowShadow = false)
+      val (ref, bodyEnv) = env.enterLocalScope.bind(name, allowShadow = false)
       CA.Term.Scope(ref, elabTerm(body, bodyEnv), span)
     case b: SA.Term.Body =>
       val checkedLets = Vector.newBuilder[CA.Let]
@@ -715,7 +702,7 @@ object Elaborator {
           case SA.Term.LetStmt(l) =>
             val ty = l.ty.map(elabTerm(_, curEnv))
             val value = elabTerm(l.value, curEnv)
-            val (ref, nextEnv) = curEnv.bindRequired(l.name, l.span, allowShadow = true)
+            val (ref, nextEnv) = curEnv.bind(l.name, allowShadow = true)
             checkedLets += CA.Let(ref, ty, value, l.span)
             nextEnv
         }
@@ -728,8 +715,8 @@ object Elaborator {
         cases.map { c =>
           val caseEnv = env.enterLocalScope
           val (argRefs, bodyEnv) =
-            c.argNames.foldLeft((Vector.empty[Option[CA.LocalRef]], caseEnv)) { case ((curRefs, curEnv), argName) =>
-              val (ref, nextEnv) = curEnv.bind(argName)
+            c.argNames.foldLeft((Vector.empty[CA.LocalRef], caseEnv)) { case ((curRefs, curEnv), argName) =>
+              val (ref, nextEnv) = curEnv.bind(argName, allowShadow = false)
               (curRefs :+ ref, nextEnv)
             }
           val (ctorName, isFullyQualified) =

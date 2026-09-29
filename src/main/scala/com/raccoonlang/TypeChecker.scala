@@ -295,7 +295,17 @@ object TypeChecker {
     }
 
     val checkedRes = checkTerm(body.res, curEnv)
-    CheckedTerm(checkedRes.value, CA.Term.Body(checkedLets.result(), checkedRes.residual, body.span))
+    val lets = checkedLets.result()
+    // A let's extent is what follows it (spec §3.2).
+    lets.zipWithIndex.foreach { case (let, idx) =>
+      Ledger.requireUsedOnce(
+        let.localRef,
+        curEnv(let.localRef).tpe,
+        let.span,
+        lets.drop(idx + 1).flatMap(later => later.ty.toVector :+ later.value) :+ checkedRes.residual
+      )
+    }
+    CheckedTerm(checkedRes.value, CA.Term.Body(lets, checkedRes.residual, body.span))
   }
 
   /**
@@ -392,6 +402,20 @@ object TypeChecker {
     CA.Closure(kind, scope)
   }
 
+  /**
+   * A lambda's or definition's parameter's extent is what follows it: the later binders' types, the result type and the
+   * body (spec §3.2).
+   */
+  private def requireParametersUsedOnce(pi: CA.Term.Pi, bodyEnv: Env, body: CA.Term): Unit =
+    pi.binders.zipWithIndex.foreach { case (binder, idx) =>
+      Ledger.requireUsedOnce(
+        binder.localRef,
+        bodyEnv(binder.localRef).tpe,
+        binder.span,
+        pi.binders.drop(idx + 1).map(_.ty) :+ pi.out :+ body
+      )
+    }
+
   private def checkLam(l: CA.Term.Lam, env: Env): CheckedTerm = {
     val telescope = checkTelescope(l.ty, env, familyParams = 0)
     val checkedVpi = finishPi(telescope, checkLamClosure(l, env), l.ty.span, env)
@@ -414,6 +438,7 @@ object TypeChecker {
 
     val checkedBody = checkTerm(l.body, checkedVpi.outTy, recurEnv)
     assertNonRawRecursive(checkedBody.value)
+    requireParametersUsedOnce(checkedVpi.residual, bodyEnv, checkedBody.residual)
 
     val checkedLam =
       CA.Term.Lam(
@@ -468,6 +493,7 @@ object TypeChecker {
       }
       val checkedBody = checkTerm(definition.body, checkedPi.outTy, bodyEnv)
       assertNonRawRecursive(checkedBody.value)
+      requireParametersUsedOnce(checkedPi.residual, checkedPi.bodyEnv, checkedBody.residual)
       val residual = CA.Term.Lam(
         checkedPi.residual,
         checkedBody.residual,

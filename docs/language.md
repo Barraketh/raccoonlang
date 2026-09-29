@@ -90,7 +90,8 @@ implementation operations; public prelude loaders only select a prelude for the
 staged pipeline.
 
 Identifiers begin with a letter and continue with letters, digits, or `_`.
-`_` may be used for an anonymous binder or ignored pattern field.
+`_` binds an anonymous local wherever a local is bound: a binder, a pattern
+field, `let _ := e` or `scope _ => e`. No name refers to it.
 
 ## Universes
 
@@ -500,6 +501,67 @@ Elimination from `Prop` is restricted. A Prop-valued result is always allowed.
 A data-valued result is allowed only for an empty reachable constructor set or
 when the exact proposition determines every constructor field. See
 [Proofs and elimination](kernel.md#proofs-and-elimination).
+
+## Linear types
+
+A type is linear when its kind is not `Kind.unr`: a family declared at
+`Kind.lin`, or at a kind variable its instance makes linear; a function type
+whose closure kind is not `Kind.unr`; or a type variable whose sort's kind is
+not. A kind variable counts, since some instantiation makes it `Kind.lin`.
+Sorts and propositions are never linear. Values of a linear family are made by
+its constructors and consumed by `match`.
+
+Every local of linear type is used exactly once within its binder's extent,
+whether a lambda's or definition's parameter, a `let` or a pattern field binds
+it, `_` included. Uses are counted along each path that takes one branch at
+every `match`, and any occurrence is a use:
+
+```raccoon
+inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }
+ | mk : Tok(l)
+
+def eat {l: Lifetime}(t: Tok(l)): Nat := match t returning Nat with
+ | Tok.mk => 0
+
+def pick {l: Lifetime}(b: Bool)(t: Tok(l)): Nat := match b returning Nat with
+ | Bool.true => eat(t)
+ | Bool.false => Nat.succ(eat(t))
+```
+
+Leaving out `eat(t)` in one branch is `LinearUnused(t)`, reported at the
+binder, and `Nat.add(eat(t), eat(t))` is `LinearReused(t)`, reported at the
+second use. A path that reuses a local is reported as reused, even where
+another path leaves it unused. Matching a linear value consumes it, and its
+fields must each be used once in the branch, so a wildcard over a linear field
+is `LinearUnused`. A match with no branch ends every path through it and so
+uses every linear local still unused there. A `decreases` clause is not a use.
+Applying a struct selector to a linear value consumes the value.
+
+A lambda's body lies on the paths at the lambda's position: a use of an outer
+local inside a lambda is one use, by the lambda, and the lambda must use it on
+every path through its body. A lambda that captures a linear local is itself
+linear, its derived closure kind is `Kind.lin`, and writing it at `Kind.unr` is
+`KindExceeded`. A value of a linear function type is used by applying it, so
+it is applied exactly once.
+
+Binders are exact about kinds: `{A: Type}` accepts only unrestricted types and
+`{A: Type { kind = lin }}` only linear ones. A position that accepts both takes
+a kind variable, and a local whose type is at that variable is tracked, so the
+one definition consumes its argument in every instantiation:
+
+```raccoon
+def pass {k: Kind}{S: Lifetime}{A: Type { kind = k, scope = S }}(x: A): A := x
+
+def apply {kf: Kind}{Sf: Lifetime}(f: { kind = kf, scope = Sf } Unit -> Nat): Nat := f(Unit.unit)
+```
+
+`pass(3)` and `pass(t)` both check, as do `apply` of a lambda that captures a
+token and of one that captures nothing. A definition that drops or copies its
+argument exists only at `Kind.unr`.
+
+A global is never tracked, so a definition or opaque definition whose type is
+linear is `LinearGlobal`. A definition's own function type is unrestricted, so
+a definition that takes or returns tokens is an ordinary global.
 
 ## Recursive definitions
 

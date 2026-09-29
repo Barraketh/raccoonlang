@@ -205,14 +205,28 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
       motive = global("Even"),
       cases = Vector(
         CoreAst.Case("Even.zero", isFullyQualified = true, Vector.empty, global("evenWitness"), blockSpan),
-        CoreAst.Case("Even.succ", isFullyQualified = true, Vector(None), global("evenWitness"), blockSpan)
+        CoreAst.Case(
+          "Even.succ",
+          isFullyQualified = true,
+          Vector(CoreAst.LocalRef(1020, "_")),
+          global("evenWitness"),
+          blockSpan
+        )
       ),
       blockSpan
     )
     val oddMatch = CoreAst.Term.Match(
       global("oddWitness"),
       motive = global("Odd"),
-      cases = Vector(CoreAst.Case("Odd.succ", isFullyQualified = true, Vector(None), global("oddWitness"), blockSpan)),
+      cases = Vector(
+        CoreAst.Case(
+          "Odd.succ",
+          isFullyQualified = true,
+          Vector(CoreAst.LocalRef(1021, "_")),
+          global("oddWitness"),
+          blockSpan
+        )
+      ),
       blockSpan
     )
     TypeChecker.checkTerm(evenMatch, matchEnv)

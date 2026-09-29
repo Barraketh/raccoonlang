@@ -278,6 +278,44 @@ variable by a binder's (see
 [Universes and function types](#universes-and-function-types)): a capture's
 type names only atoms whose `scope` encloses the lambda.
 
+## Linearity
+
+A type is linear when its kind is not `Kind.unr`: `Kind.lin`, or a kind
+involving a variable, which some instantiation makes `Kind.lin`. A function
+type's kind is its closure kind, and any other type's is its sort's, so a
+family instance is linear when its declared kind under its arguments is, and a
+type variable when the sort its type states is. Sorts and propositions are at
+`Kind.unr`. One function decides it, and every linearity rule asks it.
+
+Every local of linear type is used exactly once within the extent of its
+binder. The binders are a lambda's or definition's parameters, whose extent is
+the later binders' types, the result type and the body; a `let`, whose extent
+is the rest of its block; and a pattern field, whose extent is its branch. A
+pattern binds a local for every field, a `_` an anonymous one no name resolves
+to, and so does `let _`. Whether a local is tracked is decided once, from its
+type at its binder, so refinement never changes it. Globals are never tracked,
+so a definition or opaque definition whose type is linear is `LinearGlobal`.
+
+The ledger checks the residual of each tracked binder's extent once that
+extent has checked. It counts uses along every path that takes one branch at
+each `match`, and a use is any occurrence of the local. A match's scrutinee and
+motive lie on every path through it; a match with no branch ends every path
+through it, so it uses every linear local live at it. A lambda's body lies on
+the paths at the lambda's position, so a use of a captured local inside a
+lambda is one use, by the lambda, there, and the lambda uses it on every path
+through its body or on none. Such a lambda is itself linear, since it captures
+a local of a linear type, and is tracked like any linear value: applying it is
+its use. A lambda's `decreases` clause is not in its body and is not a use.
+
+A second use on some path is `LinearReused`, located at that use; otherwise no
+use on some path is `LinearUnused`, located at the binder. So matching a
+linear scrutinee consumes it once, and its fields are released to the ledger
+at the branch's extent, where a wildcard over a linear field is
+`LinearUnused`. A struct selector is a definition whose body is a match, so
+applying one to a linear value is that value's use. The ledger is one walk,
+an exhaustive match over Core terms with no wildcard arm, and runs only for a
+binder of linear type. Evaluation makes none of its checks.
+
 ## Inductives and matching
 
 An inductive declaration is installed only after checking:
@@ -609,3 +647,8 @@ Changes to the checker or evaluator must preserve these rules:
     node identity, in checking and evaluation alike. It is never refinable and
     never abstracted, and no type the checker synthesizes, checks against or
     binds names it outside its `scope`; evaluation never checks this.
+21. A type is linear exactly when its kind is not `Kind.unr`, and one function
+    decides it. Every local bound at a linear type by a lambda, a definition's
+    parameters, a `let` or a pattern, `_` included, is used exactly once on
+    every path through its binder's checked extent, and no global has a linear
+    type.

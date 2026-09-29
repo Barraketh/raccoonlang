@@ -508,11 +508,8 @@ object Interpreter {
     // against that constructor's arity.
     if (args.length != branch.argRefs.length)
       wtf(s"Checked branch for ${branch.ctorName} binds ${branch.argRefs.length} fields, got ${args.length}")
-    val newEnv = args.zip(branch.argRefs).foldLeft(env) { case (curEnv, (argV, argRef)) =>
-      argRef match {
-        case Some(ref) => curEnv.putLocal(ref, Value.canonicalizeProof(argV))
-        case None      => curEnv
-      }
+    val newEnv = args.zip(branch.argRefs).foldLeft(env) { case (curEnv, (argV, ref)) =>
+      curEnv.putLocal(ref, Value.canonicalizeProof(argV))
     }
     evalTerm(branch.body, newEnv)
   }
@@ -568,6 +565,8 @@ object Interpreter {
 
               case CoreAst.ConstBody.TermBody(term) =>
                 val checkedTy = TypeChecker.checkDeclType(ty, env).value
+                // A global is never tracked, so none may be linear (spec §3.2).
+                if (Linearity.isLinear(checkedTy)) at(ty.span)(fail(LinearGlobal(name, checkedTy)))
                 val checked = TypeChecker.checkTerm(term, checkedTy, env)
                 val value = if (isOpaque) VConst(name, Symbol, checkedTy) else checked.value
                 val published =

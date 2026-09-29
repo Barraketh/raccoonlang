@@ -347,11 +347,12 @@ object CoreAst {
   }
 
   // `isFullyQualified` records how the source wrote the constructor name; match checking resolves
-  // it to the canonical name, after which the flag is no longer consulted.
+  // it to the canonical name, after which the flag is no longer consulted. A pattern binds a local for every field, a
+  // `_` an anonymous one.
   final case class Case(
       ctorName: String,
       isFullyQualified: Boolean,
-      argRefs: Vector[Option[LocalRef]],
+      argRefs: Vector[LocalRef],
       body: Term,
       span: Span
   )
