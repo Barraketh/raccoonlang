@@ -16,7 +16,8 @@ final case class EqStore(subst: Map[VarId, Value], refinable: DepSet) {
 
   def isRefinable(id: VarId): Boolean = refinable.contains(id)
 
-  def allow(ids: DepSet): EqStore = copy(refinable = refinable ++ ids)
+  /** Make `ids` refinable, except the atoms among them: an atom is not a variable and is never linked (spec §6.2). */
+  def allow(ids: DepSet): EqStore = copy(refinable = refinable ++ (ids -- Atoms.all))
 
   /**
    * Make `ids` refinable, expanding structure eta at the boundary. This is the one entry point through which match

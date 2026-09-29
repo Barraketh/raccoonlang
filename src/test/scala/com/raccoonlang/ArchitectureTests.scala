@@ -40,6 +40,16 @@ class ArchitectureTests extends munit.FunSuite {
       Set("Value.scala", "Interpreter.scala")
     ),
     Rule(
+      "an atom's confinement is one test, TypeChecker.requireInScope, the only place LifetimeEscapes is raised",
+      raw"\bLifetimeEscapes\(".r,
+      Set("TypeChecker.scala", "Errors.scala", "ErrorRendering.scala")
+    ),
+    Rule(
+      "only the checker confines atoms, at its choke points; evaluation never does",
+      raw"\brequireInScope\(".r,
+      Set("TypeChecker.scala", "MatchChecker.scala")
+    ),
+    Rule(
       "checking is synthesis plus equality: only TypeChecker.check takes an optional expected type",
       raw"\bexpected\w*\s*:\s*Option\[".r,
       Set("TypeChecker.scala")

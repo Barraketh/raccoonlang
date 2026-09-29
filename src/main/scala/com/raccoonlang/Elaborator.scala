@@ -701,6 +701,9 @@ object Elaborator {
           elabLam(pi, header.bodyEnv, l.body, None, None, l.span)
         case _ => at(l.span) { wtf("Lambda header must produce a function type") }
       }
+    case SA.Term.Scope(name, body, span) =>
+      val (ref, bodyEnv) = env.enterLocalScope.bindNamed(name, allowShadow = false)
+      CA.Term.Scope(ref, elabTerm(body, bodyEnv), span)
     case b: SA.Term.Body =>
       val checkedLets = Vector.newBuilder[CA.Let]
       val startEnv = env.enterOpenScope

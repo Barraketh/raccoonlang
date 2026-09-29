@@ -1,5 +1,5 @@
 
-<root>/main.rac:8:16: error: Lambda is declared at kind Kind.unr, which does not contain the kind Kind.lin of capture t : Tok(l#N)
+<root>/main.rac:8:16: error: Lambda is declared at kind Kind.unr, which does not contain the kind Kind.lin of capture t : Tok(l)
   fun { kind = unr, scope = l } (u: Unit): Nat => eat(t)
                ^^^
 note: in definition delay
