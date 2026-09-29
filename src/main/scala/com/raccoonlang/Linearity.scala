@@ -1,6 +1,6 @@
 package com.raccoonlang
 
-import com.raccoonlang.Value.{Kind, Large, SortParameter, VPi, VSort}
+import com.raccoonlang.Value.{Kind, VPi, VSort}
 
 /**
  * Which types are linear (spec §3.1): the one answer, read off a type's sort as its scope is, never off a family's
@@ -18,11 +18,6 @@ object Linearity {
     Kind.anyNonUnr && (tpe match {
       case pi: VPi  => !pi.closureKind.isUnr
       case _: VSort => false
-      case other =>
-        other.tpe match {
-          case sort: VSort           => !sort.kind.isUnr
-          case Large | SortParameter => false
-          case classifier            => wtf(s"The type $other is classified by $classifier, which is no classifier")
-        }
+      case other    => Sorts.sortOf(other).exists(!_.kind.isUnr)
     })
 }

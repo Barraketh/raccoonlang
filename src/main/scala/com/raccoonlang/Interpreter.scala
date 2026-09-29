@@ -203,26 +203,16 @@ object Interpreter {
   private[raccoonlang] final case class Capture(ref: CoreAst.LocalRef, value: Value, sort: VSort)
 
   /**
-   * What a captured local contributes to its lambda's closure (spec §4.3): the sort of its type. A variable of a sort
-   * parameter is not a value and contributes nothing. Neither does a recursive definition's reference to itself, the
-   * one local whose type may be large: it names a global, which a lambda does not capture (spec §3.3).
-   */
-  private def captureSort(ref: CoreAst.LocalRef, value: Value): Option[VSort] =
-    value.tpe.tpe match {
-      case sort: VSort           => Some(sort)
-      case Large | SortParameter => None
-      case other                 => wtf(s"Captured local ${ref.name} has the type ${value.tpe} : $other")
-    }
-
-  /**
-   * The locals a lambda captures (spec §4.3): those bound outside it, in `env`, that its body mentions. The binder
-   * types and result are not the body, and implicit arguments are never written, so neither contributes. The residual
-   * lists them, in ref id order.
+   * The locals a lambda captures (spec §4.3): those bound outside it, in `env`, that its body mentions, each
+   * contributing the sort of its type. The binder types and result are not the body, and implicit arguments are never
+   * written, so neither contributes. A variable of a sort parameter is not a value and contributes nothing. Neither
+   * does a recursive definition's reference to itself, the one local whose type may be large: it names a global, which
+   * a lambda does not capture (spec §3.3). The residual lists them, in ref id order.
    */
   private[raccoonlang] def lambdaCaptures(l: CTerm.Lam, env: Env): Vector[Capture] =
     l.bodyRefs.toVector
       .sortBy(_.id)
-      .flatMap(ref => env.locals.get(ref).flatMap(value => captureSort(ref, value).map(Capture(ref, value, _))))
+      .flatMap(ref => env.locals.get(ref).flatMap(value => Sorts.sortOf(value.tpe).map(Capture(ref, value, _))))
 
   /**
    * A lambda's derived closure field (spec §4.3): the join of that field of its captures' sorts, read in `env`, where
@@ -231,7 +221,8 @@ object Interpreter {
    */
   private def derivedField[P <: Value](field: Sorts.Field[P], captures: Vector[CoreAst.LocalRef], env: Env): P =
     field.join(captures.flatMap { ref =>
-      captureSort(ref, env.locals.getOrElse(ref, wtf(s"The derived closure's capture ${ref.name} is unbound")))
+      Sorts
+        .sortOf(env.locals.getOrElse(ref, wtf(s"The derived closure's capture ${ref.name} is unbound")).tpe)
         .map(field.of)
     })
 
