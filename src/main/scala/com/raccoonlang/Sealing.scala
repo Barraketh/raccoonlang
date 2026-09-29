@@ -5,8 +5,9 @@ package com.raccoonlang
  * constructors and selectors only to its module, the `.rac` file that declares it. Sealing restricts what a program may
  * write, never what the checker knows (§7.2): kinds, scopes, coverage, apartness and conversion read the full
  * declaration everywhere, and evaluation compares no module. A seal shapes no value: structure eta and proof
- * reconstruction apply to a sealed family as to any other, since only the trusted prelude declares axioms and the
- * bundled one declares no sealed family (§7.3), so every value of one was built from its constructors.
+ * reconstruction apply to a sealed family as to any other, since only the trusted prelude declares axioms and builtins,
+ * and none of them yields a value of a sealed family except by applying its constructors (obligation T2,
+ * docs/kernel.md), so every value of one was built from its constructors.
  *
  * `accessible` is the one decision. The checker asks it where a name is resolved to a constructor or selector (a global
  * reference, a selected field) and for a match's scrutinee family, which also covers a case's `.short` form, since that

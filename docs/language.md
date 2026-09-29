@@ -85,7 +85,10 @@ a consistent one could consume a token without its module or equate two
 lifetimes. A program that needs an assumption declares it in a custom prelude
 instead, a copy of the bundled `Init/Prelude.rac` with the axiom added, and
 runs with `--prelude <file>`. That makes the extension of the trusted base
-explicit. The bundled prelude's axioms are `Quot` and `Quot.sound`.
+explicit, and the prelude's axioms and builtins keep the obligations of the
+[trusted bootstrap](kernel.md#trusted-bootstrap-and-native-values). Its other
+declarations are checked as in any module. The bundled prelude's axioms are
+`Quot` and `Quot.sound`.
 
 `:= builtin` is reserved for declarations in the trusted prelude. Ordinary
 programs cannot acquire builtin behavior.
@@ -751,9 +754,11 @@ an implicit argument the checker reconstructs may be a sealed constructor
 application.
 
 Every value of a sealed family comes from its constructors, since only the
-trusted prelude declares axioms and it declares no sealed family. So structure
-eta and proof reconstruction apply to a sealed family as to any other, and open
-nothing its module did not build.
+trusted prelude declares axioms and builtins, and none of them yields a value
+of a sealed family except by applying its constructors (obligation T2 of the
+[trusted bootstrap](kernel.md#trusted-bootstrap-and-native-values)). So
+structure eta and proof reconstruction apply to a sealed family as to any
+other, and open nothing its module did not build.
 
 ```raccoon
 // Permit.rac
@@ -875,9 +880,9 @@ def Eq.subst {u: Level}{S: Lifetime}{Sm: Lifetime}{Sc: Lifetime}
 So for a family `W (l: Lifetime) : Type { scope = l }`, `List(W(l))` is at
 `Type { scope = l }`, `Eq(W(l), a, b)` is at `Prop { scope = l }`, and a lambda
 passed to `List.map` may capture a `W(l)`. A family declares the union of its
-parameters' scopes, as `Prod` declares `scope = union(S, T)`. The prelude
-declares nothing at a kind other than `Kind.unr` and no kind variable, and every
-declaration is at `Lifetime.empty`, a lifetime variable, or a union of them.
+parameters' scopes, as `Prod` declares `scope = union(S, T)`. No global's type
+names an atom, so every prelude declaration is at `Lifetime.empty`, a lifetime
+variable, or a union of them.
 
 A family's function-typed field cannot have a closure-scope variable of its
 own, since nothing in an instance's type would force it. It takes the family's

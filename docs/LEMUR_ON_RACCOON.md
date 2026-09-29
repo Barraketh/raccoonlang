@@ -446,8 +446,9 @@ instantiations alike. The same holds for a function-typed parameter at a
 kind variable, `(f: { kind = kf } A -> B)`: a lambda of either kind may be
 passed, and the definition applies `f` once. A definition that must drop or
 copy its `A`-typed arguments exists only at `Kind.unr`. This is a deliberate
-cost: the intended linear families are tokens, not containers, and the prelude
-has no kind variables (§7.3).
+cost: the intended linear families are tokens, not containers. A prelude's
+kind-polymorphic declarations are checked like any module's; only its trusted
+surface carries obligations (§7.3).
 
 **3.5 Constructors and selectors.** A constructor application whose family
 instance is linear is itself linear. It is consumed by `match`, which releases
@@ -703,9 +704,8 @@ Elsewhere the implicit is `NonForcedImplicitParam`, since reconstructing it
 would read the field.
 
 Every value of a sealed family comes from its constructors, because only the
-trusted prelude declares axioms, and the bundled prelude declares no sealed
-family (§7.3). A custom prelude is part of the trusted base, so this holds only
-if it keeps to the same rule. A
+trusted prelude declares axioms and builtins, and none of them yields a value
+of a sealed family except by applying its constructors (obligation T2, §7.3). A
 neutral of a sealed family is a parameter that a caller supplied, a blocked
 computation, or an opaque definition whose checked body built it. So structure
 eta and proof reconstruction apply to sealed families as to any other, and open
@@ -740,14 +740,20 @@ break an abstraction:
 So sealing, linearity and confinement hold unconditionally, relative to the one
 audited prelude. An axiom's result is a neutral, and it never runs.
 
-The bundled prelude:
-- declares no sealed family;
-- declares no family, closure or sort at a kind other than `Kind.unr`, and no
-  kind variable;
-- puts every declaration at scope `Lifetime.empty`, or at a lifetime variable
-  or a union of lifetime variables.
+A prelude's trust covers only what the kernel does not check: its axioms,
+builtins, native operations and native literal layouts. On that surface a
+trusted prelude, bundled or custom, keeps the obligations T1 to T5 of the
+kernel reference (Trusted bootstrap and native values), which are audited, not
+checked: consistency, sealing, linearity, lifetimes and native equations. Each
+example above breaks one of them: `eat` linearity (T3), `forge` sealing (T2)
+and `pairEq` lifetimes (T4). Every other prelude declaration is checked as one
+in any module, so a prelude may declare a linear, kind-polymorphic or sealed
+family. No global's type names an atom (`LifetimeEscapes`), so every prelude
+declaration is at `Lifetime.empty`, a lifetime variable or a union of them, as
+a consequence and not a rule.
 
-A library that needs a container of tokens declares its own.
+The bundled prelude declares no sealed family. A library that needs a container
+of tokens declares its own.
 
 ## 8. Interactions
 

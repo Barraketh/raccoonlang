@@ -21,7 +21,9 @@ propositions before publication.
 The bundled source prelude is a trusted bootstrap. A prelude is still parsed,
 elaborated, and typechecked, but prelude loading alone may install builtin
 declarations and native equations, and declare axioms. Selecting `--prelude`
-therefore selects a different trusted bootstrap.
+therefore selects a different trusted bootstrap, which keeps the same audited
+obligations (see
+[Trusted bootstrap and native values](#trusted-bootstrap-and-native-values)).
 
 ## Equality and evidence
 
@@ -546,13 +548,16 @@ implicit may be a sealed constructor application: neither is written by the
 program that applies it.
 
 Structure eta and proof reconstruction apply to a sealed family as to any
-other. Only the trusted prelude declares axioms, and the bundled prelude
-declares no sealed family, so every value of a sealed family was built from its
-constructors: a neutral of one is a parameter a caller supplied, a blocked
-computation, or an opaque definition whose checked body built it. Eta and
-reconstruction therefore open nothing the module did not build. A match in the
-module opens a proof that a module function returned, although the function's
-body never runs, since the proof is reconstructed from its proposition.
+other. Only the trusted prelude declares axioms and builtins, and none of them
+yields a value of a sealed family except by applying its constructors
+(obligation T2, see
+[Trusted bootstrap and native values](#trusted-bootstrap-and-native-values)),
+so every value of a sealed family was built from its constructors: a neutral
+of one is a parameter a caller supplied, a blocked computation, or an opaque
+definition whose checked body built it. Eta and reconstruction therefore open
+nothing the module did not build. A match in the module opens a proof that a
+module function returned, although the function's body never runs, since the
+proof is reconstructed from its proposition.
 
 Sealing restricts what a program may write, not what the checker knows.
 Kinds, scopes, coverage, apartness and the conversion of values read the full
@@ -608,8 +613,8 @@ program that needs an assumption declares it in a custom prelude
 (`--prelude`), such as a copy of the bundled one with the axiom added;
 selecting it explicitly extends the trusted base. An axiom may introduce an
 arbitrary symbolic inhabitant. It is typechecked, but its consistency is the
-prelude's responsibility. Proof axioms still canonicalize according to their
-exact proposition; data axioms remain symbolic.
+prelude's responsibility (obligation T1). Proof axioms still canonicalize
+according to their exact proposition; data axioms remain symbolic.
 
 No rule on an axiom's type could make program axioms safe. An axiom can state
 `False`, from which every value follows, a token or an equation between
@@ -618,12 +623,10 @@ over a linear type consumes a token without its module, one at a sealed family
 yields a value its module never built, and an equation between two instances
 of a family at different lifetimes is irrefutable, since no two lifetimes are
 apart, yet refinement along it links a lifetime variable and lets a token leave
-its scope. So sealing, linearity and confinement hold unconditionally, relative
-to the audited prelude. The bundled prelude declares no sealed family, nothing
-at a kind other than `Kind.unr` and no kind variable, and puts every
-declaration at `Lifetime.empty` or at lifetime variables; `Quot` and
-`Quot.sound` bind lifetimes. A test walks every prelude declaration's type,
-axioms included, to keep it so.
+its scope. So these are obligations of the trusted bootstrap, T1 to T4 (see
+[Trusted bootstrap and native values](#trusted-bootstrap-and-native-values)),
+and sealing, linearity and confinement hold unconditionally, relative to an
+audited prelude that keeps them.
 
 The bundled quotient interface is the fixed non-inductive primitive surface:
 
@@ -648,6 +651,44 @@ eliminator.
 Only a trusted prelude may publish builtin declarations or native literal
 layouts, or declare an axiom. Ordinary modules cannot gain native semantics by
 declaring a reserved name.
+
+That privilege is the whole of a prelude's trust. Its axioms, builtins, native
+operations and native literal layouts are its trusted surface. Every other
+prelude declaration is checked exactly as one in any module, so a prelude may
+declare a linear, kind-polymorphic or sealed family as any module may. The
+trusted surface is not checked, so a trusted prelude, bundled or given with
+`--prelude`, keeps these obligations, which are audited:
+
+- **T1 Consistency.** The axioms are consistent with the kernel's rules.
+- **T2 Sealing.** No axiom or builtin yields a value of a sealed family except
+  by applying that family's constructors. Structure eta and proof
+  reconstruction apply to sealed families because of this (see
+  [Sealing](#sealing)).
+- **T3 Linearity.** A builtin uses each argument whose type is linear, or at a
+  kind variable, exactly once on every path. No axiom takes or yields such a
+  value, since an axiom has no body to account for it.
+- **T4 Lifetimes.** No axiom makes two distinct lifetimes, or two instances of
+  a family at distinct lifetime arguments, provably equal. No two lifetimes are
+  apart, so such an equation is consistent, yet refinement along it links a
+  lifetime variable and lets a token leave its scope.
+- **T5 Native equations.** Each native operation's declared body agrees with
+  its host equation (see [Natural numbers](#natural-numbers)).
+
+T1 subsumes nothing: a consistent axiom can still break T2 to T4.
+
+What the kernel can check about a prelude, it checks. Only a trusted prelude
+declares axioms, builtins, native operations and native literal layouts
+(`UntrustedAxiom`, `ReservedKernelName`). A native literal layout refuses a
+sealed family. No prelude declaration's type names an atom, since
+`LifetimeEscapes` refuses any global whose type does.
+
+A test keeps a golden inventory of the bundled prelude's trusted surface: every
+axiom and builtin with its declared type, every native operation, every native
+literal layout, and every sealed family. A change to any of them changes the
+golden file, and is reviewed against the obligations. The bundled prelude's
+axioms are `Quot` and `Quot.sound`, its builtins `Quot.mk`, `Quot.lift` and
+`Quot.ind`, its native operations the Nat ones listed below, and its one native
+literal layout `Nat`'s. It declares no sealed family.
 
 ### Natural numbers
 
@@ -676,9 +717,8 @@ An equation attaches only to the exact transparent lambda published under its
 canonical `Nat.*` name while a trusted prelude loads, after its two explicit
 Nat arguments and Nat/Bool result are validated. The declaration body is
 typechecked but not semantically recognized; agreement between that body and
-the host equation is part of the bootstrap trust assumption. Application never
-consults a global name registry, so later same-named source cannot acquire the
-equation.
+the host equation is obligation T5. Application never consults a global name
+registry, so later same-named source cannot acquire the equation.
 
 Subtraction truncates at zero. Division by zero returns zero, modulus by zero
 returns the dividend, and `pow(a, 0)` returns one. `pow` and nonzero
@@ -807,6 +847,6 @@ Changes to the checker or evaluator must preserve these rules:
     or selectors, matches on a value of it, or forces an implicit through its
     constructors' fields. Sealing never changes what conversion, coverage,
     apartness, structure eta or proof reconstruction decide.
-24. Only a trusted prelude declares axioms, and the bundled prelude declares
-    no sealed family, nothing at a kind other than `Kind.unr`, and no kind
-    variable.
+24. Only a trusted prelude declares axioms, builtins, native operations and
+    native literal layouts. That trusted surface keeps the audited obligations
+    T1 to T5; every other prelude declaration is checked as one in any module.

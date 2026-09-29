@@ -17,8 +17,8 @@ lazy val root = (project in file(".")).settings(
     "-Xfatal-warnings"
   ),
   Test / fork := true,
-  // Forked tests get their own JVM, so the diagnostic-snapshot regeneration switch has to be handed across.
-  Test / javaOptions ++= sys.props.get("raccoon.diagnostics.regenerate").map(v => s"-Draccoon.diagnostics.regenerate=$v"),
+  // Forked tests get their own JVM, so the golden-file regeneration switch has to be handed across.
+  Test / javaOptions ++= sys.props.get("raccoon.goldens.regenerate").map(v => s"-Draccoon.goldens.regenerate=$v"),
   libraryDependencies ++= Seq(
     "com.fasterxml.jackson.core" % "jackson-core" % jacksonVersion,
     "org.roaringbitmap" % "RoaringBitmap" % roaringBitmapVersion,
