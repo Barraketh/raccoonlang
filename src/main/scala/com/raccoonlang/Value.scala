@@ -201,8 +201,9 @@ object Value {
           }
         // Everything else is either leaf-like or reaches vars only through its type. Sorts are
         // excluded explicitly: the type of a sort at `u` is the sort at `u+1`, an infinite ascent with the same deps.
-        case _: VSort | Large | SortParameter | LevelTpe | _: Level | _: ConstructorHead =>
-        case other                                                                       => walk(other.tpe)
+        case _: VSort | Large | SortParameter | _: ParameterTpe | _: Level | _: Kind | _: Lifetime |
+            _: ConstructorHead =>
+        case other => walk(other.tpe)
       }
     }
 
@@ -228,12 +229,17 @@ object Value {
   }
 
   /**
-   * The sort parameter `Level` (spec §2.2). It is not a type: no sort contains it, so a level is bound only at a
-   * parameter site and stands only where a level is expected.
+   * A sort parameter: `Level`, `Kind` or `Lifetime` (spec §2.2). None is a type: no sort contains it, so a variable of
+   * one is bound only at the binder sites the checker admits, and an expression of one stands only where that parameter
+   * is expected.
    */
-  case object LevelTpe extends TopLevelValue {
-    override def tpe: Value = SortParameter
+  sealed trait ParameterTpe extends TopLevelValue {
+    final override def tpe: Value = SortParameter
   }
+
+  case object LevelTpe extends ParameterTpe
+  case object KindTpe extends ParameterTpe
+  case object LifetimeTpe extends ParameterTpe
 
   /**
    * The classifier of the sort parameters. It is not a sort, so nothing it classifies is a type; it classifies itself,
@@ -445,14 +451,103 @@ object Value {
   }
 
   /**
+   * A kind in normal form (spec §2.3): `Kind.lin`, or a set of kind variables, the empty set being `Kind.unr`. Built
+   * only by the constructors below, so structural equality is definitional equality and the set is canonical at birth.
+   */
+  final class Kind private (val isLin: Boolean, val vars: DepSet) extends Value {
+    override def tpe: Value = KindTpe
+    override def synDeps: DepSet = vars
+
+    def isUnr: Boolean = !isLin && vars.isEmpty
+
+    private val cachedHashCode: Int = 31 * vars.hashCode() + isLin.hashCode()
+
+    override def equals(obj: Any): Boolean =
+      obj match {
+        case other: Kind => cachedHashCode == other.cachedHashCode && isLin == other.isLin && vars == other.vars
+        case _           => false
+      }
+
+    override def hashCode(): Int = cachedHashCode
+  }
+
+  object Kind {
+    val unr: Kind = new Kind(isLin = false, DepSet.empty)
+    val lin: Kind = new Kind(isLin = true, DepSet.empty)
+
+    def variable(id: VarId): Kind = new Kind(isLin = false, DepSet(id))
+
+    /** `lin` absorbs, and otherwise the variable sets unite: `join(unr, k) = k`, `join(lin, k) = lin`. */
+    def join(kinds: Iterable[Kind]): Kind =
+      if (kinds.exists(_.isLin)) lin
+      else
+        kinds.foldLeft(unr) { (acc, k) =>
+          if (k.vars.isEmpty) acc else if (acc.vars.isEmpty) k else new Kind(isLin = false, acc.vars ++ k.vars)
+        }
+
+    /** `outer` contains `inner` when `outer` is `lin`, or `inner` is a set of variables each of which is in `outer`. */
+    def contains(outer: Kind, inner: Kind): Boolean =
+      outer.isLin || (!inner.isLin && (inner.vars -- outer.vars).isEmpty)
+
+    /** The kind variable this kind is exactly, as refinement and forcing recognize it. */
+    def singleVariable(k: Kind): Option[VarId] =
+      if (!k.isLin && k.vars.size == 1) Some(k.vars.max) else None
+  }
+
+  /**
+   * A lifetime in normal form (spec §2.3): the set of its lifetime variables, the empty set being `Lifetime.empty`.
+   * Built only by the constructors below, so structural equality is definitional equality and the set is canonical at
+   * birth.
+   */
+  final class Lifetime private (val vars: DepSet) extends Value {
+    override def tpe: Value = LifetimeTpe
+    override def synDeps: DepSet = vars
+
+    def isEmpty: Boolean = vars.isEmpty
+
+    private val cachedHashCode: Int = vars.hashCode()
+
+    override def equals(obj: Any): Boolean =
+      obj match {
+        case other: Lifetime => cachedHashCode == other.cachedHashCode && vars == other.vars
+        case _               => false
+      }
+
+    override def hashCode(): Int = cachedHashCode
+  }
+
+  object Lifetime {
+    val empty: Lifetime = new Lifetime(DepSet.empty)
+
+    def variable(id: VarId): Lifetime = new Lifetime(DepSet(id))
+
+    /** Set union: associative, commutative, idempotent, with `union(empty, x) = x`. */
+    def union(lifetimes: Iterable[Lifetime]): Lifetime =
+      lifetimes.foldLeft(empty) { (acc, l) =>
+        if (l.isEmpty) acc else if (acc.isEmpty) l else new Lifetime(acc.vars ++ l.vars)
+      }
+
+    /** `outer` contains `inner` when every element of `inner` is one of `outer`. */
+    def contains(outer: Lifetime, inner: Lifetime): Boolean = (inner.vars -- outer.vars).isEmpty
+
+    /** `l` less the variables `ids`: a function type's scope without the lifetimes its own group binds (spec §2.4). */
+    def less(l: Lifetime, ids: DepSet): Lifetime =
+      if (!l.vars.intersects(ids)) l else new Lifetime(l.vars -- ids)
+
+    /** The lifetime variable this lifetime is exactly, as refinement and forcing recognize it. */
+    def singleVariable(l: Lifetime): Option[VarId] =
+      if (l.vars.size == 1) Some(l.vars.max) else None
+  }
+
+  /**
    * A sort, built only by `Sorts`, which also answers every question about which sort it is. There is no extractor and
    * no structural equality: two sorts are compared only by conversion, so `==` on a sort is a kernel bug and throws
    * rather than silently answering false.
    */
-  final class VSort private[raccoonlang] (val level: Level) extends Classifier {
-    override def tpe: Value = Sorts.sort(Level.succ(level))
+  final class VSort private[raccoonlang] (val level: Level, val kind: Kind, val scope: Lifetime) extends Classifier {
+    override def tpe: Value = Sorts.sort(Level.succ(level), Kind.unr, scope)
 
-    override lazy val synDeps: DepSet = level.synDeps
+    override lazy val synDeps: DepSet = level.synDeps ++ kind.synDeps ++ scope.synDeps
 
     override def equals(obj: Any): Boolean = wtf(s"Sort $this compared structurally; compare sorts by conversion")
     override def hashCode(): Int = wtf(s"Sort $this hashed structurally; sorts are never collection keys")

@@ -11,10 +11,10 @@ import scala.collection.mutable
  *
  *   - `compile` pattern-matches the *evaluated* types of the non-implicit binders (as patterns over the implicits'
  *     fresh vars) and produces a per-implicit `Spec` — which provided argument to start from and the path to walk.
- *     Every position used is rigid (irreducible head applications, no-confusion constructor fields, sorts/levels, Pi
- *     domains), so following the same path on the actual arguments at any later time re-derives the value. Projection
- *     is a *choice*, not a proof: application checking re-verifies every argument against its instantiated binder type,
- *     so soundness never rests on injectivity of these positions.
+ *     Every position used is rigid (irreducible head applications, no-confusion constructor fields, sort fields and
+ *     levels, Pi domains), so following the same path on the actual arguments at any later time re-derives the value.
+ *     Projection is a *choice*, not a proof: application checking re-verifies every argument against its instantiated
+ *     binder type, so soundness never rests on injectivity of these positions.
  *   - `project` follows a Spec against actual argument values. It is the single implementation used by check-time
  *     application, run-world residual evaluation, and check-world evaluation of checked syntax (match motives,
  *     termination measures, lambda-body quoting).
@@ -38,6 +38,12 @@ object Projection {
 
     /** VSort -> its level. */
     case object SortLevel extends Step
+
+    /** VSort -> its kind; it recovers a kind variable only when the kind is exactly that variable. */
+    case object SortKind extends Step
+
+    /** VSort -> its scope; it recovers a lifetime variable only when the scope is exactly that variable. */
+    case object SortScope extends Step
 
     /** Level of the exact shape u + k -> u (single atom, no constant), mirroring unifyLevels. */
     final case class LevelOffset(k: Int) extends Step
@@ -95,7 +101,9 @@ object Projection {
         case Var(_, id, _) => Some(id)
         case level: Level =>
           Level.singleVariableOffset(level).collect { case (id, 0) => id }
-        case _ => None
+        case kind: Kind         => Kind.singleVariable(kind)
+        case lifetime: Lifetime => Lifetime.singleVariable(lifetime)
+        case _                  => None
       }
 
     val holeOfVar = mutable.Map.empty[VarId, Int]
@@ -169,6 +177,8 @@ object Projection {
               v match {
                 case sort: VSort =>
                   queue.append((root, steps :+ Step.SortLevel, sort.level))
+                  queue.append((root, steps :+ Step.SortKind, sort.kind))
+                  queue.append((root, steps :+ Step.SortScope, sort.scope))
 
                 case VCtor(head, stored, tpe) =>
                   if (head.noConfusion)
@@ -336,6 +346,18 @@ object Projection {
           case Step.SortLevel =>
             v match {
               case sort: VSort => Right(sort.level)
+              case other       => Left(s"expected a sort, got $other")
+            }
+
+          case Step.SortKind =>
+            v match {
+              case sort: VSort => Right(sort.kind)
+              case other       => Left(s"expected a sort, got $other")
+            }
+
+          case Step.SortScope =>
+            v match {
+              case sort: VSort => Right(sort.scope)
               case other       => Left(s"expected a sort, got $other")
             }
 

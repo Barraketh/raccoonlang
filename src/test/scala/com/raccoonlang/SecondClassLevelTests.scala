@@ -158,4 +158,11 @@ class SecondClassLevelTests extends munit.FunSuite with TestSupport {
     typecheckDecls(program("Nat"))
     expectOnly[NotAType](typecheckDecls(program("Nat.zero")))
   }
+
+  test("a let's annotation is a type") {
+    def program(annotation: String): String = s"def f (n: Nat): Nat := {\n  let m : $annotation := n\n  m\n}\n"
+
+    typecheckDecls(program("Nat"))
+    expectOnly[NotAType](typecheckDecls(program("Nat.zero")))
+  }
 }

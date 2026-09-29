@@ -98,23 +98,36 @@ Types are terms. `Sort`, `Type` and `Prop` are the sort formers, and they are
 keywords:
 
 ```text
-Sort { level = e }   -- the sort at level e
-Type                 -- Sort { level = Level.one }
-Prop                 -- Sort { level = Level.zero }
+Sort { level = e, kind = k, scope = S }   -- the sort at level e, kind k, scope S
+Type { kind = k, scope = S }              -- level is Level.one
+Prop { kind = k, scope = S }              -- level is Level.zero
 ```
 
-`Sort` is not a function, so `Sort(u)` does not parse. A sort takes its level
-as a named field. A field list is nonempty, and an unknown or repeated field is
-a parse error. `Type` and `Prop` fix the level, so a `level` field on either is
-a parse error too.
+A sort has three parameters, supplied by name in any order: its `level`, its
+`kind`, which says how the values of its types may be used, and its `scope`, a
+lifetime: the set of lifetime variables its types' values may depend on.
+`Sort` is not a function, so `Sort(u)` does not parse, and `Sort` requires its
+`level`. An omitted `kind` is `Kind.unr` and an omitted `scope` is
+`Lifetime.empty`; that is what the shorter spelling means. So `Type` is
+`Sort { level = Level.one, kind = Kind.unr, scope = Lifetime.empty }`. A field
+list is nonempty, and an unknown or repeated field is a parse error. `Type` and
+`Prop` fix the level, so a `level` field on either is a parse error too.
 
-A level is a level variable or one of the level forms `Level.zero`,
-`Level.one`, `Level.succ(e)`, `Level.max(e, e)` and `Level.imax(e, e)`. The
-forms belong to the language, not to the prelude: they are not functions, and
-`Level.succ` without its argument names nothing. A name in a `level` field
-resolves to a local first, then to one of the forms unqualified, and only then
-as usual. So `level = succ(u)` means `Level.succ(u)`, even inside
-`namespace Nat`:
+`Level`, `Kind` and `Lifetime` are the sort parameters. An expression of one is
+a variable or one of its forms:
+
+```text
+Level.zero  Level.one  Level.succ(e)  Level.max(e, e)  Level.imax(e, e)
+Kind.unr  Kind.lin  Kind.join(e, e)
+Lifetime.empty  Lifetime.union(e, e)
+```
+
+The forms belong to the language, not to the prelude: they are not functions,
+and `Level.succ` or `Lifetime.union` without its arguments names nothing. A
+name in a sort field resolves to a local first, then to one of that field's
+forms unqualified, and only then as usual. So `level = succ(u)` means
+`Level.succ(u)`, even inside `namespace Nat`, and `kind = lin` and
+`scope = union(a, b)` mean `Kind.lin` and `Lifetime.union(a, b)`:
 
 ```raccoon
 def id {u: Level}{A: Sort { level = u }}(x: A): A := x
@@ -122,27 +135,42 @@ def id {u: Level}{A: Sort { level = u }}(x: A): A := x
 inductive Box (u: Level)(A: Sort { level = u }) : Sort { level = u }
  | mk (value: A) : Box(u, A)
 
-def lift {u: Level}(A: Sort { level = succ(u) })(x: A): A := x
+def keep {k: Kind}{S: Lifetime}{A: Type { kind = k, scope = S }}(x: A): A := x
 ```
 
-Levels are second-class: they parameterize sorts, families and declarations,
-but `Level` is not a type, since no sort contains it. A position that requires
-a type rejects it with `NotAType`, so there is no `List(Level)`, no
-`Eq(Level, u, v)`, no constructor field or `let` holding a level, and no
+Kinds and lifetimes are normalized as they are built. A lifetime is a set:
+`union` is associative, commutative and idempotent, with `Lifetime.empty` as its
+identity. A kind is `Kind.lin` or a set of kind variables, the empty set being
+`Kind.unr`: `join` unites the sets, and `Kind.lin` absorbs. Two kinds or two
+lifetimes are equal exactly when their normal forms are.
+
+The sort parameters are second-class: they parameterize sorts, families and
+declarations, but none is a type, since no sort contains it. A position that
+requires a type rejects them with `NotAType`, so there is no `List(Level)`, no
+`Eq(Lifetime, a, b)`, no constructor field or `let` holding one, and no
 function returning one.
 
-A level variable is bound only by a declaration's header, the binders written
-before a definition's, opaque definition's or axiom's `:`, or by a family
-parameter. A family index, a constructor field, a function type and a lambda
-cannot bind one. A function type written after the `:` is an ordinary function
-type, so `axiom f : {u: Level} -> Sort { level = u } -> Nat` is `NotAType` and
-is written `axiom f {u: Level}(A: Sort { level = u }): Nat`.
+A variable of a sort parameter is bound only at these binders; anywhere else a
+binder's type must be a type:
 
-A level stands only at a parameter position: a sort's `level` field, or the
-argument at a binder of type `Level`, as in `Box(Level.one, Nat)`. Anywhere
-else, such as a `match` scrutinee, a block's result or an argument at an
-ordinary binder, it is `NotAType`. A term of another type at a parameter
-position, such as `Sort { level = Nat.zero }`, is `TypeMismatch`.
+| Binder | `Level` | `Kind` | `Lifetime` |
+|---|---|---|---|
+| a definition's, opaque definition's or axiom's header | yes | yes | yes |
+| a family parameter | yes | yes | yes |
+| a family index, a constructor field | no | no | no |
+| a function type or lambda binder | no | no | yes |
+
+A header is the binders written before a declaration's `:`. A function type
+written after the `:` is an ordinary function type, so
+`axiom f : {u: Level} -> Sort { level = u } -> Nat` is `NotAType` and is written
+`axiom f {u: Level}(A: Sort { level = u }): Nat`.
+
+An expression of a sort parameter stands only at a parameter position: a
+sort's field, or the argument at a binder of that parameter, as in
+`Box(Level.one, Nat)`. Anywhere else, such as a `match` scrutinee, a block's
+result or an argument at an ordinary binder, it is `NotAType`. A term of
+another type at a parameter position, such as `Sort { level = Nat.zero }` or
+`Type { scope = Kind.lin }`, is `TypeMismatch`.
 
 A function type that binds a level is *large*: no sort contains it, so a large
 type fits no position that requires a type. Only a declaration's own type can
@@ -150,11 +178,34 @@ be large, so a level-polymorphic declaration is used only applied. Naming one
 anywhere but as the head of an application is `NotAType`: `let f := id` is
 rejected, and `fun (x: Nat): Nat => id(x)` is written instead. A large function
 type whose result is a proposition is still a proposition, so a
-level-polymorphic lemma such as `Eq.symm` is a proof like any other.
+level-polymorphic lemma such as `Eq.symm` is a proof like any other. A kind or
+lifetime binder does not make a type large.
 
-Universes are not cumulative. A value in `Sort { level = u }` does not
-automatically fit a position expecting a larger sort. Universe expressions must
-be definitionally equal where types are compared.
+A sort's type is the sort one level up at the same scope and at `Kind.unr`:
+`Sort { level = u, kind = k, scope = S } : Sort { level = succ(u), scope = S }`.
+A function type's sort is at `Kind.unr`. Its level is computed as below, and
+its scope unites its binder types' scopes with its result's, less the
+lifetimes the function type binds itself, since the caller supplies them. So
+for a family `Lease (l: Lifetime) : Type { scope = l }`, `Lease(m) -> Nat` is at
+`Type { scope = m }`, and `(l: Lifetime) -> Lease(l) -> Nat` is at `Type`. A
+kind or lifetime binder contributes neither a level nor a scope.
+
+A sort whose kind is not `Kind.unr` must have a level that is never zero, else
+`LinearProp`, since proofs are unrestricted. So `Prop { kind = lin }` and
+`Sort { level = u, kind = k }` are rejected, and a kind-polymorphic sort is
+written `Type { kind = k }` or `Sort { level = succ(u), kind = k }`.
+
+Universes are not cumulative, and neither are kinds and scopes. A value in
+`Sort { level = u }` does not automatically fit a position expecting a larger
+sort, and a type at `Type { scope = S }` does not fit a position expecting
+`Type`. Sorts must be definitionally equal, level, kind and scope alike, where
+types are compared.
+
+A binder `{k: Kind}` or `{S: Lifetime}` is forced like any implicit: through a
+family parameter in a later explicit argument's type, or through a sort's
+field, which recovers a variable only when the field is exactly that variable.
+So `{S: Lifetime}{A: Type { scope = S }}(x: A)` forces `S`, while
+`{A: Type { scope = union(S, m) }}` does not.
 
 `Prop` is impredicative: a dependent function whose result is a proposition is
 itself a proposition regardless of the parameter universes. The sort `Prop` is
@@ -280,9 +331,9 @@ family parameters are not pattern fields.
 A `mutual` block may contain several inductive families or structures. The
 families are checked and published atomically; all sibling family heads are
 available while constructor fields and results are elaborated. They must share
-the same common parameter telescope and universe, as required by the trusted
-Core block. Generated structure selectors are declared immediately after the
-family block.
+the same common parameter telescope and sort, level, kind and scope alike, as
+required by the trusted Core block. Generated structure selectors are declared
+immediately after the family block.
 
 ## Pattern matching
 

@@ -16,8 +16,9 @@ The implementation favors:
 Raccoon currently provides:
 
 - dependent functions with forced implicit parameters;
-- `Prop`, `Type`, and `Sort { level = u }`, with universe levels as
-  second-class parameters of sorts, families and declarations;
+- `Prop`, `Type`, and `Sort { level = u, kind = k, scope = S }`, whose
+  universe levels, kinds and lifetimes are second-class parameters of sorts,
+  families and declarations, normalized and compared exactly;
 - strictly positive inductive families with parameters and indices;
 - dependent, exhaustive pattern matching with an explicit `returning` motive;
 - checking by synthesis and definitional equality: a term's type never depends

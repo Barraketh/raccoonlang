@@ -91,12 +91,15 @@ object CoreAst {
 
     final case class Body(lets: Vector[Let], res: Term, span: Span) extends Term
 
-    /** The sort at `level`. `Type` and `Prop` elaborate to it at `Level.one` and `Level.zero`. */
-    final case class Sort(level: Term, span: Span) extends Term
+    /**
+     * The sort at `level`, `kind` and `scope`. `Type` and `Prop` elaborate to it at `Level.one` and `Level.zero`, and
+     * an omitted `kind` or `scope` to `Kind.unr` or `Lifetime.empty`.
+     */
+    final case class Sort(level: Term, kind: Term, scope: Term, span: Span) extends Term
 
-    /** A level form applied to all of its arguments, as `Level.succ(u)`; a nullary form has none. */
-    final case class LevelOp(form: LevelForm, args: Vector[Term], span: Span) extends Term {
-      require(args.length == form.arity, s"Level.${form.name} takes ${form.arity} arguments")
+    /** A sort parameter's form applied to all of its arguments, as `Level.succ(u)`; a nullary form has none. */
+    final case class FormOp(form: Form, args: Vector[Term], span: Span) extends Term {
+      require(args.length == form.arity, s"${form.qualifiedName} takes ${form.arity} arguments")
     }
 
     // Lambda: fun (x : A): B => body
@@ -131,19 +134,55 @@ object CoreAst {
   }
 
   /**
-   * The level forms. They are forms of the language, not functions: the kernel owns them, no declaration introduces
-   * them, and one is only ever written applied to all of its arguments.
+   * The sort parameters (spec §2.2). The kernel owns them and their forms; the prelude declares none of them. `name` is
+   * the global that names the parameter and the namespace of its forms.
    */
-  sealed abstract class LevelForm(val name: String, val arity: Int)
+  sealed abstract class Parameter(val name: String) {
+    lazy val forms: Vector[Form] = Form.all.filter(_.parameter == this)
+  }
 
-  object LevelForm {
-    case object Zero extends LevelForm("zero", 0)
-    case object One extends LevelForm("one", 0)
-    case object Succ extends LevelForm("succ", 1)
-    case object Max extends LevelForm("max", 2)
-    case object IMax extends LevelForm("imax", 2)
+  object Parameter {
+    case object Level extends Parameter("Level")
+    case object Kind extends Parameter("Kind")
+    case object Lifetime extends Parameter("Lifetime")
 
-    val all: Vector[LevelForm] = Vector(Zero, One, Succ, Max, IMax)
+    val all: Vector[Parameter] = Vector(Level, Kind, Lifetime)
+  }
+
+  /**
+   * The forms of the sort parameters. They are forms of the language, not functions: the kernel owns them, no
+   * declaration introduces them, and one is only ever written applied to all of its arguments. A form's arguments and
+   * result are all of its own parameter.
+   */
+  sealed abstract class Form(val parameter: Parameter, val name: String, val arity: Int) {
+    def qualifiedName: String = s"${parameter.name}.$name"
+  }
+
+  object Form {
+    case object LevelZero extends Form(Parameter.Level, "zero", 0)
+    case object LevelOne extends Form(Parameter.Level, "one", 0)
+    case object LevelSucc extends Form(Parameter.Level, "succ", 1)
+    case object LevelMax extends Form(Parameter.Level, "max", 2)
+    case object LevelIMax extends Form(Parameter.Level, "imax", 2)
+    case object KindUnr extends Form(Parameter.Kind, "unr", 0)
+    case object KindLin extends Form(Parameter.Kind, "lin", 0)
+    case object KindJoin extends Form(Parameter.Kind, "join", 2)
+    case object LifetimeEmpty extends Form(Parameter.Lifetime, "empty", 0)
+    case object LifetimeUnion extends Form(Parameter.Lifetime, "union", 2)
+
+    val all: Vector[Form] =
+      Vector(
+        LevelZero,
+        LevelOne,
+        LevelSucc,
+        LevelMax,
+        LevelIMax,
+        KindUnr,
+        KindLin,
+        KindJoin,
+        LifetimeEmpty,
+        LifetimeUnion
+      )
   }
 
   /**
@@ -157,11 +196,11 @@ object CoreAst {
     term match {
       case _: Term.GlobalRef | _: Term.LocalRef | _: Term.NatLit | _: Term.StrLit =>
         Vector.empty
-      case Term.Select(base, _, _)     => Vector(base)
-      case Term.Sort(level, _)         => Vector(level)
-      case Term.LevelOp(_, args, _)    => args
-      case Term.App(fn, args, _)       => fn +: args
-      case Term.Pi(binders, out, _, _) => binders.map(_.ty) :+ out
+      case Term.Select(base, _, _)          => Vector(base)
+      case Term.Sort(level, kind, scope, _) => Vector(level, kind, scope)
+      case Term.FormOp(_, args, _)          => args
+      case Term.App(fn, args, _)            => fn +: args
+      case Term.Pi(binders, out, _, _)      => binders.map(_.ty) :+ out
       case Term.Body(lets, res, _) =>
         lets.flatMap(let => let.ty.toVector :+ let.value) :+ res
       case Term.Lam(ty, body, _, _, _, _) => Vector(ty, body)

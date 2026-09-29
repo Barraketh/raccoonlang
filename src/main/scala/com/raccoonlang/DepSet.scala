@@ -11,6 +11,8 @@ final class DepSet private (private val bitmap: RoaringBitmap) {
 
   def max: Int = bitmap.last()
 
+  def size: Int = bitmap.getCardinality
+
   def intersects(other: DepSet): Boolean =
     !isEmpty && !other.isEmpty && RoaringBitmap.intersects(bitmap, other.bitmap)
 

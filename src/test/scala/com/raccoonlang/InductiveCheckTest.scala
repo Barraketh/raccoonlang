@@ -31,11 +31,10 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
 
   private def global(name: String): CoreAst.Term = CoreAst.Term.GlobalRef(name, blockSpan)
 
-  private def sortAt(level: CoreAst.LevelForm): CoreAst.Term =
-    CoreAst.Term.Sort(CoreAst.Term.LevelOp(level, Vector.empty, blockSpan), blockSpan)
+  private def sortAt(level: CoreAst.Form): CoreAst.Term = CoreTestTerms.sortAt(level, blockSpan)
 
-  private val typeSort: CoreAst.Term = sortAt(CoreAst.LevelForm.One)
-  private val propSort: CoreAst.Term = sortAt(CoreAst.LevelForm.Zero)
+  private val typeSort: CoreAst.Term = sortAt(CoreAst.Form.LevelOne)
+  private val propSort: CoreAst.Term = sortAt(CoreAst.Form.LevelZero)
 
   private def mutualEvenOdd(evenRecursiveFieldType: CoreAst.Term = global("Odd")): CoreAst.Decl.InductiveBlock = {
     val oddField =
@@ -161,7 +160,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   test("native singleton declarations never infer source universe coordinates") {
     val universe = CoreAst.Binder(CoreAst.LocalRef(1060, "u"), global("Level"), blockSpan, CoreAst.BinderSite.Parameter)
     val universeTerm = CoreAst.Term.LocalRef(universe.localRef, blockSpan)
-    val sort = CoreAst.Term.Sort(universeTerm, blockSpan)
+    val sort = CoreTestTerms.sortAt(universeTerm, blockSpan)
     val result = CoreAst.Term.App(global("Poly"), Vector(universeTerm), blockSpan)
     val declaration = CoreAst.Decl.InductiveDecl(
       CoreAst.InductiveHeader("Poly", Vector(universe), Vector.empty, sort, blockSpan),

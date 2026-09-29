@@ -20,11 +20,13 @@ object ValueOps {
       if (!mayNeedMaterialization(resolved)) return resolved
 
       val rebuilt = resolved match {
-        case LevelTpe | SortParameter | Large => resolved
-        case level: Level                     => materializeLevel(level)
-        case sort: VSort                      => materializeClassifier(sort)
-        case Var(name, id, tpe)               => Var(name, id, materialize(tpe))
-        case VConst(name, constType, tpe)     => VConst(name, constType, materialize(tpe))
+        case _: ParameterTpe | SortParameter | Large => resolved
+        case level: Level                            => materializeLevel(level)
+        case kind: Kind                              => materializeKind(kind)
+        case lifetime: Lifetime                      => materializeLifetime(lifetime)
+        case sort: VSort                             => materializeClassifier(sort)
+        case Var(name, id, tpe)                      => Var(name, id, materialize(tpe))
+        case VConst(name, constType, tpe)            => VConst(name, constType, materialize(tpe))
         case VApp(head, args, tpe, blockedOn) =>
           val materializedHead = materialize(head)
           val materializedArgs = args.map(materialize(_))
@@ -73,10 +75,25 @@ object ValueOps {
         case other    => wtf(s"Level $level materialized to the non-level $other")
       }
 
+    private def materializeKind(kind: Kind)(implicit eqStore: EqStore): Kind =
+      Interpreter.resolveInEqStore(kind, eqStore) match {
+        case k: Kind => k
+        case other   => wtf(s"Kind $kind materialized to the non-kind $other")
+      }
+
+    private def materializeLifetime(lifetime: Lifetime)(implicit eqStore: EqStore): Lifetime =
+      Interpreter.resolveInEqStore(lifetime, eqStore) match {
+        case l: Lifetime => l
+        case other       => wtf(s"Lifetime $lifetime materialized to the non-lifetime $other")
+      }
+
     private def materializeClassifier(classifier: Classifier)(implicit eqStore: EqStore): Classifier =
       classifier match {
-        case sort: VSort => if (mayNeedMaterialization(sort)) Sorts.sort(materializeLevel(sort.level)) else sort
-        case Large       => Large
+        case sort: VSort =>
+          if (mayNeedMaterialization(sort))
+            Sorts.sort(materializeLevel(sort.level), materializeKind(sort.kind), materializeLifetime(sort.scope))
+          else sort
+        case Large => Large
       }
 
     private def materializePi(pi: VPi)(implicit eqStore: EqStore): VPi = {
