@@ -35,10 +35,18 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     def program(sort: String): String = s"def f {u: Level}(A: $sort)(x: A): A := x\n"
 
     typecheckDecls(program("Sort { level = u }"))
+    typecheckDecls(program("Sort { scope = empty, level = u, kind = unr }"))
     assertEquals(parseFailure(program("Sort {}")), "Empty field list")
     assertEquals(parseFailure(program("Sort { level = u, level = u }")), "Repeated field level")
-    assertEquals(parseFailure(program("Sort { level = u, kind = u }")), "Unknown field kind")
-    assertEquals(parseFailure(program("Sort { scope = u, level = u }")), "Unknown field scope")
+    assertEquals(parseFailure(program("Sort { level = u, scope = empty, scope = empty }")), "Repeated field scope")
+    assertEquals(parseFailure(program("Sort { level = u, size = u }")), "Unknown field size")
+  }
+
+  test("Sort requires its level field") {
+    def program(sort: String): String = s"def f (A: $sort)(x: A): A := x\n"
+
+    typecheckDecls(program("Sort { level = one, kind = unr }"))
+    assertEquals(parseFailure(program("Sort { kind = unr }")), "Sort requires a level field")
   }
 
   test("Type and Prop fix the level, so a level field on them is misplaced") {
@@ -524,8 +532,8 @@ class UniverseTests extends munit.FunSuite with TestSupport {
 
     val solved = ValueEquivalence
       .tryUnify(
-        Sorts.sort(Value.Level.mk(u.id)),
-        Sorts.sort(Value.Level.const(1)),
+        Sorts.sort(Value.Level.mk(u.id), Value.Kind.unr, Value.Lifetime.empty),
+        Sorts.sort(Value.Level.const(1), Value.Kind.unr, Value.Lifetime.empty),
         eqStore
       )
       .getOrElse(fail("expected sort unification to solve the level variable"))
@@ -540,8 +548,8 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     assert(
       ValueEquivalence
         .tryUnify(
-          Sorts.sort(Value.Level.of(Map(u.id -> 1), 0)),
-          Sorts.sort(Value.Level.zero),
+          Sorts.sort(Value.Level.of(Map(u.id -> 1), 0), Value.Kind.unr, Value.Lifetime.empty),
+          Sorts.sort(Value.Level.zero, Value.Kind.unr, Value.Lifetime.empty),
           eqStore
         )
         .isLeft
@@ -554,7 +562,15 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     val eqStore = EqStore.empty.allow(DepSet(u.id, v.id))
     val imax = Value.Level.imax(Value.Level.mk(u.id), Value.Level.mk(v.id))
 
-    assert(ValueEquivalence.tryUnify(Sorts.sort(imax), Sorts.sort(Value.Level.one), eqStore).isLeft)
+    assert(
+      ValueEquivalence
+        .tryUnify(
+          Sorts.sort(imax, Value.Kind.unr, Value.Lifetime.empty),
+          Sorts.sort(Value.Level.one, Value.Kind.unr, Value.Lifetime.empty),
+          eqStore
+        )
+        .isLeft
+    )
   }
 
   test("positive: implicit level through Level.succ works") {

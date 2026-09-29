@@ -12,13 +12,10 @@ object Elaborator {
 
   private def globalName(parts: GlobalName): String = parts.mkString(".")
 
-  private val LevelName = "Level"
+  /** A form's qualified name. The kernel owns these names, and the elaborator lowers them to `FormOp`s. */
+  private def formPath(form: CA.Form): GlobalName = Vector(form.parameter.name, form.name)
 
-  /** A level form's qualified name. The kernel owns these names, and the elaborator lowers them to `LevelOp`s. */
-  private def levelFormPath(form: CA.LevelForm): GlobalName = Vector(LevelName, form.name)
-
-  private val LevelForms: Map[String, CA.LevelForm] =
-    CA.LevelForm.all.map(form => globalName(levelFormPath(form)) -> form).toMap
+  private val Forms: Map[String, CA.Form] = CA.Form.all.map(form => form.qualifiedName -> form).toMap
 
   /**
    * Immutable global-name trie.
@@ -60,7 +57,8 @@ object Elaborator {
    * objects live in `root`. Recursive aliases resolve qualified peer paths to local refs while checking recursive
    * bodies. Open scopes are snapshots of resolved objects, so later declarations do not affect an earlier `open`.
    * `fieldForms` are the forms of the sort field being elaborated; they come right after locals, ahead of the current
-   * namespace, so `level = succ(u)` means `Level.succ(u)` even inside `namespace Nat`.
+   * namespace, so `level = succ(u)` means `Level.succ(u)` even inside `namespace Nat`, and `kind = lin` means
+   * `Kind.lin`.
    */
   private final case class ResolveEnv(
       scopes: List[Map[String, CA.LocalRef]],
@@ -78,11 +76,12 @@ object Elaborator {
 
     def exitScoped(inner: ResolveEnv): ResolveEnv = copy(root = inner.root)
 
-    /** The scope of a `level` field: the level forms resolve unqualified. */
-    def openLevelForms: ResolveEnv =
-      copy(fieldForms = CA.LevelForm.all.map { form =>
-        val path = levelFormPath(form)
-        form.name -> rootObject(path).getOrElse(wtf(s"level form ${globalName(path)} is missing from the name trie"))
+    /** The scope of a sort field of `parameter`: that parameter's forms resolve unqualified. */
+    def openForms(parameter: CA.Parameter): ResolveEnv =
+      copy(fieldForms = parameter.forms.map { form =>
+        form.name -> rootObject(formPath(form)).getOrElse(
+          wtf(s"form ${form.qualifiedName} is missing from the name trie")
+        )
       }.toMap)
 
     private def rootObject(parts: GlobalName): Option[ResolvedObject] =
@@ -274,7 +273,7 @@ object Elaborator {
 
   private object ResolveEnv {
     private val BuiltinGlobals: Set[GlobalName] =
-      Set(Vector(LevelName)) ++ CA.LevelForm.all.map(levelFormPath)
+      CA.Parameter.all.map(parameter => Vector(parameter.name)).toSet ++ CA.Form.all.map(formPath)
 
     private val builtinRoot: NameNode =
       BuiltinGlobals
@@ -451,8 +450,13 @@ object Elaborator {
           span
         )
 
-      case SA.Term.Sort(SA.Term.SortLevel.Written(level), span) =>
-        SA.Term.Sort(SA.Term.SortLevel.Written(rewriteFieldType(structName, selfName, level, previousFields)), span)
+      case SA.Term.Sort(level, kind, scope, span) =>
+        def rewrite(field: SA.Term): SA.Term = rewriteFieldType(structName, selfName, field, previousFields)
+        val rewrittenLevel = level match {
+          case SA.Term.SortLevel.Written(written)                       => SA.Term.SortLevel.Written(rewrite(written))
+          case fixed @ (SA.Term.SortLevel.Zero | SA.Term.SortLevel.One) => fixed
+        }
+        SA.Term.Sort(rewrittenLevel, kind.map(rewrite), scope.map(rewrite), span)
 
       case SA.Term.Pi(binders, body, span) =>
         // Binders in one group scope left to right: each one's type sees the names bound before it,
@@ -496,23 +500,23 @@ object Elaborator {
     }
   }
 
-  /** A path as an application head: a level form, or an ordinary term. */
-  private def elabPathHead(path: SurfacePath, env: ResolveEnv): Either[CA.LevelForm, CA.Term] =
-    elabPath[Either[CA.LevelForm, CA.Term]](path, env)(
+  /** A path as an application head: a form, or an ordinary term. */
+  private def elabPathHead(path: SurfacePath, env: ResolveEnv): Either[CA.Form, CA.Term] =
+    elabPath[Either[CA.Form, CA.Term]](path, env)(
       (ref, span) => Right(CA.Term.LocalRef(ref, span)),
-      (name, span) => LevelForms.get(name).toLeft(CA.Term.GlobalRef(name, span)),
+      (name, span) => Forms.get(name).toLeft(CA.Term.GlobalRef(name, span)),
       (base, field, span) => Right(CA.Term.Select(unapplied(base, span), field, span))
     )
 
   /**
-   * A head that is not applied. A nullary level form is complete as written; any other form exists only applied, so
-   * without its arguments it names nothing.
+   * A head that is not applied. A nullary form is complete as written; any other form exists only applied, so without
+   * its arguments it names nothing.
    */
-  private def unapplied(head: Either[CA.LevelForm, CA.Term], span: Span): CA.Term =
+  private def unapplied(head: Either[CA.Form, CA.Term], span: Span): CA.Term =
     head match {
       case Right(term)                   => term
-      case Left(form) if form.arity == 0 => CA.Term.LevelOp(form, Vector.empty, span)
-      case Left(form)                    => at(span) { fail(NotFound(globalName(levelFormPath(form)))) }
+      case Left(form) if form.arity == 0 => CA.Term.FormOp(form, Vector.empty, span)
+      case Left(form)                    => at(span) { fail(NotFound(form.qualifiedName)) }
     }
 
   private def elabPathTerm(path: SurfacePath, env: ResolveEnv): CA.Term =
@@ -631,16 +635,24 @@ object Elaborator {
       head match {
         case Left(form) if form.arity > 0 =>
           if (args.length != form.arity) at(sp) { fail(ArityMismatch(form.arity, args.length)) }
-          CA.Term.LevelOp(form, args.map(elabTerm(_, env)), sp)
+          CA.Term.FormOp(form, args.map(elabTerm(_, env)), sp)
         case _ => CA.Term.App(unapplied(head, fn.span), args.map(elabTerm(_, env)), sp)
       }
-    case SA.Term.Sort(level, sp) =>
+    case SA.Term.Sort(level, kind, scope, sp) =>
+      // A written field is elaborated with its parameter's forms open; an omitted one is what its former fixes.
+      def written(term: SA.Term, parameter: CA.Parameter): CA.Term = elabTerm(term, env.openForms(parameter))
+      def fixed(form: CA.Form): CA.Term = CA.Term.FormOp(form, Vector.empty, sp)
       val levelTerm = level match {
-        case SA.Term.SortLevel.Zero             => CA.Term.LevelOp(CA.LevelForm.Zero, Vector.empty, sp)
-        case SA.Term.SortLevel.One              => CA.Term.LevelOp(CA.LevelForm.One, Vector.empty, sp)
-        case SA.Term.SortLevel.Written(written) => elabTerm(written, env.openLevelForms)
+        case SA.Term.SortLevel.Zero          => fixed(CA.Form.LevelZero)
+        case SA.Term.SortLevel.One           => fixed(CA.Form.LevelOne)
+        case SA.Term.SortLevel.Written(term) => written(term, CA.Parameter.Level)
       }
-      CA.Term.Sort(levelTerm, sp)
+      CA.Term.Sort(
+        levelTerm,
+        kind.fold(fixed(CA.Form.KindUnr))(written(_, CA.Parameter.Kind)),
+        scope.fold(fixed(CA.Form.LifetimeEmpty))(written(_, CA.Parameter.Lifetime)),
+        sp
+      )
     case pi: SA.Term.Pi => elabPi(pi, env)
     case l: SA.Term.Lam =>
       val header = elabHeader(l.header, CA.BinderSite.Function, env)

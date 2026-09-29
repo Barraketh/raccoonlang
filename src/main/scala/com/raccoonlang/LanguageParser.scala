@@ -81,7 +81,7 @@ object LanguageParser {
   private def former(name: String): Parser[NoValue.type] = wordAtom.filter(_ == name).map(_ => NoValue)
 
   /** The fields a sort takes by name. */
-  private val sortFieldNames: Set[String] = Set("level")
+  private val sortFieldNames: Set[String] = Set("level", "kind", "scope")
 
   private def sortField(implicit sourceId: Option[SourceId]): Parser[(String, Term, Span)] =
     (wordAtom ~ sym('=') ~/ skipAllWs ~ term).flatSpanned(sourceId)
@@ -106,18 +106,19 @@ object LanguageParser {
       .named("sort field list")
 
   /**
-   * `Sort { level = e }`, `Type` and `Prop`. `level` is the only sort field, and `Type` and `Prop` fix it, so a field
-   * list after either is always rejected.
+   * `Sort { level = e, ... }`, `Type` and `Prop`. `Sort` requires its `level`; `Type` and `Prop` fix it, so a `level`
+   * field after either is rejected. An omitted `kind` or `scope` is `Kind.unr` or `Lifetime.empty`.
    */
   private def sortFormer(implicit sourceId: Option[SourceId]): Parser[Term] = {
     def fixed(name: String, level: SortLevel): Parser[Term] =
-      (former(name) ~ (skipWS ~ sortFields(fixesLevel = true)).?).flatSpanned(sourceId).map { case (_, span) =>
-        Sort(level, span)
+      (former(name) ~ (skipWS ~ sortFields(fixesLevel = true)).?).flatSpanned(sourceId).map { case (fields, span) =>
+        val written = fields.getOrElse(Map.empty)
+        Sort(level, written.get("kind"), written.get("scope"), span)
       }
     val written =
       (former("Sort") ~/ skipWS ~ sortFields(fixesLevel = false)).flatSpanned(sourceId).map { case (fields, span) =>
         fields.get("level") match {
-          case Some(level) => Sort(SortLevel.Written(level), span)
+          case Some(level) => Sort(SortLevel.Written(level), fields.get("kind"), fields.get("scope"), span)
           case None        => throw ParseError(span.start, span.start, "Sort requires a level field")
         }
       }

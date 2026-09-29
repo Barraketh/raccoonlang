@@ -45,7 +45,8 @@ refinable variables. Its successful rules are:
   registered builtin reduction;
 - structural congruence for values and applications;
 - extensional comparison of lambdas on shared fresh arguments;
-- normalized universe-level equality;
+- equality of normal forms for universe levels, kinds and lifetimes, and of
+  sorts field by field;
 - proof irrelevance at definitionally equal propositions;
 - structure eta for eligible non-Prop inductive instances;
 - equality and constructor peeling for validated packed values;
@@ -73,6 +74,10 @@ solution. In particular:
 - an occurs failure or an equation that has several possible solutions remains
   stuck;
 - level variables link only when normalization leaves a forced solution;
+- a kind or lifetime variable links only when it is alone on one side and does
+  not occur on the other; when both sides are variables, the later-bound one
+  links to the earlier-bound one. Every other kind or lifetime equation, a join
+  or union on both sides included, is stuck;
 - refinable values at eta-eligible structure types are expanded at the
   refinability boundary, where eta makes the expansion unique.
 
@@ -90,30 +95,52 @@ is produced only by evidence that supports propositional no-confusion:
   decoding reaches such a constructor clash. The Nat codec has this property.
 
 Proof constructors, quotient constructors, family heads, opaque applications,
-level failures, and ordinary unification failures do not produce apartness.
+level, kind and lifetime failures, and ordinary unification failures do not
+produce apartness. No two kinds and no two lifetimes are apart, so refinement
+never prunes a branch on one.
 
 ## Universes and function types
 
-A sort is a Core term of its own, `Sort { level = e }`, and `Type` and `Prop`
-elaborate to it at `Level.one` and `Level.zero`. The primitive universe
-equations are:
+A sort is a Core term of its own with three fields, a level, a kind and a
+scope: `Sort { level = e, kind = k, scope = S }`. `Type` and `Prop` elaborate
+to it at `Level.one` and `Level.zero`, and an omitted kind or scope to
+`Kind.unr` or `Lifetime.empty`. The primitive universe equations are:
 
 ```text
 Prop = Sort { level = Level.zero }
 Type = Sort { level = Level.one }
 Prop : Type
-Sort { level = u } : Sort { level = Level.succ(u) }
+Sort { level = u, kind = k, scope = S } : Sort { level = Level.succ(u), scope = S }
 ```
 
-The level forms `Level.zero`, `Level.one`, `Level.succ`, `Level.max` and
-`Level.imax` are Core terms too, always applied to all of their arguments. The
-kernel owns them and the sort formers: no declaration introduces them, the
-prelude declares none of them, and no global or builtin carries their names.
+`Level`, `Kind` and `Lifetime` are the sort parameters. Their forms,
+`Level.zero`, `Level.one`, `Level.succ`, `Level.max`, `Level.imax`, `Kind.unr`,
+`Kind.lin`, `Kind.join`, `Lifetime.empty` and `Lifetime.union`, are Core terms
+too, always applied to all of their arguments. The kernel owns the parameters,
+their forms and the sort formers: no declaration introduces them, the prelude
+declares none of them, and no global or builtin carries a form's name.
 
-Levels normalize to maxima of offset atoms plus an optional constant, and the
-level forms construct normalized levels. `imax(a, b)` reduces when `b` is known
-to be zero or positive and otherwise remains a conditional atom. Normalized
-representation equality is level equality.
+Every sort parameter expression is normalized at birth, and its only neutrals
+are variables:
+
+- Levels normalize to maxima of offset atoms plus an optional constant.
+  `imax(a, b)` reduces when `b` is known to be zero or positive and otherwise
+  remains a conditional atom.
+- A lifetime is the set of its lifetime variables; `Lifetime.union` is set
+  union.
+- A kind is `Kind.lin` or a set of kind variables, the empty set being
+  `Kind.unr`; `Kind.join` unites the sets, and `Kind.lin` absorbs.
+
+Normalized representation equality is equality of levels, kinds and lifetimes.
+Each normal form is built only by its own constructors, which sort and
+deduplicate, so one implementation of union, join and containment serves the
+checker and the evaluator. A kind or lifetime has no neutral other than a
+variable, so no two of them are ever apart.
+
+A sort of a kind other than `Kind.unr` must have a level that is never zero,
+since proofs are unrestricted; the checker rejects any other sort term with
+`LinearProp`. Substitution preserves both a level that is never zero and the
+kind `Kind.unr`, so every sort the kernel builds satisfies the rule.
 
 A telescope
 
@@ -121,17 +148,19 @@ A telescope
 (x1 : A1) ... (xn : An) -> B
 ```
 
-has universe
+that binds no level has the sort
 
 ```text
-imax(u1, ... imax(un, v) ...)
+Sort { level = imax(u1, ... imax(un, v) ...),
+       scope = union(S1, ..., Sn, SB) less the telescope's own lifetime variables }
 ```
 
-where each `Ai : Sort { level = ui }` and `B : Sort { level = v }`. Consequently,
-a Pi whose codomain is a proposition lives in `Prop`, regardless of its domain
-universes.
-A codomain equal to the sort `Prop` is different: `Prop` itself lives in
-`Type`.
+where each `Ai : Sort { level = ui, scope = Si }` and
+`B : Sort { level = v, scope = SB }`. Its kind is `Kind.unr`. A binder of type
+`Kind` or `Lifetime` contributes neither a level nor a scope. Consequently, a
+Pi whose codomain is a proposition lives in `Prop` at its scope, regardless of
+its domain universes. A codomain equal to the sort `Prop` is different: `Prop`
+itself lives in `Type`.
 
 A telescope that binds a level is instead classified by `Large`. A level binder
 changes the universe of everything after it, so no sort contains the Pi. `Large`
@@ -139,30 +168,36 @@ is kernel-internal: it is not a sort, no program writes it, and it classifies
 itself, which is harmless because nothing quantifies over it. A type's
 classifier is therefore a sort or `Large`, and code that reads a Pi's
 classifier handles both. Instantiating a large Pi's binders yields small types
-again: its codomain is always a type.
+again: its codomain is always a type. Kind and lifetime binders never make a
+Pi large.
 
-`Level` is a sort parameter, not a type: its classifier is not a sort. Every
+The sort parameters are not types: their classifier is not a sort. Every
 checked term must have a type, except in the positions that admit something
 else:
 
-- a binder of type `Level` is admitted only at a parameter site, a
-  declaration's header (the binders before its `:`) or a family parameter;
-  everywhere else a binder's type must be a type. The elaborator records each
+- a binder of a sort parameter is admitted only where its site allows: a
+  parameter site (a declaration's header, the binders before its `:`, or a
+  family parameter) may bind any sort parameter, a function type's or lambda's
+  binder only a lifetime, and a family index or constructor field none.
+  Everywhere else a binder's type must be a type. The elaborator records each
   binder's site, so a function type written after a declaration's `:` binds no
   level;
-- a level stands only where `Level` is expected: a sort's level field and the
-  argument at a `Level` binder, which is checked against `Level` rather than
-  synthesized alone. A term of another type there is a type mismatch;
+- an expression of a sort parameter stands only where a sort parameter is
+  expected: a sort's field and the argument at a binder of a sort parameter,
+  which is checked against that parameter rather than synthesized alone. A term
+  of another type there, another sort parameter's included, is a type mismatch;
 - a reference whose type is large stands only as the head of an application;
 - a large type is admitted only as a declaration's type: a definition, opaque
   definition, axiom, family or constructor, and a definition's lambda at that
   type.
 
-Anywhere else the sort parameter, a level, or a large reference is `NotAType`.
+Anywhere else a sort parameter, an expression of one, or a large reference is
+`NotAType`.
 
-Universes are non-cumulative. Constructor-field universe checks enforce the
-declared inductive's size bound, but they do not introduce general sort
-subsumption.
+Universes are non-cumulative, and so are kinds and scopes: two sorts are
+convertible only when their levels, kinds and scopes are. Constructor-field
+universe checks enforce the declared inductive's size bound, but they do not
+introduce general sort subsumption.
 
 A sort is `Prop` exactly when its level is zero, and a type is a proposition
 exactly when its sort is `Prop` (a Pi by its codomain, so a large Pi into a
@@ -170,9 +205,11 @@ proposition is one too). The kernel has one definition of each, which the
 checker and proof irrelevance share. Sorts are compared only by conversion.
 
 An implicit binder is accepted only with a compiled projection that recovers
-it from later explicit arguments. Checked applications retain only explicit
-arguments. Checking and evaluation reconstruct every implicit with the same
-projection and then check it against its instantiated binder type. Constructor
+it from later explicit arguments. A sort's level, kind and scope are projection
+positions; the kind and scope recover a variable only when the field is exactly
+that variable. Checked applications retain only explicit arguments. Checking
+and evaluation reconstruct every implicit with the same projection and then
+check it against its instantiated binder type. Constructor
 family parameters that cannot be projected are demoted to explicit arguments;
 other unforced implicits are rejected.
 
@@ -189,10 +226,10 @@ An inductive declaration is installed only after checking:
   block certifies as positive.
 
 Atomic mutual-inductive blocks are available through the surface `mutual { ... }`
-form. Every family in a block has the same parameter telescope and universe.
-All provisional family heads are visible while constructors are checked, but
-the block publishes only after every family succeeds. Positivity and recursion
-metadata are computed for the whole block.
+form. Every family in a block has the same parameter telescope and sort, level,
+kind and scope alike. All provisional family heads are visible while
+constructors are checked, but the block publishes only after every family
+succeeds. Positivity and recursion metadata are computed for the whole block.
 
 Constructor values erase family parameters and retain ordinary constructor
 fields. Each family records only its own constructors for match
@@ -429,9 +466,11 @@ key-coherence assertion (`-Draccoon.keyAssertions`, on by default and off for
 benchmarking) runs the conversion rules beneath every equation a key decides
 and fails loudly on disagreement. Only atoms whose key is their identity are
 exempt: variables (by id), constants and constructor heads (by name), and
-levels (by normal form). The kernel singletons `Level`, its classifier and
-`Large` are equal only to themselves, which object identity decides before any
-key is read.
+levels (by normal form). Kinds and lifetimes key by their normal forms too, but
+their conversion rule compares the normal forms itself, so the assertion checks
+their keys. A sort's key mixes in its level, kind and scope. The kernel
+singletons `Level`, `Kind`, `Lifetime`, their classifier and `Large` are equal
+only to themselves, which object identity decides before any key is read.
 
 Blocked applications and matches carry dependency sets describing which
 refinement-store events could make reevaluation productive. An empty dependency
@@ -461,9 +500,13 @@ Changes to the checker or evaluator must preserve these rules:
 12. Whether a sort is `Prop` or a type is a proposition has one definition.
 13. A term's type never depends on where it stands: checking is synthesis
     followed by definitional equality with the expected type.
-14. Sorts and levels are built only by the kernel's own sort and level forms;
-    no global, builtin or prelude declaration names one.
+14. Sorts, levels, kinds and lifetimes are built only by the kernel's own sort
+    former and forms; no global, builtin or prelude declaration names one.
 15. Every checked term has a type, except where the checker's position rules
-    admit otherwise: `Level` as a parameter binder's type, a level where `Level`
-    is expected, a large reference at an application head, and a large type as a
+    admit otherwise: a sort parameter as the type of a binder at a site that
+    may bind it, an expression of a sort parameter where one is expected, a
+    large reference at an application head, and a large type as a
     declaration's type.
+16. Kinds and lifetimes exist only in normal form, so their structural
+    equality is definitional equality; no two of them are apart.
+17. A sort whose kind is not `Kind.unr` has a level that is never zero.

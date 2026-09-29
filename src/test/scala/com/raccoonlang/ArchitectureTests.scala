@@ -13,6 +13,8 @@ import scala.util.matching.Regex
 class ArchitectureTests extends munit.FunSuite {
   import ArchitectureTests.Rule
 
+  private val kernelObjects = "(LevelTpe|KindTpe|LifetimeTpe|SortParameter|Large)"
+
   private val rules = Vector(
     Rule("sorts are built through Sorts, not the removed PropTpe/TypeTpe", raw"\b(PropTpe|TypeTpe)\b".r, Set.empty),
     Rule("only Sorts builds a sort", raw"\bnew\s+VSort\b".r, Set("Sorts.scala")),
@@ -22,14 +24,14 @@ class ArchitectureTests extends munit.FunSuite {
       Set("Sorts.scala")
     ),
     Rule(
-      "sort formers and level forms are syntax the kernel owns, never names of globals or builtins",
-      "\"(Sort|Type|Prop|Level\\.(zero|one|succ|max|imax))\"".r,
+      "sort formers and the sort parameters' forms are syntax the kernel owns, never names of globals or builtins",
+      "\"(Sort|Type|Prop|Level\\.(zero|one|succ|max|imax)|Kind\\.(unr|lin|join)|Lifetime\\.(empty|union))\"".r,
       Set("IdentifierSyntax.scala", "LanguageParser.scala", "PrettyPrinter.scala")
     ),
     Rule(
-      "where Level, a level or a large type may stand is decided only by the checker's position rules and the Pi " +
-        "classifier",
-      raw"(\beq|[=!]=)\s*(LevelTpe|SortParameter|Large)\b|\b(LevelTpe|SortParameter|Large)\s*(\beq\b|[=!]=)".r,
+      "where a sort parameter, an expression of one or a large type may stand is decided only by the checker's " +
+        "position rules and the Pi classifier",
+      raw"(\beq|[=!]=)\s*$kernelObjects\b|\b$kernelObjects\s*(\beq\b|[=!]=)".r,
       Set("TypeChecker.scala", "Interpreter.scala")
     ),
     Rule(

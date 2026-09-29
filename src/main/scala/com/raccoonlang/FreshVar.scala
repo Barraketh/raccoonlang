@@ -16,16 +16,18 @@ object FreshVar {
   }
 
   /**
-   * A fresh unknown as a Value. Level-typed unknowns must be Level atoms rather than Vars so that level arithmetic
-   * (Level.max/imax/succ, unifyLevels) can see them; every producer of fresh unknowns must apply this rule, so it lives
-   * here.
+   * A fresh unknown as a Value. An unknown of a sort parameter must be its normal form rather than a Var, so that level
+   * arithmetic, kind joins and lifetime unions (and their unification) can see it; every producer of fresh unknowns
+   * must apply this rule, so it lives here.
    */
   def freshValue(name: String, tpe: Value): (VarId, Value) = {
     val fresh = freshVar(name, tpe)
     val value =
       tpe match {
-        case Value.LevelTpe => Value.Level.mk(fresh.id)
-        case _              => fresh
+        case Value.LevelTpe    => Value.Level.mk(fresh.id)
+        case Value.KindTpe     => Value.Kind.variable(fresh.id)
+        case Value.LifetimeTpe => Value.Lifetime.variable(fresh.id)
+        case _                 => fresh
       }
     (fresh.id, value)
   }

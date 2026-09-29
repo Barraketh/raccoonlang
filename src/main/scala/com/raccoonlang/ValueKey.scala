@@ -47,6 +47,10 @@ object ValueKey {
     val LevelIMaxAtom = 20
     val SortParameter = 21
     val Large = 22
+    val KindTpe = 23
+    val LifetimeTpe = 24
+    val Kind = 25
+    val Lifetime = 26
   }
 
   private val SeedHi = -7046029254386353131L
@@ -164,12 +168,25 @@ object ValueKey {
     mixLong(cur, sortedTerms.length.toLong)
   }
 
+  /** A set of variables in ascending id order, so the key depends on the set and not on how it was built. */
+  private def mixVars(key: Key, vars: DepSet): Key = {
+    var cur = key
+    vars.foreach(id => cur = mixLong(cur, id.toLong))
+    mixLong(cur, vars.size.toLong)
+  }
+
   def orderKey(v: Value): Key = v match {
-    case Value.LevelTpe        => tag(Tag.LevelTpe)
-    case Value.SortParameter   => tag(Tag.SortParameter)
-    case Value.Large           => tag(Tag.Large)
-    case level: Value.Level    => levelKey(level.terms, level.c)
-    case sort: Value.VSort     => mixKey(tag(Tag.Sort), sort.level.key)
+    case Value.LevelTpe           => tag(Tag.LevelTpe)
+    case Value.KindTpe            => tag(Tag.KindTpe)
+    case Value.LifetimeTpe        => tag(Tag.LifetimeTpe)
+    case Value.SortParameter      => tag(Tag.SortParameter)
+    case Value.Large              => tag(Tag.Large)
+    case level: Value.Level       => levelKey(level.terms, level.c)
+    case kind: Value.Kind         => mixVars(mixLong(tag(Tag.Kind), if (kind.isLin) 1L else 0L), kind.vars)
+    case lifetime: Value.Lifetime => mixVars(tag(Tag.Lifetime), lifetime.vars)
+    case sort: Value.VSort        =>
+      // Every field explicitly: two sorts at one level differ when their kinds or scopes do.
+      mixKey(mixKey(mixKey(tag(Tag.Sort), sort.level.key), sort.kind.key), sort.scope.key)
     case Value.VConst(n, _, _) => mixString(tag(Tag.Const), n)
     case Value.Var(_, id, _)   => mixLong(tag(Tag.Var), id.toLong)
     case Value.VApp(h, args, tpe, _) =>

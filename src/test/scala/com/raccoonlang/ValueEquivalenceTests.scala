@@ -1,15 +1,14 @@
 package com.raccoonlang
 
-import com.raccoonlang.CoreAst.{Term => CTerm}
 import com.raccoonlang.Value._
 
 class ValueEquivalenceTests extends munit.FunSuite {
   private val span = Span(0, 0)
-  private val typeSort: CoreAst.Term = CTerm.Sort(CTerm.LevelOp(CoreAst.LevelForm.One, Vector.empty, span), span)
+  private val typeSort: CoreAst.Term = CoreTestTerms.sortAt(CoreAst.Form.LevelOne, span)
   private val binderRef = CoreAst.LocalRef(0, "x")
   private val binder = CoreAst.Binder(binderRef, typeSort, Span(0, 0), CoreAst.BinderSite.Function)
   private val env = Env.empty
-  private val typeToTypeClassifier = Sorts.sort(Level.succ(Level.one))
+  private val typeToTypeClassifier = Sorts.sort(Level.succ(Level.one), Value.Kind.unr, Value.Lifetime.empty)
 
   private def nodeId(start: Int): AstNodeId = AstNodeId(None, start)
 
@@ -36,8 +35,8 @@ class ValueEquivalenceTests extends munit.FunSuite {
     )
 
   test("sorts compare only by conversion, never structurally") {
-    assert(ValueEquivalence.defEq(Sorts.sort(Level.one), Sorts.Type))
-    intercept[InternalError](Sorts.Type == Sorts.sort(Level.one))
+    assert(ValueEquivalence.defEq(Sorts.sort(Level.one, Value.Kind.unr, Value.Lifetime.empty), Sorts.Type))
+    intercept[InternalError](Sorts.Type == Sorts.sort(Level.one, Value.Kind.unr, Value.Lifetime.empty))
     intercept[InternalError](Sorts.Prop.hashCode())
   }
 
@@ -118,7 +117,7 @@ class ValueEquivalenceTests extends munit.FunSuite {
       () => typeToTypeClassifier
     )
     val applicationEnv = env.putGlobal("nested", VConst("nested", Symbol, nested))
-    val ref = CTerm.Sort(CTerm.LevelOp(CoreAst.LevelForm.Zero, Vector.empty, span), span)
+    val ref = CoreTestTerms.sortAt(CoreAst.Form.LevelZero, span)
     val first = CoreAst.Term.App(CoreAst.Term.GlobalRef("nested", span), Vector(ref), span)
     val application = CoreAst.Term.App(first, Vector(ref), span)
 

@@ -1,0 +1,4 @@
+
+<root>/main.rac:1:11: error: Failed to parse module <root>/main.rac: Sort requires a level field
+def f (A: Sort { kind = unr })(x: A): A := x
+          ^
