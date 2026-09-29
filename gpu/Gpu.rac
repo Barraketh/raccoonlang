@@ -179,7 +179,7 @@ namespace Gpu {
       | LPair.mk inner after => {
         match inner returning LPair(Ctx(l, g), S) with
         | Ctx.mk bodyCode next2 errors2 =>
-          LPair.mk(Ctx.mk(l, g, List.cons(Stmt.forLoop(next, count.expr, Gpu.toBlock(bodyCode, Block.done)), code), next2, errors2), after)
+          LPair.mk(Ctx.mk(l, g, List.cons(Stmt.forLoop(next, Expr.lit(0), count.expr, Gpu.toBlock(bodyCode, Block.done)), code), next2, errors2), after)
       }
     }
   }
@@ -383,6 +383,6 @@ namespace Gpu {
     let params := List.cons(Param.input(t, "A"), List.cons(Param.input(t, "B"), List.cons(Param.output(t, "C"),
       List.cons(Param.scalar(DType.u32, "M"), List.cons(Param.scalar(DType.u32, "N"), List.cons(Param.scalar(DType.u32, "K"), List.nil(Param)))))))
     match body(l, Ctx.mk(l, Group.cta(Nat.mul(tile, tile)), List.nil(Stmt), 0, List.nil(String)), launch, GOwn.mk(l, t, tile)) returning Kernel with
-    | Ctx.mk code next errors => Kernel.mk(name, params, Gpu.toBlock(code, Gpu.toBlock(Gpu.errorsToCode(errors, List.nil(Stmt)), Block.done)))
+    | Ctx.mk code next errors => Kernel.mk(name, params, 0, Gpu.toBlock(code, Gpu.toBlock(Gpu.errorsToCode(errors, List.nil(Stmt)), Block.done)))
   }
 }

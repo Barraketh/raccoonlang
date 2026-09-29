@@ -4,9 +4,16 @@
 here=$(cd "$(dirname "$0")" && pwd)
 run() { ${RACCOON:?set RACCOON to a raccoon launcher} --prelude "$here/Prelude.rac" --root "$here" "$@"; }
 status=0
+# Generated C++ is compiled against stub headers when a host clang++ is available; inline assembly is stripped first.
+cxx() {
+  command -v clang++ >/dev/null || return 0
+  sed 's/^\( *\)asm volatile(.*);$/\1;/' | clang++ -std=c++17 -fsyntax-only -Wall -Wno-unused-parameter -Werror \
+    -I "$here/stub" -include "$here/stub/cuda_stub.h" -x c++ -
+}
 for f in "$here"/examples/*.rac; do
   out=$(run "$f" 2>&1)
   if printf '%s' "$out" | grep -q "error:"; then echo "FAIL $f"; printf '%s\n' "$out" | grep -v '^[0-9][0-9]:'; status=1
+  elif ! printf '%s' "$out" | python3 "$here/render.py" | cxx; then echo "FAIL $(basename "$f"): generated C++ does not compile"; status=1
   else echo "ok   $(basename "$f")"; fi
 done
 for f in "$here"/rejected/*.rac; do

@@ -6,13 +6,17 @@ import Text
 namespace Cuda {
   inductive DType : Type
    | u32 : DType
+   | u64 : DType
    | f32 : DType
+   | bf16 : DType
    | bool : DType
 
   inductive Builtin : Type
    | threadX : Builtin
    | blockX : Builtin
    | blockY : Builtin
+   | warp : Builtin
+   | lane : Builtin
 
   inductive BinOp : Type
    | add : BinOp
@@ -21,29 +25,47 @@ namespace Cuda {
    | div : BinOp
    | rem : BinOp
    | lt : BinOp
+   | eq : BinOp
    | land : BinOp
+   | shl : BinOp
+   | shr : BinOp
+   | bor : BinOp
+   | band : BinOp
 
   inductive Expr : Type
    | var (id: Nat) : Expr
    | lit (value: Nat) : Expr
+   | lit64 (value: Nat) : Expr
    | zero (t: DType) : Expr
    | param (name: String) : Expr
    | special (b: Builtin) : Expr
    | bin (op: BinOp)(a: Expr)(b: Expr) : Expr
+   | max (a: Expr)(b: Expr) : Expr
    | fma (a: Expr)(b: Expr)(c: Expr) : Expr
    | select (c: Expr)(t: Expr)(f: Expr) : Expr
    | index (base: Expr)(i: Expr) : Expr
+   | cast (t: DType)(e: Expr) : Expr
+   | sharedAddr (offset: Nat) : Expr
+   | sharedPtr (t: DType)(offset: Nat) : Expr
+   | paramAddr (name: String) : Expr
+
+  // An inline-assembly operand: its constraint, such as "r", "l" or "=f", and its expression.
+  struct Operand : Type
+   | mk (constraint: String)(e: Expr) : Operand
 
   mutual {
     inductive Stmt : Type
      | decl (t: DType)(id: Nat)(init: Expr) : Stmt
      | declMut (t: DType)(id: Nat)(init: Expr) : Stmt
+     | declOut (t: DType)(id: Nat) : Stmt
      | assign (id: Nat)(value: Expr) : Stmt
      | store (base: Expr)(i: Expr)(value: Expr) : Stmt
      | shared (t: DType)(id: Nat)(size: Nat) : Stmt
-     | forLoop (id: Nat)(count: Expr)(body: Block) : Stmt
+     | forLoop (id: Nat)(start: Expr)(count: Expr)(body: Block) : Stmt
      | ifElse (c: Expr)(yes: Block)(no: Block) : Stmt
      | sync : Stmt
+     | syncWarp : Stmt
+     | asm (template: String)(outs: List(Operand))(ins: List(Operand)) : Stmt
      | error (message: String) : Stmt
 
     inductive Block : Type
@@ -55,14 +77,18 @@ namespace Cuda {
    | input (t: DType)(name: String) : Param
    | output (t: DType)(name: String) : Param
    | scalar (t: DType)(name: String) : Param
+   | tensorMap (name: String) : Param
 
+  // A kernel, with the bytes of dynamic shared memory it must be launched with.
   struct Kernel : Type
-   | mk (name: String)(params: List(Param))(body: Block) : Kernel
+   | mk (name: String)(params: List(Param))(dynamicShared: Nat)(body: Block) : Kernel
 
   def dtype (t: DType): String := {
     match t returning String with
     | DType.u32 => "unsigned"
+    | DType.u64 => "unsigned long long"
     | DType.f32 => "float"
+    | DType.bf16 => "__nv_bfloat16"
     | DType.bool => "bool"
   }
 
@@ -74,19 +100,32 @@ namespace Cuda {
     | BinOp.div => " / "
     | BinOp.rem => " % "
     | BinOp.lt => " < "
+    | BinOp.eq => " == "
     | BinOp.land => " && "
+    | BinOp.shl => " << "
+    | BinOp.shr => " >> "
+    | BinOp.bor => " | "
+    | BinOp.band => " & "
   }
 
   def name (id: Nat): String := Text.cat("v", Text.nat(id))
+
+  // The dynamic shared buffer, and its address in the shared window.
+  def smem : String := "gpu_smem"
+
+  def smemBase : String := "gpu_smem_base"
 
   def expr (e: Expr): String decreases structural(e) := {
     match e returning String with
     | Expr.var id => Cuda.name(id)
     | Expr.lit value => Text.cat(Text.nat(value), "u")
+    | Expr.lit64 value => Text.cat(Text.nat(value), "ull")
     | Expr.zero t => {
       match t returning String with
       | DType.u32 => "0u"
+      | DType.u64 => "0ull"
       | DType.f32 => "0.0f"
+      | DType.bf16 => "__float2bfloat16(0.0f)"
       | DType.bool => "false"
     }
     | Expr.param n => n
@@ -95,11 +134,34 @@ namespace Cuda {
       | Builtin.threadX => "threadIdx.x"
       | Builtin.blockX => "blockIdx.x"
       | Builtin.blockY => "blockIdx.y"
+      | Builtin.warp => "__shfl_sync(0xffffffffu, threadIdx.x / 32u, 0)"
+      | Builtin.lane => "(threadIdx.x % 32u)"
     }
     | Expr.bin op a b => Text.cat3("(", Text.cat3(Cuda.expr(a), Cuda.binop(op), Cuda.expr(b)), ")")
+    | Expr.max a b => Text.cat3("max(", Text.cat3(Cuda.expr(a), ", ", Cuda.expr(b)), ")")
     | Expr.fma a b c => Text.cat3("fmaf(", Text.cat3(Cuda.expr(a), ", ", Text.cat3(Cuda.expr(b), ", ", Cuda.expr(c))), ")")
     | Expr.select c t f => Text.cat3("(", Text.cat3(Cuda.expr(c), " ? ", Text.cat3(Cuda.expr(t), " : ", Cuda.expr(f))), ")")
     | Expr.index base i => Text.cat3(Cuda.expr(base), "[", Text.cat(Cuda.expr(i), "]"))
+    | Expr.cast t x => Text.cat3("static_cast<", Cuda.dtype(t), Text.cat3(">(", Cuda.expr(x), ")"))
+    | Expr.sharedAddr offset => Text.cat3("(", Cuda.smemBase, Text.cat3(" + ", Text.nat(offset), "u)"))
+    | Expr.sharedPtr t offset =>
+      Text.cat3("reinterpret_cast<", Cuda.dtype(t), Text.cat3("*>(", Cuda.smem, Text.cat3(" + ", Text.nat(offset), ")")))
+    | Expr.paramAddr n => Text.cat3("reinterpret_cast<unsigned long long>(&", n, ")")
+  }
+
+  def operand (o: Operand): String := {
+    match o returning String with
+    | Operand.mk c x => Text.cat3("\"", c, Text.cat3("\"(", Cuda.expr(x), ")"))
+  }
+
+  def operands (os: List(Operand)): String decreases structural(os) := {
+    match os returning String with
+    | List.nil => ""
+    | List.cons o more => {
+      match more returning String with
+      | List.nil => Cuda.operand(o)
+      | List.cons p rest => Text.cat3(Cuda.operand(o), ", ", Cuda.operands(more))
+    }
   }
 
   def indent (depth: Nat): String decreases structural(depth) := {
@@ -118,14 +180,16 @@ namespace Cuda {
         Cuda.line(depth, Text.cat3("const ", Cuda.dtype(t), Text.cat3(" ", Cuda.name(id), Text.cat3(" = ", Cuda.expr(init), ";"))), rest)
       | Stmt.declMut t id init =>
         Cuda.line(depth, Text.cat3(Cuda.dtype(t), " ", Text.cat3(Cuda.name(id), " = ", Text.cat(Cuda.expr(init), ";"))), rest)
+      | Stmt.declOut t id => Cuda.line(depth, Text.cat3(Cuda.dtype(t), " ", Text.cat(Cuda.name(id), ";")), rest)
       | Stmt.assign id value => Cuda.line(depth, Text.cat3(Cuda.name(id), " = ", Text.cat(Cuda.expr(value), ";")), rest)
       | Stmt.store base i value =>
         Cuda.line(depth, Text.cat3(Cuda.expr(Expr.index(base, i)), " = ", Text.cat(Cuda.expr(value), ";")), rest)
       | Stmt.shared t id size =>
         Cuda.line(depth, Text.cat3("__shared__ ", Cuda.dtype(t), Text.cat3(" ", Cuda.name(id), Text.cat3("[", Text.nat(size), "];"))), rest)
-      | Stmt.forLoop id count body => {
+      | Stmt.forLoop id start count body => {
         let i := Cuda.name(id)
-        let head := Text.cat3("for (unsigned ", i, Text.cat3(" = 0u; ", i, Text.cat3(" < ", Cuda.expr(count), Text.cat3("; ++", i, ") {"))))
+        let head := Text.cat3("for (unsigned ", i, Text.cat3(" = ", Cuda.expr(start), Text.cat3("; ", i,
+          Text.cat3(" < ", Cuda.expr(count), Text.cat3("; ++", i, ") {")))))
         Cuda.line(depth, head, Cuda.block(Nat.succ(depth), body, Cuda.line(depth, "}", rest)))
       }
       | Stmt.ifElse c yes no => {
@@ -138,6 +202,12 @@ namespace Cuda {
         Cuda.line(depth, Text.cat3("if (", Cuda.expr(c), ") {"), Cuda.block(Nat.succ(depth), yes, elseTail))
       }
       | Stmt.sync => Cuda.line(depth, "__syncthreads();", rest)
+      | Stmt.syncWarp => Cuda.line(depth, "__syncwarp();", rest)
+      | Stmt.asm template outs ins => {
+        let text := Text.cat3("asm volatile(\"", template, Text.cat3("\" : ", Cuda.operands(outs),
+          Text.cat3(" : ", Cuda.operands(ins), " : \"memory\");")))
+        Cuda.line(depth, text, rest)
+      }
       | Stmt.error message => Cuda.line(depth, Text.cat3("#error \"", message, "\""), rest)
     }
 
@@ -153,6 +223,7 @@ namespace Cuda {
     | Param.input t n => Text.cat3("const ", Cuda.dtype(t), Text.cat("* __restrict__ ", n))
     | Param.output t n => Text.cat3(Cuda.dtype(t), "* __restrict__ ", n)
     | Param.scalar t n => Text.cat3(Cuda.dtype(t), " ", n)
+    | Param.tensorMap n => Text.cat("const __grid_constant__ CUtensorMap ", n)
   }
 
   def params (ps: List(Param)): String decreases structural(ps) := {
@@ -165,11 +236,34 @@ namespace Cuda {
     }
   }
 
+  def usesTensorMaps (ps: List(Param)): Bool := List.any(ps, fun (p: Param): Bool => {
+    match p returning Bool with
+    | Param.input t n => Bool.false
+    | Param.output t n => Bool.false
+    | Param.scalar t n => Bool.false
+    | Param.tensorMap n => Bool.true
+  })
+
+  // Headers a kernel needs: the driver API's CUtensorMap and bf16 when it takes tensor maps, nothing otherwise.
+  def headers (ps: List(Param))(rest: String): String :=
+    Bool.cond(Cuda.usesTensorMaps(ps), String, Text.cat("#include <cuda.h>\n#include <cuda_bf16.h>\n\n", rest), rest)
+
+  // The dynamic shared buffer's declaration and shared-window address, when the kernel uses one.
+  def sharedPrologue (bytes: Nat)(rest: String): String := {
+    match Nat.isZero(bytes) returning String with
+    | Bool.true => rest
+    | Bool.false => {
+      let buffer := Text.cat3("extern __shared__ __align__(1024) unsigned char ", Cuda.smem, "[];")
+      let base := Text.cat3("const unsigned ", Cuda.smemBase, Text.cat3(" = static_cast<unsigned>(__cvta_generic_to_shared(", Cuda.smem, "));"))
+      Cuda.line(1, buffer, Cuda.line(1, base, rest))
+    }
+  }
+
   def kernel (k: Kernel): String := {
     match k returning String with
-    | Kernel.mk n ps body => {
+    | Kernel.mk n ps bytes body => {
       let head := Text.cat3("extern \"C\" __global__ void ", n, Text.cat3("(", Cuda.params(ps), ") {"))
-      Cuda.line(0, head, Cuda.block(1, body, "}\n"))
+      Cuda.headers(ps, Cuda.line(0, head, Cuda.sharedPrologue(bytes, Cuda.block(1, body, "}\n"))))
     }
   }
 }
