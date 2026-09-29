@@ -17,9 +17,11 @@ present at `bfd5196`; the rest were introduced or exposed by the Lemur work.
 | S5 Conversion assertions and hot paths | F4, perf nits | done | `6efcf4b`, `9f894c7` |
 | S6 Sealing cleanup | F7, F8, F9 | done | `bbb24db` |
 | S7a Parser and printer diagnostics | F10, F12, F13 | done | `973ae20` |
-| S7b Elaborator field resolution and pattern spans | F11, F14 | in progress (wave 4) | |
+| S7b Elaborator field resolution and pattern spans | F11, F14 | done | `0d0f789` |
 
-Open decisions, not scheduled: D1–D3 below.
+All steps are done; the branch validates (714 tests), and every finding's
+repro was rerun against the final build. Open decisions, not scheduled: D1–D3
+and the proposals under "Follow-ups" below.
 
 ## Findings
 
@@ -346,3 +348,32 @@ carry spans, and `LinearUnused` for one points at it.
   `FreshVar.parameterNames` (any sort-parameter variable may be printed), and
   sharing `normalizeKind`/`normalizeLifetime` (longer, not shorter). The
   merged branch validates (710 tests).
+- 2026-09-29: S7b landed (`0d0f789`). `elabPath` states the one resolution
+  order: local, the field's forms, the recursive group's members (no longer
+  bound as locals), then globals. One `elabField` helper; an unapplied
+  non-nullary form is `ArityMismatch(arity, 0)`; pattern variables carry spans
+  through `SurfaceAst` and `CoreAst` (`PatternVar`), so `LinearUnused` points at
+  the variable, `_` included. The mutual-peer repro (n2c) passed `Nat` where a
+  `Type { kind = lin }` is required, which is rightly `TypeMismatch`; the test
+  uses a linear type. The merged branch validates (714 tests), and every
+  finding's repro behaves as expected on the final build.
+
+## Follow-ups (proposed, not scheduled)
+
+- **Explicit node identity** (from S2). Identity is a span's start offset, so
+  any future desugaring that reuses a source span for different syntax brings
+  F2 back. An identity field on Pi, Lam, Match and Scope, assigned by the
+  elaborator, would make that impossible; `NodeIdentityTests` guards it today.
+- **Field projection printing** (from S7a). The printer shows any one-branch
+  match returning a field of a one-constructor family as `P.x(v)`, including a
+  plain `inductive` that has no selector `P.x`; the kernel does not record which
+  families are structs.
+- **Implicit-first Pi in term position** (from S7a, pre-existing).
+  `{A: Type} -> A -> A` as a term is read as a block.
+- **`with` on the next line** (from S7a). `returning` may start the next line;
+  `with` still may not.
+- **Duplicated `parseFailure` helper** in `ClosureTests`, `UniverseTests` and
+  `ScopeTests`.
+- **Materializing shared values** (from S5 review). `ValueOps.materialize`
+  rebuilds a shared value without a memo, so it walks a DAG as a tree whenever
+  the store has solved variables it mentions.
