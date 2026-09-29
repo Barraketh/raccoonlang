@@ -655,10 +655,18 @@ constructor's field compiles only inside the declaring file.
 Elsewhere the implicit is `NonForcedImplicitParam`, since reconstructing it
 would read the field.
 
-A sealed family is never structure-eta eligible. Eta would let a `match` in its
-module open a neutral of it as a constructor application, even though the
-module never built it; an axiom's result or a blocked computation are such
-neutrals.
+A sealed family is never structure-eta eligible, and a proof of a sealed
+proposition is never reconstructed as its constructor. Either would let a
+`match` in the family's module open a value the module never built as a
+constructor application. Examples of such values:
+- an axiom's result, or a blocked computation;
+- a proof pulled out of another family's field;
+- a proof whose proposition only computes to the sealed one.
+
+A proof the module did build keeps its constructor form, and a `match` on it
+reduces as usual. Any other proof of a sealed proposition stays neutral, and a
+`match` on it stays stuck. Proofs remain irrelevant to conversion; only which
+proofs a `match` opens changes.
 
 **7.2 What the checker knows.** Sealing restricts what a program may write, not
 what the checker knows. Kinds, scopes, coverage, apartness and the conversion
@@ -672,8 +680,7 @@ when its type, in its value, contains any of these:
 - a binder of a kind or lifetime;
 - a kind or lifetime expression other than `Kind.unr` and `Lifetime.empty`,
   sort and closure fields included;
-- a linear type;
-- a sealed family declared in another module.
+- a linear type.
 
 An axiom's result is a neutral. Without this rule an axiom could consume a
 token without its module, as `axiom eat {A: Type { kind = lin }}(x: A): Unit`
@@ -688,16 +695,16 @@ a `Tok(Lifetime.empty)`, and a caller that instantiates `a` at a scope's atom
 carries the token out of that scope. An equation between kinds would likewise
 retype a value across kinds.
 
-The last bullet protects sealing. A data value of a sealed family is safe from
-an axiom: the axiom's result is a neutral, and since a sealed family has no eta
-(§7.1), no `match` opens it. A proof is different. Proof irrelevance
-reconstructs a proof as its proposition's constructor when the proposition
-determines the constructor's fields, and an axiom's proof is no exception.
-Take a sealed `Permit (l: Lifetime) : Prop | mk`, and the axiom
-`axiom forge : Permit(Lifetime.empty)`. The module's own `match` would take
-`forge` for a permit the module had made, and could mint a token from it. With
-the bullet, every value of a sealed family that a `match` opens was made in its
-module.
+Sealing needs no axiom rule. An axiom may yield a value of a sealed family,
+directly or through another family's field or a computation, but no `match`
+opens it. A data value has no eta, and a proof is not reconstructed (§7.1). Take
+a sealed `Permit (l: Lifetime) : Prop | mk`, and the axiom
+`axiom forge : Permit(Lifetime.empty)`. The module's `match` on `forge` stays
+stuck, so it cannot mint a token from it. Every value of a sealed family that a
+`match` opens was made in its module. An axiom can still yield an unscoped
+capability, such as a neutral `Permit(Lifetime.empty)`, that satisfies a
+parameter which only requires one. It can name no lifetime, so it can confine
+nothing and mint nothing.
 
 The bundled prelude:
 - declares no family, closure or sort at a kind other than `Kind.unr`, and no
