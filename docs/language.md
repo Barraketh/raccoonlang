@@ -510,10 +510,11 @@ match xs returning Vec(A, n) with
 | Vec.cons k tail head => xs
 ```
 
-A match without `returning` is a parse error, and a motive that is not a type
-is `NotAType`. Each branch is checked against the motive under the branch's
-refinements. The match's type is the motive, evaluated where the match stands,
-whether or not the match reduces.
+The clause continues the match header, so it may start the next line, as an
+arrow of a function type may. A match without `returning` is a parse error,
+and a motive that is not a type is `NotAType`. Each branch is checked against
+the motive under the branch's refinements. The match's type is the motive,
+evaluated where the match stands, whether or not the match reduces.
 
 Elimination from `Prop` is restricted. A Prop-valued result is always allowed.
 A data-valued result is allowed only for an empty reachable constructor set or

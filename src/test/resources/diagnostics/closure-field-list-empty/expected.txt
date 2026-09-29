@@ -1,0 +1,4 @@
+
+<root>/main.rac:1:30: error: Failed to parse module <root>/main.rac: Empty field list
+def keep : Nat -> Nat := fun {} (n: Nat): Nat => n
+                             ^

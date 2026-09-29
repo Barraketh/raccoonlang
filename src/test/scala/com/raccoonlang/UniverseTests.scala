@@ -27,8 +27,8 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     def program(sort: String): String = s"def f {u: Level}(A: $sort)(x: A): A := x\n"
 
     typecheckDecls(program("Sort { level = u }"))
-    assertEquals(parseFailure(program("Sort(u)")), "Failed to parse sort field list")
-    assertEquals(parseFailure(program("Sort")), "Failed to parse sort field list")
+    assertEquals(parseFailure(program("Sort(u)")), "Sort requires a level field")
+    assertEquals(parseFailure(program("Sort")), "Sort requires a level field")
   }
 
   test("a sort's field list is nonempty and names each known field once") {
@@ -54,9 +54,8 @@ class UniverseTests extends munit.FunSuite with TestSupport {
 
     typecheckDecls(program("Type"))
     typecheckDecls(program("Prop"))
-    val misplaced = "Misplaced field level: Type and Prop fix the level"
-    assertEquals(parseFailure(program("Type { level = one }")), misplaced)
-    assertEquals(parseFailure(program("Prop { level = zero }")), misplaced)
+    assertEquals(parseFailure(program("Type { level = one }")), "Misplaced field level: Type fixes the level")
+    assertEquals(parseFailure(program("Prop { level = zero }")), "Misplaced field level: Prop fixes the level")
     assertEquals(parseFailure(program("Type {}")), "Empty field list")
   }
 
