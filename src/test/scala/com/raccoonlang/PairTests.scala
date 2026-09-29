@@ -38,6 +38,22 @@ class PairTests extends munit.FunSuite with TestSupport {
     expectOnly[TypeMismatch](typecheckDecls(program("Type", "Pair(Type, Type)")))
   }
 
+  // An instance's sort is what a binder at a sort checks against, so a pair at a component's kind or scope reaches only
+  // a binder that admits it.
+  test("a binder at an unrestricted, unscoped sort refuses a linear or scoped pair") {
+    def program(body: String): String =
+      withFamilies(
+        "def count {A: Type}(x: A): Nat := 1\n" +
+          "def countAt {S: Lifetime}{A: Type { scope = S }}(x: A): Nat := 1\n" +
+          s"def at {l: Lifetime}(t: Tok(l)): Nat := $body\n"
+      )
+
+    typecheckDecls(program("Nat.add(burn(t), count(Pair.mk(0, Bool.true)))"))
+    typecheckDecls(program("Nat.add(burn(t), countAt(Pair.mk(Lease.mk(l), 0)))"))
+    expectOnly[TypeMismatch](typecheckDecls(program("Nat.add(burn(t), count(Pair.mk(Lease.mk(l), 0)))")))
+    expectOnly[TypeMismatch](typecheckDecls(program("countAt(Pair.mk(t, 0))")))
+  }
+
   // spec §2.3: a component's level is a successor, so a proof is paired with a value by Prod, Sigma or Subtype. A
   // proposition's level `zero` solves no successor `succ(u)`, whichever position it takes.
   test("a component is a type, never a proposition") {
@@ -51,8 +67,11 @@ class PairTests extends munit.FunSuite with TestSupport {
       "v"
     )
     typecheckDecls("def at : Nat := Prod.snd(Prod.mk(True.intro, 0))\n")
-    expectOnly[ImplicitReconstructionFailed](
-      typecheckDecls("def at : Nat := match Pair.mk(True.intro, 0) returning Nat with\n | Pair.mk _ n => n\n")
+    assertEquals(
+      expectOnly[ImplicitReconstructionFailed](
+        typecheckDecls("def at : Nat := match Pair.mk(True.intro, 0) returning Nat with\n | Pair.mk _ n => n\n")
+      ).param,
+      "u"
     )
   }
 
@@ -90,17 +109,16 @@ class PairTests extends munit.FunSuite with TestSupport {
       expectOnly[LinearUnused](typecheckDecls(program("match p returning Nat with\n  | Pair.mk t n => n"))),
       LinearUnused("t")
     )
-    def twice(component: String): String =
-      withFamilies(
-        s"def twice (l: Lifetime)(p: Pair($component, Bool)): Pair(Pair($component, Bool), Pair($component, Bool)) := " +
-          "Pair.mk(p, p)\n"
-      )
+    def twice(component: String): String = {
+      val pair = s"Pair($component, Bool)"
+      withFamilies(s"def twice (l: Lifetime)(p: $pair): Pair($pair, $pair) := Pair.mk(p, p)\n")
+    }
     typecheckDecls(twice("Nat"))
     typecheckDecls(twice("Lease(l)"))
     assertEquals(expectOnly[LinearReused](typecheckDecls(twice("Tok(l)"))), LinearReused("p"))
   }
 
-  test("a scoped component keeps the pair in its scope") {
+  test("a pair with a scoped component cannot leave its scope") {
     def program(body: String): String = withFamilies(s"def at : Nat := $body\n")
 
     typecheckDecls(program("scope l => match Pair.mk(Lease.mk(l), 1) returning Nat with\n | Pair.mk _ n => n"))
