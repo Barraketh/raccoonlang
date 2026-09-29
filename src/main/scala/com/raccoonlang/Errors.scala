@@ -142,9 +142,10 @@ final case class LinearReused(local: String) extends TypeError
 final case class LinearInType(term: CoreAst.Term, tpe: Value) extends TypeError
 
 /**
- * A definition whose type is linear: a global is never tracked, so it could be used any number of times (spec §3.2).
+ * A value outside every binder whose type is linear (spec §3.2): `definition` names a definition, which every reference
+ * uses, and is absent for the program's result, which nothing uses. Only a local's uses are counted.
  */
-final case class LinearGlobal(name: String, tpe: Value) extends TypeError
+final case class LinearGlobal(definition: Option[String], tpe: Value) extends TypeError
 
 /** A type that names the atom of a `scope` whose binder `lifetime` does not enclose it (spec §4.2). */
 final case class LifetimeEscapes(lifetime: String, tpe: Value) extends TypeError

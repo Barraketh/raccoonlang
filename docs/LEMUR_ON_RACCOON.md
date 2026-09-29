@@ -383,9 +383,12 @@ binder. Refinement in a branch never changes that for a local bound outside the
 branch. A pattern field's binder is its pattern, so its type reads as the branch
 refines it. A local whose type's kind
 involves a variable is tracked, since its binder's extent must be valid when
-the variable is `lin`. Locals of unrestricted type are not tracked. Globals are
-never tracked: a `def` or `opaque def` whose type is linear is `LinearGlobal`,
-and axioms belong to the trusted prelude (§7.3).
+the variable is `lin`. Locals of unrestricted type are not tracked. A value
+outside every binder is never tracked, so its type may not be linear
+(`LinearGlobal`). That is a `def` or `opaque def`, which every reference uses,
+and the program's result, the entry module's final `{ … }`. Nothing uses the
+result, and it would otherwise be the one place a token could be dropped
+outside its module. Axioms belong to the trusted prelude (§7.3).
 
 Types and proofs hold no tokens. A term whose type is a sort or a proposition
 may not contain a subterm of linear type (`LinearInType(e)`, where `e` is that
