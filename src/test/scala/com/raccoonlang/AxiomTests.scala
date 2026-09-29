@@ -2,7 +2,8 @@ package com.raccoonlang
 
 /**
  * Axioms (spec §7.3): only the trusted prelude declares them. A program that needs an assumption declares it in a
- * custom prelude, so every value of a sealed family comes from its constructors (§7.1).
+ * custom prelude, whose axioms keep the trusted bootstrap's obligations (docs/kernel.md), so every value of a sealed
+ * family comes from its constructors (§7.1).
  */
 class AxiomTests extends munit.FunSuite with TestSupport {
   private val peano =

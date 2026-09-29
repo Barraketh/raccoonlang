@@ -1,13 +1,9 @@
 package com.raccoonlang
 
-import com.raccoonlang.Value._
-import com.raccoonlang.telescope.BinderOps
-
 /**
- * The bundled prelude's lifetime polymorphism (spec §2.7, §7.3): its declarations take forced lifetime variables for
- * their type parameters' scopes, their type-family parameters' result sorts and their function-typed parameters'
- * closures, and it declares nothing linear and no sealed family. Its axioms are audited by the same walk, since only
- * the trusted prelude declares axioms.
+ * The bundled prelude's lifetime polymorphism (spec §2.7): its declarations take forced lifetime variables for their
+ * type parameters' scopes, their type-family parameters' result sorts and their function-typed parameters' closures.
+ * `PreludeInventoryTests` keeps its trusted surface.
  */
 class PreludeLifetimeTests extends munit.FunSuite with TestSupport {
 
@@ -21,69 +17,6 @@ class PreludeLifetimeTests extends munit.FunSuite with TestSupport {
       |""".stripMargin
 
   private def withScoped(decls: String): String = scoped + "\n" + decls
-
-  /**
-   * The globals of a prelude that are sealed families, or whose types mention a kind other than Kind.unr (a sort's, a
-   * closure's or a family instance's included), a kind variable, or an atom, walking every declaration's type, axioms
-   * included, under fresh binders. Lifetime variables are admitted: `Quot` binds them.
-   */
-  private def nonconforming(prelude: Prelude.Config): Set[String] = {
-    val env = prelude.checkedEnv
-
-    def conformsSort(sort: VSort): Boolean = sort.kind.isUnr && !sort.scope.vars.intersects(Atoms.all)
-
-    def conforms(v: Value): Boolean = {
-      val classifier = v.tpe match {
-        case sort: VSort => conformsSort(sort)
-        case _           => true
-      }
-      classifier && (v match {
-        case kind: Kind         => kind.isUnr
-        case lifetime: Lifetime => !lifetime.vars.intersects(Atoms.all)
-        case sort: VSort        => conformsSort(sort)
-        case pi: VPi =>
-          val fresh = BinderOps.freshen(pi)
-          val binderTypes = pi.binders.map(binder => fresh(binder.localRef).tpe)
-          pi.closureKind.isUnr && !pi.closureScope.vars.intersects(Atoms.all) &&
-          !binderTypes.exists(_ eq KindTpe) && binderTypes.forall(conforms) && conforms(pi.codomain(fresh))
-        case ConstSpine(_, args) => args.forall(conforms)
-        case _                   => true
-      })
-    }
-
-    def sealedFamily(v: Value): Boolean = v match {
-      case VConst(_, Inductive(meta), _) => meta.seal.nonEmpty
-      case _                             => false
-    }
-
-    env.globals.keys.filter(name => sealedFamily(env(name)) || !conforms(env(name).tpe)).toSet
-  }
-
-  test("the prelude declares nothing at a kind other than Kind.unr, no kind variable, only variable scopes, no seal") {
-    assertEquals(nonconforming(Prelude.default), Set.empty[String])
-
-    val linear =
-      """
-        |inductive Unit : Type
-        | | unit : Unit
-        |
-        |inductive Tok : Type { kind = lin }
-        | | mk : Tok
-        |
-        |def keep {k: Kind}{A: Type { kind = k }}(x: A): A := x
-        |
-        |def apply (f: { kind = lin } Unit -> Unit): Unit := f(Unit.unit)
-        |
-        |axiom eat {A: Type { kind = lin }}(x: A): Unit
-        |
-        |sealed inductive Permit : Prop
-        | | mk : Permit
-        |""".stripMargin
-    assertEquals(
-      nonconforming(Prelude.fromSource("linear", linear)),
-      Set("Tok", "Tok.mk", "keep", "apply", "eat", "Permit")
-    )
-  }
 
   test("a prelude family instance is at the scope its arguments' types give it") {
     def program(sort: String, family: String): String =

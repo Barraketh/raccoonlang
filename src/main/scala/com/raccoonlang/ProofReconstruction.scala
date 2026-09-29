@@ -43,8 +43,8 @@ object ProofReconstruction {
 
   /**
    * Reconstruct one validated constructor layer at the exact proposition `tpe`, a sealed one included (spec §7.1): only
-   * the trusted prelude declares axioms, and the bundled one declares no sealed family, so every proof of a sealed
-   * proposition was built from its constructors.
+   * the trusted prelude declares axioms and builtins, and none of them yields a proof of a sealed proposition except by
+   * applying its constructors (obligation T2, docs/kernel.md), so every such proof was built from its constructors.
    */
   def reconstruct(tpe: Value): Option[Result] =
     recoveryInfo(tpe).flatMap { case (instance, info) => validate(instance, info, tpe) }

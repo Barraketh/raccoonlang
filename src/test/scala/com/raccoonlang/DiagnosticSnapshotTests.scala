@@ -1,6 +1,5 @@
 package com.raccoonlang
 
-import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path, Paths}
 import scala.jdk.CollectionConverters._
 import scala.util.control.NonFatal
@@ -13,12 +12,10 @@ import scala.util.control.NonFatal
  * machine independent. A case whose program is expected to fail but does not, or that fails somewhere the reporter
  * cannot render, is itself a snapshot: the harness records that outcome verbatim rather than hiding it.
  *
- * Regenerate every expectation with `sbt -batch -Draccoon.diagnostics.regenerate=true test`, then read the diff: it is
- * the review artifact for any change to error reporting.
+ * Each `expected.txt` is a golden (`Goldens`), so its diff is the review artifact for any change to error reporting.
  */
-class DiagnosticSnapshotTests extends munit.FunSuite {
+class DiagnosticSnapshotTests extends munit.FunSuite with Goldens {
   private val casesRoot: Path = Paths.get("src", "test", "resources", "diagnostics").toAbsolutePath.normalize
-  private val regenerate: Boolean = sys.props.get("raccoon.diagnostics.regenerate").contains("true")
 
   private def caseDirs: Vector[Path] =
     Files
@@ -70,13 +67,7 @@ class DiagnosticSnapshotTests extends munit.FunSuite {
   caseDirs.foreach { caseDir =>
     val name = caseDir.getFileName.toString
     test(s"diagnostic snapshot: $name") {
-      val expectedFile = caseDir.resolve("expected.txt")
-      val actual = normalize(render(caseDir.resolve("main.rac")), caseDir)
-      if (regenerate) Files.write(expectedFile, actual.getBytes(StandardCharsets.UTF_8))
-      else {
-        assert(Files.isRegularFile(expectedFile), s"missing expectation $expectedFile; regenerate the snapshots")
-        assertNoDiff(actual, Files.readString(expectedFile))
-      }
+      assertGolden(caseDir.resolve("expected.txt"), normalize(render(caseDir.resolve("main.rac")), caseDir))
     }
   }
 
