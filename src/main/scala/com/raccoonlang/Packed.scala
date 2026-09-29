@@ -28,6 +28,13 @@ object Packed {
   private[raccoonlang] val MaxPowExponent: BigInt = BigInt(1) << 24
   private[raccoonlang] val MaxShiftLeft: BigInt = BigInt(1) << 24
 
+  /**
+   * The largest literal on which a native operation not applied to two literals runs its declared body (spec §5.2). A
+   * body unfolds one layer per unit of its recursion argument, and the kernel does not know which argument that is, so
+   * the limit bounds every literal argument.
+   */
+  private[raccoonlang] val MaxUnfoldedLiteral: BigInt = BigInt(1) << 10
+
   private def natSpec(name: String)(run: (BigInt, BigInt) => BigInt): NativeNatOpSpec = new NatOpSpec(name, run)
 
   private def boolSpec(name: String)(run: (BigInt, BigInt) => Boolean): NativeNatOpSpec = new BoolOpSpec(name, run)
@@ -107,20 +114,46 @@ object Packed {
         case Some(h: ConstructorHead) if h.totalArity == 0 && h.noConfusion => VCtor(h, Vector.empty, h.tpe)
         case _ => reject(s"`$ctorName` is not a nullary constructor")
       }
-    val compute: (BigInt, BigInt) => Value = spec match {
-      case natOp: NatOpSpec => (a, b) => VPacked.nat(natOp.run(a, b), nat)
+    val (compute, resultTy): ((BigInt, BigInt) => Value, Value) = spec match {
+      case natOp: NatOpSpec => ((a, b) => VPacked.nat(natOp.run(a, b), nat), nat)
       case boolOp: BoolOpSpec =>
         val (yes, no) = (boolCtor("Bool.true"), boolCtor("Bool.false"))
-        (a, b) => if (boolOp.run(a, b)) yes else no
+        ((a, b) => if (boolOp.run(a, b)) yes else no, yes.tpe)
     }
-    val run: (Vector[Value], Env) => Value = (args, _) =>
-      args match {
-        case Vector(left: VPacked, right: VPacked)
-            if opsEnabled.value && left.natValue.nonEmpty && right.natValue.nonEmpty =>
-          compute(left.natValue.get, right.natValue.get)
-        case _ => Interpreter.runLam(source, args)
+    lazy val self: VLam =
+      VLam(
+        source.tpe,
+        source.id,
+        LamBody.Native(
+          (args, _) =>
+            args match {
+              case Vector(NatLiteral(a), NatLiteral(b)) =>
+                if (opsEnabled.value) compute(a, b) else Interpreter.runLam(source, args)
+              case _ if args.forall { case NatLiteral(n) => n <= MaxUnfoldedLiteral; case _ => true } =>
+                Interpreter.runLam(source, args)
+              // A neutral headed by this operation, which reruns once what blocks its arguments is solved, and is rigid
+              // when nothing does (spec §5.2).
+              case _ =>
+                val blockedOn = args.foldLeft(DepSet.empty) {
+                  case (deps, Blocker(argDeps)) => deps ++ argDeps
+                  case (deps, _)                => deps
+                }
+                VApp(self, args, resultTy, blockedOn)
+            },
+          Env.empty,
+          isRawRecursive = false
+        )
+      )
+    self
+  }
+
+  /** A packed Nat literal's value. */
+  private object NatLiteral {
+    def unapply(value: Value): Option[BigInt] =
+      value match {
+        case p: VPacked => p.natValue
+        case _          => None
       }
-    VLam(source.tpe, source.id, LamBody.Native(run, Env.empty, isRawRecursive = false))
   }
 
   private[raccoonlang] def validateNatFamily(env: Env): ValidatedNatLayout = {
