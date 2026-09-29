@@ -680,11 +680,18 @@ not currently install this layout.
 ## Value identity
 
 Fast equality keys may prove definitional equality, so every value component
-used to build a key must be semantically identifying. Source and synthesized
-Pi, lambda, and blocked-match nodes carry distinct AST node identities;
-captured values are part of closure identity. Packed keys include the codec,
-canonical payload, and packed type. Source spans are diagnostic metadata and
-are not identities.
+used to build a key must be semantically identifying. A Pi, lambda, match or
+`scope` node's identity is its source and the offset its span starts at, and
+no two nodes of one kind with different syntax share one. A written node keeps
+its own span, a generated one gets a span of its own (a struct selector's
+header its field's), and a node the checker fabricates, or the elaborator
+rewrites from written syntax (a selector's result type that reads an earlier
+field), gets a synthetic identity. Nodes of one syntax may share an identity:
+a selector's result type is both its header's codomain and its match's motive.
+Captured values, in binding order, are part of closure identity, and a Pi's
+key counts its binders, so a Pi that drops leading binders its remainder does
+not depend on keeps its node's identity. Packed keys include the codec,
+canonical payload, and packed type. A span is otherwise diagnostic metadata.
 
 A key only accelerates conversion. Equal keys must be convertible, and a key
 mismatch that conversion treats as conclusive must be unconvertible. The

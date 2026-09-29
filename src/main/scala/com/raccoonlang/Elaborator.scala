@@ -362,14 +362,12 @@ object Elaborator {
           .toSet
         val resultTy =
           rewriteFieldType(header.name, selfName, field.ty, previousFields)
+        // Where a header's span starts is its function type's node identity (docs/kernel.md#value-identity), and the
+        // selectors' types are different function types, so each header takes its own field's span.
         val selectorHeader =
           SA.Command.DeclHeader(
             field.name,
-            SA.FuncHeader(
-              implicitFamilyBinders :+ selfBinder,
-              resultTy,
-              Span(selfSpan.start, resultTy.span.end, selfSpan.source)
-            ),
+            SA.FuncHeader(implicitFamilyBinders :+ selfBinder, resultTy, field.span),
             field.span
           )
         // The selector is an ordinary match on `self` binding every stored field and returning the
@@ -462,7 +460,7 @@ object Elaborator {
         }
         SA.Term.Sort(rewrittenLevel, kind.map(rewrite), scope.map(rewrite), span)
 
-      case SA.Term.Pi(closure, binders, body, span) =>
+      case pi @ SA.Term.Pi(closure, binders, body, span) =>
         // The closure stands outside the group. Binders in one group scope left to right: each one's
         // type sees the names bound before it, and the body sees them all.
         def rewrite(field: SA.Term): SA.Term = rewriteFieldType(structName, selfName, field, previousFields)
@@ -470,12 +468,15 @@ object Elaborator {
           binders.foldLeft((Vector.empty[SA.Binder], previousFields)) { case ((acc, fields), binder) =>
             (acc :+ binder.copy(ty = rewriteFieldType(structName, selfName, binder.ty, fields)), fields - binder.name)
           }
-        SA.Term.Pi(
+        val rewritten = SA.Term.Pi(
           SA.Closure(closure.kind.map(rewrite), closure.scope.map(rewrite)),
           rewrittenBinders,
           rewriteFieldType(structName, selfName, body, bodyFields),
           span
         )
+        // A span's start is a node identity (docs/kernel.md#value-identity), and the field's own type already holds
+        // this one. A rewritten function type is a different one, so it takes a fresh identity.
+        if (rewritten == pi) pi else rewritten.copy(span = Span.synthetic())
 
       case other => other
     }
@@ -536,16 +537,19 @@ object Elaborator {
    * A surface Pi's binders are already exactly its group — the parser decided the grouping — so a Pi body is NOT merged
    * into the enclosing group. `(a: A) -> ((b: B) -> C)` stays a 1-ary Pi returning a Pi, which is a different type from
    * the 2-ary `(a: A) -> (b: B) -> C`.
+   *
+   * The Core Pi keeps the surface Pi's own span, whose start is its node identity (docs/kernel.md#value-identity). A
+   * span built from its binders would not do: an anonymous binder's span is its domain's, so the outer Pi of
+   * `(A -> A) -> A` would start where its domain `A -> A` does.
    */
   private def elabPi(pi: SA.Term.Pi, env: ResolveEnv): CA.Term.Pi = {
     val piEnv = env.enterLocalScope
     val (binders, binderEnv) = elabBinders(pi.binders, CA.BinderSite.Function, piEnv)
     val body = elabTerm(pi.body, binderEnv)
-    val span = Span(binders.head.span.start, body.span.end, binders.head.span.source.orElse(body.span.source))
     // A function type captures nothing, so an omitted closure field is Kind.unr or Lifetime.empty (spec §1).
     def field(written: Option[SA.Term], parameter: CA.Parameter, omitted: CA.Form): CA.ClosureField =
       CA.ClosureField.Written(
-        written.fold[CA.Term](CA.Term.FormOp(omitted, Vector.empty, span))(elabField(_, parameter, env))
+        written.fold[CA.Term](CA.Term.FormOp(omitted, Vector.empty, pi.span))(elabField(_, parameter, env))
       )
     CA.Term.Pi(
       binders,
@@ -554,7 +558,7 @@ object Elaborator {
         field(pi.closure.kind, CA.Parameter.Kind, CA.Form.KindUnr),
         field(pi.closure.scope, CA.Parameter.Lifetime, CA.Form.LifetimeEmpty)
       ),
-      span
+      pi.span
     )
   }
 

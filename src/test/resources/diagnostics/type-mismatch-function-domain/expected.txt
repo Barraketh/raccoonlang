@@ -1,0 +1,9 @@
+
+<root>/main.rac:1:42: error: type mismatch
+def k {A: Type}(f: (A -> A) -> A) : A := f(f)
+                                         ^^^^
+  expected: A -> A
+  actual:   (A -> A) -> A
+  differ at: A  vs  A -> A   (not reducible: stuck)
+note: in argument 1 (_) of f
+note: in definition k

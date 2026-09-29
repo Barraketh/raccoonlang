@@ -1,0 +1,10 @@
+def G {T: Type}(t: T) : Type := T
+
+struct P (A: Type) indices (n: Nat) : Type
+ | mk (x: A) (f: G(x) -> Nat) : P(A, 0)
+
+open P
+
+def wrap (v: P(Nat, 0)) : P(P(Nat, 0), 0) := mk(v, f(v))
+
+{ Nat.zero }
