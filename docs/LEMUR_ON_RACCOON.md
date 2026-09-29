@@ -655,7 +655,9 @@ Elsewhere the implicit is `NonForcedImplicitParam`, since reconstructing it
 would read the field.
 
 Every value of a sealed family comes from its constructors, because only the
-trusted prelude declares axioms, and it declares no sealed family (§7.3). A
+trusted prelude declares axioms, and the bundled prelude declares no sealed
+family (§7.3). A custom prelude is part of the trusted base, so this holds only
+if it keeps to the same rule. A
 neutral of a sealed family is a parameter that a caller supplied, a blocked
 computation, or an opaque definition whose checked body built it. So structure
 eta and proof reconstruction apply to sealed families as to any other, and open
