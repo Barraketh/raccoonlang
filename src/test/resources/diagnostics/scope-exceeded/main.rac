@@ -1,0 +1,7 @@
+inductive Lease (l: Lifetime) : Type { scope = l }
+ | mk : Lease(l)
+
+inductive Holds (l: Lifetime) : Type
+ | mk (lease: Lease(l)) : Holds(l)
+
+{ Nat.zero }

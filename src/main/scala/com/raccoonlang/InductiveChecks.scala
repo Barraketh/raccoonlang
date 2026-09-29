@@ -456,6 +456,26 @@ object InductiveChecks {
         case sort: VSort => sort
         case other       => at(decl.header.resultTy.span) { fail(InductiveTypeNotASort(other)) }
       }
+      // spec §5.1: whatever can be read off an instance's type counts toward the declared scope, so it contains the
+      // scope of each parameter's and index's type, a sort parameter contributing nothing. A family at a kind other
+      // than Kind.unr also names each lifetime parameter.
+      decl.header.binders.zip(familyArgs).zipWithIndex.foreach { case ((binder, arg), index) =>
+        val role = if (index < decl.header.params.length) "parameter" else "index"
+        def exceeded(part: String, partScope: Lifetime): Nothing =
+          at(binder.span) { fail(ScopeExceeded(s"Family ${decl.header.name}", declaredSort.scope, part, partScope)) }
+        (arg, arg.tpe) match {
+          case (lifetime: Lifetime, _) =>
+            if (!declaredSort.kind.isUnr && !Lifetime.contains(declaredSort.scope, lifetime))
+              exceeded(
+                s"lifetime parameter ${binder.name}, which a family at kind ${declaredSort.kind} must name",
+                lifetime
+              )
+          case (_, _: ParameterTpe) =>
+          case (_, tpe) =>
+            val scope = TypeChecker.getUniverse(tpe).scope
+            if (!Lifetime.contains(declaredSort.scope, scope)) exceeded(s"$role ${binder.name} : $tpe", scope)
+        }
+      }
       FamilySignature(decl, familyType, declaredSort, familyArgs)
     }
 
@@ -592,22 +612,20 @@ object InductiveChecks {
       )
 
       constructorArgs.zipWithIndex.foreach { case ((binder, field), sourceFieldIndex) =>
+        def fieldName = s"${ctor.canonicalName}.${binder.name}"
+        def part = s"field $fieldName : ${field.tpe}"
+        val fieldSort = TypeChecker.getUniverse(field.tpe)
         // 2) Universe bound: skip for Prop families; enforce for Sort families
-        if (!Sorts.isProp(constructorUniverse)) {
-          val fieldLevel = TypeChecker.getUniverse(field.tpe).level
-          if (!Level.leq(fieldLevel, constructorUniverse.level))
-            at(binder.span) {
-              fail(
-                InductiveUniverseTooSmall(
-                  name,
-                  s"${ctor.canonicalName}.${binder.name}",
-                  field.tpe,
-                  fieldLevel,
-                  constructorUniverse.level
-                )
-              )
-            }
-        }
+        if (!Sorts.isProp(constructorUniverse) && !Level.leq(fieldSort.level, constructorUniverse.level))
+          at(binder.span) {
+            fail(InductiveUniverseTooSmall(name, fieldName, field.tpe, fieldSort.level, constructorUniverse.level))
+          }
+        // Kind and scope bounds (spec §5.1), Prop families included: the declared kind and scope, never derived,
+        // contain each field's. A sibling's field is read by its declared sort, so no fixed point is needed.
+        if (!Kind.contains(constructorUniverse.kind, fieldSort.kind))
+          at(binder.span) { fail(KindExceeded(s"Family $name", constructorUniverse.kind, part, fieldSort.kind)) }
+        if (!Lifetime.contains(constructorUniverse.scope, fieldSort.scope))
+          at(binder.span) { fail(ScopeExceeded(s"Family $name", constructorUniverse.scope, part, fieldSort.scope)) }
 
         if (!doesNotOccur(recursiveTarget, field.tpe)) hasRecursiveField = true
 

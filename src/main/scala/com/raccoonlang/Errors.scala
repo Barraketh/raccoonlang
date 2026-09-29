@@ -118,6 +118,17 @@ final case class InductiveTypeNotASort(tpe: Value) extends TypeError
 /** A sort of a kind other than `Kind.unr` at a level that may be zero (spec §2.3): proofs are unrestricted. */
 final case class LinearProp(kind: Value.Kind, level: Value.Level) extends TypeError
 
+/** A declared kind that does not contain the kind of `part` (spec §2.6), such as a family's constructor field. */
+final case class KindExceeded(declaration: String, declared: Value.Kind, part: String, partKind: Value.Kind)
+  extends TypeError
+
+/**
+ * A declared scope that does not contain the scope of `part` (spec §2.6), such as a family's constructor field,
+ * parameter or index.
+ */
+final case class ScopeExceeded(declaration: String, declared: Value.Lifetime, part: String, partScope: Value.Lifetime)
+  extends TypeError
+
 final case class InvalidInductiveBlock(reason: String) extends TypeError
 
 /** One family of a mutual block declared in a different universe from its siblings. */

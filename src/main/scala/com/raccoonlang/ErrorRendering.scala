@@ -49,9 +49,14 @@ object ErrorRendering {
         s"Inductive $inductive lives in Sort ${PrettyPrinter.print(inductiveUniverse)}, " +
           s"but $where has type $fieldTy : Sort ${PrettyPrinter.print(fieldUniverse)}"
       case InductiveTypeNotASort(tpe) => s"Inductive type must be a Sort, got $tpe instead"
-      case LinearProp(kind, level) =>
-        s"A sort of kind $kind needs a level that is never zero, but its level $level may be zero; " +
-          "proofs are unrestricted"
+      case LinearProp(kind, level)    =>
+        // The level is not never zero, so a constant one is zero.
+        val levelIsZero = if (level.terms.isEmpty) "is zero" else s"$level may be zero"
+        s"A sort of kind $kind needs a level that is never zero, but its level $levelIsZero; proofs are unrestricted"
+      case KindExceeded(declaration, declared, part, partKind) =>
+        s"$declaration is declared at kind $declared, which does not contain the kind $partKind of $part"
+      case ScopeExceeded(declaration, declared, part, partScope) =>
+        s"$declaration is declared at scope $declared, which does not contain the scope $partScope of $part"
       case InvalidInductiveBlock(reason) => s"Invalid inductive block: $reason"
       case MutualBlockSortMismatch(family, declared, expected) =>
         s"Invalid inductive block: family $family lives in $declared, expected $expected"
