@@ -231,7 +231,11 @@ checker and proof irrelevance share. Sorts are compared only by conversion.
 An implicit binder is accepted only with a compiled projection that recovers
 it from later explicit arguments. A sort's level, kind and scope, and a function
 type's closure kind and closure scope, are projection positions; the kinds and
-scopes recover a variable only when the field is exactly that variable. Checked
+scopes recover a variable only when the field is exactly that variable.
+Positions are searched breadth-first from the explicit arguments, and a closure
+field only once no other position is left: a closure is what a lambda derives
+from its captures, so reading an implicit elsewhere lets a lambda written
+without the closure its parameter declares fail its own check. Checked
 applications retain only explicit arguments. Checking and evaluation
 reconstruct every implicit with the same projection and then check it against
 its instantiated binder type. Constructor family parameters that cannot be
