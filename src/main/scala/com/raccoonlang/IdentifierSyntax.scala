@@ -13,6 +13,7 @@ private[raccoonlang] object IdentifierSyntax {
     "def",
     "inductive",
     "struct",
+    "sealed",
     "namespace",
     "open",
     "import",

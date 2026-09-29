@@ -146,12 +146,14 @@ object SurfaceAst {
     sealed trait Decl extends Command
 
     object Decl {
-      // Constant: name : type [:= value]. Opaque definitions keep only their symbolic head in the environment.
+      // Constant: name : type [:= value]. Opaque definitions keep only their symbolic head in the environment. A
+      // struct's generated selectors are marked `isSelector`; a program cannot write one.
       final case class ConstDecl(
           isOpaque: Boolean,
           header: DeclHeader,
           decreases: Option[DecreaseSpec],
           body: ConstBody,
+          isSelector: Boolean,
           span: Span
       ) extends Decl
 
@@ -165,6 +167,7 @@ object SurfaceAst {
           header: InductiveHeader,
           ctors: Vector[ConstructorDecl],
           generateSelectors: Boolean,
+          isSealed: Boolean,
           span: Span
       ) extends Decl
     }

@@ -297,7 +297,8 @@ object InductiveChecks {
     result.toVector
   }
 
-  private def installConstructors(decl: Decl.InductiveDecl, baseEnv: Env): Env =
+  private def installConstructors(family: PreparedFamily, baseEnv: Env): Env = {
+    val decl = family.decl
     decl.ctors.foldLeft(baseEnv) { case (curEnv, ctor) =>
       val allBinders = constructorBinders(decl.header, ctor)
       val fullTypeTerm =
@@ -305,11 +306,13 @@ object InductiveChecks {
         else Term.Pi(allBinders, ctor.resultTy, Closure.unrestricted(ctor.span), ctor.span)
 
       val fullType = TypeChecker.getConstructorType(fullTypeTerm, curEnv, decl.header.params.length)
-      curEnv.putGlobal(
+      val installed = curEnv.putGlobal(
         ctor.canonicalName,
         ConstructorHead(ctor.canonicalName, decl.header.params.length, allBinders.length, fullType)
       )
+      family.seal.fold(installed)(installed.sealMember(ctor.canonicalName, _))
     }
+  }
 
   private def checkConstructorParamDiscipline(
       header: InductiveHeader,
@@ -367,6 +370,7 @@ object InductiveChecks {
   private final case class PreparedFamily(
       decl: Decl.InductiveDecl,
       head: VConst,
+      seal: Option[Sealing.Seal],
       completeConstructorLink: Env => Unit
   )
 
@@ -499,7 +503,8 @@ object InductiveChecks {
       decl.header.binders.length,
       provisionalBlock,
       projectionInfo = None,
-      proofRecovery = None
+      proofRecovery = None,
+      seal = Option.when(decl.isSealed)(Sealing.Seal(decl.header.name, decl.span.source))
     )
   }
 
@@ -536,7 +541,7 @@ object InductiveChecks {
     decl.ctors.foreach { ctor =>
       val allConstructorBinders = constructorBinders(header, ctor)
       val checkedBinders =
-        BinderOps.checkBinders(allConstructorBinders, provisionalEnv, familyParams = header.params.length)
+        BinderOps.checkBinders(allConstructorBinders, provisionalEnv, familyParams = header.params.length, ctor.span)
       val binders = checkedBinders.binders
       val envWithBinders = checkedBinders.env
       val binderVars = binders.map(binder => envWithBinders(binder.localRef))
@@ -683,7 +688,8 @@ object InductiveChecks {
 
     // A one-constructor family gets positional projection metadata regardless of indices or recursion. Structure eta
     // is the narrower Lean gate: zero true source indices and no recursive occurrence. Prop instances are filtered
-    // dynamically by StructEta.eligibleInstance and follow their declaration-compiled recovery plan.
+    // dynamically by StructEta.eligibleInstance and follow their declaration-compiled recovery plan. A sealed family
+    // never has eta, which would let a match in its module open a neutral the module never built (spec §7.1).
     //
     // The constructor head is a promise completed after installation: constructor types are checked against the
     // installed family head, so the head cannot exist before installConstructors runs.
@@ -695,7 +701,7 @@ object InductiveChecks {
           new ProjectionInfo(
             ctor.canonicalName,
             constructorFieldDependencies(ctor),
-            etaEligible = header.indices.isEmpty && !blockHasRecursiveField,
+            etaEligible = header.indices.isEmpty && !blockHasRecursiveField && check.initialMeta.seal.isEmpty,
             () => installedCtorHead
           )
         )
@@ -725,7 +731,7 @@ object InductiveChecks {
         projectionInfo.foreach(_.ctorHead)
       }
 
-    PreparedFamily(decl, inductiveHead, completeConstructorLink)
+    PreparedFamily(decl, inductiveHead, meta.seal, completeConstructorLink)
   }
 
   def evalInductiveBlock(block: Decl.InductiveBlock, env: Env): Env = {
@@ -752,7 +758,7 @@ object InductiveChecks {
       curEnv.putGlobal(family.decl.header.name, family.head)
     }
     val finalEnv = prepared.foldLeft(envWithFinalHeads) { case (curEnv, family) =>
-      installConstructors(family.decl, curEnv)
+      installConstructors(family, curEnv)
     }
     prepared.foreach(_.completeConstructorLink(finalEnv))
     finalEnv

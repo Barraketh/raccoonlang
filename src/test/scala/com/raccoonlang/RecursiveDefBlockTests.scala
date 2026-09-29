@@ -48,6 +48,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           span
         )
       ),
+      isSealed = false,
       span
     )
     val familyB = Decl.InductiveDecl(
@@ -62,11 +63,13 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           span
         )
       ),
+      isSealed = false,
       span
     )
     val result = Decl.InductiveDecl(
       CoreAst.InductiveHeader("GroupResult", Vector.empty, Vector.empty, typeSort, span),
       Vector(CoreAst.ConstructorDecl("GroupResult.zero", "zero", Vector.empty, global("GroupResult"), span)),
+      isSealed = false,
       span
     )
     val withResult = Interpreter.evalDecl(result, Prelude.test.checkedEnv)
@@ -198,6 +201,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           span
         )
       ),
+      isSealed = false,
       span
     )
     val holderEnv = Interpreter.evalDecl(holder, base)

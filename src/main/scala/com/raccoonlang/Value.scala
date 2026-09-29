@@ -1041,12 +1041,14 @@ object Value {
     validatePositiveParams()
   }
 
+  /** A family's checked metadata. `seal` is present when the family is sealed to its module (Sealing). */
   final case class InductiveMeta(
       constructors: Vector[ConstructorMeta],
       familyArity: Int,
       block: InductiveBlockDescriptor,
       projectionInfo: Option[ProjectionInfo],
-      proofRecovery: Option[ProofRecoveryInfo]
+      proofRecovery: Option[ProofRecoveryInfo],
+      seal: Option[Sealing.Seal]
   ) {
     require(familyArity >= block.key.numParams, "Inductive family arity must contain the common parameter prefix")
     require(projectionInfo.isEmpty || constructors.length == 1, "Only one-constructor families can be projected")
@@ -1055,6 +1057,7 @@ object Value {
       proofRecovery.forall(info => projectionInfo.contains(info.projectionInfo)),
       "Proof recovery must share its family's projection metadata"
     )
+    require(seal.isEmpty || !projectionInfo.exists(_.etaEligible), "A sealed family is never structure-eta eligible")
 
     lazy val constructorNames: Vector[String] = constructors.map(_.canonicalName)
   }

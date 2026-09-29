@@ -90,14 +90,16 @@ object Projection {
    * Compile projection specs for a freshened telescope. The first `familyParams` binders are a constructor telescope's
    * synthesized family params: their author never wrote the braces, so when unforced they are demoted to explicit
    * instead of erroring. Everywhere else — defs, axioms, lambdas, and constructor binders the user wrote — an unforced
-   * implicit throws NonForcedImplicitParam.
+   * implicit throws NonForcedImplicitParam. `site` is where the telescope is written: a path reads a sealed
+   * constructor's field only inside its family's module (spec §7.1).
    */
-  def compile(binders: Vector[BinderInput], familyParams: Int = 0): Vector[BinderResult] =
-    compileDemotable(binders, (0 until familyParams).toSet)
+  def compile(binders: Vector[BinderInput], familyParams: Int, site: Span): Vector[BinderResult] =
+    compileDemotable(binders, (0 until familyParams).toSet, site)
 
   private def compileDemotable(
       binders: Vector[BinderInput],
-      demotable: Set[Int]
+      demotable: Set[Int],
+      site: Span
   ): Vector[BinderResult] = {
     if (binders.forall(!_.isImplicit))
       return binders.map(_ => BinderResult(isImplicit = false, projection = None))
@@ -191,7 +193,7 @@ object Projection {
                   queue.append((root, steps :+ Step.SortScope, sort.scope))
 
                 case VCtor(head, stored, tpe) =>
-                  if (head.noConfusion)
+                  if (head.noConfusion && Sealing.accessible(familySeal(tpe), site))
                     stored.zipWithIndex.foreach { case (field, idx) =>
                       queue.append((root, steps :+ Step.CtorField(head.name, idx), field))
                     }
@@ -279,6 +281,13 @@ object Projection {
         }
     }
   }
+
+  /** The seal of the family a constructor value belongs to, read off its type. */
+  private def familySeal(ctorTpe: Value): Option[Sealing.Seal] =
+    ctorTpe match {
+      case InductiveFamilyValue(instance) => instance.meta.seal
+      case other => wtf(s"A constructor value has the type $other, which is no family instance")
+    }
 
   /**
    * Domain of binder `idx`, evaluated under fresh earlier binders; None when it depends on them (such a position is not

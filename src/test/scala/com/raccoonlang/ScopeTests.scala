@@ -184,7 +184,7 @@ class ScopeTests extends munit.FunSuite with TestSupport {
     val env =
       core.decls.dropRight(1).foldLeft(Prelude.default.checkedEnv)((env, decl) => Interpreter.evalDecl(decl, env))
     core.decls.last match {
-      case CA.Decl.ConstDecl(_, _, _, CA.ConstBody.TermBody(body), _) =>
+      case CA.Decl.ConstDecl(_, _, _, CA.ConstBody.TermBody(body), _, _) =>
         (env, body, TypeChecker.checkTerm(body, env))
       case other => fail(s"Expected a definition, got $other")
     }

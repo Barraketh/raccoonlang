@@ -9,7 +9,8 @@ object Env {
       locals = VectorMap.empty,
       nativeLiterals = NativeLiteralState.empty,
       localRefs = Set.empty,
-      openAtoms = DepSet.empty
+      openAtoms = DepSet.empty,
+      sealedMembers = Map.empty
     )
 
   // Internal-invariant assertions run on every env bind — the hottest path in the system — and
@@ -73,12 +74,16 @@ object GlobalBinding {
 //
 // `openAtoms` is checker-only: the atoms whose `scope` binders enclose the position being checked (spec §4.2). It is
 // lexical, so only the checker opens one, and closing an env over a value drops them, since evaluation never checks.
+//
+// `sealedMembers` is checker-only too: each constructor and selector of a sealed family, by global name, with its
+// family's seal, which the checker consults where a global name is resolved (Sealing).
 final case class Env(
     globals: Map[String, GlobalBinding],
     locals: VectorMap[CoreAst.LocalRef, Value],
     nativeLiterals: NativeLiteralState,
     private[raccoonlang] val localRefs: Set[CoreAst.LocalRef],
-    private[raccoonlang] val openAtoms: DepSet
+    private[raccoonlang] val openAtoms: DepSet,
+    private[raccoonlang] val sealedMembers: Map[String, Sealing.Seal]
 ) {
   require(localRefs.size == locals.size, "local-ref index size disagrees with locals")
 
@@ -148,6 +153,12 @@ final case class Env(
     val capturedLocals = VectorMap.from(locals.iterator.filter { case (ref, _) => capturedRefs(ref) })
 
     copy(locals = capturedLocals, localRefs = capturedRefs, openAtoms = DepSet.empty)
+  }
+
+  /** Record a published global as a constructor or selector of a family sealed by `seal`. */
+  private[raccoonlang] def sealMember(name: String, seal: Sealing.Seal): Env = {
+    if (!globals.contains(name)) wtf(s"Sealed member $name is not a global")
+    copy(sealedMembers = sealedMembers + (name -> seal))
   }
 
   /** The body of a `scope` term, checked: its binder denotes the atom, which is open there. */

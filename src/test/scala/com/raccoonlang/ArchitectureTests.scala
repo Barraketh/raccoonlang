@@ -68,6 +68,22 @@ class ArchitectureTests extends munit.FunSuite {
       "uses of a linear local are counted only by the ledger",
       raw"\bLinear(Unused|Reused)\(".r,
       Set("Ledger.scala", "Errors.scala", "ErrorRendering.scala")
+    ),
+    Rule(
+      "sealing is one decision, Sealing.accessible, and only Sealing raises SealedConstructor",
+      raw"\bSealedConstructor\(".r,
+      Set("Sealing.scala", "Errors.scala", "ErrorRendering.scala")
+    ),
+    Rule(
+      "a module is a source file, and only Sealing compares a span's source",
+      raw"\.source\s*[=!]=|\.source\.contains\b|[=!]=\s*[\w.]*\.source\b|\bsyntheticSource\b".r,
+      Set("Sealing.scala", "Parser.scala")
+    ),
+    Rule(
+      "sealing is asked only where a name resolves to a constructor or selector, of a match's scrutinee family, " +
+        "and by implicit projection before it reads a constructor's field",
+      raw"\bSealing\.(accessible|requireAccessible)\(".r,
+      Set("TypeChecker.scala", "MatchChecker.scala", "Projection.scala")
     )
   )
 

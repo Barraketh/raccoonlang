@@ -224,7 +224,7 @@ object TypeChecker {
 
   private def checkTelescope(pi: CA.Term.Pi, env: Env, familyParams: Int): CheckedTelescope = {
     // Implicit legality (forced-by-later-binders) and projection specs come from BinderOps.checkBinders.
-    val checkedBinders = BinderOps.checkBinders(pi.binders, env, familyParams)
+    val checkedBinders = BinderOps.checkBinders(pi.binders, env, familyParams, pi.span)
     val checkedOut = checkTypeTerm(pi.out, checkedBinders.env)
     CheckedTelescope(checkedBinders.binders, checkedBinders.env, checkedOut.value, checkedOut.residual)
   }
@@ -326,6 +326,7 @@ object TypeChecker {
     }
     val selectorName = s"${family.head.name}.$field"
     if (!env.globals.contains(selectorName)) fail(NotFound(selectorName))
+    Sealing.requireAccessible(env.sealedMembers.get(selectorName), Some(selectorName), span)
     val selector = env(selectorName)
     val applied =
       checkApplyChecked(
@@ -683,8 +684,11 @@ object TypeChecker {
       case pi: CA.Term.Pi =>
         val checked = checkPi(pi, env)
         CheckedTerm(checked.vpi, checked.residual)
-      case ref: CA.Term.Ref => CheckedTerm(Interpreter.evalTerm(ref, env), ref)
-      case l: CA.Term.Lam   => checkLam(l, env)
+      case global: CA.Term.GlobalRef =>
+        Sealing.requireAccessible(env.sealedMembers.get(global.name), Some(global.name), global.span)
+        CheckedTerm(Interpreter.evalTerm(global, env), global)
+      case local: CA.Term.LocalRef => CheckedTerm(Interpreter.evalTerm(local, env), local)
+      case l: CA.Term.Lam          => checkLam(l, env)
       // The body is checked with the binder denoting the atom, open there (spec §4.1). The construct's type is its
       // body's, which `synthesize` then confines at the scope's own position, where the atom is no longer open.
       case scope: CA.Term.Scope =>

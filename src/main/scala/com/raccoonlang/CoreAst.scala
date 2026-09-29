@@ -412,11 +412,13 @@ object CoreAst {
 
   object Decl {
     // Constant: name : type [:= value]. Opaque definitions keep only their symbolic head in the environment.
+    // `selectorOf` names the family of a struct's generated selector, which a sealed family keeps to its module.
     final case class ConstDecl(
         isOpaque: Boolean,
         name: String,
         ty: Term,
         body: ConstBody,
+        selectorOf: Option[String],
         span: Span
     ) extends Decl
 
@@ -426,10 +428,12 @@ object CoreAst {
         span: Span
     ) extends Decl
 
-    // Inductive type declaration. Record syntax has already been lowered to ordinary selector definitions.
+    // Inductive type declaration. Record syntax has already been lowered to ordinary selector definitions. A sealed
+    // family keeps its constructors and selectors to the module its span was read from (Sealing).
     final case class InductiveDecl(
         header: InductiveHeader,
         ctors: Vector[ConstructorDecl],
+        isSealed: Boolean,
         span: Span
     ) extends Decl
 

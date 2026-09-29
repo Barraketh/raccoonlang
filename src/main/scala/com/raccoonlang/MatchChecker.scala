@@ -132,6 +132,9 @@ object MatchChecker {
     }
     val inductiveName = inductiveFamily.head.name
     val inductiveMeta = inductiveFamily.meta
+    // Outside a sealed family's module no match opens its values, so no case, `.short` form included, names its
+    // constructors (spec §7.1).
+    Sealing.requireAccessible(inductiveMeta.seal, None, t.span)
     val inductiveCtorNames = inductiveMeta.constructorNames
     val cases = t.cases.map { c =>
       val candidates =
