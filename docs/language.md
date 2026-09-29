@@ -654,5 +654,42 @@ the examples and tests, including:
   operations;
 - `Quot` with `Quot.mk`, `Quot.sound`, `Quot.lift`, and `Quot.ind`.
 
+Its polymorphic declarations are lifetime-polymorphic. Each takes a lifetime
+variable beside each type parameter, `Prop`-valued ones included, one for the
+sort of each type-family parameter's result, and one for each function-typed
+parameter's closure scope. All of them are forced implicits, so no call site
+writes them:
+
+```text
+inductive List {u: Level}{S: Lifetime}(A: Sort { level = u, scope = S })
+    : Sort { level = u, scope = S }
+
+def List.map {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}{Sf: Lifetime}
+    {A: Sort { level = u, scope = S }}
+    (xs: List(A))(B: Sort { level = v, scope = T })(f: { scope = Sf } A -> B)
+    : List(B)
+
+def Eq.subst {u: Level}{S: Lifetime}{Sm: Lifetime}{Sc: Lifetime}
+    {A: Sort { level = u, scope = S }}{x: A}{y: A}
+    (p: Eq(A, x, y))(v: Level)(motive: { scope = Sc } A -> Sort { level = v, scope = Sm })
+    (h: motive(x)): motive(y)
+```
+
+So for a family `W (l: Lifetime) : Type { scope = l }`, `List(W(l))` is at
+`Type { scope = l }`, `Eq(W(l), a, b)` is at `Prop { scope = l }`, and a lambda
+passed to `List.map` may capture a `W(l)`. A family declares the union of its
+parameters' scopes, as `Prod` declares `scope = union(S, T)`. The prelude
+declares nothing at a kind other than `Kind.unr` and no kind variable, and every
+declaration is at `Lifetime.empty`, a lifetime variable, or a union of them.
+
+A family cannot force a lifetime variable that none of its parameters' types
+mentions, so the function-typed fields of `Iff`, `BEq`, `DecidableEq`, `LE`,
+`LT` and `Subsingleton` have an empty closure, and the propositions `LE.le` and
+`LT.lt` return are at `Lifetime.empty`. `Not(a)` is likewise a function type
+with an empty closure. A lambda that captures a value at a type parameter's
+scope fits none of these, so `Decidable.not`, `optionBEq`, `listBEq`,
+`prodBEq` and `DecidableEq.toBEq`, whose bodies build one, are declared at
+`Lifetime.empty` only.
+
 The prelude source is authoritative for its exact API:
 `src/main/resources/Init/Prelude.rac`.

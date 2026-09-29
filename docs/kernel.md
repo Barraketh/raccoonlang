@@ -462,6 +462,12 @@ The bundled quotient interface is the fixed non-inductive primitive surface:
 - `Quot.mk`, `Quot.lift`, and `Quot.ind` are prelude-only builtins;
 - `Quot.sound` is an axiom identifying related representatives.
 
+`Quot` is an axiom, so no family check applies to its classifier: its scope,
+the union of the scopes of `A`'s and `r`'s types, is written by hand as part of
+the trusted bootstrap. The builtins locate their arguments in
+their declared types by binder name, so the prelude may add binders, such as
+lifetime variables, without moving them.
+
 `Quot.mk` is not a no-confusion constructor. Quotient equality is intentionally
 coarser than representative structure, so quotient values supply neither
 constructor injectivity nor apartness. `Quot.lift` reduces on `Quot.mk` only
