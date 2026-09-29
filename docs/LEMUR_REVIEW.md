@@ -10,9 +10,9 @@ present at `bfd5196`; the rest were introduced or exposed by the Lemur work.
 
 | Step | Fixes | Status | Commits |
 |---|---|---|---|
-| S1 Ledger paths | F1, F5 | planned | |
-| S2 Function-type identity | F2 | planned | |
-| S3 Constructor parameters from the scrutinee | F3 | planned | |
+| S1 Ledger paths | F1, F5 | done | `7923f6e` |
+| S2 Function-type identity | F2 | in progress (wave 1) | |
+| S3 Constructor parameters from the scrutinee | F3 | in progress (wave 1) | |
 | S4 Derived closures as capture lists; one containment rule | (refactor; retires F3's failure mode) | planned | |
 | S5 Conversion assertions and hot paths | F4, perf nits | planned | |
 | S6 Sealing cleanup | F7, F8, F9 | planned | |
@@ -281,3 +281,7 @@ carry spans, and `LinearUnused` for one points at it.
 ## Log
 
 - 2026-09-29: review complete; plan written.
+- 2026-09-29: S1 landed (`7923f6e`). Beyond the brief: code after a branchless
+  match now lies on no path, so a double use there is no longer reported; the
+  `Pi` boundary has no surface test, since a function type that mentions a
+  linear local is already `LinearInType`. `docs/language.md` updated too.
