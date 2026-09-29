@@ -1,0 +1,18 @@
+// expect: TypeMismatch
+// A loop body runs any number of times, so it may not capture a linear value: here it would store the output block
+// once per iteration. The body's closure is linear, and `loop` takes an unrestricted one.
+import Gpu
+namespace T {
+  open Gpu
+  open Cuda
+  def G : Group := Group.cta(256)
+
+  def kernel : Kernel := Gpu.tiledKernel("bad", DType.f32, 16, Eq.refl(Bool.true),
+    fun (l: Lifetime)(e: Ctx(l, T.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, T.G) => {
+      let body := fun (m: Lifetime)(i: Val(m, Grain.uniform, DType.u32))(e: Ctx(m, T.G))(s: Unit): LPair(Ctx(m, T.G), Unit) =>
+        LPair.mk(Gpu.gstore(e, k.c, c, Gpu.zero(DType.f32)), s)
+      match Gpu.loop(e, k.k, Unit.unit, body) returning Ctx(l, T.G) with
+      | LPair.mk e s => e
+    })
+}
+{ Cuda.kernel(T.kernel) }

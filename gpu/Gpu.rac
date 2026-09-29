@@ -1,0 +1,388 @@
+// The typed GPU core. Every family that carries authority or names generated code is sealed, so only this file can
+// make one. A kernel is an ordinary Raccoon program over these operations; evaluating it builds a `Cuda.Kernel`.
+//
+// Three rules carry the safety argument:
+// - An emitter `Ctx(l, g)` is linear and every operation threads it, so code is emitted in the order the program's
+//   authority flows. `g` says which threads run the code, so a barrier cannot sit under a per-thread branch.
+// - Every value and register lives in the lifetime of the block that declared it, so a value made in a loop body,
+//   branch arm or allocation scope cannot be used outside it. Generated code is well scoped by construction.
+// - Authority tokens (`Tile`, `GOwn`) have no fields: everything about one is in its type. That is what lets a loop
+//   body and a branch arm be generated once, from any token of the right type.
+
+import Cuda
+import Text
+
+namespace Gpu {
+  open Cuda
+
+  // Lets this file's helpers be public definitions without being callable elsewhere: only this file can build a key.
+  sealed inductive Key : Type
+   | key : Key
+
+  // Whether a runtime value can differ between the threads of a CTA.
+  inductive Grain : Type
+   | thread : Grain
+   | uniform : Grain
+
+  namespace Grain {
+    def join (a: Grain)(b: Grain): Grain := {
+      match a returning Grain with
+      | Grain.thread => Grain.thread
+      | Grain.uniform => b
+    }
+  }
+
+  // Which threads run a block of code: all threads of a CTA of `threads` threads, or some of them.
+  inductive Group : Type
+   | cta (threads: Nat) : Group
+   | diverged (threads: Nat) : Group
+
+  namespace Group {
+    def threads (g: Group): Nat := {
+      match g returning Nat with
+      | Group.cta n => n
+      | Group.diverged n => n
+    }
+
+    // The group that runs the arms of a branch on a condition of grain `c`.
+    def arm (g: Group)(c: Grain): Group := {
+      match c returning Group with
+      | Grain.uniform => g
+      | Grain.thread => Group.diverged(Group.threads(g))
+    }
+  }
+
+  // The emitter for a block of lifetime `l` run by `g`: the code so far, newest first; the next fresh name; and the
+  // generation-time errors found so far.
+  sealed inductive Ctx (l: Lifetime)(g: Group) : Type { kind = lin, scope = l }
+   | mk (code: List(Stmt))(next: Nat)(errors: List(String)) : Ctx(l, g)
+
+  // An immutable runtime value, valid in lifetime `l`. `bound` is an exclusive upper bound known while generating.
+  sealed struct Val (l: Lifetime)(u: Grain)(t: DType) : Type { scope = l }
+   | mk (expr: Expr)(bound: Option(Nat)) : Val(l, u, t)
+
+  // A per-thread mutable register declared in lifetime `l`.
+  sealed struct Reg (l: Lifetime)(t: DType) : Type { scope = l }
+   | mk (id: Nat) : Reg(l, t)
+
+  def emit {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(s: Stmt): Ctx(l, g) := {
+    match e returning Ctx(l, g) with
+    | Ctx.mk code next errors => Ctx.mk(l, g, List.cons(s, code), next, errors)
+  }
+
+  def reject {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(message: String): Ctx(l, g) := {
+    match e returning Ctx(l, g) with
+    | Ctx.mk code next errors => Ctx.mk(l, g, code, next, List.cons(message, errors))
+  }
+
+  // Declares a fresh constant holding `init` and returns it.
+  def bind {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(u: Grain)(t: DType)(init: Expr)(bound: Option(Nat))
+      : LPair(Ctx(l, g), Val(l, u, t)) := {
+    match e returning LPair(Ctx(l, g), Val(l, u, t)) with
+    | Ctx.mk code next errors =>
+      LPair.mk(Ctx.mk(l, g, List.cons(Stmt.decl(t, next, init), code), Nat.succ(next), errors), Val.mk(l, u, t, Expr.var(next), bound))
+  }
+
+  // Turns code kept newest first into a block in program order.
+  def toBlock (code: List(Stmt))(acc: Block): Block decreases structural(code) := {
+    match code returning Block with
+    | List.nil => acc
+    | List.cons s more => Gpu.toBlock(more, Block.seq(s, acc))
+  }
+
+  // ---- Pure values ------------------------------------------------------------------------------------------------
+
+  def u32Limit : Nat := 4294967296
+
+  // An exclusive bound, forgotten when it could exceed what a u32 holds.
+  def cap (n: Nat): Option(Nat) := Bool.cond(Nat.ble(n, Gpu.u32Limit), Option(Nat), Option.some(n), Option.none(Nat))
+
+  def boundAdd (a: Option(Nat))(b: Option(Nat)): Option(Nat) := {
+    match a returning Option(Nat) with
+    | Option.none => Option.none(Nat)
+    | Option.some x => {
+      match b returning Option(Nat) with
+      | Option.none => Option.none(Nat)
+      | Option.some y => Gpu.cap(Nat.sub(Nat.add(x, y), 1))
+    }
+  }
+
+  def boundMap (a: Option(Nat))(f: Nat -> Nat): Option(Nat) := {
+    match a returning Option(Nat) with
+    | Option.none => Option.none(Nat)
+    | Option.some x => Gpu.cap(f(x))
+  }
+
+  // A literal. One that does not fit a u32 has no known bound.
+  def lit (n: Nat): Val(Lifetime.empty, Grain.uniform, DType.u32) :=
+    Val.mk(Lifetime.empty, Grain.uniform, DType.u32, Expr.lit(n), Gpu.cap(Nat.succ(n)))
+
+  def zero (t: DType): Val(Lifetime.empty, Grain.uniform, t) := Val.mk(Lifetime.empty, Grain.uniform, t, Expr.zero(t), Option.none(Nat))
+
+  def add {Sa: Lifetime}{Sb: Lifetime}{ua: Grain}{ub: Grain}(a: Val(Sa, ua, DType.u32))(b: Val(Sb, ub, DType.u32))
+      : Val(Lifetime.union(Sa, Sb), Grain.join(ua, ub), DType.u32) :=
+    Val.mk(Lifetime.union(Sa, Sb), Grain.join(ua, ub), DType.u32, Expr.bin(BinOp.add, a.expr, b.expr), Gpu.boundAdd(a.bound, b.bound))
+
+  def mulC {S: Lifetime}{u: Grain}(a: Val(S, u, DType.u32))(c: Nat): Val(S, u, DType.u32) :=
+    Val.mk(S, u, DType.u32, Expr.bin(BinOp.mul, a.expr, Expr.lit(c)),
+      Gpu.boundMap(a.bound, fun (x: Nat): Nat => Nat.succ(Nat.mul(Nat.pred(x), c))))
+
+  // Division and remainder by a constant, which must be positive.
+  def divC {S: Lifetime}{u: Grain}(a: Val(S, u, DType.u32))(c: Nat)(positive: Nat.lt(0, c)): Val(S, u, DType.u32) :=
+    Val.mk(S, u, DType.u32, Expr.bin(BinOp.div, a.expr, Expr.lit(c)),
+      Gpu.boundMap(a.bound, fun (x: Nat): Nat => Nat.succ(Nat.div(Nat.pred(x), c))))
+
+  def remC {S: Lifetime}{u: Grain}(a: Val(S, u, DType.u32))(c: Nat)(positive: Nat.lt(0, c)): Val(S, u, DType.u32) :=
+    Val.mk(S, u, DType.u32, Expr.bin(BinOp.rem, a.expr, Expr.lit(c)), Option.some(c))
+
+  // Rounds up: `(a + c - 1) / c`.
+  def ceilDivC {S: Lifetime}{u: Grain}(a: Val(S, u, DType.u32))(c: Nat)(positive: Nat.lt(0, c)): Val(S, u, DType.u32) :=
+    Gpu.divC(Gpu.add(Gpu.lit(Nat.pred(c)), a), c, positive)
+
+  def lt {Sa: Lifetime}{Sb: Lifetime}{ua: Grain}{ub: Grain}{t: DType}(a: Val(Sa, ua, t))(b: Val(Sb, ub, t))
+      : Val(Lifetime.union(Sa, Sb), Grain.join(ua, ub), DType.bool) :=
+    Val.mk(Lifetime.union(Sa, Sb), Grain.join(ua, ub), DType.bool, Expr.bin(BinOp.lt, a.expr, b.expr), Option.none(Nat))
+
+  def fma {Sa: Lifetime}{Sb: Lifetime}{Sc: Lifetime}{ua: Grain}{ub: Grain}{uc: Grain}
+      (a: Val(Sa, ua, DType.f32))(b: Val(Sb, ub, DType.f32))(c: Val(Sc, uc, DType.f32))
+      : Val(Lifetime.union(Sa, Lifetime.union(Sb, Sc)), Grain.join(ua, Grain.join(ub, uc)), DType.f32) :=
+    Val.mk(Lifetime.union(Sa, Lifetime.union(Sb, Sc)), Grain.join(ua, Grain.join(ub, uc)), DType.f32,
+      Expr.fma(a.expr, b.expr, c.expr), Option.none(Nat))
+
+  // ---- Registers --------------------------------------------------------------------------------------------------
+
+  def reg {l: Lifetime}{g: Group}{S: Lifetime}{u: Grain}{t: DType}(e: Ctx(l, g))(init: Val(S, u, t)): LPair(Ctx(l, g), Reg(l, t)) := {
+    match e returning LPair(Ctx(l, g), Reg(l, t)) with
+    | Ctx.mk code next errors =>
+      LPair.mk(Ctx.mk(l, g, List.cons(Stmt.declMut(t, next, init.expr), code), Nat.succ(next), errors), Reg.mk(l, t, next))
+  }
+
+  // Reading a register snapshots it: the value does not change when the register does.
+  def get {l: Lifetime}{g: Group}{S: Lifetime}{t: DType}(e: Ctx(l, g))(r: Reg(S, t)): LPair(Ctx(l, g), Val(l, Grain.thread, t)) :=
+    Gpu.bind(Key.key, e, Grain.thread, t, Expr.var(r.id), Option.none(Nat))
+
+  def set {l: Lifetime}{g: Group}{S: Lifetime}{Sv: Lifetime}{u: Grain}{t: DType}(e: Ctx(l, g))(r: Reg(S, t))(v: Val(Sv, u, t)): Ctx(l, g) :=
+    Gpu.emit(Key.key, e, Stmt.assign(r.id, v.expr))
+
+  // ---- Control flow -----------------------------------------------------------------------------------------------
+
+  // A runtime loop of `count` iterations. The body is generated once, so it captures no linear value: everything it
+  // consumes and returns travels in `state`, whose type every iteration preserves.
+  def loop {l: Lifetime}{g: Group}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sf: Lifetime}{Sn: Lifetime}
+      (e: Ctx(l, g))(count: Val(Sn, Grain.uniform, DType.u32))(state: S)
+      (body: { scope = Sf } (m: Lifetime) -> Val(m, Grain.uniform, DType.u32) -> Ctx(m, g) -> S -> LPair(Ctx(m, g), S))
+      : LPair(Ctx(l, g), S) := {
+    match e returning LPair(Ctx(l, g), S) with
+    | Ctx.mk code next errors => scope m => {
+      let i := Val.mk(m, Grain.uniform, DType.u32, Expr.var(next), count.bound)
+      match body(m, i, Ctx.mk(m, g, List.nil(Stmt), Nat.succ(next), errors), state) returning LPair(Ctx(l, g), S) with
+      | LPair.mk inner after => {
+        match inner returning LPair(Ctx(l, g), S) with
+        | Ctx.mk bodyCode next2 errors2 =>
+          LPair.mk(Ctx.mk(l, g, List.cons(Stmt.forLoop(next, count.expr, Gpu.toBlock(bodyCode, Block.done)), code), next2, errors2), after)
+      }
+    }
+  }
+
+  // A runtime branch. A per-thread condition runs each arm on part of the CTA only. Both arms receive and return
+  // the same state type, and neither captures a linear value; the else arm is generated from the then arm's result.
+  def branch {l: Lifetime}{g: Group}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sy: Lifetime}{Sn: Lifetime}
+      {Sc: Lifetime}{uc: Grain}
+      (e: Ctx(l, g))(cond: Val(Sc, uc, DType.bool))(state: S)
+      (yes: { scope = Sy } (m: Lifetime) -> Ctx(m, Group.arm(g, uc)) -> S -> LPair(Ctx(m, Group.arm(g, uc)), S))
+      (no: { scope = Sn } (m: Lifetime) -> Ctx(m, Group.arm(g, uc)) -> S -> LPair(Ctx(m, Group.arm(g, uc)), S))
+      : LPair(Ctx(l, g), S) := {
+    match e returning LPair(Ctx(l, g), S) with
+    | Ctx.mk code next errors => scope m => {
+      match yes(m, Ctx.mk(m, Group.arm(g, uc), List.nil(Stmt), next, errors), state) returning LPair(Ctx(l, g), S) with
+      | LPair.mk yesCtx afterYes => {
+        match yesCtx returning LPair(Ctx(l, g), S) with
+        | Ctx.mk yesCode next1 errors1 => scope n => {
+          match no(n, Ctx.mk(n, Group.arm(g, uc), List.nil(Stmt), next1, errors1), afterYes) returning LPair(Ctx(l, g), S) with
+          | LPair.mk noCtx afterNo => {
+            match noCtx returning LPair(Ctx(l, g), S) with
+            | Ctx.mk noCode next2 errors2 => {
+              let s := Stmt.ifElse(cond.expr, Gpu.toBlock(yesCode, Block.done), Gpu.toBlock(noCode, Block.done))
+              LPair.mk(Ctx.mk(l, g, List.cons(s, code), next2, errors2), afterNo)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // ---- Shared memory ----------------------------------------------------------------------------------------------
+
+  // The state of a shared array owned by a CTA whose threads each write one element.
+  inductive TileState : Type
+   | empty : TileState    // no thread may read; each thread may write its own element
+   | written : TileState  // every thread wrote its element; nobody may read before a barrier
+   | ready : TileState    // fully written, and visible to every thread
+   | reading : TileState  // read since the last barrier; nobody may write before a barrier
+
+  namespace TileState {
+    def afterSync (s: TileState): TileState := {
+      match s returning TileState with
+      | TileState.empty => TileState.empty
+      | TileState.written => TileState.ready
+      | TileState.ready => TileState.ready
+      | TileState.reading => TileState.empty
+    }
+  }
+
+  // A shared array of `n` elements of type `t`, allocated in scope `a`. A handle grants nothing.
+  sealed struct Smem (a: Lifetime)(t: DType)(n: Nat) : Type { scope = a }
+   | mk (id: Nat) : Smem(a, t, n)
+
+  // Authority over that array, in state `s`.
+  sealed inductive Tile (a: Lifetime)(t: DType)(n: Nat)(s: TileState) : Type { kind = lin, scope = a }
+   | mk : Tile(a, t, n, s)
+
+  // Read authority shared by every thread inside a read scope `r`. It is unrestricted but cannot leave `r`.
+  sealed inductive SRead (a: Lifetime)(r: Lifetime)(t: DType)(n: Nat) : Type { scope = union(a, r) }
+   | mk : SRead(a, r, t, n)
+
+  // Allocates a shared array for the callback. Its handle and authority cannot leave the callback.
+  def shared {l: Lifetime}{g: Group}{kf: Kind}{Sf: Lifetime}(e: Ctx(l, g))(t: DType)(n: Nat)
+      (body: { kind = kf, scope = Sf } (a: Lifetime) -> Smem(a, t, n) -> Tile(a, t, n, TileState.empty) -> Ctx(l, g) -> Ctx(l, g))
+      : Ctx(l, g) := {
+    match e returning Ctx(l, g) with
+    | Ctx.mk code next errors => scope a =>
+      body(a, Smem.mk(a, t, n, next), Tile.mk(a, t, n, TileState.empty), Ctx.mk(l, g, List.cons(Stmt.shared(t, next, n), code), Nat.succ(next), errors))
+  }
+
+  // Gives up authority over a shared array. Its storage is never reused, so this is safe in any state.
+  def release {a: Lifetime}{t: DType}{n: Nat}{s: TileState}(x: Tile(a, t, n, s)): Unit := {
+    match x returning Unit with
+    | Tile.mk => Unit.unit
+  }
+
+  // Every thread of the CTA writes its own element, `buf[threadIdx.x]`. The array has one element per thread.
+  def storeMine {l: Lifetime}{n: Nat}{a: Lifetime}{t: DType}{S: Lifetime}{u: Grain}
+      (e: Ctx(l, Group.cta(n)))(buf: Smem(a, t, n))(x: Tile(a, t, n, TileState.empty))(v: Val(S, u, t))
+      : LPair(Ctx(l, Group.cta(n)), Tile(a, t, n, TileState.written)) := {
+    match x returning LPair(Ctx(l, Group.cta(n)), Tile(a, t, n, TileState.written)) with
+    | Tile.mk => LPair.mk(Gpu.emit(Key.key, e, Stmt.store(Expr.var(buf.id), Expr.special(Builtin.threadX), v.expr)), Tile.mk(a, t, n, TileState.written))
+  }
+
+  // A CTA-wide barrier, which only a converged CTA may reach.
+  def sync1 {l: Lifetime}{n: Nat}{a: Lifetime}{t: DType}{m: Nat}{s: TileState}(e: Ctx(l, Group.cta(n)))(x: Tile(a, t, m, s))
+      : LPair(Ctx(l, Group.cta(n)), Tile(a, t, m, TileState.afterSync(s))) := {
+    match x returning LPair(Ctx(l, Group.cta(n)), Tile(a, t, m, TileState.afterSync(s))) with
+    | Tile.mk => LPair.mk(Gpu.emit(Key.key, e, Stmt.sync), Tile.mk(a, t, m, TileState.afterSync(s)))
+  }
+
+  def sync2 {l: Lifetime}{n: Nat}{a: Lifetime}{t: DType}{m: Nat}{s: TileState}{b: Lifetime}{t2: DType}{m2: Nat}{s2: TileState}
+      (e: Ctx(l, Group.cta(n)))(x: Tile(a, t, m, s))(y: Tile(b, t2, m2, s2))
+      : LPair(Ctx(l, Group.cta(n)), LPair(Tile(a, t, m, TileState.afterSync(s)), Tile(b, t2, m2, TileState.afterSync(s2)))) := {
+    match x returning LPair(Ctx(l, Group.cta(n)), LPair(Tile(a, t, m, TileState.afterSync(s)), Tile(b, t2, m2, TileState.afterSync(s2)))) with
+    | Tile.mk => {
+      match y returning LPair(Ctx(l, Group.cta(n)), LPair(Tile(a, t, m, TileState.afterSync(s)), Tile(b, t2, m2, TileState.afterSync(s2)))) with
+      | Tile.mk => LPair.mk(Gpu.emit(Key.key, e, Stmt.sync), LPair.mk(Tile.mk(a, t, m, TileState.afterSync(s)), Tile.mk(b, t2, m2, TileState.afterSync(s2))))
+    }
+  }
+
+  // Lends a ready array to every thread for the callback, then returns its authority as `reading`.
+  def reads {l: Lifetime}{g: Group}{a: Lifetime}{t: DType}{n: Nat}{kx: Kind}{Sx: Lifetime}{X: Type { kind = kx, scope = Sx }}
+      {kf: Kind}{Sf: Lifetime}
+      (e: Ctx(l, g))(x: Tile(a, t, n, TileState.ready))
+      (body: { kind = kf, scope = Sf } (r: Lifetime) -> SRead(a, r, t, n) -> Ctx(l, g) -> LPair(Ctx(l, g), X))
+      : LPair(Ctx(l, g), LPair(Tile(a, t, n, TileState.reading), X)) := {
+    match x returning LPair(Ctx(l, g), LPair(Tile(a, t, n, TileState.reading), X)) with
+    | Tile.mk => {
+      match (scope r => body(r, SRead.mk(a, r, t, n), e)) returning LPair(Ctx(l, g), LPair(Tile(a, t, n, TileState.reading), X)) with
+      | LPair.mk e2 out => LPair.mk(e2, LPair.mk(Tile.mk(a, t, n, TileState.reading), out))
+    }
+  }
+
+  // Reads `buf[i]`. The index must be provably below the array's length while generating.
+  def sread {l: Lifetime}{g: Group}{a: Lifetime}{r: Lifetime}{t: DType}{n: Nat}{Si: Lifetime}{ui: Grain}
+      (e: Ctx(l, g))(buf: Smem(a, t, n))(rd: SRead(a, r, t, n))(i: Val(Si, ui, DType.u32)): LPair(Ctx(l, g), Val(l, ui, t)) := {
+    let fits := {
+      match i.bound returning Bool with
+      | Option.none => Bool.false
+      | Option.some b => Nat.ble(b, n)
+    }
+    match fits returning LPair(Ctx(l, g), Val(l, ui, t)) with
+    | Bool.true => Gpu.bind(Key.key, e, ui, t, Expr.index(Expr.var(buf.id), i.expr), Option.none(Nat))
+    | Bool.false =>
+      LPair.mk(Gpu.reject(Key.key, e, Text.cat("shared read index not provably below ", Text.nat(n))), Val.mk(l, ui, t, Expr.zero(t), Option.none(Nat)))
+  }
+
+  // ---- Global memory and launch -----------------------------------------------------------------------------------
+
+  // Read access to a row-major global matrix parameter with runtime extents.
+  sealed struct GMat (l: Lifetime)(t: DType) : Type { scope = l }
+   | mk (name: String)(rows: Expr)(cols: Expr) : GMat(l, t)
+
+  // Where this CTA's `tile`×`tile` block of the output matrix lies.
+  sealed struct GOut (l: Lifetime)(t: DType)(tile: Nat) : Type { scope = l }
+   | mk (name: String)(rows: Expr)(cols: Expr) : GOut(l, t, tile)
+
+  // The authority to write that block, once.
+  sealed inductive GOwn (l: Lifetime)(t: DType)(tile: Nat) : Type { kind = lin, scope = l }
+   | mk : GOwn(l, t, tile)
+
+  // What each CTA of a tiled kernel starts with. `row` and `col` are this thread's element of the output block.
+  struct Launch (l: Lifetime)(t: DType)(tile: Nat) : Type { scope = l }
+   | mk (a: GMat(l, t))(b: GMat(l, t))(c: GOut(l, t, tile))
+        (m: Val(l, Grain.uniform, DType.u32))(n: Val(l, Grain.uniform, DType.u32))(k: Val(l, Grain.uniform, DType.u32))
+        (tx: Val(l, Grain.thread, DType.u32))(ty: Val(l, Grain.thread, DType.u32))
+        (row: Val(l, Grain.thread, DType.u32))(col: Val(l, Grain.thread, DType.u32)) : Launch(l, t, tile)
+
+  // Reads `src[row][col]`, or zero outside the matrix.
+  def gload {l: Lifetime}{g: Group}{S: Lifetime}{t: DType}{Sr: Lifetime}{Sc: Lifetime}{ur: Grain}{uc: Grain}
+      (e: Ctx(l, g))(src: GMat(S, t))(row: Val(Sr, ur, DType.u32))(col: Val(Sc, uc, DType.u32)): LPair(Ctx(l, g), Val(l, Grain.thread, t)) := {
+    let inside := Expr.bin(BinOp.land, Expr.bin(BinOp.lt, row.expr, src.rows), Expr.bin(BinOp.lt, col.expr, src.cols))
+    let at := Expr.index(Expr.param(src.name), Expr.bin(BinOp.add, Expr.bin(BinOp.mul, row.expr, src.cols), col.expr))
+    Gpu.bind(Key.key, e, Grain.thread, t, Expr.select(inside, at, Expr.zero(t)), Option.none(Nat))
+  }
+
+  // Every thread writes its own element of the CTA's output block, where it lies inside the matrix. The element is
+  // computed here from the thread and block indices, never taken from the caller: CTAs own disjoint blocks and threads
+  // disjoint elements, so no two threads of the grid write one location.
+  def gstore {l: Lifetime}{L: Lifetime}{t: DType}{tile: Nat}{S: Lifetime}{u: Grain}
+      (e: Ctx(l, Group.cta(Nat.mul(tile, tile))))(out: GOut(L, t, tile))(x: GOwn(L, t, tile))(v: Val(S, u, t))
+      : Ctx(l, Group.cta(Nat.mul(tile, tile))) := {
+    match x returning Ctx(l, Group.cta(Nat.mul(tile, tile))) with
+    | GOwn.mk => {
+      let tid := Expr.special(Builtin.threadX)
+      let row := Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.special(Builtin.blockY), Expr.lit(tile)), Expr.bin(BinOp.div, tid, Expr.lit(tile)))
+      let col := Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(tile)), Expr.bin(BinOp.rem, tid, Expr.lit(tile)))
+      let inside := Expr.bin(BinOp.land, Expr.bin(BinOp.lt, row, out.rows), Expr.bin(BinOp.lt, col, out.cols))
+      let at := Expr.bin(BinOp.add, Expr.bin(BinOp.mul, row, out.cols), col)
+      Gpu.emit(Key.key, e, Stmt.ifElse(inside, Block.seq(Stmt.store(Expr.param(out.name), at, v.expr), Block.done), Block.done))
+    }
+  }
+
+  def uniformParam (l: Lifetime)(name: String): Val(l, Grain.uniform, DType.u32) :=
+    Val.mk(l, Grain.uniform, DType.u32, Expr.param(name), Option.none(Nat))
+
+  def errorsToCode (errors: List(String))(acc: List(Stmt)): List(Stmt) decreases structural(errors) := {
+    match errors returning List(Stmt) with
+    | List.nil => acc
+    | List.cons m more => Gpu.errorsToCode(more, List.append(acc, List.cons(Stmt.error(m), List.nil(Stmt))))
+  }
+
+  // A kernel computing C (M×N) from A (M×K) and B (K×N), one CTA of `tile*tile` threads per `tile`×`tile` block of C.
+  // Launch contract: grid (ceil(N/tile), ceil(M/tile)), block tile*tile, and A, B, C distinct arrays of those extents,
+  // each with fewer than 2^32 elements.
+  def tiledKernel (name: String)(t: DType)(tile: Nat)(positive: Nat.lt(0, tile))
+      (body: (l: Lifetime) -> Ctx(l, Group.cta(Nat.mul(tile, tile))) -> Launch(l, t, tile) -> GOwn(l, t, tile) -> Ctx(l, Group.cta(Nat.mul(tile, tile))))
+      : Kernel := scope l => {
+    let tid := Val.mk(l, Grain.thread, DType.u32, Expr.special(Builtin.threadX), Option.some(Nat.mul(tile, tile)))
+    let tx := Gpu.remC(tid, tile, positive)
+    let ty := Gpu.divC(tid, tile, positive)
+    let bx := Val.mk(l, Grain.uniform, DType.u32, Expr.special(Builtin.blockX), Option.none(Nat))
+    let by := Val.mk(l, Grain.uniform, DType.u32, Expr.special(Builtin.blockY), Option.none(Nat))
+    let m := Gpu.uniformParam(l, "M")
+    let n := Gpu.uniformParam(l, "N")
+    let k := Gpu.uniformParam(l, "K")
+    let launch := Launch.mk(GMat.mk(l, t, "A", m.expr, k.expr), GMat.mk(l, t, "B", k.expr, n.expr), GOut.mk(l, t, tile, "C", m.expr, n.expr),
+      m, n, k, tx, ty, Gpu.add(Gpu.mulC(by, tile), ty), Gpu.add(Gpu.mulC(bx, tile), tx))
+    let params := List.cons(Param.input(t, "A"), List.cons(Param.input(t, "B"), List.cons(Param.output(t, "C"),
+      List.cons(Param.scalar(DType.u32, "M"), List.cons(Param.scalar(DType.u32, "N"), List.cons(Param.scalar(DType.u32, "K"), List.nil(Param)))))))
+    match body(l, Ctx.mk(l, Group.cta(Nat.mul(tile, tile)), List.nil(Stmt), 0, List.nil(String)), launch, GOwn.mk(l, t, tile)) returning Kernel with
+    | Ctx.mk code next errors => Kernel.mk(name, params, Gpu.toBlock(code, Gpu.toBlock(Gpu.errorsToCode(errors, List.nil(Stmt)), Block.done)))
+  }
+}

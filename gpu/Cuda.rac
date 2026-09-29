@@ -1,0 +1,175 @@
+// A small CUDA C++ AST and its printer. It knows nothing about safety: the `Gpu` module is the only producer of
+// kernels, and this file only renders what it is given.
+
+import Text
+
+namespace Cuda {
+  inductive DType : Type
+   | u32 : DType
+   | f32 : DType
+   | bool : DType
+
+  inductive Builtin : Type
+   | threadX : Builtin
+   | blockX : Builtin
+   | blockY : Builtin
+
+  inductive BinOp : Type
+   | add : BinOp
+   | sub : BinOp
+   | mul : BinOp
+   | div : BinOp
+   | rem : BinOp
+   | lt : BinOp
+   | land : BinOp
+
+  inductive Expr : Type
+   | var (id: Nat) : Expr
+   | lit (value: Nat) : Expr
+   | zero (t: DType) : Expr
+   | param (name: String) : Expr
+   | special (b: Builtin) : Expr
+   | bin (op: BinOp)(a: Expr)(b: Expr) : Expr
+   | fma (a: Expr)(b: Expr)(c: Expr) : Expr
+   | select (c: Expr)(t: Expr)(f: Expr) : Expr
+   | index (base: Expr)(i: Expr) : Expr
+
+  mutual {
+    inductive Stmt : Type
+     | decl (t: DType)(id: Nat)(init: Expr) : Stmt
+     | declMut (t: DType)(id: Nat)(init: Expr) : Stmt
+     | assign (id: Nat)(value: Expr) : Stmt
+     | store (base: Expr)(i: Expr)(value: Expr) : Stmt
+     | shared (t: DType)(id: Nat)(size: Nat) : Stmt
+     | forLoop (id: Nat)(count: Expr)(body: Block) : Stmt
+     | ifElse (c: Expr)(yes: Block)(no: Block) : Stmt
+     | sync : Stmt
+     | error (message: String) : Stmt
+
+    inductive Block : Type
+     | done : Block
+     | seq (s: Stmt)(rest: Block) : Block
+  }
+
+  inductive Param : Type
+   | input (t: DType)(name: String) : Param
+   | output (t: DType)(name: String) : Param
+   | scalar (t: DType)(name: String) : Param
+
+  struct Kernel : Type
+   | mk (name: String)(params: List(Param))(body: Block) : Kernel
+
+  def dtype (t: DType): String := {
+    match t returning String with
+    | DType.u32 => "unsigned"
+    | DType.f32 => "float"
+    | DType.bool => "bool"
+  }
+
+  def binop (op: BinOp): String := {
+    match op returning String with
+    | BinOp.add => " + "
+    | BinOp.sub => " - "
+    | BinOp.mul => " * "
+    | BinOp.div => " / "
+    | BinOp.rem => " % "
+    | BinOp.lt => " < "
+    | BinOp.land => " && "
+  }
+
+  def name (id: Nat): String := Text.cat("v", Text.nat(id))
+
+  def expr (e: Expr): String decreases structural(e) := {
+    match e returning String with
+    | Expr.var id => Cuda.name(id)
+    | Expr.lit value => Text.cat(Text.nat(value), "u")
+    | Expr.zero t => {
+      match t returning String with
+      | DType.u32 => "0u"
+      | DType.f32 => "0.0f"
+      | DType.bool => "false"
+    }
+    | Expr.param n => n
+    | Expr.special b => {
+      match b returning String with
+      | Builtin.threadX => "threadIdx.x"
+      | Builtin.blockX => "blockIdx.x"
+      | Builtin.blockY => "blockIdx.y"
+    }
+    | Expr.bin op a b => Text.cat3("(", Text.cat3(Cuda.expr(a), Cuda.binop(op), Cuda.expr(b)), ")")
+    | Expr.fma a b c => Text.cat3("fmaf(", Text.cat3(Cuda.expr(a), ", ", Text.cat3(Cuda.expr(b), ", ", Cuda.expr(c))), ")")
+    | Expr.select c t f => Text.cat3("(", Text.cat3(Cuda.expr(c), " ? ", Text.cat3(Cuda.expr(t), " : ", Cuda.expr(f))), ")")
+    | Expr.index base i => Text.cat3(Cuda.expr(base), "[", Text.cat(Cuda.expr(i), "]"))
+  }
+
+  def indent (depth: Nat): String decreases structural(depth) := {
+    match depth returning String with
+    | Nat.zero => ""
+    | Nat.succ d => Text.cat("  ", Cuda.indent(d))
+  }
+
+  def line (depth: Nat)(text: String)(rest: String): String := Text.cat3(Cuda.indent(depth), text, Text.cat("\n", rest))
+
+  mutual {
+    // Renders `s` at `depth`, in front of `rest`, so a whole kernel is built by prepending lines.
+    def stmt (depth: Nat)(s: Stmt)(rest: String): String decreases structural(s) := {
+      match s returning String with
+      | Stmt.decl t id init =>
+        Cuda.line(depth, Text.cat3("const ", Cuda.dtype(t), Text.cat3(" ", Cuda.name(id), Text.cat3(" = ", Cuda.expr(init), ";"))), rest)
+      | Stmt.declMut t id init =>
+        Cuda.line(depth, Text.cat3(Cuda.dtype(t), " ", Text.cat3(Cuda.name(id), " = ", Text.cat(Cuda.expr(init), ";"))), rest)
+      | Stmt.assign id value => Cuda.line(depth, Text.cat3(Cuda.name(id), " = ", Text.cat(Cuda.expr(value), ";")), rest)
+      | Stmt.store base i value =>
+        Cuda.line(depth, Text.cat3(Cuda.expr(Expr.index(base, i)), " = ", Text.cat(Cuda.expr(value), ";")), rest)
+      | Stmt.shared t id size =>
+        Cuda.line(depth, Text.cat3("__shared__ ", Cuda.dtype(t), Text.cat3(" ", Cuda.name(id), Text.cat3("[", Text.nat(size), "];"))), rest)
+      | Stmt.forLoop id count body => {
+        let i := Cuda.name(id)
+        let head := Text.cat3("for (unsigned ", i, Text.cat3(" = 0u; ", i, Text.cat3(" < ", Cuda.expr(count), Text.cat3("; ++", i, ") {"))))
+        Cuda.line(depth, head, Cuda.block(Nat.succ(depth), body, Cuda.line(depth, "}", rest)))
+      }
+      | Stmt.ifElse c yes no => {
+        let tail := Cuda.line(depth, "}", rest)
+        let elseTail := {
+          match no returning String with
+          | Block.done => tail
+          | Block.seq first more => Cuda.line(depth, "} else {", Cuda.block(Nat.succ(depth), Block.seq(first, more), tail))
+        }
+        Cuda.line(depth, Text.cat3("if (", Cuda.expr(c), ") {"), Cuda.block(Nat.succ(depth), yes, elseTail))
+      }
+      | Stmt.sync => Cuda.line(depth, "__syncthreads();", rest)
+      | Stmt.error message => Cuda.line(depth, Text.cat3("#error \"", message, "\""), rest)
+    }
+
+    def block (depth: Nat)(b: Block)(rest: String): String decreases structural(b) := {
+      match b returning String with
+      | Block.done => rest
+      | Block.seq s more => Cuda.stmt(depth, s, Cuda.block(depth, more, rest))
+    }
+  }
+
+  def param (p: Param): String := {
+    match p returning String with
+    | Param.input t n => Text.cat3("const ", Cuda.dtype(t), Text.cat("* __restrict__ ", n))
+    | Param.output t n => Text.cat3(Cuda.dtype(t), "* __restrict__ ", n)
+    | Param.scalar t n => Text.cat3(Cuda.dtype(t), " ", n)
+  }
+
+  def params (ps: List(Param)): String decreases structural(ps) := {
+    match ps returning String with
+    | List.nil => ""
+    | List.cons p more => {
+      match more returning String with
+      | List.nil => Cuda.param(p)
+      | List.cons q rest => Text.cat3(Cuda.param(p), ", ", Cuda.params(more))
+    }
+  }
+
+  def kernel (k: Kernel): String := {
+    match k returning String with
+    | Kernel.mk n ps body => {
+      let head := Text.cat3("extern \"C\" __global__ void ", n, Text.cat3("(", Cuda.params(ps), ") {"))
+      Cuda.line(0, head, Cuda.block(1, body, "}\n"))
+    }
+  }
+}

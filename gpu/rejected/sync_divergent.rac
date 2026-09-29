@@ -1,0 +1,25 @@
+// expect: ImplicitReconstructionFailed
+// A barrier under a per-thread branch: threads that skip the arm never arrive. The arm's emitter is for a diverged
+// group, and `sync1` reads its thread count off a converged CTA, which a diverged group is not.
+import Gpu
+namespace T {
+  open Gpu
+  open Cuda
+  def G : Group := Group.cta(256)
+  def Tl (a: Lifetime) : Type { kind = lin, scope = a } := Tile(a, DType.f32, 256, TileState.empty)
+
+  def kernel : Kernel := Gpu.tiledKernel("bad", DType.f32, 16, Eq.refl(Bool.true),
+    fun (l: Lifetime)(e: Ctx(l, T.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, T.G) =>
+      Gpu.shared(e, DType.f32, 256, fun (a: Lifetime)(sa: Smem(a, DType.f32, 256))(ta: T.Tl(a))(e: Ctx(l, T.G)): Ctx(l, T.G) => {
+        let yes := fun (m: Lifetime)(e: Ctx(m, Group.diverged(256)))(t: T.Tl(a)): LPair(Ctx(m, Group.diverged(256)), T.Tl(a)) =>
+          Gpu.sync1(e, t)
+        let no := fun (m: Lifetime)(e: Ctx(m, Group.diverged(256)))(t: T.Tl(a)): LPair(Ctx(m, Group.diverged(256)), T.Tl(a)) =>
+          LPair.mk(e, t)
+        match Gpu.branch(e, Gpu.lt(k.row, k.m), ta, yes, no) returning Ctx(l, T.G) with
+        | LPair.mk e t => {
+          let _ := Gpu.release(t)
+          Gpu.gstore(e, k.c, c, Gpu.zero(DType.f32))
+        }
+      }))
+}
+{ Cuda.kernel(T.kernel) }

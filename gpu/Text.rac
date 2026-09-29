@@ -1,0 +1,21 @@
+// Text helpers for printing generated code.
+
+namespace Text {
+  def digitsFuel (fuel: Nat)(n: Nat)(acc: List(Char)): List(Char) decreases structural(fuel) := {
+    match fuel returning List(Char) with
+    | Nat.zero => acc
+    | Nat.succ f => {
+      let digit := Char.ofNat(Nat.add(48, Nat.mod(n, 10)))
+      let rest := Nat.div(n, 10)
+      match Nat.isZero(rest) returning List(Char) with
+      | Bool.true => List.cons(digit, acc)
+      | Bool.false => Text.digitsFuel(f, rest, List.cons(digit, acc))
+    }
+  }
+
+  def nat (n: Nat): String := String.mk(Text.digitsFuel(40, n, List.nil(Char)))
+
+  def cat (a: String)(b: String): String := String.append(a, b)
+
+  def cat3 (a: String)(b: String)(c: String): String := String.append(a, String.append(b, c))
+}

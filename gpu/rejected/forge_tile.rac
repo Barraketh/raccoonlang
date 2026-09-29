@@ -1,0 +1,8 @@
+// expect: SealedConstructor
+// Authority cannot be made outside the Gpu module.
+import Gpu
+namespace T {
+  def forged (a: Lifetime) : Gpu.Tile(a, Cuda.DType.f32, 256, Gpu.TileState.ready) :=
+    Gpu.Tile.mk(a, Cuda.DType.f32, 256, Gpu.TileState.ready)
+}
+{ 0 }

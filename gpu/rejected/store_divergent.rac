@@ -1,0 +1,27 @@
+// expect: TypeMismatch
+// Filling a shared tile under a per-thread branch leaves some elements unwritten, so the tile could not become
+// `ready`. `storeMine` needs the converged CTA.
+import Gpu
+namespace T {
+  open Gpu
+  open Cuda
+  def G : Group := Group.cta(256)
+  def D : Group := Group.diverged(256)
+  def Tl (a: Lifetime) : Type { kind = lin, scope = a } := Tile(a, DType.f32, 256, TileState.empty)
+
+  def kernel : Kernel := Gpu.tiledKernel("bad", DType.f32, 16, Eq.refl(Bool.true),
+    fun (l: Lifetime)(e: Ctx(l, T.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, T.G) =>
+      Gpu.shared(e, DType.f32, 256, fun (a: Lifetime)(sa: Smem(a, DType.f32, 256))(ta: T.Tl(a))(e: Ctx(l, T.G)): Ctx(l, T.G) => {
+        let yes := fun (m: Lifetime)(e: Ctx(m, T.D))(t: T.Tl(a)): LPair(Ctx(m, T.D), T.Tl(a)) => {
+          match Gpu.storeMine(e, sa, t, Gpu.zero(DType.f32)) returning LPair(Ctx(m, T.D), T.Tl(a)) with
+          | LPair.mk e t => LPair.mk(e, t)
+        }
+        let no := fun (m: Lifetime)(e: Ctx(m, T.D))(t: T.Tl(a)): LPair(Ctx(m, T.D), T.Tl(a)) => LPair.mk(e, t)
+        match Gpu.branch(e, Gpu.lt(k.row, k.m), ta, yes, no) returning Ctx(l, T.G) with
+        | LPair.mk e t => {
+          let _ := Gpu.release(t)
+          Gpu.gstore(e, k.c, c, Gpu.zero(DType.f32))
+        }
+      }))
+}
+{ Cuda.kernel(T.kernel) }

@@ -1,0 +1,39 @@
+// expect: TypeMismatch
+// A K-step that reads the tile and loops back without a barrier: the next iteration's writes would race with this
+// iteration's reads. The step returns the tile `reading`, not `empty`.
+import Gpu
+namespace T {
+  open Gpu
+  open Cuda
+  def G : Group := Group.cta(256)
+  def Tl (a: Lifetime)(s: TileState) : Type { kind = lin, scope = a } := Tile(a, DType.f32, 256, s)
+
+  def kernel : Kernel := Gpu.tiledKernel("bad", DType.f32, 16, Eq.refl(Bool.true),
+    fun (l: Lifetime)(e: Ctx(l, T.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, T.G) =>
+      Gpu.shared(e, DType.f32, 256, fun (a: Lifetime)(sa: Smem(a, DType.f32, 256))(ta: T.Tl(a, TileState.empty))(e: Ctx(l, T.G)): Ctx(l, T.G) => {
+        let body := fun (m: Lifetime)(i: Val(m, Grain.uniform, DType.u32))(e: Ctx(m, T.G))(t: T.Tl(a, TileState.empty))
+            : LPair(Ctx(m, T.G), T.Tl(a, TileState.empty)) => {
+          match Gpu.storeMine(e, sa, t, Gpu.zero(DType.f32)) returning LPair(Ctx(m, T.G), T.Tl(a, TileState.empty)) with
+          | LPair.mk e t => {
+            match Gpu.sync1(e, t) returning LPair(Ctx(m, T.G), T.Tl(a, TileState.empty)) with
+            | LPair.mk e t => {
+              let use := fun (r: Lifetime)(rd: SRead(a, r, DType.f32, 256))(e: Ctx(m, T.G)): LPair(Ctx(m, T.G), Unit) => {
+                match Gpu.sread(e, sa, rd, k.tx) returning LPair(Ctx(m, T.G), Unit) with
+                | LPair.mk e x => LPair.mk(e, Unit.unit)
+              }
+              match Gpu.reads(e, t, use) returning LPair(Ctx(m, T.G), T.Tl(a, TileState.empty)) with
+              | LPair.mk e out => {
+                match out returning LPair(Ctx(m, T.G), T.Tl(a, TileState.empty)) with
+                | LPair.mk t done => LPair.mk(e, t)
+              }
+            }
+          }
+        }
+        match Gpu.loop(e, k.k, ta, body) returning Ctx(l, T.G) with
+        | LPair.mk e t => {
+          let _ := Gpu.release(t)
+          Gpu.gstore(e, k.c, c, Gpu.zero(DType.f32))
+        }
+      }))
+}
+{ Cuda.kernel(T.kernel) }
