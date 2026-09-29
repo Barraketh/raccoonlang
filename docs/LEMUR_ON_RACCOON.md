@@ -99,7 +99,7 @@ anywhere else is `NotAType`, because there its type must be a type.
 
 | Binder | `Level` | `Kind` | `Lifetime` |
 |---|---|---|---|
-| a definition's, opaque definition's or axiom's header | yes | yes (not an axiom's, §7.3) | yes (not an axiom's, §7.3) |
+| a definition's, opaque definition's or axiom's header | yes | yes | yes |
 | a family parameter | yes | yes | yes |
 | a family index, a constructor field, a `let` | no | no | no |
 | a function type or lambda binder | no | no | yes |
@@ -108,8 +108,8 @@ anywhere else is `NotAType`, because there its type must be a type.
 A header is the binders written before a declaration's `:`. A header binder
 may be explicit or a forced implicit, as today. A function type written after
 the `:` is a function type like any other. So
-`axiom f : {u: Level} -> Sort { level = u } -> Nat` is `NotAType`, and is written
-`axiom f {u: Level}(A: Sort { level = u }): Nat`.
+`def f : {u: Level} -> Sort { level = u } -> Nat := …` is `NotAType`, and is
+written `def f {u: Level}(A: Sort { level = u }): Nat := …`.
 
 The asymmetry has a reason:
 - A level binder changes the universe of everything after it. So a function type
@@ -160,8 +160,8 @@ its only neutrals are variables, so no expression is ever stuck.
 
 No two lifetimes, and no two kinds, are ever apart, so refinement never prunes a
 branch on a lifetime or kind equation (§6.2). For the same reason such an
-equation is never refutable, which is why no axiom may bind a lifetime or a kind
-(§7.3).
+equation is never refutable, which is one reason only the trusted prelude
+declares axioms (§7.3).
 
 A sort of a kind other than `Kind.unr` must have a level that is never zero,
 else `LinearProp`, because proofs are unrestricted. So each of these is
@@ -371,7 +371,7 @@ refines it. A local whose type's kind
 involves a variable is tracked, since its binder's extent must be valid when
 the variable is `lin`. Locals of unrestricted type are not tracked. Globals are
 never tracked: a `def` or `opaque def` whose type is linear is `LinearGlobal`,
-and an axiom is §7.3's.
+and axioms belong to the trusted prelude (§7.3).
 
 Types and proofs hold no tokens. A term whose type is a sort or a proposition
 may not contain a subterm of linear type (`LinearInType(e)`, where `e` is that
@@ -449,9 +449,8 @@ a field is declared with `inductive` and matched on directly, or given
 hand-written selectors where they are
 admissible.
 
-Structure eta is unchanged and is never a use; a sealed family has none
-(§7.1). A constructor's implicit family parameters are inferred or explicit
-exactly as today.
+Structure eta is unchanged and is never a use. A constructor's implicit family
+parameters are inferred or explicit exactly as today.
 
 ## 4. Scopes
 
@@ -655,58 +654,43 @@ constructor's field compiles only inside the declaring file.
 Elsewhere the implicit is `NonForcedImplicitParam`, since reconstructing it
 would read the field.
 
-A sealed family is never structure-eta eligible, and a proof of a sealed
-proposition is never reconstructed as its constructor. Either would let a
-`match` in the family's module open a value the module never built as a
-constructor application. Examples of such values:
-- an axiom's result, or a blocked computation;
-- a proof pulled out of another family's field;
-- a proof whose proposition only computes to the sealed one.
-
-A proof the module did build keeps its constructor form, and a `match` on it
-reduces as usual. Any other proof of a sealed proposition stays neutral, and a
-`match` on it stays stuck. Proofs remain irrelevant to conversion; only which
-proofs a `match` opens changes.
+Every value of a sealed family comes from its constructors, because only the
+trusted prelude declares axioms, and it declares no sealed family (§7.3). A
+neutral of a sealed family is a parameter that a caller supplied, a blocked
+computation, or an opaque definition whose checked body built it. So structure
+eta and proof reconstruction apply to sealed families as to any other, and open
+nothing the module did not build.
 
 **7.2 What the checker knows.** Sealing restricts what a program may write, not
 what the checker knows. Kinds, scopes, coverage, apartness and the conversion
-of values are computed from the full declaration in every module, with no eta
-for a sealed family (§7.1). An `opaque def` is unchanged: its body is checked,
+of values are computed from the full declaration in every module. An
+`opaque def` is unchanged: its body is checked,
 and it does not unfold after publication, in any module. Its application's
 sort is the sort of its declared result (§2.4).
 
-**7.3 Axioms.** Outside the trusted prelude, an `axiom` is `AxiomMintsToken`
-when its type, in its value, contains any of these:
-- a binder of a kind or lifetime;
-- a kind or lifetime expression other than `Kind.unr` and `Lifetime.empty`,
-  sort and closure fields included;
-- a linear type.
+**7.3 Axioms.** Only the trusted prelude declares axioms. An `axiom` in any
+other module is `UntrustedAxiom`. A program that needs an assumption the bundled
+prelude lacks declares it in a custom prelude (`--prelude`), which explicitly
+extends the trusted base.
 
-An axiom's result is a neutral. Without this rule an axiom could consume a
-token without its module, as `axiom eat {A: Type { kind = lin }}(x: A): Unit`
-would. That includes a token held by a family `W` whose field is a token.
+No rule on an axiom's type could make user axioms safe. An axiom can state
+`False`, and every value follows from that:
+`False.elim(bad, Lease(Lifetime.empty))` would be a lease no module issued, and
+likewise a token or an equation between lifetimes. Even a consistent axiom can
+break an abstraction:
+- `axiom eat {A: Type { kind = lin }}(x: A): Unit` consumes a token without its
+  module.
+- `axiom forge : Lease(Lifetime.empty)` makes a lease no module issued.
+- `axiom wrapEq (a: Lifetime)(b: Lifetime): Eq(Type, Wrap(a), Wrap(b))` is
+  consistent, since no two lifetimes are apart (§2.3). Yet a match along it
+  links a lifetime variable to `Lifetime.empty` (§6.2), which lets a token
+  leave its scope.
 
-An axiom could also state an equation no program can refute. Take a fieldless
-`Wrap (l: Lifetime) : Type`. No two lifetimes are apart (§2.3), so
-`axiom wrapEq (a: Lifetime)(b: Lifetime): Eq(Type, Wrap(a), Wrap(b))` is
-consistent. Yet a match along `wrapEq(a, Lifetime.empty)` links the variable `a`
-to `Lifetime.empty` (§6.2). A generic definition can then return its `Tok(a)` as
-a `Tok(Lifetime.empty)`, and a caller that instantiates `a` at a scope's atom
-carries the token out of that scope. An equation between kinds would likewise
-retype a value across kinds.
-
-Sealing needs no axiom rule. An axiom may yield a value of a sealed family,
-directly or through another family's field or a computation, but no `match`
-opens it. A data value has no eta, and a proof is not reconstructed (§7.1). Take
-a sealed `Permit (l: Lifetime) : Prop | mk`, and the axiom
-`axiom forge : Permit(Lifetime.empty)`. The module's `match` on `forge` stays
-stuck, so it cannot mint a token from it. Every value of a sealed family that a
-`match` opens was made in its module. An axiom can still yield an unscoped
-capability, such as a neutral `Permit(Lifetime.empty)`, that satisfies a
-parameter which only requires one. It can name no lifetime, so it can confine
-nothing and mint nothing.
+So sealing, linearity and confinement hold unconditionally, relative to the one
+audited prelude. An axiom's result is a neutral, and it never runs.
 
 The bundled prelude:
+- declares no sealed family;
 - declares no family, closure or sort at a kind other than `Kind.unr`, and no
   kind variable;
 - puts every declaration at scope `Lifetime.empty`, or at a lifetime variable
@@ -782,7 +766,7 @@ A library that needs a container of tokens declares its own.
 
 ```text
 LinearUnused, LinearReused, LinearInType, LinearGlobal, LinearProp,
-LifetimeEscapes, KindExceeded, ScopeExceeded, SealedConstructor, AxiomMintsToken
+LifetimeEscapes, KindExceeded, ScopeExceeded, SealedConstructor, UntrustedAxiom
 ```
 
 `TypeMismatch`, `NotAType` and `NonForcedImplicitParam` are existing
