@@ -1,5 +1,5 @@
 
-<root>/main.rac:5:7: error: Family Holds is declared at scope Lifetime.empty, which does not contain the scope l of field Holds.mk.lease : Lease(l)
- | mk (lease: Lease(l)) : Holds(l)
-      ^^^^^^^^^^^^^^^^^
-note: in definition Holds
+<root>/main.rac:1:16: error: Family Wrap is declared at scope Lifetime.empty, which does not contain the scope l of lifetime parameter l, which every family must name
+inductive Wrap (l: Lifetime) : Type
+               ^^^^^^^^^^^^^
+note: in definition Wrap

@@ -465,31 +465,20 @@ object InductiveChecks {
         case sort: VSort => sort
         case other       => at(decl.header.resultTy.span) { fail(InductiveTypeNotASort(other)) }
       }
-      // spec §5.1: whatever can be read off an instance's type counts toward the declared scope, so it contains the
-      // scope of each parameter's and index's type, a sort parameter contributing nothing. A family at a kind other
-      // than Kind.unr also names each lifetime parameter.
-      decl.header.binders.zip(familyArgs).zipWithIndex.foreach { case ((binder, arg), index) =>
-        val role = if (index < decl.header.params.length) "parameter" else "index"
-        def requireContains(part: => String, partScope: Lifetime): Unit =
+      // spec §5.1: the declared scope may mention only the family's parameters, and it names each lifetime parameter,
+      // so it is exactly their union. No field's, parameter's or index's type can name another lifetime, since only a
+      // parameter binds one and no atom is open at a declaration, so each of their scopes lies within it unchecked.
+      decl.header.binders.zip(familyArgs).foreach {
+        case (binder, lifetime: Lifetime) =>
           Sorts.requireContains(
             Sorts.ScopeField,
             s"Family ${decl.header.name}",
             declaredSort.scope,
-            part,
-            partScope,
+            s"lifetime parameter ${binder.name}, which every family must name",
+            lifetime,
             binder.span
           )
-        (arg, arg.tpe) match {
-          case (lifetime: Lifetime, _) =>
-            if (!declaredSort.kind.isUnr)
-              requireContains(
-                s"lifetime parameter ${binder.name}, which a family at kind ${declaredSort.kind} must name",
-                lifetime
-              )
-          case (_, _: ParameterTpe) =>
-          case (_, tpe) =>
-            requireContains(s"$role ${binder.name} : $tpe", TypeChecker.getUniverse(tpe).scope)
-        }
+        case _ =>
       }
       FamilySignature(decl, familyType, declaredSort, familyArgs)
     }
@@ -636,22 +625,15 @@ object InductiveChecks {
           at(binder.span) {
             fail(InductiveUniverseTooSmall(name, fieldName, field.tpe, fieldSort.level, constructorUniverse.level))
           }
-        // Kind and scope bounds (spec §5.1), Prop families included: the declared kind and scope, never derived,
-        // contain each field's. A sibling's field is read by its declared sort, so no fixed point is needed.
+        // Kind bound (spec §5.1), Prop families included: the declared kind, never derived, contains each field's. A
+        // sibling's field is read by its declared sort, so no fixed point is needed. The field's scope lies within the
+        // declared scope by construction (see checkFamilySignatures).
         Sorts.requireContains(
           Sorts.KindField,
           s"Family $name",
           constructorUniverse.kind,
           part,
           fieldSort.kind,
-          binder.span
-        )
-        Sorts.requireContains(
-          Sorts.ScopeField,
-          s"Family $name",
-          constructorUniverse.scope,
-          part,
-          fieldSort.scope,
           binder.span
         )
 

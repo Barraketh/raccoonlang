@@ -4,23 +4,38 @@ import com.raccoonlang.{CoreAst => CA}
 
 /**
  * `scope l => e` and atoms (spec §1, §4.1, §4.2, §6.2, §8): a `scope` term opens one atom, named by the term's node
- * identity in checking and evaluation alike, and a type that names it outside the scope is `LifetimeEscapes`. Each rule
- * has an admitted program and the smallest mutation that reaches its diagnostic.
+ * identity in checking and evaluation alike, and a type whose sort's scope names it outside the scope is
+ * `LifetimeEscapes`. Each rule has an admitted program and the smallest mutation that reaches its diagnostic.
  */
 class ScopeTests extends munit.FunSuite with TestSupport {
 
-  /** A family scoped by its lifetime, an unscoped one, and consumers of both. */
+  /**
+   * A family scoped by its lifetime, a linear one, one holding the first, one scoped by two lifetimes, and consumers.
+   */
   private val families =
     """
       |inductive V (l: Lifetime) : Type { scope = l }
       | | mk : V(l)
       |
-      |inductive W (l: Lifetime) : Type
-      | | mk : W(l)
+      |inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }
+      | | mk : Tok(l)
+      |
+      |inductive H (l: Lifetime) : Type { scope = l }
+      | | mk (v: V(l)) : H(l)
+      |
+      |inductive Two (l: Lifetime)(m: Lifetime) : Type { scope = union(l, m) }
+      | | mk : Two(l, m)
       |
       |def useV {l: Lifetime}(v: V(l)): Nat := 0
       |
-      |def same {l: Lifetime}(a: W(l))(b: W(l)): Nat := 1
+      |def same {l: Lifetime}(a: V(l))(b: V(l)): Nat := 1
+      |
+      |def burn {l: Lifetime}(t: Tok(l)): Nat := match t returning Nat with
+      | | .mk => 1
+      |
+      |def keep {S: Lifetime}{A: Type { scope = S }}(x: A): A := x
+      |
+      |def constNat {S: Lifetime}(A: Type { scope = S }): Nat := 0
       |""".stripMargin
 
   private def withFamilies(decls: String): String = families + "\n" + decls
@@ -49,7 +64,7 @@ class ScopeTests extends munit.FunSuite with TestSupport {
       """
         |def n : Nat := scope l => {
         |  let v := V.mk(l)
-        |  same(W.mk(l), W.mk(l))
+        |  same(v, V.mk(l))
         |}
         |
         |{ n }
@@ -58,23 +73,50 @@ class ScopeTests extends munit.FunSuite with TestSupport {
     assert(ValueEquivalence.defEq(runProgram(program), runProgram("{ 1 }")))
   }
 
-  test("a type that names the atom outside its scope is LifetimeEscapes") {
+  test("a type whose sort names the atom outside its scope is LifetimeEscapes") {
     def program(body: String): String = withFamilies(s"def n : Nat := $body\n")
 
     typecheckDecls(program("scope l => useV(V.mk(l))"))
     val escaped = expectOnly[LifetimeEscapes](typecheckDecls(program("useV(scope l => V.mk(l))")))
     assertEquals(escaped.lifetime, "l")
     assertEquals(escaped.tpe.toString, "V(l)")
-    // An unscoped family names the atom in its value alone.
-    expectOnly[LifetimeEscapes](
-      typecheckDecls(withFamilies("def w : Nat := same(scope l => W.mk(l), W.mk(Lifetime.empty))\n"))
-    )
     // The type's sort counts too.
     typecheckDecls("def s : Sort { level = succ(one) } := scope l => Type\n")
     expectOnly[LifetimeEscapes](typecheckDecls("def s : Sort { level = succ(one) } := scope l => Type { scope = l }\n"))
   }
 
-  test("a closure whose code names the atom but captures nothing scoped may leave its scope") {
+  /**
+   * Confinement reads only the sort's scope, so it rests on each rule that computes one (spec §2.4, §4.3, §5.1). Each
+   * value below is bound in the scope and leaves it, and its type's sort names the atom exactly when the value is built
+   * at `l` rather than at `Lifetime.empty`.
+   */
+  test("each rule that computes a sort's scope counts the atom") {
+    def leaving(value: String): String = withFamilies(s"def n : Nat := {\n  let x := scope l => $value\n  0\n}\n")
+    val values = Vector(
+      "a lease" -> "V.mk(@)",
+      "a family holding a lease, through its declared scope (§5.1)" -> "H.mk(V.mk(@))",
+      "a family's type argument" -> "List.nil(V(@))",
+      "a closure capturing a lease, through its derived closure (§4.3)" ->
+        "{\n    let v := V.mk(@)\n    fun (u: Unit): Nat => useV(v)\n  }",
+      "a lambda with a written closure" -> "fun { scope = @ } (u: Unit): Nat => 0",
+      "a function type's domain" -> "fun (v: V(@)): Nat => 0",
+      "a function type's codomain" -> "fun (u: Unit): V(@) => V.mk(@)",
+      "a sort, at its own scope" -> "Type { scope = @ }",
+      "a type variable, instantiated exactly" -> "keep(V.mk(@))",
+      "a proof of an equation between leases" -> "Eq.refl(V.mk(@))",
+      "a match's pattern field" -> "(match H.mk(V.mk(@)) returning V(@) with\n    | .mk v => v\n    )"
+    )
+    values.foreach { case (what, value) =>
+      typecheckDecls(leaving(value.replace("@", "Lifetime.empty")))
+      val escaped = expectOnly[LifetimeEscapes](typecheckDecls(leaving(value.replace("@", "l"))))
+      assertEquals(escaped.lifetime, "l", what)
+    }
+    // A token is consumed where it is bound, so it leaves through its consumer.
+    typecheckDecls(withFamilies("def n : Nat := scope l => burn(Tok.mk(l))\n"))
+    expectOnly[LifetimeEscapes](typecheckDecls(withFamilies("def n : Nat := burn(scope l => Tok.mk(l))\n")))
+  }
+
+  test("a value whose type's sort does not name the atom may leave its scope, even when it holds the atom") {
     def program(result: String, body: String): String =
       withFamilies(s"def leave : $result := scope l => {\n  let v := V.mk(l)\n  fun (u: Unit): Nat => $body\n}\n")
 
@@ -82,23 +124,41 @@ class ScopeTests extends munit.FunSuite with TestSupport {
     assert(ValueEquivalence.defEq(runProgram(leave + "\n{ leave(Unit.unit) }"), runProgram("{ 0 }")))
     // Capturing `v : V(l)` puts the atom in the closure's scope, so its type names it.
     expectOnly[LifetimeEscapes](typecheckDecls(program("Unit -> Nat", "useV(v)")))
+    // A type about the closure is at the closure type's scope, not at the atoms its value holds.
+    typecheckDecls(leave + "def refl : Eq(Unit -> Nat, leave, leave) := Eq.refl(leave)\n")
+    // So is a stuck computation that holds the atom.
+    typecheckDecls(
+      withFamilies(
+        """
+          |def pick {l: Lifetime}(n: Nat)(v: V(l)): Nat := match n returning Nat with
+          | | .zero => useV(v)
+          | | .succ _ => 1
+          |
+          |def count (n: Nat): Nat := scope l => pick(n, V.mk(l))
+          |
+          |def lemma (n: Nat): Eq(Nat, count(n), count(n)) := Eq.refl(count(n))
+          |""".stripMargin
+      )
+    )
   }
 
   test("nested scopes open distinct atoms") {
     def program(second: String): String =
-      withFamilies(s"def n : Nat := scope l => scope m => same(W.mk(l), W.mk($second))\n")
+      withFamilies(s"def n : Nat := scope l => scope m => same(V.mk(l), V.mk($second))\n")
 
     typecheckDecls(program("l"))
     expectOnly[TypeMismatch](typecheckDecls(program("m")))
   }
 
+  // spec §6.2: a lifetime equation arises only between instances that share a scope, as `Two(a, b)` and `Two(b, a)` do.
   test("refinement links a lifetime variable to an atom but never links an atom") {
     def program(binders: String, a: String, b: String): String =
       withFamilies(
         s"""
            |def n : Nat := scope l => scope m => {
-           |  let f := fun $binders(p: Eq(Type, W($a), W($b)))(w: W($a)): W($b) =>
-           |    (match p returning W($b) with
+           |  let f := fun $binders(p: Eq(Type { scope = union($a, $b) }, Two($a, $b), Two($b, $a)))(w: Two($a, $b))
+           |      : Two($b, $a) =>
+           |    (match p returning Two($b, $a) with
            |    | Eq.refl x => w
            |    )
            |  0
@@ -113,25 +173,26 @@ class ScopeTests extends munit.FunSuite with TestSupport {
     expectOnly[TypeMismatch](typecheckDecls(program("", "l", "m")))
   }
 
+  // A type computed under a scope names the atom exactly when its sort does, so it cannot leave as a definition's value.
+  test("a type computed under a scope is confined where the scope stands") {
+    typecheckDecls(withFamilies("def T : Type := scope l => V(Lifetime.empty)\n"))
+    val escaped = expectOnly[LifetimeEscapes](typecheckDecls(withFamilies("def T : Type := scope l => V(l)\n")))
+    assertEquals(escaped.tpe.toString, "Type { scope = l }")
+  }
+
   /**
-   * A definition whose type is a sort may compute a type naming an atom: its own type does not name it. Every use of it
-   * as a type is confined.
+   * A type naming the atom may stand at a local's binder, as an argument at a binder whose type is a sort, and as a
+   * type a term is checked against, all inside the scope. Outside it only a `scope` term can name the atom, and that
+   * term's own type, a sort that names it, is refused where the term stands.
    */
-  private val computed = withFamilies("def T : Type := scope l => W(l)\n\ndef constNat (A: Type): Nat := 0\n")
-
-  test("a local's type at its binder is confined") {
-    typecheckDecls(computed + "def f (x: W(Lifetime.empty)): Nat := 0\n")
-    expectOnly[LifetimeEscapes](typecheckDecls(computed + "def f (x: T): Nat := 0\n"))
-  }
-
-  test("an argument at a binder whose type is a sort is confined") {
-    typecheckDecls(computed + "def k : Nat := constNat(W(Lifetime.empty))\n")
-    expectOnly[LifetimeEscapes](typecheckDecls(computed + "def k : Nat := constNat(T)\n"))
-  }
-
-  test("a type a term is checked against is confined") {
-    typecheckDecls(computed + "def t : Nat := 0\n")
-    expectOnly[LifetimeEscapes](typecheckDecls(computed + "def t : T := 0\n"))
+  test("a type at a binder, as an argument or as an expected type is confined") {
+    typecheckDecls(
+      withFamilies("def k : Nat := scope l => {\n  let x : V(l) := V.mk(l)\n  constNat(V(l))\n}\n")
+    )
+    typecheckDecls(withFamilies("def k : Nat := constNat(scope l => V(Lifetime.empty))\n"))
+    val escaped =
+      expectOnly[LifetimeEscapes](typecheckDecls(withFamilies("def k : Nat := constNat(scope l => V(l))\n")))
+    assertEquals(escaped.tpe.toString, "Type { scope = l }")
   }
 
   test("a recursive call re-enters the same atom") {
@@ -139,7 +200,7 @@ class ScopeTests extends munit.FunSuite with TestSupport {
       """
         |def count (n: Nat): Nat decreases structural(n) := scope l =>
         |  match n returning Nat with
-        |  | Nat.zero => same(W.mk(l), W.mk(l))
+        |  | Nat.zero => same(V.mk(l), V.mk(l))
         |  | Nat.succ m => Nat.add(count(m), useV(V.mk(l)))
         |
         |{ count(3) }
@@ -163,22 +224,26 @@ class ScopeTests extends munit.FunSuite with TestSupport {
   }
 
   test("one scope term is one atom in checking and evaluation, and its residual keeps its node identity") {
-    val (env, sourceTerm, checked) = checkBody(withFamilies("def T : Type := scope l => W(l)\n"))
+    // The closure holds the atom and may leave, since its type does not name it.
+    val program = withFamilies("def f : Unit -> Nat := scope l => fun (u: Unit): Nat => List.length(List.nil(V(l)))\n")
+    val (env, sourceTerm, checked) = checkBody(program)
     val (source, residual) = (sourceTerm, checked.residual) match {
       case (source: CA.Term.Scope, residual: CA.Term.Scope) => (source, residual)
       case other                                            => fail(s"Expected scope terms, got $other")
     }
     assertEquals(residual.nodeId, source.nodeId)
     assertEquals(Atoms.of(residual), Atoms.of(source))
-    assertEquals(checked.value.toString, "W(l)")
     val first = Interpreter.evalTerm(residual, env)
     val second = Interpreter.evalTerm(residual, env)
     assertEquals(first.key, checked.value.key)
     assert(ValueEquivalence.defEq(first, checked.value))
     assert(ValueEquivalence.defEq(first, second))
     // A second scope term, however alike, opens another atom.
-    val (_, _, other) = checkBody(withFamilies("def T : Type := scope l => W(l)\n"))
-    assert(!ValueEquivalence.defEq(other.value, checked.value))
+    val (_, otherTerm, _) = checkBody(program)
+    otherTerm match {
+      case other: CA.Term.Scope => assertNotEquals(Atoms.of(other), Atoms.of(source))
+      case other                => fail(s"Expected a scope term, got $other")
+    }
   }
 
   /** The declarations before the last one published, and the last definition's body checked where it stands. */

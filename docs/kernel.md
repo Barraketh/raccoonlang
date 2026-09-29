@@ -178,9 +178,9 @@ scope of its type's sort, except that a variable of a sort parameter contributes
 nothing, and neither does a recursive definition's reference to itself, which
 names a global. An omitted closure field is the join of the captures' kinds or
 the union of their scopes; a written one must contain it, else `KindExceeded` or
-`ScopeExceeded` naming a capture it does not contain. That test and a family's
-declared kind and scope against its fields, parameters and indices are one
-containment rule with one implementation.
+`ScopeExceeded` naming a capture it does not contain. That test, a family's
+declared kind against its fields' and a family's declared scope against its
+lifetime parameters are one containment rule with one implementation.
 
 The residual carries a derived field as the captures it is derived from. Every
 evaluation of the lambda, the one checking makes included, reads those captures
@@ -262,26 +262,33 @@ opens the same atom. An atom is never refinable, so refinement never links it,
 and nothing abstracts over it: a function type's scope drops only its own
 binders' variables.
 
-Confinement is the one check an atom needs. A type whose value's dependency
-set holds an atom whose `scope` does not enclose the position is
-`LifetimeEscapes`. The checker keeps the atoms whose `scope` encloses the
+Confinement is the one check an atom needs. A type whose sort's scope names an
+atom whose `scope` does not enclose the position is `LifetimeEscapes`. A type's
+sort is its classifier; a sort's own sort is at the same scope, so a type at a
+type position is confined through its sort, and a large type or a sort
+parameter names no atom. The checker keeps the atoms whose `scope` encloses the
 position in its environment; they are lexical, and closing an environment over
-a value drops them. One test applies the rule, at these choke points:
+a value drops them. One test applies the rule, reading the sort's scope and
+nothing else; it returns at once until a program opens an atom. It is applied
+at these choke points:
 
 - every type the checker synthesizes, at the one exit of synthesis, so a
   `scope`'s own type is tested where its atom is no longer open; this is what
-  keeps the body's type, its sort included, from naming the atom;
+  keeps the body's type's sort from naming the atom;
 - every type a term is checked against;
 - a binder's type, which is the type of the local it binds, and a pattern
   field's type;
 - an argument at a binder whose type is a sort, which is itself a type.
 
 Evaluation never makes the check. A value computed under a `scope` may leave it
-whenever its type does not name the atom, even when the value itself holds the
-atom: a closure whose code names `l` but captures nothing scoped, or a type
-computed under the `scope` as the value of a definition whose type is a sort.
-Every use of such a type as a type is then confined. So a global value may hold
-an atom, though never a variable.
+whenever its type's sort does not name the atom, even when the value itself
+holds the atom in its code, a closure's environment or a stuck computation: a
+closure whose code names `l` but captures nothing scoped, or a proposition such
+as `Eq(Unit -> Nat, f, f)` about such a closure `f`. So a global value may hold
+an atom, though never a variable. A type holds an atom its sort does not name
+only inside such values, never as a lifetime that can be read off it, because
+every family names each of its lifetime parameters in its scope (see
+[Inductives and matching](#inductives-and-matching)).
 
 A derived closure holds an atom when a capture's type's scope does (see
 [Universes and function types](#universes-and-function-types)): a capture's
@@ -364,12 +371,14 @@ An inductive declaration is installed only after checking:
 
 - that the family result is a sort;
 - universe bounds for every constructor field;
-- kind and scope bounds: the family's declared kind and scope, which are never
-  derived, contain every constructor field's kind and scope, `Prop` families
-  included; the declared scope also contains the scope of every parameter's
-  and index's type, a sort parameter's contributing nothing; and a family at a
-  kind other than `Kind.unr` names each of its lifetime parameters in its
-  scope;
+- kind and scope bounds: the family's declared kind, which is never derived,
+  contains every constructor field's kind, `Prop` families included; and every
+  family, whatever its kind, names each of its lifetime parameters in its
+  scope, so that a lifetime a forced implicit reads off an instance is counted
+  in the instance's sort. The declared scope may mention only parameters, so
+  it is exactly the union of the lifetime parameters. Only a parameter binds a
+  lifetime and no atom is open at a declaration, so every field's, parameter's
+  and index's type's scope lies within it, and none is checked;
 - that every constructor result is the declared family with uniform
   parameters and well-typed indices;
 - strict positivity of recursive occurrences;
@@ -386,7 +395,8 @@ parameter.
 
 Atomic mutual-inductive blocks are available through the surface `mutual { ... }`
 form. Every family in a block has the same parameter telescope and sort, level,
-kind and scope alike. All provisional family heads are visible while
+kind and scope alike; since each scope is the union of the shared lifetime
+parameters, only the level or kind can differ. All provisional family heads are visible while
 constructors are checked, but the block publishes only after every family
 succeeds. Positivity and recursion metadata are computed for the whole block.
 
@@ -763,7 +773,8 @@ Changes to the checker or evaluator must preserve these rules:
 17. A sort whose kind is not `Kind.unr` has a level that is never zero.
 18. A family's kind and scope are declared, never derived. An instance's sort
     is the declared sort under its arguments, and its declared kind and scope
-    contain whatever a value of it holds or carries in its type.
+    contain whatever a value of it holds or carries in its type; its scope names
+    every lifetime parameter.
 19. A function type's closure is part of its identity and its sort. A lambda's
     closure is written or derived from its captures' types alone, never from
     where the lambda stands, and its residual carries a derived field as those
@@ -771,7 +782,9 @@ Changes to the checker or evaluator must preserve these rules:
 20. An atom is opened only by a `scope` term and is determined by that term's
     node identity, in checking and evaluation alike. It is never refinable and
     never abstracted, and no type the checker synthesizes, checks against or
-    binds names it outside its `scope`; evaluation never checks this.
+    binds has a sort whose scope names it outside its `scope`; evaluation never
+    checks this. A value, a type's included, may hold an atom its type's sort
+    does not name.
 21. A type is linear exactly when its kind is not `Kind.unr`, and one function
     decides it. Every local bound at a linear type by a lambda, a definition's
     parameters, a `let` or a pattern, `_` included, is used exactly once on

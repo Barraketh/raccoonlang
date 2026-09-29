@@ -1,10 +1,10 @@
 package com.raccoonlang
 
 /**
- * Declared family kinds and scopes (spec §5.1): a family's classifier is declared, never derived; its kind and scope
- * contain each constructor field's, its scope the scope of each parameter's and index's type, and a family at a kind
- * other than `Kind.unr` names each lifetime parameter. An instance is at exactly the declared sort under its arguments
- * (§2.4). Each rule has an admitted program and the smallest mutation that reaches its diagnostic.
+ * Declared family kinds and scopes (spec §5.1): a family's classifier is declared, never derived; its kind contains
+ * each constructor field's, and its scope names exactly its lifetime parameters. An instance is at exactly the declared
+ * sort under its arguments (§2.4). Each rule has an admitted program and the smallest mutation that reaches its
+ * diagnostic.
  */
 class FamilyKindScopeTests extends munit.FunSuite with TestSupport {
 
@@ -39,73 +39,49 @@ class FamilyKindScopeTests extends munit.FunSuite with TestSupport {
     )
   }
 
-  test("the declared scope contains each field's scope") {
-    def program(sort: String): String =
-      withFamilies(s"inductive Holds (l: Lifetime) : $sort\n | mk (h: V(l)) : Holds(l)\n")
-
-    typecheckDecls(program("Type { scope = l }"))
-    val error = expectOnly[ScopeExceeded](typecheckDecls(program("Type")))
-    assert(error.part.contains("Holds.mk.h"), error.part)
-  }
-
-  // spec §5.1: a field in which the parameter holds no value is at its own kind, Kind.unr for an arrow. Its scope is
-  // still the arrow's (§2.4), which counts its domains' scopes, so it is not "nothing" for the scope.
-  test("a function-typed field is at Kind.unr but counts its domains' scopes") {
-    typecheckDecls(
+  // spec §5.1: the declared scope may mention only the family's parameters and names each lifetime parameter, so it
+  // is exactly their union. Only a parameter binds a lifetime, so every field's, parameter's and index's type's scope
+  // lies within it, and none has a check of its own: omitting a lifetime is refused at its parameter.
+  test("a scope naming the lifetime parameters holds every field's, parameter's and index's scope") {
+    val admitted = Vector(
+      "inductive Holds (l: Lifetime) : Type { scope = l }\n | mk (h: V(l)) : Holds(l)\n",
+      // A function-typed field is at Kind.unr, its closure kind, but its scope counts its domains' (§2.4).
+      "inductive Reader (l: Lifetime) : Type { scope = l }\n | mk (f: V(l) -> Nat) : Reader(l)\n",
       "inductive Fn {k: Kind}{S: Lifetime}(A: Type { kind = k, scope = S }) : Type { scope = S }\n" +
-        " | mk (f: A -> Nat) : Fn(A)\n"
+        " | mk (f: A -> Nat) : Fn(A)\n",
+      "inductive Phantom {S: Lifetime}(A: Type { scope = S }) : Type { scope = S }\n | mk : Phantom(A)\n",
+      "inductive P {l: Lifetime}(h: V(l)) : Type { scope = l }\n | mk : P(h)\n",
+      "inductive I (l: Lifetime) indices (h: V(l)) : Type { scope = l }\n | mk : I(l, V.mk(l))\n",
+      "inductive S (u: Level)(k: Kind)(l: Lifetime) : Type { scope = l }\n | mk : S(u, k, l)\n",
+      "inductive F {k: Kind}(A: Type { kind = k }) : Type { kind = k }\n | mk (a: A) : F(A)\n"
     )
-    def program(sort: String): String =
-      withFamilies(s"inductive Reader (l: Lifetime) : $sort\n | mk (f: V(l) -> Nat) : Reader(l)\n")
-
-    typecheckDecls(program("Type { scope = l }"))
-    val error = expectOnly[ScopeExceeded](typecheckDecls(program("Type")))
-    assert(error.part.contains("Reader.mk.f"), error.part)
-  }
-
-  test("the declared scope contains each parameter's and index's type's scope") {
-    def phantom(sort: String): String =
-      s"inductive Phantom {S: Lifetime}(A: Type { scope = S }) : $sort\n | mk : Phantom(A)\n"
-    def leased(sort: String): String = withFamilies(s"inductive P {l: Lifetime}(h: V(l)) : $sort\n | mk : P(h)\n")
-    def indexed(sort: String): String =
-      withFamilies(s"inductive I (l: Lifetime) indices (h: V(l)) : $sort\n | mk : I(l, V.mk(l))\n")
-
-    typecheckDecls(phantom("Type { scope = S }"))
-    typecheckDecls(leased("Type { scope = l }"))
-    typecheckDecls(indexed("Type { scope = l }"))
-    assert(expectOnly[ScopeExceeded](typecheckDecls(phantom("Type"))).part.startsWith("parameter A"))
-    assert(expectOnly[ScopeExceeded](typecheckDecls(leased("Type"))).part.startsWith("parameter h"))
-    assert(expectOnly[ScopeExceeded](typecheckDecls(indexed("Type"))).part.startsWith("index h"))
-  }
-
-  test("a sort parameter's type contributes nothing to the scope") {
-    typecheckDecls(
-      "inductive S (u: Level)(k: Kind)(l: Lifetime) : Type\n | mk : S(u, k, l)\n\n" +
-        "inductive F {k: Kind}(A: Type { kind = k }) : Type { kind = k }\n | mk (a: A) : F(A)\n"
-    )
-  }
-
-  test("a family holding two scopes declares their union") {
-    def program(scope: String): String =
+    admitted.foreach(family => typecheckDecls(withFamilies(family)))
+    def pair(scope: String): String =
       s"""
          |inductive Pair {S: Lifetime}{T: Lifetime}(A: Type { scope = S })(B: Type { scope = T }) : Type { scope = $scope }
          | | mk (a: A)(b: B) : Pair(A, B)
          |""".stripMargin
-
-    typecheckDecls(program("union(S, T)"))
-    assert(expectOnly[ScopeExceeded](typecheckDecls(program("S"))).part.startsWith("parameter B"))
+    typecheckDecls(pair("union(S, T)"))
+    assert(expectOnly[ScopeExceeded](typecheckDecls(pair("S"))).part.startsWith("lifetime parameter T"))
   }
 
-  test("a family at a kind other than Kind.unr names each lifetime parameter") {
+  // spec §5.1, §2.4: otherwise `W(l)` for a family `W (l: Lifetime) : Type` would be at scope `{}`, and could leave
+  // `scope l` though `l` can be read off it.
+  test("every family names each lifetime parameter, whatever its kind") {
     def tok(sort: String): String = s"inductive Tok (l: Lifetime) : $sort\n | mk : Tok(l)\n"
     def cell(sort: String): String = s"inductive Cell (k: Kind)(l: Lifetime) : $sort\n | mk : Cell(k, l)\n"
 
     typecheckDecls(tok("Type { kind = lin, scope = l }"))
-    typecheckDecls(tok("Type"))
+    typecheckDecls(tok("Type { scope = l }"))
+    typecheckDecls(tok("Prop { scope = l }"))
     typecheckDecls(cell("Type { kind = k, scope = l }"))
+    val unscoped = expectOnly[ScopeExceeded](typecheckDecls(tok("Type")))
+    assertEquals(unscoped.part, "lifetime parameter l, which every family must name")
+    assertEquals(unscoped.declaration, "Family Tok")
     assert(
       expectOnly[ScopeExceeded](typecheckDecls(tok("Type { kind = lin }"))).part.startsWith("lifetime parameter l")
     )
+    assert(expectOnly[ScopeExceeded](typecheckDecls(tok("Prop"))).part.startsWith("lifetime parameter l"))
     expectOnly[ScopeExceeded](typecheckDecls(cell("Type { kind = k }")))
   }
 
@@ -118,7 +94,7 @@ class FamilyKindScopeTests extends munit.FunSuite with TestSupport {
          |""".stripMargin
 
     typecheckDecls(same("Prop { scope = S }"))
-    expectOnly[ScopeExceeded](typecheckDecls(same("Prop")))
+    assert(expectOnly[ScopeExceeded](typecheckDecls(same("Prop"))).part.startsWith("lifetime parameter S"))
     expectOnly[KindExceeded](
       typecheckDecls(withFamilies("inductive Holds (l: Lifetime) : Prop { scope = l }\n | mk (t: Tok(l)) : Holds(l)\n"))
     )

@@ -77,8 +77,8 @@ level `u` whose values are used as kind `k` says (§3.1) and depend on at most
 the atoms in `S` (§4).
 `Sort { level = u, kind = k, scope = S } : Sort { level = Level.succ(u), scope = S }`.
 A type is an unrestricted value, and it carries at most the atoms its values
-may depend on (§2.4). A type that names an atom is confined both by §4.2 and by
-its sort's scope. Levels are as today, except that they are
+may depend on (§2.4). A type is confined by the atoms its sort's scope names
+(§4.2), and a sort by its own scope. Levels are as today, except that they are
 second-class (§2.2). The three parameters never interact, except that a sort of
 a kind other than `Kind.unr` has a level that is never zero (§2.3). A type's
 sort is given by §2.4, and the type checks against a sort exactly when all
@@ -196,12 +196,16 @@ proposition is proof-valued, as a small one is. Each of its instances is a
 proposition. So a level-polymorphic lemma such as `Eq.symm` is published and
 applied as a proof, as today, and its body never runs.
 
-A type's scope counts every atom a value of it can hand over. A value can hand
-over an atom in three ways: by holding it, by producing it, or by carrying it
-in its type. A value can be read off a type, and a forced implicit is exactly
-such a readout. Checking and evaluation compute it by following a projection
-path through a later argument's type (§2.7), and no caller supplies it. So for a
-function type:
+A type's scope counts every atom a value of it can hand over, and confinement
+reads nothing else (§4.2): a type may leave a `scope` exactly when its sort's
+scope does not name the atom. So each rule of this section, and §5.1's for a
+family, is part of an atom's confinement. A value can hand over an atom in
+three ways: by holding it, by producing it, or by carrying it in its type. A
+value can be read off a type, and a forced implicit is exactly such a readout.
+Checking and evaluation compute it by following a projection path through a
+later argument's type (§2.7), and no caller supplies it. So a type's scope
+counts every lifetime that can be read off it, a forced implicit's included,
+and for a function type:
 - the closure scope counts what the function holds;
 - the codomain's scope counts what calling it produces;
 - the domains' scopes count what can be read off its type.
@@ -234,9 +238,10 @@ so nothing else needs deciding.
 A family instance's sort is its declaration's classifier under its arguments
 (§5.1), not something read off the arguments' values, so it commutes with
 substitution. The declaration's scope already counts every value that can be
-read off an instance, because §5.1 requires it to contain the scope of each
-parameter's and index's type. A family declaration has no removal, since its
-declared scope may mention only its parameters.
+read off an instance, because §5.1 requires it to name exactly the lifetime
+parameters, and every parameter's and index's type names no other lifetime. A
+family declaration has no removal, since its declared scope may mention only
+its parameters.
 
 **2.5 Conversion is exact.** Conversion compares the new parts by equality: two
 sorts are equal when their levels, kinds and scopes are, and two function types
@@ -258,7 +263,8 @@ unscoped type, or a linear one at an unrestricted type.
 Inclusion is tested in exactly two places. In both, something declares a sort
 or closure, and what it contains must fit that declaration:
 - a lambda's closure against what its body captures (§4.3);
-- a family's declaration against its fields (§5.1).
+- a family's declaration against its fields' kinds and its lifetime
+  parameters (§5.1).
 
 A failure is `KindExceeded` for a kind and `ScopeExceeded` for a scope. To lift
 a function value `f` to a larger closure, write
@@ -324,8 +330,8 @@ in `{S: Lifetime}{A: Type { scope = S }}{B: Type { scope = S }}`, requires
 `scope(B)` to equal `scope(A)`. A family that holds both takes a variable for
 each and declares their union, `Type { scope = union(S, T) }`.
 
-A proposition obeys §5.1 like any family. `Eq` is at `Prop { scope = S }`
-because `refl` holds an `A`, and `Eq(Lease(l), a, b)` is at
+A proposition obeys §5.1 like any family. `Eq` is at `Prop { scope = S }`,
+which counts the `A` that `refl` holds, and `Eq(Lease(l), a, b)` is at
 `Prop { scope = l }`. A closure that captures a proof of it can match the proof
 and recover the lease, so the proof's type must count `l` in the closure's
 scope (§4.3).
@@ -467,10 +473,10 @@ parameters are inferred or explicit exactly as today.
 ## 4. Scopes
 
 **4.1 Opening a lifetime.** `scope l => e : T` when `e : T` under
-`l: Lifetime`. The requirement that `T` not name the new atom, its sort
-included, is §4.2's check at the `scope`'s own position, where `l` is out of
-scope. This is the only construct that introduces an atom. `scope` synthesizes
-when its body does, and checks by checking its body against the expected type.
+`l: Lifetime`. The requirement that `T`'s sort not name the new atom is §4.2's
+check at the `scope`'s own position, where `l` is out of scope. This is the
+only construct that introduces an atom. `scope` synthesizes when its body does,
+and checks by checking its body against the expected type.
 
 Checking and evaluation alike bind `l` to a lifetime holding one atom unique to
 this `scope` term, identified by the term's node identity. The body is checked
@@ -485,31 +491,41 @@ Printed output spells an atom as its binder. A residual keeps the `scope` term
 with its node identity and never gives it a synthetic one, which would open a
 different atom.
 
-**4.2 Outside its scope an atom cannot be named in a type.** A type whose value
-mentions an atom whose `scope` binder is not in the ambient context is
+**4.2 Outside its scope an atom cannot be named in a type.** A type whose
+sort's scope names an atom whose `scope` binder is not in the ambient context is
 `LifetimeEscapes(l)`. A `scope` term encloses a position exactly when its
-binder is in that position's context. The check is made:
+binder is in that position's context. A type's sort is its classifier (§2.4).
+A large type's is `Large`, which is closed and names no atom. A term that is
+itself a type is confined through its own type, a sort, whose sort has the
+same scope (§2.1). So `Lease(l)` written as a binder's type is confined,
+because its sort `Type { scope = l }` names `l`. The check is made:
 - on every type the checker synthesizes for a term or checks a term against;
 - on every argument or reconstructed implicit at a binder whose classifier is
   a sort;
 - on the type of every local at its binder.
 
-The dependency set a value carries answers it. Evaluation never makes this
-check, and a residual records nothing of it, since the residual keeps the
-`scope` term and re-evaluates it.
+The sort's scope answers it, and nothing else does. An atom that a type's value
+holds, but that its sort's scope does not name, does not confine the type.
+Evaluation never makes this check, and a residual records nothing of it, since
+the residual keeps the `scope` term and re-evaluates it.
 
 This check is the whole of an atom's confinement. A lifetime is not a value
-(§2.2), so an atom can leave its scope only inside a type, which this check
-refuses. A linear value whose type's scope contains `l` can neither leave the
-scope nor be dropped, so it is consumed inside it. §5.1's rule that a linear
-family names its lifetime parameters in its scope is an aid to that, not a
-second mechanism.
+(§2.2), so a value hands an atom over only as §2.4 counts: by holding it, by
+producing it, or by carrying it in its type. Its type's scope counts all three,
+so a value whose type may leave the scope can hand over no atom of it, though
+its code may name one. A linear value whose type's scope contains `l` can
+neither leave the scope nor be dropped, so it is consumed inside it. §5.1's
+rule that every family names its lifetime parameters in its scope is part of
+that count, not a second mechanism.
 
-A value computed under `l` whose type neither mentions `l` nor is scoped by it
-may leave, even when its code names `l`. For example, a closure
-`fun (u: Unit): Nat => e` whose body names `l` but captures nothing scoped has
-type `Unit -> Nat`. A lifetime is not a capability. What confines a capability
-is that only its module can make one (§5.1).
+A value computed under `l` whose type's sort does not name `l` may leave, even
+when its code, a closure's environment or a stuck computation holds the atom.
+For example, a closure `fun (u: Unit): Nat => e` whose body names `l` but
+captures nothing scoped has type `Unit -> Nat`. A type about such a value may
+leave as well: for such a closure `f`, `Eq(Unit -> Nat, f, f)` is at `Prop`,
+and a proof of it can be stated and used where no scope is open. A lifetime is
+not a capability. What confines a capability is that only its module can make
+one (§5.1).
 
 **4.3 Captures and derived closures.** A lambda's captures are the locals bound
 outside it that its body mentions, in terms and in types written in the body.
@@ -575,33 +591,42 @@ that depends on its binder `l`, so `A` cannot be read off it. That is
 ## 5. Declarations
 
 **5.1 Families.** A family's classifier is a sort. Its kind and scope are
-declared, written or omitted, and never derived. The scope may mention only the
-family's parameters. For each constructor:
-- the declared kind must contain the join of its fields' kinds, else
-  `KindExceeded` naming the field;
-- the declared scope must contain the join of its fields' scopes, else
-  `ScopeExceeded` naming the field.
+declared, written or omitted, and never derived. For each constructor, the
+declared kind must contain the join of its fields' kinds, else `KindExceeded`
+naming the field.
 
-The declared scope must also contain the scope of every parameter's and
-index's type, else `ScopeExceeded` naming it. A value that can be read off an
-instance's type is one its values can hand over (§2.4). So
-`P {l: Lifetime}(h: Lease(l))` must declare `scope = l`. A type parameter counts
-too, because a type carries up to its sort's scope (§2.4). So
-`Phantom {S: Lifetime}(A: Type { scope = S })` must declare `scope = S` even
-though it holds no `A`.
+The declared scope names exactly the family's lifetime parameters: it may
+mention only the family's parameters, and it must name each lifetime parameter,
+else `ScopeExceeded` naming it. A value that can be read off an instance's type
+is one its values can hand over (§2.4), and a lifetime parameter is read off it
+by a forced implicit, as `{l: Lifetime}(w: Wrap(l))` forces `l`. So every
+family names it, whatever its kind and whether or not it holds anything scoped
+by it.
 
-A family whose declared kind is not `Kind.unr` must also name every lifetime
-parameter in its scope, else `ScopeExceeded` naming it. These joins are
-computed for the declaration check alone. An instance is at
+Only a parameter binds a lifetime, since an index or a field cannot (§2.2), and
+no atom is open at a declaration. So a field's, parameter's or index's type
+names no lifetime but the family's lifetime parameters, and its scope (§2.4)
+lies within the declared scope. No further scope check is needed. For example:
+- `Wrap (l: Lifetime)` is at `scope = l` though it holds nothing;
+- `P {l: Lifetime}(h: Lease(l))` is at `scope = l`, which counts `h`, since `h`
+  can be read off an instance;
+- `Phantom {S: Lifetime}(A: Type { scope = S })` is at `scope = S`, which counts
+  `A` though it holds none, because a type carries up to its sort's scope
+  (§2.4).
+
+The kind's join is computed for the declaration check alone. An instance is at
 exactly the declared sort under its arguments (§2.4). So a family confined to
 a lifetime, or linear in a kind, that it is parameterized by says so in its
-classifier.
+classifier. Without the rule for lifetime parameters, `Wrap(l)` would be at
+`Type` and could leave `scope l` (§4.2), though `l` can be read off it. A module
+that hands out such a family only inside a scope, as evidence of being inside
+it, would then be fooled.
 
 ```raccoon
 sealed inductive Lease (l: Lifetime) : Type { scope = l }            // cannot leave scope l
  | mk : Lease(l)
 
-sealed inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }  // scope = l is required: Tok is linear
+sealed inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }  // scope = l is required, as for every family
  | mk : Tok(l)
 
 inductive Holder {k: Kind}{S: Lifetime}(A: Type { kind = k, scope = S })
@@ -621,7 +646,7 @@ through a kind variable is declared at that variable, as `Holder` is. That
 makes it linear at exactly the instances whose argument is linear. A field
 type in which the parameter holds no value, such as `A -> Nat`, is at its own
 kind, its closure kind (§2.4). So it adds nothing to the family's kind, though
-its scope still counts `A`'s. A sibling in a
+its scope still counts `A`'s, which the declared scope names. A sibling in a
 `mutual` block is read by its declared classifier, so no fixed point is
 computed. Strict positivity, uniform parameters, `mutual` blocks and structs
 are unchanged.
@@ -637,10 +662,14 @@ checked against the motive under the branch's equations.
 
 **6.2 Lifetime and kind equations.** Lifetimes and kinds are never indices
 (§2.2). Refinement still meets an equation between two of them when it compares
-two instances of a family at different lifetime or kind arguments. Matching a
-proof of `Eq(Type, Wrap(l), Wrap(m))`, for a family `Wrap (l: Lifetime) : Type`,
-is one such case. The equation is solved over the normal forms of §2.3, as
-level and variable equations are today:
+two instances of a family at different lifetime or kind arguments. A family
+names every lifetime parameter in its scope (§5.1), and sorts are exact (§2.6),
+so two instances at different lifetimes live in different sorts, and a lifetime
+equation arises only between instances that share a scope. Matching a proof of
+`Eq(Type { scope = union(l, m) }, Pair(l, m), Pair(m, l))`, for a family
+`Pair (l: Lifetime)(m: Lifetime) : Type { scope = union(l, m) }`, is one such
+case. The equation is solved over the normal forms of §2.3, as level and
+variable equations are today:
 - A refinable variable alone on one side, not occurring in the other, is linked
   to the other side. When both sides are refinable variables, the later-bound is
   linked to the earlier-bound.
@@ -698,10 +727,11 @@ break an abstraction:
 - `axiom eat {A: Type { kind = lin }}(x: A): Unit` consumes a token without its
   module.
 - `axiom forge : Lease(Lifetime.empty)` makes a lease no module issued.
-- `axiom wrapEq (a: Lifetime)(b: Lifetime): Eq(Type, Wrap(a), Wrap(b))` is
-  consistent, since no two lifetimes are apart (§2.3). Yet a match along it
-  links a lifetime variable to `Lifetime.empty` (§6.2), which lets a token
-  leave its scope.
+- `axiom pairEq (a: Lifetime)(b: Lifetime): Eq(Type { scope = union(a, b) }, Pair(a, b), Pair(b, a))`,
+  for the `Pair` of §6.2, is consistent, since no two lifetimes are apart
+  (§2.3). Yet a match along it links `b` to `a` (§6.2), so a definition can
+  turn a `Tok(a)` into a `Tok(b)`. Applied at `b = Lifetime.empty`, that lets a
+  token leave its scope.
 
 So sealing, linearity and confinement hold unconditionally, relative to the one
 audited prelude. An axiom's result is a neutral, and it never runs.
@@ -738,7 +768,7 @@ A library that needs a container of tokens declares its own.
   and scope ride beside the level, are forced the same way (§2.7), and interact
   with it only through `LinearProp` (§2.3).
 - **Implicit reconstruction.** A recovered `Lifetime` argument is subject to
-  §4.2 wherever it enters a type.
+  §4.2 wherever it enters a type's sort.
 - **The eta-adapter is removed.** Today a function name or lambda checked against
   an expected function type with fewer implicit binders is wrapped in a lambda
   that fits it, so `def monoId : Peano -> Peano := polyId` checks. That types an
