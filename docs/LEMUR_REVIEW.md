@@ -19,7 +19,7 @@ present at `bfd5196`; the rest were introduced or exposed by the Lemur work.
 | S7a Parser and printer diagnostics | F10, F12, F13 | done | `973ae20` |
 | S7b Elaborator field resolution and pattern spans | F11, F14 | done | `0d0f789` |
 | S8 Confinement by sort scope | F6 (D1, decided) | done | `5035a69`, `b8c5f6f` |
-| S9 The program's result is never linear | D2 (decided) | in progress | |
+| S9 The program's result is never linear | D2 (decided) | done | `345b445` |
 | S10 Mutual siblings at their own sorts | D3 (decided) | in progress | |
 
 All steps are done, S8 included; the branch validates (710 tests), and every
@@ -439,6 +439,13 @@ carry spans, and `LinearUnused` for one points at it.
   rewritten. The fixtures `scope-exceeded-parameter` and
   `scope-exceeded-lifetime-parameter` merged into `scope-exceeded`. The merged
   branch validates (710 tests).
+
+- 2026-09-29: S9 landed (`345b445`). `LinearGlobal(definition: Option[String],
+  tpe)` covers a definition and the program's result ("a value outside every
+  binder is never linear, since only a local's uses are counted"); `checkRaw`
+  reports it at the result's type site. §3.2, `kernel.md` and `language.md`
+  updated; fixture `linear-global-result`. The merged branch validates (712
+  tests).
 
 ## Follow-ups (proposed, not scheduled)
 
