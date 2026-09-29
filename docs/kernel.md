@@ -684,10 +684,10 @@ used to build a key must be semantically identifying. A Pi, lambda, match or
 `scope` node's identity is its source and the offset its span starts at, and
 no two nodes of one kind with different syntax share one. A written node keeps
 its own span, a generated one gets a span of its own (a struct selector's
-header its field's), and a node the checker fabricates, or the elaborator
-rewrites from written syntax (a selector's result type that reads an earlier
-field), gets a synthetic identity. Nodes of one syntax may share an identity:
-a selector's result type is both its header's codomain and its match's motive.
+header its field's), and a node the checker fabricates gets a synthetic
+identity. Nodes of one syntax may share an identity: a selector's result type
+is its field's type as written, under `let`s binding the earlier fields it
+mentions, and it is both its header's codomain and its match's motive.
 Captured values, in binding order, are part of closure identity, and a Pi's
 key counts its binders, so a Pi that drops leading binders its remainder does
 not depend on keeps its node's identity. Packed keys include the codec,

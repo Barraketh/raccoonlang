@@ -3,7 +3,7 @@
 def wrap (v: P(Nat, 0)) : P(P(Nat, 0), 0) := mk(v, f(v))
                                              ^^^^^^^^^^^
   expected: G(v) -> Nat
-  actual:   G(P.x(v)) -> Nat
+  actual:   G((match v returning Nat with | P.mk x f => x)) -> Nat
   differ at: P(Nat, 0)  vs  Nat   (not reducible: stuck)
 note: in argument 2 (f) of P.mk
 note: in definition wrap
