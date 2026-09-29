@@ -164,9 +164,6 @@ final case class UntrustedAxiom(axiom: String) extends TypeError
 
 final case class InvalidInductiveBlock(reason: String) extends TypeError
 
-/** One family of a mutual block declared in a different universe from its siblings. */
-final case class MutualBlockSortMismatch(family: String, declared: Value.VSort, expected: Value.VSort) extends TypeError
-
 final case class NonStrictlyPositive(inductive: String, ctor: String, field: String, fieldTy: Value) extends TypeError
 
 final case class PropEliminationRestricted(inductive: String, motive: Value) extends TypeError

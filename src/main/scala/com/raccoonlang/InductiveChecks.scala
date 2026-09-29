@@ -426,7 +426,7 @@ object InductiveChecks {
               )
             }
         }
-    val signatures = typedFamilies.map { case (decl, familyType) =>
+    typedFamilies.map { case (decl, familyType) =>
       val (familyArgs, result) =
         familyType match {
           case pi: VPi if pi.binders.length == decl.header.arity =>
@@ -482,15 +482,6 @@ object InductiveChecks {
       }
       FamilySignature(decl, familyType, declaredSort, familyArgs)
     }
-
-    val commonSort = signatures.head.declaredSort
-    signatures.tail.foreach { signature =>
-      if (!ValueEquivalence.defEq(signature.declaredSort, commonSort))
-        at(signature.decl.header.resultTy.span) {
-          fail(MutualBlockSortMismatch(signature.decl.header.name, signature.declaredSort, commonSort))
-        }
-    }
-    signatures
   }
 
   private def initialMeta(

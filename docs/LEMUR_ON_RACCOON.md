@@ -651,8 +651,9 @@ type in which the parameter holds no value, such as `A -> Nat`, is at its own
 kind, its closure kind (§2.4). So it adds nothing to the family's kind, though
 its scope still counts `A`'s, which the declared scope names. A sibling in a
 `mutual` block is read by its declared classifier, so no fixed point is
-computed. Strict positivity, uniform parameters, `mutual` blocks and structs
-are unchanged.
+computed. Siblings may be at different sorts, each family checked against its
+own declared sort. Strict positivity, uniform parameters and structs are
+unchanged.
 
 ## 6. Matching
 
