@@ -11,12 +11,12 @@ present at `bfd5196`; the rest were introduced or exposed by the Lemur work.
 | Step | Fixes | Status | Commits |
 |---|---|---|---|
 | S1 Ledger paths | F1, F5 | done | `7923f6e` |
-| S2 Function-type identity | F2 | in progress (wave 1) | |
-| S3 Constructor parameters from the scrutinee | F3 | in progress (wave 1) | |
-| S4 Derived closures as capture lists; one containment rule | (refactor; retires F3's failure mode) | planned | |
-| S5 Conversion assertions and hot paths | F4, perf nits | planned | |
-| S6 Sealing cleanup | F7, F8, F9 | planned | |
-| S7a Parser and printer diagnostics | F10, F12, F13 | planned | |
+| S2 Function-type identity | F2 | done | `3423042`, `57cc1ea` |
+| S3 Constructor parameters from the scrutinee | F3 | done | `d776c80` |
+| S4 Derived closures as capture lists; one containment rule | (refactor; retires F3's failure mode) | done | `0830800` |
+| S5 Conversion assertions and hot paths | F4, perf nits | in progress (wave 3) | |
+| S6 Sealing cleanup | F7, F8, F9 | in progress (wave 2) | |
+| S7a Parser and printer diagnostics | F10, F12, F13 | in progress (wave 3) | |
 | S7b Elaborator field resolution and pattern spans | F11, F14 | planned | |
 
 Open decisions, not scheduled: D1–D3 below.
@@ -285,3 +285,28 @@ carry spans, and `LinearUnused` for one points at it.
   match now lies on no path, so a double use there is no longer reported; the
   `Pi` boundary has no surface test, since a function type that mentions a
   linear local is already `LinearInType`. `docs/language.md` updated too.
+- 2026-09-29: S3 landed (`d776c80`). One builder, `BinderOps.freshCtorFields`,
+  now serves match refinement, `EqStore.allowEta` and `tryUnifyNeutralMatches`;
+  the last now succeeds for parameterized families whose indices agree, where it
+  used to give up on every parameterized family. The kind-parameter repro
+  (`stuckkind.rac`) is now its correct `LinearUnused` rather than a crash.
+- 2026-09-29: S2 landed (`3423042`, `57cc1ea`). Function types keep their
+  surface span; selector headers take their field's span. A third collision
+  turned up: a selector's result type was rewritten from the field's type but
+  kept its spans. The first fix gave rewritten Pis synthetic identities; on
+  review that was replaced by generating a selector's result type as the
+  field's own type under `let`s binding the earlier fields it mentions, which
+  deletes `rewriteFieldType` and makes identity correct by construction.
+  `NodeIdentityTests` asserts the invariant over the preludes, examples and
+  fixtures. Proposed, not scheduled: an explicit identity field on Pi, Lam,
+  Match and Scope, so no future desugaring can reuse a span for different
+  syntax.
+- 2026-09-29: S4 landed (`0830800`). A derived closure field is carried as
+  `ClosureField.Derived(captures)`, leaving out captures that contribute
+  `Kind.unr`/`Lifetime.empty` at check time; `Interpreter.derivedField` derives
+  it for checking and evaluation alike. `quoteParameter`, `quoteKind`,
+  `quoteLifetime`, `assertDerivedClosure` and `evalSort` are gone.
+  `Sorts.requireContains` is the one containment rule (four former call sites)
+  and `Sorts.checkedSort` the one `LinearProp` check. No measurable change on a
+  closure-heavy benchmark. Spec §8 and `kernel.md` updated. The merged branch
+  validates (694 tests).
