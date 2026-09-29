@@ -135,7 +135,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
                 CoreAst.ConstBody.TermBody(
                   CoreAst.Term.Lam(_, m: CoreAst.Term.Match, _, _, _, _)
                 ),
-                Some("Pair"),
+                None,
                 _
               ) =>
             m.cases.length == 1 && m.cases.head.ctorName.endsWith("mk") && m.cases.head.argRefs.length == 2

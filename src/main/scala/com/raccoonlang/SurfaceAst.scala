@@ -147,13 +147,13 @@ object SurfaceAst {
 
     object Decl {
       // Constant: name : type [:= value]. Opaque definitions keep only their symbolic head in the environment. A
-      // struct's generated selectors are marked `isSelector`; a program cannot write one.
+      // struct's generated selector names its family's declaration in `selectorOf`; a program cannot write one.
       final case class ConstDecl(
           isOpaque: Boolean,
           header: DeclHeader,
           decreases: Option[DecreaseSpec],
           body: ConstBody,
-          isSelector: Boolean,
+          selectorOf: Option[InductiveDecl],
           span: Span
       ) extends Decl
 

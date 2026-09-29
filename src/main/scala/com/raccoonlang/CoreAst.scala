@@ -388,15 +388,15 @@ object CoreAst {
         case other                      => other.definedNames
       }).mkString(", ")
 
-    /** Whether this declaration's terms mention any of `names` as a global. */
+    /** Whether this declaration's terms may name any of `names` as a global (`mayName`). */
     def references(names: Set[String]): Boolean =
       this match {
         case decl: Decl.ConstDecl =>
-          mentionsGlobal(decl.ty, names) || (decl.body match {
-            case ConstBody.TermBody(term) => mentionsGlobal(term, names)
+          mayName(decl.ty, names) || (decl.body match {
+            case ConstBody.TermBody(term) => mayName(term, names)
             case _: ConstBody.Builtin     => false
           })
-        case decl: Decl.AxiomDecl          => mentionsGlobal(decl.ty, names)
+        case decl: Decl.AxiomDecl          => mayName(decl.ty, names)
         case decl: Decl.InductiveDecl      => inductiveReferences(decl, names)
         case block: Decl.InductiveBlock    => block.families.exists(inductiveReferences(_, names))
         case block: Decl.RecursiveDefBlock => block.definitions.exists(recursiveDefReferences(_, names))
@@ -410,24 +410,39 @@ object CoreAst {
   private def inductiveReferences(decl: Decl.InductiveDecl, names: Set[String]): Boolean = {
     val headerTerms = decl.header.binders.map(_.ty) :+ decl.header.resultTy
     val ctorTerms = decl.ctors.flatMap(ctor => ctor.binders.map(_.ty) :+ ctor.resultTy)
-    (headerTerms ++ ctorTerms).exists(mentionsGlobal(_, names))
+    (headerTerms ++ ctorTerms).exists(mayName(_, names))
   }
 
   private def recursiveDefReferences(definition: RecursiveDef, names: Set[String]): Boolean =
-    mentionsGlobal(definition.ty, names) || mentionsGlobal(definition.body, names) || (definition.decreases match {
-      case DecreaseSpec.Measure(term, _) => mentionsGlobal(term, names)
+    mayName(definition.ty, names) || mayName(definition.body, names) || (definition.decreases match {
+      case DecreaseSpec.Measure(term, _) => mayName(term, names)
       case _: DecreaseSpec.Lexicographic => false
     })
 
+  /**
+   * Whether checking the term may resolve a global among `names`, at any depth. `base.f` is checked as a call of its
+   * family's selector `Family.f` (TypeChecker.checkSelect), and which family that is is known only once `base` is
+   * checked, so a selection of `f` may name any of `names` whose last segment is `f`.
+   */
+  private def mayName(term: Term, names: Set[String]): Boolean =
+    term match {
+      case Term.GlobalRef(name, _) => names(name)
+      case Term.Select(base, field, _) =>
+        val selector = s".$field"
+        names.exists(_.endsWith(selector)) || mayName(base, names)
+      case other => children(other).exists(mayName(_, names))
+    }
+
   object Decl {
     // Constant: name : type [:= value]. Opaque definitions keep only their symbolic head in the environment.
-    // `selectorOf` names the family of a struct's generated selector, which a sealed family keeps to its module.
+    // `sealedBy` is the seal of the family whose generated selector this is, when that family is sealed: the selector is
+    // kept to the family's module, as its constructors are.
     final case class ConstDecl(
         isOpaque: Boolean,
         name: String,
         ty: Term,
         body: ConstBody,
-        selectorOf: Option[String],
+        sealedBy: Option[Sealing.Seal],
         span: Span
     ) extends Decl
 
@@ -438,11 +453,11 @@ object CoreAst {
     ) extends Decl
 
     // Inductive type declaration. Record syntax has already been lowered to ordinary selector definitions. A sealed
-    // family keeps its constructors and selectors to the module its span was read from (Sealing).
+    // family's `seal` keeps its constructors and selectors to the module its declaration was read from (Sealing).
     final case class InductiveDecl(
         header: InductiveHeader,
         ctors: Vector[ConstructorDecl],
-        isSealed: Boolean,
+        seal: Option[Sealing.Seal],
         span: Span
     ) extends Decl
 

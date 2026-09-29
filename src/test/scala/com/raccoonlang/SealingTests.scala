@@ -59,12 +59,25 @@ class SealingTests extends munit.FunSuite with TestSupport {
     outside(boxModule(""), "def x (b: Box): Nat := b.n\n")
   }
 
-  test("a module is a source; a term the checker fabricates belongs to none and is exempt") {
-    val seal = Some(Sealing.Seal("Box", Some(SourceId.fresh())))
-    assert(Sealing.accessible(seal, Span(0, 0, seal.get.module)))
+  test("a module is a source, and a site in no source or a fabricated one lies outside every module") {
+    val seal = Some(Sealing.Seal("Box", SourceId.fresh()))
+    assert(Sealing.accessible(seal, Span(0, 0, Some(seal.get.module))))
     assert(!Sealing.accessible(seal, Span(0, 0, Some(SourceId.fresh()))))
-    assert(Sealing.accessible(seal, Span.synthetic()))
-    assert(Sealing.accessible(None, Span(0, 0, Some(SourceId.fresh()))))
+    assert(!Sealing.accessible(seal, Span(0, 0, None)))
+    assert(!Sealing.accessible(seal, Span.synthetic()))
+    assert(Sealing.accessible(None, Span(0, 0, None)))
+  }
+
+  test("a family and its selectors are sealed to one module, the source the family was read from") {
+    val program = parse(sealedBox)
+    val seals = program.decls.map {
+      case family: CoreAst.Decl.InductiveDecl => family.header.name -> family.seal
+      case definition: CoreAst.Decl.ConstDecl => definition.name -> definition.sealedBy
+      case other                              => fail(s"unexpected declaration $other")
+    }
+    val boxSeal = Some(Sealing.Seal("Box", program.decls.head.span.source.get))
+    // The unsealed family and the module's own definitions carry none.
+    assertEquals(seals, Vector("Box" -> boxSeal, "Box.n" -> boxSeal, "box" -> None, "P" -> None, "get" -> None))
   }
 
   test("outside its module a sealed family's head, its instances and the module's definitions stay usable") {

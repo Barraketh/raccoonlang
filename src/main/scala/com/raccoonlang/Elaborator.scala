@@ -409,7 +409,7 @@ object Elaborator {
           selectorHeader,
           decreases = None,
           SA.ConstBody.TermBody(body),
-          isSelector = true,
+          selectorOf = Some(decl),
           field.span
         )
       }
@@ -799,6 +799,17 @@ object Elaborator {
   }
 
   /**
+   * The seal of the family that `family` declares under the global name `name`, if it is `sealed`. Its constructors and
+   * its generated selectors both take their seal from here, so they are kept to one module: the source the declaration
+   * was read from. Every parsed program has a source (LanguageParser.parseProgram), so a sealed declaration without one
+   * was read from no file and cannot be kept to it; that is a broken invariant, not a program's error.
+   */
+  private def familySeal(family: SA.Command.Decl.InductiveDecl, name: String): Option[Sealing.Seal] =
+    Option.when(family.isSealed) {
+      Sealing.Seal(name, family.span.source.getOrElse(wtf(s"Sealed family $name has no source")))
+    }
+
+  /**
    * Elaborate one or more inductive families. Family signatures see only the incoming environment; constructors see
    * every family head, but no constructors, matching the Core block checker's provisional environment.
    */
@@ -839,7 +850,12 @@ object Elaborator {
         )
       }
       ElaboratedInductive(
-        CA.Decl.InductiveDecl(family.header, constructors, family.surface.isSealed, family.surface.span),
+        CA.Decl.InductiveDecl(
+          family.header,
+          constructors,
+          familySeal(family.surface, family.header.name),
+          family.surface.span
+        ),
         constructorNames
       )
     }
@@ -920,9 +936,9 @@ object Elaborator {
             }
         }
         // A selector is declared in its family's namespace, so that namespace names its family.
-        val selectorOf = Option.when(c.isSelector)(globalName(env.namespace))
+        val sealedBy = c.selectorOf.flatMap(family => familySeal(family, globalName(env.namespace)))
         (
-          CA.Decl.ConstDecl(c.isOpaque, nameText, header.ty, body, selectorOf, c.span),
+          CA.Decl.ConstDecl(c.isOpaque, nameText, header.ty, body, sealedBy, c.span),
           envWithSelf
         )
       case c: SurfaceAst.Command.Decl.AxiomDecl =>

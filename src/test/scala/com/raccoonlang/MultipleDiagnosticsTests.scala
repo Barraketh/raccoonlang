@@ -44,6 +44,22 @@ class MultipleDiagnosticsTests extends munit.FunSuite with TestSupport {
     assert(!diagnostics.exists(_.error.isInstanceOf[NotFound]))
   }
 
+  test("selecting a field whose selector failed is skipped, as a call of the selector is") {
+    // `PS.n` fails: a Prop struct's Type field cannot be selected. `p.n` becomes `PS.n(p)` only once `p` is checked,
+    // so the scan counts a selection of `n` as naming every failed `*.n`.
+    val diagnostics = diagnosticsOf(
+      """
+        |struct PS (a: Prop) : Prop
+        | | mk (n: Nat)(h: a) : PS(a)
+        |
+        |def get (p: PS(True)): Nat := p.n
+        |def get2 (p: PS(True)): Nat := PS.n(p)
+        |""".stripMargin
+    )
+    assertEquals(definitionsNamed(diagnostics), Vector("PS.n"))
+    assert(!diagnostics.exists(_.error.isInstanceOf[NotFound]))
+  }
+
   test("skipping is transitive") {
     val diagnostics = diagnosticsOf(
       """
