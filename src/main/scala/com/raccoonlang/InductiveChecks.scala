@@ -297,15 +297,19 @@ object InductiveChecks {
     result.toVector
   }
 
+  /** A constructor's declared type: its family's parameters, implicit, then its fields. */
+  private[raccoonlang] def constructorTypeTerm(header: InductiveHeader, ctor: ConstructorDecl): Term = {
+    val allBinders = constructorBinders(header, ctor)
+    if (allBinders.isEmpty) ctor.resultTy
+    else Term.Pi(allBinders, ctor.resultTy, Closure.unrestricted(ctor.span), ctor.span)
+  }
+
   private def installConstructors(family: PreparedFamily, baseEnv: Env): Env = {
     val decl = family.decl
     decl.ctors.foldLeft(baseEnv) { case (curEnv, ctor) =>
       val allBinders = constructorBinders(decl.header, ctor)
-      val fullTypeTerm =
-        if (allBinders.isEmpty) ctor.resultTy
-        else Term.Pi(allBinders, ctor.resultTy, Closure.unrestricted(ctor.span), ctor.span)
-
-      val fullType = TypeChecker.getConstructorType(fullTypeTerm, curEnv, decl.header.params.length)
+      val fullType =
+        TypeChecker.getConstructorType(constructorTypeTerm(decl.header, ctor), curEnv, decl.header.params.length)
       val installed = curEnv.putGlobal(
         ctor.canonicalName,
         ConstructorHead(ctor.canonicalName, decl.header.params.length, allBinders.length, fullType)
@@ -397,7 +401,8 @@ object InductiveChecks {
     }
   }
 
-  private def familyTypeTerm(decl: Decl.InductiveDecl): Term =
+  /** A family's declared type: its parameters, then its indices. */
+  private[raccoonlang] def familyTypeTerm(decl: Decl.InductiveDecl): Term =
     if (decl.header.binders.isEmpty) decl.header.resultTy
     else Term.Pi(decl.header.binders, decl.header.resultTy, Closure.unrestricted(decl.header.span), decl.header.span)
 

@@ -323,7 +323,9 @@ object Projection {
       val out = pi.codomain(fullEnv)
       if ((binderTypes :+ out).exists(_.synDeps.intersects(firstIds))) None
       else {
-        // The remaining group keeps the closure: it is the same function's, applied one binder further.
+        // The remaining group keeps the closure: it is the same function's, applied one binder further. It keeps the
+        // node identity and captures too, which is sound: a Pi's key counts its binders (docs/kernel.md#value-identity),
+        // so the only Pis sharing this key are this node's, at these captures, less as many leading binders.
         Some(
           pi.copy(
             env = firstEnv,
