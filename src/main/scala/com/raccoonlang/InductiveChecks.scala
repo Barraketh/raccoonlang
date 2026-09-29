@@ -688,8 +688,7 @@ object InductiveChecks {
 
     // A one-constructor family gets positional projection metadata regardless of indices or recursion. Structure eta
     // is the narrower Lean gate: zero true source indices and no recursive occurrence. Prop instances are filtered
-    // dynamically by StructEta.eligibleInstance and follow their declaration-compiled recovery plan. A sealed family
-    // never has eta, which would let a match in its module open a neutral the module never built (spec §7.1).
+    // dynamically by StructEta.eligibleInstance and follow their declaration-compiled recovery plan.
     //
     // The constructor head is a promise completed after installation: constructor types are checked against the
     // installed family head, so the head cannot exist before installConstructors runs.
@@ -701,7 +700,7 @@ object InductiveChecks {
           new ProjectionInfo(
             ctor.canonicalName,
             constructorFieldDependencies(ctor),
-            etaEligible = header.indices.isEmpty && !blockHasRecursiveField && check.initialMeta.seal.isEmpty,
+            etaEligible = header.indices.isEmpty && !blockHasRecursiveField,
             () => installedCtorHead
           )
         )

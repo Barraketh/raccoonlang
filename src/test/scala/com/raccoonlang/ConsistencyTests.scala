@@ -60,7 +60,7 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
       """
         |def TrivRel (a: Bool)(b: Bool): Prop := True
         |
-        |axiom g (q: Quot(Bool, TrivRel)): Nat
+        |opaque def g (q: Quot(Bool, TrivRel)): Nat := 0
         |
         |def gEq : Eq(Nat, g(Quot.mk(TrivRel, Bool.true)), g(Quot.mk(TrivRel, Bool.false))) :=
         |  congrArg(Quot.sound(Bool.true, Bool.false, TrivRel, True.intro), Nat, g)
@@ -276,10 +276,14 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
     // must never inspect that proof computation. Once checked, every proof of a Pi proposition is
     // replaced by the type-directed eta-lambda, whose applications reconstruct only their result
     // proposition rather than re-entering the discarded source body.
+    // Propositional extensionality is an assumption, so it goes in a trusted prelude (spec §7.3).
+    val propext =
+      TestSupport.preludeAssuming(
+        TestSupport.bundledPreludeSource,
+        "axiom acPropext (a: Prop)(b: Prop)(h: Iff(a, b)): Eq(Prop, a, b)\n"
+      )
     val result = runProgram(
       """
-        |axiom acPropext (a: Prop)(b: Prop)(h: Iff(a, b)): Eq(Prop, a, b)
-        |
         |def acTautext {A: Prop}{B: Prop}(a: A)(b: B): Eq(Prop, A, B) :=
         |  acPropext(A, B, Iff.intro(fun (_: A): B => b, fun (_: B): A => a))
         |
@@ -293,7 +297,8 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
         |{
         |  acOmegaClosed
         |}
-        |""".stripMargin
+        |""".stripMargin,
+      propext
     )
 
     result match {

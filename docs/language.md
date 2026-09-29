@@ -71,6 +71,22 @@ has a checked body but does not unfold after publication. An `axiom` has the
 declared type and no body. At proof types, both forms still obey canonical proof
 representation and proof irrelevance.
 
+Only the trusted prelude declares axioms. An `axiom` in any other module is
+`UntrustedAxiom`, whatever its type:
+
+```raccoon
+axiom excludedMiddle (P: Prop): Or(P, Not(P))       -- UntrustedAxiom
+axiom eat {A: Type { kind = lin }}(x: A): Unit      -- UntrustedAxiom
+```
+
+No rule on an axiom's type could keep it from breaking sealing, linearity or
+lifetimes: an axiom can state `False`, from which every value follows, and even
+a consistent one could consume a token without its module or equate two
+lifetimes. A program that needs an assumption declares it in a custom prelude
+instead, a copy of the bundled `Init/Prelude.rac` with the axiom added, and
+runs with `--prelude <file>`. That makes the extension of the trusted base
+explicit. The bundled prelude's axioms are `Quot` and `Quot.sound`.
+
 `:= builtin` is reserved for declarations in the trusted prelude. Ordinary
 programs cannot acquire builtin behavior.
 
@@ -166,8 +182,8 @@ binder's type must be a type:
 
 A header is the binders written before a declaration's `:`. A function type
 written after the `:` is an ordinary function type, so
-`axiom f : {u: Level} -> Sort { level = u } -> Nat` is `NotAType` and is written
-`axiom f {u: Level}(A: Sort { level = u }): Nat`.
+`def f : {u: Level} -> Sort { level = u } -> Nat := …` is `NotAType` and is
+written `def f {u: Level}(A: Sort { level = u }): Nat := …`.
 
 An expression of a sort parameter stands only at a parameter position: a
 sort's field, or the argument at a binder of that parameter, as in
@@ -560,8 +576,9 @@ token and of one that captures nothing. A definition that drops or copies its
 argument exists only at `Kind.unr`.
 
 A global is never tracked, so a definition or opaque definition whose type is
-linear is `LinearGlobal`. A definition's own function type is unrestricted, so
-a definition that takes or returns tokens is an ordinary global.
+linear is `LinearGlobal`, and axioms belong to the trusted prelude. A
+definition's own function type is unrestricted, so a definition that takes or
+returns tokens is an ordinary global.
 
 Types and proofs hold no tokens. A term whose type is a sort or a proposition
 may not contain a subterm of linear type, which is `LinearInType`, reported at
@@ -666,7 +683,7 @@ field remains stored but gets no selector.
 
 Structure eta is based on the checked family shape, not the `struct` keyword.
 Any non-Prop family instance is eta-eligible when it has exactly one
-constructor, no indices, no recursive constructor field, and no seal. A plain
+constructor, no indices, and no recursive constructor field, sealed or not. A plain
 `inductive` can therefore receive eta without receiving named selectors.
 Indexed or recursive singleton families still have positional metadata used by
 generated selectors, but they do not receive eta.
@@ -709,8 +726,30 @@ module's own definitions that force one that way can be applied anywhere, and
 an implicit argument the checker reconstructs may be a sealed constructor
 application.
 
-A sealed family never receives structure eta, so even inside its module a
-match does not open a neutral value of it as a constructor application.
+Every value of a sealed family comes from its constructors, since only the
+trusted prelude declares axioms and it declares no sealed family. So structure
+eta and proof reconstruction apply to a sealed family as to any other, and open
+nothing its module did not build.
+
+```raccoon
+-- Permit.rac
+sealed inductive Permit (l: Lifetime) : Prop
+ | mk : Permit(l)
+
+sealed inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }
+ | mk : Tok(l)
+
+def redeem {l: Lifetime}(p: Permit(l)): Tok(l) := match p returning Tok(l) with
+ | .mk => Tok.mk(l)
+
+def grant (n: Nat): Permit(Lifetime.empty) := Permit.mk(Lifetime.empty)
+```
+
+A proof function's body never runs, so `grant(0)` is the proof of
+`Permit(Lifetime.empty)` reconstructed from its proposition, which is
+`Permit.mk(Lifetime.empty)`. Any module may call `redeem(grant(0))`, and it
+reduces to a token.
+
 Sealing restricts what a program may write, not what the checker knows: kinds,
 scopes, coverage, apartness and conversion use the full declaration in every
 module.

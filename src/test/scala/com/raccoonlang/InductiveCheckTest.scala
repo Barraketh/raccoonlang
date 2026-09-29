@@ -31,6 +31,10 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
 
   private def global(name: String): CoreAst.Term = CoreAst.Term.GlobalRef(name, blockSpan)
 
+  /** A neutral global of type `ty`: an opaque definition, a symbol whatever `body` built. */
+  private def opaque(name: String, ty: CoreAst.Term, body: CoreAst.Term): CoreAst.Decl =
+    CoreAst.Decl.ConstDecl(isOpaque = true, name, ty, CoreAst.ConstBody.TermBody(body), None, blockSpan)
+
   private def sortAt(level: CoreAst.Form): CoreAst.Term = CoreTestTerms.sortAt(level, blockSpan)
 
   private val typeSort: CoreAst.Term = sortAt(CoreAst.Form.LevelOne)
@@ -206,10 +210,13 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
     assert(oddMeta.block.positiveParams.isEmpty)
     assert(!oddMeta.projectionInfo.get.etaEligible)
 
-    val matchEnv = Interpreter.evalDecl(
-      CoreAst.Decl.AxiomDecl("evenWitness", global("Even"), blockSpan),
-      Interpreter.evalDecl(CoreAst.Decl.AxiomDecl("oddWitness", global("Odd"), blockSpan), env)
-    )
+    val oddWitness =
+      opaque("oddWitness", global("Odd"), CoreAst.Term.App(global("Odd.succ"), Vector(global("Even.zero")), blockSpan))
+    val matchEnv =
+      Interpreter.evalDecl(
+        opaque("evenWitness", global("Even"), global("Even.zero")),
+        Interpreter.evalDecl(oddWitness, env)
+      )
     val evenMatch = CoreAst.Term.Match(
       global("evenWitness"),
       motive = global("Even"),
@@ -290,10 +297,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   }
 
   test("mutual blocks reject non-uniform parameters on recursive sibling fields") {
-    val base = Interpreter.evalDecl(
-      CoreAst.Decl.AxiomDecl("Carrier", typeSort, blockSpan),
-      Prelude.test.checkedEnv
-    )
+    val base = Interpreter.evalDecl(opaque("Carrier", typeSort, propSort), Prelude.test.checkedEnv)
 
     interceptError[NonStrictlyPositive] {
       Interpreter.evalDecl(nonUniformRecursiveMutual, base)

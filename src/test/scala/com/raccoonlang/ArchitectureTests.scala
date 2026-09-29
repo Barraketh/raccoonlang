@@ -75,6 +75,11 @@ class ArchitectureTests extends munit.FunSuite {
       Set("Sealing.scala", "Errors.scala", "ErrorRendering.scala")
     ),
     Rule(
+      "only the trusted prelude declares axioms, decided by Interpreter.evalDecl's bootstrap privilege alone",
+      raw"\bUntrustedAxiom\(".r,
+      Set("Interpreter.scala", "Errors.scala", "ErrorRendering.scala")
+    ),
+    Rule(
       "a module is a source file, and only Sealing compares a span's source",
       raw"\.source\s*[=!]=|\.source\.contains\b|[=!]=\s*[\w.]*\.source\b|\bsyntheticSource\b".r,
       Set("Sealing.scala", "Parser.scala")
@@ -84,6 +89,11 @@ class ArchitectureTests extends munit.FunSuite {
         "and by implicit projection before it reads a constructor's field",
       raw"\bSealing\.(accessible|requireAccessible)\(".r,
       Set("TypeChecker.scala", "MatchChecker.scala", "Projection.scala")
+    ),
+    Rule(
+      "a proof's recovery plan is read only by ProofReconstruction, the one place a proof is reconstructed",
+      raw"\.proofRecovery\b".r,
+      Set("ProofReconstruction.scala")
     )
   )
 

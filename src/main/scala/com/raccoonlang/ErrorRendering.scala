@@ -73,6 +73,9 @@ object ErrorRendering {
         val use = member.fold("matching on a value of it")(name => s"naming $name")
         s"The sealed family $family keeps its constructors and selectors to the module that declares it, so $use " +
           "is not allowed here"
+      case UntrustedAxiom(axiom) =>
+        s"Axiom $axiom is declared outside the trusted prelude; only the prelude declares axioms, so an assumption " +
+          "goes in a custom prelude (--prelude)"
       case InvalidInductiveBlock(reason) => s"Invalid inductive block: $reason"
       case MutualBlockSortMismatch(family, declared, expected) =>
         s"Invalid inductive block: family $family lives in $declared, expected $expected"
