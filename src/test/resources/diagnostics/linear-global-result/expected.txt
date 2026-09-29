@@ -1,0 +1,4 @@
+
+<root>/main.rac:6:3: error: The program's result has the linear type { kind = Kind.lin } (u: Unit) -> Nat; a value outside every binder is never linear, since only a local's uses are counted
+  fun (u: Unit): Nat => closeFile(h)
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -309,8 +309,12 @@ the later binders' types, the result type and the body; a `let`, whose extent
 is the rest of its block; and a pattern field, whose extent is its branch. A
 pattern binds a local for every field, a `_` an anonymous one no name resolves
 to, and so does `let _`. Whether a local is tracked is decided once, from its
-type at its binder, so refinement never changes it. Globals are never tracked,
-so a definition or opaque definition whose type is linear is `LinearGlobal`.
+type at its binder, so refinement never changes it. A value outside every
+binder is never tracked, so its type may not be linear: a definition or opaque
+definition, which every reference uses, and the program's result, which
+nothing uses, are `LinearGlobal` when their type is linear. The result is
+checked once the entry program's body has checked, and reported where its
+type comes from, as a mismatch is; an imported module has no body.
 
 The ledger checks the residual of each tracked binder's extent once that
 extent has checked. It counts uses along every path that takes one branch at

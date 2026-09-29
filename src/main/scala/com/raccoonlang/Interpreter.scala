@@ -553,7 +553,7 @@ object Interpreter {
               case CoreAst.ConstBody.TermBody(term) =>
                 val checkedTy = TypeChecker.checkDeclType(ty, env).value
                 // A global is never tracked, so none may be linear (spec §3.2).
-                if (Linearity.isLinear(checkedTy)) at(ty.span)(fail(LinearGlobal(name, checkedTy)))
+                if (Linearity.isLinear(checkedTy)) at(ty.span)(fail(LinearGlobal(Some(name), checkedTy)))
                 val checked = TypeChecker.checkTerm(term, checkedTy, env)
                 val value = if (isOpaque) VConst(name, Symbol, checkedTy) else checked.value
                 val published =

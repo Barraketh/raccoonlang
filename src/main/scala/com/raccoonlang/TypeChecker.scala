@@ -51,7 +51,13 @@ object TypeChecker {
 
     val collected = diagnostics.result()
     if (collected.nonEmpty) throw Execution.CheckFailure(collected)
-    try program.body.map(body => checkTerm(body, env).value)
+    try
+      program.body.map { body =>
+        val result = checkTerm(body, env).value
+        // The result is outside every binder, like a global, so it may not be linear either (spec §3.2).
+        if (Linearity.isLinear(result.tpe)) at(typeSite(body))(fail(LinearGlobal(None, result.tpe)))
+        result
+      }
     catch { case diagnostic: Diagnostic => throw Execution.CheckFailure(Vector(diagnostic)) }
   }
 
