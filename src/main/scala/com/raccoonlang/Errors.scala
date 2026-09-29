@@ -129,6 +129,9 @@ final case class KindExceeded(declaration: String, declared: Value.Kind, part: S
 final case class ScopeExceeded(declaration: String, declared: Value.Lifetime, part: String, partScope: Value.Lifetime)
   extends TypeError
 
+/** A type that names the atom of a `scope` whose binder `lifetime` does not enclose it (spec §4.2). */
+final case class LifetimeEscapes(lifetime: String, tpe: Value) extends TypeError
+
 final case class InvalidInductiveBlock(reason: String) extends TypeError
 
 /** One family of a mutual block declared in a different universe from its siblings. */

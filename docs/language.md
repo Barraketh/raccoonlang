@@ -105,7 +105,8 @@ Prop { kind = k, scope = S }              -- level is Level.zero
 
 A sort has three parameters, supplied by name in any order: its `level`, its
 `kind`, which says how the values of its types may be used, and its `scope`, a
-lifetime: the set of lifetime variables its types' values may depend on.
+lifetime: the set of atoms and lifetime variables its types' values may depend
+on (see [Scopes](#scopes)).
 `Sort` is not a function, so `Sort(u)` does not parse, and `Sort` requires its
 `level`. An omitted `kind` is `Kind.unr` and an omitted `scope` is
 `Lifetime.empty`; that is what the shorter spelling means. So `Type` is
@@ -138,7 +139,8 @@ inductive Box (u: Level)(A: Sort { level = u }) : Sort { level = u }
 def keep {k: Kind}{S: Lifetime}{A: Type { kind = k, scope = S }}(x: A): A := x
 ```
 
-Kinds and lifetimes are normalized as they are built. A lifetime is a set:
+Kinds and lifetimes are normalized as they are built. A lifetime is a set of
+atoms and lifetime variables:
 `union` is associative, commutative and idempotent, with `Lifetime.empty` as its
 identity. A kind is `Kind.lin` or a set of kind variables, the empty set being
 `Kind.unr`: `join` unites the sets, and `Kind.lin` absorbs. Two kinds or two
@@ -159,6 +161,7 @@ binder's type must be a type:
 | a family parameter | yes | yes | yes |
 | a family index, a constructor field | no | no | no |
 | a function type or lambda binder | no | no | yes |
+| `scope l =>` | – | – | yes |
 
 A header is the binders written before a declaration's `:`. A function type
 written after the `:` is an ordinary function type, so
@@ -342,6 +345,41 @@ prelude. String literal syntax uses JSON-style escapes and Unicode scalar
 values, but it is available only when the active trusted prelude provides the
 validated `String`, `List Char`, and `Char.ofNat` layout. The bundled prelude
 does not currently provide that string layout.
+
+### Scopes
+
+`scope l => e` opens a fresh atom and binds `l` to the lifetime holding it,
+then denotes the value of `e`. Its type is `e`'s type. `scope` is a keyword at
+the start of a term, and a field name inside a field list; the body extends as
+far to the right as a lambda body does:
+
+```raccoon
+inductive Lease (l: Lifetime) : Type { scope = l }
+ | mk : Lease(l)
+
+def use {l: Lifetime}(h: Lease(l)): Nat := 0
+
+def ok : Nat := scope l => use(Lease.mk(l))
+```
+
+The atom is unique to the `scope` term: two `scope` terms open two atoms, while
+running one term twice, a recursive call included, opens the same one. Printed
+output spells an atom as its binder.
+
+Outside its `scope`, an atom cannot be named in a type. A type whose value
+mentions an atom whose `scope` does not enclose it is `LifetimeEscapes`. That is
+checked on every type a term has or is checked against, on the type of every
+local at its binder, and on every argument that is a type. So
+`use(scope l => Lease.mk(l))` is rejected: the `scope`'s own type `Lease(l)`
+names its atom where `l` is no longer bound. A value whose type does not name
+the atom may leave, even when its code does: in
+`scope l => fun (u: Unit): Nat => use(Lease.mk(l))`, the lambda has type
+`Unit -> Nat`, since a lifetime is not a value and the lambda captures nothing
+scoped. Capturing a local of type `Lease(l)` instead would give the lambda type
+`{ scope = l } Unit -> Nat`, which cannot leave.
+
+An atom is not a variable: matching never links it to another lifetime, while a
+lifetime variable may be linked to it. Nothing checks a `scope` at run time.
 
 ## Inductive families
 

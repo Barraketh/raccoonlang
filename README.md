@@ -23,6 +23,8 @@ Raccoon currently provides:
   families and declarations, normalized and compared exactly;
 - strictly positive inductive families with parameters and indices, whose
   declared kind and scope bound what their values hold;
+- `scope l => e`, which opens a fresh lifetime atom that no type may name
+  outside it;
 - dependent, exhaustive pattern matching with an explicit `returning` motive;
 - checking by synthesis and definitional equality: a term's type never depends
   on where it stands;

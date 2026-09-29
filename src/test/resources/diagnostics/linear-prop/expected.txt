@@ -1,5 +1,5 @@
 
-<root>/main.rac:1:33: error: A sort of kind k#N needs a level that is never zero, but its level u#N may be zero; proofs are unrestricted
+<root>/main.rac:1:33: error: A sort of kind k needs a level that is never zero, but its level u may be zero; proofs are unrestricted
 def keep {u: Level}{k: Kind}(A: Sort { level = u, kind = k })(x: A): A := x
                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: in definition keep

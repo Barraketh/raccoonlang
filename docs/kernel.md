@@ -77,8 +77,9 @@ solution. In particular:
 - level variables link only when normalization leaves a forced solution;
 - a kind or lifetime variable links only when it is alone on one side and does
   not occur on the other; when both sides are variables, the later-bound one
-  links to the earlier-bound one. Every other kind or lifetime equation, a join
-  or union on both sides included, is stuck;
+  links to the earlier-bound one. An atom is not a variable and never links:
+  admitting a value's ids as refinable leaves its atoms out. Every other kind or
+  lifetime equation, a join or union on both sides included, is stuck;
 - refinable values at eta-eligible structure types are expanded at the
   refinability boundary, where eta makes the expansion unique.
 
@@ -127,8 +128,8 @@ are variables:
 - Levels normalize to maxima of offset atoms plus an optional constant.
   `imax(a, b)` reduces when `b` is known to be zero or positive and otherwise
   remains a conditional atom.
-- A lifetime is the set of its lifetime variables; `Lifetime.union` is set
-  union.
+- A lifetime is the set of its lifetime variables and atoms (see
+  [Scopes and atoms](#scopes-and-atoms)); `Lifetime.union` is set union.
 - A kind is `Kind.lin` or a set of kind variables, the empty set being
   `Kind.unr`; `Kind.join` unites the sets, and `Kind.lin` absorbs.
 
@@ -136,7 +137,7 @@ Normalized representation equality is equality of levels, kinds and lifetimes.
 Each normal form is built only by its own constructors, which sort and
 deduplicate, so one implementation of union, join and containment serves the
 checker and the evaluator. A kind or lifetime has no neutral other than a
-variable, so no two of them are ever apart.
+variable or an atom, so no two of them are ever apart.
 
 A sort of a kind other than `Kind.unr` must have a level that is never zero,
 since proofs are unrestricted; the checker rejects any other sort term with
@@ -236,6 +237,46 @@ reconstruct every implicit with the same projection and then check it against
 its instantiated binder type. Constructor family parameters that cannot be
 projected are demoted to explicit arguments; other unforced implicits are
 rejected.
+
+## Scopes and atoms
+
+`scope l => e` is a Core term of its own. It opens an atom: an id in a
+lifetime's set, allocated like a variable's and printed as the `scope`'s
+binder, but not a variable. One registry, shared by checking and evaluation,
+maps the term's AST node identity to its atom, so two `scope` terms are two
+atoms and one term checked or evaluated any number of times is one atom, a
+recursive call re-entering it included. Both checking and evaluation bind `l`
+to the lifetime holding exactly that atom, and the term denotes its body's
+value. A residual keeps the term with its node identity, so re-evaluating it
+opens the same atom. An atom is never refinable, so refinement never links it,
+and nothing abstracts over it: a function type's scope drops only its own
+binders' variables.
+
+Confinement is the one check an atom needs. A type whose value's dependency
+set holds an atom whose `scope` does not enclose the position is
+`LifetimeEscapes`. The checker keeps the atoms whose `scope` encloses the
+position in its environment; they are lexical, and closing an environment over
+a value drops them. One test applies the rule, at these choke points:
+
+- every type the checker synthesizes, at the one exit of synthesis, so a
+  `scope`'s own type is tested where its atom is no longer open; this is what
+  keeps the body's type, its sort included, from naming the atom;
+- every type a term is checked against;
+- a binder's type, which is the type of the local it binds, and a pattern
+  field's type;
+- an argument at a binder whose type is a sort, which is itself a type.
+
+Evaluation never makes the check. A value computed under a `scope` may leave it
+whenever its type does not name the atom, even when the value itself holds the
+atom: a closure whose code names `l` but captures nothing scoped, or a type
+computed under the `scope` as the value of a definition whose type is a sort.
+Every use of such a type as a type is then confined. So a global value may hold
+an atom, though never a variable.
+
+A derived closure names an atom by the `scope` binder's local, as it names a
+variable by a binder's (see
+[Universes and function types](#universes-and-function-types)): a capture's
+type names only atoms whose `scope` encloses the lambda.
 
 ## Inductives and matching
 
@@ -504,7 +545,8 @@ key-coherence assertion (`-Draccoon.keyAssertions`, on by default and off for
 benchmarking) runs the conversion rules beneath every equation a key decides
 and fails loudly on disagreement. Only atoms whose key is their identity are
 exempt: variables (by id), constants and constructor heads (by name), and
-levels (by normal form). Kinds and lifetimes key by their normal forms too, but
+levels (by normal form). Kinds and lifetimes key by their normal forms too, an
+atom by its id, which its `scope` term's node identity determines, but
 their conversion rule compares the normal forms itself, so the assertion checks
 their keys. A sort's key mixes in its level, kind and scope, and a Pi's key its
 closure kind and closure scope, explicitly rather than through its captures.
@@ -557,3 +599,7 @@ Changes to the checker or evaluator must preserve these rules:
     closure is written or derived from its captures' types alone, never from
     where the lambda stands, and re-evaluating a derived closure agrees with
     deriving it again.
+20. An atom is opened only by a `scope` term and is determined by that term's
+    node identity, in checking and evaluation alike. It is never refinable and
+    never abstracted, and no type the checker synthesizes, checks against or
+    binds names it outside its `scope`; evaluation never checks this.

@@ -443,6 +443,8 @@ object Interpreter {
       case l: CTerm.Lam             => evalLam(l, env)
       case m: CTerm.Match           => evalMatch(m, env)
       case b: CTerm.Body            => evalBody(b, env)
+      // The interpreter binds a scope's variable to its atom and makes none of its checks (spec §8).
+      case scope: CTerm.Scope => evalTerm(scope.body, env.putLocal(scope.ref, Atoms.of(scope)))
       case CTerm.Sort(level, kind, scope, _) =>
         evalSort(evalTerm(level, env), evalTerm(kind, env), evalTerm(scope, env))
       case CTerm.FormOp(form, args, _) => evalFormOp(form, args.map(evalTerm(_, env)))
