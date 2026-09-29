@@ -17,7 +17,9 @@ object PrettyPrinter {
   private def printApp(head: Value, args: Seq[Value]): String = {
     val headStr = head match {
       case _: Value.VApp | _: Value.VConst | _: Value.Var | _: Value.VSort => print(head)
-      case _                                                               => s"(${print(head)})"
+      // A named lambda prints as its name, such as a native operation heading its neutral application.
+      case Value.VLam(_, _: Value.ValueId.Const, _) => print(head)
+      case _                                        => s"(${print(head)})"
     }
     val argsStr = explicitArgs(head, args).map(print).mkString(", ")
     s"$headStr($argsStr)"

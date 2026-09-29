@@ -194,6 +194,125 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
     }
   }
 
+  /** `2^32`, far above the unfolding limit: a declared body unfolding on it would overflow the host stack. */
+  private val two32 = BigInt(1) << 32
+
+  /** The full profile with a `mod` whose body multiplies by its divisor, as a real definition would. */
+  private lazy val multiplyingModPrelude = syntheticFullNative(
+    "multiplying-mod",
+    fullNativeAddendum.replace(
+      "  def mod (a: Nat)(b: Nat): Nat := a",
+      "  def mod (a: Nat)(b: Nat): Nat := Nat.sub(a, Nat.mul(Nat.div(a, b), b))"
+    )
+  )
+
+  test("a native operation on a literal above the unfolding limit is a neutral that resumes on literals") {
+    typecheckDecls(s"def f (n: Nat): Nat := Nat.mul(n, $two32)")
+    assertEquals(payload(runProgram(s"def f (n: Nat): Nat := Nat.mul(n, $two32)\n{ f(3) }")), 3 * two32)
+
+    typecheckDecls(s"def f (n: Nat): Nat := Nat.mod(n, $two32)", multiplyingModPrelude)
+    val mod = s"def f : (n: Nat) -> Nat := fun (n: Nat): Nat => Nat.mod(n, $two32)\n{ f(${two32 + 5}) }"
+    assertEquals(payload(runProgram(mod, multiplyingModPrelude)), BigInt(5))
+  }
+
+  test("a native neutral is blocked on its non-literal argument, or rigid when that is not blocked") {
+    val env = Prelude.default.checkedEnv
+    val big = runProgram(s"{ $two32 }")
+    val n = FreshVar.freshVar("n", env("Nat"))
+    val blocked = Interpreter.evalApply(env("Nat.mul"), Vector(n, big))
+    blocked match {
+      case Value.VBlockedApp(head, Vector(`n`, `big`), tpe, blockedOn) =>
+        assert(head eq env("Nat.mul"))
+        assert(tpe eq env("Nat"))
+        assertEquals(blockedOn, DepSet(n.id))
+      case other => fail(s"Expected a blocked native application, got $other")
+    }
+    // Solving the blocker reruns the operation through its own head: on a literal, with the host equation.
+    def solved(solution: Value): Value =
+      ValueOps.materialize(blocked, EqStore.empty.allow(DepSet(n.id)).addLink(n.id, solution))
+    assertEquals(payload(solved(runProgram("{ 3 }"))), 3 * two32)
+    Interpreter.evalApply(env("Nat.blt"), Vector(big, n)) match {
+      case Value.VBlockedApp(_, _, tpe, blockedOn) =>
+        assert(ValueEquivalence.defEq(tpe, env("Bool")))
+        assertEquals(blockedOn, DepSet(n.id))
+      case other => fail(s"Expected a blocked native application, got $other")
+    }
+
+    val k = Value.VConst("k", Value.Symbol, env("Nat"))
+    Interpreter.evalApply(env("Nat.add"), Vector(k, big)) match {
+      case rigid @ Value.VApp(head, Vector(`k`, `big`), _, blockedOn) =>
+        assert(head eq env("Nat.add"))
+        assert(blockedOn.isEmpty)
+        assert(ValueEquivalence.defEq(rigid, Interpreter.evalApply(env("Nat.add"), Vector(k, big))))
+      case other => fail(s"Expected a rigid native application, got $other")
+    }
+    solved(k) match {
+      case Value.VApp(head, Vector(`k`, `big`), _, blockedOn) =>
+        assert(head eq env("Nat.mul"))
+        assert(blockedOn.isEmpty)
+      case other => fail(s"Expected a rigid native application, got $other")
+    }
+  }
+
+  test("native neutrals are equal when they apply the same operation to convertible arguments") {
+    typecheckDecls(
+      s"""
+         |def same (n: Nat): Eq(Nat, Nat.mul(n, $two32), Nat.mul(n, $two32)) := Eq.refl(Nat.mul(n, $two32))
+         |def converted (n: Nat): Eq(Nat, Nat.mul(Nat.add(n, 1), $two32), Nat.mul(Nat.succ(n), $two32)) :=
+         |  Eq.refl(Nat.mul(Nat.succ(n), $two32))
+         |opaque def k : Nat := 5
+         |def rigid : Eq(Bool, Nat.beq(k, $two32), Nat.beq(k, $two32)) := Eq.refl(Nat.beq(k, $two32))
+         |""".stripMargin
+    )
+    expectTypeError[TypeMismatch](
+      s"def otherLiteral (n: Nat): Eq(Nat, Nat.mul(n, $two32), Nat.mul(n, ${two32 + 1})) := Eq.refl(Nat.mul(n, $two32))",
+      Prelude.default
+    )
+    expectTypeError[TypeMismatch](
+      s"def otherOperation (n: Nat): Eq(Nat, Nat.mul(n, $two32), Nat.add(n, $two32)) := Eq.refl(Nat.mul(n, $two32))",
+      Prelude.default
+    )
+  }
+
+  test("a native neutral resumes with the host equation once refinement solves its argument") {
+    typecheckDecls(
+      s"""
+         |def refine (n: Nat)(h: Eq(Nat, n, 3)): Eq(Nat, Nat.mul(n, $two32), ${3 * two32}) := {
+         |  match h returning Eq(Nat, Nat.mul(n, $two32), ${3 * two32}) with
+         |  | Eq.refl z => Eq.refl(${3 * two32})
+         |}
+         |""".stripMargin
+    )
+  }
+
+  test("native operations unfold on literals up to the limit and no further") {
+    typecheckDecls(
+      """
+        |def one (n: Nat): Eq(Nat, Nat.add(n, 1), Nat.succ(n)) := Eq.refl(Nat.succ(n))
+        |def two (n: Nat): Eq(Nat, Nat.mul(n, 2), Nat.add(n, n)) := Eq.refl(Nat.add(n, n))
+        |""".stripMargin
+    )
+
+    // The limit bounds every literal argument, so `add`'s first argument, on which its body does not recurse, shows it
+    // without unfolding a layer per unit: at the limit the body runs and is stuck on `n`, and above it does not run.
+    val env = Prelude.default.checkedEnv
+    val limit = Packed.MaxUnfoldedLiteral
+    val n = FreshVar.freshVar("n", env("Nat"))
+    def add(a: Value, b: Value): Value = Interpreter.evalApply(env("Nat.add"), Vector(a, b))
+    assert(add(runProgram(s"{ $limit }"), n).isInstanceOf[Value.NeutralThunk])
+    Vector(add(runProgram(s"{ ${limit + 1} }"), n), add(n, runProgram(s"{ ${limit + 1} }"))).foreach {
+      case Value.VBlockedApp(head, _, _, _) => assert(head eq env("Nat.add"))
+      case other                            => fail(s"Expected a blocked native application, got $other")
+    }
+
+    // Spec §5.3: the equation lost above the limit, which a program relying on it no longer checks.
+    val lost = expectTypeError[TypeMismatch](
+      "def lost (x: Nat): Eq(Nat, Nat.add(x, 2000), Nat.succ(Nat.add(x, 1999))) := Eq.refl(Nat.add(x, 2000))",
+      Prelude.default
+    )
+    assertEquals(PrettyPrinter.print(lost.actual), "Eq(Nat, Nat.add(x, 2000), Nat.add(x, 2000))")
+  }
+
   test("packed literals refine constructor equations and prove apartness") {
     typecheckDecls(
       """
