@@ -6,6 +6,7 @@ package com.raccoonlang
  * declarations once inside the module, appended to it, and once outside it, in an entry file that imports it.
  */
 class SealingTests extends munit.FunSuite with TestSupport {
+  import TestSupport.leaseModule
 
   /**
    * A sealed struct with a module-made value, an unsealed family indexed by it, and a module definition that forces an
@@ -25,27 +26,6 @@ class SealingTests extends munit.FunSuite with TestSupport {
        |""".stripMargin
 
   private val sealedBox = boxModule("sealed ")
-
-  /** The Lease and Tok capabilities of spec §5.1, sealed, with the module's helpers that alone make them. */
-  private val leaseModule =
-    """
-      |sealed inductive Lease (l: Lifetime) : Type { scope = l }
-      | | mk : Lease(l)
-      |
-      |sealed inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }
-      | | mk : Tok(l)
-      |
-      |def withLease {k: Kind}{S: Lifetime}{A: Type { kind = k, scope = S }}{kf: Kind}{Sf: Lifetime}
-      |    (f: { kind = kf, scope = Sf } (l: Lifetime) -> Lease(l) -> A): A :=
-      |  scope l => f(l, Lease.mk(l))
-      |
-      |def withTok {k: Kind}{S: Lifetime}{A: Type { kind = k, scope = S }}{kf: Kind}{Sf: Lifetime}
-      |    (f: { kind = kf, scope = Sf } (l: Lifetime) -> Tok(l) -> A): A :=
-      |  scope l => f(l, Tok.mk(l))
-      |
-      |def burn {l: Lifetime}(t: Tok(l)): Nat := match t returning Nat with
-      | | .mk => 1
-      |""".stripMargin
 
   /** The use is admitted inside the module and `SealedConstructor` outside it. */
   private def sealedUse(module: String, client: String, expected: SealedConstructor)(implicit
@@ -133,7 +113,7 @@ class SealingTests extends munit.FunSuite with TestSupport {
     val callers =
       """
         |def unscoped : Nat := withLease(fun (l: Lifetime)(h: Lease(l)): Nat => 0)
-        |def burned : Nat := withTok(fun (l: Lifetime)(t: Tok(l)): Nat => burn(t))
+        |def burned : Nat := withLease(fun (l: Lifetime)(h: Lease(l)): Nat => burn(issue(h)))
         |{ Nat.add(unscoped, burned) }
         |""".stripMargin
     assertEquals(outside(leaseModule, callers).map(PrettyPrinter.print), Some("1"))
