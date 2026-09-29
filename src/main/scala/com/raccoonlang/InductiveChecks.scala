@@ -301,7 +301,7 @@ object InductiveChecks {
   private[raccoonlang] def constructorTypeTerm(header: InductiveHeader, ctor: ConstructorDecl): Term = {
     val allBinders = constructorBinders(header, ctor)
     if (allBinders.isEmpty) ctor.resultTy
-    else Term.Pi(allBinders, ctor.resultTy, Closure.unrestricted(ctor.span), ctor.span)
+    else Term.Pi(allBinders, ctor.resultTy, Closure.unrestricted(ctor.span), ctor.span, NodeId.fresh())
   }
 
   private def installConstructors(family: PreparedFamily, baseEnv: Env): Env = {
@@ -404,7 +404,14 @@ object InductiveChecks {
   /** A family's declared type: its parameters, then its indices. */
   private[raccoonlang] def familyTypeTerm(decl: Decl.InductiveDecl): Term =
     if (decl.header.binders.isEmpty) decl.header.resultTy
-    else Term.Pi(decl.header.binders, decl.header.resultTy, Closure.unrestricted(decl.header.span), decl.header.span)
+    else
+      Term.Pi(
+        decl.header.binders,
+        decl.header.resultTy,
+        Closure.unrestricted(decl.header.span),
+        decl.header.span,
+        NodeId.fresh()
+      )
 
   private def checkFamilySignatures(block: Decl.InductiveBlock, env: Env): Vector[FamilySignature] = {
     val typedFamilies = block.families.map(decl => (decl, TypeChecker.checkDeclType(familyTypeTerm(decl), env).value))

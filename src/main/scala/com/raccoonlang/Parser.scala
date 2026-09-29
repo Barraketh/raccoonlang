@@ -35,43 +35,8 @@ object SourceId {
   }
 }
 
-case class AstNodeId(source: Option[SourceId], start: Int) {
-  def stableName: String =
-    source match {
-      case Some(sourceId) => s"${sourceId.value}:$start"
-      case None           => s"unknown:$start"
-    }
-}
+case class Span(start: Int, end: Int, source: Option[SourceId] = None)
 
-object AstNodeId {
-  // Synthetic ids share the SourceId allocator with parses. This assumes single-threaded checking,
-  // as does FreshVar; a unique offset within the reserved source makes every fabricated node distinct.
-  private[raccoonlang] lazy val syntheticSource = SourceId.fresh()
-  private var nextSyntheticStart = 0
-
-  def synthetic(): AstNodeId = {
-    val result = AstNodeId(Some(syntheticSource), nextSyntheticStart)
-    nextSyntheticStart += 1
-    result
-  }
-}
-
-case class Span(start: Int, end: Int, source: Option[SourceId] = None) {
-  def nodeId: AstNodeId = AstNodeId(source, start)
-}
-
-object Span {
-
-  /**
-   * A span for a term the checker fabricates rather than reads from source. Node identity is carried by `span.nodeId`
-   * alone, so a fabricated term gets its fresh `AstNodeId.synthetic()` by getting a span built around one — which keeps
-   * the identity discipline of docs/kernel.md#value-identity without a second id field on every node.
-   */
-  def synthetic(): Span = {
-    val id = AstNodeId.synthetic()
-    Span(id.start, id.start, id.source)
-  }
-}
 case class Spanned[+A](value: A, span: Span)
 
 trait Parser[+A] {

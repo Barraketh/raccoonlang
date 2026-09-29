@@ -175,7 +175,7 @@ object Interpreter {
     val capturedRefs = CapturedRefs.getCapturedRefs(pi, env)
     val closedEnv = env.closeForEval(capturedRefs)
     val captureVals = closedEnv.locals.values.toVector
-    val id = ValueId.LocalId(pi.nodeId, captureVals)
+    val id = ValueId.LocalId(pi.id, captureVals)
     val closureKind = evalClosureField(pi.closure.kind, Sorts.KindField, env)
     val closureScope = evalClosureField(pi.closure.scope, Sorts.ScopeField, env)
 
@@ -335,7 +335,7 @@ object Interpreter {
       val closedEnv = env.closeForEval(capturedRefs)
       val id = l.name match {
         case Some(funcName) => ValueId.Const(funcName)
-        case None           => ValueId.LocalId(l.nodeId, closedEnv.locals.values.toVector)
+        case None           => ValueId.LocalId(l.id, closedEnv.locals.values.toVector)
       }
       Value.canonicalizeProof(VLam(vpi, id, LamBody.Core(l, closedEnv)))
     }
@@ -486,7 +486,7 @@ object Interpreter {
       blockedOn: DepSet
   ): NeutralThunk = {
     val closedEnv = env.closeForEval(CapturedRefs.getCapturedRefs(m, env))
-    NeutralThunk(m, closedEnv, ValueId.LocalId(m.nodeId, closedEnv.locals.values.toVector), outType, blockedOn)
+    NeutralThunk(m, closedEnv, ValueId.LocalId(m.id, closedEnv.locals.values.toVector), outType, blockedOn)
   }
 
   private[raccoonlang] def evalBranch(branch: CoreAst.Case, args: Vector[Value], env: Env): Value = {

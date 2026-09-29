@@ -74,9 +74,12 @@ object Value {
         }
     }
 
-  /** The unique operational shape reconstructed for every proof of a Pi proposition. */
+  /**
+   * The unique operational shape reconstructed for every proof of a Pi proposition. It is fabricated here, with no node
+   * behind it, so it takes a fresh identity.
+   */
   private def canonicalProofLambda(pi: VPi): VLam =
-    VLam(pi, ValueId.LocalId(AstNodeId.synthetic(), Vector.empty), LamBody.ProofEta)
+    VLam(pi, ValueId.LocalId(NodeId.fresh(), Vector.empty), LamBody.ProofEta)
 
   /**
    * Recover an erased proof without recursively reconstructing an inductive constructor. Pi proofs still need their
@@ -135,7 +138,7 @@ object Value {
       override def toString: String = name
     }
 
-    final case class LocalId(nodeId: AstNodeId, captures: Vector[Value]) extends ValueId
+    final case class LocalId(nodeId: NodeId, captures: Vector[Value]) extends ValueId
   }
 
   private[raccoonlang] def envDeps(env: Env): DepSet = {
@@ -954,7 +957,7 @@ object Value {
 
     /**
      * The canonical projection program for each field of this family, allocated once with the metadata. Each field
-     * index gets its own synthetic span, so its `nodeId` is stable across every projection of that field and distinct
+     * index gets a match node of its own, so its identity is stable across every projection of that field and distinct
      * from every other field's — which is exactly what makes two projections of defEq bases compare equal by id.
      *
      * The terms depend only on the constructor's name and the field count, both fixed when the family is checked, so

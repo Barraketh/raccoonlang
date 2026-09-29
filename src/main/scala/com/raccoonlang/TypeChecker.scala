@@ -235,14 +235,18 @@ object TypeChecker {
     CheckedTelescope(checkedBinders.binders, checkedBinders.env, checkedOut.value, checkedOut.residual)
   }
 
-  /** The residual Pi of a checked telescope and closure, and its value with its classifier forced. */
-  private def finishPi(telescope: CheckedTelescope, closure: CA.Closure, span: Span, env: Env): CheckedPi = {
+  /**
+   * The residual of the function type `source`, from its checked telescope and closure, and its value with its
+   * classifier forced. The residual is `source` rebuilt, so it keeps its node identity.
+   */
+  private def finishPi(telescope: CheckedTelescope, closure: CA.Closure, source: CA.Term.Pi, env: Env): CheckedPi = {
     val residual =
       CA.Term.Pi(
         telescope.binders,
         telescope.out,
         closure,
-        span,
+        source.span,
+        source.id,
         knownPropValued = Interpreter.stablePiPropClassification(telescope.outTy)
       )
     val evaluated = evalPi(residual, env)
@@ -270,7 +274,7 @@ object TypeChecker {
     finishPi(
       telescope,
       CA.Closure(written(pi.closure.kind, KindTpe), written(pi.closure.scope, LifetimeTpe)),
-      pi.span,
+      pi,
       env
     )
   }
@@ -394,7 +398,7 @@ object TypeChecker {
 
   private def checkLam(l: CA.Term.Lam, env: Env): CheckedTerm = {
     val telescope = checkTelescope(l.ty, env, familyParams = 0)
-    val checkedVpi = finishPi(telescope, checkLamClosure(l, env), l.ty.span, env)
+    val checkedVpi = finishPi(telescope, checkLamClosure(l, env), l.ty, env)
     val vpi = checkedVpi.vpi
     val bodyEnv = checkedVpi.bodyEnv
 
@@ -421,6 +425,7 @@ object TypeChecker {
         checkedVpi.residual,
         checkedBody.residual,
         l.span,
+        l.id,
         l.name,
         l.recursion,
         recursivePeers = l.recursion.map(recursion => recursion.selfRef -> l.name.get).toVector
@@ -474,6 +479,7 @@ object TypeChecker {
         checkedPi.residual,
         checkedBody.residual,
         definition.span,
+        definition.id,
         Some(definition.name),
         // A group member has no source `recursion` of its own: the whole group's peer table is
         // what its body's recursive calls resolve through.
@@ -678,7 +684,7 @@ object TypeChecker {
       // body's, which `synthesize` then confines at the scope's own position, where the atom is no longer open.
       case scope: CA.Term.Scope =>
         val checkedBody = checkTerm(scope.body, env.openScope(scope.ref, Atoms.of(scope)))
-        CheckedTerm(checkedBody.value, CA.Term.Scope(scope.ref, checkedBody.residual, scope.span))
+        CheckedTerm(checkedBody.value, CA.Term.Scope(scope.ref, checkedBody.residual, scope.span, scope.id))
       case CA.Term.Sort(level, kind, scope, span) =>
         val checkedLevel = checkTerm(level, LevelTpe, env)
         val checkedKind = checkTerm(kind, KindTpe, env)

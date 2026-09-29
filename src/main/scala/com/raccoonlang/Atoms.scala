@@ -14,7 +14,7 @@ import scala.collection.mutable
  * FreshVar, the registry assumes a single checking thread.
  */
 object Atoms {
-  private val byNode = mutable.HashMap.empty[AstNodeId, Lifetime]
+  private val byNode = mutable.HashMap.empty[NodeId, Lifetime]
   private var allocated: DepSet = DepSet.empty
 
   /** Every atom opened so far. Empty until the first `scope` term is checked, which is the confinement fast path. */
@@ -23,7 +23,7 @@ object Atoms {
   /** The lifetime holding exactly the atom of this `scope` term. */
   def of(scope: CoreAst.Term.Scope): Lifetime =
     byNode.getOrElseUpdate(
-      scope.nodeId, {
+      scope.id, {
         val (id, _) = FreshVar.freshValue(scope.ref.name, LifetimeTpe)
         allocated = allocated + id
         Lifetime.variable(id)
