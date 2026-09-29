@@ -301,9 +301,10 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
     )
   }
 
-  // Plan G6: siblings of a mutual block agree on all three sort fields. They share their parameters, and each names every
-  // lifetime parameter and no other lifetime, so their scopes cannot differ: a sibling that omits one is refused at it.
-  test("mutual siblings agree on level, kind and scope") {
+  // Siblings of a mutual block are each checked against their own sort, so one that holds another at a greater level or
+  // kind is refused at that field. They share their parameters, and each names every lifetime parameter and no other
+  // lifetime, so their scopes cannot differ: a sibling that omits one is refused at it.
+  test("mutual siblings are bounded at each field and name their lifetime parameters") {
     def program(secondSort: String): String =
       s"""
          |mutual {
@@ -316,8 +317,10 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
          |""".stripMargin
 
     typecheckDecls(program("Type { scope = l }"))
-    expectOnly[MutualBlockSortMismatch](typecheckDecls(program("Sort { level = succ(one), scope = l }")))
-    expectOnly[MutualBlockSortMismatch](typecheckDecls(program("Type { kind = lin, scope = l }")))
+    val level = expectOnly[InductiveUniverseTooSmall](typecheckDecls(program("Sort { level = succ(one), scope = l }")))
+    assertEquals(level.where, "First.mk.second")
+    val kind = expectOnly[KindExceeded](typecheckDecls(program("Type { kind = lin, scope = l }")))
+    assert(kind.part.startsWith("field First.mk.second"))
     assert(expectOnly[ScopeExceeded](typecheckDecls(program("Type"))).part.startsWith("lifetime parameter l"))
   }
 }

@@ -318,26 +318,18 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
     assert(!base.globals.contains("Second"))
   }
 
-  test("mutual blocks require every family to inhabit the same universe") {
+  test("mutual siblings each inhabit their own declared universe") {
     val block = mutualEvenOdd()
     val odd = block.families(1)
-    val mismatched = block.copy(
+    val mixed = block.copy(
       families = block.families.updated(1, odd.copy(header = odd.header.copy(resultTy = propSort)))
     )
-    val base = Prelude.test.checkedEnv
-    val error = interceptError[MutualBlockSortMismatch] {
-      Interpreter.evalDecl(mismatched, base)
-    }
+    val env = Interpreter.evalDecl(mixed, Prelude.test.checkedEnv)
 
-    assertEquals(error.family, "Odd")
-    assert(Sorts.isProp(error.declared))
-    assertEquals(error.expected.level, Value.Level.one)
-    assertEquals(
-      ErrorRendering.render(error),
-      "Invalid inductive block: family Odd lives in Prop, expected Type"
-    )
-    assert(!base.globals.contains("Even"))
-    assert(!base.globals.contains("Odd"))
+    assert(!Sorts.isProposition(env("Even")))
+    assert(Sorts.isProposition(env("Odd")))
+    // Odd's field is data from its sibling that no index determines, so Odd eliminates only into propositions.
+    assert(!ProofReconstruction.canRecoverAll(env("Odd")))
   }
 
   test("Inductive type must be a Sort (no Pi): inductive Bad : Peano") {

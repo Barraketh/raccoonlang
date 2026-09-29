@@ -478,8 +478,11 @@ family parameters are not pattern fields.
 A `mutual` block may contain several inductive families or structures. The
 families are checked and published atomically; all sibling family heads are
 available while constructor fields and results are elaborated. They must share
-the same common parameter telescope and sort, level, kind and scope alike, as
-required by the trusted Core block. Generated structure selectors are declared
+the same common parameter telescope, as required by the trusted Core block, but
+each may be at its own sort: a `Type` family and a `Prop` family, or a linear
+token and an unrestricted factory of them, may be siblings. Each family is
+checked against its own declared sort, so siblings that hold each other are
+bounded at each field. Generated structure selectors are declared
 immediately after the family block.
 
 ## Pattern matching
