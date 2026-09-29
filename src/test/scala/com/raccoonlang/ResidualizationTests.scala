@@ -382,8 +382,9 @@ class ResidualizationTests extends munit.FunSuite {
   }
 
   // Every match writes its motive. A generated selector's match writes the selector's declared
-  // result type, with an earlier field rewritten to that field's selector applied to `self`.
-  test("a generated selector's match residualizes its rewritten field type as its motive") {
+  // result type: the field's type, under a let binding each earlier field it mentions to that
+  // field's selector applied to `self`.
+  test("a generated selector's match residualizes its field type, under its earlier fields, as its motive") {
     val p =
       """
         |struct Boxed : Sort { level = succ(one) }
@@ -397,12 +398,19 @@ class ResidualizationTests extends munit.FunSuite {
     body match {
       case CA.Term.Match(
             CA.Term.LocalRef(scrut, _),
-            CA.Term.App(CA.Term.GlobalRef("Boxed.T", _), Vector(CA.Term.LocalRef(self, _)), _),
+            CA.Term.Body(
+              Vector(
+                CA.Let(bound, _, CA.Term.App(CA.Term.GlobalRef("Boxed.T", _), Vector(CA.Term.LocalRef(self, _)), _), _)
+              ),
+              CA.Term.LocalRef(fieldType, _),
+              _
+            ),
             _,
             _
           ) =>
         assertEquals(self, scrut)
-      case other => fail(s"Expected the selector match to return Boxed.T(self), got $other")
+        assertEquals(fieldType, bound)
+      case other => fail(s"Expected the selector match to return { let T := Boxed.T(self); T }, got $other")
     }
   }
 
