@@ -326,4 +326,80 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
 
     assert(!ValueEquivalence.defEq(natPi, boolPi))
   }
+
+  /** `source` is rejected, first with a type mismatch underlining `at`: an ordinary error, not a kernel one. */
+  private def expectMismatchAt(source: String, at: String)(implicit loc: munit.Location): Unit = {
+    val diagnostic = interceptDiagnostic(typecheckDecls(source))
+    assert(diagnostic.error.isInstanceOf[TypeMismatch], diagnostic.error)
+    assertEquals(diagnostic.span.map(span => source.substring(span.start, span.end)), Some(at))
+  }
+
+  // A key decides conversion, and a function type's key is its node identity, captures, binder count and closure
+  // (docs/kernel.md#value-identity). Each program below once gave two different function types one node identity, so
+  // the unifier took them for equal: the key assertion failed, and without it the program crashed at run time.
+  test("a function type and its function-typed domain have distinct identities") {
+    expectMismatchAt(
+      """
+        |def k {A: Type}(f: (A -> A) -> A) : A := f(f)
+        |{ k(fun (g: Nat -> Nat): Nat => g(5)) }
+        |""".stripMargin,
+      "f(f)"
+    )
+    val domOf = "def domOf {A: Type}{B: Type}(f: A -> B)(a: A): Nat := 0\n"
+    expectMismatchAt(domOf + "def bad (g: (Nat -> Nat) -> Nat): Nat := domOf(g, g)\n", "domOf(g, g)")
+    expectMismatchAt(domOf + "def bad (g: ((x: Nat) -> Nat) -> Nat): Nat := domOf(g, g)\n", "domOf(g, g)")
+    expectMismatchAt(domOf + "def bad (g: (List(Nat) -> Nat) -> Nat): Nat := domOf(g, g)\n", "domOf(g, g)")
+    expectMismatchAt(
+      """
+        |def Id (X: Type): Type := X
+        |def coerce {A: Type}{B: Type}(f: A -> B)(a: Id(A)): A := a
+        |def bad (g: ((x: Nat) -> Nat) -> Nat): (x: Nat) -> Nat := coerce(g, g)
+        |def boom : Nat := bad(fun (h: (x: Nat) -> Nat): Nat => h(5))(7)
+        |{ boom }
+        |""".stripMargin,
+      "coerce(g, g)"
+    )
+    expectMismatchAt(
+      """
+        |def apply {A: Type}{B: Type}(f: A -> B)(a: A): B := f(a)
+        |def bad (g: (Nat -> Nat) -> Nat): Nat := apply(g, g)
+        |{ bad(fun (h: Nat -> Nat): Nat => h(1)) }
+        |""".stripMargin,
+      "apply(g, g)"
+    )
+  }
+
+  test("each struct selector's type is a function type of its own") {
+    val struct =
+      """
+        |struct P : Type
+        | | mk (a: Nat) (b: Bool) : P
+        |
+        |""".stripMargin
+    expectMismatchAt(
+      struct + "def same {A: Type}(x: A)(y: A): A := y\ndef bad : P -> Nat := same(P.a, P.b)\n",
+      "same(P.a, P.b)"
+    )
+    expectMismatchAt(
+      struct + "def first {A: Type}(x: A)(y: A): A := x\ndef bad : P -> Nat := first(P.b, P.a)\n",
+      "first(P.b, P.a)"
+    )
+    expectMismatchAt(struct + "def typeOf {A: Type}(x: A): Type := A\ndef coerced : typeOf(P.b) := P.a\n", "P.a")
+  }
+
+  // A selector's result type is its field's, with each earlier field read through its selector. So rewritten, it is a
+  // different function type from the field's own, written at the same place.
+  test("a selector's rewritten result type is not its field's type") {
+    expectMismatchAt(
+      """
+        |def G {T: Type}(t: T) : Type := T
+        |struct P (A: Type) indices (n: Nat) : Type
+        | | mk (x: A) (f: G(x) -> Nat) : P(A, 0)
+        |
+        |open P
+        |def wrap (v: P(Nat, 0)) : P(P(Nat, 0), 0) := mk(v, f(v))
+        |""".stripMargin,
+      "mk(v, f(v))"
+    )
+  }
 }
