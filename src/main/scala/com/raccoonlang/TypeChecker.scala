@@ -628,12 +628,35 @@ object TypeChecker {
   private def checkHead(term: CA.Term, env: Env): CheckedTerm = at(term.span)(synthesize(term, env))
 
   /**
+   * The first subterm of linear type, in order of completion, among the terms synthesized since the innermost
+   * `synthesize` in progress began. A synthesis starts from none, and when it completes it restores what its enclosing
+   * synthesis had seen, extended by its own first one, or else by itself when it is linear. A failure abandons the
+   * syntheses in progress, and every later one starts from none again. Like FreshVar, it assumes a single checking
+   * thread.
+   */
+  private var linearSubterm: Option[CheckedTerm] = None
+
+  /**
    * A term's own type, whatever position it stands at; the callers above decide what the position admits. Every term
-   * the checker sees is synthesized here, so this is where each synthesized type is confined (spec §4.2).
+   * the checker sees is synthesized here, so this is where each synthesized type is confined (spec §4.2), and where a
+   * type or a proof is found to contain a subterm of linear type, `LinearInType` located at that subterm (spec §3.2).
+   * Types and proofs hold no tokens, since they are copied and dropped freely; this is the one test of it, and until a
+   * kind other than `Kind.unr` has been built no term is linear.
    */
   private def synthesize(term: CA.Term, env: Env): CheckedTerm = {
+    val enclosing = linearSubterm
+    linearSubterm = None
     val synthed = synthesizeTerm(term, env)
     requireInScope(synthed.value.tpe, env)
+    val inner = linearSubterm
+    inner.foreach { subterm =>
+      val holdsNoTokens = synthed.value.tpe match {
+        case _: VSort => true
+        case tpe      => Sorts.isProposition(tpe)
+      }
+      if (holdsNoTokens) at(subterm.residual.span)(fail(LinearInType(subterm.residual, subterm.value.tpe)))
+    }
+    linearSubterm = enclosing.orElse(inner).orElse(Option.when(Linearity.isLinear(synthed.value.tpe))(synthed))
     synthed
   }
 

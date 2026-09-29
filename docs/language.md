@@ -563,6 +563,32 @@ A global is never tracked, so a definition or opaque definition whose type is
 linear is `LinearGlobal`. A definition's own function type is unrestricted, so
 a definition that takes or returns tokens is an ordinary global.
 
+Types and proofs hold no tokens. A term whose type is a sort or a proposition
+may not contain a subterm of linear type, which is `LinearInType`, reported at
+that subterm. That covers a binder type such as `Eq(Nat, eat(t), 0)`, a type
+computed by a definition, a `returning` motive, and a proof: a definition
+whose type is a proposition cannot consume a token, and so cannot take one. A lambda that
+consumes its own linear parameter is refused inside a type too; name it by a
+definition and refer to it by name instead. So no type mentions a linear local,
+and an implicit binder of linear type is never forced, which is
+`NonForcedImplicitParam`. Facts about a token are stated about its indices,
+which are unrestricted:
+
+```raccoon
+inductive Coin (l: Lifetime) indices (n: Nat) : Type { kind = lin, scope = l }
+ | mk (n: Nat) : Coin(l, n)
+
+def spend {l: Lifetime}{n: Nat}(c: Coin(l, n))(p: Eq(Nat, n, 1)): Nat := match c returning Nat with
+ | Coin.mk m => m
+```
+
+A struct selector binds every field and returns one, so a selector of a linear
+struct is rejected when another field is linear (`LinearUnused`), when its
+field's type names an earlier field, since its result type then applies that
+field's selector to the struct value (`LinearInType`), and when its field is a
+proof (`LinearInType`). The struct and its other selectors are still declared;
+match on the constructor instead.
+
 ## Recursive definitions
 
 A recursive function must carry a `decreases` clause:
