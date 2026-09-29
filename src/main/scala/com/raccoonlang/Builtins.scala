@@ -7,32 +7,33 @@ private object Builtins {
     def instantiate(name: String, tpe: Value): Value
   }
 
+  /** A native function; `bind` locates its arguments in its declared type once, and returns what runs a call. */
   private final case class Native(
-      run: (VLam, VPi, Vector[Value]) => Value
+      bind: VPi => (VLam, Vector[Value]) => Value
   ) extends Entry {
     override def instantiate(name: String, tpe: Value): Value =
       tpe match {
         case pi: VPi =>
+          val run = bind(pi)
           lazy val self: VLam =
             VLam(
               pi,
               ValueId.Const(name),
-              LamBody.Native((args, _) => run(self, pi, args), Env.empty, isRawRecursive = false)
+              LamBody.Native((args, _) => run(self, args), Env.empty, isRawRecursive = false)
             )
           self
         case other => fail(CannotApplyNonFunction(other))
       }
   }
 
-  private final case class Constructor(numErasedFamilyArgs: Int) extends Entry {
+  /** A constructor that stores its binders from `firstField` on; the binders before it are its family's arguments. */
+  private final case class Constructor(firstField: String) extends Entry {
     override def instantiate(name: String, tpe: Value): Value =
       tpe match {
         case pi: VPi =>
-          if (numErasedFamilyArgs > pi.binders.length)
-            fail(ArityMismatch(numErasedFamilyArgs, pi.binders.length))
           // Quot.sound identifies distinct Quot.mk applications, so unification must not assume
           // injectivity or disjointness for builtin constructors.
-          ConstructorHead(name, numErasedFamilyArgs, pi.binders.length, pi, noConfusion = false)
+          ConstructorHead(name, binderIndex(pi, firstField), pi.binders.length, pi, noConfusion = false)
         case other => fail(CannotApplyNonFunction(other))
       }
   }
@@ -43,7 +44,7 @@ private object Builtins {
 
   private val entries: Map[String, Entry] =
     Map(
-      MkName -> Constructor(3),
+      MkName -> Constructor("a"),
       LiftName -> Native(runLift),
       IndName -> Native(runInd)
     )
@@ -54,30 +55,40 @@ private object Builtins {
       case None        => wtf(s"Unknown builtin $name")
     }
 
-  private def runLift(self: VLam, selfType: VPi, args: Vector[Value]): Value = {
-    // Prelude declaration order: {u} {v} {A} {r} q B f sound.
-    val (q, resultTy, f) = (args(4), args(5), args(6))
-
-    q match {
-      case QuotientMk(rep) => Interpreter.evalApply(f, Vector(rep))
-      case Blocker(blockedOn) =>
-        Value.canonicalizeProof(VBlockedApp(self, args, resultTy, blockedOn))
-      case _ =>
-        Value.canonicalizeProof(VApp(VConst(LiftName, Symbol, selfType), args, resultTy))
+  /**
+   * The position of the binder `name` in a builtin's declared type. Builtins locate their arguments by name, so the
+   * prelude may add binders, such as lifetime variables, without moving them.
+   */
+  private def binderIndex(pi: VPi, name: String): Int =
+    pi.binders.indexWhere(_.name == name) match {
+      case -1  => wtf(s"Builtin type $pi has no binder $name")
+      case idx => idx
     }
+
+  private def runLift(selfType: VPi): (VLam, Vector[Value]) => Value = {
+    val (qAt, resultTyAt, fAt) = (binderIndex(selfType, "q"), binderIndex(selfType, "B"), binderIndex(selfType, "f"))
+    (self, args) =>
+      args(qAt) match {
+        case QuotientMk(rep) => Interpreter.evalApply(args(fAt), Vector(rep))
+        case Blocker(blockedOn) =>
+          Value.canonicalizeProof(VBlockedApp(self, args, args(resultTyAt), blockedOn))
+        case _ =>
+          Value.canonicalizeProof(VApp(VConst(LiftName, Symbol, selfType), args, args(resultTyAt)))
+      }
   }
 
-  private def runInd(self: VLam, selfType: VPi, args: Vector[Value]): Value = {
-    // Prelude declaration order: {u} {A} {r} q motive mk.
-    val (q, motive, mkCase) = (args(3), args(4), args(5))
-    lazy val resultTy = Interpreter.evalApply(motive, Vector(q))
-
-    q match {
-      case QuotientMk(rep) => Interpreter.evalApply(mkCase, Vector(rep))
-      case Blocker(blockedOn) =>
-        Value.canonicalizeProof(VBlockedApp(self, args, resultTy, blockedOn))
-      case _ =>
-        Value.canonicalizeProof(VApp(VConst(IndName, Symbol, selfType), args, resultTy))
+  private def runInd(selfType: VPi): (VLam, Vector[Value]) => Value = {
+    val (qAt, motiveAt, mkAt) =
+      (binderIndex(selfType, "q"), binderIndex(selfType, "motive"), binderIndex(selfType, "mk"))
+    (self, args) => {
+      lazy val resultTy = Interpreter.evalApply(args(motiveAt), Vector(args(qAt)))
+      args(qAt) match {
+        case QuotientMk(rep) => Interpreter.evalApply(args(mkAt), Vector(rep))
+        case Blocker(blockedOn) =>
+          Value.canonicalizeProof(VBlockedApp(self, args, resultTy, blockedOn))
+        case _ =>
+          Value.canonicalizeProof(VApp(VConst(IndName, Symbol, selfType), args, resultTy))
+      }
     }
   }
 

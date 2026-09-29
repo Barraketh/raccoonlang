@@ -654,5 +654,47 @@ the examples and tests, including:
   operations;
 - `Quot` with `Quot.mk`, `Quot.sound`, `Quot.lift`, and `Quot.ind`.
 
+Its polymorphic declarations are lifetime-polymorphic. Each takes a lifetime
+variable beside each type parameter, `Prop`-valued ones included, one for the
+sort of each type-family parameter's result, and one for each function-typed
+parameter's closure scope. All of them are forced implicits, so no call site
+writes them:
+
+```text
+inductive List {u: Level}{S: Lifetime}(A: Sort { level = u, scope = S })
+    : Sort { level = u, scope = S }
+
+def List.map {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}{Sf: Lifetime}
+    {A: Sort { level = u, scope = S }}
+    (xs: List(A))(B: Sort { level = v, scope = T })(f: { scope = Sf } A -> B)
+    : List(B)
+
+def Eq.subst {u: Level}{S: Lifetime}{Sm: Lifetime}{Sc: Lifetime}
+    {A: Sort { level = u, scope = S }}{x: A}{y: A}
+    (p: Eq(A, x, y))(v: Level)(motive: { scope = Sc } A -> Sort { level = v, scope = Sm })
+    (h: motive(x)): motive(y)
+```
+
+So for a family `W (l: Lifetime) : Type { scope = l }`, `List(W(l))` is at
+`Type { scope = l }`, `Eq(W(l), a, b)` is at `Prop { scope = l }`, and a lambda
+passed to `List.map` may capture a `W(l)`. A family declares the union of its
+parameters' scopes, as `Prod` declares `scope = union(S, T)`. The prelude
+declares nothing at a kind other than `Kind.unr` and no kind variable, and every
+declaration is at `Lifetime.empty`, a lifetime variable, or a union of them.
+
+A family's function-typed field cannot have a closure-scope variable of its
+own, since nothing in an instance's type would force it. It takes the family's
+own scope as its closure scope instead, as in
+`BEq {u: Level}{S: Lifetime}(A: Sort { level = u, scope = S })` with
+`mk (beq: { scope = S } A -> A -> Bool)`: the closure may hold what the
+family's values may already depend on, and adds nothing to the family's scope.
+`Iff`, `DecidableEq`, `LE`, `LT` and `Subsingleton` do the same, and `LE.le` and
+`LT.lt` return propositions at that scope too. `Not(a)` is a function type at
+`a`'s scope, `{ scope = S } (h: a) -> False`. So `listBEq` can build a `BEq`
+from a lambda that captures a `BEq(A)`, while a lambda that captures nothing
+passed at a scoped instance writes its closure, as
+`fun { scope = S } (a: P)(b: P): Eq(P, a, b) => Eq.refl(a)` does in
+`propSubsingleton`.
+
 The prelude source is authoritative for its exact API:
 `src/main/resources/Init/Prelude.rac`.

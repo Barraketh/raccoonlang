@@ -21,7 +21,7 @@ class SubsingletonTests extends munit.FunSuite with TestSupport {
       )
 
     res.tpe match {
-      case Value.VApp(Value.VConst("Eq", _, _), Vector(_, Value.VConst("True", _, _), _, _), _, _) =>
+      case Value.VApp(Value.VConst("Eq", _, _), Vector(_, _, Value.VConst("True", _, _), _, _), _, _) =>
       case other => fail(s"Expected equality proof over True, got $other")
     }
   }

@@ -121,7 +121,7 @@ class QuotientTests extends munit.FunSuite with TestSupport {
     )
 
     res.tpe match {
-      case Value.VApp(Value.VConst("Eq", _, _), Vector(_, quotTy, left, right), _, _) =>
+      case Value.VApp(Value.VConst("Eq", _, _), Vector(_, _, quotTy, left, right), _, _) =>
         val printedQuot = PrettyPrinter.print(quotTy)
         assert(printedQuot.startsWith("Quot("))
         assert(printedQuot.contains("Nat"))

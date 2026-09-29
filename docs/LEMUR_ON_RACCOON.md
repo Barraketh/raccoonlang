@@ -297,6 +297,15 @@ Every higher-order prelude declaration also carries a lifetime variable for each
 function-typed parameter's closure scope. A definition that omits them accepts
 only arguments at `Lifetime.empty`.
 
+A family's function-typed field is different: a closure-scope variable of its
+own could not be forced, because nothing in an instance's type mentions it. So
+such a field takes the family's own lifetime variable as its closure scope, as
+in `BEq {S: Lifetime}(A: Type { scope = S })` with
+`mk (beq: { scope = S } A -> A -> Bool)`. The closure may then hold what the
+family's values may already depend on, and adds nothing to the family's scope.
+A function type that a prelude definition returns as a type, such as `Not(a)`,
+follows the same rule.
+
 ```raccoon
 inductive List {S: Lifetime}(A: Type { scope = S }) : Type { scope = S }
  | nil : List(A)
