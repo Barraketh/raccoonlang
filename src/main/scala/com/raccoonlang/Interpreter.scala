@@ -33,6 +33,33 @@ object Interpreter {
     Level.max(pieces.result())
   }
 
+  /** The solution of a solved kind or lifetime variable, which refinement links only to a normal form of its own. */
+  private def solvedParameter(id: VarId, eqStore: EqStore): Option[Value] = eqStore.subst.get(id).map(eqStore.force)
+
+  private def normalizeKind(k: Kind, eqStore: EqStore): Kind = {
+    val pieces = Vector.newBuilder[Kind]
+    k.vars.foreach { id =>
+      pieces += (solvedParameter(id, eqStore) match {
+        case Some(next: Kind) => normalizeKind(next, eqStore)
+        case Some(other)      => wtf(s"Kind variable $id solved to the non-kind $other")
+        case None             => Kind.variable(id)
+      })
+    }
+    if (k.isLin) Kind.lin else Kind.join(pieces.result())
+  }
+
+  private def normalizeLifetime(l: Lifetime, eqStore: EqStore): Lifetime = {
+    val pieces = Vector.newBuilder[Lifetime]
+    l.vars.foreach { id =>
+      pieces += (solvedParameter(id, eqStore) match {
+        case Some(next: Lifetime) => normalizeLifetime(next, eqStore)
+        case Some(other)          => wtf(s"Lifetime variable $id solved to the non-lifetime $other")
+        case None                 => Lifetime.variable(id)
+      })
+    }
+    Lifetime.union(pieces.result())
+  }
+
   /**
    * Continues the reduction of v if any dependency that blocks it has been solved in EqStore. The default call (if v
    * cannot be further reduced) is a fast empty/intersection check, so callers may use it defensively.
@@ -58,7 +85,9 @@ object Interpreter {
           case _                => wtf(s"Blocked extractor matched unexpected value $v0")
         }
 
-      case l: Level if l.synDeps.intersects(eqStore.solvedIds) => normalizeLevel(l, eqStore)
+      case l: Level if l.synDeps.intersects(eqStore.solvedIds)    => normalizeLevel(l, eqStore)
+      case k: Kind if k.synDeps.intersects(eqStore.solvedIds)     => normalizeKind(k, eqStore)
+      case l: Lifetime if l.synDeps.intersects(eqStore.solvedIds) => normalizeLifetime(l, eqStore)
 
       case _ => v0
     }
@@ -73,29 +102,38 @@ object Interpreter {
     BinderOps.instantiateFull(fnTpe.binders, baseEnv, args)
 
   /**
-   * The universe of a Pi, derived from the env it closed over: the binder types' universes are right-folded with imax
-   * over the codomain's universe. IMax reduces to Prop for a Prop-valued codomain and to ordinary max for a definitely
-   * positive codomain. Computing it per instance means a residual Pi re-evaluated with concrete levels gets the
-   * concrete universe, not the declaration-time one. A Pi that binds a level is `Large` (spec §2.4): the level changes
-   * the universe of everything after it, so no sort contains the Pi.
+   * The sort of a Pi, derived from the env it closed over (spec §2.4). Its level right-folds the binder types' levels
+   * with imax over the codomain's, which reduces to Prop for a Prop-valued codomain and to ordinary max for a
+   * definitely positive one. Its scope unites the binder types' scopes with the codomain's, less the lifetimes the
+   * group itself binds, since the caller supplies them. Its kind is `Kind.unr`. A kind or lifetime binder contributes
+   * no level and no scope. Computing it per instance means a residual Pi re-evaluated with concrete parameters gets the
+   * concrete sort, not the declaration-time one. A Pi that binds a level is `Large`: the level changes the universe of
+   * everything after it, so no sort contains the Pi.
    */
   private[raccoonlang] def piClassifierFromChecked(
       binders: Vector[CoreAst.Binder],
       freshEnv: Env,
       outV: Value
   ): Classifier = {
-    if (binders.exists(binder => freshEnv(binder.localRef).tpe eq LevelTpe)) Large
+    val freshValues = binders.map(binder => freshEnv(binder.localRef))
+    if (freshValues.exists(_.tpe eq LevelTpe)) Large
     else {
       val outSort = TypeChecker.getUniverse(outV)
-      if (Sorts.isProp(outSort)) outSort
-      else {
-        val outLevel = outSort.level
-        val domLevels = binders.map(binder => TypeChecker.getUniverse(freshEnv(binder.localRef).tpe).level)
-        val classifier =
-          if (Level.isNeverZero(outLevel)) Level.max(domLevels :+ outLevel)
-          else domLevels.foldRight(outLevel)(Level.imax)
-        Sorts.sort(classifier)
+      val domSorts = freshValues.flatMap { fresh =>
+        fresh.tpe match {
+          case _: ParameterTpe => None
+          case tpe             => Some(TypeChecker.getUniverse(tpe))
+        }
       }
+      // A lifetime binder enters as its own variable, which the caller supplies.
+      val ownLifetimes = freshValues.collect { case lifetime: Lifetime => lifetime.vars }.foldLeft(DepSet.empty)(_ ++ _)
+      val scope = Lifetime.less(Lifetime.union(domSorts.map(_.scope) :+ outSort.scope), ownLifetimes)
+      val outLevel = outSort.level
+      val level =
+        if (Sorts.isProp(outSort)) outLevel
+        else if (Level.isNeverZero(outLevel)) Level.max(domSorts.map(_.level) :+ outLevel)
+        else domSorts.map(_.level).foldRight(outLevel)(Level.imax)
+      Sorts.sort(level, Kind.unr, scope)
     }
   }
 
@@ -276,22 +314,46 @@ object Interpreter {
     evalLam(l, vpi, env)
   }
 
-  /** A checked level expression denotes a level: checking admits nothing else at a level position. */
+  /** The value that is a sort parameter's type, which a variable of it and an expression of it have. */
+  private[raccoonlang] def parameterType(parameter: CoreAst.Parameter): ParameterTpe =
+    parameter match {
+      case CoreAst.Parameter.Level    => LevelTpe
+      case CoreAst.Parameter.Kind     => KindTpe
+      case CoreAst.Parameter.Lifetime => LifetimeTpe
+    }
+
+  // A checked sort parameter expression denotes a normal form: checking admits nothing else at its position.
   private[raccoonlang] def getLevel(v: Value): Level =
     Level.fromValue(v).getOrElse(wtf(s"Checked level expression evaluated to the non-level $v"))
 
-  private[raccoonlang] def evalSort(level: Value): VSort = Sorts.sort(getLevel(level))
-
-  private[raccoonlang] def evalLevelOp(form: CoreAst.LevelForm, args: Vector[Value]): Level = {
-    val levels = args.map(getLevel)
-    form match {
-      case CoreAst.LevelForm.Zero => Level.zero
-      case CoreAst.LevelForm.One  => Level.one
-      case CoreAst.LevelForm.Succ => Level.succ(levels(0))
-      case CoreAst.LevelForm.Max  => Level.max(levels)
-      case CoreAst.LevelForm.IMax => Level.imax(levels(0), levels(1))
+  private[raccoonlang] def getKind(v: Value): Kind =
+    v match {
+      case k: Kind => k
+      case other   => wtf(s"Checked kind expression evaluated to the non-kind $other")
     }
-  }
+
+  private[raccoonlang] def getLifetime(v: Value): Lifetime =
+    v match {
+      case l: Lifetime => l
+      case other       => wtf(s"Checked lifetime expression evaluated to the non-lifetime $other")
+    }
+
+  private[raccoonlang] def evalSort(level: Value, kind: Value, scope: Value): VSort =
+    Sorts.sort(getLevel(level), getKind(kind), getLifetime(scope))
+
+  private[raccoonlang] def evalFormOp(form: CoreAst.Form, args: Vector[Value]): Value =
+    form match {
+      case CoreAst.Form.LevelZero     => Level.zero
+      case CoreAst.Form.LevelOne      => Level.one
+      case CoreAst.Form.LevelSucc     => Level.succ(getLevel(args(0)))
+      case CoreAst.Form.LevelMax      => Level.max(args.map(getLevel))
+      case CoreAst.Form.LevelIMax     => Level.imax(getLevel(args(0)), getLevel(args(1)))
+      case CoreAst.Form.KindUnr       => Kind.unr
+      case CoreAst.Form.KindLin       => Kind.lin
+      case CoreAst.Form.KindJoin      => Kind.join(args.map(getKind))
+      case CoreAst.Form.LifetimeEmpty => Lifetime.empty
+      case CoreAst.Form.LifetimeUnion => Lifetime.union(args.map(getLifetime))
+    }
 
   /**
    * Evaluation attaches no location: reduction runs inside callee bodies the user did not write, so a failure here
@@ -299,16 +361,17 @@ object Interpreter {
    */
   private[raccoonlang] def evalTerm(term: CoreAst.Term, env: Env): Value =
     term match {
-      case CTerm.NatLit(value, _)       => Packed.evalNatLit(value, env)
-      case CTerm.StrLit(scalars, _)     => Packed.evalStrLit(scalars, env)
-      case ref: CTerm.Ref               => evalRef(ref, env)
-      case CTerm.App(fn, args, _)       => evalApplyTerm(fn, args, env)
-      case pi: CTerm.Pi                 => evalPi(pi, env)
-      case l: CTerm.Lam                 => evalLam(l, env)
-      case m: CTerm.Match               => evalMatch(m, env)
-      case b: CTerm.Body                => evalBody(b, env)
-      case CTerm.Sort(level, _)         => evalSort(evalTerm(level, env))
-      case CTerm.LevelOp(form, args, _) => evalLevelOp(form, args.map(evalTerm(_, env)))
+      case CTerm.NatLit(value, _)   => Packed.evalNatLit(value, env)
+      case CTerm.StrLit(scalars, _) => Packed.evalStrLit(scalars, env)
+      case ref: CTerm.Ref           => evalRef(ref, env)
+      case CTerm.App(fn, args, _)   => evalApplyTerm(fn, args, env)
+      case pi: CTerm.Pi             => evalPi(pi, env)
+      case l: CTerm.Lam             => evalLam(l, env)
+      case m: CTerm.Match           => evalMatch(m, env)
+      case b: CTerm.Body            => evalBody(b, env)
+      case CTerm.Sort(level, kind, scope, _) =>
+        evalSort(evalTerm(level, env), evalTerm(kind, env), evalTerm(scope, env))
+      case CTerm.FormOp(form, args, _) => evalFormOp(form, args.map(evalTerm(_, env)))
       // Named field syntax is resolved to a selector application by checkSelect, so a Select can
       // only reach evaluation if something published unchecked syntax.
       case CTerm.Select(_, field, _) =>
@@ -477,7 +540,9 @@ object Interpreter {
     TypeChecker.checkRaw(p, prelude)
 
   private[raccoonlang] val preludeInitialEnv: Env =
-    Env.empty.putGlobal("Level", LevelTpe)
+    CoreAst.Parameter.all.foldLeft(Env.empty)((env, parameter) =>
+      env.putGlobal(parameter.name, parameterType(parameter))
+    )
 
   private[raccoonlang] def addPreludeDecl(env: Env, decl: Decl): Env = evalDecl(decl, env, trusted = true)
 

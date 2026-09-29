@@ -52,8 +52,11 @@ object SurfaceAst {
     // Application: f(a)
     final case class App(fn: Term, args: Vector[Term], span: Span) extends Term
 
-    /** A sort former: `Sort { level = e }`, or `Type`/`Prop`, which fix the level. */
-    final case class Sort(level: SortLevel, span: Span) extends Term
+    /**
+     * A sort former: `Sort { level = e, ... }`, or `Type` /`Prop`, which fix the level. `kind` and `scope` are the
+     * fields written, if any.
+     */
+    final case class Sort(level: SortLevel, kind: Option[Term], scope: Option[Term], span: Span) extends Term
 
     sealed trait SortLevel
     object SortLevel {

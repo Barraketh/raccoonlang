@@ -42,6 +42,20 @@ class PrettyPrinterTests extends munit.FunSuite with TestSupport {
     assertEquals(PrettyPrinter.print(runProgram("{ Sort { level = one } }")), "Type")
   }
 
+  test("a sort prints the kind and scope it does not leave at their defaults") {
+    val src = "axiom f : (l: Lifetime) -> (A: Type { scope = union(l, empty), kind = lin }) -> Prop { scope = l }\n"
+    val printed = PrettyPrinter.printTerm(axiomType(src, "f"))
+
+    assertEquals(
+      printed,
+      "(l: Lifetime) -> (A: Type { kind = Kind.lin, scope = Lifetime.union(l, Lifetime.empty) }) -> " +
+        "Prop { scope = l }"
+    )
+    parse(s"axiom g : $printed\n")
+    assertEquals(PrettyPrinter.print(runProgram("{ Type { kind = lin, scope = empty } }")), "Type { kind = Kind.lin }")
+    assertEquals(PrettyPrinter.print(runProgram("{ Sort { level = succ(one), kind = unr } }")), "Sort { level = 2 }")
+  }
+
   test("anonymous function domain remains parenthesized in arrow shorthand") {
     val printed = PrettyPrinter.printTerm(axiomType("axiom f : (_: Type -> Type) -> Type\n", "f"))
 

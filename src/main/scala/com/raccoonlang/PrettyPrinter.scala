@@ -1,7 +1,5 @@
 package com.raccoonlang
 
-import com.raccoonlang.Value.LevelTpe
-
 object PrettyPrinter {
   private def printString(scalars: Vector[Int]): String = UnicodeScalarString.renderQuoted(scalars)
 
@@ -70,7 +68,7 @@ object PrettyPrinter {
    */
   private def printTermAtom(t: CoreAst.Term): String = t match {
     case _: CoreAst.Term.NatLit | _: CoreAst.Term.StrLit | _: CoreAst.Term.Ref | _: CoreAst.Term.App |
-        _: CoreAst.Term.Select | _: CoreAst.Term.Sort | _: CoreAst.Term.LevelOp =>
+        _: CoreAst.Term.Select | _: CoreAst.Term.Sort | _: CoreAst.Term.FormOp =>
       printCoreTerm(t)
     case _: CoreAst.Term.Lam | _: CoreAst.Term.Match | _: CoreAst.Term.Body | _: CoreAst.Term.Pi =>
       s"(${printCoreTerm(t)})"
@@ -93,12 +91,31 @@ object PrettyPrinter {
     case CoreAst.Term.Pi(binders, out, _, _) =>
       val bindersStr = binders.map(printPiBinder).mkString(" -> ")
       s"$bindersStr -> ${printCoreTerm(out)}"
-    case CoreAst.Term.Sort(CoreAst.Term.LevelOp(CoreAst.LevelForm.Zero, _, _), _) => "Prop"
-    case CoreAst.Term.Sort(CoreAst.Term.LevelOp(CoreAst.LevelForm.One, _, _), _)  => "Type"
-    case CoreAst.Term.Sort(level, _) => s"Sort { level = ${printCoreTerm(level)} }"
-    case CoreAst.Term.LevelOp(form, args, _) =>
+    case CoreAst.Term.Sort(level, kind, scope, _) =>
+      def isForm(term: CoreAst.Term, form: CoreAst.Form): Boolean =
+        term match {
+          case CoreAst.Term.FormOp(`form`, _, _) => true
+          case _                                 => false
+        }
+      val (former, levelField) =
+        if (isForm(level, CoreAst.Form.LevelZero)) ("Prop", None)
+        else if (isForm(level, CoreAst.Form.LevelOne)) ("Type", None)
+        else ("Sort", Some(printCoreTerm(level)))
+      printSort(
+        former,
+        levelField,
+        Option.unless(isForm(kind, CoreAst.Form.KindUnr))(printCoreTerm(kind)),
+        Option.unless(isForm(scope, CoreAst.Form.LifetimeEmpty))(printCoreTerm(scope))
+      )
+    case CoreAst.Term.FormOp(form, args, _) =>
       val argsStr = if (args.isEmpty) "" else args.map(printCoreTerm).mkString("(", ", ", ")")
-      s"Level.${form.name}$argsStr"
+      s"${form.qualifiedName}$argsStr"
+  }
+
+  /** A sort as its former and the fields it spells out; a field left at its former's value is not printed. */
+  private def printSort(former: String, level: Option[String], kind: Option[String], scope: Option[String]): String = {
+    val fields = level.map(l => s"level = $l").toVector ++ kind.map(k => s"kind = $k") ++ scope.map(l => s"scope = $l")
+    if (fields.isEmpty) former else s"$former { ${fields.mkString(", ")} }"
   }
 
   def printTerm(t: CoreAst.Ast): String = t match {
@@ -137,6 +154,22 @@ object PrettyPrinter {
       case Vector(single) => single
       case several        => s"Level.max(${several.mkString(", ")})"
     }
+  }
+
+  /**
+   * A kind as source syntax: `Kind.lin`, `Kind.unr`, or its variables joined. Variables print by id, as level atoms.
+   */
+  private def printKind(kind: Value.Kind): String =
+    if (kind.isLin) "Kind.lin"
+    else joined(kind.vars, "k", "Kind.unr", "Kind.join")
+
+  private def printLifetime(lifetime: Value.Lifetime): String =
+    joined(lifetime.vars, "l", "Lifetime.empty", "Lifetime.union")
+
+  private def joined(vars: DepSet, prefix: String, empty: String, form: String): String = {
+    val names = Vector.newBuilder[String]
+    vars.foreach(id => names += s"$prefix#$id")
+    names.result().reduceLeftOption((acc, name) => s"$form($acc, $name)").getOrElse(empty)
   }
 
   /**
@@ -185,13 +218,23 @@ object PrettyPrinter {
   }
 
   def print(value: Value): String = value match {
-    case sort: Value.VSort if Sorts.isProp(sort)            => "Prop"
-    case sort: Value.VSort if sort.level == Value.Level.one => "Type"
-    case sort: Value.VSort                                  => s"Sort { level = ${printLevel(sort.level)} }"
-    case level: Value.Level                                 => printLevel(level)
-    case pi: Value.VPi                                      => printPi(pi)
-    case Value.VConst(name, _, _)                           => name
-    case Value.ConstructorHead(name, _, _, _, _)            => name
+    case sort: Value.VSort =>
+      val (former, levelField) =
+        if (Sorts.isProp(sort)) ("Prop", None)
+        else if (sort.level == Value.Level.one) ("Type", None)
+        else ("Sort", Some(printLevel(sort.level)))
+      printSort(
+        former,
+        levelField,
+        Option.unless(sort.kind.isUnr)(printKind(sort.kind)),
+        Option.unless(sort.scope.isEmpty)(printLifetime(sort.scope))
+      )
+    case level: Value.Level                      => printLevel(level)
+    case kind: Value.Kind                        => printKind(kind)
+    case lifetime: Value.Lifetime                => printLifetime(lifetime)
+    case pi: Value.VPi                           => printPi(pi)
+    case Value.VConst(name, _, _)                => name
+    case Value.ConstructorHead(name, _, _, _, _) => name
     case Value.VCtor(head, Vector(field: Value.VPacked), _)
         if head.name == "String.mk" && field.codec.isInstanceOf[Value.CharListCodec] =>
       printString(field.charScalars.getOrElse(wtf("Invalid packed String field")))
@@ -210,7 +253,9 @@ object PrettyPrinter {
         .map(_.toString)
         .orElse(p.charScalars.map(scalars => s"proj[String,0](${printString(scalars)})"))
         .getOrElse(wtf("Unknown packed payload"))
-    case LevelTpe            => "Level"
+    case Value.LevelTpe      => CoreAst.Parameter.Level.name
+    case Value.KindTpe       => CoreAst.Parameter.Kind.name
+    case Value.LifetimeTpe   => CoreAst.Parameter.Lifetime.name
     case Value.SortParameter => "SortParameter"
     case Value.Large         => "Large"
   }

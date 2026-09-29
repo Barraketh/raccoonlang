@@ -7,7 +7,8 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
   private val span = Span(0, 0)
   private val valueType: Value = Sorts.Type
   private val typeRef: CoreAst.Term = CTerm.GlobalRef("Type", span)
-  private val typeToTypeClassifier: Value.VSort = Sorts.sort(Level.succ(Level.one))
+  private val typeToTypeClassifier: Value.VSort =
+    Sorts.sort(Level.succ(Level.one), Value.Kind.unr, Value.Lifetime.empty)
 
   private def nodeId(start: Int): AstNodeId = AstNodeId(None, start)
 

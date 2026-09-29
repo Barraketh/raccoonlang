@@ -48,7 +48,10 @@ object ErrorRendering {
       case InductiveUniverseTooSmall(inductive, where, fieldTy, fieldUniverse, inductiveUniverse) =>
         s"Inductive $inductive lives in Sort ${PrettyPrinter.print(inductiveUniverse)}, " +
           s"but $where has type $fieldTy : Sort ${PrettyPrinter.print(fieldUniverse)}"
-      case InductiveTypeNotASort(tpe)    => s"Inductive type must be a Sort, got $tpe instead"
+      case InductiveTypeNotASort(tpe) => s"Inductive type must be a Sort, got $tpe instead"
+      case LinearProp(kind, level) =>
+        s"A sort of kind $kind needs a level that is never zero, but its level $level may be zero; " +
+          "proofs are unrestricted"
       case InvalidInductiveBlock(reason) => s"Invalid inductive block: $reason"
       case MutualBlockSortMismatch(family, declared, expected) =>
         s"Invalid inductive block: family $family lives in $declared, expected $expected"

@@ -320,6 +320,33 @@ object ValueEquivalence {
       }
     }
 
+    /**
+     * A kind or lifetime equation (spec §6.2), between normal forms that differ. A variable alone on one side, not
+     * occurring in the other, links to the other side; when both sides are variables, the later-bound one links to the
+     * earlier-bound one. Every other equation is stuck, and none is apart: no two kinds or lifetimes are provably
+     * unequal.
+     */
+    private def unifyParameters(
+        a: Value,
+        aVar: Option[VarId],
+        b: Value,
+        bVar: Option[VarId],
+        meta: EqStore,
+        ctx: Ctx
+    ): Result = {
+      val candidates = (aVar, bVar) match {
+        case (Some(aId), Some(bId)) if aId < bId => Vector(bId -> a, aId -> b)
+        case _                                   => aVar.map(_ -> b).toVector ++ bVar.map(_ -> a)
+      }
+      candidates
+        .collectFirst {
+          case (id, other) if ctx.canLinkForced && meta.isRefinable(id) && !meta.occurs(id, other) =>
+            meta.addLink(id, other)
+        }
+        .map(Right(_))
+        .getOrElse(stuck(a, b))
+    }
+
     private def tryLinkVar(v: Var, other: Value, meta: EqStore, ctx: Ctx): Result = {
       val m1 =
         if (!v.tpe.synDeps.intersects(meta.refinable) && defEq(other.tpe, v.tpe)) meta
@@ -532,7 +559,22 @@ object ValueEquivalence {
             .map(Right(_))
             .getOrElse(stuck(l1, l2))
 
-        case (s1: VSort, s2: VSort) => tryUnify(s1.level, s2.level, meta, ctx)
+        // Kinds and lifetimes are equal exactly when their normal forms are (spec §2.3); otherwise only a link can
+        // solve the equation.
+        case (k1: Kind, k2: Kind) =>
+          if (k1 == k2) Right(meta)
+          else unifyParameters(k1, Kind.singleVariable(k1), k2, Kind.singleVariable(k2), meta, ctx)
+        case (l1: Lifetime, l2: Lifetime) =>
+          if (l1 == l2) Right(meta)
+          else unifyParameters(l1, Lifetime.singleVariable(l1), l2, Lifetime.singleVariable(l2), meta, ctx)
+
+        // Two sorts are equal when their levels, kinds and scopes are (spec §2.5).
+        case (s1: VSort, s2: VSort) =>
+          for {
+            afterLevel <- tryUnify(s1.level, s2.level, meta, ctx)
+            afterKind <- tryUnify(s1.kind, s2.kind, afterLevel, ctx)
+            afterScope <- tryUnify(s1.scope, s2.scope, afterKind, ctx)
+          } yield afterScope
 
         // Unify FreshVars through ctx. Basic idea: FreshVars can point at things through context
         // unify creates a ctx of pointers. We only create pointers from the top of the chain

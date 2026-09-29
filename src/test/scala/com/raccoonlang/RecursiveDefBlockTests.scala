@@ -6,7 +6,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
   private val span = Span(0, 0)
 
   private def global(name: String): Term.GlobalRef = Term.GlobalRef(name, span)
-  private val typeSort: Term = Term.Sort(Term.LevelOp(CoreAst.LevelForm.One, Vector.empty, span), span)
+  private val typeSort: Term = CoreTestTerms.sortAt(CoreAst.Form.LevelOne, span)
   private def local(ref: CoreAst.LocalRef): Term.LocalRef = Term.LocalRef(ref, span)
   private def app(fn: Term, args: Term*): Term.App = Term.App(fn, args.toVector, span)
   private def binder(ref: CoreAst.LocalRef, tpe: Term, site: CoreAst.BinderSite): CoreAst.Binder =

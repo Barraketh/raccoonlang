@@ -1,6 +1,6 @@
 package com.raccoonlang
 
-import com.raccoonlang.Value.{Level, VPi, VSort}
+import com.raccoonlang.Value.{Kind, Level, Lifetime, VPi, VSort}
 
 /**
  * The one place sorts are built and classified (docs/kernel.md#universes-and-function-types). `VSort` is constructed
@@ -8,10 +8,22 @@ import com.raccoonlang.Value.{Level, VPi, VSort}
  * a proposition, is answered here and nowhere else, so proof irrelevance and the checker cannot disagree about it.
  */
 object Sorts {
-  def sort(level: Level): VSort = new VSort(level)
 
-  val Prop: VSort = sort(Level.zero)
-  val Type: VSort = sort(Level.one)
+  /**
+   * A sort. The checker has already refused a kind other than `Kind.unr` at a level that may be zero (`LinearProp`,
+   * spec §2.3); substitution preserves both a level that is never zero and the kind `Kind.unr`, so no sort built later
+   * breaks it either.
+   */
+  def sort(level: Level, kind: Kind, scope: Lifetime): VSort = {
+    if (!admitsKind(level, kind)) wtf(s"Sort at level $level cannot have the kind $kind")
+    new VSort(level, kind, scope)
+  }
+
+  val Prop: VSort = sort(Level.zero, Kind.unr, Lifetime.empty)
+  val Type: VSort = sort(Level.one, Kind.unr, Lifetime.empty)
+
+  /** A sort of a kind other than `Kind.unr` needs a level that is never zero, since proofs are unrestricted. */
+  def admitsKind(level: Level, kind: Kind): Boolean = kind.isUnr || Level.isNeverZero(level)
 
   def isProp(sort: VSort): Boolean = sort.level == Level.zero
 

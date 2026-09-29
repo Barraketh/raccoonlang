@@ -93,7 +93,8 @@ object InductiveChecks {
 
         case _: ConstructorHead => !target.mayOccurIn(value)
 
-        case _: Level | LevelTpe | SortParameter | Large | _: VLam | _: VSort | _: Var | _: VConst =>
+        case _: Level | _: Kind | _: Lifetime | _: ParameterTpe | SortParameter | Large | _: VLam | _: VSort | _: Var |
+            _: VConst =>
           !target.mayOccurIn(value)
       }
 
@@ -204,7 +205,8 @@ object InductiveChecks {
 
         case _: ConstructorHead => true
 
-        case _: Level | LevelTpe | SortParameter | Large | _: VSort | _: Var | _: VConst =>
+        case _: Level | _: Kind | _: Lifetime | _: ParameterTpe | SortParameter | Large | _: VSort | _: Var |
+            _: VConst =>
           true
       }
 
@@ -252,7 +254,8 @@ object InductiveChecks {
 
       case VConst(name, Inductive(_), _) if blockNames(name) => false
 
-      case _: ConstructorHead | _: Level | LevelTpe | SortParameter | Large | _: VSort | _: Var | _: VConst =>
+      case _: ConstructorHead | _: Level | _: Kind | _: Lifetime | _: ParameterTpe | SortParameter | Large | _: VSort |
+          _: Var | _: VConst =>
         true
     }
 

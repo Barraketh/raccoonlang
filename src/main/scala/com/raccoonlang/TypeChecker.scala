@@ -57,23 +57,27 @@ object TypeChecker {
 
   /**
    * An argument of a checked application: its own syntax, checked inside the application's argument frame, or a value
-   * the caller has already checked (a selected field's base). An argument is synthesized, except that at a level binder
-   * it is checked against `Level`, the one place a level may stand as an argument (spec §2.2). The verification pass
-   * then checks each one against its binder type, as any check is synthesis followed by equality.
+   * the caller has already checked (a selected field's base). An argument is synthesized, except that at a binder of a
+   * sort parameter it is checked against that parameter, the one place an expression of one may stand as an argument
+   * (spec §2.2). The verification pass then checks each one against its binder type, as any check is synthesis followed
+   * by equality.
    */
   private sealed trait PendingArg {
-    def check(env: Env, atLevelBinder: Boolean): CheckedTerm
+    def check(env: Env, parameter: Option[ParameterTpe]): CheckedTerm
   }
 
   private object PendingArg {
     final case class Term(term: CA.Term) extends PendingArg {
-      def check(env: Env, atLevelBinder: Boolean): CheckedTerm =
-        if (atLevelBinder) checkTerm(term, LevelTpe, env) else checkTerm(term, env)
+      def check(env: Env, parameter: Option[ParameterTpe]): CheckedTerm =
+        parameter match {
+          case Some(parameterTpe) => checkTerm(term, parameterTpe, env)
+          case None               => checkTerm(term, env)
+        }
     }
 
     // A selected field's base was checked where it stands, and the verification pass fits it to its binder.
     final case class Checked(checked: CheckedTerm) extends PendingArg {
-      def check(env: Env, atLevelBinder: Boolean): CheckedTerm = checked
+      def check(env: Env, parameter: Option[ParameterTpe]): CheckedTerm = checked
     }
 
     def term(t: CA.Term): PendingArg = Term(t)
@@ -111,13 +115,18 @@ object TypeChecker {
   }
 
   /**
-   * A binder of the sort parameter `Level`. Its type is the closed name `Level`, so it is recognized before any
-   * argument is known; no other term evaluates to `Level`, since nothing of another type can have it as a value.
+   * The sort parameter a binder binds a variable of. Its type is the closed name of the parameter, so it is recognized
+   * before any argument is known; no other term evaluates to a sort parameter, since nothing of another type can have
+   * one as a value.
    */
-  private def isLevelBinder(binder: CA.Binder, env: Env): Boolean =
+  private def binderParameter(binder: CA.Binder, env: Env): Option[ParameterTpe] =
     binder.ty match {
-      case ref: CA.Term.GlobalRef => Interpreter.evalTerm(ref, env) eq LevelTpe
-      case _                      => false
+      case ref: CA.Term.GlobalRef =>
+        Interpreter.evalTerm(ref, env) match {
+          case parameterTpe: ParameterTpe => Some(parameterTpe)
+          case _                          => None
+        }
+      case _ => None
     }
 
   private def applyHeadName(fnResidual: CA.Term): String =
@@ -167,7 +176,7 @@ object TypeChecker {
             // Arguments are checked where they stand and verified in the final pass; see PendingArg.
             val checked =
               framed(Frame.InArgument(argumentPositions(idx), binder.name, applyHeadName(fnResidual)))(
-                providedArgs(explicitIdx).check(env, isLevelBinder(binder, pi.env))
+                providedArgs(explicitIdx).check(env, binderParameter(binder, pi.env))
               )
             assertNonRawRecursive(checked.value)
             known(idx) = checked.value
@@ -240,7 +249,7 @@ object TypeChecker {
     var curEnv = env
 
     body.lets.foreach { l =>
-      val checkedTy = l.ty.map(tyTerm => checkTerm(tyTerm, curEnv))
+      val checkedTy = l.ty.map(tyTerm => checkTypeTerm(tyTerm, curEnv))
       val checkedValue = checkedTy match {
         case Some(ty) => checkTerm(l.value, ty.value, curEnv)
         case None     => checkTerm(l.value, curEnv)
@@ -380,13 +389,17 @@ object TypeChecker {
       checked
     }
 
-  /** A binder's type: a type, or at a parameter site the sort parameter `Level` (spec §2.2). */
+  /**
+   * A binder's type: a type, or a sort parameter where the binder's site admits it (spec §2.2). A parameter site admits
+   * every sort parameter, a function type's or lambda's binder only `Lifetime`, and a field site none.
+   */
   def checkBinderType(binder: CA.Binder, env: Env): CheckedTerm =
     at(binder.ty.span) {
       val checked = synthesize(binder.ty, env)
-      binder.site match {
-        case CA.BinderSite.Parameter if checked.value eq LevelTpe =>
-        case _                                                    => assertType(checked.value)
+      (binder.site, checked.value) match {
+        case (CA.BinderSite.Parameter, _: ParameterTpe) =>
+        case (CA.BinderSite.Function, LifetimeTpe)      =>
+        case _                                          => assertType(checked.value)
       }
       checked
     }
@@ -412,9 +425,9 @@ object TypeChecker {
     }
 
   /**
-   * A term must have a type wherever it stands (spec §2.2), except where `admitsNonType` allows otherwise. So the sort
-   * parameter `Level` itself, a level, and a reference whose type is large are `NotAType` there; a large reference may
-   * still head an application (`checkHead`).
+   * A term must have a type wherever it stands (spec §2.2), except where `admitsNonType` allows otherwise. So a sort
+   * parameter itself, an expression of one, and a reference whose type is large are `NotAType` there; a large reference
+   * may still head an application (`checkHead`).
    */
   private def requireTyped(value: Value): Unit =
     value.tpe match {
@@ -424,12 +437,16 @@ object TypeChecker {
     }
 
   /**
-   * The positions where a term whose type is not a type may stand: a level where a level is expected (a sort's level
-   * field, the argument at a level binder), and a definition's lambda at its own large declared type. Equality with the
-   * expected type then decides as for any check.
+   * The positions where a term whose type is not a type may stand: an expression of a sort parameter where one is
+   * expected (a sort's field, the argument at a binder of a sort parameter), and a definition's lambda at its own large
+   * declared type. Equality with the expected type then decides as for any check, so a kind where a level is expected
+   * is a `TypeMismatch`, as a term of any other type there is.
    */
   private def admitsNonType(actualTy: Value, expectedTy: Value): Boolean =
-    ((actualTy eq LevelTpe) && (expectedTy eq LevelTpe)) || ((actualTy.tpe eq Large) && (expectedTy.tpe eq Large))
+    (actualTy, expectedTy) match {
+      case (_: ParameterTpe, _: ParameterTpe) => true
+      case _                                  => (actualTy.tpe eq Large) && (expectedTy.tpe eq Large)
+    }
 
   def checkTerm(term: CA.Term, env: Env): CheckedTerm =
     check(term, None, env)
@@ -488,14 +505,22 @@ object TypeChecker {
         CheckedTerm(checked.vpi, checked.residual)
       case ref: CA.Term.Ref => CheckedTerm(Interpreter.evalTerm(ref, env), ref)
       case l: CA.Term.Lam   => checkLam(l, env)
-      case CA.Term.Sort(level, span) =>
+      case CA.Term.Sort(level, kind, scope, span) =>
         val checkedLevel = checkTerm(level, LevelTpe, env)
-        CheckedTerm(Interpreter.evalSort(checkedLevel.value), CA.Term.Sort(checkedLevel.residual, span))
-      case CA.Term.LevelOp(form, args, span) =>
-        val checkedArgs = args.map(checkTerm(_, LevelTpe, env))
+        val checkedKind = checkTerm(kind, KindTpe, env)
+        val checkedScope = checkTerm(scope, LifetimeTpe, env)
+        val levelV = Interpreter.getLevel(checkedLevel.value)
+        val kindV = Interpreter.getKind(checkedKind.value)
+        if (!Sorts.admitsKind(levelV, kindV)) fail(LinearProp(kindV, levelV))
         CheckedTerm(
-          Interpreter.evalLevelOp(form, checkedArgs.map(_.value)),
-          CA.Term.LevelOp(form, checkedArgs.map(_.residual), span)
+          Interpreter.evalSort(checkedLevel.value, checkedKind.value, checkedScope.value),
+          CA.Term.Sort(checkedLevel.residual, checkedKind.residual, checkedScope.residual, span)
+        )
+      case CA.Term.FormOp(form, args, span) =>
+        val checkedArgs = args.map(checkTerm(_, Interpreter.parameterType(form.parameter), env))
+        CheckedTerm(
+          Interpreter.evalFormOp(form, checkedArgs.map(_.value)),
+          CA.Term.FormOp(form, checkedArgs.map(_.residual), span)
         )
     }
 
