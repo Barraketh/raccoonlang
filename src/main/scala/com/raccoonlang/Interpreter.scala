@@ -585,7 +585,7 @@ object Interpreter {
 
           case Decl.AxiomDecl(name, ty, _) =>
             val tyV = TypeChecker.checkDeclType(ty, env).value
-            if (!trusted) at(ty.span)(Axioms.requireMintsNoToken(name, tyV, ty.span))
+            if (!trusted) at(ty.span)(Axioms.requireMintsNoToken(name, tyV))
             env.putGlobal(name, publishedValue(VConst(name, Symbol, tyV), tyV))
 
           case d: Decl.InductiveDecl =>

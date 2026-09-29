@@ -84,9 +84,6 @@ object ErrorRendering {
           case AxiomMintsToken.Part.LinearType(tpe) =>
             s"Axiom $axiom's type contains the linear type $tpe; an axiom's result is a neutral, so it could make or " +
               "consume a token without its module"
-          case AxiomMintsToken.Part.SealedFamily(family) =>
-            s"Axiom $axiom's type contains the family $family, sealed to another module; an axiom could forge a " +
-              "value of it that its module never made"
         }
       case InvalidInductiveBlock(reason) => s"Invalid inductive block: $reason"
       case MutualBlockSortMismatch(family, declared, expected) =>

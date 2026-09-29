@@ -151,7 +151,7 @@ class AxiomTests extends munit.FunSuite with TestSupport {
     val env = Prelude.default.checkedEnv
     Vector("Quot" -> "S", "Quot.sound" -> "S").foreach { case (axiom, binder) =>
       assertEquals(
-        interceptError[AxiomMintsToken](Axioms.requireMintsNoToken(axiom, env(axiom).tpe, Span.synthetic())),
+        interceptError[AxiomMintsToken](Axioms.requireMintsNoToken(axiom, env(axiom).tpe)),
         AxiomMintsToken(axiom, Part.Binder(binder, Value.LifetimeTpe))
       )
     }
@@ -161,7 +161,7 @@ class AxiomTests extends munit.FunSuite with TestSupport {
     assertEquals(mints(quot), AxiomMintsToken("Quot2", Part.Binder("S", Value.LifetimeTpe)))
   }
 
-  /** A sealed permit its module redeems for a token (spec §7.3). */
+  /** A sealed permit its module redeems for a token (spec §7.1, §7.3). */
   private val permitModule =
     """
       |sealed inductive Permit (l: Lifetime) : Prop
@@ -175,21 +175,53 @@ class AxiomTests extends munit.FunSuite with TestSupport {
       |
       |def burn {l: Lifetime}(t: Tok(l)): Nat := match t returning Nat with
       | | .mk => 1
+      |
+      |def granted : Permit(Lifetime.empty) := Permit.mk(Lifetime.empty)
       |""".stripMargin
 
-  test("an axiom at a family sealed to another module is AxiomMintsToken, so it cannot forge a permit") {
-    // Proof irrelevance reconstructs forge as Permit.mk, so the module's own match redeems it for a token. Inside the
-    // module that is the module's own choice.
-    val attack = "axiom forge : Permit(Lifetime.empty)\n{ burn(redeem(forge)) }\n"
-    assertEquals(inside(permitModule, attack).map(PrettyPrinter.print), Some("1"))
+  /** Three ways an axiom yields a proof of the sealed `Permit(Lifetime.empty)`, each with the program redeeming it. */
+  private val forgeries = Vector(
+    "axiom forge : Permit(Lifetime.empty)\n{ redeem(forge) }\n",
+    // Through the field of an unsealed family.
+    "struct Wrapper : Prop\n | mk (p: Permit(Lifetime.empty)) : Wrapper\n\naxiom w : Wrapper\n" +
+      "{\n  match w returning Tok(Lifetime.empty) with\n  | .mk p => redeem(p)\n}\n",
+    // Through a proposition that only computes to Permit(Lifetime.empty).
+    "def P (n: Nat) : Prop := match n returning Prop with\n | .zero => Permit(Lifetime.empty)\n | .succ _ => True\n\n" +
+      "axiom a (n: Nat) : P(n)\n{ redeem(a(0)) }\n"
+  )
+
+  private def assertStuck(value: Option[Value])(implicit loc: munit.Location): Unit =
+    value match {
+      case Some(_: Value.NeutralThunk) =>
+      case other                       => fail(s"Expected the redeeming match to stay stuck, got $other")
+    }
+
+  test("an axiom may yield a proof of a sealed proposition, but no match opens it, in the module or outside") {
+    forgeries.foreach { forgery =>
+      assertStuck(outside(permitModule, forgery))
+      assertStuck(inside(permitModule, forgery))
+    }
+    // The mutation is the seal alone: an unsealed permit's every proof is its constructor, so it redeems.
+    forgeries.foreach { forgery =>
+      val unsealed = permitModule.replace("sealed inductive Permit", "inductive Permit")
+      assertEquals(ctorName(outside(unsealed, forgery).get), "Tok.mk")
+    }
+  }
+
+  test("a permit its module built keeps its constructor, so the module's match redeems it") {
     assertEquals(
-      expectOnly[AxiomMintsToken](outside(permitModule, attack)),
-      AxiomMintsToken("forge", Part.SealedFamily("Permit"))
-    )
-    // The mutation is the seal alone.
-    assertEquals(
-      outside(permitModule.replace("sealed inductive Permit", "inductive Permit"), attack).map(PrettyPrinter.print),
+      inside(permitModule, "{ burn(redeem(Permit.mk(Lifetime.empty))) }").map(PrettyPrinter.print),
       Some("1")
     )
+    assertEquals(outside(permitModule, "{ burn(redeem(granted)) }").map(PrettyPrinter.print), Some("1"))
+  }
+
+  test("proofs of a sealed proposition stay irrelevant to conversion") {
+    // A forged proof and a built one are convertible, though only the built one is opened by a match.
+    val same =
+      "axiom forge : Permit(Lifetime.empty)\n" +
+        "def same : Eq(Permit(Lifetime.empty), forge, granted) := Eq.refl(forge)\n"
+    outside(permitModule, same)
+    inside(permitModule, same)
   }
 }

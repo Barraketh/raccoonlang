@@ -80,8 +80,7 @@ is `AxiomMintsToken`:
   its type;
 - a kind or lifetime other than `Kind.unr` and `Lifetime.empty`, a sort's or a
   closure's field included;
-- a linear type;
-- a family sealed to another module.
+- a linear type.
 
 ```raccoon
 axiom eat {A: Type { kind = lin }}(x: A): Unit                        -- AxiomMintsToken
@@ -90,11 +89,11 @@ axiom a : List(Nat)                                                  -- admitted
 ```
 
 The type is read as its value, so `List(Nat)` is admitted although `List`
-binds a lifetime, and so is an axiom that binds a level. For a sealed `Prop`
-family `Permit`, `axiom forge : Permit(Lifetime.empty)` outside its module
-would be a proof the module takes for one it made; inside the module it is
-admitted. The bundled prelude's `Quot` and `Quot.sound` bind lifetimes, which
-only a prelude may do.
+binds a lifetime, and so is an axiom that binds a level. An axiom may yield a
+value of a sealed family, `axiom forge : Permit(Lifetime.empty)` for a sealed
+`Prop` family `Permit` included, but no match opens it (see Sealed families).
+The bundled prelude's `Quot` and `Quot.sound` bind lifetimes, which only a
+prelude may do.
 
 `:= builtin` is reserved for declarations in the trusted prelude. Ordinary
 programs cannot acquire builtin behavior.
@@ -713,8 +712,7 @@ definitions, but outside the module each of these is `SealedConstructor`:
 - matching on a value of it, with qualified or `.short` case heads.
 
 The names still resolve, so such a use reports `SealedConstructor` rather than
-an unknown name. An axiom outside the module whose type contains the family is
-`AxiomMintsToken`. A value of a sealed family is therefore made and taken apart
+an unknown name. A value of a sealed family is therefore made and taken apart
 only by its module, which is what makes a capability confine anything:
 
 ```raccoon
@@ -736,8 +734,33 @@ module's own definitions that force one that way can be applied anywhere, and
 an implicit argument the checker reconstructs may be a sealed constructor
 application.
 
-A sealed family never receives structure eta, so even inside its module a
-match does not open a neutral value of it as a constructor application.
+A sealed family never receives structure eta, and a proof of a sealed
+proposition is never reconstructed as its constructor. So even inside its
+module a match opens only a value the module built: a neutral, such as an
+axiom's result or a blocked computation, stays one, and so does a proof pulled
+out of another family's field or one whose proposition only computes to the
+sealed one. A match on such a value stays stuck.
+
+```raccoon
+-- Permit.rac
+sealed inductive Permit (l: Lifetime) : Prop
+ | mk : Permit(l)
+
+sealed inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }
+ | mk : Tok(l)
+
+def redeem {l: Lifetime}(p: Permit(l)): Tok(l) := match p returning Tok(l) with
+ | .mk => Tok.mk(l)
+```
+
+`redeem(Permit.mk(Lifetime.empty))` reduces to a token, but with
+`axiom forge : Permit(Lifetime.empty)`, in any module, `redeem(forge)` stays
+stuck. The two proofs are still interchangeable in types: proof irrelevance is
+unchanged, and only which proofs a match opens differs. A proof keeps the
+module's constructor only as a value: a function's proof body never runs, so
+with `def grant (n: Nat) : Permit(Lifetime.empty) := Permit.mk(Lifetime.empty)`,
+`redeem(grant(0))` stays stuck as well.
+
 Sealing restricts what a program may write, not what the checker knows: kinds,
 scopes, coverage, apartness and conversion use the full declaration in every
 module.

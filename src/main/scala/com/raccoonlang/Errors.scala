@@ -173,9 +173,6 @@ object AxiomMintsToken {
     final case class Parameter(value: Value) extends Part
 
     final case class LinearType(tpe: Value) extends Part
-
-    /** A family sealed to another module. */
-    final case class SealedFamily(family: String) extends Part
   }
 }
 

@@ -33,10 +33,11 @@ object Value {
   private def isKnownProof(value: Value): Boolean = Sorts.isProposition(value.tpe)
 
   /**
-   * Put a proof into the canonical representation determined solely by its exact proposition
+   * Put a proof into the canonical representation determined by its exact proposition
    * (docs/kernel.md#proofs-and-elimination). If the proposition's recovery plan reconstructs a constructor at that
    * exact type, every inhabitant uses constructor form. Otherwise a Pi proposition reconstructs its eta-lambda and
-   * every other ordinary inhabitant erases to `VProof`. Exemptions:
+   * every other ordinary inhabitant erases to `VProof`. A sealed proposition is never reconstructed (spec §7.1): a
+   * constructor application its module built keeps its form, and every other inhabitant erases. Exemptions:
    *   - `Var`: metas and unification unknowns must stay refinable — collapsing a placeholder would silently discharge a
    *     proof obligation. Rigid hypotheses are erased at binder freshening only after the source binder has established
    *     that an inhabitant is in scope (`canonicalizeRigidBinder` below).
@@ -52,20 +53,9 @@ object Value {
       case _: VPi | _: Var | _: ConstructorHead   => value
       case VLam(_, _, LamBody.Native(_, _, true)) => value
       case _ if !Sorts.isProposition(value.tpe)   => value
-      // A trusted application of the declaration-certified constructor already carries the
-      // result-forced data fields. Check this before running recovery so repeated canonicalization
-      // at environment boundaries is constant-time.
-      case VCtor(actualHead, _, _) if ProofReconstruction.isDefinitelyCertifiedConstructor(value.tpe, actualHead) =>
-        value
-      // A universe-polymorphic field may become a proof only at this exact instance, so it cannot
-      // use the declaration-wide fast path. Validate recovery once and preserve the already-
-      // constructor-headed value when it is the canonical head.
-      case VCtor(actualHead, _, _) =>
-        ProofReconstruction.reconstruct(value.tpe) match {
-          case Some(reconstructed) if reconstructed.head.name == actualHead.name => value
-          case Some(reconstructed) => VCtor(reconstructed.head, reconstructed.fields, value.tpe)
-          case None                => VProof(value.tpe)
-        }
+      // A constructor application already in canonical form keeps it, and keeps a sealed proposition's
+      // constructor, which only its module builds.
+      case VCtor(head, _, _) if ProofReconstruction.isCanonicalConstructor(value.tpe, head) => value
       case _ =>
         ProofReconstruction.reconstruct(value.tpe) match {
           case Some(reconstructed) =>

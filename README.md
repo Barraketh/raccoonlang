@@ -36,7 +36,7 @@ Raccoon currently provides:
 - proof irrelevance and controlled elimination from `Prop`;
 - namespaces, scoped `open`, and file imports;
 - opaque definitions, quotients, and axioms, whose types bind no kind or
-  lifetime and mention no linear type and no other module's sealed family;
+  lifetime and mention no linear type;
 - compact natural-number literals and trusted native natural-number reduction;
 - a bundled prelude that is polymorphic in lifetimes as well as levels.
 

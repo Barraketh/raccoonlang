@@ -411,11 +411,12 @@ p ≡ q  iff  P ≡ Q
 ```
 
 Operational behavior must be congruent with that equality. A proof's canonical
-outer representation is chosen only from its exact proposition:
+outer representation is chosen from its exact proposition:
 
 1. A declaration-certified, one-constructor recovery plan may reconstruct a
    constructor after every field is recovered and the constructor result is
-   definitionally equal to the exact proposition.
+   definitionally equal to the exact proposition. A sealed proposition is
+   never reconstructed; see below.
 2. A Pi proposition becomes a synthetic proof eta-lambda. Applying it produces
    the canonical proof of the instantiated codomain; the checked source proof
    body does not run. A large Pi into a proposition is proof-valued too, so a
@@ -442,9 +443,21 @@ match from a proposition to data is accepted only when:
   proposition.
 
 Eligibility alone does not force reduction. Evaluation selects a branch only
-after exact constructor-result validation reconstructs a constructor. A
-non-reconstructible proof leaves a data-valued match blocked. This separation
-prevents constrained indexed propositions from manufacturing data.
+on a proof in constructor form, which exact constructor-result validation
+admits. A non-reconstructible proof leaves a data-valued match blocked. This
+separation prevents constrained indexed propositions from manufacturing data.
+
+A proof of a sealed proposition is never reconstructed, the proof counterpart
+of a sealed family's missing structure eta (see Sealing). A constructor
+application its module built keeps its form when it is the canonical
+constructor at its exact proposition, and a match on it reduces. Every other
+proof of it is `VProof`, so a data-valued match on it stays stuck: an axiom's
+result, a proof recovered as another family's field, one whose proposition only
+computes to the sealed one, and one returned by a proof function, whose body
+never runs. Conversion is unchanged, since it compares propositions only; what
+a sealed proposition's proof does in a match is the one place where behavior
+depends on more than the proposition. `ProofReconstruction` alone reads a
+family's recovery plan, and its `reconstruct` refuses a sealed family.
 
 Proof constructor identity and fields provide no injectivity, apartness, or
 termination evidence. Recursive proof fields are exposed one layer at a time,
@@ -500,17 +513,20 @@ module is followed wherever its definition is applied, and a reconstructed
 implicit may be a sealed constructor application: neither is written by the
 program that applies it.
 
-A sealed family is never structure-eta eligible. Eta would let a match in its
-module open a neutral of it, such as an axiom's result or a blocked
-computation, as a constructor application the module never built.
+A sealed family is never structure-eta eligible, and a proof of a sealed
+proposition is never reconstructed as its constructor (see Proofs and
+elimination). Either would let a match in its module open a value the module
+never built as a constructor application: an axiom's result, a blocked
+computation, a proof pulled out of another family's field, or a proof whose
+proposition only computes to the sealed one. Such a value stays neutral, and a
+match on it stays stuck, in the module and outside it.
 
 Sealing restricts what a program may write, not what the checker knows.
 Kinds, scopes, coverage, apartness and the conversion of values read the full
-declaration in every module, and evaluation makes no sealing check. One
-function decides whether a position may use a sealed family's constructors;
-the checker asks it at those name resolutions and match scrutinees, implicit
-projection asks it before reading a constructor's field, and the axiom rule
-asks it of every family an axiom's type contains.
+declaration in every module, and evaluation compares no module. One function
+decides whether a position may use a sealed family's constructors; the checker
+asks it at those name resolutions and match scrutinees, and implicit
+projection asks it before reading a constructor's field.
 
 ## Termination
 
@@ -569,20 +585,21 @@ checked type once and refuses the first of these, with `AxiomMintsToken`:
   retype a value across scopes or kinds;
 - a kind or lifetime other than `Kind.unr` and `Lifetime.empty`, a sort's or
   closure's field and an atom included;
-- a linear type;
-- a family sealed to another module: proof irrelevance reconstructs a proof of
-  it as its constructor, so the module's own match would take a forged proof
-  for one it made.
+- a linear type.
 
 The walk reads the type as a value, never a subterm's type: a function type's
 closure, each binder's type under fresh values for the earlier binders, and its
 codomain; an application's head and arguments; a lambda's type and captures; a
 blocked match's captures, since its branches are code; a proof's proposition.
 A family head's own declared type is not part of the axiom's, so `List(Nat)`,
-whose `List` binds a lifetime, is admitted, and level binders are admitted. A
-sealed family that the value reaches only through code, such as a blocked
-match's branch, or only through the fields of another family, is not seen.
+whose `List` binds a lifetime, is admitted, and level binders are admitted.
 The trusted prelude is exempt: `Quot` and `Quot.sound` bind lifetimes.
+
+Sealing needs no axiom rule. An axiom may yield a value of a sealed family,
+directly, through another family's field, or through a computed proposition,
+but a data value has no eta and a proof is not reconstructed, so no match opens
+it. `axiom forge : Permit(Lifetime.empty)` for a sealed `Prop` family `Permit`
+is admitted anywhere, and the module's match on `forge` stays stuck.
 
 The bundled quotient interface is the fixed non-inductive primitive surface:
 
@@ -702,7 +719,9 @@ Changes to the checker or evaluator must preserve these rules:
 2. Refinement links are forced consequences; the unifier never chooses among
    several solutions.
 3. Match pruning uses apartness, never ordinary unification failure.
-4. A proof's behavior depends only on its exact proposition.
+4. A proof's behavior depends only on its exact proposition, except that a
+   proof of a sealed proposition is in constructor form only when its module
+   built it; conversion never distinguishes proofs of one proposition.
 5. Runtime proof reconstruction is finite and never invokes unification.
 6. Proof structure supplies no no-confusion or termination evidence.
 7. Structure eta applies only to checked non-Prop, nonrecursive,
@@ -746,9 +765,10 @@ Changes to the checker or evaluator must preserve these rules:
     type, and no implicit binder of linear type is forced.
 23. Outside a sealed family's module, no checked term names its constructors
     or selectors, matches on a value of it, or forces an implicit through its
-    constructors' fields; sealing never changes what conversion, coverage or
+    constructors' fields. A value of a sealed family that a match opens was
+    built by its module: the family has no structure eta, and a proof of it is
+    never reconstructed. Sealing never changes what conversion, coverage or
     apartness decide.
 24. Outside the trusted prelude, no axiom's type value binds a kind or
     lifetime, holds a kind or lifetime other than `Kind.unr` and
-    `Lifetime.empty`, contains a linear type, or contains a family sealed to
-    another module.
+    `Lifetime.empty`, or contains a linear type.
