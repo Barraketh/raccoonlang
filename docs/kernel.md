@@ -512,8 +512,15 @@ declaration was read from. Outside that module each of these is
 - a match whose scrutinee is an instance of it. A case's `.short` form resolves
   only against the scrutinee's family, so this covers it.
 
-The names still resolve, so each such use reaches this diagnostic. A term the
-checker fabricates belongs to no module and is exempt.
+The names still resolve, so each such use reaches this diagnostic. A family's
+seal names its module, which every parsed declaration has, and its
+constructors and generated selectors take that one seal. No position is
+exempt: a position's module is the source it was read from, and a position in
+no source lies outside every module.
+
+A native literal layout refuses a sealed family (see Trusted bootstrap and
+native values), since a literal makes the family's values wherever it is
+written.
 
 Implicit projection reads a sealed constructor's field only when the telescope
 it compiles is written in the family's module; elsewhere an implicit that only
@@ -629,8 +636,8 @@ declaring a reserved name.
 ### Natural numbers
 
 At the end of prelude loading, a declaration named `Nat` is accepted for
-literal syntax only if it is exactly a Type-valued unary inductive with the
-no-confusion constructors:
+literal syntax only if it is exactly an unsealed Type-valued unary inductive
+with the no-confusion constructors:
 
 ```text
 Nat.zero : Nat
@@ -674,7 +681,8 @@ String literals require an optional validated bootstrap layout:
 - `List(Char)` with exact `nil` and `cons` constructors;
 - an eta-eligible one-field `String` with constructor `String.mk` storing
   `List(Char)`;
-- a closed checked `Char.ofNat : Nat -> Char`.
+- a closed checked `Char.ofNat : Nat -> Char`;
+- none of `Char`, `List` and `String` sealed.
 
 The kernel trusts the exact `Char.ofNat` identity to map Unicode scalar values
 injectively. A string evaluates to `String.mk` containing a packed scalar list.

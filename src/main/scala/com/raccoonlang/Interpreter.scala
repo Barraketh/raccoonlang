@@ -542,7 +542,7 @@ object Interpreter {
     framed(Frame.InDefinition(decl.label)) {
       at(decl.span) {
         decl match {
-          case Decl.ConstDecl(isOpaque, name, ty, body, selectorOf, _) =>
+          case Decl.ConstDecl(isOpaque, name, ty, body, sealedBy, _) =>
             val installed = body match {
               case CoreAst.ConstBody.Builtin(_) =>
                 if (isOpaque) wtf("Builtin declarations cannot be opaque")
@@ -562,12 +562,7 @@ object Interpreter {
                 env.putGlobal(name, published)
             }
             // A sealed family's selectors are kept to its module, as its constructors are (spec §7.1).
-            selectorOf.fold(installed) { family =>
-              env(family) match {
-                case VConst(_, Inductive(meta), _) => meta.seal.fold(installed)(installed.sealMember(name, _))
-                case other                         => wtf(s"Selector $name belongs to $other, which is no family")
-              }
-            }
+            sealedBy.fold(installed)(installed.sealMember(name, _))
 
           case Decl.AxiomDecl(name, ty, _) =>
             if (!trusted) fail(UntrustedAxiom(name))

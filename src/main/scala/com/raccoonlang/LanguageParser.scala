@@ -433,7 +433,7 @@ object LanguageParser {
           header,
           decreases,
           body,
-          isSelector = false,
+          selectorOf = None,
           span
         )
       }
