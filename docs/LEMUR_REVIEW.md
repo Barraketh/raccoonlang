@@ -21,7 +21,7 @@ present at `bfd5196`; the rest were introduced or exposed by the Lemur work.
 | S8 Confinement by sort scope | F6 (D1, decided) | done | `5035a69`, `b8c5f6f` |
 | S9 The program's result is never linear | D2 (decided) | done | `345b445` |
 | S10 Mutual siblings at their own sorts | D3 (decided) | done | `5a37ef6` |
-| S11 Explicit node identity | F2's root cause | in progress | |
+| S11 Explicit node identity | F2's root cause | done | `05f541a` |
 
 All steps are done, S8 included; the branch validates (710 tests), and every
 finding's repro was rerun against the final build. Open decisions, not
@@ -471,6 +471,20 @@ carry spans, and `LinearUnused` for one points at it.
   and a linear `Tok` with an unrestricted `Factory` (a factory cannot hand out
   one captured token twice: its closure would be `lin`). `Even : Type` with
   `Odd : Prop` is now accepted. The merged branch validates (721 tests).
+
+- 2026-09-29: S11 landed (`05f541a`). `NodeId`, made only by `NodeId.fresh()`,
+  is a required field of `Pi`, `Lam`, `Match`, `Scope` and `RecursiveDef`;
+  every place that makes one of these nodes allocates a fresh id, and every
+  checker rebuild (`finishPi`, `checkLam`, `checkRecursiveDefBlock`,
+  `checkMatch`, the `Scope` case) keeps its source's. `AstNodeId`,
+  `Span.nodeId`, `Span.synthetic` and `AstNodeId.synthetic` are gone: a span is
+  location only. `NodeIdentityTests` asserts that distinct nodes never share an
+  id and that every residual keeps its source's (636 residual nodes checked),
+  with a mutation check; a unit test shows `(Nat -> Nat) -> Nat` and its domain
+  at one span get different ids and keys. Duplicated syntax (a selector's result
+  type) is now distinct nodes; nothing relied on the sharing. No measurable
+  timing change. The merged branch validates (723 tests), and the F2 repros are
+  ordinary `TypeMismatch`es.
 
 ## Follow-ups (proposed, not scheduled)
 
