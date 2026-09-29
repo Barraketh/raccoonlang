@@ -365,7 +365,9 @@ with no branch ends every path through it and so uses every linear local live
 at it; no evaluation reaches it.
 
 Whether a local is tracked is decided once, from its type as it reads at its
-binder, and refinement in a branch never changes it. A local whose type's kind
+binder. Refinement in a branch never changes that for a local bound outside the
+branch. A pattern field's binder is its pattern, so its type reads as the branch
+refines it. A local whose type's kind
 involves a variable is tracked, since its binder's extent must be valid when
 the variable is `lin`. Locals of unrestricted type are not tracked. Globals are
 never tracked: a `def` or `opaque def` whose type is linear is `LinearGlobal`,
