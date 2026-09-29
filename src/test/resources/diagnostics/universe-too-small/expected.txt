@@ -1,5 +1,5 @@
 
-<root>/main.rac:2:7: error: Inductive Small lives in Sort 1, but Small.mk.t has type Type : Sort 2
+<root>/main.rac:2:7: error: Inductive Small lives in Sort { level = Level.one }, but Small.mk.t has type Type : Sort { level = Level.succ(Level.one) }
  | mk (t: Type) : Small
       ^^^^^^^^^
 note: in definition Small

@@ -46,8 +46,8 @@ object ErrorRendering {
       case NonUniformInductiveParam(inductive, ctor, param, got) =>
         s"Constructor $ctor of $inductive returns non-uniform parameter $param as $got"
       case InductiveUniverseTooSmall(inductive, where, fieldTy, fieldUniverse, inductiveUniverse) =>
-        s"Inductive $inductive lives in Sort ${PrettyPrinter.print(inductiveUniverse)}, " +
-          s"but $where has type $fieldTy : Sort ${PrettyPrinter.print(fieldUniverse)}"
+        s"Inductive $inductive lives in Sort { level = ${PrettyPrinter.print(inductiveUniverse)} }, " +
+          s"but $where has type $fieldTy : Sort { level = ${PrettyPrinter.print(fieldUniverse)} }"
       case InductiveTypeNotASort(tpe) => s"Inductive type must be a Sort, got $tpe instead"
       case LinearProp(kind, level)    =>
         // The level is not never zero, so a constant one is zero.
@@ -97,19 +97,34 @@ object ErrorRendering {
 
   /**
    * The "differ at" line is omitted when the unifier failed at the root. `checkFits` asks `actual ~ expected`, so `v1`
-   * belongs to `actual`; both are printed expected-first to match the lines above.
+   * belongs to `actual`; both are printed expected-first to match the lines above. Function types that differ in their
+   * closures fail at the two function types, and the report names the closure fields that differ.
    */
   private def renderTypeMismatch(mismatch: TypeMismatch): String = {
     val expected = PrettyPrinter.print(mismatch.expected)
     val actual = PrettyPrinter.print(mismatch.actual)
     val differ =
-      mismatch.detail.flatMap { failure =>
+      mismatch.detail.map { failure =>
         val expectedPart = PrettyPrinter.print(failure.v2)
         val actualPart = PrettyPrinter.print(failure.v1)
+        val closures = (failure.v2, failure.v1) match {
+          case (expectedPi: Value.VPi, actualPi: Value.VPi) =>
+            Vector(
+              Option.when(expectedPi.closureKind != actualPi.closureKind)(
+                s"kind ${PrettyPrinter.print(expectedPi.closureKind)}  vs  ${PrettyPrinter.print(actualPi.closureKind)}"
+              ),
+              Option.when(expectedPi.closureScope != actualPi.closureScope)(
+                s"scope ${PrettyPrinter.print(expectedPi.closureScope)}  vs  ${PrettyPrinter.print(actualPi.closureScope)}"
+              )
+            ).flatten
+          case _ => Vector.empty
+        }
         val reason = if (failure.apart) "provably different" else "not reducible: stuck"
-        Option.when(!(expectedPart == expected && actualPart == actual))(
-          s"\n  differ at: $expectedPart  vs  $actualPart   ($reason)"
-        )
+        val at =
+          if (expectedPart == expected && actualPart == actual) ""
+          else if (closures.nonEmpty) s"\n  differ at: $expectedPart  vs  $actualPart"
+          else s"\n  differ at: $expectedPart  vs  $actualPart   ($reason)"
+        at + closures.map(field => s"\n  closures differ in $field").mkString
       }
     s"type mismatch\n  expected: $expected\n  actual:   $actual${differ.getOrElse("")}"
   }

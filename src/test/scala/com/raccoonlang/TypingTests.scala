@@ -370,6 +370,20 @@ class TypingTests extends munit.FunSuite with TestSupport {
    * decided: an unparenthesised arrow chain is ONE binder group, while a parenthesised Pi in body position is a nested,
    * separate group.
    */
+  test("an application's span covers its head, so a diagnostic about a call underlines the whole call") {
+    def located(source: String): Option[String] =
+      interceptDiagnostic(typecheckDecls(source)).span.map(span => source.substring(span.start, span.end))
+
+    val peano = "inductive Peano : Type\n | zero : Peano\n | succ (_: Peano) : Peano\n\n"
+    val add = peano + "def add (a: Peano)(b: Peano): Peano := a\n\n"
+    assertEquals(located(add + "def bad : Peano := add(Peano.zero)\n"), Some("add(Peano.zero)"))
+    val curried = peano + "def add (a: Peano): Peano -> Peano := fun (b: Peano): Peano => a\n\n"
+    assertEquals(
+      located(curried + "def bad : Peano := add(Peano.zero)(Peano.zero, Peano.zero)\n"),
+      Some("add(Peano.zero)(Peano.zero, Peano.zero)")
+    )
+  }
+
   test("arrow chains group, parenthesised Pi bodies nest") {
     def elabType(src: String): CoreAst.Term =
       LanguageParser.parseFuncHeader(src) match {

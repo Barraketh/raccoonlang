@@ -3,19 +3,6 @@ package com.raccoonlang
 object PrettyPrinter {
   private def printString(scalars: Vector[Int]): String = UnicodeScalarString.renderQuoted(scalars)
 
-  private def printRef(ref: CoreAst.Term.Ref): String = ref match {
-    case CoreAst.Term.GlobalRef(name, _) => name
-    case CoreAst.Term.LocalRef(ref, _)   => ref.name
-  }
-
-  private def printDecreaseSpec(spec: CoreAst.DecreaseSpec): String =
-    spec match {
-      case CoreAst.DecreaseSpec.Lexicographic(args, _) =>
-        s"decreases lexicographic(${args.map(_.name).mkString(", ")})"
-      case CoreAst.DecreaseSpec.Measure(term, _) =>
-        s"decreases measure(${printCoreTerm(term)})"
-    }
-
   /**
    * Implicit arguments are never written in source, so a saturated call prints only its explicit ones. Anything that is
    * not a plain saturated call keeps every argument.
@@ -36,79 +23,14 @@ object PrettyPrinter {
     s"$headStr($argsStr)"
   }
 
-  def printBinder(b: CoreAst.Binder): String = {
-    val body = s"${b.name}: ${printCoreTerm(b.ty)}"
-    if (b.isImplicit) s"{$body}" else s"($body)"
-  }
-
-  private def printPiBinder(b: CoreAst.Binder): String =
-    if (b.name == "_" && !b.isImplicit) printTermAtom(b.ty)
-    else printBinder(b)
-
-  private def printBinders(binders: Vector[CoreAst.Binder]): String =
-    binders.map(printBinder).mkString(" ")
-
-  // ---- Core term pretty printing (for neutral match bodies/scrutinees) ----
-  private def printLet(l: CoreAst.Let): String = {
-    val tyStr = l.ty.map(t => s": ${printCoreTerm(t)}").getOrElse("")
-    s"let ${l.name}$tyStr := ${printCoreTerm(l.value)}"
-  }
-
-  private def printBody(b: CoreAst.Term.Body): String = {
-    if (b.lets.isEmpty) printCoreTerm(b.res)
-    else {
-      val letsStr = b.lets.map(printLet).mkString("\n")
-      s"{ $letsStr \n ${printCoreTerm(b.res)} }"
+  /** A value that prints as loose syntax, so it is parenthesized where an atom is expected. */
+  private def isLoose(value: Value): Boolean =
+    value match {
+      case _: Value.VPi                               => true
+      case Value.VLam(_, _: Value.ValueId.LocalId, _) => true
+      case thunk: Value.NeutralThunk                  => blockedCall(thunk).isEmpty
+      case _                                          => false
     }
-  }
-
-  /**
-   * A term in a position where an operator would bind tighter than the term prints: atoms and already-delimited forms
-   * render as themselves, and the forms that print as loose infix-ish syntax get parenthesized.
-   */
-  private def printTermAtom(t: CoreAst.Term): String = t match {
-    case _: CoreAst.Term.NatLit | _: CoreAst.Term.StrLit | _: CoreAst.Term.Ref | _: CoreAst.Term.App |
-        _: CoreAst.Term.Select | _: CoreAst.Term.Sort | _: CoreAst.Term.FormOp =>
-      printCoreTerm(t)
-    case _: CoreAst.Term.Lam | _: CoreAst.Term.Scope | _: CoreAst.Term.Match | _: CoreAst.Term.Body |
-        _: CoreAst.Term.Pi =>
-      s"(${printCoreTerm(t)})"
-  }
-
-  private def printCoreTerm(t: CoreAst.Term): String = t match {
-    case CoreAst.Term.NatLit(value, _)   => value.toString
-    case CoreAst.Term.StrLit(scalars, _) => printString(scalars)
-    case ref: CoreAst.Term.Ref           => printRef(ref)
-    case CoreAst.Term.Lam(ty, body, _, _, recursion, _) =>
-      val decreaseStr = recursion.map(r => s" ${printDecreaseSpec(r.decreases)}").getOrElse("")
-      s"fun ${printCoreClosure(ty.closure)}${printBinders(ty.binders)}: ${printCoreTerm(ty.out)}$decreaseStr => " +
-        printCoreTerm(body)
-    case CoreAst.Term.Scope(ref, body, _)    => s"scope ${ref.name} => ${printCoreTerm(body)}"
-    case m @ CoreAst.Term.Match(_, _, _, _)  => printMatch(m)
-    case b: CoreAst.Term.Body                => printBody(b)
-    case CoreAst.Term.Select(base, field, _) => s"${printTermAtom(base)}[$field]"
-    case CoreAst.Term.App(fn, args, _) =>
-      val headStr = printTermAtom(fn)
-      val argsStr = args.map(printTermAtom).mkString(", ")
-      s"$headStr($argsStr)"
-    case CoreAst.Term.Pi(binders, out, closure, _, _) =>
-      val bindersStr = binders.map(printPiBinder).mkString(" -> ")
-      s"${printCoreClosure(closure)}$bindersStr -> ${printCoreTerm(out)}"
-    case CoreAst.Term.Sort(level, kind, scope, _) =>
-      val (former, levelField) =
-        if (isForm(level, CoreAst.Form.LevelZero)) ("Prop", None)
-        else if (isForm(level, CoreAst.Form.LevelOne)) ("Type", None)
-        else ("Sort", Some(printCoreTerm(level)))
-      printSort(
-        former,
-        levelField,
-        Option.unless(isForm(kind, CoreAst.Form.KindUnr))(printCoreTerm(kind)),
-        Option.unless(isForm(scope, CoreAst.Form.LifetimeEmpty))(printCoreTerm(scope))
-      )
-    case CoreAst.Term.FormOp(form, args, _) =>
-      val argsStr = if (args.isEmpty) "" else args.map(printCoreTerm).mkString("(", ", ", ")")
-      s"${form.qualifiedName}$argsStr"
-  }
 
   private def isForm(term: CoreAst.Term, form: CoreAst.Form): Boolean =
     term match {
@@ -135,31 +57,133 @@ object PrettyPrinter {
 
   private def fieldList(fields: Vector[String]): String = if (fields.isEmpty) "" else s"{ ${fields.mkString(", ")} }"
 
-  private def printCoreClosure(closure: CoreAst.Closure): String =
-    printClosure(
-      closure.kind.term.filterNot(isForm(_, CoreAst.Form.KindUnr)).map(printCoreTerm),
-      closure.scope.term.filterNot(isForm(_, CoreAst.Form.LifetimeEmpty)).map(printCoreTerm)
-    )
+  /**
+   * Core syntax as source, under the values its free locals are bound to: a bound local prints as its value, and any
+   * other by its binder's name. A value holding syntax (a function type's binders, a stuck match) prints under its own
+   * environment, so a generated name such as a selector's parameter never shows for the argument it stands for.
+   */
+  private final class SyntaxPrinter(bound: CoreAst.LocalRef => Option[Value]) {
+    private def printRef(ref: CoreAst.Term.Ref): String = ref match {
+      case CoreAst.Term.GlobalRef(name, _) => name
+      case CoreAst.Term.LocalRef(ref, _)   => bound(ref).fold(ref.name)(print)
+    }
+
+    def printDecreaseSpec(spec: CoreAst.DecreaseSpec): String =
+      spec match {
+        case CoreAst.DecreaseSpec.Lexicographic(args, _) =>
+          s"decreases lexicographic(${args.map(_.name).mkString(", ")})"
+        case CoreAst.DecreaseSpec.Measure(term, _) =>
+          s"decreases measure(${printCoreTerm(term)})"
+      }
+
+    def printBinder(b: CoreAst.Binder): String = {
+      val body = s"${b.name}: ${printCoreTerm(b.ty)}"
+      if (b.isImplicit) s"{$body}" else s"($body)"
+    }
+
+    def printPiBinder(b: CoreAst.Binder): String =
+      if (b.name == "_" && !b.isImplicit) printTermAtom(b.ty)
+      else printBinder(b)
+
+    def printBinders(binders: Vector[CoreAst.Binder]): String =
+      binders.map(printBinder).mkString(" ")
+
+    private def printLet(l: CoreAst.Let): String = {
+      val tyStr = l.ty.map(t => s": ${printCoreTerm(t)}").getOrElse("")
+      s"let ${l.name}$tyStr := ${printCoreTerm(l.value)}"
+    }
+
+    private def printBody(b: CoreAst.Term.Body): String = {
+      if (b.lets.isEmpty) printCoreTerm(b.res)
+      else {
+        val letsStr = b.lets.map(printLet).mkString("\n")
+        s"{ $letsStr \n ${printCoreTerm(b.res)} }"
+      }
+    }
+
+    /**
+     * A term in a position where an operator would bind tighter than the term prints: atoms and already-delimited forms
+     * render as themselves, and the forms that print as loose infix-ish syntax get parenthesized.
+     */
+    private def printTermAtom(t: CoreAst.Term): String = t match {
+      // A bound local stands for its value, which may itself print as loose syntax.
+      case CoreAst.Term.LocalRef(ref, _) if bound(ref).exists(isLoose) => s"(${printCoreTerm(t)})"
+      case _: CoreAst.Term.NatLit | _: CoreAst.Term.StrLit | _: CoreAst.Term.Ref | _: CoreAst.Term.App |
+          _: CoreAst.Term.Select | _: CoreAst.Term.Sort | _: CoreAst.Term.FormOp =>
+        printCoreTerm(t)
+      case _: CoreAst.Term.Lam | _: CoreAst.Term.Scope | _: CoreAst.Term.Match | _: CoreAst.Term.Body |
+          _: CoreAst.Term.Pi =>
+        s"(${printCoreTerm(t)})"
+    }
+
+    def printCoreTerm(t: CoreAst.Term): String = t match {
+      case CoreAst.Term.NatLit(value, _)   => value.toString
+      case CoreAst.Term.StrLit(scalars, _) => printString(scalars)
+      case ref: CoreAst.Term.Ref           => printRef(ref)
+      case CoreAst.Term.Lam(ty, body, _, _, recursion, _) =>
+        val decreaseStr = recursion.map(r => s" ${printDecreaseSpec(r.decreases)}").getOrElse("")
+        s"fun ${printCoreClosure(ty.closure)}${printBinders(ty.binders)}: ${printCoreTerm(ty.out)}$decreaseStr => " +
+          printCoreTerm(body)
+      case CoreAst.Term.Scope(ref, body, _)    => s"scope ${ref.name} => ${printCoreTerm(body)}"
+      case m @ CoreAst.Term.Match(_, _, _, _)  => printMatch(m)
+      case b: CoreAst.Term.Body                => printBody(b)
+      case CoreAst.Term.Select(base, field, _) => s"${printTermAtom(base)}[$field]"
+      case CoreAst.Term.App(fn, args, _) =>
+        val headStr = printTermAtom(fn)
+        val argsStr = args.map(printTermAtom).mkString(", ")
+        s"$headStr($argsStr)"
+      case CoreAst.Term.Pi(binders, out, closure, _, _) =>
+        val bindersStr = binders.map(printPiBinder).mkString(" -> ")
+        s"${printCoreClosure(closure)}$bindersStr -> ${printCoreTerm(out)}"
+      case CoreAst.Term.Sort(level, kind, scope, _) =>
+        val (former, levelField) =
+          if (isForm(level, CoreAst.Form.LevelZero)) ("Prop", None)
+          else if (isForm(level, CoreAst.Form.LevelOne)) ("Type", None)
+          else ("Sort", Some(printCoreTerm(level)))
+        printSort(
+          former,
+          levelField,
+          Option.unless(isForm(kind, CoreAst.Form.KindUnr))(printCoreTerm(kind)),
+          Option.unless(isForm(scope, CoreAst.Form.LifetimeEmpty))(printCoreTerm(scope))
+        )
+      case CoreAst.Term.FormOp(form, args, _) =>
+        val argsStr = if (args.isEmpty) "" else args.map(printCoreTerm).mkString("(", ", ", ")")
+        s"${form.qualifiedName}$argsStr"
+    }
+
+    private def printCoreClosure(closure: CoreAst.Closure): String =
+      printClosure(
+        closure.kind.term.filterNot(isForm(_, CoreAst.Form.KindUnr)).map(printCoreTerm),
+        closure.scope.term.filterNot(isForm(_, CoreAst.Form.LifetimeEmpty)).map(printCoreTerm)
+      )
+
+    private def printCase(c: CoreAst.Case): String = {
+      val argNames = c.argRefs.map(_.name)
+      val args = if (argNames.isEmpty) "" else s" ${argNames.mkString(" ")}"
+      val ctor = if (c.isFullyQualified) c.ctorName else s".${c.ctorName}"
+      s"| $ctor$args => ${printCoreTerm(c.body)}"
+    }
+
+    def printMatch(m: CoreAst.Term.Match): String = {
+      val scrutStr = printTermAtom(m.scrut)
+      val casesStr = m.cases.map(printCase).mkString(" ")
+      s"match $scrutStr returning ${printCoreTerm(m.motive)} with $casesStr"
+    }
+  }
+
+  private val unbound = new SyntaxPrinter(_ => None)
+
+  def printBinder(b: CoreAst.Binder): String = unbound.printBinder(b)
 
   def printTerm(t: CoreAst.Ast): String = t match {
-    case term: CoreAst.Term             => printCoreTerm(term)
-    case decrease: CoreAst.DecreaseSpec => printDecreaseSpec(decrease)
+    case term: CoreAst.Term             => unbound.printCoreTerm(term)
+    case decrease: CoreAst.DecreaseSpec => unbound.printDecreaseSpec(decrease)
   }
 
-  private def printCase(c: CoreAst.Case): String = {
-    val argNames = c.argRefs.map(_.name)
-    val args = if (argNames.isEmpty) "" else s" ${argNames.mkString(" ")}"
-    val ctor = if (c.isFullyQualified) c.ctorName else s".${c.ctorName}"
-    s"| $ctor$args => ${printCoreTerm(c.body)}"
-  }
-
-  private def printMatch(m: CoreAst.Term.Match): String = {
-    val scrutStr = printTermAtom(m.scrut)
-    val casesStr = m.cases.map(printCase).mkString(" ")
-    s"match $scrutStr returning ${printCoreTerm(m.motive)} with $casesStr"
-  }
-
-  /** A level as source syntax (`Level.succ`, `Level.max`), not its normalized `max(atom+k, …, c)` form. */
+  /**
+   * A level as source syntax (`Level.succ`, `Level.max`), not its normalized `max(atom+k, …, c)` form; a constant is
+   * `Level.zero`, `Level.one` or successors of it, since a level field takes no numeral.
+   */
   private def printLevel(level: Value.Level): String = {
     def succs(base: String, offset: Int): String =
       if (offset == 0) base else s"Level.succ(${succs(base, offset - 1)})"
@@ -171,7 +195,8 @@ object PrettyPrinter {
       }
 
     val terms = level.terms.toVector.map { case (a, offset) => succs(atom(a), offset) }
-    val parts = if (level.c > 0 || terms.isEmpty) terms :+ level.c.toString else terms
+    val constant = if (level.c == 0) "Level.zero" else succs("Level.one", level.c - 1)
+    val parts = if (level.c > 0 || terms.isEmpty) terms :+ constant else terms
     parts match {
       case Vector(single) => single
       case several        => s"Level.max(${several.mkString(", ")})"
@@ -206,7 +231,7 @@ object PrettyPrinter {
    */
   private def printPi(pi: Value.VPi): String = {
     val bodyEnv = telescope.BinderOps.freshen(pi)
-    val bindersStr = pi.binders.map(printPiBinder).mkString(" -> ")
+    val bindersStr = pi.binders.map(new SyntaxPrinter(pi.env.locals.get).printPiBinder).mkString(" -> ")
     val closure = printClosure(
       Option.unless(pi.closureKind.isUnr)(printKind(pi.closureKind)),
       Option.unless(pi.closureScope.isEmpty)(printLifetime(pi.closureScope))
@@ -221,7 +246,8 @@ object PrettyPrinter {
   private def printLam(lam: Value.VLam): String =
     lam.id match {
       case Value.ValueId.Const(name) => name
-      case _: Value.ValueId.LocalId  => s"fun ${printBinders(lam.tpe.binders)} => …"
+      case _: Value.ValueId.LocalId =>
+        s"fun ${new SyntaxPrinter(lam.tpe.env.locals.get).printBinders(lam.tpe.binders)} => …"
     }
 
   /**
@@ -278,7 +304,7 @@ object PrettyPrinter {
     case v: Value.VLam => printLam(v)
     case v: Value.Var  => varName(v)
     case s: Value.NeutralThunk =>
-      blockedCall(s).getOrElse(printMatch(s.term))
+      blockedCall(s).getOrElse(new SyntaxPrinter(s.env.locals.get).printMatch(s.term))
     case p: Value.VProof => s"‹proof of ${print(p.tpe)}›"
     case p: Value.VPacked =>
       p.natValue

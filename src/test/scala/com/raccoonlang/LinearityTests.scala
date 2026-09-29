@@ -358,7 +358,8 @@ class LinearityTests extends munit.FunSuite with TestSupport {
     typecheckDecls(sized("Tag(0)"))
     val dependent = sized("Tag(n)")
     val diagnostic = interceptDiagnostic(typecheckDecls(dependent))
-    assertEquals(expectOnly[LinearInType](typecheckDecls(dependent)).tpe.toString, "Sized")
+    val inType = expectOnly[LinearInType](typecheckDecls(dependent))
+    assertEquals((PrettyPrinter.printTerm(inType.term), inType.tpe.toString), ("self", "Sized"))
     assertEquals(diagnostic.span.map(_.start), Some(dependent.lastIndexOf("Tag(n)") + "Tag(".length))
     assertEquals(diagnostic.frames, Vector(Frame.InDefinition("Sized.t")))
     // A proof field's selector is a proof that consumes the struct value (spec §3.2).

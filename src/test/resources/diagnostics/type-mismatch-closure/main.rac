@@ -1,0 +1,3 @@
+def eqBy {S: Lifetime}(A: Type { scope = S }): BEq(A) := BEq.mk(fun (a: A)(b: A): Bool => Bool.true)
+
+def listed {l: Lifetime}(xs: List(({ scope = l } Unit -> Nat))): List((Unit -> Nat)) := xs

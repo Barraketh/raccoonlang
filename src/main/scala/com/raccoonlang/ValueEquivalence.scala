@@ -169,11 +169,12 @@ object ValueEquivalence {
 
       val innerCtx = ctx.enterNonInvertibleFrame
       val watermark = FreshVar.currentId
+      // A closure mismatch is reported at the two function types, whose closures say where they differ.
       var curStore =
         tryUnify(pi1.closureKind, pi2.closureKind, eqStore, innerCtx)
           .flatMap(tryUnify(pi1.closureScope, pi2.closureScope, _, innerCtx)) match {
           case Right(closureStore) => closureStore
-          case Left(failed)        => return Left(failed.asStuck)
+          case Left(_)             => return Left(UnifyFailure(pi1, pi2, apart = false))
         }
       var env1 = pi1.env
       var env2 = pi2.env
@@ -530,12 +531,16 @@ object ValueEquivalence {
                   case Right(next)                  => curMeta = next
                 }
               }
+              val postponed = deferred.result()
               // Equal values have equal types, so the type equation is a consequence: ctx is inherited.
               tryUnify(v1.tpe, v2.tpe, curMeta, ctx) match { // Important for constructors
-                case Left(failed) => return Left(frame(failed))
-                case Right(next)  => curMeta = next
+                // A stuck type follows from the stuck arguments, and the last of them is reported: an implicit
+                // argument is read off a later one, so the last is where the two applications were written apart.
+                case Left(failed) if !failed.apart && postponed.nonEmpty => return Left(frame(postponed.last._3))
+                case Left(failed)                                        => return Left(frame(failed))
+                case Right(next)                                         => curMeta = next
               }
-              val retryIter = deferred.result().iterator
+              val retryIter = postponed.iterator
               while (retryIter.hasNext) {
                 val (arg1, arg2, original) = retryIter.next()
                 tryUnify(arg1, arg2, curMeta, argCtx) match {
