@@ -33,7 +33,8 @@ Raccoon currently provides:
 - proof irrelevance and controlled elimination from `Prop`;
 - namespaces, scoped `open`, and file imports;
 - opaque definitions, axioms, and quotients;
-- compact natural-number literals and trusted native natural-number reduction.
+- compact natural-number literals and trusted native natural-number reduction;
+- a bundled prelude that is polymorphic in lifetimes as well as levels.
 
 ```raccoon
 inductive Vec {u: Level}(A: Sort { level = u }) indices (n: Nat)
