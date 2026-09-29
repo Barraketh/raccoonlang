@@ -503,23 +503,24 @@ object Elaborator {
     val (binders, binderEnv) = elabBinders(pi.binders, CA.BinderSite.Function, piEnv)
     val body = elabTerm(pi.body, binderEnv)
     // A function type captures nothing, so an omitted closure field is Kind.unr or Lifetime.empty (spec §1).
-    val omitted = CA.Closure.unrestricted(pi.span)
-    CA.Term.Pi(
-      binders,
-      body,
-      CA.Closure(
-        pi.closure.kind.map(elabField(_, CA.Parameter.Kind, env)).fold(omitted.kind)(CA.ClosureField.Written),
-        pi.closure.scope.map(elabField(_, CA.Parameter.Lifetime, env)).fold(omitted.scope)(CA.ClosureField.Written)
-      ),
-      pi.span,
-      NodeId.fresh()
-    )
+    val closure = elabClosure(pi.closure, CA.Closure.unrestricted(pi.span), env)
+    CA.Term.Pi(binders, body, closure, pi.span, NodeId.fresh())
   }
 
   /**
-   * A sort's or closure's written field, elaborated with its parameter's forms open (spec §1). What an omitted field is
-   * depends on what omits it, so each caller supplies that.
+   * A function type's or lambda's closure: each written field elaborated as a field, and each omitted one taken from
+   * `omitted`, since what an omitted field is depends on what omits it.
    */
+  private def elabClosure(written: SA.Closure, omitted: CA.Closure, env: ResolveEnv): CA.Closure = {
+    def field(term: Option[SA.Term], parameter: CA.Parameter, omittedField: CA.ClosureField): CA.ClosureField =
+      term.fold(omittedField)(written => CA.ClosureField.Written(elabField(written, parameter, env)))
+    CA.Closure(
+      field(written.kind, CA.Parameter.Kind, omitted.kind),
+      field(written.scope, CA.Parameter.Lifetime, omitted.scope)
+    )
+  }
+
+  /** A sort's or closure's written field, elaborated with its parameter's forms open (spec §1). */
   private def elabField(written: SA.Term, parameter: CA.Parameter, env: ResolveEnv): CA.Term =
     elabTerm(written, env.openForms(parameter))
 
@@ -651,14 +652,7 @@ object Elaborator {
     case pi: SA.Term.Pi => elabPi(pi, env)
     case l: SA.Term.Lam =>
       // A lambda's omitted closure field is derived from its captures by the checker (spec §4.3).
-      val closure = CA.Closure(
-        l.closure.kind
-          .map(elabField(_, CA.Parameter.Kind, env))
-          .fold[CA.ClosureField](CA.ClosureField.Omitted)(CA.ClosureField.Written),
-        l.closure.scope
-          .map(elabField(_, CA.Parameter.Lifetime, env))
-          .fold[CA.ClosureField](CA.ClosureField.Omitted)(CA.ClosureField.Written)
-      )
+      val closure = elabClosure(l.closure, CA.Closure(CA.ClosureField.Omitted, CA.ClosureField.Omitted), env)
       val header = elabHeader(l.header, CA.BinderSite.Function, closure, env)
       header.ty match {
         case pi: CA.Term.Pi =>

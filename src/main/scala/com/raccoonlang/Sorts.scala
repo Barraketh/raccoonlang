@@ -1,6 +1,17 @@
 package com.raccoonlang
 
-import com.raccoonlang.Value.{Kind, KindTpe, Level, Lifetime, LifetimeTpe, ParameterTpe, VPi, VSort}
+import com.raccoonlang.Value.{
+  Kind,
+  KindTpe,
+  Large,
+  Level,
+  Lifetime,
+  LifetimeTpe,
+  ParameterTpe,
+  SortParameter,
+  VPi,
+  VSort
+}
 
 /**
  * The one place sorts are built and classified (docs/kernel.md#universes-and-function-types). `VSort` is constructed
@@ -36,6 +47,19 @@ object Sorts {
   def admitsKind(level: Level, kind: Kind): Boolean = kind.isUnr || Level.isNeverZero(level)
 
   def isProp(sort: VSort): Boolean = sort.level == Level.zero
+
+  /**
+   * The sort of the type `tpe`, which says what its values hold: their kind and scope. A large type and a sort
+   * parameter have none, since no sort classifies either, so their values hold nothing. Anything else is not a type,
+   * and asking is a bug. Linearity, confinement, a lambda's captures and propositions read a type's sort here; where a
+   * position requires a type, `TypeChecker.getUniverse` refuses one without a sort instead.
+   */
+  def sortOf(tpe: Value): Option[VSort] =
+    tpe.tpe match {
+      case sort: VSort           => Some(sort)
+      case Large | SortParameter => None
+      case classifier            => wtf(s"The type $tpe is classified by $classifier, which is no classifier")
+    }
 
   /** A sort's kind or its scope: the two fields a function type's closure also has. */
   sealed abstract class Field[P <: Value](val parameter: ParameterTpe) {
@@ -100,10 +124,6 @@ object Sorts {
       // Impredicativity: a Pi is a proposition exactly when its codomain is Prop-valued, large or not. Answered
       // via the dedicated lazy val so proof canonicalization checks skip the full classifier computation.
       case pi: VPi => pi.isPropValued
-      case tpe =>
-        tpe.tpe match {
-          case sort: VSort => isProp(sort)
-          case _           => false
-        }
+      case tpe     => sortOf(tpe).exists(isProp)
     }
 }
