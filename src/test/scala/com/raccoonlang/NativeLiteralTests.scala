@@ -285,6 +285,15 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
     )
   }
 
+  test("checking a native operation on a variable and a literal above the limit unfolds nothing") {
+    // 1024 layers of `mul` or `sub` overflow the default stack of the forked test JVM; above the limit none unfold.
+    typecheckDecls("def f (n: Nat): Nat := Nat.sub(Nat.mul(n, 1024), Nat.sub(n, 1024))\n")
+    assertEquals(
+      payload(runProgram("def f (n: Nat): Nat := Nat.sub(Nat.mul(n, 1024), Nat.sub(n, 1024))\n{ f(3) }")),
+      BigInt(3072)
+    )
+  }
+
   test("native operations unfold on literals up to the limit and no further") {
     typecheckDecls(
       """
