@@ -558,10 +558,15 @@ object Value {
   // instance derives its own from its binders and codomain (Interpreter.piClassifier). A Pi that
   // binds a level is `Large`.
   // Binders are the checked CoreAst.Binder nodes themselves: a VPi is its syntax plus a closure.
+  // `closureKind` and `closureScope` are the function type's closure (spec §1) in normal form; they are part of its
+  // identity, so its key mixes them in and conversion compares them exactly. Structural `==` is meaningless on a
+  // value holding functions, so it throws, as on a sort.
   case class VPi(
       env: Env,
       binders: Vector[CoreAst.Binder],
       codomain: Env => Value,
+      closureKind: Kind,
+      closureScope: Lifetime,
       synDeps: DepSet,
       id: ValueId,
       classifier0: () => Classifier,
@@ -570,6 +575,9 @@ object Value {
     require(binders.nonEmpty, "VPi requires at least one binder")
 
     override lazy val tpe: Classifier = classifier0()
+
+    override def equals(obj: Any): Boolean = wtf(s"Function type $this compared structurally; compare by conversion")
+    override def hashCode(): Int = wtf(s"Function type $this hashed structurally; it is never a collection key")
 
     /**
      * Whether this Pi's values are proofs — exactly when its codomain is Prop-valued. For a small Pi that is also

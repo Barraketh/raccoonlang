@@ -29,6 +29,8 @@ class ValueEquivalenceTests extends munit.FunSuite {
       env,
       Vector(binder),
       out,
+      Value.Kind.unr,
+      Value.Lifetime.empty,
       deps(captures: _*),
       ValueId.LocalId(nodeId(start), captures),
       () => typeToTypeClassifier
@@ -68,6 +70,8 @@ class ValueEquivalenceTests extends munit.FunSuite {
       env,
       Vector(binder, yBinder),
       _ => Sorts.Type,
+      Value.Kind.unr,
+      Value.Lifetime.empty,
       DepSet.empty,
       ValueId.LocalId(nodeId(5), Vector.empty),
       () => typeToTypeClassifier
@@ -80,10 +84,14 @@ class ValueEquivalenceTests extends munit.FunSuite {
           outerEnv,
           Vector(yBinder),
           _ => Sorts.Type,
+          Value.Kind.unr,
+          Value.Lifetime.empty,
           DepSet.empty,
           ValueId.LocalId(nodeId(6), Vector.empty),
           () => typeToTypeClassifier
         ),
+      Value.Kind.unr,
+      Value.Lifetime.empty,
       DepSet.empty,
       ValueId.LocalId(nodeId(7), Vector.empty),
       () => typeToTypeClassifier
@@ -108,10 +116,14 @@ class ValueEquivalenceTests extends munit.FunSuite {
           outerEnv,
           Vector(yBinder),
           _ => Sorts.Type,
+          Value.Kind.unr,
+          Value.Lifetime.empty,
           DepSet.empty,
           ValueId.LocalId(nodeId(8), Vector.empty),
           () => typeToTypeClassifier
         ),
+      Value.Kind.unr,
+      Value.Lifetime.empty,
       DepSet.empty,
       ValueId.LocalId(nodeId(9), Vector.empty),
       () => typeToTypeClassifier

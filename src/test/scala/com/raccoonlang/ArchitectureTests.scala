@@ -35,6 +35,11 @@ class ArchitectureTests extends munit.FunSuite {
       Set("TypeChecker.scala", "Interpreter.scala")
     ),
     Rule(
+      "a function type's value is built only by evaluating its syntax, so its closure is always its syntax's",
+      raw"\bVPi\(".r,
+      Set("Value.scala", "Interpreter.scala")
+    ),
+    Rule(
       "checking is synthesis plus equality: only TypeChecker.check takes an optional expected type",
       raw"\bexpected\w*\s*:\s*Option\[".r,
       Set("TypeChecker.scala")

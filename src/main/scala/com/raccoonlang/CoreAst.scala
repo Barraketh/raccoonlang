@@ -8,7 +8,7 @@ package com.raccoonlang
 //
 // A few fields exist only after checking — `Binder.projection`, `Pi.knownPropValued`, and
 // `Lam.recursivePeers`. Each defaults to the "not yet checked" value, so the parser and elaborator
-// never mention them.
+// never mention them. A lambda's derived closure field is likewise empty until the checker derives it.
 
 object CoreAst {
   final case class LocalRef(id: Int, name: String)
@@ -65,14 +65,16 @@ object CoreAst {
     // Projection: base[field]
     final case class Select(base: Term, field: String, span: Span) extends Term
 
-    // Pi (x: A) -> B x
+    // Pi { kind = k, scope = S } (x: A) -> B x
     //
     // No classifier field: a Pi's universe is env-dependent (level-polymorphic binder types), so it is derived at
     // evaluation time (Interpreter.piClassifier), never baked in. `knownPropValued` is only a checker-filled cache of
-    // the classifications that cannot change under level instantiation.
+    // the classifications that cannot change under level instantiation. The closure is evaluated where the Pi stands,
+    // outside its own binders.
     final case class Pi(
         binders: Vector[Binder],
         out: Term,
+        closure: Closure,
         span: Span,
         knownPropValued: Option[Boolean] = None
     ) extends Term {
@@ -117,7 +119,10 @@ object CoreAst {
     ) extends Term {
       def nodeId: AstNodeId = span.nodeId
 
-      lazy val refs: Set[CoreAst.LocalRef] = childRefs(this)
+      /** What the body mentions: a local bound outside the lambda among these is one of its captures (spec §4.3). */
+      lazy val bodyRefs: Set[CoreAst.LocalRef] = mentionedRefs(body)
+
+      lazy val refs: Set[CoreAst.LocalRef] = ty.refs | bodyRefs
     }
 
     final case class Match(
@@ -131,6 +136,40 @@ object CoreAst {
       lazy val refs: Set[CoreAst.LocalRef] = childRefs(this)
     }
 
+  }
+
+  /**
+   * A function type's or lambda's closure (spec §1): its kind, how its values may be applied, and its scope, what they
+   * hold. A function type captures nothing, so an omitted field of one is written as `Kind.unr` or `Lifetime.empty`.
+   */
+  final case class Closure(kind: ClosureField, scope: ClosureField) {
+    def terms: Vector[Term] = Vector(kind, scope).flatMap(_.term)
+  }
+
+  object Closure {
+
+    /** The closure of a function type that writes none, and of every declaration's own type (spec §3.3). */
+    def unrestricted(span: Span): Closure =
+      Closure(
+        ClosureField.Written(Term.FormOp(Form.KindUnr, Vector.empty, span)),
+        ClosureField.Written(Term.FormOp(Form.LifetimeEmpty, Vector.empty, span))
+      )
+  }
+
+  sealed trait ClosureField {
+    def term: Option[Term]
+  }
+
+  object ClosureField {
+    final case class Written(written: Term) extends ClosureField {
+      override def term: Option[Term] = Some(written)
+    }
+
+    /**
+     * A lambda's omitted field, derived from what the lambda captures (spec §4.3). The checker fills in the derived
+     * expression, so a residual carries it and evaluation re-evaluates it where the lambda stands (spec §8).
+     */
+    final case class Derived(term: Option[Term]) extends ClosureField
   }
 
   /**
@@ -196,11 +235,11 @@ object CoreAst {
     term match {
       case _: Term.GlobalRef | _: Term.LocalRef | _: Term.NatLit | _: Term.StrLit =>
         Vector.empty
-      case Term.Select(base, _, _)          => Vector(base)
-      case Term.Sort(level, kind, scope, _) => Vector(level, kind, scope)
-      case Term.FormOp(_, args, _)          => args
-      case Term.App(fn, args, _)            => fn +: args
-      case Term.Pi(binders, out, _, _)      => binders.map(_.ty) :+ out
+      case Term.Select(base, _, _)              => Vector(base)
+      case Term.Sort(level, kind, scope, _)     => Vector(level, kind, scope)
+      case Term.FormOp(_, args, _)              => args
+      case Term.App(fn, args, _)                => fn +: args
+      case Term.Pi(binders, out, closure, _, _) => closure.terms ++ binders.map(_.ty) :+ out
       case Term.Body(lets, res, _) =>
         lets.flatMap(let => let.ty.toVector :+ let.value) :+ res
       case Term.Lam(ty, body, _, _, _, _) => Vector(ty, body)

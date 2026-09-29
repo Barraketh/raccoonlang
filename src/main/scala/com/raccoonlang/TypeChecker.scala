@@ -13,6 +13,9 @@ object TypeChecker {
       residual: CA.Term.Pi
   )
 
+  /** A Pi's checked binders and result, before its closure: the caller decides what the closure is. */
+  private final case class CheckedTelescope(binders: Vector[CA.Binder], bodyEnv: Env, outTy: Value, out: CA.Term)
+
   /** A checker-produced term; callers cannot construct or copy one themselves. */
   final class CheckedTerm private (val value: Value, val residual: CA.Term)
 
@@ -211,25 +214,50 @@ object TypeChecker {
       case _ => fail(CannotApplyNonFunction(fnValue))
     }
 
-  private def checkPi(pi: CA.Term.Pi, env: Env, familyParams: Int = 0): CheckedPi = {
+  private def checkTelescope(pi: CA.Term.Pi, env: Env, familyParams: Int): CheckedTelescope = {
     // Implicit legality (forced-by-later-binders) and projection specs come from BinderOps.checkBinders.
     val checkedBinders = BinderOps.checkBinders(pi.binders, env, familyParams)
-    val binderEnv = checkedBinders.env
-    val checkedOut = checkTypeTerm(pi.out, binderEnv)
-    val outV = checkedOut.value
-    val classifier = Interpreter.piClassifierFromChecked(checkedBinders.binders, binderEnv, outV)
-    val checkedPi =
+    val checkedOut = checkTypeTerm(pi.out, checkedBinders.env)
+    CheckedTelescope(checkedBinders.binders, checkedBinders.env, checkedOut.value, checkedOut.residual)
+  }
+
+  /** The residual Pi of a checked telescope and closure, and its value with its classifier forced. */
+  private def finishPi(telescope: CheckedTelescope, closure: CA.Closure, span: Span, env: Env): CheckedPi = {
+    val residual =
       CA.Term.Pi(
-        checkedBinders.binders,
-        checkedOut.residual,
-        pi.span,
-        knownPropValued = Interpreter.stablePiPropClassification(outV)
+        telescope.binders,
+        telescope.out,
+        closure,
+        span,
+        knownPropValued = Interpreter.stablePiPropClassification(telescope.outTy)
       )
-    val vpi = evalPi(checkedPi, env).copy(classifier0 = () => classifier)
+    val evaluated = evalPi(residual, env)
     // Force the classifier at declaration. Reuse the already checked fresh telescope instead of eta-expanding every
     // binder a second time.
-    vpi.tpe
-    CheckedPi(vpi, binderEnv, outV, checkedPi)
+    val classifier = Interpreter.piClassifierFromChecked(
+      telescope.binders,
+      telescope.bodyEnv,
+      telescope.outTy,
+      evaluated.closureKind,
+      evaluated.closureScope
+    )
+    CheckedPi(evaluated.copy(classifier0 = () => classifier), telescope.bodyEnv, telescope.outTy, residual)
+  }
+
+  /** A function type captures nothing, so its closure is always written (spec §1): the elaborator writes it so. */
+  private def checkPi(pi: CA.Term.Pi, env: Env, familyParams: Int = 0): CheckedPi = {
+    val telescope = checkTelescope(pi, env, familyParams)
+    def written(field: CA.ClosureField, parameter: ParameterTpe): CA.ClosureField =
+      field match {
+        case CA.ClosureField.Written(term) => CA.ClosureField.Written(checkTerm(term, parameter, env).residual)
+        case _: CA.ClosureField.Derived    => wtf(s"The function type $pi has a derived closure field")
+      }
+    finishPi(
+      telescope,
+      CA.Closure(written(pi.closure.kind, KindTpe), written(pi.closure.scope, LifetimeTpe)),
+      pi.span,
+      env
+    )
   }
 
   /**
@@ -292,8 +320,72 @@ object TypeChecker {
     CheckedTerm(applied.value, applied.residual)
   }
 
+  /**
+   * A derived closure field as an expression (spec §8, G9): each variable of the normal form is written as a local of
+   * `env` bound to exactly that variable. Only a header's, lambda's or function type's binder binds a kind or lifetime,
+   * and it binds a local, so every variable a capture's type mentions has one; in a refined branch two locals may
+   * denote one variable, and either is correct.
+   */
+  private def quoteParameter(vars: DepSet, form: CA.Form, env: Env, span: Span): CA.Term = {
+    val locals = env.locals.iterator.flatMap { case (ref, value) =>
+      val variable = value match {
+        case kind: Kind         => Kind.singleVariable(kind)
+        case lifetime: Lifetime => Lifetime.singleVariable(lifetime)
+        case _                  => None
+      }
+      variable.filter(vars.contains).map(_ -> ref)
+    }.toMap
+    val refs = Vector.newBuilder[CA.Term]
+    vars.foreach { id =>
+      refs += CA.Term.LocalRef(locals.getOrElse(id, wtf(s"No local binds the variable $id of a derived closure")), span)
+    }
+    refs.result().reduceLeft((acc, ref) => CA.Term.FormOp(form, Vector(acc, ref), span))
+  }
+
+  private def quoteKind(kind: Kind, env: Env, span: Span): CA.Term =
+    if (kind.isLin) CA.Term.FormOp(CA.Form.KindLin, Vector.empty, span)
+    else if (kind.isUnr) CA.Term.FormOp(CA.Form.KindUnr, Vector.empty, span)
+    else quoteParameter(kind.vars, CA.Form.KindJoin, env, span)
+
+  private def quoteLifetime(lifetime: Lifetime, env: Env, span: Span): CA.Term =
+    if (lifetime.isEmpty) CA.Term.FormOp(CA.Form.LifetimeEmpty, Vector.empty, span)
+    else quoteParameter(lifetime.vars, CA.Form.LifetimeUnion, env, span)
+
+  /**
+   * A lambda's closure is what it captures (spec §4.3): an omitted field is derived as the join of its captures' kinds
+   * or scopes, and a written one must contain that join, else `KindExceeded` or `ScopeExceeded` naming a capture it
+   * does not contain. Only the lambda and its captures' types decide it, never where the lambda stands.
+   */
+  private def checkLamClosure(l: CA.Term.Lam, env: Env): CA.Closure = {
+    val captures = Interpreter.lambdaCaptures(l, env)
+    val (derivedKind, derivedScope) = Interpreter.derivedClosure(captures)
+    def part(capture: Interpreter.Capture): String = s"capture ${capture.ref.name} : ${capture.value.tpe}"
+    val kind = l.ty.closure.kind match {
+      case CA.ClosureField.Written(term) =>
+        val checked = checkTerm(term, KindTpe, env)
+        val written = Interpreter.getKind(checked.value)
+        captures.find(capture => !Kind.contains(written, capture.sort.kind)).foreach { capture =>
+          at(term.span) { fail(KindExceeded("Lambda", written, part(capture), capture.sort.kind)) }
+        }
+        CA.ClosureField.Written(checked.residual)
+      case _: CA.ClosureField.Derived => CA.ClosureField.Derived(Some(quoteKind(derivedKind, env, l.span)))
+    }
+    val scope = l.ty.closure.scope match {
+      case CA.ClosureField.Written(term) =>
+        val checked = checkTerm(term, LifetimeTpe, env)
+        val written = Interpreter.getLifetime(checked.value)
+        captures.find(capture => !Lifetime.contains(written, capture.sort.scope)).foreach { capture =>
+          at(term.span) { fail(ScopeExceeded("Lambda", written, part(capture), capture.sort.scope)) }
+        }
+        CA.ClosureField.Written(checked.residual)
+      case _: CA.ClosureField.Derived => CA.ClosureField.Derived(Some(quoteLifetime(derivedScope, env, l.span)))
+    }
+    CA.Closure(kind, scope)
+  }
+
   private def checkLam(l: CA.Term.Lam, env: Env): CheckedTerm = {
-    val checkedVpi = checkPi(l.ty, env)
+    val telescope = checkTelescope(l.ty, env, familyParams = 0)
+    val checkedVpi = finishPi(telescope, checkLamClosure(l, env), l.ty.span, env)
     val vpi = checkedVpi.vpi
     val bodyEnv = checkedVpi.bodyEnv
 

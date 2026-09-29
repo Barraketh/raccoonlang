@@ -43,11 +43,12 @@ object SurfaceAst {
     final case class Select(base: Term, field: String, span: Span) extends Term
 
     /**
-     * Pi `(x: A) -> B x`. An unparenthesised arrow chain is ONE binder group: `(a: A) -> (b: B) -> C` carries both
-     * binders here. Grouping is part of a function type's identity, so a parenthesised Pi in body position —
-     * `(a: A) -> ((b: B) -> C)` — is a nested, separate 1-ary Pi and stays its own node.
+     * Pi `{ kind = k, scope = S } (x: A) -> B x`. An unparenthesised arrow chain is ONE binder group: `(a: A) -> (b: B)
+     * -> C` carries both binders here. Grouping is part of a function type's identity, so a parenthesised Pi in body
+     * position — `(a: A) -> ((b: B) -> C)` — is a nested, separate 1-ary Pi and stays its own node. The closure
+     * prefixes the whole group.
      */
-    final case class Pi(binders: Vector[Binder], body: Term, span: Span) extends Term
+    final case class Pi(closure: Closure, binders: Vector[Binder], body: Term, span: Span) extends Term
 
     // Application: f(a)
     final case class App(fn: Term, args: Vector[Term], span: Span) extends Term
@@ -65,8 +66,8 @@ object SurfaceAst {
       final case class Written(level: Term) extends SortLevel
     }
 
-    // Lambda: fun (x : A)(y: B): B => body
-    final case class Lam(header: FuncHeader, body: Term, span: Span) extends Term
+    // Lambda: fun { kind = k, scope = S } (x : A)(y: B): B => body
+    final case class Lam(closure: Closure, header: FuncHeader, body: Term, span: Span) extends Term
 
     final case class Match(
         scrut: Term,
@@ -95,6 +96,15 @@ object SurfaceAst {
         body: Term,
         span: Span
     )
+  }
+
+  /**
+   * A function type's or lambda's closure, as written: its `kind` and `scope` fields, either of which may be omitted.
+   */
+  final case class Closure(kind: Option[Term], scope: Option[Term])
+
+  object Closure {
+    val omitted: Closure = Closure(None, None)
   }
 
   case class Binder(
