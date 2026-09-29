@@ -273,10 +273,7 @@ class ClosureTests extends munit.FunSuite with TestSupport {
         assertEquals(scope.toString, "l")
       case other => fail(s"Expected derived closure fields, got $other")
     }
-    assert(
-      checked.value.tpe.toString.matches(raw"\{ kind = Kind\.lin, scope = l#\d+ \} \(u: Unit\) -> Nat"),
-      checked.value.tpe.toString
-    )
+    assertEquals(checked.value.tpe.toString, "{ kind = Kind.lin, scope = l } (u: Unit) -> Nat")
     val reevaluated = Interpreter.evalTerm(residual, env)
     assertEquals(reevaluated.key, checked.value.key)
     assert(ValueEquivalence.defEq(reevaluated, checked.value))

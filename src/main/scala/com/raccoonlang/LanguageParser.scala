@@ -322,6 +322,15 @@ object LanguageParser {
         Lam(written.getOrElse(Closure.omitted), header, body, span)
       }
 
+  /**
+   * `scope l => e` (spec §1). `scope` is a keyword only here, at the start of a term; in a field list it is a field
+   * name, which the field parser reads as a plain word. The body extends as far to the right as a lambda body does.
+   */
+  private def scopeP(implicit sourceId: Option[SourceId]): Parser[Term] =
+    (kw("scope") ~/ ident ~ sym("=>") ~/ skipAllWs ~ term).flatSpanned(sourceId).map { case (name, body, span) =>
+      Scope(name, body, span)
+    }
+
   private def caseHead: Parser[(Vector[String], Boolean)] = {
     val shortName = (symTight(".") ~/ ident).map(name => (Vector(name), true))
     val globalPath = pathP.map(path => (path, false))
@@ -352,7 +361,7 @@ object LanguageParser {
       parenArgs(term).flatSpanned(sourceId).map(TermApp.tupled)).rep(0)
 
   private def term(implicit sourceId: Option[SourceId]): Parser[Term] =
-    ((lambda | matchP | closedPi | body | simplePi | termAtom) ~ termTrailers).map { case (base, trailers) =>
+    ((lambda | scopeP | matchP | closedPi | body | simplePi | termAtom) ~ termTrailers).map { case (base, trailers) =>
       trailers.foldLeft(base) {
         case (cur, TermDot(name, sp)) => Select(cur, name, sp)
         case (cur, TermApp(args, sp)) => App(cur, args, sp)

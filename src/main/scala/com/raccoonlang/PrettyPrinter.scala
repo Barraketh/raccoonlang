@@ -70,7 +70,8 @@ object PrettyPrinter {
     case _: CoreAst.Term.NatLit | _: CoreAst.Term.StrLit | _: CoreAst.Term.Ref | _: CoreAst.Term.App |
         _: CoreAst.Term.Select | _: CoreAst.Term.Sort | _: CoreAst.Term.FormOp =>
       printCoreTerm(t)
-    case _: CoreAst.Term.Lam | _: CoreAst.Term.Match | _: CoreAst.Term.Body | _: CoreAst.Term.Pi =>
+    case _: CoreAst.Term.Lam | _: CoreAst.Term.Scope | _: CoreAst.Term.Match | _: CoreAst.Term.Body |
+        _: CoreAst.Term.Pi =>
       s"(${printCoreTerm(t)})"
   }
 
@@ -82,6 +83,7 @@ object PrettyPrinter {
       val decreaseStr = recursion.map(r => s" ${printDecreaseSpec(r.decreases)}").getOrElse("")
       s"fun ${printCoreClosure(ty.closure)}${printBinders(ty.binders)}: ${printCoreTerm(ty.out)}$decreaseStr => " +
         printCoreTerm(body)
+    case CoreAst.Term.Scope(ref, body, _)    => s"scope ${ref.name} => ${printCoreTerm(body)}"
     case m @ CoreAst.Term.Match(_, _, _, _)  => printMatch(m)
     case b: CoreAst.Term.Body                => printBody(b)
     case CoreAst.Term.Select(base, field, _) => s"${printTermAtom(base)}[$field]"
@@ -162,10 +164,9 @@ object PrettyPrinter {
     def succs(base: String, offset: Int): String =
       if (offset == 0) base else s"Level.succ(${succs(base, offset - 1)})"
 
-    // A level atom does not keep its binder's name, so it prints by id.
     def atom(a: Value.Level.Atom): String =
       a match {
-        case Value.Level.ParamAtom(id)      => s"u#$id"
+        case Value.Level.ParamAtom(id)      => printParameterVar(id, "u")
         case Value.Level.IMaxAtom(lhs, rhs) => s"Level.imax(${printLevel(lhs)}, ${printLevel(rhs)})"
       }
 
@@ -177,21 +178,27 @@ object PrettyPrinter {
     }
   }
 
-  /**
-   * A kind as source syntax: `Kind.lin`, `Kind.unr`, or its variables joined. Variables print by id, as level atoms.
-   */
+  /** A kind as source syntax: `Kind.lin`, `Kind.unr`, or its variables joined. */
   private def printKind(kind: Value.Kind): String =
     if (kind.isLin) "Kind.lin"
     else joined(kind.vars, "k", "Kind.unr", "Kind.join")
 
+  /** A lifetime as source syntax; an atom prints as its `scope` binder (spec §4.1). */
   private def printLifetime(lifetime: Value.Lifetime): String =
     joined(lifetime.vars, "l", "Lifetime.empty", "Lifetime.union")
 
   private def joined(vars: DepSet, prefix: String, empty: String, form: String): String = {
     val names = Vector.newBuilder[String]
-    vars.foreach(id => names += s"$prefix#$id")
+    vars.foreach(id => names += printParameterVar(id, prefix))
     names.result().reduceLeftOption((acc, name) => s"$form($acc, $name)").getOrElse(empty)
   }
+
+  /**
+   * A variable of a sort parameter, or an atom, prints as its binder's name, as a `Var` does; only one bound by `_`
+   * prints by id.
+   */
+  private def printParameterVar(id: Value.VarId, prefix: String): String =
+    FreshVar.parameterName(id).filter(name => name.nonEmpty && name != "_").getOrElse(s"$prefix#$id")
 
   /**
    * Opens the telescope at fresh variables to print the codomain. Binders are joined by arrows because that is the

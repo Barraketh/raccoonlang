@@ -1,0 +1,6 @@
+
+<root>/main.rac:6:23: error: Lifetime l escapes its scope: the type Lease(l) names it outside `scope l`
+def leak : Nat := use(scope l => Lease.mk(l))
+                      ^^^^^^^^^^^^^^^^^^^^^^
+note: in argument 1 (h) of use
+note: in definition leak

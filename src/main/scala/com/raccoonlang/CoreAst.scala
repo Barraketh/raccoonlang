@@ -125,6 +125,15 @@ object CoreAst {
       lazy val refs: Set[CoreAst.LocalRef] = ty.refs | bodyRefs
     }
 
+    /**
+     * `scope l => body` (spec §4.1): `ref` denotes the atom this term opens, which its node identity names (Atoms), in
+     * checking and evaluation alike. A residual keeps the term and its node identity, so re-evaluating it opens the
+     * same atom.
+     */
+    final case class Scope(ref: CoreAst.LocalRef, body: Term, span: Span) extends Term {
+      def nodeId: AstNodeId = span.nodeId
+    }
+
     final case class Match(
         scrut: Term,
         motive: Term,
@@ -243,6 +252,7 @@ object CoreAst {
       case Term.Body(lets, res, _) =>
         lets.flatMap(let => let.ty.toVector :+ let.value) :+ res
       case Term.Lam(ty, body, _, _, _, _) => Vector(ty, body)
+      case Term.Scope(_, body, _)         => Vector(body)
       case Term.Match(scrut, motive, cases, _) =>
         Vector(scrut, motive) ++ cases.map(_.body)
     }

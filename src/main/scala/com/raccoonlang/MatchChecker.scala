@@ -109,8 +109,11 @@ object MatchChecker {
           argRef match {
             // Proof recovery stores recursive proof fields shallowly. Crossing the pattern
             // boundary exposes one such field, so put it into the canonical form for its exact type.
-            case Some(ref) => curEnv.putLocal(ref, Value.canonicalizeProof(argVal))
-            case None      => curEnv
+            // A field's type is its local's type at its binder, so it is confined there (spec §4.2).
+            case Some(ref) =>
+              requireInScope(argVal.tpe, curEnv)
+              curEnv.putLocal(ref, Value.canonicalizeProof(argVal))
+            case None => curEnv
           }
         }
         val branchRes = checkTerm(br.body, expectedTy, branchEnv)

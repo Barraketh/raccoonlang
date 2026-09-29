@@ -8,7 +8,8 @@ object Env {
       globals = Map.empty,
       locals = VectorMap.empty,
       nativeLiterals = NativeLiteralState.empty,
-      localRefs = Set.empty
+      localRefs = Set.empty,
+      openAtoms = DepSet.empty
     )
 
   // Internal-invariant assertions run on every env bind — the hottest path in the system — and
@@ -17,9 +18,11 @@ object Env {
   private val assertionsEnabled: Boolean =
     java.lang.Boolean.parseBoolean(System.getProperty("raccoon.envAssertions", "true"))
 
+  // An atom is not a variable: a global may hold one, as a closure that names its scope's binder does (spec §4.2), or a
+  // type computed under a scope does; the type checker keeps any type that names it inside the scope.
   private[raccoonlang] def assertClosedGlobal(value: Value): Unit =
-    if (assertionsEnabled && value.synDeps.nonEmpty)
-      wtf(s"Global value must be closed, but has free vars ${value.synDeps}")
+    if (assertionsEnabled && (value.synDeps -- Atoms.all).nonEmpty)
+      wtf(s"Global value must be closed, but has free vars ${value.synDeps -- Atoms.all}")
 
   // Proof-representation invariant (docs/kernel.md#proofs-and-elimination): every value of known-propositional type
   // is a fixed point of canonicalizeProof. This includes reconstructed constructors as well as
@@ -67,11 +70,15 @@ object GlobalBinding {
 
 // Runtime/checking environment for resolved terms. Source-name scoping is handled by the elaborator before terms
 // reach this layer; local lookup uses the resolved LocalRef as the map key.
+//
+// `openAtoms` is checker-only: the atoms whose `scope` binders enclose the position being checked (spec §4.2). It is
+// lexical, so only the checker opens one, and closing an env over a value drops them, since evaluation never checks.
 final case class Env(
     globals: Map[String, GlobalBinding],
     locals: VectorMap[CoreAst.LocalRef, Value],
     nativeLiterals: NativeLiteralState,
-    private[raccoonlang] val localRefs: Set[CoreAst.LocalRef]
+    private[raccoonlang] val localRefs: Set[CoreAst.LocalRef],
+    private[raccoonlang] val openAtoms: DepSet
 ) {
   require(localRefs.size == locals.size, "local-ref index size disagrees with locals")
 
@@ -140,8 +147,12 @@ final case class Env(
 
     val capturedLocals = VectorMap.from(locals.iterator.filter { case (ref, _) => capturedRefs(ref) })
 
-    copy(locals = capturedLocals, localRefs = capturedRefs)
+    copy(locals = capturedLocals, localRefs = capturedRefs, openAtoms = DepSet.empty)
   }
+
+  /** The body of a `scope` term, checked: its binder denotes the atom, which is open there. */
+  private[raccoonlang] def openScope(ref: CoreAst.LocalRef, atom: Value.Lifetime): Env =
+    putLocal(ref, atom).copy(openAtoms = openAtoms ++ atom.vars)
 
   private[raccoonlang] def installStringLayout(layout: Value.ValidatedStringLayout): Env =
     nativeLiterals.stringLayout match {

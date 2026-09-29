@@ -202,7 +202,15 @@ object TypeChecker {
         // pass is what makes the application well-typed. Arguments are bound as supplied.
         val calleeEnv =
           binders.indices.foldLeft(pi.env) { case (curEnv, idx) =>
-            def bind: Env = BinderOps.bindValueAndCheck(curEnv, binders(idx), known(idx))
+            // An argument at a binder whose type is a sort is a type, confined where the application stands.
+            def bind: Env = {
+              val bound = BinderOps.bindValueAndCheck(curEnv, binders(idx), known(idx))
+              known(idx).tpe match {
+                case _: VSort => requireInScope(known(idx), env)
+                case _        =>
+              }
+              bound
+            }
             val position = argumentPositions(idx)
             if (position == 0) bind
             else framed(Frame.InArgument(position, binders(idx).name, applyHeadName(fnResidual)))(bind)
@@ -321,10 +329,11 @@ object TypeChecker {
   }
 
   /**
-   * A derived closure field as an expression (spec §8, G9): each variable of the normal form is written as a local of
-   * `env` bound to exactly that variable. Only a header's, lambda's or function type's binder binds a kind or lifetime,
-   * and it binds a local, so every variable a capture's type mentions has one; in a refined branch two locals may
-   * denote one variable, and either is correct.
+   * A derived closure field as an expression (spec §8, G9): each variable or atom of the normal form is written as a
+   * local of `env` bound to exactly it. Only a header's, lambda's or function type's binder binds a kind or lifetime
+   * variable, and only a `scope` binder an atom, and each binds a local. A capture's type names only atoms whose
+   * `scope` encloses the lambda (spec §4.2), so every element has one; in a refined branch two locals may denote one
+   * element, and either is correct.
    */
   private def quoteParameter(vars: DepSet, form: CA.Form, env: Env, span: Span): CA.Term = {
     val locals = env.locals.iterator.flatMap { case (ref, value) =>
@@ -473,6 +482,24 @@ object TypeChecker {
     }
   }
 
+  /**
+   * An atom's confinement (spec §4.2): a type whose value names an atom whose `scope` does not enclose the position is
+   * `LifetimeEscapes`, and the dependency set the value carries answers it. This is the one test; the checker applies
+   * it to every type it synthesizes or checks against, to each local's type at its binder, and to each argument that is
+   * a type. Evaluation never makes it.
+   */
+  private[raccoonlang] def requireInScope(tpe: Value, env: Env): Unit = {
+    val atoms = Atoms.all
+    // Until a program opens an atom there is nothing to confine: the per-term fast path.
+    if (atoms.nonEmpty && tpe.synDeps.intersects(atoms)) {
+      val escaped = (tpe.synDeps & atoms) -- env.openAtoms
+      if (escaped.nonEmpty) {
+        val atom = escaped.max
+        fail(LifetimeEscapes(FreshVar.parameterName(atom).getOrElse(wtf(s"Atom $atom has no binder name")), tpe))
+      }
+    }
+  }
+
   /** A term at a type position: it must be a type. */
   def checkTypeTerm(term: CA.Term, env: Env): CheckedTerm =
     at(term.span) {
@@ -483,7 +510,8 @@ object TypeChecker {
 
   /**
    * A binder's type: a type, or a sort parameter where the binder's site admits it (spec §2.2). A parameter site admits
-   * every sort parameter, a function type's or lambda's binder only `Lifetime`, and a field site none.
+   * every sort parameter, a function type's or lambda's binder only `Lifetime`, and a field site none. It is the type
+   * of the local the binder binds, so it is confined where the binder stands (spec §4.2).
    */
   def checkBinderType(binder: CA.Binder, env: Env): CheckedTerm =
     at(binder.ty.span) {
@@ -493,6 +521,7 @@ object TypeChecker {
         case (CA.BinderSite.Function, LifetimeTpe)      =>
         case _                                          => assertType(checked.value)
       }
+      requireInScope(checked.value, env)
       checked
     }
 
@@ -558,6 +587,7 @@ object TypeChecker {
       val synthed = synthesize(term, env)
       expected match {
         case Some(expectedTy) =>
+          requireInScope(expectedTy, env)
           if (!admitsNonType(synthed.value.tpe, expectedTy)) requireTyped(synthed.value)
           at(typeSite(term))(checkType(synthed.value, expectedTy))
         case None => requireTyped(synthed.value)
@@ -571,8 +601,17 @@ object TypeChecker {
    */
   private def checkHead(term: CA.Term, env: Env): CheckedTerm = at(term.span)(synthesize(term, env))
 
-  /** A term's own type, whatever position it stands at; the callers above decide what the position admits. */
-  private def synthesize(term: CA.Term, env: Env): CheckedTerm =
+  /**
+   * A term's own type, whatever position it stands at; the callers above decide what the position admits. Every term
+   * the checker sees is synthesized here, so this is where each synthesized type is confined (spec §4.2).
+   */
+  private def synthesize(term: CA.Term, env: Env): CheckedTerm = {
+    val synthed = synthesizeTerm(term, env)
+    requireInScope(synthed.value.tpe, env)
+    synthed
+  }
+
+  private def synthesizeTerm(term: CA.Term, env: Env): CheckedTerm =
     term match {
       case CA.Term.NatLit(value, span) =>
         val layout = env.nativeLiterals.natLayout.getOrElse(fail(NatLiteralUnavailable("no validated Nat layout")))
@@ -597,6 +636,11 @@ object TypeChecker {
         CheckedTerm(checked.vpi, checked.residual)
       case ref: CA.Term.Ref => CheckedTerm(Interpreter.evalTerm(ref, env), ref)
       case l: CA.Term.Lam   => checkLam(l, env)
+      // The body is checked with the binder denoting the atom, open there (spec §4.1). The construct's type is its
+      // body's, which `synthesize` then confines at the scope's own position, where the atom is no longer open.
+      case scope: CA.Term.Scope =>
+        val checkedBody = checkTerm(scope.body, env.openScope(scope.ref, Atoms.of(scope)))
+        CheckedTerm(checkedBody.value, CA.Term.Scope(scope.ref, checkedBody.residual, scope.span))
       case CA.Term.Sort(level, kind, scope, span) =>
         val checkedLevel = checkTerm(level, LevelTpe, env)
         val checkedKind = checkTerm(kind, KindTpe, env)
@@ -616,12 +660,13 @@ object TypeChecker {
         )
     }
 
-  /** Where a term's type comes from, for locating a mismatch: a block's type is its result's. */
+  /** Where a term's type comes from, for locating a mismatch: a block's type is its result's, a scope's its body's. */
   @annotation.tailrec
   private def typeSite(term: CA.Term): Span =
     term match {
-      case body: CA.Term.Body => typeSite(body.res)
-      case other              => other.span
+      case body: CA.Term.Body   => typeSite(body.res)
+      case scope: CA.Term.Scope => typeSite(scope.body)
+      case other                => other.span
     }
 
 }

@@ -69,6 +69,9 @@ object SurfaceAst {
     // Lambda: fun { kind = k, scope = S } (x : A)(y: B): B => body
     final case class Lam(closure: Closure, header: FuncHeader, body: Term, span: Span) extends Term
 
+    // Scope: scope l => body
+    final case class Scope(name: String, body: Term, span: Span) extends Term
+
     final case class Match(
         scrut: Term,
         motive: Term,

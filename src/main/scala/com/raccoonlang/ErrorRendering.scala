@@ -57,6 +57,8 @@ object ErrorRendering {
         s"$declaration is declared at kind $declared, which does not contain the kind $partKind of $part"
       case ScopeExceeded(declaration, declared, part, partScope) =>
         s"$declaration is declared at scope $declared, which does not contain the scope $partScope of $part"
+      case LifetimeEscapes(lifetime, tpe) =>
+        s"Lifetime $lifetime escapes its scope: the type $tpe names it outside `scope $lifetime`"
       case InvalidInductiveBlock(reason) => s"Invalid inductive block: $reason"
       case MutualBlockSortMismatch(family, declared, expected) =>
         s"Invalid inductive block: family $family lives in $declared, expected $expected"
