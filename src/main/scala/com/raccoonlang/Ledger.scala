@@ -63,8 +63,7 @@ object Ledger {
   /**
    * Require `ref`, of type `tpe` at its binder, to be used exactly once along every path through `extent`, the terms
    * its binder scopes over in source order: a second use on some path is `LinearReused` there, and otherwise no use on
-   * some path is `LinearUnused` at the binder (G8). A local of unrestricted type is not tracked, which is the fast
-   * path.
+   * some path is `LinearUnused` at the binder. A local of unrestricted type is not tracked, which is the fast path.
    */
   def requireUsedOnce(ref: CA.LocalRef, tpe: Value, binderSpan: Span, extent: => Vector[CA.Term]): Unit =
     if (Linearity.isLinear(tpe)) {

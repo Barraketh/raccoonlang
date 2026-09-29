@@ -116,7 +116,10 @@ object PrettyPrinter {
         s"(${printCoreTerm(t)})"
     }
 
-    /** A function type's codomain, parenthesized when it is a function type itself, as `printCodomain` says why. */
+    /**
+     * A function type's codomain, parenthesized when it is a function type itself, as the value printer's
+     * `PrettyPrinter.printCodomain` says why; a local bound to a value prints as that value does there.
+     */
     private def printCodomain(out: CoreAst.Term): String = out match {
       case _: CoreAst.Term.Pi            => s"(${printCoreTerm(out)})"
       case CoreAst.Term.LocalRef(ref, _) => bound(ref).fold(ref.name)(PrettyPrinter.printCodomain)

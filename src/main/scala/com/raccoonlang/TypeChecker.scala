@@ -501,11 +501,7 @@ object TypeChecker {
   private[raccoonlang] def requireInScope(tpe: Value, env: Env): Unit = {
     // Until a program opens an atom there is nothing to confine: the per-term fast path.
     if (Atoms.all.nonEmpty) {
-      val sortScope = tpe.tpe match {
-        case sort: VSort           => sort.scope.vars
-        case Large | SortParameter => DepSet.empty
-        case classifier            => wtf(s"The type $tpe is classified by $classifier, which is no classifier")
-      }
+      val sortScope = Sorts.sortOf(tpe).fold(DepSet.empty)(_.scope.vars)
       val escaped = (sortScope & Atoms.all) -- env.openAtoms
       if (escaped.nonEmpty) {
         val atom = escaped.max

@@ -306,13 +306,12 @@ object InductiveChecks {
 
   private def installConstructors(family: PreparedFamily, baseEnv: Env): Env = {
     val decl = family.decl
+    val familyParams = decl.header.params.length
     decl.ctors.foldLeft(baseEnv) { case (curEnv, ctor) =>
-      val allBinders = constructorBinders(decl.header, ctor)
-      val fullType =
-        TypeChecker.getConstructorType(constructorTypeTerm(decl.header, ctor), curEnv, decl.header.params.length)
+      val fullType = TypeChecker.getConstructorType(constructorTypeTerm(decl.header, ctor), curEnv, familyParams)
       val installed = curEnv.putGlobal(
         ctor.canonicalName,
-        ConstructorHead(ctor.canonicalName, decl.header.params.length, allBinders.length, fullType)
+        ConstructorHead(ctor.canonicalName, familyParams, familyParams + ctor.binders.length, fullType)
       )
       family.seal.fold(installed)(installed.sealMember(ctor.canonicalName, _))
     }

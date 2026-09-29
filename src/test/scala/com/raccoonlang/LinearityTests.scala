@@ -64,7 +64,7 @@ class LinearityTests extends munit.FunSuite with TestSupport {
 
     typecheckDecls(program("eat(t)", "Nat.succ(eat(t))"))
     assertEquals(expectOnly[LinearUnused](typecheckDecls(program("eat(t)", "0"))), LinearUnused("t"))
-    // Reused on one path and unused on another is the reuse (G8).
+    // Reused on one path and unused on another is the reuse.
     assertEquals(
       expectOnly[LinearReused](typecheckDecls(program("Nat.add(eat(t), eat(t))", "0"))),
       LinearReused("t")
