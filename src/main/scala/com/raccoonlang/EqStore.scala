@@ -47,8 +47,7 @@ final case class EqStore(subst: Map[VarId, Value], refinable: DepSet) {
         if (store.refinable.contains(v.id) && !store.subst.contains(v.id)) {
           StructEta.eligibleInstance(v.tpe).foreach { case (inst, info) =>
             val head = info.ctorHead
-            val fieldEnv = telescope.BinderOps.freshen(head.fieldBinders, head.fieldEnv(inst.args))
-            val fields = head.fieldBinders.map(binder => fieldEnv(binder.localRef))
+            val (fields, _) = telescope.BinderOps.freshCtorFields(head, inst.args, Vector.empty)
             val witness = Value.VCtor(head, fields, v.tpe)
             // The fresh fields stand for `v`'s own fields and must be as refinable as `v` was, or
             // linking `v` would leave later equations less solvable than before.

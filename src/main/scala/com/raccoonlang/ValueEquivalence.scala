@@ -282,25 +282,26 @@ object ValueEquivalence {
             }
 
         if (!step(left.tpe, right.tpe) || !step(leftScrutinee, rightScrutinee) || !shapeAgrees) stuck(left, right)
-        else {
-          val branchesAgree = left.term.cases.zip(right.term.cases).forall { case (leftCase, rightCase) =>
-            left.env(leftCase.ctorName) match {
-              case head: ConstructorHead =>
-                val (arguments, resultType) =
-                  BinderOps.freshCtorArgsAndResult(head, leftCase.argRefs)
-                if (!step(resultType, leftScrutinee.tpe) || !step(resultType, rightScrutinee.tpe)) false
-                else {
-                  val stored = Value.constructorStoredArgs(head, arguments)
-                  step(
-                    Interpreter.evalBranch(leftCase, stored, left.env),
-                    Interpreter.evalBranch(rightCase, stored, right.env)
-                  )
+        else
+          leftScrutinee.tpe match {
+            // Each constructor's fields are taken at the scrutinee type's parameters, so only the result's indices
+            // remain to agree with both scrutinee types.
+            case InductiveFamilyValue(family) =>
+              val branchesAgree = left.term.cases.zip(right.term.cases).forall { case (leftCase, rightCase) =>
+                left.env(leftCase.ctorName) match {
+                  case head: ConstructorHead =>
+                    val (fields, resultType) = BinderOps.freshCtorFields(head, family.args, leftCase.argRefs)
+                    step(resultType, leftScrutinee.tpe) && step(resultType, rightScrutinee.tpe) &&
+                    step(
+                      Interpreter.evalBranch(leftCase, fields, left.env),
+                      Interpreter.evalBranch(rightCase, fields, right.env)
+                    )
+                  case _ => false
                 }
-              case _ => false
-            }
+              }
+              if (branchesAgree) Right(curMeta) else stuck(left, right)
+            case _ => stuck(left, right)
           }
-          if (branchesAgree) Right(curMeta) else stuck(left, right)
-        }
       }
 
       try run()

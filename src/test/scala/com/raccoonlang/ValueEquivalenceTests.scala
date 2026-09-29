@@ -169,6 +169,25 @@ class ValueEquivalenceTests extends munit.FunSuite {
     assert(!ValueEquivalence.defEq(left, different))
   }
 
+  test("neutral match congruence compares branches at a parameterized scrutinee's own parameters") {
+    def checked(source: String): Value = TypeChecker.checkTerm(parseBody(source), Prelude.default.checkedEnv).value
+    def program(someBranch: String): String =
+      s"""{
+         |  fun (A: Type)(o: Option(A))(d: A): A =>
+         |    match o returning A with
+         |    | Option.none => d
+         |    | Option.some a => $someBranch
+         |}
+         |""".stripMargin
+    val written = checked(program("a"))
+    // The same program one character later is another match node, so only its eliminator can decide the equation.
+    val shifted = checked(" " + program("a"))
+    val different = checked(" " + program("d"))
+
+    assert(ValueEquivalence.defEq(written, shifted))
+    assert(!ValueEquivalence.defEq(written, different))
+  }
+
   test("neutral match congruence rejects a different scrutinee") {
     def checked(source: String): Value = TypeChecker.checkTerm(parseBody(source), Prelude.default.checkedEnv).value
     val onFirst = checked(
