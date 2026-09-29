@@ -21,6 +21,7 @@ present at `bfd5196`; the rest were introduced or exposed by the Lemur work.
 | S8 Confinement by sort scope | F6 (D1, decided) | done | `5035a69`, `b8c5f6f` |
 | S9 The program's result is never linear | D2 (decided) | done | `345b445` |
 | S10 Mutual siblings at their own sorts | D3 (decided) | in progress | |
+| S11 Explicit node identity | F2's root cause | in progress | |
 
 All steps are done, S8 included; the branch validates (710 tests), and every
 finding's repro was rerun against the final build. Open decisions, not
@@ -339,6 +340,20 @@ Tests: a linear `Tok` with an unrestricted `Factory` of them, and a `Tree : Type
 with a `Balanced : Prop` holding a `Tree`, are accepted; siblings holding each
 other at different kinds or levels get the per-field diagnostic.
 
+### S11. Explicit node identity (F2's root cause)
+
+A Pi's, lambda's, match's or `scope`'s identity is today its span's start
+offset (`AstNodeId(source, start)`, read through `span.nodeId`), so any
+desugaring that reuses a source span for different syntax brings F2 back, and a
+fabricated node needs a synthetic span to get an identity. Give each of these
+nodes an explicit identity of its own, allocated fresh wherever a node is made
+(the elaborator, the inductive checks, StructEta, anything else that fabricates
+one) and carried over wherever the checker rebuilds a node as its residual, so
+that a term checked and later evaluated keeps its identity and one `scope` term
+is one atom. Spans become location only. `NodeIdentityTests` then asserts the
+new invariant: distinct nodes never share an identity, and every residual keeps
+its source node's.
+
 ### S7b. Elaborator field resolution and pattern spans (F11, F14)
 
 Field forms as a plain map consulted right after locals and before recursive
@@ -449,10 +464,6 @@ carry spans, and `LinearUnused` for one points at it.
 
 ## Follow-ups (proposed, not scheduled)
 
-- **Explicit node identity** (from S2). Identity is a span's start offset, so
-  any future desugaring that reuses a source span for different syntax brings
-  F2 back. An identity field on Pi, Lam, Match and Scope, assigned by the
-  elaborator, would make that impossible; `NodeIdentityTests` guards it today.
 - **Field projection printing** (from S7a). The printer shows any one-branch
   match returning a field of a one-constructor family as `P.x(v)`, including a
   plain `inductive` that has no selector `P.x`; the kernel does not record which
