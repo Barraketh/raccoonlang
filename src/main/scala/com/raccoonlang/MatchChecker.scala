@@ -18,8 +18,7 @@ object MatchChecker {
   private def computeReachableCtors(
       scrut: Value,
       scrutTpe: Value,
-      inductiveName: String,
-      ctorNames: Vector[String],
+      family: InductiveFamilyInstance,
       cases: Vector[CA.Case],
       env: Env
   ): Vector[ReachableCtor] = {
@@ -43,16 +42,18 @@ object MatchChecker {
         case _                  => Refinable(DepSet.empty, Vector.empty)
       }
 
-    ctorNames.flatMap { ctorName =>
+    family.meta.constructorNames.flatMap { ctorName =>
       env(ctorName) match {
         case h: ConstructorHead =>
           val fieldRefs = cases.find(_.ctorName == ctorName).fold(Vector.empty[CA.LocalRef])(_.argRefs)
-          val (freshArgs, resultTy) = BinderOps.freshCtorArgsAndResult(h, fieldRefs)
-          val storedArgs = Value.constructorStoredArgs(h, freshArgs)
+          // The constructor's parameters are the scrutinee type's own, so they need no equation, and a stuck index
+          // equation cannot leave a field's type over parameters nothing binds. Only the fresh fields are unknowns:
+          // they are exactly what the constructor value mentions beyond the scrutinee type.
+          val (fields, resultTy) = BinderOps.freshCtorFields(h, family.args, fieldRefs)
           val ctorValue = Value.canonicalizeProof(
-            Packed.foldCtor(h, storedArgs, resultTy).getOrElse(VCtor(h, storedArgs, resultTy))
+            Packed.foldCtor(h, fields, resultTy).getOrElse(VCtor(h, fields, resultTy))
           )
-          val ctorRefinable = refinableIn(ctorValue, ctorValue.synDeps)
+          val ctorRefinable = refinableIn(ctorValue, ctorValue.synDeps -- scrutTpe.synDeps)
           val valueRefinable = rootRefinable(scrut) ++ ctorRefinable
           val typeRefinable = refinableIn(scrutTpe, scrutTpe.synDeps) ++ ctorRefinable
 
@@ -74,10 +75,10 @@ object MatchChecker {
 
           branchEqStore.map { branchStore =>
             val refinedResultTy = ValueOps.materialize(scrutTpe, branchStore)
-            ReachableCtor(ctorName, h, storedArgs, refinedResultTy, branchStore)
+            ReachableCtor(ctorName, h, fields, refinedResultTy, branchStore)
           }
 
-        case _ => fail(UnknownConstructor(ctorName, inductiveName))
+        case _ => fail(UnknownConstructor(ctorName, family.head.name))
       }
     }
   }
@@ -157,7 +158,7 @@ object MatchChecker {
     }
 
     lazy val reachableByType: Vector[ReachableCtor] =
-      computeReachableCtors(scrut, scrutTpe, inductiveName, inductiveCtorNames, cases, env)
+      computeReachableCtors(scrut, scrutTpe, inductiveFamily, cases, env)
 
     val checkedMotive = checkTypeTerm(t.motive, env)
     val motiveTy = checkedMotive.value

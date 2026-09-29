@@ -22,22 +22,26 @@ object BinderOps {
 
   def freshen(vpi: VPi): Env = freshen(vpi.binders, vpi.env)
 
-  // Fresh copy of a constructor's telescope: a fresh value per binder plus the instantiated result
-  // type. Used by MatchChecker for reachability and branch refinement. `fieldRefs` are a pattern's
-  // locals for the stored fields, so a branch's variables print as the user wrote them; an anonymous
-  // one prints as the constructor's field.
-  def freshCtorArgsAndResult(
+  /**
+   * A constructor's telescope at a family instance: its parameters bound to the instance's arguments `familyArgs`
+   * (`ConstructorHead.fieldEnv`), and a fresh value for each stored field. Returns the fields and the constructor's
+   * result type there. Parameters are uniform, so that result carries the instance's own parameter arguments, and only
+   * its indices, over the fresh fields, can differ from the instance's. `fieldRefs` are a pattern's locals for the
+   * fields, so a branch's variables print as the user wrote them; an anonymous or absent one prints as the
+   * constructor's field.
+   */
+  def freshCtorFields(
       head: Value.ConstructorHead,
+      familyArgs: Vector[Value],
       fieldRefs: Vector[CoreAst.LocalRef]
   ): (Vector[Value], Value) =
     head.pi match {
       case Some(pi) =>
-        val fresh = pi.binders.zipWithIndex.foldLeft(pi.env) { case (env, (binder, idx)) =>
-          val name =
-            fieldRefs.lift(idx - head.numErasedFamilyArgs).map(_.name).filter(_ != "_").getOrElse(binder.name)
+        val fresh = head.fieldBinders.zipWithIndex.foldLeft(head.fieldEnv(familyArgs)) { case (env, (binder, idx)) =>
+          val name = fieldRefs.lift(idx).map(_.name).filter(_ != "_").getOrElse(binder.name)
           env.putLocal(binder.localRef, freshenBinder(env, binder, name).value)
         }
-        (pi.binders.map(binder => fresh(binder.localRef)), pi.codomain(fresh))
+        (head.fieldBinders.map(binder => fresh(binder.localRef)), pi.codomain(fresh))
       case None => (Vector.empty, head.tpe)
     }
 
