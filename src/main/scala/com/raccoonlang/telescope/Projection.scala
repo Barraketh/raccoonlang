@@ -116,10 +116,12 @@ object Projection {
 
     val holeOfVar = mutable.Map.empty[VarId, Int]
     val proofHoles = Vector.newBuilder[(Int, Value)]
+    // A token is never read off a type, since no type contains one (spec §3.2): an implicit of linear type has no hole,
+    // so it is never forced.
     binders.zipWithIndex.foreach { case (b, idx) =>
       if (b.isImplicit) {
         if (Sorts.isProposition(b.fresh.tpe)) proofHoles += idx -> b.fresh.tpe
-        else b.holeId.foreach(id => holeOfVar.update(id, idx))
+        else if (!Linearity.isLinear(b.fresh.tpe)) b.holeId.foreach(id => holeOfVar.update(id, idx))
       }
     }
     val proofHolesByType = proofHoles.result()

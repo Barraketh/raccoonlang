@@ -136,6 +136,12 @@ final case class LinearUnused(local: String) extends TypeError
 final case class LinearReused(local: String) extends TypeError
 
 /**
+ * A subterm of linear type, `term`, inside a term whose type is a sort or a proposition: types and proofs hold no
+ * tokens (spec §3.2).
+ */
+final case class LinearInType(term: CoreAst.Term, tpe: Value) extends TypeError
+
+/**
  * A definition whose type is linear: a global is never tracked, so it could be used any number of times (spec §3.2).
  */
 final case class LinearGlobal(name: String, tpe: Value) extends TypeError

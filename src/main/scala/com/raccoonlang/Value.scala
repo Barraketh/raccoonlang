@@ -460,6 +460,8 @@ object Value {
 
     def isUnr: Boolean = !isLin && vars.isEmpty
 
+    if (!isUnr) Kind.nonUnrBuilt = true
+
     private val cachedHashCode: Int = 31 * vars.hashCode() + isLin.hashCode()
 
     override def equals(obj: Any): Boolean =
@@ -472,8 +474,17 @@ object Value {
   }
 
   object Kind {
+    private var nonUnrBuilt = false
+
+    /**
+     * Whether a kind other than `unr` has been built. Until one is, no type is linear, since a type's kind is a kind
+     * that was built: the linearity fast path. Like FreshVar, it assumes a single checking thread.
+     */
+    def anyNonUnr: Boolean = nonUnrBuilt
+
     val unr: Kind = new Kind(isLin = false, DepSet.empty)
-    val lin: Kind = new Kind(isLin = true, DepSet.empty)
+    // Lazy, so that no program that never names it builds it.
+    lazy val lin: Kind = new Kind(isLin = true, DepSet.empty)
 
     def variable(id: VarId): Kind = new Kind(isLin = false, DepSet(id))
 
