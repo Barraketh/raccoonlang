@@ -93,6 +93,8 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
       runtimeEnv,
       Vector(binder),
       _ => valueType,
+      Value.Kind.unr,
+      Value.Lifetime.empty,
       captured.synDeps,
       ValueId.LocalId(nodeId(1), Vector(captured)),
       () => typeToTypeClassifier
@@ -100,6 +102,7 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
     val piTerm = CTerm.Pi(
       Vector(CoreAst.Binder(argRef, typeRef, span, CoreAst.BinderSite.Function)),
       typeRef,
+      CoreAst.Closure.unrestricted(span),
       Span.synthetic()
     )
     val lamTerm = CTerm.Lam(
@@ -134,6 +137,8 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
       runtimeEnv,
       Vector(binder),
       _ => valueType,
+      Value.Kind.unr,
+      Value.Lifetime.empty,
       DepSet.empty,
       ValueId.LocalId(nodeId(1), Vector.empty),
       () => typeToTypeClassifier
@@ -141,6 +146,7 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
     val piTerm = CTerm.Pi(
       Vector(CoreAst.Binder(argRef, typeRef, span, CoreAst.BinderSite.Function)),
       typeRef,
+      CoreAst.Closure.unrestricted(span),
       Span.synthetic()
     )
     val lamTerm = CTerm.Lam(
@@ -164,6 +170,7 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
     val piTerm = CTerm.Pi(
       Vector(CoreAst.Binder(argRef, typeRef, span, CoreAst.BinderSite.Function)),
       typeRef,
+      CoreAst.Closure.unrestricted(span),
       Span.synthetic()
     )
     val vpi = Interpreter.evalPi(piTerm, env)

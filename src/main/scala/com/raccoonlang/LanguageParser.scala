@@ -87,10 +87,12 @@ object LanguageParser {
     (wordAtom ~ sym('=') ~/ skipAllWs ~ term).flatSpanned(sourceId)
 
   /**
-   * A sort's field list `{ name = e, ... }`. An empty list, an unknown or repeated field, and a `level` field on a
-   * former that fixes the level are parse errors.
+   * A sort's or closure's field list `{ name = e, ... }`. An empty list, an unknown or repeated field, and a `level`
+   * field where none belongs (`levelMisplaced` says why) are parse errors.
    */
-  private def sortFields(fixesLevel: Boolean)(implicit sourceId: Option[SourceId]): Parser[Map[String, Term]] =
+  private def sortFields(
+      levelMisplaced: Option[String]
+  )(implicit sourceId: Option[SourceId]): Parser[Map[String, Term]] =
     (P('{') ~/ skipAllWs ~ sortField.rep(0, layoutSym(',')) ~ layoutSymTight('}'))
       .flatSpanned(sourceId)
       .map { case (fields, span) =>
@@ -98,7 +100,7 @@ object LanguageParser {
         fields.foldLeft(Map.empty[String, Term]) { case (seen, (name, value, fieldSpan)) =>
           def reject(message: String): Nothing = throw ParseError(fieldSpan.start, fieldSpan.start, message)
           if (!sortFieldNames(name)) reject(s"Unknown field $name")
-          if (fixesLevel && name == "level") reject("Misplaced field level: Type and Prop fix the level")
+          if (name == "level") levelMisplaced.foreach(reason => reject(s"Misplaced field level: $reason"))
           if (seen.contains(name)) reject(s"Repeated field $name")
           seen + (name -> value)
         }
@@ -106,17 +108,60 @@ object LanguageParser {
       .named("sort field list")
 
   /**
+   * The start of a closure `{ name = ...`, recognized without consuming it: the token after the first name tells a
+   * closure from an implicit binder `{ name: ... }`. It is tried at the start of every term and type and almost always
+   * fails at the first character, so that failure is checked first and reported with a constant message.
+   */
+  private val closureStart: Parser[NoValue.type] = new Parser[NoValue.type] {
+    private val nameAndEquals = skipAllWs ~ wordAtom ~ skipWS ~ P('=')
+
+    override def parse(input: String, startIdx: Int): ParseResult[NoValue.type] =
+      if (startIdx < input.length && input.charAt(startIdx) == '{')
+        nameAndEquals.parse(input, startIdx + 1) match {
+          case _: Success[_] => Success(NoValue, startIdx, startIdx)
+          case _: Failure    => fail(startIdx, startIdx)
+        }
+      else fail(startIdx, startIdx)
+
+    override def toString: String = "closure"
+  }
+
+  /**
+   * A closure `{ kind = k, scope = S }` (spec §1): a function type's or lambda's kind and scope, never a level. Callers
+   * build it only once `closureStart` has recognized one, so ruling a closure out stays cheap.
+   */
+  private def closureFields(implicit sourceId: Option[SourceId]): Parser[Closure] =
+    sortFields(levelMisplaced = Some("a closure has no level")).map { fields =>
+      Closure(fields.get("kind"), fields.get("scope"))
+    }
+
+  /**
+   * A closure where a domain of an unparenthesized chain begins. The closure prefixes the whole group, so it may stand
+   * only before the chain's first domain; a nested group is parenthesized.
+   */
+  private def misplacedClosure(implicit sourceId: Option[SourceId]): Parser[Term] =
+    closureStart.spanned(sourceId).map { closureAt =>
+      throw ParseError(
+        closureAt.span.start,
+        closureAt.span.start,
+        "A closure prefixes a whole function type; parenthesize a nested one"
+      )
+    }
+
+  /**
    * `Sort { level = e, ... }`, `Type` and `Prop`. `Sort` requires its `level`; `Type` and `Prop` fix it, so a `level`
    * field after either is rejected. An omitted `kind` or `scope` is `Kind.unr` or `Lifetime.empty`.
    */
   private def sortFormer(implicit sourceId: Option[SourceId]): Parser[Term] = {
     def fixed(name: String, level: SortLevel): Parser[Term] =
-      (former(name) ~ (skipWS ~ sortFields(fixesLevel = true)).?).flatSpanned(sourceId).map { case (fields, span) =>
-        val written = fields.getOrElse(Map.empty)
-        Sort(level, written.get("kind"), written.get("scope"), span)
-      }
+      (former(name) ~ (skipWS ~ sortFields(levelMisplaced = Some("Type and Prop fix the level"))).?)
+        .flatSpanned(sourceId)
+        .map { case (fields, span) =>
+          val written = fields.getOrElse(Map.empty)
+          Sort(level, written.get("kind"), written.get("scope"), span)
+        }
     val written =
-      (former("Sort") ~/ skipWS ~ sortFields(fixesLevel = false)).flatSpanned(sourceId).map { case (fields, span) =>
+      (former("Sort") ~/ skipWS ~ sortFields(levelMisplaced = None)).flatSpanned(sourceId).map { case (fields, span) =>
         fields.get("level") match {
           case Some(level) => Sort(SortLevel.Written(level), fields.get("kind"), fields.get("scope"), span)
           case None        => throw ParseError(span.start, span.start, "Sort requires a level field")
@@ -138,11 +183,25 @@ object LanguageParser {
    */
   private def simplePi(implicit sourceId: Option[SourceId]): Parser[Pi] =
     (namedSegment.rep(1) ~ typeExpr ~ chainRest).flatSpanned(sourceId).map { case (named, body, rest, sp) =>
-      buildChain(named, body, rest, sp) match {
+      buildChain(Closure.omitted, named, body, rest, sp) match {
         case pi: Pi => pi
         case other  => at(other.span) { wtf("named binders always form a Pi") }
       }
     }
+
+  /**
+   * A function type written with its closure, in a type or a term position alike: nothing but a function type starts
+   * with a closure, so the closure commits, and a closure prefixing no function type is a parse error.
+   */
+  private def closedPi(implicit sourceId: Option[SourceId]): Parser[Term] =
+    (closureStart ~ (closureFields ~/ skipAllWs ~ namedSegment.rep(0) ~ typeExpr ~ chainRest))
+      .flatSpanned(sourceId)
+      .map { case (written, named, first, rest, sp) =>
+        buildChain(written, named, first, rest, sp) match {
+          case pi: Pi => pi
+          case _      => throw ParseError(sp.start, sp.start, "A closure prefixes a function type")
+        }
+      }
 
   // Type positions have their own grammar (arrows, no lambdas/matches) but produce ordinary Terms.
   // A parenthesised type is an ATOM: `((b: B) -> C)` stays a nested Pi rather than merging into an
@@ -153,7 +212,8 @@ object LanguageParser {
       identTerm |
       sortFormer |
       natLitTerm |
-      strLitTerm
+      strLitTerm |
+      misplacedClosure
 
   sealed trait TypeTrailer
   case class Dot(name: String, span: Span) extends TypeTrailer
@@ -191,6 +251,7 @@ object LanguageParser {
    * anonymous binder for its type; the last piece contributes only its named binders, and its type is the body.
    */
   private def buildChain(
+      closure: Closure,
       named: Vector[Vector[Binder]],
       first: Term,
       rest: Vector[(Vector[Vector[Binder]], Term)],
@@ -200,7 +261,7 @@ object LanguageParser {
     val binders =
       pieces.init.flatMap { case (groups, domain) => groups.flatten :+ Binder("_", domain, domain.span) } ++
         pieces.last._1.flatten
-    if (binders.isEmpty) pieces.last._2 else Pi(binders, pieces.last._2, sp)
+    if (binders.isEmpty) pieces.last._2 else Pi(closure, binders, pieces.last._2, sp)
   }
 
   /**
@@ -211,8 +272,8 @@ object LanguageParser {
    * the arrow is looked for only after a piece has been read, never by speculatively re-parsing it as a domain.
    */
   private def typeTerm(implicit sourceId: Option[SourceId]): Parser[Term] =
-    (namedSegment.rep(0) ~ typeExpr ~ chainRest).flatSpanned(sourceId).map { case (named, first, rest, sp) =>
-      buildChain(named, first, rest, sp)
+    closedPi | (namedSegment.rep(0) ~ typeExpr ~ chainRest).flatSpanned(sourceId).map { case (named, first, rest, sp) =>
+      buildChain(Closure.omitted, named, first, rest, sp)
     }
 
   private def normalParam(implicit sourceId: Option[SourceId]): Parser[Binder] =
@@ -255,9 +316,11 @@ object LanguageParser {
   }
 
   private def lambda(implicit sourceId: Option[SourceId]): Parser[Term] =
-    (kw("fun") ~/ funcHeader ~ sym("=>") ~/ skipAllWs ~ term)
+    (kw("fun") ~/ (closureStart ~ closureFields).? ~ funcHeader ~ sym("=>") ~/ skipAllWs ~ term)
       .flatSpanned(sourceId)
-      .map[SurfaceAst.Term] { case (header, body, span) => Lam(header, body, span) }
+      .map[SurfaceAst.Term] { case (written, header, body, span) =>
+        Lam(written.getOrElse(Closure.omitted), header, body, span)
+      }
 
   private def caseHead: Parser[(Vector[String], Boolean)] = {
     val shortName = (symTight(".") ~/ ident).map(name => (Vector(name), true))
@@ -289,7 +352,7 @@ object LanguageParser {
       parenArgs(term).flatSpanned(sourceId).map(TermApp.tupled)).rep(0)
 
   private def term(implicit sourceId: Option[SourceId]): Parser[Term] =
-    ((lambda | matchP | body | simplePi | termAtom) ~ termTrailers).map { case (base, trailers) =>
+    ((lambda | matchP | closedPi | body | simplePi | termAtom) ~ termTrailers).map { case (base, trailers) =>
       trailers.foldLeft(base) {
         case (cur, TermDot(name, sp)) => Select(cur, name, sp)
         case (cur, TermApp(args, sp)) => App(cur, args, sp)

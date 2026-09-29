@@ -1,0 +1,9 @@
+inductive Lease (l: Lifetime) : Type { scope = l }
+ | mk : Lease(l)
+
+def use {l: Lifetime}(h: Lease(l)): Nat := 0
+
+def delay (l: Lifetime)(h: Lease(l)): Unit -> Nat :=
+  fun { scope = Lifetime.empty } (u: Unit): Nat => use(h)
+
+{ Nat.zero }

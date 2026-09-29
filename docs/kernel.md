@@ -55,7 +55,8 @@ refinable variables. Its successful rules are:
 Function binder grouping is exact. Two Pi values compare binder-for-binder and
 must have the same binder count and implicitness within the current group.
 `(a: A)(b: B) -> C` is not convertible with
-`(a: A) -> ((b: B) -> C)`.
+`(a: A) -> ((b: B) -> C)`. Their closures compare exactly too: equal closure
+kinds and equal closure scopes, as normal forms.
 
 Conversion does not include universe cumulativity. Type fitting succeeds by
 definitional equality, not by a general subtyping relation. Checking a term
@@ -69,8 +70,8 @@ variables. A link may be recorded only when the presented equation forces that
 solution. In particular:
 
 - genuine inductive family and data-constructor frames are invertible;
-- arbitrary applications, Pi components, blocked computations, and closure
-  captures are not invertible frames;
+- arbitrary applications, Pi components (closures included), blocked
+  computations, and closure captures are not invertible frames;
 - an occurs failure or an equation that has several possible solutions remains
   stuck;
 - level variables link only when normalization leaves a forced solution;
@@ -145,22 +146,44 @@ kind `Kind.unr`, so every sort the kernel builds satisfies the rule.
 A telescope
 
 ```text
-(x1 : A1) ... (xn : An) -> B
+{ kind = k, scope = C } (x1 : A1) ... (xn : An) -> B
 ```
 
 that binds no level has the sort
 
 ```text
 Sort { level = imax(u1, ... imax(un, v) ...),
-       scope = union(S1, ..., Sn, SB) less the telescope's own lifetime variables }
+       kind = k,
+       scope = union(C, S1, ..., Sn, SB) less the telescope's own lifetime variables }
 ```
 
 where each `Ai : Sort { level = ui, scope = Si }` and
-`B : Sort { level = v, scope = SB }`. Its kind is `Kind.unr`. A binder of type
-`Kind` or `Lifetime` contributes neither a level nor a scope. Consequently, a
-Pi whose codomain is a proposition lives in `Prop` at its scope, regardless of
-its domain universes. A codomain equal to the sort `Prop` is different: `Prop`
-itself lives in `Type`.
+`B : Sort { level = v, scope = SB }`. The closure `{ kind = k, scope = C }` is
+the function type's closure kind and closure scope: how its values may be
+applied, and what they hold. It is evaluated where the Pi stands, outside its
+own binders, and a closure kind other than `Kind.unr` at a level that may be
+zero is `LinearProp`. A binder of type `Kind` or `Lifetime` contributes neither
+a level nor a scope. Consequently, a Pi whose codomain is a proposition lives
+in `Prop` at its scope, regardless of its domain universes. A codomain equal to
+the sort `Prop` is different: `Prop` itself lives in `Type`.
+
+A function type captures nothing, so the elaborator writes an omitted closure
+field of one as `Kind.unr` or `Lifetime.empty`, and a declaration's own type is
+always at that closure. A lambda's closure is part of its type and is decided by
+the lambda alone. Its captures are the locals bound outside it that its body
+mentions; its binder types and result are not its body, and implicit arguments
+are never written, so neither contributes. Each capture contributes the kind and
+scope of its type's sort, except that a variable of a sort parameter contributes
+nothing, and neither does a recursive definition's reference to itself, which
+names a global. An omitted closure field is the join of the captures' kinds or
+the union of their scopes; a written one must contain it, else `KindExceeded` or
+`ScopeExceeded` naming a capture it does not contain. The residual carries a
+derived field as a kind or lifetime expression over the locals bound to its
+variables (any one of them, where a refined branch binds two locals to one
+variable), and evaluation re-evaluates it where the lambda stands. Sorts commute
+with substitution, so that agrees with deriving the closure again from the
+captures' instantiated types; the key-coherence switch asserts it on every
+evaluation of such a lambda.
 
 A telescope that binds a level is instead classified by `Large`. A level binder
 changes the universe of everything after it, so no sort contains the Pi. `Large`
@@ -205,13 +228,14 @@ proposition is one too). The kernel has one definition of each, which the
 checker and proof irrelevance share. Sorts are compared only by conversion.
 
 An implicit binder is accepted only with a compiled projection that recovers
-it from later explicit arguments. A sort's level, kind and scope are projection
-positions; the kind and scope recover a variable only when the field is exactly
-that variable. Checked applications retain only explicit arguments. Checking
-and evaluation reconstruct every implicit with the same projection and then
-check it against its instantiated binder type. Constructor
-family parameters that cannot be projected are demoted to explicit arguments;
-other unforced implicits are rejected.
+it from later explicit arguments. A sort's level, kind and scope, and a function
+type's closure kind and closure scope, are projection positions; the kinds and
+scopes recover a variable only when the field is exactly that variable. Checked
+applications retain only explicit arguments. Checking and evaluation
+reconstruct every implicit with the same projection and then check it against
+its instantiated binder type. Constructor family parameters that cannot be
+projected are demoted to explicit arguments; other unforced implicits are
+rejected.
 
 ## Inductives and matching
 
@@ -482,9 +506,11 @@ and fails loudly on disagreement. Only atoms whose key is their identity are
 exempt: variables (by id), constants and constructor heads (by name), and
 levels (by normal form). Kinds and lifetimes key by their normal forms too, but
 their conversion rule compares the normal forms itself, so the assertion checks
-their keys. A sort's key mixes in its level, kind and scope. The kernel
-singletons `Level`, `Kind`, `Lifetime`, their classifier and `Large` are equal
-only to themselves, which object identity decides before any key is read.
+their keys. A sort's key mixes in its level, kind and scope, and a Pi's key its
+closure kind and closure scope, explicitly rather than through its captures.
+The kernel singletons `Level`, `Kind`, `Lifetime`, their classifier and `Large`
+are equal only to themselves, which object identity decides before any key is
+read.
 
 Blocked applications and matches carry dependency sets describing which
 refinement-store events could make reevaluation productive. An empty dependency
@@ -527,3 +553,7 @@ Changes to the checker or evaluator must preserve these rules:
 18. A family's kind and scope are declared, never derived. An instance's sort
     is the declared sort under its arguments, and its declared kind and scope
     contain whatever a value of it holds or carries in its type.
+19. A function type's closure is part of its identity and its sort. A lambda's
+    closure is written or derived from its captures' types alone, never from
+    where the lambda stands, and re-evaluating a derived closure agrees with
+    deriving it again.

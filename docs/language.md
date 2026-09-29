@@ -183,17 +183,19 @@ lifetime binder does not make a type large.
 
 A sort's type is the sort one level up at the same scope and at `Kind.unr`:
 `Sort { level = u, kind = k, scope = S } : Sort { level = succ(u), scope = S }`.
-A function type's sort is at `Kind.unr`. Its level is computed as below, and
-its scope unites its binder types' scopes with its result's, less the
+A function type's sort is at its closure kind (see
+[Closures](#closures)). Its level is computed as below, and its scope unites
+its closure scope and its binder types' scopes with its result's, less the
 lifetimes the function type binds itself, since the caller supplies them. So
 for a family `Lease (l: Lifetime) : Type { scope = l }`, `Lease(m) -> Nat` is at
 `Type { scope = m }`, and `(l: Lifetime) -> Lease(l) -> Nat` is at `Type`. A
 kind or lifetime binder contributes neither a level nor a scope.
 
 A sort whose kind is not `Kind.unr` must have a level that is never zero, else
-`LinearProp`, since proofs are unrestricted. So `Prop { kind = lin }` and
-`Sort { level = u, kind = k }` are rejected, and a kind-polymorphic sort is
-written `Type { kind = k }` or `Sort { level = succ(u), kind = k }`.
+`LinearProp`, since proofs are unrestricted. So `Prop { kind = lin }`,
+`Sort { level = u, kind = k }` and a `{ kind = lin }` function type into a
+proposition are rejected, and a kind-polymorphic sort is written
+`Type { kind = k }` or `Sort { level = succ(u), kind = k }`.
 
 Universes are not cumulative, and neither are kinds and scopes. A value in
 `Sort { level = u }` does not automatically fit a position expecting a larger
@@ -203,8 +205,10 @@ types are compared.
 
 A binder `{k: Kind}` or `{S: Lifetime}` is forced like any implicit: through a
 family parameter in a later explicit argument's type, or through a sort's
-field, which recovers a variable only when the field is exactly that variable.
-So `{S: Lifetime}{A: Type { scope = S }}(x: A)` forces `S`, while
+field or a function type's closure field, which recovers a variable only when
+the field is exactly that variable. So
+`{S: Lifetime}{A: Type { scope = S }}(x: A)` forces `S`, and so does
+`{S: Lifetime}(f: { scope = S } A -> B)`, while
 `{A: Type { scope = union(S, m) }}` does not.
 
 `Prop` is impredicative: a dependent function whose result is a proposition is
@@ -269,6 +273,46 @@ Inductive family parameters are erased from constructor values. At a
 constructor call, a family parameter is inferred when later stored fields
 force it; otherwise it becomes an explicit constructor argument. Implicits
 written directly on a constructor must still be forced.
+
+### Closures
+
+A function type or lambda may carry a closure, a field list with a `kind` and
+a `scope`, that says how its values may be applied and what they hold:
+
+```raccoon
+inductive Lease (l: Lifetime) : Type { scope = l }
+ | mk : Lease(l)
+
+def use {l: Lifetime}(h: Lease(l)): Nat := 0
+
+def apply {kf: Kind}{S: Lifetime}(f: { kind = kf, scope = S } Unit -> Nat): Nat := f(Unit.unit)
+
+def delay (l: Lifetime)(h: Lease(l)): { scope = l } Unit -> Nat :=
+  fun (u: Unit): Nat => use(h)
+```
+
+A closure prefixes a whole binder group: the first one of an unparenthesized
+chain, or a parenthesized one, as in `A -> ({ kind = lin } B -> C)`. Before a
+later domain of the same chain it is a parse error, and so is a `level` field,
+an empty list, or an unknown or repeated field. The token after the first name
+tells a closure `{ kind = ...` from an implicit binder `{ kind: ...`. A closure
+is part of the function type, compared exactly like the rest of it, and a
+function type is at its closure's kind and counts its closure's scope.
+
+A function type captures nothing, so an omitted closure field of one is
+`Kind.unr` or `Lifetime.empty`, and a definition's own type is always at those.
+A lambda's closure is written after `fun`, and each omitted field is derived
+from what the lambda captures: the locals bound outside it that its body
+mentions. Its binder types and result type are not its body. The derived kind
+joins the captures' types' kinds, and the derived scope unites their scopes; a
+variable of `Kind` or `Lifetime` contributes nothing. So `delay`'s lambda,
+which captures `h: Lease(l)`, has type `{ scope = l } Unit -> Nat`, and a
+lambda that captures nothing has an unrestricted, empty closure wherever it
+stands: checking `fun (u: Unit): Nat => 0` against `{ scope = l } Unit -> Nat`
+is a `TypeMismatch`. A written closure field must contain what the captures
+derive, else `KindExceeded` or `ScopeExceeded`. That is also how a function
+value is lifted to a larger closure:
+`fun { kind = k, scope = S } (x: A): B => f(x)`.
 
 ## Terms and local blocks
 

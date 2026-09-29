@@ -429,7 +429,8 @@ class ResidualizationTests extends munit.FunSuite {
     def walk(term: CA.Term): Unit = {
       term match {
         case _: CA.Term.GlobalRef | _: CA.Term.LocalRef | _: CA.Term.NatLit | _: CA.Term.StrLit | _: CA.Term.Select |
-            _: CA.Term.App | _: CA.Term.Pi | _: CA.Term.Body | _: CA.Term.Lam | _: CA.Term.Match =>
+            _: CA.Term.App | _: CA.Term.Pi | _: CA.Term.Body | _: CA.Term.Lam | _: CA.Term.Match | _: CA.Term.Sort |
+            _: CA.Term.FormOp =>
         case other => fail(s"Residual contains a non-syntax node: $other")
       }
       CA.children(term).foreach(walk)

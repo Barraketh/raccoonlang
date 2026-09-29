@@ -102,6 +102,8 @@ object ValueOps {
       val store = eqStore
       pi.copy(
         env = materializeEnv(pi.env),
+        closureKind = materializeKind(pi.closureKind),
+        closureScope = materializeLifetime(pi.closureScope),
         synDeps = materializeDeps(pi.synDeps),
         id = materializeId(pi.id),
         classifier0 = () => materializeClassifier(pi.tpe)(store)

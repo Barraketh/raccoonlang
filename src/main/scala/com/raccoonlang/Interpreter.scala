@@ -104,16 +104,21 @@ object Interpreter {
   /**
    * The sort of a Pi, derived from the env it closed over (spec §2.4). Its level right-folds the binder types' levels
    * with imax over the codomain's, which reduces to Prop for a Prop-valued codomain and to ordinary max for a
-   * definitely positive one. Its scope unites the binder types' scopes with the codomain's, less the lifetimes the
-   * group itself binds, since the caller supplies them. Its kind is `Kind.unr`. A kind or lifetime binder contributes
-   * no level and no scope. Computing it per instance means a residual Pi re-evaluated with concrete parameters gets the
-   * concrete sort, not the declaration-time one. A Pi that binds a level is `Large`: the level changes the universe of
-   * everything after it, so no sort contains the Pi.
+   * definitely positive one. Its kind is its closure kind alone. Its scope unites its closure scope, what its values
+   * hold, with the binder types' scopes and the codomain's, less the lifetimes the group itself binds, since the caller
+   * supplies them. A kind or lifetime binder contributes no level and no scope. Computing it per instance means a
+   * residual Pi re-evaluated with concrete parameters gets the concrete sort, not the declaration-time one. A Pi that
+   * binds a level is `Large`: the level changes the universe of everything after it, so no sort contains the Pi.
+   *
+   * A closure kind other than `Kind.unr` at a level that may be zero is `LinearProp` (spec §2.3); substitution keeps a
+   * level that is never zero, so only checking can reach it.
    */
   private[raccoonlang] def piClassifierFromChecked(
       binders: Vector[CoreAst.Binder],
       freshEnv: Env,
-      outV: Value
+      outV: Value,
+      closureKind: Kind,
+      closureScope: Lifetime
   ): Classifier = {
     val freshValues = binders.map(binder => freshEnv(binder.localRef))
     if (freshValues.exists(_.tpe eq LevelTpe)) Large
@@ -127,13 +132,14 @@ object Interpreter {
       }
       // A lifetime binder enters as its own variable, which the caller supplies.
       val ownLifetimes = freshValues.collect { case lifetime: Lifetime => lifetime.vars }.foldLeft(DepSet.empty)(_ ++ _)
-      val scope = Lifetime.less(Lifetime.union(domSorts.map(_.scope) :+ outSort.scope), ownLifetimes)
+      val scope = Lifetime.less(Lifetime.union(closureScope +: domSorts.map(_.scope) :+ outSort.scope), ownLifetimes)
       val outLevel = outSort.level
       val level =
         if (Sorts.isProp(outSort)) outLevel
         else if (Level.isNeverZero(outLevel)) Level.max(domSorts.map(_.level) :+ outLevel)
         else domSorts.map(_.level).foldRight(outLevel)(Level.imax)
-      Sorts.sort(level, Kind.unr, scope)
+      if (!Sorts.admitsKind(level, closureKind)) fail(LinearProp(closureKind, level))
+      Sorts.sort(level, closureKind, scope)
     }
   }
 
@@ -145,32 +151,78 @@ object Interpreter {
     else None
   }
 
-  private def piClassifier(binders: Vector[CoreAst.Binder], baseEnv: Env, out: CoreAst.Term): Classifier = {
+  private def piClassifier(
+      binders: Vector[CoreAst.Binder],
+      baseEnv: Env,
+      out: CoreAst.Term,
+      closureKind: Kind,
+      closureScope: Lifetime
+  ): Classifier = {
     val freshEnv = BinderOps.freshen(binders, baseEnv)
-    piClassifierFromChecked(binders, freshEnv, evalTerm(out, freshEnv))
+    piClassifierFromChecked(binders, freshEnv, evalTerm(out, freshEnv), closureKind, closureScope)
   }
+
+  /** A checked closure field's expression. A lambda's derived one is filled in by the checker before evaluation. */
+  private def closureTerm(field: CoreAst.ClosureField): CoreAst.Term =
+    field.term match {
+      case Some(term) => term
+      case None       => wtf("A derived closure field reached evaluation before checking derived it")
+    }
 
   private[raccoonlang] def evalPi(pi: CTerm.Pi, env: Env): VPi = {
     val capturedRefs = CapturedRefs.getCapturedRefs(pi, env)
     val closedEnv = env.closeForEval(capturedRefs)
     val captureVals = closedEnv.locals.values.toVector
     val id = ValueId.LocalId(pi.nodeId, captureVals)
+    val closureKind = getKind(evalTerm(closureTerm(pi.closure.kind), closedEnv))
+    val closureScope = getLifetime(evalTerm(closureTerm(pi.closure.scope), closedEnv))
 
     val synDeps = DepSet.newBuilder
     captureVals.foreach { v =>
       synDeps.unionInPlace(v.synDeps)
     }
+    synDeps.unionInPlace(closureKind.synDeps)
+    synDeps.unionInPlace(closureScope.synDeps)
 
     VPi(
       closedEnv,
       pi.binders,
       codomain = env => evalTerm(pi.out, env),
+      closureKind,
+      closureScope,
       synDeps.result(),
       id,
-      classifier0 = () => piClassifier(pi.binders, closedEnv, pi.out),
+      classifier0 = () => piClassifier(pi.binders, closedEnv, pi.out, closureKind, closureScope),
       knownPropValued = pi.knownPropValued
     )
   }
+
+  /** A local a lambda captures, and the sort of its type, which is what it contributes to the lambda's closure. */
+  private[raccoonlang] final case class Capture(ref: CoreAst.LocalRef, value: Value, sort: VSort)
+
+  /**
+   * The locals a lambda captures (spec §4.3): those bound outside it, in `env`, that its body mentions. The binder
+   * types and result are not the body, and implicit arguments are never written, so neither contributes. A variable of
+   * a sort parameter is not a value and contributes nothing. Neither does a recursive definition's reference to itself,
+   * the one local whose type may be large: it names a global, which a lambda does not capture (spec §3.3).
+   */
+  private[raccoonlang] def lambdaCaptures(l: CTerm.Lam, env: Env): Vector[Capture] =
+    if (env.locals.isEmpty) Vector.empty
+    else
+      env.locals.iterator
+        .filter { case (ref, _) => l.bodyRefs(ref) }
+        .flatMap { case (ref, value) =>
+          value.tpe.tpe match {
+            case sort: VSort           => Some(Capture(ref, value, sort))
+            case Large | SortParameter => None
+            case other                 => wtf(s"Captured local ${ref.name} has the type ${value.tpe} : $other")
+          }
+        }
+        .toVector
+
+  /** The closure a lambda's captures derive (spec §4.3): the join of their kinds and the union of their scopes. */
+  private[raccoonlang] def derivedClosure(captures: Vector[Capture]): (Kind, Lifetime) =
+    (Kind.join(captures.map(_.sort.kind)), Lifetime.union(captures.map(_.sort.scope)))
 
   private def evalRef(ref: CTerm.Ref, env: Env): Value = {
     val res = ref match {
@@ -311,7 +363,29 @@ object Interpreter {
 
   private def evalLam(l: CTerm.Lam, env: Env): Value = {
     val vpi = evalPi(l.ty, env)
+    if (ValueEquivalence.keyAssertionsEnabled) assertDerivedClosure(l, vpi, env)
     evalLam(l, vpi, env)
+  }
+
+  /**
+   * Check/run coherence of a derived closure (spec §8): the expression the checker derived, re-evaluated where the
+   * lambda now stands, equals what the lambda's captures derive there. Sorts commute with substitution, so it must.
+   */
+  private def assertDerivedClosure(l: CTerm.Lam, vpi: VPi, env: Env): Unit = {
+    def derived(field: CoreAst.ClosureField): Boolean =
+      field match {
+        case _: CoreAst.ClosureField.Derived => true
+        case _: CoreAst.ClosureField.Written => false
+      }
+    val kindDerived = derived(l.ty.closure.kind)
+    val scopeDerived = derived(l.ty.closure.scope)
+    if (kindDerived || scopeDerived) {
+      val (kind, scope) = derivedClosure(lambdaCaptures(l, env))
+      if ((kindDerived && kind != vpi.closureKind) || (scopeDerived && scope != vpi.closureScope))
+        wtf(
+          s"The derived closure of $vpi is ${vpi.closureKind}, ${vpi.closureScope}; its captures derive $kind, $scope"
+        )
+    }
   }
 
   /** The value that is a sort parameter's type, which a variable of it and an expression of it have. */

@@ -55,6 +55,15 @@ object ValueEquivalence {
   ): Either[UnifyFailure, EqStore] =
     Unify.tryUnify(v1, v2, meta, Unify.Ctx())
 
+  /**
+   * Key-coherence assertions (docs/kernel.md#value-identity): wherever the fast path decides an equation by key alone,
+   * the rules below must reach the same verdict, and a lambda's derived closure re-evaluates to what its captures
+   * derive (Interpreter.evalLam). On by default so the whole test suite checks both; disable for benchmarking with
+   * -Draccoon.keyAssertions=false.
+   */
+  private[raccoonlang] val keyAssertionsEnabled: Boolean =
+    java.lang.Boolean.parseBoolean(System.getProperty("raccoon.keyAssertions", "true"))
+
   private object Unify {
     // EqStore is immutable, so a Left result implies the caller's store is untouched: failed
     // sub-unifications discard their partial links for free. Callers (MatchChecker refinement in
@@ -77,14 +86,6 @@ object ValueEquivalence {
 
     private def sameValueObject(v1: Value, v2: Value): Boolean =
       v1.asInstanceOf[AnyRef] eq v2.asInstanceOf[AnyRef]
-
-    /**
-     * Key-coherence assertions (docs/kernel.md#value-identity): wherever the fast path decides an equation by key
-     * alone, the rules below must reach the same verdict. On by default so the whole test suite checks the key rule;
-     * disable for benchmarking with -Draccoon.keyAssertions=false.
-     */
-    private val keyAssertionsEnabled: Boolean =
-      java.lang.Boolean.parseBoolean(System.getProperty("raccoon.keyAssertions", "true"))
 
     /**
      * The exemption list of the key-coherence assertion: the atoms whose key is their identity, so the key is the whole
@@ -152,11 +153,13 @@ object ValueEquivalence {
       }
 
     // Pi-former injectivity is not assumed, so all failures below are reported as stuck and links made
-    // inside binder types or the codomain are not consequences of the Pi equation (non-invertible frame).
+    // inside the closure, binder types or the codomain are not consequences of the Pi equation
+    // (non-invertible frame).
     //
     // Grouping is part of a function type's identity: two Pis are related binder-by-binder within their
     // single groups, and differing group counts are a failure to derive `≡` (stuck), never apartness.
-    // `(a:A)(b:B) -> C` and `(a:A) -> (b:B) -> C` are different types and do not relate here.
+    // `(a:A)(b:B) -> C` and `(a:A) -> (b:B) -> C` are different types and do not relate here. So is the
+    // closure: closure kinds and scopes compare exactly (spec §2.5).
     private def tryUnifyPis(pi1: VPi, pi2: VPi, eqStore: EqStore, ctx: Ctx): Either[UnifyFailure, PiUnification] = {
       if (
         pi1.binders.length != pi2.binders.length ||
@@ -166,7 +169,12 @@ object ValueEquivalence {
 
       val innerCtx = ctx.enterNonInvertibleFrame
       val watermark = FreshVar.currentId
-      var curStore = eqStore
+      var curStore =
+        tryUnify(pi1.closureKind, pi2.closureKind, eqStore, innerCtx)
+          .flatMap(tryUnify(pi1.closureScope, pi2.closureScope, _, innerCtx)) match {
+          case Right(closureStore) => closureStore
+          case Left(failed)        => return Left(failed.asStuck)
+        }
       var env1 = pi1.env
       var env2 = pi2.env
       val sharedVars = Vector.newBuilder[Value]

@@ -12,9 +12,9 @@ import scala.collection.mutable
  *   - `compile` pattern-matches the *evaluated* types of the non-implicit binders (as patterns over the implicits'
  *     fresh vars) and produces a per-implicit `Spec` — which provided argument to start from and the path to walk.
  *     Every position used is rigid (irreducible head applications, no-confusion constructor fields, sort fields and
- *     levels, Pi domains), so following the same path on the actual arguments at any later time re-derives the value.
- *     Projection is a *choice*, not a proof: application checking re-verifies every argument against its instantiated
- *     binder type, so soundness never rests on injectivity of these positions.
+ *     levels, Pi closures and domains), so following the same path on the actual arguments at any later time re-derives
+ *     the value. Projection is a *choice*, not a proof: application checking re-verifies every argument against its
+ *     instantiated binder type, so soundness never rests on injectivity of these positions.
  *   - `project` follows a Spec against actual argument values. It is the single implementation used by check-time
  *     application, run-world residual evaluation, and check-world evaluation of checked syntax (match motives,
  *     termination measures, lambda-body quoting).
@@ -47,6 +47,14 @@ object Projection {
 
     /** Level of the exact shape u + k -> u (single atom, no constant), mirroring unifyLevels. */
     final case class LevelOffset(k: Int) extends Step
+
+    /** VPi -> its closure kind; it recovers a kind variable only when the closure kind is exactly that variable. */
+    case object PiClosureKind extends Step
+
+    /**
+     * VPi -> its closure scope; it recovers a lifetime variable only when the closure scope is exactly that variable.
+     */
+    case object PiClosureScope extends Step
 
     /** VPi -> evaluated domain of binder idx; valid only when independent of earlier binders. */
     final case class PiDomain(idx: Int) extends Step
@@ -197,6 +205,8 @@ object Projection {
                   queue.append((root, steps :+ Step.Tpe, p.tpe))
 
                 case pi: VPi =>
+                  queue.append((root, steps :+ Step.PiClosureKind, pi.closureKind))
+                  queue.append((root, steps :+ Step.PiClosureScope, pi.closureScope))
                   pi.binders.indices.foreach { idx =>
                     independentPiDomain(pi, idx).foreach { domain =>
                       queue.append((root, steps :+ Step.PiDomain(idx), domain))
@@ -297,12 +307,14 @@ object Projection {
       val out = pi.codomain(fullEnv)
       if ((binderTypes :+ out).exists(_.synDeps.intersects(firstIds))) None
       else {
+        // The remaining group keeps the closure: it is the same function's, applied one binder further.
         Some(
           pi.copy(
             env = firstEnv,
             binders = remaining,
             synDeps = pi.synDeps,
-            classifier0 = () => Interpreter.piClassifierFromChecked(remaining, fullEnv, out)
+            classifier0 =
+              () => Interpreter.piClassifierFromChecked(remaining, fullEnv, out, pi.closureKind, pi.closureScope)
           )
         )
       }
@@ -366,6 +378,18 @@ object Projection {
               if (k == 0) Right(l)
               else if (Level.geq(l, k)) Right(Level.addOffset(l, -k))
               else Left(s"level $l does not cover offset $k")
+            }
+
+          case Step.PiClosureKind =>
+            v match {
+              case pi: VPi => Right(pi.closureKind)
+              case other   => Left(s"expected a function type, got $other")
+            }
+
+          case Step.PiClosureScope =>
+            v match {
+              case pi: VPi => Right(pi.closureScope)
+              case other   => Left(s"expected a function type, got $other")
             }
 
           case Step.PiDomain(idx) =>
