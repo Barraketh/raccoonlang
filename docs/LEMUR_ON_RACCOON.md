@@ -286,7 +286,9 @@ A variable is solved where it forces:
 Every other occurrence must then equal that solution. Since sorts are exact
 (§2.6), the solution is canonical, never chosen among alternatives, and
 evaluation re-derives the same one. A variable no argument reaches is
-`NonForcedImplicitParam`.
+`NonForcedImplicitParam`. When several positions can force a variable, family
+parameters and sort fields are read before closure fields. The order changes
+only which diagnostic an ill-typed program gets.
 
 Every polymorphic prelude declaration carries a lifetime variable:
 - beside each type parameter, `Prop`-valued ones included;
@@ -386,6 +388,10 @@ Consequences:
 - An implicit binder of linear type is never forced, since forcing reads
   types, so it is `NonForcedImplicitParam`.
 - Facts about a token are stated about its indices, which are unrestricted.
+
+The prelude's `Eq` is at `Kind.unr`, so `Eq(Tok(m), t, t)` is already
+`TypeMismatch`. `LinearInType` catches what a kind-polymorphic family would
+admit.
 
 A `decreases` clause is not a use: it may name a linear parameter as the
 structural argument or measure it.
@@ -530,7 +536,7 @@ def withLease {k: Kind}{S: Lifetime}{A: Type { kind = k, scope = S }}{kf: Kind}{
     (f: { kind = kf, scope = Sf } (l: Lifetime) -> Lease(l) -> A): A :=
   scope l => f(l, Lease.mk(l))
 
--- callers, where t: Tok(m) and g: Lease(m) are locals
+// callers, where t: Tok(m) and g: Lease(m) are locals obtained from the module's API
 withLease(fun (l: Lifetime)(h: Lease(l)): Nat => 0)
 withLease(fun (l: Lifetime)(h: Lease(l)): Tok(m) => t)
 withLease(fun (l: Lifetime)(h: Lease(l)): Nat => useLease(g))
@@ -556,7 +562,9 @@ caller writes a closure (§4.3):
 
 `A` is forced through `f`'s result, which depends on none of `f`'s binders.
 `k` and `S` are forced through `A`'s sort, and `kf` and `Sf` through `f`'s
-closure (§2.7).
+closure (§2.7). A callback that returns a value confined to `l` has a result
+that depends on its binder `l`, so `A` cannot be read off it. That is
+`ImplicitReconstructionFailed`.
 
 ## 5. Declarations
 
@@ -584,14 +592,14 @@ a lifetime, or linear in a kind, that it is parameterized by says so in its
 classifier.
 
 ```raccoon
-sealed inductive Lease (l: Lifetime) : Type { scope = l }            -- cannot leave scope l
+sealed inductive Lease (l: Lifetime) : Type { scope = l }            // cannot leave scope l
  | mk : Lease(l)
 
-sealed inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }  -- scope = l is required: Tok is linear
+sealed inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }  // scope = l is required: Tok is linear
  | mk : Tok(l)
 
 inductive Holder {k: Kind}{S: Lifetime}(A: Type { kind = k, scope = S })
-    : Type { kind = k, scope = S }                                   -- declared, never derived
+    : Type { kind = k, scope = S }                                   // declared, never derived
  | mk (held: A) : Holder(A)
 ```
 
@@ -771,8 +779,9 @@ LinearUnused, LinearReused, LinearInType, LinearGlobal, LinearProp,
 LifetimeEscapes, KindExceeded, ScopeExceeded, SealedConstructor, UntrustedAxiom
 ```
 
-`TypeMismatch`, `NotAType` and `NonForcedImplicitParam` are existing
-diagnostics and gain the cases named above. These field-list errors are parse
+`TypeMismatch`, `NotAType`, `NonForcedImplicitParam` and
+`ImplicitReconstructionFailed` are existing diagnostics and gain the cases
+named above. These field-list errors are parse
 errors:
 - an unknown, repeated or misplaced field;
 - an empty field list;
