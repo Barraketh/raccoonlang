@@ -1,4 +1,0 @@
-inductive Phantom {S: Lifetime}(A: Type { scope = S }) : Type
- | mk : Phantom(A)
-
-{ Nat.zero }

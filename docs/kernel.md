@@ -178,9 +178,9 @@ scope of its type's sort, except that a variable of a sort parameter contributes
 nothing, and neither does a recursive definition's reference to itself, which
 names a global. An omitted closure field is the join of the captures' kinds or
 the union of their scopes; a written one must contain it, else `KindExceeded` or
-`ScopeExceeded` naming a capture it does not contain. That test and a family's
-declared kind and scope against its fields, parameters and indices are one
-containment rule with one implementation.
+`ScopeExceeded` naming a capture it does not contain. That test, a family's
+declared kind against its fields' and a family's declared scope against its
+lifetime parameters are one containment rule with one implementation.
 
 The residual carries a derived field as the captures it is derived from. Every
 evaluation of the lambda, the one checking makes included, reads those captures
@@ -268,11 +268,8 @@ sort is its classifier; a sort's own sort is at the same scope, so a type at a
 type position is confined through its sort, and a large type or a sort
 parameter names no atom. The checker keeps the atoms whose `scope` encloses the
 position in its environment; they are lexical, and closing an environment over
-a value drops them. One test applies the rule. It returns at once until a
-program opens an atom, and otherwise reads the sort only when the type's
-dependency set holds an atom that is not open, which it must for the sort's
-scope to name one, since that scope is read off the type's components; so a
-function type's classifier is not forced where nothing needs it. It is applied
+a value drops them. One test applies the rule, reading the sort's scope and
+nothing else; it returns at once until a program opens an atom. It is applied
 at these choke points:
 
 - every type the checker synthesizes, at the one exit of synthesis, so a
@@ -374,13 +371,14 @@ An inductive declaration is installed only after checking:
 
 - that the family result is a sort;
 - universe bounds for every constructor field;
-- kind and scope bounds: the family's declared kind and scope, which are never
-  derived, contain every constructor field's kind and scope, `Prop` families
-  included; the declared scope also contains the scope of every parameter's
-  and index's type, a level or kind parameter's contributing nothing; and every
+- kind and scope bounds: the family's declared kind, which is never derived,
+  contains every constructor field's kind, `Prop` families included; and every
   family, whatever its kind, names each of its lifetime parameters in its
   scope, so that a lifetime a forced implicit reads off an instance is counted
-  in the instance's sort;
+  in the instance's sort. The declared scope may mention only parameters, so
+  it is exactly the union of the lifetime parameters. Only a parameter binds a
+  lifetime and no atom is open at a declaration, so every field's, parameter's
+  and index's type's scope lies within it, and none is checked;
 - that every constructor result is the declared family with uniform
   parameters and well-typed indices;
 - strict positivity of recursive occurrences;
@@ -397,7 +395,8 @@ parameter.
 
 Atomic mutual-inductive blocks are available through the surface `mutual { ... }`
 form. Every family in a block has the same parameter telescope and sort, level,
-kind and scope alike. All provisional family heads are visible while
+kind and scope alike; since each scope is the union of the shared lifetime
+parameters, only the level or kind can differ. All provisional family heads are visible while
 constructors are checked, but the block publishes only after every family
 succeeds. Positivity and recursion metadata are computed for the whole block.
 

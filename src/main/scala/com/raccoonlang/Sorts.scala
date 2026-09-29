@@ -77,7 +77,7 @@ object Sorts {
   /**
    * The one containment rule (spec §2.6): something that declares a kind or scope must contain each of its parts', else
    * `KindExceeded` or `ScopeExceeded` naming the part, at `site`. A lambda's written closure bounds its captures (spec
-   * §4.3), and a family's declared sort its fields, parameters and indices (spec §5.1).
+   * §4.3), a family's declared kind its fields' kinds, and its declared scope its lifetime parameters (spec §5.1).
    */
   def requireContains[P <: Value](
       field: Field[P],

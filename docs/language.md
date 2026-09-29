@@ -439,16 +439,16 @@ account for everything a value of the family can hand over:
 - the declared kind contains each constructor field's kind, else
   `KindExceeded` naming the field. A family whose fields are linear only
   through a kind variable is declared at that variable;
-- the declared scope contains each constructor field's scope, else
-  `ScopeExceeded` naming the field;
-- the declared scope contains the scope of each parameter's and index's type,
-  else `ScopeExceeded` naming it, since that value can be read off an
-  instance's type. A type parameter counts at its sort's scope, and the type
-  of a `Level`, `Kind` or `Lifetime` parameter counts nothing;
-- every family, whatever its kind, names each of its lifetime parameters in
-  its scope, else `ScopeExceeded` naming it, since a forced implicit reads the
-  lifetime off an instance's type. So `inductive Wrap (l: Lifetime) : Type` is
-  rejected, and declares `Type { scope = l }` instead.
+- the declared scope names exactly the family's lifetime parameters: it may
+  mention only parameters, and must name each lifetime parameter, else
+  `ScopeExceeded` naming it, since a forced implicit reads the lifetime off an
+  instance's type. So `inductive Wrap (l: Lifetime) : Type` is rejected, and
+  declares `Type { scope = l }` instead.
+
+Only a parameter binds a lifetime, so each constructor field's scope, and the
+scope of each parameter's and index's type, lies within the declared scope and
+needs no check of its own. A type parameter counts at its sort's scope, which
+names a lifetime parameter.
 
 ```raccoon
 inductive Lease (l: Lifetime) : Type { scope = l }

@@ -238,10 +238,10 @@ so nothing else needs deciding.
 A family instance's sort is its declaration's classifier under its arguments
 (§5.1), not something read off the arguments' values, so it commutes with
 substitution. The declaration's scope already counts every value that can be
-read off an instance, because §5.1 requires it to name each lifetime parameter
-and to contain the scope of each parameter's and index's type. A family
-declaration has no removal, since its declared scope may mention only its
-parameters.
+read off an instance, because §5.1 requires it to name exactly the lifetime
+parameters, and every parameter's and index's type names no other lifetime. A
+family declaration has no removal, since its declared scope may mention only
+its parameters.
 
 **2.5 Conversion is exact.** Conversion compares the new parts by equality: two
 sorts are equal when their levels, kinds and scopes are, and two function types
@@ -263,7 +263,8 @@ unscoped type, or a linear one at an unrestricted type.
 Inclusion is tested in exactly two places. In both, something declares a sort
 or closure, and what it contains must fit that declaration:
 - a lambda's closure against what its body captures (§4.3);
-- a family's declaration against its fields (§5.1).
+- a family's declaration against its fields' kinds and its lifetime
+  parameters (§5.1).
 
 A failure is `KindExceeded` for a kind and `ScopeExceeded` for a scope. To lift
 a function value `f` to a larger closure, write
@@ -329,8 +330,8 @@ in `{S: Lifetime}{A: Type { scope = S }}{B: Type { scope = S }}`, requires
 `scope(B)` to equal `scope(A)`. A family that holds both takes a variable for
 each and declares their union, `Type { scope = union(S, T) }`.
 
-A proposition obeys §5.1 like any family. `Eq` is at `Prop { scope = S }`
-because `refl` holds an `A`, and `Eq(Lease(l), a, b)` is at
+A proposition obeys §5.1 like any family. `Eq` is at `Prop { scope = S }`,
+which counts the `A` that `refl` holds, and `Eq(Lease(l), a, b)` is at
 `Prop { scope = l }`. A closure that captures a proof of it can match the proof
 and recover the lease, so the proof's type must count `l` in the closure's
 scope (§4.3).
@@ -590,26 +591,30 @@ that depends on its binder `l`, so `A` cannot be read off it. That is
 ## 5. Declarations
 
 **5.1 Families.** A family's classifier is a sort. Its kind and scope are
-declared, written or omitted, and never derived. The scope may mention only the
-family's parameters. For each constructor:
-- the declared kind must contain the join of its fields' kinds, else
-  `KindExceeded` naming the field;
-- the declared scope must contain the join of its fields' scopes, else
-  `ScopeExceeded` naming the field.
+declared, written or omitted, and never derived. For each constructor, the
+declared kind must contain the join of its fields' kinds, else `KindExceeded`
+naming the field.
 
-The declared scope must also name every lifetime parameter, and contain the
-scope of every parameter's and index's type, else `ScopeExceeded` naming the
-parameter or index. A value that can be read off an instance's type is one its
-values can hand over (§2.4), and a lifetime parameter is read off it by a
-forced implicit, as `{l: Lifetime}(w: Wrap(l))` forces `l`. So every family
-counts it, whatever its kind and whether or not it holds anything scoped by it:
-`Wrap (l: Lifetime)` must declare `scope = l` though it holds nothing, and
-`P {l: Lifetime}(h: Lease(l))` must declare `scope = l`. A type parameter counts
-too, because a type carries up to its sort's scope (§2.4). So
-`Phantom {S: Lifetime}(A: Type { scope = S })` must declare `scope = S` even
-though it holds no `A`.
+The declared scope names exactly the family's lifetime parameters: it may
+mention only the family's parameters, and it must name each lifetime parameter,
+else `ScopeExceeded` naming it. A value that can be read off an instance's type
+is one its values can hand over (§2.4), and a lifetime parameter is read off it
+by a forced implicit, as `{l: Lifetime}(w: Wrap(l))` forces `l`. So every
+family names it, whatever its kind and whether or not it holds anything scoped
+by it.
 
-These joins are computed for the declaration check alone. An instance is at
+Only a parameter binds a lifetime, since an index or a field cannot (§2.2), and
+no atom is open at a declaration. So a field's, parameter's or index's type
+names no lifetime but the family's lifetime parameters, and its scope (§2.4)
+lies within the declared scope. No further scope check is needed. For example:
+- `Wrap (l: Lifetime)` is at `scope = l` though it holds nothing;
+- `P {l: Lifetime}(h: Lease(l))` is at `scope = l`, which counts `h`, since `h`
+  can be read off an instance;
+- `Phantom {S: Lifetime}(A: Type { scope = S })` is at `scope = S`, which counts
+  `A` though it holds none, because a type carries up to its sort's scope
+  (§2.4).
+
+The kind's join is computed for the declaration check alone. An instance is at
 exactly the declared sort under its arguments (§2.4). So a family confined to
 a lifetime, or linear in a kind, that it is parameterized by says so in its
 classifier. Without the rule for lifetime parameters, `Wrap(l)` would be at
@@ -641,7 +646,7 @@ through a kind variable is declared at that variable, as `Holder` is. That
 makes it linear at exactly the instances whose argument is linear. A field
 type in which the parameter holds no value, such as `A -> Nat`, is at its own
 kind, its closure kind (§2.4). So it adds nothing to the family's kind, though
-its scope still counts `A`'s. A sibling in a
+its scope still counts `A`'s, which the declared scope names. A sibling in a
 `mutual` block is read by its declared classifier, so no fixed point is
 computed. Strict positivity, uniform parameters, `mutual` blocks and structs
 are unchanged.
