@@ -288,23 +288,26 @@ class ClosureTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  test("a residual carries a derived closure, and re-evaluating it gives the checked value") {
+  test("a residual carries a derived closure as its captures, and re-evaluating it gives the checked value") {
     val (env, checked) = checkInnerLambda(
       withFamilies(
-        "def f (l: Lifetime)(v: V(l))(t: Tok(l)): { kind = lin, scope = l } Unit -> Nat :=\n" +
-          "  fun (u: Unit): Nat => Nat.add(useV(v), eat(t))\n"
+        "def f (l: Lifetime)(n: Nat)(v: V(l))(t: Tok(l)): { kind = lin, scope = l } Unit -> Nat :=\n" +
+          "  fun (u: Unit): Nat => Nat.add(Nat.add(n, useV(v)), eat(t))\n"
       )
     )
     val residual = checked.residual match {
       case lam: CA.Term.Lam => lam
       case other            => fail(s"Expected a lambda residual, got $other")
     }
+    // Each field carries the captures that contribute to it: `n` contributes to neither, and `v` to the scope alone.
     residual.ty.closure match {
-      case CA.Closure(CA.ClosureField.Derived(Some(kind)), CA.ClosureField.Derived(Some(scope))) =>
-        assertEquals(kind.toString, "Kind.lin")
-        assertEquals(scope.toString, "l")
+      case CA.Closure(CA.ClosureField.Derived(kind), CA.ClosureField.Derived(scope)) =>
+        assertEquals(kind.map(_.name), Vector("t"))
+        assertEquals(scope.map(_.name), Vector("v", "t"))
       case other => fail(s"Expected derived closure fields, got $other")
     }
+    // The residual prints its derived fields as omitted, as written; the value's type shows the closure.
+    assert(residual.toString.startsWith("fun (u: Unit): Nat => "), residual.toString)
     assertEquals(checked.value.tpe.toString, "{ kind = Kind.lin, scope = l } (u: Unit) -> Nat")
     val reevaluated = Interpreter.evalTerm(residual, env)
     assertEquals(reevaluated.key, checked.value.key)
@@ -312,17 +315,40 @@ class ClosureTests extends munit.FunSuite with TestSupport {
     assert(ValueEquivalence.defEq(reevaluated.tpe, checked.value.tpe))
   }
 
-  test("re-evaluating a derived closure that disagrees with the captures is an internal error") {
-    val (env, checked) = checkInnerLambda(
-      withFamilies("def f (l: Lifetime)(v: V(l)): { scope = l } Unit -> Nat := fun (u: Unit): Nat => useV(v)\n")
+  test("a derived closure is derived again from its captures wherever its residual is evaluated") {
+    val delay = withFamilies(
+      """
+        |def delay {k: Kind}{S: Lifetime}{A: Type { kind = k, scope = S }}(x: A): { kind = k, scope = S } Unit -> A :=
+        |  fun (u: Unit): A => x
+        |
+        |def force {kf: Kind}{Sf: Lifetime}{k: Kind}{S: Lifetime}{A: Type { kind = k, scope = S }}
+        |    (g: { kind = kf, scope = Sf } Unit -> A): A := g(Unit.unit)
+        |""".stripMargin
     )
-    val tampered = checked.residual match {
-      case lam: CA.Term.Lam =>
-        val empty = CA.Term.FormOp(CA.Form.LifetimeEmpty, Vector.empty, lam.span)
-        lam.copy(ty = lam.ty.copy(closure = lam.ty.closure.copy(scope = CA.ClosureField.Derived(Some(empty)))))
-      case other => fail(s"Expected a lambda residual, got $other")
-    }
-    intercept[InternalError](Interpreter.evalTerm(tampered, env))
+    def closure(result: String): (Value.Kind, Value.Lifetime) =
+      runProgram(delay + s"\n{ $result }\n").tpe match {
+        case pi: Value.VPi => (pi.closureKind, pi.closureScope)
+        case other         => fail(s"Expected a function type, got $other")
+      }
+
+    // One residual, evaluated at a linear and at an unrestricted capture.
+    assertEquals(closure("delay(Tok.mk(Lifetime.empty))"), (Value.Kind.lin, Value.Lifetime.empty))
+    assertEquals(closure("delay(Nat.zero)"), (Value.Kind.unr, Value.Lifetime.empty))
+    // Forcing reads the closure where the residual was evaluated: at `Tok(l)` it is linear and scoped by `l`.
+    val p = delay +
+      """
+        |def viaTok (l: Lifetime)(t: Tok(l)): Nat := eat(force(delay(t)))
+        |def viaV (l: Lifetime)(v: V(l)): Nat := useV(force(delay(v)))
+        |def viaNat (n: Nat): Nat := force(delay(n))
+        |
+        |{ Nat.add(Nat.add(viaTok(Lifetime.empty, Tok.mk(Lifetime.empty)), viaV(Lifetime.empty, V.mk(Lifetime.empty))), viaNat(3)) }
+        |""".stripMargin
+    assert(ValueEquivalence.defEq(runProgram(p), runProgram("{ 3 }")))
+    // The evaluated lambda's type is the declared result under the instantiation, and nothing else.
+    def program(result: String): String = delay + s"\ndef g (l: Lifetime)(t: Tok(l)): $result := delay(t)\n"
+    typecheckDecls(program("{ kind = lin, scope = l } Unit -> Tok(l)"))
+    expectOnly[TypeMismatch](typecheckDecls(program("{ scope = l } Unit -> Tok(l)")))
+    expectOnly[TypeMismatch](typecheckDecls(program("{ kind = lin } Unit -> Tok(l)")))
   }
 
   test("function types differing only in their closures are not convertible") {

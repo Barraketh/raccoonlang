@@ -1,6 +1,6 @@
 package com.raccoonlang
 
-import com.raccoonlang.Value.{Kind, Level, Lifetime, VPi, VSort}
+import com.raccoonlang.Value.{Kind, KindTpe, Level, Lifetime, LifetimeTpe, ParameterTpe, VPi, VSort}
 
 /**
  * The one place sorts are built and classified (docs/kernel.md#universes-and-function-types). `VSort` is constructed
@@ -19,6 +19,16 @@ object Sorts {
     new VSort(level, kind, scope)
   }
 
+  /**
+   * A sort whose fields were just checked, where a kind other than `Kind.unr` at a level that may be zero is
+   * `LinearProp` (spec §2.3): a written sort, and a function type's classifier. Sorts built on already-checked paths
+   * use `sort`.
+   */
+  def checkedSort(level: Level, kind: Kind, scope: Lifetime): VSort = {
+    if (!admitsKind(level, kind)) fail(LinearProp(kind, level))
+    sort(level, kind, scope)
+  }
+
   val Prop: VSort = sort(Level.zero, Kind.unr, Lifetime.empty)
   val Type: VSort = sort(Level.one, Kind.unr, Lifetime.empty)
 
@@ -26,6 +36,58 @@ object Sorts {
   def admitsKind(level: Level, kind: Kind): Boolean = kind.isUnr || Level.isNeverZero(level)
 
   def isProp(sort: VSort): Boolean = sort.level == Level.zero
+
+  /** A sort's kind or its scope: the two fields a function type's closure also has. */
+  sealed abstract class Field[P <: Value](val parameter: ParameterTpe) {
+    def of(sort: VSort): P
+
+    /** A checked expression of the field's sort parameter, which denotes a normal form. */
+    def normalForm(value: Value): P
+
+    def join(parts: Iterable[P]): P
+
+    /** `Kind.unr` or `Lifetime.empty`: the unit of the join, and what every substitution keeps. */
+    def isLeast(part: P): Boolean
+
+    def contains(declared: P, part: P): Boolean
+
+    private[Sorts] def exceeded(declaration: String, declared: P, part: String, partValue: P): TypeError
+  }
+
+  object KindField extends Field[Kind](KindTpe) {
+    def of(sort: VSort): Kind = sort.kind
+    def normalForm(value: Value): Kind = Interpreter.getKind(value)
+    def join(parts: Iterable[Kind]): Kind = Kind.join(parts)
+    def isLeast(part: Kind): Boolean = part.isUnr
+    def contains(declared: Kind, part: Kind): Boolean = Kind.contains(declared, part)
+    private[Sorts] def exceeded(declaration: String, declared: Kind, part: String, partValue: Kind): TypeError =
+      KindExceeded(declaration, declared, part, partValue)
+  }
+
+  object ScopeField extends Field[Lifetime](LifetimeTpe) {
+    def of(sort: VSort): Lifetime = sort.scope
+    def normalForm(value: Value): Lifetime = Interpreter.getLifetime(value)
+    def join(parts: Iterable[Lifetime]): Lifetime = Lifetime.union(parts)
+    def isLeast(part: Lifetime): Boolean = part.isEmpty
+    def contains(declared: Lifetime, part: Lifetime): Boolean = Lifetime.contains(declared, part)
+    private[Sorts] def exceeded(declaration: String, declared: Lifetime, part: String, partValue: Lifetime): TypeError =
+      ScopeExceeded(declaration, declared, part, partValue)
+  }
+
+  /**
+   * The one containment rule (spec §2.6): something that declares a kind or scope must contain each of its parts', else
+   * `KindExceeded` or `ScopeExceeded` naming the part, at `site`. A lambda's written closure bounds its captures (spec
+   * §4.3), and a family's declared sort its fields, parameters and indices (spec §5.1).
+   */
+  def requireContains[P <: Value](
+      field: Field[P],
+      declaration: String,
+      declared: P,
+      part: => String,
+      partValue: P,
+      site: Span
+  ): Unit =
+    if (!field.contains(declared, partValue)) at(site)(fail(field.exceeded(declaration, declared, part, partValue)))
 
   /**
    * The type is a proposition: its values are proofs. A type in `Prop` is one, and so is a large function type into a

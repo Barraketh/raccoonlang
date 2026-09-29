@@ -174,11 +174,20 @@ object CoreAst {
       override def term: Option[Term] = Some(written)
     }
 
+    /** A lambda's omitted field as elaborated, before checking derives it from the lambda's captures. */
+    case object Omitted extends ClosureField {
+      override def term: Option[Term] = None
+    }
+
     /**
-     * A lambda's omitted field, derived from what the lambda captures (spec §4.3). The checker fills in the derived
-     * expression, so a residual carries it and evaluation re-evaluates it where the lambda stands (spec §8).
+     * A lambda's omitted field as checked (spec §8): the captures it is derived from. Evaluation reads them where the
+     * lambda stands and derives the field from their types' sorts (spec §4.3). A capture that contributes `Kind.unr` or
+     * `Lifetime.empty` to the field as checking saw it is left out, since every instantiation keeps that. The captures
+     * are among the lambda's body refs, so the lambda's own closure env binds them; they are not subterms of its type.
      */
-    final case class Derived(term: Option[Term]) extends ClosureField
+    final case class Derived(captures: Vector[LocalRef]) extends ClosureField {
+      override def term: Option[Term] = None
+    }
   }
 
   /**

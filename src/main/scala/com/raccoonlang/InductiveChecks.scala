@@ -470,19 +470,25 @@ object InductiveChecks {
       // than Kind.unr also names each lifetime parameter.
       decl.header.binders.zip(familyArgs).zipWithIndex.foreach { case ((binder, arg), index) =>
         val role = if (index < decl.header.params.length) "parameter" else "index"
-        def exceeded(part: String, partScope: Lifetime): Nothing =
-          at(binder.span) { fail(ScopeExceeded(s"Family ${decl.header.name}", declaredSort.scope, part, partScope)) }
+        def requireContains(part: => String, partScope: Lifetime): Unit =
+          Sorts.requireContains(
+            Sorts.ScopeField,
+            s"Family ${decl.header.name}",
+            declaredSort.scope,
+            part,
+            partScope,
+            binder.span
+          )
         (arg, arg.tpe) match {
           case (lifetime: Lifetime, _) =>
-            if (!declaredSort.kind.isUnr && !Lifetime.contains(declaredSort.scope, lifetime))
-              exceeded(
+            if (!declaredSort.kind.isUnr)
+              requireContains(
                 s"lifetime parameter ${binder.name}, which a family at kind ${declaredSort.kind} must name",
                 lifetime
               )
           case (_, _: ParameterTpe) =>
           case (_, tpe) =>
-            val scope = TypeChecker.getUniverse(tpe).scope
-            if (!Lifetime.contains(declaredSort.scope, scope)) exceeded(s"$role ${binder.name} : $tpe", scope)
+            requireContains(s"$role ${binder.name} : $tpe", TypeChecker.getUniverse(tpe).scope)
         }
       }
       FamilySignature(decl, familyType, declaredSort, familyArgs)
@@ -632,10 +638,22 @@ object InductiveChecks {
           }
         // Kind and scope bounds (spec §5.1), Prop families included: the declared kind and scope, never derived,
         // contain each field's. A sibling's field is read by its declared sort, so no fixed point is needed.
-        if (!Kind.contains(constructorUniverse.kind, fieldSort.kind))
-          at(binder.span) { fail(KindExceeded(s"Family $name", constructorUniverse.kind, part, fieldSort.kind)) }
-        if (!Lifetime.contains(constructorUniverse.scope, fieldSort.scope))
-          at(binder.span) { fail(ScopeExceeded(s"Family $name", constructorUniverse.scope, part, fieldSort.scope)) }
+        Sorts.requireContains(
+          Sorts.KindField,
+          s"Family $name",
+          constructorUniverse.kind,
+          part,
+          fieldSort.kind,
+          binder.span
+        )
+        Sorts.requireContains(
+          Sorts.ScopeField,
+          s"Family $name",
+          constructorUniverse.scope,
+          part,
+          fieldSort.scope,
+          binder.span
+        )
 
         if (!doesNotOccur(recursiveTarget, field.tpe)) hasRecursiveField = true
 

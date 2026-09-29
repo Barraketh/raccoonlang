@@ -138,8 +138,7 @@ object Interpreter {
         if (Sorts.isProp(outSort)) outLevel
         else if (Level.isNeverZero(outLevel)) Level.max(domSorts.map(_.level) :+ outLevel)
         else domSorts.map(_.level).foldRight(outLevel)(Level.imax)
-      if (!Sorts.admitsKind(level, closureKind)) fail(LinearProp(closureKind, level))
-      Sorts.sort(level, closureKind, scope)
+      Sorts.checkedSort(level, closureKind, scope)
     }
   }
 
@@ -162,11 +161,15 @@ object Interpreter {
     piClassifierFromChecked(binders, freshEnv, evalTerm(out, freshEnv), closureKind, closureScope)
   }
 
-  /** A checked closure field's expression. A lambda's derived one is filled in by the checker before evaluation. */
-  private def closureTerm(field: CoreAst.ClosureField): CoreAst.Term =
-    field.term match {
-      case Some(term) => term
-      case None       => wtf("A derived closure field reached evaluation before checking derived it")
+  /**
+   * A checked closure field, where its function type stands: a written one is its expression's value, and a lambda's
+   * derived one is what its captures derive there (spec §8).
+   */
+  private def evalClosureField[P <: Value](field: CoreAst.ClosureField, part: Sorts.Field[P], env: Env): P =
+    field match {
+      case CoreAst.ClosureField.Written(term)     => part.normalForm(evalTerm(term, env))
+      case CoreAst.ClosureField.Derived(captures) => derivedField(part, captures, env)
+      case CoreAst.ClosureField.Omitted           => wtf("An omitted closure field reached evaluation before checking")
     }
 
   private[raccoonlang] def evalPi(pi: CTerm.Pi, env: Env): VPi = {
@@ -174,8 +177,8 @@ object Interpreter {
     val closedEnv = env.closeForEval(capturedRefs)
     val captureVals = closedEnv.locals.values.toVector
     val id = ValueId.LocalId(pi.nodeId, captureVals)
-    val closureKind = getKind(evalTerm(closureTerm(pi.closure.kind), closedEnv))
-    val closureScope = getLifetime(evalTerm(closureTerm(pi.closure.scope), closedEnv))
+    val closureKind = evalClosureField(pi.closure.kind, Sorts.KindField, env)
+    val closureScope = evalClosureField(pi.closure.scope, Sorts.ScopeField, env)
 
     val synDeps = DepSet.newBuilder
     captureVals.foreach { v =>
@@ -201,28 +204,39 @@ object Interpreter {
   private[raccoonlang] final case class Capture(ref: CoreAst.LocalRef, value: Value, sort: VSort)
 
   /**
+   * What a captured local contributes to its lambda's closure (spec §4.3): the sort of its type. A variable of a sort
+   * parameter is not a value and contributes nothing. Neither does a recursive definition's reference to itself, the
+   * one local whose type may be large: it names a global, which a lambda does not capture (spec §3.3).
+   */
+  private def captureSort(ref: CoreAst.LocalRef, value: Value): Option[VSort] =
+    value.tpe.tpe match {
+      case sort: VSort           => Some(sort)
+      case Large | SortParameter => None
+      case other                 => wtf(s"Captured local ${ref.name} has the type ${value.tpe} : $other")
+    }
+
+  /**
    * The locals a lambda captures (spec §4.3): those bound outside it, in `env`, that its body mentions. The binder
-   * types and result are not the body, and implicit arguments are never written, so neither contributes. A variable of
-   * a sort parameter is not a value and contributes nothing. Neither does a recursive definition's reference to itself,
-   * the one local whose type may be large: it names a global, which a lambda does not capture (spec §3.3).
+   * types and result are not the body, and implicit arguments are never written, so neither contributes.
    */
   private[raccoonlang] def lambdaCaptures(l: CTerm.Lam, env: Env): Vector[Capture] =
     if (env.locals.isEmpty) Vector.empty
     else
       env.locals.iterator
         .filter { case (ref, _) => l.bodyRefs(ref) }
-        .flatMap { case (ref, value) =>
-          value.tpe.tpe match {
-            case sort: VSort           => Some(Capture(ref, value, sort))
-            case Large | SortParameter => None
-            case other                 => wtf(s"Captured local ${ref.name} has the type ${value.tpe} : $other")
-          }
-        }
+        .flatMap { case (ref, value) => captureSort(ref, value).map(Capture(ref, value, _)) }
         .toVector
 
-  /** The closure a lambda's captures derive (spec §4.3): the join of their kinds and the union of their scopes. */
-  private[raccoonlang] def derivedClosure(captures: Vector[Capture]): (Kind, Lifetime) =
-    (Kind.join(captures.map(_.sort.kind)), Lifetime.union(captures.map(_.sort.scope)))
+  /**
+   * A lambda's derived closure field (spec §4.3): the join of that field of its captures' sorts, read in `env`, where
+   * the lambda stands. Checking and evaluation both derive it here from the residual's captures, and sorts commute with
+   * substitution, so evaluation agrees with what checking derived.
+   */
+  private def derivedField[P <: Value](field: Sorts.Field[P], captures: Vector[CoreAst.LocalRef], env: Env): P =
+    field.join(captures.flatMap { ref =>
+      captureSort(ref, env.locals.getOrElse(ref, wtf(s"The derived closure's capture ${ref.name} is unbound")))
+        .map(field.of)
+    })
 
   private def evalRef(ref: CTerm.Ref, env: Env): Value = {
     val res = ref match {
@@ -361,32 +375,7 @@ object Interpreter {
   private def forceThunk(thunk: NeutralThunk, eqStore: EqStore): Value =
     evalMatch(thunk.term, ValueOps.materializeEnv(thunk.env, eqStore))
 
-  private def evalLam(l: CTerm.Lam, env: Env): Value = {
-    val vpi = evalPi(l.ty, env)
-    if (ValueEquivalence.keyAssertionsEnabled) assertDerivedClosure(l, vpi, env)
-    evalLam(l, vpi, env)
-  }
-
-  /**
-   * Check/run coherence of a derived closure (spec §8): the expression the checker derived, re-evaluated where the
-   * lambda now stands, equals what the lambda's captures derive there. Sorts commute with substitution, so it must.
-   */
-  private def assertDerivedClosure(l: CTerm.Lam, vpi: VPi, env: Env): Unit = {
-    def derived(field: CoreAst.ClosureField): Boolean =
-      field match {
-        case _: CoreAst.ClosureField.Derived => true
-        case _: CoreAst.ClosureField.Written => false
-      }
-    val kindDerived = derived(l.ty.closure.kind)
-    val scopeDerived = derived(l.ty.closure.scope)
-    if (kindDerived || scopeDerived) {
-      val (kind, scope) = derivedClosure(lambdaCaptures(l, env))
-      if ((kindDerived && kind != vpi.closureKind) || (scopeDerived && scope != vpi.closureScope))
-        wtf(
-          s"The derived closure of $vpi is ${vpi.closureKind}, ${vpi.closureScope}; its captures derive $kind, $scope"
-        )
-    }
-  }
+  private def evalLam(l: CTerm.Lam, env: Env): Value = evalLam(l, evalPi(l.ty, env), env)
 
   /** The value that is a sort parameter's type, which a variable of it and an expression of it have. */
   private[raccoonlang] def parameterType(parameter: CoreAst.Parameter): ParameterTpe =
@@ -411,9 +400,6 @@ object Interpreter {
       case l: Lifetime => l
       case other       => wtf(s"Checked lifetime expression evaluated to the non-lifetime $other")
     }
-
-  private[raccoonlang] def evalSort(level: Value, kind: Value, scope: Value): VSort =
-    Sorts.sort(getLevel(level), getKind(kind), getLifetime(scope))
 
   private[raccoonlang] def evalFormOp(form: CoreAst.Form, args: Vector[Value]): Value =
     form match {
@@ -446,7 +432,7 @@ object Interpreter {
       // The interpreter binds a scope's variable to its atom and makes none of its checks (spec §8).
       case scope: CTerm.Scope => evalTerm(scope.body, env.putLocal(scope.ref, Atoms.of(scope)))
       case CTerm.Sort(level, kind, scope, _) =>
-        evalSort(evalTerm(level, env), evalTerm(kind, env), evalTerm(scope, env))
+        Sorts.sort(getLevel(evalTerm(level, env)), getKind(evalTerm(kind, env)), getLifetime(evalTerm(scope, env)))
       case CTerm.FormOp(form, args, _) => evalFormOp(form, args.map(evalTerm(_, env)))
       // Named field syntax is resolved to a selector application by checkSelect, so a Select can
       // only reach evaluation if something published unchecked syntax.
