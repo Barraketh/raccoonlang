@@ -20,7 +20,7 @@ present at `bfd5196`; the rest were introduced or exposed by the Lemur work.
 | S7b Elaborator field resolution and pattern spans | F11, F14 | done | `0d0f789` |
 | S8 Confinement by sort scope | F6 (D1, decided) | done | `5035a69`, `b8c5f6f` |
 | S9 The program's result is never linear | D2 (decided) | done | `345b445` |
-| S10 Mutual siblings at their own sorts | D3 (decided) | in progress | |
+| S10 Mutual siblings at their own sorts | D3 (decided) | done | `5a37ef6` |
 | S11 Explicit node identity | F2's root cause | in progress | |
 
 All steps are done, S8 included; the branch validates (710 tests), and every
@@ -462,6 +462,16 @@ carry spans, and `LinearUnused` for one points at it.
   updated; fixture `linear-global-result`. The merged branch validates (712
   tests).
 
+- 2026-09-29: S10 landed (`5a37ef6`). The block-wide sort equality and
+  `MutualBlockSortMismatch` are gone; nothing else assumed siblings share a
+  sort. The audit (`MutualSiblingSortTests`) covers proof recovery and `Prop`
+  elimination for a `Prop` sibling holding data, proof irrelevance, a `Type`
+  sibling holding a sibling's proof, termination across a mixed block (no
+  structural descent through a proof), struct eta, packed layouts, positivity,
+  and a linear `Tok` with an unrestricted `Factory` (a factory cannot hand out
+  one captured token twice: its closure would be `lin`). `Even : Type` with
+  `Odd : Prop` is now accepted. The merged branch validates (721 tests).
+
 ## Follow-ups (proposed, not scheduled)
 
 - **Field projection printing** (from S7a). The printer shows any one-branch
@@ -470,6 +480,11 @@ carry spans, and `LinearUnused` for one points at it.
   families are structs.
 - **Implicit-first Pi in term position** (from S7a, pre-existing).
   `{A: Type} -> A -> A` as a term is read as a block.
+- **A `match` ending right before the next declaration** (pre-existing; seen in
+  S10). With no blank line between a `match`'s last case and the next `def`,
+  the module fails to parse ("Failed to parse end of input"; at `1823e67` the
+  message was a JVM identity hash). A nested match without braces at the end of
+  input fails similarly.
 - **`with` on the next line** (from S7a). `returning` may start the next line;
   `with` still may not.
 - **Family scope error message** (from D4). "Family Wrap is declared at scope
