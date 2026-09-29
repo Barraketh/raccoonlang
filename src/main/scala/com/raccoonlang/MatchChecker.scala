@@ -92,7 +92,7 @@ object MatchChecker {
       motiveTy: Value,
       reachable: => Vector[ReachableCtor]
   ): Unit =
-    if (isPropValuedType(scrutTpe) && !isPropValuedType(motiveTy) && !allowLargeElimination(scrutTpe, reachable))
+    if (Sorts.isProposition(scrutTpe) && !Sorts.isProposition(motiveTy) && !allowLargeElimination(scrutTpe, reachable))
       fail(PropEliminationRestricted(inductiveName, motiveTy))
 
   /** The branch boundary: locates and frames failures in the pattern and the refined environment around the body. */
@@ -154,7 +154,7 @@ object MatchChecker {
     lazy val reachableByType: Vector[ReachableCtor] =
       computeReachableCtors(scrut, scrutTpe, inductiveName, inductiveCtorNames, cases, env)
 
-    val checkedMotive = checkTerm(t.motive, env)
+    val checkedMotive = checkTypeTerm(t.motive, env)
     val motiveTy = checkedMotive.value
 
     checkPropElimination(inductiveName, scrutTpe, motiveTy, reachableByType)

@@ -84,8 +84,6 @@ final case class LocalCaseHead(name: String) extends TypeError
 final case class TypeMismatch(expected: Value, actual: Value, detail: Option[ValueEquivalence.UnifyFailure])
   extends TypeError
 
-final case class NotALevel(v1: Value) extends TypeError
-
 /** A broken kernel invariant, not a `TypeError`: keeps its stack trace and is reported as a kernel bug. */
 final class InternalError(val reason: String) extends RuntimeException {
   private var located: Option[Span] = None

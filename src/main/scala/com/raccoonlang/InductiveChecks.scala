@@ -93,7 +93,7 @@ object InductiveChecks {
 
         case _: ConstructorHead => !target.mayOccurIn(value)
 
-        case _: Level | LevelTpe | _: VLam | _: VSort | _: Var | _: VConst =>
+        case _: Level | LevelTpe | SortParameter | Large | _: VLam | _: VSort | _: Var | _: VConst =>
           !target.mayOccurIn(value)
       }
 
@@ -204,7 +204,7 @@ object InductiveChecks {
 
         case _: ConstructorHead => true
 
-        case _: Level | LevelTpe | _: VSort | _: Var | _: VConst =>
+        case _: Level | LevelTpe | SortParameter | Large | _: VSort | _: Var | _: VConst =>
           true
       }
 
@@ -252,7 +252,7 @@ object InductiveChecks {
 
       case VConst(name, Inductive(_), _) if blockNames(name) => false
 
-      case _: ConstructorHead | _: Level | LevelTpe | _: VSort | _: Var | _: VConst =>
+      case _: ConstructorHead | _: Level | LevelTpe | SortParameter | Large | _: VSort | _: Var | _: VConst =>
         true
     }
 
@@ -395,7 +395,7 @@ object InductiveChecks {
     else Term.Pi(decl.header.binders, decl.header.resultTy, decl.header.span)
 
   private def checkFamilySignatures(block: Decl.InductiveBlock, env: Env): Vector[FamilySignature] = {
-    val typedFamilies = block.families.map(decl => (decl, TypeChecker.getType(familyTypeTerm(decl), env)))
+    val typedFamilies = block.families.map(decl => (decl, TypeChecker.checkDeclType(familyTypeTerm(decl), env).value))
     val coreParamCount = block.families.head.header.params.length
     val expectedImplicitness = block.families.head.header.params.map(_.isImplicit)
     val canonicalParams =
@@ -521,7 +521,7 @@ object InductiveChecks {
       val ownBinderVars = binderVars.drop(header.params.length)
       val sourceParamValues = commonParamValues
       val trueFieldVars = ownBinderVars
-      val outputTpe = TypeChecker.getType(ctor.resultTy, envWithBinders)
+      val outputTpe = TypeChecker.checkTypeTerm(ctor.resultTy, envWithBinders).value
 
       // 4) Constructor result must be the inductive family head applied to the full family arity.
       def badResult: Nothing =

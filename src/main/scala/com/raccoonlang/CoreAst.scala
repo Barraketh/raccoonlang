@@ -209,6 +209,18 @@ object CoreAst {
     def name: String = localRef.name
   }
 
+  /**
+   * Where a binder was written, which decides what it may bind (spec §2.2): a declaration's header or a family's
+   * parameters may bind a level; a family index, a constructor field, and a function type's or lambda's binder may not.
+   * A function type written after a declaration's `:` is not its header.
+   */
+  sealed trait BinderSite
+  object BinderSite {
+    case object Parameter extends BinderSite
+    case object Field extends BinderSite
+    case object Function extends BinderSite
+  }
+
   // An implicit binder never appears in checked App syntax: applications carry only the explicit
   // args, and evaluation reconstructs the implicits by running `projection` against them. The spec
   // is compiled at Pi formation and filled in by BinderOps.checkBinders.
@@ -216,6 +228,7 @@ object CoreAst {
       localRef: LocalRef,
       ty: Term,
       span: Span,
+      site: BinderSite,
       isImplicit: Boolean = false,
       projection: Option[telescope.Projection.Spec] = None
   ) {

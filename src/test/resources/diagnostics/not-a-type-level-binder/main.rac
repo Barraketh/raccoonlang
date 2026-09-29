@@ -1,0 +1,2 @@
+def F : (u: Level) -> Sort { level = succ(succ(u)) } :=
+  fun (u: Level): Sort { level = succ(succ(u)) } => Sort { level = succ(u) }

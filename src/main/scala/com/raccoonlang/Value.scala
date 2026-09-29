@@ -46,7 +46,7 @@ object Value {
    */
   def canonicalizeProof(value: Value): Value =
     value match {
-      // A Pi's own type is a sort, never a proposition — skip without forcing its lazy classifier.
+      // A Pi's own type is a classifier, never a proposition — skip without forcing it.
       // Metas remain linkable, constructor heads remain applicable, and the raw recursive lambda
       // remains executable until checking has validated every recursive call.
       case _: VPi | _: Var | _: ConstructorHead   => value
@@ -201,8 +201,8 @@ object Value {
           }
         // Everything else is either leaf-like or reaches vars only through its type. Sorts are
         // excluded explicitly: the type of a sort at `u` is the sort at `u+1`, an infinite ascent with the same deps.
-        case _: VSort | LevelTpe | _: Level | _: ConstructorHead =>
-        case other                                               => walk(other.tpe)
+        case _: VSort | Large | SortParameter | LevelTpe | _: Level | _: ConstructorHead =>
+        case other                                                                       => walk(other.tpe)
       }
     }
 
@@ -227,8 +227,36 @@ object Value {
     }
   }
 
+  /**
+   * The sort parameter `Level` (spec §2.2). It is not a type: no sort contains it, so a level is bound only at a
+   * parameter site and stands only where a level is expected.
+   */
   case object LevelTpe extends TopLevelValue {
-    override def tpe: Value = Sorts.Type
+    override def tpe: Value = SortParameter
+  }
+
+  /**
+   * The classifier of the sort parameters. It is not a sort, so nothing it classifies is a type; it classifies itself,
+   * and no program can write it.
+   */
+  case object SortParameter extends TopLevelValue {
+    override def tpe: Value = SortParameter
+  }
+
+  /**
+   * A type's classifier: a sort, or `Large`. Matches on a classifier are exhaustive and have no wildcard arm, so no
+   * code reads a function type's classifier as a sort without deciding what a large one means there.
+   */
+  sealed trait Classifier extends Value
+
+  /**
+   * The classifier of a function type that binds a level (spec §2.4). It is internal: no program writes it or binds a
+   * variable of it, and it is not a sort, so a large type fits no position that requires a type. Only a declaration's
+   * own type is large, so it is used only applied. `Large` classifies itself; nothing quantifies over it, so no
+   * hierarchy above it is needed.
+   */
+  case object Large extends TopLevelValue with Classifier {
+    override def tpe: Value = Large
   }
 
   // Represents max(atom1 + k1, atom2 + k2... , c), where an atom is either a level variable or an unresolved imax.
@@ -421,7 +449,7 @@ object Value {
    * no structural equality: two sorts are compared only by conversion, so `==` on a sort is a kernel bug and throws
    * rather than silently answering false.
    */
-  final class VSort private[raccoonlang] (val level: Level) extends Value {
+  final class VSort private[raccoonlang] (val level: Level) extends Classifier {
     override def tpe: Value = Sorts.sort(Level.succ(level))
 
     override lazy val synDeps: DepSet = level.synDeps
@@ -432,7 +460,8 @@ object Value {
 
   // The classifier is a thunk, not a stored sort: a Pi's universe depends on the env it is
   // evaluated in (level-polymorphic binder types), so residuals carry no classifier and each VPi
-  // instance derives its own from its binders and codomain (Interpreter.piClassifier).
+  // instance derives its own from its binders and codomain (Interpreter.piClassifier). A Pi that
+  // binds a level is `Large`.
   // Binders are the checked CoreAst.Binder nodes themselves: a VPi is its syntax plus a closure.
   case class VPi(
       env: Env,
@@ -440,18 +469,18 @@ object Value {
       codomain: Env => Value,
       synDeps: DepSet,
       id: ValueId,
-      classifier0: () => VSort,
+      classifier0: () => Classifier,
       knownPropValued: Option[Boolean] = None
   ) extends Value {
     require(binders.nonEmpty, "VPi requires at least one binder")
 
-    override lazy val tpe: VSort = classifier0()
+    override lazy val tpe: Classifier = classifier0()
 
     /**
-     * Whether this Pi is itself a proposition — by impredicativity, exactly when its codomain is Prop-valued, which is
-     * also exactly when the classifier is Prop. Kept separate from `tpe` so the proof canonicalization checks that run
-     * on every lambda creation and env binding need only a codomain evaluation, not the per-binder universe walk of the
-     * full classifier.
+     * Whether this Pi's values are proofs — exactly when its codomain is Prop-valued. For a small Pi that is also
+     * exactly when the classifier is Prop (impredicativity); a large Pi into a proposition is proof-valued as well
+     * (spec §2.4). Kept separate from `tpe` so the proof canonicalization checks that run on every lambda creation and
+     * env binding need only a codomain evaluation, not the per-binder universe walk of the full classifier.
      */
     lazy val isPropValued: Boolean = {
       knownPropValued.getOrElse {

@@ -525,23 +525,27 @@ object Elaborator {
    */
   private def elabPi(pi: SA.Term.Pi, env: ResolveEnv): CA.Term.Pi = {
     val piEnv = env.enterLocalScope
-    val (binders, binderEnv) = elabBinders(pi.binders, piEnv)
+    val (binders, binderEnv) = elabBinders(pi.binders, CA.BinderSite.Function, piEnv)
     val body = elabTerm(pi.body, binderEnv)
     val span = Span(binders.head.span.start, body.span.end, binders.head.span.source.orElse(body.span.source))
     CA.Term.Pi(binders, body, span)
   }
 
-  private def elabBinder(b: SA.Binder, env: ResolveEnv): (CA.Binder, ResolveEnv) = {
+  private def elabBinder(b: SA.Binder, site: CA.BinderSite, env: ResolveEnv): (CA.Binder, ResolveEnv) = {
     val ty = elabTerm(b.ty, env)
     val (ref, nextEnv) =
       if (b.name == "_") env.allocate(b.name)
       else env.bindNamed(b.name, allowShadow = false)
-    (CA.Binder(ref, ty, b.span, b.isImplicit), nextEnv)
+    (CA.Binder(ref, ty, b.span, site, b.isImplicit), nextEnv)
   }
 
-  private def elabBinders(binders: Vector[SA.Binder], env: ResolveEnv): (Vector[CA.Binder], ResolveEnv) =
+  private def elabBinders(
+      binders: Vector[SA.Binder],
+      site: CA.BinderSite,
+      env: ResolveEnv
+  ): (Vector[CA.Binder], ResolveEnv) =
     binders.foldLeft((Vector.empty[CA.Binder], env)) { case ((curBinders, curEnv), binder) =>
-      val (nextBinder, nextEnv) = elabBinder(binder, curEnv)
+      val (nextBinder, nextEnv) = elabBinder(binder, site, curEnv)
       (curBinders :+ nextBinder, nextEnv)
     }
 
@@ -567,9 +571,10 @@ object Elaborator {
       constructorNames: Vector[GlobalName]
   )
 
-  private def elabHeader(header: SA.FuncHeader, env: ResolveEnv): HeaderResult = {
+  /** A declaration's header binds `Parameter`s; a lambda's header binds `Function` binders. */
+  private def elabHeader(header: SA.FuncHeader, site: CA.BinderSite, env: ResolveEnv): HeaderResult = {
     val headerEnv = env.enterLocalScope
-    val (params, bodyEnv) = elabBinders(header.params, headerEnv)
+    val (params, bodyEnv) = elabBinders(header.params, site, headerEnv)
     val outTy = elabTerm(header.ty, bodyEnv)
     val ty =
       if (params.isEmpty) outTy
@@ -578,7 +583,7 @@ object Elaborator {
   }
 
   def getType(header: SA.FuncHeader): CA.Term =
-    elabHeader(header, ResolveEnv.empty).ty
+    elabHeader(header, CA.BinderSite.Parameter, ResolveEnv.empty).ty
 
   private def elabLam(
       pi: CA.Term.Pi,
@@ -638,7 +643,7 @@ object Elaborator {
       CA.Term.Sort(levelTerm, sp)
     case pi: SA.Term.Pi => elabPi(pi, env)
     case l: SA.Term.Lam =>
-      val header = elabHeader(l.header, env)
+      val header = elabHeader(l.header, CA.BinderSite.Function, env)
       header.ty match {
         case pi: CA.Term.Pi =>
           elabLam(pi, header.bodyEnv, l.body, None, None, l.span)
@@ -713,7 +718,7 @@ object Elaborator {
       val decrease = defn.decreases.getOrElse {
         at(defn.span) { fail(InvalidDecreaseSpec("every mutual definition requires a decreases annotation")) }
       }
-      val header = elabHeader(defn.header.funcHeader, allocator)
+      val header = elabHeader(defn.header.funcHeader, CA.BinderSite.Parameter, allocator)
       allocator = allocator.copy(nextLocal = header.bodyEnv.nextLocal)
       header.ty match {
         case pi: CA.Term.Pi => PreparedRecursiveDefinition(defn, name, header, pi, decrease)
@@ -766,8 +771,8 @@ object Elaborator {
 
     val prepared = families.zip(names).map { case (family, name) =>
       val headerEnv = env.copy(nextLocal = nextLocal).enterLocalScope
-      val (params, envWithParams) = elabBinders(family.header.params, headerEnv)
-      val (indices, envWithIndices) = elabBinders(family.header.indices, envWithParams)
+      val (params, envWithParams) = elabBinders(family.header.params, CA.BinderSite.Parameter, headerEnv)
+      val (indices, envWithIndices) = elabBinders(family.header.indices, CA.BinderSite.Field, envWithParams)
       val resultTy = elabTerm(family.header.resultTy, envWithIndices)
       nextLocal = envWithIndices.nextLocal
       PreparedInductive(
@@ -782,7 +787,7 @@ object Elaborator {
       val constructorNames = family.surface.ctors.map(ctor => family.name :+ ctor.name)
       val constructors = family.surface.ctors.zip(constructorNames).map { case (constructor, name) =>
         val constructorEnv = family.constructorParamEnv.copy(root = familyEnv.root, nextLocal = nextLocal)
-        val (binders, envWithBinders) = elabBinders(constructor.binders, constructorEnv)
+        val (binders, envWithBinders) = elabBinders(constructor.binders, CA.BinderSite.Field, constructorEnv)
         nextLocal = envWithBinders.nextLocal
         CA.ConstructorDecl(
           canonicalName = globalName(name),
@@ -836,7 +841,7 @@ object Elaborator {
           case Some(_) => env.reserveRecursiveNames(Vector(c.header.name))
           case None    => env
         }
-        val header = elabHeader(c.header.funcHeader, headerEnv)
+        val header = elabHeader(c.header.funcHeader, CA.BinderSite.Parameter, headerEnv)
         val envWithSelf = env.addGlobal(name)
         val body = c.body match {
           case SA.ConstBody.Builtin(sp) =>
@@ -880,7 +885,7 @@ object Elaborator {
       case c: SurfaceAst.Command.Decl.AxiomDecl =>
         val name = env.qualify(c.header.name)
         val nameText = globalName(name)
-        val header = elabHeader(c.header.funcHeader, env)
+        val header = elabHeader(c.header.funcHeader, CA.BinderSite.Parameter, env)
         (
           CA.Decl.AxiomDecl(nameText, header.ty, c.span),
           env.addGlobal(name)

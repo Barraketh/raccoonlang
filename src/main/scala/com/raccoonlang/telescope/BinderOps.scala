@@ -40,9 +40,10 @@ object BinderOps {
     }
 
   /**
-   * Check a telescope's binder types and compile the implicit projection specs (Projection.compile). Every implicit
-   * binder must be forced by later non-implicit binders; the leading `familyParams` binders of a constructor telescope
-   * are demoted to explicit instead of erroring when unforced.
+   * Check a telescope's binder types and compile the implicit projection specs (Projection.compile). A binder's site
+   * decides whether it may bind a level (TypeChecker.checkBinderType). Every implicit binder must be forced by later
+   * non-implicit binders; the leading `familyParams` binders of a constructor telescope are demoted to explicit instead
+   * of erroring when unforced.
    */
   def checkBinders(
       binders: Vector[CoreAst.Binder],
@@ -52,9 +53,8 @@ object BinderOps {
     var env = baseEnv
     val holeIds = Vector.newBuilder[Option[Value.VarId]]
     val checkedTys = binders.map { binder =>
-      val checkedTy = TypeChecker.checkTerm(binder.ty, env)
-      TypeChecker.assertType(checkedTy.value)
-      val provisional = CoreAst.Binder(binder.localRef, checkedTy.residual, binder.span, binder.isImplicit)
+      val checkedTy = TypeChecker.checkBinderType(binder, env)
+      val provisional = binder.copy(ty = checkedTy.residual)
       val freshened = freshenBinder(env, provisional, provisional.name)
       env = env.putLocal(binder.localRef, freshened.value)
       holeIds += freshened.holeId
@@ -79,13 +79,7 @@ object BinderOps {
     val checkedBinders = binders.indices.toVector.map { idx =>
       val binder = binders(idx)
       val result = compiled(idx)
-      CoreAst.Binder(
-        binder.localRef,
-        checkedTys(idx).residual,
-        binder.span,
-        result.isImplicit,
-        result.projection
-      )
+      binder.copy(ty = checkedTys(idx).residual, isImplicit = result.isImplicit, projection = result.projection)
     }
 
     CheckedBinders(checkedBinders, env)

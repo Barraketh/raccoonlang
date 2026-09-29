@@ -7,7 +7,7 @@ class ValueEquivalenceTests extends munit.FunSuite {
   private val span = Span(0, 0)
   private val typeSort: CoreAst.Term = CTerm.Sort(CTerm.LevelOp(CoreAst.LevelForm.One, Vector.empty, span), span)
   private val binderRef = CoreAst.LocalRef(0, "x")
-  private val binder = CoreAst.Binder(binderRef, typeSort, Span(0, 0))
+  private val binder = CoreAst.Binder(binderRef, typeSort, Span(0, 0), CoreAst.BinderSite.Function)
   private val env = Env.empty
   private val typeToTypeClassifier = Sorts.sort(Level.succ(Level.one))
 
@@ -64,7 +64,7 @@ class ValueEquivalenceTests extends munit.FunSuite {
 
   test("Pi definitional equality distinguishes telescope grouping") {
     val yRef = CoreAst.LocalRef(1, "y")
-    val yBinder = CoreAst.Binder(yRef, typeSort, span)
+    val yBinder = CoreAst.Binder(yRef, typeSort, span, CoreAst.BinderSite.Function)
     val grouped = VPi(
       env,
       Vector(binder, yBinder),
@@ -100,7 +100,7 @@ class ValueEquivalenceTests extends munit.FunSuite {
 
   test("checked and residual applications cross nested Pi groups") {
     val yRef = CoreAst.LocalRef(2, "y")
-    val yBinder = CoreAst.Binder(yRef, typeSort, span)
+    val yBinder = CoreAst.Binder(yRef, typeSort, span, CoreAst.BinderSite.Function)
     val nested = VPi(
       env,
       Vector(binder),

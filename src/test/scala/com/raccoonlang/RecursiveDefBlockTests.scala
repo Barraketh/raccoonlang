@@ -9,11 +9,15 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
   private val typeSort: Term = Term.Sort(Term.LevelOp(CoreAst.LevelForm.One, Vector.empty, span), span)
   private def local(ref: CoreAst.LocalRef): Term.LocalRef = Term.LocalRef(ref, span)
   private def app(fn: Term, args: Term*): Term.App = Term.App(fn, args.toVector, span)
-  private def binder(ref: CoreAst.LocalRef, tpe: Term): CoreAst.Binder = CoreAst.Binder(ref, tpe, span)
+  private def binder(ref: CoreAst.LocalRef, tpe: Term, site: CoreAst.BinderSite): CoreAst.Binder =
+    CoreAst.Binder(ref, tpe, span, site)
+  private def field(ref: CoreAst.LocalRef, tpe: Term): CoreAst.Binder = binder(ref, tpe, CoreAst.BinderSite.Field)
+  private def param(ref: CoreAst.LocalRef, tpe: Term): CoreAst.Binder = binder(ref, tpe, CoreAst.BinderSite.Parameter)
+  // A definition's header.
   private def pi(ref: CoreAst.LocalRef, input: Term, output: Term): Term.Pi =
-    Term.Pi(Vector(binder(ref, input)), output, span)
+    Term.Pi(Vector(param(ref, input)), output, span)
   private def pi2(first: CoreAst.LocalRef, firstType: Term, second: CoreAst.LocalRef, secondType: Term): Term.Pi =
-    Term.Pi(Vector(binder(first, firstType), binder(second, secondType)), global("GroupResult"), span)
+    Term.Pi(Vector(param(first, firstType), param(second, secondType)), global("GroupResult"), span)
 
   private def installSource(source: String, initial: Env): Env =
     LanguageParser.parseProgram(source) match {
@@ -34,7 +38,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
         CoreAst.ConstructorDecl(
           "GroupA.toB",
           "toB",
-          Vector(binder(aToB, global("GroupB"))),
+          Vector(field(aToB, global("GroupB"))),
           global("GroupA"),
           span
         )
@@ -48,7 +52,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
         CoreAst.ConstructorDecl(
           "GroupB.toA",
           "toA",
-          Vector(binder(bToA, global("GroupA"))),
+          Vector(field(bToA, global("GroupA"))),
           global("GroupB"),
           span
         )
@@ -174,7 +178,16 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
         CoreAst.ConstructorDecl(
           "GroupHolder.mk",
           "mk",
-          Vector(binder(functionField, pi(argument, global("GroupA"), global("GroupResult")))),
+          Vector(
+            field(
+              functionField,
+              Term.Pi(
+                Vector(binder(argument, global("GroupA"), CoreAst.BinderSite.Function)),
+                global("GroupResult"),
+                span
+              )
+            )
+          ),
           global("GroupHolder"),
           span
         )
@@ -216,7 +229,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
     val first = block.definitions.head
     val metric = first.ty.binders.head.localRef
     val extra = CoreAst.LocalRef(99, "extra")
-    val extendedType = first.ty.copy(binders = first.ty.binders :+ binder(extra, global("GroupA")))
+    val extendedType = first.ty.copy(binders = first.ty.binders :+ param(extra, global("GroupA")))
     val malformed = block.copy(
       definitions = block.definitions.updated(
         0,

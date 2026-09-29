@@ -49,7 +49,7 @@ class TypingTests extends munit.FunSuite with TestSupport {
          | | zero : Peano
          | | succ (_: Peano) : Peano
          |
-         |def polyId {u: Level}{A: Sort { level = u }} (x: A): A := x
+         |def polyId {A: Type} (x: A): A := x
          |
          |def monoId : Peano -> Peano := $body
          |

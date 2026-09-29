@@ -1,0 +1,5 @@
+
+<root>/main.rac:1:13: error: Level is not a type
+def F : (u: Level) -> Sort { level = succ(succ(u)) } :=
+            ^^^^^
+note: in definition F

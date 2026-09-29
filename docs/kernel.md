@@ -133,14 +133,41 @@ universes.
 A codomain equal to the sort `Prop` is different: `Prop` itself lives in
 `Type`.
 
+A telescope that binds a level is instead classified by `Large`. A level binder
+changes the universe of everything after it, so no sort contains the Pi. `Large`
+is kernel-internal: it is not a sort, no program writes it, and it classifies
+itself, which is harmless because nothing quantifies over it. A type's
+classifier is therefore a sort or `Large`, and code that reads a Pi's
+classifier handles both. Instantiating a large Pi's binders yields small types
+again: its codomain is always a type.
+
+`Level` is a sort parameter, not a type: its classifier is not a sort. Every
+checked term must have a type, except in the positions that admit something
+else:
+
+- a binder of type `Level` is admitted only at a parameter site, a
+  declaration's header (the binders before its `:`) or a family parameter;
+  everywhere else a binder's type must be a type. The elaborator records each
+  binder's site, so a function type written after a declaration's `:` binds no
+  level;
+- a level stands only where `Level` is expected: a sort's level field and the
+  argument at a `Level` binder, which is checked against `Level` rather than
+  synthesized alone. A term of another type there is a type mismatch;
+- a reference whose type is large stands only as the head of an application;
+- a large type is admitted only as a declaration's type: a definition, opaque
+  definition, axiom, family or constructor, and a definition's lambda at that
+  type.
+
+Anywhere else the sort parameter, a level, or a large reference is `NotAType`.
+
 Universes are non-cumulative. Constructor-field universe checks enforce the
 declared inductive's size bound, but they do not introduce general sort
 subsumption.
 
 A sort is `Prop` exactly when its level is zero, and a type is a proposition
-exactly when its sort is `Prop` (a Pi by its codomain). The kernel has one
-definition of each, which the checker and proof irrelevance share. Sorts are
-compared only by conversion.
+exactly when its sort is `Prop` (a Pi by its codomain, so a large Pi into a
+proposition is one too). The kernel has one definition of each, which the
+checker and proof irrelevance share. Sorts are compared only by conversion.
 
 An implicit binder is accepted only with a compiled projection that recovers
 it from later explicit arguments. Checked applications retain only explicit
@@ -179,8 +206,8 @@ A checked match establishes all of the following:
 - no constructor is duplicated;
 - every reachable constructor is present;
 - constructor-result equations provide only justified branch refinements;
-- every branch has the instantiated motive, which the match writes as its
-  `returning` clause.
+- the motive, which the match writes as its `returning` clause, is a type;
+- every branch has the instantiated motive.
 
 An omitted constructor is valid only when its result is apart from the exact
 scrutinee type. A stuck equation keeps the constructor reachable and provides
@@ -209,7 +236,9 @@ outer representation is chosen only from its exact proposition:
    definitionally equal to the exact proposition.
 2. A Pi proposition becomes a synthetic proof eta-lambda. Applying it produces
    the canonical proof of the instantiated codomain; the checked source proof
-   body does not run.
+   body does not run. A large Pi into a proposition is proof-valued too, so a
+   level-polymorphic lemma such as `Eq.symm` publishes as this eta-lambda and
+   its body never runs.
 3. Every other proof is the structureless `VProof(proposition)`.
 
 This is finite, type-directed reconstruction, not proof search. It performs no
@@ -400,7 +429,9 @@ key-coherence assertion (`-Draccoon.keyAssertions`, on by default and off for
 benchmarking) runs the conversion rules beneath every equation a key decides
 and fails loudly on disagreement. Only atoms whose key is their identity are
 exempt: variables (by id), constants and constructor heads (by name), and
-levels (by normal form).
+levels (by normal form). The kernel singletons `Level`, its classifier and
+`Large` are equal only to themselves, which object identity decides before any
+key is read.
 
 Blocked applications and matches carry dependency sets describing which
 refinement-store events could make reevaluation productive. An empty dependency
@@ -432,3 +463,7 @@ Changes to the checker or evaluator must preserve these rules:
     followed by definitional equality with the expected type.
 14. Sorts and levels are built only by the kernel's own sort and level forms;
     no global, builtin or prelude declaration names one.
+15. Every checked term has a type, except where the checker's position rules
+    admit otherwise: `Level` as a parameter binder's type, a level where `Level`
+    is expected, a large reference at an application head, and a large type as a
+    declaration's type.

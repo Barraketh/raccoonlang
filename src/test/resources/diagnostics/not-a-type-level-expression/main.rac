@@ -1,0 +1,4 @@
+def f {u: Level}(A: Sort { level = u })(n: Nat): Nat :=
+  match u returning Nat with
+  | Nat.zero => 0
+  | Nat.succ k => k

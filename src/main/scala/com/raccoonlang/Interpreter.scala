@@ -21,7 +21,7 @@ object Interpreter {
               eqStore.force(sol) match {
                 case next: Level       => normalizeLevel(next, eqStore)
                 case Var(_, nextId, _) => Level.mk(nextId)
-                case other             => fail(NotALevel(other))
+                case other             => wtf(s"Level variable $id solved to the non-level $other")
               }
             case None => Level.mk(id)
           }
@@ -76,22 +76,26 @@ object Interpreter {
    * The universe of a Pi, derived from the env it closed over: the binder types' universes are right-folded with imax
    * over the codomain's universe. IMax reduces to Prop for a Prop-valued codomain and to ordinary max for a definitely
    * positive codomain. Computing it per instance means a residual Pi re-evaluated with concrete levels gets the
-   * concrete universe, not the declaration-time one.
+   * concrete universe, not the declaration-time one. A Pi that binds a level is `Large` (spec §2.4): the level changes
+   * the universe of everything after it, so no sort contains the Pi.
    */
   private[raccoonlang] def piClassifierFromChecked(
       binders: Vector[CoreAst.Binder],
       freshEnv: Env,
       outV: Value
-  ): VSort = {
-    val outSort = TypeChecker.getUniverse(outV)
-    if (Sorts.isProp(outSort)) outSort
+  ): Classifier = {
+    if (binders.exists(binder => freshEnv(binder.localRef).tpe eq LevelTpe)) Large
     else {
-      val outLevel = outSort.level
-      val domLevels = binders.map(binder => TypeChecker.getUniverse(freshEnv(binder.localRef).tpe).level)
-      val classifier =
-        if (Level.isNeverZero(outLevel)) Level.max(domLevels :+ outLevel)
-        else domLevels.foldRight(outLevel)(Level.imax)
-      Sorts.sort(classifier)
+      val outSort = TypeChecker.getUniverse(outV)
+      if (Sorts.isProp(outSort)) outSort
+      else {
+        val outLevel = outSort.level
+        val domLevels = binders.map(binder => TypeChecker.getUniverse(freshEnv(binder.localRef).tpe).level)
+        val classifier =
+          if (Level.isNeverZero(outLevel)) Level.max(domLevels :+ outLevel)
+          else domLevels.foldRight(outLevel)(Level.imax)
+        Sorts.sort(classifier)
+      }
     }
   }
 
@@ -103,7 +107,7 @@ object Interpreter {
     else None
   }
 
-  private def piClassifier(binders: Vector[CoreAst.Binder], baseEnv: Env, out: CoreAst.Term): VSort = {
+  private def piClassifier(binders: Vector[CoreAst.Binder], baseEnv: Env, out: CoreAst.Term): Classifier = {
     val freshEnv = BinderOps.freshen(binders, baseEnv)
     piClassifierFromChecked(binders, freshEnv, evalTerm(out, freshEnv))
   }
@@ -272,8 +276,9 @@ object Interpreter {
     evalLam(l, vpi, env)
   }
 
+  /** A checked level expression denotes a level: checking admits nothing else at a level position. */
   private[raccoonlang] def getLevel(v: Value): Level =
-    Level.fromValue(v).getOrElse(fail(NotALevel(v)))
+    Level.fromValue(v).getOrElse(wtf(s"Checked level expression evaluated to the non-level $v"))
 
   private[raccoonlang] def evalSort(level: Value): VSort = Sorts.sort(getLevel(level))
 
@@ -419,11 +424,11 @@ object Interpreter {
               case CoreAst.ConstBody.Builtin(_) =>
                 if (isOpaque) wtf("Builtin declarations cannot be opaque")
                 if (!trusted) fail(ReservedKernelName(name))
-                val tyV = TypeChecker.getType(ty, env)
+                val tyV = TypeChecker.checkDeclType(ty, env).value
                 env.putGlobal(name, publishedValue(Builtins.instantiate(name, tyV), tyV))
 
               case CoreAst.ConstBody.TermBody(term) =>
-                val checkedTy = TypeChecker.getType(ty, env)
+                val checkedTy = TypeChecker.checkDeclType(ty, env).value
                 val checked = TypeChecker.checkTerm(term, checkedTy, env)
                 val value = if (isOpaque) VConst(name, Symbol, checkedTy) else checked.value
                 val published =
@@ -433,7 +438,7 @@ object Interpreter {
             }
 
           case Decl.AxiomDecl(name, ty, _) =>
-            val tyV = TypeChecker.getType(ty, env)
+            val tyV = TypeChecker.checkDeclType(ty, env).value
             env.putGlobal(name, publishedValue(VConst(name, Symbol, tyV), tyV))
 
           case d: Decl.InductiveDecl =>
