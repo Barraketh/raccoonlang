@@ -1,4 +1,4 @@
-inductive Tok (l: Lifetime) : Type { kind = lin }
- | mk : Tok(l)
+inductive Wrap (l: Lifetime) : Type
+ | mk : Wrap(l)
 
 { Nat.zero }

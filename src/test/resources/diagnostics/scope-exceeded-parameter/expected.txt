@@ -1,5 +1,5 @@
 
-<root>/main.rac:1:32: error: Family Phantom is declared at scope Lifetime.empty, which does not contain the scope S of parameter A : Type { scope = S }
+<root>/main.rac:1:19: error: Family Phantom is declared at scope Lifetime.empty, which does not contain the scope S of lifetime parameter S, which every family must name
 inductive Phantom {S: Lifetime}(A: Type { scope = S }) : Type
-                               ^^^^^^^^^^^^^^^^^^^^^^^
+                  ^^^^^^^^^^^^^
 note: in definition Phantom

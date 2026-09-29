@@ -4,7 +4,8 @@ import com.raccoonlang.Value.VPi
 import com.raccoonlang.telescope.{BinderOps, Projection}
 import com.raccoonlang.{CoreAst => CA}
 
-import java.nio.file.Paths
+import java.nio.charset.StandardCharsets
+import java.nio.file.{Files, Paths}
 
 /**
  * Leases and tokens end to end (spec §4.4, §4.2, §8): the sealed `Lease` and `Tok` module of `TestSupport.leaseModule`,
@@ -132,6 +133,26 @@ class LeaseTests extends munit.FunSuite with TestSupport {
     // Capturing the lease puts `l` in the closure's scope, and a lambda's type is exact wherever it stands.
     val mismatch = expectOnly[TypeMismatch](outside(leaseModule, client("useLease(h)")))
     assertEquals(mismatch.actual.toString, "{ scope = l } (u: Unit) -> Nat")
+  }
+
+  // spec §4.2: confinement reads a type's sort, not the atoms its value holds in code, a closure or a stuck computation.
+  test("a type about a value computed under a scope names no atom its sort does not") {
+    val example = new String(Files.readAllBytes(Paths.get("examples", "leases", "Lease.rac")), StandardCharsets.UTF_8)
+    val later =
+      "def later : Unit -> Nat :=\n" +
+        "  withLease(fun (l: Lifetime)(h: Lease(l)): Unit -> Nat => fun (u: Unit): Nat => List.length(List.nil(Lease(l))))\n"
+    val callback = "(l: Lifetime) -> Lease(l) -> Nat"
+    Vector(
+      later + "def same : Eq(Unit -> Nat, later, later) := Eq.refl(later)\n",
+      later + "def later2 : Unit -> Nat := fun (u: Unit): Nat => later(u)\n" +
+        "def same2 : Eq(Unit -> Nat, later2, later2) := Eq.refl(later2)\n",
+      s"def runs (f: $callback): Prop := Eq(Nat, withLease(f), withLease(f))\n" +
+        s"def proof (f: $callback): runs(f) := Eq.refl(withLease(f))\n",
+      s"def congr (f: $callback)(g: $callback)(p: Eq($callback, f, g)): Eq(Nat, withLease(f), withLease(g)) :=\n" +
+        s"  congrArg(p, Nat, fun (h: $callback): Nat => withLease(h))\n",
+      "def runs : Prop := Eq(Nat, withLease(fun (l: Lifetime)(h: Lease(l)): Nat => 3), 3)\n"
+    ).foreach(client => outside(example, client))
+    assertEquals(outside(example, later + "\n{ later(Unit.unit) }\n").map(PrettyPrinter.print), Some("0"))
   }
 
   test("a callback at a kind variable serves both kinds and is applied once") {

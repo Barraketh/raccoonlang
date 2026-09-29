@@ -479,19 +479,30 @@ object TypeChecker {
   }
 
   /**
-   * An atom's confinement (spec §4.2): a type whose value names an atom whose `scope` does not enclose the position is
-   * `LifetimeEscapes`, and the dependency set the value carries answers it. This is the one test; the checker applies
-   * it to every type it synthesizes or checks against, to each local's type at its binder, and to each argument that is
-   * a type. Evaluation never makes it.
+   * An atom's confinement (spec §4.2): a type whose sort's scope names an atom whose `scope` does not enclose the
+   * position is `LifetimeEscapes`. The sort is the type's classifier, and a sort's own sort is at its scope; a large
+   * type or a sort parameter is at none. An atom the type's value merely holds, in a closure's code or environment or a
+   * stuck computation, does not confine it. This is the one test; the checker applies it to every type it synthesizes
+   * or checks against, to each local's type at its binder, and to each argument that is a type. Evaluation never makes
+   * it.
    */
   private[raccoonlang] def requireInScope(tpe: Value, env: Env): Unit = {
     val atoms = Atoms.all
-    // Until a program opens an atom there is nothing to confine: the per-term fast path.
+    // Until a program opens an atom there is nothing to confine: the per-term fast path. The sort's scope is read off
+    // the type's components (spec §2.4), so the type's dependency set holds every atom it names; testing that first
+    // spares forcing a function type's classifier where no atom outside its scope is in sight.
     if (atoms.nonEmpty && tpe.synDeps.intersects(atoms)) {
-      val escaped = (tpe.synDeps & atoms) -- env.openAtoms
-      if (escaped.nonEmpty) {
-        val atom = escaped.max
-        fail(LifetimeEscapes(FreshVar.parameterName(atom).getOrElse(wtf(s"Atom $atom has no binder name")), tpe))
+      val held = (tpe.synDeps & atoms) -- env.openAtoms
+      if (held.nonEmpty) {
+        val escaped = tpe.tpe match {
+          case sort: VSort           => sort.scope.vars & held
+          case Large | SortParameter => DepSet.empty
+          case classifier            => wtf(s"The type $tpe is classified by $classifier, which is no classifier")
+        }
+        if (escaped.nonEmpty) {
+          val atom = escaped.max
+          fail(LifetimeEscapes(FreshVar.parameterName(atom).getOrElse(wtf(s"Atom $atom has no binder name")), tpe))
+        }
       }
     }
   }

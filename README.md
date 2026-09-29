@@ -23,8 +23,8 @@ Raccoon currently provides:
   families and declarations, normalized and compared exactly;
 - strictly positive inductive families with parameters and indices, whose
   declared kind and scope bound what their values hold;
-- `scope l => e`, which opens a fresh lifetime atom that no type may name
-  outside it;
+- `scope l => e`, which opens a fresh lifetime atom that no type's sort may
+  name outside it;
 - linear types: every local of a type whose kind is not `Kind.unr` is used
   exactly once on every path through its scope, and no type or proof holds one;
 - dependent, exhaustive pattern matching with an explicit `returning` motive;

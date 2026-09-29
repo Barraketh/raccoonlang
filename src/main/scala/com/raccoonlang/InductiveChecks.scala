@@ -465,9 +465,9 @@ object InductiveChecks {
         case sort: VSort => sort
         case other       => at(decl.header.resultTy.span) { fail(InductiveTypeNotASort(other)) }
       }
-      // spec §5.1: whatever can be read off an instance's type counts toward the declared scope, so it contains the
-      // scope of each parameter's and index's type, a sort parameter contributing nothing. A family at a kind other
-      // than Kind.unr also names each lifetime parameter.
+      // spec §5.1: whatever can be read off an instance's type counts toward the declared scope, so it names each
+      // lifetime parameter and contains the scope of each parameter's and index's type, a level or kind parameter
+      // contributing nothing.
       decl.header.binders.zip(familyArgs).zipWithIndex.foreach { case ((binder, arg), index) =>
         val role = if (index < decl.header.params.length) "parameter" else "index"
         def requireContains(part: => String, partScope: Lifetime): Unit =
@@ -481,11 +481,7 @@ object InductiveChecks {
           )
         (arg, arg.tpe) match {
           case (lifetime: Lifetime, _) =>
-            if (!declaredSort.kind.isUnr)
-              requireContains(
-                s"lifetime parameter ${binder.name}, which a family at kind ${declaredSort.kind} must name",
-                lifetime
-              )
+            requireContains(s"lifetime parameter ${binder.name}, which every family must name", lifetime)
           case (_, _: ParameterTpe) =>
           case (_, tpe) =>
             requireContains(s"$role ${binder.name} : $tpe", TypeChecker.getUniverse(tpe).scope)

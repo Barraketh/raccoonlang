@@ -9,16 +9,16 @@ package com.raccoonlang
 class KindLifetimeTests extends munit.FunSuite with TestSupport {
 
   /**
-   * A fieldless family at `Lifetime.empty`, so its instances fit `Eq(Type, …)`; one scoped by its lifetime; one per
-   * kind.
+   * A family scoped by its lifetime; one scoped by two, whose instances at swapped arguments share a sort and so fit
+   * one `Eq`; one per kind.
    */
   private val families =
     """
-      |inductive W (l: Lifetime) : Type
-      | | mk : W(l)
-      |
       |inductive V (l: Lifetime) : Type { scope = l }
       | | mk : V(l)
+      |
+      |inductive P (l: Lifetime)(m: Lifetime) : Type { scope = union(l, m) }
+      | | mk : P(l, m)
       |
       |inductive K (k: Kind) : Type
       | | mk : K(k)
@@ -37,11 +37,12 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
   }
 
   test("a family index cannot bind a kind or a lifetime") {
-    def program(index: String, result: String): String = s"inductive Box $index : Type\n | mk : Box($result)\n"
+    def program(index: String, sort: String, result: String): String =
+      s"inductive Box $index : $sort\n | mk : Box($result)\n"
 
-    typecheckDecls(program("(l: Lifetime)", "l"))
-    expectOnly[NotAType](typecheckDecls(program("indices (l: Lifetime)", "Lifetime.empty")))
-    expectOnly[NotAType](typecheckDecls(program("indices (k: Kind)", "Kind.unr")))
+    typecheckDecls(program("(l: Lifetime)", "Type { scope = l }", "l"))
+    expectOnly[NotAType](typecheckDecls(program("indices (l: Lifetime)", "Type", "Lifetime.empty")))
+    expectOnly[NotAType](typecheckDecls(program("indices (k: Kind)", "Type", "Kind.unr")))
   }
 
   test("a constructor field cannot bind a kind or a lifetime") {
@@ -81,9 +82,9 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
   }
 
   test("a kind or a lifetime stands only at a parameter position") {
-    def program(body: String): String = withFamilies(s"def f (l: Lifetime)(h: W(l)): W(l) := $body\n")
+    def program(body: String): String = withFamilies(s"def f (l: Lifetime)(h: V(l)): V(l) := $body\n")
 
-    typecheckDecls(program("W.mk(Lifetime.union(l, l))"))
+    typecheckDecls(program("V.mk(Lifetime.union(l, l))"))
     expectOnly[NotAType](typecheckDecls(program("{ let m := l\n h }")))
     expectOnly[NotAType](typecheckDecls(program("{ let e := Lifetime.empty\n h }")))
     expectOnly[NotAType](
@@ -99,7 +100,7 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
     expectOnly[TypeMismatch](typecheckDecls(program("Type { scope = Kind.lin }")))
     expectOnly[TypeMismatch](typecheckDecls(program("Type { kind = Lifetime.empty }")))
     expectOnly[TypeMismatch](typecheckDecls(program("Sort { level = Kind.unr }")))
-    expectOnly[TypeMismatch](typecheckDecls(withFamilies("def w : Type := W(Kind.lin)\n")))
+    expectOnly[TypeMismatch](typecheckDecls(withFamilies("def w : Type := V(Kind.lin)\n")))
   }
 
   test("kind and lifetime forms are the language's, recognized only applied") {
@@ -115,13 +116,16 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
   test("union and join are normalized at birth") {
     val laws =
       """
-        |def unionComm (a: Lifetime)(b: Lifetime): Eq(Type, W(Lifetime.union(a, b)), W(Lifetime.union(b, a))) :=
-        |  Eq.refl(W(Lifetime.union(a, b)))
+        |def unionComm (a: Lifetime)(b: Lifetime):
+        |    Eq(Type { scope = union(a, b) }, V(Lifetime.union(a, b)), V(Lifetime.union(b, a))) :=
+        |  Eq.refl(V(Lifetime.union(a, b)))
         |def unionAssoc (a: Lifetime)(b: Lifetime)(c: Lifetime):
-        |    Eq(Type, W(Lifetime.union(a, Lifetime.union(b, c))), W(Lifetime.union(Lifetime.union(a, b), c))) :=
-        |  Eq.refl(W(Lifetime.union(a, Lifetime.union(b, c))))
-        |def unionIdem (a: Lifetime): Eq(Type, W(Lifetime.union(a, a)), W(a)) := Eq.refl(W(a))
-        |def unionEmpty (a: Lifetime): Eq(Type, W(Lifetime.union(Lifetime.empty, a)), W(a)) := Eq.refl(W(a))
+        |    Eq(Type { scope = union(a, union(b, c)) },
+        |      V(Lifetime.union(a, Lifetime.union(b, c))), V(Lifetime.union(Lifetime.union(a, b), c))) :=
+        |  Eq.refl(V(Lifetime.union(a, Lifetime.union(b, c))))
+        |def unionIdem (a: Lifetime): Eq(Type { scope = a }, V(Lifetime.union(a, a)), V(a)) := Eq.refl(V(a))
+        |def unionEmpty (a: Lifetime): Eq(Type { scope = a }, V(Lifetime.union(Lifetime.empty, a)), V(a)) :=
+        |  Eq.refl(V(a))
         |def joinLin (k: Kind): Eq(Type, K(Kind.join(Kind.lin, k)), K(Kind.lin)) := Eq.refl(K(Kind.lin))
         |def joinUnr (k: Kind): Eq(Type, K(Kind.join(Kind.unr, k)), K(k)) := Eq.refl(K(k))
         |def joinComm (j: Kind)(k: Kind): Eq(Type, K(Kind.join(j, k)), K(Kind.join(k, j))) := Eq.refl(K(Kind.join(j, k)))
@@ -129,7 +133,11 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
 
     typecheckDecls(withFamilies(laws))
     expectOnly[TypeMismatch](
-      typecheckDecls(withFamilies("def apart (a: Lifetime)(b: Lifetime): Eq(Type, W(a), W(b)) := Eq.refl(W(a))\n"))
+      typecheckDecls(
+        withFamilies(
+          "def apart (a: Lifetime)(b: Lifetime): Eq(Type { scope = union(a, b) }, P(a, b), P(b, a)) := Eq.refl(P(a, b))\n"
+        )
+      )
     )
     expectOnly[TypeMismatch](
       typecheckDecls(withFamilies("def unrLin : Eq(Type, K(Kind.unr), K(Kind.lin)) := Eq.refl(K(Kind.unr))\n"))
@@ -233,21 +241,25 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
     expectOnly[LinearProp](typecheckDecls(program("Sort { level = u, kind = lin }")))
   }
 
-  // spec §6.2: a variable alone on one side links, the later-bound to the earlier-bound when both are variables.
+  // spec §6.2: a variable alone on one side links, the later-bound to the earlier-bound when both are variables. A
+  // lifetime equation arises only between instances that share a scope, so each one swaps P's arguments.
   test("refinement links a lone lifetime or kind variable") {
     val program =
       """
-        |def cast (a: Lifetime)(b: Lifetime)(p: Eq(Type, W(a), W(b)))(x: W(a)): W(b) :=
-        |  match p returning W(b) with
+        |def cast (a: Lifetime)(b: Lifetime)(p: Eq(Type { scope = union(a, b) }, P(a, b), P(b, a)))(x: P(a, b))
+        |    : P(b, a) :=
+        |  match p returning P(b, a) with
         |  | .refl _ => x
         |
-        |def toEmpty (a: Lifetime)(p: Eq(Type, W(a), W(Lifetime.empty)))(x: W(a)): W(Lifetime.empty) :=
-        |  match p returning W(Lifetime.empty) with
+        |def toEmpty (a: Lifetime)(p: Eq(Type { scope = a }, P(a, Lifetime.empty), P(Lifetime.empty, a)))
+        |    (x: P(a, Lifetime.empty)): P(Lifetime.empty, a) :=
+        |  match p returning P(Lifetime.empty, a) with
         |  | .refl _ => x
         |
-        |def toUnion (a: Lifetime)(b: Lifetime)(c: Lifetime)(p: Eq(Type, W(c), W(Lifetime.union(a, b))))(x: W(c))
-        |    : W(Lifetime.union(a, b)) :=
-        |  match p returning W(Lifetime.union(a, b)) with
+        |def toUnion (a: Lifetime)(b: Lifetime)(c: Lifetime)
+        |    (p: Eq(Type { scope = union(c, union(a, b)) }, P(c, Lifetime.union(a, b)), P(Lifetime.union(a, b), c)))
+        |    (x: P(c, Lifetime.union(a, b))): P(Lifetime.union(a, b), c) :=
+        |  match p returning P(Lifetime.union(a, b), c) with
         |  | .refl _ => x
         |
         |def toLin (k: Kind)(p: Eq(Type, K(k), K(Kind.lin)))(x: K(k)): K(Kind.lin) :=
@@ -263,9 +275,10 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
       withFamilies(
         s"""
            |def cast (a: Lifetime)(b: Lifetime)(c: Lifetime)(d: Lifetime)
-           |    (p: Eq(Type, W(Lifetime.union(a, b)), W(Lifetime.union(c, d))))(x: W(Lifetime.union(a, b)))
-           |    : W(Lifetime.union(a, b)) :=
-           |  match p returning W(Lifetime.union(a, b)) with
+           |    (p: Eq(Type { scope = union(union(a, b), union(c, d)) },
+           |      P(Lifetime.union(a, b), Lifetime.union(c, d)), P(Lifetime.union(c, d), Lifetime.union(a, b))))
+           |    (x: P(Lifetime.union(a, b), Lifetime.union(c, d))): P(Lifetime.union(a, b), Lifetime.union(c, d)) :=
+           |  match p returning P(Lifetime.union(a, b), Lifetime.union(c, d)) with
            |  $cases
            |""".stripMargin
       )
@@ -277,9 +290,10 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
         withFamilies(
           """
             |def cast (a: Lifetime)(b: Lifetime)(c: Lifetime)(d: Lifetime)
-            |    (p: Eq(Type, W(Lifetime.union(a, b)), W(Lifetime.union(c, d))))(x: W(Lifetime.union(a, b)))
-            |    : W(Lifetime.union(c, d)) :=
-            |  match p returning W(Lifetime.union(c, d)) with
+            |    (p: Eq(Type { scope = union(union(a, b), union(c, d)) },
+            |      P(Lifetime.union(a, b), Lifetime.union(c, d)), P(Lifetime.union(c, d), Lifetime.union(a, b))))
+            |    (x: P(Lifetime.union(a, b), Lifetime.union(c, d))): P(Lifetime.union(c, d), Lifetime.union(a, b)) :=
+            |  match p returning P(Lifetime.union(c, d), Lifetime.union(a, b)) with
             |  | .refl _ => x
             |""".stripMargin
         )
@@ -287,7 +301,8 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
     )
   }
 
-  // Plan G6: siblings of a mutual block agree on all three sort fields.
+  // Plan G6: siblings of a mutual block agree on all three sort fields. They share their parameters, and each names every
+  // lifetime parameter and no other lifetime, so their scopes cannot differ: a sibling that omits one is refused at it.
   test("mutual siblings agree on level, kind and scope") {
     def program(secondSort: String): String =
       s"""
@@ -301,7 +316,8 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
          |""".stripMargin
 
     typecheckDecls(program("Type { scope = l }"))
-    expectOnly[MutualBlockSortMismatch](typecheckDecls(program("Type")))
+    expectOnly[MutualBlockSortMismatch](typecheckDecls(program("Sort { level = succ(one), scope = l }")))
     expectOnly[MutualBlockSortMismatch](typecheckDecls(program("Type { kind = lin, scope = l }")))
+    assert(expectOnly[ScopeExceeded](typecheckDecls(program("Type"))).part.startsWith("lifetime parameter l"))
   }
 }

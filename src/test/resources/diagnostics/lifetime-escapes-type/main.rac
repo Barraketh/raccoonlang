@@ -1,0 +1,6 @@
+inductive Wrap (l: Lifetime) : Type { scope = l }
+ | mk : Wrap(l)
+
+def leak : Type := scope l => Wrap(l)
+
+{ Nat.zero }
