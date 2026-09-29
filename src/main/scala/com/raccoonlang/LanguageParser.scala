@@ -293,7 +293,7 @@ object LanguageParser {
   private def layoutParam(implicit sourceId: Option[SourceId]): Parser[Binder] = skipAllWs ~ param
 
   private def let(implicit sourceId: Option[SourceId]): Parser[Let] =
-    (kw("let") ~/ ident ~ (sym(':') ~ skipAllWs ~ typeTerm).? ~ sym(":=") ~/ skipAllWs ~ term)
+    (kw("let") ~/ argName ~ (sym(':') ~ skipAllWs ~ typeTerm).? ~ sym(":=") ~/ skipAllWs ~ term)
       .flatSpanned(sourceId)
       .map { case (name, ty, value, span) =>
         Let(name, ty, value, span)
@@ -327,7 +327,7 @@ object LanguageParser {
    * name, which the field parser reads as a plain word. The body extends as far to the right as a lambda body does.
    */
   private def scopeP(implicit sourceId: Option[SourceId]): Parser[Term] =
-    (kw("scope") ~/ ident ~ sym("=>") ~/ skipAllWs ~ term).flatSpanned(sourceId).map { case (name, body, span) =>
+    (kw("scope") ~/ argName ~ sym("=>") ~/ skipAllWs ~ term).flatSpanned(sourceId).map { case (name, body, span) =>
       Scope(name, body, span)
     }
 

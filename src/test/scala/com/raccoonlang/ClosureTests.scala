@@ -34,7 +34,7 @@ class ClosureTests extends munit.FunSuite with TestSupport {
     }
 
   test("a closure prefixes a function type's group, or a lambda") {
-    typecheckDecls(withFamilies("def f (l: Lifetime)(g: { kind = lin, scope = l } Unit -> Nat): Nat := 0\n"))
+    typecheckDecls(withFamilies("def f (l: Lifetime)(g: { kind = lin, scope = l } Unit -> Nat): Nat := g(Unit.unit)\n"))
     typecheckDecls(withFamilies("def f (l: Lifetime)(g: Nat -> ({ scope = l } Unit -> Nat)): Nat := 0\n"))
     typecheckDecls(withFamilies("def f (l: Lifetime)(g: { scope = l } (u: Unit)(n: Nat) -> Nat): Nat := 0\n"))
     typecheckDecls(
@@ -97,18 +97,16 @@ class ClosureTests extends munit.FunSuite with TestSupport {
   }
 
   test("a lambda's omitted closure is what its body captures") {
-    def program(result: String, body: String): String =
-      withFamilies(
-        s"def f (l: Lifetime)(v: V(l))(t: Tok(l)): $result := fun (u: Unit): Nat => $body\n"
-      )
+    def program(capture: String, result: String, body: String): String =
+      withFamilies(s"def f (l: Lifetime)$capture: $result := fun (u: Unit): Nat => $body\n")
 
-    typecheckDecls(program("Unit -> Nat", "0"))
-    typecheckDecls(program("{ scope = l } Unit -> Nat", "useV(v)"))
-    typecheckDecls(program("{ kind = lin, scope = l } Unit -> Nat", "eat(t)"))
-    expectOnly[TypeMismatch](typecheckDecls(program("{ scope = l } Unit -> Nat", "eat(t)")))
-    expectOnly[TypeMismatch](typecheckDecls(program("Unit -> Nat", "useV(v)")))
+    typecheckDecls(program("", "Unit -> Nat", "0"))
+    typecheckDecls(program("(v: V(l))", "{ scope = l } Unit -> Nat", "useV(v)"))
+    typecheckDecls(program("(t: Tok(l))", "{ kind = lin, scope = l } Unit -> Nat", "eat(t)"))
+    expectOnly[TypeMismatch](typecheckDecls(program("(t: Tok(l))", "{ scope = l } Unit -> Nat", "eat(t)")))
+    expectOnly[TypeMismatch](typecheckDecls(program("(v: V(l))", "Unit -> Nat", "useV(v)")))
     // Where the lambda stands never changes its type: one that captures nothing is not at scope l.
-    expectOnly[TypeMismatch](typecheckDecls(program("{ scope = l } Unit -> Nat", "0")))
+    expectOnly[TypeMismatch](typecheckDecls(program("", "{ scope = l } Unit -> Nat", "0")))
   }
 
   test("a lambda's captures are what its body mentions, not its binder types or result") {
@@ -161,7 +159,7 @@ class ClosureTests extends munit.FunSuite with TestSupport {
 
   test("a lambda that captures a linear value into a proposition is LinearProp") {
     def program(body: String): String =
-      withFamilies(s"def f (l: Lifetime)(t: Tok(l)): Nat := {\n  let p := fun (u: Unit): True => $body\n  0\n}\n")
+      withFamilies(s"def f (l: Lifetime)(t: Tok(l)): Nat := {\n  let p := fun (u: Unit): True => $body\n  eat(t)\n}\n")
 
     typecheckDecls(program("True.intro"))
     expectOnly[LinearProp](typecheckDecls(program("match t returning True with\n    | Tok.mk => True.intro")))
@@ -181,21 +179,23 @@ class ClosureTests extends munit.FunSuite with TestSupport {
   }
 
   test("a written closure must contain what the lambda captures") {
-    def program(closure: String, body: String): String =
+    // The block applies `g` once, and consumes the token itself when `g` does not.
+    def program(closure: String, body: String, result: String): String =
       withFamilies(
-        s"def f (l: Lifetime)(v: V(l))(t: Tok(l)): Nat := {\n  let g := fun $closure (u: Unit): Nat => $body\n  0\n}\n"
+        s"def f (l: Lifetime)(v: V(l))(t: Tok(l)): Nat := {\n  let g := fun $closure (u: Unit): Nat => $body\n  $result\n}\n"
       )
 
-    typecheckDecls(program("{ kind = lin, scope = l }", "eat(t)"))
-    typecheckDecls(program("{ kind = lin, scope = l }", "0"))
-    val kind = expectOnly[KindExceeded](typecheckDecls(program("{ kind = unr, scope = l }", "eat(t)")))
+    typecheckDecls(program("{ kind = lin, scope = l }", "eat(t)", "g(Unit.unit)"))
+    typecheckDecls(program("{ kind = lin, scope = l }", "0", "Nat.add(g(Unit.unit), eat(t))"))
+    val kind = expectOnly[KindExceeded](typecheckDecls(program("{ kind = unr, scope = l }", "eat(t)", "g(Unit.unit)")))
     assert(kind.part.contains("capture t"), kind.part)
-    val scope = expectOnly[ScopeExceeded](typecheckDecls(program("{ kind = lin, scope = empty }", "eat(t)")))
+    val scope =
+      expectOnly[ScopeExceeded](typecheckDecls(program("{ kind = lin, scope = empty }", "eat(t)", "g(Unit.unit)")))
     assert(scope.part.contains("capture t"), scope.part)
-    expectOnly[ScopeExceeded](typecheckDecls(program("{ scope = empty }", "useV(v)")))
+    expectOnly[ScopeExceeded](typecheckDecls(program("{ scope = empty }", "useV(v)", "Nat.add(g(Unit.unit), eat(t))")))
     // Each omitted field is derived on its own.
-    typecheckDecls(program("{ kind = lin }", "eat(t)"))
-    typecheckDecls(program("{ scope = l }", "eat(t)"))
+    typecheckDecls(program("{ kind = lin }", "eat(t)", "g(Unit.unit)"))
+    typecheckDecls(program("{ scope = l }", "eat(t)", "g(Unit.unit)"))
   }
 
   test("a function value is lifted to a larger closure by a lambda") {
@@ -237,7 +237,10 @@ class ClosureTests extends munit.FunSuite with TestSupport {
 
   test("a definition's own function type is unrestricted and captures nothing") {
     def program(ty: String): String =
-      withFamilies(s"def f (l: Lifetime)(t: Tok(l)): Nat := eat(t)\n\ndef g : $ty := f\n")
+      withFamilies(
+        s"def f (l: Lifetime)(t: Tok(l)): Nat := eat(t)\n\n" +
+          s"def h (l: Lifetime)(t: Tok(l)): Nat := {\n  let g : $ty := f\n  g(l, t)\n}\n"
+      )
 
     typecheckDecls(program("(l: Lifetime) -> Tok(l) -> Nat"))
     expectOnly[TypeMismatch](typecheckDecls(program("{ kind = lin } (l: Lifetime) -> Tok(l) -> Nat")))

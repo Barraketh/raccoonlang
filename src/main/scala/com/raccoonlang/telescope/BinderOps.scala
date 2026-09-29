@@ -23,16 +23,18 @@ object BinderOps {
   def freshen(vpi: VPi): Env = freshen(vpi.binders, vpi.env)
 
   // Fresh copy of a constructor's telescope: a fresh value per binder plus the instantiated result
-  // type. Used by MatchChecker for reachability and branch refinement. `fieldNames` are a pattern's
-  // names for the stored fields, so a branch's variables print as the user wrote them.
+  // type. Used by MatchChecker for reachability and branch refinement. `fieldRefs` are a pattern's
+  // locals for the stored fields, so a branch's variables print as the user wrote them; an anonymous
+  // one prints as the constructor's field.
   def freshCtorArgsAndResult(
       head: Value.ConstructorHead,
-      fieldNames: Vector[Option[String]]
+      fieldRefs: Vector[CoreAst.LocalRef]
   ): (Vector[Value], Value) =
     head.pi match {
       case Some(pi) =>
         val fresh = pi.binders.zipWithIndex.foldLeft(pi.env) { case (env, (binder, idx)) =>
-          val name = fieldNames.lift(idx - head.numErasedFamilyArgs).flatten.getOrElse(binder.name)
+          val name =
+            fieldRefs.lift(idx - head.numErasedFamilyArgs).map(_.name).filter(_ != "_").getOrElse(binder.name)
           env.putLocal(binder.localRef, freshenBinder(env, binder, name).value)
         }
         (pi.binders.map(binder => fresh(binder.localRef)), pi.codomain(fresh))

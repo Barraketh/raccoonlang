@@ -7,8 +7,8 @@ import scala.util.matching.Regex
 
 /**
  * Kernel invariants the compiler cannot enforce, stated as source patterns forbidden in `src/main`. A rule names the
- * invariant, the pattern that would break it, and the only files (by name) where the pattern belongs. Adding an
- * invariant is adding one rule.
+ * invariant, the pattern that would break it, and the files (by name) where the pattern belongs. Adding an invariant is
+ * adding one rule.
  */
 class ArchitectureTests extends munit.FunSuite {
   import ArchitectureTests.Rule
@@ -53,6 +53,16 @@ class ArchitectureTests extends munit.FunSuite {
       "checking is synthesis plus equality: only TypeChecker.check takes an optional expected type",
       raw"\bexpected\w*\s*:\s*Option\[".r,
       Set("TypeChecker.scala")
+    ),
+    Rule(
+      "the ledger's walk has no wildcard arm, so a new Core term is a compile error there until it is counted",
+      raw"\bcase\s+(_|[a-z]\w*)\s*(=>|\bif\b)".r,
+      _ != "Ledger.scala"
+    ),
+    Rule(
+      "uses of a linear local are counted only by the ledger",
+      raw"\bLinear(Unused|Reused)\(".r,
+      Set("Ledger.scala", "Errors.scala", "ErrorRendering.scala")
     )
   )
 
@@ -62,7 +72,7 @@ class ArchitectureTests extends munit.FunSuite {
     val sources = Files.walk(mainRoot).iterator().asScala.filter(_.toString.endsWith(".scala")).toVector.sorted
     val violations = for {
       source <- sources
-      rule <- rules if !rule.allowedIn.contains(source.getFileName.toString)
+      rule <- rules if !rule.allowedIn(source.getFileName.toString)
       (line, index) <- Files.readAllLines(source, StandardCharsets.UTF_8).asScala.zipWithIndex
       if rule.forbidden.findFirstIn(line).nonEmpty
     } yield s"${mainRoot.relativize(source)}:${index + 1}: ${rule.invariant}: ${line.trim}"
@@ -72,5 +82,5 @@ class ArchitectureTests extends munit.FunSuite {
 }
 
 object ArchitectureTests {
-  private final case class Rule(invariant: String, forbidden: Regex, allowedIn: Set[String])
+  private final case class Rule(invariant: String, forbidden: Regex, allowedIn: String => Boolean)
 }

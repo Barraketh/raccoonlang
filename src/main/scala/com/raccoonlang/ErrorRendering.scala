@@ -57,6 +57,13 @@ object ErrorRendering {
         s"$declaration is declared at kind $declared, which does not contain the kind $partKind of $part"
       case ScopeExceeded(declaration, declared, part, partScope) =>
         s"$declaration is declared at scope $declared, which does not contain the scope $partScope of $part"
+      case LinearUnused(local) =>
+        if (local == "_") "A wildcard binds a value of linear type, which must be used exactly once, and is never used"
+        else s"$local has a linear type, so it must be used exactly once, but some path does not use it"
+      case LinearReused(local) =>
+        s"$local has a linear type, so it must be used exactly once, but this is a second use on some path"
+      case LinearGlobal(name, tpe) =>
+        s"Definition $name has the linear type $tpe; a global is never linear, since every reference to it is a use"
       case LifetimeEscapes(lifetime, tpe) =>
         s"Lifetime $lifetime escapes its scope: the type $tpe names it outside `scope $lifetime`"
       case InvalidInductiveBlock(reason) => s"Invalid inductive block: $reason"

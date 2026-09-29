@@ -1,0 +1,6 @@
+
+<root>/main.rac:11:2: error: A wildcard binds a value of linear type, which must be used exactly once, and is never used
+ | Two.mk a _ => eat(a)
+ ^^^^^^^^^^^^^^^^^^^^^^
+note: in branch Two.mk a _
+note: in definition first
