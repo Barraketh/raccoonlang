@@ -155,6 +155,12 @@ final case class LifetimeEscapes(lifetime: String, tpe: Value) extends TypeError
  */
 final case class SealedConstructor(family: String, member: Option[String]) extends TypeError
 
+/**
+ * An axiom outside the trusted prelude (spec §7.3). No rule on an axiom's type could keep it from breaking sealing,
+ * linearity or confinement, since an axiom can state `False`; a program adds an assumption in a custom prelude.
+ */
+final case class UntrustedAxiom(axiom: String) extends TypeError
+
 final case class InvalidInductiveBlock(reason: String) extends TypeError
 
 /** One family of a mutual block declared in a different universe from its siblings. */

@@ -102,15 +102,11 @@ class StructEtaTests extends munit.FunSuite with TestSupport {
     )
   }
 
-  test("axiom eta: an axiom of struct type is its constructor of projections") {
-    typecheckDecls(
-      natAndPair +
-        """
-          |axiom a : Pair(Peano, Peano)
-          |
-          |def eta : Eq(Pair(Peano, Peano), a, Pair.mk(a.fst, a.snd)) := Eq.refl(a)
-          |""".stripMargin
-    )
+  test("axiom eta: a prelude axiom of struct type is its constructor of projections") {
+    // Only the trusted prelude declares axioms (spec §7.3).
+    val prelude =
+      TestSupport.preludeAssuming(TestSupport.testPreludeSource, natAndPair + "\naxiom a : Pair(Peano, Peano)\n")
+    typecheckDecls("def eta : Eq(Pair(Peano, Peano), a, Pair.mk(a.fst, a.snd)) := Eq.refl(a)\n", prelude)
   }
 
   test("unit-like struct: any two values are definitionally equal") {
@@ -241,7 +237,7 @@ class StructEtaTests extends munit.FunSuite with TestSupport {
     typecheckDecls(
       natAndPair +
         """
-          |axiom p : Pair(Peano, Peano)
+          |opaque def p : Pair(Peano, Peano) := Pair.mk(Peano.zero, Peano.zero)
           |def selectorIsProjection : Eq(Peano, Pair.fst(p), p.fst) := Eq.refl(p.fst)
           |def etaThroughSelectors : Eq(Pair(Peano, Peano), p, Pair.mk(p.fst, p.snd)) := Eq.refl(p)
           |""".stripMargin
@@ -282,8 +278,8 @@ class StructEtaTests extends munit.FunSuite with TestSupport {
         |struct Sig (A: Type)(B: A -> Type) : Type
         | | mk (fst: A)(snd: B(fst)) : Sig(A, B)
         |
-        |axiom anyA : Type
-        |axiom anyB : anyA -> Type
+        |opaque def anyA : Type := Peano
+        |opaque def anyB : anyA -> Type := fun (_: anyA): Type => Peano
         |
         |def useDependent (s: Sig(anyA, anyB)): anyB(s.fst) := {
         |  match s returning anyB(s.fst) with

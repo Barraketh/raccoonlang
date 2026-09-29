@@ -50,9 +50,8 @@ class ResidualizationTests extends munit.FunSuite {
           Interpreter.evalDecl(decl, curEnv)
         }
         val ty = last match {
-          case CoreAst.Decl.AxiomDecl(_, ty, _)          => ty
           case CoreAst.Decl.ConstDecl(_, _, ty, _, _, _) => ty
-          case other                                     => fail(s"Expected typed declaration, got $other")
+          case other                                     => fail(s"Expected a definition, got $other")
         }
         TypeChecker.checkDeclType(ty, env).residual
 
@@ -267,7 +266,7 @@ class ResidualizationTests extends munit.FunSuite {
   test("Pi binder residual preserves forced implicit binders with projection specs") {
     val p =
       """
-        |axiom f : {A: Type} -> (x: A) -> A
+        |def f {A: Type}(x: A): A := x
         |""".stripMargin
 
     checkLastDeclType(p) match {
@@ -302,7 +301,7 @@ class ResidualizationTests extends munit.FunSuite {
           | | nil : Vec(A, Peano.zero)
           | | cons {n: Peano} (tail: Vec(A, n)) (head: A) : Vec(A, Peano.succ(n))
           |
-          |axiom f : {n: Peano} -> (v: Vec(Peano, n)) -> Vec(Peano, n)
+          |def f {n: Peano}(v: Vec(Peano, n)): Vec(Peano, n) := v
           |""".stripMargin
 
     checkLastDeclType(p) match {
@@ -339,7 +338,7 @@ class ResidualizationTests extends munit.FunSuite {
   test("Pi binder residual preserves explicit type binders") {
     val p =
       """
-        |axiom f : (A: Type) -> A
+        |def f (A: Type)(x: A): A := x
         |""".stripMargin
 
     checkLastDeclType(p) match {
@@ -361,7 +360,7 @@ class ResidualizationTests extends munit.FunSuite {
   test("a declaration header's residual preserves implicit level binders") {
     val p =
       """
-        |axiom f {u: Level}(_: Sort { level = succ(u) }): Sort { level = u }
+        |def f {u: Level}(A: Sort { level = u }): Sort { level = u } := A
         |""".stripMargin
 
     checkLastDeclType(p) match {

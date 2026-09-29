@@ -1,8 +1,5 @@
 package com.raccoonlang
 
-import java.nio.charset.StandardCharsets
-import java.nio.file.Files
-
 /**
  * Sealed families (spec §7.1, §7.2): a sealed family exports its head, parameters, indices and classifier, but its
  * constructors and selectors only to its module, the file that declares it. Each rule is checked with the same
@@ -49,20 +46,6 @@ class SealingTests extends munit.FunSuite with TestSupport {
       |def burn {l: Lifetime}(t: Tok(l)): Nat := match t returning Nat with
       | | .mk => 1
       |""".stripMargin
-
-  /** `client` checked in the same file as `module`, and run when it has a body. */
-  private def inside(module: String, client: String): Option[Value] =
-    Interpreter.run(TypeChecker.check(Elaborator.elaborate(parseSurface(module + "\n" + client), suitePrelude)))
-
-  /** `client` checked as an entry file importing `module`, and run when it has a body. */
-  private def outside(module: String, client: String): Option[Value] = {
-    val root = Files.createTempDirectory("raccoon-sealing")
-    Files.write(root.resolve("Sealed.rac"), module.getBytes(StandardCharsets.UTF_8))
-    val entry = root.resolve("main.rac")
-    Files.write(entry, ("import Sealed\n" + client).getBytes(StandardCharsets.UTF_8))
-    val loaded = ModuleLoader.load(entry, ModuleLoader.LoadConfig.forEntry(entry, suitePrelude))
-    Interpreter.run(TypeChecker.check(Elaborator.elaborate(loaded.program, suitePrelude)))
-  }
 
   /** The use is admitted inside the module and `SealedConstructor` outside it. */
   private def sealedUse(module: String, client: String, expected: SealedConstructor)(implicit
@@ -134,19 +117,16 @@ class SealingTests extends munit.FunSuite with TestSupport {
     )
   }
 
-  test("a sealed family is never structure-eta eligible, so a match in its own module does not open a neutral") {
-    val opened =
-      """
-        |def two (b: Box): Nat := match b returning Nat with
-        | | .mk n => 2
-        |
-        |def opened (b: Box): Eq(Nat, two(b), 2) := Eq.refl(2)
-        |
-        |""".stripMargin
+  test("a sealed family has structure eta like any other, in its module and outside it") {
+    // Every Box comes from Box.mk, since only the trusted prelude declares axioms (spec §7.1, §7.3), so a match on a
+    // caller's Box reduces through eta, in the module and wherever its definitions are applied.
+    val two = "def two (b: Box): Nat := match b returning Nat with\n | .mk n => 2\n\n"
+    val opened = "def opened (b: Box): Eq(Nat, two(b), 2) := Eq.refl(2)\n"
     val eta = "def eta (b: Box): Eq(Box, b, Box.mk(b.n)) := Eq.refl(b)\n"
-    typecheckDecls(boxModule("") + opened + eta)
-    expectOnly[TypeMismatch](typecheckDecls(sealedBox + opened))
-    expectOnly[TypeMismatch](typecheckDecls(sealedBox + eta))
+    typecheckDecls(sealedBox + two + opened + eta)
+    outside(sealedBox + two, opened)
+    // Outside the module eta still holds, but stating it names the sealed constructor.
+    expectOnly[SealedConstructor](outside(sealedBox, eta))
   }
 
   test("sealed Lease and Tok are made only by their module, whose helpers any module may call") {

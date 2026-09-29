@@ -2,6 +2,9 @@ package com.raccoonlang
 
 import com.raccoonlang.ErrorReporter.Source
 
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+
 /** Shared source-level test plumbing. Specialized environment and residual helpers stay with their suites. */
 trait TestSupport extends DiagnosticAssertions { this: munit.FunSuite =>
   protected def suitePrelude: Prelude.Config = Prelude.default
@@ -52,10 +55,43 @@ trait TestSupport extends DiagnosticAssertions { this: munit.FunSuite =>
       loc: munit.Location
   ): E = expectTypeError(source, suitePrelude)
 
+  /** `client` checked in the same file as `module`, and run when it has a body. */
+  protected def inside(module: String, client: String): Option[Value] =
+    Interpreter.run(TypeChecker.check(Elaborator.elaborate(parseSurface(module + "\n" + client), suitePrelude)))
+
+  /** `client` checked as an entry file importing `module`, another module, and run when it has a body. */
+  protected def outside(module: String, client: String): Option[Value] = {
+    val root = Files.createTempDirectory("raccoon-module")
+    Files.write(root.resolve("Module.rac"), module.getBytes(StandardCharsets.UTF_8))
+    val entry = root.resolve("main.rac")
+    Files.write(entry, ("import Module\n" + client).getBytes(StandardCharsets.UTF_8))
+    val loaded = ModuleLoader.load(entry, ModuleLoader.LoadConfig.forEntry(entry, suitePrelude))
+    Interpreter.run(TypeChecker.check(Elaborator.elaborate(loaded.program, suitePrelude)))
+  }
+
   protected def ctorName(value: Value): String = value match {
     case Value.ConstructorHead(name, _, _, _, _) => name
     case Value.VCtor(head, _, _)                 => head.name
     case packed: Value.VPacked                   => packed.codec.decodeHead(packed)._1
     case other                                   => fail(s"Expected constructor value, got $other")
+  }
+}
+
+object TestSupport {
+  lazy val bundledPreludeSource: String = resource("/Init/Prelude.rac")
+
+  lazy val testPreludeSource: String = resource("/Init/TestPrelude.rac")
+
+  /**
+   * The trusted prelude `base` followed by `assumptions`. Only the trusted prelude declares axioms (spec §7.3), so a
+   * test assumes one the way a program does, with a custom prelude.
+   */
+  def preludeAssuming(base: String, assumptions: String): Prelude.Config =
+    Prelude.fromSource("assumptions", base + "\n" + assumptions)
+
+  private def resource(path: String): String = {
+    val stream = getClass.getResourceAsStream(path)
+    try new String(stream.readAllBytes(), StandardCharsets.UTF_8)
+    finally stream.close()
   }
 }

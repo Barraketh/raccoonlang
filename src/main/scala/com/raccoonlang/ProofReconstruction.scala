@@ -5,7 +5,8 @@ import com.raccoonlang.Value._
 /** Type-directed field recovery and canonical constructor reconstruction for proofs. */
 object ProofReconstruction {
 
-  final case class Result(head: ConstructorHead, fields: Vector[Value])
+  /** A reconstructed constructor layer, which only `reconstruct` hands out. */
+  final class Result private[ProofReconstruction] (val head: ConstructorHead, val fields: Vector[Value])
 
   private final case class Recovered(
       head: ConstructorHead,
@@ -22,12 +23,14 @@ object ProofReconstruction {
       }
 
   /**
-   * A trusted constructor application is already canonical when its declaration guarantees recovery. Other
-   * instance-sensitive families revalidate recovery at the exact proposition. The hint changes cost, never semantics.
+   * Whether an application of `head` is a proof's canonical form at the exact proposition `tpe`: the one constructor
+   * its recovery plan names, validated at this instance. A trusted application of a declaration-certified constructor
+   * already carries the result-forced data fields, so it skips validation; the hint changes cost, never semantics.
    */
-  def isDefinitelyCertifiedConstructor(tpe: Value, head: ConstructorHead): Boolean =
-    recoveryInfo(tpe).exists { case (_, info) =>
-      info.definitelyComplete && info.projectionInfo.ctorHeadOption.exists(_.name == head.name)
+  def isCanonicalConstructor(tpe: Value, head: ConstructorHead): Boolean =
+    recoveryInfo(tpe).exists { case (instance, info) =>
+      info.projectionInfo.ctorHeadOption.exists(_.name == head.name) &&
+      (info.definitelyComplete || validate(instance, info, tpe).nonEmpty)
     }
 
   /**
@@ -39,18 +42,23 @@ object ProofReconstruction {
     }
 
   /**
-   * Reconstruct one validated constructor layer at the exact proposition `tpe`. Field recovery performs no search or
-   * unification; this final result comparison is what prevents a constrained instance from manufacturing a branch-
-   * firing constructor.
+   * Reconstruct one validated constructor layer at the exact proposition `tpe`, a sealed one included (spec §7.1): only
+   * the trusted prelude declares axioms, and the bundled one declares no sealed family, so every proof of a sealed
+   * proposition was built from its constructors.
    */
   def reconstruct(tpe: Value): Option[Result] =
-    recoveryInfo(tpe).flatMap { case (instance, info) =>
-      recover(instance, info, includeResultType = true).flatMap { recovered =>
-        val fields = recovered.fields.flatten
-        if (fields.length != info.fieldSources.length || !recovered.resultType.exists(ValueEquivalence.defEq(_, tpe)))
-          None
-        else Some(Result(recovered.head, fields))
-      }
+    recoveryInfo(tpe).flatMap { case (instance, info) => validate(instance, info, tpe) }
+
+  /**
+   * Field recovery performs no search or unification; this final result comparison is what prevents a constrained
+   * instance from manufacturing a branch-firing constructor.
+   */
+  private def validate(instance: InductiveFamilyInstance, info: ProofRecoveryInfo, tpe: Value): Option[Result] =
+    recover(instance, info, includeResultType = true).flatMap { recovered =>
+      val fields = recovered.fields.flatten
+      if (fields.length != info.fieldSources.length || !recovered.resultType.exists(ValueEquivalence.defEq(_, tpe)))
+        None
+      else Some(new Result(recovered.head, fields))
     }
 
   private def recover(

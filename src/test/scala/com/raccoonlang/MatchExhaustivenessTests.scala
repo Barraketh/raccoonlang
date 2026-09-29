@@ -176,8 +176,8 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
         |  | Peano.succ _ => y
         |}
         |
-        |axiom n : Peano
-        |axiom a : Peano
+        |opaque def n : Peano := Peano.zero
+        |opaque def a : Peano := Peano.zero
         |
         |{ f(n, a) }
         |""".stripMargin

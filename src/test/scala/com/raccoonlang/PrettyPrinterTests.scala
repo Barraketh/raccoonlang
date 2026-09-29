@@ -3,8 +3,12 @@ package com.raccoonlang
 class PrettyPrinterTests extends munit.FunSuite with TestSupport {
   override protected val suitePrelude: Prelude.Config = Prelude.test
 
+  /** The elaborated type of axiom `name` in `src`, read as a prelude: only a prelude declares axioms (spec §7.3). */
   private def axiomType(src: String, name: String): CoreAst.Term =
-    parse(src).decls
+    Prelude
+      .fromSource("printer", src)
+      .core
+      .decls
       .collectFirst { case CoreAst.Decl.AxiomDecl(n, ty, _) if n == name => ty }
       .getOrElse(fail(s"Expected axiom $name"))
 
@@ -13,7 +17,7 @@ class PrettyPrinterTests extends munit.FunSuite with TestSupport {
     val printed = PrettyPrinter.printTerm(axiomType(src, "f"))
 
     assertEquals(printed, "{A: Type} -> A")
-    parse(s"axiom g : $printed\n")
+    axiomType(s"axiom g : $printed\n", "g")
   }
 
   test("anonymous applied type binder prints as explicit binder") {
@@ -26,7 +30,7 @@ class PrettyPrinterTests extends munit.FunSuite with TestSupport {
     val printed = PrettyPrinter.printTerm(axiomType(prelude + "axiom f : (_: Box(Type)) -> Type\n", "f"))
 
     assertEquals(printed, "Box(Type) -> Type")
-    parse(prelude + s"axiom g : $printed\n")
+    axiomType(prelude + s"axiom g : $printed\n", "g")
   }
 
   test("sorts print as their formers") {
@@ -37,7 +41,7 @@ class PrettyPrinterTests extends munit.FunSuite with TestSupport {
       printed,
       "{u: Level} -> (A: Sort { level = Level.succ(u) }) -> (P: Prop) -> Sort { level = Level.max(u, Level.one) }"
     )
-    parse(s"axiom g : $printed\n")
+    axiomType(s"axiom g : $printed\n", "g")
     assertEquals(PrettyPrinter.print(runProgram("{ Sort { level = succ(one) } }")), "Sort { level = 2 }")
     assertEquals(PrettyPrinter.print(runProgram("{ Sort { level = one } }")), "Type")
   }
@@ -51,7 +55,7 @@ class PrettyPrinterTests extends munit.FunSuite with TestSupport {
       "(l: Lifetime) -> (A: Type { kind = Kind.lin, scope = Lifetime.union(l, Lifetime.empty) }) -> " +
         "Prop { scope = l }"
     )
-    parse(s"axiom g : $printed\n")
+    axiomType(s"axiom g : $printed\n", "g")
     assertEquals(PrettyPrinter.print(runProgram("{ Type { kind = lin, scope = empty } }")), "Type { kind = Kind.lin }")
     assertEquals(PrettyPrinter.print(runProgram("{ Sort { level = succ(one), kind = unr } }")), "Sort { level = 2 }")
   }
@@ -60,6 +64,6 @@ class PrettyPrinterTests extends munit.FunSuite with TestSupport {
     val printed = PrettyPrinter.printTerm(axiomType("axiom f : (_: Type -> Type) -> Type\n", "f"))
 
     assertEquals(printed, "(Type -> Type) -> Type")
-    parse(s"axiom g : $printed\n")
+    axiomType(s"axiom g : $printed\n", "g")
   }
 }
