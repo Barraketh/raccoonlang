@@ -16,13 +16,14 @@ object Sorts {
   def isProp(sort: VSort): Boolean = sort.level == Level.zero
 
   /**
-   * The type is a proposition: it lives in `Prop`. A sort never qualifies, `Prop` included (`Prop : Sort 1`):
-   * predicates are data, not proofs.
+   * The type is a proposition: its values are proofs. A type in `Prop` is one, and so is a large function type into a
+   * proposition (spec §2.4), whose instances are all propositions. A sort never qualifies, `Prop` included (`Prop :
+   * Sort 1`): predicates are data, not proofs.
    */
   def isProposition(tpe: Value): Boolean =
     tpe match {
       case _: VSort => false
-      // Impredicativity: a Pi is a proposition exactly when its codomain is Prop-valued. Answered
+      // Impredicativity: a Pi is a proposition exactly when its codomain is Prop-valued, large or not. Answered
       // via the dedicated lazy val so proof canonicalization checks skip the full classifier computation.
       case pi: VPi => pi.isPropValued
       case tpe =>

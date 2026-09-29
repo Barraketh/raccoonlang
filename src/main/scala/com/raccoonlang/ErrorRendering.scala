@@ -37,7 +37,6 @@ object ErrorRendering {
         s"Case head $name is local; unqualified case heads must resolve to globals. " +
           s"Use .$name for short-name matching."
       case mismatch: TypeMismatch => renderTypeMismatch(mismatch)
-      case NotALevel(v1)          => s"$v1 is not a Level"
       case InvalidConstructorResult(ctor, inductive, got) =>
         s"Constructor $ctor must return $inductive but got $got"
       case NonForcedImplicitParam(param) =>

@@ -27,6 +27,12 @@ class ArchitectureTests extends munit.FunSuite {
       Set("IdentifierSyntax.scala", "LanguageParser.scala", "PrettyPrinter.scala")
     ),
     Rule(
+      "where Level, a level or a large type may stand is decided only by the checker's position rules and the Pi " +
+        "classifier",
+      raw"(\beq|[=!]=)\s*(LevelTpe|SortParameter|Large)\b|\b(LevelTpe|SortParameter|Large)\s*(\beq\b|[=!]=)".r,
+      Set("TypeChecker.scala", "Interpreter.scala")
+    ),
+    Rule(
       "checking is synthesis plus equality: only TypeChecker.check takes an optional expected type",
       raw"\bexpected\w*\s*:\s*Option\[".r,
       Set("TypeChecker.scala")

@@ -1,0 +1,4 @@
+def g (n: Nat): Nat := {
+  let f := id
+  f(n)
+}

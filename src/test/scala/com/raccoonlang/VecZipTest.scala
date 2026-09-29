@@ -19,11 +19,10 @@ class VecZipTest extends munit.FunSuite with TestSupport {
         |
         |def zip(u1: Level)(u2: Level)(A: Sort { level = u1 })(B: Sort { level = u2 })(n: Peano)(va: Vec(u1, A, n))(vb: Vec(u2, B, n)): Vec(Level.max(u1, u2), Pair(u1, u2, A, B), n) decreases structural(n) := {
         |  let R := Pair(u1, u2, A, B)
-        |  let L := Level.max(u1, u2)
-        |  match va returning Vec(L, R, n) with
+        |  match va returning Vec(Level.max(u1, u2), R, n) with
         |  | Vec.nil => Vec.nil(R)
         |  | Vec.cons x va0 a => {
-        |    match vb returning Vec(L, R, n) with
+        |    match vb returning Vec(Level.max(u1, u2), R, n) with
         |    | Vec.cons _ vb0 b => Vec.cons(x, zip(u1, u2, A, B, x, va0, vb0), Pair.mk(a, b))
         |  }
         |}

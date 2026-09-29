@@ -56,21 +56,24 @@ object TypeChecker {
   private[raccoonlang] final case class CheckedRecursiveDef(name: String, vpi: VPi, residual: CA.Term.Lam)
 
   /**
-   * An argument of a checked application: its own syntax, synthesized inside the application's argument frame, or a
-   * value the caller has already checked (a selected field's base). Arguments are always synthesized; the verification
-   * pass then checks each one against its binder type, as any check is synthesis followed by equality.
+   * An argument of a checked application: its own syntax, checked inside the application's argument frame, or a value
+   * the caller has already checked (a selected field's base). An argument is synthesized, except that at a level binder
+   * it is checked against `Level`, the one place a level may stand as an argument (spec §2.2). The verification pass
+   * then checks each one against its binder type, as any check is synthesis followed by equality.
    */
   private sealed trait PendingArg {
-    def synth(env: Env): CheckedTerm
+    def check(env: Env, atLevelBinder: Boolean): CheckedTerm
   }
 
   private object PendingArg {
     final case class Term(term: CA.Term) extends PendingArg {
-      def synth(env: Env): CheckedTerm = checkTerm(term, env)
+      def check(env: Env, atLevelBinder: Boolean): CheckedTerm =
+        if (atLevelBinder) checkTerm(term, LevelTpe, env) else checkTerm(term, env)
     }
 
+    // A selected field's base was checked where it stands, and the verification pass fits it to its binder.
     final case class Checked(checked: CheckedTerm) extends PendingArg {
-      def synth(env: Env): CheckedTerm = checked
+      def check(env: Env, atLevelBinder: Boolean): CheckedTerm = checked
     }
 
     def term(t: CA.Term): PendingArg = Term(t)
@@ -98,21 +101,6 @@ object TypeChecker {
     }
   }
 
-  /**
-   * `Sorts.isProposition` plus the validation that `value` is a type at all.
-   *
-   * The classification itself is deliberately not duplicated — it is the one shared predicate, so the checker can never
-   * disagree with proof collapse. What this adds is the `NotAType` check in `getUniverse`, and the one caller,
-   * `MatchChecker.checkPropElimination`, needs it: its `motiveTy` is the written `returning` clause, which has not been
-   * asserted to be a type by the time elimination is classified. (A type is Prop-valued when it is itself a
-   * proposition. The sort `Prop` is not: `Prop : Sort 1`, so `Nat -> Prop` lives in Type, and predicates are data, not
-   * proofs — conflating the two made predicates proof-irrelevant and derived False.)
-   */
-  def isPropValuedType(value: Value): Boolean = {
-    getUniverse(value)
-    Sorts.isProposition(value)
-  }
-
   private def assertNonRawRecursive(v: Value): Unit = {
     v match {
       // TerminationChecker.rawRecursiveStub always names its stubs `ValueId.Const(name)`.
@@ -121,6 +109,16 @@ object TypeChecker {
       case _                                                        =>
     }
   }
+
+  /**
+   * A binder of the sort parameter `Level`. Its type is the closed name `Level`, so it is recognized before any
+   * argument is known; no other term evaluates to `Level`, since nothing of another type can have it as a value.
+   */
+  private def isLevelBinder(binder: CA.Binder, env: Env): Boolean =
+    binder.ty match {
+      case ref: CA.Term.GlobalRef => Interpreter.evalTerm(ref, env) eq LevelTpe
+      case _                      => false
+    }
 
   private def applyHeadName(fnResidual: CA.Term): String =
     fnResidual match {
@@ -166,10 +164,10 @@ object TypeChecker {
         binders.zipWithIndex.foreach { case (binder, idx) =>
           if (!binder.isImplicit) {
             argumentPositions(idx) = explicitIdx + 1
-            // Arguments are synthesized and verified in the final pass; see PendingArg.
+            // Arguments are checked where they stand and verified in the final pass; see PendingArg.
             val checked =
               framed(Frame.InArgument(argumentPositions(idx), binder.name, applyHeadName(fnResidual)))(
-                providedArgs(explicitIdx).synth(env)
+                providedArgs(explicitIdx).check(env, isLevelBinder(binder, pi.env))
               )
             assertNonRawRecursive(checked.value)
             known(idx) = checked.value
@@ -208,7 +206,7 @@ object TypeChecker {
     // Implicit legality (forced-by-later-binders) and projection specs come from BinderOps.checkBinders.
     val checkedBinders = BinderOps.checkBinders(pi.binders, env, familyParams)
     val binderEnv = checkedBinders.env
-    val checkedOut = checkTerm(pi.out, binderEnv)
+    val checkedOut = checkTypeTerm(pi.out, binderEnv)
     val outV = checkedOut.value
     val classifier = Interpreter.piClassifierFromChecked(checkedBinders.binders, binderEnv, outV)
     val checkedPi =
@@ -220,22 +218,20 @@ object TypeChecker {
       )
     val vpi = evalPi(checkedPi, env).copy(classifier0 = () => classifier)
     // Force the classifier at declaration. Reuse the already checked fresh telescope instead of eta-expanding every
-    // binder a second time; this is the universe validation (NotAType on a bad domain or codomain).
+    // binder a second time.
     vpi.tpe
     CheckedPi(vpi, binderEnv, outV, checkedPi)
   }
 
   /**
    * Constructor telescopes route through here so unforced family params (the leading `familyParams` binders) get
-   * demoted instead of rejected; see Projection.compile.
+   * demoted instead of rejected; see Projection.compile. A constructor's type is a declaration's type, so it may be
+   * large.
    */
   private[raccoonlang] def getConstructorType(term: CA.Term, env: Env, familyParams: Int): Value =
     term match {
-      case pi: CA.Term.Pi =>
-        val checked = checkPi(pi, env, familyParams)
-        assertType(checked.vpi)
-        checked.vpi
-      case other => getType(other, env)
+      case pi: CA.Term.Pi => checkPi(pi, env, familyParams).vpi
+      case other          => checkDeclType(other, env).value
     }
 
   // Returning the residual term lets callers preserve checked let/lambda structure instead of re-checking.
@@ -376,17 +372,64 @@ object TypeChecker {
     }
   }
 
-  def getType(term: CA.Term, env: Env): Value = {
-    val res = checkTerm(term, env).value
-    assertType(res)
-    res
-  }
+  /** A term at a type position: it must be a type. */
+  def checkTypeTerm(term: CA.Term, env: Env): CheckedTerm =
+    at(term.span) {
+      val checked = synthesize(term, env)
+      assertType(checked.value)
+      checked
+    }
+
+  /** A binder's type: a type, or at a parameter site the sort parameter `Level` (spec §2.2). */
+  def checkBinderType(binder: CA.Binder, env: Env): CheckedTerm =
+    at(binder.ty.span) {
+      val checked = synthesize(binder.ty, env)
+      binder.site match {
+        case CA.BinderSite.Parameter if checked.value eq LevelTpe =>
+        case _                                                    => assertType(checked.value)
+      }
+      checked
+    }
+
+  /**
+   * A declaration's type: a type, or a large function type, since only a declaration's own type may bind a level (spec
+   * §2.2). A definition, opaque definition, axiom, family or constructor may therefore be level-polymorphic.
+   */
+  def checkDeclType(term: CA.Term, env: Env): CheckedTerm =
+    at(term.span) {
+      val checked = synthesize(term, env)
+      checked.value.tpe match {
+        case _: VSort | Large =>
+        case _                => fail(NotAType(checked.value))
+      }
+      checked
+    }
 
   def assertType(value: Value): Unit =
     value.tpe match {
       case _: VSort =>
       case _        => fail(NotAType(value))
     }
+
+  /**
+   * A term must have a type wherever it stands (spec §2.2), except where `admitsNonType` allows otherwise. So the sort
+   * parameter `Level` itself, a level, and a reference whose type is large are `NotAType` there; a large reference may
+   * still head an application (`checkHead`).
+   */
+  private def requireTyped(value: Value): Unit =
+    value.tpe match {
+      case _: VSort      =>
+      case SortParameter => fail(NotAType(value))
+      case tpe           => assertType(tpe)
+    }
+
+  /**
+   * The positions where a term whose type is not a type may stand: a level where a level is expected (a sort's level
+   * field, the argument at a level binder), and a definition's lambda at its own large declared type. Equality with the
+   * expected type then decides as for any check.
+   */
+  private def admitsNonType(actualTy: Value, expectedTy: Value): Boolean =
+    ((actualTy eq LevelTpe) && (expectedTy eq LevelTpe)) || ((actualTy.tpe eq Large) && (expectedTy.tpe eq Large))
 
   def checkTerm(term: CA.Term, env: Env): CheckedTerm =
     check(term, None, env)
@@ -397,47 +440,63 @@ object TypeChecker {
   /**
    * The checker's locating boundary: an unlocated failure raised while checking `term` belongs to `term`.
    *
-   * Checking is synthesis followed by equality. Every case synthesizes without looking at the expectation, and the
-   * synthesized type must then equal the expected one: a term's type never depends on where it stands.
+   * Checking is synthesis followed by equality. The term is synthesized without looking at the expectation; its type
+   * must be a type unless the expected one admits otherwise, and must then equal the expected one: a term's type never
+   * depends on where it stands.
    */
   private def check(term: CA.Term, expected: Option[Value], env: Env): CheckedTerm =
     at(term.span) {
-      val synthed = term match {
-        case CA.Term.NatLit(value, span) =>
-          val layout = env.nativeLiterals.natLayout.getOrElse(fail(NatLiteralUnavailable("no validated Nat layout")))
-          CheckedTerm(VPacked.nat(value, layout.natTpe), CA.Term.NatLit(value, span))
-        case CA.Term.StrLit(scalars, span) =>
-          val layout =
-            env.nativeLiterals.stringLayout.getOrElse(fail(StringLiteralUnavailable("no validated String layout")))
-          val checked = CheckedTerm(Packed.evalStrLit(scalars, env), CA.Term.StrLit(scalars, span))
-          if (!ValueEquivalence.defEq(checked.value.tpe, layout.stringTpe))
-            wtf("String literal evaluator returned the wrong type")
-          checked
-        case CA.Term.Select(base, field, span) => checkSelect(checkTerm(base, env), field, span, env)
-        case app: CA.Term.App =>
-          val checkedFn = checkTerm(app.fn, env)
-          val checkedApp =
-            checkApplyChecked(checkedFn.value, checkedFn.residual, app.args.map(PendingArg.term), env, app.span)
-          CheckedTerm(checkedApp.value, checkedApp.residual)
-        case m: CA.Term.Match => MatchChecker.checkMatch(m, env)
-        case b: CA.Term.Body  => checkBody(b, env)
-        case pi: CA.Term.Pi =>
-          val checked = checkPi(pi, env)
-          CheckedTerm(checked.vpi, checked.residual)
-        case ref: CA.Term.Ref => CheckedTerm(Interpreter.evalTerm(ref, env), ref)
-        case l: CA.Term.Lam   => checkLam(l, env)
-        case CA.Term.Sort(level, span) =>
-          val checkedLevel = checkTerm(level, LevelTpe, env)
-          CheckedTerm(Interpreter.evalSort(checkedLevel.value), CA.Term.Sort(checkedLevel.residual, span))
-        case CA.Term.LevelOp(form, args, span) =>
-          val checkedArgs = args.map(checkTerm(_, LevelTpe, env))
-          CheckedTerm(
-            Interpreter.evalLevelOp(form, checkedArgs.map(_.value)),
-            CA.Term.LevelOp(form, checkedArgs.map(_.residual), span)
-          )
+      val synthed = synthesize(term, env)
+      expected match {
+        case Some(expectedTy) =>
+          if (!admitsNonType(synthed.value.tpe, expectedTy)) requireTyped(synthed.value)
+          at(typeSite(term))(checkType(synthed.value, expectedTy))
+        case None => requireTyped(synthed.value)
       }
-      expected.foreach(expectedTy => at(typeSite(term))(checkType(synthed.value, expectedTy)))
       synthed
+    }
+
+  /**
+   * An application's head: the one position where a reference whose type is large may stand, since a level-polymorphic
+   * declaration is used only applied (spec §2.2).
+   */
+  private def checkHead(term: CA.Term, env: Env): CheckedTerm = at(term.span)(synthesize(term, env))
+
+  /** A term's own type, whatever position it stands at; the callers above decide what the position admits. */
+  private def synthesize(term: CA.Term, env: Env): CheckedTerm =
+    term match {
+      case CA.Term.NatLit(value, span) =>
+        val layout = env.nativeLiterals.natLayout.getOrElse(fail(NatLiteralUnavailable("no validated Nat layout")))
+        CheckedTerm(VPacked.nat(value, layout.natTpe), CA.Term.NatLit(value, span))
+      case CA.Term.StrLit(scalars, span) =>
+        val layout =
+          env.nativeLiterals.stringLayout.getOrElse(fail(StringLiteralUnavailable("no validated String layout")))
+        val checked = CheckedTerm(Packed.evalStrLit(scalars, env), CA.Term.StrLit(scalars, span))
+        if (!ValueEquivalence.defEq(checked.value.tpe, layout.stringTpe))
+          wtf("String literal evaluator returned the wrong type")
+        checked
+      case CA.Term.Select(base, field, span) => checkSelect(checkTerm(base, env), field, span, env)
+      case app: CA.Term.App =>
+        val checkedFn = checkHead(app.fn, env)
+        val checkedApp =
+          checkApplyChecked(checkedFn.value, checkedFn.residual, app.args.map(PendingArg.term), env, app.span)
+        CheckedTerm(checkedApp.value, checkedApp.residual)
+      case m: CA.Term.Match => MatchChecker.checkMatch(m, env)
+      case b: CA.Term.Body  => checkBody(b, env)
+      case pi: CA.Term.Pi =>
+        val checked = checkPi(pi, env)
+        CheckedTerm(checked.vpi, checked.residual)
+      case ref: CA.Term.Ref => CheckedTerm(Interpreter.evalTerm(ref, env), ref)
+      case l: CA.Term.Lam   => checkLam(l, env)
+      case CA.Term.Sort(level, span) =>
+        val checkedLevel = checkTerm(level, LevelTpe, env)
+        CheckedTerm(Interpreter.evalSort(checkedLevel.value), CA.Term.Sort(checkedLevel.residual, span))
+      case CA.Term.LevelOp(form, args, span) =>
+        val checkedArgs = args.map(checkTerm(_, LevelTpe, env))
+        CheckedTerm(
+          Interpreter.evalLevelOp(form, checkedArgs.map(_.value)),
+          CA.Term.LevelOp(form, checkedArgs.map(_.residual), span)
+        )
     }
 
   /** Where a term's type comes from, for locating a mismatch: a block's type is its result's. */
