@@ -18,10 +18,12 @@ present at `bfd5196`; the rest were introduced or exposed by the Lemur work.
 | S6 Sealing cleanup | F7, F8, F9 | done | `bbb24db` |
 | S7a Parser and printer diagnostics | F10, F12, F13 | done | `973ae20` |
 | S7b Elaborator field resolution and pattern spans | F11, F14 | done | `0d0f789` |
+| S8 Confinement by sort scope | F6 (D1, decided) | in progress | |
 
-All steps are done; the branch validates (714 tests), and every finding's
-repro was rerun against the final build. Open decisions, not scheduled: D1–D3
-and the proposals under "Follow-ups" below.
+S1–S7b are done; the branch validates (714 tests), and every finding's repro
+was rerun against the final build. D1 was decided on 2026-09-29 and is S8.
+Open decisions, not scheduled: D2, D3 and the proposals under "Follow-ups"
+below.
 
 ## Findings
 
@@ -181,7 +183,7 @@ neither mentions l … may leave". It is over-conservative, not unsound. See D1.
 
 ## Open decisions
 
-- **D1 (F6).** Confine by the type's sort scope instead of its dependency set.
+- **D1 (F6). Decided 2026-09-29: adopt, as S8.** Confine by the type's sort scope instead of its dependency set.
   §2.4 built the sort scope to count exactly what a value can hand over, so
   `requireInScope` would become "the sort's scope, less the open atoms, is
   empty": constant time, and blind to atoms held inside data. It needs §5.1 to
@@ -272,6 +274,32 @@ list and closure errors; one table-driven sort former, so bare `Sort` and
 `Sort(u)` get the §9 message; an empty closure reaches "empty field list"; a
 `Select` span starts at its base; `returning` may start the next line; both
 printers parenthesize a function type in codomain position.
+
+### S8. Confinement by sort scope (F6, D1)
+
+Two rule changes. §4.2: a type is `LifetimeEscapes` when the scope of its sort
+names an atom whose `scope` is not open, at the same three kinds of site as
+today; a type's dependency set no longer decides it. §5.1: every family, not
+only one at a kind other than `Kind.unr`, names each lifetime parameter in its
+scope, so that §2.4's claim holds literally: a type's sort scope counts every
+lifetime that can be read off it, a forced implicit's included. Without the
+second change `Wrap(atom)` for `inductive Wrap (l: Lifetime) : Type` would sit
+at scope `{}` and leave its scope, and a module that treats such a family as
+evidence of being inside the scope would be fooled.
+
+Expected outcomes (all against the unchanged `examples/leases/Lease.rac`):
+`Eq.refl(later)`, a proposition about `withLease(f)` for an abstract `f` used as
+a type, and `congrArg` over `withLease` are accepted; `later`, its eta-expanded
+twin and concrete-callback statements stay accepted; a `Lease(l)`, a `Tok(l)`
+or a closure capturing a lease still cannot leave `scope l`; and
+`scope l => Wrap(l)` is rejected at the `scope`, where today the type value
+escapes and only its later use is caught. Costs accepted: lifetime-parameterized
+families must be scoped (about six test families, three `.rac` test files, the
+§6.2 and §7.3 spec examples; the prelude already complies); instances of a
+family at different lifetimes live in different sorts, so §6.2's lifetime
+equations arise only between instances sharing a scope; confinement now rests
+on the sort-scope bookkeeping, so each rule that computes a sort scope gets a
+targeted escape test.
 
 ### S7b. Elaborator field resolution and pattern spans (F11, F14)
 
