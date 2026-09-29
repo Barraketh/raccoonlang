@@ -1,8 +1,11 @@
 package com.raccoonlang
 
+import java.nio.charset.StandardCharsets
+import java.nio.file.{Files, Paths}
+
 /**
  * Anonymous locals and the ledger (spec §1, §3.1-§3.5, §6.1): each local of linear type is used exactly once along
- * every path through its binder's extent, a lambda's body lying on those paths at the lambda's position, and no global
+ * every path through its binder's extent, a lambda being one use at its position with paths of its own, and no global
  * is linear; and tokens stay out of types (spec §3.2, §3.5): no type or proof contains a subterm of linear type. Each
  * rule has an admitted program and the smallest mutation that reaches its diagnostic.
  */
@@ -123,6 +126,88 @@ class LinearityTests extends munit.FunSuite with TestSupport {
         )
       )
     )
+    // What follows it lies on no path.
+    typecheckDecls(
+      withFamilies(
+        "def f {l: Lifetime}(t: Tok(l))(h: False): Nat := {\n  let n := match h returning Nat with\n\n" +
+          "  Nat.add(eat(t), eat(t))\n}\n"
+      )
+    )
+  }
+
+  test("a use on a path a branchless match ends is not a use on the paths that continue") {
+    def program(onTrue: String, onFalse: String): String =
+      withFamilies(
+        "def toEmpty {l: Lifetime}(t: Tok(l))(e: Empty): Empty := {\n  let _ := eat(t)\n  e\n}\n" +
+          "def f {l: Lifetime}(t: Tok(l))(b: Bool)(e: Empty): Nat := {\n  let first := match b returning Nat with\n" +
+          s"    | .true => $onTrue\n    | .false => $onFalse\n  Nat.add(first, eat(t))\n}\n"
+      )
+
+    typecheckDecls(program("{\n      let n := eat(t)\n      match e returning Nat with\n    }", "0"))
+    // The use in the ended path is its scrutinee's.
+    typecheckDecls(program("{\n      match toEmpty(t, e) returning Nat with\n    }", "0"))
+    // A path that uses it and continues still meets the use after the match.
+    expectOnly[LinearReused](typecheckDecls(program("{\n      match e returning Nat with\n    }", "eat(t)")))
+  }
+
+  test("a path a lambda's body ends does not end the enclosing path") {
+    val absurd = "fun (e: Empty): Nat => match e returning Nat with\n"
+    def dropped(decls: String): LinearUnused = expectOnly[LinearUnused](typecheckDecls(withFamilies(decls)))
+
+    // A parameter, a let and a pattern field, each dropped beside an absurd lambda.
+    assertEquals(
+      dropped(s"def f {l: Lifetime}(t: Tok(l)): Nat := {\n  let g := $absurd  7\n}\n"),
+      LinearUnused("t")
+    )
+    assertEquals(
+      dropped(s"def f {l: Lifetime}(t: Tok(l)): Nat := {\n  let u := t\n  let g := $absurd  7\n}\n"),
+      LinearUnused("u")
+    )
+    assertEquals(
+      dropped(
+        "def f {l: Lifetime}(w: Two(l)): Nat := match w returning Nat with\n" +
+          s" | Two.mk a b => {\n  let g := $absurd  eat(a)\n}\n"
+      ),
+      LinearUnused("b")
+    )
+    // An absurd lambda as an argument, and an inline proof of a negation.
+    assertEquals(
+      dropped(s"def ignore (f: Empty -> Nat): Nat := 7\ndef f {l: Lifetime}(t: Tok(l)): Nat := ignore($absurd)\n"),
+      LinearUnused("t")
+    )
+    assertEquals(
+      dropped(
+        "def ignore (p: Not(False)): Nat := 7\n" +
+          "def f {l: Lifetime}(t: Tok(l)): Nat := ignore(fun (h: False): False => match h returning False with\n)\n"
+      ),
+      LinearUnused("t")
+    )
+    // Inside a closure's body: its own parameter, and a captured local on one of its paths.
+    assertEquals(
+      dropped(
+        "def f (l: Lifetime): Tok(l) -> Nat :=\n" +
+          s"  fun (t: Tok(l)): Nat => {\n  let g := $absurd  7\n}\n"
+      ),
+      LinearUnused("t")
+    )
+    assertEquals(
+      dropped(
+        "def f (l: Lifetime)(t: Tok(l)): { kind = lin, scope = l } Bool -> Nat :=\n" +
+          "  fun (b: Bool): Nat => match b returning Nat with\n | Bool.true => eat(t)\n" +
+          s" | Bool.false => {\n  let g := $absurd  0\n}\n"
+      ),
+      LinearUnused("t")
+    )
+  }
+
+  test("a sealed module's client cannot drop an issued token beside an absurd proof") {
+    val module = new String(Files.readAllBytes(Paths.get("examples", "leases", "Lease.rac")), StandardCharsets.UTF_8)
+    def client(body: String): String =
+      "def leak : Nat := withLease(fun (m: Lifetime)(g: Lease(m)): Nat => {\n  let t := issue(g)\n" +
+        s"  let n : Not(False) := fun (h: False): False => match h returning False with\n\n  $body\n})\n"
+
+    outside(module, client("redeem(t)"))
+    assertEquals(expectOnly[LinearUnused](outside(module, client("0"))), LinearUnused("t"))
   }
 
   test("a local whose type's kind is a variable is tracked") {
@@ -146,6 +231,18 @@ class LinearityTests extends munit.FunSuite with TestSupport {
 
     typecheckDecls(program("eat(t)"))
     assertEquals(expectOnly[LinearUnused](typecheckDecls(program("0"))), LinearUnused("t"))
+    assertEquals(
+      expectOnly[LinearReused](typecheckDecls(program("Nat.add(eat(t), eat(t))"))),
+      LinearReused("t")
+    )
+    // A path through the body that a branchless match ends needs no use of its own.
+    typecheckDecls(
+      withFamilies(
+        "def f (l: Lifetime)(t: Tok(l))(e: Empty): { kind = lin, scope = l } Bool -> Nat :=\n" +
+          "  fun (b: Bool): Nat => match b returning Nat with\n | Bool.true => eat(t)\n" +
+          " | Bool.false => {\n  match e returning Nat with\n}\n"
+      )
+    )
   }
 
   test("a use inside a lambda is one use, by the lambda, at its position") {
