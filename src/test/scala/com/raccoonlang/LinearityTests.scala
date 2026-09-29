@@ -111,6 +111,20 @@ class LinearityTests extends munit.FunSuite with TestSupport {
     assertEquals(expectOnly[LinearReused](typecheckDecls(consumed)), LinearReused("t"))
   }
 
+  test("an unused pattern field is reported at its pattern variable, a wildcard at its `_`") {
+    def program(pattern: String, body: String): String =
+      withFamilies(s"def f {l: Lifetime}(w: Two(l)): Nat := match w returning Nat with\n | Two.mk $pattern => $body\n")
+    def reported(source: String): Option[(Int, String)] =
+      interceptDiagnostic(typecheckDecls(source)).span.map(span => (span.start, source.substring(span.start, span.end)))
+
+    val unusedB = program("a b", "eat(a)")
+    assertEquals(reported(unusedB), Some((unusedB.lastIndexOf("b =>"), "b")))
+    val unusedA = program("a b", "eat(b)")
+    assertEquals(reported(unusedA), Some((unusedA.lastIndexOf("a b =>"), "a")))
+    val wildcard = program("a _", "eat(a)")
+    assertEquals(reported(wildcard), Some((wildcard.lastIndexOf("_ =>"), "_")))
+  }
+
   test("a match with no branch uses every linear local live at it") {
     typecheckDecls(withFamilies("def f {l: Lifetime}(t: Tok(l))(h: False): Nat := match h returning Nat with\n"))
     // Through a global the branchless match is not in the extent.

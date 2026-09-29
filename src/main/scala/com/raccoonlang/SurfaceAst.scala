@@ -95,10 +95,13 @@ object SurfaceAst {
     final case class Case(
         ctorPath: Vector[String],
         useShortName: Boolean,
-        argNames: Vector[String],
+        patternVars: Vector[PatternVar],
         body: Term,
         span: Span
     )
+
+    /** A pattern's variable for one constructor field, `_` included, where it is written. */
+    final case class PatternVar(name: String, span: Span)
   }
 
   /**

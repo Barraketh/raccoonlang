@@ -361,10 +361,15 @@ object CoreAst {
   final case class Case(
       ctorName: String,
       isFullyQualified: Boolean,
-      argRefs: Vector[LocalRef],
+      patternVars: Vector[PatternVar],
       body: Term,
       span: Span
-  )
+  ) {
+    def argRefs: Vector[LocalRef] = patternVars.map(_.ref)
+  }
+
+  /** The local a pattern binds for one constructor field, and where its variable is written. */
+  final case class PatternVar(ref: LocalRef, span: Span)
 
   // Global declarations and environment entries
   sealed trait Decl {
