@@ -47,7 +47,7 @@ namespace False {
 inductive True : Prop
  | intro : True
 
-def Not {S: Lifetime}(a: Prop { scope = S }): Prop { scope = S } := (h: a) -> False
+def Not {S: Lifetime}(a: Prop { scope = S }): Prop { scope = S } := { scope = S } (h: a) -> False
 
 def falseElim {u: Level}{S: Lifetime}(h: False)(C: Sort { level = u, scope = S }): C := False.elim(h, C)
 
@@ -71,7 +71,7 @@ namespace Or {
 }
 
 struct Iff {Sa: Lifetime}{Sb: Lifetime}(a: Prop { scope = Sa })(b: Prop { scope = Sb }) : Prop { scope = union(Sa, Sb) }
- | intro (mp: a -> b)(mpr: b -> a) : Iff(a, b)
+ | intro (mp: { scope = union(Sa, Sb) } a -> b)(mpr: { scope = union(Sa, Sb) } b -> a) : Iff(a, b)
 
 inductive Empty : Type
 
@@ -151,8 +151,7 @@ namespace Decidable {
     | Decidable.isTrue h => isTrue(h)
   }
 
-  // At Lifetime.empty only: the lambda below captures h, but Not(p) is a function type with an empty closure.
-  def not {p: Prop} (d: Decidable(p)): Decidable(Not(p)) := {
+  def not {S: Lifetime}{p: Prop { scope = S }} (d: Decidable(p)): Decidable(Not(p)) := {
     match d returning Decidable(Not(p)) with
     | Decidable.isFalse h => Decidable.isTrue(h)
     | Decidable.isTrue h => Decidable.isFalse(fun (hn: Not(p)): False => hn(h))
@@ -373,7 +372,7 @@ def boolInhabited : Inhabited(Bool) := Inhabited.mk(Bool.false)
 def natInhabited : Inhabited(Nat) := Inhabited.mk(Nat.zero)
 
 struct BEq {u: Level}{S: Lifetime}(A: Sort { level = u, scope = S }) : Sort { level = max(one, u), scope = S }
- | mk (beq: A -> A -> Bool) : BEq(A)
+ | mk (beq: { scope = S } A -> A -> Bool) : BEq(A)
 
 def beq {u: Level}{S: Lifetime}{A: Sort { level = u, scope = S }} (self: BEq(A))(a: A)(b: A): Bool := BEq.beq(self)(a, b)
 
@@ -395,9 +394,7 @@ namespace Option {
   }
 }
 
-// At Lifetime.empty only, as are listBEq, prodBEq and DecidableEq.toBEq: BEq.mk takes a function with an empty
-// closure, and the lambda passed to it captures a value of a type at A's scope.
-def optionBEq {u: Level}{A: Sort { level = u }} (beqA: BEq(A)): BEq(Option(A)) :=
+def optionBEq {u: Level}{S: Lifetime}{A: Sort { level = u, scope = S }} (beqA: BEq(A)): BEq(Option(A)) :=
   BEq.mk(
     fun (x: Option(A))(y: Option(A)): Bool =>
       Option.beq(beqA, x, y)
@@ -419,7 +416,7 @@ namespace List {
   }
 }
 
-def listBEq {u: Level}{A: Sort { level = u }} (beqA: BEq(A)): BEq(List(A)) :=
+def listBEq {u: Level}{S: Lifetime}{A: Sort { level = u, scope = S }} (beqA: BEq(A)): BEq(List(A)) :=
   BEq.mk(
     fun (xs: List(A))(ys: List(A)): Bool =>
       List.beq(beqA, xs, ys)
@@ -433,17 +430,17 @@ namespace Prod {
     )
 }
 
-def prodBEq {u: Level}{v: Level}{A: Sort { level = u }}{B: Sort { level = v }} (beqA: BEq(A))(beqB: BEq(B)): BEq(Prod(A, B)) :=
+def prodBEq {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}{A: Sort { level = u, scope = S }}{B: Sort { level = v, scope = T }} (beqA: BEq(A))(beqB: BEq(B)): BEq(Prod(A, B)) :=
   BEq.mk(
     fun (x: Prod(A, B))(y: Prod(A, B)): Bool =>
       Prod.beq(beqA, beqB, x, y)
   )
 
 struct DecidableEq {u: Level}{S: Lifetime}(A: Sort { level = u, scope = S }) : Sort { level = max(one, u), scope = S }
- | mk (decEq: (a: A) -> (b: A) -> Decidable(Eq(A, a, b))) : DecidableEq(A)
+ | mk (decEq: { scope = S } (a: A) -> (b: A) -> Decidable(Eq(A, a, b))) : DecidableEq(A)
 
 namespace DecidableEq {
-  def toBEq {u: Level}{A: Sort { level = u }} (self: DecidableEq(A)): BEq(A) := BEq.mk(fun (a: A)(b: A): Bool => Decidable.toBool(DecidableEq.decEq(self)(a, b)))
+  def toBEq {u: Level}{S: Lifetime}{A: Sort { level = u, scope = S }} (self: DecidableEq(A)): BEq(A) := BEq.mk(fun (a: A)(b: A): Bool => Decidable.toBool(DecidableEq.decEq(self)(a, b)))
 }
 
 def decEq {u: Level}{S: Lifetime}{A: Sort { level = u, scope = S }} (self: DecidableEq(A))(a: A)(b: A): Decidable(Eq(A, a, b)) := DecidableEq.decEq(self)(a, b)
@@ -540,23 +537,23 @@ namespace Nat {
 def natDecidableEq : DecidableEq(Nat) := DecidableEq.mk(Nat.decEq)
 
 struct LE {u: Level}{S: Lifetime}(A: Sort { level = u, scope = S }) : Sort { level = max(one, u), scope = S }
- | mk (le: A -> A -> Prop) : LE(A)
+ | mk (le: { scope = S } A -> A -> Prop { scope = S }) : LE(A)
 
-def le {u: Level}{S: Lifetime}{A: Sort { level = u, scope = S }} (self: LE(A))(a: A)(b: A): Prop := LE.le(self)(a, b)
+def le {u: Level}{S: Lifetime}{A: Sort { level = u, scope = S }} (self: LE(A))(a: A)(b: A): Prop { scope = S } := LE.le(self)(a, b)
 
 struct LT {u: Level}{S: Lifetime}(A: Sort { level = u, scope = S }) : Sort { level = max(one, u), scope = S }
- | mk (lt: A -> A -> Prop) : LT(A)
+ | mk (lt: { scope = S } A -> A -> Prop { scope = S }) : LT(A)
 
-def lt {u: Level}{S: Lifetime}{A: Sort { level = u, scope = S }} (self: LT(A))(a: A)(b: A): Prop := LT.lt(self)(a, b)
+def lt {u: Level}{S: Lifetime}{A: Sort { level = u, scope = S }} (self: LT(A))(a: A)(b: A): Prop { scope = S } := LT.lt(self)(a, b)
 
 def natLE : LE(Nat) := LE.mk(Nat.le)
 
 def natLT : LT(Nat) := LT.mk(Nat.lt)
 
 struct Subsingleton {u: Level}{S: Lifetime}(A: Sort { level = u, scope = S }) : Prop { scope = S }
- | intro (elim: (a: A) -> (b: A) -> Eq(A, a, b)) : Subsingleton(A)
+ | intro (elim: { scope = S } (a: A) -> (b: A) -> Eq(A, a, b)) : Subsingleton(A)
 
-def propSubsingleton {S: Lifetime}(P: Prop { scope = S }): Subsingleton(P) := Subsingleton.intro(fun (a: P)(b: P): Eq(P, a, b) => Eq.refl(a))
+def propSubsingleton {S: Lifetime}(P: Prop { scope = S }): Subsingleton(P) := Subsingleton.intro(fun { scope = S } (a: P)(b: P): Eq(P, a, b) => Eq.refl(a))
 
 axiom Quot {u: Level}{S: Lifetime}{Sr: Lifetime}{Sq: Lifetime}(A: Sort { level = u, scope = S })(r: { scope = Sr } A -> A -> Prop { scope = Sq }): Sort { level = u, scope = union(S, union(Sr, Sq)) }
 

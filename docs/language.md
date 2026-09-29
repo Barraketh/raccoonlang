@@ -682,14 +682,19 @@ parameters' scopes, as `Prod` declares `scope = union(S, T)`. The prelude
 declares nothing at a kind other than `Kind.unr` and no kind variable, and every
 declaration is at `Lifetime.empty`, a lifetime variable, or a union of them.
 
-A family cannot force a lifetime variable that none of its parameters' types
-mentions, so the function-typed fields of `Iff`, `BEq`, `DecidableEq`, `LE`,
-`LT` and `Subsingleton` have an empty closure, and the propositions `LE.le` and
-`LT.lt` return are at `Lifetime.empty`. `Not(a)` is likewise a function type
-with an empty closure. A lambda that captures a value at a type parameter's
-scope fits none of these, so `Decidable.not`, `optionBEq`, `listBEq`,
-`prodBEq` and `DecidableEq.toBEq`, whose bodies build one, are declared at
-`Lifetime.empty` only.
+A family's function-typed field cannot have a closure-scope variable of its
+own, since nothing in an instance's type would force it. It takes the family's
+own scope as its closure scope instead, as in
+`BEq {u: Level}{S: Lifetime}(A: Sort { level = u, scope = S })` with
+`mk (beq: { scope = S } A -> A -> Bool)`: the closure may hold what the
+family's values may already depend on, and adds nothing to the family's scope.
+`Iff`, `DecidableEq`, `LE`, `LT` and `Subsingleton` do the same, and `LE.le` and
+`LT.lt` return propositions at that scope too. `Not(a)` is a function type at
+`a`'s scope, `{ scope = S } (h: a) -> False`. So `listBEq` can build a `BEq`
+from a lambda that captures a `BEq(A)`, while a lambda that captures nothing
+passed at a scoped instance writes its closure, as
+`fun { scope = S } (a: P)(b: P): Eq(P, a, b) => Eq.refl(a)` does in
+`propSubsingleton`.
 
 The prelude source is authoritative for its exact API:
 `src/main/resources/Init/Prelude.rac`.

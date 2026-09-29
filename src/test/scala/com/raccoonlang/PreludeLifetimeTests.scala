@@ -117,6 +117,32 @@ class PreludeLifetimeTests extends munit.FunSuite with TestSupport {
     expectOnly[TypeMismatch](typecheckDecls(program(s"mapAt(xs, $lambda)")))
   }
 
+  test("a family's function-typed field closes over the family's scope") {
+    def program(beq: String): String =
+      withScoped(
+        s"""
+           |def wBEq (l: Lifetime)(w: W(l)): BEq(W(l)) := BEq.mk($beq)
+           |
+           |{
+           |  scope l => {
+           |    let w := W.mk(l)
+           |    let ws := List.cons(w, List.cons(w, List.nil(W(l))))
+           |    let refuted := Decidable.not(Decidable.isTrue(Eq.refl(w)))
+           |    Bool.and(beq(listBEq(wBEq(l, w)), ws, ws), Bool.not(decide(refuted)))
+           |  }
+           |}
+           |""".stripMargin
+      )
+
+    // The field's closure is `{ scope = l }`, so a lambda capturing `w: W(l)` fits it, `listBEq` builds one that
+    // captures a `BEq(W(l))`, and `Decidable.not` one that captures a proof at `Prop { scope = l }`.
+    val captures = "fun (a: W(l))(b: W(l)): Bool => Nat.beq(useW(w), useW(a))"
+    assert(ValueEquivalence.defEq(runProgram(program(captures)), runProgram("{ Bool.true }")))
+    typecheckDecls(program("fun { scope = l } (a: W(l))(b: W(l)): Bool => Bool.true"))
+    // A lambda that captures nothing is at `Lifetime.empty`, and sorts are exact.
+    expectOnly[TypeMismatch](typecheckDecls(program("fun (a: W(l))(b: W(l)): Bool => Bool.true")))
+  }
+
   test("the quotient builtins locate their arguments by name at a scoped carrier") {
     val program =
       withScoped(
