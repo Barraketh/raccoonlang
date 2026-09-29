@@ -253,7 +253,7 @@ object TypeChecker {
   }
 
   /** A function type captures nothing, so its closure is always written (spec §1): the elaborator writes it so. */
-  private def checkPi(pi: CA.Term.Pi, env: Env, familyParams: Int = 0): CheckedPi = {
+  private def checkPi(pi: CA.Term.Pi, env: Env, familyParams: Int): CheckedPi = {
     val telescope = checkTelescope(pi, env, familyParams)
     def written(field: CA.ClosureField, parameter: ParameterTpe): CA.ClosureField =
       field match {
@@ -439,7 +439,7 @@ object TypeChecker {
     if (ambientPeerRefs.nonEmpty)
       fail(InvalidRecursiveGroup(s"peer refs collide with the incoming environment: ${ambientPeerRefs.mkString(", ")}"))
     val headers = definitions.map { definition =>
-      val checkedPi = checkPi(definition.ty, env)
+      val checkedPi = checkPi(definition.ty, env, familyParams = 0)
       val metric = TerminationChecker.checkLexicographic(checkedPi.vpi, definition.decreases, checkedPi.bodyEnv)
       (definition, checkedPi, metric)
     }
@@ -626,7 +626,11 @@ object TypeChecker {
       }
       if (holdsNoTokens) at(subterm.residual.span)(fail(LinearInType(subterm.residual, subterm.value.tpe)))
     }
-    linearSubterm = enclosing.orElse(inner).orElse(Option.when(Linearity.isLinear(synthed.value.tpe))(synthed))
+    linearSubterm =
+      if (enclosing.isDefined) enclosing
+      else if (inner.isDefined) inner
+      else if (Linearity.isLinear(synthed.value.tpe)) Some(synthed)
+      else None
     synthed
   }
 
@@ -651,7 +655,7 @@ object TypeChecker {
       case m: CA.Term.Match => MatchChecker.checkMatch(m, env)
       case b: CA.Term.Body  => checkBody(b, env)
       case pi: CA.Term.Pi =>
-        val checked = checkPi(pi, env)
+        val checked = checkPi(pi, env, familyParams = 0)
         CheckedTerm(checked.vpi, checked.residual)
       case global: CA.Term.GlobalRef =>
         Sealing.requireAccessibleGlobal(global.name, global.span, env)

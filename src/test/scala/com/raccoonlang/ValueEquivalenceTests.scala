@@ -2,7 +2,10 @@ package com.raccoonlang
 
 import com.raccoonlang.Value._
 
-class ValueEquivalenceTests extends munit.FunSuite {
+import scala.concurrent.duration.DurationInt
+import scala.concurrent.{Await, ExecutionContext, Future}
+
+class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
   private val span = Span(0, 0)
   private val typeSort: CoreAst.Term = CoreTestTerms.sortAt(CoreAst.Form.LevelOne, span)
   private val binderRef = CoreAst.LocalRef(0, "x")
@@ -260,5 +263,29 @@ class ValueEquivalenceTests extends munit.FunSuite {
     )
 
     assert(!ValueEquivalence.defEq(neutral, wrongType))
+  }
+
+  // Each key verdict is checked one step deep, whose sub-equations the keys decide without asserting again. Asserting
+  // beneath every nested verdict walked a shared value as a tree: 2^40 nodes here. The deadline fails a regression
+  // rather than hanging the suite.
+  test("the key-coherence assertion costs one structural pass on a shared value") {
+    assert(ValueEquivalence.keyAssertionsEnabled)
+    val program =
+      """
+        |inductive T : Type
+        | | leaf : T
+        | | node (l: T)(r: T) : T
+        |
+        |def dup (t: T): T := T.node(t, t)
+        |
+        |def big (n: Nat): T decreases structural(n) := match n returning T with
+        | | .zero => T.leaf
+        | | .succ m => dup(big(m))
+        |
+        |def same (n: Nat): Eq(T, big(n), big(n)) := Eq.refl(big(n))
+        |
+        |def check : Eq(T, big(40), big(40)) := same(40)
+        |""".stripMargin
+    Await.result(Future(typecheckDecls(program))(ExecutionContext.global), 60.seconds)
   }
 }

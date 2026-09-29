@@ -339,15 +339,16 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
     val env = program.decls.foldLeft(Prelude.default.checkedEnv) { case (current, decl) =>
       Interpreter.evalDecl(decl, current)
     }
-    val u = FreshVar.freshVar("u", Value.LevelTpe)
+    // A level variable is its normal form, never a Var.
+    val (uId, u) = FreshVar.freshValue("u", Value.LevelTpe)
     // Indexed, so structure eta does not apply and the match genuinely sticks on a neutral.
     val polyUnitAtU = Interpreter.evalApply(env("PolyUnit"), Vector(u, env("Peano.zero")))
     val x = Value.VConst("x", Value.Symbol, polyUnitAtU)
     val thunk = Interpreter.evalApply(env("probe"), Vector(u, x)).asInstanceOf[Value.NeutralThunk]
 
-    assertEquals(thunk.blockedOn, DepSet(u.id))
+    assertEquals(thunk.blockedOn, DepSet(uId))
 
-    val store = EqStore.empty.allow(DepSet(u.id)).addLink(u.id, Value.Level.zero)
+    val store = EqStore.empty.allow(DepSet(uId)).addLink(uId, Value.Level.zero)
     val fired = Interpreter.resolveInEqStore(thunk, store)
     assertEquals(PrettyPrinter.print(fired), "Peano.zero")
 
@@ -359,7 +360,7 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
     val blockedThunk =
       Interpreter.evalApply(env("probe"), Vector(u, blockedScrutinee)).asInstanceOf[Value.NeutralThunk]
 
-    assertEquals(blockedThunk.blockedOn, DepSet(blockedHead.id, u.id))
+    assertEquals(blockedThunk.blockedOn, DepSet(blockedHead.id, uId))
     val firedThroughSortCollapse = Interpreter.resolveInEqStore(blockedThunk, store)
     assertEquals(PrettyPrinter.print(firedThroughSortCollapse), "Peano.zero")
   }

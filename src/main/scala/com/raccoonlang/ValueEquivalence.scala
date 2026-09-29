@@ -57,9 +57,8 @@ object ValueEquivalence {
 
   /**
    * Key-coherence assertions (docs/kernel.md#value-identity): wherever the fast path decides an equation by key alone,
-   * the rules below must reach the same verdict, and a lambda's derived closure re-evaluates to what its captures
-   * derive (Interpreter.evalLam). On by default so the whole test suite checks both; disable for benchmarking with
-   * -Draccoon.keyAssertions=false.
+   * the rules below must reach the same verdict. On by default so the whole test suite checks it; disable for
+   * benchmarking with -Draccoon.keyAssertions=false.
    */
   private[raccoonlang] val keyAssertionsEnabled: Boolean =
     java.lang.Boolean.parseBoolean(System.getProperty("raccoon.keyAssertions", "true"))
@@ -344,11 +343,8 @@ object ValueEquivalence {
         meta: EqStore,
         ctx: Ctx
     ): Result = {
-      val candidates = (aVar, bVar) match {
-        case (Some(aId), Some(bId)) if aId < bId => Vector(bId -> a, aId -> b)
-        case _                                   => aVar.map(_ -> b).toVector ++ bVar.map(_ -> a)
-      }
-      candidates
+      (aVar.map(_ -> b).toVector ++ bVar.map(_ -> a))
+        .sortBy { case (id, _) => id }(Ordering[VarId].reverse)
         .collectFirst {
           case (id, other) if ctx.canLinkForced && meta.isRefinable(id) && !meta.occurs(id, other) =>
             meta.addLink(id, other)
@@ -434,12 +430,27 @@ object ValueEquivalence {
       structurally(a, b, meta, ctx)
     }
 
+    private val assertingKeyVerdict = new ThreadLocal[Boolean] {
+      override def initialValue(): Boolean = false
+    }
+
+    /**
+     * One step of the rules beneath a key verdict, whose sub-equations the keys decide without asserting again. Every
+     * verdict reached outside an assertion is checked, so a comparison costs one structural pass however much its
+     * values share, where asserting under every nested verdict would walk a shared value as a tree.
+     */
     private def assertKeyVerdict(a: Value, b: Value, meta: EqStore, ctx: Ctx, keysEqual: Boolean): Unit =
-      if (structurally(a, b, meta, ctx).isRight != keysEqual)
-        wtf(
-          s"ValueKey disagrees with conversion: keys ${if (keysEqual) "equal" else "differ"} but the structural " +
-            s"comparison ${if (keysEqual) "fails" else "succeeds"} for $a and $b"
-        )
+      if (!assertingKeyVerdict.get()) {
+        assertingKeyVerdict.set(true)
+        val agrees =
+          try structurally(a, b, meta, ctx).isRight == keysEqual
+          finally assertingKeyVerdict.remove()
+        if (!agrees)
+          wtf(
+            s"ValueKey disagrees with conversion: keys ${if (keysEqual) "equal" else "differ"} but the structural " +
+              s"comparison ${if (keysEqual) "fails" else "succeeds"} for $a and $b"
+          )
+      }
 
     /** The rules below the key fast path: decomposition, whose leaves are decided by the fast path again. */
     private def structurally(a: Value, b: Value, meta: EqStore, ctx: Ctx): Result = {

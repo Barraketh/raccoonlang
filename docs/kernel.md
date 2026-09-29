@@ -709,8 +709,10 @@ canonical payload, and packed type. A span is otherwise diagnostic metadata.
 A key only accelerates conversion. Equal keys must be convertible, and a key
 mismatch that conversion treats as conclusive must be unconvertible. The
 key-coherence assertion (`-Draccoon.keyAssertions`, on by default and off for
-benchmarking) runs the conversion rules beneath every equation a key decides
-and fails loudly on disagreement. Only atoms whose key is their identity are
+benchmarking) runs one step of the conversion rules beneath every equation a
+key decides and fails loudly on disagreement. The keys decide that step's
+sub-equations without asserting again, so the check costs one structural pass
+however much its values share. Only atoms whose key is their identity are
 exempt: variables (by id), constants and constructor heads (by name), and
 levels (by normal form). Kinds and lifetimes key by their normal forms too, an
 atom by its id, which its `scope` term's node identity determines, but

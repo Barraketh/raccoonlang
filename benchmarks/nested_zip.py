@@ -3,10 +3,10 @@
 
 The benchmark builds a chain
 
-    z1 := zip(v, v)
-    z2 := zip(v, z1)
+    z1 := zip(n, v, v)
+    z2 := zip(n, v, z1)
     ...
-    zN := zip(v, zN-1)
+    zN := zip(n, v, zN-1)
     consume(zN)
 
 The final consume(...) keeps the full nested indexed-vector type live, so the
@@ -52,33 +52,33 @@ def raccoon_source(size: int, transparent_zip: bool) -> str:
     lets = []
     previous = "v"
     for idx in range(1, size + 1):
-        lets.append(f"  let z{idx} := zip(v, {previous})")
+        lets.append(f"  let z{idx} := zip(n, v, {previous})")
         previous = f"z{idx}"
 
     return f"""inductive Nat : Type
  | zero : Nat
- | succ (_: Nat) : Nat
+ | succ (m: Nat) : Nat
 
-inductive Vec (A: Sort($u)) indices (n: Nat) : Sort(Level.max(Level.one, u))
- | nil {{A: Sort($u)}} : Vec(A, Nat.zero)
- | cons {{A: Sort($u)}} (tail: Vec(A, $n)) (head: A) : Vec(A, Nat.succ(n))
+inductive Vec {{u: Level}}(A: Sort {{ level = u }}) indices (n: Nat) : Sort {{ level = max(one, u) }}
+ | nil : Vec(A, Nat.zero)
+ | cons (n: Nat)(tail: Vec(A, n))(head: A) : Vec(A, Nat.succ(n))
 
-inductive Pair (A: Sort($u1))(B: Sort($u2)): Sort(Level.max(u1, u2))
- | mk(a: $A in Sort($u1))(b: $B in Sort($u2)): Pair(A, B)
+inductive Pair {{u1: Level}}{{u2: Level}}(A: Sort {{ level = u1 }})(B: Sort {{ level = u2 }}) : Sort {{ level = max(u1, u2) }}
+ | mk (a: A)(b: B) : Pair(A, B)
 
-{unfold} zip(va: Vec($A, $n))(vb: Vec($B, n)): Vec(Pair(A, B), n) decreases measure(n) := {{
-  let ResType := Vec(Pair(A, B), n)
-  match va returning ResType with
-  | Vec.nil => Vec.nil(Pair(A, B))
-  | Vec.cons va0 a => {{
-    match vb returning ResType with
-    | Vec.cons vb0 b => Vec.cons(Pair(A, B), zip(va0, vb0), Pair.mk(a, b))
+{unfold} zip {{u1: Level}}{{u2: Level}}{{A: Sort {{ level = u1 }}}}{{B: Sort {{ level = u2 }}}}(n: Nat)(va: Vec(A, n))(vb: Vec(B, n)) : Vec(Pair(A, B), n) decreases structural(n) := {{
+  let R := Pair(A, B)
+  match va returning Vec(R, n) with
+  | Vec.nil => Vec.nil(R)
+  | Vec.cons m va0 a => {{
+    match vb returning Vec(R, n) with
+    | Vec.cons _ vb0 b => Vec.cons(m, zip(m, va0, vb0), Pair.mk(a, b))
   }}
 }}
 
-def consume (w: Vec($A, $n)): Nat := Nat.zero
+def consume {{u: Level}}{{A: Sort {{ level = u }}}}{{n: Nat}}(w: Vec(A, n)) : Nat := Nat.zero
 
-def bench (n: Nat)(v: Vec(Nat, n)): Nat := {{
+def bench (n: Nat)(v: Vec(Nat, n)) : Nat := {{
 {chr(10).join(lets)}
   consume({previous})
 }}
