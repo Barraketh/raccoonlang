@@ -522,7 +522,8 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
     residual match {
       case CoreAst.Term.Lam(
             outerType,
-            CoreAst.Term.Lam(innerType, _: CoreAst.Term.App, _, _, _, _),
+            CoreAst.Term.Lam(innerType, _: CoreAst.Term.App, _, _, _, _, _),
+            _,
             _,
             _,
             _,

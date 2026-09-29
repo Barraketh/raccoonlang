@@ -9,6 +9,10 @@ package com.raccoonlang
 // A few fields exist only after checking — `Binder.projection`, `Pi.knownPropValued`, and
 // `Lam.recursivePeers`. Each defaults to the "not yet checked" value, so the parser and elaborator
 // never mention them. A lambda's derived closure field is likewise empty until the checker derives it.
+//
+// A Pi, lambda, match and `scope` carry their node identity (NodeId) as a field of their own, with no default: whoever
+// makes one of these nodes allocates it a fresh identity, and whoever rebuilds one, as the checker does with its
+// residual, keeps the identity of the node it rebuilds (docs/kernel.md#value-identity).
 
 object CoreAst {
   final case class LocalRef(id: Int, name: String)
@@ -42,13 +46,15 @@ object CoreAst {
 
   final case class Recursion(selfRef: LocalRef, decreases: DecreaseSpec)
 
+  /** A member of a recursive group. The checker checks it to a lambda, and `id` is that lambda's node identity. */
   final case class RecursiveDef(
       name: String,
       peerRef: LocalRef,
       ty: Term.Pi,
       body: Term,
       decreases: DecreaseSpec,
-      span: Span
+      span: Span,
+      id: NodeId
   )
 
   object Term {
@@ -76,11 +82,10 @@ object CoreAst {
         out: Term,
         closure: Closure,
         span: Span,
+        id: NodeId,
         knownPropValued: Option[Boolean] = None
     ) extends Term {
       require(binders.nonEmpty, "Pi requires at least one binder")
-
-      def nodeId: AstNodeId = span.nodeId
 
       lazy val refs: Set[CoreAst.LocalRef] = childRefs(this)
     }
@@ -113,11 +118,11 @@ object CoreAst {
         ty: Pi,
         body: Term,
         span: Span,
+        id: NodeId,
         name: Option[String],
         recursion: Option[Recursion],
         recursivePeers: Vector[(CoreAst.LocalRef, String)] = Vector.empty
     ) extends Term {
-      def nodeId: AstNodeId = span.nodeId
 
       /** What the body mentions: a local bound outside the lambda among these is one of its captures (spec §4.3). */
       lazy val bodyRefs: Set[CoreAst.LocalRef] = mentionedRefs(body)
@@ -127,21 +132,18 @@ object CoreAst {
 
     /**
      * `scope l => body` (spec §4.1): `ref` denotes the atom this term opens, which its node identity names (Atoms), in
-     * checking and evaluation alike. A residual keeps the term and its node identity, so re-evaluating it opens the
-     * same atom.
+     * checking and evaluation alike. A residual keeps the term's node identity, so re-evaluating it opens the same
+     * atom.
      */
-    final case class Scope(ref: CoreAst.LocalRef, body: Term, span: Span) extends Term {
-      def nodeId: AstNodeId = span.nodeId
-    }
+    final case class Scope(ref: CoreAst.LocalRef, body: Term, span: Span, id: NodeId) extends Term
 
     final case class Match(
         scrut: Term,
         motive: Term,
         cases: Vector[Case],
-        span: Span
+        span: Span,
+        id: NodeId
     ) extends Term {
-      def nodeId: AstNodeId = span.nodeId
-
       lazy val refs: Set[CoreAst.LocalRef] = childRefs(this)
     }
 
@@ -253,16 +255,16 @@ object CoreAst {
     term match {
       case _: Term.GlobalRef | _: Term.LocalRef | _: Term.NatLit | _: Term.StrLit =>
         Vector.empty
-      case Term.Select(base, _, _)              => Vector(base)
-      case Term.Sort(level, kind, scope, _)     => Vector(level, kind, scope)
-      case Term.FormOp(_, args, _)              => args
-      case Term.App(fn, args, _)                => fn +: args
-      case Term.Pi(binders, out, closure, _, _) => closure.terms ++ binders.map(_.ty) :+ out
+      case Term.Select(base, _, _)                 => Vector(base)
+      case Term.Sort(level, kind, scope, _)        => Vector(level, kind, scope)
+      case Term.FormOp(_, args, _)                 => args
+      case Term.App(fn, args, _)                   => fn +: args
+      case Term.Pi(binders, out, closure, _, _, _) => closure.terms ++ binders.map(_.ty) :+ out
       case Term.Body(lets, res, _) =>
         lets.flatMap(let => let.ty.toVector :+ let.value) :+ res
-      case Term.Lam(ty, body, _, _, _, _) => Vector(ty, body)
-      case Term.Scope(_, body, _)         => Vector(body)
-      case Term.Match(scrut, motive, cases, _) =>
+      case Term.Lam(ty, body, _, _, _, _, _) => Vector(ty, body)
+      case Term.Scope(_, body, _, _)         => Vector(body)
+      case Term.Match(scrut, motive, cases, _, _) =>
         Vector(scrut, motive) ++ cases.map(_.body)
     }
 

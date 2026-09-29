@@ -253,7 +253,7 @@ rejected.
 `scope l => e` is a Core term of its own. It opens an atom: an id in a
 lifetime's set, allocated like a variable's and printed as the `scope`'s
 binder, but not a variable. One registry, shared by checking and evaluation,
-maps the term's AST node identity to its atom, so two `scope` terms are two
+maps the term's node identity to its atom, so two `scope` terms are two
 atoms and one term checked or evaluated any number of times is one atom, a
 recursive call re-entering it included. Both checking and evaluation bind `l`
 to the lifetime holding exactly that atom, and the term denotes its body's
@@ -710,17 +710,21 @@ not currently install this layout.
 
 Fast equality keys may prove definitional equality, so every value component
 used to build a key must be semantically identifying. A Pi, lambda, match or
-`scope` node's identity is its source and the offset its span starts at, and
-no two nodes of one kind with different syntax share one. A written node keeps
-its own span, a generated one gets a span of its own (a struct selector's
-header its field's), and a node the checker fabricates gets a synthetic
-identity. Nodes of one syntax may share an identity: a selector's result type
-is its field's type as written, under `let`s binding the earlier fields it
-mentions, and it is both its header's codomain and its match's motive.
-Captured values, in binding order, are part of closure identity, and a Pi's
-key counts its binders, so a Pi that drops leading binders its remainder does
-not depend on keeps its node's identity. Packed keys include the codec,
-canonical payload, and packed type. A span is otherwise diagnostic metadata.
+`scope` node carries an identity of its own. Whoever makes a node allocates it
+a fresh one: the elaborator for each node it elaborates, the inductive checks
+for a family's and a constructor's type, and the kernel for a node it
+fabricates, such as a structure-eta projection or a proof's eta-lambda.
+Whoever rebuilds a node keeps its identity, as the checker's residual does, so
+a term checked and later evaluated keeps it. Two nodes therefore share an
+identity only when one rebuilds the other. A span only locates a node, so two
+nodes written at one span are still two. Syntax the elaborator duplicates is
+as many nodes: a selector's result type, its field's type as written under
+`let`s binding the earlier fields it mentions, is elaborated once as its
+header's codomain and once as its match's motive. Captured values, in binding
+order, are part of closure identity, and a Pi's key counts its binders, so a
+Pi that drops leading binders its remainder does not depend on keeps its
+node's identity. Packed keys include the codec, canonical payload, and packed
+type.
 
 A key only accelerates conversion. Equal keys must be convertible, and a key
 mismatch that conversion treats as conclusive must be unconvertible. The

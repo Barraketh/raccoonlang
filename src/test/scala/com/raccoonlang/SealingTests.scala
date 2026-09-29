@@ -59,12 +59,11 @@ class SealingTests extends munit.FunSuite with TestSupport {
     outside(boxModule(""), "def x (b: Box): Nat := b.n\n")
   }
 
-  test("a module is a source, and a site in no source or a fabricated one lies outside every module") {
+  test("a module is a source, and a site in no source lies outside every module") {
     val seal = Some(Sealing.Seal("Box", SourceId.fresh()))
     assert(Sealing.accessible(seal, Span(0, 0, Some(seal.get.module))))
     assert(!Sealing.accessible(seal, Span(0, 0, Some(SourceId.fresh()))))
     assert(!Sealing.accessible(seal, Span(0, 0, None)))
-    assert(!Sealing.accessible(seal, Span.synthetic()))
     assert(Sealing.accessible(None, Span(0, 0, None)))
   }
 

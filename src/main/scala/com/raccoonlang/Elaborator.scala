@@ -347,8 +347,9 @@ object Elaborator {
         // field's selector applied to `self`. The selector is spelled qualified so it resolves whether or not the
         // namespace is open. Only a mentioned field is bound: an unmentioned one would put `self` in the type for
         // nothing, which a linear struct cannot have (spec §3.5). Each binding stands at the field's first mention,
-        // where an error about it belongs. The type keeps its spans, so its nodes are the constructor's field type's
-        // syntax, differing only in what they capture (docs/kernel.md#value-identity).
+        // where an error about it belongs. The type keeps the field type's spans, so an error in it is located where
+        // the field's type is written. It is elaborated twice, as the header's codomain and as the match's motive, and
+        // so is two nodes, each with an identity of its own (docs/kernel.md#value-identity).
         val mentions = freeIdentifiers(field.ty, Set.empty)
         val earlierFields = storedBinders.take(fieldIdx).filter(_.name != "_")
         val bindings = earlierFields.flatMap { earlier =>
@@ -363,8 +364,6 @@ object Elaborator {
           }
         }
         val resultTy = if (bindings.isEmpty) field.ty else SA.Term.Body(bindings, field.ty, field.ty.span)
-        // Where a header's span starts is its function type's node identity (docs/kernel.md#value-identity), and the
-        // selectors' types are different function types, so each header takes its own field's span.
         val selectorHeader =
           SA.Command.DeclHeader(
             field.name,
@@ -498,10 +497,6 @@ object Elaborator {
    * A surface Pi's binders are already exactly its group — the parser decided the grouping — so a Pi body is NOT merged
    * into the enclosing group. `(a: A) -> ((b: B) -> C)` stays a 1-ary Pi returning a Pi, which is a different type from
    * the 2-ary `(a: A) -> (b: B) -> C`.
-   *
-   * The Core Pi keeps the surface Pi's own span, whose start is its node identity (docs/kernel.md#value-identity). A
-   * span built from its binders would not do: an anonymous binder's span is its domain's, so the outer Pi of
-   * `(A -> A) -> A` would start where its domain `A -> A` does.
    */
   private def elabPi(pi: SA.Term.Pi, env: ResolveEnv): CA.Term.Pi = {
     val piEnv = env.enterLocalScope
@@ -516,7 +511,8 @@ object Elaborator {
         pi.closure.kind.map(elabField(_, CA.Parameter.Kind, env)).fold(omitted.kind)(CA.ClosureField.Written),
         pi.closure.scope.map(elabField(_, CA.Parameter.Lifetime, env)).fold(omitted.scope)(CA.ClosureField.Written)
       ),
-      pi.span
+      pi.span,
+      NodeId.fresh()
     )
   }
 
@@ -580,7 +576,7 @@ object Elaborator {
     val outTy = elabTerm(header.ty, bodyEnv)
     val ty =
       if (params.isEmpty) outTy
-      else CA.Term.Pi(params, outTy, closure, header.span)
+      else CA.Term.Pi(params, outTy, closure, header.span, NodeId.fresh())
     HeaderResult(ty, bodyEnv)
   }
 
@@ -597,7 +593,7 @@ object Elaborator {
       recursion: Option[CA.Recursion],
       span: Span
   ): CA.Term.Lam = {
-    CA.Term.Lam(pi, elabTerm(body, bodyEnv), span, name, recursion)
+    CA.Term.Lam(pi, elabTerm(body, bodyEnv), span, NodeId.fresh(), name, recursion)
   }
 
   private def elabDecreaseRef(name: String, span: Span, env: ResolveEnv): CA.LocalRef =
@@ -671,7 +667,7 @@ object Elaborator {
       }
     case SA.Term.Scope(name, body, span) =>
       val (ref, bodyEnv) = env.enterLocalScope.bind(name, allowShadow = false)
-      CA.Term.Scope(ref, elabTerm(body, bodyEnv), span)
+      CA.Term.Scope(ref, elabTerm(body, bodyEnv), span, NodeId.fresh())
     case b: SA.Term.Body =>
       val checkedLets = Vector.newBuilder[CA.Let]
       val startEnv = env.enterOpenScope
@@ -710,7 +706,8 @@ object Elaborator {
             }
           CA.Case(ctorName, isFullyQualified, patternVars, elabTerm(c.body, bodyEnv), c.span)
         },
-        sp
+        sp,
+        NodeId.fresh()
       )
   }
 
@@ -768,7 +765,8 @@ object Elaborator {
         definition.pi,
         body,
         decrease,
-        definition.surface.span
+        definition.surface.span,
+        NodeId.fresh()
       )
     }
     (CA.Decl.RecursiveDefBlock(definitions, span), groupEnv)

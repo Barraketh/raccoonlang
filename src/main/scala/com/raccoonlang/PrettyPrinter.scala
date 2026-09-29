@@ -127,19 +127,19 @@ object PrettyPrinter {
       case CoreAst.Term.NatLit(value, _)   => value.toString
       case CoreAst.Term.StrLit(scalars, _) => printString(scalars)
       case ref: CoreAst.Term.Ref           => printRef(ref)
-      case CoreAst.Term.Lam(ty, body, _, _, recursion, _) =>
+      case CoreAst.Term.Lam(ty, body, _, _, _, recursion, _) =>
         val decreaseStr = recursion.map(r => s" ${printDecreaseSpec(r.decreases)}").getOrElse("")
         s"fun ${printCoreClosure(ty.closure)}${printBinders(ty.binders)}: ${printCoreTerm(ty.out)}$decreaseStr => " +
           printCoreTerm(body)
-      case CoreAst.Term.Scope(ref, body, _)    => s"scope ${ref.name} => ${printCoreTerm(body)}"
-      case m @ CoreAst.Term.Match(_, _, _, _)  => printMatch(m)
-      case b: CoreAst.Term.Body                => printBody(b)
-      case CoreAst.Term.Select(base, field, _) => s"${printTermAtom(base)}[$field]"
+      case CoreAst.Term.Scope(ref, body, _, _)   => s"scope ${ref.name} => ${printCoreTerm(body)}"
+      case m @ CoreAst.Term.Match(_, _, _, _, _) => printMatch(m)
+      case b: CoreAst.Term.Body                  => printBody(b)
+      case CoreAst.Term.Select(base, field, _)   => s"${printTermAtom(base)}[$field]"
       case CoreAst.Term.App(fn, args, _) =>
         val headStr = printTermAtom(fn)
         val argsStr = args.map(printTermAtom).mkString(", ")
         s"$headStr($argsStr)"
-      case CoreAst.Term.Pi(binders, out, closure, _, _) =>
+      case CoreAst.Term.Pi(binders, out, closure, _, _, _) =>
         val bindersStr = binders.map(printPiBinder).mkString(" -> ")
         s"${printCoreClosure(closure)}$bindersStr -> ${printCodomain(out)}"
       case CoreAst.Term.Sort(level, kind, scope, _) =>
@@ -277,7 +277,7 @@ object PrettyPrinter {
     def isResult(term: CoreAst.Term): Boolean =
       term match {
         case body: CoreAst.Term.Body => isResult(body.res)
-        case m: CoreAst.Term.Match   => m.nodeId == thunk.term.nodeId
+        case m: CoreAst.Term.Match   => m.id == thunk.term.id
         case _                       => false
       }
 
@@ -301,7 +301,7 @@ object PrettyPrinter {
    */
   private def fieldProjection(thunk: Value.NeutralThunk): Option[String] =
     thunk.term match {
-      case CoreAst.Term.Match(CoreAst.Term.LocalRef(scrutinee, _), _, Vector(branch), _) =>
+      case CoreAst.Term.Match(CoreAst.Term.LocalRef(scrutinee, _), _, Vector(branch), _, _) =>
         val fieldIdx = branch.body match {
           case CoreAst.Term.LocalRef(ref, _) => branch.argRefs.indexOf(ref)
           case _                             => -1

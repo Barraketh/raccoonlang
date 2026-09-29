@@ -90,11 +90,18 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
       CoreAst.BinderSite.Function
     )
     val firstParamTerm = CoreAst.Term.LocalRef(firstParam.localRef, blockSpan)
-    val inner = CoreAst.Term.Pi(Vector(innerArg), firstParamTerm, CoreAst.Closure.unrestricted(blockSpan), blockSpan)
+    val inner = CoreAst.Term.Pi(
+      Vector(innerArg),
+      firstParamTerm,
+      CoreAst.Closure.unrestricted(blockSpan),
+      blockSpan,
+      NodeId.fresh()
+    )
     val outerArg = CoreAst.Binder(CoreAst.LocalRef(1015, "consume"), inner, blockSpan, CoreAst.BinderSite.Function)
     val field = CoreAst.Binder(
       CoreAst.LocalRef(1016, "field"),
-      CoreAst.Term.Pi(Vector(outerArg), firstParamTerm, CoreAst.Closure.unrestricted(blockSpan), blockSpan),
+      CoreAst.Term
+        .Pi(Vector(outerArg), firstParamTerm, CoreAst.Closure.unrestricted(blockSpan), blockSpan, NodeId.fresh()),
       blockSpan,
       CoreAst.BinderSite.Field
     )
@@ -230,7 +237,8 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
           blockSpan
         )
       ),
-      blockSpan
+      blockSpan,
+      NodeId.fresh()
     )
     val oddMatch = CoreAst.Term.Match(
       global("oddWitness"),
@@ -244,7 +252,8 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
           blockSpan
         )
       ),
-      blockSpan
+      blockSpan,
+      NodeId.fresh()
     )
     TypeChecker.checkTerm(evenMatch, matchEnv)
     TypeChecker.checkTerm(oddMatch, matchEnv)
@@ -284,7 +293,13 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   test("mutual blocks reject negative sibling occurrences without publication") {
     val functionArg = CoreAst.Binder(CoreAst.LocalRef(1020, "x"), global("Odd"), blockSpan, CoreAst.BinderSite.Function)
     val negativeField =
-      CoreAst.Term.Pi(Vector(functionArg), global("Even"), CoreAst.Closure.unrestricted(blockSpan), blockSpan)
+      CoreAst.Term.Pi(
+        Vector(functionArg),
+        global("Even"),
+        CoreAst.Closure.unrestricted(blockSpan),
+        blockSpan,
+        NodeId.fresh()
+      )
     val base = Prelude.test.checkedEnv
 
     interceptError[NonStrictlyPositive] {

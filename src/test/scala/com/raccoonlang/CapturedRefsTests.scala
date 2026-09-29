@@ -20,7 +20,8 @@ class CapturedRefsTests extends munit.FunSuite with DiagnosticAssertions {
         span
       ),
       CoreAst.Closure.unrestricted(span),
-      Span.synthetic()
+      span,
+      NodeId.fresh()
     )
 
     val refs = CapturedRefs.getCapturedRefs(term, env)

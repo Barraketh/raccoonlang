@@ -491,7 +491,7 @@ An atom names a `scope` term, not an entry into it. A recursive call re-enters
 the same atom, which confinement (§4.2) makes harmless to the checker. An atom
 is not a local: it is never linked by refinement (§6.2) and never abstracted.
 Printed output spells an atom as its binder. A residual keeps the `scope` term
-with its node identity and never gives it a synthetic one, which would open a
+with its node identity and never gives it a fresh one, which would open a
 different atom.
 
 **4.2 Outside its scope an atom cannot be named in a type.** A type whose

@@ -10,8 +10,6 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
   private val typeToTypeClassifier: Value.VSort =
     Sorts.sort(Level.succ(Level.one), Value.Kind.unr, Value.Lifetime.empty)
 
-  private def nodeId(start: Int): AstNodeId = AstNodeId(None, start)
-
   private def symbolicValue(name: String): VConst =
     VConst(name, Symbol, valueType)
 
@@ -96,23 +94,25 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
       Value.Kind.unr,
       Value.Lifetime.empty,
       captured.synDeps,
-      ValueId.LocalId(nodeId(1), Vector(captured)),
+      ValueId.LocalId(NodeId.fresh(), Vector(captured)),
       () => typeToTypeClassifier
     )
     val piTerm = CTerm.Pi(
       Vector(CoreAst.Binder(argRef, typeRef, span, CoreAst.BinderSite.Function)),
       typeRef,
       CoreAst.Closure.unrestricted(span),
-      Span.synthetic()
+      span,
+      NodeId.fresh()
     )
     val lamTerm = CTerm.Lam(
       piTerm,
       CTerm.LocalRef(capturedRef, span),
       span,
+      NodeId.fresh(),
       name = None,
       recursion = None
     )
-    val lam = VLam(pi, ValueId.LocalId(nodeId(2), Vector(captured)), LamBody.Core(lamTerm, runtimeEnv))
+    val lam = VLam(pi, ValueId.LocalId(NodeId.fresh(), Vector(captured)), LamBody.Core(lamTerm, runtimeEnv))
 
     val materialized = ValueOps.materialize(lam, solve(captured, solution)).asInstanceOf[VLam]
 
@@ -140,23 +140,25 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
       Value.Kind.unr,
       Value.Lifetime.empty,
       DepSet.empty,
-      ValueId.LocalId(nodeId(1), Vector.empty),
+      ValueId.LocalId(NodeId.fresh(), Vector.empty),
       () => typeToTypeClassifier
     )
     val piTerm = CTerm.Pi(
       Vector(CoreAst.Binder(argRef, typeRef, span, CoreAst.BinderSite.Function)),
       typeRef,
       CoreAst.Closure.unrestricted(span),
-      Span.synthetic()
+      span,
+      NodeId.fresh()
     )
     val lamTerm = CTerm.Lam(
       piTerm,
       CTerm.LocalRef(capturedRef, span),
       span,
+      NodeId.fresh(),
       name = None,
       recursion = None
     )
-    val lam = VLam(pi, ValueId.LocalId(nodeId(2), Vector.empty), LamBody.Core(lamTerm, runtimeEnv))
+    val lam = VLam(pi, ValueId.LocalId(NodeId.fresh(), Vector.empty), LamBody.Core(lamTerm, runtimeEnv))
 
     interceptError[NotFound](Interpreter.evalApply(lam, Vector(symbolicValue("Arg"))))
   }
@@ -171,13 +173,15 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
       Vector(CoreAst.Binder(argRef, typeRef, span, CoreAst.BinderSite.Function)),
       typeRef,
       CoreAst.Closure.unrestricted(span),
-      Span.synthetic()
+      span,
+      NodeId.fresh()
     )
     val vpi = Interpreter.evalPi(piTerm, env)
     val lamTerm = CTerm.Lam(
       piTerm,
       CTerm.LocalRef(capturedRef, span),
       span,
+      NodeId.fresh(),
       name = None,
       recursion = None
     )
@@ -212,12 +216,13 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
           span
         )
       ),
-      Span.synthetic()
+      span,
+      NodeId.fresh()
     )
     val thunk = NeutralThunk(
       matchTerm,
       runtimeEnv,
-      ValueId.LocalId(nodeId(3), Vector(scrut, captured)),
+      ValueId.LocalId(NodeId.fresh(), Vector(scrut, captured)),
       valueType,
       DepSet(scrut.id)
     )
@@ -246,12 +251,13 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
       CTerm.LocalRef(scrutRef, span),
       motive = typeRef,
       cases = Vector(CoreAst.Case("C", isFullyQualified = true, Vector.empty, CTerm.LocalRef(capturedRef, span), span)),
-      Span.synthetic()
+      span,
+      NodeId.fresh()
     )
     val thunk = NeutralThunk(
       matchTerm,
       runtimeEnv,
-      ValueId.LocalId(nodeId(4), Vector(scrut, captured)),
+      ValueId.LocalId(NodeId.fresh(), Vector(scrut, captured)),
       valueType,
       DepSet(scrut.id)
     )
@@ -302,7 +308,8 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
           span
         )
       ),
-      Span.synthetic()
+      span,
+      NodeId.fresh()
     )
 
     val blocked = Interpreter.evalTerm(matchTerm, env).asInstanceOf[NeutralThunk]
