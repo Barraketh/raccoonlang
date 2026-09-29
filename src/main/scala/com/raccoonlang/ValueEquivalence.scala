@@ -430,27 +430,37 @@ object ValueEquivalence {
       structurally(a, b, meta, ctx)
     }
 
-    private val assertingKeyVerdict = new ThreadLocal[Boolean] {
-      override def initialValue(): Boolean = false
+    /** Two values, compared by object identity. */
+    private final class AssertedPair(val a: Value, val b: Value) {
+      override def equals(obj: Any): Boolean =
+        obj match {
+          case other: AssertedPair => sameValueObject(a, other.a) && sameValueObject(b, other.b)
+          case _                   => false
+        }
+      override def hashCode(): Int = 31 * System.identityHashCode(a) + System.identityHashCode(b)
     }
 
+    /** The pairs the running outermost assertion has checked so far, or null when no assertion is running. */
+    private val assertedPairs = new ThreadLocal[java.util.HashSet[AssertedPair]]
+
     /**
-     * One step of the rules beneath a key verdict, whose sub-equations the keys decide without asserting again. Every
-     * verdict reached outside an assertion is checked, so a comparison costs one structural pass however much its
-     * values share, where asserting under every nested verdict would walk a shared value as a tree.
+     * The rules beneath a key verdict must reach it too, and each sub-equation the keys decide is asserted in turn.
+     * Within one outermost assertion each pair of objects is checked once, so the check costs one structural pass
+     * however much its values share, where rechecking every repeated pair would walk a shared value as a tree. A pair
+     * checked once is skipped even under another store or frame: the verdict under test is its keys', which neither
+     * changes, and the assertion is a debug check.
      */
-    private def assertKeyVerdict(a: Value, b: Value, meta: EqStore, ctx: Ctx, keysEqual: Boolean): Unit =
-      if (!assertingKeyVerdict.get()) {
-        assertingKeyVerdict.set(true)
-        val agrees =
-          try structurally(a, b, meta, ctx).isRight == keysEqual
-          finally assertingKeyVerdict.remove()
-        if (!agrees)
+    private def assertKeyVerdict(a: Value, b: Value, meta: EqStore, ctx: Ctx, keysEqual: Boolean): Unit = {
+      val outermost = assertedPairs.get() == null
+      if (outermost) assertedPairs.set(new java.util.HashSet[AssertedPair])
+      try {
+        if (assertedPairs.get().add(new AssertedPair(a, b)) && structurally(a, b, meta, ctx).isRight != keysEqual)
           wtf(
             s"ValueKey disagrees with conversion: keys ${if (keysEqual) "equal" else "differ"} but the structural " +
               s"comparison ${if (keysEqual) "fails" else "succeeds"} for $a and $b"
           )
-      }
+      } finally if (outermost) assertedPairs.remove()
+    }
 
     /** The rules below the key fast path: decomposition, whose leaves are decided by the fast path again. */
     private def structurally(a: Value, b: Value, meta: EqStore, ctx: Ctx): Result = {
