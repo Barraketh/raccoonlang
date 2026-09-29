@@ -148,14 +148,17 @@ class ScopeTests extends munit.FunSuite with TestSupport {
     assert(ValueEquivalence.defEq(runProgram(program), runProgram("{ 1 }")))
   }
 
-  test("a closure derived inside a scope names the atom by the scope's binder") {
-    val (env, _, checked) = checkBody(
+  test("a closure derived inside a scope is at the atom, and its residual derives it again from the capture") {
+    def program(annotation: String): String =
       withFamilies(
-        "def n : Nat := scope l => {\n  let v := V.mk(l)\n  let f := fun (u: Unit): Nat => useV(v)\n  f(Unit.unit)\n}\n"
+        s"def n : Nat := scope l => {\n  let v := V.mk(l)\n  let f$annotation := fun (u: Unit): Nat => useV(v)\n" +
+          "  f(Unit.unit)\n}\n"
       )
-    )
-    assert(checked.residual.toString.contains("fun { scope = l } (u: Unit): Nat"), checked.residual.toString)
-    // Re-evaluating the residual re-derives the closure from the capture's type and asserts it agrees.
+    typecheckDecls(program(" : { scope = l } Unit -> Nat"))
+    expectOnly[TypeMismatch](typecheckDecls(program(" : Unit -> Nat")))
+    val (env, _, checked) = checkBody(program(""))
+    // The residual carries the capture, and prints the derived field as omitted, as written.
+    assert(checked.residual.toString.contains("fun (u: Unit): Nat"), checked.residual.toString)
     assert(ValueEquivalence.defEq(Interpreter.evalTerm(checked.residual, env), checked.value))
   }
 

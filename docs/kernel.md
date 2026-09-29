@@ -178,13 +178,19 @@ scope of its type's sort, except that a variable of a sort parameter contributes
 nothing, and neither does a recursive definition's reference to itself, which
 names a global. An omitted closure field is the join of the captures' kinds or
 the union of their scopes; a written one must contain it, else `KindExceeded` or
-`ScopeExceeded` naming a capture it does not contain. The residual carries a
-derived field as a kind or lifetime expression over the locals bound to its
-variables (any one of them, where a refined branch binds two locals to one
-variable), and evaluation re-evaluates it where the lambda stands. Sorts commute
-with substitution, so that agrees with deriving the closure again from the
-captures' instantiated types; the key-coherence switch asserts it on every
-evaluation of such a lambda.
+`ScopeExceeded` naming a capture it does not contain. That test and a family's
+declared kind and scope against its fields, parameters and indices are one
+containment rule with one implementation.
+
+The residual carries a derived field as the captures it is derived from. Every
+evaluation of the lambda, the one checking makes included, reads those captures
+in the environment it is evaluated in and derives the field from their values'
+types' sorts; one function does it. A capture that contributes `Kind.unr` or
+`Lifetime.empty` to a field as checking saw it is left out of that field, since
+every instantiation keeps it so: a lambda whose captures are all unrestricted
+and unscoped carries none. Sorts commute with substitution, so an evaluation
+derives what checking would derive under that instantiation. A printed residual
+shows a derived field as omitted, as the source did.
 
 A telescope that binds a level is instead classified by `Large`. A level binder
 changes the universe of everything after it, so no sort contains the Pi. `Large`
@@ -277,8 +283,7 @@ computed under the `scope` as the value of a definition whose type is a sort.
 Every use of such a type as a type is then confined. So a global value may hold
 an atom, though never a variable.
 
-A derived closure names an atom by the `scope` binder's local, as it names a
-variable by a binder's (see
+A derived closure holds an atom when a capture's type's scope does (see
 [Universes and function types](#universes-and-function-types)): a capture's
 type names only atoms whose `scope` encloses the lambda.
 
@@ -751,8 +756,8 @@ Changes to the checker or evaluator must preserve these rules:
     contain whatever a value of it holds or carries in its type.
 19. A function type's closure is part of its identity and its sort. A lambda's
     closure is written or derived from its captures' types alone, never from
-    where the lambda stands, and re-evaluating a derived closure agrees with
-    deriving it again.
+    where the lambda stands, and its residual carries a derived field as those
+    captures.
 20. An atom is opened only by a `scope` term and is determined by that term's
     node identity, in checking and evaluation alike. It is never refinable and
     never abstracted, and no type the checker synthesizes, checks against or

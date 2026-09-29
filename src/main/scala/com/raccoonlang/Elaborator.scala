@@ -676,7 +676,7 @@ object Elaborator {
     case l: SA.Term.Lam =>
       // A lambda's omitted closure field is derived from its captures by the checker (spec §4.3).
       def field(written: Option[SA.Term], parameter: CA.Parameter): CA.ClosureField =
-        written.fold[CA.ClosureField](CA.ClosureField.Derived(None))(term =>
+        written.fold[CA.ClosureField](CA.ClosureField.Omitted)(term =>
           CA.ClosureField.Written(elabField(term, parameter, env))
         )
       val closure =
