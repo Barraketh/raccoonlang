@@ -697,14 +697,14 @@ published atomically, and cross-member calls obey the caller's metric.
 definitions:
 
 ```raccoon
-struct Pair (A: Type)(B: Type) : Type
- | mk (fst: A)(snd: B) : Pair(A, B)
+struct Couple (A: Type)(B: Type) : Type
+ | mk (fst: A)(snd: B) : Couple(A, B)
 
-def first {A: Type}{B: Type}(p: Pair(A, B)): A := p.fst
+def first {A: Type}{B: Type}(p: Couple(A, B)): A := p.fst
 ```
 
 A struct declaration has exactly one constructor. Every named stored field
-gets a selector in the family namespace, so `p.fst` and `Pair.fst(p)` are the
+gets a selector in the family namespace, so `p.fst` and `Couple.fst(p)` are the
 same ordinary function application. A selector is a match on its parameter
 `self` that returns the field, with the field's type as its `returning` clause.
 An `_` field remains stored but gets no selector.
@@ -859,6 +859,10 @@ the examples and tests, including:
 
 - `Eq`, `False`, `True`, `And`, `Or`, `Iff`, and `Not`;
 - `Empty`, `Unit`, `Bool`, `Nat`, `Option`, `Sum`, `List`, `Prod`, and `Sigma`;
+- `Pair`, a pair whose components may be linear or scoped: it holds values
+  of types at any level above `Prop`, is at the join of their kinds and the
+  union of their scopes, has no selectors, and is taken apart by `match`, while
+  `Prod` stays the unrestricted pair with selectors;
 - `Decidable`, `Subtype`, `Exists`, `Nonempty`, and common boolean and natural
   operations;
 - `Quot` with `Quot.mk`, `Quot.sound`, `Quot.lift`, and `Quot.ind`.

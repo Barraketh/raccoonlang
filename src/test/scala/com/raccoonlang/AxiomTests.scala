@@ -47,12 +47,12 @@ class AxiomTests extends munit.FunSuite with TestSupport {
   }
 
   test("an axiom outside the prelude is UntrustedAxiom whatever its type, spec §7.3's examples and harmless ones") {
-    val pair = "inductive Pair (l: Lifetime)(m: Lifetime) : Type { scope = union(l, m) }\n | mk : Pair(l, m)\n\n"
+    val both = "inductive Both (l: Lifetime)(m: Lifetime) : Type { scope = union(l, m) }\n | mk : Both(l, m)\n\n"
     Vector(
       "axiom excludedMiddle (P: Prop): Or(P, Not(P))\n" -> "excludedMiddle",
       "axiom eat {A: Type { kind = lin }}(x: A): Unit\n" -> "eat",
-      pair + "axiom pairEq (a: Lifetime)(b: Lifetime): Eq(Type { scope = union(a, b) }, Pair(a, b), Pair(b, a))\n" ->
-        "pairEq",
+      both + "axiom bothEq (a: Lifetime)(b: Lifetime): Eq(Type { scope = union(a, b) }, Both(a, b), Both(b, a))\n" ->
+        "bothEq",
       "axiom a : List(Nat)\n" -> "a"
     ).foreach { case (program, axiom) =>
       assertEquals(expectOnly[UntrustedAxiom](typecheckDecls(program)), UntrustedAxiom(axiom))
