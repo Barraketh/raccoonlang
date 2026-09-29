@@ -327,7 +327,7 @@ object TypeChecker {
     }
     val selectorName = s"${family.head.name}.$field"
     if (!env.globals.contains(selectorName)) fail(NotFound(selectorName))
-    Sealing.requireAccessible(env.sealedMembers.get(selectorName), Some(selectorName), span)
+    Sealing.requireAccessibleGlobal(selectorName, span, env)
     val selector = env(selectorName)
     val applied =
       checkApplyChecked(
@@ -654,7 +654,7 @@ object TypeChecker {
         val checked = checkPi(pi, env)
         CheckedTerm(checked.vpi, checked.residual)
       case global: CA.Term.GlobalRef =>
-        Sealing.requireAccessible(env.sealedMembers.get(global.name), Some(global.name), global.span)
+        Sealing.requireAccessibleGlobal(global.name, global.span, env)
         CheckedTerm(Interpreter.evalTerm(global, env), global)
       case local: CA.Term.LocalRef => CheckedTerm(Interpreter.evalTerm(local, env), local)
       case l: CA.Term.Lam          => checkLam(l, env)

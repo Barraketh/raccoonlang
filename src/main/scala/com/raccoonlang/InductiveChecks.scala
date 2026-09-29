@@ -515,7 +515,7 @@ object InductiveChecks {
       provisionalBlock,
       projectionInfo = None,
       proofRecovery = None,
-      seal = Option.when(decl.isSealed)(Sealing.Seal(decl.header.name, decl.span.source))
+      seal = decl.seal
     )
   }
 

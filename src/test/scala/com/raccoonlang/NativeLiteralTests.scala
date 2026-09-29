@@ -706,6 +706,29 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
     interceptError[StringLiteralUnavailable](Packed.validateStringLayout(openEnv))
   }
 
+  test("a sealed family is no literal layout, so a literal cannot make its values outside its module") {
+    // The layout is not the expected one, and a prelude that declares a malformed one is rejected.
+    val sealedNat = Prelude.fromSource(
+      "sealed-nat",
+      "sealed inductive Nat : Type\n | zero : Nat\n | succ (_: Nat) : Nat\n",
+      Set(Prelude.ImportPath)
+    )
+    assertEquals(interceptError[NatLiteralUnavailable](sealedNat.checkedEnv).reason, "`Nat` is sealed")
+    // The String layout's families, each sealed in turn.
+    def stringReason(prelude: Prelude.Config): String =
+      interceptError[StringLiteralUnavailable](prelude.checkedEnv).reason
+    val sealedString = fullNativeAddendum.replace("struct String", "sealed struct String")
+    assertEquals(stringReason(syntheticFullNative("sealed-string", sealedString)), "`String` is sealed")
+    val sealedChar = fullNativeAddendum.replace("struct Char", "sealed struct Char")
+    assertEquals(stringReason(syntheticFullNative("sealed-char", sealedChar)), "`Char` is sealed")
+    val sealedList = Prelude.fromSource(
+      "sealed-list",
+      bundledPreludeSource.replace("\ninductive List ", "\nsealed inductive List ") + "\n" + fullNativeAddendum,
+      Set(Prelude.ImportPath)
+    )
+    assertEquals(stringReason(sealedList), "`List Char` is sealed")
+  }
+
   test("trusted bootstrap finalization is atomic and reusable for streamed declarations") {
     val validCandidate =
       fullNativePrelude.core.decls.foldLeft(Interpreter.preludeInitialEnv)(Interpreter.addPreludeDecl)

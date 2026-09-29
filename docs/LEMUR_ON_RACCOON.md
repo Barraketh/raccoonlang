@@ -662,9 +662,10 @@ a `.rac` file. Outside the declaring file, each of the following is
 
 The constructor names still resolve, so that every such use reaches this
 diagnostic and not an unbound-name error. Beyond that, they have no effect
-outside the file. An implicit argument the checker reconstructs may name a
-sealed constructor and is exempt. But forcing an implicit through a sealed
-constructor's field compiles only inside the declaring file.
+outside the file. An implicit argument the checker reconstructs may be a
+sealed constructor application, since the program does not write it. But
+forcing an implicit through a sealed constructor's field compiles only inside
+the declaring file.
 Elsewhere the implicit is `NonForcedImplicitParam`, since reconstructing it
 would read the field.
 

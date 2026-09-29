@@ -40,8 +40,7 @@ case class AstNodeId(source: Option[SourceId], start: Int) {
 
 object AstNodeId {
   // Synthetic ids share the SourceId allocator with parses. This assumes single-threaded checking,
-  // as does FreshVar; a unique offset within the reserved source makes every fabricated node distinct. No file is read
-  // from the reserved source, so no module owns a fabricated node (Sealing).
+  // as does FreshVar; a unique offset within the reserved source makes every fabricated node distinct.
   private[raccoonlang] lazy val syntheticSource = SourceId.fresh()
   private var nextSyntheticStart = 0
 

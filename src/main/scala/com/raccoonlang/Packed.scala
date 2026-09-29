@@ -131,6 +131,8 @@ object Packed {
     family match {
       case VConst(NatCodec.familyName, Inductive(meta), _)
           if meta.familyArity == 0 && meta.constructorNames == Vector(NatCodec.zeroName, NatCodec.succName) =>
+        // A literal builds its value from `zero` and `succ` wherever it is written, which a seal forbids (spec §7.1).
+        if (meta.seal.nonEmpty) reject("`Nat` is sealed")
       case _ => reject("`Nat` in scope is not the two-constructor unary inductive")
     }
     if (!ValueEquivalence.defEq(family.tpe, Sorts.Type)) reject("`Nat` in scope is not Type-valued")
@@ -258,6 +260,9 @@ object Packed {
       case InductiveFamilyValue(instance)
           if instance.head.name == expectedName && !Sorts.isProposition(value) &&
             ValueEquivalence.defEq(value.tpe, Sorts.Type) =>
+        // A literal makes values of the layout's families wherever it is written, and a sealed family's are its
+        // module's to make (spec §7.1).
+        if (instance.meta.seal.nonEmpty) reject(s"`$label` is sealed")
         instance.meta
       case _ => reject(s"`$label` is not the expected non-propositional Type-valued inductive instance")
     }
