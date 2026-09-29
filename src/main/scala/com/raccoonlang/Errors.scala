@@ -149,6 +149,12 @@ final case class LinearGlobal(name: String, tpe: Value) extends TypeError
 /** A type that names the atom of a `scope` whose binder `lifetime` does not enclose it (spec §4.2). */
 final case class LifetimeEscapes(lifetime: String, tpe: Value) extends TypeError
 
+/**
+ * A use of a sealed family's constructors or selectors outside its module (spec §7.1): `member` names the constructor
+ * or selector named, and is absent for a match on a value of the family.
+ */
+final case class SealedConstructor(family: String, member: Option[String]) extends TypeError
+
 final case class InvalidInductiveBlock(reason: String) extends TypeError
 
 /** One family of a mutual block declared in a different universe from its siblings. */

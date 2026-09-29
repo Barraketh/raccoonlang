@@ -1,0 +1,10 @@
+import Box
+
+def made : Box := Box.mk(1)
+
+def opened (b: Box): Nat := match b returning Nat with
+ | .mk n => n
+
+def selected (b: Box): Nat := b.n
+
+{ box(2) }

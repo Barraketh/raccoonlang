@@ -395,6 +395,7 @@ object Elaborator {
           selectorHeader,
           decreases = None,
           SA.ConstBody.TermBody(body),
+          isSelector = true,
           field.span
         )
       }
@@ -840,7 +841,7 @@ object Elaborator {
         )
       }
       ElaboratedInductive(
-        CA.Decl.InductiveDecl(family.header, constructors, family.surface.span),
+        CA.Decl.InductiveDecl(family.header, constructors, family.surface.isSealed, family.surface.span),
         constructorNames
       )
     }
@@ -920,8 +921,10 @@ object Elaborator {
                 CA.ConstBody.TermBody(elabTerm(term, envWithSelf))
             }
         }
+        // A selector is declared in its family's namespace, so that namespace names its family.
+        val selectorOf = Option.when(c.isSelector)(globalName(env.namespace))
         (
-          CA.Decl.ConstDecl(c.isOpaque, nameText, header.ty, body, c.span),
+          CA.Decl.ConstDecl(c.isOpaque, nameText, header.ty, body, selectorOf, c.span),
           envWithSelf
         )
       case c: SurfaceAst.Command.Decl.AxiomDecl =>

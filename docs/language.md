@@ -23,8 +23,8 @@ The declaration forms are:
 def name (parameters): Result := term
 opaque def name (parameters): Result := term
 axiom name (parameters): Result
-inductive Family (parameters) indices (indices): Sort
-struct Family (parameters) indices (indices): Sort
+[sealed] inductive Family (parameters) indices (indices): Sort
+[sealed] struct Family (parameters) indices (indices): Sort
 mutual { declarations }
 namespace Path { declarations }
 open Path
@@ -666,7 +666,7 @@ field remains stored but gets no selector.
 
 Structure eta is based on the checked family shape, not the `struct` keyword.
 Any non-Prop family instance is eta-eligible when it has exactly one
-constructor, no indices, and no recursive constructor field. A plain
+constructor, no indices, no recursive constructor field, and no seal. A plain
 `inductive` can therefore receive eta without receiving named selectors.
 Indexed or recursive singleton families still have positional metadata used by
 generated selectors, but they do not receive eta.
@@ -674,6 +674,46 @@ generated selectors, but they do not receive eta.
 For a Prop-valued instance, proof representation and elimination rules replace
 data structure eta. A selector out of a proposition is an ordinary match and
 must obey the same elimination restriction as any other match.
+
+## Sealed families
+
+A family declared `sealed inductive` or `sealed struct` keeps its constructors
+and selectors to its module, the `.rac` file that declares it. Every other
+module sees its head, parameters, indices and sort, and may use the module's
+definitions, but outside the module each of these is `SealedConstructor`:
+
+- naming one of its constructors, applied or not;
+- selecting one of its fields, as `b.n` or `Box.n(b)`;
+- matching on a value of it, with qualified or `.short` case heads.
+
+The names still resolve, so such a use reports `SealedConstructor` rather than
+an unknown name. A value of a sealed family is therefore made and taken apart
+only by its module, which is what makes a capability confine anything:
+
+```raccoon
+-- Lease.rac
+sealed inductive Lease (l: Lifetime) : Type { scope = l }
+ | mk : Lease(l)
+
+def withLease {k: Kind}{S: Lifetime}{A: Type { kind = k, scope = S }}{kf: Kind}{Sf: Lifetime}
+    (f: { kind = kf, scope = Sf } (l: Lifetime) -> Lease(l) -> A): A :=
+  scope l => f(l, Lease.mk(l))
+```
+
+Another module calls `withLease(fun (l: Lifetime)(h: Lease(l)): Nat => 0)`, but
+`Lease.mk(l)` there is `SealedConstructor`.
+
+An implicit parameter may be forced through a sealed constructor's field only
+inside the family's module; elsewhere it is `NonForcedImplicitParam`. The
+module's own definitions that force one that way can be applied anywhere, and
+an implicit argument the checker reconstructs may be a sealed constructor
+application.
+
+A sealed family never receives structure eta, so even inside its module a
+match does not open a neutral value of it as a constructor application.
+Sealing restricts what a program may write, not what the checker knows: kinds,
+scopes, coverage, apartness and conversion use the full declaration in every
+module.
 
 ## Namespaces and names
 
@@ -724,7 +764,8 @@ import Lib.Data.Nat
 
 The import searches each configured source root for `Lib/Data/Nat.rac`.
 Dependencies load before the importing module, duplicate imports are emitted
-once, and import cycles are rejected. Imported declarations keep their
+once, and import cycles are rejected. Each file is its own module, which is
+what a sealed family's seal refers to. Imported declarations keep their
 canonical names and are not opened automatically.
 
 `Init.Prelude` is loaded automatically by the normal CLI. An explicit
