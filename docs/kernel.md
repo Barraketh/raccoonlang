@@ -727,7 +727,7 @@ returns the dividend, and `pow(a, 0)` returns one. `pow` and nonzero
 `shiftRight` returns zero without allocating an enormous intermediate value.
 
 Applied to anything but two literals, an operation runs its declared body only
-when every literal argument is at most the unfolding limit, `2^10`. A body
+when every literal argument is at most the unfolding limit, `2^8`. A body
 unfolds one layer per unit of its recursion argument, and the kernel does not
 know which argument that is, so the limit bounds each literal argument.
 Otherwise the application is a neutral headed by the operation itself. It is
@@ -738,8 +738,9 @@ the same operation to convertible arguments. Conversion therefore never
 unfolds an application on a literal above the limit: `Nat.add(x, 2000)` is not
 definitionally `Nat.succ(Nat.add(x, 1999))`. This loses definitional equations
 and adds none, so it can only reject a program that relied on one. Small
-offsets such as `Nat.add(n, 1)` still unfold, well below the depth at which
-the host stack overflows.
+offsets such as `Nat.add(n, 1)` still unfold. The limit stays below the depth
+at which the host stack overflows: checking `Nat.mul(n, 512)` already exhausts
+a 1MB stack.
 
 The bundled prelude defines and accelerates `add`, `sub`, `mul`, `pow`, `beq`,
 `ble`, and `blt`. Other table entries become available only if the selected

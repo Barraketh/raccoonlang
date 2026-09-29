@@ -31,9 +31,10 @@ object Packed {
   /**
    * The largest literal on which a native operation not applied to two literals runs its declared body (spec §5.2). A
    * body unfolds one layer per unit of its recursion argument, and the kernel does not know which argument that is, so
-   * the limit bounds every literal argument.
+   * the limit bounds every literal argument. Checking `Nat.mul(n, 2^9)` already overflows a 1MB host stack, so the
+   * limit is `2^8`.
    */
-  private[raccoonlang] val MaxUnfoldedLiteral: BigInt = BigInt(1) << 10
+  private[raccoonlang] val MaxUnfoldedLiteral: BigInt = BigInt(1) << 8
 
   private def natSpec(name: String)(run: (BigInt, BigInt) => BigInt): NativeNatOpSpec = new NatOpSpec(name, run)
 

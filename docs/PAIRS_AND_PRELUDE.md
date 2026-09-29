@@ -208,7 +208,7 @@ billions of layers: checking `let v := Nat.mod(n, 4294967296)` for a variable
 host exception, which is a defect whatever the program.
 
 **5.2 Rule.** Applied to anything but two literals, a native operation runs its
-body only when every literal argument is at most the unfolding limit, `2^10`.
+body only when every literal argument is at most the unfolding limit, `2^8`.
 Otherwise the application is a neutral:
 
 - it is blocked on what its non-literal arguments are blocked on, and is rigid
@@ -224,7 +224,9 @@ literal above the limit: `Nat.add(x, 2000)` is not definitionally
 `Nat.succ(Nat.add(x, 1999))`. This loses definitional equations and adds none,
 so it cannot make a program unsound, only reject one that relied on such an
 equation. Small offsets such as `Nat.add(n, 1)` and `Nat.mul(n, 2)` still
-unfold, well below the recursion depth at which the host overflows.
+unfold. The limit stays below the recursion depth at which the host overflows:
+checking `Nat.mul(n, 1024)` exhausts a default 2MB stack, and `Nat.mul(n, 512)`
+a 1MB one.
 
 The limit bounds every literal argument, not just the recursion argument:
 declared bodies are checked but not semantically recognized, so the kernel
@@ -297,7 +299,9 @@ those:
 3. **Arity.** No flattening in patterns (§3.3) and only binary pair
    expressions (§4.2). Right-nested n-tuples could be added later without
    changing what any program written under these rules means.
-4. **The unfolding limit.** `2^10` (§5.2).
+4. **The unfolding limit.** `2^8` (§5.2). Review chose `2^10`; implementation
+   showed that checking `Nat.mul(n, 1024)` overflows a default 2MB host stack,
+   so the limit was lowered to keep §5's purpose.
 5. **Inventory, not a flag.** §1.4 makes the trusted surface visible in review.
    A CLI flag printing a custom prelude's inventory is deferred.
 
