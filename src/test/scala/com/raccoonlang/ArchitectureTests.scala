@@ -75,15 +75,20 @@ class ArchitectureTests extends munit.FunSuite {
       Set("Sealing.scala", "Errors.scala", "ErrorRendering.scala")
     ),
     Rule(
+      "what an axiom may state is one walk of its type, in Axioms, the only place AxiomMintsToken is raised",
+      raw"\bAxiomMintsToken\(".r,
+      Set("Axioms.scala", "Errors.scala", "ErrorRendering.scala")
+    ),
+    Rule(
       "a module is a source file, and only Sealing compares a span's source",
       raw"\.source\s*[=!]=|\.source\.contains\b|[=!]=\s*[\w.]*\.source\b|\bsyntheticSource\b".r,
       Set("Sealing.scala", "Parser.scala")
     ),
     Rule(
       "sealing is asked only where a name resolves to a constructor or selector, of a match's scrutinee family, " +
-        "and by implicit projection before it reads a constructor's field",
+        "by implicit projection before it reads a constructor's field, and of the families an axiom's type contains",
       raw"\bSealing\.(accessible|requireAccessible)\(".r,
-      Set("TypeChecker.scala", "MatchChecker.scala", "Projection.scala")
+      Set("TypeChecker.scala", "MatchChecker.scala", "Projection.scala", "Axioms.scala")
     )
   )
 

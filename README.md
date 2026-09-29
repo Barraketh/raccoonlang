@@ -35,7 +35,8 @@ Raccoon currently provides:
 - sealed families, whose constructors and selectors only their own file may use;
 - proof irrelevance and controlled elimination from `Prop`;
 - namespaces, scoped `open`, and file imports;
-- opaque definitions, axioms, and quotients;
+- opaque definitions, quotients, and axioms, whose types bind no kind or
+  lifetime and mention no linear type and no other module's sealed family;
 - compact natural-number literals and trusted native natural-number reduction;
 - a bundled prelude that is polymorphic in lifetimes as well as levels.
 

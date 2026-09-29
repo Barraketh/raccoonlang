@@ -2,6 +2,9 @@ package com.raccoonlang
 
 import com.raccoonlang.ErrorReporter.Source
 
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+
 /** Shared source-level test plumbing. Specialized environment and residual helpers stay with their suites. */
 trait TestSupport extends DiagnosticAssertions { this: munit.FunSuite =>
   protected def suitePrelude: Prelude.Config = Prelude.default
@@ -51,6 +54,20 @@ trait TestSupport extends DiagnosticAssertions { this: munit.FunSuite =>
       tag: reflect.ClassTag[E],
       loc: munit.Location
   ): E = expectTypeError(source, suitePrelude)
+
+  /** `client` checked in the same file as `module`, and run when it has a body. */
+  protected def inside(module: String, client: String): Option[Value] =
+    Interpreter.run(TypeChecker.check(Elaborator.elaborate(parseSurface(module + "\n" + client), suitePrelude)))
+
+  /** `client` checked as an entry file importing `module`, another module, and run when it has a body. */
+  protected def outside(module: String, client: String): Option[Value] = {
+    val root = Files.createTempDirectory("raccoon-module")
+    Files.write(root.resolve("Module.rac"), module.getBytes(StandardCharsets.UTF_8))
+    val entry = root.resolve("main.rac")
+    Files.write(entry, ("import Module\n" + client).getBytes(StandardCharsets.UTF_8))
+    val loaded = ModuleLoader.load(entry, ModuleLoader.LoadConfig.forEntry(entry, suitePrelude))
+    Interpreter.run(TypeChecker.check(Elaborator.elaborate(loaded.program, suitePrelude)))
+  }
 
   protected def ctorName(value: Value): String = value match {
     case Value.ConstructorHead(name, _, _, _, _) => name

@@ -548,8 +548,9 @@ object Interpreter {
    * The per-declaration boundary: locates what happens between a declaration's terms (name collisions, block layout,
    * bootstrap privilege) and appends the outermost context frame.
    *
-   * `trusted` is the one bootstrap privilege: a prelude may declare builtin bodies and the native Nat operations. A
-   * program cannot, so nothing it declares can acquire kernel semantics it did not write.
+   * `trusted` is the one bootstrap privilege: a prelude may declare builtin bodies and the native Nat operations, and
+   * axioms that spec §7.3 refuses elsewhere, as `Quot` binds lifetimes. A program cannot, so nothing it declares can
+   * acquire kernel semantics it did not write.
    */
   private[raccoonlang] def evalDecl(decl: Decl, env: Env, trusted: Boolean): Env =
     framed(Frame.InDefinition(decl.label)) {
@@ -584,6 +585,7 @@ object Interpreter {
 
           case Decl.AxiomDecl(name, ty, _) =>
             val tyV = TypeChecker.checkDeclType(ty, env).value
+            if (!trusted) at(ty.span)(Axioms.requireMintsNoToken(name, tyV, ty.span))
             env.putGlobal(name, publishedValue(VConst(name, Symbol, tyV), tyV))
 
           case d: Decl.InductiveDecl =>

@@ -1,0 +1,17 @@
+import Permit
+
+inductive Coin : Type { kind = lin }
+ | mk : Coin
+
+inductive Wrap (l: Lifetime) : Type
+ | mk : Wrap(l)
+
+axiom forge : Permit(Lifetime.empty)
+
+axiom coin : Coin
+
+axiom eat {A: Type { kind = lin }}(x: A): Unit
+
+axiom wrapEq (a: Lifetime)(b: Lifetime): Eq(Type, Wrap(a), Wrap(b))
+
+{ burn(redeem(forge)) }

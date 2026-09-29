@@ -20,8 +20,9 @@ propositions before publication.
 
 The bundled source prelude is a trusted bootstrap. A prelude is still parsed,
 elaborated, and typechecked, but prelude loading alone may install builtin
-declarations and native equations. Selecting `--prelude` therefore selects a
-different trusted bootstrap.
+declarations and native equations, and declare axioms the axiom rule refuses
+elsewhere. Selecting `--prelude` therefore selects a different trusted
+bootstrap.
 
 ## Equality and evidence
 
@@ -202,10 +203,12 @@ else:
 - a binder of a sort parameter is admitted only where its site allows: a
   parameter site (a declaration's header, the binders before its `:`, or a
   family parameter) may bind any sort parameter, a function type's or lambda's
-  binder only a lifetime, and a family index or constructor field none.
-  Everywhere else a binder's type must be a type. The elaborator records each
-  binder's site, so a function type written after a declaration's `:` binds no
-  level;
+  binder only a lifetime, and a family index or constructor field none. An
+  axiom's header is a parameter site, but the axiom rule (see
+  [Axioms, opacity, and quotients](#axioms-opacity-and-quotients)) refuses a
+  kind or lifetime binder there. Everywhere else a binder's type must be a
+  type. The elaborator records each binder's site, so a function type written
+  after a declaration's `:` binds no level;
 - an expression of a sort parameter stands only where a sort parameter is
   expected: a sort's field and the argument at a binder of a sort parameter,
   which is checked against that parameter rather than synthesized alone. A term
@@ -505,8 +508,9 @@ Sealing restricts what a program may write, not what the checker knows.
 Kinds, scopes, coverage, apartness and the conversion of values read the full
 declaration in every module, and evaluation makes no sealing check. One
 function decides whether a position may use a sealed family's constructors;
-the checker asks it at those name resolutions and match scrutinees, and
-implicit projection asks it before reading a constructor's field.
+the checker asks it at those name resolutions and match scrutinees, implicit
+projection asks it before reading a constructor's field, and the axiom rule
+asks it of every family an axiom's type contains.
 
 ## Termination
 
@@ -554,6 +558,32 @@ are typechecked, but their consistency is the user's responsibility. Proof
 axioms still canonicalize according to their exact proposition; data axioms
 remain symbolic.
 
+An axiom's result is a neutral, so the axiom rule keeps an axiom from making or
+consuming a token without its module and from stating what no program can
+refute. Outside the trusted prelude, the checker walks the value of an axiom's
+checked type once and refuses the first of these, with `AxiomMintsToken`:
+
+- a binder of a kind or lifetime, in the header or in any function type the
+  type contains: no two kinds or lifetimes are apart, so an equation between
+  them is irrefutable, yet refinement along it links a variable and would
+  retype a value across scopes or kinds;
+- a kind or lifetime other than `Kind.unr` and `Lifetime.empty`, a sort's or
+  closure's field and an atom included;
+- a linear type;
+- a family sealed to another module: proof irrelevance reconstructs a proof of
+  it as its constructor, so the module's own match would take a forged proof
+  for one it made.
+
+The walk reads the type as a value, never a subterm's type: a function type's
+closure, each binder's type under fresh values for the earlier binders, and its
+codomain; an application's head and arguments; a lambda's type and captures; a
+blocked match's captures, since its branches are code; a proof's proposition.
+A family head's own declared type is not part of the axiom's, so `List(Nat)`,
+whose `List` binds a lifetime, is admitted, and level binders are admitted. A
+sealed family that the value reaches only through code, such as a blocked
+match's branch, or only through the fields of another family, is not seen.
+The trusted prelude is exempt: `Quot` and `Quot.sound` bind lifetimes.
+
 The bundled quotient interface is the fixed non-inductive primitive surface:
 
 - `Quot` is an axiomatically declared type former;
@@ -575,8 +605,8 @@ eliminator.
 ## Trusted bootstrap and native values
 
 Only a trusted prelude may publish builtin declarations or native literal
-layouts. Ordinary modules cannot gain native semantics by declaring a reserved
-name.
+layouts, or declare an axiom the axiom rule refuses. Ordinary modules cannot
+gain native semantics by declaring a reserved name.
 
 ### Natural numbers
 
@@ -718,3 +748,7 @@ Changes to the checker or evaluator must preserve these rules:
     or selectors, matches on a value of it, or forces an implicit through its
     constructors' fields; sealing never changes what conversion, coverage or
     apartness decide.
+24. Outside the trusted prelude, no axiom's type value binds a kind or
+    lifetime, holds a kind or lifetime other than `Kind.unr` and
+    `Lifetime.empty`, contains a linear type, or contains a family sealed to
+    another module.

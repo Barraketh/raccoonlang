@@ -8,8 +8,8 @@ package com.raccoonlang
  *
  * `accessible` is the one decision. The checker asks it where a name is resolved to a constructor or selector (a global
  * reference, a selected field) and for a match's scrutinee family, which also covers a case's `.short` form, since that
- * resolves only against the scrutinee's family. Implicit projection asks it before reading a constructor's field. A
- * module is compared nowhere else.
+ * resolves only against the scrutinee's family. Implicit projection asks it before reading a constructor's field, and
+ * the axiom rule (Axioms) of each family an axiom's type contains. A module is compared nowhere else.
  */
 object Sealing {
 

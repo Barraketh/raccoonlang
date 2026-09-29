@@ -71,6 +71,31 @@ has a checked body but does not unfold after publication. An `axiom` has the
 declared type and no body. At proof types, both forms still obey canonical proof
 representation and proof irrelevance.
 
+An axiom's result is a neutral, so an axiom's type may not contain anything
+that would let it make or consume a token, or state what no program can
+refute. Outside the trusted prelude, an axiom whose type contains any of these
+is `AxiomMintsToken`:
+
+- a binder of a kind or lifetime, in its header or in a function type inside
+  its type;
+- a kind or lifetime other than `Kind.unr` and `Lifetime.empty`, a sort's or a
+  closure's field included;
+- a linear type;
+- a family sealed to another module.
+
+```raccoon
+axiom eat {A: Type { kind = lin }}(x: A): Unit                        -- AxiomMintsToken
+axiom wrapEq (a: Lifetime)(b: Lifetime): Eq(Type, Wrap(a), Wrap(b))  -- AxiomMintsToken
+axiom a : List(Nat)                                                  -- admitted
+```
+
+The type is read as its value, so `List(Nat)` is admitted although `List`
+binds a lifetime, and so is an axiom that binds a level. For a sealed `Prop`
+family `Permit`, `axiom forge : Permit(Lifetime.empty)` outside its module
+would be a proof the module takes for one it made; inside the module it is
+admitted. The bundled prelude's `Quot` and `Quot.sound` bind lifetimes, which
+only a prelude may do.
+
 `:= builtin` is reserved for declarations in the trusted prelude. Ordinary
 programs cannot acquire builtin behavior.
 
@@ -158,7 +183,7 @@ binder's type must be a type:
 
 | Binder | `Level` | `Kind` | `Lifetime` |
 |---|---|---|---|
-| a definition's, opaque definition's or axiom's header | yes | yes | yes |
+| a definition's, opaque definition's or axiom's header | yes | yes (not an axiom's) | yes (not an axiom's) |
 | a family parameter | yes | yes | yes |
 | a family index, a constructor field | no | no | no |
 | a function type or lambda binder | no | no | yes |
@@ -560,7 +585,8 @@ token and of one that captures nothing. A definition that drops or copies its
 argument exists only at `Kind.unr`.
 
 A global is never tracked, so a definition or opaque definition whose type is
-linear is `LinearGlobal`. A definition's own function type is unrestricted, so
+linear is `LinearGlobal`, and an axiom whose type contains a linear type is
+`AxiomMintsToken`. A definition's own function type is unrestricted, so
 a definition that takes or returns tokens is an ordinary global.
 
 Types and proofs hold no tokens. A term whose type is a sort or a proposition
@@ -687,7 +713,8 @@ definitions, but outside the module each of these is `SealedConstructor`:
 - matching on a value of it, with qualified or `.short` case heads.
 
 The names still resolve, so such a use reports `SealedConstructor` rather than
-an unknown name. A value of a sealed family is therefore made and taken apart
+an unknown name. An axiom outside the module whose type contains the family is
+`AxiomMintsToken`. A value of a sealed family is therefore made and taken apart
 only by its module, which is what makes a capability confine anything:
 
 ```raccoon

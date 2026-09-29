@@ -1,0 +1,11 @@
+sealed inductive Permit (l: Lifetime) : Prop
+ | mk : Permit(l)
+
+sealed inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }
+ | mk : Tok(l)
+
+def redeem {l: Lifetime}(p: Permit(l)): Tok(l) := match p returning Tok(l) with
+ | .mk => Tok.mk(l)
+
+def burn {l: Lifetime}(t: Tok(l)): Nat := match t returning Nat with
+ | .mk => 1

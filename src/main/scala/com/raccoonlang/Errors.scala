@@ -155,6 +155,30 @@ final case class LifetimeEscapes(lifetime: String, tpe: Value) extends TypeError
  */
 final case class SealedConstructor(family: String, member: Option[String]) extends TypeError
 
+/**
+ * An axiom, outside the trusted prelude, whose type contains `part` (spec §7.3): with it the axiom could make or
+ * consume a token without its module, or state an equation between lifetimes or kinds that no program can refute.
+ */
+final case class AxiomMintsToken(axiom: String, part: AxiomMintsToken.Part) extends TypeError
+
+object AxiomMintsToken {
+  sealed trait Part
+
+  object Part {
+
+    /** A binder of a kind or lifetime. */
+    final case class Binder(name: String, parameter: Value.ParameterTpe) extends Part
+
+    /** A kind or lifetime other than `Kind.unr` and `Lifetime.empty`. */
+    final case class Parameter(value: Value) extends Part
+
+    final case class LinearType(tpe: Value) extends Part
+
+    /** A family sealed to another module. */
+    final case class SealedFamily(family: String) extends Part
+  }
+}
+
 final case class InvalidInductiveBlock(reason: String) extends TypeError
 
 /** One family of a mutual block declared in a different universe from its siblings. */
