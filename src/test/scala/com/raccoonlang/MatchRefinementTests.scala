@@ -99,4 +99,93 @@ class MatchRefinementTests extends munit.FunSuite with TestSupport {
     interceptError[TypeMismatch] { typecheckDecls(p) }
   }
 
+  // A constructor's parameters are the scrutinee type's own, never unknowns, so an index equation that is stuck (here on
+  // an opaque `double`) leaves each field at the scrutinee's parameters. A lambda capturing one derives its closure over
+  // variables in scope.
+  private def stuckIndex(declarations: String): String =
+    """
+      |inductive Peano : Type
+      | | zero : Peano
+      | | succ (p: Peano) : Peano
+      |
+      |inductive Tick : Type
+      | | tick : Tick
+      |
+      |opaque def double (n: Peano): Peano := n
+      |""".stripMargin + declarations
+
+  test("a stuck index equation leaves a field at the scrutinee's lifetime parameter") {
+    def program(body: String): String =
+      stuckIndex(
+        s"""
+           |inductive L (l: Lifetime) : Type { scope = l }
+           | | mk : L(l)
+           |
+           |inductive W (l: Lifetime) indices (n: Peano) : Type { scope = l }
+           | | mk (h: L(l)) : W(l, Peano.zero)
+           |
+           |def f {S: Lifetime}(n: Peano)(w: W(S, double(n))): L(S) := match w returning L(S) with
+           | | .mk h => $body
+           |""".stripMargin
+      )
+
+    typecheckDecls(program("h"))
+    typecheckDecls(program("(fun (u: Tick): L(S) => h)(Tick.tick)"))
+  }
+
+  test("a stuck index equation leaves a field at the scrutinee's kind parameter") {
+    def program(body: String): String =
+      stuckIndex(
+        s"""
+           |inductive H {k: Kind}(A: Type { kind = k }) indices (n: Peano) : Type { kind = k }
+           | | mk (x: A) : H(A, Peano.zero)
+           |
+           |def f {k: Kind}{A: Type { kind = k }}(n: Peano)(w: H(A, double(n))): A := match w returning A with
+           | | .mk x => $body
+           |""".stripMargin
+      )
+
+    typecheckDecls(program("x"))
+    typecheckDecls(program("(fun (u: Tick): A => x)(Tick.tick)"))
+  }
+
+  test("a stuck index equation leaves a field at the scrutinee's type parameter") {
+    def program(result: String, body: String): String =
+      stuckIndex(
+        s"""
+           |inductive V {S: Lifetime}(A: Type { scope = S }) indices (n: Peano) : Type { scope = S }
+           | | nil : V(A, Peano.zero)
+           | | cons (m: Peano)(head: A)(tail: V(A, m)) : V(A, Peano.succ(m))
+           |
+           |def headOr {S: Lifetime}{A: Type { scope = S }}(B: Type)(k: Peano)(d: $result)(v: V(A, double(k))): $result :=
+           |  match v returning $result with
+           |  | .nil => d
+           |  | .cons m h t => $body
+           |""".stripMargin
+      )
+
+    typecheckDecls(program("A", "h"))
+    typecheckDecls(program("A", "(fun (u: Tick): A => h)(Tick.tick)"))
+    expectOnly[TypeMismatch](typecheckDecls(program("B", "h")))
+  }
+
+  test("a stuck index equation keeps every constructor's branch required") {
+    def program(cases: String*): String =
+      stuckIndex(
+        """
+          |inductive V (A: Type) indices (n: Peano) : Type
+          | | nil : V(A, Peano.zero)
+          | | cons (m: Peano)(head: A)(tail: V(A, m)) : V(A, Peano.succ(m))
+          |
+          |def f (A: Type)(k: Peano)(v: V(A, double(k))): Tick := match v returning Tick with
+          |""".stripMargin + cases.mkString("", "\n", "\n")
+      )
+    val nil = " | .nil => Tick.tick"
+    val cons = " | .cons m h t => Tick.tick"
+
+    typecheckDecls(program(nil, cons))
+    expectOnly[MissingCase](typecheckDecls(program(nil)))
+    expectOnly[MissingCase](typecheckDecls(program(cons)))
+  }
+
 }

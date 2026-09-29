@@ -400,9 +400,13 @@ A checked match establishes all of the following:
 - the motive, which the match writes as its `returning` clause, is a type;
 - every branch has the instantiated motive.
 
-An omitted constructor is valid only when its result is apart from the exact
-scrutinee type. A stuck equation keeps the constructor reachable and provides
-no refinement.
+A branch's fields enter fresh, at the scrutinee type's own parameter arguments.
+Parameters are uniform, so they need no equation: refinement relates the
+scrutinee to the constructor applied to those fields, and the constructor's
+result indices to the scrutinee type's. An omitted constructor is valid
+only when its result is apart from the exact scrutinee type. A stuck equation
+keeps the constructor reachable and provides no refinement; the fields keep
+their types at the scrutinee's parameters.
 
 Evaluation reduces a match only when the scrutinee exposes a justified
 constructor view. Otherwise it retains a blocked match with the dependencies
