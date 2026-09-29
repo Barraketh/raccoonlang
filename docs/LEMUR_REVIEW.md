@@ -15,7 +15,7 @@ present at `bfd5196`; the rest were introduced or exposed by the Lemur work.
 | S3 Constructor parameters from the scrutinee | F3 | done | `d776c80` |
 | S4 Derived closures as capture lists; one containment rule | (refactor; retires F3's failure mode) | done | `0830800` |
 | S5 Conversion assertions and hot paths | F4, perf nits | in progress (wave 3) | |
-| S6 Sealing cleanup | F7, F8, F9 | in progress (wave 2) | |
+| S6 Sealing cleanup | F7, F8, F9 | done | `bbb24db` |
 | S7a Parser and printer diagnostics | F10, F12, F13 | in progress (wave 3) | |
 | S7b Elaborator field resolution and pattern spans | F11, F14 | planned | |
 
@@ -310,3 +310,11 @@ carry spans, and `LinearUnused` for one points at it.
   and `Sorts.checkedSort` the one `LinearProp` check. No measurable change on a
   closure-heavy benchmark. Spec §8 and `kernel.md` updated. The merged branch
   validates (694 tests).
+- 2026-09-29: S6 landed (`bbb24db`). `Seal(family, module: SourceId)` with no
+  exemption; `Elaborator.familySeal` is the one place a seal is made, for a
+  family's constructors (`InductiveDecl.seal`) and its selectors
+  (`ConstDecl.sealedBy`), so `Interpreter.evalDecl` no longer looks the family
+  up. A sealed `Nat`, `String`, `Char` or `List` makes its literal layout
+  unavailable, and since `finishPrelude` rejects a malformed layout, such a
+  prelude now fails to load. `Decl.references` treats `base.f` as naming any
+  failed `*.f`. The merged branch validates (697 tests).
