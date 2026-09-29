@@ -36,8 +36,7 @@ object Value {
    * Put a proof into the canonical representation determined by its exact proposition
    * (docs/kernel.md#proofs-and-elimination). If the proposition's recovery plan reconstructs a constructor at that
    * exact type, every inhabitant uses constructor form. Otherwise a Pi proposition reconstructs its eta-lambda and
-   * every other ordinary inhabitant erases to `VProof`. A sealed proposition is never reconstructed (spec §7.1): a
-   * constructor application its module built keeps its form, and every other inhabitant erases. Exemptions:
+   * every other ordinary inhabitant erases to `VProof`. Exemptions:
    *   - `Var`: metas and unification unknowns must stay refinable — collapsing a placeholder would silently discharge a
    *     proof obligation. Rigid hypotheses are erased at binder freshening only after the source binder has established
    *     that an inhabitant is in scope (`canonicalizeRigidBinder` below).
@@ -53,8 +52,7 @@ object Value {
       case _: VPi | _: Var | _: ConstructorHead   => value
       case VLam(_, _, LamBody.Native(_, _, true)) => value
       case _ if !Sorts.isProposition(value.tpe)   => value
-      // A constructor application already in canonical form keeps it, and keeps a sealed proposition's
-      // constructor, which only its module builds.
+      // A constructor application already in canonical form keeps it.
       case VCtor(head, _, _) if ProofReconstruction.isCanonicalConstructor(value.tpe, head) => value
       case _ =>
         ProofReconstruction.reconstruct(value.tpe) match {
@@ -1047,7 +1045,6 @@ object Value {
       proofRecovery.forall(info => projectionInfo.contains(info.projectionInfo)),
       "Proof recovery must share its family's projection metadata"
     )
-    require(seal.isEmpty || !projectionInfo.exists(_.etaEligible), "A sealed family is never structure-eta eligible")
 
     lazy val constructorNames: Vector[String] = constructors.map(_.canonicalName)
   }

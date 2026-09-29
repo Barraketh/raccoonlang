@@ -73,18 +73,9 @@ object ErrorRendering {
         val use = member.fold("matching on a value of it")(name => s"naming $name")
         s"The sealed family $family keeps its constructors and selectors to the module that declares it, so $use " +
           "is not allowed here"
-      case AxiomMintsToken(axiom, part) =>
-        part match {
-          case AxiomMintsToken.Part.Binder(name, parameter) =>
-            s"Axiom $axiom binds ($name: $parameter); an axiom binds no kind or lifetime, since no program can refute " +
-              "an equation it states between them"
-          case AxiomMintsToken.Part.Parameter(value) =>
-            s"Axiom $axiom's type contains $value : ${value.tpe}; an axiom's type holds no kind or lifetime but " +
-              "Kind.unr and Lifetime.empty"
-          case AxiomMintsToken.Part.LinearType(tpe) =>
-            s"Axiom $axiom's type contains the linear type $tpe; an axiom's result is a neutral, so it could make or " +
-              "consume a token without its module"
-        }
+      case UntrustedAxiom(axiom) =>
+        s"Axiom $axiom is declared outside the trusted prelude; only the prelude declares axioms, so an assumption " +
+          "goes in a custom prelude (--prelude)"
       case InvalidInductiveBlock(reason) => s"Invalid inductive block: $reason"
       case MutualBlockSortMismatch(family, declared, expected) =>
         s"Invalid inductive block: family $family lives in $declared, expected $expected"

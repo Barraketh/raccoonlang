@@ -76,3 +76,22 @@ trait TestSupport extends DiagnosticAssertions { this: munit.FunSuite =>
     case other                                   => fail(s"Expected constructor value, got $other")
   }
 }
+
+object TestSupport {
+  lazy val bundledPreludeSource: String = resource("/Init/Prelude.rac")
+
+  lazy val testPreludeSource: String = resource("/Init/TestPrelude.rac")
+
+  /**
+   * The trusted prelude `base` followed by `assumptions`. Only the trusted prelude declares axioms (spec §7.3), so a
+   * test assumes one the way a program does, with a custom prelude.
+   */
+  def preludeAssuming(base: String, assumptions: String): Prelude.Config =
+    Prelude.fromSource("assumptions", base + "\n" + assumptions)
+
+  private def resource(path: String): String = {
+    val stream = getClass.getResourceAsStream(path)
+    try new String(stream.readAllBytes(), StandardCharsets.UTF_8)
+    finally stream.close()
+  }
+}

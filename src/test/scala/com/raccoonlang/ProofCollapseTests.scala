@@ -3,6 +3,30 @@ package com.raccoonlang
 /** Pins the declaration-time proof representation policy (docs/kernel.md#proofs-and-elimination). */
 class ProofCollapseTests extends munit.FunSuite with TestSupport {
 
+  /** Neutral proofs no program could build, assumed in a trusted prelude (spec §7.3). */
+  private lazy val assumptions =
+    TestSupport.preludeAssuming(
+      TestSupport.bundledPreludeSource,
+      """
+        |axiom natIsBool : Eq(Type, Nat, Bool)
+        |
+        |inductive Eq2 (A: Type) indices (left: A)(right: A) : Prop
+        | | refl (value: A) : Eq2(A, value, value)
+        |
+        |axiom a : Nat
+        |axiom b : Nat
+        |axiom h : Eq2(Nat, a, b)
+        |
+        |inductive Loop : Prop
+        | | mk (next: Loop) : Loop
+        |
+        |axiom loop : Loop
+        |
+        |axiom P : Prop
+        |axiom axP : P
+        |""".stripMargin
+    )
+
   test("certified singleton proofs canonicalize to ordinary constructor form") {
     val res = runProgram(
       """
@@ -47,7 +71,7 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
     // Projection compilation must retain structural defEq as the fallback after key bucketing.
     typecheckDecls(
       """
-        |axiom truthFn (_: Nat): True
+        |opaque def truthFn (_: Nat): True := True.intro
         |
         |def chooseFn {h: (x: Nat) -> True}
         |    (e: Eq((x: Nat) -> True, truthFn, truthFn)): (x: Nat) -> True := h
@@ -94,7 +118,7 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
         |inductive PolyBox {u: Level}(A: Sort { level = u }) : Sort { level = u }
         | | mk (value: A) : PolyBox(A)
         |
-        |axiom boxedTrue : PolyBox(True)
+        |opaque def boxedTrue : PolyBox(True) := PolyBox.mk(True.intro)
         |
         |def observe (P: Prop)(box: PolyBox(P)): Nat := {
         |  match box returning Nat with
@@ -110,7 +134,7 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
   test("proof irrelevance is unchanged by constructor canonicalization") {
     typecheckDecls(
       """
-        |axiom zeroEq : Eq(Nat, Nat.zero, Nat.zero)
+        |opaque def zeroEq : Eq(Nat, Nat.zero, Nat.zero) := Eq.refl(Nat.zero)
         |
         |def mixed : Eq(
         |  Eq(Nat, Nat.zero, Nat.zero),
@@ -122,15 +146,7 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
   }
 
   test("casts along axiom-stuck proofs stay stuck") {
-    val res = runProgram(
-      """
-        |axiom natIsBool : Eq(Type, Nat, Bool)
-        |
-        |{
-        |  Eq.subst(natIsBool, Level.one, fun (A: Type): Type => A, Nat.zero)
-        |}
-        |""".stripMargin
-    )
+    val res = runProgram("{ Eq.subst(natIsBool, Level.one, fun (A: Type): Type => A, Nat.zero) }", assumptions)
     res match {
       case _: Value.NeutralThunk =>
       case other                 => fail(s"Expected the cast to stay stuck, got $other")
@@ -140,20 +156,14 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
   test("large-match reduction still requires the constructor result to match the exact proposition") {
     val res = runProgram(
       """
-        |inductive Eq2 (A: Type) indices (left: A)(right: A) : Prop
-        | | refl (value: A) : Eq2(A, value, value)
-        |
-        |axiom a : Nat
-        |axiom b : Nat
-        |axiom h : Eq2(Nat, a, b)
-        |
         |def inspect (proof: Eq2(Nat, a, b)): Bool := {
         |  match proof returning Bool with
         |  | Eq2.refl _ => Bool.true
         |}
         |
         |{ inspect(h) }
-        |""".stripMargin
+        |""".stripMargin,
+      assumptions
     )
     res match {
       case _: Value.NeutralThunk =>
@@ -317,7 +327,8 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
         |inductive PolyUnit (u: Level) indices (n: Peano) : Sort { level = u }
         | | mk : PolyUnit(u, Peano.zero)
         |
-        |axiom makerType (u: Level): (n: Peano) -> PolyUnit(u, Peano.zero)
+        |opaque def makerType (u: Level): (n: Peano) -> PolyUnit(u, Peano.zero) :=
+        |  fun (n: Peano): PolyUnit(u, Peano.zero) => PolyUnit.mk(u)
         |
         |def probe (u: Level)(x: PolyUnit(u, Peano.zero)): Peano := {
         |  match x returning Peano with
@@ -383,12 +394,12 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
     )
   }
 
-  test("a diagonal equality axiom canonicalizes to refl and eliminates") {
+  test("an opaque diagonal equality proof canonicalizes to refl and eliminates") {
     // Eq's declaration records that refl can be reconstructed exactly when the two endpoints
     // coincide. Runtime canonicalization follows that recipe; it does not run unification.
     val res = runProgram(
       """
-        |axiom zeroEq : Eq(Nat, Nat.zero, Nat.zero)
+        |opaque def zeroEq : Eq(Nat, Nat.zero, Nat.zero) := Eq.refl(Nat.zero)
         |
         |{
         |  Eq.subst(zeroEq, Level.one, fun (n: Nat): Type => Bool, Bool.true)
@@ -401,10 +412,10 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  test("a diagonal equality axiom has the same canonical constructor as refl") {
+  test("an opaque diagonal equality proof has the same canonical constructor as refl") {
     val res = runProgram(
       """
-        |axiom zeroEq : Eq(Nat, Nat.zero, Nat.zero)
+        |opaque def zeroEq : Eq(Nat, Nat.zero, Nat.zero) := Eq.refl(Nat.zero)
         |
         |{ zeroEq }
         |""".stripMargin
@@ -421,7 +432,7 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
   test("canonical diagonal proofs preserve congruence of execution") {
     typecheckDecls(
       """
-        |axiom zeroEq : Eq(Nat, Nat.zero, Nat.zero)
+        |opaque def zeroEq : Eq(Nat, Nat.zero, Nat.zero) := Eq.refl(Nat.zero)
         |
         |def cast (p: Eq(Nat, Nat.zero, Nat.zero)): Bool :=
         |  Eq.subst(p, Level.one, fun (_: Nat): Type => Bool, Bool.true)
@@ -526,10 +537,10 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  test("axiomatic proof functions also canonicalize to eta-lambdas") {
+  test("opaque proof functions also canonicalize to eta-lambdas") {
     val function = runProgram(
       """
-        |axiom reflish (n: Nat): Eq(Nat, n, n)
+        |opaque def reflish (n: Nat): Eq(Nat, n, n) := Eq.refl(n)
         |
         |{ reflish }
         |""".stripMargin
@@ -541,7 +552,7 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
 
     val applied = runProgram(
       """
-        |axiom reflish (n: Nat): Eq(Nat, n, n)
+        |opaque def reflish (n: Nat): Eq(Nat, n, n) := Eq.refl(n)
         |
         |{
         |  Eq.subst(reflish(Nat.zero), Level.one, fun (_: Nat): Type => Bool, Bool.true)
@@ -557,11 +568,6 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
   test("recursive proof constructors reconstruct one finite layer at each match") {
     val res = runProgram(
       """
-        |inductive Loop : Prop
-        | | mk (next: Loop) : Loop
-        |
-        |axiom loop : Loop
-        |
         |def inspectTwo (p: Loop): Bool := {
         |  match p returning Bool with
         |  | Loop.mk next => {
@@ -571,7 +577,8 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
         |}
         |
         |{ inspectTwo(loop) }
-        |""".stripMargin
+        |""".stripMargin,
+      assumptions
     )
     res match {
       case Value.VCtor(head, _, _) => assertEquals(head.name, "Bool.true")
@@ -585,7 +592,8 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
         |inductive DependentProof : Prop
         | | mk (h: (n: Nat) -> True) (same: Eq(True, h(Nat.zero), h(Nat.zero))) : DependentProof
         |
-        |axiom recovered : DependentProof
+        |opaque def recovered : DependentProof :=
+        |  DependentProof.mk(fun (n: Nat): True => True.intro, Eq.refl(True.intro))
         |""".stripMargin
     )
   }
@@ -615,16 +623,7 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
   test("erased proofs re-evaluate from their residual to their canonical proof form") {
     // Residuals are pure syntax, so a proof reaches a later evaluation through the syntax that
     // produced it rather than as a carried value.
-    val res = runProgram(
-      """
-        |axiom P : Prop
-        |axiom axP : P
-        |
-        |def useP : P := axP
-        |
-        |{ useP }
-        |""".stripMargin
-    )
+    val res = runProgram("def useP : P := axP\n\n{ useP }\n", assumptions)
 
     res match {
       case p: Value.VProof => assert(Sorts.isProposition(p.tpe))
@@ -638,14 +637,12 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
     // would reject an uncollapsed prop-typed binding.
     val res = runProgram(
       """
-        |axiom P : Prop
-        |axiom axP : P
-        |
         |{
         |  let h : P := axP
         |  h
         |}
-        |""".stripMargin
+        |""".stripMargin,
+      assumptions
     )
     res match {
       case p: Value.VProof =>

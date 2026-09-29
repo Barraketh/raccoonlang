@@ -303,7 +303,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |struct FnBox : Type
         | | mk (f: (n: Peano) -> Peano) : FnBox
         |
-        |axiom box : FnBox
+        |opaque def box : FnBox := FnBox.mk(fun (n: Peano): Peano => n)
         |def use : Peano := box.f(Peano.zero)
         |
         |{ use }
@@ -694,7 +694,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |
         |def get {u: Level}{A: Sort { level = u }} (box: PolyBox(A)): A := box.value
         |
-        |axiom boxedTrue : PolyBox(True)
+        |opaque def boxedTrue : PolyBox(True) := PolyBox.mk(True.intro)
         |def gotTrue : True := get(boxedTrue)
         |""".stripMargin
 
@@ -714,7 +714,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |inductive HasProof : Prop
         | | intro (data: Peano)(proof: True) : HasProof
         |
-        |axiom h : HasProof
+        |opaque def h : HasProof := HasProof.intro(Peano.zero, True.intro)
         |def theProof : True := {
         |  match h returning True with
         |  | HasProof.intro data proof => proof
@@ -732,8 +732,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |inductive DepProof : Prop
         | | intro (data: Peano)(proof: Eq(Peano, data, data)) : DepProof
         |
-        |axiom h : DepProof
-        |def theData : Peano := {
+        |def theData (h: DepProof): Peano := {
         |  match h returning Peano with
         |  | DepProof.intro data proof => data
         |}
@@ -756,8 +755,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |inductive DepProof : Prop
         | | intro (data: Peano)(proof: Ignore(data)) : DepProof
         |
-        |axiom h : DepProof
-        |def theData : Peano := {
+        |def theData (h: DepProof): Peano := {
         |  match h returning Peano with
         |  | DepProof.intro data proof => data
         |}
@@ -778,7 +776,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |inductive IndexedProof indices (n: Peano) : Prop
         | | intro (data: Peano)(proof: True) : IndexedProof(data)
         |
-        |axiom h : IndexedProof(Peano.zero)
+        |opaque def h : IndexedProof(Peano.zero) := IndexedProof.intro(Peano.zero, True.intro)
         |def theData : Peano := {
         |  match h returning Peano with
         |  | IndexedProof.intro data proof => data
@@ -799,7 +797,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |struct IndexedProp indices (n: Peano) : Prop
         | | intro (value: Peano) : IndexedProp(value)
         |
-        |axiom h : IndexedProp(Peano.zero)
+        |opaque def h : IndexedProp(Peano.zero) := IndexedProp.intro(Peano.zero)
         |def recovered : Peano := h.value
         |""".stripMargin
 
@@ -817,13 +815,13 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |inductive Eq2 indices (left: Peano)(right: Peano) : Prop
         | | refl (value: Peano) : Eq2(value, value)
         |
-        |axiom a : Peano
-        |axiom b : Peano
-        |axiom h : Eq2(a, b)
+        |opaque def a : Peano := Peano.zero
+        |opaque def b : Peano := Peano.zero
+        |def AB : Prop := Eq2(a, b)
         |""".stripMargin
 
     val env = evalDecls(p)
-    val eqTpe = env("h").tpe
+    val eqTpe = env("AB")
     // Field recovery reads the index that forces the field (`value := a`) and stops there; it never
     // asserts the constructor's own result equation, which here would claim `a = b`. So the fields
     // are recoverable, while reconstructing the whole `Eq2.refl a : Eq2(a, a)` layer is refused.
@@ -844,8 +842,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |inductive NestedProof indices (n: Peano) : Prop
         | | intro (data: Peano)(proof: True) : NestedProof(Peano.succ(data))
         |
-        |axiom h : NestedProof(Peano.succ(Peano.zero))
-        |def theData : Peano := {
+        |def theData (h: NestedProof(Peano.succ(Peano.zero))): Peano := {
         |  match h returning Peano with
         |  | NestedProof.intro data proof => data
         |}
@@ -867,8 +864,8 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         | | left (value: Peano) : Choice
         | | right (value: Peano) : Choice
         |
-        |axiom box : Box
-        |axiom choice : Choice
+        |opaque def box : Box := Box.mk(Peano.zero)
+        |opaque def choice : Choice := Choice.left(Peano.zero)
         |""".stripMargin
 
     val env = evalDecls(p)

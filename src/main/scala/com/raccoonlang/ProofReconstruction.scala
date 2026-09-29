@@ -5,7 +5,7 @@ import com.raccoonlang.Value._
 /** Type-directed field recovery and canonical constructor reconstruction for proofs. */
 object ProofReconstruction {
 
-  /** A reconstructed constructor layer, which `reconstruct` hands out only at an unsealed proposition. */
+  /** A reconstructed constructor layer, which only `reconstruct` hands out. */
   final class Result private[ProofReconstruction] (val head: ConstructorHead, val fields: Vector[Value])
 
   private final case class Recovered(
@@ -26,7 +26,6 @@ object ProofReconstruction {
    * Whether an application of `head` is a proof's canonical form at the exact proposition `tpe`: the one constructor
    * its recovery plan names, validated at this instance. A trusted application of a declaration-certified constructor
    * already carries the result-forced data fields, so it skips validation; the hint changes cost, never semantics.
-   * Unlike `reconstruct`, this holds for a sealed proposition, whose constructor form its module built.
    */
   def isCanonicalConstructor(tpe: Value, head: ConstructorHead): Boolean =
     recoveryInfo(tpe).exists { case (instance, info) =>
@@ -43,14 +42,12 @@ object ProofReconstruction {
     }
 
   /**
-   * Reconstruct one validated constructor layer at the exact proposition `tpe`. A sealed proposition is never
-   * reconstructed (spec §7.1): its constructor form is only what its module built, so every other proof of it stays
-   * neutral and no `match` opens it.
+   * Reconstruct one validated constructor layer at the exact proposition `tpe`, a sealed one included (spec §7.1): only
+   * the trusted prelude declares axioms, and the bundled one declares no sealed family, so every proof of a sealed
+   * proposition was built from its constructors.
    */
   def reconstruct(tpe: Value): Option[Result] =
-    recoveryInfo(tpe).flatMap { case (instance, info) =>
-      if (instance.meta.seal.nonEmpty) None else validate(instance, info, tpe)
-    }
+    recoveryInfo(tpe).flatMap { case (instance, info) => validate(instance, info, tpe) }
 
   /**
    * Field recovery performs no search or unification; this final result comparison is what prevents a constrained

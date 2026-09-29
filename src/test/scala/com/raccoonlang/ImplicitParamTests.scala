@@ -103,7 +103,7 @@ class ImplicitParamTests extends munit.FunSuite with TestSupport {
         |inductive Peano : Type
         | | zero : Peano
         |
-        |axiom bad : Peano -> {A: Type} -> A
+        |def use (bad: Peano -> {A: Type} -> A): Peano := Peano.zero
         |""".stripMargin
 
     expectTypeError[NonForcedImplicitParam](p)
@@ -186,16 +186,16 @@ class ImplicitParamTests extends munit.FunSuite with TestSupport {
     assertEquals(toShape(runProgram(p)), SConst("Peano"))
   }
 
-  test("implicit-only axiom has no forcing binder and is rejected") {
+  test("an implicit-only function type has no forcing binder and is rejected") {
     // Expected-type-driven instantiation is gone, so `arbitrary` could never be
-    // applied; the axiom itself is now rejected at declaration time.
+    // applied; its function type itself is rejected.
     val p =
       """
         |inductive Peano : Type
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |axiom arbitrary : {A: Type} -> A
+        |def use (arbitrary: {A: Type} -> A): Peano := Peano.zero
         |""".stripMargin
 
     expectTypeError[NonForcedImplicitParam](p)

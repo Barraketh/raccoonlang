@@ -75,9 +75,9 @@ class ArchitectureTests extends munit.FunSuite {
       Set("Sealing.scala", "Errors.scala", "ErrorRendering.scala")
     ),
     Rule(
-      "what an axiom may state is one walk of its type, in Axioms, the only place AxiomMintsToken is raised",
-      raw"\bAxiomMintsToken\(".r,
-      Set("Axioms.scala", "Errors.scala", "ErrorRendering.scala")
+      "only the trusted prelude declares axioms, decided by Interpreter.evalDecl's bootstrap privilege alone",
+      raw"\bUntrustedAxiom\(".r,
+      Set("Interpreter.scala", "Errors.scala", "ErrorRendering.scala")
     ),
     Rule(
       "a module is a source file, and only Sealing compares a span's source",
@@ -91,7 +91,7 @@ class ArchitectureTests extends munit.FunSuite {
       Set("TypeChecker.scala", "MatchChecker.scala", "Projection.scala")
     ),
     Rule(
-      "a proof's recovery plan is read only by ProofReconstruction, which never reconstructs a sealed proposition",
+      "a proof's recovery plan is read only by ProofReconstruction, the one place a proof is reconstructed",
       raw"\.proofRecovery\b".r,
       Set("ProofReconstruction.scala")
     )

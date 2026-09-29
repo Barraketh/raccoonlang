@@ -110,7 +110,7 @@ class InterpreterTests extends munit.FunSuite {
         | | true : Bool
         | | false : Bool
         |
-        |axiom b : Bool
+        |opaque def b : Bool := Bool.true
         |def choose : Peano -> Peano := {
         |  match b returning Peano -> Peano with
         |  | Bool.true => fun (n: Peano): Peano => n

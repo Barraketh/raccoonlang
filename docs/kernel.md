@@ -20,9 +20,8 @@ propositions before publication.
 
 The bundled source prelude is a trusted bootstrap. A prelude is still parsed,
 elaborated, and typechecked, but prelude loading alone may install builtin
-declarations and native equations, and declare axioms the axiom rule refuses
-elsewhere. Selecting `--prelude` therefore selects a different trusted
-bootstrap.
+declarations and native equations, and declare axioms. Selecting `--prelude`
+therefore selects a different trusted bootstrap.
 
 ## Equality and evidence
 
@@ -203,12 +202,10 @@ else:
 - a binder of a sort parameter is admitted only where its site allows: a
   parameter site (a declaration's header, the binders before its `:`, or a
   family parameter) may bind any sort parameter, a function type's or lambda's
-  binder only a lifetime, and a family index or constructor field none. An
-  axiom's header is a parameter site, but the axiom rule (see
-  [Axioms, opacity, and quotients](#axioms-opacity-and-quotients)) refuses a
-  kind or lifetime binder there. Everywhere else a binder's type must be a
-  type. The elaborator records each binder's site, so a function type written
-  after a declaration's `:` binds no level;
+  binder only a lifetime, and a family index or constructor field none.
+  Everywhere else a binder's type must be a type. The elaborator records each
+  binder's site, so a function type written after a declaration's `:` binds no
+  level;
 - an expression of a sort parameter stands only where a sort parameter is
   expected: a sort's field and the argument at a binder of a sort parameter,
   which is checked against that parameter rather than synthesized alone. A term
@@ -415,8 +412,7 @@ outer representation is chosen from its exact proposition:
 
 1. A declaration-certified, one-constructor recovery plan may reconstruct a
    constructor after every field is recovered and the constructor result is
-   definitionally equal to the exact proposition. A sealed proposition is
-   never reconstructed; see below.
+   definitionally equal to the exact proposition.
 2. A Pi proposition becomes a synthetic proof eta-lambda. Applying it produces
    the canonical proof of the instantiated codomain; the checked source proof
    body does not run. A large Pi into a proposition is proof-valued too, so a
@@ -447,17 +443,8 @@ on a proof in constructor form, which exact constructor-result validation
 admits. A non-reconstructible proof leaves a data-valued match blocked. This
 separation prevents constrained indexed propositions from manufacturing data.
 
-A proof of a sealed proposition is never reconstructed, the proof counterpart
-of a sealed family's missing structure eta (see Sealing). A constructor
-application its module built keeps its form when it is the canonical
-constructor at its exact proposition, and a match on it reduces. Every other
-proof of it is `VProof`, so a data-valued match on it stays stuck: an axiom's
-result, a proof recovered as another family's field, one whose proposition only
-computes to the sealed one, and one returned by a proof function, whose body
-never runs. Conversion is unchanged, since it compares propositions only; what
-a sealed proposition's proof does in a match is the one place where behavior
-depends on more than the proposition. `ProofReconstruction` alone reads a
-family's recovery plan, and its `reconstruct` refuses a sealed family.
+`ProofReconstruction` alone reads a family's recovery plan, so a proof is
+reconstructed in one place.
 
 Proof constructor identity and fields provide no injectivity, apartness, or
 termination evidence. Recursive proof fields are exposed one layer at a time,
@@ -470,8 +457,9 @@ instance is structure-eta eligible exactly when the checked family has:
 
 - one constructor;
 - no indices;
-- no recursive constructor field in its inductive block;
-- no seal (see Sealing).
+- no recursive constructor field in its inductive block.
+
+A sealed family is eligible like any other (see Sealing).
 
 Eligibility depends on the checked family, not on whether the source used
 `struct`. Prop instances use canonical proof representation and never structure
@@ -513,13 +501,14 @@ module is followed wherever its definition is applied, and a reconstructed
 implicit may be a sealed constructor application: neither is written by the
 program that applies it.
 
-A sealed family is never structure-eta eligible, and a proof of a sealed
-proposition is never reconstructed as its constructor (see Proofs and
-elimination). Either would let a match in its module open a value the module
-never built as a constructor application: an axiom's result, a blocked
-computation, a proof pulled out of another family's field, or a proof whose
-proposition only computes to the sealed one. Such a value stays neutral, and a
-match on it stays stuck, in the module and outside it.
+Structure eta and proof reconstruction apply to a sealed family as to any
+other. Only the trusted prelude declares axioms, and the bundled prelude
+declares no sealed family, so every value of a sealed family was built from its
+constructors: a neutral of one is a parameter a caller supplied, a blocked
+computation, or an opaque definition whose checked body built it. Eta and
+reconstruction therefore open nothing the module did not build. A match in the
+module opens a proof that a module function returned, although the function's
+body never runs, since the proof is reconstructed from its proposition.
 
 Sealing restricts what a program may write, not what the checker knows.
 Kinds, scopes, coverage, apartness and the conversion of values read the full
@@ -548,7 +537,7 @@ strictly positive inductive data.
   predecessor descent.
 
 Every metric must have a genuine non-Prop inductive type. Proofs, quotients,
-and values of user-axiomatized types are rejected as metrics.
+and values of axiomatized or opaque types are rejected as metrics.
 
 While checking a recursive body, a raw recursive reference is valid only as
 the head of a direct call whose metric decreases. It cannot escape into a
@@ -569,37 +558,28 @@ inductive type may remain a symbolic or blocked application instead of reducing
 to a constructor. Kernel code must therefore never assume that every closed
 inductive value is constructor-headed.
 
-User `axiom` declarations may introduce arbitrary symbolic inhabitants. They
-are typechecked, but their consistency is the user's responsibility. Proof
-axioms still canonicalize according to their exact proposition; data axioms
-remain symbolic.
+Only a trusted prelude declares axioms. An `axiom` in any other module is
+`UntrustedAxiom`, reported at the declaration before its type is checked. A
+program that needs an assumption declares it in a custom prelude
+(`--prelude`), such as a copy of the bundled one with the axiom added;
+selecting it explicitly extends the trusted base. An axiom may introduce an
+arbitrary symbolic inhabitant. It is typechecked, but its consistency is the
+prelude's responsibility. Proof axioms still canonicalize according to their
+exact proposition; data axioms remain symbolic.
 
-An axiom's result is a neutral, so the axiom rule keeps an axiom from making or
-consuming a token without its module and from stating what no program can
-refute. Outside the trusted prelude, the checker walks the value of an axiom's
-checked type once and refuses the first of these, with `AxiomMintsToken`:
-
-- a binder of a kind or lifetime, in the header or in any function type the
-  type contains: no two kinds or lifetimes are apart, so an equation between
-  them is irrefutable, yet refinement along it links a variable and would
-  retype a value across scopes or kinds;
-- a kind or lifetime other than `Kind.unr` and `Lifetime.empty`, a sort's or
-  closure's field and an atom included;
-- a linear type.
-
-The walk reads the type as a value, never a subterm's type: a function type's
-closure, each binder's type under fresh values for the earlier binders, and its
-codomain; an application's head and arguments; a lambda's type and captures; a
-blocked match's captures, since its branches are code; a proof's proposition.
-A family head's own declared type is not part of the axiom's, so `List(Nat)`,
-whose `List` binds a lifetime, is admitted, and level binders are admitted.
-The trusted prelude is exempt: `Quot` and `Quot.sound` bind lifetimes.
-
-Sealing needs no axiom rule. An axiom may yield a value of a sealed family,
-directly, through another family's field, or through a computed proposition,
-but a data value has no eta and a proof is not reconstructed, so no match opens
-it. `axiom forge : Permit(Lifetime.empty)` for a sealed `Prop` family `Permit`
-is admitted anywhere, and the module's match on `forge` stays stuck.
+No rule on an axiom's type could make program axioms safe. An axiom can state
+`False`, from which every value follows, a token or an equation between
+lifetimes included. Even a consistent one can break an abstraction: an axiom
+over a linear type consumes a token without its module, one at a sealed family
+yields a value its module never built, and an equation between two instances
+of a family at different lifetimes is irrefutable, since no two lifetimes are
+apart, yet refinement along it links a lifetime variable and lets a token leave
+its scope. So sealing, linearity and confinement hold unconditionally, relative
+to the audited prelude. The bundled prelude declares no sealed family, nothing
+at a kind other than `Kind.unr` and no kind variable, and puts every
+declaration at `Lifetime.empty` or at lifetime variables; `Quot` and
+`Quot.sound` bind lifetimes. A test walks every prelude declaration's type,
+axioms included, to keep it so.
 
 The bundled quotient interface is the fixed non-inductive primitive surface:
 
@@ -622,8 +602,8 @@ eliminator.
 ## Trusted bootstrap and native values
 
 Only a trusted prelude may publish builtin declarations or native literal
-layouts, or declare an axiom the axiom rule refuses. Ordinary modules cannot
-gain native semantics by declaring a reserved name.
+layouts, or declare an axiom. Ordinary modules cannot gain native semantics by
+declaring a reserved name.
 
 ### Natural numbers
 
@@ -719,13 +699,11 @@ Changes to the checker or evaluator must preserve these rules:
 2. Refinement links are forced consequences; the unifier never chooses among
    several solutions.
 3. Match pruning uses apartness, never ordinary unification failure.
-4. A proof's behavior depends only on its exact proposition, except that a
-   proof of a sealed proposition is in constructor form only when its module
-   built it; conversion never distinguishes proofs of one proposition.
+4. A proof's behavior depends only on its exact proposition.
 5. Runtime proof reconstruction is finite and never invokes unification.
 6. Proof structure supplies no no-confusion or termination evidence.
 7. Structure eta applies only to checked non-Prop, nonrecursive,
-   zero-index, unsealed singleton families.
+   zero-index singleton families, sealed or not.
 8. Recursive calls are accepted only from genuine structural descent.
 9. Axiom, opaque, and quotient values are allowed to remain closed neutrals.
 10. Native equations and literal layouts are installed only by a selected
@@ -765,10 +743,8 @@ Changes to the checker or evaluator must preserve these rules:
     type, and no implicit binder of linear type is forced.
 23. Outside a sealed family's module, no checked term names its constructors
     or selectors, matches on a value of it, or forces an implicit through its
-    constructors' fields. A value of a sealed family that a match opens was
-    built by its module: the family has no structure eta, and a proof of it is
-    never reconstructed. Sealing never changes what conversion, coverage or
-    apartness decide.
-24. Outside the trusted prelude, no axiom's type value binds a kind or
-    lifetime, holds a kind or lifetime other than `Kind.unr` and
-    `Lifetime.empty`, or contains a linear type.
+    constructors' fields. Sealing never changes what conversion, coverage,
+    apartness, structure eta or proof reconstruction decide.
+24. Only a trusted prelude declares axioms, and the bundled prelude declares
+    no sealed family, nothing at a kind other than `Kind.unr`, and no kind
+    variable.

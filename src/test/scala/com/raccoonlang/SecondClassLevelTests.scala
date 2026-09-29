@@ -10,7 +10,9 @@ class SecondClassLevelTests extends munit.FunSuite with TestSupport {
   test("a level binder is admitted in a declaration's header") {
     typecheckDecls("def f {u: Level}(A: Sort { level = u })(x: A): A := x\n")
     typecheckDecls("opaque def f (u: Level)(A: Sort { level = u }): Sort { level = u } := A\n")
-    typecheckDecls("axiom f {u: Level}(A: Sort { level = u }): Nat\n")
+    // Only the trusted prelude declares axioms (§7.3).
+    val axiom = "axiom f {u: Level}(A: Sort { level = u }): Sort { level = u }\n"
+    TestSupport.preludeAssuming(TestSupport.testPreludeSource, axiom).checkedEnv
   }
 
   test("a level binder is admitted as a family parameter, not as an index") {
@@ -43,8 +45,8 @@ class SecondClassLevelTests extends munit.FunSuite with TestSupport {
 
   // A header is the binders before a declaration's `:`; a function type written after it is an ordinary one.
   test("a function type written after a declaration's colon is not its header") {
-    typecheckDecls("axiom f {u: Level}(A: Sort { level = u }): Nat\n")
-    expectOnly[NotAType](typecheckDecls("axiom f : {u: Level} -> Sort { level = u } -> Nat\n"))
+    typecheckDecls("def f {u: Level}(A: Sort { level = u }): Nat := 0\n")
+    expectOnly[NotAType](typecheckDecls("def f : {u: Level} -> Sort { level = u } -> Nat := 0\n"))
   }
 
   // The written function type would bind a level that its own codomain's universe escapes.
