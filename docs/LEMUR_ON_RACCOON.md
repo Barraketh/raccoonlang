@@ -671,8 +671,8 @@ two instances of a family at different lifetime or kind arguments. A family
 names every lifetime parameter in its scope (§5.1), and sorts are exact (§2.6),
 so two instances at different lifetimes live in different sorts, and a lifetime
 equation arises only between instances that share a scope. Matching a proof of
-`Eq(Type { scope = union(l, m) }, Pair(l, m), Pair(m, l))`, for a family
-`Pair (l: Lifetime)(m: Lifetime) : Type { scope = union(l, m) }`, is one such
+`Eq(Type { scope = union(l, m) }, Both(l, m), Both(m, l))`, for a family
+`Both (l: Lifetime)(m: Lifetime) : Type { scope = union(l, m) }`, is one such
 case. The equation is solved over the normal forms of §2.3, as level and
 variable equations are today:
 - A refinable variable alone on one side, not occurring in the other, is linked
@@ -731,8 +731,8 @@ break an abstraction:
 - `axiom eat {A: Type { kind = lin }}(x: A): Unit` consumes a token without its
   module.
 - `axiom forge : Lease(Lifetime.empty)` makes a lease no module issued.
-- `axiom pairEq (a: Lifetime)(b: Lifetime): Eq(Type { scope = union(a, b) }, Pair(a, b), Pair(b, a))`,
-  for the `Pair` of §6.2, is consistent, since no two lifetimes are apart
+- `axiom bothEq (a: Lifetime)(b: Lifetime): Eq(Type { scope = union(a, b) }, Both(a, b), Both(b, a))`,
+  for the `Both` of §6.2, is consistent, since no two lifetimes are apart
   (§2.3). Yet a match along it links `b` to `a` (§6.2), so a definition can
   turn a `Tok(a)` into a `Tok(b)`. Applied at `b = Lifetime.empty`, that lets a
   token leave its scope.
@@ -746,7 +746,7 @@ trusted prelude, bundled or custom, keeps the obligations T1 to T5 of the
 kernel reference (Trusted bootstrap and native values), which are audited, not
 checked: consistency, sealing, linearity, lifetimes and native equations. Each
 example above breaks one of them: `eat` linearity (T3), `forge` sealing (T2)
-and `pairEq` lifetimes (T4). Every other prelude declaration is checked as one
+and `bothEq` lifetimes (T4). Every other prelude declaration is checked as one
 in any module, so a prelude may declare a linear, kind-polymorphic or sealed
 family. No global's type names an atom (`LifetimeEscapes`), so every prelude
 declaration is at `Lifetime.empty`, a lifetime variable or a union of them, as

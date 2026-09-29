@@ -128,11 +128,11 @@ class ResidualizationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |struct Pair (A: Type)(B: Type) : Type
-          | | mk (fst: A)(snd: B) : Pair(A, B)
+          |struct Couple (A: Type)(B: Type) : Type
+          | | mk (fst: A)(snd: B) : Couple(A, B)
           |
           |{
-          |  let p := Pair.mk(Peano.zero, Peano.succ(Peano.zero))
+          |  let p := Couple.mk(Peano.zero, Peano.succ(Peano.zero))
           |  p.fst
           |}
           |""".stripMargin
@@ -140,13 +140,13 @@ class ResidualizationTests extends munit.FunSuite {
     checkBody(p).term match {
       case CA.Term.Body(
             lets,
-            CA.Term.App(CA.Term.GlobalRef("Pair.fst", _), Vector(CA.Term.LocalRef(ref, _)), _),
+            CA.Term.App(CA.Term.GlobalRef("Couple.fst", _), Vector(CA.Term.LocalRef(ref, _)), _),
             _
           ) =>
         assertEquals(lets.length, 1)
         assertEquals(ref, lets.head.localRef)
-        assert(containsGlobal(lets.head.value, "Pair.mk"))
-      case other => fail(s"Expected a Pair.fst application over the local pair, got $other")
+        assert(containsGlobal(lets.head.value, "Couple.mk"))
+      case other => fail(s"Expected a Couple.fst application over the local pair, got $other")
     }
   }
 
@@ -154,19 +154,19 @@ class ResidualizationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |struct Pair (A: Type)(B: Type) : Type
-          | | mk (fst: A)(snd: B) : Pair(A, B)
+          |struct Couple (A: Type)(B: Type) : Type
+          | | mk (fst: A)(snd: B) : Couple(A, B)
           |
           |{
-          |  let p := Pair.mk(Peano.zero, Peano.succ(Peano.zero))
-          |  Pair.fst(p)
+          |  let p := Couple.mk(Peano.zero, Peano.succ(Peano.zero))
+          |  Couple.fst(p)
           |}
           |""".stripMargin
 
     checkBody(p).term match {
       case CA.Term.Body(
             Vector(let),
-            CA.Term.App(CA.Term.GlobalRef("Pair.fst", _), Vector(CA.Term.LocalRef(ref, _)), _),
+            CA.Term.App(CA.Term.GlobalRef("Couple.fst", _), Vector(CA.Term.LocalRef(ref, _)), _),
             _
           ) =>
         assertEquals(ref, let.localRef)

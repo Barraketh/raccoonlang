@@ -481,11 +481,11 @@ class LinearityTests extends munit.FunSuite with TestSupport {
 
   test("a linear struct's selector is rejected when another field is linear or its field is dependent") {
     // A selector binds every field and returns one, so another linear field is unused (spec §3.5).
-    val pair = withFamilies(
-      "struct Pair (l: Lifetime) : Type { kind = lin, scope = l }\n | mk (a: Tok(l)) (b: Tok(l)) : Pair(l)\n"
+    val couple = withFamilies(
+      "struct Couple (l: Lifetime) : Type { kind = lin, scope = l }\n | mk (a: Tok(l)) (b: Tok(l)) : Couple(l)\n"
     )
     assertEquals(
-      interceptDiagnostics(typecheckDecls(pair)).map(_.error),
+      interceptDiagnostics(typecheckDecls(couple)).map(_.error),
       Vector(LinearUnused("b"), LinearUnused("a"))
     )
     // A dependent field's selector names the earlier field's selector applied to the struct value in its result type.

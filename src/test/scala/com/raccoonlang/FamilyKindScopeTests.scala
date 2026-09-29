@@ -58,8 +58,8 @@ class FamilyKindScopeTests extends munit.FunSuite with TestSupport {
     admitted.foreach(family => typecheckDecls(withFamilies(family)))
     def pair(scope: String): String =
       s"""
-         |inductive Pair {S: Lifetime}{T: Lifetime}(A: Type { scope = S })(B: Type { scope = T }) : Type { scope = $scope }
-         | | mk (a: A)(b: B) : Pair(A, B)
+         |inductive Couple {S: Lifetime}{T: Lifetime}(A: Type { scope = S })(B: Type { scope = T }) : Type { scope = $scope }
+         | | mk (a: A)(b: B) : Couple(A, B)
          |""".stripMargin
     typecheckDecls(pair("union(S, T)"))
     assert(expectOnly[ScopeExceeded](typecheckDecls(pair("S"))).part.startsWith("lifetime parameter T"))

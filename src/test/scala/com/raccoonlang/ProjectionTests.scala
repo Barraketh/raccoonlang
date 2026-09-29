@@ -94,21 +94,21 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
   }
 
   private val zeroS = SConst("Peano.zero")
-  test("non-dependent projections: Pair.fst and Pair.snd") {
+  test("non-dependent projections: Couple.fst and Couple.snd") {
     val p =
       """
         |inductive Peano : Type
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |struct Pair (A: Type)(B: Type) : Type
-        | | mk (fst: A)(snd: B) : Pair(A, B)
+        |struct Couple (A: Type)(B: Type) : Type
+        | | mk (fst: A)(snd: B) : Couple(A, B)
         |
-        |def first {A1: Type}{B1: Type} (p: Pair(A1, B1)): A1 := p.fst
-        |def second {A2: Type}{B2: Type} (p: Pair(A2, B2)): B2 := p.snd
+        |def first {A1: Type}{B1: Type} (p: Couple(A1, B1)): A1 := p.fst
+        |def second {A2: Type}{B2: Type} (p: Couple(A2, B2)): B2 := p.snd
         |
         |{
-        |  let p : Pair(Peano, Peano) := Pair.mk(Peano.zero, Peano.succ(Peano.zero))
+        |  let p : Couple(Peano, Peano) := Couple.mk(Peano.zero, Peano.succ(Peano.zero))
         |  first(p)
         |}
         |""".stripMargin
@@ -120,8 +120,8 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
   test("struct syntax emits selectors whose bodies are matches on self") {
     val p =
       """
-        |struct Pair (A: Type)(B: Type) : Type
-        | | mk (fst: A)(snd: B) : Pair(A, B)
+        |struct Couple (A: Type)(B: Type) : Type
+        | | mk (fst: A)(snd: B) : Couple(A, B)
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {
@@ -130,7 +130,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         val found = core.decls.exists {
           case CoreAst.Decl.ConstDecl(
                 false,
-                "Pair.snd",
+                "Couple.snd",
                 _,
                 CoreAst.ConstBody.TermBody(
                   CoreAst.Term.Lam(_, m: CoreAst.Term.Match, _, _, _, _, _)
@@ -141,7 +141,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
             m.cases.length == 1 && m.cases.head.ctorName.endsWith("mk") && m.cases.head.argRefs.length == 2
           case _ => false
         }
-        assert(found, "expected Pair.snd to be a match on self returning its second field")
+        assert(found, "expected Couple.snd to be a match on self returning its second field")
         Interpreter.run(core, Prelude.test)
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }
@@ -376,14 +376,14 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |struct Pair (A: Type)(B: Type) : Type
-        | | mk (fst: A)(snd: B) : Pair(A, B)
+        |struct Couple (A: Type)(B: Type) : Type
+        | | mk (fst: A)(snd: B) : Couple(A, B)
         |
         |// Opaque on purpose
-        |opaque def mkPair (a: Peano)(b: Peano): Pair(Peano, Peano) := Pair.mk(a, b)
+        |opaque def mkCouple (a: Peano)(b: Peano): Couple(Peano, Peano) := Couple.mk(a, b)
         |
         |def firstOpaque (a: Peano)(b: Peano): Peano := {
-        |  let p := mkPair(a, b)
+        |  let p := mkCouple(a, b)
         |  p.fst
         |}
         |""".stripMargin
@@ -398,11 +398,11 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |struct PairU {u1: Level}{u2: Level}(A: Sort { level = u1 })(B: Sort { level = u2 }) : Sort { level = max(u1, u2) }
-        | | mk (fst: A)(snd: B) : PairU(A, B)
+        |struct CoupleU {u1: Level}{u2: Level}(A: Sort { level = u1 })(B: Sort { level = u2 }) : Sort { level = max(u1, u2) }
+        | | mk (fst: A)(snd: B) : CoupleU(A, B)
         |
         |// Opaque on purpose
-        |opaque def F : PairU(Type, Type) := PairU.mk(Peano, Peano)
+        |opaque def F : CoupleU(Type, Type) := CoupleU.mk(Peano, Peano)
         |
         |def idF (x: F.fst): F.fst := x
         |""".stripMargin
@@ -419,11 +419,11 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |inductive Peano : Type
         | | zero : Peano
         |
-        |struct PairU {u1: Level}{u2: Level}(A: Sort { level = u1 })(B: Sort { level = u2 }) : Sort { level = max(u1, u2) }
-        | | mk (fst: A)(snd: B) : PairU(A, B)
+        |struct CoupleU {u1: Level}{u2: Level}(A: Sort { level = u1 })(B: Sort { level = u2 }) : Sort { level = max(u1, u2) }
+        | | mk (fst: A)(snd: B) : CoupleU(A, B)
         |
         |// Opaque on purpose
-        |opaque def F : PairU(Type, Type) := PairU.mk(Peano, Peano)
+        |opaque def F : CoupleU(Type, Type) := CoupleU.mk(Peano, Peano)
         |
         |struct UsesF : Type
         | | mk (x: F.fst) : UsesF
@@ -441,16 +441,16 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |struct Pair (A: Type)(B: Type) : Type
-        | | mk (fst: A)(snd: B) : Pair(A, B)
+        |struct Couple (A: Type)(B: Type) : Type
+        | | mk (fst: A)(snd: B) : Couple(A, B)
         |
         |// Opaque on purpose
         |opaque def step (n: Peano): Peano := n
         |
-        |def choose (n: Peano): Pair(Peano, Peano) := {
-        |  match step(n) returning Pair(Peano, Peano) with
-        |  | Peano.zero => Pair.mk(Peano.zero, Peano.zero)
-        |  | Peano.succ k => Pair.mk(Peano.succ(k), k)
+        |def choose (n: Peano): Couple(Peano, Peano) := {
+        |  match step(n) returning Couple(Peano, Peano) with
+        |  | Peano.zero => Couple.mk(Peano.zero, Peano.zero)
+        |  | Peano.succ k => Couple.mk(Peano.succ(k), k)
         |}
         |
         |def fstChoose (n: Peano): Peano := {
@@ -642,10 +642,10 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
   test("negative: unknown field name on struct throws NotFound") {
     val p =
       """
-        |struct Pair (A: Type)(B: Type) : Type
-        | | mk (fst: A)(snd: B) : Pair(A, B)
+        |struct Couple (A: Type)(B: Type) : Type
+        | | mk (fst: A)(snd: B) : Couple(A, B)
         |
-        |def bad (A: Type)(B: Type)(p: Pair(A, B)): A := p.foo
+        |def bad (A: Type)(B: Type)(p: Couple(A, B)): A := p.foo
         |""".stripMargin
 
     LanguageParser.parseProgram(p) match {

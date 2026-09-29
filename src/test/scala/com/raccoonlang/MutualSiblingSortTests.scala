@@ -206,14 +206,14 @@ class MutualSiblingSortTests extends munit.FunSuite with TestSupport {
     typecheckDecls(
       """
         |mutual {
-        |  struct Pair : Type
-        |   | mk (a: Nat) (b: Nat) : Pair
+        |  struct Couple : Type
+        |   | mk (a: Nat) (b: Nat) : Couple
         |
         |  struct Fact : Prop
         |   | mk (h: True) : Fact
         |}
         |
-        |def etaPair (p: Pair): Eq(Pair, p, Pair.mk(p.a, p.b)) := Eq.refl(p)
+        |def etaCouple (p: Couple): Eq(Couple, p, Couple.mk(p.a, p.b)) := Eq.refl(p)
         |""".stripMargin
     )
     // `Box` holds a proof of `Fine`, which holds a `Box`: the block is recursive, so no family in it has eta.
