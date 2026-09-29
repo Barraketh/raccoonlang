@@ -3,6 +3,7 @@ package com.raccoonlang
 import com.raccoonlang.Value._
 
 import scala.collection.immutable.VectorMap
+import scala.reflect.ClassTag
 
 object ValueOps {
   def materialize(value: Value, eqStore: EqStore): Value = Materialize.materialize(value)(eqStore)
@@ -21,9 +22,9 @@ object ValueOps {
 
       val rebuilt = resolved match {
         case _: ParameterTpe | SortParameter | Large => resolved
-        case level: Level                            => materializeLevel(level)
-        case kind: Kind                              => materializeKind(kind)
-        case lifetime: Lifetime                      => materializeLifetime(lifetime)
+        case level: Level                            => materializeParameter(level)
+        case kind: Kind                              => materializeParameter(kind)
+        case lifetime: Lifetime                      => materializeParameter(lifetime)
         case sort: VSort                             => materializeClassifier(sort)
         case Var(name, id, tpe)                      => Var(name, id, materialize(tpe))
         case VConst(name, constType, tpe)            => VConst(name, constType, materialize(tpe))
@@ -69,29 +70,22 @@ object ValueOps {
     private def mayNeedMaterialization(value: Value)(implicit eqStore: EqStore): Boolean =
       value.synDeps.intersects(eqStore.solvedIds)
 
-    private def materializeLevel(level: Level)(implicit eqStore: EqStore): Level =
-      Interpreter.resolveInEqStore(level, eqStore) match {
-        case l: Level => l
-        case other    => wtf(s"Level $level materialized to the non-level $other")
-      }
-
-    private def materializeKind(kind: Kind)(implicit eqStore: EqStore): Kind =
-      Interpreter.resolveInEqStore(kind, eqStore) match {
-        case k: Kind => k
-        case other   => wtf(s"Kind $kind materialized to the non-kind $other")
-      }
-
-    private def materializeLifetime(lifetime: Lifetime)(implicit eqStore: EqStore): Lifetime =
-      Interpreter.resolveInEqStore(lifetime, eqStore) match {
-        case l: Lifetime => l
-        case other       => wtf(s"Lifetime $lifetime materialized to the non-lifetime $other")
+    /** A level, kind or lifetime, which resolves to a normal form of the same sort parameter. */
+    private def materializeParameter[P <: Value: ClassTag](parameter: P)(implicit eqStore: EqStore): P =
+      Interpreter.resolveInEqStore(parameter, eqStore) match {
+        case normal: P => normal
+        case other     => wtf(s"$parameter : ${parameter.tpe} materialized to $other : ${other.tpe}")
       }
 
     private def materializeClassifier(classifier: Classifier)(implicit eqStore: EqStore): Classifier =
       classifier match {
         case sort: VSort =>
           if (mayNeedMaterialization(sort))
-            Sorts.sort(materializeLevel(sort.level), materializeKind(sort.kind), materializeLifetime(sort.scope))
+            Sorts.sort(
+              materializeParameter(sort.level),
+              materializeParameter(sort.kind),
+              materializeParameter(sort.scope)
+            )
           else sort
         case Large => Large
       }
@@ -102,8 +96,8 @@ object ValueOps {
       val store = eqStore
       pi.copy(
         env = materializeEnv(pi.env),
-        closureKind = materializeKind(pi.closureKind),
-        closureScope = materializeLifetime(pi.closureScope),
+        closureKind = materializeParameter(pi.closureKind),
+        closureScope = materializeParameter(pi.closureScope),
         synDeps = materializeDeps(pi.synDeps),
         id = materializeId(pi.id),
         classifier0 = () => materializeClassifier(pi.tpe)(store)

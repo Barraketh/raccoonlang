@@ -16,7 +16,8 @@ object Linearity {
    */
   def isLinear(tpe: Value): Boolean =
     Kind.anyNonUnr && (tpe match {
-      case pi: VPi => !pi.closureKind.isUnr
+      case pi: VPi  => !pi.closureKind.isUnr
+      case _: VSort => false
       case other =>
         other.tpe match {
           case sort: VSort           => !sort.kind.isUnr
