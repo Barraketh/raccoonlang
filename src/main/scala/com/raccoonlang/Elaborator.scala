@@ -335,7 +335,9 @@ object Elaborator {
 
     // The selector's parameter must not capture a name its header or result type mentions.
     val binders = header.binders ++ ctor.binders
-    val usedNames = binders.map(_.name).toSet ++ binders.flatMap(binder => typeNames(binder.ty)) + header.name
+    val usedNames =
+      binders.map(_.name).toSet ++ binders.flatMap(binder => freeIdentifiers(binder.ty, Set.empty).map(_.name)) +
+        header.name
     val selfName = (Iterator.single("self") ++ Iterator.from(1).map(suffix => s"self$suffix")).find(!usedNames(_)).get
     val selfSpan = header.span
     // The generated self type supplies exactly the explicit family binders; implicit ones are
@@ -354,14 +356,26 @@ object Elaborator {
       SA.Binder(selfName, selfType, selfSpan)
     val selectors =
       fields.map { case (field, fieldIdx) =>
-        val previousFields = storedBinders
-          .take(fieldIdx)
-          .collect {
-            case previous if previous.name != "_" => previous.name
+        // The result type is the field's own type, as written, with each earlier field it mentions bound to that
+        // field's selector applied to `self`. The selector is spelled qualified so it resolves whether or not the
+        // namespace is open. Only a mentioned field is bound: an unmentioned one would put `self` in the type for
+        // nothing, which a linear struct cannot have (spec §3.5). Each binding stands at the field's first mention,
+        // where an error about it belongs. The type keeps its spans, so its nodes are the constructor's field type's
+        // syntax, differing only in what they capture (docs/kernel.md#value-identity).
+        val mentions = freeIdentifiers(field.ty, Set.empty)
+        val earlierFields = storedBinders.take(fieldIdx).filter(_.name != "_")
+        val bindings = earlierFields.flatMap { earlier =>
+          mentions.find(_.name == earlier.name).map { mention =>
+            val span = mention.span
+            val selected = SA.Term.App(
+              SA.Term.Select(SA.Term.Ident(header.name, span), earlier.name, span),
+              Vector(SA.Term.Ident(selfName, span)),
+              span
+            )
+            SA.Term.LetStmt(SA.Term.Let(earlier.name, None, selected, span))
           }
-          .toSet
-        val resultTy =
-          rewriteFieldType(header.name, selfName, field.ty, previousFields)
+        }
+        val resultTy = if (bindings.isEmpty) field.ty else SA.Term.Body(bindings, field.ty, field.ty.span)
         // Where a header's span starts is its function type's node identity (docs/kernel.md#value-identity), and the
         // selectors' types are different function types, so each header takes its own field's span.
         val selectorHeader =
@@ -403,83 +417,49 @@ object Elaborator {
     Some(SA.Command.Namespace(Vector(header.name), selectors, header.span))
   }
 
-  /** The names a term of the type grammar mentions, by the shapes `rewriteFieldType` walks. */
-  private def typeNames(term: SA.Term): Set[String] =
+  /**
+   * The identifiers a term leaves free, at any depth and in source order: those no binder inside it binds, `bound`
+   * naming the ones already bound around it.
+   */
+  private def freeIdentifiers(term: SA.Term, bound: Set[String]): Vector[SA.Term.Ident] = {
+    def free(part: SA.Term): Vector[SA.Term.Ident] = freeIdentifiers(part, bound)
+    def closure(written: SA.Closure): Vector[SA.Term.Ident] = (written.kind.toVector ++ written.scope).flatMap(free)
+    // Binders in one group scope left to right: each one's type sees the names bound before it.
+    def group(binders: Vector[SA.Binder]): (Vector[SA.Term.Ident], Set[String]) =
+      binders.foldLeft((Vector.empty[SA.Term.Ident], bound)) { case ((found, inner), binder) =>
+        (found ++ freeIdentifiers(binder.ty, inner), inner + binder.name)
+      }
     term match {
-      case SA.Term.Ident(name, _)     => Set(name)
-      case SA.Term.Select(base, _, _) => typeNames(base)
-      case SA.Term.App(fn, args, _)   => args.foldLeft(typeNames(fn))(_ | typeNames(_))
+      case ident: SA.Term.Ident                  => if (bound(ident.name)) Vector.empty else Vector(ident)
+      case _: SA.Term.NatLit | _: SA.Term.StrLit => Vector.empty
+      case SA.Term.Select(base, _, _)            => free(base)
+      case SA.Term.App(fn, args, _)              => (fn +: args).flatMap(free)
       case SA.Term.Sort(level, kind, scope, _) =>
         val written = level match {
-          case SA.Term.SortLevel.Written(written)             => Set(written)
-          case SA.Term.SortLevel.Zero | SA.Term.SortLevel.One => Set.empty
+          case SA.Term.SortLevel.Written(written)             => Vector(written)
+          case SA.Term.SortLevel.Zero | SA.Term.SortLevel.One => Vector.empty
         }
-        (written ++ kind ++ scope).flatMap(typeNames)
-      case SA.Term.Pi(closure, binders, body, _) =>
-        (closure.kind.toVector ++ closure.scope ++ binders.map(_.ty) :+ body).flatMap(typeNames).toSet ++
-          binders.map(_.name)
-      case _ => Set.empty
-    }
-
-  // Rewrites the shapes the type grammar can produce (Ident/Select/App/Pi); anything else
-  // cannot mention fields and passes through.
-  private def rewriteFieldType(
-      structName: String,
-      selfName: String,
-      term: SA.Term,
-      previousFields: Set[String]
-  ): SA.Term =
-    term match {
-      // An earlier field mentioned in a later field's type becomes an application of that earlier
-      // selector to `self`. The unqualified name resolves inside the generated namespace to the
-      // sibling selector; it is spelled qualified so it also resolves when the namespace is not open.
-      case SA.Term.Ident(name, span) if previousFields.contains(name) =>
-        SA.Term.App(
-          SA.Term.Select(SA.Term.Ident(structName, span), name, span),
-          Vector(SA.Term.Ident(selfName, span)),
-          span
-        )
-
-      case i: SA.Term.Ident => i
-
-      case SA.Term.Select(base, field, span) =>
-        SA.Term.Select(rewriteFieldType(structName, selfName, base, previousFields), field, span)
-
-      case SA.Term.App(fn, args, span) =>
-        SA.Term.App(
-          rewriteFieldType(structName, selfName, fn, previousFields),
-          args.map(arg => rewriteFieldType(structName, selfName, arg, previousFields)),
-          span
-        )
-
-      case SA.Term.Sort(level, kind, scope, span) =>
-        def rewrite(field: SA.Term): SA.Term = rewriteFieldType(structName, selfName, field, previousFields)
-        val rewrittenLevel = level match {
-          case SA.Term.SortLevel.Written(written)                       => SA.Term.SortLevel.Written(rewrite(written))
-          case fixed @ (SA.Term.SortLevel.Zero | SA.Term.SortLevel.One) => fixed
-        }
-        SA.Term.Sort(rewrittenLevel, kind.map(rewrite), scope.map(rewrite), span)
-
-      case pi @ SA.Term.Pi(closure, binders, body, span) =>
-        // The closure stands outside the group. Binders in one group scope left to right: each one's
-        // type sees the names bound before it, and the body sees them all.
-        def rewrite(field: SA.Term): SA.Term = rewriteFieldType(structName, selfName, field, previousFields)
-        val (rewrittenBinders, bodyFields) =
-          binders.foldLeft((Vector.empty[SA.Binder], previousFields)) { case ((acc, fields), binder) =>
-            (acc :+ binder.copy(ty = rewriteFieldType(structName, selfName, binder.ty, fields)), fields - binder.name)
+        (written ++ kind ++ scope).flatMap(free)
+      case SA.Term.Pi(written, binders, body, _) =>
+        val (inBinders, inner) = group(binders)
+        closure(written) ++ inBinders ++ freeIdentifiers(body, inner)
+      case SA.Term.Lam(written, header, body, _) =>
+        val (inBinders, inner) = group(header.params)
+        closure(written) ++ inBinders ++ freeIdentifiers(header.ty, inner) ++ freeIdentifiers(body, inner)
+      case SA.Term.Scope(name, body, _) => freeIdentifiers(body, bound + name)
+      case SA.Term.Match(scrut, motive, cases, _) =>
+        free(scrut) ++ free(motive) ++ cases.flatMap(c => freeIdentifiers(c.body, bound ++ c.argNames))
+      case SA.Term.Body(statements, out, _) =>
+        // Lets scope left to right, each one's own value outside it; an open binds no local.
+        val (inLets, inner) =
+          statements.foldLeft((Vector.empty[SA.Term.Ident], bound)) {
+            case ((found, inner), SA.Term.LetStmt(let)) =>
+              (found ++ (let.ty.toVector :+ let.value).flatMap(freeIdentifiers(_, inner)), inner + let.name)
+            case (acc, _: SA.Term.OpenStmt) => acc
           }
-        val rewritten = SA.Term.Pi(
-          SA.Closure(closure.kind.map(rewrite), closure.scope.map(rewrite)),
-          rewrittenBinders,
-          rewriteFieldType(structName, selfName, body, bodyFields),
-          span
-        )
-        // A span's start is a node identity (docs/kernel.md#value-identity), and the field's own type already holds
-        // this one. A rewritten function type is a different one, so it takes a fresh identity.
-        if (rewritten == pi) pi else rewritten.copy(span = Span.synthetic())
-
-      case other => other
+        inLets ++ freeIdentifiers(out, inner)
     }
+  }
 
   /**
    * Elaborate a dotted path using the local-first rule.
