@@ -60,13 +60,16 @@ trait TestSupport extends DiagnosticAssertions { this: munit.FunSuite =>
     Interpreter.run(TypeChecker.check(Elaborator.elaborate(parseSurface(module + "\n" + client), suitePrelude)))
 
   /** `client` checked as an entry file importing `module`, another module, and run when it has a body. */
-  protected def outside(module: String, client: String): Option[Value] = {
+  protected def outside(module: String, client: String): Option[Value] =
+    Interpreter.run(TypeChecker.check(Elaborator.elaborate(outsideProgram(module, client), suitePrelude)))
+
+  /** `client` loaded as an entry file importing `module`, another module. */
+  protected def outsideProgram(module: String, client: String): SurfaceAst.Program = {
     val root = Files.createTempDirectory("raccoon-module")
     Files.write(root.resolve("Module.rac"), module.getBytes(StandardCharsets.UTF_8))
     val entry = root.resolve("main.rac")
     Files.write(entry, ("import Module\n" + client).getBytes(StandardCharsets.UTF_8))
-    val loaded = ModuleLoader.load(entry, ModuleLoader.LoadConfig.forEntry(entry, suitePrelude))
-    Interpreter.run(TypeChecker.check(Elaborator.elaborate(loaded.program, suitePrelude)))
+    ModuleLoader.load(entry, ModuleLoader.LoadConfig.forEntry(entry, suitePrelude)).program
   }
 
   protected def ctorName(value: Value): String = value match {
@@ -81,6 +84,31 @@ object TestSupport {
   lazy val bundledPreludeSource: String = resource("/Init/Prelude.rac")
 
   lazy val testPreludeSource: String = resource("/Init/TestPrelude.rac")
+
+  /**
+   * The sealed Lease and Tok capabilities of spec §5.1 and `withLease` of spec §4.4, with the module's helpers, which
+   * alone make and consume them: `issue` mints a token for a lease's holder, in the lease's lifetime, and `burn`
+   * consumes one.
+   */
+  val leaseModule: String =
+    """
+      |sealed inductive Lease (l: Lifetime) : Type { scope = l }
+      | | mk : Lease(l)
+      |
+      |sealed inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }
+      | | mk : Tok(l)
+      |
+      |def withLease {k: Kind}{S: Lifetime}{A: Type { kind = k, scope = S }}{kf: Kind}{Sf: Lifetime}
+      |    (f: { kind = kf, scope = Sf } (l: Lifetime) -> Lease(l) -> A): A :=
+      |  scope l => f(l, Lease.mk(l))
+      |
+      |def issue {l: Lifetime}(h: Lease(l)): Tok(l) := Tok.mk(l)
+      |
+      |def useLease {l: Lifetime}(h: Lease(l)): Nat := 2
+      |
+      |def burn {l: Lifetime}(t: Tok(l)): Nat := match t returning Nat with
+      | | .mk => 1
+      |""".stripMargin
 
   /**
    * The trusted prelude `base` followed by `assumptions`. Only the trusted prelude declares axioms (spec §7.3), so a
