@@ -11,13 +11,13 @@ namespace T {
     fun (l: Lifetime)(e: Ctx(l, T.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, T.G) =>
       Gpu.shared(e, DType.f32, 256, fun (a: Lifetime)(sa: Smem(a, DType.f32, 256))(ta: Tile(a, DType.f32, 256, TileState.empty))(e: Ctx(l, T.G)): Ctx(l, T.G) => {
         match Gpu.storeMine(e, sa, ta, Gpu.zero(DType.f32)) returning Ctx(l, T.G) with
-        | LPair.mk e t => {
-          let use := fun (r: Lifetime)(rd: SRead(a, r, DType.f32, 256))(e: Ctx(l, T.G)): LPair(Ctx(l, T.G), Val(l, Grain.thread, DType.f32)) =>
+        | Pair.mk e t => {
+          let use := fun (r: Lifetime)(rd: SRead(a, r, DType.f32, 256))(e: Ctx(l, T.G)): Pair(Ctx(l, T.G), Val(l, Grain.thread, DType.f32)) =>
             Gpu.sread(e, sa, rd, k.tx)
           match Gpu.reads(e, t, use) returning Ctx(l, T.G) with
-          | LPair.mk e out => {
+          | Pair.mk e out => {
             match out returning Ctx(l, T.G) with
-            | LPair.mk t v => {
+            | Pair.mk t v => {
               let _ := Gpu.release(t)
               Gpu.gstore(e, k.c, c, v)
             }

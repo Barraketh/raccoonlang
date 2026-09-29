@@ -6,7 +6,7 @@ prelude.
 
 | File | Role |
 |---|---|
-| `Prelude.rac` | The bundled prelude, plus a `String` layout (for literals), native `Nat.div`/`Nat.mod`, and `LPair`, a pair that may hold linear values |
+| `Prelude.rac` | The bundled prelude, plus a `String` layout (for literals), native `Nat.div`/`Nat.mod`, and `Pair`, a pair that may hold linear values |
 | `Text.rac` | Number printing |
 | `Cuda.rac` | CUDA AST and printer; knows nothing about safety |
 | `Gpu.rac` | The sealed core: emitter, values, registers, loops, branches, shared tiles, global matrices, launch |

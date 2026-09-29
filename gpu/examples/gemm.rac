@@ -14,13 +14,13 @@ namespace Gemm {
 
   // Authority over the two shared tiles.
   def Tiles (a: Lifetime)(b: Lifetime)(s: TileState) : Type { kind = lin, scope = union(a, b) } :=
-    LPair(Tile(a, DType.f32, 256, s), Tile(b, DType.f32, 256, s))
+    Pair(Tile(a, DType.f32, 256, s), Tile(b, DType.f32, 256, s))
 
   // What one K step returns: its emitter, and both tiles empty again.
   def Step (m: Lifetime)(a: Lifetime)(b: Lifetime) : Type { kind = lin, scope = union(m, union(a, b)) } :=
-    LPair(Ctx(m, Gemm.G), Gemm.Tiles(a, b, TileState.empty))
+    Pair(Ctx(m, Gemm.G), Gemm.Tiles(a, b, TileState.empty))
 
-  def Out (l: Lifetime) : Type { kind = lin, scope = l } := LPair(Ctx(l, Gemm.G), Val(l, Grain.thread, DType.f32))
+  def Out (l: Lifetime) : Type { kind = lin, scope = l } := Pair(Ctx(l, Gemm.G), Val(l, Grain.thread, DType.f32))
 
   // sum + Σ As[ty][j] · Bs[j][tx] for the next `count` values of j, unrolled.
   def dot {l: Lifetime}{a: Lifetime}{b: Lifetime}{r: Lifetime}{q: Lifetime}{L: Lifetime}
@@ -28,12 +28,12 @@ namespace Gemm {
       (sb: Smem(b, DType.f32, 256))(rb: SRead(b, q, DType.f32, 256))(tx: Val(L, Grain.thread, DType.u32))
       (ty: Val(L, Grain.thread, DType.u32))(sum: Val(l, Grain.thread, DType.f32)): Gemm.Out(l) decreases structural(count) := {
     match count returning Gemm.Out(l) with
-    | Nat.zero => LPair.mk(e, sum)
+    | Nat.zero => Pair.mk(e, sum)
     | Nat.succ c => {
       match Gpu.sread(e, sa, ra, Gpu.add(Gpu.mulC(ty, 16), Gpu.lit(j))) returning Gemm.Out(l) with
-      | LPair.mk e x => {
+      | Pair.mk e x => {
         match Gpu.sread(e, sb, rb, Gpu.add(Gpu.mulC(Gpu.lit(j), 16), tx)) returning Gemm.Out(l) with
-        | LPair.mk e y => Gemm.dot(c, Nat.succ(j), e, sa, ra, sb, rb, tx, ty, Gpu.fma(x, y, sum))
+        | Pair.mk e y => Gemm.dot(c, Nat.succ(j), e, sa, ra, sb, rb, tx, ty, Gpu.fma(x, y, sum))
       }
     }
   }
@@ -44,40 +44,40 @@ namespace Gemm {
       (m: Lifetime)(kt: Val(m, Grain.uniform, DType.u32))(e: Ctx(m, Gemm.G))(st: Gemm.Tiles(a, b, TileState.empty))
       : Gemm.Step(m, a, b) := {
     match st returning Gemm.Step(m, a, b) with
-    | LPair.mk ta tb => {
+    | Pair.mk ta tb => {
       match Gpu.gload(e, k.a, k.row, Gpu.add(Gpu.mulC(kt, 16), k.tx)) returning Gemm.Step(m, a, b) with
-      | LPair.mk e x => {
+      | Pair.mk e x => {
         match Gpu.storeMine(e, sa, ta, x) returning Gemm.Step(m, a, b) with
-        | LPair.mk e ta => {
+        | Pair.mk e ta => {
           match Gpu.gload(e, k.b, Gpu.add(Gpu.mulC(kt, 16), k.ty), k.col) returning Gemm.Step(m, a, b) with
-          | LPair.mk e y => {
+          | Pair.mk e y => {
             match Gpu.storeMine(e, sb, tb, y) returning Gemm.Step(m, a, b) with
-            | LPair.mk e tb => {
+            | Pair.mk e tb => {
               match Gpu.sync2(e, ta, tb) returning Gemm.Step(m, a, b) with
-              | LPair.mk e both => {
+              | Pair.mk e both => {
                 match both returning Gemm.Step(m, a, b) with
-                | LPair.mk ta tb => {
+                | Pair.mk ta tb => {
                   let accumulate := fun (r: Lifetime)(ra: SRead(a, r, DType.f32, 256))(e: Ctx(m, Gemm.G))
-                      : LPair(Ctx(m, Gemm.G), Tile(b, DType.f32, 256, TileState.reading)) => {
-                    let inner := fun (q: Lifetime)(rb: SRead(b, q, DType.f32, 256))(e: Ctx(m, Gemm.G)): LPair(Ctx(m, Gemm.G), Unit) => {
-                      match Gpu.get(e, acc) returning LPair(Ctx(m, Gemm.G), Unit) with
-                      | LPair.mk e sum0 => {
-                        match Gemm.dot(16, 0, e, sa, ra, sb, rb, k.tx, k.ty, sum0) returning LPair(Ctx(m, Gemm.G), Unit) with
-                        | LPair.mk e sum => LPair.mk(Gpu.set(e, acc, sum), Unit.unit)
+                      : Pair(Ctx(m, Gemm.G), Tile(b, DType.f32, 256, TileState.reading)) => {
+                    let inner := fun (q: Lifetime)(rb: SRead(b, q, DType.f32, 256))(e: Ctx(m, Gemm.G)): Pair(Ctx(m, Gemm.G), Unit) => {
+                      match Gpu.get(e, acc) returning Pair(Ctx(m, Gemm.G), Unit) with
+                      | Pair.mk e sum0 => {
+                        match Gemm.dot(16, 0, e, sa, ra, sb, rb, k.tx, k.ty, sum0) returning Pair(Ctx(m, Gemm.G), Unit) with
+                        | Pair.mk e sum => Pair.mk(Gpu.set(e, acc, sum), Unit.unit)
                       }
                     }
-                    match Gpu.reads(e, tb, inner) returning LPair(Ctx(m, Gemm.G), Tile(b, DType.f32, 256, TileState.reading)) with
-                    | LPair.mk e out => {
-                      match out returning LPair(Ctx(m, Gemm.G), Tile(b, DType.f32, 256, TileState.reading)) with
-                      | LPair.mk tb done => LPair.mk(e, tb)
+                    match Gpu.reads(e, tb, inner) returning Pair(Ctx(m, Gemm.G), Tile(b, DType.f32, 256, TileState.reading)) with
+                    | Pair.mk e out => {
+                      match out returning Pair(Ctx(m, Gemm.G), Tile(b, DType.f32, 256, TileState.reading)) with
+                      | Pair.mk tb done => Pair.mk(e, tb)
                     }
                   }
                   match Gpu.reads(e, ta, accumulate) returning Gemm.Step(m, a, b) with
-                  | LPair.mk e out => {
+                  | Pair.mk e out => {
                     match out returning Gemm.Step(m, a, b) with
-                    | LPair.mk ta tb => {
+                    | Pair.mk ta tb => {
                       match Gpu.sync2(e, ta, tb) returning Gemm.Step(m, a, b) with
-                      | LPair.mk e both => LPair.mk(e, both)
+                      | Pair.mk e both => Pair.mk(e, both)
                     }
                   }
                 }
@@ -97,18 +97,18 @@ namespace Gemm {
             Gpu.shared(e, DType.f32, 256,
               fun (b: Lifetime)(sb: Smem(b, DType.f32, 256))(tb: Tile(b, DType.f32, 256, TileState.empty))(e: Ctx(l, Gemm.G)): Ctx(l, Gemm.G) => {
                 match Gpu.reg(e, Gpu.zero(DType.f32)) returning Ctx(l, Gemm.G) with
-                | LPair.mk e acc => {
+                | Pair.mk e acc => {
                   let steps := Gpu.ceilDivC(k.k, 16, Eq.refl(Bool.true))
                   let body := fun (m: Lifetime)(kt: Val(m, Grain.uniform, DType.u32))(e: Ctx(m, Gemm.G))(st: Gemm.Tiles(a, b, TileState.empty))
                       : Gemm.Step(m, a, b) => Gemm.step(k, sa, sb, acc, m, kt, e, st)
-                  match Gpu.loop(e, steps, LPair.mk(ta, tb), body) returning Ctx(l, Gemm.G) with
-                  | LPair.mk e st => {
+                  match Gpu.loop(e, steps, Pair.mk(ta, tb), body) returning Ctx(l, Gemm.G) with
+                  | Pair.mk e st => {
                     match st returning Ctx(l, Gemm.G) with
-                    | LPair.mk ta tb => {
+                    | Pair.mk ta tb => {
                       let _ := Gpu.release(ta)
                       let _ := Gpu.release(tb)
                       match Gpu.get(e, acc) returning Ctx(l, Gemm.G) with
-                      | LPair.mk e v => Gpu.gstore(e, k.c, c, v)
+                      | Pair.mk e v => Gpu.gstore(e, k.c, c, v)
                     }
                   }
                 }

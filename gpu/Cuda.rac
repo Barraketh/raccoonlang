@@ -63,6 +63,7 @@ namespace Cuda {
      | shared (t: DType)(id: Nat)(size: Nat) : Stmt
      | forLoop (id: Nat)(start: Expr)(count: Expr)(body: Block) : Stmt
      | ifElse (c: Expr)(yes: Block)(no: Block) : Stmt
+     | scoped (body: Block) : Stmt
      | sync : Stmt
      | syncWarp : Stmt
      | asm (template: String)(outs: List(Operand))(ins: List(Operand)) : Stmt
@@ -201,6 +202,7 @@ namespace Cuda {
         }
         Cuda.line(depth, Text.cat3("if (", Cuda.expr(c), ") {"), Cuda.block(Nat.succ(depth), yes, elseTail))
       }
+      | Stmt.scoped body => Cuda.line(depth, "{", Cuda.block(Nat.succ(depth), body, Cuda.line(depth, "}", rest)))
       | Stmt.sync => Cuda.line(depth, "__syncthreads();", rest)
       | Stmt.syncWarp => Cuda.line(depth, "__syncwarp();", rest)
       | Stmt.asm template outs ins => {

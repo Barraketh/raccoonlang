@@ -350,6 +350,11 @@ namespace List {
 struct Prod {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}(A: Sort { level = u, scope = S })(B: Sort { level = v, scope = T }) : Sort { level = max(u, v), scope = union(S, T) }
  | mk (fst: A)(snd: B) : Prod(A, B)
 
+inductive Pair {u: Level}{v: Level}{k1: Kind}{k2: Kind}{S: Lifetime}{T: Lifetime}
+    (A: Sort { level = succ(u), kind = k1, scope = S })(B: Sort { level = succ(v), kind = k2, scope = T })
+    : Sort { level = succ(max(u, v)), kind = join(k1, k2), scope = union(S, T) }
+ | mk (fst: A)(snd: B) : Pair(A, B)
+
 struct Sigma {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}{Sb: Lifetime}(A: Sort { level = u, scope = S })(B: { scope = Sb } A -> Sort { level = v, scope = T }) : Sort { level = max(u, v), scope = union(S, union(T, Sb)) }
  | mk (fst: A)(snd: B(fst)) : Sigma(A, B)
 
@@ -572,8 +577,8 @@ namespace Quot {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// GPU prelude additions: string literals, native division, and a kind-polymorphic pair. Everything above this line is
-// the bundled prelude unchanged.
+// GPU prelude additions: string literals and native division. Everything above this line is the bundled prelude
+// unchanged.
 
 namespace Nat {
   def divFuel (fuel: Nat)(a: Nat)(b: Nat): Nat decreases structural(fuel) := {
@@ -615,8 +620,3 @@ namespace String {
   def append (a: String)(b: String): String := String.mk(List.append(a.data, b.data))
 
 }
-
-// A pair whose components may be linear. The bundled `Prod` holds only unrestricted types.
-inductive LPair {k1: Kind}{k2: Kind}{S: Lifetime}{T: Lifetime}(A: Type { kind = k1, scope = S })(B: Type { kind = k2, scope = T })
-    : Type { kind = join(k1, k2), scope = union(S, T) }
- | mk (fst: A)(snd: B) : LPair(A, B)

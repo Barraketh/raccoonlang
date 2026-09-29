@@ -3,11 +3,15 @@
 //
 // Three rules carry the safety argument:
 // - An emitter `Ctx(l, g)` is linear and every operation threads it, so code is emitted in the order the program's
-//   authority flows. `g` says which threads run the code, so a barrier cannot sit under a per-thread branch.
+//   authority flows. `g` says which threads run the code, so a collective cannot sit where some of them are missing.
 // - Every value and register lives in the lifetime of the block that declared it, so a value made in a loop body,
-//   branch arm or allocation scope cannot be used outside it. Generated code is well scoped by construction.
-// - Authority tokens (`Tile`, `GOwn`) have no fields: everything about one is in its type. That is what lets a loop
-//   body and a branch arm be generated once, from any token of the right type.
+//   branch arm, role or allocation scope cannot be used outside it. Generated code is well scoped by construction.
+// - Authority tokens have no fields: everything about one is in its type, and runtime protocol state lives in
+//   registers named by unrestricted handles. That is what lets a loop body and a branch arm be generated once, from
+//   any token of the right type, and a token pass between roles that are generated separately.
+//
+// The sm_100a operations (TMA, mbarrier, tcgen05) follow CUTLASS's inline assembly but have not been assembled by
+// ptxas here: see gpu/DESIGN.md §6.
 
 import Cuda
 import Text
@@ -32,15 +36,20 @@ namespace Gpu {
     }
   }
 
-  // Which threads run a block of code: all threads of a CTA of `threads` threads, or some of them.
+  // Which threads run a block of code: all threads of a CTA, a range of its warps, one elected thread, or some of
+  // them under a per-thread branch.
   inductive Group : Type
    | cta (threads: Nat) : Group
+   | warps (first: Nat)(count: Nat) : Group
+   | lane : Group
    | diverged (threads: Nat) : Group
 
   namespace Group {
     def threads (g: Group): Nat := {
       match g returning Nat with
       | Group.cta n => n
+      | Group.warps f c => Nat.mul(32, c)
+      | Group.lane => 1
       | Group.diverged n => n
     }
 
@@ -50,12 +59,46 @@ namespace Gpu {
       | Grain.uniform => g
       | Grain.thread => Group.diverged(Group.threads(g))
     }
+
+    def first (g: Group): Nat := {
+      match g returning Nat with
+      | Group.cta n => 0
+      | Group.warps f c => f
+      | Group.lane => 0
+      | Group.diverged n => 0
+    }
+
+    def count (g: Group): Nat := {
+      match g returning Nat with
+      | Group.cta n => Nat.div(n, 32)
+      | Group.warps f c => c
+      | Group.lane => 0
+      | Group.diverged n => 0
+    }
+
+    // The first `k` warps of a group, and the rest.
+    def left (g: Group)(k: Nat): Group := Group.warps(Group.first(g), k)
+
+    def right (g: Group)(k: Nat): Group := Group.warps(Nat.add(Group.first(g), k), Nat.sub(Group.count(g), k))
+
+    // Whether `g` is whole warps, converged, with more than `k` of them.
+    def splits (g: Group)(k: Nat): Bool := {
+      match g returning Bool with
+      | Group.cta n => Bool.and(Nat.isZero(Nat.mod(n, 32)), Bool.and(Nat.blt(0, k), Nat.blt(k, Nat.div(n, 32))))
+      | Group.warps f c => Bool.and(Nat.blt(0, k), Nat.blt(k, c))
+      | Group.lane => Bool.false
+      | Group.diverged n => Bool.false
+    }
   }
 
-  // The emitter for a block of lifetime `l` run by `g`: the code so far, newest first; the next fresh name; and the
-  // generation-time errors found so far.
+  // Everything generation has produced so far: the code, newest first; the next fresh name; the next free byte of
+  // dynamic shared memory; the next free named barrier; and the generation-time errors found so far.
+  struct Gen : Type
+   | mk (code: List(Stmt))(next: Nat)(smem: Nat)(barrier: Nat)(errors: List(String)) : Gen
+
+  // The emitter for a block of lifetime `l` run by `g`.
   sealed inductive Ctx (l: Lifetime)(g: Group) : Type { kind = lin, scope = l }
-   | mk (code: List(Stmt))(next: Nat)(errors: List(String)) : Ctx(l, g)
+   | mk (gen: Gen) : Ctx(l, g)
 
   // An immutable runtime value, valid in lifetime `l`. `bound` is an exclusive upper bound known while generating.
   sealed struct Val (l: Lifetime)(u: Grain)(t: DType) : Type { scope = l }
@@ -65,29 +108,66 @@ namespace Gpu {
   sealed struct Reg (l: Lifetime)(t: DType) : Type { scope = l }
    | mk (id: Nat) : Reg(l, t)
 
-  def emit {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(s: Stmt): Ctx(l, g) := {
-    match e returning Ctx(l, g) with
-    | Ctx.mk code next errors => Ctx.mk(l, g, List.cons(s, code), next, errors)
+  // ---- Generation state -------------------------------------------------------------------------------------------
+
+  def state {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g)): Gen := {
+    match e returning Gen with
+    | Ctx.mk gen => gen
   }
 
-  def reject {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(message: String): Ctx(l, g) := {
-    match e returning Ctx(l, g) with
-    | Ctx.mk code next errors => Ctx.mk(l, g, code, next, List.cons(message, errors))
+  def resume (k: Key)(l: Lifetime)(g: Group)(gen: Gen): Ctx(l, g) := Ctx.mk(l, g, gen)
+
+  def push (gen: Gen)(s: Stmt): Gen := Gen.mk(List.cons(s, gen.code), gen.next, gen.smem, gen.barrier, gen.errors)
+
+  // `ss` in program order.
+  def pushAll (gen: Gen)(ss: List(Stmt)): Gen decreases structural(ss) := {
+    match ss returning Gen with
+    | List.nil => gen
+    | List.cons s more => Gpu.pushAll(Gpu.push(gen, s), more)
   }
 
-  // Declares a fresh constant holding `init` and returns it.
-  def bind {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(u: Grain)(t: DType)(init: Expr)(bound: Option(Nat))
-      : LPair(Ctx(l, g), Val(l, u, t)) := {
-    match e returning LPair(Ctx(l, g), Val(l, u, t)) with
-    | Ctx.mk code next errors =>
-      LPair.mk(Ctx.mk(l, g, List.cons(Stmt.decl(t, next, init), code), Nat.succ(next), errors), Val.mk(l, u, t, Expr.var(next), bound))
-  }
+  def fresh (gen: Gen): Gen := Gen.mk(gen.code, Nat.succ(gen.next), gen.smem, gen.barrier, gen.errors)
+
+  def fail (gen: Gen)(message: String): Gen := Gen.mk(gen.code, gen.next, gen.smem, gen.barrier, List.cons(message, gen.errors))
+
+  def check (gen: Gen)(ok: Bool)(message: String): Gen := Bool.cond(ok, Gen, gen, Gpu.fail(gen, message))
+
+  // A nested block's starting state: no code yet, the enclosing block's counters.
+  def child (gen: Gen): Gen := Gen.mk(List.nil(Stmt), gen.next, gen.smem, gen.barrier, gen.errors)
+
+  // `parent` followed by `s`, with the counters its nested blocks reached in `last`.
+  def after (parent: Gen)(last: Gen)(s: Stmt): Gen := Gen.mk(List.cons(s, parent.code), last.next, last.smem, last.barrier, last.errors)
 
   // Turns code kept newest first into a block in program order.
   def toBlock (code: List(Stmt))(acc: Block): Block decreases structural(code) := {
     match code returning Block with
     | List.nil => acc
     | List.cons s more => Gpu.toBlock(more, Block.seq(s, acc))
+  }
+
+  def blockOf (gen: Gen): Block := Gpu.toBlock(gen.code, Block.done)
+
+  // Operands are ordered so that a large literal never meets an unknown one while checking: `Nat.mul` and `Nat.add`
+  // recurse on their second argument.
+  def alignUp (n: Nat)(a: Nat): Nat := Nat.mul(a, Nat.div(Nat.add(Nat.pred(a), n), a))
+
+  // Reserves `bytes` of dynamic shared memory at the next `align`-aligned offset, `Gpu.alignUp(gen.smem, align)`.
+  def reserve (gen: Gen)(bytes: Nat)(align: Nat): Gen :=
+    Gen.mk(gen.code, gen.next, Nat.add(Gpu.alignUp(gen.smem, align), bytes), gen.barrier, gen.errors)
+
+  def emit {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(s: Stmt): Ctx(l, g) := Gpu.resume(k, l, g, Gpu.push(Gpu.state(k, e), s))
+
+  def emitAll {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(ss: List(Stmt)): Ctx(l, g) :=
+    Gpu.resume(k, l, g, Gpu.pushAll(Gpu.state(k, e), ss))
+
+  def reject {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(message: String): Ctx(l, g) :=
+    Gpu.resume(k, l, g, Gpu.fail(Gpu.state(k, e), message))
+
+  // Declares a fresh constant holding `init` and returns it.
+  def bind {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(u: Grain)(t: DType)(init: Expr)(bound: Option(Nat))
+      : Pair(Ctx(l, g), Val(l, u, t)) := {
+    let gen := Gpu.state(k, e)
+    Pair.mk(Gpu.resume(k, l, g, Gpu.push(Gpu.fresh(gen), Stmt.decl(t, gen.next, init))), Val.mk(l, u, t, Expr.var(gen.next), bound))
   }
 
   // ---- Pure values ------------------------------------------------------------------------------------------------
@@ -151,18 +231,83 @@ namespace Gpu {
 
   // ---- Registers --------------------------------------------------------------------------------------------------
 
-  def reg {l: Lifetime}{g: Group}{S: Lifetime}{u: Grain}{t: DType}(e: Ctx(l, g))(init: Val(S, u, t)): LPair(Ctx(l, g), Reg(l, t)) := {
-    match e returning LPair(Ctx(l, g), Reg(l, t)) with
-    | Ctx.mk code next errors =>
-      LPair.mk(Ctx.mk(l, g, List.cons(Stmt.declMut(t, next, init.expr), code), Nat.succ(next), errors), Reg.mk(l, t, next))
+  def reg {l: Lifetime}{g: Group}{S: Lifetime}{u: Grain}{t: DType}(e: Ctx(l, g))(init: Val(S, u, t)): Pair(Ctx(l, g), Reg(l, t)) := {
+    let gen := Gpu.state(Key.key, e)
+    Pair.mk(Gpu.resume(Key.key, l, g, Gpu.push(Gpu.fresh(gen), Stmt.declMut(t, gen.next, init.expr))), Reg.mk(l, t, gen.next))
   }
 
   // Reading a register snapshots it: the value does not change when the register does.
-  def get {l: Lifetime}{g: Group}{S: Lifetime}{t: DType}(e: Ctx(l, g))(r: Reg(S, t)): LPair(Ctx(l, g), Val(l, Grain.thread, t)) :=
+  def get {l: Lifetime}{g: Group}{S: Lifetime}{t: DType}(e: Ctx(l, g))(r: Reg(S, t)): Pair(Ctx(l, g), Val(l, Grain.thread, t)) :=
     Gpu.bind(Key.key, e, Grain.thread, t, Expr.var(r.id), Option.none(Nat))
 
   def set {l: Lifetime}{g: Group}{S: Lifetime}{Sv: Lifetime}{u: Grain}{t: DType}(e: Ctx(l, g))(r: Reg(S, t))(v: Val(Sv, u, t)): Ctx(l, g) :=
     Gpu.emit(Key.key, e, Stmt.assign(r.id, v.expr))
+
+  // ---- sm_100a instructions ---------------------------------------------------------------------------------------
+  //
+  // Each is the inline assembly CUTLASS uses for the operation, with its operands. None has been through ptxas here.
+
+  def r (x: Expr): Operand := Operand.mk("r", x)
+
+  def l64 (x: Expr): Operand := Operand.mk("l", x)
+
+  def one (a: Operand): List(Operand) := List.cons(a, List.nil(Operand))
+
+  def two (a: Operand)(b: Operand): List(Operand) := List.cons(a, Gpu.one(b))
+
+  def asm0 (template: String): Stmt := Stmt.asm(template, List.nil(Operand), List.nil(Operand))
+
+  def asmIn (template: String)(ins: List(Operand)): Stmt := Stmt.asm(template, List.nil(Operand), ins)
+
+  def namedBarrier (id: Nat)(threads: Nat): Stmt := Gpu.asmIn("bar.sync %0, %1;", Gpu.two(Gpu.r(Expr.lit(id)), Gpu.r(Expr.lit(threads))))
+
+  def mbarInit (bar: Expr)(count: Nat): Stmt :=
+    Gpu.asmIn("mbarrier.init.shared::cta.b64 [%0], %1;", Gpu.two(Gpu.r(bar), Gpu.r(Expr.lit(count))))
+
+  def fenceBarrierInit : Stmt := Gpu.asm0("fence.mbarrier_init.release.cluster;")
+
+  // Spins until the phase of `bar` with parity `parity` has completed.
+  def mbarWait (bar: Expr)(parity: Expr): Stmt :=
+    Gpu.asmIn("{\\n\\t.reg .pred P1;\\n\\tLAB_WAIT:\\n\\tmbarrier.try_wait.parity.shared::cta.b64 P1, [%0], %1;\\n\\t@P1 bra DONE;\\n\\tbra LAB_WAIT;\\n\\tDONE:\\n\\t}",
+      Gpu.two(Gpu.r(bar), Gpu.r(parity)))
+
+  def mbarArriveExpectTx (bar: Expr)(bytes: Nat): Stmt :=
+    Gpu.asmIn("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;", Gpu.two(Gpu.r(bar), Gpu.r(Expr.lit(bytes))))
+
+  def tmaLoad2d (dst: Expr)(map: String)(c0: Expr)(c1: Expr)(bar: Expr): Stmt :=
+    Gpu.asmIn("cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1, {%3, %4}], [%2];",
+      List.cons(Gpu.r(dst), List.cons(Gpu.l64(Expr.paramAddr(map)), List.cons(Gpu.r(bar), Gpu.two(Gpu.r(c0), Gpu.r(c1))))))
+
+  def tmemAlloc (slot: Expr)(cols: Nat): Stmt :=
+    Gpu.asmIn("tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%0], %1;", Gpu.two(Gpu.r(slot), Gpu.r(Expr.lit(cols))))
+
+  def tmemRelinquish : Stmt := Gpu.asm0("tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;")
+
+  def tmemDealloc (taddr: Expr)(cols: Nat): Stmt :=
+    Gpu.asmIn("tcgen05.dealloc.cta_group::1.sync.aligned.b32 %0, %1;", Gpu.two(Gpu.r(taddr), Gpu.r(Expr.lit(cols))))
+
+  def tcFenceBefore : Stmt := Gpu.asm0("tcgen05.fence::before_thread_sync;")
+
+  def tcFenceAfter : Stmt := Gpu.asm0("tcgen05.fence::after_thread_sync;")
+
+  // D (in tensor memory) = A·B, plus D when `accumulate` is 1.
+  def mmaIssue (tmem: Expr)(descA: Expr)(descB: Expr)(idesc: Nat)(accumulate: Nat): Stmt :=
+    Gpu.asmIn("{\\n\\t.reg .pred p;\\n\\tsetp.ne.b32 p, %4, 0;\\n\\ttcgen05.mma.cta_group::1.kind::f16 [%0], %1, %2, %3, p;\\n\\t}",
+      List.cons(Gpu.r(tmem), List.cons(Gpu.l64(descA), List.cons(Gpu.l64(descB), Gpu.two(Gpu.r(Expr.lit(idesc)), Gpu.r(Expr.lit(accumulate)))))))
+
+  // Arrives on `bar` once every tensor-core operation this thread issued so far has completed.
+  def mmaCommit (bar: Expr): Stmt :=
+    Gpu.asmIn("tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%0];", Gpu.one(Gpu.r(bar)))
+
+  def outs8 (first: Nat): List(Operand) := List.map(
+    List.cons(0, List.cons(1, List.cons(2, List.cons(3, List.cons(4, List.cons(5, List.cons(6, List.cons(7, List.nil(Nat))))))))),
+    Operand, fun (j: Nat): Operand => Operand.mk("=f", Expr.var(Nat.add(first, j))))
+
+  // Eight columns of this thread's tensor-memory lane into the fresh registers `first` to `first + 7`.
+  def tmemLoad8 (first: Nat)(taddr: Expr): Stmt :=
+    Stmt.asm("tcgen05.ld.sync.aligned.32x32b.x8.b32 {%0, %1, %2, %3, %4, %5, %6, %7}, [%8];", Gpu.outs8(first), Gpu.one(Gpu.r(taddr)))
+
+  def tmemWaitLoad : Stmt := Gpu.asm0("tcgen05.wait::ld.sync.aligned;")
 
   // ---- Control flow -----------------------------------------------------------------------------------------------
 
@@ -170,16 +315,45 @@ namespace Gpu {
   // consumes and returns travels in `state`, whose type every iteration preserves.
   def loop {l: Lifetime}{g: Group}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sf: Lifetime}{Sn: Lifetime}
       (e: Ctx(l, g))(count: Val(Sn, Grain.uniform, DType.u32))(state: S)
-      (body: { scope = Sf } (m: Lifetime) -> Val(m, Grain.uniform, DType.u32) -> Ctx(m, g) -> S -> LPair(Ctx(m, g), S))
-      : LPair(Ctx(l, g), S) := {
-    match e returning LPair(Ctx(l, g), S) with
-    | Ctx.mk code next errors => scope m => {
-      let i := Val.mk(m, Grain.uniform, DType.u32, Expr.var(next), count.bound)
-      match body(m, i, Ctx.mk(m, g, List.nil(Stmt), Nat.succ(next), errors), state) returning LPair(Ctx(l, g), S) with
-      | LPair.mk inner after => {
-        match inner returning LPair(Ctx(l, g), S) with
-        | Ctx.mk bodyCode next2 errors2 =>
-          LPair.mk(Ctx.mk(l, g, List.cons(Stmt.forLoop(next, Expr.lit(0), count.expr, Gpu.toBlock(bodyCode, Block.done)), code), next2, errors2), after)
+      (body: { scope = Sf } (m: Lifetime) -> Val(m, Grain.uniform, DType.u32) -> Ctx(m, g) -> S -> Pair(Ctx(m, g), S))
+      : Pair(Ctx(l, g), S) := {
+    let gen := Gpu.state(Key.key, e)
+    scope m => {
+      let i := Val.mk(m, Grain.uniform, DType.u32, Expr.var(gen.next), count.bound)
+      match body(m, i, Gpu.resume(Key.key, m, g, Gpu.child(Gpu.fresh(gen))), state) returning Pair(Ctx(l, g), S) with
+      | Pair.mk inner after => {
+        let done := Gpu.state(Key.key, inner)
+        let s := Stmt.forLoop(gen.next, Expr.lit(0), count.expr, Gpu.blockOf(done))
+        Pair.mk(Gpu.resume(Key.key, l, g, Gpu.after(gen, done, s)), after)
+      }
+    }
+  }
+
+  // A runtime loop that runs its first iteration unconditionally, as `first`, and the others, while the index is below
+  // `count`, as `rest`: `max(count, 1)` iterations. The first may change the state's type once, so a loop whose
+  // state starts in one typestate (an empty accumulator) keeps one type through every later iteration.
+  def loopPeeled {l: Lifetime}{g: Group}{k0: Kind}{T0: Lifetime}{S0: Type { kind = k0, scope = T0 }}
+      {k1: Kind}{T1: Lifetime}{S1: Type { kind = k1, scope = T1 }}{Sf: Lifetime}{Sr: Lifetime}{Sn: Lifetime}
+      (e: Ctx(l, g))(count: Val(Sn, Grain.uniform, DType.u32))(init: S0)
+      (first: { scope = Sf } (m: Lifetime) -> Val(m, Grain.uniform, DType.u32) -> Ctx(m, g) -> S0 -> Pair(Ctx(m, g), S1))
+      (rest: { scope = Sr } (m: Lifetime) -> Val(m, Grain.uniform, DType.u32) -> Ctx(m, g) -> S1 -> Pair(Ctx(m, g), S1))
+      : Pair(Ctx(l, g), S1) := {
+    let gen := Gpu.state(Key.key, e)
+    scope m => {
+      let zero := Val.mk(m, Grain.uniform, DType.u32, Expr.lit(0), Option.some(1))
+      match first(m, zero, Gpu.resume(Key.key, m, g, Gpu.child(gen)), init) returning Pair(Ctx(l, g), S1) with
+      | Pair.mk firstCtx mid => {
+        let firstDone := Gpu.state(Key.key, firstCtx)
+        let afterFirst := Gpu.after(gen, firstDone, Stmt.scoped(Gpu.blockOf(firstDone)))
+        scope n => {
+          let i := Val.mk(n, Grain.uniform, DType.u32, Expr.var(afterFirst.next), count.bound)
+          match rest(n, i, Gpu.resume(Key.key, n, g, Gpu.child(Gpu.fresh(afterFirst))), mid) returning Pair(Ctx(l, g), S1) with
+          | Pair.mk restCtx last => {
+            let restDone := Gpu.state(Key.key, restCtx)
+            let s := Stmt.forLoop(afterFirst.next, Expr.lit(1), count.expr, Gpu.blockOf(restDone))
+            Pair.mk(Gpu.resume(Key.key, l, g, Gpu.after(afterFirst, restDone, s)), last)
+          }
+        }
       }
     }
   }
@@ -189,24 +363,86 @@ namespace Gpu {
   def branch {l: Lifetime}{g: Group}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sy: Lifetime}{Sn: Lifetime}
       {Sc: Lifetime}{uc: Grain}
       (e: Ctx(l, g))(cond: Val(Sc, uc, DType.bool))(state: S)
-      (yes: { scope = Sy } (m: Lifetime) -> Ctx(m, Group.arm(g, uc)) -> S -> LPair(Ctx(m, Group.arm(g, uc)), S))
-      (no: { scope = Sn } (m: Lifetime) -> Ctx(m, Group.arm(g, uc)) -> S -> LPair(Ctx(m, Group.arm(g, uc)), S))
-      : LPair(Ctx(l, g), S) := {
-    match e returning LPair(Ctx(l, g), S) with
-    | Ctx.mk code next errors => scope m => {
-      match yes(m, Ctx.mk(m, Group.arm(g, uc), List.nil(Stmt), next, errors), state) returning LPair(Ctx(l, g), S) with
-      | LPair.mk yesCtx afterYes => {
-        match yesCtx returning LPair(Ctx(l, g), S) with
-        | Ctx.mk yesCode next1 errors1 => scope n => {
-          match no(n, Ctx.mk(n, Group.arm(g, uc), List.nil(Stmt), next1, errors1), afterYes) returning LPair(Ctx(l, g), S) with
-          | LPair.mk noCtx afterNo => {
-            match noCtx returning LPair(Ctx(l, g), S) with
-            | Ctx.mk noCode next2 errors2 => {
-              let s := Stmt.ifElse(cond.expr, Gpu.toBlock(yesCode, Block.done), Gpu.toBlock(noCode, Block.done))
-              LPair.mk(Ctx.mk(l, g, List.cons(s, code), next2, errors2), afterNo)
-            }
+      (yes: { scope = Sy } (m: Lifetime) -> Ctx(m, Group.arm(g, uc)) -> S -> Pair(Ctx(m, Group.arm(g, uc)), S))
+      (no: { scope = Sn } (m: Lifetime) -> Ctx(m, Group.arm(g, uc)) -> S -> Pair(Ctx(m, Group.arm(g, uc)), S))
+      : Pair(Ctx(l, g), S) := {
+    let gen := Gpu.state(Key.key, e)
+    scope m => {
+      match yes(m, Gpu.resume(Key.key, m, Group.arm(g, uc), Gpu.child(gen)), state) returning Pair(Ctx(l, g), S) with
+      | Pair.mk yesCtx afterYes => {
+        let yesDone := Gpu.state(Key.key, yesCtx)
+        scope n => {
+          match no(n, Gpu.resume(Key.key, n, Group.arm(g, uc), Gpu.child(yesDone)), afterYes) returning Pair(Ctx(l, g), S) with
+          | Pair.mk noCtx afterNo => {
+            let noDone := Gpu.state(Key.key, noCtx)
+            let s := Stmt.ifElse(cond.expr, Gpu.blockOf(yesDone), Gpu.blockOf(noDone))
+            Pair.mk(Gpu.resume(Key.key, l, g, Gpu.after(gen, noDone, s)), afterNo)
           }
         }
+      }
+    }
+  }
+
+  // Waits for every thread of `g` at the end of a split: the CTA barrier for a whole CTA, else a fresh named barrier.
+  def join (g: Group)(gen: Gen): Gen := {
+    match g returning Gen with
+    | Group.cta n => Gpu.push(gen, Stmt.sync)
+    | Group.warps f c => {
+      let id := gen.barrier
+      let withId := Gen.mk(gen.code, gen.next, gen.smem, Nat.succ(id), gen.errors)
+      Gpu.push(Gpu.check(withId, Nat.ble(id, 15), "split: more than 15 named barriers"), Gpu.namedBarrier(id, Group.threads(g)))
+    }
+    | Group.lane => gen
+    | Group.diverged n => gen
+  }
+
+  // Runs `left` on the first `k` warps of the group and `right` on the rest, concurrently, then waits for both. Each
+  // side is invoked exactly once, so each may capture linear values; the two sides capture disjoint ones.
+  def split {l: Lifetime}{g: Group}{ka: Kind}{Sa: Lifetime}{kb: Kind}{Sb: Lifetime}{kf1: Kind}{Sf1: Lifetime}{kf2: Kind}{Sf2: Lifetime}
+      (e: Ctx(l, g))(k: Nat)(A: Type { kind = ka, scope = Sa })(B: Type { kind = kb, scope = Sb })
+      (left: { kind = kf1, scope = Sf1 } (m: Lifetime) -> Ctx(m, Group.left(g, k)) -> Pair(Ctx(m, Group.left(g, k)), A))
+      (right: { kind = kf2, scope = Sf2 } (m: Lifetime) -> Ctx(m, Group.right(g, k)) -> Pair(Ctx(m, Group.right(g, k)), B))
+      : Pair(Ctx(l, g), Pair(A, B)) := {
+    let gen := Gpu.check(Gpu.state(Key.key, e), Group.splits(g, k), "split: the group is not that many whole warps")
+    scope m => {
+      match left(m, Gpu.resume(Key.key, m, Group.left(g, k), Gpu.child(gen))) returning Pair(Ctx(l, g), Pair(A, B)) with
+      | Pair.mk leftCtx a => {
+        let leftDone := Gpu.state(Key.key, leftCtx)
+        scope n => {
+          match right(n, Gpu.resume(Key.key, n, Group.right(g, k), Gpu.child(leftDone))) returning Pair(Ctx(l, g), Pair(A, B)) with
+          | Pair.mk rightCtx b => {
+            let rightDone := Gpu.state(Key.key, rightCtx)
+            let cond := Expr.bin(BinOp.lt, Expr.special(Builtin.warp), Expr.lit(Nat.add(Group.first(g), k)))
+            let s := Stmt.ifElse(cond, Gpu.blockOf(leftDone), Gpu.blockOf(rightDone))
+            Pair.mk(Gpu.resume(Key.key, l, g, Gpu.join(g, Gpu.after(gen, rightDone, s))), Pair.mk(a, b))
+          }
+        }
+      }
+    }
+  }
+
+  // Evidence that the code holding it runs on the one thread `elect` chose in scope `m`. Tensor-core work issued
+  // under it can only be committed under it, since `tcgen05.commit` tracks the issuing thread's operations.
+  sealed inductive Elected (m: Lifetime) : Type { scope = m }
+   | mk : Elected(m)
+
+  def electAsm : String := "{\\n\\t.reg .b32 rx;\\n\\t.reg .pred px;\\n\\telect.sync rx|px, 0xffffffff;\\n\\t@px mov.u32 %0, 1;\\n\\t}"
+
+  // Runs `body` on one thread of a warp, then reconverges the warp.
+  def elect {l: Lifetime}{f: Nat}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}
+      (e: Ctx(l, Group.warps(f, 1)))(X: Type { kind = kx, scope = Sx })
+      (body: { kind = kf, scope = Sf } (m: Lifetime) -> Elected(m) -> Ctx(m, Group.lane) -> Pair(Ctx(m, Group.lane), X))
+      : Pair(Ctx(l, Group.warps(f, 1)), X) := {
+    let gen := Gpu.state(Key.key, e)
+    let flag := gen.next
+    let pre := Gpu.push(Gpu.push(Gpu.fresh(gen), Stmt.declMut(DType.u32, flag, Expr.zero(DType.u32))),
+      Stmt.asm(Gpu.electAsm, List.cons(Operand.mk("+r", Expr.var(flag)), List.nil(Operand)), List.nil(Operand)))
+    scope m => {
+      match body(m, Elected.mk(m), Gpu.resume(Key.key, m, Group.lane, Gpu.child(pre))) returning Pair(Ctx(l, Group.warps(f, 1)), X) with
+      | Pair.mk inner x => {
+        let done := Gpu.state(Key.key, inner)
+        let s := Stmt.ifElse(Expr.bin(BinOp.lt, Expr.lit(0), Expr.var(flag)), Gpu.blockOf(done), Block.done)
+        Pair.mk(Gpu.resume(Key.key, l, Group.warps(f, 1), Gpu.push(Gpu.after(pre, done, s), Stmt.syncWarp)), x)
       }
     }
   }
@@ -246,9 +482,9 @@ namespace Gpu {
   def shared {l: Lifetime}{g: Group}{kf: Kind}{Sf: Lifetime}(e: Ctx(l, g))(t: DType)(n: Nat)
       (body: { kind = kf, scope = Sf } (a: Lifetime) -> Smem(a, t, n) -> Tile(a, t, n, TileState.empty) -> Ctx(l, g) -> Ctx(l, g))
       : Ctx(l, g) := {
-    match e returning Ctx(l, g) with
-    | Ctx.mk code next errors => scope a =>
-      body(a, Smem.mk(a, t, n, next), Tile.mk(a, t, n, TileState.empty), Ctx.mk(l, g, List.cons(Stmt.shared(t, next, n), code), Nat.succ(next), errors))
+    let gen := Gpu.state(Key.key, e)
+    scope a => body(a, Smem.mk(a, t, n, gen.next), Tile.mk(a, t, n, TileState.empty),
+      Gpu.resume(Key.key, l, g, Gpu.push(Gpu.fresh(gen), Stmt.shared(t, gen.next, n))))
   }
 
   // Gives up authority over a shared array. Its storage is never reused, so this is safe in any state.
@@ -260,25 +496,25 @@ namespace Gpu {
   // Every thread of the CTA writes its own element, `buf[threadIdx.x]`. The array has one element per thread.
   def storeMine {l: Lifetime}{n: Nat}{a: Lifetime}{t: DType}{S: Lifetime}{u: Grain}
       (e: Ctx(l, Group.cta(n)))(buf: Smem(a, t, n))(x: Tile(a, t, n, TileState.empty))(v: Val(S, u, t))
-      : LPair(Ctx(l, Group.cta(n)), Tile(a, t, n, TileState.written)) := {
-    match x returning LPair(Ctx(l, Group.cta(n)), Tile(a, t, n, TileState.written)) with
-    | Tile.mk => LPair.mk(Gpu.emit(Key.key, e, Stmt.store(Expr.var(buf.id), Expr.special(Builtin.threadX), v.expr)), Tile.mk(a, t, n, TileState.written))
+      : Pair(Ctx(l, Group.cta(n)), Tile(a, t, n, TileState.written)) := {
+    match x returning Pair(Ctx(l, Group.cta(n)), Tile(a, t, n, TileState.written)) with
+    | Tile.mk => Pair.mk(Gpu.emit(Key.key, e, Stmt.store(Expr.var(buf.id), Expr.special(Builtin.threadX), v.expr)), Tile.mk(a, t, n, TileState.written))
   }
 
   // A CTA-wide barrier, which only a converged CTA may reach.
   def sync1 {l: Lifetime}{n: Nat}{a: Lifetime}{t: DType}{m: Nat}{s: TileState}(e: Ctx(l, Group.cta(n)))(x: Tile(a, t, m, s))
-      : LPair(Ctx(l, Group.cta(n)), Tile(a, t, m, TileState.afterSync(s))) := {
-    match x returning LPair(Ctx(l, Group.cta(n)), Tile(a, t, m, TileState.afterSync(s))) with
-    | Tile.mk => LPair.mk(Gpu.emit(Key.key, e, Stmt.sync), Tile.mk(a, t, m, TileState.afterSync(s)))
+      : Pair(Ctx(l, Group.cta(n)), Tile(a, t, m, TileState.afterSync(s))) := {
+    match x returning Pair(Ctx(l, Group.cta(n)), Tile(a, t, m, TileState.afterSync(s))) with
+    | Tile.mk => Pair.mk(Gpu.emit(Key.key, e, Stmt.sync), Tile.mk(a, t, m, TileState.afterSync(s)))
   }
 
   def sync2 {l: Lifetime}{n: Nat}{a: Lifetime}{t: DType}{m: Nat}{s: TileState}{b: Lifetime}{t2: DType}{m2: Nat}{s2: TileState}
       (e: Ctx(l, Group.cta(n)))(x: Tile(a, t, m, s))(y: Tile(b, t2, m2, s2))
-      : LPair(Ctx(l, Group.cta(n)), LPair(Tile(a, t, m, TileState.afterSync(s)), Tile(b, t2, m2, TileState.afterSync(s2)))) := {
-    match x returning LPair(Ctx(l, Group.cta(n)), LPair(Tile(a, t, m, TileState.afterSync(s)), Tile(b, t2, m2, TileState.afterSync(s2)))) with
+      : Pair(Ctx(l, Group.cta(n)), Pair(Tile(a, t, m, TileState.afterSync(s)), Tile(b, t2, m2, TileState.afterSync(s2)))) := {
+    match x returning Pair(Ctx(l, Group.cta(n)), Pair(Tile(a, t, m, TileState.afterSync(s)), Tile(b, t2, m2, TileState.afterSync(s2)))) with
     | Tile.mk => {
-      match y returning LPair(Ctx(l, Group.cta(n)), LPair(Tile(a, t, m, TileState.afterSync(s)), Tile(b, t2, m2, TileState.afterSync(s2)))) with
-      | Tile.mk => LPair.mk(Gpu.emit(Key.key, e, Stmt.sync), LPair.mk(Tile.mk(a, t, m, TileState.afterSync(s)), Tile.mk(b, t2, m2, TileState.afterSync(s2))))
+      match y returning Pair(Ctx(l, Group.cta(n)), Pair(Tile(a, t, m, TileState.afterSync(s)), Tile(b, t2, m2, TileState.afterSync(s2)))) with
+      | Tile.mk => Pair.mk(Gpu.emit(Key.key, e, Stmt.sync), Pair.mk(Tile.mk(a, t, m, TileState.afterSync(s)), Tile.mk(b, t2, m2, TileState.afterSync(s2))))
     }
   }
 
@@ -286,27 +522,27 @@ namespace Gpu {
   def reads {l: Lifetime}{g: Group}{a: Lifetime}{t: DType}{n: Nat}{kx: Kind}{Sx: Lifetime}{X: Type { kind = kx, scope = Sx }}
       {kf: Kind}{Sf: Lifetime}
       (e: Ctx(l, g))(x: Tile(a, t, n, TileState.ready))
-      (body: { kind = kf, scope = Sf } (r: Lifetime) -> SRead(a, r, t, n) -> Ctx(l, g) -> LPair(Ctx(l, g), X))
-      : LPair(Ctx(l, g), LPair(Tile(a, t, n, TileState.reading), X)) := {
-    match x returning LPair(Ctx(l, g), LPair(Tile(a, t, n, TileState.reading), X)) with
+      (body: { kind = kf, scope = Sf } (r: Lifetime) -> SRead(a, r, t, n) -> Ctx(l, g) -> Pair(Ctx(l, g), X))
+      : Pair(Ctx(l, g), Pair(Tile(a, t, n, TileState.reading), X)) := {
+    match x returning Pair(Ctx(l, g), Pair(Tile(a, t, n, TileState.reading), X)) with
     | Tile.mk => {
-      match (scope r => body(r, SRead.mk(a, r, t, n), e)) returning LPair(Ctx(l, g), LPair(Tile(a, t, n, TileState.reading), X)) with
-      | LPair.mk e2 out => LPair.mk(e2, LPair.mk(Tile.mk(a, t, n, TileState.reading), out))
+      match (scope r => body(r, SRead.mk(a, r, t, n), e)) returning Pair(Ctx(l, g), Pair(Tile(a, t, n, TileState.reading), X)) with
+      | Pair.mk e2 out => Pair.mk(e2, Pair.mk(Tile.mk(a, t, n, TileState.reading), out))
     }
   }
 
   // Reads `buf[i]`. The index must be provably below the array's length while generating.
   def sread {l: Lifetime}{g: Group}{a: Lifetime}{r: Lifetime}{t: DType}{n: Nat}{Si: Lifetime}{ui: Grain}
-      (e: Ctx(l, g))(buf: Smem(a, t, n))(rd: SRead(a, r, t, n))(i: Val(Si, ui, DType.u32)): LPair(Ctx(l, g), Val(l, ui, t)) := {
+      (e: Ctx(l, g))(buf: Smem(a, t, n))(rd: SRead(a, r, t, n))(i: Val(Si, ui, DType.u32)): Pair(Ctx(l, g), Val(l, ui, t)) := {
     let fits := {
       match i.bound returning Bool with
       | Option.none => Bool.false
       | Option.some b => Nat.ble(b, n)
     }
-    match fits returning LPair(Ctx(l, g), Val(l, ui, t)) with
+    match fits returning Pair(Ctx(l, g), Val(l, ui, t)) with
     | Bool.true => Gpu.bind(Key.key, e, ui, t, Expr.index(Expr.var(buf.id), i.expr), Option.none(Nat))
     | Bool.false =>
-      LPair.mk(Gpu.reject(Key.key, e, Text.cat("shared read index not provably below ", Text.nat(n))), Val.mk(l, ui, t, Expr.zero(t), Option.none(Nat)))
+      Pair.mk(Gpu.reject(Key.key, e, Text.cat("shared read index not provably below ", Text.nat(n))), Val.mk(l, ui, t, Expr.zero(t), Option.none(Nat)))
   }
 
   // ---- Global memory and launch -----------------------------------------------------------------------------------
@@ -332,7 +568,7 @@ namespace Gpu {
 
   // Reads `src[row][col]`, or zero outside the matrix.
   def gload {l: Lifetime}{g: Group}{S: Lifetime}{t: DType}{Sr: Lifetime}{Sc: Lifetime}{ur: Grain}{uc: Grain}
-      (e: Ctx(l, g))(src: GMat(S, t))(row: Val(Sr, ur, DType.u32))(col: Val(Sc, uc, DType.u32)): LPair(Ctx(l, g), Val(l, Grain.thread, t)) := {
+      (e: Ctx(l, g))(src: GMat(S, t))(row: Val(Sr, ur, DType.u32))(col: Val(Sc, uc, DType.u32)): Pair(Ctx(l, g), Val(l, Grain.thread, t)) := {
     let inside := Expr.bin(BinOp.land, Expr.bin(BinOp.lt, row.expr, src.rows), Expr.bin(BinOp.lt, col.expr, src.cols))
     let at := Expr.index(Expr.param(src.name), Expr.bin(BinOp.add, Expr.bin(BinOp.mul, row.expr, src.cols), col.expr))
     Gpu.bind(Key.key, e, Grain.thread, t, Expr.select(inside, at, Expr.zero(t)), Option.none(Nat))
@@ -364,6 +600,12 @@ namespace Gpu {
     | List.cons m more => Gpu.errorsToCode(more, List.append(acc, List.cons(Stmt.error(m), List.nil(Stmt))))
   }
 
+  def start (l: Lifetime)(g: Group): Ctx(l, g) := Ctx.mk(l, g, Gen.mk(List.nil(Stmt), 0, 0, 1, List.nil(String)))
+
+  // The finished kernel: its code, then any generation errors as `#error` lines, so it does not compile.
+  def finish (name: String)(params: List(Param))(gen: Gen): Kernel :=
+    Kernel.mk(name, params, gen.smem, Gpu.toBlock(gen.code, Gpu.toBlock(Gpu.errorsToCode(gen.errors, List.nil(Stmt)), Block.done)))
+
   // A kernel computing C (M×N) from A (M×K) and B (K×N), one CTA of `tile*tile` threads per `tile`×`tile` block of C.
   // Launch contract: grid (ceil(N/tile), ceil(M/tile)), block tile*tile, and A, B, C distinct arrays of those extents,
   // each with fewer than 2^32 elements.
@@ -382,7 +624,444 @@ namespace Gpu {
       m, n, k, tx, ty, Gpu.add(Gpu.mulC(by, tile), ty), Gpu.add(Gpu.mulC(bx, tile), tx))
     let params := List.cons(Param.input(t, "A"), List.cons(Param.input(t, "B"), List.cons(Param.output(t, "C"),
       List.cons(Param.scalar(DType.u32, "M"), List.cons(Param.scalar(DType.u32, "N"), List.cons(Param.scalar(DType.u32, "K"), List.nil(Param)))))))
-    match body(l, Ctx.mk(l, Group.cta(Nat.mul(tile, tile)), List.nil(Stmt), 0, List.nil(String)), launch, GOwn.mk(l, t, tile)) returning Kernel with
-    | Ctx.mk code next errors => Kernel.mk(name, params, 0, Gpu.toBlock(code, Gpu.toBlock(Gpu.errorsToCode(errors, List.nil(Stmt)), Block.done)))
+    let g := Group.cta(Nat.mul(tile, tile))
+    Gpu.finish(name, params, Gpu.state(Key.key, body(l, Gpu.start(l, g), launch, GOwn.mk(l, t, tile))))
+  }
+
+  // ---- Tensor maps and the stage ring -----------------------------------------------------------------------------
+
+  // A TMA box of bf16 elements: `inner` along the contiguous dimension and `outer` rows, loaded with 128-byte swizzle.
+  struct TmaSpec : Type
+   | mk (inner: Nat)(outer: Nat) : TmaSpec
+
+  def boxBytes (s: TmaSpec): Nat := Nat.mul(Nat.mul(s.inner, s.outer), 2)
+
+  // A tensor map kernel parameter whose box is `spec`. Launch contract: the host encodes it with that box, bf16
+  // elements and CU_TENSOR_MAP_SWIZZLE_128B.
+  sealed struct TMap (l: Lifetime)(spec: TmaSpec) : Type { scope = l }
+   | mk (name: String) : TMap(l, spec)
+
+  // A ring of `stages` shared stages, each holding one box of operand `a` followed by one of operand `b`.
+  struct RingCfg : Type
+   | mk (stages: Nat)(a: TmaSpec)(b: TmaSpec) : RingCfg
+
+  def stageBytes (c: RingCfg): Nat := Nat.add(Gpu.boxBytes(c.a), Gpu.boxBytes(c.b))
+
+  // The ring in scope `r`: where its stages and barriers lie, and the registers holding each side's stage and phase.
+  sealed struct Ring (r: Lifetime)(cfg: RingCfg) : Type { scope = r }
+   | mk (base: Nat)(bars: Nat)(pStage: Nat)(pPhase: Nat)(cStage: Nat)(cPhase: Nat) : Ring(r, cfg)
+
+  // The two endpoints; a stage the producer may fill; a stage the consumer may read; the endpoints' final states.
+  sealed inductive Producer (r: Lifetime) : Type { kind = lin, scope = r }
+   | mk : Producer(r)
+
+  sealed inductive Consumer (r: Lifetime) : Type { kind = lin, scope = r }
+   | mk : Consumer(r)
+
+  sealed inductive Slot (r: Lifetime) : Type { kind = lin, scope = r }
+   | mk : Slot(r)
+
+  sealed inductive Ready (r: Lifetime) : Type { kind = lin, scope = r }
+   | mk : Ready(r)
+
+  sealed inductive ProducerDone (r: Lifetime) : Type { kind = lin, scope = r }
+   | mk : ProducerDone(r)
+
+  sealed inductive ConsumerDone (r: Lifetime) : Type { kind = lin, scope = r }
+   | mk : ConsumerDone(r)
+
+  def fullBar {r: Lifetime}{cfg: RingCfg}(ring: Ring(r, cfg))(stage: Nat): Expr :=
+    Expr.bin(BinOp.add, Expr.sharedAddr(ring.bars), Expr.bin(BinOp.mul, Expr.var(stage), Expr.lit(8)))
+
+  def emptyBar {r: Lifetime}{cfg: RingCfg}(ring: Ring(r, cfg))(stage: Nat): Expr :=
+    Expr.bin(BinOp.add, Expr.sharedAddr(Nat.add(ring.bars, Nat.mul(8, cfg.stages))), Expr.bin(BinOp.mul, Expr.var(stage), Expr.lit(8)))
+
+  def stageAddr {r: Lifetime}{cfg: RingCfg}(ring: Ring(r, cfg))(stage: Nat): Expr :=
+    Expr.bin(BinOp.add, Expr.sharedAddr(ring.base), Expr.bin(BinOp.mul, Expr.var(stage), Expr.lit(Gpu.stageBytes(cfg))))
+
+  // Moves a side to its next stage, flipping its phase when it wraps.
+  def advance (stage: Nat)(phase: Nat)(stages: Nat): List(Stmt) :=
+    List.cons(Stmt.assign(stage, Expr.bin(BinOp.add, Expr.var(stage), Expr.lit(1))),
+      List.cons(Stmt.ifElse(Expr.bin(BinOp.eq, Expr.var(stage), Expr.lit(stages)),
+        Block.seq(Stmt.assign(stage, Expr.lit(0)), Block.seq(Stmt.assign(phase, Expr.bin(BinOp.sub, Expr.lit(1), Expr.var(phase))), Block.done)),
+        Block.done), List.nil(Stmt)))
+
+  def barrierInits (bars: Nat)(i: Nat)(count: Nat): List(Stmt) decreases structural(count) := {
+    match count returning List(Stmt) with
+    | Nat.zero => List.nil(Stmt)
+    | Nat.succ more => List.cons(Gpu.mbarInit(Expr.sharedAddr(Nat.add(bars, Nat.mul(8, i))), 1), Gpu.barrierInits(bars, Nat.succ(i), more))
+  }
+
+  // One thread initializes `count` barriers of arrival count one, then the whole CTA waits for it.
+  def initBarriers (gen: Gen)(bars: Nat)(count: Nat): Gen := {
+    let inits := List.append(Gpu.barrierInits(bars, 0, count), List.cons(Gpu.fenceBarrierInit, List.nil(Stmt)))
+    let first := Expr.bin(BinOp.eq, Expr.special(Builtin.threadX), Expr.lit(0))
+    Gpu.push(Gpu.push(gen, Stmt.ifElse(first, Gpu.toBlock(List.reverse(inits), Block.done), Block.done)), Stmt.sync)
+  }
+
+  // Opens a stage ring for the callback, which must hand back both endpoints finished: the producer's finish waits
+  // until every stage it filled was released, so no copy into the ring's storage can still be in flight.
+  def withRing {l: Lifetime}{w: Nat}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}
+      (e: Ctx(l, Group.cta(w)))(cfg: RingCfg)(X: Type { kind = kx, scope = Sx })
+      (body: { kind = kf, scope = Sf } (r: Lifetime) -> Ring(r, cfg) -> Producer(r) -> Consumer(r) -> Ctx(l, Group.cta(w))
+        -> Pair(Ctx(l, Group.cta(w)), Pair(Pair(ProducerDone(r), ConsumerDone(r)), X)))
+      : Pair(Ctx(l, Group.cta(w)), X) := {
+    let gen0 := Gpu.check(Gpu.state(Key.key, e), Nat.blt(0, cfg.stages), "ring: no stages")
+    let base := Gpu.alignUp(gen0.smem, 1024)
+    let gen1 := Gpu.reserve(gen0, Nat.mul(cfg.stages, Gpu.stageBytes(cfg)), 1024)
+    let bars := Gpu.alignUp(gen1.smem, 8)
+    let gen2 := Gpu.reserve(gen1, Nat.mul(16, cfg.stages), 8)
+    let p := gen2.next
+    let regs := List.cons(Stmt.declMut(DType.u32, p, Expr.lit(0)), List.cons(Stmt.declMut(DType.u32, Nat.add(p, 1), Expr.lit(1)),
+      List.cons(Stmt.declMut(DType.u32, Nat.add(p, 2), Expr.lit(0)), List.cons(Stmt.declMut(DType.u32, Nat.add(p, 3), Expr.lit(0)), List.nil(Stmt)))))
+    let gen3 := Gpu.pushAll(Gpu.fresh(Gpu.fresh(Gpu.fresh(Gpu.fresh(gen2)))), regs)
+    let gen4 := Gpu.initBarriers(gen3, bars, Nat.mul(2, cfg.stages))
+    scope r => {
+      let ring := Ring.mk(r, cfg, base, bars, p, Nat.add(p, 1), Nat.add(p, 2), Nat.add(p, 3))
+      match body(r, ring, Producer.mk(r), Consumer.mk(r), Gpu.resume(Key.key, l, Group.cta(w), gen4))
+          returning Pair(Ctx(l, Group.cta(w)), X) with
+      | Pair.mk e2 out => {
+        match out returning Pair(Ctx(l, Group.cta(w)), X) with
+        | Pair.mk ends x => {
+          match ends returning Pair(Ctx(l, Group.cta(w)), X) with
+          | Pair.mk pd cd => {
+            match pd returning Pair(Ctx(l, Group.cta(w)), X) with
+            | ProducerDone.mk => {
+              match cd returning Pair(Ctx(l, Group.cta(w)), X) with
+              | ConsumerDone.mk => Pair.mk(e2, x)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // The producer waits until its current stage is free, and may then fill it.
+  def acquire {n: Lifetime}{r: Lifetime}{cfg: RingCfg}(e: Ctx(n, Group.lane))(ring: Ring(r, cfg))(p: Producer(r))
+      : Pair(Ctx(n, Group.lane), Slot(r)) := {
+    match p returning Pair(Ctx(n, Group.lane), Slot(r)) with
+    | Producer.mk => Pair.mk(Gpu.emit(Key.key, e, Gpu.mbarWait(Gpu.emptyBar(ring, ring.pStage), Expr.var(ring.pPhase))), Slot.mk(r))
+  }
+
+  // Fills the acquired stage with one TMA box of each operand, at the given coordinates (contiguous dimension first).
+  // The stage's full barrier expects both boxes' bytes, and completes when both copies land.
+  def fill {n: Lifetime}{r: Lifetime}{cfg: RingCfg}{L: Lifetime}{S0: Lifetime}{S1: Lifetime}{S2: Lifetime}{S3: Lifetime}
+      {u0: Grain}{u1: Grain}{u2: Grain}{u3: Grain}
+      (e: Ctx(n, Group.lane))(ring: Ring(r, cfg))(s: Slot(r))
+      (a: TMap(L, RingCfg.a(cfg)))(a0: Val(S0, u0, DType.u32))(a1: Val(S1, u1, DType.u32))
+      (b: TMap(L, RingCfg.b(cfg)))(b0: Val(S2, u2, DType.u32))(b1: Val(S3, u3, DType.u32))
+      : Pair(Ctx(n, Group.lane), Producer(r)) := {
+    match s returning Pair(Ctx(n, Group.lane), Producer(r)) with
+    | Slot.mk => {
+      let full := Gpu.fullBar(ring, ring.pStage)
+      let dst := Gpu.stageAddr(ring, ring.pStage)
+      let dstB := Expr.bin(BinOp.add, dst, Expr.lit(Gpu.boxBytes(cfg.a)))
+      let copies := List.cons(Gpu.mbarArriveExpectTx(full, Gpu.stageBytes(cfg)),
+        List.cons(Gpu.tmaLoad2d(dst, a.name, a0.expr, a1.expr, full), List.cons(Gpu.tmaLoad2d(dstB, b.name, b0.expr, b1.expr, full), List.nil(Stmt))))
+      Pair.mk(Gpu.emitAll(Key.key, e, List.append(copies, Gpu.advance(ring.pStage, ring.pPhase, cfg.stages))), Producer.mk(r))
+    }
+  }
+
+  def drain (stage: Nat)(phase: Nat)(emptyBase: Nat)(stages: Nat)(count: Nat): List(Stmt) decreases structural(count) := {
+    match count returning List(Stmt) with
+    | Nat.zero => List.nil(Stmt)
+    | Nat.succ more => {
+      let bar := Expr.bin(BinOp.add, Expr.sharedAddr(emptyBase), Expr.bin(BinOp.mul, Expr.var(stage), Expr.lit(8)))
+      List.cons(Gpu.mbarWait(bar, Expr.var(phase)), List.append(Gpu.advance(stage, phase, stages), Gpu.drain(stage, phase, emptyBase, stages, more)))
+    }
+  }
+
+  // The producer's tail: waits until every stage has been released, so none of its copies is still reading or
+  // writing when the ring closes.
+  def finishProducer {n: Lifetime}{r: Lifetime}{cfg: RingCfg}(e: Ctx(n, Group.lane))(ring: Ring(r, cfg))(p: Producer(r))
+      : Pair(Ctx(n, Group.lane), ProducerDone(r)) := {
+    match p returning Pair(Ctx(n, Group.lane), ProducerDone(r)) with
+    | Producer.mk => {
+      let emptyBase := Nat.add(ring.bars, Nat.mul(8, cfg.stages))
+      Pair.mk(Gpu.emitAll(Key.key, e, Gpu.drain(ring.pStage, ring.pPhase, emptyBase, cfg.stages, cfg.stages)), ProducerDone.mk(r))
+    }
+  }
+
+  // The consumer waits until its current stage is full, and may then read it.
+  def await {n: Lifetime}{r: Lifetime}{cfg: RingCfg}(e: Ctx(n, Group.lane))(ring: Ring(r, cfg))(c: Consumer(r))
+      : Pair(Ctx(n, Group.lane), Ready(r)) := {
+    match c returning Pair(Ctx(n, Group.lane), Ready(r)) with
+    | Consumer.mk => Pair.mk(Gpu.emit(Key.key, e, Gpu.mbarWait(Gpu.fullBar(ring, ring.cStage), Expr.var(ring.cPhase))), Ready.mk(r))
+  }
+
+  def finishConsumer {r: Lifetime}(c: Consumer(r)): ConsumerDone(r) := {
+    match c returning ConsumerDone(r) with
+    | Consumer.mk => ConsumerDone.mk(r)
+  }
+
+  // ---- Tensor memory, the accumulator and the tensor cores --------------------------------------------------------
+
+  // `cols` columns of tensor memory allocated in scope `a`; `addr` names the constant holding their address.
+  sealed struct Tmem (a: Lifetime)(cols: Nat) : Type { scope = a }
+   | mk (addr: Nat) : Tmem(a, cols)
+
+  inductive AccState : Type
+   | empty : AccState
+   | ready : AccState
+
+  // Authority over the accumulator in `a`: `empty` holds nothing, `ready` holds finished results visible to readers.
+  sealed inductive Acc (a: Lifetime)(s: AccState) : Type { kind = lin, scope = a }
+   | mk : Acc(a, s)
+
+  // The accumulator with tensor-core work issued by the thread elected in `m`, not yet committed.
+  sealed inductive AccPending (a: Lifetime)(m: Lifetime) : Type { kind = lin, scope = union(a, m) }
+   | mk : AccPending(a, m)
+
+  // A ready stage that tensor-core work issued by the thread elected in `m` reads: only that thread's commit can
+  // release it.
+  sealed inductive ReadyUsed (r: Lifetime)(m: Lifetime) : Type { kind = lin, scope = union(r, m) }
+   | mk : ReadyUsed(r, m)
+
+  def isAllocCols (cols: Nat): Bool :=
+    List.any(List.cons(32, List.cons(64, List.cons(128, List.cons(256, List.cons(512, List.nil(Nat)))))), fun (c: Nat): Bool => Nat.beq(c, cols))
+
+  // Allocates `cols` columns of tensor memory with warp 0 for the callback, which must hand the accumulator back
+  // ready, so no tensor-core work on it is in flight; then warp 0 frees it.
+  def withTmem {l: Lifetime}{w: Nat}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}
+      (e: Ctx(l, Group.cta(w)))(cols: Nat)(X: Type { kind = kx, scope = Sx })
+      (body: { kind = kf, scope = Sf } (a: Lifetime) -> Tmem(a, cols) -> Acc(a, AccState.empty) -> Ctx(l, Group.cta(w))
+        -> Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.ready), X)))
+      : Pair(Ctx(l, Group.cta(w)), X) := {
+    let gen0 := Gpu.check(Gpu.state(Key.key, e), Gpu.isAllocCols(cols), "tensor memory: columns must be 32, 64, 128, 256 or 512")
+    let slot := Gpu.alignUp(gen0.smem, 4)
+    let gen1 := Gpu.reserve(gen0, 4, 4)
+    let warp0 := Expr.bin(BinOp.eq, Expr.special(Builtin.warp), Expr.lit(0))
+    let alloc := Stmt.ifElse(warp0, Block.seq(Gpu.tmemAlloc(Expr.sharedAddr(slot), cols), Block.seq(Gpu.tmemRelinquish, Block.done)), Block.done)
+    let addr := gen1.next
+    let read := Stmt.decl(DType.u32, addr, Expr.index(Expr.sharedPtr(DType.u32, slot), Expr.lit(0)))
+    let opened := List.cons(alloc, List.cons(Gpu.tcFenceBefore, List.cons(Stmt.sync, List.cons(Gpu.tcFenceAfter, List.cons(read, List.nil(Stmt))))))
+    let gen2 := Gpu.pushAll(Gpu.fresh(gen1), opened)
+    scope a => {
+      match body(a, Tmem.mk(a, cols, addr), Acc.mk(a, AccState.empty), Gpu.resume(Key.key, l, Group.cta(w), gen2))
+          returning Pair(Ctx(l, Group.cta(w)), X) with
+      | Pair.mk e2 out => {
+        match out returning Pair(Ctx(l, Group.cta(w)), X) with
+        | Pair.mk acc x => {
+          match acc returning Pair(Ctx(l, Group.cta(w)), X) with
+          | Acc.mk => {
+            let free := Stmt.ifElse(warp0, Block.seq(Gpu.tmemDealloc(Expr.var(addr), cols), Block.done), Block.done)
+            Pair.mk(Gpu.emitAll(Key.key, e2, List.cons(Gpu.tcFenceBefore, List.cons(Stmt.sync, List.cons(Gpu.tcFenceAfter, List.cons(free, List.nil(Stmt)))))), x)
+          }
+        }
+      }
+    }
+  }
+
+  // A one-shot handoff of the accumulator from the thread that issues the tensor-core work to the threads that read
+  // its results: one barrier, which the issuer's commit arrives on when the work completes.
+  sealed struct AccHandoff (h: Lifetime) : Type { scope = h }
+   | mk (bar: Nat) : AccHandoff(h)
+
+  sealed inductive AccSend (h: Lifetime)(a: Lifetime) : Type { kind = lin, scope = union(h, a) }
+   | mk : AccSend(h, a)
+
+  sealed inductive AccRecv (h: Lifetime)(a: Lifetime) : Type { kind = lin, scope = union(h, a) }
+   | mk : AccRecv(h, a)
+
+  def withAccHandoff {l: Lifetime}{w: Nat}{a: Lifetime}{cols: Nat}{kx: Kind}{Sx: Lifetime}{X: Type { kind = kx, scope = Sx }}
+      {kf: Kind}{Sf: Lifetime}
+      (e: Ctx(l, Group.cta(w)))(t: Tmem(a, cols))
+      (body: { kind = kf, scope = Sf } (h: Lifetime) -> AccHandoff(h) -> AccSend(h, a) -> AccRecv(h, a) -> Ctx(l, Group.cta(w))
+        -> Pair(Ctx(l, Group.cta(w)), X))
+      : Pair(Ctx(l, Group.cta(w)), X) := {
+    let gen0 := Gpu.state(Key.key, e)
+    let bar := Gpu.alignUp(gen0.smem, 8)
+    let gen1 := Gpu.initBarriers(Gpu.reserve(gen0, 8, 8), bar, 1)
+    scope h => body(h, AccHandoff.mk(h, bar), AccSend.mk(h, a), AccRecv.mk(h, a), Gpu.resume(Key.key, l, Group.cta(w), gen1))
+  }
+
+  // Commits the elected thread's tensor-core work on the accumulator to the handoff.
+  def sendAcc {n: Lifetime}{m: Lifetime}{h: Lifetime}{a: Lifetime}
+      (e: Ctx(n, Group.lane))(w: Elected(m))(hd: AccHandoff(h))(s: AccSend(h, a))(acc: AccPending(a, m)): Ctx(n, Group.lane) := {
+    match s returning Ctx(n, Group.lane) with
+    | AccSend.mk => {
+      match acc returning Ctx(n, Group.lane) with
+      | AccPending.mk => Gpu.emit(Key.key, e, Gpu.mmaCommit(Expr.sharedAddr(hd.bar)))
+    }
+  }
+
+  // Waits for the handoff, after which the accumulator's results are visible to this group.
+  def recvAcc {n: Lifetime}{g: Group}{h: Lifetime}{a: Lifetime}(e: Ctx(n, g))(hd: AccHandoff(h))(rv: AccRecv(h, a))
+      : Pair(Ctx(n, g), Acc(a, AccState.ready)) := {
+    match rv returning Pair(Ctx(n, g), Acc(a, AccState.ready)) with
+    | AccRecv.mk => {
+      let wait := List.cons(Gpu.mbarWait(Expr.sharedAddr(hd.bar), Expr.lit(0)), List.cons(Gpu.tcFenceAfter, List.nil(Stmt)))
+      Pair.mk(Gpu.emitAll(Key.key, e, wait), Acc.mk(a, AccState.ready))
+    }
+  }
+
+  // A shared-memory matrix descriptor for a K-major, 128-byte-swizzled bf16 box at `addr`, advanced by `k` steps of
+  // sixteen elements: start address >> 4, stride byte offset 1024 >> 4 at bit 32, version 1 at bit 46, swizzle 2 at 61.
+  def descHigh : Nat := Nat.add(Nat.mul(64, Nat.pow(2, 32)), Nat.add(Nat.pow(2, 46), Nat.mul(2, Nat.pow(2, 61))))
+
+  def smemDesc (addr: Expr)(k: Nat): Expr :=
+    Expr.bin(BinOp.add,
+      Expr.bin(BinOp.bor, Expr.cast(DType.u64, Expr.bin(BinOp.shr, Expr.bin(BinOp.band, addr, Expr.lit(262143)), Expr.lit(4))), Expr.lit64(Gpu.descHigh)),
+      Expr.lit64(Nat.mul(2, k)))
+
+  // The instruction descriptor for f32 += bf16 · bf16, both K-major, of shape M×N.
+  def instrDesc (m: Nat)(n: Nat): Nat :=
+    Nat.add(16, Nat.add(128, Nat.add(1024, Nat.add(Nat.mul(Nat.pow(2, 17), Nat.div(n, 8)), Nat.mul(Nat.pow(2, 24), Nat.div(m, 16))))))
+
+  def mmaSteps (stage: Expr)(cfg: RingCfg)(taddr: Expr)(first: Bool)(k: Nat)(count: Nat): List(Stmt) decreases structural(count) := {
+    match count returning List(Stmt) with
+    | Nat.zero => List.nil(Stmt)
+    | Nat.succ more => {
+      let descA := Gpu.smemDesc(stage, k)
+      let descB := Gpu.smemDesc(Expr.bin(BinOp.add, stage, Expr.lit(Gpu.boxBytes(cfg.a))), k)
+      let accumulate := Bool.cond(Bool.and(first, Nat.isZero(k)), Nat, 0, 1)
+      List.cons(Gpu.mmaIssue(taddr, descA, descB, Gpu.instrDesc(cfg.a.outer, cfg.b.outer), accumulate),
+        Gpu.mmaSteps(stage, cfg, taddr, first, Nat.succ(k), more))
+    }
+  }
+
+  // What the tensor cores accept here: 64-element (128-byte) boxes along K, M of 64 or 128, N a multiple of 16 up to
+  // 256 that fits the accumulator's columns.
+  def mmaShapeOk (cfg: RingCfg)(cols: Nat): Bool :=
+    Bool.and(Bool.and(Nat.beq(cfg.a.inner, 64), Nat.beq(cfg.b.inner, 64)),
+      Bool.and(Bool.or(Nat.beq(cfg.a.outer, 64), Nat.beq(cfg.a.outer, 128)),
+        Bool.and(Bool.and(Nat.isZero(Nat.mod(cfg.b.outer, 16)), Nat.ble(cfg.b.outer, 256)), Bool.and(Nat.blt(0, cfg.b.outer), Nat.ble(cfg.b.outer, cols)))))
+
+  def mmaStage (k: Key)(gen: Gen)(stage: Expr)(cfg: RingCfg)(taddr: Expr)(cols: Nat)(first: Bool): Gen :=
+    Gpu.pushAll(Gpu.check(gen, Gpu.mmaShapeOk(cfg, cols), "mma: unsupported shape"),
+      Gpu.mmaSteps(stage, cfg, taddr, first, 0, Nat.div(cfg.a.inner, 16)))
+
+  // The first tensor-core work on an empty accumulator: overwrites it with A·B from the ready stage.
+  def mmaFirst {n: Lifetime}{m: Lifetime}{r: Lifetime}{cfg: RingCfg}{a: Lifetime}{cols: Nat}
+      (e: Ctx(n, Group.lane))(w: Elected(m))(ring: Ring(r, cfg))(rd: Ready(r))(t: Tmem(a, cols))(acc: Acc(a, AccState.empty))
+      : Pair(Ctx(n, Group.lane), Pair(ReadyUsed(r, m), AccPending(a, m))) := {
+    match rd returning Pair(Ctx(n, Group.lane), Pair(ReadyUsed(r, m), AccPending(a, m))) with
+    | Ready.mk => {
+      match acc returning Pair(Ctx(n, Group.lane), Pair(ReadyUsed(r, m), AccPending(a, m))) with
+      | Acc.mk => {
+        let gen := Gpu.mmaStage(Key.key, Gpu.state(Key.key, e), Gpu.stageAddr(ring, ring.cStage), cfg, Expr.var(t.addr), cols, Bool.true)
+        Pair.mk(Gpu.resume(Key.key, n, Group.lane, gen), Pair.mk(ReadyUsed.mk(r, m), AccPending.mk(a, m)))
+      }
+    }
+  }
+
+  // Further tensor-core work, accumulating A·B from the ready stage.
+  def mmaNext {n: Lifetime}{m: Lifetime}{r: Lifetime}{cfg: RingCfg}{a: Lifetime}{cols: Nat}
+      (e: Ctx(n, Group.lane))(w: Elected(m))(ring: Ring(r, cfg))(rd: Ready(r))(t: Tmem(a, cols))(acc: AccPending(a, m))
+      : Pair(Ctx(n, Group.lane), Pair(ReadyUsed(r, m), AccPending(a, m))) := {
+    match rd returning Pair(Ctx(n, Group.lane), Pair(ReadyUsed(r, m), AccPending(a, m))) with
+    | Ready.mk => {
+      let gen := Gpu.mmaStage(Key.key, Gpu.state(Key.key, e), Gpu.stageAddr(ring, ring.cStage), cfg, Expr.var(t.addr), cols, Bool.false)
+      Pair.mk(Gpu.resume(Key.key, n, Group.lane, gen), Pair.mk(ReadyUsed.mk(r, m), acc))
+    }
+  }
+
+  // Releases the stage when the elected thread's tensor-core work reading it completes, and moves to the next stage.
+  def releaseByMma {n: Lifetime}{m: Lifetime}{r: Lifetime}{cfg: RingCfg}
+      (e: Ctx(n, Group.lane))(w: Elected(m))(ring: Ring(r, cfg))(u: ReadyUsed(r, m)): Pair(Ctx(n, Group.lane), Consumer(r)) := {
+    match u returning Pair(Ctx(n, Group.lane), Consumer(r)) with
+    | ReadyUsed.mk => {
+      let release := List.cons(Gpu.mmaCommit(Gpu.emptyBar(ring, ring.cStage)), Gpu.advance(ring.cStage, ring.cPhase, cfg.stages))
+      Pair.mk(Gpu.emitAll(Key.key, e, release), Consumer.mk(r))
+    }
+  }
+
+  // ---- The output of a tensor-core GEMM ---------------------------------------------------------------------------
+
+  // Where this CTA's 128×`bn` block of the f32 output lies, and the authority to write it once.
+  sealed struct COut (l: Lifetime)(bn: Nat) : Type { scope = l }
+   | mk (name: String)(rows: Expr)(cols: Expr) : COut(l, bn)
+
+  sealed inductive COwn (l: Lifetime)(bn: Nat) : Type { kind = lin, scope = l }
+   | mk : COwn(l, bn)
+
+  def columnStores (name: String)(row: Expr)(rowOk: Expr)(rows: Expr)(cols: Expr)(col0: Expr)(first: Nat)(j: Nat)(count: Nat)
+      : List(Stmt) decreases structural(count) := {
+    match count returning List(Stmt) with
+    | Nat.zero => List.nil(Stmt)
+    | Nat.succ more => {
+      let col := Expr.bin(BinOp.add, col0, Expr.lit(j))
+      let inside := Expr.bin(BinOp.land, rowOk, Expr.bin(BinOp.lt, col, cols))
+      let store := Stmt.store(Expr.param(name), Expr.bin(BinOp.add, Expr.bin(BinOp.mul, row, cols), col), Expr.var(Nat.add(first, j)))
+      List.cons(Stmt.ifElse(inside, Block.seq(store, Block.done), Block.done), Gpu.columnStores(name, row, rowOk, rows, cols, col0, first, Nat.succ(j), more))
+    }
+  }
+
+  def declOuts (first: Nat)(count: Nat): List(Stmt) decreases structural(count) := {
+    match count returning List(Stmt) with
+    | Nat.zero => List.nil(Stmt)
+    | Nat.succ more => List.cons(Stmt.declOut(DType.f32, first), Gpu.declOuts(Nat.succ(first), more))
+  }
+
+  // Reads the accumulator eight columns at a time and stores this thread's row of the block.
+  def chunks (gen: Gen)(name: String)(row: Expr)(rowOk: Expr)(rows: Expr)(cols: Expr)(lane: Expr)(c: Nat)(count: Nat)
+      : Gen decreases structural(count) := {
+    match count returning Gen with
+    | Nat.zero => gen
+    | Nat.succ more => {
+      let first := gen.next
+      let col0 := Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(0)), Expr.lit(Nat.mul(8, c)))
+      let load := List.append(Gpu.declOuts(first, 8),
+        List.cons(Gpu.tmemLoad8(first, Expr.bin(BinOp.add, lane, Expr.lit(Nat.mul(8, c)))), List.cons(Gpu.tmemWaitLoad, List.nil(Stmt))))
+      let named := Gen.mk(gen.code, Nat.add(first, 8), gen.smem, gen.barrier, gen.errors)
+      Gpu.chunks(Gpu.pushAll(named, List.append(load, Gpu.columnStores(name, row, rowOk, rows, cols, col0, first, 0, 8))),
+        name, row, rowOk, rows, cols, lane, Nat.succ(c), more)
+    }
+  }
+
+  // The epilogue: each warp of an aligned warpgroup reads its own 32 lanes of the accumulator (lane quadrant
+  // `warp % 4`), and each thread stores its own row of the CTA's 128×`bn` output block, inside the matrix. The block
+  // and the row are computed from the block and thread indices, never taken from the caller.
+  def storeAcc {n: Lifetime}{f: Nat}{L: Lifetime}{a: Lifetime}{cols: Nat}{bn: Nat}
+      (e: Ctx(n, Group.warps(f, 4)))(aligned: Eq(Nat, Nat.mod(f, 4), 0))(t: Tmem(a, cols))(acc: Acc(a, AccState.ready))
+      (out: COut(L, bn))(own: COwn(L, bn)): Pair(Ctx(n, Group.warps(f, 4)), Acc(a, AccState.ready)) := {
+    match own returning Pair(Ctx(n, Group.warps(f, 4)), Acc(a, AccState.ready)) with
+    | COwn.mk => {
+      let gen0 := Gpu.check(Gpu.state(Key.key, e), Bool.and(Nat.isZero(Nat.mod(bn, 8)), Bool.and(Nat.blt(0, bn), Nat.ble(bn, cols))),
+        "epilogue: the block's columns must be a positive multiple of 8 within the accumulator")
+      let q := gen0.next
+      let row := Nat.add(q, 1)
+      let rowOk := Nat.add(q, 2)
+      let quadrant := Expr.bin(BinOp.rem, Expr.special(Builtin.warp), Expr.lit(4))
+      let rowExpr := Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.special(Builtin.blockY), Expr.lit(128)),
+        Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.var(q), Expr.lit(32)), Expr.special(Builtin.lane)))
+      let setup := List.cons(Stmt.decl(DType.u32, q, quadrant), List.cons(Stmt.decl(DType.u32, row, rowExpr),
+        List.cons(Stmt.decl(DType.bool, rowOk, Expr.bin(BinOp.lt, Expr.var(row), out.rows)), List.nil(Stmt))))
+      let gen1 := Gpu.pushAll(Gpu.fresh(Gpu.fresh(Gpu.fresh(gen0))), setup)
+      let lane := Expr.bin(BinOp.add, Expr.var(t.addr), Expr.bin(BinOp.shl, Expr.bin(BinOp.mul, Expr.var(q), Expr.lit(32)), Expr.lit(16)))
+      let col0 := Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(bn))
+      let gen2 := Gpu.chunks(gen1, out.name, Expr.var(row), Expr.var(rowOk), out.rows, out.cols, lane, 0, Nat.div(bn, 8))
+      Pair.mk(Gpu.resume(Key.key, n, Group.warps(f, 4), gen2), acc)
+    }
+  }
+
+  // ---- The tensor-core GEMM launch ---------------------------------------------------------------------------------
+
+  // What each CTA of a tensor-core GEMM starts with: the operand tensor maps, its output block, and the extents.
+  struct TmaLaunch (l: Lifetime)(sa: TmaSpec)(sb: TmaSpec) : Type { scope = l }
+   | mk (a: TMap(l, sa))(b: TMap(l, sb))(c: COut(l, TmaSpec.outer(sb)))
+        (m: Val(l, Grain.uniform, DType.u32))(n: Val(l, Grain.uniform, DType.u32))(k: Val(l, Grain.uniform, DType.u32))
+        (m0: Val(l, Grain.uniform, DType.u32))(n0: Val(l, Grain.uniform, DType.u32)) : TmaLaunch(l, sa, sb)
+
+  def maxDynamicShared : Nat := 232448
+
+  // C (M×N, f32, row-major) = A (M×K) · Bᵀ, with B given as N×K, both bf16 and K contiguous, read through tensor maps
+  // whose boxes are `sa` (K by 128 rows of A) and `sb` (K by N-block rows of B). One CTA of 256 threads per 128×`bn`
+  // block of C. Launch contract: grid (ceil(N / bn), ceil(M / 128)), block 256, the returned kernel's dynamic shared
+  // memory, A_map and B_map encoded as `TMap` says, and C a distinct array with fewer than 2^32 elements.
+  def tmaGemmKernel (name: String)(sa: TmaSpec)(sb: TmaSpec)
+      (body: (l: Lifetime) -> Ctx(l, Group.cta(256)) -> TmaLaunch(l, sa, sb) -> COwn(l, TmaSpec.outer(sb)) -> Ctx(l, Group.cta(256)))
+      : Kernel := scope l => {
+    let bn := sb.outer
+    let m := Gpu.uniformParam(l, "M")
+    let n := Gpu.uniformParam(l, "N")
+    let k := Gpu.uniformParam(l, "K")
+    let m0 := Val.mk(l, Grain.uniform, DType.u32, Expr.bin(BinOp.mul, Expr.special(Builtin.blockY), Expr.lit(128)), Option.none(Nat))
+    let n0 := Val.mk(l, Grain.uniform, DType.u32, Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(bn)), Option.none(Nat))
+    let launch := TmaLaunch.mk(TMap.mk(l, sa, "A_map"), TMap.mk(l, sb, "B_map"), COut.mk(l, bn, "C", m.expr, n.expr), m, n, k, m0, n0)
+    let params := List.cons(Param.tensorMap("A_map"), List.cons(Param.tensorMap("B_map"), List.cons(Param.output(DType.f32, "C"),
+      List.cons(Param.scalar(DType.u32, "M"), List.cons(Param.scalar(DType.u32, "N"), List.cons(Param.scalar(DType.u32, "K"), List.nil(Param)))))))
+    let gen := Gpu.state(Key.key, body(l, Gpu.start(l, Group.cta(256)), launch, COwn.mk(l, bn)))
+    Gpu.finish(name, params, Gpu.check(gen, Nat.ble(gen.smem, Gpu.maxDynamicShared), "kernel: more dynamic shared memory than sm_100a has"))
   }
 }
