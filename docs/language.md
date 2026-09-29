@@ -552,12 +552,15 @@ second use. A path that reuses a local is reported as reused, even where
 another path leaves it unused. Matching a linear value consumes it, and its
 fields must each be used once in the branch, so a wildcard over a linear field
 is `LinearUnused`. A match with no branch ends every path through it and so
-uses every linear local still unused there. A `decreases` clause is not a use.
-Applying a struct selector to a linear value consumes the value.
+uses every linear local still unused there; nothing after it is on those
+paths. A `decreases` clause is not a use. Applying a struct selector to a
+linear value consumes the value.
 
-A lambda's body lies on the paths at the lambda's position: a use of an outer
-local inside a lambda is one use, by the lambda, and the lambda must use it on
-every path through its body. A lambda that captures a linear local is itself
+A lambda's body runs only when the lambda is applied, so it is not on the
+paths around it, and a match with no branch inside it ends none of them. A use
+of an outer local inside a lambda is one use, by the lambda, at the lambda's
+position, and the lambda must use it exactly once on every path through its
+body. A lambda that captures a linear local is itself
 linear, its derived closure kind is `Kind.lin`, and writing it at `Kind.unr` is
 `KindExceeded`. A value of a linear function type is used by applying it, so
 it is applied exactly once.
