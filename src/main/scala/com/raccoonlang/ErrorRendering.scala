@@ -62,6 +62,9 @@ object ErrorRendering {
         else s"$local has a linear type, so it must be used exactly once, but some path does not use it"
       case LinearReused(local) =>
         s"$local has a linear type, so it must be used exactly once, but this is a second use on some path"
+      case LinearInType(term, tpe) =>
+        s"${PrettyPrinter.printTerm(term)} has the linear type $tpe, so it cannot stand inside a type or a proof: " +
+          "types and proofs hold no tokens"
       case LinearGlobal(name, tpe) =>
         s"Definition $name has the linear type $tpe; a global is never linear, since every reference to it is a use"
       case LifetimeEscapes(lifetime, tpe) =>

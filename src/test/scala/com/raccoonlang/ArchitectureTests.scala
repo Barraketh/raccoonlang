@@ -60,6 +60,11 @@ class ArchitectureTests extends munit.FunSuite {
       _ != "Ledger.scala"
     ),
     Rule(
+      "tokens stay out of types and proofs by one test, in TypeChecker.synthesize, the only place LinearInType is raised",
+      raw"\bLinearInType\(".r,
+      Set("TypeChecker.scala", "Errors.scala", "ErrorRendering.scala")
+    ),
+    Rule(
       "uses of a linear local are counted only by the ledger",
       raw"\bLinear(Unused|Reused)\(".r,
       Set("Ledger.scala", "Errors.scala", "ErrorRendering.scala")

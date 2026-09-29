@@ -440,11 +440,13 @@ selector when another field's type is linear, a kind variable included, with
 `LinearUnused` naming that field. A selector of a linear struct whose field's
 type mentions an earlier field is also rejected. Its generated result type
 names that earlier field's selector applied to the struct value, so the result
-type contains a token, which is `LinearInType` (§3.2). Either way that
-selector's declaration fails, reported at its field, and the family itself is
-still published. This is what happens today when a selector of a struct in
-`Prop` would eliminate it into data. A family with such a field is declared with `inductive`
-and matched on directly, or given hand-written selectors where they are
+type contains a token, which is `LinearInType` (§3.2). So is a selector of a
+linear struct's proof field: its body is a proof that consumes the struct
+value. Either way that selector's declaration fails, reported at its field, and
+the family itself is still published. This is what happens today when a
+selector of a struct in `Prop` would eliminate it into data. A family with such
+a field is declared with `inductive` and matched on directly, or given
+hand-written selectors where they are
 admissible.
 
 Structure eta is unchanged and is never a use; a sealed family has none

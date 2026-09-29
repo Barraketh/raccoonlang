@@ -316,6 +316,31 @@ applying one to a linear value is that value's use. The ledger is one walk,
 an exhaustive match over Core terms with no wildcard arm, and runs only for a
 binder of linear type. Evaluation makes none of its checks.
 
+Types and proofs hold no tokens: a term whose type is a sort or a proposition
+may not contain a subterm of linear type, else `LinearInType`, located at that
+subterm. This covers a type at a type position, a type computed as a value, a
+`returning` motive and a proof alike, and a lambda inside one that consumes
+its own linear parameter; such a function is a definition, referred to by
+name. Types and proofs are copied and dropped freely, and a proof never runs,
+so a token inside one would escape the ledger. The test is made at the
+checker's one synthesis boundary: each synthesized subterm of linear type is
+handed to the enclosing synthesis, and a term whose type is a sort or a
+proposition refuses the first one it was handed. It fires before the ledger
+could count an occurrence in a type as a use. So no type contains a linear
+local, and facts about a token are stated about its indices. An implicit
+binder of linear type is never forced, since forcing reads types: implicit
+projection gives it no hole, and it is `NonForcedImplicitParam`.
+
+A selector of a linear struct is therefore rejected when another field is
+linear (`LinearUnused` naming that field), when its field's type names an
+earlier field, since its result type applies that field's selector to the
+struct value (`LinearInType`), and when its field is a proof, since its body is
+then a proof that consumes the struct value (`LinearInType`). The failure is
+the selector's own; the family and its other selectors are still published.
+
+Until a kind other than `Kind.unr` has been built no type is linear, since a
+type's kind is a kind that was built, and every linearity rule returns at once.
+
 ## Inductives and matching
 
 An inductive declaration is installed only after checking:
@@ -652,3 +677,5 @@ Changes to the checker or evaluator must preserve these rules:
     parameters, a `let` or a pattern, `_` included, is used exactly once on
     every path through its binder's checked extent, and no global has a linear
     type.
+22. No term whose type is a sort or a proposition contains a subterm of linear
+    type, and no implicit binder of linear type is forced.
