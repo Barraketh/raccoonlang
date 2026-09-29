@@ -677,9 +677,10 @@ trusted surface is not checked, so a trusted prelude, bundled or given with
 T1 subsumes nothing: a consistent axiom can still break T2 to T4.
 
 What the kernel can check about a prelude, it checks. Only a trusted prelude
-declares axioms, builtins, native operations and native literal layouts
-(`UntrustedAxiom`, `ReservedKernelName`). A native literal layout refuses a
-sealed family. No prelude declaration's type names an atom, since
+declares axioms and builtins (`UntrustedAxiom`, `ReservedKernelName`), and only
+its declarations receive native operations and native literal layouts: a
+module that declares `Nat.add` gets an ordinary definition. A native literal
+layout refuses a sealed family. No prelude declaration's type names an atom, since
 `LifetimeEscapes` refuses any global whose type does.
 
 A test keeps a golden inventory of the bundled prelude's trusted surface: every
