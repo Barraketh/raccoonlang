@@ -4,10 +4,11 @@
 here=$(cd "$(dirname "$0")" && pwd)
 run() { ${RACCOON:?set RACCOON to a raccoon launcher} --prelude "$here/Prelude.rac" --root "$here" "$@"; }
 status=0
-# Generated C++ is compiled against stub headers when a host clang++ is available; inline assembly is stripped first.
+# Generated C++ is compiled against stub headers when a host clang++ is available; each inline assembly statement is
+# first replaced by stub calls over its operands (`stub/asm_calls.py`).
 cxx() {
   command -v clang++ >/dev/null || return 0
-  sed 's/^\( *\)asm volatile(.*);$/\1;/' | clang++ -std=c++17 -fsyntax-only -Wall -Wno-unused-parameter -Werror \
+  python3 "$here/stub/asm_calls.py" | clang++ -std=c++17 -fsyntax-only -Wall -Wno-unused-parameter -Wno-parentheses-equality -Werror \
     -I "$here/stub" -include "$here/stub/cuda_stub.h" -x c++ -
 }
 for f in "$here"/examples/*.rac; do

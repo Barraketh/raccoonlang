@@ -994,18 +994,18 @@ namespace Gpu {
   }
 
   // Reads the accumulator eight columns at a time and stores this thread's row of the block.
-  def chunks (gen: Gen)(name: String)(row: Expr)(rowOk: Expr)(rows: Expr)(cols: Expr)(lane: Expr)(c: Nat)(count: Nat)
+  def chunks (gen: Gen)(name: String)(row: Expr)(rowOk: Expr)(rows: Expr)(cols: Expr)(lane: Expr)(base: Expr)(c: Nat)(count: Nat)
       : Gen decreases structural(count) := {
     match count returning Gen with
     | Nat.zero => gen
     | Nat.succ more => {
       let first := gen.next
-      let col0 := Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(0)), Expr.lit(Nat.mul(8, c)))
+      let col0 := Expr.bin(BinOp.add, base, Expr.lit(Nat.mul(8, c)))
       let load := List.append(Gpu.declOuts(first, 8),
         List.cons(Gpu.tmemLoad8(first, Expr.bin(BinOp.add, lane, Expr.lit(Nat.mul(8, c)))), List.cons(Gpu.tmemWaitLoad, List.nil(Stmt))))
       let named := Gen.mk(gen.code, Nat.add(first, 8), gen.smem, gen.barrier, gen.errors)
       Gpu.chunks(Gpu.pushAll(named, List.append(load, Gpu.columnStores(name, row, rowOk, rows, cols, col0, first, 0, 8))),
-        name, row, rowOk, rows, cols, lane, Nat.succ(c), more)
+        name, row, rowOk, rows, cols, lane, base, Nat.succ(c), more)
     }
   }
 
@@ -1030,7 +1030,7 @@ namespace Gpu {
       let gen1 := Gpu.pushAll(Gpu.fresh(Gpu.fresh(Gpu.fresh(gen0))), setup)
       let lane := Expr.bin(BinOp.add, Expr.var(t.addr), Expr.bin(BinOp.shl, Expr.bin(BinOp.mul, Expr.var(q), Expr.lit(32)), Expr.lit(16)))
       let col0 := Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(bn))
-      let gen2 := Gpu.chunks(gen1, out.name, Expr.var(row), Expr.var(rowOk), out.rows, out.cols, lane, 0, Nat.div(bn, 8))
+      let gen2 := Gpu.chunks(gen1, out.name, Expr.var(row), Expr.var(rowOk), out.rows, out.cols, lane, col0, 0, Nat.div(bn, 8))
       Pair.mk(Gpu.resume(Key.key, n, Group.warps(f, 4), gen2), acc)
     }
   }
