@@ -113,6 +113,13 @@ Identifiers begin with a letter and continue with letters, digits, or `_`.
 local wherever a local is bound: a binder, a pattern field, `let _ := e` or
 `scope _ => e`. No name refers to it.
 
+Line breaks separate imports, declarations, the statements of a block, the
+cases of a match and the constructors of an inductive. Wherever a line break
+separates two items, any number of blank lines and comment-only lines may stand
+in its place. A case or constructor starts on a new line and ends its last line,
+where only a comment may follow it, so a match's cases never share a line with
+its header or with each other.
+
 ## Universes
 
 Types are terms. `Sort`, `Type` and `Prop` are the sort formers, and they are
