@@ -112,8 +112,10 @@ object Value {
     }
 
   private[raccoonlang] def needsStructuralDefEq(value: Value): Boolean =
-    isKnownProof(value) || (value match {
+    value match {
+      // Tested before proofhood, which would force a function type's classifier.
       case _: VPi | _: VLam | _: NeutralThunk => true
+      case _ if isKnownProof(value)           => true
       // A value that structure eta can decompose compares fieldwise, which no key can decide
       // (StructEta, rule 2).
       case v if etaDecomposable(v) => true
@@ -121,7 +123,7 @@ object Value {
         app.head.needsStructuralDefEq || app.args.exists(_.needsStructuralDefEq) || app.tpe.needsStructuralDefEq
       case p: VPacked => !p.codec.canonical
       case _          => false
-    })
+    }
 
   type VarId = Int
 
@@ -425,14 +427,6 @@ object Value {
 
     def mk(varId: VarId): Level = ofTerms(Map(ParamAtom(varId) -> 0), 0)
 
-    /** The level a value denotes: a Level directly, or a Level-typed variable as its atom. */
-    def fromValue(v: Value): Option[Level] =
-      v match {
-        case l: Level             => Some(l)
-        case Var(_, id, LevelTpe) => Some(mk(id))
-        case _                    => None
-      }
-
     val zero = const(0)
     val one = const(1)
 
@@ -544,7 +538,7 @@ object Value {
    * rather than silently answering false.
    */
   final class VSort private[raccoonlang] (val level: Level, val kind: Kind, val scope: Lifetime) extends Classifier {
-    override def tpe: Value = Sorts.sort(Level.succ(level), Kind.unr, scope)
+    override lazy val tpe: Value = Sorts.sort(Level.succ(level), Kind.unr, scope)
 
     override lazy val synDeps: DepSet = level.synDeps ++ kind.synDeps ++ scope.synDeps
 

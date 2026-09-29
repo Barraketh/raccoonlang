@@ -2,7 +2,10 @@ package com.raccoonlang
 
 import com.raccoonlang.Value._
 
-class ValueEquivalenceTests extends munit.FunSuite {
+import scala.concurrent.duration.DurationInt
+import scala.concurrent.{Await, ExecutionContext, Future}
+
+class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
   private val span = Span(0, 0)
   private val typeSort: CoreAst.Term = CoreTestTerms.sortAt(CoreAst.Form.LevelOne, span)
   private val binderRef = CoreAst.LocalRef(0, "x")
@@ -260,5 +263,46 @@ class ValueEquivalenceTests extends munit.FunSuite {
     )
 
     assert(!ValueEquivalence.defEq(neutral, wrongType))
+  }
+
+  // Within one outermost assertion each pair of values is checked once. Rechecking every repeated pair walked a shared
+  // value as a tree: 2^40 nodes here. The deadline only turns a hang into a failure. By then the suite has failed, and
+  // the abandoned check may still be running on another thread, which the single-threaded checker does not support.
+  test("the key-coherence assertion costs one structural pass on a shared value") {
+    assert(ValueEquivalence.keyAssertionsEnabled)
+    val program =
+      """
+        |inductive T : Type
+        | | leaf : T
+        | | node (l: T)(r: T) : T
+        |
+        |def dup (t: T): T := T.node(t, t)
+        |
+        |def big (n: Nat): T decreases structural(n) := match n returning T with
+        | | .zero => T.leaf
+        | | .succ m => dup(big(m))
+        |
+        |def same (n: Nat): Eq(T, big(n), big(n)) := Eq.refl(big(n))
+        |
+        |def check : Eq(T, big(40), big(40)) := same(40)
+        |""".stripMargin
+    Await.result(Future(typecheckDecls(program))(ExecutionContext.global), 60.seconds)
+  }
+
+  // Two function types of different syntax that share a node identity share a key (the F2 bug class). Beneath a
+  // family application their keys make the applications' keys agree too, so only the assertion beneath the outer
+  // verdict reaches the collision.
+  test("the key-coherence assertion reaches a key collision beneath an agreeing parent") {
+    assert(ValueEquivalence.keyAssertionsEnabled)
+    val toProp = pi(Vector.empty, _ => Sorts.Prop, 20)
+    val toType = pi(Vector.empty, _ => Sorts.Type, 20)
+    assertEquals(toProp.key, toType.key)
+    val list = Prelude.default.checkedEnv("List")
+    def listOf(elem: Value): Value = Interpreter.evalApply(list, Vector(Level.succ(Level.one), Lifetime.empty, elem))
+    val (left, right) = (listOf(toProp), listOf(toType))
+    assertEquals(left.key, right.key)
+
+    val error = intercept[InternalError](ValueEquivalence.defEq(left, right))
+    assert(error.getMessage.contains("ValueKey disagrees with conversion"), error.getMessage)
   }
 }

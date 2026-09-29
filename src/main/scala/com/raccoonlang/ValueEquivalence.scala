@@ -57,9 +57,8 @@ object ValueEquivalence {
 
   /**
    * Key-coherence assertions (docs/kernel.md#value-identity): wherever the fast path decides an equation by key alone,
-   * the rules below must reach the same verdict, and a lambda's derived closure re-evaluates to what its captures
-   * derive (Interpreter.evalLam). On by default so the whole test suite checks both; disable for benchmarking with
-   * -Draccoon.keyAssertions=false.
+   * the rules below must reach the same verdict. On by default so the whole test suite checks it; disable for
+   * benchmarking with -Draccoon.keyAssertions=false.
    */
   private[raccoonlang] val keyAssertionsEnabled: Boolean =
     java.lang.Boolean.parseBoolean(System.getProperty("raccoon.keyAssertions", "true"))
@@ -344,11 +343,8 @@ object ValueEquivalence {
         meta: EqStore,
         ctx: Ctx
     ): Result = {
-      val candidates = (aVar, bVar) match {
-        case (Some(aId), Some(bId)) if aId < bId => Vector(bId -> a, aId -> b)
-        case _                                   => aVar.map(_ -> b).toVector ++ bVar.map(_ -> a)
-      }
-      candidates
+      (aVar.map(_ -> b).toVector ++ bVar.map(_ -> a))
+        .sortBy { case (id, _) => id }(Ordering[VarId].reverse)
         .collectFirst {
           case (id, other) if ctx.canLinkForced && meta.isRefinable(id) && !meta.occurs(id, other) =>
             meta.addLink(id, other)
@@ -434,12 +430,37 @@ object ValueEquivalence {
       structurally(a, b, meta, ctx)
     }
 
-    private def assertKeyVerdict(a: Value, b: Value, meta: EqStore, ctx: Ctx, keysEqual: Boolean): Unit =
-      if (structurally(a, b, meta, ctx).isRight != keysEqual)
-        wtf(
-          s"ValueKey disagrees with conversion: keys ${if (keysEqual) "equal" else "differ"} but the structural " +
-            s"comparison ${if (keysEqual) "fails" else "succeeds"} for $a and $b"
-        )
+    /** Two values, compared by object identity. */
+    private final class AssertedPair(val a: Value, val b: Value) {
+      override def equals(obj: Any): Boolean =
+        obj match {
+          case other: AssertedPair => sameValueObject(a, other.a) && sameValueObject(b, other.b)
+          case _                   => false
+        }
+      override def hashCode(): Int = 31 * System.identityHashCode(a) + System.identityHashCode(b)
+    }
+
+    /** The pairs the running outermost assertion has checked so far, or null when no assertion is running. */
+    private val assertedPairs = new ThreadLocal[java.util.HashSet[AssertedPair]]
+
+    /**
+     * The rules beneath a key verdict must reach it too, and each sub-equation the keys decide is asserted in turn.
+     * Within one outermost assertion each pair of objects is checked once, so the check costs one structural pass
+     * however much its values share, where rechecking every repeated pair would walk a shared value as a tree. A pair
+     * checked once is skipped even under another store or frame: the verdict under test is its keys', which neither
+     * changes, and the assertion is a debug check.
+     */
+    private def assertKeyVerdict(a: Value, b: Value, meta: EqStore, ctx: Ctx, keysEqual: Boolean): Unit = {
+      val outermost = assertedPairs.get() == null
+      if (outermost) assertedPairs.set(new java.util.HashSet[AssertedPair])
+      try {
+        if (assertedPairs.get().add(new AssertedPair(a, b)) && structurally(a, b, meta, ctx).isRight != keysEqual)
+          wtf(
+            s"ValueKey disagrees with conversion: keys ${if (keysEqual) "equal" else "differ"} but the structural " +
+              s"comparison ${if (keysEqual) "fails" else "succeeds"} for $a and $b"
+          )
+      } finally if (outermost) assertedPairs.remove()
+    }
 
     /** The rules below the key fast path: decomposition, whose leaves are decided by the fast path again. */
     private def structurally(a: Value, b: Value, meta: EqStore, ctx: Ctx): Result = {

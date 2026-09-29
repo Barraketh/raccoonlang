@@ -353,7 +353,10 @@ object Projection {
       return Left(s"projection root ${spec.rootArgIdx} out of range (${providedArgs.length} args)")
 
     def toLevel(v: Value): Either[String, Level] =
-      Level.fromValue(v).toRight(s"expected a level, got $v")
+      v match {
+        case l: Level => Right(l)
+        case other    => Left(s"expected a level, got $other")
+      }
 
     spec.steps.foldLeft[Either[String, Value]](Right(providedArgs(spec.rootArgIdx))) {
       case (left @ Left(_), _) => left

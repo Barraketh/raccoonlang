@@ -19,9 +19,8 @@ object Interpreter {
           eqStore.subst.get(id) match {
             case Some(sol) =>
               eqStore.force(sol) match {
-                case next: Level       => normalizeLevel(next, eqStore)
-                case Var(_, nextId, _) => Level.mk(nextId)
-                case other             => wtf(s"Level variable $id solved to the non-level $other")
+                case next: Level => normalizeLevel(next, eqStore)
+                case other       => wtf(s"Level variable $id solved to the non-level $other")
               }
             case None => Level.mk(id)
           }
@@ -217,15 +216,13 @@ object Interpreter {
 
   /**
    * The locals a lambda captures (spec §4.3): those bound outside it, in `env`, that its body mentions. The binder
-   * types and result are not the body, and implicit arguments are never written, so neither contributes.
+   * types and result are not the body, and implicit arguments are never written, so neither contributes. The residual
+   * lists them, in ref id order.
    */
   private[raccoonlang] def lambdaCaptures(l: CTerm.Lam, env: Env): Vector[Capture] =
-    if (env.locals.isEmpty) Vector.empty
-    else
-      env.locals.iterator
-        .filter { case (ref, _) => l.bodyRefs(ref) }
-        .flatMap { case (ref, value) => captureSort(ref, value).map(Capture(ref, value, _)) }
-        .toVector
+    l.bodyRefs.toVector
+      .sortBy(_.id)
+      .flatMap(ref => env.locals.get(ref).flatMap(value => captureSort(ref, value).map(Capture(ref, value, _))))
 
   /**
    * A lambda's derived closure field (spec §4.3): the join of that field of its captures' sorts, read in `env`, where
@@ -387,7 +384,10 @@ object Interpreter {
 
   // A checked sort parameter expression denotes a normal form: checking admits nothing else at its position.
   private[raccoonlang] def getLevel(v: Value): Level =
-    Level.fromValue(v).getOrElse(wtf(s"Checked level expression evaluated to the non-level $v"))
+    v match {
+      case l: Level => l
+      case other    => wtf(s"Checked level expression evaluated to the non-level $other")
+    }
 
   private[raccoonlang] def getKind(v: Value): Kind =
     v match {
