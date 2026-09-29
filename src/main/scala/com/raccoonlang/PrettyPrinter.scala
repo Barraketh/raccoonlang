@@ -28,7 +28,7 @@ object PrettyPrinter {
     value match {
       case _: Value.VPi                               => true
       case Value.VLam(_, _: Value.ValueId.LocalId, _) => true
-      case thunk: Value.NeutralThunk                  => blockedCall(thunk).isEmpty
+      case thunk: Value.NeutralThunk                  => printedCall(thunk).isEmpty
       case _                                          => false
     }
 
@@ -116,6 +116,13 @@ object PrettyPrinter {
         s"(${printCoreTerm(t)})"
     }
 
+    /** A function type's codomain, parenthesized when it is a function type itself, as `printCodomain` says why. */
+    private def printCodomain(out: CoreAst.Term): String = out match {
+      case _: CoreAst.Term.Pi            => s"(${printCoreTerm(out)})"
+      case CoreAst.Term.LocalRef(ref, _) => bound(ref).fold(ref.name)(PrettyPrinter.printCodomain)
+      case _                             => printCoreTerm(out)
+    }
+
     def printCoreTerm(t: CoreAst.Term): String = t match {
       case CoreAst.Term.NatLit(value, _)   => value.toString
       case CoreAst.Term.StrLit(scalars, _) => printString(scalars)
@@ -134,7 +141,7 @@ object PrettyPrinter {
         s"$headStr($argsStr)"
       case CoreAst.Term.Pi(binders, out, closure, _, _) =>
         val bindersStr = binders.map(printPiBinder).mkString(" -> ")
-        s"${printCoreClosure(closure)}$bindersStr -> ${printCoreTerm(out)}"
+        s"${printCoreClosure(closure)}$bindersStr -> ${printCodomain(out)}"
       case CoreAst.Term.Sort(level, kind, scope, _) =>
         val (former, levelField) =
           if (isForm(level, CoreAst.Form.LevelZero)) ("Prop", None)
@@ -236,8 +243,18 @@ object PrettyPrinter {
       Option.unless(pi.closureKind.isUnr)(printKind(pi.closureKind)),
       Option.unless(pi.closureScope.isEmpty)(printLifetime(pi.closureScope))
     )
-    s"$closure$bindersStr -> ${print(pi.codomain(bodyEnv))}"
+    s"$closure$bindersStr -> ${printCodomain(pi.codomain(bodyEnv))}"
   }
+
+  /**
+   * A function type in codomain position is parenthesized. Grouping is part of a function type's identity, and written
+   * bare, `A -> (B -> C)` would read back as the one group `A -> B -> C`, and a closure there would be misplaced.
+   */
+  private def printCodomain(codomain: Value): String =
+    codomain match {
+      case _: Value.VPi => s"(${print(codomain)})"
+      case _            => print(codomain)
+    }
 
   /** A variable prints as its binder name; the id only disambiguates the nameless `_`. */
   private def varName(v: Value.Var): String =
@@ -275,6 +292,32 @@ object PrettyPrinter {
     }
   }
 
+  /**
+   * The selector call a stuck field projection stands for. A match with one branch, whose body is one of that branch's
+   * fields, on a local of a one-constructor family, projects that field: a struct's selector is this match, and so is
+   * structure eta's projection (StructEta), whose fields are named by position. Either prints as `P.x(v)`, with the
+   * field named as the constructor names it. The kernel does not record which families are structs, so a
+   * one-constructor `inductive`, which has no selectors, prints its projections the same way.
+   */
+  private def fieldProjection(thunk: Value.NeutralThunk): Option[String] =
+    thunk.term match {
+      case CoreAst.Term.Match(CoreAst.Term.LocalRef(scrutinee, _), _, Vector(branch), _) =>
+        val fieldIdx = branch.body match {
+          case CoreAst.Term.LocalRef(ref, _) => branch.argRefs.indexOf(ref)
+          case _                             => -1
+        }
+        for {
+          base <- thunk.env.locals.get(scrutinee) if fieldIdx >= 0
+          family <- Value.InductiveFamilyValue.unapply(base.tpe)
+          ctorHead <- family.meta.projectionInfo.flatMap(_.ctorHeadOption)
+          field = ctorHead.fieldBinders(fieldIdx).name if field != "_"
+        } yield s"${family.head.name}.$field(${print(base)})"
+      case _ => None
+    }
+
+  /** A stuck match that prints as the call it stands for rather than as the match. */
+  private def printedCall(thunk: Value.NeutralThunk): Option[String] = blockedCall(thunk).orElse(fieldProjection(thunk))
+
   def print(value: Value): String = value match {
     case sort: Value.VSort =>
       val (former, levelField) =
@@ -304,7 +347,7 @@ object PrettyPrinter {
     case v: Value.VLam => printLam(v)
     case v: Value.Var  => varName(v)
     case s: Value.NeutralThunk =>
-      blockedCall(s).getOrElse(new SyntaxPrinter(s.env.locals.get).printMatch(s.term))
+      printedCall(s).getOrElse(new SyntaxPrinter(s.env.locals.get).printMatch(s.term))
     case p: Value.VProof => s"‹proof of ${print(p.tpe)}›"
     case p: Value.VPacked =>
       p.natValue

@@ -1,7 +1,7 @@
 
-<root>/main.rac:1:21: error: type mismatch
+<root>/main.rac:1:18: error: type mismatch
 def bad : Nat := Nat.add(Nat.zero, Bool.true)
-                    ^^^^^^^^^^^^^^^^^^^^^^^^^
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   expected: Nat
   actual:   Bool
 note: in argument 2 (b) of Nat.add

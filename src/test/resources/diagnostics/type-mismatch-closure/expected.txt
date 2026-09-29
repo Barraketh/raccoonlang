@@ -1,7 +1,7 @@
 
-<root>/main.rac:1:61: error: type mismatch
+<root>/main.rac:1:58: error: type mismatch
 def eqBy {S: Lifetime}(A: Type { scope = S }): BEq(A) := BEq.mk(fun (a: A)(b: A): Bool => Bool.true)
-                                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   expected: { scope = S } A -> A -> Bool
   actual:   (a: A) -> (b: A) -> Bool
   closures differ in scope S  vs  Lifetime.empty
