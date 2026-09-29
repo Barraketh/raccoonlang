@@ -350,13 +350,15 @@ object LanguageParser {
     shortName | globalPath
   }
 
-  private def matchCase(implicit sourceId: Option[SourceId]): Parser[Case] =
-    (sym("|") ~/ caseHead ~ (wsSep ~ argName).rep(0) ~ sym("=>") ~/ skipAllWs ~ term ~ lineSep)
+  private def matchCase(implicit sourceId: Option[SourceId]): Parser[Case] = {
+    val patternVar = argName.spanned(sourceId).map(name => PatternVar(name.value, name.span))
+    (sym("|") ~/ caseHead ~ (wsSep ~ patternVar).rep(0) ~ sym("=>") ~/ skipAllWs ~ term ~ lineSep)
       .flatSpanned(sourceId)
-      .map { case (ctorPath, useShortName, argNames, body, span) =>
-        Case(ctorPath, useShortName, argNames, body, span)
+      .map { case (ctorPath, useShortName, patternVars, body, span) =>
+        Case(ctorPath, useShortName, patternVars, body, span)
       }
       .named("Case")
+  }
 
   /** `returning` continues the header, so it may start the next line, as an arrow or a parameter group may. */
   private def matchP(implicit sourceId: Option[SourceId]): Parser[Match] = {

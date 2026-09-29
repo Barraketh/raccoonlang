@@ -142,11 +142,13 @@ Lifetime.empty  Lifetime.union(e, e)
 ```
 
 The forms belong to the language, not to the prelude: they are not functions,
-and `Level.succ` or `Lifetime.union` without its arguments names nothing. A
-name in a sort field resolves to a local first, then to one of that field's
-forms unqualified, and only then as usual. So `level = succ(u)` means
-`Level.succ(u)`, even inside `namespace Nat`, and `kind = lin` and
-`scope = union(a, b)` mean `Kind.lin` and `Lifetime.union(a, b)`:
+and `Level.succ` or `Lifetime.union` written without its arguments is an
+`ArityMismatch`, as a partial application of one is. A name in a sort or
+closure field resolves to a local first, then to one of that field's forms
+unqualified, and only then as usual. So `level = succ(u)` means
+`Level.succ(u)`, even inside `namespace Nat` or in the body of a recursive
+`def succ`, and `kind = lin` and `scope = union(a, b)` mean `Kind.lin` and
+`Lifetime.union(a, b)`:
 
 ```raccoon
 def id {u: Level}{A: Sort { level = u }}(x: A): A := x
@@ -784,13 +786,18 @@ Constructors always live under their family head.
 Dotted names resolve their first segment as follows:
 
 1. a local binding;
-2. the current namespace, from most specific to the root;
-3. aliases in the current open scope.
+2. in a sort or closure field, one of that field's forms;
+3. in the body of a recursive definition or `mutual` group, a member of the
+   group, when the whole path names it as it would name its global;
+4. the current namespace, from most specific to the root;
+5. aliases in the current open scope.
 
-If the first segment is local, the remaining path is projection syntax. Once a
+A definition's own name and its peers' are not locals, which is why a field's
+forms win over them. If the first segment is local, the remaining path is
+projection syntax. Once a
 global first segment is selected, resolution continues inside that object and
 does not backtrack to another open. Prefix a path with `_root_.` to bypass
-locals, the current namespace, and opens.
+locals, a field's forms, the current namespace, and opens.
 
 `open` takes a snapshot of a namespace's existing children:
 

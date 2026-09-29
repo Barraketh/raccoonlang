@@ -94,7 +94,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
         CoreAst.Case(
           "GroupA.toB",
           true,
-          Vector(aField),
+          Vector(CoreAst.PatternVar(aField, span)),
           app(local(gPeer), if (nonDecreasing) global("GroupB.leaf") else local(aField)),
           span
         )
@@ -109,7 +109,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
         CoreAst.Case(
           "GroupB.toA",
           true,
-          Vector(bField),
+          Vector(CoreAst.PatternVar(bField, span)),
           app(local(fPeer), local(bField)),
           span
         )
@@ -285,7 +285,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
         CoreAst.Case(
           "GroupA.toB",
           true,
-          Vector(bField),
+          Vector(CoreAst.PatternVar(bField, span)),
           app(local(gPeer), local(fPrefix), local(bField)),
           span
         )
@@ -300,7 +300,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
         CoreAst.Case(
           "GroupB.toA",
           true,
-          Vector(aField),
+          Vector(CoreAst.PatternVar(aField, span)),
           app(local(fPeer), local(gPrefix), local(aField)),
           span
         )
@@ -395,7 +395,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
         CoreAst.Case(
           "K6Tree.node",
           true,
-          Vector(children),
+          Vector(CoreAst.PatternVar(children, span)),
           app(local(listPeer), local(children)),
           span
         )
@@ -410,7 +410,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
         CoreAst.Case(
           "K6List.cons",
           true,
-          Vector(tail, head),
+          Vector(CoreAst.PatternVar(tail, span), CoreAst.PatternVar(head, span)),
           app(local(treePeer), local(head)),
           span
         )

@@ -53,12 +53,11 @@ object Elaborator {
   /**
    * Source-name resolution state.
    *
-   * Locals are resolved outside the global trie and always win on the first path segment. Global names and namespace
-   * objects live in `root`. Recursive aliases resolve qualified peer paths to local refs while checking recursive
-   * bodies. Open scopes are snapshots of resolved objects, so later declarations do not affect an earlier `open`.
-   * `fieldForms` are the forms of the sort field being elaborated; they come right after locals, ahead of the current
-   * namespace, so `level = succ(u)` means `Level.succ(u)` even inside `namespace Nat`, and `kind = lin` means
-   * `Kind.lin`.
+   * `scopes` are the locals. `fieldForms` are the forms of the sort or closure field being elaborated, by short name.
+   * `recursiveAliases` are the members of the recursive group whose bodies are being elaborated, by full name: a
+   * definition's own name and its peers' are not locals (spec §1), but in the group's bodies they denote local refs.
+   * Global names and namespace objects live in `root`. Open scopes are snapshots of resolved objects, so later
+   * declarations do not affect an earlier `open`. `elabPath` states the order in which these are consulted.
    */
   private final case class ResolveEnv(
       scopes: List[Map[String, CA.LocalRef]],
@@ -68,7 +67,7 @@ object Elaborator {
       opens: List[OpenScope],
       reservedLocals: Set[String],
       recursiveAliases: Map[GlobalName, CA.LocalRef],
-      fieldForms: OpenScope
+      fieldForms: Map[String, CA.Form]
   ) {
     def enterLocalScope: ResolveEnv = copy(scopes = Map.empty[String, CA.LocalRef] :: scopes)
 
@@ -76,13 +75,9 @@ object Elaborator {
 
     def exitScoped(inner: ResolveEnv): ResolveEnv = copy(root = inner.root)
 
-    /** The scope of a sort field of `parameter`: that parameter's forms resolve unqualified. */
+    /** The scope of a sort or closure field of `parameter`: that parameter's forms resolve unqualified. */
     def openForms(parameter: CA.Parameter): ResolveEnv =
-      copy(fieldForms = parameter.forms.map { form =>
-        form.name -> rootObject(formPath(form)).getOrElse(
-          wtf(s"form ${form.qualifiedName} is missing from the name trie")
-        )
-      }.toMap)
+      copy(fieldForms = parameter.forms.map(form => form.name -> form).toMap)
 
     private def rootObject(parts: GlobalName): Option[ResolvedObject] =
       root.lookup(parts).map(ResolvedObject(parts, _))
@@ -92,7 +87,11 @@ object Elaborator {
         .map(prefix => prefix ++ parts)
         .collectFirst(Function.unlift(rootObject))
 
-    def resolveQualifiedLocal(path: SurfacePath): Option[CA.LocalRef] =
+    def local(name: String): Option[CA.LocalRef] =
+      scopes.collectFirst(Function.unlift(_.get(name)))
+
+    /** A member of the recursive group, by its short name or a qualified one, found as its global name would be. */
+    def recursiveMember(path: SurfacePath): Option[CA.LocalRef] =
       if (path.parts.isEmpty) None
       else if (path.root) recursiveAliases.get(path.parts)
       else namespace.inits.collectFirst(Function.unlift(prefix => recursiveAliases.get(prefix ++ path.parts)))
@@ -108,11 +107,7 @@ object Elaborator {
         path.parts.headOption
           .flatMap { first =>
             if (path.root) rootObject(Vector(first))
-            else
-              fieldForms
-                .get(first)
-                .orElse(scopedObject(Vector(first)))
-                .orElse(opens.collectFirst(Function.unlift(_.get(first))))
+            else scopedObject(Vector(first)).orElse(opens.collectFirst(Function.unlift(_.get(first))))
           }
 
       @tailrec
@@ -215,9 +210,6 @@ object Elaborator {
 
     def qualify(name: String): GlobalName = namespace :+ name
 
-    def hasLocal(name: String): Boolean =
-      scopes.exists(_.contains(name))
-
     def reserveRecursiveNames(names: Iterable[String]): ResolveEnv =
       copy(reservedLocals = reservedLocals ++ names)
 
@@ -232,20 +224,15 @@ object Elaborator {
     }
 
     /**
-     * Bind every member of a recursive group into one body scope. Unlike ordinary locals, these bindings are
-     * deliberately allowed despite reservedLocals: the reservation prevents parameters and lets from shadowing the
-     * group names.
+     * Bind every member of a recursive group to the local ref its name denotes in the group's bodies. The names are
+     * reserved beforehand, so no parameter or let takes one.
      */
     def bindRecursivePeers(peers: Vector[(String, GlobalName)]): (Vector[CA.LocalRef], ResolveEnv) = {
       peers.foldLeft((Vector.empty[CA.LocalRef], this)) { case ((refs, cur), (name, fullName)) =>
         if (!cur.reservedLocals.contains(name)) wtf(s"$name is not reserved for recursive peer binding")
-        if (cur.scopes.head.contains(name)) fail(AlreadyDefined(name))
+        if (cur.recursiveAliases.contains(fullName)) fail(AlreadyDefined(name))
         val (ref, next) = cur.allocate(name)
-        val bound = next.copy(
-          scopes = (next.scopes.head + (name -> ref)) :: next.scopes.tail,
-          recursiveAliases = next.recursiveAliases + (fullName -> ref)
-        )
-        (refs :+ ref, bound)
+        (refs :+ ref, next.copy(recursiveAliases = next.recursiveAliases + (fullName -> ref)))
       }
     }
 
@@ -384,11 +371,9 @@ object Elaborator {
             SA.FuncHeader(implicitFamilyBinders :+ selfBinder, resultTy, field.span),
             field.span
           )
-        // The selector is an ordinary match on `self` binding every stored field and returning the
-        // selected one, at the selector's declared result type.
-        val argNames = storedBinders.zipWithIndex.map { case (binder, idx) =>
-          if (idx == fieldIdx) field.name else if (binder.name == "_") "_" else binder.name
-        }
+        // The selector is an ordinary match on `self` binding every stored field, each where its binder is written, and
+        // returning the selected one, at the selector's declared result type.
+        val patternVars = storedBinders.map(binder => SA.Term.PatternVar(binder.name, binder.span))
         val body = SA.Term.Match(
           SA.Term.Ident(selfName, selfSpan),
           motive = resultTy,
@@ -396,7 +381,7 @@ object Elaborator {
             SA.Term.Case(
               Vector(ctor.name),
               useShortName = true,
-              argNames,
+              patternVars,
               SA.Term.Ident(field.name, field.span),
               field.span
             )
@@ -448,7 +433,7 @@ object Elaborator {
         closure(written) ++ inBinders ++ freeIdentifiers(header.ty, inner) ++ freeIdentifiers(body, inner)
       case SA.Term.Scope(name, body, _) => freeIdentifiers(body, bound + name)
       case SA.Term.Match(scrut, motive, cases, _) =>
-        free(scrut) ++ free(motive) ++ cases.flatMap(c => freeIdentifiers(c.body, bound ++ c.argNames))
+        free(scrut) ++ free(motive) ++ cases.flatMap(c => freeIdentifiers(c.body, bound ++ c.patternVars.map(_.name)))
       case SA.Term.Body(statements, out, _) =>
         // Lets scope left to right, each one's own value outside it; an open binds no local.
         val (inLets, inner) =
@@ -462,33 +447,29 @@ object Elaborator {
   }
 
   /**
-   * Elaborate a dotted path using the local-first rule.
-   *
-   * If the first segment is a local, the remaining path is a projection chain. Otherwise the entire path is resolved
-   * through the global/namespace/open machinery.
+   * Elaborate a dotted path. This is the one order in which a name resolves (spec §1):
+   *   1. a local, the rest of the path being a projection chain;
+   *   2. in a sort or closure field, one of the field's forms, as its qualified name does;
+   *   3. a member of the recursive group being elaborated, by its short or qualified name. It is not a local, so a
+   *      field's forms win over it: `level = succ(u)` means `Level.succ(u)` even in the body of a recursive `def succ`;
+   *   4. a global, through the current namespace and then the open scopes.
+   * A rooted path skips the first two.
    */
   private def elabPath[A](path: SurfacePath, env: ResolveEnv)(
       local: (CA.LocalRef, Span) => A,
       global: (String, Span) => A,
       select: (A, String, Span) => A
   ): A = {
-    def selectTail(base: A, tail: Vector[String]): A =
-      tail.foldLeft(base) { case (cur, field) => select(cur, field, path.span) }
+    def selectTail(base: A): A =
+      path.parts.tail.foldLeft(base) { case (cur, field) => select(cur, field, path.span) }
 
-    def resolveNonLocalPath: A =
-      env.resolveQualifiedLocal(path) match {
-        case Some(ref) => local(ref, path.span)
-        case None      => env.resolvePath(path)(global, select)
-      }
-
-    if (!path.root && path.parts.nonEmpty) {
-      env.scopes.collectFirst(Function.unlift(_.get(path.parts.head))) match {
-        case Some(ref) => selectTail(local(ref, path.span), path.parts.tail)
-        case None      => resolveNonLocalPath
-      }
-    } else {
-      resolveNonLocalPath
-    }
+    val first = if (path.root) None else path.parts.headOption
+    first
+      .flatMap(env.local)
+      .map(ref => selectTail(local(ref, path.span)))
+      .orElse(first.flatMap(env.fieldForms.get).map(form => selectTail(global(form.qualifiedName, path.span))))
+      .orElse(env.recursiveMember(path).map(local(_, path.span)))
+      .getOrElse(env.resolvePath(path)(global, select))
   }
 
   /** A path as an application head: a form, or an ordinary term. */
@@ -500,14 +481,14 @@ object Elaborator {
     )
 
   /**
-   * A head that is not applied. A nullary form is complete as written; any other form exists only applied, so without
-   * its arguments it names nothing.
+   * A head that is not applied. A nullary form is complete as written; any other form exists only applied to all of its
+   * arguments (spec §2.2), so naming it without them is applying it to none.
    */
   private def unapplied(head: Either[CA.Form, CA.Term], span: Span): CA.Term =
     head match {
       case Right(term)                   => term
       case Left(form) if form.arity == 0 => CA.Term.FormOp(form, Vector.empty, span)
-      case Left(form)                    => at(span) { fail(NotFound(form.qualifiedName)) }
+      case Left(form)                    => at(span) { fail(ArityMismatch(form.arity, 0)) }
     }
 
   private def elabPathTerm(path: SurfacePath, env: ResolveEnv): CA.Term =
@@ -527,24 +508,24 @@ object Elaborator {
     val (binders, binderEnv) = elabBinders(pi.binders, CA.BinderSite.Function, piEnv)
     val body = elabTerm(pi.body, binderEnv)
     // A function type captures nothing, so an omitted closure field is Kind.unr or Lifetime.empty (spec §1).
-    def field(written: Option[SA.Term], parameter: CA.Parameter, omitted: CA.Form): CA.ClosureField =
-      CA.ClosureField.Written(
-        written.fold[CA.Term](CA.Term.FormOp(omitted, Vector.empty, pi.span))(elabField(_, parameter, env))
-      )
+    val omitted = CA.Closure.unrestricted(pi.span)
     CA.Term.Pi(
       binders,
       body,
       CA.Closure(
-        field(pi.closure.kind, CA.Parameter.Kind, CA.Form.KindUnr),
-        field(pi.closure.scope, CA.Parameter.Lifetime, CA.Form.LifetimeEmpty)
+        pi.closure.kind.map(elabField(_, CA.Parameter.Kind, env)).fold(omitted.kind)(CA.ClosureField.Written),
+        pi.closure.scope.map(elabField(_, CA.Parameter.Lifetime, env)).fold(omitted.scope)(CA.ClosureField.Written)
       ),
       pi.span
     )
   }
 
-  /** A sort's or closure's written field, elaborated with its parameter's forms open. */
-  private def elabField(term: SA.Term, parameter: CA.Parameter, env: ResolveEnv): CA.Term =
-    elabTerm(term, env.openForms(parameter))
+  /**
+   * A sort's or closure's written field, elaborated with its parameter's forms open (spec §1). What an omitted field is
+   * depends on what omits it, so each caller supplies that.
+   */
+  private def elabField(written: SA.Term, parameter: CA.Parameter, env: ResolveEnv): CA.Term =
+    elabTerm(written, env.openForms(parameter))
 
   private def elabBinder(b: SA.Binder, site: CA.BinderSite, env: ResolveEnv): (CA.Binder, ResolveEnv) = {
     val ty = elabTerm(b.ty, env)
@@ -658,29 +639,30 @@ object Elaborator {
         case _ => CA.Term.App(unapplied(head, fn.span), args.map(elabTerm(_, env)), sp)
       }
     case SA.Term.Sort(level, kind, scope, sp) =>
-      // A written field is elaborated with its parameter's forms open; an omitted one is what its former fixes.
-      def written(term: SA.Term, parameter: CA.Parameter): CA.Term = elabField(term, parameter, env)
+      // `Type` and `Prop` fix the level, and an omitted kind or scope is Kind.unr or Lifetime.empty (spec §1).
       def fixed(form: CA.Form): CA.Term = CA.Term.FormOp(form, Vector.empty, sp)
       val levelTerm = level match {
         case SA.Term.SortLevel.Zero          => fixed(CA.Form.LevelZero)
         case SA.Term.SortLevel.One           => fixed(CA.Form.LevelOne)
-        case SA.Term.SortLevel.Written(term) => written(term, CA.Parameter.Level)
+        case SA.Term.SortLevel.Written(term) => elabField(term, CA.Parameter.Level, env)
       }
       CA.Term.Sort(
         levelTerm,
-        kind.fold(fixed(CA.Form.KindUnr))(written(_, CA.Parameter.Kind)),
-        scope.fold(fixed(CA.Form.LifetimeEmpty))(written(_, CA.Parameter.Lifetime)),
+        kind.fold(fixed(CA.Form.KindUnr))(elabField(_, CA.Parameter.Kind, env)),
+        scope.fold(fixed(CA.Form.LifetimeEmpty))(elabField(_, CA.Parameter.Lifetime, env)),
         sp
       )
     case pi: SA.Term.Pi => elabPi(pi, env)
     case l: SA.Term.Lam =>
       // A lambda's omitted closure field is derived from its captures by the checker (spec §4.3).
-      def field(written: Option[SA.Term], parameter: CA.Parameter): CA.ClosureField =
-        written.fold[CA.ClosureField](CA.ClosureField.Omitted)(term =>
-          CA.ClosureField.Written(elabField(term, parameter, env))
-        )
-      val closure =
-        CA.Closure(field(l.closure.kind, CA.Parameter.Kind), field(l.closure.scope, CA.Parameter.Lifetime))
+      val closure = CA.Closure(
+        l.closure.kind
+          .map(elabField(_, CA.Parameter.Kind, env))
+          .fold[CA.ClosureField](CA.ClosureField.Omitted)(CA.ClosureField.Written),
+        l.closure.scope
+          .map(elabField(_, CA.Parameter.Lifetime, env))
+          .fold[CA.ClosureField](CA.ClosureField.Omitted)(CA.ClosureField.Written)
+      )
       val header = elabHeader(l.header, CA.BinderSite.Function, closure, env)
       header.ty match {
         case pi: CA.Term.Pi =>
@@ -713,20 +695,20 @@ object Elaborator {
         elabTerm(motive, env),
         cases.map { c =>
           val caseEnv = env.enterLocalScope
-          val (argRefs, bodyEnv) =
-            c.argNames.foldLeft((Vector.empty[CA.LocalRef], caseEnv)) { case ((curRefs, curEnv), argName) =>
-              val (ref, nextEnv) = curEnv.bind(argName, allowShadow = false)
-              (curRefs :+ ref, nextEnv)
+          val (patternVars, bodyEnv) =
+            c.patternVars.foldLeft((Vector.empty[CA.PatternVar], caseEnv)) { case ((curVars, curEnv), patternVar) =>
+              val (ref, nextEnv) = curEnv.bind(patternVar.name, allowShadow = false)
+              (curVars :+ CA.PatternVar(ref, patternVar.span), nextEnv)
             }
           val (ctorName, isFullyQualified) =
             if (c.useShortName) (c.ctorPath.head, false)
             else {
               val first = c.ctorPath.head
-              if (env.hasLocal(first))
+              if (env.local(first).nonEmpty)
                 at(c.span) { fail(LocalCaseHead(first)) }
               (globalName(env.resolveGlobalBinding(c.ctorPath, c.span)), true)
             }
-          CA.Case(ctorName, isFullyQualified, argRefs, elabTerm(c.body, bodyEnv), c.span)
+          CA.Case(ctorName, isFullyQualified, patternVars, elabTerm(c.body, bodyEnv), c.span)
         },
         sp
       )
@@ -770,16 +752,10 @@ object Elaborator {
 
     val peerInfo = headers.map(definition => definition.surface.header.name -> definition.name)
     val (peerRefs, peerEnv) = allocator.bindRecursivePeers(peerInfo)
-    val aliases = peerInfo.zip(peerRefs).map { case ((_, name), ref) => name -> ref }.toMap
-    val peerBindings = peerInfo.zip(peerRefs).map { case ((localName, _), ref) => localName -> ref }.toMap
 
     val definitions = headers.zip(peerRefs).map { case (definition, ownPeerRef) =>
       val bodyEnv = definition.header.bodyEnv
-      val bodyBase = bodyEnv.copy(
-        nextLocal = peerEnv.nextLocal,
-        scopes = (bodyEnv.scopes.head ++ peerBindings) :: bodyEnv.scopes.tail,
-        recursiveAliases = aliases
-      )
+      val bodyBase = bodyEnv.copy(nextLocal = peerEnv.nextLocal, recursiveAliases = peerEnv.recursiveAliases)
       val decrease = elabDecreaseSpec(definition.decrease, bodyEnv)
       val body = definition.surface.body match {
         case SA.ConstBody.TermBody(term) => elabTerm(term, bodyBase)

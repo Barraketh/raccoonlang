@@ -60,7 +60,7 @@ class UniverseTests extends munit.FunSuite with TestSupport {
   }
 
   // A name in a sort field resolves to a local, then to one of the field's forms, then as usual.
-  test("a level field resolves its forms ahead of the current namespace") {
+  test("a level field resolves its forms ahead of the current namespace and the opens") {
     val p =
       """
         |inductive Peano : Type
@@ -72,10 +72,48 @@ class UniverseTests extends munit.FunSuite with TestSupport {
         |  def two : Peano := succ(succ(zero))
         |}
         |
-        |{ Peano.keep(Peano, Peano.two) }
+        |open Peano
+        |def keep (A: Sort { level = succ(zero) })(x: A): A := x
+        |
+        |{ keep(Peano, Peano.keep(Peano, two)) }
         |""".stripMargin
 
     assertEquals(PrettyPrinter.print(runProgram(p)), "Peano.succ(Peano.succ(Peano.zero))")
+  }
+
+  // A recursive definition's own name and its peers' are not locals, so a field's forms win over them.
+  test("a field's forms win over a recursive definition's own name and its peers") {
+    val p =
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (_: Peano) : Peano
+        |
+        |inductive Tok : Type { kind = lin }
+        | | mk : Tok
+        |
+        |def succ {u: Level}(A: Sort { level = succ(u) })(n: Peano): Peano decreases structural(n) :=
+        |  match n returning Peano with
+        |  | Peano.zero => (fun (x: Sort { level = succ(u) }): Peano => Peano.zero)(A)
+        |  | Peano.succ k => Peano.succ(succ(A, k))
+        |
+        |mutual {
+        |  def lin (n: Peano): Peano decreases structural(n) := {
+        |    match n returning Peano with
+        |    | Peano.zero => (fun (x: Type { kind = lin }): Peano => Peano.zero)(Tok)
+        |    | Peano.succ k => Peano.succ(other(k))
+        |  }
+        |  def other (n: Peano): Peano decreases structural(n) := {
+        |    match n returning Peano with
+        |    | Peano.zero => Peano.zero
+        |    | Peano.succ k => lin(k)
+        |  }
+        |}
+        |
+        |{ lin(succ(Type, Peano.succ(Peano.zero))) }
+        |""".stripMargin
+
+    assertEquals(PrettyPrinter.print(runProgram(p)), "Peano.succ(Peano.zero)")
   }
 
   test("a local shadows a level form in a sort field") {
@@ -89,6 +127,10 @@ class UniverseTests extends munit.FunSuite with TestSupport {
 
     typecheckDecls(program("p"))
     expectOnly[TypeMismatch](typecheckDecls(program("zero")))
+    // A kind form too: `lin` is the parameter, so `Kind.unr` instantiates it and an unrestricted `Peano` fits.
+    val kindLocal =
+      "def f (lin: Kind)(A: Type { kind = lin })(x: A): A := x\ndef g : Peano := f(Kind.unr, Peano, Peano.zero)\n"
+    typecheckDecls(program("p") + kindLocal)
   }
 
   // The level forms are forms of the language, not functions: one exists only applied to all of its arguments.
@@ -97,8 +139,16 @@ class UniverseTests extends munit.FunSuite with TestSupport {
       s"def s : Sort { level = succ(succ(zero)) } := Sort { level = $level }\n"
 
     typecheckDecls(program("Level.succ(Level.zero)"))
-    expectOnly[NotFound](typecheckDecls(program("Level.succ")))
+    assertEquals(expectOnly[ArityMismatch](typecheckDecls(program("Level.succ"))), ArityMismatch(1, 0))
     expectOnly[ArityMismatch](typecheckDecls(program("Level.max(Level.zero)")))
+  }
+
+  test("a form named without its arguments is applied to none of them, and reported at its name") {
+    val source = "inductive Peano : Type\n | zero : Peano\n\ndef h (n: Peano): Peano := n\n{ h(Level.succ) }\n"
+    val diagnostic = interceptDiagnostic(typecheckDecls(source))
+
+    assertEquals(diagnostic.error, ArityMismatch(1, 0))
+    assertEquals(diagnostic.span.map(span => source.substring(span.start, span.end)), Some("Level.succ"))
   }
 
   test("the kernel owns the sort formers and level forms; the prelude declares none") {
