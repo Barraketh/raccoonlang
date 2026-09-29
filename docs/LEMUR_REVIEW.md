@@ -14,10 +14,10 @@ present at `bfd5196`; the rest were introduced or exposed by the Lemur work.
 | S2 Function-type identity | F2 | done | `3423042`, `57cc1ea` |
 | S3 Constructor parameters from the scrutinee | F3 | done | `d776c80` |
 | S4 Derived closures as capture lists; one containment rule | (refactor; retires F3's failure mode) | done | `0830800` |
-| S5 Conversion assertions and hot paths | F4, perf nits | in progress (wave 3) | |
+| S5 Conversion assertions and hot paths | F4, perf nits | in review (wave 3) | |
 | S6 Sealing cleanup | F7, F8, F9 | done | `bbb24db` |
-| S7a Parser and printer diagnostics | F10, F12, F13 | in progress (wave 3) | |
-| S7b Elaborator field resolution and pattern spans | F11, F14 | planned | |
+| S7a Parser and printer diagnostics | F10, F12, F13 | done | `973ae20` |
+| S7b Elaborator field resolution and pattern spans | F11, F14 | in progress (wave 4) | |
 
 Open decisions, not scheduled: D1–D3 below.
 
@@ -318,3 +318,18 @@ carry spans, and `LinearUnused` for one points at it.
   unavailable, and since `finishPrelude` rejects a malformed layout, such a
   prelude now fails to load. `Decl.references` treats `base.f` as naming any
   failed `*.f`. The merged branch validates (697 tests).
+- 2026-09-29: S7a landed (`973ae20`). `Attempt` is deleted: a binder commits
+  once `(name :` or `{name :` is read, so §9 errors inside Pi binders report as
+  themselves (`ParseErrorTests` reaches each in eight positions). No parse
+  failure prints a parser object any more. One table-driven sort former; `{}`
+  closures reach "empty field list"; `Select` spans start at their base (seven
+  fixtures' underlines moved to the qualified head); `returning` may start the
+  next line; both printers parenthesize a function-type codomain; a stuck field
+  projection prints as `P.x(v)` (heuristically: any one-branch match returning a
+  field of a one-constructor family). Left alone: an implicit-first Pi in term
+  position (`{A: Type} -> A -> A`) still parses as a block; `{ }` as a term now
+  says "Empty field list". The merged branch validates (708 tests).
+- 2026-09-29: S5 in review. First version asserted key verdicts one step deep,
+  which removed the exponential cost (p2: 69s to 1.6s) but no longer caught a
+  collision hidden under a parent whose keys agree because of it; sent back to
+  assert at every depth with an identity memo of checked pairs.
