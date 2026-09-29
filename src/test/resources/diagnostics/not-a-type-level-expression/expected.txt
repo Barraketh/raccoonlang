@@ -1,0 +1,5 @@
+
+<root>/main.rac:2:9: error: Level is not a type
+  match u returning Nat with
+        ^
+note: in definition f

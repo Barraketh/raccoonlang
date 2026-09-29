@@ -155,9 +155,9 @@ class ForcedImplicitTests extends munit.FunSuite with TestSupport {
     val p =
       natDecls +
         """
-          |def levelOf {u: Level}(A: Sort { level = u }): Level := u
+          |def sortOf {u: Level}(A: Sort { level = u }): Sort { level = succ(u) } := Sort { level = u }
           |
-          |def g (T: Sort { level = succ(one) }): Level := levelOf(T)
+          |def g (T: Sort { level = succ(one) }): Sort { level = succ(succ(one)) } := sortOf(T)
           |
           |{
           |  g(Peano)
@@ -170,15 +170,15 @@ class ForcedImplicitTests extends munit.FunSuite with TestSupport {
   test("run-world level projection agrees with the checker through def bodies") {
     // Coherence regression: runtime binding ascribes args to binder types (Interpreter.ascribeArgs)
     // exactly like the checker's verification pass, so projection inside `g`'s body reads the same
-    // type in both worlds and the checked equation `g(Peano) = Level.one` holds at runtime.
+    // type in both worlds and the checked equation `g(Peano) = Type` holds at runtime.
     val p =
       natDecls +
         """
-          |def levelOf {u: Level}(A: Sort { level = u }): Level := u
+          |def sortOf {u: Level}(A: Sort { level = u }): Sort { level = succ(u) } := Sort { level = u }
           |
-          |def g (T: Type): Level := levelOf(T)
+          |def g (T: Type): Sort { level = succ(one) } := sortOf(T)
           |
-          |def pf : Eq(Level, g(Peano), Level.one) := Eq.refl(g(Peano))
+          |def pf : Eq(Sort { level = succ(one) }, g(Peano), Type) := Eq.refl(g(Peano))
           |
           |{
           |  g(Peano)
@@ -186,8 +186,8 @@ class ForcedImplicitTests extends munit.FunSuite with TestSupport {
           |""".stripMargin
 
     runProgram(p) match {
-      case l: Value.Level => assertEquals(l, Value.Level.const(1))
-      case other          => fail(s"Expected a level, got $other")
+      case sort: Value.VSort => assert(ValueEquivalence.defEq(sort, Sorts.Type))
+      case other             => fail(s"Expected a sort, got $other")
     }
   }
 
@@ -212,16 +212,16 @@ class ForcedImplicitTests extends munit.FunSuite with TestSupport {
     def program(value: String): String =
       natDecls +
         s"""
-           |def idL {u: Level}{A: Sort { level = u }}(x: A): A := x
+           |def constT {A: Type}{B: Type}(x: A)(y: B): A := x
            |
            |{
-           |  let f : {A: Type} -> (x: A) -> A := $value
-           |  f(Peano.succ(Peano.zero))
+           |  let f : {A: Type} -> (x: A)(y: Peano) -> A := $value
+           |  f(Peano.succ(Peano.zero), Peano.zero)
            |}
            |""".stripMargin
 
-    assertEquals(ctorName(runProgram(program("fun {A: Type}(x: A): A => idL(x)"))), "Peano.succ")
-    expectOnly[TypeMismatch](typecheckDecls(program("idL")))
+    assertEquals(ctorName(runProgram(program("fun {A: Type}(x: A)(y: Peano): A => constT(x, y)"))), "Peano.succ")
+    expectOnly[TypeMismatch](typecheckDecls(program("constT")))
   }
 
   // An argument is synthesized and compared with its binder type like any checked term, so a
@@ -230,7 +230,7 @@ class ForcedImplicitTests extends munit.FunSuite with TestSupport {
     def program(argument: String): String =
       natDecls +
         s"""
-           |def idL {u: Level}{A: Sort { level = u }}(x: A): A := x
+           |def idT {A: Type}(x: A): A := x
            |
            |def apply1 {A: Type}(a: A)(f: (x: A) -> A): A := f(a)
            |
@@ -239,8 +239,8 @@ class ForcedImplicitTests extends munit.FunSuite with TestSupport {
            |}
            |""".stripMargin
 
-    assertEquals(ctorName(runProgram(program("fun (x: Peano): Peano => idL(x)"))), "Peano.zero")
-    expectOnly[TypeMismatch](typecheckDecls(program("idL")))
+    assertEquals(ctorName(runProgram(program("fun (x: Peano): Peano => idT(x)"))), "Peano.zero")
+    expectOnly[TypeMismatch](typecheckDecls(program("idT")))
   }
 
   test("Quot.mk takes the relation explicitly and the carrier by projection") {

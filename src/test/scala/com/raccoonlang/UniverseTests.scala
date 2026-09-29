@@ -86,7 +86,8 @@ class UniverseTests extends munit.FunSuite with TestSupport {
 
   // The level forms are forms of the language, not functions: one exists only applied to all of its arguments.
   test("a level form is written applied to all of its arguments") {
-    def program(level: String): String = s"def l : Level := $level\n"
+    def program(level: String): String =
+      s"def s : Sort { level = succ(succ(zero)) } := Sort { level = $level }\n"
 
     typecheckDecls(program("Level.succ(Level.zero)"))
     expectOnly[NotFound](typecheckDecls(program("Level.succ")))
@@ -97,7 +98,8 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     Vector("Sort", "Type", "Prop", "Level.zero", "Level.one", "Level.succ", "Level.max", "Level.imax").foreach { name =>
       assert(!Prelude.default.checkedEnv.globals.contains(name), s"the prelude declares $name")
     }
-    def program(name: String): String = s"namespace Level {\n  def $name (l: Level): Level := succ(l)\n}\n"
+    def program(name: String): String =
+      s"namespace Level {\n  def $name (u: Level)(A: Sort { level = u }): Sort { level = u } := A\n}\n"
 
     typecheckDecls(program("next"))
     expectOnly[AlreadyDefined](typecheckDecls(program("succ")))
@@ -257,20 +259,6 @@ class UniverseTests extends munit.FunSuite with TestSupport {
           case other             => fail(s"Expected Pi type to live in Prop, got: $other")
         }
       case other => fail(s"Expected the canonical eta-lambda for the Prop-valued Pi, got: $other")
-    }
-  }
-
-  test("Level is a type and has type Type") {
-    val p =
-      """
-        |{ Level }
-        |""".stripMargin
-
-    val res = runProgram(p)
-    res match {
-      case Value.LevelTpe =>
-        assert(ValueEquivalence.defEq(res.tpe, Sorts.Type))
-      case other => fail(s"Expected Level type, got: $other")
     }
   }
 

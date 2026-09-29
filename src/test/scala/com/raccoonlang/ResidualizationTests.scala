@@ -35,7 +35,7 @@ class ResidualizationTests extends munit.FunSuite {
         }
         last match {
           case CoreAst.Decl.ConstDecl(_, _, ty, CoreAst.ConstBody.TermBody(term), _) =>
-            TypeChecker.checkTerm(term, TypeChecker.getType(ty, env), env).residual
+            TypeChecker.checkTerm(term, TypeChecker.checkDeclType(ty, env).value, env).residual
           case other => fail(s"Expected a term definition, got $other")
         }
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
@@ -54,7 +54,7 @@ class ResidualizationTests extends munit.FunSuite {
           case CoreAst.Decl.ConstDecl(_, _, ty, _, _) => ty
           case other                                  => fail(s"Expected typed declaration, got $other")
         }
-        TypeChecker.checkTerm(ty, env).residual
+        TypeChecker.checkDeclType(ty, env).residual
 
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
@@ -358,10 +358,10 @@ class ResidualizationTests extends munit.FunSuite {
     }
   }
 
-  test("Pi binder residual preserves implicit level binders") {
+  test("a declaration header's residual preserves implicit level binders") {
     val p =
       """
-        |axiom f : {u: Level} -> (_: Sort { level = succ(u) }) -> Sort { level = u }
+        |axiom f {u: Level}(_: Sort { level = succ(u) }): Sort { level = u }
         |""".stripMargin
 
     checkLastDeclType(p) match {

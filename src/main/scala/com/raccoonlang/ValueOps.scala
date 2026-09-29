@@ -20,11 +20,11 @@ object ValueOps {
       if (!mayNeedMaterialization(resolved)) return resolved
 
       val rebuilt = resolved match {
-        case LevelTpe                     => resolved
-        case level: Level                 => materializeLevel(level)
-        case sort: VSort                  => Sorts.sort(materializeLevel(sort.level))
-        case Var(name, id, tpe)           => Var(name, id, materialize(tpe))
-        case VConst(name, constType, tpe) => VConst(name, constType, materialize(tpe))
+        case LevelTpe | SortParameter | Large => resolved
+        case level: Level                     => materializeLevel(level)
+        case sort: VSort                      => materializeClassifier(sort)
+        case Var(name, id, tpe)               => Var(name, id, materialize(tpe))
+        case VConst(name, constType, tpe)     => VConst(name, constType, materialize(tpe))
         case VApp(head, args, tpe, blockedOn) =>
           val materializedHead = materialize(head)
           val materializedArgs = args.map(materialize(_))
@@ -70,13 +70,13 @@ object ValueOps {
     private def materializeLevel(level: Level)(implicit eqStore: EqStore): Level =
       Interpreter.resolveInEqStore(level, eqStore) match {
         case l: Level => l
-        case other    => fail(NotALevel(other))
+        case other    => wtf(s"Level $level materialized to the non-level $other")
       }
 
-    private def materializeUniverse(value: VSort)(implicit eqStore: EqStore): VSort =
-      materialize(value) match {
-        case u: VSort => u
-        case other    => fail(NotAType(other))
+    private def materializeClassifier(classifier: Classifier)(implicit eqStore: EqStore): Classifier =
+      classifier match {
+        case sort: VSort => if (mayNeedMaterialization(sort)) Sorts.sort(materializeLevel(sort.level)) else sort
+        case Large       => Large
       }
 
     private def materializePi(pi: VPi)(implicit eqStore: EqStore): VPi = {
@@ -87,7 +87,7 @@ object ValueOps {
         env = materializeEnv(pi.env),
         synDeps = materializeDeps(pi.synDeps),
         id = materializeId(pi.id),
-        classifier0 = () => materializeUniverse(pi.tpe)(store)
+        classifier0 = () => materializeClassifier(pi.tpe)(store)
       )
     }
 

@@ -13,7 +13,7 @@ class CapturedRefsTests extends munit.FunSuite with DiagnosticAssertions {
     val captured = FreshVar.freshVar("captured", valueType)
     val env = Env.empty.putLocal(capturedRef, captured)
     val term = CTerm.Pi(
-      Vector(CoreAst.Binder(binderRef, typeSort, span)),
+      Vector(CoreAst.Binder(binderRef, typeSort, span, CoreAst.BinderSite.Function)),
       CTerm.App(
         CTerm.LocalRef(binderRef, span),
         Vector(CTerm.LocalRef(capturedRef, span)),

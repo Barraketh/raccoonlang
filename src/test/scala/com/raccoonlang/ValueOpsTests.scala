@@ -87,7 +87,7 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
     val solution = symbolicValue("CapturedSolution")
     val runtimeEnv = Env.empty.putGlobal("Type", valueType).putLocal(capturedRef, captured)
 
-    val binder = CoreAst.Binder(argRef, typeRef, span)
+    val binder = CoreAst.Binder(argRef, typeRef, span, CoreAst.BinderSite.Function)
     val pi = VPi(
       runtimeEnv,
       Vector(binder),
@@ -97,7 +97,7 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
       () => typeToTypeClassifier
     )
     val piTerm = CTerm.Pi(
-      Vector(CoreAst.Binder(argRef, typeRef, span)),
+      Vector(CoreAst.Binder(argRef, typeRef, span, CoreAst.BinderSite.Function)),
       typeRef,
       Span.synthetic()
     )
@@ -128,7 +128,7 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
     val env = Env.empty.putGlobal("Type", valueType).putLocal(capturedRef, captured)
     val runtimeEnv = env.closeForEval(Set.empty)
 
-    val binder = CoreAst.Binder(argRef, typeRef, span)
+    val binder = CoreAst.Binder(argRef, typeRef, span, CoreAst.BinderSite.Function)
     val pi = VPi(
       runtimeEnv,
       Vector(binder),
@@ -138,7 +138,7 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
       () => typeToTypeClassifier
     )
     val piTerm = CTerm.Pi(
-      Vector(CoreAst.Binder(argRef, typeRef, span)),
+      Vector(CoreAst.Binder(argRef, typeRef, span, CoreAst.BinderSite.Function)),
       typeRef,
       Span.synthetic()
     )
@@ -161,7 +161,7 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
     val env = Env.empty.putGlobal("Type", valueType).putLocal(capturedRef, captured)
 
     val piTerm = CTerm.Pi(
-      Vector(CoreAst.Binder(argRef, typeRef, span)),
+      Vector(CoreAst.Binder(argRef, typeRef, span, CoreAst.BinderSite.Function)),
       typeRef,
       Span.synthetic()
     )

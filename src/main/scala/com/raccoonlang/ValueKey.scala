@@ -45,6 +45,8 @@ object ValueKey {
     val Packed = 18
     val LevelParamAtom = 19
     val LevelIMaxAtom = 20
+    val SortParameter = 21
+    val Large = 22
   }
 
   private val SeedHi = -7046029254386353131L
@@ -164,6 +166,8 @@ object ValueKey {
 
   def orderKey(v: Value): Key = v match {
     case Value.LevelTpe        => tag(Tag.LevelTpe)
+    case Value.SortParameter   => tag(Tag.SortParameter)
+    case Value.Large           => tag(Tag.Large)
     case level: Value.Level    => levelKey(level.terms, level.c)
     case sort: Value.VSort     => mixKey(tag(Tag.Sort), sort.level.key)
     case Value.VConst(n, _, _) => mixString(tag(Tag.Const), n)

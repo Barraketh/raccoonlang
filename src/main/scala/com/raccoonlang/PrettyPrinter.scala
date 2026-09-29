@@ -210,7 +210,9 @@ object PrettyPrinter {
         .map(_.toString)
         .orElse(p.charScalars.map(scalars => s"proj[String,0](${printString(scalars)})"))
         .getOrElse(wtf("Unknown packed payload"))
-    case LevelTpe => s"Level"
+    case LevelTpe            => "Level"
+    case Value.SortParameter => "SortParameter"
+    case Value.Large         => "Large"
   }
 
 }

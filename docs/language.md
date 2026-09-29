@@ -108,13 +108,13 @@ as a named field. A field list is nonempty, and an unknown or repeated field is
 a parse error. `Type` and `Prop` fix the level, so a `level` field on either is
 a parse error too.
 
-`Level` is a first-class type. A level is a level variable or one of the level
-forms `Level.zero`, `Level.one`, `Level.succ(e)`, `Level.max(e, e)` and
-`Level.imax(e, e)`. The forms belong to the language, not to the prelude: they
-are not functions, and `Level.succ` without its argument names nothing. A name
-in a `level` field resolves to a local first, then to one of the forms
-unqualified, and only then as usual. So `level = succ(u)` means
-`Level.succ(u)`, even inside `namespace Nat`:
+A level is a level variable or one of the level forms `Level.zero`,
+`Level.one`, `Level.succ(e)`, `Level.max(e, e)` and `Level.imax(e, e)`. The
+forms belong to the language, not to the prelude: they are not functions, and
+`Level.succ` without its argument names nothing. A name in a `level` field
+resolves to a local first, then to one of the forms unqualified, and only then
+as usual. So `level = succ(u)` means `Level.succ(u)`, even inside
+`namespace Nat`:
 
 ```raccoon
 def id {u: Level}{A: Sort { level = u }}(x: A): A := x
@@ -124,6 +124,33 @@ inductive Box (u: Level)(A: Sort { level = u }) : Sort { level = u }
 
 def lift {u: Level}(A: Sort { level = succ(u) })(x: A): A := x
 ```
+
+Levels are second-class: they parameterize sorts, families and declarations,
+but `Level` is not a type, since no sort contains it. A position that requires
+a type rejects it with `NotAType`, so there is no `List(Level)`, no
+`Eq(Level, u, v)`, no constructor field or `let` holding a level, and no
+function returning one.
+
+A level variable is bound only by a declaration's header, the binders written
+before a definition's, opaque definition's or axiom's `:`, or by a family
+parameter. A family index, a constructor field, a function type and a lambda
+cannot bind one. A function type written after the `:` is an ordinary function
+type, so `axiom f : {u: Level} -> Sort { level = u } -> Nat` is `NotAType` and
+is written `axiom f {u: Level}(A: Sort { level = u }): Nat`.
+
+A level stands only at a parameter position: a sort's `level` field, or the
+argument at a binder of type `Level`, as in `Box(Level.one, Nat)`. Anywhere
+else, such as a `match` scrutinee, a block's result or an argument at an
+ordinary binder, it is `NotAType`. A term of another type at a parameter
+position, such as `Sort { level = Nat.zero }`, is `TypeMismatch`.
+
+A function type that binds a level is *large*: no sort contains it, so a large
+type fits no position that requires a type. Only a declaration's own type can
+be large, so a level-polymorphic declaration is used only applied. Naming one
+anywhere but as the head of an application is `NotAType`: `let f := id` is
+rejected, and `fun (x: Nat): Nat => id(x)` is written instead. A large function
+type whose result is a proposition is still a proposition, so a
+level-polymorphic lemma such as `Eq.symm` is a proof like any other.
 
 Universes are not cumulative. A value in `Sort { level = u }` does not
 automatically fit a position expecting a larger sort. Universe expressions must
@@ -292,9 +319,10 @@ match xs returning Vec(A, n) with
 | Vec.cons k tail head => xs
 ```
 
-A match without `returning` is a parse error. Each branch is checked against
-the motive under the branch's refinements. The match's type is the motive,
-evaluated where the match stands, whether or not the match reduces.
+A match without `returning` is a parse error, and a motive that is not a type
+is `NotAType`. Each branch is checked against the motive under the branch's
+refinements. The match's type is the motive, evaluated where the match stands,
+whether or not the match reduces.
 
 Elimination from `Prop` is restricted. A Prop-valued result is always allowed.
 A data-valued result is allowed only for an empty reachable constructor set or
