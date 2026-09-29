@@ -16,6 +16,8 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
       env,
       Vector(x, y),
       _ => Sorts.Type,
+      Value.Kind.unr,
+      Value.Lifetime.empty,
       DepSet.empty,
       ValueId.LocalId(AstNodeId(None, 0), Vector.empty),
       () => Sorts.sort(Level.succ(Level.one), Value.Kind.unr, Value.Lifetime.empty)
@@ -48,6 +50,8 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
       env,
       Vector(x, y),
       _ => Sorts.Type,
+      Value.Kind.unr,
+      Value.Lifetime.empty,
       DepSet.empty,
       ValueId.LocalId(AstNodeId(None, 0), Vector.empty),
       () => Sorts.sort(Level.succ(Level.one), Value.Kind.unr, Value.Lifetime.empty)

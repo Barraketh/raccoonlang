@@ -80,7 +80,8 @@ object PrettyPrinter {
     case ref: CoreAst.Term.Ref           => printRef(ref)
     case CoreAst.Term.Lam(ty, body, _, _, recursion, _) =>
       val decreaseStr = recursion.map(r => s" ${printDecreaseSpec(r.decreases)}").getOrElse("")
-      s"fun ${printBinders(ty.binders)}: ${printCoreTerm(ty.out)}$decreaseStr => ${printCoreTerm(body)}"
+      s"fun ${printCoreClosure(ty.closure)}${printBinders(ty.binders)}: ${printCoreTerm(ty.out)}$decreaseStr => " +
+        printCoreTerm(body)
     case m @ CoreAst.Term.Match(_, _, _, _)  => printMatch(m)
     case b: CoreAst.Term.Body                => printBody(b)
     case CoreAst.Term.Select(base, field, _) => s"${printTermAtom(base)}[$field]"
@@ -88,15 +89,10 @@ object PrettyPrinter {
       val headStr = printTermAtom(fn)
       val argsStr = args.map(printTermAtom).mkString(", ")
       s"$headStr($argsStr)"
-    case CoreAst.Term.Pi(binders, out, _, _) =>
+    case CoreAst.Term.Pi(binders, out, closure, _, _) =>
       val bindersStr = binders.map(printPiBinder).mkString(" -> ")
-      s"$bindersStr -> ${printCoreTerm(out)}"
+      s"${printCoreClosure(closure)}$bindersStr -> ${printCoreTerm(out)}"
     case CoreAst.Term.Sort(level, kind, scope, _) =>
-      def isForm(term: CoreAst.Term, form: CoreAst.Form): Boolean =
-        term match {
-          case CoreAst.Term.FormOp(`form`, _, _) => true
-          case _                                 => false
-        }
       val (former, levelField) =
         if (isForm(level, CoreAst.Form.LevelZero)) ("Prop", None)
         else if (isForm(level, CoreAst.Form.LevelOne)) ("Type", None)
@@ -112,11 +108,36 @@ object PrettyPrinter {
       s"${form.qualifiedName}$argsStr"
   }
 
+  private def isForm(term: CoreAst.Term, form: CoreAst.Form): Boolean =
+    term match {
+      case CoreAst.Term.FormOp(`form`, _, _) => true
+      case _                                 => false
+    }
+
   /** A sort as its former and the fields it spells out; a field left at its former's value is not printed. */
   private def printSort(former: String, level: Option[String], kind: Option[String], scope: Option[String]): String = {
-    val fields = level.map(l => s"level = $l").toVector ++ kind.map(k => s"kind = $k") ++ scope.map(l => s"scope = $l")
-    if (fields.isEmpty) former else s"$former { ${fields.mkString(", ")} }"
+    val fields = fieldList(
+      level.map(l => s"level = $l").toVector ++ kind.map(k => s"kind = $k") ++ scope.map(l => s"scope = $l")
+    )
+    if (fields.isEmpty) former else s"$former $fields"
   }
+
+  /**
+   * A closure prefix: the fields that are not `Kind.unr` or `Lifetime.empty`, with a trailing space, or nothing. A
+   * lambda's derived field prints as the expression the checker derived, once it has.
+   */
+  private def printClosure(kind: Option[String], scope: Option[String]): String = {
+    val fields = fieldList(kind.map(k => s"kind = $k").toVector ++ scope.map(l => s"scope = $l"))
+    if (fields.isEmpty) "" else s"$fields "
+  }
+
+  private def fieldList(fields: Vector[String]): String = if (fields.isEmpty) "" else s"{ ${fields.mkString(", ")} }"
+
+  private def printCoreClosure(closure: CoreAst.Closure): String =
+    printClosure(
+      closure.kind.term.filterNot(isForm(_, CoreAst.Form.KindUnr)).map(printCoreTerm),
+      closure.scope.term.filterNot(isForm(_, CoreAst.Form.LifetimeEmpty)).map(printCoreTerm)
+    )
 
   def printTerm(t: CoreAst.Ast): String = t match {
     case term: CoreAst.Term             => printCoreTerm(term)
@@ -179,7 +200,11 @@ object PrettyPrinter {
   private def printPi(pi: Value.VPi): String = {
     val bodyEnv = telescope.BinderOps.freshen(pi)
     val bindersStr = pi.binders.map(printPiBinder).mkString(" -> ")
-    s"$bindersStr -> ${print(pi.codomain(bodyEnv))}"
+    val closure = printClosure(
+      Option.unless(pi.closureKind.isUnr)(printKind(pi.closureKind)),
+      Option.unless(pi.closureScope.isEmpty)(printLifetime(pi.closureScope))
+    )
+    s"$closure$bindersStr -> ${print(pi.codomain(bodyEnv))}"
   }
 
   /** A variable prints as its binder name; the id only disambiguates the nameless `_`. */

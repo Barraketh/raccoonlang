@@ -458,14 +458,20 @@ object Elaborator {
         }
         SA.Term.Sort(rewrittenLevel, kind.map(rewrite), scope.map(rewrite), span)
 
-      case SA.Term.Pi(binders, body, span) =>
-        // Binders in one group scope left to right: each one's type sees the names bound before it,
-        // and the body sees them all.
+      case SA.Term.Pi(closure, binders, body, span) =>
+        // The closure stands outside the group. Binders in one group scope left to right: each one's
+        // type sees the names bound before it, and the body sees them all.
+        def rewrite(field: SA.Term): SA.Term = rewriteFieldType(structName, selfName, field, previousFields)
         val (rewrittenBinders, bodyFields) =
           binders.foldLeft((Vector.empty[SA.Binder], previousFields)) { case ((acc, fields), binder) =>
             (acc :+ binder.copy(ty = rewriteFieldType(structName, selfName, binder.ty, fields)), fields - binder.name)
           }
-        SA.Term.Pi(rewrittenBinders, rewriteFieldType(structName, selfName, body, bodyFields), span)
+        SA.Term.Pi(
+          SA.Closure(closure.kind.map(rewrite), closure.scope.map(rewrite)),
+          rewrittenBinders,
+          rewriteFieldType(structName, selfName, body, bodyFields),
+          span
+        )
 
       case other => other
     }
@@ -532,8 +538,25 @@ object Elaborator {
     val (binders, binderEnv) = elabBinders(pi.binders, CA.BinderSite.Function, piEnv)
     val body = elabTerm(pi.body, binderEnv)
     val span = Span(binders.head.span.start, body.span.end, binders.head.span.source.orElse(body.span.source))
-    CA.Term.Pi(binders, body, span)
+    // A function type captures nothing, so an omitted closure field is Kind.unr or Lifetime.empty (spec §1).
+    def field(written: Option[SA.Term], parameter: CA.Parameter, omitted: CA.Form): CA.ClosureField =
+      CA.ClosureField.Written(
+        written.fold[CA.Term](CA.Term.FormOp(omitted, Vector.empty, span))(elabField(_, parameter, env))
+      )
+    CA.Term.Pi(
+      binders,
+      body,
+      CA.Closure(
+        field(pi.closure.kind, CA.Parameter.Kind, CA.Form.KindUnr),
+        field(pi.closure.scope, CA.Parameter.Lifetime, CA.Form.LifetimeEmpty)
+      ),
+      span
+    )
   }
+
+  /** A sort's or closure's written field, elaborated with its parameter's forms open. */
+  private def elabField(term: SA.Term, parameter: CA.Parameter, env: ResolveEnv): CA.Term =
+    elabTerm(term, env.openForms(parameter))
 
   private def elabBinder(b: SA.Binder, site: CA.BinderSite, env: ResolveEnv): (CA.Binder, ResolveEnv) = {
     val ty = elabTerm(b.ty, env)
@@ -575,19 +598,29 @@ object Elaborator {
       constructorNames: Vector[GlobalName]
   )
 
-  /** A declaration's header binds `Parameter`s; a lambda's header binds `Function` binders. */
-  private def elabHeader(header: SA.FuncHeader, site: CA.BinderSite, env: ResolveEnv): HeaderResult = {
+  /**
+   * A declaration's header binds `Parameter` s and its type's closure is unrestricted, since a declaration captures
+   * nothing (spec §3.3); a lambda's header binds `Function` binders at the lambda's closure.
+   */
+  private def elabHeader(
+      header: SA.FuncHeader,
+      site: CA.BinderSite,
+      closure: CA.Closure,
+      env: ResolveEnv
+  ): HeaderResult = {
     val headerEnv = env.enterLocalScope
     val (params, bodyEnv) = elabBinders(header.params, site, headerEnv)
     val outTy = elabTerm(header.ty, bodyEnv)
     val ty =
       if (params.isEmpty) outTy
-      else CA.Term.Pi(params, outTy, header.span)
+      else CA.Term.Pi(params, outTy, closure, header.span)
     HeaderResult(ty, bodyEnv)
   }
 
-  def getType(header: SA.FuncHeader): CA.Term =
-    elabHeader(header, CA.BinderSite.Parameter, ResolveEnv.empty).ty
+  private def elabDeclHeader(header: SA.FuncHeader, env: ResolveEnv): HeaderResult =
+    elabHeader(header, CA.BinderSite.Parameter, CA.Closure.unrestricted(header.span), env)
+
+  def getType(header: SA.FuncHeader): CA.Term = elabDeclHeader(header, ResolveEnv.empty).ty
 
   private def elabLam(
       pi: CA.Term.Pi,
@@ -640,7 +673,7 @@ object Elaborator {
       }
     case SA.Term.Sort(level, kind, scope, sp) =>
       // A written field is elaborated with its parameter's forms open; an omitted one is what its former fixes.
-      def written(term: SA.Term, parameter: CA.Parameter): CA.Term = elabTerm(term, env.openForms(parameter))
+      def written(term: SA.Term, parameter: CA.Parameter): CA.Term = elabField(term, parameter, env)
       def fixed(form: CA.Form): CA.Term = CA.Term.FormOp(form, Vector.empty, sp)
       val levelTerm = level match {
         case SA.Term.SortLevel.Zero          => fixed(CA.Form.LevelZero)
@@ -655,7 +688,14 @@ object Elaborator {
       )
     case pi: SA.Term.Pi => elabPi(pi, env)
     case l: SA.Term.Lam =>
-      val header = elabHeader(l.header, CA.BinderSite.Function, env)
+      // A lambda's omitted closure field is derived from its captures by the checker (spec §4.3).
+      def field(written: Option[SA.Term], parameter: CA.Parameter): CA.ClosureField =
+        written.fold[CA.ClosureField](CA.ClosureField.Derived(None))(term =>
+          CA.ClosureField.Written(elabField(term, parameter, env))
+        )
+      val closure =
+        CA.Closure(field(l.closure.kind, CA.Parameter.Kind), field(l.closure.scope, CA.Parameter.Lifetime))
+      val header = elabHeader(l.header, CA.BinderSite.Function, closure, env)
       header.ty match {
         case pi: CA.Term.Pi =>
           elabLam(pi, header.bodyEnv, l.body, None, None, l.span)
@@ -730,7 +770,7 @@ object Elaborator {
       val decrease = defn.decreases.getOrElse {
         at(defn.span) { fail(InvalidDecreaseSpec("every mutual definition requires a decreases annotation")) }
       }
-      val header = elabHeader(defn.header.funcHeader, CA.BinderSite.Parameter, allocator)
+      val header = elabDeclHeader(defn.header.funcHeader, allocator)
       allocator = allocator.copy(nextLocal = header.bodyEnv.nextLocal)
       header.ty match {
         case pi: CA.Term.Pi => PreparedRecursiveDefinition(defn, name, header, pi, decrease)
@@ -853,7 +893,7 @@ object Elaborator {
           case Some(_) => env.reserveRecursiveNames(Vector(c.header.name))
           case None    => env
         }
-        val header = elabHeader(c.header.funcHeader, CA.BinderSite.Parameter, headerEnv)
+        val header = elabDeclHeader(c.header.funcHeader, headerEnv)
         val envWithSelf = env.addGlobal(name)
         val body = c.body match {
           case SA.ConstBody.Builtin(sp) =>
@@ -897,7 +937,7 @@ object Elaborator {
       case c: SurfaceAst.Command.Decl.AxiomDecl =>
         val name = env.qualify(c.header.name)
         val nameText = globalName(name)
-        val header = elabHeader(c.header.funcHeader, CA.BinderSite.Parameter, env)
+        val header = elabDeclHeader(c.header.funcHeader, env)
         (
           CA.Decl.AxiomDecl(nameText, header.ty, c.span),
           env.addGlobal(name)

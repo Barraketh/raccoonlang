@@ -302,7 +302,7 @@ object InductiveChecks {
       val allBinders = constructorBinders(decl.header, ctor)
       val fullTypeTerm =
         if (allBinders.isEmpty) ctor.resultTy
-        else Term.Pi(allBinders, ctor.resultTy, ctor.span)
+        else Term.Pi(allBinders, ctor.resultTy, Closure.unrestricted(ctor.span), ctor.span)
 
       val fullType = TypeChecker.getConstructorType(fullTypeTerm, curEnv, decl.header.params.length)
       curEnv.putGlobal(
@@ -395,7 +395,7 @@ object InductiveChecks {
 
   private def familyTypeTerm(decl: Decl.InductiveDecl): Term =
     if (decl.header.binders.isEmpty) decl.header.resultTy
-    else Term.Pi(decl.header.binders, decl.header.resultTy, decl.header.span)
+    else Term.Pi(decl.header.binders, decl.header.resultTy, Closure.unrestricted(decl.header.span), decl.header.span)
 
   private def checkFamilySignatures(block: Decl.InductiveBlock, env: Env): Vector[FamilySignature] = {
     val typedFamilies = block.families.map(decl => (decl, TypeChecker.checkDeclType(familyTypeTerm(decl), env).value))

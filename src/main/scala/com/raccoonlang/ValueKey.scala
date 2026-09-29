@@ -200,7 +200,11 @@ object ValueKey {
     case m: Value.NeutralThunk =>
       valueIdKey(tag(Tag.NeutralThunk), m.id)
     case p: Value.VPi =>
-      mixLong(valueIdKey(tag(Tag.Pi), p.id), p.binders.length.toLong)
+      // The closure explicitly, not through the captures: it is part of the function type's identity (spec §2.5).
+      mixKey(
+        mixKey(mixLong(valueIdKey(tag(Tag.Pi), p.id), p.binders.length.toLong), p.closureKind.key),
+        p.closureScope.key
+      )
     case p: Value.VPacked =>
       val codecId = p.codec match {
         case Value.NatCodec         => 1L

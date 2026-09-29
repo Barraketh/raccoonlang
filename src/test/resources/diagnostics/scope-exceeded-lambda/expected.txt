@@ -1,0 +1,5 @@
+
+<root>/main.rac:7:17: error: Lambda is declared at scope Lifetime.empty, which does not contain the scope l#N of capture h : Lease(l#N)
+  fun { scope = Lifetime.empty } (u: Unit): Nat => use(h)
+                ^^^^^^^^^^^^^^
+note: in definition delay

@@ -19,6 +19,7 @@ class CapturedRefsTests extends munit.FunSuite with DiagnosticAssertions {
         Vector(CTerm.LocalRef(capturedRef, span)),
         span
       ),
+      CoreAst.Closure.unrestricted(span),
       Span.synthetic()
     )
 
