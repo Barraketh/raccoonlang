@@ -14,7 +14,7 @@ present at `bfd5196`; the rest were introduced or exposed by the Lemur work.
 | S2 Function-type identity | F2 | done | `3423042`, `57cc1ea` |
 | S3 Constructor parameters from the scrutinee | F3 | done | `d776c80` |
 | S4 Derived closures as capture lists; one containment rule | (refactor; retires F3's failure mode) | done | `0830800` |
-| S5 Conversion assertions and hot paths | F4, perf nits | in review (wave 3) | |
+| S5 Conversion assertions and hot paths | F4, perf nits | done | `6efcf4b`, `9f894c7` |
 | S6 Sealing cleanup | F7, F8, F9 | done | `bbb24db` |
 | S7a Parser and printer diagnostics | F10, F12, F13 | done | `973ae20` |
 | S7b Elaborator field resolution and pattern spans | F11, F14 | in progress (wave 4) | |
@@ -333,3 +333,16 @@ carry spans, and `LinearUnused` for one points at it.
   which removed the exponential cost (p2: 69s to 1.6s) but no longer caught a
   collision hidden under a parent whose keys agree because of it; sent back to
   assert at every depth with an identity memo of checked pairs.
+- 2026-09-29: S5 landed (`6efcf4b`, `9f894c7`). Key assertions stay on by
+  default and assert beneath every key verdict, each object pair once per
+  outermost assertion (p1 n=22: 6.9s to 1.5s; p2 n=25: 53s to 1.8s; a test
+  shows a collision beneath an agreeing parent is still an internal error).
+  Also: `VSort.tpe` is lazy; `isLinear` short-cuts sorts; `synthesize` without
+  by-name thunks; `needsStructuralDefEq` tests function types before proofhood;
+  `lambdaCaptures` walks `bodyRefs`; the unreachable `Var`-of-a-parameter arms
+  and `Level.fromValue` are gone; one `materializeParameter`; `unifyParameters`
+  states later-bound first; `checkPi` has no default parameter;
+  `benchmarks/nested_zip.py` generates current syntax. Skipped:
+  `FreshVar.parameterNames` (any sort-parameter variable may be printed), and
+  sharing `normalizeKind`/`normalizeLifetime` (longer, not shorter). The
+  merged branch validates (710 tests).
