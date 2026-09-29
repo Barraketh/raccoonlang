@@ -19,10 +19,11 @@ present at `bfd5196`; the rest were introduced or exposed by the Lemur work.
 | S7a Parser and printer diagnostics | F10, F12, F13 | done | `973ae20` |
 | S7b Elaborator field resolution and pattern spans | F11, F14 | done | `0d0f789` |
 | S8 Confinement by sort scope | F6 (D1, decided) | done | `5035a69`, `b8c5f6f` |
+| S9 The program's result is never linear | D2 (decided) | in progress | |
 
 All steps are done, S8 included; the branch validates (710 tests), and every
 finding's repro was rerun against the final build. Open decisions, not
-scheduled: D2, D3, D4 and the proposals under "Follow-ups" below.
+scheduled: D3, D4 and the proposals under "Follow-ups" below.
 
 ## Findings
 
@@ -198,9 +199,12 @@ neither mentions l … may leave". It is over-conservative, not unsound. See D1.
   confined), or derive it and disallow writing it (less to write, but it drops
   "kind and scope are declared, never derived" for scopes while kinds stay
   declared, and changes surface syntax across the prelude and tests).
-- **D2.** The program's final `{ … }` result may have a linear type and is not
-  tracked. §3.2 is silent: treat it as a global (reject), or say the runtime
-  consumes it.
+- **D2. Decided 2026-09-29: reject, as S9.** The program's final `{ … }` result
+  may have a linear type and is not tracked, so a client of a sealed module can
+  end the program holding its token (`{ openFile(Unit.unit) }`, or a linear
+  closure that would close it), the one place a token can be dropped outside its
+  module; and `def main : Handle := …` is `LinearGlobal` while the same
+  expression as the result is accepted.
 - **D3.** Every family in a `mutual` block must have the same sort, kind and
   scope included (`InductiveChecks.scala:485`). `kernel.md` documents it; the
   spec only says a sibling is read by its declared classifier.
@@ -306,6 +310,15 @@ family at different lifetimes live in different sorts, so §6.2's lifetime
 equations arise only between instances sharing a scope; confinement now rests
 on the sort-scope bookkeeping, so each rule that computes a sort scope gets a
 targeted escape test.
+
+### S9. The program's result is never linear (D2)
+
+The program's result is a value outside every binder, like a global, so its
+type may not be linear. It is reported as `LinearGlobal`, generalized from a
+definition to any value outside every binder, so §9's list is unchanged. §3.2
+says so. Tests: against a sealed module whose protocol is "every handle it opens
+is closed", `{ openFile(Unit.unit) }` and a result that is a linear closure are
+rejected, and `{ closeFile(openFile(Unit.unit)) }` is accepted.
 
 ### S7b. Elaborator field resolution and pattern spans (F11, F14)
 
