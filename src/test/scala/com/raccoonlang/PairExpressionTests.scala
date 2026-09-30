@@ -117,6 +117,9 @@ class PairExpressionTests extends munit.FunSuite with TestSupport {
     evaluatesTo(shadow + "open M\n\n{ (1, Bool.true) }", "Pair.mk(1, Bool.true)")
     evaluatesTo(shadow + "{\n  open M\n  (1, Bool.true)\n}\n", "Pair.mk(1, Bool.true)")
     evaluatesTo(shadow + "open M.{Pair as Q}\n\n{ (1, Bool.true) }", "Pair.mk(1, Bool.true)")
+    val alias = "namespace N {\n  inductive Q : Type\n   | mk (n: Nat)(m: Nat) : Q\n}\n\nopen N.{Q as Pair}\n\n"
+    evaluatesTo(alias + "{ (1, 2) }", "Pair.mk(1, 2)")
+    evaluatesTo(alias + "{\n  open N.{Q as Pair}\n  (1, 2)\n}\n", "Pair.mk(1, 2)")
     expectOnly[TypeMismatch](
       typecheckDecls(shadow.replace("def pair : _root_.Pair(Nat, Bool)", "def pair : Pair(Nat, Bool)"))
     )
@@ -132,9 +135,46 @@ class PairExpressionTests extends munit.FunSuite with TestSupport {
     val own = "inductive Pair (A: Type)(B: Type) : Type\n | mk (a: A)(b: B) : Pair(A, B)\n\n"
     typecheckDecls(own + program.replace("(Unit.unit, Unit.unit)", "Pair.mk(Unit.unit, Unit.unit)"), noPair)
     assertEquals(expectOnly[NotFound](typecheckDecls(own + program, noPair)), NotFound("Pair.mk"))
-    // A prelude that declares Pair.mk defines what a pair expression applies.
-    val withPair = Prelude.fromSource("own-pair", units + "\n" + own)
+    // A prelude that declares Pair.mk defines what a pair expression applies, in its own declarations too, from where
+    // it has declared it.
+    val both = "def both : Pair(Unit, Unit) := (Unit.unit, Unit.unit)\n"
+    val withPair = Prelude.fromSource("own-pair", units + "\n" + own + both)
     typecheckDecls("def p : Pair(Unit, Unit) := (Unit.unit, Unit.unit)\n", withPair)
+    assertEquals(PrettyPrinter.print(runProgram("{ both }", withPair)), "Pair.mk(Unit.unit, Unit.unit)")
+    assertEquals(
+      interceptError[NotFound](Prelude.fromSource("early-pair", units + "\n" + program + "\n" + own)),
+      NotFound("Pair.mk")
+    )
+  }
+
+  test("a pair expression is a value that trailers select from and apply") {
+    // Pair has no selectors, so selecting a field is the selector's NotFound, and a pair is no function.
+    assertEquals(expectOnly[NotFound](typecheckDecls("def x : Nat := (1, 2).fst\n")), NotFound("Pair.fst"))
+    val applied = "def x : Nat := (Nat.succ, Nat.succ)(1)\n"
+    typecheckDecls(applied.replace("(Nat.succ, Nat.succ)(1)", "(Nat.succ)(1)"))
+    expectOnly[CannotApplyNonFunction](typecheckDecls(applied))
+  }
+
+  test("a pair expression is an argument in a type: in a signature, an annotation and a motive") {
+    evaluatesTo(
+      "def f (p: Pair(Nat, Nat))(h: Eq(Pair(Nat, Nat), p, (1, (2)))): Nat := 0\n\n{ f((1, 2), Eq.refl((1, 2))) }",
+      "0"
+    )
+    expectOnly[TypeMismatch](
+      typecheckDecls(
+        "def f (p: Pair(Nat, Nat))(h: Eq(Pair(Nat, Nat), p, (1, 2))): Nat := 0\n\n{ f((2, 1), Eq.refl((2, 1))) }"
+      )
+    )
+    typecheckDecls(
+      "def f : Nat := {\n  let h : Eq(Pair(Nat, Pair(Nat, Nat)), (1, (2, 3)), Pair.mk(1, Pair.mk(2, 3))) := Eq.refl((1, (2, 3)))\n  0\n}\n"
+    )
+    typecheckDecls(
+      "def f (b: Bool): Eq(Pair(Nat, Nat), (1, 2), (1, 2)) := match b returning Eq(Pair(Nat, Nat), (1, 2), (1, 2)) with\n" +
+        " | Bool.true => Eq.refl((1, 2))\n | Bool.false => Eq.refl(Pair.mk(1, 2))\n"
+    )
+    expectOnly[TypeMismatch](
+      typecheckDecls("def f : Nat := {\n  let h : Eq(Pair(Nat, Nat), (1, 2), (2, 1)) := Eq.refl((1, 2))\n  0\n}\n")
+    )
   }
 
   test("destructuring takes a pair expression apart, transparently") {
