@@ -9,9 +9,10 @@ prelude.
 | `Prelude.rac` | The bundled prelude, plus a `String` layout (for literals), native `Nat.div`/`Nat.mod`, and `Pair`, a pair that may hold linear values |
 | `Text.rac` | Number printing |
 | `Cuda.rac` | CUDA AST and printer; knows nothing about safety |
-| `Gpu.rac` | The sealed core: emitter, values, registers, loops, branches, shared tiles, global matrices, launch |
-| `examples/` | Kernels that must generate code |
-| `rejected/` | Mutations that must be refused, each naming the diagnostic on its `// expect:` line |
+| `Gpu.rac` | The sealed core: emitter, values, registers, loops, branches, shared tiles, global matrices, launch; and the Blackwell layer (warp roles, `elect`, the TMA stage ring, tensor memory, `tcgen05` MMA, the tensor-core epilogue), designed in `DESIGN.md` |
+| `examples/` | Kernels that must generate code: a tiled SIMT GEMM, ReLU, and TinyGEMM, a warp-specialized sm_100a GEMM |
+| `rejected/` | Programs that must be refused, each naming the diagnostic on its `// expect:` line, and `*_mutants.py` tables of one-snippet mutations of an example (run by `mutate.py`) |
+| `stub/` | Just enough of the CUDA headers for a host C++ compiler to check generated kernels |
 
 Generate a kernel, or check everything:
 
@@ -24,7 +25,9 @@ RACCOON="java -cp <raccoon classpath> com.raccoonlang.Main" gpu/check.sh
 ```
 
 `gen.sh` falls back to `sbt run`; `check.sh` needs a fast launcher in `RACCOON`. The CLI prints a computed `String`
-as a constructor tree, and `render.py` turns it back into text.
+as a constructor tree, and `render.py` turns it back into text; printing a large kernel recurses deeply, so give the
+launcher a large stack (`java -Xss64m …`). When `clang++` is present, `check.sh` also compiles each generated kernel
+against `stub/`.
 
 ## What the types guarantee
 
@@ -41,3 +44,9 @@ as a constructor tree, and `render.py` turns it back into text.
 
 Index bounds are checked while generating, where every size is concrete: a read that is not provably in bounds turns
 the kernel into an `#error`.
+
+The Blackwell layer extends the same rules to asynchronous hardware (`DESIGN.md`): warp roles made by `split` and
+`elect`; a stage ring whose endpoints an elected thread takes, so its per-thread stage and phase registers stay with
+one thread; a one-shot tensor-memory permit; an accumulator whose typestate (`empty`, pending under one elected
+thread, `ready`) orders the first MMA, the commit and the epilogue's loads; and tensor-map boxes that fix the layout
+the TMA writes and the MMA descriptors read.

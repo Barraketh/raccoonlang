@@ -1,6 +1,7 @@
 #!/bin/sh
-# Checks the spike: every example must generate code, and every file under rejected/ must fail with the diagnostic
-# kind named on its `// expect:` line (or, for `#error`, generate a kernel carrying that generation-time error).
+# Checks the spike: every example must generate code, every file under rejected/ must fail with the diagnostic
+# kind named on its `// expect:` line (or, for `#error`, generate a kernel carrying that generation-time error), and
+# every mutant in a rejected/*_mutants.py table must be refused as the table says (see mutate.py).
 here=$(cd "$(dirname "$0")" && pwd)
 run() { ${RACCOON:?set RACCOON to a raccoon launcher} --prelude "$here/Prelude.rac" --root "$here" "$@"; }
 status=0
@@ -29,5 +30,8 @@ for f in "$here"/rejected/*.rac; do
       *) echo "FAIL $(basename "$f"): expected $want, got '$got'"; status=1 ;;
     esac
   fi
+done
+for t in "$here"/rejected/*_mutants.py; do
+  python3 "$here/mutate.py" "$t" || status=1
 done
 exit $status

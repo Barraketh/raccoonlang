@@ -31,16 +31,19 @@ namespace Tiny {
 
   // The producer: fill one stage per K slice, then wait for every stage to be released.
   def producer {l: Lifetime}{r: Lifetime}(k: Tiny.Launch(l))(ring: Ring(r, Tiny.ring))(steps: Val(l, Grain.uniform, DType.u32))
-      (p: Producer(r))(m: Lifetime)(e: Ctx(m, Tiny.Load)): Pair(Ctx(m, Tiny.Load), ProducerDone(r)) := {
-    let step := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Tiny.One))(p: Producer(r)): Pair(Ctx(n, Tiny.One), Producer(r)) => {
-      match Gpu.acquire(e, ring, p) returning Pair(Ctx(n, Tiny.One), Producer(r)) with
-      | Pair.mk e s => Gpu.fill(e, ring, s, k.a, Gpu.mulC(i, 64), k.m0, k.b, Gpu.mulC(i, 64), k.n0)
-    }
+      (p: Producer(r))(m: Lifetime)(e: Ctx(m, Tiny.Load)): Pair(Ctx(m, Tiny.Load), ProducerDone(r)) :=
     Gpu.elect(e, ProducerDone(r), fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, Tiny.One)): Pair(Ctx(j, Tiny.One), ProducerDone(r)) => {
-      match Gpu.loopPeeled(e, steps, p, step, step) returning Pair(Ctx(j, Tiny.One), ProducerDone(r)) with
-      | Pair.mk e p => Gpu.finishProducer(e, ring, p)
+      let step := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Tiny.One))(p: ProducerAt(r, j))
+          : Pair(Ctx(n, Tiny.One), ProducerAt(r, j)) => {
+        match Gpu.acquire(e, ring, p) returning Pair(Ctx(n, Tiny.One), ProducerAt(r, j)) with
+        | Pair.mk e s => Gpu.fill(e, ring, s, k.a, Gpu.mulC(i, 64), k.m0, k.b, Gpu.mulC(i, 64), k.n0)
+      }
+      match Gpu.takeProducer(e, w, ring, p) returning Pair(Ctx(j, Tiny.One), ProducerDone(r)) with
+      | Pair.mk e p => {
+        match Gpu.loopPeeled(e, steps, p, step, step) returning Pair(Ctx(j, Tiny.One), ProducerDone(r)) with
+        | Pair.mk e p => Gpu.finishProducer(e, ring, p)
+      }
     })
-  }
 
   // The MMA issuer: accumulate every stage into tensor memory, releasing each when its MMAs complete, then hand the
   // accumulator to the epilogue.
@@ -48,44 +51,47 @@ namespace Tiny {
       (steps: Val(l, Grain.uniform, DType.u32))(c: Consumer(r))(acc: Acc(a, AccState.empty))(send: AccSend(h, a))
       (m: Lifetime)(e: Ctx(m, Tiny.Issue)): Pair(Ctx(m, Tiny.Issue), ConsumerDone(r)) :=
     Gpu.elect(e, ConsumerDone(r), fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, Tiny.One)): Pair(Ctx(j, Tiny.One), ConsumerDone(r)) => {
-      let first := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Tiny.One))(st: Pair(Consumer(r), Acc(a, AccState.empty)))
-          : Pair(Ctx(n, Tiny.One), Pair(Consumer(r), AccPending(a, j))) => {
-        match st returning Pair(Ctx(n, Tiny.One), Pair(Consumer(r), AccPending(a, j))) with
+      let first := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Tiny.One))(st: Pair(ConsumerAt(r, j), Acc(a, AccState.empty)))
+          : Pair(Ctx(n, Tiny.One), Pair(ConsumerAt(r, j), AccPending(a, j))) => {
+        match st returning Pair(Ctx(n, Tiny.One), Pair(ConsumerAt(r, j), AccPending(a, j))) with
         | Pair.mk c acc => {
-          match Gpu.await(e, ring, c) returning Pair(Ctx(n, Tiny.One), Pair(Consumer(r), AccPending(a, j))) with
+          match Gpu.await(e, ring, c) returning Pair(Ctx(n, Tiny.One), Pair(ConsumerAt(r, j), AccPending(a, j))) with
           | Pair.mk e rd => {
-            match Gpu.mmaFirst(e, w, ring, rd, t, acc) returning Pair(Ctx(n, Tiny.One), Pair(Consumer(r), AccPending(a, j))) with
+            match Gpu.mmaFirst(e, w, ring, rd, t, acc) returning Pair(Ctx(n, Tiny.One), Pair(ConsumerAt(r, j), AccPending(a, j))) with
             | Pair.mk e both => {
-              match both returning Pair(Ctx(n, Tiny.One), Pair(Consumer(r), AccPending(a, j))) with
+              match both returning Pair(Ctx(n, Tiny.One), Pair(ConsumerAt(r, j), AccPending(a, j))) with
               | Pair.mk used acc => {
-                match Gpu.releaseByMma(e, w, ring, used) returning Pair(Ctx(n, Tiny.One), Pair(Consumer(r), AccPending(a, j))) with
+                match Gpu.releaseByMma(e, w, ring, used) returning Pair(Ctx(n, Tiny.One), Pair(ConsumerAt(r, j), AccPending(a, j))) with
                 | Pair.mk e c => Pair.mk(e, Pair.mk(c, acc))
               }
             }
           }
         }
       }
-      let rest := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Tiny.One))(st: Pair(Consumer(r), AccPending(a, j)))
-          : Pair(Ctx(n, Tiny.One), Pair(Consumer(r), AccPending(a, j))) => {
-        match st returning Pair(Ctx(n, Tiny.One), Pair(Consumer(r), AccPending(a, j))) with
+      let rest := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Tiny.One))(st: Pair(ConsumerAt(r, j), AccPending(a, j)))
+          : Pair(Ctx(n, Tiny.One), Pair(ConsumerAt(r, j), AccPending(a, j))) => {
+        match st returning Pair(Ctx(n, Tiny.One), Pair(ConsumerAt(r, j), AccPending(a, j))) with
         | Pair.mk c acc => {
-          match Gpu.await(e, ring, c) returning Pair(Ctx(n, Tiny.One), Pair(Consumer(r), AccPending(a, j))) with
+          match Gpu.await(e, ring, c) returning Pair(Ctx(n, Tiny.One), Pair(ConsumerAt(r, j), AccPending(a, j))) with
           | Pair.mk e rd => {
-            match Gpu.mmaNext(e, w, ring, rd, t, acc) returning Pair(Ctx(n, Tiny.One), Pair(Consumer(r), AccPending(a, j))) with
+            match Gpu.mmaNext(e, w, ring, rd, t, acc) returning Pair(Ctx(n, Tiny.One), Pair(ConsumerAt(r, j), AccPending(a, j))) with
             | Pair.mk e both => {
-              match both returning Pair(Ctx(n, Tiny.One), Pair(Consumer(r), AccPending(a, j))) with
+              match both returning Pair(Ctx(n, Tiny.One), Pair(ConsumerAt(r, j), AccPending(a, j))) with
               | Pair.mk used acc => {
-                match Gpu.releaseByMma(e, w, ring, used) returning Pair(Ctx(n, Tiny.One), Pair(Consumer(r), AccPending(a, j))) with
+                match Gpu.releaseByMma(e, w, ring, used) returning Pair(Ctx(n, Tiny.One), Pair(ConsumerAt(r, j), AccPending(a, j))) with
                 | Pair.mk e c => Pair.mk(e, Pair.mk(c, acc))
               }
             }
           }
         }
       }
-      match Gpu.loopPeeled(e, steps, Pair.mk(c, acc), first, rest) returning Pair(Ctx(j, Tiny.One), ConsumerDone(r)) with
-      | Pair.mk e st => {
-        match st returning Pair(Ctx(j, Tiny.One), ConsumerDone(r)) with
-        | Pair.mk c acc => Pair.mk(Gpu.sendAcc(e, w, hd, send, acc), Gpu.finishConsumer(c))
+      match Gpu.takeConsumer(e, w, ring, c) returning Pair(Ctx(j, Tiny.One), ConsumerDone(r)) with
+      | Pair.mk e c => {
+        match Gpu.loopPeeled(e, steps, Pair.mk(c, acc), first, rest) returning Pair(Ctx(j, Tiny.One), ConsumerDone(r)) with
+        | Pair.mk e st => {
+          match st returning Pair(Ctx(j, Tiny.One), ConsumerDone(r)) with
+          | Pair.mk c acc => Pair.mk(Gpu.sendAcc(e, w, hd, send, acc), Gpu.finishConsumer(c))
+        }
       }
     })
 
@@ -124,7 +130,7 @@ namespace Tiny {
 
   def kernel : Kernel :=
     Gpu.tmaGemmKernel("tinygemm", Tiny.boxA, Tiny.boxB,
-      fun (l: Lifetime)(e: Ctx(l, Tiny.Cta))(k: Tiny.Launch(l))(own: COwn(l, 128)): Ctx(l, Tiny.Cta) => {
+      fun (l: Lifetime)(e: Ctx(l, Tiny.Cta))(k: Tiny.Launch(l))(own: COwn(l, 128))(permit: TmemPermit(l)): Ctx(l, Tiny.Cta) => {
         let steps := Gpu.ceilDivC(k.k, 64, Eq.refl(Bool.true))
         let body := fun (a: Lifetime)(t: Tmem(a, 128))(acc: Acc(a, AccState.empty))(e: Ctx(l, Tiny.Cta))
             : Pair(Ctx(l, Tiny.Cta), Pair(Acc(a, AccState.ready), Unit)) => {
@@ -137,7 +143,7 @@ namespace Tiny {
           match Gpu.withAccHandoff(e, t, handoff) returning Pair(Ctx(l, Tiny.Cta), Pair(Acc(a, AccState.ready), Unit)) with
           | Pair.mk e acc => Pair.mk(e, Pair.mk(acc, Unit.unit))
         }
-        match Gpu.withTmem(e, 128, Unit, body) returning Ctx(l, Tiny.Cta) with
+        match Gpu.withTmem(e, permit, 128, Unit, body) returning Ctx(l, Tiny.Cta) with
         | Pair.mk e u => e
       })
 }
