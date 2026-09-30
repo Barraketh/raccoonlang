@@ -119,23 +119,43 @@ MUTANTS = [
         name="second_tmem_allocation", expect="LinearReused", mentions="permit",
         why="Allocates tensor memory after giving up the permit: `tcgen05.alloc` after `relinquish_alloc_permit` is "
             "illegal.",
-        old="""        let (e, u) := Gpu.withTmem(e, permit, 128, Unit, body)""",
+        old="""        let (e, u) := Gpu.withTmem(e, permit, 128, AccState.ready, Unit, body)""",
         new="""        let gone := Gpu.skipTmem(permit)
-        let (e, u) := Gpu.withTmem(e, permit, 128, Unit, body)""",
+        let (e, u) := Gpu.withTmem(e, permit, 128, AccState.ready, Unit, body)""",
     ),
     dict(
         name="static_and_dynamic_shared", expect="#error",
         why="Declares a static shared array in a kernel whose TMA stages live in the dynamic buffer: the static array "
             "comes first in the shared window, and the dynamic buffer could lose the 1024-byte alignment the 128-byte "
             "swizzle needs.",
-        old="""        let (e, u) := Gpu.withTmem(e, permit, 128, Unit, body)
+        old="""        let (e, u) := Gpu.withTmem(e, permit, 128, AccState.ready, Unit, body)
         e""",
         new="""        Gpu.shared(e, DType.f32, 256, fun (a2: Lifetime)(sa: Smem(a2, DType.f32, 256))(ta: Tile(a2, DType.f32, 256, TileState.empty))
             (e: Ctx(l, Tiny.Cta)): Ctx(l, Tiny.Cta) => {
           let gone := Gpu.release(ta)
-          let (e, u) := Gpu.withTmem(e, permit, 128, Unit, body)
+          let (e, u) := Gpu.withTmem(e, permit, 128, AccState.ready, Unit, body)
           e
         })""",
+    ),
+    dict(
+        name="kernel_name_not_identifier", expect="#error",
+        why="Names the kernel with text that is not a C identifier: the name is printed as written, so it could "
+            "inject code of its own.",
+        old="""    Gpu.tmaGemmKernel("tinygemm",""",
+        new="""    Gpu.tmaGemmKernel("tinygemm(float* C) { C[0] = 0.0f; } __global__ void evil",""",
+    ),
+    dict(
+        name="literal_wider_than_u32", expect="#error",
+        why="Scales the K coordinate by a constant that does not fit the 32-bit value it is typed as.",
+        old="""        Gpu.fill(e, ring, s, k.a, Gpu.mulC(i, 64), k.m0, k.b, Gpu.mulC(i, 64), k.n0)""",
+        new="""        Gpu.fill(e, ring, s, k.a, Gpu.mulC(i, 4294967296), k.m0, k.b, Gpu.mulC(i, 64), k.n0)""",
+    ),
+    dict(
+        name="box_narrower_than_swizzle", expect="#error",
+        why="Loads 32-element (64-byte) boxes of A with the 128-byte swizzle, which needs 128-byte rows and "
+            "1024-byte-aligned stages.",
+        old="""  def boxA : TmaSpec := TmaSpec.mk(64, 128)""",
+        new="""  def boxA : TmaSpec := TmaSpec.mk(32, 128)""",
     ),
     dict(
         name="mma_m64", expect="#error",

@@ -95,7 +95,7 @@ namespace Tiny {
     (e, ((pd, cd), acc))
   }
 
-  def kernel : Kernel :=
+  def kernel : Program :=
     Gpu.tmaGemmKernel("tinygemm", Tiny.boxA, Tiny.boxB,
       fun (l: Lifetime)(e: Ctx(l, Tiny.Cta))(k: Tiny.Launch(l))(own: COwn(l, 128))(permit: TmemPermit(l)): Ctx(l, Tiny.Cta) => {
         let steps := Gpu.ceilDivC(k.k, 64, Eq.refl(Bool.true))
@@ -110,9 +110,9 @@ namespace Tiny {
           let (e, acc) := Gpu.withAccHandoff(e, t, handoff)
           (e, (acc, Unit.unit))
         }
-        let (e, u) := Gpu.withTmem(e, permit, 128, Unit, body)
+        let (e, u) := Gpu.withTmem(e, permit, 128, AccState.ready, Unit, body)
         e
       })
 }
 
-{ Cuda.kernel(Tiny.kernel) }
+{ Gpu.render(Tiny.kernel) }

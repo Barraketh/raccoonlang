@@ -12,7 +12,7 @@ namespace Relu {
   def G : Group := Group.cta(256)
   def D : Group := Group.diverged(256)
 
-  def kernel : Kernel :=
+  def kernel : Program :=
     Gpu.tiledKernel("relu16", DType.f32, 16, Eq.refl(Bool.true),
       fun (l: Lifetime)(e: Ctx(l, Relu.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, Relu.G) => {
         let (e, x) := Gpu.gload(e, k.a, k.row, k.col)
@@ -26,4 +26,4 @@ namespace Relu {
       })
 }
 
-{ Cuda.kernel(Relu.kernel) }
+{ Gpu.render(Relu.kernel) }

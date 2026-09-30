@@ -6,7 +6,7 @@ namespace T {
   open Cuda
   def G : Group := Group.cta(256)
 
-  def kernel : Kernel := Gpu.tiledKernel("bad", DType.f32, 16, Eq.refl(Bool.true),
+  def kernel : Program := Gpu.tiledKernel("bad", DType.f32, 16, Eq.refl(Bool.true),
     fun (l: Lifetime)(e: Ctx(l, T.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, T.G) => e)
 }
-{ Cuda.kernel(T.kernel) }
+{ Gpu.render(T.kernel) }

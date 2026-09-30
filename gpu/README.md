@@ -38,13 +38,17 @@ against `stub/`.
   a loop index cannot become loop state, and a shared-array handle cannot leave its allocation.
 - **Authority.** `Tile` and `GOwn` are sealed, linear and fieldless. A shared tile moves `empty → written → ready →
   reading → empty` through stores, barriers and reads, which rules out reading before a barrier and overwriting
-  before one. The output block is written exactly once.
+  before one. A tile is released only `empty`, since a loop body's shared array is reused by the next iteration.
+  The output block is written exactly once.
 - **Codegen soundness.** A loop body is generated once and captures no linear value, so all authority it uses travels
   in state whose type every iteration preserves. The same holds for branch arms, which are generated one after the
-  other.
+  other. That state must be `Fixed` (one value per type), so the code after a loop or branch cannot depend on which
+  arm ran or how often the body did.
+- **What is printed.** Only `Gpu.render` of a sealed `Program`, which only the kernel builders make, so every printed
+  kernel came from the typed core, with its own shared memory and launcher. Its name must be a C identifier.
 
 Index bounds are checked while generating, where every size is concrete: a read that is not provably in bounds turns
-the kernel into an `#error`.
+the kernel into an `#error`, as does a 32-bit literal that does not fit 32 bits.
 
 The Blackwell layer extends the same rules to asynchronous hardware (`DESIGN.md`): warp roles made by `split` and
 `elect`; a stage ring whose endpoints an elected thread takes, so its per-thread stage and phase registers stay with

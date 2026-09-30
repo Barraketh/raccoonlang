@@ -71,8 +71,10 @@ registers the protocol owns:
 - **Tensor memory** (`withTmem`, in the whole CTA): the kernel hands out one linear `TmemPermit`, which `withTmem`
   uses up: warp 0 allocates `n` columns (`tcgen05.alloc` into a shared word, then `relinquish_alloc_permit`, after
   which a second allocation would be illegal), the CTA synchronizes with the `tcgen05.fence` pair, and the callback
-  receives `Acc(a, empty)`. The callback must hand back `Acc(a, ready)`, so no tensor-core work is in flight; the CTA
-  synchronizes again and warp 0 deallocates. A kernel without tensor memory gives the permit up with `skipTmem`.
+  receives `Acc(a, empty)`. The callback must hand back the accumulator (`Acc` never has tensor-core work in flight),
+  in the state `withTmem` is told (`ready` for TinyGEMM, `empty` after an accumulator ring); the CTA synchronizes
+  again and warp 0 deallocates. `ready` means holds results: only `recvAcc` makes it, after MMAs that wrote every
+  column (the MMA's N is exactly the accumulator's columns, and the epilogue reads exactly that many). A kernel without tensor memory gives the permit up with `skipTmem`.
 - **Accumulator**: `Acc(a, empty)` → `mmaFirst` (the first MMA of the stage has `enable_input_d = 0`, since tensor
   memory is not zeroed) → `AccPending(a, m)` → `mmaNext` (accumulating) → `sendAcc` commits it to a one-shot mbarrier
   (`withAccHandoff`). The epilogue's `recvAcc` waits for the barrier, fences `after_thread_sync`, and receives
@@ -101,8 +103,9 @@ generation-time error), which would come first in the shared window. So TMA writ
 comes with a generated host launcher (`<name>_launch`) that encodes both maps from the same boxes, checks the extents
 the kernel's 32-bit index arithmetic and TMA's signed coordinates need, sets the dynamic shared memory, and launches
 the grid the kernel assumes. What remains to the caller is that A, B and C are distinct device arrays of M×K, N×K
-and M×N elements. Shapes the tensor cores or the epilogue do not support (K box other than 64, M other than 128,
-N not a multiple of 16 up to 256 or wider than the accumulator) are generation-time errors.
+and M×N elements. Shapes the tensor cores or the epilogue do not support are generation-time errors: `withRing` takes
+only boxes 64 elements (one 128-byte swizzle row) wide and a multiple of 8 rows (so every stage is 1024-byte aligned),
+and an MMA needs M = 128 and N a multiple of 16 up to 256, equal to the accumulator's columns.
 
 ## 4. Output
 
@@ -150,8 +153,8 @@ tiles. What is new:
   warpgroup (`takeAccConsumer`, with the alignment proof), so its 128 threads run every ring operation together and
   keep identical stage and phase registers: `awaitAcc` (wait full, fence) → `AccFull` → `storeTile` → `releaseAcc`
   (`tcgen05.fence::before_thread_sync`, 128 arrivals on empty). `finishAccProducer` waits until the epilogue has read
-  every buffer, so the accumulator goes back to `withTmem` with no tensor-core work in flight. As with the stage ring,
-  trip counts that disagree deadlock; they cannot race.
+  every buffer, so the accumulator goes back to `withTmem`, `empty`, with no tensor-core work in flight. As with the
+  stage ring, trip counts that disagree deadlock; they cannot race.
 - **Launcher.** The host launcher queries the SM count and launches `min(tiles, SMs)` CTAs.
 
 `rejected/persistent_gemm_mutants.py` refuses storing a tile twice, storing to a tile of the program's choosing,

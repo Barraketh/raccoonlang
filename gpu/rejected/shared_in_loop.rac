@@ -1,0 +1,35 @@
+// expect: TypeMismatch
+// A shared array declared in a loop body is one array, reused by every iteration. Releasing it while threads may
+// still be reading it lets the next iteration's writes race this iteration's reads: `release` takes only an `empty`
+// tile, one that passed a barrier after its reads.
+import Gpu
+namespace T {
+  open Gpu
+  open Cuda
+  def G : Group := Group.cta(256)
+
+  def kernel : Program := Gpu.tiledKernel("bad", DType.f32, 16, Eq.refl(Bool.true),
+    fun (l: Lifetime)(e: Ctx(l, T.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, T.G) => {
+      let (e, acc) := Gpu.reg(e, Gpu.zero(DType.f32))
+      let body := fun (m: Lifetime)(i: Val(m, Grain.uniform, DType.u32))(e: Ctx(m, T.G))(s: Unit): Pair(Ctx(m, T.G), Unit) => {
+        let e := Gpu.shared(e, DType.f32, 256,
+          fun (a: Lifetime)(buf: Smem(a, DType.f32, 256))(t: Tile(a, DType.f32, 256, TileState.empty))(e: Ctx(m, T.G)): Ctx(m, T.G) => {
+            let (e, x) := Gpu.gload(e, k.a, k.row, i)
+            let (e, t) := Gpu.storeMine(e, buf, t, x)
+            let (e, t) := Gpu.sync1(e, t)
+            let rd := fun (r: Lifetime)(sr: SRead(a, r, DType.f32, 256))(e: Ctx(m, T.G)): Pair(Ctx(m, T.G), Unit) => {
+              let (e, y) := Gpu.sread(e, buf, sr, Gpu.lit(255))
+              (Gpu.set(e, acc, y), Unit.unit)
+            }
+            let (e, (t, u)) := Gpu.reads(e, t, rd)
+            let gone := Gpu.release(t)
+            e
+          })
+        (e, s)
+      }
+      let (e, s) := Gpu.loop(e, k.k, Gpu.fixedUnit, Unit.unit, body)
+      let (e, v) := Gpu.get(e, acc)
+      Gpu.gstore(e, k.c, c, v)
+    })
+}
+{ Gpu.render(T.kernel) }

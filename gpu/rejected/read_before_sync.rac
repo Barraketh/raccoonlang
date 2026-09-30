@@ -7,7 +7,7 @@ namespace T {
   open Cuda
   def G : Group := Group.cta(256)
 
-  def kernel : Kernel := Gpu.tiledKernel("bad", DType.f32, 16, Eq.refl(Bool.true),
+  def kernel : Program := Gpu.tiledKernel("bad", DType.f32, 16, Eq.refl(Bool.true),
     fun (l: Lifetime)(e: Ctx(l, T.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, T.G) =>
       Gpu.shared(e, DType.f32, 256, fun (a: Lifetime)(sa: Smem(a, DType.f32, 256))(ta: Tile(a, DType.f32, 256, TileState.empty))(e: Ctx(l, T.G)): Ctx(l, T.G) => {
         let (e, t) := Gpu.storeMine(e, sa, ta, Gpu.zero(DType.f32))
@@ -18,4 +18,4 @@ namespace T {
         Gpu.gstore(e, k.c, c, v)
       }))
 }
-{ Cuda.kernel(T.kernel) }
+{ Gpu.render(T.kernel) }

@@ -498,8 +498,9 @@ namespace Gpu {
       Gpu.resume(Key.key, l, g, Gpu.push(Gpu.fresh(gen), Stmt.shared(t, gen.next, n))))
   }
 
-  // Gives up authority over a shared array. Its storage is never reused, so this is safe in any state.
-  def release {a: Lifetime}{t: DType}{n: Nat}{s: TileState}(x: Tile(a, t, n, s)): Unit := {
+  // Gives up authority over a shared array that no thread can still be reading. Its storage is reused whenever the
+  // block that declared it runs again, as a loop body does, so a tile being read must first pass a barrier to `empty`.
+  def release {a: Lifetime}{t: DType}{n: Nat}(x: Tile(a, t, n, TileState.empty)): Unit := {
     match x returning Unit with
     | Tile.mk => Unit.unit
   }
@@ -643,14 +644,86 @@ namespace Gpu {
     }
   }
 
-  // The finished kernel: its code, then any generation errors as `#error` lines, so it does not compile. Static shared
-  // arrays come before the dynamic buffer in the shared window, which could then lose the 1024-byte alignment its
-  // swizzled layouts need, so a kernel may use one kind of shared memory or the other.
-  def finish (name: String)(params: List(Param))(launcher: Option(Launcher))(gen0: Gen): Kernel := {
+  // A 32-bit literal that does not fit 32 bits, anywhere in an expression.
+  def exprWide (x: Expr): Bool decreases structural(x) := {
+    match x returning Bool with
+    | Expr.var id => Bool.false
+    | Expr.lit value => Nat.ble(Gpu.u32Limit, value)
+    | Expr.lit64 value => Bool.false
+    | Expr.zero t => Bool.false
+    | Expr.param n => Bool.false
+    | Expr.special b => Bool.false
+    | Expr.bin op a b => Bool.or(Gpu.exprWide(a), Gpu.exprWide(b))
+    | Expr.max a b => Bool.or(Gpu.exprWide(a), Gpu.exprWide(b))
+    | Expr.fma a b c => Bool.or(Gpu.exprWide(a), Bool.or(Gpu.exprWide(b), Gpu.exprWide(c)))
+    | Expr.select c a b => Bool.or(Gpu.exprWide(c), Bool.or(Gpu.exprWide(a), Gpu.exprWide(b)))
+    | Expr.index base i => Bool.or(Gpu.exprWide(base), Gpu.exprWide(i))
+    | Expr.cast t a => Gpu.exprWide(a)
+    | Expr.sharedAddr offset => Bool.false
+    | Expr.sharedPtr t offset => Bool.false
+    | Expr.paramAddr n => Bool.false
+  }
+
+  def operandsWide (os: List(Operand)): Bool := List.any(os, fun (o: Operand): Bool => Gpu.exprWide(o.e))
+
+  mutual {
+    def stmtWide (s: Stmt): Bool decreases structural(s) := {
+      match s returning Bool with
+      | Stmt.decl t id init => Gpu.exprWide(init)
+      | Stmt.declMut t id init => Gpu.exprWide(init)
+      | Stmt.declOut t id => Bool.false
+      | Stmt.assign id value => Gpu.exprWide(value)
+      | Stmt.store base i value => Bool.or(Gpu.exprWide(base), Bool.or(Gpu.exprWide(i), Gpu.exprWide(value)))
+      | Stmt.shared t id size => Bool.false
+      | Stmt.forLoop id start count body => Bool.or(Bool.or(Gpu.exprWide(start), Gpu.exprWide(count)), Gpu.blockWide(body))
+      | Stmt.forStride id start stop step body =>
+        Bool.or(Bool.or(Gpu.exprWide(start), Bool.or(Gpu.exprWide(stop), Gpu.exprWide(step))), Gpu.blockWide(body))
+      | Stmt.ifElse c yes no => Bool.or(Gpu.exprWide(c), Bool.or(Gpu.blockWide(yes), Gpu.blockWide(no)))
+      | Stmt.scoped body => Gpu.blockWide(body)
+      | Stmt.sync => Bool.false
+      | Stmt.syncWarp => Bool.false
+      | Stmt.asm template outs ins => Bool.or(Gpu.operandsWide(outs), Gpu.operandsWide(ins))
+      | Stmt.error message => Bool.false
+    }
+
+    def blockWide (b: Block): Bool decreases structural(b) := {
+      match b returning Bool with
+      | Block.done => Bool.false
+      | Block.seq st more => Bool.or(Gpu.stmtWide(st), Gpu.blockWide(more))
+    }
+  }
+
+  // Whether `c` may start a C identifier (a letter or `_`), and continue one (also a digit).
+  def identStart (c: Char): Bool :=
+    Bool.or(Bool.and(Nat.ble(65, c.value), Nat.ble(c.value, 90)), Bool.or(Bool.and(Nat.ble(97, c.value), Nat.ble(c.value, 122)), Nat.beq(c.value, 95)))
+
+  def identRest (c: Char): Bool := Bool.or(Gpu.identStart(c), Bool.and(Nat.ble(48, c.value), Nat.ble(c.value, 57)))
+
+  def isIdent (name: String): Bool := {
+    match name.data returning Bool with
+    | List.nil => Bool.false
+    | List.cons c more => Bool.and(Gpu.identStart(c), Bool.not(List.any(more, fun (d: Char): Bool => Bool.not(Gpu.identRest(d)))))
+  }
+
+  // A kernel the typed core built: the only thing `render` prints. A program can neither build one nor take one apart,
+  // so it cannot change a kernel's code, shared memory or launcher.
+  sealed struct Program : Type
+   | mk (kernel: Kernel) : Program
+
+  def render (p: Program): String := Cuda.kernel(p.kernel)
+
+  // The finished kernel: its code, then any generation errors as `#error` lines, so it does not compile. The name is
+  // printed as written, so it must be a C identifier. Static shared arrays come before the dynamic buffer in the shared
+  // window, which could then lose the 1024-byte alignment its swizzled layouts need, so a kernel may use one kind of
+  // shared memory or the other. A 32-bit literal must fit 32 bits.
+  def finish (k: Key)(name: String)(params: List(Param))(launcher: Option(Launcher))(gen0: Gen): Program := {
     let code := Gpu.toBlock(gen0.code, Block.done)
-    let gen := Gpu.check(gen0, Bool.not(Bool.and(Nat.blt(0, gen0.smem), Gpu.blockShared(code))),
+    let gen1 := Gpu.check(gen0, Bool.not(Bool.and(Nat.blt(0, gen0.smem), Gpu.blockShared(code))),
       "kernel: static shared arrays and dynamic shared memory together")
-    Kernel.mk(name, params, gen.smem, Gpu.toBlock(gen.code, Gpu.toBlock(Gpu.errorsToCode(gen.errors, List.nil(Stmt)), Block.done)), launcher)
+    let gen2 := Gpu.check(gen1, Gpu.isIdent(name), "kernel: the name must be a C identifier")
+    let gen := Gpu.check(gen2, Bool.not(Gpu.blockWide(code)), "kernel: a 32-bit literal does not fit 32 bits")
+    Program.mk(Kernel.mk(name, params, gen.smem, Gpu.toBlock(gen.code, Gpu.toBlock(Gpu.errorsToCode(gen.errors, List.nil(Stmt)), Block.done)),
+      launcher))
   }
 
   // A kernel computing C (M×N) from A (M×K) and B (K×N), one CTA of `tile*tile` threads per `tile`×`tile` block of C.
@@ -658,7 +731,7 @@ namespace Gpu {
   // each with fewer than 2^32 elements.
   def tiledKernel (name: String)(t: DType)(tile: Nat)(positive: Nat.lt(0, tile))
       (body: (l: Lifetime) -> Ctx(l, Group.cta(Nat.mul(tile, tile))) -> Launch(l, t, tile) -> GOwn(l, t, tile) -> Ctx(l, Group.cta(Nat.mul(tile, tile))))
-      : Kernel := scope l => {
+      : Program := scope l => {
     let tid := Val.mk(l, Grain.thread, DType.u32, Expr.special(Builtin.threadX), Option.some(Nat.mul(tile, tile)))
     let tx := Gpu.remC(tid, tile, positive)
     let ty := Gpu.divC(tid, tile, positive)
@@ -672,7 +745,7 @@ namespace Gpu {
     let params := List.cons(Param.input(t, "A"), List.cons(Param.input(t, "B"), List.cons(Param.output(t, "C"),
       List.cons(Param.scalar(DType.u32, "M"), List.cons(Param.scalar(DType.u32, "N"), List.cons(Param.scalar(DType.u32, "K"), List.nil(Param)))))))
     let g := Group.cta(Nat.mul(tile, tile))
-    Gpu.finish(name, params, Option.none(Launcher), Gpu.state(Key.key, body(l, Gpu.start(Key.key, l, g), launch, GOwn.mk(l, t, tile))))
+    Gpu.finish(Key.key, name, params, Option.none(Launcher), Gpu.state(Key.key, body(l, Gpu.start(Key.key, l, g), launch, GOwn.mk(l, t, tile))))
   }
 
   // ---- Tensor maps and the stage ring -----------------------------------------------------------------------------
@@ -682,6 +755,11 @@ namespace Gpu {
    | mk (inner: Nat)(outer: Nat) : TmaSpec
 
   def boxBytes (s: TmaSpec): Nat := Nat.mul(Nat.mul(s.inner, s.outer), 2)
+
+  // A box the 128-byte swizzle can load into a stage: one 128-byte swizzle row of 64 bf16 elements wide, and whole
+  // 1024-byte swizzle atoms of 8 rows (so every box, and so every stage, starts 1024-byte aligned), at most 256 rows.
+  def boxOk (s: TmaSpec): Bool :=
+    Bool.and(Nat.beq(s.inner, 64), Bool.and(Nat.isZero(Nat.mod(s.outer, 8)), Bool.and(Nat.blt(0, s.outer), Nat.ble(s.outer, 256))))
 
   // A tensor map kernel parameter whose box is `spec`. Launch contract: the host encodes it with that box, bf16
   // elements and CU_TENSOR_MAP_SWIZZLE_128B.
@@ -771,7 +849,8 @@ namespace Gpu {
       (body: { kind = kf, scope = Sf } (r: Lifetime) -> Ring(r, cfg) -> Producer(r) -> Consumer(r) -> Ctx(l, Group.cta(w))
         -> Pair(Ctx(l, Group.cta(w)), Pair(Pair(ProducerDone(r), ConsumerDone(r)), X)))
       : Pair(Ctx(l, Group.cta(w)), X) := {
-    let gen0 := Gpu.check(Gpu.state(Key.key, e), Nat.blt(0, cfg.stages), "ring: no stages")
+    let gen0 := Gpu.check(Gpu.check(Gpu.state(Key.key, e), Nat.blt(0, cfg.stages), "ring: no stages"),
+      Bool.and(Gpu.boxOk(cfg.a), Gpu.boxOk(cfg.b)), "ring: a box must be 64 elements wide and a multiple of 8 rows, up to 256")
     let base := Gpu.alignUp(gen0.smem, 1024)
     let gen1 := Gpu.reserve(gen0, Nat.mul(cfg.stages, Gpu.stageBytes(cfg)), 1024)
     let bars := Gpu.alignUp(gen1.smem, 8)
@@ -915,11 +994,12 @@ namespace Gpu {
     List.any(List.cons(32, List.cons(64, List.cons(128, List.cons(256, List.cons(512, List.nil(Nat)))))), fun (c: Nat): Bool => Nat.beq(c, cols))
 
   // Allocates `cols` columns of tensor memory with warp 0, using up the CTA's permit, for the callback, which must hand
-  // the accumulator back ready, so no tensor-core work on it is in flight; then warp 0 frees it.
+  // the accumulator back, in state `done`, with no tensor-core work on it in flight (as `Acc` always is); then warp 0
+  // frees it.
   def withTmem {l: Lifetime}{w: Nat}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}
-      (e: Ctx(l, Group.cta(w)))(permit: TmemPermit(l))(cols: Nat)(X: Type { kind = kx, scope = Sx })
+      (e: Ctx(l, Group.cta(w)))(permit: TmemPermit(l))(cols: Nat)(done: AccState)(X: Type { kind = kx, scope = Sx })
       (body: { kind = kf, scope = Sf } (a: Lifetime) -> Tmem(a, cols) -> Acc(a, AccState.empty) -> Ctx(l, Group.cta(w))
-        -> Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.ready), X)))
+        -> Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, done), X)))
       : Pair(Ctx(l, Group.cta(w)), X) := {
     let spent := Gpu.skipTmem(permit)  // the allocation below relinquishes the permit
     let gen0 := Gpu.check(Gpu.state(Key.key, e), Gpu.isAllocCols(cols), "tensor memory: columns must be 32, 64, 128, 256 or 512")
@@ -1012,11 +1092,12 @@ namespace Gpu {
   }
 
   // What the tensor cores accept here: 64-element (128-byte) boxes along K, M of 128 (so that row `i` of the result is
-  // lane `i` of tensor memory, as `storeAcc` reads it), N a multiple of 16 up to 256 that fits the accumulator's columns.
+  // lane `i` of tensor memory, as `storeAcc` reads it), N a multiple of 16 up to 256 and exactly the accumulator's
+  // columns, which the epilogue reads all of.
   def mmaShapeOk (cfg: RingCfg)(cols: Nat): Bool :=
     Bool.and(Bool.and(Nat.beq(cfg.a.inner, 64), Nat.beq(cfg.b.inner, 64)),
       Bool.and(Nat.beq(cfg.a.outer, 128),
-        Bool.and(Bool.and(Nat.isZero(Nat.mod(cfg.b.outer, 16)), Nat.ble(cfg.b.outer, 256)), Bool.and(Nat.blt(0, cfg.b.outer), Nat.ble(cfg.b.outer, cols)))))
+        Bool.and(Bool.and(Nat.isZero(Nat.mod(cfg.b.outer, 16)), Nat.ble(cfg.b.outer, 256)), Bool.and(Nat.blt(0, cfg.b.outer), Nat.beq(cfg.b.outer, cols)))))
 
   def mmaStage (k: Key)(gen: Gen)(stage: Expr)(cfg: RingCfg)(taddr: Expr)(cols: Nat)(first: Bool): Gen :=
     Gpu.pushAll(Gpu.check(gen, Gpu.mmaShapeOk(cfg, cols), "mma: unsupported shape"),
@@ -1104,8 +1185,8 @@ namespace Gpu {
   // address `taddr` (lane quadrant `warp % 4`), and each thread stores its own row of the 128×`bn` block of the output
   // at rows from `row0` and columns from `col0`, inside the matrix. `capacity` is the accumulator's width in columns.
   def storeRows {L: Lifetime}{bn: Nat}(gen: Gen)(taddr: Expr)(row0: Expr)(col0: Expr)(out: COut(L, bn))(capacity: Nat): Gen := {
-    let gen0 := Gpu.check(gen, Bool.and(Nat.isZero(Nat.mod(bn, 8)), Bool.and(Nat.blt(0, bn), Nat.ble(bn, capacity))),
-      "epilogue: the block's columns must be a positive multiple of 8 within the accumulator")
+    let gen0 := Gpu.check(gen, Bool.and(Nat.isZero(Nat.mod(bn, 8)), Bool.and(Nat.blt(0, bn), Nat.beq(bn, capacity))),
+      "epilogue: the block's columns must be a positive multiple of 8, exactly the accumulator's columns")
     let q := gen0.next
     let row := Nat.add(q, 1)
     let rowOk := Nat.add(q, 2)
@@ -1257,13 +1338,13 @@ namespace Gpu {
 
   // Splits the accumulator of `withTmem` into `bufs` buffers of `n` columns for the callback, which must hand back both
   // endpoints finished: the issuer's finish waits until the epilogue has read every buffer, so no tensor-core work is
-  // in flight and the accumulator can be handed back.
+  // in flight and the accumulator can be handed back, `empty`, since what it holds has been read.
   def withAccRing {l: Lifetime}{w: Nat}{a: Lifetime}{cols: Nat}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}
       (e: Ctx(l, Group.cta(w)))(t: Tmem(a, cols))(acc: Acc(a, AccState.empty))(bufs: Nat)(n: Nat)(X: Type { kind = kx, scope = Sx })
       (body: { kind = kf, scope = Sf } (q: Lifetime) -> AccRing(q, n) -> AccProducer(q) -> AccConsumer(q) -> Ctx(l, Group.cta(w))
         -> Pair(Ctx(l, Group.cta(w)), Pair(Pair(AccProducerDone(q), AccConsumerDone(q)), X)))
-      : Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.ready), X)) := {
-    match acc returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.ready), X)) with
+      : Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.empty), X)) := {
+    match acc returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.empty), X)) with
     | Acc.mk => {
       let gen0 := Gpu.check(Gpu.state(Key.key, e), Bool.and(Nat.blt(0, bufs), Nat.ble(Nat.mul(bufs, n), cols)),
         "accumulator ring: the buffers do not fit the tensor memory")
@@ -1276,10 +1357,10 @@ namespace Gpu {
         let ring := AccRing.mk(q, n, t.addr, bufs, bars, p, Nat.add(p, 1), Nat.add(p, 2), Nat.add(p, 3))
         let (e2, ((pd, cd), x)) :=
           body(q, ring, AccProducer.mk(q), AccConsumer.mk(q), Gpu.resume(Key.key, l, Group.cta(w), gen2))
-        match pd returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.ready), X)) with
+        match pd returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.empty), X)) with
         | AccProducerDone.mk => {
-          match cd returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.ready), X)) with
-          | AccConsumerDone.mk => (e2, (Acc.mk(a, AccState.ready), x))
+          match cd returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.empty), X)) with
+          | AccConsumerDone.mk => (e2, (Acc.mk(a, AccState.empty), x))
         }
       }
     }
@@ -1435,7 +1516,7 @@ namespace Gpu {
   def tmaGemmKernel (name: String)(sa: TmaSpec)(sb: TmaSpec)
       (body: (l: Lifetime) -> Ctx(l, Group.cta(256)) -> TmaLaunch(l, sa, sb) -> COwn(l, TmaSpec.outer(sb)) -> TmemPermit(l)
         -> Ctx(l, Group.cta(256)))
-      : Kernel := scope l => {
+      : Program := scope l => {
     let bn := sb.outer
     let m := Gpu.uniformParam(l, "M")
     let n := Gpu.uniformParam(l, "N")
@@ -1445,7 +1526,7 @@ namespace Gpu {
     let launch := TmaLaunch.mk(TMap.mk(l, sa, "A_map"), TMap.mk(l, sb, "B_map"), COut.mk(l, bn, "C", m.expr, n.expr), m, n, k, m0, n0)
     let gen := Gpu.state(Key.key, body(l, Gpu.start(Key.key, l, Group.cta(256)), launch, COwn.mk(l, bn), TmemPermit.mk(l)))
     let grid := Grid.blocks(Gpu.paramCeilDiv("N", bn), Gpu.paramCeilDiv("M", 128))
-    Gpu.finish(name, Gpu.tmaGemmParams, Option.some(Gpu.tmaGemmLauncher(sa, sb, grid)),
+    Gpu.finish(Key.key, name, Gpu.tmaGemmParams, Option.some(Gpu.tmaGemmLauncher(sa, sb, grid)),
       Gpu.check(gen, Nat.ble(gen.smem, Gpu.maxDynamicShared), "kernel: more dynamic shared memory than sm_100a has"))
   }
 
@@ -1463,7 +1544,7 @@ namespace Gpu {
   def tmaGemmPersistentKernel (name: String)(sa: TmaSpec)(sb: TmaSpec)
       (body: (l: Lifetime) -> Ctx(l, Group.cta(256)) -> TmaGemm(l, sa, sb) -> Sched(l, TmaSpec.outer(sb)) -> SchedOwn(l, TmaSpec.outer(sb))
         -> TmemPermit(l) -> Ctx(l, Group.cta(256)))
-      : Kernel := scope l => {
+      : Program := scope l => {
     let bn := sb.outer
     let m := Gpu.uniformParam(l, "M")
     let n := Gpu.uniformParam(l, "N")
@@ -1478,7 +1559,7 @@ namespace Gpu {
     let e := Gpu.resume(Key.key, l, Group.cta(256), gen1)
     let gen := Gpu.state(Key.key, body(l, e, gemm, Sched.mk(l, bn, tiles, tilesN), SchedOwn.mk(l, bn), TmemPermit.mk(l)))
     let grid := Grid.persistent(Expr.bin(BinOp.mul, Gpu.paramCeilDiv("M", 128), Gpu.paramCeilDiv("N", bn)))
-    Gpu.finish(name, Gpu.tmaGemmParams, Option.some(Gpu.tmaGemmLauncher(sa, sb, grid)),
+    Gpu.finish(Key.key, name, Gpu.tmaGemmParams, Option.some(Gpu.tmaGemmLauncher(sa, sb, grid)),
       Gpu.check(gen, Nat.ble(gen.smem, Gpu.maxDynamicShared), "kernel: more dynamic shared memory than sm_100a has"))
   }
 }
