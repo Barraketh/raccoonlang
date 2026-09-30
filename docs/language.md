@@ -396,12 +396,12 @@ commas; `let (x) := e` is a parse error. A pattern stands only in a block's
 The value is checked as a `let`'s is, against the annotation when one is
 written. Its type must be an instance of a structure-eta eligible family (see
 [Structs and projections](#structs-and-projections)): one constructor, no
-indices, no recursive constructor field, and outside `Prop` at every level. A
-type a transparent definition computes to such an instance is one. A type
-variable, a function type, an opaque or blocked type, and an instance of a
-sort-polymorphic family whose level may be zero, which some instantiation puts
-in `Prop`, are not. Otherwise the destructuring is `NotDestructurable`, naming
-the type.
+indices, no recursive constructor field, and outside `Prop`. A type a
+transparent definition computes to such an instance is one; a type variable, a
+function type, and an opaque or blocked type are not. Otherwise the
+destructuring is `NotDestructurable`, naming the type. An instance of a
+sort-polymorphic family, such as `Prod(A, B)` at levels `u` and `v`, is outside
+`Prop` where it is checked, so it is destructured there.
 
 The components match the constructor's stored fields in order, and erased
 family parameters are not fields. A pattern with another number of components
@@ -624,10 +624,10 @@ second use. A path that reuses a local is reported as reused, even where
 another path leaves it unused. Matching a linear value consumes it, and its
 fields must each be used once in the branch, so a wildcard over a linear field
 is `LinearUnused`. A [destructuring](#destructuring) consumes its value the same
-way, and each local it binds is used once in the rest of the block. A match with no branch ends every path through it and so
-uses every linear local still unused there; nothing after it is on those
-paths. A `decreases` clause is not a use. Applying a struct selector to a
-linear value consumes the value.
+way, and each local it binds is used once in the rest of the block. A match
+with no branch ends every path through it and so uses every linear local still
+unused there; nothing after it is on those paths. A `decreases` clause is not a
+use. Applying a struct selector to a linear value consumes the value.
 
 A lambda's body runs only when the lambda is applied, so it is not on the
 paths around it, and a match with no branch inside it ends none of them. A use

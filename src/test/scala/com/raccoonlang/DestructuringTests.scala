@@ -44,7 +44,7 @@ class DestructuringTests extends munit.FunSuite with TestSupport {
     // Patterns do not flatten: three components against a pair whose second field is a pair.
     assertEquals(
       expectOnly[ArityMismatch](typecheckDecls(s"def x : Nat := {\n  let (e, a, b) := $nestedValue\n  e\n}\n")),
-      ArityMismatch(2, 3)
+      ArityMismatch(2, 3, ArityMismatch.Fields)
     )
   }
 
@@ -52,11 +52,15 @@ class DestructuringTests extends munit.FunSuite with TestSupport {
     typecheckDecls(triple + "def x (t: Triple): Bool := {\n  let (a, b, c) := t\n  c\n}\n")
     assertEquals(
       expectOnly[ArityMismatch](typecheckDecls(triple + "def x (t: Triple): Nat := {\n  let (a, b) := t\n  a\n}\n")),
-      ArityMismatch(3, 2)
+      ArityMismatch(3, 2, ArityMismatch.Fields)
     )
     val tooMany = "def x (p: Prod(Nat, Nat)): Nat := {\n  let (a, b, c) := p\n  a\n}\n"
-    assertEquals(expectOnly[ArityMismatch](typecheckDecls(tooMany)), ArityMismatch(2, 3))
+    assertEquals(expectOnly[ArityMismatch](typecheckDecls(tooMany)), ArityMismatch(2, 3, ArityMismatch.Fields))
     assert(reportedAt(tooMany).startsWith("(a, b, c) := p"))
+    assertEquals(
+      interceptDiagnostic(typecheckDecls(tooMany)).getMessage,
+      "Cannot bind the constructor's fields - expected 2 fields, got 3"
+    )
   }
 
   test("a name occurs once in a pattern, at any depth") {
@@ -110,15 +114,38 @@ class DestructuringTests extends munit.FunSuite with TestSupport {
     assertEquals(notDestructurable(families, "{A: Type}", "A"), "A")
     assertEquals(notDestructurable(families, "", "Nat -> Nat"), "Nat -> Nat")
     assertEquals(notDestructurable(families, "", "Hidden"), "Hidden")
-    // An instance that a zero level puts in Prop has no eta view there, so it is not destructurable where its level
-    // may be zero, and is where it cannot be.
-    assertEquals(
-      notDestructurable(families, "{u: Level}{A: Sort { level = u }}", "Loose(A, A)"),
-      "Loose(A, A)"
-    )
-    typecheckDecls(families + program("{u: Level}{A: Sort { level = u }}", "Loose(A, Nat)"))
-    // Reported where the value's type comes from.
+    // An instance at a level that may be zero is outside Prop where it is checked.
+    typecheckDecls(families + program("{u: Level}{A: Sort { level = u }}", "Loose(A, A)"))
+    assertEquals(notDestructurable(families, "", "Loose(True, True)"), "Loose(True, True)")
+    // Reported where the value's type comes from: the annotation when one is written.
     assert(reportedAt(families + program("", "Sum(Nat, Nat)")).startsWith("v\n"))
+    val annotated = "def x : Nat := {\n  let (a, b) : Option(Nat) := Option.none(Nat)\n  0\n}\n"
+    assert(reportedAt(annotated).startsWith("Option(Nat) := "))
+  }
+
+  test("a level-polymorphic destructuring evaluates where its levels put the instance in Prop") {
+    val defs =
+      """
+        |def swap {u: Level}{v: Level}{S: Lifetime}{T: Lifetime}{A: Sort { level = u, scope = S }}
+        |    {B: Sort { level = v, scope = T }}(p: Prod(A, B)): Prod(B, A) := {
+        |  let (a, b) := p
+        |  Prod.mk(b, a)
+        |}
+        |
+        |def count {u: Level}{v: Level}{A: Sort { level = u }}{B: Sort { level = v }}(p: Prod(A, B)): Nat := {
+        |  let (a, b) := p
+        |  2
+        |}
+        |
+        |def both : And(True, True) := And.intro(True.intro, True.intro)
+        |
+        |def atProp : Eq(Prod(True, And(True, True)), swap(Prod.mk(both, True.intro)), Prod.mk(True.intro, both)) :=
+        |  Eq.refl(Prod.mk(True.intro, both))
+        |
+        |// An equation between variables has no reconstructed proof, so this proof has no constructor form.
+        |def opaqueProof (x: Nat)(y: Nat)(h: Prod(Eq(Nat, x, y), True)): Eq(Nat, count(h), 2) := Eq.refl(2)
+        |""".stripMargin
+    evaluatesTo(defs + "{ Nat.add(count(Prod.mk(True.intro, True.intro)), count(Prod.mk(1, True.intro))) }\n", "4")
   }
 
   test("the scrutinee is a use, and each destructured field is tracked by its own kind") {
@@ -280,6 +307,14 @@ class DestructuringTests extends munit.FunSuite with TestSupport {
     TypeChecker.checkTerm(elaborated, Prelude.default.checkedEnv).residual match {
       case checked: CoreAst.Term.Lam => assertEquals(PrettyPrinter.printTerm(checked.body), printed)
       case other                     => fail(s"Expected a checked lambda, got $other")
+    }
+    // A destructuring of a named field stays its own let.
+    val separate = "def y (q: Prod(Prod(Nat, Nat), Nat)): Nat := {\n  let (t, d) := q\n  let (b, c) := t\n  b\n}\n"
+    parse(separate).decls.collectFirst {
+      case CoreAst.Decl.ConstDecl(_, "y", _, CoreAst.ConstBody.TermBody(lam: CoreAst.Term.Lam), _, _) => lam.body
+    } match {
+      case Some(body) => assertEquals(PrettyPrinter.printTerm(body), "{ let (t, d) := q\nlet (b, c) := t \n b }")
+      case None       => fail("Expected a lambda")
     }
   }
 

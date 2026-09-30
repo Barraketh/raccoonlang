@@ -169,7 +169,7 @@ object TypeChecker {
         // `(a:A)(b:B) -> C` takes two. Supplying the wrong number is an arity error here, not a
         // descent into the codomain — `f(x)(y)` is how a nested group is reached.
         if (providedArgs.length != pi.numExplicit)
-          fail(ArityMismatch(pi.numExplicit, providedArgs.length))
+          fail(ArityMismatch(pi.numExplicit, providedArgs.length, ArityMismatch.Arguments))
 
         val known = new Array[Value](binders.length)
         val checkedResiduals = Vector.newBuilder[CA.Term]
@@ -303,15 +303,16 @@ object TypeChecker {
       }
       checkedLets += CA.Let(l.pattern, checkedTy.map(_.residual), checkedValue.residual, l.span)
       curEnv = l.pattern match {
-        case local: CA.LetPattern.Local   => Interpreter.bindLet(local, checkedValue.value, curEnv)
-        case fields: CA.LetPattern.Fields => destructure(fields, checkedValue, curEnv)
+        case local: CA.LetPattern.Local => Interpreter.bindLet(local, checkedValue.value, curEnv)
+        case fields: CA.LetPattern.Fields =>
+          destructure(fields, checkedValue, checkedTy.fold(typeSite(checkedValue.residual))(_.residual.span), curEnv)
       }
     }
 
     val checkedRes = checkTerm(body.res, curEnv)
     val lets = checkedLets.result()
     // A let's extent is what follows it (spec §3.2). A plain let's local is reported at the let, and a destructured
-    // field's at its component, a `_`'s included.
+    // field's at its component, a `_`'s included (PAIRS_AND_PRELUDE §3.6).
     lets.zipWithIndex.foreach { case (let, idx) =>
       val binders = let.pattern match {
         case CA.LetPattern.Local(ref)      => Vector(ref -> let.span)
@@ -330,19 +331,21 @@ object TypeChecker {
   }
 
   /**
-   * A destructuring binds its locals to the fields of its checked value's eta view (spec §3). The value's type must be
-   * an instance that has one under every instantiation, else `NotDestructurable` where the type comes from. At the
-   * pattern: a destructuring is a match on the value, so it opens a sealed family only in its module
-   * (`SealedConstructor`), and it has a component for each stored field (`ArityMismatch`). A field's type is its
-   * local's type at its binder, so it is confined there (spec §4.2).
+   * A destructuring binds its locals to the fields of its checked value's eta view (PAIRS_AND_PRELUDE §3). The value's
+   * type must be an instance of an eta-eligible family outside `Prop` (§3.2), else `NotDestructurable` at `typeAt`,
+   * where the type comes from: the annotation when one is written. At the pattern: a destructuring is a match on the
+   * value, so it opens a sealed family only in its module (`SealedConstructor`, §3.7), and it has a component for each
+   * stored field (`ArityMismatch`, §3.3). A field's type is its local's type at its binder, so it is confined there
+   * (spec §4.2).
    */
-  private def destructure(pattern: CA.LetPattern.Fields, value: CheckedTerm, env: Env): Env = {
+  private def destructure(pattern: CA.LetPattern.Fields, value: CheckedTerm, typeAt: Span, env: Env): Env = {
     val tpe = value.value.tpe
     val (instance, info) =
-      StructEta.destructurableInstance(tpe).getOrElse(at(typeSite(value.residual))(fail(NotDestructurable(tpe))))
+      StructEta.eligibleInstance(tpe).getOrElse(at(typeAt)(fail(NotDestructurable(tpe))))
     at(pattern.span) {
       Sealing.requireAccessible(instance.meta.seal, None, pattern.span)
-      if (pattern.vars.length != info.fieldCount) fail(ArityMismatch(info.fieldCount, pattern.vars.length))
+      if (pattern.vars.length != info.fieldCount)
+        fail(ArityMismatch(info.fieldCount, pattern.vars.length, ArityMismatch.Fields))
     }
     val bound = Interpreter.bindLet(pattern, value.value, env)
     pattern.vars.foreach(v => at(v.span)(requireInScope(bound(v.ref).tpe, bound)))

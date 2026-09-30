@@ -139,7 +139,10 @@ class UniverseTests extends munit.FunSuite with TestSupport {
       s"def s : Sort { level = succ(succ(zero)) } := Sort { level = $level }\n"
 
     typecheckDecls(program("Level.succ(Level.zero)"))
-    assertEquals(expectOnly[ArityMismatch](typecheckDecls(program("Level.succ"))), ArityMismatch(1, 0))
+    assertEquals(
+      expectOnly[ArityMismatch](typecheckDecls(program("Level.succ"))),
+      ArityMismatch(1, 0, ArityMismatch.Arguments)
+    )
     expectOnly[ArityMismatch](typecheckDecls(program("Level.max(Level.zero)")))
   }
 
@@ -147,7 +150,7 @@ class UniverseTests extends munit.FunSuite with TestSupport {
     val source = "inductive Peano : Type\n | zero : Peano\n\ndef h (n: Peano): Peano := n\n{ h(Level.succ) }\n"
     val diagnostic = interceptDiagnostic(typecheckDecls(source))
 
-    assertEquals(diagnostic.error, ArityMismatch(1, 0))
+    assertEquals(diagnostic.error, ArityMismatch(1, 0, ArityMismatch.Arguments))
     assertEquals(diagnostic.span.map(span => source.substring(span.start, span.end)), Some("Level.succ"))
   }
 

@@ -328,8 +328,8 @@ object LanguageParser {
   private def layoutParam(implicit sourceId: Option[SourceId]): Parser[Binder] = skipAllWs ~ param
 
   /**
-   * A `let` 's pattern: a name, `_`, or a parenthesized destructuring of two or more patterns (spec §3.1). `(x)` is not
-   * a pattern, since it would bind what `x` binds.
+   * A `let` 's pattern: a name, `_`, or a parenthesized destructuring of two or more patterns (PAIRS_AND_PRELUDE §3.1).
+   * `(x)` is not a pattern, since it would bind what `x` binds.
    */
   private def letPattern(implicit sourceId: Option[SourceId]): Parser[LetPattern] = {
     val name = argName.flatSpanned(sourceId).map(LetPattern.Name.tupled)

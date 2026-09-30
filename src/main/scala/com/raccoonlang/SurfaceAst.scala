@@ -82,7 +82,7 @@ object SurfaceAst {
     // Let: let x := foo, or a destructuring: let (a, (b, c)) := foo
     final case class Let(pattern: LetPattern, ty: Option[Term], value: Term, span: Span)
 
-    /** What a `let` binds: a name or `_`, or a destructuring of two or more components (spec §3.1). */
+    /** What a `let` binds: a name or `_`, or a destructuring of two or more components (PAIRS_AND_PRELUDE §3.1). */
     sealed trait LetPattern {
       def span: Span
 

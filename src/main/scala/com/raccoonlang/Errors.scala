@@ -34,7 +34,16 @@ final case class Diagnostic(error: TypeError, span: Option[Span], frames: Vector
 
 final case class CannotApplyNonFunction(got: Value) extends TypeError
 
-final case class ArityMismatch(expected: Int, got: Int) extends TypeError
+/** A count of what `counted` names that differs from the count expected: a call's arguments, or a pattern's fields. */
+final case class ArityMismatch(expected: Int, got: Int, counted: ArityMismatch.Counted) extends TypeError
+
+object ArityMismatch {
+  sealed trait Counted
+  case object Arguments extends Counted
+
+  /** A match case's or a destructuring's pattern, against its constructor's stored fields. */
+  case object Fields extends Counted
+}
 
 final case class UnknownConstructor(ctor: String, inductive: String) extends TypeError
 
@@ -51,8 +60,8 @@ final case class NotAType(value: Value) extends TypeError
 final case class NonInductiveMatch(tpe: Value) extends TypeError
 
 /**
- * A destructuring whose value's type is not an instance of a family with one constructor, no indices, no recursive
- * field, and outside `Prop` under every instantiation (spec §3.2).
+ * A destructuring whose value's type is not an instance of a family with one constructor, no indices and no recursive
+ * field, outside `Prop` (PAIRS_AND_PRELUDE §3.2).
  */
 final case class NotDestructurable(tpe: Value) extends TypeError
 

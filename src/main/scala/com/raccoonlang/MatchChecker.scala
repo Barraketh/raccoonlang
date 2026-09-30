@@ -104,7 +104,7 @@ object MatchChecker {
   ): CA.Case =
     framed(Frame.InBranch(br.ctorName, br.argRefs.map(_.name))) {
       at(br.span) {
-        if (args.length != br.argRefs.length) fail(ArityMismatch(args.length, br.argRefs.length))
+        if (args.length != br.argRefs.length) fail(ArityMismatch(args.length, br.argRefs.length, ArityMismatch.Fields))
         // Proof recovery stores recursive proof fields shallowly. Crossing the pattern boundary exposes one such
         // field, so put it into the canonical form for its exact type. A field's type is its local's type at its
         // binder, so it is confined there (spec §4.2).

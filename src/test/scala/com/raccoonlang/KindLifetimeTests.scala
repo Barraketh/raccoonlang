@@ -108,7 +108,10 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
 
     typecheckDecls(program("union(a, b)"))
     typecheckDecls(program("Lifetime.union(a, Lifetime.empty)"))
-    assertEquals(expectOnly[ArityMismatch](typecheckDecls(program("union"))), ArityMismatch(2, 0))
+    assertEquals(
+      expectOnly[ArityMismatch](typecheckDecls(program("union"))),
+      ArityMismatch(2, 0, ArityMismatch.Arguments)
+    )
     expectOnly[ArityMismatch](typecheckDecls(program("union(a)")))
   }
 

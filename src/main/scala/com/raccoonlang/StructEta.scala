@@ -27,13 +27,6 @@ object StructEta {
     anyInstance(tpe).filter(_ => !Sorts.isProposition(tpe))
 
   /**
-   * The instance a destructuring takes apart (spec §3.2): an eligible one that no instantiation of its levels makes a
-   * proposition, so every value of it has an eta view wherever the destructuring is evaluated.
-   */
-  def destructurableInstance(tpe: Value): Option[(InductiveFamilyInstance, ProjectionInfo)] =
-    eligibleInstance(tpe).filter(_ => Sorts.isNeverProposition(tpe))
-
-  /**
    * The eta view of a value at an eta-eligible structure type: the constructor's stored fields when it is already in
    * constructor form, and the virtual field projections otherwise. `None` for anything that is not at such a type.
    *
@@ -43,17 +36,27 @@ object StructEta {
   def fields(value: Value): Option[Vector[Value]] =
     value match {
       case _: VProof => None
+      case _         => eligibleInstance(value.tpe).map { case (inst, info) => view(value, inst, info) }
+    }
+
+  /**
+   * The fields a destructuring binds (PAIRS_AND_PRELUDE §3.5, §3.8): the view above, read at any instance of an
+   * eligible family. The checker admits a destructuring only outside `Prop`, and there this is the eta view. But a
+   * level instantiation may put a sort-polymorphic instance in `Prop` where the destructuring is evaluated, and there a
+   * field's projection is a proof, canonical for its exact type, as a one-branch match's field would be, so a
+   * destructuring never blocks.
+   */
+  def destructuredFields(value: Value): Option[Vector[Value]] =
+    anyInstance(value.tpe).map { case (inst, info) => view(value, inst, info) }
+
+  private def view(value: Value, inst: InductiveFamilyInstance, info: ProjectionInfo): Vector[Value] =
+    value match {
+      case ConstructorForm(ctorName, stored) if ctorName == info.ctorName =>
+        if (stored.length != info.fieldCount)
+          wtf(s"Constructor $ctorName supplied ${stored.length} fields, expected ${info.fieldCount}")
+        stored
       case _ =>
-        eligibleInstance(value.tpe).map { case (inst, info) =>
-          value match {
-            case ConstructorForm(ctorName, stored) if ctorName == info.ctorName =>
-              if (stored.length != info.fieldCount)
-                wtf(s"Constructor $ctorName supplied ${stored.length} fields, expected ${info.fieldCount}")
-              stored
-            case _ =>
-              Vector.tabulate(info.fieldCount)(idx => fieldProjection(value, inst, info, idx))
-          }
-        }
+        Vector.tabulate(info.fieldCount)(idx => fieldProjection(value, inst, info, idx))
     }
 
   /**

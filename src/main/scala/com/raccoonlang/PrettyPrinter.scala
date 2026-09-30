@@ -91,16 +91,24 @@ object PrettyPrinter {
       binders.map(printBinder).mkString(" ")
 
     /**
-     * A block's lets as written. A nested pattern is a destructuring of an anonymous local its enclosing pattern binds
-     * (spec §3.3), and nothing else can name that local, so such a let prints inside the enclosing pattern instead.
+     * A block's lets as written. A nested pattern is a destructuring of an anonymous component of an earlier
+     * destructuring in the block (PAIRS_AND_PRELUDE §3.3), and it prints inside that component's pattern. No name
+     * resolves to an anonymous local, so nothing else in the block names one.
      */
     private def printLets(lets: Vector[CoreAst.Let]): String = {
-      val nestedLet: PartialFunction[CoreAst.Let, (CoreAst.LocalRef, CoreAst.LetPattern.Fields)] = {
-        case CoreAst.Let(fields: CoreAst.LetPattern.Fields, None, CoreAst.Term.LocalRef(ref, _), _)
-            if ref.name == "_" =>
-          ref -> fields
-      }
-      val nested = lets.collect(nestedLet).toMap
+      val anonymous = lets.flatMap { l =>
+        l.pattern match {
+          case CoreAst.LetPattern.Fields(vars, _) => vars.map(_.ref).filter(_.name == "_")
+          case _: CoreAst.LetPattern.Local        => Vector.empty
+        }
+      }.toSet
+      def nestedAt(l: CoreAst.Let): Option[CoreAst.LocalRef] =
+        l match {
+          case CoreAst.Let(_: CoreAst.LetPattern.Fields, None, CoreAst.Term.LocalRef(ref, _), _) if anonymous(ref) =>
+            Some(ref)
+          case _ => None
+        }
+      val nested = lets.flatMap(l => nestedAt(l).map(_ -> l.pattern)).toMap
       def pattern(written: CoreAst.LetPattern): String =
         written match {
           case CoreAst.LetPattern.Local(ref) => ref.name
@@ -108,7 +116,7 @@ object PrettyPrinter {
             vars.map(v => nested.get(v.ref).fold(v.ref.name)(pattern)).mkString("(", ", ", ")")
         }
       lets
-        .filterNot(nestedLet.isDefinedAt)
+        .filter(nestedAt(_).isEmpty)
         .map { l =>
           val tyStr = l.ty.map(t => s": ${printCoreTerm(t)}").getOrElse("")
           s"let ${pattern(l.pattern)}$tyStr := ${printCoreTerm(l.value)}"
