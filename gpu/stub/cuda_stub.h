@@ -1,4 +1,6 @@
-// Just enough of CUDA for a host C++ compiler to type-check generated kernels (`check.sh` force-includes it). Inline
+// Just enough of CUDA for a host C++ compiler to type-check generated kernels and launchers, and the hardware test
+// harnesses (`check.sh` force-includes it, and `cuda.h`, `cuda_runtime.h` and `cuda_bf16.h` here stand in for the
+// real headers). Inline
 // assembly becomes calls of `gpu_asm_out`/`gpu_asm_in` over its operands before checking: only ptxas can validate a
 // template.
 #include <algorithm>

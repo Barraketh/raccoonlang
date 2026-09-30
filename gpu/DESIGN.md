@@ -82,8 +82,11 @@ A tensor map parameter's type carries its box (`TMap(l, spec)`; bf16 elements an
 requires the maps' boxes to be the ring's, the stage buffers are laid out from the same boxes, and the `tcgen05.mma`
 shared-memory descriptors (start address, stride byte offset 1024, version 1, 128-byte swizzle, K advanced 32 bytes
 per step) and the instruction descriptor (f32 accumulator, bf16 operands, both K-major, M, N) are computed from them.
-So TMA writes, the MMA reads, and the host's `cuTensorMapEncodeTiled` call (to be generated from the same spec) cannot
-disagree about layout. Shapes the tensor cores or the epilogue do not support (K box other than 64, M other than 128,
+So TMA writes, the MMA reads, and the host's `cuTensorMapEncodeTiled` call cannot disagree about layout: the kernel
+comes with a generated host launcher (`<name>_launch`) that encodes both maps from the same boxes, checks the extents
+the kernel's 32-bit index arithmetic and TMA's signed coordinates need, sets the dynamic shared memory, and launches
+the grid the kernel assumes. What remains to the caller is that A, B and C are distinct device arrays of M×K, N×K
+and M×N elements. Shapes the tensor cores or the epilogue do not support (K box other than 64, M other than 128,
 N not a multiple of 16 up to 256 or wider than the accumulator) are generation-time errors.
 
 ## 4. Output
@@ -118,4 +121,14 @@ The PTX templates follow CUTLASS and a published minimal kernel (sources in the 
 is available on the development machine, so none of the generated sm_100a code has been assembled or run. `check.sh`
 compiles the generated C++ against stub headers, with each inline assembly statement replaced by calls over its
 operands, which checks everything but the templates. Every template is Experimental until `ptxas -arch=sm_100a`
-accepts it and a run on hardware matches a reference GEMM.
+accepts it and a run on hardware matches a reference GEMM. `harness/tinygemm_test.cu` is that run: it compares the
+generated kernel with a CPU reference exactly, over whole, partial and tiny tiles, checks that the launcher refuses
+extents TMA cannot encode, and reports throughput:
+
+```bash
+gpu/gen.sh gpu/examples/tinygemm.rac > tinygemm.cu
+```
+
+```bash
+nvcc -std=c++17 -O2 -arch=sm_100a -o tinygemm_test tinygemm.cu gpu/harness/tinygemm_test.cu -lcuda && ./tinygemm_test
+```

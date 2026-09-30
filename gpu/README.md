@@ -12,7 +12,8 @@ prelude.
 | `Gpu.rac` | The sealed core: emitter, values, registers, loops, branches, shared tiles, global matrices, launch; and the Blackwell layer (warp roles, `elect`, the TMA stage ring, tensor memory, `tcgen05` MMA, the tensor-core epilogue), designed in `DESIGN.md` |
 | `examples/` | Kernels that must generate code: a tiled SIMT GEMM, ReLU, and TinyGEMM, a warp-specialized sm_100a GEMM |
 | `rejected/` | Programs that must be refused, each naming the diagnostic on its `// expect:` line, and `*_mutants.py` tables of one-snippet mutations of an example (run by `mutate.py`) |
-| `stub/` | Just enough of the CUDA headers for a host C++ compiler to check generated kernels |
+| `stub/` | Just enough of the CUDA headers for a host C++ compiler to check generated kernels, launchers and harnesses |
+| `harness/` | Host programs that run a generated kernel on a GPU against a CPU reference (`DESIGN.md` §6) |
 
 Generate a kernel, or check everything:
 

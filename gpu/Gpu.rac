@@ -175,6 +175,8 @@ namespace Gpu {
 
   def u32Limit : Nat := 4294967296
 
+  def i32Limit : Nat := 2147483648
+
   // An exclusive bound, forgotten when it could exceed what a u32 holds.
   def cap (n: Nat): Option(Nat) := Bool.cond(Nat.ble(n, Gpu.u32Limit), Option(Nat), Option.some(n), Option.none(Nat))
 
@@ -604,8 +606,8 @@ namespace Gpu {
   def start (l: Lifetime)(g: Group): Ctx(l, g) := Ctx.mk(l, g, Gen.mk(List.nil(Stmt), 0, 0, 1, List.nil(String)))
 
   // The finished kernel: its code, then any generation errors as `#error` lines, so it does not compile.
-  def finish (name: String)(params: List(Param))(gen: Gen): Kernel :=
-    Kernel.mk(name, params, gen.smem, Gpu.toBlock(gen.code, Gpu.toBlock(Gpu.errorsToCode(gen.errors, List.nil(Stmt)), Block.done)))
+  def finish (name: String)(params: List(Param))(launcher: Option(Launcher))(gen: Gen): Kernel :=
+    Kernel.mk(name, params, gen.smem, Gpu.toBlock(gen.code, Gpu.toBlock(Gpu.errorsToCode(gen.errors, List.nil(Stmt)), Block.done)), launcher)
 
   // A kernel computing C (M×N) from A (M×K) and B (K×N), one CTA of `tile*tile` threads per `tile`×`tile` block of C.
   // Launch contract: grid (ceil(N/tile), ceil(M/tile)), block tile*tile, and A, B, C distinct arrays of those extents,
@@ -626,7 +628,7 @@ namespace Gpu {
     let params := List.cons(Param.input(t, "A"), List.cons(Param.input(t, "B"), List.cons(Param.output(t, "C"),
       List.cons(Param.scalar(DType.u32, "M"), List.cons(Param.scalar(DType.u32, "N"), List.cons(Param.scalar(DType.u32, "K"), List.nil(Param)))))))
     let g := Group.cta(Nat.mul(tile, tile))
-    Gpu.finish(name, params, Gpu.state(Key.key, body(l, Gpu.start(l, g), launch, GOwn.mk(l, t, tile))))
+    Gpu.finish(name, params, Option.none(Launcher), Gpu.state(Key.key, body(l, Gpu.start(l, g), launch, GOwn.mk(l, t, tile))))
   }
 
   // ---- Tensor maps and the stage ring -----------------------------------------------------------------------------
@@ -1085,10 +1087,26 @@ namespace Gpu {
 
   def maxDynamicShared : Nat := 232448
 
+  // The host launcher of a tensor-core GEMM: it encodes A_map and B_map as `TMap` says and launches the grid below. The
+  // kernel indexes C with 32-bit arithmetic, and TMA coordinates are signed 32-bit.
+  def tmaGemmLauncher (sa: TmaSpec)(sb: TmaSpec): Launcher := {
+    let bn := sb.outer
+    let hostParams := List.cons(Param.input(DType.bf16, "A"), List.cons(Param.input(DType.bf16, "B"), List.cons(Param.output(DType.f32, "C"),
+      List.cons(Param.scalar(DType.u32, "M"), List.cons(Param.scalar(DType.u32, "N"), List.cons(Param.scalar(DType.u32, "K"), List.nil(Param)))))))
+    let below := fun (x: Expr)(limit: Nat): Expr => Expr.bin(BinOp.lt, x, Expr.lit64(limit))
+    let requires := List.cons(below(Expr.bin(BinOp.mul, Expr.cast(DType.u64, Expr.param("M")), Expr.param("N")), Gpu.u32Limit),
+      List.cons(below(Expr.param("M"), Gpu.i32Limit), List.cons(below(Expr.param("N"), Gpu.i32Limit),
+        List.cons(below(Expr.param("K"), Gpu.i32Limit), List.nil(Expr)))))
+    let maps := List.cons(MapEncoding.mk("A_map", "A", "M", "K", sa.inner, sa.outer),
+      List.cons(MapEncoding.mk("B_map", "B", "N", "K", sb.inner, sb.outer), List.nil(MapEncoding)))
+    let ceilDiv := fun (x: String)(d: Nat): Expr => Expr.bin(BinOp.div, Expr.bin(BinOp.add, Expr.param(x), Expr.lit(Nat.pred(d))), Expr.lit(d))
+    Launcher.mk(hostParams, requires, maps, ceilDiv("N", bn), ceilDiv("M", 128), 256)
+  }
+
   // C (M×N, f32, row-major) = A (M×K) · Bᵀ, with B given as N×K, both bf16 and K contiguous, read through tensor maps
   // whose boxes are `sa` (K by 128 rows of A) and `sb` (K by N-block rows of B). One CTA of 256 threads per 128×`bn`
-  // block of C. Launch contract: grid (ceil(N / bn), ceil(M / 128)), block 256, the returned kernel's dynamic shared
-  // memory, A_map and B_map encoded as `TMap` says, and C a distinct array with fewer than 2^32 elements.
+  // block of C. The kernel comes with a host launcher (`tmaGemmLauncher`); its remaining contract is that A, B and C
+  // are distinct device arrays of M×K, N×K and M×N elements.
   def tmaGemmKernel (name: String)(sa: TmaSpec)(sb: TmaSpec)
       (body: (l: Lifetime) -> Ctx(l, Group.cta(256)) -> TmaLaunch(l, sa, sb) -> COwn(l, TmaSpec.outer(sb)) -> TmemPermit(l)
         -> Ctx(l, Group.cta(256)))
@@ -1103,6 +1121,7 @@ namespace Gpu {
     let params := List.cons(Param.tensorMap("A_map"), List.cons(Param.tensorMap("B_map"), List.cons(Param.output(DType.f32, "C"),
       List.cons(Param.scalar(DType.u32, "M"), List.cons(Param.scalar(DType.u32, "N"), List.cons(Param.scalar(DType.u32, "K"), List.nil(Param)))))))
     let gen := Gpu.state(Key.key, body(l, Gpu.start(l, Group.cta(256)), launch, COwn.mk(l, bn), TmemPermit.mk(l)))
-    Gpu.finish(name, params, Gpu.check(gen, Nat.ble(gen.smem, Gpu.maxDynamicShared), "kernel: more dynamic shared memory than sm_100a has"))
+    Gpu.finish(name, params, Option.some(Gpu.tmaGemmLauncher(sa, sb)),
+      Gpu.check(gen, Nat.ble(gen.smem, Gpu.maxDynamicShared), "kernel: more dynamic shared memory than sm_100a has"))
   }
 }

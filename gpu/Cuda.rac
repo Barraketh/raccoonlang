@@ -80,9 +80,22 @@ namespace Cuda {
    | scalar (t: DType)(name: String) : Param
    | tensorMap (name: String) : Param
 
-  // A kernel, with the bytes of dynamic shared memory it must be launched with.
+  // How the host encodes a tensor-map parameter: from the bf16 matrix `source` of `rows` × `cols` elements, `cols`
+  // contiguous (both host scalars), in boxes of `inner` × `outer` elements with 128-byte swizzle. Elements outside the
+  // matrix read as zero.
+  struct MapEncoding : Type
+   | mk (param: String)(source: String)(rows: String)(cols: String)(inner: Nat)(outer: Nat) : MapEncoding
+
+  // A host function `<kernel>_launch` taking `params` and a stream: it fails with `cudaErrorInvalidValue` unless every
+  // condition in `requires` holds, encodes `maps`, and launches `gridX` × `gridY` CTAs of `block` threads with the
+  // kernel's dynamic shared memory. It passes the kernel's parameters by name: `params` declares each of them but the
+  // tensor maps, which `maps` declares.
+  struct Launcher : Type
+   | mk (params: List(Param))(requires: List(Expr))(maps: List(MapEncoding))(gridX: Expr)(gridY: Expr)(block: Nat) : Launcher
+
+  // A kernel, with the bytes of dynamic shared memory it must be launched with, and its host launcher if it has one.
   struct Kernel : Type
-   | mk (name: String)(params: List(Param))(dynamicShared: Nat)(body: Block) : Kernel
+   | mk (name: String)(params: List(Param))(dynamicShared: Nat)(body: Block)(launcher: Option(Launcher)) : Kernel
 
   def dtype (t: DType): String := {
     match t returning String with
@@ -246,9 +259,12 @@ namespace Cuda {
     | Param.tensorMap n => Bool.true
   })
 
-  // Headers a kernel needs: the driver API's CUtensorMap and bf16 when it takes tensor maps, nothing otherwise.
-  def headers (ps: List(Param))(rest: String): String :=
-    Bool.cond(Cuda.usesTensorMaps(ps), String, Text.cat("#include <cuda.h>\n#include <cuda_bf16.h>\n\n", rest), rest)
+  // Headers a kernel needs: the driver API's CUtensorMap and bf16 when it takes tensor maps, the runtime API when it
+  // has a launcher, nothing otherwise.
+  def headers (ps: List(Param))(launched: Bool)(rest: String): String := {
+    let runtime := Bool.cond(launched, String, Text.cat("#include <cuda_runtime.h>\n", "\n"), "\n")
+    Bool.cond(Cuda.usesTensorMaps(ps), String, Text.cat3("#include <cuda.h>\n#include <cuda_bf16.h>\n", runtime, rest), rest)
+  }
 
   // The dynamic shared buffer's declaration and shared-window address, when the kernel uses one.
   def sharedPrologue (bytes: Nat)(rest: String): String := {
@@ -261,11 +277,84 @@ namespace Cuda {
     }
   }
 
+  // ---- The host launcher -------------------------------------------------------------------------------------------
+
+  def failUnless (c: Expr)(rest: String): String :=
+    Cuda.line(1, Text.cat3("if (!", Cuda.expr(c), ") {"), Cuda.line(2, "return cudaErrorInvalidValue;", Cuda.line(1, "}", rest)))
+
+  def requirements (cs: List(Expr))(rest: String): String decreases structural(cs) := {
+    match cs returning String with
+    | List.nil => rest
+    | List.cons c more => Cuda.failUnless(c, Cuda.requirements(more, rest))
+  }
+
+  def mapEncoding (m: MapEncoding)(rest: String): String := {
+    match m returning String with
+    | MapEncoding.mk param source rows cols inner outer => {
+      let encode := Text.cat3("if (cuTensorMapEncodeTiled(&", param, Text.cat3(", CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, const_cast<__nv_bfloat16*>(",
+        source, "), dims, strides, box, steps,"))
+      Cuda.line(1, Text.cat3("CUtensorMap ", param, ";"), Cuda.line(1, "{",
+        Cuda.line(2, Text.cat3("const cuuint64_t dims[2] = {", cols, Text.cat3(", ", rows, "};")),
+        Cuda.line(2, Text.cat3("const cuuint64_t strides[1] = {static_cast<cuuint64_t>(", cols, ") * 2u};"),
+        Cuda.line(2, Text.cat3("const cuuint32_t box[2] = {", Text.nat(inner), Text.cat3("u, ", Text.nat(outer), "u};")),
+        Cuda.line(2, "const cuuint32_t steps[2] = {1u, 1u};",
+        Cuda.line(2, encode,
+        Cuda.line(4, "CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_256B,",
+        Cuda.line(4, "CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE) != CUDA_SUCCESS) {",
+        Cuda.line(3, "return cudaErrorInvalidValue;",
+        Cuda.line(2, "}", Cuda.line(1, "}", rest))))))))))))
+    }
+  }
+
+  def mapEncodings (ms: List(MapEncoding))(rest: String): String decreases structural(ms) := {
+    match ms returning String with
+    | List.nil => rest
+    | List.cons m more => Cuda.mapEncoding(m, Cuda.mapEncodings(more, rest))
+  }
+
+  def paramName (p: Param): String := {
+    match p returning String with
+    | Param.input t n => n
+    | Param.output t n => n
+    | Param.scalar t n => n
+    | Param.tensorMap n => n
+  }
+
+  // `&a, &b, …` for the kernel's parameters.
+  def argAddrs (ps: List(Param)): String decreases structural(ps) := {
+    match ps returning String with
+    | List.nil => ""
+    | List.cons p more => {
+      match more returning String with
+      | List.nil => Text.cat("&", Cuda.paramName(p))
+      | List.cons q rest => Text.cat3("&", Cuda.paramName(p), Text.cat(", ", Cuda.argAddrs(more)))
+    }
+  }
+
+  def launcher (name: String)(kernelParams: List(Param))(bytes: Nat)(l: Launcher): String := {
+    match l returning String with
+    | Launcher.mk ps requires maps gridX gridY block => {
+      let entry := Text.cat3("reinterpret_cast<const void*>(", name, ")")
+      let head := Text.cat3("extern \"C\" cudaError_t ", name, Text.cat3("_launch(", Cuda.params(ps), ", cudaStream_t stream) {"))
+      let attr := Text.cat3("const cudaError_t status = cudaFuncSetAttribute(", entry,
+        Text.cat3(", cudaFuncAttributeMaxDynamicSharedMemorySize, ", Text.nat(bytes), ");"))
+      let launch := Text.cat3("return cudaLaunchKernel(", entry, Text.cat3(", dim3(", Cuda.expr(gridX), Text.cat3(", ", Cuda.expr(gridY),
+        Text.cat3("), dim3(", Text.nat(block), Text.cat3("u), args, ", Text.nat(bytes), "u, stream);")))))
+      Cuda.line(0, "", Cuda.line(0, Text.cat3("// Launches ", name, " on `stream`, encoding its tensor maps as its parameter types require."),
+        Cuda.line(0, head, Cuda.requirements(requires, Cuda.mapEncodings(maps,
+          Cuda.line(1, attr, Cuda.line(1, "if (status != cudaSuccess) {", Cuda.line(2, "return status;", Cuda.line(1, "}",
+          Cuda.line(1, Text.cat3("void* args[] = {", Cuda.argAddrs(kernelParams), "};"),
+          Cuda.line(1, launch, "}\n")))))))))))
+    }
+  }
+
   def kernel (k: Kernel): String := {
     match k returning String with
-    | Kernel.mk n ps bytes body => {
+    | Kernel.mk n ps bytes body host => {
       let head := Text.cat3("extern \"C\" __global__ void ", n, Text.cat3("(", Cuda.params(ps), ") {"))
-      Cuda.headers(ps, Cuda.line(0, head, Cuda.sharedPrologue(bytes, Cuda.block(1, body, "}\n"))))
+      let tail := Option.elim(host, String, "", fun (l: Launcher): String => Cuda.launcher(n, ps, bytes, l))
+      let launched := Option.elim(host, Bool, Bool.false, fun (l: Launcher): Bool => Bool.true)
+      Cuda.headers(ps, launched, Cuda.line(0, head, Cuda.sharedPrologue(bytes, Cuda.block(1, body, Text.cat("}\n", tail)))))
     }
   }
 }

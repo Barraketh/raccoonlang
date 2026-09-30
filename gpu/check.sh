@@ -31,6 +31,13 @@ for f in "$here"/rejected/*.rac; do
     esac
   fi
 done
+# Hardware test harnesses are host code: the same stubs check them.
+for h in "$here"/harness/*.cu; do
+  if command -v clang++ >/dev/null && ! clang++ -std=c++17 -fsyntax-only -Wall -Werror -I "$here/stub" \
+      -include "$here/stub/cuda_stub.h" -x c++ "$h"; then
+    echo "FAIL $(basename "$h") does not compile"; status=1
+  else echo "ok   harness/$(basename "$h")"; fi
+done
 for t in "$here"/rejected/*_mutants.py; do
   python3 "$here/mutate.py" "$t" || status=1
 done
