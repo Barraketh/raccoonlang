@@ -1,0 +1,108 @@
+// The literal checker is sound (I4): a kernel it finds nothing in prints every 32-bit literal below 2^32 and every
+// 64-bit literal below 2^64.
+
+import proofs.Fold
+
+namespace Literals {
+  open Cuda
+
+  def u32Ok (found: List(String))(what: String)(n: Nat)(h: Fold.Empty(Check.u32Printed(found, what, n))): Nat.lt(n, Cuda.u32Limit) :=
+    Fold.unlessOk(found, Check.below(n, Cuda.u32Limit), fun (u: Unit): String => Text.cat3(what, Text.nat(n), " does not fit 32 bits"), h)
+
+  def u32Found (found: List(String))(what: String)(n: Nat)(h: Fold.Empty(Check.u32Printed(found, what, n))): Fold.Empty(found) :=
+    Fold.unlessFound(found, Check.below(n, Cuda.u32Limit), fun (u: Unit): String => Text.cat3(what, Text.nat(n), " does not fit 32 bits"), h)
+
+  def u64Ok (found: List(String))(n: Nat)(h: Fold.Empty(Check.u64Printed(found, n))): Nat.lt(n, Spec.u64Limit) :=
+    Fold.unlessOk(found, Check.below(n, Check.u64Limit), fun (u: Unit): String => Text.cat3("64-bit literal ", Text.nat(n), " does not fit 64 bits"), h)
+
+  def u64Found (found: List(String))(n: Nat)(h: Fold.Empty(Check.u64Printed(found, n))): Fold.Empty(found) :=
+    Fold.unlessFound(found, Check.below(n, Check.u64Limit), fun (u: Unit): String => Text.cat3("64-bit literal ", Text.nat(n), " does not fit 64 bits"), h)
+
+  def keeps (found: List(String))(x: Expr)(h: Fold.Empty(Check.literalStep(found, x))): Fold.Empty(found) := {
+    match x returning Fold.Empty(found) with
+    | Expr.var id => h
+    | Expr.lit value => Literals.u32Found(found, "32-bit literal ", value, h)
+    | Expr.lit64 value => Literals.u64Found(found, value, h)
+    | Expr.zero t => h
+    | Expr.param n => h
+    | Expr.special b => h
+    | Expr.bin op a b => h
+    | Expr.max a b => h
+    | Expr.fma a b c => h
+    | Expr.select c t f => h
+    | Expr.index base i => h
+    | Expr.cast t a => h
+    | Expr.sharedAddr offset => h
+    | Expr.sharedPtr t offset => h
+    | Expr.paramAddr n => h
+  }
+
+  def boxKeeps (found: List(String))(m: MapEncoding)(h: Fold.Empty(Check.boxStep(found, m))): Fold.Empty(found) := {
+    let width := Text.cat3("launcher: ", m.param, "'s box width ")
+    Literals.u32Found(found, width, m.inner, Literals.u32Found(Check.u32Printed(found, width, m.inner), Text.cat3("launcher: ", m.param, "'s box height "), m.outer, h))
+  }
+
+  def sizesAcc (host: Option(Launcher))(found: List(String))(h: Fold.Empty(Check.launcherSizes(host, found))): Fold.Empty(found) := {
+    match host returning Fold.Empty(found) with
+    | Option.none => h
+    | Option.some l => {
+      let block := Check.u32Printed(found, "launcher: a block of ", l.block)
+      Literals.u32Found(found, "launcher: a block of ", l.block, Fold.foldlAcc(MapEncoding, l.maps, block, Check.boxStep, Literals.boxKeeps, h))
+    }
+  }
+
+  // What the launcher's sizes found nothing wrong with, when the kernel has launcher `l`.
+  def sizesBlock (host: Option(Launcher))(l: Launcher)(launched: Eq(Option(Launcher), host, Option.some(l)))(found: List(String))
+      (h: Fold.Empty(Check.launcherSizes(host, found))): Fold.Empty(Check.u32Printed(found, "launcher: a block of ", l.block)) := {
+    match launched returning Fold.Empty(Check.u32Printed(found, "launcher: a block of ", l.block)) with
+    | Eq.refl z => Fold.foldlAcc(MapEncoding, l.maps, Check.u32Printed(found, "launcher: a block of ", l.block), Check.boxStep, Literals.boxKeeps, h)
+  }
+
+  def sizesBox (host: Option(Launcher))(l: Launcher)(launched: Eq(Option(Launcher), host, Option.some(l)))(m: MapEncoding)
+      (encoded: Spec.Mem(MapEncoding, m, l.maps))(found: List(String))(h: Fold.Empty(Check.launcherSizes(host, found)))
+      : Fold.Empty(Check.boxStep(List.nil(String), m)) := {
+    match launched returning Fold.Empty(Check.boxStep(List.nil(String), m)) with
+    | Eq.refl z =>
+      Fold.foldlAt(MapEncoding, m, l.maps, encoded, Check.u32Printed(found, "launcher: a block of ", l.block), Check.boxStep, Literals.boxKeeps, h)
+  }
+
+  def sound (k: Kernel)(h: Eq(List(String), Check.literals(k), List.nil(String))): Spec.Literals(k) := {
+    let body := Check.blockExprs(List(String), k.body, List.nil(String), Check.literalStep)
+    let exprs := Check.hostExprs(List(String), k.launcher, body, Check.literalStep)
+    let sizes := Fold.inOrder(Check.launcherSizes(k.launcher, exprs), h)
+    let exprsOk := Literals.sizesAcc(k.launcher, exprs, sizes)
+    let bodyOk := Fold.hostExprsAcc(k.launcher, body, Check.literalStep, Literals.keeps, exprsOk)
+    let u32 := fun (n: Nat)(occ: Spec.Lit32(k, n)): Nat.lt(n, Cuda.u32Limit) => {
+      match occ returning Nat.lt(n, Cuda.u32Limit) with
+      | Spec.Lit32.body inBody =>
+        Literals.u32Ok(List.nil(String), "32-bit literal ", n, Fold.blockExprsAt(Expr.lit(n), k.body, inBody, List.nil(String), Check.literalStep, Literals.keeps, bodyOk))
+      | Spec.Lit32.host inHost =>
+        Literals.u32Ok(List.nil(String), "32-bit literal ", n, Fold.hostExprsAt(k, Expr.lit(n), inHost, body, Check.literalStep, Literals.keeps, exprsOk))
+      | Spec.Lit32.block l launched size => {
+        match size returning Nat.lt(n, Cuda.u32Limit) with
+        | Eq.refl z => Literals.u32Ok(exprs, "launcher: a block of ", l.block, Literals.sizesBlock(k.launcher, l, launched, exprs, sizes))
+      }
+      | Spec.Lit32.boxInner l launched m encoded size => {
+        let width := Text.cat3("launcher: ", m.param, "'s box width ")
+        let box := Literals.sizesBox(k.launcher, l, launched, m, encoded, exprs, sizes)
+        let inner := Literals.u32Found(Check.u32Printed(List.nil(String), width, m.inner), Text.cat3("launcher: ", m.param, "'s box height "), m.outer, box)
+        match size returning Nat.lt(n, Cuda.u32Limit) with
+        | Eq.refl z => Literals.u32Ok(List.nil(String), width, m.inner, inner)
+      }
+      | Spec.Lit32.boxOuter l launched m encoded size => {
+        let width := Text.cat3("launcher: ", m.param, "'s box width ")
+        let box := Literals.sizesBox(k.launcher, l, launched, m, encoded, exprs, sizes)
+        match size returning Nat.lt(n, Cuda.u32Limit) with
+        | Eq.refl z => Literals.u32Ok(Check.u32Printed(List.nil(String), width, m.inner), Text.cat3("launcher: ", m.param, "'s box height "), m.outer, box)
+      }
+    }
+    let u64 := fun (n: Nat)(occ: Spec.Lit64(k, n)): Nat.lt(n, Spec.u64Limit) => {
+      match occ returning Nat.lt(n, Spec.u64Limit) with
+      | Spec.Lit64.body inBody =>
+        Literals.u64Ok(List.nil(String), n, Fold.blockExprsAt(Expr.lit64(n), k.body, inBody, List.nil(String), Check.literalStep, Literals.keeps, bodyOk))
+      | Spec.Lit64.host inHost =>
+        Literals.u64Ok(List.nil(String), n, Fold.hostExprsAt(k, Expr.lit64(n), inHost, body, Check.literalStep, Literals.keeps, exprsOk))
+    }
+    Spec.Literals.mk(k, u32, u64)
+  }
+}

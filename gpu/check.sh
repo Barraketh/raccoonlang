@@ -2,7 +2,7 @@
 # Checks the spike: every example must generate code, every file under rejected/ must fail with the diagnostic
 # kind named on its `// expect:` line (with a message that mentions the text of its `// mentions:` line, if it has
 # one), every mutant in a rejected/*_mutants.py table must be refused as the table says (see mutate.py), and every file
-# under checks/ must check without a diagnostic.
+# under checks/ and proofs/ must check without a diagnostic.
 here=$(cd "$(dirname "$0")" && pwd)
 run() { ${RACCOON:?set RACCOON to a raccoon launcher} --prelude "$here/Prelude.rac" --root "$here" "$@"; }
 status=0
@@ -28,10 +28,12 @@ for f in "$here"/rejected/*.rac; do
     *) echo "FAIL $(basename "$f"): expected $want${mentions:+ mentioning $mentions}, got '$got'"; status=1 ;;
   esac
 done
-# The checkers' unit tests: theorems about hand-built kernels, proved by evaluation.
-for f in "$here"/checks/*.rac; do
+# The checkers' unit tests (theorems about hand-built kernels, proved by evaluation) and their soundness proofs
+# against gpu/Spec.rac.
+for f in "$here"/checks/*.rac "$here"/proofs/*.rac; do
+  what=$(basename "$(dirname "$f")")/$(basename "$f")
   got=$(run --json "$f" 2>/dev/null | python3 -c 'import json,sys; [print("L%d %s: %s" % (x["startLine"], x["kind"], x["message"])) for x in json.load(sys.stdin)]' 2>/dev/null || echo crashed)
-  if [ -z "$got" ]; then echo "ok   checks/$(basename "$f")"; else echo "FAIL checks/$(basename "$f")"; printf '%s\n' "$got"; status=1; fi
+  if [ -z "$got" ]; then echo "ok   $what"; else echo "FAIL $what"; printf '%s\n' "$got"; status=1; fi
 done
 # Hardware test harnesses are host code: the same stubs check them.
 for h in "$here"/harness/*.cu; do

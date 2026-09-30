@@ -1,0 +1,32 @@
+// The generation-error checker is sound: a kernel it finds nothing in has no `#error` line.
+
+import proofs.Fold
+
+namespace Errors {
+  open Cuda
+
+  // Only an `#error` line adds a message.
+  def keeps (found: List(String))(s: Stmt)(h: Fold.Empty(Check.errorStep(found, s))): Fold.Empty(found) := {
+    match s returning Fold.Empty(found) with
+    | Stmt.decl t id init => h
+    | Stmt.declMut t id init => h
+    | Stmt.declOut t id => h
+    | Stmt.assign id value => h
+    | Stmt.store base i value => h
+    | Stmt.shared t id size => h
+    | Stmt.forLoop id start count body => h
+    | Stmt.forStride id start stop step body => h
+    | Stmt.ifElse c yes no => h
+    | Stmt.scoped body => h
+    | Stmt.sync => h
+    | Stmt.syncWarp => h
+    | Stmt.asm template outs ins => h
+    | Stmt.error message => False.elim(Fold.consNotEmpty(message, found, h), Fold.Empty(found))
+  }
+
+  def sound (k: Kernel)(h: Eq(List(String), Check.errors(k), List.nil(String))): Spec.NoErrors(k) :=
+    fun (m: String)(occ: Spec.InBlock(Stmt.error(m), k.body)): False => {
+      let walk := Fold.inOrder(Check.blockFold(List(String), k.body, List.nil(String), Check.errorStep), h)
+      Fold.consNotEmpty(m, List.nil(String), Fold.blockFoldAt(Stmt.error(m), k.body, occ, List.nil(String), Check.errorStep, Errors.keeps, walk))
+    }
+}

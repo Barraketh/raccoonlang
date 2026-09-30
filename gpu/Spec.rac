@@ -1,0 +1,142 @@
+// What the structural invariants of gpu/OBLIGATIONS.md §4 mean, stated on a kernel's AST without reference to how
+// gpu/Check.rac decides them. Each invariant is a universal over an occurrence relation: whatever occurs in the kernel
+// in some way has some property. gpu/proofs/ proves each checker sound against its statement here, so this file is
+// part of what is trusted: it should say what the invariant means, and nothing else.
+
+import Cuda
+
+namespace Spec {
+  open Cuda
+
+  // ---- Occurrence ---------------------------------------------------------------------------------------------------
+
+  // `x` is an element of `xs`.
+  inductive Mem (A: Type)(x: A) indices (xs: List(A)) : Prop
+   | here (rest: List(A)) : Mem(A, x, List.cons(x, rest))
+   | there (y: A)(rest: List(A))(h: Mem(A, x, rest)) : Mem(A, x, List.cons(y, rest))
+
+  // `x` is `e` or one of its subexpressions.
+  inductive SubExpr (x: Expr) indices (e: Expr) : Prop
+   | here : SubExpr(x, x)
+   | binA (op: BinOp)(a: Expr)(b: Expr)(h: SubExpr(x, a)) : SubExpr(x, Expr.bin(op, a, b))
+   | binB (op: BinOp)(a: Expr)(b: Expr)(h: SubExpr(x, b)) : SubExpr(x, Expr.bin(op, a, b))
+   | maxA (a: Expr)(b: Expr)(h: SubExpr(x, a)) : SubExpr(x, Expr.max(a, b))
+   | maxB (a: Expr)(b: Expr)(h: SubExpr(x, b)) : SubExpr(x, Expr.max(a, b))
+   | fmaA (a: Expr)(b: Expr)(c: Expr)(h: SubExpr(x, a)) : SubExpr(x, Expr.fma(a, b, c))
+   | fmaB (a: Expr)(b: Expr)(c: Expr)(h: SubExpr(x, b)) : SubExpr(x, Expr.fma(a, b, c))
+   | fmaC (a: Expr)(b: Expr)(c: Expr)(h: SubExpr(x, c)) : SubExpr(x, Expr.fma(a, b, c))
+   | selectC (c: Expr)(t: Expr)(f: Expr)(h: SubExpr(x, c)) : SubExpr(x, Expr.select(c, t, f))
+   | selectT (c: Expr)(t: Expr)(f: Expr)(h: SubExpr(x, t)) : SubExpr(x, Expr.select(c, t, f))
+   | selectF (c: Expr)(t: Expr)(f: Expr)(h: SubExpr(x, f)) : SubExpr(x, Expr.select(c, t, f))
+   | indexBase (base: Expr)(i: Expr)(h: SubExpr(x, base)) : SubExpr(x, Expr.index(base, i))
+   | indexI (base: Expr)(i: Expr)(h: SubExpr(x, i)) : SubExpr(x, Expr.index(base, i))
+   | cast (t: DType)(a: Expr)(h: SubExpr(x, a)) : SubExpr(x, Expr.cast(t, a))
+
+  mutual {
+    // `x` is `s` or a statement in one of its blocks, at any depth.
+    inductive InStmt (x: Stmt) indices (s: Stmt) : Prop
+     | here : InStmt(x, x)
+     | forLoop (id: Nat)(start: Expr)(count: Expr)(body: Block)(h: InBlock(x, body)) : InStmt(x, Stmt.forLoop(id, start, count, body))
+     | forStride (id: Nat)(start: Expr)(stop: Expr)(step: Expr)(body: Block)(h: InBlock(x, body))
+         : InStmt(x, Stmt.forStride(id, start, stop, step, body))
+     | ifYes (c: Expr)(yes: Block)(no: Block)(h: InBlock(x, yes)) : InStmt(x, Stmt.ifElse(c, yes, no))
+     | ifNo (c: Expr)(yes: Block)(no: Block)(h: InBlock(x, no)) : InStmt(x, Stmt.ifElse(c, yes, no))
+     | scoped (body: Block)(h: InBlock(x, body)) : InStmt(x, Stmt.scoped(body))
+
+    // `x` is a statement of `b`, or in the blocks of one, at any depth.
+    inductive InBlock (x: Stmt) indices (b: Block) : Prop
+     | head (s: Stmt)(rest: Block)(h: InStmt(x, s)) : InBlock(x, Block.seq(s, rest))
+     | tail (s: Stmt)(rest: Block)(h: InBlock(x, rest)) : InBlock(x, Block.seq(s, rest))
+  }
+
+  // `x` is, or is inside, an expression that statement `s` holds itself (not in its blocks): an initializer, an
+  // assigned or stored value, a store's address or index, a loop's header, a branch's condition, an asm operand.
+  inductive OwnExpr (x: Expr) indices (s: Stmt) : Prop
+   | decl (t: DType)(id: Nat)(init: Expr)(h: SubExpr(x, init)) : OwnExpr(x, Stmt.decl(t, id, init))
+   | declMut (t: DType)(id: Nat)(init: Expr)(h: SubExpr(x, init)) : OwnExpr(x, Stmt.declMut(t, id, init))
+   | assign (id: Nat)(value: Expr)(h: SubExpr(x, value)) : OwnExpr(x, Stmt.assign(id, value))
+   | storeBase (base: Expr)(i: Expr)(value: Expr)(h: SubExpr(x, base)) : OwnExpr(x, Stmt.store(base, i, value))
+   | storeIndex (base: Expr)(i: Expr)(value: Expr)(h: SubExpr(x, i)) : OwnExpr(x, Stmt.store(base, i, value))
+   | storeValue (base: Expr)(i: Expr)(value: Expr)(h: SubExpr(x, value)) : OwnExpr(x, Stmt.store(base, i, value))
+   | forStart (id: Nat)(start: Expr)(count: Expr)(body: Block)(h: SubExpr(x, start)) : OwnExpr(x, Stmt.forLoop(id, start, count, body))
+   | forCount (id: Nat)(start: Expr)(count: Expr)(body: Block)(h: SubExpr(x, count)) : OwnExpr(x, Stmt.forLoop(id, start, count, body))
+   | strideStart (id: Nat)(start: Expr)(stop: Expr)(step: Expr)(body: Block)(h: SubExpr(x, start))
+       : OwnExpr(x, Stmt.forStride(id, start, stop, step, body))
+   | strideStop (id: Nat)(start: Expr)(stop: Expr)(step: Expr)(body: Block)(h: SubExpr(x, stop))
+       : OwnExpr(x, Stmt.forStride(id, start, stop, step, body))
+   | strideStep (id: Nat)(start: Expr)(stop: Expr)(step: Expr)(body: Block)(h: SubExpr(x, step))
+       : OwnExpr(x, Stmt.forStride(id, start, stop, step, body))
+   | cond (c: Expr)(yes: Block)(no: Block)(h: SubExpr(x, c)) : OwnExpr(x, Stmt.ifElse(c, yes, no))
+   | asmOut (template: String)(outs: List(Operand))(ins: List(Operand))(o: Operand)(operand: Mem(Operand, o, outs))(h: SubExpr(x, o.e))
+       : OwnExpr(x, Stmt.asm(template, outs, ins))
+   | asmIn (template: String)(outs: List(Operand))(ins: List(Operand))(o: Operand)(operand: Mem(Operand, o, ins))(h: SubExpr(x, o.e))
+       : OwnExpr(x, Stmt.asm(template, outs, ins))
+
+  // `x` occurs in an expression of block `b`.
+  inductive ExprIn (x: Expr)(b: Block) : Prop
+   | mk (s: Stmt)(stmt: InBlock(s, b))(own: OwnExpr(x, s)) : ExprIn(x, b)
+
+  // `root` is an expression of grid `g`.
+  inductive GridExpr (root: Expr) indices (g: Grid) : Prop
+   | blocksX (y: Expr) : GridExpr(root, Grid.blocks(root, y))
+   | blocksY (x: Expr) : GridExpr(root, Grid.blocks(x, root))
+   | persistent : GridExpr(root, Grid.persistent(root))
+
+  // `root` is an expression launcher `l` evaluates on the host: a requirement, or its grid's extent.
+  inductive HostRoot (l: Launcher)(root: Expr) : Prop
+   | require (h: Mem(Expr, root, l.requires)) : HostRoot(l, root)
+   | grid (h: GridExpr(root, l.grid)) : HostRoot(l, root)
+
+  // `x` occurs in an expression the launcher of kernel `k` evaluates on the host.
+  inductive HostExpr (k: Kernel)(x: Expr) : Prop
+   | mk (l: Launcher)(launched: Eq(Option(Launcher), k.launcher, Option.some(l)))(root: Expr)(evaluated: HostRoot(l, root))
+        (sub: SubExpr(x, root)) : HostExpr(k, x)
+
+  // ---- Generation errors --------------------------------------------------------------------------------------------
+
+  // The kernel has no `#error` line.
+  def NoErrors (k: Kernel): Prop := (m: String) -> Spec.InBlock(Stmt.error(m), k.body) -> False
+
+  // ---- I2, shared memory --------------------------------------------------------------------------------------------
+
+  // The dynamic shared memory an sm_100a CTA can have.
+  def maxDynamicShared : Nat := 232448
+
+  // `offset` is a constant offset into the dynamic shared buffer, taken as a shared-window address or as a pointer.
+  inductive SharedAt (b: Block)(offset: Nat) : Prop
+   | addr (h: Spec.ExprIn(Expr.sharedAddr(offset), b)) : SharedAt(b, offset)
+   | ptr (t: DType)(h: Spec.ExprIn(Expr.sharedPtr(t, offset), b)) : SharedAt(b, offset)
+
+  // I2, as far as the AST shows it: the dynamic buffer fits an SM; a kernel that has one has a launcher and no static
+  // shared array; every constant offset into it lies inside it.
+  struct SharedMemory (k: Kernel) : Prop
+   | mk (fits: Nat.le(k.dynamicShared, Spec.maxDynamicShared))
+        (launched: Nat.lt(0, k.dynamicShared) -> Not(Eq(Option(Launcher), k.launcher, Option.none(Launcher))))
+        (noStatic: (t: DType) -> (id: Nat) -> (size: Nat) -> Spec.InBlock(Stmt.shared(t, id, size), k.body) -> Eq(Nat, k.dynamicShared, 0))
+        (inside: (offset: Nat) -> Spec.SharedAt(k.body, offset) -> Nat.lt(offset, k.dynamicShared)) : SharedMemory(k)
+
+  // ---- I4, literals -------------------------------------------------------------------------------------------------
+
+  def u64Limit : Nat := 18446744073709551616
+
+  // `n` is printed as a 32-bit literal: a `lit` in the kernel or its launcher, the launcher's block size, or a
+  // dimension of a tensor map's box.
+  inductive Lit32 (k: Kernel)(n: Nat) : Prop
+   | body (h: Spec.ExprIn(Expr.lit(n), k.body)) : Lit32(k, n)
+   | host (h: Spec.HostExpr(k, Expr.lit(n))) : Lit32(k, n)
+   | block (l: Launcher)(launched: Eq(Option(Launcher), k.launcher, Option.some(l)))(size: Eq(Nat, l.block, n)) : Lit32(k, n)
+   | boxInner (l: Launcher)(launched: Eq(Option(Launcher), k.launcher, Option.some(l)))(m: MapEncoding)
+       (encoded: Mem(MapEncoding, m, l.maps))(size: Eq(Nat, m.inner, n)) : Lit32(k, n)
+   | boxOuter (l: Launcher)(launched: Eq(Option(Launcher), k.launcher, Option.some(l)))(m: MapEncoding)
+       (encoded: Mem(MapEncoding, m, l.maps))(size: Eq(Nat, m.outer, n)) : Lit32(k, n)
+
+  // `n` is printed as a 64-bit literal: a `lit64` in the kernel or its launcher.
+  inductive Lit64 (k: Kernel)(n: Nat) : Prop
+   | body (h: Spec.ExprIn(Expr.lit64(n), k.body)) : Lit64(k, n)
+   | host (h: Spec.HostExpr(k, Expr.lit64(n))) : Lit64(k, n)
+
+  // I4: every 32-bit literal is below 2^32, and every 64-bit literal below 2^64.
+  struct Literals (k: Kernel) : Prop
+   | mk (u32: (n: Nat) -> Spec.Lit32(k, n) -> Nat.lt(n, Cuda.u32Limit))
+        (u64: (n: Nat) -> Spec.Lit64(k, n) -> Nat.lt(n, Spec.u64Limit)) : Literals(k)
+}

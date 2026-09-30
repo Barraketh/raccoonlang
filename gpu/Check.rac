@@ -260,15 +260,15 @@ namespace Check {
   def blockExprs (A: Type)(b: Block)(acc: A)(f: A -> Expr -> A): A :=
     Check.blockFold(A, b, acc, fun (a: A)(s: Stmt): A => Check.stmtExprs(A, s, a, f))
 
-  // The expressions a launcher evaluates on the host: its requirements, then its grid's extent.
-  def hostExprList (l: Launcher): List(Expr) := {
-    let grid := {
-      match l.grid returning List(Expr) with
-      | Grid.blocks x y => List.cons(x, List.cons(y, List.nil(Expr)))
-      | Grid.persistent tiles => List.cons(tiles, List.nil(Expr))
-    }
-    List.foldr(l.requires, List(Expr), grid, fun (x: Expr)(rest: List(Expr)): List(Expr) => List.cons(x, rest))
+  // A grid's extent.
+  def gridExprs (g: Grid): List(Expr) := {
+    match g returning List(Expr) with
+    | Grid.blocks x y => List.cons(x, List.cons(y, List.nil(Expr)))
+    | Grid.persistent tiles => List.cons(tiles, List.nil(Expr))
   }
+
+  // The expressions a launcher evaluates on the host: its requirements, then its grid's extent.
+  def hostExprList (l: Launcher): List(Expr) := List.append(l.requires, Check.gridExprs(l.grid))
 
   // `f` folded over every expression the kernel's launcher, if it has one, evaluates on the host.
   def hostExprs (A: Type)(host: Option(Launcher))(acc: A)(f: A -> Expr -> A): A := {
@@ -283,26 +283,28 @@ namespace Check {
 
   // ---- The checkers -------------------------------------------------------------------------------------------------
 
+  // A statement's generation error, added to those found before it.
+  def errorStep (found: List(String))(s: Stmt): List(String) := {
+    match s returning List(String) with
+    | Stmt.decl t id init => found
+    | Stmt.declMut t id init => found
+    | Stmt.declOut t id => found
+    | Stmt.assign id value => found
+    | Stmt.store base i value => found
+    | Stmt.shared t id size => found
+    | Stmt.forLoop id start count body => found
+    | Stmt.forStride id start stop step body => found
+    | Stmt.ifElse c yes no => found
+    | Stmt.scoped body => found
+    | Stmt.sync => found
+    | Stmt.syncWarp => found
+    | Stmt.asm template outs ins => found
+    | Stmt.error message => List.cons(message, found)
+  }
+
   // Generation errors: the messages of the kernel's `#error` lines, in order. Every check a builder makes while
   // generating (`Gpu.check`) ends up as one.
-  def errors (k: Kernel): List(String) := Check.inOrder(Check.blockFold(List(String), k.body, List.nil(String),
-    fun (found: List(String))(s: Stmt): List(String) => {
-      match s returning List(String) with
-      | Stmt.decl t id init => found
-      | Stmt.declMut t id init => found
-      | Stmt.declOut t id => found
-      | Stmt.assign id value => found
-      | Stmt.store base i value => found
-      | Stmt.shared t id size => found
-      | Stmt.forLoop id start count body => found
-      | Stmt.forStride id start stop step body => found
-      | Stmt.ifElse c yes no => found
-      | Stmt.scoped body => found
-      | Stmt.sync => found
-      | Stmt.syncWarp => found
-      | Stmt.asm template outs ins => found
-      | Stmt.error message => List.cons(message, found)
-    }))
+  def errors (k: Kernel): List(String) := Check.inOrder(Check.blockFold(List(String), k.body, List.nil(String), Check.errorStep))
 
   // A use of variable `id` where `visible` holds the variables in scope; `st.seen` holds those declared so far.
   def useVar (visible: NatSet)(st: Scan)(id: Nat): Scan := {
@@ -408,49 +410,62 @@ namespace Check {
   // The dynamic shared memory an sm_100a CTA can have.
   def maxDynamicShared : Nat := 232448
 
+  // The dynamic buffer's size, which must fit an SM, and a launcher to ask for it.
+  def sharedSize (bytes: Nat)(launched: Bool): List(String) := {
+    let fits := Check.unless(List.nil(String), Nat.ble(bytes, Check.maxDynamicShared), fun (u: Unit): String =>
+      Text.cat3(Text.nat(bytes), " bytes of dynamic shared memory, more than sm_100a's ", Text.nat(Check.maxDynamicShared)))
+    Check.unless(fits, Bool.or(Bool.not(Nat.blt(0, bytes)), launched), fun (u: Unit): String =>
+      Text.cat(Text.nat(bytes), " bytes of dynamic shared memory, and no launcher to ask for them"))
+  }
+
+  // A static shared array `id`, in a kernel whose dynamic shared memory is `bytes`.
+  def staticArray (bytes: Nat)(found: List(String))(id: Nat): List(String) :=
+    Check.unless(found, Bool.not(Nat.blt(0, bytes)), fun (u: Unit): String =>
+      Text.cat3("static shared array ", Cuda.name(id), " in a kernel with dynamic shared memory"))
+
+  def staticStep (bytes: Nat): List(String) -> Stmt -> List(String) := fun (found: List(String))(s: Stmt): List(String) => {
+    match s returning List(String) with
+    | Stmt.decl t id init => found
+    | Stmt.declMut t id init => found
+    | Stmt.declOut t id => found
+    | Stmt.assign id value => found
+    | Stmt.store base i value => found
+    | Stmt.shared t id size => Check.staticArray(bytes, found, id)
+    | Stmt.forLoop id start count body => found
+    | Stmt.forStride id start stop step body => found
+    | Stmt.ifElse c yes no => found
+    | Stmt.scoped body => found
+    | Stmt.sync => found
+    | Stmt.syncWarp => found
+    | Stmt.asm template outs ins => found
+    | Stmt.error message => found
+  }
+
+  // A constant offset into the dynamic shared buffer of `bytes` bytes.
+  def sharedOffset (bytes: Nat)(found: List(String))(offset: Nat): List(String) :=
+    Check.unless(found, Nat.blt(offset, bytes), fun (u: Unit): String =>
+      Text.cat3("dynamic shared memory at byte ", Text.nat(offset), Text.cat3(", outside the kernel's ", Text.nat(bytes), " bytes")))
+
+  def offsetStep (bytes: Nat): List(String) -> Expr -> List(String) := fun (found: List(String))(x: Expr): List(String) => {
+    match Check.leaf(x) returning List(String) with
+    | Leaf.other => found
+    | Leaf.var id => found
+    | Leaf.special b => found
+    | Leaf.element => found
+    | Leaf.lit32 value => found
+    | Leaf.lit64 value => found
+    | Leaf.param name => found
+    | Leaf.shared offset => Check.sharedOffset(bytes, found, offset)
+  }
+
   // I2, shared memory, as far as the AST shows it: the dynamic buffer fits an SM; a kernel that has one has a launcher,
   // which asks for it, and no static shared array, which would come first in the shared window and could cost the
   // buffer its 1024-byte alignment; every constant offset into it lies inside it. (Where an address adds a run-time
   // index to its offset, the AST does not bound the sum.)
   def sharedMemory (k: Kernel): List(String) := {
     let bytes := k.dynamicShared
-    let dynamic := Nat.blt(0, bytes)
-    let launched := Option.isSome(k.launcher)
-    let fits := Check.unless(List.nil(String), Nat.ble(bytes, Check.maxDynamicShared), fun (u: Unit): String =>
-      Text.cat3(Text.nat(bytes), " bytes of dynamic shared memory, more than sm_100a's ", Text.nat(Check.maxDynamicShared)))
-    let asked := Check.unless(fits, Bool.or(Bool.not(dynamic), launched), fun (u: Unit): String =>
-      Text.cat(Text.nat(bytes), " bytes of dynamic shared memory, and no launcher to ask for them"))
-    let statics := Check.blockFold(List(String), k.body, asked, fun (found: List(String))(s: Stmt): List(String) => {
-      let static := fun (id: Nat): List(String) => Check.unless(found, Bool.not(dynamic), fun (u: Unit): String =>
-        Text.cat3("static shared array ", Cuda.name(id), " in a kernel with dynamic shared memory"))
-      match s returning List(String) with
-      | Stmt.decl t id init => found
-      | Stmt.declMut t id init => found
-      | Stmt.declOut t id => found
-      | Stmt.assign id value => found
-      | Stmt.store base i value => found
-      | Stmt.shared t id size => static(id)
-      | Stmt.forLoop id start count body => found
-      | Stmt.forStride id start stop step body => found
-      | Stmt.ifElse c yes no => found
-      | Stmt.scoped body => found
-      | Stmt.sync => found
-      | Stmt.syncWarp => found
-      | Stmt.asm template outs ins => found
-      | Stmt.error message => found
-    })
-    Check.inOrder(Check.blockExprs(List(String), k.body, statics, fun (found: List(String))(x: Expr): List(String) => {
-      match Check.leaf(x) returning List(String) with
-      | Leaf.other => found
-      | Leaf.var id => found
-      | Leaf.special b => found
-      | Leaf.element => found
-      | Leaf.lit32 value => found
-      | Leaf.lit64 value => found
-      | Leaf.param name => found
-      | Leaf.shared offset => Check.unless(found, Nat.blt(offset, bytes), fun (u: Unit): String =>
-        Text.cat3("dynamic shared memory at byte ", Text.nat(offset), Text.cat3(", outside the kernel's ", Text.nat(bytes), " bytes")))
-    }))
+    let statics := Check.blockFold(List(String), k.body, Check.sharedSize(bytes, Option.isSome(k.launcher)), Check.staticStep(bytes))
+    Check.inOrder(Check.blockExprs(List(String), k.body, statics, Check.offsetStep(bytes)))
   }
 
   // The template of the named barrier `Gpu.namedBarrier` emits, `bar.sync id, threads`, by which it is known here.
@@ -536,34 +551,47 @@ namespace Check {
 
   def u64Limit : Nat := 18446744073709551616
 
+  // Whether `n` is below `limit`, as `Nat.lt` states it. (`Nat.blt(n, limit)` is the same test, but a native operation
+  // applied to a variable and a literal above the unfolding limit does not unfold, so no proof could relate the two.)
+  def below (n: Nat)(limit: Nat): Bool := Nat.ble(Nat.succ(n), limit)
+
   // A number printed as a 32-bit literal, such as a launcher's block size or a tensor map's box, must fit 32 bits.
   def u32Printed (found: List(String))(what: String)(n: Nat): List(String) :=
-    Check.unless(found, Nat.blt(n, Cuda.u32Limit), fun (u: Unit): String => Text.cat3(what, Text.nat(n), " does not fit 32 bits"))
+    Check.unless(found, Check.below(n, Cuda.u32Limit), fun (u: Unit): String => Text.cat3(what, Text.nat(n), " does not fit 32 bits"))
+
+  def u64Printed (found: List(String))(n: Nat): List(String) :=
+    Check.unless(found, Check.below(n, Check.u64Limit), fun (u: Unit): String => Text.cat3("64-bit literal ", Text.nat(n), " does not fit 64 bits"))
+
+  // An expression's literal, which must fit its width.
+  def literalStep (found: List(String))(x: Expr): List(String) := {
+    match Check.leaf(x) returning List(String) with
+    | Leaf.other => found
+    | Leaf.var id => found
+    | Leaf.special b => found
+    | Leaf.element => found
+    | Leaf.lit32 value => Check.u32Printed(found, "32-bit literal ", value)
+    | Leaf.lit64 value => Check.u64Printed(found, value)
+    | Leaf.param name => found
+    | Leaf.shared offset => found
+  }
+
+  // A tensor map's box, printed as two 32-bit literals.
+  def boxStep (found: List(String))(m: MapEncoding): List(String) :=
+    Check.u32Printed(Check.u32Printed(found, Text.cat3("launcher: ", m.param, "'s box width "), m.inner),
+      Text.cat3("launcher: ", m.param, "'s box height "), m.outer)
+
+  // The sizes a launcher prints as 32-bit literals: its block size and its boxes.
+  def launcherSizes (host: Option(Launcher))(found: List(String)): List(String) := {
+    match host returning List(String) with
+    | Option.none => found
+    | Option.some l => List.foldl(l.maps, List(String), Check.u32Printed(found, "launcher: a block of ", l.block), Check.boxStep)
+  }
 
   // I4, literals: every 32-bit literal, in the kernel and its launcher, is below 2^32, and every 64-bit one below 2^64.
   def literals (k: Kernel): List(String) := {
-    let lit := fun (found: List(String))(x: Expr): List(String) => {
-      match Check.leaf(x) returning List(String) with
-      | Leaf.other => found
-      | Leaf.var id => found
-      | Leaf.special b => found
-      | Leaf.element => found
-      | Leaf.lit32 value => Check.u32Printed(found, "32-bit literal ", value)
-      | Leaf.lit64 value => Check.unless(found, Nat.blt(value, Check.u64Limit), fun (u: Unit): String =>
-        Text.cat3("64-bit literal ", Text.nat(value), " does not fit 64 bits"))
-      | Leaf.param name => found
-      | Leaf.shared offset => found
-    }
-    let exprs := Check.hostExprs(List(String), k.launcher, Check.blockExprs(List(String), k.body, List.nil(String), lit), lit)
-    let sizes := {
-      match k.launcher returning List(String) with
-      | Option.none => exprs
-      | Option.some l => List.foldl(l.maps, List(String), Check.u32Printed(exprs, "launcher: a block of ", l.block),
-        fun (found: List(String))(m: MapEncoding): List(String) =>
-          Check.u32Printed(Check.u32Printed(found, Text.cat3("launcher: ", m.param, "'s box width "), m.inner),
-            Text.cat3("launcher: ", m.param, "'s box height "), m.outer))
-    }
-    Check.inOrder(sizes)
+    let exprs := Check.hostExprs(List(String), k.launcher, Check.blockExprs(List(String), k.body, List.nil(String), Check.literalStep),
+      Check.literalStep)
+    Check.inOrder(Check.launcherSizes(k.launcher, exprs))
   }
 
   // A name a program chose, which must be a C identifier the printer does not declare itself, and not the kernel's.
