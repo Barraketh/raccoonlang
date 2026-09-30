@@ -224,19 +224,19 @@ namespace Barriers {
         match more returning Spec.LiteralOperands(List.nil(Operand), List.cons(a, more)) with
         | List.nil => refused(Spec.LiteralOperands(List.nil(Operand), List.cons(a, List.nil(Operand))), h)
         | List.cons b rest => {
-          let two := List.cons(a, List.cons(b, rest))
           match rest returning Spec.LiteralOperands(List.nil(Operand), List.cons(a, List.cons(b, rest))) with
           | List.cons c others => refused(Spec.LiteralOperands(List.nil(Operand), List.cons(a, List.cons(b, List.cons(c, others)))), h)
           | List.nil => {
             let goal := Spec.LiteralOperands(List.nil(Operand), List.cons(a, List.cons(b, List.nil(Operand))))
-            Barriers.twoLiterals(st, Check.literal(a.e), Check.literal(b.e), h, goal,
-              fun (id: Nat)(n: Nat)(first: Eq(Option(Nat), Check.literal(a.e), Option.some(id)))(second: Eq(Option(Nat), Check.literal(b.e), Option.some(n))): Spec.LiteralOperands(List.nil(Operand), List.cons(a, List.cons(b, List.nil(Operand)))) => {
-                match Barriers.literalSome(a.e, id, first) returning Spec.LiteralOperands(List.nil(Operand), List.cons(a, List.cons(b, List.nil(Operand)))) with
-                | Eq.refl x => {
-                  match Barriers.literalSome(b.e, n, second) returning Spec.LiteralOperands(List.nil(Operand), List.cons(a, List.cons(b, List.nil(Operand)))) with
-                  | Eq.refl y => Spec.LiteralOperands.mk(a.constraint, id, b.constraint, n)
-                }
-              })
+            let literals := fun (id: Nat)(n: Nat)(first: Eq(Option(Nat), Check.literal(a.e), Option.some(id)))
+                (second: Eq(Option(Nat), Check.literal(b.e), Option.some(n))): goal => {
+              match Barriers.literalSome(a.e, id, first) returning goal with
+              | Eq.refl x => {
+                match Barriers.literalSome(b.e, n, second) returning goal with
+                | Eq.refl y => Spec.LiteralOperands.mk(a.constraint, id, b.constraint, n)
+              }
+            }
+            Barriers.twoLiterals(st, Check.literal(a.e), Check.literal(b.e), h, goal, literals)
           }
         }
       }
@@ -259,7 +259,8 @@ namespace Barriers {
     let flat := Spec.statements(k.body)
     let flatWalk := Eq.subst(Fold.blockFusion(Scan, k.body, start, Check.barrierStep), Level.zero, fun (sc: Scan): Prop => Fold.Empty(sc.found),
       Fold.inOrder(walk.found, h))
-    let literal := fun (outs: List(Operand))(ins: List(Operand))(occ: Spec.InBlock(Stmt.asm(Spec.barrierTemplate, outs, ins), k.body)): Spec.LiteralOperands(outs, ins) =>
+    let literal := fun (outs: List(Operand))(ins: List(Operand))(occ: Spec.InBlock(Stmt.asm(Spec.barrierTemplate, outs, ins), k.body))
+        : Spec.LiteralOperands(outs, ins) =>
       Barriers.literalAt(outs, ins, flat, Fold.blockMem(Stmt.asm(Spec.barrierTemplate, outs, ins), k.body, occ), start, flatWalk)
     let inRange := fun (s: Stmt)(id: Nat)(threads: Nat)(occ: Spec.InBlock(s, k.body))(bar: Spec.Barrier(id, threads, s)): And(Nat.le(1, id), Nat.le(id, 15)) =>
       Barriers.atBarrier(s, flat, Fold.blockMem(s, k.body, occ), start, flatWalk, id, threads, bar).left

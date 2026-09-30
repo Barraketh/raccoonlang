@@ -57,7 +57,8 @@ namespace Names {
     | List.cons c more => {
       let continued := fun (d: Char)(m: Spec.Mem(Char, d, more)): Or(Spec.IdentStart(d), Spec.Digit(d)) =>
         Names.identRestSound(d, Lib.allMem(Char, more, Check.identRest, Lib.andRight(Check.identStart(c), List.all(more, Check.identRest), h), d, m))
-      Spec.CIdent.mk(name, c, more, Eq.refl(List.cons(c, more)), Names.identStartSound(c, Lib.andLeft(Check.identStart(c), List.all(more, Check.identRest), h)), continued)
+      let start := Names.identStartSound(c, Lib.andLeft(Check.identStart(c), List.all(more, Check.identRest), h))
+      Spec.CIdent.mk(name, c, more, Eq.refl(List.cons(c, more)), start, continued)
     }
   }
 
@@ -68,8 +69,8 @@ namespace Names {
     | Spec.PrinterName.variable d ds spelled digits => {
       match spelled returning Eq(Bool, Check.printerName(name), Bool.true) with
       | Eq.refl z => {
-        let allDigits := Lib.allIntro(Char, List.cons(d, ds), Check.isDigit, fun (e: Char)(m: Spec.Mem(Char, e, List.cons(d, ds))): Eq(Bool, Check.isDigit(e), Bool.true) =>
-          Names.digitComplete(e, digits(e, m)))
+        let each := fun (e: Char)(m: Spec.Mem(Char, e, List.cons(d, ds))): Eq(Bool, Check.isDigit(e), Bool.true) => Names.digitComplete(e, digits(e, m))
+        let allDigits := Lib.allIntro(Char, List.cons(d, ds), Check.isDigit, each)
         Lib.orLeft(Check.variableName(name.data), others, allDigits)
       }
     }
@@ -124,7 +125,8 @@ namespace Names {
 
   // Each declared name is chosen, and not the kernel's.
   def declaredChosen (n: String)(names: List(String))(mem: Spec.Mem(String, n, names))(found: List(String))(kernel: String)(what: String)
-      (before: List(String))(h: Fold.Empty(Check.declaredAfter(found, kernel, what, before, names))): And(Spec.Chosen(n), Not(Eq(String, n, kernel))) decreases structural(names) := {
+      (before: List(String))(h: Fold.Empty(Check.declaredAfter(found, kernel, what, before, names)))
+      : And(Spec.Chosen(n), Not(Eq(String, n, kernel))) decreases structural(names) := {
     match mem returning And(Spec.Chosen(n), Not(Eq(String, n, kernel))) with
     | Spec.Mem.here more => {
       let chosen := Check.chosenName(found, kernel, what, n)
@@ -140,7 +142,8 @@ namespace Names {
 
   // A name declared before `names` is not among them.
   def declaredFresh (n: String)(names: List(String))(inNames: Spec.Mem(String, n, names))(found: List(String))(kernel: String)(what: String)
-      (before: List(String))(inBefore: Spec.Mem(String, n, before))(h: Fold.Empty(Check.declaredAfter(found, kernel, what, before, names))): False decreases structural(names) := {
+      (before: List(String))(inBefore: Spec.Mem(String, n, before))(h: Fold.Empty(Check.declaredAfter(found, kernel, what, before, names)))
+      : False decreases structural(names) := {
     match inNames returning False with
     | Spec.Mem.here more => {
       let chosen := Check.chosenName(found, kernel, what, n)
@@ -203,7 +206,8 @@ namespace Names {
     }
 
   // A parameter a use step found nothing wrong with is declared.
-  def useDeclared (declared: List(String))(what: String)(n: String)(h: Fold.Empty(Check.unless(List.nil(String), Check.mentions(declared, n), Names.useMessage(what, n))))
+  def useDeclared (declared: List(String))(what: String)(n: String)
+      (h: Fold.Empty(Check.unless(List.nil(String), Check.mentions(declared, n), Names.useMessage(what, n))))
       : Spec.Mem(String, n, declared) :=
     Lib.mentionsSound(declared, n, Fold.unlessOk(List.nil(String), Check.mentions(declared, n), Names.useMessage(what, n), h))
 
@@ -229,7 +233,8 @@ namespace Names {
     let uses := Check.paramUses(hostParams, "launcher: ")
     match launched returning Spec.LauncherNames(kernel, l) with
     | Eq.refl z => {
-      let declared := Names.declared(found, kernel, "launcher: name ", hostNames, Fold.hostExprsAcc(Option.some(l), names, uses, Names.usesKeeps(hostParams, "launcher: "), h))
+      let namesOk := Fold.hostExprsAcc(Option.some(l), names, uses, Names.usesKeeps(hostParams, "launcher: "), h)
+      let declared := Names.declared(found, kernel, "launcher: name ", hostNames, namesOk)
       let value := fun (n: String)(occ: Spec.LauncherExpr(l, Expr.param(n))): Spec.Mem(String, n, hostParams) =>
         Names.useDeclared(hostParams, "launcher: ", n, Fold.launcherExprsAt(l, Expr.param(n), occ, names, uses, Names.usesKeeps(hostParams, "launcher: "), h))
       let address := fun (n: String)(occ: Spec.LauncherExpr(l, Expr.paramAddr(n))): Spec.Mem(String, n, hostParams) =>

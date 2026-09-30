@@ -236,7 +236,8 @@ namespace Spec {
   // `s` is the named barrier `bar.sync id, threads`.
   inductive Barrier (id: Nat)(threads: Nat) indices (s: Stmt) : Prop
    | mk (c: String)(d: String)
-       : Barrier(id, threads, Stmt.asm(Spec.barrierTemplate, List.nil(Operand), List.cons(Operand.mk(c, Expr.lit(id)), List.cons(Operand.mk(d, Expr.lit(threads)), List.nil(Operand)))))
+       : Barrier(id, threads, Stmt.asm(Spec.barrierTemplate, List.nil(Operand),
+           List.cons(Operand.mk(c, Expr.lit(id)), List.cons(Operand.mk(d, Expr.lit(threads)), List.nil(Operand)))))
 
   // Each `bar.sync` has literal operands and an id in 1..15, and no two have one id.
   struct BarrierIds (k: Kernel) : Prop
@@ -358,4 +359,12 @@ namespace Spec {
 
   // I6: if the kernel has a launcher, it keeps `Launched`.
   def LauncherOk (k: Kernel): Prop := (l: Launcher) -> Eq(Option(Launcher), k.launcher, Option.some(l)) -> Spec.Launched(k, l)
+
+  // ---- The certificate ----------------------------------------------------------------------------------------------
+
+  // What `Check.WellFormed` certifies of a kernel: no generation error, and I1 to I6 as far as its AST shows them. (A
+  // conjunction rather than a structure, for `Spec.BarrierCounts`'s sake, see there.)
+  def WellFormed (k: Kernel): Prop :=
+    And(Spec.NoErrors(k), And(Spec.Scoping(k), And(Spec.SharedMemory(k), And(Spec.NamedBarriers(k), And(Spec.Literals(k), And(Spec.Names(k),
+      Spec.LauncherOk(k)))))))
 }

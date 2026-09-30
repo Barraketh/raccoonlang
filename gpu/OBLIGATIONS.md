@@ -227,7 +227,9 @@ AST shows them (§4), with unit tests (`gpu/checks/`). `Gpu.render` requires the
 which a client's `Gpu.render(p)` discharges by evaluation, and a failing checker is reported as
 `EvidenceNotDischarged`, naming its field and showing its messages, which print as string literals although they are
 computed. On the persistent GEMM the checkers, with checking `Check.rac` itself, add about 0.2 s to the 2.3 s of
-checking. The soundness statements are the next step. I7 and I8 are not decidable on today's AST (§9.6).
+checking. Each checker is proved sound in Raccoon (`gpu/proofs/`) against a syntactic statement of what its invariant
+means (`gpu/Spec.rac`), and `WellFormed.sound` turns `Check.WellFormed(k)` into `Spec.WellFormed(k)` for every kernel;
+`gpu/proofs/NOTES.md` records what made the proofs hard. I7 and I8 are not decidable on today's AST (§9.6).
 
 **Layer 2: protocols.** Abstract models of A6, A9 and A12 (an mbarrier as phase, pending arrivals and expected
 bytes; TMA fills and tensor-core commits as asynchronous events), the stage ring, accumulator ring, handoff and

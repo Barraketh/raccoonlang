@@ -199,13 +199,15 @@ namespace Scoping {
       | Spec.BlockScope.head outer s rest inner =>
         Scoping.stmtInScope(x, visible, vars, s, inner, v, w, st, Scoping.blockAcc(Check.after(v, s), rest, Check.scopeStmt(v, s, st), h))
       | Spec.BlockScope.tail outer s rest inner =>
-        Scoping.blockInScope(x, visible, List.append(Spec.declaredBy(s), vars), rest, inner, Check.after(v, s), Scoping.withinAfter(v, vars, s, w), Check.scopeStmt(v, s, st), h)
+        Scoping.blockInScope(x, visible, List.append(Spec.declaredBy(s), vars), rest, inner, Check.after(v, s), Scoping.withinAfter(v, vars, s, w),
+          Check.scopeStmt(v, s, st), h)
     }
   }
 
   // ---- No id is declared twice --------------------------------------------------------------------------------------
 
-  def memSplit (A: Type)(x: A)(xs: List(A))(ys: List(A))(m: Spec.Mem(A, x, List.append(xs, ys))): Or(Spec.Mem(A, x, xs), Spec.Mem(A, x, ys)) decreases structural(xs) := {
+  def memSplit (A: Type)(x: A)(xs: List(A))(ys: List(A))(m: Spec.Mem(A, x, List.append(xs, ys)))
+      : Or(Spec.Mem(A, x, xs), Spec.Mem(A, x, ys)) decreases structural(xs) := {
     match xs returning Or(Spec.Mem(A, x, xs), Spec.Mem(A, x, ys)) with
     | List.nil => Or.inr(Spec.Mem(A, x, List.nil(A)), m)
     | List.cons z more => {
@@ -331,10 +333,10 @@ namespace Scoping {
       | Block.seq s rest => {
         let first := Check.scopeStmt(v, s, st)
         Scoping.blockCases(y, s, rest, m, goal,
-          fun (inFirst: Spec.Mem(Stmt, y, List.cons(s, Spec.inner(s)))): Eq(Bool, Check.NatSet.member(Check.scopeBlock(v, Block.seq(s, rest), st).seen, id), Bool.true) =>
+          fun (inFirst: Spec.Mem(Stmt, y, List.cons(s, Spec.inner(s)))): goal =>
             Scoping.blockSeen(Check.after(v, s), rest, first, id,
               Scoping.seenAfterStmt(y, s, inFirst, id, bind, v, st, Scoping.blockAcc(Check.after(v, s), rest, first, h))),
-          fun (inRest: Spec.Mem(Stmt, y, Spec.statements(rest))): Eq(Bool, Check.NatSet.member(Check.scopeBlock(v, Block.seq(s, rest), st).seen, id), Bool.true) =>
+          fun (inRest: Spec.Mem(Stmt, y, Spec.statements(rest))): goal =>
             Scoping.seenAfterBlock(y, rest, inRest, id, bind, Check.after(v, s), first, h))
       }
     }
@@ -503,7 +505,8 @@ namespace Scoping {
     let body := Check.scopeBlock(NatSet.empty, k.body, start)
     let all := Fold.inOrder(Check.hostExprs(List(String), k.launcher, body.found, Check.hostUse), h)
     let bodyOk := Fold.hostExprsAcc(k.launcher, body.found, Check.hostUse, Scoping.hostKeeps, all)
-    let inScope := fun (x: Stmt)(visible: List(Nat))(occ: Spec.BlockScope(x, visible, List.nil(Nat), k.body))(id: Nat)(use: Spec.Uses(id, x)): Spec.Mem(Nat, id, visible) =>
+    let inScope := fun (x: Stmt)(visible: List(Nat))(occ: Spec.BlockScope(x, visible, List.nil(Nat), k.body))(id: Nat)(use: Spec.Uses(id, x))
+        : Spec.Mem(Nat, id, visible) =>
       Scoping.blockInScope(x, visible, List.nil(Nat), k.body, occ, NatSet.empty, Scoping.withinEmpty, start, bodyOk)(id, use)
     let once := fun (x: Stmt)(y: Stmt)(id: Nat)(before: Spec.Before(Stmt, x, y, Spec.statements(k.body)))(bindX: Spec.Binds(id, x))(bindY: Spec.Binds(id, y)): False =>
       Scoping.distinctBlock(x, y, k.body, before, id, bindX, bindY, NatSet.empty, start, bodyOk)

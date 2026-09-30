@@ -11,9 +11,9 @@ namespace Check {
 
   // ---- Sets of naturals ---------------------------------------------------------------------------------------------
 
-  // A set of naturals as a binary trie. A number's node is reached by its path (`NatSet.path`), a step per binary digit,
-  // and lists the numbers inserted at it. Only one number has a given path, but a node keeps its numbers so that
-  // membership compares them rather than relying on that.
+  // A set of naturals as a binary trie. A number's node is reached by its path (`NatSet.path`), a step per binary
+  // digit, and lists the numbers inserted at it. Only one number has a given path, but a node keeps its numbers so
+  // that membership compares them rather than relying on that.
   inductive NatSet : Type
    | empty : NatSet
    | node (keys: List(Nat))(even: NatSet)(odd: NatSet) : NatSet

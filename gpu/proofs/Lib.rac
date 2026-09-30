@@ -82,13 +82,15 @@ namespace Lib {
   }
 
   // What `List.all` found true of a list, it found true of each element.
-  def allMem (A: Type)(xs: List(A))(p: A -> Bool)(h: Eq(Bool, List.all(xs, p), Bool.true))(x: A)(m: Spec.Mem(A, x, xs)): Eq(Bool, p(x), Bool.true) decreases structural(xs) := {
+  def allMem (A: Type)(xs: List(A))(p: A -> Bool)(h: Eq(Bool, List.all(xs, p), Bool.true))(x: A)(m: Spec.Mem(A, x, xs))
+      : Eq(Bool, p(x), Bool.true) decreases structural(xs) := {
     match m returning Eq(Bool, p(x), Bool.true) with
     | Spec.Mem.here rest => Lib.andLeft(p(x), List.all(rest, p), h)
     | Spec.Mem.there y rest inRest => Lib.allMem(A, rest, p, Lib.andRight(p(y), List.all(rest, p), h), x, inRest)
   }
 
-  def allIntro (A: Type)(xs: List(A))(p: A -> Bool)(h: (x: A) -> Spec.Mem(A, x, xs) -> Eq(Bool, p(x), Bool.true)): Eq(Bool, List.all(xs, p), Bool.true) decreases structural(xs) := {
+  def allIntro (A: Type)(xs: List(A))(p: A -> Bool)(h: (x: A) -> Spec.Mem(A, x, xs) -> Eq(Bool, p(x), Bool.true))
+      : Eq(Bool, List.all(xs, p), Bool.true) decreases structural(xs) := {
     match xs returning Eq(Bool, List.all(xs, p), Bool.true) with
     | List.nil => Eq.refl(Bool.true)
     | List.cons y rest => {
@@ -163,7 +165,8 @@ namespace Lib {
     }
 
   // `Check.mentions` decides membership.
-  def mentionsSound (names: List(String))(name: String)(h: Eq(Bool, Check.mentions(names, name), Bool.true)): Spec.Mem(String, name, names) decreases structural(names) := {
+  def mentionsSound (names: List(String))(name: String)(h: Eq(Bool, Check.mentions(names, name), Bool.true))
+      : Spec.Mem(String, name, names) decreases structural(names) := {
     match names returning Spec.Mem(String, name, names) with
     | List.nil => False.elim(Bool.falseNeTrue(h), Spec.Mem(String, name, List.nil(String)))
     | List.cons n rest => {
@@ -176,7 +179,8 @@ namespace Lib {
     }
   }
 
-  def mentionsComplete (names: List(String))(name: String)(h: Spec.Mem(String, name, names)): Eq(Bool, Check.mentions(names, name), Bool.true) decreases structural(names) := {
+  def mentionsComplete (names: List(String))(name: String)(h: Spec.Mem(String, name, names))
+      : Eq(Bool, Check.mentions(names, name), Bool.true) decreases structural(names) := {
     match h returning Eq(Bool, Check.mentions(names, name), Bool.true) with
     | Spec.Mem.here rest => Lib.orLeft(Check.same(name, name), Check.mentions(rest, name), Lib.sameRefl(name))
     | Spec.Mem.there n rest inRest => Lib.orRight(Check.same(n, name), Check.mentions(rest, name), Lib.mentionsComplete(rest, name, inRest))

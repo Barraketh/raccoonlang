@@ -75,7 +75,8 @@ namespace Literals {
     let u32 := fun (n: Nat)(occ: Spec.Lit32(k, n)): Nat.lt(n, Cuda.u32Limit) => {
       match occ returning Nat.lt(n, Cuda.u32Limit) with
       | Spec.Lit32.body inBody =>
-        Literals.u32Ok(List.nil(String), "32-bit literal ", n, Fold.blockExprsAt(Expr.lit(n), k.body, inBody, List.nil(String), Check.literalStep, Literals.keeps, bodyOk))
+        Literals.u32Ok(List.nil(String), "32-bit literal ", n,
+          Fold.blockExprsAt(Expr.lit(n), k.body, inBody, List.nil(String), Check.literalStep, Literals.keeps, bodyOk))
       | Spec.Lit32.host inHost =>
         Literals.u32Ok(List.nil(String), "32-bit literal ", n, Fold.hostExprsAt(k, Expr.lit(n), inHost, body, Check.literalStep, Literals.keeps, exprsOk))
       | Spec.Lit32.block l launched size => {
