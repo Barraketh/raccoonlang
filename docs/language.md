@@ -428,6 +428,34 @@ its field's type: a linear field bound to `_`, or not used on some path, is
 `LinearUnused`, and one used twice is `LinearReused`. Outside a sealed family's
 module, destructuring a value of it is `SealedConstructor`.
 
+### Pair expressions
+
+In a term position, `(a, b)` is the active prelude's `Pair.mk(a, b)`, and a
+destructuring takes it apart:
+
+```raccoon
+def swap {k: Kind}{S: Lifetime}{A: Type { kind = k, scope = S }}(a: A)(n: Nat): Pair(Nat, A) := {
+  let (x, y) := (a, n)
+  (y, x)
+}
+```
+
+`Pair.mk` is looked up from the root among the prelude's declarations, so no
+local, namespace, `open` or declaration of the program named `Pair` or `mk`
+changes what a pair expression means. Where the active prelude declares no
+`Pair.mk`, a pair expression is `NotFound`. Otherwise it is checked as that
+application, so its type comes from its components: `Pair.mk` forces its
+implicits from their types, `(1, Bool.true)` is a `Pair(Nat, Bool)`, and a
+pair with a linear component is linear. Each component is a use of the locals
+it mentions.
+
+A pair expression has exactly two components; `(a, b, c)` is a parse error, and
+`(a, (b, c))` is written instead. `(e)` is `e`, and `((a, b))` is a pair. There
+is no pair type syntax: a type is written `Pair(A, B)`, and in a type position
+`(` begins a parenthesized type or a binder group, never a pair, while
+`(Nat, Bool)` in a term position is a pair of types, a value of
+`Pair(Type, Type)`.
+
 ### Scopes
 
 `scope l => e` opens a fresh atom and binds `l` to the lifetime holding it,
@@ -919,8 +947,9 @@ the examples and tests, including:
 - `Empty`, `Unit`, `Bool`, `Nat`, `Option`, `Sum`, `List`, `Prod`, and `Sigma`;
 - `Pair`, a pair whose components may be linear or scoped: it holds values
   of types at any level above `Prop`, is at the join of their kinds and the
-  union of their scopes, has no selectors, and is taken apart by `match`, while
-  `Prod` stays the unrestricted pair with selectors;
+  union of their scopes, has no selectors, is written `(a, b)` (see
+  [Pair expressions](#pair-expressions)), and is taken apart by `match` or a
+  destructuring, while `Prod` stays the unrestricted pair with selectors;
 - `Decidable`, `Subtype`, `Exists`, `Nonempty`, and common boolean and natural
   operations;
 - `Quot` with `Quot.mk`, `Quot.sound`, `Quot.lift`, and `Quot.ind`.

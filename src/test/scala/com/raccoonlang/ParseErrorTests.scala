@@ -142,6 +142,23 @@ class ParseErrorTests extends munit.FunSuite {
     )
   }
 
+  test("a pair expression has two components, and only a term position has one") {
+    expectParses("def f : Pair(Nat, Nat) := (1, 2)\n")
+    expectParses("def f : Pair(Nat, Pair(Nat, Nat)) := ( 1 ,\n  (2, 3) )\n")
+    expectParses("def f : Nat := (1)\n")
+    expectParses("def f : Pair(Nat, Nat) := ((1, 2))\n")
+    val arity = "A pair expression has exactly two components; write (a, (b, c))"
+    expectParseError("def f : Nat := (1, 2, @3)\n", arity)
+    expectParseError("def f : Nat := (1, (2, 3, @4), 5)\n", arity)
+    expectParseError("def f : Nat := ((1, 2), 3,\n  @(4, 5))\n", arity)
+    // A trailing comma is reported where it stands, as in an argument list.
+    expectParseError("def f : Nat := (1@, )\n", "Failed to parse LayoutSymTight())")
+    expectParseError("def f : Nat := Nat.succ(1@, )\n", "Failed to parse LayoutSymTight())")
+    expectParseError("def f : Nat := (1@ 2)\n", "Failed to parse LayoutSymTight())")
+    // A type position has no pair expression: there is no pair type syntax.
+    expectParseError("def f (p: @(Nat, Nat)): Nat := 0\n", "Failed to parse closure")
+  }
+
   test("a parse failure names what was expected, never a parser object") {
     expectParseError("def f : Nat := 0\n@)\n", "Failed to parse end of input")
     expectParseError("def f (n: Nat): Nat := Nat.add(n@\n", "Failed to parse LayoutSymTight())")

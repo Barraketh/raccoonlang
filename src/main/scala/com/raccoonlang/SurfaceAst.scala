@@ -54,6 +54,11 @@ object SurfaceAst {
     final case class App(fn: Term, args: Vector[Term], span: Span) extends Term
 
     /**
+     * A pair expression `(a, b)`: `Pair.mk(a, b)` of the active prelude, whatever is in scope (PAIRS_AND_PRELUDE §4).
+     */
+    final case class Pair(fst: Term, snd: Term, span: Span) extends Term
+
+    /**
      * A sort former: `Sort { level = e, ... }`, or `Type` /`Prop`, which fix the level. `kind` and `scope` are the
      * fields written, if any.
      */

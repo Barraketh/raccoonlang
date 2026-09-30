@@ -58,7 +58,6 @@ object LanguageParser {
   private def symTight(s: String) = (skipWS ~ P(s)).named(s"SymTight($s)")
   private def layoutSym(c: Char) = (skipAllWs ~ P(c) ~/ skipAllWs).named(s"LayoutSym($c)")
   private def layoutSymTight(c: Char) = (skipAllWs ~ P(c)).named(s"LayoutSymTight($c)")
-  private def layoutSymTight(s: String) = (skipAllWs ~ P(s)).named(s"LayoutSymTight($s)")
 
   private def kw(s: String) = (skipWS ~ P(s) ~ wsSep).named(s"Kw($s)")
   private def kwTight(s: String) = (skipWS ~ P(s)).named(s"KwTight($s)")
@@ -99,7 +98,21 @@ object LanguageParser {
   }
 
   private def termAtom(implicit sourceId: Option[SourceId]): Parser[Term] =
-    (sym("(") ~/ skipAllWs ~ term ~ layoutSymTight(")")) | rootTerm | identTerm | sortFormer | natLitTerm | strLitTerm
+    parenthesized | rootTerm | identTerm | sortFormer | natLitTerm | strLitTerm
+
+  /**
+   * `(e)`, a parenthesized term, or `(a, b)`, a pair expression (PAIRS_AND_PRELUDE §4). A pair has exactly two
+   * components, so a longer tuple is written nested, `(a, (b, c))`. Only a term position has pair expressions: in a
+   * type position `(` begins a parenthesized type or a binder group.
+   */
+  private def parenthesized(implicit sourceId: Option[SourceId]): Parser[Term] =
+    skipWS ~ (P('(') ~/ skipAllWs ~ term.rep(1, layoutSym(',')) ~ layoutSymTight(')')).flatSpanned(sourceId).map {
+      case (Vector(inner), _)       => inner
+      case (Vector(fst, snd), span) => Pair(fst, snd, span)
+      case (components, _) =>
+        val third = components(2).span.start
+        throw ParseError(third, third, "A pair expression has exactly two components; write (a, (b, c))")
+    }
 
   /** The fields a sort takes by name. */
   private val sortFieldNames: Set[String] = Set("level", "kind", "scope")
