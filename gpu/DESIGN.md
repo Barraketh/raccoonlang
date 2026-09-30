@@ -32,6 +32,15 @@ Only sealed combinators change the group:
   (`__syncwarp`). The body receives an `Elected(m)` witness for its own scope `m`.
 - `branch` on a per-thread condition gives `diverged`, as before.
 
+**Fixed state.** A branch's arms and a loop's body are generated once, and the code after them from the state that
+one arm or one iteration returned, while at run time either arm, or any number of iterations, may have run. That is
+sound only if the state cannot record which. A state type that did, such as a sum of typestates
+(`before(ProducerAt) | after(Slot)`), would let one arm wait, the other not, and the code after the branch assume the
+wait. So `branch`, `loop`, `loopPeeled` (for the iterations after the first, which runs exactly once) and the tile
+loops take `Fixed(S)`: evidence, which only `Gpu` can build, that every value of `S` is the same one. It exists for
+`Unit`, for pairs of fixed types, and for each fieldless token family (`fixedTile`, `fixedProducerAt`, …). Values
+that change at run time live in registers (`Reg`), which the unrestricted arms and bodies capture.
+
 Result types of `split`, `elect` and the allocation combinators are explicit arguments: a callback's codomain mentions
 its own lifetime binder, which forced implicits cannot see through.
 
@@ -69,6 +78,9 @@ registers the protocol owns:
   (`withAccHandoff`). The epilogue's `recvAcc` waits for the barrier, fences `after_thread_sync`, and receives
   `Acc(a, ready)`, which `tcgen05.ld` requires. The handoff consumes the token on the issuing side and mints it on the
   waiting side, which is how authority crosses between roles that are generated separately.
+- **Fences where the accumulator is read.** The epilogue's loads start with `tcgen05.fence::after_thread_sync`
+  whoever waited for the accumulator, since `Acc(a, ready)` may reach the reading threads through a thread barrier
+  from the threads that observed the commit.
 - **Commit tracks the issuing thread.** `tcgen05.commit` covers the tensor-core work of the thread that executes it,
   so `AccPending(a, m)` and the used stage `ReadyUsed(r, m)` carry the elect's scope `m`: they are committed by the
   thread that issued them, before its elect ends.
@@ -83,7 +95,9 @@ A tensor map parameter's type carries its box (`TMap(l, spec)`; bf16 elements an
 requires the maps' boxes to be the ring's, the stage buffers are laid out from the same boxes, and the `tcgen05.mma`
 shared-memory descriptors (start address, stride byte offset 1024, version 1, 128-byte swizzle, K advanced 32 bytes
 per step) and the instruction descriptor (f32 accumulator, bf16 operands, both K-major, M, N) are computed from them.
-So TMA writes, the MMA reads, and the host's `cuTensorMapEncodeTiled` call cannot disagree about layout: the kernel
+The dynamic buffer is declared 1024-byte aligned, and a kernel may not also declare static shared arrays (a
+generation-time error), which would come first in the shared window. So TMA writes, the MMA reads, and the host's
+`cuTensorMapEncodeTiled` call cannot disagree about layout: the kernel
 comes with a generated host launcher (`<name>_launch`) that encodes both maps from the same boxes, checks the extents
 the kernel's 32-bit index arithmetic and TMA's signed coordinates need, sets the dynamic shared memory, and launches
 the grid the kernel assumes. What remains to the caller is that A, B and C are distinct device arrays of M×K, N×K

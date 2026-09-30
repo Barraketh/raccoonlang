@@ -25,10 +25,10 @@ MUTANTS = [
     dict(
         name="second_output_loop", expect="LinearReused", mentions="own",
         why="Loops over the CTA's tiles twice with the authority to write them: every tile would be written twice.",
-        old="""    let (e, c) := Gpu.forOwnedTiles(e, sched, own, c, tile)
+        old="""    let (e, c) := Gpu.forOwnedTiles(e, sched, own, Gpu.fixedAccConsumerAt(q, m, 4), c, tile)
 """,
-        new="""    let (e, c) := Gpu.forOwnedTiles(e, sched, own, c, tile)
-    let (e, c) := Gpu.forOwnedTiles(e, sched, own, c, tile)
+        new="""    let (e, c) := Gpu.forOwnedTiles(e, sched, own, Gpu.fixedAccConsumerAt(q, m, 4), c, tile)
+    let (e, c) := Gpu.forOwnedTiles(e, sched, own, Gpu.fixedAccConsumerAt(q, m, 4), c, tile)
 """,
     ),
     dict(
@@ -58,9 +58,11 @@ MUTANTS = [
         why="Issues a tile's MMAs without waiting for the epilogue to free the buffer: `mmaFirstInto` needs the "
             "`AccFree` that `acquireAcc` hands out.",
         old="""        let (e, acc) := Gpu.acquireAcc(e, accs, ap)
-        let (e, (c, acc)) := Gpu.loopPeeled(e, steps, Pair.mk(c, acc), first, rest)
+        let (e, (c, acc)) := Gpu.loopPeeled(e, steps, Gpu.fixedPair(Gpu.fixedConsumerAt(r, j), Gpu.fixedAccFilling(q, j)), Pair.mk(c, acc),
+          first, rest)
 """,
-        new="""        let (e, (c, acc)) := Gpu.loopPeeled(e, steps, Pair.mk(c, ap), first, rest)
+        new="""        let (e, (c, acc)) := Gpu.loopPeeled(e, steps, Gpu.fixedPair(Gpu.fixedConsumerAt(r, j), Gpu.fixedAccFilling(q, j)), Pair.mk(c, ap),
+          first, rest)
 """,
     ),
     dict(

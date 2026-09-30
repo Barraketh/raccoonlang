@@ -44,10 +44,10 @@ namespace PGemm {
           let (e, slot) := Gpu.acquire(e, ring, p)
           Gpu.fill(e, ring, slot, g.a, Gpu.mulC(i, 64), Gpu.tileRow0(t), g.b, Gpu.mulC(i, 64), Gpu.tileCol0(t))
         }
-        Gpu.loopPeeled(e, steps, p, step, step)
+        Gpu.loopPeeled(e, steps, Gpu.fixedProducerAt(r, j), p, step, step)
       }
       let (e, p) := Gpu.takeProducer(e, w, ring, p)
-      let (e, p) := Gpu.forTiles(e, sched, p, tile)
+      let (e, p) := Gpu.forTiles(e, sched, Gpu.fixedProducerAt(r, j), p, tile)
       Gpu.finishProducer(e, ring, p)
     })
 
@@ -77,13 +77,14 @@ namespace PGemm {
           : Pair(Ctx(n, PGemm.One), Pair(ConsumerAt(r, j), AccProducerAt(q, j))) => {
         let (c, ap) := st
         let (e, acc) := Gpu.acquireAcc(e, accs, ap)
-        let (e, (c, acc)) := Gpu.loopPeeled(e, steps, Pair.mk(c, acc), first, rest)
+        let (e, (c, acc)) := Gpu.loopPeeled(e, steps, Gpu.fixedPair(Gpu.fixedConsumerAt(r, j), Gpu.fixedAccFilling(q, j)), Pair.mk(c, acc),
+          first, rest)
         let (e, ap) := Gpu.commitAcc(e, w, accs, acc)
         Pair.mk(e, Pair.mk(c, ap))
       }
       let (e, c) := Gpu.takeConsumer(e, w, ring, c)
       let (e, ap) := Gpu.takeAccProducer(e, w, accs, ap)
-      let (e, (c, ap)) := Gpu.forTiles(e, sched, Pair.mk(c, ap), tile)
+      let (e, (c, ap)) := Gpu.forTiles(e, sched, Gpu.fixedPair(Gpu.fixedConsumerAt(r, j), Gpu.fixedAccProducerAt(q, j)), Pair.mk(c, ap), tile)
       let (e, apDone) := Gpu.finishAccProducer(e, accs, ap)
       Pair.mk(e, Pair.mk(Gpu.finishConsumer(c), apDone))
     })
@@ -98,7 +99,7 @@ namespace PGemm {
       Gpu.releaseAcc(e, accs, full)
     }
     let (e, c) := Gpu.takeAccConsumer(e, Eq.refl(0), accs, ac)
-    let (e, c) := Gpu.forOwnedTiles(e, sched, own, c, tile)
+    let (e, c) := Gpu.forOwnedTiles(e, sched, own, Gpu.fixedAccConsumerAt(q, m, 4), c, tile)
     Pair.mk(e, Gpu.finishAccConsumer(c))
   }
 

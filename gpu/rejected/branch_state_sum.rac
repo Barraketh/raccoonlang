@@ -1,0 +1,43 @@
+// expect: SealedConstructor
+// A branch whose state records the tile's typestate in its data: the then arm synchronizes (reading -> empty), the
+// else arm does not, and what follows the branch is generated from the then arm's state, so it would overwrite the
+// tile while, on the else path, other threads still read it. A branch's state must be `Fixed`, which only Gpu can
+// show, and a type that carries a typestate is not.
+import Gpu
+namespace T {
+  open Gpu
+  open Cuda
+  def G : Group := Group.cta(256)
+
+  inductive AnyTile (a: Lifetime) : Type { kind = lin, scope = a }
+   | mk (s: TileState)(t: Tile(a, DType.f32, 256, s)) : AnyTile(a)
+
+  def kernel : Kernel := Gpu.tiledKernel("bad", DType.f32, 16, Eq.refl(Bool.true),
+    fun (l: Lifetime)(e: Ctx(l, T.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, T.G) =>
+      Gpu.shared(e, DType.f32, 256, fun (a: Lifetime)(sa: Smem(a, DType.f32, 256))(ta: Tile(a, DType.f32, 256, TileState.empty))(e: Ctx(l, T.G)): Ctx(l, T.G) => {
+        let (e, t) := Gpu.storeMine(e, sa, ta, Gpu.zero(DType.f32))
+        let (e, t) := Gpu.sync1(e, t)
+        let use := fun (r: Lifetime)(rd: SRead(a, r, DType.f32, 256))(e: Ctx(l, T.G)): Pair(Ctx(l, T.G), Val(l, Grain.thread, DType.f32)) =>
+          Gpu.sread(e, sa, rd, Gpu.remC(Gpu.add(Gpu.mulC(k.ty, 16), Gpu.add(k.tx, Gpu.lit(1))), 256, Eq.refl(Bool.true)))
+        let (e, (t, x)) := Gpu.reads(e, t, use)
+        let yes := fun (m: Lifetime)(e: Ctx(m, T.G))(s: T.AnyTile(a)): Pair(Ctx(m, T.G), T.AnyTile(a)) => {
+          match s returning Pair(Ctx(m, T.G), T.AnyTile(a)) with
+          | T.AnyTile.mk st t => {
+            let (e, t) := Gpu.sync1(e, t)
+            Pair.mk(e, T.AnyTile.mk(TileState.afterSync(st), t))
+          }
+        }
+        let no := fun (m: Lifetime)(e: Ctx(m, T.G))(s: T.AnyTile(a)): Pair(Ctx(m, T.G), T.AnyTile(a)) => Pair.mk(e, s)
+        let (e, s) := Gpu.branch(e, Gpu.lt(Gpu.lit(0), k.m), Fixed.mk(T.AnyTile(a)), T.AnyTile.mk(TileState.reading, t), yes, no)
+        match s returning Ctx(l, T.G) with
+        | T.AnyTile.mk st t => {
+          match st returning Ctx(l, T.G) with
+          | TileState.empty => {
+            let (e, t) := Gpu.storeMine(e, sa, t, x)
+            let gone := Gpu.release(t)
+            Gpu.gstore(e, k.c, c, x)
+          }
+        }
+      }))
+}
+{ Cuda.kernel(T.kernel) }

@@ -40,7 +40,7 @@ namespace Tiny {
       }
       match Gpu.takeProducer(e, w, ring, p) returning Pair(Ctx(j, Tiny.One), ProducerDone(r)) with
       | Pair.mk e p => {
-        match Gpu.loopPeeled(e, steps, p, step, step) returning Pair(Ctx(j, Tiny.One), ProducerDone(r)) with
+        match Gpu.loopPeeled(e, steps, Gpu.fixedProducerAt(r, j), p, step, step) returning Pair(Ctx(j, Tiny.One), ProducerDone(r)) with
         | Pair.mk e p => Gpu.finishProducer(e, ring, p)
       }
     })
@@ -87,7 +87,8 @@ namespace Tiny {
       }
       match Gpu.takeConsumer(e, w, ring, c) returning Pair(Ctx(j, Tiny.One), ConsumerDone(r)) with
       | Pair.mk e c => {
-        match Gpu.loopPeeled(e, steps, Pair.mk(c, acc), first, rest) returning Pair(Ctx(j, Tiny.One), ConsumerDone(r)) with
+        match Gpu.loopPeeled(e, steps, Gpu.fixedPair(Gpu.fixedConsumerAt(r, j), Gpu.fixedAccPending(a, j)), Pair.mk(c, acc),
+          first, rest) returning Pair(Ctx(j, Tiny.One), ConsumerDone(r)) with
         | Pair.mk e st => {
           match st returning Pair(Ctx(j, Tiny.One), ConsumerDone(r)) with
           | Pair.mk c acc => Pair.mk(Gpu.sendAcc(e, w, hd, send, acc), Gpu.finishConsumer(c))

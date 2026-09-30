@@ -29,7 +29,7 @@ namespace T {
             }
           }
         }
-        match Gpu.loop(e, k.k, ta, body) returning Ctx(l, T.G) with
+        match Gpu.loop(e, k.k, Gpu.fixedTile(a, DType.f32, 256, TileState.empty), ta, body) returning Ctx(l, T.G) with
         | Pair.mk e t => {
           let _ := Gpu.release(t)
           Gpu.gstore(e, k.c, c, Gpu.zero(DType.f32))

@@ -1,0 +1,16 @@
+// expect: SealedConstructor
+// An emitter made from nothing: its code would go nowhere, so operations on it would hand out authority for waits
+// that never run. Only Gpu can start an emitter.
+import Gpu
+namespace T {
+  open Gpu
+  open Cuda
+  def G : Group := Group.cta(256)
+
+  def kernel : Kernel := Gpu.tiledKernel("bad", DType.f32, 16, Eq.refl(Bool.true),
+    fun (l: Lifetime)(e: Ctx(l, T.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, T.G) => {
+      let spare := Gpu.start(Key.key, l, T.G)
+      Gpu.gstore(e, k.c, c, Gpu.zero(DType.f32))
+    })
+}
+{ Cuda.kernel(T.kernel) }

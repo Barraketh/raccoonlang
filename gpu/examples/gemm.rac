@@ -101,7 +101,8 @@ namespace Gemm {
                   let steps := Gpu.ceilDivC(k.k, 16, Eq.refl(Bool.true))
                   let body := fun (m: Lifetime)(kt: Val(m, Grain.uniform, DType.u32))(e: Ctx(m, Gemm.G))(st: Gemm.Tiles(a, b, TileState.empty))
                       : Gemm.Step(m, a, b) => Gemm.step(k, sa, sb, acc, m, kt, e, st)
-                  match Gpu.loop(e, steps, Pair.mk(ta, tb), body) returning Ctx(l, Gemm.G) with
+                  match Gpu.loop(e, steps, Gpu.fixedPair(Gpu.fixedTile(a, DType.f32, 256, TileState.empty), Gpu.fixedTile(b, DType.f32, 256, TileState.empty)),
+                      Pair.mk(ta, tb), body) returning Ctx(l, Gemm.G) with
                   | Pair.mk e st => {
                     match st returning Ctx(l, Gemm.G) with
                     | Pair.mk ta tb => {

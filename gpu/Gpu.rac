@@ -10,6 +10,8 @@
 //   registers named by unrestricted handles. That is what lets a loop body and a branch arm be generated once, from
 //   any token of the right type, and a token pass between roles that are generated separately. Registers are per
 //   thread, so a token whose state lives in them is confined to the scope of the one thread that declared them.
+//   What follows a branch or a loop is generated from the state one arm or one iteration returned, so that state
+//   must be `Fixed`: a type with one value, which cannot tell which arm ran or how often.
 //
 // The sm_100a operations (TMA, mbarrier, tcgen05) follow CUTLASS's inline assembly but have not been assembled by
 // ptxas here: see gpu/DESIGN.md §7.
@@ -314,12 +316,27 @@ namespace Gpu {
 
   def tmemWaitLoad : Stmt := Gpu.asm0("tcgen05.wait::ld.sync.aligned;")
 
-  // ---- Control flow -----------------------------------------------------------------------------------------------
+  // ---- Fixed state -------------------------------------------------------------------------------------------------
+
+  // Evidence that every value of `S` is the same one: `S` carries nothing but its type. A branch or loop is generated
+  // once, and the code after it from the state that one arm or one iteration returned, while at run time either arm,
+  // or any number of iterations, may have run. That is sound only when the state cannot record which: a program whose
+  // state were a sum of typestates could skip a wait in one arm and carry on as if it had waited. So the state of a
+  // branch or loop must be `Fixed`, which only this file can show: of `Unit`, of pairs, and of the fieldless token
+  // families below.
+  sealed inductive Fixed {k: Kind}{T: Lifetime}(S: Type { kind = k, scope = T }) : Type { scope = T }
+   | mk : Fixed(S)
+
+  def fixedUnit : Fixed(Unit) := Fixed.mk(Unit)
+
+  def fixedPair {ka: Kind}{Ta: Lifetime}{A: Type { kind = ka, scope = Ta }}{kb: Kind}{Tb: Lifetime}{B: Type { kind = kb, scope = Tb }}
+      (a: Fixed(A))(b: Fixed(B)): Fixed(Pair(A, B)) := Fixed.mk(Pair(A, B))
+
 
   // A runtime loop of `count` iterations. The body is generated once, so it captures no linear value: everything it
-  // consumes and returns travels in `state`, whose type every iteration preserves.
+  // consumes and returns travels in `state`, whose type every iteration preserves and which is `Fixed`.
   def loop {l: Lifetime}{g: Group}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sf: Lifetime}{Sn: Lifetime}
-      (e: Ctx(l, g))(count: Val(Sn, Grain.uniform, DType.u32))(state: S)
+      (e: Ctx(l, g))(count: Val(Sn, Grain.uniform, DType.u32))(fixed: Fixed(S))(state: S)
       (body: { scope = Sf } (m: Lifetime) -> Val(m, Grain.uniform, DType.u32) -> Ctx(m, g) -> S -> Pair(Ctx(m, g), S))
       : Pair(Ctx(l, g), S) := {
     let gen := Gpu.state(Key.key, e)
@@ -336,10 +353,11 @@ namespace Gpu {
 
   // A runtime loop that runs its first iteration unconditionally, as `first`, and the others, while the index is below
   // `count`, as `rest`: `max(count, 1)` iterations. The first may change the state's type once, so a loop whose
-  // state starts in one typestate (an empty accumulator) keeps one type through every later iteration.
+  // state starts in one typestate (an empty accumulator) keeps one type through every later iteration. The first runs
+  // exactly once, so only the later iterations' state must be `Fixed`.
   def loopPeeled {l: Lifetime}{g: Group}{k0: Kind}{T0: Lifetime}{S0: Type { kind = k0, scope = T0 }}
       {k1: Kind}{T1: Lifetime}{S1: Type { kind = k1, scope = T1 }}{Sf: Lifetime}{Sr: Lifetime}{Sn: Lifetime}
-      (e: Ctx(l, g))(count: Val(Sn, Grain.uniform, DType.u32))(init: S0)
+      (e: Ctx(l, g))(count: Val(Sn, Grain.uniform, DType.u32))(fixed: Fixed(S1))(init: S0)
       (first: { scope = Sf } (m: Lifetime) -> Val(m, Grain.uniform, DType.u32) -> Ctx(m, g) -> S0 -> Pair(Ctx(m, g), S1))
       (rest: { scope = Sr } (m: Lifetime) -> Val(m, Grain.uniform, DType.u32) -> Ctx(m, g) -> S1 -> Pair(Ctx(m, g), S1))
       : Pair(Ctx(l, g), S1) := {
@@ -364,10 +382,11 @@ namespace Gpu {
   }
 
   // A runtime branch. A per-thread condition runs each arm on part of the CTA only. Both arms receive and return
-  // the same state type, and neither captures a linear value; the else arm is generated from the then arm's result.
+  // the same `Fixed` state type, and neither captures a linear value; the else arm is generated from the then arm's
+  // result.
   def branch {l: Lifetime}{g: Group}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sy: Lifetime}{Sn: Lifetime}
       {Sc: Lifetime}{uc: Grain}
-      (e: Ctx(l, g))(cond: Val(Sc, uc, DType.bool))(state: S)
+      (e: Ctx(l, g))(cond: Val(Sc, uc, DType.bool))(fixed: Fixed(S))(state: S)
       (yes: { scope = Sy } (m: Lifetime) -> Ctx(m, Group.arm(g, uc)) -> S -> Pair(Ctx(m, Group.arm(g, uc)), S))
       (no: { scope = Sn } (m: Lifetime) -> Ctx(m, Group.arm(g, uc)) -> S -> Pair(Ctx(m, Group.arm(g, uc)), S))
       : Pair(Ctx(l, g), S) := {
@@ -478,6 +497,8 @@ namespace Gpu {
   // Authority over that array, in state `s`.
   sealed inductive Tile (a: Lifetime)(t: DType)(n: Nat)(s: TileState) : Type { kind = lin, scope = a }
    | mk : Tile(a, t, n, s)
+
+  def fixedTile (a: Lifetime)(t: DType)(n: Nat)(s: TileState): Fixed(Tile(a, t, n, s)) := Fixed.mk(Tile(a, t, n, s))
 
   // Read authority shared by every thread inside a read scope `r`. It is unrestricted but cannot leave `r`.
   sealed inductive SRead (a: Lifetime)(r: Lifetime)(t: DType)(n: Nat) : Type { scope = union(a, r) }
@@ -605,11 +626,44 @@ namespace Gpu {
     | List.cons m more => Gpu.errorsToCode(more, List.append(acc, List.cons(Stmt.error(m), List.nil(Stmt))))
   }
 
-  def start (l: Lifetime)(g: Group): Ctx(l, g) := Ctx.mk(l, g, Gen.mk(List.nil(Stmt), 0, 0, 1, List.nil(String)))
+  def start (k: Key)(l: Lifetime)(g: Group): Ctx(l, g) := Ctx.mk(l, g, Gen.mk(List.nil(Stmt), 0, 0, 1, List.nil(String)))
 
-  // The finished kernel: its code, then any generation errors as `#error` lines, so it does not compile.
-  def finish (name: String)(params: List(Param))(launcher: Option(Launcher))(gen: Gen): Kernel :=
+  mutual {
+    // Whether code declares a static shared array anywhere.
+    def stmtShared (s: Stmt): Bool decreases structural(s) := {
+      match s returning Bool with
+      | Stmt.decl t id init => Bool.false
+      | Stmt.declMut t id init => Bool.false
+      | Stmt.declOut t id => Bool.false
+      | Stmt.assign id value => Bool.false
+      | Stmt.store base i value => Bool.false
+      | Stmt.shared t id size => Bool.true
+      | Stmt.forLoop id start count body => Gpu.blockShared(body)
+      | Stmt.forStride id start stop step body => Gpu.blockShared(body)
+      | Stmt.ifElse c yes no => Bool.or(Gpu.blockShared(yes), Gpu.blockShared(no))
+      | Stmt.scoped body => Gpu.blockShared(body)
+      | Stmt.sync => Bool.false
+      | Stmt.syncWarp => Bool.false
+      | Stmt.asm template outs ins => Bool.false
+      | Stmt.error message => Bool.false
+    }
+
+    def blockShared (b: Block): Bool decreases structural(b) := {
+      match b returning Bool with
+      | Block.done => Bool.false
+      | Block.seq st more => Bool.or(Gpu.stmtShared(st), Gpu.blockShared(more))
+    }
+  }
+
+  // The finished kernel: its code, then any generation errors as `#error` lines, so it does not compile. Static shared
+  // arrays come before the dynamic buffer in the shared window, which could then lose the 1024-byte alignment its
+  // swizzled layouts need, so a kernel may use one kind of shared memory or the other.
+  def finish (name: String)(params: List(Param))(launcher: Option(Launcher))(gen0: Gen): Kernel := {
+    let code := Gpu.toBlock(gen0.code, Block.done)
+    let gen := Gpu.check(gen0, Bool.not(Bool.and(Nat.blt(0, gen0.smem), Gpu.blockShared(code))),
+      "kernel: static shared arrays and dynamic shared memory together")
     Kernel.mk(name, params, gen.smem, Gpu.toBlock(gen.code, Gpu.toBlock(Gpu.errorsToCode(gen.errors, List.nil(Stmt)), Block.done)), launcher)
+  }
 
   // A kernel computing C (M×N) from A (M×K) and B (K×N), one CTA of `tile*tile` threads per `tile`×`tile` block of C.
   // Launch contract: grid (ceil(N/tile), ceil(M/tile)), block tile*tile, and A, B, C distinct arrays of those extents,
@@ -630,7 +684,7 @@ namespace Gpu {
     let params := List.cons(Param.input(t, "A"), List.cons(Param.input(t, "B"), List.cons(Param.output(t, "C"),
       List.cons(Param.scalar(DType.u32, "M"), List.cons(Param.scalar(DType.u32, "N"), List.cons(Param.scalar(DType.u32, "K"), List.nil(Param)))))))
     let g := Group.cta(Nat.mul(tile, tile))
-    Gpu.finish(name, params, Option.none(Launcher), Gpu.state(Key.key, body(l, Gpu.start(l, g), launch, GOwn.mk(l, t, tile))))
+    Gpu.finish(name, params, Option.none(Launcher), Gpu.state(Key.key, body(l, Gpu.start(Key.key, l, g), launch, GOwn.mk(l, t, tile))))
   }
 
   // ---- Tensor maps and the stage ring -----------------------------------------------------------------------------
@@ -670,6 +724,10 @@ namespace Gpu {
 
   sealed inductive ConsumerAt (r: Lifetime)(m: Lifetime) : Type { kind = lin, scope = union(r, m) }
    | mk : ConsumerAt(r, m)
+
+  def fixedProducerAt (r: Lifetime)(m: Lifetime): Fixed(ProducerAt(r, m)) := Fixed.mk(ProducerAt(r, m))
+
+  def fixedConsumerAt (r: Lifetime)(m: Lifetime): Fixed(ConsumerAt(r, m)) := Fixed.mk(ConsumerAt(r, m))
 
   // A stage the producer may fill; a stage the consumer may read; the endpoints' final states.
   sealed inductive Slot (r: Lifetime)(m: Lifetime) : Type { kind = lin, scope = union(r, m) }
@@ -848,6 +906,10 @@ namespace Gpu {
   // The accumulator with tensor-core work issued by the thread elected in `m`, not yet committed.
   sealed inductive AccPending (a: Lifetime)(m: Lifetime) : Type { kind = lin, scope = union(a, m) }
    | mk : AccPending(a, m)
+
+  def fixedAcc (a: Lifetime)(s: AccState): Fixed(Acc(a, s)) := Fixed.mk(Acc(a, s))
+
+  def fixedAccPending (a: Lifetime)(m: Lifetime): Fixed(AccPending(a, m)) := Fixed.mk(AccPending(a, m))
 
   // A ready stage that tensor-core work issued by the thread elected in `m` reads: only that thread's commit can
   // release it.
@@ -1071,7 +1133,9 @@ namespace Gpu {
     let rowExpr := Expr.bin(BinOp.add, row0, Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.var(q), Expr.lit(32)), Expr.special(Builtin.lane)))
     let setup := List.cons(Stmt.decl(DType.u32, q, quadrant), List.cons(Stmt.decl(DType.u32, row, rowExpr),
       List.cons(Stmt.decl(DType.bool, rowOk, Expr.bin(BinOp.lt, Expr.var(row), out.rows)), List.nil(Stmt))))
-    let gen1 := Gpu.pushAll(Gpu.fresh(Gpu.fresh(Gpu.fresh(gen0))), setup)
+    // Whoever observed the tensor-core work complete, these threads' loads are ordered after it: an accumulator may
+    // reach them through a thread barrier from the threads that waited for it.
+    let gen1 := Gpu.pushAll(Gpu.fresh(Gpu.fresh(Gpu.fresh(gen0))), List.cons(Gpu.tcFenceAfter, setup))
     let lane := Expr.bin(BinOp.add, taddr, Expr.bin(BinOp.shl, Expr.bin(BinOp.mul, Expr.var(q), Expr.lit(32)), Expr.lit(16)))
     Gpu.chunks(gen1, out.name, Expr.var(row), Expr.var(rowOk), out.cols, lane, col0, 0, Nat.div(bn, 8))
   }
@@ -1114,7 +1178,7 @@ namespace Gpu {
 
   // The loop over this CTA's tiles, generated once; `body` sees the iteration's tile.
   def tileLoop {l: Lifetime}{L: Lifetime}{g: Group}{bn: Nat}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sf: Lifetime}
-      (e: Ctx(l, g))(sched: Sched(L, bn))(state: S)
+      (e: Ctx(l, g))(sched: Sched(L, bn))(fixed: Fixed(S))(state: S)
       (body: { scope = Sf } (m: Lifetime) -> TileAt(m, bn) -> Ctx(m, g) -> S -> Pair(Ctx(m, g), S))
       : Pair(Ctx(l, g), S) := {
     let gen := Gpu.state(Key.key, e)
@@ -1134,19 +1198,19 @@ namespace Gpu {
 
   // Runs `body` once per tile this CTA visits.
   def forTiles {l: Lifetime}{L: Lifetime}{g: Group}{bn: Nat}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sf: Lifetime}
-      (e: Ctx(l, g))(sched: Sched(L, bn))(state: S)
+      (e: Ctx(l, g))(sched: Sched(L, bn))(fixed: Fixed(S))(state: S)
       (body: { scope = Sf } (m: Lifetime) -> TileAt(m, bn) -> Ctx(m, g) -> S -> Pair(Ctx(m, g), S))
-      : Pair(Ctx(l, g), S) := Gpu.tileLoop(e, sched, state, body)
+      : Pair(Ctx(l, g), S) := Gpu.tileLoop(e, sched, fixed, state, body)
 
   // Runs `body` once per tile this CTA visits, with the authority to write that tile: the one loop that writes the
   // output.
   def forOwnedTiles {l: Lifetime}{L: Lifetime}{g: Group}{bn: Nat}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}
       {Sf: Lifetime}
-      (e: Ctx(l, g))(sched: Sched(L, bn))(own: SchedOwn(L, bn))(state: S)
+      (e: Ctx(l, g))(sched: Sched(L, bn))(own: SchedOwn(L, bn))(fixed: Fixed(S))(state: S)
       (body: { scope = Sf } (m: Lifetime) -> TileAt(m, bn) -> TileOwn(m, bn) -> Ctx(m, g) -> S -> Pair(Ctx(m, g), S))
       : Pair(Ctx(l, g), S) := {
     match own returning Pair(Ctx(l, g), S) with
-    | SchedOwn.mk => Gpu.tileLoop(e, sched, state,
+    | SchedOwn.mk => Gpu.tileLoop(e, sched, fixed, state,
         fun (m: Lifetime)(tile: TileAt(m, bn))(e: Ctx(m, g))(st: S): Pair(Ctx(m, g), S) => body(m, tile, TileOwn.mk(m, bn), e, st))
   }
 
@@ -1181,6 +1245,14 @@ namespace Gpu {
 
   sealed inductive AccFilling (q: Lifetime)(m: Lifetime) : Type { kind = lin, scope = union(q, m) }
    | mk : AccFilling(q, m)
+
+  def fixedAccProducerAt (q: Lifetime)(m: Lifetime): Fixed(AccProducerAt(q, m)) := Fixed.mk(AccProducerAt(q, m))
+
+  def fixedAccConsumerAt (q: Lifetime)(m: Lifetime)(f: Nat): Fixed(AccConsumerAt(q, m, f)) := Fixed.mk(AccConsumerAt(q, m, f))
+
+  def fixedAccFree (q: Lifetime)(m: Lifetime): Fixed(AccFree(q, m)) := Fixed.mk(AccFree(q, m))
+
+  def fixedAccFilling (q: Lifetime)(m: Lifetime): Fixed(AccFilling(q, m)) := Fixed.mk(AccFilling(q, m))
 
   // The reader's current buffer, whose results are visible to the warpgroup.
   sealed inductive AccFull (q: Lifetime)(m: Lifetime)(f: Nat) : Type { kind = lin, scope = union(q, m) }
@@ -1399,7 +1471,7 @@ namespace Gpu {
     let m0 := Val.mk(l, Grain.uniform, DType.u32, Expr.bin(BinOp.mul, Expr.special(Builtin.blockY), Expr.lit(128)), Option.none(Nat))
     let n0 := Val.mk(l, Grain.uniform, DType.u32, Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(bn)), Option.none(Nat))
     let launch := TmaLaunch.mk(TMap.mk(l, sa, "A_map"), TMap.mk(l, sb, "B_map"), COut.mk(l, bn, "C", m.expr, n.expr), m, n, k, m0, n0)
-    let gen := Gpu.state(Key.key, body(l, Gpu.start(l, Group.cta(256)), launch, COwn.mk(l, bn), TmemPermit.mk(l)))
+    let gen := Gpu.state(Key.key, body(l, Gpu.start(Key.key, l, Group.cta(256)), launch, COwn.mk(l, bn), TmemPermit.mk(l)))
     let grid := Grid.blocks(Gpu.paramCeilDiv("N", bn), Gpu.paramCeilDiv("M", 128))
     Gpu.finish(name, Gpu.tmaGemmParams, Option.some(Gpu.tmaGemmLauncher(sa, sb, grid)),
       Gpu.check(gen, Nat.ble(gen.smem, Gpu.maxDynamicShared), "kernel: more dynamic shared memory than sm_100a has"))
@@ -1425,7 +1497,7 @@ namespace Gpu {
     let n := Gpu.uniformParam(l, "N")
     let k := Gpu.uniformParam(l, "K")
     let gemm := TmaGemm.mk(TMap.mk(l, sa, "A_map"), TMap.mk(l, sb, "B_map"), COut.mk(l, bn, "C", m.expr, n.expr), m, n, k)
-    let gen0 := Gpu.state(Key.key, Gpu.start(l, Group.cta(256)))
+    let gen0 := Gpu.state(Key.key, Gpu.start(Key.key, l, Group.cta(256)))
     let tilesN := gen0.next
     let tiles := Nat.add(tilesN, 1)
     let counts := List.cons(Stmt.decl(DType.u32, tilesN, Gpu.paramCeilDiv("N", bn)),

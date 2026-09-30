@@ -1,19 +1,22 @@
 // expect: TypeMismatch
-// A loop that tries to carry its own index out as loop state. The index lives in the body's lifetime `m`; the state
-// type is fixed outside the loop and cannot name `m`, so the body's type does not fit.
+// A role that tries to hand out a value it computed. The value lives in the role's lifetime `m`; the split's result
+// type is fixed outside the split and cannot name `m`, so the role's type does not fit.
 import Gpu
 namespace T {
   open Gpu
   open Cuda
   def G : Group := Group.cta(256)
-  def U : Type := Val(Lifetime.empty, Grain.uniform, DType.u32)
+  def U : Type := Val(Lifetime.empty, Grain.thread, DType.f32)
 
   def kernel : Kernel := Gpu.tiledKernel("bad", DType.f32, 16, Eq.refl(Bool.true),
     fun (l: Lifetime)(e: Ctx(l, T.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, T.G) => {
-      let body := fun (m: Lifetime)(i: Val(m, Grain.uniform, DType.u32))(e: Ctx(m, T.G))(s: T.U)
-          : Pair(Ctx(m, T.G), Val(m, Grain.uniform, DType.u32)) => Pair.mk(e, i)
-      match Gpu.loop(e, k.k, Gpu.lit(0), body) returning Ctx(l, T.G) with
-      | Pair.mk e last => Gpu.gstore(e, k.c, c, Gpu.zero(DType.f32))
+      let left := fun (m: Lifetime)(e: Ctx(m, Group.warps(0, 4))): Pair(Ctx(m, Group.warps(0, 4)), T.U) => {
+        let (e, r) := Gpu.reg(e, Gpu.zero(DType.f32))
+        Gpu.get(e, r)
+      }
+      let right := fun (m: Lifetime)(e: Ctx(m, Group.warps(4, 4))): Pair(Ctx(m, Group.warps(4, 4)), Unit) => Pair.mk(e, Unit.unit)
+      let (e, (v, u)) := Gpu.split(e, 4, T.U, Unit, left, right)
+      Gpu.gstore(e, k.c, c, v)
     })
 }
 { Cuda.kernel(T.kernel) }

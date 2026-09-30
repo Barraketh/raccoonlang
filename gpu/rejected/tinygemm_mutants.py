@@ -31,7 +31,7 @@ MUTANTS = [
       }
       match Gpu.takeProducer(e, w, ring, p) returning Pair(Ctx(j, Tiny.One), ProducerDone(r)) with
       | Pair.mk e p => {
-        match Gpu.loopPeeled(e, steps, p, step, step) returning Pair(Ctx(j, Tiny.One), ProducerDone(r)) with
+        match Gpu.loopPeeled(e, steps, Gpu.fixedProducerAt(r, j), p, step, step) returning Pair(Ctx(j, Tiny.One), ProducerDone(r)) with
         | Pair.mk e p => Gpu.finishProducer(e, ring, p)
       }
     })""",
@@ -41,7 +41,7 @@ MUTANTS = [
       match Gpu.acquire(e, ring, p) returning Pair(Ctx(n, Tiny.Load), Producer(r)) with
       | Pair.mk e s => Gpu.fill(e, ring, s, k.a, Gpu.mulC(i, 64), k.m0, k.b, Gpu.mulC(i, 64), k.n0)
     }
-    match Gpu.loopPeeled(e, steps, p, step, step) returning Pair(Ctx(m, Tiny.Load), ProducerDone(r)) with
+    match Gpu.loopPeeled(e, steps, Gpu.fixedProducerAt(r, m), p, step, step) returning Pair(Ctx(m, Tiny.Load), ProducerDone(r)) with
     | Pair.mk e p => Gpu.finishProducer(e, ring, p)
   }""",
     ),
@@ -52,13 +52,13 @@ MUTANTS = [
             "and overwrite a stage still being read. An endpoint taken in scope `j` cannot leave it.",
         old="""      match Gpu.takeProducer(e, w, ring, p) returning Pair(Ctx(j, Tiny.One), ProducerDone(r)) with
       | Pair.mk e p => {
-        match Gpu.loopPeeled(e, steps, p, step, step) returning Pair(Ctx(j, Tiny.One), ProducerDone(r)) with
+        match Gpu.loopPeeled(e, steps, Gpu.fixedProducerAt(r, j), p, step, step) returning Pair(Ctx(j, Tiny.One), ProducerDone(r)) with
         | Pair.mk e p => Gpu.finishProducer(e, ring, p)
       }
     })""",
         new="""      match Gpu.takeProducer(e, w, ring, p) returning Pair(Ctx(j, Tiny.One), ProducerDone(r)) with
       | Pair.mk e p => {
-        match Gpu.loopPeeled(e, steps, p, step, step) returning Pair(Ctx(j, Tiny.One), ProducerDone(r)) with
+        match Gpu.loopPeeled(e, steps, Gpu.fixedProducerAt(r, j), p, step, step) returning Pair(Ctx(j, Tiny.One), ProducerDone(r)) with
         | Pair.mk e p => Gpu.finishProducer(e, ring, p)
       }
     })
@@ -115,8 +115,9 @@ MUTANTS = [
         name="loop_changes_accumulator", expect="TypeMismatch",
         why="Runs every K step, the first included, as one loop body that starts from the empty accumulator: the "
             "body is generated once, so its state must keep one type; the first step has to be peeled.",
-        old="""        match Gpu.loopPeeled(e, steps, Pair.mk(c, acc), first, rest)""",
-        new="""        match Gpu.loop(e, steps, Pair.mk(c, acc), first)""",
+        old="""        match Gpu.loopPeeled(e, steps, Gpu.fixedPair(Gpu.fixedConsumerAt(r, j), Gpu.fixedAccPending(a, j)), Pair.mk(c, acc),
+          first, rest)""",
+        new="""        match Gpu.loop(e, steps, Gpu.fixedPair(Gpu.fixedConsumerAt(r, j), Gpu.fixedAccPending(a, j)), Pair.mk(c, acc), first)""",
     ),
     dict(
         name="mma_never_committed", expect="LinearUnused", mentions="acc",
@@ -140,6 +141,20 @@ MUTANTS = [
         old="""        match Gpu.withTmem(e, permit, 128, Unit, body) returning Ctx(l, Tiny.Cta) with""",
         new="""        let gone := Gpu.skipTmem(permit)
         match Gpu.withTmem(e, permit, 128, Unit, body) returning Ctx(l, Tiny.Cta) with""",
+    ),
+    dict(
+        name="static_and_dynamic_shared", expect="#error",
+        why="Declares a static shared array in a kernel whose TMA stages live in the dynamic buffer: the static array "
+            "comes first in the shared window, and the dynamic buffer could lose the 1024-byte alignment the 128-byte "
+            "swizzle needs.",
+        old="""        match Gpu.withTmem(e, permit, 128, Unit, body) returning Ctx(l, Tiny.Cta) with
+        | Pair.mk e u => e""",
+        new="""        Gpu.shared(e, DType.f32, 256, fun (a2: Lifetime)(sa: Smem(a2, DType.f32, 256))(ta: Tile(a2, DType.f32, 256, TileState.empty))
+            (e: Ctx(l, Tiny.Cta)): Ctx(l, Tiny.Cta) => {
+          let gone := Gpu.release(ta)
+          match Gpu.withTmem(e, permit, 128, Unit, body) returning Ctx(l, Tiny.Cta) with
+          | Pair.mk e u => e
+        })""",
     ),
     dict(
         name="mma_m64", expect="#error",
