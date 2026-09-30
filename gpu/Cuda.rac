@@ -172,8 +172,8 @@ namespace Cuda {
   }
 
   def operand (o: Operand): String := {
-    match o returning String with
-    | Operand.mk c x => Text.cat3("\"", c, Text.cat3("\"(", Cuda.expr(x), ")"))
+    let (c, x) := o
+    Text.cat3("\"", c, Text.cat3("\"(", Cuda.expr(x), ")"))
   }
 
   def operands (os: List(Operand)): String decreases structural(os) := {
@@ -303,21 +303,19 @@ namespace Cuda {
   }
 
   def mapEncoding (m: MapEncoding)(rest: String): String := {
-    match m returning String with
-    | MapEncoding.mk param source rows cols inner outer => {
-      let encode := Text.cat3("if (cuTensorMapEncodeTiled(&", param, Text.cat3(", CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, const_cast<__nv_bfloat16*>(",
-        source, "), dims, strides, box, steps,"))
-      Cuda.line(1, Text.cat3("CUtensorMap ", param, ";"), Cuda.line(1, "{",
-        Cuda.line(2, Text.cat3("const cuuint64_t dims[2] = {", cols, Text.cat3(", ", rows, "};")),
-        Cuda.line(2, Text.cat3("const cuuint64_t strides[1] = {static_cast<cuuint64_t>(", cols, ") * 2u};"),
-        Cuda.line(2, Text.cat3("const cuuint32_t box[2] = {", Text.nat(inner), Text.cat3("u, ", Text.nat(outer), "u};")),
-        Cuda.line(2, "const cuuint32_t steps[2] = {1u, 1u};",
-        Cuda.line(2, encode,
-        Cuda.line(4, "CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_256B,",
-        Cuda.line(4, "CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE) != CUDA_SUCCESS) {",
-        Cuda.line(3, "return cudaErrorInvalidValue;",
-        Cuda.line(2, "}", Cuda.line(1, "}", rest))))))))))))
-    }
+    let (param, source, rows, cols, inner, outer) := m
+    let encode := Text.cat3("if (cuTensorMapEncodeTiled(&", param, Text.cat3(", CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, const_cast<__nv_bfloat16*>(",
+      source, "), dims, strides, box, steps,"))
+    Cuda.line(1, Text.cat3("CUtensorMap ", param, ";"), Cuda.line(1, "{",
+      Cuda.line(2, Text.cat3("const cuuint64_t dims[2] = {", cols, Text.cat3(", ", rows, "};")),
+      Cuda.line(2, Text.cat3("const cuuint64_t strides[1] = {static_cast<cuuint64_t>(", cols, ") * 2u};"),
+      Cuda.line(2, Text.cat3("const cuuint32_t box[2] = {", Text.nat(inner), Text.cat3("u, ", Text.nat(outer), "u};")),
+      Cuda.line(2, "const cuuint32_t steps[2] = {1u, 1u};",
+      Cuda.line(2, encode,
+      Cuda.line(4, "CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_256B,",
+      Cuda.line(4, "CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE) != CUDA_SUCCESS) {",
+      Cuda.line(3, "return cudaErrorInvalidValue;",
+      Cuda.line(2, "}", Cuda.line(1, "}", rest))))))))))))
   }
 
   def mapEncodings (ms: List(MapEncoding))(rest: String): String decreases structural(ms) := {
@@ -359,28 +357,24 @@ namespace Cuda {
   }
 
   def launcher (name: String)(kernelParams: List(Param))(bytes: Nat)(l: Launcher): String := {
-    match l returning String with
-    | Launcher.mk ps requires maps grid block => {
-      let entry := Text.cat3("reinterpret_cast<const void*>(", name, ")")
-      let head := Text.cat3("extern \"C\" cudaError_t ", name, Text.cat3("_launch(", Cuda.params(ps), ", cudaStream_t stream) {"))
-      let attr := Text.cat3("const cudaError_t status = cudaFuncSetAttribute(", entry,
-        Text.cat3(", cudaFuncAttributeMaxDynamicSharedMemorySize, ", Text.nat(bytes), ");"))
-      let launch := fun (dims: String): String => Cuda.line(1, Text.cat3("return cudaLaunchKernel(", entry, Text.cat3(", ", dims,
-        Text.cat3(", dim3(", Text.nat(block), Text.cat3("u), args, ", Text.nat(bytes), "u, stream);")))), "}\n")
-      Cuda.line(0, "", Cuda.line(0, Text.cat3("// Launches ", name, " on `stream`, encoding its tensor maps as its parameter types require."),
-        Cuda.line(0, head, Cuda.requirements(requires, Cuda.mapEncodings(maps,
-          Cuda.line(1, attr, Cuda.line(1, "if (status != cudaSuccess) {", Cuda.line(2, "return status;", Cuda.line(1, "}",
-          Cuda.line(1, Text.cat3("void* args[] = {", Cuda.argAddrs(kernelParams), "};"), Cuda.gridDims(grid, launch)))))))))))
-    }
+    let (ps, requires, maps, grid, block) := l
+    let entry := Text.cat3("reinterpret_cast<const void*>(", name, ")")
+    let head := Text.cat3("extern \"C\" cudaError_t ", name, Text.cat3("_launch(", Cuda.params(ps), ", cudaStream_t stream) {"))
+    let attr := Text.cat3("const cudaError_t status = cudaFuncSetAttribute(", entry,
+      Text.cat3(", cudaFuncAttributeMaxDynamicSharedMemorySize, ", Text.nat(bytes), ");"))
+    let launch := fun (dims: String): String => Cuda.line(1, Text.cat3("return cudaLaunchKernel(", entry, Text.cat3(", ", dims,
+      Text.cat3(", dim3(", Text.nat(block), Text.cat3("u), args, ", Text.nat(bytes), "u, stream);")))), "}\n")
+    Cuda.line(0, "", Cuda.line(0, Text.cat3("// Launches ", name, " on `stream`, encoding its tensor maps as its parameter types require."),
+      Cuda.line(0, head, Cuda.requirements(requires, Cuda.mapEncodings(maps,
+        Cuda.line(1, attr, Cuda.line(1, "if (status != cudaSuccess) {", Cuda.line(2, "return status;", Cuda.line(1, "}",
+        Cuda.line(1, Text.cat3("void* args[] = {", Cuda.argAddrs(kernelParams), "};"), Cuda.gridDims(grid, launch)))))))))))
   }
 
   def kernel (k: Kernel): String := {
-    match k returning String with
-    | Kernel.mk n ps bytes body host => {
-      let head := Text.cat3("extern \"C\" __global__ void ", n, Text.cat3("(", Cuda.params(ps), ") {"))
-      let tail := Option.elim(host, String, "", fun (l: Launcher): String => Cuda.launcher(n, ps, bytes, l))
-      let launched := Option.elim(host, Bool, Bool.false, fun (l: Launcher): Bool => Bool.true)
-      Cuda.headers(ps, launched, Cuda.line(0, head, Cuda.sharedPrologue(bytes, Cuda.block(1, body, Text.cat("}\n", tail)))))
-    }
+    let (n, ps, bytes, body, host) := k
+    let head := Text.cat3("extern \"C\" __global__ void ", n, Text.cat3("(", Cuda.params(ps), ") {"))
+    let tail := Option.elim(host, String, "", fun (l: Launcher): String => Cuda.launcher(n, ps, bytes, l))
+    let launched := Option.elim(host, Bool, Bool.false, fun (l: Launcher): Bool => Bool.true)
+    Cuda.headers(ps, launched, Cuda.line(0, head, Cuda.sharedPrologue(bytes, Cuda.block(1, body, Text.cat("}\n", tail)))))
   }
 }

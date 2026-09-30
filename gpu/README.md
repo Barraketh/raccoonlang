@@ -6,7 +6,7 @@ prelude.
 
 | File | Role |
 |---|---|
-| `Prelude.rac` | The bundled prelude, plus a `String` layout (for literals), native `Nat.div`/`Nat.mod`, and `Pair`, a pair that may hold linear values |
+| `Prelude.rac` | The bundled prelude, whose `Pair` may hold linear values, plus a `String` layout (for literals) and native `Nat.div`/`Nat.mod` |
 | `Text.rac` | Number printing |
 | `Cuda.rac` | CUDA AST and printer; knows nothing about safety |
 | `Gpu.rac` | The sealed core: emitter, values, registers, loops, branches, shared tiles, global matrices, launch; and the Blackwell layer (warp roles, `elect`, the TMA stage ring, tensor memory, `tcgen05` MMA, the tensor-core epilogue), designed in `DESIGN.md` |

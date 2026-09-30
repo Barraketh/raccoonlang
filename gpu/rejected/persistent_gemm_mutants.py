@@ -50,7 +50,7 @@ MUTANTS = [
 """,
         new="""      let (e, c) := Gpu.releaseAcc(e, accs, full)
       let (e, full) := Gpu.storeTile(e, accs, full, t, o, g.c)
-      Pair.mk(e, c)
+      (e, c)
 """,
     ),
     dict(
@@ -58,11 +58,11 @@ MUTANTS = [
         why="Issues a tile's MMAs without waiting for the epilogue to free the buffer: `mmaFirstInto` needs the "
             "`AccFree` that `acquireAcc` hands out.",
         old="""        let (e, acc) := Gpu.acquireAcc(e, accs, ap)
-        let (e, (c, acc)) := Gpu.loopPeeled(e, steps, Gpu.fixedPair(Gpu.fixedConsumerAt(r, j), Gpu.fixedAccFilling(q, j)), Pair.mk(c, acc),
-          first, rest)
+        let (e, (c, acc)) := Gpu.loopPeeled(e, steps,
+          Gpu.fixedPair(Gpu.fixedConsumerAt(r, j), Gpu.fixedAccFilling(q, j)), (c, acc), first, rest)
 """,
-        new="""        let (e, (c, acc)) := Gpu.loopPeeled(e, steps, Gpu.fixedPair(Gpu.fixedConsumerAt(r, j), Gpu.fixedAccFilling(q, j)), Pair.mk(c, ap),
-          first, rest)
+        new="""        let (e, (c, acc)) := Gpu.loopPeeled(e, steps,
+          Gpu.fixedPair(Gpu.fixedConsumerAt(r, j), Gpu.fixedAccFilling(q, j)), (c, ap), first, rest)
 """,
     ),
     dict(

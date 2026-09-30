@@ -13,15 +13,13 @@ namespace T {
     fun (l: Lifetime)(e: Ctx(l, T.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, T.G) =>
       Gpu.shared(e, DType.f32, 256, fun (a: Lifetime)(sa: Smem(a, DType.f32, 256))(ta: T.Tl(a))(e: Ctx(l, T.G)): Ctx(l, T.G) => {
         let yes := fun (m: Lifetime)(e: Ctx(m, T.D))(t: T.Tl(a)): Pair(Ctx(m, T.D), T.Tl(a)) => {
-          match Gpu.storeMine(e, sa, t, Gpu.zero(DType.f32)) returning Pair(Ctx(m, T.D), T.Tl(a)) with
-          | Pair.mk e t => Pair.mk(e, t)
+          let (e, t) := Gpu.storeMine(e, sa, t, Gpu.zero(DType.f32))
+          (e, t)
         }
-        let no := fun (m: Lifetime)(e: Ctx(m, T.D))(t: T.Tl(a)): Pair(Ctx(m, T.D), T.Tl(a)) => Pair.mk(e, t)
-        match Gpu.branch(e, Gpu.lt(k.row, k.m), Gpu.fixedTile(a, DType.f32, 256, TileState.empty), ta, yes, no) returning Ctx(l, T.G) with
-        | Pair.mk e t => {
-          let _ := Gpu.release(t)
-          Gpu.gstore(e, k.c, c, Gpu.zero(DType.f32))
-        }
+        let no := fun (m: Lifetime)(e: Ctx(m, T.D))(t: T.Tl(a)): Pair(Ctx(m, T.D), T.Tl(a)) => (e, t)
+        let (e, t) := Gpu.branch(e, Gpu.lt(k.row, k.m), Gpu.fixedTile(a, DType.f32, 256, TileState.empty), ta, yes, no)
+        let _ := Gpu.release(t)
+        Gpu.gstore(e, k.c, c, Gpu.zero(DType.f32))
       }))
 }
 { Cuda.kernel(T.kernel) }

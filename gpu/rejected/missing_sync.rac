@@ -13,27 +13,18 @@ namespace T {
       Gpu.shared(e, DType.f32, 256, fun (a: Lifetime)(sa: Smem(a, DType.f32, 256))(ta: T.Tl(a, TileState.empty))(e: Ctx(l, T.G)): Ctx(l, T.G) => {
         let body := fun (m: Lifetime)(i: Val(m, Grain.uniform, DType.u32))(e: Ctx(m, T.G))(t: T.Tl(a, TileState.empty))
             : Pair(Ctx(m, T.G), T.Tl(a, TileState.empty)) => {
-          match Gpu.storeMine(e, sa, t, Gpu.zero(DType.f32)) returning Pair(Ctx(m, T.G), T.Tl(a, TileState.empty)) with
-          | Pair.mk e t => {
-            match Gpu.sync1(e, t) returning Pair(Ctx(m, T.G), T.Tl(a, TileState.empty)) with
-            | Pair.mk e t => {
-              let use := fun (r: Lifetime)(rd: SRead(a, r, DType.f32, 256))(e: Ctx(m, T.G)): Pair(Ctx(m, T.G), Unit) => {
-                match Gpu.sread(e, sa, rd, k.tx) returning Pair(Ctx(m, T.G), Unit) with
-                | Pair.mk e x => Pair.mk(e, Unit.unit)
-              }
-              match Gpu.reads(e, t, use) returning Pair(Ctx(m, T.G), T.Tl(a, TileState.empty)) with
-              | Pair.mk e out => {
-                match out returning Pair(Ctx(m, T.G), T.Tl(a, TileState.empty)) with
-                | Pair.mk t done => Pair.mk(e, t)
-              }
-            }
+          let (e, t) := Gpu.storeMine(e, sa, t, Gpu.zero(DType.f32))
+          let (e, t) := Gpu.sync1(e, t)
+          let use := fun (r: Lifetime)(rd: SRead(a, r, DType.f32, 256))(e: Ctx(m, T.G)): Pair(Ctx(m, T.G), Unit) => {
+            let (e, x) := Gpu.sread(e, sa, rd, k.tx)
+            (e, Unit.unit)
           }
+          let (e, (t, done)) := Gpu.reads(e, t, use)
+          (e, t)
         }
-        match Gpu.loop(e, k.k, Gpu.fixedTile(a, DType.f32, 256, TileState.empty), ta, body) returning Ctx(l, T.G) with
-        | Pair.mk e t => {
-          let _ := Gpu.release(t)
-          Gpu.gstore(e, k.c, c, Gpu.zero(DType.f32))
-        }
+        let (e, t) := Gpu.loop(e, k.k, Gpu.fixedTile(a, DType.f32, 256, TileState.empty), ta, body)
+        let _ := Gpu.release(t)
+        Gpu.gstore(e, k.c, c, Gpu.zero(DType.f32))
       }))
 }
 { Cuda.kernel(T.kernel) }

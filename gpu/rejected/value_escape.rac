@@ -14,7 +14,7 @@ namespace T {
         let (e, r) := Gpu.reg(e, Gpu.zero(DType.f32))
         Gpu.get(e, r)
       }
-      let right := fun (m: Lifetime)(e: Ctx(m, Group.warps(4, 4))): Pair(Ctx(m, Group.warps(4, 4)), Unit) => Pair.mk(e, Unit.unit)
+      let right := fun (m: Lifetime)(e: Ctx(m, Group.warps(4, 4))): Pair(Ctx(m, Group.warps(4, 4)), Unit) => (e, Unit.unit)
       let (e, (v, u)) := Gpu.split(e, 4, T.U, Unit, left, right)
       Gpu.gstore(e, k.c, c, v)
     })

@@ -14,12 +14,10 @@ namespace T {
         let yes := fun (m: Lifetime)(e: Ctx(m, Group.diverged(256)))(t: T.Tl(a)): Pair(Ctx(m, Group.diverged(256)), T.Tl(a)) =>
           Gpu.sync1(e, t)
         let no := fun (m: Lifetime)(e: Ctx(m, Group.diverged(256)))(t: T.Tl(a)): Pair(Ctx(m, Group.diverged(256)), T.Tl(a)) =>
-          Pair.mk(e, t)
-        match Gpu.branch(e, Gpu.lt(k.row, k.m), Gpu.fixedTile(a, DType.f32, 256, TileState.empty), ta, yes, no) returning Ctx(l, T.G) with
-        | Pair.mk e t => {
-          let _ := Gpu.release(t)
-          Gpu.gstore(e, k.c, c, Gpu.zero(DType.f32))
-        }
+          (e, t)
+        let (e, t) := Gpu.branch(e, Gpu.lt(k.row, k.m), Gpu.fixedTile(a, DType.f32, 256, TileState.empty), ta, yes, no)
+        let _ := Gpu.release(t)
+        Gpu.gstore(e, k.c, c, Gpu.zero(DType.f32))
       }))
 }
 { Cuda.kernel(T.kernel) }

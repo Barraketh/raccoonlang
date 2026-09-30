@@ -10,9 +10,9 @@ namespace T {
   def kernel : Kernel := Gpu.tiledKernel("bad", DType.f32, 16, Eq.refl(Bool.true),
     fun (l: Lifetime)(e: Ctx(l, T.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, T.G) => {
       let body := fun (m: Lifetime)(i: Val(m, Grain.uniform, DType.u32))(e: Ctx(m, T.G))(s: Unit): Pair(Ctx(m, T.G), Unit) =>
-        Pair.mk(Gpu.gstore(e, k.c, c, Gpu.zero(DType.f32)), s)
-      match Gpu.loop(e, k.k, Gpu.fixedUnit, Unit.unit, body) returning Ctx(l, T.G) with
-      | Pair.mk e s => e
+        (Gpu.gstore(e, k.c, c, Gpu.zero(DType.f32)), s)
+      let (e, s) := Gpu.loop(e, k.k, Gpu.fixedUnit, Unit.unit, body)
+      e
     })
 }
 { Cuda.kernel(T.kernel) }

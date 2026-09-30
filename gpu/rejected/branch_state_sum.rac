@@ -24,10 +24,10 @@ namespace T {
           match s returning Pair(Ctx(m, T.G), T.AnyTile(a)) with
           | T.AnyTile.mk st t => {
             let (e, t) := Gpu.sync1(e, t)
-            Pair.mk(e, T.AnyTile.mk(TileState.afterSync(st), t))
+            (e, T.AnyTile.mk(TileState.afterSync(st), t))
           }
         }
-        let no := fun (m: Lifetime)(e: Ctx(m, T.G))(s: T.AnyTile(a)): Pair(Ctx(m, T.G), T.AnyTile(a)) => Pair.mk(e, s)
+        let no := fun (m: Lifetime)(e: Ctx(m, T.G))(s: T.AnyTile(a)): Pair(Ctx(m, T.G), T.AnyTile(a)) => (e, s)
         let (e, s) := Gpu.branch(e, Gpu.lt(Gpu.lit(0), k.m), Fixed.mk(T.AnyTile(a)), T.AnyTile.mk(TileState.reading, t), yes, no)
         match s returning Ctx(l, T.G) with
         | T.AnyTile.mk st t => {

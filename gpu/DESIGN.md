@@ -123,7 +123,7 @@ grid write one location. The block and row come from the block and thread indice
 | handing a taken endpoint to a later elect | `ProducerAt(r, j)` cannot leave `j` |
 | MMA on a stage without `await` | `mmaFirst` needs `Ready` |
 | accumulating into the fresh accumulator | `mmaNext` needs `AccPending`, not `Acc(a, empty)` |
-| releasing a stage twice | the second release leaves an endpoint nothing can finish |
+| releasing a stage twice | a release consumes the used stage (`ReadyUsed` is linear) |
 | the first K step inside the loop | a loop body's state keeps one type |
 | never committing the MMAs | `AccPending` and `AccSend` are linear |
 | storing before the handoff | `storeAcc` needs `Acc(a, ready)` |

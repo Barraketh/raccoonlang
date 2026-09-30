@@ -170,7 +170,8 @@ namespace Gpu {
   def bind {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(u: Grain)(t: DType)(init: Expr)(bound: Option(Nat))
       : Pair(Ctx(l, g), Val(l, u, t)) := {
     let gen := Gpu.state(k, e)
-    Pair.mk(Gpu.resume(k, l, g, Gpu.push(Gpu.fresh(gen), Stmt.decl(t, gen.next, init))), Val.mk(l, u, t, Expr.var(gen.next), bound))
+    (Gpu.resume(k, l, g, Gpu.push(Gpu.fresh(gen), Stmt.decl(t, gen.next, init))),
+      Val.mk(l, u, t, Expr.var(gen.next), bound))
   }
 
   // ---- Pure values ------------------------------------------------------------------------------------------------
@@ -238,7 +239,7 @@ namespace Gpu {
 
   def reg {l: Lifetime}{g: Group}{S: Lifetime}{u: Grain}{t: DType}(e: Ctx(l, g))(init: Val(S, u, t)): Pair(Ctx(l, g), Reg(l, t)) := {
     let gen := Gpu.state(Key.key, e)
-    Pair.mk(Gpu.resume(Key.key, l, g, Gpu.push(Gpu.fresh(gen), Stmt.declMut(t, gen.next, init.expr))), Reg.mk(l, t, gen.next))
+    (Gpu.resume(Key.key, l, g, Gpu.push(Gpu.fresh(gen), Stmt.declMut(t, gen.next, init.expr))), Reg.mk(l, t, gen.next))
   }
 
   // Reading a register snapshots it: the value does not change when the register does.
@@ -342,12 +343,10 @@ namespace Gpu {
     let gen := Gpu.state(Key.key, e)
     scope m => {
       let i := Val.mk(m, Grain.uniform, DType.u32, Expr.var(gen.next), count.bound)
-      match body(m, i, Gpu.resume(Key.key, m, g, Gpu.child(Gpu.fresh(gen))), state) returning Pair(Ctx(l, g), S) with
-      | Pair.mk inner after => {
-        let done := Gpu.state(Key.key, inner)
-        let s := Stmt.forLoop(gen.next, Expr.lit(0), count.expr, Gpu.blockOf(done))
-        Pair.mk(Gpu.resume(Key.key, l, g, Gpu.after(gen, done, s)), after)
-      }
+      let (inner, after) := body(m, i, Gpu.resume(Key.key, m, g, Gpu.child(Gpu.fresh(gen))), state)
+      let done := Gpu.state(Key.key, inner)
+      let s := Stmt.forLoop(gen.next, Expr.lit(0), count.expr, Gpu.blockOf(done))
+      (Gpu.resume(Key.key, l, g, Gpu.after(gen, done, s)), after)
     }
   }
 
@@ -364,19 +363,15 @@ namespace Gpu {
     let gen := Gpu.state(Key.key, e)
     scope m => {
       let zero := Val.mk(m, Grain.uniform, DType.u32, Expr.lit(0), Option.some(1))
-      match first(m, zero, Gpu.resume(Key.key, m, g, Gpu.child(gen)), init) returning Pair(Ctx(l, g), S1) with
-      | Pair.mk firstCtx mid => {
-        let firstDone := Gpu.state(Key.key, firstCtx)
-        let afterFirst := Gpu.after(gen, firstDone, Stmt.scoped(Gpu.blockOf(firstDone)))
-        scope n => {
-          let i := Val.mk(n, Grain.uniform, DType.u32, Expr.var(afterFirst.next), count.bound)
-          match rest(n, i, Gpu.resume(Key.key, n, g, Gpu.child(Gpu.fresh(afterFirst))), mid) returning Pair(Ctx(l, g), S1) with
-          | Pair.mk restCtx last => {
-            let restDone := Gpu.state(Key.key, restCtx)
-            let s := Stmt.forLoop(afterFirst.next, Expr.lit(1), count.expr, Gpu.blockOf(restDone))
-            Pair.mk(Gpu.resume(Key.key, l, g, Gpu.after(afterFirst, restDone, s)), last)
-          }
-        }
+      let (firstCtx, mid) := first(m, zero, Gpu.resume(Key.key, m, g, Gpu.child(gen)), init)
+      let firstDone := Gpu.state(Key.key, firstCtx)
+      let afterFirst := Gpu.after(gen, firstDone, Stmt.scoped(Gpu.blockOf(firstDone)))
+      scope n => {
+        let i := Val.mk(n, Grain.uniform, DType.u32, Expr.var(afterFirst.next), count.bound)
+        let (restCtx, last) := rest(n, i, Gpu.resume(Key.key, n, g, Gpu.child(Gpu.fresh(afterFirst))), mid)
+        let restDone := Gpu.state(Key.key, restCtx)
+        let s := Stmt.forLoop(afterFirst.next, Expr.lit(1), count.expr, Gpu.blockOf(restDone))
+        (Gpu.resume(Key.key, l, g, Gpu.after(afterFirst, restDone, s)), last)
       }
     }
   }
@@ -392,17 +387,13 @@ namespace Gpu {
       : Pair(Ctx(l, g), S) := {
     let gen := Gpu.state(Key.key, e)
     scope m => {
-      match yes(m, Gpu.resume(Key.key, m, Group.arm(g, uc), Gpu.child(gen)), state) returning Pair(Ctx(l, g), S) with
-      | Pair.mk yesCtx afterYes => {
-        let yesDone := Gpu.state(Key.key, yesCtx)
-        scope n => {
-          match no(n, Gpu.resume(Key.key, n, Group.arm(g, uc), Gpu.child(yesDone)), afterYes) returning Pair(Ctx(l, g), S) with
-          | Pair.mk noCtx afterNo => {
-            let noDone := Gpu.state(Key.key, noCtx)
-            let s := Stmt.ifElse(cond.expr, Gpu.blockOf(yesDone), Gpu.blockOf(noDone))
-            Pair.mk(Gpu.resume(Key.key, l, g, Gpu.after(gen, noDone, s)), afterNo)
-          }
-        }
+      let (yesCtx, afterYes) := yes(m, Gpu.resume(Key.key, m, Group.arm(g, uc), Gpu.child(gen)), state)
+      let yesDone := Gpu.state(Key.key, yesCtx)
+      scope n => {
+        let (noCtx, afterNo) := no(n, Gpu.resume(Key.key, n, Group.arm(g, uc), Gpu.child(yesDone)), afterYes)
+        let noDone := Gpu.state(Key.key, noCtx)
+        let s := Stmt.ifElse(cond.expr, Gpu.blockOf(yesDone), Gpu.blockOf(noDone))
+        (Gpu.resume(Key.key, l, g, Gpu.after(gen, noDone, s)), afterNo)
       }
     }
   }
@@ -429,18 +420,14 @@ namespace Gpu {
       : Pair(Ctx(l, g), Pair(A, B)) := {
     let gen := Gpu.check(Gpu.state(Key.key, e), Group.splits(g, k), "split: the group is not that many whole warps")
     scope m => {
-      match left(m, Gpu.resume(Key.key, m, Group.left(g, k), Gpu.child(gen))) returning Pair(Ctx(l, g), Pair(A, B)) with
-      | Pair.mk leftCtx a => {
-        let leftDone := Gpu.state(Key.key, leftCtx)
-        scope n => {
-          match right(n, Gpu.resume(Key.key, n, Group.right(g, k), Gpu.child(leftDone))) returning Pair(Ctx(l, g), Pair(A, B)) with
-          | Pair.mk rightCtx b => {
-            let rightDone := Gpu.state(Key.key, rightCtx)
-            let cond := Expr.bin(BinOp.lt, Expr.special(Builtin.warp), Expr.lit(Nat.add(Group.first(g), k)))
-            let s := Stmt.ifElse(cond, Gpu.blockOf(leftDone), Gpu.blockOf(rightDone))
-            Pair.mk(Gpu.resume(Key.key, l, g, Gpu.join(g, Gpu.after(gen, rightDone, s))), Pair.mk(a, b))
-          }
-        }
+      let (leftCtx, a) := left(m, Gpu.resume(Key.key, m, Group.left(g, k), Gpu.child(gen)))
+      let leftDone := Gpu.state(Key.key, leftCtx)
+      scope n => {
+        let (rightCtx, b) := right(n, Gpu.resume(Key.key, n, Group.right(g, k), Gpu.child(leftDone)))
+        let rightDone := Gpu.state(Key.key, rightCtx)
+        let cond := Expr.bin(BinOp.lt, Expr.special(Builtin.warp), Expr.lit(Nat.add(Group.first(g), k)))
+        let s := Stmt.ifElse(cond, Gpu.blockOf(leftDone), Gpu.blockOf(rightDone))
+        (Gpu.resume(Key.key, l, g, Gpu.join(g, Gpu.after(gen, rightDone, s))), (a, b))
       }
     }
   }
@@ -462,12 +449,10 @@ namespace Gpu {
     let pre := Gpu.push(Gpu.push(Gpu.fresh(gen), Stmt.declMut(DType.u32, flag, Expr.zero(DType.u32))),
       Stmt.asm(Gpu.electAsm, List.cons(Operand.mk("+r", Expr.var(flag)), List.nil(Operand)), List.nil(Operand)))
     scope m => {
-      match body(m, Elected.mk(m), Gpu.resume(Key.key, m, Group.lane, Gpu.child(pre))) returning Pair(Ctx(l, Group.warps(f, 1)), X) with
-      | Pair.mk inner x => {
-        let done := Gpu.state(Key.key, inner)
-        let s := Stmt.ifElse(Expr.bin(BinOp.lt, Expr.lit(0), Expr.var(flag)), Gpu.blockOf(done), Block.done)
-        Pair.mk(Gpu.resume(Key.key, l, Group.warps(f, 1), Gpu.push(Gpu.after(pre, done, s), Stmt.syncWarp)), x)
-      }
+      let (inner, x) := body(m, Elected.mk(m), Gpu.resume(Key.key, m, Group.lane, Gpu.child(pre)))
+      let done := Gpu.state(Key.key, inner)
+      let s := Stmt.ifElse(Expr.bin(BinOp.lt, Expr.lit(0), Expr.var(flag)), Gpu.blockOf(done), Block.done)
+      (Gpu.resume(Key.key, l, Group.warps(f, 1), Gpu.push(Gpu.after(pre, done, s), Stmt.syncWarp)), x)
     }
   }
 
@@ -524,14 +509,15 @@ namespace Gpu {
       (e: Ctx(l, Group.cta(n)))(buf: Smem(a, t, n))(x: Tile(a, t, n, TileState.empty))(v: Val(S, u, t))
       : Pair(Ctx(l, Group.cta(n)), Tile(a, t, n, TileState.written)) := {
     match x returning Pair(Ctx(l, Group.cta(n)), Tile(a, t, n, TileState.written)) with
-    | Tile.mk => Pair.mk(Gpu.emit(Key.key, e, Stmt.store(Expr.var(buf.id), Expr.special(Builtin.threadX), v.expr)), Tile.mk(a, t, n, TileState.written))
+    | Tile.mk => (Gpu.emit(Key.key, e, Stmt.store(Expr.var(buf.id), Expr.special(Builtin.threadX), v.expr)),
+      Tile.mk(a, t, n, TileState.written))
   }
 
   // A CTA-wide barrier, which only a converged CTA may reach.
   def sync1 {l: Lifetime}{n: Nat}{a: Lifetime}{t: DType}{m: Nat}{s: TileState}(e: Ctx(l, Group.cta(n)))(x: Tile(a, t, m, s))
       : Pair(Ctx(l, Group.cta(n)), Tile(a, t, m, TileState.afterSync(s))) := {
     match x returning Pair(Ctx(l, Group.cta(n)), Tile(a, t, m, TileState.afterSync(s))) with
-    | Tile.mk => Pair.mk(Gpu.emit(Key.key, e, Stmt.sync), Tile.mk(a, t, m, TileState.afterSync(s)))
+    | Tile.mk => (Gpu.emit(Key.key, e, Stmt.sync), Tile.mk(a, t, m, TileState.afterSync(s)))
   }
 
   def sync2 {l: Lifetime}{n: Nat}{a: Lifetime}{t: DType}{m: Nat}{s: TileState}{b: Lifetime}{t2: DType}{m2: Nat}{s2: TileState}
@@ -540,7 +526,8 @@ namespace Gpu {
     match x returning Pair(Ctx(l, Group.cta(n)), Pair(Tile(a, t, m, TileState.afterSync(s)), Tile(b, t2, m2, TileState.afterSync(s2)))) with
     | Tile.mk => {
       match y returning Pair(Ctx(l, Group.cta(n)), Pair(Tile(a, t, m, TileState.afterSync(s)), Tile(b, t2, m2, TileState.afterSync(s2)))) with
-      | Tile.mk => Pair.mk(Gpu.emit(Key.key, e, Stmt.sync), Pair.mk(Tile.mk(a, t, m, TileState.afterSync(s)), Tile.mk(b, t2, m2, TileState.afterSync(s2))))
+      | Tile.mk => (Gpu.emit(Key.key, e, Stmt.sync),
+        (Tile.mk(a, t, m, TileState.afterSync(s)), Tile.mk(b, t2, m2, TileState.afterSync(s2))))
     }
   }
 
@@ -552,8 +539,8 @@ namespace Gpu {
       : Pair(Ctx(l, g), Pair(Tile(a, t, n, TileState.reading), X)) := {
     match x returning Pair(Ctx(l, g), Pair(Tile(a, t, n, TileState.reading), X)) with
     | Tile.mk => {
-      match (scope r => body(r, SRead.mk(a, r, t, n), e)) returning Pair(Ctx(l, g), Pair(Tile(a, t, n, TileState.reading), X)) with
-      | Pair.mk e2 out => Pair.mk(e2, Pair.mk(Tile.mk(a, t, n, TileState.reading), out))
+      let (e2, out) := (scope r => body(r, SRead.mk(a, r, t, n), e))
+      (e2, (Tile.mk(a, t, n, TileState.reading), out))
     }
   }
 
@@ -568,7 +555,8 @@ namespace Gpu {
     match fits returning Pair(Ctx(l, g), Val(l, ui, t)) with
     | Bool.true => Gpu.bind(Key.key, e, ui, t, Expr.index(Expr.var(buf.id), i.expr), Option.none(Nat))
     | Bool.false =>
-      Pair.mk(Gpu.reject(Key.key, e, Text.cat("shared read index not provably below ", Text.nat(n))), Val.mk(l, ui, t, Expr.zero(t), Option.none(Nat)))
+      (Gpu.reject(Key.key, e, Text.cat("shared read index not provably below ", Text.nat(n))),
+        Val.mk(l, ui, t, Expr.zero(t), Option.none(Nat)))
   }
 
   // ---- Global memory and launch -----------------------------------------------------------------------------------
@@ -792,20 +780,12 @@ namespace Gpu {
     let gen4 := Gpu.initBarriers(Gpu.fresh(Gpu.fresh(Gpu.fresh(Gpu.fresh(gen2)))), bars, Nat.mul(2, cfg.stages))
     scope r => {
       let ring := Ring.mk(r, cfg, base, bars, p, Nat.add(p, 1), Nat.add(p, 2), Nat.add(p, 3))
-      match body(r, ring, Producer.mk(r), Consumer.mk(r), Gpu.resume(Key.key, l, Group.cta(w), gen4))
-          returning Pair(Ctx(l, Group.cta(w)), X) with
-      | Pair.mk e2 out => {
-        match out returning Pair(Ctx(l, Group.cta(w)), X) with
-        | Pair.mk ends x => {
-          match ends returning Pair(Ctx(l, Group.cta(w)), X) with
-          | Pair.mk pd cd => {
-            match pd returning Pair(Ctx(l, Group.cta(w)), X) with
-            | ProducerDone.mk => {
-              match cd returning Pair(Ctx(l, Group.cta(w)), X) with
-              | ConsumerDone.mk => Pair.mk(e2, x)
-            }
-          }
-        }
+      let (e2, ((pd, cd), x)) :=
+        body(r, ring, Producer.mk(r), Consumer.mk(r), Gpu.resume(Key.key, l, Group.cta(w), gen4))
+      match pd returning Pair(Ctx(l, Group.cta(w)), X) with
+      | ProducerDone.mk => {
+        match cd returning Pair(Ctx(l, Group.cta(w)), X) with
+        | ConsumerDone.mk => (e2, x)
       }
     }
   }
@@ -818,7 +798,7 @@ namespace Gpu {
     match p returning Pair(Ctx(m, Group.lane), ProducerAt(r, m)) with
     | Producer.mk => {
       let regs := List.cons(Stmt.declMut(DType.u32, ring.pStage, Expr.lit(0)), List.cons(Stmt.declMut(DType.u32, ring.pPhase, Expr.lit(1)), List.nil(Stmt)))
-      Pair.mk(Gpu.emitAll(Key.key, e, regs), ProducerAt.mk(r, m))
+      (Gpu.emitAll(Key.key, e, regs), ProducerAt.mk(r, m))
     }
   }
 
@@ -827,7 +807,7 @@ namespace Gpu {
     match c returning Pair(Ctx(m, Group.lane), ConsumerAt(r, m)) with
     | Consumer.mk => {
       let regs := List.cons(Stmt.declMut(DType.u32, ring.cStage, Expr.lit(0)), List.cons(Stmt.declMut(DType.u32, ring.cPhase, Expr.lit(0)), List.nil(Stmt)))
-      Pair.mk(Gpu.emitAll(Key.key, e, regs), ConsumerAt.mk(r, m))
+      (Gpu.emitAll(Key.key, e, regs), ConsumerAt.mk(r, m))
     }
   }
 
@@ -835,7 +815,8 @@ namespace Gpu {
   def acquire {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}(e: Ctx(n, Group.lane))(ring: Ring(r, cfg))(p: ProducerAt(r, m))
       : Pair(Ctx(n, Group.lane), Slot(r, m)) := {
     match p returning Pair(Ctx(n, Group.lane), Slot(r, m)) with
-    | ProducerAt.mk => Pair.mk(Gpu.emit(Key.key, e, Gpu.mbarWait(Gpu.emptyBar(ring, ring.pStage), Expr.var(ring.pPhase))), Slot.mk(r, m))
+    | ProducerAt.mk =>
+      (Gpu.emit(Key.key, e, Gpu.mbarWait(Gpu.emptyBar(ring, ring.pStage), Expr.var(ring.pPhase))), Slot.mk(r, m))
   }
 
   // Fills the acquired stage with one TMA box of each operand, at the given coordinates (contiguous dimension first).
@@ -853,7 +834,8 @@ namespace Gpu {
       let dstB := Expr.bin(BinOp.add, dst, Expr.lit(Gpu.boxBytes(cfg.a)))
       let copies := List.cons(Gpu.mbarArriveExpectTx(full, Gpu.stageBytes(cfg)),
         List.cons(Gpu.tmaLoad2d(dst, a.name, a0.expr, a1.expr, full), List.cons(Gpu.tmaLoad2d(dstB, b.name, b0.expr, b1.expr, full), List.nil(Stmt))))
-      Pair.mk(Gpu.emitAll(Key.key, e, List.append(copies, Gpu.advance(ring.pStage, ring.pPhase, cfg.stages))), ProducerAt.mk(r, m))
+      (Gpu.emitAll(Key.key, e, List.append(copies, Gpu.advance(ring.pStage, ring.pPhase, cfg.stages))),
+        ProducerAt.mk(r, m))
     }
   }
 
@@ -873,7 +855,8 @@ namespace Gpu {
     match p returning Pair(Ctx(n, Group.lane), ProducerDone(r)) with
     | ProducerAt.mk => {
       let emptyBase := Nat.add(ring.bars, Nat.mul(8, cfg.stages))
-      Pair.mk(Gpu.emitAll(Key.key, e, Gpu.drain(ring.pStage, ring.pPhase, emptyBase, cfg.stages, cfg.stages)), ProducerDone.mk(r))
+      (Gpu.emitAll(Key.key, e, Gpu.drain(ring.pStage, ring.pPhase, emptyBase, cfg.stages, cfg.stages)),
+        ProducerDone.mk(r))
     }
   }
 
@@ -881,7 +864,8 @@ namespace Gpu {
   def await {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}(e: Ctx(n, Group.lane))(ring: Ring(r, cfg))(c: ConsumerAt(r, m))
       : Pair(Ctx(n, Group.lane), Ready(r, m)) := {
     match c returning Pair(Ctx(n, Group.lane), Ready(r, m)) with
-    | ConsumerAt.mk => Pair.mk(Gpu.emit(Key.key, e, Gpu.mbarWait(Gpu.fullBar(ring, ring.cStage), Expr.var(ring.cPhase))), Ready.mk(r, m))
+    | ConsumerAt.mk =>
+      (Gpu.emit(Key.key, e, Gpu.mbarWait(Gpu.fullBar(ring, ring.cStage), Expr.var(ring.cPhase))), Ready.mk(r, m))
   }
 
   def finishConsumer {r: Lifetime}{m: Lifetime}(c: ConsumerAt(r, m)): ConsumerDone(r) := {
@@ -948,17 +932,13 @@ namespace Gpu {
     let opened := List.cons(alloc, List.cons(Gpu.tcFenceBefore, List.cons(Stmt.sync, List.cons(Gpu.tcFenceAfter, List.cons(read, List.nil(Stmt))))))
     let gen2 := Gpu.pushAll(Gpu.fresh(gen1), opened)
     scope a => {
-      match body(a, Tmem.mk(a, cols, addr), Acc.mk(a, AccState.empty), Gpu.resume(Key.key, l, Group.cta(w), gen2))
-          returning Pair(Ctx(l, Group.cta(w)), X) with
-      | Pair.mk e2 out => {
-        match out returning Pair(Ctx(l, Group.cta(w)), X) with
-        | Pair.mk acc x => {
-          match acc returning Pair(Ctx(l, Group.cta(w)), X) with
-          | Acc.mk => {
-            let free := Stmt.ifElse(warp0, Block.seq(Gpu.tmemDealloc(Expr.var(addr), cols), Block.done), Block.done)
-            Pair.mk(Gpu.emitAll(Key.key, e2, List.cons(Gpu.tcFenceBefore, List.cons(Stmt.sync, List.cons(Gpu.tcFenceAfter, List.cons(free, List.nil(Stmt)))))), x)
-          }
-        }
+      let (e2, (acc, x)) :=
+        body(a, Tmem.mk(a, cols, addr), Acc.mk(a, AccState.empty), Gpu.resume(Key.key, l, Group.cta(w), gen2))
+      match acc returning Pair(Ctx(l, Group.cta(w)), X) with
+      | Acc.mk => {
+        let free := Stmt.ifElse(warp0, Block.seq(Gpu.tmemDealloc(Expr.var(addr), cols), Block.done), Block.done)
+        (Gpu.emitAll(Key.key, e2, List.cons(Gpu.tcFenceBefore, List.cons(Stmt.sync, List.cons(Gpu.tcFenceAfter,
+          List.cons(free, List.nil(Stmt)))))), x)
       }
     }
   }
@@ -1002,7 +982,7 @@ namespace Gpu {
     match rv returning Pair(Ctx(n, g), Acc(a, AccState.ready)) with
     | AccRecv.mk => {
       let wait := List.cons(Gpu.mbarWait(Expr.sharedAddr(hd.bar), Expr.lit(0)), List.cons(Gpu.tcFenceAfter, List.nil(Stmt)))
-      Pair.mk(Gpu.emitAll(Key.key, e, wait), Acc.mk(a, AccState.ready))
+      (Gpu.emitAll(Key.key, e, wait), Acc.mk(a, AccState.ready))
     }
   }
 
@@ -1051,7 +1031,7 @@ namespace Gpu {
       match acc returning Pair(Ctx(n, Group.lane), Pair(ReadyUsed(r, m), AccPending(a, m))) with
       | Acc.mk => {
         let gen := Gpu.mmaStage(Key.key, Gpu.state(Key.key, e), Gpu.stageAddr(ring, ring.cStage), cfg, Expr.var(t.addr), cols, Bool.true)
-        Pair.mk(Gpu.resume(Key.key, n, Group.lane, gen), Pair.mk(ReadyUsed.mk(r, m), AccPending.mk(a, m)))
+        (Gpu.resume(Key.key, n, Group.lane, gen), (ReadyUsed.mk(r, m), AccPending.mk(a, m)))
       }
     }
   }
@@ -1063,7 +1043,7 @@ namespace Gpu {
     match rd returning Pair(Ctx(n, Group.lane), Pair(ReadyUsed(r, m), AccPending(a, m))) with
     | Ready.mk => {
       let gen := Gpu.mmaStage(Key.key, Gpu.state(Key.key, e), Gpu.stageAddr(ring, ring.cStage), cfg, Expr.var(t.addr), cols, Bool.false)
-      Pair.mk(Gpu.resume(Key.key, n, Group.lane, gen), Pair.mk(ReadyUsed.mk(r, m), acc))
+      (Gpu.resume(Key.key, n, Group.lane, gen), (ReadyUsed.mk(r, m), acc))
     }
   }
 
@@ -1073,7 +1053,7 @@ namespace Gpu {
     match u returning Pair(Ctx(n, Group.lane), ConsumerAt(r, m)) with
     | ReadyUsed.mk => {
       let release := List.cons(Gpu.mmaCommit(Gpu.emptyBar(ring, ring.cStage)), Gpu.advance(ring.cStage, ring.cPhase, cfg.stages))
-      Pair.mk(Gpu.emitAll(Key.key, e, release), ConsumerAt.mk(r, m))
+      (Gpu.emitAll(Key.key, e, release), ConsumerAt.mk(r, m))
     }
   }
 
@@ -1149,7 +1129,7 @@ namespace Gpu {
       let row0 := Expr.bin(BinOp.mul, Expr.special(Builtin.blockY), Expr.lit(128))
       let col0 := Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(bn))
       let gen := Gpu.storeRows(Gpu.state(Key.key, e), Expr.var(t.addr), row0, col0, out, cols)
-      Pair.mk(Gpu.resume(Key.key, n, Group.warps(f, 4), gen), acc)
+      (Gpu.resume(Key.key, n, Group.warps(f, 4), gen), acc)
     }
   }
 
@@ -1187,12 +1167,11 @@ namespace Gpu {
     let col0 := Expr.bin(BinOp.mul, Expr.bin(BinOp.rem, Expr.var(t), Expr.var(sched.tilesN)), Expr.lit(bn))
     scope m => {
       let tile := TileAt.mk(bn, Val.mk(m, Grain.uniform, DType.u32, row0, Option.none(Nat)), Val.mk(m, Grain.uniform, DType.u32, col0, Option.none(Nat)))
-      match body(m, tile, Gpu.resume(Key.key, m, g, Gpu.child(Gpu.fresh(gen))), state) returning Pair(Ctx(l, g), S) with
-      | Pair.mk inner after => {
-        let done := Gpu.state(Key.key, inner)
-        let s := Stmt.forStride(t, Expr.special(Builtin.blockX), Expr.var(sched.tiles), Expr.special(Builtin.gridX), Gpu.blockOf(done))
-        Pair.mk(Gpu.resume(Key.key, l, g, Gpu.after(gen, done, s)), after)
-      }
+      let (inner, after) := body(m, tile, Gpu.resume(Key.key, m, g, Gpu.child(Gpu.fresh(gen))), state)
+      let done := Gpu.state(Key.key, inner)
+      let s := Stmt.forStride(t, Expr.special(Builtin.blockX), Expr.var(sched.tiles), Expr.special(Builtin.gridX),
+        Gpu.blockOf(done))
+      (Gpu.resume(Key.key, l, g, Gpu.after(gen, done, s)), after)
     }
   }
 
@@ -1295,20 +1274,12 @@ namespace Gpu {
       let gen2 := Gpu.initBarrierList(Gpu.fresh(Gpu.fresh(Gpu.fresh(Gpu.fresh(gen1)))), inits)
       scope q => {
         let ring := AccRing.mk(q, n, t.addr, bufs, bars, p, Nat.add(p, 1), Nat.add(p, 2), Nat.add(p, 3))
-        match body(q, ring, AccProducer.mk(q), AccConsumer.mk(q), Gpu.resume(Key.key, l, Group.cta(w), gen2))
-            returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.ready), X)) with
-        | Pair.mk e2 out => {
-          match out returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.ready), X)) with
-          | Pair.mk ends x => {
-            match ends returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.ready), X)) with
-            | Pair.mk pd cd => {
-              match pd returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.ready), X)) with
-              | AccProducerDone.mk => {
-                match cd returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.ready), X)) with
-                | AccConsumerDone.mk => Pair.mk(e2, Pair.mk(Acc.mk(a, AccState.ready), x))
-              }
-            }
-          }
+        let (e2, ((pd, cd), x)) :=
+          body(q, ring, AccProducer.mk(q), AccConsumer.mk(q), Gpu.resume(Key.key, l, Group.cta(w), gen2))
+        match pd returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.ready), X)) with
+        | AccProducerDone.mk => {
+          match cd returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.ready), X)) with
+          | AccConsumerDone.mk => (e2, (Acc.mk(a, AccState.ready), x))
         }
       }
     }
@@ -1320,7 +1291,7 @@ namespace Gpu {
     match p returning Pair(Ctx(m, Group.lane), AccProducerAt(q, m)) with
     | AccProducer.mk => {
       let regs := List.cons(Stmt.declMut(DType.u32, ring.pStage, Expr.lit(0)), List.cons(Stmt.declMut(DType.u32, ring.pPhase, Expr.lit(1)), List.nil(Stmt)))
-      Pair.mk(Gpu.emitAll(Key.key, e, regs), AccProducerAt.mk(q, m))
+      (Gpu.emitAll(Key.key, e, regs), AccProducerAt.mk(q, m))
     }
   }
 
@@ -1330,7 +1301,7 @@ namespace Gpu {
     match p returning Pair(Ctx(k, Group.lane), AccFree(q, m)) with
     | AccProducerAt.mk => {
       let wait := List.cons(Gpu.mbarWait(Gpu.accEmptyBar(ring, ring.pStage), Expr.var(ring.pPhase)), List.cons(Gpu.tcFenceAfter, List.nil(Stmt)))
-      Pair.mk(Gpu.emitAll(Key.key, e, wait), AccFree.mk(q, m))
+      (Gpu.emitAll(Key.key, e, wait), AccFree.mk(q, m))
     }
   }
 
@@ -1343,7 +1314,7 @@ namespace Gpu {
       match acc returning Pair(Ctx(k, Group.lane), Pair(ReadyUsed(r, m), AccFilling(q, m))) with
       | AccFree.mk => {
         let gen := Gpu.mmaStage(Key.key, Gpu.state(Key.key, e), Gpu.stageAddr(ring, ring.cStage), cfg, Gpu.accBuffer(accs, accs.pStage), n, Bool.true)
-        Pair.mk(Gpu.resume(Key.key, k, Group.lane, gen), Pair.mk(ReadyUsed.mk(r, m), AccFilling.mk(q, m)))
+        (Gpu.resume(Key.key, k, Group.lane, gen), (ReadyUsed.mk(r, m), AccFilling.mk(q, m)))
       }
     }
   }
@@ -1355,7 +1326,7 @@ namespace Gpu {
     match rd returning Pair(Ctx(k, Group.lane), Pair(ReadyUsed(r, m), AccFilling(q, m))) with
     | Ready.mk => {
       let gen := Gpu.mmaStage(Key.key, Gpu.state(Key.key, e), Gpu.stageAddr(ring, ring.cStage), cfg, Gpu.accBuffer(accs, accs.pStage), n, Bool.false)
-      Pair.mk(Gpu.resume(Key.key, k, Group.lane, gen), Pair.mk(ReadyUsed.mk(r, m), acc))
+      (Gpu.resume(Key.key, k, Group.lane, gen), (ReadyUsed.mk(r, m), acc))
     }
   }
 
@@ -1365,7 +1336,7 @@ namespace Gpu {
     match acc returning Pair(Ctx(k, Group.lane), AccProducerAt(q, m)) with
     | AccFilling.mk => {
       let commit := List.cons(Gpu.mmaCommit(Gpu.accFullBar(ring, ring.pStage)), Gpu.advance(ring.pStage, ring.pPhase, ring.bufs))
-      Pair.mk(Gpu.emitAll(Key.key, e, commit), AccProducerAt.mk(q, m))
+      (Gpu.emitAll(Key.key, e, commit), AccProducerAt.mk(q, m))
     }
   }
 
@@ -1374,7 +1345,8 @@ namespace Gpu {
       (p: AccProducerAt(q, m)): Pair(Ctx(k, Group.lane), AccProducerDone(q)) := {
     match p returning Pair(Ctx(k, Group.lane), AccProducerDone(q)) with
     | AccProducerAt.mk =>
-      Pair.mk(Gpu.emitAll(Key.key, e, Gpu.drain(ring.pStage, ring.pPhase, Gpu.accEmptyBase(ring), ring.bufs, ring.bufs)), AccProducerDone.mk(q))
+      (Gpu.emitAll(Key.key, e, Gpu.drain(ring.pStage, ring.pPhase, Gpu.accEmptyBase(ring), ring.bufs, ring.bufs)),
+        AccProducerDone.mk(q))
   }
 
   // An aligned warpgroup takes the reading side: its buffer starts at 0, none yet full.
@@ -1384,7 +1356,7 @@ namespace Gpu {
     match c returning Pair(Ctx(m, Group.warps(f, 4)), AccConsumerAt(q, m, f)) with
     | AccConsumer.mk => {
       let regs := List.cons(Stmt.declMut(DType.u32, ring.cStage, Expr.lit(0)), List.cons(Stmt.declMut(DType.u32, ring.cPhase, Expr.lit(0)), List.nil(Stmt)))
-      Pair.mk(Gpu.emitAll(Key.key, e, regs), AccConsumerAt.mk(q, m, f))
+      (Gpu.emitAll(Key.key, e, regs), AccConsumerAt.mk(q, m, f))
     }
   }
 
@@ -1394,7 +1366,7 @@ namespace Gpu {
     match c returning Pair(Ctx(k, Group.warps(f, 4)), AccFull(q, m, f)) with
     | AccConsumerAt.mk => {
       let wait := List.cons(Gpu.mbarWait(Gpu.accFullBar(ring, ring.cStage), Expr.var(ring.cPhase)), List.cons(Gpu.tcFenceAfter, List.nil(Stmt)))
-      Pair.mk(Gpu.emitAll(Key.key, e, wait), AccFull.mk(q, m, f))
+      (Gpu.emitAll(Key.key, e, wait), AccFull.mk(q, m, f))
     }
   }
 
@@ -1405,7 +1377,7 @@ namespace Gpu {
     match own returning Pair(Ctx(k, Group.warps(f, 4)), AccFull(q, m, f)) with
     | TileOwn.mk => {
       let gen := Gpu.storeRows(Gpu.state(Key.key, e), Gpu.accBuffer(ring, ring.cStage), tile.row0.expr, tile.col0.expr, out, n)
-      Pair.mk(Gpu.resume(Key.key, k, Group.warps(f, 4), gen), full)
+      (Gpu.resume(Key.key, k, Group.warps(f, 4), gen), full)
     }
   }
 
@@ -1416,7 +1388,7 @@ namespace Gpu {
     | AccFull.mk => {
       let release := List.cons(Gpu.tcFenceBefore, List.cons(Gpu.mbarArrive(Gpu.accEmptyBar(ring, ring.cStage)),
         Gpu.advance(ring.cStage, ring.cPhase, ring.bufs)))
-      Pair.mk(Gpu.emitAll(Key.key, e, release), AccConsumerAt.mk(q, m, f))
+      (Gpu.emitAll(Key.key, e, release), AccConsumerAt.mk(q, m, f))
     }
   }
 

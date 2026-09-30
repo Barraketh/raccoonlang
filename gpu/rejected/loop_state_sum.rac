@@ -24,7 +24,7 @@ namespace T {
           match s returning Pair(Ctx(m, T.G), T.AnyTile(a)) with
           | T.AnyTile.mk st t => {
             let (e, t) := Gpu.sync1(e, t)
-            Pair.mk(e, T.AnyTile.mk(TileState.afterSync(st), t))
+            (e, T.AnyTile.mk(TileState.afterSync(st), t))
           }
         }
 

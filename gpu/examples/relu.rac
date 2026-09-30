@@ -15,20 +15,14 @@ namespace Relu {
   def kernel : Kernel :=
     Gpu.tiledKernel("relu16", DType.f32, 16, Eq.refl(Bool.true),
       fun (l: Lifetime)(e: Ctx(l, Relu.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, Relu.G) => {
-        match Gpu.gload(e, k.a, k.row, k.col) returning Ctx(l, Relu.G) with
-        | Pair.mk e x => {
-          match Gpu.reg(e, x) returning Ctx(l, Relu.G) with
-          | Pair.mk e out => {
-            let negative := fun (m: Lifetime)(e: Ctx(m, Relu.D))(s: Unit): Pair(Ctx(m, Relu.D), Unit) =>
-              Pair.mk(Gpu.set(e, out, Gpu.zero(DType.f32)), s)
-            let otherwise := fun (m: Lifetime)(e: Ctx(m, Relu.D))(s: Unit): Pair(Ctx(m, Relu.D), Unit) => Pair.mk(e, s)
-            match Gpu.branch(e, Gpu.lt(x, Gpu.zero(DType.f32)), Gpu.fixedUnit, Unit.unit, negative, otherwise) returning Ctx(l, Relu.G) with
-            | Pair.mk e s => {
-              match Gpu.get(e, out) returning Ctx(l, Relu.G) with
-              | Pair.mk e v => Gpu.gstore(e, k.c, c, v)
-            }
-          }
-        }
+        let (e, x) := Gpu.gload(e, k.a, k.row, k.col)
+        let (e, out) := Gpu.reg(e, x)
+        let negative := fun (m: Lifetime)(e: Ctx(m, Relu.D))(s: Unit): Pair(Ctx(m, Relu.D), Unit) =>
+          (Gpu.set(e, out, Gpu.zero(DType.f32)), s)
+        let otherwise := fun (m: Lifetime)(e: Ctx(m, Relu.D))(s: Unit): Pair(Ctx(m, Relu.D), Unit) => (e, s)
+        let (e, s) := Gpu.branch(e, Gpu.lt(x, Gpu.zero(DType.f32)), Gpu.fixedUnit, Unit.unit, negative, otherwise)
+        let (e, v) := Gpu.get(e, out)
+        Gpu.gstore(e, k.c, c, v)
       })
 }
 
