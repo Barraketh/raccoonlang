@@ -273,15 +273,6 @@ class EvidenceTests extends munit.FunSuite with TestSupport {
     )
   }
 
-  test("a constructor's evidence field is not yet supported") {
-    assertEquals(
-      expectOnly[EvidenceFieldUnsupported](
-        typecheckDecls("struct Box (n: Nat) : Type\n | mk (i: Nat)[h: True] : Box(n)\n")
-      ),
-      EvidenceFieldUnsupported("Box.mk", "h")
-    )
-  }
-
   test("a sealed family's constructor discharges evidence only in its module") {
     val module = "sealed inductive Permit : Prop\n | mk : Permit\n\ndef need [p: Permit]: Nat := 1\n"
     assertEquals(inside(module, "{ need() }").map(PrettyPrinter.print), Some("1"))

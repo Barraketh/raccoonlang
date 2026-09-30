@@ -30,13 +30,34 @@ object StructEta {
    * The eta view of a value at an eta-eligible structure type: the constructor's stored fields when it is already in
    * constructor form, and the virtual field projections otherwise. `None` for anything that is not at such a type.
    *
-   * This is the single statement of structure eta. A `VProof` never has a view: proof values are governed by proof
-   * irrelevance, and eligibility already excludes propositions.
+   * This is the one statement of the eta view, which conversion (`determiningFields`) and destructuring
+   * (`destructuredFields`) read too. A `VProof` never has a view: proof values are governed by proof irrelevance, and
+   * eligibility already excludes propositions.
    */
   def fields(value: Value): Option[Vector[Value]] =
     value match {
       case _: VProof => None
-      case _         => eligibleInstance(value.tpe).map { case (inst, info) => view(value, inst, info) }
+      case _ =>
+        eligibleInstance(value.tpe).map { case (inst, info) => view(value, inst, info) }
+    }
+
+  /**
+   * The eta view less its evidence fields, which conversion compares (PROOF_BY_EVALUATION §1.8): an evidence field is a
+   * proof of a proposition the other fields and the type determine, and proofs are irrelevant, so two values that
+   * differ only in one are equal. A constructor's fields are read as stored, so comparing forces no evidence field.
+   */
+  def determiningFields(value: Value): Option[Vector[Value]] =
+    value match {
+      case _: VProof => None
+      case _ =>
+        eligibleInstance(value.tpe).map { case (inst, info) =>
+          val fields = view(value, inst, info)
+          if (!info.ctorHead.hasEvidenceFields) fields
+          else
+            fields.zip(info.ctorHead.fieldBinders).collect {
+              case (field, binder) if binder.mode != BinderMode.Evidence => field
+            }
+        }
     }
 
   /**
@@ -44,14 +65,19 @@ object StructEta {
    * eligible family. The checker admits a destructuring only outside `Prop`, and there this is the eta view. But a
    * level instantiation may put a sort-polymorphic instance in `Prop` where the destructuring is evaluated, and there a
    * field's projection is a proof, canonical for its exact type, as a one-branch match's field would be, so a
-   * destructuring never blocks.
+   * destructuring never blocks. A constructor's fields are bound as stored, as a match binds them, so a destructuring
+   * forces no evidence field.
    */
   def destructuredFields(value: Value): Option[Vector[Value]] =
     anyInstance(value.tpe).map { case (inst, info) => view(value, inst, info) }
 
+  /**
+   * The eta view of `value`. A constructor's fields are read as stored, evidence unforced: a match and a destructuring
+   * bind them to locals, which force it where they are looked up, and conversion skips it.
+   */
   private def view(value: Value, inst: InductiveFamilyInstance, info: ProjectionInfo): Vector[Value] =
     value match {
-      case ConstructorForm(ctorName, stored) if ctorName == info.ctorName =>
+      case ConstructorForm.Stored(ctorName, stored) if ctorName == info.ctorName =>
         if (stored.length != info.fieldCount)
           wtf(s"Constructor $ctorName supplied ${stored.length} fields, expected ${info.fieldCount}")
         stored
@@ -68,7 +94,7 @@ object StructEta {
     if (idx < 0 || idx >= info.fieldCount)
       fail(InvalidProjection(inst.head.name, idx, s"field index is out of range (${info.fieldCount} fields)"))
     base match {
-      case ConstructorForm(ctorName, stored) if ctorName == info.ctorName =>
+      case ConstructorForm.Stored(ctorName, stored) if ctorName == info.ctorName =>
         if (stored.length != info.fieldCount)
           wtf(s"Constructor $ctorName supplied ${stored.length} fields, expected ${info.fieldCount}")
         stored(idx)

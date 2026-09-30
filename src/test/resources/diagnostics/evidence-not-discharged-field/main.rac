@@ -1,0 +1,6 @@
+struct GemmShape (m: Nat)(n: Nat) : Prop
+ | mk [mOk: Eq(Nat, m, 128)][nOk: Eq(Nat, n, 128)] : GemmShape(m, n)
+
+def gemm (m: Nat)(n: Nat)[shape: GemmShape(m, n)]: Nat := Nat.mul(m, n)
+
+{ gemm(128, 192) }

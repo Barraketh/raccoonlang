@@ -10,12 +10,18 @@ object ValueOps {
 
   def materializeEnv(env: Env, eqStore: EqStore): Env = Materialize.materializeEnv(env)(eqStore)
 
-  /** An application's stored argument, materialized, unforced evidence staying unforced. */
+  /** An application's stored argument or a local, materialized, unforced evidence staying unforced. */
   def materializeArgument(arg: Value, eqStore: EqStore): Value = Materialize.materializeArgument(arg)(eqStore)
 
   private object Materialize {
+
+    /**
+     * Each local materialized as an argument is: one bound to unforced evidence, as a destructuring binds it, stays so.
+     */
     def materializeEnv(env: Env)(implicit eqStore: EqStore): Env =
-      env.copy(locals = VectorMap.from(env.locals.iterator.map { case (ref, value) => ref -> materialize(value) }))
+      env.copy(locals = VectorMap.from(env.locals.iterator.map { case (ref, value) =>
+        ref -> materializeArgument(value)
+      }))
 
     def materialize(value: Value)(implicit eqStore: EqStore): Value = {
       if (!mayNeedMaterialization(value)) return value

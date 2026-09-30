@@ -140,12 +140,15 @@ final case class NonForcedImplicitParam(param: String, isProposition: Boolean) e
 final case class NotAProposition(binder: String, tpe: Value) extends TypeError
 
 /**
- * An application that neither supplies nor discharges the evidence binder `binder` of `callee`: `proposition` is its
- * type evaluated there, which rule 1 does not discharge for `reason` (PROOF_BY_EVALUATION §1.2).
+ * An application that neither supplies nor discharges the evidence binder `binder` of `callee` (PROOF_BY_EVALUATION
+ * §1.2). `proposition` is the one discharge failed at, as evaluated, for `reason`: the binder's type evaluated there,
+ * or, when `path` is not empty, the proposition of the evidence field that `path` reaches from it, one step per field
+ * discharged through, each named `Family.field`.
  */
 final case class EvidenceNotDischarged(
     binder: String,
     callee: String,
+    path: Vector[String],
     proposition: Value,
     reason: EvidenceNotDischarged.Reason
 ) extends TypeError
@@ -161,10 +164,19 @@ object EvidenceNotDischarged {
 
   /** The proposition's family is being checked, and its constructors are not yet declared. */
   case object Undeclared extends Reason
+
+  /**
+   * Discharging the proposition would take a rule-2 step deeper than the language's bound (Discharge.DepthBound), so it
+   * is not discharged (PROOF_BY_EVALUATION §1.9).
+   */
+  case object TooDeep extends Reason
 }
 
-/** A constructor's evidence field, which a later step supports (PROOF_BY_EVALUATION §1.8). */
-final case class EvidenceFieldUnsupported(ctor: String, field: String) extends TypeError
+/**
+ * A builtin whose own binder group binds an evidence parameter: a builtin reads its arguments as values, so it would
+ * read an erased proof nothing has forced.
+ */
+final case class BuiltinEvidence(name: String, binder: String) extends TypeError
 
 final case class ImplicitReconstructionFailed(param: String, fn: String, reason: String) extends TypeError
 

@@ -509,9 +509,9 @@ so canonicalization never builds an infinite proof value eagerly.
 A binder's mode is explicit, implicit or evidence, and it is part of its
 function type's identity: conversion compares modes binder for binder, and a
 Pi's key mixes them in. An evidence binder `[h: P]` stands in a definition's,
-lambda's or function type's telescope; a family's parameters and indices have
-none, and a constructor's evidence field is refused
-(`EvidenceFieldUnsupported`) until evidence fields are specified. Its type
+lambda's, function type's or constructor's telescope; a family's parameters
+and indices have none, and neither has a builtin's own binder group
+(`BuiltinEvidence`), since a builtin reads its arguments as values. Its type
 must be a proposition, else `NotAProposition`. It is not explicit: it is not
 among the arguments an application writes, and it is never a root of implicit
 projection.
@@ -526,16 +526,38 @@ the proposition `P′`. Then:
   proof per evidence binder, else `ArityMismatch`; each proof was synthesized
   where it stands, as an argument is, and its type must be convertible with
   `P′`;
-- otherwise `P′` is discharged by rule 1. `P′` must be an instance of an
-  inductive family whose constructors are declared; they are tried in
-  declaration order, and the first that fits is the proof. A constructor fits
-  when each of its fields, a proof field included, occurs as one of the
-  arguments of its result type, so that its value is read off `P′` at that
-  position and has the field's type there, and when its result type at `P′`'s
-  parameters and those fields is convertible with `P′`. The proof is that
-  constructor applied to them, canonicalized as every proof is. Anything else,
-  a `P′` that is not a family instance included, is `EvidenceNotDischarged`,
-  located at the application.
+- otherwise `P′` is discharged, by rule 1 or else by rule 2, below. Anything
+  neither discharges, a `P′` that is not a family instance included, is
+  `EvidenceNotDischarged`, located at the application. It shows the
+  proposition discharge failed at, as evaluated, and, when rule 2 reached it,
+  the path of evidence fields to it from `P′`, each step `Family.field`, depth
+  first in field order.
+
+**Rule 1.** `P′` is an instance of an inductive family whose constructors are
+declared; they are tried in declaration order, and the first that fits is the
+proof. A constructor fits when each of its fields, a proof field included,
+occurs as one of the arguments of its result type, so that its value is read
+off `P′` at that position and has the field's type there, and when its result
+type at `P′`'s parameters and those fields is convertible with `P′`. The proof
+is that constructor applied to them, canonicalized as every proof is.
+
+**Rule 2.** `P′` is an instance `F(ā)` of an evidence-eligible family, and no
+constructor fits rule 1. A family is evidence-eligible when it is declared in
+`Prop` (its sort is `Prop` itself, not a level that may be zero), has one
+constructor and no indices, no field type of its constructor mentions a family
+of its inductive block, and every field is an evidence field; eligibility is
+recorded when the family is checked. Each field's type, in order, is evaluated
+in the constructor's telescope with the parameters bound to `ā` and the earlier
+fields to their proofs, and discharged in turn, by either rule. The proof is the
+constructor applied to those proofs, canonicalized. The arguments `ā` may be
+anything: open, stuck, or holding functions.
+
+**The depth bound.** Discharge counts the rule-2 steps on its current path,
+from `P′` to the proposition being discharged. A proposition that a rule-2 step
+at depth greater than `N = 1024` would discharge is not discharged: the
+application is `EvidenceNotDischarged`, reporting the path and the bound. The
+bound is a constant of the language, not a flag, so whether a program checks
+does not depend on how it is run.
 
 Where each field occurs is compiled once, when the family is checked, for a
 family whose instances may be propositions; proof reconstruction reads the same
@@ -554,18 +576,39 @@ an argument, makes the constructor unfit. Proof reconstruction fabricates proof
 fields unchecked, which rule 1 never does, so a rule that accepted whatever
 reconstructs would accept `And(False, False)`. It consults no hypothesis beyond
 what `P′` holds, which it may copy into a field, and chooses nothing that proof
-irrelevance would not make unobservable. A sealed
-family's constructor is applied only where the application's module may name it
-(see [Sealing](#sealing)), since elsewhere it would build a value its module
-never built. A family of an inductive block still being checked has no
-constructors to discharge with.
+irrelevance would not make unobservable. Rule 2 is sound by induction on its
+steps: each field's proof is a proof of that field's type at `ā` and the earlier
+proofs, so the constructor applied to them is a well-typed proof of `F(ā)`, the
+one the program would write as `F.mk(…)[p1, …]`. It chooses nothing, since the
+family has one constructor, and recurses only into evidence fields, never
+guessing a data field. Under either rule a sealed family's constructor is
+applied only where the application's module may name it (see
+[Sealing](#sealing)), since elsewhere it would build a value its module never
+built; under rule 2 that holds at every step. A family of an inductive block
+still being checked has no constructors to discharge with.
 
 Discharge is local: it reads the callee's type and the application's other
 arguments, never the type the application is expected to have, so checking
-stays synthesis followed by equality. It terminates, since it evaluates one
-proposition, and for each constructor checks each parameter's and field's type
-and its result type by conversion. Its time includes the decision procedures a
-proposition calls.
+stays synthesis followed by equality. It terminates:
+
+- each rule-2 step evaluates one field's proposition, and evaluation of checked
+  terms is total (see [Termination](#termination));
+- an eligible family's constructor has finitely many fields, so each step has
+  finitely many successors;
+- no path has more than `N` rule-2 steps, so the tree of steps is finite
+  (König's lemma);
+- at each node rule 1 evaluates, for each constructor, each parameter's and
+  field's type and its result type, and compares by conversion, which
+  terminates.
+
+Nothing here orders terms, so nothing restricts rule 2's arguments. Condition 2
+of eligibility is not needed for termination either; it makes a family nested
+in its own field, which could only ever reach the bound, not eligible, so
+`inductive Loop : Prop | mk [h: Loop]` is refused at once. The bound limits
+nesting, not work: evaluation may duplicate a proposition, so a tree of depth
+`d` may have exponentially many leaves in `d`. Each step is host recursion, so
+a path of `N` steps needs a few megabytes of the checking thread's stack. Its
+time includes the decision procedures a proposition calls.
 
 Evaluation erases evidence. A checked application carries only its explicit
 arguments, and evaluating it gives each evidence binder deferred evidence: the
@@ -576,18 +619,24 @@ head, an opaque definition's say, stores it unforced among the arguments of the
 application it builds. Those two are where deferred evidence stands, and both
 force it where it is read: the environment where the local is looked up or a
 value closes over it, and the application where its arguments themselves are
-read, as a match on it or an implicit projected from it reads them. Anything else that reaches deferred evidence is a kernel bug. So a proposition is evaluated when a
-program runs only if something looks at its proof, and then the proof is exactly
-the canonical proof its proposition determines, as checking bound: erasure
-changes when a proposition is evaluated, never what a value is.
+read, as a use of them does. Anything else that reaches deferred evidence is a
+kernel bug. A match or a destructuring binds a constructor's fields as stored,
+so the local, not the match, forces an evidence field where it is looked up,
+and materializing an environment keeps it unforced; implicit projection, when a
+program runs, forces only the one argument or field it reads; and printing
+shows no evidence argument or field. So a proposition is evaluated when a
+program runs only if something looks at its proof, and then the proof is
+exactly the canonical proof its proposition determines, as checking bound:
+erasure changes when a proposition is evaluated, never what a value is.
 
-An application's evidence arguments, at its head's evidence binders, are
-determined by the rest of it. Each is a proof of its binder's proposition, its
-binder type evaluated in the head's function type's environment with the
-arguments before it bound, whether checking bound it or evaluation deferred it,
-and its dependencies are that proposition's: a canonical proof's, a discharged
-proof's whose fields are read off the proposition, and a supplied one's, which
-checking binds as the canonical proof. So:
+An application's evidence arguments, at its head's evidence binders or its
+constructor's evidence fields, are determined by the rest of it. Each is a
+proof of its binder's proposition, its binder type evaluated in the head's
+function type's environment with the arguments before it bound, whether
+checking bound it or evaluation deferred it, and its dependencies are that
+proposition's: a canonical proof's, a discharged proof's, whose fields are read
+off the proposition or are proofs of propositions evaluated from it, and a
+supplied one's, which checking binds as the canonical proof. So:
 
 - its dependencies are among the application's others: evaluation introduces no
   free variable, so they
@@ -613,6 +662,22 @@ global is asserted to have, its key and its conversion force none of its
 evidence, and printing a call reads only its explicit arguments. Evidence is told by
 binder mode: a supplied, a discharged and a deferred proof are skipped alike.
 
+**Evidence fields.** A constructor's evidence binder is an evidence field.
+Constructing is applying, so a construction discharges an evidence field, or
+takes a supplied proof, exactly as an application does its evidence argument,
+and evaluation stores deferred evidence in the constructor application it
+builds, evaluating no proposition. Its type is checked as any field type is
+(universes, kinds, positivity), may mention the family's parameters and the
+earlier fields, and forces no implicit. It is a stored proof field: a pattern
+and a destructuring bind it in its place among the stored fields, a generated
+selector returns it, and rule 1 treats it as any field. Structure eta
+compares an eligible value's fields but its evidence fields, which the others
+and the type determine, so two values that differ only in an evidence field are
+equal, and comparing them forces none; at a structure whose fields are all
+evidence, any two values are equal, as at a fieldless one. The native literal layouts have no
+evidence field, since each field of theirs is data, so packing a constructor
+application never sees deferred evidence.
+
 ## Structure eta and projections
 
 Every one-constructor family records positional field metadata. A non-Prop
@@ -632,7 +697,9 @@ Eta is a rule, not a representation invariant. At an eligible type, a value is
 definitionally equal to its constructor applied to its fields. A
 constructor-headed value exposes stored fields; a neutral value exposes virtual
 field projections. Conversion, match evaluation, destructuring, and
-structural-subterm checking all use the same eta view.
+structural-subterm checking all use the same eta view; conversion leaves out
+its evidence fields, which are proofs the other fields determine (see
+[Evidence arguments](#evidence-arguments)).
 
 A destructuring `let (x1, …, xn) := e` binds each local, transparently, to its
 field of the eta view of `e`'s value, in checking and in evaluation alike. So

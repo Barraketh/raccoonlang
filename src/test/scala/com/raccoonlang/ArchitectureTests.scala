@@ -89,7 +89,7 @@ class ArchitectureTests extends munit.FunSuite {
         "a destructured value's, before evidence is discharged with a constructor, and by implicit projection before " +
         "it reads a constructor's field",
       raw"\bSealing\.(accessible|requireAccessible)\(".r,
-      Set("TypeChecker.scala", "MatchChecker.scala", "Projection.scala")
+      Set("TypeChecker.scala", "MatchChecker.scala", "Discharge.scala", "Projection.scala")
     ),
     Rule(
       "a proof's recovery plan is read only by ProofReconstruction, the one place a proof is reconstructed",

@@ -346,7 +346,11 @@ object Projection {
     Option.when(!out.synDeps.intersects(freshIds))(out)
   }
 
-  /** Follow a compiled spec against the provided (explicit) arguments of a call. */
+  /**
+   * Follow a compiled spec against the provided (explicit) arguments of a call. A step reads the one argument or field
+   * it names, as stored, and forces only that one: evaluation projects implicits at every call, and must evaluate no
+   * proposition of an evidence argument beside it.
+   */
   def project(spec: Spec, providedArgs: Vector[Value]): Either[String, Value] = {
     if (spec.rootArgIdx >= providedArgs.length)
       return Left(s"projection root ${spec.rootArgIdx} out of range (${providedArgs.length} args)")
@@ -365,13 +369,18 @@ object Projection {
 
           case Step.SpineArg(head, idx) =>
             v match {
-              case ConstSpine(c, args) if c.name == head && idx < args.length => Right(args(idx))
+              case app: VApp if app.blockedOn.isEmpty && idx < app.storedArgs.length =>
+                app.head match {
+                  case c: VConst if c.name == head => Right(Value.forced(app.storedArgs(idx)))
+                  case _                           => Left(s"expected an application of $head, got $app")
+                }
               case other => Left(s"expected an application of $head, got $other")
             }
 
           case Step.CtorField(ctor, idx) =>
             v match {
-              case ConstructorForm(name, stored) if name == ctor && idx < stored.length => Right(stored(idx))
+              case ConstructorForm.Stored(name, stored) if name == ctor && idx < stored.length =>
+                Right(Value.forced(stored(idx)))
               case other => Left(s"expected a $ctor value, got $other")
             }
 
