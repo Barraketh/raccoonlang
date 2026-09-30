@@ -621,10 +621,14 @@ namespace Gpu {
   sealed struct Program : Type
    | mk (kernel: Kernel) : Program
 
+  // That `p`'s kernel is well formed (`Check.WellFormed`): what `render` requires, which a client's own function over
+  // programs states to forward a proof, since it cannot read the kernel itself.
+  def WellFormed (p: Program): Prop := Check.WellFormed(p.kernel)
+
   // The kernel as CUDA C++. It must be well formed (`Check.WellFormed`), which the checker discharges by evaluating
   // `Check`'s checkers on the concrete kernel where a program renders it: one with a generation error, or that breaks
   // a structural invariant, is refused with the checker's messages and never printed.
-  def render (p: Program)[ok: Check.WellFormed(p.kernel)]: String := Cuda.kernel(p.kernel)
+  def render (p: Program)[ok: Gpu.WellFormed(p)]: String := Cuda.kernel(p.kernel)
 
   // The finished kernel: its code, then any generation errors as `#error` lines, which `render` refuses.
   def finish (k: Key)(name: String)(params: List(Param))(launcher: Option(Launcher))(gen: Gen): Program :=

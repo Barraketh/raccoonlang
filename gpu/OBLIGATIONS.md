@@ -267,9 +267,11 @@ Settled in implementing layer 1 (2026-09-30):
 5. **The certificate is on `render`, not on `Program.mk`.** An evidence field on `Program.mk` would need `finish` to
    prove the certificate of a generic kernel, and the library has no idiom for inspecting a computed Bool and
    branching on its proof (a dependent if). `render` is the only path that prints a kernel, so a certificate there
-   reaches every client all the same: `render` requires `Check.WellFormed(p.kernel)`, which is discharged where a
-   program renders its concrete kernel. `finish` no longer checks I2, I4 or I5; the checkers decide them on the
-   output, and a generation error is refused by `Check.errors`.
+   reaches every client all the same: `render` requires `Gpu.WellFormed(p)`, that is `Check.WellFormed(p.kernel)`,
+   which is discharged where a program renders its concrete kernel. A client's own function over programs states
+   `Gpu.WellFormed(p)` to forward the proof, since it cannot read a program's kernel (`gpu/checks/generic_render.rac`).
+   `finish` no longer checks I2, I4 or I5; the checkers decide them on the output, and a generation error is refused
+   by `Check.errors`.
 6. **I7 and I8 wait for layer 2.** Deciding them on the output needs the AST to record which threads run each block
    (a group per block) and which shared addresses are mbarriers and in which phase of their life each operation
    uses them. Whether the AST should carry that, or layer 2's models should state them instead, is a question for
