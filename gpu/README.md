@@ -14,6 +14,7 @@ prelude. Its two sm_100a GEMMs run correctly on a B200, the persistent one at 98
 | `examples/` | Kernels that must generate code: a tiled SIMT GEMM, ReLU, TinyGEMM (a warp-specialized sm_100a GEMM), and a persistent version of it with a double-buffered accumulator |
 | `rejected/` | Programs that must be refused, each naming the diagnostic on its `// expect:` line, and `*_mutants.py` tables of one-snippet mutations of an example (run by `mutate.py`) |
 | `stub/` | Just enough of the CUDA headers for a host C++ compiler to check generated kernels, launchers and harnesses |
+| `OBLIGATIONS.md` | The library's claim, the platform assumptions it rests on, and each sealed operation's obligations: the checklist for review and for verification |
 | `harness/` | Host programs that run a generated kernel on a GPU against a CPU reference (`DESIGN.md` §7) |
 
 Generate a kernel, or check everything:
