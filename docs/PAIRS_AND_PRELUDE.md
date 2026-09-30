@@ -91,7 +91,7 @@ inductive Pair {u: Level}{v: Level}{k1: Kind}{k2: Kind}{S: Lifetime}{T: Lifetime
 An instance is at the kind and scope its components give it:
 `Pair(Tok(l), Nat)` is at `Type { kind = lin, scope = l }`,
 `Pair(Nat, Bool)` at `Type`, and `Pair(Type, Type)` at
-`Sort { level = 2 }`. Every implicit is forced from the constructor's fields,
+`Sort { level = succ(one) }`. Every implicit is forced from the constructor's fields,
 so `Pair.mk(a, b)` writes neither the types nor their kinds, levels or scopes.
 
 **2.2 Why a new family.** `Prod` is unchanged. Made kind-polymorphic, it would
@@ -160,9 +160,13 @@ constructor is written.
 **3.8 Evaluation.** Evaluation binds the names to the eta view of the
 scrutinee's value, as a one-branch match on an eta-eligible family already does.
 Such a value always has an eta view, so a destructuring never blocks. Its
-checked form therefore carries no motive, and nothing is written for one. The
-residual keeps the destructuring as one binding form, and the printer prints it
-as written. Structural descent reads the same eta view, so a destructured name
+checked form therefore carries no motive, and nothing is written for one. Where
+evaluation instantiates a level-polymorphic instance's levels to zero, putting it
+in `Prop`, each name is bound to its field's canonical projection, which for such
+an instance is a proof, so a destructuring still never blocks. The residual keeps
+the destructuring as binding forms (a nested pattern as a destructuring into an
+anonymous local followed by a destructuring of it), and the printer folds them
+back and prints the pattern as written. Structural descent reads the same eta view, so a destructured name
 is a subterm of its scrutinee exactly as a one-branch match's field is.
 
 **3.9 Example.** One K step of the spike's SGEMM (`gpu/examples/gemm.rac`), 50
@@ -187,16 +191,27 @@ Gpu.sync2(e, ta, tb)
 Term ::= ... | ( e , e )
 ```
 
-`(a, b)` is `_root_.Pair.mk(a, b)`, resolved from the root, so no local,
-namespace or open named `Pair` changes what it means. It is checked as that
-application, and its type is local: `Pair.mk` forces its implicits from the
-components' types. Where the active prelude declares no `Pair.mk`, the
-expression is `NotFound`.
+`(a, b)` is the active prelude's `Pair.mk(a, b)`, looked up among the prelude's
+names before any of the program's, so no local, namespace, open or declaration
+of the program named `Pair` changes what it means. (A program cannot redeclare a
+prelude name, so where the prelude declares `Pair.mk` this is
+`_root_.Pair.mk(a, b)`.) It is checked as that application, and its type is
+local: `Pair.mk` forces its implicits from the components' types. Where the
+active prelude declares no `Pair.mk`, the expression is `NotFound`. Within a
+prelude, a pair expression names the `Pair.mk` that prelude has declared so far.
 
 **4.2 Arity.** A pair expression has exactly two components. `(a, b, c)` is a
 parse error, and `(a, (b, c))` is written instead; `(e)` stays a parenthesized
 term. There is no pair type syntax: a type is written `Pair(A, B)`, since `(`
-in a type position begins a binder group.
+in a type position begins a binder group, and a pair where a type stands is the
+parse error "There is no pair type syntax". An argument of an application is a
+term, in a type too, so `Eq(Pair(Nat, Nat), p, (1, 2))` is a type.
+
+**4.3 Arguments follow without a space.** A term followed on its line by spaces
+and then `(` is a parse error: that `(` would otherwise begin another item, a
+block's result or the program's, as a pair or a parenthesized term, so `f (a, b)`
+quietly meant `f` and then a pair. The printer prints `Pair.mk(a, b)` as that
+application; printing it as `(a, b)` is left open.
 
 ## 5. Native Nat operations on a non-literal argument
 
@@ -304,6 +319,14 @@ those:
    so the limit was lowered to keep §5's purpose.
 5. **Inventory, not a flag.** §1.4 makes the trusted surface visible in review.
    A CLI flag printing a custom prelude's inventory is deferred.
+6. **Decided during implementation, for ratification.** §3.2 was implemented
+   literally (outside `Prop` where checked; a level-polymorphic instance may land
+   in `Prop` at evaluation, §3.8), after a first cut refused any instance whose
+   level may be zero. §4.1's lookup is the prelude's names, which differs from a
+   literal root lookup only for a program declaring its own root `Pair.mk` under a
+   prelude without one (`NotFound`). Pairs are allowed among a type's arguments
+   (§4.2), and §4.3's no-space rule was added after review found `f (1, 2)`
+   silently parsing as two items.
 
 ## 9. Notation
 
