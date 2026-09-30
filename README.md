@@ -99,11 +99,19 @@ Other CLI options are:
 --wait-for-enter   pause after JVM startup
 --json             print diagnostics as JSON on stdout, and nothing else
 --raw              print a String result as its characters, and nothing else
+--stack <size>     the stack checking and evaluation run on (default 256m)
 ```
 
 Checking reports every independent error a program has, not only the first. A
 declaration that uses one that failed is skipped rather than reported again, and
 the program's final expression is evaluated only when there are no errors.
+
+Loading, checking, evaluation and printing run on a thread whose stack is
+`--stack` bytes, 256MB unless it is given. A size is a positive whole number of
+bytes, or of KiB, MiB or GiB with the suffix `k`, `m` or `g` in either case, as
+for `-Xss`: `512k`, `256m`, `1g`. A declaration whose checking exhausts that
+stack, or a final expression whose evaluation does, is `EvaluationTooDeep`
+there, and checking stops: no later declaration is checked.
 
 With `--json`, stdout carries a single JSON array and nothing else — no progress
 log and no program result — so a tool can read it directly:

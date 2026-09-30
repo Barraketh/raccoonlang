@@ -1,0 +1,5 @@
+
+<root>/main.rac:7:1: error: Evaluation is too deep: it exhausted the stack, whose size the command line sets with --stack
+def deep : Eq(Nat, count(1000000), 1000000) := Eq.refl(1000000)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: in definition deep

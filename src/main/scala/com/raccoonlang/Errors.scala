@@ -4,7 +4,7 @@ import java.nio.file.Path
 import scala.util.control.NoStackTrace
 
 /** What went wrong, as plain data: no location, not throwable. `Diagnostic` carries it. */
-sealed trait TypeError
+sealed trait TypeError extends Product with Serializable
 
 /** How the checker reached a failure; appended by the boundary that knows it. */
 sealed trait Frame
@@ -87,6 +87,13 @@ final case class StringLiteralUnavailable(reason: String) extends TypeError
 final case class NativeOperationDeclarationMismatch(name: String, reason: String) extends TypeError
 
 final case class NativeOperationLimitExceeded(operation: String, argument: BigInt, limit: BigInt) extends TypeError
+
+/**
+ * Checking a declaration, or checking and evaluating the program's body, exhausted the host stack (PROOF_BY_EVALUATION
+ * §2.5). It is located at the declaration or the body, and checking stops there: an overflow can unwind past the
+ * restoration of the checker's state, so nothing after it is checked.
+ */
+case object EvaluationTooDeep extends TypeError
 
 final case class AmbiguousName(name: String, candidates: Vector[String]) extends TypeError
 

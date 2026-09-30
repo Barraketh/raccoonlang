@@ -551,7 +551,9 @@ object Interpreter {
 
   /**
    * The per-declaration boundary: locates what happens between a declaration's terms (name collisions, block layout,
-   * bootstrap privilege) and appends the outermost context frame.
+   * bootstrap privilege) and appends the outermost context frame. It is where a host stack overflow in the
+   * declaration's checking becomes `EvaluationTooDeep`, located at the whole declaration (PROOF_BY_EVALUATION §2.5): no
+   * boundary inside a declaration catches one.
    *
    * `trusted` is the one bootstrap privilege: a prelude may declare builtin bodies, the native Nat operations and
    * axioms (spec §7.3). A program cannot, so nothing it declares can acquire kernel semantics it did not write, nor
@@ -560,59 +562,61 @@ object Interpreter {
   private[raccoonlang] def evalDecl(decl: Decl, env: Env, trusted: Boolean): Env =
     framed(Frame.InDefinition(decl.label)) {
       at(decl.span) {
-        decl match {
-          case Decl.ConstDecl(isOpaque, name, ty, body, sealedBy, _) =>
-            val installed = body match {
-              case CoreAst.ConstBody.Builtin(_) =>
-                if (isOpaque) wtf("Builtin declarations cannot be opaque")
-                if (!trusted) fail(ReservedKernelName(name))
-                val tyV = TypeChecker.checkDeclType(ty, env).value
-                env.putGlobal(name, publishedValue(Builtins.instantiate(name, tyV), tyV))
+        try
+          decl match {
+            case Decl.ConstDecl(isOpaque, name, ty, body, sealedBy, _) =>
+              val installed = body match {
+                case CoreAst.ConstBody.Builtin(_) =>
+                  if (isOpaque) wtf("Builtin declarations cannot be opaque")
+                  if (!trusted) fail(ReservedKernelName(name))
+                  val tyV = TypeChecker.checkDeclType(ty, env).value
+                  env.putGlobal(name, publishedValue(Builtins.instantiate(name, tyV), tyV))
 
-              case CoreAst.ConstBody.TermBody(term) =>
-                val checkedTy = TypeChecker.checkDeclType(ty, env).value
-                // A global is never tracked, so none may be linear (spec §3.2).
-                if (Linearity.isLinear(checkedTy)) at(ty.span)(fail(LinearGlobal(Some(name), checkedTy)))
-                val checked = TypeChecker.checkTerm(term, checkedTy, env)
-                val value = if (isOpaque) VConst(name, Symbol, checkedTy) else checked.value
-                val published =
-                  if (trusted && Packed.opNames(name)) Packed.nativeOp(name, value, env)
-                  else publishedValue(value, checkedTy)
-                env.putGlobal(name, published)
-            }
-            // A sealed family's selectors are kept to its module, as its constructors are (spec §7.1).
-            sealedBy.fold(installed)(installed.sealMember(name, _))
-
-          case Decl.AxiomDecl(name, ty, _) =>
-            if (!trusted) fail(UntrustedAxiom(name))
-            val tyV = TypeChecker.checkDeclType(ty, env).value
-            env.putGlobal(name, publishedValue(VConst(name, Symbol, tyV), tyV))
-
-          case d: Decl.InductiveDecl =>
-            InductiveChecks.evalInductiveBlock(Decl.InductiveBlock(Vector(d), d.span), env)
-
-          case b: Decl.InductiveBlock => InductiveChecks.evalInductiveBlock(b, env)
-
-          case b: Decl.RecursiveDefBlock =>
-            b.definitions.foreach { definition =>
-              // One member of a group: more precise than the group's own span.
-              at(definition.span) {
-                if (env.globals.contains(definition.name)) fail(AlreadyDefined(definition.name))
-                if (definition.name == "_") wtf("Wildcards not allowed in global names")
+                case CoreAst.ConstBody.TermBody(term) =>
+                  val checkedTy = TypeChecker.checkDeclType(ty, env).value
+                  // A global is never tracked, so none may be linear (spec §3.2).
+                  if (Linearity.isLinear(checkedTy)) at(ty.span)(fail(LinearGlobal(Some(name), checkedTy)))
+                  val checked = TypeChecker.checkTerm(term, checkedTy, env)
+                  val value = if (isOpaque) VConst(name, Symbol, checkedTy) else checked.value
+                  val published =
+                    if (trusted && Packed.opNames(name)) Packed.nativeOp(name, value, env)
+                    else publishedValue(value, checkedTy)
+                  env.putGlobal(name, published)
               }
-            }
-            val checked = TypeChecker.checkRecursiveDefBlock(b, env)
-            env.putRecursiveGroup(
-              checked.map(_.name),
-              groupEnv =>
-                checked.map { definition =>
-                  evalLam(definition.residual, definition.vpi, groupEnv) match {
-                    case lambda: VLam => lambda
-                    case other        => wtf(s"Checked recursive definition ${definition.name} produced $other")
-                  }
+              // A sealed family's selectors are kept to its module, as its constructors are (spec §7.1).
+              sealedBy.fold(installed)(installed.sealMember(name, _))
+
+            case Decl.AxiomDecl(name, ty, _) =>
+              if (!trusted) fail(UntrustedAxiom(name))
+              val tyV = TypeChecker.checkDeclType(ty, env).value
+              env.putGlobal(name, publishedValue(VConst(name, Symbol, tyV), tyV))
+
+            case d: Decl.InductiveDecl =>
+              InductiveChecks.evalInductiveBlock(Decl.InductiveBlock(Vector(d), d.span), env)
+
+            case b: Decl.InductiveBlock => InductiveChecks.evalInductiveBlock(b, env)
+
+            case b: Decl.RecursiveDefBlock =>
+              b.definitions.foreach { definition =>
+                // One member of a group: more precise than the group's own span.
+                at(definition.span) {
+                  if (env.globals.contains(definition.name)) fail(AlreadyDefined(definition.name))
+                  if (definition.name == "_") wtf("Wildcards not allowed in global names")
                 }
-            )
-        }
+              }
+              val checked = TypeChecker.checkRecursiveDefBlock(b, env)
+              env.putRecursiveGroup(
+                checked.map(_.name),
+                groupEnv =>
+                  checked.map { definition =>
+                    evalLam(definition.residual, definition.vpi, groupEnv) match {
+                      case lambda: VLam => lambda
+                      case other        => wtf(s"Checked recursive definition ${definition.name} produced $other")
+                    }
+                  }
+              )
+          }
+        catch { case _: StackOverflowError => fail(EvaluationTooDeep) }
       }
     }
 

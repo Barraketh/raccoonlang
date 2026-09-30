@@ -1,0 +1,9 @@
+def count (n: Nat): Nat decreases structural(n) := {
+  match n returning Nat with
+  | Nat.zero => Nat.zero
+  | Nat.succ k => Nat.succ(count(k))
+}
+
+def deep : Eq(Nat, count(1000000), 1000000) := Eq.refl(1000000)
+
+{ count(3) }

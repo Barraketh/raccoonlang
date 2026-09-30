@@ -5,6 +5,8 @@ import com.raccoonlang.CoreAst.{Decl, Term}
 import java.nio.file.{Files, Path, Paths}
 import scala.jdk.CollectionConverters._
 
+import NodeIdentityTests.Residuals
+
 /**
  * A Pi's, lambda's, match's or `scope` term's node identity is a field of its own, and the keys built from it decide
  * conversion and name atoms (docs/kernel.md#value-identity). So two nodes may share an identity only when one is the
@@ -122,23 +124,39 @@ class NodeIdentityTests extends munit.FunSuite {
         }
     }
 
-  /** A program's residuals, declaration by declaration, up to its first failure: a fixture may exist to fail. */
-  private def programResiduals(program: CoreAst.Program, initial: Env, trusted: Boolean): Vector[(Term, Term)] = {
+  /**
+   * A program's residuals, declaration by declaration, up to its first failure: a fixture may exist to fail, and one
+   * does by exhausting the stack, which the terms checked here outside a declaration's boundary meet as an overflow. So
+   * each program is checked on a thread of its own, which ends with the failure, and the caller is told of it.
+   */
+  private def programResiduals(program: CoreAst.Program, initial: Env, trusted: Boolean): Residuals = {
     val found = Vector.newBuilder[(Term, Term)]
-    try {
-      val env = program.decls.foldLeft(initial) { (env, decl) =>
-        found ++= residuals(decl, env)
-        Interpreter.evalDecl(decl, env, trusted)
+    var checking = "the program's body"
+    var overflowedIn = Option.empty[String]
+    Execution.onStack(TestSupport.FixtureStack) {
+      try {
+        val env = program.decls.foldLeft(initial) { (env, decl) =>
+          checking = decl.label
+          found ++= residuals(decl, env)
+          Interpreter.evalDecl(decl, env, trusted)
+        }
+        checking = "the program's body"
+        program.body.foreach(body => found += body -> TypeChecker.checkTerm(body, env).residual)
+      } catch {
+        case _: Diagnostic         =>
+        case _: StackOverflowError => overflowedIn = Some(checking)
       }
-      program.body.foreach(body => found += body -> TypeChecker.checkTerm(body, env).residual)
-    } catch { case _: Diagnostic => }
-    found.result()
+    }
+    Residuals(found.result(), overflowedIn)
   }
 
   test("every residual node keeps the identity of the node it rebuilds") {
-    val pairs =
-      preludes.flatMap(programResiduals(_, Interpreter.preludeInitialEnv, trusted = true)) ++
-        programs.flatMap(programResiduals(_, Prelude.default.checkedEnv, trusted = false))
+    val checked =
+      preludes.map(programResiduals(_, Interpreter.preludeInitialEnv, trusted = true)) ++
+        programs.map(programResiduals(_, Prelude.default.checkedEnv, trusted = false))
+    // Only the `evaluation-too-deep` fixture's declaration, built to, exhausts the stack.
+    assertEquals(checked.flatMap(_.overflowedIn), Vector("deep"))
+    val pairs = checked.flatMap(_.pairs)
     val compared = pairs.flatMap(pair => identityNodes(pair._2)).length
     assert(compared > 500, s"only $compared residual nodes were compared")
     assertEquals(pairs.flatMap { case (source, residual) => rebuildMismatches(source, residual) }, Vector.empty[String])
@@ -170,4 +188,10 @@ class NodeIdentityTests extends munit.FunSuite {
     assertNotEquals(checkedDomain.value.key, checkedOuter.value.key)
     assert(!ValueEquivalence.defEq(checkedDomain.value, checkedOuter.value))
   }
+}
+
+object NodeIdentityTests {
+
+  /** A program's residuals, and the declaration whose checking exhausted the stack, if one did. */
+  private final case class Residuals(pairs: Vector[(Term, Term)], overflowedIn: Option[String])
 }

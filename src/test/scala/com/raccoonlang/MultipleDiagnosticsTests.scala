@@ -97,7 +97,7 @@ class MultipleDiagnosticsTests extends munit.FunSuite with TestSupport {
     // One report for the whole family, named after the family rather than the constructor that broke it,
     // and nothing for the declaration that names a constructor the family never published.
     assertEquals(definitionsNamed(diagnostics), Vector("Bad", "independent"))
-    assertEquals(diagnostics.head.error.getClass.getSimpleName, "InvalidConstructorResult")
+    assertEquals(diagnostics.head.error.productPrefix, "InvalidConstructorResult")
   }
 
   test("a mutual recursive block fails as one unit") {
