@@ -729,8 +729,43 @@ namespace Check {
 
   def declares (ps: List(Param))(p: Param): Bool := List.any(ps, fun (q: Param): Bool => Check.sameParam(q, p))
 
-  def count (maps: List(MapEncoding))(name: String): Nat :=
-    List.foldl(maps, Nat, 0, fun (n: Nat)(m: MapEncoding): Nat => Bool.cond(Check.same(m.param, name), Nat, Nat.succ(n), n))
+  // How many of `maps` encode `name`.
+  def count (maps: List(MapEncoding))(name: String): Nat decreases structural(maps) := {
+    match maps returning Nat with
+    | List.nil => 0
+    | List.cons m more => Bool.cond(Check.same(m.param, name), Nat, Nat.succ(Check.count(more, name)), Check.count(more, name))
+  }
+
+  // The names of the tensor maps among `ps`.
+  def mapParams (ps: List(Param)): List(String) :=
+    List.foldr(ps, List(String), List.nil(String), fun (p: Param)(rest: List(String)): List(String) =>
+      Option.elim(Check.tensorMapName(p), List(String), rest, fun (n: String): List(String) => List.cons(n, rest)))
+
+  // A kernel's parameter, which launcher `l` must declare as the kernel does, or, a tensor map, encode once.
+  def passedStep (l: Launcher): List(String) -> Param -> List(String) := fun (found: List(String))(p: Param): List(String) => {
+    match Check.tensorMapName(p) returning List(String) with
+    | Option.none => Check.unless(found, Check.declares(l.params, p), fun (u: Unit): String =>
+      Text.cat3("launcher: does not declare the kernel's parameter ", Cuda.paramName(p), " as the kernel does"))
+    | Option.some name => {
+      let n := Check.count(l.maps, name)
+      Check.unless(found, Nat.beq(n, 1), fun (u: Unit): String =>
+        Text.cat3("launcher: tensor map ", name, Text.cat3(" has ", Text.nat(n), " encodings, not one")))
+    }
+  }
+
+  // A tensor-map encoding of launcher `l`, which must name one of `kernelMaps` and read the launcher's own parameters.
+  def encodingStep (l: Launcher)(kernelMaps: List(String)): List(String) -> MapEncoding -> List(String) :=
+    fun (found: List(String))(m: MapEncoding): List(String) => {
+      let what := Text.cat3("launcher: the encoding of ", m.param, " ")
+      let named := Check.unless(found, Check.mentions(kernelMaps, m.param), fun (u: Unit): String =>
+        Text.cat(what, "names no tensor map of the kernel"))
+      let source := Check.unless(named, Check.declares(l.params, Param.input(DType.bf16, m.source)), fun (u: Unit): String =>
+        Text.cat3(what, "reads ", Text.cat(m.source, ", not a bf16 input of the launcher")))
+      let rows := Check.unless(source, Check.declares(l.params, Param.scalar(DType.u32, m.rows)), fun (u: Unit): String =>
+        Text.cat3(what, "takes rows from ", Text.cat(m.rows, ", not a u32 scalar of the launcher")))
+      Check.unless(rows, Check.declares(l.params, Param.scalar(DType.u32, m.cols)), fun (u: Unit): String =>
+        Text.cat3(what, "takes columns from ", Text.cat(m.cols, ", not a u32 scalar of the launcher")))
+    }
 
   // I6, the launcher, as far as the AST shows it: it passes the kernel's parameters by name, in the kernel's order (as
   // the printer does), so it declares each one that is not a tensor map exactly as the kernel does, and encodes each
@@ -739,29 +774,8 @@ namespace Check {
     match k.launcher returning List(String) with
     | Option.none => List.nil(String)
     | Option.some l => {
-      let passed := List.foldl(k.params, List(String), List.nil(String), fun (found: List(String))(p: Param): List(String) => {
-        match Check.tensorMapName(p) returning List(String) with
-        | Option.none => Check.unless(found, Check.declares(l.params, p), fun (u: Unit): String =>
-          Text.cat3("launcher: does not declare the kernel's parameter ", Cuda.paramName(p), " as the kernel does"))
-        | Option.some name => {
-          let n := Check.count(l.maps, name)
-          Check.unless(found, Nat.beq(n, 1), fun (u: Unit): String =>
-            Text.cat3("launcher: tensor map ", name, Text.cat3(" has ", Text.nat(n), " encodings, not one")))
-        }
-      })
-      let kernelMaps := List.foldr(k.params, List(String), List.nil(String), fun (p: Param)(rest: List(String)): List(String) =>
-        Option.elim(Check.tensorMapName(p), List(String), rest, fun (n: String): List(String) => List.cons(n, rest)))
-      Check.inOrder(List.foldl(l.maps, List(String), passed, fun (found: List(String))(m: MapEncoding): List(String) => {
-        let what := Text.cat3("launcher: the encoding of ", m.param, " ")
-        let named := Check.unless(found, Check.mentions(kernelMaps, m.param), fun (u: Unit): String =>
-          Text.cat(what, "names no tensor map of the kernel"))
-        let source := Check.unless(named, Check.declares(l.params, Param.input(DType.bf16, m.source)), fun (u: Unit): String =>
-          Text.cat3(what, "reads ", Text.cat(m.source, ", not a bf16 input of the launcher")))
-        let rows := Check.unless(source, Check.declares(l.params, Param.scalar(DType.u32, m.rows)), fun (u: Unit): String =>
-          Text.cat3(what, "takes rows from ", Text.cat(m.rows, ", not a u32 scalar of the launcher")))
-        Check.unless(rows, Check.declares(l.params, Param.scalar(DType.u32, m.cols)), fun (u: Unit): String =>
-          Text.cat3(what, "takes columns from ", Text.cat(m.cols, ", not a u32 scalar of the launcher")))
-      }))
+      let passed := List.foldl(k.params, List(String), List.nil(String), Check.passedStep(l))
+      Check.inOrder(List.foldl(l.maps, List(String), passed, Check.encodingStep(l, Check.mapParams(k.params))))
     }
   }
 

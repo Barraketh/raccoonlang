@@ -18,6 +18,7 @@ Line counts are of the files as committed, comments included.
 | I3 `namedBarriers` | `NamedBarriers`, `BarrierIds`, `BarrierCounts`, `Barrier`, `LiteralOperands`, 29 lines | `Barriers.rac` | 273 | proved |
 | I4 `literals` | `Literals`, `Lit32`, `Lit64`, 25 lines | `Literals.rac` | 108 | proved |
 | I5 `names` | `Names`, `Chosen`, `CIdent`, `PrinterName`, `Declared`, `Twice`, …, 60 lines | `Names.rac` | 266 | proved |
+| I6 `launcher` | `LauncherOk`, `Launched`, `NotMap`, 19 lines | `Launcher.rac` | 327 | proved |
 
 ## The shape of every proof
 
@@ -77,6 +78,16 @@ The checker's steps were named (`barrierStep`), and the decisions it matched on 
 (`isBarrier`, `args`), so the lemmas case on variables (F2). The sets of ids needed a change of representation,
 next.
 
+**I6, the launcher.** Spec: for a kernel with launcher `l`, every parameter of the kernel that is `NotMap` is a `Mem`
+of `l.params` (the same constructor, element type and name); every `tensorMap(name)` of the kernel is among the
+encodings' names and not `Twice` there; and every encoding names a `tensorMap` of the kernel and reads
+`input(bf16, source)`, `scalar(u32, rows)` and `scalar(u32, cols)` of the launcher. Its size is in Bool reflection:
+`Check.sameParam` sound (a 4 × 4 case split, 12 arms impossible), `Check.sameType` sound (through an inverse of
+`typeIndex`, which saves a 5 × 5 split), `Check.declares` sound, and `Check.count` against `Mem` and `Twice` (lower
+bounds with `Nat.ble`, since `count = 1` is what the checker tests). `Check.count` was a `List.foldl` with a `Nat`
+accumulator; it became a direct recursion, so the bounds are proved by induction on the maps without a lemma relating
+the accumulator to the prefix walked.
+
 **`Check.NatSet`.** The trie branched on `Nat.isZero(Nat.mod(m, 2))` and recursed on `Nat.div(m, 2)`, and a node held
 a Bool. Its soundness (a member was inserted) then rests on distinct numbers having distinct paths, which is
 arithmetic about the prelude's `Nat.div` (a `divFuel` recursion) and `Nat.mod` (`a - (a / b) * b`) that no library
@@ -112,6 +123,7 @@ Written here because Raccoon's prelude has none of them:
 - **`List.foldl` over `List.append`** (`Fold.foldlAppend`), and **fold fusion** for the AST (`Fold.stmtFusion`,
   `blockFusion`): a derived traversal is a fold over a flattening. `Option.some` injectivity (`Barriers.someInj`,
   copied from the prelude's `Nat.succInj` idiom), `Nat.isZero` soundness (`Barriers.isZeroSound`).
+- **`Nat.ble` monotone in its second argument** (`Launch.bleSucc`).
 - **`Eq` transport**: never needed as a lemma, since matching an equation proof rewrites the goal and every
   hypothesis (finding P1).
 
@@ -301,6 +313,12 @@ fun (n: String): Not(Spec.Twice(String, n, names)) => fun (twice: Spec.Twice(Str
 
 The message is clear once one knows the rule; the rule itself (grouping is part of a type's identity) is the cost.
 *Feature:* none for the kernel; an `intro`-style tactic would hide it.
+
+### F10. A namespace's name shadows the type it is about
+
+A proof module about launchers cannot be `namespace Launcher`: inside it, `Launcher` resolves to the namespace
+before the opened `Cuda.Launcher`, and a binder `(l: Launcher)` is `Launcher not found`; renamed `Launch`. Similarly
+`indices` is a keyword, so `let indices := …` is a parse error (`Failed to parse pattern`).
 
 ### F9. Declaring an inductive whose field applies `Nat.mod` to a variable takes exponential time
 
