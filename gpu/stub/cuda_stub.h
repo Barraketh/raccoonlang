@@ -7,6 +7,8 @@
 #include <cmath>
 #define __global__
 #define __device__
+#define __host__
+#define __launch_bounds__(...)
 #define __shared__
 #define __restrict__
 #define __grid_constant__
@@ -18,6 +20,10 @@ void __syncthreads();
 void __syncwarp();
 unsigned __shfl_sync(unsigned mask, unsigned value, int lane);
 unsigned long long __cvta_generic_to_shared(const void *p);
+long long clock64();
+void __trap();
+void __threadfence_system();
+struct uint4 { unsigned x, y, z, w; };
 using std::max;
 template <class... T> void gpu_asm_out(T &...);
 template <class... T> void gpu_asm_in(const T &...);

@@ -42,6 +42,18 @@ for h in "$here"/harness/*.cu; do
     echo "FAIL $(basename "$h") does not compile"; status=1
   else echo "ok   harness/$(basename "$h")"; fi
 done
+# So are the hardware probes, whose shared header's inline assembly is rewritten as a generated kernel's is.
+if command -v clang++ >/dev/null; then
+  probes=$(mktemp -d)
+  python3 "$here/stub/asm_calls.py" < "$here/probes/probe.h" > "$probes/probe.h"
+  for p in "$here"/probes/*.cu; do
+    cp "$p" "$probes/"
+    if clang++ -std=c++17 -fsyntax-only -Wall -Werror -I "$here/stub" -include "$here/stub/cuda_stub.h" -x c++ \
+        "$probes/$(basename "$p")"; then echo "ok   probes/$(basename "$p")"
+    else echo "FAIL probes/$(basename "$p") does not compile"; status=1; fi
+  done
+  rm -r "$probes"
+fi
 for t in "$here"/rejected/*_mutants.py; do
   python3 "$here/mutate.py" "$t" || status=1
 done

@@ -21,6 +21,7 @@ prelude. Its two sm_100a GEMMs ran correctly on a B200, the persistent one at 98
 | `OBLIGATIONS.md` | The library's claim, the platform assumptions it rests on, and each sealed operation's obligations: the checklist for review and for verification |
 | `REFERENCE_CUTLASS.md` | How CUTLASS's sm100 GEMM, the performance reference, differs from ours, what that means for the discipline, and the commands to benchmark it |
 | `harness/` | Host programs that run a generated kernel on a GPU against a CPU reference (`DESIGN.md` §7) |
+| `probes/` | Hand-written CUDA probes that settle hardware questions of the attention design (`ATTENTION.md` §4.4: H1–H3, H5), and `run.sh`, which builds and runs them |
 
 Generate a kernel, or check everything:
 
