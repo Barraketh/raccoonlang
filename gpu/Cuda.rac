@@ -255,6 +255,26 @@ namespace Cuda {
     | Param.tensorMap n => Text.cat("const __grid_constant__ CUtensorMap ", n)
   }
 
+  // A host function's parameter: as the kernel's, without `__restrict__`, which means nothing on the host and would
+  // stop `&p` converting to `void*` for the launch's argument array.
+  def hostParam (p: Param): String := {
+    match p returning String with
+    | Param.input t n => Text.cat3("const ", Cuda.dtype(t), Text.cat("* ", n))
+    | Param.output t n => Text.cat3(Cuda.dtype(t), "* ", n)
+    | Param.scalar t n => Text.cat3(Cuda.dtype(t), " ", n)
+    | Param.tensorMap n => Text.cat("CUtensorMap ", n)
+  }
+
+  def hostParams (ps: List(Param)): String decreases structural(ps) := {
+    match ps returning String with
+    | List.nil => ""
+    | List.cons p more => {
+      match more returning String with
+      | List.nil => Cuda.hostParam(p)
+      | List.cons q rest => Text.cat3(Cuda.hostParam(p), ", ", Cuda.hostParams(more))
+    }
+  }
+
   def params (ps: List(Param)): String decreases structural(ps) := {
     match ps returning String with
     | List.nil => ""
@@ -359,7 +379,7 @@ namespace Cuda {
   def launcher (name: String)(kernelParams: List(Param))(bytes: Nat)(l: Launcher): String := {
     let (ps, requires, maps, grid, block) := l
     let entry := Text.cat3("reinterpret_cast<const void*>(", name, ")")
-    let head := Text.cat3("extern \"C\" cudaError_t ", name, Text.cat3("_launch(", Cuda.params(ps), ", cudaStream_t stream) {"))
+    let head := Text.cat3("extern \"C\" cudaError_t ", name, Text.cat3("_launch(", Cuda.hostParams(ps), ", cudaStream_t stream) {"))
     let attr := Text.cat3("const cudaError_t status = cudaFuncSetAttribute(", entry,
       Text.cat3(", cudaFuncAttributeMaxDynamicSharedMemorySize, ", Text.nat(bytes), ");"))
     let launch := fun (dims: String): String => Cuda.line(1, Text.cat3("return cudaLaunchKernel(", entry, Text.cat3(", ", dims,

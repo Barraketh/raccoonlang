@@ -13,8 +13,8 @@
 //   What follows a branch or a loop is generated from the state one arm or one iteration returned, so that state
 //   must be `Fixed`: a type with one value, which cannot tell which arm ran or how often.
 //
-// The sm_100a operations (TMA, mbarrier, tcgen05) follow CUTLASS's inline assembly but have not been assembled by
-// ptxas here: see gpu/DESIGN.md §7.
+// The sm_100a operations (TMA, mbarrier, tcgen05) follow CUTLASS's inline assembly; gpu/DESIGN.md §7 records their
+// runs on a B200.
 
 import Cuda
 import Text

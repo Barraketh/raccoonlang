@@ -2,7 +2,8 @@
 
 A feasibility spike of a GPU library written in Raccoon: a kernel is an ordinary Raccoon program over a sealed core,
 and evaluating it builds a CUDA AST, which prints as CUDA C++. It runs on unmodified Raccoon with a custom trusted
-prelude.
+prelude. Its two sm_100a GEMMs run correctly on a B200, the persistent one at 980 TFLOP/s against cuBLAS's 2147
+(`DESIGN.md` §7).
 
 | File | Role |
 |---|---|

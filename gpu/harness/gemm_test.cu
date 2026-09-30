@@ -2,7 +2,7 @@
 // handle, and times it. Needs an sm_100a GPU. For TinyGEMM:
 //
 //   gpu/gen.sh gpu/examples/tinygemm.rac > tinygemm.cu
-//   nvcc -std=c++17 -O2 -arch=sm_100a -o tinygemm_test tinygemm.cu gpu/harness/gemm_test.cu -lcuda
+//   nvcc -std=c++17 -O2 -gencode arch=compute_100a,code=sm_100a -o tinygemm_test tinygemm.cu gpu/harness/gemm_test.cu -lcuda
 //   ./tinygemm_test
 //
 // For another kernel, name its launcher: `-DGEMM_LAUNCH=persistent_gemm_launch` for examples/persistent_gemm.rac.
