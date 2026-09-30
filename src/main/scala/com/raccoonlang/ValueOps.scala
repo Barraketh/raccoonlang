@@ -10,6 +10,9 @@ object ValueOps {
 
   def materializeEnv(env: Env, eqStore: EqStore): Env = Materialize.materializeEnv(env)(eqStore)
 
+  /** An application's stored argument, materialized, unforced evidence staying unforced. */
+  def materializeArgument(arg: Value, eqStore: EqStore): Value = Materialize.materializeArgument(arg)(eqStore)
+
   private object Materialize {
     def materializeEnv(env: Env)(implicit eqStore: EqStore): Env =
       env.copy(locals = VectorMap.from(env.locals.iterator.map { case (ref, value) => ref -> materialize(value) }))
@@ -28,9 +31,10 @@ object ValueOps {
         case sort: VSort                             => materializeClassifier(sort)
         case Var(name, id, tpe)                      => Var(name, id, materialize(tpe))
         case VConst(name, constType, tpe)            => VConst(name, constType, materialize(tpe))
-        case VApp(head, args, tpe, blockedOn) =>
+        case app: VApp =>
+          val (head, tpe, blockedOn) = (app.head, app.tpe, app.blockedOn)
           val materializedHead = materialize(head)
-          val materializedArgs = args.map(materialize(_))
+          val materializedArgs = app.storedArgs.map(materializeArgument(_))
           val materializedTpe = materialize(tpe)
           (materializedHead, blockedOn) match {
             case (h: ConstructorHead, blockers) if blockers.isEmpty =>
@@ -68,6 +72,17 @@ object ValueOps {
       Value.canonicalizeProof(rebuilt)
     }
 
+    /**
+     * An application's stored argument. Unforced evidence stays unforced, its proposition materialized when it is
+     * forced: materializing is not a use of the proof.
+     */
+    def materializeArgument(arg: Value)(implicit eqStore: EqStore): Value =
+      arg match {
+        case deferred: DeferredEvidence => deferred.map(materialize(_))
+        case other                      => materialize(other)
+      }
+
+    // Constant time: a value's dependencies are computed when it is built.
     private def mayNeedMaterialization(value: Value)(implicit eqStore: EqStore): Boolean =
       value.synDeps.intersects(eqStore.solvedIds)
 

@@ -304,5 +304,12 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
 
     val error = intercept[InternalError](ValueEquivalence.defEq(left, right))
     assert(error.getMessage.contains("ValueKey disagrees with conversion"), error.getMessage)
+
+    // As deep beneath as a hundred thousand agreeing parents, checked on the assertion's own work stack.
+    def nested(bottom: Value): Value = (1 to 100000).foldLeft(listOf(bottom))((inner, _) => listOf(inner))
+    val (deepLeft, deepRight) = (nested(toProp), nested(toType))
+    assertEquals(deepLeft.key, deepRight.key)
+    val deepError = onDefaultStack(intercept[InternalError](ValueEquivalence.defEq(deepLeft, deepRight)))
+    assert(deepError.getMessage.contains("ValueKey disagrees with conversion"), deepError.getMessage)
   }
 }

@@ -11,21 +11,29 @@ import scala.collection.immutable.BitSet
  *   - Every value is typed correctly. Types are themselves Values, and so are Sorts and Levels
  *   - synDeps is the set of all VarIds that this Value contains, including in its type. It is extremely important to
  * maintain this correctly
- *   - key - a structural hash key of this value. Lazily computed by ValueKey.orderKey(). Used by defEq
+ *   - key - a structural hash key of this value (ValueKey). Used by defEq
  *   - needsStructuralDefEq: tracks values whose key may differ even when structural equality can still succeed
+ *
+ * The three are computed when a value is built, from its own components and its children's, which were computed when
+ * they were built (docs/kernel.md#value-identity), so none of them walks a value, however deep. An application's three
+ * leave out its evidence arguments, which its head and other arguments determine (`VApp.determiningArgs`).
  */
 sealed trait Value {
   def tpe: Value
   def synDeps: DepSet
-
-  final lazy val key: ValueKey.Key = ValueKey.orderKey(this)
-  final lazy val needsStructuralDefEq: Boolean = Value.needsStructuralDefEq(this)
+  def key: ValueKey.Key
+  def needsStructuralDefEq: Boolean
 
   override def toString: String = PrettyPrinter.print(this)
 }
 
 sealed trait TopLevelValue extends Value {
   override val synDeps: DepSet = DepSet.empty
+}
+
+/** A kernel singleton: equal only to itself, it has no dependencies and needs no structural comparison. */
+sealed trait KernelSingleton extends TopLevelValue {
+  override val needsStructuralDefEq: Boolean = false
 }
 
 object Value {
@@ -55,7 +63,7 @@ object Value {
       case VLam(_, _, LamBody.Native(_, _, true)) => value
       case _ if !Sorts.isProposition(value.tpe)   => value
       // A constructor application already in canonical form keeps it.
-      case VCtor(head, _, _) if ProofReconstruction.isCanonicalConstructor(value.tpe, head) => value
+      case ConstructorApp(head) if ProofReconstruction.isCanonicalConstructor(value.tpe, head) => value
       case _ =>
         ProofReconstruction.reconstruct(value.tpe) match {
           case Some(reconstructed) =>
@@ -112,20 +120,36 @@ object Value {
       case _: VProof => false
       case v =>
         StructEta.eligibleInstance(v.tpe).exists { case (_, info) =>
-          info.fieldCount == 0 || ConstructorForm.unapply(v).nonEmpty
+          info.fieldCount == 0 || isConstructorForm(v)
         }
     }
 
+  /** Whether `ConstructorForm` answers for a value, decided without reading its fields or decoding a packed one. */
+  private def isConstructorForm(value: Value): Boolean =
+    value match {
+      case ConstructorApp(_) | _: VPacked => true
+      case _                              => false
+    }
+
+  /**
+   * Whether a key mismatch leaves an equation with this value open. Each value computes it when it is built: from its
+   * own form and type, and for an application from its head's, its determining arguments' and its type's flags, which
+   * were computed when they were built.
+   */
   private[raccoonlang] def needsStructuralDefEq(value: Value): Boolean =
     value match {
       // Tested before proofhood, which would force a function type's classifier.
       case _: VPi | _: VLam | _: NeutralThunk => true
-      case _ if isKnownProof(value)           => true
+      // Classified by a sort or a sort parameter, so neither a proof nor a structure: tested before proofhood, which
+      // would build a sort's type, a sort that would build its own in turn.
+      case _: VSort | _: Level | _: Kind | _: Lifetime | _: KernelSingleton => false
+      case _ if isKnownProof(value)                                         => true
       // A value that structure eta can decompose compares fieldwise, which no key can decide
       // (StructEta, rule 2).
       case v if etaDecomposable(v) => true
       case app: VApp =>
-        app.head.needsStructuralDefEq || app.args.exists(_.needsStructuralDefEq) || app.tpe.needsStructuralDefEq
+        app.head.needsStructuralDefEq || app.determiningArgs.exists(_.needsStructuralDefEq) ||
+        app.tpe.needsStructuralDefEq
       case p: VPacked => !p.codec.canonical
       case _          => false
     }
@@ -143,11 +167,7 @@ object Value {
     final case class LocalId(nodeId: NodeId, captures: Vector[Value]) extends ValueId
   }
 
-  private[raccoonlang] def envDeps(env: Env): DepSet = {
-    val res = DepSet.newBuilder
-    env.locals.values.foreach(value => res.unionInPlace(value.synDeps))
-    res.result()
-  }
+  private[raccoonlang] def envDeps(env: Env): DepSet = DepSet.unionAll(env.locals.valuesIterator.map(_.synDeps))
 
   /**
    * The `Var` objects occurring in `value` whose ids lie in `ids`. `synDeps` already answers *which* ids occur; this
@@ -155,7 +175,8 @@ object Value {
    * boundary in `EqStore.allowEta` asks whether each one stands at an eta-eligible struct type).
    *
    * The walk is pruned by `synDeps`: a subvalue that mentions none of `ids` is skipped whole. Each id is reported once
-   * — a `Var` is determined by its id, so the first occurrence is as good as any.
+   * — a `Var` is determined by its id, so the first occurrence is as good as any — and an application's evidence
+   * arguments are skipped as its `synDeps` skips them: any variable one holds, its head or other arguments hold.
    */
   private[raccoonlang] def varsIn(value: Value, ids: DepSet): Vector[Var] = {
     if (ids.isEmpty || !value.synDeps.intersects(ids)) return Vector.empty
@@ -173,10 +194,10 @@ object Value {
             found += x
           }
           walk(x.tpe)
-        case VApp(head, args, tpe, _) =>
-          walk(head)
-          args.foreach(walk)
-          walk(tpe)
+        case app: VApp =>
+          walk(app.head)
+          app.determiningArgs.foreach(walk)
+          walk(app.tpe)
         case NeutralThunk(_, env, id, tpe, _) =>
           walkEnv(env)
           id.captures.foreach(walk)
@@ -211,10 +232,10 @@ object Value {
   }
   object LamBody {
     final case class Core(term: CoreAst.Term.Lam, env: Env) extends LamBody {
-      override lazy val synDeps: DepSet = envDeps(env)
+      override val synDeps: DepSet = envDeps(env)
     }
     final case class Native(run: (Vector[Value], Env) => Value, env: Env, isRawRecursive: Boolean) extends LamBody {
-      override lazy val synDeps: DepSet = envDeps(env)
+      override val synDeps: DepSet = envDeps(env)
     }
 
     /** Type-directed eta expansion of a proof of Pi; its result is reconstructed from the instantiated codomain. */
@@ -228,20 +249,27 @@ object Value {
    * one is bound only at the binder sites the checker admits, and an expression of one stands only where that parameter
    * is expected.
    */
-  sealed trait ParameterTpe extends TopLevelValue {
+  sealed trait ParameterTpe extends KernelSingleton {
     final override def tpe: Value = SortParameter
   }
 
-  case object LevelTpe extends ParameterTpe
-  case object KindTpe extends ParameterTpe
-  case object LifetimeTpe extends ParameterTpe
+  case object LevelTpe extends ParameterTpe {
+    override val key: ValueKey.Key = ValueKey.levelTpe
+  }
+  case object KindTpe extends ParameterTpe {
+    override val key: ValueKey.Key = ValueKey.kindTpe
+  }
+  case object LifetimeTpe extends ParameterTpe {
+    override val key: ValueKey.Key = ValueKey.lifetimeTpe
+  }
 
   /**
    * The classifier of the sort parameters. It is not a sort, so nothing it classifies is a type; it classifies itself,
    * and no program can write it.
    */
-  case object SortParameter extends TopLevelValue {
+  case object SortParameter extends KernelSingleton {
     override def tpe: Value = SortParameter
+    override val key: ValueKey.Key = ValueKey.sortParameter
   }
 
   /**
@@ -256,8 +284,9 @@ object Value {
    * own type is large, so it is used only applied. `Large` classifies itself; nothing quantifies over it, so no
    * hierarchy above it is needed.
    */
-  case object Large extends TopLevelValue with Classifier {
+  case object Large extends KernelSingleton with Classifier {
     override def tpe: Value = Large
+    override val key: ValueKey.Key = ValueKey.large
   }
 
   // Represents max(atom1 + k1, atom2 + k2... , c), where an atom is either a level variable or an unresolved imax.
@@ -284,16 +313,21 @@ object Value {
         case _                 => false
       }
 
-    override lazy val synDeps: DepSet = {
-      val deps = DepSet.newBuilder
-      terms.keys.foreach {
-        case Level.ParamAtom(id) => deps.add(id)
-        case Level.IMaxAtom(lhs, rhs) =>
-          deps.unionInPlace(lhs.synDeps)
-          deps.unionInPlace(rhs.synDeps)
+    override val synDeps: DepSet =
+      if (terms.isEmpty) DepSet.empty
+      else {
+        val deps = DepSet.newBuilder
+        terms.keys.foreach {
+          case Level.ParamAtom(id) => deps.add(id)
+          case Level.IMaxAtom(lhs, rhs) =>
+            deps.unionInPlace(lhs.synDeps)
+            deps.unionInPlace(rhs.synDeps)
+        }
+        deps.result()
       }
-      deps.result()
-    }
+
+    override val key: ValueKey.Key = ValueKey.level(terms, c)
+    override val needsStructuralDefEq: Boolean = Value.needsStructuralDefEq(this)
 
     override def equals(obj: Any): Boolean =
       obj match {
@@ -451,6 +485,11 @@ object Value {
 
     private val cachedHashCode: Int = 31 * vars.hashCode() + isLin.hashCode()
 
+    // Its variable set's key, hashed by a loop when first read, as a packed payload's is: a join builds a kind for each
+    // set it adds, and hashing each as it is built would make a join of many quadratic.
+    override lazy val key: ValueKey.Key = ValueKey.kind(isLin, vars)
+    override val needsStructuralDefEq: Boolean = Value.needsStructuralDefEq(this)
+
     override def equals(obj: Any): Boolean =
       obj match {
         case other: Kind => cachedHashCode == other.cachedHashCode && isLin == other.isLin && vars == other.vars
@@ -505,6 +544,10 @@ object Value {
 
     private val cachedHashCode: Int = vars.hashCode()
 
+    // Hashed when first read, as a kind's is.
+    override lazy val key: ValueKey.Key = ValueKey.lifetime(vars)
+    override val needsStructuralDefEq: Boolean = Value.needsStructuralDefEq(this)
+
     override def equals(obj: Any): Boolean =
       obj match {
         case other: Lifetime => cachedHashCode == other.cachedHashCode && vars == other.vars
@@ -545,7 +588,9 @@ object Value {
   final class VSort private[raccoonlang] (val level: Level, val kind: Kind, val scope: Lifetime) extends Classifier {
     override lazy val tpe: Value = Sorts.sort(Level.succ(level), Kind.unr, scope)
 
-    override lazy val synDeps: DepSet = level.synDeps ++ kind.synDeps ++ scope.synDeps
+    override val synDeps: DepSet = DepSet.unionAll(Iterator(level.synDeps, kind.synDeps, scope.synDeps))
+    override val key: ValueKey.Key = ValueKey.sort(level, kind, scope)
+    override val needsStructuralDefEq: Boolean = Value.needsStructuralDefEq(this)
 
     override def equals(obj: Any): Boolean = wtf(s"Sort $this compared structurally; compare sorts by conversion")
     override def hashCode(): Int = wtf(s"Sort $this hashed structurally; sorts are never collection keys")
@@ -573,6 +618,8 @@ object Value {
     require(binders.nonEmpty, "VPi requires at least one binder")
 
     override lazy val tpe: Classifier = classifier0()
+    override val key: ValueKey.Key = ValueKey.pi(id, binders, closureKind, closureScope)
+    override val needsStructuralDefEq: Boolean = Value.needsStructuralDefEq(this)
 
     override def equals(obj: Any): Boolean = wtf(s"Function type $this compared structurally; compare by conversion")
     override def hashCode(): Int = wtf(s"Function type $this hashed structurally; it is never a collection key")
@@ -615,16 +662,43 @@ object Value {
   }
 
   case class VConst(name: String, constType: ConstType, tpe: Value) extends Value {
-    override lazy val synDeps: DepSet = tpe.synDeps
+    override val synDeps: DepSet = tpe.synDeps
+    override val key: ValueKey.Key = ValueKey.constant(name)
+    override val needsStructuralDefEq: Boolean = Value.needsStructuralDefEq(this)
   }
 
   /**
    * An application that does not reduce: a neutral or blocked head's, or a constructor's. It stores its arguments as it
    * is given them, deferred evidence included, and `args` forces them when first read (`DeferredEvidence`), so building
-   * one evaluates no proposition; everything the kernel asks of an application reads `args`.
+   * one evaluates no proposition.
+   *
+   * Its evidence arguments, those at its head's evidence binders or its constructor's evidence fields, are determined
+   * by the rest: each is a proof of its binder's proposition, evaluated from the head's type and the arguments before
+   * it, and proofs are irrelevant. So its dependencies, key and conversion read only `determiningArgs`, the others, and
+   * only a use of the arguments themselves forces evidence (docs/kernel.md#evidence-arguments).
    */
   final class VApp private (val head: Value, stored: Vector[Value], val tpe: Value, val blockedOn: DepSet)
     extends Value {
+    require(stored.nonEmpty || blockedOn.isEmpty, "Blocked application requires at least one argument")
+    head match {
+      case h: ConstructorHead =>
+        require(blockedOn.isEmpty, s"Constructor ${h.name} cannot be blocked")
+        val expectedArgs = h.totalArity - h.numErasedFamilyArgs
+        require(
+          stored.length == expectedArgs,
+          s"Constructor ${h.name} stores ${stored.length} args, expected $expectedArgs"
+        )
+      case _ =>
+    }
+
+    /** The stored arguments less the evidence ones, which they and the head determine. None of them is deferred. */
+    private[raccoonlang] val determiningArgs: Vector[Value] = VApp.withoutEvidence(head, stored)
+
+    override val synDeps: DepSet =
+      DepSet.unionAll(Iterator(head.synDeps) ++ determiningArgs.iterator.map(_.synDeps) ++ Iterator(tpe.synDeps))
+    override val key: ValueKey.Key = ValueKey.application(head, determiningArgs, tpe)
+    override val needsStructuralDefEq: Boolean = Value.needsStructuralDefEq(this)
+
     // Memoized without a lock: computing it again yields the same arguments, since each deferred proof forces once.
     private[this] var forcedArgs: Vector[Value] = null
 
@@ -644,39 +718,44 @@ object Value {
         stored.zip(pi.binders).collect { case (arg, binder) if binder.mode == BinderMode.Explicit => arg }
       }
 
+    /** The arguments as stored, deferred evidence included, which only rebuilding the application reads. */
+    private[raccoonlang] def storedArgs: Vector[Value] = stored
+
+    // Structural equality compares the parts the key is built from, as conversion does, and so hashes by key.
     override def equals(other: Any): Boolean =
       other match {
         case that: VApp =>
-          (this eq that) || (head == that.head && args == that.args && tpe == that.tpe && blockedOn == that.blockedOn)
+          (this eq that) || (head == that.head && determiningArgs == that.determiningArgs && tpe == that.tpe &&
+            blockedOn == that.blockedOn)
         case _ => false
       }
 
-    override def hashCode(): Int = (head, args, tpe, blockedOn).hashCode()
-
-    override lazy val synDeps: DepSet = {
-      val res = DepSet.newBuilder
-      res.unionInPlace(head.synDeps)
-      args.foreach(v => res.unionInPlace(v.synDeps))
-      res.unionInPlace(tpe.synDeps)
-      res.result()
-    }
-
-    require(stored.nonEmpty || blockedOn.isEmpty, "Blocked application requires at least one argument")
-    head match {
-      case h: ConstructorHead =>
-        require(blockedOn.isEmpty, s"Constructor ${h.name} cannot be blocked")
-        val expectedArgs = h.totalArity - h.numErasedFamilyArgs
-        require(
-          stored.length == expectedArgs,
-          s"Constructor ${h.name} stores ${stored.length} args, expected $expectedArgs"
-        )
-      case _ =>
-    }
+    override def hashCode(): Int = key.hashCode()
   }
 
   object VApp {
     def apply(head: Value, args: Vector[Value], tpe: Value, blockedOn: DepSet = DepSet.empty): VApp =
       new VApp(head, args, tpe, blockedOn)
+
+    /**
+     * `stored` less the arguments at evidence binders: its constructor's evidence fields, or the evidence binders of
+     * its head's function type, whose group it saturates. Evidence is told by binder mode, so a supplied, a discharged
+     * and a deferred proof are skipped alike.
+     */
+    private def withoutEvidence(head: Value, stored: Vector[Value]): Vector[Value] = {
+      val binders = head match {
+        case h: ConstructorHead => if (h.hasEvidenceFields) h.fieldBinders else Vector.empty
+        case other =>
+          other.tpe match {
+            case pi: VPi if pi.numEvidence > 0 => pi.binders
+            case _                             => Vector.empty
+          }
+      }
+      if (binders.isEmpty) stored
+      else if (binders.length != stored.length)
+        wtf(s"An application stores ${stored.length} arguments for ${binders.length} binders")
+      else stored.zip(binders).collect { case (arg, binder) if binder.mode != BinderMode.Evidence => arg }
+    }
 
     def unapply(app: VApp): Some[(Value, Vector[Value], Value, DepSet)] =
       Some((app.head, app.args, app.tpe, app.blockedOn))
@@ -689,17 +768,16 @@ object Value {
       tpe: Value,
       blockedOn: DepSet
   ) extends Value {
-    override lazy val synDeps: DepSet = {
-      val res = DepSet.newBuilder
-      res.unionInPlace(envDeps(env))
-      res.unionInPlace(tpe.synDeps)
-      id.captures.foreach(v => res.unionInPlace(v.synDeps))
-      res.result()
-    }
+    override val synDeps: DepSet =
+      DepSet.unionAll(Iterator(envDeps(env), tpe.synDeps) ++ id.captures.iterator.map(_.synDeps))
+    override val key: ValueKey.Key = ValueKey.neutralThunk(id)
+    override val needsStructuralDefEq: Boolean = Value.needsStructuralDefEq(this)
   }
 
   case class Var(name: String, id: VarId, tpe: Value) extends Value {
-    override lazy val synDeps: DepSet = tpe.synDeps + id
+    override val synDeps: DepSet = tpe.synDeps + id
+    override val key: ValueKey.Key = ValueKey.variable(id)
+    override val needsStructuralDefEq: Boolean = Value.needsStructuralDefEq(this)
   }
 
   case class VLam(
@@ -707,16 +785,13 @@ object Value {
       id: ValueId,
       body: LamBody
   ) extends Value {
-    override lazy val synDeps: DepSet = {
-      val res = DepSet.newBuilder
-      res.unionInPlace(tpe.synDeps)
-      res.unionInPlace(body.synDeps)
-      id match {
-        case ValueId.Const(_)           =>
-        case ValueId.LocalId(_, params) => params.foreach(v => res.unionInPlace(v.synDeps))
-      }
-      res.result()
+    override val synDeps: DepSet = id match {
+      case ValueId.Const(_) => DepSet.unionAll(Iterator(tpe.synDeps, body.synDeps))
+      case ValueId.LocalId(_, params) =>
+        DepSet.unionAll(Iterator(tpe.synDeps, body.synDeps) ++ params.iterator.map(_.synDeps))
     }
+    override val key: ValueKey.Key = ValueKey.lambda(id)
+    override val needsStructuralDefEq: Boolean = Value.needsStructuralDefEq(this)
   }
 
   /**
@@ -730,7 +805,9 @@ object Value {
   final case class VProof(tpe: Value) extends Value {
     require(Sorts.isProposition(tpe), s"VProof requires a proposition, got a value of $tpe")
 
-    override lazy val synDeps: DepSet = tpe.synDeps
+    override val synDeps: DepSet = tpe.synDeps
+    override val key: ValueKey.Key = ValueKey.proof(tpe)
+    override val needsStructuralDefEq: Boolean = Value.needsStructuralDefEq(this)
   }
 
   /**
@@ -747,16 +824,31 @@ object Value {
    * is a kernel bug, so it has no type of its own.
    */
   final class DeferredEvidence private[raccoonlang] (proposition: () => Value) extends Value {
-    lazy val proof: Value = {
-      DeferredEvidence.forcings.incrementAndGet()
-      canonicalizeProof(VProof(proposition()))
+    // Memoized without a lock, like an application's forced arguments; checking is single-threaded.
+    private[this] var forcedProof: Value = null
+
+    def proof: Value = {
+      if (forcedProof == null) {
+        DeferredEvidence.forcings.incrementAndGet()
+        forcedProof = canonicalizeProof(VProof(proposition()))
+      }
+      forcedProof
     }
+
+    /**
+     * This evidence with `f` applied to what it holds, as a rebuilt application needs it: to its proof if that has been
+     * forced, and otherwise to its proposition when it is, so that mapping forces nothing.
+     */
+    private[raccoonlang] def map(f: Value => Value): Value =
+      if (forcedProof != null) f(forcedProof) else new DeferredEvidence(() => f(proposition()))
 
     /** What a walk over values that reaches one reports: it escaped the containers that force it. */
     def escaped: Nothing = wtf("Deferred evidence was inspected before it was forced")
 
     override def tpe: Value = escaped
     override def synDeps: DepSet = escaped
+    override def key: ValueKey.Key = escaped
+    override def needsStructuralDefEq: Boolean = escaped
   }
 
   object DeferredEvidence {
@@ -922,7 +1014,14 @@ object Value {
     require(tpe.synDeps.isEmpty, s"VPacked requires a closed type, got dependencies ${tpe.synDeps}")
     require(!Sorts.isProposition(tpe), s"VPacked requires a non-propositional type, got $tpe")
 
-    override lazy val synDeps: DepSet = tpe.synDeps
+    override val synDeps: DepSet = tpe.synDeps
+    override val needsStructuralDefEq: Boolean = Value.needsStructuralDefEq(this)
+
+    /**
+     * Its payload's key, hashed by a loop when first read. A payload is host data, not values, and a packed list's tail
+     * is built for each layer decoded, so hashing each one as it is built would make decoding a list quadratic.
+     */
+    override lazy val key: ValueKey.Key = ValueKey.packed(codec, payload, tpe)
 
     private[raccoonlang] def natValue: Option[BigInt] = codec match {
       case NatCodec         => Some(PackedPayload.natValue(payload))
@@ -973,6 +1072,20 @@ object Value {
     require(numErasedFamilyArgs >= 0, "Constructor erased family argument count must be non-negative")
     require(numErasedFamilyArgs <= totalArity, "Constructor erased family argument count cannot exceed total arity")
 
+    /** Its name's key, which its applications mix in. */
+    private[raccoonlang] val nameKey: ValueKey.Key = ValueKey.constructorName(name)
+
+    // A nullary constructor is already a value in constructor form: a global lookup hands back the bare head where
+    // `evalRef` hands back `VCtor(h, [], tpe)`. Both spellings denote the same value, so the bare head keys exactly as
+    // that application would, or defEq's key fast path would call one unequal to the other.
+    override val key: ValueKey.Key =
+      if (totalArity == 0) ValueKey.application(this, Vector.empty, tpe) else nameKey
+
+    // Decided when first asked, which building its first application does, rather than when it is built: a constructor
+    // is built while its family is checked, before its type need be evaluable. It has no children, so this walks
+    // nothing.
+    override lazy val needsStructuralDefEq: Boolean = Value.needsStructuralDefEq(this)
+
     /** The constructor's telescope, when it has one. A nullary constructor's type is its result type directly. */
     lazy val pi: Option[VPi] = tpe match {
       case pi: VPi => Some(pi)
@@ -989,6 +1102,9 @@ object Value {
 
     lazy val fieldBinders: Vector[CoreAst.Binder] =
       pi.fold(Vector.empty[CoreAst.Binder])(_.binders.drop(numErasedFamilyArgs))
+
+    /** Whether any field is an evidence field, which its applications' dependencies, keys and conversion skip. */
+    lazy val hasEvidenceFields: Boolean = fieldBinders.exists(_.mode == BinderMode.Evidence)
 
     /**
      * The env in which this constructor's field binder types are evaluable: the Pi's own closure extended with the
@@ -1169,9 +1285,18 @@ object Value {
     /** Reads the fields only of a constructor's application, so it forces no other application's arguments. */
     def unapply(value: Value): Option[(ConstructorHead, Vector[Value], Value)] =
       value match {
+        case app: VApp => ConstructorApp.unapply(app).map(head => (head, app.args, app.tpe))
+        case _         => None
+      }
+  }
+
+  /** A constructor's application, by its head alone, so reading none of its fields and forcing no evidence field. */
+  object ConstructorApp {
+    def unapply(value: Value): Option[ConstructorHead] =
+      value match {
         case app: VApp if app.blockedOn.isEmpty =>
           app.head match {
-            case head: ConstructorHead => Some((head, app.args, app.tpe))
+            case head: ConstructorHead => Some(head)
             case _                     => None
           }
         case _ => None

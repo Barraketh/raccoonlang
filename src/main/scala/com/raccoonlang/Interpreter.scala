@@ -68,15 +68,18 @@ object Interpreter {
     v0 match {
       case Blocked(blockedOn) if blockedOn.intersects(eqStore.solvedIds) =>
         v0 match {
-          case VBlockedApp(h, args, tpe, _) =>
-            val h0 = ValueOps.materialize(resolveInEqStore(h, eqStore), eqStore)
-            val materializedArgs = args.map(arg => ValueOps.materialize(arg, eqStore))
+          // Reapplied to its arguments as stored, which forces no evidence, as applying does not. Its evidence is
+          // deferred afresh at the head it now has, so that the head and the other arguments still determine it.
+          case app: VApp =>
+            val h0 = ValueOps.materialize(resolveInEqStore(app.head, eqStore), eqStore)
+            val materializedArgs =
+              evidenceDeferredAt(h0, app.storedArgs).map(arg => ValueOps.materializeArgument(arg, eqStore))
             h0 match {
               case lam: VLam =>
                 val res = runLam(lam, materializedArgs)
                 resolveInEqStore(res, eqStore)
               case nextHead @ Blocker(nextBlockedOn) =>
-                VBlockedApp(nextHead, args, tpe, nextBlockedOn)
+                VBlockedApp(nextHead, materializedArgs, ValueOps.materialize(app.tpe, eqStore), nextBlockedOn)
               case other =>
                 resolveInEqStore(evalApply(other, materializedArgs), eqStore)
             }
@@ -316,12 +319,32 @@ object Interpreter {
                 case Right(value) => value
                 case Left(reason) => fail(ImplicitReconstructionFailed(binder.name, valueName(fn), reason))
               }
-            case BinderMode.Evidence =>
-              val before = pi.binders.take(earlier.length)
-              new DeferredEvidence(() => evalTerm(binder.ty, BinderOps.instantiateFull(before, pi.env, earlier)))
+            case BinderMode.Evidence => deferredEvidence(pi, earlier)
           })
         }
       case _ => vArgs
+    }
+
+  /** Deferred evidence for the binder of `pi` after the arguments `earlier`: its type, evaluated with them bound. */
+  private def deferredEvidence(pi: VPi, earlier: Vector[Value]): DeferredEvidence = {
+    val before = pi.binders.take(earlier.length)
+    new DeferredEvidence(() =>
+      evalTerm(pi.binders(earlier.length).ty, BinderOps.instantiateFull(before, pi.env, earlier))
+    )
+  }
+
+  /**
+   * `args` for `fn`, each at one of its evidence binders replaced by deferred evidence of that binder's proposition.
+   */
+  private def evidenceDeferredAt(fn: Value, args: Vector[Value]): Vector[Value] =
+    fn.tpe match {
+      case pi: VPi if pi.numEvidence > 0 =>
+        if (pi.binders.length != args.length)
+          wtf(s"An application of ${pi.binders.length} binders stores ${args.length} arguments")
+        pi.binders.zip(args).foldLeft(Vector.empty[Value]) { case (earlier, (binder, arg)) =>
+          earlier :+ (if (binder.mode == BinderMode.Evidence) deferredEvidence(pi, earlier) else arg)
+        }
+      case _ => args
     }
 
   private[raccoonlang] def evalLam(l: CTerm.Lam, vpi: VPi, env: Env): Value = {
