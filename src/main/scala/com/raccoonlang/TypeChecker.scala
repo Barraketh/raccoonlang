@@ -301,22 +301,52 @@ object TypeChecker {
         case Some(ty) => checkTerm(l.value, ty.value, curEnv)
         case None     => checkTerm(l.value, curEnv)
       }
-      checkedLets += CA.Let(l.localRef, checkedTy.map(_.residual), checkedValue.residual, l.span)
-      curEnv = curEnv.putLocal(l.localRef, checkedValue.value)
+      checkedLets += CA.Let(l.pattern, checkedTy.map(_.residual), checkedValue.residual, l.span)
+      curEnv = l.pattern match {
+        case local: CA.LetPattern.Local   => Interpreter.bindLet(local, checkedValue.value, curEnv)
+        case fields: CA.LetPattern.Fields => destructure(fields, checkedValue, curEnv)
+      }
     }
 
     val checkedRes = checkTerm(body.res, curEnv)
     val lets = checkedLets.result()
-    // A let's extent is what follows it (spec §3.2).
+    // A let's extent is what follows it (spec §3.2). A plain let's local is reported at the let, and a destructured
+    // field's at its component, a `_`'s included.
     lets.zipWithIndex.foreach { case (let, idx) =>
-      Ledger.requireUsedOnce(
-        let.localRef,
-        curEnv(let.localRef).tpe,
-        let.span,
-        lets.drop(idx + 1).flatMap(later => later.ty.toVector :+ later.value) :+ checkedRes.residual
-      )
+      val binders = let.pattern match {
+        case CA.LetPattern.Local(ref)      => Vector(ref -> let.span)
+        case CA.LetPattern.Fields(vars, _) => vars.map(v => v.ref -> v.span)
+      }
+      binders.foreach { case (ref, span) =>
+        Ledger.requireUsedOnce(
+          ref,
+          curEnv(ref).tpe,
+          span,
+          lets.drop(idx + 1).flatMap(later => later.ty.toVector :+ later.value) :+ checkedRes.residual
+        )
+      }
     }
     CheckedTerm(checkedRes.value, CA.Term.Body(lets, checkedRes.residual, body.span))
+  }
+
+  /**
+   * A destructuring binds its locals to the fields of its checked value's eta view (spec §3). The value's type must be
+   * an instance that has one under every instantiation, else `NotDestructurable` where the type comes from. At the
+   * pattern: a destructuring is a match on the value, so it opens a sealed family only in its module
+   * (`SealedConstructor`), and it has a component for each stored field (`ArityMismatch`). A field's type is its
+   * local's type at its binder, so it is confined there (spec §4.2).
+   */
+  private def destructure(pattern: CA.LetPattern.Fields, value: CheckedTerm, env: Env): Env = {
+    val tpe = value.value.tpe
+    val (instance, info) =
+      StructEta.destructurableInstance(tpe).getOrElse(at(typeSite(value.residual))(fail(NotDestructurable(tpe))))
+    at(pattern.span) {
+      Sealing.requireAccessible(instance.meta.seal, None, pattern.span)
+      if (pattern.vars.length != info.fieldCount) fail(ArityMismatch(info.fieldCount, pattern.vars.length))
+    }
+    val bound = Interpreter.bindLet(pattern, value.value, env)
+    pattern.vars.foreach(v => at(v.span)(requireInScope(bound(v.ref).tpe, bound)))
+    bound
   }
 
   /**

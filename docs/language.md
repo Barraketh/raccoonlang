@@ -377,6 +377,57 @@ values, but it is available only when the active trusted prelude provides the
 validated `String`, `List Char`, and `Char.ofNat` layout. The bundled prelude
 does not currently provide that string layout.
 
+### Destructuring
+
+`let (a, b) := e` takes apart a value of a one-constructor family without
+naming its constructor:
+
+```raccoon
+def swap (p: Prod(Nat, Bool)): Prod(Bool, Nat) := {
+  let (n, b) := p
+  Prod.mk(b, n)
+}
+```
+
+A pattern is a name, `_`, or two or more patterns in parentheses, separated by
+commas; `let (x) := e` is a parse error. A pattern stands only in a block's
+`let`, never in a binder, a lambda or a `match` case.
+
+The value is checked as a `let`'s is, against the annotation when one is
+written. Its type must be an instance of a structure-eta eligible family (see
+[Structs and projections](#structs-and-projections)): one constructor, no
+indices, no recursive constructor field, and outside `Prop` at every level. A
+type a transparent definition computes to such an instance is one. A type
+variable, a function type, an opaque or blocked type, and an instance of a
+sort-polymorphic family whose level may be zero, which some instantiation puts
+in `Prop`, are not. Otherwise the destructuring is `NotDestructurable`, naming
+the type.
+
+The components match the constructor's stored fields in order, and erased
+family parameters are not fields. A pattern with another number of components
+is `ArityMismatch`. There is no flattening: a nested value is taken apart by a
+nested pattern, `(e, (a, b))`, which means `let (e, t) := x` followed by
+`let (a, b) := t` for a fresh anonymous `t`, so every rule applies at each
+level. A name occurs once in a pattern, at any depth, else `AlreadyDefined`, as
+in a match case. Names may shadow earlier locals, the scrutinee's included:
+`let (e, x) := op(e, y)` is the common form.
+
+Each name, or `_`, binds a local for the rest of the block, transparently, to
+its field of the value's eta view: a constructor-headed value's stored field,
+or a neutral value's field projection. So a field whose type names an earlier
+field has that type at the scrutinee, and a type about a destructured name is
+a statement about the scrutinee: after `let (a, b) := p`, `Eq.refl(p)` proves
+`Eq(Prod(Nat, Nat), Prod.mk(a, b), p)`. The destructuring's type is the rest of
+the block's. Evaluation binds the names the same way, so a destructuring never
+blocks, and a destructured name is a structural subterm of the scrutinee, as a
+match's field is.
+
+A destructuring is a match on its value. The value is a use of every local it
+mentions, so destructuring a linear value consumes it. Each name is tracked by
+its field's type: a linear field bound to `_`, or not used on some path, is
+`LinearUnused`, and one used twice is `LinearReused`. Outside a sealed family's
+module, destructuring a value of it is `SealedConstructor`.
+
 ### Scopes
 
 `scope l => e` opens a fresh atom and binds `l` to the lifetime holding it,
@@ -572,7 +623,8 @@ binder, and `Nat.add(eat(t), eat(t))` is `LinearReused(t)`, reported at the
 second use. A path that reuses a local is reported as reused, even where
 another path leaves it unused. Matching a linear value consumes it, and its
 fields must each be used once in the branch, so a wildcard over a linear field
-is `LinearUnused`. A match with no branch ends every path through it and so
+is `LinearUnused`. A [destructuring](#destructuring) consumes its value the same
+way, and each local it binds is used once in the rest of the block. A match with no branch ends every path through it and so
 uses every linear local still unused there; nothing after it is on those
 paths. A `decreases` clause is not a use. Applying a struct selector to a
 linear value consumes the value.
@@ -716,6 +768,11 @@ constructor, no indices, and no recursive constructor field, sealed or not. A pl
 Indexed or recursive singleton families still have positional metadata used by
 generated selectors, but they do not receive eta.
 
+A value of an eta-eligible family is also taken apart by its fields at once,
+without naming its constructor, by a
+[destructuring](#destructuring) `let (a, b) := p`, which binds each field of
+its eta view.
+
 For a Prop-valued instance, proof representation and elimination rules replace
 data structure eta. A selector out of a proposition is an ordinary match and
 must obey the same elimination restriction as any other match.
@@ -729,7 +786,8 @@ definitions, but outside the module each of these is `SealedConstructor`:
 
 - naming one of its constructors, applied or not;
 - selecting one of its fields, as `b.n` or `Box.n(b)`;
-- matching on a value of it, with qualified or `.short` case heads.
+- matching on a value of it, with qualified or `.short` case heads;
+- destructuring a value of it, `let (a, b) := v`.
 
 The names still resolve, so such a use reports `SealedConstructor` rather than
 an unknown name. A value of a sealed family is therefore made and taken apart

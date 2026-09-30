@@ -10,9 +10,9 @@ package com.raccoonlang
  * docs/kernel.md), so every value of one was built from its constructors.
  *
  * `accessible` is the one decision. The checker asks it where a name is resolved to a constructor or selector (a global
- * reference, a selected field) and for a match's scrutinee family, which also covers a case's `.short` form, since that
- * resolves only against the scrutinee's family. Implicit projection asks it before reading a constructor's field. A
- * module is compared nowhere else, and no site is exempt.
+ * reference, a selected field), for a match's scrutinee family, which also covers a case's `.short` form, since that
+ * resolves only against the scrutinee's family, and for a destructured value's family. Implicit projection asks it
+ * before reading a constructor's field. A module is compared nowhere else, and no site is exempt.
  */
 object Sealing {
 

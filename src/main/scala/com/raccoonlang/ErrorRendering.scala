@@ -36,6 +36,9 @@ object ErrorRendering {
       case LocalCaseHead(name) =>
         s"Case head $name is local; unqualified case heads must resolve to globals. " +
           s"Use .$name for short-name matching."
+      case NotDestructurable(tpe) =>
+        s"Cannot destructure a value of type $tpe: only a family with one constructor, no indices and no recursive " +
+          "field, outside Prop at every level, is taken apart by its fields"
       case mismatch: TypeMismatch => renderTypeMismatch(mismatch)
       case InvalidConstructorResult(ctor, inductive, got) =>
         s"Constructor $ctor must return $inductive but got $got"

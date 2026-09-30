@@ -126,4 +126,11 @@ object Sorts {
       case pi: VPi => pi.isPropValued
       case tpe     => sortOf(tpe).exists(isProp)
     }
+
+  /**
+   * The type is a proposition under no instantiation of its level variables: its sort's level is never zero. A type
+   * whose level may be zero, such as an instance of a sort-polymorphic family, is not a proposition where it is checked
+   * but becomes one where a zero level is substituted.
+   */
+  def isNeverProposition(tpe: Value): Boolean = sortOf(tpe).exists(sort => Level.isNeverZero(sort.level))
 }

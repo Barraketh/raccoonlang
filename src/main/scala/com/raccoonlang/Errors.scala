@@ -50,6 +50,12 @@ final case class NotAType(value: Value) extends TypeError
 
 final case class NonInductiveMatch(tpe: Value) extends TypeError
 
+/**
+ * A destructuring whose value's type is not an instance of a family with one constructor, no indices, no recursive
+ * field, and outside `Prop` under every instantiation (spec §3.2).
+ */
+final case class NotDestructurable(tpe: Value) extends TypeError
+
 final case class NotFound(name: String) extends TypeError
 
 final case class AlreadyDefined(name: String) extends TypeError

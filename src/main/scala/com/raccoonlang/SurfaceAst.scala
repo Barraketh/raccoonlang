@@ -79,8 +79,25 @@ object SurfaceAst {
         span: Span
     ) extends Term
 
-    // Let: let x := foo
-    final case class Let(name: String, ty: Option[Term], value: Term, span: Span)
+    // Let: let x := foo, or a destructuring: let (a, (b, c)) := foo
+    final case class Let(pattern: LetPattern, ty: Option[Term], value: Term, span: Span)
+
+    /** What a `let` binds: a name or `_`, or a destructuring of two or more components (spec §3.1). */
+    sealed trait LetPattern {
+      def span: Span
+
+      /** Every name the pattern binds, `_` included, at any depth and in source order. */
+      def names: Vector[LetPattern.Name] =
+        this match {
+          case name: LetPattern.Name                 => Vector(name)
+          case LetPattern.Destructure(components, _) => components.flatMap(_.names)
+        }
+    }
+
+    object LetPattern {
+      final case class Name(name: String, span: Span) extends LetPattern
+      final case class Destructure(components: Vector[LetPattern], span: Span) extends LetPattern
+    }
 
     sealed trait BodyStmt {
       def span: Span

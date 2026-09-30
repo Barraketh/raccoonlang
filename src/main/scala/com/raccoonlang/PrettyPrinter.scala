@@ -90,17 +90,35 @@ object PrettyPrinter {
     def printBinders(binders: Vector[CoreAst.Binder]): String =
       binders.map(printBinder).mkString(" ")
 
-    private def printLet(l: CoreAst.Let): String = {
-      val tyStr = l.ty.map(t => s": ${printCoreTerm(t)}").getOrElse("")
-      s"let ${l.name}$tyStr := ${printCoreTerm(l.value)}"
+    /**
+     * A block's lets as written. A nested pattern is a destructuring of an anonymous local its enclosing pattern binds
+     * (spec §3.3), and nothing else can name that local, so such a let prints inside the enclosing pattern instead.
+     */
+    private def printLets(lets: Vector[CoreAst.Let]): String = {
+      val nestedLet: PartialFunction[CoreAst.Let, (CoreAst.LocalRef, CoreAst.LetPattern.Fields)] = {
+        case CoreAst.Let(fields: CoreAst.LetPattern.Fields, None, CoreAst.Term.LocalRef(ref, _), _)
+            if ref.name == "_" =>
+          ref -> fields
+      }
+      val nested = lets.collect(nestedLet).toMap
+      def pattern(written: CoreAst.LetPattern): String =
+        written match {
+          case CoreAst.LetPattern.Local(ref) => ref.name
+          case CoreAst.LetPattern.Fields(vars, _) =>
+            vars.map(v => nested.get(v.ref).fold(v.ref.name)(pattern)).mkString("(", ", ", ")")
+        }
+      lets
+        .filterNot(nestedLet.isDefinedAt)
+        .map { l =>
+          val tyStr = l.ty.map(t => s": ${printCoreTerm(t)}").getOrElse("")
+          s"let ${pattern(l.pattern)}$tyStr := ${printCoreTerm(l.value)}"
+        }
+        .mkString("\n")
     }
 
     private def printBody(b: CoreAst.Term.Body): String = {
       if (b.lets.isEmpty) printCoreTerm(b.res)
-      else {
-        val letsStr = b.lets.map(printLet).mkString("\n")
-        s"{ $letsStr \n ${printCoreTerm(b.res)} }"
-      }
+      else s"{ ${printLets(b.lets)} \n ${printCoreTerm(b.res)} }"
     }
 
     /**

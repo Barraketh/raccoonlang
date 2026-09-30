@@ -121,6 +121,27 @@ class ParseErrorTests extends munit.FunSuite {
     constructors.foreach(expectParseError(_, "Failed to parse end of line"))
   }
 
+  test("a destructuring has two or more components, and only a block's let destructures") {
+    expectParses("def f (p: Prod(Nat, Nat)): Nat := {\n  let (a, _) := p\n  a\n}\n")
+    expectParses(
+      "def f : Nat := {\n  let ( e ,\n    (a, b) ) : Prod(Nat, Prod(Nat, Nat)) := Prod.mk(1, Prod.mk(2, 3))\n  e\n}\n"
+    )
+    val single = "A destructuring has two or more components"
+    expectParseError("def f (p: Nat): Nat := {\n  let (@x) := p\n  x\n}\n", single)
+    expectParseError("def f (p: Nat): Nat := {\n  let (e, (@x)) := p\n  x\n}\n", single)
+    expectParseError("def f (p: Nat): Nat := {\n  let (@) := p\n  p\n}\n", "Failed to parse pattern")
+    // A binder, a lambda's and a match case's pattern take no destructuring.
+    expectParseError("def @f ((a, b): Prod(Nat, Nat)): Nat := a\n", "Failed to parse Sym(:)")
+    expectParseError(
+      "def f : Prod(Nat, Nat) -> Nat := fun @((a, b): Prod(Nat, Nat)): Nat => a\n",
+      "Failed to parse Sym(:)"
+    )
+    expectParseError(
+      "def f (p: Prod(Nat, Nat)): Nat := match p returning Nat with\n | Prod.mk@ (a, b) => a\n",
+      "Failed to parse Sym(=>)"
+    )
+  }
+
   test("a parse failure names what was expected, never a parser object") {
     expectParseError("def f : Nat := 0\n@)\n", "Failed to parse end of input")
     expectParseError("def f (n: Nat): Nat := Nat.add(n@\n", "Failed to parse LayoutSymTight())")
