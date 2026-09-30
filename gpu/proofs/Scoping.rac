@@ -68,13 +68,13 @@ namespace Scoping {
       | Expr.paramAddr n => h
     }
 
-  def declaredAcc (seen: NatSet)(found: List(String))(id: Nat)(isSeen: Bool)(h: Fold.Empty(Check.declared(seen, found, id, isSeen).found)): Fold.Empty(found) := {
+  def declaredAcc (seen: NatSet)(found: List(String))(id: Nat)(isSeen: Bool)(h: Fold.Empty(Check.declaration(seen, found, id, isSeen).found)): Fold.Empty(found) := {
     match isSeen returning Fold.Empty(found) with
     | Bool.true => False.elim(Fold.consNotEmpty(Text.cat(Cuda.name(id), " declared twice"), found, h), Fold.Empty(found))
     | Bool.false => h
   }
 
-  def declaredFresh (seen: NatSet)(found: List(String))(id: Nat)(isSeen: Bool)(h: Fold.Empty(Check.declared(seen, found, id, isSeen).found))
+  def declaredFresh (seen: NatSet)(found: List(String))(id: Nat)(isSeen: Bool)(h: Fold.Empty(Check.declaration(seen, found, id, isSeen).found))
       : Eq(Bool, isSeen, Bool.false) := {
     match isSeen returning Eq(Bool, isSeen, Bool.false) with
     | Bool.true => False.elim(Fold.consNotEmpty(Text.cat(Cuda.name(id), " declared twice"), found, h), Eq(Bool, Bool.true, Bool.false))
@@ -82,15 +82,15 @@ namespace Scoping {
   }
 
   def declaredSeen (seen: NatSet)(found: List(String))(id: Nat)(isSeen: Bool)(n: Nat)(h: Eq(Bool, Check.NatSet.member(seen, n), Bool.true))
-      : Eq(Bool, Check.NatSet.member(Check.declared(seen, found, id, isSeen).seen, n), Bool.true) := {
-    match isSeen returning Eq(Bool, Check.NatSet.member(Check.declared(seen, found, id, isSeen).seen, n), Bool.true) with
+      : Eq(Bool, Check.NatSet.member(Check.declaration(seen, found, id, isSeen).seen, n), Bool.true) := {
+    match isSeen returning Eq(Bool, Check.NatSet.member(Check.declaration(seen, found, id, isSeen).seen, n), Bool.true) with
     | Bool.true => h
     | Bool.false => NatSets.kept(seen, id, n, h)
   }
 
   def declaredHas (seen: NatSet)(found: List(String))(id: Nat)(isSeen: Bool)(fresh: Eq(Bool, isSeen, Bool.false))
-      : Eq(Bool, Check.NatSet.member(Check.declared(seen, found, id, isSeen).seen, id), Bool.true) := {
-    match fresh returning Eq(Bool, Check.NatSet.member(Check.declared(seen, found, id, isSeen).seen, id), Bool.true) with
+      : Eq(Bool, Check.NatSet.member(Check.declaration(seen, found, id, isSeen).seen, id), Bool.true) := {
+    match fresh returning Eq(Bool, Check.NatSet.member(Check.declaration(seen, found, id, isSeen).seen, id), Bool.true) with
     | Eq.refl z => NatSets.inserted(seen, id)
   }
 

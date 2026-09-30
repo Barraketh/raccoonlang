@@ -158,6 +158,7 @@ namespace Check {
     }
   }
 
+  // The launcher's own locals, which the printer declares.
   def printerLocals : List(String) := List.cons("stream", List.cons("status", List.cons("args", List.cons("dims", List.cons("strides",
     List.cons("box", List.cons("steps", List.nil(String))))))))
 
@@ -350,13 +351,13 @@ namespace Check {
   }
 
   // A declaration of variable `id`, which must be its first, where `isSeen` is whether `seen` has it.
-  def declared (seen: NatSet)(found: List(String))(id: Nat)(isSeen: Bool): Scan := {
+  def declaration (seen: NatSet)(found: List(String))(id: Nat)(isSeen: Bool): Scan := {
     match isSeen returning Scan with
     | Bool.true => Scan.mk(seen, List.cons(Text.cat(Cuda.name(id), " declared twice"), found))
     | Bool.false => Scan.mk(Check.NatSet.insert(seen, id), found)
   }
 
-  def declare (st: Scan)(id: Nat): Scan := Check.declared(st.seen, st.found, id, Check.NatSet.member(st.seen, id))
+  def declare (st: Scan)(id: Nat): Scan := Check.declaration(st.seen, st.found, id, Check.NatSet.member(st.seen, id))
 
   // The variables in scope after statement `s`, where `visible` holds those in scope before it.
   def after (visible: NatSet)(s: Stmt): NatSet := {
@@ -445,6 +446,7 @@ namespace Check {
     Check.unless(found, Bool.not(Nat.blt(0, bytes)), fun (u: Unit): String =>
       Text.cat3("static shared array ", Cuda.name(id), " in a kernel with dynamic shared memory"))
 
+  // A statement, which must not be a static shared array in a kernel with `bytes` > 0 of dynamic shared memory.
   def staticStep (bytes: Nat): List(String) -> Stmt -> List(String) := fun (found: List(String))(s: Stmt): List(String) => {
     match s returning List(String) with
     | Stmt.decl t id init => found
@@ -468,6 +470,7 @@ namespace Check {
     Check.unless(found, Nat.blt(offset, bytes), fun (u: Unit): String =>
       Text.cat3("dynamic shared memory at byte ", Text.nat(offset), Text.cat3(", outside the kernel's ", Text.nat(bytes), " bytes")))
 
+  // An expression, whose constant offset into the dynamic shared buffer, if it has one, must lie inside its `bytes`.
   def offsetStep (bytes: Nat): List(String) -> Expr -> List(String) := fun (found: List(String))(x: Expr): List(String) => {
     match Check.leaf(x) returning List(String) with
     | Leaf.other => found
@@ -550,6 +553,7 @@ namespace Check {
     }
   }
 
+  // A statement, checked if it is a named barrier, where `st.seen` holds the ids of the barriers before it.
   def barrierStep (st: Scan)(s: Stmt): Scan := {
     match s returning Scan with
     | Stmt.decl t id init => st
@@ -576,16 +580,13 @@ namespace Check {
 
   def u64Limit : Nat := 18446744073709551616
 
-  // Whether `n` is below `limit`, as `Nat.lt` states it. (`Nat.blt(n, limit)` is the same test, but a native operation
-  // applied to a variable and a literal above the unfolding limit does not unfold, so no proof could relate the two.)
-  def below (n: Nat)(limit: Nat): Bool := Nat.ble(Nat.succ(n), limit)
-
   // A number printed as a 32-bit literal, such as a launcher's block size or a tensor map's box, must fit 32 bits.
   def u32Printed (found: List(String))(what: String)(n: Nat): List(String) :=
-    Check.unless(found, Check.below(n, Cuda.u32Limit), fun (u: Unit): String => Text.cat3(what, Text.nat(n), " does not fit 32 bits"))
+    Check.unless(found, Nat.blt(n, Cuda.u32Limit), fun (u: Unit): String => Text.cat3(what, Text.nat(n), " does not fit 32 bits"))
 
+  // A number printed as a 64-bit literal must fit 64 bits.
   def u64Printed (found: List(String))(n: Nat): List(String) :=
-    Check.unless(found, Check.below(n, Check.u64Limit), fun (u: Unit): String => Text.cat3("64-bit literal ", Text.nat(n), " does not fit 64 bits"))
+    Check.unless(found, Nat.blt(n, Check.u64Limit), fun (u: Unit): String => Text.cat3("64-bit literal ", Text.nat(n), " does not fit 64 bits"))
 
   // An expression's literal, which must fit its width.
   def literalStep (found: List(String))(x: Expr): List(String) := {
@@ -739,7 +740,10 @@ namespace Check {
   def count (maps: List(MapEncoding))(name: String): Nat decreases structural(maps) := {
     match maps returning Nat with
     | List.nil => 0
-    | List.cons m more => Bool.cond(Check.same(m.param, name), Nat, Nat.succ(Check.count(more, name)), Check.count(more, name))
+    | List.cons m more => {
+      let rest := Check.count(more, name)
+      Bool.cond(Check.same(m.param, name), Nat, Nat.succ(rest), rest)
+    }
   }
 
   // The names of the tensor maps among `ps`.

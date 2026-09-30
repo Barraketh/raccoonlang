@@ -34,6 +34,8 @@ Not claimed:
 
 - Raccoon's kernel, and `gpu/Prelude.rac` under PAIRS_AND_PRELUDE §1's obligations T1–T5.
 - `gpu/Cuda.rac`'s printer: it renders the AST faithfully.
+- `gpu/Spec.rac`: its statements of I1–I6 say what the invariants mean, so that the checkers' soundness proofs
+  (`gpu/proofs/`, §8) prove what §4 claims.
 - The platform assumptions of §3: our reading of the PTX ISA and CUDA semantics.
 - nvcc, ptxas, the driver and the hardware.
 
@@ -78,7 +80,7 @@ the builders do.
 | I1 | Every variable is declared once per kernel, before use, in an enclosing C scope. | Fresh names from `Gen`; lifetimes (M2). Checked on the output by `Check.scoping`: each id declared once, used only in the C scope of its declaration and after it (a loop's variable in its body), and no variable, thread, block or grid index, shared address or array element in the launcher. |
 | I2 | Dynamic shared-memory regions are disjoint and aligned as requested. Total ≤ 232448 bytes. Dynamic memory only with a launcher. Never mixed with static arrays. | Bump allocation (`reserve`). Checked on the output by `Check.sharedMemory`: the total, the launcher, no static array with dynamic memory, and every constant offset into the buffer inside it. Disjointness, alignment, and offsets plus run-time indices are not in the AST. |
 | I3 | Each join's named barrier has its own id in 1..15, and its count is its group's threads. | `join`, with a check. Checked on the output by `Check.namedBarriers`: each `bar.sync` (the asm template `Gpu.namedBarrier` emits) has literal operands, an id in 1..15 that no other has, and a count that is a positive multiple of 32. That the count is its group's is not in the AST. |
-| I4 | Every `u32` literal is below 2^32. | Checked on the output by `Check.literals`: every 32-bit literal of the kernel and its launcher, and the launcher's block size and boxes, below 2^32; every 64-bit literal below 2^64. |
+| I4 | Every `u32` literal is below 2^32. | Checked on the output by `Check.literals`: every 32-bit literal of the kernel and its launcher, and the launcher's block size and boxes, below 2^32; every 64-bit literal below 2^64. The other `u` literals the printer writes, shared-memory offsets and the launch's shared bytes, are bounded by I2's check. |
 | I5 | The kernel's name is a C identifier; every other printed name is the library's. | `uniformParam` needs the Key (M8). Checked on the output by `Check.names`: the kernel's, the parameters' and the tensor maps' names are C identifiers the printer does not declare itself (`v` and digits, `gpu_…`, the launcher's locals), none is the kernel's name, each is declared once in its function, and every parameter an expression names is its function's. C++ keywords, CUDA's names and host library symbols are not excluded: the first two fail to compile, but an `extern "C"` kernel named as a host symbol is not ruled out. |
 | I6 | The launcher passes the kernel's parameters in order. It asks for and launches with exactly the kernel's dynamic shared memory. It encodes each tensor map with its `TMap` box, bf16 and 128-byte swizzle. It launches the grid the builder assumes. | The printer passes the parameters in order and the kernel's shared memory. Checked on the output by `Check.launcher`: the launcher declares each non-map parameter as the kernel does, and encodes each tensor map exactly once, from a bf16 input and two u32 scalars of its own. The box, beyond fitting 32 bits, and the grid are the builders'. |
 | I7 | Every collective sits where its whole group runs convergently. `__syncthreads` only in `cta` code. `bar.sync` only at a split's join. `elect.sync` only in one-warp code. Warp-collective `tcgen05` in whole-warp code, reconverged by `__syncwarp` after spin loops and guarded stores. | Groups (M3). Not checked on the output: the AST does not record which threads run a block (§9.6). |
@@ -226,10 +228,13 @@ Status: the checkers are built (`gpu/Check.rac`), one for the generation errors 
 AST shows them (§4), with unit tests (`gpu/checks/`). `Gpu.render` requires their certificate, `Check.WellFormed`,
 which a client's `Gpu.render(p)` discharges by evaluation, and a failing checker is reported as
 `EvidenceNotDischarged`, naming its field and showing its messages, which print as string literals although they are
-computed. On the persistent GEMM the checkers, with checking `Check.rac` itself, add about 0.2 s to the 2.3 s of
-checking. Each checker is proved sound in Raccoon (`gpu/proofs/`) against a syntactic statement of what its invariant
-means (`gpu/Spec.rac`), and `WellFormed.sound` turns `Check.WellFormed(k)` into `Spec.WellFormed(k)` for every kernel;
-`gpu/proofs/NOTES.md` records what made the proofs hard. I7 and I8 are not decidable on today's AST (§9.6).
+computed. On the persistent GEMM the checkers, with checking `Check.rac` itself, added about 0.2 s when they were
+built. A whole CLI run that generates it
+(starting the JVM, checking, printing) takes about 3.3 s of wall time, of which the restructuring for the soundness
+proofs added about 0.06 s (`gpu/proofs/NOTES.md`). Each checker is proved sound in Raccoon (`gpu/proofs/`) against a
+syntactic statement of what its invariant means (`gpu/Spec.rac`), and `WellFormed.sound` turns `Check.WellFormed(k)`
+into `Spec.WellFormed(k)` for every kernel; `gpu/proofs/NOTES.md` records what made the proofs hard. I7 and I8 are not
+decidable on today's AST (§9.6).
 
 **Layer 2: protocols.** Abstract models of A6, A9 and A12 (an mbarrier as phase, pending arrivals and expected
 bytes; TMA fills and tensor-core commits as asynchronous events), the stage ring, accumulator ring, handoff and

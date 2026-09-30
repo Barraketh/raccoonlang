@@ -256,10 +256,13 @@ namespace Spec {
 
   // ---- I4, literals -------------------------------------------------------------------------------------------------
 
+  // Every value of a 64-bit unsigned integer is below it.
   def u64Limit : Nat := 18446744073709551616
 
   // `n` is printed as a 32-bit literal: a `lit` in the kernel or its launcher, the launcher's block size, or a
-  // dimension of a tensor map's box.
+  // dimension of a tensor map's box. The printer also writes an offset into the dynamic shared buffer and the launch's
+  // dynamic shared bytes as `u` literals; those are not here, since `Spec.SharedMemory` bounds them (an offset below
+  // the size, the size at most 232448), and `Spec.WellFormed` holds both.
   inductive Lit32 (k: Kernel)(n: Nat) : Prop
    | body (h: Spec.ExprIn(Expr.lit(n), k.body)) : Lit32(k, n)
    | host (h: Spec.HostExpr(k, Expr.lit(n))) : Lit32(k, n)

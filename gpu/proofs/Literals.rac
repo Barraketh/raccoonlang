@@ -6,17 +6,23 @@ import proofs.Fold
 namespace Literals {
   open Cuda
 
+  // `Nat.blt` is `Nat.lt`'s test. On two variables its definition unfolds; applied to a literal above the unfolding
+  // limit it would not, so the proofs below instantiate this lemma instead of converting.
+  def bltIsLt (n: Nat)(m: Nat): Eq(Bool, Nat.blt(n, m), Nat.ble(Nat.succ(n), m)) := Eq.refl(Nat.blt(n, m))
+
   def u32Ok (found: List(String))(what: String)(n: Nat)(h: Fold.Empty(Check.u32Printed(found, what, n))): Nat.lt(n, Cuda.u32Limit) :=
-    Fold.unlessOk(found, Check.below(n, Cuda.u32Limit), fun (u: Unit): String => Text.cat3(what, Text.nat(n), " does not fit 32 bits"), h)
+    Eq.trans(Eq.symm(Literals.bltIsLt(n, Cuda.u32Limit)),
+      Fold.unlessOk(found, Nat.blt(n, Cuda.u32Limit), fun (u: Unit): String => Text.cat3(what, Text.nat(n), " does not fit 32 bits"), h))
 
   def u32Found (found: List(String))(what: String)(n: Nat)(h: Fold.Empty(Check.u32Printed(found, what, n))): Fold.Empty(found) :=
-    Fold.unlessFound(found, Check.below(n, Cuda.u32Limit), fun (u: Unit): String => Text.cat3(what, Text.nat(n), " does not fit 32 bits"), h)
+    Fold.unlessFound(found, Nat.blt(n, Cuda.u32Limit), fun (u: Unit): String => Text.cat3(what, Text.nat(n), " does not fit 32 bits"), h)
 
   def u64Ok (found: List(String))(n: Nat)(h: Fold.Empty(Check.u64Printed(found, n))): Nat.lt(n, Spec.u64Limit) :=
-    Fold.unlessOk(found, Check.below(n, Check.u64Limit), fun (u: Unit): String => Text.cat3("64-bit literal ", Text.nat(n), " does not fit 64 bits"), h)
+    Eq.trans(Eq.symm(Literals.bltIsLt(n, Check.u64Limit)),
+      Fold.unlessOk(found, Nat.blt(n, Check.u64Limit), fun (u: Unit): String => Text.cat3("64-bit literal ", Text.nat(n), " does not fit 64 bits"), h))
 
   def u64Found (found: List(String))(n: Nat)(h: Fold.Empty(Check.u64Printed(found, n))): Fold.Empty(found) :=
-    Fold.unlessFound(found, Check.below(n, Check.u64Limit), fun (u: Unit): String => Text.cat3("64-bit literal ", Text.nat(n), " does not fit 64 bits"), h)
+    Fold.unlessFound(found, Nat.blt(n, Check.u64Limit), fun (u: Unit): String => Text.cat3("64-bit literal ", Text.nat(n), " does not fit 64 bits"), h)
 
   def keeps (found: List(String))(x: Expr)(h: Fold.Empty(Check.literalStep(found, x))): Fold.Empty(found) := {
     match x returning Fold.Empty(found) with

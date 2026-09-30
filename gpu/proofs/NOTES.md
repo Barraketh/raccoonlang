@@ -21,17 +21,18 @@ the whole certificate, `WellFormed.sound: Check.WellFormed(k) -> Spec.WellFormed
 | I1 `scoping` | `Scoping`, `StmtScope`, `BlockScope`, `declaredBy`, `Uses`, `Binds`, `DeviceOnly`, 72 lines | `Scoping.rac` | 517 |
 | I2 `sharedMemory` | `SharedMemory`, `SharedAt`, 18 lines | `SharedMemory.rac` | 109 |
 | I3 `namedBarriers` | `NamedBarriers`, `BarrierIds`, `BarrierCounts`, `Barrier`, `LiteralOperands`, 31 lines | `Barriers.rac` | 274 |
-| I4 `literals` | `Literals`, `Lit32`, `Lit64`, 25 lines | `Literals.rac` | 109 |
+| I4 `literals` | `Literals`, `Lit32`, `Lit64`, 28 lines | `Literals.rac` | 115 |
 | I5 `names` | `Names`, `Chosen`, `CIdent`, `PrinterName`, `Declared`, `Twice`, …, 61 lines | `Names.rac` | 271 |
 | I6 `launcher` | `LauncherOk`, `Launched`, `NotMap`, 20 lines | `Launcher.rac` | 317 |
 | certificate | `WellFormed`, 7 lines | `WellFormed.rac` | 21 |
-| **total** | 370 | | 2436 |
+| **total** | 373 | | 2442 |
 
 Check time. Each proof file checks in 1.4 to 2.3 s of wall time, most of it loading `Check.rac` (a file that loads
 only the prelude takes 0.8 s); `WellFormed.rac`, which loads every proof, takes 2.3 s. `check.sh` gains the 11 files
-of `proofs/` (63 ok). The checker restructurings below cost the persistent GEMM about 0.06 s of its 3.25 s of
-generation (six alternating runs of each: 3.25 s against 3.31 s wall, 7.46 s against 7.51 s CPU); the four
-generated kernels are byte-identical to those before.
+of `proofs/` (63 ok). The checker restructurings below cost the persistent GEMM about 0.06 s: a whole CLI run that
+generates it (starting the JVM, checking, printing) took 3.25 s of wall time before and 3.31 s after, 7.46 s and
+7.51 s of CPU (six alternating runs of each, on an otherwise quiet machine); the four generated kernels are
+byte-identical to those before.
 
 ## The shape of every proof
 
@@ -75,7 +76,7 @@ statement's blocks split on the statement (14 arms, 10 of which say "no blocks")
 
 The checker's use of a variable goes through `unless` (`useVar`, its message named `unscoped`); its expression walk
 became a `List(String)` fold (`useStep`, closing over the `seen` set, which the walk of one statement's expressions
-never changes), so `Fold`'s lemmas apply; a declaration takes whether its id was seen as an argument (`declared`);
+never changes), so `Fold`'s lemmas apply; a declaration takes whether its id was seen as an argument (`declaration`);
 the launcher's step is `hostUse`.
 
 **I2, shared memory.** Spec: `Nat.le(k.dynamicShared, 232448)`; a positive size means `k.launcher` is not `none`;
@@ -95,7 +96,9 @@ place the proof inspects expressions. The checker's step was named (`barrierStep
 became arguments of `barrierAt` (`isBarrier`, `args`), so the lemmas case on variables (F2).
 
 **I4, literals.** Spec: every `n` that `Lit32(k, n)` (a `lit` in the body or the launcher's expressions, the block
-size, a box dimension) is `Nat.lt(n, Cuda.u32Limit)`, and every `Lit64` below 2^64. Needed F1's checker change.
+size, a box dimension) is `Nat.lt(n, Cuda.u32Limit)`, and every `Lit64` below 2^64. The checker tests `Nat.blt`, which
+reaches `Nat.lt` through `Literals.bltIsLt` (F1). The printer's other `u` literals, shared-memory offsets and the
+launch's shared bytes, are left to I2, which bounds them.
 
 **I5, names.** Spec: the kernel's name is `Chosen` (a `CIdent`, a letter or `_` then letters, digits and `_`, and
 not a `PrinterName`: `v` and digits, `gpu_…`, or one of the launcher's locals); the parameters' names are
@@ -118,7 +121,9 @@ encodings' names and not `Twice` there; and every encoding names a `tensorMap` o
 `Check.sameParam` sound (a 4 × 4 case split, 12 arms impossible), `Check.sameType` sound (through an inverse of
 `typeIndex`, which saves a 5 × 5 split), `Check.declares` sound, and `Check.count` against `Mem` and `Twice` (lower
 bounds with `Nat.ble`, since `count = 1` is what the checker tests). `Check.count` was a `List.foldl` with a `Nat`
-accumulator; it became a direct recursion, so the bounds are proved by induction on the maps without a lemma relating
+accumulator; it became a direct recursion (binding the recursive count before `Bool.cond`, which evaluates both
+arguments: a first version recomputed it twice per step, exponential in the number of encodings, 9.9 s at 20 against
+1.6 s, caught in review), so the bounds are proved by induction on the maps without a lemma relating
 the accumulator to the prefix walked.
 
 **The certificate.** `Spec.WellFormed(k)` is the conjunction of the seven statements, and `WellFormed.sound` takes
@@ -172,8 +177,8 @@ Each finding has a minimal example and a guess at the feature that would remove 
 worked better than expected.
 
 The five that cost the most, in order: F4 (every argument explicit, messages included), F2 (no `inspect`), F5 (no
-catch-all case), F11 (walks with state need their own induction) and F1 with F9 (native `Nat` operations, which made
-one invariant unprovable as the checker was written and one specification take exponential time to check).
+catch-all case), F11 (walks with state need their own induction) and F9 with F1 (native `Nat` operations: one
+specification takes exponential time to declare, and a checker's test converts to the spec's only through a lemma).
 
 ### P1. Matching a variable refines every hypothesis, and matching `Eq.refl` rewrites
 
@@ -209,26 +214,33 @@ So every "At" lemma is a recursion on the occurrence proof in all but name, with
 `let goal := Eq(Expr, x, Expr.lit(n))` then `match x returning goal with` refines `goal` in each branch like a written
 motive. Found late: `NatSet.rac` still restates its motives (up to 130 characters) in each of its nested matches.
 
-### F1. A native Nat operation on a variable and a large literal hides its definition
+### F1. A native Nat operation on a variable and a large literal does not unfold
 
 `Nat.lt(n, m)` is `Eq(Bool, Nat.ble(Nat.succ(n), m), Bool.true)`, and `Nat.blt(n, m)` is defined as
 `Nat.ble(Nat.succ(n), m)`. But `blt` is native, and applied to a variable and a literal above the unfolding limit
-(2^8) it is a neutral headed by `blt` that never unfolds (`docs/kernel.md`, natural numbers). So:
+(2^8) it is a neutral headed by `blt` that never unfolds (`docs/kernel.md`, natural numbers). So a direct cast works
+at 200 and fails at 300, and at the checker's `Cuda.u32Limit`:
 
 ```raccoon
 def f (n: Nat)(h: Eq(Bool, Nat.blt(n, 4294967296), Bool.true)): Nat.lt(n, 4294967296) := h
 // type mismatch: Nat.ble(Nat.succ(n), 4294967296) vs Nat.blt(n, 4294967296) (not reducible: stuck)
 ```
 
-No propositional route was found either: induction on `n` meets `Nat.blt(Nat.succ(m), 4294967296)`, which is as
-stuck, and nothing else relates the two neutrals. The checker compared literals with `Nat.blt(n, Cuda.u32Limit)`,
-so the spec's `Nat.lt` could not be reached from it. Worked around by a checker change: `Check.below(n, limit)` is
-`Nat.ble(Nat.succ(n), limit)`, which is `Nat.lt`'s own form. With no literal above the limit (`Nat.blt(offset,
-bytes)`, both variables) the body unfolds and nothing is lost.
+The workaround is to state the fact over variables, where the body unfolds, and instantiate it at the literal
+(`Literals.bltIsLt`, found by the review; a first version of this proof changed the checker instead):
+
+```raccoon
+def bltIsLt (n: Nat)(m: Nat): Eq(Bool, Nat.blt(n, m), Nat.ble(Nat.succ(n), m)) := Eq.refl(Nat.blt(n, m))
+// then Eq.trans(Eq.symm(Literals.bltIsLt(n, Cuda.u32Limit)), h) : Nat.lt(n, Cuda.u32Limit)
+```
+
+So conversion and substitution disagree: `Nat.blt(n, L)` is not convertible to its definition, but an equation
+proved for all `m` holds at `L`. The trap is that the failure is silent until a cast is tried, and the fix is not
+obvious from the message.
 
 *Feature:* let a native operation whose declared body is not recursive (`blt`, and wrappers like it) unfold that one
-layer on neutral arguments, since the limit exists only to bound recursive unfolding; or ship the native equations
-as trusted propositional lemmas (they are obligation T5 already).
+layer on neutral arguments, since the limit exists only to bound recursive unfolding; or a normalizer (`simp`) that
+knows such unfolding lemmas.
 
 ### F2. No `inspect`: matching a computed value refines nothing
 
@@ -249,7 +261,7 @@ def t (n: Nat)(h: Eq(Nat, E.g(n), 0)): Eq(Bool, Nat.isZero(n), Bool.true) := {
 a variable. `Check.unless(found, ok, message)` does that by taking the decision as an argument, which is why most of
 these proofs are easy: `unlessOk` is stated over a variable `ok` and applied to the checker's expression. Where a
 checker matched a computed value itself, it was restructured to take it as an argument (`Check.barrierAt`,
-`Check.declared`, `Check.useVar`), or a lemma was stated over a Bool variable and applied to the expression
+`Check.declaration`, `Check.useVar`), or a lemma was stated over a Bool variable and applied to the expression
 (`SharedMemory.orNot`, `notPositive`, `Launch.countCases`).
 
 Where the match is inside a function the proof reasons about (`Check.sameChars` matches `Nat.beq(c.value,
@@ -305,7 +317,7 @@ Fold.unlessOk(List.nil(String), Nat.blt(offset, bytes), SharedMemory.offsetMessa
 
 The second restates the checker's message text (`offsetMessage`), only to state `here`'s type; a wrong text is a type
 mismatch, so this is brittle rather than unsound. Each per-checker file restates the checker's messages for this
-alone: `Names` 5 message definitions, `Launch` 6, `Barriers` 3 and one text twice inline, `SharedMemory` 2 and 2
+alone: `Names` 5 message definitions, `Launch` 6, `Barriers` 3 and one text three times inline, `SharedMemory` 2 and 2
 inline, `Literals` 2 texts in 4 lemmas, `Scoping` 5 texts in 12 places. The accumulators are as bad: the proof must
 write the checker's intermediate results (`Check.blockFold(List(String), k.body, size, Check.staticStep(bytes))`,
 `Scoping.used(v, s, st)`) to name the point it reasons about, and most `let`s in the proofs exist to name them.
@@ -429,7 +441,7 @@ Fixing it reveals the next, one check run at a time. *Feature:* report each fail
 
 The checkers that carry state beyond a list of messages (`namedBarriers`' seen ids, `scoping`'s visible and seen
 sets) fit `Fold`'s lemmas only in part. For I3 a fusion lemma turned the walk into a list fold; for I1 the visible
-set changes with the block structure, so the walk is not a fold over program order, and eight mutual recursions
+set changes with the block structure, so the walk is not a fold over program order, and six mutual recursions
 (`ownFound`/`blockAcc`, `stmtSeen`/`blockSeen`, `stmtInScope`/`blockInScope`, `seenAfterStmt`/`seenAfterBlock`,
 `freshStmt`/`freshBlock`, `distinctStmt`/`distinctBlock`) restate the traversal. The distinctness half of I1 is the I3
 argument again, over a tree instead of a list.
