@@ -133,6 +133,78 @@ namespace Spec {
   // The kernel has no `#error` line.
   def NoErrors (k: Kernel): Prop := (m: String) -> Spec.InBlock(Stmt.error(m), k.body) -> False
 
+  // ---- I1, scoping --------------------------------------------------------------------------------------------------
+
+  // The variables `s` declares for the rest of its block: a declaration's and a shared array's.
+  def declaredBy (s: Stmt): List(Nat) := {
+    match s returning List(Nat) with
+    | Stmt.decl t id init => List.cons(id, List.nil(Nat))
+    | Stmt.declMut t id init => List.cons(id, List.nil(Nat))
+    | Stmt.declOut t id => List.cons(id, List.nil(Nat))
+    | Stmt.assign id value => List.nil(Nat)
+    | Stmt.store base i value => List.nil(Nat)
+    | Stmt.shared t id size => List.cons(id, List.nil(Nat))
+    | Stmt.forLoop id start count body => List.nil(Nat)
+    | Stmt.forStride id start stop step body => List.nil(Nat)
+    | Stmt.ifElse c yes no => List.nil(Nat)
+    | Stmt.scoped body => List.nil(Nat)
+    | Stmt.sync => List.nil(Nat)
+    | Stmt.syncWarp => List.nil(Nat)
+    | Stmt.asm template outs ins => List.nil(Nat)
+    | Stmt.error message => List.nil(Nat)
+  }
+
+  mutual {
+    // `x` occurs in `s`, where the variables `vars` are in scope, and `visible` at `x`. A loop's variable is
+    // in scope in its body.
+    inductive StmtScope (x: Stmt)(visible: List(Nat)) indices (vars: List(Nat))(s: Stmt) : Prop
+     | here : StmtScope(x, visible, visible, x)
+     | forLoop (vars: List(Nat))(id: Nat)(start: Expr)(count: Expr)(body: Block)(h: BlockScope(x, visible, List.cons(id, vars), body))
+         : StmtScope(x, visible, vars, Stmt.forLoop(id, start, count, body))
+     | forStride (vars: List(Nat))(id: Nat)(start: Expr)(stop: Expr)(step: Expr)(body: Block)(h: BlockScope(x, visible, List.cons(id, vars), body))
+         : StmtScope(x, visible, vars, Stmt.forStride(id, start, stop, step, body))
+     | ifYes (vars: List(Nat))(c: Expr)(yes: Block)(no: Block)(h: BlockScope(x, visible, vars, yes)) : StmtScope(x, visible, vars, Stmt.ifElse(c, yes, no))
+     | ifNo (vars: List(Nat))(c: Expr)(yes: Block)(no: Block)(h: BlockScope(x, visible, vars, no)) : StmtScope(x, visible, vars, Stmt.ifElse(c, yes, no))
+     | scoped (vars: List(Nat))(body: Block)(h: BlockScope(x, visible, vars, body)) : StmtScope(x, visible, vars, Stmt.scoped(body))
+
+    // `x` occurs in `b`, where `vars` are in scope, and `visible` at `x`. A block is a C scope: what a
+    // statement declares is in scope for the rest of it.
+    inductive BlockScope (x: Stmt)(visible: List(Nat)) indices (vars: List(Nat))(b: Block) : Prop
+     | head (vars: List(Nat))(s: Stmt)(rest: Block)(h: StmtScope(x, visible, vars, s)) : BlockScope(x, visible, vars, Block.seq(s, rest))
+     | tail (vars: List(Nat))(s: Stmt)(rest: Block)(h: BlockScope(x, visible, List.append(Spec.declaredBy(s), vars), rest))
+         : BlockScope(x, visible, vars, Block.seq(s, rest))
+  }
+
+  // Statement `s` uses variable `id` itself: in one of its expressions, or as an assignment's target.
+  inductive Uses (id: Nat) indices (s: Stmt) : Prop
+   | expr (s: Stmt)(h: OwnExpr(Expr.var(id), s)) : Uses(id, s)
+   | target (value: Expr) : Uses(id, Stmt.assign(id, value))
+
+  // Statement `s` declares id `id`: a declaration, a shared array, or a loop's variable.
+  inductive Binds (id: Nat) indices (s: Stmt) : Prop
+   | decl (t: DType)(init: Expr) : Binds(id, Stmt.decl(t, id, init))
+   | declMut (t: DType)(init: Expr) : Binds(id, Stmt.declMut(t, id, init))
+   | declOut (t: DType) : Binds(id, Stmt.declOut(t, id))
+   | shared (t: DType)(size: Nat) : Binds(id, Stmt.shared(t, id, size))
+   | forLoop (start: Expr)(count: Expr)(body: Block) : Binds(id, Stmt.forLoop(id, start, count, body))
+   | forStride (start: Expr)(stop: Expr)(step: Expr)(body: Block) : Binds(id, Stmt.forStride(id, start, stop, step, body))
+
+  // An expression only the device can evaluate: a variable, a thread, block or grid index, an array element (arrays
+  // are device memory), or the dynamic shared buffer.
+  inductive DeviceOnly indices (x: Expr) : Prop
+   | var (id: Nat) : DeviceOnly(Expr.var(id))
+   | special (b: Builtin) : DeviceOnly(Expr.special(b))
+   | element (base: Expr)(i: Expr) : DeviceOnly(Expr.index(base, i))
+   | sharedAddr (offset: Nat) : DeviceOnly(Expr.sharedAddr(offset))
+   | sharedPtr (t: DType)(offset: Nat) : DeviceOnly(Expr.sharedPtr(t, offset))
+
+  // I1: each statement uses only variables in scope where it stands, no two statements declare one id, and the
+  // launcher evaluates nothing only the device can.
+  struct Scoping (k: Kernel) : Prop
+   | mk (inScope: (x: Stmt) -> (visible: List(Nat)) -> Spec.BlockScope(x, visible, List.nil(Nat), k.body) -> (id: Nat) -> Spec.Uses(id, x) -> Mem(Nat, id, visible))
+        (once: (x: Stmt) -> (y: Stmt) -> (id: Nat) -> Spec.Before(Stmt, x, y, Spec.statements(k.body)) -> Spec.Binds(id, x) -> Spec.Binds(id, y) -> False)
+        (host: (x: Expr) -> Spec.HostExpr(k, x) -> Spec.DeviceOnly(x) -> False) : Scoping(k)
+
   // ---- I2, shared memory --------------------------------------------------------------------------------------------
 
   // The dynamic shared memory an sm_100a CTA can have.

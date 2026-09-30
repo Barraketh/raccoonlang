@@ -322,38 +322,41 @@ namespace Check {
   // generating (`Gpu.check`) ends up as one.
   def errors (k: Kernel): List(String) := Check.inOrder(Check.blockFold(List(String), k.body, List.nil(String), Check.errorStep))
 
-  // A use of variable `id` where `visible` holds the variables in scope; `st.seen` holds those declared so far.
-  def useVar (visible: NatSet)(st: Scan)(id: Nat): Scan := {
-    match Check.NatSet.member(visible, id) returning Scan with
-    | Bool.true => st
-    | Bool.false => {
-      let why := {
-        match Check.NatSet.member(st.seen, id) returning String with
-        | Bool.true => " used outside the scope of its declaration"
-        | Bool.false => " used before its declaration"
-      }
-      Scan.mk(st.seen, List.cons(Text.cat(Cuda.name(id), why), st.found))
+  // Why variable `id` is not in scope, where `seen` holds the variables declared so far.
+  def unscoped (seen: NatSet)(id: Nat): Unit -> String := fun (u: Unit): String => {
+    let why := {
+      match Check.NatSet.member(seen, id) returning String with
+      | Bool.true => " used outside the scope of its declaration"
+      | Bool.false => " used before its declaration"
     }
+    Text.cat(Cuda.name(id), why)
   }
 
-  def useIn (visible: NatSet)(st: Scan)(x: Expr): Scan := {
-    match Check.leaf(x) returning Scan with
-    | Leaf.other => st
-    | Leaf.var id => Check.useVar(visible, st, id)
-    | Leaf.special b => st
-    | Leaf.element => st
-    | Leaf.lit32 value => st
-    | Leaf.lit64 value => st
-    | Leaf.param name => st
-    | Leaf.shared offset => st
+  // A use of variable `id` where `visible` holds the variables in scope and `seen` those declared so far.
+  def useVar (visible: NatSet)(seen: NatSet)(found: List(String))(id: Nat): List(String) :=
+    Check.unless(found, Check.NatSet.member(visible, id), Check.unscoped(seen, id))
+
+  // The variables an expression uses, which must be in scope.
+  def useStep (visible: NatSet)(seen: NatSet): List(String) -> Expr -> List(String) := fun (found: List(String))(x: Expr): List(String) => {
+    match Check.leaf(x) returning List(String) with
+    | Leaf.other => found
+    | Leaf.var id => Check.useVar(visible, seen, found, id)
+    | Leaf.special b => found
+    | Leaf.element => found
+    | Leaf.lit32 value => found
+    | Leaf.lit64 value => found
+    | Leaf.param name => found
+    | Leaf.shared offset => found
   }
 
-  // A declaration of variable `id`, which must be its first.
-  def declare (st: Scan)(id: Nat): Scan := {
-    match Check.NatSet.member(st.seen, id) returning Scan with
-    | Bool.true => Scan.mk(st.seen, List.cons(Text.cat(Cuda.name(id), " declared twice"), st.found))
-    | Bool.false => Scan.mk(Check.NatSet.insert(st.seen, id), st.found)
+  // A declaration of variable `id`, which must be its first, where `isSeen` is whether `seen` has it.
+  def declared (seen: NatSet)(found: List(String))(id: Nat)(isSeen: Bool): Scan := {
+    match isSeen returning Scan with
+    | Bool.true => Scan.mk(seen, List.cons(Text.cat(Cuda.name(id), " declared twice"), found))
+    | Bool.false => Scan.mk(Check.NatSet.insert(seen, id), found)
   }
+
+  def declare (st: Scan)(id: Nat): Scan := Check.declared(st.seen, st.found, id, Check.NatSet.member(st.seen, id))
 
   // The variables in scope after statement `s`, where `visible` holds those in scope before it.
   def after (visible: NatSet)(s: Stmt): NatSet := {
@@ -378,12 +381,12 @@ namespace Check {
     // The scoping walk through statement `s`, where `visible` holds the variables in scope. A declaration's initializer
     // and a loop's header are outside the name they declare; a loop's variable is in scope in its body.
     def scopeStmt (visible: NatSet)(s: Stmt)(st: Scan): Scan decreases structural(s) := {
-      let used := Check.stmtExprs(Scan, s, st, fun (a: Scan)(x: Expr): Scan => Check.useIn(visible, a, x))
+      let used := Scan.mk(st.seen, Check.stmtExprs(List(String), s, st.found, Check.useStep(visible, st.seen)))
       match s returning Scan with
       | Stmt.decl t id init => Check.declare(used, id)
       | Stmt.declMut t id init => Check.declare(used, id)
       | Stmt.declOut t id => Check.declare(used, id)
-      | Stmt.assign id value => Check.useVar(visible, used, id)
+      | Stmt.assign id value => Scan.mk(st.seen, Check.useVar(visible, st.seen, used.found, id))
       | Stmt.store base i value => used
       | Stmt.shared t id size => Check.declare(used, id)
       | Stmt.forLoop id start count body => Check.scopeBlock(Check.NatSet.insert(visible, id), body, Check.declare(used, id))
@@ -404,23 +407,26 @@ namespace Check {
     }
   }
 
+  // What the launcher evaluates, which must be host values.
+  def hostUse (found: List(String))(x: Expr): List(String) := {
+    match Check.leaf(x) returning List(String) with
+    | Leaf.other => found
+    | Leaf.var id => List.cons(Text.cat3("launcher: ", Cuda.name(id), " is not a host variable"), found)
+    | Leaf.special b => List.cons("launcher: a thread, block or grid index is not a host value", found)
+    | Leaf.element => List.cons("launcher: an array element is device memory, not a host value", found)
+    | Leaf.lit32 value => found
+    | Leaf.lit64 value => found
+    | Leaf.param name => found
+    | Leaf.shared offset => List.cons("launcher: dynamic shared memory is not host memory", found)
+  }
+
   // I1, scoping: each variable is declared once in the kernel, and used (in an expression, an asm operand, or as an
   // assignment's target) only in the C scope of its declaration and after it. The launcher runs on the host, where no
   // variable, thread, block or grid index, dynamic shared buffer or array element (the arrays are device memory) is in
   // scope.
   def scoping (k: Kernel): List(String) := {
     let body := Check.scopeBlock(NatSet.empty, k.body, Scan.mk(NatSet.empty, List.nil(String)))
-    Check.inOrder(Check.hostExprs(List(String), k.launcher, body.found, fun (found: List(String))(x: Expr): List(String) => {
-      match Check.leaf(x) returning List(String) with
-      | Leaf.other => found
-      | Leaf.var id => List.cons(Text.cat3("launcher: ", Cuda.name(id), " is not a host variable"), found)
-      | Leaf.special b => List.cons("launcher: a thread, block or grid index is not a host value", found)
-      | Leaf.element => List.cons("launcher: an array element is device memory, not a host value", found)
-      | Leaf.lit32 value => found
-      | Leaf.lit64 value => found
-      | Leaf.param name => found
-      | Leaf.shared offset => List.cons("launcher: dynamic shared memory is not host memory", found)
-    }))
+    Check.inOrder(Check.hostExprs(List(String), k.launcher, body.found, Check.hostUse))
   }
 
   // The dynamic shared memory an sm_100a CTA can have.

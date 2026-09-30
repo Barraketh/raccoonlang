@@ -14,11 +14,12 @@ Line counts are of the files as committed, comments included.
 | (shared) | | `Lib.rac`: Bool, Nat, List and string facts | 184 | done |
 | (shared) | | `NatSet.rac`: `Check.NatSet` is a set | 148 | done |
 | `errors` | `NoErrors`, 5 lines | `Errors.rac` | 32 | proved |
+| I1 `scoping` | `Scoping`, `StmtScope`, `BlockScope`, `declaredBy`, `Uses`, `Binds`, `DeviceOnly`, 72 lines | `Scoping.rac` | 514 | proved |
 | I2 `sharedMemory` | `SharedMemory`, `SharedAt`, 18 lines | `SharedMemory.rac` | 109 | proved |
 | I3 `namedBarriers` | `NamedBarriers`, `BarrierIds`, `BarrierCounts`, `Barrier`, `LiteralOperands`, 29 lines | `Barriers.rac` | 273 | proved |
 | I4 `literals` | `Literals`, `Lit32`, `Lit64`, 25 lines | `Literals.rac` | 108 | proved |
 | I5 `names` | `Names`, `Chosen`, `CIdent`, `PrinterName`, `Declared`, `Twice`, …, 60 lines | `Names.rac` | 266 | proved |
-| I6 `launcher` | `LauncherOk`, `Launched`, `NotMap`, 19 lines | `Launcher.rac` | 327 | proved |
+| I6 `launcher` | `LauncherOk`, `Launched`, `NotMap`, 19 lines | `Launcher.rac` | 317 | proved |
 
 ## The shape of every proof
 
@@ -87,6 +88,27 @@ encodings' names and not `Twice` there; and every encoding names a `tensorMap` o
 bounds with `Nat.ble`, since `count = 1` is what the checker tests). `Check.count` was a `List.foldl` with a `Nat`
 accumulator; it became a direct recursion, so the bounds are proved by induction on the maps without a lemma relating
 the accumulator to the prefix walked.
+
+**I1, scoping.** Spec: `BlockScope(x, visible, [], k.body)` relates each statement `x` of the body to the variables
+in scope where it stands: a block extends the scope of the rest of it by what a statement declares (`declaredBy`: a
+declaration's or a shared array's id), and a loop's body has the loop's variable; every variable `x` `Uses` (in an
+expression it holds itself, or as an assignment's target) is in `visible`. No two statements, one `Before` the other
+in program order, `Binds` one id (declarations, shared arrays and loop variables). No expression the launcher
+evaluates is `DeviceOnly` (a variable, a thread index, an array element, the shared buffer).
+
+The proof carries `Within(v, vars)`, that the checker's set `v` of visible variables holds only variables of the
+spec's scope; `NatSets.fromInsert` keeps it across a declaration and a loop. That gives the uses (`stmtInScope`,
+`blockInScope`, a mutual recursion over the occurrence proof). Distinctness is the barrier argument over a tree:
+`seen` only grows (`stmtSeen`, `blockSeen`), what a statement binds is fresh when it is declared (`bindsFresh`) and
+seen after it (`seenAfterStmt`, `seenAfterBlock`), and a statement does not bind what was seen before it
+(`freshStmt`, `freshBlock`); two places in program order are split along `Spec.statements`' appends (`memSplit`,
+`beforeSplit`, `blockCases`). Most of the 514 lines are those six mutual recursions, each of which splits on the
+statement to reach its blocks (14 arms, 10 of which say "no blocks").
+
+The checker's use of a variable went through `unless` (`useVar`, its message named `unscoped`); its expression walk
+became a `List(String)` fold (`useStep`, closing over the `seen` set, which the walk of one statement's expressions
+never changes), so `Fold`'s lemmas apply; a declaration takes whether its id was seen as an argument (`declared`);
+the launcher's step is `hostUse`. Messages and order are unchanged.
 
 **`Check.NatSet`.** The trie branched on `Nat.isZero(Nat.mod(m, 2))` and recursed on `Nat.div(m, 2)`, and a node held
 a Bool. Its soundness (a member was inserted) then rests on distinct numbers having distinct paths, which is
@@ -314,11 +336,23 @@ fun (n: String): Not(Spec.Twice(String, n, names)) => fun (twice: Spec.Twice(Str
 The message is clear once one knows the rule; the rule itself (grouping is part of a type's identity) is the cost.
 *Feature:* none for the kernel; an `intro`-style tactic would hide it.
 
+### F11. Scope-carrying walks need their own induction
+
+The checkers that carry state beyond a list of messages (`namedBarriers`' seen ids, `scoping`'s visible and seen
+sets) fit `Fold`'s lemmas only in part. For I3 a fusion lemma turned the walk into a list fold; for I1 the visible
+set changes with the block structure, so the walk is not a fold over program order, and six mutual recursions
+restate the traversal. The distinctness half of I1 is the I3 argument again, over a tree instead of a list.
+
+*Feature:* a derived induction principle for a walk (Coq's functional induction, Lean's `fun_induction`), which
+would give each lemma the checker's own case structure; or a generic "state-threading traversal" with its lemmas
+proved once.
+
 ### F10. A namespace's name shadows the type it is about
 
 A proof module about launchers cannot be `namespace Launcher`: inside it, `Launcher` resolves to the namespace
 before the opened `Cuda.Launcher`, and a binder `(l: Launcher)` is `Launcher not found`; renamed `Launch`. Similarly
-`indices` is a keyword, so `let indices := …` is a parse error (`Failed to parse pattern`).
+`indices` is a keyword, so `let indices := …` is a parse error (`Failed to parse pattern`), and so is `scope`, as a
+parameter name (`Failed to parse Sym(:)`).
 
 ### F9. Declaring an inductive whose field applies `Nat.mod` to a variable takes exponential time
 
