@@ -206,7 +206,9 @@ object Packed {
         diagnostic.error match {
           case _: NativeOperationDeclarationMismatch => throw diagnostic
           case error =>
-            throw diagnostic.copy(error = NativeOperationDeclarationMismatch(name, ErrorRendering.render(error)))
+            throw diagnostic.copy(error =
+              NativeOperationDeclarationMismatch(name, ErrorRendering.render(error, env.nativeLiterals.stringLayout))
+            )
         }
       // A broken kernel invariant is not a fact about this declaration; let it through untouched.
       case internal: InternalError => throw internal
@@ -382,7 +384,9 @@ object Packed {
         diagnostic.error match {
           case _: StringLiteralUnavailable => throw diagnostic
           case error =>
-            throw diagnostic.copy(error = StringLiteralUnavailable(ErrorRendering.render(error)))
+            throw diagnostic.copy(error =
+              StringLiteralUnavailable(ErrorRendering.render(error, env.nativeLiterals.stringLayout))
+            )
         }
       // A broken kernel invariant is not a fact about the layout; let it through untouched.
       case internal: InternalError => throw internal
@@ -416,7 +420,13 @@ object Packed {
       "String.mk" -> stringMk
     ).foreach { case (name, value) => requireClosed(name, value) }
 
-    new SourceStringLayout(string, stringMk, inputs.charListCodec)
+    // Found once, by applying `Char.ofNat` to a fresh variable, so that printing never evaluates.
+    val scalar = FreshVar.freshVar("value", inputs.charListCodec.natTpe)
+    val charConstructor = Interpreter.evalApply(inputs.charListCodec.charOfNat, Vector(scalar)) match {
+      case VCtor(head, Vector(Var(_, id, _)), _) if id == scalar.id => Some(head.name)
+      case _                                                        => None
+    }
+    new SourceStringLayout(string, stringMk, inputs.charListCodec, charConstructor)
   }
 
   private[raccoonlang] def evalNatLit(value: BigInt, env: Env): Value =

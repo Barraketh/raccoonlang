@@ -28,9 +28,9 @@ trait TestSupport extends DiagnosticAssertions { this: munit.FunSuite =>
       val checked = TypeChecker.check(Elaborator.elaborate(parseSurface(source), prelude))
       Interpreter.run(checked).getOrElse(fail("Program has no body"))
     } catch {
-      case Execution.CheckFailure(diagnostics) =>
-        fail(diagnostics.map(ErrorReporter.pretty(_, Source(source))).mkString)
-      case diagnostic: Diagnostic => fail(ErrorReporter.pretty(diagnostic, Source(source)))
+      case Execution.CheckFailure(diagnostics, strings) =>
+        fail(diagnostics.map(ErrorReporter.pretty(_, Source(source), strings)).mkString)
+      case diagnostic: Diagnostic => fail(ErrorReporter.pretty(diagnostic, Source(source), None))
     }
 
   protected def runProgram(source: String): Value = runProgram(source, suitePrelude)

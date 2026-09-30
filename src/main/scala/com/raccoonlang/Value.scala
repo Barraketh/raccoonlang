@@ -996,13 +996,20 @@ object Value {
   sealed abstract class ValidatedStringLayout private[raccoonlang] {
     def stringTpe: Value
     def charListCodec: CharListCodec
+
+    /**
+     * The constructor `Char.ofNat` applies to its argument, when its result is exactly that constructor over it: then
+     * `Char.ofNat(s)` is that constructor over `s`, so a character it makes names its scalar (PrettyPrinter).
+     */
+    def charConstructor: Option[String]
     private[raccoonlang] def eval(scalars: Vector[Int]): Value
   }
 
   final class SourceStringLayout private[raccoonlang] (
       val stringTpe: Value,
       val stringMk: ConstructorHead,
-      val charListCodec: CharListCodec
+      val charListCodec: CharListCodec,
+      val charConstructor: Option[String]
   ) extends ValidatedStringLayout {
     override private[raccoonlang] def eval(scalars: Vector[Int]): Value =
       Interpreter.evalApply(stringMk, Vector(VPacked.charList(charListCodec, scalars)))

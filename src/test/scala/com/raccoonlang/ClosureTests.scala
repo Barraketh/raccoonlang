@@ -78,7 +78,7 @@ class ClosureTests extends munit.FunSuite with TestSupport {
   }
 
   test("a mismatch between function types that differ in their closures names the closure fields that differ") {
-    def rendered(source: String): String = ErrorRendering.render(expectOnly[TypeMismatch](typecheckDecls(source)))
+    def rendered(source: String): String = ErrorRendering.render(expectOnly[TypeMismatch](typecheckDecls(source)), None)
 
     assertEquals(
       rendered("def f (l: Lifetime)(g: { scope = l } Unit -> Nat): { kind = lin } Unit -> Nat := g\n"),
@@ -109,7 +109,10 @@ class ClosureTests extends munit.FunSuite with TestSupport {
     typecheckDecls(program("Type { kind = lin, scope = l }"))
     expectOnly[KindExceeded](typecheckDecls(program("Type { scope = l }")))
     // The closure's scope can name only a lifetime parameter, which the family must name in any case (spec §5.1).
-    assert(expectOnly[ScopeExceeded](typecheckDecls(program("Type { kind = lin }"))).part.startsWith("lifetime"))
+    assertEquals(
+      expectOnly[ScopeExceeded](typecheckDecls(program("Type { kind = lin }"))).part,
+      ContainedPart.LifetimeParameter("l")
+    )
   }
 
   test("a linear closure into a proposition is LinearProp") {
@@ -219,10 +222,10 @@ class ClosureTests extends munit.FunSuite with TestSupport {
     typecheckDecls(program("{ kind = lin, scope = l }", "eat(t)", "g(Unit.unit)"))
     typecheckDecls(program("{ kind = lin, scope = l }", "0", "Nat.add(g(Unit.unit), eat(t))"))
     val kind = expectOnly[KindExceeded](typecheckDecls(program("{ kind = unr, scope = l }", "eat(t)", "g(Unit.unit)")))
-    assert(kind.part.contains("capture t"), kind.part)
+    assert(PartialFunction.cond(kind.part) { case ContainedPart.Capture("t", _) => true }, kind.part)
     val scope =
       expectOnly[ScopeExceeded](typecheckDecls(program("{ kind = lin, scope = empty }", "eat(t)", "g(Unit.unit)")))
-    assert(scope.part.contains("capture t"), scope.part)
+    assert(PartialFunction.cond(scope.part) { case ContainedPart.Capture("t", _) => true }, scope.part)
     expectOnly[ScopeExceeded](typecheckDecls(program("{ scope = empty }", "useV(v)", "Nat.add(g(Unit.unit), eat(t))")))
     // Each omitted field is derived on its own.
     typecheckDecls(program("{ kind = lin }", "eat(t)", "g(Unit.unit)"))

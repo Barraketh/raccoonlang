@@ -25,7 +25,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
     val root = VConst("f", Symbol, grouped)
     val tail = Projection
       .project(Projection.Spec(0, Vector(Projection.Step.Tpe, Projection.Step.PiCodomain)), Vector(root))
-      .fold(fail(_), identity)
+      .fold(failure => fail(failure.toString), identity)
 
     assertEquals(tail.asInstanceOf[VPi].binders.map(_.localRef), Vector(y.localRef))
     assert(

@@ -73,14 +73,17 @@ class MutualSiblingSortTests extends munit.FunSuite with TestSupport {
          |""".stripMargin
 
     val kinds = expectOnly[KindExceeded](typecheckDecls(block("Type { kind = lin }", "B", "Type", "A")))
-    assertEquals((kinds.declaration, kinds.part), ("Family B", "field B.mk.a : A"))
+    def isFieldAOfBMk(part: ContainedPart): Boolean =
+      PartialFunction.cond(part) { case ContainedPart.Field("B.mk.a", tpe) => PrettyPrinter.print(tpe) == "A" }
+    assertEquals(kinds.declaration, "Family B")
+    assert(isFieldAOfBMk(kinds.part), kinds.part)
     val levels = expectOnly[InductiveUniverseTooSmall](
       typecheckDecls(block("Type", "B", "Sort { level = succ(one) }", "A"))
     )
     assertEquals((levels.inductive, levels.where), ("A", "A.mk.b"))
     // A proposition holds no linear field, a linear sibling's included.
     val proposition = expectOnly[KindExceeded](typecheckDecls(block("Type { kind = lin }", "B", "Prop", "A")))
-    assertEquals(proposition.part, "field B.mk.a : A")
+    assert(isFieldAOfBMk(proposition.part), proposition.part)
   }
 
   test("a proposition holding a data sibling eliminates like any proposition holding data") {

@@ -2,7 +2,8 @@ package com.raccoonlang
 
 /**
  * Renders diagnostics as text. Positions are 1-based `file:line:column`; the underline covers the span, clamped to its
- * first line.
+ * first line. Messages print their values with `strings`, the `String` layout of the environment the program was
+ * checked in (`ErrorRendering`).
  */
 object ErrorReporter {
 
@@ -48,22 +49,34 @@ object ErrorReporter {
   ): Option[ModuleLoader.LoadedSource] =
     span.source.flatMap(sourceId => sources.find(_.sourceId == sourceId)).orElse(sources.headOption)
 
-  def pretty(diagnostic: Diagnostic, source: Source): String =
-    render(diagnostic, path = None, source)
+  def pretty(diagnostic: Diagnostic, source: Source, strings: Option[Value.ValidatedStringLayout]): String =
+    render(diagnostic, path = None, source, strings)
 
-  def pretty(diagnostic: Diagnostic, loaded: ModuleLoader.LoadedProgram): String =
-    pretty(diagnostic, loaded.sources)
+  def pretty(
+      diagnostic: Diagnostic,
+      loaded: ModuleLoader.LoadedProgram,
+      strings: Option[Value.ValidatedStringLayout]
+  ): String =
+    pretty(diagnostic, loaded.sources, strings)
 
-  def pretty(diagnostic: Diagnostic, sources: Vector[ModuleLoader.LoadedSource]): String =
+  def pretty(
+      diagnostic: Diagnostic,
+      sources: Vector[ModuleLoader.LoadedSource],
+      strings: Option[Value.ValidatedStringLayout]
+  ): String =
     sourceFor(diagnostic.span.getOrElse(Span(0, 0)), sources) match {
       case Some(loadedSource) =>
-        render(diagnostic, Some(loadedSource.path.toString), Source(loadedSource.source))
-      case None => diagnostic.getMessage
+        render(diagnostic, Some(loadedSource.path.toString), Source(loadedSource.source), strings)
+      case None => ErrorRendering.render(diagnostic.error, strings)
     }
 
   /** Every diagnostic of a run, in order. Each report already starts and ends with a blank line. */
-  def pretty(diagnostics: Vector[Diagnostic], sources: Vector[ModuleLoader.LoadedSource]): String =
-    diagnostics.map(pretty(_, sources)).mkString
+  def pretty(
+      diagnostics: Vector[Diagnostic],
+      sources: Vector[ModuleLoader.LoadedSource],
+      strings: Option[Value.ValidatedStringLayout]
+  ): String =
+    diagnostics.map(pretty(_, sources, strings)).mkString
 
   /** A kernel bug is not a diagnostic about the program: no excerpt, no "error:". */
   def pretty(internal: InternalError, sources: Vector[ModuleLoader.LoadedSource]): String = {
@@ -79,7 +92,12 @@ object ErrorReporter {
   }
 
   /** Headline, source line, underline (at least one column; tabs preserved for alignment), detail, notes. */
-  private def render(diagnostic: Diagnostic, path: Option[String], source: Source): String = {
+  private def render(
+      diagnostic: Diagnostic,
+      path: Option[String],
+      source: Source,
+      strings: Option[Value.ValidatedStringLayout]
+  ): String = {
     val span = diagnostic.span.getOrElse(Span(0, 0))
     val pos = positionIn(source, span)
     val line = source.getLine(math.max(0, math.min(span.start, source.s.length)))
@@ -90,7 +108,7 @@ object ErrorReporter {
     val indent = text.take(startColumn).map(ch => if (ch == '\t') '\t' else ' ')
     val where = path.fold("")(p => s"$p:")
     // A message's first line is its headline; any detail follows the source excerpt it is about.
-    val (headline, detail) = diagnostic.getMessage.span(_ != '\n')
+    val (headline, detail) = ErrorRendering.render(diagnostic.error, strings).span(_ != '\n')
     val notes = diagnostic.frames.map(frame => s"\nnote: in ${renderFrame(frame)}").mkString
     s"""
        |$where${pos.line}:${pos.column}: error: $headline

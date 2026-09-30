@@ -426,23 +426,10 @@ object PrettyPrinter {
    */
   private final class StringReader(strings: Option[Value.ValidatedStringLayout]) {
 
-    /**
-     * The constructor `Char.ofNat` applies to its argument, when its result is exactly that constructor over it: then
-     * `Char.ofNat(s)` is that constructor over `s`, so the character it makes names its scalar. Found by applying it to
-     * a fresh variable.
-     */
-    private lazy val charConstructor: Option[String] = strings.flatMap { layout =>
-      val codec = layout.charListCodec
-      val scalar = FreshVar.freshVar("value", codec.natTpe)
-      Interpreter.evalApply(codec.charOfNat, Vector(scalar)) match {
-        case Value.VCtor(head, Vector(Value.Var(_, id, _)), _) if id == scalar.id => Some(head.name)
-        case _                                                                    => None
-      }
-    }
-
     private def scalar(char: Value): Option[Int] =
       char match {
-        case Value.VCtor(head, Vector(code: Value.VPacked), _) if charConstructor.contains(head.name) =>
+        case Value.VCtor(head, Vector(code: Value.VPacked), _)
+            if strings.exists(_.charConstructor.contains(head.name)) =>
           code.natValue.filter(n => n.isValidInt && UnicodeScalarString.isScalar(n.toInt)).map(_.toInt)
         case _ => None
       }

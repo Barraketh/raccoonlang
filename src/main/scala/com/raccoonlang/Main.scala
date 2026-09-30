@@ -119,10 +119,17 @@ object Main {
 
     var loadedOpt = Option.empty[ModuleLoader.LoadedProgram]
 
-    /** Report every diagnostic of the run, as the array a tool reads or as the text a reader reads; the exit code. */
-    def report(diagnostics: Vector[Diagnostic], sources: Vector[ModuleLoader.LoadedSource]): Int = {
-      if (parsedArgs.json) println(DiagnosticJson.render(diagnostics, sources))
-      else System.err.println(ErrorReporter.pretty(diagnostics, sources))
+    /**
+     * Report every diagnostic of the run, as the array a tool reads or as the text a reader reads, printing values with
+     * `strings`; the exit code.
+     */
+    def report(
+        diagnostics: Vector[Diagnostic],
+        sources: Vector[ModuleLoader.LoadedSource],
+        strings: Option[Value.ValidatedStringLayout]
+    ): Int = {
+      if (parsedArgs.json) println(DiagnosticJson.render(diagnostics, sources, strings))
+      else System.err.println(ErrorReporter.pretty(diagnostics, sources, strings))
       1
     }
 
@@ -154,10 +161,10 @@ object Main {
         val checked = TypeChecker.check(elaborated)
         log("Checked")
         val resOpt = Interpreter.run(checked)
-        if (parsedArgs.json) println(DiagnosticJson.render(Vector.empty, Vector.empty))
+        if (parsedArgs.json) println(DiagnosticJson.render(Vector.empty, Vector.empty, None))
         else
           resOpt.foreach { result =>
-            val strings = prelude.checkedEnv.nativeLiterals.stringLayout
+            val strings = checked.strings
             val raw = if (parsedArgs.raw) PrettyPrinter.rawString(result, strings) else None
             raw match {
               // A String's characters exactly: in UTF-8, the encoding of source text, whatever the platform's, and with
@@ -172,13 +179,15 @@ object Main {
         log("Done")
         0
       } catch {
+        // Nothing has been checked when loading fails, so there is no String layout to print with.
         case ModuleLoader.LoadFailure(diagnostic, sources) =>
-          report(Vector(diagnostic), sources)
-        case Execution.CheckFailure(diagnostics) =>
-          report(diagnostics, loadedOpt.map(_.sources).getOrElse(Vector.empty))
-        // Elaboration fails fast with a lone diagnostic.
+          report(Vector(diagnostic), sources, None)
+        case Execution.CheckFailure(diagnostics, strings) =>
+          report(diagnostics, loadedOpt.map(_.sources).getOrElse(Vector.empty), strings)
+        // Elaboration fails fast with a lone diagnostic, which holds no value. So does checking the prelude, whose
+        // diagnostics print with no String layout, since its layout is installed only once it has been checked.
         case diagnostic: Diagnostic =>
-          report(Vector(diagnostic), loadedOpt.map(_.sources).getOrElse(Vector.empty))
+          report(Vector(diagnostic), loadedOpt.map(_.sources).getOrElse(Vector.empty), None)
         case internal: InternalError =>
           System.err.println(ErrorReporter.pretty(internal, loadedOpt.map(_.sources).getOrElse(Vector.empty)))
           internal.printStackTrace()

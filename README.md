@@ -129,15 +129,17 @@ Lines and columns are 1-based, matching the `file:line:column` positions the
 human-readable report prints. A run that finds nothing prints `[]`, so stdout is
 always a JSON document.
 
-A `String` result whose characters are all known prints as a string literal,
-whether it was written or computed. A character is known when it is
-`Char.ofNat` of a Unicode scalar, as the prelude's String layout makes it; a
-String with any other character, such as a variable, prints as its
-constructors. With `--raw`, such a String result prints as its characters
-exactly, unquoted, unescaped, and with no newline after them, in UTF-8 whatever
-the platform's encoding, so a program that generates text writes that text. Any
-other result prints as usual, in the platform's encoding. Under
-`--raw`, stdout carries the result and nothing else: no progress log.
+A `String` whose characters are all known prints as a string literal, whether
+it was written or computed: as a result, and wherever a diagnostic shows a
+value, in the text report and under `--json` alike. A character is known when
+it is `Char.ofNat` of a Unicode scalar, as the prelude's String layout makes
+it; a String with any other character, such as a variable, prints as its
+constructors. With `--raw`, a String result whose characters are all known
+prints as its characters exactly, unquoted, unescaped, and with no newline
+after them, in UTF-8 whatever the platform's encoding, so a program that
+generates text writes that text. Any other result prints as usual, in the
+platform's encoding. Under `--raw`, stdout carries the result and nothing else:
+no progress log.
 
 Choosing a custom prelude changes the trusted bootstrap. See the
 [kernel reference](docs/kernel.md#trusted-bootstrap-and-native-values).

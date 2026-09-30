@@ -1,6 +1,9 @@
 package com.raccoonlang
 
 import com.raccoonlang.Value.{VCtor, VPacked}
+import com.raccoonlang.telescope.Projection
+
+import java.nio.file.{Files, Paths}
 
 /**
  * Printing a `String` (PROOF_BY_EVALUATION §2.2): one whose characters are all known prints as a literal, whether it
@@ -117,6 +120,129 @@ class StringPrintingTests extends munit.FunSuite with TestSupport {
     assertEquals(
       PrettyPrinter.print(runProgram("{ List.cons(\"a\", List.nil(String)) }"), strings),
       "List.cons(\"a\", List.nil)"
+    )
+  }
+
+  /**
+   * The rejection of `program` as the text report and as the JSON report, each printing values with the String layout
+   * that checking hands back with its diagnostics.
+   */
+  private def reports(program: String): (String, String) = {
+    val sources = Vector(ModuleLoader.LoadedSource(SourceId.fresh(), Paths.get("main.rac"), program))
+    try {
+      typecheckDecls(program)
+      fail("expected the program to be rejected")
+    } catch {
+      case Execution.CheckFailure(diagnostics, reported) =>
+        assertEquals(reported, strings)
+        (ErrorReporter.pretty(diagnostics, sources, reported), DiagnosticJson.render(diagnostics, sources, reported))
+    }
+  }
+
+  /** `text` as a JSON string's contents. */
+  private def escaped(text: String): String = text.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
+
+  test("a diagnostic prints a computed String as a literal, in the text report and in JSON alike") {
+    val list = s"List.cons(${computed("ab")}, List.nil(String))"
+    val (mismatchText, mismatchJson) =
+      reports(s"def bad : Eq(List(String), $list, List.nil(String)) := Eq.refl(List.nil(String))\n")
+    val mismatchDetail =
+      "\n  expected: Eq(List(String), List.cons(\"ab\", List.nil), List.nil)" +
+        "\n  actual:   Eq(List(String), List.nil, List.nil)" +
+        "\n  differ at: List.cons(\"ab\", List.nil)  vs  List.nil   (provably different)"
+    assert(mismatchText.contains("error: type mismatch\n"), mismatchText)
+    assert(mismatchText.contains(s"$mismatchDetail\n"), mismatchText)
+    assert(mismatchJson.contains(s"\"message\": \"${escaped("type mismatch" + mismatchDetail)}\""), mismatchJson)
+
+    val (evidenceText, evidenceJson) =
+      reports(s"def needs (s: String)[ok: Eq(String, s, \"ok\")]: Nat := 0\n{ needs(${computed("no")}) }\n")
+    val evidenceMessage =
+      "Evidence ok of needs is not discharged: its proposition is Eq(String, \"no\", \"ok\"), which no constructor " +
+        "proves with the fields its type determines; supply a proof as needs(…)[proof]"
+    assert(evidenceText.contains(s"error: $evidenceMessage\n"), evidenceText)
+    assert(evidenceJson.contains(s"\"message\": \"${escaped(evidenceMessage)}\""), evidenceJson)
+
+    // A part a declared kind must contain is named with its type.
+    val (partsText, _) = reports(
+      "inductive Tok (s: String) : Type { kind = lin }\n | mk : Tok(s)\n" +
+        "def eat {s: String}(t: Tok(s)): Nat := match t returning Nat with\n | Tok.mk => 0\n" +
+        s"def delay (t: Tok(${computed("a")})): { kind = lin } Unit -> Nat :=\n" +
+        "  fun { kind = unr } (u: Unit): Nat => eat(t)\n" +
+        s"inductive Holder : Type\n | mk (held: Tok(${computed("b")})) : Holder\n"
+    )
+    assert(partsText.contains("of capture t : Tok(\"a\")\n"), partsText)
+    assert(partsText.contains("of field Holder.mk.held : Tok(\"b\")\n"), partsText)
+  }
+
+  test("a diagnostic prints a String with a character not known as its constructors") {
+    val (text, json) = reports(
+      "def needs (s: String)[ok: Eq(String, s, \"ok\")]: Nat := 0\n" +
+        "{ needs(String.mk(List.cons(Char.ofNat(111), List.cons(someChar, List.nil(Char))))) }\n"
+    )
+    val proposition = "Eq(String, String.mk(List.cons(Char.mk(111), List.cons(someChar, List.nil))), \"ok\")"
+    assert(text.contains(s"its proposition is $proposition, "), text)
+    assert(json.contains(s"its proposition is ${escaped(proposition)}, "), json)
+  }
+
+  test("every value a diagnostic holds prints with the layout, so a String among them prints as a literal") {
+    val ab = runProgram(s"{ ${computed("ab")} }")
+    // A function type whose binder's type names a local bound to the String.
+    val pi = runProgram(s"{\n  let s := ${computed("ab")}\n  fun (x: Eq(String, s, s)): Nat => 0\n}\n").tpe match {
+      case pi: Value.VPi => pi
+      case other         => fail(s"Expected a function type, got $other")
+    }
+    val span = Span(0, 0)
+    val failures = Vector(
+      Projection.Failure.NotALevel(ab),
+      Projection.Failure.NotAnApplication("Box", ab),
+      Projection.Failure.NotAConstructor("Box.mk", ab),
+      Projection.Failure.NotASort(ab),
+      Projection.Failure.NotAFunctionType(ab),
+      Projection.Failure.DependentDomain(0, pi),
+      Projection.Failure.DependentCodomain(pi),
+      Projection.Failure.DependentResult(pi)
+    )
+    val parts = Vector(ContainedPart.Capture("t", ab), ContainedPart.Field("Box.mk.a", ab))
+    val errors = Vector(
+      CannotApplyNonFunction(ab),
+      NotAType(ab),
+      NonInductiveMatch(ab),
+      NotDestructurable(ab),
+      TypeMismatch(ab, ab, Some(ValueEquivalence.UnifyFailure(ab, ab, apart = true))),
+      InvalidConstructorResult("Box.mk", "Box", ab),
+      NotAProposition("h", ab),
+      EvidenceNotDischarged("h", "f", Vector.empty, ab, EvidenceNotDischarged.NoConstructor),
+      NonUniformInductiveParam("Box", "Box.mk", "A", ab),
+      InductiveUniverseTooSmall("Box", "field a", ab, Value.Level.one, Value.Level.one),
+      InductiveTypeNotASort(ab),
+      LinearInType(CoreAst.Term.GlobalRef("t", span), ab),
+      LinearGlobal(None, ab),
+      LifetimeEscapes("l", ab),
+      NonStrictlyPositive("Box", "Box.mk", "a", ab),
+      PropEliminationRestricted("Box", ab),
+      NonInductiveDecreaseMetric(ab, isProof = true),
+      NonInductiveDecreaseMetric(ab, isProof = false)
+    ) ++ failures.map(ImplicitReconstructionFailed("A", "f", _)) ++
+      parts.map(KindExceeded("Box", Value.Kind.unr, _, Value.Kind.lin)) ++
+      parts.map(ScopeExceeded("Box", Value.Lifetime.empty, _, Value.Lifetime.empty))
+    errors.foreach { error =>
+      val message = ErrorRendering.render(error, strings)
+      assert(message.contains("\"ab\"") && !message.contains("String.mk"), message)
+    }
+
+    // Every class of Errors.scala and of Projection.scala with a field of type `Value` or `VPi`, or an `Option` of
+    // one, is among those above. The three that hold a value only through a part or a failure are too.
+    def holdingValues(file: String, parents: String): Set[String] =
+      raw"final case class (\w+)\(([^)]*)\)\s*extends ($parents)\b".r
+        .findAllMatchIn(Files.readString(Paths.get("src/main/scala/com/raccoonlang", file)))
+        .filter(m => raw":\s*(Option\[)?(Value|VPi)\b(?!\.)".r.findFirstIn(m.group(2)).nonEmpty)
+        .map(_.group(1))
+        .toSet
+    assertEquals(
+      holdingValues("Errors.scala", "TypeError|ContainedPart") ++
+        holdingValues("telescope/Projection.scala", "Failure"),
+      (errors ++ parts ++ failures).map(_.productPrefix).toSet --
+        Set("ImplicitReconstructionFailed", "KindExceeded", "ScopeExceeded")
     )
   }
 

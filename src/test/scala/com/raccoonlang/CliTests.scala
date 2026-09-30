@@ -16,21 +16,43 @@ class CliTests extends munit.FunSuite {
       TestSupport.bundledPreludeSource + TestSupport.stringLayoutSource("Char.mk(value)")
     )
 
-  /** Runs the CLI on `program` under the String prelude, in a locale whose encoding is ASCII, with stdin closed. */
-  private def run(flags: Vector[String], program: String): Run = {
+  /**
+   * Starts the CLI on `program` under the String prelude, in a locale whose encoding is ASCII, with stdin closed and
+   * stdout and stderr sent where `stdout` and `stderr` say.
+   */
+  private def start(
+      flags: Vector[String],
+      program: String,
+      stdout: ProcessBuilder.Redirect,
+      stderr: ProcessBuilder.Redirect
+  ): Process = {
     val entry = Files.createTempFile(dir, "main", ".rac")
     Files.writeString(entry, program)
     val java = Paths.get(System.getProperty("java.home"), "bin", "java").toString
     val command =
       Vector(java, "-cp", System.getProperty("java.class.path"), "com.raccoonlang.Main", "--prelude") ++
         Vector(stringPrelude.toString) ++ flags :+ entry.toString
-    val builder = new ProcessBuilder(command: _*).redirectError(ProcessBuilder.Redirect.DISCARD)
+    val builder = new ProcessBuilder(command: _*).redirectOutput(stdout).redirectError(stderr)
     builder.environment().put("LANG", "C")
     builder.environment().put("LC_ALL", "C")
     val process = builder.start()
     process.getOutputStream.close()
+    process
+  }
+
+  /** Runs the CLI on `program` with `flags`, and reads its stdout. */
+  private def run(flags: Vector[String], program: String): Run = {
+    val process = start(flags, program, ProcessBuilder.Redirect.PIPE, ProcessBuilder.Redirect.DISCARD)
     val stdout = new String(process.getInputStream.readAllBytes(), StandardCharsets.UTF_8)
     Run(process.waitFor(), stdout)
+  }
+
+  /** Runs the CLI on `program`, which it rejects, and reads its text report from stderr. */
+  private def textReport(program: String): String = {
+    val process = start(Vector.empty, program, ProcessBuilder.Redirect.DISCARD, ProcessBuilder.Redirect.PIPE)
+    val stderr = new String(process.getErrorStream.readAllBytes(), StandardCharsets.UTF_8)
+    assertEquals(process.waitFor(), 1)
+    stderr
   }
 
   /** stdout without the progress log's timestamped lines. */
@@ -68,6 +90,17 @@ class CliTests extends munit.FunSuite {
       run(Vector("--raw"), "{ String.mk(List.cons(Char.ofNat(97), List.cons(someChar, List.nil(Char)))) }\n"),
       Run(0, "String.mk(List.cons(Char.mk(97), List.cons(someChar, List.nil)))\n")
     )
+  }
+
+  test("a diagnostic prints a computed String as a literal, in the text report and under --json") {
+    val program =
+      "def needs (s: String)[ok: Eq(String, s, \"ok\")]: Nat := 0\n" +
+        "{ needs(String.mk(List.cons(Char.ofNat(110), List.cons(Char.ofNat(111), List.nil(Char))))) }\n"
+    val json = run(Vector("--json"), program)
+    assertEquals(json.exitCode, 1)
+    assert(json.stdout.contains("its proposition is Eq(String, \\\"no\\\", \\\"ok\\\"), "), json.stdout)
+    val text = textReport(program)
+    assert(text.contains("its proposition is Eq(String, \"no\", \"ok\"), "), text)
   }
 
   test("--stack sets the stack checking and evaluation run on, and exhausting it is EvaluationTooDeep") {

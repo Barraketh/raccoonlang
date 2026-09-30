@@ -73,6 +73,44 @@ object Projection {
    */
   final case class Spec(rootArgIdx: Int, steps: Vector[Step])
 
+  /**
+   * Why `project` could not follow a spec, as data, so that a diagnostic prints the values it holds as every other
+   * value it prints (`ErrorRendering`).
+   */
+  sealed trait Failure
+  object Failure {
+
+    /** The spec's root is argument `root`, but only `provided` were given. */
+    final case class RootOutOfRange(root: Int, provided: Int) extends Failure
+
+    /** A step that reads a level met `got`. */
+    final case class NotALevel(got: Value) extends Failure
+
+    /** A step that reads an argument of an application of `head` met `got`. */
+    final case class NotAnApplication(head: String, got: Value) extends Failure
+
+    /** A step that reads a field of `ctor` met `got`. */
+    final case class NotAConstructor(ctor: String, got: Value) extends Failure
+
+    /** A step that reads a sort's field met `got`. */
+    final case class NotASort(got: Value) extends Failure
+
+    /** A step that reads part of a function type met `got`. */
+    final case class NotAFunctionType(got: Value) extends Failure
+
+    /** A step that takes `offset` off a level met `level`, which does not cover it. */
+    final case class LevelBelowOffset(level: Level, offset: Int) extends Failure
+
+    /** The domain of binder `idx` of `pi` depends on earlier binders. */
+    final case class DependentDomain(idx: Int, pi: VPi) extends Failure
+
+    /** The codomain of `pi` past its first binder depends on it. */
+    final case class DependentCodomain(pi: VPi) extends Failure
+
+    /** The result of `pi` depends on its binders. */
+    final case class DependentResult(pi: VPi) extends Failure
+  }
+
   final case class BinderInput(
       name: String,
       span: Span,
@@ -351,17 +389,17 @@ object Projection {
    * it names, as stored, and forces only that one: evaluation projects implicits at every call, and must evaluate no
    * proposition of an evidence argument beside it.
    */
-  def project(spec: Spec, providedArgs: Vector[Value]): Either[String, Value] = {
+  def project(spec: Spec, providedArgs: Vector[Value]): Either[Failure, Value] = {
     if (spec.rootArgIdx >= providedArgs.length)
-      return Left(s"projection root ${spec.rootArgIdx} out of range (${providedArgs.length} args)")
+      return Left(Failure.RootOutOfRange(spec.rootArgIdx, providedArgs.length))
 
-    def toLevel(v: Value): Either[String, Level] =
+    def toLevel(v: Value): Either[Failure, Level] =
       v match {
         case l: Level => Right(l)
-        case other    => Left(s"expected a level, got $other")
+        case other    => Left(Failure.NotALevel(other))
       }
 
-    spec.steps.foldLeft[Either[String, Value]](Right(providedArgs(spec.rootArgIdx))) {
+    spec.steps.foldLeft[Either[Failure, Value]](Right(providedArgs(spec.rootArgIdx))) {
       case (left @ Left(_), _) => left
       case (Right(v), step) =>
         step match {
@@ -372,73 +410,73 @@ object Projection {
               case app: VApp if app.blockedOn.isEmpty && idx < app.storedArgs.length =>
                 app.head match {
                   case c: VConst if c.name == head => Right(Value.forced(app.storedArgs(idx)))
-                  case _                           => Left(s"expected an application of $head, got $app")
+                  case _                           => Left(Failure.NotAnApplication(head, app))
                 }
-              case other => Left(s"expected an application of $head, got $other")
+              case other => Left(Failure.NotAnApplication(head, other))
             }
 
           case Step.CtorField(ctor, idx) =>
             v match {
               case ConstructorForm.Stored(name, stored) if name == ctor && idx < stored.length =>
                 Right(Value.forced(stored(idx)))
-              case other => Left(s"expected a $ctor value, got $other")
+              case other => Left(Failure.NotAConstructor(ctor, other))
             }
 
           case Step.SortLevel =>
             v match {
               case sort: VSort => Right(sort.level)
-              case other       => Left(s"expected a sort, got $other")
+              case other       => Left(Failure.NotASort(other))
             }
 
           case Step.SortKind =>
             v match {
               case sort: VSort => Right(sort.kind)
-              case other       => Left(s"expected a sort, got $other")
+              case other       => Left(Failure.NotASort(other))
             }
 
           case Step.SortScope =>
             v match {
               case sort: VSort => Right(sort.scope)
-              case other       => Left(s"expected a sort, got $other")
+              case other       => Left(Failure.NotASort(other))
             }
 
           case Step.LevelOffset(k) =>
             toLevel(v).flatMap { l =>
               if (k == 0) Right(l)
               else if (Level.geq(l, k)) Right(Level.addOffset(l, -k))
-              else Left(s"level $l does not cover offset $k")
+              else Left(Failure.LevelBelowOffset(l, k))
             }
 
           case Step.PiClosureKind =>
             v match {
               case pi: VPi => Right(pi.closureKind)
-              case other   => Left(s"expected a function type, got $other")
+              case other   => Left(Failure.NotAFunctionType(other))
             }
 
           case Step.PiClosureScope =>
             v match {
               case pi: VPi => Right(pi.closureScope)
-              case other   => Left(s"expected a function type, got $other")
+              case other   => Left(Failure.NotAFunctionType(other))
             }
 
           case Step.PiDomain(idx) =>
             v match {
               case pi: VPi if idx < pi.binders.length =>
-                independentPiDomain(pi, idx).toRight(s"domain $idx of $pi depends on earlier binders")
-              case other => Left(s"expected a function type, got $other")
+                independentPiDomain(pi, idx).toRight(Failure.DependentDomain(idx, pi))
+              case other => Left(Failure.NotAFunctionType(other))
             }
 
           case Step.PiCodomain =>
             v match {
               case pi: VPi =>
-                independentPiCodomain(pi).toRight(s"codomain of $pi depends on its binders")
-              case other => Left(s"expected a function type, got $other")
+                independentPiCodomain(pi).toRight(Failure.DependentCodomain(pi))
+              case other => Left(Failure.NotAFunctionType(other))
             }
 
           case Step.PiResult =>
             v match {
-              case pi: VPi => independentPiResult(pi).toRight(s"result of $pi depends on its binders")
-              case other   => Left(s"expected a function type, got $other")
+              case pi: VPi => independentPiResult(pi).toRight(Failure.DependentResult(pi))
+              case other   => Left(Failure.NotAFunctionType(other))
             }
         }
     }

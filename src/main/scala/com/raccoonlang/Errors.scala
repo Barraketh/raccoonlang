@@ -32,7 +32,11 @@ final case class Diagnostic(error: TypeError, span: Option[Span], frames: Vector
   extends RuntimeException
   with NoStackTrace {
 
-  override def getMessage: String = ErrorRendering.render(error)
+  /**
+   * The message with no `String` layout: a diagnostic does not know the environment it arose in. A report renders
+   * `error` itself, with the layout of the environment the program was checked in (`Execution.CheckFailure`).
+   */
+  override def getMessage: String = ErrorRendering.render(error, None)
 }
 
 final case class CannotApplyNonFunction(got: Value) extends TypeError
@@ -178,7 +182,8 @@ object EvidenceNotDischarged {
  */
 final case class BuiltinEvidence(name: String, binder: String) extends TypeError
 
-final case class ImplicitReconstructionFailed(param: String, fn: String, reason: String) extends TypeError
+final case class ImplicitReconstructionFailed(param: String, fn: String, reason: telescope.Projection.Failure)
+  extends TypeError
 
 final case class NonUniformInductiveParam(inductive: String, ctor: String, param: String, got: Value) extends TypeError
 
@@ -196,15 +201,34 @@ final case class InductiveTypeNotASort(tpe: Value) extends TypeError
 final case class LinearProp(kind: Value.Kind, level: Value.Level) extends TypeError
 
 /** A declared kind that does not contain the kind of `part` (spec §2.6), such as a family's constructor field. */
-final case class KindExceeded(declaration: String, declared: Value.Kind, part: String, partKind: Value.Kind)
+final case class KindExceeded(declaration: String, declared: Value.Kind, part: ContainedPart, partKind: Value.Kind)
   extends TypeError
 
 /**
  * A declared scope that does not contain the scope of `part` (spec §2.6), such as a family's constructor field,
  * parameter or index.
  */
-final case class ScopeExceeded(declaration: String, declared: Value.Lifetime, part: String, partScope: Value.Lifetime)
-  extends TypeError
+final case class ScopeExceeded(
+    declaration: String,
+    declared: Value.Lifetime,
+    part: ContainedPart,
+    partScope: Value.Lifetime
+) extends TypeError
+
+/** A part of a declaration whose kind or scope the declaration's declared one must contain (spec §2.6). */
+sealed trait ContainedPart
+
+object ContainedPart {
+
+  /** A lambda's capture `name`, of type `tpe`. */
+  final case class Capture(name: String, tpe: Value) extends ContainedPart
+
+  /** A family's constructor field `name`, written `Ctor.field`, of type `tpe`. */
+  final case class Field(name: String, tpe: Value) extends ContainedPart
+
+  /** A family's lifetime parameter `name`, which its declared scope must name. */
+  final case class LifetimeParameter(name: String) extends ContainedPart
+}
 
 /** A local of linear type that some path through its binder's extent does not use (spec §3.2). */
 final case class LinearUnused(local: String) extends TypeError

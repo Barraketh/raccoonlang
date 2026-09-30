@@ -43,12 +43,12 @@ class DiagnosticSnapshotTests extends munit.FunSuite with Goldens {
           case None        => "NO ERROR: program has no body"
         }
       } catch {
-        case Execution.CheckFailure(diagnostics) => ErrorReporter.pretty(diagnostics, loaded.sources)
-        case diagnostic: Diagnostic              => ErrorReporter.pretty(diagnostic, loaded)
-        case internal: InternalError             => ErrorReporter.pretty(internal, loaded.sources)
+        case Execution.CheckFailure(diagnostics, strings) => ErrorReporter.pretty(diagnostics, loaded.sources, strings)
+        case diagnostic: Diagnostic                       => ErrorReporter.pretty(diagnostic, loaded, None)
+        case internal: InternalError                      => ErrorReporter.pretty(internal, loaded.sources)
       }
     } catch {
-      case ModuleLoader.LoadFailure(diagnostic, sources) => ErrorReporter.pretty(diagnostic, sources)
+      case ModuleLoader.LoadFailure(diagnostic, sources) => ErrorReporter.pretty(diagnostic, sources, None)
       case internal: InternalError                       => ErrorReporter.pretty(internal, Vector.empty)
       case NonFatal(error)                               => s"UNREPORTED ${error.getClass.getName}: ${error.getMessage}"
     }
@@ -96,7 +96,7 @@ class DiagnosticSnapshotTests extends munit.FunSuite with Goldens {
         TypeChecker.check(Elaborator.elaborate(loaded.program, prelude))
         Vector.empty
       } catch {
-        case Execution.CheckFailure(diagnostics)     => diagnostics
+        case Execution.CheckFailure(diagnostics, _)  => diagnostics
         case diagnostic: Diagnostic                  => Vector(diagnostic)
         case ModuleLoader.LoadFailure(diagnostic, _) => Vector(diagnostic)
       }

@@ -238,9 +238,9 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
     typecheckDecls(program("Sort { level = succ(u), kind = k }"))
     typecheckDecls(program("Sort { level = max(u, one), kind = k }"))
     val zero = expectOnly[LinearProp](typecheckDecls(program("Prop { kind = lin }")))
-    assert(ErrorRendering.render(zero).contains("its level is zero"), ErrorRendering.render(zero))
+    assert(ErrorRendering.render(zero, None).contains("its level is zero"), ErrorRendering.render(zero, None))
     val variable = expectOnly[LinearProp](typecheckDecls(program("Sort { level = u, kind = k }")))
-    assert(ErrorRendering.render(variable).contains("may be zero"), ErrorRendering.render(variable))
+    assert(ErrorRendering.render(variable, None).contains("may be zero"), ErrorRendering.render(variable, None))
     expectOnly[LinearProp](typecheckDecls(program("Sort { level = u, kind = lin }")))
   }
 
@@ -323,7 +323,7 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
     val level = expectOnly[InductiveUniverseTooSmall](typecheckDecls(program("Sort { level = succ(one), scope = l }")))
     assertEquals(level.where, "First.mk.second")
     val kind = expectOnly[KindExceeded](typecheckDecls(program("Type { kind = lin, scope = l }")))
-    assert(kind.part.startsWith("field First.mk.second"))
-    assert(expectOnly[ScopeExceeded](typecheckDecls(program("Type"))).part.startsWith("lifetime parameter l"))
+    assert(PartialFunction.cond(kind.part) { case ContainedPart.Field("First.mk.second", _) => true }, kind.part)
+    assertEquals(expectOnly[ScopeExceeded](typecheckDecls(program("Type"))).part, ContainedPart.LifetimeParameter("l"))
   }
 }
