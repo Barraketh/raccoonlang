@@ -608,7 +608,9 @@ namespace Gpu {
     }
   }
 
-  def uniformParam (l: Lifetime)(name: String): Val(l, Grain.uniform, DType.u32) :=
+  // A kernel parameter's value, the same in every thread. Only the kernel builders name parameters: a name is printed
+  // as written, and the grain is taken on trust.
+  def uniformParam (k: Key)(l: Lifetime)(name: String): Val(l, Grain.uniform, DType.u32) :=
     Val.mk(l, Grain.uniform, DType.u32, Expr.param(name), Option.none(Nat))
 
   def errorsToCode (errors: List(String))(acc: List(Stmt)): List(Stmt) decreases structural(errors) := {
@@ -746,9 +748,9 @@ namespace Gpu {
     let ty := Gpu.divC(tid, tile, positive)
     let bx := Val.mk(l, Grain.uniform, DType.u32, Expr.special(Builtin.blockX), Option.none(Nat))
     let by := Val.mk(l, Grain.uniform, DType.u32, Expr.special(Builtin.blockY), Option.none(Nat))
-    let m := Gpu.uniformParam(l, "M")
-    let n := Gpu.uniformParam(l, "N")
-    let k := Gpu.uniformParam(l, "K")
+    let m := Gpu.uniformParam(Key.key, l, "M")
+    let n := Gpu.uniformParam(Key.key, l, "N")
+    let k := Gpu.uniformParam(Key.key, l, "K")
     let launch := Launch.mk(GMat.mk(l, t, "A", m.expr, k.expr), GMat.mk(l, t, "B", k.expr, n.expr), GOut.mk(l, t, tile, "C", m.expr, n.expr),
       m, n, k, tx, ty, Gpu.add(Gpu.mulC(by, tile), ty), Gpu.add(Gpu.mulC(bx, tile), tx))
     let params := List.cons(Param.input(t, "A"), List.cons(Param.input(t, "B"), List.cons(Param.output(t, "C"),
@@ -1548,9 +1550,9 @@ namespace Gpu {
         -> Ctx(l, Group.cta(256)))
       : Program := scope l => {
     let bn := sb.outer
-    let m := Gpu.uniformParam(l, "M")
-    let n := Gpu.uniformParam(l, "N")
-    let k := Gpu.uniformParam(l, "K")
+    let m := Gpu.uniformParam(Key.key, l, "M")
+    let n := Gpu.uniformParam(Key.key, l, "N")
+    let k := Gpu.uniformParam(Key.key, l, "K")
     let m0 := Val.mk(l, Grain.uniform, DType.u32, Expr.bin(BinOp.mul, Expr.special(Builtin.blockY), Expr.lit(128)), Option.none(Nat))
     let n0 := Val.mk(l, Grain.uniform, DType.u32, Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(bn)), Option.none(Nat))
     let launch := TmaLaunch.mk(TMap.mk(l, sa, "A_map"), TMap.mk(l, sb, "B_map"), COut.mk(l, bn, "C", m.expr, n.expr), m, n, k, m0, n0)
@@ -1576,9 +1578,9 @@ namespace Gpu {
         -> TmemPermit(l) -> Ctx(l, Group.cta(256)))
       : Program := scope l => {
     let bn := sb.outer
-    let m := Gpu.uniformParam(l, "M")
-    let n := Gpu.uniformParam(l, "N")
-    let k := Gpu.uniformParam(l, "K")
+    let m := Gpu.uniformParam(Key.key, l, "M")
+    let n := Gpu.uniformParam(Key.key, l, "N")
+    let k := Gpu.uniformParam(Key.key, l, "K")
     let gemm := TmaGemm.mk(TMap.mk(l, sa, "A_map"), TMap.mk(l, sb, "B_map"), COut.mk(l, bn, "C", m.expr, n.expr), m, n, k)
     let gen0 := Gpu.state(Key.key, Gpu.start(Key.key, l, Group.cta(256)))
     let tilesN := gen0.next
