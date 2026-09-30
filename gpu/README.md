@@ -19,6 +19,7 @@ prelude. Its two sm_100a GEMMs run correctly on a B200, the persistent one at 98
 | `proofs/` | Soundness proofs of `Check.rac`'s checkers against `Spec.rac`, and `NOTES.md`, what made them hard |
 | `stub/` | Just enough of the CUDA headers for a host C++ compiler to check generated kernels, launchers and harnesses |
 | `OBLIGATIONS.md` | The library's claim, the platform assumptions it rests on, and each sealed operation's obligations: the checklist for review and for verification |
+| `REFERENCE_CUTLASS.md` | How CUTLASS's sm100 GEMM, the performance reference, differs from ours, what that means for the discipline, and the commands to benchmark it |
 | `harness/` | Host programs that run a generated kernel on a GPU against a CPU reference (`DESIGN.md` §7) |
 
 Generate a kernel, or check everything:
