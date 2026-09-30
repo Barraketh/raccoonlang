@@ -8,7 +8,7 @@ namespace T {
   open Cuda
   def G : Group := Group.cta(256)
 
-  def kernel : Program := Gpu.tiledKernel("bad", DType.f32, 16, Eq.refl(Bool.true),
+  def kernel : Program := Gpu.tiledKernel("bad", DType.f32, 16,
     fun (l: Lifetime)(e: Ctx(l, T.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, T.G) => {
       let (e, acc) := Gpu.reg(e, Gpu.zero(DType.f32))
       let body := fun (m: Lifetime)(i: Val(m, Grain.uniform, DType.u32))(e: Ctx(m, T.G))(s: Unit): Pair(Ctx(m, T.G), Unit) => {

@@ -62,14 +62,14 @@ namespace Gemm {
   }
 
   def kernel : Program :=
-    Gpu.tiledKernel("sgemm16", DType.f32, 16, Eq.refl(Bool.true),
+    Gpu.tiledKernel("sgemm16", DType.f32, 16,
       fun (l: Lifetime)(e: Ctx(l, Gemm.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, Gemm.G) =>
         Gpu.shared(e, DType.f32, 256,
           fun (a: Lifetime)(sa: Smem(a, DType.f32, 256))(ta: Tile(a, DType.f32, 256, TileState.empty))(e: Ctx(l, Gemm.G)): Ctx(l, Gemm.G) =>
             Gpu.shared(e, DType.f32, 256,
               fun (b: Lifetime)(sb: Smem(b, DType.f32, 256))(tb: Tile(b, DType.f32, 256, TileState.empty))(e: Ctx(l, Gemm.G)): Ctx(l, Gemm.G) => {
                 let (e, acc) := Gpu.reg(e, Gpu.zero(DType.f32))
-                let steps := Gpu.ceilDivC(k.k, 16, Eq.refl(Bool.true))
+                let steps := Gpu.ceilDivC(k.k, 16)
                 let body := fun (m: Lifetime)(kt: Val(m, Grain.uniform, DType.u32))(e: Ctx(m, Gemm.G))(st: Gemm.Tiles(a, b, TileState.empty))
                     : Gemm.Step(m, a, b) => Gemm.step(k, sa, sb, acc, m, kt, e, st)
                 let (e, (ta, tb)) := Gpu.loop(e, steps, Gpu.fixedPair(Gpu.fixedTile(a, DType.f32, 256, TileState.empty),

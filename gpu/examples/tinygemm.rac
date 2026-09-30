@@ -75,7 +75,7 @@ namespace Tiny {
   def epilogue {l: Lifetime}{a: Lifetime}{h: Lifetime}(k: Tiny.Launch(l))(t: Tmem(a, 128))(hd: AccHandoff(h))(recv: AccRecv(h, a))
       (own: COwn(l, 128))(m: Lifetime)(e: Ctx(m, Tiny.Wg1)): Pair(Ctx(m, Tiny.Wg1), Acc(a, AccState.ready)) := {
     let (e, acc) := Gpu.recvAcc(e, hd, recv)
-    Gpu.storeAcc(e, Eq.refl(0), t, acc, k.c, own)
+    Gpu.storeAcc(e, t, acc, k.c, own)
   }
 
   def roles {l: Lifetime}{r: Lifetime}{a: Lifetime}{h: Lifetime}(k: Tiny.Launch(l))(ring: Ring(r, Tiny.ring))(t: Tmem(a, 128))
@@ -98,7 +98,7 @@ namespace Tiny {
   def kernel : Program :=
     Gpu.tmaGemmKernel("tinygemm", Tiny.boxA, Tiny.boxB,
       fun (l: Lifetime)(e: Ctx(l, Tiny.Cta))(k: Tiny.Launch(l))(own: COwn(l, 128))(permit: TmemPermit(l)): Ctx(l, Tiny.Cta) => {
-        let steps := Gpu.ceilDivC(k.k, 64, Eq.refl(Bool.true))
+        let steps := Gpu.ceilDivC(k.k, 64)
         let body := fun (a: Lifetime)(t: Tmem(a, 128))(acc: Acc(a, AccState.empty))(e: Ctx(l, Tiny.Cta))
             : Pair(Ctx(l, Tiny.Cta), Pair(Acc(a, AccState.ready), Unit)) => {
           let handoff := fun (h: Lifetime)(hd: AccHandoff(h))(send: AccSend(h, a))(recv: AccRecv(h, a))(e: Ctx(l, Tiny.Cta))

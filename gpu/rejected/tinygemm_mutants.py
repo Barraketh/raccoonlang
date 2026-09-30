@@ -112,8 +112,8 @@ MUTANTS = [
         why="Reads the accumulator without waiting for the issuer's commit: `storeAcc` needs `Acc(a, ready)`, which "
             "only `recvAcc` makes.",
         old="""    let (e, acc) := Gpu.recvAcc(e, hd, recv)
-    Gpu.storeAcc(e, Eq.refl(0), t, acc, k.c, own)""",
-        new="""    Gpu.storeAcc(e, Eq.refl(0), t, recv, k.c, own)""",
+    Gpu.storeAcc(e, t, acc, k.c, own)""",
+        new="""    Gpu.storeAcc(e, t, recv, k.c, own)""",
     ),
     dict(
         name="second_tmem_allocation", expect="LinearReused", mentions="permit",
@@ -163,5 +163,19 @@ MUTANTS = [
             "epilogue reads it.",
         old="""  def boxA : TmaSpec := TmaSpec.mk(64, 128)""",
         new="""  def boxA : TmaSpec := TmaSpec.mk(64, 64)""",
+    ),
+    dict(
+        name="epilogue_misaligned", expect="EvidenceNotDischarged", mentions="aligned",
+        why="Runs the epilogue on warps 5 to 8: a warp reads the tensor-memory lanes of its rank in its aligned "
+            "warpgroup, so an unaligned group would store rows of C from another warp's lanes. `storeAcc` asks for "
+            "the alignment as evidence.",
+        old="""  def Wg1 : Group := Group.warps(4, 4)""",
+        new="""  def Wg1 : Group := Group.warps(5, 4)""",
+    ),
+    dict(
+        name="k_steps_by_zero", expect="EvidenceNotDischarged", mentions="positive",
+        why="Counts the K slices by dividing by zero: `ceilDivC` asks for a positive divisor as evidence.",
+        old="""Gpu.ceilDivC(k.k, 64)""",
+        new="""Gpu.ceilDivC(k.k, 0)""",
     ),
 ]

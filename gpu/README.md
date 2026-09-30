@@ -50,7 +50,10 @@ each generated kernel against `stub/`.
   a kernel with a launcher (which asks for it) may use dynamic shared memory, never more than an SM has.
 
 Index bounds are checked while generating, where every size is concrete: a read that is not provably in bounds turns
-the kernel into an `#error`, as does a 32-bit literal that does not fit 32 bits.
+the kernel into an `#error`, as does a 32-bit literal that does not fit 32 bits. Preconditions on the numbers a call
+is given (a positive tile or divisor, an aligned warpgroup) are evidence arguments instead
+(`docs/PROOF_BY_EVALUATION.md`): the checker discharges each by evaluation where the call stands, and refuses a false
+one with `EvidenceNotDischarged`, so the program never generates.
 
 The Blackwell layer extends the same rules to asynchronous hardware (`DESIGN.md`): warp roles made by `split` and
 `elect`; a stage ring whose endpoints an elected thread takes, so its per-thread stage and phase registers stay with

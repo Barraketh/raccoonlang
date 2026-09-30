@@ -214,16 +214,16 @@ namespace Gpu {
       Gpu.boundMap(a.bound, fun (x: Nat): Nat => Nat.succ(Nat.mul(Nat.pred(x), c))))
 
   // Division and remainder by a constant, which must be positive.
-  def divC {S: Lifetime}{u: Grain}(a: Val(S, u, DType.u32))(c: Nat)(positive: Nat.lt(0, c)): Val(S, u, DType.u32) :=
+  def divC {S: Lifetime}{u: Grain}(a: Val(S, u, DType.u32))(c: Nat)[positive: Nat.lt(0, c)]: Val(S, u, DType.u32) :=
     Val.mk(S, u, DType.u32, Expr.bin(BinOp.div, a.expr, Expr.lit(c)),
       Gpu.boundMap(a.bound, fun (x: Nat): Nat => Nat.succ(Nat.div(Nat.pred(x), c))))
 
-  def remC {S: Lifetime}{u: Grain}(a: Val(S, u, DType.u32))(c: Nat)(positive: Nat.lt(0, c)): Val(S, u, DType.u32) :=
+  def remC {S: Lifetime}{u: Grain}(a: Val(S, u, DType.u32))(c: Nat)[positive: Nat.lt(0, c)]: Val(S, u, DType.u32) :=
     Val.mk(S, u, DType.u32, Expr.bin(BinOp.rem, a.expr, Expr.lit(c)), Option.some(c))
 
   // Rounds up: `(a + c - 1) / c`.
-  def ceilDivC {S: Lifetime}{u: Grain}(a: Val(S, u, DType.u32))(c: Nat)(positive: Nat.lt(0, c)): Val(S, u, DType.u32) :=
-    Gpu.divC(Gpu.add(Gpu.lit(Nat.pred(c)), a), c, positive)
+  def ceilDivC {S: Lifetime}{u: Grain}(a: Val(S, u, DType.u32))(c: Nat)[positive: Nat.lt(0, c)]: Val(S, u, DType.u32) :=
+    Gpu.divC(Gpu.add(Gpu.lit(Nat.pred(c)), a), c)[positive]
 
   def lt {Sa: Lifetime}{Sb: Lifetime}{ua: Grain}{ub: Grain}{t: DType}(a: Val(Sa, ua, t))(b: Val(Sb, ub, t))
       : Val(Lifetime.union(Sa, Sb), Grain.join(ua, ub), DType.bool) :=
@@ -740,12 +740,12 @@ namespace Gpu {
   // A kernel computing C (M×N) from A (M×K) and B (K×N), one CTA of `tile*tile` threads per `tile`×`tile` block of C.
   // Launch contract: grid (ceil(N/tile), ceil(M/tile)), block tile*tile, and A, B, C distinct arrays of those extents,
   // each with fewer than 2^32 elements.
-  def tiledKernel (name: String)(t: DType)(tile: Nat)(positive: Nat.lt(0, tile))
+  def tiledKernel (name: String)(t: DType)(tile: Nat)[positive: Nat.lt(0, tile)]
       (body: (l: Lifetime) -> Ctx(l, Group.cta(Nat.mul(tile, tile))) -> Launch(l, t, tile) -> GOwn(l, t, tile) -> Ctx(l, Group.cta(Nat.mul(tile, tile))))
       : Program := scope l => {
     let tid := Val.mk(l, Grain.thread, DType.u32, Expr.special(Builtin.threadX), Option.some(Nat.mul(tile, tile)))
-    let tx := Gpu.remC(tid, tile, positive)
-    let ty := Gpu.divC(tid, tile, positive)
+    let tx := Gpu.remC(tid, tile)[positive]
+    let ty := Gpu.divC(tid, tile)[positive]
     let bx := Val.mk(l, Grain.uniform, DType.u32, Expr.special(Builtin.blockX), Option.none(Nat))
     let by := Val.mk(l, Grain.uniform, DType.u32, Expr.special(Builtin.blockY), Option.none(Nat))
     let m := Gpu.uniformParam(Key.key, l, "M")
@@ -1232,7 +1232,7 @@ namespace Gpu {
 
   // The epilogue of a one-tile-per-CTA GEMM: stores the CTA's block, which the block indices locate, never the caller.
   def storeAcc {n: Lifetime}{f: Nat}{L: Lifetime}{a: Lifetime}{cols: Nat}{bn: Nat}
-      (e: Ctx(n, Group.warps(f, 4)))(aligned: Eq(Nat, Nat.mod(f, 4), 0))(t: Tmem(a, cols))(acc: Acc(a, AccState.ready))
+      (e: Ctx(n, Group.warps(f, 4)))[aligned: Eq(Nat, Nat.mod(f, 4), 0)](t: Tmem(a, cols))(acc: Acc(a, AccState.ready))
       (out: COut(L, bn))(own: COwn(L, bn)): Pair(Ctx(n, Group.warps(f, 4)), Acc(a, AccState.ready)) := {
     match own returning Pair(Ctx(n, Group.warps(f, 4)), Acc(a, AccState.ready)) with
     | COwn.mk => {
@@ -1461,7 +1461,7 @@ namespace Gpu {
 
   // An aligned warpgroup takes the reading side: its buffer starts at 0, none yet full.
   def takeAccConsumer {m: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}
-      (e: Ctx(m, Group.warps(f, 4)))(aligned: Eq(Nat, Nat.mod(f, 4), 0))(ring: AccRing(q, n))(c: AccConsumer(q))
+      (e: Ctx(m, Group.warps(f, 4)))[aligned: Eq(Nat, Nat.mod(f, 4), 0)](ring: AccRing(q, n))(c: AccConsumer(q))
       : Pair(Ctx(m, Group.warps(f, 4)), AccConsumerAt(q, m, f)) := {
     match c returning Pair(Ctx(m, Group.warps(f, 4)), AccConsumerAt(q, m, f)) with
     | AccConsumer.mk => {

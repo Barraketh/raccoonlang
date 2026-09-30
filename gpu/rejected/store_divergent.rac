@@ -9,7 +9,7 @@ namespace T {
   def D : Group := Group.diverged(256)
   def Tl (a: Lifetime) : Type { kind = lin, scope = a } := Tile(a, DType.f32, 256, TileState.empty)
 
-  def kernel : Program := Gpu.tiledKernel("bad", DType.f32, 16, Eq.refl(Bool.true),
+  def kernel : Program := Gpu.tiledKernel("bad", DType.f32, 16,
     fun (l: Lifetime)(e: Ctx(l, T.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, T.G) =>
       Gpu.shared(e, DType.f32, 256, fun (a: Lifetime)(sa: Smem(a, DType.f32, 256))(ta: T.Tl(a))(e: Ctx(l, T.G)): Ctx(l, T.G) => {
         let yes := fun (m: Lifetime)(e: Ctx(m, T.D))(t: T.Tl(a)): Pair(Ctx(m, T.D), T.Tl(a)) => {

@@ -99,7 +99,7 @@ namespace PGemm {
       let (e, full) := Gpu.storeTile(e, accs, full, t, o, g.c)
       Gpu.releaseAcc(e, accs, full)
     }
-    let (e, c) := Gpu.takeAccConsumer(e, Eq.refl(0), accs, ac)
+    let (e, c) := Gpu.takeAccConsumer(e, accs, ac)
     let (e, c) := Gpu.forOwnedTiles(e, sched, own, Gpu.fixedAccConsumerAt(q, m, 4), c, tile)
     (e, Gpu.finishAccConsumer(c))
   }
@@ -125,7 +125,7 @@ namespace PGemm {
     Gpu.tmaGemmPersistentKernel("persistent_gemm", PGemm.boxA, PGemm.boxB,
       fun (l: Lifetime)(e: Ctx(l, PGemm.Cta))(g: PGemm.Gemm(l))(sched: Sched(l, 128))(own: SchedOwn(l, 128))(permit: TmemPermit(l))
           : Ctx(l, PGemm.Cta) => {
-        let steps := Gpu.ceilDivC(g.k, 64, Eq.refl(Bool.true))
+        let steps := Gpu.ceilDivC(g.k, 64)
         let body := fun (a: Lifetime)(t: Tmem(a, 256))(acc: Acc(a, AccState.empty))(e: Ctx(l, PGemm.Cta))
             : Pair(Ctx(l, PGemm.Cta), Pair(Acc(a, AccState.empty), Unit)) => {
           let accRing := fun (q: Lifetime)(accs: AccRing(q, 128))(ap: AccProducer(q))(ac: AccConsumer(q))(e: Ctx(l, PGemm.Cta))

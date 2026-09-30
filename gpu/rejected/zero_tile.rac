@@ -1,0 +1,15 @@
+// expect: EvidenceNotDischarged
+// A kernel's tile must be positive: its threads are indexed by division and remainder by the tile.
+import Gpu
+namespace T {
+  open Gpu
+  open Cuda
+  def G : Group := Group.cta(0)
+
+  def kernel : Program := Gpu.tiledKernel("bad", DType.f32, 0,
+    fun (l: Lifetime)(e: Ctx(l, T.G))(k: Launch(l, DType.f32, 0))(c: GOwn(l, DType.f32, 0)): Ctx(l, T.G) => {
+      let (e, x) := Gpu.gload(e, k.a, k.row, k.col)
+      Gpu.gstore(e, k.c, c, x)
+    })
+}
+{ Gpu.render(T.kernel) }

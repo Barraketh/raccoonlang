@@ -8,7 +8,7 @@ namespace T {
   def G : Group := Group.cta(256)
   def U : Type := Val(Lifetime.empty, Grain.thread, DType.f32)
 
-  def kernel : Program := Gpu.tiledKernel("bad", DType.f32, 16, Eq.refl(Bool.true),
+  def kernel : Program := Gpu.tiledKernel("bad", DType.f32, 16,
     fun (l: Lifetime)(e: Ctx(l, T.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, T.G) => {
       let left := fun (m: Lifetime)(e: Ctx(m, Group.warps(0, 4))): Pair(Ctx(m, Group.warps(0, 4)), T.U) => {
         let (e, r) := Gpu.reg(e, Gpu.zero(DType.f32))

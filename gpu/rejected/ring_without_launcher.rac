@@ -10,7 +10,7 @@ namespace T {
   def box : TmaSpec := TmaSpec.mk(64, 256)
   def cfg : RingCfg := RingCfg.mk(8, T.box, T.box)
 
-  def kernel : Program := Gpu.tiledKernel("tiledring", DType.f32, 16, Eq.refl(Bool.true),
+  def kernel : Program := Gpu.tiledKernel("tiledring", DType.f32, 16,
     fun (l: Lifetime)(e: Ctx(l, T.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, T.G) => {
       let body := fun (r: Lifetime)(ring: Ring(r, T.cfg))(p: Producer(r))(q: Consumer(r))(e: Ctx(l, T.G))
           : Pair(Ctx(l, T.G), Pair(Pair(ProducerDone(r), ConsumerDone(r)), Unit)) => {
