@@ -40,7 +40,10 @@ class EvidenceTests extends munit.FunSuite with TestSupport {
 
   private val three = families + "def three (n: Nat)[h: Eq(Nat, n, 3)]: Nat := n\n\n"
 
-  /** The deferred proofs evaluation forces while `body` runs. */
+  /**
+   * The deferred proofs evaluation forces while `body` runs. The counter is global, which is sound while suites run one
+   * at a time in the forked test JVM, as build.sbt has them.
+   */
   private def forcings(body: => Any): Long = {
     val before = Value.DeferredEvidence.forcings.get()
     body
@@ -314,6 +317,16 @@ class EvidenceTests extends munit.FunSuite with TestSupport {
     typecheckDecls(opaque)
     assertEquals(forcings(evaluatesTo(transparent + "{ loop(200) }", "200")), 0L)
     assertEquals(forcings(evaluatesTo(opaque + "{ loop(200) }", "200")), 0L)
+    // An opaque head's applications kept in the result, and printed, which reads only their explicit arguments.
+    val kept =
+      spin + "opaque def guarded (x: Nat)[h: IsTrue(spin(10))]: Nat := x\n\n" +
+        "def loop (n: Nat): Nat decreases structural(n) := match n returning Nat with\n" +
+        " | Nat.zero => 0\n | Nat.succ k => Nat.add(guarded(1), loop(k))\n\n"
+    typecheckDecls(kept)
+    assertEquals(forcings(evaluatesTo(kept + "{ loop(2) }", "Nat.add(guarded(1), guarded(1))")), 0L)
+    // Publishing them reads their arguments where the environment assertions check that a global is closed.
+    val asserted = sys.props.getOrElse("raccoon.envAssertions", "true").toBoolean
+    assertEquals(forcings(typecheckDecls(kept + "def r : Nat := loop(2)\n")), if (asserted) 2L else 0L)
   }
 
   test("a callee that looks at its evidence sees the proof checking bound") {

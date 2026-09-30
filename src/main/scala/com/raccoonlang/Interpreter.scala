@@ -346,8 +346,9 @@ object Interpreter {
     lazy val piEnv = BinderOps.instantiateFull(lam.tpe.binders, lam.tpe.env, args)
 
     lam.body match {
-      // A native body reads only the arguments it names, none of them evidence: a builtin's and a native operation's
-      // are validated, and a raw recursive stub reads its metric's, which is never a proof.
+      // A native body reads only the arguments it names, none of them evidence: a native operation's binders are
+      // validated explicit, a builtin reads its binders by name and stores the rest in the applications it builds, and
+      // a raw recursive stub reads its metric's, which is never a proof.
       case LamBody.Native(run, nativeEnv, _) => run(args, nativeEnv)
       case LamBody.ProofEta =>
         Value.canonicalizeProof(VProof(lam.tpe.codomain(piEnv)))

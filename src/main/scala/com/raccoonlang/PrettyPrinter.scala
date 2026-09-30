@@ -35,21 +35,21 @@ object PrettyPrinter {
    * Implicit and evidence arguments are not written among a call's arguments, so a saturated call prints only its
    * explicit ones. Anything that is not a plain saturated call keeps every argument.
    */
-  private def explicitArgs(head: Value, args: Seq[Value]): Seq[Value] =
-    head.tpe match {
-      case pi: Value.VPi if pi.binders.length == args.length =>
-        args.zip(pi.binders).collect { case (arg, binder) if binder.mode == BinderMode.Explicit => arg }
-      case _ => args
+  private def explicitArgs(app: Value.VApp): Seq[Value] =
+    app.head.tpe match {
+      case pi: Value.VPi => app.explicitArgs(pi).getOrElse(app.args)
+      case _             => app.args
     }
 
-  private def printApp(head: Value, args: Seq[Value]): Vector[Piece] = {
+  private def printApp(app: Value.VApp): Vector[Piece] = {
+    val head = app.head
     val headPieces = head match {
       case _: Value.VApp | _: Value.VConst | _: Value.Var | _: Value.VSort => Vector(Val(head))
       // A named lambda prints as its name, such as a native operation heading its neutral application.
       case Value.VLam(_, _: Value.ValueId.Const, _) => Vector(Val(head))
       case _                                        => parens(Val(head))
     }
-    headPieces ++ argList(explicitArgs(head, args).map(Val))
+    headPieces ++ argList(explicitArgs(app).map(Val))
   }
 
   /** A value that prints as loose syntax, so it is parenthesized where an atom is expected. */
@@ -499,7 +499,7 @@ object PrettyPrinter {
           case None if storedArgs.isEmpty => Vector(Text(head.name))
           case None                       => Text(head.name) +: argList(storedArgs.map(Val))
         }
-      case v: Value.VApp => printApp(v.head, v.args)
+      case v: Value.VApp => printApp(v)
       case v: Value.VLam => printLam(v)
       case v: Value.Var  => Vector(Text(varName(v)))
       case s: Value.NeutralThunk =>

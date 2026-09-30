@@ -385,10 +385,14 @@ and a function type prints its binders as written.
 Proofs are erased when a program runs. A call binds its callee's evidence
 parameters to erased proofs without evaluating their propositions, whatever the
 callee is: a function, or an opaque definition whose application stores its
-arguments. So a decision procedure in a proposition runs when a call is checked,
-once per call, and not when the program runs. Something that looks at an erased
-proof, as a match on the parameter or a use of it as an explicit argument does,
-evaluates its proposition then, and sees the proof checking bound.
+arguments unevaluated. So a decision procedure in a proposition runs when a call
+is checked, once per call, and not when the call runs. Whatever reads an erased
+proof evaluates its proposition then, and sees the proof checking bound: a
+match on the parameter, a use of it as an explicit argument, and anything that
+reads a stored application's arguments, as comparing it does, or publishing it
+as a definition's value while the environment assertions
+(`-Draccoon.envAssertions`, on by default) check that the value is closed.
+Printing an application reads only its explicit arguments.
 
 ### Closures
 

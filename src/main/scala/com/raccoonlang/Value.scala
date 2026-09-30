@@ -625,8 +625,24 @@ object Value {
    */
   final class VApp private (val head: Value, stored: Vector[Value], val tpe: Value, val blockedOn: DepSet)
     extends Value {
-    lazy val args: Vector[Value] =
-      if (stored.exists { case _: DeferredEvidence => true; case _ => false }) stored.map(forced) else stored
+    // Memoized without a lock: computing it again yields the same arguments, since each deferred proof forces once.
+    private[this] var forcedArgs: Vector[Value] = null
+
+    def args: Vector[Value] = {
+      if (forcedArgs == null)
+        forcedArgs =
+          if (stored.exists { case _: DeferredEvidence => true; case _ => false }) stored.map(forced) else stored
+      forcedArgs
+    }
+
+    /**
+     * The explicit arguments, as stored, when the application saturates `pi`, its head's type: none of them is
+     * evidence, so reading them forces nothing. Printing reads them, since it shows only a call's explicit arguments.
+     */
+    private[raccoonlang] def explicitArgs(pi: VPi): Option[Vector[Value]] =
+      Option.when(stored.length == pi.binders.length) {
+        stored.zip(pi.binders).collect { case (arg, binder) if binder.mode == BinderMode.Explicit => arg }
+      }
 
     override def equals(other: Any): Boolean =
       other match {
@@ -1150,10 +1166,14 @@ object Value {
   object VCtor {
     def apply(head: ConstructorHead, fields: Vector[Value], tpe: Value): VApp = VApp(head, fields, tpe)
 
+    /** Reads the fields only of a constructor's application, so it forces no other application's arguments. */
     def unapply(value: Value): Option[(ConstructorHead, Vector[Value], Value)] =
       value match {
-        case VApp(head: ConstructorHead, fields, tpe, blockedOn) if blockedOn.isEmpty =>
-          Some((head, fields, tpe))
+        case app: VApp if app.blockedOn.isEmpty =>
+          app.head match {
+            case head: ConstructorHead => Some((head, app.args, app.tpe))
+            case _                     => None
+          }
         case _ => None
       }
   }
@@ -1177,11 +1197,12 @@ object Value {
       }
   }
 
+  // Blocker and Blocked read an application's blockers alone, never its arguments.
   object Blocker {
     def unapply(value: Value): Option[DepSet] =
       value match {
         case Var(_, id, _)                                             => Some(DepSet(id))
-        case VBlockedApp(_, _, _, blockedOn)                           => Some(blockedOn)
+        case app: VApp if app.blockedOn.nonEmpty                       => Some(app.blockedOn)
         case NeutralThunk(_, _, _, _, blockedOn) if blockedOn.nonEmpty => Some(blockedOn)
         case _                                                         => None
       }
@@ -1190,7 +1211,7 @@ object Value {
   object Blocked {
     def unapply(value: Value): Option[DepSet] =
       value match {
-        case VBlockedApp(_, _, _, blockedOn)                           => Some(blockedOn)
+        case app: VApp if app.blockedOn.nonEmpty                       => Some(app.blockedOn)
         case NeutralThunk(_, _, _, _, blockedOn) if blockedOn.nonEmpty => Some(blockedOn)
         case _                                                         => None
       }
@@ -1208,10 +1229,18 @@ object Value {
   final case class InductiveFamilyInstance(head: VConst, meta: InductiveMeta, args: Vector[Value])
 
   object InductiveFamilyValue {
+
+    /** Reads an application's arguments only once its head is a family's. */
     def unapply(value: Value): Option[InductiveFamilyInstance] =
       value match {
-        case ConstSpine(head @ VConst(_, Inductive(meta), _), args) if args.length == meta.familyArity =>
-          Some(InductiveFamilyInstance(head, meta, args))
+        case head @ VConst(_, Inductive(meta), _) if meta.familyArity == 0 =>
+          Some(InductiveFamilyInstance(head, meta, Vector.empty))
+        case app: VApp if app.blockedOn.isEmpty =>
+          app.head match {
+            case head @ VConst(_, Inductive(meta), _) if app.args.length == meta.familyArity =>
+              Some(InductiveFamilyInstance(head, meta, app.args))
+            case _ => None
+          }
         case _ => None
       }
   }
