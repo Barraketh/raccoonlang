@@ -9,8 +9,8 @@ MUTANTS = [
         why="Fills the producer's current stage without waiting for it to be free: `fill` needs the `Slot` that "
             "`acquire` hands out.",
         old="""        let (e, s) := Gpu.acquire(e, ring, p)
-        Gpu.fill(e, ring, s, k.a, Gpu.mulC(i, 64), k.m0, k.b, Gpu.mulC(i, 64), k.n0)""",
-        new="""        Gpu.fill(e, ring, p, k.a, Gpu.mulC(i, 64), k.m0, k.b, Gpu.mulC(i, 64), k.n0)""",
+        Gpu.fill(e, ring, s, k.a, Gpu.mulC(i, 64), Gpu.tileRow0(k.tile), k.b, Gpu.mulC(i, 64), Gpu.tileCol0(k.tile))""",
+        new="""        Gpu.fill(e, ring, p, k.a, Gpu.mulC(i, 64), Gpu.tileRow0(k.tile), k.b, Gpu.mulC(i, 64), Gpu.tileCol0(k.tile))""",
     ),
     dict(
         name="ring_closed_while_filling", expect="TypeMismatch",
@@ -27,7 +27,7 @@ MUTANTS = [
       let step := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Tiny.One))(p: ProducerAt(r, j))
           : Pair(Ctx(n, Tiny.One), ProducerAt(r, j)) => {
         let (e, s) := Gpu.acquire(e, ring, p)
-        Gpu.fill(e, ring, s, k.a, Gpu.mulC(i, 64), k.m0, k.b, Gpu.mulC(i, 64), k.n0)
+        Gpu.fill(e, ring, s, k.a, Gpu.mulC(i, 64), Gpu.tileRow0(k.tile), k.b, Gpu.mulC(i, 64), Gpu.tileCol0(k.tile))
       }
       let (e, p) := Gpu.takeProducer(e, w, ring, p)
       let (e, p) := Gpu.loopPeeled(e, steps, Gpu.fixedProducerAt(r, j), p, step, step)
@@ -37,7 +37,7 @@ MUTANTS = [
     let step := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Tiny.Load))(p: Producer(r))
         : Pair(Ctx(n, Tiny.Load), Producer(r)) => {
       let (e, s) := Gpu.acquire(e, ring, p)
-      Gpu.fill(e, ring, s, k.a, Gpu.mulC(i, 64), k.m0, k.b, Gpu.mulC(i, 64), k.n0)
+      Gpu.fill(e, ring, s, k.a, Gpu.mulC(i, 64), Gpu.tileRow0(k.tile), k.b, Gpu.mulC(i, 64), Gpu.tileCol0(k.tile))
     }
     let (e, p) := Gpu.loopPeeled(e, steps, Gpu.fixedProducerAt(r, m), p, step, step)
     Gpu.finishProducer(e, ring, p)
@@ -62,7 +62,7 @@ MUTANTS = [
     Gpu.elect(e, ProducerAt(r, m), fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, Tiny.One)): Pair(Ctx(j, Tiny.One), ProducerAt(r, m)) => {
       let (e, p) := Gpu.takeProducer(e, w, ring, p)
       let (e, s) := Gpu.acquire(e, ring, p)
-      Gpu.fill(e, ring, s, k.a, Gpu.lit(0), k.m0, k.b, Gpu.lit(0), k.n0)
+      Gpu.fill(e, ring, s, k.a, Gpu.lit(0), Gpu.tileRow0(k.tile), k.b, Gpu.lit(0), Gpu.tileCol0(k.tile))
     })""",
     ),
     dict(
@@ -109,11 +109,31 @@ MUTANTS = [
     ),
     dict(
         name="store_before_handoff", expect="TypeMismatch",
-        why="Reads the accumulator without waiting for the issuer's commit: `storeAcc` needs `Acc(a, ready)`, which "
+        why="Reads the accumulator without waiting for the issuer's commit: `stageAcc` needs `Acc(a, ready)`, which "
             "only `recvAcc` makes.",
         old="""    let (e, acc) := Gpu.recvAcc(e, hd, recv)
-    Gpu.storeAcc(e, t, acc, k.c, own)""",
-        new="""    Gpu.storeAcc(e, t, recv, k.c, own)""",
+    let (e, sa) := Gpu.takeStore(e, stg, side)
+    let (e, (acc, sa)) := Gpu.forChunks(e, k.tile, own, Gpu.fixedPair(Gpu.fixedAcc(a, AccState.ready), Gpu.fixedStoreAt(s, m, Tiny.epilogueWarp)), (acc, sa), chunk)""",
+        new="""    let (e, sa) := Gpu.takeStore(e, stg, side)
+    let (e, (acc, sa)) := Gpu.forChunks(e, k.tile, own, Gpu.fixedPair(Gpu.fixedAcc(a, AccState.ready), Gpu.fixedStoreAt(s, m, Tiny.epilogueWarp)), (recv, sa), chunk)""",
+    ),
+    dict(
+        name="stage_before_wait", expect="ImplicitReconstructionFailed", mentions="StageFree",
+        why="Writes the staging buffer without waiting for the store that last read it: lane 0's "
+            "`cp.async.bulk.wait_group.read` is what frees it, and `stageAcc` needs the `StageFree` that "
+            "`acquireStage` hands out.",
+        old="""      let (e, free) := Gpu.acquireStage(e, stg, sa)
+      let (e, (acc, written)) := Gpu.stageAcc(e, t, acc, stg, free, ch)""",
+        new="""      let (e, (acc, written)) := Gpu.stageAcc(e, t, acc, stg, sa, ch)""",
+    ),
+    dict(
+        name="stores_in_flight_at_exit", expect="TypeMismatch", mentions="StoreDone",
+        why="Ends the epilogue without waiting for its stores: they could still be reading the staging buffers when "
+            "their shared memory is released, and writing C when the kernel ends. Only `finishStores` makes the "
+            "`StoreDone` that `withStaging` requires.",
+        old="""    let (e, done) := Gpu.finishStores(e, stg, sa)
+    (e, (acc, done))""",
+        new="""    (e, (acc, sa))""",
     ),
     dict(
         name="second_tmem_allocation", expect="LinearReused", mentions="permit",
@@ -155,8 +175,8 @@ MUTANTS = [
     dict(
         name="literal_wider_than_u32", expect="EvidenceNotDischarged", mentions="Check.Clean.literalsOk",
         why="Scales the K coordinate by a constant that does not fit the 32-bit value it is typed as.",
-        old="""        Gpu.fill(e, ring, s, k.a, Gpu.mulC(i, 64), k.m0, k.b, Gpu.mulC(i, 64), k.n0)""",
-        new="""        Gpu.fill(e, ring, s, k.a, Gpu.mulC(i, 4294967296), k.m0, k.b, Gpu.mulC(i, 64), k.n0)""",
+        old="""        Gpu.fill(e, ring, s, k.a, Gpu.mulC(i, 64), Gpu.tileRow0(k.tile), k.b, Gpu.mulC(i, 64), Gpu.tileCol0(k.tile))""",
+        new="""        Gpu.fill(e, ring, s, k.a, Gpu.mulC(i, 4294967296), Gpu.tileRow0(k.tile), k.b, Gpu.mulC(i, 64), Gpu.tileCol0(k.tile))""",
     ),
     dict(
         name="box_narrower_than_swizzle", expect="EvidenceNotDischarged", mentions="ring: a box must be 64 elements wide",
@@ -175,10 +195,10 @@ MUTANTS = [
     dict(
         name="epilogue_misaligned", expect="EvidenceNotDischarged", mentions="aligned",
         why="Runs the epilogue on warps 5 to 8: a warp reads the tensor-memory lanes of its rank in its aligned "
-            "warpgroup, so an unaligned group would store rows of C from another warp's lanes. `storeAcc` asks for "
+            "warpgroup, so an unaligned group would store rows of C from another warp's lanes. `takeStore` asks for "
             "the alignment as evidence.",
-        old="""  def Wg1 : Group := Group.warps(4, 4)""",
-        new="""  def Wg1 : Group := Group.warps(5, 4)""",
+        old="""  def epilogueWarp : Nat := 4""",
+        new="""  def epilogueWarp : Nat := 5""",
     ),
     dict(
         name="k_steps_by_zero", expect="EvidenceNotDischarged", mentions="positive",

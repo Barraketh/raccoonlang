@@ -67,6 +67,11 @@ Each assumption is our reading of NVIDIA's documentation and CUTLASS's usage. "E
 | A16 | A block-scope `__shared__` array is one allocation for the whole kernel execution, whichever block declares it. | CUDA | high |
 | A17 | The launcher's `cudaFuncSetAttribute` and `cudaLaunchKernel` run the kernel with the given grid, block and dynamic shared memory, or return an error. | CUDA runtime | high, exercised |
 | A18 | `unsigned` arithmetic wraps modulo 2^32; a loop that neither terminates nor has side effects is undefined behavior. | C++ | high |
+| A19 | `cp.async.bulk.tensor.2d.global.shared::cta.bulk_group`, issued by one thread, asynchronously reads the box from shared memory (1024-byte aligned for the 128-byte swizzle, whose rows of the box are 128 bytes) and writes it to the tensor at the given coordinates. Elements outside the tensor are not written, but clipping is at 16-byte granularity of the global address: with the base 16-byte aligned (the launch contract) and rows a multiple of 16 bytes (the launcher's check, and the encoding's stride rule), that is the row's end, so nothing outside the tensor is written, also when the box lies wholly outside. The operation belongs to the bulk async-group that the issuing thread's next `cp.async.bulk.commit_group` closes. | PTX ISA 9.4 §9.7.10.28.5.3 (`cp.async.bulk.tensor`), §5.5.3 (tiled mode, §5.5.3.3 out-of-boundary access), §5.5.7 (swizzling); CUDA Programming Guide §4.12 (TMA: "parts of the tile may be out of bounds" on writes, strides and addresses 16-byte multiples, shared memory 128-byte aligned, box rows at most the swizzle width); the 16-byte granularity observed on H100 in triton-lang/triton#11583, extrapolated to sm_100 | medium-high (a wholly outside box: medium); to be exercised (`{1, 8, 8}` stores wholly outside boxes) |
+| A20 | `cp.async.bulk.commit_group` closes the executing thread's bulk async operations issued since its last commit into one bulk async-group. `cp.async.bulk.wait_group.read N` returns once at most the N most recent bulk async-groups of the executing thread have not finished reading their sources; `cp.async.bulk.wait_group N` once, beyond that, all earlier ones have completed, writes included and visible to the executing thread. Groups are per thread: a thread's wait says nothing of another thread's groups. | PTX ISA 9.4 §9.7.10.28.1.1 (async-group mechanism), §9.7.10.28.6.1, §9.7.10.28.6.2 | high |
+| A21 | `fence.proxy.async.shared::cta`, executed by a thread after its `st.shared` writes, orders them before later operations of the async proxy on shared memory that are ordered after the fence (here by `__syncwarp`, A22), such as a TMA store's reads. Once a thread's `wait_group.read` returned, generic writes ordered after it (A22) may overwrite the store's source without a proxy fence. | PTX ISA 9.4 §9.7.15.4 (`membar`/`fence`, proxy fences), §9.7.10.28.2 (async proxy); CUTLASS `tma_store_fence` before the epilogue's barrier and TMA store, `tma_store_wait` before rewriting; CUDA Programming Guide §4.12 example | medium-high; to be exercised |
+| A22 | `__syncwarp()` orders the memory accesses of the warp's threads before it before their accesses after it (as A2 for a CTA). | CUDA Programming Guide (`__syncwarp`) | high |
+| A23 | Nothing is assumed of bulk stores outstanding when their thread exits: every thread that commits one waits for all its groups to complete (`wait_group 0`) before its shared memory is released and before it exits. CUTLASS 4.8's sm100 epilogue without C does not wait at all (`store_tail`), its sm90 one waits for all groups' reads (`tma_store_wait<0>`, the `.read` form), as does the CUDA guide's example; the PTX ISA, as read here, states no rule for exit, so the stronger wait. | CUTLASS `sm100_epilogue_tma_warpspecialized.hpp` `store_tail` (`REFERENCE_CUTLASS.md` §4); PTX ISA 9.4 §9.7.10.28.6.2; CUDA Programming Guide §4.12 | — (a design choice, relying on A20 only) |
 
 ## 4. Structural invariants of emitted code
 
@@ -82,7 +87,7 @@ the builders do.
 | I3 | Each join's named barrier has its own id in 1..15, and its count is its group's threads. | `join`, with a check. Checked on the output by `Check.namedBarriers`: each `bar.sync` (the asm template `Gpu.namedBarrier` emits) has literal operands, an id in 1..15 that no other has, and a count that is a positive multiple of 32. That the count is its group's is not in the AST. |
 | I4 | Every `u32` literal is below 2^32. | Checked on the output by `Check.literals`: every 32-bit literal of the kernel and its launcher, and the launcher's block size and boxes, below 2^32; every 64-bit literal below 2^64. The other `u` literals the printer writes, shared-window offsets and the launch's shared bytes, are bounded by I2's check in the body; I1's keeps shared addresses out of the launcher. |
 | I5 | The kernel's name is a C identifier; every other printed name is the library's. | `uniformParam` needs the Key (M8). Checked on the output by `Check.names`: the kernel's, the parameters' and the tensor maps' names are C identifiers the printer does not declare itself (`v` and digits, `gpu_…`, the launcher's locals), none is the kernel's name, each is declared once in its function, and every parameter an expression names is its function's. C++ keywords, CUDA's names and host library symbols are not excluded: the first two fail to compile, but an `extern "C"` kernel named as a host symbol is not ruled out. |
-| I6 | The launcher passes the kernel's parameters in order. It asks for and launches with exactly the kernel's dynamic shared memory. It encodes each tensor map with its `TMap` box, bf16 and 128-byte swizzle. It launches the grid the builder assumes. | The printer passes the parameters in order and the kernel's shared memory. Checked on the output by `Check.launcher`: the launcher declares each non-map parameter as the kernel does, and encodes each tensor map exactly once, from a bf16 input and two u32 scalars of its own. The box, beyond fitting 32 bits, and the grid are the builders'. |
+| I6 | The launcher passes the kernel's parameters in order. It asks for and launches with exactly the kernel's dynamic shared memory. It encodes each operand's tensor map with its `TMap` box, bf16 and 128-byte swizzle, and the output's as `CMap` says (f32, 32×32, 128-byte swizzle). It launches the grid the builder assumes. | The printer passes the parameters in order and the kernel's shared memory, and takes a map's element type from its source. Checked on the output by `Check.launcher`: the launcher declares each non-map parameter as the kernel does, and encodes each tensor map exactly once, for the use (load or store) the kernel's parameter declares, over one of the launcher's own arrays of the kind and element type that use needs (a bf16 input to load, an f32 output to store; two maps may share an array), with two u32 scalars of its own. That the body loads only through load maps and stores only through store maps, the box beyond fitting 32 bits, and the grid are the builders'. |
 | I7 | Every collective sits where its whole group runs convergently. `__syncthreads` only in `cta` code. `bar.sync` only at a split's join. `elect.sync` only in one-warp code. Warp-collective `tcgen05` in whole-warp code, reconverged by `__syncwarp` after spin loops and guarded stores. | Groups (M3). Not checked on the output: the AST does not record which threads run a block (§9.6). |
 | I8 | Every mbarrier is initialized, fenced and CTA-synchronized before any use, and invalidated after every thread's last use. | `withRing`, `withAccRing`, `withAccHandoff`. Not checked on the output: the AST does not record which addresses are barriers (§9.6). |
 
@@ -172,9 +177,21 @@ claim. Types are abbreviated; "code" is what it emits into its `Ctx`.
 | `mmaFirst`, `mmaNext` | `Ready(r, m)`, `Elected(m)`, `Acc(empty)` / `AccPending(a, m)`; shape passes `mmaShapeOk` (M = 128, N = cols) | K/16 `tcgen05.mma` from the stage's descriptors into the accumulator, the first overwriting | `ReadyUsed(r, m)`, `AccPending(a, m)` | A11 |
 | `sendAcc` | `AccPending(a, m)`, `Elected(m)` | `tcgen05.commit` to the handoff | the handoff completes when every MMA completed | A12 |
 | `recvAcc` | `AccRecv` | wait the handoff at parity 0, `after_thread_sync` | `Acc(ready)`: every column written (N = cols) and visible | A6, A13 |
-| `storeAcc` | `Acc(ready)`, `COwn`, aligned warpgroup, bn = cols | fence, `__syncwarp`, per 8 columns `tcgen05.ld` + `wait::ld` + guarded stores; rows/columns from block and thread indices | the CTA's block written once | A13, A14, S5 |
+| `stageAcc` | `Acc(ready)`, `StageFree`, a `ChunkAt(p, cols)` of the accumulator's width, aligned warpgroup | as `stageAccFull` (§6.7), from the accumulator's columns | `StageWritten`, the accumulator still `ready` | A13, A14 |
 
-### 6.7 Persistent GEMM
+### 6.7 The output
+| Operation | Requires | Emits | Establishes | Relies on |
+|---|---|---|---|---|
+| `forChunks` | `TileAt` and `TileOwn` of one tile, bn a positive multiple of 32 (else `#error`); `Fixed(S)` | `for (c = 0; c < bn/32; ++c)` | per iteration the chunk's `ChunkAt` (columns `col0 + 32c` on) and a linear `ChunkOwn`: each chunk of the tile once | M5, S5 |
+| `withStaging` | `cta` context, bufs > 0 | 4·bufs buffers of 4096 bytes, 1024-byte aligned | `Staging`, `StoreSide`; closes only on `StoreDone`, when no store reads the buffers | I2, A19 |
+| `takeStore` | aligned warpgroup `warps(f, 4)` in scope `m` (evidence) | the buffer-index register, 0 | `StoreAt(s, m, f)`: every warp's current buffer free, no store of its lane 0 in flight | M6, A20 |
+| `acquireStage` | `StoreAt` | lane 0: `cp.async.bulk.wait_group.read (bufs − 1)`; `__syncwarp` | `StageFree`: the store that last read the current buffer, `bufs` groups back, finished reading, before any thread's next write | A20, A21, A22 |
+| `stageAccFull` | `AccFull`, `StageFree`, a `ChunkAt(p, n)` of the buffer's width | `__syncwarp`, `after_thread_sync`, 4 `tcgen05.ld.32x32b.x8`, `wait::ld`, 8 `st.shared.v4.f32` of the thread's row in the 128-byte swizzle | `StageWritten`: the warp's 32 rows of the chunk in the buffer; the loads complete, so the accumulator may be released | A13, A14 |
+| `fenceStage` | `StageWritten` | every thread `fence.proxy.async.shared::cta`, `__syncwarp` | `StageFenced`: the writes ordered before any async-proxy read issued after | A21, A22 |
+| `storeStage` | `StageFenced`, `ChunkAt` and `ChunkOwn` of one chunk, `CMap` | every lane: the buffer's address and the row `row0 + 32·(warp mod 4)` (the warp index is a full-warp `__shfl_sync`, A1, so never under the lane-0 branch); lane 0: TMA store of the buffer to (`col0`, row), `commit_group`; next buffer | `StoreAt`: one more group, reading the buffer just left; the warp's rows of the chunk written once, clipped to C | A19, A20, S5 |
+| `finishStores` | `StoreAt` | lane 0: `cp.async.bulk.wait_group 0`; `__syncwarp` | `StoreDone`: every store of the warpgroup complete, reads and writes | A20, A22, A23 |
+
+### 6.8 Persistent GEMM
 | Operation | Requires | Emits | Establishes | Relies on |
 |---|---|---|---|---|
 | `tmaGemmPersistentKernel` | a band height G > 0 (else `#error`) | `tilesM`, `tilesN`, `tiles = tilesM·tilesN`, `bandRows = min(tilesM, G)`, `bandTiles = bandRows·tilesN`, all below 2^32 by the launcher's extent checks | `Sched`, `SchedOwn` | A18 |
@@ -186,14 +203,13 @@ claim. Types are abbreviated; "code" is what it emits into its `Ctx`.
 | `commitAcc` | `AccFilling`, `Elected(m)` | `tcgen05.commit` to `full[buf]`, advance | the buffer completes when its MMAs do | A12 |
 | `finishAccProducer` | producer side | `bufs` waits on `empty`, advancing | every buffer was read: no tensor-core work in flight | A6 |
 | `awaitAcc` | consumer side | wait `full[buf]`, `after_thread_sync` | `AccFull`: the buffer's results are visible | A6, A13 |
-| `storeTile` | `AccFull`, `TileAt` and `TileOwn` of one iteration, bn = n | as `storeAcc`, at the tile's origin | the tile written once | A14, S5 |
-| `releaseAcc` | `AccFull` | `before_thread_sync`, 128 arrivals on `empty[buf]`, advance | the buffer is free to the issuer | A13 |
+| `releaseAcc` | `AccFull` | `before_thread_sync`, 128 arrivals on `empty[buf]`, advance | the buffer is free to the issuer: every chunk's loads completed (`wait::ld` in `stageAccFull`) | A13 |
 
-### 6.8 Kernels
+### 6.9 Kernels
 | Operation | Requires | Emits | Establishes | Relies on |
 |---|---|---|---|---|
 | `tiledKernel` | a body over `cta(tile²)` | the kernel; no launcher | a `Program` | I1–I7 |
-| `tmaGemmKernel`, `tmaGemmPersistentKernel` | a body; boxes pass `gemmShapeOk` | the kernel and its launcher (extent checks, map encodings, shared-memory attribute, grid) | a `Program` | A17, I6 |
+| `tmaGemmKernel`, `tmaGemmPersistentKernel` | a body; boxes pass `gemmShapeOk` | the kernel (parameters `A_map`, `B_map`, `C_map`, `M`, `N`, `K`) and its launcher (extent checks, `N mod 4 = 0`, the three map encodings, shared-memory attribute, grid); for `tmaGemmKernel` the CTA's `TileAt` from the block indices and its `TileOwn` | a `Program` | A17, A19, I6 |
 | `finish` | the Key | `#error` lines for every generation error | the `Program` | — |
 | `render` | a `Program`; `Check.WellFormed` of its kernel, discharged by evaluating the checkers | the printed kernel | no generation error; I1–I6 as far as the AST shows them | the printer, `gpu/Check.rac` |
 
@@ -204,11 +220,21 @@ arguments. The audit as of this document:
 
 - **Values.** `lit`, `zero`, `add`, `mulC`, `divC`, `remC`, `ceilDivC`, `lt`, `fma` build expressions from the
   library's own parts, with `u32` width checked on the output by `Check.literals` (I4). `tileRow0` and `tileCol0` read a sealed tile.
-- **Evidence.** `fixedUnit`, `fixedPair` and the per-family `fixed…` exist only for one-valued types.
+- **Evidence.** `fixedUnit`, `fixedPair` and the per-family `fixed…` (among them `fixedAccFull` and `fixedStoreAt`) exist
+  only for one-valued types. None exists for `StageFree`, `StageWritten` or `StageFenced`, so a chunk's protocol runs
+  in straight-line code.
 - **Endings.** `release`, `skipTmem`, `finishConsumer` and `finishAccConsumer` consume authority; none mints any.
 - **Unsealed data.** `Gen` helpers (`push`, `fresh`, `child`, `after`, `check`, …) and instruction builders (`mbarInit`,
   `mmaIssue`, …) build unsealed `Gen` and `Stmt` values. These reach a kernel only through operations that need the
   Key (`resume`, `emit`, `finish`).
+- **Output tiles and staging** (the TMA-store epilogue). `forChunks` consumes a tile's `TileOwn` and mints one
+  `ChunkOwn` per chunk; `withStaging` mints the one `StoreSide`, `takeStore` turns it into the warpgroup-bound
+  `StoreAt` (alignment evidence), and `acquireStage`, `stageAcc`, `stageAccFull`, `fenceStage`, `storeStage` and
+  `finishStores` each consume the token of one typestate and mint the next (§6.6, §6.7); the coordinates, buffers
+  and the issuing lane are the library's, never an argument. `tileRow0` and `tileCol0` read a sealed tile, as
+  before. The instruction builders `bulkWaitRead`, `bulkWait`, `bulkCommit`, `fenceProxyAsync`, `tmaStore2d`,
+  `storeShared4`, and the helpers `onLaneZero`, `stageBuffer`, `stageChunk`, build unsealed `Stmt`s or `Gen`s,
+  which reach a kernel only through the Key.
 - **Found by this audit.** `uniformParam` built a `Val` from any name, typed `uniform`. It now needs the Key.
 
 A new public operation must be added to this list with its argument.

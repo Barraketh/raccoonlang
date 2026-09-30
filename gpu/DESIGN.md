@@ -1,13 +1,13 @@
 # GPU library: design of the Blackwell layer
 
 Status: implemented in `Gpu.rac` and exercised by `examples/tinygemm.rac` and `examples/persistent_gemm.rac` (§6); both
-run correctly on a B200 (§7).
+ran correctly on a B200 (§7) before the TMA-store epilogue (§2, §4), which has not yet run on hardware.
 `gpu/README.md` describes the spike as a whole.
 
 The target is the structure of a minimal warp-specialized Blackwell GEMM ("TinyGEMM"): a TMA producer warp fills a
 ring of shared-memory stages, one elected thread of an MMA warp issues `tcgen05.mma` into a tensor-memory accumulator
 and releases each stage by `tcgen05.commit`, and an epilogue warpgroup reads the accumulator with `tcgen05.ld` and
-stores the output. Everything below is typed by the three rules of the spike: a linear emitter threaded through all
+stores the output through shared memory with TMA. Everything below is typed by the three rules of the spike: a linear emitter threaded through all
 code, lifetime-scoped values, and fieldless authority tokens.
 
 ## 1. Groups
@@ -89,6 +89,32 @@ registers the protocol owns:
 - **Commit tracks the issuing thread.** `tcgen05.commit` covers the tensor-core work of the thread that executes it,
   so `AccPending(a, m)` and the used stage `ReadyUsed(r, m)` carry the elect's scope `m`: they are committed by the
   thread that issued them, before its elect ends.
+- **Output staging** (`withStaging`, in the whole CTA): allocates `bufs` staging buffers of 32×32 f32 (4096 bytes,
+  1024-byte aligned) per warp of an aligned warpgroup, and hands its callback an untaken `StoreSide(s)`; the callback
+  must return `StoreDone(s)`, so no TMA store still reads the buffers when their shared memory is released or the
+  kernel ends.
+  - **Taking the side.** The aligned warpgroup takes it (`takeStore`, with the alignment proof), declaring its current
+    buffer index as a register of each of its 128 threads, which run every operation on it together and so keep one
+    index; `StoreAt(s, m, f)` is confined to the warpgroup's scope `m`. A TMA store is issued by one thread, and
+    `cp.async.bulk.commit_group` and `cp.async.bulk.wait_group` count the bulk async-groups of the thread that
+    executes them. So each warp's stores are issued, committed and waited for by one fixed thread, its lane 0: the
+    operations guard those instructions with `lane == 0` themselves, and the endpoint cannot reach other threads (the
+    per-thread lesson of the rings). Another group (a single warp, another role, the whole CTA) has no context the
+    operations accept.
+  - **A buffer's typestate**, per chunk: `acquireStage` (lane 0 waits `cp.async.bulk.wait_group.read (bufs − 1)`,
+    then `__syncwarp`) → `StageFree`: the current buffer was last read by the store `bufs` stores ago, since each store
+    is one group and the buffers are used in turn, and that store has finished reading it; the warp's threads write
+    after the wait. `stageAcc` / `stageAccFull` (`tcgen05.ld` into registers, `wait::ld`, `st.shared.v4`) →
+    `StageWritten`. `fenceStage` (`fence.proxy.async.shared::cta` in every thread, `__syncwarp`) → `StageFenced`: the
+    writes are ordered before the async proxy's reads, and lane 0 is past every thread's fence. `storeStage` (lane 0:
+    `cp.async.bulk.tensor.2d.global.shared::cta.bulk_group`, `cp.async.bulk.commit_group`; every thread: next buffer)
+    → in flight, back to `StoreAt`. `finishStores` (lane 0: `cp.async.bulk.wait_group 0`, `__syncwarp`) → `StoreDone`.
+  - The tokens between acquiring and storing have no `Fixed` evidence, so a chunk's protocol runs in straight-line
+    code; `StoreAt` is `Fixed`, and the invariant it stands for (the current buffer's last store is at least `bufs`
+    groups back) holds whether an arm or an iteration stored or not.
+  - `finishStores` waits for completion, reads and writes, where CUTLASS's sm100 epilogue without C does not wait
+    and the CUDA guide's example waits for the reads (`.read`): the PTX ISA states no rule for bulk stores
+    outstanding when their thread exits, and this needs none (`OBLIGATIONS.md` A23).
 - **The first K step** is peeled: `loopPeeled(e, count, init, first, rest)` emits the first iteration unconditionally,
   then a loop from 1. So the accumulator type changes once, in straight-line code, and every loop body keeps its state
   type. With `count = 0` the first iteration still runs; TMA fills out-of-bounds boxes with zeros, so the accumulator
@@ -103,8 +129,9 @@ per step) and the instruction descriptor (f32 accumulator, bf16 operands, both K
 The dynamic buffer is declared 1024-byte aligned, and a kernel may not also declare static shared arrays (`Gpu.render`
 refuses it, `Check.sharedMemory`), which would come first in the shared window. So TMA writes, the MMA reads, and the host's
 `cuTensorMapEncodeTiled` call cannot disagree about layout: the kernel
-comes with a generated host launcher (`<name>_launch`) that encodes both maps from the same boxes, checks the extents
-the kernel's 32-bit index arithmetic and TMA's signed coordinates need, sets the dynamic shared memory, and launches
+comes with a generated host launcher (`<name>_launch`) that encodes the operands' maps from the same boxes, and the
+output's (f32, boxes of 32×32 elements, 128-byte swizzle) as `CMap` says, checks the extents TMA's signed coordinates
+and the tile counts need and that a row of C is a multiple of 16 bytes, sets the dynamic shared memory, and launches
 the grid the kernel assumes. What remains to the caller is that A, B and C are distinct device arrays of M×K, N×K
 and M×N elements. Shapes the tensor cores or the epilogue do not support are generation-time errors: `withRing` takes
 only boxes 64 elements (one 128-byte swizzle row) wide and a multiple of 8 rows (so every stage is 1024-byte aligned),
@@ -112,11 +139,31 @@ and an MMA needs M = 128 and N a multiple of 16 up to 256, equal to the accumula
 
 ## 4. Output
 
-The epilogue warpgroup reads the accumulator eight columns at a time (`__syncwarp`, since a barrier wait's spin loop
-or the previous chunk's guarded stores may leave a warp diverged, then `tcgen05.ld.32x32b.x8` and
-`tcgen05.wait::ld`): thread `t` of warp `w` holds row `32 (w % 4) + t` of the tile. It stores its own row's columns of
-the CTA's block, guarded against the matrix edge, consuming the CTA's `COwn` output token, so no two threads of the
-grid write one location. The block and row come from the block and thread indices, never from the caller.
+The epilogue warpgroup stores a 128×`bn` tile of C that it owns (`TileAt` and `TileOwn`: the CTA's block, located by
+the block indices, in TinyGEMM; the iteration's tile in the persistent kernel), a chunk of 32 columns at a time:
+`forChunks` consumes the tile's `TileOwn` and runs a loop, generated once, whose iteration `c` gets the chunk's
+`ChunkAt` (columns `col0 + 32c` to `+ 31`) and a linear `ChunkOwn`, which `storeStage` consumes. Per chunk, every
+warp reads its 32 lanes of the chunk's accumulator columns (`__syncwarp`, since a barrier wait's spin loop or lane 0's
+branch may leave it diverged, `tcgen05.fence::after_thread_sync`, four `tcgen05.ld.32x32b.x8`, `tcgen05.wait::ld`):
+thread `t` of warp `w` holds row `32 (w % 4) + t` of the tile. It writes the row into the warp's staging buffer in
+the 128-byte swizzle (16-byte group `g` of row `r` at byte `128 r + 16 (g xor r mod 8)`, which is also free of bank
+conflicts), and lane 0 stores the 32×32 box at (column `col0 + 32c`, row `row0 + 32 (w % 4)`) through `C_map` (§2).
+TMA clips a box to the matrix, so partial tiles need no guards; the launcher requires rows of C to be whole 16-byte
+units, the granularity of that clipping. Each chunk's box of rows is its warp's own, and each chunk is stored once,
+so no two stores of the grid write one location, and the coordinates come from the tile and the warp, never from the
+caller.
+
+With two buffers per warp, a warp writes one chunk while its lane 0's store of the previous one is still reading.
+
+CUTLASS's sm100 epilogue for this configuration (`REFERENCE_CUTLASS.md` §4) stages 128×32 subtiles for the whole
+warpgroup, synchronizes the 128 threads with a named barrier after the fence and again after the wait, and issues
+each store from warp 0. Here each warp stages and stores its own 32×32 box: bulk async-groups are per thread, so each
+warp's stores have one issuing and waiting thread, the warps synchronize only within themselves (`__syncwarp`), and
+no named barrier id is spent; the cost is four TMA stores of 4 KiB per subtile instead of one of 16 KiB. Where
+CUTLASS relies on what we could not confirm from PTX, the stricter choice is ours: registers are read only after
+`tcgen05.wait::ld`, one thread per warp issues, commits and waits, and the stores are waited for before the staging
+memory is released or the kernel ends. Unlike CUTLASS, the accumulator buffer is released after the tile's last
+chunk has been staged, not right after its last load.
 
 ## 5. Mutations to refuse
 
@@ -133,9 +180,12 @@ grid write one location. The block and row come from the block and thread indice
 | releasing a stage twice | a release consumes the used stage (`ReadyUsed` is linear) |
 | the first K step inside the loop | a loop body's state keeps one type |
 | never committing the MMAs | `AccPending` and `AccSend` are linear |
-| storing before the handoff | `storeAcc` needs `Acc(a, ready)` |
+| storing before the handoff | `stageAcc` needs `Acc(a, ready)` |
+| writing a staging buffer before `wait_group.read` | `stageAcc` needs `StageFree` |
+| ending the epilogue with stores in flight | only `finishStores` makes `StoreDone` |
 | a second tensor-memory allocation | `TmemPermit` is linear |
 | M = 64 boxes | generation-time shape check |
+| an unaligned epilogue warpgroup | `takeStore` asks for the alignment as evidence |
 
 ## 6. The persistent kernel
 
@@ -155,7 +205,7 @@ tiles. What is new:
 - **Tile loops.** `forTiles(e, sched, state, body)` is a loop over the CTA's tiles, generated once; `body` gets the
   iteration's `TileAt(m, bn)` (its first row and column, for TMA coordinates). Every role runs the same loop, so they
   agree on the tiles. `forOwnedTiles` consumes the CTA's `SchedOwn` and also hands each iteration a linear
-  `TileOwn(m, bn)`: the one loop that may write the output, once per tile. `storeTile` takes both, so a tile is
+  `TileOwn(m, bn)`: the one loop that may write the output, once per tile. `forChunks` takes both, so a tile is
   written by the CTA the schedule gives it to, once, at the coordinates the schedule computed.
 - **Accumulator ring.** `withAccRing(e, t, acc, bufs, n, X, body)` splits `withTmem`'s accumulator into `bufs`
   buffers of `n` columns, with a full barrier (arrival count one) and an empty barrier (arrival count 128) per
@@ -163,15 +213,23 @@ tiles. What is new:
   `acquireAcc` (wait empty, `tcgen05.fence::after_thread_sync`) → `AccFree` → `mmaFirstInto` → `AccFilling` →
   `mmaNextInto`… → `commitAcc` (`tcgen05.commit` to full). The epilogue takes the consumer side as the whole aligned
   warpgroup (`takeAccConsumer`, with the alignment proof), so its 128 threads run every ring operation together and
-  keep identical stage and phase registers: `awaitAcc` (wait full, fence) → `AccFull` → `storeTile` → `releaseAcc`
-  (`tcgen05.fence::before_thread_sync`, 128 arrivals on empty). `finishAccProducer` waits until the epilogue has read
+  keep identical stage and phase registers: `awaitAcc` (wait full, fence) → `AccFull` → `forChunks` over the tile,
+  staging each chunk with `stageAccFull` (§4) → `releaseAcc` (`tcgen05.fence::before_thread_sync`, 128 arrivals on
+  empty), once every chunk's loads have completed; the stores themselves may still be in flight, since they read
+  shared memory, not tensor memory. `finishAccProducer` waits until the epilogue has read
   every buffer, so the accumulator goes back to `withTmem`, `empty`, with no tensor-core work in flight. As with the
   stage ring, trip counts that disagree deadlock; they cannot race.
+- **Output staging.** The epilogue takes the storing side once, before its tile loop, and finishes it after, so
+  stores of one tile are still reading their buffers while the next tile's chunks are staged; `acquireStage` waits
+  for them only when their buffer comes round again. Shared memory: the stage ring's 192 KiB, the staging's 32 KiB and
+  the barriers come to 230496 bytes, under the 232448 an SM has.
 - **Launcher.** The host launcher queries the SM count and launches `min(tiles, SMs)` CTAs.
 
 `rejected/persistent_gemm_mutants.py` refuses storing a tile twice, storing to a tile of the program's choosing,
 a second owning loop, reading an accumulator before `awaitAcc`, releasing it before the store, MMAs into a buffer not
-yet acquired, bands of no tile rows, and an issuer that does not drain.
+yet acquired, writing a staging buffer before `wait_group.read`, a TMA store before the proxy fence, waiting for the
+stores on one warp of the four whose lanes 0 issued them, ending the epilogue with stores in flight, bands of no tile
+rows, and an issuer that does not drain.
 
 ## 7. On hardware
 
@@ -183,6 +241,8 @@ CTA, three runs each, with sentinel guard bands around C; checks that the launch
 encode; and reports throughput.
 
 **Results** (2026-09-29, one NVIDIA B200, driver 580.126, CUDA 12.9, on vast.ai):
+
+These results predate the tile order in bands and the TMA-store epilogue (per-thread scalar stores before them).
 
 | Kernel | Checks | M = N = K = 8192 |
 |---|---|---|

@@ -347,17 +347,26 @@ namespace Spec {
   // ---- I6, the launcher ---------------------------------------------------------------------------------------------
 
   // `p` is not a tensor map.
-  def NotMap (p: Param): Prop := (name: String) -> Not(Eq(Param, p, Param.tensorMap(name)))
+  def NotMap (p: Param): Prop := (use: MapUse) -> (name: String) -> Not(Eq(Param, p, Param.tensorMap(use, name)))
+
+  // An array a tensor map the kernel uses for `use` may be encoded over: a bf16 input to load (an operand), an f32
+  // output to store (the result).
+  inductive MapSource indices (use: MapUse)(p: Param) : Prop
+   | load (name: String) : MapSource(MapUse.load, Param.input(DType.bf16, name))
+   | store (name: String) : MapSource(MapUse.store, Param.output(DType.f32, name))
 
   // I6 for kernel `k` with launcher `l`, as far as the AST shows it: the launcher declares each of the kernel's
   // parameters but the tensor maps exactly as the kernel does, and encodes each tensor map exactly once; each encoding
-  // names a tensor map of the kernel, and reads a bf16 input and two u32 scalars of the launcher.
+  // names a tensor map of the kernel with the use the kernel declares, and reads an array of the launcher that is a
+  // `MapSource` for that use, and two u32 scalars of the launcher. Encodings are counted by name: that a name is one
+  // map's, of one use, is I5's (`Names.params`, each name declared once).
   struct Launched (k: Kernel)(l: Launcher) : Prop
    | mk (declared: (p: Param) -> Mem(Param, p, k.params) -> Spec.NotMap(p) -> Mem(Param, p, l.params))
-        (encoded: (name: String) -> Mem(Param, Param.tensorMap(name), k.params) -> Mem(String, name, Spec.mapNames(l.maps)))
-        (once: (name: String) -> Mem(Param, Param.tensorMap(name), k.params) -> Not(Spec.Twice(String, name, Spec.mapNames(l.maps))))
-        (named: (m: MapEncoding) -> Mem(MapEncoding, m, l.maps) -> Mem(Param, Param.tensorMap(m.param), k.params))
-        (source: (m: MapEncoding) -> Mem(MapEncoding, m, l.maps) -> Mem(Param, Param.input(DType.bf16, m.source), l.params))
+        (encoded: (use: MapUse) -> (name: String) -> Mem(Param, Param.tensorMap(use, name), k.params) -> Mem(String, name, Spec.mapNames(l.maps)))
+        (once: (use: MapUse) -> (name: String) -> Mem(Param, Param.tensorMap(use, name), k.params) -> Not(Spec.Twice(String, name, Spec.mapNames(l.maps))))
+        (named: (m: MapEncoding) -> Mem(MapEncoding, m, l.maps) -> Mem(Param, Param.tensorMap(m.use, m.param), k.params))
+        (array: (m: MapEncoding) -> Mem(MapEncoding, m, l.maps) -> Spec.MapSource(m.use, m.source))
+        (source: (m: MapEncoding) -> Mem(MapEncoding, m, l.maps) -> Mem(Param, m.source, l.params))
         (rows: (m: MapEncoding) -> Mem(MapEncoding, m, l.maps) -> Mem(Param, Param.scalar(DType.u32, m.rows), l.params))
         (cols: (m: MapEncoding) -> Mem(MapEncoding, m, l.maps) -> Mem(Param, Param.scalar(DType.u32, m.cols), l.params)) : Launched(k, l)
 

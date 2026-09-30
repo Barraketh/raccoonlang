@@ -30,12 +30,12 @@ namespace T {
 
   // ---- Good kernels ---------------------------------------------------------------------------------------------------
 
-  def goodParams : List(Param) := List.cons(Param.tensorMap("A_map"), List.cons(Param.output(DType.f32, "C"), List.cons(T.n, List.nil(Param))))
+  def goodParams : List(Param) := List.cons(Param.tensorMap(MapUse.load, "A_map"), List.cons(Param.output(DType.f32, "C"), List.cons(T.n, List.nil(Param))))
 
   def hostParams : List(Param) := List.cons(Param.input(DType.bf16, "A"), List.cons(Param.output(DType.f32, "C"),
     List.cons(T.n, List.cons(Param.scalar(DType.u32, "K"), List.nil(Param)))))
 
-  def encodeA : MapEncoding := MapEncoding.mk("A_map", "A", "N", "K", 64, 128)
+  def encodeA : MapEncoding := MapEncoding.mk("A_map", MapUse.load, Param.input(DType.bf16, "A"), "N", "K", 64, 128)
 
   def launcher (maps: List(MapEncoding)): Launcher := Launcher.mk(T.hostParams,
     List.cons(Expr.bin(BinOp.lt, Expr.param("N"), Expr.lit64(2147483648)), List.nil(Expr)), maps, Grid.blocks(Expr.param("N"), Expr.lit(1)), 256)
@@ -308,7 +308,7 @@ namespace T {
 
   // A launcher prints its block size and each box as 32-bit literals.
   def wideLaunch : Kernel := Kernel.mk("good", T.goodParams, 1024, T.goodBody, Option.some(Launcher.mk(T.hostParams,
-    List.nil(Expr), List.cons(MapEncoding.mk("A_map", "A", "N", "K", 4294967296, 4294967297), List.nil(MapEncoding)),
+    List.nil(Expr), List.cons(MapEncoding.mk("A_map", MapUse.load, Param.input(DType.bf16, "A"), "N", "K", 4294967296, 4294967297), List.nil(MapEncoding)),
     Grid.blocks(Expr.param("N"), Expr.lit(1)), 4294967296)))
 
   def literalsWideLaunch : Eq(List(String), Check.literals(T.wideLaunch), List.cons("launcher: a block of 4294967296 does not fit 32 bits",
@@ -370,9 +370,9 @@ namespace T {
     Eq.refl(List.cons("launcher: name good is the kernel's name", T.two("launcher: name A_map is declared twice", "launcher: M is not a parameter")))
 
   // The launcher's own names are chosen names too, its tensor maps' included.
-  def hostChosen : Kernel := Kernel.mk("good", List.cons(Param.tensorMap("gpu_map"), List.nil(Param)), 0, Block.done,
+  def hostChosen : Kernel := Kernel.mk("good", List.cons(Param.tensorMap(MapUse.load, "gpu_map"), List.nil(Param)), 0, Block.done,
     Option.some(Launcher.mk(List.cons(Param.input(DType.bf16, "a-b"), List.cons(Param.scalar(DType.u32, "v3"), T.hostParams)), List.nil(Expr),
-    List.cons(MapEncoding.mk("gpu_map", "A", "N", "K", 64, 128), List.nil(MapEncoding)), Grid.blocks(Expr.lit(1), Expr.lit(1)), 256)))
+    List.cons(MapEncoding.mk("gpu_map", MapUse.load, Param.input(DType.bf16, "A"), "N", "K", 64, 128), List.nil(MapEncoding)), Grid.blocks(Expr.lit(1), Expr.lit(1)), 256)))
 
   def namesHostChosen : Eq(List(String), Check.names(T.hostChosen), List.cons("parameter gpu_map is a name the printer declares",
       List.cons("launcher: name a-b is not a C identifier", T.two("launcher: name v3 is a name the printer declares",
@@ -404,20 +404,68 @@ namespace T {
     Eq.refl(T.one("launcher: tensor map A_map has 0 encodings, not one"))
 
   def encodedTwice : Kernel := Kernel.mk("good", T.goodParams, 0, Block.done,
-    Option.some(T.launcher(List.cons(T.encodeA, List.cons(T.encodeA, List.cons(MapEncoding.mk("C", "A", "N", "K", 64, 8), List.nil(MapEncoding)))))))
+    Option.some(T.launcher(List.cons(T.encodeA, List.cons(T.encodeA, List.cons(MapEncoding.mk("C", MapUse.load, Param.input(DType.bf16, "A"), "N", "K", 64, 8), List.nil(MapEncoding)))))))
 
   def launcherEncodedTwice : Eq(List(String), Check.launcher(T.encodedTwice), T.two("launcher: tensor map A_map has 2 encodings, not one",
-      "launcher: the encoding of C names no tensor map of the kernel")) :=
-    Eq.refl(T.two("launcher: tensor map A_map has 2 encodings, not one", "launcher: the encoding of C names no tensor map of the kernel"))
+      "launcher: the encoding of C names no load map of the kernel")) :=
+    Eq.refl(T.two("launcher: tensor map A_map has 2 encodings, not one", "launcher: the encoding of C names no load map of the kernel"))
 
-  // An encoding reads a bf16 input of the launcher, with u32 scalars for its extents.
+  // An encoding reads an array of the launcher that its use needs, with u32 scalars for its extents.
   def badSources : Kernel := Kernel.mk("good", T.goodParams, 0, Block.done,
-    Option.some(T.launcher(List.cons(MapEncoding.mk("A_map", "C", "A", "Q", 64, 128), List.nil(MapEncoding)))))
+    Option.some(T.launcher(List.cons(MapEncoding.mk("A_map", MapUse.load, Param.input(DType.f32, "C"), "A", "Q", 64, 128), List.nil(MapEncoding)))))
 
-  def launcherBadSources : Eq(List(String), Check.launcher(T.badSources), List.cons("launcher: the encoding of A_map reads C, not a bf16 input of the launcher",
+  def launcherBadSources : Eq(List(String), Check.launcher(T.badSources), List.cons("launcher: the encoding of A_map reads C, not a bf16 input",
+      List.cons("launcher: the encoding of A_map reads C, which the launcher does not declare so",
       T.two("launcher: the encoding of A_map takes rows from A, not a u32 scalar of the launcher",
-        "launcher: the encoding of A_map takes columns from Q, not a u32 scalar of the launcher"))) :=
-    Eq.refl(List.cons("launcher: the encoding of A_map reads C, not a bf16 input of the launcher",
+        "launcher: the encoding of A_map takes columns from Q, not a u32 scalar of the launcher")))) :=
+    Eq.refl(List.cons("launcher: the encoding of A_map reads C, not a bf16 input",
+      List.cons("launcher: the encoding of A_map reads C, which the launcher does not declare so",
       T.two("launcher: the encoding of A_map takes rows from A, not a u32 scalar of the launcher",
-        "launcher: the encoding of A_map takes columns from Q, not a u32 scalar of the launcher")))
+        "launcher: the encoding of A_map takes columns from Q, not a u32 scalar of the launcher"))))
+
+  // A map the kernel stores through is encoded over an f32 output of the launcher.
+  def storeParams : List(Param) := List.cons(Param.tensorMap(MapUse.load, "A_map"), List.cons(Param.tensorMap(MapUse.store, "C_map"), List.cons(T.n, List.nil(Param))))
+
+  def storeMap (source: Param): Kernel := Kernel.mk("good", T.storeParams, 0, Block.done,
+    Option.some(T.launcher(List.cons(T.encodeA, List.cons(MapEncoding.mk("C_map", MapUse.store, source, "N", "K", 32, 32), List.nil(MapEncoding))))))
+
+  def launcherStoreMap : Eq(List(String), Check.launcher(T.storeMap(Param.output(DType.f32, "C"))), T.none) := Eq.refl(T.none)
+
+  // An output of another element type, an input of the output's type, a bf16 input (an operand), a scalar, and an
+  // output the launcher does not have.
+  def launcherStoreBf16 : Eq(List(String), Check.launcher(T.storeMap(Param.output(DType.bf16, "C"))),
+      T.two("launcher: the encoding of C_map reads C, not an f32 output", "launcher: the encoding of C_map reads C, which the launcher does not declare so")) :=
+    Eq.refl(T.two("launcher: the encoding of C_map reads C, not an f32 output", "launcher: the encoding of C_map reads C, which the launcher does not declare so"))
+
+  def launcherStoreInput : Eq(List(String), Check.launcher(T.storeMap(Param.input(DType.f32, "C"))),
+      T.two("launcher: the encoding of C_map reads C, not an f32 output", "launcher: the encoding of C_map reads C, which the launcher does not declare so")) :=
+    Eq.refl(T.two("launcher: the encoding of C_map reads C, not an f32 output", "launcher: the encoding of C_map reads C, which the launcher does not declare so"))
+
+  def launcherStoreOperand : Eq(List(String), Check.launcher(T.storeMap(Param.input(DType.bf16, "A"))),
+      T.one("launcher: the encoding of C_map reads A, not an f32 output")) :=
+    Eq.refl(T.one("launcher: the encoding of C_map reads A, not an f32 output"))
+
+  def launcherStoreScalar : Eq(List(String), Check.launcher(T.storeMap(Param.scalar(DType.u32, "N"))),
+      T.one("launcher: the encoding of C_map reads N, not an f32 output")) :=
+    Eq.refl(T.one("launcher: the encoding of C_map reads N, not an f32 output"))
+
+  def launcherStoreUndeclared : Eq(List(String), Check.launcher(T.storeMap(Param.output(DType.f32, "D"))),
+      T.one("launcher: the encoding of C_map reads D, which the launcher does not declare so")) :=
+    Eq.refl(T.one("launcher: the encoding of C_map reads D, which the launcher does not declare so"))
+
+  // The maps' roles swapped: the load map encoded over the output, the store map over an operand. And an encoding that
+  // claims another use than the kernel declares.
+  def swapped : Kernel := Kernel.mk("good", T.storeParams, 0, Block.done, Option.some(T.launcher(
+    List.cons(MapEncoding.mk("A_map", MapUse.load, Param.output(DType.f32, "C"), "N", "K", 64, 128),
+      List.cons(MapEncoding.mk("C_map", MapUse.store, Param.input(DType.bf16, "A"), "N", "K", 32, 32), List.nil(MapEncoding))))))
+
+  def launcherSwapped : Eq(List(String), Check.launcher(T.swapped),
+      T.two("launcher: the encoding of A_map reads C, not a bf16 input", "launcher: the encoding of C_map reads A, not an f32 output")) :=
+    Eq.refl(T.two("launcher: the encoding of A_map reads C, not a bf16 input", "launcher: the encoding of C_map reads A, not an f32 output"))
+
+  def misused : Kernel := Kernel.mk("good", T.storeParams, 0, Block.done, Option.some(T.launcher(
+    List.cons(T.encodeA, List.cons(MapEncoding.mk("C_map", MapUse.load, Param.input(DType.bf16, "A"), "N", "K", 32, 32), List.nil(MapEncoding))))))
+
+  def launcherMisused : Eq(List(String), Check.launcher(T.misused), T.one("launcher: the encoding of C_map names no load map of the kernel")) :=
+    Eq.refl(T.one("launcher: the encoding of C_map names no load map of the kernel"))
 }

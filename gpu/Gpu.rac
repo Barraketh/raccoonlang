@@ -1017,7 +1017,7 @@ namespace Gpu {
   }
 
   // What the tensor cores accept here: 64-element (128-byte) boxes along K, M of 128 (so that row `i` of the result is
-  // lane `i` of tensor memory, as `storeAcc` reads it), N a multiple of 16 up to 256 and exactly the accumulator's
+  // lane `i` of tensor memory, as the epilogue reads it), N a multiple of 16 up to 256 and exactly the accumulator's
   // columns, which the epilogue reads all of.
   def mmaShapeOk (cfg: RingCfg)(cols: Nat): Bool :=
     Bool.and(Bool.and(Nat.beq(cfg.a.inner, 64), Nat.beq(cfg.b.inner, 64)),
@@ -1064,24 +1064,166 @@ namespace Gpu {
   }
 
   // ---- The output of a tensor-core GEMM ---------------------------------------------------------------------------
+  //
+  // The epilogue warpgroup stores the accumulator's 128×`bn` tile of C by TMA. The tile is stored in chunks of 32
+  // columns (`forChunks`), and each warp of the aligned warpgroup stores its own 32 rows of a chunk, the rows of its
+  // tensor-memory lane quadrant (`warp % 4`), through staging buffers in shared memory: its threads load the chunk
+  // from tensor memory into registers, write it into a free staging buffer, fence the writes to the async proxy and
+  // reconverge, and then one thread of the warp, its lane 0, issues the TMA store of the 32×32 box and commits it as a
+  // bulk async-group. A buffer is free again once the store reading it has finished reading, which that thread learns
+  // with `cp.async.bulk.wait_group.read`. Bulk async-groups are counted per thread, so every commit and every wait of a
+  // warp's stores is on that same thread, lane 0, and the endpoint that carries the buffer index is taken by the
+  // aligned warpgroup and stays in its scope (`takeStore`), as the accumulator ring's reading side does.
+  //
+  // A staging buffer's typestate: free (`StageFree`, after `acquireStage`) → written (`StageWritten`, `stageAcc`,
+  // `stageAccFull`) → fenced (`StageFenced`, `fenceStage`) → in flight (`storeStage`, back to `StoreAt`), and free again
+  // `bufs` stores later. The store endpoint must be finished (`finishStores`, which waits for every store to complete)
+  // before `withStaging` releases the buffers.
 
-  // Where this CTA's 128×`bn` block of the f32 output lies, and the authority to write it once.
-  sealed struct COut (l: Lifetime)(bn: Nat) : Type { scope = l }
-   | mk (name: String)(rows: Expr)(cols: Expr) : COut(l, bn)
+  // An output tile of 128×`bn` elements: its first row and its first column. The tile of a one-tile-per-CTA GEMM, or
+  // that a loop iteration in scope `m` visits.
+  sealed struct TileAt (m: Lifetime)(bn: Nat) : Type { scope = m }
+   | mk (row0: Val(m, Grain.uniform, DType.u32))(col0: Val(m, Grain.uniform, DType.u32)) : TileAt(m, bn)
 
-  sealed inductive COwn (l: Lifetime)(bn: Nat) : Type { kind = lin, scope = l }
-   | mk : COwn(l, bn)
+  // Authority to write that tile, once.
+  sealed inductive TileOwn (m: Lifetime)(bn: Nat) : Type { kind = lin, scope = m }
+   | mk : TileOwn(m, bn)
 
-  def columnStores (name: String)(row: Expr)(rowOk: Expr)(cols: Expr)(col0: Expr)(first: Nat)(j: Nat)(count: Nat)
-      : List(Stmt) decreases structural(count) := {
-    match count returning List(Stmt) with
-    | Nat.zero => List.nil(Stmt)
-    | Nat.succ more => {
-      let col := Expr.bin(BinOp.add, col0, Expr.lit(j))
-      let inside := Expr.bin(BinOp.land, rowOk, Expr.bin(BinOp.lt, col, cols))
-      let store := Stmt.store(Expr.param(name), Expr.bin(BinOp.add, Expr.bin(BinOp.mul, row, cols), col), Expr.var(Nat.add(first, j)))
-      List.cons(Stmt.ifElse(inside, Block.seq(store, Block.done), Block.done), Gpu.columnStores(name, row, rowOk, cols, col0, first, Nat.succ(j), more))
+  def tileRow0 {m: Lifetime}{bn: Nat}(t: TileAt(m, bn)): Val(m, Grain.uniform, DType.u32) := t.row0
+
+  def tileCol0 {m: Lifetime}{bn: Nat}(t: TileAt(m, bn)): Val(m, Grain.uniform, DType.u32) := t.col0
+
+  // The chunk of 32 columns of a 128×`bn` tile that the iteration in scope `p` of `forChunks` stores: its index in the
+  // tile, the tile's first row, and its first column.
+  sealed struct ChunkAt (p: Lifetime)(bn: Nat) : Type { scope = p }
+   | mk (index: Expr)(row0: Expr)(col0: Expr) : ChunkAt(p, bn)
+
+  // Authority to write that chunk, once.
+  sealed inductive ChunkOwn (p: Lifetime)(bn: Nat) : Type { kind = lin, scope = p }
+   | mk : ChunkOwn(p, bn)
+
+  // Runs `body` once per chunk of 32 columns of a tile it owns, in a loop generated once: the tile's authority becomes
+  // each chunk's.
+  def forChunks {k: Lifetime}{g: Group}{j: Lifetime}{bn: Nat}{kd: Kind}{T: Lifetime}{S: Type { kind = kd, scope = T }}{Sf: Lifetime}
+      (e: Ctx(k, g))(tile: TileAt(j, bn))(own: TileOwn(j, bn))(fixed: Fixed(S))(state: S)
+      (body: { scope = Sf } (p: Lifetime) -> ChunkAt(p, bn) -> ChunkOwn(p, bn) -> Ctx(p, g) -> S -> Pair(Ctx(p, g), S))
+      : Pair(Ctx(k, g), S) := {
+    match own returning Pair(Ctx(k, g), S) with
+    | TileOwn.mk => {
+      let gen := Gpu.check(Gpu.state(Key.key, e), Bool.and(Nat.blt(0, bn), Nat.isZero(Nat.mod(bn, 32))),
+        "epilogue: a tile's columns must be a positive multiple of 32")
+      let c := gen.next
+      scope p => {
+        let col0 := Expr.bin(BinOp.add, tile.col0.expr, Expr.bin(BinOp.mul, Expr.var(c), Expr.lit(32)))
+        let (inner, after) := body(p, ChunkAt.mk(p, bn, Expr.var(c), tile.row0.expr, col0), ChunkOwn.mk(p, bn),
+          Gpu.resume(Key.key, p, g, Gpu.child(Gpu.fresh(gen))), state)
+        let done := Gpu.state(Key.key, inner)
+        let s := Stmt.forLoop(c, Expr.lit(0), Expr.lit(Nat.div(bn, 32)), Gpu.blockOf(done))
+        (Gpu.resume(Key.key, k, g, Gpu.after(gen, done, s)), after)
+      }
     }
+  }
+
+  // A tensor map parameter over the f32 output C, which the kernel stores through in boxes of 32×32 elements with the
+  // 128-byte swizzle. Launch contract: the host encodes it so.
+  sealed struct CMap (l: Lifetime) : Type { scope = l }
+   | mk (name: String) : CMap(l)
+
+  // The staging buffers in scope `s`: `bufs` of 32×32 f32 (4096 bytes, 1024-byte aligned for the 128-byte swizzle)
+  // per warp of an aligned warpgroup, from byte `base`; `cur` names the register holding the current buffer's index.
+  sealed struct Staging (s: Lifetime) : Type { scope = s }
+   | mk (base: Nat)(bufs: Nat)(cur: Nat) : Staging(s)
+
+  // The storing side, before a warpgroup takes it; taken by the aligned warpgroup `warps(f, 4)` in scope `m`, whose
+  // 128 threads run every operation on it together, and whose lane 0 of each warp issues and waits for that warp's
+  // stores; and finished, with no store in flight.
+  sealed inductive StoreSide (s: Lifetime) : Type { kind = lin, scope = s }
+   | mk : StoreSide(s)
+
+  sealed inductive StoreAt (s: Lifetime)(m: Lifetime)(f: Nat) : Type { kind = lin, scope = union(s, m) }
+   | mk : StoreAt(s, m, f)
+
+  sealed inductive StoreDone (s: Lifetime) : Type { kind = lin, scope = s }
+   | mk : StoreDone(s)
+
+  def fixedStoreAt (s: Lifetime)(m: Lifetime)(f: Nat): Fixed(StoreAt(s, m, f)) := Fixed.mk(StoreAt(s, m, f))
+
+  // Each warp's current staging buffer: free (no store reads it), written by the warp's threads, and fenced (the writes
+  // ordered before the async proxy's reads, and the warp reconverged).
+  sealed inductive StageFree (s: Lifetime)(m: Lifetime)(f: Nat) : Type { kind = lin, scope = union(s, m) }
+   | mk : StageFree(s, m, f)
+
+  sealed inductive StageWritten (s: Lifetime)(m: Lifetime)(f: Nat) : Type { kind = lin, scope = union(s, m) }
+   | mk : StageWritten(s, m, f)
+
+  sealed inductive StageFenced (s: Lifetime)(m: Lifetime)(f: Nat) : Type { kind = lin, scope = union(s, m) }
+   | mk : StageFenced(s, m, f)
+
+  def bulkWaitRead (pending: Nat): Stmt := Gpu.asm0(Text.cat3("cp.async.bulk.wait_group.read ", Text.nat(pending), ";"))
+
+  def bulkWait (pending: Nat): Stmt := Gpu.asm0(Text.cat3("cp.async.bulk.wait_group ", Text.nat(pending), ";"))
+
+  def bulkCommit : Stmt := Gpu.asm0("cp.async.bulk.commit_group;")
+
+  def fenceProxyAsync : Stmt := Gpu.asm0("fence.proxy.async.shared::cta;")
+
+  // Stores the box at shared address `src` to the tensor at coordinates (`c0`, `c1`), contiguous dimension first.
+  def tmaStore2d (map: String)(c0: Expr)(c1: Expr)(src: Expr): Stmt :=
+    Gpu.asmIn("cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%0, {%2, %3}], [%1];",
+      List.cons(Gpu.l64(Expr.paramAddr(map)), List.cons(Gpu.r(src), Gpu.two(Gpu.r(c0), Gpu.r(c1)))))
+
+  def f32 (x: Expr): Operand := Operand.mk("f", x)
+
+  // Four f32 registers from `first` into shared memory at `addr`.
+  def storeShared4 (addr: Expr)(first: Nat): Stmt :=
+    Gpu.asmIn("st.shared.v4.f32 [%0], {%1, %2, %3, %4};", List.cons(Gpu.r(addr), List.cons(Gpu.f32(Expr.var(first)),
+      List.cons(Gpu.f32(Expr.var(Nat.add(first, 1))), Gpu.two(Gpu.f32(Expr.var(Nat.add(first, 2))), Gpu.f32(Expr.var(Nat.add(first, 3))))))))
+
+  def laneZero : Expr := Expr.bin(BinOp.eq, Expr.special(Builtin.lane), Expr.lit(0))
+
+  // What lane 0 of each warp does, then the warp reconverges.
+  def onLaneZero (ss: List(Stmt)): List(Stmt) :=
+    List.cons(Stmt.ifElse(Gpu.laneZero, Gpu.toBlock(List.reverse(ss), Block.done), Block.done), List.cons(Stmt.syncWarp, List.nil(Stmt)))
+
+  def quadrant : Expr := Expr.bin(BinOp.rem, Expr.special(Builtin.warp), Expr.lit(4))
+
+  // This warp's current staging buffer.
+  def stageBuffer {s: Lifetime}(stg: Staging(s)): Expr :=
+    Expr.bin(BinOp.add, Expr.sharedAddr(stg.base),
+      Expr.bin(BinOp.mul, Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Gpu.quadrant, Expr.lit(stg.bufs)), Expr.var(stg.cur)), Expr.lit(4096)))
+
+  // Opens `bufs` staging buffers per warp of a warpgroup for the callback, which must hand back the storing side
+  // finished: no store can still be reading the buffers when their shared memory is released.
+  def withStaging {l: Lifetime}{w: Nat}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}
+      (e: Ctx(l, Group.cta(w)))(bufs: Nat)(X: Type { kind = kx, scope = Sx })
+      (body: { kind = kf, scope = Sf } (s: Lifetime) -> Staging(s) -> StoreSide(s) -> Ctx(l, Group.cta(w))
+        -> Pair(Ctx(l, Group.cta(w)), Pair(StoreDone(s), X)))
+      : Pair(Ctx(l, Group.cta(w)), X) := {
+    let gen0 := Gpu.check(Gpu.state(Key.key, e), Nat.blt(0, bufs), "staging: no buffers")
+    let base := Gpu.alignUp(gen0.smem, 1024)
+    let gen1 := Gpu.fresh(Gpu.reserve(gen0, Nat.mul(Nat.mul(4, bufs), 4096), 1024))
+    scope s => {
+      let (e2, (done, x)) := body(s, Staging.mk(s, base, bufs, gen0.next), StoreSide.mk(s), Gpu.resume(Key.key, l, Group.cta(w), gen1))
+      match done returning Pair(Ctx(l, Group.cta(w)), X) with
+      | StoreDone.mk => (e2, x)
+    }
+  }
+
+  // The aligned warpgroup takes the storing side: its current buffer starts at 0, and no store is in flight.
+  def takeStore {m: Lifetime}{f: Nat}{s: Lifetime}
+      (e: Ctx(m, Group.warps(f, 4)))[aligned: Eq(Nat, Nat.mod(f, 4), 0)](stg: Staging(s))(side: StoreSide(s))
+      : Pair(Ctx(m, Group.warps(f, 4)), StoreAt(s, m, f)) := {
+    match side returning Pair(Ctx(m, Group.warps(f, 4)), StoreAt(s, m, f)) with
+    | StoreSide.mk => (Gpu.emit(Key.key, e, Stmt.declMut(DType.u32, stg.cur, Expr.lit(0))), StoreAt.mk(s, m, f))
+  }
+
+  // Lane 0 of each warp waits until at most `bufs - 1` of its stores are still reading their buffers. The current
+  // buffer was last read by the store `bufs` stores ago (each store is one bulk async-group, from the buffers in turn),
+  // so it is free; the warp reconverges, so its threads write the buffer after the wait.
+  def acquireStage {k: Lifetime}{f: Nat}{s: Lifetime}{m: Lifetime}
+      (e: Ctx(k, Group.warps(f, 4)))(stg: Staging(s))(st: StoreAt(s, m, f)): Pair(Ctx(k, Group.warps(f, 4)), StageFree(s, m, f)) := {
+    match st returning Pair(Ctx(k, Group.warps(f, 4)), StageFree(s, m, f)) with
+    | StoreAt.mk => (Gpu.emitAll(Key.key, e, Gpu.onLaneZero(List.cons(Gpu.bulkWaitRead(Nat.pred(stg.bufs)), List.nil(Stmt)))), StageFree.mk(s, m, f))
   }
 
   def declOuts (first: Nat)(count: Nat): List(Stmt) decreases structural(count) := {
@@ -1090,55 +1232,81 @@ namespace Gpu {
     | Nat.succ more => List.cons(Stmt.declOut(DType.f32, first), Gpu.declOuts(Nat.succ(first), more))
   }
 
-  // Reads the accumulator eight columns at a time and stores this thread's row of the block.
-  def chunks (gen: Gen)(name: String)(row: Expr)(rowOk: Expr)(cols: Expr)(lane: Expr)(base: Expr)(c: Nat)(count: Nat)
-      : Gen decreases structural(count) := {
-    match count returning Gen with
-    | Nat.zero => gen
-    | Nat.succ more => {
-      let first := gen.next
-      let col0 := Expr.bin(BinOp.add, base, Expr.lit(Nat.mul(8, c)))
-      // The warp reconverges before each `.sync.aligned` load: a barrier wait's spin loop, or the guarded stores of
-      // the chunk before, may leave it diverged.
-      let load := List.append(Gpu.declOuts(first, 8), List.cons(Stmt.syncWarp,
-        List.cons(Gpu.tmemLoad8(first, Expr.bin(BinOp.add, lane, Expr.lit(Nat.mul(8, c)))), List.cons(Gpu.tmemWaitLoad, List.nil(Stmt)))))
-      let named := Gen.mk(gen.code, Nat.add(first, 8), gen.smem, gen.barrier, gen.errors)
-      Gpu.chunks(Gpu.pushAll(named, List.append(load, Gpu.columnStores(name, row, rowOk, cols, col0, first, 0, 8))),
-        name, row, rowOk, cols, lane, base, Nat.succ(c), more)
+  // Each warp loads its 32 lanes of 32 columns of the accumulator at tensor-memory address `taddr` from column
+  // `32·index`, one row per thread, and writes them into its current staging buffer in the 128-byte swizzle the TMA
+  // store reads: row r's 16-byte group g at byte 128·r + 16·(g xor r mod 8).
+  def stageChunk (gen: Gen)(taddr: Expr)(buffer: Expr)(index: Expr): Gen := {
+    let first := gen.next
+    let row := Nat.add(first, 32)
+    let swizzle := Nat.add(first, 33)
+    let lane := Expr.bin(BinOp.add, Expr.bin(BinOp.add, taddr, Expr.bin(BinOp.shl, Expr.bin(BinOp.mul, Gpu.quadrant, Expr.lit(32)), Expr.lit(16))),
+      Expr.bin(BinOp.mul, index, Expr.lit(32)))
+    let load := fun (i: Nat): Stmt => Gpu.tmemLoad8(Nat.add(first, Nat.mul(8, i)), Expr.bin(BinOp.add, lane, Expr.lit(Nat.mul(8, i))))
+    let write := fun (g: Nat): Stmt => Gpu.storeShared4(Expr.bin(BinOp.add, Expr.var(row),
+      Expr.bin(BinOp.shl, Expr.bin(BinOp.bxor, Expr.lit(g), Expr.var(swizzle)), Expr.lit(4))), Nat.add(first, Nat.mul(4, g)))
+    let eight := List.cons(0, List.cons(1, List.cons(2, List.cons(3, List.cons(4, List.cons(5, List.cons(6, List.cons(7, List.nil(Nat)))))))))
+    let four := List.cons(0, List.cons(1, List.cons(2, List.cons(3, List.nil(Nat)))))
+    // The warp reconverges before the `.sync.aligned` loads, and its loads are ordered after the tensor-core work that
+    // wrote the accumulator, whoever observed it complete.
+    let loads := List.append(Gpu.declOuts(first, 32), List.cons(Stmt.syncWarp, List.cons(Gpu.tcFenceAfter,
+      List.append(List.map(four, Stmt, load), List.cons(Gpu.tmemWaitLoad, List.nil(Stmt))))))
+    let place := List.cons(Stmt.decl(DType.u32, row, Expr.bin(BinOp.add, buffer, Expr.bin(BinOp.mul, Expr.special(Builtin.lane), Expr.lit(128)))),
+      List.cons(Stmt.decl(DType.u32, swizzle, Expr.bin(BinOp.band, Expr.special(Builtin.lane), Expr.lit(7))), List.nil(Stmt)))
+    Gpu.pushAll(Gen.mk(gen.code, Nat.add(first, 34), gen.smem, gen.barrier, gen.errors),
+      List.append(loads, List.append(place, List.map(eight, Stmt, write))))
+  }
+
+  // Writes a chunk of the one-tile-per-CTA accumulator, whose results are ready, into the free staging buffer.
+  def stageAcc {k: Lifetime}{f: Nat}{a: Lifetime}{cols: Nat}{s: Lifetime}{m: Lifetime}{p: Lifetime}
+      (e: Ctx(k, Group.warps(f, 4)))(t: Tmem(a, cols))(acc: Acc(a, AccState.ready))(stg: Staging(s))(free: StageFree(s, m, f))
+      (chunk: ChunkAt(p, cols)): Pair(Ctx(k, Group.warps(f, 4)), Pair(Acc(a, AccState.ready), StageWritten(s, m, f))) := {
+    match free returning Pair(Ctx(k, Group.warps(f, 4)), Pair(Acc(a, AccState.ready), StageWritten(s, m, f))) with
+    | StageFree.mk => {
+      let gen := Gpu.stageChunk(Gpu.state(Key.key, e), Expr.var(t.addr), Gpu.stageBuffer(stg), chunk.index)
+      (Gpu.resume(Key.key, k, Group.warps(f, 4), gen), (acc, StageWritten.mk(s, m, f)))
     }
   }
 
-  // What an aligned warpgroup's epilogue does: each warp reads its own 32 lanes of the accumulator at tensor-memory
-  // address `taddr` (lane quadrant `warp % 4`), and each thread stores its own row of the 128×`bn` block of the output
-  // at rows from `row0` and columns from `col0`, inside the matrix. `capacity` is the accumulator's width in columns.
-  def storeRows {L: Lifetime}{bn: Nat}(gen: Gen)(taddr: Expr)(row0: Expr)(col0: Expr)(out: COut(L, bn))(capacity: Nat): Gen := {
-    let gen0 := Gpu.check(gen, Bool.and(Nat.isZero(Nat.mod(bn, 8)), Bool.and(Nat.blt(0, bn), Nat.beq(bn, capacity))),
-      "epilogue: the block's columns must be a positive multiple of 8, exactly the accumulator's columns")
-    let q := gen0.next
-    let row := Nat.add(q, 1)
-    let rowOk := Nat.add(q, 2)
-    let quadrant := Expr.bin(BinOp.rem, Expr.special(Builtin.warp), Expr.lit(4))
-    let rowExpr := Expr.bin(BinOp.add, row0, Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.var(q), Expr.lit(32)), Expr.special(Builtin.lane)))
-    let setup := List.cons(Stmt.decl(DType.u32, q, quadrant), List.cons(Stmt.decl(DType.u32, row, rowExpr),
-      List.cons(Stmt.decl(DType.bool, rowOk, Expr.bin(BinOp.lt, Expr.var(row), out.rows)), List.nil(Stmt))))
-    // Whoever observed the tensor-core work complete, these threads' loads are ordered after it: an accumulator may
-    // reach them through a thread barrier from the threads that waited for it.
-    let gen1 := Gpu.pushAll(Gpu.fresh(Gpu.fresh(Gpu.fresh(gen0))), List.cons(Gpu.tcFenceAfter, setup))
-    let lane := Expr.bin(BinOp.add, taddr, Expr.bin(BinOp.shl, Expr.bin(BinOp.mul, Expr.var(q), Expr.lit(32)), Expr.lit(16)))
-    Gpu.chunks(gen1, out.name, Expr.var(row), Expr.var(rowOk), out.cols, lane, col0, 0, Nat.div(bn, 8))
+  // Orders the warp's writes to its staging buffer before the TMA store's reads (each thread fences its own writes to
+  // the async proxy), and reconverges the warp, so lane 0 issues the store after every thread's fence.
+  def fenceStage {k: Lifetime}{f: Nat}{s: Lifetime}{m: Lifetime}
+      (e: Ctx(k, Group.warps(f, 4)))(w: StageWritten(s, m, f)): Pair(Ctx(k, Group.warps(f, 4)), StageFenced(s, m, f)) := {
+    match w returning Pair(Ctx(k, Group.warps(f, 4)), StageFenced(s, m, f)) with
+    | StageWritten.mk => (Gpu.emitAll(Key.key, e, List.cons(Gpu.fenceProxyAsync, List.cons(Stmt.syncWarp, List.nil(Stmt)))), StageFenced.mk(s, m, f))
   }
 
-  // The epilogue of a one-tile-per-CTA GEMM: stores the CTA's block, which the block indices locate, never the caller.
-  def storeAcc {n: Lifetime}{f: Nat}{L: Lifetime}{a: Lifetime}{cols: Nat}{bn: Nat}
-      (e: Ctx(n, Group.warps(f, 4)))[aligned: Eq(Nat, Nat.mod(f, 4), 0)](t: Tmem(a, cols))(acc: Acc(a, AccState.ready))
-      (out: COut(L, bn))(own: COwn(L, bn)): Pair(Ctx(n, Group.warps(f, 4)), Acc(a, AccState.ready)) := {
-    match own returning Pair(Ctx(n, Group.warps(f, 4)), Acc(a, AccState.ready)) with
-    | COwn.mk => {
-      let row0 := Expr.bin(BinOp.mul, Expr.special(Builtin.blockY), Expr.lit(128))
-      let col0 := Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(bn))
-      let gen := Gpu.storeRows(Gpu.state(Key.key, e), Expr.var(t.addr), row0, col0, out, cols)
-      (Gpu.resume(Key.key, n, Group.warps(f, 4), gen), acc)
+  // Lane 0 of each warp stores the warp's 32 rows of the chunk from its staging buffer to C, clipped to the matrix, and
+  // commits the store as a bulk async-group; every thread moves to the next buffer. The chunk must be owned.
+  def storeStage {k: Lifetime}{f: Nat}{s: Lifetime}{m: Lifetime}{L: Lifetime}{p: Lifetime}{bn: Nat}
+      (e: Ctx(k, Group.warps(f, 4)))(stg: Staging(s))(fenced: StageFenced(s, m, f))(out: CMap(L))(chunk: ChunkAt(p, bn))(own: ChunkOwn(p, bn))
+      : Pair(Ctx(k, Group.warps(f, 4)), StoreAt(s, m, f)) := {
+    match fenced returning Pair(Ctx(k, Group.warps(f, 4)), StoreAt(s, m, f)) with
+    | StageFenced.mk => {
+      match own returning Pair(Ctx(k, Group.warps(f, 4)), StoreAt(s, m, f)) with
+      | ChunkOwn.mk => {
+        // The buffer and the row are computed by every lane: the warp index is a full-warp `__shfl_sync`, which lane 0
+        // alone may not execute.
+        let gen := Gpu.state(Key.key, e)
+        let src := gen.next
+        let row := Nat.add(gen.next, 1)
+        let place := List.cons(Stmt.decl(DType.u32, src, Gpu.stageBuffer(stg)),
+          List.cons(Stmt.decl(DType.u32, row, Expr.bin(BinOp.add, chunk.row0, Expr.bin(BinOp.mul, Gpu.quadrant, Expr.lit(32)))), List.nil(Stmt)))
+        let store := Gpu.onLaneZero(List.cons(Gpu.tmaStore2d(out.name, chunk.col0, Expr.var(row), Expr.var(src)), List.cons(Gpu.bulkCommit, List.nil(Stmt))))
+        let next := List.cons(Stmt.assign(stg.cur, Expr.bin(BinOp.add, Expr.var(stg.cur), Expr.lit(1))),
+          List.cons(Stmt.ifElse(Expr.bin(BinOp.eq, Expr.var(stg.cur), Expr.lit(stg.bufs)), Block.seq(Stmt.assign(stg.cur, Expr.lit(0)), Block.done), Block.done),
+            List.nil(Stmt)))
+        let named := Gen.mk(gen.code, Nat.add(gen.next, 2), gen.smem, gen.barrier, gen.errors)
+        (Gpu.resume(Key.key, k, Group.warps(f, 4), Gpu.pushAll(named, List.append(place, List.append(store, next)))), StoreAt.mk(s, m, f))
+      }
     }
+  }
+
+  // Lane 0 of each warp waits until every store it issued has completed, reads and writes; then no store reads the
+  // staging buffers, which may be released, and none is in flight when the kernel ends.
+  def finishStores {k: Lifetime}{f: Nat}{s: Lifetime}{m: Lifetime}
+      (e: Ctx(k, Group.warps(f, 4)))(stg: Staging(s))(st: StoreAt(s, m, f)): Pair(Ctx(k, Group.warps(f, 4)), StoreDone(s)) := {
+    match st returning Pair(Ctx(k, Group.warps(f, 4)), StoreDone(s)) with
+    | StoreAt.mk => (Gpu.emitAll(Key.key, e, Gpu.onLaneZero(List.cons(Gpu.bulkWait(0), List.nil(Stmt)))), StoreDone.mk(s))
   }
 
   // ---- Persistent GEMM: the tile schedule --------------------------------------------------------------------------
@@ -1155,18 +1323,6 @@ namespace Gpu {
   // Authority to write, once each, the tiles this CTA visits.
   sealed inductive SchedOwn (l: Lifetime)(bn: Nat) : Type { kind = lin, scope = l }
    | mk : SchedOwn(l, bn)
-
-  // The tile a loop iteration in scope `m` visits: its first row and its first column.
-  sealed struct TileAt (m: Lifetime)(bn: Nat) : Type { scope = m }
-   | mk (row0: Val(m, Grain.uniform, DType.u32))(col0: Val(m, Grain.uniform, DType.u32)) : TileAt(m, bn)
-
-  // Authority to write the tile of the iteration in scope `m`.
-  sealed inductive TileOwn (m: Lifetime)(bn: Nat) : Type { kind = lin, scope = m }
-   | mk : TileOwn(m, bn)
-
-  def tileRow0 {m: Lifetime}{bn: Nat}(t: TileAt(m, bn)): Val(m, Grain.uniform, DType.u32) := t.row0
-
-  def tileCol0 {m: Lifetime}{bn: Nat}(t: TileAt(m, bn)): Val(m, Grain.uniform, DType.u32) := t.col0
 
   // `(a < b) ? a : b`.
   def minExpr (a: Expr)(b: Expr): Expr := Expr.select(Expr.bin(BinOp.lt, a, b), a, b)
@@ -1260,6 +1416,8 @@ namespace Gpu {
   // The reader's current buffer, whose results are visible to the warpgroup.
   sealed inductive AccFull (q: Lifetime)(m: Lifetime)(f: Nat) : Type { kind = lin, scope = union(q, m) }
    | mk : AccFull(q, m, f)
+
+  def fixedAccFull (q: Lifetime)(m: Lifetime)(f: Nat): Fixed(AccFull(q, m, f)) := Fixed.mk(AccFull(q, m, f))
 
   sealed inductive AccProducerDone (q: Lifetime) : Type { kind = lin, scope = q }
    | mk : AccProducerDone(q)
@@ -1394,14 +1552,14 @@ namespace Gpu {
     }
   }
 
-  // Stores the current buffer to the iteration's tile, which it must own.
-  def storeTile {k: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}{m: Lifetime}{j: Lifetime}{L: Lifetime}{bn: Nat}
-      (e: Ctx(k, Group.warps(f, 4)))(ring: AccRing(q, n))(full: AccFull(q, m, f))(tile: TileAt(j, bn))(own: TileOwn(j, bn))
-      (out: COut(L, bn)): Pair(Ctx(k, Group.warps(f, 4)), AccFull(q, m, f)) := {
-    match own returning Pair(Ctx(k, Group.warps(f, 4)), AccFull(q, m, f)) with
-    | TileOwn.mk => {
-      let gen := Gpu.storeRows(Gpu.state(Key.key, e), Gpu.accBuffer(ring, ring.cStage), tile.row0.expr, tile.col0.expr, out, n)
-      (Gpu.resume(Key.key, k, Group.warps(f, 4), gen), full)
+  // Writes a chunk of the current buffer, whose results are visible, into the free staging buffer.
+  def stageAccFull {k: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}{m: Lifetime}{s: Lifetime}{j: Lifetime}{p: Lifetime}
+      (e: Ctx(k, Group.warps(f, 4)))(ring: AccRing(q, n))(full: AccFull(q, m, f))(stg: Staging(s))(free: StageFree(s, j, f))
+      (chunk: ChunkAt(p, n)): Pair(Ctx(k, Group.warps(f, 4)), Pair(AccFull(q, m, f), StageWritten(s, j, f))) := {
+    match free returning Pair(Ctx(k, Group.warps(f, 4)), Pair(AccFull(q, m, f), StageWritten(s, j, f))) with
+    | StageFree.mk => {
+      let gen := Gpu.stageChunk(Gpu.state(Key.key, e), Gpu.accBuffer(ring, ring.cStage), Gpu.stageBuffer(stg), chunk.index)
+      (Gpu.resume(Key.key, k, Group.warps(f, 4), gen), (full, StageWritten.mk(s, j, f)))
     }
   }
 
@@ -1423,11 +1581,12 @@ namespace Gpu {
 
   // ---- The tensor-core GEMM launch ---------------------------------------------------------------------------------
 
-  // What each CTA of a tensor-core GEMM starts with: the operand tensor maps, its output block, and the extents.
+  // What each CTA of a tensor-core GEMM starts with: the operand tensor maps, the output's, the extents, and its tile of
+  // the output.
   struct TmaLaunch (l: Lifetime)(sa: TmaSpec)(sb: TmaSpec) : Type { scope = l }
-   | mk (a: TMap(l, sa))(b: TMap(l, sb))(c: COut(l, TmaSpec.outer(sb)))
+   | mk (a: TMap(l, sa))(b: TMap(l, sb))(c: CMap(l))
         (m: Val(l, Grain.uniform, DType.u32))(n: Val(l, Grain.uniform, DType.u32))(k: Val(l, Grain.uniform, DType.u32))
-        (m0: Val(l, Grain.uniform, DType.u32))(n0: Val(l, Grain.uniform, DType.u32)) : TmaLaunch(l, sa, sb)
+        (tile: TileAt(l, TmaSpec.outer(sb))) : TmaLaunch(l, sa, sb)
 
 
   // Boxes a tensor-core GEMM can take, whether or not its body loads or multiplies them.
@@ -1435,23 +1594,27 @@ namespace Gpu {
     Bool.and(Bool.and(Gpu.boxOk(sa), Gpu.boxOk(sb)), Gpu.mmaShapeOk(RingCfg.mk(1, sa, sb), sb.outer))
 
   def tmaGemmParams : List(Param) :=
-    List.cons(Param.tensorMap("A_map"), List.cons(Param.tensorMap("B_map"), List.cons(Param.output(DType.f32, "C"),
+    List.cons(Param.tensorMap(MapUse.load, "A_map"), List.cons(Param.tensorMap(MapUse.load, "B_map"), List.cons(Param.tensorMap(MapUse.store, "C_map"),
       List.cons(Param.scalar(DType.u32, "M"), List.cons(Param.scalar(DType.u32, "N"), List.cons(Param.scalar(DType.u32, "K"), List.nil(Param)))))))
 
   // `ceil(x / d)` for a host or kernel scalar parameter `x`.
   def paramCeilDiv (x: String)(d: Nat): Expr := Expr.bin(BinOp.div, Expr.bin(BinOp.add, Expr.param(x), Expr.lit(Nat.pred(d))), Expr.lit(d))
 
-  // The host launcher of a tensor-core GEMM: it encodes A_map and B_map as `TMap` says and launches `grid`. The kernel
-  // indexes C with 32-bit arithmetic, and TMA coordinates are signed 32-bit.
+  // The host launcher of a tensor-core GEMM: it encodes A_map and B_map as `TMap` says, and C_map as `CMap` says, and
+  // launches `grid`. TMA coordinates are signed 32-bit, and the tile schedule counts tiles in 32 bits. A row of C must
+  // be a multiple of 16 bytes: `cuTensorMapEncodeTiled` requires it of the stride, and a TMA store clips a box to the
+  // matrix only at 16-byte granularity of its rows.
   def tmaGemmLauncher (sa: TmaSpec)(sb: TmaSpec)(grid: Grid): Launcher := {
     let hostParams := List.cons(Param.input(DType.bf16, "A"), List.cons(Param.input(DType.bf16, "B"), List.cons(Param.output(DType.f32, "C"),
       List.cons(Param.scalar(DType.u32, "M"), List.cons(Param.scalar(DType.u32, "N"), List.cons(Param.scalar(DType.u32, "K"), List.nil(Param)))))))
     let below := fun (x: Expr)(limit: Nat): Expr => Expr.bin(BinOp.lt, x, Expr.lit64(limit))
     let requires := List.cons(below(Expr.bin(BinOp.mul, Expr.cast(DType.u64, Expr.param("M")), Expr.param("N")), Cuda.u32Limit),
       List.cons(below(Expr.param("M"), Gpu.i32Limit), List.cons(below(Expr.param("N"), Gpu.i32Limit),
-        List.cons(below(Expr.param("K"), Gpu.i32Limit), List.nil(Expr)))))
-    let maps := List.cons(MapEncoding.mk("A_map", "A", "M", "K", sa.inner, sa.outer),
-      List.cons(MapEncoding.mk("B_map", "B", "N", "K", sb.inner, sb.outer), List.nil(MapEncoding)))
+        List.cons(below(Expr.param("K"), Gpu.i32Limit),
+        List.cons(Expr.bin(BinOp.eq, Expr.bin(BinOp.rem, Expr.param("N"), Expr.lit(4)), Expr.lit(0)), List.nil(Expr))))))
+    let maps := List.cons(MapEncoding.mk("A_map", MapUse.load, Param.input(DType.bf16, "A"), "M", "K", sa.inner, sa.outer),
+      List.cons(MapEncoding.mk("B_map", MapUse.load, Param.input(DType.bf16, "B"), "N", "K", sb.inner, sb.outer),
+      List.cons(MapEncoding.mk("C_map", MapUse.store, Param.output(DType.f32, "C"), "M", "N", 32, 32), List.nil(MapEncoding))))
     Launcher.mk(hostParams, requires, maps, grid, 256)
   }
 
@@ -1460,17 +1623,17 @@ namespace Gpu {
   // block of C. The kernel comes with a host launcher (`tmaGemmLauncher`); its remaining contract is that A, B and C
   // are distinct device arrays of M×K, N×K and M×N elements.
   def tmaGemmKernel (name: String)(sa: TmaSpec)(sb: TmaSpec)
-      (body: (l: Lifetime) -> Ctx(l, Group.cta(256)) -> TmaLaunch(l, sa, sb) -> COwn(l, TmaSpec.outer(sb)) -> TmemPermit(l)
+      (body: (l: Lifetime) -> Ctx(l, Group.cta(256)) -> TmaLaunch(l, sa, sb) -> TileOwn(l, TmaSpec.outer(sb)) -> TmemPermit(l)
         -> Ctx(l, Group.cta(256)))
       : Program := scope l => {
     let bn := sb.outer
     let m := Gpu.uniformParam(Key.key, l, "M")
     let n := Gpu.uniformParam(Key.key, l, "N")
     let k := Gpu.uniformParam(Key.key, l, "K")
-    let m0 := Val.mk(l, Grain.uniform, DType.u32, Expr.bin(BinOp.mul, Expr.special(Builtin.blockY), Expr.lit(128)), Option.none(Nat))
-    let n0 := Val.mk(l, Grain.uniform, DType.u32, Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(bn)), Option.none(Nat))
-    let launch := TmaLaunch.mk(TMap.mk(l, sa, "A_map"), TMap.mk(l, sb, "B_map"), COut.mk(l, bn, "C", m.expr, n.expr), m, n, k, m0, n0)
-    let gen := Gpu.state(Key.key, body(l, Gpu.start(Key.key, l, Group.cta(256)), launch, COwn.mk(l, bn), TmemPermit.mk(l)))
+    let row0 := Val.mk(l, Grain.uniform, DType.u32, Expr.bin(BinOp.mul, Expr.special(Builtin.blockY), Expr.lit(128)), Option.none(Nat))
+    let col0 := Val.mk(l, Grain.uniform, DType.u32, Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(bn)), Option.none(Nat))
+    let launch := TmaLaunch.mk(TMap.mk(l, sa, "A_map"), TMap.mk(l, sb, "B_map"), CMap.mk(l, "C_map"), m, n, k, TileAt.mk(bn, row0, col0))
+    let gen := Gpu.state(Key.key, body(l, Gpu.start(Key.key, l, Group.cta(256)), launch, TileOwn.mk(l, bn), TmemPermit.mk(l)))
     let grid := Grid.blocks(Gpu.paramCeilDiv("N", bn), Gpu.paramCeilDiv("M", 128))
     Gpu.finish(Key.key, name, Gpu.tmaGemmParams, Option.some(Gpu.tmaGemmLauncher(sa, sb, grid)),
       Gpu.check(gen, Gpu.gemmShapeOk(sa, sb), "kernel: boxes the ring or the tensor cores do not take"))
@@ -1478,9 +1641,9 @@ namespace Gpu {
 
   // ---- The persistent tensor-core GEMM launch ------------------------------------------------------------------------
 
-  // What each CTA of a persistent tensor-core GEMM starts with: the operand tensor maps, the output, and the extents.
+  // What each CTA of a persistent tensor-core GEMM starts with: the operand tensor maps, the output's, and the extents.
   struct TmaGemm (l: Lifetime)(sa: TmaSpec)(sb: TmaSpec) : Type { scope = l }
-   | mk (a: TMap(l, sa))(b: TMap(l, sb))(c: COut(l, TmaSpec.outer(sb)))
+   | mk (a: TMap(l, sa))(b: TMap(l, sb))(c: CMap(l))
         (m: Val(l, Grain.uniform, DType.u32))(n: Val(l, Grain.uniform, DType.u32))(k: Val(l, Grain.uniform, DType.u32))
         : TmaGemm(l, sa, sb)
 
@@ -1495,7 +1658,7 @@ namespace Gpu {
     let m := Gpu.uniformParam(Key.key, l, "M")
     let n := Gpu.uniformParam(Key.key, l, "N")
     let k := Gpu.uniformParam(Key.key, l, "K")
-    let gemm := TmaGemm.mk(TMap.mk(l, sa, "A_map"), TMap.mk(l, sb, "B_map"), COut.mk(l, bn, "C", m.expr, n.expr), m, n, k)
+    let gemm := TmaGemm.mk(TMap.mk(l, sa, "A_map"), TMap.mk(l, sb, "B_map"), CMap.mk(l, "C_map"), m, n, k)
     let gen0 := Gpu.check(Gpu.state(Key.key, Gpu.start(Key.key, l, Group.cta(256))), Nat.blt(0, band),
       "schedule: a band must have at least one tile row")
     let tilesN := gen0.next

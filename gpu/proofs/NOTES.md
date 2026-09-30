@@ -23,9 +23,9 @@ the whole certificate, `WellFormed.sound: Check.WellFormed(k) -> Spec.WellFormed
 | I3 `namedBarriers` | `NamedBarriers`, `BarrierIds`, `BarrierCounts`, `Barrier`, `LiteralOperands`, 31 lines | `Barriers.rac` | 274 |
 | I4 `literals` | `Literals`, `Lit32`, `Lit64`, 29 lines | `Literals.rac` | 115 |
 | I5 `names` | `Names`, `Chosen`, `CIdent`, `PrinterName`, `Declared`, `Twice`, …, 61 lines | `Names.rac` | 271 |
-| I6 `launcher` | `LauncherOk`, `Launched`, `NotMap`, 20 lines | `Launcher.rac` | 317 |
+| I6 `launcher` | `LauncherOk`, `Launched`, `NotMap`, `MapSource`, 27 lines | `Launcher.rac` | 352 |
 | certificate | `WellFormed`, 7 lines | `WellFormed.rac` | 21 |
-| **total** | 374 | | 2442 |
+| **total** | 382 | | 2477 |
 
 Check time. Each proof file checks in 1.4 to 2.3 s of wall time, most of it loading `Check.rac` (a file that loads
 only the prelude takes 0.8 s); `WellFormed.rac`, which loads every proof, takes 2.3 s. `check.sh` gains the 11 files
@@ -118,8 +118,12 @@ would have needed its own `Keeps`, `Acc` and an invariant relating the first com
 
 **I6, the launcher.** Spec: for a kernel with launcher `l`, every parameter of the kernel that is `NotMap` is a `Mem`
 of `l.params` (the same constructor, element type and name); every `tensorMap(name)` of the kernel is among the
-encodings' names and not `Twice` there; and every encoding names a `tensorMap` of the kernel and reads
-`input(bf16, source)`, `scalar(u32, rows)` and `scalar(u32, cols)` of the launcher. Its size is in Bool reflection:
+encodings' names and not `Twice` there; and every encoding names a `tensorMap(use, name)` of the kernel with the use it
+states, and reads a source array that is a `MapSource` for that use (`input(bf16, n)` to load, `output(f32, n)` to
+store) and a `Mem` of the launcher's parameters, and `scalar(u32, rows)` and `scalar(u32, cols)` of the launcher.
+`MapSource` from `Check.mapSource` is two `Eq.subst`s per arm, over the soundness of `Check.sameUse` and
+`Check.sameType`; that the named map is the kernel's is `Check.declares` again, now that `sameParam` compares a map's
+use. Its size is in Bool reflection:
 `Check.sameParam` sound (a 4 × 4 case split, 12 arms impossible), `Check.sameType` sound (through an inverse of
 `typeIndex`, which saves a 5 × 5 split), `Check.declares` sound, and `Check.count` against `Mem` and `Twice` (lower
 bounds with `Nat.ble`, since `count = 1` is what the checker tests). `Check.count` was a `List.foldl` with a `Nat`

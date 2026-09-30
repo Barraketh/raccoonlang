@@ -3,8 +3,9 @@
 // Four roles share a CTA of eight warps. Warp 0 elects a thread that streams 64-wide K slices of A and B into a
 // four-stage ring with TMA. Warp 1 elects a thread that waits for each stage, issues four tcgen05.mma into a 128-column
 // tensor-memory accumulator, and releases the stage by tcgen05.commit; after the last stage it hands the accumulator
-// to the epilogue. Warps 2 and 3 idle. Warps 4 to 7, an aligned warpgroup, wait for the handoff, read the accumulator
-// quadrant by quadrant and store the block.
+// to the epilogue. Warps 2 and 3 idle. Warps 4 to 7, an aligned warpgroup, wait for the handoff and store the block
+// 32 columns at a time: each warp reads its quadrant of the accumulator's lanes, writes it into a staging buffer in
+// shared memory, and its lane 0 stores the buffer to C with TMA.
 //
 // Run: gpu/gen.sh gpu/examples/tinygemm.rac
 
@@ -18,9 +19,12 @@ namespace Tiny {
   def boxB : TmaSpec := TmaSpec.mk(64, 128)
   def ring : RingCfg := RingCfg.mk(4, Tiny.boxA, Tiny.boxB)
 
+  // The first warp of the epilogue's warpgroup, which must be aligned.
+  def epilogueWarp : Nat := 4
+
   def Cta : Group := Group.cta(256)
   def Wg0 : Group := Group.warps(0, 4)
-  def Wg1 : Group := Group.warps(4, 4)
+  def Wg1 : Group := Group.warps(Tiny.epilogueWarp, 4)
   def Load : Group := Group.warps(0, 1)
   def Rest : Group := Group.warps(1, 3)
   def Issue : Group := Group.warps(1, 1)
@@ -36,7 +40,7 @@ namespace Tiny {
       let step := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Tiny.One))(p: ProducerAt(r, j))
           : Pair(Ctx(n, Tiny.One), ProducerAt(r, j)) => {
         let (e, s) := Gpu.acquire(e, ring, p)
-        Gpu.fill(e, ring, s, k.a, Gpu.mulC(i, 64), k.m0, k.b, Gpu.mulC(i, 64), k.n0)
+        Gpu.fill(e, ring, s, k.a, Gpu.mulC(i, 64), Gpu.tileRow0(k.tile), k.b, Gpu.mulC(i, 64), Gpu.tileCol0(k.tile))
       }
       let (e, p) := Gpu.takeProducer(e, w, ring, p)
       let (e, p) := Gpu.loopPeeled(e, steps, Gpu.fixedProducerAt(r, j), p, step, step)
@@ -71,17 +75,34 @@ namespace Tiny {
       (Gpu.sendAcc(e, w, hd, send, acc), Gpu.finishConsumer(c))
     })
 
-  // The epilogue: wait for the accumulator and store this CTA's block of C.
-  def epilogue {l: Lifetime}{a: Lifetime}{h: Lifetime}(k: Tiny.Launch(l))(t: Tmem(a, 128))(hd: AccHandoff(h))(recv: AccRecv(h, a))
-      (own: COwn(l, 128))(m: Lifetime)(e: Ctx(m, Tiny.Wg1)): Pair(Ctx(m, Tiny.Wg1), Acc(a, AccState.ready)) := {
+  // What the epilogue hands back: the accumulator, still ready, and the storing side, every store complete.
+  def EpilogueDone (a: Lifetime)(s: Lifetime) : Type { kind = lin, scope = union(a, s) } := Pair(Acc(a, AccState.ready), StoreDone(s))
+
+  // The epilogue: wait for the accumulator and store this CTA's block of C, a chunk of 32 columns at a time, each
+  // through a staging buffer; then wait for the stores.
+  def epilogue {l: Lifetime}{a: Lifetime}{h: Lifetime}{s: Lifetime}(k: Tiny.Launch(l))(t: Tmem(a, 128))(hd: AccHandoff(h))
+      (recv: AccRecv(h, a))(own: TileOwn(l, 128))(stg: Staging(s))(side: StoreSide(s))(m: Lifetime)(e: Ctx(m, Tiny.Wg1))
+      : Pair(Ctx(m, Tiny.Wg1), Tiny.EpilogueDone(a, s)) := {
+    let chunk := fun (p: Lifetime)(ch: ChunkAt(p, 128))(co: ChunkOwn(p, 128))(e: Ctx(p, Tiny.Wg1))(st: Pair(Acc(a, AccState.ready), StoreAt(s, m, Tiny.epilogueWarp)))
+        : Pair(Ctx(p, Tiny.Wg1), Pair(Acc(a, AccState.ready), StoreAt(s, m, Tiny.epilogueWarp))) => {
+      let (acc, sa) := st
+      let (e, free) := Gpu.acquireStage(e, stg, sa)
+      let (e, (acc, written)) := Gpu.stageAcc(e, t, acc, stg, free, ch)
+      let (e, fenced) := Gpu.fenceStage(e, written)
+      let (e, sa) := Gpu.storeStage(e, stg, fenced, k.c, ch, co)
+      (e, (acc, sa))
+    }
     let (e, acc) := Gpu.recvAcc(e, hd, recv)
-    Gpu.storeAcc(e, t, acc, k.c, own)
+    let (e, sa) := Gpu.takeStore(e, stg, side)
+    let (e, (acc, sa)) := Gpu.forChunks(e, k.tile, own, Gpu.fixedPair(Gpu.fixedAcc(a, AccState.ready), Gpu.fixedStoreAt(s, m, Tiny.epilogueWarp)), (acc, sa), chunk)
+    let (e, done) := Gpu.finishStores(e, stg, sa)
+    (e, (acc, done))
   }
 
-  def roles {l: Lifetime}{r: Lifetime}{a: Lifetime}{h: Lifetime}(k: Tiny.Launch(l))(ring: Ring(r, Tiny.ring))(t: Tmem(a, 128))
-      (hd: AccHandoff(h))(steps: Val(l, Grain.uniform, DType.u32))(p: Producer(r))(c: Consumer(r))(acc: Acc(a, AccState.empty))
-      (send: AccSend(h, a))(recv: AccRecv(h, a))(own: COwn(l, 128))(e: Ctx(l, Tiny.Cta))
-      : Pair(Ctx(l, Tiny.Cta), Pair(Pair(ProducerDone(r), ConsumerDone(r)), Acc(a, AccState.ready))) := {
+  def roles {l: Lifetime}{r: Lifetime}{a: Lifetime}{h: Lifetime}{s: Lifetime}(k: Tiny.Launch(l))(ring: Ring(r, Tiny.ring))(t: Tmem(a, 128))
+      (hd: AccHandoff(h))(stg: Staging(s))(steps: Val(l, Grain.uniform, DType.u32))(p: Producer(r))(c: Consumer(r))(acc: Acc(a, AccState.empty))
+      (send: AccSend(h, a))(recv: AccRecv(h, a))(own: TileOwn(l, 128))(side: StoreSide(s))(e: Ctx(l, Tiny.Cta))
+      : Pair(Ctx(l, Tiny.Cta), Pair(Pair(ProducerDone(r), ConsumerDone(r)), Tiny.EpilogueDone(a, s))) := {
     let idle := fun (m: Lifetime)(e: Ctx(m, Tiny.Idle)): Pair(Ctx(m, Tiny.Idle), Unit) => (e, Unit.unit)
     let rest := fun (m: Lifetime)(e: Ctx(m, Tiny.Rest)): Pair(Ctx(m, Tiny.Rest), Pair(ConsumerDone(r), Unit)) =>
       Gpu.split(e, 1, ConsumerDone(r), Unit, fun (n: Lifetime)(e: Ctx(n, Tiny.Issue)): Pair(Ctx(n, Tiny.Issue), ConsumerDone(r)) =>
@@ -89,24 +110,29 @@ namespace Tiny {
     let wg0 := fun (m: Lifetime)(e: Ctx(m, Tiny.Wg0)): Pair(Ctx(m, Tiny.Wg0), Pair(ProducerDone(r), Pair(ConsumerDone(r), Unit))) =>
       Gpu.split(e, 1, ProducerDone(r), Pair(ConsumerDone(r), Unit),
         fun (n: Lifetime)(e: Ctx(n, Tiny.Load)): Pair(Ctx(n, Tiny.Load), ProducerDone(r)) => Tiny.producer(k, ring, steps, p, n, e), rest)
-    let wg1 := fun (m: Lifetime)(e: Ctx(m, Tiny.Wg1)): Pair(Ctx(m, Tiny.Wg1), Acc(a, AccState.ready)) => Tiny.epilogue(k, t, hd, recv, own, m, e)
-    let (e, ((pd, (cd, u)), acc)) :=
-      Gpu.split(e, 4, Pair(ProducerDone(r), Pair(ConsumerDone(r), Unit)), Acc(a, AccState.ready), wg0, wg1)
-    (e, ((pd, cd), acc))
+    let wg1 := fun (m: Lifetime)(e: Ctx(m, Tiny.Wg1)): Pair(Ctx(m, Tiny.Wg1), Tiny.EpilogueDone(a, s)) =>
+      Tiny.epilogue(k, t, hd, recv, own, stg, side, m, e)
+    let (e, ((pd, (cd, u)), done)) :=
+      Gpu.split(e, 4, Pair(ProducerDone(r), Pair(ConsumerDone(r), Unit)), Tiny.EpilogueDone(a, s), wg0, wg1)
+    (e, ((pd, cd), done))
   }
 
   def kernel : Program :=
     Gpu.tmaGemmKernel("tinygemm", Tiny.boxA, Tiny.boxB,
-      fun (l: Lifetime)(e: Ctx(l, Tiny.Cta))(k: Tiny.Launch(l))(own: COwn(l, 128))(permit: TmemPermit(l)): Ctx(l, Tiny.Cta) => {
+      fun (l: Lifetime)(e: Ctx(l, Tiny.Cta))(k: Tiny.Launch(l))(own: TileOwn(l, 128))(permit: TmemPermit(l)): Ctx(l, Tiny.Cta) => {
         let steps := Gpu.ceilDivC(k.k, 64)
         let body := fun (a: Lifetime)(t: Tmem(a, 128))(acc: Acc(a, AccState.empty))(e: Ctx(l, Tiny.Cta))
             : Pair(Ctx(l, Tiny.Cta), Pair(Acc(a, AccState.ready), Unit)) => {
           let handoff := fun (h: Lifetime)(hd: AccHandoff(h))(send: AccSend(h, a))(recv: AccRecv(h, a))(e: Ctx(l, Tiny.Cta))
               : Pair(Ctx(l, Tiny.Cta), Acc(a, AccState.ready)) =>
-            Gpu.withRing(e, Tiny.ring, Acc(a, AccState.ready),
-              fun (r: Lifetime)(ring: Ring(r, Tiny.ring))(p: Producer(r))(c: Consumer(r))(e: Ctx(l, Tiny.Cta))
-                  : Pair(Ctx(l, Tiny.Cta), Pair(Pair(ProducerDone(r), ConsumerDone(r)), Acc(a, AccState.ready))) =>
-                Tiny.roles(k, ring, t, hd, steps, p, c, acc, send, recv, own, e))
+            Gpu.withStaging(e, 2, Acc(a, AccState.ready), fun (s: Lifetime)(stg: Staging(s))(side: StoreSide(s))(e: Ctx(l, Tiny.Cta))
+                : Pair(Ctx(l, Tiny.Cta), Pair(StoreDone(s), Acc(a, AccState.ready))) => {
+              let (e, (acc, done)) := Gpu.withRing(e, Tiny.ring, Tiny.EpilogueDone(a, s),
+                fun (r: Lifetime)(ring: Ring(r, Tiny.ring))(p: Producer(r))(c: Consumer(r))(e: Ctx(l, Tiny.Cta))
+                    : Pair(Ctx(l, Tiny.Cta), Pair(Pair(ProducerDone(r), ConsumerDone(r)), Tiny.EpilogueDone(a, s))) =>
+                  Tiny.roles(k, ring, t, hd, stg, steps, p, c, acc, send, recv, own, side, e))
+              (e, (done, acc))
+            })
           let (e, acc) := Gpu.withAccHandoff(e, t, handoff)
           (e, (acc, Unit.unit))
         }

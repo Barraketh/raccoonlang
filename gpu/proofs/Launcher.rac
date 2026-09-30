@@ -1,6 +1,7 @@
 // The launcher checker is sound (I6): a kernel it finds nothing in has, if it has a launcher, one that declares the
-// kernel's parameters but its tensor maps as the kernel does, encodes each tensor map once, and encodes each from a
-// bf16 input and two u32 scalars of its own.
+// kernel's parameters but its tensor maps as the kernel does, encodes each tensor map once, for the use the kernel
+// declares, and encodes each from an array its use needs (a bf16 input to load, an f32 output to store) and two u32
+// scalars of its own.
 
 import proofs.Fold
 import proofs.Lib
@@ -55,6 +56,30 @@ namespace Launch {
 
   def mismatch (a: Param)(b: Param)(h: Eq(Bool, Bool.false, Bool.true)): Eq(Param, a, b) := False.elim(Bool.falseNeTrue(h), Eq(Param, a, b))
 
+  def sameUseSound (a: MapUse)(b: MapUse)(h: Eq(Bool, Check.sameUse(a, b), Bool.true)): Eq(MapUse, a, b) := {
+    match a returning Eq(MapUse, a, b) with
+    | MapUse.load => {
+      match b returning Eq(MapUse, MapUse.load, b) with
+      | MapUse.load => Eq.refl(MapUse.load)
+      | MapUse.store => False.elim(Bool.falseNeTrue(h), Eq(MapUse, MapUse.load, MapUse.store))
+    }
+    | MapUse.store => {
+      match b returning Eq(MapUse, MapUse.store, b) with
+      | MapUse.load => False.elim(Bool.falseNeTrue(h), Eq(MapUse, MapUse.store, MapUse.load))
+      | MapUse.store => Eq.refl(MapUse.store)
+    }
+  }
+
+  // Congruence of the tensor-map constructor.
+  def mapEq (t: MapUse)(u: MapUse)(n: String)(m: String)(h: Eq(Bool, Bool.and(Check.sameUse(t, u), Check.same(n, m)), Bool.true))
+      : Eq(Param, Param.tensorMap(t, n), Param.tensorMap(u, m)) := {
+    match Launch.sameUseSound(t, u, Lib.andLeft(Check.sameUse(t, u), Check.same(n, m), h)) returning Eq(Param, Param.tensorMap(t, n), Param.tensorMap(u, m)) with
+    | Eq.refl x => {
+      match Lib.sameSound(n, m, Lib.andRight(Check.sameUse(t, u), Check.same(n, m), h)) returning Eq(Param, Param.tensorMap(x, n), Param.tensorMap(x, m)) with
+      | Eq.refl y => Eq.refl(Param.tensorMap(x, y))
+    }
+  }
+
   def sameParamSound (a: Param)(b: Param)(h: Eq(Bool, Check.sameParam(a, b), Bool.true)): Eq(Param, a, b) := {
     let input := fun (t: DType)(n: String): Param => Param.input(t, n)
     let output := fun (t: DType)(n: String): Param => Param.output(t, n)
@@ -65,29 +90,48 @@ namespace Launch {
       | Param.input u m => Launch.paramEq(input, t, u, n, m, h)
       | Param.output u m => Launch.mismatch(Param.input(t, n), Param.output(u, m), h)
       | Param.scalar u m => Launch.mismatch(Param.input(t, n), Param.scalar(u, m), h)
-      | Param.tensorMap m => Launch.mismatch(Param.input(t, n), Param.tensorMap(m), h)
+      | Param.tensorMap v m => Launch.mismatch(Param.input(t, n), Param.tensorMap(v, m), h)
     }
     | Param.output t n => {
       match b returning Eq(Param, Param.output(t, n), b) with
       | Param.input u m => Launch.mismatch(Param.output(t, n), Param.input(u, m), h)
       | Param.output u m => Launch.paramEq(output, t, u, n, m, h)
       | Param.scalar u m => Launch.mismatch(Param.output(t, n), Param.scalar(u, m), h)
-      | Param.tensorMap m => Launch.mismatch(Param.output(t, n), Param.tensorMap(m), h)
+      | Param.tensorMap v m => Launch.mismatch(Param.output(t, n), Param.tensorMap(v, m), h)
     }
     | Param.scalar t n => {
       match b returning Eq(Param, Param.scalar(t, n), b) with
       | Param.input u m => Launch.mismatch(Param.scalar(t, n), Param.input(u, m), h)
       | Param.output u m => Launch.mismatch(Param.scalar(t, n), Param.output(u, m), h)
       | Param.scalar u m => Launch.paramEq(scalar, t, u, n, m, h)
-      | Param.tensorMap m => Launch.mismatch(Param.scalar(t, n), Param.tensorMap(m), h)
+      | Param.tensorMap v m => Launch.mismatch(Param.scalar(t, n), Param.tensorMap(v, m), h)
     }
-    | Param.tensorMap n => {
-      match b returning Eq(Param, Param.tensorMap(n), b) with
-      | Param.input u m => Launch.mismatch(Param.tensorMap(n), Param.input(u, m), h)
-      | Param.output u m => Launch.mismatch(Param.tensorMap(n), Param.output(u, m), h)
-      | Param.scalar u m => Launch.mismatch(Param.tensorMap(n), Param.scalar(u, m), h)
-      | Param.tensorMap m => congrArg(Lib.sameSound(n, m, h), Param, Param.tensorMap)
+    | Param.tensorMap t n => {
+      match b returning Eq(Param, Param.tensorMap(t, n), b) with
+      | Param.input u m => Launch.mismatch(Param.tensorMap(t, n), Param.input(u, m), h)
+      | Param.output u m => Launch.mismatch(Param.tensorMap(t, n), Param.output(u, m), h)
+      | Param.scalar u m => Launch.mismatch(Param.tensorMap(t, n), Param.scalar(u, m), h)
+      | Param.tensorMap u m => Launch.mapEq(t, u, n, m, h)
     }
+  }
+
+  // `Check.mapSource` decides `Spec.MapSource`.
+  def mapSourceSound (use: MapUse)(p: Param)(h: Eq(Bool, Check.mapSource(use, p), Bool.true)): Spec.MapSource(use, p) := {
+    match p returning Spec.MapSource(use, p) with
+    | Param.input t n => {
+      let isLoad := Launch.sameUseSound(use, MapUse.load, Lib.andLeft(Check.sameUse(use, MapUse.load), Check.sameType(t, DType.bf16), h))
+      let isBf16 := Launch.sameTypeSound(t, DType.bf16, Lib.andRight(Check.sameUse(use, MapUse.load), Check.sameType(t, DType.bf16), h))
+      Eq.subst(Eq.symm(isLoad), Level.zero, fun (v: MapUse): Prop => Spec.MapSource(v, Param.input(t, n)),
+        Eq.subst(Eq.symm(isBf16), Level.zero, fun (u: DType): Prop => Spec.MapSource(MapUse.load, Param.input(u, n)), Spec.MapSource.load(n)))
+    }
+    | Param.output t n => {
+      let isStore := Launch.sameUseSound(use, MapUse.store, Lib.andLeft(Check.sameUse(use, MapUse.store), Check.sameType(t, DType.f32), h))
+      let isF32 := Launch.sameTypeSound(t, DType.f32, Lib.andRight(Check.sameUse(use, MapUse.store), Check.sameType(t, DType.f32), h))
+      Eq.subst(Eq.symm(isStore), Level.zero, fun (v: MapUse): Prop => Spec.MapSource(v, Param.output(t, n)),
+        Eq.subst(Eq.symm(isF32), Level.zero, fun (u: DType): Prop => Spec.MapSource(MapUse.store, Param.output(u, n)), Spec.MapSource.store(n)))
+    }
+    | Param.scalar t n => False.elim(Bool.falseNeTrue(h), Spec.MapSource(use, Param.scalar(t, n)))
+    | Param.tensorMap u n => False.elim(Bool.falseNeTrue(h), Spec.MapSource(use, Param.tensorMap(u, n)))
   }
 
   // `Check.declares` decides membership.
@@ -101,25 +145,6 @@ namespace Launch {
         | Eq.refl z => Spec.Mem.here(z, rest)
       }
       | Or.inr inRest => Spec.Mem.there(q, rest, Launch.declaresSound(rest, p, inRest))
-    }
-  }
-
-  // The tensor maps `Check.mapParams` names are the parameters'.
-  def mapParamsSound (ps: List(Param))(n: String)(h: Spec.Mem(String, n, Check.mapParams(ps))): Spec.Mem(Param, Param.tensorMap(n), ps) decreases structural(ps) := {
-    match ps returning Spec.Mem(Param, Param.tensorMap(n), ps) with
-    | List.nil => {
-      match h returning Spec.Mem(Param, Param.tensorMap(n), List.nil(Param)) with
-    }
-    | List.cons p more => {
-      match p returning Spec.Mem(Param, Param.tensorMap(n), List.cons(p, more)) with
-      | Param.input t m => Spec.Mem.there(Param.input(t, m), more, Launch.mapParamsSound(more, n, h))
-      | Param.output t m => Spec.Mem.there(Param.output(t, m), more, Launch.mapParamsSound(more, n, h))
-      | Param.scalar t m => Spec.Mem.there(Param.scalar(t, m), more, Launch.mapParamsSound(more, n, h))
-      | Param.tensorMap m => {
-        match h returning Spec.Mem(Param, Param.tensorMap(n), List.cons(Param.tensorMap(m), more)) with
-        | Spec.Mem.here rest => Spec.Mem.here(Param.tensorMap(n), more)
-        | Spec.Mem.there y rest inRest => Spec.Mem.there(Param.tensorMap(m), more, Launch.mapParamsSound(more, n, inRest))
-      }
     }
   }
 
@@ -217,15 +242,19 @@ namespace Launch {
       | Param.input t n => Fold.unlessFound(found, Check.declares(l.params, Param.input(t, n)), Launch.declareMessage(Param.input(t, n)), h)
       | Param.output t n => Fold.unlessFound(found, Check.declares(l.params, Param.output(t, n)), Launch.declareMessage(Param.output(t, n)), h)
       | Param.scalar t n => Fold.unlessFound(found, Check.declares(l.params, Param.scalar(t, n)), Launch.declareMessage(Param.scalar(t, n)), h)
-      | Param.tensorMap n => Fold.unlessFound(found, Nat.beq(Check.count(l.maps, n), 1), Launch.countMessage(l, n), h)
+      | Param.tensorMap u n => Fold.unlessFound(found, Nat.beq(Check.count(l.maps, n), 1), Launch.countMessage(l, n), h)
     }
 
   def what (m: MapEncoding): String := Text.cat3("launcher: the encoding of ", m.param, " ")
 
-  def namedMessage (m: MapEncoding): Unit -> String := fun (u: Unit): String => Text.cat(Launch.what(m), "names no tensor map of the kernel")
+  def namedMessage (m: MapEncoding): Unit -> String := fun (u: Unit): String =>
+    Text.cat(Launch.what(m), Text.cat3("names no ", Check.mapUseName(m.use), " map of the kernel"))
+
+  def arrayMessage (m: MapEncoding): Unit -> String := fun (u: Unit): String =>
+    Text.cat3(Launch.what(m), "reads ", Text.cat3(Cuda.paramName(m.source), ", not ", Check.mapArray(m.use)))
 
   def sourceMessage (m: MapEncoding): Unit -> String := fun (u: Unit): String =>
-    Text.cat3(Launch.what(m), "reads ", Text.cat(m.source, ", not a bf16 input of the launcher"))
+    Text.cat3(Launch.what(m), "reads ", Text.cat(Cuda.paramName(m.source), ", which the launcher does not declare so"))
 
   def rowsMessage (m: MapEncoding): Unit -> String := fun (u: Unit): String =>
     Text.cat3(Launch.what(m), "takes rows from ", Text.cat(m.rows, ", not a u32 scalar of the launcher"))
@@ -234,42 +263,46 @@ namespace Launch {
     Text.cat3(Launch.what(m), "takes columns from ", Text.cat(m.cols, ", not a u32 scalar of the launcher"))
 
   // What an encoding the walk found nothing wrong with satisfies.
-  struct EncodingOk (l: Launcher)(kernelMaps: List(String))(m: MapEncoding) : Prop
-   | mk (named: Eq(Bool, Check.mentions(kernelMaps, m.param), Bool.true))
-        (source: Eq(Bool, Check.declares(l.params, Param.input(DType.bf16, m.source)), Bool.true))
+  struct EncodingOk (l: Launcher)(kernelParams: List(Param))(m: MapEncoding) : Prop
+   | mk (named: Eq(Bool, Check.declares(kernelParams, Param.tensorMap(m.use, m.param)), Bool.true))
+        (array: Eq(Bool, Check.mapSource(m.use, m.source), Bool.true))
+        (source: Eq(Bool, Check.declares(l.params, m.source), Bool.true))
         (rows: Eq(Bool, Check.declares(l.params, Param.scalar(DType.u32, m.rows)), Bool.true))
-        (cols: Eq(Bool, Check.declares(l.params, Param.scalar(DType.u32, m.cols)), Bool.true)) : EncodingOk(l, kernelMaps, m)
+        (cols: Eq(Bool, Check.declares(l.params, Param.scalar(DType.u32, m.cols)), Bool.true)) : EncodingOk(l, kernelParams, m)
 
-  def encoding (l: Launcher)(kernelMaps: List(String))(found: List(String))(m: MapEncoding)(h: Fold.Empty(Check.encodingStep(l, kernelMaps)(found, m)))
-      : And(Fold.Empty(found), Launch.EncodingOk(l, kernelMaps, m)) := {
-    let isNamed := Check.mentions(kernelMaps, m.param)
-    let isSource := Check.declares(l.params, Param.input(DType.bf16, m.source))
+  def encoding (l: Launcher)(kernelParams: List(Param))(found: List(String))(m: MapEncoding)(h: Fold.Empty(Check.encodingStep(l, kernelParams)(found, m)))
+      : And(Fold.Empty(found), Launch.EncodingOk(l, kernelParams, m)) := {
+    let isNamed := Check.declares(kernelParams, Param.tensorMap(m.use, m.param))
+    let isArray := Check.mapSource(m.use, m.source)
+    let isSource := Check.declares(l.params, m.source)
     let isRows := Check.declares(l.params, Param.scalar(DType.u32, m.rows))
     let isCols := Check.declares(l.params, Param.scalar(DType.u32, m.cols))
     let named := Check.unless(found, isNamed, Launch.namedMessage(m))
-    let source := Check.unless(named, isSource, Launch.sourceMessage(m))
+    let array := Check.unless(named, isArray, Launch.arrayMessage(m))
+    let source := Check.unless(array, isSource, Launch.sourceMessage(m))
     let rows := Check.unless(source, isRows, Launch.rowsMessage(m))
     let rowsFound := Fold.unlessFound(rows, isCols, Launch.colsMessage(m), h)
     let sourceFound := Fold.unlessFound(source, isRows, Launch.rowsMessage(m), rowsFound)
-    let namedFound := Fold.unlessFound(named, isSource, Launch.sourceMessage(m), sourceFound)
-    let ok := Launch.EncodingOk.mk(l, kernelMaps, m, Fold.unlessOk(found, isNamed, Launch.namedMessage(m), namedFound),
-      Fold.unlessOk(named, isSource, Launch.sourceMessage(m), sourceFound), Fold.unlessOk(source, isRows, Launch.rowsMessage(m), rowsFound),
-      Fold.unlessOk(rows, isCols, Launch.colsMessage(m), h))
+    let arrayFound := Fold.unlessFound(array, isSource, Launch.sourceMessage(m), sourceFound)
+    let namedFound := Fold.unlessFound(named, isArray, Launch.arrayMessage(m), arrayFound)
+    let ok := Launch.EncodingOk.mk(l, kernelParams, m, Fold.unlessOk(found, isNamed, Launch.namedMessage(m), namedFound),
+      Fold.unlessOk(named, isArray, Launch.arrayMessage(m), arrayFound), Fold.unlessOk(array, isSource, Launch.sourceMessage(m), sourceFound),
+      Fold.unlessOk(source, isRows, Launch.rowsMessage(m), rowsFound), Fold.unlessOk(rows, isCols, Launch.colsMessage(m), h))
     And.intro(Fold.unlessFound(found, isNamed, Launch.namedMessage(m), namedFound), ok)
   }
 
-  def encodingKeeps (l: Launcher)(kernelMaps: List(String)): Fold.Keeps(MapEncoding, Check.encodingStep(l, kernelMaps)) :=
-    fun (found: List(String))(m: MapEncoding)(h: Fold.Empty(Check.encodingStep(l, kernelMaps)(found, m))): Fold.Empty(found) =>
-      Launch.encoding(l, kernelMaps, found, m, h).left
+  def encodingKeeps (l: Launcher)(kernelParams: List(Param)): Fold.Keeps(MapEncoding, Check.encodingStep(l, kernelParams)) :=
+    fun (found: List(String))(m: MapEncoding)(h: Fold.Empty(Check.encodingStep(l, kernelParams)(found, m))): Fold.Empty(found) =>
+      Launch.encoding(l, kernelParams, found, m, h).left
 
   // ---- The theorem --------------------------------------------------------------------------------------------------
 
   def launched (k: Kernel)(l: Launcher)(h: Fold.Empty(Check.inOrder(List.foldl(l.maps, List(String), List.foldl(k.params, List(String), List.nil(String),
-      Check.passedStep(l)), Check.encodingStep(l, Check.mapParams(k.params)))))): Spec.Launched(k, l) := {
-    let kernelMaps := Check.mapParams(k.params)
+      Check.passedStep(l)), Check.encodingStep(l, k.params))))): Spec.Launched(k, l) := {
+    let kernelParams := k.params
     let passed := List.foldl(k.params, List(String), List.nil(String), Check.passedStep(l))
-    let all := Fold.inOrder(List.foldl(l.maps, List(String), passed, Check.encodingStep(l, kernelMaps)), h)
-    let passedOk := Fold.foldlAcc(MapEncoding, l.maps, passed, Check.encodingStep(l, kernelMaps), Launch.encodingKeeps(l, kernelMaps), all)
+    let all := Fold.inOrder(List.foldl(l.maps, List(String), passed, Check.encodingStep(l, kernelParams)), h)
+    let passedOk := Fold.foldlAcc(MapEncoding, l.maps, passed, Check.encodingStep(l, kernelParams), Launch.encodingKeeps(l, kernelParams), all)
     let passedAt := fun (p: Param)(mem: Spec.Mem(Param, p, k.params)): Fold.Empty(Check.passedStep(l)(List.nil(String), p)) =>
       Fold.foldlAt(Param, p, k.params, mem, List.nil(String), Check.passedStep(l), Launch.passedKeeps(l), passedOk)
     let declared := fun (p: Param)(mem: Spec.Mem(Param, p, k.params))(notMap: Spec.NotMap(p)): Spec.Mem(Param, p, l.params) => {
@@ -281,32 +314,34 @@ namespace Launch {
         Fold.unlessOk(List.nil(String), Check.declares(l.params, Param.output(t, n)), Launch.declareMessage(Param.output(t, n)), here))
       | Param.scalar t n => Launch.declaresSound(l.params, Param.scalar(t, n),
         Fold.unlessOk(List.nil(String), Check.declares(l.params, Param.scalar(t, n)), Launch.declareMessage(Param.scalar(t, n)), here))
-      | Param.tensorMap n => False.elim(notMap(n)(Eq.refl(Param.tensorMap(n))), Spec.Mem(Param, Param.tensorMap(n), l.params))
+      | Param.tensorMap u n => False.elim(notMap(u, n)(Eq.refl(Param.tensorMap(u, n))), Spec.Mem(Param, Param.tensorMap(u, n), l.params))
     }
     // The number of encodings of a tensor map of the kernel is 1.
-    let one := fun (name: String)(mem: Spec.Mem(Param, Param.tensorMap(name), k.params)): Eq(Nat, Check.count(l.maps, name), 1) =>
+    let one := fun (use: MapUse)(name: String)(mem: Spec.Mem(Param, Param.tensorMap(use, name), k.params)): Eq(Nat, Check.count(l.maps, name), 1) =>
       Lib.beqSound(Check.count(l.maps, name), 1,
-        Fold.unlessOk(List.nil(String), Nat.beq(Check.count(l.maps, name), 1), Launch.countMessage(l, name), passedAt(Param.tensorMap(name), mem)))
-    let encoded := fun (name: String)(mem: Spec.Mem(Param, Param.tensorMap(name), k.params)): Spec.Mem(String, name, Spec.mapNames(l.maps)) => {
-      let atLeastOne := Eq.subst(Eq.symm(one(name, mem)), Level.zero, fun (c: Nat): Prop => Eq(Bool, Nat.ble(1, c), Bool.true), Eq.refl(Bool.true))
+        Fold.unlessOk(List.nil(String), Nat.beq(Check.count(l.maps, name), 1), Launch.countMessage(l, name), passedAt(Param.tensorMap(use, name), mem)))
+    let encoded := fun (use: MapUse)(name: String)(mem: Spec.Mem(Param, Param.tensorMap(use, name), k.params)): Spec.Mem(String, name, Spec.mapNames(l.maps)) => {
+      let atLeastOne := Eq.subst(Eq.symm(one(use, name, mem)), Level.zero, fun (c: Nat): Prop => Eq(Bool, Nat.ble(1, c), Bool.true), Eq.refl(Bool.true))
       Launch.encodedMem(l.maps, name, atLeastOne)
     }
-    let once := fun (name: String)(mem: Spec.Mem(Param, Param.tensorMap(name), k.params)): Not(Spec.Twice(String, name, Spec.mapNames(l.maps))) =>
+    let once := fun (use: MapUse)(name: String)(mem: Spec.Mem(Param, Param.tensorMap(use, name), k.params)): Not(Spec.Twice(String, name, Spec.mapNames(l.maps))) =>
       fun (twice: Spec.Twice(String, name, Spec.mapNames(l.maps))): False =>
-        Bool.falseNeTrue(Eq.subst(one(name, mem), Level.zero, fun (c: Nat): Prop => Eq(Bool, Nat.ble(2, c), Bool.true),
+        Bool.falseNeTrue(Eq.subst(one(use, name, mem), Level.zero, fun (c: Nat): Prop => Eq(Bool, Nat.ble(2, c), Bool.true),
           Launch.countAtLeastTwo(l.maps, name, twice)))
-    let ok := fun (m: MapEncoding)(mem: Spec.Mem(MapEncoding, m, l.maps)): Launch.EncodingOk(l, kernelMaps, m) =>
-      Launch.encoding(l, kernelMaps, List.nil(String), m,
-        Fold.foldlAt(MapEncoding, m, l.maps, mem, passed, Check.encodingStep(l, kernelMaps), Launch.encodingKeeps(l, kernelMaps), all)).right
-    let named := fun (m: MapEncoding)(mem: Spec.Mem(MapEncoding, m, l.maps)): Spec.Mem(Param, Param.tensorMap(m.param), k.params) =>
-      Launch.mapParamsSound(k.params, m.param, Lib.mentionsSound(kernelMaps, m.param, ok(m, mem).named))
-    let source := fun (m: MapEncoding)(mem: Spec.Mem(MapEncoding, m, l.maps)): Spec.Mem(Param, Param.input(DType.bf16, m.source), l.params) =>
-      Launch.declaresSound(l.params, Param.input(DType.bf16, m.source), ok(m, mem).source)
+    let ok := fun (m: MapEncoding)(mem: Spec.Mem(MapEncoding, m, l.maps)): Launch.EncodingOk(l, kernelParams, m) =>
+      Launch.encoding(l, kernelParams, List.nil(String), m,
+        Fold.foldlAt(MapEncoding, m, l.maps, mem, passed, Check.encodingStep(l, kernelParams), Launch.encodingKeeps(l, kernelParams), all)).right
+    let named := fun (m: MapEncoding)(mem: Spec.Mem(MapEncoding, m, l.maps)): Spec.Mem(Param, Param.tensorMap(m.use, m.param), k.params) =>
+      Launch.declaresSound(k.params, Param.tensorMap(m.use, m.param), ok(m, mem).named)
+    let array := fun (m: MapEncoding)(mem: Spec.Mem(MapEncoding, m, l.maps)): Spec.MapSource(m.use, m.source) =>
+      Launch.mapSourceSound(m.use, m.source, ok(m, mem).array)
+    let source := fun (m: MapEncoding)(mem: Spec.Mem(MapEncoding, m, l.maps)): Spec.Mem(Param, m.source, l.params) =>
+      Launch.declaresSound(l.params, m.source, ok(m, mem).source)
     let rows := fun (m: MapEncoding)(mem: Spec.Mem(MapEncoding, m, l.maps)): Spec.Mem(Param, Param.scalar(DType.u32, m.rows), l.params) =>
       Launch.declaresSound(l.params, Param.scalar(DType.u32, m.rows), ok(m, mem).rows)
     let cols := fun (m: MapEncoding)(mem: Spec.Mem(MapEncoding, m, l.maps)): Spec.Mem(Param, Param.scalar(DType.u32, m.cols), l.params) =>
       Launch.declaresSound(l.params, Param.scalar(DType.u32, m.cols), ok(m, mem).cols)
-    Spec.Launched.mk(k, l, declared, encoded, once, named, source, rows, cols)
+    Spec.Launched.mk(k, l, declared, encoded, once, named, array, source, rows, cols)
   }
 
   def sound (k: Kernel)(h: Eq(List(String), Check.launcher(k), List.nil(String))): Spec.LauncherOk(k) :=

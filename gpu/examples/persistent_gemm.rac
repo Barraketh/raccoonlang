@@ -5,8 +5,9 @@
 //
 // Warp 0 elects a thread that streams the K slices of every tile into a six-stage ring with TMA. Warp 1 elects a thread
 // that, per tile, takes a free accumulator, issues the tile's MMAs into it (releasing each stage by tcgen05.commit) and
-// commits it. Warps 2 and 3 idle. Warps 4 to 7, an aligned warpgroup, wait for each accumulator, store its tile and
-// hand the buffer back.
+// commits it. Warps 2 and 3 idle. Warps 4 to 7, an aligned warpgroup, wait for each accumulator, store its tile 32
+// columns at a time through staging buffers in shared memory (each warp its quadrant of the rows, its lane 0 issuing
+// the TMA stores), and hand the buffer back.
 //
 // Run: gpu/gen.sh gpu/examples/persistent_gemm.rac
 
@@ -36,6 +37,13 @@ namespace PGemm {
 
   // What the issuer's role hands back: its side of the stage ring and of the accumulator ring, finished.
   def IssuerDone (r: Lifetime)(q: Lifetime) : Type { kind = lin, scope = union(r, q) } := Pair(ConsumerDone(r), AccProducerDone(q))
+
+  // What the epilogue hands back: its side of the accumulator ring, and the storing side, every store complete.
+  def EpilogueDone (q: Lifetime)(s: Lifetime) : Type { kind = lin, scope = union(q, s) } := Pair(AccConsumerDone(q), StoreDone(s))
+
+  // What the roles hand back beside the stage ring's sides: the accumulator ring's, and the storing side.
+  def RolesDone (q: Lifetime)(s: Lifetime) : Type { kind = lin, scope = union(q, s) } :=
+    Pair(Pair(AccProducerDone(q), AccConsumerDone(q)), StoreDone(s))
 
   // The producer: for every tile, fill one stage per K slice; then wait for every stage to be released.
   def producer {l: Lifetime}{L: Lifetime}{r: Lifetime}(g: PGemm.Gemm(l))(sched: Sched(L, 128))(ring: Ring(r, PGemm.ring))
@@ -94,24 +102,39 @@ namespace PGemm {
       (e, (Gpu.finishConsumer(c), apDone))
     })
 
-  // The epilogue: for every tile, wait for its accumulator, store the tile, and hand the buffer back.
-  def epilogue {l: Lifetime}{L: Lifetime}{q: Lifetime}(g: PGemm.Gemm(l))(sched: Sched(L, 128))(own: SchedOwn(L, 128))
-      (accs: AccRing(q, 128))(ac: AccConsumer(q))(m: Lifetime)(e: Ctx(m, PGemm.Wg1)): Pair(Ctx(m, PGemm.Wg1), AccConsumerDone(q)) := {
-    let tile := fun (n: Lifetime)(t: TileAt(n, 128))(o: TileOwn(n, 128))(e: Ctx(n, PGemm.Wg1))(c: AccConsumerAt(q, m, 4))
-        : Pair(Ctx(n, PGemm.Wg1), AccConsumerAt(q, m, 4)) => {
+  // The epilogue: for every tile, wait for its accumulator, store the tile a chunk of 32 columns at a time, each
+  // through a staging buffer, and hand the accumulator buffer back; then wait for the stores.
+  def epilogue {l: Lifetime}{L: Lifetime}{q: Lifetime}{s: Lifetime}(g: PGemm.Gemm(l))(sched: Sched(L, 128))(own: SchedOwn(L, 128))
+      (accs: AccRing(q, 128))(ac: AccConsumer(q))(stg: Staging(s))(side: StoreSide(s))(m: Lifetime)(e: Ctx(m, PGemm.Wg1))
+      : Pair(Ctx(m, PGemm.Wg1), PGemm.EpilogueDone(q, s)) := {
+    let chunk := fun (p: Lifetime)(ch: ChunkAt(p, 128))(co: ChunkOwn(p, 128))(e: Ctx(p, PGemm.Wg1))(st: Pair(AccFull(q, m, 4), StoreAt(s, m, 4)))
+        : Pair(Ctx(p, PGemm.Wg1), Pair(AccFull(q, m, 4), StoreAt(s, m, 4))) => {
+      let (full, sa) := st
+      let (e, free) := Gpu.acquireStage(e, stg, sa)
+      let (e, (full, written)) := Gpu.stageAccFull(e, accs, full, stg, free, ch)
+      let (e, fenced) := Gpu.fenceStage(e, written)
+      let (e, sa) := Gpu.storeStage(e, stg, fenced, g.c, ch, co)
+      (e, (full, sa))
+    }
+    let tile := fun (n: Lifetime)(t: TileAt(n, 128))(o: TileOwn(n, 128))(e: Ctx(n, PGemm.Wg1))(st: Pair(AccConsumerAt(q, m, 4), StoreAt(s, m, 4)))
+        : Pair(Ctx(n, PGemm.Wg1), Pair(AccConsumerAt(q, m, 4), StoreAt(s, m, 4))) => {
+      let (c, sa) := st
       let (e, full) := Gpu.awaitAcc(e, accs, c)
-      let (e, full) := Gpu.storeTile(e, accs, full, t, o, g.c)
-      Gpu.releaseAcc(e, accs, full)
+      let (e, (full, sa)) := Gpu.forChunks(e, t, o, Gpu.fixedPair(Gpu.fixedAccFull(q, m, 4), Gpu.fixedStoreAt(s, m, 4)), (full, sa), chunk)
+      let (e, c) := Gpu.releaseAcc(e, accs, full)
+      (e, (c, sa))
     }
     let (e, c) := Gpu.takeAccConsumer(e, accs, ac)
-    let (e, c) := Gpu.forOwnedTiles(e, sched, own, Gpu.fixedAccConsumerAt(q, m, 4), c, tile)
-    (e, Gpu.finishAccConsumer(c))
+    let (e, sa) := Gpu.takeStore(e, stg, side)
+    let (e, (c, sa)) := Gpu.forOwnedTiles(e, sched, own, Gpu.fixedPair(Gpu.fixedAccConsumerAt(q, m, 4), Gpu.fixedStoreAt(s, m, 4)), (c, sa), tile)
+    let (e, done) := Gpu.finishStores(e, stg, sa)
+    (e, (Gpu.finishAccConsumer(c), done))
   }
 
-  def roles {l: Lifetime}{r: Lifetime}{q: Lifetime}(g: PGemm.Gemm(l))(sched: Sched(l, 128))(own: SchedOwn(l, 128))
-      (ring: Ring(r, PGemm.ring))(accs: AccRing(q, 128))(steps: Val(l, Grain.uniform, DType.u32))(p: Producer(r))(c: Consumer(r))
-      (ap: AccProducer(q))(ac: AccConsumer(q))(e: Ctx(l, PGemm.Cta))
-      : Pair(Ctx(l, PGemm.Cta), Pair(Pair(ProducerDone(r), ConsumerDone(r)), Pair(AccProducerDone(q), AccConsumerDone(q)))) := {
+  def roles {l: Lifetime}{r: Lifetime}{q: Lifetime}{s: Lifetime}(g: PGemm.Gemm(l))(sched: Sched(l, 128))(own: SchedOwn(l, 128))
+      (ring: Ring(r, PGemm.ring))(accs: AccRing(q, 128))(stg: Staging(s))(steps: Val(l, Grain.uniform, DType.u32))(p: Producer(r))
+      (c: Consumer(r))(ap: AccProducer(q))(ac: AccConsumer(q))(side: StoreSide(s))(e: Ctx(l, PGemm.Cta))
+      : Pair(Ctx(l, PGemm.Cta), Pair(Pair(ProducerDone(r), ConsumerDone(r)), PGemm.RolesDone(q, s))) := {
     let idle := fun (m: Lifetime)(e: Ctx(m, PGemm.Idle)): Pair(Ctx(m, PGemm.Idle), Unit) => (e, Unit.unit)
     let rest := fun (m: Lifetime)(e: Ctx(m, PGemm.Rest)): Pair(Ctx(m, PGemm.Rest), Pair(PGemm.IssuerDone(r, q), Unit)) =>
       Gpu.split(e, 1, PGemm.IssuerDone(r, q), Unit, fun (n: Lifetime)(e: Ctx(n, PGemm.Issue)): Pair(Ctx(n, PGemm.Issue), PGemm.IssuerDone(r, q)) =>
@@ -119,10 +142,11 @@ namespace PGemm {
     let wg0 := fun (m: Lifetime)(e: Ctx(m, PGemm.Wg0)): Pair(Ctx(m, PGemm.Wg0), Pair(ProducerDone(r), Pair(PGemm.IssuerDone(r, q), Unit))) =>
       Gpu.split(e, 1, ProducerDone(r), Pair(PGemm.IssuerDone(r, q), Unit),
         fun (n: Lifetime)(e: Ctx(n, PGemm.Load)): Pair(Ctx(n, PGemm.Load), ProducerDone(r)) => PGemm.producer(g, sched, ring, steps, p, n, e), rest)
-    let wg1 := fun (m: Lifetime)(e: Ctx(m, PGemm.Wg1)): Pair(Ctx(m, PGemm.Wg1), AccConsumerDone(q)) => PGemm.epilogue(g, sched, own, accs, ac, m, e)
-    let (e, ((pd, ((cd, apd), u)), acd)) :=
-      Gpu.split(e, 4, Pair(ProducerDone(r), Pair(PGemm.IssuerDone(r, q), Unit)), AccConsumerDone(q), wg0, wg1)
-    (e, ((pd, cd), (apd, acd)))
+    let wg1 := fun (m: Lifetime)(e: Ctx(m, PGemm.Wg1)): Pair(Ctx(m, PGemm.Wg1), PGemm.EpilogueDone(q, s)) =>
+      PGemm.epilogue(g, sched, own, accs, ac, stg, side, m, e)
+    let (e, ((pd, ((cd, apd), u)), (acd, sd))) :=
+      Gpu.split(e, 4, Pair(ProducerDone(r), Pair(PGemm.IssuerDone(r, q), Unit)), PGemm.EpilogueDone(q, s), wg0, wg1)
+    (e, ((pd, cd), ((apd, acd), sd)))
   }
 
   def kernel : Program :=
@@ -134,10 +158,15 @@ namespace PGemm {
             : Pair(Ctx(l, PGemm.Cta), Pair(Acc(a, AccState.empty), Unit)) => {
           let accRing := fun (q: Lifetime)(accs: AccRing(q, 128))(ap: AccProducer(q))(ac: AccConsumer(q))(e: Ctx(l, PGemm.Cta))
               : Pair(Ctx(l, PGemm.Cta), Pair(Pair(AccProducerDone(q), AccConsumerDone(q)), Unit)) => {
-            let stages := fun (r: Lifetime)(ring: Ring(r, PGemm.ring))(p: Producer(r))(c: Consumer(r))(e: Ctx(l, PGemm.Cta))
-                : Pair(Ctx(l, PGemm.Cta), Pair(Pair(ProducerDone(r), ConsumerDone(r)), Pair(AccProducerDone(q), AccConsumerDone(q)))) =>
-              PGemm.roles(g, sched, own, ring, accs, steps, p, c, ap, ac, e)
-            let (e, accsDone) := Gpu.withRing(e, PGemm.ring, Pair(AccProducerDone(q), AccConsumerDone(q)), stages)
+            let staged := fun (s: Lifetime)(stg: Staging(s))(side: StoreSide(s))(e: Ctx(l, PGemm.Cta))
+                : Pair(Ctx(l, PGemm.Cta), Pair(StoreDone(s), Pair(AccProducerDone(q), AccConsumerDone(q)))) => {
+              let stages := fun (r: Lifetime)(ring: Ring(r, PGemm.ring))(p: Producer(r))(c: Consumer(r))(e: Ctx(l, PGemm.Cta))
+                  : Pair(Ctx(l, PGemm.Cta), Pair(Pair(ProducerDone(r), ConsumerDone(r)), PGemm.RolesDone(q, s))) =>
+                PGemm.roles(g, sched, own, ring, accs, stg, steps, p, c, ap, ac, side, e)
+              let (e, (accsDone, done)) := Gpu.withRing(e, PGemm.ring, PGemm.RolesDone(q, s), stages)
+              (e, (done, accsDone))
+            }
+            let (e, accsDone) := Gpu.withStaging(e, 2, Pair(AccProducerDone(q), AccConsumerDone(q)), staged)
             (e, (accsDone, Unit.unit))
           }
           Gpu.withAccRing(e, t, acc, 2, 128, Unit, accRing)

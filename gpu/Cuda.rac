@@ -35,6 +35,7 @@ namespace Cuda {
    | shr : BinOp
    | bor : BinOp
    | band : BinOp
+   | bxor : BinOp
 
   inductive Expr : Type
    | var (id: Nat) : Expr
@@ -79,17 +80,22 @@ namespace Cuda {
      | seq (s: Stmt)(rest: Block) : Block
   }
 
+  // What a kernel does through a tensor map: load from global memory (an operand), or store to it (the result).
+  inductive MapUse : Type
+   | load : MapUse
+   | store : MapUse
+
   inductive Param : Type
    | input (t: DType)(name: String) : Param
    | output (t: DType)(name: String) : Param
    | scalar (t: DType)(name: String) : Param
-   | tensorMap (name: String) : Param
+   | tensorMap (use: MapUse)(name: String) : Param
 
-  // How the host encodes a tensor-map parameter: from the bf16 matrix `source` of `rows` × `cols` elements, `cols`
-  // contiguous (both host scalars), in boxes of `inner` × `outer` elements with 128-byte swizzle. Elements outside the
-  // matrix read as zero.
+  // How the host encodes the tensor-map parameter `param`, which the kernel uses for `use`: over the matrix of the host
+  // parameter `source`, of its element type, `rows` × `cols` elements, `cols` contiguous (both host scalars), in boxes of
+  // `inner` × `outer` elements with 128-byte swizzle. Elements outside the matrix read as zero, and are not written.
   struct MapEncoding : Type
-   | mk (param: String)(source: String)(rows: String)(cols: String)(inner: Nat)(outer: Nat) : MapEncoding
+   | mk (param: String)(use: MapUse)(source: Param)(rows: String)(cols: String)(inner: Nat)(outer: Nat) : MapEncoding
 
   // How many CTAs a launcher starts: `x` × `y`, or, for a persistent kernel, one per SM but no more than `tiles`.
   inductive Grid : Type
@@ -130,6 +136,7 @@ namespace Cuda {
     | BinOp.shr => " >> "
     | BinOp.bor => " | "
     | BinOp.band => " & "
+    | BinOp.bxor => " ^ "
   }
 
   def name (id: Nat): String := Text.cat("v", Text.nat(id))
@@ -255,7 +262,7 @@ namespace Cuda {
     | Param.input t n => Text.cat3("const ", Cuda.dtype(t), Text.cat("* __restrict__ ", n))
     | Param.output t n => Text.cat3(Cuda.dtype(t), "* __restrict__ ", n)
     | Param.scalar t n => Text.cat3(Cuda.dtype(t), " ", n)
-    | Param.tensorMap n => Text.cat("const __grid_constant__ CUtensorMap ", n)
+    | Param.tensorMap u n => Text.cat("const __grid_constant__ CUtensorMap ", n)
   }
 
   // A host function's parameter: as the kernel's, without `__restrict__`, which means nothing on the host and would
@@ -265,7 +272,7 @@ namespace Cuda {
     | Param.input t n => Text.cat3("const ", Cuda.dtype(t), Text.cat("* ", n))
     | Param.output t n => Text.cat3(Cuda.dtype(t), "* ", n)
     | Param.scalar t n => Text.cat3(Cuda.dtype(t), " ", n)
-    | Param.tensorMap n => Text.cat("CUtensorMap ", n)
+    | Param.tensorMap u n => Text.cat("CUtensorMap ", n)
   }
 
   def hostParams (ps: List(Param)): String decreases structural(ps) := {
@@ -293,7 +300,7 @@ namespace Cuda {
     | Param.input t n => Bool.false
     | Param.output t n => Bool.false
     | Param.scalar t n => Bool.false
-    | Param.tensorMap n => Bool.true
+    | Param.tensorMap u n => Bool.true
   })
 
   // Headers a kernel needs: the driver API's CUtensorMap and bf16 when it takes tensor maps, the runtime API when it
@@ -316,6 +323,14 @@ namespace Cuda {
 
   // ---- The host launcher -------------------------------------------------------------------------------------------
 
+  def paramName (p: Param): String := {
+    match p returning String with
+    | Param.input t n => n
+    | Param.output t n => n
+    | Param.scalar t n => n
+    | Param.tensorMap u n => n
+  }
+
   def failUnless (c: Expr)(rest: String): String :=
     Cuda.line(1, Text.cat3("if (!", Cuda.expr(c), ") {"), Cuda.line(2, "return cudaErrorInvalidValue;", Cuda.line(1, "}", rest)))
 
@@ -325,13 +340,42 @@ namespace Cuda {
     | List.cons c more => Cuda.failUnless(c, Cuda.requirements(more, rest))
   }
 
+  // The element type of a parameter's array or scalar. (A tensor map's is never asked for: `Check.launcher` refuses a
+  // map encoded from one.)
+  def elementType (p: Param): DType := {
+    match p returning DType with
+    | Param.input t n => t
+    | Param.output t n => t
+    | Param.scalar t n => t
+    | Param.tensorMap u n => DType.u64
+  }
+
+  def tensorDataType (t: DType): String := {
+    match t returning String with
+    | DType.u32 => "CU_TENSOR_MAP_DATA_TYPE_UINT32"
+    | DType.u64 => "CU_TENSOR_MAP_DATA_TYPE_UINT64"
+    | DType.f32 => "CU_TENSOR_MAP_DATA_TYPE_FLOAT32"
+    | DType.bf16 => "CU_TENSOR_MAP_DATA_TYPE_BFLOAT16"
+    | DType.bool => "CU_TENSOR_MAP_DATA_TYPE_UINT8"
+  }
+
+  def elementBytes (t: DType): Nat := {
+    match t returning Nat with
+    | DType.u32 => 4
+    | DType.u64 => 8
+    | DType.f32 => 4
+    | DType.bf16 => 2
+    | DType.bool => 1
+  }
+
   def mapEncoding (m: MapEncoding)(rest: String): String := {
-    let (param, source, rows, cols, inner, outer) := m
-    let encode := Text.cat3("if (cuTensorMapEncodeTiled(&", param, Text.cat3(", CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, const_cast<__nv_bfloat16*>(",
-      source, "), dims, strides, box, steps,"))
+    let (param, use, source, rows, cols, inner, outer) := m
+    let t := Cuda.elementType(source)
+    let encode := Text.cat3("if (cuTensorMapEncodeTiled(&", param, Text.cat3(", ", Cuda.tensorDataType(t),
+      Text.cat3(", 2, const_cast<void*>(static_cast<const void*>(", Cuda.paramName(source), ")), dims, strides, box, steps,")))
     Cuda.line(1, Text.cat3("CUtensorMap ", param, ";"), Cuda.line(1, "{",
       Cuda.line(2, Text.cat3("const cuuint64_t dims[2] = {", cols, Text.cat3(", ", rows, "};")),
-      Cuda.line(2, Text.cat3("const cuuint64_t strides[1] = {static_cast<cuuint64_t>(", cols, ") * 2u};"),
+      Cuda.line(2, Text.cat3("const cuuint64_t strides[1] = {static_cast<cuuint64_t>(", cols, Text.cat3(") * ", Text.nat(Cuda.elementBytes(t)), "u};")),
       Cuda.line(2, Text.cat3("const cuuint32_t box[2] = {", Text.nat(inner), Text.cat3("u, ", Text.nat(outer), "u};")),
       Cuda.line(2, "const cuuint32_t steps[2] = {1u, 1u};",
       Cuda.line(2, encode,
@@ -345,14 +389,6 @@ namespace Cuda {
     match ms returning String with
     | List.nil => rest
     | List.cons m more => Cuda.mapEncoding(m, Cuda.mapEncodings(more, rest))
-  }
-
-  def paramName (p: Param): String := {
-    match p returning String with
-    | Param.input t n => n
-    | Param.output t n => n
-    | Param.scalar t n => n
-    | Param.tensorMap n => n
   }
 
   // `&a, &b, …` for the kernel's parameters.

@@ -2,8 +2,8 @@
 
 A feasibility spike of a GPU library written in Raccoon: a kernel is an ordinary Raccoon program over a sealed core,
 and evaluating it builds a CUDA AST, which prints as CUDA C++. It runs on unmodified Raccoon with a custom trusted
-prelude. Its two sm_100a GEMMs run correctly on a B200, the persistent one at 980 TFLOP/s against cuBLAS's 2147
-(`DESIGN.md` §7).
+prelude. Its two sm_100a GEMMs ran correctly on a B200, the persistent one at 980 TFLOP/s against cuBLAS's 2147
+(`DESIGN.md` §7), before their TMA-store epilogue, which has not yet run on hardware.
 
 | File | Role |
 |---|---|
@@ -71,4 +71,6 @@ The Blackwell layer extends the same rules to asynchronous hardware (`DESIGN.md`
 one thread; a one-shot tensor-memory permit; an accumulator whose typestate (`empty`, pending under one elected
 thread, `ready`) orders the first MMA, the commit and the epilogue's loads; and tensor-map boxes that fix the layout
 the TMA writes and the MMA descriptors read. The persistent kernel adds tile loops whose one owning loop writes each
-tile once, and a ring of accumulators in tensor memory between the MMA thread and the epilogue warpgroup.
+tile once, and a ring of accumulators in tensor memory between the MMA thread and the epilogue warpgroup. Both store
+their output by TMA through staging buffers whose typestate (free, written, fenced, in flight) orders each warp's
+writes, the proxy fence, its lane 0's store, and that lane's wait before the buffer is written again or released.

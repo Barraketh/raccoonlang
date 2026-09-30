@@ -694,7 +694,21 @@ namespace Check {
 
   def sameType (a: DType)(b: DType): Bool := Nat.beq(Check.typeIndex(a), Check.typeIndex(b))
 
-  // Whether `a` and `b` declare the same parameter: its kind, its element type and its name.
+  def sameUse (a: MapUse)(b: MapUse): Bool := {
+    match a returning Bool with
+    | MapUse.load => {
+      match b returning Bool with
+      | MapUse.load => Bool.true
+      | MapUse.store => Bool.false
+    }
+    | MapUse.store => {
+      match b returning Bool with
+      | MapUse.load => Bool.false
+      | MapUse.store => Bool.true
+    }
+  }
+
+  // Whether `a` and `b` declare the same parameter: its kind, its element type (a tensor map's use) and its name.
   def sameParam (a: Param)(b: Param): Bool := {
     match a returning Bool with
     | Param.input t n => {
@@ -702,28 +716,28 @@ namespace Check {
       | Param.input u m => Bool.and(Check.sameType(t, u), Check.same(n, m))
       | Param.output u m => Bool.false
       | Param.scalar u m => Bool.false
-      | Param.tensorMap m => Bool.false
+      | Param.tensorMap v m => Bool.false
     }
     | Param.output t n => {
       match b returning Bool with
       | Param.input u m => Bool.false
       | Param.output u m => Bool.and(Check.sameType(t, u), Check.same(n, m))
       | Param.scalar u m => Bool.false
-      | Param.tensorMap m => Bool.false
+      | Param.tensorMap v m => Bool.false
     }
     | Param.scalar t n => {
       match b returning Bool with
       | Param.input u m => Bool.false
       | Param.output u m => Bool.false
       | Param.scalar u m => Bool.and(Check.sameType(t, u), Check.same(n, m))
-      | Param.tensorMap m => Bool.false
+      | Param.tensorMap v m => Bool.false
     }
-    | Param.tensorMap n => {
+    | Param.tensorMap t n => {
       match b returning Bool with
       | Param.input u m => Bool.false
       | Param.output u m => Bool.false
       | Param.scalar u m => Bool.false
-      | Param.tensorMap m => Check.same(n, m)
+      | Param.tensorMap u m => Bool.and(Check.sameUse(t, u), Check.same(n, m))
     }
   }
 
@@ -732,7 +746,7 @@ namespace Check {
     | Param.input t n => Option.none(String)
     | Param.output t n => Option.none(String)
     | Param.scalar t n => Option.none(String)
-    | Param.tensorMap n => Option.some(n)
+    | Param.tensorMap u n => Option.some(n)
   }
 
   def declares (ps: List(Param))(p: Param): Bool := List.any(ps, fun (q: Param): Bool => Check.sameParam(q, p))
@@ -747,11 +761,6 @@ namespace Check {
     }
   }
 
-  // The names of the tensor maps among `ps`.
-  def mapParams (ps: List(Param)): List(String) :=
-    List.foldr(ps, List(String), List.nil(String), fun (p: Param)(rest: List(String)): List(String) =>
-      Option.elim(Check.tensorMapName(p), List(String), rest, fun (n: String): List(String) => List.cons(n, rest)))
-
   // A kernel's parameter, which launcher `l` must declare as the kernel does, or, a tensor map, encode once.
   def passedStep (l: Launcher): List(String) -> Param -> List(String) := fun (found: List(String))(p: Param): List(String) => {
     match Check.tensorMapName(p) returning List(String) with
@@ -764,14 +773,41 @@ namespace Check {
     }
   }
 
-  // A tensor-map encoding of launcher `l`, which must name one of `kernelMaps` and read the launcher's own parameters.
-  def encodingStep (l: Launcher)(kernelMaps: List(String)): List(String) -> MapEncoding -> List(String) :=
+  // The array a map the kernel uses for `use` must be encoded over: for loading, a bf16 input (an operand); for
+  // storing, an f32 output (the result).
+  def mapArray (use: MapUse): String := {
+    match use returning String with
+    | MapUse.load => "a bf16 input"
+    | MapUse.store => "an f32 output"
+  }
+
+  def mapUseName (use: MapUse): String := {
+    match use returning String with
+    | MapUse.load => "load"
+    | MapUse.store => "store"
+  }
+
+  // Whether a tensor map the kernel uses for `use` may be encoded over the array `p` (`mapArray`).
+  def mapSource (use: MapUse)(p: Param): Bool := {
+    match p returning Bool with
+    | Param.input t n => Bool.and(Check.sameUse(use, MapUse.load), Check.sameType(t, DType.bf16))
+    | Param.output t n => Bool.and(Check.sameUse(use, MapUse.store), Check.sameType(t, DType.f32))
+    | Param.scalar t n => Bool.false
+    | Param.tensorMap u n => Bool.false
+  }
+
+  // A tensor-map encoding of launcher `l`, which must name a map the kernel (with parameters `kernelParams`) uses as it
+  // says, and read the launcher's own parameters: an array of the kind and element type that use needs, and two u32
+  // scalars.
+  def encodingStep (l: Launcher)(kernelParams: List(Param)): List(String) -> MapEncoding -> List(String) :=
     fun (found: List(String))(m: MapEncoding): List(String) => {
       let what := Text.cat3("launcher: the encoding of ", m.param, " ")
-      let named := Check.unless(found, Check.mentions(kernelMaps, m.param), fun (u: Unit): String =>
-        Text.cat(what, "names no tensor map of the kernel"))
-      let source := Check.unless(named, Check.declares(l.params, Param.input(DType.bf16, m.source)), fun (u: Unit): String =>
-        Text.cat3(what, "reads ", Text.cat(m.source, ", not a bf16 input of the launcher")))
+      let named := Check.unless(found, Check.declares(kernelParams, Param.tensorMap(m.use, m.param)), fun (u: Unit): String =>
+        Text.cat(what, Text.cat3("names no ", Check.mapUseName(m.use), " map of the kernel")))
+      let array := Check.unless(named, Check.mapSource(m.use, m.source), fun (u: Unit): String =>
+        Text.cat3(what, "reads ", Text.cat3(Cuda.paramName(m.source), ", not ", Check.mapArray(m.use))))
+      let source := Check.unless(array, Check.declares(l.params, m.source), fun (u: Unit): String =>
+        Text.cat3(what, "reads ", Text.cat(Cuda.paramName(m.source), ", which the launcher does not declare so")))
       let rows := Check.unless(source, Check.declares(l.params, Param.scalar(DType.u32, m.rows)), fun (u: Unit): String =>
         Text.cat3(what, "takes rows from ", Text.cat(m.rows, ", not a u32 scalar of the launcher")))
       Check.unless(rows, Check.declares(l.params, Param.scalar(DType.u32, m.cols)), fun (u: Unit): String =>
@@ -780,13 +816,14 @@ namespace Check {
 
   // I6, the launcher, as far as the AST shows it: it passes the kernel's parameters by name, in the kernel's order (as
   // the printer does), so it declares each one that is not a tensor map exactly as the kernel does, and encodes each
-  // tensor map exactly once, from a bf16 input of its own and two u32 scalars; it encodes nothing else.
+  // tensor map exactly once, for the use the kernel declares, from an array of its own that use needs (a bf16 input to
+  // load, an f32 output to store) and two u32 scalars of its own; it encodes nothing else.
   def launcher (k: Kernel): List(String) := {
     match k.launcher returning List(String) with
     | Option.none => List.nil(String)
     | Option.some l => {
       let passed := List.foldl(k.params, List(String), List.nil(String), Check.passedStep(l))
-      Check.inOrder(List.foldl(l.maps, List(String), passed, Check.encodingStep(l, Check.mapParams(k.params))))
+      Check.inOrder(List.foldl(l.maps, List(String), passed, Check.encodingStep(l, k.params)))
     }
   }
 

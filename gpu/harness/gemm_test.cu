@@ -41,7 +41,10 @@ extern "C" cudaError_t GEMM_LAUNCH(const __nv_bfloat16 *A, const __nv_bfloat16 *
 struct Problem {
   unsigned m, n, k;
   std::vector<float> a, b;  // A is M×K and B is N×K, K contiguous; values exactly representable in bf16
-  static constexpr size_t guard = 4096;  // sentinel floats on each side of C
+  // Sentinel floats before C, and after it: as many again and 128 rows of C, so a store of a box the kernel must clip
+  // away entirely (the rows of a last tile below M) would land in the guard.
+  static constexpr size_t guard = 4096;
+  size_t after() const { return guard + size_t(128) * n; }
   __nv_bfloat16 *dA = nullptr, *dB = nullptr;
   float *dAlloc = nullptr, *dC = nullptr;
 
@@ -54,7 +57,7 @@ struct Problem {
     for (float &x : b) x = next();
     CHECK(cudaMalloc(&dA, std::max<size_t>(a.size(), 1) * sizeof(__nv_bfloat16)));
     CHECK(cudaMalloc(&dB, std::max<size_t>(b.size(), 1) * sizeof(__nv_bfloat16)));
-    CHECK(cudaMalloc(&dAlloc, (size_t(m) * n + 2 * guard) * sizeof(float)));
+    CHECK(cudaMalloc(&dAlloc, (guard + size_t(m) * n + after()) * sizeof(float)));
     dC = dAlloc + guard;
     upload(dA, a);
     upload(dB, b);
@@ -76,7 +79,7 @@ struct Problem {
   // Runs once from a NaN-filled C inside sentinel guard bands, and returns the number of elements that differ from the
   // reference or guard values that changed.
   size_t mismatches() {
-    const size_t total = size_t(m) * n + 2 * guard;
+    const size_t total = guard + size_t(m) * n + after();
     CHECK(cudaMemset(dAlloc, 0x7f, total * sizeof(float)));  // sentinel 0x7f7f7f7f, a finite float
     CHECK(cudaMemset(dC, 0xff, size_t(m) * n * sizeof(float)));
     CHECK(run());
@@ -148,9 +151,10 @@ int main() {
   // Whole tiles, several K steps (more than the ring's stages), partial tiles in every dimension, tiny ones, and, for
   // a persistent kernel, several tiles per CTA (4096×4096 is 1024 tiles, about 7 per CTA on 148 SMs), so tile loops
   // run again and accumulator buffers are reused, and tile rows that are not a multiple of its band of 16 (2200 rows
-  // are 18 tile rows, 4224 are 33), so its last band has fewer rows.
+  // are 18 tile rows, 4224 are 33), so its last band has fewer rows. N is a multiple of 4 (16-byte rows of C), and
+  // the stores' boxes of 32×32 are clipped in both dimensions (N = 136, 260, 1000, 1032).
   const unsigned sizes[][3] = {{128, 128, 64},     {256, 256, 256},  {384, 256, 1024},  {200, 136, 72},
-                               {128, 128, 8},      {1, 8, 8},        {129, 257, 520},   {1000, 1000, 1000},
+                               {128, 128, 8},      {1, 8, 8},        {129, 260, 520},   {1000, 1000, 1000},
                                {2048, 2048, 200},  {1920, 2688, 72}, {4096, 4096, 72},  {2200, 1032, 136},
                                {4224, 640, 64}};
   for (auto &s : sizes) {
@@ -163,8 +167,10 @@ int main() {
   }
 
   // What the launcher must refuse rather than launch: a row of A or B that is not a multiple of 16 bytes (TMA
-  // strides), and an empty K extent.
-  const unsigned refused[][3] = {{128, 128, 10}, {128, 128, 0}};
+  // strides), an empty K extent, and a row of C that is not a multiple of 16 bytes (TMA strides, and the TMA store
+  // clips a box to the matrix only at 16-byte granularity; the launcher's own check refuses it before the encoding
+  // would, and the two cannot be told apart from here).
+  const unsigned refused[][3] = {{128, 128, 10}, {128, 128, 0}, {128, 130, 64}};
   for (auto &s : refused) {
     Problem p(s[0], s[1], s[2], 1);
     cudaError_t status = p.run();
