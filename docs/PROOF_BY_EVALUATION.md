@@ -120,37 +120,50 @@ does not determine is not used by that rule.
 At run time, as in §1.6, a construction stores an erased proof without evaluating the proposition. Implicits written
 on a constructor must still be forced; an evidence field is not an implicit and needs no forcing.
 
-**1.9 Termination of discharge.** A family `F` is **evidence-eligible** when:
-1. `F` is in `Prop`, has one constructor and no indices (a `struct`);
+**1.9 Termination of discharge.** A family `F` is **evidence-eligible** at a discharge site when:
+1. `F` is declared in `Prop` (its sort is `Prop` itself, not a level that may become zero), and has one constructor
+   and no indices (a `struct`);
 2. `F` is not recursive: no field's type mentions `F` or a member of its mutual block;
-3. every field of its constructor is an evidence field.
+3. every field of its constructor is an evidence field;
+4. its constructor is accessible at the site: a sealed family's only in its module, as for rule 1.
 
-§1.2's second rule applies to an instance `F(ā)` of an eligible family only when its arguments `ā` are first-order:
-those that are not types or propositions contain no function. Otherwise only the first rule is tried. This is checked
-on the evaluated arguments at discharge.
+§1.2's second rule applies to an instance `F(ā)` of an eligible family only when its arguments `ā` are **closed and
+function-free**. That means no neutral values (variables, stuck applications, stuck matches), and no function values
+or function types, anywhere in `ā`: inside types and propositions, and inside the propositions of proofs, since a proof
+carries its proposition as its type, which implicit inference reads. Deferred evidence is examined through its
+proposition. Otherwise only the first rule is tried. This is checked on the evaluated arguments at discharge.
 
-Discharge then terminates. The obligation is to prove it, and the proof is to be written out in `docs/kernel.md` when
-this lands. Its argument:
-- Order the program's symbols (families, constructors, definitions) by declaration, a well-founded order, since
-  Raccoon requires declaration before use. A closure counts as the symbol of the definition whose code built it, and
-  literals as minimal constants.
-- A discharge step goes from `F(ā)` to `Qᵢ`, the value of the i-th field's type evaluated with `ā` (and earlier fields'
-  proofs, which are erased). By condition 2 and declaration before use, that type mentions only symbols declared
-  before `F`, so its evaluation runs only code declared before `F`.
-- That code cannot run code declared after `F`: a parameter that is a type or proposition can be copied but not
-  inspected (Raccoon has no case analysis on types), and the other parameters contain no function to apply. So `Qᵢ`
-  is built from symbols declared before `F` and from copies of subterms of `ā`.
-- Such a `Qᵢ` is smaller than `F(ā)` in the recursive path ordering whose precedence is declaration order: `F` exceeds
-  every symbol built around the copies, and each copy is a subterm of `F(ā)`. That covers duplication, as in a field
-  `[a: Both(p, p)]`, and descent into a parameter, as in `Both(Both(X, Y), Z)`. The recursive path ordering over a
-  well-founded precedence is well-founded (Dershowitz), so no chain of discharge steps is infinite.
-- Each step's evaluation is total, and the base case, rule 1, is a conversion check between closed values, which
+Discharge then terminates. The obligation is to prove it, and the proof is to be written out in full in
+`docs/kernel.md` when this lands. Its argument:
+- **The symbols and their order.** Order the program's symbols (families, constructors, definitions) by declaration, a
+  well-founded order, since Raccoon requires declaration before use. Code that belongs to `F`'s own declaration (the
+  field types, and closures and function types built by them) ranks strictly between the symbols declared before `F`
+  and `F`. A closure counts as the symbol of the code that built it. Literals, universes and variables form one class
+  of minimal constants. A proof counts as a node whose only child is its proposition.
+- **What a step evaluates.** A discharge step goes from `F(ā)` to `Qᵢ`, the value of the i-th field's type evaluated
+  with `ā` and the earlier fields' proofs. By condition 2 and declaration before use, that type mentions only `F`'s own
+  code and symbols declared before `F`.
+- **Why no later code runs.** `ā` holds no function and no function type anywhere, not even in a proof's proposition,
+  so there is nothing in it that code could apply, or that inference could read and apply. Evaluation therefore runs
+  only `F`'s own code and code declared before `F`, and `Qᵢ` is built from their symbols and from copies of subterms of
+  `ā`.
+- **Why a step decreases.** Such a `Qᵢ` is smaller than `F(ā)` in the recursive path ordering with that precedence: `F`
+  exceeds every symbol built around the copies, and each copy is a subterm of `F(ā)`. That covers duplication, as in a
+  field `[a: Both(p, p)]`, and descent into a parameter, as in `Both(Both(X, Y), Z)`. With finitely many symbols
+  above one class of minimal constants, the recursive path ordering is well-founded (Dershowitz), so no chain of
+  discharge steps is infinite.
+- **The base case.** Each step's evaluation is total, and rule 1 is a conversion check between closed values, which
   terminates.
 
 What the conditions exclude:
 - `inductive Loop : Prop | mk [h: Loop]` fails condition 2.
-- `struct App (f: Nat -> Prop)(n: Nat) : Prop | mk [a: f(n)]` has a function among its arguments. Both are discharged
-  by rule 1 only, and so, having no constructor whose fields its result type determines, not at all.
+- `struct App (f: Nat -> Prop)(n: Nat) : Prop | mk [a: f(n)]` has a function among its arguments, and `Both(All(xs,
+  fun (x: Nat): Prop => …), Q)` has one inside a proposition.
+
+These are discharged by rule 1 only, and so, having no constructor whose fields its result type determines, not at
+all. A proposition parameter holding a function is excluded because a proof of it carries it: a later field that
+matches on an equality can make inference read, and run, a function declared after `F`, which is how review found the
+first version of this argument, which excluded functions only outside types and propositions, to be wrong.
 
 As defence in depth, the implementation also bounds the depth of discharge, and reports `EvidenceNotDischarged` if
 the bound is reached. Under the proof the bound is never reached, and a test pins that.
@@ -301,6 +314,12 @@ and no earlier one. Beyond those:
    - **Rule 1 reads determined fields.** In implementation, "fieldless" was found to exclude `Eq.refl`, whose field
      occurs in its result type, contradicting the rule's own example. Rule 1 was corrected to read such fields off
      `P′`: that invents nothing, which was the point of "fieldless".
+   - **Rule 2's arguments are closed and function-free everywhere.** The first version of §1.9 exempted types and
+     propositions from the first-order check, as if code could only copy them. Implementation review found that a
+     proof carries its proposition as its type, so inference can read and run a function hidden there, one declared
+     after the family, breaking the ordering argument. Proving termination up to conversion instead would need a
+     normalization theorem Raccoon does not state, so the condition was strengthened, at the cost of rule 2 for
+     propositions over functions.
 4. **Reflection before tactics.** Metaprogramming (elaboration-time Raccoon programs building terms) is the route to
    automation for goals that are not about data. It is left for when layer 3 of `gpu/OBLIGATIONS.md` §8 needs it.
 5. **Key assertions stay on.** They become iterative (§2.3); turning them off by default in the CLI would change a
