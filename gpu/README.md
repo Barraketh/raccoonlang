@@ -45,7 +45,8 @@ against `stub/`.
   other. That state must be `Fixed` (one value per type), so the code after a loop or branch cannot depend on which
   arm ran or how often the body did.
 - **What is printed.** Only `Gpu.render` of a sealed `Program`, which only the kernel builders make, so every printed
-  kernel came from the typed core, with its own shared memory and launcher. Its name must be a C identifier.
+  kernel came from the typed core, with its own shared memory and launcher. Its name must be a C identifier, and only
+  a kernel with a launcher (which asks for it) may use dynamic shared memory, never more than an SM has.
 
 Index bounds are checked while generating, where every size is concrete: a read that is not provably in bounds turns
 the kernel into an `#error`, as does a 32-bit literal that does not fit 32 bits.

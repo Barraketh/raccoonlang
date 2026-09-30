@@ -66,6 +66,9 @@ registers the protocol owns:
   - The consumer `await`s a stage (waits `full[s]` at its phase), receiving a linear `Ready(r, m)` that authorizes
     reading the stage, and releases it when its tensor-core work completes (`tcgen05.commit` to `empty[s]`).
     A synchronous release (`mbarrier.arrive`), for a consumer that reads the stage with ordinary loads, is not built.
+  - When the ring closes, every thread is past its last use of the barriers (the roles' join), and one thread
+    invalidates them (`mbarrier.inval`), so a ring opened again, in a loop, initializes fresh barriers. The
+    accumulator handoff and the accumulator ring close the same way.
   - No type mentions an iteration count, so a loop body over the ring is generated once. Mismatched trip counts
     between the two sides deadlock; they cannot race.
 - **Tensor memory** (`withTmem`, in the whole CTA): the kernel hands out one linear `TmemPermit`, which `withTmem`
@@ -109,7 +112,8 @@ and an MMA needs M = 128 and N a multiple of 16 up to 256, equal to the accumula
 
 ## 4. Output
 
-The epilogue warpgroup reads the accumulator eight columns at a time (`tcgen05.ld.32x32b.x8`, then
+The epilogue warpgroup reads the accumulator eight columns at a time (`__syncwarp`, since a barrier wait's spin loop
+or the previous chunk's guarded stores may leave a warp diverged, then `tcgen05.ld.32x32b.x8` and
 `tcgen05.wait::ld`): thread `t` of warp `w` holds row `32 (w % 4) + t` of the tile. It stores its own row's columns of
 the CTA's block, guarded against the matrix edge, consuming the CTA's `COwn` output token, so no two threads of the
 grid write one location. The block and row come from the block and thread indices, never from the caller.

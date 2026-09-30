@@ -272,6 +272,8 @@ namespace Gpu {
 
   def fenceBarrierInit : Stmt := Gpu.asm0("fence.mbarrier_init.release.cluster;")
 
+  def mbarInval (bar: Expr): Stmt := Gpu.asmIn("mbarrier.inval.shared::cta.b64 [%0];", Gpu.one(Gpu.r(bar)))
+
   // Spins until the phase of `bar` with parity `parity` has completed.
   def mbarWait (bar: Expr)(parity: Expr): Stmt :=
     Gpu.asmIn("{\\n\\t.reg .pred P1;\\n\\tLAB_WAIT:\\n\\tmbarrier.try_wait.parity.shared::cta.b64 P1, [%0], %1;\\n\\t@P1 bra DONE;\\n\\tbra LAB_WAIT;\\n\\tDONE:\\n\\t}",
@@ -705,6 +707,9 @@ namespace Gpu {
     | List.cons c more => Bool.and(Gpu.identStart(c), Bool.not(List.any(more, fun (d: Char): Bool => Bool.not(Gpu.identRest(d)))))
   }
 
+  // The dynamic shared memory an sm_100a CTA can have.
+  def maxDynamicShared : Nat := 232448
+
   // A kernel the typed core built: the only thing `render` prints. A program can neither build one nor take one apart,
   // so it cannot change a kernel's code, shared memory or launcher.
   sealed struct Program : Type
@@ -715,10 +720,14 @@ namespace Gpu {
   // The finished kernel: its code, then any generation errors as `#error` lines, so it does not compile. The name is
   // printed as written, so it must be a C identifier. Static shared arrays come before the dynamic buffer in the shared
   // window, which could then lose the 1024-byte alignment its swizzled layouts need, so a kernel may use one kind of
-  // shared memory or the other. A 32-bit literal must fit 32 bits.
+  // shared memory or the other. Dynamic shared memory must fit the SM, and only a kernel with a launcher, which asks
+  // for it, may use it. A 32-bit literal must fit 32 bits.
   def finish (k: Key)(name: String)(params: List(Param))(launcher: Option(Launcher))(gen0: Gen): Program := {
     let code := Gpu.toBlock(gen0.code, Block.done)
-    let gen1 := Gpu.check(gen0, Bool.not(Bool.and(Nat.blt(0, gen0.smem), Gpu.blockShared(code))),
+    let launched := Option.elim(launcher, Bool, Bool.false, fun (l: Launcher): Bool => Bool.true)
+    let gen01 := Gpu.check(gen0, Nat.ble(gen0.smem, Gpu.maxDynamicShared), "kernel: more dynamic shared memory than sm_100a has")
+    let gen02 := Gpu.check(gen01, Bool.or(launched, Nat.isZero(gen0.smem)), "kernel: dynamic shared memory without a launcher to ask for it")
+    let gen1 := Gpu.check(gen02, Bool.not(Bool.and(Nat.blt(0, gen0.smem), Gpu.blockShared(code))),
       "kernel: static shared arrays and dynamic shared memory together")
     let gen2 := Gpu.check(gen1, Gpu.isIdent(name), "kernel: the name must be a C identifier")
     let gen := Gpu.check(gen2, Bool.not(Gpu.blockWide(code)), "kernel: a 32-bit literal does not fit 32 bits")
@@ -842,6 +851,19 @@ namespace Gpu {
   // One thread initializes `count` barriers of arrival count one, then the whole CTA waits for it.
   def initBarriers (gen: Gen)(bars: Nat)(count: Nat): Gen := Gpu.initBarrierList(gen, Gpu.barrierInits(bars, 1, 0, count))
 
+  def barrierInvals (bars: Nat)(i: Nat)(count: Nat): List(Stmt) decreases structural(count) := {
+    match count returning List(Stmt) with
+    | Nat.zero => List.nil(Stmt)
+    | Nat.succ more => List.cons(Gpu.mbarInval(Expr.sharedAddr(Nat.add(bars, Nat.mul(8, i)))), Gpu.barrierInvals(bars, Nat.succ(i), more))
+  }
+
+  // Ends `count` barriers once every thread is past its last use of them (a barrier's storage may be initialized again
+  // if its block runs again, as a loop body does): one thread invalidates them.
+  def invalBarriers {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(bars: Nat)(count: Nat): Ctx(l, g) := {
+    let first := Expr.bin(BinOp.eq, Expr.special(Builtin.threadX), Expr.lit(0))
+    Gpu.emit(k, e, Stmt.ifElse(first, Gpu.toBlock(List.reverse(Gpu.barrierInvals(bars, 0, count)), Block.done), Block.done))
+  }
+
   // Opens a stage ring for the callback, which must hand back both endpoints finished: the producer's finish waits
   // until every stage it filled was released, so no copy into the ring's storage can still be in flight.
   def withRing {l: Lifetime}{w: Nat}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}
@@ -864,7 +886,7 @@ namespace Gpu {
       match pd returning Pair(Ctx(l, Group.cta(w)), X) with
       | ProducerDone.mk => {
         match cd returning Pair(Ctx(l, Group.cta(w)), X) with
-        | ConsumerDone.mk => (e2, x)
+        | ConsumerDone.mk => (Gpu.invalBarriers(Key.key, e2, bars, Nat.mul(2, cfg.stages)), x)
       }
     }
   }
@@ -1043,7 +1065,10 @@ namespace Gpu {
     let gen0 := Gpu.state(Key.key, e)
     let bar := Gpu.alignUp(gen0.smem, 8)
     let gen1 := Gpu.initBarriers(Gpu.reserve(gen0, 8, 8), bar, 1)
-    scope h => body(h, AccHandoff.mk(h, bar), AccSend.mk(h, a), AccRecv.mk(h, a), Gpu.resume(Key.key, l, Group.cta(w), gen1))
+    scope h => {
+      let (e2, x) := body(h, AccHandoff.mk(h, bar), AccSend.mk(h, a), AccRecv.mk(h, a), Gpu.resume(Key.key, l, Group.cta(w), gen1))
+      (Gpu.invalBarriers(Key.key, e2, bar, 1), x)
+    }
   }
 
   // Commits the elected thread's tensor-core work on the accumulator to the handoff.
@@ -1173,8 +1198,10 @@ namespace Gpu {
     | Nat.succ more => {
       let first := gen.next
       let col0 := Expr.bin(BinOp.add, base, Expr.lit(Nat.mul(8, c)))
-      let load := List.append(Gpu.declOuts(first, 8),
-        List.cons(Gpu.tmemLoad8(first, Expr.bin(BinOp.add, lane, Expr.lit(Nat.mul(8, c)))), List.cons(Gpu.tmemWaitLoad, List.nil(Stmt))))
+      // The warp reconverges before each `.sync.aligned` load: a barrier wait's spin loop, or the guarded stores of
+      // the chunk before, may leave it diverged.
+      let load := List.append(Gpu.declOuts(first, 8), List.cons(Stmt.syncWarp,
+        List.cons(Gpu.tmemLoad8(first, Expr.bin(BinOp.add, lane, Expr.lit(Nat.mul(8, c)))), List.cons(Gpu.tmemWaitLoad, List.nil(Stmt)))))
       let named := Gen.mk(gen.code, Nat.add(first, 8), gen.smem, gen.barrier, gen.errors)
       Gpu.chunks(Gpu.pushAll(named, List.append(load, Gpu.columnStores(name, row, rowOk, cols, col0, first, 0, 8))),
         name, row, rowOk, cols, lane, base, Nat.succ(c), more)
@@ -1360,7 +1387,7 @@ namespace Gpu {
         match pd returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.empty), X)) with
         | AccProducerDone.mk => {
           match cd returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.empty), X)) with
-          | AccConsumerDone.mk => (e2, (Acc.mk(a, AccState.empty), x))
+          | AccConsumerDone.mk => (Gpu.invalBarriers(Key.key, e2, bars, Nat.mul(2, bufs)), (Acc.mk(a, AccState.empty), x))
         }
       }
     }
@@ -1486,7 +1513,10 @@ namespace Gpu {
         (m: Val(l, Grain.uniform, DType.u32))(n: Val(l, Grain.uniform, DType.u32))(k: Val(l, Grain.uniform, DType.u32))
         (m0: Val(l, Grain.uniform, DType.u32))(n0: Val(l, Grain.uniform, DType.u32)) : TmaLaunch(l, sa, sb)
 
-  def maxDynamicShared : Nat := 232448
+
+  // Boxes a tensor-core GEMM can take, whether or not its body loads or multiplies them.
+  def gemmShapeOk (sa: TmaSpec)(sb: TmaSpec): Bool :=
+    Bool.and(Bool.and(Gpu.boxOk(sa), Gpu.boxOk(sb)), Gpu.mmaShapeOk(RingCfg.mk(1, sa, sb), sb.outer))
 
   def tmaGemmParams : List(Param) :=
     List.cons(Param.tensorMap("A_map"), List.cons(Param.tensorMap("B_map"), List.cons(Param.output(DType.f32, "C"),
@@ -1527,7 +1557,7 @@ namespace Gpu {
     let gen := Gpu.state(Key.key, body(l, Gpu.start(Key.key, l, Group.cta(256)), launch, COwn.mk(l, bn), TmemPermit.mk(l)))
     let grid := Grid.blocks(Gpu.paramCeilDiv("N", bn), Gpu.paramCeilDiv("M", 128))
     Gpu.finish(Key.key, name, Gpu.tmaGemmParams, Option.some(Gpu.tmaGemmLauncher(sa, sb, grid)),
-      Gpu.check(gen, Nat.ble(gen.smem, Gpu.maxDynamicShared), "kernel: more dynamic shared memory than sm_100a has"))
+      Gpu.check(gen, Gpu.gemmShapeOk(sa, sb), "kernel: boxes the ring or the tensor cores do not take"))
   }
 
   // ---- The persistent tensor-core GEMM launch ------------------------------------------------------------------------
@@ -1560,6 +1590,6 @@ namespace Gpu {
     let gen := Gpu.state(Key.key, body(l, e, gemm, Sched.mk(l, bn, tiles, tilesN), SchedOwn.mk(l, bn), TmemPermit.mk(l)))
     let grid := Grid.persistent(Expr.bin(BinOp.mul, Gpu.paramCeilDiv("M", 128), Gpu.paramCeilDiv("N", bn)))
     Gpu.finish(Key.key, name, Gpu.tmaGemmParams, Option.some(Gpu.tmaGemmLauncher(sa, sb, grid)),
-      Gpu.check(gen, Nat.ble(gen.smem, Gpu.maxDynamicShared), "kernel: more dynamic shared memory than sm_100a has"))
+      Gpu.check(gen, Gpu.gemmShapeOk(sa, sb), "kernel: boxes the ring or the tensor cores do not take"))
   }
 }

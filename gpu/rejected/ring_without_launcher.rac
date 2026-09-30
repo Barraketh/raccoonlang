@@ -1,0 +1,38 @@
+// expect: #error
+// A SIMT kernel that opens a stage ring. Its dynamic shared memory (here more than an SM has) would be asked for by
+// no launcher, so the ring's barriers would lie outside the CTA's shared memory: only a kernel with a launcher may
+// use dynamic shared memory, and never more than sm_100a has.
+import Gpu
+namespace T {
+  open Gpu
+  open Cuda
+  def G : Group := Group.cta(256)
+  def box : TmaSpec := TmaSpec.mk(64, 256)
+  def cfg : RingCfg := RingCfg.mk(8, T.box, T.box)
+
+  def kernel : Program := Gpu.tiledKernel("tiledring", DType.f32, 16, Eq.refl(Bool.true),
+    fun (l: Lifetime)(e: Ctx(l, T.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, T.G) => {
+      let body := fun (r: Lifetime)(ring: Ring(r, T.cfg))(p: Producer(r))(q: Consumer(r))(e: Ctx(l, T.G))
+          : Pair(Ctx(l, T.G), Pair(Pair(ProducerDone(r), ConsumerDone(r)), Unit)) => {
+        let prod := fun (m: Lifetime)(e: Ctx(m, Group.warps(0, 1))): Pair(Ctx(m, Group.warps(0, 1)), ProducerDone(r)) =>
+          Gpu.elect(e, ProducerDone(r), fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, Group.lane)): Pair(Ctx(j, Group.lane), ProducerDone(r)) => {
+            let (e, pa) := Gpu.takeProducer(e, w, ring, p)
+            Gpu.finishProducer(e, ring, pa)
+          })
+        let cons := fun (m: Lifetime)(e: Ctx(m, Group.warps(1, 1))): Pair(Ctx(m, Group.warps(1, 1)), ConsumerDone(r)) =>
+          Gpu.elect(e, ConsumerDone(r), fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, Group.lane)): Pair(Ctx(j, Group.lane), ConsumerDone(r)) => {
+            let (e, ca) := Gpu.takeConsumer(e, w, ring, q)
+            (e, Gpu.finishConsumer(ca))
+          })
+        let idle := fun (m: Lifetime)(e: Ctx(m, Group.warps(2, 6))): Pair(Ctx(m, Group.warps(2, 6)), Unit) => (e, Unit.unit)
+        let rest := fun (m: Lifetime)(e: Ctx(m, Group.warps(1, 7))): Pair(Ctx(m, Group.warps(1, 7)), Pair(ConsumerDone(r), Unit)) =>
+          Gpu.split(e, 1, ConsumerDone(r), Unit, cons, idle)
+        let (e, (pd, (cd, u))) := Gpu.split(e, 1, ProducerDone(r), Pair(ConsumerDone(r), Unit), prod, rest)
+        (e, ((pd, cd), Unit.unit))
+      }
+      let (e, u) := Gpu.withRing(e, T.cfg, Unit, body)
+      let (e, x) := Gpu.gload(e, k.a, k.row, k.col)
+      Gpu.gstore(e, k.c, c, x)
+    })
+}
+{ Gpu.render(T.kernel) }

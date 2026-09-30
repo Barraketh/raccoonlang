@@ -9,13 +9,16 @@
 //
 // Inputs are small multiples of 1/4, so every product and partial sum is exact in f32 whatever the order of
 // accumulation: the result must equal the reference exactly. C starts as NaN, so an element the kernel never writes
-// shows up as a mismatch.
+// shows up as a mismatch, and it sits between two guard bands of sentinels that no write may touch. Every size runs
+// three times, since a race need not show on one run.
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -38,8 +41,9 @@ extern "C" cudaError_t GEMM_LAUNCH(const __nv_bfloat16 *A, const __nv_bfloat16 *
 struct Problem {
   unsigned m, n, k;
   std::vector<float> a, b;  // A is M×K and B is N×K, K contiguous; values exactly representable in bf16
+  static constexpr size_t guard = 4096;  // sentinel floats on each side of C
   __nv_bfloat16 *dA = nullptr, *dB = nullptr;
-  float *dC = nullptr;
+  float *dAlloc = nullptr, *dC = nullptr;
 
   Problem(unsigned m, unsigned n, unsigned k, uint32_t seed) : m(m), n(n), k(k), a(size_t(m) * k), b(size_t(n) * k) {
     auto next = [&seed]() {
@@ -50,14 +54,15 @@ struct Problem {
     for (float &x : b) x = next();
     CHECK(cudaMalloc(&dA, std::max<size_t>(a.size(), 1) * sizeof(__nv_bfloat16)));
     CHECK(cudaMalloc(&dB, std::max<size_t>(b.size(), 1) * sizeof(__nv_bfloat16)));
-    CHECK(cudaMalloc(&dC, std::max<size_t>(size_t(m) * n, 1) * sizeof(float)));
+    CHECK(cudaMalloc(&dAlloc, (size_t(m) * n + 2 * guard) * sizeof(float)));
+    dC = dAlloc + guard;
     upload(dA, a);
     upload(dB, b);
   }
   ~Problem() {
     cudaFree(dA);
     cudaFree(dB);
-    cudaFree(dC);
+    cudaFree(dAlloc);
   }
 
   static void upload(__nv_bfloat16 *dst, const std::vector<float> &src) {
@@ -68,14 +73,27 @@ struct Problem {
 
   cudaError_t run() { return GEMM_LAUNCH(dA, dB, dC, m, n, k, nullptr); }
 
-  // Runs once from a NaN-filled C and returns the number of elements that differ from the reference.
+  // Runs once from a NaN-filled C inside sentinel guard bands, and returns the number of elements that differ from the
+  // reference or guard values that changed.
   size_t mismatches() {
+    const size_t total = size_t(m) * n + 2 * guard;
+    CHECK(cudaMemset(dAlloc, 0x7f, total * sizeof(float)));  // sentinel 0x7f7f7f7f, a finite float
     CHECK(cudaMemset(dC, 0xff, size_t(m) * n * sizeof(float)));
     CHECK(run());
     CHECK(cudaDeviceSynchronize());
-    std::vector<float> c(size_t(m) * n);
-    CHECK(cudaMemcpy(c.data(), dC, c.size() * sizeof(float), cudaMemcpyDeviceToHost));
+    std::vector<float> all(total);
+    CHECK(cudaMemcpy(all.data(), dAlloc, total * sizeof(float), cudaMemcpyDeviceToHost));
+    const float *c = all.data() + guard;
     size_t bad = 0;
+    unsigned sentinel;
+    for (size_t i = 0; i < total; ++i) {
+      if (i >= guard && i < guard + size_t(m) * n) continue;
+      std::memcpy(&sentinel, &all[i], sizeof(sentinel));
+      if (sentinel != 0x7f7f7f7fu) {
+        if (bad < 5) std::printf("    guard element %td written\n", ptrdiff_t(i) - ptrdiff_t(guard));
+        ++bad;
+      }
+    }
     for (unsigned i = 0; i < m; ++i)
       for (unsigned j = 0; j < n; ++j) {
         double want = 0;
@@ -93,12 +111,16 @@ struct Problem {
 int main() {
   int failures = 0;
 
-  // Whole tiles, several K steps (more than the ring's four stages), partial tiles in every dimension, and tiny ones.
-  const unsigned sizes[][3] = {{128, 128, 64},  {256, 256, 256}, {384, 256, 1024}, {200, 136, 72},
-                               {128, 128, 8},   {1, 8, 8},       {129, 257, 520},  {1000, 1000, 1000}};
+  // Whole tiles, several K steps (more than the ring's stages), partial tiles in every dimension, tiny ones, and, for
+  // a persistent kernel, several tiles per CTA (4096×4096 is 1024 tiles, about 7 per CTA on 148 SMs), so tile loops
+  // run again and accumulator buffers are reused.
+  const unsigned sizes[][3] = {{128, 128, 64},     {256, 256, 256},  {384, 256, 1024},  {200, 136, 72},
+                               {128, 128, 8},      {1, 8, 8},        {129, 257, 520},   {1000, 1000, 1000},
+                               {2048, 2048, 200},  {1920, 2688, 72}, {4096, 4096, 72}};
   for (auto &s : sizes) {
     Problem p(s[0], s[1], s[2], s[0] * 7919u + s[1] * 104729u + s[2]);
-    size_t bad = p.mismatches();
+    size_t bad = 0;
+    for (int rep = 0; rep < 3; ++rep) bad += p.mismatches();
     std::printf("%s M=%u N=%u K=%u%s\n", bad ? "FAIL" : "ok  ", s[0], s[1], s[2],
                 bad ? (" (" + std::to_string(bad) + " wrong)").c_str() : "");
     failures += bad != 0;
