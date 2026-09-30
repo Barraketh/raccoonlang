@@ -85,8 +85,8 @@ class ArchitectureTests extends munit.FunSuite {
       Set("Sealing.scala", "Parser.scala")
     ),
     Rule(
-      "sealing is asked only where a name resolves to a constructor or selector, of a match's scrutinee family, " +
-        "and by implicit projection before it reads a constructor's field",
+      "sealing is asked only where a name resolves to a constructor or selector, of a match's scrutinee family or " +
+        "a destructured value's, and by implicit projection before it reads a constructor's field",
       raw"\bSealing\.(accessible|requireAccessible)\(".r,
       Set("TypeChecker.scala", "MatchChecker.scala", "Projection.scala")
     ),

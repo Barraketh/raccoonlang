@@ -1,0 +1,6 @@
+def firstOr (o: Option(Nat)): Nat := {
+  let (n, rest) := o
+  n
+}
+
+{ firstOr(Option.some(Nat, 3)) }

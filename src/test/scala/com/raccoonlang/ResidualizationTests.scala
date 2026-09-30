@@ -144,7 +144,7 @@ class ResidualizationTests extends munit.FunSuite {
             _
           ) =>
         assertEquals(lets.length, 1)
-        assertEquals(ref, lets.head.localRef)
+        assertEquals(lets.head.pattern, CA.LetPattern.Local(ref))
         assert(containsGlobal(lets.head.value, "Couple.mk"))
       case other => fail(s"Expected a Couple.fst application over the local pair, got $other")
     }
@@ -169,7 +169,7 @@ class ResidualizationTests extends munit.FunSuite {
             CA.Term.App(CA.Term.GlobalRef("Couple.fst", _), Vector(CA.Term.LocalRef(ref, _)), _),
             _
           ) =>
-        assertEquals(ref, let.localRef)
+        assertEquals(let.pattern, CA.LetPattern.Local(ref))
       case other => fail(s"Expected an explicit selector call, got $other")
     }
   }
@@ -400,7 +400,12 @@ class ResidualizationTests extends munit.FunSuite {
             CA.Term.LocalRef(scrut, _),
             CA.Term.Body(
               Vector(
-                CA.Let(bound, _, CA.Term.App(CA.Term.GlobalRef("Boxed.T", _), Vector(CA.Term.LocalRef(self, _)), _), _)
+                CA.Let(
+                  CA.LetPattern.Local(bound),
+                  _,
+                  CA.Term.App(CA.Term.GlobalRef("Boxed.T", _), Vector(CA.Term.LocalRef(self, _)), _),
+                  _
+                )
               ),
               CA.Term.LocalRef(fieldType, _),
               _

@@ -360,7 +360,7 @@ object Elaborator {
               Vector(SA.Term.Ident(selfName, span)),
               span
             )
-            SA.Term.LetStmt(SA.Term.Let(earlier.name, None, selected, span))
+            SA.Term.LetStmt(SA.Term.Let(SA.Term.LetPattern.Name(earlier.name, span), None, selected, span))
           }
         }
         val resultTy = if (bindings.isEmpty) field.ty else SA.Term.Body(bindings, field.ty, field.ty.span)
@@ -438,7 +438,10 @@ object Elaborator {
         val (inLets, inner) =
           statements.foldLeft((Vector.empty[SA.Term.Ident], bound)) {
             case ((found, inner), SA.Term.LetStmt(let)) =>
-              (found ++ (let.ty.toVector :+ let.value).flatMap(freeIdentifiers(_, inner)), inner + let.name)
+              (
+                found ++ (let.ty.toVector :+ let.value).flatMap(freeIdentifiers(_, inner)),
+                inner ++ let.pattern.names.map(_.name)
+              )
             case (acc, _: SA.Term.OpenStmt) => acc
           }
         inLets ++ freeIdentifiers(out, inner)
@@ -673,9 +676,21 @@ object Elaborator {
           case SA.Term.LetStmt(l) =>
             val ty = l.ty.map(elabTerm(_, curEnv))
             val value = elabTerm(l.value, curEnv)
-            val (ref, nextEnv) = curEnv.bind(l.name, allowShadow = true)
-            checkedLets += CA.Let(ref, ty, value, l.span)
-            nextEnv
+            l.pattern match {
+              case SA.Term.LetPattern.Name(name, _) =>
+                val (ref, nextEnv) = curEnv.bind(name, allowShadow = true)
+                checkedLets += CA.Let(CA.LetPattern.Local(ref), ty, value, l.span)
+                nextEnv
+              case pattern: SA.Term.LetPattern.Destructure =>
+                // A name occurs once in a pattern, as in a match case, at any depth (spec §3.4).
+                pattern.names.filter(_.name != "_").foldLeft(Set.empty[String]) { (seen, name) =>
+                  if (seen(name.name)) at(name.span) { fail(AlreadyDefined(name.name)) }
+                  seen + name.name
+                }
+                val (lets, nextEnv) = elabDestructure(pattern, ty, value, l.span, curEnv)
+                checkedLets ++= lets
+                nextEnv
+            }
         }
       }
       CA.Term.Body(checkedLets.result(), elabTerm(b.out, bodyEnv), b.span)
@@ -703,6 +718,36 @@ object Elaborator {
         sp,
         NodeId.fresh()
       )
+  }
+
+  /**
+   * A destructuring as Core lets (spec §3.3): one binding a local for each component, a name's or `_` 's, and for a
+   * nested pattern a fresh anonymous one, which a destructuring of its own, located at that pattern, takes apart right
+   * after. So every rule applies at each level.
+   */
+  private def elabDestructure(
+      pattern: SA.Term.LetPattern.Destructure,
+      ty: Option[CA.Term],
+      value: CA.Term,
+      span: Span,
+      env: ResolveEnv
+  ): (Vector[CA.Let], ResolveEnv) = {
+    val (vars, nested, fieldsEnv) =
+      pattern.components.foldLeft(
+        (Vector.empty[CA.PatternVar], Vector.empty[(CA.LocalRef, SA.Term.LetPattern.Destructure)], env)
+      ) {
+        case ((curVars, curNested, curEnv), SA.Term.LetPattern.Name(name, nameSpan)) =>
+          val (ref, nextEnv) = curEnv.bind(name, allowShadow = true)
+          (curVars :+ CA.PatternVar(ref, nameSpan), curNested, nextEnv)
+        case ((curVars, curNested, curEnv), inner: SA.Term.LetPattern.Destructure) =>
+          val (ref, nextEnv) = curEnv.allocate("_")
+          (curVars :+ CA.PatternVar(ref, inner.span), curNested :+ (ref -> inner), nextEnv)
+      }
+    val outer = CA.Let(CA.LetPattern.Fields(vars, pattern.span), ty, value, span)
+    nested.foldLeft((Vector(outer), fieldsEnv)) { case ((lets, curEnv), (ref, inner)) =>
+      val (innerLets, nextEnv) = elabDestructure(inner, None, CA.Term.LocalRef(ref, inner.span), inner.span, curEnv)
+      (lets ++ innerLets, nextEnv)
+    }
   }
 
   /**

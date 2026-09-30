@@ -7,12 +7,12 @@ import com.raccoonlang.telescope.BinderOps
 /**
  * Structure eta as rules, not representation. A value of an eta-eligible structure type is NOT forced into constructor
  * form; instead `fields` supplies the eta *view* of any such value — its stored fields when it is already constructor-
- * headed, and its virtual field projections when it is neutral — and the four consumers of eta (match evaluation,
- * definitional equality, unification, structural subterm descent) all read that one view.
+ * headed, and its virtual field projections when it is neutral — and the consumers of eta (match evaluation,
+ * destructuring, definitional equality, unification, structural subterm descent) all read that one view.
  *
  * Eligibility is a checked declaration property (one constructor, zero indices, nonrecursive) plus non-propness. Prop
  * instances remain proof-representation territory and never eta-expand. A field projection is an ordinary `match`, so
- * `match` stays the kernel's only eliminator.
+ * `match` stays the kernel's only eliminator: a destructuring is a one-branch match that binds this view's fields.
  */
 object StructEta {
 
@@ -25,6 +25,13 @@ object StructEta {
   /** The eta-eligible family instance behind `tpe`, excluding proposition-valued instances. */
   def eligibleInstance(tpe: Value): Option[(InductiveFamilyInstance, ProjectionInfo)] =
     anyInstance(tpe).filter(_ => !Sorts.isProposition(tpe))
+
+  /**
+   * The instance a destructuring takes apart (spec §3.2): an eligible one that no instantiation of its levels makes a
+   * proposition, so every value of it has an eta view wherever the destructuring is evaluated.
+   */
+  def destructurableInstance(tpe: Value): Option[(InductiveFamilyInstance, ProjectionInfo)] =
+    eligibleInstance(tpe).filter(_ => Sorts.isNeverProposition(tpe))
 
   /**
    * The eta view of a value at an eta-eligible structure type: the constructor's stored fields when it is already in

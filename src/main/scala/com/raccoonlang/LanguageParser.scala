@@ -327,11 +327,26 @@ object LanguageParser {
     normalParam | implicitParam
   private def layoutParam(implicit sourceId: Option[SourceId]): Parser[Binder] = skipAllWs ~ param
 
+  /**
+   * A `let` 's pattern: a name, `_`, or a parenthesized destructuring of two or more patterns (spec §3.1). `(x)` is not
+   * a pattern, since it would bind what `x` binds.
+   */
+  private def letPattern(implicit sourceId: Option[SourceId]): Parser[LetPattern] = {
+    val name = argName.flatSpanned(sourceId).map(LetPattern.Name.tupled)
+    val destructure =
+      (P('(') ~/ skipAllWs ~ letPattern.rep(1, layoutSym(',')) ~ layoutSymTight(')')).flatSpanned(sourceId).map {
+        case (Vector(single), _) =>
+          throw ParseError(single.span.start, single.span.start, "A destructuring has two or more components")
+        case (components, span) => LetPattern.Destructure(components, span)
+      }
+    (name | destructure).named("pattern")
+  }
+
   private def let(implicit sourceId: Option[SourceId]): Parser[Let] =
-    (kw("let") ~/ argName ~ (sym(':') ~ skipAllWs ~ typeTerm).? ~ sym(":=") ~/ skipAllWs ~ term)
+    (kw("let") ~/ letPattern ~ (sym(':') ~ skipAllWs ~ typeTerm).? ~ sym(":=") ~/ skipAllWs ~ term)
       .flatSpanned(sourceId)
-      .map { case (name, ty, value, span) =>
-        Let(name, ty, value, span)
+      .map { case (pattern, ty, value, span) =>
+        Let(pattern, ty, value, span)
       }
 
   private def bodyStmt(implicit sourceId: Option[SourceId]): Parser[BodyStmt] =

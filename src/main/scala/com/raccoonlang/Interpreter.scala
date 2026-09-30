@@ -485,11 +485,29 @@ object Interpreter {
     // against that constructor's arity.
     if (args.length != branch.argRefs.length)
       wtf(s"Checked branch for ${branch.ctorName} binds ${branch.argRefs.length} fields, got ${args.length}")
-    val newEnv = args.zip(branch.argRefs).foldLeft(env) { case (curEnv, (argV, ref)) =>
-      curEnv.putLocal(ref, Value.canonicalizeProof(argV))
-    }
-    evalTerm(branch.body, newEnv)
+    evalTerm(branch.body, bindFields(branch.argRefs, args, env))
   }
+
+  /** A pattern's locals bound to a constructor's fields, each in the canonical form for its exact type. */
+  private def bindFields(refs: Vector[CoreAst.LocalRef], fields: Vector[Value], env: Env): Env =
+    refs.zip(fields).foldLeft(env) { case (curEnv, (ref, field)) =>
+      curEnv.putLocal(ref, Value.canonicalizeProof(field))
+    }
+
+  /**
+   * A `let` 's locals bound to its value, transparently: the one local to the value, or a destructuring's locals to the
+   * fields of the value's eta view (spec §3.5, §3.8). The checker binds them here too, once it has admitted the
+   * destructuring, so a destructuring never blocks.
+   */
+  private[raccoonlang] def bindLet(pattern: CoreAst.LetPattern, value: Value, env: Env): Env =
+    pattern match {
+      case CoreAst.LetPattern.Local(ref) => env.putLocal(ref, value)
+      case CoreAst.LetPattern.Fields(vars, _) =>
+        val fields = StructEta.fields(value).getOrElse(wtf(s"A checked destructuring's value $value has no eta view"))
+        if (fields.length != vars.length)
+          wtf(s"A checked destructuring binds ${vars.length} fields of $value, which has ${fields.length}")
+        bindFields(vars.map(_.ref), fields, env)
+    }
 
   /**
    * Elimination of an erased proof (docs/kernel.md#proofs-and-elimination). A Prop-valued result can erase immediately.
@@ -503,9 +521,7 @@ object Interpreter {
   }
 
   private[raccoonlang] def evalBody(body: CTerm.Body, env: Env): Value = {
-    val newEnv = body.lets.foldLeft(env) { case (curEnv, l) =>
-      curEnv.putLocal(l.localRef, evalTerm(l.value, curEnv))
-    }
+    val newEnv = body.lets.foldLeft(env)((curEnv, l) => bindLet(l.pattern, evalTerm(l.value, curEnv), curEnv))
     evalTerm(body.res, newEnv)
   }
 

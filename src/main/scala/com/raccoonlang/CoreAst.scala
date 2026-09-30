@@ -298,14 +298,26 @@ object CoreAst {
       case other                   => children(other).exists(mentionsGlobal(_, names))
     }
 
-  // Let: let x := foo
+  // Let: let x := foo, or a destructuring: let (a, b) := foo
   final case class Let(
-      localRef: LocalRef,
+      pattern: LetPattern,
       ty: Option[Term],
       value: Term,
       span: Span
-  ) {
-    def name: String = localRef.name
+  )
+
+  /**
+   * What a `let` binds, for the rest of its block: one local for its value, or a local for each stored field of its
+   * value, in order (spec §3). A destructuring's component is a local, `_` an anonymous one: the elaborator takes a
+   * nested pattern apart as a destructuring into an anonymous local followed by a destructuring of that local.
+   */
+  sealed trait LetPattern
+
+  object LetPattern {
+    final case class Local(ref: LocalRef) extends LetPattern
+
+    /** `(x1, …, xn)`, each field's local where its component is written, and the pattern where it is. */
+    final case class Fields(vars: Vector[PatternVar], span: Span) extends LetPattern
   }
 
   /**
@@ -370,7 +382,7 @@ object CoreAst {
     def argRefs: Vector[LocalRef] = patternVars.map(_.ref)
   }
 
-  /** The local a pattern binds for one constructor field, and where its variable is written. */
+  /** The local a case's or a destructuring's pattern binds for one constructor field, and where it is written. */
   final case class PatternVar(ref: LocalRef, span: Span)
 
   // Global declarations and environment entries

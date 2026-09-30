@@ -308,9 +308,10 @@ type variable when the sort its type states is. Sorts and propositions are at
 Every local of linear type is used exactly once within the extent of its
 binder. The binders are a lambda's or definition's parameters, whose extent is
 the later binders' types, the result type and the body; a `let`, whose extent
-is the rest of its block; and a pattern field, whose extent is its branch. A
-pattern binds a local for every field, a `_` an anonymous one no name resolves
-to, and so does `let _`. Whether a local is tracked is decided once, from its
+is the rest of its block, a destructuring's for each local it binds; and a
+pattern field, whose extent is its branch. A pattern binds a local for every
+field, a `_` an anonymous one no name resolves to, and so do `let _` and a
+destructuring's `_`. Whether a local is tracked is decided once, from its
 type at its binder, so refinement never changes it. A value outside every
 binder is never tracked, so its type may not be linear: a definition or opaque
 definition, which every reference uses, and the program's result, which
@@ -341,7 +342,9 @@ A second use on some path is `LinearReused`, located at that use; otherwise no
 use on some path is `LinearUnused`, located at the binder. So matching a
 linear scrutinee consumes it once, and its fields are released to the ledger
 at the branch's extent, where a wildcard over a linear field is
-`LinearUnused`. A struct selector is a definition whose body is a match, so
+`LinearUnused`. A destructuring consumes its value the same way, and releases
+its locals at the rest of its block, each reported at its component. A struct
+selector is a definition whose body is a match, so
 applying one to a linear value is that value's use. The ledger is one walk,
 an exhaustive match over Core terms with no wildcard arm, and runs only for a
 binder of linear type. Evaluation makes none of its checks.
@@ -507,8 +510,18 @@ eta.
 Eta is a rule, not a representation invariant. At an eligible type, a value is
 definitionally equal to its constructor applied to its fields. A
 constructor-headed value exposes stored fields; a neutral value exposes virtual
-field projections. Conversion, match evaluation, and structural-subterm
-checking all use the same eta view.
+field projections. Conversion, match evaluation, destructuring, and
+structural-subterm checking all use the same eta view.
+
+A destructuring `let (x1, …, xn) := e` binds each local, transparently, to its
+field of the eta view of `e`'s value, in checking and in evaluation alike. So
+it has no motive, never blocks, and a destructured local is a structural
+subterm of `e`'s value exactly as a one-branch match's field is. It is admitted
+only at an instance that no instantiation of its levels makes a proposition,
+since an instance in `Prop` has no eta view: an instance of a sort-polymorphic
+family whose level may be zero is `NotDestructurable`. A nested pattern is a
+destructuring into an anonymous local followed by a destructuring of that
+local, so each level is checked alike.
 
 There is no primitive projection value. A positional projection is the
 ordinary one-branch match that returns the chosen field. Like every match, it
@@ -528,7 +541,9 @@ declaration was read from. Outside that module each of these is
   under any name that resolves to it;
 - selecting one of its fields;
 - a match whose scrutinee is an instance of it. A case's `.short` form resolves
-  only against the scrutinee's family, so this covers it.
+  only against the scrutinee's family, so this covers it;
+- a destructuring whose value is an instance of it, which is a match that
+  names no constructor.
 
 The names still resolve, so each such use reaches this diagnostic. A family's
 seal names its module, which every parsed declaration has, and its
@@ -563,7 +578,8 @@ Sealing restricts what a program may write, not what the checker knows.
 Kinds, scopes, coverage, apartness and the conversion of values read the full
 declaration in every module, and evaluation compares no module. One function
 decides whether a position may use a sealed family's constructors; the checker
-asks it at those name resolutions and match scrutinees, and implicit
+asks it at those name resolutions, match scrutinees and destructured values,
+and implicit
 projection asks it before reading a constructor's field.
 
 ## Termination
