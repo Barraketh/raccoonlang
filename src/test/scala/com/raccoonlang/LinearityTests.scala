@@ -456,7 +456,7 @@ class LinearityTests extends munit.FunSuite with TestSupport {
       expectOnly[NonForcedImplicitParam](
         typecheckDecls(withFamilies("def f (l: Lifetime){t: Tok(l)}(n: Nat): Nat := eat(t)\n"))
       ),
-      NonForcedImplicitParam("t")
+      NonForcedImplicitParam("t", isProposition = false)
     )
     // Only a type could force it, and no type may name it.
     expectOnly[LinearInType](

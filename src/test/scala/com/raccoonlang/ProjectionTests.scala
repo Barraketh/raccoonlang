@@ -10,8 +10,8 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
     val span = Span(0, 0)
     val env = Env.empty
     val typeSort = CoreTestTerms.sortAt(CoreAst.Form.LevelOne, span)
-    val x = CoreAst.Binder(CoreAst.LocalRef(0, "x"), typeSort, span, CoreAst.BinderSite.Function)
-    val y = CoreAst.Binder(CoreAst.LocalRef(1, "y"), typeSort, span, CoreAst.BinderSite.Function)
+    val x = CoreAst.Binder(CoreAst.LocalRef(0, "x"), typeSort, span, CoreAst.BinderSite.Function, BinderMode.Explicit)
+    val y = CoreAst.Binder(CoreAst.LocalRef(1, "y"), typeSort, span, CoreAst.BinderSite.Function, BinderMode.Explicit)
     val grouped = VPi(
       env,
       Vector(x, y),
@@ -39,12 +39,13 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
     val span = Span(0, 0)
     val env = Env.empty
     val typeSort = CoreTestTerms.sortAt(CoreAst.Form.LevelOne, span)
-    val x = CoreAst.Binder(CoreAst.LocalRef(0, "x"), typeSort, span, CoreAst.BinderSite.Function)
+    val x = CoreAst.Binder(CoreAst.LocalRef(0, "x"), typeSort, span, CoreAst.BinderSite.Function, BinderMode.Explicit)
     val y = CoreAst.Binder(
       CoreAst.LocalRef(1, "y"),
       CoreAst.Term.LocalRef(x.localRef, span),
       span,
-      CoreAst.BinderSite.Function
+      CoreAst.BinderSite.Function,
+      BinderMode.Explicit
     )
     val grouped = VPi(
       env,

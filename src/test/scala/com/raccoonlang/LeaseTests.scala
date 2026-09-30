@@ -44,8 +44,8 @@ class LeaseTests extends munit.FunSuite with TestSupport {
   /** A checked call's residual argument, its callback. */
   private def callbackResidual(checked: TypeChecker.CheckedTerm): CA.Term =
     checked.residual match {
-      case CA.Term.App(_, Vector(callback), _) => callback
-      case other                               => fail(s"Expected a call residual, got $other")
+      case CA.Term.App(_, Vector(callback), _, _) => callback
+      case other                                  => fail(s"Expected a call residual, got $other")
     }
 
   /** `withLease`'s implicits, read off its callback's value the way checking and evaluation both read them. */
@@ -53,7 +53,7 @@ class LeaseTests extends munit.FunSuite with TestSupport {
     env("withLease").tpe match {
       case pi: VPi =>
         pi.binders.collect {
-          case binder if binder.isImplicit =>
+          case binder if binder.mode == BinderMode.Implicit =>
             binder.name -> Projection.project(binder.projection.get, Vector(callback)).fold(fail(_), _.toString)
         }.toMap
       case other => fail(s"Expected a function type, got $other")

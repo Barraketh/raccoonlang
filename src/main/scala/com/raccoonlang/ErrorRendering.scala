@@ -8,6 +8,8 @@ object ErrorRendering {
       case CannotApplyNonFunction(got) => s"Cannot apply non-fn type $got"
       case ArityMismatch(expected, got, ArityMismatch.Arguments) =>
         s"Cannot apply function - expected $expected params, got $got"
+      case ArityMismatch(expected, got, ArityMismatch.Evidence) =>
+        s"Cannot supply evidence - expected $expected proofs, got $got"
       case ArityMismatch(expected, got, ArityMismatch.Fields) =>
         s"Cannot bind the constructor's fields - expected $expected fields, got $got"
       case UnknownConstructor(ctor, inductive) => s"Constructor $ctor does not belong to $inductive"
@@ -44,8 +46,19 @@ object ErrorRendering {
       case mismatch: TypeMismatch => renderTypeMismatch(mismatch)
       case InvalidConstructorResult(ctor, inductive, got) =>
         s"Constructor $ctor must return $inductive but got $got"
-      case NonForcedImplicitParam(param) =>
-        s"Parameter $param cannot be implicit: it is not forced by the type of any later non-implicit parameter"
+      case NonForcedImplicitParam(param, isProposition) =>
+        val evidence =
+          if (isProposition) s"; a proposition each call discharges is an evidence parameter, written [$param: …]"
+          else ""
+        s"Parameter $param cannot be implicit: it is not forced by the type of any later explicit parameter$evidence"
+      case NotAProposition(binder, tpe) =>
+        s"Evidence parameter $binder has the type $tpe, which is not a proposition: evidence is a proof, so its type " +
+          "is in Prop"
+      case EvidenceNotDischarged(binder, callee, proposition) =>
+        s"Evidence $binder of $callee is not discharged: its proposition is $proposition, which no fieldless " +
+          s"constructor proves here; supply a proof as $callee(…)[proof]"
+      case EvidenceFieldUnsupported(ctor, field) =>
+        s"Constructor $ctor declares the evidence field $field, which is not yet supported"
       case ImplicitReconstructionFailed(param, fn, reason) =>
         s"Cannot reconstruct implicit argument $param of $fn: $reason"
       case NonUniformInductiveParam(inductive, ctor, param, got) =>

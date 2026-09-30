@@ -96,6 +96,8 @@ object InductiveChecks {
         case _: Level | _: Kind | _: Lifetime | _: ParameterTpe | SortParameter | Large | _: VLam | _: VSort | _: Var |
             _: VConst =>
           !target.mayOccurIn(value)
+
+        case deferred: DeferredEvidence => deferred.escaped
       }
 
   private def lambdaMayContain(names: Set[String], lambda: VLam): Boolean = {
@@ -208,6 +210,8 @@ object InductiveChecks {
         case _: Level | _: Kind | _: Lifetime | _: ParameterTpe | SortParameter | Large | _: VSort | _: Var |
             _: VConst =>
           true
+
+        case deferred: DeferredEvidence => deferred.escaped
       }
 
   /** Requires every block-family occurrence to be fully applied at the common parameters and nonrecursive indices. */
@@ -257,10 +261,12 @@ object InductiveChecks {
       case _: ConstructorHead | _: Level | _: Kind | _: Lifetime | _: ParameterTpe | SortParameter | Large | _: VSort |
           _: Var | _: VConst =>
         true
+
+      case deferred: DeferredEvidence => deferred.escaped
     }
 
   private def constructorFamilyParams(header: InductiveHeader): Vector[Binder] =
-    header.params.map(_.copy(isImplicit = true))
+    header.params.map(_.copy(mode = BinderMode.Implicit))
 
   private def constructorBinders(header: InductiveHeader, ctor: ConstructorDecl): Vector[Binder] =
     constructorFamilyParams(header) ++ ctor.binders
@@ -413,9 +419,17 @@ object InductiveChecks {
       )
 
   private def checkFamilySignatures(block: Decl.InductiveBlock, env: Env): Vector[FamilySignature] = {
+    // A family's parameters and indices are explicit or implicit; the parser admits no evidence binder among them.
+    block.families.foreach { decl =>
+      decl.header.binders.find(_.mode == BinderMode.Evidence).foreach { binder =>
+        at(binder.span) {
+          fail(InvalidInductiveBlock(s"family ${decl.header.name} binds the evidence parameter ${binder.name}"))
+        }
+      }
+    }
     val typedFamilies = block.families.map(decl => (decl, TypeChecker.checkDeclType(familyTypeTerm(decl), env).value))
     val coreParamCount = block.families.head.header.params.length
-    val expectedImplicitness = block.families.head.header.params.map(_.isImplicit)
+    val expectedModes = block.families.head.header.params.map(_.mode)
     val canonicalParams =
       if (coreParamCount == 0) Vector.empty
       else
@@ -436,8 +450,7 @@ object InductiveChecks {
       val (familyArgs, result) =
         familyType match {
           case pi: VPi if pi.binders.length == decl.header.arity =>
-            val actualImplicitness = decl.header.params.map(_.isImplicit)
-            if (actualImplicitness != expectedImplicitness)
+            if (decl.header.params.map(_.mode) != expectedModes)
               at(decl.header.span) {
                 fail(InvalidInductiveBlock(s"family ${decl.header.name} has a different common-parameter binder mode"))
               }
@@ -536,6 +549,9 @@ object InductiveChecks {
     }
 
     decl.ctors.foreach { ctor =>
+      ctor.binders.find(_.mode == BinderMode.Evidence).foreach { field =>
+        at(field.span)(fail(EvidenceFieldUnsupported(ctor.canonicalName, field.name)))
+      }
       val allConstructorBinders = constructorBinders(header, ctor)
       val checkedBinders =
         BinderOps.checkBinders(allConstructorBinders, provisionalEnv, familyParams = header.params.length, ctor.span)

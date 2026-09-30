@@ -6,14 +6,15 @@ import com.raccoonlang._
 import scala.collection.mutable
 
 /**
- * Implicit binders are legal only when *forced*: recoverable from the values of the non-implicit binders by a
- * structural projection compiled at Pi formation. This module owns both halves:
+ * Implicit binders are legal only when *forced*: recoverable from the values of the explicit binders by a structural
+ * projection compiled at Pi formation. An evidence binder is never a root, supplied or not (PROOF_BY_EVALUATION §1.5):
+ * its argument is discharged from its proposition, so it is no source for forcing. This module owns both halves:
  *
- *   - `compile` pattern-matches the *evaluated* types of the non-implicit binders (as patterns over the implicits'
- *     fresh vars) and produces a per-implicit `Spec` — which provided argument to start from and the path to walk.
- *     Every position used is rigid (irreducible head applications, no-confusion constructor fields, sort fields and
- *     levels, Pi closures and domains), so following the same path on the actual arguments at any later time re-derives
- *     the value. Projection is a *choice*, not a proof: application checking re-verifies every argument against its
+ *   - `compile` pattern-matches the *evaluated* types of the explicit binders (as patterns over the implicits' fresh
+ *     vars) and produces a per-implicit `Spec` — which provided argument to start from and the path to walk. Every
+ *     position used is rigid (irreducible head applications, no-confusion constructor fields, sort fields and levels,
+ *     Pi closures and domains), so following the same path on the actual arguments at any later time re-derives the
+ *     value. Projection is a *choice*, not a proof: application checking re-verifies every argument against its
  *     instantiated binder type, so soundness never rests on injectivity of these positions.
  *   - `project` follows a Spec against actual argument values. It is the single implementation used by check-time
  *     application, run-world residual evaluation, and check-world evaluation of checked syntax (match motives,
@@ -75,16 +76,16 @@ object Projection {
   final case class BinderInput(
       name: String,
       span: Span,
-      isImplicit: Boolean,
+      mode: BinderMode,
       fresh: Value,
       holeId: Option[VarId]
   )
 
   /**
    * Final binder classification: family params of a constructor telescope that no field forces are demoted to explicit
-   * instead of erroring, so `isImplicit` may differ from the input.
+   * instead of erroring, so `mode` may differ from the input.
    */
-  final case class BinderResult(isImplicit: Boolean, projection: Option[Spec])
+  final case class BinderResult(mode: BinderMode, projection: Option[Spec])
 
   /**
    * Compile projection specs for a freshened telescope. The first `familyParams` binders are a constructor telescope's
@@ -101,8 +102,8 @@ object Projection {
       demotable: Set[Int],
       site: Span
   ): Vector[BinderResult] = {
-    if (binders.forall(!_.isImplicit))
-      return binders.map(_ => BinderResult(isImplicit = false, projection = None))
+    if (binders.forall(_.mode != BinderMode.Implicit))
+      return binders.map(b => BinderResult(b.mode, projection = None))
 
     // Recognize non-proof fresh ids inside visited values. Proof binders are handled separately by
     // proposition below: VProof deliberately contains no hidden witness to recover an id from.
@@ -121,7 +122,7 @@ object Projection {
     // A token is never read off a type, since no type contains one (spec §3.2): an implicit of linear type has no hole,
     // so it is never forced.
     binders.zipWithIndex.foreach { case (b, idx) =>
-      if (b.isImplicit) {
+      if (b.mode == BinderMode.Implicit) {
         if (Sorts.isProposition(b.fresh.tpe)) proofHoles += idx -> b.fresh.tpe
         else if (!Linearity.isLinear(b.fresh.tpe)) b.holeId.foreach(id => holeOfVar.update(id, idx))
       }
@@ -141,10 +142,10 @@ object Projection {
     // to report the closure.
     val closures = mutable.ArrayDeque.empty[(Int, Vector[Step], Value)]
 
-    def isRoot(idx: Int): Boolean = !binders(idx).isImplicit || demoted(idx)
+    def isRoot(idx: Int): Boolean = binders(idx).mode == BinderMode.Explicit || demoted(idx)
 
     def solveHole(hole: Int, root: Int, steps: Vector[Step], tpe: Value): Unit =
-      if (!isRoot(hole) && !solved.contains(hole)) {
+      if (binders(hole).mode == BinderMode.Implicit && !demoted(hole) && !solved.contains(hole)) {
         solved.update(hole, (root, steps))
         if (proofHoleIndexes(hole)) remainingProofHoles -= 1
         // Saturation: the hole's own declared type is a pattern over earlier implicits,
@@ -257,7 +258,7 @@ object Projection {
       while (progress) {
         val rightmostUnforced = binders.indices.reverse.find { idx =>
           demotable(idx) &&
-          binders(idx).isImplicit && !demoted(idx) && !solved.contains(idx)
+          binders(idx).mode == BinderMode.Implicit && !demoted(idx) && !solved.contains(idx)
         }
         rightmostUnforced match {
           case Some(idx) =>
@@ -271,18 +272,16 @@ object Projection {
     }
 
     binders.zipWithIndex.map { case (b, idx) =>
-      val implicitNow = b.isImplicit && !demoted(idx)
-      if (!implicitNow) BinderResult(isImplicit = false, projection = None)
+      if (demoted(idx)) BinderResult(BinderMode.Explicit, projection = None)
+      else if (b.mode != BinderMode.Implicit) BinderResult(b.mode, projection = None)
       else
         solved.get(idx) match {
           case Some((rootTelescopeIdx, steps)) =>
             // Convert the telescope index of the root into its position among provided args.
-            val rootArgIdx = (0 until rootTelescopeIdx).count { j =>
-              !binders(j).isImplicit || demoted(j)
-            }
-            BinderResult(isImplicit = true, projection = Some(Spec(rootArgIdx, steps)))
+            val rootArgIdx = (0 until rootTelescopeIdx).count(isRoot)
+            BinderResult(BinderMode.Implicit, projection = Some(Spec(rootArgIdx, steps)))
           case None =>
-            at(b.span) { fail(NonForcedImplicitParam(b.name)) }
+            at(b.span) { fail(NonForcedImplicitParam(b.name, Sorts.isProposition(b.fresh.tpe))) }
         }
     }
   }

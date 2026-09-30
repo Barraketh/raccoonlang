@@ -702,7 +702,9 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
       case other           => fail(s"Expected Nat.div lambda, got $other")
     }
     val implicitDiv =
-      div.copy(tpe = div.tpe.copy(binders = div.tpe.binders.updated(0, div.tpe.binders.head.copy(isImplicit = true))))
+      div.copy(tpe =
+        div.tpe.copy(binders = div.tpe.binders.updated(0, div.tpe.binders.head.copy(mode = BinderMode.Implicit)))
+      )
     val implicitError =
       interceptError[NativeOperationDeclarationMismatch](
         Packed.validateNativeOpDeclaration("Nat.div", implicitDiv, env)

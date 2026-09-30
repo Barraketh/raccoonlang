@@ -43,9 +43,11 @@ object Value {
    *   - `ConstructorHead`: heads must remain applicable and recognizable by match machinery.
    *   - a raw-recursive `VLam`: this checker-only stub must execute its decrease guard. The checked published proof
    *     lambda is replaced by the canonical proof eta-lambda after its body has passed checking.
+   *   - `DeferredEvidence`: it is the canonical proof of its proposition once forced, and binding it must not force it.
    */
   def canonicalizeProof(value: Value): Value =
     value match {
+      case _: DeferredEvidence => value
       // A Pi's own type is a classifier, never a proposition — skip without forcing it.
       // Metas remain linkable, constructor heads remain applicable, and the raw recursive lambda
       // remains executable until checking has validated every recursive call.
@@ -589,18 +591,21 @@ object Value {
     }
 
     /** How many explicit arguments this Pi's own binder group takes. */
-    lazy val numExplicit: Int = binders.count(!_.isImplicit)
+    lazy val numExplicit: Int = binders.count(_.mode == BinderMode.Explicit)
+
+    /** How many evidence binders this Pi's own binder group has, which a bracket group supplies all of. */
+    lazy val numEvidence: Int = binders.count(_.mode == BinderMode.Evidence)
 
     /**
      * Implicit telescope indices grouped by the *explicit* argument position their projection spec roots at. Specs
-     * always root at a non-implicit binder, so walking the explicit args in order lands every implicit exactly once.
+     * always root at an explicit binder, so walking the explicit args in order lands every implicit exactly once.
      *
      * Derived from `binders` alone, so it survives `copy` of any other field.
      */
     lazy val implicitRoots: Map[Int, Vector[Int]] =
       binders.zipWithIndex
         .collect {
-          case (binder, idx) if binder.isImplicit =>
+          case (binder, idx) if binder.mode == BinderMode.Implicit =>
             val spec = binder.projection.getOrElse(
               wtf(s"Implicit binder ${binder.name} has no projection spec")
             )
@@ -685,6 +690,35 @@ object Value {
 
     override lazy val synDeps: DepSet = tpe.synDeps
   }
+
+  /**
+   * An evidence argument where a checked application runs (PROOF_BY_EVALUATION §1.6): the canonical proof of its
+   * binder's proposition, which `proposition` evaluates only when the proof is first forced. Evaluation binds a
+   * callee's evidence parameters to these, so a decision procedure in a proposition runs when checking discharges it
+   * and not when the program runs. A body that does look at its evidence parameter forces it, and sees exactly the
+   * proof the proposition determines (docs/kernel.md#proofs-and-elimination), so erasure changes when a proposition is
+   * evaluated and never what a program means.
+   *
+   * It stands only in the arguments `Interpreter.residualArguments` builds and in the environment of the body they run,
+   * never inside another value: `Env` forces it where a local is looked up or captured, and `Interpreter.evalApply`
+   * where a head stores its arguments or runs natively. Anything else reaching one is a kernel bug, so it has no type.
+   */
+  final class DeferredEvidence private[raccoonlang] (proposition: () => Value) extends Value {
+    lazy val proof: Value = canonicalizeProof(VProof(proposition()))
+
+    /** What a walk over values that reaches one reports: it escaped the application it stands in. */
+    def escaped: Nothing = wtf("Deferred evidence was inspected before it was forced")
+
+    override def tpe: Value = escaped
+    override def synDeps: DepSet = escaped
+  }
+
+  /** A value as the kernel may inspect it: deferred evidence forced to its proof, anything else itself. */
+  private[raccoonlang] def forced(value: Value): Value =
+    value match {
+      case deferred: DeferredEvidence => deferred.proof
+      case other                      => other
+    }
 
   /**
    * A packed representation codec (docs/kernel.md#trusted-bootstrap-and-native-values): one type's compact host-side

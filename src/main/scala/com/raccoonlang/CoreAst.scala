@@ -90,11 +90,13 @@ object CoreAst {
       lazy val refs: Set[CoreAst.LocalRef] = childRefs(this)
     }
 
-    // Application: f(a)
+    // Application: f(a), or f(a)[h] with its evidence supplied (PROOF_BY_EVALUATION §1.3).
     //
     // Checked applications carry only the explicit args: every implicit binder is re-derived by running its projection
-    // spec against them (Interpreter.reconstructImplicits).
-    final case class App(fn: Term, args: Vector[Term], span: Span) extends Term
+    // spec against them, and every evidence binder is bound to an erased proof of its proposition
+    // (Interpreter.residualArguments). So a checked application's `evidence` is empty; only an elaborated one that
+    // supplies its evidence has any.
+    final case class App(fn: Term, args: Vector[Term], evidence: Vector[Term], span: Span) extends Term
 
     final case class Body(lets: Vector[Let], res: Term, span: Span) extends Term
 
@@ -258,7 +260,7 @@ object CoreAst {
       case Term.Select(base, _, _)                 => Vector(base)
       case Term.Sort(level, kind, scope, _)        => Vector(level, kind, scope)
       case Term.FormOp(_, args, _)                 => args
-      case Term.App(fn, args, _)                   => fn +: args
+      case Term.App(fn, args, evidence, _)         => (fn +: args) ++ evidence
       case Term.Pi(binders, out, closure, _, _, _) => closure.terms ++ binders.map(_.ty) :+ out
       case Term.Body(lets, res, _) =>
         lets.flatMap(let => let.ty.toVector :+ let.value) :+ res
@@ -333,15 +335,15 @@ object CoreAst {
     case object Function extends BinderSite
   }
 
-  // An implicit binder never appears in checked App syntax: applications carry only the explicit
-  // args, and evaluation reconstructs the implicits by running `projection` against them. The spec
-  // is compiled at Pi formation and filled in by BinderOps.checkBinders.
+  // Neither an implicit nor an evidence binder appears in checked App syntax: applications carry only the explicit
+  // args, evaluation reconstructs the implicits by running `projection` against them, and binds each evidence binder to
+  // an erased proof. The spec is compiled at Pi formation and filled in by BinderOps.checkBinders.
   final case class Binder(
       localRef: LocalRef,
       ty: Term,
       span: Span,
       site: BinderSite,
-      isImplicit: Boolean = false,
+      mode: BinderMode,
       projection: Option[telescope.Projection.Spec] = None
   ) {
     def name: String = localRef.name

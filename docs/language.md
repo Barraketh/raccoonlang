@@ -308,6 +308,83 @@ constructor call, a family parameter is inferred when later stored fields
 force it; otherwise it becomes an explicit constructor argument. Implicits
 written directly on a constructor must still be forced.
 
+### Evidence arguments
+
+An evidence binder `[h: P]` declares a parameter whose argument is a proof of
+the proposition `P`. A call does not write it: the checker discharges it by
+evaluating `P` where the call stands.
+
+```raccoon
+inductive IsTrue indices (b: Bool) : Prop
+ | yes : IsTrue(Bool.true)
+
+def pred (n: Nat)[h: IsTrue(Nat.blt(0, n))]: Nat := Nat.sub(n, 1)
+
+{ pred(5) }
+```
+
+An evidence binder stands in a definition's, a lambda's or a function type's
+telescope, before, after or between explicit and implicit binders. A family's
+parameters and indices are never evidence, which is a parse error, and a
+constructor's evidence field is not yet supported, `EvidenceFieldUnsupported`.
+`P` must be a proposition, a type whose sort is `Prop`, else `NotAProposition`,
+and it may mention only earlier binders.
+
+At a call that writes no bracket group, each evidence binder's type is
+evaluated, with every earlier argument known, to a proposition `P′`. `P′` is
+discharged when it is an instance of an inductive family in `Prop` that has a
+fieldless constructor whose type there is convertible with `P′`; the proof is
+the first such constructor declared. Otherwise the call is
+`EvidenceNotDischarged`, reported at the call and showing `P′`. So `True` is
+discharged by `True.intro` and `IsTrue(Nat.blt(0, 5))` by `IsTrue.yes`, while
+`False`, `IsTrue(Nat.blt(0, 0))`, `And(True, True)`, `Or(…)` and `Exists(…)`
+are not: a constructor with fields is never used, since its fields would have
+to be invented. The bundled prelude's `Eq.refl (x: A)` stores `x`, so an `Eq`
+is not discharged either. A proposition that stays neutral, as in generic code
+that knows no concrete argument, is not discharged, but a family instance whose
+sides convert is: with `inductive Same {A: Type}(a: A) indices (b: A) : Prop`
+and `| refl : Same(a, a)`, `Same(n, n)` is discharged for any `n`. A sealed
+family's constructors discharge evidence only in its module.
+
+A call may instead supply every evidence argument, in a bracket group that
+follows its explicit arguments with no space, one proof per evidence binder in
+order:
+
+```raccoon
+def three (n: Nat)[h: Same(n, 3)]: Nat := n
+
+def g (n: Nat)[h: Same(n, 3)]: Nat := three(n)[h]
+```
+
+This is how generic code forwards a proof it has. Each supplied proof is checked
+against its evaluated proposition, a `TypeMismatch` otherwise, and a group of
+another length is an `ArityMismatch`. An empty group, and a group that follows
+anything but an application's arguments, `f[h]` or `f(a)[h][k]`, are parse
+errors. A group is written after the arguments, `f(x)[h]`, and the result may be
+applied again, `f(x)[h](y)`.
+
+Discharge reads only the callee's type and the call's arguments, never the type
+the call is expected to have, and it searches for nothing: no proof in scope is
+consulted.
+
+An evidence binder is not explicit. It does not count among the arguments a
+call writes, so a definition whose only parameters are evidence is called as
+`g()`, and `g` alone is the function. It forces no implicit, supplied or not, so
+`def f {n: Nat}[h: Same(n, 3)]: Nat := n` is `NonForcedImplicitParam`, as is an
+implicit proposition that no explicit argument forces, whose message points to
+an evidence binder instead.
+
+The binder's mode is part of a function type's identity: `[h: P] -> A` and
+`(h: P) -> A` are different types, a lambda `fun [h: P]: A => …` has the first,
+and a function type prints its binders as written.
+
+Proofs are erased when a program runs. Running a function binds its evidence
+parameters to erased proofs without evaluating their propositions, so a decision
+procedure in one runs when a call is checked, once per call, and not when the
+program runs. A body that names its evidence parameter anywhere but in a bracket
+group, by matching on it or passing it as an explicit argument, evaluates the
+proposition then.
+
 ### Closures
 
 A function type or lambda may carry a closure, a field list with a `kind` and
@@ -358,7 +435,8 @@ f(x, y)
 
 The arguments follow the function with no space. `f (x, y)` is a parse error,
 since on the same line `(` would otherwise begin a [pair](#pair-expressions) or
-a parenthesized term as the next item.
+a parenthesized term as the next item. A bracket group that supplies a call's
+[evidence](#evidence-arguments), `f(x)[h]`, follows the arguments the same way.
 
 A block contains ordered `let` or `open` statements followed by one result
 term:

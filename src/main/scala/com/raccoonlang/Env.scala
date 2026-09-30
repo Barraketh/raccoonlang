@@ -90,8 +90,9 @@ final case class Env(
   def apply(name: String): Value =
     globals.get(name).map(_.value(this)).getOrElse(fail(NotFound(name)))
 
+  /** A local's value. An evidence parameter bound to deferred evidence is forced here, where it is first looked at. */
   def apply(ref: CoreAst.LocalRef): Value =
-    locals.getOrElse(ref, fail(NotFound(ref.toString)))
+    Value.forced(locals.getOrElse(ref, fail(NotFound(ref.toString))))
 
   def putGlobal(name: String, value: Value): Env = {
     Env.assertClosedGlobal(value)
@@ -144,13 +145,15 @@ final case class Env(
     else copy(locals = locals + (ref -> value), localRefs = localRefs + ref)
   }
 
+  /** The env a value closes over: the captured locals, each forced, since deferred evidence stays in no value. */
   def closeForEval(capturedRefs: Set[CoreAst.LocalRef]): Env = {
     capturedRefs.foreach { ref =>
       if (!locals.contains(ref))
         wtf(s"Captured local $ref is outside env")
     }
 
-    val capturedLocals = VectorMap.from(locals.iterator.filter { case (ref, _) => capturedRefs(ref) })
+    val capturedLocals =
+      VectorMap.from(locals.iterator.collect { case (ref, value) if capturedRefs(ref) => ref -> Value.forced(value) })
 
     copy(locals = capturedLocals, localRefs = capturedRefs, openAtoms = DepSet.empty)
   }

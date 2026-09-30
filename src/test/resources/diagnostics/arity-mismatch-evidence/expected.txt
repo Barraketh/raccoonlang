@@ -1,0 +1,4 @@
+
+<root>/main.rac:6:3: error: Cannot supply evidence - expected 1 proofs, got 2
+{ pred(5)[IsTrue.yes, IsTrue.yes] }
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

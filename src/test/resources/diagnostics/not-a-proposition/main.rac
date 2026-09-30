@@ -1,0 +1,3 @@
+def pred (n: Nat)[h: Nat]: Nat := Nat.sub(n, 1)
+
+{ pred(0) }

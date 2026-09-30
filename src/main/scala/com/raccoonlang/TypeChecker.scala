@@ -152,54 +152,77 @@ object TypeChecker {
    * against its binder type only once every binder that type mentions is known, and all fits are (re)verified in
    * telescope order at the end.
    *
-   * `span` only goes onto the residual; failures are located by the enclosing `check`.
+   * An evidence binder's argument is supplied in the call's bracket group, `providedEvidence`, one proof per evidence
+   * binder, or else the call writes none and each is discharged (PROOF_BY_EVALUATION §1.2, §1.3). Either way the final
+   * pass evaluates its type, with every earlier argument known, once: a supplied proof must fit that proposition, and
+   * an omitted one is discharged from it. The residual keeps neither, since evaluation binds an evidence parameter to
+   * an erased proof of the same proposition (Interpreter.residualArguments).
+   *
+   * `span` goes onto the residual, and is where a discharge stands for sealing; failures are located by the enclosing
+   * `check`.
    */
   private def checkApplyChecked(
       fnValue: Value,
       fnResidual: CA.Term,
       providedArgs: Vector[PendingArg],
+      providedEvidence: Vector[CA.Term],
       env: Env,
       span: Span
   ): CheckedApply =
     fnValue.tpe match {
       case pi: VPi =>
         val binders = pi.binders
+        val callee = applyHeadName(fnResidual)
         // Grouping is part of a function type's identity: a call supplies exactly this Pi's own
         // explicit binders. `(a:A) -> (b:B) -> C` takes one argument and returns a function;
         // `(a:A)(b:B) -> C` takes two. Supplying the wrong number is an arity error here, not a
         // descent into the codomain — `f(x)(y)` is how a nested group is reached.
         if (providedArgs.length != pi.numExplicit)
           fail(ArityMismatch(pi.numExplicit, providedArgs.length, ArityMismatch.Arguments))
+        if (providedEvidence.nonEmpty && providedEvidence.length != pi.numEvidence)
+          fail(ArityMismatch(pi.numEvidence, providedEvidence.length, ArityMismatch.Evidence))
 
         val known = new Array[Value](binders.length)
         val checkedResiduals = Vector.newBuilder[CA.Term]
         var providedValues = Vector.empty[Value]
-        // Each binder's written-argument position from 1, or 0 for a projected implicit. Kept as ints
-        // so that frames are only built on failure.
-        val argumentPositions = new Array[Int](binders.length)
+        // Each binder's written position from 1 among the explicit arguments or the supplied evidence, as its mode
+        // says, or 0 for a projected implicit or discharged evidence. Kept as ints so that frames are only built on
+        // failure.
+        val writtenPositions = new Array[Int](binders.length)
+        def frame(idx: Int): Frame =
+          binders(idx).mode match {
+            case BinderMode.Evidence => Frame.InEvidence(writtenPositions(idx), binders(idx).name, callee)
+            case _                   => Frame.InArgument(writtenPositions(idx), binders(idx).name, callee)
+          }
 
         var explicitIdx = 0
+        var evidenceIdx = 0
         binders.zipWithIndex.foreach { case (binder, idx) =>
-          if (!binder.isImplicit) {
-            argumentPositions(idx) = explicitIdx + 1
-            // Arguments are checked where they stand and verified in the final pass; see PendingArg.
-            val checked =
-              framed(Frame.InArgument(argumentPositions(idx), binder.name, applyHeadName(fnResidual)))(
-                providedArgs(explicitIdx).check(env, binderParameter(binder, pi.env))
-              )
-            assertNonRawRecursive(checked.value)
-            known(idx) = checked.value
-            checkedResiduals += checked.residual
-            providedValues :+= checked.value
-            // Specs always root at a non-implicit binder, so every implicit lands during this walk.
-            pi.implicitRoots.getOrElse(explicitIdx, Vector.empty).foreach { implicitIdx =>
-              Projection.project(binders(implicitIdx).projection.get, providedValues) match {
-                case Right(value) => known(implicitIdx) = value
-                case Left(reason) =>
-                  fail(ImplicitReconstructionFailed(binders(implicitIdx).name, applyHeadName(fnResidual), reason))
+          binder.mode match {
+            case BinderMode.Explicit =>
+              writtenPositions(idx) = explicitIdx + 1
+              // Arguments are checked where they stand and verified in the final pass; see PendingArg.
+              val checked = framed(frame(idx))(providedArgs(explicitIdx).check(env, binderParameter(binder, pi.env)))
+              assertNonRawRecursive(checked.value)
+              known(idx) = checked.value
+              checkedResiduals += checked.residual
+              providedValues :+= checked.value
+              // Specs always root at an explicit binder, so every implicit lands during this walk.
+              pi.implicitRoots.getOrElse(explicitIdx, Vector.empty).foreach { implicitIdx =>
+                Projection.project(binders(implicitIdx).projection.get, providedValues) match {
+                  case Right(value) => known(implicitIdx) = value
+                  case Left(reason) => fail(ImplicitReconstructionFailed(binders(implicitIdx).name, callee, reason))
+                }
               }
-            }
-            explicitIdx += 1
+              explicitIdx += 1
+            // A supplied proof is synthesized where it stands, as an argument is, and fits its proposition below.
+            case BinderMode.Evidence if providedEvidence.nonEmpty =>
+              writtenPositions(idx) = evidenceIdx + 1
+              val checked = framed(frame(idx))(checkTerm(providedEvidence(evidenceIdx), env))
+              assertNonRawRecursive(checked.value)
+              known(idx) = checked.value
+              evidenceIdx += 1
+            case BinderMode.Evidence | BinderMode.Implicit =>
           }
         }
 
@@ -208,24 +231,66 @@ object TypeChecker {
         // pass is what makes the application well-typed. Arguments are bound as supplied.
         val calleeEnv =
           binders.indices.foldLeft(pi.env) { case (curEnv, idx) =>
-            // An argument at a binder whose type is a sort is a type, confined where the application stands.
-            def bind: Env = {
-              val bound = BinderOps.bindValueAndCheck(curEnv, binders(idx), known(idx))
-              known(idx).tpe match {
-                case _: VSort => requireInScope(known(idx), env)
-                case _        =>
+            val binder = binders(idx)
+            def bind: Env =
+              binder.mode match {
+                // The proposition is evaluated here, once, for a supplied proof and a discharge alike.
+                case BinderMode.Evidence =>
+                  val proposition = Interpreter.evalTerm(binder.ty, curEnv)
+                  val proof =
+                    if (providedEvidence.nonEmpty) {
+                      checkType(known(idx), proposition)
+                      known(idx)
+                    } else
+                      discharge(proposition, span, env).getOrElse(
+                        fail(EvidenceNotDischarged(binder.name, callee, proposition))
+                      )
+                  BinderOps.bindValue(curEnv, binder, proof)
+                // An argument at a binder whose type is a sort is a type, confined where the application stands.
+                case BinderMode.Explicit | BinderMode.Implicit =>
+                  val bound = BinderOps.bindValueAndCheck(curEnv, binder, known(idx))
+                  known(idx).tpe match {
+                    case _: VSort => requireInScope(known(idx), env)
+                    case _        =>
+                  }
+                  bound
               }
-              bound
-            }
-            val position = argumentPositions(idx)
-            if (position == 0) bind
-            else framed(Frame.InArgument(position, binders(idx).name, applyHeadName(fnResidual)))(bind)
+            if (writtenPositions(idx) == 0) bind else framed(frame(idx))(bind)
           }
         val finalArgs = binders.map(binder => calleeEnv(binder.localRef))
-        val residual = CA.Term.App(fnResidual, checkedResiduals.result(), span)
+        val residual = CA.Term.App(fnResidual, checkedResiduals.result(), Vector.empty, span)
         CheckedApply(Interpreter.evalApply(fnValue, finalArgs), residual)
 
       case _ => fail(CannotApplyNonFunction(fnValue))
+    }
+
+  /**
+   * An evidence argument discharged by the fieldless rule (PROOF_BY_EVALUATION §1.2): `proposition`, evaluated where
+   * the application stands, is an instance of an inductive family in `Prop` with a fieldless constructor whose result
+   * type there is convertible with it, and the proof is that constructor at `proposition`. Nothing is searched: the
+   * constructor is the first declared that fits, and proof irrelevance makes the choice unobservable (§1.4). A
+   * constructor with fields never discharges, since its fields would have to be invented, and a proposition that is not
+   * a family instance, as a neutral one is not, never discharges either.
+   *
+   * The constructor is applied for the program at `site`, as if it named it, so a sealed family's constructors
+   * discharge only in its module (Sealing): elsewhere one would build a value its module never built. A family whose
+   * constructors are not yet installed, one of an inductive block being checked, has none to discharge with.
+   */
+  private def discharge(proposition: Value, site: Span, env: Env): Option[Value] =
+    proposition match {
+      case InductiveFamilyValue(instance) if Sealing.accessible(instance.meta.seal, site) =>
+        instance.meta.constructorNames.iterator
+          .flatMap(name => env.globals.get(name).map(_.value(env)))
+          .collectFirst {
+            case head: ConstructorHead
+                if head.fieldBinders.isEmpty &&
+                  ValueEquivalence.defEq(
+                    BinderOps.freshCtorFields(head, instance.args, Vector.empty)._2,
+                    proposition
+                  ) =>
+              Value.canonicalizeProof(VCtor(head, Vector.empty, proposition))
+          }
+      case _ => None
     }
 
   private def checkTelescope(pi: CA.Term.Pi, env: Env, familyParams: Int): CheckedTelescope = {
@@ -377,6 +442,7 @@ object TypeChecker {
         selector,
         CA.Term.GlobalRef(selectorName, span),
         Vector(PendingArg.checked(base)),
+        Vector.empty,
         env,
         span
       )
@@ -553,8 +619,9 @@ object TypeChecker {
 
   /**
    * A binder's type: a type, or a sort parameter where the binder's site admits it (spec §2.2). A parameter site admits
-   * every sort parameter, a function type's or lambda's binder only `Lifetime`, and a field site none. It is the type
-   * of the local the binder binds, so it is confined where the binder stands (spec §4.2).
+   * every sort parameter, a function type's or lambda's binder only `Lifetime`, and a field site none. An evidence
+   * binder's argument is a proof, so its type is a proposition, else `NotAProposition` (PROOF_BY_EVALUATION §1.1). It
+   * is the type of the local the binder binds, so it is confined where the binder stands (spec §4.2).
    */
   def checkBinderType(binder: CA.Binder, env: Env): CheckedTerm =
     at(binder.ty.span) {
@@ -564,6 +631,8 @@ object TypeChecker {
         case (CA.BinderSite.Function, LifetimeTpe)      =>
         case _                                          => assertType(checked.value)
       }
+      if (binder.mode == BinderMode.Evidence && !Sorts.isProposition(checked.value))
+        fail(NotAProposition(binder.name, checked.value))
       requireInScope(checked.value, env)
       checked
     }
@@ -697,7 +766,14 @@ object TypeChecker {
       case app: CA.Term.App =>
         val checkedFn = checkHead(app.fn, env)
         val checkedApp =
-          checkApplyChecked(checkedFn.value, checkedFn.residual, app.args.map(PendingArg.term), env, app.span)
+          checkApplyChecked(
+            checkedFn.value,
+            checkedFn.residual,
+            app.args.map(PendingArg.term),
+            app.evidence,
+            env,
+            app.span
+          )
         CheckedTerm(checkedApp.value, checkedApp.residual)
       case m: CA.Term.Match => MatchChecker.checkMatch(m, env)
       case b: CA.Term.Body  => checkBody(b, env)

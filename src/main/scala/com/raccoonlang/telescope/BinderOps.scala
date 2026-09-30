@@ -47,9 +47,10 @@ object BinderOps {
 
   /**
    * Check a telescope's binder types and compile the implicit projection specs (Projection.compile). A binder's site
-   * decides whether it may bind a level (TypeChecker.checkBinderType). Every implicit binder must be forced by later
-   * non-implicit binders; the leading `familyParams` binders of a constructor telescope are demoted to explicit instead
-   * of erroring when unforced. `span` is the telescope's, whose module decides which sealed fields forcing may read.
+   * decides whether it may bind a level, and an evidence binder's type must be a proposition
+   * (TypeChecker.checkBinderType). Every implicit binder must be forced by later explicit binders; the leading
+   * `familyParams` binders of a constructor telescope are demoted to explicit instead of erroring when unforced. `span`
+   * is the telescope's, whose module decides which sealed fields forcing may read.
    */
   def checkBinders(
       binders: Vector[CoreAst.Binder],
@@ -69,7 +70,7 @@ object BinderOps {
     }
 
     val inputs = binders.zip(holeIds.result()).map { case (binder, holeId) =>
-      Projection.BinderInput(binder.name, binder.span, binder.isImplicit, env(binder.localRef), holeId)
+      Projection.BinderInput(binder.name, binder.span, binder.mode, env(binder.localRef), holeId)
     }
     val compiled = Projection.compile(inputs, familyParams, span)
 
@@ -86,7 +87,7 @@ object BinderOps {
     val checkedBinders = binders.indices.toVector.map { idx =>
       val binder = binders(idx)
       val result = compiled(idx)
-      binder.copy(ty = checkedTys(idx).residual, isImplicit = result.isImplicit, projection = result.projection)
+      binder.copy(ty = checkedTys(idx).residual, mode = result.mode, projection = result.projection)
     }
 
     CheckedBinders(checkedBinders, env)

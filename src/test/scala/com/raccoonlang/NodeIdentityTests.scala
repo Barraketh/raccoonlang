@@ -91,7 +91,7 @@ class NodeIdentityTests extends munit.FunSuite {
    */
   private def rebuildMismatches(source: Term, residual: Term): Vector[String] =
     (source, residual) match {
-      case (Term.Select(base, _, _), Term.App(_, Vector(checkedBase), _)) => rebuildMismatches(base, checkedBase)
+      case (Term.Select(base, _, _), Term.App(_, Vector(checkedBase), _, _)) => rebuildMismatches(base, checkedBase)
       case _ =>
         val (sourceChildren, residualChildren) = (CoreAst.children(source), CoreAst.children(residual))
         if (source.getClass != residual.getClass || sourceChildren.length != residualChildren.length)
@@ -152,7 +152,9 @@ class NodeIdentityTests extends munit.FunSuite {
     val nat = Term.GlobalRef("Nat", span)
     def arrow(domain: Term, ref: Int): Term.Pi =
       Term.Pi(
-        Vector(CoreAst.Binder(CoreAst.LocalRef(ref, "x"), domain, span, CoreAst.BinderSite.Function)),
+        Vector(
+          CoreAst.Binder(CoreAst.LocalRef(ref, "x"), domain, span, CoreAst.BinderSite.Function, BinderMode.Explicit)
+        ),
         nat,
         CoreAst.Closure.unrestricted(span),
         span,

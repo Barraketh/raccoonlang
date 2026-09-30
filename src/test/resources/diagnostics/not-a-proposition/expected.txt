@@ -1,0 +1,5 @@
+
+<root>/main.rac:1:22: error: Evidence parameter h has the type Nat, which is not a proposition: evidence is a proof, so its type is in Prop
+def pred (n: Nat)[h: Nat]: Nat := Nat.sub(n, 1)
+                     ^^^
+note: in definition pred

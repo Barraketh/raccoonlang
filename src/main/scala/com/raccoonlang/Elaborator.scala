@@ -344,17 +344,17 @@ object Elaborator {
     // The generated self type supplies exactly the explicit family binders; implicit ones are
     // reconstructed by projection when the family application is checked.
     val familyArgs = header.binders.collect {
-      case binder if !binder.isImplicit =>
+      case binder if binder.mode == BinderMode.Explicit =>
         SA.Term.Ident(binder.name, binder.span)
     }
-    val implicitFamilyBinders = header.binders.map(binder => binder.copy(isImplicit = true))
+    val implicitFamilyBinders = header.binders.map(binder => binder.copy(mode = BinderMode.Implicit))
     val selfType = {
       val head = SA.Term.Ident(header.name, header.span)
       if (familyArgs.isEmpty) head
-      else SA.Term.App(head, familyArgs, header.span)
+      else SA.Term.App(head, familyArgs, Vector.empty, header.span)
     }
     val selfBinder =
-      SA.Binder(selfName, selfType, selfSpan)
+      SA.Binder(selfName, selfType, selfSpan, BinderMode.Explicit)
     val selectors =
       fields.map { case (field, fieldIdx) =>
         // The result type is the field's own type, as written, with each earlier field it mentions bound to that
@@ -372,6 +372,7 @@ object Elaborator {
             val selected = SA.Term.App(
               SA.Term.Select(SA.Term.Ident(header.name, span), earlier.name, span),
               Vector(SA.Term.Ident(selfName, span)),
+              Vector.empty,
               span
             )
             SA.Term.LetStmt(SA.Term.Let(SA.Term.LetPattern.Name(earlier.name, span), None, selected, span))
@@ -431,7 +432,7 @@ object Elaborator {
       case ident: SA.Term.Ident                  => if (bound(ident.name)) Vector.empty else Vector(ident)
       case _: SA.Term.NatLit | _: SA.Term.StrLit => Vector.empty
       case SA.Term.Select(base, _, _)            => free(base)
-      case SA.Term.App(fn, args, _)              => (fn +: args).flatMap(free)
+      case SA.Term.App(fn, args, evidence, _)    => ((fn +: args) ++ evidence).flatMap(free)
       case SA.Term.Pair(fst, snd, _)             => free(fst) ++ free(snd)
       case SA.Term.Sort(level, kind, scope, _) =>
         val written = level match {
@@ -545,7 +546,7 @@ object Elaborator {
   private def elabBinder(b: SA.Binder, site: CA.BinderSite, env: ResolveEnv): (CA.Binder, ResolveEnv) = {
     val ty = elabTerm(b.ty, env)
     val (ref, nextEnv) = env.bind(b.name, allowShadow = false)
-    (CA.Binder(ref, ty, b.span, site, b.isImplicit), nextEnv)
+    (CA.Binder(ref, ty, b.span, site, b.mode), nextEnv)
   }
 
   private def elabBinders(
@@ -642,18 +643,21 @@ object Elaborator {
         case Some(path) => elabPathTerm(path, env)
         case None       => CA.Term.Select(elabTerm(s.base, env), s.field, s.span)
       }
-    case SA.Term.App(fn, args, sp) =>
+    case SA.Term.App(fn, args, evidence, sp) =>
       val head = flattenTermPath(fn) match {
         case Some(path) => elabPathHead(path, env)
         case None       => Right(elabTerm(fn, env))
       }
       head match {
+        // A form is not a function, and takes no evidence.
         case Left(form) if form.arity > 0 =>
           if (args.length != form.arity) at(sp) {
             fail(ArityMismatch(form.arity, args.length, ArityMismatch.Arguments))
           }
+          if (evidence.nonEmpty) at(sp) { fail(ArityMismatch(0, evidence.length, ArityMismatch.Evidence)) }
           CA.Term.FormOp(form, args.map(elabTerm(_, env)), sp)
-        case _ => CA.Term.App(unapplied(head, fn.span), args.map(elabTerm(_, env)), sp)
+        case _ =>
+          CA.Term.App(unapplied(head, fn.span), args.map(elabTerm(_, env)), evidence.map(elabTerm(_, env)), sp)
       }
     case SA.Term.Pair(fst, snd, sp) =>
       // The prelude's `Pair.mk`, applied as written (PAIRS_AND_PRELUDE §4.1). A program cannot redeclare a prelude
@@ -662,7 +666,12 @@ object Elaborator {
       val pairMk = env.prelude.getOrElse(env.root).lookup(PairMkPath).flatMap(_.binding).getOrElse {
         at(sp) { fail(NotFound(globalName(PairMkPath))) }
       }
-      CA.Term.App(CA.Term.GlobalRef(globalName(pairMk), sp), Vector(elabTerm(fst, env), elabTerm(snd, env)), sp)
+      CA.Term.App(
+        CA.Term.GlobalRef(globalName(pairMk), sp),
+        Vector(elabTerm(fst, env), elabTerm(snd, env)),
+        Vector.empty,
+        sp
+      )
     case SA.Term.Sort(level, kind, scope, sp) =>
       // `Type` and `Prop` fix the level, and an omitted kind or scope is Kind.unr or Lifetime.empty (spec §1).
       def fixed(form: CA.Form): CA.Term = CA.Term.FormOp(form, Vector.empty, sp)

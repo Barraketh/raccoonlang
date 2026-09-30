@@ -17,6 +17,9 @@ object Frame {
   /** An explicit argument of a call, numbered from 1 in source order. */
   final case class InArgument(index: Int, binder: String, callee: String) extends Frame
 
+  /** A proof in a call's bracket group, numbered from 1 in source order (PROOF_BY_EVALUATION §1.3). */
+  final case class InEvidence(index: Int, binder: String, callee: String) extends Frame
+
   /** One branch of a match, named by its constructor and the fields it binds. */
   final case class InBranch(ctor: String, args: Vector[String]) extends Frame
 }
@@ -34,12 +37,18 @@ final case class Diagnostic(error: TypeError, span: Option[Span], frames: Vector
 
 final case class CannotApplyNonFunction(got: Value) extends TypeError
 
-/** A count of what `counted` names that differs from the count expected: a call's arguments, or a pattern's fields. */
+/**
+ * A count of what `counted` names that differs from the count expected: a call's arguments or its evidence, or a
+ * pattern's fields.
+ */
 final case class ArityMismatch(expected: Int, got: Int, counted: ArityMismatch.Counted) extends TypeError
 
 object ArityMismatch {
   sealed trait Counted
   case object Arguments extends Counted
+
+  /** A call's bracket group, against its function's evidence binders (PROOF_BY_EVALUATION §1.3). */
+  case object Evidence extends Counted
 
   /** A match case's or a destructuring's pattern, against its constructor's stored fields. */
   case object Fields extends Counted
@@ -114,7 +123,23 @@ final class InternalError(val reason: String) extends RuntimeException {
 
 final case class InvalidConstructorResult(ctor: String, inductive: String, got: Value) extends TypeError
 
-final case class NonForcedImplicitParam(param: String) extends TypeError
+/**
+ * An implicit binder no later explicit argument's type forces. `isProposition` says its type is a proposition, which an
+ * evidence binder is discharged for instead (PROOF_BY_EVALUATION §1.5).
+ */
+final case class NonForcedImplicitParam(param: String, isProposition: Boolean) extends TypeError
+
+/** An evidence binder whose type is not a proposition (PROOF_BY_EVALUATION §1.1). */
+final case class NotAProposition(binder: String, tpe: Value) extends TypeError
+
+/**
+ * An application that neither supplies nor discharges the evidence binder `binder` of `callee`: `proposition` is its
+ * type evaluated there, which no fieldless constructor proves (PROOF_BY_EVALUATION §1.2).
+ */
+final case class EvidenceNotDischarged(binder: String, callee: String, proposition: Value) extends TypeError
+
+/** A constructor's evidence field, which a later step supports (PROOF_BY_EVALUATION §1.8). */
+final case class EvidenceFieldUnsupported(ctor: String, field: String) extends TypeError
 
 final case class ImplicitReconstructionFailed(param: String, fn: String, reason: String) extends TypeError
 

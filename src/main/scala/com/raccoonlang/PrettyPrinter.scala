@@ -32,13 +32,13 @@ object PrettyPrinter {
   private def argList(items: Seq[Piece]): Vector[Piece] = (Text("(") +: separated(items, ", ")) :+ Text(")")
 
   /**
-   * Implicit arguments are never written in source, so a saturated call prints only its explicit ones. Anything that is
-   * not a plain saturated call keeps every argument.
+   * Implicit and evidence arguments are not written among a call's arguments, so a saturated call prints only its
+   * explicit ones. Anything that is not a plain saturated call keeps every argument.
    */
   private def explicitArgs(head: Value, args: Seq[Value]): Seq[Value] =
     head.tpe match {
       case pi: Value.VPi if pi.binders.length == args.length =>
-        args.zip(pi.binders).collect { case (arg, binder) if !binder.isImplicit => arg }
+        args.zip(pi.binders).collect { case (arg, binder) if binder.mode == BinderMode.Explicit => arg }
       case _ => args
     }
 
@@ -119,13 +119,18 @@ object PrettyPrinter {
           Vector(Text("decreases measure("), term(measure), Text(")"))
       }
 
+    /** A binder as written: `(x: A)`, `{x: A}` or `[h: P]`. */
     def printBinder(b: CoreAst.Binder): Vector[Piece] = {
-      val (open, close) = if (b.isImplicit) ("{", "}") else ("(", ")")
+      val (open, close) = b.mode match {
+        case BinderMode.Explicit => ("(", ")")
+        case BinderMode.Implicit => ("{", "}")
+        case BinderMode.Evidence => ("[", "]")
+      }
       Vector(Text(s"$open${b.name}: "), term(b.ty), Text(close))
     }
 
     def printPiBinder(b: CoreAst.Binder): Vector[Piece] =
-      if (b.name == "_" && !b.isImplicit) printTermAtom(b.ty)
+      if (b.name == "_" && b.mode == BinderMode.Explicit) printTermAtom(b.ty)
       else printBinder(b)
 
     def printBinders(binders: Vector[CoreAst.Binder]): Vector[Piece] =
@@ -207,8 +212,11 @@ object PrettyPrinter {
       case m @ CoreAst.Term.Match(_, _, _, _, _) => printMatch(m)
       case b: CoreAst.Term.Body                  => printBody(b)
       case CoreAst.Term.Select(base, field, _)   => printTermAtom(base) :+ Text(s"[$field]")
-      case CoreAst.Term.App(fn, args, _) =>
-        printTermAtom(fn) ++ argList(args.map(arg => Later(() => printTermAtom(arg))))
+      case CoreAst.Term.App(fn, args, evidence, _) =>
+        val evidencePieces =
+          if (evidence.isEmpty) Vector.empty
+          else (Text("[") +: separated(evidence.map(proof => Later(() => printTermAtom(proof))), ", ")) :+ Text("]")
+        printTermAtom(fn) ++ argList(args.map(arg => Later(() => printTermAtom(arg)))) ++ evidencePieces
       case CoreAst.Term.Pi(binders, out, closure, _, _, _) =>
         val bindersPieces = separated(binders.map(b => Later(() => printPiBinder(b))), " -> ")
         printCoreClosure(closure) ++ bindersPieces ++ (Text(" -> ") +: printCodomain(out))
@@ -363,7 +371,8 @@ object PrettyPrinter {
     }.toVector
     callers match {
       case Vector((name, pi)) =>
-        val args = pi.binders.filter(!_.isImplicit).map(binder => thunk.env.locals.get(binder.localRef))
+        val args =
+          pi.binders.filter(_.mode == BinderMode.Explicit).map(binder => thunk.env.locals.get(binder.localRef))
         Option.when(args.forall(_.isDefined))(Text(name) +: argList(args.map(arg => Val(arg.get))))
       case _ => None
     }
@@ -496,6 +505,8 @@ object PrettyPrinter {
       case s: Value.NeutralThunk =>
         printedCall(s).getOrElse(new SyntaxPrinter(s.env.locals.get).printMatch(s.term))
       case p: Value.VProof => Vector(Text("‹proof of "), Val(p.tpe), Text("›"))
+      // Printing does not force it, so printing evaluates no proposition the program has not.
+      case _: Value.DeferredEvidence => Vector(Text("‹deferred evidence›"))
       case p: Value.VPacked =>
         val printed = p.natValue
           .map(_.toString)

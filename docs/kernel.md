@@ -55,7 +55,8 @@ refinable variables. Its successful rules are:
 - conservative congruence of blocked matches with the same checked behavior.
 
 Function binder grouping is exact. Two Pi values compare binder-for-binder and
-must have the same binder count and implicitness within the current group.
+must have the same binder count and binder modes (explicit, implicit or
+evidence) within the current group.
 `(a: A)(b: B) -> C` is not convertible with
 `(a: A) -> ((b: B) -> C)`. Their closures compare exactly too: equal closure
 kinds and equal closure scopes, as normal forms.
@@ -243,8 +244,11 @@ scopes recover a variable only when the field is exactly that variable.
 Positions are searched breadth-first from the explicit arguments, and a closure
 field only once no other position is left: a closure is what a lambda derives
 from its captures, so reading an implicit elsewhere lets a lambda written
-without the closure its parameter declares fail its own check. Checked
-applications retain only explicit arguments. Checking and evaluation
+without the closure its parameter declares fail its own check. Only explicit
+binders are roots: an evidence binder is not, supplied or not, since its
+argument is discharged from its proposition (see
+[Evidence arguments](#evidence-arguments)). Checked applications retain only
+explicit arguments. Checking and evaluation
 reconstruct every implicit with the same projection and then check it against
 its instantiated binder type. Constructor family parameters that cannot be
 projected are demoted to explicit arguments; other unforced implicits are
@@ -492,6 +496,70 @@ Proof constructor identity and fields provide no injectivity, apartness, or
 termination evidence. Recursive proof fields are exposed one layer at a time,
 so canonicalization never builds an infinite proof value eagerly.
 
+## Evidence arguments
+
+A binder's mode is explicit, implicit or evidence, and it is part of its
+function type's identity: conversion compares modes binder for binder, and a
+Pi's key mixes them in. An evidence binder `[h: P]` stands in a definition's,
+lambda's or function type's telescope; a family's parameters and indices have
+none, and a constructor's evidence field is refused
+(`EvidenceFieldUnsupported`) until evidence fields are specified. Its type
+must be a proposition, else `NotAProposition`. It is not explicit: it is not
+among the arguments an application writes, and it is never a root of implicit
+projection.
+
+Checking an application walks its binder group as for implicits (see
+[Universes and function types](#universes-and-function-types)). In the final
+pass, which binds every binder in telescope order, an evidence binder's type is
+evaluated once, in the Pi's environment with every earlier argument bound, to
+the proposition `P′`. Then:
+
+- if the application supplies its evidence, `f(x)[p1, …]`, it supplies one
+  proof per evidence binder, else `ArityMismatch`; each proof was synthesized
+  where it stands, as an argument is, and its type must be convertible with
+  `P′`;
+- otherwise `P′` is discharged by the fieldless rule: `P′` is an instance of an
+  inductive family whose constructor, the first declared with no stored field,
+  has a result type at `P′`'s parameters that is convertible with `P′`. The
+  proof is that constructor at `P′`, canonicalized as every proof is. Anything
+  else, a `P′` that is not a family instance included, is
+  `EvidenceNotDischarged`, located at the application.
+
+The binder is bound to that proof, and the application is evaluated with it.
+The residual keeps neither a supplied proof nor a discharged one.
+
+The fieldless rule is sound because it adds no proof that the object theory
+lacks: the constructor has no field to invent, its result type is convertible
+with `P′`, and conversion is justified by definitional equality alone, so the
+constructor applied to `P′`'s own parameters is a well-typed proof of `P′`, one
+the program could have written there.
+It never uses a constructor with a field. Proof reconstruction fabricates proof
+fields unchecked, so a rule that accepted whatever reconstructs would accept
+`And(False, False)`. It reads no proof in scope and chooses nothing that proof
+irrelevance would not make unobservable. A sealed family's constructor is
+applied only where the application's module may name it (see
+[Sealing](#sealing)), since elsewhere it would build a value its module never
+built. A family whose constructors are not yet installed, one of an inductive
+block being checked, discharges nothing.
+
+Discharge is local: it reads the callee's type and the application's other
+arguments, never the type the application is expected to have, so checking
+stays synthesis followed by equality. It terminates, since it evaluates one
+proposition and makes one conversion check per fieldless constructor. Its time
+includes the decision procedures a proposition calls.
+
+Evaluation erases evidence. A checked application carries only its explicit
+arguments, and evaluating it gives each evidence binder deferred evidence: the
+canonical proof of the binder's type, evaluated in the Pi's environment with
+every earlier argument bound, computed only when forced. A callee's body
+environment binds it unforced. Looking the local up forces it, and so does
+closing a value over it, any head other than a lambda, which stores its
+arguments, and a native body. Deferred evidence stands in no other value, and
+anything else that reaches one is a kernel bug. So a proposition is evaluated
+when a program runs only if the callee looks at its proof, and then the proof
+is exactly the canonical proof its proposition determines, as checking bound:
+erasure changes when a proposition is evaluated, never what a value is.
+
 ## Structure eta and projections
 
 Every one-constructor family records positional field metadata. A non-Prop
@@ -581,7 +649,8 @@ Kinds, scopes, coverage, apartness and the conversion of values read the full
 declaration in every module, and evaluation compares no module. One function
 decides whether a position may use a sealed family's constructors; the checker
 asks it at those name resolutions, match scrutinees and destructured values,
-and implicit projection asks it before reading a constructor's field.
+and before it discharges evidence with a constructor, and implicit projection
+asks it before reading a constructor's field.
 
 ## Termination
 
@@ -812,7 +881,8 @@ levels (by normal form). Kinds and lifetimes key by their normal forms too, an
 atom by its id, which its `scope` term's node identity determines, but
 their conversion rule compares the normal forms itself, so the assertion checks
 their keys. A sort's key mixes in its level, kind and scope, and a Pi's key its
-closure kind and closure scope, explicitly rather than through its captures.
+closure kind, closure scope and binder modes, explicitly rather than through
+its node and captures.
 The kernel singletons `Level`, `Kind`, `Lifetime`, their classifier and `Large`
 are equal only to themselves, which object identity decides before any key is
 read.
@@ -878,9 +948,16 @@ Changes to the checker or evaluator must preserve these rules:
 22. No term whose type is a sort or a proposition contains a subterm of linear
     type, and no implicit binder of linear type is forced.
 23. Outside a sealed family's module, no checked term names its constructors
-    or selectors, matches on a value of it, or forces an implicit through its
-    constructors' fields. Sealing never changes what conversion, coverage,
-    apartness, structure eta or proof reconstruction decide.
+    or selectors, matches on a value of it, forces an implicit through its
+    constructors' fields, or discharges evidence with its constructors. Sealing
+    never changes what conversion, coverage, apartness, structure eta or proof
+    reconstruction decide.
 24. Only a trusted prelude declares axioms, builtins, native operations and
     native literal layouts. That trusted surface keeps the audited obligations
     T1 to T5; every other prelude declaration is checked as one in any module.
+25. An evidence argument is either supplied and convertible with its
+    proposition evaluated at the application, or discharged by a fieldless
+    constructor whose result type is convertible with it; discharge reads no
+    expected type and no hypothesis. Evaluation binds the canonical proof of
+    the same proposition, and evaluates the proposition only when that proof is
+    looked at.

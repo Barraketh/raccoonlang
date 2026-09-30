@@ -158,11 +158,12 @@ object ValueEquivalence {
     // Grouping is part of a function type's identity: two Pis are related binder-by-binder within their
     // single groups, and differing group counts are a failure to derive `≡` (stuck), never apartness.
     // `(a:A)(b:B) -> C` and `(a:A) -> (b:B) -> C` are different types and do not relate here. So is the
-    // closure: closure kinds and scopes compare exactly (spec §2.5).
+    // closure: closure kinds and scopes compare exactly (spec §2.5). So is each binder's mode: `[h: P] -> A`,
+    // `{h: P} -> A` and `(h: P) -> A` are three types (PROOF_BY_EVALUATION §1.5).
     private def tryUnifyPis(pi1: VPi, pi2: VPi, eqStore: EqStore, ctx: Ctx): Either[UnifyFailure, PiUnification] = {
       if (
         pi1.binders.length != pi2.binders.length ||
-        pi1.binders.zip(pi2.binders).exists { case (b1, b2) => b1.isImplicit != b2.isImplicit }
+        pi1.binders.zip(pi2.binders).exists { case (b1, b2) => b1.mode != b2.mode }
       )
         return Left(UnifyFailure(pi1, pi2, apart = false))
 

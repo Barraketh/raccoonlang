@@ -96,7 +96,10 @@ class SealingTests extends munit.FunSuite with TestSupport {
   test("forcing an implicit through a sealed constructor's field compiles only inside its module") {
     val forcing = "def get2 {n: Nat}(p: P(box(n))): Nat := n\n"
     assertEquals(inside(sealedBox, forcing + "{ get2(P.mk(box(5))) }\n").map(PrettyPrinter.print), Some("5"))
-    assertEquals(expectOnly[NonForcedImplicitParam](outside(sealedBox, forcing)), NonForcedImplicitParam("n"))
+    assertEquals(
+      expectOnly[NonForcedImplicitParam](outside(sealedBox, forcing)),
+      NonForcedImplicitParam("n", isProposition = false)
+    )
     outside(boxModule(""), forcing)
   }
 
