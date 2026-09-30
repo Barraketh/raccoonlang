@@ -544,8 +544,9 @@ well-typed proof of `P′`, one the program could have written there. It invents
 no field: a field its result type does not determine, or determines only inside
 an argument, makes the constructor unfit. Proof reconstruction fabricates proof
 fields unchecked, which rule 1 never does, so a rule that accepted whatever
-reconstructs would accept `And(False, False)`. It reads no proof in scope and
-chooses nothing that proof irrelevance would not make unobservable. A sealed
+reconstructs would accept `And(False, False)`. It consults no hypothesis beyond
+what `P′` holds, which it may copy into a field, and chooses nothing that proof
+irrelevance would not make unobservable. A sealed
 family's constructor is applied only where the application's module may name it
 (see [Sealing](#sealing)), since elsewhere it would build a value its module
 never built. A family of an inductive block still being checked has no
@@ -554,8 +555,9 @@ constructors to discharge with.
 Discharge is local: it reads the callee's type and the application's other
 arguments, never the type the application is expected to have, so checking
 stays synthesis followed by equality. It terminates, since it evaluates one
-proposition and makes one conversion check per constructor. Its time includes
-the decision procedures a proposition calls.
+proposition, and for each constructor checks each parameter's and field's type
+and its result type by conversion. Its time includes the decision procedures a
+proposition calls.
 
 Evaluation erases evidence. A checked application carries only its explicit
 arguments, and evaluating it gives each evidence binder deferred evidence: the
@@ -566,8 +568,10 @@ head, an opaque definition's say, stores it unforced among the arguments of the
 application it builds. Those two are where deferred evidence stands, and both
 force it where it is read: the environment where the local is looked up or a
 value closes over it, and the application where its arguments are read, which
-every question the kernel asks of an application does. Anything else that
-reaches deferred evidence is a kernel bug. So a proposition is evaluated when a
+every question the kernel asks of an application does: its dependencies, and so
+the closedness a published global's is asserted to have, its key, and its
+conversion. Printing reads only its explicit arguments, which are never
+evidence. Anything else that reaches deferred evidence is a kernel bug. So a proposition is evaluated when a
 program runs only if something looks at its proof, and then the proof is exactly
 the canonical proof its proposition determines, as checking bound: erasure
 changes when a proposition is evaluated, never what a value is.
@@ -971,6 +975,6 @@ Changes to the checker or evaluator must preserve these rules:
     proposition evaluated at the application, or discharged by a constructor
     applied to fields read off that proposition, whose result type is
     convertible with it; discharge invents no field, and reads no expected type
-    and no hypothesis. Evaluation binds the canonical proof of the same
+    and no hypothesis beyond what the proposition holds. Evaluation binds the canonical proof of the same
     proposition, and evaluates the proposition only when that proof is looked
     at.
