@@ -75,10 +75,8 @@ equality. Nothing is searched for:
 `(h: P) -> A` are different types, and unification compares modes. A lambda `fun [h: P] => …` has an evidence
 binder.
 
-An evidence binder:
-- is never the target of forcing;
-- does not count as an explicit parameter for arity;
-- may not stand in a constructor's telescope (§6.2).
+An evidence binder is not an explicit parameter: it does not count for arity, and since forcing projects implicits
+from explicit arguments' types, it forces nothing. It may not stand in a constructor's telescope (§6.2).
 
 An unforced implicit binder of a proposition stays `NonForcedImplicitParam`, whose message points to `[h: P]`.
 
@@ -199,6 +197,8 @@ and no earlier one. Beyond those:
 - **Run time.** A program that calls an evidence-taking function in a loop runs no decision procedure. Pin it with a
   procedure whose cost would dominate the run.
 - **Types.** `[h: P] -> A` and `(h: P) -> A` do not unify; a higher-order argument keeps its evidence mode.
+- **Forcing.** `def f {n: Nat}[h: Eq(Nat, n, 3)]: …` is `NonForcedImplicitParam`: an evidence binder, supplied or
+  not, is no source for forcing.
 - **§2.6's targets**, as tests where they are cheap enough. The rest are measured by hand and recorded in this
   document, until a benchmark suite exists.
 - **The GPU library as client.** `storeAcc`'s alignment, `tiledKernel`'s positivity and `ceilDivC`'s divisor become
