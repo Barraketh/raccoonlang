@@ -246,12 +246,14 @@ object TypeChecker {
             def bind: Env =
               binder.mode match {
                 // The proposition is evaluated here, once, for a supplied proof and a discharge alike.
+                // A supplied proof is bound as the canonical proof of the proposition, as evaluation binds one, so
+                // what an evidence argument holds is determined by the arguments before it (VApp.determiningArgs).
                 case BinderMode.Evidence =>
                   val proposition = Interpreter.evalTerm(binder.ty, curEnv)
                   val proof =
                     if (providedEvidence.nonEmpty) {
                       checkType(known(idx), proposition)
-                      known(idx)
+                      Value.canonicalizeProof(VProof(proposition))
                     } else
                       discharge(proposition, span, env) match {
                         case Right(proof) => proof

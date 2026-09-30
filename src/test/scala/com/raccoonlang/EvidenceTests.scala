@@ -324,9 +324,96 @@ class EvidenceTests extends munit.FunSuite with TestSupport {
         " | Nat.zero => 0\n | Nat.succ k => Nat.add(guarded(1), loop(k))\n\n"
     typecheckDecls(kept)
     assertEquals(forcings(evaluatesTo(kept + "{ loop(2) }", "Nat.add(guarded(1), guarded(1))")), 0L)
-    // Publishing them reads their arguments where the environment assertions check that a global is closed.
-    val asserted = sys.props.getOrElse("raccoon.envAssertions", "true").toBoolean
-    assertEquals(forcings(typecheckDecls(kept + "def r : Nat := loop(2)\n")), if (asserted) 2L else 0L)
+    // Publishing them, where the environment assertions check that a global is closed, reads their dependencies, which
+    // leave their evidence out.
+    assert(sys.props.getOrElse("raccoon.envAssertions", "true").toBoolean)
+    assertEquals(forcings(typecheckDecls(kept + "def r : Nat := loop(2)\n")), 0L)
+    // So do their keys and conversion: two built alike are equal by key, and the key assertion's recheck skips the
+    // evidence too, as conversion does.
+    assert(ValueEquivalence.keyAssertionsEnabled)
+    assertEquals(
+      forcings {
+        val (left, right) = (runProgram(kept + "{ loop(3) }"), runProgram(kept + "{ loop(3) }"))
+        assertEquals(left.key, right.key)
+        assert(left.synDeps.isEmpty)
+        assert(ValueEquivalence.defEq(left, right))
+        assert(!ValueEquivalence.defEq(left, runProgram(kept + "{ loop(2) }")))
+        Prelude.default.checkedEnv.putGlobal("r", left)
+      },
+      0L
+    )
+  }
+
+  test("an application's evidence is determined by the rest, so its dependencies, key and conversion skip it") {
+    val pi = runProgram(three + "{ three }").tpe match {
+      case pi: Value.VPi => pi
+      case other         => fail(s"expected a function type, got $other")
+    }
+    val proposition = runProgram("{ Eq(Nat, 3, 3) }")
+    val nat = Prelude.default.checkedEnv("Nat")
+    val opaque = Value.VConst("three", Value.Symbol, pi)
+    val unforceable = new Value.DeferredEvidence(() => fail("the evidence was forced"))
+    val checked = Value.canonicalizeProof(Value.VProof(proposition))
+    val three3 = Value.VPacked.nat(3, nat)
+    // One application as checking builds it, with the proof bound, and one as evaluation does, with deferred evidence.
+    val bound = Value.VApp(opaque, Vector(three3, checked), nat, DepSet.empty)
+    val deferred = Value.VApp(opaque, Vector(three3, unforceable), nat, DepSet.empty)
+    assertEquals(deferred.key, bound.key)
+    assert(deferred.synDeps.isEmpty)
+    assert(!deferred.needsStructuralDefEq)
+    assert(ValueEquivalence.defEq(deferred, bound))
+    Prelude.default.checkedEnv.putGlobal("deferred", deferred)
+
+    // Materializing rebuilds the application and keeps its evidence deferred, at the proposition materialized.
+    val x = FreshVar.freshVar("x", nat)
+    val propositionAtX =
+      Interpreter.evalTerm(pi.binders(1).ty, telescope.BinderOps.instantiateFull(pi.binders.take(1), pi.env, Vector(x)))
+    val atX = Value.VApp(opaque, Vector(x, new Value.DeferredEvidence(() => propositionAtX)), nat, DepSet.empty)
+    assertEquals(atX.synDeps, DepSet(x.id))
+    val solved = EqStore.empty.allow(DepSet(x.id)).addLink(x.id, three3)
+    var materialized: Value = null
+    assertEquals(forcings { materialized = ValueOps.materialize(atX, solved) }, 0L)
+    assertEquals(materialized.key, bound.key)
+    materialized match {
+      case app: Value.VApp =>
+        assertEquals(forcings(assert(ValueEquivalence.defEq(app.args(1).tpe, proposition))), 1L)
+      case other => fail(s"expected an application, got $other")
+    }
+  }
+
+  test("an application reapplied at the head its blocker was solved to has its evidence deferred at that head") {
+    val nat = Prelude.default.checkedEnv("Nat")
+    val three = Value.VPacked.nat(3, nat)
+    // `f(3)` where `f : (x: Nat) -> [h: Eq(Nat, x, n)] -> Nat` for an unknown `n`, as evaluation stores it.
+    val atN = runProgram("def mk (m: Nat): Type := (x: Nat) -> [h: Eq(Nat, x, m)] -> Nat\n\n{ mk }")
+    val n = FreshVar.freshVar("n", nat)
+    val piAtN = Interpreter.evalApply(atN, Vector(n)) match {
+      case pi: Value.VPi => pi
+      case other         => fail(s"expected a function type, got $other")
+    }
+    val f = FreshVar.freshVar("f", piAtN)
+    val propositionAtN =
+      Interpreter.evalTerm(
+        piAtN.binders(1).ty,
+        telescope.BinderOps.instantiateFull(piAtN.binders.take(1), piAtN.env, Vector(three))
+      )
+    val app = Value.VBlockedApp(f, Vector(three, new Value.DeferredEvidence(() => propositionAtN)), nat, DepSet(f.id))
+    assertEquals(app.synDeps, DepSet(f.id, n.id))
+    // `f` is solved to `k(3)`, blocked on `k`, whose type states the proposition at 3, and `n` to 3.
+    val k = FreshVar.freshVar("k", runProgram("{ (b: Nat) -> ((x: Nat) -> [h: Eq(Nat, x, 3)] -> Nat) }"))
+    val solved = EqStore.empty
+      .allow(DepSet(f.id, n.id))
+      .addLink(n.id, three)
+      .addLink(f.id, Interpreter.evalApply(k, Vector(three)))
+    Interpreter.resolveInEqStore(app, solved) match {
+      case resolved: Value.VApp =>
+        assertEquals(resolved.synDeps, DepSet(k.id))
+        // The evidence is determined by the new head: its proposition no longer mentions `n`.
+        val evidence = resolved.args(1)
+        assert(evidence.synDeps.isEmpty, evidence.synDeps)
+        assert(ValueEquivalence.defEq(evidence.tpe, runProgram("{ Eq(Nat, 3, 3) }")))
+      case other => fail(s"expected an application, got $other")
+    }
   }
 
   test("a callee that looks at its evidence sees the proof checking bound") {

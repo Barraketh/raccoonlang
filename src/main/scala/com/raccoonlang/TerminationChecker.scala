@@ -199,7 +199,7 @@ object TerminationChecker {
    */
   private def applicationOfSubterm(candidate: Value, field: Value): Boolean =
     ValueEquivalence.defEq(candidate, field) || (candidate match {
-      case VApp(head, _, _, _) => applicationOfSubterm(head, field)
-      case _                   => false
+      case app: VApp => applicationOfSubterm(app.head, field)
+      case _         => false
     })
 }

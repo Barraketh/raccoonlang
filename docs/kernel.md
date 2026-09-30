@@ -540,8 +540,9 @@ the proposition `P′`. Then:
 Where each field occurs is compiled once, when the family is checked, for a
 family whose instances may be propositions; proof reconstruction reads the same
 sources (see [Proofs and elimination](#proofs-and-elimination)). The binder is
-bound to the proof, and the application is evaluated with it. The residual keeps
-neither a supplied proof nor a discharged one.
+bound to the proof, a supplied one as the canonical proof of `P′`, and the
+application is evaluated with it. The residual keeps neither a supplied proof
+nor a discharged one.
 
 Rule 1 is sound because it adds no proof that the object theory lacks: every
 field is a value `P′` already holds, checked against its field type, and the
@@ -574,14 +575,43 @@ none of it: a lambda binds it unforced in its body's environment, and any other
 head, an opaque definition's say, stores it unforced among the arguments of the
 application it builds. Those two are where deferred evidence stands, and both
 force it where it is read: the environment where the local is looked up or a
-value closes over it, and the application where its arguments are read, which
-every question the kernel asks of an application does: its dependencies, and so
-the closedness a published global's is asserted to have, its key, and its
-conversion. Printing reads only its explicit arguments, which are never
-evidence. Anything else that reaches deferred evidence is a kernel bug. So a proposition is evaluated when a
+value closes over it, and the application where its arguments themselves are
+read, as a match on it or an implicit projected from it reads them. Anything else that reaches deferred evidence is a kernel bug. So a proposition is evaluated when a
 program runs only if something looks at its proof, and then the proof is exactly
 the canonical proof its proposition determines, as checking bound: erasure
 changes when a proposition is evaluated, never what a value is.
+
+An application's evidence arguments, at its head's evidence binders, are
+determined by the rest of it. Each is a proof of its binder's proposition, its
+binder type evaluated in the head's function type's environment with the
+arguments before it bound, whether checking bound it or evaluation deferred it,
+and its dependencies are that proposition's: a canonical proof's, a discharged
+proof's whose fields are read off the proposition, and a supplied one's, which
+checking binds as the canonical proof. So:
+
+- its dependencies are among the application's others: evaluation introduces no
+  free variable, so they
+  are among those of the function type's environment, which the head's
+  dependencies include with its type's, and of the arguments before it, the
+  evidence among them by induction;
+- two applications whose heads and other arguments are equal have equal
+  evidence arguments: equal heads have equal types, so the propositions are
+  equal, and proofs of equal propositions are equal (proof irrelevance). For
+  the same reason, heads and other arguments that unify leave the evidence
+  equations with nothing to link.
+
+An application's dependency set, its key and its conversion therefore read only
+its other arguments, and skip its evidence exactly: the set is the same,
+conversion reaches the same verdict with the same links, and equal keys are
+still convertible. A key mismatch is no longer made inconclusive by a proof
+among the evidence, so an application with evidence may now be decided by key
+where it was compared structurally. Materializing an application keeps its
+evidence unforced, at the proposition materialized, and reapplying a head once
+it is unblocked defers the evidence afresh at the head it then has, so that
+head still determines it. So its dependencies, and the closedness a published
+global is asserted to have, its key and its conversion force none of its
+evidence, and printing a call reads only its explicit arguments. Evidence is told by
+binder mode: a supplied, a discharged and a deferred proof are skipped alike.
 
 ## Structure eta and projections
 
@@ -892,13 +922,28 @@ Pi that drops leading binders its remainder does not depend on keeps its
 node's identity. Packed keys include the codec, canonical payload, and packed
 type.
 
+A value's key, its dependency set, and whether a mismatch of its key is
+conclusive are computed when it is built, from its own components and its
+children's, which were computed when they were built. So none is computed by a
+walk, and publishing a global, materializing and deciding an equation by key
+cost the same however deep their values. A key over host data rather than
+values, a packed literal's payload or a kind's or lifetime's variable set, is
+hashed by a loop when first read: a packed list's tail is built for each layer
+decoded, and hashing each as it is built would make decoding quadratic. An
+application's key mixes its head, its arguments less its evidence ones (see
+[Evidence arguments](#evidence-arguments)), their count, and a constructor
+application's type.
+
 A key only accelerates conversion. Equal keys must be convertible, and a key
 mismatch that conversion treats as conclusive must be unconvertible. The
 key-coherence assertion (`-Draccoon.keyAssertions`, on by default and off for
 benchmarking) runs the conversion rules beneath every equation a key decides
 and fails loudly on disagreement. Within one outermost check each pair of
 values is checked once, so the check costs one structural pass however much
-its values share. Only atoms whose key is their identity are
+its values share. It runs on a work stack of its own: an equation a key decides
+while the check runs is given the key's verdict at once, as with no check
+running, and its own check is pushed there, so each step decomposes one layer
+and no check uses host stack for depth. Only atoms whose key is their identity are
 exempt: variables (by id), constants and constructor heads (by name), and
 levels (by normal form). Kinds and lifetimes key by their normal forms too, an
 atom by its id, which its `scope` term's node identity determines, but
@@ -984,4 +1029,7 @@ Changes to the checker or evaluator must preserve these rules:
     convertible with it; discharge invents no field, and reads no expected type
     and no hypothesis beyond what the proposition holds. Evaluation binds the canonical proof of the same
     proposition, and evaluates the proposition only when that proof is looked
-    at.
+    at. An application's dependencies, key and conversion skip its evidence
+    arguments, which its head and other arguments determine.
+26. A value's dependencies, key and key conclusiveness are computed when it is
+    built, from its children's; no walk over a value computes them.

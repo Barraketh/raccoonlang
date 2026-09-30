@@ -51,6 +51,7 @@ object ValueKey {
     val LifetimeTpe = 24
     val Kind = 25
     val Lifetime = 26
+    val Count = 27
   }
 
   private val SeedHi = -7046029254386353131L
@@ -67,8 +68,11 @@ object ValueKey {
     x ^ (x >>> 33)
   }
 
-  private def tag(id: Int): Key =
-    Key(avalanche(SeedHi ^ id.toLong), avalanche(SeedLo + id.toLong))
+  // Tags are mixed into every key built, so each is avalanched once.
+  private val tags: Array[Key] =
+    Array.tabulate(Tag.Count)(id => Key(avalanche(SeedHi ^ id.toLong), avalanche(SeedLo + id.toLong)))
+
+  private def tag(id: Int): Key = tags(id)
 
   private[raccoonlang] def mixLong(key: Key, value: Long): Key =
     Key(
@@ -119,11 +123,7 @@ object ValueKey {
     )
 
   /** The identity of a constructor head itself, independent of whether it stands alone or heads an application. */
-  private def headKey(head: Value): Key =
-    head match {
-      case h: Value.ConstructorHead => mixString(tag(Tag.ConstructorHead), h.name)
-      case other                    => other.key
-    }
+  private[raccoonlang] def constructorName(name: String): Key = mixString(tag(Tag.ConstructorHead), name)
 
   private def mixValues(key: Key, values: Iterable[Value]): Key = {
     val iter = values.iterator
@@ -144,14 +144,32 @@ object ValueKey {
         mixValues(mixLong(mixKey(key, tag(Tag.LocalId)), nodeId.value.toLong), captures)
     }
 
-  private[raccoonlang] def levelAtomKey(atom: Value.Level.Atom): Key =
+  private def levelAtomKey(atom: Value.Level.Atom): Key =
     atom match {
       case Value.Level.ParamAtom(id) => mixLong(tag(Tag.LevelParamAtom), id.toLong)
       case Value.Level.IMaxAtom(lhs, rhs) =>
         mixKey(mixKey(tag(Tag.LevelIMaxAtom), lhs.key), rhs.key)
     }
 
-  private def levelKey(terms: Map[Value.Level.Atom, Int], c: Int): Key = {
+  /** A set of variables in ascending id order, so the key depends on the set and not on how it was built. */
+  private def mixVars(key: Key, vars: DepSet): Key = {
+    var cur = key
+    vars.foreach(id => cur = mixLong(cur, id.toLong))
+    mixLong(cur, vars.size.toLong)
+  }
+
+  /*
+   * A value's key, one function per value form. Each value computes its key when it is built, from its components and
+   * its children's keys, which were computed when they were built, so no key is computed by a walk.
+   */
+
+  val levelTpe: Key = tag(Tag.LevelTpe)
+  val kindTpe: Key = tag(Tag.KindTpe)
+  val lifetimeTpe: Key = tag(Tag.LifetimeTpe)
+  val sortParameter: Key = tag(Tag.SortParameter)
+  val large: Key = tag(Tag.Large)
+
+  def level(terms: Map[Value.Level.Atom, Int], c: Int): Key = {
     var cur = mixLong(tag(Tag.Level), c.toLong)
     val sortedTerms = terms.iterator
       .map { case (atom, offset) => (levelAtomKey(atom), offset) }
@@ -166,60 +184,57 @@ object ValueKey {
     mixLong(cur, sortedTerms.length.toLong)
   }
 
-  /** A set of variables in ascending id order, so the key depends on the set and not on how it was built. */
-  private def mixVars(key: Key, vars: DepSet): Key = {
-    var cur = key
-    vars.foreach(id => cur = mixLong(cur, id.toLong))
-    mixLong(cur, vars.size.toLong)
+  def kind(isLin: Boolean, vars: DepSet): Key = mixVars(mixLong(tag(Tag.Kind), if (isLin) 1L else 0L), vars)
+
+  def lifetime(vars: DepSet): Key = mixVars(tag(Tag.Lifetime), vars)
+
+  /** Every field explicitly: two sorts at one level differ when their kinds or scopes do. */
+  def sort(level: Value.Level, kind: Value.Kind, scope: Value.Lifetime): Key =
+    mixKey(mixKey(mixKey(tag(Tag.Sort), level.key), kind.key), scope.key)
+
+  def constant(name: String): Key = mixString(tag(Tag.Const), name)
+
+  def variable(id: Value.VarId): Key = mixLong(tag(Tag.Var), id.toLong)
+
+  /**
+   * An application's key mixes its head and the arguments it is given, `args`, which leave out its evidence arguments
+   * (`VApp.determiningArgs`); a constructor's mixes its type too. A nullary constructor's bare head keys as its
+   * application to no arguments.
+   */
+  def application(head: Value, args: Vector[Value], tpe: Value): Key =
+    head match {
+      case h: Value.ConstructorHead => mixKey(mixValues(mixKey(tag(Tag.App), h.nameKey), args), tpe.key)
+      case other                    => mixValues(mixKey(tag(Tag.App), other.key), args)
+    }
+
+  def lambda(id: Value.ValueId): Key = valueIdKey(tag(Tag.Lam), id)
+
+  def neutralThunk(id: Value.ValueId): Key = valueIdKey(tag(Tag.NeutralThunk), id)
+
+  /**
+   * The closure and the binders' modes explicitly, not through the node: both are part of the function type's identity
+   * (spec §2.5, PROOF_BY_EVALUATION §1.5), and a checked node's modes may differ from its source's.
+   */
+  def pi(
+      id: Value.ValueId,
+      binders: Vector[CoreAst.Binder],
+      closureKind: Value.Kind,
+      closureScope: Value.Lifetime
+  ): Key = {
+    val modes = binders.foldLeft(mixLong(valueIdKey(tag(Tag.Pi), id), binders.length.toLong)) { (key, binder) =>
+      mixLong(key, modeKey(binder.mode))
+    }
+    mixKey(mixKey(modes, closureKind.key), closureScope.key)
   }
 
-  def orderKey(v: Value): Key = v match {
-    case Value.LevelTpe           => tag(Tag.LevelTpe)
-    case Value.KindTpe            => tag(Tag.KindTpe)
-    case Value.LifetimeTpe        => tag(Tag.LifetimeTpe)
-    case Value.SortParameter      => tag(Tag.SortParameter)
-    case Value.Large              => tag(Tag.Large)
-    case level: Value.Level       => levelKey(level.terms, level.c)
-    case kind: Value.Kind         => mixVars(mixLong(tag(Tag.Kind), if (kind.isLin) 1L else 0L), kind.vars)
-    case lifetime: Value.Lifetime => mixVars(tag(Tag.Lifetime), lifetime.vars)
-    case sort: Value.VSort        =>
-      // Every field explicitly: two sorts at one level differ when their kinds or scopes do.
-      mixKey(mixKey(mixKey(tag(Tag.Sort), sort.level.key), sort.kind.key), sort.scope.key)
-    case Value.VConst(n, _, _) => mixString(tag(Tag.Const), n)
-    case Value.Var(_, id, _)   => mixLong(tag(Tag.Var), id.toLong)
-    case Value.VApp(h, args, tpe, _) =>
-      val appKey = mixValues(mixKey(tag(Tag.App), headKey(h)), args)
-      h match {
-        case _: Value.ConstructorHead => mixKey(appKey, tpe.key)
-        case _                        => appKey
-      }
-    case Value.VLam(_, id, _) =>
-      valueIdKey(tag(Tag.Lam), id)
-    case m: Value.NeutralThunk =>
-      valueIdKey(tag(Tag.NeutralThunk), m.id)
-    case p: Value.VPi =>
-      // The closure and the binders' modes explicitly, not through the node: both are part of the function type's
-      // identity (spec §2.5, PROOF_BY_EVALUATION §1.5), and a checked node's modes may differ from its source's.
-      val binders = p.binders.foldLeft(mixLong(valueIdKey(tag(Tag.Pi), p.id), p.binders.length.toLong)) {
-        (key, binder) => mixLong(key, modeKey(binder.mode))
-      }
-      mixKey(mixKey(binders, p.closureKind.key), p.closureScope.key)
-    case p: Value.VPacked =>
-      val codecId = p.codec match {
-        case Value.NatCodec         => 1L
-        case _: Value.CharListCodec => 2L
-      }
-      mixKey(p.codec.mixPayloadKey(mixLong(tag(Tag.Packed), codecId), p.payload), p.tpe.key)
-    // A nullary constructor is already a value in constructor form: a global lookup hands back the
-    // bare head where `evalRef` hands back `VCtor(h, [], tpe)`. Both spellings denote the same
-    // value, so the bare head keys exactly as that application would, or defEq's key fast path
-    // would call one unequal to the other.
-    case head: Value.ConstructorHead if head.totalArity == 0 =>
-      mixKey(mixValues(mixKey(tag(Tag.App), headKey(head)), Vector.empty), head.tpe.key)
-    case head: Value.ConstructorHead => headKey(head)
-    // All erased proofs of defEq propositions share a key; VProof contains only its proposition.
-    case p: Value.VProof =>
-      mixKey(tag(Tag.Proof), p.tpe.key)
-    case deferred: Value.DeferredEvidence => deferred.escaped
+  def packed(codec: Value.PackedCodec, payload: Value.PackedPayload, tpe: Value): Key = {
+    val codecId = codec match {
+      case Value.NatCodec         => 1L
+      case _: Value.CharListCodec => 2L
+    }
+    mixKey(codec.mixPayloadKey(mixLong(tag(Tag.Packed), codecId), payload), tpe.key)
   }
+
+  /** All erased proofs of defEq propositions share a key; VProof contains only its proposition. */
+  def proof(tpe: Value): Key = mixKey(tag(Tag.Proof), tpe.key)
 }

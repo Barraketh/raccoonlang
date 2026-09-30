@@ -109,8 +109,8 @@ object ValueEquivalence {
       a.needsStructuralDefEq || b.needsStructuralDefEq || ((a, b) match {
         // During construction of the bundled Prelude, closures can retain a constructor-form Nat
         // created before all fold seams are active.
-        case (_: VPacked, VCtor(_, _, _)) | (VCtor(_, _, _), _: VPacked) => true
-        case _                                                           => false
+        case (_: VPacked, ConstructorApp(_)) | (ConstructorApp(_), _: VPacked) => true
+        case _                                                                 => false
       })
 
     // Unsolvable, but not refutable: safe for elaboration to give up on, unsound to prune a match case on.
@@ -441,8 +441,20 @@ object ValueEquivalence {
       override def hashCode(): Int = 31 * System.identityHashCode(a) + System.identityHashCode(b)
     }
 
-    /** The pairs the running outermost assertion has checked so far, or null when no assertion is running. */
-    private val assertedPairs = new ThreadLocal[java.util.HashSet[AssertedPair]]
+    /** An equation a key decided, with the verdict its keys gave and the store and frame it was decided under. */
+    private final class KeyVerdict(val a: Value, val b: Value, val meta: EqStore, val ctx: Ctx, val keysEqual: Boolean)
+
+    /** The running outermost assertion: the pairs it has taken on, and the verdicts it has yet to check. */
+    private final class Assertion {
+      val taken = new java.util.HashSet[AssertedPair]
+      val pending = new java.util.ArrayDeque[KeyVerdict]
+
+      def take(verdict: KeyVerdict): Unit =
+        if (taken.add(new AssertedPair(verdict.a, verdict.b))) pending.push(verdict)
+    }
+
+    /** The running outermost assertion, or null when none is running. */
+    private val runningAssertion = new ThreadLocal[Assertion]
 
     /**
      * The rules beneath a key verdict must reach it too, and each sub-equation the keys decide is asserted in turn.
@@ -450,17 +462,32 @@ object ValueEquivalence {
      * however much its values share, where rechecking every repeated pair would walk a shared value as a tree. A pair
      * checked once is skipped even under another store or frame: the verdict under test is its keys', which neither
      * changes, and the assertion is a debug check.
+     *
+     * The check runs on an explicit work stack, not the host's: a verdict reached while one is being checked, one of
+     * its sub-equations', is pushed there, and the equation it came from gets the keys' verdict at once, as it does
+     * with no assertion running. So each structural step decomposes one layer, and checking two equal values as deep as
+     * a million-element list takes a million steps and no host stack. Every verdict taken is checked before the
+     * outermost assertion returns.
      */
     private def assertKeyVerdict(a: Value, b: Value, meta: EqStore, ctx: Ctx, keysEqual: Boolean): Unit = {
-      val outermost = assertedPairs.get() == null
-      if (outermost) assertedPairs.set(new java.util.HashSet[AssertedPair])
-      try {
-        if (assertedPairs.get().add(new AssertedPair(a, b)) && structurally(a, b, meta, ctx).isRight != keysEqual)
-          wtf(
-            s"ValueKey disagrees with conversion: keys ${if (keysEqual) "equal" else "differ"} but the structural " +
-              s"comparison ${if (keysEqual) "fails" else "succeeds"} for $a and $b"
-          )
-      } finally if (outermost) assertedPairs.remove()
+      val verdict = new KeyVerdict(a, b, meta, ctx, keysEqual)
+      val running = runningAssertion.get()
+      if (running != null) running.take(verdict)
+      else {
+        val assertion = new Assertion
+        runningAssertion.set(assertion)
+        try {
+          assertion.take(verdict)
+          while (!assertion.pending.isEmpty) {
+            val next = assertion.pending.pop()
+            if (structurally(next.a, next.b, next.meta, next.ctx).isRight != next.keysEqual)
+              wtf(
+                s"ValueKey disagrees with conversion: keys ${if (next.keysEqual) "equal" else "differ"} but the " +
+                  s"structural comparison ${if (next.keysEqual) "fails" else "succeeds"} for ${next.a} and ${next.b}"
+              )
+          }
+        } finally runningAssertion.remove()
+      }
     }
 
     /** The rules below the key fast path: decomposition, whose leaves are decided by the fast path again. */
@@ -502,7 +529,7 @@ object ValueEquivalence {
         // Different constructors of a genuine inductive are disjoint for data. Proof applications
         // were handled by ProofEquation above, whether erased or reconstructed. Heads without
         // no-confusion (e.g. Quot.mk) can still only be identified or separated by their theory.
-        case (VCtor(h1, _, _), VCtor(h2, _, _)) if h1.name != h2.name =>
+        case (ConstructorApp(h1), ConstructorApp(h2)) if h1.name != h2.name =>
           if (h1.noConfusion && h2.noConfusion) apart(a, b)
           else stuck(a, b)
 
@@ -511,16 +538,18 @@ object ValueEquivalence {
           else if (p1.codec.refutesUnequalPayloads) apart(p1, p2)
           else stuck(p1, p2)
 
-        case (p: VPacked, other @ VCtor(head, _, _)) =>
+        case (p: VPacked, other @ ConstructorApp(head)) =>
           unifyPeeled(p, head, other, meta, ctx, packedOnLeft = true)
-        case (other @ VCtor(head, _, _), p: VPacked) =>
+        case (other @ ConstructorApp(head), p: VPacked) =>
           unifyPeeled(p, head, other, meta, ctx, packedOnLeft = false)
 
         // Deliberately NOT a refutation: different inductive family heads (bare or applied) are only
         // definitionally distinct. Propositional generativity is not assumed — propext can equate
         // Prop-valued families (And T T = Or T T), so head clashes fall through to stuck.
 
-        case (v1: VApp, v2: VApp) if v1.args.length == v2.args.length =>
+        // Evidence arguments are not compared: each is a proof of a proposition its head and earlier
+        // arguments determine, so heads and determining arguments that unify make them equal too.
+        case (v1: VApp, v2: VApp) if v1.determiningArgs.length == v2.determiningArgs.length =>
           // Decomposition is invertible only for no-confusion heads. Proof-typed applications were
           // handled by ProofEquation, so no proof exclusion is needed here. For any other head it is
           // a solving heuristic: `f a ~ f b` failing on `a ~ b` proves nothing about the applications,
@@ -544,7 +573,7 @@ object ValueEquivalence {
               // ground once a later argument solves its atoms. Postponement reorders work without
               // ever inventing values. Apart failures are rigid and fail immediately.
               val deferred = Vector.newBuilder[(Value, Value, UnifyFailure)]
-              val args = v1.args.zip(v2.args)
+              val args = v1.determiningArgs.zip(v2.determiningArgs)
               val iter = args.iterator
               while (iter.hasNext) {
                 val (arg1, arg2) = iter.next()
