@@ -100,8 +100,8 @@ A tensor map parameter's type carries its box (`TMap(l, spec)`; bf16 elements an
 requires the maps' boxes to be the ring's, the stage buffers are laid out from the same boxes, and the `tcgen05.mma`
 shared-memory descriptors (start address, stride byte offset 1024, version 1, 128-byte swizzle, K advanced 32 bytes
 per step) and the instruction descriptor (f32 accumulator, bf16 operands, both K-major, M, N) are computed from them.
-The dynamic buffer is declared 1024-byte aligned, and a kernel may not also declare static shared arrays (a
-generation-time error), which would come first in the shared window. So TMA writes, the MMA reads, and the host's
+The dynamic buffer is declared 1024-byte aligned, and a kernel may not also declare static shared arrays (`Gpu.render`
+refuses it, `Check.sharedMemory`), which would come first in the shared window. So TMA writes, the MMA reads, and the host's
 `cuTensorMapEncodeTiled` call cannot disagree about layout: the kernel
 comes with a generated host launcher (`<name>_launch`) that encodes both maps from the same boxes, checks the extents
 the kernel's 32-bit index arithmetic and TMA's signed coordinates need, sets the dynamic shared memory, and launches

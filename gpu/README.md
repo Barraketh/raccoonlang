@@ -10,9 +10,11 @@ prelude. Its two sm_100a GEMMs run correctly on a B200, the persistent one at 98
 | `Prelude.rac` | The bundled prelude, whose `Pair` may hold linear values, plus a `String` layout (for literals) and native `Nat.div`/`Nat.mod` |
 | `Text.rac` | Number printing |
 | `Cuda.rac` | CUDA AST and printer; knows nothing about safety |
+| `Check.rac` | Checkers of the structural invariants of a kernel's AST (`OBLIGATIONS.md` §4), and the certificate `Gpu.render` requires of a kernel it prints |
 | `Gpu.rac` | The sealed core: emitter, values, registers, loops, branches, shared tiles, global matrices, launch; and the Blackwell layer (warp roles, `elect`, the TMA stage ring, tensor memory, `tcgen05` MMA, the tensor-core epilogue), designed in `DESIGN.md` |
 | `examples/` | Kernels that must generate code: a tiled SIMT GEMM, ReLU, TinyGEMM (a warp-specialized sm_100a GEMM), and a persistent version of it with a double-buffered accumulator |
 | `rejected/` | Programs that must be refused, each naming the diagnostic on its `// expect:` line, and `*_mutants.py` tables of one-snippet mutations of an example (run by `mutate.py`) |
+| `checks/` | Unit tests of `Check.rac`: what each checker finds in hand-built kernels, as theorems proved by evaluation |
 | `stub/` | Just enough of the CUDA headers for a host C++ compiler to check generated kernels, launchers and harnesses |
 | `OBLIGATIONS.md` | The library's claim, the platform assumptions it rests on, and each sealed operation's obligations: the checklist for review and for verification |
 | `harness/` | Host programs that run a generated kernel on a GPU against a CPU reference (`DESIGN.md` §7) |
@@ -46,12 +48,18 @@ each generated kernel against `stub/`.
   other. That state must be `Fixed` (one value per type), so the code after a loop or branch cannot depend on which
   arm ran or how often the body did.
 - **What is printed.** Only `Gpu.render` of a sealed `Program`, which only the kernel builders make, so every printed
-  kernel came from the typed core, with its own shared memory and launcher. Its name must be a C identifier, and only
-  a kernel with a launcher (which asks for it) may use dynamic shared memory, never more than an SM has.
+  kernel came from the typed core, with its own shared memory and launcher. And only a well-formed one: `render`
+  requires the certificate `Check.WellFormed` of its kernel, which the checker discharges by running `Check.rac`'s
+  checkers on the concrete kernel where a program renders it. A kernel with a generation error, or that breaks a
+  structural invariant the AST shows (`OBLIGATIONS.md` §4: scoping, shared memory, named barriers, literal widths,
+  names, the launcher's parameters), is refused with `EvidenceNotDischarged`, naming the invariant and showing what
+  its checker found (a message computed from numbers or names prints, today, as its list of character codes), and
+  never printed. So its name is a C identifier the printer does not declare itself, and only a
+  kernel with a launcher (which asks for it) uses dynamic shared memory, never more than an SM has.
 
-Index bounds are checked while generating, where every size is concrete: a read that is not provably in bounds turns
-the kernel into an `#error`, as does a 32-bit literal that does not fit 32 bits. Preconditions on the numbers a call
-is given (a positive tile or divisor, an aligned warpgroup) are evidence arguments instead
+Index bounds are checked while generating, where every size is concrete: a read that is not provably in bounds is a
+generation error, recorded in the kernel as an `#error` line, so `render` refuses the kernel. Preconditions on the
+numbers a call is given (a positive tile or divisor, an aligned warpgroup) are evidence arguments instead
 (`docs/PROOF_BY_EVALUATION.md`): the checker discharges each by evaluation where the call stands, and refuses a false
 one with `EvidenceNotDischarged`, so the program never generates.
 

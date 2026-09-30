@@ -1,7 +1,8 @@
-// expect: #error
+// expect: EvidenceNotDischarged
+// mentions: Check.Clean.noErrors
 // A shared read whose index is not provably below the array's length. Index arithmetic is checked while generating,
-// where every bound is concrete, so this kernel generates an `#error` instead of code: ty * 16 + tx + 1 reaches
-// 256 for the last thread.
+// where every bound is concrete, so this kernel carries a generation error, which `Gpu.render` refuses to print:
+// ty * 16 + tx + 1 reaches 256 for the last thread.
 import Gpu
 namespace T {
   open Gpu

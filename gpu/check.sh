@@ -1,7 +1,8 @@
 #!/bin/sh
 # Checks the spike: every example must generate code, every file under rejected/ must fail with the diagnostic
-# kind named on its `// expect:` line (or, for `#error`, generate a kernel carrying that generation-time error), and
-# every mutant in a rejected/*_mutants.py table must be refused as the table says (see mutate.py).
+# kind named on its `// expect:` line (with a message that mentions the text of its `// mentions:` line, if it has
+# one), every mutant in a rejected/*_mutants.py table must be refused as the table says (see mutate.py), and every file
+# under checks/ must check without a diagnostic.
 here=$(cd "$(dirname "$0")" && pwd)
 run() { ${RACCOON:?set RACCOON to a raccoon launcher} --prelude "$here/Prelude.rac" --root "$here" "$@"; }
 status=0
@@ -20,16 +21,17 @@ for f in "$here"/examples/*.rac; do
 done
 for f in "$here"/rejected/*.rac; do
   want=$(sed -n 's#^// expect: ##p' "$f" | head -1)
-  if [ "$want" = "#error" ]; then
-    got=$(run --raw "$f" 2>&1 | grep -c '#error')
-    [ "$got" -gt 0 ] && echo "ok   $(basename "$f") -> generation error" || { echo "FAIL $(basename "$f"): no generation error"; status=1; }
-  else
-    got=$(run --json "$f" 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(" ".join(x["kind"] for x in d))' 2>/dev/null || echo crashed)
-    case " $got " in
-      *" $want "*) echo "ok   $(basename "$f") -> $got" ;;
-      *) echo "FAIL $(basename "$f"): expected $want, got '$got'"; status=1 ;;
-    esac
-  fi
+  mentions=$(sed -n 's#^// mentions: ##p' "$f" | head -1)
+  got=$(run --json "$f" 2>/dev/null | MENTIONS="$mentions" python3 -c 'import json,os,sys; d=json.load(sys.stdin); print(" ".join(x["kind"] for x in d if os.environ["MENTIONS"] in x["message"]))' 2>/dev/null || echo crashed)
+  case " $got " in
+    *" $want "*) echo "ok   $(basename "$f") -> $got" ;;
+    *) echo "FAIL $(basename "$f"): expected $want${mentions:+ mentioning $mentions}, got '$got'"; status=1 ;;
+  esac
+done
+# The checkers' unit tests: theorems about hand-built kernels, proved by evaluation.
+for f in "$here"/checks/*.rac; do
+  got=$(run --json "$f" 2>/dev/null | python3 -c 'import json,sys; [print("L%d %s: %s" % (x["startLine"], x["kind"], x["message"])) for x in json.load(sys.stdin)]' 2>/dev/null || echo crashed)
+  if [ -z "$got" ]; then echo "ok   checks/$(basename "$f")"; else echo "FAIL checks/$(basename "$f")"; printf '%s\n' "$got"; status=1; fi
 done
 # Hardware test harnesses are host code: the same stubs check them.
 for h in "$here"/harness/*.cu; do

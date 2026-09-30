@@ -16,6 +16,7 @@
 // The sm_100a operations (TMA, mbarrier, tcgen05) follow CUTLASS's inline assembly; gpu/DESIGN.md §7 records their
 // runs on a B200.
 
+import Check
 import Cuda
 import Text
 
@@ -176,12 +177,10 @@ namespace Gpu {
 
   // ---- Pure values ------------------------------------------------------------------------------------------------
 
-  def u32Limit : Nat := 4294967296
-
   def i32Limit : Nat := 2147483648
 
   // An exclusive bound, forgotten when it could exceed what a u32 holds.
-  def cap (n: Nat): Option(Nat) := Bool.cond(Nat.ble(n, Gpu.u32Limit), Option(Nat), Option.some(n), Option.none(Nat))
+  def cap (n: Nat): Option(Nat) := Bool.cond(Nat.ble(n, Cuda.u32Limit), Option(Nat), Option.some(n), Option.none(Nat))
 
   def boundAdd (a: Option(Nat))(b: Option(Nat)): Option(Nat) := {
     match a returning Option(Nat) with
@@ -265,7 +264,7 @@ namespace Gpu {
 
   def asmIn (template: String)(ins: List(Operand)): Stmt := Stmt.asm(template, List.nil(Operand), ins)
 
-  def namedBarrier (id: Nat)(threads: Nat): Stmt := Gpu.asmIn("bar.sync %0, %1;", Gpu.two(Gpu.r(Expr.lit(id)), Gpu.r(Expr.lit(threads))))
+  def namedBarrier (id: Nat)(threads: Nat): Stmt := Gpu.asmIn(Check.barrierTemplate, Gpu.two(Gpu.r(Expr.lit(id)), Gpu.r(Expr.lit(threads))))
 
   def mbarInit (bar: Expr)(count: Nat): Stmt :=
     Gpu.asmIn("mbarrier.init.shared::cta.b64 [%0], %1;", Gpu.two(Gpu.r(bar), Gpu.r(Expr.lit(count))))
@@ -613,129 +612,24 @@ namespace Gpu {
   def uniformParam (k: Key)(l: Lifetime)(name: String): Val(l, Grain.uniform, DType.u32) :=
     Val.mk(l, Grain.uniform, DType.u32, Expr.param(name), Option.none(Nat))
 
-  def errorsToCode (errors: List(String))(acc: List(Stmt)): List(Stmt) decreases structural(errors) := {
-    match errors returning List(Stmt) with
-    | List.nil => acc
-    | List.cons m more => Gpu.errorsToCode(more, List.append(acc, List.cons(Stmt.error(m), List.nil(Stmt))))
-  }
+  def errorsToCode (errors: List(String)): List(Stmt) := List.map(errors, Stmt, fun (m: String): Stmt => Stmt.error(m))
 
   def start (k: Key)(l: Lifetime)(g: Group): Ctx(l, g) := Ctx.mk(l, g, Gen.mk(List.nil(Stmt), 0, 0, 1, List.nil(String)))
-
-  mutual {
-    // Whether code declares a static shared array anywhere.
-    def stmtShared (s: Stmt): Bool decreases structural(s) := {
-      match s returning Bool with
-      | Stmt.decl t id init => Bool.false
-      | Stmt.declMut t id init => Bool.false
-      | Stmt.declOut t id => Bool.false
-      | Stmt.assign id value => Bool.false
-      | Stmt.store base i value => Bool.false
-      | Stmt.shared t id size => Bool.true
-      | Stmt.forLoop id start count body => Gpu.blockShared(body)
-      | Stmt.forStride id start stop step body => Gpu.blockShared(body)
-      | Stmt.ifElse c yes no => Bool.or(Gpu.blockShared(yes), Gpu.blockShared(no))
-      | Stmt.scoped body => Gpu.blockShared(body)
-      | Stmt.sync => Bool.false
-      | Stmt.syncWarp => Bool.false
-      | Stmt.asm template outs ins => Bool.false
-      | Stmt.error message => Bool.false
-    }
-
-    def blockShared (b: Block): Bool decreases structural(b) := {
-      match b returning Bool with
-      | Block.done => Bool.false
-      | Block.seq st more => Bool.or(Gpu.stmtShared(st), Gpu.blockShared(more))
-    }
-  }
-
-  // A 32-bit literal that does not fit 32 bits, anywhere in an expression.
-  def exprWide (x: Expr): Bool decreases structural(x) := {
-    match x returning Bool with
-    | Expr.var id => Bool.false
-    | Expr.lit value => Nat.ble(Gpu.u32Limit, value)
-    | Expr.lit64 value => Bool.false
-    | Expr.zero t => Bool.false
-    | Expr.param n => Bool.false
-    | Expr.special b => Bool.false
-    | Expr.bin op a b => Bool.or(Gpu.exprWide(a), Gpu.exprWide(b))
-    | Expr.max a b => Bool.or(Gpu.exprWide(a), Gpu.exprWide(b))
-    | Expr.fma a b c => Bool.or(Gpu.exprWide(a), Bool.or(Gpu.exprWide(b), Gpu.exprWide(c)))
-    | Expr.select c a b => Bool.or(Gpu.exprWide(c), Bool.or(Gpu.exprWide(a), Gpu.exprWide(b)))
-    | Expr.index base i => Bool.or(Gpu.exprWide(base), Gpu.exprWide(i))
-    | Expr.cast t a => Gpu.exprWide(a)
-    | Expr.sharedAddr offset => Bool.false
-    | Expr.sharedPtr t offset => Bool.false
-    | Expr.paramAddr n => Bool.false
-  }
-
-  def operandsWide (os: List(Operand)): Bool := List.any(os, fun (o: Operand): Bool => Gpu.exprWide(o.e))
-
-  mutual {
-    def stmtWide (s: Stmt): Bool decreases structural(s) := {
-      match s returning Bool with
-      | Stmt.decl t id init => Gpu.exprWide(init)
-      | Stmt.declMut t id init => Gpu.exprWide(init)
-      | Stmt.declOut t id => Bool.false
-      | Stmt.assign id value => Gpu.exprWide(value)
-      | Stmt.store base i value => Bool.or(Gpu.exprWide(base), Bool.or(Gpu.exprWide(i), Gpu.exprWide(value)))
-      | Stmt.shared t id size => Bool.false
-      | Stmt.forLoop id start count body => Bool.or(Bool.or(Gpu.exprWide(start), Gpu.exprWide(count)), Gpu.blockWide(body))
-      | Stmt.forStride id start stop step body =>
-        Bool.or(Bool.or(Gpu.exprWide(start), Bool.or(Gpu.exprWide(stop), Gpu.exprWide(step))), Gpu.blockWide(body))
-      | Stmt.ifElse c yes no => Bool.or(Gpu.exprWide(c), Bool.or(Gpu.blockWide(yes), Gpu.blockWide(no)))
-      | Stmt.scoped body => Gpu.blockWide(body)
-      | Stmt.sync => Bool.false
-      | Stmt.syncWarp => Bool.false
-      | Stmt.asm template outs ins => Bool.or(Gpu.operandsWide(outs), Gpu.operandsWide(ins))
-      | Stmt.error message => Bool.false
-    }
-
-    def blockWide (b: Block): Bool decreases structural(b) := {
-      match b returning Bool with
-      | Block.done => Bool.false
-      | Block.seq st more => Bool.or(Gpu.stmtWide(st), Gpu.blockWide(more))
-    }
-  }
-
-  // Whether `c` may start a C identifier (a letter or `_`), and continue one (also a digit).
-  def identStart (c: Char): Bool :=
-    Bool.or(Bool.and(Nat.ble(65, c.value), Nat.ble(c.value, 90)), Bool.or(Bool.and(Nat.ble(97, c.value), Nat.ble(c.value, 122)), Nat.beq(c.value, 95)))
-
-  def identRest (c: Char): Bool := Bool.or(Gpu.identStart(c), Bool.and(Nat.ble(48, c.value), Nat.ble(c.value, 57)))
-
-  def isIdent (name: String): Bool := {
-    match name.data returning Bool with
-    | List.nil => Bool.false
-    | List.cons c more => Bool.and(Gpu.identStart(c), Bool.not(List.any(more, fun (d: Char): Bool => Bool.not(Gpu.identRest(d)))))
-  }
-
-  // The dynamic shared memory an sm_100a CTA can have.
-  def maxDynamicShared : Nat := 232448
 
   // A kernel the typed core built: the only thing `render` prints. A program can neither build one nor take one apart,
   // so it cannot change a kernel's code, shared memory or launcher.
   sealed struct Program : Type
    | mk (kernel: Kernel) : Program
 
-  def render (p: Program): String := Cuda.kernel(p.kernel)
+  // The kernel as CUDA C++. It must be well formed (`Check.WellFormed`), which the checker discharges by evaluating
+  // `Check`'s checkers on the concrete kernel where a program renders it: one with a generation error, or that breaks
+  // a structural invariant, is refused with the checker's messages and never printed.
+  def render (p: Program)[ok: Check.WellFormed(p.kernel)]: String := Cuda.kernel(p.kernel)
 
-  // The finished kernel: its code, then any generation errors as `#error` lines, so it does not compile. The name is
-  // printed as written, so it must be a C identifier. Static shared arrays come before the dynamic buffer in the shared
-  // window, which could then lose the 1024-byte alignment its swizzled layouts need, so a kernel may use one kind of
-  // shared memory or the other. Dynamic shared memory must fit the SM, and only a kernel with a launcher, which asks
-  // for it, may use it. A 32-bit literal must fit 32 bits.
-  def finish (k: Key)(name: String)(params: List(Param))(launcher: Option(Launcher))(gen0: Gen): Program := {
-    let code := Gpu.toBlock(gen0.code, Block.done)
-    let launched := Option.elim(launcher, Bool, Bool.false, fun (l: Launcher): Bool => Bool.true)
-    let gen01 := Gpu.check(gen0, Nat.ble(gen0.smem, Gpu.maxDynamicShared), "kernel: more dynamic shared memory than sm_100a has")
-    let gen02 := Gpu.check(gen01, Bool.or(launched, Nat.isZero(gen0.smem)), "kernel: dynamic shared memory without a launcher to ask for it")
-    let gen1 := Gpu.check(gen02, Bool.not(Bool.and(Nat.blt(0, gen0.smem), Gpu.blockShared(code))),
-      "kernel: static shared arrays and dynamic shared memory together")
-    let gen2 := Gpu.check(gen1, Gpu.isIdent(name), "kernel: the name must be a C identifier")
-    let gen := Gpu.check(gen2, Bool.not(Gpu.blockWide(code)), "kernel: a 32-bit literal does not fit 32 bits")
-    Program.mk(Kernel.mk(name, params, gen.smem, Gpu.toBlock(gen.code, Gpu.toBlock(Gpu.errorsToCode(gen.errors, List.nil(Stmt)), Block.done)),
+  // The finished kernel: its code, then any generation errors as `#error` lines, which `render` refuses.
+  def finish (k: Key)(name: String)(params: List(Param))(launcher: Option(Launcher))(gen: Gen): Program :=
+    Program.mk(Kernel.mk(name, params, gen.smem, Gpu.toBlock(gen.code, Gpu.toBlock(Gpu.errorsToCode(gen.errors), Block.done)),
       launcher))
-  }
 
   // A kernel computing C (M×N) from A (M×K) and B (K×N), one CTA of `tile*tile` threads per `tile`×`tile` block of C.
   // Launch contract: grid (ceil(N/tile), ceil(M/tile)), block tile*tile, and A, B, C distinct arrays of those extents,
@@ -1533,7 +1427,7 @@ namespace Gpu {
     let hostParams := List.cons(Param.input(DType.bf16, "A"), List.cons(Param.input(DType.bf16, "B"), List.cons(Param.output(DType.f32, "C"),
       List.cons(Param.scalar(DType.u32, "M"), List.cons(Param.scalar(DType.u32, "N"), List.cons(Param.scalar(DType.u32, "K"), List.nil(Param)))))))
     let below := fun (x: Expr)(limit: Nat): Expr => Expr.bin(BinOp.lt, x, Expr.lit64(limit))
-    let requires := List.cons(below(Expr.bin(BinOp.mul, Expr.cast(DType.u64, Expr.param("M")), Expr.param("N")), Gpu.u32Limit),
+    let requires := List.cons(below(Expr.bin(BinOp.mul, Expr.cast(DType.u64, Expr.param("M")), Expr.param("N")), Cuda.u32Limit),
       List.cons(below(Expr.param("M"), Gpu.i32Limit), List.cons(below(Expr.param("N"), Gpu.i32Limit),
         List.cons(below(Expr.param("K"), Gpu.i32Limit), List.nil(Expr)))))
     let maps := List.cons(MapEncoding.mk("A_map", "A", "M", "K", sa.inner, sa.outer),

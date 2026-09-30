@@ -124,7 +124,7 @@ MUTANTS = [
         let (e, u) := Gpu.withTmem(e, permit, 128, AccState.ready, Unit, body)""",
     ),
     dict(
-        name="static_and_dynamic_shared", expect="#error",
+        name="static_and_dynamic_shared", expect="EvidenceNotDischarged", mentions="Check.Clean.sharedOk",
         why="Declares a static shared array in a kernel whose TMA stages live in the dynamic buffer: the static array "
             "comes first in the shared window, and the dynamic buffer could lose the 1024-byte alignment the 128-byte "
             "swizzle needs.",
@@ -138,27 +138,35 @@ MUTANTS = [
         })""",
     ),
     dict(
-        name="kernel_name_not_identifier", expect="#error",
+        name="kernel_name_not_identifier", expect="EvidenceNotDischarged", mentions="Check.Clean.namesOk",
         why="Names the kernel with text that is not a C identifier: the name is printed as written, so it could "
             "inject code of its own.",
         old="""    Gpu.tmaGemmKernel("tinygemm",""",
         new="""    Gpu.tmaGemmKernel("tinygemm(float* C) { C[0] = 0.0f; } __global__ void evil",""",
     ),
     dict(
-        name="literal_wider_than_u32", expect="#error",
+        name="kernel_named_like_parameter", expect="EvidenceNotDischarged", mentions="Check.Clean.namesOk",
+        why="Names the kernel `A`, a C identifier that generates, but also the name of the launcher's parameter: in "
+            "the launcher, `reinterpret_cast<const void*>(A)` would take the pointer to A's elements for the kernel, "
+            "and launch it. No chosen name may be one the printer or the launcher declares.",
+        old="""    Gpu.tmaGemmKernel("tinygemm",""",
+        new="""    Gpu.tmaGemmKernel("A",""",
+    ),
+    dict(
+        name="literal_wider_than_u32", expect="EvidenceNotDischarged", mentions="Check.Clean.literalsOk",
         why="Scales the K coordinate by a constant that does not fit the 32-bit value it is typed as.",
         old="""        Gpu.fill(e, ring, s, k.a, Gpu.mulC(i, 64), k.m0, k.b, Gpu.mulC(i, 64), k.n0)""",
         new="""        Gpu.fill(e, ring, s, k.a, Gpu.mulC(i, 4294967296), k.m0, k.b, Gpu.mulC(i, 64), k.n0)""",
     ),
     dict(
-        name="box_narrower_than_swizzle", expect="#error",
+        name="box_narrower_than_swizzle", expect="EvidenceNotDischarged", mentions="ring: a box must be 64 elements wide",
         why="Loads 32-element (64-byte) boxes of A with the 128-byte swizzle, which needs 128-byte rows and "
             "1024-byte-aligned stages.",
         old="""  def boxA : TmaSpec := TmaSpec.mk(64, 128)""",
         new="""  def boxA : TmaSpec := TmaSpec.mk(32, 128)""",
     ),
     dict(
-        name="mma_m64", expect="#error",
+        name="mma_m64", expect="EvidenceNotDischarged", mentions="mma: unsupported shape",
         why="Loads 64-row boxes of A: an M=64 accumulator is not laid out one row per tensor-memory lane, as the "
             "epilogue reads it.",
         old="""  def boxA : TmaSpec := TmaSpec.mk(64, 128)""",

@@ -1,0 +1,739 @@
+// The structural invariants of a kernel (gpu/OBLIGATIONS.md §4), decided on its AST. Each checker returns the
+// violations of one invariant, as messages, and none when the kernel keeps it. `WellFormed` is the certificate
+// `Gpu.render` requires, so a kernel that breaks one, or carries a generation error, is never printed.
+// I7 and I8 are not here: the AST does not record which threads run a block or what a barrier is for.
+
+import Cuda
+import Text
+
+namespace Check {
+  open Cuda
+
+  // ---- Sets of naturals ---------------------------------------------------------------------------------------------
+
+  // A set of naturals as a binary trie: a node holds 0 itself, and n + 1 in its `even` or `odd` child, as n is even or
+  // odd, at n / 2. Membership and insertion take a step per binary digit.
+  inductive NatSet : Type
+   | empty : NatSet
+   | node (here: Bool)(even: NatSet)(odd: NatSet) : NatSet
+
+  namespace NatSet {
+    def member (s: NatSet)(n: Nat): Bool decreases structural(s) := {
+      match s returning Bool with
+      | NatSet.empty => Bool.false
+      | NatSet.node here even odd => {
+        match n returning Bool with
+        | Nat.zero => here
+        | Nat.succ m => {
+          match Nat.isZero(Nat.mod(m, 2)) returning Bool with
+          | Bool.true => Check.NatSet.member(even, Nat.div(m, 2))
+          | Bool.false => Check.NatSet.member(odd, Nat.div(m, 2))
+        }
+      }
+    }
+
+    def here (s: NatSet): Bool := {
+      match s returning Bool with
+      | NatSet.empty => Bool.false
+      | NatSet.node h e o => h
+    }
+
+    def even (s: NatSet): NatSet := {
+      match s returning NatSet with
+      | NatSet.empty => NatSet.empty
+      | NatSet.node h e o => e
+    }
+
+    def odd (s: NatSet): NatSet := {
+      match s returning NatSet with
+      | NatSet.empty => NatSet.empty
+      | NatSet.node h e o => o
+    }
+
+    // `s` with `n` added, where `fuel` is at least `n`, and so at least the depth of `n`'s node.
+    def insertFuel (fuel: Nat)(s: NatSet)(n: Nat): NatSet decreases structural(fuel) := {
+      match n returning NatSet with
+      | Nat.zero => NatSet.node(Bool.true, Check.NatSet.even(s), Check.NatSet.odd(s))
+      | Nat.succ m => {
+        match fuel returning NatSet with
+        | Nat.zero => s
+        | Nat.succ f => {
+          match Nat.isZero(Nat.mod(m, 2)) returning NatSet with
+          | Bool.true => NatSet.node(Check.NatSet.here(s), Check.NatSet.insertFuel(f, Check.NatSet.even(s), Nat.div(m, 2)), Check.NatSet.odd(s))
+          | Bool.false => NatSet.node(Check.NatSet.here(s), Check.NatSet.even(s), Check.NatSet.insertFuel(f, Check.NatSet.odd(s), Nat.div(m, 2)))
+        }
+      }
+    }
+
+    def insert (s: NatSet)(n: Nat): NatSet := Check.NatSet.insertFuel(n, s, n)
+  }
+
+  // ---- Messages and names -------------------------------------------------------------------------------------------
+
+  // `found` reversed onto `acc`: checkers collect violations newest first, and report them in program order.
+  def revOnto (found: List(String))(acc: List(String)): List(String) decreases structural(found) := {
+    match found returning List(String) with
+    | List.nil => acc
+    | List.cons m more => Check.revOnto(more, List.cons(m, acc))
+  }
+
+  def inOrder (found: List(String)): List(String) := Check.revOnto(found, List.nil(String))
+
+  // `found` with `message` added unless `ok`. The message is built only when it is reported.
+  def unless (found: List(String))(ok: Bool)(message: Unit -> String): List(String) := {
+    match ok returning List(String) with
+    | Bool.true => found
+    | Bool.false => List.cons(message(Unit.unit), found)
+  }
+
+  def sameChars (a: List(Char))(b: List(Char)): Bool decreases structural(a) := {
+    match a returning Bool with
+    | List.nil => {
+      match b returning Bool with
+      | List.nil => Bool.true
+      | List.cons d more => Bool.false
+    }
+    | List.cons c rest => {
+      match b returning Bool with
+      | List.nil => Bool.false
+      | List.cons d more => {
+        match Nat.beq(c.value, d.value) returning Bool with
+        | Bool.true => Check.sameChars(rest, more)
+        | Bool.false => Bool.false
+      }
+    }
+  }
+
+  def same (a: String)(b: String): Bool := Check.sameChars(a.data, b.data)
+
+  // Whether `a` begins with `prefix`.
+  def startsWith (a: List(Char))(prefix: List(Char)): Bool decreases structural(prefix) := {
+    match prefix returning Bool with
+    | List.nil => Bool.true
+    | List.cons p rest => {
+      match a returning Bool with
+      | List.nil => Bool.false
+      | List.cons c more => Bool.and(Nat.beq(c.value, p.value), Check.startsWith(more, rest))
+    }
+  }
+
+  def mentions (names: List(String))(name: String): Bool := List.any(names, fun (n: String): Bool => Check.same(n, name))
+
+  def isDigit (c: Char): Bool := Bool.and(Nat.ble(48, c.value), Nat.ble(c.value, 57))
+
+  // Whether `c` may start a C identifier (a letter or `_`), and continue one (also a digit).
+  def identStart (c: Char): Bool :=
+    Bool.or(Bool.and(Nat.ble(65, c.value), Nat.ble(c.value, 90)), Bool.or(Bool.and(Nat.ble(97, c.value), Nat.ble(c.value, 122)), Nat.beq(c.value, 95)))
+
+  def identRest (c: Char): Bool := Bool.or(Check.identStart(c), Check.isDigit(c))
+
+  def isIdent (name: String): Bool := {
+    match name.data returning Bool with
+    | List.nil => Bool.false
+    | List.cons c more => Bool.and(Check.identStart(c), List.all(more, Check.identRest))
+  }
+
+  // Whether the printer declares `name` itself where a kernel's, a parameter's or a tensor map's name is used, so that
+  // using it for one would rebind it: a variable `v` and digits, anything starting `gpu_`, the launcher's `stream`,
+  // `status` and `args`, and a tensor-map encoding's `dims`, `strides`, `box` and `steps`.
+  def printerName (name: String): Bool := {
+    let variable := {
+      match name.data returning Bool with
+      | List.nil => Bool.false
+      | List.cons c more => {
+        match more returning Bool with
+        | List.nil => Bool.false
+        | List.cons d rest => Bool.and(Nat.beq(c.value, 118), List.all(more, Check.isDigit))
+      }
+    }
+    let fixed := List.cons("stream", List.cons("status", List.cons("args", List.cons("dims", List.cons("strides",
+      List.cons("box", List.cons("steps", List.nil(String))))))))
+    Bool.or(variable, Bool.or(Check.startsWith(name.data, "gpu_".data), Check.mentions(fixed, name)))
+  }
+
+  // ---- Traversals ---------------------------------------------------------------------------------------------------
+
+  // What an expression holds itself, apart from its subexpressions: a variable, a thread, block or grid index, an
+  // element of an array, a 32- or 64-bit literal, a parameter (its value or its address), an offset into the dynamic
+  // shared buffer, or nothing a checker reads.
+  inductive Leaf : Type
+   | other : Leaf
+   | var (id: Nat) : Leaf
+   | special (b: Builtin) : Leaf
+   | element : Leaf
+   | lit32 (value: Nat) : Leaf
+   | lit64 (value: Nat) : Leaf
+   | param (name: String) : Leaf
+   | shared (offset: Nat) : Leaf
+
+  def leaf (x: Expr): Leaf := {
+    match x returning Leaf with
+    | Expr.var id => Leaf.var(id)
+    | Expr.lit value => Leaf.lit32(value)
+    | Expr.lit64 value => Leaf.lit64(value)
+    | Expr.zero t => Leaf.other
+    | Expr.param n => Leaf.param(n)
+    | Expr.special b => Leaf.special(b)
+    | Expr.bin op a b => Leaf.other
+    | Expr.max a b => Leaf.other
+    | Expr.fma a b c => Leaf.other
+    | Expr.select c t f => Leaf.other
+    | Expr.index base i => Leaf.element
+    | Expr.cast t a => Leaf.other
+    | Expr.sharedAddr offset => Leaf.shared(offset)
+    | Expr.sharedPtr t offset => Leaf.shared(offset)
+    | Expr.paramAddr n => Leaf.param(n)
+  }
+
+  // `f` folded over `x` and every expression inside it, outermost first, left to right.
+  def exprFold (A: Type)(x: Expr)(acc: A)(f: A -> Expr -> A): A decreases structural(x) := {
+    let here := f(acc, x)
+    match x returning A with
+    | Expr.var id => here
+    | Expr.lit value => here
+    | Expr.lit64 value => here
+    | Expr.zero t => here
+    | Expr.param n => here
+    | Expr.special b => here
+    | Expr.bin op a b => Check.exprFold(A, b, Check.exprFold(A, a, here, f), f)
+    | Expr.max a b => Check.exprFold(A, b, Check.exprFold(A, a, here, f), f)
+    | Expr.fma a b c => Check.exprFold(A, c, Check.exprFold(A, b, Check.exprFold(A, a, here, f), f), f)
+    | Expr.select c t e => Check.exprFold(A, e, Check.exprFold(A, t, Check.exprFold(A, c, here, f), f), f)
+    | Expr.index base i => Check.exprFold(A, i, Check.exprFold(A, base, here, f), f)
+    | Expr.cast t a => Check.exprFold(A, a, here, f)
+    | Expr.sharedAddr offset => here
+    | Expr.sharedPtr t offset => here
+    | Expr.paramAddr n => here
+  }
+
+  // `f` folded over every expression a statement holds itself, not in its blocks, in printed order. A loop's header
+  // expressions are the statement's own.
+  def stmtExprs (A: Type)(s: Stmt)(acc: A)(f: A -> Expr -> A): A := {
+    let each := fun (a: A)(x: Expr): A => Check.exprFold(A, x, a, f)
+    let operands := fun (a: A)(os: List(Operand)): A => List.foldl(os, A, a, fun (b: A)(o: Operand): A => each(b, o.e))
+    match s returning A with
+    | Stmt.decl t id init => each(acc, init)
+    | Stmt.declMut t id init => each(acc, init)
+    | Stmt.declOut t id => acc
+    | Stmt.assign id value => each(acc, value)
+    | Stmt.store base i value => each(each(each(acc, base), i), value)
+    | Stmt.shared t id size => acc
+    | Stmt.forLoop id start count body => each(each(acc, start), count)
+    | Stmt.forStride id start stop step body => each(each(each(acc, start), stop), step)
+    | Stmt.ifElse c yes no => each(acc, c)
+    | Stmt.scoped body => acc
+    | Stmt.sync => acc
+    | Stmt.syncWarp => acc
+    | Stmt.asm template outs ins => operands(operands(acc, outs), ins)
+    | Stmt.error message => acc
+  }
+
+  mutual {
+    // `f` folded over `s` and every statement in its blocks, in program order.
+    def stmtFold (A: Type)(s: Stmt)(acc: A)(f: A -> Stmt -> A): A decreases structural(s) := {
+      let here := f(acc, s)
+      match s returning A with
+      | Stmt.decl t id init => here
+      | Stmt.declMut t id init => here
+      | Stmt.declOut t id => here
+      | Stmt.assign id value => here
+      | Stmt.store base i value => here
+      | Stmt.shared t id size => here
+      | Stmt.forLoop id start count body => Check.blockFold(A, body, here, f)
+      | Stmt.forStride id start stop step body => Check.blockFold(A, body, here, f)
+      | Stmt.ifElse c yes no => Check.blockFold(A, no, Check.blockFold(A, yes, here, f), f)
+      | Stmt.scoped body => Check.blockFold(A, body, here, f)
+      | Stmt.sync => here
+      | Stmt.syncWarp => here
+      | Stmt.asm template outs ins => here
+      | Stmt.error message => here
+    }
+
+    def blockFold (A: Type)(b: Block)(acc: A)(f: A -> Stmt -> A): A decreases structural(b) := {
+      match b returning A with
+      | Block.done => acc
+      | Block.seq s more => Check.blockFold(A, more, Check.stmtFold(A, s, acc, f), f)
+    }
+  }
+
+  // `f` folded over every expression in the block, in program order.
+  def blockExprs (A: Type)(b: Block)(acc: A)(f: A -> Expr -> A): A :=
+    Check.blockFold(A, b, acc, fun (a: A)(s: Stmt): A => Check.stmtExprs(A, s, a, f))
+
+  // The expressions a launcher evaluates on the host: its requirements, then its grid's extent.
+  def hostExprList (l: Launcher): List(Expr) := {
+    let grid := {
+      match l.grid returning List(Expr) with
+      | Grid.blocks x y => List.cons(x, List.cons(y, List.nil(Expr)))
+      | Grid.persistent tiles => List.cons(tiles, List.nil(Expr))
+    }
+    List.foldr(l.requires, List(Expr), grid, fun (x: Expr)(rest: List(Expr)): List(Expr) => List.cons(x, rest))
+  }
+
+  // `f` folded over every expression the kernel's launcher, if it has one, evaluates on the host.
+  def hostExprs (A: Type)(host: Option(Launcher))(acc: A)(f: A -> Expr -> A): A := {
+    match host returning A with
+    | Option.none => acc
+    | Option.some l => List.foldl(Check.hostExprList(l), A, acc, fun (a: A)(x: Expr): A => Check.exprFold(A, x, a, f))
+  }
+
+  // What a walk carries: a set it has seen so far, and the violations it found, newest first.
+  struct Scan : Type
+   | mk (seen: NatSet)(found: List(String)) : Scan
+
+  // ---- The checkers -------------------------------------------------------------------------------------------------
+
+  // Generation errors: the messages of the kernel's `#error` lines, in order. Every check a builder makes while
+  // generating (`Gpu.check`) ends up as one.
+  def errors (k: Kernel): List(String) := Check.inOrder(Check.blockFold(List(String), k.body, List.nil(String),
+    fun (found: List(String))(s: Stmt): List(String) => {
+      match s returning List(String) with
+      | Stmt.decl t id init => found
+      | Stmt.declMut t id init => found
+      | Stmt.declOut t id => found
+      | Stmt.assign id value => found
+      | Stmt.store base i value => found
+      | Stmt.shared t id size => found
+      | Stmt.forLoop id start count body => found
+      | Stmt.forStride id start stop step body => found
+      | Stmt.ifElse c yes no => found
+      | Stmt.scoped body => found
+      | Stmt.sync => found
+      | Stmt.syncWarp => found
+      | Stmt.asm template outs ins => found
+      | Stmt.error message => List.cons(message, found)
+    }))
+
+  // A use of variable `id` where `visible` holds the variables in scope; `st.seen` holds those declared so far.
+  def useVar (visible: NatSet)(st: Scan)(id: Nat): Scan := {
+    match Check.NatSet.member(visible, id) returning Scan with
+    | Bool.true => st
+    | Bool.false => {
+      let why := {
+        match Check.NatSet.member(st.seen, id) returning String with
+        | Bool.true => " used outside the scope of its declaration"
+        | Bool.false => " used before its declaration"
+      }
+      Scan.mk(st.seen, List.cons(Text.cat(Cuda.name(id), why), st.found))
+    }
+  }
+
+  def useIn (visible: NatSet)(st: Scan)(x: Expr): Scan := {
+    match Check.leaf(x) returning Scan with
+    | Leaf.other => st
+    | Leaf.var id => Check.useVar(visible, st, id)
+    | Leaf.special b => st
+    | Leaf.element => st
+    | Leaf.lit32 value => st
+    | Leaf.lit64 value => st
+    | Leaf.param name => st
+    | Leaf.shared offset => st
+  }
+
+  // A declaration of variable `id`, which must be its first.
+  def declare (st: Scan)(id: Nat): Scan := {
+    match Check.NatSet.member(st.seen, id) returning Scan with
+    | Bool.true => Scan.mk(st.seen, List.cons(Text.cat(Cuda.name(id), " declared twice"), st.found))
+    | Bool.false => Scan.mk(Check.NatSet.insert(st.seen, id), st.found)
+  }
+
+  // The variables in scope after statement `s`, where `visible` holds those in scope before it.
+  def after (visible: NatSet)(s: Stmt): NatSet := {
+    match s returning NatSet with
+    | Stmt.decl t id init => Check.NatSet.insert(visible, id)
+    | Stmt.declMut t id init => Check.NatSet.insert(visible, id)
+    | Stmt.declOut t id => Check.NatSet.insert(visible, id)
+    | Stmt.assign id value => visible
+    | Stmt.store base i value => visible
+    | Stmt.shared t id size => Check.NatSet.insert(visible, id)
+    | Stmt.forLoop id start count body => visible
+    | Stmt.forStride id start stop step body => visible
+    | Stmt.ifElse c yes no => visible
+    | Stmt.scoped body => visible
+    | Stmt.sync => visible
+    | Stmt.syncWarp => visible
+    | Stmt.asm template outs ins => visible
+    | Stmt.error message => visible
+  }
+
+  mutual {
+    // The scoping walk through statement `s`, where `visible` holds the variables in scope. A declaration's initializer
+    // and a loop's header are outside the name they declare; a loop's variable is in scope in its body.
+    def scopeStmt (visible: NatSet)(s: Stmt)(st: Scan): Scan decreases structural(s) := {
+      let used := Check.stmtExprs(Scan, s, st, fun (a: Scan)(x: Expr): Scan => Check.useIn(visible, a, x))
+      match s returning Scan with
+      | Stmt.decl t id init => Check.declare(used, id)
+      | Stmt.declMut t id init => Check.declare(used, id)
+      | Stmt.declOut t id => Check.declare(used, id)
+      | Stmt.assign id value => Check.useVar(visible, used, id)
+      | Stmt.store base i value => used
+      | Stmt.shared t id size => Check.declare(used, id)
+      | Stmt.forLoop id start count body => Check.scopeBlock(Check.NatSet.insert(visible, id), body, Check.declare(used, id))
+      | Stmt.forStride id start stop step body => Check.scopeBlock(Check.NatSet.insert(visible, id), body, Check.declare(used, id))
+      | Stmt.ifElse c yes no => Check.scopeBlock(visible, no, Check.scopeBlock(visible, yes, used))
+      | Stmt.scoped body => Check.scopeBlock(visible, body, used)
+      | Stmt.sync => used
+      | Stmt.syncWarp => used
+      | Stmt.asm template outs ins => used
+      | Stmt.error message => used
+    }
+
+    // A block is a C scope: what it declares is in scope for the rest of it, and not after it.
+    def scopeBlock (visible: NatSet)(b: Block)(st: Scan): Scan decreases structural(b) := {
+      match b returning Scan with
+      | Block.done => st
+      | Block.seq s more => Check.scopeBlock(Check.after(visible, s), more, Check.scopeStmt(visible, s, st))
+    }
+  }
+
+  // I1, scoping: each variable is declared once in the kernel, and used (in an expression, an asm operand, or as an
+  // assignment's target) only in the C scope of its declaration and after it. The launcher runs on the host, where no
+  // variable, thread, block or grid index, dynamic shared buffer or array element (the arrays are device memory) is in
+  // scope.
+  def scoping (k: Kernel): List(String) := {
+    let body := Check.scopeBlock(NatSet.empty, k.body, Scan.mk(NatSet.empty, List.nil(String)))
+    Check.inOrder(Check.hostExprs(List(String), k.launcher, body.found, fun (found: List(String))(x: Expr): List(String) => {
+      match Check.leaf(x) returning List(String) with
+      | Leaf.other => found
+      | Leaf.var id => List.cons(Text.cat3("launcher: ", Cuda.name(id), " is not a host variable"), found)
+      | Leaf.special b => List.cons("launcher: a thread, block or grid index is not a host value", found)
+      | Leaf.element => List.cons("launcher: an array element is device memory, not a host value", found)
+      | Leaf.lit32 value => found
+      | Leaf.lit64 value => found
+      | Leaf.param name => found
+      | Leaf.shared offset => List.cons("launcher: dynamic shared memory is not host memory", found)
+    }))
+  }
+
+  // The dynamic shared memory an sm_100a CTA can have.
+  def maxDynamicShared : Nat := 232448
+
+  // I2, shared memory, as far as the AST shows it: the dynamic buffer fits an SM; a kernel that has one has a launcher,
+  // which asks for it, and no static shared array, which would come first in the shared window and could cost the
+  // buffer its 1024-byte alignment; every constant offset into it lies inside it. (Where an address adds a run-time
+  // index to its offset, the AST does not bound the sum.)
+  def sharedMemory (k: Kernel): List(String) := {
+    let bytes := k.dynamicShared
+    let dynamic := Nat.blt(0, bytes)
+    let launched := Option.isSome(k.launcher)
+    let fits := Check.unless(List.nil(String), Nat.ble(bytes, Check.maxDynamicShared), fun (u: Unit): String =>
+      Text.cat3(Text.nat(bytes), " bytes of dynamic shared memory, more than sm_100a's ", Text.nat(Check.maxDynamicShared)))
+    let asked := Check.unless(fits, Bool.or(Bool.not(dynamic), launched), fun (u: Unit): String =>
+      Text.cat(Text.nat(bytes), " bytes of dynamic shared memory, and no launcher to ask for them"))
+    let statics := Check.blockFold(List(String), k.body, asked, fun (found: List(String))(s: Stmt): List(String) => {
+      let static := fun (id: Nat): List(String) => Check.unless(found, Bool.not(dynamic), fun (u: Unit): String =>
+        Text.cat3("static shared array ", Cuda.name(id), " in a kernel with dynamic shared memory"))
+      match s returning List(String) with
+      | Stmt.decl t id init => found
+      | Stmt.declMut t id init => found
+      | Stmt.declOut t id => found
+      | Stmt.assign id value => found
+      | Stmt.store base i value => found
+      | Stmt.shared t id size => static(id)
+      | Stmt.forLoop id start count body => found
+      | Stmt.forStride id start stop step body => found
+      | Stmt.ifElse c yes no => found
+      | Stmt.scoped body => found
+      | Stmt.sync => found
+      | Stmt.syncWarp => found
+      | Stmt.asm template outs ins => found
+      | Stmt.error message => found
+    })
+    Check.inOrder(Check.blockExprs(List(String), k.body, statics, fun (found: List(String))(x: Expr): List(String) => {
+      match Check.leaf(x) returning List(String) with
+      | Leaf.other => found
+      | Leaf.var id => found
+      | Leaf.special b => found
+      | Leaf.element => found
+      | Leaf.lit32 value => found
+      | Leaf.lit64 value => found
+      | Leaf.param name => found
+      | Leaf.shared offset => Check.unless(found, Nat.blt(offset, bytes), fun (u: Unit): String =>
+        Text.cat3("dynamic shared memory at byte ", Text.nat(offset), Text.cat3(", outside the kernel's ", Text.nat(bytes), " bytes")))
+    }))
+  }
+
+  // The template of the named barrier `Gpu.namedBarrier` emits, `bar.sync id, threads`, by which it is known here.
+  def barrierTemplate : String := "bar.sync %0, %1;"
+
+  def literal (x: Expr): Option(Nat) := {
+    match Check.leaf(x) returning Option(Nat) with
+    | Leaf.other => Option.none(Nat)
+    | Leaf.var id => Option.none(Nat)
+    | Leaf.special b => Option.none(Nat)
+    | Leaf.element => Option.none(Nat)
+    | Leaf.lit32 value => Option.some(value)
+    | Leaf.lit64 value => Option.none(Nat)
+    | Leaf.param name => Option.none(Nat)
+    | Leaf.shared offset => Option.none(Nat)
+  }
+
+  // A named barrier's id and thread count: no outputs, and two inputs that are 32-bit literals.
+  def barrierArgs (outs: List(Operand))(ins: List(Operand)): Option(Prod(Nat, Nat)) := {
+    let two := {
+      match ins returning Option(Prod(Nat, Nat)) with
+      | List.nil => Option.none(Prod(Nat, Nat))
+      | List.cons a more => {
+        match more returning Option(Prod(Nat, Nat)) with
+        | List.nil => Option.none(Prod(Nat, Nat))
+        | List.cons b rest => {
+          match rest returning Option(Prod(Nat, Nat)) with
+          | List.nil => Option.bind(Check.literal(a.e), Prod(Nat, Nat), fun (id: Nat): Option(Prod(Nat, Nat)) =>
+            Option.map(Check.literal(b.e), Prod(Nat, Nat), fun (n: Nat): Prod(Nat, Nat) => Prod.mk(id, n)))
+          | List.cons c others => Option.none(Prod(Nat, Nat))
+        }
+      }
+    }
+    match outs returning Option(Prod(Nat, Nat)) with
+    | List.nil => two
+    | List.cons o others => Option.none(Prod(Nat, Nat))
+  }
+
+  // A named barrier with id `id` and `threads` threads, where `st.seen` holds the ids of those before it.
+  def barrier (st: Scan)(id: Nat)(threads: Nat): Scan := {
+    let name := Text.cat("bar.sync ", Text.nat(id))
+    let inRange := Check.unless(st.found, Bool.and(Nat.ble(1, id), Nat.ble(id, 15)), fun (u: Unit): String =>
+      Text.cat(name, ": the id is outside 1..15"))
+    let fresh := Check.unless(inRange, Bool.not(Check.NatSet.member(st.seen, id)), fun (u: Unit): String =>
+      Text.cat(name, ": the id is already another barrier's"))
+    let counted := Check.unless(fresh, Bool.and(Nat.blt(0, threads), Nat.isZero(Nat.mod(threads, 32))), fun (u: Unit): String =>
+      Text.cat3(name, ": waits for ", Text.cat(Text.nat(threads), " threads, not a positive multiple of 32")))
+    Scan.mk(Check.NatSet.insert(st.seen, id), counted)
+  }
+
+  // I3, named barriers: each `bar.sync` has literal operands, an id in 1..15 that no other `bar.sync` of the kernel
+  // has, and a thread count that is a positive multiple of 32. (A loop body is generated once, so a barrier in one has
+  // one id however often it runs.)
+  def namedBarriers (k: Kernel): List(String) := {
+    let walk := Check.blockFold(Scan, k.body, Scan.mk(NatSet.empty, List.nil(String)), fun (st: Scan)(s: Stmt): Scan => {
+      let asm := fun (template: String)(outs: List(Operand))(ins: List(Operand)): Scan => {
+        match Check.same(template, Check.barrierTemplate) returning Scan with
+        | Bool.false => st
+        | Bool.true => {
+          match Check.barrierArgs(outs, ins) returning Scan with
+          | Option.none => Scan.mk(st.seen, List.cons("bar.sync without a literal id and thread count", st.found))
+          | Option.some args => Check.barrier(st, args.fst, args.snd)
+        }
+      }
+      match s returning Scan with
+      | Stmt.decl t id init => st
+      | Stmt.declMut t id init => st
+      | Stmt.declOut t id => st
+      | Stmt.assign id value => st
+      | Stmt.store base i value => st
+      | Stmt.shared t id size => st
+      | Stmt.forLoop id start count body => st
+      | Stmt.forStride id start stop step body => st
+      | Stmt.ifElse c yes no => st
+      | Stmt.scoped body => st
+      | Stmt.sync => st
+      | Stmt.syncWarp => st
+      | Stmt.asm template outs ins => asm(template, outs, ins)
+      | Stmt.error message => st
+    })
+    Check.inOrder(walk.found)
+  }
+
+  def u64Limit : Nat := 18446744073709551616
+
+  // A number printed as a 32-bit literal, such as a launcher's block size or a tensor map's box, must fit 32 bits.
+  def u32Printed (found: List(String))(what: String)(n: Nat): List(String) :=
+    Check.unless(found, Nat.blt(n, Cuda.u32Limit), fun (u: Unit): String => Text.cat3(what, Text.nat(n), " does not fit 32 bits"))
+
+  // I4, literals: every 32-bit literal, in the kernel and its launcher, is below 2^32, and every 64-bit one below 2^64.
+  def literals (k: Kernel): List(String) := {
+    let lit := fun (found: List(String))(x: Expr): List(String) => {
+      match Check.leaf(x) returning List(String) with
+      | Leaf.other => found
+      | Leaf.var id => found
+      | Leaf.special b => found
+      | Leaf.element => found
+      | Leaf.lit32 value => Check.u32Printed(found, "32-bit literal ", value)
+      | Leaf.lit64 value => Check.unless(found, Nat.blt(value, Check.u64Limit), fun (u: Unit): String =>
+        Text.cat3("64-bit literal ", Text.nat(value), " does not fit 64 bits"))
+      | Leaf.param name => found
+      | Leaf.shared offset => found
+    }
+    let exprs := Check.hostExprs(List(String), k.launcher, Check.blockExprs(List(String), k.body, List.nil(String), lit), lit)
+    let sizes := {
+      match k.launcher returning List(String) with
+      | Option.none => exprs
+      | Option.some l => List.foldl(l.maps, List(String), Check.u32Printed(exprs, "launcher: a block of ", l.block),
+        fun (found: List(String))(m: MapEncoding): List(String) =>
+          Check.u32Printed(Check.u32Printed(found, Text.cat3("launcher: ", m.param, "'s box width "), m.inner),
+            Text.cat3("launcher: ", m.param, "'s box height "), m.outer))
+    }
+    Check.inOrder(sizes)
+  }
+
+  // A name a program chose, which must be a C identifier the printer does not declare itself, and not the kernel's.
+  def chosenName (found: List(String))(kernel: String)(what: String)(name: String): List(String) := {
+    let ident := Check.unless(found, Check.isIdent(name), fun (u: Unit): String => Text.cat3(what, name, " is not a C identifier"))
+    let own := Check.unless(ident, Bool.not(Check.printerName(name)), fun (u: Unit): String =>
+      Text.cat3(what, name, " is a name the printer declares"))
+    Check.unless(own, Bool.not(Check.same(name, kernel)), fun (u: Unit): String => Text.cat3(what, name, " is the kernel's name"))
+  }
+
+  // `names` checked as the names of parameters one function declares: chosen names, each declared once.
+  def declaredNames (found: List(String))(kernel: String)(what: String)(names: List(String)): List(String) := {
+    let walk := List.foldl(names, Prod(List(String), List(String)), Prod.mk(List.nil(String), found),
+      fun (acc: Prod(List(String), List(String)))(name: String): Prod(List(String), List(String)) => {
+        let chosen := Check.chosenName(acc.snd, kernel, what, name)
+        let once := Check.unless(chosen, Bool.not(Check.mentions(acc.fst, name)), fun (u: Unit): String =>
+          Text.cat3(what, name, " is declared twice"))
+        Prod.mk(List.cons(name, acc.fst), once)
+      })
+    walk.snd
+  }
+
+  // A parameter named in an expression, which must be one of `declared`.
+  def paramUses (declared: List(String))(what: String)(found: List(String))(x: Expr): List(String) := {
+    match Check.leaf(x) returning List(String) with
+    | Leaf.other => found
+    | Leaf.var id => found
+    | Leaf.special b => found
+    | Leaf.element => found
+    | Leaf.lit32 value => found
+    | Leaf.lit64 value => found
+    | Leaf.param name => Check.unless(found, Check.mentions(declared, name), fun (u: Unit): String => Text.cat3(what, name, " is not a parameter"))
+    | Leaf.shared offset => found
+  }
+
+  // I5, names: the kernel's name is a C identifier the printer does not declare itself; so is each name its parameters,
+  // its launcher's parameters and its tensor-map encodings declare, each declared once in its function and none the
+  // kernel's own name; and an expression names only its function's parameters.
+  def names (k: Kernel): List(String) := {
+    let name := k.name
+    let ident := Check.unless(List.nil(String), Check.isIdent(name), fun (u: Unit): String => Text.cat3("kernel name ", name, " is not a C identifier"))
+    let kernelName := Check.unless(ident, Bool.not(Check.printerName(name)), fun (u: Unit): String =>
+      Text.cat3("kernel name ", name, " is a name the printer declares"))
+    let params := List.map(k.params, String, Cuda.paramName)
+    let declared := Check.declaredNames(kernelName, name, "parameter ", params)
+    let used := Check.blockExprs(List(String), k.body, declared, fun (found: List(String))(x: Expr): List(String) =>
+      Check.paramUses(params, "kernel: ", found, x))
+    let host := {
+      match k.launcher returning List(String) with
+      | Option.none => used
+      | Option.some l => {
+        let hostNames := List.foldr(List.map(l.params, String, Cuda.paramName), List(String),
+          List.map(l.maps, String, fun (m: MapEncoding): String => m.param), fun (n: String)(rest: List(String)): List(String) => List.cons(n, rest))
+        let hostDeclared := Check.declaredNames(used, name, "launcher: name ", hostNames)
+        let hostParams := List.map(l.params, String, Cuda.paramName)
+        Check.hostExprs(List(String), k.launcher, hostDeclared, fun (found: List(String))(x: Expr): List(String) =>
+          Check.paramUses(hostParams, "launcher: ", found, x))
+      }
+    }
+    Check.inOrder(host)
+  }
+
+  // A distinct number for each element type.
+  def typeIndex (t: DType): Nat := {
+    match t returning Nat with
+    | DType.u32 => 0
+    | DType.u64 => 1
+    | DType.f32 => 2
+    | DType.bf16 => 3
+    | DType.bool => 4
+  }
+
+  def sameType (a: DType)(b: DType): Bool := Nat.beq(Check.typeIndex(a), Check.typeIndex(b))
+
+  // Whether `a` and `b` declare the same parameter: its kind, its element type and its name.
+  def sameParam (a: Param)(b: Param): Bool := {
+    match a returning Bool with
+    | Param.input t n => {
+      match b returning Bool with
+      | Param.input u m => Bool.and(Check.sameType(t, u), Check.same(n, m))
+      | Param.output u m => Bool.false
+      | Param.scalar u m => Bool.false
+      | Param.tensorMap m => Bool.false
+    }
+    | Param.output t n => {
+      match b returning Bool with
+      | Param.input u m => Bool.false
+      | Param.output u m => Bool.and(Check.sameType(t, u), Check.same(n, m))
+      | Param.scalar u m => Bool.false
+      | Param.tensorMap m => Bool.false
+    }
+    | Param.scalar t n => {
+      match b returning Bool with
+      | Param.input u m => Bool.false
+      | Param.output u m => Bool.false
+      | Param.scalar u m => Bool.and(Check.sameType(t, u), Check.same(n, m))
+      | Param.tensorMap m => Bool.false
+    }
+    | Param.tensorMap n => {
+      match b returning Bool with
+      | Param.input u m => Bool.false
+      | Param.output u m => Bool.false
+      | Param.scalar u m => Bool.false
+      | Param.tensorMap m => Check.same(n, m)
+    }
+  }
+
+  def tensorMapName (p: Param): Option(String) := {
+    match p returning Option(String) with
+    | Param.input t n => Option.none(String)
+    | Param.output t n => Option.none(String)
+    | Param.scalar t n => Option.none(String)
+    | Param.tensorMap n => Option.some(n)
+  }
+
+  def declares (ps: List(Param))(p: Param): Bool := List.any(ps, fun (q: Param): Bool => Check.sameParam(q, p))
+
+  def count (maps: List(MapEncoding))(name: String): Nat :=
+    List.foldl(maps, Nat, 0, fun (n: Nat)(m: MapEncoding): Nat => Bool.cond(Check.same(m.param, name), Nat, Nat.succ(n), n))
+
+  // I6, the launcher, as far as the AST shows it: it passes the kernel's parameters by name, in the kernel's order (as
+  // the printer does), so it declares each one that is not a tensor map exactly as the kernel does, and encodes each
+  // tensor map exactly once, from a bf16 input of its own and two u32 scalars; it encodes nothing else.
+  def launcher (k: Kernel): List(String) := {
+    match k.launcher returning List(String) with
+    | Option.none => List.nil(String)
+    | Option.some l => {
+      let passed := List.foldl(k.params, List(String), List.nil(String), fun (found: List(String))(p: Param): List(String) => {
+        match Check.tensorMapName(p) returning List(String) with
+        | Option.none => Check.unless(found, Check.declares(l.params, p), fun (u: Unit): String =>
+          Text.cat3("launcher: does not declare the kernel's parameter ", Cuda.paramName(p), " as the kernel does"))
+        | Option.some name => {
+          let n := Check.count(l.maps, name)
+          Check.unless(found, Nat.beq(n, 1), fun (u: Unit): String =>
+            Text.cat3("launcher: tensor map ", name, Text.cat3(" has ", Text.nat(n), " encodings, not one")))
+        }
+      })
+      let kernelMaps := List.foldr(k.params, List(String), List.nil(String), fun (p: Param)(rest: List(String)): List(String) =>
+        Option.elim(Check.tensorMapName(p), List(String), rest, fun (n: String): List(String) => List.cons(n, rest)))
+      Check.inOrder(List.foldl(l.maps, List(String), passed, fun (found: List(String))(m: MapEncoding): List(String) => {
+        let what := Text.cat3("launcher: the encoding of ", m.param, " ")
+        let named := Check.unless(found, Check.mentions(kernelMaps, m.param), fun (u: Unit): String =>
+          Text.cat(what, "names no tensor map of the kernel"))
+        let source := Check.unless(named, Check.declares(l.params, Param.input(DType.bf16, m.source)), fun (u: Unit): String =>
+          Text.cat3(what, "reads ", Text.cat(m.source, ", not a bf16 input of the launcher")))
+        let rows := Check.unless(source, Check.declares(l.params, Param.scalar(DType.u32, m.rows)), fun (u: Unit): String =>
+          Text.cat3(what, "takes rows from ", Text.cat(m.rows, ", not a u32 scalar of the launcher")))
+        Check.unless(rows, Check.declares(l.params, Param.scalar(DType.u32, m.cols)), fun (u: Unit): String =>
+          Text.cat3(what, "takes columns from ", Text.cat(m.cols, ", not a u32 scalar of the launcher")))
+      }))
+    }
+  }
+
+  // ---- The certificate ----------------------------------------------------------------------------------------------
+
+  // That the checkers found nothing: each argument is one checker's violations, and each field that the list is empty.
+  // A field that fails to discharge shows its checker's messages.
+  struct Clean (errors: List(String))(scoping: List(String))(shared: List(String))(barriers: List(String))
+      (literals: List(String))(names: List(String))(launcher: List(String)) : Prop
+   | mk [noErrors: Eq(List(String), errors, List.nil(String))]
+        [scoped: Eq(List(String), scoping, List.nil(String))]
+        [sharedOk: Eq(List(String), shared, List.nil(String))]
+        [barriersOk: Eq(List(String), barriers, List.nil(String))]
+        [literalsOk: Eq(List(String), literals, List.nil(String))]
+        [namesOk: Eq(List(String), names, List.nil(String))]
+        [launcherOk: Eq(List(String), launcher, List.nil(String))] : Clean(errors, scoping, shared, barriers, literals, names, launcher)
+
+  // That kernel `k` carries no generation error and keeps I1 to I6 as far as its AST shows them: what `Gpu.render`
+  // requires of a kernel it prints. On a concrete kernel it is discharged by evaluating the checkers.
+  def WellFormed (k: Kernel): Prop :=
+    Check.Clean(Check.errors(k), Check.scoping(k), Check.sharedMemory(k), Check.namedBarriers(k), Check.literals(k), Check.names(k),
+      Check.launcher(k))
+}

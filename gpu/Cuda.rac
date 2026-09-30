@@ -11,6 +11,9 @@ namespace Cuda {
    | bf16 : DType
    | bool : DType
 
+  // Every value of a `u32` is below it.
+  def u32Limit : Nat := 4294967296
+
   inductive Builtin : Type
    | threadX : Builtin
    | blockX : Builtin

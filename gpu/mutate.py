@@ -1,6 +1,5 @@
 # Runs a table of mutations of an example: each mutant replaces one snippet of the example's source and must be
-# refused with a given diagnostic kind (whose message, if the mutant says so, mentions a given name), or, for kind
-# `#error`, must generate a kernel carrying a generation-time error.
+# refused with a given diagnostic kind (whose message, if the mutant says so, mentions a given name).
 #
 #   python3 gpu/mutate.py [-v] gpu/rejected/tinygemm_mutants.py     (with $RACCOON set, as for check.sh)
 #
@@ -29,9 +28,6 @@ def check(m):
     path = os.path.join(scratch, m["name"] + ".rac")
     with open(path, "w") as f:
         f.write(source.replace(m["old"], m["new"]))
-    if m["expect"] == "#error":
-        ok = "#error" in run("--raw", path).stdout
-        return ok, f"ok   {label} -> generation error" if ok else f"FAIL {label}: no generation error"
     try:
         diags = json.loads(run("--json", path).stdout)
     except json.JSONDecodeError:

@@ -7,8 +7,8 @@ plan of §8, verified in Raccoon. `DESIGN.md` explains the design; this document
 ## 1. The claim
 
 Let `P` be any Raccoon program that type-checks against `gpu/Prelude.rac`, imports `Gpu`, and prints
-`Gpu.render(p)` for a `Program p`. Then the printed CUDA C++, if it has no `#error`, compiled for sm_100a and
-launched by its generated launcher (or, for a kernel without one, as its builder's launch contract says), satisfies:
+`Gpu.render(p)` for a `Program p`. Then the printed CUDA C++, compiled for sm_100a and launched by its generated
+launcher (or, for a kernel without one, as its builder's launch contract says), satisfies:
 
 - **S1, no data race.** No two accesses to one shared- or global-memory location, at least one a write, from
   different threads or from a thread and an asynchronous unit (TMA, tensor cores), are unordered by the CUDA/PTX
@@ -68,18 +68,21 @@ Each assumption is our reading of NVIDIA's documentation and CUTLASS's usage. "E
 
 ## 4. Structural invariants of emitted code
 
-These are properties of the printed kernel alone, decidable on its AST (§8 layer 1).
+These are properties of the printed kernel alone, and all but I7 and I8 are decidable on its AST (§8 layer 1).
+`Gpu.render` prints only a kernel that carries no generation error and passes the checkers of `gpu/Check.rac` named
+below (`Check.WellFormed`, §9.5), so the parts of I1–I6 those checkers decide hold of every printed kernel, whatever
+the builders do.
 
 | # | Invariant | Kept today by |
 |---|---|---|
-| I1 | Every variable is declared once per kernel, before use, in an enclosing C scope. | Fresh names from `Gen`; lifetimes (M2). Not checked on the output. |
-| I2 | Dynamic shared-memory regions are disjoint and aligned as requested. Total ≤ 232448 bytes. Dynamic memory only with a launcher. Never mixed with static arrays. | Bump allocation (`reserve`); `finish` checks the rest. |
-| I3 | Each join's named barrier has its own id in 1..15, and its count is its group's threads. | `join`, with a check. |
-| I4 | Every `u32` literal is below 2^32. | `finish` scans. |
-| I5 | The kernel's name is a C identifier; every other printed name is the library's. | `finish` checks the name; `uniformParam` needs the Key (M8). |
-| I6 | The launcher passes the kernel's parameters in order. It asks for and launches with exactly the kernel's dynamic shared memory. It encodes each tensor map with its `TMap` box, bf16 and 128-byte swizzle. It launches the grid the builder assumes. | The builders. Not checked on the output. |
-| I7 | Every collective sits where its whole group runs convergently. `__syncthreads` only in `cta` code. `bar.sync` only at a split's join. `elect.sync` only in one-warp code. Warp-collective `tcgen05` in whole-warp code, reconverged by `__syncwarp` after spin loops and guarded stores. | Groups (M3). Not checked on the output. |
-| I8 | Every mbarrier is initialized, fenced and CTA-synchronized before any use, and invalidated after every thread's last use. | `withRing`, `withAccRing`, `withAccHandoff`. |
+| I1 | Every variable is declared once per kernel, before use, in an enclosing C scope. | Fresh names from `Gen`; lifetimes (M2). Checked on the output by `Check.scoping`: each id declared once, used only in the C scope of its declaration and after it (a loop's variable in its body), and no variable, thread, block or grid index, shared address or array element in the launcher. |
+| I2 | Dynamic shared-memory regions are disjoint and aligned as requested. Total ≤ 232448 bytes. Dynamic memory only with a launcher. Never mixed with static arrays. | Bump allocation (`reserve`). Checked on the output by `Check.sharedMemory`: the total, the launcher, no static array with dynamic memory, and every constant offset into the buffer inside it. Disjointness, alignment, and offsets plus run-time indices are not in the AST. |
+| I3 | Each join's named barrier has its own id in 1..15, and its count is its group's threads. | `join`, with a check. Checked on the output by `Check.namedBarriers`: each `bar.sync` (the asm template `Gpu.namedBarrier` emits) has literal operands, an id in 1..15 that no other has, and a count that is a positive multiple of 32. That the count is its group's is not in the AST. |
+| I4 | Every `u32` literal is below 2^32. | Checked on the output by `Check.literals`: every 32-bit literal of the kernel and its launcher, and the launcher's block size and boxes, below 2^32; every 64-bit literal below 2^64. |
+| I5 | The kernel's name is a C identifier; every other printed name is the library's. | `uniformParam` needs the Key (M8). Checked on the output by `Check.names`: the kernel's, the parameters' and the tensor maps' names are C identifiers the printer does not declare itself (`v` and digits, `gpu_…`, the launcher's locals), none is the kernel's name, each is declared once in its function, and every parameter an expression names is its function's. C++ keywords, CUDA's names and host library symbols are not excluded: the first two fail to compile, but an `extern "C"` kernel named as a host symbol is not ruled out. |
+| I6 | The launcher passes the kernel's parameters in order. It asks for and launches with exactly the kernel's dynamic shared memory. It encodes each tensor map with its `TMap` box, bf16 and 128-byte swizzle. It launches the grid the builder assumes. | The printer passes the parameters in order and the kernel's shared memory. Checked on the output by `Check.launcher`: the launcher declares each non-map parameter as the kernel does, and encodes each tensor map exactly once, from a bf16 input and two u32 scalars of its own. The box, beyond fitting 32 bits, and the grid are the builders'. |
+| I7 | Every collective sits where its whole group runs convergently. `__syncthreads` only in `cta` code. `bar.sync` only at a split's join. `elect.sync` only in one-warp code. Warp-collective `tcgen05` in whole-warp code, reconverged by `__syncwarp` after spin loops and guarded stores. | Groups (M3). Not checked on the output: the AST does not record which threads run a block (§9.6). |
+| I8 | Every mbarrier is initialized, fenced and CTA-synchronized before any use, and invalidated after every thread's last use. | `withRing`, `withAccRing`, `withAccHandoff`. Not checked on the output: the AST does not record which addresses are barriers (§9.6). |
 
 ## 5. The discipline
 
@@ -188,8 +191,8 @@ claim. Types are abbreviated; "code" is what it emits into its `Ctx`.
 |---|---|---|---|---|
 | `tiledKernel` | a body over `cta(tile²)` | the kernel; no launcher | a `Program` | I1–I7 |
 | `tmaGemmKernel`, `tmaGemmPersistentKernel` | a body; boxes pass `gemmShapeOk` | the kernel and its launcher (extent checks, map encodings, shared-memory attribute, grid) | a `Program` | A17, I6 |
-| `finish` | the Key | checks I2, I4, I5; `#error` lines for every generation error | the `Program` | — |
-| `render` | a `Program` | the printed kernel | — | the printer |
+| `finish` | the Key | `#error` lines for every generation error | the `Program` | — |
+| `render` | a `Program`; `Check.WellFormed` of its kernel, discharged by evaluating the checkers | the printed kernel | no generation error; I1–I6 as far as the AST shows them | the printer, `gpu/Check.rac` |
 
 ## 7. Public surface
 
@@ -197,7 +200,7 @@ Every operation that a client can call without the Key, and that builds a sealed
 arguments. The audit as of this document:
 
 - **Values.** `lit`, `zero`, `add`, `mulC`, `divC`, `remC`, `ceilDivC`, `lt`, `fma` build expressions from the
-  library's own parts, with `u32` width checked by `finish` (I4). `tileRow0` and `tileCol0` read a sealed tile.
+  library's own parts, with `u32` width checked on the output by `Check.literals` (I4). `tileRow0` and `tileCol0` read a sealed tile.
 - **Evidence.** `fixedUnit`, `fixedPair` and the per-family `fixed…` exist only for one-valued types.
 - **Endings.** `release`, `skipTmem`, `finishConsumer` and `finishAccConsumer` consume authority; none mints any.
 - **Unsealed data.** `Gen` helpers (`push`, `fresh`, `child`, `after`, `check`, …) and instruction builders (`mbarInit`,
@@ -214,10 +217,17 @@ and Raccoon's type checker checks. Sealing then carries the guarantee to every c
 own typing. We approach it in three layers, each useful alone.
 
 **Layer 1: structural invariants.** I1–I8 as a checker over `Cuda.Kernel`, together with a soundness statement for
-each against a small syntactic specification (for example, the declared names at each program point). `Program`
-requires a proof that the checker returns true. Where the kernel is concrete, which is always at generation, the
+each against a small syntactic specification (for example, the declared names at each program point). `render`
+requires a proof that the checkers find nothing (§9.5). Where the kernel is concrete, which is always at generation, the
 proof is `Eq.refl` evaluated by conversion. Alternatively, I1 becomes intrinsic: an AST indexed by the names in
 scope. Needs Raccoon's evaluation-discharged evidence and an evaluator that scales (`docs/PROOF_BY_EVALUATION.md`).
+
+Status: the checkers are built (`gpu/Check.rac`), one for the generation errors and one each for I1–I6 as far as the
+AST shows them (§4), with unit tests (`gpu/checks/`). `Gpu.render` requires their certificate, `Check.WellFormed`,
+which a client's `Gpu.render(p)` discharges by evaluation, and a failing checker is reported as
+`EvidenceNotDischarged`, naming its field and showing its messages. (Raccoon's diagnostic prints a computed string
+as its list of characters, so today only a message that is a string literal reads as text.) On the persistent GEMM
+the checkers, with checking `Check.rac` itself, add about 0.2 s to the 2.3 s of checking. The soundness statements are the next step. I7 and I8 are not decidable on today's AST (§9.6).
 
 **Layer 2: protocols.** Abstract models of A6, A9 and A12 (an mbarrier as phase, pending arrivals and expected
 bytes; TMA fills and tensor-core commits as asynchronous events), the stage ring, accumulator ring, handoff and
@@ -245,9 +255,22 @@ The hardware harness stays, as a check of those assumptions.
 
 Settled in review (2026-09-30):
 1. **Layer 1 is a checker first.** An intrinsically scoped AST would change most of `Gpu.rac`; the checker, with
-   `Program` requiring its certificate, does not.
+   a certificate required of what is printed (§9.5), does not.
 2. **The models live in `gpu/model/`**, as Raccoon modules that `Gpu` imports.
 3. **Model only what the protocols need.** Of A6–A14, model the ordering facts the protocols need, extending the
    models as proofs demand, each extension citing its source.
 4. **The "Establishes" column of §6 becomes Raccoon propositions** as layer 3 is reached, so that its triples are
    stated from this document.
+
+Settled in implementing layer 1 (2026-09-30):
+
+5. **The certificate is on `render`, not on `Program.mk`.** An evidence field on `Program.mk` would need `finish` to
+   prove the certificate of a generic kernel, and the library has no idiom for inspecting a computed Bool and
+   branching on its proof (a dependent if). `render` is the only path that prints a kernel, so a certificate there
+   reaches every client all the same: `render` requires `Check.WellFormed(p.kernel)`, which is discharged where a
+   program renders its concrete kernel. `finish` no longer checks I2, I4 or I5; the checkers decide them on the
+   output, and a generation error is refused by `Check.errors`.
+6. **I7 and I8 wait for layer 2.** Deciding them on the output needs the AST to record which threads run each block
+   (a group per block) and which shared addresses are mbarriers and in which phase of their life each operation
+   uses them. Whether the AST should carry that, or layer 2's models should state them instead, is a question for
+   layer 2.
