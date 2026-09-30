@@ -50,23 +50,29 @@ order.
 **1.2 Discharge.** At an application whose evidence argument is omitted, the checker runs its telescope-order pass
 (the pass that already evaluates each binder type once earlier arguments are known). When it reaches `[h: P]`, it
 evaluates `P`, with every earlier argument known, to a value `P′`, and discharges `P′`, by one of two rules:
-1. **Fieldless.** `P′` is an instance of an inductive family in `Prop` that has a fieldless constructor whose result
-   type is convertible with `P′`. The proof is that constructor.
+1. **Determined.** `P′` is an instance of an inductive family in `Prop` that has a constructor whose fields are all
+   determined by its result type: each field is itself one of the arguments of the constructor's result type, so its
+   value is read off `P′` at that position (a field inside an argument, as `x` in `F(g(x))`, cannot be read back), and
+   the constructor applied to those values has a result type convertible with `P′`. The proof is
+   that application. A fieldless constructor is the case with no fields to read.
 2. **Through evidence fields.** `P′` is an instance of an evidence-eligible family (§1.9), and each of its constructor's
    evidence fields, in order, has a proposition that, evaluated with `P′`'s arguments, discharges in turn. The proof is
    the constructor applied to those proofs.
 
-`Eq(A, l, r)` is discharged exactly when `l` and `r` evaluate to convertible values, by `Eq.refl`. `True` is
-discharged by `True.intro`. A family whose constructors all have fields (`And`, `Or`, `Exists`, an inductive `Le`) is
-never discharged, since its fields would have to be invented. The fieldless rule is what makes discharge sound
-without checking fabricated fields: `ProofReconstruction` fabricates proof fields unchecked, so "reconstructs to some
-constructor" would accept `And(False, False)`.
+`Eq(A, l, r)` is discharged exactly when `l` and `r` evaluate to convertible values: `Eq.refl`'s field `x` occurs in
+its result type `Eq(A, x, x)`, so it is read off `P′` as `l`, and `Eq(A, l, l)` must be convertible with `Eq(A, l, r)`.
+`True` is discharged by `True.intro`, which has no fields. A family whose every constructor has a field that its
+result type does not determine (`And`, `Or`, `Exists`, an inductive `Le`) is never discharged by this rule, since that
+field would have to be invented. This is what makes discharge sound without checking fabricated fields:
+`ProofReconstruction` fabricates proof fields unchecked, so "reconstructs to some constructor" would accept
+`And(False, False)`, while every field read off `P′` is a value `P′` already holds, and the conversion check validates
+the whole.
 
 Otherwise the application is `EvidenceNotDischarged`, reported at the application. It shows the proposition that
 failed, as evaluated, and, if it was reached through evidence fields, the path of fields to it. For example
 `GemmShape.nOk: Eq(Nat, 192, 128)` names the conjunct that failed, and `Eq(Bool, Bool.false, Bool.true)` shows which
-check did. A `P′` that stays neutral, as it does in generic
-code that knows no concrete arguments, is not discharged either.
+check did. A `P′` that stays neutral, as it does in generic code that knows no concrete arguments, is not discharged
+either.
 
 **1.3 Explicit evidence.** A supplied evidence argument is checked against `P` as any argument is. It is how generic
 code forwards a proof it has: inside a function with `[h: P]`, a call that needs `P` passes `[h]`. Supplying the wrong
@@ -75,7 +81,7 @@ number of evidence arguments is `ArityMismatch` (counting evidence).
 **1.4 Locality.** Evidence comes from the callee's type and the call's other arguments, never from the expected type,
 the same locality as forced implicits (`docs/kernel.md`, invariant 13). Checking stays synthesis followed by
 equality. Nothing is searched for:
-- the constructor, if several fieldless ones fit, is the first declared, and proof irrelevance makes the choice
+- the constructor, if several fit rule 1, is the first declared, and proof irrelevance makes the choice
   unobservable;
 - no hypothesis in scope is consulted (§5.2).
 
@@ -93,7 +99,7 @@ evidence parameters to erased proofs without evaluating their propositions, so a
 time only, once per application, and never when the program runs. The checker caches `P′` for the application
 rather than evaluating it again for the result type.
 
-**1.7 Decidability.** Discharge evaluates and compares, and never searches: a fieldless constructor is chosen as §1.4
+**1.7 Decidability.** Discharge evaluates and compares, and never searches: rule 1's constructor is chosen as §1.4
 says, and an evidence-eligible family has one constructor. It terminates (§1.9), so checking still does. Its running
 time now includes the decision procedures that programs call, which are total but may be costly: evaluation may
 duplicate a proposition, so discharge through evidence fields can take time exponential in their nesting. That is
@@ -109,7 +115,8 @@ construction an evidence field is discharged or supplied exactly as an evidence 
   evidence field are equal.
 
 Its proposition may mention the family's parameters and earlier fields, and is checked as any field's type is
-(positivity, universes). A constructor with an evidence field is not fieldless, so §1.2's first rule never uses it.
+(positivity, universes). For §1.2's first rule an evidence field is a field like any other: a constructor whose evidence field its result type
+does not determine is not used by that rule.
 At run time, as in §1.6, a construction stores an erased proof without evaluating the proposition. Implicits written
 on a constructor must still be forced; an evidence field is not an implicit and needs no forcing.
 
@@ -143,7 +150,7 @@ this lands. Its argument:
 What the conditions exclude:
 - `inductive Loop : Prop | mk [h: Loop]` fails condition 2.
 - `struct App (f: Nat -> Prop)(n: Nat) : Prop | mk [a: f(n)]` has a function among its arguments. Both are discharged
-  by rule 1 only, and so, having no fieldless constructor, not at all.
+  by rule 1 only, and so, having no constructor whose fields its result type determines, not at all.
 
 As defence in depth, the implementation also bounds the depth of discharge, and reports `EvidenceNotDischarged` if
 the bound is reached. Under the proof the bound is never reached, and a test pins that.
@@ -249,7 +256,7 @@ A bracket group that is empty or follows no application is a parse error.
 Every rule is a test obligation: one program it admits, and the smallest mutation that reaches its named diagnostic
 and no earlier one. Beyond those:
 - **Soundness of discharge.** `EvidenceNotDischarged` for `False`, `And(True, True)`, `Exists(…)`, an `Eq` whose sides
-  differ, and a proposition that stays neutral. `And(True, True)` is the case that separates "fieldless" from
+  differ, and a proposition that stays neutral. `And(True, True)` is the case that separates "determined" from
   "reconstructs".
 - **Discharge through evidence fields.**
   - `Both(True, Eq(Nat, 2, 2))`, a nested `Both(Both(…), …)`, and a field that duplicates a parameter
@@ -289,8 +296,11 @@ and no earlier one. Beyond those:
      field means.
    - **Eligible families only.** One constructor means no search. Non-recursion and first-order arguments give the
      termination proof.
-   - **Why not fieldless-only.** Adopted in review over that alternative for its diagnostics, which name the failing
-     conjunct. It only adds programs that are accepted: nothing fieldless-only accepts changes meaning.
+   - **Why not rule 1 alone.** Adopted in review over that alternative for its diagnostics, which name the failing
+     conjunct. It only adds programs that are accepted: nothing rule 1 alone accepts changes meaning.
+   - **Rule 1 reads determined fields.** In implementation, "fieldless" was found to exclude `Eq.refl`, whose field
+     occurs in its result type, contradicting the rule's own example. Rule 1 was corrected to read such fields off
+     `P′`: that invents nothing, which was the point of "fieldless".
 4. **Reflection before tactics.** Metaprogramming (elaboration-time Raccoon programs building terms) is the route to
    automation for goals that are not about data. It is left for when layer 3 of `gpu/OBLIGATIONS.md` §8 needs it.
 5. **Key assertions stay on.** They become iterative (§2.3); turning them off by default in the CLI would change a
