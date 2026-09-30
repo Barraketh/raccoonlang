@@ -221,9 +221,8 @@ object Interpreter {
    */
   private def derivedField[P <: Value](field: Sorts.Field[P], captures: Vector[CoreAst.LocalRef], env: Env): P =
     field.join(captures.flatMap { ref =>
-      Sorts
-        .sortOf(env.locals.getOrElse(ref, wtf(s"The derived closure's capture ${ref.name} is unbound")).tpe)
-        .map(field.of)
+      val capture = env.locals.getOrElse(ref, wtf(s"The derived closure's capture ${ref.name} is unbound"))
+      Sorts.sortOf(Value.forced(capture).tpe).map(field.of)
     })
 
   private def evalRef(ref: CTerm.Ref, env: Env): Value = {
@@ -238,6 +237,10 @@ object Interpreter {
     }
   }
 
+  /**
+   * Apply `fn` to an argument for each binder of its group. A lambda binds them as given, deferred evidence included
+   * (`DeferredEvidence`); any other head stores its arguments in the value it builds, so it forces them first.
+   */
   private[raccoonlang] def evalApply(fn: Value, vArgs: Vector[Value]): Value = {
     fn.tpe match {
       case pi: VPi =>
@@ -247,21 +250,22 @@ object Interpreter {
         if (vArgs.length != pi.binders.length)
           fail(ArityMismatch(pi.binders.length, vArgs.length, ArityMismatch.Arguments))
         // Lazy: the VLam branch delegates env construction to runLam.
-        lazy val envWithArgs = getEnvWithArgs(pi, pi.env, vArgs)
+        lazy val storedArgs = vArgs.map(Value.forced)
+        lazy val envWithArgs = getEnvWithArgs(pi, pi.env, storedArgs)
         fn match {
           case lam: VLam =>
             runLam(lam, vArgs)
           case h: ConstructorHead =>
             val resultTy = pi.codomain(envWithArgs)
-            val storedArgs = Value.constructorStoredArgs(h, vArgs)
-            Value.canonicalizeProof(Packed.foldCtor(h, storedArgs, resultTy).getOrElse(VCtor(h, storedArgs, resultTy)))
+            val fields = Value.constructorStoredArgs(h, storedArgs)
+            Value.canonicalizeProof(Packed.foldCtor(h, fields, resultTy).getOrElse(VCtor(h, fields, resultTy)))
           // Every non-reducing head builds one new application layer over itself. An existing
           // neutral stays the head rather than being flattened into the new spine: flattening
           // would destroy positional-projection arity. A blocked head propagates its blockers,
           // and any other head is unblocked.
           case head @ (_: VConst | _: VApp | _: NeutralThunk | _: Var) =>
             val blockedOn = Blocker.unapply(head).getOrElse(DepSet.empty)
-            Value.canonicalizeProof(VApp(head, vArgs, pi.codomain(envWithArgs), blockedOn))
+            Value.canonicalizeProof(VApp(head, storedArgs, pi.codomain(envWithArgs), blockedOn))
           case _ => fail(CannotApplyNonFunction(fn))
         }
       case _ => fail(CannotApplyNonFunction(fn.tpe))
@@ -270,9 +274,7 @@ object Interpreter {
 
   private def evalApplyTerm(fn: CoreAst.Term, args: Vector[CoreAst.Term], env: Env): Value = {
     val vf = evalTerm(fn, env)
-    val vArgs = args.map(a => evalTerm(a, env))
-    if (vArgs.isEmpty) fail(CannotApplyNonFunction(vf.tpe))
-    evalApply(vf, reconstructImplicits(vf, vArgs))
+    evalApply(vf, residualArguments(vf, args.map(a => evalTerm(a, env))))
   }
 
   private def valueName(v: Value): String =
@@ -284,34 +286,41 @@ object Interpreter {
     }
 
   /**
-   * Checked application syntax carries only the explicit args; the implicit ones are re-derived here by running their
+   * Checked application syntax carries only the explicit args. The implicit ones are re-derived here by running their
    * projection specs against the provided args, exactly as application checking did (Projection.project is the shared
-   * implementation).
+   * implementation). Each evidence one is an erased proof of its binder's proposition, deferred (`DeferredEvidence`):
+   * checking discharged or checked it once, and running the application evaluates the proposition only if the callee
+   * looks at the proof (PROOF_BY_EVALUATION §1.6). The proposition is its binder type evaluated where every binder
+   * before it is bound, as checking evaluated it.
    */
-  private def reconstructImplicits(fn: Value, vArgs: Vector[Value]): Vector[Value] =
+  private def residualArguments(fn: Value, vArgs: Vector[Value]): Vector[Value] =
     fn.tpe match {
-      case pi: VPi if pi.binders.exists(_.isImplicit) =>
+      case pi: VPi if pi.numExplicit != pi.binders.length =>
         // A binder type is evaluated before the application inside it has been checked, so both of
         // these are reachable from a program and stay ordinary errors, located by whichever term the
         // checker was working on.
         if (vArgs.length != pi.numExplicit) fail(ArityMismatch(pi.numExplicit, vArgs.length, ArityMismatch.Arguments))
         var provided = 0
-        pi.binders.map { binder =>
-          if (!binder.isImplicit) {
-            val arg = vArgs(provided)
-            provided += 1
-            arg
-          } else {
-            // Pi formation compiles a spec for every binder that stays implicit; one without is a
-            // broken invariant, not a program's fault.
-            val spec = binder.projection.getOrElse(
-              wtf(s"Implicit binder ${binder.name} of ${valueName(fn)} has no projection spec")
-            )
-            telescope.Projection.project(spec, vArgs) match {
-              case Right(value) => value
-              case Left(reason) => fail(ImplicitReconstructionFailed(binder.name, valueName(fn), reason))
-            }
-          }
+        pi.binders.foldLeft(Vector.empty[Value]) { (earlier, binder) =>
+          earlier :+ (binder.mode match {
+            case BinderMode.Explicit =>
+              val arg = vArgs(provided)
+              provided += 1
+              arg
+            case BinderMode.Implicit =>
+              // Pi formation compiles a spec for every binder that stays implicit; one without is a
+              // broken invariant, not a program's fault.
+              val spec = binder.projection.getOrElse(
+                wtf(s"Implicit binder ${binder.name} of ${valueName(fn)} has no projection spec")
+              )
+              telescope.Projection.project(spec, vArgs) match {
+                case Right(value) => value
+                case Left(reason) => fail(ImplicitReconstructionFailed(binder.name, valueName(fn), reason))
+              }
+            case BinderMode.Evidence =>
+              val before = pi.binders.take(earlier.length)
+              new DeferredEvidence(() => evalTerm(binder.ty, BinderOps.instantiateFull(before, pi.env, earlier)))
+          })
         }
       case _ => vArgs
     }
@@ -338,7 +347,8 @@ object Interpreter {
     lazy val piEnv = BinderOps.instantiateFull(lam.tpe.binders, lam.tpe.env, args)
 
     lam.body match {
-      case LamBody.Native(run, nativeEnv, _) => run(args, nativeEnv)
+      // A native body reads its arguments as values, so deferred evidence is forced for it.
+      case LamBody.Native(run, nativeEnv, _) => run(args.map(Value.forced), nativeEnv)
       case LamBody.ProofEta =>
         Value.canonicalizeProof(VProof(lam.tpe.codomain(piEnv)))
       case LamBody.Core(term, coreEnv) =>
@@ -412,14 +422,14 @@ object Interpreter {
    */
   private[raccoonlang] def evalTerm(term: CoreAst.Term, env: Env): Value =
     term match {
-      case CTerm.NatLit(value, _)   => Packed.evalNatLit(value, env)
-      case CTerm.StrLit(scalars, _) => Packed.evalStrLit(scalars, env)
-      case ref: CTerm.Ref           => evalRef(ref, env)
-      case CTerm.App(fn, args, _)   => evalApplyTerm(fn, args, env)
-      case pi: CTerm.Pi             => evalPi(pi, env)
-      case l: CTerm.Lam             => evalLam(l, env)
-      case m: CTerm.Match           => evalMatch(m, env)
-      case b: CTerm.Body            => evalBody(b, env)
+      case CTerm.NatLit(value, _)    => Packed.evalNatLit(value, env)
+      case CTerm.StrLit(scalars, _)  => Packed.evalStrLit(scalars, env)
+      case ref: CTerm.Ref            => evalRef(ref, env)
+      case CTerm.App(fn, args, _, _) => evalApplyTerm(fn, args, env)
+      case pi: CTerm.Pi              => evalPi(pi, env)
+      case l: CTerm.Lam              => evalLam(l, env)
+      case m: CTerm.Match            => evalMatch(m, env)
+      case b: CTerm.Body             => evalBody(b, env)
       // The interpreter binds a scope's variable to its atom and makes none of its checks (spec §8).
       case scope: CTerm.Scope => evalTerm(scope.body, env.putLocal(scope.ref, Atoms.of(scope)))
       case CTerm.Sort(level, kind, scope, _) =>

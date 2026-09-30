@@ -50,8 +50,11 @@ object SurfaceAst {
      */
     final case class Pi(closure: Closure, binders: Vector[Binder], body: Term, span: Span) extends Term
 
-    // Application: f(a)
-    final case class App(fn: Term, args: Vector[Term], span: Span) extends Term
+    /**
+     * Application: `f(a)`, and `f(a)[h]` with its evidence supplied, one proof per evidence binder in order
+     * (PROOF_BY_EVALUATION §1.3). An empty `evidence` is a call that writes none, since an empty group does not parse.
+     */
+    final case class App(fn: Term, args: Vector[Term], evidence: Vector[Term], span: Span) extends Term
 
     /**
      * A pair expression `(a, b)`: `Pair.mk(a, b)` of the active prelude, whatever is in scope (PAIRS_AND_PRELUDE §4).
@@ -135,12 +138,7 @@ object SurfaceAst {
     val omitted: Closure = Closure(None, None)
   }
 
-  case class Binder(
-      name: String,
-      ty: Term,
-      span: Span,
-      isImplicit: Boolean = false
-  )
+  case class Binder(name: String, ty: Term, span: Span, mode: BinderMode)
 
   case class FuncHeader(params: Vector[Binder], ty: Term, span: Span)
 

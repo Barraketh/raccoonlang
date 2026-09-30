@@ -104,6 +104,7 @@ object ErrorReporter {
     frame match {
       case Frame.InDefinition(name)                   => s"definition $name"
       case Frame.InArgument(index, binder, callee)    => s"argument $index ($binder) of $callee"
+      case Frame.InEvidence(index, binder, callee)    => s"evidence $index ($binder) of $callee"
       case Frame.InBranch(ctor, args) if args.isEmpty => s"branch $ctor"
       case Frame.InBranch(ctor, args)                 => s"branch $ctor ${args.mkString(" ")}"
     }

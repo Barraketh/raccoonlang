@@ -120,15 +120,17 @@ object LanguageParser {
     }
 
   /**
-   * A term's arguments follow it with no space. Where spaces and then `(` follow a complete term on its line, that `(`
-   * is a parse error: it would otherwise begin another item, a block's result or the program's, as a pair or a
-   * parenthesized term.
+   * A term's arguments, and its evidence, follow it with no space. Where spaces and then `(` follow a complete term on
+   * its line, that `(` is a parse error: it would otherwise begin another item, a block's result or the program's, as a
+   * pair or a parenthesized term. No item begins with `[`, so a `[` there is an evidence group written apart.
    */
   private val spacedArguments: Parser[NoValue.type] = new Parser[NoValue.type] {
     override def parse(input: String, startIdx: Int): ParseResult[NoValue.type] = {
-      val paren = input.indexWhere(c => c != ' ' && c != '\t', startIdx)
-      if (paren > startIdx && input.charAt(paren) == '(')
-        throw ParseError(paren, paren, "Arguments follow a function with no space: write f(a, b)")
+      val next = input.indexWhere(c => c != ' ' && c != '\t', startIdx)
+      if (next > startIdx && input.charAt(next) == '(')
+        throw ParseError(next, next, "Arguments follow a function with no space: write f(a, b)")
+      if (next > startIdx && input.charAt(next) == '[')
+        throw ParseError(next, next, "Evidence follows the arguments with no space: write f(a)[h]")
       Success(NoValue, startIdx, startIdx)
     }
 
@@ -291,19 +293,44 @@ object LanguageParser {
   sealed trait TypeTrailer
   case class Dot(name: String, span: Span) extends TypeTrailer
   case class AppTrailer(args: Vector[Term], span: Span) extends TypeTrailer
+  case class EvidenceTrailer(proofs: Vector[Term], span: Span) extends TypeTrailer
 
   private def typeTrailers(implicit sourceId: Option[SourceId]): Parser[Vector[TypeTrailer]] =
     ((P(".") ~/ identAtom).flatSpanned(sourceId).map(Dot.tupled) |
-      nonEmptyParenArgs(typeArgument).flatSpanned(sourceId).map(AppTrailer.tupled)).rep(0)
+      nonEmptyParenArgs(typeArgument).flatSpanned(sourceId).map(AppTrailer.tupled) |
+      evidenceGroup(typeArgument).map(EvidenceTrailer.tupled)).rep(0)
 
   private def typeExpr(implicit sourceId: Option[SourceId]): Parser[Term] =
     (typeAtom ~ typeTrailers).map { case (ta, trailers) =>
       trailers.foldLeft(ta) { case (curTerm, nextTrailer) =>
         nextTrailer match {
-          case Dot(name, sp)        => Select(curTerm, name, trailerSpan(curTerm, sp))
-          case AppTrailer(args, sp) => App(curTerm, args, trailerSpan(curTerm, sp))
+          case Dot(name, sp)               => Select(curTerm, name, trailerSpan(curTerm, sp))
+          case AppTrailer(args, sp)        => App(curTerm, args, Vector.empty, trailerSpan(curTerm, sp))
+          case EvidenceTrailer(proofs, sp) => suppliedEvidence(curTerm, proofs, sp)
         }
       }
+    }
+
+  /**
+   * An application's bracket group `[p1, …]`, its evidence supplied (PROOF_BY_EVALUATION §1.3), and its span. Like the
+   * arguments, it follows with no space. An empty group is a parse error.
+   */
+  private def evidenceGroup(proof: => Parser[Term])(implicit sourceId: Option[SourceId]): Parser[(Vector[Term], Span)] =
+    (P('[') ~/ skipAllWs ~ proof.rep(0, layoutSym(',')) ~ layoutSymTight(']')).flatSpanned(sourceId).map {
+      case (proofs, span) =>
+        if (proofs.isEmpty) throw ParseError(span.start, span.start, "An evidence group supplies at least one proof")
+        (proofs, span)
+    }
+
+  /**
+   * `base` with its evidence supplied. A bracket group stands only after an application's explicit arguments, once, so
+   * after anything else it is a parse error.
+   */
+  private def suppliedEvidence(base: Term, proofs: Vector[Term], span: Span): Term =
+    base match {
+      case App(fn, args, Vector(), _) => App(fn, args, proofs, trailerSpan(base, span))
+      case _ =>
+        throw ParseError(span.start, span.start, "An evidence group follows an application's arguments: write f(a)[h]")
     }
 
   /**
@@ -331,7 +358,9 @@ object LanguageParser {
   ): Term = {
     val pieces = (named, first) +: rest
     val binders =
-      pieces.init.flatMap { case (groups, domain) => groups.flatten :+ Binder("_", domain, domain.span) } ++
+      pieces.init.flatMap { case (groups, domain) =>
+        groups.flatten :+ Binder("_", domain, domain.span, BinderMode.Explicit)
+      } ++
         pieces.last._1.flatten
     if (binders.isEmpty) pieces.last._2
     else Pi(closure, binders.map(binder => binder.copy(ty = notPair(binder.ty))), notPair(pieces.last._2), sp)
@@ -366,21 +395,27 @@ object LanguageParser {
   /** A type where a type stands, which is never a pair expression. */
   private def typeTerm(implicit sourceId: Option[SourceId]): Parser[Term] = typeArgument.map(notPair)
 
-  private def normalParam(implicit sourceId: Option[SourceId]): Parser[Binder] =
-    (sym('(') ~ argName ~ sym(':') ~/ skipAllWs ~ typeTerm ~ layoutSymTight(')')).flatSpanned(sourceId).map {
-      case (name, ty, span) =>
-        Binder(name, ty, span)
+  /** A binder `open name: type close` of the given mode. It commits once `open name :` is read. */
+  private def binder(open: Char, close: Char, mode: BinderMode)(implicit sourceId: Option[SourceId]): Parser[Binder] =
+    (sym(open) ~ argName ~ sym(':') ~/ skipAllWs ~ typeTerm ~ layoutSymTight(close)).flatSpanned(sourceId).map {
+      case (name, ty, span) => Binder(name, ty, span, mode)
     }
 
-  private def implicitParam(implicit sourceId: Option[SourceId]): Parser[Binder] =
-    (sym('{') ~ argName ~ sym(':') ~/ skipAllWs ~ typeTerm ~ layoutSymTight('}')).flatSpanned(sourceId).map {
-      case (name, ty, span) =>
-        Binder(name, ty, span, isImplicit = true)
-    }
-
+  /** An explicit `(x: A)`, an implicit `{x: A}` or an evidence binder `[h: P]` (PROOF_BY_EVALUATION §1.1). */
   private def param(implicit sourceId: Option[SourceId]): Parser[Binder] =
-    normalParam | implicitParam
+    binder('(', ')', BinderMode.Explicit) | binder('{', '}', BinderMode.Implicit) |
+      binder('[', ']', BinderMode.Evidence)
   private def layoutParam(implicit sourceId: Option[SourceId]): Parser[Binder] = skipAllWs ~ param
+
+  /**
+   * A family's parameter or index, which is explicit or implicit. An evidence binder stands only in the telescope of a
+   * definition, a lambda, a function type or a constructor (PROOF_BY_EVALUATION §1.1), so one here is a parse error.
+   */
+  private def familyParam(implicit sourceId: Option[SourceId]): Parser[Binder] =
+    skipAllWs ~ (binder('(', ')', BinderMode.Explicit) | binder('{', '}', BinderMode.Implicit) |
+      binder('[', ']', BinderMode.Evidence).map[Binder] { evidence =>
+        throw ParseError(evidence.span.start, evidence.span.start, "A family's parameters and indices are not evidence")
+      })
 
   /**
    * A `let` 's pattern: a name, `_`, or a parenthesized destructuring of two or more patterns (PAIRS_AND_PRELUDE §3.1).
@@ -464,17 +499,20 @@ object LanguageParser {
   sealed trait TermTrailer
   case class TermDot(name: String, span: Span) extends TermTrailer
   case class TermApp(args: Vector[Term], span: Span) extends TermTrailer
+  case class TermEvidence(proofs: Vector[Term], span: Span) extends TermTrailer
 
   private def termTrailers(implicit sourceId: Option[SourceId]): Parser[Vector[TermTrailer]] =
     ((P(".") ~/ identAtom).flatSpanned(sourceId).map(TermDot.tupled) |
-      parenArgs(term).flatSpanned(sourceId).map(TermApp.tupled)).rep(0)
+      parenArgs(term).flatSpanned(sourceId).map(TermApp.tupled) |
+      evidenceGroup(term).map(TermEvidence.tupled)).rep(0)
 
   private def term(implicit sourceId: Option[SourceId]): Parser[Term] =
     ((lambda | scopeP | matchP | closedPi | body | simplePi | termAtom) ~ termTrailers ~ spacedArguments).map {
       case (base, trailers) =>
         trailers.foldLeft(base) {
-          case (cur, TermDot(name, sp)) => Select(cur, name, trailerSpan(cur, sp))
-          case (cur, TermApp(args, sp)) => App(cur, args, trailerSpan(cur, sp))
+          case (cur, TermDot(name, sp))        => Select(cur, name, trailerSpan(cur, sp))
+          case (cur, TermApp(args, sp))        => App(cur, args, Vector.empty, trailerSpan(cur, sp))
+          case (cur, TermEvidence(proofs, sp)) => suppliedEvidence(cur, proofs, sp)
         }
     }
 
@@ -486,8 +524,8 @@ object LanguageParser {
 
   // New inductive-specific parsers
   private def inductiveHeader(implicit sourceId: Option[SourceId]): Parser[InductiveHeader] = {
-    val paramsP = layoutParam.rep(0)
-    val indicesP = (kw("indices") ~/ layoutParam.rep(0)).?.map(_.getOrElse(Vector.empty))
+    val paramsP = familyParam.rep(0)
+    val indicesP = (kw("indices") ~/ familyParam.rep(0)).?.map(_.getOrElse(Vector.empty))
     (ident ~ paramsP ~ indicesP ~ skipAllWs ~ sym(':') ~/ skipAllWs ~ typeTerm)
       .flatSpanned(sourceId)
       .map { case (name, params, indices, ty, sp) => InductiveHeader(name, params, indices, ty, sp) }

@@ -1,0 +1,5 @@
+
+<root>/main.rac:5:15: error: Constructor Fin.mk declares the evidence field h, which is not yet supported
+ | mk (i: Nat)[h: IsTrue(Nat.blt(i, n))] : Fin(n)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: in definition Fin

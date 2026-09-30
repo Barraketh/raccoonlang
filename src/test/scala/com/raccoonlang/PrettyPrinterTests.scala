@@ -208,7 +208,7 @@ class PrettyPrinterTests extends munit.FunSuite with TestSupport {
     )
     val span = Span(0, 0)
     val nested = (1 to depth).foldLeft[CoreAst.Term](CoreAst.Term.NatLit(0, span)) { (acc, _) =>
-      CoreAst.Term.App(CoreAst.Term.GlobalRef("f", span), Vector(acc), span)
+      CoreAst.Term.App(CoreAst.Term.GlobalRef("f", span), Vector(acc), Vector.empty, span)
     }
     assertEquals(onDefaultStack(PrettyPrinter.printTerm(nested)), "f(" * depth + "0" + ")" * depth)
   }

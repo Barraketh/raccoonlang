@@ -1,0 +1,5 @@
+inductive IsTrue indices (b: Bool) : Prop
+ | yes : IsTrue(Bool.true)
+
+struct Fin (n: Nat) : Type
+ | mk (i: Nat)[h: IsTrue(Nat.blt(i, n))] : Fin(n)

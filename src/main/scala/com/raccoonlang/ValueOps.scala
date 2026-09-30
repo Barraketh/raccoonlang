@@ -57,7 +57,8 @@ object ValueOps {
           VProof(materialize(p.tpe))
         // A packed literal's type is closed (VPacked requires it), so it never reaches here:
         // `mayNeedMaterialization` has already returned false for anything with no dependencies.
-        case p: VPacked => p
+        case p: VPacked                 => p
+        case deferred: DeferredEvidence => deferred.escaped
       }
       // Deferred collapse: a type may resolve to a proposition only once its metas solve
       // (e.g. u := 0); the proof policy applies at that point (docs/kernel.md#proofs-and-elimination). Deferred struct

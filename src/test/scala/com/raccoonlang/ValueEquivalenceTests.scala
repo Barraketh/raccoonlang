@@ -9,7 +9,7 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
   private val span = Span(0, 0)
   private val typeSort: CoreAst.Term = CoreTestTerms.sortAt(CoreAst.Form.LevelOne, span)
   private val binderRef = CoreAst.LocalRef(0, "x")
-  private val binder = CoreAst.Binder(binderRef, typeSort, Span(0, 0), CoreAst.BinderSite.Function)
+  private val binder = CoreAst.Binder(binderRef, typeSort, Span(0, 0), CoreAst.BinderSite.Function, BinderMode.Explicit)
   private val env = Env.empty
   private val typeToTypeClassifier = Sorts.sort(Level.succ(Level.one), Value.Kind.unr, Value.Lifetime.empty)
 
@@ -66,7 +66,7 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
 
   test("Pi definitional equality distinguishes telescope grouping") {
     val yRef = CoreAst.LocalRef(1, "y")
-    val yBinder = CoreAst.Binder(yRef, typeSort, span, CoreAst.BinderSite.Function)
+    val yBinder = CoreAst.Binder(yRef, typeSort, span, CoreAst.BinderSite.Function, BinderMode.Explicit)
     val grouped = VPi(
       env,
       Vector(binder, yBinder),
@@ -108,7 +108,7 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
 
   test("checked and residual applications cross nested Pi groups") {
     val yRef = CoreAst.LocalRef(2, "y")
-    val yBinder = CoreAst.Binder(yRef, typeSort, span, CoreAst.BinderSite.Function)
+    val yBinder = CoreAst.Binder(yRef, typeSort, span, CoreAst.BinderSite.Function, BinderMode.Explicit)
     val nested = VPi(
       env,
       Vector(binder),
@@ -131,8 +131,8 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
     )
     val applicationEnv = env.putGlobal("nested", VConst("nested", Symbol, nested))
     val ref = CoreTestTerms.sortAt(CoreAst.Form.LevelZero, span)
-    val first = CoreAst.Term.App(CoreAst.Term.GlobalRef("nested", span), Vector(ref), span)
-    val application = CoreAst.Term.App(first, Vector(ref), span)
+    val first = CoreAst.Term.App(CoreAst.Term.GlobalRef("nested", span), Vector(ref), Vector.empty, span)
+    val application = CoreAst.Term.App(first, Vector(ref), Vector.empty, span)
 
     val checked = TypeChecker.checkTerm(application, applicationEnv)
     assert(ValueEquivalence.defEq(checked.value.tpe, Sorts.Type))

@@ -42,8 +42,20 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
 
   private def mutualEvenOdd(evenRecursiveFieldType: CoreAst.Term = global("Odd")): CoreAst.Decl.InductiveBlock = {
     val oddField =
-      CoreAst.Binder(CoreAst.LocalRef(1001, "odd"), evenRecursiveFieldType, blockSpan, CoreAst.BinderSite.Field)
-    val evenField = CoreAst.Binder(CoreAst.LocalRef(1002, "even"), global("Even"), blockSpan, CoreAst.BinderSite.Field)
+      CoreAst.Binder(
+        CoreAst.LocalRef(1001, "odd"),
+        evenRecursiveFieldType,
+        blockSpan,
+        CoreAst.BinderSite.Field,
+        BinderMode.Explicit
+      )
+    val evenField = CoreAst.Binder(
+      CoreAst.LocalRef(1002, "even"),
+      global("Even"),
+      blockSpan,
+      CoreAst.BinderSite.Field,
+      BinderMode.Explicit
+    )
     val even = CoreAst.Decl.InductiveDecl(
       CoreAst.InductiveHeader("Even", Vector.empty, Vector.empty, typeSort, blockSpan),
       Vector(
@@ -63,12 +75,29 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   }
 
   private def parameterizedMutual(secondParamType: CoreAst.Term): CoreAst.Decl.InductiveBlock = {
-    val firstParam = CoreAst.Binder(CoreAst.LocalRef(1010, "A"), typeSort, blockSpan, CoreAst.BinderSite.Parameter)
+    val firstParam = CoreAst.Binder(
+      CoreAst.LocalRef(1010, "A"),
+      typeSort,
+      blockSpan,
+      CoreAst.BinderSite.Parameter,
+      BinderMode.Explicit
+    )
     val secondParam =
-      CoreAst.Binder(CoreAst.LocalRef(1011, "B"), secondParamType, blockSpan, CoreAst.BinderSite.Parameter)
+      CoreAst.Binder(
+        CoreAst.LocalRef(1011, "B"),
+        secondParamType,
+        blockSpan,
+        CoreAst.BinderSite.Parameter,
+        BinderMode.Explicit
+      )
 
     def family(name: String, param: CoreAst.Binder): CoreAst.Decl.InductiveDecl = {
-      val result = CoreAst.Term.App(global(name), Vector(CoreAst.Term.LocalRef(param.localRef, blockSpan)), blockSpan)
+      val result = CoreAst.Term.App(
+        global(name),
+        Vector(CoreAst.Term.LocalRef(param.localRef, blockSpan)),
+        Vector.empty,
+        blockSpan
+      )
       CoreAst.Decl.InductiveDecl(
         CoreAst.InductiveHeader(name, Vector(param), Vector.empty, typeSort, blockSpan),
         Vector(CoreAst.ConstructorDecl(s"$name.mk", "mk", Vector.empty, result, blockSpan)),
@@ -81,13 +110,26 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   }
 
   private def parameterizedMutualWithStrictlyNegativeParam: CoreAst.Decl.InductiveBlock = {
-    val firstParam = CoreAst.Binder(CoreAst.LocalRef(1012, "A"), typeSort, blockSpan, CoreAst.BinderSite.Parameter)
-    val secondParam = CoreAst.Binder(CoreAst.LocalRef(1013, "B"), typeSort, blockSpan, CoreAst.BinderSite.Parameter)
+    val firstParam = CoreAst.Binder(
+      CoreAst.LocalRef(1012, "A"),
+      typeSort,
+      blockSpan,
+      CoreAst.BinderSite.Parameter,
+      BinderMode.Explicit
+    )
+    val secondParam = CoreAst.Binder(
+      CoreAst.LocalRef(1013, "B"),
+      typeSort,
+      blockSpan,
+      CoreAst.BinderSite.Parameter,
+      BinderMode.Explicit
+    )
     val innerArg = CoreAst.Binder(
       CoreAst.LocalRef(1014, "a"),
       CoreAst.Term.LocalRef(firstParam.localRef, blockSpan),
       blockSpan,
-      CoreAst.BinderSite.Function
+      CoreAst.BinderSite.Function,
+      BinderMode.Explicit
     )
     val firstParamTerm = CoreAst.Term.LocalRef(firstParam.localRef, blockSpan)
     val inner = CoreAst.Term.Pi(
@@ -97,17 +139,24 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
       blockSpan,
       NodeId.fresh()
     )
-    val outerArg = CoreAst.Binder(CoreAst.LocalRef(1015, "consume"), inner, blockSpan, CoreAst.BinderSite.Function)
+    val outerArg = CoreAst.Binder(
+      CoreAst.LocalRef(1015, "consume"),
+      inner,
+      blockSpan,
+      CoreAst.BinderSite.Function,
+      BinderMode.Explicit
+    )
     val field = CoreAst.Binder(
       CoreAst.LocalRef(1016, "field"),
       CoreAst.Term
         .Pi(Vector(outerArg), firstParamTerm, CoreAst.Closure.unrestricted(blockSpan), blockSpan, NodeId.fresh()),
       blockSpan,
-      CoreAst.BinderSite.Field
+      CoreAst.BinderSite.Field,
+      BinderMode.Explicit
     )
 
     def result(name: String, param: CoreAst.Binder): CoreAst.Term =
-      CoreAst.Term.App(global(name), Vector(CoreAst.Term.LocalRef(param.localRef, blockSpan)), blockSpan)
+      CoreAst.Term.App(global(name), Vector(CoreAst.Term.LocalRef(param.localRef, blockSpan)), Vector.empty, blockSpan)
 
     val first = CoreAst.Decl.InductiveDecl(
       CoreAst.InductiveHeader("First", Vector(firstParam), Vector.empty, typeSort, blockSpan),
@@ -125,13 +174,36 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   }
 
   private def nonUniformRecursiveMutual: CoreAst.Decl.InductiveBlock = {
-    val firstParam = CoreAst.Binder(CoreAst.LocalRef(1030, "A"), typeSort, blockSpan, CoreAst.BinderSite.Parameter)
-    val secondParam = CoreAst.Binder(CoreAst.LocalRef(1031, "B"), typeSort, blockSpan, CoreAst.BinderSite.Parameter)
+    val firstParam = CoreAst.Binder(
+      CoreAst.LocalRef(1030, "A"),
+      typeSort,
+      blockSpan,
+      CoreAst.BinderSite.Parameter,
+      BinderMode.Explicit
+    )
+    val secondParam = CoreAst.Binder(
+      CoreAst.LocalRef(1031, "B"),
+      typeSort,
+      blockSpan,
+      CoreAst.BinderSite.Parameter,
+      BinderMode.Explicit
+    )
     val firstResult =
-      CoreAst.Term.App(global("First"), Vector(CoreAst.Term.LocalRef(firstParam.localRef, blockSpan)), blockSpan)
-    val secondAtCarrier = CoreAst.Term.App(global("Second"), Vector(global("Carrier")), blockSpan)
+      CoreAst.Term.App(
+        global("First"),
+        Vector(CoreAst.Term.LocalRef(firstParam.localRef, blockSpan)),
+        Vector.empty,
+        blockSpan
+      )
+    val secondAtCarrier = CoreAst.Term.App(global("Second"), Vector(global("Carrier")), Vector.empty, blockSpan)
     val recursiveField =
-      CoreAst.Binder(CoreAst.LocalRef(1032, "child"), secondAtCarrier, blockSpan, CoreAst.BinderSite.Field)
+      CoreAst.Binder(
+        CoreAst.LocalRef(1032, "child"),
+        secondAtCarrier,
+        blockSpan,
+        CoreAst.BinderSite.Field,
+        BinderMode.Explicit
+      )
     val first = CoreAst.Decl.InductiveDecl(
       CoreAst.InductiveHeader("First", Vector(firstParam), Vector.empty, typeSort, blockSpan),
       Vector(CoreAst.ConstructorDecl("First.mk", "mk", Vector(recursiveField), firstResult, blockSpan)),
@@ -139,7 +211,12 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
       blockSpan
     )
     val secondResult =
-      CoreAst.Term.App(global("Second"), Vector(CoreAst.Term.LocalRef(secondParam.localRef, blockSpan)), blockSpan)
+      CoreAst.Term.App(
+        global("Second"),
+        Vector(CoreAst.Term.LocalRef(secondParam.localRef, blockSpan)),
+        Vector.empty,
+        blockSpan
+      )
     val second = CoreAst.Decl.InductiveDecl(
       CoreAst.InductiveHeader("Second", Vector(secondParam), Vector.empty, typeSort, blockSpan),
       Vector(CoreAst.ConstructorDecl("Second.mk", "mk", Vector.empty, secondResult, blockSpan)),
@@ -150,8 +227,9 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   }
 
   private def recursiveResultIndexMutual: CoreAst.Decl.InductiveBlock = {
-    val index = CoreAst.Binder(CoreAst.LocalRef(1040, "X"), typeSort, blockSpan, CoreAst.BinderSite.Field)
-    val firstAtSecond = CoreAst.Term.App(global("First"), Vector(global("Second")), blockSpan)
+    val index =
+      CoreAst.Binder(CoreAst.LocalRef(1040, "X"), typeSort, blockSpan, CoreAst.BinderSite.Field, BinderMode.Explicit)
+    val firstAtSecond = CoreAst.Term.App(global("First"), Vector(global("Second")), Vector.empty, blockSpan)
     val first = CoreAst.Decl.InductiveDecl(
       CoreAst.InductiveHeader("First", Vector.empty, Vector(index), typeSort, blockSpan),
       Vector(CoreAst.ConstructorDecl("First.mk", "mk", Vector.empty, firstAtSecond, blockSpan)),
@@ -178,10 +256,16 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   }
 
   test("native singleton declarations never infer source universe coordinates") {
-    val universe = CoreAst.Binder(CoreAst.LocalRef(1060, "u"), global("Level"), blockSpan, CoreAst.BinderSite.Parameter)
+    val universe = CoreAst.Binder(
+      CoreAst.LocalRef(1060, "u"),
+      global("Level"),
+      blockSpan,
+      CoreAst.BinderSite.Parameter,
+      BinderMode.Explicit
+    )
     val universeTerm = CoreAst.Term.LocalRef(universe.localRef, blockSpan)
     val sort = CoreTestTerms.sortAt(universeTerm, blockSpan)
-    val result = CoreAst.Term.App(global("Poly"), Vector(universeTerm), blockSpan)
+    val result = CoreAst.Term.App(global("Poly"), Vector(universeTerm), Vector.empty, blockSpan)
     val declaration = CoreAst.Decl.InductiveDecl(
       CoreAst.InductiveHeader("Poly", Vector(universe), Vector.empty, sort, blockSpan),
       Vector(CoreAst.ConstructorDecl("Poly.mk", "mk", Vector.empty, result, blockSpan)),
@@ -218,7 +302,11 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
     assert(!oddMeta.projectionInfo.get.etaEligible)
 
     val oddWitness =
-      opaque("oddWitness", global("Odd"), CoreAst.Term.App(global("Odd.succ"), Vector(global("Even.zero")), blockSpan))
+      opaque(
+        "oddWitness",
+        global("Odd"),
+        CoreAst.Term.App(global("Odd.succ"), Vector(global("Even.zero")), Vector.empty, blockSpan)
+      )
     val matchEnv =
       Interpreter.evalDecl(
         opaque("evenWitness", global("Even"), global("Even.zero")),
@@ -291,7 +379,13 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   }
 
   test("mutual blocks reject negative sibling occurrences without publication") {
-    val functionArg = CoreAst.Binder(CoreAst.LocalRef(1020, "x"), global("Odd"), blockSpan, CoreAst.BinderSite.Function)
+    val functionArg = CoreAst.Binder(
+      CoreAst.LocalRef(1020, "x"),
+      global("Odd"),
+      blockSpan,
+      CoreAst.BinderSite.Function,
+      BinderMode.Explicit
+    )
     val negativeField =
       CoreAst.Term.Pi(
         Vector(functionArg),

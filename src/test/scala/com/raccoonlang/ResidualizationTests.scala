@@ -140,7 +140,7 @@ class ResidualizationTests extends munit.FunSuite {
     checkBody(p).term match {
       case CA.Term.Body(
             lets,
-            CA.Term.App(CA.Term.GlobalRef("Couple.fst", _), Vector(CA.Term.LocalRef(ref, _)), _),
+            CA.Term.App(CA.Term.GlobalRef("Couple.fst", _), Vector(CA.Term.LocalRef(ref, _)), _, _),
             _
           ) =>
         assertEquals(lets.length, 1)
@@ -166,7 +166,7 @@ class ResidualizationTests extends munit.FunSuite {
     checkBody(p).term match {
       case CA.Term.Body(
             Vector(let),
-            CA.Term.App(CA.Term.GlobalRef("Couple.fst", _), Vector(CA.Term.LocalRef(ref, _)), _),
+            CA.Term.App(CA.Term.GlobalRef("Couple.fst", _), Vector(CA.Term.LocalRef(ref, _)), _, _),
             _
           ) =>
         assertEquals(let.pattern, CA.LetPattern.Local(ref))
@@ -273,14 +273,14 @@ class ResidualizationTests extends munit.FunSuite {
       case pi: CA.Term.Pi =>
         assertEquals(pi.binders.length, 2)
         val implicitBinder = pi.binders.head
-        assert(implicitBinder.isImplicit, "expected leading binder to stay implicit in the residual")
+        assert(implicitBinder.mode == BinderMode.Implicit, "expected leading binder to stay implicit in the residual")
         assert(implicitBinder.projection.isDefined, "expected forced implicit binder to carry a projection spec")
         implicitBinder.ty match {
           case CA.Term.Sort(CA.Term.FormOp(CA.Form.LevelOne, _, _), _, _, _) =>
           case other => fail(s"Expected Type binder annotation, got $other")
         }
         val explicitBinder = pi.binders(1)
-        assert(!explicitBinder.isImplicit, "expected forcing binder to stay explicit in the residual")
+        assert(explicitBinder.mode == BinderMode.Explicit, "expected forcing binder to stay explicit in the residual")
         explicitBinder.ty match {
           case CA.Term.LocalRef(tyRef, _) => assertEquals(tyRef, implicitBinder.localRef)
           case other                      => fail(s"Expected explicit binder typed by implicit A, got $other")
@@ -316,6 +316,7 @@ class ResidualizationTests extends munit.FunSuite {
           case CA.Term.App(
                 CA.Term.GlobalRef("Vec", _),
                 Vector(CA.Term.GlobalRef("Peano", _), CA.Term.LocalRef(argRef, _)),
+                _,
                 _
               ) =>
             assertEquals(argRef, nRef)
@@ -325,6 +326,7 @@ class ResidualizationTests extends munit.FunSuite {
           case CA.Term.App(
                 CA.Term.GlobalRef("Vec", _),
                 Vector(CA.Term.GlobalRef("Peano", _), CA.Term.LocalRef(outRef, _)),
+                _,
                 _
               ) =>
             assertEquals(outRef, nRef)
@@ -343,7 +345,7 @@ class ResidualizationTests extends munit.FunSuite {
 
     checkLastDeclType(p) match {
       case pi: CA.Term.Pi =>
-        assert(!pi.binders.head.isImplicit, "expected explicit binder to stay explicit in the residual")
+        assert(pi.binders.head.mode == BinderMode.Explicit, "expected explicit binder to stay explicit in the residual")
         pi.binders.head.ty match {
           case CA.Term.Sort(CA.Term.FormOp(CA.Form.LevelOne, _, _), _, _, _) =>
           case other => fail(s"Expected Type binder, got $other")
@@ -403,7 +405,7 @@ class ResidualizationTests extends munit.FunSuite {
                 CA.Let(
                   CA.LetPattern.Local(bound),
                   _,
-                  CA.Term.App(CA.Term.GlobalRef("Boxed.T", _), Vector(CA.Term.LocalRef(self, _)), _),
+                  CA.Term.App(CA.Term.GlobalRef("Boxed.T", _), Vector(CA.Term.LocalRef(self, _)), _, _),
                   _
                 )
               ),

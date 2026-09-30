@@ -237,7 +237,7 @@ object Packed {
         // produces the same bare fresh Var this validation used to build by hand.
         var telescopeEnv = pi.env
         pi.binders.foreach { binder =>
-          if (binder.isImplicit) reject("expected two explicit telescope binders")
+          if (binder.mode != BinderMode.Explicit) reject("expected two explicit telescope binders")
           val binderTy = Interpreter.evalTerm(binder.ty, telescopeEnv)
           if (!ValueEquivalence.defEq(binderTy, nat)) reject("expected telescope domain Nat -> Nat")
           telescopeEnv = BinderOps.freshen(Vector(binder), telescopeEnv)
@@ -321,6 +321,7 @@ object Packed {
         CoreAst.Term.App(
           CoreAst.Term.GlobalRef("List", syntheticSpan),
           Vector(CoreAst.Term.GlobalRef("Char", syntheticSpan)),
+          Vector.empty,
           syntheticSpan
         ),
         env

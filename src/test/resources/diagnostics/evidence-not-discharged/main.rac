@@ -1,0 +1,6 @@
+inductive IsTrue indices (b: Bool) : Prop
+ | yes : IsTrue(Bool.true)
+
+def pred (n: Nat)[h: IsTrue(Nat.blt(0, n))]: Nat := Nat.sub(n, 1)
+
+{ pred(0) }

@@ -76,6 +76,13 @@ object ValueKey {
       avalanche(key.lo + java.lang.Long.rotateLeft(value ^ SeedLo, 31))
     )
 
+  private def modeKey(mode: BinderMode): Long =
+    mode match {
+      case BinderMode.Explicit => 0L
+      case BinderMode.Implicit => 1L
+      case BinderMode.Evidence => 2L
+    }
+
   private def mixString(key: Key, value: String): Key = {
     var cur = mixLong(key, value.length.toLong)
     var idx = 0
@@ -191,11 +198,12 @@ object ValueKey {
     case m: Value.NeutralThunk =>
       valueIdKey(tag(Tag.NeutralThunk), m.id)
     case p: Value.VPi =>
-      // The closure explicitly, not through the captures: it is part of the function type's identity (spec §2.5).
-      mixKey(
-        mixKey(mixLong(valueIdKey(tag(Tag.Pi), p.id), p.binders.length.toLong), p.closureKind.key),
-        p.closureScope.key
-      )
+      // The closure and the binders' modes explicitly, not through the node: both are part of the function type's
+      // identity (spec §2.5, PROOF_BY_EVALUATION §1.5), and a checked node's modes may differ from its source's.
+      val binders = p.binders.foldLeft(mixLong(valueIdKey(tag(Tag.Pi), p.id), p.binders.length.toLong)) {
+        (key, binder) => mixLong(key, modeKey(binder.mode))
+      }
+      mixKey(mixKey(binders, p.closureKind.key), p.closureScope.key)
     case p: Value.VPacked =>
       val codecId = p.codec match {
         case Value.NatCodec         => 1L
@@ -212,5 +220,6 @@ object ValueKey {
     // All erased proofs of defEq propositions share a key; VProof contains only its proposition.
     case p: Value.VProof =>
       mixKey(tag(Tag.Proof), p.tpe.key)
+    case deferred: Value.DeferredEvidence => deferred.escaped
   }
 }
