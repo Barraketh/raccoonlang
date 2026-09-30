@@ -1,7 +1,9 @@
 # Proof by evaluation
 
-Status: **approved design, not yet implemented** (review 2026-09-30). As each change lands, `docs/language.md` and
-`docs/kernel.md` state its rules, and this document stays as the design record.
+Status: **approved design, partly implemented** (review 2026-09-30). Implemented: §1 (evidence arguments and fields,
+both discharge rules, the depth bound), §2.2 (printing), §2.3 (value metadata), §2.5 (stack exhaustion). Open: §2.4
+(tail positions) and the §2.6 measurements. `docs/language.md` and `docs/kernel.md` state the implemented rules, and
+this document stays as the design record.
 
 Proof by reflection proves a property in three steps:
 1. Write a decision procedure in Raccoon, `check : D -> Bool`.
@@ -243,10 +245,13 @@ AST, which is data, not the linear tokens that built it.
 EvidenceNotDischarged
 EvaluationTooDeep
 NotAProposition
+BuiltinEvidence
 ```
 
-All three are new: `EvidenceNotDischarged` (§1.2), `EvaluationTooDeep` (§2.5), and `NotAProposition` for an evidence
-binder whose type is not a proposition (§1.1). Existing diagnostics gain cases:
+All four are new: `EvidenceNotDischarged` (§1.2, with the path through evidence fields and, past the bound, the
+reason `TooDeep`, §1.9), `EvaluationTooDeep` (§2.5), `NotAProposition` for an evidence binder whose type is not a
+proposition (§1.1), and `BuiltinEvidence` for an evidence binder in a builtin's signature, since a builtin's native
+body reads its arguments as values and nothing would force an erased proof for it. Existing diagnostics gain cases:
 - `ArityMismatch`: the wrong number of explicit evidence arguments (§1.3);
 - `TypeMismatch`: an explicit evidence argument of another proposition, and a function type whose binder modes
   differ (§1.5).
