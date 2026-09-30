@@ -102,9 +102,26 @@ Apartness is the stronger result used to omit an unreachable match branch. It
 is produced only by evidence that supports propositional no-confusion:
 
 - a clash between distinct constructors of a non-Prop inductive, when both
-  constructor heads carry checked no-confusion evidence;
-- unequal payloads of a packed codec that explicitly certifies that finite
-  decoding reaches such a constructor clash. The Nat codec has this property.
+  constructor heads carry checked no-confusion evidence and the two values are
+  of one family at convertible parameters, one type up to its indices;
+- unequal packed Nat payloads, which decode to `zero` against `succ` at
+  finite depth, and a packed literal whose decoded head clashes with a
+  constructor under the same condition. Packed character lists compare as
+  their decodings do (see [Strings](#strings)), so they are apart only through
+  such a clash there.
+
+No-confusion relates values of one type. A clash between values of different
+families, or of one family at parameters not known equal, is reached only once
+the equation between their types failed stuck, and it is not a refutation: for
+`Tag(A: Type)(a: A)` with only `mk : Tag(Bool, Bool.true)`, a match on a
+`Tag(Two, Two.one)` keeps its `mk` case, since pruning it would decide that
+`Two` is not `Bool`, an equation between types no eliminator decides. The rule
+reads only the two values' types, so it keeps such a clash stuck even where the
+declared type of its position, say `List(A)` for a bound `A`, would refute it.
+
+A key mismatch decides only that two values are not definitionally equal, so a
+mismatch that one of these rules refutes at the two values' heads is decided
+by the rule, whatever the keys.
 
 Proof constructors, quotient constructors, family heads, opaque applications,
 level, kind and lifetime failures, and ordinary unification failures do not
@@ -966,8 +983,13 @@ String literals require an optional validated bootstrap layout:
 The kernel trusts the exact `Char.ofNat` identity to map Unicode scalar values
 injectively. A string evaluates to `String.mk` containing a packed scalar list.
 The outer `String` remains constructor-headed, preserving structure eta. List
-matching decodes one `nil` or `cons` layer at a time. The bundled prelude does
-not currently install this layout.
+matching decodes one `nil` or `cons` layer at a time. Two packed lists compare
+as their decodings do: where their scalars agree the decoded characters are the
+same, where they differ the characters `Char.ofNat` gives are compared, and a
+list that ends first is `nil` against `cons`. So two distinct literals are
+apart when one ends first or a character where they differ is apart, as it is
+when `Char.ofNat` builds a constructor around its scalar. The bundled prelude
+does not currently install this layout.
 
 ## Value identity
 

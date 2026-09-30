@@ -25,13 +25,6 @@ class StringPrintingTests extends munit.FunSuite with TestSupport {
     s"String.mk($chars)"
   }
 
-  /** The time `body` takes, in milliseconds, with its result. */
-  private def timed[A](body: => A): (A, Long) = {
-    val start = System.nanoTime()
-    val result = body
-    (result, (System.nanoTime() - start) / 1000000)
-  }
-
   test("a computed String prints as the literal a written one does, and the literal reads back as it") {
     val cases = Vector(
       s"{ ${computed("hi")} }" -> "\"hi\"",

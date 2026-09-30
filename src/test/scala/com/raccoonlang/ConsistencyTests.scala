@@ -173,6 +173,54 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
     }
   }
 
+  // A constructor clash is apart only between values of one type up to its indices (docs/kernel.md#apartness).
+  test("constructor clashes between values of different types are not refutations") {
+    // `Tag`'s index `a` has the type its index `A` says, so where the `A`s disagree the `a`s are of different types.
+    // That `A` equation is stuck, not apart: no family is provably distinct from another. Pruning on `Bool.true`
+    // against `Two.one` would decide that `Bool` is not `Two`, against the literal `0` that `Bool` is not `Nat`, and on
+    // `List.nil` against `List.cons` at `List(Bool)` and `List(Two)`, in the position typed `a: A`, that those two are
+    // distinct; no eliminator decides any of them. Within one type the clash still prunes. The `Box` index is a structure, so its key never decides
+    // the family's equation, and the `x` index leaves something refinable.
+    val families =
+      """
+        |inductive Two : Type
+        | | one : Two
+        | | two : Two
+        |
+        |struct Box : Type
+        | | mk (n: Nat) : Box
+        |
+        |inductive Tag indices (A: Type)(a: A)(c: Box) : Type
+        | | mk : Tag(Bool, Bool.true, Box.mk(0))
+        |
+        |inductive Tagged indices (A: Type)(a: A)(c: Nat) : Type
+        | | mk : Tagged(List(Bool), List.nil(Bool), 0)
+        |""".stripMargin
+    def matching(tpe: String, cases: String): String =
+      families +
+        s"""
+           |def f (x: Nat)(g: (n: Nat) -> $tpe)(n: Nat): Nat := {
+           |  match g(n) returning Nat with
+           |$cases
+           |}
+           |""".stripMargin
+    val reached = "  | .mk => n"
+    Vector(
+      "Tag(Two, Two.one, Box.mk(0))",
+      "Tag(Two, Two.one, Box.mk(x))",
+      "Tag(Nat, 0, Box.mk(x))",
+      "Tagged(List(Two), List.cons(Two.one, List.nil(Two)), x)"
+    ).foreach { tpe =>
+      typecheckDecls(matching(tpe, reached))
+      expectOnly[MissingCase](typecheckDecls(matching(tpe, "")))
+    }
+    Vector("Tag(Bool, Bool.false, Box.mk(0))", "Tag(Bool, Bool.false, Box.mk(x))").foreach { tpe =>
+      typecheckDecls(matching(tpe, ""))
+      expectOnly[UnreachableCase](typecheckDecls(matching(tpe, reached)))
+    }
+    typecheckDecls(matching("Tagged(List(Bool), List.cons(Bool.true, List.nil(Bool)), x)", ""))
+  }
+
   // `Prop` is a sort, not a proposition (docs/kernel.md#universes-and-function-types).
   test("Negative: elimination from Exists into Prop-the-sort is large elimination") {
     // Prop is a sort, not a proposition: returning Prop extracts the witness into data,

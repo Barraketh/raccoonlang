@@ -71,6 +71,26 @@ object ValueEquivalence {
     private final case class PiUnification(eqStore: EqStore, vars: Vector[Value], watermark: Value.VarId)
 
     /**
+     * An application's argument equation `v1 ~ v2` that failed stuck under `store`, postponed until the rest of the
+     * spine has run.
+     *
+     * An attempt reads its store only at the variables its sides reach through the store's links: materializing the
+     * sides follows exactly those links, every value it goes on to compare is built from the sides' variables and from
+     * fresh ones it makes itself, and it links only variables it meets. The refinable set, the one other thing it
+     * reads, is fixed for a whole unification. So under a later store that links none of those variables, a store that
+     * only adds links to this one, a retry is the same computation up to its fresh variables' names, and fails again.
+     * Skipping it changes no outcome, and it is what keeps a failure beneath k nested applications from being retried
+     * at each of them, 2^k attempts: conversion, which never links, never retries.
+     */
+    private final case class Postponed(v1: Value, v2: Value, store: EqStore, failure: UnifyFailure) {
+      def reachesLinksOf(later: EqStore): Boolean = {
+        val linkedSince = later.solvedIds -- store.solvedIds
+        linkedSince.nonEmpty &&
+        (store.reachable(v1).intersects(linkedSince) || store.reachable(v2).intersects(linkedSince))
+      }
+    }
+
+    /**
      * Unification context: whether every frame descended through so far is invertible.
      *
      * A link records exactly the equation presented at the point of linking (or its unique forced solution) — the store
@@ -102,8 +122,7 @@ object ValueEquivalence {
     /**
      * Whether a key mismatch leaves the equation open. `Value.needsStructuralDefEq` is the one enumeration of the value
      * forms whose key is incomplete — a key that cannot see extensionality, proof irrelevance or structure eta decides
-     * nothing when it differs. The mixed packed/constructor pair is the specified one-layer peel rule; canonical
-     * packed-vs-packed comparison remains key-only.
+     * nothing when it differs. The mixed packed/constructor pair is the specified one-layer peel rule.
      */
     private def keysAreInconclusive(a: Value, b: Value): Boolean =
       a.needsStructuralDefEq || b.needsStructuralDefEq || ((a, b) match {
@@ -112,6 +131,18 @@ object ValueEquivalence {
         case (_: VPacked, ConstructorApp(_)) | (ConstructorApp(_), _: VPacked) => true
         case _                                                                 => false
       })
+
+    /**
+     * Whether a mismatch between `a` and `b` is decided at their heads by a rule below that can also refute it: a clash
+     * of constructors, or unequal payloads of one packed codec. A key tells only that two values differ, never that
+     * they are apart, so such a pair goes to its rule even when its keys are conclusive, at the cost of one comparison.
+     */
+    private def mismatchRefutableAtHead(a: Value, b: Value): Boolean =
+      (a, b) match {
+        case (ConstructorApp(h1), ConstructorApp(h2)) => h1.name != h2.name
+        case (p1: VPacked, p2: VPacked)               => p1.codec == p2.codec
+        case _                                        => false
+      }
 
     // Unsolvable, but not refutable: safe for elaboration to give up on, unsound to prune a match case on.
     private def stuck(v1: Value, v2: Value): Result = Left(UnifyFailure(v1, v2, apart = false))
@@ -379,6 +410,25 @@ object ValueEquivalence {
       tryLinkVar(toLink, representative, meta, ctx)
     }
 
+    /**
+     * Two values headed by different constructors. Different constructors of a genuine inductive are disjoint, but only
+     * within one type: no-confusion relates values of one family at convertible parameters, one type up to its indices.
+     * A clash across families, or across parameters not known equal, is a heterogeneous equation, reached only once the
+     * equation between the two types failed stuck, and no eliminator refutes it: `Two.one` against `Bool.true` would
+     * decide that `Two` is not `Bool` (docs/kernel.md#apartness). Heads without no-confusion (e.g. `Quot.mk`) can only
+     * be identified or separated by their theory.
+     */
+    private def constructorClash(a: Value, b: Value, noConfusion: Boolean): Result = {
+      val oneType = (a.tpe, b.tpe) match {
+        case (InductiveFamilyValue(family1), InductiveFamilyValue(family2)) =>
+          val params = family1.meta.block.key.numParams
+          family1.head.name == family2.head.name &&
+          family1.args.take(params).zip(family2.args.take(params)).forall { case (p1, p2) => defEq(p1, p2) }
+        case _ => false
+      }
+      if (noConfusion && oneType) apart(a, b) else stuck(a, b)
+    }
+
     private def unifyPeeled(
         packed: VPacked,
         head: ConstructorHead,
@@ -388,14 +438,57 @@ object ValueEquivalence {
         packedOnLeft: Boolean
     ): Result = {
       val (name, decoded) = packed.codec.decodeHead(packed)
-      if (name != head.name) {
-        if (head.noConfusion) apart(packed, ctor) else stuck(packed, ctor)
-      } else if (decoded.length != head.totalArity - head.numErasedFamilyArgs) stuck(packed, ctor)
+      if (name != head.name) constructorClash(packed, ctor, head.noConfusion)
+      else if (decoded.length != head.totalArity - head.numErasedFamilyArgs) stuck(packed, ctor)
       else {
         val peeled = VCtor(head, decoded, packed.tpe)
         if (packedOnLeft) tryUnify(peeled, ctor, meta, ctx)
         else tryUnify(ctor, peeled, meta, ctx)
       }
+    }
+
+    /**
+     * Two packed character lists with unequal payloads, compared as their decodings are, one `nil` or `cons` layer at a
+     * time. A layer whose scalars agree decodes to the same character on both sides, so only the characters where the
+     * scalars differ are compared, by the rules, and a list that runs out first is `nil` against `cons`, a clash of the
+     * layout's validated no-confusion constructors. Each `cons` layer is an invertible frame whose equations are
+     * decided as an application's are: a refutation anywhere refutes the lists, and otherwise the first stuck character
+     * is the failure. It is reported at the two lists from its layer on, whose text begins where they differ. The
+     * characters are closed, as the layout is, so comparing them links nothing.
+     *
+     * The kernel trusts `Char.ofNat` to be injective (docs/kernel.md#strings), and then the first differing character
+     * decides. The comparison does not rely on it.
+     */
+    private def unifyUnequalCharLists(
+        codec: CharListCodec,
+        p1: VPacked,
+        p2: VPacked,
+        meta: EqStore,
+        ctx: Ctx
+    ): Result = {
+      val (scalars1, scalars2) = (PackedPayload.charScalars(p1.payload), PackedPayload.charScalars(p2.payload))
+      def failure(from: Int, apart: Boolean): Result =
+        Left(
+          UnifyFailure(
+            VPacked.charList(codec, scalars1.drop(from)),
+            VPacked.charList(codec, scalars2.drop(from)),
+            apart
+          )
+        )
+      val shared = scalars1.length.min(scalars2.length)
+      var firstStuck: Option[Int] = None
+      var index = 0
+      while (index < shared) {
+        if (scalars1(index) != scalars2(index))
+          tryUnify(codec.decodeChar(scalars1(index)), codec.decodeChar(scalars2(index)), meta, ctx) match {
+            case Left(failed) if failed.apart  => return failure(index, apart = true)
+            case Left(_) if firstStuck.isEmpty => firstStuck = Some(index)
+            case _                             =>
+          }
+        index += 1
+      }
+      if (scalars1.length != scalars2.length) failure(shared, apart = true)
+      else firstStuck.fold[Result](Right(meta))(failure(_, apart = false))
     }
 
     /**
@@ -414,17 +507,18 @@ object ValueEquivalence {
       val b = constructorForm(ValueOps.materialize(v2, meta))
 
       // Fast path. Identity and key equality decide the equation outright (docs/kernel.md#value-identity).
-      // A key *mismatch* is only conclusive when both keys are complete AND nothing can link: a
+      // A key *mismatch* decides the equation when both keys are complete AND nothing can link: a
       // refinable variable's key is its id, so two different ids may still denote the same value
-      // once one links to the other, and no key mismatch survives that. When the keys are conclusive
-      // the answer is `stuck` rather than `apart` — a key mismatch is a failure to derive `≡`, not
-      // no-confusion evidence, and only the VCtor clash below produces the latter.
+      // once one links to the other, and no key mismatch survives that. Such a mismatch is `stuck`,
+      // a failure to derive `≡`, except where a rule below can refute it at the two heads, a
+      // constructor clash or unequal literals: only the rules produce `apart`, so those pairs go to
+      // them whatever the keys.
       if (sameValueObject(a, b)) return Right(meta)
       if (a.key == b.key) {
         if (keyAssertionsEnabled && !keyIsIdentity(a, b)) assertKeyVerdict(a, b, meta, ctx, keysEqual = true)
         return Right(meta)
       }
-      if (meta.refinable.isEmpty && !keysAreInconclusive(a, b)) {
+      if (meta.refinable.isEmpty && !keysAreInconclusive(a, b) && !mismatchRefutableAtHead(a, b)) {
         if (keyAssertionsEnabled) assertKeyVerdict(a, b, meta, ctx, keysEqual = false)
         return stuck(a, b)
       }
@@ -526,17 +620,19 @@ object ValueEquivalence {
               }
           }
 
-        // Different constructors of a genuine inductive are disjoint for data. Proof applications
-        // were handled by ProofEquation above, whether erased or reconstructed. Heads without
-        // no-confusion (e.g. Quot.mk) can still only be identified or separated by their theory.
+        // Proof applications were handled by ProofEquation above, whether erased or reconstructed.
         case (ConstructorApp(h1), ConstructorApp(h2)) if h1.name != h2.name =>
-          if (h1.noConfusion && h2.noConfusion) apart(a, b)
-          else stuck(a, b)
+          constructorClash(a, b, h1.noConfusion && h2.noConfusion)
 
         case (p1: VPacked, p2: VPacked) if p1.codec == p2.codec =>
           if (p1.codec.payloadEquals(p1.payload, p2.payload)) tryUnify(p1.tpe, p2.tpe, meta, ctx)
-          else if (p1.codec.refutesUnequalPayloads) apart(p1, p2)
-          else stuck(p1, p2)
+          else
+            p1.codec match {
+              // Unequal numbers decode to `zero` against `succ` once the smaller runs out, a clash of the validated
+              // no-confusion constructors.
+              case NatCodec             => apart(p1, p2)
+              case codec: CharListCodec => unifyUnequalCharLists(codec, p1, p2, meta, ctx)
+            }
 
         case (p: VPacked, other @ ConstructorApp(head)) =>
           unifyPeeled(p, head, other, meta, ctx, packedOnLeft = true)
@@ -572,14 +668,14 @@ object ValueEquivalence {
               // an equation like `max(u, v) ~ 1` has no forced solution on its own, but becomes
               // ground once a later argument solves its atoms. Postponement reorders work without
               // ever inventing values. Apart failures are rigid and fail immediately.
-              val deferred = Vector.newBuilder[(Value, Value, UnifyFailure)]
+              val deferred = Vector.newBuilder[Postponed]
               val args = v1.determiningArgs.zip(v2.determiningArgs)
               val iter = args.iterator
               while (iter.hasNext) {
                 val (arg1, arg2) = iter.next()
                 tryUnify(arg1, arg2, curMeta, argCtx) match {
                   case Left(failed) if failed.apart => return Left(frame(failed))
-                  case Left(failed)                 => deferred += ((arg1, arg2, failed))
+                  case Left(failed)                 => deferred += Postponed(arg1, arg2, curMeta, failed)
                   case Right(next)                  => curMeta = next
                 }
               }
@@ -588,15 +684,16 @@ object ValueEquivalence {
               tryUnify(v1.tpe, v2.tpe, curMeta, ctx) match { // Important for constructors
                 // A stuck type follows from the stuck arguments, and the last of them is reported: an implicit
                 // argument is read off a later one, so the last is where the two applications were written apart.
-                case Left(failed) if !failed.apart && postponed.nonEmpty => return Left(frame(postponed.last._3))
+                case Left(failed) if !failed.apart && postponed.nonEmpty => return Left(frame(postponed.last.failure))
                 case Left(failed)                                        => return Left(frame(failed))
                 case Right(next)                                         => curMeta = next
               }
               val retryIter = postponed.iterator
               while (retryIter.hasNext) {
-                val (arg1, arg2, original) = retryIter.next()
-                tryUnify(arg1, arg2, curMeta, argCtx) match {
-                  case Left(_)     => return Left(frame(original))
+                val equation = retryIter.next()
+                if (!equation.reachesLinksOf(curMeta)) return Left(frame(equation.failure))
+                tryUnify(equation.v1, equation.v2, curMeta, argCtx) match {
+                  case Left(_)     => return Left(frame(equation.failure))
                   case Right(next) => curMeta = next
                 }
               }

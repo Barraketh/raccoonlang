@@ -889,9 +889,6 @@ object Value {
     /** Strict order realized by constructor-field steps on decodings; well-founded. */
     def strictlyLess(candidate: VPacked, root: VPacked): Boolean
 
-    /** Unequal payloads decode to a derivable constructor clash at finite depth. */
-    def refutesUnequalPayloads: Boolean
-
     /** Whether this codec owns this sealed payload variant. */
     private[raccoonlang] def acceptsPayload(payload: PackedPayload): Boolean
 
@@ -939,8 +936,6 @@ object Value {
     override def strictlyLess(candidate: VPacked, root: VPacked): Boolean =
       PackedPayload.natValue(candidate.payload) < PackedPayload.natValue(root.payload)
 
-    override def refutesUnequalPayloads: Boolean = true
-
     override private[raccoonlang] def acceptsPayload(payload: PackedPayload): Boolean =
       payload match {
         case _: NatPayload      => true
@@ -966,19 +961,19 @@ object Value {
 
     override def decodeHead(v: VPacked): (String, Vector[Value]) =
       PackedPayload.charScalars(v.payload) match {
-        case head +: _ =>
-          val char = Interpreter.evalApply(charOfNat, Vector(VPacked.nat(BigInt(head), natTpe)))
-          ("List.cons", Vector(char, VPacked.charListTail(v)))
-        case _ => ("List.nil", Vector.empty)
+        case head +: _ => ("List.cons", Vector(decodeChar(head), VPacked.charListTail(v)))
+        case _         => ("List.nil", Vector.empty)
       }
+
+    /** The character a scalar of the payload decodes to. */
+    private[raccoonlang] def decodeChar(scalar: Int): Value =
+      Interpreter.evalApply(charOfNat, Vector(VPacked.nat(BigInt(scalar), natTpe)))
 
     override def strictlyLess(candidate: VPacked, root: VPacked): Boolean = {
       val left = PackedPayload.charScalars(candidate.payload)
       val right = PackedPayload.charScalars(root.payload)
       left.length < right.length && right.endsWith(left)
     }
-
-    override def refutesUnequalPayloads: Boolean = false
 
     override private[raccoonlang] def acceptsPayload(payload: PackedPayload): Boolean =
       payload match {
