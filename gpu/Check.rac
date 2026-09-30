@@ -578,6 +578,7 @@ namespace Check {
   def namedBarriers (k: Kernel): List(String) :=
     Check.inOrder(Check.blockFold(Scan, k.body, Scan.mk(NatSet.empty, List.nil(String)), Check.barrierStep).found)
 
+  // Every value of a `u64` is below it.
   def u64Limit : Nat := 18446744073709551616
 
   // A number printed as a 32-bit literal, such as a launcher's block size or a tensor map's box, must fit 32 bits.

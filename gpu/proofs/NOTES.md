@@ -21,18 +21,19 @@ the whole certificate, `WellFormed.sound: Check.WellFormed(k) -> Spec.WellFormed
 | I1 `scoping` | `Scoping`, `StmtScope`, `BlockScope`, `declaredBy`, `Uses`, `Binds`, `DeviceOnly`, 72 lines | `Scoping.rac` | 517 |
 | I2 `sharedMemory` | `SharedMemory`, `SharedAt`, 18 lines | `SharedMemory.rac` | 109 |
 | I3 `namedBarriers` | `NamedBarriers`, `BarrierIds`, `BarrierCounts`, `Barrier`, `LiteralOperands`, 31 lines | `Barriers.rac` | 274 |
-| I4 `literals` | `Literals`, `Lit32`, `Lit64`, 28 lines | `Literals.rac` | 115 |
+| I4 `literals` | `Literals`, `Lit32`, `Lit64`, 29 lines | `Literals.rac` | 115 |
 | I5 `names` | `Names`, `Chosen`, `CIdent`, `PrinterName`, `Declared`, `Twice`, …, 61 lines | `Names.rac` | 271 |
 | I6 `launcher` | `LauncherOk`, `Launched`, `NotMap`, 20 lines | `Launcher.rac` | 317 |
 | certificate | `WellFormed`, 7 lines | `WellFormed.rac` | 21 |
-| **total** | 373 | | 2442 |
+| **total** | 374 | | 2442 |
 
 Check time. Each proof file checks in 1.4 to 2.3 s of wall time, most of it loading `Check.rac` (a file that loads
 only the prelude takes 0.8 s); `WellFormed.rac`, which loads every proof, takes 2.3 s. `check.sh` gains the 11 files
-of `proofs/` (63 ok). The checker restructurings below cost the persistent GEMM about 0.06 s: a whole CLI run that
-generates it (starting the JVM, checking, printing) took 3.25 s of wall time before and 3.31 s after, 7.46 s and
-7.51 s of CPU (six alternating runs of each, on an otherwise quiet machine); the four generated kernels are
-byte-identical to those before.
+of `proofs/` (63 ok). The checker restructurings cost the persistent GEMM nothing measurable. A whole CLI run that generates
+it (starting the JVM, checking, printing), six alternating runs of the original and the final checker: on a quiet
+machine, before the review fixes, 3.25 s against 3.31 s of wall time (7.46 s against 7.51 s of CPU); after them
+(commit `ec195fc` and later), on a loaded machine, 4.24 s against 4.34 s wall and 8.29 s against 8.26 s CPU. The four
+generated kernels are byte-identical to those before.
 
 ## The shape of every proof
 
@@ -97,8 +98,9 @@ became arguments of `barrierAt` (`isBarrier`, `args`), so the lemmas case on var
 
 **I4, literals.** Spec: every `n` that `Lit32(k, n)` (a `lit` in the body or the launcher's expressions, the block
 size, a box dimension) is `Nat.lt(n, Cuda.u32Limit)`, and every `Lit64` below 2^64. The checker tests `Nat.blt`, which
-reaches `Nat.lt` through `Literals.bltIsLt` (F1). The printer's other `u` literals, shared-memory offsets and the
-launch's shared bytes, are left to I2, which bounds them.
+reaches `Nat.lt` through `Literals.bltIsLt` (F1). The printer's other `u` literals, shared-window offsets and the
+launch's shared bytes, are left to I2, which bounds them in the body, and I1, which keeps shared addresses out of the
+launcher.
 
 **I5, names.** Spec: the kernel's name is `Chosen` (a `CIdent`, a letter or `_` then letters, digits and `_`, and
 not a `PrinterName`: `v` and digits, `gpu_…`, or one of the launcher's locals); the parameters' names are
@@ -223,7 +225,7 @@ at 200 and fails at 300, and at the checker's `Cuda.u32Limit`:
 
 ```raccoon
 def f (n: Nat)(h: Eq(Bool, Nat.blt(n, 4294967296), Bool.true)): Nat.lt(n, 4294967296) := h
-// type mismatch: Nat.ble(Nat.succ(n), 4294967296) vs Nat.blt(n, 4294967296) (not reducible: stuck)
+// type mismatch; differ at: Nat.ble(a, b)  vs  match b returning Bool with | Nat.zero => Bool.false | … (not reducible: stuck)
 ```
 
 The workaround is to state the fact over variables, where the body unfolds, and instantiate it at the literal
