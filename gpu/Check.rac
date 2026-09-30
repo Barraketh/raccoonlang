@@ -11,61 +11,75 @@ namespace Check {
 
   // ---- Sets of naturals ---------------------------------------------------------------------------------------------
 
-  // A set of naturals as a binary trie: a node holds 0 itself, and n + 1 in its `even` or `odd` child, as n is even or
-  // odd, at n / 2. Membership and insertion take a step per binary digit.
+  // A set of naturals as a binary trie. A number's node is reached by its path (`NatSet.path`), a step per binary digit,
+  // and lists the numbers inserted at it. Only one number has a given path, but a node keeps its numbers so that
+  // membership compares them rather than relying on that.
   inductive NatSet : Type
    | empty : NatSet
-   | node (here: Bool)(even: NatSet)(odd: NatSet) : NatSet
+   | node (keys: List(Nat))(even: NatSet)(odd: NatSet) : NatSet
 
   namespace NatSet {
-    def member (s: NatSet)(n: Nat): Bool decreases structural(s) := {
+    // The path to `n`'s node, where `fuel` is at least `n`: none for 0, and for n + 1 whether n is even, then the path
+    // to n / 2.
+    def pathFuel (fuel: Nat)(n: Nat): List(Bool) decreases structural(fuel) := {
+      match n returning List(Bool) with
+      | Nat.zero => List.nil(Bool)
+      | Nat.succ m => {
+        match fuel returning List(Bool) with
+        | Nat.zero => List.nil(Bool)
+        | Nat.succ f => List.cons(Nat.isZero(Nat.mod(m, 2)), Check.NatSet.pathFuel(f, Nat.div(m, 2)))
+      }
+    }
+
+    def path (n: Nat): List(Bool) := Check.NatSet.pathFuel(n, n)
+
+    // Whether `key` is listed at the node at `p`.
+    def memberAt (s: NatSet)(p: List(Bool))(key: Nat): Bool decreases structural(s) := {
       match s returning Bool with
       | NatSet.empty => Bool.false
-      | NatSet.node here even odd => {
-        match n returning Bool with
-        | Nat.zero => here
-        | Nat.succ m => {
-          match Nat.isZero(Nat.mod(m, 2)) returning Bool with
-          | Bool.true => Check.NatSet.member(even, Nat.div(m, 2))
-          | Bool.false => Check.NatSet.member(odd, Nat.div(m, 2))
+      | NatSet.node keys even odd => {
+        match p returning Bool with
+        | List.nil => List.any(keys, fun (k: Nat): Bool => Nat.beq(k, key))
+        | List.cons isEven rest => {
+          match isEven returning Bool with
+          | Bool.true => Check.NatSet.memberAt(even, rest, key)
+          | Bool.false => Check.NatSet.memberAt(odd, rest, key)
         }
       }
     }
 
-    def here (s: NatSet): Bool := {
-      match s returning Bool with
-      | NatSet.empty => Bool.false
-      | NatSet.node h e o => h
+    def member (s: NatSet)(n: Nat): Bool := Check.NatSet.memberAt(s, Check.NatSet.path(n), n)
+
+    def keys (s: NatSet): List(Nat) := {
+      match s returning List(Nat) with
+      | NatSet.empty => List.nil(Nat)
+      | NatSet.node ks e o => ks
     }
 
     def even (s: NatSet): NatSet := {
       match s returning NatSet with
       | NatSet.empty => NatSet.empty
-      | NatSet.node h e o => e
+      | NatSet.node ks e o => e
     }
 
     def odd (s: NatSet): NatSet := {
       match s returning NatSet with
       | NatSet.empty => NatSet.empty
-      | NatSet.node h e o => o
+      | NatSet.node ks e o => o
     }
 
-    // `s` with `n` added, where `fuel` is at least `n`, and so at least the depth of `n`'s node.
-    def insertFuel (fuel: Nat)(s: NatSet)(n: Nat): NatSet decreases structural(fuel) := {
-      match n returning NatSet with
-      | Nat.zero => NatSet.node(Bool.true, Check.NatSet.even(s), Check.NatSet.odd(s))
-      | Nat.succ m => {
-        match fuel returning NatSet with
-        | Nat.zero => s
-        | Nat.succ f => {
-          match Nat.isZero(Nat.mod(m, 2)) returning NatSet with
-          | Bool.true => NatSet.node(Check.NatSet.here(s), Check.NatSet.insertFuel(f, Check.NatSet.even(s), Nat.div(m, 2)), Check.NatSet.odd(s))
-          | Bool.false => NatSet.node(Check.NatSet.here(s), Check.NatSet.even(s), Check.NatSet.insertFuel(f, Check.NatSet.odd(s), Nat.div(m, 2)))
-        }
+    // `s` with `key` listed at the node at `p`.
+    def insertAt (s: NatSet)(p: List(Bool))(key: Nat): NatSet decreases structural(p) := {
+      match p returning NatSet with
+      | List.nil => NatSet.node(List.cons(key, Check.NatSet.keys(s)), Check.NatSet.even(s), Check.NatSet.odd(s))
+      | List.cons isEven rest => {
+        match isEven returning NatSet with
+        | Bool.true => NatSet.node(Check.NatSet.keys(s), Check.NatSet.insertAt(Check.NatSet.even(s), rest, key), Check.NatSet.odd(s))
+        | Bool.false => NatSet.node(Check.NatSet.keys(s), Check.NatSet.even(s), Check.NatSet.insertAt(Check.NatSet.odd(s), rest, key))
       }
     }
 
-    def insert (s: NatSet)(n: Nat): NatSet := Check.NatSet.insertFuel(n, s, n)
+    def insert (s: NatSet)(n: Nat): NatSet := Check.NatSet.insertAt(s, Check.NatSet.path(n), n)
   }
 
   // ---- Messages and names -------------------------------------------------------------------------------------------
@@ -518,38 +532,41 @@ namespace Check {
     Scan.mk(Check.NatSet.insert(st.seen, id), counted)
   }
 
+  // An asm statement, which is a named barrier if its template is `bar.sync`'s (`isBarrier`), with `args` its literal
+  // id and thread count if it has them.
+  def barrierAt (st: Scan)(isBarrier: Bool)(args: Option(Prod(Nat, Nat))): Scan := {
+    match isBarrier returning Scan with
+    | Bool.false => st
+    | Bool.true => {
+      match args returning Scan with
+      | Option.none => Scan.mk(st.seen, List.cons("bar.sync without a literal id and thread count", st.found))
+      | Option.some idThreads => Check.barrier(st, idThreads.fst, idThreads.snd)
+    }
+  }
+
+  def barrierStep (st: Scan)(s: Stmt): Scan := {
+    match s returning Scan with
+    | Stmt.decl t id init => st
+    | Stmt.declMut t id init => st
+    | Stmt.declOut t id => st
+    | Stmt.assign id value => st
+    | Stmt.store base i value => st
+    | Stmt.shared t id size => st
+    | Stmt.forLoop id start count body => st
+    | Stmt.forStride id start stop step body => st
+    | Stmt.ifElse c yes no => st
+    | Stmt.scoped body => st
+    | Stmt.sync => st
+    | Stmt.syncWarp => st
+    | Stmt.asm template outs ins => Check.barrierAt(st, Check.same(template, Check.barrierTemplate), Check.barrierArgs(outs, ins))
+    | Stmt.error message => st
+  }
+
   // I3, named barriers: each `bar.sync` has literal operands, an id in 1..15 that no other `bar.sync` of the kernel
   // has, and a thread count that is a positive multiple of 32. (A loop body is generated once, so a barrier in one has
   // one id however often it runs.)
-  def namedBarriers (k: Kernel): List(String) := {
-    let walk := Check.blockFold(Scan, k.body, Scan.mk(NatSet.empty, List.nil(String)), fun (st: Scan)(s: Stmt): Scan => {
-      let asm := fun (template: String)(outs: List(Operand))(ins: List(Operand)): Scan => {
-        match Check.same(template, Check.barrierTemplate) returning Scan with
-        | Bool.false => st
-        | Bool.true => {
-          match Check.barrierArgs(outs, ins) returning Scan with
-          | Option.none => Scan.mk(st.seen, List.cons("bar.sync without a literal id and thread count", st.found))
-          | Option.some args => Check.barrier(st, args.fst, args.snd)
-        }
-      }
-      match s returning Scan with
-      | Stmt.decl t id init => st
-      | Stmt.declMut t id init => st
-      | Stmt.declOut t id => st
-      | Stmt.assign id value => st
-      | Stmt.store base i value => st
-      | Stmt.shared t id size => st
-      | Stmt.forLoop id start count body => st
-      | Stmt.forStride id start stop step body => st
-      | Stmt.ifElse c yes no => st
-      | Stmt.scoped body => st
-      | Stmt.sync => st
-      | Stmt.syncWarp => st
-      | Stmt.asm template outs ins => asm(template, outs, ins)
-      | Stmt.error message => st
-    })
-    Check.inOrder(walk.found)
-  }
+  def namedBarriers (k: Kernel): List(String) :=
+    Check.inOrder(Check.blockFold(Scan, k.body, Scan.mk(NatSet.empty, List.nil(String)), Check.barrierStep).found)
 
   def u64Limit : Nat := 18446744073709551616
 

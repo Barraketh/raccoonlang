@@ -374,4 +374,77 @@ namespace Fold {
       | Eq.refl host => Fold.launcherExprsAt(l, y, inLauncher, acc, f, keeps, h)
     }
   }
+
+  // ---- Program order ------------------------------------------------------------------------------------------------
+
+  def foldlAppend (A: Type)(B: Type)(xs: List(A))(ys: List(A))(acc: B)(f: B -> A -> B)
+      : Eq(B, List.foldl(List.append(xs, ys), B, acc, f), List.foldl(ys, B, List.foldl(xs, B, acc, f), f)) decreases structural(xs) := {
+    match xs returning Eq(B, List.foldl(List.append(xs, ys), B, acc, f), List.foldl(ys, B, List.foldl(xs, B, acc, f), f)) with
+    | List.nil => Eq.refl(List.foldl(ys, B, acc, f))
+    | List.cons x more => Fold.foldlAppend(A, B, more, ys, f(acc, x), f)
+  }
+
+  mutual {
+    // A statement fold is a fold over the statement and those in its blocks, in program order.
+    def stmtFusion (A: Type)(s: Stmt)(acc: A)(f: A -> Stmt -> A)
+        : Eq(A, Check.stmtFold(A, s, acc, f), List.foldl(Spec.inner(s), A, f(acc, s), f)) decreases structural(s) := {
+      let here := f(acc, s)
+      match s returning Eq(A, Check.stmtFold(A, s, acc, f), List.foldl(Spec.inner(s), A, f(acc, s), f)) with
+      | Stmt.decl t id init => Eq.refl(here)
+      | Stmt.declMut t id init => Eq.refl(here)
+      | Stmt.declOut t id => Eq.refl(here)
+      | Stmt.assign id value => Eq.refl(here)
+      | Stmt.store base i value => Eq.refl(here)
+      | Stmt.shared t id size => Eq.refl(here)
+      | Stmt.forLoop id start count body => Fold.blockFusion(A, body, here, f)
+      | Stmt.forStride id start stop step body => Fold.blockFusion(A, body, here, f)
+      | Stmt.ifElse c yes no => {
+        let yesFold := Check.blockFold(A, yes, here, f)
+        let noFlat := fun (a: A): A => List.foldl(Spec.statements(no), A, a, f)
+        let both := Eq.trans(Fold.blockFusion(A, no, yesFold, f), congrArg(Fold.blockFusion(A, yes, here, f), A, noFlat))
+        Eq.trans(both, Eq.symm(Fold.foldlAppend(Stmt, A, Spec.statements(yes), Spec.statements(no), here, f)))
+      }
+      | Stmt.scoped body => Fold.blockFusion(A, body, here, f)
+      | Stmt.sync => Eq.refl(here)
+      | Stmt.syncWarp => Eq.refl(here)
+      | Stmt.asm template outs ins => Eq.refl(here)
+      | Stmt.error message => Eq.refl(here)
+    }
+
+    // A block fold is a fold over its statements in program order.
+    def blockFusion (A: Type)(b: Block)(acc: A)(f: A -> Stmt -> A)
+        : Eq(A, Check.blockFold(A, b, acc, f), List.foldl(Spec.statements(b), A, acc, f)) decreases structural(b) := {
+      match b returning Eq(A, Check.blockFold(A, b, acc, f), List.foldl(Spec.statements(b), A, acc, f)) with
+      | Block.done => Eq.refl(acc)
+      | Block.seq s more => {
+        let restFlat := fun (a: A): A => List.foldl(Spec.statements(more), A, a, f)
+        let both := Eq.trans(Fold.blockFusion(A, more, Check.stmtFold(A, s, acc, f), f), congrArg(Fold.stmtFusion(A, s, acc, f), A, restFlat))
+        Eq.trans(both, Eq.symm(Fold.foldlAppend(Stmt, A, Spec.inner(s), Spec.statements(more), f(acc, s), f)))
+      }
+    }
+  }
+
+  mutual {
+    // A statement in the blocks of `s` is among the statements `Spec.inner` lists.
+    def innerMem (x: Stmt)(s: Stmt)(occ: Spec.InStmt(x, s)): Spec.Mem(Stmt, x, List.cons(s, Spec.inner(s))) decreases structural(s) := {
+      match occ returning Spec.Mem(Stmt, x, List.cons(s, Spec.inner(s))) with
+      | Spec.InStmt.here => Spec.Mem.here(x, Spec.inner(x))
+      | Spec.InStmt.forLoop id start count body inside => Spec.Mem.there(s, Spec.statements(body), Fold.blockMem(x, body, inside))
+      | Spec.InStmt.forStride id start stop step body inside => Spec.Mem.there(s, Spec.statements(body), Fold.blockMem(x, body, inside))
+      | Spec.InStmt.ifYes c yes no inside => Spec.Mem.there(s, List.append(Spec.statements(yes), Spec.statements(no)),
+        Fold.memAppendLeft(Stmt, x, Spec.statements(yes), Spec.statements(no), Fold.blockMem(x, yes, inside)))
+      | Spec.InStmt.ifNo c yes no inside => Spec.Mem.there(s, List.append(Spec.statements(yes), Spec.statements(no)),
+        Fold.memAppendRight(Stmt, x, Spec.statements(yes), Spec.statements(no), Fold.blockMem(x, no, inside)))
+      | Spec.InStmt.scoped body inside => Spec.Mem.there(s, Spec.statements(body), Fold.blockMem(x, body, inside))
+    }
+
+    // A statement in `b` is among its statements in program order.
+    def blockMem (x: Stmt)(b: Block)(occ: Spec.InBlock(x, b)): Spec.Mem(Stmt, x, Spec.statements(b)) decreases structural(b) := {
+      match occ returning Spec.Mem(Stmt, x, Spec.statements(b)) with
+      | Spec.InBlock.head s rest inside =>
+        Fold.memAppendLeft(Stmt, x, List.cons(s, Spec.inner(s)), Spec.statements(rest), Fold.innerMem(x, s, inside))
+      | Spec.InBlock.tail s rest inside =>
+        Fold.memAppendRight(Stmt, x, List.cons(s, Spec.inner(s)), Spec.statements(rest), Fold.blockMem(x, rest, inside))
+    }
+  }
 }

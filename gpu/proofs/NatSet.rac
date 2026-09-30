@@ -1,0 +1,148 @@
+// `Check.NatSet` is a set: a number is a member after it is inserted, stays one when others are, and is one only if it
+// was inserted. Each lemma recurses on the paths; a node's keys make the last step a comparison of numbers, so no
+// fact about the paths themselves (that distinct numbers have distinct paths) is needed.
+
+import proofs.Lib
+
+namespace NatSets {
+  open Check
+
+  def anyKey (keys: List(Nat))(key: Nat): Bool := List.any(keys, fun (k: Nat): Bool => Nat.beq(k, key))
+
+  // After inserting `key` at `p`, it is listed there.
+  def insertedAt (s: NatSet)(p: List(Bool))(key: Nat): Eq(Bool, Check.NatSet.memberAt(Check.NatSet.insertAt(s, p, key), p, key), Bool.true) decreases structural(p) := {
+    match p returning Eq(Bool, Check.NatSet.memberAt(Check.NatSet.insertAt(s, p, key), p, key), Bool.true) with
+    | List.nil => Lib.orLeft(Nat.beq(key, key), NatSets.anyKey(Check.NatSet.keys(s), key), Lib.beqRefl(key))
+    | List.cons isEven rest => {
+      match isEven returning Eq(Bool, Check.NatSet.memberAt(Check.NatSet.insertAt(s, List.cons(isEven, rest), key), List.cons(isEven, rest), key), Bool.true) with
+      | Bool.true => NatSets.insertedAt(Check.NatSet.even(s), rest, key)
+      | Bool.false => NatSets.insertedAt(Check.NatSet.odd(s), rest, key)
+    }
+  }
+
+  // Inserting keeps what is listed.
+  def keptAt (s: NatSet)(p: List(Bool))(k: Nat)(q: List(Bool))(key: Nat)(h: Eq(Bool, Check.NatSet.memberAt(s, q, key), Bool.true))
+      : Eq(Bool, Check.NatSet.memberAt(Check.NatSet.insertAt(s, p, k), q, key), Bool.true) decreases structural(p) := {
+    match s returning Eq(Bool, Check.NatSet.memberAt(Check.NatSet.insertAt(s, p, k), q, key), Bool.true) with
+    | NatSet.empty => False.elim(Bool.falseNeTrue(h), Eq(Bool, Check.NatSet.memberAt(Check.NatSet.insertAt(NatSet.empty, p, k), q, key), Bool.true))
+    | NatSet.node keys even odd => {
+      let node := NatSet.node(keys, even, odd)
+      match p returning Eq(Bool, Check.NatSet.memberAt(Check.NatSet.insertAt(node, p, k), q, key), Bool.true) with
+      | List.nil => {
+        match q returning Eq(Bool, Check.NatSet.memberAt(Check.NatSet.insertAt(node, List.nil(Bool), k), q, key), Bool.true) with
+        | List.nil => Lib.orRight(Nat.beq(k, key), NatSets.anyKey(keys, key), h)
+        | List.cons c rest => h
+      }
+      | List.cons isEven prest => {
+        match isEven returning Eq(Bool, Check.NatSet.memberAt(Check.NatSet.insertAt(node, List.cons(isEven, prest), k), q, key), Bool.true) with
+        | Bool.true => {
+          match q returning Eq(Bool, Check.NatSet.memberAt(Check.NatSet.insertAt(node, List.cons(Bool.true, prest), k), q, key), Bool.true) with
+          | List.nil => h
+          | List.cons c rest => {
+            match c returning Eq(Bool, Check.NatSet.memberAt(Check.NatSet.insertAt(node, List.cons(Bool.true, prest), k), List.cons(c, rest), key), Bool.true) with
+            | Bool.true => NatSets.keptAt(even, prest, k, rest, key, h)
+            | Bool.false => h
+          }
+        }
+        | Bool.false => {
+          match q returning Eq(Bool, Check.NatSet.memberAt(Check.NatSet.insertAt(node, List.cons(Bool.false, prest), k), q, key), Bool.true) with
+          | List.nil => h
+          | List.cons c rest => {
+            match c returning Eq(Bool, Check.NatSet.memberAt(Check.NatSet.insertAt(node, List.cons(Bool.false, prest), k), List.cons(c, rest), key), Bool.true) with
+            | Bool.true => h
+            | Bool.false => NatSets.keptAt(odd, prest, k, rest, key, h)
+          }
+        }
+      }
+    }
+  }
+
+  // What is listed after inserting `k` is `k` or was listed before.
+  def fromInsertAt (s: NatSet)(p: List(Bool))(k: Nat)(q: List(Bool))(key: Nat)(h: Eq(Bool, Check.NatSet.memberAt(Check.NatSet.insertAt(s, p, k), q, key), Bool.true))
+      : Or(Eq(Nat, key, k), Eq(Bool, Check.NatSet.memberAt(s, q, key), Bool.true)) decreases structural(p) := {
+    match s returning Or(Eq(Nat, key, k), Eq(Bool, Check.NatSet.memberAt(s, q, key), Bool.true)) with
+    | NatSet.empty => {
+      match p returning Or(Eq(Nat, key, k), Eq(Bool, Check.NatSet.memberAt(NatSet.empty, q, key), Bool.true)) with
+      | List.nil => {
+        match q returning Or(Eq(Nat, key, k), Eq(Bool, Check.NatSet.memberAt(NatSet.empty, q, key), Bool.true)) with
+        | List.nil => {
+          match Lib.orCases(Nat.beq(k, key), Bool.false, h) returning Or(Eq(Nat, key, k), Eq(Bool, Bool.false, Bool.true)) with
+          | Or.inl same => Or.inl(Eq(Bool, Bool.false, Bool.true), Eq.symm(Lib.beqSound(k, key, same)))
+          | Or.inr none => Or.inr(Eq(Nat, key, k), none)
+        }
+        | List.cons c rest => {
+          match c returning Or(Eq(Nat, key, k), Eq(Bool, Bool.false, Bool.true)) with
+          | Bool.true => Or.inr(Eq(Nat, key, k), h)
+          | Bool.false => Or.inr(Eq(Nat, key, k), h)
+        }
+      }
+      | List.cons isEven prest => {
+        match isEven returning Or(Eq(Nat, key, k), Eq(Bool, Bool.false, Bool.true)) with
+        | Bool.true => {
+          match q returning Or(Eq(Nat, key, k), Eq(Bool, Bool.false, Bool.true)) with
+          | List.nil => Or.inr(Eq(Nat, key, k), h)
+          | List.cons c rest => {
+            match c returning Or(Eq(Nat, key, k), Eq(Bool, Bool.false, Bool.true)) with
+            | Bool.true => NatSets.fromInsertAt(NatSet.empty, prest, k, rest, key, h)
+            | Bool.false => Or.inr(Eq(Nat, key, k), h)
+          }
+        }
+        | Bool.false => {
+          match q returning Or(Eq(Nat, key, k), Eq(Bool, Bool.false, Bool.true)) with
+          | List.nil => Or.inr(Eq(Nat, key, k), h)
+          | List.cons c rest => {
+            match c returning Or(Eq(Nat, key, k), Eq(Bool, Bool.false, Bool.true)) with
+            | Bool.true => Or.inr(Eq(Nat, key, k), h)
+            | Bool.false => NatSets.fromInsertAt(NatSet.empty, prest, k, rest, key, h)
+          }
+        }
+      }
+    }
+    | NatSet.node keys even odd => {
+      let node := NatSet.node(keys, even, odd)
+      match p returning Or(Eq(Nat, key, k), Eq(Bool, Check.NatSet.memberAt(node, q, key), Bool.true)) with
+      | List.nil => {
+        match q returning Or(Eq(Nat, key, k), Eq(Bool, Check.NatSet.memberAt(node, q, key), Bool.true)) with
+        | List.nil => {
+          match Lib.orCases(Nat.beq(k, key), NatSets.anyKey(keys, key), h) returning Or(Eq(Nat, key, k), Eq(Bool, NatSets.anyKey(keys, key), Bool.true)) with
+          | Or.inl same => Or.inl(Eq(Bool, NatSets.anyKey(keys, key), Bool.true), Eq.symm(Lib.beqSound(k, key, same)))
+          | Or.inr listed => Or.inr(Eq(Nat, key, k), listed)
+        }
+        | List.cons c rest => Or.inr(Eq(Nat, key, k), h)
+      }
+      | List.cons isEven prest => {
+        match isEven returning Or(Eq(Nat, key, k), Eq(Bool, Check.NatSet.memberAt(node, q, key), Bool.true)) with
+        | Bool.true => {
+          match q returning Or(Eq(Nat, key, k), Eq(Bool, Check.NatSet.memberAt(node, q, key), Bool.true)) with
+          | List.nil => Or.inr(Eq(Nat, key, k), h)
+          | List.cons c rest => {
+            match c returning Or(Eq(Nat, key, k), Eq(Bool, Check.NatSet.memberAt(node, List.cons(c, rest), key), Bool.true)) with
+            | Bool.true => NatSets.fromInsertAt(even, prest, k, rest, key, h)
+            | Bool.false => Or.inr(Eq(Nat, key, k), h)
+          }
+        }
+        | Bool.false => {
+          match q returning Or(Eq(Nat, key, k), Eq(Bool, Check.NatSet.memberAt(node, q, key), Bool.true)) with
+          | List.nil => Or.inr(Eq(Nat, key, k), h)
+          | List.cons c rest => {
+            match c returning Or(Eq(Nat, key, k), Eq(Bool, Check.NatSet.memberAt(node, List.cons(c, rest), key), Bool.true)) with
+            | Bool.true => Or.inr(Eq(Nat, key, k), h)
+            | Bool.false => NatSets.fromInsertAt(odd, prest, k, rest, key, h)
+          }
+        }
+      }
+    }
+  }
+
+  // ---- Members ------------------------------------------------------------------------------------------------------
+
+  def inserted (s: NatSet)(n: Nat): Eq(Bool, Check.NatSet.member(Check.NatSet.insert(s, n), n), Bool.true) :=
+    NatSets.insertedAt(s, Check.NatSet.path(n), n)
+
+  def kept (s: NatSet)(n: Nat)(m: Nat)(h: Eq(Bool, Check.NatSet.member(s, m), Bool.true)): Eq(Bool, Check.NatSet.member(Check.NatSet.insert(s, n), m), Bool.true) :=
+    NatSets.keptAt(s, Check.NatSet.path(n), n, Check.NatSet.path(m), m, h)
+
+  def fromInsert (s: NatSet)(n: Nat)(m: Nat)(h: Eq(Bool, Check.NatSet.member(Check.NatSet.insert(s, n), m), Bool.true))
+      : Or(Eq(Nat, m, n), Eq(Bool, Check.NatSet.member(s, m), Bool.true)) :=
+    NatSets.fromInsertAt(s, Check.NatSet.path(n), n, Check.NatSet.path(m), m, h)
+}

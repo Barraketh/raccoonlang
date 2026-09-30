@@ -10,10 +10,12 @@ Line counts are of the files as committed, comments included.
 
 | Checker | Spec (`Spec.rac`) | Proof | Lines | Status |
 |---|---|---|---|---|
-| (shared) | occurrence relations, 97 lines | `Fold.rac`: the traversal lemmas | 377 | done |
+| (shared) | occurrence relations and program order, 127 lines | `Fold.rac`: the traversal lemmas | 450 | done |
 | (shared) | | `Lib.rac`: Bool, Nat, List and string facts | 184 | done |
+| (shared) | | `NatSet.rac`: `Check.NatSet` is a set | 148 | done |
 | `errors` | `NoErrors`, 5 lines | `Errors.rac` | 32 | proved |
 | I2 `sharedMemory` | `SharedMemory`, `SharedAt`, 18 lines | `SharedMemory.rac` | 109 | proved |
+| I3 `namedBarriers` | `NamedBarriers`, `BarrierIds`, `BarrierCounts`, `Barrier`, `LiteralOperands`, 29 lines | `Barriers.rac` | 273 | proved |
 | I4 `literals` | `Literals`, `Lit32`, `Lit64`, 25 lines | `Literals.rac` | 108 | proved |
 | I5 `names` | `Names`, `Chosen`, `CIdent`, `PrinterName`, `Declared`, `Twice`, …, 60 lines | `Names.rac` | 266 | proved |
 
@@ -60,6 +62,32 @@ names with `List.foldl`. It became a direct recursion, `declaredAfter`, whose `b
 whole induction. The fold was not attempted, since `Fold`'s lemmas are for a `List(String)` accumulator and a pair
 would have needed its own `Keeps`, `Acc` and an invariant relating the first component to the prefix walked.
 
+**I3, named barriers.** Spec: every `bar.sync` in the body (an asm statement with its template) has
+`LiteralOperands` (no outputs, two `lit` inputs); every `Barrier(id, threads, s)` in the body has `id` in 1..15 and
+`threads` positive with `Nat.mod(threads, 32) = 0`; and no two barriers, one `Before` the other in
+`Spec.statements(k.body)` (every statement at any depth, in program order), have one id. Distinctness needs positions,
+which `InBlock` does not have (two identical `bar.sync 1, 64` are one statement to it), hence the flattening. The
+proof first turns the checker's `blockFold` into a `List.foldl` over `Spec.statements` (`Fold.blockFusion`, generic in
+the walk's state), then reasons about a flat walk: ids seen stay seen (`stepSeen`), a barrier's id was not seen before
+it (`barrierFresh`), and an id is seen after its barrier (`NatSets.inserted`). The literal operands come from a case
+split on the operand lists and on `Check.literal` of each (`shape`, `twoLiterals`, `literalSome`), which is the only
+place the proof inspects expressions.
+
+The checker's steps were named (`barrierStep`), and the decisions it matched on became arguments of `barrierAt`
+(`isBarrier`, `args`), so the lemmas case on variables (F2). The sets of ids needed a change of representation,
+next.
+
+**`Check.NatSet`.** The trie branched on `Nat.isZero(Nat.mod(m, 2))` and recursed on `Nat.div(m, 2)`, and a node held
+a Bool. Its soundness (a member was inserted) then rests on distinct numbers having distinct paths, which is
+arithmetic about the prelude's `Nat.div` (a `divFuel` recursion) and `Nat.mod` (`a - (a / b) * b`) that no library
+provides, and every step case-splits on two computed parities at once (the member's and the inserted number's),
+which F2 makes painful: each needs a mirror definition and an `Eq.subst` along the parity's equation. It became a
+trie that follows a precomputed path (`NatSet.path(n)`, a `List(Bool)`) and whose node lists the numbers inserted at
+it. Membership compares numbers at the end of the path, so no fact about paths is needed, and every case split is on
+a path's head, a variable. `NatSet.rac` proves the three facts the checkers need (`inserted`, `kept`, `fromInsert`) in
+148 lines of plain structural recursion. Check time on the persistent GEMM did not change measurably (the machine's
+load dominated the noise; see the report).
+
 ## Lemmas a standard library would provide
 
 Written here because Raccoon's prelude has none of them:
@@ -81,6 +109,9 @@ Written here because Raccoon's prelude has none of them:
   and `Check.same`, sound and reflexive; `Check.mentions` (`List.any` of `same`) sound and complete. `Char` and
   `String` equality from their fields is `congrArg(h, Char, Char.mk)`, which structure eta makes a proof about `c`.
 - **Congruence of a two-argument constructor** (`Lib.consEq`): the prelude's `congrArg` takes one argument.
+- **`List.foldl` over `List.append`** (`Fold.foldlAppend`), and **fold fusion** for the AST (`Fold.stmtFusion`,
+  `blockFusion`): a derived traversal is a fold over a flattening. `Option.some` injectivity (`Barriers.someInj`,
+  copied from the prelude's `Nat.succInj` idiom), `Nat.isZero` soundness (`Barriers.isZeroSound`).
 - **`Eq` transport**: never needed as a lemma, since matching an equation proof rewrites the goal and every
   hypothesis (finding P1).
 
@@ -103,6 +134,11 @@ def unlessOk (found: List(String))(ok: Bool)(message: Unit -> String)
   | Bool.false => { match h returning Eq(Bool, Bool.false, Bool.true) with }   // h: Eq(…, List.cons(…), List.nil)
 }
 ```
+
+### P3. A `let` can name a `returning` motive
+
+`let goal := Eq(Expr, x, Expr.lit(n))` then `match x returning goal with` refines `goal` in each branch like a written
+motive. Found late: `NatSet.rac` still restates its motives (up to 130 characters) in each of its nested matches.
 
 ### P2. Induction over an inductive predicate works through its data index
 
@@ -266,6 +302,23 @@ fun (n: String): Not(Spec.Twice(String, n, names)) => fun (twice: Spec.Twice(Str
 The message is clear once one knows the rule; the rule itself (grouping is part of a type's identity) is the cost.
 *Feature:* none for the kernel; an `intro`-style tactic would hide it.
 
+### F9. Declaring an inductive whose field applies `Nat.mod` to a variable takes exponential time
+
+```raccoon
+struct S (t: Nat) : Prop
+ | mk (h: Eq(Nat, Nat.mod(t, 20), 0)) : S(t)
+```
+
+checks in 13 s of CPU, and with modulus 32 did not finish in 100 s; moduli 12, 16 and 18 take 2.8, 4.1 and 6.2 s. The
+same type as a definition's binder, or as the body of a `def … : Prop`, checks at once, and so does a `Type`-sorted
+struct only slightly faster (modulus 20: 12.5 s). So `Spec.BarrierCounts` is a definition, and `Spec.NamedBarriers`
+is an `And` of it and a struct, where the other invariants are structs with named fields. Whatever the family check
+does to a field type (it looks like full normalization, under binders and into blocked matches, of `Nat.mod`'s body:
+`Nat.sub(a, Nat.mul(Nat.div(a, b), b))` with `Nat.div` a fuelled recursion), it is exponential in the literal.
+
+*Feature:* a kernel fix: check field types by weak-head normalization, or stop at native operations on neutral
+arguments, as conversion does above the unfolding limit.
+
 ### F8. Small syntax and diagnostic traps
 
 - A `decreases` clause must stay on the line of the result type; on a continuation line the error is
@@ -275,7 +328,10 @@ The message is clear once one knows the rule; the rule itself (grouping is part 
   (`expected 2 params, got 3`) names neither binder.
 - `False.elim(h, T)` must be given the goal `T` again (no expected type is consulted), and `Or.inl` and `Or.inr`
   must be given the other disjunct: `Or.inl(Eq(Bool, b, Bool.true), p)`, since nothing forces it.
-- A lambda cannot appear inside a constructor field's type (a parse error), so `Spec.mapNames` is a definition.
+- A lambda cannot appear in a type at all, a constructor field's or a binder's (a parse error at the `fun`), so
+  `Spec.mapNames` and `Barriers.pairWith` are definitions.
+- `open Check` inside a namespace that already opens `Cuda` fails at once (`launcher is ambiguous: Cuda.launcher,
+  Check.launcher`), even if neither is used; `open Check.{Scan, NatSet}` works.
 - A match cannot appear in a binder's type written inline (`(h: Eq(Bool, { match … }, Bool.true))` is a parse
   error), which is one reason the mirror definitions of F2 are definitions.
 

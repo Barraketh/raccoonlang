@@ -49,6 +49,39 @@ namespace Spec {
      | tail (s: Stmt)(rest: Block)(h: InBlock(x, rest)) : InBlock(x, Block.seq(s, rest))
   }
 
+  mutual {
+    // The statements in the blocks of `s`, at any depth, in program order.
+    def inner (s: Stmt): List(Stmt) decreases structural(s) := {
+      match s returning List(Stmt) with
+      | Stmt.decl t id init => List.nil(Stmt)
+      | Stmt.declMut t id init => List.nil(Stmt)
+      | Stmt.declOut t id => List.nil(Stmt)
+      | Stmt.assign id value => List.nil(Stmt)
+      | Stmt.store base i value => List.nil(Stmt)
+      | Stmt.shared t id size => List.nil(Stmt)
+      | Stmt.forLoop id start count body => Spec.statements(body)
+      | Stmt.forStride id start stop step body => Spec.statements(body)
+      | Stmt.ifElse c yes no => List.append(Spec.statements(yes), Spec.statements(no))
+      | Stmt.scoped body => Spec.statements(body)
+      | Stmt.sync => List.nil(Stmt)
+      | Stmt.syncWarp => List.nil(Stmt)
+      | Stmt.asm template outs ins => List.nil(Stmt)
+      | Stmt.error message => List.nil(Stmt)
+    }
+
+    // The statements of `b`, and those in their blocks, at any depth, in program order.
+    def statements (b: Block): List(Stmt) decreases structural(b) := {
+      match b returning List(Stmt) with
+      | Block.done => List.nil(Stmt)
+      | Block.seq s rest => List.cons(s, List.append(Spec.inner(s), Spec.statements(rest)))
+    }
+  }
+
+  // `x` comes before `y` in `xs`, at another place.
+  inductive Before (A: Type)(x: A)(y: A) indices (xs: List(A)) : Prop
+   | here (rest: List(A))(later: Mem(A, y, rest)) : Before(A, x, y, List.cons(x, rest))
+   | there (z: A)(rest: List(A))(h: Before(A, x, y, rest)) : Before(A, x, y, List.cons(z, rest))
+
   // `x` is, or is inside, an expression that statement `s` holds itself (not in its blocks): an initializer, an
   // assigned or stored value, a store's address or index, a loop's header, a branch's condition, an asm operand.
   inductive OwnExpr (x: Expr) indices (s: Stmt) : Prop
@@ -117,6 +150,36 @@ namespace Spec {
         (launched: Nat.lt(0, k.dynamicShared) -> Not(Eq(Option(Launcher), k.launcher, Option.none(Launcher))))
         (noStatic: (t: DType) -> (id: Nat) -> (size: Nat) -> Spec.InBlock(Stmt.shared(t, id, size), k.body) -> Eq(Nat, k.dynamicShared, 0))
         (inside: (offset: Nat) -> Spec.SharedAt(k.body, offset) -> Nat.lt(offset, k.dynamicShared)) : SharedMemory(k)
+
+  // ---- I3, named barriers -------------------------------------------------------------------------------------------
+
+  // The template of `bar.sync id, threads`, the named barrier `Gpu.namedBarrier` emits.
+  def barrierTemplate : String := "bar.sync %0, %1;"
+
+  // No outputs, and two inputs that are 32-bit literals.
+  inductive LiteralOperands indices (outs: List(Operand))(ins: List(Operand)) : Prop
+   | mk (c: String)(id: Nat)(d: String)(threads: Nat)
+       : LiteralOperands(List.nil(Operand), List.cons(Operand.mk(c, Expr.lit(id)), List.cons(Operand.mk(d, Expr.lit(threads)), List.nil(Operand))))
+
+  // `s` is the named barrier `bar.sync id, threads`.
+  inductive Barrier (id: Nat)(threads: Nat) indices (s: Stmt) : Prop
+   | mk (c: String)(d: String)
+       : Barrier(id, threads, Stmt.asm(Spec.barrierTemplate, List.nil(Operand), List.cons(Operand.mk(c, Expr.lit(id)), List.cons(Operand.mk(d, Expr.lit(threads)), List.nil(Operand)))))
+
+  // Each `bar.sync` has literal operands and an id in 1..15, and no two have one id.
+  struct BarrierIds (k: Kernel) : Prop
+   | mk (literal: (outs: List(Operand)) -> (ins: List(Operand)) -> Spec.InBlock(Stmt.asm(Spec.barrierTemplate, outs, ins), k.body) -> Spec.LiteralOperands(outs, ins))
+        (inRange: (s: Stmt) -> (id: Nat) -> (threads: Nat) -> Spec.InBlock(s, k.body) -> Spec.Barrier(id, threads, s) -> And(Nat.le(1, id), Nat.le(id, 15)))
+        (distinct: (x: Stmt) -> (y: Stmt) -> (id: Nat) -> (tx: Nat) -> (ty: Nat) -> Spec.Before(Stmt, x, y, Spec.statements(k.body))
+          -> Spec.Barrier(id, tx, x) -> Spec.Barrier(id, ty, y) -> False) : BarrierIds(k)
+
+  // Each `bar.sync` waits for a positive multiple of 32 threads. (A definition, not a field: declaring an inductive
+  // whose field's type applies `Nat.mod` to a variable takes time exponential in the modulus.)
+  def BarrierCounts (k: Kernel): Prop :=
+    (s: Stmt) -> (id: Nat) -> (threads: Nat) -> Spec.InBlock(s, k.body) -> Spec.Barrier(id, threads, s) -> And(Nat.lt(0, threads), Eq(Nat, Nat.mod(threads, 32), 0))
+
+  // I3, as far as the AST shows it.
+  def NamedBarriers (k: Kernel): Prop := And(Spec.BarrierIds(k), Spec.BarrierCounts(k))
 
   // ---- I4, literals -------------------------------------------------------------------------------------------------
 
