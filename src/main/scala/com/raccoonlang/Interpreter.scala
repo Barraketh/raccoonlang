@@ -245,7 +245,7 @@ object Interpreter {
         // Pi's own binders. A nested group is reached by a second application, which arrives here
         // as its own call. Keep this boundary checked because native lambdas bypass Core evaluation.
         if (vArgs.length != pi.binders.length)
-          fail(ArityMismatch(pi.binders.length, vArgs.length))
+          fail(ArityMismatch(pi.binders.length, vArgs.length, ArityMismatch.Arguments))
         // Lazy: the VLam branch delegates env construction to runLam.
         lazy val envWithArgs = getEnvWithArgs(pi, pi.env, vArgs)
         fn match {
@@ -294,7 +294,7 @@ object Interpreter {
         // A binder type is evaluated before the application inside it has been checked, so both of
         // these are reachable from a program and stay ordinary errors, located by whichever term the
         // checker was working on.
-        if (vArgs.length != pi.numExplicit) fail(ArityMismatch(pi.numExplicit, vArgs.length))
+        if (vArgs.length != pi.numExplicit) fail(ArityMismatch(pi.numExplicit, vArgs.length, ArityMismatch.Arguments))
         var provided = 0
         pi.binders.map { binder =>
           if (!binder.isImplicit) {
@@ -496,14 +496,15 @@ object Interpreter {
 
   /**
    * A `let` 's locals bound to its value, transparently: the one local to the value, or a destructuring's locals to the
-   * fields of the value's eta view (spec §3.5, §3.8). The checker binds them here too, once it has admitted the
-   * destructuring, so a destructuring never blocks.
+   * fields of the value's eta view (PAIRS_AND_PRELUDE §3.5, §3.8), `StructEta.destructuredFields`. The checker binds
+   * them here too, once it has admitted the destructuring, so a destructuring never blocks.
    */
   private[raccoonlang] def bindLet(pattern: CoreAst.LetPattern, value: Value, env: Env): Env =
     pattern match {
       case CoreAst.LetPattern.Local(ref) => env.putLocal(ref, value)
       case CoreAst.LetPattern.Fields(vars, _) =>
-        val fields = StructEta.fields(value).getOrElse(wtf(s"A checked destructuring's value $value has no eta view"))
+        val fields =
+          StructEta.destructuredFields(value).getOrElse(wtf(s"A checked destructuring's value $value has no fields"))
         if (fields.length != vars.length)
           wtf(s"A checked destructuring binds ${vars.length} fields of $value, which has ${fields.length}")
         bindFields(vars.map(_.ref), fields, env)

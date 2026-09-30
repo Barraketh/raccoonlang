@@ -490,7 +490,7 @@ object Elaborator {
     head match {
       case Right(term)                   => term
       case Left(form) if form.arity == 0 => CA.Term.FormOp(form, Vector.empty, span)
-      case Left(form)                    => at(span) { fail(ArityMismatch(form.arity, 0)) }
+      case Left(form)                    => at(span) { fail(ArityMismatch(form.arity, 0, ArityMismatch.Arguments)) }
     }
 
   private def elabPathTerm(path: SurfacePath, env: ResolveEnv): CA.Term =
@@ -634,7 +634,9 @@ object Elaborator {
       }
       head match {
         case Left(form) if form.arity > 0 =>
-          if (args.length != form.arity) at(sp) { fail(ArityMismatch(form.arity, args.length)) }
+          if (args.length != form.arity) at(sp) {
+            fail(ArityMismatch(form.arity, args.length, ArityMismatch.Arguments))
+          }
           CA.Term.FormOp(form, args.map(elabTerm(_, env)), sp)
         case _ => CA.Term.App(unapplied(head, fn.span), args.map(elabTerm(_, env)), sp)
       }
@@ -682,7 +684,8 @@ object Elaborator {
                 checkedLets += CA.Let(CA.LetPattern.Local(ref), ty, value, l.span)
                 nextEnv
               case pattern: SA.Term.LetPattern.Destructure =>
-                // A name occurs once in a pattern, as in a match case, at any depth (spec §3.4).
+                // A name occurs once in a pattern, at any depth, as in a match case (PAIRS_AND_PRELUDE §3.4). The
+                // names land in the block's scope, where shadowing is allowed, so the whole pattern is checked here.
                 pattern.names.filter(_.name != "_").foldLeft(Set.empty[String]) { (seen, name) =>
                   if (seen(name.name)) at(name.span) { fail(AlreadyDefined(name.name)) }
                   seen + name.name
@@ -721,9 +724,9 @@ object Elaborator {
   }
 
   /**
-   * A destructuring as Core lets (spec §3.3): one binding a local for each component, a name's or `_` 's, and for a
-   * nested pattern a fresh anonymous one, which a destructuring of its own, located at that pattern, takes apart right
-   * after. So every rule applies at each level.
+   * A destructuring as Core lets (PAIRS_AND_PRELUDE §3.3): one binding a local for each component, a name's or `_` 's,
+   * and for a nested pattern a fresh anonymous one, which a destructuring of its own, located at that pattern, takes
+   * apart right after. So every rule applies at each level.
    */
   private def elabDestructure(
       pattern: SA.Term.LetPattern.Destructure,

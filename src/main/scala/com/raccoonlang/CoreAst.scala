@@ -308,8 +308,9 @@ object CoreAst {
 
   /**
    * What a `let` binds, for the rest of its block: one local for its value, or a local for each stored field of its
-   * value, in order (spec §3). A destructuring's component is a local, `_` an anonymous one: the elaborator takes a
-   * nested pattern apart as a destructuring into an anonymous local followed by a destructuring of that local.
+   * value, in order (PAIRS_AND_PRELUDE §3). A destructuring's component is a local, `_` an anonymous one: the
+   * elaborator takes a nested pattern apart as a destructuring into an anonymous local followed by a destructuring of
+   * that local.
    */
   sealed trait LetPattern
 

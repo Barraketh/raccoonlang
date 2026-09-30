@@ -6,8 +6,10 @@ object ErrorRendering {
   def render(error: TypeError): String =
     error match {
       case CannotApplyNonFunction(got) => s"Cannot apply non-fn type $got"
-      case ArityMismatch(expected, got) =>
+      case ArityMismatch(expected, got, ArityMismatch.Arguments) =>
         s"Cannot apply function - expected $expected params, got $got"
+      case ArityMismatch(expected, got, ArityMismatch.Fields) =>
+        s"Cannot bind the constructor's fields - expected $expected fields, got $got"
       case UnknownConstructor(ctor, inductive) => s"Constructor $ctor does not belong to $inductive"
       case DuplicateCase(ctor)                 => s"Duplicate case for constructor $ctor"
       case UnreachableCase(ctor)               => s"Unreachable case for constructor $ctor"
@@ -38,7 +40,7 @@ object ErrorRendering {
           s"Use .$name for short-name matching."
       case NotDestructurable(tpe) =>
         s"Cannot destructure a value of type $tpe: only a family with one constructor, no indices and no recursive " +
-          "field, outside Prop at every level, is taken apart by its fields"
+          "field, outside Prop, is taken apart by its fields"
       case mismatch: TypeMismatch => renderTypeMismatch(mismatch)
       case InvalidConstructorResult(ctor, inductive, got) =>
         s"Constructor $ctor must return $inductive but got $got"

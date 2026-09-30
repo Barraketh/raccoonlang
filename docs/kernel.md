@@ -344,10 +344,10 @@ linear scrutinee consumes it once, and its fields are released to the ledger
 at the branch's extent, where a wildcard over a linear field is
 `LinearUnused`. A destructuring consumes its value the same way, and releases
 its locals at the rest of its block, each reported at its component. A struct
-selector is a definition whose body is a match, so
-applying one to a linear value is that value's use. The ledger is one walk,
-an exhaustive match over Core terms with no wildcard arm, and runs only for a
-binder of linear type. Evaluation makes none of its checks.
+selector is a definition whose body is a match, so applying one to a linear
+value is that value's use. The ledger is one walk, an exhaustive match over
+Core terms with no wildcard arm, and runs only for a binder of linear type.
+Evaluation makes none of its checks.
 
 Types and proofs hold no tokens: a term whose type is a sort or a proposition
 may not contain a subterm of linear type, else `LinearInType`, located at that
@@ -517,10 +517,12 @@ A destructuring `let (x1, …, xn) := e` binds each local, transparently, to its
 field of the eta view of `e`'s value, in checking and in evaluation alike. So
 it has no motive, never blocks, and a destructured local is a structural
 subterm of `e`'s value exactly as a one-branch match's field is. It is admitted
-only at an instance that no instantiation of its levels makes a proposition,
-since an instance in `Prop` has no eta view: an instance of a sort-polymorphic
-family whose level may be zero is `NotDestructurable`. A nested pattern is a
-destructuring into an anonymous local followed by a destructuring of that
+only at an eligible instance outside `Prop`, but evaluation may instantiate a
+sort-polymorphic instance's levels to zero, putting it in `Prop`. There each
+local is bound to its field's canonical projection, which for a proof field is
+the canonical proof of its type, as a one-branch match on a constructor-form
+proof would bind it, so a destructuring still never blocks. A nested pattern is
+a destructuring into an anonymous local followed by a destructuring of that
 local, so each level is checked alike.
 
 There is no primitive projection value. A positional projection is the
@@ -579,8 +581,7 @@ Kinds, scopes, coverage, apartness and the conversion of values read the full
 declaration in every module, and evaluation compares no module. One function
 decides whether a position may use a sealed family's constructors; the checker
 asks it at those name resolutions, match scrutinees and destructured values,
-and implicit
-projection asks it before reading a constructor's field.
+and implicit projection asks it before reading a constructor's field.
 
 ## Termination
 

@@ -1,5 +1,5 @@
 
-<root>/main.rac:2:20: error: Cannot destructure a value of type Option(Nat): only a family with one constructor, no indices and no recursive field, outside Prop at every level, is taken apart by its fields
+<root>/main.rac:2:20: error: Cannot destructure a value of type Option(Nat): only a family with one constructor, no indices and no recursive field, outside Prop, is taken apart by its fields
   let (n, rest) := o
                    ^
 note: in definition firstOr
