@@ -472,11 +472,12 @@ struct App (f: Nat -> Prop)(n: Nat) : Prop
 def isFour (n: Nat): Prop := Eq(Nat, n, 4)
 ```
 
-`App(isFour, 4)` is discharged when `isFour(4)` is. A field that fails is reported with the path to it, depth first
-in field order: `gemm(128, 100)` fails at `GemmShape.nOk: Eq(Nat, 100, 128)`. A
-family of several constructors is not recursed into, nor one whose field
-mentions it, so `inductive Loop : Prop | mk [h: Loop]` is refused at once. A
-sealed family is discharged through its fields only in its module.
+`App(isFour, 4)` is discharged when `isFour(4)` is. A field that fails is
+reported with the path to it, depth first in field order: `gemm(128, 100)`
+fails at `GemmShape.nOk: Eq(Nat, 100, 128)`. A family of several constructors
+is not recursed into, nor one whose field mentions it, so
+`inductive Loop : Prop | mk [h: Loop]` is refused at once. A sealed family is
+discharged through its fields only in its module.
 
 Discharge takes at most 1024 such steps on any path from a call's proposition:
 one nested deeper, as a chain `Wrap(Wrap(…))` of 1025 built by a recursive
