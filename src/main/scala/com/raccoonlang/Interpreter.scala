@@ -5,6 +5,8 @@ import com.raccoonlang.CoreAst.{Term => CTerm}
 import com.raccoonlang.Value._
 import com.raccoonlang.telescope.BinderOps
 
+import scala.annotation.tailrec
+
 /**
  * Interpreter evaluates CoreAst into ordinary WHNF Values in the Env it is given. EqStore-aware reduction is isolated
  * to resolveInEqStore and the materialization helpers in ValueOps.
@@ -247,7 +249,9 @@ object Interpreter {
    * Apply `fn` to an argument for each binder of its group. A lambda binds them as given, and any other head stores
    * them as given in the application it builds, deferred evidence included (`DeferredEvidence`): applying forces none.
    */
-  private[raccoonlang] def evalApply(fn: Value, vArgs: Vector[Value]): Value = {
+  private[raccoonlang] def evalApply(fn: Value, vArgs: Vector[Value]): Value = evalSteps(applyStep(fn, vArgs))
+
+  private def applyStep(fn: Value, vArgs: Vector[Value]): Step = {
     fn.tpe match {
       case pi: VPi =>
         // Grouping is part of a function type's identity, so an application supplies exactly this
@@ -255,31 +259,36 @@ object Interpreter {
         // as its own call. Keep this boundary checked because native lambdas bypass Core evaluation.
         if (vArgs.length != pi.binders.length)
           fail(ArityMismatch(pi.binders.length, vArgs.length, ArityMismatch.Arguments))
-        // Lazy: the VLam branch delegates env construction to runLam.
+        // Lazy: the VLam branch delegates env construction to lamStep.
         lazy val envWithArgs = getEnvWithArgs(pi, pi.env, vArgs)
         fn match {
           case lam: VLam =>
-            runLam(lam, vArgs)
+            lamStep(lam, vArgs)
           case h: ConstructorHead =>
             val resultTy = pi.codomain(envWithArgs)
             val storedArgs = Value.constructorStoredArgs(h, vArgs)
-            Value.canonicalizeProof(Packed.foldCtor(h, storedArgs, resultTy).getOrElse(VCtor(h, storedArgs, resultTy)))
+            Step.Done(
+              Value.canonicalizeProof(
+                Packed.foldCtor(h, storedArgs, resultTy).getOrElse(VCtor(h, storedArgs, resultTy))
+              )
+            )
           // Every non-reducing head builds one new application layer over itself. An existing
           // neutral stays the head rather than being flattened into the new spine: flattening
           // would destroy positional-projection arity. A blocked head propagates its blockers,
           // and any other head is unblocked.
           case head @ (_: VConst | _: VApp | _: NeutralThunk | _: Var) =>
             val blockedOn = Blocker.unapply(head).getOrElse(DepSet.empty)
-            Value.canonicalizeProof(VApp(head, vArgs, pi.codomain(envWithArgs), blockedOn))
+            Step.Done(Value.canonicalizeProof(VApp(head, vArgs, pi.codomain(envWithArgs), blockedOn)))
           case _ => fail(CannotApplyNonFunction(fn))
         }
       case _ => fail(CannotApplyNonFunction(fn.tpe))
     }
   }
 
-  private def evalApplyTerm(fn: CoreAst.Term, args: Vector[CoreAst.Term], env: Env): Value = {
+  /** An application's arguments are evaluated first, since evaluation is strict; the callee's body is its tail. */
+  private def applyTermStep(fn: CoreAst.Term, args: Vector[CoreAst.Term], env: Env): Step = {
     val vf = evalTerm(fn, env)
-    evalApply(vf, residualArguments(vf, args.map(a => evalTerm(a, env))))
+    applyStep(vf, residualArguments(vf, args.map(a => evalTerm(a, env))))
   }
 
   private def valueName(v: Value): String =
@@ -366,7 +375,10 @@ object Interpreter {
     }
   }
 
-  private[raccoonlang] def runLam(lam: VLam, args: Vector[Value]): Value = {
+  private[raccoonlang] def runLam(lam: VLam, args: Vector[Value]): Value = evalSteps(lamStep(lam, args))
+
+  /** A native or proof eta-lambda's result, or a core lambda's body, its tail, in the env binding its arguments. */
+  private def lamStep(lam: VLam, args: Vector[Value]): Step = {
     // Arguments are bound as supplied. A lambda's Pi is the one it was created with, so its binders
     // are exactly the ones its body expects.
     lazy val piEnv = BinderOps.instantiateFull(lam.tpe.binders, lam.tpe.env, args)
@@ -375,9 +387,8 @@ object Interpreter {
       // A native body reads only the arguments it names, none of them evidence: a native operation's binders are
       // validated explicit, a builtin's are never evidence (BuiltinEvidence), and a raw recursive stub reads its
       // metric's, which is never a proof.
-      case LamBody.Native(run, nativeEnv, _) => run(args, nativeEnv)
-      case LamBody.ProofEta =>
-        Value.canonicalizeProof(VProof(lam.tpe.codomain(piEnv)))
+      case LamBody.Native(run, nativeEnv, _) => Step.Done(run(args, nativeEnv))
+      case LamBody.ProofEta                  => Step.Done(Value.canonicalizeProof(VProof(lam.tpe.codomain(piEnv))))
       case LamBody.Core(term, coreEnv) =>
         val bodyEnv = BinderOps.instantiateFull(lam.tpe.binders, coreEnv, args)
 
@@ -393,12 +404,12 @@ object Interpreter {
                 .getOrElse(wtf(s"Checked recursive peer $name is absent from its group"))
           current.putLocal(ref, peer)
         }
-        evalTerm(term.body, recurEnv)
+        Step.Tail(term.body, recurEnv)
     }
   }
 
   private def forceThunk(thunk: NeutralThunk, eqStore: EqStore): Value =
-    evalMatch(thunk.term, ValueOps.materializeEnv(thunk.env, eqStore))
+    evalSteps(matchStep(thunk.term, ValueOps.materializeEnv(thunk.env, eqStore)))
 
   private def evalLam(l: CTerm.Lam, env: Env): Value = evalLam(l, evalPi(l.ty, env), env)
 
@@ -444,41 +455,67 @@ object Interpreter {
     }
 
   /**
+   * One step of evaluation (docs/kernel.md#evaluation-depth): a term's value, or the term in tail position whose value
+   * is its value, with the env to evaluate that term in.
+   */
+  private sealed trait Step
+  private object Step {
+    final case class Done(value: Value) extends Step
+    final case class Tail(term: CoreAst.Term, env: Env) extends Step
+  }
+
+  /**
    * Evaluation attaches no location: reduction runs inside callee bodies the user did not write, so a failure here
    * belongs to the term the checker was working on.
    */
-  private[raccoonlang] def evalTerm(term: CoreAst.Term, env: Env): Value =
+  private[raccoonlang] def evalTerm(term: CoreAst.Term, env: Env): Value = evalSteps(step(term, env))
+
+  /** Takes steps until one is a value, in a loop, so a tail position costs no host stack. */
+  @tailrec
+  private def evalSteps(next: Step): Value =
+    next match {
+      case Step.Done(value)     => value
+      case Step.Tail(term, env) => evalSteps(step(term, env))
+    }
+
+  /**
+   * The tail positions are a block's result, a match's chosen branch, a scope's body, and a core lambda's body at an
+   * application.
+   */
+  private def step(term: CoreAst.Term, env: Env): Step =
     term match {
-      case CTerm.NatLit(value, _)    => Packed.evalNatLit(value, env)
-      case CTerm.StrLit(scalars, _)  => Packed.evalStrLit(scalars, env)
-      case ref: CTerm.Ref            => evalRef(ref, env)
-      case CTerm.App(fn, args, _, _) => evalApplyTerm(fn, args, env)
-      case pi: CTerm.Pi              => evalPi(pi, env)
-      case l: CTerm.Lam              => evalLam(l, env)
-      case m: CTerm.Match            => evalMatch(m, env)
-      case b: CTerm.Body             => evalBody(b, env)
+      case CTerm.NatLit(value, _)    => Step.Done(Packed.evalNatLit(value, env))
+      case CTerm.StrLit(scalars, _)  => Step.Done(Packed.evalStrLit(scalars, env))
+      case ref: CTerm.Ref            => Step.Done(evalRef(ref, env))
+      case CTerm.App(fn, args, _, _) => applyTermStep(fn, args, env)
+      case pi: CTerm.Pi              => Step.Done(evalPi(pi, env))
+      case l: CTerm.Lam              => Step.Done(evalLam(l, env))
+      case m: CTerm.Match            => matchStep(m, env)
+      case b: CTerm.Body =>
+        Step.Tail(b.res, b.lets.foldLeft(env)((curEnv, l) => bindLet(l.pattern, evalTerm(l.value, curEnv), curEnv)))
       // The interpreter binds a scope's variable to its atom and makes none of its checks (spec §8).
-      case scope: CTerm.Scope => evalTerm(scope.body, env.putLocal(scope.ref, Atoms.of(scope)))
+      case scope: CTerm.Scope => Step.Tail(scope.body, env.putLocal(scope.ref, Atoms.of(scope)))
       case CTerm.Sort(level, kind, scope, _) =>
-        Sorts.sort(getLevel(evalTerm(level, env)), getKind(evalTerm(kind, env)), getLifetime(evalTerm(scope, env)))
-      case CTerm.FormOp(form, args, _) => evalFormOp(form, args.map(evalTerm(_, env)))
+        Step.Done(
+          Sorts.sort(getLevel(evalTerm(level, env)), getKind(evalTerm(kind, env)), getLifetime(evalTerm(scope, env)))
+        )
+      case CTerm.FormOp(form, args, _) => Step.Done(evalFormOp(form, args.map(evalTerm(_, env))))
       // Named field syntax is resolved to a selector application by checkSelect, so a Select can
       // only reach evaluation if something published unchecked syntax.
       case CTerm.Select(_, field, _) =>
         wtf(s"Unresolved field selection .$field reached evaluation")
     }
 
-  private def evalMatch(m: CTerm.Match, env: Env): Value = {
-    val scrut = evalTerm(m.scrut, env)
-    scrut match {
+  private def matchStep(m: CTerm.Match, env: Env): Step =
+    evalTerm(m.scrut, env) match {
       // The fields are bound as stored, so matching forces no evidence field; a branch forces one where it reads it.
       // Exhaustiveness is settled by MatchChecker: a constructor-form scrutinee always has a branch.
       case ConstructorForm.Stored(ctorName, args) =>
         val branch = m.cases
           .find(c => c.ctorName == ctorName)
           .getOrElse(wtf(s"Checked match has no branch for constructor $ctorName"))
-        evalBranch(branch, args, env)
-      case proof: VProof => evalProofMatch(m, proof, env)
+        Step.Tail(branch.body, branchEnv(branch, args, env))
+      case proof: VProof => Step.Done(evalProofMatch(m, proof, env))
       case other         =>
         // Structure eta (rule 1): a neutral at an eta-eligible struct type has an eta view, so the
         // single branch fires against its virtual fields instead of sticking. The canonical
@@ -490,7 +527,7 @@ object Interpreter {
               case Vector(single) => single
               case _              => wtf(s"Eta-eligible struct match has ${m.cases.length} cases")
             }
-            evalBranch(branch, etaFields, env)
+            Step.Tail(branch.body, branchEnv(branch, etaFields, env))
           // We are either blocked or stuck
           case None =>
             val headBlockers = other match {
@@ -498,10 +535,9 @@ object Interpreter {
               case _                  => DepSet.empty
             }
             val blockedOn = headBlockers ++ typeCollapseDeps(other.tpe)
-            Value.canonicalizeProof(stuckMatchThunk(m, env, evalTerm(m.motive, env), blockedOn))
+            Step.Done(Value.canonicalizeProof(stuckMatchThunk(m, env, evalTerm(m.motive, env), blockedOn)))
         }
     }
-  }
 
   private[raccoonlang] def typeCollapseDeps(tpe: Value): DepSet = {
     val classifierLevel = TypeChecker.getUniverse(tpe).level
@@ -518,12 +554,16 @@ object Interpreter {
     NeutralThunk(m, closedEnv, ValueId.LocalId(m.id, closedEnv.locals.values.toVector), outType, blockedOn)
   }
 
-  private[raccoonlang] def evalBranch(branch: CoreAst.Case, args: Vector[Value], env: Env): Value = {
+  private[raccoonlang] def evalBranch(branch: CoreAst.Case, args: Vector[Value], env: Env): Value =
+    evalTerm(branch.body, branchEnv(branch, args, env))
+
+  /** The env a branch's body runs in: its pattern's locals bound to the scrutinee's fields. */
+  private def branchEnv(branch: CoreAst.Case, args: Vector[Value], env: Env): Env = {
     // Every caller supplies a scrutinee's stored fields to a branch MatchChecker already matched
     // against that constructor's arity.
     if (args.length != branch.argRefs.length)
       wtf(s"Checked branch for ${branch.ctorName} binds ${branch.argRefs.length} fields, got ${args.length}")
-    evalTerm(branch.body, bindFields(branch.argRefs, args, env))
+    bindFields(branch.argRefs, args, env)
   }
 
   /** A pattern's locals bound to a constructor's fields, each in the canonical form for its exact type. */
@@ -557,11 +597,6 @@ object Interpreter {
     val outType = evalTerm(m.motive, env)
     if (Sorts.isProposition(outType)) Value.canonicalizeProof(VProof(outType))
     else stuckMatchThunk(m, env, outType, scrut.tpe.synDeps)
-  }
-
-  private[raccoonlang] def evalBody(body: CTerm.Body, env: Env): Value = {
-    val newEnv = body.lets.foldLeft(env)((curEnv, l) => bindLet(l.pattern, evalTerm(l.value, curEnv), curEnv))
-    evalTerm(body.res, newEnv)
   }
 
   // Proof publication (docs/kernel.md#proofs-and-elimination): exact type alone chooses a reconstructed constructor,

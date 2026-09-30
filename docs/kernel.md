@@ -18,12 +18,13 @@ their evaluated values. Data-valued opaque definitions and axioms publish
 symbolic heads; proof-valued declarations are canonicalized from their exact
 propositions before publication.
 
-Checking and evaluation recurse on the host stack. A stack overflow is caught
-only at the boundary of a declaration, prelude declarations included, or of
-the program's body, and becomes `EvaluationTooDeep` located there; no rule
-inside them observes one. The declaration that overflowed is not published,
-and checking stops, since the overflow may have unwound past the restoration
-of the checker's state, thread-local and process-wide.
+Checking and evaluation recurse on the host stack, except where evaluation
+continues in tail position ([Evaluation depth](#evaluation-depth)). A stack
+overflow is caught only at the boundary of a declaration, prelude declarations
+included, or of the program's body, and becomes `EvaluationTooDeep` located
+there; no rule inside them observes one. The declaration that overflowed is not
+published, and checking stops, since the overflow may have unwound past the
+restoration of the checker's state, thread-local and process-wide.
 
 The bundled source prelude is a trusted bootstrap. A prelude is still parsed,
 elaborated, and typechecked, but prelude loading alone may install builtin
@@ -822,6 +823,20 @@ Mutually recursive definition blocks are available through the surface
 compatible lexicographic metric shapes, and every cross-component call must
 decrease from the caller's current metric. Measure specifications are not
 supported for recursive definition blocks.
+
+## Evaluation depth
+
+Evaluation is strict, and it takes no host stack for a term in tail position,
+whose value is the value of the term being evaluated: a block's result after
+its lets, a match's chosen branch, a scope's body, and a core lambda's body
+where the lambda is applied, after the application's arguments. The evaluator
+continues with that term in a loop instead of recursing into it. Native
+bodies, proof eta-lambdas, constructor heads and neutral heads produce their
+results directly. The loop changes no value, neutral or blocking set: it
+removes host frames only, so evaluation that exhausted the stack may now
+finish instead of reporting `EvaluationTooDeep`. Recursion outside tail
+position is bounded by the host stack, whose exhaustion is that diagnostic
+(see [Trust boundary](#trust-boundary)).
 
 ## Axioms, opacity, and quotients
 
