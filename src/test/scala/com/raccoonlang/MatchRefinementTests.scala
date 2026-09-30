@@ -188,4 +188,24 @@ class MatchRefinementTests extends munit.FunSuite with TestSupport {
     expectOnly[MissingCase](typecheckDecls(program(cons)))
   }
 
+  test("a stuck argument equation is retried once a later argument links a variable it reaches") {
+    // `g(x) ~ g(c)` cannot link beneath the opaque `g`, so it is postponed; `x ~ c` then links the two, and the retry
+    // compares `g(x)` with itself. Without the retry the index equation would be stuck and refine nothing.
+    typecheckDecls(
+      """
+        |inductive Peano : Type
+        | | zero : Peano
+        | | succ (p: Peano) : Peano
+        |
+        |inductive Two : Type
+        | | mk (a: Peano)(b: Peano) : Two
+        |
+        |def congArg (g: (n: Peano) -> Peano)(x: Peano)(c: Peano)(p: Eq(Two, Two.mk(g(x), x), Two.mk(g(c), c))): Eq(Peano, c, x) := {
+        |  match p returning Eq(Peano, c, x) with
+        |  | Eq.refl t => Eq.refl(x)
+        |}
+        |""".stripMargin
+    )
+  }
+
 }

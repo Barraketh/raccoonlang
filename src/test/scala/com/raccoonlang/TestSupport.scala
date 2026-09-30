@@ -72,6 +72,13 @@ trait TestSupport extends DiagnosticAssertions { this: munit.FunSuite =>
     ModuleLoader.load(entry, ModuleLoader.LoadConfig.forEntry(entry, suitePrelude)).program
   }
 
+  /** The time `body` takes, in milliseconds, with its result. */
+  protected def timed[A](body: => A): (A, Long) = {
+    val start = System.nanoTime()
+    val result = body
+    (result, (System.nanoTime() - start) / 1000000)
+  }
+
   /** `body` run on a thread of the JVM's default stack size; what it throws, a stack overflow included, it rethrows. */
   protected def onDefaultStack[A](body: => A): A = Execution.onStack(0)(body)
 
