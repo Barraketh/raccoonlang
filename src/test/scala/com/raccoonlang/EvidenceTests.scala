@@ -1,97 +1,122 @@
 package com.raccoonlang
 
 /**
- * Evidence arguments discharged by the fieldless rule (docs/PROOF_BY_EVALUATION.md §1.1–1.7): an evidence binder
- * `[h: P]` in a definition's, a lambda's or a function type's telescope, discharged at each application by evaluating
- * `P` there, or supplied in a bracket group `f(x)[p]`. Each rule has an admitted program and the smallest mutation that
- * reaches its diagnostic.
+ * Evidence arguments discharged by rule 1 (docs/PROOF_BY_EVALUATION.md §1.1–1.7): an evidence binder `[h: P]` in a
+ * definition's, a lambda's or a function type's telescope, discharged at each application by evaluating `P` there and
+ * applying a constructor whose fields its result type determines, or supplied in a bracket group `f(x)[p]`. Each rule
+ * has an admitted program and the smallest mutation that reaches its diagnostic.
  *
- * The bundled prelude's `Eq.refl` stores its field, so the fieldless rule never discharges `Eq`; `Same` is the equality
- * whose one constructor is fieldless, and `IsTrue` a proposition a decision procedure's result is checked by.
+ * `Same` is an equality whose constructor is fieldless, `IsTrue` a proposition that checks a decision procedure's
+ * result, and `SameP` an equality between proofs.
  */
 class EvidenceTests extends munit.FunSuite with TestSupport {
 
   private def evaluatesTo(source: String, expected: String)(implicit loc: munit.Location): Unit =
     assertEquals(PrettyPrinter.print(runProgram(source)), expected)
 
-  /** The proposition an application failed to discharge, printed, for the evidence binder `binder` of `callee`. */
-  private def notDischarged(source: String, binder: String, callee: String)(implicit loc: munit.Location): String = {
+  /** The failure an application reports, for the evidence binder `binder` of `callee`. */
+  private def notDischarged(source: String, binder: String, callee: String)(implicit
+      loc: munit.Location
+  ): EvidenceNotDischarged = {
     val failure = expectOnly[EvidenceNotDischarged](typecheckDecls(source))
     assertEquals((failure.binder, failure.callee), (binder, callee))
+    failure
+  }
+
+  /** The proposition an application failed to discharge because no constructor fits, printed. */
+  private def noConstructor(source: String, binder: String, callee: String)(implicit loc: munit.Location): String = {
+    val failure = notDischarged(source, binder, callee)
+    assertEquals(failure.reason, EvidenceNotDischarged.NoConstructor)
     PrettyPrinter.print(failure.proposition)
   }
 
   private val families =
     "inductive Same {A: Type}(a: A) indices (b: A) : Prop\n | refl : Same(a, a)\n\n" +
-      "inductive IsTrue indices (b: Bool) : Prop\n | yes : IsTrue(Bool.true)\n\n"
+      "inductive IsTrue indices (b: Bool) : Prop\n | yes : IsTrue(Bool.true)\n\n" +
+      "inductive SameP {A: Prop}(a: A) indices (b: A) : Prop\n | refl : SameP(a, a)\n\n"
 
   /** `def need [h: P]: Nat := 1`, whose proposition is closed. */
   private def needing(proposition: String): String = families + s"def need [h: $proposition]: Nat := 1\n\n"
 
-  private val three = families + "def three (n: Nat)[h: Same(n, 3)]: Nat := n\n\n"
+  private val three = families + "def three (n: Nat)[h: Eq(Nat, n, 3)]: Nat := n\n\n"
+
+  /** The deferred proofs evaluation forces while `body` runs. */
+  private def forcings(body: => Any): Long = {
+    val before = Value.DeferredEvidence.forcings.get()
+    body
+    Value.DeferredEvidence.forcings.get() - before
+  }
 
   test("an evidence argument is discharged by evaluating its proposition where the application stands") {
     evaluatesTo(three + "{ three(3) }", "3")
     evaluatesTo(three + "{ three(Nat.add(1, 2)) }", "3")
-    assertEquals(notDischarged(three + "{ three(4) }", "h", "three"), "Same(4, 3)")
+    assertEquals(noConstructor(three + "{ three(4) }", "h", "three"), "Eq(Nat, 4, 3)")
     // The proposition is evaluated with the call's arguments, so a decision procedure in it runs.
-    val positive = families + "def pred (n: Nat)[h: IsTrue(Nat.blt(0, n))]: Nat := Nat.sub(n, 1)\n\n"
+    val positive = families + "def pred (n: Nat)[h: Eq(Bool, Nat.blt(0, n), Bool.true)]: Nat := Nat.sub(n, 1)\n\n"
     evaluatesTo(positive + "{ pred(5) }", "4")
-    assertEquals(notDischarged(positive + "{ pred(0) }", "h", "pred"), "IsTrue(Bool.false)")
+    assertEquals(noConstructor(positive + "{ pred(0) }", "h", "pred"), "Eq(Bool, Bool.false, Bool.true)")
   }
 
-  test("only a fieldless constructor whose type is the proposition discharges it") {
+  test("a constructor discharges when its fields are read off the proposition, and never by inventing one") {
     evaluatesTo(needing("True") + "{ need() }", "1")
+    // `Eq.refl`'s field is the argument its result type repeats, so it is read off the proposition.
+    evaluatesTo(needing("Eq(Nat, Nat.mul(2, 3), 6)") + "{ need() }", "1")
     evaluatesTo(needing("Same(Nat.mul(2, 3), 6)") + "{ need() }", "1")
-    assertEquals(notDischarged(needing("False") + "{ need() }", "h", "need"), "False")
-    assertEquals(notDischarged(needing("Same(2, 3)") + "{ need() }", "h", "need"), "Same(2, 3)")
-    // A constructor with fields is never applied, though its fields could be proved: they would have to be invented.
-    assertEquals(notDischarged(needing("And(True, True)") + "{ need() }", "h", "need"), "And(True, True)")
-    assertEquals(notDischarged(needing("Or(True, False)") + "{ need() }", "h", "need"), "Or(True, False)")
-    notDischarged(
-      families + "def isZero (n: Nat): Prop := Same(n, 0)\n\n" + "def need [h: Exists(Nat, isZero)]: Nat := 1\n\n{ need() }",
+    evaluatesTo(needing("IsTrue(Nat.blt(2, 3))") + "{ need() }", "1")
+    assertEquals(noConstructor(needing("False") + "{ need() }", "h", "need"), "False")
+    assertEquals(noConstructor(needing("Eq(Nat, 2, 3)") + "{ need() }", "h", "need"), "Eq(Nat, 2, 3)")
+    // A field its result type does not determine would have to be invented, though here one could be proved.
+    assertEquals(noConstructor(needing("And(True, True)") + "{ need() }", "h", "need"), "And(True, True)")
+    assertEquals(noConstructor(needing("Or(True, False)") + "{ need() }", "h", "need"), "Or(True, False)")
+    noConstructor(
+      families + "def isZero (n: Nat): Prop := Eq(Nat, n, 0)\n\ndef need [h: Exists(Nat, isZero)]: Nat := 1\n\n{ need() }",
       "h",
       "need"
     )
-    // The prelude's `Eq.refl (x: A)` stores `x`, so it is not fieldless, and `Eq` is never discharged.
-    assertEquals(notDischarged(needing("Eq(Nat, 3, 3)") + "{ need() }", "h", "need"), "Eq(Nat, 3, 3)")
-    // Of a fieldless constructor and one with fields, only the fieldless one is tried.
+    // A field inside an argument of the result type cannot be read back.
+    val succ = "inductive Succ indices (n: Nat) : Prop\n | mk (m: Nat) : Succ(Nat.succ(m))\n\n"
+    assertEquals(noConstructor(succ + needing("Succ(4)") + "{ need() }", "h", "need"), "Succ(4)")
+    // A proof field is read off the proposition as a data field is.
+    val holds = "inductive Holds indices (p: True) : Prop\n | mk (h: True) : Holds(h)\n\n"
+    evaluatesTo(holds + needing("Holds(True.intro)") + "{ need() }", "1")
+    // The constructors are tried in declaration order, and the first that fits is taken.
     val le =
       "inductive Le (n: Nat) indices (m: Nat) : Prop\n | refl : Le(n, n)\n | step (m: Nat)(h: Le(n, m)) : " +
         "Le(n, Nat.succ(m))\n\n"
     evaluatesTo(le + needing("Le(3, 3)") + "{ need() }", "1")
-    assertEquals(notDischarged(le + needing("Le(3, 4)") + "{ need() }", "h", "need"), "Le(3, 4)")
+    assertEquals(noConstructor(le + needing("Le(3, 4)") + "{ need() }", "h", "need"), "Le(3, 4)")
+    val two = "inductive B indices (b: Bool) : Prop\n | t : B(Bool.true)\n | f : B(Bool.false)\n\n"
+    evaluatesTo(two + needing("B(Bool.false)") + "{ need() }", "1")
   }
 
   test("a proposition that stays neutral is not discharged, and one whose sides convert is") {
     // Generic code knows no concrete argument, so its proposition stays neutral.
-    assertEquals(notDischarged(three + "def g (n: Nat): Nat := three(n)\n", "h", "three"), "Same(n, 3)")
+    assertEquals(noConstructor(three + "def g (n: Nat): Nat := three(n)\n", "h", "three"), "Eq(Nat, n, 3)")
     assertEquals(
-      notDischarged("def any (P: Prop)[h: P]: Nat := 1\n\ndef g (Q: Prop): Nat := any(Q)\n", "h", "any"),
+      noConstructor("def any (P: Prop)[h: P]: Nat := 1\n\ndef g (Q: Prop): Nat := any(Q)\n", "h", "any"),
       "Q"
     )
     // An instance whose sides convert is discharged, neutral or not.
     evaluatesTo(
-      families + "def same (a: Nat)(b: Nat)[h: Same(a, b)]: Nat := b\n\ndef g (n: Nat): Nat := same(n, n)\n\n{ g(7) }",
+      "def same (a: Nat)(b: Nat)[h: Eq(Nat, a, b)]: Nat := b\n\ndef g (n: Nat): Nat := same(n, n)\n\n{ g(7) }",
       "7"
     )
   }
 
   test("generic code forwards the evidence it has, and its callers discharge theirs") {
-    val forward = three + "def g (n: Nat)[h: Same(n, 3)]: Nat := Nat.add(three(n)[h], 1)\n\n"
+    val forward = three + "def g (n: Nat)[h: Eq(Nat, n, 3)]: Nat := Nat.add(three(n)[h], 1)\n\n"
     evaluatesTo(forward + "{ g(3) }", "4")
-    assertEquals(notDischarged(forward + "{ g(2) }", "h", "g"), "Same(2, 3)")
-    // Any proof of the proposition is supplied the same way, one the fieldless rule would not find included.
-    evaluatesTo(three + "{ three(3)[Same.refl(3)] }", "3")
+    assertEquals(noConstructor(forward + "{ g(2) }", "h", "g"), "Eq(Nat, 2, 3)")
+    // Any proof of the proposition is supplied the same way, one rule 1 would not find included.
+    evaluatesTo(three + "{ three(3)[Eq.refl(3)] }", "3")
     evaluatesTo(needing("And(True, True)") + "{ need()[And.intro(True.intro, True.intro)] }", "1")
-    evaluatesTo(needing("Eq(Nat, 3, 3)") + "{ need()[Eq.refl(3)] }", "1")
   }
 
   test("a supplied proof is checked against the evaluated proposition, one proof per evidence binder") {
-    val mismatch = expectOnly[TypeMismatch](typecheckDecls(three + "{ three(3)[Same.refl(4)] }"))
-    assertEquals(PrettyPrinter.print(mismatch.expected), "Same(3, 3)")
+    val mismatch = expectOnly[TypeMismatch](typecheckDecls(three + "{ three(3)[Eq.refl(4)] }"))
+    assertEquals(PrettyPrinter.print(mismatch.expected), "Eq(Nat, 3, 3)")
     assertEquals(
-      expectOnly[ArityMismatch](typecheckDecls(three + "{ three(3)[Same.refl(3), Same.refl(3)] }")),
+      expectOnly[ArityMismatch](typecheckDecls(three + "{ three(3)[Eq.refl(3), Eq.refl(3)] }")),
       ArityMismatch(1, 2, ArityMismatch.Evidence)
     )
     assertEquals(
@@ -103,67 +128,72 @@ class EvidenceTests extends munit.FunSuite with TestSupport {
       "inductive Tok (l: Lifetime) : Type { kind = lin, scope = l }\n | mk : Tok(l)\n\n" +
         "def eat {l: Lifetime}(t: Tok(l)): Nat := match t returning Nat with\n | Tok.mk => 3\n\n"
     expectOnly[LinearInType](
-      typecheckDecls(tokens + three + "def g {l: Lifetime}(t: Tok(l)): Nat := three(3)[Same.refl(eat(t))]\n")
+      typecheckDecls(tokens + three + "def g {l: Lifetime}(t: Tok(l)): Nat := three(3)[Eq.refl(eat(t))]\n")
     )
   }
 
   test("evidence mixes with implicit and explicit binders in any order, each proposition over earlier binders") {
     val mixed =
-      families + "def m {A: Type}(x: A)[h1: Same(x, x)](n: Nat)[h2: IsTrue(Nat.beq(n, 2))]{B: Type}(b: B): B := b\n\n"
+      families + "def m {A: Type}(x: A)[h1: Eq(A, x, x)](n: Nat)[h2: IsTrue(Nat.beq(n, 2))]{B: Type}(b: B): B := b\n\n"
     evaluatesTo(mixed + "{ m(Bool.false, 2, 5) }", "5")
-    assertEquals(notDischarged(mixed + "{ m(Bool.false, 3, 5) }", "h2", "m"), "IsTrue(Bool.false)")
-    evaluatesTo(mixed + "{ m(Bool.false, 2, 5)[Same.refl(Bool.false), IsTrue.yes] }", "5")
+    assertEquals(noConstructor(mixed + "{ m(Bool.false, 3, 5) }", "h2", "m"), "IsTrue(Bool.false)")
+    evaluatesTo(mixed + "{ m(Bool.false, 2, 5)[Eq.refl(Bool.false), IsTrue.yes] }", "5")
     assertEquals(
-      expectOnly[ArityMismatch](typecheckDecls(mixed + "{ m(Bool.false, 2, 5)[Same.refl(Bool.false)] }")),
+      expectOnly[ArityMismatch](typecheckDecls(mixed + "{ m(Bool.false, 2, 5)[Eq.refl(Bool.false)] }")),
       ArityMismatch(2, 1, ArityMismatch.Evidence)
     )
     // Evidence first, then an explicit binder, which its proposition cannot mention.
     evaluatesTo("def first [h: True](n: Nat): Nat := n\n\n{ first(4) }", "4")
     assertEquals(
-      expectOnly[NotFound](typecheckDecls(families + "def later [h: Same(n, 3)](n: Nat): Nat := n\n")),
+      expectOnly[NotFound](typecheckDecls("def later [h: Eq(Nat, n, 3)](n: Nat): Nat := n\n")),
       NotFound("n")
     )
+    // A proposition over an earlier evidence binder.
+    evaluatesTo(families + "def two [h1: True][h2: SameP(h1, True.intro)]: Nat := 5\n\n{ two() }", "5")
   }
 
-  test("a definition whose only parameters are evidence is applied to no arguments") {
+  test("a definition whose only parameters are evidence is applied to no arguments, in a type as anywhere") {
     evaluatesTo(needing("True") + "{ need() }", "1")
     // Named alone it is the function, whose type keeps its evidence binder.
     evaluatesTo(needing("True") + "def f : [h: True] -> Nat := need\n\n{ f() }", "1")
     expectOnly[TypeMismatch](typecheckDecls(needing("True") + "def f : Nat := need\n"))
+    val typed = "def g [h: True]: Type := Nat\n\n"
+    evaluatesTo(typed + "def k (x: g()): Nat := x\n\n{ k(3) }", "3")
+    evaluatesTo(typed + "{\n  let x : g() := 4\n  x\n}", "4")
+    evaluatesTo(typed + "def k : (g()) -> Nat := fun (x: Nat): Nat => x\n\n{ k(5) }", "5")
   }
 
   test("a lambda binds evidence, applied directly and through a function type") {
-    evaluatesTo(families + "{ (fun (x: Nat)[h: Same(x, 3)]: Nat => Nat.add(x, 1))(3) }", "4")
+    evaluatesTo("{ (fun (x: Nat)[h: Eq(Nat, x, 3)]: Nat => Nat.add(x, 1))(3) }", "4")
     evaluatesTo("{ (fun [h: True]: Nat => 5)() }", "5")
     assertEquals(
-      notDischarged(families + "def v : Nat := (fun (x: Nat)[h: Same(x, 3)]: Nat => x)(4)\n", "h", "function"),
-      "Same(4, 3)"
+      noConstructor("def v : Nat := (fun (x: Nat)[h: Eq(Nat, x, 3)]: Nat => x)(4)\n", "h", "function"),
+      "Eq(Nat, 4, 3)"
     )
-    val typed =
-      families + "def viaType : (x: Nat) -> [h: Same(x, 3)] -> Nat := fun (x: Nat)[h: Same(x, 3)]: Nat => x\n\n"
+    val typed = "def viaType : (x: Nat) -> [h: Eq(Nat, x, 3)] -> Nat := fun (x: Nat)[h: Eq(Nat, x, 3)]: Nat => x\n\n"
     evaluatesTo(typed + "{ viaType(3) }", "3")
-    assertEquals(notDischarged(typed + "{ viaType(5) }", "h", "viaType"), "Same(5, 3)")
+    assertEquals(noConstructor(typed + "{ viaType(5) }", "h", "viaType"), "Eq(Nat, 5, 3)")
   }
 
   test("the evidence mode is part of a function type's identity, and a higher-order argument keeps it") {
-    val takes = families + "def takes (f: (x: Nat) -> [h: Same(x, 3)] -> Nat): Nat := f(3)\n\n"
-    evaluatesTo(takes + "{ takes(fun (x: Nat)[h: Same(x, 3)]: Nat => Nat.add(x, 4)) }", "7")
-    expectOnly[TypeMismatch](typecheckDecls(takes + "{ takes(fun (x: Nat)(h: Same(x, 3)): Nat => x) }"))
+    val takes = "def takes (f: (x: Nat) -> [h: Eq(Nat, x, 3)] -> Nat): Nat := f(3)\n\n"
+    evaluatesTo(takes + "{ takes(fun (x: Nat)[h: Eq(Nat, x, 3)]: Nat => Nat.add(x, 4)) }", "7")
+    expectOnly[TypeMismatch](typecheckDecls(takes + "{ takes(fun (x: Nat)(h: Eq(Nat, x, 3)): Nat => x) }"))
     expectOnly[TypeMismatch](
       typecheckDecls(
-        families + "def takes (f: (x: Nat) -> (h: Same(x, 3)) -> Nat): Nat := f(3, Same.refl(3))\n\n" +
-          "{ takes(fun (x: Nat)[h: Same(x, 3)]: Nat => x) }"
+        "def takes (f: (x: Nat) -> (h: Eq(Nat, x, 3)) -> Nat): Nat := f(3, Eq.refl(3))\n\n" +
+          "{ takes(fun (x: Nat)[h: Eq(Nat, x, 3)]: Nat => x) }"
       )
     )
     // Applied inside the higher-order function, the parameter's evidence is discharged from its type there.
     assertEquals(
-      notDischarged(families + "def takes (f: (x: Nat) -> [h: Same(x, 3)] -> Nat): Nat := f(2)\n", "h", "f"),
-      "Same(2, 3)"
+      noConstructor("def takes (f: (x: Nat) -> [h: Eq(Nat, x, 3)] -> Nat): Nat := f(2)\n", "h", "f"),
+      "Eq(Nat, 2, 3)"
     )
     // A proposition over the higher-order function's own parameter, neutral but with convertible sides.
     evaluatesTo(
-      families + "def at (n: Nat)(f: (x: Nat) -> [h: Same(x, n)] -> Nat): Nat := f(n)\n\n" +
-        "{ at(6, fun (x: Nat)[h: Same(x, 6)]: Nat => x) }",
+      "def at (n: Nat)(f: (x: Nat) -> [h: Eq(Nat, x, n)] -> Nat): Nat := f(n)\n\n" +
+        "{ at(6, fun (x: Nat)[h: Eq(Nat, x, 6)]: Nat => x) }",
       "6"
     )
   }
@@ -186,45 +216,40 @@ class EvidenceTests extends munit.FunSuite with TestSupport {
         case Failure(_, _, message) => message
         case _: Success[_]          => fail(s"expected a parse error in:\n$source")
       }
-    val defs = families + "def three (n: Nat)[h: Same(n, 3)]: Nat := n\n\n"
-    assertEquals(
-      parseError(defs + "{ three(3) [Same.refl(3)] }"),
-      "Evidence follows the arguments with no space: write f(a)[h]"
-    )
-    assertEquals(
-      parseError(defs + "{ three[Same.refl(3)] }"),
-      "An evidence group follows an application's arguments: write f(a)[h]"
-    )
-    assertEquals(parseError(defs + "{ three(3)[] }"), "An evidence group supplies at least one proof")
-    assertEquals(
-      parseError(defs + "{ three(3)[Same.refl(3)][Same.refl(3)] }"),
-      "An evidence group follows an application's arguments: write f(a)[h]"
-    )
-    assertEquals(
-      parseError(defs + "{ (1, 2)[True.intro] }"),
-      "An evidence group follows an application's arguments: write f(a)[h]"
-    )
+    val spaced = "Evidence follows the arguments with no space: write f(a)[h]"
+    val misplaced = "An evidence group follows an application's arguments: write f(a)[h]"
+    assertEquals(parseError(three + "{ three(3) [Eq.refl(3)] }"), spaced)
+    assertEquals(parseError(three + "def k (p: Eq(Nat, three(3) [Eq.refl(3)], 3)): Nat := 0\n"), spaced)
+    assertEquals(parseError(three + "{ three[Eq.refl(3)] }"), misplaced)
+    assertEquals(parseError(three + "{ three(3)[] }"), "An evidence group supplies at least one proof")
+    assertEquals(parseError(three + "{ three(3)[Eq.refl(3)][Eq.refl(3)] }"), misplaced)
+    assertEquals(parseError(three + "{ (1, 2)[True.intro] }"), misplaced)
     assertEquals(parseError("inductive F [h: True] : Type\n"), "A family's parameters and indices are not evidence")
     assertEquals(
       parseError("inductive F indices [h: True] : Type\n"),
       "A family's parameters and indices are not evidence"
     )
     // A bracket group applies in a type as anywhere, and its result may be applied again.
-    evaluatesTo(defs + "def t (p: Same(three(3)[Same.refl(3)], 3)): Nat := 0\n\n{ t(Same.refl(3)) }", "0")
+    evaluatesTo(three + "def t (p: Eq(Nat, three(3)[Eq.refl(3)], 3)): Nat := 0\n\n{ t(Eq.refl(3)) }", "0")
     evaluatesTo(
-      families + "def k (n: Nat)[h: Same(n, 1)]: Nat -> Nat := fun (m: Nat): Nat => Nat.add(n, m)\n\n{ k(1)[Same.refl(1)](2) }",
+      "def k (n: Nat)[h: Eq(Nat, n, 1)]: Nat -> Nat := fun (m: Nat): Nat => Nat.add(n, m)\n\n{ k(1)[Eq.refl(1)](2) }",
       "3"
+    )
+    // A function type's binder group may be spaced, and so may an evidence binder in it.
+    evaluatesTo(
+      "def f (g: (x: Nat) [h: Eq(Nat, x, 1)] -> Nat): Nat := g(1)\n\n{ f(fun (x: Nat)[h: Eq(Nat, x, 1)]: Nat => x) }",
+      "1"
     )
   }
 
   test("a function type prints its evidence binders as written") {
-    assertEquals(PrettyPrinter.print(runProgram(three + "{ three }").tpe), "(n: Nat) -> [h: Same(n, 3)] -> Nat")
+    assertEquals(PrettyPrinter.print(runProgram(three + "{ three }").tpe), "(n: Nat) -> [h: Eq(Nat, n, 3)] -> Nat")
     assertEquals(PrettyPrinter.print(runProgram("{ fun [h: True]: Nat => 5 }").tpe), "[h: True] -> Nat")
   }
 
   test("an evidence binder is never a source for forcing, supplied or not") {
     assertEquals(
-      expectOnly[NonForcedImplicitParam](typecheckDecls(families + "def f {n: Nat}[h: Same(n, 3)]: Nat := n\n")),
+      expectOnly[NonForcedImplicitParam](typecheckDecls("def f {n: Nat}[h: Eq(Nat, n, 3)]: Nat := n\n")),
       NonForcedImplicitParam("n", isProposition = false)
     )
     // An unforced implicit proposition is refused as any unforced implicit is, and its message points to evidence.
@@ -240,7 +265,7 @@ class EvidenceTests extends munit.FunSuite with TestSupport {
     expectOnly[NotAProposition](typecheckDecls("def f {u: Level}(P: Sort { level = u })[h: P]: Nat := 0\n"))
     // A proposition a definition computes is one.
     evaluatesTo(
-      families + "def isThree (n: Nat): Prop := Same(n, 3)\n\ndef f (n: Nat)[h: isThree(n)]: Nat := n\n\n{ f(3) }",
+      "def isThree (n: Nat): Prop := Eq(Nat, n, 3)\n\ndef f (n: Nat)[h: isThree(n)]: Nat := n\n\n{ f(3) }",
       "3"
     )
   }
@@ -257,32 +282,79 @@ class EvidenceTests extends munit.FunSuite with TestSupport {
   test("a sealed family's constructor discharges evidence only in its module") {
     val module = "sealed inductive Permit : Prop\n | mk : Permit\n\ndef need [p: Permit]: Nat := 1\n"
     assertEquals(inside(module, "{ need() }").map(PrettyPrinter.print), Some("1"))
-    expectOnly[EvidenceNotDischarged](outside(module, "{ need() }"))
+    assertEquals(expectOnly[EvidenceNotDischarged](outside(module, "{ need() }")).reason, EvidenceNotDischarged.Sealed)
     // A proof the module hands out is forwarded as any proof is.
     val exporting = module + "def permit : Permit := Permit.mk\n"
     assertEquals(outside(exporting, "{ need()[permit] }").map(PrettyPrinter.print), Some("1"))
   }
 
-  test("running a program binds evidence without evaluating its proposition") {
-    // `spin(k)` makes 2^k calls, and is Bool.true.
+  test("a family whose constructors are not yet declared discharges nothing") {
+    val failure = notDischarged(
+      families + "def need (P: Prop)[h: P]: Nat := 1\n\ninductive U : Prop\n | mk (x: Same(need(U), 1)) : U\n",
+      "h",
+      "need"
+    )
+    assertEquals(failure.reason, EvidenceNotDischarged.Undeclared)
+  }
+
+  test("running a program evaluates no proposition, even where a head stores its evidence") {
+    // `spin(k)` makes 2^k calls, and is Bool.true; a proposition that calls it would dominate the run.
     val spin =
       families + "def spin (n: Nat): Bool decreases structural(n) := match n returning Bool with\n" +
-        " | Nat.zero => Bool.true\n | Nat.succ k => Bool.and(spin(k), spin(k))\n\n" +
-        "def guarded (x: Nat)[h: IsTrue(spin(15))]: Nat := x\n\n" +
+        " | Nat.zero => Bool.true\n | Nat.succ k => Bool.and(spin(k), spin(k))\n\n"
+    def loop(callee: String): String =
+      spin + s"$callee (x: Nat)[h: IsTrue(spin(10))]: Nat := x\n\n" +
         "def loop (n: Nat): Nat decreases structural(n) := match n returning Nat with\n" +
-        " | Nat.zero => 0\n | Nat.succ k => Nat.add(guarded(1), loop(k))\n\n"
-    def timed(body: String): (String, Long) = {
-      val start = System.nanoTime()
-      val result = PrettyPrinter.print(runProgram(spin + body))
-      (result, System.nanoTime() - start)
-    }
-    // Checking `loop` discharges the proposition once, and each of the program's 200 calls binds an erased proof. Were
-    // the proposition evaluated at each call, the run would take some 100 to 200 times what one call takes. The first
-    // run warms the evaluator up, so that the two measured ones compare evaluation alone.
-    timed("{ loop(1) }")
-    val (once, onceTime) = timed("{ loop(1) }")
-    val (many, manyTime) = timed("{ loop(200) }")
-    assertEquals((once, many), ("1", "200"))
-    assert(manyTime < onceTime * 5, s"200 calls took ${manyTime / 1000000} ms, one took ${onceTime / 1000000} ms")
+        " | Nat.zero => 0\n | Nat.succ k => {\n    let u := guarded(1)\n    Nat.add(1, loop(k))\n  }\n\n"
+    // Checking `loop` discharges the proposition once; each of the 200 calls then binds an erased proof, a lambda's
+    // parameter to it and an opaque head's stored argument alike.
+    val transparent = loop("def guarded")
+    val opaque = loop("opaque def guarded")
+    typecheckDecls(transparent)
+    typecheckDecls(opaque)
+    assertEquals(forcings(evaluatesTo(transparent + "{ loop(200) }", "200")), 0L)
+    assertEquals(forcings(evaluatesTo(opaque + "{ loop(200) }", "200")), 0L)
+  }
+
+  test("a callee that looks at its evidence sees the proof checking bound") {
+    // Matching on it into data forces it, once per call, and reduces as the canonical proof does.
+    val matching =
+      "def three (n: Nat)[h: Eq(Nat, n, 3)]: Nat := match h returning Nat with\n | Eq.refl z => Nat.add(z, 10)\n\n"
+    assertEquals(forcings(evaluatesTo(matching + "def g (u: Nat): Nat := three(3)\n\n{ g(0) }", "13")), 1L)
+    // Equally from a lambda that captures it.
+    evaluatesTo(
+      "def mk (n: Nat)[h: Eq(Nat, n, 3)]: Nat -> Nat := fun (m: Nat): Nat => match h returning Nat with\n" +
+        " | Eq.refl z => Nat.add(z, m)\n\n{ mk(3)(4) }",
+      "7"
+    )
+    // A proof of a function type is applied.
+    evaluatesTo(
+      families + "def f [h: (x: Nat) -> Same(x, x)]: Nat := match h(3) returning Nat with\n | Same.refl => 1\n\n" +
+        "{ f()[fun (x: Nat): Same(x, x) => Same.refl(x)] }",
+      "1"
+    )
+    // A lambda with evidence stored in a pair and taken back out.
+    evaluatesTo(
+      "def body (x: Nat)[h: Eq(Nat, x, 3)]: Nat := match h returning Nat with\n | Eq.refl z => Nat.add(z, 1)\n\n" +
+        "def p : Pair((x: Nat) -> [h: Eq(Nat, x, 3)] -> Nat, Nat) := (fun (x: Nat)[h: Eq(Nat, x, 3)]: Nat => body(x)[h], 1)\n\n" +
+        "def use (q: Pair((x: Nat) -> [h: Eq(Nat, x, 3)] -> Nat, Nat)): Nat := {\n  let (f, n) := q\n  f(3)\n}\n\n{ use(p) }",
+      "4"
+    )
+    // Recursion that forwards its evidence, and a proposition over a recursive call's argument.
+    evaluatesTo(
+      "def r (n: Nat)[h: True]: Nat decreases structural(n) := match n returning Nat with\n" +
+        " | Nat.zero => 0\n | Nat.succ k => Nat.add(1, r(k)[h])\n\n" +
+        "def z (n: Nat)[h: Eq(Nat, n, n)]: Nat := match h returning Nat with\n | Eq.refl m => m\n\n" +
+        "def r3 (n: Nat)[h: Eq(Nat, n, n)]: Nat decreases structural(n) := match n returning Nat with\n" +
+        " | Nat.zero => z(n)[h]\n | Nat.succ k => Nat.add(1, r3(k))\n\n{ (r(5), r3(5)) }",
+      "Pair.mk(5, 5)"
+    )
+    // A measure that looks at its evidence.
+    evaluatesTo(
+      "def m (n: Nat)[h: Eq(Nat, n, n)]: Nat := match h returning Nat with\n | Eq.refl k => k\n\n" +
+        "def r (n: Nat)[h: Eq(Nat, n, n)]: Nat decreases measure(m(n)[h]) := match n returning Nat with\n" +
+        " | Nat.zero => 0\n | Nat.succ k => r(k)\n\n{ r(3) }",
+      "0"
+    )
   }
 }

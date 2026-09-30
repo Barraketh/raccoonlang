@@ -122,19 +122,29 @@ object LanguageParser {
   /**
    * A term's arguments, and its evidence, follow it with no space. Where spaces and then `(` follow a complete term on
    * its line, that `(` is a parse error: it would otherwise begin another item, a block's result or the program's, as a
-   * pair or a parenthesized term. No item begins with `[`, so a `[` there is an evidence group written apart.
+   * pair or a parenthesized term. Nothing but an evidence group can follow a term with `[` on its line, since items are
+   * separated by line breaks, so a `[` there is an evidence group written apart.
    */
-  private val spacedArguments: Parser[NoValue.type] = new Parser[NoValue.type] {
+  private val spacedArguments: Parser[NoValue.type] = spacedTrailer(parenthesized = true)
+
+  /**
+   * A type's evidence follows it with no space, as a term's does. Its arguments may be spaced, so only a `[` there is
+   * an error: nothing but an evidence group follows a type with `[` on its line.
+   */
+  private val spacedEvidence: Parser[NoValue.type] = spacedTrailer(parenthesized = false)
+
+  /** Rejects a trailer written apart from what it follows; `parenthesized` says whether an argument list is one. */
+  private def spacedTrailer(parenthesized: Boolean): Parser[NoValue.type] = new Parser[NoValue.type] {
     override def parse(input: String, startIdx: Int): ParseResult[NoValue.type] = {
       val next = input.indexWhere(c => c != ' ' && c != '\t', startIdx)
-      if (next > startIdx && input.charAt(next) == '(')
+      if (next > startIdx && parenthesized && input.charAt(next) == '(')
         throw ParseError(next, next, "Arguments follow a function with no space: write f(a, b)")
       if (next > startIdx && input.charAt(next) == '[')
         throw ParseError(next, next, "Evidence follows the arguments with no space: write f(a)[h]")
       Success(NoValue, startIdx, startIdx)
     }
 
-    override def toString: String = "arguments"
+    override def toString: String = if (parenthesized) "arguments" else "evidence"
   }
 
   /** The fields a sort takes by name. */
@@ -239,6 +249,12 @@ object LanguageParser {
   private def parenArgs[A](arg: => Parser[A]): Parser[Vector[A]] =
     P('(') ~/ skipAllWs ~ arg.rep(0, layoutSym(',')) ~ layoutSymTight(')')
 
+  /**
+   * An application to no explicit arguments, `g()`, as a function whose only parameters are evidence takes one. In a
+   * type, where arguments are otherwise never empty, it follows with no space.
+   */
+  private val noArgs: Parser[Vector[Term]] = (P('(') ~ skipWS ~ P(')')).map(_ => Vector.empty[Term])
+
   private def nonEmptyParenArgs[A](arg: => Parser[A]): Parser[Vector[A]] =
     sym('(') ~/ skipAllWs ~ arg.rep(1, layoutSym(',')) ~ layoutSymTight(')')
 
@@ -297,11 +313,12 @@ object LanguageParser {
 
   private def typeTrailers(implicit sourceId: Option[SourceId]): Parser[Vector[TypeTrailer]] =
     ((P(".") ~/ identAtom).flatSpanned(sourceId).map(Dot.tupled) |
+      noArgs.flatSpanned(sourceId).map(AppTrailer.tupled) |
       nonEmptyParenArgs(typeArgument).flatSpanned(sourceId).map(AppTrailer.tupled) |
       evidenceGroup(typeArgument).map(EvidenceTrailer.tupled)).rep(0)
 
   private def typeExpr(implicit sourceId: Option[SourceId]): Parser[Term] =
-    (typeAtom ~ typeTrailers).map { case (ta, trailers) =>
+    (typeAtom ~ typeTrailers ~ spacedEvidence).map { case (ta, trailers) =>
       trailers.foldLeft(ta) { case (curTerm, nextTrailer) =>
         nextTrailer match {
           case Dot(name, sp)               => Select(curTerm, name, trailerSpan(curTerm, sp))
@@ -334,9 +351,10 @@ object LanguageParser {
     }
 
   /**
-   * Named binder groups that open an arrow chain: `(a: A) ->`, `(a: A)(b: B) ->`. A binder commits once its `(name :`
-   * or `{name :` is read, since nothing else in a type or term starts that way: a parenthesised type or term cannot be
-   * a name followed by a colon, and a closure is `{name =`. So an error inside a binder's type is reported as itself.
+   * Named binder groups that open an arrow chain: `(a: A) ->`, `(a: A)(b: B) ->`, `(a: A)[h: P] ->`. A binder commits
+   * once its `(name :`, `{name :` or `[name :` is read, since nothing else in a type or term starts that way: a
+   * parenthesised type or term cannot be a name followed by a colon, a closure is `{name =`, and a bracket group
+   * follows an application rather than starting anything. So an error inside a binder's type is reported as itself.
    */
   private def namedSegment(implicit sourceId: Option[SourceId]): Parser[Vector[Binder]] =
     (param.rep(1) ~ skipAllWs ~ sym("->") ~ skipAllWs).named("PiBinders")

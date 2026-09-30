@@ -350,6 +350,7 @@ object InductiveChecks {
       initialMeta: InductiveMeta,
       positivityInputs: PositiveParamInputs,
       hasRecursiveField: Boolean,
+      constructorSources: Vector[Option[Vector[ProofFieldSource]]],
       proofFieldPlan: Option[(Vector[ProofFieldSource], Boolean)]
   )
 
@@ -419,12 +420,10 @@ object InductiveChecks {
       )
 
   private def checkFamilySignatures(block: Decl.InductiveBlock, env: Env): Vector[FamilySignature] = {
-    // A family's parameters and indices are explicit or implicit; the parser admits no evidence binder among them.
+    // A family's parameters and indices are explicit or implicit: the parser refuses an evidence binder among them.
     block.families.foreach { decl =>
       decl.header.binders.find(_.mode == BinderMode.Evidence).foreach { binder =>
-        at(binder.span) {
-          fail(InvalidInductiveBlock(s"family ${decl.header.name} binds the evidence parameter ${binder.name}"))
-        }
+        wtf(s"Family ${decl.header.name} binds the evidence parameter ${binder.name}")
       }
     }
     val typedFamilies = block.families.map(decl => (decl, TypeChecker.checkDeclType(familyTypeTerm(decl), env).value))
@@ -509,7 +508,7 @@ object InductiveChecks {
   ): InductiveMeta = {
     val decl = signature.decl
     InductiveMeta(
-      decl.ctors.map(ctor => ConstructorMeta(ctor.shortName, ctor.canonicalName)),
+      decl.ctors.map(ctor => ConstructorMeta(ctor.shortName, ctor.canonicalName, fieldSources = None)),
       decl.header.binders.length,
       provisionalBlock,
       projectionInfo = None,
@@ -542,11 +541,11 @@ object InductiveChecks {
     )
     var hasRecursiveField = false
     // A family whose declared universe is positive under every level assignment can never have a
-    // Prop instance, so proof representation metadata would be dead weight. Retain a candidate only
+    // Prop instance, so proof representation metadata would be dead weight. Retain it only
     // for Prop and universe-polymorphic families whose result level may reduce to zero.
-    var proofFieldPlan = Option.when(decl.ctors.length == 1 && !Level.isNeverZero(signature.declaredSort.level)) {
-      (Vector.empty[ProofFieldSource], false)
-    }
+    val mayBeProp = !Level.isNeverZero(signature.declaredSort.level)
+    val constructorSources = Vector.newBuilder[Option[Vector[ProofFieldSource]]]
+    var proofFieldPlan = Option.empty[(Vector[ProofFieldSource], Boolean)]
 
     decl.ctors.foreach { ctor =>
       ctor.binders.find(_.mode == BinderMode.Evidence).foreach { field =>
@@ -599,19 +598,23 @@ object InductiveChecks {
           )
         }
 
-      // Compile data sources for the one-constructor family's proof-recovery plan. Whether a
-      // field is a proof is classified later at the actual family instance, so universe-polymorphic
-      // fields that become proofs at u := 0 need no declaration-time special case.
-      if (proofFieldPlan.nonEmpty) {
-        val sources = ownBinderVars.map { field =>
+      // Compile where each field occurs among the result's arguments, for proof reconstruction and evidence discharge.
+      // Whether a field is a proof is classified later at the actual family instance, so universe-polymorphic fields
+      // that become proofs at u := 0 need no declaration-time special case.
+      val sources = Option.when(mayBeProp) {
+        ownBinderVars.map { field =>
           val resultIndex = outputArgs.indexWhere(arg => ValueEquivalence.defEq(arg, field))
           if (resultIndex >= 0) ProofFieldSource.ResultArgument(resultIndex)
           else ProofFieldSource.Unavailable
         }
+      }
+      constructorSources += sources
+      // A one-constructor family's proof-recovery plan.
+      if (decl.ctors.length == 1) proofFieldPlan = sources.map { sources =>
         val definitelyComplete = ownBinderVars.zip(sources).forall { case (field, source) =>
           Sorts.isProposition(field.tpe) || source != ProofFieldSource.Unavailable
         }
-        proofFieldPlan = Some((sources, definitelyComplete))
+        (sources, definitelyComplete)
       }
 
       val constructorUniverse = TypeChecker.getUniverse(outputTpe)
@@ -672,6 +675,7 @@ object InductiveChecks {
       meta,
       PositiveParamInputs(positivityContexts.result()),
       hasRecursiveField,
+      constructorSources.result(),
       proofFieldPlan
     )
   }
@@ -729,6 +733,9 @@ object InductiveChecks {
       info <- projectionInfo
     } yield new ProofRecoveryInfo(fields, info, definitelyComplete)
     val meta = check.initialMeta.copy(
+      constructors = check.initialMeta.constructors.zip(check.constructorSources).map { case (ctor, sources) =>
+        ctor.copy(fieldSources = sources)
+      },
       block = checkedBlock,
       projectionInfo = projectionInfo,
       proofRecovery = proofRecovery

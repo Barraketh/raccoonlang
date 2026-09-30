@@ -1,4 +1,4 @@
 
-<root>/main.rac:6:3: error: Evidence h of pred is not discharged: its proposition is IsTrue(Bool.false), which no fieldless constructor proves here; supply a proof as pred(…)[proof]
+<root>/main.rac:3:3: error: Evidence h of pred is not discharged: its proposition is Eq(Bool, Bool.false, Bool.true), which no constructor proves with the fields its type determines; supply a proof as pred(…)[proof]
 { pred(0) }
   ^^^^^^^

@@ -2,10 +2,13 @@ package com.raccoonlang
 
 import com.raccoonlang.Value._
 
-/** Type-directed field recovery and canonical constructor reconstruction for proofs. */
+/**
+ * Type-directed field recovery for proofs: canonical constructor reconstruction, and evidence discharge's rule 1, which
+ * reads a constructor's fields off a proposition (PROOF_BY_EVALUATION §1.2).
+ */
 object ProofReconstruction {
 
-  /** A reconstructed constructor layer, which only `reconstruct` hands out. */
+  /** A recovered constructor layer, which only `reconstruct` and `determined` hand out. */
   final class Result private[ProofReconstruction] (val head: ConstructorHead, val fields: Vector[Value])
 
   private final case class Recovered(
@@ -38,7 +41,9 @@ object ProofReconstruction {
    */
   def canRecoverAll(tpe: Value): Boolean =
     recoveryInfo(tpe).exists { case (instance, info) =>
-      recover(instance, info, includeResultType = false).nonEmpty
+      info.projectionInfo.ctorHeadOption.exists { head =>
+        recover(instance, head, info.fieldSources, fabricateProofFields = true, includeResultType = false).nonEmpty
+      }
     }
 
   /**
@@ -50,25 +55,58 @@ object ProofReconstruction {
     recoveryInfo(tpe).flatMap { case (instance, info) => validate(instance, info, tpe) }
 
   /**
+   * Evidence discharge's rule 1 (PROOF_BY_EVALUATION §1.2): `head`, a constructor of the family whose instance
+   * `instance` is `proposition`, applied to the fields its result type determines. Each field, a proof field included,
+   * is read off `proposition` at the argument of the result type that it is, as `sources` says, so nothing is
+   * fabricated; and the constructor's result type there must be convertible with `proposition`. A fieldless constructor
+   * has no field to read.
+   */
+  def determined(
+      proposition: Value,
+      instance: InductiveFamilyInstance,
+      head: ConstructorHead,
+      sources: Vector[ProofFieldSource]
+  ): Option[Result] =
+    validate(instance, head, sources, fabricateProofFields = false, proposition)
+
+  private def validate(instance: InductiveFamilyInstance, info: ProofRecoveryInfo, tpe: Value): Option[Result] =
+    info.projectionInfo.ctorHeadOption.flatMap { head =>
+      validate(instance, head, info.fieldSources, fabricateProofFields = true, tpe)
+    }
+
+  /**
    * Field recovery performs no search or unification; this final result comparison is what prevents a constrained
    * instance from manufacturing a branch-firing constructor.
    */
-  private def validate(instance: InductiveFamilyInstance, info: ProofRecoveryInfo, tpe: Value): Option[Result] =
-    recover(instance, info, includeResultType = true).flatMap { recovered =>
+  private def validate(
+      instance: InductiveFamilyInstance,
+      head: ConstructorHead,
+      sources: Vector[ProofFieldSource],
+      fabricateProofFields: Boolean,
+      tpe: Value
+  ): Option[Result] =
+    recover(instance, head, sources, fabricateProofFields, includeResultType = true).flatMap { recovered =>
       val fields = recovered.fields.flatten
-      if (fields.length != info.fieldSources.length || !recovered.resultType.exists(ValueEquivalence.defEq(_, tpe)))
-        None
+      if (fields.length != sources.length || !recovered.resultType.exists(ValueEquivalence.defEq(_, tpe))) None
       else Some(new Result(recovered.head, fields))
     }
 
+  /**
+   * The fields of `head` at `instance`: each read off the instance's arguments where `sources` says it occurs, and
+   * checked against its field type there. A proof field is fabricated instead, as the shallow proof of its type, only
+   * where `fabricateProofFields` allows. Reconstruction may, since it rebuilds a proof already known to exist, and
+   * proof irrelevance makes any proof of the field's type its field; discharge may not, since it builds a proof of a
+   * proposition nothing has yet shown inhabited, and a fabricated field would assume what it is to show.
+   */
   private def recover(
       instance: InductiveFamilyInstance,
-      info: ProofRecoveryInfo,
+      head: ConstructorHead,
+      sources: Vector[ProofFieldSource],
+      fabricateProofFields: Boolean,
       includeResultType: Boolean
   ): Option[Recovered] = {
-    val head = info.projectionInfo.ctorHeadOption.getOrElse(return None)
     val numParams = head.numErasedFamilyArgs
-    if (instance.args.length < numParams || info.fieldSources.length != head.totalArity - numParams)
+    if (instance.args.length < numParams || sources.length != head.totalArity - numParams)
       return None
 
     head.tpe match {
@@ -95,9 +133,9 @@ object ProofReconstruction {
           val binder = fieldBinders(fieldIndex)
           val expectedType = Interpreter.evalTerm(binder.ty, env)
           val recovered =
-            if (Sorts.isProposition(expectedType)) Value.shallowProof(expectedType)
+            if (fabricateProofFields && Sorts.isProposition(expectedType)) Value.shallowProof(expectedType)
             else
-              info.fieldSources(fieldIndex) match {
+              sources(fieldIndex) match {
                 case ProofFieldSource.ResultArgument(resultIndex) =>
                   if (resultIndex < 0 || resultIndex >= instance.args.length) return None
                   val argument = instance.args(resultIndex)
