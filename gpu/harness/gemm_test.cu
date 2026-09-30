@@ -1,9 +1,11 @@
-// Runs the generated TinyGEMM against a CPU reference, checks that its launcher refuses what the kernel cannot
-// handle, and times it. Needs an sm_100a GPU:
+// Runs a generated tensor-core GEMM against a CPU reference, checks that its launcher refuses what the kernel cannot
+// handle, and times it. Needs an sm_100a GPU. For TinyGEMM:
 //
 //   gpu/gen.sh gpu/examples/tinygemm.rac > tinygemm.cu
-//   nvcc -std=c++17 -O2 -arch=sm_100a -o tinygemm_test tinygemm.cu gpu/harness/tinygemm_test.cu -lcuda
+//   nvcc -std=c++17 -O2 -arch=sm_100a -o tinygemm_test tinygemm.cu gpu/harness/gemm_test.cu -lcuda
 //   ./tinygemm_test
+//
+// For another kernel, name its launcher: `-DGEMM_LAUNCH=persistent_gemm_launch` for examples/persistent_gemm.rac.
 //
 // Inputs are small multiples of 1/4, so every product and partial sum is exact in f32 whatever the order of
 // accumulation: the result must equal the reference exactly. C starts as NaN, so an element the kernel never writes
@@ -17,8 +19,12 @@
 #include <string>
 #include <vector>
 
-extern "C" cudaError_t tinygemm_launch(const __nv_bfloat16 *A, const __nv_bfloat16 *B, float *C, unsigned M, unsigned N,
-                                       unsigned K, cudaStream_t stream);
+#ifndef GEMM_LAUNCH
+#define GEMM_LAUNCH tinygemm_launch
+#endif
+
+extern "C" cudaError_t GEMM_LAUNCH(const __nv_bfloat16 *A, const __nv_bfloat16 *B, float *C, unsigned M, unsigned N,
+                                   unsigned K, cudaStream_t stream);
 
 #define CHECK(call)                                                                                                  \
   do {                                                                                                               \
@@ -60,7 +66,7 @@ struct Problem {
     CHECK(cudaMemcpy(dst, host.data(), host.size() * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice));
   }
 
-  cudaError_t run() { return tinygemm_launch(dA, dB, dC, m, n, k, nullptr); }
+  cudaError_t run() { return GEMM_LAUNCH(dA, dB, dC, m, n, k, nullptr); }
 
   // Runs once from a NaN-filled C and returns the number of elements that differ from the reference.
   size_t mismatches() {

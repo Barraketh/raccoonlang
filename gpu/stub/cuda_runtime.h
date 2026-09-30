@@ -24,3 +24,6 @@ cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream = 0);
 cudaError_t cudaEventSynchronize(cudaEvent_t event);
 cudaError_t cudaEventElapsedTime(float *ms, cudaEvent_t start, cudaEvent_t end);
 cudaError_t cudaEventDestroy(cudaEvent_t event);
+enum cudaDeviceAttr { cudaDevAttrMultiProcessorCount = 16 };
+cudaError_t cudaGetDevice(int *device);
+cudaError_t cudaDeviceGetAttribute(int *value, cudaDeviceAttr attr, int device);

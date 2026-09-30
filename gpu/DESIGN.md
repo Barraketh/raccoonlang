@@ -1,6 +1,7 @@
 # GPU library: design of the Blackwell layer
 
-Status: implemented in `Gpu.rac` and exercised by `examples/tinygemm.rac`; not yet assembled or run (§6).
+Status: implemented in `Gpu.rac` and exercised by `examples/tinygemm.rac` and `examples/persistent_gemm.rac` (§6);
+not yet assembled or run (§7).
 `gpu/README.md` describes the spike as a whole.
 
 The target is the structure of a minimal warp-specialized Blackwell GEMM ("TinyGEMM"): a TMA producer warp fills a
@@ -115,20 +116,56 @@ grid write one location. The block and row come from the block and thread indice
 | a second tensor-memory allocation | `TmemPermit` is linear |
 | M = 64 boxes | generation-time shape check |
 
-## 6. What is not verified here
+## 6. The persistent kernel
+
+`examples/persistent_gemm.rac` keeps TinyGEMM's roles but launches one CTA per SM (at most one per tile), each looping
+over the 128×`bn` tiles of C that `Sched` assigns it (tile `t` visited by CTA `t mod gridDim.x`), and gives tensor
+memory two accumulators, so the epilogue of one tile overlaps the MMAs of the next. The stage ring runs on across
+tiles. What is new:
+
+- **Tile loops.** `forTiles(e, sched, state, body)` is a loop over the CTA's tiles, generated once; `body` gets the
+  iteration's `TileAt(m, bn)` (its first row and column, for TMA coordinates). Every role runs the same loop, so they
+  agree on the tiles. `forOwnedTiles` consumes the CTA's `SchedOwn` and also hands each iteration a linear
+  `TileOwn(m, bn)`: the one loop that may write the output, once per tile. `storeTile` takes both, so a tile is
+  written by the CTA the schedule gives it to, once, at the coordinates the schedule computed.
+- **Accumulator ring.** `withAccRing(e, t, acc, bufs, n, X, body)` splits `withTmem`'s accumulator into `bufs`
+  buffers of `n` columns, with a full barrier (arrival count one) and an empty barrier (arrival count 128) per
+  buffer. The MMA thread takes the producer side (`takeAccProducer`, as for the stage ring) and per tile runs
+  `acquireAcc` (wait empty, `tcgen05.fence::after_thread_sync`) → `AccFree` → `mmaFirstInto` → `AccFilling` →
+  `mmaNextInto`… → `commitAcc` (`tcgen05.commit` to full). The epilogue takes the consumer side as the whole aligned
+  warpgroup (`takeAccConsumer`, with the alignment proof), so its 128 threads run every ring operation together and
+  keep identical stage and phase registers: `awaitAcc` (wait full, fence) → `AccFull` → `storeTile` → `releaseAcc`
+  (`tcgen05.fence::before_thread_sync`, 128 arrivals on empty). `finishAccProducer` waits until the epilogue has read
+  every buffer, so the accumulator goes back to `withTmem` with no tensor-core work in flight. As with the stage ring,
+  trip counts that disagree deadlock; they cannot race.
+- **Launcher.** The host launcher queries the SM count and launches `min(tiles, SMs)` CTAs.
+
+`rejected/persistent_gemm_mutants.py` refuses storing a tile twice, storing to a tile of the program's choosing,
+a second owning loop, reading an accumulator before `awaitAcc`, releasing it before the store, MMAs into a buffer not
+yet acquired, and an issuer that does not drain.
+
+## 7. What is not verified here
 
 The PTX templates follow CUTLASS and a published minimal kernel (sources in the scratch notes), but no `nvcc`/`ptxas`
 is available on the development machine, so none of the generated sm_100a code has been assembled or run. `check.sh`
 compiles the generated C++ against stub headers, with each inline assembly statement replaced by calls over its
 operands, which checks everything but the templates. Every template is Experimental until `ptxas -arch=sm_100a`
-accepts it and a run on hardware matches a reference GEMM. `harness/tinygemm_test.cu` is that run: it compares the
-generated kernel with a CPU reference exactly, over whole, partial and tiny tiles, checks that the launcher refuses
-extents TMA cannot encode, and reports throughput:
+accepts it and a run on hardware matches a reference GEMM. `harness/gemm_test.cu` is that run: it compares a
+generated kernel with a CPU reference exactly, over whole, partial and tiny tiles and more tiles than SMs, checks that
+the launcher refuses extents TMA cannot encode, and reports throughput:
 
 ```bash
 gpu/gen.sh gpu/examples/tinygemm.rac > tinygemm.cu
 ```
 
 ```bash
-nvcc -std=c++17 -O2 -arch=sm_100a -o tinygemm_test tinygemm.cu gpu/harness/tinygemm_test.cu -lcuda && ./tinygemm_test
+nvcc -std=c++17 -O2 -arch=sm_100a -o tinygemm_test tinygemm.cu gpu/harness/gemm_test.cu -lcuda && ./tinygemm_test
+```
+
+```bash
+gpu/gen.sh gpu/examples/persistent_gemm.rac > persistent_gemm.cu
+```
+
+```bash
+nvcc -std=c++17 -O2 -arch=sm_100a -DGEMM_LAUNCH=persistent_gemm_launch -o persistent_test persistent_gemm.cu gpu/harness/gemm_test.cu -lcuda && ./persistent_test
 ```

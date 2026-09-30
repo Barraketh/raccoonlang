@@ -12,7 +12,7 @@
 //   thread, so a token whose state lives in them is confined to the scope of the one thread that declared them.
 //
 // The sm_100a operations (TMA, mbarrier, tcgen05) follow CUTLASS's inline assembly but have not been assembled by
-// ptxas here: see gpu/DESIGN.md §6.
+// ptxas here: see gpu/DESIGN.md §7.
 
 import Cuda
 import Text
@@ -276,6 +276,8 @@ namespace Gpu {
 
   def mbarArriveExpectTx (bar: Expr)(bytes: Nat): Stmt :=
     Gpu.asmIn("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;", Gpu.two(Gpu.r(bar), Gpu.r(Expr.lit(bytes))))
+
+  def mbarArrive (bar: Expr): Stmt := Gpu.asmIn("mbarrier.arrive.shared::cta.b64 _, [%0];", Gpu.one(Gpu.r(bar)))
 
   def tmaLoad2d (dst: Expr)(map: String)(c0: Expr)(c1: Expr)(bar: Expr): Stmt :=
     Gpu.asmIn("cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1, {%3, %4}], [%2];",
@@ -698,18 +700,23 @@ namespace Gpu {
         Block.seq(Stmt.assign(stage, Expr.lit(0)), Block.seq(Stmt.assign(phase, Expr.bin(BinOp.sub, Expr.lit(1), Expr.var(phase))), Block.done)),
         Block.done), List.nil(Stmt)))
 
-  def barrierInits (bars: Nat)(i: Nat)(count: Nat): List(Stmt) decreases structural(count) := {
+  // Initializes the `count` barriers from byte `bars` on, starting at the `i`th, each expecting `arrivals` arrivals.
+  def barrierInits (bars: Nat)(arrivals: Nat)(i: Nat)(count: Nat): List(Stmt) decreases structural(count) := {
     match count returning List(Stmt) with
     | Nat.zero => List.nil(Stmt)
-    | Nat.succ more => List.cons(Gpu.mbarInit(Expr.sharedAddr(Nat.add(bars, Nat.mul(8, i))), 1), Gpu.barrierInits(bars, Nat.succ(i), more))
+    | Nat.succ more =>
+      List.cons(Gpu.mbarInit(Expr.sharedAddr(Nat.add(bars, Nat.mul(8, i))), arrivals), Gpu.barrierInits(bars, arrivals, Nat.succ(i), more))
+  }
+
+  // One thread initializes the barriers `inits` sets up, then the whole CTA waits for it.
+  def initBarrierList (gen: Gen)(inits: List(Stmt)): Gen := {
+    let all := List.append(inits, List.cons(Gpu.fenceBarrierInit, List.nil(Stmt)))
+    let first := Expr.bin(BinOp.eq, Expr.special(Builtin.threadX), Expr.lit(0))
+    Gpu.push(Gpu.push(gen, Stmt.ifElse(first, Gpu.toBlock(List.reverse(all), Block.done), Block.done)), Stmt.sync)
   }
 
   // One thread initializes `count` barriers of arrival count one, then the whole CTA waits for it.
-  def initBarriers (gen: Gen)(bars: Nat)(count: Nat): Gen := {
-    let inits := List.append(Gpu.barrierInits(bars, 0, count), List.cons(Gpu.fenceBarrierInit, List.nil(Stmt)))
-    let first := Expr.bin(BinOp.eq, Expr.special(Builtin.threadX), Expr.lit(0))
-    Gpu.push(Gpu.push(gen, Stmt.ifElse(first, Gpu.toBlock(List.reverse(inits), Block.done), Block.done)), Stmt.sync)
-  }
+  def initBarriers (gen: Gen)(bars: Nat)(count: Nat): Gen := Gpu.initBarrierList(gen, Gpu.barrierInits(bars, 1, 0, count))
 
   // Opens a stage ring for the callback, which must hand back both endpoints finished: the producer's finish waits
   // until every stage it filled was released, so no copy into the ring's storage can still be in flight.
@@ -1051,30 +1058,299 @@ namespace Gpu {
     }
   }
 
-  // The epilogue: each warp of an aligned warpgroup reads its own 32 lanes of the accumulator (lane quadrant
-  // `warp % 4`), and each thread stores its own row of the CTA's 128×`bn` output block, inside the matrix. The block
-  // and the row are computed from the block and thread indices, never taken from the caller.
+  // What an aligned warpgroup's epilogue does: each warp reads its own 32 lanes of the accumulator at tensor-memory
+  // address `taddr` (lane quadrant `warp % 4`), and each thread stores its own row of the 128×`bn` block of the output
+  // at rows from `row0` and columns from `col0`, inside the matrix. `capacity` is the accumulator's width in columns.
+  def storeRows {L: Lifetime}{bn: Nat}(gen: Gen)(taddr: Expr)(row0: Expr)(col0: Expr)(out: COut(L, bn))(capacity: Nat): Gen := {
+    let gen0 := Gpu.check(gen, Bool.and(Nat.isZero(Nat.mod(bn, 8)), Bool.and(Nat.blt(0, bn), Nat.ble(bn, capacity))),
+      "epilogue: the block's columns must be a positive multiple of 8 within the accumulator")
+    let q := gen0.next
+    let row := Nat.add(q, 1)
+    let rowOk := Nat.add(q, 2)
+    let quadrant := Expr.bin(BinOp.rem, Expr.special(Builtin.warp), Expr.lit(4))
+    let rowExpr := Expr.bin(BinOp.add, row0, Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.var(q), Expr.lit(32)), Expr.special(Builtin.lane)))
+    let setup := List.cons(Stmt.decl(DType.u32, q, quadrant), List.cons(Stmt.decl(DType.u32, row, rowExpr),
+      List.cons(Stmt.decl(DType.bool, rowOk, Expr.bin(BinOp.lt, Expr.var(row), out.rows)), List.nil(Stmt))))
+    let gen1 := Gpu.pushAll(Gpu.fresh(Gpu.fresh(Gpu.fresh(gen0))), setup)
+    let lane := Expr.bin(BinOp.add, taddr, Expr.bin(BinOp.shl, Expr.bin(BinOp.mul, Expr.var(q), Expr.lit(32)), Expr.lit(16)))
+    Gpu.chunks(gen1, out.name, Expr.var(row), Expr.var(rowOk), out.cols, lane, col0, 0, Nat.div(bn, 8))
+  }
+
+  // The epilogue of a one-tile-per-CTA GEMM: stores the CTA's block, which the block indices locate, never the caller.
   def storeAcc {n: Lifetime}{f: Nat}{L: Lifetime}{a: Lifetime}{cols: Nat}{bn: Nat}
       (e: Ctx(n, Group.warps(f, 4)))(aligned: Eq(Nat, Nat.mod(f, 4), 0))(t: Tmem(a, cols))(acc: Acc(a, AccState.ready))
       (out: COut(L, bn))(own: COwn(L, bn)): Pair(Ctx(n, Group.warps(f, 4)), Acc(a, AccState.ready)) := {
     match own returning Pair(Ctx(n, Group.warps(f, 4)), Acc(a, AccState.ready)) with
     | COwn.mk => {
-      let gen0 := Gpu.check(Gpu.state(Key.key, e), Bool.and(Nat.isZero(Nat.mod(bn, 8)), Bool.and(Nat.blt(0, bn), Nat.ble(bn, cols))),
-        "epilogue: the block's columns must be a positive multiple of 8 within the accumulator")
-      let q := gen0.next
-      let row := Nat.add(q, 1)
-      let rowOk := Nat.add(q, 2)
-      let quadrant := Expr.bin(BinOp.rem, Expr.special(Builtin.warp), Expr.lit(4))
-      let rowExpr := Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.special(Builtin.blockY), Expr.lit(128)),
-        Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.var(q), Expr.lit(32)), Expr.special(Builtin.lane)))
-      let setup := List.cons(Stmt.decl(DType.u32, q, quadrant), List.cons(Stmt.decl(DType.u32, row, rowExpr),
-        List.cons(Stmt.decl(DType.bool, rowOk, Expr.bin(BinOp.lt, Expr.var(row), out.rows)), List.nil(Stmt))))
-      let gen1 := Gpu.pushAll(Gpu.fresh(Gpu.fresh(Gpu.fresh(gen0))), setup)
-      let lane := Expr.bin(BinOp.add, Expr.var(t.addr), Expr.bin(BinOp.shl, Expr.bin(BinOp.mul, Expr.var(q), Expr.lit(32)), Expr.lit(16)))
+      let row0 := Expr.bin(BinOp.mul, Expr.special(Builtin.blockY), Expr.lit(128))
       let col0 := Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(bn))
-      let gen2 := Gpu.chunks(gen1, out.name, Expr.var(row), Expr.var(rowOk), out.cols, lane, col0, 0, Nat.div(bn, 8))
-      Pair.mk(Gpu.resume(Key.key, n, Group.warps(f, 4), gen2), acc)
+      let gen := Gpu.storeRows(Gpu.state(Key.key, e), Expr.var(t.addr), row0, col0, out, cols)
+      Pair.mk(Gpu.resume(Key.key, n, Group.warps(f, 4), gen), acc)
     }
+  }
+
+  // ---- Persistent GEMM: the tile schedule --------------------------------------------------------------------------
+
+  // The 128×`bn` output tiles of a persistent GEMM, `tiles` in all and `tilesN` per block row (the constants those
+  // names hold). CTA `b` visits tiles b, b + gridDim.x, b + 2·gridDim.x, …, so no two CTAs visit one tile.
+  sealed struct Sched (l: Lifetime)(bn: Nat) : Type { scope = l }
+   | mk (tiles: Nat)(tilesN: Nat) : Sched(l, bn)
+
+  // Authority to write, once each, the tiles this CTA visits.
+  sealed inductive SchedOwn (l: Lifetime)(bn: Nat) : Type { kind = lin, scope = l }
+   | mk : SchedOwn(l, bn)
+
+  // The tile a loop iteration in scope `m` visits: its first row and its first column.
+  sealed struct TileAt (m: Lifetime)(bn: Nat) : Type { scope = m }
+   | mk (row0: Val(m, Grain.uniform, DType.u32))(col0: Val(m, Grain.uniform, DType.u32)) : TileAt(m, bn)
+
+  // Authority to write the tile of the iteration in scope `m`.
+  sealed inductive TileOwn (m: Lifetime)(bn: Nat) : Type { kind = lin, scope = m }
+   | mk : TileOwn(m, bn)
+
+  def tileRow0 {m: Lifetime}{bn: Nat}(t: TileAt(m, bn)): Val(m, Grain.uniform, DType.u32) := t.row0
+
+  def tileCol0 {m: Lifetime}{bn: Nat}(t: TileAt(m, bn)): Val(m, Grain.uniform, DType.u32) := t.col0
+
+  // The loop over this CTA's tiles, generated once; `body` sees the iteration's tile.
+  def tileLoop {l: Lifetime}{L: Lifetime}{g: Group}{bn: Nat}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sf: Lifetime}
+      (e: Ctx(l, g))(sched: Sched(L, bn))(state: S)
+      (body: { scope = Sf } (m: Lifetime) -> TileAt(m, bn) -> Ctx(m, g) -> S -> Pair(Ctx(m, g), S))
+      : Pair(Ctx(l, g), S) := {
+    let gen := Gpu.state(Key.key, e)
+    let t := gen.next
+    let row0 := Expr.bin(BinOp.mul, Expr.bin(BinOp.div, Expr.var(t), Expr.var(sched.tilesN)), Expr.lit(128))
+    let col0 := Expr.bin(BinOp.mul, Expr.bin(BinOp.rem, Expr.var(t), Expr.var(sched.tilesN)), Expr.lit(bn))
+    scope m => {
+      let tile := TileAt.mk(bn, Val.mk(m, Grain.uniform, DType.u32, row0, Option.none(Nat)), Val.mk(m, Grain.uniform, DType.u32, col0, Option.none(Nat)))
+      match body(m, tile, Gpu.resume(Key.key, m, g, Gpu.child(Gpu.fresh(gen))), state) returning Pair(Ctx(l, g), S) with
+      | Pair.mk inner after => {
+        let done := Gpu.state(Key.key, inner)
+        let s := Stmt.forStride(t, Expr.special(Builtin.blockX), Expr.var(sched.tiles), Expr.special(Builtin.gridX), Gpu.blockOf(done))
+        Pair.mk(Gpu.resume(Key.key, l, g, Gpu.after(gen, done, s)), after)
+      }
+    }
+  }
+
+  // Runs `body` once per tile this CTA visits.
+  def forTiles {l: Lifetime}{L: Lifetime}{g: Group}{bn: Nat}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sf: Lifetime}
+      (e: Ctx(l, g))(sched: Sched(L, bn))(state: S)
+      (body: { scope = Sf } (m: Lifetime) -> TileAt(m, bn) -> Ctx(m, g) -> S -> Pair(Ctx(m, g), S))
+      : Pair(Ctx(l, g), S) := Gpu.tileLoop(e, sched, state, body)
+
+  // Runs `body` once per tile this CTA visits, with the authority to write that tile: the one loop that writes the
+  // output.
+  def forOwnedTiles {l: Lifetime}{L: Lifetime}{g: Group}{bn: Nat}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}
+      {Sf: Lifetime}
+      (e: Ctx(l, g))(sched: Sched(L, bn))(own: SchedOwn(L, bn))(state: S)
+      (body: { scope = Sf } (m: Lifetime) -> TileAt(m, bn) -> TileOwn(m, bn) -> Ctx(m, g) -> S -> Pair(Ctx(m, g), S))
+      : Pair(Ctx(l, g), S) := {
+    match own returning Pair(Ctx(l, g), S) with
+    | SchedOwn.mk => Gpu.tileLoop(e, sched, state,
+        fun (m: Lifetime)(tile: TileAt(m, bn))(e: Ctx(m, g))(st: S): Pair(Ctx(m, g), S) => body(m, tile, TileOwn.mk(m, bn), e, st))
+  }
+
+  // ---- Persistent GEMM: the accumulator ring -----------------------------------------------------------------------
+
+  // `bufs` accumulators of `n` columns each, from the tensor-memory address `addr` names: the MMA issuer fills
+  // one while the epilogue drains another. `full[b]` (arrival count one) completes when buffer b's tensor-core work
+  // does; `empty[b]` (arrival count 128) when the epilogue warpgroup has read it. Stage and phase registers as in
+  // `Ring`.
+  sealed struct AccRing (q: Lifetime)(n: Nat) : Type { scope = q }
+   | mk (addr: Nat)(bufs: Nat)(bars: Nat)(pStage: Nat)(pPhase: Nat)(cStage: Nat)(cPhase: Nat) : AccRing(q, n)
+
+  sealed inductive AccProducer (q: Lifetime) : Type { kind = lin, scope = q }
+   | mk : AccProducer(q)
+
+  sealed inductive AccConsumer (q: Lifetime) : Type { kind = lin, scope = q }
+   | mk : AccConsumer(q)
+
+  // The issuing side, taken by the thread elected in `m`.
+  sealed inductive AccProducerAt (q: Lifetime)(m: Lifetime) : Type { kind = lin, scope = union(q, m) }
+   | mk : AccProducerAt(q, m)
+
+  // The reading side, taken by the aligned warpgroup `warps(f, 4)` in scope `m`. Its 128 threads run every operation
+  // on it together, so each keeps the same stage and phase.
+  sealed inductive AccConsumerAt (q: Lifetime)(m: Lifetime)(f: Nat) : Type { kind = lin, scope = union(q, m) }
+   | mk : AccConsumerAt(q, m, f)
+
+  // The issuer's current buffer, free to overwrite; then with tensor-core work issued into it by the thread elected in
+  // `m`, not yet committed.
+  sealed inductive AccFree (q: Lifetime)(m: Lifetime) : Type { kind = lin, scope = union(q, m) }
+   | mk : AccFree(q, m)
+
+  sealed inductive AccFilling (q: Lifetime)(m: Lifetime) : Type { kind = lin, scope = union(q, m) }
+   | mk : AccFilling(q, m)
+
+  // The reader's current buffer, whose results are visible to the warpgroup.
+  sealed inductive AccFull (q: Lifetime)(m: Lifetime)(f: Nat) : Type { kind = lin, scope = union(q, m) }
+   | mk : AccFull(q, m, f)
+
+  sealed inductive AccProducerDone (q: Lifetime) : Type { kind = lin, scope = q }
+   | mk : AccProducerDone(q)
+
+  sealed inductive AccConsumerDone (q: Lifetime) : Type { kind = lin, scope = q }
+   | mk : AccConsumerDone(q)
+
+  def accFullBar {q: Lifetime}{n: Nat}(ring: AccRing(q, n))(stage: Nat): Expr :=
+    Expr.bin(BinOp.add, Expr.sharedAddr(ring.bars), Expr.bin(BinOp.mul, Expr.var(stage), Expr.lit(8)))
+
+  def accEmptyBase {q: Lifetime}{n: Nat}(ring: AccRing(q, n)): Nat := Nat.add(ring.bars, Nat.mul(8, ring.bufs))
+
+  def accEmptyBar {q: Lifetime}{n: Nat}(ring: AccRing(q, n))(stage: Nat): Expr :=
+    Expr.bin(BinOp.add, Expr.sharedAddr(Gpu.accEmptyBase(ring)), Expr.bin(BinOp.mul, Expr.var(stage), Expr.lit(8)))
+
+  // The tensor-memory address of a side's current buffer.
+  def accBuffer {q: Lifetime}{n: Nat}(ring: AccRing(q, n))(stage: Nat): Expr :=
+    Expr.bin(BinOp.add, Expr.var(ring.addr), Expr.bin(BinOp.mul, Expr.var(stage), Expr.lit(n)))
+
+  // Splits the accumulator of `withTmem` into `bufs` buffers of `n` columns for the callback, which must hand back both
+  // endpoints finished: the issuer's finish waits until the epilogue has read every buffer, so no tensor-core work is
+  // in flight and the accumulator can be handed back.
+  def withAccRing {l: Lifetime}{w: Nat}{a: Lifetime}{cols: Nat}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}
+      (e: Ctx(l, Group.cta(w)))(t: Tmem(a, cols))(acc: Acc(a, AccState.empty))(bufs: Nat)(n: Nat)(X: Type { kind = kx, scope = Sx })
+      (body: { kind = kf, scope = Sf } (q: Lifetime) -> AccRing(q, n) -> AccProducer(q) -> AccConsumer(q) -> Ctx(l, Group.cta(w))
+        -> Pair(Ctx(l, Group.cta(w)), Pair(Pair(AccProducerDone(q), AccConsumerDone(q)), X)))
+      : Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.ready), X)) := {
+    match acc returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.ready), X)) with
+    | Acc.mk => {
+      let gen0 := Gpu.check(Gpu.state(Key.key, e), Bool.and(Nat.blt(0, bufs), Nat.ble(Nat.mul(bufs, n), cols)),
+        "accumulator ring: the buffers do not fit the tensor memory")
+      let bars := Gpu.alignUp(gen0.smem, 8)
+      let gen1 := Gpu.reserve(gen0, Nat.mul(16, bufs), 8)
+      let p := gen1.next
+      let inits := List.append(Gpu.barrierInits(bars, 1, 0, bufs), Gpu.barrierInits(bars, 128, bufs, bufs))
+      let gen2 := Gpu.initBarrierList(Gpu.fresh(Gpu.fresh(Gpu.fresh(Gpu.fresh(gen1)))), inits)
+      scope q => {
+        let ring := AccRing.mk(q, n, t.addr, bufs, bars, p, Nat.add(p, 1), Nat.add(p, 2), Nat.add(p, 3))
+        match body(q, ring, AccProducer.mk(q), AccConsumer.mk(q), Gpu.resume(Key.key, l, Group.cta(w), gen2))
+            returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.ready), X)) with
+        | Pair.mk e2 out => {
+          match out returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.ready), X)) with
+          | Pair.mk ends x => {
+            match ends returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.ready), X)) with
+            | Pair.mk pd cd => {
+              match pd returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.ready), X)) with
+              | AccProducerDone.mk => {
+                match cd returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.ready), X)) with
+                | AccConsumerDone.mk => Pair.mk(e2, Pair.mk(Acc.mk(a, AccState.ready), x))
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // The elected thread takes the issuing side: its buffer starts at 0, every buffer free.
+  def takeAccProducer {m: Lifetime}{q: Lifetime}{n: Nat}(e: Ctx(m, Group.lane))(w: Elected(m))(ring: AccRing(q, n))
+      (p: AccProducer(q)): Pair(Ctx(m, Group.lane), AccProducerAt(q, m)) := {
+    match p returning Pair(Ctx(m, Group.lane), AccProducerAt(q, m)) with
+    | AccProducer.mk => {
+      let regs := List.cons(Stmt.declMut(DType.u32, ring.pStage, Expr.lit(0)), List.cons(Stmt.declMut(DType.u32, ring.pPhase, Expr.lit(1)), List.nil(Stmt)))
+      Pair.mk(Gpu.emitAll(Key.key, e, regs), AccProducerAt.mk(q, m))
+    }
+  }
+
+  // Waits until the epilogue has read the current buffer; the tensor cores may then overwrite it.
+  def acquireAcc {k: Lifetime}{q: Lifetime}{n: Nat}{m: Lifetime}(e: Ctx(k, Group.lane))(ring: AccRing(q, n))
+      (p: AccProducerAt(q, m)): Pair(Ctx(k, Group.lane), AccFree(q, m)) := {
+    match p returning Pair(Ctx(k, Group.lane), AccFree(q, m)) with
+    | AccProducerAt.mk => {
+      let wait := List.cons(Gpu.mbarWait(Gpu.accEmptyBar(ring, ring.pStage), Expr.var(ring.pPhase)), List.cons(Gpu.tcFenceAfter, List.nil(Stmt)))
+      Pair.mk(Gpu.emitAll(Key.key, e, wait), AccFree.mk(q, m))
+    }
+  }
+
+  // The first tensor-core work on a free buffer: overwrites it with A·B from the ready stage.
+  def mmaFirstInto {k: Lifetime}{m: Lifetime}{r: Lifetime}{cfg: RingCfg}{q: Lifetime}{n: Nat}
+      (e: Ctx(k, Group.lane))(w: Elected(m))(ring: Ring(r, cfg))(rd: Ready(r, m))(accs: AccRing(q, n))(acc: AccFree(q, m))
+      : Pair(Ctx(k, Group.lane), Pair(ReadyUsed(r, m), AccFilling(q, m))) := {
+    match rd returning Pair(Ctx(k, Group.lane), Pair(ReadyUsed(r, m), AccFilling(q, m))) with
+    | Ready.mk => {
+      match acc returning Pair(Ctx(k, Group.lane), Pair(ReadyUsed(r, m), AccFilling(q, m))) with
+      | AccFree.mk => {
+        let gen := Gpu.mmaStage(Key.key, Gpu.state(Key.key, e), Gpu.stageAddr(ring, ring.cStage), cfg, Gpu.accBuffer(accs, accs.pStage), n, Bool.true)
+        Pair.mk(Gpu.resume(Key.key, k, Group.lane, gen), Pair.mk(ReadyUsed.mk(r, m), AccFilling.mk(q, m)))
+      }
+    }
+  }
+
+  // Further tensor-core work, accumulating A·B from the ready stage into the buffer.
+  def mmaNextInto {k: Lifetime}{m: Lifetime}{r: Lifetime}{cfg: RingCfg}{q: Lifetime}{n: Nat}
+      (e: Ctx(k, Group.lane))(w: Elected(m))(ring: Ring(r, cfg))(rd: Ready(r, m))(accs: AccRing(q, n))(acc: AccFilling(q, m))
+      : Pair(Ctx(k, Group.lane), Pair(ReadyUsed(r, m), AccFilling(q, m))) := {
+    match rd returning Pair(Ctx(k, Group.lane), Pair(ReadyUsed(r, m), AccFilling(q, m))) with
+    | Ready.mk => {
+      let gen := Gpu.mmaStage(Key.key, Gpu.state(Key.key, e), Gpu.stageAddr(ring, ring.cStage), cfg, Gpu.accBuffer(accs, accs.pStage), n, Bool.false)
+      Pair.mk(Gpu.resume(Key.key, k, Group.lane, gen), Pair.mk(ReadyUsed.mk(r, m), acc))
+    }
+  }
+
+  // Commits the elected thread's tensor-core work on the buffer to its full barrier, and moves to the next buffer.
+  def commitAcc {k: Lifetime}{m: Lifetime}{q: Lifetime}{n: Nat}
+      (e: Ctx(k, Group.lane))(w: Elected(m))(ring: AccRing(q, n))(acc: AccFilling(q, m)): Pair(Ctx(k, Group.lane), AccProducerAt(q, m)) := {
+    match acc returning Pair(Ctx(k, Group.lane), AccProducerAt(q, m)) with
+    | AccFilling.mk => {
+      let commit := List.cons(Gpu.mmaCommit(Gpu.accFullBar(ring, ring.pStage)), Gpu.advance(ring.pStage, ring.pPhase, ring.bufs))
+      Pair.mk(Gpu.emitAll(Key.key, e, commit), AccProducerAt.mk(q, m))
+    }
+  }
+
+  // The issuer's tail: waits until the epilogue has read every buffer.
+  def finishAccProducer {k: Lifetime}{q: Lifetime}{n: Nat}{m: Lifetime}(e: Ctx(k, Group.lane))(ring: AccRing(q, n))
+      (p: AccProducerAt(q, m)): Pair(Ctx(k, Group.lane), AccProducerDone(q)) := {
+    match p returning Pair(Ctx(k, Group.lane), AccProducerDone(q)) with
+    | AccProducerAt.mk =>
+      Pair.mk(Gpu.emitAll(Key.key, e, Gpu.drain(ring.pStage, ring.pPhase, Gpu.accEmptyBase(ring), ring.bufs, ring.bufs)), AccProducerDone.mk(q))
+  }
+
+  // An aligned warpgroup takes the reading side: its buffer starts at 0, none yet full.
+  def takeAccConsumer {m: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}
+      (e: Ctx(m, Group.warps(f, 4)))(aligned: Eq(Nat, Nat.mod(f, 4), 0))(ring: AccRing(q, n))(c: AccConsumer(q))
+      : Pair(Ctx(m, Group.warps(f, 4)), AccConsumerAt(q, m, f)) := {
+    match c returning Pair(Ctx(m, Group.warps(f, 4)), AccConsumerAt(q, m, f)) with
+    | AccConsumer.mk => {
+      let regs := List.cons(Stmt.declMut(DType.u32, ring.cStage, Expr.lit(0)), List.cons(Stmt.declMut(DType.u32, ring.cPhase, Expr.lit(0)), List.nil(Stmt)))
+      Pair.mk(Gpu.emitAll(Key.key, e, regs), AccConsumerAt.mk(q, m, f))
+    }
+  }
+
+  // Waits until the current buffer's tensor-core work has completed; its results are then visible to the warpgroup.
+  def awaitAcc {k: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}{m: Lifetime}
+      (e: Ctx(k, Group.warps(f, 4)))(ring: AccRing(q, n))(c: AccConsumerAt(q, m, f)): Pair(Ctx(k, Group.warps(f, 4)), AccFull(q, m, f)) := {
+    match c returning Pair(Ctx(k, Group.warps(f, 4)), AccFull(q, m, f)) with
+    | AccConsumerAt.mk => {
+      let wait := List.cons(Gpu.mbarWait(Gpu.accFullBar(ring, ring.cStage), Expr.var(ring.cPhase)), List.cons(Gpu.tcFenceAfter, List.nil(Stmt)))
+      Pair.mk(Gpu.emitAll(Key.key, e, wait), AccFull.mk(q, m, f))
+    }
+  }
+
+  // Stores the current buffer to the iteration's tile, which it must own.
+  def storeTile {k: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}{m: Lifetime}{j: Lifetime}{L: Lifetime}{bn: Nat}
+      (e: Ctx(k, Group.warps(f, 4)))(ring: AccRing(q, n))(full: AccFull(q, m, f))(tile: TileAt(j, bn))(own: TileOwn(j, bn))
+      (out: COut(L, bn)): Pair(Ctx(k, Group.warps(f, 4)), AccFull(q, m, f)) := {
+    match own returning Pair(Ctx(k, Group.warps(f, 4)), AccFull(q, m, f)) with
+    | TileOwn.mk => {
+      let gen := Gpu.storeRows(Gpu.state(Key.key, e), Gpu.accBuffer(ring, ring.cStage), tile.row0.expr, tile.col0.expr, out, n)
+      Pair.mk(Gpu.resume(Key.key, k, Group.warps(f, 4), gen), full)
+    }
+  }
+
+  // Tells the issuer the warpgroup has read the current buffer (every load waited for), and moves to the next buffer.
+  def releaseAcc {k: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}{m: Lifetime}
+      (e: Ctx(k, Group.warps(f, 4)))(ring: AccRing(q, n))(full: AccFull(q, m, f)): Pair(Ctx(k, Group.warps(f, 4)), AccConsumerAt(q, m, f)) := {
+    match full returning Pair(Ctx(k, Group.warps(f, 4)), AccConsumerAt(q, m, f)) with
+    | AccFull.mk => {
+      let release := List.cons(Gpu.tcFenceBefore, List.cons(Gpu.mbarArrive(Gpu.accEmptyBar(ring, ring.cStage)),
+        Gpu.advance(ring.cStage, ring.cPhase, ring.bufs)))
+      Pair.mk(Gpu.emitAll(Key.key, e, release), AccConsumerAt.mk(q, m, f))
+    }
+  }
+
+  def finishAccConsumer {q: Lifetime}{m: Lifetime}{f: Nat}(c: AccConsumerAt(q, m, f)): AccConsumerDone(q) := {
+    match c returning AccConsumerDone(q) with
+    | AccConsumerAt.mk => AccConsumerDone.mk(q)
   }
 
   // ---- The tensor-core GEMM launch ---------------------------------------------------------------------------------
@@ -1087,10 +1363,16 @@ namespace Gpu {
 
   def maxDynamicShared : Nat := 232448
 
-  // The host launcher of a tensor-core GEMM: it encodes A_map and B_map as `TMap` says and launches the grid below. The
-  // kernel indexes C with 32-bit arithmetic, and TMA coordinates are signed 32-bit.
-  def tmaGemmLauncher (sa: TmaSpec)(sb: TmaSpec): Launcher := {
-    let bn := sb.outer
+  def tmaGemmParams : List(Param) :=
+    List.cons(Param.tensorMap("A_map"), List.cons(Param.tensorMap("B_map"), List.cons(Param.output(DType.f32, "C"),
+      List.cons(Param.scalar(DType.u32, "M"), List.cons(Param.scalar(DType.u32, "N"), List.cons(Param.scalar(DType.u32, "K"), List.nil(Param)))))))
+
+  // `ceil(x / d)` for a host or kernel scalar parameter `x`.
+  def paramCeilDiv (x: String)(d: Nat): Expr := Expr.bin(BinOp.div, Expr.bin(BinOp.add, Expr.param(x), Expr.lit(Nat.pred(d))), Expr.lit(d))
+
+  // The host launcher of a tensor-core GEMM: it encodes A_map and B_map as `TMap` says and launches `grid`. The kernel
+  // indexes C with 32-bit arithmetic, and TMA coordinates are signed 32-bit.
+  def tmaGemmLauncher (sa: TmaSpec)(sb: TmaSpec)(grid: Grid): Launcher := {
     let hostParams := List.cons(Param.input(DType.bf16, "A"), List.cons(Param.input(DType.bf16, "B"), List.cons(Param.output(DType.f32, "C"),
       List.cons(Param.scalar(DType.u32, "M"), List.cons(Param.scalar(DType.u32, "N"), List.cons(Param.scalar(DType.u32, "K"), List.nil(Param)))))))
     let below := fun (x: Expr)(limit: Nat): Expr => Expr.bin(BinOp.lt, x, Expr.lit64(limit))
@@ -1099,8 +1381,7 @@ namespace Gpu {
         List.cons(below(Expr.param("K"), Gpu.i32Limit), List.nil(Expr)))))
     let maps := List.cons(MapEncoding.mk("A_map", "A", "M", "K", sa.inner, sa.outer),
       List.cons(MapEncoding.mk("B_map", "B", "N", "K", sb.inner, sb.outer), List.nil(MapEncoding)))
-    let ceilDiv := fun (x: String)(d: Nat): Expr => Expr.bin(BinOp.div, Expr.bin(BinOp.add, Expr.param(x), Expr.lit(Nat.pred(d))), Expr.lit(d))
-    Launcher.mk(hostParams, requires, maps, ceilDiv("N", bn), ceilDiv("M", 128), 256)
+    Launcher.mk(hostParams, requires, maps, grid, 256)
   }
 
   // C (M×N, f32, row-major) = A (M×K) · Bᵀ, with B given as N×K, both bf16 and K contiguous, read through tensor maps
@@ -1118,10 +1399,42 @@ namespace Gpu {
     let m0 := Val.mk(l, Grain.uniform, DType.u32, Expr.bin(BinOp.mul, Expr.special(Builtin.blockY), Expr.lit(128)), Option.none(Nat))
     let n0 := Val.mk(l, Grain.uniform, DType.u32, Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(bn)), Option.none(Nat))
     let launch := TmaLaunch.mk(TMap.mk(l, sa, "A_map"), TMap.mk(l, sb, "B_map"), COut.mk(l, bn, "C", m.expr, n.expr), m, n, k, m0, n0)
-    let params := List.cons(Param.tensorMap("A_map"), List.cons(Param.tensorMap("B_map"), List.cons(Param.output(DType.f32, "C"),
-      List.cons(Param.scalar(DType.u32, "M"), List.cons(Param.scalar(DType.u32, "N"), List.cons(Param.scalar(DType.u32, "K"), List.nil(Param)))))))
     let gen := Gpu.state(Key.key, body(l, Gpu.start(l, Group.cta(256)), launch, COwn.mk(l, bn), TmemPermit.mk(l)))
-    Gpu.finish(name, params, Option.some(Gpu.tmaGemmLauncher(sa, sb)),
+    let grid := Grid.blocks(Gpu.paramCeilDiv("N", bn), Gpu.paramCeilDiv("M", 128))
+    Gpu.finish(name, Gpu.tmaGemmParams, Option.some(Gpu.tmaGemmLauncher(sa, sb, grid)),
+      Gpu.check(gen, Nat.ble(gen.smem, Gpu.maxDynamicShared), "kernel: more dynamic shared memory than sm_100a has"))
+  }
+
+  // ---- The persistent tensor-core GEMM launch ------------------------------------------------------------------------
+
+  // What each CTA of a persistent tensor-core GEMM starts with: the operand tensor maps, the output, and the extents.
+  struct TmaGemm (l: Lifetime)(sa: TmaSpec)(sb: TmaSpec) : Type { scope = l }
+   | mk (a: TMap(l, sa))(b: TMap(l, sb))(c: COut(l, TmaSpec.outer(sb)))
+        (m: Val(l, Grain.uniform, DType.u32))(n: Val(l, Grain.uniform, DType.u32))(k: Val(l, Grain.uniform, DType.u32))
+        : TmaGemm(l, sa, sb)
+
+  // The GEMM of `tmaGemmKernel`, computed by one CTA per SM (at most one per tile) that loops over the 128×`bn` tiles
+  // of C as `Sched` assigns them. The kernel comes with its host launcher; its remaining contract is that A, B and C
+  // are distinct device arrays of M×K, N×K and M×N elements.
+  def tmaGemmPersistentKernel (name: String)(sa: TmaSpec)(sb: TmaSpec)
+      (body: (l: Lifetime) -> Ctx(l, Group.cta(256)) -> TmaGemm(l, sa, sb) -> Sched(l, TmaSpec.outer(sb)) -> SchedOwn(l, TmaSpec.outer(sb))
+        -> TmemPermit(l) -> Ctx(l, Group.cta(256)))
+      : Kernel := scope l => {
+    let bn := sb.outer
+    let m := Gpu.uniformParam(l, "M")
+    let n := Gpu.uniformParam(l, "N")
+    let k := Gpu.uniformParam(l, "K")
+    let gemm := TmaGemm.mk(TMap.mk(l, sa, "A_map"), TMap.mk(l, sb, "B_map"), COut.mk(l, bn, "C", m.expr, n.expr), m, n, k)
+    let gen0 := Gpu.state(Key.key, Gpu.start(l, Group.cta(256)))
+    let tilesN := gen0.next
+    let tiles := Nat.add(tilesN, 1)
+    let counts := List.cons(Stmt.decl(DType.u32, tilesN, Gpu.paramCeilDiv("N", bn)),
+      List.cons(Stmt.decl(DType.u32, tiles, Expr.bin(BinOp.mul, Gpu.paramCeilDiv("M", 128), Expr.var(tilesN))), List.nil(Stmt)))
+    let gen1 := Gpu.pushAll(Gpu.fresh(Gpu.fresh(gen0)), counts)
+    let e := Gpu.resume(Key.key, l, Group.cta(256), gen1)
+    let gen := Gpu.state(Key.key, body(l, e, gemm, Sched.mk(l, bn, tiles, tilesN), SchedOwn.mk(l, bn), TmemPermit.mk(l)))
+    let grid := Grid.persistent(Expr.bin(BinOp.mul, Gpu.paramCeilDiv("M", 128), Gpu.paramCeilDiv("N", bn)))
+    Gpu.finish(name, Gpu.tmaGemmParams, Option.some(Gpu.tmaGemmLauncher(sa, sb, grid)),
       Gpu.check(gen, Nat.ble(gen.smem, Gpu.maxDynamicShared), "kernel: more dynamic shared memory than sm_100a has"))
   }
 }

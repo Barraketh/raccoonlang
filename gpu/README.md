@@ -10,10 +10,10 @@ prelude.
 | `Text.rac` | Number printing |
 | `Cuda.rac` | CUDA AST and printer; knows nothing about safety |
 | `Gpu.rac` | The sealed core: emitter, values, registers, loops, branches, shared tiles, global matrices, launch; and the Blackwell layer (warp roles, `elect`, the TMA stage ring, tensor memory, `tcgen05` MMA, the tensor-core epilogue), designed in `DESIGN.md` |
-| `examples/` | Kernels that must generate code: a tiled SIMT GEMM, ReLU, and TinyGEMM, a warp-specialized sm_100a GEMM |
+| `examples/` | Kernels that must generate code: a tiled SIMT GEMM, ReLU, TinyGEMM (a warp-specialized sm_100a GEMM), and a persistent version of it with a double-buffered accumulator |
 | `rejected/` | Programs that must be refused, each naming the diagnostic on its `// expect:` line, and `*_mutants.py` tables of one-snippet mutations of an example (run by `mutate.py`) |
 | `stub/` | Just enough of the CUDA headers for a host C++ compiler to check generated kernels, launchers and harnesses |
-| `harness/` | Host programs that run a generated kernel on a GPU against a CPU reference (`DESIGN.md` §6) |
+| `harness/` | Host programs that run a generated kernel on a GPU against a CPU reference (`DESIGN.md` §7) |
 
 Generate a kernel, or check everything:
 
@@ -50,4 +50,5 @@ The Blackwell layer extends the same rules to asynchronous hardware (`DESIGN.md`
 `elect`; a stage ring whose endpoints an elected thread takes, so its per-thread stage and phase registers stay with
 one thread; a one-shot tensor-memory permit; an accumulator whose typestate (`empty`, pending under one elected
 thread, `ready`) orders the first MMA, the commit and the epilogue's loads; and tensor-map boxes that fix the layout
-the TMA writes and the MMA descriptors read.
+the TMA writes and the MMA descriptors read. The persistent kernel adds tile loops whose one owning loop writes each
+tile once, and a ring of accumulators in tensor memory between the MMA thread and the epilogue warpgroup.

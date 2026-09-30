@@ -15,6 +15,7 @@ namespace Cuda {
    | threadX : Builtin
    | blockX : Builtin
    | blockY : Builtin
+   | gridX : Builtin
    | warp : Builtin
    | lane : Builtin
 
@@ -62,6 +63,7 @@ namespace Cuda {
      | store (base: Expr)(i: Expr)(value: Expr) : Stmt
      | shared (t: DType)(id: Nat)(size: Nat) : Stmt
      | forLoop (id: Nat)(start: Expr)(count: Expr)(body: Block) : Stmt
+     | forStride (id: Nat)(start: Expr)(stop: Expr)(step: Expr)(body: Block) : Stmt
      | ifElse (c: Expr)(yes: Block)(no: Block) : Stmt
      | scoped (body: Block) : Stmt
      | sync : Stmt
@@ -86,12 +88,17 @@ namespace Cuda {
   struct MapEncoding : Type
    | mk (param: String)(source: String)(rows: String)(cols: String)(inner: Nat)(outer: Nat) : MapEncoding
 
+  // How many CTAs a launcher starts: `x` × `y`, or, for a persistent kernel, one per SM but no more than `tiles`.
+  inductive Grid : Type
+   | blocks (x: Expr)(y: Expr) : Grid
+   | persistent (tiles: Expr) : Grid
+
   // A host function `<kernel>_launch` taking `params` and a stream: it fails with `cudaErrorInvalidValue` unless every
-  // condition in `requires` holds, encodes `maps`, and launches `gridX` × `gridY` CTAs of `block` threads with the
-  // kernel's dynamic shared memory. It passes the kernel's parameters by name: `params` declares each of them but the
-  // tensor maps, which `maps` declares.
+  // condition in `requires` holds, encodes `maps`, and launches `grid` of CTAs of `block` threads with the kernel's
+  // dynamic shared memory. It passes the kernel's parameters by name: `params` declares each of them but the tensor
+  // maps, which `maps` declares.
   struct Launcher : Type
-   | mk (params: List(Param))(requires: List(Expr))(maps: List(MapEncoding))(gridX: Expr)(gridY: Expr)(block: Nat) : Launcher
+   | mk (params: List(Param))(requires: List(Expr))(maps: List(MapEncoding))(grid: Grid)(block: Nat) : Launcher
 
   // A kernel, with the bytes of dynamic shared memory it must be launched with, and its host launcher if it has one.
   struct Kernel : Type
@@ -148,6 +155,7 @@ namespace Cuda {
       | Builtin.threadX => "threadIdx.x"
       | Builtin.blockX => "blockIdx.x"
       | Builtin.blockY => "blockIdx.y"
+      | Builtin.gridX => "gridDim.x"
       | Builtin.warp => "__shfl_sync(0xffffffffu, threadIdx.x / 32u, 0)"
       | Builtin.lane => "(threadIdx.x % 32u)"
     }
@@ -204,6 +212,12 @@ namespace Cuda {
         let i := Cuda.name(id)
         let head := Text.cat3("for (unsigned ", i, Text.cat3(" = ", Cuda.expr(start), Text.cat3("; ", i,
           Text.cat3(" < ", Cuda.expr(count), Text.cat3("; ++", i, ") {")))))
+        Cuda.line(depth, head, Cuda.block(Nat.succ(depth), body, Cuda.line(depth, "}", rest)))
+      }
+      | Stmt.forStride id start stop step body => {
+        let i := Cuda.name(id)
+        let head := Text.cat3("for (unsigned ", i, Text.cat3(" = ", Cuda.expr(start), Text.cat3("; ", i,
+          Text.cat3(" < ", Cuda.expr(stop), Text.cat3("; ", i, Text.cat3(" += ", Cuda.expr(step), ") {"))))))
         Cuda.line(depth, head, Cuda.block(Nat.succ(depth), body, Cuda.line(depth, "}", rest)))
       }
       | Stmt.ifElse c yes no => {
@@ -331,20 +345,32 @@ namespace Cuda {
     }
   }
 
+  // The grid's extent, after any lines that compute it.
+  def gridDims (g: Grid)(rest: String -> String): String := {
+    match g returning String with
+    | Grid.blocks x y => rest(Text.cat3("dim3(", Cuda.expr(x), Text.cat3(", ", Cuda.expr(y), ")")))
+    | Grid.persistent tiles => {
+      let query := "if (cudaGetDevice(&gpu_device) != cudaSuccess || cudaDeviceGetAttribute(&gpu_sms, cudaDevAttrMultiProcessorCount, gpu_device) != cudaSuccess) {"
+      Cuda.line(1, "int gpu_device = 0;", Cuda.line(1, "int gpu_sms = 0;", Cuda.line(1, query,
+        Cuda.line(2, "return cudaErrorInvalidValue;", Cuda.line(1, "}",
+        Cuda.line(1, Text.cat3("const unsigned gpu_tiles = ", Cuda.expr(tiles), ";"),
+        rest("dim3(gpu_tiles < static_cast<unsigned>(gpu_sms) ? gpu_tiles : static_cast<unsigned>(gpu_sms))")))))))
+    }
+  }
+
   def launcher (name: String)(kernelParams: List(Param))(bytes: Nat)(l: Launcher): String := {
     match l returning String with
-    | Launcher.mk ps requires maps gridX gridY block => {
+    | Launcher.mk ps requires maps grid block => {
       let entry := Text.cat3("reinterpret_cast<const void*>(", name, ")")
       let head := Text.cat3("extern \"C\" cudaError_t ", name, Text.cat3("_launch(", Cuda.params(ps), ", cudaStream_t stream) {"))
       let attr := Text.cat3("const cudaError_t status = cudaFuncSetAttribute(", entry,
         Text.cat3(", cudaFuncAttributeMaxDynamicSharedMemorySize, ", Text.nat(bytes), ");"))
-      let launch := Text.cat3("return cudaLaunchKernel(", entry, Text.cat3(", dim3(", Cuda.expr(gridX), Text.cat3(", ", Cuda.expr(gridY),
-        Text.cat3("), dim3(", Text.nat(block), Text.cat3("u), args, ", Text.nat(bytes), "u, stream);")))))
+      let launch := fun (dims: String): String => Cuda.line(1, Text.cat3("return cudaLaunchKernel(", entry, Text.cat3(", ", dims,
+        Text.cat3(", dim3(", Text.nat(block), Text.cat3("u), args, ", Text.nat(bytes), "u, stream);")))), "}\n")
       Cuda.line(0, "", Cuda.line(0, Text.cat3("// Launches ", name, " on `stream`, encoding its tensor maps as its parameter types require."),
         Cuda.line(0, head, Cuda.requirements(requires, Cuda.mapEncodings(maps,
           Cuda.line(1, attr, Cuda.line(1, "if (status != cudaSuccess) {", Cuda.line(2, "return status;", Cuda.line(1, "}",
-          Cuda.line(1, Text.cat3("void* args[] = {", Cuda.argAddrs(kernelParams), "};"),
-          Cuda.line(1, launch, "}\n")))))))))))
+          Cuda.line(1, Text.cat3("void* args[] = {", Cuda.argAddrs(kernelParams), "};"), Cuda.gridDims(grid, launch)))))))))))
     }
   }
 
