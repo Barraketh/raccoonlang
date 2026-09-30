@@ -1,5 +1,6 @@
 package com.raccoonlang
 
+import java.nio.charset.StandardCharsets
 import java.nio.file.{Path, Paths}
 import java.time.{Instant, ZoneId}
 import java.time.format.DateTimeFormatter
@@ -10,16 +11,17 @@ object Main {
     DateTimeFormatter.ofPattern("HH:mm:ss.SSS").withZone(ZoneId.systemDefault())
 
   private final case class CliArgs(
-      roots: Vector[Path] = Vector.empty,
-      preludePath: Option[Path] = None,
-      noPrelude: Boolean = false,
-      waitForEnter: Boolean = false,
-      json: Boolean = false,
-      entry: Option[Path] = None
+      roots: Vector[Path],
+      preludePath: Option[Path],
+      noPrelude: Boolean,
+      waitForEnter: Boolean,
+      json: Boolean,
+      raw: Boolean,
+      entry: Option[Path]
   )
 
   private val Usage =
-    "Usage: raccoon-lang [--root <dir>] [--prelude <file> | --no-prelude] [--wait-for-enter] [--json] <file>"
+    "Usage: raccoon-lang [--root <dir>] [--prelude <file> | --no-prelude] [--wait-for-enter] [--json] [--raw] <file>"
 
   def main(args: Array[String]): Unit = {
     val parsedArgs = {
@@ -42,13 +44,26 @@ object Main {
             loop(tail, cur.copy(waitForEnter = true))
           case "--json" :: tail =>
             loop(tail, cur.copy(json = true))
+          case "--raw" :: tail =>
+            loop(tail, cur.copy(raw = true))
           case file :: tail if cur.entry.isEmpty =>
             loop(tail, cur.copy(entry = Some(Paths.get(file))))
           case _ =>
             cur.copy(entry = None)
         }
 
-      loop(args.toList, CliArgs())
+      loop(
+        args.toList,
+        CliArgs(
+          roots = Vector.empty,
+          preludePath = None,
+          noPrelude = false,
+          waitForEnter = false,
+          json = false,
+          raw = false,
+          entry = None
+        )
+      )
     }
 
     val entry = parsedArgs.entry.getOrElse {
@@ -63,9 +78,9 @@ object Main {
       return
     }
 
-    // Under --json, stdout carries the diagnostics array and nothing else.
+    // Under --json, stdout carries the diagnostics array and nothing else; under --raw, the result and nothing else.
     def log(s: String): Unit =
-      if (!parsedArgs.json) {
+      if (!parsedArgs.json && !parsedArgs.raw) {
         val timestamp = LogTimestampFormat.format(Instant.ofEpochMilli(System.currentTimeMillis()))
         println(s"$timestamp: $s")
       }
@@ -104,7 +119,20 @@ object Main {
       log("Checked")
       val resOpt = Interpreter.run(checked)
       if (parsedArgs.json) println(DiagnosticJson.render(Vector.empty, Vector.empty))
-      else resOpt.foreach { v => println(PrettyPrinter.print(v)) }
+      else
+        resOpt.foreach { result =>
+          val strings = prelude.checkedEnv.nativeLiterals.stringLayout
+          val raw = if (parsedArgs.raw) PrettyPrinter.rawString(result, strings) else None
+          raw match {
+            // A String's characters exactly: in UTF-8, the encoding of source text, whatever the platform's, and with
+            // no newline after them.
+            case Some(text) =>
+              val bytes = text.getBytes(StandardCharsets.UTF_8)
+              System.out.write(bytes, 0, bytes.length)
+              System.out.flush()
+            case None => println(PrettyPrinter.print(result, strings))
+          }
+        }
       log("Done")
       sys.exit(0)
     } catch {

@@ -95,6 +95,7 @@ Other CLI options are:
 --no-prelude       run without a source prelude
 --wait-for-enter   pause after JVM startup
 --json             print diagnostics as JSON on stdout, and nothing else
+--raw              print a String result as its characters, and nothing else
 ```
 
 Checking reports every independent error a program has, not only the first. A
@@ -116,6 +117,16 @@ log and no program result — so a tool can read it directly:
 Lines and columns are 1-based, matching the `file:line:column` positions the
 human-readable report prints. A run that finds nothing prints `[]`, so stdout is
 always a JSON document.
+
+A `String` result whose characters are all known prints as a string literal,
+whether it was written or computed. A character is known when it is
+`Char.ofNat` of a Unicode scalar, as the prelude's String layout makes it; a
+String with any other character, such as a variable, prints as its
+constructors. With `--raw`, such a String result prints as its characters
+exactly, unquoted, unescaped, and with no newline after them, in UTF-8 whatever
+the platform's encoding, so a program that generates text writes that text. Any
+other result prints as usual, in the platform's encoding. Under
+`--raw`, stdout carries the result and nothing else: no progress log.
 
 Choosing a custom prelude changes the trusted bootstrap. See the
 [kernel reference](docs/kernel.md#trusted-bootstrap-and-native-values).
