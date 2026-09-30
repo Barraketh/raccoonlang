@@ -106,9 +106,10 @@ duplicate a proposition, so discharge through evidence fields can take time expo
 the point of the feature, and why §2 matters.
 
 **1.8 Evidence fields.** A constructor's evidence binder is an evidence field. Constructing is applying, so at a
-construction an evidence field is discharged or supplied exactly as an evidence argument is: `Fin.mk(3)` at
-`Fin(5)` discharges `Nat.lt(3, 5)`, `Fin.mk(3)` at `Fin(2)` is `EvidenceNotDischarged`, and generic code writes
-`Fin.mk(i)[h]`. An evidence field is a stored proof field:
+construction an evidence field is discharged or supplied exactly as an evidence argument is: `Fin.mk(5, 3)`
+discharges `Nat.lt(3, 5)`, `Fin.mk(2, 3)` is `EvidenceNotDischarged`, and generic code writes `Fin.mk(n, i)[h]`.
+(`Fin`'s parameter `n` is an explicit argument of `Fin.mk`: it occurs only in the evidence field's proposition, which
+forces nothing.) An evidence field is a stored proof field:
 - patterns and destructuring bind it in order among the stored fields, `| Fin.mk i h =>` and `let (i, h) := x`;
 - a struct selector returns it, `x.h`;
 - it takes part in the eta view as proof fields do, and, proofs being irrelevant, two values that differ only in an
@@ -127,46 +128,32 @@ on a constructor must still be forced; an evidence field is not an implicit and 
 3. every field of its constructor is an evidence field;
 4. its constructor is accessible at the site: a sealed family's only in its module, as for rule 1.
 
-§1.2's second rule applies to an instance `F(ā)` of an eligible family only when its arguments `ā` are **closed and
-function-free**. That means no neutral values (variables, stuck applications, stuck matches), and no function values
-or function types, anywhere in `ā`: inside types and propositions, and inside the propositions of proofs, since a proof
-carries its proposition as its type, which implicit inference reads. Deferred evidence is examined through its
-proposition. Otherwise only the first rule is tried. This is checked on the evaluated arguments at discharge.
+Rule 2 applies to any instance `F(ā)` of an eligible family, whatever its arguments: they may be open, and may hold
+functions, as in `Both(All(xs, fun (x: Nat): Prop => …), Q)` or `struct App (f: Nat -> Prop)(n: Nat) : Prop | mk [a:
+f(n)]`.
 
-Discharge then terminates. The obligation is to prove it, and the proof is to be written out in full in
-`docs/kernel.md` when this lands. Its argument:
-- **The symbols and their order.** Order the program's symbols (families, constructors, definitions) by declaration, a
-  well-founded order, since Raccoon requires declaration before use. Code that belongs to `F`'s own declaration (the
-  field types, and closures and function types built by them) ranks strictly between the symbols declared before `F`
-  and `F`. A closure counts as the symbol of the code that built it. Literals, universes and variables form one class
-  of minimal constants. A proof counts as a node whose only child is its proposition.
-- **What a step evaluates.** A discharge step goes from `F(ā)` to `Qᵢ`, the value of the i-th field's type evaluated
-  with `ā` and the earlier fields' proofs. By condition 2 and declaration before use, that type mentions only `F`'s own
-  code and symbols declared before `F`.
-- **Why no later code runs.** `ā` holds no function and no function type anywhere, not even in a proof's proposition,
-  so there is nothing in it that code could apply, or that inference could read and apply. Evaluation therefore runs
-  only `F`'s own code and code declared before `F`, and `Qᵢ` is built from their symbols and from copies of subterms of
-  `ā`.
-- **Why a step decreases.** Such a `Qᵢ` is smaller than `F(ā)` in the recursive path ordering with that precedence: `F`
-  exceeds every symbol built around the copies, and each copy is a subterm of `F(ā)`. That covers duplication, as in a
-  field `[a: Both(p, p)]`, and descent into a parameter, as in `Both(Both(X, Y), Z)`. With finitely many symbols
-  above one class of minimal constants, the recursive path ordering is well-founded (Dershowitz), so no chain of
-  discharge steps is infinite.
-- **The base case.** Each step's evaluation is total, and rule 1 is a conversion check between closed values, which
-  terminates.
+**The depth bound.** Discharge counts the rule-2 steps on its current path, from the application's `P′` to the
+proposition being discharged. A proposition that would be discharged by a rule-2 step at depth greater than
+`N = 1024` is not discharged: the application is `EvidenceNotDischarged`, which reports the path and that the bound was
+reached. The bound is part of what a program means, fixed by the language and not by a flag, so that whether a program
+checks does not depend on how it is run.
 
-What the conditions exclude:
-- `inductive Loop : Prop | mk [h: Loop]` fails condition 2.
-- `struct App (f: Nat -> Prop)(n: Nat) : Prop | mk [a: f(n)]` has a function among its arguments, and `Both(All(xs,
-  fun (x: Nat): Prop => …), Q)` has one inside a proposition.
+Discharge then terminates, by a direct argument:
+- each step evaluates a field's proposition, and evaluation is total;
+- an eligible family's constructor has finitely many fields, so each step has finitely many successors;
+- no path is longer than `N`, so the tree of steps is finite (König);
+- rule 1 at a leaf is a conversion check between two values, which terminates.
 
-These are discharged by rule 1 only, and so, having no constructor whose fields its result type determines, not at
-all. A proposition parameter holding a function is excluded because a proof of it carries it: a later field that
-matches on an equality can make inference read, and run, a function declared after `F`, which is how review found the
-first version of this argument, which excluded functions only outside types and propositions, to be wrong.
+Nothing here needs an ordering on terms, so nothing restricts the arguments. Conditions 1 to 4 are not needed for
+termination either. They make rule 2 what §5.3 says it is: a step picks no constructor (condition 1), recurses only
+where a field is evidence (condition 3), and respects sealing (condition 4). Condition 2 makes the one case that could
+only ever reach the bound, a family nested in its own field, not eligible at all, so `inductive Loop : Prop | mk [h:
+Loop]` is refused at once, as a proposition rule 1 cannot discharge.
 
-As defence in depth, the implementation also bounds the depth of discharge, and reports `EvidenceNotDischarged` if
-the bound is reached. Under the proof the bound is never reached, and a test pins that.
+The bound limits nesting, not work: evaluation may duplicate a proposition, so a tree of depth `d` may have
+exponentially many leaves in `d` (§1.7). Nesting deeper than `N` needs a proposition built that deep, such as a chain
+`Wrap(Wrap(…))` computed by a recursive definition, and such a proposition is a proof obligation for a lemma, not a
+case for discharge.
 
 ## 2. Evaluation that scales
 
@@ -275,12 +262,15 @@ and no earlier one. Beyond those:
   - `Both(True, Eq(Nat, 2, 2))`, a nested `Both(Both(…), …)`, and a field that duplicates a parameter
     (`[a: Both(p, p)]`) are discharged.
   - A failing field is reported with its path, depth first in field order.
-  - `Loop` (recursive) and an `App`-style family applied to a function are refused promptly, without a hang.
+  - `Loop` (recursive) is refused at once, without being recursed into.
+  - An `App`-style family applied to a function, and `Both` over a proposition that holds a function, are discharged
+    when their fields are.
   - A multi-constructor family whose constructors have only evidence fields is not recursed into.
-  - The depth bound is not reached anywhere in the suite, and a direct test of the bound covers the report.
+  - The bound: a chain `Wrap(Wrap(…(True)))` of `N` eligible steps is discharged, and one of `N + 1` is
+    `EvidenceNotDischarged`, reporting the bound; the bound is not reached anywhere else in the suite.
 - **Evidence fields.**
-  - `Fin.mk(3)` at `Fin(5)` is discharged; at `Fin(2)` it is `EvidenceNotDischarged`.
-  - Generic `Fin.mk(i)[h]` works.
+  - `Fin.mk(5, 3)` is discharged; `Fin.mk(2, 3)` is `EvidenceNotDischarged`.
+  - Generic `Fin.mk(n, i)[h]` works.
   - A match, a destructuring and a selector each bind the proof.
   - Two `Fin` values with equal `i` are equal.
   - Constructing in a run-time loop evaluates no proposition.
@@ -307,19 +297,22 @@ and no earlier one. Beyond those:
 3. **Recursive discharge through evidence fields only, of eligible families only** (§1.2, §1.9).
    - **Through evidence fields.** Ordinary fields, as in `And(P, Q)`, are never discharged: that would guess what a
      field means.
-   - **Eligible families only.** One constructor means no search. Non-recursion and first-order arguments give the
-     termination proof.
+   - **Eligible families only.** One constructor means no search, and only evidence fields are recursed into.
    - **Why not rule 1 alone.** Adopted in review over that alternative for its diagnostics, which name the failing
      conjunct. It only adds programs that are accepted: nothing rule 1 alone accepts changes meaning.
    - **Rule 1 reads determined fields.** In implementation, "fieldless" was found to exclude `Eq.refl`, whose field
      occurs in its result type, contradicting the rule's own example. Rule 1 was corrected to read such fields off
      `P′`: that invents nothing, which was the point of "fieldless".
-   - **Rule 2's arguments are closed and function-free everywhere.** The first version of §1.9 exempted types and
-     propositions from the first-order check, as if code could only copy them. Implementation review found that a
-     proof carries its proposition as its type, so inference can read and run a function hidden there, one declared
-     after the family, breaking the ordering argument. Proving termination up to conversion instead would need a
-     normalization theorem Raccoon does not state, so the condition was strengthened, at the cost of rule 2 for
-     propositions over functions.
+   - **Termination by a depth bound, not by an ordering.** The approved version proved termination with a recursive
+     path ordering on declaration order, which needed rule 2's arguments to be first-order. Implementation review found
+     two gaps in it, each where code could run a function that the ordering did not account for: inference reading a
+     function from a proof's proposition, and code opening a proof among the arguments by a cast to read its stored
+     proofs, whose propositions are only convertible with what the code computes. The first was repaired by requiring
+     the arguments to be closed and function-free everywhere; the second would have needed a further condition and a
+     lemma, that conversion of closed function-free values is equality of normal forms, which the kernel does not
+     state. A bound on nesting gives termination in four lines, and so the argument conditions went too: rule 2 now
+     applies to propositions over functions. The costs are a constant in the semantics, and that an eligible
+     proposition nested deeper than `N` is not discharged, which in practice means one built by recursion.
 4. **Reflection before tactics.** Metaprogramming (elaboration-time Raccoon programs building terms) is the route to
    automation for goals that are not about data. It is left for when layer 3 of `gpu/OBLIGATIONS.md` §8 needs it.
 5. **Key assertions stay on.** They become iterative (§2.3); turning them off by default in the CLI would change a
