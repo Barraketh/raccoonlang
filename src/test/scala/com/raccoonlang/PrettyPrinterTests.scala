@@ -145,4 +145,71 @@ class PrettyPrinterTests extends munit.FunSuite with TestSupport {
     )
     assertEquals(actual("def bad (g: Nat -> Nat -> Nat): Nat := g\n"), "Nat -> Nat -> Nat")
   }
+
+  // Printing is a loop over an explicit stack (PROOF_BY_EVALUATION §2.2); these pin what it prints for each kind of
+  // value, as printing did when it recursed.
+  test("each kind of value prints as source") {
+    val values = Vector(
+      "{ Option.some(3) }" -> "Option.some(3)",
+      "{ Option.none(Nat) }" -> "Option.none",
+      "{ Prod.mk(1, Bool.true) }" -> "Prod.mk(1, Bool.true)",
+      "{ List.cons(1, List.cons(2, List.nil(Nat))) }" -> "List.cons(1, List.cons(2, List.nil))",
+      "{ Nat.add }" -> "Nat.add",
+      "{ fun (A: Type)(x: A): A => x }" -> "fun (A: Type) (x: A) => …",
+      "{ (A: Type) -> (x: A) -> Eq(A, x, x) }" -> "(A: Type) -> (x: A) -> Eq(A, x, x)",
+      "{ (l: Lifetime) -> Type -> ({ scope = l } Type -> Type) }" ->
+        "(l: Lifetime) -> Type -> ({ scope = l } Type -> Type)",
+      "{ Type { kind = lin } }" -> "Type { kind = Kind.lin }",
+      "{ 1267650600228229401496703205376 }" -> "1267650600228229401496703205376",
+      "{ Eq.refl(3) }" -> "Eq.refl(3)"
+    )
+    values.foreach { case (source, printed) =>
+      assertEquals(PrettyPrinter.print(runProgram(source, Prelude.default)), printed)
+    }
+    // Neutral values: a native operation's application, a stuck call, a stuck selector, and an applied variable.
+    val expected = Vector(
+      "def bad (x: Nat): Eq(Nat, Nat.add(x, 2000), 0) := Eq.refl(0)\n" -> "Eq(Nat, Nat.add(x, 2000), 0)",
+      "def bad (xs: List(Nat)): Eq(Nat, List.length(xs), 3) := Eq.refl(3)\n" -> "Eq(Nat, List.length(xs), 3)",
+      "def bad (p: Prod(Nat, Bool)): Eq(Nat, Prod.fst(p), 3) := Eq.refl(3)\n" -> "Eq(Nat, Prod.fst(p), 3)",
+      "def bad (f: Nat -> Nat)(x: Nat): Eq(Nat, f(x), 3) := Eq.refl(3)\n" -> "Eq(Nat, f(x), 3)"
+    )
+    expected.foreach { case (source, printed) =>
+      assertEquals(PrettyPrinter.print(expectTypeError[TypeMismatch](source, Prelude.default).expected), printed)
+    }
+    val proposition = runProgram("{ Or(True, True) }", Prelude.default)
+    assertEquals(PrettyPrinter.print(Value.VProof(proposition)), "‹proof of Or(True, True)›")
+  }
+
+  test("deep values and deep syntax print without host stack") {
+    val env = Prelude.default.checkedEnv
+    val nat = env("Nat")
+    val depth = 200000
+    val x = FreshVar.freshVar("x", nat)
+    val sum = (1 to depth).foldLeft[Value](x) { (acc, _) =>
+      Value.VApp(env("Nat.add"), Vector(acc, Value.VPacked.nat(1, nat)), nat, DepSet(x.id))
+    }
+    assertEquals(onDefaultStack(PrettyPrinter.print(sum)), "Nat.add(" * depth + "x" + ", 1)" * depth)
+    assertEquals(
+      onDefaultStack(PrettyPrinter.print(Value.Level.const(depth))),
+      "Level.succ(" * (depth - 1) + "Level.one" + ")" * (depth - 1)
+    )
+    val names = Vector.tabulate(depth)(idx => s"l$idx")
+    val union = Value.Lifetime.union(
+      names.map(name =>
+        FreshVar.freshValue(name, Value.LifetimeTpe)._2 match {
+          case lifetime: Value.Lifetime => lifetime
+          case other                    => fail(s"Expected a lifetime variable, got $other")
+        }
+      )
+    )
+    assertEquals(
+      onDefaultStack(PrettyPrinter.print(union)),
+      "Lifetime.union(" * (depth - 1) + names.head + names.tail.map(name => s", $name)").mkString
+    )
+    val span = Span(0, 0)
+    val nested = (1 to depth).foldLeft[CoreAst.Term](CoreAst.Term.NatLit(0, span)) { (acc, _) =>
+      CoreAst.Term.App(CoreAst.Term.GlobalRef("f", span), Vector(acc), span)
+    }
+    assertEquals(onDefaultStack(PrettyPrinter.printTerm(nested)), "f(" * depth + "0" + ")" * depth)
+  }
 }

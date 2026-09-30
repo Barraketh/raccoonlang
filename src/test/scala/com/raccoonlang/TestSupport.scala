@@ -72,6 +72,23 @@ trait TestSupport extends DiagnosticAssertions { this: munit.FunSuite =>
     ModuleLoader.load(entry, ModuleLoader.LoadConfig.forEntry(entry, suitePrelude)).program
   }
 
+  /** `body` run on a thread of the JVM's default stack size; what it throws, a stack overflow included, it rethrows. */
+  protected def onDefaultStack[A](body: => A): A = {
+    var result: Either[Throwable, A] = Left(new IllegalStateException("the thread did not run"))
+    val thread = new Thread(
+      null,
+      () =>
+        result =
+          try Right(body)
+          catch { case thrown: Throwable => Left(thrown) },
+      "default-stack",
+      0
+    )
+    thread.start()
+    thread.join()
+    result.fold(throw _, identity)
+  }
+
   protected def ctorName(value: Value): String = value match {
     case Value.ConstructorHead(name, _, _, _, _) => name
     case Value.VCtor(head, _, _)                 => head.name
@@ -109,6 +126,29 @@ object TestSupport {
       |def burn {l: Lifetime}(t: Tok(l)): Nat := match t returning Nat with
       | | .mk => 1
       |""".stripMargin
+
+  /**
+   * A String layout (docs/kernel.md, "Strings") to follow the bundled prelude, whose `Char.ofNat` returns `charOfNat`
+   * of its parameter `value`, with `String.append`, and `someChar`, a character of no known scalar.
+   */
+  def stringLayoutSource(charOfNat: String): String =
+    s"""
+       |struct Char : Type
+       | | mk (value: Nat) : Char
+       |
+       |namespace Char {
+       |  def ofNat (value: Nat): Char := $charOfNat
+       |}
+       |
+       |struct String : Type
+       | | mk (data: List(Char)) : String
+       |
+       |namespace String {
+       |  def append (a: String)(b: String): String := String.mk(List.append(a.data, b.data))
+       |}
+       |
+       |axiom someChar : Char
+       |""".stripMargin
 
   /**
    * The trusted prelude `base` followed by `assumptions`. Only the trusted prelude declares axioms (spec §7.3), so a

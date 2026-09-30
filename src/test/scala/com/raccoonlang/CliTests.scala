@@ -1,0 +1,75 @@
+package com.raccoonlang
+
+import java.nio.charset.StandardCharsets
+import java.nio.file.{Files, Path, Paths}
+
+import CliTests.Run
+
+/** The command line, run as its own process, since it prints to stdout and exits. */
+class CliTests extends munit.FunSuite {
+  private lazy val dir: Path = Files.createTempDirectory("raccoon-cli")
+
+  /** The bundled prelude with a String layout. */
+  private lazy val stringPrelude: Path =
+    Files.writeString(
+      dir.resolve("Prelude.rac"),
+      TestSupport.bundledPreludeSource + TestSupport.stringLayoutSource("Char.mk(value)")
+    )
+
+  /** Runs the CLI on `program` under the String prelude, in a locale whose encoding is ASCII. */
+  private def run(flags: Vector[String], program: String): Run = {
+    val entry = Files.createTempFile(dir, "main", ".rac")
+    Files.writeString(entry, program)
+    val java = Paths.get(System.getProperty("java.home"), "bin", "java").toString
+    val command =
+      Vector(java, "-cp", System.getProperty("java.class.path"), "com.raccoonlang.Main", "--prelude") ++
+        Vector(stringPrelude.toString) ++ flags :+ entry.toString
+    val builder = new ProcessBuilder(command: _*).redirectError(ProcessBuilder.Redirect.DISCARD)
+    builder.environment().put("LANG", "C")
+    builder.environment().put("LC_ALL", "C")
+    val process = builder.start()
+    val stdout = new String(process.getInputStream.readAllBytes(), StandardCharsets.UTF_8)
+    Run(process.waitFor(), stdout)
+  }
+
+  /** stdout without the progress log's timestamped lines. */
+  private def withoutLog(stdout: String): String =
+    stdout.linesWithSeparators.filterNot(_.matches("""(?s)\d\d:\d\d:\d\d\.\d{3}: .*""")).mkString
+
+  test("--raw prints a String result as its characters in UTF-8, and nothing else") {
+    // A written part and a computed part, with characters a literal escapes and characters ASCII lacks.
+    def program(computed: String): String = {
+      val chars =
+        computed
+          .codePoints()
+          .toArray
+          .foldRight("List.nil(Char)")((scalar, rest) => s"List.cons(Char.ofNat($scalar), $rest)")
+      "{ String.append(\"q\\\"b\\\\\\n\\t\", String.mk(" + chars + ")) }\n"
+    }
+    assertEquals(run(Vector("--raw"), program("λ😀")), Run(0, "q\"b\\\n\tλ😀"))
+    // Without it, the String prints as a literal, after the progress log.
+    val plain = run(Vector.empty, program("ok"))
+    assertEquals(plain.exitCode, 0)
+    assertNotEquals(withoutLog(plain.stdout), plain.stdout)
+    assertEquals(withoutLog(plain.stdout), "\"q\\\"b\\\\\\n\\tok\"\n")
+  }
+
+  test("--raw prints a result that is not a String as usual, and nothing else") {
+    assertEquals(run(Vector("--raw"), "{ Nat.add(2, 3) }\n"), Run(0, "5\n"))
+    assertEquals(
+      run(Vector("--raw"), "{ List.cons(\"a\", List.nil(String)) }\n"),
+      Run(0, "List.cons(\"a\", List.nil)\n")
+    )
+  }
+
+  test("--raw prints a String with a character it does not know as usual") {
+    assertEquals(
+      run(Vector("--raw"), "{ String.mk(List.cons(Char.ofNat(97), List.cons(someChar, List.nil(Char)))) }\n"),
+      Run(0, "String.mk(List.cons(Char.mk(97), List.cons(someChar, List.nil)))\n")
+    )
+  }
+}
+
+object CliTests {
+  private final case class Run(exitCode: Int, stdout: String)
+}
