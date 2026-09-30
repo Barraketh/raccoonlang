@@ -108,15 +108,51 @@ struct Problem {
   }
 };
 
+// The persistent kernel's tile order (`Gpu.tileLoop`), restated: tile index `t` of a grid of `tilesM` × `tilesN` tiles
+// visited in bands of `band` tile rows, column by column within a band, lies at tile row `*row` and column `*col`.
+static void tileAt(unsigned t, unsigned tilesM, unsigned tilesN, unsigned band, unsigned *row, unsigned *col) {
+  const unsigned bandRows = tilesM < band ? tilesM : band;
+  const unsigned bandTiles = bandRows * tilesN;
+  const unsigned first = t / bandTiles * bandRows;
+  const unsigned rows = tilesM - first < bandRows ? tilesM - first : bandRows;
+  const unsigned i = t - t / bandTiles * bandTiles;
+  *row = first + i % rows;
+  *col = i / rows;
+}
+
+// Whether that order visits every tile exactly once, for every grid up to 48 × 48 tiles and band up to 20 rows, most of
+// which leave a last band of fewer rows. On the GPU, a tile the order missed would stay NaN; since there are as many
+// tile indices as tiles, missing none is visiting each once.
+static bool tileOrderIsBijective() {
+  for (unsigned tilesM = 1; tilesM <= 48; ++tilesM)
+    for (unsigned tilesN = 1; tilesN <= 48; ++tilesN)
+      for (unsigned band = 1; band <= 20; ++band) {
+        std::vector<int> seen(size_t(tilesM) * tilesN, 0);
+        for (unsigned t = 0; t < tilesM * tilesN; ++t) {
+          unsigned row, col;
+          tileAt(t, tilesM, tilesN, band, &row, &col);
+          if (row >= tilesM || col >= tilesN || seen[size_t(row) * tilesN + col]++) {
+            std::printf("FAIL tile order: %u×%u tiles in bands of %u, index %u -> (%u, %u)\n", tilesM, tilesN, band, t,
+                        row, col);
+            return false;
+          }
+        }
+      }
+  std::printf("ok   tile order visits every tile once (up to 48×48 tiles, bands up to 20 rows)\n");
+  return true;
+}
+
 int main() {
-  int failures = 0;
+  int failures = !tileOrderIsBijective();
 
   // Whole tiles, several K steps (more than the ring's stages), partial tiles in every dimension, tiny ones, and, for
   // a persistent kernel, several tiles per CTA (4096×4096 is 1024 tiles, about 7 per CTA on 148 SMs), so tile loops
-  // run again and accumulator buffers are reused.
+  // run again and accumulator buffers are reused, and tile rows that are not a multiple of its band of 16 (2200 rows
+  // are 18 tile rows, 4224 are 33), so its last band has fewer rows.
   const unsigned sizes[][3] = {{128, 128, 64},     {256, 256, 256},  {384, 256, 1024},  {200, 136, 72},
                                {128, 128, 8},      {1, 8, 8},        {129, 257, 520},   {1000, 1000, 1000},
-                               {2048, 2048, 200},  {1920, 2688, 72}, {4096, 4096, 72}};
+                               {2048, 2048, 200},  {1920, 2688, 72}, {4096, 4096, 72},  {2200, 1032, 136},
+                               {4224, 640, 64}};
   for (auto &s : sizes) {
     Problem p(s[0], s[1], s[2], s[0] * 7919u + s[1] * 104729u + s[2]);
     size_t bad = 0;

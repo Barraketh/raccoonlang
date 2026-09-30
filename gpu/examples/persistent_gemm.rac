@@ -1,6 +1,7 @@
 // Persistent GEMM on sm_100a: C (f32) = A · Bᵀ as in tinygemm.rac, but each CTA (one per SM) loops over the 128×128
-// tiles of C the schedule gives it, and tensor memory holds two accumulators, so storing one tile overlaps the MMAs of
-// the next.
+// tiles of C the schedule gives it (in bands of 16 tile rows, column by column within a band, so the CTAs running at
+// once share rows of A and columns of B in L2), and tensor memory holds two accumulators, so storing one tile overlaps
+// the MMAs of the next.
 //
 // Warp 0 elects a thread that streams the K slices of every tile into a six-stage ring with TMA. Warp 1 elects a thread
 // that, per tile, takes a free accumulator, issues the tile's MMAs into it (releasing each stage by tcgen05.commit) and
@@ -18,6 +19,9 @@ namespace PGemm {
   def boxA : TmaSpec := TmaSpec.mk(64, 128)
   def boxB : TmaSpec := TmaSpec.mk(64, 128)
   def ring : RingCfg := RingCfg.mk(6, PGemm.boxA, PGemm.boxB)
+
+  // Tiles are visited in bands of 16 tile rows, column by column within a band.
+  def band : Nat := 16
 
   def Cta : Group := Group.cta(256)
   def Wg0 : Group := Group.warps(0, 4)
@@ -122,7 +126,7 @@ namespace PGemm {
   }
 
   def kernel : Program :=
-    Gpu.tmaGemmPersistentKernel("persistent_gemm", PGemm.boxA, PGemm.boxB,
+    Gpu.tmaGemmPersistentKernel("persistent_gemm", PGemm.boxA, PGemm.boxB, PGemm.band,
       fun (l: Lifetime)(e: Ctx(l, PGemm.Cta))(g: PGemm.Gemm(l))(sched: Sched(l, 128))(own: SchedOwn(l, 128))(permit: TmemPermit(l))
           : Ctx(l, PGemm.Cta) => {
         let steps := Gpu.ceilDivC(g.k, 64)

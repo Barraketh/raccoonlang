@@ -66,6 +66,16 @@ MUTANTS = [
 """,
     ),
     dict(
+        name="band_of_no_rows", expect="EvidenceNotDischarged", mentions="schedule: a band must have at least one tile row",
+        why="Orders the tiles in bands of zero tile rows: tile index t would lie in band t / 0, so the order would be "
+            "no bijection onto the tiles. The schedule is the builder's; a program chooses only the band's height, "
+            "which must be positive.",
+        old="""  def band : Nat := 16
+""",
+        new="""  def band : Nat := 0
+""",
+    ),
+    dict(
         name="accumulators_not_drained", expect="TypeMismatch",
         why="Finishes the issuer without waiting for the epilogue to read every buffer: tensor memory could be freed "
             "under the last loads. Only `finishAccProducer` makes `AccProducerDone`.",

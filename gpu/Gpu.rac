@@ -1143,10 +1143,14 @@ namespace Gpu {
 
   // ---- Persistent GEMM: the tile schedule --------------------------------------------------------------------------
 
-  // The 128×`bn` output tiles of a persistent GEMM, `tiles` in all and `tilesN` per block row (the constants those
-  // names hold). CTA `b` visits tiles b, b + gridDim.x, b + 2·gridDim.x, …, so no two CTAs visit one tile.
+  // The 128×`bn` output tiles of a persistent GEMM, `tilesM` tile rows of `tiles` in all (the constants those names
+  // hold), in the order the kernel visits them: bands of `bandRows` tile rows (the builder's band height, or every tile
+  // row if there are fewer), a band's tiles column by column, `bandTiles` of them in each band but the last, which may
+  // have fewer rows. So tile index `t` is a bijection onto the tiles (`tileLoop`). CTA `b` visits tile indices b,
+  // b + gridDim.x, b + 2·gridDim.x, …, so no two CTAs visit one tile; and the CTAs that run at once visit a few bands'
+  // worth of rows of A and columns of B, which stay in L2.
   sealed struct Sched (l: Lifetime)(bn: Nat) : Type { scope = l }
-   | mk (tiles: Nat)(tilesN: Nat) : Sched(l, bn)
+   | mk (tiles: Nat)(tilesM: Nat)(bandRows: Nat)(bandTiles: Nat) : Sched(l, bn)
 
   // Authority to write, once each, the tiles this CTA visits.
   sealed inductive SchedOwn (l: Lifetime)(bn: Nat) : Type { kind = lin, scope = l }
@@ -1164,15 +1168,27 @@ namespace Gpu {
 
   def tileCol0 {m: Lifetime}{bn: Nat}(t: TileAt(m, bn)): Val(m, Grain.uniform, DType.u32) := t.col0
 
-  // The loop over this CTA's tiles, generated once; `body` sees the iteration's tile.
+  // `(a < b) ? a : b`.
+  def minExpr (a: Expr)(b: Expr): Expr := Expr.select(Expr.bin(BinOp.lt, a, b), a, b)
+
+  // The loop over this CTA's tiles, generated once; `body` sees the iteration's tile. Tile index `t` lies in band
+  // `t / bandTiles`, whose first tile row is `first` and which has `rows` = min(bandRows, tilesM - first) > 0 tile
+  // rows (t < tiles makes first < tilesM); its `i`th tile, `i` = t - band·bandTiles < rows·tilesN, is at tile row
+  // first + i % rows and tile column i / rows. Within a band that is a bijection from [0, rows·tilesN) onto its rows ×
+  // [0, tilesN), and the bands partition the tile rows, so tile indices [0, tiles) map one to one onto the tiles.
   def tileLoop {l: Lifetime}{L: Lifetime}{g: Group}{bn: Nat}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sf: Lifetime}
       (e: Ctx(l, g))(sched: Sched(L, bn))(fixed: Fixed(S))(state: S)
       (body: { scope = Sf } (m: Lifetime) -> TileAt(m, bn) -> Ctx(m, g) -> S -> Pair(Ctx(m, g), S))
       : Pair(Ctx(l, g), S) := {
     let gen := Gpu.state(Key.key, e)
     let t := gen.next
-    let row0 := Expr.bin(BinOp.mul, Expr.bin(BinOp.div, Expr.var(t), Expr.var(sched.tilesN)), Expr.lit(128))
-    let col0 := Expr.bin(BinOp.mul, Expr.bin(BinOp.rem, Expr.var(t), Expr.var(sched.tilesN)), Expr.lit(bn))
+    let band := Expr.bin(BinOp.div, Expr.var(t), Expr.var(sched.bandTiles))
+    let first := Expr.bin(BinOp.mul, band, Expr.var(sched.bandRows))
+    let rows := Gpu.minExpr(Expr.bin(BinOp.sub, Expr.var(sched.tilesM), first), Expr.var(sched.bandRows))
+    let i := Expr.bin(BinOp.sub, Expr.var(t), Expr.bin(BinOp.mul, band, Expr.var(sched.bandTiles)))
+    // Expressions rather than declarations, which a role that does not use the tile's origin would leave unused.
+    let row0 := Expr.bin(BinOp.mul, Expr.bin(BinOp.add, first, Expr.bin(BinOp.rem, i, rows)), Expr.lit(128))
+    let col0 := Expr.bin(BinOp.mul, Expr.bin(BinOp.div, i, rows), Expr.lit(bn))
     scope m => {
       let tile := TileAt.mk(bn, Val.mk(m, Grain.uniform, DType.u32, row0, Option.none(Nat)), Val.mk(m, Grain.uniform, DType.u32, col0, Option.none(Nat)))
       let (inner, after) := body(m, tile, Gpu.resume(Key.key, m, g, Gpu.child(Gpu.fresh(gen))), state)
@@ -1469,9 +1485,9 @@ namespace Gpu {
         : TmaGemm(l, sa, sb)
 
   // The GEMM of `tmaGemmKernel`, computed by one CTA per SM (at most one per tile) that loops over the 128×`bn` tiles
-  // of C as `Sched` assigns them. The kernel comes with its host launcher; its remaining contract is that A, B and C
-  // are distinct device arrays of M×K, N×K and M×N elements.
-  def tmaGemmPersistentKernel (name: String)(sa: TmaSpec)(sb: TmaSpec)
+  // of C as `Sched` assigns them, in bands of `band` tile rows. The kernel comes with its host launcher; its remaining
+  // contract is that A, B and C are distinct device arrays of M×K, N×K and M×N elements.
+  def tmaGemmPersistentKernel (name: String)(sa: TmaSpec)(sb: TmaSpec)(band: Nat)
       (body: (l: Lifetime) -> Ctx(l, Group.cta(256)) -> TmaGemm(l, sa, sb) -> Sched(l, TmaSpec.outer(sb)) -> SchedOwn(l, TmaSpec.outer(sb))
         -> TmemPermit(l) -> Ctx(l, Group.cta(256)))
       : Program := scope l => {
@@ -1480,14 +1496,21 @@ namespace Gpu {
     let n := Gpu.uniformParam(Key.key, l, "N")
     let k := Gpu.uniformParam(Key.key, l, "K")
     let gemm := TmaGemm.mk(TMap.mk(l, sa, "A_map"), TMap.mk(l, sb, "B_map"), COut.mk(l, bn, "C", m.expr, n.expr), m, n, k)
-    let gen0 := Gpu.state(Key.key, Gpu.start(Key.key, l, Group.cta(256)))
+    let gen0 := Gpu.check(Gpu.state(Key.key, Gpu.start(Key.key, l, Group.cta(256))), Nat.blt(0, band),
+      "schedule: a band must have at least one tile row")
     let tilesN := gen0.next
-    let tiles := Nat.add(tilesN, 1)
+    let tilesM := Nat.add(tilesN, 1)
+    let tiles := Nat.add(tilesN, 2)
+    let bandRows := Nat.add(tilesN, 3)
+    let bandTiles := Nat.add(tilesN, 4)
     let counts := List.cons(Stmt.decl(DType.u32, tilesN, Gpu.paramCeilDiv("N", bn)),
-      List.cons(Stmt.decl(DType.u32, tiles, Expr.bin(BinOp.mul, Gpu.paramCeilDiv("M", 128), Expr.var(tilesN))), List.nil(Stmt)))
-    let gen1 := Gpu.pushAll(Gpu.fresh(Gpu.fresh(gen0)), counts)
+      List.cons(Stmt.decl(DType.u32, tilesM, Gpu.paramCeilDiv("M", 128)),
+      List.cons(Stmt.decl(DType.u32, tiles, Expr.bin(BinOp.mul, Expr.var(tilesM), Expr.var(tilesN))),
+      List.cons(Stmt.decl(DType.u32, bandRows, Gpu.minExpr(Expr.var(tilesM), Expr.lit(band))),
+      List.cons(Stmt.decl(DType.u32, bandTiles, Expr.bin(BinOp.mul, Expr.var(bandRows), Expr.var(tilesN))), List.nil(Stmt))))))
+    let gen1 := Gpu.pushAll(Gen.mk(gen0.code, Nat.add(tilesN, 5), gen0.smem, gen0.barrier, gen0.errors), counts)
     let e := Gpu.resume(Key.key, l, Group.cta(256), gen1)
-    let gen := Gpu.state(Key.key, body(l, e, gemm, Sched.mk(l, bn, tiles, tilesN), SchedOwn.mk(l, bn), TmemPermit.mk(l)))
+    let gen := Gpu.state(Key.key, body(l, e, gemm, Sched.mk(l, bn, tiles, tilesM, bandRows, bandTiles), SchedOwn.mk(l, bn), TmemPermit.mk(l)))
     let grid := Grid.persistent(Expr.bin(BinOp.mul, Gpu.paramCeilDiv("M", 128), Gpu.paramCeilDiv("N", bn)))
     Gpu.finish(Key.key, name, Gpu.tmaGemmParams, Option.some(Gpu.tmaGemmLauncher(sa, sb, grid)),
       Gpu.check(gen, Gpu.gemmShapeOk(sa, sb), "kernel: boxes the ring or the tensor cores do not take"))

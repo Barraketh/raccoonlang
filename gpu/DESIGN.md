@@ -140,9 +140,17 @@ grid write one location. The block and row come from the block and thread indice
 ## 6. The persistent kernel
 
 `examples/persistent_gemm.rac` keeps TinyGEMM's roles but launches one CTA per SM (at most one per tile), each looping
-over the 128×`bn` tiles of C that `Sched` assigns it (tile `t` visited by CTA `t mod gridDim.x`), and gives tensor
+over the 128×`bn` tiles of C that `Sched` assigns it (tile index `t` visited by CTA `t mod gridDim.x`), and gives tensor
 memory two accumulators, so the epilogue of one tile overlaps the MMAs of the next. The stage ring runs on across
 tiles. What is new:
+
+- **Tile order.** Tile indices run through bands of `G` tile rows (the builder's argument; 16 in the example), column
+  by column within a band: index `t` lies in band `t / (G·tilesN)`, at tile row `first + i mod rows` and tile column
+  `i / rows`, where `first` is the band's first tile row, `rows = min(G, tilesM − first)` and `i` is `t`'s place in
+  the band. The last band may have fewer rows, and within each band the map is a bijection onto its rows × columns,
+  so the tile indices `[0, tiles)` map one to one onto the tiles, for every M, N and positive G (§6.7 of
+  `OBLIGATIONS.md`; a zero G is a generation error). Row-major order made each wave of CTAs read all of B; in bands,
+  the CTAs running at once read `G` rows of tiles of A and a few columns of tiles of B, which stay in L2.
 
 - **Tile loops.** `forTiles(e, sched, state, body)` is a loop over the CTA's tiles, generated once; `body` gets the
   iteration's `TileAt(m, bn)` (its first row and column, for TMA coordinates). Every role runs the same loop, so they
@@ -163,7 +171,7 @@ tiles. What is new:
 
 `rejected/persistent_gemm_mutants.py` refuses storing a tile twice, storing to a tile of the program's choosing,
 a second owning loop, reading an accumulator before `awaitAcc`, releasing it before the store, MMAs into a buffer not
-yet acquired, and an issuer that does not drain.
+yet acquired, bands of no tile rows, and an issuer that does not drain.
 
 ## 7. On hardware
 
