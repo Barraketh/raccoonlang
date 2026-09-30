@@ -54,9 +54,15 @@ object ErrorRendering {
       case NotAProposition(binder, tpe) =>
         s"Evidence parameter $binder has the type $tpe, which is not a proposition: evidence is a proof, so its type " +
           "is in Prop"
-      case EvidenceNotDischarged(binder, callee, proposition) =>
-        s"Evidence $binder of $callee is not discharged: its proposition is $proposition, which no fieldless " +
-          s"constructor proves here; supply a proof as $callee(…)[proof]"
+      case EvidenceNotDischarged(binder, callee, proposition, reason) =>
+        val why = reason match {
+          case EvidenceNotDischarged.NoConstructor =>
+            "which no constructor proves with the fields its type determines"
+          case EvidenceNotDischarged.Sealed     => "whose sealed family keeps its constructors to its module"
+          case EvidenceNotDischarged.Undeclared => "whose family's constructors are not yet declared"
+        }
+        s"Evidence $binder of $callee is not discharged: its proposition is $proposition, $why; supply a proof as " +
+          s"$callee(…)[proof]"
       case EvidenceFieldUnsupported(ctor, field) =>
         s"Constructor $ctor declares the evidence field $field, which is not yet supported"
       case ImplicitReconstructionFailed(param, fn, reason) =>

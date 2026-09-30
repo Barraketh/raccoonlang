@@ -618,7 +618,25 @@ object Value {
     override lazy val synDeps: DepSet = tpe.synDeps
   }
 
-  case class VApp(head: Value, args: Vector[Value], tpe: Value, blockedOn: DepSet = DepSet.empty) extends Value {
+  /**
+   * An application that does not reduce: a neutral or blocked head's, or a constructor's. It stores its arguments as it
+   * is given them, deferred evidence included, and `args` forces them when first read (`DeferredEvidence`), so building
+   * one evaluates no proposition; everything the kernel asks of an application reads `args`.
+   */
+  final class VApp private (val head: Value, stored: Vector[Value], val tpe: Value, val blockedOn: DepSet)
+    extends Value {
+    lazy val args: Vector[Value] =
+      if (stored.exists { case _: DeferredEvidence => true; case _ => false }) stored.map(forced) else stored
+
+    override def equals(other: Any): Boolean =
+      other match {
+        case that: VApp =>
+          (this eq that) || (head == that.head && args == that.args && tpe == that.tpe && blockedOn == that.blockedOn)
+        case _ => false
+      }
+
+    override def hashCode(): Int = (head, args, tpe, blockedOn).hashCode()
+
     override lazy val synDeps: DepSet = {
       val res = DepSet.newBuilder
       res.unionInPlace(head.synDeps)
@@ -627,17 +645,25 @@ object Value {
       res.result()
     }
 
-    require(args.nonEmpty || blockedOn.isEmpty, "Blocked application requires at least one argument")
+    require(stored.nonEmpty || blockedOn.isEmpty, "Blocked application requires at least one argument")
     head match {
       case h: ConstructorHead =>
         require(blockedOn.isEmpty, s"Constructor ${h.name} cannot be blocked")
         val expectedArgs = h.totalArity - h.numErasedFamilyArgs
         require(
-          args.length == expectedArgs,
-          s"Constructor ${h.name} stores ${args.length} args, expected $expectedArgs"
+          stored.length == expectedArgs,
+          s"Constructor ${h.name} stores ${stored.length} args, expected $expectedArgs"
         )
       case _ =>
     }
+  }
+
+  object VApp {
+    def apply(head: Value, args: Vector[Value], tpe: Value, blockedOn: DepSet = DepSet.empty): VApp =
+      new VApp(head, args, tpe, blockedOn)
+
+    def unapply(app: VApp): Some[(Value, Vector[Value], Value, DepSet)] =
+      Some((app.head, app.args, app.tpe, app.blockedOn))
   }
 
   case class NeutralThunk(
@@ -692,25 +718,35 @@ object Value {
   }
 
   /**
-   * An evidence argument where a checked application runs (PROOF_BY_EVALUATION §1.6): the canonical proof of its
-   * binder's proposition, which `proposition` evaluates only when the proof is first forced. Evaluation binds a
-   * callee's evidence parameters to these, so a decision procedure in a proposition runs when checking discharges it
-   * and not when the program runs. A body that does look at its evidence parameter forces it, and sees exactly the
-   * proof the proposition determines (docs/kernel.md#proofs-and-elimination), so erasure changes when a proposition is
-   * evaluated and never what a program means.
+   * An evidence argument where a checked application runs (PROOF_BY_EVALUATION §1.6): an erased proof of its binder's
+   * proposition, which `proposition` evaluates only when the proof is first forced. Evaluation binds a callee's
+   * evidence parameters to these, so a call evaluates no proposition, and a decision procedure in one runs when
+   * checking discharges it and not when the program runs. Whatever does look at the proof forces it, and sees exactly
+   * the canonical proof the proposition determines (docs/kernel.md#proofs-and-elimination), so erasure changes when a
+   * proposition is evaluated and never what a program means.
    *
-   * It stands only in the arguments `Interpreter.residualArguments` builds and in the environment of the body they run,
-   * never inside another value: `Env` forces it where a local is looked up or captured, and `Interpreter.evalApply`
-   * where a head stores its arguments or runs natively. Anything else reaching one is a kernel bug, so it has no type.
+   * It stands only where a value is held without being read: in the arguments `Interpreter.residualArguments` builds,
+   * in the environment of the body they run, which forces it where a local is looked up or captured (`Env`), and among
+   * the arguments a `VApp` stores, which forces it where they are read. Nothing reads one unforced: anything that does
+   * is a kernel bug, so it has no type of its own.
    */
   final class DeferredEvidence private[raccoonlang] (proposition: () => Value) extends Value {
-    lazy val proof: Value = canonicalizeProof(VProof(proposition()))
+    lazy val proof: Value = {
+      DeferredEvidence.forcings.incrementAndGet()
+      canonicalizeProof(VProof(proposition()))
+    }
 
-    /** What a walk over values that reaches one reports: it escaped the application it stands in. */
+    /** What a walk over values that reaches one reports: it escaped the containers that force it. */
     def escaped: Nothing = wtf("Deferred evidence was inspected before it was forced")
 
     override def tpe: Value = escaped
     override def synDeps: DepSet = escaped
+  }
+
+  object DeferredEvidence {
+
+    /** How many deferred proofs have been forced, which is how many propositions evaluation has evaluated. */
+    private[raccoonlang] val forcings = new java.util.concurrent.atomic.AtomicLong
   }
 
   /** A value as the kernel may inspect it: deferred evidence forced to its proof, anything else itself. */
@@ -959,9 +995,19 @@ object Value {
     args.drop(head.numErasedFamilyArgs)
   }
 
-  final case class ConstructorMeta(shortName: String, canonicalName: String)
+  /**
+   * A constructor as its family's metadata records it. `fieldSources` is where each stored field occurs among the
+   * arguments of the constructor's result type, compiled once its family is checked, for a family whose instances may
+   * be propositions; it is absent otherwise, and while its family is being checked. ProofReconstruction reads it both
+   * to reconstruct a proof and to discharge evidence (PROOF_BY_EVALUATION §1.2).
+   */
+  final case class ConstructorMeta(
+      shortName: String,
+      canonicalName: String,
+      fieldSources: Option[Vector[ProofFieldSource]]
+  )
 
-  /** A stored data field's declaration-time source in the family result. */
+  /** A stored field's declaration-time source in the family result. */
   sealed trait ProofFieldSource
   object ProofFieldSource {
     final case class ResultArgument(index: Int) extends ProofFieldSource {

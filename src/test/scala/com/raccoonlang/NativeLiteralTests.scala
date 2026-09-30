@@ -751,7 +751,7 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
     }
     val wrongStringConstructor = string.copy(
       constType = Value.Inductive(
-        stringMeta.copy(constructors = Vector(Value.ConstructorMeta("other", "String.other")))
+        stringMeta.copy(constructors = Vector(Value.ConstructorMeta("other", "String.other", None)))
       )
     )
     val wrongStringConstructorError = interceptError[StringLiteralUnavailable](
@@ -793,7 +793,7 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
       case Value.Inductive(meta) =>
         list.copy(
           constType = Value.Inductive(
-            meta.copy(constructors = meta.constructors.updated(0, Value.ConstructorMeta("empty", "List.empty")))
+            meta.copy(constructors = meta.constructors.updated(0, Value.ConstructorMeta("empty", "List.empty", None)))
           )
         )
       case _ => fail("Expected List inductive metadata")

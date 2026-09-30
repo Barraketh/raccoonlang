@@ -489,8 +489,9 @@ on a proof in constructor form, which exact constructor-result validation
 admits. A non-reconstructible proof leaves a data-valued match blocked. This
 separation prevents constrained indexed propositions from manufacturing data.
 
-`ProofReconstruction` alone reads a family's recovery plan, so a proof is
-reconstructed in one place.
+`ProofReconstruction` alone reads a family's recovery plan and its
+constructors' field sources, so a proof is reconstructed, and evidence
+discharged (see [Evidence arguments](#evidence-arguments)), by one reader.
 
 Proof constructor identity and fields provide no injectivity, apartness, or
 termination evidence. Recursive proof fields are exposed one layer at a time,
@@ -518,47 +519,58 @@ the proposition `P′`. Then:
   proof per evidence binder, else `ArityMismatch`; each proof was synthesized
   where it stands, as an argument is, and its type must be convertible with
   `P′`;
-- otherwise `P′` is discharged by the fieldless rule: `P′` is an instance of an
-  inductive family whose constructor, the first declared with no stored field,
-  has a result type at `P′`'s parameters that is convertible with `P′`. The
-  proof is that constructor at `P′`, canonicalized as every proof is. Anything
-  else, a `P′` that is not a family instance included, is
-  `EvidenceNotDischarged`, located at the application.
+- otherwise `P′` is discharged by rule 1. `P′` must be an instance of an
+  inductive family whose constructors are declared; they are tried in
+  declaration order, and the first that fits is the proof. A constructor fits
+  when each of its fields, a proof field included, occurs as one of the
+  arguments of its result type, so that its value is read off `P′` at that
+  position and has the field's type there, and when its result type at `P′`'s
+  parameters and those fields is convertible with `P′`. The proof is that
+  constructor applied to them, canonicalized as every proof is. Anything else,
+  a `P′` that is not a family instance included, is `EvidenceNotDischarged`,
+  located at the application.
 
-The binder is bound to that proof, and the application is evaluated with it.
-The residual keeps neither a supplied proof nor a discharged one.
+Where each field occurs is compiled once, when the family is checked, for a
+family whose instances may be propositions; proof reconstruction reads the same
+sources (see [Proofs and elimination](#proofs-and-elimination)). The binder is
+bound to the proof, and the application is evaluated with it. The residual keeps
+neither a supplied proof nor a discharged one.
 
-The fieldless rule is sound because it adds no proof that the object theory
-lacks: the constructor has no field to invent, its result type is convertible
-with `P′`, and conversion is justified by definitional equality alone, so the
-constructor applied to `P′`'s own parameters is a well-typed proof of `P′`, one
-the program could have written there.
-It never uses a constructor with a field. Proof reconstruction fabricates proof
-fields unchecked, so a rule that accepted whatever reconstructs would accept
-`And(False, False)`. It reads no proof in scope and chooses nothing that proof
-irrelevance would not make unobservable. A sealed family's constructor is
-applied only where the application's module may name it (see
-[Sealing](#sealing)), since elsewhere it would build a value its module never
-built. A family whose constructors are not yet installed, one of an inductive
-block being checked, discharges nothing.
+Rule 1 is sound because it adds no proof that the object theory lacks: every
+field is a value `P′` already holds, checked against its field type, and the
+constructor's result type is convertible with `P′` by definitional equality
+alone, so the constructor applied to `P′`'s own parameters and those values is a
+well-typed proof of `P′`, one the program could have written there. It invents
+no field: a field its result type does not determine, or determines only inside
+an argument, makes the constructor unfit. Proof reconstruction fabricates proof
+fields unchecked, which rule 1 never does, so a rule that accepted whatever
+reconstructs would accept `And(False, False)`. It reads no proof in scope and
+chooses nothing that proof irrelevance would not make unobservable. A sealed
+family's constructor is applied only where the application's module may name it
+(see [Sealing](#sealing)), since elsewhere it would build a value its module
+never built. A family of an inductive block still being checked has no
+constructors to discharge with.
 
 Discharge is local: it reads the callee's type and the application's other
 arguments, never the type the application is expected to have, so checking
 stays synthesis followed by equality. It terminates, since it evaluates one
-proposition and makes one conversion check per fieldless constructor. Its time
-includes the decision procedures a proposition calls.
+proposition and makes one conversion check per constructor. Its time includes
+the decision procedures a proposition calls.
 
 Evaluation erases evidence. A checked application carries only its explicit
 arguments, and evaluating it gives each evidence binder deferred evidence: the
 canonical proof of the binder's type, evaluated in the Pi's environment with
-every earlier argument bound, computed only when forced. A callee's body
-environment binds it unforced. Looking the local up forces it, and so does
-closing a value over it, any head other than a lambda, which stores its
-arguments, and a native body. Deferred evidence stands in no other value, and
-anything else that reaches one is a kernel bug. So a proposition is evaluated
-when a program runs only if the callee looks at its proof, and then the proof
-is exactly the canonical proof its proposition determines, as checking bound:
-erasure changes when a proposition is evaluated, never what a value is.
+every earlier argument bound, computed only when forced. Applying a head forces
+none of it: a lambda binds it unforced in its body's environment, and any other
+head, an opaque definition's say, stores it unforced among the arguments of the
+application it builds. Those two are where deferred evidence stands, and both
+force it where it is read: the environment where the local is looked up or a
+value closes over it, and the application where its arguments are read, which
+every question the kernel asks of an application does. Anything else that
+reaches deferred evidence is a kernel bug. So a proposition is evaluated when a
+program runs only if something looks at its proof, and then the proof is exactly
+the canonical proof its proposition determines, as checking bound: erasure
+changes when a proposition is evaluated, never what a value is.
 
 ## Structure eta and projections
 
@@ -956,8 +968,9 @@ Changes to the checker or evaluator must preserve these rules:
     native literal layouts. That trusted surface keeps the audited obligations
     T1 to T5; every other prelude declaration is checked as one in any module.
 25. An evidence argument is either supplied and convertible with its
-    proposition evaluated at the application, or discharged by a fieldless
-    constructor whose result type is convertible with it; discharge reads no
-    expected type and no hypothesis. Evaluation binds the canonical proof of
-    the same proposition, and evaluates the proposition only when that proof is
-    looked at.
+    proposition evaluated at the application, or discharged by a constructor
+    applied to fields read off that proposition, whose result type is
+    convertible with it; discharge invents no field, and reads no expected type
+    and no hypothesis. Evaluation binds the canonical proof of the same
+    proposition, and evaluates the proposition only when that proof is looked
+    at.

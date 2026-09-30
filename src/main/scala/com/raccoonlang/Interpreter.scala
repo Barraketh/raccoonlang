@@ -238,8 +238,8 @@ object Interpreter {
   }
 
   /**
-   * Apply `fn` to an argument for each binder of its group. A lambda binds them as given, deferred evidence included
-   * (`DeferredEvidence`); any other head stores its arguments in the value it builds, so it forces them first.
+   * Apply `fn` to an argument for each binder of its group. A lambda binds them as given, and any other head stores
+   * them as given in the application it builds, deferred evidence included (`DeferredEvidence`): applying forces none.
    */
   private[raccoonlang] def evalApply(fn: Value, vArgs: Vector[Value]): Value = {
     fn.tpe match {
@@ -250,22 +250,21 @@ object Interpreter {
         if (vArgs.length != pi.binders.length)
           fail(ArityMismatch(pi.binders.length, vArgs.length, ArityMismatch.Arguments))
         // Lazy: the VLam branch delegates env construction to runLam.
-        lazy val storedArgs = vArgs.map(Value.forced)
-        lazy val envWithArgs = getEnvWithArgs(pi, pi.env, storedArgs)
+        lazy val envWithArgs = getEnvWithArgs(pi, pi.env, vArgs)
         fn match {
           case lam: VLam =>
             runLam(lam, vArgs)
           case h: ConstructorHead =>
             val resultTy = pi.codomain(envWithArgs)
-            val fields = Value.constructorStoredArgs(h, storedArgs)
-            Value.canonicalizeProof(Packed.foldCtor(h, fields, resultTy).getOrElse(VCtor(h, fields, resultTy)))
+            val storedArgs = Value.constructorStoredArgs(h, vArgs)
+            Value.canonicalizeProof(Packed.foldCtor(h, storedArgs, resultTy).getOrElse(VCtor(h, storedArgs, resultTy)))
           // Every non-reducing head builds one new application layer over itself. An existing
           // neutral stays the head rather than being flattened into the new spine: flattening
           // would destroy positional-projection arity. A blocked head propagates its blockers,
           // and any other head is unblocked.
           case head @ (_: VConst | _: VApp | _: NeutralThunk | _: Var) =>
             val blockedOn = Blocker.unapply(head).getOrElse(DepSet.empty)
-            Value.canonicalizeProof(VApp(head, storedArgs, pi.codomain(envWithArgs), blockedOn))
+            Value.canonicalizeProof(VApp(head, vArgs, pi.codomain(envWithArgs), blockedOn))
           case _ => fail(CannotApplyNonFunction(fn))
         }
       case _ => fail(CannotApplyNonFunction(fn.tpe))
@@ -347,8 +346,9 @@ object Interpreter {
     lazy val piEnv = BinderOps.instantiateFull(lam.tpe.binders, lam.tpe.env, args)
 
     lam.body match {
-      // A native body reads its arguments as values, so deferred evidence is forced for it.
-      case LamBody.Native(run, nativeEnv, _) => run(args.map(Value.forced), nativeEnv)
+      // A native body reads only the arguments it names, none of them evidence: a builtin's and a native operation's
+      // are validated, and a raw recursive stub reads its metric's, which is never a proof.
+      case LamBody.Native(run, nativeEnv, _) => run(args, nativeEnv)
       case LamBody.ProofEta =>
         Value.canonicalizeProof(VProof(lam.tpe.codomain(piEnv)))
       case LamBody.Core(term, coreEnv) =>

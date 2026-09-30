@@ -19,7 +19,8 @@ Raccoon currently provides:
   and lambdas carry a closure kind and scope, derived for a lambda from what
   it captures;
 - evidence parameters, `[h: P]`, whose proposition each call discharges by
-  evaluating it, and which the program never evaluates when it runs;
+  evaluating it when the call is checked, and whose proofs are erased when the
+  program runs;
 - `Prop`, `Type`, and `Sort { level = u, kind = k, scope = S }`, whose
   universe levels, kinds and lifetimes are second-class parameters of sorts,
   families and declarations, normalized and compared exactly;

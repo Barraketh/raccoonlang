@@ -242,9 +242,10 @@ object TypeChecker {
                       checkType(known(idx), proposition)
                       known(idx)
                     } else
-                      discharge(proposition, span, env).getOrElse(
-                        fail(EvidenceNotDischarged(binder.name, callee, proposition))
-                      )
+                      discharge(proposition, span, env) match {
+                        case Right(proof) => proof
+                        case Left(reason) => fail(EvidenceNotDischarged(binder.name, callee, proposition, reason))
+                      }
                   BinderOps.bindValue(curEnv, binder, proof)
                 // An argument at a binder whose type is a sort is a type, confined where the application stands.
                 case BinderMode.Explicit | BinderMode.Implicit =>
@@ -265,32 +266,39 @@ object TypeChecker {
     }
 
   /**
-   * An evidence argument discharged by the fieldless rule (PROOF_BY_EVALUATION §1.2): `proposition`, evaluated where
-   * the application stands, is an instance of an inductive family in `Prop` with a fieldless constructor whose result
-   * type there is convertible with it, and the proof is that constructor at `proposition`. Nothing is searched: the
-   * constructor is the first declared that fits, and proof irrelevance makes the choice unobservable (§1.4). A
-   * constructor with fields never discharges, since its fields would have to be invented, and a proposition that is not
-   * a family instance, as a neutral one is not, never discharges either.
+   * An evidence argument discharged by rule 1 (PROOF_BY_EVALUATION §1.2): `proposition`, evaluated where the
+   * application stands, is an instance of an inductive family in `Prop` with a constructor whose fields its result type
+   * determines, and whose result type, at the fields read off `proposition`, is convertible with it. The proof is that
+   * constructor applied to those fields (ProofReconstruction.determined, which invents no field). Nothing is searched:
+   * the constructors are tried in declaration order and the first that fits is taken, and proof irrelevance makes the
+   * choice unobservable (§1.4). A proposition that is not a family instance, as a neutral one is not, is not
+   * discharged.
    *
    * The constructor is applied for the program at `site`, as if it named it, so a sealed family's constructors
-   * discharge only in its module (Sealing): elsewhere one would build a value its module never built. A family whose
-   * constructors are not yet installed, one of an inductive block being checked, has none to discharge with.
+   * discharge only in its module (Sealing): elsewhere one would build a value its module never built. A family being
+   * checked, one of an inductive block whose constructors are not yet declared, has none to discharge with.
    */
-  private def discharge(proposition: Value, site: Span, env: Env): Option[Value] =
+  private def discharge(proposition: Value, site: Span, env: Env): Either[EvidenceNotDischarged.Reason, Value] =
     proposition match {
-      case InductiveFamilyValue(instance) if Sealing.accessible(instance.meta.seal, site) =>
-        instance.meta.constructorNames.iterator
-          .flatMap(name => env.globals.get(name).map(_.value(env)))
-          .collectFirst {
-            case head: ConstructorHead
-                if head.fieldBinders.isEmpty &&
-                  ValueEquivalence.defEq(
-                    BinderOps.freshCtorFields(head, instance.args, Vector.empty)._2,
-                    proposition
-                  ) =>
-              Value.canonicalizeProof(VCtor(head, Vector.empty, proposition))
+      case InductiveFamilyValue(instance) =>
+        if (!Sealing.accessible(instance.meta.seal, site)) Left(EvidenceNotDischarged.Sealed)
+        else
+          instance.meta.block match {
+            case _: ProvisionalInductiveBlockInfo => Left(EvidenceNotDischarged.Undeclared)
+            case _: CheckedInductiveBlockSchema =>
+              instance.meta.constructors.iterator
+                .flatMap { ctor =>
+                  (env(ctor.canonicalName), ctor.fieldSources) match {
+                    case (head: ConstructorHead, Some(sources)) =>
+                      ProofReconstruction.determined(proposition, instance, head, sources)
+                    case (other, sources) => wtf(s"Constructor ${ctor.canonicalName} is $other, with sources $sources")
+                  }
+                }
+                .nextOption()
+                .map(proof => Value.canonicalizeProof(VCtor(proof.head, proof.fields, proposition)))
+                .toRight(EvidenceNotDischarged.NoConstructor)
           }
-      case _ => None
+      case _ => Left(EvidenceNotDischarged.NoConstructor)
     }
 
   private def checkTelescope(pi: CA.Term.Pi, env: Env, familyParams: Int): CheckedTelescope = {

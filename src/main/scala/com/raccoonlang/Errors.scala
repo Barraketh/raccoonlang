@@ -134,9 +134,27 @@ final case class NotAProposition(binder: String, tpe: Value) extends TypeError
 
 /**
  * An application that neither supplies nor discharges the evidence binder `binder` of `callee`: `proposition` is its
- * type evaluated there, which no fieldless constructor proves (PROOF_BY_EVALUATION §1.2).
+ * type evaluated there, which rule 1 does not discharge for `reason` (PROOF_BY_EVALUATION §1.2).
  */
-final case class EvidenceNotDischarged(binder: String, callee: String, proposition: Value) extends TypeError
+final case class EvidenceNotDischarged(
+    binder: String,
+    callee: String,
+    proposition: Value,
+    reason: EvidenceNotDischarged.Reason
+) extends TypeError
+
+object EvidenceNotDischarged {
+  sealed trait Reason
+
+  /** No constructor has the proposition as its type with the fields its type determines; nor does a non-instance. */
+  case object NoConstructor extends Reason
+
+  /** The proposition's family is sealed, and its constructors are kept to a module the application is not in. */
+  case object Sealed extends Reason
+
+  /** The proposition's family is being checked, and its constructors are not yet declared. */
+  case object Undeclared extends Reason
+}
 
 /** A constructor's evidence field, which a later step supports (PROOF_BY_EVALUATION §1.8). */
 final case class EvidenceFieldUnsupported(ctor: String, field: String) extends TypeError
