@@ -1,17 +1,25 @@
 package com.raccoonlang
 
 /**
- * Diagnostics as a JSON array for tools. Positions match the text report; `kind` is the error class name. Hand-written:
- * the shape is too small to justify a dependency.
+ * Diagnostics as a JSON array for tools. Positions and messages match the text report; `kind` is the error class name.
+ * Hand-written: the shape is too small to justify a dependency.
  */
 object DiagnosticJson {
 
   /** A clean run still prints `[]`, so a tool can tell "nothing wrong" from "no output". */
-  def render(diagnostics: Vector[Diagnostic], sources: Vector[ModuleLoader.LoadedSource]): String =
+  def render(
+      diagnostics: Vector[Diagnostic],
+      sources: Vector[ModuleLoader.LoadedSource],
+      strings: Option[Value.ValidatedStringLayout]
+  ): String =
     if (diagnostics.isEmpty) "[]"
-    else diagnostics.map(one(_, sources)).mkString("[\n", ",\n", "\n]")
+    else diagnostics.map(one(_, sources, strings)).mkString("[\n", ",\n", "\n]")
 
-  private def one(diagnostic: Diagnostic, sources: Vector[ModuleLoader.LoadedSource]): String = {
+  private def one(
+      diagnostic: Diagnostic,
+      sources: Vector[ModuleLoader.LoadedSource],
+      strings: Option[Value.ValidatedStringLayout]
+  ): String = {
     val span = diagnostic.span.getOrElse(Span(0, 0))
     val fields = Vector.newBuilder[String]
     ErrorReporter.sourceFor(span, sources).foreach { source =>
@@ -24,7 +32,7 @@ object DiagnosticJson {
     }
     fields += field("severity", string("error"))
     fields += field("kind", string(diagnostic.error.productPrefix))
-    fields += field("message", string(diagnostic.getMessage))
+    fields += field("message", string(ErrorRendering.render(diagnostic.error, strings)))
     fields += field(
       "notes",
       diagnostic.frames.map(frame => string(s"in ${ErrorReporter.renderFrame(frame)}")).mkString("[", ", ", "]")

@@ -54,7 +54,9 @@ class LeaseTests extends munit.FunSuite with TestSupport {
       case pi: VPi =>
         pi.binders.collect {
           case binder if binder.mode == BinderMode.Implicit =>
-            binder.name -> Projection.project(binder.projection.get, Vector(callback)).fold(fail(_), _.toString)
+            binder.name -> Projection
+              .project(binder.projection.get, Vector(callback))
+              .fold(failure => fail(failure.toString), _.toString)
         }.toMap
       case other => fail(s"Expected a function type, got $other")
     }

@@ -53,9 +53,9 @@ each generated kernel against `stub/`.
   checkers on the concrete kernel where a program renders it. A kernel with a generation error, or that breaks a
   structural invariant the AST shows (`OBLIGATIONS.md` §4: scoping, shared memory, named barriers, literal widths,
   names, the launcher's parameters), is refused with `EvidenceNotDischarged`, naming the invariant and showing what
-  its checker found (a message computed from numbers or names prints, today, as its list of character codes), and
-  never printed. So its name is a C identifier the printer does not declare itself, and only a
-  kernel with a launcher (which asks for it) uses dynamic shared memory, never more than an SM has.
+  its checker found (its messages, computed from numbers and names, show as string literals), and the kernel is never
+  printed. So its name is a C identifier the printer does not declare itself, and only a kernel with a launcher
+  (which asks for it) uses dynamic shared memory, never more than an SM has.
 
 Index bounds are checked while generating, where every size is concrete: a read that is not provably in bounds is a
 generation error, recorded in the kernel as an `#error` line, so `render` refuses the kernel. Preconditions on the

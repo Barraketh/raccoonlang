@@ -11,7 +11,7 @@ class TerminationTests extends munit.FunSuite with TestSupport {
         val core = Elaborator.elab(value, Prelude.test)
         try Interpreter.run(core, Prelude.test)
         catch {
-          case diagnostic: Diagnostic => fail(ErrorReporter.pretty(diagnostic, Source(src)))
+          case diagnostic: Diagnostic => fail(ErrorReporter.pretty(diagnostic, Source(src), None))
         }
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }

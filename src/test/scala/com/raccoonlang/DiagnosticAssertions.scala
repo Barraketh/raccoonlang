@@ -42,7 +42,7 @@ trait DiagnosticAssertions { this: munit.FunSuite =>
       body
       fail("expected the program to be rejected, but it was accepted")
     } catch {
-      case Execution.CheckFailure(diagnostics) => diagnostics
-      case diagnostic: Diagnostic              => Vector(diagnostic)
+      case Execution.CheckFailure(diagnostics, _) => diagnostics
+      case diagnostic: Diagnostic                 => Vector(diagnostic)
     }
 }

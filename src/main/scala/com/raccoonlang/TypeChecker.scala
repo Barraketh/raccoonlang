@@ -30,7 +30,8 @@ object TypeChecker {
   /**
    * Check every declaration, collecting one diagnostic per independent failure. A declaration that names a failed (or
    * skipped) one is skipped silently; the body is checked only when nothing failed. Every rejection leaves as one
-   * `CheckFailure`. An `InternalError` is never collected: it aborts.
+   * `CheckFailure`, with the environment's `String` layout to print it with. An `InternalError` is never collected: it
+   * aborts.
    *
    * `EvaluationTooDeep` stops checking where it arises, with the diagnostics collected so far (PROOF_BY_EVALUATION
    * §2.5): the overflow may have unwound past the restoration of the checker's state, such as the thread-local tables
@@ -49,7 +50,7 @@ object TypeChecker {
         try env = Interpreter.evalDecl(decl, env)
         catch {
           case diagnostic: Diagnostic if diagnostic.error == EvaluationTooDeep =>
-            throw Execution.CheckFailure(diagnostics.result() :+ diagnostic)
+            throw Execution.CheckFailure(diagnostics.result() :+ diagnostic, env.nativeLiterals.stringLayout)
           case diagnostic: Diagnostic =>
             diagnostics += diagnostic
             unavailable ++= decl.definedNames
@@ -57,7 +58,7 @@ object TypeChecker {
     }
 
     val collected = diagnostics.result()
-    if (collected.nonEmpty) throw Execution.CheckFailure(collected)
+    if (collected.nonEmpty) throw Execution.CheckFailure(collected, env.nativeLiterals.stringLayout)
     try
       program.body.map { body =>
         // The program's boundary, as `Interpreter.evalDecl` is a declaration's: an overflow while checking and
@@ -69,7 +70,9 @@ object TypeChecker {
           result
         } catch { case _: StackOverflowError => at(body.span)(fail(EvaluationTooDeep)) }
       }
-    catch { case diagnostic: Diagnostic => throw Execution.CheckFailure(Vector(diagnostic)) }
+    catch {
+      case diagnostic: Diagnostic => throw Execution.CheckFailure(Vector(diagnostic), env.nativeLiterals.stringLayout)
+    }
   }
 
   private final case class CheckedApply(value: Value, residual: CA.Term.App)
@@ -462,7 +465,7 @@ object TypeChecker {
               part,
               "Lambda",
               written,
-              s"capture ${capture.ref.name} : ${capture.value.tpe}",
+              ContainedPart.Capture(capture.ref.name, capture.value.tpe),
               part.of(capture.sort),
               term.span
             )

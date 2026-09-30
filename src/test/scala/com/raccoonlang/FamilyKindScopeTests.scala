@@ -27,7 +27,7 @@ class FamilyKindScopeTests extends munit.FunSuite with TestSupport {
     typecheckDecls(program("Type { kind = k, scope = S }"))
     typecheckDecls(program("Type { kind = lin, scope = S }"))
     val error = expectOnly[KindExceeded](typecheckDecls(program("Type { scope = S }")))
-    assert(error.part.contains("Holder.mk.held"), error.part)
+    assert(PartialFunction.cond(error.part) { case ContainedPart.Field("Holder.mk.held", _) => true }, error.part)
     expectOnly[KindExceeded](
       typecheckDecls(withFamilies("inductive Held (l: Lifetime) : Type { scope = l }\n | mk (t: Tok(l)) : Held(l)\n"))
     )
@@ -62,7 +62,7 @@ class FamilyKindScopeTests extends munit.FunSuite with TestSupport {
          | | mk (a: A)(b: B) : Couple(A, B)
          |""".stripMargin
     typecheckDecls(pair("union(S, T)"))
-    assert(expectOnly[ScopeExceeded](typecheckDecls(pair("S"))).part.startsWith("lifetime parameter T"))
+    assertEquals(expectOnly[ScopeExceeded](typecheckDecls(pair("S"))).part, ContainedPart.LifetimeParameter("T"))
   }
 
   // spec §5.1, §2.4: otherwise `W(l)` for a family `W (l: Lifetime) : Type` would be at scope `{}`, and could leave
@@ -76,12 +76,13 @@ class FamilyKindScopeTests extends munit.FunSuite with TestSupport {
     typecheckDecls(tok("Prop { scope = l }"))
     typecheckDecls(cell("Type { kind = k, scope = l }"))
     val unscoped = expectOnly[ScopeExceeded](typecheckDecls(tok("Type")))
-    assertEquals(unscoped.part, "lifetime parameter l, which every family must name")
+    assertEquals(unscoped.part, ContainedPart.LifetimeParameter("l"))
     assertEquals(unscoped.declaration, "Family Tok")
-    assert(
-      expectOnly[ScopeExceeded](typecheckDecls(tok("Type { kind = lin }"))).part.startsWith("lifetime parameter l")
+    assertEquals(
+      expectOnly[ScopeExceeded](typecheckDecls(tok("Type { kind = lin }"))).part,
+      ContainedPart.LifetimeParameter("l")
     )
-    assert(expectOnly[ScopeExceeded](typecheckDecls(tok("Prop"))).part.startsWith("lifetime parameter l"))
+    assertEquals(expectOnly[ScopeExceeded](typecheckDecls(tok("Prop"))).part, ContainedPart.LifetimeParameter("l"))
     expectOnly[ScopeExceeded](typecheckDecls(cell("Type { kind = k }")))
   }
 
@@ -94,7 +95,7 @@ class FamilyKindScopeTests extends munit.FunSuite with TestSupport {
          |""".stripMargin
 
     typecheckDecls(same("Prop { scope = S }"))
-    assert(expectOnly[ScopeExceeded](typecheckDecls(same("Prop"))).part.startsWith("lifetime parameter S"))
+    assertEquals(expectOnly[ScopeExceeded](typecheckDecls(same("Prop"))).part, ContainedPart.LifetimeParameter("S"))
     expectOnly[KindExceeded](
       typecheckDecls(withFamilies("inductive Holds (l: Lifetime) : Prop { scope = l }\n | mk (t: Tok(l)) : Holds(l)\n"))
     )
@@ -117,7 +118,7 @@ class FamilyKindScopeTests extends munit.FunSuite with TestSupport {
 
     typecheckDecls(program("Type { kind = lin, scope = l }"))
     val error = expectOnly[KindExceeded](typecheckDecls(program("Type { scope = l }")))
-    assert(error.part.contains("Second.stop.t"), error.part)
+    assert(PartialFunction.cond(error.part) { case ContainedPart.Field("Second.stop.t", _) => true }, error.part)
   }
 
   // spec §3.1: a family at a kind variable is linear exactly at the instances whose argument is.

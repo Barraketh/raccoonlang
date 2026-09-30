@@ -172,7 +172,7 @@ class MultipleDiagnosticsTests extends munit.FunSuite with TestSupport {
       diagnosticsOf(source).map(diagnostic =>
         diagnostic.copy(span = diagnostic.span.map(_.copy(source = Some(sources.head.sourceId))))
       )
-    val json = DiagnosticJson.render(located, sources)
+    val json = DiagnosticJson.render(located, sources, None)
 
     assert(json.startsWith("[\n"), json)
     assert(json.endsWith("\n]"), json)
@@ -189,6 +189,6 @@ class MultipleDiagnosticsTests extends munit.FunSuite with TestSupport {
 
   test("a run that found nothing still renders an array") {
     // Empty stdout would leave a tool unable to tell a clean check from a run that printed nothing at all.
-    assertEquals(DiagnosticJson.render(Vector.empty, Vector.empty), "[]")
+    assertEquals(DiagnosticJson.render(Vector.empty, Vector.empty, None), "[]")
   }
 }

@@ -225,9 +225,9 @@ scope. Needs Raccoon's evaluation-discharged evidence and an evaluator that scal
 Status: the checkers are built (`gpu/Check.rac`), one for the generation errors and one each for I1–I6 as far as the
 AST shows them (§4), with unit tests (`gpu/checks/`). `Gpu.render` requires their certificate, `Check.WellFormed`,
 which a client's `Gpu.render(p)` discharges by evaluation, and a failing checker is reported as
-`EvidenceNotDischarged`, naming its field and showing its messages. (Raccoon's diagnostic prints a computed string
-as its list of characters, so today only a message that is a string literal reads as text.) On the persistent GEMM
-the checkers, with checking `Check.rac` itself, add about 0.2 s to the 2.3 s of checking. The soundness statements are the next step. I7 and I8 are not decidable on today's AST (§9.6).
+`EvidenceNotDischarged`, naming its field and showing its messages, which print as string literals although they are
+computed. On the persistent GEMM the checkers, with checking `Check.rac` itself, add about 0.2 s to the 2.3 s of
+checking. The soundness statements are the next step. I7 and I8 are not decidable on today's AST (§9.6).
 
 **Layer 2: protocols.** Abstract models of A6, A9 and A12 (an mbarrier as phase, pending arrivals and expected
 bytes; TMA fills and tensor-core commits as asynchronous events), the stage ring, accumulator ring, handoff and

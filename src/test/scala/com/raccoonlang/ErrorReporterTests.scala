@@ -13,7 +13,7 @@ class ErrorReporterTests extends munit.FunSuite {
   private def report(source: String, span: Span): String = report(source, span, Vector.empty)
 
   private def report(source: String, span: Span, frames: Vector[Frame]): String =
-    ErrorReporter.pretty(Diagnostic(NotFound("x"), Some(span), frames), Source(source))
+    ErrorReporter.pretty(Diagnostic(NotFound("x"), Some(span), frames), Source(source), None)
 
   private def lines(report: String): Vector[String] = report.linesIterator.toVector
 
@@ -51,7 +51,7 @@ class ErrorReporterTests extends munit.FunSuite {
   }
 
   test("an unlocated diagnostic still renders") {
-    val out = lines(ErrorReporter.pretty(Diagnostic(NotFound("x"), None, Vector.empty), Source("abc\n")))
+    val out = lines(ErrorReporter.pretty(Diagnostic(NotFound("x"), None, Vector.empty), Source("abc\n"), None))
     assertEquals(out(1), "1:1: error: x not found")
   }
 
@@ -87,7 +87,8 @@ class ErrorReporterTests extends munit.FunSuite {
           Diagnostic(NotFound("a"), Some(span), Vector.empty),
           Diagnostic(NotFound("b"), Some(span), Vector.empty)
         ),
-        Vector(source)
+        Vector(source),
+        None
       )
     assert(!out.contains("\n\n\n"), s"doubled blank line:\n$out")
     assertEquals(out.linesIterator.count(_.contains("error:")), 2)

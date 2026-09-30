@@ -493,7 +493,7 @@ object InductiveChecks {
             Sorts.ScopeField,
             s"Family ${decl.header.name}",
             declaredSort.scope,
-            s"lifetime parameter ${binder.name}, which every family must name",
+            ContainedPart.LifetimeParameter(binder.name),
             lifetime,
             binder.span
           )
@@ -633,7 +633,6 @@ object InductiveChecks {
 
       constructorArgs.zipWithIndex.foreach { case ((binder, field), sourceFieldIndex) =>
         def fieldName = s"${ctor.canonicalName}.${binder.name}"
-        def part = s"field $fieldName : ${field.tpe}"
         val fieldSort = TypeChecker.getUniverse(field.tpe)
         // 2) Universe bound: skip for Prop families; enforce for Sort families
         if (!Sorts.isProp(constructorUniverse) && !Level.leq(fieldSort.level, constructorUniverse.level))
@@ -647,7 +646,7 @@ object InductiveChecks {
           Sorts.KindField,
           s"Family $name",
           constructorUniverse.kind,
-          part,
+          ContainedPart.Field(fieldName, field.tpe),
           fieldSort.kind,
           binder.span
         )

@@ -1,11 +1,16 @@
 package com.raccoonlang
 
-/** Every message in the language is written here. Values print through `PrettyPrinter`, never as case-class dumps. */
+/**
+ * Every message in the language is written here. Values print through `PrettyPrinter`, never as case-class dumps, and
+ * never through `toString`: each is printed with `strings`, the `String` layout of the environment the program was
+ * checked in, so a `String` whose characters are all known prints as a literal, whether it was written or computed.
+ */
 object ErrorRendering {
 
-  def render(error: TypeError): String =
+  def render(error: TypeError, strings: Option[Value.ValidatedStringLayout]): String = {
+    def show(value: Value): String = PrettyPrinter.print(value, strings)
     error match {
-      case CannotApplyNonFunction(got) => s"Cannot apply non-fn type $got"
+      case CannotApplyNonFunction(got) => s"Cannot apply non-fn type ${show(got)}"
       case ArityMismatch(expected, got, ArityMismatch.Arguments) =>
         s"Cannot apply function - expected $expected params, got $got"
       case ArityMismatch(expected, got, ArityMismatch.Evidence) =>
@@ -17,8 +22,8 @@ object ErrorRendering {
       case UnreachableCase(ctor)               => s"Unreachable case for constructor $ctor"
       case MissingCase(ctor)                   => s"Missing case : $ctor"
       case VarAlreadyLinked(id)                => s"FreshVar $id already linked"
-      case NotAType(value)                     => s"$value is not a type"
-      case NonInductiveMatch(tpe)              => s"Cannot match on non-inductive type $tpe"
+      case NotAType(value)                     => s"${show(value)} is not a type"
+      case NonInductiveMatch(tpe)              => s"Cannot match on non-inductive type ${show(tpe)}"
       case NotFound(name)                      => s"$name not found"
       case AlreadyDefined(name)                => s"$name already defined"
       case ReservedKernelName(name)            => s"$name has a builtin body, which only a prelude may declare"
@@ -43,23 +48,23 @@ object ErrorRendering {
         s"Case head $name is local; unqualified case heads must resolve to globals. " +
           s"Use .$name for short-name matching."
       case NotDestructurable(tpe) =>
-        s"Cannot destructure a value of type $tpe: only a family with one constructor, no indices and no recursive " +
-          "field, outside Prop, is taken apart by its fields"
-      case mismatch: TypeMismatch => renderTypeMismatch(mismatch)
+        s"Cannot destructure a value of type ${show(tpe)}: only a family with one constructor, no indices and no " +
+          "recursive field, outside Prop, is taken apart by its fields"
+      case mismatch: TypeMismatch => renderTypeMismatch(mismatch, show)
       case InvalidConstructorResult(ctor, inductive, got) =>
-        s"Constructor $ctor must return $inductive but got $got"
+        s"Constructor $ctor must return $inductive but got ${show(got)}"
       case NonForcedImplicitParam(param, isProposition) =>
         val evidence =
           if (isProposition) s"; a proposition each call discharges is an evidence parameter, written [$param: …]"
           else ""
         s"Parameter $param cannot be implicit: it is not forced by the type of any later explicit parameter$evidence"
       case NotAProposition(binder, tpe) =>
-        s"Evidence parameter $binder has the type $tpe, which is not a proposition: evidence is a proof, so its type " +
-          "is in Prop"
+        s"Evidence parameter $binder has the type ${show(tpe)}, which is not a proposition: evidence is a proof, so " +
+          "its type is in Prop"
       case EvidenceNotDischarged(binder, callee, path, proposition, reason) =>
         val failed =
-          if (path.isEmpty) s"its proposition is $proposition"
-          else s"through its proposition's evidence fields, ${renderPath(path)}: $proposition"
+          if (path.isEmpty) s"its proposition is ${show(proposition)}"
+          else s"through its proposition's evidence fields, ${renderPath(path)}: ${show(proposition)}"
         val why = reason match {
           case EvidenceNotDischarged.NoConstructor =>
             "which no constructor proves with the fields its type determines"
@@ -73,35 +78,38 @@ object ErrorRendering {
         s"Builtin $name binds the evidence parameter $binder: a builtin reads its arguments as values, so its " +
           "binders are explicit or implicit"
       case ImplicitReconstructionFailed(param, fn, reason) =>
-        s"Cannot reconstruct implicit argument $param of $fn: $reason"
+        s"Cannot reconstruct implicit argument $param of $fn: ${renderProjectionFailure(reason, show)}"
       case NonUniformInductiveParam(inductive, ctor, param, got) =>
-        s"Constructor $ctor of $inductive returns non-uniform parameter $param as $got"
+        s"Constructor $ctor of $inductive returns non-uniform parameter $param as ${show(got)}"
       case InductiveUniverseTooSmall(inductive, where, fieldTy, fieldUniverse, inductiveUniverse) =>
-        s"Inductive $inductive lives in Sort { level = ${PrettyPrinter.print(inductiveUniverse)} }, " +
-          s"but $where has type $fieldTy : Sort { level = ${PrettyPrinter.print(fieldUniverse)} }"
-      case InductiveTypeNotASort(tpe) => s"Inductive type must be a Sort, got $tpe instead"
+        s"Inductive $inductive lives in Sort { level = ${show(inductiveUniverse)} }, " +
+          s"but $where has type ${show(fieldTy)} : Sort { level = ${show(fieldUniverse)} }"
+      case InductiveTypeNotASort(tpe) => s"Inductive type must be a Sort, got ${show(tpe)} instead"
       case LinearProp(kind, level)    =>
         // The level is not never zero, so a constant one is zero.
-        val levelIsZero = if (level.terms.isEmpty) "is zero" else s"$level may be zero"
-        s"A sort of kind $kind needs a level that is never zero, but its level $levelIsZero; proofs are unrestricted"
+        val levelIsZero = if (level.terms.isEmpty) "is zero" else s"${show(level)} may be zero"
+        s"A sort of kind ${show(kind)} needs a level that is never zero, but its level $levelIsZero; proofs are " +
+          "unrestricted"
       case KindExceeded(declaration, declared, part, partKind) =>
-        s"$declaration is declared at kind $declared, which does not contain the kind $partKind of $part"
+        s"$declaration is declared at kind ${show(declared)}, which does not contain the kind ${show(partKind)} " +
+          s"of ${renderPart(part, show)}"
       case ScopeExceeded(declaration, declared, part, partScope) =>
-        s"$declaration is declared at scope $declared, which does not contain the scope $partScope of $part"
+        s"$declaration is declared at scope ${show(declared)}, which does not contain the scope ${show(partScope)} " +
+          s"of ${renderPart(part, show)}"
       case LinearUnused(local) =>
         if (local == "_") "A wildcard binds a value of linear type, which must be used exactly once, and is never used"
         else s"$local has a linear type, so it must be used exactly once, but some path does not use it"
       case LinearReused(local) =>
         s"$local has a linear type, so it must be used exactly once, but this is a second use on some path"
       case LinearInType(term, tpe) =>
-        s"${PrettyPrinter.printTerm(term)} has the linear type $tpe, so it cannot stand inside a type or a proof: " +
-          "types and proofs hold no tokens"
+        s"${PrettyPrinter.printTerm(term)} has the linear type ${show(tpe)}, so it cannot stand inside a type or a " +
+          "proof: types and proofs hold no tokens"
       case LinearGlobal(definition, tpe) =>
         val value = definition.fold("The program's result")(name => s"Definition $name")
-        s"$value has the linear type $tpe; a value outside every binder is never linear, since only a local's uses " +
-          "are counted"
+        s"$value has the linear type ${show(tpe)}; a value outside every binder is never linear, since only a " +
+          "local's uses are counted"
       case LifetimeEscapes(lifetime, tpe) =>
-        s"Lifetime $lifetime escapes its scope: the type $tpe names it outside `scope $lifetime`"
+        s"Lifetime $lifetime escapes its scope: the type ${show(tpe)} names it outside `scope $lifetime`"
       case SealedConstructor(family, member) =>
         val use = member.fold("matching on a value of it")(name => s"naming $name")
         s"The sealed family $family keeps its constructors and selectors to the module that declares it, so $use " +
@@ -111,41 +119,42 @@ object ErrorRendering {
           "goes in a custom prelude (--prelude)"
       case InvalidInductiveBlock(reason) => s"Invalid inductive block: $reason"
       case NonStrictlyPositive(inductive, ctor, field, fieldTy) =>
-        s"Constructor $ctor of $inductive is not strictly positive in field $field : $fieldTy"
+        s"Constructor $ctor of $inductive is not strictly positive in field $field : ${show(fieldTy)}"
       case PropEliminationRestricted(inductive, motive) =>
-        s"Cannot eliminate proposition $inductive into non-Prop motive $motive"
+        s"Cannot eliminate proposition $inductive into non-Prop motive ${show(motive)}"
       case InvalidProjection(inductive, fieldIndex, reason) =>
         s"Invalid projection $inductive.$fieldIndex: $reason"
       case InvalidDecreaseSpec(reason) => s"Invalid decreases annotation: $reason"
       case NonInductiveDecreaseMetric(metric, isProof) =>
-        if (isProof) s"decrease metric $metric is a proof; structural recursion on proofs is not supported"
-        else s"decrease metric $metric must have an inductive type"
+        if (isProof) s"decrease metric ${show(metric)} is a proof; structural recursion on proofs is not supported"
+        else s"decrease metric ${show(metric)} must have an inductive type"
       case NonDecreasingRecursiveCall(function, reason) =>
         s"Recursive call to $function is not decreasing: $reason"
       case InvalidRecursiveOccurrence(function) => s"Invalid recursive occurrence of $function"
       case InvalidRecursiveGroup(reason)        => s"Invalid recursive definition group: $reason"
     }
+  }
 
   /**
    * The "differ at" line is omitted when the unifier failed at the root. `checkFits` asks `actual ~ expected`, so `v1`
    * belongs to `actual`; both are printed expected-first to match the lines above. Function types that differ in their
    * closures fail at the two function types, and the report names the closure fields that differ.
    */
-  private def renderTypeMismatch(mismatch: TypeMismatch): String = {
-    val expected = PrettyPrinter.print(mismatch.expected)
-    val actual = PrettyPrinter.print(mismatch.actual)
+  private def renderTypeMismatch(mismatch: TypeMismatch, show: Value => String): String = {
+    val expected = show(mismatch.expected)
+    val actual = show(mismatch.actual)
     val differ =
       mismatch.detail.map { failure =>
-        val expectedPart = PrettyPrinter.print(failure.v2)
-        val actualPart = PrettyPrinter.print(failure.v1)
+        val expectedPart = show(failure.v2)
+        val actualPart = show(failure.v1)
         val closures = (failure.v2, failure.v1) match {
           case (expectedPi: Value.VPi, actualPi: Value.VPi) =>
             Vector(
               Option.when(expectedPi.closureKind != actualPi.closureKind)(
-                s"kind ${PrettyPrinter.print(expectedPi.closureKind)}  vs  ${PrettyPrinter.print(actualPi.closureKind)}"
+                s"kind ${show(expectedPi.closureKind)}  vs  ${show(actualPi.closureKind)}"
               ),
               Option.when(expectedPi.closureScope != actualPi.closureScope)(
-                s"scope ${PrettyPrinter.print(expectedPi.closureScope)}  vs  ${PrettyPrinter.print(actualPi.closureScope)}"
+                s"scope ${show(expectedPi.closureScope)}  vs  ${show(actualPi.closureScope)}"
               )
             ).flatten
           case _ => Vector.empty
@@ -170,5 +179,30 @@ object ErrorRendering {
       case (runs, next)                                    => runs :+ (next -> 1)
     }
     runs.map { case (step, count) => if (count == 1) step else s"$step ×$count" }.mkString(" > ")
+  }
+
+  /** A part whose kind or scope a declaration's must contain, as the phrase that follows "of". */
+  private def renderPart(part: ContainedPart, show: Value => String): String =
+    part match {
+      case ContainedPart.Capture(name, tpe)      => s"capture $name : ${show(tpe)}"
+      case ContainedPart.Field(name, tpe)        => s"field $name : ${show(tpe)}"
+      case ContainedPart.LifetimeParameter(name) => s"lifetime parameter $name, which every family must name"
+    }
+
+  /** Why an implicit argument's projection could not be followed (`Projection.project`). */
+  private def renderProjectionFailure(failure: telescope.Projection.Failure, show: Value => String): String = {
+    import telescope.Projection.Failure._
+    failure match {
+      case RootOutOfRange(root, provided) => s"projection root $root out of range ($provided args)"
+      case NotALevel(got)                 => s"expected a level, got ${show(got)}"
+      case NotAnApplication(head, got)    => s"expected an application of $head, got ${show(got)}"
+      case NotAConstructor(ctor, got)     => s"expected a $ctor value, got ${show(got)}"
+      case NotASort(got)                  => s"expected a sort, got ${show(got)}"
+      case NotAFunctionType(got)          => s"expected a function type, got ${show(got)}"
+      case LevelBelowOffset(level, k)     => s"level ${show(level)} does not cover offset $k"
+      case DependentDomain(idx, pi)       => s"domain $idx of ${show(pi)} depends on earlier binders"
+      case DependentCodomain(pi)          => s"codomain of ${show(pi)} depends on its binders"
+      case DependentResult(pi)            => s"result of ${show(pi)} depends on its binders"
+    }
   }
 }

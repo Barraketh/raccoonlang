@@ -75,7 +75,7 @@ object Sorts {
 
     def contains(declared: P, part: P): Boolean
 
-    private[Sorts] def exceeded(declaration: String, declared: P, part: String, partValue: P): TypeError
+    private[Sorts] def exceeded(declaration: String, declared: P, part: ContainedPart, partValue: P): TypeError
   }
 
   object KindField extends Field[Kind](KindTpe) {
@@ -84,7 +84,7 @@ object Sorts {
     def join(parts: Iterable[Kind]): Kind = Kind.join(parts)
     def isLeast(part: Kind): Boolean = part.isUnr
     def contains(declared: Kind, part: Kind): Boolean = Kind.contains(declared, part)
-    private[Sorts] def exceeded(declaration: String, declared: Kind, part: String, partValue: Kind): TypeError =
+    private[Sorts] def exceeded(declaration: String, declared: Kind, part: ContainedPart, partValue: Kind): TypeError =
       KindExceeded(declaration, declared, part, partValue)
   }
 
@@ -94,7 +94,12 @@ object Sorts {
     def join(parts: Iterable[Lifetime]): Lifetime = Lifetime.union(parts)
     def isLeast(part: Lifetime): Boolean = part.isEmpty
     def contains(declared: Lifetime, part: Lifetime): Boolean = Lifetime.contains(declared, part)
-    private[Sorts] def exceeded(declaration: String, declared: Lifetime, part: String, partValue: Lifetime): TypeError =
+    private[Sorts] def exceeded(
+        declaration: String,
+        declared: Lifetime,
+        part: ContainedPart,
+        partValue: Lifetime
+    ): TypeError =
       ScopeExceeded(declaration, declared, part, partValue)
   }
 
@@ -107,7 +112,7 @@ object Sorts {
       field: Field[P],
       declaration: String,
       declared: P,
-      part: => String,
+      part: ContainedPart,
       partValue: P,
       site: Span
   ): Unit =

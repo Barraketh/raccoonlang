@@ -351,7 +351,7 @@ class ModuleLoaderTests extends munit.FunSuite with DiagnosticAssertions {
       Elaborator.elab(loaded.program, Prelude.test)
     }
     assert(diagnostic.error.isInstanceOf[NotFound], s"expected NotFound, got ${diagnostic.error}")
-    assert(ErrorReporter.pretty(diagnostic, loaded).contains(badPath.toRealPath().toString))
+    assert(ErrorReporter.pretty(diagnostic, loaded, None).contains(badPath.toRealPath().toString))
   }
 
   test("same-offset local value ids remain distinct across imported modules") {
