@@ -312,9 +312,10 @@ The measurements (B200, 8192³, 1.10 TFLOP per GEMM; 1 ms is 1100 TFLOP/s):
 | Variant | Time | Reading |
 |---|---|---|
 | Ours | 1.19 ms | |
+| without epilogue stores (row-major order) | 0.909 ms | the scalar stores cost 0.28 ms |
 | grouped (G = 16) | 0.955 ms | row-major order wastes 0.24 ms, probably in L2 misses on B |
-| without epilogue stores | 0.695 ms | the scalar stores cost about 0.5 ms (ungrouped) |
-| without stores and MMAs | 0.622 ms | data movement alone; 17.2 GB of stage fills (4096 tiles × 4 MiB) at 27.6 TB/s |
+| grouped, without epilogue stores | 0.695 ms | the scalar stores cost 0.26 ms in grouped order |
+| grouped, without stores and MMAs | 0.622 ms | data movement alone; 17.2 GB of stage fills (4096 tiles × 4 MiB) at 27.6 TB/s |
 | MMA floor | about 0.49 ms | at the nominal dense bf16 rate of about 2.25 PFLOP/s (not measured) |
 
 The mainloop is bound by data movement at 128×128: 0.622 ms > 0.49 ms. Whether the bound is L2 bandwidth, the SMs'
@@ -323,7 +324,7 @@ Expected times below scale the data-movement floor by bytes moved, and are estim
 
 1. **TMA-store epilogue** (being added). Two 128×32 f32 staging buffers (32 KiB; at 128×128 still 6 stages:
    6 × 32 KiB + 32 KiB fits in 227 KiB), `tcgen05.ld.32x32b.x32` and one `wait::ld` per subtile, accumulator released
-   after the last load. Expected: most of the 0.5 ms store penalty goes; grouped time approaches the grouped
+   after the last load. Expected: most of the 0.26 ms store penalty goes; grouped time approaches the grouped
    "without stores" time, which should be at or below 0.695 ms. The biggest single gain, and a prerequisite for the
    others, since a 128×256 tile doubles the output per tile. Settled by our own run.
 2. **Grouped rasterization** (being added): measured 1.19 → 0.955 ms. Keep; retune G after items 1 and 3, since larger
