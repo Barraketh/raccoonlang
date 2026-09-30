@@ -30,9 +30,7 @@ def check(m):
     with open(path, "w") as f:
         f.write(source.replace(m["old"], m["new"]))
     if m["expect"] == "#error":
-        out = run(path)
-        rendered = subprocess.run(["python3", os.path.join(here, "render.py")], input=out.stdout, capture_output=True, text=True)
-        ok = "#error" in rendered.stdout
+        ok = "#error" in run("--raw", path).stdout
         return ok, f"ok   {label} -> generation error" if ok else f"FAIL {label}: no generation error"
     try:
         diags = json.loads(run("--json", path).stdout)

@@ -27,10 +27,9 @@ gpu/gen.sh gpu/examples/gemm.rac
 RACCOON="java -cp <raccoon classpath> com.raccoonlang.Main" gpu/check.sh
 ```
 
-`gen.sh` falls back to `sbt run`; `check.sh` needs a fast launcher in `RACCOON`. The CLI prints a computed `String`
-as a constructor tree, and `render.py` turns it back into text; printing a large kernel recurses deeply, so give the
-launcher a large stack (`java -Xss64m …`). When `clang++` is present, `check.sh` also compiles each generated kernel
-against `stub/`.
+`gen.sh` falls back to `sbt run`; `check.sh` needs a fast launcher in `RACCOON`. Both print the generated kernel with
+the CLI's `--raw`, which prints a String result as its characters. When `clang++` is present, `check.sh` also compiles
+each generated kernel against `stub/`.
 
 ## What the types guarantee
 
