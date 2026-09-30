@@ -1,0 +1,184 @@
+// Facts about the prelude's Bool, Nat, List, Char and String functions, and about the checkers' string helpers, that a
+// standard library would provide: each relates a Bool test to the proposition it decides.
+
+import Check
+import Spec
+
+namespace Lib {
+  open Cuda
+
+  // ---- Bool ---------------------------------------------------------------------------------------------------------
+
+  def andLeft (a: Bool)(b: Bool)(h: Eq(Bool, Bool.and(a, b), Bool.true)): Eq(Bool, a, Bool.true) := {
+    match a returning Eq(Bool, a, Bool.true) with
+    | Bool.true => Eq.refl(Bool.true)
+    | Bool.false => h
+  }
+
+  def andRight (a: Bool)(b: Bool)(h: Eq(Bool, Bool.and(a, b), Bool.true)): Eq(Bool, b, Bool.true) := {
+    match a returning Eq(Bool, b, Bool.true) with
+    | Bool.true => h
+    | Bool.false => False.elim(Bool.falseNeTrue(h), Eq(Bool, b, Bool.true))
+  }
+
+  def andIntro (a: Bool)(b: Bool)(ha: Eq(Bool, a, Bool.true))(hb: Eq(Bool, b, Bool.true)): Eq(Bool, Bool.and(a, b), Bool.true) := {
+    match ha returning Eq(Bool, Bool.and(a, b), Bool.true) with
+    | Eq.refl z => hb
+  }
+
+  def orCases (a: Bool)(b: Bool)(h: Eq(Bool, Bool.or(a, b), Bool.true)): Or(Eq(Bool, a, Bool.true), Eq(Bool, b, Bool.true)) := {
+    match a returning Or(Eq(Bool, a, Bool.true), Eq(Bool, b, Bool.true)) with
+    | Bool.true => Or.inl(Eq(Bool, b, Bool.true), Eq.refl(Bool.true))
+    | Bool.false => Or.inr(Eq(Bool, Bool.false, Bool.true), h)
+  }
+
+  def orLeft (a: Bool)(b: Bool)(h: Eq(Bool, a, Bool.true)): Eq(Bool, Bool.or(a, b), Bool.true) := {
+    match h returning Eq(Bool, Bool.or(a, b), Bool.true) with
+    | Eq.refl z => Eq.refl(Bool.true)
+  }
+
+  def orRight (a: Bool)(b: Bool)(h: Eq(Bool, b, Bool.true)): Eq(Bool, Bool.or(a, b), Bool.true) := {
+    match a returning Eq(Bool, Bool.or(a, b), Bool.true) with
+    | Bool.true => Eq.refl(Bool.true)
+    | Bool.false => h
+  }
+
+  // `Bool.not(a)` holds and `a` holds: a contradiction.
+  def notBoth (a: Bool)(h: Eq(Bool, Bool.not(a), Bool.true))(ha: Eq(Bool, a, Bool.true)): False := {
+    match ha returning False with
+    | Eq.refl z => Bool.falseNeTrue(h)
+  }
+
+  // ---- Nat ----------------------------------------------------------------------------------------------------------
+
+  def beqSound (a: Nat)(b: Nat)(h: Eq(Bool, Nat.beq(a, b), Bool.true)): Eq(Nat, a, b) decreases structural(a) := {
+    match a returning Eq(Nat, a, b) with
+    | Nat.zero => {
+      match b returning Eq(Nat, Nat.zero, b) with
+      | Nat.zero => Eq.refl(Nat.zero)
+      | Nat.succ q => False.elim(Bool.falseNeTrue(h), Eq(Nat, Nat.zero, Nat.succ(q)))
+    }
+    | Nat.succ p => {
+      match b returning Eq(Nat, Nat.succ(p), b) with
+      | Nat.zero => False.elim(Bool.falseNeTrue(h), Eq(Nat, Nat.succ(p), Nat.zero))
+      | Nat.succ q => congrArg(Lib.beqSound(p, q, h), Nat, Nat.succ)
+    }
+  }
+
+  def beqRefl (a: Nat): Eq(Bool, Nat.beq(a, a), Bool.true) decreases structural(a) := {
+    match a returning Eq(Bool, Nat.beq(a, a), Bool.true) with
+    | Nat.zero => Eq.refl(Bool.true)
+    | Nat.succ p => Lib.beqRefl(p)
+  }
+
+  // ---- Lists --------------------------------------------------------------------------------------------------------
+
+  def consEq (A: Type)(x: A)(y: A)(xs: List(A))(ys: List(A))(hx: Eq(A, x, y))(hs: Eq(List(A), xs, ys)): Eq(List(A), List.cons(x, xs), List.cons(y, ys)) := {
+    match hx returning Eq(List(A), List.cons(x, xs), List.cons(y, ys)) with
+    | Eq.refl z => {
+      match hs returning Eq(List(A), List.cons(z, xs), List.cons(z, ys)) with
+      | Eq.refl w => Eq.refl(List.cons(z, w))
+    }
+  }
+
+  // What `List.all` found true of a list, it found true of each element.
+  def allMem (A: Type)(xs: List(A))(p: A -> Bool)(h: Eq(Bool, List.all(xs, p), Bool.true))(x: A)(m: Spec.Mem(A, x, xs)): Eq(Bool, p(x), Bool.true) decreases structural(xs) := {
+    match m returning Eq(Bool, p(x), Bool.true) with
+    | Spec.Mem.here rest => Lib.andLeft(p(x), List.all(rest, p), h)
+    | Spec.Mem.there y rest inRest => Lib.allMem(A, rest, p, Lib.andRight(p(y), List.all(rest, p), h), x, inRest)
+  }
+
+  def allIntro (A: Type)(xs: List(A))(p: A -> Bool)(h: (x: A) -> Spec.Mem(A, x, xs) -> Eq(Bool, p(x), Bool.true)): Eq(Bool, List.all(xs, p), Bool.true) decreases structural(xs) := {
+    match xs returning Eq(Bool, List.all(xs, p), Bool.true) with
+    | List.nil => Eq.refl(Bool.true)
+    | List.cons y rest => {
+      let inRest := fun (x: A)(m: Spec.Mem(A, x, rest)): Eq(Bool, p(x), Bool.true) => h(x, Spec.Mem.there(y, rest, m))
+      Lib.andIntro(p(y), List.all(rest, p), h(y, Spec.Mem.here(y, rest)), Lib.allIntro(A, rest, p, inRest))
+    }
+  }
+
+  // ---- Strings ------------------------------------------------------------------------------------------------------
+
+  // `Check.sameChars` on two nonempty lists, as a function of whether their first characters agree.
+  def sameRest (heads: Bool)(rest: List(Char))(more: List(Char)): Bool := {
+    match heads returning Bool with
+    | Bool.true => Check.sameChars(rest, more)
+    | Bool.false => Bool.false
+  }
+
+  def sameHeads (heads: Bool)(rest: List(Char))(more: List(Char))(h: Eq(Bool, Lib.sameRest(heads, rest, more), Bool.true)): Eq(Bool, heads, Bool.true) := {
+    match heads returning Eq(Bool, heads, Bool.true) with
+    | Bool.true => Eq.refl(Bool.true)
+    | Bool.false => False.elim(Bool.falseNeTrue(h), Eq(Bool, Bool.false, Bool.true))
+  }
+
+  def sameTails (heads: Bool)(rest: List(Char))(more: List(Char))(h: Eq(Bool, Lib.sameRest(heads, rest, more), Bool.true))
+      : Eq(Bool, Check.sameChars(rest, more), Bool.true) := {
+    match heads returning Eq(Bool, Check.sameChars(rest, more), Bool.true) with
+    | Bool.true => h
+    | Bool.false => False.elim(Bool.falseNeTrue(h), Eq(Bool, Check.sameChars(rest, more), Bool.true))
+  }
+
+  def sameCharsSound (a: List(Char))(b: List(Char))(h: Eq(Bool, Check.sameChars(a, b), Bool.true)): Eq(List(Char), a, b) decreases structural(a) := {
+    match a returning Eq(List(Char), a, b) with
+    | List.nil => {
+      match b returning Eq(List(Char), List.nil(Char), b) with
+      | List.nil => Eq.refl(List.nil(Char))
+      | List.cons d more => False.elim(Bool.falseNeTrue(h), Eq(List(Char), List.nil(Char), List.cons(d, more)))
+    }
+    | List.cons c rest => {
+      match b returning Eq(List(Char), List.cons(c, rest), b) with
+      | List.nil => False.elim(Bool.falseNeTrue(h), Eq(List(Char), List.cons(c, rest), List.nil(Char)))
+      | List.cons d more => {
+        let heads := Nat.beq(c.value, d.value)
+        let char := congrArg(Lib.beqSound(c.value, d.value, Lib.sameHeads(heads, rest, more, h)), Char, Char.mk)
+        Lib.consEq(Char, c, d, rest, more, char, Lib.sameCharsSound(rest, more, Lib.sameTails(heads, rest, more, h)))
+      }
+    }
+  }
+
+  // `Lib.sameRest` when the first characters agree.
+  def sameRestTrue (heads: Bool)(rest: List(Char))(more: List(Char))(agree: Eq(Bool, heads, Bool.true))(h: Eq(Bool, Check.sameChars(rest, more), Bool.true))
+      : Eq(Bool, Lib.sameRest(heads, rest, more), Bool.true) := {
+    match agree returning Eq(Bool, Lib.sameRest(heads, rest, more), Bool.true) with
+    | Eq.refl z => h
+  }
+
+  def sameCharsRefl (a: List(Char)): Eq(Bool, Check.sameChars(a, a), Bool.true) decreases structural(a) := {
+    match a returning Eq(Bool, Check.sameChars(a, a), Bool.true) with
+    | List.nil => Eq.refl(Bool.true)
+    | List.cons c rest => Lib.sameRestTrue(Nat.beq(c.value, c.value), rest, rest, Lib.beqRefl(c.value), Lib.sameCharsRefl(rest))
+  }
+
+  def sameSound (a: String)(b: String)(h: Eq(Bool, Check.same(a, b), Bool.true)): Eq(String, a, b) :=
+    congrArg(Lib.sameCharsSound(a.data, b.data, h), String, String.mk)
+
+  def sameRefl (a: String): Eq(Bool, Check.same(a, a), Bool.true) := Lib.sameCharsRefl(a.data)
+
+  // Two names `Check.same` tells apart differ.
+  def notSame (a: String)(b: String)(h: Eq(Bool, Bool.not(Check.same(a, b)), Bool.true)): Not(Eq(String, a, b)) :=
+    fun (e: Eq(String, a, b)): False => {
+      match e returning False with
+      | Eq.refl z => Lib.notBoth(Check.same(z, z), h, Lib.sameRefl(z))
+    }
+
+  // `Check.mentions` decides membership.
+  def mentionsSound (names: List(String))(name: String)(h: Eq(Bool, Check.mentions(names, name), Bool.true)): Spec.Mem(String, name, names) decreases structural(names) := {
+    match names returning Spec.Mem(String, name, names) with
+    | List.nil => False.elim(Bool.falseNeTrue(h), Spec.Mem(String, name, List.nil(String)))
+    | List.cons n rest => {
+      match Lib.orCases(Check.same(n, name), Check.mentions(rest, name), h) returning Spec.Mem(String, name, List.cons(n, rest)) with
+      | Or.inl same => {
+        match Lib.sameSound(n, name, same) returning Spec.Mem(String, name, List.cons(n, rest)) with
+        | Eq.refl z => Spec.Mem.here(z, rest)
+      }
+      | Or.inr inRest => Spec.Mem.there(n, rest, Lib.mentionsSound(rest, name, inRest))
+    }
+  }
+
+  def mentionsComplete (names: List(String))(name: String)(h: Spec.Mem(String, name, names)): Eq(Bool, Check.mentions(names, name), Bool.true) decreases structural(names) := {
+    match h returning Eq(Bool, Check.mentions(names, name), Bool.true) with
+    | Spec.Mem.here rest => Lib.orLeft(Check.same(name, name), Check.mentions(rest, name), Lib.sameRefl(name))
+    | Spec.Mem.there n rest inRest => Lib.orRight(Check.same(n, name), Check.mentions(rest, name), Lib.mentionsComplete(rest, name, inRest))
+  }
+}

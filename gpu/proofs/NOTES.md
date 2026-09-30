@@ -10,10 +10,12 @@ Line counts are of the files as committed, comments included.
 
 | Checker | Spec (`Spec.rac`) | Proof | Lines | Status |
 |---|---|---|---|---|
-| (shared) | occurrence relations, 95 lines | `Fold.rac`: the traversal lemmas | 371 | done |
-| `errors` | `NoErrors` | `Errors.rac` | 32 | proved |
-| I4 `literals` | `Literals`, `Lit32`, `Lit64` | `Literals.rac` | 108 | proved |
-| I2 `sharedMemory` | `SharedMemory`, `SharedAt` | `SharedMemory.rac` | 111 | proved |
+| (shared) | occurrence relations, 97 lines | `Fold.rac`: the traversal lemmas | 377 | done |
+| (shared) | | `Lib.rac`: Bool, Nat, List and string facts | 184 | done |
+| `errors` | `NoErrors`, 5 lines | `Errors.rac` | 32 | proved |
+| I2 `sharedMemory` | `SharedMemory`, `SharedAt`, 18 lines | `SharedMemory.rac` | 109 | proved |
+| I4 `literals` | `Literals`, `Lit32`, `Lit64`, 25 lines | `Literals.rac` | 108 | proved |
+| I5 `names` | `Names`, `Chosen`, `CIdent`, `PrinterName`, `Declared`, `Twice`, …, 60 lines | `Names.rac` | 266 | proved |
 
 ## The shape of every proof
 
@@ -32,6 +34,32 @@ relation (`InBlock`, `ExprIn`, `HostExpr`, `Mem`, …). The proofs share one arg
 
 All the real induction is in `Fold.rac`; the per-checker files are step lemmas and plumbing.
 
+## Per invariant
+
+**errors.** Spec: `(m: String) -> InBlock(Stmt.error(m), k.body) -> False`. The proof is `Fold.blockFoldAt` applied
+to a 14-case `Keeps` lemma for the step; no lemma of its own.
+
+**I4, literals.** Spec: every `n` that `Lit32(k, n)` (a `lit` in the body or the launcher's expressions, the block
+size, a box dimension) is `Nat.lt(n, Cuda.u32Limit)`, and every `Lit64` below 2^64. Needed F1's checker change.
+
+**I2, shared memory.** Spec: `Nat.le(k.dynamicShared, 232448)`; a positive size means `k.launcher` is not `none`;
+a `Stmt.shared` anywhere in the body means the size is 0; every `sharedAddr`/`sharedPtr` offset is below the size.
+Two small Bool/Nat facts (`orNot`, `notPositive`).
+
+**I5, names.** Spec: the kernel's name is `Chosen` (a `CIdent`, a letter or `_` then letters, digits and `_`, and
+not a `PrinterName`: `v` and digits, `gpu_…`, or one of the launcher's locals); the parameters' names are
+`Declared` (each chosen, none the kernel's name, none `Twice` in the list); every `param`/`paramAddr` in the body
+names one of them; and likewise for the launcher, whose declared names are its parameters' then its maps' and whose
+expressions name only its parameters. This is the first proof that needs both directions of a Bool test: soundness
+for what the checker accepts (`isIdent` true gives `CIdent`), and completeness for what it rejects (a
+`PrinterName` makes `printerName` true, so its `Bool.not` being true is a contradiction). Hence `Lib.rac`.
+
+`Check.declaredNames` folded a `Prod(List(String), List(String))` of the names so far and the messages over the
+names with `List.foldl`. It became a direct recursion, `declaredAfter`, whose `before` is an argument: the lemmas
+(`declaredChosen`, `declaredFresh`, `declaredOnce`) then recurse on the names with `before` growing, which is the
+whole induction. The fold was not attempted, since `Fold`'s lemmas are for a `List(String)` accumulator and a pair
+would have needed its own `Keeps`, `Acc` and an invariant relating the first component to the prefix walked.
+
 ## Lemmas a standard library would provide
 
 Written here because Raccoon's prelude has none of them:
@@ -47,6 +75,12 @@ Written here because Raccoon's prelude has none of them:
 - **Bool elimination**: `Bool.or(Bool.not(a), b) = true` and `a = true` give `b = true` (`SharedMemory.orNot`);
   the `unless` lemmas are `Bool.cond` elimination.
 - **Nat order facts**: `Bool.not(Nat.blt(0, n)) = true` gives `n = 0` (`SharedMemory.notPositive`).
+- **Bool reflection** (`Lib.rac`): `Bool.and` and `Bool.or` introduction and elimination into `Eq(Bool, …, true)` and
+  `Or` (`andLeft`, `andRight`, `andIntro`, `orCases`, `orLeft`, `orRight`, `notBoth`); `Nat.beq` sound and reflexive
+  (`beqSound`, `beqRefl`); `List.all` sound and complete (`allMem`, `allIntro`); string equality, `Check.sameChars`
+  and `Check.same`, sound and reflexive; `Check.mentions` (`List.any` of `same`) sound and complete. `Char` and
+  `String` equality from their fields is `congrArg(h, Char, Char.mk)`, which structure eta makes a proof about `c`.
+- **Congruence of a two-argument constructor** (`Lib.consEq`): the prelude's `congrArg` takes one argument.
 - **`Eq` transport**: never needed as a lemma, since matching an equation proof rewrites the goal and every
   hypothesis (finding P1).
 
@@ -126,6 +160,23 @@ variable `ok` and applied to the checker's expression. Where a checker matched a
 restructured to go through a function taking it as an argument, or the lemma was stated over a Bool variable and
 applied to the expression (`SharedMemory.orNot`, `notPositive`).
 
+Where the match is inside a function the proof reasons about (`Check.sameChars` matches `Nat.beq(c.value,
+d.value)`), a *mirror definition* works: restate the match over a variable (`Lib.sameRest(heads, rest, more)`),
+prove the lemma by matching the variable, and apply it to the expression. Conversion identifies the two blocked
+matches, since they have the same scrutinee and branches:
+
+```raccoon
+def sameRest (heads: Bool)(rest: List(Char))(more: List(Char)): Bool := {
+  match heads returning Bool with
+  | Bool.true => Check.sameChars(rest, more)
+  | Bool.false => Bool.false
+}
+// h: Eq(Bool, Check.sameChars(List.cons(c, rest), List.cons(d, more)), Bool.true) is accepted at
+// Lib.sameHeads(Nat.beq(c.value, d.value), rest, more, h), whose h is Eq(Bool, Lib.sameRest(…), Bool.true)
+```
+
+It costs a definition and two lemmas per such match, and the proof must copy the checker's branches exactly.
+
 *Feature:* a `match e as b with (h: Eq(Bool, e, b))` form (Agda's `with … in`, Lean's `match h : e with`) that
 abstracts `e` in the goal and in the hypotheses and hands the branch the equation.
 
@@ -134,7 +185,9 @@ abstracts `e` in the goal and in the hypotheses and hands the branch the equatio
 A lemma about a checker's step must name the step, but the checkers folded with inline lambdas. Stating
 `Keeps(Stmt, fun (found: List(String))(s: Stmt): List(String) => { … 14 cases … })` would repeat the checker's code
 in the proof, so the steps became definitions: `Check.errorStep`, `literalStep`, `boxStep`, `launcherSizes`,
-`u64Printed`, `gridExprs`, `sharedSize`, `staticArray`, `staticStep`, `sharedOffset`, `offsetStep`. Behaviour and
+`u64Printed`, `gridExprs`, `sharedSize`, `staticArray`, `staticStep`, `sharedOffset`, `offsetStep`, `paramUses`
+(now returning its step), `launcherNames`, and `printerName`'s parts `variableName` and `printerLocals` (a proof that
+`printerName` holds must name the disjuncts it does not prove). Behaviour and
 messages are unchanged, and the checker reads no worse.
 
 A step that closes over a value (`bytes`) must be a definition returning a function,
@@ -179,7 +232,7 @@ match s returning Fold.Empty(found) with
 ```
 
 So far: `Errors.keeps` (14 arms, 13 trivial), `Literals.keeps` (15, 13), `SharedMemory.staticKeeps` (14, 13),
-`SharedMemory.offsetKeeps` (15, 13), `Fold.stmtFoldHere` (14, 10), `Fold.stmtExprsAcc` (14, 7),
+`SharedMemory.offsetKeeps` (15, 13), `Names.usesKeeps` (15, 13), `Fold.stmtFoldHere` (14, 10), `Fold.stmtExprsAcc` (14, 7),
 `Fold.exprFoldHere` (15, 9).
 
 *Feature:* a wildcard case, checked once per remaining constructor under its refinement; or a tactic combinator
@@ -198,21 +251,42 @@ struct ExprIn (x: Expr)(b: Block) : Prop
 
 Written as a one-constructor `inductive`. *Feature:* generate no selector for such a field (as `_` fields get none).
 
-### F7. Small syntax and diagnostic traps
+### F7. A negation is a binder group of its own
+
+`Not(P)` unfolds to the function type `(h: P) -> False`, so `(n: String) -> Not(P(n))` has two binder groups, and a
+lambda written as one does not fit:
+
+```raccoon
+let once := fun (n: String)(twice: Spec.Twice(String, n, names)): False => …
+// expected: (n: String) -> ((h: Spec.Twice(String, n, names)) -> False)
+// actual:   (n: String) -> (twice: Spec.Twice(String, n, names)) -> False
+fun (n: String): Not(Spec.Twice(String, n, names)) => fun (twice: Spec.Twice(String, n, names)): False => …   // accepted
+```
+
+The message is clear once one knows the rule; the rule itself (grouping is part of a type's identity) is the cost.
+*Feature:* none for the kernel; an `intro`-style tactic would hide it.
+
+### F8. Small syntax and diagnostic traps
 
 - A `decreases` clause must stay on the line of the result type; on a continuation line the error is
   `Failed to parse Sym(:=)`, pointing at the result type.
 - Which family parameters a constructor takes explicitly depends on forcing by later fields, so
   `Spec.Mem.here(x, rest)` takes `x` and `Spec.Mem.there(y, rest, h)` does not; the arity error
   (`expected 2 params, got 3`) names neither binder.
-- `False.elim(h, T)` must be given the goal `T` again (no expected type is consulted).
+- `False.elim(h, T)` must be given the goal `T` again (no expected type is consulted), and `Or.inl` and `Or.inr`
+  must be given the other disjunct: `Or.inl(Eq(Bool, b, Bool.true), p)`, since nothing forces it.
+- A lambda cannot appear inside a constructor field's type (a parse error), so `Spec.mapNames` is a definition.
+- A match cannot appear in a binder's type written inline (`(h: Eq(Bool, { match … }, Bool.true))` is a parse
+  error), which is one reason the mirror definitions of F2 are definitions.
 
 ## Evaluation versus induction
 
 None of the soundness theorems is "evaluate and compare": each quantifies over every kernel, and every kernel's
 walk is a recursion over an open AST. What evaluation does inside them is small and local: a step applied to a
 constructor reduces by conversion (`Check.literalStep(found, Expr.lit(v))` to `Check.u32Printed(…)`), and a Bool
-condition converts to the spec's Prop. Proof by evaluation would help only where it does already, in discharging
+condition converts to the spec's Prop. One step in I5 is a genuine evaluation: that a name spelled `gpu_` then
+anything starts with `gpu_` is `Eq.refl(Bool.true)`, since `Check.startsWith` recurses on the literal prefix.
+Proof by evaluation would help only where it does already, in discharging
 `Check.WellFormed` of a concrete kernel at `render`.
 
 The induction is all in `Fold.rac`, and it is the same induction eight times over (acc and at, for four traversal

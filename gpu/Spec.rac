@@ -87,10 +87,13 @@ namespace Spec {
    | require (h: Mem(Expr, root, l.requires)) : HostRoot(l, root)
    | grid (h: GridExpr(root, l.grid)) : HostRoot(l, root)
 
+  // `x` occurs in an expression launcher `l` evaluates on the host.
+  inductive LauncherExpr (l: Launcher)(x: Expr) : Prop
+   | mk (root: Expr)(evaluated: HostRoot(l, root))(sub: SubExpr(x, root)) : LauncherExpr(l, x)
+
   // `x` occurs in an expression the launcher of kernel `k` evaluates on the host.
   inductive HostExpr (k: Kernel)(x: Expr) : Prop
-   | mk (l: Launcher)(launched: Eq(Option(Launcher), k.launcher, Option.some(l)))(root: Expr)(evaluated: HostRoot(l, root))
-        (sub: SubExpr(x, root)) : HostExpr(k, x)
+   | mk (l: Launcher)(launched: Eq(Option(Launcher), k.launcher, Option.some(l)))(h: LauncherExpr(l, x)) : HostExpr(k, x)
 
   // ---- Generation errors --------------------------------------------------------------------------------------------
 
@@ -139,4 +142,65 @@ namespace Spec {
   struct Literals (k: Kernel) : Prop
    | mk (u32: (n: Nat) -> Spec.Lit32(k, n) -> Nat.lt(n, Cuda.u32Limit))
         (u64: (n: Nat) -> Spec.Lit64(k, n) -> Nat.lt(n, Spec.u64Limit)) : Literals(k)
+
+  // ---- I5, names ----------------------------------------------------------------------------------------------------
+
+  // `x` occurs at two places in `xs`.
+  inductive Twice (A: Type)(x: A) indices (xs: List(A)) : Prop
+   | here (rest: List(A))(again: Mem(A, x, rest)) : Twice(A, x, List.cons(x, rest))
+   | there (y: A)(rest: List(A))(h: Twice(A, x, rest)) : Twice(A, x, List.cons(y, rest))
+
+  // `c` may start a C identifier: an ASCII letter or `_`.
+  def IdentStart (c: Char): Prop :=
+    Or(And(Nat.le(65, c.value), Nat.le(c.value, 90)), Or(And(Nat.le(97, c.value), Nat.le(c.value, 122)), Eq(Nat, c.value, 95)))
+
+  // `c` is an ASCII digit.
+  def Digit (c: Char): Prop := And(Nat.le(48, c.value), Nat.le(c.value, 57))
+
+  // `name` is a C identifier: a letter or `_`, then letters, digits and `_`.
+  inductive CIdent (name: String) : Prop
+   | mk (c: Char)(rest: List(Char))(spelled: Eq(List(Char), name.data, List.cons(c, rest)))(start: Spec.IdentStart(c))
+        (continued: (d: Char) -> Mem(Char, d, rest) -> Or(Spec.IdentStart(d), Spec.Digit(d))) : CIdent(name)
+
+  // The printed launcher's own locals.
+  def printerLocals : List(String) := List.cons("stream", List.cons("status", List.cons("args", List.cons("dims", List.cons("strides",
+    List.cons("box", List.cons("steps", List.nil(String))))))))
+
+  // `name` is one the printer declares itself where it prints a kernel's, a parameter's or a tensor map's name: a
+  // variable (`v` and digits), a name starting `gpu_`, or one of the launcher's locals.
+  inductive PrinterName (name: String) : Prop
+   | variable (d: Char)(ds: List(Char))(spelled: Eq(List(Char), name.data, List.append("v".data, List.cons(d, ds))))
+       (digits: (e: Char) -> Mem(Char, e, List.cons(d, ds)) -> Spec.Digit(e)) : PrinterName(name)
+   | prefixed (rest: List(Char))(spelled: Eq(List(Char), name.data, List.append("gpu_".data, rest))) : PrinterName(name)
+   | local (h: Mem(String, name, Spec.printerLocals)) : PrinterName(name)
+
+  // A name a program chose: a C identifier the printer does not declare itself.
+  struct Chosen (name: String) : Prop
+   | mk (ident: Spec.CIdent(name))(own: Not(Spec.PrinterName(name))) : Chosen(name)
+
+  // `names` are those one function declares, in a kernel named `kernel`: each chosen, none the kernel's, none twice.
+  struct Declared (kernel: String)(names: List(String)) : Prop
+   | mk (chosen: (n: String) -> Mem(String, n, names) -> Spec.Chosen(n))
+        (notKernel: (n: String) -> Mem(String, n, names) -> Not(Eq(String, n, kernel)))
+        (once: (n: String) -> Not(Spec.Twice(String, n, names))) : Declared(kernel, names)
+
+  def paramNames (ps: List(Param)): List(String) := List.map(ps, String, Cuda.paramName)
+
+  def mapNames (maps: List(MapEncoding)): List(String) := List.map(maps, String, fun (m: MapEncoding): String => m.param)
+
+  // A launcher's names: its parameters' and its tensor maps' are declared as one function's, and its expressions name
+  // only its parameters, by value or by address.
+  struct LauncherNames (kernel: String)(l: Launcher) : Prop
+   | mk (declared: Spec.Declared(kernel, List.append(Spec.paramNames(l.params), Spec.mapNames(l.maps))))
+        (value: (n: String) -> Spec.LauncherExpr(l, Expr.param(n)) -> Mem(String, n, Spec.paramNames(l.params)))
+        (address: (n: String) -> Spec.LauncherExpr(l, Expr.paramAddr(n)) -> Mem(String, n, Spec.paramNames(l.params))) : LauncherNames(kernel, l)
+
+  // I5: the kernel's name is chosen; its parameters' names are declared as one function's, and its body names only
+  // them, by value or by address; and so is its launcher's.
+  struct Names (k: Kernel) : Prop
+   | mk (kernel: Spec.Chosen(k.name))
+        (params: Spec.Declared(k.name, Spec.paramNames(k.params)))
+        (value: (n: String) -> Spec.ExprIn(Expr.param(n), k.body) -> Mem(String, n, Spec.paramNames(k.params)))
+        (address: (n: String) -> Spec.ExprIn(Expr.paramAddr(n), k.body) -> Mem(String, n, Spec.paramNames(k.params)))
+        (launcher: (l: Launcher) -> Eq(Option(Launcher), k.launcher, Option.some(l)) -> Spec.LauncherNames(k.name, l)) : Names(k)
 }

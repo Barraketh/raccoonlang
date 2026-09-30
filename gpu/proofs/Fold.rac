@@ -356,16 +356,22 @@ namespace Fold {
     | Spec.HostRoot.grid m => Fold.memAppendRight(Expr, root, l.requires, Check.gridExprs(l.grid), Fold.gridMem(root, l.grid, m))
   }
 
-  // A fold over the launcher's expressions that found nothing found nothing at each of them.
+  // A fold over a launcher's expressions that found nothing found nothing at each of them.
+  def launcherExprsAt (l: Launcher)(y: Expr)(occ: Spec.LauncherExpr(l, y))(acc: List(String))(f: List(String) -> Expr -> List(String))
+      (keeps: Fold.Keeps(Expr, f))(h: Fold.Empty(List.foldl(Check.hostExprList(l), List(String), acc, Fold.exprStep(f)))): Fold.Empty(f(List.nil(String), y)) := {
+    match occ returning Fold.Empty(f(List.nil(String), y)) with
+    | Spec.LauncherExpr.mk root evaluated sub => {
+      let atRoot := Fold.foldlAt(Expr, root, Check.hostExprList(l), Fold.hostRootMem(l, root, evaluated), acc, Fold.exprStep(f), Fold.exprKeeps(f, keeps), h)
+      Fold.exprFoldAt(y, root, sub, List.nil(String), f, keeps, atRoot)
+    }
+  }
+
   def hostExprsAt (k: Kernel)(y: Expr)(occ: Spec.HostExpr(k, y))(acc: List(String))(f: List(String) -> Expr -> List(String))
       (keeps: Fold.Keeps(Expr, f))(h: Fold.Empty(Check.hostExprs(List(String), k.launcher, acc, f))): Fold.Empty(f(List.nil(String), y)) := {
     match occ returning Fold.Empty(f(List.nil(String), y)) with
-    | Spec.HostExpr.mk l launched root evaluated sub => {
+    | Spec.HostExpr.mk l launched inLauncher => {
       match launched returning Fold.Empty(f(List.nil(String), y)) with
-      | Eq.refl host => {
-        let atRoot := Fold.foldlAt(Expr, root, Check.hostExprList(l), Fold.hostRootMem(l, root, evaluated), acc, Fold.exprStep(f), Fold.exprKeeps(f, keeps), h)
-        Fold.exprFoldAt(y, root, sub, List.nil(String), f, keeps, atRoot)
-      }
+      | Eq.refl host => Fold.launcherExprsAt(l, y, inLauncher, acc, f, keeps, h)
     }
   }
 }

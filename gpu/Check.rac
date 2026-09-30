@@ -133,23 +133,25 @@ namespace Check {
     | List.cons c more => Bool.and(Check.identStart(c), List.all(more, Check.identRest))
   }
 
+  // Whether `cs` spells a variable: `v` and one or more digits.
+  def variableName (cs: List(Char)): Bool := {
+    match cs returning Bool with
+    | List.nil => Bool.false
+    | List.cons c more => {
+      match more returning Bool with
+      | List.nil => Bool.false
+      | List.cons d rest => Bool.and(Nat.beq(c.value, 118), List.all(more, Check.isDigit))
+    }
+  }
+
+  def printerLocals : List(String) := List.cons("stream", List.cons("status", List.cons("args", List.cons("dims", List.cons("strides",
+    List.cons("box", List.cons("steps", List.nil(String))))))))
+
   // Whether the printer declares `name` itself where a kernel's, a parameter's or a tensor map's name is used, so that
   // using it for one would rebind it: a variable `v` and digits, anything starting `gpu_`, the launcher's `stream`,
   // `status` and `args`, and a tensor-map encoding's `dims`, `strides`, `box` and `steps`.
-  def printerName (name: String): Bool := {
-    let variable := {
-      match name.data returning Bool with
-      | List.nil => Bool.false
-      | List.cons c more => {
-        match more returning Bool with
-        | List.nil => Bool.false
-        | List.cons d rest => Bool.and(Nat.beq(c.value, 118), List.all(more, Check.isDigit))
-      }
-    }
-    let fixed := List.cons("stream", List.cons("status", List.cons("args", List.cons("dims", List.cons("strides",
-      List.cons("box", List.cons("steps", List.nil(String))))))))
-    Bool.or(variable, Bool.or(Check.startsWith(name.data, "gpu_".data), Check.mentions(fixed, name)))
-  }
+  def printerName (name: String): Bool :=
+    Bool.or(Check.variableName(name.data), Bool.or(Check.startsWith(name.data, "gpu_".data), Check.mentions(Check.printerLocals, name)))
 
   // ---- Traversals ---------------------------------------------------------------------------------------------------
 
@@ -602,20 +604,23 @@ namespace Check {
     Check.unless(own, Bool.not(Check.same(name, kernel)), fun (u: Unit): String => Text.cat3(what, name, " is the kernel's name"))
   }
 
-  // `names` checked as the names of parameters one function declares: chosen names, each declared once.
-  def declaredNames (found: List(String))(kernel: String)(what: String)(names: List(String)): List(String) := {
-    let walk := List.foldl(names, Prod(List(String), List(String)), Prod.mk(List.nil(String), found),
-      fun (acc: Prod(List(String), List(String)))(name: String): Prod(List(String), List(String)) => {
-        let chosen := Check.chosenName(acc.snd, kernel, what, name)
-        let once := Check.unless(chosen, Bool.not(Check.mentions(acc.fst, name)), fun (u: Unit): String =>
-          Text.cat3(what, name, " is declared twice"))
-        Prod.mk(List.cons(name, acc.fst), once)
-      })
-    walk.snd
+  // `names` checked as the names of parameters one function declares: chosen names, each declared once, where `before`
+  // holds those declared before them.
+  def declaredAfter (found: List(String))(kernel: String)(what: String)(before: List(String))(names: List(String)): List(String) decreases structural(names) := {
+    match names returning List(String) with
+    | List.nil => found
+    | List.cons name more => {
+      let chosen := Check.chosenName(found, kernel, what, name)
+      let once := Check.unless(chosen, Bool.not(Check.mentions(before, name)), fun (u: Unit): String => Text.cat3(what, name, " is declared twice"))
+      Check.declaredAfter(once, kernel, what, List.cons(name, before), more)
+    }
   }
 
+  def declaredNames (found: List(String))(kernel: String)(what: String)(names: List(String)): List(String) :=
+    Check.declaredAfter(found, kernel, what, List.nil(String), names)
+
   // A parameter named in an expression, which must be one of `declared`.
-  def paramUses (declared: List(String))(what: String)(found: List(String))(x: Expr): List(String) := {
+  def paramUses (declared: List(String))(what: String): List(String) -> Expr -> List(String) := fun (found: List(String))(x: Expr): List(String) => {
     match Check.leaf(x) returning List(String) with
     | Leaf.other => found
     | Leaf.var id => found
@@ -625,6 +630,17 @@ namespace Check {
     | Leaf.lit64 value => found
     | Leaf.param name => Check.unless(found, Check.mentions(declared, name), fun (u: Unit): String => Text.cat3(what, name, " is not a parameter"))
     | Leaf.shared offset => found
+  }
+
+  // The names a launcher declares, its parameters' and its tensor maps', and the parameters its expressions name.
+  def launcherNames (host: Option(Launcher))(kernel: String)(found: List(String)): List(String) := {
+    match host returning List(String) with
+    | Option.none => found
+    | Option.some l => {
+      let hostParams := List.map(l.params, String, Cuda.paramName)
+      let hostNames := List.append(hostParams, List.map(l.maps, String, fun (m: MapEncoding): String => m.param))
+      Check.hostExprs(List(String), host, Check.declaredNames(found, kernel, "launcher: name ", hostNames), Check.paramUses(hostParams, "launcher: "))
+    }
   }
 
   // I5, names: the kernel's name is a C identifier the printer does not declare itself; so is each name its parameters,
@@ -637,21 +653,8 @@ namespace Check {
       Text.cat3("kernel name ", name, " is a name the printer declares"))
     let params := List.map(k.params, String, Cuda.paramName)
     let declared := Check.declaredNames(kernelName, name, "parameter ", params)
-    let used := Check.blockExprs(List(String), k.body, declared, fun (found: List(String))(x: Expr): List(String) =>
-      Check.paramUses(params, "kernel: ", found, x))
-    let host := {
-      match k.launcher returning List(String) with
-      | Option.none => used
-      | Option.some l => {
-        let hostNames := List.foldr(List.map(l.params, String, Cuda.paramName), List(String),
-          List.map(l.maps, String, fun (m: MapEncoding): String => m.param), fun (n: String)(rest: List(String)): List(String) => List.cons(n, rest))
-        let hostDeclared := Check.declaredNames(used, name, "launcher: name ", hostNames)
-        let hostParams := List.map(l.params, String, Cuda.paramName)
-        Check.hostExprs(List(String), k.launcher, hostDeclared, fun (found: List(String))(x: Expr): List(String) =>
-          Check.paramUses(hostParams, "launcher: ", found, x))
-      }
-    }
-    Check.inOrder(host)
+    let used := Check.blockExprs(List(String), k.body, declared, Check.paramUses(params, "kernel: "))
+    Check.inOrder(Check.launcherNames(k.launcher, name, used))
   }
 
   // A distinct number for each element type.
