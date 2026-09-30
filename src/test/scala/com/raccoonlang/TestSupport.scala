@@ -73,21 +73,7 @@ trait TestSupport extends DiagnosticAssertions { this: munit.FunSuite =>
   }
 
   /** `body` run on a thread of the JVM's default stack size; what it throws, a stack overflow included, it rethrows. */
-  protected def onDefaultStack[A](body: => A): A = {
-    var result: Either[Throwable, A] = Left(new IllegalStateException("the thread did not run"))
-    val thread = new Thread(
-      null,
-      () =>
-        result =
-          try Right(body)
-          catch { case thrown: Throwable => Left(thrown) },
-      "default-stack",
-      0
-    )
-    thread.start()
-    thread.join()
-    result.fold(throw _, identity)
-  }
+  protected def onDefaultStack[A](body: => A): A = Execution.onStack(0)(body)
 
   protected def ctorName(value: Value): String = value match {
     case Value.ConstructorHead(name, _, _, _, _) => name
@@ -101,6 +87,12 @@ object TestSupport {
   lazy val bundledPreludeSource: String = resource("/Init/Prelude.rac")
 
   lazy val testPreludeSource: String = resource("/Init/TestPrelude.rac")
+
+  /**
+   * The stack the diagnostic fixtures' programs are checked on, so that the one that exhausts it,
+   * `evaluation-too-deep`, does so on every machine, and promptly.
+   */
+  val FixtureStack: Long = 4L << 20
 
   /**
    * The sealed Lease and Tok capabilities of spec §5.1 and `withLease` of spec §4.4, with the module's helpers, which
@@ -155,7 +147,10 @@ object TestSupport {
    * test assumes one the way a program does, with a custom prelude.
    */
   def preludeAssuming(base: String, assumptions: String): Prelude.Config =
-    Prelude.fromSource("assumptions", base + "\n" + assumptions)
+    Prelude.fromSource("assumptions", preludeSourceAssuming(base, assumptions))
+
+  /** The source of `preludeAssuming(base, assumptions)`. */
+  def preludeSourceAssuming(base: String, assumptions: String): String = base + "\n" + assumptions
 
   private def resource(path: String): String = {
     val stream = getClass.getResourceAsStream(path)

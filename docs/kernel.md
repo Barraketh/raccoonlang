@@ -18,6 +18,13 @@ their evaluated values. Data-valued opaque definitions and axioms publish
 symbolic heads; proof-valued declarations are canonicalized from their exact
 propositions before publication.
 
+Checking and evaluation recurse on the host stack. A stack overflow is caught
+only at the boundary of a declaration, prelude declarations included, or of
+the program's body, and becomes `EvaluationTooDeep` located there; no rule
+inside them observes one. The declaration that overflowed is not published,
+and checking stops, since the overflow may have unwound past the restoration
+of the checker's state, thread-local and process-wide.
+
 The bundled source prelude is a trusted bootstrap. A prelude is still parsed,
 elaborated, and typechecked, but prelude loading alone may install builtin
 declarations and native equations, and declare axioms. Selecting `--prelude`

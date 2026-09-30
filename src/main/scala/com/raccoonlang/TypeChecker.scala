@@ -31,6 +31,11 @@ object TypeChecker {
    * Check every declaration, collecting one diagnostic per independent failure. A declaration that names a failed (or
    * skipped) one is skipped silently; the body is checked only when nothing failed. Every rejection leaves as one
    * `CheckFailure`. An `InternalError` is never collected: it aborts.
+   *
+   * `EvaluationTooDeep` stops checking where it arises, with the diagnostics collected so far (PROOF_BY_EVALUATION
+   * §2.5): the overflow may have unwound past the restoration of the checker's state, such as the thread-local tables
+   * of `ValueEquivalence` and `InductiveChecks` and the process-wide ones of `FreshVar` and `Atoms`, so nothing after
+   * it is checked on that state.
    */
   private[raccoonlang] def checkRaw(program: CA.Program, prelude: Prelude.Config): Option[Value] = {
     var env = prelude.checkedEnv
@@ -43,6 +48,8 @@ object TypeChecker {
       else
         try env = Interpreter.evalDecl(decl, env)
         catch {
+          case diagnostic: Diagnostic if diagnostic.error == EvaluationTooDeep =>
+            throw Execution.CheckFailure(diagnostics.result() :+ diagnostic)
           case diagnostic: Diagnostic =>
             diagnostics += diagnostic
             unavailable ++= decl.definedNames
@@ -53,10 +60,14 @@ object TypeChecker {
     if (collected.nonEmpty) throw Execution.CheckFailure(collected)
     try
       program.body.map { body =>
-        val result = checkTerm(body, env).value
-        // The result is outside every binder, like a global, so it may not be linear either (spec §3.2).
-        if (Linearity.isLinear(result.tpe)) at(typeSite(body))(fail(LinearGlobal(None, result.tpe)))
-        result
+        // The program's boundary, as `Interpreter.evalDecl` is a declaration's: an overflow while checking and
+        // evaluating the body is `EvaluationTooDeep` at the whole body.
+        try {
+          val result = checkTerm(body, env).value
+          // The result is outside every binder, like a global, so it may not be linear either (spec §3.2).
+          if (Linearity.isLinear(result.tpe)) at(typeSite(body))(fail(LinearGlobal(None, result.tpe)))
+          result
+        } catch { case _: StackOverflowError => at(body.span)(fail(EvaluationTooDeep)) }
       }
     catch { case diagnostic: Diagnostic => throw Execution.CheckFailure(Vector(diagnostic)) }
   }

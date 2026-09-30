@@ -16,7 +16,7 @@ class CliTests extends munit.FunSuite {
       TestSupport.bundledPreludeSource + TestSupport.stringLayoutSource("Char.mk(value)")
     )
 
-  /** Runs the CLI on `program` under the String prelude, in a locale whose encoding is ASCII. */
+  /** Runs the CLI on `program` under the String prelude, in a locale whose encoding is ASCII, with stdin closed. */
   private def run(flags: Vector[String], program: String): Run = {
     val entry = Files.createTempFile(dir, "main", ".rac")
     Files.writeString(entry, program)
@@ -28,6 +28,7 @@ class CliTests extends munit.FunSuite {
     builder.environment().put("LANG", "C")
     builder.environment().put("LC_ALL", "C")
     val process = builder.start()
+    process.getOutputStream.close()
     val stdout = new String(process.getInputStream.readAllBytes(), StandardCharsets.UTF_8)
     Run(process.waitFor(), stdout)
   }
@@ -68,8 +69,47 @@ class CliTests extends munit.FunSuite {
       Run(0, "String.mk(List.cons(Char.mk(97), List.cons(someChar, List.nil)))\n")
     )
   }
+
+  test("--stack sets the stack checking and evaluation run on, and exhausting it is EvaluationTooDeep") {
+    val shallow = run(Vector("--json", "--stack", "1m"), CliTests.deepProgram)
+    assertEquals(shallow.exitCode, 1)
+    assert(shallow.stdout.startsWith("[\n  {"), shallow.stdout)
+    // At the program's body, on line 7.
+    assert(shallow.stdout.contains("\"startLine\": 7, \"startColumn\": 3,"), shallow.stdout)
+    assert(shallow.stdout.contains("\"kind\": \"EvaluationTooDeep\""), shallow.stdout)
+    assertEquals(run(Vector("--raw", "--stack", "256m"), CliTests.deepProgram), Run(0, "20000\n"))
+    // 256MB is the default.
+    assertEquals(run(Vector("--raw"), CliTests.deepProgram), Run(0, "20000\n"))
+  }
+
+  test("--stack takes a number of bytes, or of KiB, MiB or GiB by its suffix") {
+    Vector("268435456", "262144K", "1g").foreach { size =>
+      assertEquals(run(Vector("--raw", "--stack", size), "{ Nat.add(2, 3) }\n"), Run(0, "5\n"), size)
+    }
+  }
+
+  test("a --stack that is not a positive size is a usage error") {
+    val sizes = Vector("0", "-1m", "1.5m", "1mb", "m", "", "99999999999999999999", "8589934592g")
+    sizes.foreach(size => assertEquals(run(Vector("--stack", size), "{ 0 }\n"), Run(2, ""), size))
+  }
+
+  test("--wait-for-enter waits before the pipeline starts, which then runs as usual") {
+    assertEquals(run(Vector("--raw", "--wait-for-enter"), "{ Nat.add(2, 3) }\n"), Run(0, "5\n"))
+  }
 }
 
 object CliTests {
+
+  /** A program whose checking recurses 20,000 levels deep on the host stack: too deep for 1MB, not for 256MB. */
+  private val deepProgram =
+    """def count (n: Nat): Nat decreases structural(n) := {
+      |  match n returning Nat with
+      |  | Nat.zero => Nat.zero
+      |  | Nat.succ k => Nat.succ(count(k))
+      |}
+      |
+      |{ count(20000) }
+      |""".stripMargin
+
   private final case class Run(exitCode: Int, stdout: String)
 }

@@ -108,6 +108,21 @@ pass. Core-AST evaluation helpers and trusted-prelude construction are internal
 implementation operations; public prelude loaders only select a prelude for the
 staged pipeline.
 
+Checking and evaluation recurse on the host stack, so a program may need more
+of it than a thread has. `Execution.onStack` runs a computation on a thread of
+a chosen stack size; the CLI runs its whole pipeline on one of `--stack` bytes,
+256MB by default. A stack overflow while a declaration is checked is the
+diagnostic `EvaluationTooDeep`, located at that declaration, and one while the
+program's body is checked and evaluated is `EvaluationTooDeep` at the body.
+Nothing inside a declaration or the body catches an overflow. Checking then
+stops, reporting the diagnostics found before it: an overflow can unwind past
+the restoration of the checker's state, thread-local and process-wide, so
+nothing after it is checked. The CLI ends there. A caller that checks another
+program afterwards does so on state the overflow may have left inconsistent;
+running each check on a thread of its own discards the thread-local part of
+it, not the rest. An overflow while parsing or elaborating is not a
+diagnostic.
+
 Identifiers begin with a letter and continue with letters, digits, or `_`.
 `//` starts a comment that runs to the end of the line. `_` binds an anonymous
 local wherever a local is bound: a binder, a pattern field, `let _ := e` or

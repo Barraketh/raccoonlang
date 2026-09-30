@@ -28,6 +28,8 @@ object ErrorRendering {
         s"Native operation declaration mismatch for $name: $reason"
       case NativeOperationLimitExceeded(operation, argument, limit) =>
         s"$operation argument $argument exceeds native evaluation limit $limit"
+      case EvaluationTooDeep =>
+        "Evaluation is too deep: it exhausted the stack, whose size the command line sets with --stack"
       case AmbiguousName(name, candidates) => s"$name is ambiguous: ${candidates.mkString(", ")}"
       case UnsupportedImport(path) =>
         s"Unresolved import $path; load files through ModuleLoader before elaboration"

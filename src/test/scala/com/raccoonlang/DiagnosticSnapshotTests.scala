@@ -26,15 +26,19 @@ class DiagnosticSnapshotTests extends munit.FunSuite with Goldens {
       .toVector
       .sortBy(_.getFileName.toString)
 
-  /** The rendered report, or the description of an outcome that produced no report. */
+  /**
+   * The rendered report, or the description of an outcome that produced no report. The program is checked and run on
+   * `TestSupport.FixtureStack`, and the prelude built before, on the test's own thread.
+   */
   private def render(entry: Path): String = {
     val prelude = Prelude.default
+    prelude.checkedEnv
     val config = ModuleLoader.LoadConfig(Vector(entry.getParent), prelude)
     try {
       val loaded = ModuleLoader.load(entry, config)
       try {
-        val checked = TypeChecker.check(Elaborator.elaborate(loaded.program, prelude))
-        Interpreter.run(checked) match {
+        val elaborated = Elaborator.elaborate(loaded.program, prelude)
+        Execution.onStack(TestSupport.FixtureStack)(Interpreter.run(TypeChecker.check(elaborated))) match {
           case Some(value) => s"NO ERROR: program evaluated to ${PrettyPrinter.print(value)}"
           case None        => "NO ERROR: program has no body"
         }
@@ -96,7 +100,7 @@ class DiagnosticSnapshotTests extends munit.FunSuite with Goldens {
         case diagnostic: Diagnostic                  => Vector(diagnostic)
         case ModuleLoader.LoadFailure(diagnostic, _) => Vector(diagnostic)
       }
-    diagnostics.map(_.error.getClass.getSimpleName)
+    diagnostics.map(_.error.productPrefix)
   }
 
   /**
