@@ -164,10 +164,11 @@ object TypeChecker {
    * telescope order at the end.
    *
    * An evidence binder's argument is supplied in the call's bracket group, `providedEvidence`, one proof per evidence
-   * binder, or else the call writes none and each is discharged (PROOF_BY_EVALUATION §1.2, §1.3). Either way the final
-   * pass evaluates its type, with every earlier argument known, once: a supplied proof must fit that proposition, and
-   * an omitted one is discharged from it. The residual keeps neither, since evaluation binds an evidence parameter to
-   * an erased proof of the same proposition (Interpreter.residualArguments).
+   * binder, or else the call writes none and each is discharged (Discharge; PROOF_BY_EVALUATION §1.2, §1.3). Either way
+   * the final pass evaluates its type, with every earlier argument known, once: a supplied proof must fit that
+   * proposition, and an omitted one is discharged from it. The residual keeps neither, since evaluation binds an
+   * evidence parameter to an erased proof of the same proposition (Interpreter.residualArguments). A constructor is
+   * applied here as any function is, so its evidence fields are discharged or supplied alike (§1.8).
    *
    * `span` goes onto the residual, and is where a discharge stands for sealing; failures are located by the enclosing
    * `check`.
@@ -255,9 +256,18 @@ object TypeChecker {
                       checkType(known(idx), proposition)
                       Value.canonicalizeProof(VProof(proposition))
                     } else
-                      discharge(proposition, span, env) match {
+                      Discharge.discharge(proposition, span, env) match {
                         case Right(proof) => proof
-                        case Left(reason) => fail(EvidenceNotDischarged(binder.name, callee, proposition, reason))
+                        case Left(failure) =>
+                          fail(
+                            EvidenceNotDischarged(
+                              binder.name,
+                              callee,
+                              failure.path,
+                              failure.proposition,
+                              failure.reason
+                            )
+                          )
                       }
                   BinderOps.bindValue(curEnv, binder, proof)
                 // An argument at a binder whose type is a sort is a type, confined where the application stands.
@@ -276,42 +286,6 @@ object TypeChecker {
         CheckedApply(Interpreter.evalApply(fnValue, finalArgs), residual)
 
       case _ => fail(CannotApplyNonFunction(fnValue))
-    }
-
-  /**
-   * An evidence argument discharged by rule 1 (PROOF_BY_EVALUATION §1.2): `proposition`, evaluated where the
-   * application stands, is an instance of an inductive family in `Prop` with a constructor whose fields its result type
-   * determines, and whose result type, at the fields read off `proposition`, is convertible with it. The proof is that
-   * constructor applied to those fields (ProofReconstruction.determined, which invents no field). Nothing is searched:
-   * the constructors are tried in declaration order and the first that fits is taken, and proof irrelevance makes the
-   * choice unobservable (§1.4). A proposition that is not a family instance, as a neutral one is not, is not
-   * discharged.
-   *
-   * The constructor is applied for the program at `site`, as if it named it, so a sealed family's constructors
-   * discharge only in its module (Sealing): elsewhere one would build a value its module never built. A family being
-   * checked, one of an inductive block whose constructors are not yet declared, has none to discharge with.
-   */
-  private def discharge(proposition: Value, site: Span, env: Env): Either[EvidenceNotDischarged.Reason, Value] =
-    proposition match {
-      case InductiveFamilyValue(instance) =>
-        if (!Sealing.accessible(instance.meta.seal, site)) Left(EvidenceNotDischarged.Sealed)
-        else
-          instance.meta.block match {
-            case _: ProvisionalInductiveBlockInfo => Left(EvidenceNotDischarged.Undeclared)
-            case _: CheckedInductiveBlockSchema =>
-              instance.meta.constructors.iterator
-                .flatMap { ctor =>
-                  (env(ctor.canonicalName), ctor.fieldSources) match {
-                    case (head: ConstructorHead, Some(sources)) =>
-                      ProofReconstruction.determined(proposition, instance, head, sources)
-                    case (other, sources) => wtf(s"Constructor ${ctor.canonicalName} is $other, with sources $sources")
-                  }
-                }
-                .nextOption()
-                .map(proof => Value.canonicalizeProof(VCtor(proof.head, proof.fields, proposition)))
-                .toRight(EvidenceNotDischarged.NoConstructor)
-          }
-      case _ => Left(EvidenceNotDischarged.NoConstructor)
     }
 
   private def checkTelescope(pi: CA.Term.Pi, env: Env, familyParams: Int): CheckedTelescope = {

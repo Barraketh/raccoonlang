@@ -666,7 +666,7 @@ object ValueEquivalence {
         // remains is rigid. The frame is invertible (single constructor, no-confusion, non-Prop), so
         // links made inside are consequences and ctx passes through unchanged.
         case _ if Value.etaDecomposable(a) || Value.etaDecomposable(b) =>
-          (StructEta.fields(a), StructEta.fields(b)) match {
+          (StructEta.determiningFields(a), StructEta.determiningFields(b)) match {
             case (Some(fa), Some(fb)) if fa.length == fb.length =>
               var curMeta = meta
               val iter = fa.zip(fb).iterator

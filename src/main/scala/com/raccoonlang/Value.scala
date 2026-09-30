@@ -111,16 +111,20 @@ object Value {
 
   /**
    * Whether structure eta may decompose an equation with this value on one side: the value is a constructor at an
-   * eta-eligible type, or any value at a *fieldless* eligible type (unit eta). Two neutrals at a struct type with
-   * fields are deliberately NOT decomposable: each virtual field is a projection thunk that captures its base, so
-   * comparing the fields would compare the bases again — a fieldwise rule for that case adds nothing and diverges.
+   * eta-eligible type, or any value at an eligible type whose fields are all evidence (unit eta: conversion compares no
+   * evidence field, so every value there is its constructor applied to nothing it compares). Two neutrals at a struct
+   * type with other fields are deliberately NOT decomposable: each virtual field is a projection thunk that captures
+   * its base, so comparing the fields would compare the bases again — a fieldwise rule for that case adds nothing and
+   * diverges.
    */
   private[raccoonlang] def etaDecomposable(value: Value): Boolean =
     value match {
       case _: VProof => false
       case v =>
         StructEta.eligibleInstance(v.tpe).exists { case (_, info) =>
-          info.fieldCount == 0 || isConstructorForm(v)
+          info.fieldCount == 0 || isConstructorForm(v) || info.ctorHead.fieldBinders.forall(
+            _.mode == BinderMode.Evidence
+          )
         }
     }
 
@@ -718,7 +722,12 @@ object Value {
         stored.zip(pi.binders).collect { case (arg, binder) if binder.mode == BinderMode.Explicit => arg }
       }
 
-    /** The arguments as stored, deferred evidence included, which only rebuilding the application reads. */
+    /**
+     * The arguments as stored, deferred evidence unforced. Only a reader that forces nothing itself reads these:
+     * rebuilding the application, a match or destructuring that binds a constructor's fields to locals, which force
+     * them where they are looked up, implicit projection, which forces the one it reads, and printing, which shows no
+     * evidence.
+     */
     private[raccoonlang] def storedArgs: Vector[Value] = stored
 
     // Structural equality compares the parts the key is built from, as conversion does, and so hashes by key.
@@ -1238,17 +1247,22 @@ object Value {
     validatePositiveParams()
   }
 
-  /** A family's checked metadata. `seal` is present when the family is sealed to its module (Sealing). */
+  /**
+   * A family's checked metadata. `seal` is present when the family is sealed to its module (Sealing).
+   * `evidenceEligible` says its instances are discharged through their evidence fields (Discharge, rule 2).
+   */
   final case class InductiveMeta(
       constructors: Vector[ConstructorMeta],
       familyArity: Int,
       block: InductiveBlockDescriptor,
       projectionInfo: Option[ProjectionInfo],
       proofRecovery: Option[ProofRecoveryInfo],
-      seal: Option[Sealing.Seal]
+      seal: Option[Sealing.Seal],
+      evidenceEligible: Boolean
   ) {
     require(familyArity >= block.key.numParams, "Inductive family arity must contain the common parameter prefix")
     require(projectionInfo.isEmpty || constructors.length == 1, "Only one-constructor families can be projected")
+    require(!evidenceEligible || projectionInfo.nonEmpty, "An evidence-eligible family has one constructor")
     require(proofRecovery.isEmpty || constructors.length == 1, "Only one-constructor families can recover proof fields")
     require(
       proofRecovery.forall(info => projectionInfo.contains(info.projectionInfo)),
@@ -1320,6 +1334,20 @@ object Value {
         case p: VPacked                 => Some(p.codec.decodeHead(p))
         case _                          => None
       }
+
+    /**
+     * The same layer with a constructor application's fields as stored, its evidence fields unforced
+     * (`VApp.storedArgs`): for a match or destructuring, which binds them to locals that force them where looked up,
+     * and for implicit projection, which forces the one field it reads.
+     */
+    object Stored {
+      def unapply(value: Value): Option[(String, Vector[Value])] =
+        value match {
+          case app: VApp  => ConstructorApp.unapply(app).map(head => (head.name, app.storedArgs))
+          case p: VPacked => Some(p.codec.decodeHead(p))
+          case _          => None
+        }
+    }
   }
 
   // Blocker and Blocked read an application's blockers alone, never its arguments.

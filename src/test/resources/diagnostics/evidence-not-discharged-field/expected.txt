@@ -1,0 +1,4 @@
+
+<root>/main.rac:6:3: error: Evidence shape of gemm is not discharged: through its proposition's evidence fields, GemmShape.nOk: Eq(Nat, 192, 128), which no constructor proves with the fields its type determines; supply a proof as gemm(…)[proof]
+{ gemm(128, 192) }
+  ^^^^^^^^^^^^^^

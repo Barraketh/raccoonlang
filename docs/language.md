@@ -335,12 +335,13 @@ def pred (n: Nat)[h: Eq(Bool, Nat.blt(0, n), Bool.true)]: Nat := Nat.sub(n, 1)
 { pred(5) }
 ```
 
-An evidence binder stands in a definition's, a lambda's or a function type's
-telescope, before, after or between explicit and implicit binders. A family's
-parameters and indices are never evidence, which is a parse error, and a
-constructor's evidence field is not yet supported, `EvidenceFieldUnsupported`.
-`P` must be a proposition, a type whose sort is `Prop`, else `NotAProposition`,
-and it may mention only earlier binders.
+An evidence binder stands in a definition's, a lambda's, a function type's or
+a constructor's telescope, before, after or between explicit and implicit
+binders; a constructor's is an evidence field (see
+[Evidence fields](#evidence-fields)). A family's parameters and indices are
+never evidence, which is a parse error. `P` must be a proposition, a type whose
+sort is `Prop`, else `NotAProposition`, and it may mention only earlier
+binders.
 
 At a call that writes no bracket group, each evidence binder's type is
 evaluated, with every earlier argument known, to a proposition `P′`. `P′` is
@@ -350,8 +351,10 @@ the arguments of the constructor's result type, so its value is read off `P′`
 at that position, and the constructor applied to those values has a result type
 convertible with `P′`. The constructors are tried in declaration order, and the
 proof is the first that fits; a fieldless constructor is one with nothing to
-read. Otherwise the call is `EvidenceNotDischarged`, reported at the call and
-showing `P′`.
+read. Failing that, `P′` is discharged through its evidence fields when its
+family is evidence-eligible (see [Evidence fields](#evidence-fields)).
+Otherwise the call is `EvidenceNotDischarged`, reported at the call and
+showing the proposition that failed.
 
 So `Eq(A, l, r)` is discharged exactly when `l` and `r` evaluate to convertible
 values: `Eq.refl`'s field `x` is read off `Eq(A, x, x)` as `l`, and
@@ -404,10 +407,81 @@ arguments unevaluated. So a decision procedure in a proposition runs when a call
 is checked, once per call, and not when the call runs. Whatever reads an erased
 proof evaluates its proposition then, and sees the proof checking bound: a
 match on the parameter, a use of it as an explicit argument, and anything that
-reads a stored application's arguments, as comparing it does, or publishing it
-as a definition's value while the environment assertions
-(`-Draccoon.envAssertions`, on by default) check that the value is closed.
-Printing an application reads only its explicit arguments.
+uses a stored application's arguments themselves. Comparing, keying and
+publishing an application skip its evidence, which its other arguments
+determine, and printing shows none.
+
+#### Evidence fields
+
+A constructor's evidence binder is an evidence field, a stored proof that its
+value satisfies a proposition over the family's parameters and the earlier
+fields:
+
+```raccoon
+struct Fin (n: Nat) : Type
+ | mk (i: Nat)[h: Nat.lt(i, n)] : Fin(n)
+
+def last : Fin(5) := Fin.mk(5, 4)
+
+def value (x: Fin(5)): Nat := x.i
+```
+
+Constructing is applying, so a construction discharges its evidence fields, or
+takes them in a bracket group, as a call does its evidence arguments:
+`Fin.mk(5, 3)` discharges `Nat.lt(3, 5)`, `Fin.mk(2, 3)` is
+`EvidenceNotDischarged`, and generic code forwards a proof, `Fin.mk(n, i)[h]`.
+`Fin`'s parameter `n` occurs only in the evidence field's proposition, which
+forces nothing, so it is an explicit argument of `Fin.mk`. Implicits written on
+a constructor must still be forced by its explicit fields. An evidence field's
+type is checked as any field type is, universes and positivity included.
+
+An evidence field is stored like any proof field. A pattern binds it in its
+place, `| Fin.mk i h => …`, a destructuring too, `let (i, h) := x`, and a
+selector returns it, `x.h`. Proofs being irrelevant, two values that differ
+only in an evidence field are equal. When a program runs, a construction stores
+an erased proof and evaluates no proposition; printing a value leaves its
+evidence fields out, `Fin.mk(4)`.
+
+A proposition whose family is **evidence-eligible** is discharged through its
+evidence fields when no constructor's fields are read off it. A family is
+eligible when it is declared in `Prop` itself, has one constructor and no
+indices, no field type mentions a family of its own block, and every field is an
+evidence field:
+
+```raccoon
+struct Both (a: Prop)(b: Prop) : Prop
+ | mk [x: a][y: b] : Both(a, b)
+
+struct GemmShape (m: Nat)(n: Nat) : Prop
+ | mk [mOk: Eq(Bool, Nat.ble(m, 256), Bool.true)][nOk: Eq(Nat, n, 128)] : GemmShape(m, n)
+
+def gemm (m: Nat)(n: Nat)[shape: GemmShape(m, n)]: Nat := Nat.mul(m, n)
+
+{ gemm(256, 128) }
+```
+
+Each field's proposition, in order, is evaluated with the family's arguments
+and the earlier fields' proofs, and discharged in turn, by either route; the
+proof is the constructor applied to those proofs. The arguments may be
+anything, functions included:
+
+```raccoon
+struct App (f: Nat -> Prop)(n: Nat) : Prop
+ | mk [a: f(n)] : App(f, n)
+
+def isFour (n: Nat): Prop := Eq(Nat, n, 4)
+```
+
+`App(isFour, 4)` is discharged when `isFour(4)` is. A field that fails is reported with the path to it, depth first
+in field order: `gemm(128, 100)` fails at `GemmShape.nOk: Eq(Nat, 100, 128)`. A
+family of several constructors is not recursed into, nor one whose field
+mentions it, so `inductive Loop : Prop | mk [h: Loop]` is refused at once. A
+sealed family is discharged through its fields only in its module.
+
+Discharge takes at most 1024 such steps on any path from a call's proposition:
+one nested deeper, as a chain `Wrap(Wrap(…))` of 1025 built by a recursive
+definition, is `EvidenceNotDischarged`, reporting the bound. The bound is part
+of the language, so whether a program checks does not depend on how it runs.
 
 ### Closures
 

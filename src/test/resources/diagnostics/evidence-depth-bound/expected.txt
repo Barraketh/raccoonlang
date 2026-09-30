@@ -1,0 +1,4 @@
+
+<root>/main.rac:10:3: error: Evidence h of need is not discharged: through its proposition's evidence fields, Wrap.h ×1024: Wrap(True), which lies 1024 evidence fields deep, the bound past which discharge does not descend; supply a proof as need(…)[proof]
+{ need(1025) }
+  ^^^^^^^^^^

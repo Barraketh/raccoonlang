@@ -33,13 +33,26 @@ object PrettyPrinter {
 
   /**
    * Implicit and evidence arguments are not written among a call's arguments, so a saturated call prints only its
-   * explicit ones. Anything that is not a plain saturated call keeps every argument.
+   * explicit ones. Anything that is not a plain saturated call keeps every argument but evidence, which printing
+   * neither shows nor forces.
    */
   private def explicitArgs(app: Value.VApp): Seq[Value] =
     app.head.tpe match {
-      case pi: Value.VPi => app.explicitArgs(pi).getOrElse(app.args)
-      case _             => app.args
+      case pi: Value.VPi => app.explicitArgs(pi).getOrElse(app.determiningArgs)
+      case _             => app.determiningArgs
     }
+
+  /**
+   * A constructor application's stored fields but its evidence fields, which a construction does not write: its
+   * determining arguments, so printing reads no evidence field and forces none.
+   */
+  private object WrittenFields {
+    def unapply(value: Value): Option[(Value.ConstructorHead, Vector[Value])] =
+      value match {
+        case app: Value.VApp => Value.ConstructorApp.unapply(app).map(head => (head, app.determiningArgs))
+        case _               => None
+      }
+  }
 
   private def printApp(app: Value.VApp): Vector[Piece] = {
     val head = app.head
@@ -436,7 +449,7 @@ object PrettyPrinter {
 
     def scalars(value: Value): Option[Vector[Int]] =
       value match {
-        case Value.VCtor(head, Vector(chars), _) if head.name == "String.mk" =>
+        case WrittenFields(head, Vector(chars)) if head.name == "String.mk" =>
           val known = Vector.newBuilder[Int]
           @annotation.tailrec
           def loop(rest: Value): Option[Vector[Int]] =
@@ -493,11 +506,11 @@ object PrettyPrinter {
       case pi: Value.VPi                           => printPi(pi)
       case Value.VConst(name, _, _)                => Vector(Text(name))
       case Value.ConstructorHead(name, _, _, _, _) => Vector(Text(name))
-      case Value.VCtor(head, storedArgs, _) =>
+      case WrittenFields(head, fields) =>
         reader.scalars(value) match {
-          case Some(scalars)              => Vector(Text(printString(scalars)))
-          case None if storedArgs.isEmpty => Vector(Text(head.name))
-          case None                       => Text(head.name) +: argList(storedArgs.map(Val))
+          case Some(scalars)          => Vector(Text(printString(scalars)))
+          case None if fields.isEmpty => Vector(Text(head.name))
+          case None                   => Text(head.name) +: argList(fields.map(Val))
         }
       case v: Value.VApp => printApp(v)
       case v: Value.VLam => printLam(v)

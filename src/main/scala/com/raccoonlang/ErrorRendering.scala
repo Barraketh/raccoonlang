@@ -56,17 +56,22 @@ object ErrorRendering {
       case NotAProposition(binder, tpe) =>
         s"Evidence parameter $binder has the type $tpe, which is not a proposition: evidence is a proof, so its type " +
           "is in Prop"
-      case EvidenceNotDischarged(binder, callee, proposition, reason) =>
+      case EvidenceNotDischarged(binder, callee, path, proposition, reason) =>
+        val failed =
+          if (path.isEmpty) s"its proposition is $proposition"
+          else s"through its proposition's evidence fields, ${renderPath(path)}: $proposition"
         val why = reason match {
           case EvidenceNotDischarged.NoConstructor =>
             "which no constructor proves with the fields its type determines"
           case EvidenceNotDischarged.Sealed     => "whose sealed family keeps its constructors to its module"
           case EvidenceNotDischarged.Undeclared => "whose family's constructors are not yet declared"
+          case EvidenceNotDischarged.TooDeep =>
+            s"which lies ${Discharge.DepthBound} evidence fields deep, the bound past which discharge does not descend"
         }
-        s"Evidence $binder of $callee is not discharged: its proposition is $proposition, $why; supply a proof as " +
-          s"$callee(…)[proof]"
-      case EvidenceFieldUnsupported(ctor, field) =>
-        s"Constructor $ctor declares the evidence field $field, which is not yet supported"
+        s"Evidence $binder of $callee is not discharged: $failed, $why; supply a proof as $callee(…)[proof]"
+      case BuiltinEvidence(name, binder) =>
+        s"Builtin $name binds the evidence parameter $binder: a builtin reads its arguments as values, so its " +
+          "binders are explicit or implicit"
       case ImplicitReconstructionFailed(param, fn, reason) =>
         s"Cannot reconstruct implicit argument $param of $fn: $reason"
       case NonUniformInductiveParam(inductive, ctor, param, got) =>
@@ -153,5 +158,17 @@ object ErrorRendering {
         at + closures.map(field => s"\n  closures differ in $field").mkString
       }
     s"type mismatch\n  expected: $expected\n  actual:   $actual${differ.getOrElse("")}"
+  }
+
+  /**
+   * A path of evidence fields, `Both.y > GemmShape.nOk`, with a run of one field repeated written once with its count,
+   * `Wrap.h ×1024`, since a path may be as deep as discharge's bound.
+   */
+  private def renderPath(path: Vector[String]): String = {
+    val runs = path.foldLeft(Vector.empty[(String, Int)]) {
+      case (init :+ ((step, count)), next) if step == next => init :+ (step -> (count + 1))
+      case (runs, next)                                    => runs :+ (next -> 1)
+    }
+    runs.map { case (step, count) => if (count == 1) step else s"$step ×$count" }.mkString(" > ")
   }
 }

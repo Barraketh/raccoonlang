@@ -351,7 +351,8 @@ object InductiveChecks {
       positivityInputs: PositiveParamInputs,
       hasRecursiveField: Boolean,
       constructorSources: Vector[Option[Vector[ProofFieldSource]]],
-      proofFieldPlan: Option[(Vector[ProofFieldSource], Boolean)]
+      proofFieldPlan: Option[(Vector[ProofFieldSource], Boolean)],
+      evidenceEligible: Boolean
   )
 
   private final case class PositiveParamInputs(
@@ -513,7 +514,8 @@ object InductiveChecks {
       provisionalBlock,
       projectionInfo = None,
       proofRecovery = None,
-      seal = decl.seal
+      seal = decl.seal,
+      evidenceEligible = false
     )
   }
 
@@ -548,9 +550,6 @@ object InductiveChecks {
     var proofFieldPlan = Option.empty[(Vector[ProofFieldSource], Boolean)]
 
     decl.ctors.foreach { ctor =>
-      ctor.binders.find(_.mode == BinderMode.Evidence).foreach { field =>
-        at(field.span)(fail(EvidenceFieldUnsupported(ctor.canonicalName, field.name)))
-      }
       val allConstructorBinders = constructorBinders(header, ctor)
       val checkedBinders =
         BinderOps.checkBinders(allConstructorBinders, provisionalEnv, familyParams = header.params.length, ctor.span)
@@ -670,13 +669,23 @@ object InductiveChecks {
 
     }
 
+    // PROOF_BY_EVALUATION §1.9: declared in Prop itself, one constructor, no indices, every field evidence, and no field
+    // type that mentions a family of the block, so each field's type mentions only symbols declared before the family.
+    val evidenceEligible = decl.ctors match {
+      case Vector(ctor) =>
+        Sorts.isProp(signature.declaredSort) && header.indices.isEmpty &&
+        ctor.binders.forall(field => field.mode == BinderMode.Evidence && !CoreAst.mentionsGlobal(field.ty, blockNames))
+      case _ => false
+    }
+
     CheckedFamily(
       signature,
       meta,
       PositiveParamInputs(positivityContexts.result()),
       hasRecursiveField,
       constructorSources.result(),
-      proofFieldPlan
+      proofFieldPlan,
+      evidenceEligible
     )
   }
 
@@ -738,7 +747,8 @@ object InductiveChecks {
       },
       block = checkedBlock,
       projectionInfo = projectionInfo,
-      proofRecovery = proofRecovery
+      proofRecovery = proofRecovery,
+      evidenceEligible = check.evidenceEligible
     )
 
     val inductiveHead = VConst(header.name, Inductive(meta), check.signature.familyType)

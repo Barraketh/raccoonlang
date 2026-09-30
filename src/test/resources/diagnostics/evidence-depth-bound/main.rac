@@ -1,0 +1,10 @@
+struct Wrap (p: Prop) : Prop
+ | mk [h: p] : Wrap(p)
+
+def wraps (k: Nat): Prop decreases structural(k) := match k returning Prop with
+ | Nat.zero => True
+ | Nat.succ j => Wrap(wraps(j))
+
+def need (k: Nat)[h: wraps(k)]: Nat := k
+
+{ need(1025) }

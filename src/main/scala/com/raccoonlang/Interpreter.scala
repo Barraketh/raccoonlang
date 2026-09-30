@@ -210,12 +210,15 @@ object Interpreter {
    * contributing the sort of its type. The binder types and result are not the body, and implicit arguments are never
    * written, so neither contributes. A variable of a sort parameter is not a value and contributes nothing. Neither
    * does a recursive definition's reference to itself, the one local whose type may be large: it names a global, which
-   * a lambda does not capture (spec §3.3). The residual lists them, in ref id order.
+   * a lambda does not capture (spec §3.3). The residual lists them, in ref id order. A capture is read forced, as a
+   * closure's environment holds it: a destructured evidence field may be bound unforced.
    */
   private[raccoonlang] def lambdaCaptures(l: CTerm.Lam, env: Env): Vector[Capture] =
     l.bodyRefs.toVector
       .sortBy(_.id)
-      .flatMap(ref => env.locals.get(ref).flatMap(value => Sorts.sortOf(value.tpe).map(Capture(ref, value, _))))
+      .flatMap(ref =>
+        env.locals.get(ref).map(Value.forced).flatMap(value => Sorts.sortOf(value.tpe).map(Capture(ref, value, _)))
+      )
 
   /**
    * A lambda's derived closure field (spec §4.3): the join of that field of its captures' sorts, read in `env`, where
@@ -370,8 +373,8 @@ object Interpreter {
 
     lam.body match {
       // A native body reads only the arguments it names, none of them evidence: a native operation's binders are
-      // validated explicit, a builtin reads its binders by name and stores the rest in the applications it builds, and
-      // a raw recursive stub reads its metric's, which is never a proof.
+      // validated explicit, a builtin's are never evidence (BuiltinEvidence), and a raw recursive stub reads its
+      // metric's, which is never a proof.
       case LamBody.Native(run, nativeEnv, _) => run(args, nativeEnv)
       case LamBody.ProofEta =>
         Value.canonicalizeProof(VProof(lam.tpe.codomain(piEnv)))
@@ -467,10 +470,16 @@ object Interpreter {
 
   private def evalMatch(m: CTerm.Match, env: Env): Value = {
     val scrut = evalTerm(m.scrut, env)
-    val (ctorName, args) = scrut match {
-      case ConstructorForm(name, storedArgs) => (name, storedArgs)
-      case proof: VProof                     => return evalProofMatch(m, proof, env)
-      case other                             =>
+    scrut match {
+      // The fields are bound as stored, so matching forces no evidence field; a branch forces one where it reads it.
+      // Exhaustiveness is settled by MatchChecker: a constructor-form scrutinee always has a branch.
+      case ConstructorForm.Stored(ctorName, args) =>
+        val branch = m.cases
+          .find(c => c.ctorName == ctorName)
+          .getOrElse(wtf(s"Checked match has no branch for constructor $ctorName"))
+        evalBranch(branch, args, env)
+      case proof: VProof => evalProofMatch(m, proof, env)
+      case other         =>
         // Structure eta (rule 1): a neutral at an eta-eligible struct type has an eta view, so the
         // single branch fires against its virtual fields instead of sticking. The canonical
         // projection terms this builds are matches whose body is a bare pattern variable, and
@@ -481,22 +490,17 @@ object Interpreter {
               case Vector(single) => single
               case _              => wtf(s"Eta-eligible struct match has ${m.cases.length} cases")
             }
-            return evalBranch(branch, etaFields, env)
+            evalBranch(branch, etaFields, env)
+          // We are either blocked or stuck
           case None =>
+            val headBlockers = other match {
+              case Blocker(blockedOn) => blockedOn
+              case _                  => DepSet.empty
+            }
+            val blockedOn = headBlockers ++ typeCollapseDeps(other.tpe)
+            Value.canonicalizeProof(stuckMatchThunk(m, env, evalTerm(m.motive, env), blockedOn))
         }
-        // We are either blocked or stuck
-        val headBlockers = other match {
-          case Blocker(blockedOn) => blockedOn
-          case _                  => DepSet.empty
-        }
-        val blockedOn = headBlockers ++ typeCollapseDeps(other.tpe)
-        return Value.canonicalizeProof(stuckMatchThunk(m, env, evalTerm(m.motive, env), blockedOn))
     }
-
-    // Exhaustiveness is settled by MatchChecker: a constructor-form scrutinee always has a branch.
-    val branch =
-      m.cases.find(c => c.ctorName == ctorName).getOrElse(wtf(s"Checked match has no branch for constructor $ctorName"))
-    evalBranch(branch, args, env)
   }
 
   private[raccoonlang] def typeCollapseDeps(tpe: Value): DepSet = {
@@ -593,6 +597,15 @@ object Interpreter {
                   if (isOpaque) wtf("Builtin declarations cannot be opaque")
                   if (!trusted) fail(ReservedKernelName(name))
                   val tyV = TypeChecker.checkDeclType(ty, env).value
+                  // A builtin's native body reads its arguments as values, and an evidence argument is an erased proof
+                  // that nothing forces for it, so its own binder group has none.
+                  tyV match {
+                    case pi: VPi =>
+                      pi.binders.find(_.mode == BinderMode.Evidence).foreach { binder =>
+                        at(binder.span)(fail(BuiltinEvidence(name, binder.name)))
+                      }
+                    case _ =>
+                  }
                   env.putGlobal(name, publishedValue(Builtins.instantiate(name, tyV), tyV))
 
                 case CoreAst.ConstBody.TermBody(term) =>
