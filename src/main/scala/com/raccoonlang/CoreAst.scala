@@ -115,7 +115,7 @@ object CoreAst {
     //
     // `recursion` is what the source declared; `recursivePeers` is the runtime peer table the checker fills — a
     // singleton's own self reference, or the whole group's table for a RecursiveDefBlock member, which no single
-    // lambda could derive on its own (Interpreter.runLam).
+    // lambda could derive on its own (Interpreter.lamStep).
     final case class Lam(
         ty: Pi,
         body: Term,

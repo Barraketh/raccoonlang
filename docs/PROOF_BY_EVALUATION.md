@@ -1,8 +1,8 @@
 # Proof by evaluation
 
 Status: **approved design, partly implemented** (review 2026-09-30). Implemented: §1 (evidence arguments and fields,
-both discharge rules, the depth bound), §2.2 (printing), §2.3 (value metadata), §2.5 (stack exhaustion). Open: §2.4
-(tail positions) and the §2.6 measurements. `docs/language.md` and `docs/kernel.md` state the implemented rules, and
+both discharge rules, the depth bound), §2.2 (printing), §2.3 (value metadata), §2.4 (tail positions), §2.5 (stack
+exhaustion). Open: the §2.6 measurements. `docs/language.md` and `docs/kernel.md` state the implemented rules, and
 this document stays as the design record.
 
 Proof by reflection proves a property in three steps:
