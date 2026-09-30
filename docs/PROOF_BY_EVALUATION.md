@@ -1,6 +1,6 @@
 # Proof by evaluation
 
-Status: **proposal, for review**. Nothing here is implemented. As each change lands, `docs/language.md` and
+Status: **approved design, not yet implemented** (review 2026-09-30). As each change lands, `docs/language.md` and
 `docs/kernel.md` state its rules, and this document stays as the design record.
 
 Proof by reflection proves a property in three steps:
@@ -24,19 +24,22 @@ This document specifies:
 - **evidence arguments**, discharged by evaluation at the call site (§1);
 - **an evaluator that scales** to the data reflection runs over (§2).
 
-§3 shows the two in use, §4 collects diagnostics and test obligations, §5 records alternatives and decisions, and
-§6 lists open questions. Both changes are in the trusted core (`docs/kernel.md`, "trust boundary"). Where this
+§3 shows the two in use, §4 collects diagnostics and test obligations, and §5 records alternatives and the decisions
+made in review. Both changes are in the trusted core (`docs/kernel.md`, "trust boundary"). Where this
 document is silent on a case, the implementation stops and reports the gap rather than choosing.
 
 ## 1. Evidence arguments
 
 **1.1 Syntax.** A binder `[h: P]` declares an evidence parameter. It may stand in a definition's parameter telescope,
-a lambda's, or a function type:
+a lambda's, a function type, or a constructor's (§1.8):
 
 ```raccoon
 def storeAcc {n: Lifetime}{f: Nat}(e: Ctx(n, Group.warps(f, 4)))[aligned: Eq(Nat, Nat.mod(f, 4), 0)] … 
 
 def render (p: Program)[ok: Eq(Bool, Gpu.wellFormed(p), Bool.true)]: String := …
+
+struct Fin (n: Nat) : Type
+ | mk (i: Nat)[h: Nat.lt(i, n)] : Fin(n)
 ```
 
 `P` must be a proposition, a type whose sort is `Prop`; otherwise it is `NotAProposition`. `P` may mention only
@@ -45,10 +48,13 @@ in a bracket group after the explicit arguments, `Gpu.render(p)[proof]`, with on
 order.
 
 **1.2 Discharge.** At an application whose evidence argument is omitted, the checker runs its telescope-order pass
-(the pass that already evaluates each binder type once earlier arguments are known). When it reaches `[h: P]`, it:
-1. evaluates `P`, with every earlier argument known, to a value `P′`;
-2. discharges `h` if `P′` is an instance of an inductive family in `Prop` that has a **fieldless** constructor whose
-   result type is convertible with `P′`. The argument is that constructor, the canonical proof.
+(the pass that already evaluates each binder type once earlier arguments are known). When it reaches `[h: P]`, it
+evaluates `P`, with every earlier argument known, to a value `P′`, and discharges `P′`, by one of two rules:
+1. **Fieldless.** `P′` is an instance of an inductive family in `Prop` that has a fieldless constructor whose result
+   type is convertible with `P′`. The proof is that constructor.
+2. **Through evidence fields.** `P′` is an instance of an evidence-eligible family (§1.9), and each of its constructor's
+   evidence fields, in order, has a proposition that, evaluated with `P′`'s arguments, discharges in turn. The proof is
+   the constructor applied to those proofs.
 
 `Eq(A, l, r)` is discharged exactly when `l` and `r` evaluate to convertible values, by `Eq.refl`. `True` is
 discharged by `True.intro`. A family whose constructors all have fields (`And`, `Or`, `Exists`, an inductive `Le`) is
@@ -56,8 +62,10 @@ never discharged, since its fields would have to be invented. The fieldless rule
 without checking fabricated fields: `ProofReconstruction` fabricates proof fields unchecked, so "reconstructs to some
 constructor" would accept `And(False, False)`.
 
-Otherwise the application is `EvidenceNotDischarged`, reported at the application, showing `P′` as evaluated. For
-example `Eq(Bool, Bool.false, Bool.true)` shows which check failed. A `P′` that stays neutral, as it does in generic
+Otherwise the application is `EvidenceNotDischarged`, reported at the application. It shows the proposition that
+failed, as evaluated, and, if it was reached through evidence fields, the path of fields to it. For example
+`GemmShape.nOk: Eq(Nat, 192, 128)` names the conjunct that failed, and `Eq(Bool, Bool.false, Bool.true)` shows which
+check did. A `P′` that stays neutral, as it does in generic
 code that knows no concrete arguments, is not discharged either.
 
 **1.3 Explicit evidence.** A supplied evidence argument is checked against `P` as any argument is. It is how generic
@@ -76,7 +84,7 @@ equality. Nothing is searched for:
 binder.
 
 An evidence binder is not an explicit parameter: it does not count for arity, and since forcing projects implicits
-from explicit arguments' types, it forces nothing. It may not stand in a constructor's telescope (§6.2).
+from explicit arguments' types, it forces nothing.
 
 An unforced implicit binder of a proposition stays `NonForcedImplicitParam`, whose message points to `[h: P]`.
 
@@ -85,9 +93,60 @@ evidence parameters to erased proofs without evaluating their propositions, so a
 time only, once per application, and never when the program runs. The checker caches `P′` for the application
 rather than evaluating it again for the result type.
 
-**1.7 Decidability.** Discharge evaluates and compares, and never searches, so checking still terminates. Its
-running time now includes the decision procedures that programs call, which are total but may be costly. That is the
-point of the feature, and why §2 matters.
+**1.7 Decidability.** Discharge evaluates and compares, and never searches: a fieldless constructor is chosen as §1.4
+says, and an evidence-eligible family has one constructor. It terminates (§1.9), so checking still does. Its running
+time now includes the decision procedures that programs call, which are total but may be costly: evaluation may
+duplicate a proposition, so discharge through evidence fields can take time exponential in their nesting. That is
+the point of the feature, and why §2 matters.
+
+**1.8 Evidence fields.** A constructor's evidence binder is an evidence field. Constructing is applying, so at a
+construction an evidence field is discharged or supplied exactly as an evidence argument is: `Fin.mk(3)` at
+`Fin(5)` discharges `Nat.lt(3, 5)`, `Fin.mk(3)` at `Fin(2)` is `EvidenceNotDischarged`, and generic code writes
+`Fin.mk(i)[h]`. An evidence field is a stored proof field:
+- patterns and destructuring bind it in order among the stored fields, `| Fin.mk i h =>` and `let (i, h) := x`;
+- a struct selector returns it, `x.h`;
+- it takes part in the eta view as proof fields do, and, proofs being irrelevant, two values that differ only in an
+  evidence field are equal.
+
+Its proposition may mention the family's parameters and earlier fields, and is checked as any field's type is
+(positivity, universes). A constructor with an evidence field is not fieldless, so §1.2's first rule never uses it.
+At run time, as in §1.6, a construction stores an erased proof without evaluating the proposition. Implicits written
+on a constructor must still be forced; an evidence field is not an implicit and needs no forcing.
+
+**1.9 Termination of discharge.** A family `F` is **evidence-eligible** when:
+1. `F` is in `Prop`, has one constructor and no indices (a `struct`);
+2. `F` is not recursive: no field's type mentions `F` or a member of its mutual block;
+3. every field of its constructor is an evidence field.
+
+§1.2's second rule applies to an instance `F(ā)` of an eligible family only when its arguments `ā` are first-order:
+those that are not types or propositions contain no function. Otherwise only the first rule is tried. This is checked
+on the evaluated arguments at discharge.
+
+Discharge then terminates. The obligation is to prove it, and the proof is to be written out in `docs/kernel.md` when
+this lands. Its argument:
+- Order the program's symbols (families, constructors, definitions) by declaration, a well-founded order, since
+  Raccoon requires declaration before use. A closure counts as the symbol of the definition whose code built it, and
+  literals as minimal constants.
+- A discharge step goes from `F(ā)` to `Qᵢ`, the value of the i-th field's type evaluated with `ā` (and earlier fields'
+  proofs, which are erased). By condition 2 and declaration before use, that type mentions only symbols declared
+  before `F`, so its evaluation runs only code declared before `F`.
+- That code cannot run code declared after `F`: a parameter that is a type or proposition can be copied but not
+  inspected (Raccoon has no case analysis on types), and the other parameters contain no function to apply. So `Qᵢ`
+  is built from symbols declared before `F` and from copies of subterms of `ā`.
+- Such a `Qᵢ` is smaller than `F(ā)` in the recursive path ordering whose precedence is declaration order: `F` exceeds
+  every symbol built around the copies, and each copy is a subterm of `F(ā)`. That covers duplication, as in a field
+  `[a: Both(p, p)]`, and descent into a parameter, as in `Both(Both(X, Y), Z)`. The recursive path ordering over a
+  well-founded precedence is well-founded (Dershowitz), so no chain of discharge steps is infinite.
+- Each step's evaluation is total, and the base case, rule 1, is a conversion check between closed values, which
+  terminates.
+
+What the conditions exclude:
+- `inductive Loop : Prop | mk [h: Loop]` fails condition 2.
+- `struct App (f: Nat -> Prop)(n: Nat) : Prop | mk [a: f(n)]` has a function among its arguments. Both are discharged
+  by rule 1 only, and so, having no fieldless constructor, not at all.
+
+As defence in depth, the implementation also bounds the depth of discharge, and reports `EvidenceNotDischarged` if
+the bound is reached. Under the proof the bound is never reached, and a test pins that.
 
 ## 2. Evaluation that scales
 
@@ -185,13 +244,26 @@ binder whose type is not a proposition (§1.1). Existing diagnostics gain cases:
 - `TypeMismatch`: an explicit evidence argument of another proposition, and a function type whose binder modes
   differ (§1.5).
 
-These are parse errors: a bracket group that is empty or on a non-application; an evidence binder in a constructor.
+A bracket group that is empty or follows no application is a parse error.
 
 Every rule is a test obligation: one program it admits, and the smallest mutation that reaches its named diagnostic
 and no earlier one. Beyond those:
 - **Soundness of discharge.** `EvidenceNotDischarged` for `False`, `And(True, True)`, `Exists(…)`, an `Eq` whose sides
   differ, and a proposition that stays neutral. `And(True, True)` is the case that separates "fieldless" from
   "reconstructs".
+- **Discharge through evidence fields.**
+  - `Both(True, Eq(Nat, 2, 2))`, a nested `Both(Both(…), …)`, and a field that duplicates a parameter
+    (`[a: Both(p, p)]`) are discharged.
+  - A failing field is reported with its path, depth first in field order.
+  - `Loop` (recursive) and an `App`-style family applied to a function are refused promptly, without a hang.
+  - A multi-constructor family whose constructors have only evidence fields is not recursed into.
+  - The depth bound is not reached anywhere in the suite, and a direct test of the bound covers the report.
+- **Evidence fields.**
+  - `Fin.mk(3)` at `Fin(5)` is discharged; at `Fin(2)` it is `EvidenceNotDischarged`.
+  - Generic `Fin.mk(i)[h]` works.
+  - A match, a destructuring and a selector each bind the proof.
+  - Two `Fin` values with equal `i` are equal.
+  - Constructing in a run-time loop evaluates no proposition.
 - **Generic code.** Discharge fails where `P` is neutral; forwarding `[h]` works; a caller with concrete arguments
   discharges.
 - **Run time.** A program that calls an evidence-taking function in a loop runs no decision procedure. Pin it with a
@@ -212,21 +284,20 @@ and no earlier one. Beyond those:
 2. **No hypothesis lookup.** Discharging from a proof in scope of a convertible proposition would be deterministic,
    since proof irrelevance makes the choice unobservable, but it is a search over the context. Explicit forwarding
    (§1.3) covers generic code; lookup can be added later without changing what any program means.
-3. **No recursive discharge of proof fields.** Discharging `And(P, Q)` by discharging `P` and `Q` would need search over
-   constructors for families with several, and a termination argument for recursive ones. Deferred until a use
-   needs it.
+3. **Recursive discharge through evidence fields only, of eligible families only** (§1.2, §1.9).
+   - **Through evidence fields.** Ordinary fields, as in `And(P, Q)`, are never discharged: that would guess what a
+     field means.
+   - **Eligible families only.** One constructor means no search. Non-recursion and first-order arguments give the
+     termination proof.
+   - **Why not fieldless-only.** Adopted in review over that alternative for its diagnostics, which name the failing
+     conjunct. It only adds programs that are accepted: nothing fieldless-only accepts changes meaning.
 4. **Reflection before tactics.** Metaprogramming (elaboration-time Raccoon programs building terms) is the route to
    automation for goals that are not about data. It is left for when layer 3 of `gpu/OBLIGATIONS.md` §8 needs it.
 5. **Key assertions stay on.** They become iterative (§2.3); turning them off by default in the CLI would change a
    documented default of the trusted core.
-
-## 6. Open questions
-
-1. **Explicit evidence syntax.** `f(x)[h]` is proposed. Alternatives are a named argument, or writing evidence in
-   parentheses at its position.
-2. **Evidence in constructors.** `sealed struct Fin | mk (i: Nat)[h: Nat.lt(i, n)]` would give checked construction of
-   refined data. It needs `InductiveChecks` and match to treat the field as a proof binder. Deferred here: is it wanted
-   soon?
-3. **`--stack`'s default.** 256MB is proposed. GraalVM native-image may not honour thread stack sizes; if Raccoon ships
-   as a native image, that needs checking.
-4. **`--raw`'s name.**
+6. **Constructors carry evidence uniformly** (§1.8). Constructing is applying, so no new mechanism is needed. An
+   evidence field is stored, so a match recovers the fact its value certifies.
+7. **Settled in review:**
+   - explicit evidence is written `f(x)[h]`;
+   - `--stack` defaults to 256MB (a native-image build must be checked to honour it, if Raccoon ships as one);
+   - the raw output flag is `--raw`.
