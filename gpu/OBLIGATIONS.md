@@ -241,12 +241,13 @@ is missing.
 Even after layer 3, §2 stays trusted, and in particular §3: the models of TMA and tcgen05 are our reading of prose.
 The hardware harness stays, as a check of those assumptions.
 
-## 9. Open questions
+## 9. Decisions
 
-1. **Layer 1's form.** A checker is non-invasive; an intrinsically scoped AST changes most of `Gpu.rac` but makes I1
-   hold by construction. Recommendation: checker first.
-2. **Where the models live.** `gpu/model/` as Raccoon modules imported by `Gpu`, or a separate library.
-3. **How much of A6–A14 to model.** Only the ordering facts the protocols need, or the documented semantics in full.
-   Recommendation: the former, extended as proofs demand, each extension cited.
-4. **Whether §6's table becomes checkable.** Each operation's "Establishes" column as a Raccoon proposition, so that
-   layer 3's triples are stated from this document.
+Settled in review (2026-09-30):
+1. **Layer 1 is a checker first.** An intrinsically scoped AST would change most of `Gpu.rac`; the checker, with
+   `Program` requiring its certificate, does not.
+2. **The models live in `gpu/model/`**, as Raccoon modules that `Gpu` imports.
+3. **Model only what the protocols need.** Of A6–A14, model the ordering facts the protocols need, extending the
+   models as proofs demand, each extension citing its source.
+4. **The "Establishes" column of §6 becomes Raccoon propositions** as layer 3 is reached, so that its triples are
+   stated from this document.
