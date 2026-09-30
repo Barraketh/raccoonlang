@@ -356,6 +356,10 @@ Function application uses parentheses and comma-separated arguments:
 f(x, y)
 ```
 
+The arguments follow the function with no space. `f (x, y)` is a parse error,
+since on the same line `(` would otherwise begin a [pair](#pair-expressions) or
+a parenthesized term as the next item.
+
 A block contains ordered `let` or `open` statements followed by one result
 term:
 
@@ -430,8 +434,8 @@ module, destructuring a value of it is `SealedConstructor`.
 
 ### Pair expressions
 
-In a term position, `(a, b)` is the active prelude's `Pair.mk(a, b)`, and a
-destructuring takes it apart:
+A term `(a, b)` is the active prelude's `Pair.mk(a, b)`, and a destructuring
+takes it apart:
 
 ```raccoon
 def swap {k: Kind}{S: Lifetime}{A: Type { kind = k, scope = S }}(a: A)(n: Nat): Pair(Nat, A) := {
@@ -440,21 +444,29 @@ def swap {k: Kind}{S: Lifetime}{A: Type { kind = k, scope = S }}(a: A)(n: Nat): 
 }
 ```
 
-`Pair.mk` is looked up from the root among the prelude's declarations, so no
-local, namespace, `open` or declaration of the program named `Pair` or `mk`
-changes what a pair expression means. Where the active prelude declares no
-`Pair.mk`, a pair expression is `NotFound`. Otherwise it is checked as that
-application, so its type comes from its components: `Pair.mk` forces its
-implicits from their types, `(1, Bool.true)` is a `Pair(Nat, Bool)`, and a
-pair with a linear component is linear. Each component is a use of the locals
-it mentions.
+`Pair.mk` is looked up from the root among the active prelude's declarations,
+so no local, namespace, `open` or declaration of the program named `Pair` or
+`mk` changes what a pair expression means. A program cannot redeclare a
+prelude's `Pair.mk`; where the active prelude declares none, a pair expression
+is `NotFound`, even in a program that declares its own `Pair.mk`, which is
+applied only by name. A prelude's own pair expression names the `Pair.mk` it
+has declared before it. Otherwise a pair is checked as that application, so
+its type comes from its components: `Pair.mk` forces its implicits from their
+types, `(1, Bool.true)` is a `Pair(Nat, Bool)`, and a pair with a linear
+component is linear. Each component is a use of the locals it mentions.
 
 A pair expression has exactly two components; `(a, b, c)` is a parse error, and
-`(a, (b, c))` is written instead. `(e)` is `e`, and `((a, b))` is a pair. There
-is no pair type syntax: a type is written `Pair(A, B)`, and in a type position
-`(` begins a parenthesized type or a binder group, never a pair, while
-`(Nat, Bool)` in a term position is a pair of types, a value of
-`Pair(Type, Type)`.
+`(a, (b, c))` is written instead. `(e)` is `e`, and `((a, b))` is a pair. A
+pair is a value that trailers apply to as to any other: `(a, b).f` selects and
+`(f, g)(x)` applies it.
+
+An argument of an application is a term, in a type as anywhere, so a type may
+hold a pair expression as an argument: `Eq(Pair(Nat, Nat), p, (1, 2))`. There
+is no pair type syntax: a type is written `Pair(A, B)`. Where a type stands, as
+a binder's type, a declared or annotated type, a `returning` motive, or a
+function type's domain or result, `(` begins a parenthesized type or a binder
+group, and a pair there, as in `(p: (Nat, Nat))`, is a parse error. In a term
+position `(Nat, Bool)` is a pair of types, a value of `Pair(Type, Type)`.
 
 ### Scopes
 

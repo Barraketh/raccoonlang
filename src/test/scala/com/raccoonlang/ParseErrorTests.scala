@@ -155,8 +155,31 @@ class ParseErrorTests extends munit.FunSuite {
     expectParseError("def f : Nat := (1@, )\n", "Failed to parse LayoutSymTight())")
     expectParseError("def f : Nat := Nat.succ(1@, )\n", "Failed to parse LayoutSymTight())")
     expectParseError("def f : Nat := (1@ 2)\n", "Failed to parse LayoutSymTight())")
-    // A type position has no pair expression: there is no pair type syntax.
-    expectParseError("def f (p: @(Nat, Nat)): Nat := 0\n", "Failed to parse closure")
+    // A pair expression is an argument in a type too, but never a type itself: there is no pair type syntax.
+    expectParses("def f (p: Pair(Nat, Nat))(h: Eq(Pair(Nat, Nat), p, (1, ((2))))): Nat := 0\n")
+    expectParses("def f : Nat := {\n  let h : Eq(Pair(Nat, Nat), (1, 2), (1, 2)) := Eq.refl((1, 2))\n  0\n}\n")
+    expectParseError("def f (h: Eq(Pair(Nat, Nat), (1, 2, @3), (1, 2))): Nat := 0\n", arity)
+    val noPairType = "There is no pair type syntax: write Pair(A, B)"
+    everywhere("@(Nat, Nat)", noPairType)
+    everywhere("(@(Nat, Nat))", noPairType)
+    everywhere("@(Nat, Nat) -> Nat", noPairType)
+    everywhere("Nat -> @(Nat, Nat)", noPairType)
+    everywhere("(x: Nat) -> @(Nat, x)", noPairType)
+    expectParseError("def f : Nat := {\n  let h : @(Nat, Nat) := (1, 2)\n  0\n}\n", noPairType)
+    expectParseError("def f (b: Bool): Nat := match b returning @(Nat, Nat) with\n | Bool.true => 0\n", noPairType)
+    expectParseError("inductive W : @(Type, Type)\n | mk : W\n", noPairType)
+  }
+
+  test("a term's arguments follow it with no space") {
+    val spaced = "Arguments follow a function with no space: write f(a, b)"
+    expectParseError("def f : Pair(Nat, Nat) := Pair.mk @(1, 2)\n", spaced)
+    expectParseError("def f : Nat := Nat.succ \t@(1)\n", spaced)
+    expectParseError("def f : Nat := (fun (n: Nat): Nat => n) @(3)\n", spaced)
+    expectParseError("def f : Nat := {\n  let x := Nat.succ @(1)\n  x\n}\n", spaced)
+    expectParseError("{ Nat.succ @(1, 2) }\n", spaced)
+    // On the next line, a parenthesized term begins the next item.
+    expectParses("def f : Nat := Nat.succ\n(1, 2)\n")
+    expectParses("def f : Nat := Nat.succ(1) // (a comment)\n")
   }
 
   test("a parse failure names what was expected, never a parser object") {

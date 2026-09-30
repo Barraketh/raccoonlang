@@ -60,15 +60,16 @@ object Elaborator {
    * `recursiveAliases` are the members of the recursive group whose bodies are being elaborated, by full name: a
    * definition's own name and its peers' are not locals (spec §1), but in the group's bodies they denote local refs.
    * Global names and namespace objects live in `root`. Open scopes are snapshots of resolved objects, so later
-   * declarations do not affect an earlier `open`. `elabPath` states the order in which these are consulted.
-   * `preludeRoot` is the root as the active prelude left it, before any of the program's declarations: what a pair
-   * expression names is looked up there, so no name in scope changes it (PAIRS_AND_PRELUDE §4.1).
+   * declarations do not affect an earlier `open`. `elabPath` states the order in which these are consulted. `prelude`
+   * is the root as the active prelude left it, before any of the program's declarations, and `None` while a prelude
+   * itself is elaborated, whose own root is the prelude's. What a pair expression names is looked up there, so no name
+   * in scope and no declaration of a program changes it (PAIRS_AND_PRELUDE §4.1).
    */
   private final case class ResolveEnv(
       scopes: List[Map[String, CA.LocalRef]],
       nextLocal: Int,
       root: NameNode,
-      preludeRoot: NameNode,
+      prelude: Option[NameNode],
       namespace: GlobalName,
       opens: List[OpenScope],
       reservedLocals: Set[String],
@@ -262,11 +263,16 @@ object Elaborator {
         .foldLeft(NameNode()) { case (root, name) => root.insertGlobal(name, name) }
 
     /** The start of a program's elaboration, under a prelude whose globals are `prelude`. */
-    def under(prelude: NameNode): ResolveEnv =
+    def under(prelude: NameNode): ResolveEnv = start(prelude, Some(prelude))
+
+    /** The start of a prelude's own elaboration, or of a declaration header's outside any program. */
+    def empty: ResolveEnv = start(builtinRoot, None)
+
+    private def start(root: NameNode, prelude: Option[NameNode]): ResolveEnv =
       ResolveEnv(
         List(Map.empty),
         0,
-        prelude,
+        root,
         prelude,
         Vector.empty,
         List(Map.empty[String, ResolvedObject]),
@@ -274,9 +280,6 @@ object Elaborator {
         Map.empty,
         Map.empty
       )
-
-    /** The start of an elaboration under no prelude: the prelude's own, or a declaration header's. */
-    def empty: ResolveEnv = under(builtinRoot)
   }
 
   private final case class SurfacePath(root: Boolean, parts: Vector[String], span: Span)
@@ -654,8 +657,9 @@ object Elaborator {
       }
     case SA.Term.Pair(fst, snd, sp) =>
       // The prelude's `Pair.mk`, applied as written (PAIRS_AND_PRELUDE §4.1). A program cannot redeclare a prelude
-      // global, so this is `_root_.Pair.mk` wherever the prelude declares one, and a program's own is never it.
-      val pairMk = env.preludeRoot.lookup(PairMkPath).flatMap(_.binding).getOrElse {
+      // global, so this is `_root_.Pair.mk` wherever the prelude declares one, and a program's own is never it. A
+      // prelude's pair expression names the `Pair.mk` it has declared so far.
+      val pairMk = env.prelude.getOrElse(env.root).lookup(PairMkPath).flatMap(_.binding).getOrElse {
         at(sp) { fail(NotFound(globalName(PairMkPath))) }
       }
       CA.Term.App(CA.Term.GlobalRef(globalName(pairMk), sp), Vector(elabTerm(fst, env), elabTerm(snd, env)), sp)

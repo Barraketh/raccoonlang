@@ -100,19 +100,40 @@ object LanguageParser {
   private def termAtom(implicit sourceId: Option[SourceId]): Parser[Term] =
     parenthesized | rootTerm | identTerm | sortFormer | natLitTerm | strLitTerm
 
-  /**
-   * `(e)`, a parenthesized term, or `(a, b)`, a pair expression (PAIRS_AND_PRELUDE §4). A pair has exactly two
-   * components, so a longer tuple is written nested, `(a, (b, c))`. Only a term position has pair expressions: in a
-   * type position `(` begins a parenthesized type or a binder group.
-   */
+  /** A term in parentheses, `(e)`, or a pair expression `(a, b)`, in a term position. */
   private def parenthesized(implicit sourceId: Option[SourceId]): Parser[Term] =
     skipWS ~ (P('(') ~/ skipAllWs ~ term.rep(1, layoutSym(',')) ~ layoutSymTight(')')).flatSpanned(sourceId).map {
-      case (Vector(inner), _)       => inner
-      case (Vector(fst, snd), span) => Pair(fst, snd, span)
-      case (components, _) =>
+      case (components, span) => grouped(components, span)
+    }
+
+  /**
+   * What parentheses around comma-separated components mean (PAIRS_AND_PRELUDE §4): one component is itself, and two
+   * are a pair expression. A pair has exactly two components, so a longer tuple is written nested, `(a, (b, c))`.
+   */
+  private def grouped(components: Vector[Term], span: Span): Term =
+    components match {
+      case Vector(inner)    => inner
+      case Vector(fst, snd) => Pair(fst, snd, span)
+      case _ =>
         val third = components(2).span.start
         throw ParseError(third, third, "A pair expression has exactly two components; write (a, (b, c))")
     }
+
+  /**
+   * A term's arguments follow it with no space. Where spaces and then `(` follow a complete term on its line, that `(`
+   * is a parse error: it would otherwise begin another item, a block's result or the program's, as a pair or a
+   * parenthesized term.
+   */
+  private val spacedArguments: Parser[NoValue.type] = new Parser[NoValue.type] {
+    override def parse(input: String, startIdx: Int): ParseResult[NoValue.type] = {
+      val paren = input.indexWhere(c => c != ' ' && c != '\t', startIdx)
+      if (paren > startIdx && input.charAt(paren) == '(')
+        throw ParseError(paren, paren, "Arguments follow a function with no space: write f(a, b)")
+      Success(NoValue, startIdx, startIdx)
+    }
+
+    override def toString: String = "arguments"
+  }
 
   /** The fields a sort takes by name. */
   private val sortFieldNames: Set[String] = Set("level", "kind", "scope")
@@ -248,9 +269,12 @@ object LanguageParser {
 
   // Type positions have their own grammar (arrows, no lambdas/matches) but produce ordinary Terms.
   // A parenthesised type is an ATOM: `((b: B) -> C)` stays a nested Pi rather than merging into an
-  // enclosing arrow chain, because grouping is part of a function type's identity.
+  // enclosing arrow chain, because grouping is part of a function type's identity. Parentheses around two
+  // components are a pair expression, which stands only as an argument (`typeArgument`).
   private def typeAtom(implicit sourceId: Option[SourceId]): Parser[Term] =
-    sym('(') ~ skipAllWs ~ typeTerm ~ layoutSymTight(')') |
+    (skipWS ~ (P('(') ~ skipWS ~ skipAllWs ~ typeArgument.rep(1, layoutSym(',')) ~ layoutSymTight(')')))
+      .flatSpanned(sourceId)
+      .map { case (components, span) => grouped(components, span) } |
       rootTerm |
       identTerm |
       sortFormer |
@@ -270,7 +294,7 @@ object LanguageParser {
 
   private def typeTrailers(implicit sourceId: Option[SourceId]): Parser[Vector[TypeTrailer]] =
     ((P(".") ~/ identAtom).flatSpanned(sourceId).map(Dot.tupled) |
-      nonEmptyParenArgs(typeTerm).flatSpanned(sourceId).map(AppTrailer.tupled)).rep(0)
+      nonEmptyParenArgs(typeArgument).flatSpanned(sourceId).map(AppTrailer.tupled)).rep(0)
 
   private def typeExpr(implicit sourceId: Option[SourceId]): Parser[Term] =
     (typeAtom ~ typeTrailers).map { case (ta, trailers) =>
@@ -309,8 +333,20 @@ object LanguageParser {
     val binders =
       pieces.init.flatMap { case (groups, domain) => groups.flatten :+ Binder("_", domain, domain.span) } ++
         pieces.last._1.flatten
-    if (binders.isEmpty) pieces.last._2 else Pi(closure, binders, pieces.last._2, sp)
+    if (binders.isEmpty) pieces.last._2
+    else Pi(closure, binders.map(binder => binder.copy(ty = notPair(binder.ty))), notPair(pieces.last._2), sp)
   }
+
+  /**
+   * A type written where a type stands. A pair expression is a value, and there is no pair type syntax, so a pair there
+   * is a parse error; a pair of types is written `Pair(A, B)`.
+   */
+  private def notPair(written: Term): Term =
+    written match {
+      case pair: Pair =>
+        throw ParseError(pair.span.start, pair.span.start, "There is no pair type syntax: write Pair(A, B)")
+      case other => other
+    }
 
   /**
    * An arrow chain is ONE binder group: `A -> B -> C` and `(a: A) -> (b: B) -> C` are 2-ary function types, not nested
@@ -318,11 +354,17 @@ object LanguageParser {
    * atom and stays its own Pi. Grouping is part of a function type's identity (docs/kernel.md#definitional-equality),
    * so this is the only place the grouping of a written type is decided. Each type in the chain is parsed exactly once:
    * the arrow is looked for only after a piece has been read, never by speculatively re-parsing it as a domain.
+   *
+   * This is also an argument of an application in a type, or a component of a pair there, which may be a pair
+   * expression, since an argument is a term (PAIRS_AND_PRELUDE §4.1): `Eq(Pair(Nat, Nat), p, (1, 2))` is a type.
    */
-  private def typeTerm(implicit sourceId: Option[SourceId]): Parser[Term] =
+  private def typeArgument(implicit sourceId: Option[SourceId]): Parser[Term] =
     closedPi | (namedSegment.rep(0) ~ typeExpr ~ chainRest).flatSpanned(sourceId).map { case (named, first, rest, sp) =>
       buildChain(Closure.omitted, named, first, rest, sp)
     }
+
+  /** A type where a type stands, which is never a pair expression. */
+  private def typeTerm(implicit sourceId: Option[SourceId]): Parser[Term] = typeArgument.map(notPair)
 
   private def normalParam(implicit sourceId: Option[SourceId]): Parser[Binder] =
     (sym('(') ~ argName ~ sym(':') ~/ skipAllWs ~ typeTerm ~ layoutSymTight(')')).flatSpanned(sourceId).map {
@@ -428,11 +470,12 @@ object LanguageParser {
       parenArgs(term).flatSpanned(sourceId).map(TermApp.tupled)).rep(0)
 
   private def term(implicit sourceId: Option[SourceId]): Parser[Term] =
-    ((lambda | scopeP | matchP | closedPi | body | simplePi | termAtom) ~ termTrailers).map { case (base, trailers) =>
-      trailers.foldLeft(base) {
-        case (cur, TermDot(name, sp)) => Select(cur, name, trailerSpan(cur, sp))
-        case (cur, TermApp(args, sp)) => App(cur, args, trailerSpan(cur, sp))
-      }
+    ((lambda | scopeP | matchP | closedPi | body | simplePi | termAtom) ~ termTrailers ~ spacedArguments).map {
+      case (base, trailers) =>
+        trailers.foldLeft(base) {
+          case (cur, TermDot(name, sp)) => Select(cur, name, trailerSpan(cur, sp))
+          case (cur, TermApp(args, sp)) => App(cur, args, trailerSpan(cur, sp))
+        }
     }
 
   private def funcHeader(implicit sourceId: Option[SourceId]): Parser[FuncHeader] =
