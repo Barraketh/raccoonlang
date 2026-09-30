@@ -10,6 +10,9 @@ object Elaborator {
 
   private val RootName = "_root_"
 
+  /** What a pair expression applies, from the prelude's root (PAIRS_AND_PRELUDE §4.1). */
+  private val PairMkPath: GlobalName = Vector("Pair", "mk")
+
   private def globalName(parts: GlobalName): String = parts.mkString(".")
 
   /** A form's qualified name. The kernel owns these names, and the elaborator lowers them to `FormOp`s. */
@@ -58,11 +61,14 @@ object Elaborator {
    * definition's own name and its peers' are not locals (spec §1), but in the group's bodies they denote local refs.
    * Global names and namespace objects live in `root`. Open scopes are snapshots of resolved objects, so later
    * declarations do not affect an earlier `open`. `elabPath` states the order in which these are consulted.
+   * `preludeRoot` is the root as the active prelude left it, before any of the program's declarations: what a pair
+   * expression names is looked up there, so no name in scope changes it (PAIRS_AND_PRELUDE §4.1).
    */
   private final case class ResolveEnv(
       scopes: List[Map[String, CA.LocalRef]],
       nextLocal: Int,
       root: NameNode,
+      preludeRoot: NameNode,
       namespace: GlobalName,
       opens: List[OpenScope],
       reservedLocals: Set[String],
@@ -255,17 +261,22 @@ object Elaborator {
       BuiltinGlobals
         .foldLeft(NameNode()) { case (root, name) => root.insertGlobal(name, name) }
 
-    def empty: ResolveEnv =
+    /** The start of a program's elaboration, under a prelude whose globals are `prelude`. */
+    def under(prelude: NameNode): ResolveEnv =
       ResolveEnv(
         List(Map.empty),
         0,
-        builtinRoot,
+        prelude,
+        prelude,
         Vector.empty,
         List(Map.empty[String, ResolvedObject]),
         Set.empty,
         Map.empty,
         Map.empty
       )
+
+    /** The start of an elaboration under no prelude: the prelude's own, or a declaration header's. */
+    def empty: ResolveEnv = under(builtinRoot)
   }
 
   private final case class SurfacePath(root: Boolean, parts: Vector[String], span: Span)
@@ -418,6 +429,7 @@ object Elaborator {
       case _: SA.Term.NatLit | _: SA.Term.StrLit => Vector.empty
       case SA.Term.Select(base, _, _)            => free(base)
       case SA.Term.App(fn, args, _)              => (fn +: args).flatMap(free)
+      case SA.Term.Pair(fst, snd, _)             => free(fst) ++ free(snd)
       case SA.Term.Sort(level, kind, scope, _) =>
         val written = level match {
           case SA.Term.SortLevel.Written(written)             => Vector(written)
@@ -640,6 +652,13 @@ object Elaborator {
           CA.Term.FormOp(form, args.map(elabTerm(_, env)), sp)
         case _ => CA.Term.App(unapplied(head, fn.span), args.map(elabTerm(_, env)), sp)
       }
+    case SA.Term.Pair(fst, snd, sp) =>
+      // The prelude's `Pair.mk`, applied as written (PAIRS_AND_PRELUDE §4.1). A program cannot redeclare a prelude
+      // global, so this is `_root_.Pair.mk` wherever the prelude declares one, and a program's own is never it.
+      val pairMk = env.preludeRoot.lookup(PairMkPath).flatMap(_.binding).getOrElse {
+        at(sp) { fail(NotFound(globalName(PairMkPath))) }
+      }
+      CA.Term.App(CA.Term.GlobalRef(globalName(pairMk), sp), Vector(elabTerm(fst, env), elabTerm(snd, env)), sp)
     case SA.Term.Sort(level, kind, scope, sp) =>
       // `Type` and `Prop` fix the level, and an omitted kind or scope is Kind.unr or Lifetime.empty (spec §1).
       def fixed(form: CA.Form): CA.Term = CA.Term.FormOp(form, Vector.empty, sp)
@@ -1015,7 +1034,7 @@ object Elaborator {
     elab(p, Prelude.default)
 
   private[raccoonlang] def elab(p: SA.Program, prelude: Prelude.Config): CA.Program =
-    elabProgram(p, ResolveEnv.empty.copy(root = prelude.names.root))
+    elabProgram(p, ResolveEnv.under(prelude.names.root))
 
   /** Elaborate a surface program into the opaque input accepted by [[TypeChecker.check]]. */
   def elaborate(p: SA.Program, prelude: Prelude.Config = Prelude.default): Execution.ElaboratedProgram =

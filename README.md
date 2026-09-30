@@ -34,6 +34,7 @@ Raccoon currently provides:
 - single-constructor `struct` declarations, named projections, and structure eta;
 - destructuring, `let (a, (b, c)) := e`, which binds the fields of a value of
   any single-constructor, index-free, nonrecursive family, linear ones included;
+- pair expressions, `(a, (b, c))`, which build the prelude's `Pair`;
 - sealed families, whose constructors and selectors only their own file may use;
 - proof irrelevance and controlled elimination from `Prop`;
 - namespaces, scoped `open`, and file imports;
