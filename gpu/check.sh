@@ -2,7 +2,8 @@
 # Checks the spike: every example must generate code, every file under rejected/ must fail with the diagnostic
 # kind named on its `// expect:` line (with a message that mentions the text of its `// mentions:` line, if it has
 # one), every mutant in a rejected/*_mutants.py table must be refused as the table says (see mutate.py), and every file
-# under checks/ and proofs/ must check without a diagnostic.
+# under checks/ and proofs/ must check without a diagnostic. The same holds of encoding/ (the next core,
+# encoding/README.md), whose examples/, rejected/ and checks/ are laid out as these.
 here=$(cd "$(dirname "$0")" && pwd)
 run() { ${RACCOON:?set RACCOON to a raccoon launcher} --prelude "$here/Prelude.rac" --root "$here" "$@"; }
 status=0
@@ -13,25 +14,29 @@ cxx() {
   python3 "$here/stub/asm_calls.py" | clang++ -std=c++17 -fsyntax-only -Wall -Wno-unused-parameter -Wno-parentheses-equality -Werror \
     -I "$here/stub" -include "$here/stub/cuda_stub.h" -x c++ -
 }
-for f in "$here"/examples/*.rac; do
+# A file's path below gpu/, which names it in the report.
+name() { printf '%s' "${1#"$here"/}"; }
+for f in "$here"/examples/*.rac "$here"/encoding/examples/*.rac; do
   out=$(run --raw "$f" 2>&1)
   if printf '%s' "$out" | grep -q "error:"; then echo "FAIL $f"; printf '%s\n' "$out"; status=1
-  elif ! printf '%s' "$out" | cxx; then echo "FAIL $(basename "$f"): generated C++ does not compile"; status=1
-  else echo "ok   $(basename "$f")"; fi
+  elif ! printf '%s' "$out" | cxx; then echo "FAIL $(name "$f"): generated C++ does not compile"; status=1
+  else echo "ok   $(name "$f")"; fi
 done
-for f in "$here"/rejected/*.rac; do
+for f in "$here"/rejected/*.rac "$here"/encoding/rejected/*.rac; do
+  [ -e "$f" ] || continue
   want=$(sed -n 's#^// expect: ##p' "$f" | head -1)
   mentions=$(sed -n 's#^// mentions: ##p' "$f" | head -1)
   got=$(run --json "$f" 2>/dev/null | MENTIONS="$mentions" python3 -c 'import json,os,sys; d=json.load(sys.stdin); print(" ".join(x["kind"] for x in d if os.environ["MENTIONS"] in x["message"]))' 2>/dev/null || echo crashed)
   case " $got " in
-    *" $want "*) echo "ok   $(basename "$f") -> $got" ;;
-    *) echo "FAIL $(basename "$f"): expected $want${mentions:+ mentioning $mentions}, got '$got'"; status=1 ;;
+    *" $want "*) echo "ok   $(name "$f") -> $got" ;;
+    *) echo "FAIL $(name "$f"): expected $want${mentions:+ mentioning $mentions}, got '$got'"; status=1 ;;
   esac
 done
 # The checkers' unit tests (theorems about hand-built kernels, proved by evaluation) and their soundness proofs
 # against gpu/Spec.rac.
-for f in "$here"/checks/*.rac "$here"/proofs/*.rac; do
-  what=$(basename "$(dirname "$f")")/$(basename "$f")
+for f in "$here"/checks/*.rac "$here"/proofs/*.rac "$here"/encoding/checks/*.rac; do
+  [ -e "$f" ] || continue
+  what=$(name "$f")
   got=$(run --json "$f" 2>/dev/null | python3 -c 'import json,sys; [print("L%d %s: %s" % (x["startLine"], x["kind"], x["message"])) for x in json.load(sys.stdin)]' 2>/dev/null || echo crashed)
   if [ -z "$got" ]; then echo "ok   $what"; else echo "FAIL $what"; printf '%s\n' "$got"; status=1; fi
 done
@@ -54,7 +59,8 @@ if command -v clang++ >/dev/null; then
   done
   rm -r "$probes"
 fi
-for t in "$here"/rejected/*_mutants.py; do
+for t in "$here"/rejected/*_mutants.py "$here"/encoding/rejected/*_mutants.py; do
+  [ -e "$t" ] || continue
   python3 "$here/mutate.py" "$t" || status=1
 done
 exit $status

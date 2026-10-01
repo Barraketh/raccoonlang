@@ -1,0 +1,210 @@
+// Unit tests of code the attention core emits (gpu/ATTENTION.md §6), stated as theorems that checking proves by
+// evaluating the rendered kernel. Run by check.sh, which requires this file to check without a diagnostic.
+//
+// The kernel is a minimal client of the exchange, not a working one (its MMA thread never fills the S ring, so it
+// would wait forever): only its code is tested.
+// - Tensor memory is split in halves, and the exchange lives in the upper one, so its products' D operand (Ô) and A
+//   operand (P) carry the half's offset, 256 columns, through `tmemBase`.
+// - The softmax warpgroup, after its last `storeP`, releases S and spins in `awaitAcc` for the next S before
+//   `publishP` (which the types allow), so `publishP` must reconverge the warp with `__syncwarp` before the
+//   `.sync.aligned` `tcgen05.wait::st`.
+
+import Check
+import encoding.Core
+
+namespace E {
+  open Core
+  open Cuda
+
+  def box : TmaSpec := TmaSpec.mk(64, 128)
+  def vRing : RingCfg := RingCfg.mk(2, E.box, E.box)
+
+  def Cta : Group := Group.cta(256)
+  def Wg0 : Group := Group.warps(0, 4)
+  def Wg1 : Group := Group.warps(4, 4)
+  def Load : Group := Group.warps(0, 1)
+  def Rest : Group := Group.warps(1, 3)
+  def Issue : Group := Group.warps(1, 1)
+  def Idle : Group := Group.warps(2, 2)
+  def One : Group := Group.lane
+
+  def IssuerDone (rv: Lifetime)(q: Lifetime)(x: Lifetime) : Type { kind = lin, scope = union(rv, union(q, x)) } :=
+    Pair(ConsumerDone(rv), Pair(AccProducerDone(q), ExReaderDone(x)))
+  def WriterDone (q: Lifetime)(x: Lifetime) : Type { kind = lin, scope = union(q, x) } := Pair(AccConsumerDone(q), ExWriterDone(x))
+  def AllDone (rv: Lifetime)(q: Lifetime)(x: Lifetime) : Type { kind = lin, scope = union(rv, union(x, q)) } :=
+    Pair(Pair(ProducerDone(rv), ConsumerDone(rv)), Pair(Pair(ExWriterDone(x), ExReaderDone(x)), Pair(AccProducerDone(q), AccConsumerDone(q))))
+
+  // One product into the exchange, then the S ring's issuing side closed unused.
+  def issuer {rv: Lifetime}{q: Lifetime}{x: Lifetime}(vr: Ring(rv, E.vRing))(accs: AccRing(q, 128))(ex: Exchange(x))(cv: Consumer(rv))
+      (ap: AccProducer(q))(rd: ExReader(x))(m: Lifetime)(e: Ctx(m, E.Issue)): Pair(Ctx(m, E.Issue), E.IssuerDone(rv, q, x)) :=
+    Core.elect(e, E.IssuerDone(rv, q, x), fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, E.One)): Pair(Ctx(j, E.One), E.IssuerDone(rv, q, x)) => {
+      let (e, cv) := Core.takeConsumer(e, w, vr, cv)
+      let (e, ap) := Core.takeAccProducer(e, w, accs, ap)
+      let (e, rd) := Core.takeExReader(e, w, ex, rd)
+      let (e, p) := Core.awaitP(e, ex, rd)
+      let (e, v) := Core.await(e, vr, cv)
+      let (e, (used, vUsed)) := Core.mmaPVFirst(e, w, ex, p, vr, v)
+      let (e, cv) := Core.releaseByMma(e, w, vr, vUsed)
+      let (e, rd) := Core.commitPV(e, w, ex, used)
+      let (e, apDone) := Core.finishAccProducer(e, accs, ap)
+      (e, (Core.finishConsumer(cv), (apDone, Core.finishExReader(rd))))
+    })
+
+  def chunk {k: Lifetime}{x: Lifetime}{m: Lifetime}{S: Lifetime}(ex: Exchange(x))(v: F32x8(S, Grain.uniform))(c: Nat)[fits: Nat.lt(c, 16)]
+      (e: Ctx(k, E.Wg1))(p: PFree(x, m, 4, OState.fresh, c)): Pair(Ctx(k, E.Wg1), PFree(x, m, 4, OState.fresh, Nat.succ(c))) :=
+    Core.storeP(e, ex, p, v)[fits]
+
+  // Every chunk of P written, S released, a spin in `awaitAcc`, then the publish.
+  def writer {l: Lifetime}{q: Lifetime}{x: Lifetime}(g: AttnLaunch(l, E.box))(accs: AccRing(q, 128))(ex: Exchange(x))(ac: AccConsumer(q))
+      (wr: ExWriter(x))(own: OOwn(l, DType.f32))(m: Lifetime)(e: Ctx(m, E.Wg1)): Pair(Ctx(m, E.Wg1), E.WriterDone(q, x)) := {
+    let (e, c) := Core.takeAccConsumer(e, accs, ac)
+    let (e, wa) := Core.takeExWriter(e, ex, wr)
+    let (e, one) := Core.fconst(e, 1065353216)
+    let v := F32x8.mk(one, one, one, one, one, one, one, one)
+    let (e, full) := Core.awaitAcc(e, accs, c)
+    let (e, p) := Core.acquireP(e, ex, wa)
+    let (e, p) := E.chunk(ex, v, 0, e, p)
+    let (e, p) := E.chunk(ex, v, 1, e, p)
+    let (e, p) := E.chunk(ex, v, 2, e, p)
+    let (e, p) := E.chunk(ex, v, 3, e, p)
+    let (e, p) := E.chunk(ex, v, 4, e, p)
+    let (e, p) := E.chunk(ex, v, 5, e, p)
+    let (e, p) := E.chunk(ex, v, 6, e, p)
+    let (e, p) := E.chunk(ex, v, 7, e, p)
+    let (e, p) := E.chunk(ex, v, 8, e, p)
+    let (e, p) := E.chunk(ex, v, 9, e, p)
+    let (e, p) := E.chunk(ex, v, 10, e, p)
+    let (e, p) := E.chunk(ex, v, 11, e, p)
+    let (e, p) := E.chunk(ex, v, 12, e, p)
+    let (e, p) := E.chunk(ex, v, 13, e, p)
+    let (e, p) := E.chunk(ex, v, 14, e, p)
+    let (e, p) := E.chunk(ex, v, 15, e, p)
+    let (e, c) := Core.releaseAcc(e, accs, full)
+    let (e, full) := Core.awaitAcc(e, accs, c)
+    let (e, wa) := Core.publishP(e, ex, p)
+    let (e, c) := Core.releaseAcc(e, accs, full)
+    let (e, final) := Core.finishExWriter(e, ex, wa)
+    let (e, final) := Core.storeO(e, ex, final, one, one, g.out, own)
+    (e, (Core.finishAccConsumer(c), Core.closeExWriter(final)))
+  }
+
+  def roles {l: Lifetime}{rv: Lifetime}{q: Lifetime}{x: Lifetime}(g: AttnLaunch(l, E.box))(vr: Ring(rv, E.vRing))(accs: AccRing(q, 128))
+      (ex: Exchange(x))(pv: Producer(rv))(cv: Consumer(rv))(ap: AccProducer(q))(ac: AccConsumer(q))(wr: ExWriter(x))(rd: ExReader(x))
+      (own: OOwn(l, DType.f32))(e: Ctx(l, E.Cta)): Pair(Ctx(l, E.Cta), E.AllDone(rv, q, x)) := {
+    let idle := fun (m: Lifetime)(e: Ctx(m, E.Idle)): Pair(Ctx(m, E.Idle), Unit) => (e, Unit.unit)
+    let loader := fun (m: Lifetime)(e: Ctx(m, E.Load)): Pair(Ctx(m, E.Load), ProducerDone(rv)) =>
+      Core.elect(e, ProducerDone(rv), fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, E.One)): Pair(Ctx(j, E.One), ProducerDone(rv)) => {
+        let (e, pv) := Core.takeProducer(e, w, vr, pv)
+        Core.finishProducer(e, vr, pv)
+      })
+    let rest := fun (m: Lifetime)(e: Ctx(m, E.Rest)): Pair(Ctx(m, E.Rest), Pair(E.IssuerDone(rv, q, x), Unit)) =>
+      Core.split(e, 1, E.IssuerDone(rv, q, x), Unit,
+        fun (n: Lifetime)(e: Ctx(n, E.Issue)): Pair(Ctx(n, E.Issue), E.IssuerDone(rv, q, x)) => E.issuer(vr, accs, ex, cv, ap, rd, n, e), idle)
+    let wg0 := fun (m: Lifetime)(e: Ctx(m, E.Wg0)): Pair(Ctx(m, E.Wg0), Pair(ProducerDone(rv), Pair(E.IssuerDone(rv, q, x), Unit))) =>
+      Core.split(e, 1, ProducerDone(rv), Pair(E.IssuerDone(rv, q, x), Unit), loader, rest)
+    let wg1 := fun (m: Lifetime)(e: Ctx(m, E.Wg1)): Pair(Ctx(m, E.Wg1), E.WriterDone(q, x)) => E.writer(g, accs, ex, ac, wr, own, m, e)
+    let (e, ((pvd, ((cvd, (apd, rdd)), u)), (acd, wrd))) :=
+      Core.split(e, 4, Pair(ProducerDone(rv), Pair(E.IssuerDone(rv, q, x), Unit)), E.WriterDone(q, x), wg0, wg1)
+    (e, ((pvd, cvd), ((wrd, rdd), (apd, acd))))
+  }
+
+  def kernel : Program :=
+    Core.attentionKernel("emitted",
+      fun (l: Lifetime)(e: Ctx(l, E.Cta))(g: AttnLaunch(l, E.box))(own: OOwn(l, DType.f32))(permit: TmemPermit(l)): Ctx(l, E.Cta) => {
+        let regions := fun (a: Lifetime)(t: Tmem(a, 512))(acc: Acc(a, AccState.empty))(e: Ctx(l, E.Cta))
+            : Pair(Ctx(l, E.Cta), Pair(Acc(a, AccState.empty), Unit)) =>
+          Core.splitTmem(e, t, acc, 256, Unit, fun (b: Lifetime)(c: Lifetime)(ts: Tmem(b, 256))(accS: Acc(b, AccState.empty))(to: Tmem(c, Nat.sub(512, 256)))
+              (accO: Acc(c, AccState.empty))(e: Ctx(l, E.Cta)): Pair(Ctx(l, E.Cta), Pair(Pair(Acc(b, AccState.empty), Acc(c, AccState.empty)), Unit)) => {
+            let sRing := fun (q: Lifetime)(accs: AccRing(q, 128))(ap: AccProducer(q))(ac: AccConsumer(q))(e: Ctx(l, E.Cta))
+                : Pair(Ctx(l, E.Cta), Pair(Pair(AccProducerDone(q), AccConsumerDone(q)), Acc(c, AccState.empty))) => {
+              let exchange := fun (x: Lifetime)(ex: Exchange(x))(wr: ExWriter(x))(rd: ExReader(x))(e: Ctx(l, E.Cta))
+                  : Pair(Ctx(l, E.Cta), Pair(Pair(ExWriterDone(x), ExReaderDone(x)), Pair(AccProducerDone(q), AccConsumerDone(q)))) => {
+                let vStage := fun (rv: Lifetime)(vr: Ring(rv, E.vRing))(pv: Producer(rv))(cv: Consumer(rv))(e: Ctx(l, E.Cta))
+                    : Pair(Ctx(l, E.Cta), E.AllDone(rv, q, x)) => E.roles(g, vr, accs, ex, pv, cv, ap, ac, wr, rd, own, e)
+                Core.withRing(e, E.vRing, Pair(Pair(ExWriterDone(x), ExReaderDone(x)), Pair(AccProducerDone(q), AccConsumerDone(q))), vStage)
+              }
+              let (e, (accO, accDone)) := Core.withExchange(e, to, accO, Pair(AccProducerDone(q), AccConsumerDone(q)), exchange)
+              (e, (accDone, accO))
+            }
+            let (e, (accS, accO)) := Core.withAccRing(e, ts, accS, 2, 128, Acc(c, AccState.empty), sRing)
+            (e, ((accS, accO), Unit.unit))
+          })
+        let (e, u) := Core.withTmem(e, permit, 512, AccState.empty, Unit, regions)
+        e
+      })
+
+  def text : String := Core.render(E.kernel)
+
+  // ---- Reading the text -------------------------------------------------------------------------------------------
+
+  def empty (cs: List(Char)): Bool := {
+    match cs returning Bool with
+    | List.nil => Bool.true
+    | List.cons c more => Bool.false
+  }
+
+  // `xs` reversed onto `acc`, in linear time (the prelude's `List.reverse` is quadratic).
+  def revOnto {A: Type}(xs: List(A))(acc: List(A)): List(A) decreases structural(xs) := {
+    match xs returning List(A) with
+    | List.nil => acc
+    | List.cons x more => E.revOnto(more, List.cons(x, acc))
+  }
+
+  // The lines of `cs`, each without its indentation, in order; `line` is the current line so far, reversed, and `acc`
+  // the lines before it, newest first. (Each case is a `match`: `Bool.cond` would evaluate both recursive calls.)
+  def linesFrom (cs: List(Char))(line: List(Char))(acc: List(List(Char))): List(List(Char)) decreases structural(cs) := {
+    match cs returning List(List(Char)) with
+    | List.nil => E.revOnto(List.cons(E.revOnto(line, List.nil(Char)), acc), List.nil(List(Char)))
+    | List.cons ch more => {
+      match Nat.beq(ch.value, 10) returning List(List(Char)) with
+      | Bool.true => E.linesFrom(more, List.nil(Char), List.cons(E.revOnto(line, List.nil(Char)), acc))
+      | Bool.false => {
+        match Bool.and(Nat.beq(ch.value, 32), E.empty(line)) returning List(List(Char)) with
+        | Bool.true => E.linesFrom(more, line, acc)
+        | Bool.false => E.linesFrom(more, List.cons(ch, line), acc)
+      }
+    }
+  }
+
+  def lines : List(List(Char)) := E.linesFrom(E.text.data, List.nil(Char), List.nil(List(Char)))
+
+  // How many lines start with `prefix`.
+  def starting (prefix: String): Nat := List.length(List.filter(E.lines, fun (l: List(Char)): Bool => Check.startsWith(l, prefix.data)))
+
+  // Whether `want` are the first lines of `ls`.
+  def opens (ls: List(List(Char)))(want: List(String)): Bool decreases structural(want) := {
+    match want returning Bool with
+    | List.nil => Bool.true
+    | List.cons w more => {
+      match ls returning Bool with
+      | List.nil => Bool.false
+      | List.cons l rest => Bool.and(Check.sameChars(l, w.data), E.opens(rest, more))
+    }
+  }
+
+  // Whether `want` occur as consecutive lines of `ls`.
+  def occurs (ls: List(List(Char)))(want: List(String)): Bool decreases structural(ls) := {
+    match ls returning Bool with
+    | List.nil => Bool.false
+    | List.cons l rest => Bool.or(E.opens(ls, want), E.occurs(rest, want))
+  }
+
+  // ---- The tests -----------------------------------------------------------------------------------------------------
+
+  // A product of the exchange, with P in tensor memory: its template, up to its operands.
+  def pvMma : String :=
+    "asm volatile(\"{\\n\\t.reg .pred p;\\n\\tsetp.ne.b32 p, %4, 0;\\n\\ttcgen05.mma.cta_group::1.kind::f16 [%0], [%1], %2, %3, p;\\n\\t}\" :  : "
+
+  // v1 is the allocation's address (v0 is the number of key blocks). Every one of the 8 products writes Ô at the upper
+  // half's first column, v1 + 256, and the first reads P from 128 columns further.
+  def pvCount : Eq(Nat, E.starting(E.pvMma), 8) := Eq.refl(8)
+
+  def pvIntoUpperHalf : Eq(Nat, E.starting(Text.cat(E.pvMma, "\"r\"((v1 + 256u)), ")), 8) := Eq.refl(8)
+
+  def pvFirstFromP : Eq(Nat, E.starting(Text.cat(E.pvMma, "\"r\"((v1 + 256u)), \"r\"(((v1 + 256u) + 128u)), ")), 1) := Eq.refl(1)
+
+  // `awaitAcc`'s wait and fence, then `publishP`: the warp reconverges before `wait::st`.
+  def syncBeforeWaitSt : Eq(Bool, E.occurs(E.lines, List.cons("asm volatile(\"tcgen05.fence::after_thread_sync;\" :  :  : \"memory\");",
+      List.cons("__syncwarp();", List.cons("asm volatile(\"tcgen05.wait::st.sync.aligned;\" :  :  : \"memory\");", List.nil(String))))), Bool.true) :=
+    Eq.refl(Bool.true)
+}

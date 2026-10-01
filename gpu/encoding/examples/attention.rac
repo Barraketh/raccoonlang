@@ -1,0 +1,370 @@
+// Forward attention on sm_100a (gpu/ATTENTION.md, stage A1): for BH heads of `seq` rows, head dimension 128,
+// non-causal, `seq` a multiple of 128, O = softmax(scale · Q·Kᵀ)·V and LSE, from Q, K and V in bf16 `[BH·seq, 128]`
+// to O in f32 `[BH·seq, 128]` and LSE in f32 `[BH·seq]`. The caller passes `scale_log2` = scale · log2(e).
+//
+// One CTA of eight warps per 128 query rows of one head (ATTENTION.md §2.5). Warp 0 elects a thread that loads Q once
+// into a one-stage ring, and then each 128-key block's K and V, in the order K_0, V_0, K_1, V_1, …, into two-stage
+// rings. Warp 1 elects a thread that holds Q's stage across the loop, issues S_0 = Q·K_0ᵀ into the first of two
+// 128-column S buffers before the loop, and in iteration j issues S_{j+1} (when there is a next block) before
+// Ô += P_j·V_j, with P read from tensor memory. Warps 2 and 3 idle. Warps 4 to 7, the softmax warpgroup, one row per
+// thread, read S_j twice: once for the row's new maximum, once to write P_j = 2^(c·s − max) to tensor memory in bf16,
+// summing it; they release S_j, rescale Ô's row by 2^(old max − new max) (from the second block on) and publish P_j.
+// After the loop they wait for the last product and store each row of Ô divided by its sum, and its LSE.
+//
+// Tensor memory: S buffers in columns 0–255, Ô in 256–383, P in 384–447.
+//
+// Run: gpu/gen.sh gpu/encoding/examples/attention.rac
+
+import encoding.Core
+
+namespace Attn {
+  open Core
+  open Cuda
+
+  // Every stage holds a 128-row block as its two 64-wide halves of the head dimension.
+  def box : TmaSpec := TmaSpec.mk(64, 128)
+  def qRing : RingCfg := RingCfg.mk(1, Attn.box, Attn.box)
+  def kRing : RingCfg := RingCfg.mk(2, Attn.box, Attn.box)
+  def vRing : RingCfg := RingCfg.mk(2, Attn.box, Attn.box)
+
+  // The first warp of the softmax warpgroup, which must be aligned.
+  def softmaxWarp : Nat := 4
+
+  // −∞ and ln 2 as f32 bits.
+  def minusInfinity : Nat := 4286578688
+  def ln2 : Nat := 1060205080
+
+  def Cta : Group := Group.cta(256)
+  def Wg0 : Group := Group.warps(0, 4)
+  def Wg1 : Group := Group.warps(Attn.softmaxWarp, 4)
+  def Load : Group := Group.warps(0, 1)
+  def Rest : Group := Group.warps(1, 3)
+  def Issue : Group := Group.warps(1, 1)
+  def Idle : Group := Group.warps(2, 2)
+  def One : Group := Group.lane
+
+  def Launch (l: Lifetime) : Type { scope = l } := AttnLaunch(l, Attn.box)
+
+  // What each protocol hands back finished.
+  def RingDone (r: Lifetime) : Type { kind = lin, scope = r } := Pair(ProducerDone(r), ConsumerDone(r))
+  def AccDone (q: Lifetime) : Type { kind = lin, scope = q } := Pair(AccProducerDone(q), AccConsumerDone(q))
+  def ExDone (x: Lifetime) : Type { kind = lin, scope = x } := Pair(ExWriterDone(x), ExReaderDone(x))
+
+  // What each role hands back.
+  def LoaderDone (rq: Lifetime)(rk: Lifetime)(rv: Lifetime) : Type { kind = lin, scope = union(rq, union(rk, rv)) } :=
+    Pair(ProducerDone(rq), Pair(ProducerDone(rk), ProducerDone(rv)))
+  def IssuerDone (rq: Lifetime)(rk: Lifetime)(rv: Lifetime)(q: Lifetime)(x: Lifetime) : Type { kind = lin, scope = union(rq, union(rk, union(rv, union(q, x)))) } :=
+    Pair(ConsumerDone(rq), Pair(ConsumerDone(rk), Pair(ConsumerDone(rv), Pair(AccProducerDone(q), ExReaderDone(x)))))
+  def SoftmaxDone (q: Lifetime)(x: Lifetime) : Type { kind = lin, scope = union(q, x) } := Pair(AccConsumerDone(q), ExWriterDone(x))
+
+  // Everything the roles hand back, nested as the scopes that opened it close: the V ring first, the S ring last.
+  def AllDone (rq: Lifetime)(rk: Lifetime)(rv: Lifetime)(q: Lifetime)(x: Lifetime)
+      : Type { kind = lin, scope = union(rv, union(rk, union(rq, union(x, q)))) } :=
+    Pair(Attn.RingDone(rv), Pair(Attn.RingDone(rk), Pair(Attn.RingDone(rq), Pair(Attn.ExDone(x), Attn.AccDone(q)))))
+
+  // ---- The loader ------------------------------------------------------------------------------------------------------
+
+  // Q's block once, then K_j and V_j for every key block j; then wait for every stage to be released.
+  def loader {l: Lifetime}{rq: Lifetime}{rk: Lifetime}{rv: Lifetime}(g: Attn.Launch(l))(qr: Ring(rq, Attn.qRing))(kr: Ring(rk, Attn.kRing))
+      (vr: Ring(rv, Attn.vRing))(pq: Producer(rq))(pk: Producer(rk))(pv: Producer(rv))(m: Lifetime)(e: Ctx(m, Attn.Load))
+      : Pair(Ctx(m, Attn.Load), Attn.LoaderDone(rq, rk, rv)) :=
+    Core.elect(e, Attn.LoaderDone(rq, rk, rv), fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, Attn.One)): Pair(Ctx(j, Attn.One), Attn.LoaderDone(rq, rk, rv)) => {
+      let block := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Attn.One))(st: Pair(ProducerAt(rk, j), ProducerAt(rv, j)))
+          : Pair(Ctx(n, Attn.One), Pair(ProducerAt(rk, j), ProducerAt(rv, j))) => {
+        let (pk, pv) := st
+        let row := Core.mulC(i, 128)
+        let (e, s) := Core.acquire(e, kr, pk)
+        let (e, pk) := Core.fillHead(e, kr, s, g.k, Core.lit(0), row, g.k, Core.lit(64), row)
+        let (e, s) := Core.acquire(e, vr, pv)
+        let (e, pv) := Core.fillHead(e, vr, s, g.v, Core.lit(0), row, g.v, Core.lit(64), row)
+        (e, (pk, pv))
+      }
+      let (e, pq) := Core.takeProducer(e, w, qr, pq)
+      let (e, pk) := Core.takeProducer(e, w, kr, pk)
+      let (e, pv) := Core.takeProducer(e, w, vr, pv)
+      let (e, s) := Core.acquire(e, qr, pq)
+      let (e, pq) := Core.fillHead(e, qr, s, g.q, Core.lit(0), g.q0, g.q, Core.lit(64), g.q0)
+      let (e, (pk, pv)) := Core.loop(e, g.blocks, Core.fixedPair(Core.fixedProducerAt(rk, j), Core.fixedProducerAt(rv, j)), (pk, pv), block)
+      let (e, dq) := Core.finishProducer(e, qr, pq)
+      let (e, dk) := Core.finishProducer(e, kr, pk)
+      let (e, dv) := Core.finishProducer(e, vr, pv)
+      (e, (dq, (dk, dv)))
+    })
+
+  // ---- The MMA issuer --------------------------------------------------------------------------------------------------
+
+  // The issuer's state for the scores: the held Q stage, the K ring's consumer side, and the S ring's issuing side.
+  def Scores (rq: Lifetime)(rk: Lifetime)(q: Lifetime)(j: Lifetime) : Type { kind = lin, scope = union(rq, union(rk, union(q, j))) } :=
+    Pair(ReadyUsed(rq, j), Pair(ConsumerAt(rk, j), AccProducerAt(q, j)))
+
+  def fixedScores (rq: Lifetime)(rk: Lifetime)(q: Lifetime)(j: Lifetime): Fixed(Attn.Scores(rq, rk, q, j)) :=
+    Core.fixedPair(Core.fixedReadyUsed(rq, j), Core.fixedPair(Core.fixedConsumerAt(rk, j), Core.fixedAccProducerAt(q, j)))
+
+  // The issuer's state for the products: the V ring's consumer side and the exchange's reading side.
+  def Products (rv: Lifetime)(x: Lifetime)(j: Lifetime)(o: OState) : Type { kind = lin, scope = union(rv, union(x, j)) } :=
+    Pair(ConsumerAt(rv, j), ExReaderAt(x, j, o))
+
+  // S_0 before the loop; in iteration i, S_{i+1} (when i + 1 < blocks), then Ô (+)= P_i·V_i; after the loop, release
+  // Q and wait until the softmax warpgroup has read every S buffer.
+  def issuer {l: Lifetime}{rq: Lifetime}{rk: Lifetime}{rv: Lifetime}{q: Lifetime}{x: Lifetime}(g: Attn.Launch(l))(qr: Ring(rq, Attn.qRing))
+      (kr: Ring(rk, Attn.kRing))(vr: Ring(rv, Attn.vRing))(accs: AccRing(q, 128))(ex: Exchange(x))(cq: Consumer(rq))(ck: Consumer(rk))
+      (cv: Consumer(rv))(ap: AccProducer(q))(rd: ExReader(x))(m: Lifetime)(e: Ctx(m, Attn.Issue))
+      : Pair(Ctx(m, Attn.Issue), Attn.IssuerDone(rq, rk, rv, q, x)) :=
+    Core.elect(e, Attn.IssuerDone(rq, rk, rv, q, x), fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, Attn.One))
+        : Pair(Ctx(j, Attn.One), Attn.IssuerDone(rq, rk, rv, q, x)) => {
+      // S = Q·Kᵀ for the next key block, into the next S buffer.
+      let scores := fun (n: Lifetime)(e: Ctx(n, Attn.One))(st: Attn.Scores(rq, rk, q, j)): Pair(Ctx(n, Attn.One), Attn.Scores(rq, rk, q, j)) => {
+        let (qu, (ck, ap)) := st
+        let (e, kReady) := Core.await(e, kr, ck)
+        let (e, free) := Core.acquireAcc(e, accs, ap)
+        let (e, (qu, (kUsed, filling))) := Core.mmaScores(e, w, qr, qu, kr, kReady, accs, free)
+        let (e, ck) := Core.releaseByMma(e, w, kr, kUsed)
+        let (e, ap) := Core.commitAcc(e, w, accs, filling)
+        (e, (qu, (ck, ap)))
+      }
+      let nextScores := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Attn.One))(st: Attn.Scores(rq, rk, q, j))
+          : Pair(Ctx(n, Attn.One), Attn.Scores(rq, rk, q, j)) =>
+        Core.branch(e, Core.lt(Core.add(i, Core.lit(1)), g.blocks), Attn.fixedScores(rq, rk, q, j), st,
+          fun (b: Lifetime)(e: Ctx(b, Attn.One))(st: Attn.Scores(rq, rk, q, j)): Pair(Ctx(b, Attn.One), Attn.Scores(rq, rk, q, j)) => scores(b, e, st),
+          fun (b: Lifetime)(e: Ctx(b, Attn.One))(st: Attn.Scores(rq, rk, q, j)): Pair(Ctx(b, Attn.One), Attn.Scores(rq, rk, q, j)) => (e, st))
+      let first := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Attn.One))
+          (st: Pair(Attn.Scores(rq, rk, q, j), Attn.Products(rv, x, j, OState.fresh)))
+          : Pair(Ctx(n, Attn.One), Pair(Attn.Scores(rq, rk, q, j), Attn.Products(rv, x, j, OState.held))) => {
+        let (sc, (cv, rd)) := st
+        let (e, sc) := nextScores(n, i, e, sc)
+        let (e, p) := Core.awaitP(e, ex, rd)
+        let (e, vReady) := Core.await(e, vr, cv)
+        let (e, (pUsed, vUsed)) := Core.mmaPVFirst(e, w, ex, p, vr, vReady)
+        let (e, cv) := Core.releaseByMma(e, w, vr, vUsed)
+        let (e, rd) := Core.commitPV(e, w, ex, pUsed)
+        (e, (sc, (cv, rd)))
+      }
+      let rest := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Attn.One))
+          (st: Pair(Attn.Scores(rq, rk, q, j), Attn.Products(rv, x, j, OState.held)))
+          : Pair(Ctx(n, Attn.One), Pair(Attn.Scores(rq, rk, q, j), Attn.Products(rv, x, j, OState.held))) => {
+        let (sc, (cv, rd)) := st
+        let (e, sc) := nextScores(n, i, e, sc)
+        let (e, p) := Core.awaitP(e, ex, rd)
+        let (e, vReady) := Core.await(e, vr, cv)
+        let (e, (pUsed, vUsed)) := Core.mmaPVNext(e, w, ex, p, vr, vReady)
+        let (e, cv) := Core.releaseByMma(e, w, vr, vUsed)
+        let (e, rd) := Core.commitPV(e, w, ex, pUsed)
+        (e, (sc, (cv, rd)))
+      }
+      let (e, cq) := Core.takeConsumer(e, w, qr, cq)
+      let (e, ck) := Core.takeConsumer(e, w, kr, ck)
+      let (e, cv) := Core.takeConsumer(e, w, vr, cv)
+      let (e, ap) := Core.takeAccProducer(e, w, accs, ap)
+      let (e, rd) := Core.takeExReader(e, w, ex, rd)
+      let (e, qReady) := Core.await(e, qr, cq)
+      let (e, sc) := scores(j, e, (Core.holdStage(qReady), (ck, ap)))
+      let fixed := Core.fixedPair(Attn.fixedScores(rq, rk, q, j), Core.fixedPair(Core.fixedConsumerAt(rv, j), Core.fixedExReaderAt(x, j, OState.held)))
+      let (e, ((qu, (ck, ap)), (cv, rd))) := Core.loopPeeled(e, g.blocks, fixed, (sc, (cv, rd)), first, rest)
+      let (e, cq) := Core.releaseByMma(e, w, qr, qu)
+      let (e, apDone) := Core.finishAccProducer(e, accs, ap)
+      (e, (Core.finishConsumer(cq), (Core.finishConsumer(ck), (Core.finishConsumer(cv), (apDone, Core.finishExReader(rd))))))
+    })
+
+  // ---- The softmax warpgroup -------------------------------------------------------------------------------------------
+
+  // Pass 1, one chunk: the running maximum `mx` of t = c·s over columns 8c to 8c+7 of this thread's row of S.
+  def maxChunk {n: Lifetime}{q: Lifetime}{mm: Lifetime}{Sc: Lifetime}{Sm: Lifetime}
+      (accs: AccRing(q, 128))(scale: Val(Sc, Grain.uniform, DType.f32))(mx: Reg(Sm, DType.f32))(c: Nat)[fits: Nat.le(Nat.mul(8, Nat.succ(c)), 128)]
+      (e: Ctx(n, Attn.Wg1))(full: AccFull(q, mm, Attn.softmaxWarp)): Pair(Ctx(n, Attn.Wg1), AccFull(q, mm, Attn.softmaxWarp)) := {
+    let (e, (full, s)) := Core.loadAcc8(e, accs, full, c)[fits]
+    let (e, old) := Core.get(e, mx)
+    let m01 := Core.fmax(Core.fmul(scale, s.v0), Core.fmul(scale, s.v1))
+    let m23 := Core.fmax(Core.fmul(scale, s.v2), Core.fmul(scale, s.v3))
+    let m45 := Core.fmax(Core.fmul(scale, s.v4), Core.fmul(scale, s.v5))
+    let m67 := Core.fmax(Core.fmul(scale, s.v6), Core.fmul(scale, s.v7))
+    (Core.set(e, mx, Core.fmax(old, Core.fmax(Core.fmax(m01, m23), Core.fmax(m45, m67)))), full)
+  }
+
+  // Pass 1: `mx` becomes the maximum of its value and t over the row.
+  def pass1 {n: Lifetime}{q: Lifetime}{mm: Lifetime}{Sc: Lifetime}{Sm: Lifetime}
+      (accs: AccRing(q, 128))(scale: Val(Sc, Grain.uniform, DType.f32))(mx: Reg(Sm, DType.f32))
+      (e: Ctx(n, Attn.Wg1))(full: AccFull(q, mm, Attn.softmaxWarp)): Pair(Ctx(n, Attn.Wg1), AccFull(q, mm, Attn.softmaxWarp)) := {
+    let (e, full) := Attn.maxChunk(accs, scale, mx, 0, e, full)
+    let (e, full) := Attn.maxChunk(accs, scale, mx, 1, e, full)
+    let (e, full) := Attn.maxChunk(accs, scale, mx, 2, e, full)
+    let (e, full) := Attn.maxChunk(accs, scale, mx, 3, e, full)
+    let (e, full) := Attn.maxChunk(accs, scale, mx, 4, e, full)
+    let (e, full) := Attn.maxChunk(accs, scale, mx, 5, e, full)
+    let (e, full) := Attn.maxChunk(accs, scale, mx, 6, e, full)
+    let (e, full) := Attn.maxChunk(accs, scale, mx, 7, e, full)
+    let (e, full) := Attn.maxChunk(accs, scale, mx, 8, e, full)
+    let (e, full) := Attn.maxChunk(accs, scale, mx, 9, e, full)
+    let (e, full) := Attn.maxChunk(accs, scale, mx, 10, e, full)
+    let (e, full) := Attn.maxChunk(accs, scale, mx, 11, e, full)
+    let (e, full) := Attn.maxChunk(accs, scale, mx, 12, e, full)
+    let (e, full) := Attn.maxChunk(accs, scale, mx, 13, e, full)
+    let (e, full) := Attn.maxChunk(accs, scale, mx, 14, e, full)
+    Attn.maxChunk(accs, scale, mx, 15, e, full)
+  }
+
+  // Pass 2, one chunk: p = 2^(t − max) over columns 8c to 8c+7, added to `sum` and written as chunk c of P.
+  def expChunk {n: Lifetime}{q: Lifetime}{mm: Lifetime}{x: Lifetime}{o: OState}{Sc: Lifetime}{Sm: Lifetime}{um: Grain}{Ss: Lifetime}
+      (accs: AccRing(q, 128))(ex: Exchange(x))(scale: Val(Sc, Grain.uniform, DType.f32))(mx: Val(Sm, um, DType.f32))(sum: Reg(Ss, DType.f32))
+      (c: Nat)[fitsS: Nat.le(Nat.mul(8, Nat.succ(c)), 128)][fitsP: Nat.lt(c, 16)]
+      (e: Ctx(n, Attn.Wg1))(st: Pair(AccFull(q, mm, Attn.softmaxWarp), PFree(x, mm, Attn.softmaxWarp, o, c)))
+      : Pair(Ctx(n, Attn.Wg1), Pair(AccFull(q, mm, Attn.softmaxWarp), PFree(x, mm, Attn.softmaxWarp, o, Nat.succ(c)))) := {
+    let (full, p) := st
+    let (e, (full, s)) := Core.loadAcc8(e, accs, full, c)[fitsS]
+    let (e, p0) := Core.ex2(e, Core.fsub(Core.fmul(scale, s.v0), mx))
+    let (e, p1) := Core.ex2(e, Core.fsub(Core.fmul(scale, s.v1), mx))
+    let (e, p2) := Core.ex2(e, Core.fsub(Core.fmul(scale, s.v2), mx))
+    let (e, p3) := Core.ex2(e, Core.fsub(Core.fmul(scale, s.v3), mx))
+    let (e, p4) := Core.ex2(e, Core.fsub(Core.fmul(scale, s.v4), mx))
+    let (e, p5) := Core.ex2(e, Core.fsub(Core.fmul(scale, s.v5), mx))
+    let (e, p6) := Core.ex2(e, Core.fsub(Core.fmul(scale, s.v6), mx))
+    let (e, p7) := Core.ex2(e, Core.fsub(Core.fmul(scale, s.v7), mx))
+    let (e, old) := Core.get(e, sum)
+    let e := Core.set(e, sum, Core.fadd(old, Core.fadd(Core.fadd(Core.fadd(p0, p1), Core.fadd(p2, p3)), Core.fadd(Core.fadd(p4, p5), Core.fadd(p6, p7)))))
+    let (e, p) := Core.storeP(e, ex, p, F32x8.mk(p0, p1, p2, p3, p4, p5, p6, p7))[fitsP]
+    (e, (full, p))
+  }
+
+  // Pass 2: P, every chunk, against the row's maximum `mx`; `sum` gains the row's sum of p.
+  def pass2 {n: Lifetime}{q: Lifetime}{mm: Lifetime}{x: Lifetime}{o: OState}{Sc: Lifetime}{Sm: Lifetime}{um: Grain}{Ss: Lifetime}
+      (accs: AccRing(q, 128))(ex: Exchange(x))(scale: Val(Sc, Grain.uniform, DType.f32))(mx: Val(Sm, um, DType.f32))(sum: Reg(Ss, DType.f32))
+      (e: Ctx(n, Attn.Wg1))(st: Pair(AccFull(q, mm, Attn.softmaxWarp), PFree(x, mm, Attn.softmaxWarp, o, 0)))
+      : Pair(Ctx(n, Attn.Wg1), Pair(AccFull(q, mm, Attn.softmaxWarp), PFree(x, mm, Attn.softmaxWarp, o, 16))) := {
+    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 0, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 1, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 2, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 3, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 4, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 5, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 6, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 7, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 8, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 9, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 10, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 11, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 12, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 13, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 14, e, st)
+    Attn.expChunk(accs, ex, scale, mx, sum, 15, e, st)
+  }
+
+  // The softmax warpgroup's state across key blocks: the S ring's reading side and the exchange's writing side.
+  def Softmax (q: Lifetime)(x: Lifetime)(m: Lifetime)(o: OState) : Type { kind = lin, scope = union(q, union(x, m)) } :=
+    Pair(AccConsumerAt(q, m, Attn.softmaxWarp), ExWriterAt(x, m, Attn.softmaxWarp, o))
+
+  // Each thread owns one row: its running maximum `m` (log2 units) and sum `l` are registers of the role. Per key
+  // block: await S_j; pass 1 (the new maximum); acquire P; pass 2 (P_j and its sum); release S_j; from the second block
+  // on, rescale Ô's row by α = 2^(m_old − m_new); publish P_j; l = α·l + sum. After the loop: wait for the last
+  // product, and store O = Ô/l and LSE = (m + log2 l)·ln 2.
+  def softmax {l: Lifetime}{q: Lifetime}{x: Lifetime}(g: Attn.Launch(l))(accs: AccRing(q, 128))(ex: Exchange(x))(ac: AccConsumer(q))
+      (wr: ExWriter(x))(own: OOwn(l, DType.f32))(m: Lifetime)(e: Ctx(m, Attn.Wg1)): Pair(Ctx(m, Attn.Wg1), Attn.SoftmaxDone(q, x)) := {
+    let (e, mReg) := Core.reg(e, Core.zero(DType.f32))
+    let (e, lReg) := Core.reg(e, Core.zero(DType.f32))
+    let first := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Attn.Wg1))(st: Attn.Softmax(q, x, m, OState.fresh))
+        : Pair(Ctx(n, Attn.Wg1), Attn.Softmax(q, x, m, OState.held)) => {
+      let (c, wa) := st
+      let (e, full) := Core.awaitAcc(e, accs, c)
+      let (e, lowest) := Core.fconst(e, Attn.minusInfinity)
+      let e := Core.set(e, mReg, lowest)
+      let (e, full) := Attn.pass1(accs, g.scale, mReg, e, full)
+      let (e, mNew) := Core.get(e, mReg)
+      let (e, p) := Core.acquireP(e, ex, wa)
+      let e := Core.set(e, lReg, Core.zero(DType.f32))
+      let (e, (full, p)) := Attn.pass2(accs, ex, g.scale, mNew, lReg, e, (full, p))
+      let (e, c) := Core.releaseAcc(e, accs, full)
+      let (e, wa) := Core.publishP(e, ex, p)
+      (e, (c, wa))
+    }
+    let rest := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Attn.Wg1))(st: Attn.Softmax(q, x, m, OState.held))
+        : Pair(Ctx(n, Attn.Wg1), Attn.Softmax(q, x, m, OState.held)) => {
+      let (c, wa) := st
+      let (e, full) := Core.awaitAcc(e, accs, c)
+      let (e, mOld) := Core.get(e, mReg)
+      let (e, full) := Attn.pass1(accs, g.scale, mReg, e, full)
+      let (e, mNew) := Core.get(e, mReg)
+      let (e, p) := Core.acquireP(e, ex, wa)
+      let (e, sum) := Core.reg(e, Core.zero(DType.f32))
+      let (e, (full, p)) := Attn.pass2(accs, ex, g.scale, mNew, sum, e, (full, p))
+      let (e, c) := Core.releaseAcc(e, accs, full)
+      let (e, alpha) := Core.ex2(e, Core.fsub(mOld, mNew))
+      let (e, p) := Core.rescaleO(e, ex, p, alpha)
+      let (e, wa) := Core.publishP(e, ex, p)
+      let (e, s) := Core.get(e, sum)
+      let (e, lOld) := Core.get(e, lReg)
+      (Core.set(e, lReg, Core.fma(alpha, lOld, s)), (c, wa))
+    }
+    let (e, c) := Core.takeAccConsumer(e, accs, ac)
+    let (e, wa) := Core.takeExWriter(e, ex, wr)
+    let fixed := Core.fixedPair(Core.fixedAccConsumerAt(q, m, Attn.softmaxWarp), Core.fixedExWriterAt(x, m, Attn.softmaxWarp, OState.held))
+    let (e, (c, wa)) := Core.loopPeeled(e, g.blocks, fixed, (c, wa), first, rest)
+    let (e, final) := Core.finishExWriter(e, ex, wa)
+    let (e, lSum) := Core.get(e, lReg)
+    let (e, mMax) := Core.get(e, mReg)
+    let (e, inv) := Core.rcp(e, lSum)
+    let (e, logSum) := Core.lg2(e, lSum)
+    let (e, ln2) := Core.fconst(e, Attn.ln2)
+    let (e, final) := Core.storeO(e, ex, final, inv, Core.fmul(Core.fadd(mMax, logSum), ln2), g.out, own)
+    (e, (Core.finishAccConsumer(c), Core.closeExWriter(final)))
+  }
+
+  // ---- The CTA ---------------------------------------------------------------------------------------------------------
+
+  def roles {l: Lifetime}{rq: Lifetime}{rk: Lifetime}{rv: Lifetime}{q: Lifetime}{x: Lifetime}(g: Attn.Launch(l))(qr: Ring(rq, Attn.qRing))
+      (kr: Ring(rk, Attn.kRing))(vr: Ring(rv, Attn.vRing))(accs: AccRing(q, 128))(ex: Exchange(x))(pq: Producer(rq))(cq: Consumer(rq))
+      (pk: Producer(rk))(ck: Consumer(rk))(pv: Producer(rv))(cv: Consumer(rv))(ap: AccProducer(q))(ac: AccConsumer(q))(wr: ExWriter(x))
+      (rd: ExReader(x))(own: OOwn(l, DType.f32))(e: Ctx(l, Attn.Cta)): Pair(Ctx(l, Attn.Cta), Attn.AllDone(rq, rk, rv, q, x)) := {
+    let idle := fun (m: Lifetime)(e: Ctx(m, Attn.Idle)): Pair(Ctx(m, Attn.Idle), Unit) => (e, Unit.unit)
+    let rest := fun (m: Lifetime)(e: Ctx(m, Attn.Rest)): Pair(Ctx(m, Attn.Rest), Pair(Attn.IssuerDone(rq, rk, rv, q, x), Unit)) =>
+      Core.split(e, 1, Attn.IssuerDone(rq, rk, rv, q, x), Unit,
+        fun (n: Lifetime)(e: Ctx(n, Attn.Issue)): Pair(Ctx(n, Attn.Issue), Attn.IssuerDone(rq, rk, rv, q, x)) =>
+          Attn.issuer(g, qr, kr, vr, accs, ex, cq, ck, cv, ap, rd, n, e), idle)
+    let wg0 := fun (m: Lifetime)(e: Ctx(m, Attn.Wg0))
+        : Pair(Ctx(m, Attn.Wg0), Pair(Attn.LoaderDone(rq, rk, rv), Pair(Attn.IssuerDone(rq, rk, rv, q, x), Unit))) =>
+      Core.split(e, 1, Attn.LoaderDone(rq, rk, rv), Pair(Attn.IssuerDone(rq, rk, rv, q, x), Unit),
+        fun (n: Lifetime)(e: Ctx(n, Attn.Load)): Pair(Ctx(n, Attn.Load), Attn.LoaderDone(rq, rk, rv)) => Attn.loader(g, qr, kr, vr, pq, pk, pv, n, e),
+        rest)
+    let wg1 := fun (m: Lifetime)(e: Ctx(m, Attn.Wg1)): Pair(Ctx(m, Attn.Wg1), Attn.SoftmaxDone(q, x)) => Attn.softmax(g, accs, ex, ac, wr, own, m, e)
+    let (e, (((pqd, (pkd, pvd)), ((cqd, (ckd, (cvd, (apd, rdd)))), u)), (acd, wrd))) :=
+      Core.split(e, 4, Pair(Attn.LoaderDone(rq, rk, rv), Pair(Attn.IssuerDone(rq, rk, rv, q, x), Unit)), Attn.SoftmaxDone(q, x), wg0, wg1)
+    (e, ((pvd, cvd), ((pkd, ckd), ((pqd, cqd), ((wrd, rdd), (apd, acd))))))
+  }
+
+  def kernel : Program :=
+    Core.attentionKernel("attention",
+      fun (l: Lifetime)(e: Ctx(l, Attn.Cta))(g: Attn.Launch(l))(own: OOwn(l, DType.f32))(permit: TmemPermit(l)): Ctx(l, Attn.Cta) => {
+        // The rings, innermost the V ring, around the roles.
+        let rings := fun (q: Lifetime)(x: Lifetime)(accs: AccRing(q, 128))(ex: Exchange(x))(ap: AccProducer(q))(ac: AccConsumer(q))(wr: ExWriter(x))
+            (rd: ExReader(x))(e: Ctx(l, Attn.Cta)): Pair(Ctx(l, Attn.Cta), Pair(Attn.ExDone(x), Attn.AccDone(q))) => {
+          let qStage := fun (rq: Lifetime)(qr: Ring(rq, Attn.qRing))(pq: Producer(rq))(cq: Consumer(rq))(e: Ctx(l, Attn.Cta))
+              : Pair(Ctx(l, Attn.Cta), Pair(Attn.RingDone(rq), Pair(Attn.ExDone(x), Attn.AccDone(q)))) => {
+            let kStage := fun (rk: Lifetime)(kr: Ring(rk, Attn.kRing))(pk: Producer(rk))(ck: Consumer(rk))(e: Ctx(l, Attn.Cta))
+                : Pair(Ctx(l, Attn.Cta), Pair(Attn.RingDone(rk), Pair(Attn.RingDone(rq), Pair(Attn.ExDone(x), Attn.AccDone(q))))) => {
+              let vStage := fun (rv: Lifetime)(vr: Ring(rv, Attn.vRing))(pv: Producer(rv))(cv: Consumer(rv))(e: Ctx(l, Attn.Cta))
+                  : Pair(Ctx(l, Attn.Cta), Attn.AllDone(rq, rk, rv, q, x)) =>
+                Attn.roles(g, qr, kr, vr, accs, ex, pq, cq, pk, ck, pv, cv, ap, ac, wr, rd, own, e)
+              Core.withRing(e, Attn.vRing, Pair(Attn.RingDone(rk), Pair(Attn.RingDone(rq), Pair(Attn.ExDone(x), Attn.AccDone(q)))), vStage)
+            }
+            Core.withRing(e, Attn.kRing, Pair(Attn.RingDone(rq), Pair(Attn.ExDone(x), Attn.AccDone(q))), kStage)
+          }
+          Core.withRing(e, Attn.qRing, Pair(Attn.ExDone(x), Attn.AccDone(q)), qStage)
+        }
+        // Tensor memory: the S ring in the lower half, the exchange in the upper.
+        let regions := fun (a: Lifetime)(t: Tmem(a, 512))(acc: Acc(a, AccState.empty))(e: Ctx(l, Attn.Cta))
+            : Pair(Ctx(l, Attn.Cta), Pair(Acc(a, AccState.empty), Unit)) =>
+          Core.splitTmem(e, t, acc, 256, Unit, fun (b: Lifetime)(c: Lifetime)(ts: Tmem(b, 256))(accS: Acc(b, AccState.empty))(to: Tmem(c, Nat.sub(512, 256)))
+              (accO: Acc(c, AccState.empty))(e: Ctx(l, Attn.Cta)): Pair(Ctx(l, Attn.Cta), Pair(Pair(Acc(b, AccState.empty), Acc(c, AccState.empty)), Unit)) => {
+            let sRing := fun (q: Lifetime)(accs: AccRing(q, 128))(ap: AccProducer(q))(ac: AccConsumer(q))(e: Ctx(l, Attn.Cta))
+                : Pair(Ctx(l, Attn.Cta), Pair(Attn.AccDone(q), Acc(c, AccState.empty))) => {
+              let exchange := fun (x: Lifetime)(ex: Exchange(x))(wr: ExWriter(x))(rd: ExReader(x))(e: Ctx(l, Attn.Cta))
+                  : Pair(Ctx(l, Attn.Cta), Pair(Attn.ExDone(x), Attn.AccDone(q))) => rings(q, x, accs, ex, ap, ac, wr, rd, e)
+              let (e, (accO, accDone)) := Core.withExchange(e, to, accO, Attn.AccDone(q), exchange)
+              (e, (accDone, accO))
+            }
+            let (e, (accS, accO)) := Core.withAccRing(e, ts, accS, 2, 128, Acc(c, AccState.empty), sRing)
+            (e, ((accS, accO), Unit.unit))
+          })
+        let (e, u) := Core.withTmem(e, permit, 512, AccState.empty, Unit, regions)
+        e
+      })
+}
+
+{ Core.render(Attn.kernel) }
