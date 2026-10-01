@@ -269,7 +269,7 @@ packing), no split-KV, no paging, no softcap, fixed `seq`.
 | Roles and warps | 16 warps: softmax 0–3 and 4–7 (one per query tile), correction 8–11, MMA 12, epilogue 13, load 14, one spare | `flash_fwd_sm100.py` 307–313 |
 | Tensor-memory map | S tiles at columns 0 and 128, Ô tiles at 256 and 384; P overlays the upper half of its S tile (S + 64), 64 columns of packed bf16 pairs | 351–364, 2083–2087 |
 | How P is stored | `tcgen05.st.32x32b` of 32-bit registers, each two bf16 (16 repetitions per 64 columns); the PV MMA takes P from tensor memory, K-major, and V MN-major | 2105–2112, 540–547 |
-| MMA order | per block: `PV_{i-1}` for both tiles, then `S_i`, in one loop; the first `PV` overwrites (`zero_init`) | 1851–1990 |
+| MMA order | per block: await `V_{i-1}`; then tile by tile, await that tile's P, issue its `PV_{i-1}`, then its `S_i` (tile 0 awaits `K_i` first), each `S_i` committed to its tile's barrier; the first `PV` overwrites (`zero_init`) | 1888–1955 |
 | Reusing S's columns for the next S while P overlays them | no barrier: the next `S_i` is issued after the `PV` that reads P, and PTX orders an MMA's A reads before a later MMA's D writes from the same thread (§9.7.18.6.2, pipelined pair "A and metadata reads → D writes") | comment at 1933–1935 |
 | One K/V ring or two | one ring (`pipeline_kv`), K and V alternating, since the MMA consumes K_0, then V_{i-1}, K_i | 1031–1041, 1851–1990 |
 | P ready and Ô rescaled | one barrier phase, `P_full_O_rescaled`, which the MMA acquires before `PV` | 1900, 1966 |
@@ -281,9 +281,9 @@ packing), no split-KV, no paging, no softcap, fixed `seq`.
 Two of these bear on A1. FA4's P store confirms the packing A23 assumes (two bf16 per 32-bit column, 64 columns for
 128 keys) in a kernel that runs; it does not document which half holds the lower key index, which H1 still settles.
 And FA4's MMA order would let A1 share one ring for K and V, but only by giving up A1's `S_{j+1}`-before-`PV_j`
-overlap, which with one query tile is the only overlap there is. A1 keeps its order and two rings; A3, with two query
-tiles, should take FA4's order and one ring, and then relies on the pipelined-pair rule for the overlay (a new
-assumption for A3, A33).
+overlap, which with one query tile is the only overlap there is. A1 keeps its order and two rings. A3, with two
+query tiles, takes FA4's order and relies on the pipelined-pair rule for the overlay (a new assumption for A3, A33).
+It keeps two rings, because FA4's one ring needs a consumer holding two stages at once (`gpu/encoding/A3.md` §2).
 
 ## 3. What the core needs
 
@@ -817,7 +817,8 @@ also at A1's), and have run against a host mock of the runtime (`encoding/NOTES.
   not, and 128-arrival barriers could complete a phase with arrivals from different steps.
   A branch that skips `rescaleO` carries the writer's `PFree` in its state, so `PFree` needs a `Fixed` family too
   (`fixedPFree`), with the chunk index fixed at 16 for the branch.
-- FA4's MMA order and one K/V ring (§2.7), relying on A33 for the overlay.
+- FA4's MMA order (§2.7), relying on A33 for the overlay; with A1's two rings rather than FA4's one, since the
+  stage ring's consumer holds one stage at a time (`gpu/encoding/A3.md` §2).
 - `setmaxnreg` per role (A30), a warpgroup-collective that fits `warps(f, 4)`.
 - One pass over S instead of two, keeping the row in registers (128 registers of S per thread; FA4's softmax runs at
   192 registers). `tcgen05.ld.red` would give the maximum for free but is not on sm_100a (A32, withdrawn).
