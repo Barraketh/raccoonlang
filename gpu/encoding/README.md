@@ -103,6 +103,12 @@ blocks, with the query heads of one KV head packed into its query tile; and a co
 are checked by generation, the checkers, the mutants and a C++ compile against `gpu/stub/`; the harnesses have run
 against a host mock of the runtime (`NOTES.md`).
 
+When a hardware session happens, `harness/hw.sh` runs every harness and the probes in it:
+- `hw.sh gen DIR` generates every example's CUDA here into a bundle;
+- `sh hw.sh run`, on the box, builds each harness against its kernels with `nvcc`, runs it under a time limit, then
+  runs the probes and prints a summary.
+The box needs no JVM.
+
 ## Layout
 
 - `Core.rac`: the core.
@@ -113,6 +119,6 @@ against a host mock of the runtime (`NOTES.md`).
 - `examples/`: kernels; `attention_pingpong.rac` holds A3a's roles itself, since no other example runs them.
 - `checks/`: unit tests of emitted code.
 - `rejected/`: programs and mutant tables the core must refuse.
-- `harness/`: host test programs for hardware runs.
+- `harness/`: host test programs for hardware runs, and `hw.sh`, which runs them all in one session.
 
 `gpu/check.sh` covers this directory like the rest.
