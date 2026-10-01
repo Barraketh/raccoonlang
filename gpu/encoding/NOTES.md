@@ -1,23 +1,24 @@
 # gpu/encoding: notes for review
 
 Observations from building A1 (`Core.rac`'s attention sections, `examples/attention.rac`, `checks/emitted.rac`), for
-the readability review and for quality-of-life work on Raccoon. Each says what was awkward and where.
+the readability review and for quality-of-life work on Raccoon. Each says what was awkward and where. Items marked
+*(removed)* are gone since the readability refactor (§"Readability refactor" at the end).
 
 ## Readability and incidental complexity
 
-1. **Sixteen straight-line calls per pass.** `PFree`'s chunk index is in its type, and `loadAcc8` and `storeP` take
+1. *(removed)* **Sixteen straight-line calls per pass.** `PFree`'s chunk index is in its type, and `loadAcc8` and `storeP` take
    their chunk as a generation-time `Nat` with evidence (`fits`). The evidence is discharged only where the index is
    a literal, so no generation-time loop over chunks can call them, and `examples/attention.rac` spells out
    `maxChunk(…, 0, …)` to `maxChunk(…, 15, …)` in `pass1`, the same for `expChunk` in `pass2`, and `checks/emitted.rac`
    repeats it for `storeP`. A chunk combinator in the core (the `forChunks` of P: one step function over chunk `c`
    with `c < 16` in scope) would replace all three, but needs a way to pass the evidence along (§Raccoon 3).
-2. **Done-token plumbing.** Seven protocols (three stage rings, the S ring, the exchange, the tensor-memory split and
+2. *(removed)* **Done-token plumbing.** Seven protocols (three stage rings, the S ring, the exchange, the tensor-memory split and
    the allocation) each open a callback and each wants its `…Done` tokens back in a `Pair` beside the callback's own
    result. `examples/attention.rac` needs `AllDone`, nested in the order the scopes close, the re-shuffle at the end
    of `roles`, and a `kernel` of 40 lines of nested callbacks whose result types restate that nesting
    (`Pair(Attn.RingDone(rk), Pair(Attn.RingDone(rq), Pair(Attn.ExDone(x), Attn.AccDone(q))))` and so on). The
    explicit result types are required (`DESIGN.md` §1), so most of the kernel's text is types.
-3. **Peeled iterations duplicated.** The first iteration changes `OState` (`fresh` to `held`), so `loopPeeled`'s
+3. *(removed)* **Peeled iterations duplicated.** The first iteration changes `OState` (`fresh` to `held`), so `loopPeeled`'s
    `first` and `rest` are two closures that differ in one call each: `mmaPVFirst`/`mmaPVNext` in `issuer`, and the
    rescale and the start of the maximum in `softmax`. Both copies have to be kept in step by hand.
 4. **No way to name a value.** A `Val` is an expression, printed wherever it is used, and there is no public `let`:
@@ -42,7 +43,7 @@ the readability review and for quality-of-life work on Raccoon. Each says what w
    `AttnOut(L, DType.f32)` only, although `AttnOut` has a type parameter (A2's bf16 output).
 9. **Two rings of one type.** The K and V rings are both `Ring(r, RingCfg.mk(2, box, box))`; nothing tells K's data
    from V's (`ATTENTION.md` §5 "the wrong data in a ring"). The example names them `kRing` and `vRing` only.
-10. **The first block's statistics.** `softmax` starts the first block's maximum at −∞ (`fconst` of its bits) and sums
+10. *(removed)* **The first block's statistics.** `softmax` starts the first block's maximum at −∞ (`fconst` of its bits) and sums
     the first block straight into `l`, while later blocks sum into a fresh register and combine with `fma`; the two
     closures differ in these details as well as in the rescale (item 3).
 
@@ -111,7 +112,7 @@ expression.
 Observations from building `PAGED.md`'s P1 (`Core.rac`'s paged-attention section, `examples/paged_attention.rac`,
 `harness/paged_attention_test.cu`, `rejected/paged_attention_mutants.py`).
 
-1. **The example copies A1's roles.** `examples/paged_attention.rac` is `examples/attention.rac` with `Attn` renamed
+1. *(removed)* **The example copies A1's roles.** `examples/paged_attention.rac` is `examples/attention.rac` with `Attn` renamed
    `Paged`, `Launch` defined as `PagedLaunch`, the kernel builder and its name changed, and a new loader: about 300 lines
    of the issuer, the softmax warpgroup (with `pass1`/`pass2` and their chunk functions), `roles` and `kernel` are
    duplicated. They could not be shared without editing `attention.rac`: every role takes the whole `Attn.Launch(l)`
@@ -132,7 +133,7 @@ Observations from building `PAGED.md`'s P1 (`Core.rac`'s paged-attention section
    through it, so the second box's spec is checked at generation (`headStage`), not by the type. A ring of two
    different boxes is reachable only that way (`rejected/paged_attention_mutants.py`, `half_page_box`).
 5. **What the mutants report.** A `PageMap` or `PageTable` passed where `storeO` expects an `AttnOut`, or a `PageMap`
-   where `fillHead` expects a `HeadMap`, is reported as `ImplicitReconstructionFailed` ("Cannot reconstruct implicit
+   where `fillBlock` (then `fillHead`) expects a `HeadMap`, is reported as `ImplicitReconstructionFailed` ("Cannot reconstruct implicit
    argument L of Core.storeO: expected an application of Core.AttnOut, got Core.PageMap(…)"), not `TypeMismatch`: the
    implicit `L` is solved from the argument's type before the types are compared. The message is clear; the kind is
    surprising.
@@ -141,7 +142,8 @@ Observations from building `PAGED.md`'s P1 (`Core.rac`'s paged-attention section
    TMA's signed coordinates and clipping) with the generated launcher's own host code. Every check passed, every
    refusal came from the generated requirements, and a mock that ignores the table failed every numerical check. The
    mock is not in the repository; it checks the harness and the launcher, not the kernel.
-7. **Emitted-code checks need a whole client.** `checks/paged_emitted.rac` tests three lines of `fillPage`'s output,
+7. **Emitted-code checks need a whole client.** (Since the refactor they need an S ring too: P is written only from
+   S, by `writeP`.) `checks/paged_emitted.rac` tests three lines of `fillPage`'s output,
    but `render` needs a well-formed kernel and `OOwn` is linear and consumed only by `storeO`, so the check builds a
    full exchange (16 `storeP` chunks, a product, the output) around one paged fill: about 100 lines of scaffolding,
    much of it copied from `checks/emitted.rac`, as are the line-reading helpers (`revOnto`, `linesFrom`). A shared
@@ -197,3 +199,86 @@ Timing (CPU s of the native binary, built from lemur_gpu at 267aa37, on a machin
 `gen.sh encoding/examples/attention.rac` 18.8 and `gen.sh encoding/examples/paged_attention.rac` 19.3, each two
 kernels; checking `checks/emitted.rac` 3.5 and `checks/paged_emitted.rac` 8.7. The generated files are 6744 lines
 (455 KB) and 6772 lines (457 KB) with their launchers.
+
+## Readability refactor
+
+The library changes of the readability review (2026-10-01), applied to A2's core: what they removed, how the code
+changed, and what friction remains.
+
+**Removed.**
+- **`…Done` tokens** (item 2; review F1). The seven families (`ProducerDone`, `ConsumerDone`, `AccProducerDone`,
+  `AccConsumerDone`, `ExWriterDone`, `ExReaderDone`, `StoreDone`) and the examples' aliases are gone. A side is
+  linear and belongs to its opener's scope, which the callback's result cannot name, so the callback must use it up,
+  and the only operation that uses a side up without handing it on is its finisher, which now threads the emitter.
+  The audit behind it: every other operation that takes a side gives one back, so a close still follows the
+  producer's drain (`OBLIGATIONS.md` §6.10, §7). `shared` and `withAccHandoff` already worked this way; now all
+  protocols do.
+- **The unrolled chunk calls** (item 1; F2). `eachChunk` (pass 1) and `writeP` (pass 2) recurse over the chunks
+  inside the core and hand a step each chunk's values and index; `loadAcc8` and `storeP`, their `fits` evidence and
+  `PFree`'s per-chunk index steps, are internal. M14 holds by construction, and the example no longer needs
+  `match h : e` (`docs/MATCH_EQUATION.md`).
+- **The peeled copies** (items 3 and 10; F3). `mmaPV` overwrites when its `PReady` is `fresh`, and `rescaleO` emits
+  nothing while Ô is `fresh`, so each role writes one loop body generic in `OState` and passes it as both `loopPeeled`
+  arguments. The softmax's maximum starts at −∞ and its sum at 0, so the first block is the others' code: `α` =
+  `ex2(−∞)` = +0 (A26) and `l = fma(0, 0, sum)` = sum exactly. That changes generated code, the only change of the
+  refactor that does: per kernel, the maximum's register is declared from a `mov` of −∞ (+2 lines) instead of from 0
+  and set to −∞ in the first block (−3), and the first block gains the read of the old maximum (+1), `α`'s `ex2`
+  (+2), the combine (+3) and a fresh sum register in place of the dead `l = 0` (±0): 5 lines more per kernel, 10 per
+  example file (6754 and 6782 lines). Every other change was checked byte-identical, by generating the new examples
+  with the old first block.
+- **The paged example's copy of A1's roles** (P1 item 1; F5). The issuer, the softmax warpgroup and the CTA's
+  protocol nesting live in `Attention.rac`; each example is its loader and its kernel builder. The roles take only
+  what they read (the issuer `blocks`; the softmax `blocks`, `mask`, `scale`, `out`, `own`), and `Attention.cta`
+  takes the loader as a callback.
+- **Self-qualification** (F4). Names resolve through the current namespace and the opens, except `Core.lt`: under
+  `open Core`, an unqualified `lt` silently resolves to the prelude's root `lt` (a wrapper around the `LT` selector),
+  whose error ("expected 3 params (self, a, b)") does not mention the shadowing.
+- **`fillHead`'s two maps and four coordinates** (F10). `fillBlock(e, ring, slot, map, row)` loads both halves of a
+  stage through one map at one row, as `fillPage` does, so the mismatched halves the review verified (half a K stage
+  from `V_map`) can no longer be written.
+- **The role nesting** (F12). `Layout.roles4` runs the load, issue and warpgroup roles of the shared eight-warp CTA;
+  tinygemm uses it too, byte-identical.
+- **Small items.** The dead `set(lReg, 0)` and the −∞ set of the first block (above); the eta lambda around the
+  issuer's `scores` in `branch`; `Nat.sub(512, 256)`.
+
+**Measured** (the review's classifier, `readability/measure.py`, its `Core.`/namespace prefixes made optional so that
+it classifies unqualified code by the same rules). Code means non-comment text.
+
+| | before: `attention.rac` | after: `attention.rac` + `Attention.rac` |
+|---|---:|---:|
+| code lines | 321 | 41 + 176 = 217 |
+| code chars | 19,132 | 1,826 + 8,966 = 10,792 (−44%) |
+| schedule operations | 7,467 (39%) | 699 + 3,132 = 3,831 (35%) |
+| lambda binder and result types | 3,065 (16%) | 396 + 1,953 = 2,349 (22%) |
+| Done plumbing (aliases, X arguments, code-free finishers, regrouping) | 2,009 (10.5%) | 4 + 214 = 218 (2.0%) |
+| loop-state plumbing | 693 | 25 + 659 = 684 |
+| `Fixed` evidence | 575 | 54 + 417 = 471 |
+| `[fits]` evidence | 170 | 0 |
+| unrolled chunk calls | 32 lines | 0 |
+| qualifiers in code | 417 (10.9%) | 6: `Core.lt` twice, and the final expression's four, outside the namespace |
+| lines wider than 120 columns | 62 | 7 + 32 |
+
+`paged_attention.rac` went from 321 code lines to 41, with the 176 of `Attention.rac` shared; `tinygemm.rac` from
+114 to 87, with `Layout.rac`'s 24 shared. The share of operations falls because the unrolled calls, which counted as
+operations, are gone; what remains is mostly lambda headers.
+
+**Remaining friction.**
+- **Lambda headers** are now the largest incidental item (22% of the code): the CTA's nesting in `Attention.cta`,
+  the loader's eta lambda in each example (eleven binders, to pass the rings' lifetimes), and the step lambdas of
+  `eachChunk` and `writeP`. Review F7 and F8 (synthesized lambda result types, callback result types read through
+  their binders) are the language proposals that would reach them.
+- **`first`/`rest` wrappers.** A lambda with an implicit binder (`fun {o: OState}…`) cannot be passed where a
+  function type is expected: "codomain … depends on its binders". So each role still writes two one-line wrappers
+  around its one body (review F9a, named implicit instantiation, would remove them).
+- **`Fixed` evidence** (review F6) is unchanged: `fixedScores` and the `fixedPair` chains.
+- **The chunk index is a `Nat`.** A2's mask needs it (`maskedScores` takes the chunk), so `eachChunk` and `writeP`
+  hand the step its index; a step can pass `maskedScores` another one, a wrong result as before. A sealed chunk value
+  would make that unwritable.
+- **K and V rings have one type up to their lifetime** (item 9; `ATTENTION.md` §2.6 no longer claims otherwise). A
+  tensor tag would need `RingCfg` or `TmaSpec`, which the GEMM track shares (`ATTENTION.md` §5).
+- **`Acc` tokens still travel back** through `splitTmem`, `withAccRing` and `withExchange` (review F1's follow-on):
+  `Acc` is also a region's ownership token, and returning it is what lets a region be reused.
+- **Mutants of the shared module** are checked as a module, not rendered: `mutate.py` writes the mutated file to a
+  scratch directory, where the examples cannot import it. Every attention mutant is a type error, so that suffices;
+  `half_page_box`, which only generation refuses, moved to `rejected/page_box_mutants.py` on `checks/paged_emitted.rac`.
+

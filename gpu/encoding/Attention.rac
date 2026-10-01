@@ -1,0 +1,235 @@
+// The CTA of forward attention on sm_100a (gpu/ATTENTION.md §2.5), shared by examples/attention.rac and
+// examples/paged_attention.rac, which differ only in their loader: one CTA of eight warps (`Layout`) per 128 query rows
+// of one head, head dimension 128, computing O = softmax(scale · Q·Kᵀ + mask)·V and LSE for those rows.
+//
+// The loader (warp 0) fills Q's block once into a one-stage ring, and then each 128-key block's K and V, in the order
+// K_0, V_0, K_1, V_1, …, into two-stage rings. Warp 1 elects a thread that holds Q's stage across the loop, issues
+// S_0 = Q·K_0ᵀ into the first of two 128-column S buffers before the loop, and in iteration j issues S_{j+1} (when there
+// is a next block) before Ô (+)= P_j·V_j, with P read from tensor memory. Warps 2 and 3 idle. Warps 4 to 7, the softmax
+// warpgroup, one row per thread, read S_j twice: once for the row's new maximum, once to write P_j = 2^(c·s − max) to
+// tensor memory in bf16, summing it; they release S_j, rescale Ô's row by 2^(old max − new max) and publish P_j. After
+// the loop they wait for the last product and store each row of Ô divided by its sum, and its LSE. Both reads mask the
+// scores (`maskedScores`): a key past `seq`, or in a causal kernel past the row's query, scores −∞ and so contributes
+// p = 0. The kernel builder's block count is every role's trip count; the rows of a last query tile past `seq` are
+// computed and not stored.
+//
+// Tensor memory: S buffers in columns 0–255, Ô in 256–383, P in 384–447.
+
+import encoding.Core
+import encoding.Layout
+
+namespace Attention {
+  open Core
+  open Cuda
+  open Layout
+
+  // Every stage holds a 128-row block as its two 64-wide halves of the head dimension.
+  def box : TmaSpec := TmaSpec.mk(64, 128)
+  def qRing : RingCfg := RingCfg.mk(1, box, box)
+  def kRing : RingCfg := RingCfg.mk(2, box, box)
+  def vRing : RingCfg := RingCfg.mk(2, box, box)
+
+  // The most negative finite f32 and ln 2 as f32 bits.
+  def lowestFinite : Nat := 4286578687
+  def ln2 : Nat := 1060205080
+
+  // ---- The MMA issuer --------------------------------------------------------------------------------------------------
+
+  // The issuer's state for the scores: the held Q stage, the K ring's consumer side, and the S ring's issuing side.
+  def Scores (rq: Lifetime)(rk: Lifetime)(q: Lifetime)(j: Lifetime) : Type { kind = lin, scope = union(rq, union(rk, union(q, j))) } :=
+    Pair(ReadyUsed(rq, j), Pair(ConsumerAt(rk, j), AccProducerAt(q, j)))
+
+  def fixedScores (rq: Lifetime)(rk: Lifetime)(q: Lifetime)(j: Lifetime): Fixed(Scores(rq, rk, q, j)) :=
+    fixedPair(fixedReadyUsed(rq, j), fixedPair(fixedConsumerAt(rk, j), fixedAccProducerAt(q, j)))
+
+  // The issuer's state across key blocks: the scores', the V ring's consumer side and the exchange's reading side.
+  def Issuing (rq: Lifetime)(rk: Lifetime)(rv: Lifetime)(q: Lifetime)(x: Lifetime)(j: Lifetime)(o: OState)
+      : Type { kind = lin, scope = union(rq, union(rk, union(rv, union(q, union(x, j))))) } :=
+    Pair(Scores(rq, rk, q, j), Pair(ConsumerAt(rv, j), ExReaderAt(x, j, o)))
+
+  // S_0 before the loop; in iteration i, S_{i+1} (when i + 1 < blocks), then Ô (+)= P_i·V_i; after the loop, release
+  // Q and wait until the softmax warpgroup has read every S buffer.
+  def issuer {L: Lifetime}{rq: Lifetime}{rk: Lifetime}{rv: Lifetime}{q: Lifetime}{x: Lifetime}(blocks: Val(L, Grain.uniform, DType.u32))
+      (qr: Ring(rq, qRing))(kr: Ring(rk, kRing))(vr: Ring(rv, vRing))(accs: AccRing(q, 128))(ex: Exchange(x))(cq: Consumer(rq))
+      (ck: Consumer(rk))(cv: Consumer(rv))(ap: AccProducer(q))(rd: ExReader(x))(m: Lifetime)(e: Ctx(m, Issue)): Pair(Ctx(m, Issue), Unit) :=
+    elect(e, Unit, fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, One)): Pair(Ctx(j, One), Unit) => {
+      // S = Q·Kᵀ for the next key block, into the next S buffer.
+      let issueS := fun (n: Lifetime)(e: Ctx(n, One))(st: Scores(rq, rk, q, j)): Pair(Ctx(n, One), Scores(rq, rk, q, j)) => {
+        let (qu, (ck, ap)) := st
+        let (e, kReady) := await(e, kr, ck)
+        let (e, free) := acquireAcc(e, accs, ap)
+        let (e, (qu, (kUsed, filling))) := mmaScores(e, w, qr, qu, kr, kReady, accs, free)
+        let (e, ck) := releaseByMma(e, w, kr, kUsed)
+        let (e, ap) := commitAcc(e, w, accs, filling)
+        (e, (qu, (ck, ap)))
+      }
+      let skip := fun (n: Lifetime)(e: Ctx(n, One))(st: Scores(rq, rk, q, j)): Pair(Ctx(n, One), Scores(rq, rk, q, j)) => (e, st)
+      // Key block i, the first (`fresh`) or a later one (`held`).
+      let block := fun {o: OState}(n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, One))(st: Issuing(rq, rk, rv, q, x, j, o))
+          : Pair(Ctx(n, One), Issuing(rq, rk, rv, q, x, j, OState.held)) => {
+        let (sc, (cv, rd)) := st
+        let (e, sc) := branch(e, Core.lt(add(i, lit(1)), blocks), fixedScores(rq, rk, q, j), sc, issueS, skip)
+        let (e, p) := awaitP(e, ex, rd)
+        let (e, vReady) := await(e, vr, cv)
+        let (e, (pUsed, vUsed)) := mmaPV(e, w, ex, p, vr, vReady)
+        let (e, cv) := releaseByMma(e, w, vr, vUsed)
+        let (e, rd) := commitPV(e, w, ex, pUsed)
+        (e, (sc, (cv, rd)))
+      }
+      let first := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, One))(st: Issuing(rq, rk, rv, q, x, j, OState.fresh))
+          : Pair(Ctx(n, One), Issuing(rq, rk, rv, q, x, j, OState.held)) => block(n, i, e, st)
+      let rest := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, One))(st: Issuing(rq, rk, rv, q, x, j, OState.held))
+          : Pair(Ctx(n, One), Issuing(rq, rk, rv, q, x, j, OState.held)) => block(n, i, e, st)
+      let (e, cq) := takeConsumer(e, w, qr, cq)
+      let (e, ck) := takeConsumer(e, w, kr, ck)
+      let (e, cv) := takeConsumer(e, w, vr, cv)
+      let (e, ap) := takeAccProducer(e, w, accs, ap)
+      let (e, rd) := takeExReader(e, w, ex, rd)
+      let (e, qReady) := await(e, qr, cq)
+      let (e, sc) := issueS(j, e, (holdStage(qReady), (ck, ap)))
+      let fixed := fixedPair(fixedScores(rq, rk, q, j), fixedPair(fixedConsumerAt(rv, j), fixedExReaderAt(x, j, OState.held)))
+      let (e, ((qu, (ck, ap)), (cv, rd))) := loopPeeled(e, blocks, fixed, (sc, (cv, rd)), first, rest)
+      let (e, cq) := releaseByMma(e, w, qr, qu)
+      let e := finishAccProducer(e, accs, ap)
+      let e := finishConsumer(e, cq)
+      let e := finishConsumer(e, ck)
+      let e := finishConsumer(e, cv)
+      (finishExReader(e, rd), Unit.unit)
+    })
+
+  // ---- The softmax warpgroup -------------------------------------------------------------------------------------------
+
+  // Chunk `c` of this thread's row of S, keys 8c to 8c+7 of key block `block`, as t = scale·s, masked: −∞ for a key
+  // past the sequence or, in a causal kernel, past this thread's query.
+  def scores {n: Lifetime}{L: Lifetime}{Sb: Lifetime}{Sc: Lifetime}{Ss: Lifetime}(mask: Mask(L))(block: Val(Sb, Grain.uniform, DType.u32))
+      (scale: Val(Sc, Grain.uniform, DType.f32))(c: Nat)(s: F32x8(Ss, Grain.thread))(e: Ctx(n, Wg)): Pair(Ctx(n, Wg), F32x8(n, Grain.thread)) :=
+    maskedScores(e, mask, block, c, F32x8.mk(fmul(scale, s.v0), fmul(scale, s.v1), fmul(scale, s.v2), fmul(scale, s.v3), fmul(scale, s.v4),
+      fmul(scale, s.v5), fmul(scale, s.v6), fmul(scale, s.v7)))
+
+  // The softmax warpgroup's state across key blocks: the S ring's reading side and the exchange's writing side.
+  def Softmax (q: Lifetime)(x: Lifetime)(m: Lifetime)(o: OState) : Type { kind = lin, scope = union(q, union(x, m)) } :=
+    Pair(AccConsumerAt(q, m, groupWarp), ExWriterAt(x, m, groupWarp, o))
+
+  // The row's maximum `mx` as the exponents use it: 0 while every score so far is masked (−∞), so that no
+  // −∞ − (−∞) arises (ATTENTION.md §3.9). It never fires in a launch the launcher accepts: key 0 is inside the
+  // sequence and at or before every query, so every row's first block has a score.
+  def usable {n: Lifetime}{Sl: Lifetime}{Sm: Lifetime}(lowest: Val(Sl, Grain.uniform, DType.f32))(mx: Reg(Sm, DType.f32))(e: Ctx(n, Wg))
+      : Pair(Ctx(n, Wg), Val(n, Grain.thread, DType.f32)) := {
+    let (e, m) := get(e, mx)
+    let (e, use) := reg(e, select(Core.lt(m, lowest), zero(DType.f32), m))
+    get(e, use)
+  }
+
+  // Each thread owns one row: its running maximum `m` (log2 units, from −∞) and sum `l` (from 0) are registers of the
+  // role. Per key block: await S_j; pass 1, the new maximum of the masked scores; acquire P; pass 2, P_j and its sum,
+  // against the maximum as `usable` gives it; release S_j; rescale Ô's row by α = 2^(m_old − m_new), which in the first
+  // block, Ô still undefined, emits nothing; publish P_j; l = α·l + sum, where the first block's α is 2^−∞ = 0. After
+  // the loop: wait for the last product, and store O = Ô/l and LSE = (m + log2 l)·ln 2.
+  def softmax {L: Lifetime}{t: DType}{q: Lifetime}{x: Lifetime}(blocks: Val(L, Grain.uniform, DType.u32))(mask: Mask(L))
+      (scale: Val(L, Grain.uniform, DType.f32))(out: AttnOut(L, t))(own: OOwn(L, t))(accs: AccRing(q, 128))(ex: Exchange(x))
+      (ac: AccConsumer(q))(wr: ExWriter(x))(m: Lifetime)(e: Ctx(m, Wg)): Pair(Ctx(m, Wg), Unit) := {
+    let (e, minusInfinity) := fconst(e, minusInfinityBits)
+    let (e, mReg) := reg(e, minusInfinity)
+    let (e, lReg) := reg(e, zero(DType.f32))
+    let (e, lowest) := fconst(e, lowestFinite)
+    let block := fun {o: OState}(n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Wg))(st: Softmax(q, x, m, o))
+        : Pair(Ctx(n, Wg), Softmax(q, x, m, OState.held)) => {
+      let (c, wa) := st
+      let (e, full) := awaitAcc(e, accs, c)
+      let (e, mOld) := get(e, mReg)
+      // Pass 1: `m` becomes the maximum of its value and the masked t over the row.
+      let (e, full) := eachChunk(e, accs, full, fun (ch: Nat)(s: F32x8(n, Grain.thread))(e: Ctx(n, Wg)): Ctx(n, Wg) => {
+        let (e, t) := scores(mask, i, scale, ch, s, e)
+        let (e, old) := get(e, mReg)
+        let m01 := fmax(t.v0, t.v1)
+        let m23 := fmax(t.v2, t.v3)
+        let m45 := fmax(t.v4, t.v5)
+        let m67 := fmax(t.v6, t.v7)
+        set(e, mReg, fmax(old, fmax(fmax(m01, m23), fmax(m45, m67))))
+      })
+      let (e, mNew) := usable(lowest, mReg, e)
+      let (e, p) := acquireP(e, ex, wa)
+      let (e, sum) := reg(e, zero(DType.f32))
+      // Pass 2: P = 2^(t − m_new) of the masked t, every chunk (0 for a masked key); `sum` gains the row's sum of p.
+      let (e, (full, p)) := writeP(e, accs, full, ex, p, fun (ch: Nat)(s: F32x8(n, Grain.thread))(e: Ctx(n, Wg))
+          : Pair(Ctx(n, Wg), F32x8(n, Grain.thread)) => {
+        let (e, t) := scores(mask, i, scale, ch, s, e)
+        let (e, p0) := ex2(e, fsub(t.v0, mNew))
+        let (e, p1) := ex2(e, fsub(t.v1, mNew))
+        let (e, p2) := ex2(e, fsub(t.v2, mNew))
+        let (e, p3) := ex2(e, fsub(t.v3, mNew))
+        let (e, p4) := ex2(e, fsub(t.v4, mNew))
+        let (e, p5) := ex2(e, fsub(t.v5, mNew))
+        let (e, p6) := ex2(e, fsub(t.v6, mNew))
+        let (e, p7) := ex2(e, fsub(t.v7, mNew))
+        let (e, old) := get(e, sum)
+        let e := set(e, sum, fadd(old, fadd(fadd(fadd(p0, p1), fadd(p2, p3)), fadd(fadd(p4, p5), fadd(p6, p7)))))
+        (e, F32x8.mk(p0, p1, p2, p3, p4, p5, p6, p7))
+      })
+      let (e, c) := releaseAcc(e, accs, full)
+      let (e, alpha) := ex2(e, fsub(mOld, mNew))
+      let (e, p) := rescaleO(e, ex, p, alpha)
+      let (e, wa) := publishP(e, ex, p)
+      let (e, s) := get(e, sum)
+      let (e, lOld) := get(e, lReg)
+      (set(e, lReg, fma(alpha, lOld, s)), (c, wa))
+    }
+    let first := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Wg))(st: Softmax(q, x, m, OState.fresh))
+        : Pair(Ctx(n, Wg), Softmax(q, x, m, OState.held)) => block(n, i, e, st)
+    let rest := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Wg))(st: Softmax(q, x, m, OState.held))
+        : Pair(Ctx(n, Wg), Softmax(q, x, m, OState.held)) => block(n, i, e, st)
+    let (e, c) := takeAccConsumer(e, accs, ac)
+    let (e, wa) := takeExWriter(e, ex, wr)
+    let fixed := fixedPair(fixedAccConsumerAt(q, m, groupWarp), fixedExWriterAt(x, m, groupWarp, OState.held))
+    let (e, (c, wa)) := loopPeeled(e, blocks, fixed, (c, wa), first, rest)
+    let (e, final) := finishExWriter(e, ex, wa)
+    let (e, lSum) := get(e, lReg)
+    let (e, mMax) := get(e, mReg)
+    let (e, inv) := rcp(e, lSum)
+    let (e, logSum) := lg2(e, lSum)
+    let (e, ln2) := fconst(e, ln2)
+    let (e, final) := storeO(e, ex, final, inv, fmul(fadd(mMax, logSum), ln2), out, own)
+    let e := finishAccConsumer(e, c)
+    (closeExWriter(e, final), Unit.unit)
+  }
+
+  // ---- The CTA ---------------------------------------------------------------------------------------------------------
+
+  // The CTA, given the kernel's block count, mask, scale, output and its authority, and the loader `load`, which fills
+  // the Q, K and V rings it is handed. Tensor memory: the S ring in the lower half, the exchange in the upper.
+  def cta {L: Lifetime}{t: DType}{kl: Kind}{Sl: Lifetime}(e: Ctx(L, Cta))(permit: TmemPermit(L))
+      (blocks: Val(L, Grain.uniform, DType.u32))(mask: Mask(L))(scale: Val(L, Grain.uniform, DType.f32))(out: AttnOut(L, t))(own: OOwn(L, t))
+      (load: { kind = kl, scope = Sl } (rq: Lifetime) -> (rk: Lifetime) -> (rv: Lifetime)
+        -> Ring(rq, qRing) -> Ring(rk, kRing) -> Ring(rv, vRing) -> Producer(rq) -> Producer(rk) -> Producer(rv)
+        -> (m: Lifetime) -> Ctx(m, Load) -> Pair(Ctx(m, Load), Unit))
+      : Ctx(L, Cta) := {
+    // The rings, innermost the V ring, around the roles.
+    let rings := fun (q: Lifetime)(x: Lifetime)(accs: AccRing(q, 128))(ex: Exchange(x))(ap: AccProducer(q))(ac: AccConsumer(q))
+        (wr: ExWriter(x))(rd: ExReader(x))(e: Ctx(L, Cta)): Pair(Ctx(L, Cta), Unit) =>
+      withRing(e, qRing, Unit, fun (rq: Lifetime)(qr: Ring(rq, qRing))(pq: Producer(rq))(cq: Consumer(rq))(e: Ctx(L, Cta))
+          : Pair(Ctx(L, Cta), Unit) =>
+        withRing(e, kRing, Unit, fun (rk: Lifetime)(kr: Ring(rk, kRing))(pk: Producer(rk))(ck: Consumer(rk))(e: Ctx(L, Cta))
+            : Pair(Ctx(L, Cta), Unit) =>
+          withRing(e, vRing, Unit, fun (rv: Lifetime)(vr: Ring(rv, vRing))(pv: Producer(rv))(cv: Consumer(rv))(e: Ctx(L, Cta))
+              : Pair(Ctx(L, Cta), Unit) =>
+            roles4(e, Unit,
+              fun (m: Lifetime)(e: Ctx(m, Load)): Pair(Ctx(m, Load), Unit) => load(rq, rk, rv, qr, kr, vr, pq, pk, pv, m, e),
+              fun (m: Lifetime)(e: Ctx(m, Issue)): Pair(Ctx(m, Issue), Unit) => issuer(blocks, qr, kr, vr, accs, ex, cq, ck, cv, ap, rd, m, e),
+              fun (m: Lifetime)(e: Ctx(m, Wg)): Pair(Ctx(m, Wg), Unit) => softmax(blocks, mask, scale, out, own, accs, ex, ac, wr, m, e)))))
+    let regions := fun (a: Lifetime)(tm: Tmem(a, 512))(acc: Acc(a, AccState.empty))(e: Ctx(L, Cta))
+        : Pair(Ctx(L, Cta), Pair(Acc(a, AccState.empty), Unit)) =>
+      splitTmem(e, tm, acc, 256, Unit, fun (b: Lifetime)(c: Lifetime)(ts: Tmem(b, 256))(accS: Acc(b, AccState.empty))(to: Tmem(c, 256))
+          (accO: Acc(c, AccState.empty))(e: Ctx(L, Cta)): Pair(Ctx(L, Cta), Pair(Pair(Acc(b, AccState.empty), Acc(c, AccState.empty)), Unit)) => {
+        let sRing := fun (q: Lifetime)(accs: AccRing(q, 128))(ap: AccProducer(q))(ac: AccConsumer(q))(e: Ctx(L, Cta))
+            : Pair(Ctx(L, Cta), Acc(c, AccState.empty)) => {
+          let (e, (accO, u)) := withExchange(e, to, accO, Unit, fun (x: Lifetime)(ex: Exchange(x))(wr: ExWriter(x))(rd: ExReader(x))(e: Ctx(L, Cta))
+              : Pair(Ctx(L, Cta), Unit) => rings(q, x, accs, ex, ap, ac, wr, rd, e))
+          (e, accO)
+        }
+        let (e, (accS, accO)) := withAccRing(e, ts, accS, 2, 128, Acc(c, AccState.empty), sRing)
+        (e, ((accS, accO), Unit.unit))
+      })
+    let (e, u) := withTmem(e, permit, 512, AccState.empty, Unit, regions)
+    e
+  }
+}

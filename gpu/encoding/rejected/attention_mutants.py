@@ -1,15 +1,31 @@
-# The attention example (A1 and A2) with one mistake each (gpu/ATTENTION.md §5): every mutant breaks a rule of the
-# attention core and is refused for that rule. Run by check.sh through gpu/mutate.py.
+# The attention roles (encoding/Attention.rac, which both attention examples run) with one mistake each
+# (gpu/ATTENTION.md §5): every mutant breaks a rule of the attention core and is refused for that rule. Run by check.sh
+# through gpu/mutate.py.
 #
 # §5's rows that are not refusals, and so have no mutant here:
 # - Publishing P without `tcgen05.wait::st`, or without the fences: not expressible, since `publishP` and `awaitP`
 #   emit them (M13).
-# - Spinning in `awaitAcc` between the last `storeP` and `publishP`: allowed, and safe, since `publishP` reconverges
-#   the warp before `wait::st`; `checks/emitted.rac` checks the `__syncwarp` it emits.
-# - Writing a chunk of P twice: not expressible, since `storeP` takes no chunk index and writes chunk `next` of its
-#   `PFree`. An extra store, at index 16 or later, is refused (`store_past_last_chunk`), and a missing one too
-#   (`publish_chunk_unwritten`); a store from the wrong chunk of S is not checked (§5's "storing P chunk c from S
-#   chunk c' ≠ c").
+# - Spinning in `awaitAcc` between writing P and `publishP`: allowed, and safe, since `publishP` reconverges the warp
+#   before `wait::st`; `checks/emitted.rac` checks the `__syncwarp` it emits.
+# - Writing a chunk of P twice, or past P's 16 (formerly `store_past_last_chunk`), or publishing with a chunk unwritten
+#   after the others: not expressible. `writeP` writes the 16 chunks itself, in order, once each, and the per-chunk
+#   store it unrolls is internal; the only way to a publishable `PFree(…, 16)` is `writeP` from `acquireP`'s
+#   `PFree(…, 0)`. What remains expressible, publishing before writing P at all, is `publish_chunk_unwritten`.
+# - Reading S chunk c′ ≠ c for P's chunk c: a step of `writeP` is handed chunk c of S only; another chunk's values
+#   could reach it only through a register, a wrong result (§5's "storing P chunk c from S chunk c′ ≠ c").
+# - Rescaling Ô in the first block (formerly `rescale_first_block`): no longer a mistake. `rescaleO` on a `fresh` Ô,
+#   which holds nothing, emits no code, so the softmax role writes one body for every block.
+# - Accumulating the first product into undefined Ô (formerly `accumulate_first_product`): not expressible. One
+#   `mmaPV` overwrites exactly when its `PReady` is `fresh`, so the issuer writes one body for every block.
+# - Closing the exchange, the S ring or a stage ring with a side unfinished: with no `…Done` token to return, a side
+#   is linear and belongs to its protocol's scope, so it must be used up inside the callback, and only its finisher
+#   uses it up without handing it on. `close_with_product_in_flight` and `close_s_ring_undrained` leave one unfinished
+#   and are refused as unused; returning one out of a role or a callback cannot even be written, since no result type
+#   bound outside the role or protocol can name its scope.
+# - Loading one half of a stage from the other tensor's map, or at another row or column (the examples' loaders): not
+#   expressible. `fillBlock` takes one head map and one row for both 64-wide halves, at columns 0 and 64, as
+#   `fillPage` does; `fill`, which takes two maps and four coordinates, takes `TMap`s, which an attention kernel has
+#   none of. Loading V into the K ring is still a wrong result (§5, "the wrong data in a ring").
 # - Using the upper half of a `splitTmem` as if it started at column 0: not expressible, since every address use adds
 #   the offset through `tmemBase`; `checks/emitted.rac` checks that an MMA into the upper half carries it.
 # - Storing rows of O that another CTA owns, or a row past `seq` (the next head's): not expressible, since `storeO`
@@ -18,160 +34,89 @@
 # - Omitting the mask, or masking against the wrong block or chunk: a wrong result, not a refusal (§5, "what the design
 #   cannot refuse"); the harness's causal and tail sizes catch it.
 
-SOURCE = "encoding/examples/attention.rac"
+SOURCE = "encoding/Attention.rac"
 
 MUTANTS = [
     dict(
         name="load_s_before_commit", expect="ImplicitReconstructionFailed",
-        mentions="Core.loadAcc8: expected an application of Core.AccFull",
-        why="Reads a chunk of S_0 before waiting for the MMA thread's commit: the tensor cores may still be writing "
-            "it. `loadAcc8` reads a buffer through the `AccFull` that only `awaitAcc` makes.",
-        old="""      let (e, full) := Core.awaitAcc(e, accs, c)
-      let (e, minusInfinity) := Core.fconst(e, Attn.minusInfinity)""",
-        new="""      let (e, (c, early)) := Core.loadAcc8(e, accs, c, 0)
-      let (e, full) := Core.awaitAcc(e, accs, c)
-      let (e, minusInfinity) := Core.fconst(e, Attn.minusInfinity)""",
+        mentions="Core.eachChunk: expected an application of Core.AccFull",
+        why="Reads the chunks of S_j before waiting for the MMA thread's commit: the tensor cores may still be writing "
+            "them. `eachChunk` reads a buffer through the `AccFull` that only `awaitAcc` makes.",
+        old="""      let (e, full) := awaitAcc(e, accs, c)
+      let (e, mOld) := get(e, mReg)""",
+        new="""      let (e, c) := eachChunk(e, accs, c, fun (ch: Nat)(s: F32x8(n, Grain.thread))(e: Ctx(n, Wg)): Ctx(n, Wg) => e)
+      let (e, full) := awaitAcc(e, accs, c)
+      let (e, mOld) := get(e, mReg)""",
     ),
     dict(
         name="load_s_after_release", expect="LinearReused", mentions="full has a linear type",
-        why="Releases S_0 after pass 1, then loads it again in pass 2: the MMA thread may already be writing S_2 into "
-            "the released buffer. `releaseAcc` consumes the `AccFull` that pass 2's loads need.",
-        old="""      let e := Core.set(e, lReg, Core.zero(DType.f32))
-      let (e, (full, p)) := Attn.pass2(accs, ex, g.mask, i, g.scale, mNew, lReg, e, (full, p))
-      let (e, c) := Core.releaseAcc(e, accs, full)""",
-        new="""      let e := Core.set(e, lReg, Core.zero(DType.f32))
-      let (e, c) := Core.releaseAcc(e, accs, full)
-      let (e, (full, p)) := Attn.pass2(accs, ex, g.mask, i, g.scale, mNew, lReg, e, (full, p))""",
+        why="Releases S_j after pass 1, then reads it again in pass 2: the MMA thread may already be writing S_{j+2} "
+            "into the released buffer. `releaseAcc` consumes the `AccFull` that pass 2's `writeP` needs.",
+        old="""      let (e, sum) := reg(e, zero(DType.f32))""",
+        new="""      let (e, sum) := reg(e, zero(DType.f32))
+      let (e, c) := releaseAcc(e, accs, full)""",
     ),
     dict(
         name="scores_into_busy_buffer", expect="TypeMismatch", mentions="expected: Core.AccFree",
         why="Issues the next S into its buffer without waiting for the softmax warpgroup's 128 releases: the "
             "warpgroup may still be reading S_{j-1} there. `mmaScores` writes the buffer through the `AccFree` that "
             "only `acquireAcc` makes.",
-        old="""        let (e, free) := Core.acquireAcc(e, accs, ap)""",
+        old="""        let (e, free) := acquireAcc(e, accs, ap)""",
         new="""        let (e, free) := (e, ap)""",
     ),
     dict(
         name="store_p_without_acquire", expect="ImplicitReconstructionFailed",
-        mentions="Core.storeP: expected an application of Core.PFree",
-        why="Writes a chunk of P_j (j > 0) before waiting on P empty, while PV_{j-1} may still be reading P. `storeP` "
-            "writes through the `PFree` that only `acquireP`'s wait makes.",
-        old="""      let (e, p) := Core.acquireP(e, ex, wa)
-      let (e, sum) := Core.reg(e, Core.zero(DType.f32))""",
-        new="""      let (e, (full, early)) := Core.loadAcc8(e, accs, full, 0)
-      let (e, wa) := Core.storeP(e, ex, wa, early)
-      let (e, p) := Core.acquireP(e, ex, wa)
-      let (e, sum) := Core.reg(e, Core.zero(DType.f32))""",
+        mentions="Core.writeP: expected an application of Core.PFree",
+        why="Writes P_j (j > 0) without waiting on P empty, while PV_{j-1} may still be reading P. `writeP` writes "
+            "through the `PFree` that only `acquireP`'s wait makes.",
+        old="""      let (e, p) := acquireP(e, ex, wa)
+      let (e, sum) := reg(e, zero(DType.f32))""",
+        new="""      let (e, p) := (e, wa)
+      let (e, sum) := reg(e, zero(DType.f32))""",
     ),
     dict(
         name="rescale_during_product", expect="ImplicitReconstructionFailed",
         mentions="Core.rescaleO: expected an application of Core.PFree",
         why="Rescales Ô before waiting on P empty, while PV_{j-1} may still be accumulating into it: a read-modify-write "
             "racing the tensor cores. `rescaleO` needs `PFree`, which only `acquireP`'s wait makes.",
-        old="""      let (e, p) := Core.acquireP(e, ex, wa)
-      let (e, sum) := Core.reg(e, Core.zero(DType.f32))""",
-        new="""      let (e, early) := Core.ex2(e, Core.fsub(mOld, mNew))
-      let (e, wa) := Core.rescaleO(e, ex, wa, early)
-      let (e, p) := Core.acquireP(e, ex, wa)
-      let (e, sum) := Core.reg(e, Core.zero(DType.f32))""",
+        old="""      let (e, p) := acquireP(e, ex, wa)
+      let (e, sum) := reg(e, zero(DType.f32))""",
+        new="""      let (e, early) := ex2(e, fsub(mOld, mNew))
+      let (e, wa) := rescaleO(e, ex, wa, early)
+      let (e, p) := acquireP(e, ex, wa)
+      let (e, sum) := reg(e, zero(DType.f32))""",
     ),
     dict(
-        name="rescale_first_block", expect="TypeMismatch", mentions="expected: Core.PFree(x, m, 4, Core.OState.held, 16)",
-        why="Rescales Ô in the first block, before any MMA has written it: its contents are undefined. `rescaleO` "
-            "needs a `PFree` whose `OState` is `held`, and the first `acquireP` gives `fresh`.",
-        old="""      let (e, (full, p)) := Attn.pass2(accs, ex, g.mask, i, g.scale, mNew, lReg, e, (full, p))
-      let (e, c) := Core.releaseAcc(e, accs, full)
-      let (e, wa) := Core.publishP(e, ex, p)
-      (e, (c, wa))""",
-        new="""      let (e, (full, p)) := Attn.pass2(accs, ex, g.mask, i, g.scale, mNew, lReg, e, (full, p))
-      let (e, c) := Core.releaseAcc(e, accs, full)
-      let (e, p) := Core.rescaleO(e, ex, p, mNew)
-      let (e, wa) := Core.publishP(e, ex, p)
-      (e, (c, wa))""",
+        name="product_before_publish", expect="ImplicitReconstructionFailed",
+        mentions="Core.mmaPV: expected an application of Core.PReady",
+        why="Issues PV_j without waiting for the softmax warpgroup to publish P_j: the tensor cores would read P while "
+            "it is being written. `mmaPV` reads P through the `PReady` that only `awaitP` makes.",
+        old="""        let (e, p) := awaitP(e, ex, rd)""",
+        new="""        let (e, p) := (e, rd)""",
     ),
     dict(
-        name="accumulate_first_product", expect="TypeMismatch", mentions="expected: Core.PReady(x, j, Core.OState.held)",
-        why="Accumulates the first product into Ô, whose contents are undefined (tensor memory is not zeroed): the "
-            "first product must overwrite. `mmaPVNext` needs `PReady(…, held)`, and the first `awaitP` gives `fresh`.",
-        old="""Core.mmaPVFirst(e, w, ex, p, vr, vReady)""",
-        new="""Core.mmaPVNext(e, w, ex, p, vr, vReady)""",
-    ),
-    dict(
-        name="product_before_publish", expect="TypeMismatch", mentions="expected: Core.PReady",
-        why="Issues PV_0 without waiting for the softmax warpgroup to publish P_0: the tensor cores would read P while "
-            "it is being written. `mmaPVFirst` reads P through the `PReady` that only `awaitP` makes.",
-        old="""        let (e, p) := Core.awaitP(e, ex, rd)
-        let (e, vReady) := Core.await(e, vr, cv)
-        let (e, (pUsed, vUsed)) := Core.mmaPVFirst(e, w, ex, p, vr, vReady)""",
-        new="""        let (e, p) := (e, rd)
-        let (e, vReady) := Core.await(e, vr, cv)
-        let (e, (pUsed, vUsed)) := Core.mmaPVFirst(e, w, ex, p, vr, vReady)""",
-    ),
-    dict(
-        name="publish_chunk_unwritten", expect="TypeMismatch", mentions="Core.PFree(x, m, 4, Core.OState.fresh, 15)",
-        why="Writes chunks 0 to 14 of P and publishes: the MMA would read the previous block's probabilities in the "
-            "last chunk. `publishP` needs `PFree(…, 16)`, every chunk written.",
-        old="""      : Pair(Ctx(n, Attn.Wg1), Pair(AccFull(q, mm, Attn.softmaxWarp), PFree(x, mm, Attn.softmaxWarp, o, 16))) := {
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 0, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 1, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 2, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 3, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 4, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 5, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 6, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 7, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 8, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 9, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 10, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 11, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 12, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 13, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 14, e, st)
-    Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 15, e, st)
-  }""",
-        new="""      : Pair(Ctx(n, Attn.Wg1), Pair(AccFull(q, mm, Attn.softmaxWarp), PFree(x, mm, Attn.softmaxWarp, o, 15))) := {
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 0, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 1, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 2, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 3, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 4, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 5, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 6, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 7, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 8, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 9, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 10, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 11, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 12, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 13, e, st)
-    Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 14, e, st)
-  }""",
-    ),
-    dict(
-        name="store_past_last_chunk", expect="EvidenceNotDischarged", mentions="Evidence fits of Core.storeP",
-        why="Writes a seventeenth chunk after P's sixteen: its store would land past P's 64 columns of tensor memory. "
-            "`storeP` asks for the chunk index below 16 as evidence.",
-        old="""      let (e, (full, p)) := Attn.pass2(accs, ex, g.mask, i, g.scale, mNew, lReg, e, (full, p))
-      let (e, c) := Core.releaseAcc(e, accs, full)""",
-        new="""      let (e, (full, p)) := Attn.pass2(accs, ex, g.mask, i, g.scale, mNew, lReg, e, (full, p))
-      let (e, (full, extra)) := Core.loadAcc8(e, accs, full, 15)
-      let (e, p) := Core.storeP(e, ex, p, extra)
-      let (e, c) := Core.releaseAcc(e, accs, full)""",
+        name="publish_chunk_unwritten", expect="TypeMismatch", mentions="Core.PFree(x, m, 4, o, 0)",
+        why="Publishes P before writing it: the MMA would read the previous block's probabilities, or, in the first "
+            "block, uninitialized tensor memory. `publishP` needs `PFree(…, 16)`, which only `writeP` makes, from "
+            "`acquireP`'s `PFree(…, 0)`.",
+        old="""      let (e, sum) := reg(e, zero(DType.f32))""",
+        new="""      let (e, wa) := publishP(e, ex, p)
+      let (e, sum) := reg(e, zero(DType.f32))""",
     ),
     dict(
         name="store_o_before_last_product", expect="ImplicitReconstructionFailed",
         mentions="Core.storeO: expected an application of Core.OFinal",
         why="Stores O without waiting for the last product: Ô may still be accumulating PV_{n-1}. `storeO` reads Ô "
             "through the `OFinal` that only `finishExWriter`'s wait makes.",
-        old="""    let (e, final) := Core.finishExWriter(e, ex, wa)""",
+        old="""    let (e, final) := finishExWriter(e, ex, wa)""",
         new="""    let (e, final) := (e, wa)""",
     ),
     dict(
         name="store_o_twice", expect="LinearReused", mentions="own has a linear type",
         why="Stores the CTA's rows of O and LSE twice. `OOwn` is linear, and `storeO` consumes it.",
-        old="""    let (e, final) := Core.storeO(e, ex, final, inv, Core.fmul(Core.fadd(mMax, logSum), ln2), g.out, own)""",
-        new="""    let (e, final) := Core.storeO(e, ex, final, inv, Core.fmul(Core.fadd(mMax, logSum), ln2), g.out, own)
-    let (e, final) := Core.storeO(e, ex, final, inv, Core.fmul(Core.fadd(mMax, logSum), ln2), g.out, own)""",
+        old="""    let (e, final) := storeO(e, ex, final, inv, fmul(fadd(mMax, logSum), ln2), out, own)""",
+        new="""    let (e, final) := storeO(e, ex, final, inv, fmul(fadd(mMax, logSum), ln2), out, own)
+    let (e, final) := storeO(e, ex, final, inv, fmul(fadd(mMax, logSum), ln2), out, own)""",
     ),
     dict(
         name="writer_on_one_thread", expect="ImplicitReconstructionFailed",
@@ -180,9 +125,9 @@ MUTANTS = [
             "thread writes its own row of P: one thread can neither publish nor write the tile. `takeExWriter` needs "
             "a four-warp group.",
         old="""  // ---- The CTA ---""",
-        new="""  def oneWriter {x: Lifetime}(ex: Exchange(x))(wr: ExWriter(x))(m: Lifetime)(e: Ctx(m, Attn.One))
-      : Pair(Ctx(m, Attn.One), ExWriterAt(x, m, 0, OState.fresh)) :=
-    Core.takeExWriter(e, ex, wr)
+        new="""  def oneWriter {x: Lifetime}(ex: Exchange(x))(wr: ExWriter(x))(m: Lifetime)(e: Ctx(m, One))
+      : Pair(Ctx(m, One), ExWriterAt(x, m, 0, OState.fresh)) :=
+    takeExWriter(e, ex, wr)
 
   // ---- The CTA ---""",
     ),
@@ -194,27 +139,23 @@ MUTANTS = [
         old="""  // ---- The CTA ---""",
         new="""  def misalignedWriter {x: Lifetime}(ex: Exchange(x))(wr: ExWriter(x))(m: Lifetime)(e: Ctx(m, Group.warps(3, 4)))
       : Pair(Ctx(m, Group.warps(3, 4)), ExWriterAt(x, m, 3, OState.fresh)) :=
-    Core.takeExWriter(e, ex, wr)
+    takeExWriter(e, ex, wr)
 
   // ---- The CTA ---""",
     ),
     dict(
         name="mask_by_thread_branch", expect="TypeMismatch", mentions="Core.Group.diverged(128)",
-        why="Loads a chunk of S under a per-thread condition, as a causal or tail mask by `if` would (instead of "
-            "`maskedScores`' selects): the `.sync.aligned` load would run with part of the warp. The arm's group is "
-            "`diverged`, and `loadAcc8` needs an aligned warpgroup.",
-        old="""    let (e, (full, t)) := Attn.scores(accs, mask, block, scale, c, e, full)[fits]
-    let (e, old) := Core.get(e, mx)""",
-        new="""    let (e, old) := Core.get(e, mx)
-    let (e, full) := Core.branch(e, Core.lt(old, Core.zero(DType.f32)), Core.fixedAccFull(q, mm, Attn.softmaxWarp), full,
-      fun (b: Lifetime)(e: Ctx(b, Group.arm(Attn.Wg1, Grain.thread)))(full: AccFull(q, mm, Attn.softmaxWarp))
-          : Pair(Ctx(b, Group.arm(Attn.Wg1, Grain.thread)), AccFull(q, mm, Attn.softmaxWarp)) => {
-        let (e, (full, t)) := Core.loadAcc8(e, accs, full, c)[fits]
-        (e, full)
-      },
-      fun (b: Lifetime)(e: Ctx(b, Group.arm(Attn.Wg1, Grain.thread)))(full: AccFull(q, mm, Attn.softmaxWarp))
-          : Pair(Ctx(b, Group.arm(Attn.Wg1, Grain.thread)), AccFull(q, mm, Attn.softmaxWarp)) => (e, full))
-    let (e, (full, t)) := Attn.scores(accs, mask, block, scale, c, e, full)[fits]""",
+        why="Reads the chunks of S under a per-thread condition, as a causal or tail mask by `if` would (instead of "
+            "`maskedScores`' selects): the `.sync.aligned` loads would run with part of the warp. The arm's group is "
+            "`diverged`, and `eachChunk` needs an aligned warpgroup.",
+        old="""      let (e, mOld) := get(e, mReg)""",
+        new="""      let (e, mOld) := get(e, mReg)
+      let (e, full) := branch(e, Core.lt(mOld, zero(DType.f32)), fixedAccFull(q, m, groupWarp), full,
+        fun (b: Lifetime)(e: Ctx(b, Group.arm(Wg, Grain.thread)))(full: AccFull(q, m, groupWarp))
+            : Pair(Ctx(b, Group.arm(Wg, Grain.thread)), AccFull(q, m, groupWarp)) =>
+          eachChunk(e, accs, full, fun (ch: Nat)(s: F32x8(b, Grain.thread))(e: Ctx(b, Group.arm(Wg, Grain.thread))): Ctx(b, Group.arm(Wg, Grain.thread)) => e),
+        fun (b: Lifetime)(e: Ctx(b, Group.arm(Wg, Grain.thread)))(full: AccFull(q, m, groupWarp))
+            : Pair(Ctx(b, Group.arm(Wg, Grain.thread)), AccFull(q, m, groupWarp)) => (e, full))""",
     ),
     dict(
         name="mask_in_thread_branch", expect="ImplicitReconstructionFailed",
@@ -222,47 +163,57 @@ MUTANTS = [
         why="Masks a chunk inside a per-thread branch: in the causal kernel `maskedScores` runs `__syncwarp` and a "
             "full-mask `__shfl_sync` for the thread's row, which part of a warp must not run alone. The arm's group is "
             "`diverged`, and `maskedScores` needs a converged `warps(f, 4)` group.",
-        old="""    let (e, (full, t)) := Attn.scores(accs, mask, block, scale, c, e, full)[fits]
-    let (e, old) := Core.get(e, mx)""",
-        new="""    let (e, (full, t)) := Attn.scores(accs, mask, block, scale, c, e, full)[fits]
-    let (e, old) := Core.get(e, mx)
-    let (e, u) := Core.branch(e, Core.lt(old, Core.zero(DType.f32)), Core.fixedUnit, Unit.unit,
-      fun (b: Lifetime)(e: Ctx(b, Group.arm(Attn.Wg1, Grain.thread)))(u: Unit): Pair(Ctx(b, Group.arm(Attn.Wg1, Grain.thread)), Unit) => {
-        let (e, again) := Core.maskedScores(e, mask, block, c, t)
-        (e, u)
-      },
-      fun (b: Lifetime)(e: Ctx(b, Group.arm(Attn.Wg1, Grain.thread)))(u: Unit): Pair(Ctx(b, Group.arm(Attn.Wg1, Grain.thread)), Unit) => (e, u))""",
+        old="""        let (e, t) := scores(mask, i, scale, ch, s, e)
+        let (e, old) := get(e, mReg)""",
+        new="""        let (e, t) := scores(mask, i, scale, ch, s, e)
+        let (e, old) := get(e, mReg)
+        let (e, u) := branch(e, Core.lt(old, zero(DType.f32)), fixedUnit, Unit.unit,
+          fun (b: Lifetime)(e: Ctx(b, Group.arm(Wg, Grain.thread)))(u: Unit): Pair(Ctx(b, Group.arm(Wg, Grain.thread)), Unit) => {
+            let (e, again) := maskedScores(e, mask, i, ch, t)
+            (e, u)
+          },
+          fun (b: Lifetime)(e: Ctx(b, Group.arm(Wg, Grain.thread)))(u: Unit): Pair(Ctx(b, Group.arm(Wg, Grain.thread)), Unit) => (e, u))""",
     ),
     dict(
         name="forged_mask", expect="SealedConstructor", mentions="Core.Mask",
         why="Masks the scores with a mask of its own, non-causal and with a sequence length of its choosing, in the "
             "causal kernel: rows would attend to later keys, or to keys past `seq` (the next head's). Only the "
-            "kernel builders make a `Mask`, from the kernel's own `seq` and causality.",
-        old="""    let (e, t) := Core.maskedScores(e, mask, block, c, t)""",
-        new="""    let (e, t) := Core.maskedScores(e, Mask.mk(n, Expr.param("BH"), Bool.false, Expr.param("seq")), block, c, t)""",
+            "kernel builders make a `Mask`.",
+        old="""    maskedScores(e, mask, block, c, F32x8.mk(""",
+        new="""    maskedScores(e, Mask.mk(n, Expr.param("BH"), Bool.false, Expr.param("seq")), block, c, F32x8.mk(""",
     ),
     dict(
         name="q_released_inside_loop", expect="LinearReused", mentions="qu has a linear type",
         why="Releases the held Q stage after the first S and keeps issuing MMAs that read it: once the commit "
             "completes, the loader may overwrite the stage. `releaseByMma` consumes the `ReadyUsed` that later "
             "`mmaScores` calls need.",
-        old="""        let (e, (qu, (kUsed, filling))) := Core.mmaScores(e, w, qr, qu, kr, kReady, accs, free)""",
-        new="""        let (e, (qu, (kUsed, filling))) := Core.mmaScores(e, w, qr, qu, kr, kReady, accs, free)
-        let (e, cq) := Core.releaseByMma(e, w, qr, qu)""",
+        old="""        let (e, (qu, (kUsed, filling))) := mmaScores(e, w, qr, qu, kr, kReady, accs, free)""",
+        new="""        let (e, (qu, (kUsed, filling))) := mmaScores(e, w, qr, qu, kr, kReady, accs, free)
+        let (e, cq) := releaseByMma(e, w, qr, qu)""",
     ),
     dict(
-        name="close_with_product_in_flight", expect="TypeMismatch", mentions="Core.ExWriterDone(x)",
-        why="Hands the exchange back without waiting for the last product: its tensor memory could be freed with an "
-            "MMA still writing Ô. `withExchange` closes only on `ExWriterDone`, reached through `finishExWriter`'s "
-            "wait.",
-        old="""    let (e, final) := Core.finishExWriter(e, ex, wa)
-    let (e, lSum) := Core.get(e, lReg)
-    let (e, mMax) := Core.get(e, mReg)
-    let (e, inv) := Core.rcp(e, lSum)
-    let (e, logSum) := Core.lg2(e, lSum)
-    let (e, ln2) := Core.fconst(e, Attn.ln2)
-    let (e, final) := Core.storeO(e, ex, final, inv, Core.fmul(Core.fadd(mMax, logSum), ln2), g.out, own)
-    (e, (Core.finishAccConsumer(c), Core.closeExWriter(final)))""",
-        new="""    (e, (Core.finishAccConsumer(c), wa))""",
+        name="close_with_product_in_flight", expect="LinearUnused", mentions="wa",
+        why="Ends the softmax role without waiting for the last product: the exchange would close, and its tensor "
+            "memory be freed, with an MMA still writing Ô. The writing side is linear and belongs to the exchange's "
+            "scope, and only `finishExWriter`'s wait (then `closeExWriter`) uses it up.",
+        old="""    let (e, final) := finishExWriter(e, ex, wa)
+    let (e, lSum) := get(e, lReg)
+    let (e, mMax) := get(e, mReg)
+    let (e, inv) := rcp(e, lSum)
+    let (e, logSum) := lg2(e, lSum)
+    let (e, ln2) := fconst(e, ln2)
+    let (e, final) := storeO(e, ex, final, inv, fmul(fadd(mMax, logSum), ln2), out, own)
+    let e := finishAccConsumer(e, c)
+    (closeExWriter(e, final), Unit.unit)""",
+        new="""    let e := finishAccConsumer(e, c)
+    (e, Unit.unit)""",
+    ),
+    dict(
+        name="close_s_ring_undrained", expect="LinearUnused", mentions="ap",
+        why="Ends the issuer without waiting until the softmax warpgroup has read every S buffer: the S ring would "
+            "close, and its tensor memory be reused, while the warpgroup still reads S. The issuing side is linear "
+            "and belongs to the ring's scope, and only `finishAccProducer`'s drain uses it up.",
+        old="""      let e := finishAccProducer(e, accs, ap)""",
+        new="""""",
     ),
 ]

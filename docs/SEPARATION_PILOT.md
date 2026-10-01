@@ -45,7 +45,7 @@ waiter.
 | A sealed linear token | an exclusive piece: it cannot be copied (no second holder), or dropped (it is handed back or consumed by an operation that accounts for it) |
 | An unrestricted value confined to a scope | a shared piece, valid while its scope is open. Every copy is gone when the scope closes, so the lender gets the whole back without counting (`SCOPE_CONTAINMENT`) |
 | A callback that binds a lifetime | lending: the callback's result cannot mention the lifetime, so nothing lent leaves it |
-| A `…Done` token a callback must return | conservation: the lender gets back what it lent, once every use is finished |
+| A linear token that belongs to the lent scope | conservation: the scope closes only once every such token is used up, and an operation uses one up without handing it on only once every use is finished (`gpu/encoding`'s finishers; `gpu/Gpu.rac` still has the callback return a `…Done` token) |
 | Sealing | only the module's operations mint or consume pieces |
 | `Ctx(l, g)`, linear | the one emitter: code is emitted in the order authority flows, into block `l`, run by group `g` |
 | An evidence argument | a fact about generation-time values (`0 < S`, alignment) |
@@ -108,16 +108,17 @@ Whether that is cleaner depends on how the exit is chosen. Decision 2 is open ag
 
 **Candidate changes.** A barrier over any number of tiles, rather than one per count (`sync1`, `sync2`).
 
-## 4. The stage ring (today's encoding, with the PTX fixes)
+## 4. The stage ring (`gpu/encoding/Core.rac`'s encoding, with the PTX fixes)
 
 ```raccoon
 withRing       : Ctx(l, cta(w)) -> RingCfg -> (X: Type)
-                 -> ((r) -> Ring(r, cfg) -> Producer(r) -> Consumer(r) -> Ctx -> Pair(Ctx, Pair(Pair(ProducerDone(r), ConsumerDone(r)), X)))
+                 -> ((r) -> Ring(r, cfg) -> Producer(r) -> Consumer(r) -> Ctx -> Pair(Ctx, X))
                  -> Pair(Ctx, X)
 takeProducer   : Ctx(m, lane) -> Elected(m) -> Ring(r, cfg) -> Producer(r) -> Pair(Ctx, ProducerAt(r, m))
 acquire        : Ctx(n, lane) -> Ring -> ProducerAt(r, m) -> Pair(Ctx, Slot(r, m))
 fill           : Ctx(n, lane) -> Ring -> Slot(r, m) -> TMap … -> Pair(Ctx, ProducerAt(r, m))
-finishProducer : Ctx(n, lane) -> Ring -> ProducerAt(r, m) -> Pair(Ctx, ProducerDone(r))
+finishProducer : Ctx(n, lane) -> Ring -> ProducerAt(r, m) -> Ctx                         // the drain
+finishConsumer : Ctx(n, lane) -> ConsumerAt(r, m) -> Ctx                                 // no code
 await          : Ctx(n, lane) -> Ring -> ConsumerAt(r, m) -> Pair(Ctx, Ready(r, m))          // now with after_thread_sync
 mmaFirst/Next  : … Ready(r, m) … -> … ReadyUsed(r, m) …
 releaseByMma   : … ReadyUsed(r, m) -> Elected(m) -> … ConsumerAt(r, m)
@@ -141,7 +142,6 @@ releaseByMma   : … ReadyUsed(r, m) -> Elected(m) -> … ConsumerAt(r, m)
 | `ConsumerAt(r, m)` | the consumer's cursor |
 | `Ready(r, m)` | the cursor and `W(cs, k)` |
 | `ReadyUsed(r, m)` | the cursor, and a claim that MMAs in flight hold `W(cs, k)` until the next commit |
-| `ProducerDone(r)` | every `W(s, _)` back: nothing in flight |
 
 **Why it is safe.** Each stage's whole piece is in exactly one place: with the producer, with TMA copies in flight, in
 `R_full[s]` or with the consumer, with MMAs in flight, or in `R_empty[s]`. Since only one place holds it:
@@ -149,7 +149,8 @@ releaseByMma   : … ReadyUsed(r, m) -> Elected(m) -> … ConsumerAt(r, m)
 - **The generation equation:** the `j`-th read reads the `j`-th fill.
 - **P3:** each side's parity register is its round's parity, and the round-robin agreement keeps every wait within
   one phase of the barrier.
-- **P4:** the close needs `ProducerDone · ConsumerDone`.
+- **P4:** the close comes after both sides are used up (they are linear and belong to `r`), and `finishProducer`, the
+  producer's only end, returns only once every `W(s, _)` is back: nothing in flight.
 - **P5:** an arrival deposits a share it holds.
 - **P8** (PTX §9.7.15.16.5.1): each phase is observed before the next one's arrivals, because the next arrival needs
   the piece the waiter received.

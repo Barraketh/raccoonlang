@@ -2,7 +2,7 @@
 // with forward attention (gpu/ATTENTION.md §3, stages A1 and A2). Every family that carries authority or names generated code is sealed, so only this file can
 // make one. A kernel is an ordinary Raccoon program over these operations; evaluating it builds a `Cuda.Kernel`.
 //
-// Three rules carry the safety argument:
+// Four rules carry the safety argument:
 // - An emitter `Ctx(l, g)` is linear and every operation threads it, so code is emitted in the order the program's
 //   authority flows. `g` says which threads run the code, so a collective cannot sit where some of them are missing.
 // - Every value and register lives in the lifetime of the block that declared it, so a value made in a loop body,
@@ -13,6 +13,11 @@
 //   thread, so a token whose state lives in them is confined to the scope of the one thread that declared them.
 //   What follows a branch or a loop is generated from the state one arm or one iteration returned, so that state
 //   must be `Fixed`: a type with one value, which cannot tell which arm ran or how often.
+// - A protocol's sides (a ring's endpoints, the exchange's sides, the storing side) are linear and belong to the scope
+//   its opener lends, which the opener's result cannot name, so each is used up before the protocol closes. Every
+//   operation on a side hands it on, except its finisher. The finisher of a ring's producer, of the exchange's writer
+//   and of the storing side waits until nothing is in flight; the other sides' finishers emit nothing, since what
+//   they issue is released to the waiting side.
 //
 // The sm_100a operations (TMA, mbarrier, tcgen05) follow CUTLASS's inline assembly; gpu/DESIGN.md §7 records their
 // runs on a B200. Those attention adds are checked against the PTX ISA 9.4 text, by section, and have not run.
@@ -788,18 +793,12 @@ namespace Core {
 
   def fixedConsumerAt (r: Lifetime)(m: Lifetime): Fixed(ConsumerAt(r, m)) := Fixed.mk(ConsumerAt(r, m))
 
-  // A stage the producer may fill; a stage the consumer may read; the endpoints' final states.
+  // A stage the producer may fill; a stage the consumer may read.
   sealed inductive Slot (r: Lifetime)(m: Lifetime) : Type { kind = lin, scope = union(r, m) }
    | mk : Slot(r, m)
 
   sealed inductive Ready (r: Lifetime)(m: Lifetime) : Type { kind = lin, scope = union(r, m) }
    | mk : Ready(r, m)
-
-  sealed inductive ProducerDone (r: Lifetime) : Type { kind = lin, scope = r }
-   | mk : ProducerDone(r)
-
-  sealed inductive ConsumerDone (r: Lifetime) : Type { kind = lin, scope = r }
-   | mk : ConsumerDone(r)
 
   def fullBar {r: Lifetime}{cfg: RingCfg}(ring: Ring(r, cfg))(stage: Nat): Expr :=
     Expr.bin(BinOp.add, Expr.sharedAddr(ring.bars), Expr.bin(BinOp.mul, Expr.var(stage), Expr.lit(8)))
@@ -859,12 +858,14 @@ namespace Core {
     Core.emit(k, e, Stmt.ifElse(first, Core.toBlock(List.reverse(Core.barrierInvals(bars, 0, count)), Block.done), Block.done))
   }
 
-  // Opens a stage ring for the callback, which must hand back both endpoints finished: the producer's finish waits
-  // until every stage it filled was released, so no copy into the ring's storage can still be in flight.
+  // Opens a stage ring for the callback, which must finish both endpoints: each is linear and belongs to the ring's
+  // scope, which the callback's result cannot name, and its finisher is the only operation that uses it up without
+  // handing it on. The producer's finish waits until every stage it filled was released, so no copy into the ring's
+  // storage can still be in flight when the ring closes.
   def withRing {l: Lifetime}{w: Nat}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}
       (e: Ctx(l, Group.cta(w)))(cfg: RingCfg)(X: Type { kind = kx, scope = Sx })
       (body: { kind = kf, scope = Sf } (r: Lifetime) -> Ring(r, cfg) -> Producer(r) -> Consumer(r) -> Ctx(l, Group.cta(w))
-        -> Pair(Ctx(l, Group.cta(w)), Pair(Pair(ProducerDone(r), ConsumerDone(r)), X)))
+        -> Pair(Ctx(l, Group.cta(w)), X))
       : Pair(Ctx(l, Group.cta(w)), X) := {
     let gen0 := Core.check(Core.check(Core.state(Key.key, e), Nat.blt(0, cfg.stages), "ring: no stages"),
       Bool.and(Core.boxOk(cfg.a), Core.boxOk(cfg.b)), "ring: a box must be 64 elements wide and a multiple of 8 rows, up to 256")
@@ -878,13 +879,8 @@ namespace Core {
     let gen4 := Core.initBarrierList(Core.fresh(Core.fresh(Core.fresh(Core.fresh(gen2)))), setup)
     scope r => {
       let ring := Ring.mk(r, cfg, base, bars, p, Nat.add(p, 1), Nat.add(p, 2), Nat.add(p, 3))
-      let (e2, ((pd, cd), x)) :=
-        body(r, ring, Producer.mk(r), Consumer.mk(r), Core.resume(Key.key, l, Group.cta(w), gen4))
-      match pd returning Pair(Ctx(l, Group.cta(w)), X) with
-      | ProducerDone.mk => {
-        match cd returning Pair(Ctx(l, Group.cta(w)), X) with
-        | ConsumerDone.mk => (Core.invalBarriers(Key.key, e2, bars, Nat.mul(2, cfg.stages)), x)
-      }
+      let (e2, x) := body(r, ring, Producer.mk(r), Consumer.mk(r), Core.resume(Key.key, l, Group.cta(w), gen4))
+      (Core.invalBarriers(Key.key, e2, bars, Nat.mul(2, cfg.stages)), x)
     }
   }
 
@@ -946,21 +942,30 @@ namespace Core {
   sealed struct HeadMap (l: Lifetime)(spec: TmaSpec) : Type { scope = l }
    | mk (name: String)(seq: Expr) : HeadMap(l, spec)
 
-  // As `fill`, through head maps, at rows `a1` and `b1` counted from the first row of this CTA's head (`blockIdx.y`),
-  // which the core computes, so the caller does not name the head. Nothing bounds the row by `seq`: a box that runs past
-  // `seq` reads the next heads' rows, or zeros past the matrix (TMA clips). The maps are only read, so that is never a
-  // race. When `seq` is not a multiple of 128, a head's last key block and last query tile do run past it: their
-  // extra keys are masked (`maskedScores`), their extra query rows never stored (`storeO`).
-  def fillHead {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}{L: Lifetime}{S0: Lifetime}{S1: Lifetime}{S2: Lifetime}{S3: Lifetime}
-      {u0: Grain}{u1: Grain}{u2: Grain}{u3: Grain}
-      (e: Ctx(n, Group.lane))(ring: Ring(r, cfg))(s: Slot(r, m))
-      (a: HeadMap(L, RingCfg.a(cfg)))(a0: Val(S0, u0, DType.u32))(a1: Val(S1, u1, DType.u32))
-      (b: HeadMap(L, RingCfg.b(cfg)))(b0: Val(S2, u2, DType.u32))(b1: Val(S3, u3, DType.u32))
+  // A box of 64 × 128: one 128-byte swizzle row of a 128-row block.
+  def isHeadBox (s: TmaSpec): Bool := Bool.and(Nat.beq(s.inner, 64), Nat.beq(s.outer, 128))
+
+  // Whether a ring's stage holds a 128 × 128 block as its two 64-wide halves, one box after the other: attention's Q,
+  // K and V blocks, whose 128 columns are the head dimension.
+  def headStage (cfg: RingCfg): Bool := Bool.and(Core.isHeadBox(cfg.a), Core.isHeadBox(cfg.b))
+
+  // Fills the acquired stage with the 128-row block at row `row` of this CTA's head, through `map`: the block's two
+  // 64-wide halves, one box each, at columns 0 and 64, as `fillPage` loads a page. The row is counted from the first
+  // row of the head (`blockIdx.y`), which the core computes, so the caller does not name the head, and both halves come
+  // from the one map and the one row. The ring's stages must be two boxes of 64 × 128 (else a generation error).
+  // Nothing bounds the row by `seq`: a box that runs past `seq` reads the next heads' rows, or zeros past the matrix
+  // (TMA clips). The map is only read, so that is never a race. When `seq` is not a multiple of 128, a head's last key
+  // block and last query tile do run past it: their extra keys are masked (`maskedScores`), their extra query rows
+  // never stored (`storeO`).
+  def fillBlock {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}{L: Lifetime}{S: Lifetime}{u: Grain}
+      (e: Ctx(n, Group.lane))(ring: Ring(r, cfg))(s: Slot(r, m))(map: HeadMap(L, RingCfg.a(cfg)))(row: Val(S, u, DType.u32))
       : Pair(Ctx(n, Group.lane), ProducerAt(r, m)) := {
     match s returning Pair(Ctx(n, Group.lane), ProducerAt(r, m)) with
     | Slot.mk => {
-      let row := fun (seq: Expr)(within: Expr): Expr => Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.special(Builtin.blockY), seq), within)
-      (Core.emitAll(Key.key, e, Core.fillCode(ring, a.name, a0.expr, row(a.seq, a1.expr), b.name, b0.expr, row(b.seq, b1.expr))), ProducerAt.mk(r, m))
+      let e := Core.resume(Key.key, n, Group.lane, Core.check(Core.state(Key.key, e), Core.headStage(cfg),
+        "fillBlock: a stage must be two boxes of 64 x 128, one block of one head"))
+      let at := Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.special(Builtin.blockY), map.seq), row.expr)
+      (Core.emitAll(Key.key, e, Core.fillCode(ring, map.name, Expr.lit(0), at, map.name, Expr.lit(64), at)), ProducerAt.mk(r, m))
     }
   }
 
@@ -973,15 +978,14 @@ namespace Core {
     }
   }
 
-  // The producer's tail: waits until every stage has been released, so none of its copies is still reading or
-  // writing when the ring closes.
+  // The producer's tail, and the only end of a `ProducerAt`: waits until every stage has been released, so none of its
+  // copies is still reading or writing when the ring closes.
   def finishProducer {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}(e: Ctx(n, Group.lane))(ring: Ring(r, cfg))(p: ProducerAt(r, m))
-      : Pair(Ctx(n, Group.lane), ProducerDone(r)) := {
-    match p returning Pair(Ctx(n, Group.lane), ProducerDone(r)) with
+      : Ctx(n, Group.lane) := {
+    match p returning Ctx(n, Group.lane) with
     | ProducerAt.mk => {
       let emptyBase := Nat.add(ring.bars, Nat.mul(8, cfg.stages))
-      (Core.emitAll(Key.key, e, Core.drain(ring.pStage, ring.pPhase, emptyBase, cfg.stages, cfg.stages)),
-        ProducerDone.mk(r))
+      Core.emitAll(Key.key, e, Core.drain(ring.pStage, ring.pPhase, emptyBase, cfg.stages, cfg.stages))
     }
   }
 
@@ -996,9 +1000,11 @@ namespace Core {
     }
   }
 
-  def finishConsumer {r: Lifetime}{m: Lifetime}(c: ConsumerAt(r, m)): ConsumerDone(r) := {
-    match c returning ConsumerDone(r) with
-    | ConsumerAt.mk => ConsumerDone.mk(r)
+  // The consumer's end, which emits nothing: every stage it took was released through a `ReadyUsed`, and the
+  // producer's finish waits for those releases.
+  def finishConsumer {n: Lifetime}{r: Lifetime}{m: Lifetime}(e: Ctx(n, Group.lane))(c: ConsumerAt(r, m)): Ctx(n, Group.lane) := {
+    match c returning Ctx(n, Group.lane) with
+    | ConsumerAt.mk => e
   }
 
   // ---- Tensor memory, the accumulator and the tensor cores --------------------------------------------------------
@@ -1277,8 +1283,8 @@ namespace Core {
   //
   // A staging buffer's typestate: free (`StageFree`, after `acquireStage`) → written (`StageWritten`, `stageAcc`,
   // `stageAccFull`) → fenced (`StageFenced`, `fenceStage`) → in flight (`storeStage`, back to `StoreAt`), and free again
-  // `bufs` stores later. The store endpoint must be finished (`finishStores`, which waits for every store to complete)
-  // before `withStaging` releases the buffers.
+  // `bufs` stores later. The store endpoint is linear and belongs to the staging scope, so it is finished
+  // (`finishStores`, which waits for every store to complete, its only end) before `withStaging` releases the buffers.
 
   // An output tile of 128×`bn` elements: its first row and its first column. The tile of a one-tile-per-CTA GEMM, or
   // that a loop iteration in scope `m` visits.
@@ -1336,15 +1342,12 @@ namespace Core {
 
   // The storing side, before a warpgroup takes it; taken by the aligned warpgroup `warps(f, 4)` in scope `m`, whose
   // 128 threads run every operation on it together, and whose lane 0 of each warp issues and waits for that warp's
-  // stores; and finished, with no store in flight.
+  // stores.
   sealed inductive StoreSide (s: Lifetime) : Type { kind = lin, scope = s }
    | mk : StoreSide(s)
 
   sealed inductive StoreAt (s: Lifetime)(m: Lifetime)(f: Nat) : Type { kind = lin, scope = union(s, m) }
    | mk : StoreAt(s, m, f)
-
-  sealed inductive StoreDone (s: Lifetime) : Type { kind = lin, scope = s }
-   | mk : StoreDone(s)
 
   def fixedStoreAt (s: Lifetime)(m: Lifetime)(f: Nat): Fixed(StoreAt(s, m, f)) := Fixed.mk(StoreAt(s, m, f))
 
@@ -1390,21 +1393,17 @@ namespace Core {
     Expr.bin(BinOp.add, Expr.sharedAddr(stg.base),
       Expr.bin(BinOp.mul, Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Core.quadrant, Expr.lit(stg.bufs)), Expr.var(stg.cur)), Expr.lit(4096)))
 
-  // Opens `bufs` staging buffers per warp of a warpgroup for the callback, which must hand back the storing side
-  // finished: no store can still be reading the buffers when their shared memory is released.
+  // Opens `bufs` staging buffers per warp of a warpgroup for the callback, which must finish the storing side: it is
+  // linear and belongs to the staging scope, which the callback's result cannot name, and `finishStores` is its only
+  // end. So no store can still be reading the buffers when their shared memory is released.
   def withStaging {l: Lifetime}{w: Nat}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}
       (e: Ctx(l, Group.cta(w)))(bufs: Nat)(X: Type { kind = kx, scope = Sx })
-      (body: { kind = kf, scope = Sf } (s: Lifetime) -> Staging(s) -> StoreSide(s) -> Ctx(l, Group.cta(w))
-        -> Pair(Ctx(l, Group.cta(w)), Pair(StoreDone(s), X)))
+      (body: { kind = kf, scope = Sf } (s: Lifetime) -> Staging(s) -> StoreSide(s) -> Ctx(l, Group.cta(w)) -> Pair(Ctx(l, Group.cta(w)), X))
       : Pair(Ctx(l, Group.cta(w)), X) := {
     let gen0 := Core.check(Core.state(Key.key, e), Nat.blt(0, bufs), "staging: no buffers")
     let base := Core.alignUp(gen0.smem, 1024)
     let gen1 := Core.fresh(Core.reserve(gen0, Nat.mul(Nat.mul(4, bufs), 4096), 1024))
-    scope s => {
-      let (e2, (done, x)) := body(s, Staging.mk(s, base, bufs, gen0.next), StoreSide.mk(s), Core.resume(Key.key, l, Group.cta(w), gen1))
-      match done returning Pair(Ctx(l, Group.cta(w)), X) with
-      | StoreDone.mk => (e2, x)
-    }
+    scope s => body(s, Staging.mk(s, base, bufs, gen0.next), StoreSide.mk(s), Core.resume(Key.key, l, Group.cta(w), gen1))
   }
 
   // The aligned warpgroup takes the storing side: its current buffer starts at 0, and no store is in flight.
@@ -1498,12 +1497,12 @@ namespace Core {
     }
   }
 
-  // Lane 0 of each warp waits until every store it issued has completed, reads and writes; then no store reads the
-  // staging buffers, which may be released, and none is in flight when the kernel ends.
+  // The storing side's end: lane 0 of each warp waits until every store it issued has completed, reads and writes;
+  // then no store reads the staging buffers, which may be released, and none is in flight when the kernel ends.
   def finishStores {k: Lifetime}{f: Nat}{s: Lifetime}{m: Lifetime}
-      (e: Ctx(k, Group.warps(f, 4)))(stg: Staging(s))(st: StoreAt(s, m, f)): Pair(Ctx(k, Group.warps(f, 4)), StoreDone(s)) := {
-    match st returning Pair(Ctx(k, Group.warps(f, 4)), StoreDone(s)) with
-    | StoreAt.mk => (Core.emitAll(Key.key, e, Core.onLaneZero(List.cons(Core.bulkWait(0), List.nil(Stmt)))), StoreDone.mk(s))
+      (e: Ctx(k, Group.warps(f, 4)))(stg: Staging(s))(st: StoreAt(s, m, f)): Ctx(k, Group.warps(f, 4)) := {
+    match st returning Ctx(k, Group.warps(f, 4)) with
+    | StoreAt.mk => Core.emitAll(Key.key, e, Core.onLaneZero(List.cons(Core.bulkWait(0), List.nil(Stmt))))
   }
 
   // ---- Persistent GEMM: the tile schedule --------------------------------------------------------------------------
@@ -1616,12 +1615,6 @@ namespace Core {
 
   def fixedAccFull (q: Lifetime)(m: Lifetime)(f: Nat): Fixed(AccFull(q, m, f)) := Fixed.mk(AccFull(q, m, f))
 
-  sealed inductive AccProducerDone (q: Lifetime) : Type { kind = lin, scope = q }
-   | mk : AccProducerDone(q)
-
-  sealed inductive AccConsumerDone (q: Lifetime) : Type { kind = lin, scope = q }
-   | mk : AccConsumerDone(q)
-
   def accFullBar {q: Lifetime}{n: Nat}(ring: AccRing(q, n))(stage: Nat): Expr :=
     Expr.bin(BinOp.add, Expr.sharedAddr(ring.bars), Expr.bin(BinOp.mul, Expr.var(stage), Expr.lit(8)))
 
@@ -1634,13 +1627,15 @@ namespace Core {
   def accBuffer {q: Lifetime}{n: Nat}(ring: AccRing(q, n))(stage: Nat): Expr :=
     Expr.bin(BinOp.add, ring.base, Expr.bin(BinOp.mul, Expr.var(stage), Expr.lit(n)))
 
-  // Splits the accumulator of `withTmem` into `bufs` buffers of `n` columns for the callback, which must hand back both
-  // endpoints finished: the issuer's finish waits until the epilogue has read every buffer, so no tensor-core work is
-  // in flight and the accumulator can be handed back, `empty`, since what it holds has been read.
+  // Splits the accumulator of `withTmem` into `bufs` buffers of `n` columns for the callback, which must finish both
+  // sides: each is linear and belongs to the ring's scope, which the callback's result cannot name, and its finisher is
+  // the only operation that uses it up without handing it on. The issuer's finish waits until the epilogue has read
+  // every buffer, so no tensor-core work is in flight and the accumulator can be handed back, `empty`, since what it
+  // holds has been read.
   def withAccRing {l: Lifetime}{w: Nat}{a: Lifetime}{cols: Nat}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}
       (e: Ctx(l, Group.cta(w)))(t: Tmem(a, cols))(acc: Acc(a, AccState.empty))(bufs: Nat)(n: Nat)(X: Type { kind = kx, scope = Sx })
       (body: { kind = kf, scope = Sf } (q: Lifetime) -> AccRing(q, n) -> AccProducer(q) -> AccConsumer(q) -> Ctx(l, Group.cta(w))
-        -> Pair(Ctx(l, Group.cta(w)), Pair(Pair(AccProducerDone(q), AccConsumerDone(q)), X)))
+        -> Pair(Ctx(l, Group.cta(w)), X))
       : Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.empty), X)) := {
     match acc returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.empty), X)) with
     | Acc.mk => {
@@ -1655,13 +1650,8 @@ namespace Core {
       let gen2 := Core.initBarrierList(Core.fresh(Core.fresh(Core.fresh(Core.fresh(gen1)))), setup)
       scope q => {
         let ring := AccRing.mk(q, n, Core.tmemBase(t), bufs, bars, p, Nat.add(p, 1), Nat.add(p, 2), Nat.add(p, 3))
-        let (e2, ((pd, cd), x)) :=
-          body(q, ring, AccProducer.mk(q), AccConsumer.mk(q), Core.resume(Key.key, l, Group.cta(w), gen2))
-        match pd returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.empty), X)) with
-        | AccProducerDone.mk => {
-          match cd returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.empty), X)) with
-          | AccConsumerDone.mk => (Core.invalBarriers(Key.key, e2, bars, Nat.mul(2, bufs)), (Acc.mk(a, AccState.empty), x))
-        }
+        let (e2, x) := body(q, ring, AccProducer.mk(q), AccConsumer.mk(q), Core.resume(Key.key, l, Group.cta(w), gen2))
+        (Core.invalBarriers(Key.key, e2, bars, Nat.mul(2, bufs)), (Acc.mk(a, AccState.empty), x))
       }
     }
   }
@@ -1722,13 +1712,11 @@ namespace Core {
     }
   }
 
-  // The issuer's tail: waits until the epilogue has read every buffer.
+  // The issuer's tail, and the only end of an `AccProducerAt`: waits until the epilogue has read every buffer.
   def finishAccProducer {k: Lifetime}{q: Lifetime}{n: Nat}{m: Lifetime}(e: Ctx(k, Group.lane))(ring: AccRing(q, n))
-      (p: AccProducerAt(q, m)): Pair(Ctx(k, Group.lane), AccProducerDone(q)) := {
-    match p returning Pair(Ctx(k, Group.lane), AccProducerDone(q)) with
-    | AccProducerAt.mk =>
-      (Core.emitAll(Key.key, e, Core.drain(ring.pStage, ring.pPhase, Core.accEmptyBase(ring), ring.bufs, ring.bufs)),
-        AccProducerDone.mk(q))
+      (p: AccProducerAt(q, m)): Ctx(k, Group.lane) := {
+    match p returning Ctx(k, Group.lane) with
+    | AccProducerAt.mk => Core.emitAll(Key.key, e, Core.drain(ring.pStage, ring.pPhase, Core.accEmptyBase(ring), ring.bufs, ring.bufs))
   }
 
   // An aligned warpgroup takes the reading side: its buffer starts at 0, none yet full.
@@ -1774,19 +1762,15 @@ namespace Core {
     }
   }
 
-  def finishAccConsumer {q: Lifetime}{m: Lifetime}{f: Nat}(c: AccConsumerAt(q, m, f)): AccConsumerDone(q) := {
-    match c returning AccConsumerDone(q) with
-    | AccConsumerAt.mk => AccConsumerDone.mk(q)
+  // The reading side's end, which emits nothing: every buffer it awaited was released (`AccFull`'s only end is
+  // `releaseAcc`), and the issuer's finish waits for those releases.
+  def finishAccConsumer {k: Lifetime}{f: Nat}{q: Lifetime}{m: Lifetime}(e: Ctx(k, Group.warps(f, 4)))(c: AccConsumerAt(q, m, f))
+      : Ctx(k, Group.warps(f, 4)) := {
+    match c returning Ctx(k, Group.warps(f, 4)) with
+    | AccConsumerAt.mk => e
   }
 
   // ---- Attention: scores, and reading an accumulator buffer ----------------------------------------------------------
-
-  // A box of 64 × 128: one 128-byte swizzle row of a 128-row block.
-  def isHeadBox (s: TmaSpec): Bool := Bool.and(Nat.beq(s.inner, 64), Nat.beq(s.outer, 128))
-
-  // Whether a ring's stage holds a 128 × 128 block as its two 64-wide halves, one box after the other: attention's Q,
-  // K and V blocks, whose 128 columns are the head dimension.
-  def headStage (cfg: RingCfg): Bool := Bool.and(Core.isHeadBox(cfg.a), Core.isHeadBox(cfg.b))
 
   // S = A·Bᵀ over K = 128 into the issuer's free accumulator buffer: A from the held stage of ring `ringA`, B from the
   // ready stage of ring `ringB`, each stage the two 64-wide halves of K for 128 rows, so 8 MMAs, the first
@@ -1833,16 +1817,36 @@ namespace Core {
       List.append(Core.declOuts(DType.f32, first, 8), List.cons(Stmt.syncWarp, List.cons(Core.tmemLoad8(first, taddr), List.cons(Core.tmemWaitLoad, List.nil(Stmt))))))
   }
 
-  // Columns 8c to 8c+7 of this thread's row of the reading side's current buffer (PTX §9.7.18.8.3, §9.7.18.8.5). No
-  // fence is needed: `AccFull` comes only from `awaitAcc`, which every thread of this warpgroup ran, waiting and then
-  // fencing `after_thread_sync` itself. The values cannot outlive the block that loaded them.
-  def loadAcc8 {k: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}{m: Lifetime}
-      (e: Ctx(k, Group.warps(f, 4)))(ring: AccRing(q, n))(full: AccFull(q, m, f))(c: Nat)[fits: Nat.le(Nat.mul(8, Nat.succ(c)), n)]
-      : Pair(Ctx(k, Group.warps(f, 4)), Pair(AccFull(q, m, f), F32x8(k, Grain.thread))) := {
-    let gen := Core.state(Key.key, e)
+  // Chunk `c` of this thread's row of the reading side's current buffer: columns 8c to 8c+7 (PTX §9.7.18.8.3,
+  // §9.7.18.8.5). No fence is needed: the callers hold an `AccFull`, which comes only from `awaitAcc`, which every thread
+  // of this warpgroup ran, waiting and then fencing `after_thread_sync` itself. The values cannot outlive the block that
+  // loaded them.
+  def loadChunk {k: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}(key: Key)(e: Ctx(k, Group.warps(f, 4)))(ring: AccRing(q, n))(c: Nat)
+      : Pair(Ctx(k, Group.warps(f, 4)), F32x8(k, Grain.thread)) := {
+    let gen := Core.state(key, e)
     let taddr := Core.quadrantLanes(Core.offsetBy(Core.accBuffer(ring, ring.cStage), Nat.mul(8, c)))
-    (Core.resume(Key.key, k, Group.warps(f, 4), Core.loadRow8(gen, taddr)), (full, Core.row8(Key.key, k, gen.next)))
+    (Core.resume(key, k, Group.warps(f, 4), Core.loadRow8(gen, taddr)), Core.row8(key, k, gen.next))
   }
+
+  // `step` on chunks `c` to `c + count - 1`, each loaded as `loadChunk` loads it.
+  def chunksFrom {k: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}{Sf: Lifetime}(key: Key)(e: Ctx(k, Group.warps(f, 4)))(ring: AccRing(q, n))
+      (step: { scope = Sf } (c: Nat) -> F32x8(k, Grain.thread) -> Ctx(k, Group.warps(f, 4)) -> Ctx(k, Group.warps(f, 4)))
+      (c: Nat)(count: Nat): Ctx(k, Group.warps(f, 4)) decreases structural(count) := {
+    match count returning Ctx(k, Group.warps(f, 4)) with
+    | Nat.zero => e
+    | Nat.succ more => {
+      let (e, s) := Core.loadChunk(key, e, ring, c)
+      Core.chunksFrom(key, step(c, s, e), ring, step, Nat.succ(c), more)
+    }
+  }
+
+  // Runs `step` on each chunk of 8 columns of this thread's row of the reading side's current buffer, in column order,
+  // with the chunk's index: the `n / 8` loads and steps are unrolled at generation. The chunks exist only inside the
+  // steps, which the buffer's `AccFull` encloses, so none is read before `awaitAcc` or after `releaseAcc`.
+  def eachChunk {k: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}{m: Lifetime}{Sf: Lifetime}
+      (e: Ctx(k, Group.warps(f, 4)))(ring: AccRing(q, n))(full: AccFull(q, m, f))
+      (step: { scope = Sf } (c: Nat) -> F32x8(k, Grain.thread) -> Ctx(k, Group.warps(f, 4)) -> Ctx(k, Group.warps(f, 4)))
+      : Pair(Ctx(k, Group.warps(f, 4)), AccFull(q, m, f)) := (Core.chunksFrom(Key.key, e, ring, step, 0, Nat.div(n, 8)), full)
 
   // ---- Attention: the exchange ----------------------------------------------------------------------------------------
   //
@@ -1866,18 +1870,12 @@ namespace Core {
   sealed struct Exchange (x: Lifetime) : Type { scope = x }
    | mk (base: Expr)(bars: Nat)(wPhase: Nat)(rPhase: Nat) : Exchange(x)
 
-  // The two sides before they are taken, and finished.
+  // The two sides before they are taken.
   sealed inductive ExWriter (x: Lifetime) : Type { kind = lin, scope = x }
    | mk : ExWriter(x)
 
   sealed inductive ExReader (x: Lifetime) : Type { kind = lin, scope = x }
    | mk : ExReader(x)
-
-  sealed inductive ExWriterDone (x: Lifetime) : Type { kind = lin, scope = x }
-   | mk : ExWriterDone(x)
-
-  sealed inductive ExReaderDone (x: Lifetime) : Type { kind = lin, scope = x }
-   | mk : ExReaderDone(x)
 
   // The writing side, taken by the aligned warpgroup `warps(f, 4)` in scope `m`, whose 128 threads run every operation
   // on it together and so keep one phase; the reading side, taken by the thread elected in `m`. `o` is what the side
@@ -1918,12 +1916,14 @@ namespace Core {
 
   def flip (phase: Nat): Stmt := Stmt.assign(phase, Expr.bin(BinOp.sub, Expr.lit(1), Expr.var(phase)))
 
-  // Opens the exchange over a 256-column region for the callback, which must hand back both sides finished: the
-  // writer's finish waits for the last product, so no MMA reads P or writes Ô when the region is handed back.
+  // Opens the exchange over a 256-column region for the callback, which must finish both sides: each is linear and
+  // belongs to the exchange's scope, which the callback's result cannot name, and its finisher is the only operation
+  // that uses it up without handing it on. The writer's finish waits for the last product, so no MMA reads P or writes
+  // Ô when the region is handed back.
   def withExchange {l: Lifetime}{w: Nat}{a: Lifetime}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}
       (e: Ctx(l, Group.cta(w)))(t: Tmem(a, 256))(acc: Acc(a, AccState.empty))(X: Type { kind = kx, scope = Sx })
       (body: { kind = kf, scope = Sf } (x: Lifetime) -> Exchange(x) -> ExWriter(x) -> ExReader(x) -> Ctx(l, Group.cta(w))
-        -> Pair(Ctx(l, Group.cta(w)), Pair(Pair(ExWriterDone(x), ExReaderDone(x)), X)))
+        -> Pair(Ctx(l, Group.cta(w)), X))
       : Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.empty), X)) := {
     match acc returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.empty), X)) with
     | Acc.mk => {
@@ -1936,12 +1936,8 @@ namespace Core {
       let gen2 := Core.initBarrierList(Core.fresh(Core.fresh(gen1)), List.append(inits, Core.barrierCompletions(bars, 1, 1, 1)))
       scope x => {
         let ex := Exchange.mk(x, Core.tmemBase(t), bars, phases, Nat.add(phases, 1))
-        let (e2, ((wd, rd), y)) := body(x, ex, ExWriter.mk(x), ExReader.mk(x), Core.resume(Key.key, l, Group.cta(w), gen2))
-        match wd returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.empty), X)) with
-        | ExWriterDone.mk => {
-          match rd returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.empty), X)) with
-          | ExReaderDone.mk => (Core.invalBarriers(Key.key, e2, bars, 2), (Acc.mk(a, AccState.empty), y))
-        }
+        let (e2, y) := body(x, ex, ExWriter.mk(x), ExReader.mk(x), Core.resume(Key.key, l, Group.cta(w), gen2))
+        (Core.invalBarriers(Key.key, e2, bars, 2), (Acc.mk(a, AccState.empty), y))
       }
     }
   }
@@ -1965,23 +1961,42 @@ namespace Core {
     }
   }
 
-  // Writes chunk `c` of this thread's row of P, keys 8c to 8c+7, from the eight values: rounded to bf16 in pairs, the
-  // lower key in the low half (A23, A25), into P's columns 4c to 4c+3. The store is pending until `publishP` waits for
-  // it. Chunks are written in order, each once, so `publishP` can require all 16.
-  def storeP {k: Lifetime}{f: Nat}{x: Lifetime}{m: Lifetime}{o: OState}{c: Nat}{S: Lifetime}{u: Grain}
-      (e: Ctx(k, Group.warps(f, 4)))(ex: Exchange(x))(p: PFree(x, m, f, o, c))(v: F32x8(S, u))[fits: Nat.lt(c, 16)]
-      : Pair(Ctx(k, Group.warps(f, 4)), PFree(x, m, f, o, Nat.succ(c))) := {
-    match p returning Pair(Ctx(k, Group.warps(f, 4)), PFree(x, m, f, o, Nat.succ(c))) with
-    | PFree.mk => {
-      let gen := Core.state(Key.key, e)
-      let first := gen.next
-      let packs := List.cons(Core.cvtBf16x2(first, v.v1.expr, v.v0.expr), List.cons(Core.cvtBf16x2(Nat.add(first, 1), v.v3.expr, v.v2.expr),
-        List.cons(Core.cvtBf16x2(Nat.add(first, 2), v.v5.expr, v.v4.expr), List.cons(Core.cvtBf16x2(Nat.add(first, 3), v.v7.expr, v.v6.expr), List.nil(Stmt)))))
-      let store := List.cons(Stmt.syncWarp, List.cons(Core.tmemStore4(Core.quadrantLanes(Core.offsetBy(Core.pBase(ex), Nat.mul(4, c))), first), List.nil(Stmt)))
-      let code := List.append(Core.declOuts(DType.u32, first, 4), List.append(packs, store))
-      (Core.resume(Key.key, k, Group.warps(f, 4), Core.pushAll(Gen.mk(gen.code, Nat.add(first, 4), gen.smem, gen.barrier, gen.errors), code)),
-        PFree.mk(x, m, f, o, Nat.succ(c)))
+  // Chunk `c` of this thread's row of P, keys 8c to 8c+7, from the eight values: rounded to bf16 in pairs, the lower
+  // key in the low half (A23, A25), into P's columns 4c to 4c+3. The store is pending until `publishP` waits for it.
+  def storeP {x: Lifetime}{S: Lifetime}{u: Grain}(gen: Gen)(ex: Exchange(x))(v: F32x8(S, u))(c: Nat): Gen := {
+    let first := gen.next
+    let packs := List.cons(Core.cvtBf16x2(first, v.v1.expr, v.v0.expr), List.cons(Core.cvtBf16x2(Nat.add(first, 1), v.v3.expr, v.v2.expr),
+      List.cons(Core.cvtBf16x2(Nat.add(first, 2), v.v5.expr, v.v4.expr), List.cons(Core.cvtBf16x2(Nat.add(first, 3), v.v7.expr, v.v6.expr), List.nil(Stmt)))))
+    let store := List.cons(Stmt.syncWarp, List.cons(Core.tmemStore4(Core.quadrantLanes(Core.offsetBy(Core.pBase(ex), Nat.mul(4, c))), first), List.nil(Stmt)))
+    let code := List.append(Core.declOuts(DType.u32, first, 4), List.append(packs, store))
+    Core.pushAll(Gen.mk(gen.code, Nat.add(first, 4), gen.smem, gen.barrier, gen.errors), code)
+  }
+
+  // For chunks `c` to `c + count - 1`: load the chunk of S (`loadChunk`), run `step` on it, and store the eight values
+  // it returns as that chunk of P (`storeP`).
+  def pChunksFrom {k: Lifetime}{f: Nat}{q: Lifetime}{x: Lifetime}{S: Lifetime}{u: Grain}{Sf: Lifetime}
+      (key: Key)(e: Ctx(k, Group.warps(f, 4)))(ring: AccRing(q, 128))(ex: Exchange(x))
+      (step: { scope = Sf } (c: Nat) -> F32x8(k, Grain.thread) -> Ctx(k, Group.warps(f, 4)) -> Pair(Ctx(k, Group.warps(f, 4)), F32x8(S, u)))
+      (c: Nat)(count: Nat): Ctx(k, Group.warps(f, 4)) decreases structural(count) := {
+    match count returning Ctx(k, Group.warps(f, 4)) with
+    | Nat.zero => e
+    | Nat.succ more => {
+      let (e, s) := Core.loadChunk(key, e, ring, c)
+      let (e, v) := step(c, s, e)
+      Core.pChunksFrom(key, Core.resume(key, k, Group.warps(f, 4), Core.storeP(Core.state(key, e), ex, v, c)), ring, ex, step, Nat.succ(c), more)
     }
+  }
+
+  // Writes all of P from S: for each chunk of 8 columns of this thread's row, in column order, loads the chunk of S
+  // (as `eachChunk` does), runs `step` on it with the chunk's index, and stores the eight values it returns as that
+  // chunk of P. The 16 chunks are unrolled at generation, so every chunk of P is written, in order, once (M14), and the
+  // result is the `PFree` that `publishP` takes. A step is handed only its own chunk of S.
+  def writeP {k: Lifetime}{f: Nat}{q: Lifetime}{m: Lifetime}{x: Lifetime}{o: OState}{S: Lifetime}{u: Grain}{Sf: Lifetime}
+      (e: Ctx(k, Group.warps(f, 4)))(ring: AccRing(q, 128))(full: AccFull(q, m, f))(ex: Exchange(x))(p: PFree(x, m, f, o, 0))
+      (step: { scope = Sf } (c: Nat) -> F32x8(k, Grain.thread) -> Ctx(k, Group.warps(f, 4)) -> Pair(Ctx(k, Group.warps(f, 4)), F32x8(S, u)))
+      : Pair(Ctx(k, Group.warps(f, 4)), Pair(AccFull(q, m, f), PFree(x, m, f, o, 16))) := {
+    match p returning Pair(Ctx(k, Group.warps(f, 4)), Pair(AccFull(q, m, f), PFree(x, m, f, o, 16))) with
+    | PFree.mk => (Core.pChunksFrom(Key.key, e, ring, ex, step, 0, 16), (full, PFree.mk(x, m, f, o, 16)))
   }
 
   // Scales chunks `c` to `c + count - 1` of this thread's row of Ô, eight columns each, by `alpha`: load, wait, store.
@@ -1997,15 +2012,21 @@ namespace Core {
     }
   }
 
-  // Multiplies this thread's row of Ô by `alpha`. Ô must hold a product (`held`); the stores are pending until
-  // `publishP` waits for them.
-  def rescaleO {k: Lifetime}{f: Nat}{x: Lifetime}{m: Lifetime}{c: Nat}{S: Lifetime}{u: Grain}
-      (e: Ctx(k, Group.warps(f, 4)))(ex: Exchange(x))(p: PFree(x, m, f, OState.held, c))(alpha: Val(S, u, DType.f32))
-      : Pair(Ctx(k, Group.warps(f, 4)), PFree(x, m, f, OState.held, c)) := {
+  // Multiplies this thread's row of Ô by `alpha`; the stores are pending until `publishP` waits for them. While Ô is
+  // `fresh` it holds nothing (the first product overwrites it), so there is nothing to rescale and no code.
+  def rescaleO {k: Lifetime}{f: Nat}{x: Lifetime}{m: Lifetime}{o: OState}{c: Nat}{S: Lifetime}{u: Grain}
+      (e: Ctx(k, Group.warps(f, 4)))(ex: Exchange(x))(p: PFree(x, m, f, o, c))(alpha: Val(S, u, DType.f32))
+      : Pair(Ctx(k, Group.warps(f, 4)), PFree(x, m, f, o, c)) := {
     let gen := Core.state(Key.key, e)
-    let scale := gen.next
-    let bound := Core.push(Core.fresh(gen), Stmt.decl(DType.f32, scale, alpha.expr))
-    (Core.resume(Key.key, k, Group.warps(f, 4), Core.rescaleChunks(bound, ex.base, Expr.var(scale), 0, 16)), p)
+    let rescaled := {
+      match o returning Gen with
+      | OState.fresh => gen
+      | OState.held => {
+        let bound := Core.push(Core.fresh(gen), Stmt.decl(DType.f32, gen.next, alpha.expr))
+        Core.rescaleChunks(bound, ex.base, Expr.var(gen.next), 0, 16)
+      }
+    }
+    (Core.resume(Key.key, k, Group.warps(f, 4), rescaled), p)
   }
 
   // Hands P, every chunk written, and Ô to the reader: the warp reconverges (a barrier wait's spin loop may have left
@@ -2032,9 +2053,10 @@ namespace Core {
     }
   }
 
-  def closeExWriter {x: Lifetime}{m: Lifetime}{f: Nat}(o: OFinal(x, m, f)): ExWriterDone(x) := {
-    match o returning ExWriterDone(x) with
-    | OFinal.mk => ExWriterDone.mk(x)
+  // The writing side's end, which emits nothing: `OFinal` comes only from `finishExWriter`'s wait.
+  def closeExWriter {k: Lifetime}{f: Nat}{x: Lifetime}{m: Lifetime}(e: Ctx(k, Group.warps(f, 4)))(o: OFinal(x, m, f)): Ctx(k, Group.warps(f, 4)) := {
+    match o returning Ctx(k, Group.warps(f, 4)) with
+    | OFinal.mk => e
   }
 
   // The elected thread takes the reading side: its phase starts at 0, which no publish has yet completed on P full.
@@ -2070,29 +2092,27 @@ namespace Core {
     }
   }
 
-  def mmaPV {r: Lifetime}{c: RingCfg}{x: Lifetime}(k: Key)(gen: Gen)(ex: Exchange(x))(ring: Ring(r, c))(overwrite: Bool): Gen :=
+  def pvStage {r: Lifetime}{c: RingCfg}{x: Lifetime}(k: Key)(gen: Gen)(ex: Exchange(x))(ring: Ring(r, c))(overwrite: Bool): Gen :=
     Core.pushAll(Core.check(gen, Core.headStage(c), "exchange: a V stage must be two boxes of 64 x 128"),
       Core.pvSteps(ex.base, Core.pBase(ex), Core.stageAddr(ring, ring.cStage), Core.boxBytes(c.a), overwrite, 0, 8))
 
-  // The first product, overwriting Ô's undefined contents: Ô = P·V from the ready stage.
-  def mmaPVFirst {k: Lifetime}{m: Lifetime}{x: Lifetime}{r: Lifetime}{c: RingCfg}
-      (e: Ctx(k, Group.lane))(w: Elected(m))(ex: Exchange(x))(p: PReady(x, m, OState.fresh))(ring: Ring(r, c))(v: Ready(r, m))
-      : Pair(Ctx(k, Group.lane), Pair(PUsed(x, m), ReadyUsed(r, m))) := {
-    match p returning Pair(Ctx(k, Group.lane), Pair(PUsed(x, m), ReadyUsed(r, m))) with
-    | PReady.mk => {
-      match v returning Pair(Ctx(k, Group.lane), Pair(PUsed(x, m), ReadyUsed(r, m))) with
-      | Ready.mk => (Core.resume(Key.key, k, Group.lane, Core.mmaPV(Key.key, Core.state(Key.key, e), ex, ring, Bool.true)), (PUsed.mk(x, m), ReadyUsed.mk(r, m)))
-    }
+  // Whether a product overwrites Ô: only while Ô is `fresh`, its contents undefined.
+  def overwritesO (o: OState): Bool := {
+    match o returning Bool with
+    | OState.fresh => Bool.true
+    | OState.held => Bool.false
   }
 
-  // A later product, accumulating: Ô += P·V from the ready stage.
-  def mmaPVNext {k: Lifetime}{m: Lifetime}{x: Lifetime}{r: Lifetime}{c: RingCfg}
-      (e: Ctx(k, Group.lane))(w: Elected(m))(ex: Exchange(x))(p: PReady(x, m, OState.held))(ring: Ring(r, c))(v: Ready(r, m))
+  // Ô (+)= P·V from the ready stage: the first product (`fresh`) overwrites Ô's undefined contents, and the later ones
+  // (`held`) accumulate.
+  def mmaPV {k: Lifetime}{m: Lifetime}{x: Lifetime}{o: OState}{r: Lifetime}{c: RingCfg}
+      (e: Ctx(k, Group.lane))(w: Elected(m))(ex: Exchange(x))(p: PReady(x, m, o))(ring: Ring(r, c))(v: Ready(r, m))
       : Pair(Ctx(k, Group.lane), Pair(PUsed(x, m), ReadyUsed(r, m))) := {
     match p returning Pair(Ctx(k, Group.lane), Pair(PUsed(x, m), ReadyUsed(r, m))) with
     | PReady.mk => {
       match v returning Pair(Ctx(k, Group.lane), Pair(PUsed(x, m), ReadyUsed(r, m))) with
-      | Ready.mk => (Core.resume(Key.key, k, Group.lane, Core.mmaPV(Key.key, Core.state(Key.key, e), ex, ring, Bool.false)), (PUsed.mk(x, m), ReadyUsed.mk(r, m)))
+      | Ready.mk =>
+        (Core.resume(Key.key, k, Group.lane, Core.pvStage(Key.key, Core.state(Key.key, e), ex, ring, Core.overwritesO(o))), (PUsed.mk(x, m), ReadyUsed.mk(r, m)))
     }
   }
 
@@ -2105,9 +2125,11 @@ namespace Core {
       ExReaderAt.mk(x, m, OState.held))
   }
 
-  def finishExReader {x: Lifetime}{m: Lifetime}(at: ExReaderAt(x, m, OState.held)): ExReaderDone(x) := {
-    match at returning ExReaderDone(x) with
-    | ExReaderAt.mk => ExReaderDone.mk(x)
+  // The reading side's end, which emits nothing: every product it issued was committed (`PUsed`'s only end is
+  // `commitPV`), and the writer's finish waits for the last commit.
+  def finishExReader {k: Lifetime}{x: Lifetime}{m: Lifetime}(e: Ctx(k, Group.lane))(at: ExReaderAt(x, m, OState.held)): Ctx(k, Group.lane) := {
+    match at returning Ctx(k, Group.lane) with
+    | ExReaderAt.mk => e
   }
 
   // ---- Attention: masks -----------------------------------------------------------------------------------------------

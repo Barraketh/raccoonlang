@@ -1,0 +1,34 @@
+// The CTA that the attention and GEMM examples share: eight warps, of which warp 0 loads, warp 1 issues the
+// tensor-core work, warps 2 and 3 idle, and warps 4 to 7 form an aligned warpgroup. Other layouts use `Core.split`.
+
+import encoding.Core
+
+namespace Layout {
+  open Core
+
+  // The warpgroup's first warp, which must be aligned.
+  def groupWarp : Nat := 4
+
+  def Cta : Group := Group.cta(256)
+  def Load : Group := Group.warps(0, 1)
+  def Issue : Group := Group.warps(1, 1)
+  def Wg : Group := Group.warps(groupWarp, 4)
+  def One : Group := Group.lane
+
+  // Runs `load` on warp 0, `issue` on warp 1 and `group` on the warpgroup, concurrently, then waits for all of them;
+  // `group` hands back an `X`.
+  def roles4 {l: Lifetime}{kx: Kind}{Sx: Lifetime}{k0: Kind}{S0: Lifetime}{k1: Kind}{S1: Lifetime}{k2: Kind}{S2: Lifetime}
+      (e: Ctx(l, Cta))(X: Type { kind = kx, scope = Sx })
+      (load: { kind = k0, scope = S0 } (m: Lifetime) -> Ctx(m, Load) -> Pair(Ctx(m, Load), Unit))
+      (issue: { kind = k1, scope = S1 } (m: Lifetime) -> Ctx(m, Issue) -> Pair(Ctx(m, Issue), Unit))
+      (group: { kind = k2, scope = S2 } (m: Lifetime) -> Ctx(m, Wg) -> Pair(Ctx(m, Wg), X))
+      : Pair(Ctx(l, Cta), X) := {
+    let idle := fun (m: Lifetime)(e: Ctx(m, Group.warps(2, 2))): Pair(Ctx(m, Group.warps(2, 2)), Unit) => (e, Unit.unit)
+    let rest := fun (m: Lifetime)(e: Ctx(m, Group.warps(1, 3))): Pair(Ctx(m, Group.warps(1, 3)), Pair(Unit, Unit)) =>
+      split(e, 1, Unit, Unit, issue, idle)
+    let first := fun (m: Lifetime)(e: Ctx(m, Group.warps(0, 4))): Pair(Ctx(m, Group.warps(0, 4)), Pair(Unit, Pair(Unit, Unit))) =>
+      split(e, 1, Unit, Pair(Unit, Unit), load, rest)
+    let (e, (u, x)) := split(e, groupWarp, Pair(Unit, Pair(Unit, Unit)), X, first, group)
+    (e, x)
+  }
+}

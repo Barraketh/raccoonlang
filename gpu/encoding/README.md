@@ -3,7 +3,8 @@
 Status: started 2026-10-01; steps 1 and 2 below done for A1, paged attention (P1) and A2 (causal and non-causal
 masking, any `seq` ≥ 1, bf16 output, for both kernels) except the hardware runs: the core, the examples, the unit
 checks, the mutants of `ATTENTION.md` §5 (`rejected/`), the host harnesses and the FA4 comparison (`harness/`), and
-`OBLIGATIONS.md` (A19–A33, M12–M14, §6.10, §7). Nothing has run on a GPU; `NOTES.md` records what was awkward. A
+`OBLIGATIONS.md` (A19–A33, M12–M14, §6.10, §7); then the readability review's library changes (below). Nothing has
+run on a GPU; `NOTES.md` records what was awkward, and what the review removed. A
 fresh copy of the typed core (`gpu/Gpu.rac`) in which the library grows the features it lacks, starting with forward
 attention, then paged attention. `gpu/Gpu.rac` and its GEMM examples stay as they are, so the kernels that ran on a
 B200 keep running while this design settles.
@@ -34,8 +35,8 @@ query tile per CTA, a CTA of 256 threads). It is built as `ATTENTION.md` §3 des
 
 Steps:
 1. **Core.** Copy `Gpu.rac` to `Core.rac`, then add `ATTENTION.md` §3: tensor-memory offsets and `splitTmem`
-   (§3.1), `holdStage` (§3.2), `mmaScores` (§3.3), the exchange (§3.4), `loadAcc8` (§3.5), the f32 math (§3.6),
-   `fillHead` over rank-2 maps (§3.7, as above), `storeO` (§3.8) and `attentionKernel` (§3.10).
+   (§3.1), `holdStage` (§3.2), `mmaScores` (§3.3), the exchange (§3.4), `eachChunk` (§3.5), the f32 math (§3.6),
+   `fillBlock` over rank-2 maps (§3.7, as above), `storeO` (§3.8) and `attentionKernel` (§3.10).
 2. **Example and checks.**
    - `examples/attention.rac`, the schedule of `ATTENTION.md` §2.5.
    - `harness/attention_test.cu`, T1–T4 of §1.3 and the launcher's refusals; `harness/fa4_compare.py`, FA4 as
@@ -43,7 +44,16 @@ Steps:
    - `checks/`, unit tests of emitted code (§6).
    - `rejected/`, the mutants of §5.
    - `gpu/check.sh` runs all of it.
-3. **Review.** Hostile review for races and protocol errors, then a code review for readability.
+3. **Review.** Hostile review for races and protocol errors, then a code review for readability, whose library
+   proposals are built (2026-10-01):
+   - protocols close without `…Done` tokens: a side is linear and belongs to its opener's scope, so the callback uses
+     it up, and only its finisher does so without handing it on;
+   - `eachChunk` and `writeP` loop over S's and P's chunks inside the core, so the per-chunk `loadAcc8` and `storeP`,
+     their evidence and their chunk indices, are internal;
+   - `mmaPV` and `rescaleO` read `OState`, so each role passes one loop body as both the peeled first iteration and
+     the rest (which changes the first block's softmax code, `NOTES.md`);
+   - the roles both attention kernels share live in `Attention.rac`, the CTA layout in `Layout.rac`;
+   - `fillBlock`, one head map and one row for both halves of a stage, replaces `fillHead`.
 
 **A2, masks, tails and bf16 output** (`ATTENTION.md` stage A2), for both the contiguous and the paged kernel. Causal
 and O's element type (f32 or bf16) are generation-time choices of the kernel builders, one kernel each; the examples
@@ -75,6 +85,9 @@ against a host mock of the runtime (`NOTES.md`).
 ## Layout
 
 - `Core.rac`: the core.
+- `Layout.rac`: the CTA of eight warps that the attention and GEMM examples share (`roles4`).
+- `Attention.rac`: the roles and CTA of forward attention, which `examples/attention.rac` and
+  `examples/paged_attention.rac` run with their own loaders.
 - `examples/`: kernels.
 - `checks/`: unit tests of emitted code.
 - `rejected/`: programs and mutant tables the core must refuse.

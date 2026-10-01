@@ -252,12 +252,21 @@ claim. Types are abbreviated; "code" is what it emits into its `Ctx`.
 ### 6.10 The attention core
 
 The operations `gpu/encoding/Core.rac` adds to `Gpu.rac`'s (`ATTENTION.md` §3, §4.2), as built for A1, A2 and paged
-attention (`encoding/PAGED.md`). Its other
-operations are `Gpu.rac`'s, with the obligations of §6.1–§6.9, except that every use of a tensor-memory region's
-address goes through `tmemBase` (the allocation's address plus the region's offset): `mmaFirst`, `mmaNext`, `stageAcc`,
-`withAccRing` (and through its buffers `mmaFirstInto`, `mmaNextInto`, `stageAccFull` and `loadAcc8`) and
-`withExchange` address the region they are given, not column 0; only `withTmem`'s deallocation names the allocation's
-address.
+attention (`encoding/PAGED.md`). Its other operations are `Gpu.rac`'s, with the obligations of §6.1–§6.9, except for
+two things.
+- Every use of a tensor-memory region's address goes through `tmemBase` (the allocation's address plus the region's
+  offset): `mmaFirst`, `mmaNext`, `stageAcc`, `withAccRing` (and through its buffers `mmaFirstInto`, `mmaNextInto`,
+  `stageAccFull`, `eachChunk` and `writeP`) and `withExchange` address the region they are given, not column 0; only
+  `withTmem`'s deallocation names the allocation's address.
+- No protocol closes on a `…Done` token. `withRing`, `withAccRing`, `withExchange` and `withStaging` take a callback
+  that returns the emitter and its result only. Their sides are linear and belong to the opener's scope, which the
+  result's type cannot name, so the callback uses every side up before the close (`docs/SCOPE_CONTAINMENT.md`), and
+  the one operation per side that uses it up without handing it on is its finisher. `finishProducer`,
+  `finishAccProducer` and `finishStores` emit §6.5, §6.8 and §6.7's waits and return the emitter; `finishExWriter`
+  waits and gives `OFinal`, which `closeExWriter` ends; `finishConsumer`, `finishAccConsumer`, `finishExReader` and
+  `closeExWriter` emit nothing, since everything their side issued is released to the waiting side. So each close
+  still follows the drain that §6.5–§6.8 tie to their `…Done` tokens, by the obligation that every other operation
+  taking a side gives a side back (§7).
 
 | Operation | Requires | Emits | Establishes | Relies on |
 |---|---|---|---|---|
@@ -266,27 +275,27 @@ address.
 | `splitTmem` | `Acc(a, empty)` of a `Tmem(a, cols)`, `cta` context; 0 < k < cols and 64 ∣ k (else a generation error) | nothing | regions `Tmem(b, k)` at the region's offset and `Tmem(c, cols − k)` at offset + k, in fresh scopes, with an `Acc(empty)` each; closes on both `Acc`s, handing back `Acc(a, empty)` | A27, S4 |
 | `holdStage` | `Ready(r, m)` | nothing | `ReadyUsed(r, m)`: the stage stays unreleased until `releaseByMma` | A12 |
 | `mmaScores` | `ReadyUsed(ra, m)`, `Ready(rb, m)`, `AccFree(q, m)` of an `AccRing(q, 128)`, `Elected(m)`; both rings' stages two 64 × 128 boxes (else a generation error) | 8 `tcgen05.mma` (two box pairs, four K = 16 steps each) from K-major descriptors into the producer's current buffer, the first overwriting | `ReadyUsed` of both, `AccFilling` | A11 |
-| `loadAcc8` | `AccFull(q, m, f)` (an aligned warpgroup's), `warps(f, 4)` context, 8(c + 1) ≤ n | 8 declarations, `__syncwarp`, `tcgen05.ld.32x32b.x8` at column 8c of the consumer's current buffer in the warp's lane quadrant, `wait::ld`; no fence, since `awaitAcc` fenced in every thread of the warpgroup | the thread's row, columns 8c–8c+7, as thread-grain values of the context's lifetime; `AccFull` kept | A13, A14, M12 |
-| `withExchange` | `Acc(a, empty)` of a `Tmem(a, 256)`, `cta` context | P full (count 128) and P empty (count 1), thread 0 completing P empty's phase 0 with one arrival at initialization; `inval` at close | the `Exchange` (Ô at the region's column 0, P at 128), `ExWriter`, `ExReader`; closes on both `…Done`, handing back `Acc(a, empty)` | A6–A8 |
+| `eachChunk` | `AccFull(q, m, f)` (an aligned warpgroup's), `warps(f, 4)` context, a step | per chunk c < n / 8, in order: 8 declarations, `__syncwarp`, `tcgen05.ld.32x32b.x8` at column 8c of the consumer's current buffer in the warp's lane quadrant, `wait::ld`; then the step's code; no fence, since `awaitAcc` fenced in every thread of the warpgroup | each step is handed the thread's row, columns 8c–8c+7, as thread-grain values of the context's lifetime; `AccFull` kept | A13, A14, M12 |
+| `withExchange` | `Acc(a, empty)` of a `Tmem(a, 256)`, `cta` context | P full (count 128) and P empty (count 1), thread 0 completing P empty's phase 0 with one arrival at initialization; `inval` at close | the `Exchange` (Ô at the region's column 0, P at 128), `ExWriter`, `ExReader`, linear and of the exchange's scope, so finished before the close; hands back `Acc(a, empty)` | A6–A8 |
 | `takeExWriter` | `warps(f, 4)` context, f mod 4 = 0 (evidence) | the writer's phase register, 0 | `ExWriterAt(x, m, f, fresh)`, bound to that warpgroup | M6 |
 | `takeExReader` | `Ctx(m, lane)` with `Elected(m)` | the reader's phase register, 0 | `ExReaderAt(x, m, fresh)`, bound to that thread | M6 |
 | `acquireP` | `ExWriterAt(x, m, f, o)` | wait P empty at the writer's phase, `after_thread_sync` | `PFree(x, m, f, o, 0)`: the last product completed, P and Ô quiescent and visible | A6, A13, A21 |
-| `storeP` | `PFree(…, c)`, c < 16 (evidence), eight f32 values | 4 u32 declarations, 4 `cvt.rn.bf16x2.f32` (pairs 2i+1, 2i, so element 2i is in the low half), `__syncwarp`, `tcgen05.st.32x32b.x4` at P's column 4c in the warp's lane quadrant | `PFree(…, c + 1)`: chunk c of the thread's row of P written (pending `wait::st`) | A19, A23, A25, M12, M14 |
-| `rescaleO` | `PFree(…, held, c)`, an f32 value | the value's declaration; 16 × (8 declarations, `__syncwarp`, `tcgen05.ld.32x32b.x8`, `wait::ld`, `tcgen05.st.32x32b.x8` of the 8 products) over Ô in the warp's lane quadrant | the thread's row of Ô scaled (pending `wait::st`); `PFree` unchanged | A14, A19, A22, M12 |
+| `writeP` | `AccFull(q, m, f)` of an `AccRing(q, 128)`, `PFree(…, 0)`, `warps(f, 4)` context, a step returning eight f32 values | per chunk c < 16, in order: S's chunk c loaded as by `eachChunk`; the step's code; 4 u32 declarations, 4 `cvt.rn.bf16x2.f32` of the step's values (pairs 2i+1, 2i, so element 2i is in the low half), `__syncwarp`, `tcgen05.st.32x32b.x4` at P's column 4c in the warp's lane quadrant | `PFree(…, 16)`: every chunk of the thread's row of P written once, in order (pending `wait::st`); `AccFull` kept | A13, A14, A19, A23, A25, M12, M14 |
+| `rescaleO` | `PFree(…, o, c)`, an f32 value | `held`: the value's declaration; 16 × (8 declarations, `__syncwarp`, `tcgen05.ld.32x32b.x8`, `wait::ld`, `tcgen05.st.32x32b.x8` of the 8 products) over Ô in the warp's lane quadrant. `fresh`: nothing, since Ô holds nothing until the first product overwrites it | the thread's row of Ô scaled (pending `wait::st`); `PFree` unchanged | A14, A19, A22, M12 |
 | `publishP` | `PFree(…, 16)` | `__syncwarp`, `wait::st`, `before_thread_sync`, one arrival per thread (128) on P full, flip the writer's phase | `ExWriterAt(…, held)`: P and Ô handed to the reader | A19, A20, M13, M14 |
 | `awaitP` | `ExReaderAt(x, m, o)` | wait P full at the reader's phase, `after_thread_sync` | `PReady(x, m, o)`: P and Ô written and visible to the tensor cores | A6, A20, M13 |
-| `mmaPVFirst`, `mmaPVNext` | `PReady(x, m, fresh)` / `PReady(x, m, held)`, `Ready(r, m)` of a ring whose stages are two 64 × 128 boxes (else a generation error), `Elected(m)` | 8 `tcgen05.mma` with D at Ô, A in tensor memory at P + 8s, B the stage MN-major (transpose-B, LBO the box's 16384 bytes, SBO 1024, 2048 bytes a step); the first of `mmaPVFirst` overwriting | `PUsed(x, m)`, `ReadyUsed(r, m)` | A23, A24 |
+| `mmaPV` | `PReady(x, m, o)`, `Ready(r, m)` of a ring whose stages are two 64 × 128 boxes (else a generation error), `Elected(m)` | 8 `tcgen05.mma` with D at Ô, A in tensor memory at P + 8s, B the stage MN-major (transpose-B, LBO the box's 16384 bytes, SBO 1024, 2048 bytes a step); the first overwriting when `o` is `fresh`, accumulating when `held` | `PUsed(x, m)`, `ReadyUsed(r, m)` | A23, A24 |
 | `commitPV` | `PUsed(x, m)`, `Elected(m)` | `tcgen05.commit` to P empty, flip the reader's phase | `ExReaderAt(x, m, held)`; the buffer returns to the writer when the products complete | A12, A21 |
 | `finishExWriter` | `ExWriterAt(…, held)` | wait P empty at the writer's phase, `after_thread_sync` | `OFinal`: every product completed, none in flight, Ô visible | A6, A13, A21 |
-| `closeExWriter`, `finishExReader` | `OFinal` / `ExReaderAt(…, held)` | nothing | `ExWriterDone` / `ExReaderDone` | — |
+| `closeExWriter`, `finishExReader` | `OFinal` / `ExReaderAt(…, held)` | nothing | the side used up | — |
 | `maskedScores` | `warps(f, 4)` context (converged: its causal form runs warp collectives), a `Mask(L)` (sealed: only the builders make one), a block index (any value), c < 16 (else a generation error), eight f32 values | `kv0 = 128 · block + 8c`; the limit: `seq`, or (causal) `__syncwarp`, the row `q + 1` with `q = 128 · blockIdx.x + 32 · (warp mod 4) + lane` declared before `min(seq, q + 1)`; 8 declarations `(kv0 + j < limit) ? v_j : −∞` (the builder's −∞) | the masked scores, thread grain, of the context's lifetime; no protocol state, and no branch, so the group stays converged | M3, M12 |
 | `storeO` | `OFinal(x, m, f)`, `OOwn(L, t)` and `AttnOut(L, t)` (t f32 or bf16, which only the builders choose), `warps(f, 4)` context, two f32 values | `__syncwarp`, `after_thread_sync`; declarations of the row `blockIdx.y · seq + 128 · blockIdx.x + 32 · (warp mod 4) + lane`, the guard `128 · blockIdx.x + 32 · (warp mod 4) + lane < seq`, and copies of the two values; 16 × (8 declarations, `__syncwarp`, `ld.x8`, `wait::ld`, 8 guarded stores of Ô · inv, each through `static_cast<__nv_bfloat16>` for bf16, round to nearest even); the guarded LSE store; `before_thread_sync` | the CTA's rows of O and LSE written once (`OOwn` consumed): rows of a last query tile past `seq` are never stored; `OFinal` kept | A13, A14, M12, S5 |
-| `fillHead` | as `fill`; `HeadMap`s whose boxes are the ring's | as `fill`, at rows `blockIdx.y · seq` plus the caller's (rank-2 maps over `[BH·seq, 128]`, `encoding/README.md`) | as `fill` | A9 |
+| `fillBlock` | as `fill`; one `HeadMap` of the ring's first box; a ring whose stages are two 64 × 128 boxes (else a generation error); a row | `arrive.expect_tx`, two TMA loads through the map at columns 0 and 64 of row `blockIdx.y · seq` plus the caller's (rank-2 maps over `[BH·seq, 128]`, `encoding/README.md`) | as `fill`; both halves of the stage from one map and one row | A9 |
 | `attentionKernel` | a body; causal or not; O's type t, f32 or bf16 (else a generation error) | `blocks = ceil(seq / 128)`, or `min(ceil(seq / 128), blockIdx.x + 1)` causal, once; −∞, once; the kernel (parameters `Q_map`, `K_map`, `V_map`, `O` of t, `LSE`, `BH`, `seq`, `scale_log2`) and its launcher (refusing seq = 0, BH = 0, BH ≥ 65536, BH · seq · 128 ≥ 2³¹, rows ≠ BH · seq, dim ≠ 128; three rank-2 encodings over `rows` × `dim` with 64 × 128 boxes; grid (ceil(seq / 128), BH) of 256 threads) | `AttnLaunch` (the maps, `AttnOut`, the `Mask`, seq, blocks, the query block's first row, `scale_log2`), `OOwn`, `TmemPermit`; a `Program` | A17, I6 |
 | `fillPage` | as `fill`; a ring whose stages are two 64 × 128 boxes (else a generation error); `PageTable`, `PageMap` of the ring's first box; a block index `j` | a guarded read of `block_table[b][j]` (`b = blockIdx.y / H`; 0 outside the table), `arrive.expect_tx`, two TMA loads at row `(p · H + blockIdx.y mod H) · 128`, columns 0 and 64 | as `fill`; whatever the table holds, the loads read only the cache or zeros (`PAGED.md` §3) | A9 |
 | `pagedAttentionKernel` | as `attentionKernel`, and 1 ≤ H ≤ 65535 | as `attentionKernel`, with parameters `Q_map`, `K_map`, `V_map`, `O`, `LSE`, `block_table`, `B`, `seq`, `max_pages`, `scale_log2`, and a launcher refusing seq = 0, B = 0, B · H ≥ 65536, B · H · seq · 128 ≥ 2³¹, rows_q ≠ B · H · seq, pages · H · 128 ≥ 2³¹, rows_kv ≠ pages · H · 128, dim ≠ 128, max_pages < ceil(seq / 128), B · max_pages ≥ 2³¹; grid (ceil(seq / 128), B · H) | `PagedLaunch` (as `AttnLaunch`, with `PageMap`s for K and V and the `PageTable`), `OOwn`, `TmemPermit`; a `Program` | A17, I6 |
 
-Rank-3 encodings in `fillHead` and `attentionKernel` (`ATTENTION.md` §3.7, A28) are not built: A2 keeps rank-2 maps,
+Rank-3 encodings in `fillBlock` and `attentionKernel` (`ATTENTION.md` §3.7, A28) are not built: A2 keeps rank-2 maps,
 masking the part of a last key block past `seq` and never storing the rows of a last query tile past it
 (`encoding/README.md`).
 
@@ -321,8 +330,15 @@ arguments. The audit as of this document:
   `fixedReadyUsed`, `fixedExWriterAt` and `fixedExReaderAt` are evidence for fieldless one-valued families only.
   `splitTmem` mints two `Acc` tokens from one, over disjoint columns (the core's arithmetic), and takes back both
   before it returns the one; that is sound only while every use of a region's address goes through `tmemBase`.
-  `fillHead` is `fill` with the head coordinate the core's, and `fillPage` `fill` with the row the core's, from the
-  table. `closeExWriter` and `finishExReader` consume authority. `maskedScores` builds values from values and the
+  `fillBlock` is `fill` with the head coordinate and both columns the core's, from one map and one row, and
+  `fillPage` `fill` with the row the core's, from the table. `eachChunk` and `writeP` run a client's step, an
+  unrestricted function of values to code and values, on chunks they load under the buffer's `AccFull`; the loads,
+  the chunk count and P's stores are theirs, so the step can neither load outside that window nor skip or repeat a
+  chunk of P. `rescaleO` and `mmaPV` read `OState` themselves: an undefined Ô is overwritten, never rescaled or
+  accumulated. `finishProducer`, `finishAccProducer`, `finishStores`, `finishConsumer`, `finishAccConsumer`,
+  `closeExWriter` and `finishExReader` consume a side and mint nothing, and they are the only operations that take a
+  side without giving one back: that is what lets the protocols close without `…Done` tokens (§6.10), so a new
+  operation that took a side and gave none back would have to drain as these do. `maskedScores` builds values from values and the
   sealed `Mask`; it emits no barrier, ring or tensor-memory operation, and a wrong block or chunk is a wrong result. In a causal kernel it
   emits warp collectives (`__syncwarp`, and the row's full-mask `__shfl_sync`), which are sound because it takes a
   `warps(f, 4)` context: a per-thread branch arm's group is `diverged`, so no part of a warp can reach it alone
@@ -335,8 +351,11 @@ arguments. The audit as of this document:
   `tmemStore8`, `tmemWaitStore` and `mmaIssueTmemA`, and the helpers `quadrantLanes`, `loadRow8`, `rescaleChunks`,
   `pvSteps`, `storeChunks`, `fillCode`, `mmaBoxes`, `pBase`, `pFullBar`, `pEmptyBar`, `flip`, `eight`, `offsetBy`,
   `boxAt`, `tmemBase`, `isHeadBox`, `headStage`, `attnParams`, `attnLauncher`, `pagedParams` and `pagedLauncher`, build
-  unsealed `Expr`s, `Stmt`s, `Gen`s, `Bool`s and launchers, which reach a kernel only through the Key; `row8`, `fbin`,
-  `mmaPV` and `mmaRingStage` need it.
+  unsealed `Expr`s, `Stmt`s, `Gen`s, `Bool`s and launchers, which reach a kernel only through the Key, as does `storeP`,
+  now the `Gen` of one chunk of P; `row8`, `fbin`, `pvStage`, `mmaRingStage`, `loadChunk`, `chunksFrom` and
+  `pChunksFrom` need it. `overwritesO` builds a `Bool`.
+- **The examples' shared modules** (`gpu/encoding/Layout.rac`, `gpu/encoding/Attention.rac`) are clients: they declare
+  no sealed family and need no Key. `Layout.roles4` is `split` three times.
 
 A new public operation must be added to this list with its argument.
 
