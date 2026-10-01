@@ -5,7 +5,8 @@ masking, any `seq` ≥ 1, bf16 output, for both kernels) except the hardware run
 checks, the mutants of `ATTENTION.md` §5 (`rejected/`), the host harnesses and the FA4 comparison (`harness/`), and
 `OBLIGATIONS.md` (A19–A33, M12–M14, §6.10, §7); then the readability review's library changes (below); then A3a, two
 query tiles in ping-pong (`A3.md`), to the same point; then P2, paged decode with append (`P2.md`: three kernels,
-their harness against a host mock, mutants, A40–A42, M17, §6.11). Nothing has run on a GPU; `NOTES.md` records what was
+their harness against a host mock, mutants, A40–A42, M17, §6.11); then CTA pairs (`TWO_CTA.md`, steps 1 and 2: the
+core and a pair TinyGEMM), to the same point as A3a. Nothing has run on a GPU; `NOTES.md` records what was
 awkward, and what the review removed. A
 fresh copy of the typed core (`gpu/Gpu.rac`) in which the library grows the features it lacks, starting with forward
 attention, then paged attention. `gpu/Gpu.rac` and its GEMM examples stay as they are, so the kernels that ran on a
@@ -76,6 +77,13 @@ across sequence boundaries shares it); the launch contracts ask for V finite in 
 row of S loaded once into registers. Built to the same point as A2: the core's score buffer and `pairAttentionKernel`,
 `examples/attention_pingpong.rac`, `harness/attention_pingpong_test.cu` (A2's harness, run against a host mock),
 `rejected/attention_pingpong_mutants.py`, and `OBLIGATIONS.md` (A39, M16).
+
+**CTA pairs** (`TWO_CTA.md`, steps 1 and 2). A cluster of two CTAs whose leader issues `cta_group::2` MMAs of M = 256
+over both CTAs' shared and tensor memory: the kernel's CTA group in the generation state, `onLeader`, the pair's
+tensor memory, stage ring and accumulator ring, and cluster barriers at their publication and close. Built to the same
+point as A3a: `pairGemmKernel`, `examples/tinygemm_pair.rac` (a 256×256 tile per pair, the epilogue scalar),
+`harness/tinygemm_pair_test.cu` (run against a host mock), `rejected/tinygemm_pair_mutants.py`, and `OBLIGATIONS.md`
+(A43–A55, M18–M20, §6.12).
 
 **Paged attention.** A1 over a paged KV cache:
 - K and V are `[pages · 128, H · 128]` (FA4's layout, since P2): a page holds 128 consecutive positions of every

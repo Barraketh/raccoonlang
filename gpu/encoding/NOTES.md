@@ -412,3 +412,50 @@ Observations from building `P2.md` (`Core.rac`'s paged-decode section, `examples
 - **Readability.** Hand-numbered ids and rebuilt `Gen`s in the decode prologue and the claim (now `bind`, `reg`,
   `asmOut` and `branch`), unrolled columns in the combine (now `F32x4.map`, `zip`, `Reg4`), launcher parameter lists
   written twice (now derived from the kernels'), and a nested `Bool.cond` in `Cuda.headers` (now a rule per header).
+
+## CTA pairs
+
+Observations from building `TWO_CTA.md`'s steps 1 and 2 (`Core.rac`'s pair sections, `examples/tinygemm_pair.rac`,
+`harness/tinygemm_pair_test.cu`, `rejected/tinygemm_pair_mutants.py`).
+
+1. **Reading the CTA group consumes the context.** `Ctx` is linear, so an emitter cannot look at the generation state
+   and then emit: every `tcgen05` emitter that read nothing before (`sendAcc`, `releaseByMma`, `commitAcc`,
+   `commitPV`, `commitBuffer`) now takes the state, builds its instruction from `gen.group` and resumes, where it used
+   `emit`. Five call sites grew two lines each. A non-consuming read of a context's generation state, or an `emit`
+   whose statement is a function of the group, would keep them one line.
+2. **No struct update.** `Gen` gained a field, and every one of its sixteen `Gen.mk(…)` constructions in `Core.rac`
+   had to name it, though none changes it: most of them only bump `next`. A functional update (`{gen with next := …}`)
+   would have made the change one line.
+3. **`Pair` is taken.** The design's `Pair(l)` collides with the prelude's product type, which every signature of
+   the core uses; the handle is `CtaPair(l)`.
+4. **Shared printer types.** The cluster shape is a property of the kernel, but `Cuda.Kernel` and `Cuda.Launcher` are
+   shared with `gpu/Gpu.rac`, which must not change, so neither could gain a field. The shape rides on the launcher's
+   grid instead (`Grid.pairs`), which costs a constructor in `Cuda.Grid` and a case each in `Check.gridExprs`,
+   `Spec.GridExpr` and `proofs/Fold.rac`'s `gridMem`.
+5. **A 16-bit operand.** The multicast commit's CTA mask is a 16-bit operand, and `Cuda.DType` has no 16-bit integer
+   for an `"h"` constraint, so the template sets the mask in a `.b16` register of its own block.
+6. **Wrappers per pair operation.** A pair ring's operations differ from a ring's in one instruction each (a wait at
+   cluster scope, a `::2` copy to the leader's barrier, a multicast commit), but each needs its own sealed entry point,
+   so the pair sections hold seventeen operations, four of them one-line delegations to the single-CTA ones
+   (`takePairProducer`, `takePairConsumer`, `takePairAccProducer`, `takePairAccConsumer`) or near copies (`acquirePair`,
+   `awaitPair`, `acquirePairAcc`, `awaitPairAcc`). Sharing the token families, with the sealed `PairRing` wrapping a
+   `Ring`, kept the types from doubling: sealed selectors are private, so a client cannot unwrap a `PairRing` and run
+   a single-CTA operation on it.
+7. **What the mutants can say.** Two of the brief's mistakes cannot be written, so their mutants show the nearest
+   attempt refused: a consumer outside `onLeader` needs a `Leader`, which outside the arm only a forged one could be
+   (`SealedConstructor`); a fill or store of the other CTA's half needs a `PairTile` of other rows, likewise forged.
+   The `Leader` escaping its arm is a `TypeMismatch`, since the arm hands back only its context, not a scope error.
+8. **The rank selects nothing a client writes.** Rows and halves come from the sealed `PairTile`, so the example never
+   names the rank; `rank` is exported for the attention kernels to come, and nothing uses it yet.
+9. **The harness ran against a mock.** `tinygemm_pair_test.cu` was linked against a host mock of the runtime and
+   driver (not in the repository) whose `cudaLaunchKernel` checks the pair grid (`2·ceil(N/256)` × `ceil(M/256)`, 256
+   threads) and emulates each pair per CTA: each CTA's A rows and half of B through the rank-2 maps with zero fill, the
+   leader's M = 256 product of each CTA's rows with both halves, and each CTA's guarded stores of its own rows, behind
+   the generated launcher's own host code. Every check passed: 13 sizes three times each, 5 refusals. Broken emulations
+   were caught: the peer loading the leader's rows of A (11 of the 13 sizes failed: the two whose peer has no rows
+   passed), the CTAs swapping their halves of B (13), stores not guarded by N (7), the peer storing nothing (11), one
+   K slice only (7, every size with K > 64). The mock checks the harness, the reference and the launcher, not the
+   kernel.
+
+Timing (CPU s of the native binary, on a machine not idle, 2026-10-01): `gen.sh encoding/examples/tinygemm_pair.rac`
+1.3, as `tinygemm.rac`. The generated pair kernel is 311 lines with its launcher, 266 without.

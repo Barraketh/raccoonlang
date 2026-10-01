@@ -114,6 +114,8 @@ namespace Spec {
    | blocksX (y: Expr) : GridExpr(root, Grid.blocks(root, y))
    | blocksY (x: Expr) : GridExpr(root, Grid.blocks(x, root))
    | persistent : GridExpr(root, Grid.persistent(root))
+   | pairsX (y: Expr) : GridExpr(root, Grid.pairs(root, y))
+   | pairsY (x: Expr) : GridExpr(root, Grid.pairs(x, root))
 
   // `root` is an expression launcher `l` evaluates on the host: a requirement, or its grid's extent.
   inductive HostRoot (l: Launcher)(root: Expr) : Prop

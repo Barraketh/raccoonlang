@@ -50,7 +50,8 @@ Each assumption is our reading of NVIDIA's documentation and CUTLASS's usage. "E
 A19–A33 are the attention core's (`gpu/encoding/Core.rac`, `ATTENTION.md` §4.3, which numbers them so), and A39 its
 score buffer's (A3a, `encoding/A3.md`); none is exercised yet, since no attention kernel has run on hardware. A34–A38 are the TMA-store epilogue's, numbered
 A19–A23 before the attention core's assumptions took those numbers. A40–A42 are paged decode's
-(`encoding/P2.md`), none exercised.
+(`encoding/P2.md`), and A43–A55 the CTA pair's (`encoding/TWO_CTA.md`, with the facts and citations in
+`encoding/TWO_CTA_FACTS.md`), none exercised.
 
 | # | Assumption | Source | Confidence |
 |---|---|---|---|
@@ -60,7 +61,7 @@ A19–A23 before the attention core's assumptions took those numbers. A40–A42 
 | A4 | `__syncwarp()` reconverges a warp; a `.sync.aligned` instruction must be executed by every thread of the warp, convergently. | PTX | high |
 | A5 | `elect.sync` with mask `0xffffffff` in a converged warp makes exactly one lane's predicate true. | PTX `elect` | high, exercised |
 | A6 | An mbarrier initialized with count c starts in phase 0 with c pending arrivals. An arrive of count k (1 by default) takes k of them; that k must not exceed the pending arrivals is our reading (PTX is silent; MODELS.md P5); a phase completes when its pending arrivals and its transaction count are both zero, and the next phase starts with c pending. `try_wait.parity p` is defined only for the current phase, for which it returns False, and the immediately preceding one, for which it returns True. In each phase, some wait must return True before any arrival of the next phase (PTX §9.7.15.16.5.1, which governs here; the CUDA guide's similar sentence is about `cuda::barrier`). Nothing is assumed of a parity-1 wait on a barrier that has never completed a phase: the rings complete phase 0 of every barrier a producer waits on first, at initialization. | PTX ISA 9.4 §9.7.15.16.3, §9.7.15.16.5.1, §9.7.15.16.8, §9.7.15.16.9, §9.7.15.16.12, §9.7.15.16.16, §9.7.15.16.19; CUDA Programming Guide §4.10.2 (for `cuda::barrier`: arrivals only on a non-zero counter) | high, exercised (the arrivals at initialization not yet) |
-| A7 | `fence.mbarrier_init.release.cluster` then a CTA barrier makes initialized mbarriers usable by every thread and by TMA and the tensor cores, which access the barrier through the generic proxy. | PTX ISA 9.4 §9.7.15.4 (the fence applies to the thread's prior `mbarrier.init`s), §9.7.10.28.5.3 and §9.7.18.12.1 (generic-proxy barrier access); CUTLASS | high, exercised |
+| A7 | `fence.mbarrier_init.release.cluster` then a CTA barrier makes initialized mbarriers usable by every thread and by TMA and the tensor cores, which access the barrier through the generic proxy. For a pair protocol the CTA barrier is a cluster barrier (A45). | PTX ISA 9.4 §9.7.15.4 (the fence applies to the thread's prior `mbarrier.init`s), §9.7.10.28.5.3 and §9.7.18.12.1 (generic-proxy barrier access); CUTLASS | high, exercised |
 | A8 | `mbarrier.inval` ends a barrier: any operation but `init` on its storage is then undefined, so no arrival or complete-tx may land after it. Its storage may be initialized again: a ring reopened in a loop is initialized again by thread 0 right after its own `inval`, in program order, the CTA barrier being the join before the `inval` (so every other thread's last use precedes both). Initializing a live barrier is undefined and not relied on. | PTX ISA 9.4 §9.7.15.16.12, §9.7.15.16.13 (Example 2 initializes again after `inval` and `bar.cta.sync`) | high |
 | A9 | `cp.async.bulk.tensor.2d…mbarrier::complete_tx::bytes` writes the box into shared memory asynchronously, zero-filling (and counting) elements outside the tensor, and on completion performs one complete-tx of the box's bytes on the barrier, with release semantics at cluster scope. A thread whose wait observes that phase sees the writes. The destination must be 128-byte aligned, and 1024-byte aligned for 128-byte swizzle atoms. | PTX ISA 9.4 §9.7.10.28.5.3, §9.7.10.28.1.2, §9.7.15.16.6; CUDA driver `cuTensorMapEncodeTiled` | high, exercised |
 | A10 | `tcgen05.alloc` / `relinquish_alloc_permit` / `dealloc` are warp-collective. Alloc writes the address to shared memory and takes a power of two ≥ 32 columns. A CTA may not allocate after relinquishing. Dealloc requires no tensor-core operation pending on those columns. | PTX `tcgen05` | high, exercised |
@@ -96,6 +97,19 @@ A19–A23 before the attention core's assumptions took those numbers. A40–A42 
 | A42 | (P2) `shfl.sync.idx.b32 d, a, 0, 31, 0xffffffff`, executed by every lane of a warp, gives each lane lane 0's `a`. It waits for every lane of the mask, so lanes that left a lane-0 branch meet there; the kernel reconverges with `__syncwarp` first. | PTX ISA 9.4 `shfl.sync` | high |
 | A38 | Nothing is assumed of bulk stores outstanding when their thread exits: every thread that commits one waits for all its groups to complete (`wait_group 0`) before its shared memory is released and before it exits. CUTLASS 4.8's sm100 epilogue without C does not wait at all (`store_tail`), its sm90 one waits for all groups' reads (`tma_store_wait<0>`, the `.read` form), as does the CUDA guide's example; the PTX ISA, as read here, states no rule for exit, so the stronger wait. | CUTLASS `sm100_epilogue_tma_warpspecialized.hpp` `store_tail` (`REFERENCE_CUTLASS.md` §4); PTX ISA 9.4 §9.7.10.28.6.2; CUDA Programming Guide §4.12 | — (a design choice, relying on A35 only) |
 | A39 | (A3a) Nothing is assumed of an MMA whose tensor-memory A operand overlaps its own D: none is issued. The score buffer keeps a product's A (P, columns 64–127) and D (Ô, 128–255) disjoint; only the next S's D (columns 0–127) overlaps P, the A of an earlier MMA (A33). | PTX §9.7.18.10.10.1 (states no rule for overlapping A and D) | — (a design choice) |
+| A43 | (pair) A kernel declared with `__cluster_dims__(2, 1, 1)` and launched by `cudaLaunchKernel` with an even grid x runs as clusters of two co-scheduled CTAs along x. `%cluster_ctarank` is 0 and 1 in a cluster, and its two CTAs form one CTA pair; `%clusterid.x` is the cluster's index along x, the same in both. | PTX §11.7.1 (`.reqnctapercluster`: the runtime uses the declared shape), §9.7.18.5.1 (pairs), §10.12, §10.16; CUDA guide's cluster example | medium: launch through the attribute is inferred |
+| A44 | (pair) `barrier.cluster.arrive.release.aligned` then `barrier.cluster.wait.acquire.aligned`, run by every thread of both CTAs, orders every memory access of either CTA's threads before the arrive before every access after the wait. | PTX §9.7.15.3 | high |
+| A45 | (pair) `mbarrier.init`, then `fence.mbarrier_init.release.cluster` by the initializing thread, then a cluster barrier (A44), makes the barriers usable by the peer's remote arrivals, the leader's multicast commits and the peer's TMA completions. The cluster barrier's release also covers the initializing thread's setup arrivals. | PTX §9.7.15.4 (Examples: init, the fence, a cluster barrier), §9.7.15.3 | high |
+| A46 | (pair) `mapa.shared::cluster.u32 d, a, 0` gives the address in the leader's shared memory of the object at `a` in the executing CTA's. `mbarrier.arrive.release.cluster.shared::cluster.b64 _, [d]` performs one arrive-on on that barrier, releasing at cluster scope, and a `try_wait.parity.acquire.cluster` in the leader that observes the phase synchronizes with it. No thread waits on another CTA's barrier. | PTX §9.7.10.26, §9.7.15.16.11, §9.7.15.16.16, §9.7.15.16.19; CUDA guide §4.12.3 (cluster scope) | high |
+| A47 | (pair) `cp.async.bulk.tensor.2d.cta_group::2.shared::cluster.global.mbarrier::complete_tx::bytes [dst], [map, …], [b]`, with `dst` in the issuing CTA and `b` the leader's barrier (by `mapa`), writes the box at `dst` as A9 and performs one complete-tx of its bytes on `b`, releasing at cluster scope. A complete-tx may precede the expect-tx within a phase: the transaction count goes negative, and the phase cannot complete while an arrival is pending. | PTX §9.7.10.28.5.3, §9.7.15.16.6; CUTLASS `SM100_TMA_2SM_LOAD` (the qualifier order) | high |
+| A48 | (pair) `tcgen05.mma.cta_group::2.kind::f16` with M = 256, issued by one thread of the leader, reads A's rows 0–127 and B's rows 0 to N/2 − 1 from the leader's shared memory and A's rows 128–255 and B's other rows from the peer's, at the same descriptor addresses, and writes D's rows 0–127 and 128–255 to the leader's and the peer's tensor memory, lane = row mod 128, at one column address. The instruction descriptor's M field is 256 >> 4. | PTX §9.7.18.10, §9.7.18.10.10.1, §9.7.18.2.1 (Table 48), §9.7.18.4.2; the split only in CUTLASS `mma_traits_sm100.hpp` | medium |
+| A49 | (pair) `tcgen05.commit.cta_group::2.mbarrier::arrive::one.shared::cluster.multicast::cluster [b], 0b11` arrives once, at cluster scope, on the barrier at `b`'s offset in each CTA of the pair, after every earlier `cta_group::2` MMA of the issuing thread has completed, its accesses to the peer's shared memory and tensor memory included, and performs `tcgen05.fence::before_thread_sync`. The two arrivals are not assumed simultaneous. | PTX §9.7.18.12.1, §9.7.18.6.2.1.1, §9.7.18.6.4.2 | high (the inclusion of the peer's accesses inferred) |
+| A50 | (pair) `tcgen05.alloc`, `relinquish_alloc_permit` and `dealloc` `.cta_group::2` are run by warp 0 of each CTA, collectively, and each may block until both have. A 512-column allocation starts at column 0 in both CTAs. Dealloc requires that no tensor-core work or `tcgen05.ld`/`st` reaches either CTA's columns concurrently. | PTX §9.7.18.5 (Tables 55–57), §9.7.18.7.1 | high |
+| A51 | (pair) A33 holds for `cta_group::2`, in both CTAs' tensor memory. | PTX §9.7.18.6.2 ("same N") | medium |
+| A52 | (pair) `tcgen05.fence::before_thread_sync` and `::after_thread_sync` compose with cluster-scope arrivals and waits across the pair as within a CTA: A13, A20 and M13 hold when the writer and the waiter are in different CTAs. | PTX §9.7.18.6.3, §9.7.18.11.1 (no restriction to a CTA stated) | medium |
+| A53 | (pair) An async-proxy write of a CTA's shared memory (a TMA load, by either CTA) and an async-proxy read of it by an MMA the other CTA issued are ordered by the barrier chain of O1 and O2 alone, with no proxy fence, as if by one thread block. | not in PTX (§8.9.5 covers "the same thread block"); CUTLASS and FA4 rely on it | **low–medium: a hardware probe and a question to NVIDIA** |
+| A54 | (pair) `tcgen05.ld`/`st` reach only the executing CTA's tensor memory, with the lanes of A14 and A19. | PTX §9.7.18.8, §9.7.18.5 (Table 55) | high |
+| A55 | (pair) Nothing is assumed of an access to a CTA that has exited, invalidated the barrier or freed the columns: every remote arrival, complete-tx, multicast commit and MMA access aimed at a CTA precedes, through a wait of its protocol, the cluster barrier before the close, and each CTA closes and exits only after it. | PTX §2.2.2 (the peer must not have exited), §9.7.18.5 (Table 55), §9.7.15.16.13 | — (a design choice) |
 
 ## 4. Structural invariants of emitted code
 
@@ -198,6 +212,28 @@ none of them (`ATTENTION.md` §4.1), and closes its protocols on `…Done` token
   The argument is about one launch: launches that share the owners must not overlap, as two launches on two streams
   with epochs 5 and 6 would each see the other's epoch as old, and both CAS steps would succeed. The launch contract
   says so, as any kernel that writes memory another kernel reads needs it.
+
+M18–M20 hold for the CTA pair (`encoding/TWO_CTA.md`, `Core.rac`'s pair sections).
+
+- **M18, lockstep** (pair). Each CTA's producer and the leader's consumer walk one stage sequence of a pair ring, and
+  the leader's issuer and each CTA's warpgroup one buffer sequence of a pair accumulator ring. Their counts agree
+  because every role runs the trip count the kernel computed once from its parameters, as within a CTA (M11). A
+  disagreement deadlocks: the extra fills wait in their producer's tail for releases that never come, and that CTA
+  never reaches the close's cluster barrier. No side can get a phase ahead, since each CTA's `empty[s]` receives only
+  the leader's commits for that stage, and the leader's `full[s]` both CTAs' bytes for the same round.
+- **M19, pair resources** (pair). A pair opener (`withPairTmem`, `withPairRing`, `withPairAccRing`) takes the
+  kernel's own context, `Ctx(l, …)` with the kernel's `CtaPair(l)`, so it runs in the kernel's top-level spine and
+  never under a branch, loop, role or other scope, each of which has a lifetime of its own. Every thread of both CTAs
+  runs every opener and close, in one order, from one generated text, so both CTAs' layouts are equal. An opener
+  publishes its barriers (A45) before its callback runs; its close waits at a cluster barrier (A44) after the
+  callback, whose sides have all been finished (M15), then invalidates or frees. The single-CTA openers (`withRing`,
+  `withTmem`, `withAccHandoff`, `withAccRing`, `withExchange`, `withScoreBuffer`) read the kernel's CTA group from the
+  generation state and refuse in a pair kernel, and every `tcgen05` instruction prints that group, so a kernel uses one
+  (A29).
+- **M20, the leader** (pair). Tensor-core work and commits are issued only in the leader. The endpoints that issue
+  them, a pair ring's consumer and a pair accumulator ring's issuing side, are taken only with a `Leader(n)`, which
+  only `onLeader`'s arm holds and which belongs to the arm's scope; every MMA and commit consumes a token derived from
+  those endpoints, so it runs in the arm. The arm hands back only its context.
 
 ## 6. Operation obligations
 
@@ -380,6 +416,34 @@ Rank-3 encodings in `fillBlock` and `attentionKernel` (`ATTENTION.md` §3.7, A28
 masking the part of a last key block past `seq` and never storing the rows of a last query tile past it
 (`encoding/README.md`).
 
+### 6.12 CTA pairs
+
+The pair kernel's operations (`encoding/TWO_CTA.md`). A pair ring's sides are the ring's (`Producer`, `Consumer`,
+`ProducerAt`, `Slot`, `ConsumerAt`, `Ready`, `ReadyUsed`), and a pair accumulator ring's the accumulator ring's; their
+operations take the `PairRing` or `PairAccRing`, which only the pair openers make, and which no single-CTA operation
+takes. Every wait on a pair barrier is `try_wait.parity.acquire.cluster`.
+
+| Operation | Requires | Emits | Establishes | Relies on |
+|---|---|---|---|---|
+| `pairGemmKernel` | a body; boxes pass `pairGemmShapeOk` (else a generation error) | `__cluster_dims__(2, 1, 1)`; the CTA group `two`; `%cluster_ctarank` and `%clusterid.x` read once; the kernel (parameters `A_map`, `B_map`, `C`, `M`, `N`, `K`) and its launcher (M·N < 2³², M, N, K < 2³¹, the two map encodings, grid `pairs(ceil(N / 2bh), ceil(M / 256))` of 256 threads) | `PairGemm` (the maps, the `PairTile`: rows `256·blockIdx.y + 128·rank`, B's rows `col0 + bh·rank`, `col0 = 2bh·clusterid.x`; `PairOut`, K), `HalfOwn`, `CtaPair`, `TmemPermit`; a `Program` | A17, A43, I6 |
+| `onLeader` | a `CtaPair` | `if (rank == 0) { body }` | the body ran in the leader only, with a `Leader(m)` of the arm's scope | M20 |
+| `withPairTmem` | the kernel's `Ctx(l, cta)` and `CtaPair(l)`, `TmemPermit` | as `withTmem` with 512 columns and `cta_group::2`; at close `before_thread_sync`, a cluster barrier, `after_thread_sync`, warp 0's dealloc | `Tmem(a, 512)`, `Acc(a, empty)`; closes on `Acc(done)` | A44, A50, M19 |
+| `withPairRing` | the kernel's `Ctx(l, cta)` and `CtaPair(l)`; boxes pass `boxOk` | `withRing`'s layout, inits and setup arrivals, the fence, a cluster barrier; at close a cluster barrier, then thread 0's `inval`s | `PairRing`, `Producer`, `Consumer`, every stage free in both CTAs | A44, A45, M19 |
+| `takePairProducer`, `acquirePair` | as `takeProducer`, `acquire` | as theirs, the wait at cluster scope | `ProducerAt`, `Slot`: this CTA's half of the stage free (the leader's commit completed) | A49 |
+| `fillPair` | `Slot`, the `PairTile`, maps of the ring's boxes, a K coordinate | `mapa` of `full[s]` to the leader's; in the leader `arrive.expect_tx` of both halves' bytes; two `::2` TMA loads into this CTA's half at the tile's rows for this rank, completing on the leader's `full[s]`; advance | this CTA's half in flight toward the leader's `full[s]` | A46, A47 |
+| `finishPairProducer` | `ProducerAt` | S waits on this CTA's `empty`, advancing | every stage of this CTA's half released: no copy in flight, no MMA reading it | A49 |
+| `takePairConsumer` | as `takeConsumer`, and a `Leader` | as `takeConsumer` | `ConsumerAt`, in the leader | M20 |
+| `awaitPair` | `ConsumerAt` | wait the leader's `full[s]`, `after_thread_sync` | `Ready`: both halves landed and visible to the tensor-core work issued next | A47, A53 |
+| `mmaPairFirst`, `mmaPairNext` | `Ready`, `AccFree`/`AccFilling` of a `PairAccRing(q, n)`; shape passes `pairMmaShapeOk` (else a generation error) | four `tcgen05.mma.cta_group::2` of M = 256, N = n from the stage's descriptors into the buffer, the first overwriting | `ReadyUsed`, `AccFilling` | A48, A51 |
+| `releasePair` | `ReadyUsed` | a commit to `empty[s]` multicast to both CTAs; advance | the stage is released in both CTAs when the thread's MMAs reading it complete | A49, A53 |
+| `withPairAccRing` | the kernel's `Ctx(l, cta)` and `CtaPair(l)`, `Acc(a, empty)` of a `Tmem(a, cols)`, bufs·n ≤ cols | `withAccRing`'s layout with `empty[b]` of count 256, completed at setup; the fence, a cluster barrier; at close a cluster barrier, then `inval`s | `PairAccRing`, `AccProducer`, `AccConsumer`; hands back `Acc(a, empty)` | A44, A45, M19 |
+| `takePairAccProducer`, `acquirePairAcc` | an elected lane and a `Leader` / the issuing side | the side's registers / wait the leader's `empty[b]`, `after_thread_sync` | `AccProducerAt`, in the leader / `AccFree`: both warpgroups' loads of the buffer done | A46, A52, M20 |
+| `commitPairAcc` | `AccFilling` | a commit to `full[b]` multicast to both CTAs; advance | the buffer passes to both warpgroups when its MMAs complete | A49 |
+| `finishPairAccProducer` | the issuing side | `bufs` waits on the leader's `empty`, advancing | every buffer read by both warpgroups: no tensor-core work in flight | A46 |
+| `takePairAccConsumer`, `awaitPairAcc` | an aligned warpgroup / the reading side | the side's registers / wait this CTA's `full[b]`, `after_thread_sync` | `AccConsumerAt` / `AccFull`: this CTA's rows of the buffer visible | A49, A52 |
+| `storeHalf` | `AccFull`, the `PairTile`, `PairOut`, `HalfOwn`; n a positive multiple of 8 (else a generation error) | `__syncwarp`; the row `rows + 32·(warp mod 4) + lane` and `row < M`; a loop over n/8 chunks: 8 declarations, `__syncwarp`, `tcgen05.ld.32x32b.x8`, `wait::ld`, 8 stores guarded by `row < M` and `col < N` | this CTA's half of the tile written once (`HalfOwn` consumed); `AccFull` kept | A14, A54, M12, S5 |
+| `releasePairAcc` | `AccFull` | `before_thread_sync`; `mapa` of `empty[b]` to the leader's; one remote arrive per thread; advance | the buffer is free to the issuer once both warpgroups (256) arrived | A46, A52 |
+
 ## 7. Public surface
 
 Every operation that a client can call without the Key, and that builds a sealed value, must be sound on any
@@ -461,6 +525,20 @@ arguments. The audit as of this document:
   `appendParams`, `appendLauncher`, `combineParams` and `combineLauncher` build unsealed `Group`s, `Expr`s, `Stmt`s,
   `Gen`s, `String`s and launchers, which reach a kernel only through the Key; `headOut`, which builds an `AttnOut`,
   needs it.
+- **The CTA pair** (§6.12). `CtaPair`, `Leader`, `PairTile`, `PairOut`, `HalfOwn`, `PairRing` and `PairAccRing` are
+  sealed, and only `pairGemmKernel`, `onLeader` and the pair openers make them. `rank` reads the pair's rank as a
+  uniform value, which can choose code but no pair resource's address: the openers take the kernel's own context (M19).
+  `onLeader` mints a `Leader` that belongs to its arm and hands back only the arm's context. `takePairProducer`,
+  `acquirePair`, `fillPair`, `finishPairProducer`, `takePairConsumer`, `awaitPair`, `mmaPairFirst`, `mmaPairNext`,
+  `releasePair`, `takePairAccProducer`, `acquirePairAcc`, `commitPairAcc`, `finishPairAccProducer`,
+  `takePairAccConsumer`, `awaitPairAcc`, `storeHalf` and `releasePairAcc` each consume a side's token and mint the next,
+  or, as the single-CTA finishers, none; `fillPair` and `storeHalf` take their rows from the sealed `PairTile`, never
+  from the caller. The unsealed `PairGemm.mk` builds a launch from sealed parts and a `Val`, K, which chooses trip
+  counts only (M18). `oneCta`, `ringLayout`, `accRingLayout`, `setupBarriers`, `publishBarriers`, `clusterSync`,
+  `readSpecial`, `mapaLeader`, `mbarArriveRemote`, `tmaLoad2dPair`, `mmaCommitBoth`, `mbarWaitCluster`, `waitTemplate`,
+  `isLeader`, `pairMmaShapeOk`, `pairGemmShapeOk`, `pairGemmParams` and `pairGemmLauncher` build unsealed `Gen`s,
+  `Stmt`s, `Expr`s, `Bool`s and launchers, which reach a kernel only through the Key; `pairStart`, `tmemScope`,
+  `closePair` and `mmaPairStage` need it.
 - **The examples' shared modules** (`gpu/encoding/Layout.rac`, `gpu/encoding/Attention.rac`) are clients: they declare
   no sealed family and need no Key. `Layout.roles4` is `split` three times, `Layout.rolesPair` four times.
 

@@ -9,6 +9,7 @@
 #define __device__
 #define __host__
 #define __launch_bounds__(...)
+#define __cluster_dims__(...)
 #define __shared__
 #define __restrict__
 #define __grid_constant__

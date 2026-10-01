@@ -97,10 +97,13 @@ namespace Cuda {
   struct MapEncoding : Type
    | mk (param: String)(use: MapUse)(source: Param)(rows: String)(cols: String)(inner: Nat)(outer: Nat) : MapEncoding
 
-  // How many CTAs a launcher starts: `x` × `y`, or, for a persistent kernel, one per SM but no more than `tiles`.
+  // How many CTAs a launcher starts: `x` × `y`; for a persistent kernel, one per SM but no more than `tiles`; or, for
+  // a kernel of CTA pairs, `x` × `y` pairs, each a cluster of two CTAs along x, the kernel declaring the cluster's shape
+  // (`__cluster_dims__(2, 1, 1)`), so `2x` × `y` CTAs.
   inductive Grid : Type
    | blocks (x: Expr)(y: Expr) : Grid
    | persistent (tiles: Expr) : Grid
+   | pairs (x: Expr)(y: Expr) : Grid
 
   // A host function `<kernel>_launch` taking `params` and a stream: it fails with `cudaErrorInvalidValue` unless every
   // condition in `requires` holds, encodes `maps`, and launches `grid` of CTAs of `block` threads with the kernel's
@@ -429,6 +432,7 @@ namespace Cuda {
   def gridDims (g: Grid)(rest: String -> String): String := {
     match g returning String with
     | Grid.blocks x y => rest(Text.cat3("dim3(", Cuda.expr(x), Text.cat3(", ", Cuda.expr(y), ")")))
+    | Grid.pairs x y => rest(Text.cat3("dim3(", Cuda.expr(Expr.bin(BinOp.mul, Expr.lit(2), x)), Text.cat3(", ", Cuda.expr(y), ")")))
     | Grid.persistent tiles => {
       let query := "if (cudaGetDevice(&gpu_device) != cudaSuccess || cudaDeviceGetAttribute(&gpu_sms, cudaDevAttrMultiProcessorCount, gpu_device) != cudaSuccess) {"
       Cuda.line(1, "int gpu_device = 0;", Cuda.line(1, "int gpu_sms = 0;", Cuda.line(1, query,
@@ -452,9 +456,17 @@ namespace Cuda {
         Cuda.line(1, Text.cat3("void* args[] = {", Cuda.argAddrs(kernelParams), "};"), Cuda.gridDims(grid, launch)))))))))))
   }
 
+  // The cluster shape a kernel launched in pairs declares, which makes its launch a cluster launch.
+  def clusterDims (host: Option(Launcher)): String := Option.elim(host, String, "", fun (l: Launcher): String => {
+    match l.grid returning String with
+    | Grid.blocks x y => ""
+    | Grid.persistent tiles => ""
+    | Grid.pairs x y => "__cluster_dims__(2, 1, 1) "
+  })
+
   def kernel (k: Kernel): String := {
     let (n, ps, bytes, body, host) := k
-    let head := Text.cat3("extern \"C\" __global__ void ", n, Text.cat3("(", Cuda.params(ps), ") {"))
+    let head := Text.cat3("extern \"C\" __global__ void ", Text.cat(Cuda.clusterDims(host), n), Text.cat3("(", Cuda.params(ps), ") {"))
     let tail := Option.elim(host, String, "", fun (l: Launcher): String => Cuda.launcher(n, ps, bytes, l))
     let launched := Option.elim(host, Bool, Bool.false, fun (l: Launcher): Bool => Bool.true)
     Cuda.headers(ps, launched, Cuda.line(0, head, Cuda.sharedPrologue(bytes, Cuda.block(1, body, Text.cat("}\n", tail)))))

@@ -107,8 +107,11 @@ Readings and gaps:
   undefined. PTX does state a related rule (§9.7.15.16.5.1): in each phase, at least one `test_wait` or `try_wait` must
   return True before any arrive-on of the next phase. That is property P8 (§3).
 - **A negative `tx`.** In general a complete-tx may precede its expect-tx within a phase, and the phase cannot
-  complete while `pend > 0`, so the model allows it. In these protocols it does not happen: `arrive.expect_tx` precedes
-  the copies in program order. The range is the ISA's. A stage is at most 2 × 64 × 256 × 2 = 65,536
+  complete while `pend > 0`, so the model allows it. In the single-CTA protocols it does not happen:
+  `arrive.expect_tx` precedes the copies in program order. In a pair ring (`encoding/TWO_CTA.md`) it does: the peer's
+  copies complete on the leader's `full[s]`, which only the leader's producer arms, so a peer's complete-tx may come
+  first (A47). The phase still completes only once the leader's arrival and both halves' bytes are in, since the
+  expectation is both halves' sum. The range is the ISA's. A stage is at most 2 × 64 × 256 × 2 = 65,536
   bytes (`boxOk`), within 2^20 − 1.
 - **Inval.** The model requires, at `Inval(b)`: no thread waiting on `b`, no operation in flight that will arrive on
   or complete-tx on `b`, `pend = count`, and `tx = 0`. PTX is silent on arrivals or transactions pending at `inval`,
@@ -125,9 +128,10 @@ Readings and gaps:
   generic proxy (§9.7.10.28.5.3, §9.7.18.12.1), so no proxy fence is needed for them. The model starts each protocol
   after that point: the setup is not interleaved with any other step. `withRing`, `withAccHandoff` and `withAccRing`
   emit exactly this prefix, the setup's arrives before the fence. `fence.mbarrier_init` covers only the prior
-  `init`s, and the setup's arrive has the default `.release.cta`; within one CTA the `__syncthreads` orders it. Once a
-  ring spans a cluster (2-CTA), the setup's arrive needs `.release.cluster`, or a cluster fence, before the cluster
-  barrier.
+  `init`s, and the setup's arrive has the default `.release.cta`; within one CTA the `__syncthreads` orders it. A pair
+  protocol's prefix (`encoding/TWO_CTA.md`) replaces the CTA barrier with a cluster barrier,
+  `barrier.cluster.arrive.release` then `barrier.cluster.wait.acquire` by every thread of both CTAs (A44, A45): its
+  release, not relaxed, also orders the setup's arrives before the peer's first remote arrival.
 
 ### 1.3 TMA bulk tensor copy
 
@@ -188,12 +192,12 @@ can depend on:
 
 | # | Fact | From | Used by |
 |---|---|---|---|
-| O1 | A TMA copy's writes are done before its complete-tx, which has release semantics at cluster scope (PTX §9.7.10.28.5.3). A thread whose wait (acquire by default) observes the phase that complete-tx helped complete sees the writes (§9.7.10.28.1.2). The tensor-core operations it issues afterwards are ordered after the wait by a `tcgen05.fence::after_thread_sync` between them (§9.7.18.6.3), which the ISA states is needed before an asynchronous `tcgen05` operation after such a wait (§9.7.18.6.4.2), and which `await` emits. | A6, A9, A13 | ring: `await` → MMA |
-| O2 | An MMA's reads and writes are done before the arrival of a later commit of its thread. After a wait observing that phase, later TMA writes to its sources are ordered after its reads, with no fence (derived below). | A12 | ring: `releaseByMma` → `acquire` → `fill`; the drains |
+| O1 | A TMA copy's writes are done before its complete-tx, which has release semantics at cluster scope (PTX §9.7.10.28.5.3). A thread whose wait (acquire by default) observes the phase that complete-tx helped complete sees the writes (§9.7.10.28.1.2). The tensor-core operations it issues afterwards are ordered after the wait by a `tcgen05.fence::after_thread_sync` between them (§9.7.18.6.3), which the ISA states is needed before an asynchronous `tcgen05` operation after such a wait (§9.7.18.6.4.2), and which `await` emits. In a pair ring the copy may be the peer's, writing the peer's shared memory, and the waiter the leader's thread, at cluster scope (`awaitPair`): the chain is the same, and that the leader's MMA's async-proxy read of the peer's shared memory is ordered after the peer's async-proxy write by it alone is A53. | A6, A9, A13, A47, A53 | ring: `await` → MMA; pair ring: `awaitPair` → MMA |
+| O2 | An MMA's reads and writes are done before the arrival of a later commit of its thread. After a wait observing that phase, later TMA writes to its sources are ordered after its reads, with no fence (derived below). In a pair ring the commit is the leader's, multicast, and the waiter and the TMA the peer's (`releasePair` → `acquirePair` → `fillPair`): the chain is the same, across the pair at cluster scope, and its last link, the same-thread-block clause of §8.9.5, is A53. | A12, A49, A53 | ring: `releaseByMma` → `acquire` → `fill`; the drains; the pair ring's |
 | O3 | After O2's wait, `tcgen05.fence::after_thread_sync` orders the waiter's later tensor-core operations and loads after the MMAs' writes (§9.7.18.6.3; §9.7.18.6.4.4, Example 2). | A12, A13 | `recvAcc`, `awaitAcc` → `tcgen05.ld` |
 | O4 | A thread's `wait::ld` ends its loads. `tcgen05.fence::before_thread_sync` then `mbarrier.arrive`, observed by a wait followed by `tcgen05.fence::after_thread_sync`, orders the loads before the waiter's later MMAs (§9.7.18.6.4.4, Example 1). | A13, A14 | `releaseAcc` → `acquireAcc` → MMA |
 | O5 | A thread barrier (`__syncthreads`, `bar.sync`) orders the memory accesses of the threads before it before those after it. | A2, A3 | tile typestate; init and inval; the roles' join |
-| O6 | Initialized barriers are visible to every thread and unit after `fence.mbarrier_init` and a CTA barrier (§9.7.15.4: the fence applies to the thread's prior `mbarrier.init`s). | A7 | every protocol's start |
+| O6 | Initialized barriers are visible to every thread and unit after `fence.mbarrier_init` and a CTA barrier (§9.7.15.4: the fence applies to the thread's prior `mbarrier.init`s); a pair protocol's, to the peer's threads and units too, after a cluster barrier instead (A45). | A7, A45 | every protocol's start |
 | O7 | A generic-proxy write to shared memory that an async-proxy access (a TMA store, an MMA) will read must be followed, in each writing thread, by `fence.proxy.async.shared::cta`, before the synchronization that orders it before the async operation's issue (§9.7.10.28.2; §9.7.18.6.5; CUDA Programming Guide §4.12.2.1). A generic read of what a TMA load wrote needs no fence once the load's completion is observed: the completion of a `cp.async.bulk` operation carries an implicit generic-async proxy fence (§9.7.10.28.2). A generic write after an async-proxy read, as when a staging buffer is written again after a TMA store read it, is ordered by the issuing thread's `cp.async.bulk.wait_group.read`, which waits until the group's operations have finished reading their sources (§9.7.10.28.6.2), then a warp barrier; that rests on A35. | A35, A36, A37 | none in the protocols of §2; the TMA-store epilogue (`fenceStage`, §6) |
 
 With these, a race in the memory model's sense needs two conflicting accesses that no chain of O1–O6 orders. In the
@@ -247,7 +251,8 @@ A generic-proxy writer in the producer's place would need `fence.proxy.async.sha
 - **Thread scheduling within a warp**, `elect.sync` and `__syncwarp` (A4, A5): a role is modelled as the one thread
   that runs it, or as the 128 epilogue threads (§2.4).
 - **`try_wait`'s time limit and suspend hint**, the `.acquire`/`.release` qualifiers beyond O1–O6, `mbarrier.
-  pending_count`, `arrive_drop`, `test_wait`, remote (cluster) barriers: unused today.
+  pending_count`, `arrive_drop`, `test_wait`: unused today. Remote (cluster) barriers: used by the CTA pair, not
+  modelled (§6).
 - **Tensor-memory allocation** (A10): `withTmem` is straight-line CTA code around the protocols. Its obligation that
   no tensor-core operation is pending at `dealloc` needs P4 of the combined system of every protocol inside it, since
   one thread's `Q(C)` holds the commits of several protocols (§3.1).
@@ -849,7 +854,9 @@ identify them. Which threads run a block still needs groups in the AST, or layer
 
 ## 6. What is left out, and the other tracks
 
-Left out today, beyond §1.7: remote (cluster) barriers, multicast, 2-CTA MMAs, `tcgen05.st`/`tcgen05.cp`, named
+Left out today, beyond §1.7: remote (cluster) barriers, multicast commits, 2-CTA MMAs and cluster barriers, which
+`gpu/encoding`'s pair kernel uses (`encoding/TWO_CTA.md`, A43–A55) but no model covers yet; TMA multicast,
+`tcgen05.st`/`tcgen05.cp`, named
 barriers between roles other than the split joins, and liveness. The models extend as follows.
 
 - **The TMA-store epilogue (`lemur_gpu`, 975f093).** Each epilogue warp writes 32 columns into one of its two staging
