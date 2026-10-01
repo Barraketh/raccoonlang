@@ -100,11 +100,40 @@ namespace Attention {
   // ---- The softmax warpgroup -------------------------------------------------------------------------------------------
 
   // Chunk `c` of this thread's row of S, keys 8c to 8c+7 of key block `block`, as t = scale·s, masked: −∞ for a key
-  // past the sequence or, in a causal kernel, past this thread's query.
-  def scores {n: Lifetime}{L: Lifetime}{Sb: Lifetime}{Sc: Lifetime}{Ss: Lifetime}(mask: Mask(L))(block: Val(Sb, Grain.uniform, DType.u32))
-      (scale: Val(Sc, Grain.uniform, DType.f32))(c: Nat)(s: F32x8(Ss, Grain.thread))(e: Ctx(n, Wg)): Pair(Ctx(n, Wg), F32x8(n, Grain.thread)) :=
+  // past the sequence or, in a causal kernel, past this thread's query. The A2 and A3a softmax roles share this
+  // arithmetic and the two below.
+  def scores {n: Lifetime}{f: Nat}{L: Lifetime}{Sb: Lifetime}{Sc: Lifetime}{Ss: Lifetime}(mask: Mask(L))(block: Val(Sb, Grain.uniform, DType.u32))
+      (scale: Val(Sc, Grain.uniform, DType.f32))(c: Nat)(s: F32x8(Ss, Grain.thread))(e: Ctx(n, Group.warps(f, 4)))
+      : Pair(Ctx(n, Group.warps(f, 4)), F32x8(n, Grain.thread)) :=
     maskedScores(e, mask, block, c, F32x8.mk(fmul(scale, s.v0), fmul(scale, s.v1), fmul(scale, s.v2), fmul(scale, s.v3), fmul(scale, s.v4),
       fmul(scale, s.v5), fmul(scale, s.v6), fmul(scale, s.v7)))
+
+  // The running maximum `mx` becomes the maximum of its value and the chunk's eight.
+  def raiseMax {n: Lifetime}{g: Group}{Sm: Lifetime}{St: Lifetime}(mx: Reg(Sm, DType.f32))(t: F32x8(St, Grain.thread))(e: Ctx(n, g)): Ctx(n, g) := {
+    let (e, old) := get(e, mx)
+    let m01 := fmax(t.v0, t.v1)
+    let m23 := fmax(t.v2, t.v3)
+    let m45 := fmax(t.v4, t.v5)
+    let m67 := fmax(t.v6, t.v7)
+    set(e, mx, fmax(old, fmax(fmax(m01, m23), fmax(m45, m67))))
+  }
+
+  // The chunk's p = 2^(t − max) against the row's maximum `mx` as `usable` gives it (0 for a masked key); `sum` gains
+  // their sum.
+  def exps {n: Lifetime}{g: Group}{Ss: Lifetime}{Sm: Lifetime}{St: Lifetime}(sum: Reg(Ss, DType.f32))(mx: Val(Sm, Grain.thread, DType.f32))
+      (t: F32x8(St, Grain.thread))(e: Ctx(n, g)): Pair(Ctx(n, g), F32x8(n, Grain.thread)) := {
+    let (e, p0) := ex2(e, fsub(t.v0, mx))
+    let (e, p1) := ex2(e, fsub(t.v1, mx))
+    let (e, p2) := ex2(e, fsub(t.v2, mx))
+    let (e, p3) := ex2(e, fsub(t.v3, mx))
+    let (e, p4) := ex2(e, fsub(t.v4, mx))
+    let (e, p5) := ex2(e, fsub(t.v5, mx))
+    let (e, p6) := ex2(e, fsub(t.v6, mx))
+    let (e, p7) := ex2(e, fsub(t.v7, mx))
+    let (e, old) := get(e, sum)
+    let e := set(e, sum, fadd(old, fadd(fadd(fadd(p0, p1), fadd(p2, p3)), fadd(fadd(p4, p5), fadd(p6, p7)))))
+    (e, F32x8.mk(p0, p1, p2, p3, p4, p5, p6, p7))
+  }
 
   // The softmax warpgroup's state across key blocks: the S ring's reading side and the exchange's writing side.
   def Softmax (q: Lifetime)(x: Lifetime)(m: Lifetime)(o: OState) : Type { kind = lin, scope = union(q, union(x, m)) } :=
@@ -113,8 +142,8 @@ namespace Attention {
   // The row's maximum `mx` as the exponents use it: 0 while every score so far is masked (−∞), so that no
   // −∞ − (−∞) arises (ATTENTION.md §3.9). It never fires in a launch the launcher accepts: key 0 is inside the
   // sequence and at or before every query, so every row's first block has a score.
-  def usable {n: Lifetime}{Sl: Lifetime}{Sm: Lifetime}(lowest: Val(Sl, Grain.uniform, DType.f32))(mx: Reg(Sm, DType.f32))(e: Ctx(n, Wg))
-      : Pair(Ctx(n, Wg), Val(n, Grain.thread, DType.f32)) := {
+  def usable {n: Lifetime}{g: Group}{Sl: Lifetime}{Sm: Lifetime}(lowest: Val(Sl, Grain.uniform, DType.f32))(mx: Reg(Sm, DType.f32))
+      (e: Ctx(n, g)): Pair(Ctx(n, g), Val(n, Grain.thread, DType.f32)) := {
     let (e, m) := get(e, mx)
     let (e, use) := reg(e, select(Core.lt(m, lowest), zero(DType.f32), m))
     get(e, use)
@@ -140,12 +169,7 @@ namespace Attention {
       // Pass 1: `m` becomes the maximum of its value and the masked t over the row.
       let (e, full) := eachChunk(e, accs, full, fun (ch: Nat)(s: F32x8(n, Grain.thread))(e: Ctx(n, Wg)): Ctx(n, Wg) => {
         let (e, t) := scores(mask, i, scale, ch, s, e)
-        let (e, old) := get(e, mReg)
-        let m01 := fmax(t.v0, t.v1)
-        let m23 := fmax(t.v2, t.v3)
-        let m45 := fmax(t.v4, t.v5)
-        let m67 := fmax(t.v6, t.v7)
-        set(e, mReg, fmax(old, fmax(fmax(m01, m23), fmax(m45, m67))))
+        raiseMax(mReg, t, e)
       })
       let (e, mNew) := usable(lowest, mReg, e)
       let (e, p) := acquireP(e, ex, wa)
@@ -154,17 +178,7 @@ namespace Attention {
       let (e, (full, p)) := writeP(e, accs, full, ex, p, fun (ch: Nat)(s: F32x8(n, Grain.thread))(e: Ctx(n, Wg))
           : Pair(Ctx(n, Wg), F32x8(n, Grain.thread)) => {
         let (e, t) := scores(mask, i, scale, ch, s, e)
-        let (e, p0) := ex2(e, fsub(t.v0, mNew))
-        let (e, p1) := ex2(e, fsub(t.v1, mNew))
-        let (e, p2) := ex2(e, fsub(t.v2, mNew))
-        let (e, p3) := ex2(e, fsub(t.v3, mNew))
-        let (e, p4) := ex2(e, fsub(t.v4, mNew))
-        let (e, p5) := ex2(e, fsub(t.v5, mNew))
-        let (e, p6) := ex2(e, fsub(t.v6, mNew))
-        let (e, p7) := ex2(e, fsub(t.v7, mNew))
-        let (e, old) := get(e, sum)
-        let e := set(e, sum, fadd(old, fadd(fadd(fadd(p0, p1), fadd(p2, p3)), fadd(fadd(p4, p5), fadd(p6, p7)))))
-        (e, F32x8.mk(p0, p1, p2, p3, p4, p5, p6, p7))
+        exps(sum, mNew, t, e)
       })
       let (e, c) := releaseAcc(e, accs, full)
       let (e, alpha) := ex2(e, fsub(mOld, mNew))

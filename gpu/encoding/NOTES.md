@@ -282,3 +282,55 @@ operations, are gone; what remains is mostly lambda headers.
   scratch directory, where the examples cannot import it. Every attention mutant is a type error, so that suffices;
   `half_page_box`, which only generation refuses, moved to `rejected/page_box_mutants.py` on `checks/paged_emitted.rac`.
 
+
+## A3a: two query tiles in ping-pong
+
+Observations from building `A3.md`'s A3a (`Core.rac`'s score buffer, `Layout.rolesPair`,
+`examples/attention_pingpong.rac`, `harness/attention_pingpong_test.cu`, `rejected/attention_pingpong_mutants.py`).
+
+1. **Four copies of the softmax block per kernel.** The softmax role is one function generic in its warpgroup `f`,
+   but each split arm is generated separately, and each role peels its first block: the block body is generated four
+   times per kernel (two warpgroups, first and rest). A body generated once for both warpgroups would select its
+   buffer by a run-time tile index (`warp / 4`); the core has one token family per buffer, chosen at generation, and
+   no family of two buffers indexed at run time. Each kernel is about 4,800 lines (4,717 of kernel), against A2's
+   3,377: the one pass and the masks computed once per block offset most of the copies.
+2. **The first product cannot know it is first.** The issuer's loop runs `n − 1` times, and the product after it is
+   the first when `n = 1`. Code after a loop is generated once, so that product cannot read `OState` as A2's `mmaPV`
+   does. The warpgroup's block-0 rescale zeroes Ô instead (16 `tcgen05.st` of zeros, once per tile), and every
+   product accumulates. The type then says more than A2's: `publishProbs` needs `Probs(…, held)`, so Ô is defined
+   before any product, where A2 relies on `mmaPV` choosing the overwrite.
+3. **`n − 1` needs `subC`.** The loop combinators count from 0 to a `Val`, and the core had no subtraction. `subC`
+   is unbounded (it wraps below 0), which is harmless here since `n ≥ 1`, but it is one more place where a trip count
+   is the client's (M11).
+4. **The warpgroup–tile binding is a convention.** `rowInPair` (`256·blockIdx.x + 32·warp + lane`) is right because
+   `rolesPair` puts tile 0's warpgroup on warps 0–3 and the example hands it buffer 0, whose S the MMA thread computes
+   from the Q stage the loader filled at row `q0`. Nothing in the types ties the three together: swapping the buffers,
+   or the Q rings, between the tiles is a wrong result, not a refusal. The other tile's buffer with one's own side is
+   refused (`other_tiles_region`).
+5. **Two `OOwn`s of one type.** `pairAttentionKernel` hands one `OOwn` per tile. Nothing stops one warpgroup from
+   using both: it would store its own rows twice, and the other's rows would stay unwritten (T4's NaN). Each thread
+   stores only its own row (M12), so it is never a race.
+6. **Helper lambdas in the issuer.** The MMA thread's three steps per tile (`hold`, `scores`, `product`) are let-bound
+   lambdas with implicit binders over the tile's buffer and ring lifetimes, called directly. They read well at the
+   call sites, but their signatures are most of the issuer's text. `hold` (await, then `holdStage`) is now used for
+   Q, K and V alike; it could be a core operation.
+7. **The CTA's nesting.** Eight openers (`withTmem`, `splitTmem`, two `withScoreBuffer`s, four `withRing`s), each a
+   lambda with its full binder types, around `rolesPair`. The first score buffer's result type carries the second
+   region's `Acc` back out (`Pair(Acc(c1, …), Unit)`), as `Attention.cta`'s exchange carries the S region's.
+8. **Register pressure is unmeasured.** The row lives in registers: 128 loaded values, which die as pass 1 makes the
+   128 masked scores, which pass 2 consumes chunk by chunk. 384 threads leave 170 registers each without
+   `setmaxnreg` (`A3.md` §4).
+9. **Generation time.** Checking and generating the example takes about 31 CPU s (A2's examples about 19), so
+   `check.sh` gains about 10 s of wall time, mostly this example and its mutants.
+10. **The harness is shared through a header.** `harness/attention_harness.h` holds A2's harness, parameterized by
+    the kernels' name (`ATTENTION_KERNEL`); `attention_test.cu` and `attention_pingpong_test.cu` each name theirs.
+    `fa4_compare.py` still calls only `attention_launch` and `attention_causal_launch`.
+11. **The harness ran against a mock.** `attention_pingpong_test.cu` was linked against a host mock of the runtime
+    and driver (not in the repository) whose `cudaLaunchKernel` emulates A3a per CTA and tile: two query tiles at rows
+    `256x` and `256x + 128`, one block count per CTA (tile 1's, causal), the rank-2 maps' zero fill, the mask, the
+    −∞ guard, bf16 P, Ô zeroed in block 0 and rescaled after, the store guard and bf16 rounding, behind the
+    generated launchers' own host code (grid `(ceil(seq/256), BH)`, 384 threads, 200,736 bytes of shared memory).
+    Every check passed (192 size and input checks, 12 refusals). Broken emulations were caught: tile 1 reading tile
+    0's Q rows (30 checks failed), the causal kernel running tile 0's block count (`2x + 1`, 60), no tail mask (44),
+    no store guard (120), and Ô not zeroed in block 0 (all 192). The mock checks the harness, the references and
+    the launchers, not the kernels.

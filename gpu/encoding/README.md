@@ -3,8 +3,8 @@
 Status: started 2026-10-01; steps 1 and 2 below done for A1, paged attention (P1) and A2 (causal and non-causal
 masking, any `seq` ≥ 1, bf16 output, for both kernels) except the hardware runs: the core, the examples, the unit
 checks, the mutants of `ATTENTION.md` §5 (`rejected/`), the host harnesses and the FA4 comparison (`harness/`), and
-`OBLIGATIONS.md` (A19–A33, M12–M14, §6.10, §7); then the readability review's library changes (below). Nothing has
-run on a GPU; `NOTES.md` records what was awkward, and what the review removed. A
+`OBLIGATIONS.md` (A19–A33, M12–M14, §6.10, §7); then the readability review's library changes (below); then A3a, two
+query tiles in ping-pong (`A3.md`), to the same point. Nothing has run on a GPU; `NOTES.md` records what was awkward, and what the review removed. A
 fresh copy of the typed core (`gpu/Gpu.rac`) in which the library grows the features it lacks, starting with forward
 attention, then paged attention. `gpu/Gpu.rac` and its GEMM examples stay as they are, so the kernels that ran on a
 B200 keep running while this design settles.
@@ -69,6 +69,12 @@ the masked keys' 0 · V into NaN, in every query row whose keys include that blo
 correctness hazard under non-finite inputs, not a safety one (a packed variable-length kernel that loads whole blocks
 across sequence boundaries shares it); the launch contracts ask for V finite in every row a block reads.
 
+**A3a, two query tiles in ping-pong** (`A3.md`, the first step of `ATTENTION.md` §6 A3). A CTA of 384 threads per
+256 query rows, two softmax warpgroups, FA4's MMA order, and P overlaid on S in one score buffer per tile, with the
+row of S loaded once into registers. Built to the same point as A2: the core's score buffer and `pairAttentionKernel`,
+`examples/attention_pingpong.rac`, `harness/attention_pingpong_test.cu` (A2's harness, run against a host mock),
+`rejected/attention_pingpong_mutants.py`, and `OBLIGATIONS.md` (A39, M16).
+
 **Paged attention.** A1 over a paged KV cache:
 - K and V are `[pages · H · 128, 128]`: a page holds 128 consecutive keys of every head;
 - a `block_table [B, maxPages]` (u32) gives each sequence's physical pages;
@@ -85,10 +91,11 @@ against a host mock of the runtime (`NOTES.md`).
 ## Layout
 
 - `Core.rac`: the core.
-- `Layout.rac`: the CTA of eight warps that the attention and GEMM examples share (`roles4`).
+- `Layout.rac`: the CTA of eight warps that the attention and GEMM examples share (`roles4`), and A3a's of twelve
+  (`rolesPair`).
 - `Attention.rac`: the roles and CTA of forward attention, which `examples/attention.rac` and
   `examples/paged_attention.rac` run with their own loaders.
-- `examples/`: kernels.
+- `examples/`: kernels; `attention_pingpong.rac` holds A3a's roles itself, since no other example runs them.
 - `checks/`: unit tests of emitted code.
 - `rejected/`: programs and mutant tables the core must refuse.
 - `harness/`: host test programs for hardware runs.

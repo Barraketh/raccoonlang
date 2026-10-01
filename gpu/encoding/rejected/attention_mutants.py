@@ -164,7 +164,7 @@ MUTANTS = [
             "full-mask `__shfl_sync` for the thread's row, which part of a warp must not run alone. The arm's group is "
             "`diverged`, and `maskedScores` needs a converged `warps(f, 4)` group.",
         old="""        let (e, t) := scores(mask, i, scale, ch, s, e)
-        let (e, old) := get(e, mReg)""",
+        raiseMax(mReg, t, e)""",
         new="""        let (e, t) := scores(mask, i, scale, ch, s, e)
         let (e, old) := get(e, mReg)
         let (e, u) := branch(e, Core.lt(old, zero(DType.f32)), fixedUnit, Unit.unit,
@@ -172,7 +172,8 @@ MUTANTS = [
             let (e, again) := maskedScores(e, mask, i, ch, t)
             (e, u)
           },
-          fun (b: Lifetime)(e: Ctx(b, Group.arm(Wg, Grain.thread)))(u: Unit): Pair(Ctx(b, Group.arm(Wg, Grain.thread)), Unit) => (e, u))""",
+          fun (b: Lifetime)(e: Ctx(b, Group.arm(Wg, Grain.thread)))(u: Unit): Pair(Ctx(b, Group.arm(Wg, Grain.thread)), Unit) => (e, u))
+        raiseMax(mReg, t, e)""",
     ),
     dict(
         name="forged_mask", expect="SealedConstructor", mentions="Core.Mask",
@@ -180,7 +181,7 @@ MUTANTS = [
             "causal kernel: rows would attend to later keys, or to keys past `seq` (the next head's). Only the "
             "kernel builders make a `Mask`.",
         old="""    maskedScores(e, mask, block, c, F32x8.mk(""",
-        new="""    maskedScores(e, Mask.mk(n, Expr.param("BH"), Bool.false, Expr.param("seq")), block, c, F32x8.mk(""",
+        new="""    maskedScores(e, Mask.mk(n, Expr.param("BH"), Bool.false, Expr.param("seq"), Core.rowInHead), block, c, F32x8.mk(""",
     ),
     dict(
         name="q_released_inside_loop", expect="LinearReused", mentions="qu has a linear type",

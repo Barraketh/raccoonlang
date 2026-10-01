@@ -697,6 +697,7 @@ The public-surface audit of `OBLIGATIONS.md` §7 gains:
 | A31 | (A3) `vote.sync.any.pred` / `vote.sync.ballot.b32` with a full mask in a converged warp gives every lane the same result. | PTX §9.7.15.10 | high |
 | A32 | *Withdrawn in review.* `tcgen05.ld.red` (load with a row maximum) is not available on sm_100a: PTX §9.7.18.8.3 lists it for sm_101a/sm_110a and the sm_101f, sm_103f and sm_110f families only. FA4 uses it on sm_103 only (`use_ldred_rowmax`, `flash_fwd_sm100.py` 245–250). | PTX §9.7.18.8.3 | — |
 | A33 | (A3) An MMA's reads of its tensor-memory A operand are ordered before a later MMA's writes of D to the same columns when one thread issues both (P overlaid on S, then the next S). | PTX §9.7.18.6.2 (pipelined pair "A and metadata reads → D writes"); FA4 relies on it (§2.7) | high (text) |
+| A39 | (A3a) Nothing is assumed of an MMA whose tensor-memory A operand overlaps its own D: none is issued. The score buffer keeps a product's A (P) and D (Ô) disjoint; only the next S's D overlaps P, the A of an earlier MMA (A33). | PTX §9.7.18.10.10.1 (states no rule for overlapping A and D) | — (a design choice) |
 
 ### 4.4 Hardware experiments
 
@@ -735,6 +736,19 @@ The public-surface audit of `OBLIGATIONS.md` §7 gains:
 | releasing the Q stage inside the loop, then using it | `releaseByMma` consumes `ReadyUsed` |
 | closing tensor memory with a product in flight, or the S ring or a stage ring undrained | each side is linear and of its protocol's scope, so it is used up before the close (`LinearUnused` otherwise), and only its finisher uses it up without handing a side back: the waiting finishers `finishProducer`, `finishAccProducer`, `finishStores` and `finishExWriter` (whose `OFinal` only `closeExWriter` ends), and the code-free `finishConsumer`, `finishAccConsumer`, `finishExReader` and `closeExWriter` (`OBLIGATIONS.md` M15) |
 | loading one half of a stage from another map or row | not expressible: `fillBlock` takes one map and one row for both halves |
+
+A3a's score buffer (`encoding/A3.md`, `encoding/rejected/attention_pingpong_mutants.py`, on
+`encoding/examples/attention_pingpong.rac`):
+
+| Mutant | Refused by |
+|---|---|
+| writing P before the row's loads complete | `writeProbs` needs `Read`, which only `loadRow`'s `wait::ld` makes (M16) |
+| rescaling Ô before the scores' commit | `rescaleRow` needs `Probs`, which comes only after `awaitScores` |
+| issuing `St_{i+1}` before `PVt_i` | after `awaitProbs` the buffer is `Published`, which only `issuePV` takes; `issueScores` needs `Issued` (M16) |
+| publishing P with Ô undefined (no rescale in block 0) | `publishProbs` needs `Probs(…, held)`, which in block 0 only `rescaleRow`'s zeroing makes |
+| storing O before the last product | `storeFinal` needs `Final`, which only `awaitFinal`'s wait makes |
+| a warpgroup given the other tile's buffer | a buffer's handle and its side's tokens share its scope `x` |
+| closing the buffer with a product in flight | the warpgroup's side is linear and of the buffer's scope; only `awaitFinal` and `closeRows` use it up (M15) |
 
 What the design cannot refuse. None of these is a race, a broken collective or a protocol error; each is a wrong
 result, a deadlock, or a question the types do not ask. The harness (§1.3) is what catches the first kind.
@@ -800,7 +814,10 @@ also at A1's), and have run against a host mock of the runtime (`encoding/NOTES.
 - Checks: a mutant masking by a per-thread branch (refused, §5). A store guarded by the array's rows instead of
   `seq` is not expressible, since `storeO` computes its guard.
 
-**A3: performance.** In order of expected return, each measured against the previous:
+**A3: performance.** In order of expected return, each measured against the previous. The first step, A3a, is built
+(`encoding/A3.md`, 2026-10-01; not run on hardware): the two query tiles in ping-pong with FA4's MMA order, P
+overlaid on S in one score buffer per tile, and the one pass over S, with two rings for K and V and no `exp` turn
+between the warpgroups (FA4's is off).
 - Two query tiles per CTA in ping-pong with two softmax warpgroups (the fixture's schedule): two S rings and two
   exchanges; a CTA of 384 or 512 threads; the tensor memory is then full (2 × 128 for Ô, 2 × 128 for S), so P
   overlays S. The overlay needs a new token: a buffer of the S ring whose consumer converts it in place, reading

@@ -47,8 +47,8 @@ clients use them correctly.
 Each assumption is our reading of NVIDIA's documentation and CUTLASS's usage. "Exercised" means the B200 runs of
 `DESIGN.md` §7 depend on it and passed; that supports the assumption but does not prove it.
 
-A19–A33 are the attention core's (`gpu/encoding/Core.rac`, `ATTENTION.md` §4.3, which numbers them so); none is
-exercised yet, since the attention kernel has not run on hardware. A34–A38 are the TMA-store epilogue's, numbered
+A19–A33 are the attention core's (`gpu/encoding/Core.rac`, `ATTENTION.md` §4.3, which numbers them so), and A39 its
+score buffer's (A3a, `encoding/A3.md`); none is exercised yet, since no attention kernel has run on hardware. A34–A38 are the TMA-store epilogue's, numbered
 A19–A23 before the attention core's assumptions took those numbers.
 
 | # | Assumption | Source | Confidence |
@@ -85,12 +85,13 @@ A19–A23 before the attention core's assumptions took those numbers.
 | A30 | (A3) `setmaxnreg.{inc,dec}.sync.aligned.u32` must be executed by every warp of a warpgroup, identically, with a synchronization between two of them. | PTX §9.7.21.5 | high (text) |
 | A31 | (A3) `vote.sync.any.pred` / `vote.sync.ballot.b32` with a full mask in a converged warp gives every lane the same result. | PTX §9.7.15.10 | high |
 | A32 | *Withdrawn* (`ATTENTION.md` §8): `tcgen05.ld.red` is not available on sm_100a. | PTX §9.7.18.8.3 | — |
-| A33 | (A3) An MMA's reads of its tensor-memory A operand are ordered before a later MMA's writes of D to the same columns when one thread issues both (P overlaid on S, then the next S). | PTX §9.7.18.6.2 (pipelined pair "A and metadata reads → D writes"); FA4 relies on it (`ATTENTION.md` §2.7) | high (text) |
+| A33 | (A3) An MMA's reads of its tensor-memory A operand are ordered before a later MMA's writes of D to the same columns when one thread issues both (P overlaid on S, then the next S). Load-bearing in A3a: `issueScores` writes S over the P that the product the same thread issued before it reads, with no barrier between. | PTX §9.7.18.6.2 (pipelined pair "A and metadata reads → D writes"); FA4 relies on it (`ATTENTION.md` §2.7) | high (text); to be probed (`encoding/A3.md` §4) |
 | A34 | `cp.async.bulk.tensor.2d.global.shared::cta.bulk_group`, issued by one thread, asynchronously reads the box from shared memory (1024-byte aligned for the 128-byte swizzle, whose rows of the box are 128 bytes) and writes it to the tensor at the given coordinates. Elements outside the tensor are not written, but clipping is at 16-byte granularity of the global address: with the base 16-byte aligned (the launch contract) and rows a multiple of 16 bytes (the launcher's check, and the encoding's stride rule), that is the row's end, so nothing outside the tensor is written, also when the box lies wholly outside. The operation belongs to the bulk async-group that the issuing thread's next `cp.async.bulk.commit_group` closes. | PTX ISA 9.4 §9.7.10.28.5.3 (`cp.async.bulk.tensor`), §5.5.3 (tiled mode, §5.5.3.3 out-of-boundary access), §5.5.7 (swizzling); CUDA Programming Guide §4.12 (TMA: "parts of the tile may be out of bounds" on writes, strides and addresses 16-byte multiples, shared memory 128-byte aligned, box rows at most the swizzle width); the 16-byte granularity observed on H100 in triton-lang/triton#11583, extrapolated to sm_100 | medium-high (a wholly outside box: medium); to be exercised (`{1, 8, 8}` stores wholly outside boxes) |
 | A35 | `cp.async.bulk.commit_group` closes the executing thread's bulk async operations issued since its last commit into one bulk async-group. `cp.async.bulk.wait_group.read N` returns once at most the N most recent bulk async-groups of the executing thread have not finished reading their sources; `cp.async.bulk.wait_group N` once, beyond that, all earlier ones have completed, writes included and visible to the executing thread. Groups are per thread: a thread's wait says nothing of another thread's groups. | PTX ISA 9.4 §9.7.10.28.1.1 (async-group mechanism), §9.7.10.28.6.1, §9.7.10.28.6.2 | high |
 | A36 | `fence.proxy.async.shared::cta`, executed by a thread after its `st.shared` writes, orders them before later operations of the async proxy on shared memory that are ordered after the fence (here by `__syncwarp`, A37), such as a TMA store's reads. Once a thread's `wait_group.read` returned, generic writes ordered after it (A37) may overwrite the store's source without a proxy fence. | PTX ISA 9.4 §9.7.15.4 (`membar`/`fence`, proxy fences), §9.7.10.28.2 (async proxy); CUTLASS `tma_store_fence` before the epilogue's barrier and TMA store, `tma_store_wait` before rewriting; CUDA Programming Guide §4.12 example | medium-high; to be exercised |
 | A37 | `__syncwarp()` orders the memory accesses of the warp's threads before it before their accesses after it (as A2 for a CTA). | CUDA Programming Guide (`__syncwarp`) | high |
 | A38 | Nothing is assumed of bulk stores outstanding when their thread exits: every thread that commits one waits for all its groups to complete (`wait_group 0`) before its shared memory is released and before it exits. CUTLASS 4.8's sm100 epilogue without C does not wait at all (`store_tail`), its sm90 one waits for all groups' reads (`tma_store_wait<0>`, the `.read` form), as does the CUDA guide's example; the PTX ISA, as read here, states no rule for exit, so the stronger wait. | CUTLASS `sm100_epilogue_tma_warpspecialized.hpp` `store_tail` (`REFERENCE_CUTLASS.md` §4); PTX ISA 9.4 §9.7.10.28.6.2; CUDA Programming Guide §4.12 | — (a design choice, relying on A35 only) |
+| A39 | (A3a) Nothing is assumed of an MMA whose tensor-memory A operand overlaps its own D: none is issued. The score buffer keeps a product's A (P, columns 64–127) and D (Ô, 128–255) disjoint; only the next S's D (columns 0–127) overlaps P, the A of an earlier MMA (A33). | PTX §9.7.18.10.10.1 (states no rule for overlapping A and D) | — (a design choice) |
 
 ## 4. Structural invariants of emitted code
 
@@ -164,7 +165,13 @@ none of them (`ATTENTION.md` §4.1), and closes its protocols on `…Done` token
   `finishExWriter` (a wait, giving `OFinal`, which only `closeExWriter` ends); and the code-free `finishConsumer`,
   `finishAccConsumer`, `finishExReader` and `closeExWriter`, whose sides' issued work is released to the waiting side.
   So a close follows the drain, as a `…Done` token's return made it do (M7, M11). A new operation that took a side
-  and gave none back would have to drain as the waiting finishers do.
+  and gave none back would have to drain as the waiting finishers do. A3a's score buffer adds the waiting `awaitFinal`
+  (giving `Final`, which only `closeRows` ends) and the code-free `finishMma` and `closeRows`.
+- **M16, overlays** (A3a). Where one region's columns are read and then overwritten, the write takes the token that
+  only the completed reads give. Threads writing over what they read (P over S) write from `Read`, which only
+  `loadRow` makes, after its `wait::ld`; the tensor cores writing over what an earlier MMA of the same thread reads
+  (the next S over P) write from `Issued`, which only `issuePV`, the reading MMA's issue, makes after a publish (A33).
+  Between the two sides the reads are ordered by the buffer's barriers, as M9 and M13 order the exchange's.
 
 ## 6. Operation obligations
 
@@ -304,6 +311,27 @@ two things.
 | `fillPage` | as `fill`; a ring whose stages are two 64 × 128 boxes (else a generation error); `PageTable`, `PageMap` of the ring's first box; a block index `j` | a guarded read of `block_table[b][j]` (`b = blockIdx.y / H`; 0 outside the table), `arrive.expect_tx`, two TMA loads at row `(p · H + blockIdx.y mod H) · 128`, columns 0 and 64 | as `fill`; whatever the table holds, the loads read only the cache or zeros (`PAGED.md` §3) | A9 |
 | `pagedAttentionKernel` | as `attentionKernel`, and 1 ≤ H ≤ 65535 | as `attentionKernel`, with parameters `Q_map`, `K_map`, `V_map`, `O`, `LSE`, `block_table`, `B`, `seq`, `max_pages`, `scale_log2`, and a launcher refusing seq = 0, B = 0, B · H ≥ 65536, B · H · seq · 128 ≥ 2³¹, rows_q ≠ B · H · seq, pages · H · 128 ≥ 2³¹, rows_kv ≠ pages · H · 128, dim ≠ 128, max_pages < ceil(seq / 128), B · max_pages ≥ 2³¹; grid (ceil(seq / 128), B · H) | `PagedLaunch` (as `AttnLaunch`, with `PageMap`s for K and V and the `PageTable`), `OOwn`, `TmemPermit`; a `Program` | A17, I6 |
 
+| `withScoreBuffer` | `Acc(a, empty)` of a `Tmem(a, 256)`, `cta` context | S full (count 1) and P full (count 128), no phase completed at initialization; `inval` at close | the `ScoreBuffer` (S at the region's column 0, P at 64, Ô at 128), `RowSide`, `MmaSide`, linear and of the buffer's scope, so finished before the close; hands back `Acc(a, empty)` | A6–A8 |
+| `takeRows` | `warps(f, 4)` context, f mod 4 = 0 (evidence) | the warpgroup's phase register, 0 | `RowsAt(x, m, f, fresh)`, bound to that warpgroup | M6 |
+| `takeMma` | `Ctx(m, lane)` with `Elected(m)` | the MMA thread's phase register, 0 | `Issued(x, m)`, bound to that thread: the buffer is the MMA thread's, nothing issued | M6 |
+| `awaitScores` | `RowsAt(x, m, f, o)` | wait S full at the warpgroup's phase, `after_thread_sync`, flip the phase | `Scored(x, m, f, o)`: the block's S complete and visible; the product before it complete, so Ô quiescent | A6, A12, A13 |
+| `loadRow` | `Scored(x, m, f, o)`, `warps(f, 4)` context | 128 declarations, `__syncwarp`, 16 × `tcgen05.ld.32x32b.x8` at S's columns 8c in the warp's lane quadrant, one `wait::ld` | `Read(x, m, f, o)`: every load of S complete; the row as a `Row` of 16 chunks, thread-grain values of the context's lifetime | A13, A14, M12, M16 |
+| `mapRow` | a `Row(k)`, a context of lifetime `k`, a step | the step's code per chunk, in order | the `Row` of the step's results, 16 chunks | — |
+| `writeProbs` | `Read(x, m, f, o)`, a `Row(k)`, `warps(f, 4)` context, a step returning eight f32 values | per chunk c < 16, in order: the step's code; 4 u32 declarations, 4 `cvt.rn.bf16x2.f32`, `__syncwarp`, `tcgen05.st.32x32b.x4` at P's column 4c (S's 64 + 4c) in the warp's lane quadrant | `Probs(x, m, f, o)`: every chunk of the thread's row of P written once, in order (pending `wait::st`) | A19, A23, A25, M12, M14, M16 |
+| `rescaleRow` | `Probs(x, m, f, o)`, an f32 value | `held`: as `rescaleO`, over Ô at column 128. `fresh`: `__syncwarp`, 16 × `tcgen05.st.32x32b.x8` of 0 over Ô | `Probs(x, m, f, held)`: the thread's row of Ô scaled, or set to 0 (pending `wait::st`) | A14, A19, A22, M12 |
+| `publishProbs` | `Probs(x, m, f, held)` | `__syncwarp`, `wait::st`, `before_thread_sync`, one arrival per thread (128) on P full | `RowsAt(x, m, f, held)`: P and Ô handed to the MMA thread, and the row's loads ordered before its next writes | A19, A20, M13 |
+| `awaitFinal` | `RowsAt(x, m, f, held)` | wait S full at the warpgroup's phase, `after_thread_sync` | `Final(x, m, f)`: the last product complete, none in flight, Ô visible | A6, A12, A13 |
+| `storeFinal` | `Final(x, m, f)`, `OOwn(L, t)`, `AttnOut(L, t)`, `warps(f, 4)` context, two f32 values | as `storeO`, from Ô at the buffer's column 128 | as `storeO`; `Final` kept | A13, A14, M12, S5 |
+| `closeRows`, `finishMma` | `Final` / `MmaAt(x, m)` | nothing | the side used up | — |
+| `issueScores` | `Issued(x, m)`, `ReadyUsed(ra, m)`, `ReadyUsed(rb, m)`, `Elected(m)`; both rings' stages two 64 × 128 boxes (else a generation error) | 8 `tcgen05.mma` from K-major descriptors into S (the buffer's columns 0–127), the first overwriting | `Issued(x, m)`, `ReadyUsed` of both | A11, A33, M16 |
+| `awaitProbs` | `MmaAt(x, m)` | wait P full at the MMA thread's phase, `after_thread_sync`, flip the phase | `Published(x, m)`: P and Ô written and visible to the tensor cores | A6, A20, M13 |
+| `issuePV` | `Published(x, m)`, `ReadyUsed(r, m)` of a ring whose stages are two 64 × 128 boxes (else a generation error), `Elected(m)` | 8 `tcgen05.mma` with D at Ô (column 128), A in tensor memory at P (column 64) + 8s, B the stage MN-major, every one accumulating | `Issued(x, m)`, `ReadyUsed(r, m)` | A23, A24, A39 |
+| `commitBuffer` | `Issued(x, m)`, `Elected(m)` | `tcgen05.commit` to S full | `MmaAt(x, m)`; the buffer passes to the warpgroup when the thread's work completes | A12, A21 |
+| `pairAttentionKernel` | as `attentionKernel` | as `attentionKernel`, with `blocks = ceil(seq / 128)`, or `min(ceil(seq / 128), 2 · blockIdx.x + 2)` causal, and a launcher with grid (ceil(seq / 256), BH) of 384 threads, refusing as `attentionKernel`'s | `AttnLaunch` with `q0 = 256 · blockIdx.x` and the mask's and output's row `256 · blockIdx.x + 32 · warp + lane`, an `OOwn` per tile, `TmemPermit`; a `Program` | A17, I6 |
+
+The rows of `maskedScores` and `storeO` (and so `storeFinal`) are the `Mask`'s and the `AttnOut`'s, which only the
+builders make: `rowInHead` for a CTA of one tile, `rowInPair` for A3a's two.
+
 Rank-3 encodings in `fillBlock` and `attentionKernel` (`ATTENTION.md` §3.7, A28) are not built: A2 keeps rank-2 maps,
 masking the part of a last key block past `seq` and never storing the rows of a last query tile past it
 (`encoding/README.md`).
@@ -364,8 +392,17 @@ arguments. The audit as of this document:
   unsealed `Expr`s, `Stmt`s, `Gen`s, `Bool`s and launchers, which reach a kernel only through the Key, as does `storeP`,
   now the `Gen` of one chunk of P; `row8`, `fbin`, `pvStage`, `mmaRingStage`, `loadChunk`, `chunksFrom` and
   `pChunksFrom` need it. `overwritesO` builds a `Bool`.
+- **The score buffer** (A3a, §6.10). `subC` builds a value with no bound, so no shared read can be proven in range
+  through it. `mapRow` runs a client's step on a `Row`'s values and returns a `Row` of as many chunks; a `Row` is
+  sealed, so its 16 chunks come only from `loadRow`, and `writeProbs` writes exactly one chunk of P per chunk.
+  `fixedRowsAt` and `fixedMmaAt` are evidence for fieldless one-valued families. `takeRows`, `awaitScores`,
+  `loadRow`, `writeProbs`, `rescaleRow`, `publishProbs`, `awaitFinal`, `storeFinal`, `takeMma`, `issueScores`,
+  `awaitProbs`, `issuePV` and `commitBuffer` each consume a side's token and mint the next, and `closeRows` and
+  `finishMma` consume one and mint none: they are its finishers (M15). `storeRow`, `counting`, `scoresFull`,
+  `probsFull`, `probsAt`, `outAt`, `mapChunks`, `probChunks`, `rowInPair` and `upToTile` build unsealed `Gen`s,
+  `Expr`s and lists, which reach a kernel only through the Key; `attnStart` needs it.
 - **The examples' shared modules** (`gpu/encoding/Layout.rac`, `gpu/encoding/Attention.rac`) are clients: they declare
-  no sealed family and need no Key. `Layout.roles4` is `split` three times.
+  no sealed family and need no Key. `Layout.roles4` is `split` three times, `Layout.rolesPair` four times.
 
 A new public operation must be added to this list with its argument.
 
