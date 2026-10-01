@@ -557,9 +557,6 @@ object LanguageParser {
       }
   }
 
-  private def opaqueP: Parser[Boolean] =
-    kw("opaque").!.?.map(_.isDefined)
-
   private def constBody(implicit sourceId: Option[SourceId]): Parser[ConstBody] =
     kwTight("builtin").!.flatSpanned(sourceId).map { case (_, span) => ConstBody.Builtin(span) } |
       term.map(ConstBody.TermBody.apply)
@@ -583,14 +580,13 @@ object LanguageParser {
     kw("decreases") ~/ (structural | lexicographic | measure)
   }
 
-  // opaque? def foo (a: A)(c : C): D := body
+  // def foo (a: A)(c : C): D := body
   private def constP(implicit sourceId: Option[SourceId]): Parser[ConstDecl] =
-    (opaqueP ~ kw("def") ~/ declHeader ~ decreasesP.? ~
+    (kw("def") ~/ declHeader ~ decreasesP.? ~
       (sym(":=") ~/ skipAllWs ~ constBody))
       .flatSpanned(sourceId)
-      .map { case (isOpaque, header, decreases, body, span) =>
+      .map { case (header, decreases, body, span) =>
         ConstDecl(
-          isOpaque,
           header,
           decreases,
           body,

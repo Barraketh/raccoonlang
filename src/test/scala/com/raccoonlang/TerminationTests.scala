@@ -375,33 +375,30 @@ class TerminationTests extends munit.FunSuite with TestSupport {
     expectTypeError[NonDecreasingRecursiveCall](p)
   }
 
-  test("decrease metric on an opaque-typed value is rejected") {
-    // Quot and opaque types are Symbol consts, not inductives: their values are not well-founded
-    // trees the structural order could descend.
-    val p =
-      natDecls +
-        """
-          |opaque def Opaque : Type := Peano
-          |
-          |def bad (q: Opaque): Peano decreases structural(q) := Peano.zero
-          |""".stripMargin
+  test("decrease metric on an axiomatized type's value is rejected") {
+    // An axiomatized type, as Quot is, is not an inductive: its values are not well-founded trees
+    // the structural order could descend.
+    val prelude = TestSupport.preludeAssuming(TestSupport.testPreludeSource, natDecls + "axiom Carrier : Type\n")
+    val p = "def bad (q: Carrier): Peano decreases structural(q) := Peano.zero\n"
 
-    assert(!expectTypeError[NonInductiveDecreaseMetric](p).isProof)
+    assert(!expectTypeError[NonInductiveDecreaseMetric](p, prelude).isProof)
   }
 
   test("raw recursive self cannot be stored inside a residual let value") {
+    // An axiom's application is blocked, so it would keep its argument `bad` in the residual.
+    val prelude = TestSupport.preludeAssuming(
+      TestSupport.testPreludeSource,
+      natDecls + "axiom stuckApply (h: Peano -> Peano)(n: Peano): Peano\n"
+    )
     val p =
-      natDecls +
-        """
-          |opaque def opaqueApply (h: Peano -> Peano)(n: Peano): Peano := h(n)
-          |
-          |def bad (n: Peano): Peano decreases structural(n) := {
-          |  let x := opaqueApply(bad, n)
-          |  Peano.zero
-          |}
-          |""".stripMargin
+      """
+        |def bad (n: Peano): Peano decreases structural(n) := {
+        |  let x := stuckApply(bad, n)
+        |  Peano.zero
+        |}
+        |""".stripMargin
 
-    expectTypeError[InvalidRecursiveOccurrence](p)
+    expectTypeError[InvalidRecursiveOccurrence](p, prelude)
   }
 
 }

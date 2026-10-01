@@ -8,7 +8,6 @@ private[raccoonlang] object IdentifierSyntax {
     "as",
     "returning",
     "with",
-    "opaque",
     "axiom",
     "def",
     "inductive",

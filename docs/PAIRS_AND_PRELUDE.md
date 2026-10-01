@@ -122,7 +122,7 @@ eligible family: one constructor, no indices, no recursive constructor field,
 and not in `Prop` (kernel reference, Structure eta and projections). Otherwise
 the destructuring is `NotDestructurable`, naming the type. A type that a
 transparent definition computes to such an instance is one; a type variable, a
-function type, and an opaque or blocked type are not.
+function type, and a blocked type are not.
 
 **3.3 Components.** A pattern `(p1, …, pn)` matches the constructor's stored
 fields in order. Erased family parameters are not fields, as in a `match`

@@ -5,11 +5,17 @@ import com.raccoonlang.{CoreAst => CA}
 class ResidualizationTests extends munit.FunSuite {
   case class Checked(value: Value, term: CA.Term)
 
-  private def checkBody(src: String): Checked =
+  /** The test prelude with `Bool` and `stuckBool`, an axiom whose applications are blocked. */
+  private val withStuckBool: Prelude.Config = TestSupport.preludeAssuming(
+    TestSupport.testPreludeSource,
+    "inductive Bool : Type\n | true : Bool\n | false : Bool\n\naxiom stuckBool (b: Bool): Bool\n"
+  )
+
+  private def checkBody(src: String, prelude: Prelude.Config): Checked =
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value, Prelude.test)
-        val env = core.decls.foldLeft(Prelude.test.checkedEnv) { case (curEnv, decl) =>
+        val core = Elaborator.elab(value, prelude)
+        val env = core.decls.foldLeft(prelude.checkedEnv) { case (curEnv, decl) =>
           Interpreter.evalDecl(decl, curEnv)
         }
         val body = core.body.getOrElse(fail("Program has no body"))
@@ -25,16 +31,16 @@ class ResidualizationTests extends munit.FunSuite {
       case other                          => other
     }
 
-  private def checkLastDeclBody(src: String): CA.Term =
+  private def checkLastDeclBody(src: String, prelude: Prelude.Config): CA.Term =
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value, Prelude.test)
+        val core = Elaborator.elab(value, prelude)
         val last = core.decls.lastOption.getOrElse(fail("Program has no declarations"))
-        val env = core.decls.dropRight(1).foldLeft(Prelude.test.checkedEnv) { case (curEnv, decl) =>
+        val env = core.decls.dropRight(1).foldLeft(prelude.checkedEnv) { case (curEnv, decl) =>
           Interpreter.evalDecl(decl, curEnv)
         }
         last match {
-          case CoreAst.Decl.ConstDecl(_, _, ty, CoreAst.ConstBody.TermBody(term), _, _) =>
+          case CoreAst.Decl.ConstDecl(_, ty, CoreAst.ConstBody.TermBody(term), _, _) =>
             TypeChecker.checkTerm(term, TypeChecker.checkDeclType(ty, env).value, env).residual
           case other => fail(s"Expected a term definition, got $other")
         }
@@ -50,8 +56,8 @@ class ResidualizationTests extends munit.FunSuite {
           Interpreter.evalDecl(decl, curEnv)
         }
         val ty = last match {
-          case CoreAst.Decl.ConstDecl(_, _, ty, _, _, _) => ty
-          case other                                     => fail(s"Expected a definition, got $other")
+          case CoreAst.Decl.ConstDecl(_, ty, _, _, _) => ty
+          case other                                  => fail(s"Expected a definition, got $other")
         }
         TypeChecker.checkDeclType(ty, env).residual
 
@@ -92,7 +98,7 @@ class ResidualizationTests extends munit.FunSuite {
           |}
           |""".stripMargin
 
-    val checked = checkBody(p)
+    val checked = checkBody(p, Prelude.test)
     val res = resultTerm(checked.term)
     assert(containsGlobal(res, "choose"))
     assert(containsGlobal(res, "expensive"))
@@ -102,12 +108,6 @@ class ResidualizationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |inductive Bool : Type
-          | | true : Bool
-          | | false : Bool
-          |
-          |opaque def opaqueBool (b: Bool): Bool := b
-          |
           |def choose (b: Bool): Peano := {
           |  match b returning Peano with
           |  | Bool.true => Peano.zero
@@ -115,13 +115,13 @@ class ResidualizationTests extends munit.FunSuite {
           |}
           |
           |{
-          |  choose(opaqueBool(Bool.true))
+          |  choose(stuckBool(Bool.true))
           |}
           |""".stripMargin
 
-    val res = resultTerm(checkBody(p).term)
+    val res = resultTerm(checkBody(p, withStuckBool).term)
     assert(containsGlobal(res, "choose"))
-    assert(containsGlobal(res, "opaqueBool"))
+    assert(containsGlobal(res, "stuckBool"))
   }
 
   test("checked residual elaborates field syntax to a selector application") {
@@ -137,7 +137,7 @@ class ResidualizationTests extends munit.FunSuite {
           |}
           |""".stripMargin
 
-    checkBody(p).term match {
+    checkBody(p, Prelude.test).term match {
       case CA.Term.Body(
             lets,
             CA.Term.App(CA.Term.GlobalRef("Couple.fst", _), Vector(CA.Term.LocalRef(ref, _)), _, _),
@@ -163,7 +163,7 @@ class ResidualizationTests extends munit.FunSuite {
           |}
           |""".stripMargin
 
-    checkBody(p).term match {
+    checkBody(p, Prelude.test).term match {
       case CA.Term.Body(
             Vector(let),
             CA.Term.App(CA.Term.GlobalRef("Couple.fst", _), Vector(CA.Term.LocalRef(ref, _)), _, _),
@@ -185,7 +185,7 @@ class ResidualizationTests extends munit.FunSuite {
           |}
           |""".stripMargin
 
-    resultTerm(checkBody(p).term) match {
+    resultTerm(checkBody(p, Prelude.test).term) match {
       case CA.Term.Lam(_, body, _, _, _, _, _) =>
         assert(containsGlobal(body, "id"))
         assert(containsGlobal(body, "Peano.zero"))
@@ -197,21 +197,16 @@ class ResidualizationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |inductive Bool : Type
-          | | true : Bool
-          | | false : Bool
-          |
           |def id (n: Peano): Peano := n
-          |opaque def opaqueBool (b: Bool): Bool := b
           |
           |{
-          |  match opaqueBool(Bool.true) returning Peano with
+          |  match stuckBool(Bool.true) returning Peano with
           |  | Bool.true => id(Peano.zero)
           |  | Bool.false => id(Peano.zero)
           |}
           |""".stripMargin
 
-    resultTerm(checkBody(p).term) match {
+    resultTerm(checkBody(p, withStuckBool).term) match {
       case CA.Term.Match(_, _, cases, _, _) =>
         assertEquals(cases.map(_.ctorName).toSet, Set("Bool.true", "Bool.false"))
         cases.foreach(c => assert(containsGlobal(c.body, "id")))
@@ -223,24 +218,19 @@ class ResidualizationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |inductive Bool : Type
-          | | true : Bool
-          | | false : Bool
-          |
           |def idBool (b: Bool): Bool := b
-          |opaque def opaqueBool (b: Bool): Bool := b
           |
           |{
-          |  match idBool(opaqueBool(Bool.true)) returning Peano with
+          |  match idBool(stuckBool(Bool.true)) returning Peano with
           |  | Bool.true => Peano.zero
           |  | Bool.false => Peano.zero
           |}
           |""".stripMargin
 
-    resultTerm(checkBody(p).term) match {
+    resultTerm(checkBody(p, withStuckBool).term) match {
       case CA.Term.Match(scrut, _, _, _, _) =>
         assert(containsGlobal(scrut, "idBool"))
-        assert(containsGlobal(scrut, "opaqueBool"))
+        assert(containsGlobal(scrut, "stuckBool"))
       case other => fail(s"Expected stuck match residual, got $other")
     }
   }
@@ -256,7 +246,7 @@ class ResidualizationTests extends munit.FunSuite {
           |}
           |""".stripMargin
 
-    resultTerm(checkBody(p).term) match {
+    resultTerm(checkBody(p, Prelude.test).term) match {
       case pi: CA.Term.Pi =>
         assertEquals(pi.binders.head.ty.toString, "TyId(Peano)")
       case other => fail(s"Expected residualized Pi, got $other")
@@ -393,7 +383,7 @@ class ResidualizationTests extends munit.FunSuite {
         | | mk (T: Type)(x: T) : Boxed
         |""".stripMargin
 
-    val body = checkLastDeclBody(p) match {
+    val body = checkLastDeclBody(p, Prelude.test) match {
       case CA.Term.Lam(_, body, _, _, _, _, _) => resultTerm(body)
       case other                               => fail(s"Expected a checked lambda, got $other")
     }
@@ -428,14 +418,8 @@ class ResidualizationTests extends munit.FunSuite {
     val p =
       natDecls +
         """
-          |inductive Bool : Type
-          | | true : Bool
-          | | false : Bool
-          |
-          |opaque def opaqueBool (b: Bool): Bool := b
-          |
           |def pick (b: Bool): Peano := {
-          |  match opaqueBool(b) returning Peano with
+          |  match stuckBool(b) returning Peano with
           |  | Bool.true => Peano.zero
           |  | Bool.false => Peano.zero
           |}
@@ -451,6 +435,6 @@ class ResidualizationTests extends munit.FunSuite {
       CA.children(term).foreach(walk)
     }
 
-    walk(checkLastDeclBody(p))
+    walk(checkLastDeclBody(p, withStuckBool))
   }
 }

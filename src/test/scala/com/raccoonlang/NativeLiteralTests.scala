@@ -260,8 +260,7 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
          |def same (n: Nat): Eq(Nat, Nat.mul(n, $two32), Nat.mul(n, $two32)) := Eq.refl(Nat.mul(n, $two32))
          |def converted (n: Nat): Eq(Nat, Nat.mul(Nat.add(n, 1), $two32), Nat.mul(Nat.succ(n), $two32)) :=
          |  Eq.refl(Nat.mul(Nat.succ(n), $two32))
-         |opaque def k : Nat := 5
-         |def rigid : Eq(Bool, Nat.beq(k, $two32), Nat.beq(k, $two32)) := Eq.refl(Nat.beq(k, $two32))
+         |def rigid (k: Nat): Eq(Bool, Nat.beq(k, $two32), Nat.beq(k, $two32)) := Eq.refl(Nat.beq(k, $two32))
          |""".stripMargin
     )
     expectTypeError[TypeMismatch](
@@ -346,11 +345,10 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
     assertEquals(payload(runProgram(src)), BigInt(4))
   }
 
-  test("packed versus an opaque neutral is stuck, never apart") {
+  test("packed versus a blocked neutral is stuck, never apart") {
     expectTypeError[MissingCase](
       """
-        |opaque def k : Nat := 5
-        |def notApart (h: Eq(Nat, k, 5)): False := {
+        |def notApart (f: (n: Nat) -> Nat)(h: Eq(Nat, f(0), 5)): False := {
         |  match h returning False with
         |}
         |""".stripMargin,
@@ -660,7 +658,7 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
     assert(materialized.nativeLiterals.stringLayout.contains(layout))
   }
 
-  test("full-profile admission rejects missing, malformed, opaque, and misidentified native declarations") {
+  test("full-profile admission rejects missing, malformed, and misidentified native declarations") {
     // A prelude that simply omits an operation is well formed; it just does not get that native equation.
     val allButDiv = fullNativeAddendum.replace("  def div (a: Nat)(b: Nat): Nat := a\n", "")
     assert(!syntheticFullNative("missing-div", allButDiv).checkedEnv.globals.contains("Nat.div"))
@@ -676,15 +674,6 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
       "Nat.div"
     )
 
-    val opaque = fullNativeAddendum.replace(
-      "  def div (a: Nat)(b: Nat): Nat := a",
-      "  opaque def div (a: Nat)(b: Nat): Nat := a"
-    )
-    assertEquals(
-      interceptError[NativeOperationDeclarationMismatch](syntheticFullNative("opaque-div", opaque).checkedEnv).name,
-      "Nat.div"
-    )
-
     val wrongIdentity = fullNativeAddendum.replace(
       "  def div (a: Nat)(b: Nat): Nat := a",
       "  def div : Nat -> Nat -> Nat := Nat.add"
@@ -694,6 +683,18 @@ class NativeLiteralTests extends munit.FunSuite with TestSupport {
         syntheticFullNative("wrong-identity", wrongIdentity).checkedEnv
       ).name,
       "Nat.div"
+    )
+
+    // A declaration whose value is not a lambda: a match blocked on an axiom.
+    val blocked = fullNativeAddendum.replace(
+      "  def div (a: Nat)(b: Nat): Nat := a",
+      "  axiom stuckB : Bool\n" +
+        "  def div : Nat -> Nat -> Nat := match stuckB returning Nat -> Nat -> Nat with\n" +
+        "   | Bool.true => Nat.add\n   | Bool.false => Nat.add"
+    )
+    assertEquals(
+      interceptError[NativeOperationDeclarationMismatch](syntheticFullNative("blocked-div", blocked).checkedEnv),
+      NativeOperationDeclarationMismatch("Nat.div", "declaration is not an applicable lambda")
     )
 
     val env = fullNativePrelude.checkedEnv

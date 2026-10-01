@@ -21,7 +21,6 @@ The declaration forms are:
 
 ```text
 def name (parameters): Result := term
-opaque def name (parameters): Result := term
 axiom name (parameters): Result
 [sealed] inductive Family (parameters) indices (indices): Sort
 [sealed] struct Family (parameters) indices (indices): Sort
@@ -33,8 +32,8 @@ open Path
 A `mutual` block is atomic and must contain either only function definitions or
 only inductive or structure declarations. Function bodies can refer to every
 peer, and constructors can refer to every family head. Mutual function members
-must be ordinary transparent definitions with a function parameter list, a
-`decreases` annotation, and no builtin or opaque body. For example:
+must be definitions with a function parameter list, a `decreases` annotation,
+and no builtin body. For example:
 
 ```raccoon
 mutual {
@@ -66,10 +65,9 @@ mutual {
 }
 ```
 
-A transparent `def` reduces during checking and evaluation. An `opaque def`
-has a checked body but does not unfold after publication. An `axiom` has the
-declared type and no body. At proof types, both forms still obey canonical proof
-representation and proof irrelevance.
+Every `def` is transparent: it reduces during checking and evaluation. An
+`axiom` has the declared type and no body, so it does not compute. At proof
+types, both forms obey canonical proof representation and proof irrelevance.
 
 Only the trusted prelude declares axioms. An `axiom` in any other module is
 `UntrustedAxiom`, whatever its type:
@@ -212,7 +210,7 @@ binder's type must be a type:
 
 | Binder | `Level` | `Kind` | `Lifetime` |
 |---|---|---|---|
-| a definition's, opaque definition's or axiom's header | yes | yes | yes |
+| a definition's or axiom's header | yes | yes | yes |
 | a family parameter | yes | yes | yes |
 | a family index, a constructor field | no | no | no |
 | a function type or lambda binder | no | no | yes |
@@ -315,8 +313,9 @@ The projection reads sorts, function types' closures and the parts of a
 function type that do not depend on its own binders, a proof's proposition, a
 constructor's stored fields, and the arguments of a family or of a prelude type
 former such as `Quot`. It never reads the arguments of a blocked application,
-an opaque definition's, another axiom's or a stuck builtin's:
-`def g {l: Lifetime}(t: Box(f(l))): Nat` is rejected when `f` is opaque.
+another axiom's or a stuck builtin's: with `axiom f (l: Lifetime): Nat` in the
+trusted prelude, `def g {l: Lifetime}(t: Box(f(l))): Nat` is rejected. Nor does
+it read through a parameter's application, whose head is a local.
 
 Implicit and explicit binders may be interleaved. Reconstruction must still
 come from a later explicit argument, and call sites supply all explicit
@@ -418,8 +417,8 @@ and a function type prints its binders as written.
 
 Proofs are erased when a program runs. A call binds its callee's evidence
 parameters to erased proofs without evaluating their propositions, whatever the
-callee is: a function, or an opaque definition whose application stores its
-arguments unevaluated. So a decision procedure in a proposition runs when a call
+callee is: a function, or an axiom whose application stores its arguments
+unevaluated. So a decision procedure in a proposition runs when a call
 is checked, once per call, and not when the call runs. Whatever reads an erased
 proof evaluates its proposition then, and sees the proof checking bound: a
 match on the parameter, a use of it as an explicit argument, and anything that
@@ -616,7 +615,7 @@ written. Its type must be an instance of a structure-eta eligible family (see
 [Structs and projections](#structs-and-projections)): one constructor, no
 indices, no recursive constructor field, and outside `Prop`. A type a
 transparent definition computes to such an instance is one; a type variable, a
-function type, and an opaque or blocked type are not. Otherwise the
+function type, and a blocked type are not. Otherwise the
 destructuring is `NotDestructurable`, naming the type. An instance of a
 sort-polymorphic family, such as `Prod(A, B)` at levels `u` and `v`, is outside
 `Prop` where it is checked, so it is destructured there.
@@ -721,9 +720,8 @@ of the lifetimes its code names, and a type to its own sort's scope. So
 lambda names `l`, so its type is `{ scope = l } Unit -> Nat`, which cannot
 leave. Applied inside the scope it is accepted, and so is
 `scope l => fun (u: Unit): Nat => 3`, which belongs to no scope. A computation
-blocked on an opaque definition, an axiom or a builtin, and a proof, may hold a
-scope's lifetime without belonging to it, since neither runs, and no implicit
-reads it back out.
+blocked on an axiom or a builtin, and a proof, may hold a scope's lifetime
+without belonging to it, since neither runs, and no implicit reads it back out.
 
 A scope's name is not a variable: matching never links it to another lifetime,
 while a lifetime variable may be linked to it. Nothing checks a `scope` at run
@@ -916,8 +914,8 @@ def apply {kf: Kind}{Sf: Lifetime}(f: { kind = kf, scope = Sf } Unit -> Nat): Na
 token and of one that captures nothing. A definition that drops or copies its
 argument exists only at `Kind.unr`.
 
-A value outside every binder is never tracked, so a definition or opaque
-definition whose type is linear is `LinearGlobal`, and so is a program whose
+A value outside every binder is never tracked, so a definition whose type is
+linear is `LinearGlobal`, and so is a program whose
 final `{ … }` result has a linear type: nothing would ever use it, so a client
 could end the program holding a module's token. Axioms belong to the trusted
 prelude. A definition's own function type is unrestricted, so a definition that

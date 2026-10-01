@@ -318,9 +318,6 @@ class LinearityTests extends munit.FunSuite with TestSupport {
       expectOnly[LinearGlobal](typecheckDecls(withFamilies("def t : Tok(Lifetime.empty) := Tok.mk(Lifetime.empty)\n")))
     assertEquals(global.definition, Some("t"))
     expectOnly[LinearGlobal](
-      typecheckDecls(withFamilies("opaque def t : Tok(Lifetime.empty) := Tok.mk(Lifetime.empty)\n"))
-    )
-    expectOnly[LinearGlobal](
       typecheckDecls("def g : { kind = lin } Unit -> Nat := fun { kind = lin } (u: Unit): Nat => 0\n")
     )
   }

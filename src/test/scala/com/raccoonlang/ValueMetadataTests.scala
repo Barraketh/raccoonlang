@@ -27,7 +27,7 @@ class ValueMetadataTests extends munit.FunSuite with TestSupport {
   private def listOf(elements: Seq[BigInt]): Value =
     elements.reverseIterator.foldLeft(nil)((tail, element) => VCtor(cons, Vector(number(element), tail), listOfNat))
 
-  /** `g` applied `depth` times over `bottom`, where `g` is an opaque `Nat -> Nat`. */
+  /** `g` applied `depth` times over `bottom`, where `g` is an uninterpreted `Nat -> Nat`. */
   private def neutralChain(bottom: Value): Value = {
     val g = VConst("g", Symbol, env("Nat.succ").tpe)
     (1 to depth).foldLeft(bottom)((arg, _) => VApp(g, Vector(arg), nat, DepSet.empty))

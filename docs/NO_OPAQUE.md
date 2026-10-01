@@ -1,6 +1,6 @@
 # No opaque definitions
 
-Status: **draft for review** (2026-10-01). To be implemented after `docs/SCOPE_CONTAINMENT.md`.
+Status: **implemented** (2026-10-01). Amends `docs/kernel.md` and `docs/language.md`.
 
 ## 1. The change
 
@@ -27,7 +27,8 @@ Two soundness holes went through these rules:
   after its scope closed.
 
 **Nothing needs it.** The bundled prelude, the GPU prelude, the GPU library and its proofs, and the examples declare
-no opaque definition. Every use is in the test suite: about 60, across 20 files. They do one of two things:
+no opaque definition. Every use is in the test suite (about 60, across 20 files), apart from the stale generator
+`benchmarks/nested_zip.py` of the benchmark suite on hold. They do one of two things:
 - **Stand for a value that never reduces.** A parameter does the same: applying an abstract `f: Peano -> Peano` is
   stuck exactly as an opaque `f` is.
 - **Hide a proof's body,** in exploit regressions. A proof-valued declaration never runs anyway, so hiding its body
@@ -49,7 +50,8 @@ are audited (obligations T1–T5). An opaque definition was the one way left for
   - deferred evidence: "any other head, an axiom's say";
   - termination metrics: not of an axiomatized type;
   - `LinearGlobal`: a definition whose type is linear;
-  - sealing: a neutral of a sealed family is a parameter, a blocked computation, or an axiom application;
+  - sealing: a neutral of a sealed family is a parameter or a blocked computation (under obligation T2 no axiom
+    yields one directly);
   - kernel.md "Maintained invariants", item 9: axiom and quotient values may remain closed neutrals.
 
 ## 4. What changes in the kernel

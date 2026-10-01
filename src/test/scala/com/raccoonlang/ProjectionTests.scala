@@ -73,16 +73,12 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
     )
   }
 
-  private def evalDecls(src: String): Env = {
-    LanguageParser.parseProgram(src) match {
-      case Success(value, _, _) =>
-        val core = Elaborator.elab(value, Prelude.test)
-        core.decls.foldLeft(Prelude.test.checkedEnv) { case (cur, decl) =>
-          Interpreter.evalDecl(decl, cur)
-        }
-      case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
-    }
-  }
+  private def evalDecls(src: String, prelude: Prelude.Config): Env =
+    parse(src, prelude).decls.foldLeft(prelude.checkedEnv) { case (cur, decl) => Interpreter.evalDecl(decl, cur) }
+
+  /** The test prelude followed by `assumptions`, which may declare axioms. */
+  private def assuming(assumptions: String): Prelude.Config =
+    TestSupport.preludeAssuming(TestSupport.testPreludeSource, assumptions)
 
   // Simple shapes for results, using the ordinary pattern view of constructor arguments.
   sealed trait Shape
@@ -135,7 +131,6 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         val core = Elaborator.elab(value, Prelude.test)
         val found = core.decls.exists {
           case CoreAst.Decl.ConstDecl(
-                false,
                 "Couple.snd",
                 _,
                 CoreAst.ConstBody.TermBody(
@@ -300,7 +295,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
   }
 
   test("regression: a function-valued projection from a neutral base can be applied") {
-    val p =
+    val prelude = assuming(
       """
         |inductive Peano : Type
         | | zero : Peano
@@ -309,23 +304,18 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |struct FnBox : Type
         | | mk (f: (n: Peano) -> Peano) : FnBox
         |
-        |opaque def box : FnBox := FnBox.mk(fun (n: Peano): Peano => n)
-        |def use : Peano := box.f(Peano.zero)
-        |
-        |{ use }
+        |axiom box : FnBox
         |""".stripMargin
+    )
+    val p = "def use : Peano := box.f(Peano.zero)\n\n{ use }\n"
 
-    val result = runProgram(p)
+    val result = runProgram(p, prelude)
     assert(Value.Blocker.unapply(result).isEmpty, s"Expected an unblocked stuck value, got $result")
 
     // Residuals are pure syntax, so the nested stuck projection has to survive re-evaluation of
     // the syntax the checker produced for it.
-    val env = evalDecls(p)
-    val core = LanguageParser.parseProgram(p) match {
-      case Success(value, _, _) => Elaborator.elab(value, Prelude.test)
-      case err: Failure         => fail(s"Failed to parse: $err")
-    }
-    val body = core.body.getOrElse(fail("Program has no body"))
+    val env = evalDecls(p, prelude)
+    val body = parse(p, prelude).body.getOrElse(fail("Program has no body"))
     val residual = TypeChecker.checkTerm(body, env).residual
     assert(
       ValueEquivalence.defEq(Interpreter.evalTerm(residual, env), result),
@@ -375,7 +365,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
     typecheckDecls(p)
   }
 
-  test("regression: projection from opaque struct-valued def stays neutral") {
+  test("regression: projection from a struct-valued parameter's application stays neutral") {
     val p =
       """
         |inductive Peano : Type
@@ -385,10 +375,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |struct Couple (A: Type)(B: Type) : Type
         | | mk (fst: A)(snd: B) : Couple(A, B)
         |
-        |// Opaque on purpose
-        |opaque def mkCouple (a: Peano)(b: Peano): Couple(Peano, Peano) := Couple.mk(a, b)
-        |
-        |def firstOpaque (a: Peano)(b: Peano): Peano := {
+        |def firstOf (mkCouple: (a: Peano)(b: Peano) -> Couple(Peano, Peano))(a: Peano)(b: Peano): Peano := {
         |  let p := mkCouple(a, b)
         |  p.fst
         |}
@@ -397,7 +384,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
     typecheckDecls(p)
   }
 
-  test("regression: projection in type position from opaque struct constant stays neutral") {
+  test("regression: projection in type position from a struct parameter stays neutral") {
     val p =
       """
         |inductive Peano : Type
@@ -407,10 +394,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |struct CoupleU {u1: Level}{u2: Level}(A: Sort { level = u1 })(B: Sort { level = u2 }) : Sort { level = max(u1, u2) }
         | | mk (fst: A)(snd: B) : CoupleU(A, B)
         |
-        |// Opaque on purpose
-        |opaque def F : CoupleU(Type, Type) := CoupleU.mk(Peano, Peano)
-        |
-        |def idF (x: F.fst): F.fst := x
+        |def idF (F: CoupleU(Type, Type))(x: F.fst): F.fst := x
         |""".stripMargin
 
     typecheckDecls(p)
@@ -418,8 +402,8 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
 
   test("stuck projection in a constructor field type is transparent to positivity") {
     // Before struct expansion (StructEta) this was rejected conservatively: F.fst was a blocked
-    // selector match, opaque to the positivity walker. An opaque struct global now publishes in
-    // constructor form, so F.fst is a structured stuck projection the walker can traverse.
+    // selector match the positivity walker could not see into. It is now a structured stuck
+    // projection the walker can traverse.
     val p =
       """
         |inductive Peano : Type
@@ -428,13 +412,10 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |struct CoupleU {u1: Level}{u2: Level}(A: Sort { level = u1 })(B: Sort { level = u2 }) : Sort { level = max(u1, u2) }
         | | mk (fst: A)(snd: B) : CoupleU(A, B)
         |
-        |// Opaque on purpose
-        |opaque def F : CoupleU(Type, Type) := CoupleU.mk(Peano, Peano)
+        |struct UsesF (F: CoupleU(Type, Type)) : Type
+        | | mk (x: F.fst) : UsesF(F)
         |
-        |struct UsesF : Type
-        | | mk (x: F.fst) : UsesF
-        |
-        |def getX (u: UsesF): F.fst := u.x
+        |def getX (F: CoupleU(Type, Type))(u: UsesF(F)): F.fst := u.x
         |""".stripMargin
 
     typecheckDecls(p)
@@ -450,17 +431,14 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |struct Couple (A: Type)(B: Type) : Type
         | | mk (fst: A)(snd: B) : Couple(A, B)
         |
-        |// Opaque on purpose
-        |opaque def step (n: Peano): Peano := n
-        |
-        |def choose (n: Peano): Couple(Peano, Peano) := {
+        |def choose (step: (n: Peano) -> Peano)(n: Peano): Couple(Peano, Peano) := {
         |  match step(n) returning Couple(Peano, Peano) with
         |  | Peano.zero => Couple.mk(Peano.zero, Peano.zero)
         |  | Peano.succ k => Couple.mk(Peano.succ(k), k)
         |}
         |
-        |def fstChoose (n: Peano): Peano := {
-        |  let p := choose(n)
+        |def fstChoose (step: (n: Peano) -> Peano)(n: Peano): Peano := {
+        |  let p := choose(step, n)
         |  p.fst
         |}
         |""".stripMargin
@@ -700,8 +678,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |
         |def get {u: Level}{A: Sort { level = u }} (box: PolyBox(A)): A := box.value
         |
-        |opaque def boxedTrue : PolyBox(True) := PolyBox.mk(True.intro)
-        |def gotTrue : True := get(boxedTrue)
+        |def gotTrue (boxedTrue: PolyBox(True)): True := get(boxedTrue)
         |""".stripMargin
 
     typecheckDecls(p)
@@ -720,8 +697,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |inductive HasProof : Prop
         | | intro (data: Peano)(proof: True) : HasProof
         |
-        |opaque def h : HasProof := HasProof.intro(Peano.zero, True.intro)
-        |def theProof : True := {
+        |def theProof (h: HasProof): True := {
         |  match h returning True with
         |  | HasProof.intro data proof => proof
         |}
@@ -782,13 +758,12 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |inductive IndexedProof indices (n: Peano) : Prop
         | | intro (data: Peano)(proof: True) : IndexedProof(data)
         |
-        |opaque def h : IndexedProof(Peano.zero) := IndexedProof.intro(Peano.zero, True.intro)
-        |def theData : Peano := {
+        |def theData (h: IndexedProof(Peano.zero)): Peano := {
         |  match h returning Peano with
         |  | IndexedProof.intro data proof => data
         |}
         |
-        |{ theData }
+        |{ theData(IndexedProof.intro(Peano.zero, True.intro)) }
         |""".stripMargin
     )
     assertEquals(PrettyPrinter.print(result), "Peano.zero")
@@ -803,8 +778,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |struct IndexedProp indices (n: Peano) : Prop
         | | intro (value: Peano) : IndexedProp(value)
         |
-        |opaque def h : IndexedProp(Peano.zero) := IndexedProp.intro(Peano.zero)
-        |def recovered : Peano := h.value
+        |def recovered (h: IndexedProp(Peano.zero)): Peano := h.value
         |""".stripMargin
 
     typecheckDecls(p)
@@ -812,7 +786,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
 
   test("Prop field recovery does not assert the constructor result equation") {
     // Recovery reads the first index only: it must NOT assume `a = b` from the result equation.
-    val p =
+    val prelude = assuming(
       """
         |inductive Peano : Type
         | | zero : Peano
@@ -821,12 +795,12 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |inductive Eq2 indices (left: Peano)(right: Peano) : Prop
         | | refl (value: Peano) : Eq2(value, value)
         |
-        |opaque def a : Peano := Peano.zero
-        |opaque def b : Peano := Peano.zero
-        |def AB : Prop := Eq2(a, b)
+        |axiom a : Peano
+        |axiom b : Peano
         |""".stripMargin
+    )
 
-    val env = evalDecls(p)
+    val env = evalDecls("def AB : Prop := Eq2(a, b)\n", prelude)
     val eqTpe = env("AB")
     // Field recovery reads the index that forces the field (`value := a`) and stops there; it never
     // asserts the constructor's own result equation, which here would claim `a = b`. So the fields
@@ -870,11 +844,11 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         | | left (value: Peano) : Choice
         | | right (value: Peano) : Choice
         |
-        |opaque def box : Box := Box.mk(Peano.zero)
-        |opaque def choice : Choice := Choice.left(Peano.zero)
+        |def box : Box := Box.mk(Peano.zero)
+        |def choice : Choice := Choice.left(Peano.zero)
         |""".stripMargin
 
-    val env = evalDecls(p)
+    val env = evalDecls(p, Prelude.test)
     val span = Span(0, 0)
     // A plain inductive gets no generated selectors at all, so any field name is NotFound.
     interceptError[NotFound] {
@@ -914,8 +888,8 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         val core = Elaborator.elab(value, Prelude.test)
         Interpreter.run(core, Prelude.test)
         assert(!core.decls.exists {
-          case CoreAst.Decl.ConstDecl(_, "Bad._", _, _, _, _) => true
-          case _                                              => false
+          case CoreAst.Decl.ConstDecl("Bad._", _, _, _, _) => true
+          case _                                           => false
         })
       case err: Failure => fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
     }

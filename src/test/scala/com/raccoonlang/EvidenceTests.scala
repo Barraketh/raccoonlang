@@ -12,7 +12,12 @@ package com.raccoonlang
 class EvidenceTests extends munit.FunSuite with TestSupport {
 
   private def evaluatesTo(source: String, expected: String)(implicit loc: munit.Location): Unit =
-    assertEquals(PrettyPrinter.print(runProgram(source)), expected)
+    evaluatesTo(source, expected, suitePrelude)
+
+  private def evaluatesTo(source: String, expected: String, prelude: Prelude.Config)(implicit
+      loc: munit.Location
+  ): Unit =
+    assertEquals(PrettyPrinter.print(runProgram(source, prelude)), expected)
 
   /** The failure an application reports, for the evidence binder `binder` of `callee`. */
   private def notDischarged(source: String, binder: String, callee: String)(implicit
@@ -296,40 +301,41 @@ class EvidenceTests extends munit.FunSuite with TestSupport {
     val spin =
       families + "def spin (n: Nat): Bool decreases structural(n) := match n returning Bool with\n" +
         " | Nat.zero => Bool.true\n | Nat.succ k => Bool.and(spin(k), spin(k))\n\n"
-    def loop(callee: String): String =
-      spin + s"$callee (x: Nat)[h: IsTrue(spin(10))]: Nat := x\n\n" +
-        "def loop (n: Nat): Nat decreases structural(n) := match n returning Nat with\n" +
-        " | Nat.zero => 0\n | Nat.succ k => {\n    let u := guarded(1)\n    Nat.add(1, loop(k))\n  }\n\n"
+    // A prelude has no literals of its own, so the proposition names 10 as `ten`.
+    val ten = "def ten : Nat := " + "Nat.succ(" * 10 + "Nat.zero" + ")" * 10 + "\n\n"
+    val guarded = "guarded (x: Nat)[h: IsTrue(spin(ten))]: Nat"
+    def loop(step: String): String =
+      "def loop (n: Nat): Nat decreases structural(n) := match n returning Nat with\n" +
+        s" | Nat.zero => 0\n | Nat.succ k => $step\n\n"
+    // The same `guarded` assumed, so that its applications are blocked.
+    val assumed = TestSupport.preludeAssuming(TestSupport.bundledPreludeSource, spin + ten + s"axiom $guarded\n")
     // Checking `loop` discharges the proposition once; each of the 200 calls then binds an erased proof, a lambda's
-    // parameter to it and an opaque head's stored argument alike.
-    val transparent = loop("def guarded")
-    val opaque = loop("opaque def guarded")
+    // parameter to it and an axiom's stored argument alike.
+    val counting = loop("{\n    let u := guarded(1)\n    Nat.add(1, loop(k))\n  }")
+    val transparent = spin + ten + s"def $guarded := x\n\n" + counting
     typecheckDecls(transparent)
-    typecheckDecls(opaque)
+    typecheckDecls(counting, assumed)
     assertEquals(forcings(evaluatesTo(transparent + "{ loop(200) }", "200")), 0L)
-    assertEquals(forcings(evaluatesTo(opaque + "{ loop(200) }", "200")), 0L)
-    // An opaque head's applications kept in the result, and printed, which reads only their explicit arguments.
-    val kept =
-      spin + "opaque def guarded (x: Nat)[h: IsTrue(spin(10))]: Nat := x\n\n" +
-        "def loop (n: Nat): Nat decreases structural(n) := match n returning Nat with\n" +
-        " | Nat.zero => 0\n | Nat.succ k => Nat.add(guarded(1), loop(k))\n\n"
-    typecheckDecls(kept)
-    assertEquals(forcings(evaluatesTo(kept + "{ loop(2) }", "Nat.add(guarded(1), guarded(1))")), 0L)
+    assertEquals(forcings(evaluatesTo(counting + "{ loop(200) }", "200", assumed)), 0L)
+    // An axiom's applications kept in the result, and printed, which reads only their explicit arguments.
+    val kept = loop("Nat.add(guarded(1), loop(k))")
+    typecheckDecls(kept, assumed)
+    assertEquals(forcings(evaluatesTo(kept + "{ loop(2) }", "Nat.add(guarded(1), guarded(1))", assumed)), 0L)
     // Publishing them, where the environment assertions check that a global is closed, reads their dependencies, which
     // leave their evidence out.
     assert(sys.props.getOrElse("raccoon.envAssertions", "true").toBoolean)
-    assertEquals(forcings(typecheckDecls(kept + "def r : Nat := loop(2)\n")), 0L)
+    assertEquals(forcings(typecheckDecls(kept + "def r : Nat := loop(2)\n", assumed)), 0L)
     // So do their keys and conversion: two built alike are equal by key, and the key assertion's recheck skips the
     // evidence too, as conversion does.
     assert(ValueEquivalence.keyAssertionsEnabled)
     assertEquals(
       forcings {
-        val (left, right) = (runProgram(kept + "{ loop(3) }"), runProgram(kept + "{ loop(3) }"))
+        val (left, right) = (runProgram(kept + "{ loop(3) }", assumed), runProgram(kept + "{ loop(3) }", assumed))
         assertEquals(left.key, right.key)
         assert(left.synDeps.isEmpty)
         assert(ValueEquivalence.defEq(left, right))
-        assert(!ValueEquivalence.defEq(left, runProgram(kept + "{ loop(2) }")))
-        Prelude.default.checkedEnv.putGlobal("r", left)
+        assert(!ValueEquivalence.defEq(left, runProgram(kept + "{ loop(2) }", assumed)))
+        assumed.checkedEnv.putGlobal("r", left)
       },
       0L
     )
@@ -342,13 +348,13 @@ class EvidenceTests extends munit.FunSuite with TestSupport {
     }
     val proposition = runProgram("{ Eq(Nat, 3, 3) }")
     val nat = Prelude.default.checkedEnv("Nat")
-    val opaque = Value.VConst("three", Value.Symbol, pi)
+    val head = Value.VConst("three", Value.Symbol, pi)
     val unforceable = new Value.DeferredEvidence(() => fail("the evidence was forced"))
     val checked = Value.canonicalizeProof(Value.VProof(proposition))
     val three3 = Value.VPacked.nat(3, nat)
     // One application as checking builds it, with the proof bound, and one as evaluation does, with deferred evidence.
-    val bound = Value.VApp(opaque, Vector(three3, checked), nat, DepSet.empty)
-    val deferred = Value.VApp(opaque, Vector(three3, unforceable), nat, DepSet.empty)
+    val bound = Value.VApp(head, Vector(three3, checked), nat, DepSet.empty)
+    val deferred = Value.VApp(head, Vector(three3, unforceable), nat, DepSet.empty)
     assertEquals(deferred.key, bound.key)
     assert(deferred.synDeps.isEmpty)
     assert(!deferred.needsStructuralDefEq)
@@ -359,7 +365,7 @@ class EvidenceTests extends munit.FunSuite with TestSupport {
     val x = FreshVar.freshVar("x", nat)
     val propositionAtX =
       Interpreter.evalTerm(pi.binders(1).ty, telescope.BinderOps.instantiateFull(pi.binders.take(1), pi.env, Vector(x)))
-    val atX = Value.VApp(opaque, Vector(x, new Value.DeferredEvidence(() => propositionAtX)), nat, DepSet.empty)
+    val atX = Value.VApp(head, Vector(x, new Value.DeferredEvidence(() => propositionAtX)), nat, DepSet.empty)
     assertEquals(atX.synDeps, DepSet(x.id))
     val solved = EqStore.empty.allow(DepSet(x.id)).addLink(x.id, three3)
     var materialized: Value = null

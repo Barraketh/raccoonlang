@@ -404,7 +404,6 @@ object Elaborator {
         )
 
         SA.Command.Decl.ConstDecl(
-          isOpaque = false,
           selectorHeader,
           decreases = None,
           SA.ConstBody.TermBody(body),
@@ -802,8 +801,6 @@ object Elaborator {
     // another or with a different member's parameter refs.
     var allocator = reserved
     val headers = defs.zip(names).map { case (defn, name) =>
-      if (defn.isOpaque)
-        at(defn.span) { fail(InvalidRecursiveGroup("mutual definitions cannot be opaque")) }
       defn.body match {
         case SA.ConstBody.TermBody(_) =>
         case SA.ConstBody.Builtin(_) =>
@@ -986,7 +983,7 @@ object Elaborator {
         // A selector is declared in its family's namespace, so that namespace names its family.
         val sealedBy = c.selectorOf.flatMap(family => familySeal(family, globalName(env.namespace)))
         (
-          CA.Decl.ConstDecl(c.isOpaque, nameText, header.ty, body, sealedBy, c.span),
+          CA.Decl.ConstDecl(nameText, header.ty, body, sealedBy, c.span),
           envWithSelf
         )
       case c: SurfaceAst.Command.Decl.AxiomDecl =>
@@ -1049,7 +1046,7 @@ object Elaborator {
   private[raccoonlang] def elab(p: SA.Program, prelude: Prelude.Config): CA.Program =
     elabProgram(p, ResolveEnv.under(prelude.names.root))
 
-  /** Elaborate a surface program into the opaque input accepted by [[TypeChecker.check]]. */
+  /** Elaborate a surface program into the abstract input accepted by [[TypeChecker.check]]. */
   def elaborate(p: SA.Program, prelude: Prelude.Config = Prelude.default): Execution.ElaboratedProgram =
     Execution.elaborate(p, prelude)
 

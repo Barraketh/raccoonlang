@@ -10,7 +10,12 @@ package com.raccoonlang
 class EvidenceFieldTests extends munit.FunSuite with TestSupport {
 
   private def evaluatesTo(source: String, expected: String)(implicit loc: munit.Location): Unit =
-    assertEquals(PrettyPrinter.print(runProgram(source)), expected)
+    evaluatesTo(source, expected, suitePrelude)
+
+  private def evaluatesTo(source: String, expected: String, prelude: Prelude.Config)(implicit
+      loc: munit.Location
+  ): Unit =
+    assertEquals(PrettyPrinter.print(runProgram(source, prelude)), expected)
 
   /** Where discharge failed, for the evidence binder `binder` of `callee`: the path, the proposition, and why. */
   private def notDischarged(source: String, binder: String, callee: String)(implicit
@@ -143,31 +148,38 @@ class EvidenceFieldTests extends munit.FunSuite with TestSupport {
 
   test("a construction stores an erased proof, and running or printing it evaluates no proposition") {
     // `spin(k)` makes 2^k calls; a proposition that calls it would dominate the run.
-    val source =
+    val spin =
       "def spin (n: Nat): Bool decreases structural(n) := match n returning Bool with\n" +
-        " | Nat.zero => Bool.true\n | Nat.succ k => Bool.and(spin(k), spin(k))\n\n" +
-        "struct Checked (n: Nat) : Type\n | mk (i: Nat)[h: Eq(Bool, spin(n), Bool.true)] : Checked(n)\n\n" +
+        " | Nat.zero => Bool.true\n | Nat.succ k => Bool.and(spin(k), spin(k))\n\n"
+    val checked =
+      "struct Checked (n: Nat) : Type\n | mk (i: Nat)[h: Eq(Bool, spin(n), Bool.true)] : Checked(n)\n\n" +
         "def get (c: Checked(10)): Nat := match c returning Nat with\n | Checked.mk i h => i\n\n" +
         "def loop (n: Nat): Nat decreases structural(n) := match n returning Nat with\n" +
         " | Nat.zero => 0\n | Nat.succ k => {\n    let c := Checked.mk(10, 1)\n" +
         "    let (i, h) := c\n    Nat.add(Nat.add(get(c), Nat.sub(c.i, i)), loop(k))\n  }\n\n"
+    val source = spin + checked
     typecheckDecls(source)
     assertEquals(forcings(evaluatesTo(source + "{ loop(200) }", "200")), 0L)
     assertEquals(forcings(evaluatesTo(source + "{ (Checked.mk(10, 7), 1) }", "Pair.mk(Checked.mk(7), 1)")), 0L)
     // Each call projects an implicit through a stored constructor field, and one through a family's argument that is an
-    // opaque application, each read alone, beside evidence that is not read. An opaque application's own arguments are
-    // not projection positions.
+    // axiom's application, each read alone, beside evidence that is not read. A blocked application's own arguments
+    // are not projection positions. A prelude has no literals of its own, so the axiom names 10 as `ten`.
+    val assumed = TestSupport.preludeAssuming(
+      TestSupport.bundledPreludeSource,
+      spin + "def ten : Nat := " + "Nat.succ(" * 10 + "Nat.zero" + ")" * 10 + "\n\n" +
+        "axiom tag (n: Nat)[h: Eq(Bool, spin(ten), Bool.true)]: Nat\n"
+    )
     val projecting =
-      source + "opaque def tag (n: Nat)[h: Eq(Bool, spin(10), Bool.true)]: Nat := n\n\n" +
-        "struct Tagged (t: Nat) : Type\n | mk : Tagged(t)\n\n" +
+      checked + "struct Tagged (t: Nat) : Type\n | mk : Tagged(t)\n\n" +
         "def untag {t: Nat}(x: Tagged(t)): Nat := 1\n\n" +
         "def at {i: Nat}(c: Checked(10))(p: Eq(Checked(10), c, Checked.mk(10, i))): Nat := i\n\n" +
         "def again (n: Nat): Nat decreases structural(n) := match n returning Nat with\n" +
         " | Nat.zero => 0\n | Nat.succ k => {\n    let c := Checked.mk(10, 1)\n" +
         "    Nat.add(Nat.add(untag(Tagged.mk(tag(1))), Nat.sub(at(c, Eq.refl(c)), 1)), again(k))\n  }\n\n"
     // Checking alone, with no iteration run, is the baseline.
-    val checking = forcings(typecheckDecls(projecting + "{ again(0) }"))
-    assertEquals(forcings(evaluatesTo(projecting + "{ again(200) }", "200")) - checking, 0L)
+    typecheckDecls(projecting, assumed)
+    val checking = forcings(typecheckDecls(projecting + "{ again(0) }", assumed))
+    assertEquals(forcings(evaluatesTo(projecting + "{ again(200) }", "200", assumed)) - checking, 0L)
   }
 
   test("an eligible proposition is discharged through its evidence fields") {
@@ -244,8 +256,9 @@ class EvidenceFieldTests extends munit.FunSuite with TestSupport {
     val over = both + "def need (n: Nat)[h: Both(Eq(Nat, n, n), True)]: Nat := n\n\n"
     evaluatesTo(over + "def g (n: Nat): Nat := need(n)\n\n{ g(4) }", "4")
     evaluatesTo(
-      both + "opaque def five : Nat := 5\n\ndef need [h: Both(Eq(Nat, five, five), True)]: Nat := 1\n\n{ need() }",
-      "1"
+      both + "def need [h: Both(Eq(Nat, five, five), True)]: Nat := 1\n\n{ need() }",
+      "1",
+      TestSupport.preludeAssuming(TestSupport.bundledPreludeSource, "axiom five : Nat\n")
     )
     val app =
       both + "struct App (f: Nat -> Prop)(n: Nat) : Prop\n | mk [a: f(n)] : App(f, n)\n\n" +
@@ -262,7 +275,7 @@ class EvidenceFieldTests extends munit.FunSuite with TestSupport {
   test("the constructions that broke the ordering proof are checked promptly") {
     // These once broke the recursive path ordering argument for termination (PROOF_BY_EVALUATION §5.3): the field `r`
     // views `p` at the type `Wrap(c)` through `e`, and inference reads the function out of `p`'s own proposition, `A`,
-    // so `c2`, declared after `F`, runs, and the field's proposition holds `later`, declared after `F` too. Termination
+    // so `c2`, declared after `F`, runs, and the field's proposition unfolds `later`, declared after `F` too. Termination
     // now rests on the depth bound, and both are discharged.
     val common =
       "struct U : Type\n | mk : U\n\nstruct PU : Type\n | mk (u: U) : PU\n\n" +
@@ -271,8 +284,8 @@ class EvidenceFieldTests extends munit.FunSuite with TestSupport {
         "def third (A: Prop)(p: A)(e: Eq(Prop, A, Wrap(c))): Prop := {\n" +
         "  let q := match e returning Wrap(c) with\n    | Eq.refl x => p\n  Holds(peek(q))\n}\n\n" +
         "struct F (A: Prop) : Prop\n | mk [p: A][e: Eq(Prop, A, Wrap(c))][r: third(A, p, e)] : F(A)\n\n" +
-        "opaque def later : U := U.mk\n\ndef c2 (n: Nat): PU := PU.mk(later)\n\n"
-    evaluatesTo(common + "{ third(Wrap(c2), Wrap.mk(c2), Eq.refl(Wrap(c2))) }", "Holds(PU.mk(later))")
+        "def later : U := U.mk\n\ndef c2 (n: Nat): PU := PU.mk(later)\n\n"
+    evaluatesTo(common + "{ third(Wrap(c2), Wrap.mk(c2), Eq.refl(Wrap(c2))) }", "Holds(PU.mk(U.mk))")
     evaluatesTo(common + "def need [h: F(Wrap(c2))]: Nat := 1\n\n{ need() }", "1")
     // The same with data beside it, where the ordering itself failed to decrease.
     val withData =
@@ -286,7 +299,7 @@ class EvidenceFieldTests extends munit.FunSuite with TestSupport {
         "  let q := match e returning Wrap(c) with\n    | Eq.refl x => p\n  Holds(peek(q, X, d))\n}\n\n" +
         "struct F (A: Prop)(X: Type)(d: Box(X)) : Prop\n" +
         " | mk [p: A][e: Eq(Prop, A, Wrap(c))][r: third(A, X, d, p, e)] : F(A, X, d)\n\n" +
-        "opaque def laterU (T: Type)(b: Box(T)): U := U.mk\n\n" +
+        "def laterU (T: Type)(b: Box(T)): U := U.mk\n\n" +
         "def c2 (T: Type)(b: Box(T)): PU2(T) := PU2.mk(b, laterU(T, b))\n\ninductive E : Type\n | e : E\n\n"
     evaluatesTo(withData + "def need [h: F(Wrap(c2), E, Box.mk(E.e))]: Nat := 1\n\n{ need() }", "1")
   }

@@ -142,16 +142,61 @@ class ScopeTests extends munit.FunSuite with TestSupport {
     expectOnly[TypeMismatch](typecheckDecls(lambda("Box(useV(V.mk(m)))")))
   }
 
-  test("an opaque application's arguments are not projection positions") {
-    // An implicit read out of an opaque application could recover a lifetime, or a value of a scope, that the type
+  test("a blocked application's arguments are not projection positions") {
+    // An implicit read out of an axiom's application could recover a lifetime, or a value of a scope, that the type
     // holding the application does not count.
-    def program(binders: String, opaque: String): String =
-      withFamilies(s"opaque def o {l: Lifetime}(v: V(l)): Nat := 0\n\ndef g $binders(t: Box($opaque)): Nat := 0\n")
+    val prelude = TestSupport.preludeAssuming(
+      TestSupport.bundledPreludeSource,
+      "inductive V (l: Lifetime) : Type { scope = l }\n | mk : V(l)\n\n" +
+        "def useV {l: Lifetime}(v: V(l)): Nat := Nat.zero\n\ninductive Box (n: Nat) : Type\n | mk : Box(n)\n\n" +
+        "axiom f (l: Lifetime): Nat\n\naxiom o {l: Lifetime}(v: V(l)): Nat\n"
+    )
+    typecheckDecls("def g {n: Nat}(t: Box(n)): Nat := 0\n", prelude)
+    expectOnly[NonForcedImplicitParam](
+      typecheckDecls("def g {l: Lifetime}{v: V(l)}(t: Box(o(v))): Nat := 0\n", prelude)
+    )
+    expectOnly[NonForcedImplicitParam](typecheckDecls("def g {l: Lifetime}(t: Box(f(l))): Nat := 0\n", prelude))
+    // So neither a lifetime nor a value of a scope is recovered out of a closure that leaves its scope.
+    expectOnly[NonForcedImplicitParam](
+      typecheckDecls(
+        "def g {l: Lifetime}(p: Eq(Nat, f(l), f(l))): V(l) := V.mk(l)\n\n" +
+          "def leak : Unit -> Nat := scope l => {\n" +
+          "  let t := Eq.refl(f(l))\n  fun (u: Unit): Nat => useV(g(t))\n}\n",
+        prelude
+      )
+    )
+    expectOnly[NonForcedImplicitParam](
+      typecheckDecls(
+        "def g {l: Lifetime}{v: V(l)}(t: Box(o(v))): V(l) := v\n\n" +
+          "def leak : Unit -> Nat := scope l => {\n" +
+          "  let t := Box.mk(o(V.mk(l)))\n  fun (u: Unit): Nat => useV(g(t))\n}\n",
+        prelude
+      )
+    )
+    // A parameter's application has a local head, which projection never reads either.
+    def program(binders: String, argument: String): String =
+      withFamilies(s"def g $binders(o: {m: Lifetime}(w: V(m)) -> Nat)(t: Box($argument)): Nat := 0\n")
     typecheckDecls(program("{n: Nat}", "n"))
     expectOnly[NonForcedImplicitParam](typecheckDecls(program("{l: Lifetime}{v: V(l)}", "o(v)")))
     expectOnly[NonForcedImplicitParam](
+      typecheckDecls(withFamilies("def g {l: Lifetime}(f: (m: Lifetime) -> Nat)(t: Box(f(l))): Nat := 0\n"))
+    )
+    expectOnly[NonForcedImplicitParam](
       typecheckDecls(
-        withFamilies("opaque def f (l: Lifetime): Nat := 0\n\ndef g {l: Lifetime}(t: Box(f(l))): Nat := 0\n")
+        withFamilies(
+          "def g {l: Lifetime}(f: (m: Lifetime) -> Nat)(p: Eq(Nat, f(l), f(l))): V(l) := V.mk(l)\n\n" +
+            "def leak (f: (m: Lifetime) -> Nat): Unit -> Nat := scope l => {\n" +
+            "  let t := Eq.refl(f(l))\n  fun (u: Unit): Nat => useV(g(f, t))\n}\n"
+        )
+      )
+    )
+    expectOnly[NonForcedImplicitParam](
+      typecheckDecls(
+        withFamilies(
+          "def g {l: Lifetime}{v: V(l)}(o: {m: Lifetime}(w: V(m)) -> Nat)(t: Box(o(v))): V(l) := v\n\n" +
+            "def leak (o: {m: Lifetime}(w: V(m)) -> Nat): Unit -> Nat := scope l => {\n" +
+            "  let t := Box.mk(o(V.mk(l)))\n  fun (u: Unit): Nat => useV(g(o, t))\n}\n"
+        )
       )
     )
   }
@@ -389,17 +434,17 @@ class ScopeTests extends munit.FunSuite with TestSupport {
       )
     typecheckDecls(program(" : { scope = l } Unit -> Nat"))
     expectOnly[TypeMismatch](typecheckDecls(program(" : Unit -> Nat")))
-    val (env, _, checked) = checkBody(program(""))
+    val (env, _, checked) = checkBody(program(""), Prelude.default)
     // The residual carries the capture, and prints the derived field as omitted, as written.
     assert(checked.residual.toString.contains("fun (u: Unit): Nat"), checked.residual.toString)
     assert(ValueEquivalence.defEq(Interpreter.evalTerm(checked.residual, env), checked.value))
   }
 
   test("one scope term is one atom in checking and evaluation, and its residual keeps its node identity") {
-    // A computation blocked on an opaque definition holds the atom, and may leave, since its type does not name it.
-    val program =
-      withFamilies("opaque def hold {l: Lifetime}(v: V(l)): Nat := 0\n\ndef f : Nat := scope l => hold(V.mk(l))\n")
-    val (env, sourceTerm, checked) = checkBody(program)
+    // A computation blocked on an axiom holds the atom, and may leave, since its type does not name it.
+    val prelude = TestSupport.preludeAssuming(TestSupport.bundledPreludeSource, "axiom hold (l: Lifetime): Nat\n")
+    val program = "def f : Nat := scope l => hold(l)\n"
+    val (env, sourceTerm, checked) = checkBody(program, prelude)
     val (source, residual) = (sourceTerm, checked.residual) match {
       case (source: CA.Term.Scope, residual: CA.Term.Scope) => (source, residual)
       case other                                            => fail(s"Expected scope terms, got $other")
@@ -412,7 +457,7 @@ class ScopeTests extends munit.FunSuite with TestSupport {
     assert(ValueEquivalence.defEq(first, checked.value))
     assert(ValueEquivalence.defEq(first, second))
     // A second scope term, however alike, opens another atom.
-    val (_, otherTerm, _) = checkBody(program)
+    val (_, otherTerm, _) = checkBody(program, prelude)
     otherTerm match {
       case other: CA.Term.Scope => assertNotEquals(Atoms.of(other), Atoms.of(source))
       case other                => fail(s"Expected a scope term, got $other")
@@ -420,12 +465,11 @@ class ScopeTests extends munit.FunSuite with TestSupport {
   }
 
   /** The declarations before the last one published, and the last definition's body checked where it stands. */
-  private def checkBody(source: String): (Env, CA.Term, TypeChecker.CheckedTerm) = {
-    val core = Elaborator.elab(parseSurface(source), Prelude.default)
-    val env =
-      core.decls.dropRight(1).foldLeft(Prelude.default.checkedEnv)((env, decl) => Interpreter.evalDecl(decl, env))
+  private def checkBody(source: String, prelude: Prelude.Config): (Env, CA.Term, TypeChecker.CheckedTerm) = {
+    val core = Elaborator.elab(parseSurface(source), prelude)
+    val env = core.decls.dropRight(1).foldLeft(prelude.checkedEnv)((env, decl) => Interpreter.evalDecl(decl, env))
     core.decls.last match {
-      case CA.Decl.ConstDecl(_, _, _, CA.ConstBody.TermBody(body), _, _) =>
+      case CA.Decl.ConstDecl(_, _, CA.ConstBody.TermBody(body), _, _) =>
         (env, body, TypeChecker.checkTerm(body, env))
       case other => fail(s"Expected a definition, got $other")
     }

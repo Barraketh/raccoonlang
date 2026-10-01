@@ -24,13 +24,13 @@ class PreludeInventoryTests extends munit.FunSuite with TestSupport with Goldens
     val axioms = decls.collect { case CoreAst.Decl.AxiomDecl(name, ty, _) =>
       s"$name : ${PrettyPrinter.printTerm(ty)}"
     }
-    val builtins = decls.collect { case CoreAst.Decl.ConstDecl(_, name, ty, CoreAst.ConstBody.Builtin(_), _, _) =>
+    val builtins = decls.collect { case CoreAst.Decl.ConstDecl(name, ty, CoreAst.ConstBody.Builtin(_), _, _) =>
       s"$name : ${PrettyPrinter.printTerm(ty)}"
     }
     val checkedNames = decls.flatMap {
-      case _: CoreAst.Decl.AxiomDecl                                           => Vector.empty
-      case CoreAst.Decl.ConstDecl(_, _, _, CoreAst.ConstBody.Builtin(_), _, _) => Vector.empty
-      case other                                                               => other.definedNames
+      case _: CoreAst.Decl.AxiomDecl                                        => Vector.empty
+      case CoreAst.Decl.ConstDecl(_, _, CoreAst.ConstBody.Builtin(_), _, _) => Vector.empty
+      case other                                                            => other.definedNames
     }
     val nativeOps = checkedNames.filter(name =>
       Packed.opNames(name) && (env(name) match {

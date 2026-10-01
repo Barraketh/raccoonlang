@@ -94,10 +94,11 @@ def no : Nat := use(withLease(fun (l: Lifetime)(h: Lease(l)): Lease(l) => h))
 - **Implicit arguments.** An implicit is read off a later argument's type: through sorts, function types' closures and
   the parts of a function type that do not depend on its own binders, a proof's proposition, constructor fields, and
   the arguments of a family or of a prelude type former such as `Quot`. A type former names each lifetime parameter in
-  its scope, as a family does. A function type's code scopes are not read, and neither are the arguments of an opaque
-  definition's application: such an application is a blocked computation, and what its arguments hold belongs to no
-  type. Otherwise `def g {l: Lifetime}(t: Tagged(f(l))): Lease(l)`, with `f` opaque, would rebuild a lease of a closed
-  scope from a captured `t` whose type belongs to none.
+  its scope, as a family does. A function type's code scopes are not read, and neither are the arguments of an axiom's
+  application: such an application is a blocked computation, and what its arguments hold belongs to no type.
+  Otherwise `def g {l: Lifetime}(t: Tagged(f(l))): Lease(l)`, with `axiom f (l: Lifetime): Nat` in the trusted
+  prelude, would rebuild a lease of a closed scope from a captured `t` whose type belongs to none. A parameter's
+  application, whose head is a local, was never read.
 
 **Unchanged:**
 - **Applications.** An application runs at once, so one that mentions `l` and returns data keeps nothing of `l`
@@ -118,8 +119,8 @@ A value can reach a scope only through what it is made of:
 | a type | the type's own `scope` |
 
 Two kinds of value hold a scope without belonging to it, and neither runs:
-- **Blocked computations.** One blocked on an opaque definition or an axiom never runs. While checking, a computation
-  blocked on a parameter only computes types. Its arguments are not read by implicit arguments either (§3).
+- **Blocked computations.** One blocked on an axiom or a builtin never runs. While checking, a computation blocked on a
+  parameter only computes types. Its arguments are not read by implicit arguments either (§3).
 - **Proofs.** A proof never runs.
 
 So once a scope closes, nothing that can run belongs to it. The scope's result doesn't belong to it, by §1's closing
@@ -184,5 +185,5 @@ Tests and corpus changes:
    closed scope is impossible. Who may mint at an open one stays sealing's job.
 4. **One scope per `scope` term**, not one per evaluation. Callbacks keep evaluations apart.
 5. **The documents use "scope" and "belongs to"**, with "atom" kept to `kernel.md`.
-6. **Implicits never read a blocked computation's arguments.** Projection through an opaque definition's application
-   could recover a lifetime, or a value, that no type counts.
+6. **Implicits never read a blocked computation's arguments.** Projection through an axiom's application could
+   recover a lifetime, or a value, that no type counts.

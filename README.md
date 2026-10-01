@@ -41,8 +41,8 @@ Raccoon currently provides:
 - sealed families, whose constructors and selectors only their own file may use;
 - proof irrelevance and controlled elimination from `Prop`;
 - namespaces, scoped `open`, and file imports;
-- opaque definitions, quotients, and axioms, which only the trusted prelude
-  (bundled or `--prelude`) declares;
+- quotients and axioms, which only the trusted prelude (bundled or
+  `--prelude`) declares; every definition computes;
 - compact natural-number literals and trusted native natural-number reduction;
 - a bundled prelude that is polymorphic in lifetimes as well as levels.
 

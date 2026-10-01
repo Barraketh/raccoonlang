@@ -100,8 +100,8 @@ class MatchRefinementTests extends munit.FunSuite with TestSupport {
   }
 
   // A constructor's parameters are the scrutinee type's own, never unknowns, so an index equation that is stuck (here on
-  // an opaque `double`) leaves each field at the scrutinee's parameters. A lambda capturing one derives its closure over
-  // variables in scope.
+  // an application of the parameter `double`) leaves each field at the scrutinee's parameters. A lambda capturing one
+  // derives its closure over variables in scope.
   private def stuckIndex(declarations: String): String =
     """
       |inductive Peano : Type
@@ -110,8 +110,6 @@ class MatchRefinementTests extends munit.FunSuite with TestSupport {
       |
       |inductive Tick : Type
       | | tick : Tick
-      |
-      |opaque def double (n: Peano): Peano := n
       |""".stripMargin + declarations
 
   test("a stuck index equation leaves a field at the scrutinee's lifetime parameter") {
@@ -124,7 +122,8 @@ class MatchRefinementTests extends munit.FunSuite with TestSupport {
            |inductive W (l: Lifetime) indices (n: Peano) : Type { scope = l }
            | | mk (h: L(l)) : W(l, Peano.zero)
            |
-           |def f {S: Lifetime}(n: Peano)(w: W(S, double(n))): L(S) := match w returning L(S) with
+           |def f {S: Lifetime}(double: (n: Peano) -> Peano)(n: Peano)(w: W(S, double(n))): L(S) :=
+           |  match w returning L(S) with
            | | .mk h => $body
            |""".stripMargin
       )
@@ -140,7 +139,8 @@ class MatchRefinementTests extends munit.FunSuite with TestSupport {
            |inductive H {k: Kind}(A: Type { kind = k }) indices (n: Peano) : Type { kind = k }
            | | mk (x: A) : H(A, Peano.zero)
            |
-           |def f {k: Kind}{A: Type { kind = k }}(n: Peano)(w: H(A, double(n))): A := match w returning A with
+           |def f {k: Kind}{A: Type { kind = k }}(double: (n: Peano) -> Peano)(n: Peano)(w: H(A, double(n))): A :=
+           |  match w returning A with
            | | .mk x => $body
            |""".stripMargin
       )
@@ -157,7 +157,8 @@ class MatchRefinementTests extends munit.FunSuite with TestSupport {
            | | nil : V(A, Peano.zero)
            | | cons (m: Peano)(head: A)(tail: V(A, m)) : V(A, Peano.succ(m))
            |
-           |def headOr {S: Lifetime}{A: Type { scope = S }}(B: Type)(k: Peano)(d: $result)(v: V(A, double(k))): $result :=
+           |def headOr {S: Lifetime}{A: Type { scope = S }}(B: Type)(double: (n: Peano) -> Peano)(k: Peano)(d: $result)
+           |    (v: V(A, double(k))): $result :=
            |  match v returning $result with
            |  | .nil => d
            |  | .cons m h t => $body
@@ -177,7 +178,7 @@ class MatchRefinementTests extends munit.FunSuite with TestSupport {
           | | nil : V(A, Peano.zero)
           | | cons (m: Peano)(head: A)(tail: V(A, m)) : V(A, Peano.succ(m))
           |
-          |def f (A: Type)(k: Peano)(v: V(A, double(k))): Tick := match v returning Tick with
+          |def f (A: Type)(double: (n: Peano) -> Peano)(k: Peano)(v: V(A, double(k))): Tick := match v returning Tick with
           |""".stripMargin + cases.mkString("", "\n", "\n")
       )
     val nil = " | .nil => Tick.tick"
@@ -189,7 +190,7 @@ class MatchRefinementTests extends munit.FunSuite with TestSupport {
   }
 
   test("a stuck argument equation is retried once a later argument links a variable it reaches") {
-    // `g(x) ~ g(c)` cannot link beneath the opaque `g`, so it is postponed; `x ~ c` then links the two, and the retry
+    // `g(x) ~ g(c)` cannot link beneath the parameter `g`, so it is postponed; `x ~ c` then links the two, and the retry
     // compares `g(x)` with itself. Without the retry the index equation would be stuck and refine nothing.
     typecheckDecls(
       """

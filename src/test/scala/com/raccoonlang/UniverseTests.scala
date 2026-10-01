@@ -275,7 +275,7 @@ class UniverseTests extends munit.FunSuite with TestSupport {
         |  | zero: Peano
         |  | succ (_: Peano) : Peano
         |
-        |opaque def up2 (u: Level)(A: Sort { level = u }): Sort { level = succ(succ(u)) } := A
+        |def up2 (u: Level)(A: Sort { level = u }): Sort { level = succ(succ(u)) } := A
         |
         |{ up2(Level.one, Peano) }
         |""".stripMargin
