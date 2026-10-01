@@ -12,6 +12,7 @@
 # The table: a harness's name, then the examples whose generated CUDA it links, in order.
 suites='attention:attention
 attention_pingpong:attention_pingpong
+attention_a3b:attention_a3b
 paged_attention:paged_attention
 paged_decode:paged_append paged_decode paged_combine
 tinygemm_pair:tinygemm_pair'
