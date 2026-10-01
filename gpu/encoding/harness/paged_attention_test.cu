@@ -340,13 +340,13 @@ static int outOfRange(unsigned b, unsigned seq) {
   auto fkv = [&r](unsigned, unsigned, unsigned, unsigned) { return r.uniform(-1, 1); };
   // No spare pages: a wild entry that lands on a valid page must find finite data there.
   Problem p(b, seq, 0, 3, scaleLog2, seq * 53u + b, fq, fkv, fkv);
-  const unsigned negative = (1u << 31) / (H * D);  // its row is about 2^31: negative as a signed coordinate
-  const unsigned outside[] = {p.pages, p.pages + 5, 0xffffffffu, negative, 0xdeadbeefu};
-  const unsigned wild[] = {p.pages, 0xffffffffu, negative, 2 * negative, 0x7fffffffu, 0x80000000u, 1u, 0u};
+  const unsigned negative = ((1u << 31) + H * D - 1) / (H * D);  // its row is just past 2^31: negative as signed
+  const unsigned outside[] = {p.pages, p.pages + 5, 0xffffffffu, negative};
+  const unsigned wild[] = {p.pages, 0xffffffffu, negative, 2 * negative, 0xdeadbeefu, 0x80000000u, 1u, 0u};
   for (unsigned s = 0; s < b; ++s)
     for (unsigned j = 0; j < p.maxPages; ++j) {
       unsigned &entry = p.table[size_t(s) * p.maxPages + j];
-      if (s == 0) entry = outside[r.next() % 5];
+      if (s == 0) entry = outside[r.next() % 4];
       else if (r.next() % 2) entry = wild[r.next() % 8];
     }
   p.uploadTable();
@@ -384,9 +384,9 @@ int main() {
     auto zero = [](unsigned, unsigned, unsigned, unsigned) { return 0.0f; };
     Problem p(1, 128, 0, 0, scaleLog2, 1, zero, zero, zero);
     const unsigned kv = H * D;  // rows_kv of one page
-    const unsigned bigB = 65536 / H;
-    const unsigned bigSeq = ((1u << 31) / (H * D) + D - 1) / D * D;
-    const unsigned bigPages = (1u << 31) / (H * D);
+    const unsigned bigB = 65535 / H + 1;
+    const unsigned bigSeq = (((1u << 31) + H * D - 1) / (H * D) + D - 1) / D * D;
+    const unsigned bigPages = ((1u << 31) + H * D - 1) / (H * D);
     struct Case {
       const char *what;
       unsigned b, seq, maxPages, pages, rowsQ, rowsKv, dim;

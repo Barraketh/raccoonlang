@@ -126,7 +126,8 @@ Observations from building `PAGED.md`'s P1 (`Core.rac`'s paged-attention section
 3. **The table is read twice per block.** `fillPage` reads its entry itself, so the loader's K and V fills each read
    it. One read would need a page value passing from one fill to the next, and a page value in the caller's hands is
    what `fillPage`'s signature rules out (a caller-chosen row). A sealed `PageAt` value (made only by a core read of the
-   table, consumed by fills of the same `j`) would allow it; for P1, the second read is an L1 hit.
+   table, consumed by fills of the same `j`) would allow it. Both reads sit on the loader's path, after `acquire`'s
+   wait; that the second is an L1 hit, and that neither matters next to the TMA loads, is expected but not measured.
 4. **One map for both boxes.** `fillPage` takes one `PageMap` typed by the ring's first box and loads both boxes
    through it, so the second box's spec is checked at generation (`headStage`), not by the type. A ring of two
    different boxes is reachable only that way (`rejected/paged_attention_mutants.py`, `half_page_box`).
@@ -140,6 +141,14 @@ Observations from building `PAGED.md`'s P1 (`Core.rac`'s paged-attention section
    TMA's signed coordinates and clipping) with the generated launcher's own host code. Every check passed, every
    refusal came from the generated requirements, and a mock that ignores the table failed every numerical check. The
    mock is not in the repository; it checks the harness and the launcher, not the kernel.
+7. **Emitted-code checks need a whole client.** `checks/paged_emitted.rac` tests three lines of `fillPage`'s output,
+   but `render` needs a well-formed kernel and `OOwn` is linear and consumed only by `storeO`, so the check builds a
+   full exchange (16 `storeP` chunks, a product, the output) around one paged fill: about 100 lines of scaffolding,
+   much of it copied from `checks/emitted.rac`, as are the line-reading helpers (`revOnto`, `linesFrom`). A shared
+   module of text helpers for `checks/` would remove the latter; an example cannot be imported for the former
+   ("ImportedModuleHasBody": `examples/paged_attention.rac` ends in its program). Text search inside the checker is
+   slow enough to matter: the first version, whose filter used `Bool.and` (strict, so every line was searched for
+   every test), took 24 s; with a `match`, 8.6 s.
 
 Timing (CPU s of the native binary, built from lemur_gpu at fb08df0, on a machine not idle, 2026-10-01):
 `gen.sh encoding/examples/paged_attention.rac` 9.1, `gen.sh encoding/examples/attention.rac` 9.0 (7.5 above, idle). The

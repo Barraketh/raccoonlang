@@ -2342,9 +2342,11 @@ namespace Core {
   // computed here, never taken from the caller, who gives only `j`.
   //
   // Whatever the table holds, the loads read only the cache, or zeros: the row is computed in u32, so it wraps modulo
-  // 2^32; TMA reads it as a signed 32-bit coordinate and clips a box to the map's extents, filling the rest with zeros
-  // (A9); and since the row and the cache's extent are multiples of 128, a box lies wholly inside the cache or wholly
-  // outside it. A wrong page gives a wrong result, never a race: the stage is filled and completed as `fill` does it.
+  // 2^32, and TMA reads it as a signed 32-bit coordinate and clips a box to the map's extents, filling the rest with
+  // zeros and counting its bytes all the same (A9). (The row is a multiple of 128 even after wrapping, so a box never
+  // straddles 2^31; with the launcher's extent, a multiple of 128 too, a box lies wholly inside the cache or wholly
+  // outside it, and a valid page is never partly zero-filled.) A wrong page gives a wrong result, never a race: the
+  // stage is filled and completed as `fill` does it.
   def fillPage {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}{L: Lifetime}{S: Lifetime}{u: Grain}
       (e: Ctx(n, Group.lane))(ring: Ring(r, cfg))(s: Slot(r, m))(table: PageTable(L))(cache: PageMap(L, RingCfg.a(cfg)))
       (j: Val(S, u, DType.u32)): Pair(Ctx(n, Group.lane), ProducerAt(r, m)) := {
@@ -2380,7 +2382,8 @@ namespace Core {
   // (seq/128, B·heads). It refuses seq = 0, seq not a multiple of 128 (A1), B = 0, B·heads > 65535 (the grid's y), a
   // table of fewer than seq/128 columns, and extents of 2^31 or more: B·heads·seq·128 (so every row and element index
   // of Q, O and LSE fits TMA's signed coordinates and a u32), pages·heads·128 (every row of the cache) and B·max_pages
-  // (every index of the table).
+  // (every index of the table). An empty cache (pages = 0) is refused by the encoding of its maps, whose extents must not
+  // be zero.
   def pagedLauncher (heads: Nat): Launcher := {
     let hostParams := List.cons(Param.input(DType.bf16, "Q"), List.cons(Param.input(DType.bf16, "K"), List.cons(Param.input(DType.bf16, "V"),
       List.cons(Param.output(DType.f32, "O"), List.cons(Param.output(DType.f32, "LSE"), List.cons(Param.input(DType.u32, "block_table"),

@@ -1,0 +1,204 @@
+// Unit tests of the code `fillPage` emits (gpu/encoding/PAGED.md §3), stated as theorems that checking proves by
+// evaluating the rendered kernel. Run by check.sh, which requires this file to check without a diagnostic.
+//
+// The kernel is a minimal client of the paged core, not a working one (its roles fill and read one V stage, and the
+// product reads a P that no one meant): only its code is tested. Its loader fills the V ring's stage with block
+// `j` = 2^32 − 1, a block index outside every table, which the core must guard:
+// - the table is read once, by a load whose guard tests the same index it reads at, and nothing else indexes it;
+// - the two TMA loads through the cache's map take their row from that read, `(p·8 + blockIdx.y % 8)·128`, and the
+//   kernel issues no TMA store.
+
+import Check
+import encoding.Core
+
+namespace P {
+  open Core
+  open Cuda
+
+  def box : TmaSpec := TmaSpec.mk(64, 128)
+  def vRing : RingCfg := RingCfg.mk(2, P.box, P.box)
+
+  def Cta : Group := Group.cta(256)
+  def Wg0 : Group := Group.warps(0, 4)
+  def Wg1 : Group := Group.warps(4, 4)
+  def Load : Group := Group.warps(0, 1)
+  def Rest : Group := Group.warps(1, 3)
+  def Issue : Group := Group.warps(1, 1)
+  def Idle : Group := Group.warps(2, 2)
+  def One : Group := Group.lane
+
+  def IssuerDone (rv: Lifetime)(x: Lifetime) : Type { kind = lin, scope = union(rv, x) } := Pair(ConsumerDone(rv), ExReaderDone(x))
+  def AllDone (rv: Lifetime)(x: Lifetime) : Type { kind = lin, scope = union(rv, x) } :=
+    Pair(Pair(ProducerDone(rv), ConsumerDone(rv)), Pair(ExWriterDone(x), ExReaderDone(x)))
+
+  // One stage of V, from block 2^32 − 1 of this CTA's sequence.
+  def loader {l: Lifetime}{rv: Lifetime}(g: PagedLaunch(l, P.box))(vr: Ring(rv, P.vRing))(pv: Producer(rv))(m: Lifetime)(e: Ctx(m, P.Load))
+      : Pair(Ctx(m, P.Load), ProducerDone(rv)) :=
+    Core.elect(e, ProducerDone(rv), fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, P.One)): Pair(Ctx(j, P.One), ProducerDone(rv)) => {
+      let (e, pv) := Core.takeProducer(e, w, vr, pv)
+      let (e, s) := Core.acquire(e, vr, pv)
+      let (e, pv) := Core.fillPage(e, vr, s, g.table, g.v, Core.lit(4294967295))
+      Core.finishProducer(e, vr, pv)
+    })
+
+  // One product into the exchange, from that stage.
+  def issuer {rv: Lifetime}{x: Lifetime}(vr: Ring(rv, P.vRing))(ex: Exchange(x))(cv: Consumer(rv))(rd: ExReader(x))(m: Lifetime)
+      (e: Ctx(m, P.Issue)): Pair(Ctx(m, P.Issue), P.IssuerDone(rv, x)) :=
+    Core.elect(e, P.IssuerDone(rv, x), fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, P.One)): Pair(Ctx(j, P.One), P.IssuerDone(rv, x)) => {
+      let (e, cv) := Core.takeConsumer(e, w, vr, cv)
+      let (e, rd) := Core.takeExReader(e, w, ex, rd)
+      let (e, p) := Core.awaitP(e, ex, rd)
+      let (e, v) := Core.await(e, vr, cv)
+      let (e, (used, vUsed)) := Core.mmaPVFirst(e, w, ex, p, vr, v)
+      let (e, cv) := Core.releaseByMma(e, w, vr, vUsed)
+      let (e, rd) := Core.commitPV(e, w, ex, used)
+      (e, (Core.finishConsumer(cv), Core.finishExReader(rd)))
+    })
+
+  def chunk {k: Lifetime}{x: Lifetime}{m: Lifetime}{S: Lifetime}(ex: Exchange(x))(v: F32x8(S, Grain.uniform))(c: Nat)[fits: Nat.lt(c, 16)]
+      (e: Ctx(k, P.Wg1))(p: PFree(x, m, 4, OState.fresh, c)): Pair(Ctx(k, P.Wg1), PFree(x, m, 4, OState.fresh, Nat.succ(c))) :=
+    Core.storeP(e, ex, p, v)[fits]
+
+  // P of ones, published; then the output.
+  def writer {l: Lifetime}{x: Lifetime}(g: PagedLaunch(l, P.box))(ex: Exchange(x))(wr: ExWriter(x))(own: OOwn(l, DType.f32))(m: Lifetime)
+      (e: Ctx(m, P.Wg1)): Pair(Ctx(m, P.Wg1), ExWriterDone(x)) := {
+    let (e, wa) := Core.takeExWriter(e, ex, wr)
+    let (e, one) := Core.fconst(e, 1065353216)
+    let v := F32x8.mk(one, one, one, one, one, one, one, one)
+    let (e, p) := Core.acquireP(e, ex, wa)
+    let (e, p) := P.chunk(ex, v, 0, e, p)
+    let (e, p) := P.chunk(ex, v, 1, e, p)
+    let (e, p) := P.chunk(ex, v, 2, e, p)
+    let (e, p) := P.chunk(ex, v, 3, e, p)
+    let (e, p) := P.chunk(ex, v, 4, e, p)
+    let (e, p) := P.chunk(ex, v, 5, e, p)
+    let (e, p) := P.chunk(ex, v, 6, e, p)
+    let (e, p) := P.chunk(ex, v, 7, e, p)
+    let (e, p) := P.chunk(ex, v, 8, e, p)
+    let (e, p) := P.chunk(ex, v, 9, e, p)
+    let (e, p) := P.chunk(ex, v, 10, e, p)
+    let (e, p) := P.chunk(ex, v, 11, e, p)
+    let (e, p) := P.chunk(ex, v, 12, e, p)
+    let (e, p) := P.chunk(ex, v, 13, e, p)
+    let (e, p) := P.chunk(ex, v, 14, e, p)
+    let (e, p) := P.chunk(ex, v, 15, e, p)
+    let (e, wa) := Core.publishP(e, ex, p)
+    let (e, final) := Core.finishExWriter(e, ex, wa)
+    let (e, final) := Core.storeO(e, ex, final, one, one, g.out, own)
+    (e, Core.closeExWriter(final))
+  }
+
+  def roles {l: Lifetime}{rv: Lifetime}{x: Lifetime}(g: PagedLaunch(l, P.box))(vr: Ring(rv, P.vRing))(ex: Exchange(x))(pv: Producer(rv))
+      (cv: Consumer(rv))(wr: ExWriter(x))(rd: ExReader(x))(own: OOwn(l, DType.f32))(e: Ctx(l, P.Cta)): Pair(Ctx(l, P.Cta), P.AllDone(rv, x)) := {
+    let idle := fun (m: Lifetime)(e: Ctx(m, P.Idle)): Pair(Ctx(m, P.Idle), Unit) => (e, Unit.unit)
+    let rest := fun (m: Lifetime)(e: Ctx(m, P.Rest)): Pair(Ctx(m, P.Rest), Pair(P.IssuerDone(rv, x), Unit)) =>
+      Core.split(e, 1, P.IssuerDone(rv, x), Unit,
+        fun (n: Lifetime)(e: Ctx(n, P.Issue)): Pair(Ctx(n, P.Issue), P.IssuerDone(rv, x)) => P.issuer(vr, ex, cv, rd, n, e), idle)
+    let wg0 := fun (m: Lifetime)(e: Ctx(m, P.Wg0)): Pair(Ctx(m, P.Wg0), Pair(ProducerDone(rv), Pair(P.IssuerDone(rv, x), Unit))) =>
+      Core.split(e, 1, ProducerDone(rv), Pair(P.IssuerDone(rv, x), Unit),
+        fun (n: Lifetime)(e: Ctx(n, P.Load)): Pair(Ctx(n, P.Load), ProducerDone(rv)) => P.loader(g, vr, pv, n, e), rest)
+    let wg1 := fun (m: Lifetime)(e: Ctx(m, P.Wg1)): Pair(Ctx(m, P.Wg1), ExWriterDone(x)) => P.writer(g, ex, wr, own, m, e)
+    let (e, ((pvd, ((cvd, rdd), u)), wrd)) := Core.split(e, 4, Pair(ProducerDone(rv), Pair(P.IssuerDone(rv, x), Unit)), ExWriterDone(x), wg0, wg1)
+    (e, ((pvd, cvd), (wrd, rdd)))
+  }
+
+  def kernel : Program :=
+    Core.pagedAttentionKernel("paged_emitted", 8,
+      fun (l: Lifetime)(e: Ctx(l, P.Cta))(g: PagedLaunch(l, P.box))(own: OOwn(l, DType.f32))(permit: TmemPermit(l)): Ctx(l, P.Cta) => {
+        let region := fun (a: Lifetime)(t: Tmem(a, 256))(acc: Acc(a, AccState.empty))(e: Ctx(l, P.Cta))
+            : Pair(Ctx(l, P.Cta), Pair(Acc(a, AccState.empty), Unit)) => {
+          let exchange := fun (x: Lifetime)(ex: Exchange(x))(wr: ExWriter(x))(rd: ExReader(x))(e: Ctx(l, P.Cta))
+              : Pair(Ctx(l, P.Cta), Pair(Pair(ExWriterDone(x), ExReaderDone(x)), Unit)) => {
+            let vStage := fun (rv: Lifetime)(vr: Ring(rv, P.vRing))(pv: Producer(rv))(cv: Consumer(rv))(e: Ctx(l, P.Cta))
+                : Pair(Ctx(l, P.Cta), P.AllDone(rv, x)) => P.roles(g, vr, ex, pv, cv, wr, rd, own, e)
+            let (e, ex2) := Core.withRing(e, P.vRing, Pair(ExWriterDone(x), ExReaderDone(x)), vStage)
+            (e, (ex2, Unit.unit))
+          }
+          Core.withExchange(e, t, acc, Unit, exchange)
+        }
+        let (e, u) := Core.withTmem(e, permit, 256, AccState.empty, Unit, region)
+        e
+      })
+
+  def text : String := Core.render(P.kernel)
+
+  // ---- Reading the text -------------------------------------------------------------------------------------------
+
+  def empty (cs: List(Char)): Bool := {
+    match cs returning Bool with
+    | List.nil => Bool.true
+    | List.cons c more => Bool.false
+  }
+
+  // `xs` reversed onto `acc`, in linear time (the prelude's `List.reverse` is quadratic).
+  def revOnto {A: Type}(xs: List(A))(acc: List(A)): List(A) decreases structural(xs) := {
+    match xs returning List(A) with
+    | List.nil => acc
+    | List.cons x more => P.revOnto(more, List.cons(x, acc))
+  }
+
+  // The lines of `cs`, each without its indentation, in order; `line` is the current line so far, reversed, and `acc`
+  // the lines before it, newest first.
+  def linesFrom (cs: List(Char))(line: List(Char))(acc: List(List(Char))): List(List(Char)) decreases structural(cs) := {
+    match cs returning List(List(Char)) with
+    | List.nil => P.revOnto(List.cons(P.revOnto(line, List.nil(Char)), acc), List.nil(List(Char)))
+    | List.cons ch more => {
+      match Nat.beq(ch.value, 10) returning List(List(Char)) with
+      | Bool.true => P.linesFrom(more, List.nil(Char), List.cons(P.revOnto(line, List.nil(Char)), acc))
+      | Bool.false => {
+        match Bool.and(Nat.beq(ch.value, 32), P.empty(line)) returning List(List(Char)) with
+        | Bool.true => P.linesFrom(more, line, acc)
+        | Bool.false => P.linesFrom(more, List.cons(ch, line), acc)
+      }
+    }
+  }
+
+  def lines : List(List(Char)) := P.linesFrom(P.text.data, List.nil(Char), List.nil(List(Char)))
+
+  // Whether `needle` occurs in `cs`.
+  def contains (cs: List(Char))(needle: List(Char)): Bool decreases structural(cs) := {
+    match cs returning Bool with
+    | List.nil => Check.startsWith(cs, needle)
+    | List.cons c more => {
+      match Check.startsWith(cs, needle) returning Bool with
+      | Bool.true => Bool.true
+      | Bool.false => P.contains(more, needle)
+    }
+  }
+
+  // How many lines start with `prefix` and contain `part`. (A `match`, so that only lines with the prefix are searched.)
+  def matching (prefix: String)(part: String): Nat :=
+    List.length(List.filter(P.lines, fun (l: List(Char)): Bool => {
+      match Check.startsWith(l, prefix.data) returning Bool with
+      | Bool.true => P.contains(l, part.data)
+      | Bool.false => Bool.false
+    }))
+
+  // ---- The tests -----------------------------------------------------------------------------------------------------
+
+  // The table is indexed once, by the guarded read of block 2^32 − 1 of sequence `blockIdx.y / 8`: the guard tests the
+  // index the read uses.
+  def tableIndexedOnce : Eq(Nat, P.matching("", "block_table["), 1) := Eq.refl(1)
+
+  def tableReadGuarded : Eq(Nat, P.matching("const unsigned v",
+      " = ((((blockIdx.y / 8u) < B) && (4294967295u < max_pages)) ? block_table[(((blockIdx.y / 8u) * max_pages) + 4294967295u)] : 0u);"), 1) :=
+    Eq.refl(1)
+
+  // A TMA load: its template, up to its operands.
+  def tmaLoad : String :=
+    "asm volatile(\"cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1, {%3, %4}], [%2];\" :  : "
+
+  // The kernel's two TMA loads are V's two boxes, at columns 0 and 64 of row `(v9·8 + blockIdx.y % 8)·128`: v9 is the
+  // page read (after the key blocks v0, the allocation's address v1, the exchange's phases v2 and v3, the ring's
+  // registers v4 to v7 and the elect's flag v8).
+  def twoLoads : Eq(Nat, P.matching(P.tmaLoad, ""), 2) := Eq.refl(2)
+
+  def bothFromV : Eq(Nat, P.matching(P.tmaLoad, "(&V_map)"), 2) := Eq.refl(2)
+
+  def firstBoxAtPageRow : Eq(Nat, P.matching(P.tmaLoad, "\"r\"(0u), \"r\"((((v9 * 8u) + (blockIdx.y % 8u)) * 128u)) : \"memory\");"), 1) := Eq.refl(1)
+
+  def secondBoxAtPageRow : Eq(Nat, P.matching(P.tmaLoad, "\"r\"(64u), \"r\"((((v9 * 8u) + (blockIdx.y % 8u)) * 128u)) : \"memory\");"), 1) := Eq.refl(1)
+
+  // No TMA store, so nothing is written through a map.
+  def noTmaStore : Eq(Nat, P.matching("", "cp.async.bulk.tensor.2d.global"), 0) := Eq.refl(0)
+}

@@ -1,8 +1,9 @@
 # Paged attention on the A1 kernel: design
 
 Status: P1 built (2026-10-01), as §6 records: `Core.rac`'s paged-attention section, `examples/paged_attention.rac`,
-`harness/paged_attention_test.cu` and `rejected/paged_attention_mutants.py`; checked by generation, the certificate,
-the mutants and a compile against `gpu/stub/`, not run on hardware. P2 is design only. It extends A1
+`harness/paged_attention_test.cu`, `rejected/paged_attention_mutants.py` and `checks/paged_emitted.rac`; checked by
+generation, the certificate, the mutants, the emitted-code checks and a compile against `gpu/stub/`, not run on
+hardware. P2 is design only. It extends A1
 (`gpu/ATTENTION.md`, as built in `gpu/encoding/`) to a KV cache stored in pages. It is the second step of
 `gpu/encoding/README.md`.
 
@@ -125,7 +126,8 @@ As §1–§3 design it, with these decisions where the design left room:
 - **"Every extent below 2³¹"** is three requirements: `B · H · seq · 128` (every row and element index of Q, O and
   LSE fits a signed coordinate and a u32, as A1 requires), `pages · H · 128` (every row of the cache is addressable by a
   signed coordinate; a valid table's rows then never wrap) and `B · max_pages` (every index of the table fits a u32).
-  The others follow: `pages`, `max_pages`, `seq` and `B` are each bounded by one of them.
+  The others follow: `pages`, `max_pages`, `seq` and `B` are each bounded by one of them. `pages = 0` has no
+  requirement of its own: the map encoding refuses a zero extent, so the launcher still fails.
 - **`fillPage`** checks at generation that the ring's stage is two 64 × 128 boxes (`headStage`): it loads both boxes
   through the one cache map, typed by the first box, and a page is 128 rows. The table's guard is `gload`'s:
   `b < B ∧ j < max_pages`, else the value 0, which is then an ordinary page number. Both bounds hold for every `b` the
@@ -136,6 +138,10 @@ As §1–§3 design it, with these decisions where the design left room:
   signature rules out (`NOTES.md`).
 - **The example shares no code with A1's.** Its issuer, softmax warpgroup and CTA are copies of
   `examples/attention.rac`'s (`NOTES.md`, "Paged attention").
+- **Checks.** Besides §5's, `checks/paged_emitted.rac` pins what `fillPage` emits: one guarded read of the table, whose
+  guard tests the index it reads at (a block index of 2³² − 1), the only indexing of the table; both boxes at the row
+  that read gives; and no TMA store.
 
-The generated kernel (2677 lines, 182 KB with its launcher) differs from A1's only in its parameters, the four TMA
-loads of the loader's loop, the two table reads before them, and the launcher.
+The generated kernel (2677 lines, 182 KB with its launcher) differs from A1's, once its variables are renumbered (the
+two table reads shift every later name by 2), only in its parameters, the four TMA loads of the loader's loop, the two
+table reads before them, and the launcher.
