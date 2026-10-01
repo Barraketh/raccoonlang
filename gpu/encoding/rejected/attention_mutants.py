@@ -1,5 +1,5 @@
-# The A1 attention example with one mistake each (gpu/ATTENTION.md §5): every mutant breaks a rule of the attention
-# core and is refused for that rule. Run by check.sh through gpu/mutate.py.
+# The attention example (A1 and A2) with one mistake each (gpu/ATTENTION.md §5): every mutant breaks a rule of the
+# attention core and is refused for that rule. Run by check.sh through gpu/mutate.py.
 #
 # §5's rows that are not refusals, and so have no mutant here:
 # - Publishing P without `tcgen05.wait::st`, or without the fences: not expressible, since `publishP` and `awaitP`
@@ -12,8 +12,11 @@
 #   chunk c' ≠ c").
 # - Using the upper half of a `splitTmem` as if it started at column 0: not expressible, since every address use adds
 #   the offset through `tmemBase`; `checks/emitted.rac` checks that an MMA into the upper half carries it.
-# - Storing rows of O that another CTA owns: not expressible, since `storeO` computes the rows from the block and
-#   thread indices and takes none from its caller.
+# - Storing rows of O that another CTA owns, or a row past `seq` (the next head's): not expressible, since `storeO`
+#   computes the rows and their guard from the block and thread indices and the kernel's `seq`, and takes none from
+#   its caller.
+# - Omitting the mask, or masking against the wrong block or chunk: a wrong result, not a refusal (§5, "what the design
+#   cannot refuse"); the harness's causal and tail sizes catch it.
 
 SOURCE = "encoding/examples/attention.rac"
 
@@ -24,21 +27,21 @@ MUTANTS = [
         why="Reads a chunk of S_0 before waiting for the MMA thread's commit: the tensor cores may still be writing "
             "it. `loadAcc8` reads a buffer through the `AccFull` that only `awaitAcc` makes.",
         old="""      let (e, full) := Core.awaitAcc(e, accs, c)
-      let (e, lowest) := Core.fconst(e, Attn.minusInfinity)""",
+      let (e, minusInfinity) := Core.fconst(e, Attn.minusInfinity)""",
         new="""      let (e, (c, early)) := Core.loadAcc8(e, accs, c, 0)
       let (e, full) := Core.awaitAcc(e, accs, c)
-      let (e, lowest) := Core.fconst(e, Attn.minusInfinity)""",
+      let (e, minusInfinity) := Core.fconst(e, Attn.minusInfinity)""",
     ),
     dict(
         name="load_s_after_release", expect="LinearReused", mentions="full has a linear type",
         why="Releases S_0 after pass 1, then loads it again in pass 2: the MMA thread may already be writing S_2 into "
             "the released buffer. `releaseAcc` consumes the `AccFull` that pass 2's loads need.",
         old="""      let e := Core.set(e, lReg, Core.zero(DType.f32))
-      let (e, (full, p)) := Attn.pass2(accs, ex, g.scale, mNew, lReg, e, (full, p))
+      let (e, (full, p)) := Attn.pass2(accs, ex, g.mask, i, g.scale, mNew, lReg, e, (full, p))
       let (e, c) := Core.releaseAcc(e, accs, full)""",
         new="""      let e := Core.set(e, lReg, Core.zero(DType.f32))
       let (e, c) := Core.releaseAcc(e, accs, full)
-      let (e, (full, p)) := Attn.pass2(accs, ex, g.scale, mNew, lReg, e, (full, p))""",
+      let (e, (full, p)) := Attn.pass2(accs, ex, g.mask, i, g.scale, mNew, lReg, e, (full, p))""",
     ),
     dict(
         name="scores_into_busy_buffer", expect="TypeMismatch", mentions="expected: Core.AccFree",
@@ -76,11 +79,11 @@ MUTANTS = [
         name="rescale_first_block", expect="TypeMismatch", mentions="expected: Core.PFree(x, m, 4, Core.OState.held, 16)",
         why="Rescales Ô in the first block, before any MMA has written it: its contents are undefined. `rescaleO` "
             "needs a `PFree` whose `OState` is `held`, and the first `acquireP` gives `fresh`.",
-        old="""      let (e, (full, p)) := Attn.pass2(accs, ex, g.scale, mNew, lReg, e, (full, p))
+        old="""      let (e, (full, p)) := Attn.pass2(accs, ex, g.mask, i, g.scale, mNew, lReg, e, (full, p))
       let (e, c) := Core.releaseAcc(e, accs, full)
       let (e, wa) := Core.publishP(e, ex, p)
       (e, (c, wa))""",
-        new="""      let (e, (full, p)) := Attn.pass2(accs, ex, g.scale, mNew, lReg, e, (full, p))
+        new="""      let (e, (full, p)) := Attn.pass2(accs, ex, g.mask, i, g.scale, mNew, lReg, e, (full, p))
       let (e, c) := Core.releaseAcc(e, accs, full)
       let (e, p) := Core.rescaleO(e, ex, p, mNew)
       let (e, wa) := Core.publishP(e, ex, p)
@@ -109,48 +112,48 @@ MUTANTS = [
         why="Writes chunks 0 to 14 of P and publishes: the MMA would read the previous block's probabilities in the "
             "last chunk. `publishP` needs `PFree(…, 16)`, every chunk written.",
         old="""      : Pair(Ctx(n, Attn.Wg1), Pair(AccFull(q, mm, Attn.softmaxWarp), PFree(x, mm, Attn.softmaxWarp, o, 16))) := {
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 0, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 1, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 2, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 3, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 4, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 5, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 6, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 7, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 8, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 9, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 10, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 11, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 12, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 13, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 14, e, st)
-    Attn.expChunk(accs, ex, scale, mx, sum, 15, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 0, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 1, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 2, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 3, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 4, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 5, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 6, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 7, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 8, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 9, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 10, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 11, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 12, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 13, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 14, e, st)
+    Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 15, e, st)
   }""",
         new="""      : Pair(Ctx(n, Attn.Wg1), Pair(AccFull(q, mm, Attn.softmaxWarp), PFree(x, mm, Attn.softmaxWarp, o, 15))) := {
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 0, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 1, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 2, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 3, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 4, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 5, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 6, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 7, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 8, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 9, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 10, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 11, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 12, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 13, e, st)
-    Attn.expChunk(accs, ex, scale, mx, sum, 14, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 0, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 1, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 2, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 3, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 4, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 5, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 6, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 7, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 8, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 9, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 10, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 11, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 12, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 13, e, st)
+    Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 14, e, st)
   }""",
     ),
     dict(
         name="store_past_last_chunk", expect="EvidenceNotDischarged", mentions="Evidence fits of Core.storeP",
         why="Writes a seventeenth chunk after P's sixteen: its store would land past P's 64 columns of tensor memory. "
             "`storeP` asks for the chunk index below 16 as evidence.",
-        old="""      let (e, (full, p)) := Attn.pass2(accs, ex, g.scale, mNew, lReg, e, (full, p))
+        old="""      let (e, (full, p)) := Attn.pass2(accs, ex, g.mask, i, g.scale, mNew, lReg, e, (full, p))
       let (e, c) := Core.releaseAcc(e, accs, full)""",
-        new="""      let (e, (full, p)) := Attn.pass2(accs, ex, g.scale, mNew, lReg, e, (full, p))
+        new="""      let (e, (full, p)) := Attn.pass2(accs, ex, g.mask, i, g.scale, mNew, lReg, e, (full, p))
       let (e, (full, extra)) := Core.loadAcc8(e, accs, full, 15)
       let (e, p) := Core.storeP(e, ex, p, extra)
       let (e, c) := Core.releaseAcc(e, accs, full)""",
@@ -197,10 +200,10 @@ MUTANTS = [
     ),
     dict(
         name="mask_by_thread_branch", expect="TypeMismatch", mentions="Core.Group.diverged(128)",
-        why="Loads a chunk of S under a per-thread condition, as a causal or tail mask by `if` would: the "
-            "`.sync.aligned` load would run with part of the warp. The arm's group is `diverged`, and `loadAcc8` "
-            "needs an aligned warpgroup.",
-        old="""    let (e, (full, s)) := Core.loadAcc8(e, accs, full, c)[fits]
+        why="Loads a chunk of S under a per-thread condition, as a causal or tail mask by `if` would (instead of "
+            "`maskedScores`' selects): the `.sync.aligned` load would run with part of the warp. The arm's group is "
+            "`diverged`, and `loadAcc8` needs an aligned warpgroup.",
+        old="""    let (e, (full, t)) := Attn.scores(accs, mask, block, scale, c, e, full)[fits]
     let (e, old) := Core.get(e, mx)""",
         new="""    let (e, old) := Core.get(e, mx)
     let (e, full) := Core.branch(e, Core.lt(old, Core.zero(DType.f32)), Core.fixedAccFull(q, mm, Attn.softmaxWarp), full,
@@ -211,7 +214,32 @@ MUTANTS = [
       },
       fun (b: Lifetime)(e: Ctx(b, Group.arm(Attn.Wg1, Grain.thread)))(full: AccFull(q, mm, Attn.softmaxWarp))
           : Pair(Ctx(b, Group.arm(Attn.Wg1, Grain.thread)), AccFull(q, mm, Attn.softmaxWarp)) => (e, full))
-    let (e, (full, s)) := Core.loadAcc8(e, accs, full, c)[fits]""",
+    let (e, (full, t)) := Attn.scores(accs, mask, block, scale, c, e, full)[fits]""",
+    ),
+    dict(
+        name="mask_in_thread_branch", expect="ImplicitReconstructionFailed",
+        mentions="Core.maskedScores: expected a Core.Group.warps value, got Core.Group.diverged(128)",
+        why="Masks a chunk inside a per-thread branch: in the causal kernel `maskedScores` runs `__syncwarp` and a "
+            "full-mask `__shfl_sync` for the thread's row, which part of a warp must not run alone. The arm's group is "
+            "`diverged`, and `maskedScores` needs a converged `warps(f, 4)` group.",
+        old="""    let (e, (full, t)) := Attn.scores(accs, mask, block, scale, c, e, full)[fits]
+    let (e, old) := Core.get(e, mx)""",
+        new="""    let (e, (full, t)) := Attn.scores(accs, mask, block, scale, c, e, full)[fits]
+    let (e, old) := Core.get(e, mx)
+    let (e, u) := Core.branch(e, Core.lt(old, Core.zero(DType.f32)), Core.fixedUnit, Unit.unit,
+      fun (b: Lifetime)(e: Ctx(b, Group.arm(Attn.Wg1, Grain.thread)))(u: Unit): Pair(Ctx(b, Group.arm(Attn.Wg1, Grain.thread)), Unit) => {
+        let (e, again) := Core.maskedScores(e, mask, block, c, t)
+        (e, u)
+      },
+      fun (b: Lifetime)(e: Ctx(b, Group.arm(Attn.Wg1, Grain.thread)))(u: Unit): Pair(Ctx(b, Group.arm(Attn.Wg1, Grain.thread)), Unit) => (e, u))""",
+    ),
+    dict(
+        name="forged_mask", expect="SealedConstructor", mentions="Core.Mask",
+        why="Masks the scores with a mask of its own, non-causal and with a sequence length of its choosing, in the "
+            "causal kernel: rows would attend to later keys, or to keys past `seq` (the next head's). Only the "
+            "kernel builders make a `Mask`, from the kernel's own `seq` and causality.",
+        old="""    let (e, t) := Core.maskedScores(e, mask, block, c, t)""",
+        new="""    let (e, t) := Core.maskedScores(e, Mask.mk(n, Expr.param("BH"), Bool.false, Expr.param("seq")), block, c, t)""",
     ),
     dict(
         name="q_released_inside_loop", expect="LinearReused", mentions="qu has a linear type",

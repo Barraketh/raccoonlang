@@ -3,13 +3,14 @@
 Status: P1 built (2026-10-01), as §6 records: `Core.rac`'s paged-attention section, `examples/paged_attention.rac`,
 `harness/paged_attention_test.cu`, `rejected/paged_attention_mutants.py` and `checks/paged_emitted.rac`; checked by
 generation, the certificate, the mutants, the emitted-code checks and a compile against `gpu/stub/`, not run on
-hardware. P2 is design only. It extends A1
+hardware. A2's masks, tails and bf16 output came to it after (§7). P2 is design only. It extends A1
 (`gpu/ATTENTION.md`, as built in `gpu/encoding/`) to a KV cache stored in pages. It is the second step of
 `gpu/encoding/README.md`.
 
 ## 1. The target
 
-**P1, paged prefill.** A1's kernel with K and V read from a paged cache. Everything else stays as A1 has it:
+**P1, paged prefill.** A1's kernel with K and V read from a paged cache. Everything else stays as A1 has it (A2 later
+lifted the first two restrictions, §7):
 - non-causal;
 - one fixed `seq`, a multiple of 128, for every sequence;
 - head dimension 128;
@@ -56,7 +57,7 @@ def fillPage {…}(e: Ctx(n, Group.lane))(ring: Ring(r, cfg))(s: Slot(r, m))(tab
     (j: Val(S, u, DType.u32)): Pair(Ctx(n, Group.lane), ProducerAt(r, m))
 ```
 
-**The kernel builder** `pagedAttentionKernel`:
+**The kernel builder** `pagedAttentionKernel`, as P1 designed it (§7 for A2's changes):
 - **Parameters:** `Q_map`, `K_map`, `V_map`, `O`, `LSE`, `block_table`, `B`, `seq`, `max_pages`, `pages`, `rows_q`,
   `rows_kv`, `dim`, `scale_log2`.
 - **Requirements:**
@@ -145,3 +146,16 @@ As §1–§3 design it, with these decisions where the design left room:
 The generated kernel (2677 lines, 182 KB with its launcher) differs from A1's, once its variables are renumbered (the
 two table reads shift every later name by 2), only in its parameters, the four TMA loads of the loader's loop, the two
 table reads before them, and the launcher.
+
+## 7. A2 on the paged kernel
+
+`gpu/ATTENTION.md`'s stage A2, as for the contiguous kernel (`encoding/README.md`):
+- **Causal and O's type** are generation-time arguments of `pagedAttentionKernel`; causal is `kv ≤ q` within a
+  sequence, which is prefill's (Q and the cached keys have the same length). The example generates
+  `paged_attention` (non-causal, f32) and `paged_attention_causal` (causal, bf16).
+- **Tails.** Any `seq ≥ 1`: a sequence's last page may be partly used, and its rows past `seq` are masked
+  (`maskedScores`). The launcher's table requirement is `max_pages ≥ ceil(seq/128)`, and its grid
+  `(ceil(seq/128), B·H)`; `seq mod 128 = 0` is no longer required.
+- **The launch contract** gains that V be finite in a last page's unused rows: their keys' `p` are 0, but `0 · NaN`
+  is NaN. Uninitialized cache memory can hold NaN, so a caller that does not clear its pages must know this. The
+  harness fills those rows with ±2⁶⁰, which a leaked key would show and a masked one does not.

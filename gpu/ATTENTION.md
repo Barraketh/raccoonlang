@@ -1,7 +1,8 @@
 # GPU library: design of a forward-attention kernel
 
-Status: design, not implemented. It extends the Blackwell layer of `DESIGN.md` to a FlashAttention-4-style forward
-kernel, states what the core lacks, and plans the work in stages. `OBLIGATIONS.md` is the contract this design adds
+Status: design; stages A1 and A2 built in `gpu/encoding/` (`encoding/README.md`), with the deviations it records,
+none run on hardware. It extends the Blackwell layer of `DESIGN.md` to a FlashAttention-4-style forward kernel, states
+what the core lacks, and plans the work in stages. `OBLIGATIONS.md` is the contract this design adds
 to (§4). The lemur2 fixture `FLASH_ATTENTION_4_FORWARD.md` supplied the schedule and the correctness pressures; the
 design differs from it where §2.6 says.
 
@@ -529,6 +530,12 @@ PTX: `cp.async.bulk.tensor.3d.shared::cluster.global.mbarrier::complete_tx::byte
 scalar names, and `Check.launcher` (I6), which checks that shape; §7.1 proposes one change shared with the GEMM
 track's TMA store.
 
+As built, A1 and A2 keep rank-2 maps over `[BH·seq, 128]` (`encoding/README.md`), so `Cuda.rac`, `Check.rac`,
+`Spec.rac` and the launcher proof are unchanged. A2's tails do without the zero-fill: a last key block that runs past
+`seq` reads the next head's rows (or zeros past the matrix), which the mask's `kv < seq` turns into −∞ scores and
+`p = 0`, and the rows of a last query tile past `seq` read the next head's Q rows and are never stored (§3.8). The
+cost is a hazard rank-3 maps would not have: a non-finite value in those rows of V makes the masked `0 · V` NaN (§5).
+
 ### 3.8 Output
 
 ```raccoon
@@ -547,6 +554,10 @@ The row is `blockIdx.y · seq + 128 · blockIdx.x + 32 · (warp mod 4) + lane`, 
 a row past `seq` is the next head's first row, which another CTA writes (S5). O's elements are written with scalar
 stores in A1 (f32) and A2 (bf16 through `static_cast`); A3 may take the GEMM track's TMA store (§7.1).
 
+As built, the conversion is `static_cast<__nv_bfloat16>` of the f32 product, cuda_bf16.h's conversion from float
+(`__float2bfloat16`, round to nearest even), chosen by O's type: `storeO` is generic in `t`, and the builders accept
+f32 and bf16 only. A kernel built with `__CUDA_NO_BFLOAT16_CONVERSIONS__` does not compile.
+
 ### 3.9 Masks
 
 A2's masks are values, not branches: `t' = select(kv < seq ∧ (¬causal ∨ kv ≤ q), t, −∞)`, with `kv` and `q` computed
@@ -554,6 +565,19 @@ by the core from the chunk, the block and the thread (`maskedScores(e, launch, b
 per-thread branch would make the warpgroup `diverged`, which the next `tcgen05.ld` refuses (M3). The `−∞ − (−∞)`
 guard is `m_use = select(lt(m_new, lowest), 0, m_new)`, with `lowest = fconst(0xff7fffff)` (the most negative finite
 f32).
+
+As built (`encoding/Core.rac`): `maskedScores(e, mask, block, c, v)` takes, in place of the launch, a sealed `Mask` that
+only the builders make (the kernel's `seq`, whether it is causal, and −∞, which the builder declares once). It
+requires a `warps(f, 4)` context, converged (the causal row's `__shfl_sync` is a warp collective), and c < 16 (a
+generation error otherwise), and emits `kv0 = 128·block + 8c`, the
+limit `min(seq, q + 1)` (causal; the row `q` declared first, after `__syncwarp`, since the select of the minimum would
+evaluate it in part of the warp) or `seq`, and eight `t'_j = (kv0 + j < limit) ? t_j : −∞`. The guard is the
+example's (`usable`), applied to the maximum each block's exponents and rescale use; the running maximum keeps the
+unguarded value. No row of a launch the launcher accepts is masked whole in its first block, since key 0 is inside the
+sequence and at or before every query, so the guard never fires; it costs one select per block. For `seq` a multiple
+of 128 the non-causal kernel computes A1's values, every mask being true, up to nvcc's contraction: the select between
+`c · s` and the subtraction of the maximum likely keeps `(c · s) − m` from becoming one FMA, a rounding of `p` well
+inside §1.3's bounds.
 
 ### 3.10 The kernel builder
 
@@ -575,6 +599,11 @@ def attentionKernel (name: String)
 Parameters: `Q_map`, `K_map`, `V_map`, `O`, `LSE`, `BH`, `seq`, `scale_log2` (f32). `blocks` is `seq / 128` in A1
 and `min(ceil(seq/128), blockIdx.x + 1)` for causal A2, computed once by the builder so that every role runs the
 same trip count from one value. `scale_log2` is the caller's; any value is memory-safe.
+
+As built for A2: `attentionKernel(name, causal, t, body)`, with causal and O's element type `t` generation-time
+choices (one kernel each), `AttnLaunch(l, spec, t)` carrying the `Mask`, and `blocks = ceil(seq/128)` (non-causal) or
+`min(ceil(seq/128), blockIdx.x + 1)` (causal). The launcher accepts any `seq ≥ 1` (grid `(ceil(seq/128), BH)`) and
+keeps A1's other refusals; `BH·seq·128 < 2³¹` also keeps `seq + 127` from wrapping.
 
 The launch contract that remains to the caller, as for `tmaGemmKernel`: Q, K and V are device arrays of `BH·seq·128`
 bf16 elements, O one of `BH·seq·128` elements of its type, LSE one of `BH·seq` f32 elements, and O and LSE are
@@ -686,6 +715,7 @@ The public-surface audit of `OBLIGATIONS.md` §7 gains:
 | storing O twice, or rows another CTA owns | `OOwn` is linear; rows come from the block and thread indices |
 | the exchange writer taken by one thread, or by warps 3–6 | `takeExWriter` needs `warps(f, 4)` and `f mod 4 = 0` |
 | a causal or tail mask by per-thread `if` around the loads | the arm is `diverged`, which `loadAcc8` does not accept |
+| a mask of the caller's own (non-causal in a causal kernel, or another `seq`) | `Mask` is sealed; only the builders make one |
 | releasing the Q stage inside the loop, then using it | `releaseByMma` consumes `ReadyUsed` |
 | closing tensor memory with a product in flight | `withExchange` closes only on `ExWriterDone`, reached through `finishExWriter`'s wait |
 
@@ -699,10 +729,14 @@ result, a deadlock, or a question the types do not ask. The harness (§1.3) is w
 - **The wrong data in a ring.** Loading V into the K ring (both are `Ring(r, cfg)` with equal boxes), or a K block at
   the wrong row. A tensor tag on `HeadMap` and `RingCfg` would refuse the first; it is cheap, but it changes
   `TmaSpec`, which the GEMM track shares, so it is left to that merge (§7.1).
-- **A block row at or past `seq`.** With A1's rank-2 maps over `[BH·seq, 128]` (`encoding/README.md`), `fillHead`
+- **A block row at or past `seq`.** With the rank-2 maps over `[BH·seq, 128]` (`encoding/README.md`), `fillHead`
   adds the caller's row to the head's first row unbounded, so a row ≥ `seq` loads the next heads' rows (or zeros past
-  the matrix, which TMA clips). The maps are only read, so it is a wrong result, not a race; A2's rank-3 maps would
-  zero-fill it.
+  the matrix, which TMA clips). The maps are only read, so it is a wrong result, not a race. A2's tails rely on it:
+  the part of a last block past `seq` is masked.
+- **Non-finite values in the rows a tail block reads past `seq`** (the next head's V, or a paged cache's unused rows
+  of a last page). The masked keys' `p` are 0, but `0 · ∞` and `0 · NaN` are NaN, so such a value makes O NaN in every
+  query row whose keys include that block. A correctness hazard under non-finite inputs, not a safety one; the launch
+  contracts ask for finite V there, and rank-3 maps (§3.7) would remove it for the contiguous kernel.
 - **Storing P chunk c from S chunk c′ ≠ c.** `storeP` checks coverage, not provenance.
 - **Omitting the causal or tail mask** (A2), or masking with the wrong comparison. T1's causal and tail sizes catch
   it.
@@ -733,7 +767,10 @@ result, a deadlock, or a question the types do not ask. The harness (§1.3) is w
   `storeP` and `publishP` emitting `__syncwarp` before `wait::st` (§3.4); OBLIGATIONS.md §3, §5, §6 and §7 updated.
   On hardware: ptxas, the harness, compute-sanitizer, and experiments H1–H5, H1 and H2 first.
 
-**A2: causal, tails, bf16 output.**
+**A2: causal, tails, bf16 output.** Built (2026-10-01) for the contiguous and the paged kernel, with rank-2 maps
+(§3.7, `encoding/README.md`); not run on hardware. As built: §3.7–§3.10's "as built" paragraphs; the examples generate
+a non-causal f32 and a causal bf16 kernel each; the harnesses run both at the sizes below (the contiguous one
+also at A1's), and have run against a host mock of the runtime (`encoding/NOTES.md`).
 - Core: masks (§3.9); `blocks` for causal; `storeO` for bf16; the launcher accepts any `seq` ≥ 1.
 - Example: `examples/attention_causal.rac`, or one example with a `causal` parameter.
 - Harness: causal and non-causal at `seq` ∈ {1, 127, 129, 1000, 4096}, `BH` ≥ 3 so that every head has neighbours;

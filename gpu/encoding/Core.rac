@@ -1,5 +1,5 @@
 // The typed GPU core of gpu/encoding (README.md): a copy of gpu/Gpu.rac that grows what the library lacks, starting
-// with forward attention (gpu/ATTENTION.md §3, stage A1). Every family that carries authority or names generated code is sealed, so only this file can
+// with forward attention (gpu/ATTENTION.md §3, stages A1 and A2). Every family that carries authority or names generated code is sealed, so only this file can
 // make one. A kernel is an ordinary Raccoon program over these operations; evaluating it builds a `Cuda.Kernel`.
 //
 // Three rules carry the safety argument:
@@ -947,9 +947,10 @@ namespace Core {
    | mk (name: String)(seq: Expr) : HeadMap(l, spec)
 
   // As `fill`, through head maps, at rows `a1` and `b1` counted from the first row of this CTA's head (`blockIdx.y`),
-  // which the core computes, so the caller does not name the head. Nothing bounds the row by `seq`: a row at or past
-  // `seq` reads the next heads' rows, or zeros past the matrix (TMA clips). That is a wrong result, not a race: the
-  // maps are only read.
+  // which the core computes, so the caller does not name the head. Nothing bounds the row by `seq`: a box that runs past
+  // `seq` reads the next heads' rows, or zeros past the matrix (TMA clips). The maps are only read, so that is never a
+  // race. When `seq` is not a multiple of 128, a head's last key block and last query tile do run past it: their
+  // extra keys are masked (`maskedScores`), their extra query rows never stored (`storeO`).
   def fillHead {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}{L: Lifetime}{S0: Lifetime}{S1: Lifetime}{S2: Lifetime}{S3: Lifetime}
       {u0: Grain}{u1: Grain}{u2: Grain}{u3: Grain}
       (e: Ctx(n, Group.lane))(ring: Ring(r, cfg))(s: Slot(r, m))
@@ -2109,6 +2110,48 @@ namespace Core {
     | ExReaderAt.mk => ExReaderDone.mk(x)
   }
 
+  // ---- Attention: masks -----------------------------------------------------------------------------------------------
+
+  // This thread's query row within its head (or its sequence's head, for paged attention): `128·blockIdx.x +
+  // 32·(warp % 4) + lane`, the row of the CTA's tile whose tensor-memory lane the thread reads and writes (M12). The
+  // warp index is a full-warp `__shfl_sync`, so the warp must be converged where this is computed.
+  def rowInHead : Expr :=
+    Expr.bin(BinOp.add, Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(128)),
+      Expr.bin(BinOp.mul, Core.quadrant, Expr.lit(32))), Expr.special(Builtin.lane))
+
+  // What a key's score is masked against: the kernel's sequence length, whether the kernel is causal, and −∞ (a value
+  // the kernel declared), which a masked score becomes. Only the kernel builders make one.
+  sealed struct Mask (l: Lifetime) : Type { scope = l }
+   | mk (seq: Expr)(causal: Bool)(minusInfinity: Expr) : Mask(l)
+
+  // The scores `v` of keys `128·block + 8c` to `128·block + 8c + 7` against this thread's query row `q` (`rowInHead`),
+  // masked: each is kept where its key `kv` lies inside the sequence and, in a causal kernel, at or before the query
+  // (`kv < seq ∧ (¬causal ∨ kv ≤ q)`, computed as `kv < min(seq, q + 1)`), and is −∞ elsewhere, so that its
+  // `2^(t − m)` is 0. The key and the query are computed here from the block, the chunk and the thread; the caller
+  // gives only the block and the chunk, and a wrong one is a wrong result. A mask is selects, not a branch, so the
+  // warpgroup stays converged for its next `tcgen05.ld` (M3); the causal mask's row needs the warp converged, so its
+  // computation starts with `__syncwarp`.
+  def maskedScores {k: Lifetime}{f: Nat}{L: Lifetime}{Sb: Lifetime}{ub: Grain}{S: Lifetime}{u: Grain}
+      (e: Ctx(k, Group.warps(f, 4)))(mask: Mask(L))(block: Val(Sb, ub, DType.u32))(c: Nat)(v: F32x8(S, u))
+      : Pair(Ctx(k, Group.warps(f, 4)), F32x8(k, Grain.thread)) := {
+    let gen := Core.check(Core.state(Key.key, e), Nat.blt(c, 16), "maskedScores: a block of 128 keys has 16 chunks")
+    let kv := gen.next
+    let past := Nat.add(kv, 1)
+    let limit := Nat.add(kv, 2)
+    let first := Nat.add(kv, 3)
+    let keys := Stmt.decl(DType.u32, kv, Core.offsetBy(Expr.bin(BinOp.mul, block.expr, Expr.lit(128)), Nat.mul(8, c)))
+    // The row is declared before the minimum, whose select would evaluate it in part of the warp only.
+    let causalLimit := List.cons(Stmt.syncWarp, List.cons(Stmt.decl(DType.u32, past, Expr.bin(BinOp.add, Core.rowInHead, Expr.lit(1))),
+      List.cons(Stmt.decl(DType.u32, limit, Core.minExpr(mask.seq, Expr.var(past))), List.nil(Stmt))))
+    let place := List.cons(keys, Bool.cond(mask.causal, List(Stmt), causalLimit, List.cons(Stmt.decl(DType.u32, limit, mask.seq), List.nil(Stmt))))
+    let masked := fun (j: Nat)(t: Val(S, u, DType.f32)): Stmt =>
+      Stmt.decl(DType.f32, Nat.add(first, j), Expr.select(Expr.bin(BinOp.lt, Core.offsetBy(Expr.var(kv), j), Expr.var(limit)), t.expr, mask.minusInfinity))
+    let values := List.cons(masked(0, v.v0), List.cons(masked(1, v.v1), List.cons(masked(2, v.v2), List.cons(masked(3, v.v3),
+      List.cons(masked(4, v.v4), List.cons(masked(5, v.v5), List.cons(masked(6, v.v6), List.cons(masked(7, v.v7), List.nil(Stmt)))))))))
+    (Core.resume(Key.key, k, Group.warps(f, 4), Core.pushAll(Gen.mk(gen.code, Nat.add(first, 8), gen.smem, gen.barrier, gen.errors),
+      List.append(place, values))), Core.row8(Key.key, k, first))
+  }
+
   // ---- Attention: the output ------------------------------------------------------------------------------------------
 
   // Where this CTA's 128 rows of O (`[BH·seq, 128]` of `t`) and LSE (`[BH·seq]` f32) lie: their parameters' names, and
@@ -2120,28 +2163,51 @@ namespace Core {
   sealed inductive OOwn (l: Lifetime)(t: DType) : Type { kind = lin, scope = l }
    | mk : OOwn(l, t)
 
+  // The element types an attention kernel writes O in.
+  def outTypeOk (t: DType): Bool := {
+    match t returning Bool with
+    | DType.u32 => Bool.false
+    | DType.u64 => Bool.false
+    | DType.f32 => Bool.true
+    | DType.bf16 => Bool.true
+    | DType.bool => Bool.false
+  }
+
+  // An f32 value as an element of O of type `t`: for bf16, rounded to nearest, ties to even (`static_cast` through
+  // cuda_bf16.h's conversion from float, `__float2bfloat16`).
+  def outValue (t: DType)(x: Expr): Expr := {
+    match t returning Expr with
+    | DType.u32 => x
+    | DType.u64 => x
+    | DType.f32 => x
+    | DType.bf16 => Expr.cast(DType.bf16, x)
+    | DType.bool => x
+  }
+
   // Stores chunks `c` to `c + count - 1` of this thread's row of Ô, eight columns each, times `scale`, into O's row
-  // `row` where `inside`.
-  def storeChunks (gen: Gen)(o: Expr)(name: String)(row: Expr)(inside: Expr)(scale: Expr)(c: Nat)(count: Nat): Gen decreases structural(count) := {
+  // `row`, as elements of type `t`, where `inside`.
+  def storeChunks (gen: Gen)(o: Expr)(t: DType)(name: String)(row: Expr)(inside: Expr)(scale: Expr)(c: Nat)(count: Nat): Gen decreases structural(count) := {
     match count returning Gen with
     | Nat.zero => gen
     | Nat.succ more => {
       let first := gen.next
       let at := fun (j: Nat): Expr => Expr.bin(BinOp.add, Expr.bin(BinOp.mul, row, Expr.lit(128)), Expr.lit(Nat.add(Nat.mul(8, c), j)))
-      let stores := List.map(Core.eight, Stmt, fun (j: Nat): Stmt => Stmt.store(Expr.param(name), at(j), Expr.bin(BinOp.mul, Expr.var(Nat.add(first, j)), scale)))
+      let stores := List.map(Core.eight, Stmt, fun (j: Nat): Stmt =>
+        Stmt.store(Expr.param(name), at(j), Core.outValue(t, Expr.bin(BinOp.mul, Expr.var(Nat.add(first, j)), scale))))
       let guarded := Stmt.ifElse(inside, Core.toBlock(List.reverse(stores), Block.done), Block.done)
-      Core.storeChunks(Core.push(Core.loadRow8(gen, Core.quadrantLanes(Core.offsetBy(o, Nat.mul(8, c)))), guarded), o, name, row, inside, scale, Nat.succ(c),
-        more)
+      Core.storeChunks(Core.push(Core.loadRow8(gen, Core.quadrantLanes(Core.offsetBy(o, Nat.mul(8, c)))), guarded), o, t, name, row, inside, scale,
+        Nat.succ(c), more)
     }
   }
 
-  // Each thread stores its own row of the CTA's tile (M12): Ô's 128 columns times `inv`, and `lse`, if the row lies
-  // inside the sequence. The row is `128·blockIdx.x + 32·(warp % 4) + lane` of head `blockIdx.y`, computed here, never
-  // taken from the caller; the guard is against `seq`, not the array's rows, since a row past a head's `seq` is the
-  // next head's, which another CTA writes. f32 output only (A1).
-  def storeO {k: Lifetime}{f: Nat}{x: Lifetime}{m: Lifetime}{S: Lifetime}{u: Grain}{S2: Lifetime}{u2: Grain}{L: Lifetime}
+  // Each thread stores its own row of the CTA's tile (M12): Ô's 128 columns times `inv`, converted to O's type `t`
+  // (`outValue`), and `lse`, if the row lies inside the sequence. The row is `rowInHead` of head `blockIdx.y`, computed
+  // here, never taken from the caller; the guard is against `seq`, not the array's rows, since a row past a head's
+  // `seq` is the next head's, which another CTA writes, and the rows of a last query tile past `seq` are computed but
+  // never stored.
+  def storeO {k: Lifetime}{f: Nat}{x: Lifetime}{m: Lifetime}{S: Lifetime}{u: Grain}{S2: Lifetime}{u2: Grain}{L: Lifetime}{t: DType}
       (e: Ctx(k, Group.warps(f, 4)))(ex: Exchange(x))(o: OFinal(x, m, f))(inv: Val(S, u, DType.f32))(lse: Val(S2, u2, DType.f32))
-      (out: AttnOut(L, DType.f32))(own: OOwn(L, DType.f32)): Pair(Ctx(k, Group.warps(f, 4)), OFinal(x, m, f)) := {
+      (out: AttnOut(L, t))(own: OOwn(L, t)): Pair(Ctx(k, Group.warps(f, 4)), OFinal(x, m, f)) := {
     match own returning Pair(Ctx(k, Group.warps(f, 4)), OFinal(x, m, f)) with
     | OOwn.mk => {
       let gen := Core.state(Key.key, e)
@@ -2150,15 +2216,13 @@ namespace Core {
       let inside := Nat.add(within, 2)
       let scale := Nat.add(within, 3)
       let logSum := Nat.add(within, 4)
-      // Every lane computes the row: the warp index is a full-warp `__shfl_sync`, which the warp reconverges for.
-      let rowInHead := Expr.bin(BinOp.add, Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(128)),
-        Expr.bin(BinOp.mul, Core.quadrant, Expr.lit(32))), Expr.special(Builtin.lane))
-      let place := List.cons(Stmt.syncWarp, List.cons(Core.tcFenceAfter, List.cons(Stmt.decl(DType.u32, within, rowInHead),
+      // Every lane computes the row, which the warp reconverges for (`rowInHead`).
+      let place := List.cons(Stmt.syncWarp, List.cons(Core.tcFenceAfter, List.cons(Stmt.decl(DType.u32, within, Core.rowInHead),
         List.cons(Stmt.decl(DType.u32, row, Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.special(Builtin.blockY), out.seq), Expr.var(within))),
         List.cons(Stmt.decl(DType.bool, inside, Expr.bin(BinOp.lt, Expr.var(within), out.seq)),
         List.cons(Stmt.decl(DType.f32, scale, inv.expr), List.cons(Stmt.decl(DType.f32, logSum, lse.expr), List.nil(Stmt))))))))
       let placed := Core.pushAll(Gen.mk(gen.code, Nat.add(within, 5), gen.smem, gen.barrier, gen.errors), place)
-      let stored := Core.storeChunks(placed, ex.base, out.o, Expr.var(row), Expr.var(inside), Expr.var(scale), 0, 16)
+      let stored := Core.storeChunks(placed, ex.base, t, out.o, Expr.var(row), Expr.var(inside), Expr.var(scale), 0, 16)
       let lseStore := Stmt.ifElse(Expr.var(inside), Block.seq(Stmt.store(Expr.param(out.lse), Expr.var(row), Expr.var(logSum)), Block.done), Block.done)
       // The loads are ordered before whatever follows a thread barrier, such as an MMA into a region reopened in the
       // same columns (PTX §9.7.18.6.4.4).
@@ -2268,62 +2332,84 @@ namespace Core {
 
   // ---- The attention kernel -----------------------------------------------------------------------------------------
 
-  // What each CTA of a forward-attention kernel starts with: the head maps of Q, K and V, its output, the sequence
-  // length, the number of key blocks (`seq / 128`, computed once, so that every role's trip count is one value), its
-  // query block's first row within the head (`128·blockIdx.x`), and the caller's scale in base 2, `scale_log2`.
-  struct AttnLaunch (l: Lifetime)(spec: TmaSpec) : Type { scope = l }
-   | mk (q: HeadMap(l, spec))(k: HeadMap(l, spec))(v: HeadMap(l, spec))(out: AttnOut(l, DType.f32))
+  // What each CTA of a forward-attention kernel starts with: the head maps of Q, K and V, its output (O of type `t`),
+  // its mask, the sequence length, the number of key blocks its roles run (computed once, so that every role's trip
+  // count is one value), its query block's first row within the head (`128·blockIdx.x`), and the caller's scale in
+  // base 2, `scale_log2`.
+  struct AttnLaunch (l: Lifetime)(spec: TmaSpec)(t: DType) : Type { scope = l }
+   | mk (q: HeadMap(l, spec))(k: HeadMap(l, spec))(v: HeadMap(l, spec))(out: AttnOut(l, t))(mask: Mask(l))
         (seq: Val(l, Grain.uniform, DType.u32))(blocks: Val(l, Grain.uniform, DType.u32))(q0: Val(l, Grain.uniform, DType.u32))
-        (scale: Val(l, Grain.uniform, DType.f32)) : AttnLaunch(l, spec)
+        (scale: Val(l, Grain.uniform, DType.f32)) : AttnLaunch(l, spec, t)
 
-  def attnParams : List(Param) :=
+  // −∞ as f32 bits.
+  def minusInfinityBits : Nat := 4286578688
+
+  // How every attention kernel starts (`attentionKernel`, `pagedAttentionKernel`): a generation error unless O's type
+  // `t` is f32 or bf16; then the number of key blocks every role runs, declared once: `ceil(seq / 128)`, or for a causal
+  // kernel `min(ceil(seq / 128), blockIdx.x + 1)`, since no key past the query tile's last row is unmasked; then −∞,
+  // which masked scores become. Returns the context, the block count and the mask.
+  def attnStart (k: Key)(l: Lifetime)(causal: Bool)(t: DType)
+      : Pair(Ctx(l, Group.cta(256)), Pair(Val(l, Grain.uniform, DType.u32), Mask(l))) := {
+    let gen0 := Core.check(Core.state(k, Core.start(k, l, Group.cta(256))), Core.outTypeOk(t), "attention: O must be f32 or bf16")
+    let blocks := gen0.next
+    let all := Core.paramCeilDiv("seq", 128)
+    let count := Bool.cond(causal, Expr, Core.minExpr(all, Expr.bin(BinOp.add, Expr.special(Builtin.blockX), Expr.lit(1))), all)
+    let gen1 := Core.push(Core.fresh(gen0), Stmt.decl(DType.u32, blocks, count))
+    let (e, minusInfinity) := Core.fconst(Core.resume(k, l, Group.cta(256), gen1), Core.minusInfinityBits)
+    (e, (Val.mk(l, Grain.uniform, DType.u32, Expr.var(blocks), Option.none(Nat)), Mask.mk(l, Expr.param("seq"), causal, minusInfinity.expr)))
+  }
+
+  def attnParams (t: DType): List(Param) :=
     List.cons(Param.tensorMap(MapUse.load, "Q_map"), List.cons(Param.tensorMap(MapUse.load, "K_map"), List.cons(Param.tensorMap(MapUse.load, "V_map"),
-      List.cons(Param.output(DType.f32, "O"), List.cons(Param.output(DType.f32, "LSE"), List.cons(Param.scalar(DType.u32, "BH"),
+      List.cons(Param.output(t, "O"), List.cons(Param.output(DType.f32, "LSE"), List.cons(Param.scalar(DType.u32, "BH"),
       List.cons(Param.scalar(DType.u32, "seq"), List.cons(Param.scalar(DType.f32, "scale_log2"), List.nil(Param)))))))))
 
-  // The host launcher of an attention kernel. Q, K and V are given as `rows` × `dim` matrices, which must be `[BH·seq,
-  // 128]`; it encodes their maps with 64 × 128 boxes and launches a CTA of 256 threads per 128 query rows of each head,
-  // grid (seq/128, BH). It refuses seq = 0, seq not a multiple of 128 (A1), BH = 0, BH > 65535 (the grid's y), and
-  // BH·seq·128 ≥ 2^31, so every row and element index fits TMA's signed coordinates and a u32.
-  def attnLauncher : Launcher := {
+  // The host launcher of an attention kernel writing O of type `t`. Q, K and V are given as `rows` × `dim` matrices,
+  // which must be `[BH·seq, 128]`; it encodes their maps with 64 × 128 boxes and launches a CTA of 256 threads per 128
+  // query rows of each head, the last tile partial when 128 does not divide `seq`: grid (ceil(seq/128), BH). It refuses
+  // seq = 0, BH = 0, BH > 65535 (the grid's y), and BH·seq·128 ≥ 2^31, so every row and element index fits TMA's signed
+  // coordinates and a u32 (and `seq + 127` does not wrap).
+  def attnLauncher (t: DType): Launcher := {
     let hostParams := List.cons(Param.input(DType.bf16, "Q"), List.cons(Param.input(DType.bf16, "K"), List.cons(Param.input(DType.bf16, "V"),
-      List.cons(Param.output(DType.f32, "O"), List.cons(Param.output(DType.f32, "LSE"), List.cons(Param.scalar(DType.u32, "BH"),
+      List.cons(Param.output(t, "O"), List.cons(Param.output(DType.f32, "LSE"), List.cons(Param.scalar(DType.u32, "BH"),
       List.cons(Param.scalar(DType.u32, "seq"), List.cons(Param.scalar(DType.f32, "scale_log2"), List.cons(Param.scalar(DType.u32, "rows"),
       List.cons(Param.scalar(DType.u32, "dim"), List.nil(Param)))))))))))
     let headRows := Expr.bin(BinOp.mul, Expr.cast(DType.u64, Expr.param("BH")), Expr.param("seq"))
     let requires := List.cons(Expr.bin(BinOp.lt, Expr.lit(0), Expr.param("seq")),
-      List.cons(Expr.bin(BinOp.eq, Expr.bin(BinOp.rem, Expr.param("seq"), Expr.lit(128)), Expr.lit(0)),
       List.cons(Expr.bin(BinOp.lt, Expr.lit(0), Expr.param("BH")), List.cons(Expr.bin(BinOp.lt, Expr.param("BH"), Expr.lit(65536)),
       List.cons(Expr.bin(BinOp.lt, Expr.bin(BinOp.mul, headRows, Expr.lit(128)), Expr.lit64(Core.i32Limit)),
-      List.cons(Expr.bin(BinOp.eq, Expr.param("rows"), headRows), List.cons(Expr.bin(BinOp.eq, Expr.param("dim"), Expr.lit(128)), List.nil(Expr))))))))
+      List.cons(Expr.bin(BinOp.eq, Expr.param("rows"), headRows), List.cons(Expr.bin(BinOp.eq, Expr.param("dim"), Expr.lit(128)), List.nil(Expr)))))))
     let map := fun (name: String)(source: String): MapEncoding => MapEncoding.mk(name, MapUse.load, Param.input(DType.bf16, source), "rows", "dim", 64, 128)
     let maps := List.cons(map("Q_map", "Q"), List.cons(map("K_map", "K"), List.cons(map("V_map", "V"), List.nil(MapEncoding))))
-    Launcher.mk(hostParams, requires, maps, Grid.blocks(Expr.bin(BinOp.div, Expr.param("seq"), Expr.lit(128)), Expr.param("BH")), 256)
+    Launcher.mk(hostParams, requires, maps, Grid.blocks(Core.paramCeilDiv("seq", 128), Expr.param("BH")), 256)
   }
 
-  // Forward attention over BH heads of `seq` rows (gpu/ATTENTION.md, stage A1): one CTA of 256 threads per 128 query
-  // rows of one head (`blockIdx.x` the query block, `blockIdx.y` the head), with its host launcher (`attnLauncher`).
-  // The launch contract that remains to the caller: Q, K and V are device arrays of BH·seq·128 bf16 elements, O one of
-  // BH·seq·128 f32 elements, LSE one of BH·seq f32 elements, and O and LSE are distinct from each other and from the
-  // inputs. Any `scale_log2` is memory-safe.
-  def attentionKernel (name: String)
-      (body: (l: Lifetime) -> Ctx(l, Group.cta(256)) -> AttnLaunch(l, TmaSpec.mk(64, 128)) -> OOwn(l, DType.f32) -> TmemPermit(l)
+  // Forward attention over BH heads of `seq` rows, any `seq` ≥ 1 (gpu/ATTENTION.md, stages A1 and A2): one CTA of 256
+  // threads per 128 query rows of one head (`blockIdx.x` the query block, `blockIdx.y` the head), with its host
+  // launcher (`attnLauncher`). Causal (`causal`) and O's element type `t` (f32 or bf16) are generation-time choices, one
+  // kernel each. The maps are rank-2, over `[BH·seq, 128]` (encoding/README.md): a last key block that runs past `seq`
+  // reads the next head's rows (or zeros past the matrix), which `maskedScores` masks, and the rows of a last query tile
+  // past `seq` are computed from the next head's Q rows but never stored (`storeO`). The launch contract that remains
+  // to the caller: Q, K and V are device arrays of BH·seq·128 bf16 elements, O one of BH·seq·128 elements of `t`, LSE
+  // one of BH·seq f32 elements, and O and LSE are distinct from each other and from the inputs. Any `scale_log2` and
+  // any input values are memory-safe; for a correct result, V must be finite in every row a key block reads, the next
+  // head's rows of a last block included, since the masked keys' p = 0 multiply them (0 · ∞ is NaN).
+  def attentionKernel (name: String)(causal: Bool)(t: DType)
+      (body: (l: Lifetime) -> Ctx(l, Group.cta(256)) -> AttnLaunch(l, TmaSpec.mk(64, 128), t) -> OOwn(l, t) -> TmemPermit(l)
         -> Ctx(l, Group.cta(256)))
       : Program := scope l => {
     let spec := TmaSpec.mk(64, 128)
-    let gen0 := Core.state(Key.key, Core.start(Key.key, l, Group.cta(256)))
-    let blocks := gen0.next
-    let gen1 := Core.push(Core.fresh(gen0), Stmt.decl(DType.u32, blocks, Expr.bin(BinOp.div, Expr.param("seq"), Expr.lit(128))))
+    let (e, (blocks, mask)) := Core.attnStart(Key.key, l, causal, t)
     let seq := Core.uniformParam(Key.key, l, DType.u32, "seq")
     let head := fun (name: String): HeadMap(l, spec) => HeadMap.mk(l, spec, name, seq.expr)
     let q0 := Val.mk(l, Grain.uniform, DType.u32, Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(128)), Option.none(Nat))
-    let launch := AttnLaunch.mk(head("Q_map"), head("K_map"), head("V_map"), AttnOut.mk(l, DType.f32, "O", "LSE", seq.expr), seq,
-      Val.mk(l, Grain.uniform, DType.u32, Expr.var(blocks), Option.none(Nat)), q0, Core.uniformParam(Key.key, l, DType.f32, "scale_log2"))
-    let gen := Core.state(Key.key, body(l, Core.resume(Key.key, l, Group.cta(256), gen1), launch, OOwn.mk(l, DType.f32), TmemPermit.mk(l)))
-    Core.finish(Key.key, name, Core.attnParams, Option.some(Core.attnLauncher), gen)
+    let launch := AttnLaunch.mk(head("Q_map"), head("K_map"), head("V_map"), AttnOut.mk(l, t, "O", "LSE", seq.expr), mask, seq, blocks, q0,
+      Core.uniformParam(Key.key, l, DType.f32, "scale_log2"))
+    let gen := Core.state(Key.key, body(l, e, launch, OOwn.mk(l, t), TmemPermit.mk(l)))
+    Core.finish(Key.key, name, Core.attnParams(t), Option.some(Core.attnLauncher(t)), gen)
   }
 
-  // ---- Paged attention (gpu/encoding/PAGED.md, P1) ------------------------------------------------------------------
+  // ---- Paged attention (gpu/encoding/PAGED.md) ----------------------------------------------------------------------
 
   // A tensor map parameter over a paged K or V cache, `[pages·heads·128, 128]` bf16 with 128 contiguous, whose box is
   // `spec`: page `p` holds 128 consecutive keys of each of the `heads` heads, head `h`'s from row `(p·heads + h)·128`.
@@ -2365,28 +2451,28 @@ namespace Core {
 
   // What each CTA of a paged-attention kernel starts with: as `AttnLaunch`, with K and V the paged cache's maps, and the
   // block table.
-  struct PagedLaunch (l: Lifetime)(spec: TmaSpec) : Type { scope = l }
-   | mk (q: HeadMap(l, spec))(k: PageMap(l, spec))(v: PageMap(l, spec))(table: PageTable(l))(out: AttnOut(l, DType.f32))
+  struct PagedLaunch (l: Lifetime)(spec: TmaSpec)(t: DType) : Type { scope = l }
+   | mk (q: HeadMap(l, spec))(k: PageMap(l, spec))(v: PageMap(l, spec))(table: PageTable(l))(out: AttnOut(l, t))(mask: Mask(l))
         (seq: Val(l, Grain.uniform, DType.u32))(blocks: Val(l, Grain.uniform, DType.u32))(q0: Val(l, Grain.uniform, DType.u32))
-        (scale: Val(l, Grain.uniform, DType.f32)) : PagedLaunch(l, spec)
+        (scale: Val(l, Grain.uniform, DType.f32)) : PagedLaunch(l, spec, t)
 
-  def pagedParams : List(Param) :=
+  def pagedParams (t: DType): List(Param) :=
     List.cons(Param.tensorMap(MapUse.load, "Q_map"), List.cons(Param.tensorMap(MapUse.load, "K_map"), List.cons(Param.tensorMap(MapUse.load, "V_map"),
-      List.cons(Param.output(DType.f32, "O"), List.cons(Param.output(DType.f32, "LSE"), List.cons(Param.input(DType.u32, "block_table"),
+      List.cons(Param.output(t, "O"), List.cons(Param.output(DType.f32, "LSE"), List.cons(Param.input(DType.u32, "block_table"),
       List.cons(Param.scalar(DType.u32, "B"), List.cons(Param.scalar(DType.u32, "seq"), List.cons(Param.scalar(DType.u32, "max_pages"),
       List.cons(Param.scalar(DType.f32, "scale_log2"), List.nil(Param)))))))))))
 
-  // The host launcher of a paged-attention kernel over `heads` heads. Q is given as a `rows_q` × `dim` matrix, which must
-  // be `[B·heads·seq, 128]`, and K and V as `rows_kv` × `dim` ones, which must be `[pages·heads·128, 128]`; it encodes
-  // their maps with 64 × 128 boxes and launches a CTA of 256 threads per 128 query rows of each sequence and head, grid
-  // (seq/128, B·heads). It refuses seq = 0, seq not a multiple of 128 (A1), B = 0, B·heads > 65535 (the grid's y), a
-  // table of fewer than seq/128 columns, and extents of 2^31 or more: B·heads·seq·128 (so every row and element index
-  // of Q, O and LSE fits TMA's signed coordinates and a u32), pages·heads·128 (every row of the cache) and B·max_pages
-  // (every index of the table). An empty cache (pages = 0) is refused by the encoding of its maps, whose extents must not
-  // be zero.
-  def pagedLauncher (heads: Nat): Launcher := {
+  // The host launcher of a paged-attention kernel over `heads` heads, writing O of type `t`. Q is given as a `rows_q` ×
+  // `dim` matrix, which must be `[B·heads·seq, 128]`, and K and V as `rows_kv` × `dim` ones, which must be
+  // `[pages·heads·128, 128]`; it encodes their maps with 64 × 128 boxes and launches a CTA of 256 threads per 128 query
+  // rows of each sequence and head, the last tile partial when 128 does not divide `seq`: grid (ceil(seq/128), B·heads).
+  // It refuses seq = 0, B = 0, B·heads > 65535 (the grid's y), a table of fewer than ceil(seq/128) columns, and extents of
+  // 2^31 or more: B·heads·seq·128 (so every row and element index of Q, O and LSE fits TMA's signed coordinates and a
+  // u32, and `seq + 127` does not wrap), pages·heads·128 (every row of the cache) and B·max_pages (every index of the
+  // table). An empty cache (pages = 0) is refused by the encoding of its maps, whose extents must not be zero.
+  def pagedLauncher (heads: Nat)(t: DType): Launcher := {
     let hostParams := List.cons(Param.input(DType.bf16, "Q"), List.cons(Param.input(DType.bf16, "K"), List.cons(Param.input(DType.bf16, "V"),
-      List.cons(Param.output(DType.f32, "O"), List.cons(Param.output(DType.f32, "LSE"), List.cons(Param.input(DType.u32, "block_table"),
+      List.cons(Param.output(t, "O"), List.cons(Param.output(DType.f32, "LSE"), List.cons(Param.input(DType.u32, "block_table"),
       List.cons(Param.scalar(DType.u32, "B"), List.cons(Param.scalar(DType.u32, "seq"), List.cons(Param.scalar(DType.u32, "max_pages"),
       List.cons(Param.scalar(DType.u32, "pages"), List.cons(Param.scalar(DType.u32, "rows_q"), List.cons(Param.scalar(DType.u32, "rows_kv"),
       List.cons(Param.scalar(DType.u32, "dim"), List.cons(Param.scalar(DType.f32, "scale_log2"), List.nil(Param)))))))))))))))
@@ -2396,44 +2482,45 @@ namespace Core {
     let qRows := Expr.bin(BinOp.mul, grid, Expr.param("seq"))
     let kvRows := Expr.bin(BinOp.mul, Expr.bin(BinOp.mul, wide("pages"), Expr.lit(heads)), Expr.lit(128))
     let requires := List.cons(Expr.bin(BinOp.lt, Expr.lit(0), Expr.param("seq")),
-      List.cons(Expr.bin(BinOp.eq, Expr.bin(BinOp.rem, Expr.param("seq"), Expr.lit(128)), Expr.lit(0)),
       List.cons(Expr.bin(BinOp.lt, Expr.lit(0), Expr.param("B")), List.cons(Expr.bin(BinOp.lt, grid, Expr.lit64(65536)),
       List.cons(below(Expr.bin(BinOp.mul, qRows, Expr.lit(128))), List.cons(Expr.bin(BinOp.eq, Expr.param("rows_q"), qRows),
       List.cons(below(kvRows), List.cons(Expr.bin(BinOp.eq, Expr.param("rows_kv"), kvRows),
       List.cons(Expr.bin(BinOp.eq, Expr.param("dim"), Expr.lit(128)),
-      List.cons(Expr.bin(BinOp.lt, Expr.bin(BinOp.div, Expr.param("seq"), Expr.lit(128)), Expr.bin(BinOp.add, wide("max_pages"), Expr.lit64(1))),
-      List.cons(below(Expr.bin(BinOp.mul, wide("B"), Expr.param("max_pages"))), List.nil(Expr))))))))))))
+      List.cons(Expr.bin(BinOp.lt, Core.paramCeilDiv("seq", 128), Expr.bin(BinOp.add, wide("max_pages"), Expr.lit64(1))),
+      List.cons(below(Expr.bin(BinOp.mul, wide("B"), Expr.param("max_pages"))), List.nil(Expr)))))))))))
     let map := fun (name: String)(source: String)(rows: String): MapEncoding =>
       MapEncoding.mk(name, MapUse.load, Param.input(DType.bf16, source), rows, "dim", 64, 128)
     let maps := List.cons(map("Q_map", "Q", "rows_q"), List.cons(map("K_map", "K", "rows_kv"), List.cons(map("V_map", "V", "rows_kv"), List.nil(MapEncoding))))
-    Launcher.mk(hostParams, requires, maps, Grid.blocks(Expr.bin(BinOp.div, Expr.param("seq"), Expr.lit(128)),
-      Expr.bin(BinOp.mul, Expr.param("B"), Expr.lit(heads))), 256)
+    Launcher.mk(hostParams, requires, maps, Grid.blocks(Core.paramCeilDiv("seq", 128), Expr.bin(BinOp.mul, Expr.param("B"), Expr.lit(heads))), 256)
   }
 
-  // Forward attention over B sequences of `seq` rows and `heads` heads each, with K and V in a paged cache
-  // (gpu/encoding/PAGED.md, P1): as `attentionKernel`, with CTA `(x, y)` computing query block `x` of sequence
-  // `y / heads`, head `y % heads`, and with its host launcher (`pagedLauncher`). `heads` is a generation-time constant,
-  // from 1 to 65535. The launch contract that remains to the caller: Q is a device array of B·heads·seq·128 bf16
-  // elements, K and V ones of pages·heads·128·128, the table one of B·max_pages u32 elements, O one of B·heads·seq·128
-  // f32 elements and LSE one of B·heads·seq, and O and LSE are distinct from each other and from the inputs. Whatever
-  // the table holds is memory-safe (`fillPage`); that its entries are the sequences' pages, and that those pages hold
-  // their K and V, is the caller's promise for a correct result. Any `scale_log2` is memory-safe.
-  def pagedAttentionKernel (name: String)(heads: Nat)
-      (body: (l: Lifetime) -> Ctx(l, Group.cta(256)) -> PagedLaunch(l, TmaSpec.mk(64, 128)) -> OOwn(l, DType.f32) -> TmemPermit(l)
+  // Forward attention over B sequences of `seq` rows and `heads` heads each, any `seq` ≥ 1, with K and V in a paged cache
+  // (gpu/encoding/PAGED.md): as `attentionKernel`, with CTA `(x, y)` computing query block `x` of sequence `y / heads`,
+  // head `y % heads`, and with its host launcher (`pagedLauncher`). `heads` is a generation-time constant, from 1 to
+  // 65535; causal (`kv ≤ q` within the sequence: Q and the cached keys have the same length, as in prefill) and O's
+  // element type `t` are generation-time choices too. A sequence's last page may be partly used: the rows of its last
+  // key block past `seq` are masked (`maskedScores`). The launch contract that remains to the caller: Q is a device
+  // array of B·heads·seq·128 bf16 elements, K and V ones of pages·heads·128·128, the table one of B·max_pages u32
+  // elements, O one of B·heads·seq·128 elements of `t` and LSE one of B·heads·seq f32 elements, and O and LSE are
+  // distinct from each other and from the inputs. Whatever the table and the cache hold is memory-safe (`fillPage`);
+  // that its entries are the sequences' pages, that those pages hold their K and V, and that V is finite in every row
+  // of every page a sequence's table names (a last page's unused rows included, since the masked keys' p = 0 multiply
+  // them), is the caller's promise for a correct result. Any `scale_log2` is memory-safe.
+  def pagedAttentionKernel (name: String)(heads: Nat)(causal: Bool)(t: DType)
+      (body: (l: Lifetime) -> Ctx(l, Group.cta(256)) -> PagedLaunch(l, TmaSpec.mk(64, 128), t) -> OOwn(l, t) -> TmemPermit(l)
         -> Ctx(l, Group.cta(256)))
       : Program := scope l => {
     let spec := TmaSpec.mk(64, 128)
-    let gen0 := Core.check(Core.state(Key.key, Core.start(Key.key, l, Group.cta(256))), Bool.and(Nat.blt(0, heads), Nat.blt(heads, 65536)),
-      "paged kernel: the head count must be from 1 to 65535")
-    let blocks := gen0.next
-    let gen1 := Core.push(Core.fresh(gen0), Stmt.decl(DType.u32, blocks, Expr.bin(BinOp.div, Expr.param("seq"), Expr.lit(128))))
+    let (e, (blocks, mask)) := Core.attnStart(Key.key, l, causal, t)
+    let e := Core.resume(Key.key, l, Group.cta(256), Core.check(Core.state(Key.key, e), Bool.and(Nat.blt(0, heads), Nat.blt(heads, 65536)),
+      "paged kernel: the head count must be from 1 to 65535"))
     let seq := Core.uniformParam(Key.key, l, DType.u32, "seq")
     let page := fun (name: String): PageMap(l, spec) => PageMap.mk(l, spec, name, heads)
     let q0 := Val.mk(l, Grain.uniform, DType.u32, Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(128)), Option.none(Nat))
     let launch := PagedLaunch.mk(HeadMap.mk(l, spec, "Q_map", seq.expr), page("K_map"), page("V_map"),
-      PageTable.mk(l, "block_table", Expr.param("B"), Expr.param("max_pages")), AttnOut.mk(l, DType.f32, "O", "LSE", seq.expr), seq,
-      Val.mk(l, Grain.uniform, DType.u32, Expr.var(blocks), Option.none(Nat)), q0, Core.uniformParam(Key.key, l, DType.f32, "scale_log2"))
-    let gen := Core.state(Key.key, body(l, Core.resume(Key.key, l, Group.cta(256), gen1), launch, OOwn.mk(l, DType.f32), TmemPermit.mk(l)))
-    Core.finish(Key.key, name, Core.pagedParams, Option.some(Core.pagedLauncher(heads)), gen)
+      PageTable.mk(l, "block_table", Expr.param("B"), Expr.param("max_pages")), AttnOut.mk(l, t, "O", "LSE", seq.expr), mask, seq, blocks, q0,
+      Core.uniformParam(Key.key, l, DType.f32, "scale_log2"))
+    let gen := Core.state(Key.key, body(l, e, launch, OOwn.mk(l, t), TmemPermit.mk(l)))
+    Core.finish(Key.key, name, Core.pagedParams(t), Option.some(Core.pagedLauncher(heads, t)), gen)
   }
 }

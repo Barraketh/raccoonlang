@@ -32,7 +32,7 @@ namespace P {
     Pair(Pair(ProducerDone(rv), ConsumerDone(rv)), Pair(ExWriterDone(x), ExReaderDone(x)))
 
   // One stage of V, from block 2^32 − 1 of this CTA's sequence.
-  def loader {l: Lifetime}{rv: Lifetime}(g: PagedLaunch(l, P.box))(vr: Ring(rv, P.vRing))(pv: Producer(rv))(m: Lifetime)(e: Ctx(m, P.Load))
+  def loader {l: Lifetime}{rv: Lifetime}(g: PagedLaunch(l, P.box, DType.f32))(vr: Ring(rv, P.vRing))(pv: Producer(rv))(m: Lifetime)(e: Ctx(m, P.Load))
       : Pair(Ctx(m, P.Load), ProducerDone(rv)) :=
     Core.elect(e, ProducerDone(rv), fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, P.One)): Pair(Ctx(j, P.One), ProducerDone(rv)) => {
       let (e, pv) := Core.takeProducer(e, w, vr, pv)
@@ -60,7 +60,7 @@ namespace P {
     Core.storeP(e, ex, p, v)[fits]
 
   // P of ones, published; then the output.
-  def writer {l: Lifetime}{x: Lifetime}(g: PagedLaunch(l, P.box))(ex: Exchange(x))(wr: ExWriter(x))(own: OOwn(l, DType.f32))(m: Lifetime)
+  def writer {l: Lifetime}{x: Lifetime}(g: PagedLaunch(l, P.box, DType.f32))(ex: Exchange(x))(wr: ExWriter(x))(own: OOwn(l, DType.f32))(m: Lifetime)
       (e: Ctx(m, P.Wg1)): Pair(Ctx(m, P.Wg1), ExWriterDone(x)) := {
     let (e, wa) := Core.takeExWriter(e, ex, wr)
     let (e, one) := Core.fconst(e, 1065353216)
@@ -88,7 +88,7 @@ namespace P {
     (e, Core.closeExWriter(final))
   }
 
-  def roles {l: Lifetime}{rv: Lifetime}{x: Lifetime}(g: PagedLaunch(l, P.box))(vr: Ring(rv, P.vRing))(ex: Exchange(x))(pv: Producer(rv))
+  def roles {l: Lifetime}{rv: Lifetime}{x: Lifetime}(g: PagedLaunch(l, P.box, DType.f32))(vr: Ring(rv, P.vRing))(ex: Exchange(x))(pv: Producer(rv))
       (cv: Consumer(rv))(wr: ExWriter(x))(rd: ExReader(x))(own: OOwn(l, DType.f32))(e: Ctx(l, P.Cta)): Pair(Ctx(l, P.Cta), P.AllDone(rv, x)) := {
     let idle := fun (m: Lifetime)(e: Ctx(m, P.Idle)): Pair(Ctx(m, P.Idle), Unit) => (e, Unit.unit)
     let rest := fun (m: Lifetime)(e: Ctx(m, P.Rest)): Pair(Ctx(m, P.Rest), Pair(P.IssuerDone(rv, x), Unit)) =>
@@ -103,8 +103,8 @@ namespace P {
   }
 
   def kernel : Program :=
-    Core.pagedAttentionKernel("paged_emitted", 8,
-      fun (l: Lifetime)(e: Ctx(l, P.Cta))(g: PagedLaunch(l, P.box))(own: OOwn(l, DType.f32))(permit: TmemPermit(l)): Ctx(l, P.Cta) => {
+    Core.pagedAttentionKernel("paged_emitted", 8, Bool.false, DType.f32,
+      fun (l: Lifetime)(e: Ctx(l, P.Cta))(g: PagedLaunch(l, P.box, DType.f32))(own: OOwn(l, DType.f32))(permit: TmemPermit(l)): Ctx(l, P.Cta) => {
         let region := fun (a: Lifetime)(t: Tmem(a, 256))(acc: Acc(a, AccState.empty))(e: Ctx(l, P.Cta))
             : Pair(Ctx(l, P.Cta), Pair(Acc(a, AccState.empty), Unit)) => {
           let exchange := fun (x: Lifetime)(ex: Exchange(x))(wr: ExWriter(x))(rd: ExReader(x))(e: Ctx(l, P.Cta))
@@ -188,16 +188,16 @@ namespace P {
   def tmaLoad : String :=
     "asm volatile(\"cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1, {%3, %4}], [%2];\" :  : "
 
-  // The kernel's two TMA loads are V's two boxes, at columns 0 and 64 of row `(v9·8 + blockIdx.y % 8)·128`: v9 is the
-  // page read (after the key blocks v0, the allocation's address v1, the exchange's phases v2 and v3, the ring's
-  // registers v4 to v7 and the elect's flag v8).
+  // The kernel's two TMA loads are V's two boxes, at columns 0 and 64 of row `(v10·8 + blockIdx.y % 8)·128`: v10 is
+  // the page read (after the key blocks v0, −∞ v1, the allocation's address v2, the exchange's phases v3 and v4, the
+  // ring's registers v5 to v8 and the elect's flag v9).
   def twoLoads : Eq(Nat, P.matching(P.tmaLoad, ""), 2) := Eq.refl(2)
 
   def bothFromV : Eq(Nat, P.matching(P.tmaLoad, "(&V_map)"), 2) := Eq.refl(2)
 
-  def firstBoxAtPageRow : Eq(Nat, P.matching(P.tmaLoad, "\"r\"(0u), \"r\"((((v9 * 8u) + (blockIdx.y % 8u)) * 128u)) : \"memory\");"), 1) := Eq.refl(1)
+  def firstBoxAtPageRow : Eq(Nat, P.matching(P.tmaLoad, "\"r\"(0u), \"r\"((((v10 * 8u) + (blockIdx.y % 8u)) * 128u)) : \"memory\");"), 1) := Eq.refl(1)
 
-  def secondBoxAtPageRow : Eq(Nat, P.matching(P.tmaLoad, "\"r\"(64u), \"r\"((((v9 * 8u) + (blockIdx.y % 8u)) * 128u)) : \"memory\");"), 1) := Eq.refl(1)
+  def secondBoxAtPageRow : Eq(Nat, P.matching(P.tmaLoad, "\"r\"(64u), \"r\"((((v10 * 8u) + (blockIdx.y % 8u)) * 128u)) : \"memory\");"), 1) := Eq.refl(1)
 
   // No TMA store, so nothing is written through a map.
   def noTmaStore : Eq(Nat, P.matching("", "cp.async.bulk.tensor.2d.global"), 0) := Eq.refl(0)

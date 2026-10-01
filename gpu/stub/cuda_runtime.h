@@ -1,4 +1,5 @@
 // Stub for check.sh: the runtime API that generated launchers and the harnesses use.
+#pragma once
 #include <cstddef>
 enum cudaError_t { cudaSuccess = 0, cudaErrorInvalidValue = 1 };
 enum cudaFuncAttribute { cudaFuncAttributeMaxDynamicSharedMemorySize = 8 };

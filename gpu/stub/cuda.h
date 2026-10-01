@@ -1,4 +1,5 @@
 // Stub for check.sh: the driver API's tensor maps.
+#pragma once
 struct CUtensorMap { alignas(64) unsigned long long opaque[16]; };
 typedef unsigned long long cuuint64_t;
 typedef unsigned int cuuint32_t;

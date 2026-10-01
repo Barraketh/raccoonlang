@@ -1,6 +1,7 @@
-// Forward attention on sm_100a (gpu/ATTENTION.md, stage A1): for BH heads of `seq` rows, head dimension 128,
-// non-causal, `seq` a multiple of 128, O = softmax(scale · Q·Kᵀ)·V and LSE, from Q, K and V in bf16 `[BH·seq, 128]`
-// to O in f32 `[BH·seq, 128]` and LSE in f32 `[BH·seq]`. The caller passes `scale_log2` = scale · log2(e).
+// Forward attention on sm_100a (gpu/ATTENTION.md, stages A1 and A2): for BH heads of `seq` rows, any `seq` ≥ 1, head
+// dimension 128, O = softmax(scale · Q·Kᵀ + mask)·V and LSE, from Q, K and V in bf16 `[BH·seq, 128]` to O `[BH·seq, 128]`
+// and LSE in f32 `[BH·seq]`. The caller passes `scale_log2` = scale · log2(e). Two kernels: `attention`, non-causal
+// with O in f32, and `attention_causal`, causal (key j of a head only for its queries i ≥ j) with O in bf16.
 //
 // One CTA of eight warps per 128 query rows of one head (ATTENTION.md §2.5). Warp 0 elects a thread that loads Q once
 // into a one-stage ring, and then each 128-key block's K and V, in the order K_0, V_0, K_1, V_1, …, into two-stage
@@ -9,7 +10,11 @@
 // Ô += P_j·V_j, with P read from tensor memory. Warps 2 and 3 idle. Warps 4 to 7, the softmax warpgroup, one row per
 // thread, read S_j twice: once for the row's new maximum, once to write P_j = 2^(c·s − max) to tensor memory in bf16,
 // summing it; they release S_j, rescale Ô's row by 2^(old max − new max) (from the second block on) and publish P_j.
-// After the loop they wait for the last product and store each row of Ô divided by its sum, and its LSE.
+// After the loop they wait for the last product and store each row of Ô divided by its sum, and its LSE. Both reads
+// mask the scores (`Core.maskedScores`): a key past `seq` (a last block reads the next head's rows), or in the causal
+// kernel past the row's query, scores −∞ and so contributes p = 0. The causal kernel runs only the key blocks up to
+// its query tile's (`Core.attentionKernel`'s block count); the rows of a last query tile past `seq` are computed and
+// not stored.
 //
 // Tensor memory: S buffers in columns 0–255, Ô in 256–383, P in 384–447.
 //
@@ -30,8 +35,9 @@ namespace Attn {
   // The first warp of the softmax warpgroup, which must be aligned.
   def softmaxWarp : Nat := 4
 
-  // −∞ and ln 2 as f32 bits.
+  // −∞, the most negative finite f32 and ln 2 as f32 bits.
   def minusInfinity : Nat := 4286578688
+  def lowestFinite : Nat := 4286578687
   def ln2 : Nat := 1060205080
 
   def Cta : Group := Group.cta(256)
@@ -43,7 +49,7 @@ namespace Attn {
   def Idle : Group := Group.warps(2, 2)
   def One : Group := Group.lane
 
-  def Launch (l: Lifetime) : Type { scope = l } := AttnLaunch(l, Attn.box)
+  def Launch (l: Lifetime)(t: DType) : Type { scope = l } := AttnLaunch(l, Attn.box, t)
 
   // What each protocol hands back finished.
   def RingDone (r: Lifetime) : Type { kind = lin, scope = r } := Pair(ProducerDone(r), ConsumerDone(r))
@@ -65,7 +71,7 @@ namespace Attn {
   // ---- The loader ------------------------------------------------------------------------------------------------------
 
   // Q's block once, then K_j and V_j for every key block j; then wait for every stage to be released.
-  def loader {l: Lifetime}{rq: Lifetime}{rk: Lifetime}{rv: Lifetime}(g: Attn.Launch(l))(qr: Ring(rq, Attn.qRing))(kr: Ring(rk, Attn.kRing))
+  def loader {l: Lifetime}{t: DType}{rq: Lifetime}{rk: Lifetime}{rv: Lifetime}(g: Attn.Launch(l, t))(qr: Ring(rq, Attn.qRing))(kr: Ring(rk, Attn.kRing))
       (vr: Ring(rv, Attn.vRing))(pq: Producer(rq))(pk: Producer(rk))(pv: Producer(rv))(m: Lifetime)(e: Ctx(m, Attn.Load))
       : Pair(Ctx(m, Attn.Load), Attn.LoaderDone(rq, rk, rv)) :=
     Core.elect(e, Attn.LoaderDone(rq, rk, rv), fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, Attn.One)): Pair(Ctx(j, Attn.One), Attn.LoaderDone(rq, rk, rv)) => {
@@ -106,7 +112,7 @@ namespace Attn {
 
   // S_0 before the loop; in iteration i, S_{i+1} (when i + 1 < blocks), then Ô (+)= P_i·V_i; after the loop, release
   // Q and wait until the softmax warpgroup has read every S buffer.
-  def issuer {l: Lifetime}{rq: Lifetime}{rk: Lifetime}{rv: Lifetime}{q: Lifetime}{x: Lifetime}(g: Attn.Launch(l))(qr: Ring(rq, Attn.qRing))
+  def issuer {l: Lifetime}{t: DType}{rq: Lifetime}{rk: Lifetime}{rv: Lifetime}{q: Lifetime}{x: Lifetime}(g: Attn.Launch(l, t))(qr: Ring(rq, Attn.qRing))
       (kr: Ring(rk, Attn.kRing))(vr: Ring(rv, Attn.vRing))(accs: AccRing(q, 128))(ex: Exchange(x))(cq: Consumer(rq))(ck: Consumer(rk))
       (cv: Consumer(rv))(ap: AccProducer(q))(rd: ExReader(x))(m: Lifetime)(e: Ctx(m, Attn.Issue))
       : Pair(Ctx(m, Attn.Issue), Attn.IssuerDone(rq, rk, rv, q, x)) :=
@@ -167,57 +173,73 @@ namespace Attn {
 
   // ---- The softmax warpgroup -------------------------------------------------------------------------------------------
 
-  // Pass 1, one chunk: the running maximum `mx` of t = c·s over columns 8c to 8c+7 of this thread's row of S.
-  def maxChunk {n: Lifetime}{q: Lifetime}{mm: Lifetime}{Sc: Lifetime}{Sm: Lifetime}
-      (accs: AccRing(q, 128))(scale: Val(Sc, Grain.uniform, DType.f32))(mx: Reg(Sm, DType.f32))(c: Nat)[fits: Nat.le(Nat.mul(8, Nat.succ(c)), 128)]
-      (e: Ctx(n, Attn.Wg1))(full: AccFull(q, mm, Attn.softmaxWarp)): Pair(Ctx(n, Attn.Wg1), AccFull(q, mm, Attn.softmaxWarp)) := {
+  // Columns 8c to 8c+7 of this thread's row of S, keys 8c to 8c+7 of key block `block`, as t = c·s, masked: −∞ for a
+  // key past the sequence or, in a causal kernel, past this thread's query.
+  def scores {n: Lifetime}{q: Lifetime}{mm: Lifetime}{L: Lifetime}{Sb: Lifetime}{Sc: Lifetime}
+      (accs: AccRing(q, 128))(mask: Mask(L))(block: Val(Sb, Grain.uniform, DType.u32))(scale: Val(Sc, Grain.uniform, DType.f32))
+      (c: Nat)[fits: Nat.le(Nat.mul(8, Nat.succ(c)), 128)](e: Ctx(n, Attn.Wg1))(full: AccFull(q, mm, Attn.softmaxWarp))
+      : Pair(Ctx(n, Attn.Wg1), Pair(AccFull(q, mm, Attn.softmaxWarp), F32x8(n, Grain.thread))) := {
     let (e, (full, s)) := Core.loadAcc8(e, accs, full, c)[fits]
+    let t := F32x8.mk(Core.fmul(scale, s.v0), Core.fmul(scale, s.v1), Core.fmul(scale, s.v2), Core.fmul(scale, s.v3), Core.fmul(scale, s.v4),
+      Core.fmul(scale, s.v5), Core.fmul(scale, s.v6), Core.fmul(scale, s.v7))
+    let (e, t) := Core.maskedScores(e, mask, block, c, t)
+    (e, (full, t))
+  }
+
+  // Pass 1, one chunk: the running maximum `mx` of the masked t over columns 8c to 8c+7 of this thread's row of S.
+  def maxChunk {n: Lifetime}{q: Lifetime}{mm: Lifetime}{L: Lifetime}{Sb: Lifetime}{Sc: Lifetime}{Sm: Lifetime}
+      (accs: AccRing(q, 128))(mask: Mask(L))(block: Val(Sb, Grain.uniform, DType.u32))(scale: Val(Sc, Grain.uniform, DType.f32))
+      (mx: Reg(Sm, DType.f32))(c: Nat)[fits: Nat.le(Nat.mul(8, Nat.succ(c)), 128)]
+      (e: Ctx(n, Attn.Wg1))(full: AccFull(q, mm, Attn.softmaxWarp)): Pair(Ctx(n, Attn.Wg1), AccFull(q, mm, Attn.softmaxWarp)) := {
+    let (e, (full, t)) := Attn.scores(accs, mask, block, scale, c, e, full)[fits]
     let (e, old) := Core.get(e, mx)
-    let m01 := Core.fmax(Core.fmul(scale, s.v0), Core.fmul(scale, s.v1))
-    let m23 := Core.fmax(Core.fmul(scale, s.v2), Core.fmul(scale, s.v3))
-    let m45 := Core.fmax(Core.fmul(scale, s.v4), Core.fmul(scale, s.v5))
-    let m67 := Core.fmax(Core.fmul(scale, s.v6), Core.fmul(scale, s.v7))
+    let m01 := Core.fmax(t.v0, t.v1)
+    let m23 := Core.fmax(t.v2, t.v3)
+    let m45 := Core.fmax(t.v4, t.v5)
+    let m67 := Core.fmax(t.v6, t.v7)
     (Core.set(e, mx, Core.fmax(old, Core.fmax(Core.fmax(m01, m23), Core.fmax(m45, m67)))), full)
   }
 
-  // Pass 1: `mx` becomes the maximum of its value and t over the row.
-  def pass1 {n: Lifetime}{q: Lifetime}{mm: Lifetime}{Sc: Lifetime}{Sm: Lifetime}
-      (accs: AccRing(q, 128))(scale: Val(Sc, Grain.uniform, DType.f32))(mx: Reg(Sm, DType.f32))
-      (e: Ctx(n, Attn.Wg1))(full: AccFull(q, mm, Attn.softmaxWarp)): Pair(Ctx(n, Attn.Wg1), AccFull(q, mm, Attn.softmaxWarp)) := {
-    let (e, full) := Attn.maxChunk(accs, scale, mx, 0, e, full)
-    let (e, full) := Attn.maxChunk(accs, scale, mx, 1, e, full)
-    let (e, full) := Attn.maxChunk(accs, scale, mx, 2, e, full)
-    let (e, full) := Attn.maxChunk(accs, scale, mx, 3, e, full)
-    let (e, full) := Attn.maxChunk(accs, scale, mx, 4, e, full)
-    let (e, full) := Attn.maxChunk(accs, scale, mx, 5, e, full)
-    let (e, full) := Attn.maxChunk(accs, scale, mx, 6, e, full)
-    let (e, full) := Attn.maxChunk(accs, scale, mx, 7, e, full)
-    let (e, full) := Attn.maxChunk(accs, scale, mx, 8, e, full)
-    let (e, full) := Attn.maxChunk(accs, scale, mx, 9, e, full)
-    let (e, full) := Attn.maxChunk(accs, scale, mx, 10, e, full)
-    let (e, full) := Attn.maxChunk(accs, scale, mx, 11, e, full)
-    let (e, full) := Attn.maxChunk(accs, scale, mx, 12, e, full)
-    let (e, full) := Attn.maxChunk(accs, scale, mx, 13, e, full)
-    let (e, full) := Attn.maxChunk(accs, scale, mx, 14, e, full)
-    Attn.maxChunk(accs, scale, mx, 15, e, full)
+  // Pass 1: `mx` becomes the maximum of its value and the masked t over the row.
+  def pass1 {n: Lifetime}{q: Lifetime}{mm: Lifetime}{L: Lifetime}{Sb: Lifetime}{Sc: Lifetime}{Sm: Lifetime}
+      (accs: AccRing(q, 128))(mask: Mask(L))(block: Val(Sb, Grain.uniform, DType.u32))(scale: Val(Sc, Grain.uniform, DType.f32))
+      (mx: Reg(Sm, DType.f32))(e: Ctx(n, Attn.Wg1))(full: AccFull(q, mm, Attn.softmaxWarp)): Pair(Ctx(n, Attn.Wg1), AccFull(q, mm, Attn.softmaxWarp)) := {
+    let (e, full) := Attn.maxChunk(accs, mask, block, scale, mx, 0, e, full)
+    let (e, full) := Attn.maxChunk(accs, mask, block, scale, mx, 1, e, full)
+    let (e, full) := Attn.maxChunk(accs, mask, block, scale, mx, 2, e, full)
+    let (e, full) := Attn.maxChunk(accs, mask, block, scale, mx, 3, e, full)
+    let (e, full) := Attn.maxChunk(accs, mask, block, scale, mx, 4, e, full)
+    let (e, full) := Attn.maxChunk(accs, mask, block, scale, mx, 5, e, full)
+    let (e, full) := Attn.maxChunk(accs, mask, block, scale, mx, 6, e, full)
+    let (e, full) := Attn.maxChunk(accs, mask, block, scale, mx, 7, e, full)
+    let (e, full) := Attn.maxChunk(accs, mask, block, scale, mx, 8, e, full)
+    let (e, full) := Attn.maxChunk(accs, mask, block, scale, mx, 9, e, full)
+    let (e, full) := Attn.maxChunk(accs, mask, block, scale, mx, 10, e, full)
+    let (e, full) := Attn.maxChunk(accs, mask, block, scale, mx, 11, e, full)
+    let (e, full) := Attn.maxChunk(accs, mask, block, scale, mx, 12, e, full)
+    let (e, full) := Attn.maxChunk(accs, mask, block, scale, mx, 13, e, full)
+    let (e, full) := Attn.maxChunk(accs, mask, block, scale, mx, 14, e, full)
+    Attn.maxChunk(accs, mask, block, scale, mx, 15, e, full)
   }
 
-  // Pass 2, one chunk: p = 2^(t − max) over columns 8c to 8c+7, added to `sum` and written as chunk c of P.
-  def expChunk {n: Lifetime}{q: Lifetime}{mm: Lifetime}{x: Lifetime}{o: OState}{Sc: Lifetime}{Sm: Lifetime}{um: Grain}{Ss: Lifetime}
-      (accs: AccRing(q, 128))(ex: Exchange(x))(scale: Val(Sc, Grain.uniform, DType.f32))(mx: Val(Sm, um, DType.f32))(sum: Reg(Ss, DType.f32))
-      (c: Nat)[fitsS: Nat.le(Nat.mul(8, Nat.succ(c)), 128)][fitsP: Nat.lt(c, 16)]
+  // Pass 2, one chunk: p = 2^(t − max) of the masked t over columns 8c to 8c+7 (0 for a masked key), added to `sum` and
+  // written as chunk c of P.
+  def expChunk {n: Lifetime}{q: Lifetime}{mm: Lifetime}{x: Lifetime}{o: OState}{L: Lifetime}{Sb: Lifetime}{Sc: Lifetime}{Sm: Lifetime}{um: Grain}
+      {Ss: Lifetime}
+      (accs: AccRing(q, 128))(ex: Exchange(x))(mask: Mask(L))(block: Val(Sb, Grain.uniform, DType.u32))(scale: Val(Sc, Grain.uniform, DType.f32))
+      (mx: Val(Sm, um, DType.f32))(sum: Reg(Ss, DType.f32))(c: Nat)[fitsS: Nat.le(Nat.mul(8, Nat.succ(c)), 128)][fitsP: Nat.lt(c, 16)]
       (e: Ctx(n, Attn.Wg1))(st: Pair(AccFull(q, mm, Attn.softmaxWarp), PFree(x, mm, Attn.softmaxWarp, o, c)))
       : Pair(Ctx(n, Attn.Wg1), Pair(AccFull(q, mm, Attn.softmaxWarp), PFree(x, mm, Attn.softmaxWarp, o, Nat.succ(c)))) := {
     let (full, p) := st
-    let (e, (full, s)) := Core.loadAcc8(e, accs, full, c)[fitsS]
-    let (e, p0) := Core.ex2(e, Core.fsub(Core.fmul(scale, s.v0), mx))
-    let (e, p1) := Core.ex2(e, Core.fsub(Core.fmul(scale, s.v1), mx))
-    let (e, p2) := Core.ex2(e, Core.fsub(Core.fmul(scale, s.v2), mx))
-    let (e, p3) := Core.ex2(e, Core.fsub(Core.fmul(scale, s.v3), mx))
-    let (e, p4) := Core.ex2(e, Core.fsub(Core.fmul(scale, s.v4), mx))
-    let (e, p5) := Core.ex2(e, Core.fsub(Core.fmul(scale, s.v5), mx))
-    let (e, p6) := Core.ex2(e, Core.fsub(Core.fmul(scale, s.v6), mx))
-    let (e, p7) := Core.ex2(e, Core.fsub(Core.fmul(scale, s.v7), mx))
+    let (e, (full, t)) := Attn.scores(accs, mask, block, scale, c, e, full)[fitsS]
+    let (e, p0) := Core.ex2(e, Core.fsub(t.v0, mx))
+    let (e, p1) := Core.ex2(e, Core.fsub(t.v1, mx))
+    let (e, p2) := Core.ex2(e, Core.fsub(t.v2, mx))
+    let (e, p3) := Core.ex2(e, Core.fsub(t.v3, mx))
+    let (e, p4) := Core.ex2(e, Core.fsub(t.v4, mx))
+    let (e, p5) := Core.ex2(e, Core.fsub(t.v5, mx))
+    let (e, p6) := Core.ex2(e, Core.fsub(t.v6, mx))
+    let (e, p7) := Core.ex2(e, Core.fsub(t.v7, mx))
     let (e, old) := Core.get(e, sum)
     let e := Core.set(e, sum, Core.fadd(old, Core.fadd(Core.fadd(Core.fadd(p0, p1), Core.fadd(p2, p3)), Core.fadd(Core.fadd(p4, p5), Core.fadd(p6, p7)))))
     let (e, p) := Core.storeP(e, ex, p, F32x8.mk(p0, p1, p2, p3, p4, p5, p6, p7))[fitsP]
@@ -225,51 +247,64 @@ namespace Attn {
   }
 
   // Pass 2: P, every chunk, against the row's maximum `mx`; `sum` gains the row's sum of p.
-  def pass2 {n: Lifetime}{q: Lifetime}{mm: Lifetime}{x: Lifetime}{o: OState}{Sc: Lifetime}{Sm: Lifetime}{um: Grain}{Ss: Lifetime}
-      (accs: AccRing(q, 128))(ex: Exchange(x))(scale: Val(Sc, Grain.uniform, DType.f32))(mx: Val(Sm, um, DType.f32))(sum: Reg(Ss, DType.f32))
-      (e: Ctx(n, Attn.Wg1))(st: Pair(AccFull(q, mm, Attn.softmaxWarp), PFree(x, mm, Attn.softmaxWarp, o, 0)))
+  def pass2 {n: Lifetime}{q: Lifetime}{mm: Lifetime}{x: Lifetime}{o: OState}{L: Lifetime}{Sb: Lifetime}{Sc: Lifetime}{Sm: Lifetime}{um: Grain}
+      {Ss: Lifetime}
+      (accs: AccRing(q, 128))(ex: Exchange(x))(mask: Mask(L))(block: Val(Sb, Grain.uniform, DType.u32))(scale: Val(Sc, Grain.uniform, DType.f32))
+      (mx: Val(Sm, um, DType.f32))(sum: Reg(Ss, DType.f32))(e: Ctx(n, Attn.Wg1))(st: Pair(AccFull(q, mm, Attn.softmaxWarp), PFree(x, mm, Attn.softmaxWarp, o, 0)))
       : Pair(Ctx(n, Attn.Wg1), Pair(AccFull(q, mm, Attn.softmaxWarp), PFree(x, mm, Attn.softmaxWarp, o, 16))) := {
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 0, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 1, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 2, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 3, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 4, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 5, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 6, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 7, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 8, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 9, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 10, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 11, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 12, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 13, e, st)
-    let (e, st) := Attn.expChunk(accs, ex, scale, mx, sum, 14, e, st)
-    Attn.expChunk(accs, ex, scale, mx, sum, 15, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 0, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 1, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 2, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 3, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 4, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 5, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 6, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 7, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 8, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 9, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 10, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 11, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 12, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 13, e, st)
+    let (e, st) := Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 14, e, st)
+    Attn.expChunk(accs, ex, mask, block, scale, mx, sum, 15, e, st)
   }
 
   // The softmax warpgroup's state across key blocks: the S ring's reading side and the exchange's writing side.
   def Softmax (q: Lifetime)(x: Lifetime)(m: Lifetime)(o: OState) : Type { kind = lin, scope = union(q, union(x, m)) } :=
     Pair(AccConsumerAt(q, m, Attn.softmaxWarp), ExWriterAt(x, m, Attn.softmaxWarp, o))
 
+  // The row's maximum `mx` as the exponents use it: 0 while every score so far is masked (−∞), so that no
+  // −∞ − (−∞) arises (ATTENTION.md §3.9). It never fires in a launch the launcher accepts: key 0 is inside the
+  // sequence and at or before every query, so every row's first block has a score.
+  def usable {n: Lifetime}{Sl: Lifetime}{Sm: Lifetime}(lowest: Val(Sl, Grain.uniform, DType.f32))(mx: Reg(Sm, DType.f32))(e: Ctx(n, Attn.Wg1))
+      : Pair(Ctx(n, Attn.Wg1), Val(n, Grain.thread, DType.f32)) := {
+    let (e, m) := Core.get(e, mx)
+    let (e, use) := Core.reg(e, Core.select(Core.lt(m, lowest), Core.zero(DType.f32), m))
+    Core.get(e, use)
+  }
+
   // Each thread owns one row: its running maximum `m` (log2 units) and sum `l` are registers of the role. Per key
-  // block: await S_j; pass 1 (the new maximum); acquire P; pass 2 (P_j and its sum); release S_j; from the second block
-  // on, rescale Ô's row by α = 2^(m_old − m_new); publish P_j; l = α·l + sum. After the loop: wait for the last
-  // product, and store O = Ô/l and LSE = (m + log2 l)·ln 2.
-  def softmax {l: Lifetime}{q: Lifetime}{x: Lifetime}(g: Attn.Launch(l))(accs: AccRing(q, 128))(ex: Exchange(x))(ac: AccConsumer(q))
-      (wr: ExWriter(x))(own: OOwn(l, DType.f32))(m: Lifetime)(e: Ctx(m, Attn.Wg1)): Pair(Ctx(m, Attn.Wg1), Attn.SoftmaxDone(q, x)) := {
+  // block: await S_j; pass 1 (the new maximum of the masked scores); acquire P; pass 2 (P_j and its sum, against the
+  // maximum as `usable` gives it); release S_j; from the second block on, rescale Ô's row by α = 2^(m_old − m_new);
+  // publish P_j; l = α·l + sum. After the loop: wait for the last product, and store O = Ô/l and
+  // LSE = (m + log2 l)·ln 2.
+  def softmax {l: Lifetime}{t: DType}{q: Lifetime}{x: Lifetime}(g: Attn.Launch(l, t))(accs: AccRing(q, 128))(ex: Exchange(x))(ac: AccConsumer(q))
+      (wr: ExWriter(x))(own: OOwn(l, t))(m: Lifetime)(e: Ctx(m, Attn.Wg1)): Pair(Ctx(m, Attn.Wg1), Attn.SoftmaxDone(q, x)) := {
     let (e, mReg) := Core.reg(e, Core.zero(DType.f32))
     let (e, lReg) := Core.reg(e, Core.zero(DType.f32))
+    let (e, lowest) := Core.fconst(e, Attn.lowestFinite)
     let first := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Attn.Wg1))(st: Attn.Softmax(q, x, m, OState.fresh))
         : Pair(Ctx(n, Attn.Wg1), Attn.Softmax(q, x, m, OState.held)) => {
       let (c, wa) := st
       let (e, full) := Core.awaitAcc(e, accs, c)
-      let (e, lowest) := Core.fconst(e, Attn.minusInfinity)
-      let e := Core.set(e, mReg, lowest)
-      let (e, full) := Attn.pass1(accs, g.scale, mReg, e, full)
-      let (e, mNew) := Core.get(e, mReg)
+      let (e, minusInfinity) := Core.fconst(e, Attn.minusInfinity)
+      let e := Core.set(e, mReg, minusInfinity)
+      let (e, full) := Attn.pass1(accs, g.mask, i, g.scale, mReg, e, full)
+      let (e, mNew) := Attn.usable(lowest, mReg, e)
       let (e, p) := Core.acquireP(e, ex, wa)
       let e := Core.set(e, lReg, Core.zero(DType.f32))
-      let (e, (full, p)) := Attn.pass2(accs, ex, g.scale, mNew, lReg, e, (full, p))
+      let (e, (full, p)) := Attn.pass2(accs, ex, g.mask, i, g.scale, mNew, lReg, e, (full, p))
       let (e, c) := Core.releaseAcc(e, accs, full)
       let (e, wa) := Core.publishP(e, ex, p)
       (e, (c, wa))
@@ -279,11 +314,11 @@ namespace Attn {
       let (c, wa) := st
       let (e, full) := Core.awaitAcc(e, accs, c)
       let (e, mOld) := Core.get(e, mReg)
-      let (e, full) := Attn.pass1(accs, g.scale, mReg, e, full)
-      let (e, mNew) := Core.get(e, mReg)
+      let (e, full) := Attn.pass1(accs, g.mask, i, g.scale, mReg, e, full)
+      let (e, mNew) := Attn.usable(lowest, mReg, e)
       let (e, p) := Core.acquireP(e, ex, wa)
       let (e, sum) := Core.reg(e, Core.zero(DType.f32))
-      let (e, (full, p)) := Attn.pass2(accs, ex, g.scale, mNew, sum, e, (full, p))
+      let (e, (full, p)) := Attn.pass2(accs, ex, g.mask, i, g.scale, mNew, sum, e, (full, p))
       let (e, c) := Core.releaseAcc(e, accs, full)
       let (e, alpha) := Core.ex2(e, Core.fsub(mOld, mNew))
       let (e, p) := Core.rescaleO(e, ex, p, alpha)
@@ -308,10 +343,10 @@ namespace Attn {
 
   // ---- The CTA ---------------------------------------------------------------------------------------------------------
 
-  def roles {l: Lifetime}{rq: Lifetime}{rk: Lifetime}{rv: Lifetime}{q: Lifetime}{x: Lifetime}(g: Attn.Launch(l))(qr: Ring(rq, Attn.qRing))
+  def roles {l: Lifetime}{t: DType}{rq: Lifetime}{rk: Lifetime}{rv: Lifetime}{q: Lifetime}{x: Lifetime}(g: Attn.Launch(l, t))(qr: Ring(rq, Attn.qRing))
       (kr: Ring(rk, Attn.kRing))(vr: Ring(rv, Attn.vRing))(accs: AccRing(q, 128))(ex: Exchange(x))(pq: Producer(rq))(cq: Consumer(rq))
       (pk: Producer(rk))(ck: Consumer(rk))(pv: Producer(rv))(cv: Consumer(rv))(ap: AccProducer(q))(ac: AccConsumer(q))(wr: ExWriter(x))
-      (rd: ExReader(x))(own: OOwn(l, DType.f32))(e: Ctx(l, Attn.Cta)): Pair(Ctx(l, Attn.Cta), Attn.AllDone(rq, rk, rv, q, x)) := {
+      (rd: ExReader(x))(own: OOwn(l, t))(e: Ctx(l, Attn.Cta)): Pair(Ctx(l, Attn.Cta), Attn.AllDone(rq, rk, rv, q, x)) := {
     let idle := fun (m: Lifetime)(e: Ctx(m, Attn.Idle)): Pair(Ctx(m, Attn.Idle), Unit) => (e, Unit.unit)
     let rest := fun (m: Lifetime)(e: Ctx(m, Attn.Rest)): Pair(Ctx(m, Attn.Rest), Pair(Attn.IssuerDone(rq, rk, rv, q, x), Unit)) =>
       Core.split(e, 1, Attn.IssuerDone(rq, rk, rv, q, x), Unit,
@@ -328,9 +363,10 @@ namespace Attn {
     (e, ((pvd, cvd), ((pkd, ckd), ((pqd, cqd), ((wrd, rdd), (apd, acd))))))
   }
 
-  def kernel : Program :=
-    Core.attentionKernel("attention",
-      fun (l: Lifetime)(e: Ctx(l, Attn.Cta))(g: Attn.Launch(l))(own: OOwn(l, DType.f32))(permit: TmemPermit(l)): Ctx(l, Attn.Cta) => {
+  // The kernel `name`, causal or not, writing O as `t` (f32 or bf16).
+  def kernel (name: String)(causal: Bool)(t: DType): Program :=
+    Core.attentionKernel(name, causal, t,
+      fun (l: Lifetime)(e: Ctx(l, Attn.Cta))(g: Attn.Launch(l, t))(own: OOwn(l, t))(permit: TmemPermit(l)): Ctx(l, Attn.Cta) => {
         // The rings, innermost the V ring, around the roles.
         let rings := fun (q: Lifetime)(x: Lifetime)(accs: AccRing(q, 128))(ex: Exchange(x))(ap: AccProducer(q))(ac: AccConsumer(q))(wr: ExWriter(x))
             (rd: ExReader(x))(e: Ctx(l, Attn.Cta)): Pair(Ctx(l, Attn.Cta), Pair(Attn.ExDone(x), Attn.AccDone(q))) => {
@@ -348,9 +384,9 @@ namespace Attn {
           Core.withRing(e, Attn.qRing, Pair(Attn.ExDone(x), Attn.AccDone(q)), qStage)
         }
         // Tensor memory: the S ring in the lower half, the exchange in the upper.
-        let regions := fun (a: Lifetime)(t: Tmem(a, 512))(acc: Acc(a, AccState.empty))(e: Ctx(l, Attn.Cta))
+        let regions := fun (a: Lifetime)(tm: Tmem(a, 512))(acc: Acc(a, AccState.empty))(e: Ctx(l, Attn.Cta))
             : Pair(Ctx(l, Attn.Cta), Pair(Acc(a, AccState.empty), Unit)) =>
-          Core.splitTmem(e, t, acc, 256, Unit, fun (b: Lifetime)(c: Lifetime)(ts: Tmem(b, 256))(accS: Acc(b, AccState.empty))(to: Tmem(c, Nat.sub(512, 256)))
+          Core.splitTmem(e, tm, acc, 256, Unit, fun (b: Lifetime)(c: Lifetime)(ts: Tmem(b, 256))(accS: Acc(b, AccState.empty))(to: Tmem(c, Nat.sub(512, 256)))
               (accO: Acc(c, AccState.empty))(e: Ctx(l, Attn.Cta)): Pair(Ctx(l, Attn.Cta), Pair(Pair(Acc(b, AccState.empty), Acc(c, AccState.empty)), Unit)) => {
             let sRing := fun (q: Lifetime)(accs: AccRing(q, 128))(ap: AccProducer(q))(ac: AccConsumer(q))(e: Ctx(l, Attn.Cta))
                 : Pair(Ctx(l, Attn.Cta), Pair(Attn.AccDone(q), Acc(c, AccState.empty))) => {
@@ -367,4 +403,6 @@ namespace Attn {
       })
 }
 
-{ Core.render(Attn.kernel) }
+// The non-causal kernel with f32 output (A1's, now for any `seq`), then the causal one with bf16 output.
+{ String.append(Core.render(Attn.kernel("attention", Bool.false, Cuda.DType.f32)),
+    Core.render(Attn.kernel("attention_causal", Bool.true, Cuda.DType.bf16))) }

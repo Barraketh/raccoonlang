@@ -153,3 +153,47 @@ Observations from building `PAGED.md`'s P1 (`Core.rac`'s paged-attention section
 Timing (CPU s of the native binary, built from lemur_gpu at fb08df0, on a machine not idle, 2026-10-01):
 `gen.sh encoding/examples/paged_attention.rac` 9.1, `gen.sh encoding/examples/attention.rac` 9.0 (7.5 above, idle). The
 generated paged kernel is 2677 lines (182 KB) with its launcher.
+
+## A2: masks, tails and bf16 output
+
+Observations from building `ATTENTION.md`'s A2 for both kernels (`Core.rac`'s masks section, `attnStart`, `storeO`'s
+conversion, the examples' second kernels, the harnesses' A2 sizes).
+
+1. **Two kernels per example.** Causal and O's type are generation-time arguments, so one example file renders both
+   of its kernels (`String.append` of two `render`s) rather than a third copy of the roles (§"Paged attention" 1).
+   That needed `#pragma once` in `gpu/stub/`'s headers, since each rendered kernel brings its own includes, and it
+   doubles generation: about 19 CPU s per example. Every role that sees the launch or `OOwn` gained `{t: DType}`.
+2. **The mask is recomputed per chunk.** `maskedScores` declares the chunk's first key and the limit
+   (`min(seq, q + 1)`, with the row and its `__shfl_sync`) for each of the 16 chunks of each of the two passes, where
+   once per block would do: the limit is a value the next call cannot be handed back without a public `bind` (§1, 4).
+   With the eight selects, each kernel is about 3370 lines, against A1's 2663. The non-causal kernel masks every
+   block, although only the last can hold a key past `seq`; FA4 masks only the blocks that need it, by a uniform
+   branch, which here would need the whole chunk state through `branch` (§1, 5). Neither cost is measured.
+3. **A collective inside a select.** The first `maskedScores` printed the causal limit as
+   `(seq < q + 1) ? seq : q + 1` with `q` inlined, so the false arm would have run `__shfl_sync(0xffffffff, …)` in part
+   of the warp. It now declares `q + 1` first. Nothing in the core or in `Check` notices a warp collective
+   (`Builtin.warp`) inside a select or a branch arm; a checker rule could.
+4. **The −∞ guard needs a register.** The example's `usable` computes `select(m < lowest, 0, m)` once per block and
+   uses it in 128 exponents and the rescale; without a public `bind` it is a register set once and read once (§1, 4).
+5. **bf16 conversion through `static_cast`.** `storeO` converts with `Expr.cast`, which prints
+   `static_cast<__nv_bfloat16>(…)`, cuda_bf16.h's conversion from float (round to nearest even). It does not compile
+   where `__CUDA_NO_BFLOAT16_CONVERSIONS__` is defined, as PyTorch's extension builds define it; a call of
+   `__float2bfloat16_rn` would, but `Cuda.Expr` has no call form. The stub's `__nv_bfloat16` gained the conversion.
+6. **The paged harness's reference was not exact.** P1's reference weighted V by `exp(s − LSE)`, which leaves residues
+   near 10⁻¹⁷ where a canary's mean is 0, so T2's exact comparison would have failed on a correct kernel; it now
+   divides by `l` as the contiguous harness does. Its guard bands were 32 rows, too few for a tail tile's 127 rows past
+   the last head; they are now 128.
+7. **The harnesses ran against a mock.** Both harnesses were linked against a host mock of the runtime and driver
+   (not in the repository) whose `cudaLaunchKernel` emulates the kernels' semantics per CTA: rank-2 TMA rows with
+   signed coordinates and zero fill (so tail blocks read the next head's rows), the guarded table read, the mask, the
+   −∞ guard, bf16 P, the peeled first block, the rescale, `storeO`'s guard and bf16 rounding, behind the generated
+   launchers' own host code. Every check passed. Broken emulations were caught: no tail mask (T1 at `seq` = 1), no
+   causal mask, one key block too few for the causal kernel, stores past `seq` (the paged harness only once its guard
+   bands were 128 rows), and truncating bf16 conversion (T2 and T3 of the causal kernel); running every key block in
+   the causal kernel, the mask alone keeping it correct, passed. The mock checks the harnesses, the references and
+   the launchers, not the kernels.
+
+Timing (CPU s of the native binary, built from lemur_gpu at 267aa37, on a machine not idle, 2026-10-01):
+`gen.sh encoding/examples/attention.rac` 18.8 and `gen.sh encoding/examples/paged_attention.rac` 19.3, each two
+kernels; checking `checks/emitted.rac` 3.5 and `checks/paged_emitted.rac` 8.7. The generated files are 6744 lines
+(455 KB) and 6772 lines (457 KB) with their launchers.

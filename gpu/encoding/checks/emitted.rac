@@ -11,6 +11,9 @@
 // - The softmax warpgroup, after its last `storeP`, releases S and spins in `awaitAcc` for the next S before
 //   `publishP` (which the types allow), so `publishP` must reconverge the warp with `__syncwarp` before the
 //   `.sync.aligned` `tcgen05.wait::st`.
+// - The kernel is causal with bf16 output (A2): its key-block count is capped at the query tile's own, the softmax
+//   warpgroup masks one chunk of scores (`maskedScores`, whose row needs the warp converged and is declared before the
+//   select that takes the minimum), and `storeO` converts every element of O to bf16.
 
 import Check
 import encoding.Core
@@ -66,12 +69,13 @@ namespace E {
     Core.storeP(e, ex, p, v)[fits]
 
   // Every chunk of P written, S released, a spin in `awaitAcc`, then the publish.
-  def writer {l: Lifetime}{q: Lifetime}{x: Lifetime}(g: AttnLaunch(l, E.box))(accs: AccRing(q, 128))(ex: Exchange(x))(ac: AccConsumer(q))
-      (wr: ExWriter(x))(own: OOwn(l, DType.f32))(m: Lifetime)(e: Ctx(m, E.Wg1)): Pair(Ctx(m, E.Wg1), E.WriterDone(q, x)) := {
+  def writer {l: Lifetime}{q: Lifetime}{x: Lifetime}(g: AttnLaunch(l, E.box, DType.bf16))(accs: AccRing(q, 128))(ex: Exchange(x))(ac: AccConsumer(q))
+      (wr: ExWriter(x))(own: OOwn(l, DType.bf16))(m: Lifetime)(e: Ctx(m, E.Wg1)): Pair(Ctx(m, E.Wg1), E.WriterDone(q, x)) := {
     let (e, c) := Core.takeAccConsumer(e, accs, ac)
     let (e, wa) := Core.takeExWriter(e, ex, wr)
     let (e, one) := Core.fconst(e, 1065353216)
     let v := F32x8.mk(one, one, one, one, one, one, one, one)
+    let (e, masked) := Core.maskedScores(e, g.mask, Core.lit(3), 2, v)
     let (e, full) := Core.awaitAcc(e, accs, c)
     let (e, p) := Core.acquireP(e, ex, wa)
     let (e, p) := E.chunk(ex, v, 0, e, p)
@@ -99,9 +103,9 @@ namespace E {
     (e, (Core.finishAccConsumer(c), Core.closeExWriter(final)))
   }
 
-  def roles {l: Lifetime}{rv: Lifetime}{q: Lifetime}{x: Lifetime}(g: AttnLaunch(l, E.box))(vr: Ring(rv, E.vRing))(accs: AccRing(q, 128))
+  def roles {l: Lifetime}{rv: Lifetime}{q: Lifetime}{x: Lifetime}(g: AttnLaunch(l, E.box, DType.bf16))(vr: Ring(rv, E.vRing))(accs: AccRing(q, 128))
       (ex: Exchange(x))(pv: Producer(rv))(cv: Consumer(rv))(ap: AccProducer(q))(ac: AccConsumer(q))(wr: ExWriter(x))(rd: ExReader(x))
-      (own: OOwn(l, DType.f32))(e: Ctx(l, E.Cta)): Pair(Ctx(l, E.Cta), E.AllDone(rv, q, x)) := {
+      (own: OOwn(l, DType.bf16))(e: Ctx(l, E.Cta)): Pair(Ctx(l, E.Cta), E.AllDone(rv, q, x)) := {
     let idle := fun (m: Lifetime)(e: Ctx(m, E.Idle)): Pair(Ctx(m, E.Idle), Unit) => (e, Unit.unit)
     let loader := fun (m: Lifetime)(e: Ctx(m, E.Load)): Pair(Ctx(m, E.Load), ProducerDone(rv)) =>
       Core.elect(e, ProducerDone(rv), fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, E.One)): Pair(Ctx(j, E.One), ProducerDone(rv)) => {
@@ -120,8 +124,8 @@ namespace E {
   }
 
   def kernel : Program :=
-    Core.attentionKernel("emitted",
-      fun (l: Lifetime)(e: Ctx(l, E.Cta))(g: AttnLaunch(l, E.box))(own: OOwn(l, DType.f32))(permit: TmemPermit(l)): Ctx(l, E.Cta) => {
+    Core.attentionKernel("emitted", Bool.true, DType.bf16,
+      fun (l: Lifetime)(e: Ctx(l, E.Cta))(g: AttnLaunch(l, E.box, DType.bf16))(own: OOwn(l, DType.bf16))(permit: TmemPermit(l)): Ctx(l, E.Cta) => {
         let regions := fun (a: Lifetime)(t: Tmem(a, 512))(acc: Acc(a, AccState.empty))(e: Ctx(l, E.Cta))
             : Pair(Ctx(l, E.Cta), Pair(Acc(a, AccState.empty), Unit)) =>
           Core.splitTmem(e, t, acc, 256, Unit, fun (b: Lifetime)(c: Lifetime)(ts: Tmem(b, 256))(accS: Acc(b, AccState.empty))(to: Tmem(c, Nat.sub(512, 256)))
@@ -212,26 +216,53 @@ namespace E {
   def pvMma : String :=
     "asm volatile(\"{\\n\\t.reg .pred p;\\n\\tsetp.ne.b32 p, %4, 0;\\n\\ttcgen05.mma.cta_group::1.kind::f16 [%0], [%1], %2, %3, p;\\n\\t}\" :  : "
 
-  // v1 is the allocation's address (v0 is the number of key blocks). Every one of the 8 products writes Ô at the upper
-  // half's first column, v1 + 256, and the first reads P from 128 columns further.
+  // v2 is the allocation's address (v0 is the number of key blocks, v1 is −∞). Every one of the 8 products writes Ô at
+  // the upper half's first column, v2 + 256, and the first reads P from 128 columns further.
   def pvCount : Eq(Nat, E.starting(E.pvMma), 8) := Eq.refl(8)
 
-  def pvIntoUpperHalf : Eq(Nat, E.starting(Text.cat(E.pvMma, "\"r\"((v1 + 256u)), ")), 8) := Eq.refl(8)
+  def pvIntoUpperHalf : Eq(Nat, E.starting(Text.cat(E.pvMma, "\"r\"((v2 + 256u)), ")), 8) := Eq.refl(8)
 
-  def pvFirstFromP : Eq(Nat, E.starting(Text.cat(E.pvMma, "\"r\"((v1 + 256u)), \"r\"(((v1 + 256u) + 128u)), ")), 1) := Eq.refl(1)
+  def pvFirstFromP : Eq(Nat, E.starting(Text.cat(E.pvMma, "\"r\"((v2 + 256u)), \"r\"(((v2 + 256u) + 128u)), ")), 1) := Eq.refl(1)
 
   // An MMA with both operands in shared memory: its template, up to its operands.
   def ssMma : String :=
     "asm volatile(\"{\\n\\t.reg .pred p;\\n\\tsetp.ne.b32 p, %4, 0;\\n\\ttcgen05.mma.cta_group::1.kind::f16 [%0], %1, %2, %3, p;\\n\\t}\" :  : "
 
-  // The S ring's one buffer starts at the second quarter, v1 + 128 (v2 is the ring's issuing stage): all 4 MMAs of
+  // The S ring's one buffer starts at the second quarter, v2 + 128 (v3 is the ring's issuing stage): all 4 MMAs of
   // the S write there.
   def sCount : Eq(Nat, E.starting(E.ssMma), 4) := Eq.refl(4)
 
-  def sIntoSecondQuarter : Eq(Nat, E.starting(Text.cat(E.ssMma, "\"r\"(((v1 + 128u) + (v2 * 128u))), ")), 4) := Eq.refl(4)
+  def sIntoSecondQuarter : Eq(Nat, E.starting(Text.cat(E.ssMma, "\"r\"(((v2 + 128u) + (v3 * 128u))), ")), 4) := Eq.refl(4)
 
   // `awaitAcc`'s wait and fence, then `publishP`: the warp reconverges before `wait::st`.
   def syncBeforeWaitSt : Eq(Bool, E.occurs(E.lines, List.cons("asm volatile(\"tcgen05.fence::after_thread_sync;\" :  :  : \"memory\");",
       List.cons("__syncwarp();", List.cons("asm volatile(\"tcgen05.wait::st.sync.aligned;\" :  :  : \"memory\");", List.nil(String))))), Bool.true) :=
     Eq.refl(Bool.true)
+
+  // The causal block count, min(ceil(seq / 128), blockIdx.x + 1), declared once before anything else; then −∞.
+  def causalBlocks : Eq(Bool, E.occurs(E.lines,
+      List.cons("const unsigned v0 = ((((seq + 127u) / 128u) < (blockIdx.x + 1u)) ? ((seq + 127u) / 128u) : (blockIdx.x + 1u));",
+      List.cons("float v1;", List.cons("asm volatile(\"mov.b32 %0, 4286578688;\" : \"=f\"(v1) :  : \"memory\");", List.nil(String))))), Bool.true) :=
+    Eq.refl(Bool.true)
+
+  // Chunk 2 of key block 3, masked for this thread's query row q: key 3·128 + 16 + j is kept while below
+  // min(seq, q + 1), else −∞ (v1). The warp reconverges before the row's `__shfl_sync`, and the row is declared before
+  // the select of the minimum, which would evaluate it in part of the warp only.
+  def causalMask : Eq(Bool, E.occurs(E.lines,
+      List.cons("const unsigned v16 = ((3u * 128u) + 16u);", List.cons("__syncwarp();",
+      List.cons("const unsigned v17 = ((((blockIdx.x * 128u) + ((__shfl_sync(0xffffffffu, threadIdx.x / 32u, 0) % 4u) * 32u)) + (threadIdx.x % 32u)) + 1u);",
+      List.cons("const unsigned v18 = ((seq < v17) ? seq : v17);", List.cons("const float v19 = ((v16 < v18) ? v15 : v1);",
+      List.cons("const float v20 = (((v16 + 1u) < v18) ? v15 : v1);", List.cons("const float v21 = (((v16 + 2u) < v18) ? v15 : v1);",
+      List.cons("const float v22 = (((v16 + 3u) < v18) ? v15 : v1);", List.cons("const float v23 = (((v16 + 4u) < v18) ? v15 : v1);",
+      List.cons("const float v24 = (((v16 + 5u) < v18) ? v15 : v1);", List.cons("const float v25 = (((v16 + 6u) < v18) ? v15 : v1);",
+      List.cons("const float v26 = (((v16 + 7u) < v18) ? v15 : v1);", List.nil(String)))))))))))))), Bool.true) :=
+    Eq.refl(Bool.true)
+
+  // `storeO` writes O's 128 elements of the row, each converted to bf16 in the core.
+  def oStores : Eq(Nat, E.starting("O["), 128) := Eq.refl(128)
+
+  def oStoresBf16 : Eq(Nat, E.starting("O[((v92 * 128u) + "), 128) := Eq.refl(128)
+
+  def firstStoreConverted : Eq(Bool, E.occurs(E.lines, List.cons("O[((v92 * 128u) + 0u)] = static_cast<__nv_bfloat16>((v96 * v94));",
+      List.nil(String))), Bool.true) := Eq.refl(Bool.true)
 }

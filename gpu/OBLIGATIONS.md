@@ -251,7 +251,8 @@ claim. Types are abbreviated; "code" is what it emits into its `Ctx`.
 
 ### 6.10 The attention core
 
-The operations `gpu/encoding/Core.rac` adds to `Gpu.rac`'s (`ATTENTION.md` §3, §4.2), as built for A1. Its other
+The operations `gpu/encoding/Core.rac` adds to `Gpu.rac`'s (`ATTENTION.md` §3, §4.2), as built for A1, A2 and paged
+attention (`encoding/PAGED.md`). Its other
 operations are `Gpu.rac`'s, with the obligations of §6.1–§6.9, except that every use of a tensor-memory region's
 address goes through `tmemBase` (the allocation's address plus the region's offset): `mmaFirst`, `mmaNext`, `stageAcc`,
 `withAccRing` (and through its buffers `mmaFirstInto`, `mmaNextInto`, `stageAccFull` and `loadAcc8`) and
@@ -278,12 +279,16 @@ address.
 | `commitPV` | `PUsed(x, m)`, `Elected(m)` | `tcgen05.commit` to P empty, flip the reader's phase | `ExReaderAt(x, m, held)`; the buffer returns to the writer when the products complete | A12, A21 |
 | `finishExWriter` | `ExWriterAt(…, held)` | wait P empty at the writer's phase, `after_thread_sync` | `OFinal`: every product completed, none in flight, Ô visible | A6, A13, A21 |
 | `closeExWriter`, `finishExReader` | `OFinal` / `ExReaderAt(…, held)` | nothing | `ExWriterDone` / `ExReaderDone` | — |
-| `storeO` | `OFinal(x, m, f)`, `OOwn(L, f32)` and `AttnOut(L, f32)`, `warps(f, 4)` context, two f32 values | `__syncwarp`, `after_thread_sync`; declarations of the row `blockIdx.y · seq + 128 · blockIdx.x + 32 · (warp mod 4) + lane`, the guard `128 · blockIdx.x + 32 · (warp mod 4) + lane < seq`, and copies of the two values; 16 × (8 declarations, `__syncwarp`, `ld.x8`, `wait::ld`, 8 guarded stores of Ô · inv); the guarded LSE store; `before_thread_sync` | the CTA's rows of O and LSE written once (`OOwn` consumed); `OFinal` kept | A13, A14, M12, S5 |
+| `maskedScores` | `warps(f, 4)` context (converged: its causal form runs warp collectives), a `Mask(L)` (sealed: only the builders make one), a block index (any value), c < 16 (else a generation error), eight f32 values | `kv0 = 128 · block + 8c`; the limit: `seq`, or (causal) `__syncwarp`, the row `q + 1` with `q = 128 · blockIdx.x + 32 · (warp mod 4) + lane` declared before `min(seq, q + 1)`; 8 declarations `(kv0 + j < limit) ? v_j : −∞` (the builder's −∞) | the masked scores, thread grain, of the context's lifetime; no protocol state, and no branch, so the group stays converged | M3, M12 |
+| `storeO` | `OFinal(x, m, f)`, `OOwn(L, t)` and `AttnOut(L, t)` (t f32 or bf16, which only the builders choose), `warps(f, 4)` context, two f32 values | `__syncwarp`, `after_thread_sync`; declarations of the row `blockIdx.y · seq + 128 · blockIdx.x + 32 · (warp mod 4) + lane`, the guard `128 · blockIdx.x + 32 · (warp mod 4) + lane < seq`, and copies of the two values; 16 × (8 declarations, `__syncwarp`, `ld.x8`, `wait::ld`, 8 guarded stores of Ô · inv, each through `static_cast<__nv_bfloat16>` for bf16, round to nearest even); the guarded LSE store; `before_thread_sync` | the CTA's rows of O and LSE written once (`OOwn` consumed): rows of a last query tile past `seq` are never stored; `OFinal` kept | A13, A14, M12, S5 |
 | `fillHead` | as `fill`; `HeadMap`s whose boxes are the ring's | as `fill`, at rows `blockIdx.y · seq` plus the caller's (rank-2 maps over `[BH·seq, 128]`, `encoding/README.md`) | as `fill` | A9 |
-| `attentionKernel` | a body | `blocks = seq / 128`, once; the kernel (parameters `Q_map`, `K_map`, `V_map`, `O`, `LSE`, `BH`, `seq`, `scale_log2`) and its launcher (refusing seq = 0, seq mod 128 ≠ 0, BH = 0, BH ≥ 65536, BH · seq · 128 ≥ 2³¹, rows ≠ BH · seq, dim ≠ 128; three rank-2 encodings over `rows` × `dim` with 64 × 128 boxes; grid (seq / 128, BH) of 256 threads) | `AttnLaunch` (the maps, `AttnOut`, seq, blocks, the query block's first row, `scale_log2`), `OOwn`, `TmemPermit`; a `Program` | A17, I6 |
+| `attentionKernel` | a body; causal or not; O's type t, f32 or bf16 (else a generation error) | `blocks = ceil(seq / 128)`, or `min(ceil(seq / 128), blockIdx.x + 1)` causal, once; −∞, once; the kernel (parameters `Q_map`, `K_map`, `V_map`, `O` of t, `LSE`, `BH`, `seq`, `scale_log2`) and its launcher (refusing seq = 0, BH = 0, BH ≥ 65536, BH · seq · 128 ≥ 2³¹, rows ≠ BH · seq, dim ≠ 128; three rank-2 encodings over `rows` × `dim` with 64 × 128 boxes; grid (ceil(seq / 128), BH) of 256 threads) | `AttnLaunch` (the maps, `AttnOut`, the `Mask`, seq, blocks, the query block's first row, `scale_log2`), `OOwn`, `TmemPermit`; a `Program` | A17, I6 |
+| `fillPage` | as `fill`; a ring whose stages are two 64 × 128 boxes (else a generation error); `PageTable`, `PageMap` of the ring's first box; a block index `j` | a guarded read of `block_table[b][j]` (`b = blockIdx.y / H`; 0 outside the table), `arrive.expect_tx`, two TMA loads at row `(p · H + blockIdx.y mod H) · 128`, columns 0 and 64 | as `fill`; whatever the table holds, the loads read only the cache or zeros (`PAGED.md` §3) | A9 |
+| `pagedAttentionKernel` | as `attentionKernel`, and 1 ≤ H ≤ 65535 | as `attentionKernel`, with parameters `Q_map`, `K_map`, `V_map`, `O`, `LSE`, `block_table`, `B`, `seq`, `max_pages`, `scale_log2`, and a launcher refusing seq = 0, B = 0, B · H ≥ 65536, B · H · seq · 128 ≥ 2³¹, rows_q ≠ B · H · seq, pages · H · 128 ≥ 2³¹, rows_kv ≠ pages · H · 128, dim ≠ 128, max_pages < ceil(seq / 128), B · max_pages ≥ 2³¹; grid (ceil(seq / 128), B · H) | `PagedLaunch` (as `AttnLaunch`, with `PageMap`s for K and V and the `PageTable`), `OOwn`, `TmemPermit`; a `Program` | A17, I6 |
 
-`ATTENTION.md` §4.2's `maskedScores`, and rank-3 encodings in `fillHead` and `attentionKernel` (A28), belong to A2
-and are not built.
+Rank-3 encodings in `fillHead` and `attentionKernel` (`ATTENTION.md` §3.7, A28) are not built: A2 keeps rank-2 maps,
+masking the part of a last key block past `seq` and never storing the rows of a last query tile past it
+(`encoding/README.md`).
 
 ## 7. Public surface
 
@@ -316,16 +321,22 @@ arguments. The audit as of this document:
   `fixedReadyUsed`, `fixedExWriterAt` and `fixedExReaderAt` are evidence for fieldless one-valued families only.
   `splitTmem` mints two `Acc` tokens from one, over disjoint columns (the core's arithmetic), and takes back both
   before it returns the one; that is sound only while every use of a region's address goes through `tmemBase`.
-  `fillHead` is `fill` with the head coordinate the core's. `closeExWriter` and `finishExReader` consume authority.
-  The unsealed `AttnLaunch.mk` builds a launch from sealed maps and output and from `Val`s: `blocks` and `q0`
-  choose trip counts and coordinates only, so a wrong one deadlocks (M11) or loads the wrong rows (`ATTENTION.md`
-  §5), and `seq` and `scale` are data, a wrong one a wrong result; none can race, since `storeO` takes its rows and
-  guard from `AttnOut`, which is sealed. The instruction builders `cvtBf16x2`, `tmemStore4`, `tmemStore8`,
-  `tmemWaitStore` and `mmaIssueTmemA`, and the helpers `quadrantLanes`, `loadRow8`, `rescaleChunks`, `pvSteps`,
-  `storeChunks`, `fillCode`, `mmaBoxes`, `pBase`, `pFullBar`, `pEmptyBar`, `flip`, `eight`, `offsetBy`, `boxAt`,
-  `tmemBase`, `isHeadBox`, `headStage`, `attnParams` and `attnLauncher`, build unsealed `Expr`s, `Stmt`s, `Gen`s,
-  `Bool`s and launchers, which reach a kernel only through the Key; `row8`, `fbin`, `mmaPV` and `mmaRingStage` need
-  it.
+  `fillHead` is `fill` with the head coordinate the core's, and `fillPage` `fill` with the row the core's, from the
+  table. `closeExWriter` and `finishExReader` consume authority. `maskedScores` builds values from values and the
+  sealed `Mask`; it emits no protocol operation, and a wrong block or chunk is a wrong result. In a causal kernel it
+  emits warp collectives (`__syncwarp`, and the row's full-mask `__shfl_sync`), which are sound because it takes a
+  `warps(f, 4)` context: a per-thread branch arm's group is `diverged`, so no part of a warp can reach it alone
+  (`rejected/attention_mutants.py`, `mask_in_thread_branch`). The unsealed
+  `AttnLaunch.mk` and `PagedLaunch.mk` build a launch from sealed maps, table, output and mask and from `Val`s:
+  `blocks` and `q0` choose trip counts and coordinates only, so a wrong one deadlocks (M11) or loads the wrong rows
+  (`ATTENTION.md` §5), and `seq` and `scale` are data, a wrong one a wrong result; none can race, since `storeO` takes
+  its rows and guard from `AttnOut`, which is sealed. `outTypeOk`, `outValue`, `rowInHead` and `minusInfinityBits`
+  build `Bool`s, `Expr`s and a `Nat`; `attnStart` needs the Key. The instruction builders `cvtBf16x2`, `tmemStore4`,
+  `tmemStore8`, `tmemWaitStore` and `mmaIssueTmemA`, and the helpers `quadrantLanes`, `loadRow8`, `rescaleChunks`,
+  `pvSteps`, `storeChunks`, `fillCode`, `mmaBoxes`, `pBase`, `pFullBar`, `pEmptyBar`, `flip`, `eight`, `offsetBy`,
+  `boxAt`, `tmemBase`, `isHeadBox`, `headStage`, `attnParams`, `attnLauncher`, `pagedParams` and `pagedLauncher`, build
+  unsealed `Expr`s, `Stmt`s, `Gen`s, `Bool`s and launchers, which reach a kernel only through the Key; `row8`, `fbin`,
+  `mmaPV` and `mmaRingStage` need it.
 
 A new public operation must be added to this list with its argument.
 

@@ -1,11 +1,12 @@
 # gpu/encoding: the next GPU core
 
-Status: started 2026-10-01; steps 1 and 2 below done for A1 except the hardware runs: the core, the example, the
-unit checks, the mutants of `ATTENTION.md` §5 (`rejected/attention_mutants.py`), the host harness and the FA4
-comparison (`harness/`), and `OBLIGATIONS.md` (A19–A33, M12–M14, §6.10, §7). Nothing has run on a GPU; `NOTES.md`
-records what was awkward. A fresh copy of the typed core (`gpu/Gpu.rac`) in which the library grows the features it
-lacks, starting with forward attention, then paged attention. `gpu/Gpu.rac` and its GEMM examples stay as they are, so
-the kernels that ran on a B200 keep running while this design settles.
+Status: started 2026-10-01; steps 1 and 2 below done for A1, paged attention (P1) and A2 (causal and non-causal
+masking, any `seq` ≥ 1, bf16 output, for both kernels) except the hardware runs: the core, the examples, the unit
+checks, the mutants of `ATTENTION.md` §5 (`rejected/`), the host harnesses and the FA4 comparison (`harness/`), and
+`OBLIGATIONS.md` (A19–A33, M12–M14, §6.10, §7). Nothing has run on a GPU; `NOTES.md` records what was awkward. A
+fresh copy of the typed core (`gpu/Gpu.rac`) in which the library grows the features it lacks, starting with forward
+attention, then paged attention. `gpu/Gpu.rac` and its GEMM examples stay as they are, so the kernels that ran on a
+B200 keep running while this design settles.
 
 ## Why a copy
 
@@ -27,8 +28,9 @@ query tile per CTA, a CTA of 256 threads). It is built as `ATTENTION.md` §3 des
   columns 128), and a CTA's rows start at `blockIdx.y · seq`. A1's `seq` is a multiple of 128, so no box crosses into
   the next head, and nothing needs the per-head zero-fill a rank-3 map gives. That keeps `Cuda.MapEncoding`,
   `Check.launcher` and its soundness proof unchanged.
-  - The launcher takes `rows` and `dim` as scalars and refuses a launch unless `rows = BH · seq` and `dim = 128`.
-  - Rank-3 maps come with A2's tails (`ATTENTION.md` §3.7).
+  - The launcher takes `rows` and `dim` as scalars and refuses a launch unless `rows = BH · seq` and `dim = 128`
+    (and, in A1, unless 128 divides `seq`).
+  - A2 keeps the rank-2 maps (a decision of 2026-10-01, against `ATTENTION.md` §3.7's rank-3 maps), below.
 
 Steps:
 1. **Core.** Copy `Gpu.rac` to `Core.rac`, then add `ATTENTION.md` §3: tensor-memory offsets and `splitTmem`
@@ -43,6 +45,20 @@ Steps:
    - `gpu/check.sh` runs all of it.
 3. **Review.** Hostile review for races and protocol errors, then a code review for readability.
 
+**A2, masks, tails and bf16 output** (`ATTENTION.md` stage A2), for both the contiguous and the paged kernel. Causal
+and O's element type (f32 or bf16) are generation-time choices of the kernel builders, one kernel each; the examples
+generate the non-causal f32 kernel and the causal bf16 one of each. Masks are values (`maskedScores`, §3.9), and the
+launchers accept any `seq` ≥ 1, the grid's x being `ceil(seq/128)`. With the rank-2 maps a sequence tail works so:
+- a last K/V block that runs past `seq` reads the next head's rows (contiguous kernel), a last page's unused rows
+  (paged kernel), or zeros past the matrix: `kv < seq` masks those keys, so their scores are −∞ and their `p` are 0;
+- the rows of a last query tile past `seq` read the next head's Q rows (or zeros past the matrix); they are computed
+  but never stored, since `storeO` guards on `seq`.
+
+What this cannot refuse: a non-finite value in those rows of V (the next head's, or a last page's unused rows) turns
+the masked keys' 0 · V into NaN, in every query row whose keys include that block, not only the tail's. That is a
+correctness hazard under non-finite inputs, not a safety one (a packed variable-length kernel that loads whole blocks
+across sequence boundaries shares it); the launch contracts ask for V finite in every row a block reads.
+
 **Paged attention.** A1 over a paged KV cache:
 - K and V are `[pages · H · 128, 128]`: a page holds 128 consecutive keys of every head;
 - a `block_table [B, maxPages]` (u32) gives each sequence's physical pages;
@@ -52,8 +68,9 @@ TMA clipping keeps reads inside the cache whatever the table holds. That the ent
 fact about the table, argued in `docs/SEPARATION_PILOT.md` §6.
 
 **Hardware.** Nothing runs on a GPU until a kernel is expected to be competitive with CUTLASS or FA4 (the user's rule,
-2026-10-01). A1 by design is not (`ATTENTION.md` §2.1), so A1 and paged A1 are checked by generation, the checkers,
-the mutants and a C++ compile against `gpu/stub/`.
+2026-10-01). A1 by design is not (`ATTENTION.md` §2.1), nor are A2 and paged attention, built on its schedule, so they
+are checked by generation, the checkers, the mutants and a C++ compile against `gpu/stub/`; the harnesses have run
+against a host mock of the runtime (`NOTES.md`).
 
 ## Layout
 
