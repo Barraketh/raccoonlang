@@ -3,7 +3,8 @@
 Status: P1 built (2026-10-01), as §6 records: `Core.rac`'s paged-attention section, `examples/paged_attention.rac`,
 `harness/paged_attention_test.cu`, `rejected/paged_attention_mutants.py` and `checks/paged_emitted.rac`; checked by
 generation, the certificate, the mutants, the emitted-code checks and a compile against `gpu/stub/`, not run on
-hardware. A2's masks, tails and bf16 output came to it after (§7). P2 is design only. It extends A1
+hardware. A2's masks, tails and bf16 output came to it after (§7), and P2's cache layout, `[pages · 128, H · 128]`,
+after that (`P2.md` §1, §9; this document's §1–§3 describe it). P2, decode with append, is `P2.md`. It extends A1
 (`gpu/ATTENTION.md`, as built in `gpu/encoding/`) to a KV cache stored in pages. It is the second step of
 `gpu/encoding/README.md`.
 
@@ -18,9 +19,10 @@ lifted the first two restrictions, §7):
 
 The pieces:
 
-- **The cache.** K and V are each `[pages, H, 128, 128]` bf16: a page holds 128 consecutive keys of every head. It is
-  addressed as a rank-2 tensor `[pages · H · 128, 128]`, so the rows of page `p`, head `h`, start at
-  `(p · H + h) · 128`.
+- **The cache.** K and V are each `[pages, 128, H, 128]` bf16, FA4's and vLLM's layout: a page holds 128 consecutive
+  positions, and each position every head. It is addressed as a rank-2 tensor `[pages · 128, H · 128]`, so page `p`,
+  head `h`, is rows `128p` to `128p + 127`, columns `128h` to `128h + 127`. (P1 was built with `[pages, H, 128, 128]`;
+  P2 moved it.)
 - **The table.** `block_table [B, maxPages]` u32. Entry `[b][j]` is the physical page holding keys `128j` to
   `128j + 127` of sequence `b`. `maxPages ≥ seq / 128`.
 - **The grid.** `(seq / 128, B · H)`, so CTA `(x, y)` computes query tile `x` of sequence `b = y / H`, head `h = y % H`.
@@ -36,13 +38,13 @@ the exchange and the epilogue do not.
 
 **The loader**, for block `j`:
 1. reads `p = block_table[b][j]` with a guarded global load (`gload`), zero outside the table;
-2. computes the row `(p · H + h) · 128`;
-3. issues `fill` for K's and V's boxes at that row.
+2. computes the row `128p` and the head's columns `128h` and `128h + 64`;
+3. issues `fill` for K's and V's boxes there.
 
 The loader is one elected thread, so `p` is that thread's value and no other thread needs it.
 
 ```raccoon
-// The paged cache's map: a rank-2 bf16 tensor map over [pages · H · 128, 128] with the ring's box.
+// The paged cache's map: a rank-2 bf16 tensor map over [pages · 128, H · 128] with the ring's box.
 sealed struct PageMap (l: Lifetime)(spec: TmaSpec) : Type { scope = l }
  | mk (name: String)(heads: Nat) : PageMap(l, spec)
 
@@ -59,10 +61,10 @@ def fillPage {…}(e: Ctx(n, Group.lane))(ring: Ring(r, cfg))(s: Slot(r, m))(tab
 
 **The kernel builder** `pagedAttentionKernel`, as P1 designed it (§7 for A2's changes):
 - **Parameters:** `Q_map`, `K_map`, `V_map`, `O`, `LSE`, `block_table`, `B`, `seq`, `max_pages`, `pages`, `rows_q`,
-  `rows_kv`, `dim`, `scale_log2`.
+  `rows_kv`, `cols_kv` (since P2), `dim`, `scale_log2`.
 - **Requirements:**
   - `seq > 0`, `seq mod 128 = 0`, `B > 0`, `B · H ≤ 65535`;
-  - `rows_q = B · H · seq` and `rows_kv = pages · H · 128`, the extents the maps use;
+  - `rows_q = B · H · seq`, `rows_kv = pages · 128` and `cols_kv = H · 128`, the extents the maps use;
   - `dim = 128`;
   - `max_pages ≥ seq / 128`;
   - every extent below 2³¹.
@@ -122,11 +124,12 @@ As §1–§3 design it, with these decisions where the design left room:
 
 - **Parameters.** The kernel takes `Q_map`, `K_map`, `V_map`, `O`, `LSE`, `block_table`, `B`, `seq`, `max_pages`,
   `scale_log2`. The launcher (`paged_attention_launch`) takes the arrays in their place (`Q`, `K`, `V`) and adds
-  `pages`, `rows_q`, `rows_kv` and `dim`, which only it reads: `Q`, `K`, `V`, `O`, `LSE`, `block_table`, `B`, `seq`,
-  `max_pages`, `pages`, `rows_q`, `rows_kv`, `dim`, `scale_log2`.
+  `pages`, `rows_q`, `rows_kv`, `cols_kv` (since P2) and `dim`, which only it reads: `Q`, `K`, `V`, `O`, `LSE`,
+  `block_table`, `B`, `seq`, `max_pages`, `pages`, `rows_q`, `rows_kv`, `cols_kv`, `dim`, `scale_log2`.
 - **"Every extent below 2³¹"** is three requirements: `B · H · seq · 128` (every row and element index of Q, O and
-  LSE fits a signed coordinate and a u32, as A1 requires), `pages · H · 128` (every row of the cache is addressable by a
-  signed coordinate; a valid table's rows then never wrap) and `B · max_pages` (every index of the table fits a u32).
+  LSE fits a signed coordinate and a u32, as A1 requires), `pages · 128` (`pages · H · 128` before P2's layout: every
+  row of the cache is addressable by a signed coordinate; a valid table's rows then never wrap) and `B · max_pages`
+  (every index of the table fits a u32).
   The others follow: `pages`, `max_pages`, `seq` and `B` are each bounded by one of them. `pages = 0` has no
   requirement of its own: the map encoding refuses a zero extent, so the launcher still fails.
 - **`fillPage`** checks at generation that the ring's stage is two 64 × 128 boxes (`headStage`): it loads both boxes

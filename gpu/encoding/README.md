@@ -4,7 +4,9 @@ Status: started 2026-10-01; steps 1 and 2 below done for A1, paged attention (P1
 masking, any `seq` ≥ 1, bf16 output, for both kernels) except the hardware runs: the core, the examples, the unit
 checks, the mutants of `ATTENTION.md` §5 (`rejected/`), the host harnesses and the FA4 comparison (`harness/`), and
 `OBLIGATIONS.md` (A19–A33, M12–M14, §6.10, §7); then the readability review's library changes (below); then A3a, two
-query tiles in ping-pong (`A3.md`), to the same point. Nothing has run on a GPU; `NOTES.md` records what was awkward, and what the review removed. A
+query tiles in ping-pong (`A3.md`), to the same point; then P2, paged decode with append (`P2.md`: three kernels,
+their harness against a host mock, mutants, A40–A42, M17, §6.11). Nothing has run on a GPU; `NOTES.md` records what was
+awkward, and what the review removed. A
 fresh copy of the typed core (`gpu/Gpu.rac`) in which the library grows the features it lacks, starting with forward
 attention, then paged attention. `gpu/Gpu.rac` and its GEMM examples stay as they are, so the kernels that ran on a
 B200 keep running while this design settles.
@@ -76,12 +78,17 @@ row of S loaded once into registers. Built to the same point as A2: the core's s
 `rejected/attention_pingpong_mutants.py`, and `OBLIGATIONS.md` (A39, M16).
 
 **Paged attention.** A1 over a paged KV cache:
-- K and V are `[pages · H · 128, 128]`: a page holds 128 consecutive keys of every head;
+- K and V are `[pages · 128, H · 128]` (FA4's layout, since P2): a page holds 128 consecutive positions of every
+  head;
 - a `block_table [B, maxPages]` (u32) gives each sequence's physical pages;
 - the loader reads the table entry for block `j` and loads that page's rows.
 
 TMA clipping keeps reads inside the cache whatever the table holds. That the entry is a valid page of the sequence is a
 fact about the table, argued in `docs/SEPARATION_PILOT.md` §6.
+
+**Paged decode (P2).** `P2.md`: an append kernel that writes each sequence's new K and V under a claim of its last
+page, checked by an atomic per page and head; a decode kernel that runs A2's roles over splits of each sequence's key
+blocks, with the query heads of one KV head packed into its query tile; and a combine kernel that merges the splits.
 
 **Hardware.** Nothing runs on a GPU until a kernel is expected to be competitive with CUTLASS or FA4 (the user's rule,
 2026-10-01). A1 by design is not (`ATTENTION.md` §2.1), nor are A2 and paged attention, built on its schedule, so they
@@ -93,8 +100,8 @@ against a host mock of the runtime (`NOTES.md`).
 - `Core.rac`: the core.
 - `Layout.rac`: the CTA of eight warps that the attention and GEMM examples share (`roles4`), and A3a's of twelve
   (`rolesPair`).
-- `Attention.rac`: the roles and CTA of forward attention, which `examples/attention.rac` and
-  `examples/paged_attention.rac` run with their own loaders.
+- `Attention.rac`: the roles and CTA of forward attention, which `examples/attention.rac`,
+  `examples/paged_attention.rac` and `examples/paged_decode.rac` run with their own loaders.
 - `examples/`: kernels; `attention_pingpong.rac` holds A3a's roles itself, since no other example runs them.
 - `checks/`: unit tests of emitted code.
 - `rejected/`: programs and mutant tables the core must refuse.

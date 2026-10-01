@@ -1,8 +1,8 @@
 // Paged forward attention on sm_100a (gpu/encoding/PAGED.md): A1 and A2 (examples/attention.rac) with K and V read
 // from a paged cache. For B sequences of `seq` rows and 8 heads each, any `seq` ≥ 1, head dimension 128,
 // O = softmax(scale · Q·Kᵀ + mask)·V and LSE, from Q in bf16 `[B·8·seq, 128]` and K and V in bf16 caches
-// `[pages·8·128, 128]`, to O `[B·8·seq, 128]` and LSE in f32 `[B·8·seq]`. Page `p` of a cache holds 128 consecutive
-// keys of each head, and entry `[b][j]` of the u32 block table `[B, max_pages]` is the page holding keys 128j to
+// `[pages·128, 8·128]`, to O `[B·8·seq, 128]` and LSE in f32 `[B·8·seq]`. Page `p` of a cache holds 128 consecutive
+// positions of every head, and entry `[b][j]` of the u32 block table `[B, max_pages]` is the page holding keys 128j to
 // 128j + 127 of sequence `b`; a sequence's last page may be partly used. The caller passes `scale_log2` =
 // scale · log2(e). Two kernels: `paged_attention`, non-causal with O in f32, and `paged_attention_causal`, causal
 // within each sequence (prefill: the queries are the cached keys' positions) with O in bf16.

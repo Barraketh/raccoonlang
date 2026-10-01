@@ -1,0 +1,65 @@
+// The combine of paged decode (gpu/encoding/P2.md §4): merges the partial results of a split decode
+// (examples/paged_decode.rac), `Opart [splits·rows, 128]` and `LSEpart [splits·rows]` in f32, into O `[rows, 128]` in
+// bf16 and LSE `[rows]` in f32, `rows` being B·Hq. Split `s` of row `r` is weighted by w_s = e^(LSE_s − M), M the row's
+// largest LSE: O = Σ w_s·O_s / Σ w_s and LSE = M + ln Σ w_s. An empty split's LSE is −∞, so its weight is 0.
+//
+// One warp per output row, each lane 4 of its columns: a pass over the splits for M, then one for the weighted sums.
+//
+// Run: gpu/gen.sh gpu/encoding/examples/paged_combine.rac
+
+import encoding.Core
+
+namespace Combine {
+  open Core
+  open Cuda
+
+  // log2(e) and ln 2 as f32 bits.
+  def log2e : Nat := 1069066811
+  def ln2 : Nat := 1060205080
+
+  def merge (l: Lifetime)(e: Ctx(l, warpCta))(g: CombineLaunch(l))(own: CombinedOwn(l)): Ctx(l, warpCta) := {
+    let (e, minusInfinity) := fconst(e, minusInfinityBits)
+    let (e, mReg) := reg(e, minusInfinity)
+    // M, the largest LSE of the row's splits.
+    let (e, u) := loop(e, g.splits, fixedUnit, Unit.unit, fun (n: Lifetime)(s: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, warpCta))(u: Unit)
+        : Pair(Ctx(n, warpCta), Unit) => {
+      let (e, lse) := splitLse(e, g.parts, s)
+      let (e, m) := get(e, mReg)
+      (set(e, mReg, fmax(m, lse)), u)
+    })
+    let (e, mMax) := get(e, mReg)
+    let (e, log2e) := fconst(e, log2e)
+    let (e, sum) := reg(e, zero(DType.f32))
+    let (e, a0) := reg(e, zero(DType.f32))
+    let (e, a1) := reg(e, zero(DType.f32))
+    let (e, a2) := reg(e, zero(DType.f32))
+    let (e, a3) := reg(e, zero(DType.f32))
+    // Σ w_s and Σ w_s·O_s over the splits, w_s = 2^((LSE_s − M)·log2 e).
+    let (e, u) := loop(e, g.splits, fixedUnit, Unit.unit, fun (n: Lifetime)(s: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, warpCta))(u: Unit)
+        : Pair(Ctx(n, warpCta), Unit) => {
+      let (e, lse) := splitLse(e, g.parts, s)
+      let (e, w) := ex2(e, fmul(fsub(lse, mMax), log2e))
+      let (e, o) := splitRow(e, g.parts, s)
+      let accumulate := fun (e: Ctx(n, warpCta))(r: Reg(l, DType.f32))(x: Val(n, Grain.thread, DType.f32)): Ctx(n, warpCta) => {
+        let (e, old) := get(e, r)
+        set(e, r, fma(w, x, old))
+      }
+      let (e, total) := get(e, sum)
+      let e := set(e, sum, fadd(total, w))
+      (accumulate(accumulate(accumulate(accumulate(e, a0, o.v0), a1, o.v1), a2, o.v2), a3, o.v3), u)
+    })
+    let (e, total) := get(e, sum)
+    let (e, inv) := rcp(e, total)
+    let (e, logSum) := lg2(e, total)
+    let (e, ln2) := fconst(e, ln2)
+    let (e, o0) := get(e, a0)
+    let (e, o1) := get(e, a1)
+    let (e, o2) := get(e, a2)
+    let (e, o3) := get(e, a3)
+    storeCombined(e, g.out, own, F32x4.mk(fmul(o0, inv), fmul(o1, inv), fmul(o2, inv), fmul(o3, inv)), fadd(mMax, fmul(logSum, ln2)))
+  }
+
+  def kernel : Program := combineKernel("paged_combine", Combine.merge)
+}
+
+{ Core.render(Combine.kernel) }

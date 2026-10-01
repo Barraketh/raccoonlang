@@ -11,6 +11,7 @@
 // within each sequence (query i sees keys j ≤ i) with O in bf16; both run every check. Their head count is a
 // generation-time constant; the harness assumes the example's 8 (`-DHEADS=…` otherwise).
 //
+// The cache is `[pages·128, H·128]`: page `p` holds positions 128p to 128p + 127 of every head (encoding/P2.md §1).
 // The checks are gpu/ATTENTION.md §1.3's, over a paged cache whose pages are shuffled across the sequences: T1 (random
 // inputs, against the reference within the stated bounds), T2 (the uniform and one-hot canaries: exact for the
 // non-causal kernel at `seq` a power of two, else within 2^-21 · max|V|), T3 (the rescale canary) and T4 (no NaN or
@@ -40,12 +41,13 @@
 extern "C" cudaError_t paged_attention_launch(const __nv_bfloat16 *Q, const __nv_bfloat16 *K, const __nv_bfloat16 *V,
                                               float *O, float *LSE, const unsigned *block_table, unsigned B,
                                               unsigned seq, unsigned max_pages, unsigned pages, unsigned rows_q,
-                                              unsigned rows_kv, unsigned dim, float scale_log2, cudaStream_t stream);
+                                              unsigned rows_kv, unsigned cols_kv, unsigned dim, float scale_log2,
+                                              cudaStream_t stream);
 extern "C" cudaError_t paged_attention_causal_launch(const __nv_bfloat16 *Q, const __nv_bfloat16 *K,
                                                      const __nv_bfloat16 *V, __nv_bfloat16 *O, float *LSE,
                                                      const unsigned *block_table, unsigned B, unsigned seq,
                                                      unsigned max_pages, unsigned pages, unsigned rows_q,
-                                                     unsigned rows_kv, unsigned dim, float scale_log2,
+                                                     unsigned rows_kv, unsigned cols_kv, unsigned dim, float scale_log2,
                                                      cudaStream_t stream);
 
 #define CHECK(call)                                                                                                  \
@@ -104,12 +106,13 @@ static const Kernel kernels[] = {{"paged_attention", false, false}, {"paged_atte
 // One launch of `kernel` on device arrays; O is an f32 or a bf16 array, as the kernel writes.
 static cudaError_t launch(const Kernel &kernel, const __nv_bfloat16 *q, const __nv_bfloat16 *k, const __nv_bfloat16 *v,
                           void *o, float *lse, const unsigned *table, unsigned b, unsigned seq, unsigned maxPages,
-                          unsigned pages, unsigned rowsQ, unsigned rowsKv, unsigned d, float scaleLog2) {
+                          unsigned pages, unsigned rowsQ, unsigned rowsKv, unsigned colsKv, unsigned d,
+                          float scaleLog2) {
   if (kernel.bf16Out)
     return paged_attention_causal_launch(q, k, v, static_cast<__nv_bfloat16 *>(o), lse, table, b, seq, maxPages, pages,
-                                         rowsQ, rowsKv, d, scaleLog2, nullptr);
-  return paged_attention_launch(q, k, v, static_cast<float *>(o), lse, table, b, seq, maxPages, pages, rowsQ, rowsKv, d,
-                                scaleLog2, nullptr);
+                                         rowsQ, rowsKv, colsKv, d, scaleLog2, nullptr);
+  return paged_attention_launch(q, k, v, static_cast<float *>(o), lse, table, b, seq, maxPages, pages, rowsQ, rowsKv,
+                                colsKv, d, scaleLog2, nullptr);
 }
 
 // A deterministic stream of numbers.
@@ -132,7 +135,7 @@ struct Problem {
   const Kernel &kernel;
   unsigned b, seq, blocks, maxPages, pages;
   float scaleLog2;
-  std::vector<float> q, k, v;  // Q as [B·H·seq, 128]; K and V as the cache, [pages·H·128, 128]
+  std::vector<float> q, k, v;  // Q as [B·H·seq, 128]; K and V as the cache, [pages·128, H·128]
   std::vector<unsigned> table;  // [B, maxPages]
   // Sentinel bytes (0x7f) on both sides of O, and sentinel floats on both sides of LSE: 128 rows of f32 O, so that the
   // rows of a last query tile past `seq`, stored by mistake past the last head, land in the guard.
@@ -143,12 +146,13 @@ struct Problem {
   float *dLAlloc = nullptr, *dLse = nullptr;
 
   size_t queryRows() const { return size_t(b) * H * seq; }
-  size_t cacheRows() const { return size_t(pages) * H * D; }
+  size_t cacheRows() const { return size_t(pages) * D; }
   size_t elementBytes() const { return kernel.bf16Out ? 2 : 4; }
   size_t bytesO() const { return queryRows() * D * elementBytes(); }
-  // The cache row holding element `key` of sequence `s`, head `h`, through the table.
-  size_t cacheRow(unsigned s, unsigned h, unsigned key) const {
-    return (size_t(table[size_t(s) * maxPages + key / D]) * H + h) * D + key % D;
+  // Where the cache holds key `key` of sequence `s`, head `h`, through the table: its first element, in row
+  // `128p + key % 128` of page `p`, columns `128h` on.
+  size_t cacheAt(unsigned s, unsigned h, unsigned key) const {
+    return (size_t(table[size_t(s) * maxPages + key / D]) * D + key % D) * H * D + size_t(h) * D;
   }
   // The keys query row i of a sequence sees: j < seq, and j ≤ i when causal.
   unsigned keys(unsigned i) const { return kernel.causal ? i + 1 : seq; }
@@ -159,7 +163,7 @@ struct Problem {
   Problem(const Kernel &kernel, unsigned b, unsigned seq, unsigned spare, unsigned extra, float scaleLog2, uint32_t seed,
           const Element &fq, const Element &fk, const Element &fv)
       : kernel(kernel), b(b), seq(seq), blocks((seq + D - 1) / D), maxPages(blocks + extra), pages(b * blocks + spare),
-        scaleLog2(scaleLog2), q(queryRows() * D), k(cacheRows() * D, NAN), v(cacheRows() * D, NAN),
+        scaleLog2(scaleLog2), q(queryRows() * D), k(cacheRows() * H * D, NAN), v(cacheRows() * H * D, NAN),
         table(size_t(b) * maxPages, 0xdeadbeefu) {
     Random r{seed};
     std::vector<unsigned> perm(pages);
@@ -172,14 +176,14 @@ struct Problem {
         for (unsigned i = 0; i < seq; ++i)
           for (unsigned d = 0; d < D; ++d) {
             q[((size_t(s) * H + h) * seq + i) * D + d] = fq(s, h, i, d);
-            k[cacheRow(s, h, i) * D + d] = fk(s, h, i, d);
-            v[cacheRow(s, h, i) * D + d] = fv(s, h, i, d);
+            k[cacheAt(s, h, i) + d] = fk(s, h, i, d);
+            v[cacheAt(s, h, i) + d] = fv(s, h, i, d);
           }
         for (unsigned i = seq; i < blocks * D; ++i)
           for (unsigned d = 0; d < D; ++d) {
             const float big = (r.next() % 2 ? 1.0f : -1.0f) * std::ldexp(1.0f, 60);
-            k[cacheRow(s, h, i) * D + d] = big;
-            v[cacheRow(s, h, i) * D + d] = -big;
+            k[cacheAt(s, h, i) + d] = big;
+            v[cacheAt(s, h, i) + d] = -big;
           }
       }
     CHECK(cudaMalloc(&dQ, q.size() * sizeof(__nv_bfloat16)));
@@ -215,7 +219,7 @@ struct Problem {
 
   cudaError_t run() {
     return launch(kernel, dQ, dK, dV, dO, dLse, dTable, b, seq, maxPages, pages, unsigned(queryRows()),
-                  unsigned(cacheRows()), D, scaleLog2);
+                  unsigned(cacheRows()), H * D, D, scaleLog2);
   }
 
   // One run from NaN-filled O and LSE inside sentinel guard bands: O (as floats) and LSE, and the number of guard bytes
@@ -276,7 +280,7 @@ struct Problem {
     std::vector<double> t(n);
     double m = -INFINITY;
     for (unsigned key = 0; key < n; ++key) {
-      const float *kj = &k[cacheRow(s, h, key) * D];
+      const float *kj = &k[cacheAt(s, h, key)];
       double dot = 0;
       for (unsigned d = 0; d < D; ++d) dot += double(qi[d]) * double(kj[d]);
       t[key] = double(scaleLog2) * dot;
@@ -287,7 +291,7 @@ struct Problem {
     for (unsigned key = 0; key < n; ++key) {
       const double p = std::exp2(t[key] - m);
       l += p;
-      const float *vj = &v[cacheRow(s, h, key) * D];
+      const float *vj = &v[cacheAt(s, h, key)];
       for (unsigned d = 0; d < D; ++d) o[d] += p * double(vj[d]);
     }
     for (unsigned d = 0; d < D; ++d) o[d] /= l;
@@ -300,7 +304,7 @@ struct Problem {
     for (unsigned s = 0; s < b; ++s)
       for (unsigned h = 0; h < H; ++h)
         for (unsigned key = 0; key < seq; ++key)
-          for (unsigned d = 0; d < D; ++d) m = std::max(m, std::fabs(double(v[cacheRow(s, h, key) * D + d])));
+          for (unsigned d = 0; d < D; ++d) m = std::max(m, std::fabs(double(v[cacheAt(s, h, key) + d])));
     return m;
   }
 
@@ -418,7 +422,7 @@ static int outOfRange(const Kernel &kernel, unsigned b, unsigned seq) {
   auto fkv = [&r](unsigned, unsigned, unsigned, unsigned) { return r.uniform(-1, 1); };
   // No spare pages: a wild entry that lands on a valid page must find finite data there.
   Problem p(kernel, b, seq, 0, 3, scaleLog2, seq * 53u + b, fq, fkv, fkv);
-  const unsigned negative = ((1u << 31) + H * D - 1) / (H * D);  // its row is just past 2^31: negative as signed
+  const unsigned negative = ((1u << 31) + D - 1) / D;  // its row is just past 2^31: negative as signed
   const unsigned outside[] = {p.pages, p.pages + 5, 0xffffffffu, negative};
   const unsigned wild[] = {p.pages, 0xffffffffu, negative, 2 * negative, 0xdeadbeefu, 0x80000000u, 1u, 0u};
   for (unsigned s = 0; s < b; ++s)
@@ -470,34 +474,35 @@ int main() {
     failures += outOfRange(kernel, 2, 200);
 
     // What the launcher must refuse rather than launch, one requirement broken each: {B, seq, max_pages, pages,
-    // rows_q, rows_kv, dim}, with the refusal reported before any memory is touched (the arrays are a small valid
-    // problem's). (A `seq` that 128 does not divide is accepted since A2; the checks above run it.)
+    // rows_q, rows_kv, cols_kv, dim}, with the refusal reported before any memory is touched (the arrays are a small
+    // valid problem's). (A `seq` that 128 does not divide is accepted since A2; the checks above run it.)
     {
       auto zero = [](unsigned, unsigned, unsigned, unsigned) { return 0.0f; };
       Problem p(kernel, 1, 128, 0, 0, scaleLog2, 1, zero, zero, zero);
-      const unsigned kv = H * D;  // rows_kv of one page
+      const unsigned kv = D, cols = H * D;  // rows_kv of one page, and cols_kv
       const unsigned bigB = 65535 / H + 1;
       const unsigned bigSeq = (((1u << 31) + H * D - 1) / (H * D) + D - 1) / D * D;
-      const unsigned bigPages = ((1u << 31) + H * D - 1) / (H * D);
+      const unsigned bigPages = ((1u << 31) + D - 1) / D;
       struct Case {
         const char *what;
-        unsigned b, seq, maxPages, pages, rowsQ, rowsKv, dim;
+        unsigned b, seq, maxPages, pages, rowsQ, rowsKv, colsKv, dim;
       } refused[] = {
-          {"seq = 0", 1, 0, 1, 1, 0, kv, 128},
-          {"B = 0", 0, 128, 1, 1, 0, kv, 128},
-          {"B·H > 65535", bigB, 128, 1, 1, bigB * H * 128, kv, 128},
-          {"B·H·seq·128 ≥ 2^31", 1, bigSeq, bigSeq / D, 1, H * bigSeq, kv, 128},
-          {"rows_q ≠ B·H·seq", 1, 128, 1, 1, H * 128 + 128, kv, 128},
-          {"pages·H·128 ≥ 2^31", 1, 128, 1, bigPages, H * 128, bigPages * kv, 128},
-          {"rows_kv ≠ pages·H·128", 1, 128, 1, 2, H * 128, kv, 128},
-          {"dim ≠ 128", 1, 128, 1, 1, H * 128, kv, 64},
-          {"max_pages < seq/128", 1, 256, 1, 2, H * 256, 2 * kv, 128},
-          {"max_pages < ceil(seq/128)", 1, 200, 1, 2, H * 200, 2 * kv, 128},
-          {"B·max_pages ≥ 2^31", 1, 128, 1u << 31, 1, H * 128, kv, 128},
+          {"seq = 0", 1, 0, 1, 1, 0, kv, cols, 128},
+          {"B = 0", 0, 128, 1, 1, 0, kv, cols, 128},
+          {"B·H > 65535", bigB, 128, 1, 1, bigB * H * 128, kv, cols, 128},
+          {"B·H·seq·128 ≥ 2^31", 1, bigSeq, bigSeq / D, 1, H * bigSeq, kv, cols, 128},
+          {"rows_q ≠ B·H·seq", 1, 128, 1, 1, H * 128 + 128, kv, cols, 128},
+          {"pages·128 ≥ 2^31", 1, 128, 1, bigPages, H * 128, bigPages * kv, cols, 128},
+          {"rows_kv ≠ pages·128", 1, 128, 1, 2, H * 128, kv, cols, 128},
+          {"cols_kv ≠ H·128", 1, 128, 1, 1, H * 128, kv, cols + D, 128},
+          {"dim ≠ 128", 1, 128, 1, 1, H * 128, kv, cols, 64},
+          {"max_pages < seq/128", 1, 256, 1, 2, H * 256, 2 * kv, cols, 128},
+          {"max_pages < ceil(seq/128)", 1, 200, 1, 2, H * 200, 2 * kv, cols, 128},
+          {"B·max_pages ≥ 2^31", 1, 128, 1u << 31, 1, H * 128, kv, cols, 128},
       };
       for (const Case &c : refused) {
         cudaError_t status = launch(kernel, p.dQ, p.dK, p.dV, p.dO, p.dLse, p.dTable, c.b, c.seq, c.maxPages, c.pages,
-                                    c.rowsQ, c.rowsKv, c.dim, scaleLog2);
+                                    c.rowsQ, c.rowsKv, c.colsKv, c.dim, scaleLog2);
         std::printf("%s %s refused %s: %s\n", status != cudaSuccess ? "ok  " : "FAIL", kernel.name, c.what,
                     cudaGetErrorString(status));
         failures += status == cudaSuccess;

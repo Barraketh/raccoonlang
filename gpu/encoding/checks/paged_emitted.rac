@@ -5,8 +5,8 @@
 // S, and the product reads a P written from an S that no one issued): only its code is tested. Its loader fills the V
 // ring's stage with block `j` = 2^32 − 1, a block index outside every table, which the core must guard:
 // - the table is read once, by a load whose guard tests the same index it reads at, and nothing else indexes it;
-// - the two TMA loads through the cache's map take their row from that read, `(p·8 + blockIdx.y % 8)·128`, and the
-//   kernel issues no TMA store.
+// - the two TMA loads through the cache's map take their row from that read, `p·128`, at the head's columns
+//   `(blockIdx.y % 8)·128` and 64 more, and the kernel issues no TMA store.
 
 import Check
 import encoding.Core
@@ -160,16 +160,16 @@ namespace P {
   def tmaLoad : String :=
     "asm volatile(\"cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1, {%3, %4}], [%2];\" :  : "
 
-  // The kernel's two TMA loads are V's two boxes, at columns 0 and 64 of row `(v14·8 + blockIdx.y % 8)·128`: v14 is
-  // the page read (after the key blocks v0, −∞ v1, the allocation's address v2, the S ring's registers v3 to v6, the
+  // The kernel's two TMA loads are V's two boxes, at columns `(blockIdx.y % 8)·128` and 64 more of row `v14·128` (the
+  // cache `[pages·128, 8·128]`): v14 is the page read (after the key blocks v0, −∞ v1, the allocation's address v2, the S ring's registers v3 to v6, the
   // exchange's phases v7 and v8, the V ring's registers v9 to v12 and the elect's flag v13).
   def twoLoads : Eq(Nat, P.matching(P.tmaLoad, ""), 2) := Eq.refl(2)
 
   def bothFromV : Eq(Nat, P.matching(P.tmaLoad, "(&V_map)"), 2) := Eq.refl(2)
 
-  def firstBoxAtPageRow : Eq(Nat, P.matching(P.tmaLoad, "\"r\"(0u), \"r\"((((v14 * 8u) + (blockIdx.y % 8u)) * 128u)) : \"memory\");"), 1) := Eq.refl(1)
+  def firstBoxAtPageRow : Eq(Nat, P.matching(P.tmaLoad, "\"r\"(((blockIdx.y % 8u) * 128u)), \"r\"((v14 * 128u)) : \"memory\");"), 1) := Eq.refl(1)
 
-  def secondBoxAtPageRow : Eq(Nat, P.matching(P.tmaLoad, "\"r\"(64u), \"r\"((((v14 * 8u) + (blockIdx.y % 8u)) * 128u)) : \"memory\");"), 1) := Eq.refl(1)
+  def secondBoxAtPageRow : Eq(Nat, P.matching(P.tmaLoad, "\"r\"((((blockIdx.y % 8u) * 128u) + 64u)), \"r\"((v14 * 128u)) : \"memory\");"), 1) := Eq.refl(1)
 
   // No TMA store, so nothing is written through a map.
   def noTmaStore : Eq(Nat, P.matching("", "cp.async.bulk.tensor.2d.global"), 0) := Eq.refl(0)

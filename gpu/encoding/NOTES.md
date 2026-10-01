@@ -336,3 +336,56 @@ Observations from building `A3.md`'s A3a (`Core.rac`'s score buffer, `Layout.rol
     0's Q rows (30 checks failed), the causal kernel running tile 0's block count (`2x + 1`, 60), no tail mask (44),
     no store guard (120), and Ô not zeroed in block 0 (all 192). The mock checks the harness, the references and
     the launchers, not the kernels.
+
+## P2: paged decode with append
+
+Observations from building `P2.md` (`Core.rac`'s paged-decode section, `examples/paged_append.rac`,
+`examples/paged_decode.rac`, `examples/paged_combine.rac`, `harness/paged_decode_test.cu`, the three mutant tables).
+
+1. **The roles' trip count is not typed.** The design asked for a mutant in which a role computes its own trip count.
+   The roles take the count as a `Val`, as A2's do, so a loader that loops another number of times type-checks, and
+   the roles then deadlock (M11). Refusing it would need a sealed key range whose loop alone yields the block index
+   that `fillPage` and the mask take. That changes A2's roles, examples and emitted-code checks; it is not built
+   (`P2.md` §5).
+2. **A split is a sequence of its own keys.** The roles count a split's blocks from 0, so the decode needs no new
+   `Mask`: A2's non-causal mask with the limit `keys − 128·first` masks a split's keys exactly, and an empty split's
+   limit is 0. The loader alone adds `first` to the block index, to read the table (`add(g.first, i)`).
+3. **An empty split still runs a block.** `loopPeeled` runs at least once, so every role of an empty split runs one
+   block whose keys are all masked: a wasted load and two MMAs per empty CTA, and an Ô that can be NaN (0 · V of a
+   page outside the sequence) times `1/l = ∞`. The store keeps O only where the split is non-empty
+   (`AttnOut`'s `kept`). A uniform branch around the CTA's work would skip it, but would need the roles' protocol
+   state through `branch` (§1, item 5).
+4. **Lambdas that capture sealed values are scoped.** `storeRow`'s per-element function first read `out.kept` inside
+   the lambda; the lambda then captured `out`, whose scope is `L`, and `storeChunks`' unscoped `Expr -> Expr`
+   parameter refused it ("closures differ in scope"). Binding `out.kept` first, a plain `Option(Expr)`, fixed it. The
+   message is clear; the cause (a field projection captures its struct) is not obvious.
+5. **No vector types.** Each lane of the append copies its 16 bytes of K and of V as 8 bf16 element stores each, and
+   the combine reads its 4 floats one by one: `Cuda.Expr` has no `uint4` or `float4`, and an `asm` for `ld.v4`/`st.v4`
+   would need four declared outputs per access. The compiler may merge them; it is not measured.
+6. **`status` is the launcher's.** The design's `status` vector is a local the generated launcher declares itself
+   (`const cudaError_t status`), so `Check.names` refused the kernel at `render`. It is `appended`.
+7. **SIMT kernels with launchers printed no headers.** `Cuda.headers` included `cuda_bf16.h` and `cuda_runtime.h` only
+   for kernels with tensor maps, so the append and combine kernels did not compile. `Cuda.rac` now includes them for a
+   launched kernel without maps; every other kernel prints as before.
+8. **Groups for one-warp CTAs.** The append and combine kernels are one warp per CTA, as `Group.warps(0, 1)`
+   (`warpCta`), so that lane 0's broadcast flag is uniform and the claim's arm keeps the warp's group. A multi-warp CTA
+   would make the flag per-warp, which `Grain` cannot say (it is `thread` or CTA-`uniform`), and the arm `diverged`.
+9. **Comparisons.** `BinOp` has no `!=` and `Expr` no negation, so the claim's branch tests "the word holds this
+   launch's epoch" and puts the CAS in the else arm, and the decode prologue names `nonEmpty` rather than `empty`.
+   Neither reads worse.
+10. **The combine's accumulators.** Four registers with a `get` and a `set` per split (`accumulate`), where four
+    values would do: there is no public `bind` (§1, item 4).
+11. **One example, three kernels.** `G` is a generation-time constant (it is Q's box height), so the decode example
+    renders `paged_decode_g1`, `_g4` and `_g8`: about 27 CPU s, and 10,005 lines with their launchers. The append and
+    combine examples take about 0.6 CPU s each (80 and 81 lines). `check.sh` grows by about 10 s of wall time.
+12. **The harness ran against a mock.** `paged_decode_test.cu` was linked against a host mock of the runtime and
+    driver (not in the repository) whose `cudaLaunchKernel` emulates the three kernels behind the generated
+    launchers' own host code: the append's claims in a shuffled warp order, with the epoch and the CAS; the decode's
+    prologue, split ranges, packed Q rows (box height G), paged TMA rows with signed coordinates and zero fill, the
+    mask, A2's softmax with bf16 P, and the stores with the empty-split zero; and the combine. Every check passed (27
+    decode configurations over three sets of lengths, G ∈ {1, 4, 8} and splits ∈ {1, 3, 8}; the collision (and a
+    decode after it), out-of-range and epoch appends; 38 refusals). Broken emulations were caught: claims that ignore
+    the owners (`noclaim`) or overwrite a current one (`steal`), each in the collision and reused-epoch checks; an
+    entry past the table read as column 0 (`nobound`); floor-sized splits (6 checks), no length mask (28), empty splits
+    not zeroed (19), a CTA storing G + 1 rows (28), and an unweighted combine (19). P1's harness, moved to the new layout, passed against the same mock. The mock
+    checks the harness, the references and the launchers, not the kernels.

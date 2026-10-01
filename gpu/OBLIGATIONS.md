@@ -49,7 +49,8 @@ Each assumption is our reading of NVIDIA's documentation and CUTLASS's usage. "E
 
 A19–A33 are the attention core's (`gpu/encoding/Core.rac`, `ATTENTION.md` §4.3, which numbers them so), and A39 its
 score buffer's (A3a, `encoding/A3.md`); none is exercised yet, since no attention kernel has run on hardware. A34–A38 are the TMA-store epilogue's, numbered
-A19–A23 before the attention core's assumptions took those numbers.
+A19–A23 before the attention core's assumptions took those numbers. A40–A42 are paged decode's
+(`encoding/P2.md`), none exercised.
 
 | # | Assumption | Source | Confidence |
 |---|---|---|---|
@@ -90,6 +91,9 @@ A19–A23 before the attention core's assumptions took those numbers.
 | A35 | `cp.async.bulk.commit_group` closes the executing thread's bulk async operations issued since its last commit into one bulk async-group. `cp.async.bulk.wait_group.read N` returns once at most the N most recent bulk async-groups of the executing thread have not finished reading their sources; `cp.async.bulk.wait_group N` once, beyond that, all earlier ones have completed, writes included and visible to the executing thread. Groups are per thread: a thread's wait says nothing of another thread's groups. | PTX ISA 9.4 §9.7.10.28.1.1 (async-group mechanism), §9.7.10.28.6.1, §9.7.10.28.6.2 | high |
 | A36 | `fence.proxy.async.shared::cta`, executed by a thread after its `st.shared` writes, orders them before later operations of the async proxy on shared memory that are ordered after the fence (here by `__syncwarp`, A37), such as a TMA store's reads. Once a thread's `wait_group.read` returned, generic writes ordered after it (A37) may overwrite the store's source without a proxy fence. | PTX ISA 9.4 §9.7.15.4 (`membar`/`fence`, proxy fences), §9.7.10.28.2 (async proxy); CUTLASS `tma_store_fence` before the epilogue's barrier and TMA store, `tma_store_wait` before rewriting; CUDA Programming Guide §4.12 example | medium-high; to be exercised |
 | A37 | `__syncwarp()` orders the memory accesses of the warp's threads before it before their accesses after it (as A2 for a CTA). | CUDA Programming Guide (`__syncwarp`) | high |
+| A40 | (P2) A TMA load of a box of g ≤ 128 rows of 64 bf16 elements, 128-byte swizzled, into a 1024-byte-aligned destination writes those rows where a 128-row box at that destination writes its first g rows: the swizzle permutes each row's 16-byte chunks by the row's shared-memory address bits 7–9, not by the row's index in the box. The box's bytes, g · 128, are what its complete-tx counts. | PTX ISA 9.4 §5.5.7 (swizzling modes, a function of the shared-memory address), §9.7.10.28.5.3 (`cp.async.bulk.tensor`); CUDA driver `cuTensorMapEncodeTiled` (box rows 1 to 256) | medium-high; to be exercised (`paged_decode_g1`, a one-row box) |
+| A41 | (P2) `ld.relaxed.gpu.global.b64` and `atom.relaxed.gpu.global.cas.b64` on one naturally aligned 64-bit word, by threads of one GPU, are morally strong with respect to each other, so each is performed with single-copy atomicity: a read sees the whole of one write, never halves of two. `atom.cas` stores its new value iff the word equals its compare value, as one indivisible read-modify-write, and returns the value it read. `cvta.to.global.u64` turns a kernel parameter array's generic address into its global one. | PTX ISA 9.4 §8 (memory consistency model: morally strong operations; the Atomicity axiom), `ld` (`.relaxed.scope`), `atom` (`.cas`), `cvta` | high |
+| A42 | (P2) `shfl.sync.idx.b32 d, a, 0, 31, 0xffffffff`, executed by every lane of a warp, gives each lane lane 0's `a`. It waits for every lane of the mask, so lanes that left a lane-0 branch meet there; the kernel reconverges with `__syncwarp` first. | PTX ISA 9.4 `shfl.sync` | high |
 | A38 | Nothing is assumed of bulk stores outstanding when their thread exits: every thread that commits one waits for all its groups to complete (`wait_group 0`) before its shared memory is released and before it exits. CUTLASS 4.8's sm100 epilogue without C does not wait at all (`store_tail`), its sm90 one waits for all groups' reads (`tma_store_wait<0>`, the `.read` form), as does the CUDA guide's example; the PTX ISA, as read here, states no rule for exit, so the stronger wait. | CUTLASS `sm100_epilogue_tma_warpspecialized.hpp` `store_tail` (`REFERENCE_CUTLASS.md` §4); PTX ISA 9.4 §9.7.10.28.6.2; CUDA Programming Guide §4.12 | — (a design choice, relying on A35 only) |
 | A39 | (A3a) Nothing is assumed of an MMA whose tensor-memory A operand overlaps its own D: none is issued. The score buffer keeps a product's A (P, columns 64–127) and D (Ô, 128–255) disjoint; only the next S's D (columns 0–127) overlaps P, the A of an earlier MMA (A33). | PTX §9.7.18.10.10.1 (states no rule for overlapping A and D) | — (a design choice) |
 
@@ -136,8 +140,9 @@ the invariants and protocols. Each was found necessary; several were found by re
 - **M9, re-fence after a join** (round 1). Threads that receive an accumulator through a thread barrier fence
   (`after_thread_sync`) before loading it, whoever observed the commit.
 - **M10, grain.** A value is `uniform` only if it comes from uniform sources: literals, parameters, block and grid
-  indices, loop and tile indices, or a shared read at a uniform index of a tile that no thread may write until a
-  barrier (M4, M7).
+  indices, loop and tile indices, a shared read at a uniform index of a tile that no thread may write until a
+  barrier (M4, M7), or a read at a uniform index of a kernel input, which no thread of the launch writes (the decode
+  prologue's length, `encoding/P2.md` §3).
 - **M11, deadlock is not a race.** Rings are FIFOs whose producer tails drain every release. Roles that disagree on
   trip counts block forever; none can get a phase ahead.
 
@@ -147,7 +152,7 @@ none of them (`ATTENTION.md` §4.1), and closes its protocols on `…Done` token
 - **M12, row affinity.** Every per-row access (tensor-memory loads and stores of the 32x32b shape, `storeO`'s global
   row) computes its row from the executing thread, never from an argument: a tensor-memory lane from `warp mod 4` and
   the lane (`quadrantLanes`), a global row from the builder's row expression (`AttnOut`'s, `Mask`'s), which reads the
-  warp and lane. A global row is the CTA's only for the warpgroups the builder meant, so the store needs the `OOwn` of
+  warp and lane, and the `AttnOut`'s first row of the CTA, which reads the block indices. A global row is the CTA's only for the warpgroups the builder meant, so the store needs the `OOwn` of
   that warpgroup (`OOwn(l, t, f)`): one tile's CTA hands that of warps 4–7, the pair kernel those of warps 0–3 and 4–7
   (`storeO`, `storeFinal`). Per-row data (the statistics registers) never crosses threads except through a core protocol that
   indexes both sides the same way, so each thread's running maximum and sum describe the row its loads read. The
@@ -176,6 +181,17 @@ none of them (`ATTENTION.md` §4.1), and closes its protocols on `…Done` token
   (the next S over P) write from `Holding`, which after a publish only `issuePV`, the reading MMA's issue, makes (A33);
   `takeMma` makes it before any publish, when no P exists, and `issueScores` hands it on.
   Between the two sides the reads are ordered by the buffer's barriers, as M9 and M13 order the exchange's.
+- **M17, claims** (P2's append, `encoding/P2.md` §2). A write whose target the run-time data chooses needs a fact
+  about that data, and the fact is a claim: `withClaim` runs its arm only where the claim holds, and `Claimed`, which
+  only that arm receives and which belongs to its scope, is what `appendRow` writes under. A claim of an owner word is
+  exclusive within one launch: every write of an owner word in a launch stores that launch's epoch (step 3's CAS
+  stores `epoch·2^32 + b`, and nothing else writes the owners), so once a word holds the launch's epoch no claim changes
+  it, and two claims of one word that hold are for one sequence and one head, so one warp. A failed CAS found the
+  launch's epoch, so none needs a retry. The step 1 read must be single-copy atomic (A41): a torn read could pair this
+  launch's epoch with another word's sequence. Nothing about the host's epochs can make two claims hold: a reused
+  epoch only refuses claims. The argument is about one launch: launches that share the owners must not overlap, as
+  two launches on two streams with epochs 5 and 6 would each see the other's epoch as old, and both CAS steps would
+  succeed. The launch contract says so, as any kernel that writes memory another kernel reads needs it.
 
 ## 6. Operation obligations
 
@@ -309,11 +325,28 @@ two things.
 | `finishExWriter` | `ExWriterAt(…, held)` | wait P empty at the writer's phase, `after_thread_sync` | `OFinal`: every product completed, none in flight, Ô visible | A6, A13, A21 |
 | `closeExWriter`, `finishExReader` | `OFinal` / `ExReaderAt(…, held)` | nothing | the side used up | — |
 | `maskedScores` | `warps(f, 4)` context (converged: its causal form runs warp collectives), a `Mask(L)` (sealed: only the builders make one), a block index (any value), c < 16 (else a generation error), eight f32 values | `kv0 = 128 · block + 8c`; the limit: `seq`, or (causal) `__syncwarp`, the row `q + 1` with `q` the mask's row (`128 · blockIdx.x + 32 · (warp mod 4) + lane` for one tile, `256 · blockIdx.x + 32 · warp + lane` for two) declared before `min(seq, q + 1)`; 8 declarations `(kv0 + j < limit) ? v_j : −∞` (the builder's −∞) | the masked scores, thread grain, of the context's lifetime; no protocol state, and no branch, so the group stays converged | M3, M12 |
-| `storeO` | `OFinal(x, m, f)`, `OOwn(L, t, f)` and `AttnOut(L, t)` (t f32 or bf16, which only the builders choose), `warps(f, 4)` context, two f32 values | `__syncwarp`, `after_thread_sync`; declarations of the row `blockIdx.y · seq + r`, with `r` the `AttnOut`'s row (as `maskedScores`'), the guard `r < seq`, and copies of the two values; 16 × (8 declarations, `__syncwarp`, `ld.x8`, `wait::ld`, 8 guarded stores of Ô · inv, each through `static_cast<__nv_bfloat16>` for bf16, round to nearest even); the guarded LSE store; `before_thread_sync` | the CTA's rows of O and LSE written once (`OOwn` consumed): rows of a last query tile past `seq` are never stored; `OFinal` kept | A13, A14, M12, S5 |
+| `storeO` | `OFinal(x, m, f)`, `OOwn(L, t, f)` and `AttnOut(L, t)` (t f32 or bf16, which only the builders choose), `warps(f, 4)` context, two f32 values | `__syncwarp`, `after_thread_sync`; declarations of the thread's row `r`, the `AttnOut`'s (as `maskedScores`', or a decode CTA's `32 · (warp mod 4) + lane`), its row of O, `first + r` with `first` the `AttnOut`'s (`blockIdx.y · seq`, or a decode CTA's `blockIdx.x · B · H · G + blockIdx.y · G`), the guard `r < seq` (G for a decode CTA), and copies of the two values; 16 × (8 declarations, `__syncwarp`, `ld.x8`, `wait::ld`, 8 guarded stores of Ô · inv, a decode CTA's as 0 where its split is empty, each through `static_cast<__nv_bfloat16>` for bf16, round to nearest even); the guarded LSE store; `before_thread_sync` | the CTA's rows of O and LSE written once (`OOwn` consumed): rows of a last query tile past `seq`, and a decode CTA's rows past G, are never stored; distinct CTAs' rows are distinct; `OFinal` kept | A13, A14, M12, S5 |
 | `fillBlock` | as `fill`; one `HeadMap` of the ring's first box; a ring whose stages are two 64 × 128 boxes (else a generation error); a row | `arrive.expect_tx`, two TMA loads through the map at columns 0 and 64 of row `blockIdx.y · seq` plus the caller's (rank-2 maps over `[BH·seq, 128]`, `encoding/README.md`) | as `fill`; both halves of the stage from one map and one row | A9 |
 | `attentionKernel` | a body; causal or not; O's type t, f32 or bf16 (else a generation error) | `blocks = ceil(seq / 128)`, or `min(ceil(seq / 128), blockIdx.x + 1)` causal, once; −∞, once; the kernel (parameters `Q_map`, `K_map`, `V_map`, `O` of t, `LSE`, `BH`, `seq`, `scale_log2`) and its launcher (refusing seq = 0, BH = 0, BH ≥ 65536, BH · seq · 128 ≥ 2³¹, rows ≠ BH · seq, dim ≠ 128; three rank-2 encodings over `rows` × `dim` with 64 × 128 boxes; grid (ceil(seq / 128), BH) of 256 threads) | `AttnLaunch` (the maps, `AttnOut`, the `Mask`, seq, blocks, the query block's first row, `scale_log2`), `OOwn`, `TmemPermit`; a `Program` | A17, I6 |
-| `fillPage` | as `fill`; a ring whose stages are two 64 × 128 boxes (else a generation error); `PageTable`, `PageMap` of the ring's first box; a block index `j` | a guarded read of `block_table[b][j]` (`b = blockIdx.y / H`; 0 outside the table), `arrive.expect_tx`, two TMA loads at row `(p · H + blockIdx.y mod H) · 128`, columns 0 and 64 | as `fill`; whatever the table holds, the loads read only the cache or zeros (`PAGED.md` §3) | A9 |
-| `pagedAttentionKernel` | as `attentionKernel`, and 1 ≤ H ≤ 65535 | as `attentionKernel`, with parameters `Q_map`, `K_map`, `V_map`, `O`, `LSE`, `block_table`, `B`, `seq`, `max_pages`, `scale_log2`, and a launcher refusing seq = 0, B = 0, B · H ≥ 65536, B · H · seq · 128 ≥ 2³¹, rows_q ≠ B · H · seq, pages · H · 128 ≥ 2³¹, rows_kv ≠ pages · H · 128, dim ≠ 128, max_pages < ceil(seq / 128), B · max_pages ≥ 2³¹; grid (ceil(seq / 128), B · H) | `PagedLaunch` (as `AttnLaunch`, with `PageMap`s for K and V and the `PageTable`), `OOwn`, `TmemPermit`; a `Program` | A17, I6 |
+| `fillPage` | as `fill`; a ring whose stages are two 64 × 128 boxes (else a generation error); `PageTable`, `PageMap` of the ring's first box; a block index `j` | a guarded read of `block_table[b][j]` (`b = blockIdx.y / H`; 0 outside the table), `arrive.expect_tx`, two TMA loads at row `p · 128`, columns `(blockIdx.y mod H) · 128` and 64 more (the cache `[pages · 128, H · 128]`) | as `fill`; whatever the table holds, the loads read only the cache or zeros (`PAGED.md` §3) | A9 |
+| `pagedAttentionKernel` | as `attentionKernel`, and 1 ≤ H ≤ 65535 | as `attentionKernel`, with parameters `Q_map`, `K_map`, `V_map`, `O`, `LSE`, `block_table`, `B`, `seq`, `max_pages`, `scale_log2`, and a launcher refusing seq = 0, B = 0, B · H ≥ 65536, B · H · seq · 128 ≥ 2³¹, rows_q ≠ B · H · seq, dim ≠ 128, max_pages < ceil(seq / 128), B · max_pages ≥ 2³¹, pages · 128 ≥ 2³¹, rows_kv ≠ pages · 128, cols_kv ≠ H · 128; grid (ceil(seq / 128), B · H) | `PagedLaunch` (as `AttnLaunch`, with `PageMap`s for K and V and the `PageTable`), `OOwn`, `TmemPermit`; a `Program` | A17, I6 |
+
+### 6.11 Paged decode
+
+The operations of `encoding/P2.md`'s three kernels (`Core.rac`'s paged-decode section). The decode CTA runs A2's roles
+and operations, with the rows `storeO` takes from its `AttnOut`. The append and combine kernels are one warp per CTA
+(`warpCta`), so a value the same in every lane of the warp is uniform.
+
+| Operation | Requires | Emits | Establishes | Relies on |
+|---|---|---|---|---|
+| `fillGroup` | as `fill`; a ring whose stages are two 64 × 128 boxes (else a generation error); a `GroupMap` of `group` rows | `arrive.expect_tx(2 · group · 128)`, two TMA loads of `group` rows at row `blockIdx.y · group`, columns 0 and 64, into the stage's two halves | as `fill`; the stage's first `group` rows of each half hold the CTA's queries, the others are never loaded | A9, A40 |
+| `decodeKernel` | a body; 1 ≤ H ≤ 65535, 1 ≤ G ≤ 128 (else a generation error) | the prologue, once, before the roles: `b = blockIdx.y / H`, `keys = lens[b] + 1`, `n = ceil(keys / 128)`, `c = ceil(n / gridDim.x)`, `first = blockIdx.x · c`, `end = min(n, first + c)`, `nonEmpty = first < end`, `count = nonEmpty ? end − first : 1`, the split's keys `nonEmpty ? keys − 128 · first : 0`; −∞; the kernel (parameters `Q_map`, `K_map`, `V_map`, `Opart`, `LSEpart`, `block_table`, `lens`, `B`, `max_pages`, `scale_log2`) and its launcher (refusing B = 0, B · H ≥ 65536, splits = 0, splits · B · H · G · 128 ≥ 2³¹, rows_q ≠ B · H · G, dim ≠ 128, B · max_pages ≥ 2³¹, and the cache's pages · 128 ≥ 2³¹, rows_kv ≠ pages · 128, cols_kv ≠ H · 128; Q's map with 64 × G boxes; grid (splits, B · H) of 256 threads) | `DecodeLaunch`: the `GroupMap`, the `PageMap`s, the `PageTable`, the `AttnOut` of the CTA's G rows of the partials (from `blockIdx.x · B · H · G + blockIdx.y · G`, O kept where `nonEmpty`), A2's non-causal `Mask` with the split's keys as its limit, `count` and `first` (uniform, M10), `scale_log2`; `OOwn`, `TmemPermit`; a `Program`. Every role runs `count ≥ 1` blocks | A17, I6, M10, M11 |
+| `withClaim` | `ClaimOwn(L)` (linear: one claim per warp), `Lengths`, `PageTable`, `Claims`, a `warpCta` context, an unrestricted arm | every lane: `b = blockIdx.x / H`, `pos = lens[b]`, `p` = table entry `[b][pos / 128]` if `pos / 128 < max_pages` else `pages`, the row `128p + pos mod 128`, the word `p · H + blockIdx.x mod H`; lane 0, if `p < pages`: `mine = epoch · 2³² + b`, `cur` by `ld.relaxed.gpu.global.b64`, then `seen = cur` if `cur`'s epoch is `epoch`, else `prev` by `atom.relaxed.gpu.global.cas.b64(cur → mine)` and `seen = prev = cur ? mine : prev`, and the flag `seen = mine`; `__syncwarp`; the flag broadcast by `shfl.sync.idx`; `if (flag) { arm }`; lane 0 stores the flag at `appended[blockIdx.x]` | the arm runs, on the whole warp, only where this warp's claim of `(p, h)` holds, with `Claimed(m)` of the arm's scope; at most one warp's claim of a word holds in a launch (M17); `appended[blockIdx.x]` written once | A41, A42, M17, S1, S5 |
+| `appendRow` | `Claimed(m)`, `PagedCache`, `NewKV`, a `warpCta` context | each lane: 8 copies of `k_new[blockIdx.x · 128 + 8 · lane + j]` to K at the claim's row, column `(blockIdx.x mod H) · 128 + 8 · lane + j` (64-bit index), and of V likewise | the warp writes only rows its claim holds, each lane its own 8 columns of them; the row lies inside the cache (`p < pages`) | M17, S1 |
+| `appendKernel` | a body; 1 ≤ H ≤ 65535 (else a generation error) | the kernel (parameters `K`, `V`, `k_new`, `v_new`, `lens`, `block_table`, `owners`, `appended`, `max_pages`, `pages`, `epoch`) and its launcher (refusing B = 0, epoch = 0, B · H · 128 ≥ 2³¹, pages · 128 ≥ 2³¹, pages · H ≥ 2³¹, B · max_pages ≥ 2³¹; grid (B · H) of 32 threads) | `AppendLaunch`, one `ClaimOwn` per warp; a `Program` | A17, I6 |
+| `splitLse`, `splitRow` | `Partials`, a split index `s` (any value) | `s < splits ? LSEpart[s · rows + blockIdx.x] : 0`; the lane's 4 columns `s < splits ? Opart[(s · rows + blockIdx.x) · 128 + 4 · lane + j] : 0` | the values, `s`'s grain for the LSE (one address, of an input), thread grain for the row; every read inside the partials | M10 |
+| `storeCombined` | `CombinedOwn(L)` (linear), `Combined`, a `warpCta` context, four f32 values and one | each lane: 4 stores of `O[blockIdx.x · 128 + 4 · lane + j]` as bf16; lane 0: `LSE[blockIdx.x]` | the warp's row of O and LSE written once, each element by one lane | S5 |
+| `combineKernel` | a body | the kernel (parameters `Opart`, `LSEpart`, `O`, `LSE`, `rows`, `splits`) and its launcher (refusing rows = 0, splits = 0, splits · rows · 128 ≥ 2³¹; grid (rows) of 32 threads) | `CombineLaunch` (the partials, the output, `splits`), one `CombinedOwn` per warp; a `Program` | A17, I6 |
 
 | `withScoreBuffer` | `Acc(a, empty)` of a `Tmem(a, 256)`, `cta` context | S full (count 1) and P full (count 128), no phase completed at initialization; `inval` at close | the `ScoreBuffer` (S at the region's column 0, P at 64, Ô at 128), `RowSide`, `MmaSide`, linear and of the buffer's scope, so finished before the close; hands back `Acc(a, empty)` | A6–A8 |
 | `takeRows` | `warps(f, 4)` context, f mod 4 = 0 (evidence) | the warpgroup's phase register, 0 | `RowsAt(x, m, f, fresh)`, bound to that warpgroup | M6 |
@@ -406,6 +439,19 @@ arguments. The audit as of this document:
   `finishMma` consume one and mint none: they are its finishers (M15). `storeRow`, `counting`, `scoresFull`,
   `probsFull`, `probsAt`, `outAt`, `mapChunks`, `probChunks`, `scaleRow`, `rowInPairCta` and `upToTile` build unsealed `Gen`s,
   `Expr`s and lists, which reach a kernel only through the Key; `attnStart` needs it.
+- **Paged decode** (`encoding/P2.md`, §6.11). `fillGroup` is `fill` with the row the core's and the bytes of a box of
+  `group` rows. `withClaim` consumes the linear `ClaimOwn` and mints `Claimed` only inside the arm it emits under the
+  broadcast flag; `Claimed` is sealed and of the arm's scope, and the arm is unrestricted, so it captures no linear
+  value. `appendRow` takes the row from `Claimed` and the columns from the warp and lane. `storeCombined` consumes
+  `CombinedOwn`. `splitLse` and `splitRow` read the sealed `Partials` with their guard. The unsealed `DecodeLaunch`,
+  `AppendLaunch` and `CombineLaunch` build launches from sealed parts and `Val`s: `blocks` and `first` (decode) and
+  `splits` (combine) choose trip counts and table entries only, so a wrong one deadlocks (M11), reads a wrong page or
+  split (guarded), or computes a wrong result. `F32x4.mk` builds values from values. `warpCta`, `wideParam`,
+  `belowI32`, `cacheRequires`, `cacheMaps`, `fillBoxes`, `rowInTile`, `keptOrZero`, `storeRow`,
+  `splitRowOf`, `globalAt`, `loadRelaxed64`, `casRelaxed64`, `broadcastLane0`, `decodeParams`, `decodeLauncher`,
+  `appendParams`, `appendLauncher`, `combineParams` and `combineLauncher` build unsealed `Group`s, `Expr`s, `Stmt`s,
+  `Gen`s, `String`s and launchers, which reach a kernel only through the Key; `headOut`, which builds an `AttnOut`,
+  needs it.
 - **The examples' shared modules** (`gpu/encoding/Layout.rac`, `gpu/encoding/Attention.rac`) are clients: they declare
   no sealed family and need no Key. `Layout.roles4` is `split` three times, `Layout.rolesPair` four times.
 
