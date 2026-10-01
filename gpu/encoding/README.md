@@ -134,7 +134,7 @@ The box needs no JVM.
 ## Layout
 
 - `Core.rac`: the core.
-- `Registers.rac`: the register file and its warpgroups' shares, which the core uses as a client (`REGISTERS.md`).
+- `Registers.rac`: the CTA's register pool and its warpgroups' shares, which the core uses as a client (`REGISTERS.md`).
 - `Layout.rac`: the CTA of eight warps that the attention and GEMM examples share (`roles4`), A3a's of twelve
   (`rolesPair`), and A3b's of sixteen (`rolesCorrected`).
 - `Attention.rac`: the roles and CTA of forward attention, which `examples/attention.rac`,

@@ -9,9 +9,10 @@
 # name, expect, why, old, new, and optionally mentions; a mutant that changes several places gives `edits`, a list of
 # (old, new) pairs, in place of old and new. Each `old` must occur exactly once in the source.
 #
-# A mutant whose `expect` is "Spill" must instead generate, and fail the register check (toolkit/registers.py) with a
-# report that mentions its `mentions`. It needs the CUDA toolkit's container, so it runs only when $CUDA_TOOLKIT is set,
-# as check.sh sets it when the container is there.
+# A mutant whose `expect` is "RegisterCheck" must instead generate, and fail the register check (toolkit/registers.py)
+# with a report that mentions its `mentions`, if any. It needs the CUDA toolkit's container, so it runs only when
+# $CUDA_TOOLKIT is "yes", as check.sh sets it when the container is there; check.sh sets it to "no" otherwise and says
+# so itself, and without it at all this script says how many it skipped.
 import concurrent.futures, json, os, runpy, shlex, shutil, subprocess, sys, tempfile
 
 here = os.path.dirname(os.path.abspath(__file__))
@@ -36,15 +37,16 @@ def check(m):
     path = os.path.join(scratch, m["name"] + ".rac")
     with open(path, "w") as f:
         f.write(mutated)
-    if m["expect"] == "Spill":
+    if m["expect"] == "RegisterCheck":
         generated = run("--raw", path)
         if "error:" in generated.stdout + generated.stderr:
             return False, f"FAIL {label}: expected a kernel, got:\n{generated.stdout}{generated.stderr}"
         judged = subprocess.run([sys.executable, os.path.join(here, "toolkit", "registers.py")], input=generated.stdout,
                                 capture_output=True, text=True)
-        if judged.returncode != 0 and m["mentions"] in judged.stdout:
-            return True, f"ok   {label} -> Spill"
-        return False, f"FAIL {label}: expected a spill mentioning {m['mentions']}, got:\n{judged.stdout}"
+        if judged.returncode != 0 and m.get("mentions", "") in judged.stdout:
+            return True, f"ok   {label} -> RegisterCheck"
+        return False, f"FAIL {label}: expected the register check to fail" + \
+            (f" mentioning {m['mentions']}" if "mentions" in m else "") + f", got:\n{judged.stdout}"
     try:
         diags = json.loads(run("--json", path).stdout)
     except json.JSONDecodeError:
@@ -59,7 +61,10 @@ def check(m):
         f", got: " + "; ".join(f"L{d['startLine']} {d['kind']}: {d['message']}" for d in diags)
 
 with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as pool:
-    mutants = [m for m in table["MUTANTS"] if m["expect"] != "Spill" or os.environ.get("CUDA_TOOLKIT")]
+    toolkit = os.environ.get("CUDA_TOOLKIT")
+    mutants = [m for m in table["MUTANTS"] if m["expect"] != "RegisterCheck" or toolkit == "yes"]
+    if toolkit is None and len(mutants) < len(table["MUTANTS"]):
+        print(f"skipped: {len(table['MUTANTS']) - len(mutants)} register-check mutants of {stem} (no CUDA toolkit)")
     results = list(pool.map(check, mutants))
 shutil.rmtree(scratch)
 for ok, line in results:

@@ -71,9 +71,9 @@ namespace Layout {
 
   // Runs `group0` on warps 0–3, `group1` on warps 4–7, `correct` on warps 8–11, `issue` on warp 12 and `load` on warp
   // 14, concurrently, then waits for all of them. Registers per thread (A3B.md §2): 192 for each softmax warpgroup, 72
-  // for the correction warpgroup, 56 for warps 12–15, which fill the register file.
+  // for the correction warpgroup, 56 for warps 12–15, which fill the CTA's register pool, the SM's 65,536 registers.
   def rolesCorrected {l: Lifetime}{k0: Kind}{S0: Lifetime}{k1: Kind}{S1: Lifetime}{k2: Kind}{S2: Lifetime}{k3: Kind}{S3: Lifetime}
-      {k4: Kind}{S4: Lifetime}(e: Ctx(l, CorrectedCta))(regs: Registers.RegFile(l, 512, 128))
+      {k4: Kind}{S4: Lifetime}(e: Ctx(l, CorrectedCta))(regs: Registers.RegPool(l, 512, 128))
       (group0: { kind = k0, scope = S0 } (m: Lifetime) -> Ctx(m, Group.warps(0, 4)) -> Pair(Ctx(m, Group.warps(0, 4)), Unit))
       (group1: { kind = k1, scope = S1 } (m: Lifetime) -> Ctx(m, Group.warps(4, 4)) -> Pair(Ctx(m, Group.warps(4, 4)), Unit))
       (correct: { kind = k2, scope = S2 } (m: Lifetime) -> Ctx(m, Group.warps(8, 4)) -> Pair(Ctx(m, Group.warps(8, 4)), Unit))

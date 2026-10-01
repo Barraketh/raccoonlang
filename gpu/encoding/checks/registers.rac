@@ -1,0 +1,33 @@
+// Register splits the core accepts (gpu/encoding/REGISTERS.md §3). Run by check.sh, which requires this file to check
+// without a diagnostic. Every split ends with its warpgroups back at the pool's per-thread count and a CTA barrier, so every warp
+// holds the budget outside a split, and a kernel may split any number of times: in sequence, and under a uniform
+// branch. `rejected/attention_a3b_mutants.py` has the splits the core refuses.
+
+import encoding.Core
+import encoding.Layout
+
+namespace R {
+  open Core
+  open Cuda
+  open Layout
+
+  // A split whose warpgroups do nothing, at A3b's counts.
+  def idle {l: Lifetime}{L: Lifetime}(regs: Registers.RegPool(L, 512, 128))(e: Ctx(l, CorrectedCta)): Ctx(l, CorrectedCta) :=
+    splitWarpgroups(e, regs, 192, 192, 72, 56,
+      fun (n: Lifetime)(e: Ctx(n, Group.warps(0, 4))): Pair(Ctx(n, Group.warps(0, 4)), Unit) => (e, Unit.unit),
+      fun (n: Lifetime)(e: Ctx(n, Group.warps(4, 4))): Pair(Ctx(n, Group.warps(4, 4)), Unit) => (e, Unit.unit),
+      fun (n: Lifetime)(e: Ctx(n, Group.warps(8, 4))): Pair(Ctx(n, Group.warps(8, 4)), Unit) => (e, Unit.unit),
+      fun (n: Lifetime)(e: Ctx(n, Group.warps(12, 4))): Pair(Ctx(n, Group.warps(12, 4)), Unit) => (e, Unit.unit))
+
+  // Two splits in sequence, of one pool.
+  def twice {l: Lifetime}(regs: Registers.RegPool(l, 512, 128))(e: Ctx(l, CorrectedCta)): Ctx(l, CorrectedCta) :=
+    R.idle(regs, R.idle(regs, e))
+
+  // A split under a uniform branch, whose arm runs on every thread of the CTA or on none.
+  def underBranch {l: Lifetime}{S: Lifetime}(regs: Registers.RegPool(l, 512, 128))(c: Val(S, Grain.uniform, DType.bool))
+      (e: Ctx(l, CorrectedCta)): Ctx(l, CorrectedCta) := {
+    let (e, u) := when(e, c, fixedUnit, Unit.unit, fun (m: Lifetime)(e: Ctx(m, CorrectedCta))(u: Unit): Pair(Ctx(m, CorrectedCta), Unit) =>
+      (R.idle(regs, e), u))
+    e
+  }
+}

@@ -35,7 +35,7 @@ a control combinator's signature, which this rule does not reach (§9, decision 
 
 | Module | Tokens |
 |---|---|
-| `Registers` | the register file, per-warpgroup shares (§3) |
+| `Registers` | the CTA's register pool, per-warpgroup shares (§3) |
 | `Tmem` | the allocation permit, regions, `Acc` |
 | `Rings` | stage rings and their sides |
 | `AccRings` | accumulator rings and their sides |
@@ -52,12 +52,16 @@ a control combinator's signature, which this rule does not reach (§9, decision 
 - **So a module is pure.** It owns its sealed families and their only operations, and emits nothing. `Core` emits, in
   emitters that need the `Key` and the module's tokens, so Core cannot emit an instruction of the family without the
   token whose type states it.
-- **Minting stays trusted.** The module's minting function is a definition any module can call. That only the kernel
-  builders call it is a stated obligation (`OBLIGATIONS.md` §7, M24), not a checked one.
+- **Creating a pool stays trusted.** `Registers.pool` is a definition any module can call. That only builders call
+  it, at the count their kernel is compiled for, is a stated obligation (`OBLIGATIONS.md` §2 and §7, M24). A client's
+  pool at another count makes changes from a count the warps do not hold; the register check (§5) refuses that
+  kernel, when the toolkit is there.
 - **Core's raw assembly stays trusted.** Core owns all emission, so it could still print a `setmaxnreg` through its raw
-  `asm` statements, outside the emitters that need a share. That it does not is reviewed, not checked.
+  `asm` statements, outside the emitters that need a share. That it does not is reviewed. The register check reads
+  every `setmaxnreg` of an example's output against the split's rule, which a stray one breaks unless it happens to
+  fit it.
 
-`Registers.rac` is built so (§3). Two remedies would close the last two points (§9, open question 1).
+`Registers.rac` is built so (§3). §9, open question 1, lists the remedies that would close the last two points.
 
 **The trusted base.** What stays trusted is these modules plus the control combinators: the kernel builders, `split`,
 `elect`, `branch`, `when`, the loops and `onLeader`. Their obligations are stated in `OBLIGATIONS.md` and reviewed.
@@ -69,7 +73,7 @@ byte-identical CUDA, apart from the changes §7 lists.
 ## 3. Supply
 
 **What is known exactly:**
-- **The register file:** 65,536 32-bit registers per SM.
+- **The SM's registers:** 65,536, of 32 bits each.
 - **The CTA's threads:** from its builder.
 - **The kernel's residency `r`:** the CTAs it means to run per SM. Every tensor-core kernel here is 1, set by its
   shared memory; one-warp SIMT kernels may want more.
@@ -81,55 +85,58 @@ beyond it. A kernel can then never fail to launch for registers. At worst it spi
 
 **Per-warpgroup counts.** For a kernel whose roles need different counts (A3b: softmax 192, correction 72, the rest 56):
 - **The user** chooses the counts as generation-time numbers on the role layout, or `auto` (§5).
-- **The `Registers` module** (`Registers.rac`) owns the CTA's register file as a linear token,
-  `RegFile(l, threads, budget)`, at the uniform budget. The builder mints it (`Registers.file(l, threads, r)`), once.
-- **The split** (`Registers.split`, which A3b's `splitWarpgroups` calls):
-  - consumes the file;
+- **The `Registers` module** (`Registers.rac`) owns the CTA's register pool, `RegPool(l, threads, perThread)`: its
+  threads times the uniform budget, which `setmaxnreg` draws on (SASS: `USETMAXREG…CTAPOOL`). The builder creates it
+  (`Registers.pool(l, threads, r)`).
+- **The split** (`Registers.split`, which A3b's `splitWarpgroups` calls) divides the pool into shares:
   - requires, as evidence, that the counts fit it (`Registers.fits`): each a multiple of 8 from 24 to 256, and
     128 · Σ counts ≤ 512 · budget, which is 65,536 at A3b's budget of 128;
-  - gives each warpgroup a `RegShare(l, f, count)`, f its first warp.
+  - gives each warpgroup a `RegShare(l, f, perThread, count)`: f its first warp, `perThread` the pool's count, which
+    its warps hold before and after the split.
 - **Core's entry emitter** (`Core.withShare`) needs the Key and warpgroup f's share. It emits the change from the
-  budget to the share's count as the first instruction of f's branch, runs the role, and hands the share on. The role
+  share's per-thread count to its count as the first instruction of f's branch, runs the role, and hands the share on. The role
   itself never sees the share; it cannot change its count.
 - **Core's way back** (`Core.regsBack`) needs the Key and all four shares, which leave the branches only at the split's
-  join. It emits each warpgroup's change back to the budget after the join barrier, in warpgroup order, then ends the
-  shares.
-- **The join** (`Registers.join`) consumes the four shares together. It does not give the file back, so a kernel
-  splits once (below).
+  join. It emits each warpgroup's change back to the budget after the join barrier, in warpgroup order, then a CTA
+  barrier, then ends the shares.
+- **The join** (`Registers.join`) returns the four shares to the pool, together. The pool is not consumed, so a kernel may
+  split any number of times.
 - **No user code calls `setmaxnreg`.**
 
+**The invariant: outside a split, every warp holds the pool's per-thread count.** The barrier after the way back makes it true:
+once every warp has passed it, every warp's change back has run.
+
 **Why this cannot deadlock:**
-- An increase at the split waits only for decreases at the split. Those never wait, and they depend on nothing.
+- An increase at a split waits only for decreases at that split. Those never wait, and they depend on nothing.
 - An increase after the join waits only for decreases after the join. Those also never wait.
 - There is no operation that changes a share between the split and the join. So a warpgroup cannot take back
   registers another warpgroup's first increase needs, which is A3b's deadlock.
-- There is one split per kernel. No barrier follows the way back, so a second split's first increase could take the
-  registers that the first split's increases back still wait for.
+- No split starts before the last split's way back has finished, by the barrier. So each split starts from the uniform
+  budget, and the argument holds per split: in sequence, in a loop, or under a uniform branch.
 
-**The invariant:** every warp holds the uniform budget before the split, and from its own change back on. It is not
-"every warp holds the budget outside a split": between the join and the last change back, warps hold different counts,
-and nothing waits for the way back to finish. So two splits in sequence can deadlock. With A3b's counts, after the
-first join:
+**Why the barrier.** Without it, nothing waits for the way back to finish, and two splits in sequence can deadlock.
+With A3b's counts, after the first join:
 1. Warpgroup 0 goes back from 192 to 128, and at once enters the second split and goes up to 192 again.
 2. Warpgroup 1 does the same. The 128 registers per thread the two decreases freed are taken again.
 3. Warpgroups 2 and 3, going back up from 72 and 56, wait for registers no one will free: warpgroups 0 and 1 are in
    their roles, waiting for the MMA warp, which is in warpgroup 3.
 
-A barrier after the way back would make sequential splits safe, at one more `__syncthreads()` in every kernel that
-changes counts. Until a kernel needs two splits, the file allows one.
+With the barrier, warpgroups 0 and 1 wait at it until warpgroups 2 and 3 are back at 128. It costs A3b one
+`__syncthreads()` after the split, its only change to generated code in this step besides the bounds.
 
-**What the file carries**, and why it stays:
-- **Its threads and budget**, `RegFile(l, threads, budget)`: the uniform count every warp holds before the split, so
-  the split can check the counts against the CTA's pool, and the emitters print the changes from and back to it.
-- **Its lifetime**, the kernel's: the split takes a context of that lifetime, so it runs in the kernel's top-level
-  spine, never in a role, a branch arm or a loop body, whose contexts have lifetimes of their own; and an arm or a
-  body, being unrestricted, cannot capture the file (M23).
-- **Its linearity**: one split per file. With the builder minting one file per kernel, one split per kernel.
+**Where a split can run.** It needs a `cta(512)` context: the kernel's spine, a uniform branch's arm or a loop's body,
+never a role (`warps(f, 4)`) or a per-thread or per-warp branch (`diverged`, `warpwise`). So splits never nest.
 
-**Two departures from the first design**, both forced:
-- **The join does not return the file.** A file given back could be split again, which the last point above refuses,
-  and a share does not carry the budget, so a returned file's budget would be the caller's word.
-- **The fit is against the file**, 128 · Σ counts ≤ 512 · budget, not against 65,536. `setmaxnreg` draws on the CTA's
+**What the pool carries**, and why it stays: the CTA's threads and its per-thread count, `RegPool(l, threads,
+perThread)`, which the kernel's context does not carry. The split checks the counts against the pool, and the emitters print the
+changes from and back to the budget. It is unrestricted, since splitting again is safe: it is evidence of the budget,
+not a resource used up.
+
+**Three departures from the first design:**
+- **The join returns no token.** The pool is unrestricted, so there is nothing to give back.
+- **A share carries the pool's per-thread count**, `RegShare(l, f, perThread, count)`, not only its count, so the
+  emitters take both ends of every change from the share's type.
+- **The fit is against the pool**, 128 · Σ counts ≤ 512 · budget, not against 65,536. `setmaxnreg` draws on the CTA's
   pool, which is the threads times their entry count (§7), and the two agree only at residency 1.
 
 **No change in the middle of a role.** FA4 and CUTLASS change counts only at role entry, and every kernel here does
@@ -170,11 +177,11 @@ it:
 
 **`auto`.** Optional:
 1. Start each role at its floor, rounded up to 8.
-2. Give the rest of the file to the roles in proportion to their floors.
+2. Give the rest of the pool to the roles in proportion to their floors.
 3. Compile.
 4. Move registers, 8 at a time, from roles that do not spill to roles that do, until none spills or none can move.
    Each round is one `ptxas` run, 10 to 30 s for an attention kernel.
-5. Cache the result by the kernel's text. A failure reports the roles' floors and the file's size.
+5. Cache the result by the kernel's text. A failure reports the roles' floors and the pool's size.
 
 **Where `ptxas` runs.** NVIDIA ships no CUDA for macOS, so on the Mac it runs in the container of §6. `gpu/check.sh`
 runs this check when the image is present, and says it skipped the check when it is not. The hardware session runs it
@@ -185,24 +192,33 @@ too, on the box's own toolkit.
   arch=compute_100a,code=sm_100a -c -lineinfo -Xptxas -v`, then `cuobjdump -xelf` and `nvdisasm -g`. About 3 s for
   A3b's two kernels; the examples run in parallel with the other checks.
 - **One line per kernel:** its registers, its budget from its printed bounds, and its spill stores and loads.
-- **A kernel fails** when its registers exceed its budget, when it spills, when its SASS has any `STL` or `LDL`, and,
-  if it changes counts, when it does not enter at exactly its budget (A59). The local-memory test runs on every
-  kernel, not only those that change counts: no generated kernel means to use local memory.
-- **Attribution** gives each local-memory instruction's role, as "the role at line L (`setmaxnreg…`)", or "no role".
-  It is by line, so it is approximate:
-  - a kernel's line info can name a line of another kernel of the file whose code is the same, so roles are looked up
-    in the whole file;
-  - spill code at a block's edge can carry a neighbour's line.
+- **The file fails** when it has no kernel, or when `ptxas` warns (a residency above 32, say, which `ptxas` ignores).
+- **A kernel fails** when its registers exceed its budget, when it spills, or when its SASS has any `STL` or `LDL`.
+  The local-memory test runs on every kernel, not only those that change counts: no generated kernel means to use
+  local memory.
+- **A kernel that changes counts fails** when it does not enter at exactly its budget (A59), or when its `setmaxnreg`s
+  are not splits of the CTA's pool at that budget:
+  - every warpgroup's first change goes from the budget to its count, `.inc` up and `.dec` down;
+  - every change back, the one in a block guarded by its warpgroup, goes from that count to the budget;
+  - the counts fit the pool: threads/4 · Σ counts ≤ threads · budget.
 
-  In `softmax_starved` (below), the non-causal kernel's two softmax roles get 1,054 and 904 instructions, and 2 lie in
-  no role. The causal kernel's get 711 and 717, and 226 more at lines of the non-causal kernel's first softmax role;
-  its correction and MMA roles get 1 and 2, and 1 lies in no role.
+  This is `Registers.split`'s rule, read from the output against the budget of the kernel's bounds. So it holds
+  whoever created the pool: a pool created by a client at another count (`pool_at_other_count`) generates, and fails
+  here.
+- **Attribution** gives each local-memory instruction's role, as "the role at line L (`setmaxnreg…`)", or "no role".
+  A role is the block that starts with a warpgroup's first change, within its kernel. The line is the last line of the
+  kernel's own source that the line info named; it also names the CUDA headers' lines, which are skipped. It is
+  approximate: spill code at a block's edge can carry a neighbour's line. In `softmax_starved` (below), the
+  non-causal kernel's two softmax roles get 979 instructions each and 2 lie in no role; the causal kernel's get 827
+  each, its correction and MMA roles 1 and 2, and 1 lies in no role.
 - **The budget is restated** in the check, from the bounds: the rule of `Registers.budget`, kept in Python so the check
   needs no Raccoon run.
-- **The proof that it catches a spill** is `attention_a3b_mutants.py`'s `softmax_starved`, a mutant whose expectation is
-  `Spill` (`gpu/mutate.py`): the softmax warpgroups at 64 registers. It generates, since the counts fit the file, and the
-  check fails it, with the local-memory instructions in the first softmax role.
-- **Without the toolkit** `check.sh` prints "skipped: no CUDA toolkit" once, and skips both the check and the spill
+- **The proof that it fails what it should** is two mutants of `attention_a3b_mutants.py` whose expectation is
+  `RegisterCheck` (`gpu/mutate.py`):
+  - `softmax_starved`: the softmax warpgroups at 64 registers. It generates, since the counts fit the pool, and the
+    check fails it, with the local-memory instructions in the softmax roles;
+  - `pool_at_other_count`: a second split, of a pool a client created at residency 2.
+- **Without the toolkit** `check.sh` prints "skipped: no CUDA toolkit" once, and skips both the check and those
   mutants; `cuda.sh true` is the probe.
 
 ## 6. The toolkit on a Mac
@@ -217,8 +233,8 @@ too, on the box's own toolkit.
 
 The changes this design made (built 2026-10-01):
 - **Bounds everywhere.** Every builder states its threads and residency to `Core.finish`, and `render` prints
-  `__launch_bounds__(threads, r)`. The bounds lines are the one change to generated code: every other line of every
-  example is byte-identical.
+  `__launch_bounds__(threads, r)`. The bounds lines, and A3b's barrier below, are the only changes to generated code:
+  every other line of every example is byte-identical.
 - **The residencies:**
   - **1 for every tensor-core kernel**, whose shared memory leaves room for one CTA per SM: A1, A2, P1, the decode,
     the GEMMs (`(256, 1)`), A3a (`(384, 1)`) and A3b (`(512, 1)`). The 256-thread kernels' budget is the 255 cap.
@@ -226,10 +242,11 @@ The changes this design made (built 2026-10-01):
     an SM holds. A one-warp kernel waits on memory, and every resident warp hides some of the wait. The budget, 64, is
     above what either uses.
   - **1 for `tiledKernel`**, which no example uses: the budget it leaves, 64 at 1,024 threads, is the CTA's share of
-    the file.
+    the SM's registers.
 - **Spill checks for every kernel** (§5).
-- **A3b.** `splitWarpgroups` is the `Registers` module's client: it splits the kernel's file and joins the shares.
-  Its counts stay 192/72/56, and its output is unchanged: the changes back already followed the join.
+- **A3b.** `splitWarpgroups` is the `Registers` module's client: it divides the CTA's register pool and joins the shares.
+  Its counts stay 192/72/56. The changes back already followed the join; a `__syncthreads()` now follows them (§3),
+  one line in each of its two kernels. It has not run on hardware with that barrier.
 
 **The bounds change the allocation.** Given a residency of 1, `ptxas` uses more of the budget where it had used
 little. Every kernel still fits without spills; whether it is faster is a hardware question.
@@ -278,11 +295,13 @@ Two kernels sit at their limit:
 
 1. **The toolkit container** (`gpu/toolkit`). Done with this document.
 2. **The `Registers` module.** Residency and budgets, bounds in every builder, and split and join in place of
-   `splitWarpgroups`' internals. Generated CUDA stays byte-identical except the bounds lines. **Done:**
+   `splitWarpgroups`' internals. Generated CUDA stays byte-identical except the bounds lines and the barrier after
+   A3b's way back. **Done:**
    `gpu/encoding/Registers.rac`; `Core.withShare` and `Core.regsBack` are the emitters; the `RegPermit` is gone;
-   mutants `registers_over_file` and `registers_split_twice`.
+   the mutant `registers_over_pool`, and `checks/registers.rac` (two splits in sequence, and one under a uniform
+   branch).
 3. **The `ptxas` check in `check.sh`:** registers and spills per kernel, and per role from the SASS. A spill is a
-   failure. **Done:** `gpu/toolkit/registers.py` (§5), and the spill mutant `softmax_starved`.
+   failure. **Done:** `gpu/toolkit/registers.py` (§5), and the mutants `softmax_starved` and `pool_at_other_count`.
 4. **Floors and `auto`.**
 5. **The other families' modules** (§2), one at a time.
 
@@ -297,18 +316,33 @@ Two kernels sit at their limit:
 5. **A spill is a build error**, found by `ptxas -v` per kernel and from the SASS per role. A count over budget is an
    error too.
 6. **The CUDA toolkit runs in a Linux container on the Mac** (`gpu/toolkit`).
-7. **A kernel splits its register file once.** The join ends the shares and does not give the file back (§3).
+7. **Every split ends with a CTA barrier after the way back**, so every warp holds the budget outside a split, and a
+   kernel may split any number of times (§3).
 
 **Open questions for the user:**
 1. **How to check what stays trusted.** Today a module that owns a family cannot emit, its minting function is
-   callable by any module, and Core could print a `setmaxnreg` through raw `asm` (§2, "The language limit"). Two
-   remedies:
-   - **A language feature** by which one module grants a narrow capability to another: exports to named modules, or
-     sealing shared with named modules (say, `Registers.rac` and `Core.rac`). The module could then need the `Key`,
-     emit its own instructions, and mint only for a builder.
-   - **Typed instructions** (`gpu/EVALUATOR.md`, step 1), with a `Check.rac` rule on the generated AST: every
-     `setmaxnreg` is a warpgroup's entry change in a split, or a change back after its join, with counts that fit
-     the file. This checks Core's own emission, raw `asm` included, as a certificate of each kernel.
+   callable by any module, and Core could print a `setmaxnreg` through raw `asm` (§2, "The language limit").
 
-   The second is the likely route, since it needs no language change. The user decides; the language is unchanged
+   **A token only Core can mint** (the user's question): `Registers.pool` would take a linear token of Core's, so
+   only Core could call it.
+   - **It is the right pattern.** Core already gates emission so, with `Key`.
+   - **It meets an import cycle.** `Registers` would import `Core` to name the token's type, and `Core` imports
+     `Registers` for the pool and the shares. Raccoon refuses import cycles.
+   - **A third module does not help.** The token's home module is then its only minter, and it can hand a token only
+     to the callers of a public function. A token controls how many and with what, not who.
+
+   **The remedies:**
+   1. **Import cycles within a declared trusted group.** The user's pattern as stated: Core mints the token and calls
+      `Registers` with it.
+   2. **Exports to named modules.** `Registers.pool` exported to `Core` only.
+   3. **Sealing shared with named modules** (say, `Registers.rac` and `Core.rac`). The module could then need the
+      `Key`, emit its own instructions, and mint only for a builder.
+   4. **Typed instructions** (`gpu/EVALUATOR.md`, step 1), with a `Check.rac` rule on the generated AST: every
+      `setmaxnreg` is a warpgroup's entry change in a split, or a change back after its join, with counts that fit
+      the pool. This checks Core's own emission, raw `asm` included, as a certificate of each kernel. No language
+      change.
+   5. **A layering in which only the top layer can render.** It likely needs contexts indexed by their kernel.
+      Unexamined.
+
+   The fourth is the likely route, since it needs no language change. The user decides; the language is unchanged
    until then.

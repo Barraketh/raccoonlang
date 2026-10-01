@@ -10,8 +10,9 @@
 # order; each mutant table then runs its mutants in parallel itself.
 #
 # When the CUDA toolkit's container is there (toolkit/cuda.sh), every kernel an example of encoding/ generates is also
-# compiled for sm_100a and its registers judged (toolkit/registers.py): within its budget, and no spill. So are the
-# mutant tables' spill mutants. Without the container both are skipped, which the report's first line says.
+# compiled for sm_100a and its registers judged (toolkit/registers.py): within its budget, no spill, and its
+# `setmaxnreg`s splits of the CTA's pool. So are the mutant tables' register-check mutants. Without the container both
+# are skipped, which the report's first line says.
 here=$(cd "$(dirname "$0")" && pwd)
 run() { ${RACCOON:?set RACCOON to a raccoon launcher} --prelude "$here/Prelude.rac" --root "$here" "$@"; }
 # Generated C++ is compiled against stub headers when a host clang++ is available; each inline assembly statement is
@@ -23,7 +24,7 @@ cxx() {
 }
 # The register check of generated kernels, when the toolkit is there.
 registers() {
-  [ -n "$CUDA_TOOLKIT" ] || return 0
+  [ "$CUDA_TOOLKIT" = yes ] || return 0
   python3 "$here/toolkit/registers.py"
 }
 # A file's path below gpu/, which names it in the report.
@@ -37,8 +38,9 @@ one() {
       out=$(run --raw "$f" 2>&1)
       if printf '%s' "$out" | grep -q "error:"; then echo "FAIL $(name "$f")"; printf '%s\n' "$out"; return 1
       elif ! printf '%s' "$out" | cxx; then echo "FAIL $(name "$f"): generated C++ does not compile"; return 1
-      else echo "ok   $(name "$f")"
-        case $f in "$here"/encoding/examples/*) printf '%s' "$out" | registers || return 1 ;; esac
+      else
+        case $f in "$here"/encoding/examples/*) printf '%s' "$out" | registers || { echo "FAIL $(name "$f")"; return 1; } ;; esac
+        echo "ok   $(name "$f")"
       fi ;;
     rejected)
       want=$(sed -n 's#^// expect: ##p' "$f" | head -1)
@@ -86,7 +88,7 @@ tasks() {
   done
 }
 if "$here/toolkit/cuda.sh" true < /dev/null > /dev/null 2>&1; then export CUDA_TOOLKIT=yes
-else echo "skipped: no CUDA toolkit"; fi
+else export CUDA_TOOLKIT=no; echo "skipped: no CUDA toolkit"; fi
 status=0
 results=$(mktemp -d)
 tasks | awk '{ print NR, $0 }' > "$results/tasks"

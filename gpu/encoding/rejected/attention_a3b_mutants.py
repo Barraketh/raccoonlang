@@ -7,9 +7,9 @@
 #   and arrives on its full barrier in one operation, and it is the only writer of the ring.
 # - Reading α from the slot before its full wait: not expressible. `awaitAlpha` waits, fences, reads and frees the slot
 #   in one operation.
-# - Setting a warpgroup's register count twice, or in the middle of its role: not expressible. Only `splitWarpgroups`
-#   emits `setmaxnreg`, through emitters that need the Key and a warpgroup's share, and the shares exist only between
-#   the split of the kernel's one register file and the join (`registers_split_twice`).
+# - Setting a warpgroup's register count in the middle of its role: not expressible. Only `splitWarpgroups` emits
+#   `setmaxnreg`, through emitters that need the Key and a warpgroup's share, and the shares exist only between a split
+#   and its join. Splitting again after the join is allowed and safe (`checks/registers.rac`).
 # - Rescaling every warp's quadrant, skipping none (`rescaleQuadrant` straight on the warpgroup, no vote): allowed, and
 #   correct. `rescaleQuadrant` takes the warpgroup or warps of it under a warp vote, and a row whose α is 1 is
 #   multiplied by 1.
@@ -91,7 +91,7 @@ MUTANTS = [
             "identically, and before any of the warpgroup's role. Only `splitWarpgroups` emits it, as the first "
             "instruction of each warpgroup's branch of a 512-thread CTA, so a single warp cannot.",
         old="""  // ---- The CTA ---""",
-        new="""  def oneWarp {l: Lifetime}(regs: Registers.RegFile(l, 512, 128))(m: Lifetime)(e: Ctx(m, CorrectedIssue)): Ctx(m, CorrectedIssue) :=
+        new="""  def oneWarp {l: Lifetime}(regs: Registers.RegPool(l, 512, 128))(m: Lifetime)(e: Ctx(m, CorrectedIssue)): Ctx(m, CorrectedIssue) :=
     splitWarpgroups(e, regs, 192, 192, 72, 56,
       fun (n: Lifetime)(e: Ctx(n, Group.warps(0, 4))): Pair(Ctx(n, Group.warps(0, 4)), Unit) => (e, Unit.unit),
       fun (n: Lifetime)(e: Ctx(n, Group.warps(4, 4))): Pair(Ctx(n, Group.warps(4, 4)), Unit) => (e, Unit.unit),
@@ -101,12 +101,12 @@ MUTANTS = [
   // ---- The CTA ---""",
     ),
     dict(
-        name="registers_over_file", expect="EvidenceNotDischarged", mentions="Evidence fits of Core.splitWarpgroups",
-        why="Gives both softmax warpgroups 256 registers per thread: 128 · (256 + 256 + 72 + 56) is more than the file's "
+        name="registers_over_pool", expect="EvidenceNotDischarged", mentions="Evidence fits of Core.splitWarpgroups",
+        why="Gives both softmax warpgroups 256 registers per thread: 128 · (256 + 256 + 72 + 56) is more than the pool's "
             "512 · 128, so a softmax warpgroup's first increase would wait forever for registers no decrease frees. "
-            "`Registers.split` requires the counts to fit the file.",
+            "`Registers.split` requires the counts to fit the pool.",
         old="""  // ---- The CTA ---""",
-        new="""  def overFile {l: Lifetime}(regs: Registers.RegFile(l, 512, 128))(e: Ctx(l, CorrectedCta)): Ctx(l, CorrectedCta) :=
+        new="""  def overPool {l: Lifetime}(regs: Registers.RegPool(l, 512, 128))(e: Ctx(l, CorrectedCta)): Ctx(l, CorrectedCta) :=
     splitWarpgroups(e, regs, 256, 256, 72, 56,
       fun (n: Lifetime)(e: Ctx(n, Group.warps(0, 4))): Pair(Ctx(n, Group.warps(0, 4)), Unit) => (e, Unit.unit),
       fun (n: Lifetime)(e: Ctx(n, Group.warps(4, 4))): Pair(Ctx(n, Group.warps(4, 4)), Unit) => (e, Unit.unit),
@@ -116,32 +116,33 @@ MUTANTS = [
   // ---- The CTA ---""",
     ),
     dict(
-        name="registers_split_twice", expect="LinearReused", mentions="regs has a linear type",
-        why="Splits the register file twice: no barrier follows the first split's way back, so the second split's "
-            "first increases could take the registers the first one's increases back still wait for. The split uses "
-            "the file up.",
-        old="""  // ---- The CTA ---""",
-        new="""  def twice {l: Lifetime}(regs: Registers.RegFile(l, 512, 128))(e: Ctx(l, CorrectedCta)): Ctx(l, CorrectedCta) := {
-    let idle := fun (e: Ctx(l, CorrectedCta))(r: Registers.RegFile(l, 512, 128)): Ctx(l, CorrectedCta) =>
-      splitWarpgroups(e, r, 192, 192, 72, 56,
-        fun (n: Lifetime)(e: Ctx(n, Group.warps(0, 4))): Pair(Ctx(n, Group.warps(0, 4)), Unit) => (e, Unit.unit),
-        fun (n: Lifetime)(e: Ctx(n, Group.warps(4, 4))): Pair(Ctx(n, Group.warps(4, 4)), Unit) => (e, Unit.unit),
-        fun (n: Lifetime)(e: Ctx(n, Group.warps(8, 4))): Pair(Ctx(n, Group.warps(8, 4)), Unit) => (e, Unit.unit),
-        fun (n: Lifetime)(e: Ctx(n, Group.warps(12, 4))): Pair(Ctx(n, Group.warps(12, 4)), Unit) => (e, Unit.unit))
-    idle(idle(e, regs), regs)
-  }
-
-  // ---- The CTA ---""",
+        name="pool_at_other_count", expect="RegisterCheck", mentions="setmaxnreg.inc 72 does not change from the budget 128",
+        why="Creates a second pool, at residency 2 (64 registers per thread), and splits it after the kernel's own: "
+            "`Registers.pool` is a definition any module can call, and the counts 72/56/64/64 fit a pool at 64, so "
+            "the kernel generates. But its warps hold 128, so the split's first changes are from a count they do not "
+            "hold, and its way back leaves them at 64. The register check reads every split's `setmaxnreg`s against "
+            "the kernel's own budget, from its bounds, and fails it.",
+        edits=[
+            ("""    let (e, u) := withTmem(e, permit, 512, AccState.empty, Unit, regions)
+    e
+  }""", """    let (e, u) := withTmem(e, permit, 512, AccState.empty, Unit, regions)
+    splitWarpgroups(e, Registers.pool(l, 512, 2), 72, 56, 64, 64,
+      fun (n: Lifetime)(e: Ctx(n, Group.warps(0, 4))): Pair(Ctx(n, Group.warps(0, 4)), Unit) => (e, Unit.unit),
+      fun (n: Lifetime)(e: Ctx(n, Group.warps(4, 4))): Pair(Ctx(n, Group.warps(4, 4)), Unit) => (e, Unit.unit),
+      fun (n: Lifetime)(e: Ctx(n, Group.warps(8, 4))): Pair(Ctx(n, Group.warps(8, 4)), Unit) => (e, Unit.unit),
+      fun (n: Lifetime)(e: Ctx(n, Group.warps(12, 4))): Pair(Ctx(n, Group.warps(12, 4)), Unit) => (e, Unit.unit))
+  }"""),
+        ],
     ),
     dict(
-        name="softmax_starved", expect="Spill", mentions="in the role at line 73 (setmaxnreg.dec.sync.aligned.u32 64)",
+        name="softmax_starved", expect="RegisterCheck", mentions="in the role at line 73 (setmaxnreg.dec 64)",
         why="Gives the softmax warpgroups 64 registers per thread, where a thread holds a row's 128 scores: the counts "
-            "fit the file, so the kernel generates, but `ptxas` spills the softmax roles to local memory, and the "
+            "fit the pool, so the kernel generates, but `ptxas` spills the softmax roles to local memory, and the "
             "register check (toolkit/registers.py) attributes the `STL`s and `LDL`s to the first softmax role.",
         edits=[
             ("""              (rolesCorrected(e, regs,""", """              (starved(e, regs,"""),
             ("""  // ---- The CTA ---""", """  def starved {l: Lifetime}{k0: Kind}{S0: Lifetime}{k1: Kind}{S1: Lifetime}{k2: Kind}{S2: Lifetime}{k3: Kind}{S3: Lifetime}
-      {k4: Kind}{S4: Lifetime}(e: Ctx(l, CorrectedCta))(regs: Registers.RegFile(l, 512, 128))
+      {k4: Kind}{S4: Lifetime}(e: Ctx(l, CorrectedCta))(regs: Registers.RegPool(l, 512, 128))
       (group0: { kind = k0, scope = S0 } (m: Lifetime) -> Ctx(m, Group.warps(0, 4)) -> Pair(Ctx(m, Group.warps(0, 4)), Unit))
       (group1: { kind = k1, scope = S1 } (m: Lifetime) -> Ctx(m, Group.warps(4, 4)) -> Pair(Ctx(m, Group.warps(4, 4)), Unit))
       (correct: { kind = k2, scope = S2 } (m: Lifetime) -> Ctx(m, Group.warps(8, 4)) -> Pair(Ctx(m, Group.warps(8, 4)), Unit))

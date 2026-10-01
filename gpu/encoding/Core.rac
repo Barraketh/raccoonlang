@@ -1,6 +1,6 @@
 // The typed GPU core of gpu/encoding (README.md): a copy of gpu/Gpu.rac that grows what the library lacks, starting
 // with forward attention (gpu/ATTENTION.md §3, stages A1 and A2). Every family that carries authority or names generated code is sealed, so only this file can
-// make one; the register file and its shares are `Registers.rac`'s (REGISTERS.md), whose client this file is. A kernel
+// make one; the CTA's register pool and its shares are `Registers.rac`'s (REGISTERS.md), whose client this file is. A kernel
 // is an ordinary Raccoon program over these operations; evaluating it builds a `Cuda.Kernel`.
 //
 // Five rules carry the safety argument:
@@ -839,7 +839,7 @@ namespace Core {
 
   // The finished kernel: its code, then any generation errors as `#error` lines, which `render` refuses. Every builder
   // states the CTA's `threads` and its `residency`, the CTAs it means to run per SM: 1 for every tensor-core kernel,
-  // whose shared memory leaves room for one, and `warpResidency` for the one-warp kernels.
+  // whose shared memory leaves room for one, and for `tiledKernel`; `warpResidency` for the one-warp kernels.
   def finish (k: Key)(name: String)(params: List(Param))(launcher: Option(Launcher))(threads: Nat)(residency: Nat)(gen: Gen): Program :=
     Program.mk(Kernel.mk(name, params, gen.smem, Core.toBlock(gen.code, Core.toBlock(Core.errorsToCode(gen.errors), Block.done)),
       launcher), threads, residency)
@@ -3026,44 +3026,48 @@ namespace Core {
     }
   }
 
-  // The branch of warpgroup `f` at its share's `count` registers per thread (A59): first `setmaxnreg` from the file's
-  // `budget` to `count`, so it covers all of the role's code, then the role; it hands the share on to the join.
-  def withShare {L: Lifetime}{f: Nat}{count: Nat}{kr: Kind}{Sr: Lifetime}(k: Key)(budget: Nat)(share: Registers.RegShare(L, f, count))
+  // The branch of warpgroup `f` at its share's `count` registers per thread (A59): first `setmaxnreg` from the pool's
+  // per-thread count `b` to `count`, so it covers all of the role's code, then the role; it hands the share on to the
+  // join.
+  def withShare {L: Lifetime}{f: Nat}{b: Nat}{count: Nat}{kr: Kind}{Sr: Lifetime}(k: Key)(share: Registers.RegShare(L, f, b, count))
       (role: { kind = kr, scope = Sr } (m: Lifetime) -> Ctx(m, Group.warps(f, 4)) -> Pair(Ctx(m, Group.warps(f, 4)), Unit))
       : { kind = lin, scope = Lifetime.union(L, Sr) } (m: Lifetime) -> Ctx(m, Group.warps(f, 4))
-        -> Pair(Ctx(m, Group.warps(f, 4)), Registers.RegShare(L, f, count)) :=
-    fun (m: Lifetime)(e: Ctx(m, Group.warps(f, 4))): Pair(Ctx(m, Group.warps(f, 4)), Registers.RegShare(L, f, count)) => {
-      let (e, u) := role(m, Core.emitAll(k, e, Core.setMaxRegs(budget, count)))
+        -> Pair(Ctx(m, Group.warps(f, 4)), Registers.RegShare(L, f, b, count)) :=
+    fun (m: Lifetime)(e: Ctx(m, Group.warps(f, 4))): Pair(Ctx(m, Group.warps(f, 4)), Registers.RegShare(L, f, b, count)) => {
+      let (e, u) := role(m, Core.emitAll(k, e, Core.setMaxRegs(b, count)))
       (e, share)
     }
 
-  // After the split's join: each warpgroup of a 512-thread CTA back from its share's count to the file's `budget`, in
-  // warpgroup order; then the shares end.
-  def regsBack {l: Lifetime}{L: Lifetime}{c0: Nat}{c1: Nat}{c2: Nat}{c3: Nat}(k: Key)(e: Ctx(l, Group.cta(512)))(budget: Nat)
-      (s0: Registers.RegShare(L, 0, c0))(s1: Registers.RegShare(L, 4, c1))(s2: Registers.RegShare(L, 8, c2))(s3: Registers.RegShare(L, 12, c3))
-      : Ctx(l, Group.cta(512)) := {
+  // After the split's join: each warpgroup of a 512-thread CTA back from its share's count to the pool's per-thread
+  // count `b`, in warpgroup order, then the CTA barrier, after which every warp holds `b`; then the shares end.
+  def regsBack {l: Lifetime}{L: Lifetime}{b: Nat}{c0: Nat}{c1: Nat}{c2: Nat}{c3: Nat}(k: Key)(e: Ctx(l, Group.cta(512)))
+      (s0: Registers.RegShare(L, 0, b, c0))(s1: Registers.RegShare(L, 4, b, c1))(s2: Registers.RegShare(L, 8, b, c2))
+      (s3: Registers.RegShare(L, 12, b, c3)): Ctx(l, Group.cta(512)) := {
     let back := fun (f: Nat)(count: Nat): Stmt =>
       Stmt.ifElse(Expr.bin(BinOp.eq, Expr.bin(BinOp.div, Expr.special(Builtin.warp), Expr.lit(4)), Expr.lit(Nat.div(f, 4))),
-        Core.toBlock(Core.setMaxRegs(count, budget), Block.done), Block.done)
+        Core.toBlock(Core.setMaxRegs(count, b), Block.done), Block.done)
     let u := Registers.join(s0, s1, s2, s3)
-    Core.emitAll(k, e, List.cons(back(0, c0), List.cons(back(4, c1), List.cons(back(8, c2), List.cons(back(12, c3), List.nil(Stmt))))))
+    Core.emitAll(k, e, List.cons(back(0, c0), List.cons(back(4, c1), List.cons(back(8, c2), List.cons(back(12, c3),
+      List.cons(Stmt.sync, List.nil(Stmt)))))))
   }
 
   // Runs the four warpgroups of a 512-thread CTA concurrently, `group0` to `group3` on warps 0–3, 4–7, 8–11 and 12–15,
-  // each at its per-thread register count `c0` to `c3`, then waits for all of them and brings each back to the file's
-  // budget `b`, so every warp holds `b` outside the split. It splits the file into the warpgroups' shares
-  // (`Registers.split`), which requires the counts to fit the file, so every first increase finds the registers the
-  // first decreases free. Each warpgroup's branch holds its share (`withShare`) and hands it to the join, where the way
-  // back is emitted (`regsBack`):
+  // each at its per-thread register count `c0` to `c3`, then waits for all of them and brings each back to the pool's
+  // per-thread count `b`. It divides the CTA's register pool into the warpgroups' shares (`Registers.split`), which
+  // requires the counts to fit the pool, so every first increase finds the registers the first decreases free. Each
+  // warpgroup's branch holds its share (`withShare`) and hands it to the join, where the way back is emitted
+  // (`regsBack`):
   // - The way back follows the join, and so every warpgroup's first change: the increases back wait only for the
   //   decreases back, which never wait. A warpgroup that went back at the end of its own role, before the join, could
   //   take registers another warpgroup's first increase still needed, and that increase waited forever (B200,
   //   2026-10-01).
-  // - The split uses the file up, so a kernel splits once. No barrier follows the way back, so a second split's first
-  //   increases could take the registers that the first split's increases back still wait for.
-  // Every warp enters at `b`, since the builder compiles the kernel for the file's threads and residency (A59).
-  def splitWarpgroups {l: Lifetime}{b: Nat}{k0: Kind}{S0: Lifetime}{k1: Kind}{S1: Lifetime}{k2: Kind}{S2: Lifetime}{k3: Kind}{S3: Lifetime}
-      (e: Ctx(l, Group.cta(512)))(regs: Registers.RegFile(l, 512, b))(c0: Nat)(c1: Nat)(c2: Nat)(c3: Nat)
+  // - A CTA barrier follows the way back, so every warp holds `b` outside a split, and a kernel may split any number
+  //   of times. Without it, a warpgroup back at `b` could go on to a second split and take, by its first increase,
+  //   the registers that another warpgroup's increase back still waited for.
+  // Every warp enters at `b` when the pool is its builder's, which compiles the kernel for the pool's threads and
+  // residency (A59).
+  def splitWarpgroups {l: Lifetime}{L: Lifetime}{b: Nat}{k0: Kind}{S0: Lifetime}{k1: Kind}{S1: Lifetime}{k2: Kind}{S2: Lifetime}{k3: Kind}{S3: Lifetime}
+      (e: Ctx(l, Group.cta(512)))(regs: Registers.RegPool(L, 512, b))(c0: Nat)(c1: Nat)(c2: Nat)(c3: Nat)
       [fits: Eq(Bool, Registers.fits(b, c0, c1, c2, c3), Bool.true)]
       (group0: { kind = k0, scope = S0 } (m: Lifetime) -> Ctx(m, Group.warps(0, 4)) -> Pair(Ctx(m, Group.warps(0, 4)), Unit))
       (group1: { kind = k1, scope = S1 } (m: Lifetime) -> Ctx(m, Group.warps(4, 4)) -> Pair(Ctx(m, Group.warps(4, 4)), Unit))
@@ -3071,16 +3075,16 @@ namespace Core {
       (group3: { kind = k3, scope = S3 } (m: Lifetime) -> Ctx(m, Group.warps(12, 4)) -> Pair(Ctx(m, Group.warps(12, 4)), Unit))
       : Ctx(l, Group.cta(512)) := {
     let ((s0, s1), (s2, s3)) := Registers.split(regs, c0, c1, c2, c3)[fits]
-    let Low := Pair(Registers.RegShare(l, 0, c0), Registers.RegShare(l, 4, c1))
-    let High := Pair(Registers.RegShare(l, 8, c2), Registers.RegShare(l, 12, c3))
+    let Low := Pair(Registers.RegShare(L, 0, b, c0), Registers.RegShare(L, 4, b, c1))
+    let High := Pair(Registers.RegShare(L, 8, b, c2), Registers.RegShare(L, 12, b, c3))
     let low := fun (m: Lifetime)(e: Ctx(m, Group.warps(0, 8))): Pair(Ctx(m, Group.warps(0, 8)), Low) =>
-      Core.split(e, 4, Registers.RegShare(l, 0, c0), Registers.RegShare(l, 4, c1), Core.withShare(Key.key, b, s0, group0),
-        Core.withShare(Key.key, b, s1, group1))
+      Core.split(e, 4, Registers.RegShare(L, 0, b, c0), Registers.RegShare(L, 4, b, c1), Core.withShare(Key.key, s0, group0),
+        Core.withShare(Key.key, s1, group1))
     let high := fun (m: Lifetime)(e: Ctx(m, Group.warps(8, 8))): Pair(Ctx(m, Group.warps(8, 8)), High) =>
-      Core.split(e, 4, Registers.RegShare(l, 8, c2), Registers.RegShare(l, 12, c3), Core.withShare(Key.key, b, s2, group2),
-        Core.withShare(Key.key, b, s3, group3))
+      Core.split(e, 4, Registers.RegShare(L, 8, b, c2), Registers.RegShare(L, 12, b, c3), Core.withShare(Key.key, s2, group2),
+        Core.withShare(Key.key, s3, group3))
     let (e, ((s0, s1), (s2, s3))) := Core.split(e, 8, Low, High, low, high)
-    Core.regsBack(Key.key, e, b, s0, s1, s2, s3)
+    Core.regsBack(Key.key, e, s0, s1, s2, s3)
   }
 
   // ---- The tensor-core GEMM launch ---------------------------------------------------------------------------------
@@ -3328,14 +3332,14 @@ namespace Core {
 
   // Forward attention as `pairAttentionKernel` computes it, in FA4's CTA of 512 threads (gpu/encoding/A3B.md, A3b),
   // whose third warpgroup rescales Ô and whose warpgroups set their register counts: the body gets the CTA's register
-  // file, at 128 registers per thread, which `splitWarpgroups` uses up. Its launcher, its rows and its launch contract
+  // pool, at 128 registers per thread, which `splitWarpgroups` divides. Its launcher, its rows and its launch contract
   // are `pairAttentionKernel`'s, with 512 threads.
   def correctedAttentionKernel (name: String)(causal: Bool)(t: DType)
       (body: (l: Lifetime) -> Ctx(l, Group.cta(512)) -> PairLaunch(l, TmaSpec.mk(64, 128), t) -> OOwn(l, t, 0) -> OOwn(l, t, 4)
-        -> TmemPermit(l) -> Registers.RegFile(l, 512, Registers.budget(512, 1)) -> Ctx(l, Group.cta(512)))
+        -> TmemPermit(l) -> Registers.RegPool(l, 512, Registers.budget(512, 1)) -> Ctx(l, Group.cta(512)))
       : Program := scope l => {
     let (e, launch) := Core.twoTileStart(Key.key, l, 512, causal, t)
-    let gen := Core.state(Key.key, body(l, e, launch, OOwn.mk(l, t, 0), OOwn.mk(l, t, 4), TmemPermit.mk(l), Registers.file(l, 512, 1)))
+    let gen := Core.state(Key.key, body(l, e, launch, OOwn.mk(l, t, 0), OOwn.mk(l, t, 4), TmemPermit.mk(l), Registers.pool(l, 512, 1)))
     Core.finish(Key.key, name, Core.attnParams(t), Option.some(Core.attnLauncher(t, 256, 512)), 512, 1, gen)
   }
 

@@ -40,8 +40,13 @@ Not claimed:
 - nvcc, ptxas, the driver and the hardware.
 
 Everything else is `gpu/Gpu.rac`, whose operations must meet §6, and the typing discipline of §5, which makes
-clients use them correctly. For `gpu/encoding/` it is `Core.rac` and `Registers.rac`; `Registers.file` is trusted to be
-called only by the kernel builders (§7, M24).
+clients use them correctly. For `gpu/encoding/` it is `Core.rac` and `Registers.rac`.
+
+**A carve-out from §1 for `gpu/encoding/`.** Its claim is for programs that do not call `Registers.pool`, which only
+the kernel builders may call (§7, M24). The language cannot refuse a client's call, since sealing is per file; a
+client's pool at a count other than its kernel's makes `setmaxnreg` changes from a count the warps do not hold, which
+PTX leaves undefined. `check.sh`'s register check refuses such a kernel when the CUDA toolkit is present
+(`encoding/REGISTERS.md` §5).
 
 ## 3. Platform assumptions
 
@@ -304,30 +309,30 @@ none of them (`ATTENTION.md` §4.1), and closes its protocols on `…Done` token
   `forTiles` and `forOwnedTiles` have no client in `encoding/`; their bodies' type is `forPairTiles`'s.
 - **M24, register shares** (`encoding/REGISTERS.md`). A warpgroup's register count changes only through its share,
   which only `encoding/Registers.rac` makes and ends:
-  - **The file.** A kernel that changes counts has one register file, `RegFile(l, threads, b)`, linear, minted by its
-    builder (`Registers.file`) at the budget b of the threads and residency it compiles for, so every warp enters at
-    b (A59).
-  - **The split** (`Registers.split`) uses the file up and gives each warpgroup of a 512-thread CTA its
-    `RegShare(l, f, count)`, linear, if the counts fit the file: each one `setmaxnreg` takes, and
-    128 · Σ counts ≤ 512 · b (evidence). So every first increase finds the registers the first decreases free.
+  - **The pool.** A kernel that changes counts has the CTA's register pool, `RegPool(l, threads, b)`, created by its
+    builder (`Registers.pool`) at the budget b of the threads and residency it compiles for, so every warp enters at
+    b (A59). It is unrestricted: evidence of b, which the context does not carry.
+  - **The split** (`Registers.split`) gives each warpgroup of a 512-thread CTA its `RegShare(l, f, b, count)`, linear, if
+    the counts fit the pool: each one `setmaxnreg` takes, and 128 · Σ counts ≤ 512 · b (evidence). So every first
+    increase finds the registers the first decreases free.
   - **The emitters** (`Core.withShare`, `Core.regsBack`) need the Key and a share, and print the change its type
-    states: from b to the share's count as the first instruction of warpgroup f's branch, and back to b after the
-    split's join. A branch holds its share and hands it to the join, so no share reaches code before the split or
-    after the way back.
+    states: from the share's b to its count as the first instruction of warpgroup f's branch, and back to b after the
+    split's join, followed by a CTA barrier. A branch holds its share and hands it to the join, so no share reaches
+    code before the split or after the way back.
   - **The join** (`Registers.join`) uses the four shares up together. No operation changes a share, so there is no
-    change in the middle of a role, and the file is not given back, so a kernel splits once: the way back is followed
-    by no barrier, and a second split's first increases could take registers the way back still waits for.
-  - **The invariant:** every warp holds the file's budget before the split, and from its own change back on. The split
-    takes a context of the file's lifetime, the kernel's, so it runs in the kernel's spine, never under a role, a branch
-    or a loop.
+    change in the middle of a role.
+  - **The invariant: outside a split, every warp holds b.** The barrier after the way back makes it so: without it, a
+    warpgroup back at b could start a second split and take, by its first increase, registers that another
+    warpgroup's increase back still waits for. So a kernel may split any number of times, in sequence, in a loop or
+    under a uniform branch. A split needs a `cta(512)` context, so splits never nest in a role.
   Trusted, and reviewed rather than checked (`encoding/REGISTERS.md` §2 and §9):
-  - that a builder mints one file per kernel, with the threads and residency it prints (§7). The language seals per
-    file, so `Registers.file` is a definition any module can call. A second file would allow a second split, which can
-    deadlock: a liveness obligation, not one of §1's claims;
+  - that only a builder creates a pool, with the threads and residency it prints (§7, and §2's carve-out). The
+    language seals per file, so `Registers.pool` is a definition any module can call; a pool at another per-thread
+    count prints changes from a count the warps do not hold, which the register check refuses;
   - that Core prints no `setmaxnreg` but through `withShare` and `regsBack`. Its raw `asm` statements could.
 
 M18–M20 hold for the CTA pair (`encoding/TWO_CTA.md`, `Core.rac`'s pair sections), M21 and M22 for A3b's correction
-warpgroup (`encoding/A3B.md`), M23 for every combinator of `encoding/Core.rac`, and M24 for the register file of
+warpgroup (`encoding/A3B.md`), M23 for every combinator of `encoding/Core.rac`, and M24 for the register pool of
 `encoding/Registers.rac`.
 
 ## 6. Operation obligations
@@ -576,9 +581,9 @@ score buffer's other operations are §6.10's, with `rescaleRow` and `publishProb
 | `finishCorrection` | `CorrectAt(x, m, f, held)` | nothing | the side used up | — |
 | `voteAny` | `warps(f, c)` context, a bool value | a u32 declaration and `vote.sync.any.pred` with a full mask of the value | a bool of grain `warp`: whether the value holds in any lane of the warp | A4, A31, M10 |
 | `ex2emu` | a context, any group; an f32 value x < 128 (its domain; not checked) | a declaration and one `asm` of `max.f32`, `add.rm.f32`, `sub.rn.f32` ×2, `fma.rn.f32` ×3, `shl.b32` and `add.s32` (FA4's `ex2_emulation`) | 2^x within 2⁻¹³·⁴⁷ relative for x ∈ [−126, 8] and 2⁻¹²⁷ absolute for x ∈ [−127, −126); +0 for x < −127 and −∞; wrong for x ≥ 128 and NaN (NaN gives +0); grain of the input | A58 |
-| `splitWarpgroups` (`withShare`, `regsBack`) | `cta(512)` context, the kernel's `RegFile(l, 512, b)`, four counts that fit it (`Registers.fits`: each a multiple of 8 from 24 to 256, and 128 · Σ ≤ 512 · b; evidence); four bodies on warps 0–3, 4–7, 8–11 and 12–15 | `split` at warp 8, then at 4 and at 12; each warpgroup's branch runs `setmaxnreg` from b to its share's count (`.inc` up, `.dec` down, none if equal) and its body; after the join, each warpgroup `setmaxnreg` back to b, in warpgroup order (`regsBack`), so every first increase precedes every increase back | the four bodies ran, each at its count; every warp holds b after the split; the file and the shares used up (M24) | A3, A30, A59, I3, M24 |
+| `splitWarpgroups` (`withShare`, `regsBack`) | `cta(512)` context, a `RegPool(L, 512, b)`, four counts that fit it (`Registers.fits`: each a multiple of 8 from 24 to 256, and 128 · Σ ≤ 512 · b; evidence); four bodies on warps 0–3, 4–7, 8–11 and 12–15 | `split` at warp 8, then at 4 and at 12; each warpgroup's branch runs `setmaxnreg` from b to its share's count (`.inc` up, `.dec` down, none if equal) and its body; after the join, each warpgroup `setmaxnreg` back to b, in warpgroup order (`regsBack`), so every first increase precedes every increase back; then `__syncthreads()` | the four bodies ran, each at its count; every warp holds b after the split; the shares used up (M24) | A3, A30, A59, I3, M24 |
 | `when` | as `branch`, one arm | as `branch`, with an empty else arm | the state after the arm, or unchanged | M5 |
-| `correctedAttentionKernel` | as `pairAttentionKernel` | as `pairAttentionKernel`, with a CTA of 512 threads (the launcher's block 512) and `__launch_bounds__(512, 1)` | as `pairAttentionKernel`, and the kernel's register file, `Registers.file(l, 512, 1)`: `RegFile(l, 512, 128)` | A17, A59, I6, M24 |
+| `correctedAttentionKernel` | as `pairAttentionKernel` | as `pairAttentionKernel`, with a CTA of 512 threads (the launcher's block 512) and `__launch_bounds__(512, 1)` | as `pairAttentionKernel`, and the CTA's register pool, `Registers.pool(l, 512, 1)`: `RegPool(l, 512, 128)` | A17, A59, I6, M24 |
 
 ## 7. Public surface
 
@@ -693,19 +698,21 @@ arguments. The audit as of this document:
   builds a value from a value, of grain `warp` because the vote makes it so; a `warp`-grain value from anything else
   would let a branch run `warpwise` arms on a condition that differs within a warp. `Grain.warp` is a constructor
   any client can name, but only on `Val`s, which are sealed: a client cannot make a `Val` of a grain the core did not
-  give it. `ex2emu` builds a value; its template is the core's. `splitWarpgroups` uses up a register file and emits
+  give it. `ex2emu` builds a value; its template is the core's. `splitWarpgroups` divides a register pool and emits
   every `setmaxnreg`, through `withShare` and `regsBack`, which need the Key and a share (M24). `when` is `branch`
   with an empty else arm. `AlphaRing.mk`, `alphaRing` and `alphaOf` build offsets and register names, which grant
   nothing; `ownQuadrants`, `zeroRow`, `publishCode`, `alphaRow`, `setMaxRegs` and `twoTileStart` build unsealed
   `Bool`s, `Gen`s, `Expr`s and `Stmt`s, which reach a kernel only through the Key (`openScoreBuffer` and
   `twoTileStart` need it).
-- **The register file** (`gpu/encoding/Registers.rac`, M24). It declares `RegFile` and `RegShare`, sealed and linear,
-  and emits nothing. `split` uses a file up and mints its four shares, under the evidence `fits`; `join` uses four
-  shares up and mints nothing; `budget`, `countOk` and `fits` build numbers and `Bool`s. `file` mints a file from
-  nothing, and is the one trusted operation: only a kernel builder may call it, once per kernel, with the threads and
+- **The register pool** (`gpu/encoding/Registers.rac`, M24). It declares `RegPool`, sealed and unrestricted, and
+  `RegShare`, sealed and linear, and emits nothing. `split` mints a pool's four shares, under the evidence `fits`;
+  `join` uses four shares up and mints nothing; `budget`, `countOk` and `fits` build numbers and `Bool`s. `pool` mints
+  a pool from nothing, and is the one trusted operation: only a kernel builder may call it, with the threads and
   residency the builder passes to `finish` (`correctedAttentionKernel`: 512 and 1). Nothing checks that, since sealing
-  is per file and `Registers.rac` cannot need the Key without importing `Core`, which imports it. A client that
-  called it would hold a second file, and could split twice (`encoding/REGISTERS.md` §9).
+  is per file and `Registers.rac` cannot need the Key without importing `Core`, which imports it (`encoding/REGISTERS.md`
+  §9). A client's pool at the kernel's own count is the builder's pool again; one at another count makes
+  `splitWarpgroups` print changes from a count the warps do not hold, which the register check refuses
+  (`pool_at_other_count`).
 - **The examples' shared modules** (`gpu/encoding/Layout.rac`, `gpu/encoding/Attention.rac`) are clients: they declare
   no sealed family and need no Key. `Layout.roles4` is `split` three times, `Layout.rolesPair` four times,
   `Layout.rolesCorrected` `splitWarpgroups` and `split` three times. `Attention.pairLoader` and `pairIssuer` are A3a's
