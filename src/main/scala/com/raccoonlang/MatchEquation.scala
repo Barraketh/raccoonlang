@@ -4,11 +4,11 @@ import com.raccoonlang.Value._
 import com.raccoonlang.telescope.BinderOps
 
 /**
- * The equation a match names (docs/implemented/MATCH_EQUATION.md): in the case of constructor `C` with fields `x̄`, `h` proves
- * `Eq(T, e, C(p̄, x̄))`, `T` the scrutinee's type and `p̄` its parameters. Its `Eq` is the trusted prelude's, validated
- * at the end of prelude loading as the equality family, so the hypothesis a case is checked under is one reflexivity
- * proves whenever the case runs, whatever a program declares. A prelude whose `Eq` is not that has no named equations,
- * and nor do its own declarations, which are checked before it ends.
+ * The equation a match names (docs/implemented/MATCH_EQUATION.md): in the case of constructor `C` with fields `x̄`, `h`
+ * proves `Eq(T, e, C(p̄, x̄))`, `T` the scrutinee's type and `p̄` its parameters. Its `Eq` is the trusted prelude's,
+ * validated at the end of prelude loading as the equality family, so the hypothesis a case is checked under is one
+ * reflexivity proves whenever the case runs, whatever a program declares. A prelude whose `Eq` is not that has no named
+ * equations, and nor do its own declarations, which are checked before it ends.
  */
 object MatchEquation {
   val familyName = "Eq"

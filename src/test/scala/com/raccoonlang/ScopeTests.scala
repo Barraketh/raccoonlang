@@ -88,7 +88,10 @@ class ScopeTests extends munit.FunSuite with TestSupport {
     expectOnly[LifetimeEscapes](typecheckDecls("def s : Sort { level = succ(one) } := scope l => Type { scope = l }\n"))
   }
 
-  /** docs/implemented/SCOPE_CONTAINMENT.md §2's table: rows 1, 6 and 7 are admitted, and rows 2 to 5 are each one's mutation. */
+  /**
+   * docs/implemented/SCOPE_CONTAINMENT.md §2's table: rows 1, 6 and 7 are admitted, and rows 2 to 5 are each one's
+   * mutation.
+   */
   test("once a scope closes, no value that belongs to it is held, created or used") {
     def result(tpe: String, body: String): String = withFamilies(s"def r : $tpe := $body\n")
     def run(body: String): Value = runProgram(withFamilies(s"def r : Nat := $body\n\n{ r }"))

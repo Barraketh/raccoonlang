@@ -1,9 +1,9 @@
 package com.raccoonlang
 
 /**
- * Evidence fields and discharge through them (docs/implemented/PROOF_BY_EVALUATION.md §1.8, §1.9): a constructor's evidence binder
- * is a stored proof field, discharged or supplied at a construction as any evidence argument is, and an instance of an
- * evidence-eligible family is discharged by discharging its fields in turn, to a bound on the nesting.
+ * Evidence fields and discharge through them (docs/implemented/PROOF_BY_EVALUATION.md §1.8, §1.9): a constructor's
+ * evidence binder is a stored proof field, discharged or supplied at a construction as any evidence argument is, and an
+ * instance of an evidence-eligible family is discharged by discharging its fields in turn, to a bound on the nesting.
  *
  * `Fin` is a bounded natural, `Both` a conjunction whose fields are evidence, and `GemmShape` a proposition over data.
  */

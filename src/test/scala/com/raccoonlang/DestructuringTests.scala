@@ -1,9 +1,10 @@
 package com.raccoonlang
 
 /**
- * Destructuring (docs/implemented/PAIRS_AND_PRELUDE.md §3): `let (a, b) := e` binds a local for each stored field of `e` 's value,
- * transparently, to its eta view, for a family with one constructor, no indices, no recursive field, and outside `Prop`
- * under every instantiation. Each rule has an admitted program and the smallest mutation that reaches its diagnostic.
+ * Destructuring (docs/implemented/PAIRS_AND_PRELUDE.md §3): `let (a, b) := e` binds a local for each stored field of
+ * `e` 's value, transparently, to its eta view, for a family with one constructor, no indices, no recursive field, and
+ * outside `Prop` under every instantiation. Each rule has an admitted program and the smallest mutation that reaches
+ * its diagnostic.
  */
 class DestructuringTests extends munit.FunSuite with TestSupport {
 
