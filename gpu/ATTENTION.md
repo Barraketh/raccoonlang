@@ -84,9 +84,16 @@ The T1 bound for O adds four terms, each relative to `max|V|`:
 - **The sums.** `l` and Ô accumulate at most 2¹⁴ terms, in 128 blocks of 128: at most about (127 + 128) · 2⁻²⁴
   ≈ 2⁻¹⁶ relative.
 - **The approximations.** `ex2.approx` is within 2 ulp (PTX §9.7.3.21) and `rcp.rn` is IEEE (§9.7.3.13): about 2⁻²¹.
+  A3b computes 16 of each row's 128 exponentials on the FMA units (`Core.ex2emu`), within 2⁻¹³·⁴⁷ ≈ 8.8 · 10⁻⁵
+  relative where 2^x is normal and 2⁻¹²⁷ absolute below. The bound was measured, not derived: every f32 x in
+  [−127, 8], the range A3b's exponents take, was run through a host emulation of the instruction sequence with the
+  device's rounding (`max`, `add.rm`, `sub.rn`, `fma.rn`, no flush to zero) and compared with 2^x in double
+  (`encoding/NOTES.md` §"A3b"). Since `l ≥ 1`, the absolute part is negligible.
 
 An error δ in every `p` moves O by at most 2δ · max|V| (numerator and `l` both move), so together about
-2⁻⁸ + 2 · 2⁻⁹·⁵ + 2⁻¹⁵ ≈ 0.0067 · max|V|, below 2⁻⁷ ≈ 0.0078 · max|V|.
+2⁻⁸ + 2 · 2⁻⁹·⁵ + 2⁻¹⁵ ≈ 0.0067 · max|V|, below 2⁻⁷ ≈ 0.0078 · max|V|; with A3b's emulated exponentials,
+2 · 2⁻¹³·⁴⁷ more, about 0.0069 · max|V|. A3b's lazy rescale lets `p` reach 2⁸ (`encoding/A3B.md` §3.3); every term
+above is relative to `p` or to `l`, so none changes.
 
 For LSE, in log₂ units: the maximum is off by at most 10⁻³, `log₂ l` by at most the relative error of `l` over ln 2
 (about 2⁻⁹·⁵ / ln 2 ≈ 2⁻⁹), and `lg2.approx` by 2⁻²² (§9.7.3.20); times ln 2, below 2⁻⁸, plus the f32 rounding of
@@ -819,7 +826,27 @@ also at A1's), and have run against a host mock of the runtime (`encoding/NOTES.
 **A3: performance.** In order of expected return, each measured against the previous. The first step, A3a, is built
 (`encoding/A3.md`, 2026-10-01; not run on hardware): the two query tiles in ping-pong with FA4's MMA order, P
 overlaid on S in one score buffer per tile, and the one pass over S, with two rings for K and V and no `exp` turn
-between the warpgroups (FA4's is off).
+between the warpgroups (FA4's is off). The second, A3b, is built to the same point (`encoding/A3B.md` §7,
+2026-10-01): FA4's CTA of 16 warps with a correction warpgroup, the lazy rescale, the emulated exponential and the
+register split. As built:
+- **The correction warpgroup** (warps 8–11) rescales both tiles' Ô. A score buffer opened by `withCorrectedBuffer` has
+  a P full of 256 arrivals, the softmax and the correction warpgroups', and an α ring of two slots of 128 f32 with
+  full and empty barriers of 128 arrivals, indexed by M12's row on both sides (M22). The softmax warpgroup sends α
+  with its publish of P (`publishAlpha`), for every block after the first; the correction warpgroup zeroes Ô in block
+  0 and, after, awaits α (`awaitAlpha`), which orders its accesses after the product before (A57).
+- **The rescale only past a threshold**: the softmax warpgroup moves its row maximum only when a block's exceeds it by
+  more than 8 (log₂ units), so α is mostly 1. Each correction warp votes (`voteAny`, A31) and skips its quadrant's
+  rescale when no row of its 32 has α < 1; the branch's arms run `warpwise` (M21). The exchange is not split into a
+  P handoff and an Ô handoff: the buffer's two pieces meet at its one P full.
+- **The polynomial `exp2`** on the FMA units for 16 of a row's 128 columns (`ex2emu`, FA4's `cta_group::1` set), with
+  its measured error in T1's budget (§1.3).
+- **`setmaxnreg`**: `splitWarpgroups` gives the softmax warpgroups 192 registers per thread, the correction warpgroup
+  72 and warps 12–15 56, each warpgroup's `setmaxnreg` the first instruction of its branch; the kernel is compiled
+  with `__launch_bounds__(512, 1)` (A30, A59).
+- **Shared roles**: A3a's loader and issuer, unchanged, as `Attention.pairLoader` and `pairIssuer`.
+
+The items below are A3's list as first planned. A3a and A3b built the first seven, without the `exp` turn between
+the softmax warpgroups and without a split exchange; the persistent schedule and the 2-CTA MMA remain.
 - Two query tiles per CTA in ping-pong with two softmax warpgroups (the fixture's schedule): two S rings and two
   exchanges; a CTA of 384 or 512 threads; the tensor memory is then full (2 × 128 for Ô, 2 × 128 for S), so P
   overlays S. The overlay needs a new token: a buffer of the S ring whose consumer converts it in place, reading

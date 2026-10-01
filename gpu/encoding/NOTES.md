@@ -461,3 +461,73 @@ Observations from building `TWO_CTA.md`'s steps 1 and 2 (`Core.rac`'s pair secti
 
 Timing (CPU s of the native binary, on a machine not idle, 2026-10-01): `gen.sh encoding/examples/tinygemm_pair.rac`
 1.3, as `tinygemm.rac`. The generated pair kernel is 311 lines with its launcher, 266 without.
+
+## A3b: a correction warpgroup
+
+Observations from building `A3B.md`'s A3b (`Core.rac`'s correction-warpgroup section, `Layout.rolesCorrected`,
+`examples/attention_a3b.rac`, `harness/attention_a3b_test.cu`, `rejected/attention_a3b_mutants.py`).
+
+1. **Who rescales Ô is in the buffer's type.** A3b's softmax warpgroup holds the same tokens as A3a's (`RowsAt`,
+   `Scored`, `Loaded`, `Probs`), so without more it could call A3a's `rescaleRow` and race the correction warpgroup
+   on the same lanes. `ScoreBuffer(x, h)` now names its rescaler (`Rescaler.softmax` or `.correction`), chosen by its
+   opener; every score-buffer operation gained `{h: Rescaler}`, and A3a's example changed in its types only.
+2. **Block 0's α was dead code.** The first build sent α in every block, so the correction warpgroup read block 0's
+   and never used it; the C++ compile of `check.sh` (`-Werror`) refused the unused variable. Block 0 now sends no α
+   (`publishAlpha` on a `fresh` Ô), and the correction warpgroup zeroes Ô without a wait, as `rescaleO` emits nothing
+   on a `fresh` Ô. It also starts the correction warpgroup's first publish before the softmax's.
+3. **`__launch_bounds__` had no place.** `Cuda.Kernel` is `Gpu.rac`'s too, so it gained no field. `Core.Program` has
+   `bounds`, `render` prints through `Cuda.boundedKernel`, and `Cuda.kernel` is `boundedKernel` without bounds.
+   `finish` takes the bounds, so every other builder passes `Option.none(Nat)`.
+4. **`setmaxnreg` is a split, not an operation.** `ptxas` allocates a role's code within a count only if the
+   `setmaxnreg` dominates it, and the direction (`.inc` or `.dec`) is only known from the count before. So
+   `splitWarpgroups` makes it the first instruction of each warpgroup's branch, once (a `RegPermit`), from 128 (the
+   512-thread builder's `__launch_bounds__`), and the counts are the layout's (`rolesCorrected`), not the roles'.
+5. **The issuer and the loader are shared.** A3b's MMA order and loads are A3a's, so they moved from A3a's example to
+   `Attention.rac` (`pairLoader`, `pairIssuer`), generic in their warp and in the buffers' rescaler. A3a's CUDA is
+   byte-identical; its issuer mutant moved to `attention_mutants.py`.
+6. **A branch with one real arm.** The correction's skip is `branch(…, rescale, keep)`, whose `keep` arm is the
+   identity with the full arm type, `Pair(Ctx(k, Group.warpwise(8, 4)), Rescaling(x, m, 8))`, as A2's issuer had for
+   its optional scores (§1, item 5).
+7. **Choosing between two emitters.** `exp2(e, emulated(c, j), x)` matches on a `Bool`: `Bool.cond` is strict, so it
+   would build both `ex2` and `ex2emu` from one linear emitter. The softmax's `exps` is A2's with that choice; giving
+   A2's `exps` the predicate would add a parameter to A2's and A3a's calls for a feature they do not use.
+8. **The α ring's index is `threadIdx.x mod 128`,** not `32·(warp mod 4) + lane`: the same number in an aligned
+   warpgroup, without the warp index's `__shfl_sync`, which would need the warp reconverged after the ring's wait.
+9. **`Grain` can say "per warp".** P2's item 8 found that `Grain` could not express a value uniform in a warp;
+   `Grain.warp` does now, from `voteAny` only. P2's one-warp CTAs still call such a value `uniform`, which there it is.
+10. **FA4's emulated columns.** A3B.md first took `ex2_emu_freq = 10` from FA4's 2-CTA row; FA4's `cta_group::1`
+    kernels use 16, so 16 columns of 128 (A3B.md §7).
+11. **The polynomial's error, measured.** A host program (not in the repository) runs every f32 x in [−127, 8]
+    (2,214,461,442 values: +0 to 8 and −0 to −127, subnormals included) through `ex2emu`'s instructions as the device
+    rounds them: `max`; `add.rm`, emulated as the round-to-nearest sum stepped down by one ulp when it exceeds the
+    exact sum, which double holds exactly; `sub.rn`, `fma.rn` (`std::fmaf`); the integer add of `j << 23` to the
+    polynomial's bits; IEEE throughout, no flush to zero. Against `exp2` in double: at most 8.77 · 10⁻⁵ (below 2⁻¹³·⁴⁷)
+    relative for x ≥ −126, at x ≈ 0.1007; at most 2⁻¹²⁷ absolute for x in [−127, −126), where the exponent's
+    addition makes a subnormal and −127 itself gives +0. The cubic alone, in exact arithmetic on [0, 1), is off by
+    8.76 · 10⁻⁵, so the rounding adds almost nothing. Integer x (T2's and T3's) give exact powers of two, and −∞ gives
+    +0. `ATTENTION.md` §1.3 adds it to T1's budget.
+12. **Register pressure is unmeasured.** Estimates: a softmax thread holds the 128 masked scores, the statistics, the
+    ring's two registers and one chunk's exponentials (the emulation's 7 temporaries live inside one `asm`), about
+    160–170 of its 192; a correction thread one chunk of Ô (8 loads), α and four ring registers, about 30 of its 72;
+    the MMA and load threads their rings' registers and addresses, well under 56. `-Xptxas -v` on hardware will say.
+13. **Size and time.** Each kernel is 4,829 (non-causal) and 4,957 (causal) lines, against A3a's 4,713 and 4,841: the
+    softmax loses its rescale, the correction role adds about 450 lines (two tiles' rescales, peeled), and
+    `ex2emu` is one `asm` line each. 202,784 bytes of shared memory (A3a's 200,736 and two α rings). Checking and
+    generating the example takes about 39 CPU s (A3a's 33, on the same loaded machine).
+14. **Per block, per thread** (the loops' bodies, block i ≥ 1):
+
+    | Role | `ex2.approx` | emulated | `tcgen05.ld` / `.st` | waits | arrivals |
+    |---|---:|---:|---:|---:|---:|
+    | A3a softmax | 129 | 0 | 32 / 32 (16 of each the rescale) | 1 | 1 |
+    | A3b softmax | 113 | 16 | 16 / 16 | 2 (S full, α empty) | 2 (α full, P full) |
+    | A3b correction, both tiles | 0 | 0 | 32 / 32 when both rescale, else fewer | 2 (α full) | 4 (α empty, P full) |
+
+    The MMA and load threads' loops are A3a's: 4 waits, 32 MMAs and 4 commits; 2 waits, 2 arrivals and 4 TMA loads.
+15. **The harness ran against a mock.** `attention_a3b_test.cu` was linked against a host mock of the runtime and
+    driver (not in the repository), A3a's extended: 512 threads; the lazy maximum; `ex2emu`'s instruction sequence
+    with the device's rounding in the emulated columns (`std::exp2f`, flushed, standing in for `ex2.approx`);
+    the chunk sums in the kernel's order and `l = fma(α, l, sum)`; Ô zeroed in block 0 and, after, each warp's rows
+    multiplied by their α when one of its 32 has α < 1. Every check passed (192 size and input checks, 12 refusals).
+    Broken emulations were caught: no rescale (26 checks failed), `l` not rescaled (108), the vote taken from lane 0
+    only (20), Ô not zeroed (192), and `add.rn` in place of `add.rm` (14, LSE), which puts the cubic's argument in
+    [−0.5, 0.5).

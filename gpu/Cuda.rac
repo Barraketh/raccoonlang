@@ -464,11 +464,17 @@ namespace Cuda {
     | Grid.pairs x y => "__cluster_dims__(2, 1, 1) "
   })
 
-  def kernel (k: Kernel): String := {
+  // As `kernel`, compiled for blocks of at most `n` threads and one block per SM (`__launch_bounds__(n, 1)`) when
+  // `bounds` is `n`.
+  def boundedKernel (bounds: Option(Nat))(k: Kernel): String := {
     let (n, ps, bytes, body, host) := k
-    let head := Text.cat3("extern \"C\" __global__ void ", Text.cat(Cuda.clusterDims(host), n), Text.cat3("(", Cuda.params(ps), ") {"))
+    let limit := Option.elim(bounds, String, "", fun (t: Nat): String => Text.cat3("__launch_bounds__(", Text.nat(t), ", 1) "))
+    let head := Text.cat3("extern \"C\" __global__ void ", Text.cat3(Cuda.clusterDims(host), limit, n), Text.cat3("(", Cuda.params(ps), ") {"))
     let tail := Option.elim(host, String, "", fun (l: Launcher): String => Cuda.launcher(n, ps, bytes, l))
     let launched := Option.elim(host, Bool, Bool.false, fun (l: Launcher): Bool => Bool.true)
     Cuda.headers(ps, launched, Cuda.line(0, head, Cuda.sharedPrologue(bytes, Cuda.block(1, body, Text.cat("}\n", tail)))))
   }
+
+  // The kernel and its launcher as CUDA C++.
+  def kernel (k: Kernel): String := Cuda.boundedKernel(Option.none(Nat), k)
 }

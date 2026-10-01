@@ -1,4 +1,4 @@
-# The attention roles (encoding/Attention.rac, which both attention examples run) with one mistake each
+# The attention roles (encoding/Attention.rac, which the attention examples run) with one mistake each
 # (gpu/ATTENTION.md §5): every mutant breaks a rule of the attention core and is refused for that rule. Run by check.sh
 # through gpu/mutate.py.
 #
@@ -216,5 +216,19 @@ MUTANTS = [
             "and belongs to the ring's scope, and only `finishAccProducer`'s drain uses it up.",
         old="""      let e := finishAccProducer(e, accs, ap)""",
         new="""""",
+    ),
+    dict(
+        name="scores_before_product", expect="TypeMismatch", mentions="Core.Holding",
+        why="Issues tile 0's next scores before its product in the two-tile issuer (`pairIssuer`, A3a and A3b): S_{i+1} would overwrite P_i while PV_i has not yet read it. "
+            "After `awaitProbs` the buffer is `Published`, which only `issuePV` takes; `issueScores` needs the `Holding` "
+            "that the product gives back.",
+        old="""        let (e, (s0, v)) := product(e, b0, s0, v)
+        let (e, k) := hold(e, kr, ck)
+        let (e, (s0, (q0, k))) := issueS(e, b0, s0, q0r, q0, k)""",
+        new="""        let (e, published) := awaitProbs(e, b0, s0)
+        let (e, k) := hold(e, kr, ck)
+        let (e, (s0, (q0, k))) := issueScores(e, w, b0, published, q0r, q0, kr, k)
+        let (e, (s0, v)) := issuePV(e, w, b0, s0, vr, v)
+        let (e, s0) := commitBuffer(e, w, b0, s0)""",
     ),
 ]

@@ -1,7 +1,9 @@
 # Attention A3b: a correction warpgroup, a lazy rescale, an emulated exponential, a register split
 
-Status: design, not implemented (2026-10-01). It is the second performance step of `gpu/ATTENTION.md` §6 A3, on A3a
-as built (`gpu/encoding/A3.md` §6). FA4 facts are from `flash_attn/cute/flash_fwd_sm100.py` and `softmax.py` at
+Status: built (2026-10-01), not run on hardware: `Core.rac`'s correction-warpgroup section, `Layout.rolesCorrected`,
+`examples/attention_a3b.rac`, `harness/attention_a3b_test.cu`, `rejected/attention_a3b_mutants.py`; `NOTES.md` §"A3b"
+records what was awkward. §7 lists where the build departs from the design as first written. It is the second
+performance step of `gpu/ATTENTION.md` §6 A3, on A3a as built (`gpu/encoding/A3.md` §6). FA4 facts are from `flash_attn/cute/flash_fwd_sm100.py` and `softmax.py` at
 `616b0e8`.
 
 ## 1. Why
@@ -119,25 +121,28 @@ A generation-time set of columns computes `2^x` on the FMA units:
 - `2^f ≈ c₀ + f(c₁ + f(c₂ + f c₃))`;
 - the result's bits are the polynomial's plus `j << 23`.
 
-FA4's set (`softmax.py` 421–460, `ex2_emu_freq = 10`, `ex2_emu_res = 4`, `ex2_emu_start_frg = 1`): in fragments of
-32 columns other than the first and the last, the pairs `k` with `k mod 10 ≥ 6`, so 24 of 128 columns. The
-coefficients are FA4's `POLY_EX2[3]` (`utils.py`).
+FA4's set for its `cta_group::1` kernels (`softmax.py` 421–460; `ex2_emu_freq = 16` from the tuning table for the
+causal kernel, `flash_fwd_sm100.py` 107, and by default for the non-causal one; `ex2_emu_res = 4`,
+`ex2_emu_start_frg = 1`): in fragments of 32 columns other than the first and the last, the pairs `k` with
+`k mod 16 ≥ 12`, so 16 of 128 columns, chunks 5, 7, 9 and 11, columns 4 to 7 of each. (`ex2_emu_freq = 10`, 24
+columns, is the 2-CTA kernel's, line 106.) The coefficients are FA4's `POLY_EX2[3]` (`utils.py`).
 
 The error bound is computed once, exhaustively over every f32 in `[−127, 8]` on the host, with the device's rounding
-modes, and added to T1's budget. It is well under bf16's 2⁻⁸, but it is measured, not assumed. The harness's host
-reference evaluates the same operations, so a mock run checks the instruction sequence too.
+modes, and added to T1's budget. It is well under bf16's 2⁻⁸, but it is measured, not assumed: 2⁻¹³·⁴⁷ relative where
+2^x is normal (x ≥ −126), 2⁻¹²⁷ absolute below (`NOTES.md` §"A3b"). The host mock evaluates the same operations, so a
+mock run checks the instruction sequence too.
 
 ## 4. New assumptions
 
 - **Chained completion.** A `tcgen05` operation whose completion thread A observes through an mbarrier, followed by A's
   release arrive on a second mbarrier, then B's acquire wait on it and B's `tcgen05.fence::after_thread_sync`, is
   complete before B's later `tcgen05` operations (PTX §9.7.18.6.3, §9.7.18.11.1: the fences compose with execution
-  ordering "across a thread scope").
+  ordering instructions "to establish an ordering between the tcgen05 operations across threads"). OBLIGATIONS A57.
 - **Warp votes**, A31, become load-bearing: `vote.sync.any` gives every lane of a converged warp the same result.
 - **`setmaxnreg`**, A30: a warpgroup-collective `.inc` or `.dec` changes the warpgroup's per-thread register count.
-  `ptxas` allocates each role's code within it.
+  `ptxas` allocates each role's code within it, and every warp starts with 128 (OBLIGATIONS A59).
 - **FMA rounding.** `add.rm.f32`, `sub.rn.f32` and `fma.rn.f32` round as PTX specifies, with no flush to zero for the
-  values in range (§9.7.3).
+  values in range (§9.7.3). OBLIGATIONS A58.
 
 ## 5. Plan
 
@@ -170,3 +175,37 @@ reference evaluates the same operations, so a mock run checks the instruction se
 4. **Threshold 8** (log₂ units), FA4's for 16-bit inputs.
 5. **FA4's emulation pattern and polynomial**, with the error bound measured on the host.
 6. **A3a's example stays** as the measured baseline.
+
+## 7. As built
+
+Where the build departs from the design above as first written (2026-10-01):
+- **The emulated columns** (§3.5): FA4's `cta_group::1` set, 16 columns, not the 2-CTA kernel's 24. The design had
+  taken `ex2_emu_freq = 10` from the 2-CTA row of FA4's tuning table. Which columns are emulated is the example's
+  choice (`emulated`); the core provides `ex2emu`.
+- **Block 0's zeroing does not wait** (§3.1 sends α for blocks i ≥ 1 only; §3.2's correction steps are for those).
+  The correction warpgroup zeroes its quadrants in block 0 at once: no product has touched Ô, and the first waits for
+  the zeroing's publish. `publishAlpha` sends α only when the softmax side's Ô is `held`, so the ring carries `n − 1`
+  messages per tile.
+- **The row ring is part of the buffer.** `withCorrectedBuffer` opens a score buffer whose P full counts 256 arrivals
+  and which carries the α ring: its barriers and slots follow the buffer's barriers, and its four registers the
+  buffer's phases. Sending is one operation with the publish (`publishAlpha`: wait for the slot, write, arrive, then
+  publish P); receiving is one operation (`awaitAlpha`: wait, fence `after_thread_sync`, read, free the slot). A slot's
+  element is `threadIdx.x mod 128` on both sides, which is M12's row in an aligned warpgroup.
+- **Who rescales is in the buffer's type.** `ScoreBuffer(x, h)` with `h : Rescaler`: A3a's `rescaleRow` and
+  `publishProbs` take a buffer whose rescaler is the softmax warpgroup, A3b's operations one whose rescaler is the
+  correction warpgroup. Without it, A3b's softmax warpgroup could rescale Ô as A3a's does, racing the correction
+  warpgroup on the same lanes (`rejected/attention_a3b_mutants.py`, `softmax_rescales_quadrant`).
+- **`setmaxnreg`** (§2): not an operation on `warps(f, 4)` but part of `splitWarpgroups`, which splits a 512-thread CTA
+  into its four warpgroups and makes each one's `setmaxnreg` the first instruction of its branch. So the count covers
+  all of the role's code, as `ptxas` needs to allocate it, and the `RegPermit` that the 512-thread builder hands out
+  makes it each warpgroup's only one, so its direction is from 128. Its counts are generation-time checked (multiples
+  of 8 from 24 to 256, at most 65536 registers in all). The kernel prints `__launch_bounds__(512, 1)`
+  (`Core.Program`'s `bounds`, `Cuda.boundedKernel`).
+- **Registers:** 192, 192, 72 and 56 for both kernels. FA4's non-causal `cta_group::1` kernel uses 192, 80 and 48
+  (`flash_fwd_sm100.py` 380–385); A3b keeps one split.
+- **Shared roles.** The loader and the MMA issuer are A3a's, moved to `Attention.rac` (`pairLoader`, `pairIssuer`),
+  generic in the warp they run on and the buffers' rescaler; A3a's example generates byte-identical CUDA.
+- **Mutants** (§5 item 4): "a softmax writing a slot before its empty wait" is not expressible, since `publishAlpha`
+  waits, writes and arrives in one operation. "A rescale of another warp's quadrant" is the softmax warpgroup
+  rescaling Ô (`softmax_rescales_quadrant`): its warp 0 shares quadrant 0 with the correction warpgroup's warp 8.
+

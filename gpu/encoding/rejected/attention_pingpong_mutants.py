@@ -12,6 +12,9 @@
 # - Committing a buffer with no new scores in it (`commitBuffer` straight after `issuePV` inside the loop): a wrong
 #   result, not a race. The commit still follows the product, so Ô is quiescent and S's stale columns are only read.
 # - Trip counts that differ between the issuer and a warpgroup: a deadlock (M11), not a race.
+#
+# The issuer is `Attention.pairIssuer`, which A3b's example shares, so its mutant (`scores_before_product`) is in
+# attention_mutants.py.
 
 SOURCE = "encoding/examples/attention_pingpong.rac"
 
@@ -34,20 +37,6 @@ MUTANTS = [
         old="""      let (e, scored) := awaitScores(e, buf, st)""",
         new="""      let (e, st) := rescaleRow(e, buf, st, lowest)
       let (e, scored) := awaitScores(e, buf, st)""",
-    ),
-    dict(
-        name="scores_before_product", expect="TypeMismatch", mentions="Core.Holding",
-        why="Issues tile 0's next scores before its product: S_{i+1} would overwrite P_i while PV_i has not yet read it. "
-            "After `awaitProbs` the buffer is `Published`, which only `issuePV` takes; `issueScores` needs the `Holding` "
-            "that the product gives back.",
-        old="""        let (e, (s0, v)) := product(e, b0, s0, v)
-        let (e, k) := hold(e, kr, ck)
-        let (e, (s0, (q0, k))) := issueS(e, b0, s0, q0r, q0, k)""",
-        new="""        let (e, published) := awaitProbs(e, b0, s0)
-        let (e, k) := hold(e, kr, ck)
-        let (e, (s0, (q0, k))) := issueScores(e, w, b0, published, q0r, q0, kr, k)
-        let (e, (s0, v)) := issuePV(e, w, b0, s0, vr, v)
-        let (e, s0) := commitBuffer(e, w, b0, s0)""",
     ),
     dict(
         name="store_before_final", expect="ImplicitReconstructionFailed",
@@ -95,8 +84,8 @@ MUTANTS = [
             "between CTAs. `OOwn` names the warpgroup that may store with it, and `pairAttentionKernel` hands out those "
             "of warps 0 and 4 only: the role's group is then fixed by its authority, here `warps(4, 4)`.",
         old="""  // ---- The CTA ---""",
-        new="""  def misplaced {L: Lifetime}{t: DType}{x: Lifetime}(g: Launch(L, t))(own: OOwn(L, t, 4))(buf: ScoreBuffer(x))(side: RowSide(x))
-      (m: Lifetime)(e: Ctx(m, Group.warps(8, 4))): Pair(Ctx(m, Group.warps(8, 4)), Unit) :=
+        new="""  def misplaced {L: Lifetime}{t: DType}{x: Lifetime}(g: Launch(L, t))(own: OOwn(L, t, 4))(buf: ScoreBuffer(x, Rescaler.softmax))
+      (side: RowSide(x))(m: Lifetime)(e: Ctx(m, Group.warps(8, 4))): Pair(Ctx(m, Group.warps(8, 4)), Unit) :=
     softmax(g.blocks, g.mask, g.scale, g.out, own, buf, side, m, e)
 
   // ---- The CTA ---""",

@@ -1,6 +1,8 @@
 // The CTA of forward attention on sm_100a (gpu/ATTENTION.md §2.5), shared by examples/attention.rac and
 // examples/paged_attention.rac, which differ only in their loader: one CTA of eight warps (`Layout`) per 128 query rows
-// of one head, head dimension 128, computing O = softmax(scale · Q·Kᵀ + mask)·V and LSE for those rows.
+// of one head, head dimension 128, computing O = softmax(scale · Q·Kᵀ + mask)·V and LSE for those rows. The last
+// section holds the loader and the MMA issuer of two query tiles, which examples/attention_pingpong.rac (A3a) and
+// examples/attention_a3b.rac (A3b) share.
 //
 // The loader (warp 0) fills Q's block once into a one-stage ring, and then each 128-key block's K and V, in the order
 // K_0, V_0, K_1, V_1, …, into two-stage rings. Warp 1 elects a thread that holds Q's stage across the loop, issues
@@ -246,4 +248,116 @@ namespace Attention {
     let (e, u) := withTmem(e, permit, 512, AccState.empty, Unit, regions)
     e
   }
+
+  // ---- Two query tiles (gpu/encoding/A3.md, A3B.md) ---------------------------------------------------------------------
+  //
+  // The loader and the MMA issuer of a CTA of two query tiles, which A3a's and A3b's examples share: each runs on one
+  // warp, the layout's, and the issuer passes each tile's score buffer to the tile's softmax warpgroup and back on
+  // A3.md §2's schedule, whoever rescales Ô.
+
+  // Q's two tiles once, then K_j and V_j for every key block j; then wait for every stage to be released.
+  def pairLoader {l: Lifetime}{t: DType}{rq0: Lifetime}{rq1: Lifetime}{rk: Lifetime}{rv: Lifetime}{f: Nat}(g: PairLaunch(l, box, t))
+      (q0r: Ring(rq0, qRing))(q1r: Ring(rq1, qRing))(kr: Ring(rk, kRing))(vr: Ring(rv, vRing))(pq0: Producer(rq0))(pq1: Producer(rq1))
+      (pk: Producer(rk))(pv: Producer(rv))(m: Lifetime)(e: Ctx(m, Group.warps(f, 1))): Pair(Ctx(m, Group.warps(f, 1)), Unit) :=
+    elect(e, Unit, fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, One)): Pair(Ctx(j, One), Unit) => {
+      let block := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, One))(st: Pair(ProducerAt(rk, j), ProducerAt(rv, j)))
+          : Pair(Ctx(n, One), Pair(ProducerAt(rk, j), ProducerAt(rv, j))) => {
+        let (pk, pv) := st
+        let row := mulC(i, 128)
+        let (e, s) := acquire(e, kr, pk)
+        let (e, pk) := fillBlock(e, kr, s, g.k, row)
+        let (e, s) := acquire(e, vr, pv)
+        let (e, pv) := fillBlock(e, vr, s, g.v, row)
+        (e, (pk, pv))
+      }
+      let (e, pq0) := takeProducer(e, w, q0r, pq0)
+      let (e, pq1) := takeProducer(e, w, q1r, pq1)
+      let (e, pk) := takeProducer(e, w, kr, pk)
+      let (e, pv) := takeProducer(e, w, vr, pv)
+      let (e, s) := acquire(e, q0r, pq0)
+      let (e, pq0) := fillBlock(e, q0r, s, g.q, g.q0)
+      let (e, s) := acquire(e, q1r, pq1)
+      let (e, pq1) := fillBlock(e, q1r, s, g.q, g.q1)
+      let (e, (pk, pv)) := loop(e, g.blocks, fixedPair(fixedProducerAt(rk, j), fixedProducerAt(rv, j)), (pk, pv), block)
+      let e := finishProducer(e, q0r, pq0)
+      let e := finishProducer(e, q1r, pq1)
+      let e := finishProducer(e, kr, pk)
+      (finishProducer(e, vr, pv), Unit.unit)
+    })
+
+  // The issuer's state across key blocks: the held Q stages, the K and V rings' consumer sides, and its side of each
+  // tile's score buffer.
+  def PairIssuing (rq0: Lifetime)(rq1: Lifetime)(rk: Lifetime)(rv: Lifetime)(x0: Lifetime)(x1: Lifetime)(j: Lifetime)
+      : Type { kind = lin, scope = union(rq0, union(rq1, union(rk, union(rv, union(x0, union(x1, j)))))) } :=
+    Pair(Pair(ReadyUsed(rq0, j), ReadyUsed(rq1, j)), Pair(Pair(ConsumerAt(rk, j), ConsumerAt(rv, j)), Pair(MmaAt(x0, j), MmaAt(x1, j))))
+
+  // Block 0's scores for both tiles before the loop; for each block i ≥ 1, per tile, the product of block i − 1 and then
+  // block i's scores, V released after tile 1's product and K after its scores; after the loop, the last products.
+  def pairIssuer {L: Lifetime}{rq0: Lifetime}{rq1: Lifetime}{rk: Lifetime}{rv: Lifetime}{x0: Lifetime}{x1: Lifetime}{h: Rescaler}{f: Nat}
+      (blocks: Val(L, Grain.uniform, DType.u32))(q0r: Ring(rq0, qRing))(q1r: Ring(rq1, qRing))(kr: Ring(rk, kRing))(vr: Ring(rv, vRing))
+      (b0: ScoreBuffer(x0, h))(b1: ScoreBuffer(x1, h))(cq0: Consumer(rq0))(cq1: Consumer(rq1))(ck: Consumer(rk))(cv: Consumer(rv))
+      (s0: MmaSide(x0))(s1: MmaSide(x1))(m: Lifetime)(e: Ctx(m, Group.warps(f, 1))): Pair(Ctx(m, Group.warps(f, 1)), Unit) :=
+    elect(e, Unit, fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, One)): Pair(Ctx(j, One), Unit) => {
+      // The ring's next stage, held for MMAs until `releaseByMma`.
+      let hold := fun {r: Lifetime}{c: RingCfg}{n: Lifetime}(e: Ctx(n, One))(ring: Ring(r, c))(cs: ConsumerAt(r, j))
+          : Pair(Ctx(n, One), ReadyUsed(r, j)) => {
+        let (e, ready) := await(e, ring, cs)
+        (e, holdStage(ready))
+      }
+      // St = Qt·Kᵀ, committed: the buffer passes to tile t's warpgroup.
+      let issueS := fun {x: Lifetime}{rq: Lifetime}{n: Lifetime}(e: Ctx(n, One))(b: ScoreBuffer(x, h))(s: Holding(x, j))(qr: Ring(rq, qRing))
+          (q: ReadyUsed(rq, j))(k: ReadyUsed(rk, j)): Pair(Ctx(n, One), Pair(MmaAt(x, j), Pair(ReadyUsed(rq, j), ReadyUsed(rk, j)))) => {
+        let (e, (s, (q, k))) := issueScores(e, w, b, s, qr, q, kr, k)
+        let (e, s) := commitBuffer(e, w, b, s)
+        (e, (s, (q, k)))
+      }
+      // Ôt += Pt·V, once tile t's P is published (and, in A3b, its Ô rescaled).
+      let product := fun {x: Lifetime}{n: Lifetime}(e: Ctx(n, One))(b: ScoreBuffer(x, h))(s: MmaAt(x, j))(v: ReadyUsed(rv, j))
+          : Pair(Ctx(n, One), Pair(Holding(x, j), ReadyUsed(rv, j))) => {
+        let (e, p) := awaitProbs(e, b, s)
+        issuePV(e, w, b, p, vr, v)
+      }
+      let block := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, One))(st: PairIssuing(rq0, rq1, rk, rv, x0, x1, j))
+          : Pair(Ctx(n, One), PairIssuing(rq0, rq1, rk, rv, x0, x1, j)) => {
+        let ((q0, q1), ((ck, cv), (s0, s1))) := st
+        let (e, v) := hold(e, vr, cv)
+        let (e, (s0, v)) := product(e, b0, s0, v)
+        let (e, k) := hold(e, kr, ck)
+        let (e, (s0, (q0, k))) := issueS(e, b0, s0, q0r, q0, k)
+        let (e, (s1, v)) := product(e, b1, s1, v)
+        let (e, cv) := releaseByMma(e, w, vr, v)
+        let (e, (s1, (q1, k))) := issueS(e, b1, s1, q1r, q1, k)
+        let (e, ck) := releaseByMma(e, w, kr, k)
+        (e, ((q0, q1), ((ck, cv), (s0, s1))))
+      }
+      let (e, cq0) := takeConsumer(e, w, q0r, cq0)
+      let (e, cq1) := takeConsumer(e, w, q1r, cq1)
+      let (e, ck) := takeConsumer(e, w, kr, ck)
+      let (e, cv) := takeConsumer(e, w, vr, cv)
+      let (e, s0) := takeMma(e, w, b0, s0)
+      let (e, s1) := takeMma(e, w, b1, s1)
+      let (e, q0) := hold(e, q0r, cq0)
+      let (e, k) := hold(e, kr, ck)
+      let (e, (s0, (q0, k))) := issueS(e, b0, s0, q0r, q0, k)
+      let (e, q1) := hold(e, q1r, cq1)
+      let (e, (s1, (q1, k))) := issueS(e, b1, s1, q1r, q1, k)
+      let (e, ck) := releaseByMma(e, w, kr, k)
+      let fixed := fixedPair(fixedPair(fixedReadyUsed(rq0, j), fixedReadyUsed(rq1, j)),
+        fixedPair(fixedPair(fixedConsumerAt(rk, j), fixedConsumerAt(rv, j)), fixedPair(fixedMmaAt(x0, j), fixedMmaAt(x1, j))))
+      let (e, ((q0, q1), ((ck, cv), (s0, s1)))) := loopFrom(e, 1, blocks, fixed, ((q0, q1), ((ck, cv), (s0, s1))), block)
+      let (e, v) := hold(e, vr, cv)
+      let (e, (s0, v)) := product(e, b0, s0, v)
+      let (e, s0) := commitBuffer(e, w, b0, s0)
+      let (e, (s1, v)) := product(e, b1, s1, v)
+      let (e, s1) := commitBuffer(e, w, b1, s1)
+      let (e, cv) := releaseByMma(e, w, vr, v)
+      let (e, cq0) := releaseByMma(e, w, q0r, q0)
+      let (e, cq1) := releaseByMma(e, w, q1r, q1)
+      let e := finishMma(e, s0)
+      let e := finishMma(e, s1)
+      let e := finishConsumer(e, cq0)
+      let e := finishConsumer(e, cq1)
+      let e := finishConsumer(e, ck)
+      (finishConsumer(e, cv), Unit.unit)
+    })
 }

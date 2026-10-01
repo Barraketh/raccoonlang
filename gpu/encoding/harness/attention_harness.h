@@ -1,7 +1,7 @@
 // The attention harness: runs an example's two generated attention kernels against a CPU reference, checks that their
 // launchers refuse what the kernels cannot handle, and times them (gpu/ATTENTION.md §1.3, §6 A1 and A2). A harness
 // program defines ATTENTION_KERNEL, the example's kernel name `K`, and includes this file (`attention_test.cu`,
-// `attention_pingpong_test.cu`). The example generates two kernels, `K`, non-causal with O in f32, and `K_causal`,
+// `attention_pingpong_test.cu`, `attention_a3b_test.cu`). The example generates two kernels, `K`, non-causal with O in f32, and `K_causal`,
 // causal with O in bf16, with their launchers `K_launch` and `K_causal_launch`, whose host parameters are
 // `attention`'s. Both kernels run every size and input set below. The reference is computed
 // in double precision from the same bf16 inputs, `s`, LSE and O exactly as §1.2's first block writes them with

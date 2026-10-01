@@ -1,6 +1,7 @@
 // The CTAs the examples share: the attention and GEMM examples' eight warps, of which warp 0 loads, warp 1 issues the
-// tensor-core work, warps 2 and 3 idle, and warps 4 to 7 form an aligned warpgroup (`roles4`); and the twelve warps
-// of A3a's two query tiles (`rolesPair`). Other layouts use `Core.split`.
+// tensor-core work, warps 2 and 3 idle, and warps 4 to 7 form an aligned warpgroup (`roles4`); the twelve warps of
+// A3a's two query tiles (`rolesPair`); and the sixteen of A3b's, with a correction warpgroup (`rolesCorrected`). Other
+// layouts use `Core.split`.
 
 import encoding.Core
 
@@ -58,5 +59,37 @@ namespace Layout {
       split(e, 1, Unit, Pair(Unit, Unit), issue, rest)
     let (e, u) := split(e, 8, Pair(Unit, Unit), Pair(Unit, Pair(Unit, Unit)), groups, tensor)
     e
+  }
+
+  // ---- A correction warpgroup (gpu/encoding/A3B.md) -----------------------------------------------------------------
+
+  // The CTA of A3b's attention, FA4's sixteen warps: warps 0–3 and 4–7 form the tiles' softmax warpgroups, 8–11 the
+  // correction warpgroup, warp 12 issues the tensor-core work, warp 14 loads, and warps 13 and 15 idle.
+  def CorrectedCta : Group := Group.cta(512)
+  def CorrectedIssue : Group := Group.warps(12, 1)
+  def CorrectedLoad : Group := Group.warps(14, 1)
+
+  // Runs `group0` on warps 0–3, `group1` on warps 4–7, `correct` on warps 8–11, `issue` on warp 12 and `load` on warp
+  // 14, concurrently, then waits for all of them. Registers per thread (A3B.md §2): 192 for each softmax warpgroup, 72
+  // for the correction warpgroup, 56 for warps 12–15, which fill the register file.
+  def rolesCorrected {l: Lifetime}{k0: Kind}{S0: Lifetime}{k1: Kind}{S1: Lifetime}{k2: Kind}{S2: Lifetime}{k3: Kind}{S3: Lifetime}
+      {k4: Kind}{S4: Lifetime}(e: Ctx(l, CorrectedCta))(permit: RegPermit(l))
+      (group0: { kind = k0, scope = S0 } (m: Lifetime) -> Ctx(m, Group.warps(0, 4)) -> Pair(Ctx(m, Group.warps(0, 4)), Unit))
+      (group1: { kind = k1, scope = S1 } (m: Lifetime) -> Ctx(m, Group.warps(4, 4)) -> Pair(Ctx(m, Group.warps(4, 4)), Unit))
+      (correct: { kind = k2, scope = S2 } (m: Lifetime) -> Ctx(m, Group.warps(8, 4)) -> Pair(Ctx(m, Group.warps(8, 4)), Unit))
+      (issue: { kind = k3, scope = S3 } (m: Lifetime) -> Ctx(m, CorrectedIssue) -> Pair(Ctx(m, CorrectedIssue), Unit))
+      (load: { kind = k4, scope = S4 } (m: Lifetime) -> Ctx(m, CorrectedLoad) -> Pair(Ctx(m, CorrectedLoad), Unit))
+      : Ctx(l, CorrectedCta) := {
+    let idle13 := fun (m: Lifetime)(e: Ctx(m, Group.warps(13, 1))): Pair(Ctx(m, Group.warps(13, 1)), Unit) => (e, Unit.unit)
+    let idle15 := fun (m: Lifetime)(e: Ctx(m, Group.warps(15, 1))): Pair(Ctx(m, Group.warps(15, 1)), Unit) => (e, Unit.unit)
+    let last := fun (m: Lifetime)(e: Ctx(m, Group.warps(14, 2))): Pair(Ctx(m, Group.warps(14, 2)), Pair(Unit, Unit)) =>
+      split(e, 1, Unit, Unit, load, idle15)
+    let rest := fun (m: Lifetime)(e: Ctx(m, Group.warps(13, 3))): Pair(Ctx(m, Group.warps(13, 3)), Pair(Unit, Pair(Unit, Unit))) =>
+      split(e, 1, Unit, Pair(Unit, Unit), idle13, last)
+    let tensor := fun (m: Lifetime)(e: Ctx(m, Group.warps(12, 4))): Pair(Ctx(m, Group.warps(12, 4)), Unit) => {
+      let (e, u) := split(e, 1, Unit, Pair(Unit, Pair(Unit, Unit)), issue, rest)
+      (e, Unit.unit)
+    }
+    splitWarpgroups(e, permit, 192, 192, 72, 56, group0, group1, correct, tensor)
   }
 }

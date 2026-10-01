@@ -6,7 +6,8 @@ checks, the mutants of `ATTENTION.md` §5 (`rejected/`), the host harnesses and 
 `OBLIGATIONS.md` (A19–A33, M12–M14, §6.10, §7); then the readability review's library changes (below); then A3a, two
 query tiles in ping-pong (`A3.md`), to the same point; then P2, paged decode with append (`P2.md`: three kernels,
 their harness against a host mock, mutants, A40–A42, M17, §6.11); then CTA pairs (`TWO_CTA.md`, steps 1 and 2: the
-core and a pair TinyGEMM), to the same point as A3a. Nothing has run on a GPU; `NOTES.md` records what was
+core and a pair TinyGEMM), to the same point as A3a; then A3b, a correction warpgroup (`A3B.md`), to A3a's point (A57–A59, M21, M22,
+§6.13). Nothing has run on a GPU; `NOTES.md` records what was
 awkward, and what the review removed. A
 fresh copy of the typed core (`gpu/Gpu.rac`) in which the library grows the features it lacks, starting with forward
 attention, then paged attention. `gpu/Gpu.rac` and its GEMM examples stay as they are, so the kernels that ran on a
@@ -85,6 +86,14 @@ point as A3a: `pairGemmKernel`, `examples/tinygemm_pair.rac` (a 256×256 tile pe
 `harness/tinygemm_pair_test.cu` (run against a host mock), `rejected/tinygemm_pair_mutants.py`, and `OBLIGATIONS.md`
 (A43–A56, M18–M20, §6.12).
 
+**A3b, a correction warpgroup** (`A3B.md`, the second step of `ATTENTION.md` §6 A3). FA4's CTA of 512 threads: A3a's
+schedule, with a third warpgroup that rescales Ô off the softmax's path, fed each block's α through the score
+buffer's α ring and skipping a warp's rescale by a warp vote (`warpwise`); a row maximum that lags by up to 8; 16 of
+each row's 128 exponentials on the FMA units; and `setmaxnreg` per warpgroup. Built to the same point as A3a: the
+core's correction-warpgroup section and `correctedAttentionKernel`, `Layout.rolesCorrected`,
+`examples/attention_a3b.rac`, `harness/attention_a3b_test.cu` (run against a host mock that emulates the exponential's
+instructions), `rejected/attention_a3b_mutants.py`, and `OBLIGATIONS.md` (A57–A59, M21, M22, §6.13).
+
 **Paged attention.** A1 over a paged KV cache:
 - K and V are `[pages · 128, H · 128]` (FA4's layout, since P2): a page holds 128 consecutive positions of every
   head;
@@ -112,11 +121,13 @@ The box needs no JVM.
 ## Layout
 
 - `Core.rac`: the core.
-- `Layout.rac`: the CTA of eight warps that the attention and GEMM examples share (`roles4`), and A3a's of twelve
-  (`rolesPair`).
+- `Layout.rac`: the CTA of eight warps that the attention and GEMM examples share (`roles4`), A3a's of twelve
+  (`rolesPair`), and A3b's of sixteen (`rolesCorrected`).
 - `Attention.rac`: the roles and CTA of forward attention, which `examples/attention.rac`,
-  `examples/paged_attention.rac` and `examples/paged_decode.rac` run with their own loaders.
-- `examples/`: kernels; `attention_pingpong.rac` holds A3a's roles itself, since no other example runs them.
+  `examples/paged_attention.rac` and `examples/paged_decode.rac` run with their own loaders, and the loader and
+  issuer of two query tiles, which `examples/attention_pingpong.rac` and `examples/attention_a3b.rac` run.
+- `examples/`: kernels; `attention_pingpong.rac` and `attention_a3b.rac` hold their softmax roles themselves, and
+  `attention_a3b.rac` its correction role.
 - `checks/`: unit tests of emitted code.
 - `rejected/`: programs and mutant tables the core must refuse.
 - `harness/`: host test programs for hardware runs, and `hw.sh`, which runs them all in one session.
