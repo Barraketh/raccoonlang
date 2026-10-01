@@ -155,7 +155,7 @@ namespace Attention {
   // block, Ô still undefined, emits nothing; publish P_j; l = α·l + sum, where the first block's α is 2^−∞ = 0. After
   // the loop: wait for the last product, and store O = Ô/l and LSE = (m + log2 l)·ln 2.
   def softmax {L: Lifetime}{t: DType}{q: Lifetime}{x: Lifetime}(blocks: Val(L, Grain.uniform, DType.u32))(mask: Mask(L))
-      (scale: Val(L, Grain.uniform, DType.f32))(out: AttnOut(L, t))(own: OOwn(L, t))(accs: AccRing(q, 128))(ex: Exchange(x))
+      (scale: Val(L, Grain.uniform, DType.f32))(out: AttnOut(L, t))(own: OOwn(L, t, groupWarp))(accs: AccRing(q, 128))(ex: Exchange(x))
       (ac: AccConsumer(q))(wr: ExWriter(x))(m: Lifetime)(e: Ctx(m, Wg)): Pair(Ctx(m, Wg), Unit) := {
     let (e, minusInfinity) := fconst(e, minusInfinityBits)
     let (e, mReg) := reg(e, minusInfinity)
@@ -212,7 +212,7 @@ namespace Attention {
   // The CTA, given the kernel's block count, mask, scale, output and its authority, and the loader `load`, which fills
   // the Q, K and V rings it is handed. Tensor memory: the S ring in the lower half, the exchange in the upper.
   def cta {L: Lifetime}{t: DType}{kl: Kind}{Sl: Lifetime}(e: Ctx(L, Cta))(permit: TmemPermit(L))
-      (blocks: Val(L, Grain.uniform, DType.u32))(mask: Mask(L))(scale: Val(L, Grain.uniform, DType.f32))(out: AttnOut(L, t))(own: OOwn(L, t))
+      (blocks: Val(L, Grain.uniform, DType.u32))(mask: Mask(L))(scale: Val(L, Grain.uniform, DType.f32))(out: AttnOut(L, t))(own: OOwn(L, t, groupWarp))
       (load: { kind = kl, scope = Sl } (rq: Lifetime) -> (rk: Lifetime) -> (rv: Lifetime)
         -> Ring(rq, qRing) -> Ring(rk, kRing) -> Ring(rv, vRing) -> Producer(rq) -> Producer(rk) -> Producer(rv)
         -> (m: Lifetime) -> Ctx(m, Load) -> Pair(Ctx(m, Load), Unit))

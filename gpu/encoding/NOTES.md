@@ -299,17 +299,19 @@ Observations from building `A3.md`'s A3a (`Core.rac`'s score buffer, `Layout.rol
    does. The warpgroup's block-0 rescale zeroes Ô instead (16 `tcgen05.st` of zeros, once per tile), and every
    product accumulates. The type then says more than A2's: `publishProbs` needs `Probs(…, held)`, so Ô is defined
    before any product, where A2 relies on `mmaPV` choosing the overwrite.
-3. **`n − 1` needs `subC`.** The loop combinators count from 0 to a `Val`, and the core had no subtraction. `subC`
-   is unbounded (it wraps below 0), which is harmless here since `n ≥ 1`, but it is one more place where a trip count
-   is the client's (M11).
-4. **The warpgroup–tile binding is a convention.** `rowInPair` (`256·blockIdx.x + 32·warp + lane`) is right because
+3. **A loop from block 1.** The issuer's loop runs `n − 1` times, from block 1; `loopFrom` exposes the loop from
+   another first index that `loopPeeled` already emits, and `loop` is `loopFrom` from 0.
+4. **The warpgroup–tile binding is a convention.** `rowInPairCta` (`256·blockIdx.x + 32·warp + lane`) is right because
    `rolesPair` puts tile 0's warpgroup on warps 0–3 and the example hands it buffer 0, whose S the MMA thread computes
    from the Q stage the loader filled at row `q0`. Nothing in the types ties the three together: swapping the buffers,
    or the Q rings, between the tiles is a wrong result, not a refusal. The other tile's buffer with one's own side is
-   refused (`other_tiles_region`).
-5. **Two `OOwn`s of one type.** `pairAttentionKernel` hands one `OOwn` per tile. Nothing stops one warpgroup from
-   using both: it would store its own rows twice, and the other's rows would stay unwritten (T4's NaN). Each thread
-   stores only its own row (M12), so it is never a race.
+   refused (`other_tiles_region`). Where the warpgroups sit is not a convention: the row reads the warp, so a
+   warpgroup on warps 8–11 would compute rows 256 to 383 of the CTA, the next CTA's. The review found that race
+   (a layout of the client's own, through `split`), and `OOwn` now names its warpgroup: the pair kernel hands those of
+   warps 0 and 4 only, so no other warpgroup stores (`wg_on_warps_8_11`).
+5. **`OOwn` per warpgroup.** `OOwn(l, t, f)` names the warpgroup that stores with it, which A2's kernels did not
+   need (their row reads `warp mod 4` and `128·blockIdx.x`, the CTA's rows from any warpgroup). It costs A2's roles and
+   checks a `groupWarp` in their types, and refuses one warpgroup taking the other's (`own_swapped`).
 6. **Helper lambdas in the issuer.** The MMA thread's three steps per tile (`hold`, `scores`, `product`) are let-bound
    lambdas with implicit binders over the tile's buffer and ring lifetimes, called directly. They read well at the
    call sites, but their signatures are most of the issuer's text. `hold` (await, then `holdStage`) is now used for

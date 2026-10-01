@@ -742,13 +742,15 @@ A3a's score buffer (`encoding/A3.md`, `encoding/rejected/attention_pingpong_muta
 
 | Mutant | Refused by |
 |---|---|
-| writing P before the row's loads complete | `writeProbs` needs `Read`, which only `loadRow`'s `wait::ld` makes (M16) |
+| writing P before the row's loads complete | `writeProbs` needs `Loaded`, which only `loadRow`'s `wait::ld` makes (M16) |
 | rescaling Ô before the scores' commit | `rescaleRow` needs `Probs`, which comes only after `awaitScores` |
-| issuing `St_{i+1}` before `PVt_i` | after `awaitProbs` the buffer is `Published`, which only `issuePV` takes; `issueScores` needs `Issued` (M16) |
+| issuing `St_{i+1}` before `PVt_i` | after `awaitProbs` the buffer is `Published`, which only `issuePV` takes; `issueScores` needs `Holding` (M16) |
 | publishing P with Ô undefined (no rescale in block 0) | `publishProbs` needs `Probs(…, held)`, which in block 0 only `rescaleRow`'s zeroing makes |
 | storing O before the last product | `storeFinal` needs `Final`, which only `awaitFinal`'s wait makes |
 | a warpgroup given the other tile's buffer | a buffer's handle and its side's tokens share its scope `x` |
 | closing the buffer with a product in flight | the warpgroup's side is linear and of the buffer's scope; only `awaitFinal` and `closeRows` use it up (M15) |
+| a softmax warpgroup on warps 8–11 storing (its rows would be the next CTA's) | `OOwn` names its warpgroup, and the pair kernel hands those of warps 0 and 4 only (M12) |
+| one warpgroup given the other's `OOwn` | the same |
 
 What the design cannot refuse. None of these is a race, a broken collective or a protocol error; each is a wrong
 result, a deadlock, or a question the types do not ask. The harness (§1.3) is what catches the first kind.

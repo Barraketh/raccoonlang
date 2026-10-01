@@ -2,20 +2,9 @@
 // examples/attention.rac computes, for any `seq` ≥ 1, with its two kernels, `attention_pingpong` (non-causal, O in f32)
 // and `attention_pingpong_causal` (causal, O in bf16).
 //
-// One CTA of twelve warps (`Layout.rolesPair`) per 256 query rows of one head, as two tiles of 128 rows. Warp 9 loads
-// each tile's Q block once into a one-stage ring, then K_j and V_j for every key block into two-stage rings. Warp 8
-// elects the MMA thread, which holds both Q stages across the loop and serves the tiles in turn (FA4's order):
-// - before the loop, S0_0 = Q0·K_0ᵀ and S1_0 = Q1·K_0ᵀ, each committed to its tile's score buffer;
-// - for each key block i ≥ 1, for tile 0 and then tile 1: once the tile's warpgroup has published Pt_{i−1}, Ôt +=
-//   Pt_{i−1}·V_{i−1}, then St_i = Qt·K_iᵀ over Pt, committed;
-// - after the loop, for each tile, Ôt += Pt_{n−1}·V_{n−1}, committed alone.
-// So a tile's next scores wait only for its own probabilities: while one warpgroup computes its probabilities, the
-// tensor cores run the other tile's products. Warps 0–3 and 4–7 are the two tiles' softmax warpgroups, one row per
-// thread, with examples/attention.rac's arithmetic (`Attention.scores`, `raiseMax`, `exps`): per key block, load the
-// row of S into registers in one pass, take the new maximum of the masked scores, write P = 2^(c·s − max) over S's
-// upper half, rescale Ô's row and publish. After the loop each waits for its tile's last product and stores its rows of
-// O and LSE.
-//
+// One CTA of twelve warps (`Layout.rolesPair`) per 256 query rows of one head, as two tiles of 128 rows, on A3.md §2's
+// schedule: warp 9 loads, warp 8's elected thread issues FA4's MMA order tile by tile, and warps 0–3 and 4–7 are the
+// tiles' softmax warpgroups, with examples/attention.rac's arithmetic (`Attention.scores`, `raiseMax`, `exps`).
 // Tensor memory: tile 0's score buffer in columns 0–255 (S, P over S's columns 64–127, then Ô), tile 1's in 256–511.
 //
 // Run: gpu/gen.sh gpu/encoding/examples/attention_pingpong.rac
@@ -30,7 +19,7 @@ namespace PingPong {
   open Layout
   open Attention
 
-  def Launch (l: Lifetime)(t: DType) : Type { scope = l } := AttnLaunch(l, box, t)
+  def Launch (l: Lifetime)(t: DType) : Type { scope = l } := PairLaunch(l, box, t)
 
   // Q's two tiles once, then K_j and V_j for every key block j; then wait for every stage to be released.
   def loader {l: Lifetime}{t: DType}{rq0: Lifetime}{rq1: Lifetime}{rk: Lifetime}{rv: Lifetime}(g: Launch(l, t))(q0r: Ring(rq0, qRing))
@@ -54,7 +43,7 @@ namespace PingPong {
       let (e, s) := acquire(e, q0r, pq0)
       let (e, pq0) := fillBlock(e, q0r, s, g.q, g.q0)
       let (e, s) := acquire(e, q1r, pq1)
-      let (e, pq1) := fillBlock(e, q1r, s, g.q, add(g.q0, lit(128)))
+      let (e, pq1) := fillBlock(e, q1r, s, g.q, g.q1)
       let (e, (pk, pv)) := loop(e, g.blocks, fixedPair(fixedProducerAt(rk, j), fixedProducerAt(rv, j)), (pk, pv), block)
       let e := finishProducer(e, q0r, pq0)
       let e := finishProducer(e, q1r, pq1)
@@ -70,7 +59,7 @@ namespace PingPong {
       : Type { kind = lin, scope = union(rq0, union(rq1, union(rk, union(rv, union(x0, union(x1, j)))))) } :=
     Pair(Pair(ReadyUsed(rq0, j), ReadyUsed(rq1, j)), Pair(Pair(ConsumerAt(rk, j), ConsumerAt(rv, j)), Pair(MmaAt(x0, j), MmaAt(x1, j))))
 
-  // Block 0's scores for both tiles before the loop; in iteration i ≥ 1, per tile, the product of block i − 1 and then
+  // Block 0's scores for both tiles before the loop; for each block i ≥ 1, per tile, the product of block i − 1 and then
   // block i's scores, V released after tile 1's product and K after its scores; after the loop, the last products.
   def issuer {L: Lifetime}{rq0: Lifetime}{rq1: Lifetime}{rk: Lifetime}{rv: Lifetime}{x0: Lifetime}{x1: Lifetime}
       (blocks: Val(L, Grain.uniform, DType.u32))(q0r: Ring(rq0, qRing))(q1r: Ring(rq1, qRing))(kr: Ring(rk, kRing))(vr: Ring(rv, vRing))
@@ -84,7 +73,7 @@ namespace PingPong {
         (e, holdStage(ready))
       }
       // St = Qt·Kᵀ, committed: the buffer passes to tile t's warpgroup.
-      let scores := fun {x: Lifetime}{rq: Lifetime}{n: Lifetime}(e: Ctx(n, One))(b: ScoreBuffer(x))(s: Issued(x, j))(qr: Ring(rq, qRing))
+      let issueS := fun {x: Lifetime}{rq: Lifetime}{n: Lifetime}(e: Ctx(n, One))(b: ScoreBuffer(x))(s: Holding(x, j))(qr: Ring(rq, qRing))
           (q: ReadyUsed(rq, j))(k: ReadyUsed(rk, j)): Pair(Ctx(n, One), Pair(MmaAt(x, j), Pair(ReadyUsed(rq, j), ReadyUsed(rk, j)))) => {
         let (e, (s, (q, k))) := issueScores(e, w, b, s, qr, q, kr, k)
         let (e, s) := commitBuffer(e, w, b, s)
@@ -92,7 +81,7 @@ namespace PingPong {
       }
       // Ôt += Pt·V, once tile t's warpgroup has published Pt.
       let product := fun {x: Lifetime}{n: Lifetime}(e: Ctx(n, One))(b: ScoreBuffer(x))(s: MmaAt(x, j))(v: ReadyUsed(rv, j))
-          : Pair(Ctx(n, One), Pair(Issued(x, j), ReadyUsed(rv, j))) => {
+          : Pair(Ctx(n, One), Pair(Holding(x, j), ReadyUsed(rv, j))) => {
         let (e, p) := awaitProbs(e, b, s)
         issuePV(e, w, b, p, vr, v)
       }
@@ -102,10 +91,10 @@ namespace PingPong {
         let (e, v) := hold(e, vr, cv)
         let (e, (s0, v)) := product(e, b0, s0, v)
         let (e, k) := hold(e, kr, ck)
-        let (e, (s0, (q0, k))) := scores(e, b0, s0, q0r, q0, k)
+        let (e, (s0, (q0, k))) := issueS(e, b0, s0, q0r, q0, k)
         let (e, (s1, v)) := product(e, b1, s1, v)
         let (e, cv) := releaseByMma(e, w, vr, v)
-        let (e, (s1, (q1, k))) := scores(e, b1, s1, q1r, q1, k)
+        let (e, (s1, (q1, k))) := issueS(e, b1, s1, q1r, q1, k)
         let (e, ck) := releaseByMma(e, w, kr, k)
         (e, ((q0, q1), ((ck, cv), (s0, s1))))
       }
@@ -117,13 +106,13 @@ namespace PingPong {
       let (e, s1) := takeMma(e, w, b1, s1)
       let (e, q0) := hold(e, q0r, cq0)
       let (e, k) := hold(e, kr, ck)
-      let (e, (s0, (q0, k))) := scores(e, b0, s0, q0r, q0, k)
+      let (e, (s0, (q0, k))) := issueS(e, b0, s0, q0r, q0, k)
       let (e, q1) := hold(e, q1r, cq1)
-      let (e, (s1, (q1, k))) := scores(e, b1, s1, q1r, q1, k)
+      let (e, (s1, (q1, k))) := issueS(e, b1, s1, q1r, q1, k)
       let (e, ck) := releaseByMma(e, w, kr, k)
       let fixed := fixedPair(fixedPair(fixedReadyUsed(rq0, j), fixedReadyUsed(rq1, j)),
         fixedPair(fixedPair(fixedConsumerAt(rk, j), fixedConsumerAt(rv, j)), fixedPair(fixedMmaAt(x0, j), fixedMmaAt(x1, j))))
-      let (e, ((q0, q1), ((ck, cv), (s0, s1)))) := loop(e, subC(blocks, 1), fixed, ((q0, q1), ((ck, cv), (s0, s1))), block)
+      let (e, ((q0, q1), ((ck, cv), (s0, s1)))) := loopFrom(e, 1, blocks, fixed, ((q0, q1), ((ck, cv), (s0, s1))), block)
       let (e, v) := hold(e, vr, cv)
       let (e, (s0, v)) := product(e, b0, s0, v)
       let (e, s0) := commitBuffer(e, w, b0, s0)
@@ -142,14 +131,12 @@ namespace PingPong {
 
   // ---- The softmax warpgroups ------------------------------------------------------------------------------------------
 
-  // The softmax of one tile, on the warpgroup of warps f to f + 3, one row per thread: its running maximum `m` (log2
-  // units, from −∞) and sum `l` (from 0) are registers of the role. Per key block: await the scores; load the row in
-  // one pass; the masked t of the row and its new maximum; P = 2^(t − m_new) over S, against the maximum as `usable`
-  // gives it, summing it; rescale Ô's row by α = 2^(m_old − m_new), which in the first block, Ô still undefined, sets
-  // it to 0; publish P; l = α·l + sum, where the first block's α is 2^−∞ = 0. After the loop: wait for the last product,
-  // and store O = Ô/l and LSE = (m + log2 l)·ln 2.
+  // The softmax of one tile (A3.md §2), on the warpgroup of warps f to f + 3, one row per thread: its running maximum
+  // `m` (log2 units, from −∞) and sum `l` (from 0) are registers of the role. Pass 1 keeps the row's masked scores and
+  // raises `m`; pass 2 writes P against `m` as `usable` gives it. After the loop it stores O = Ô/l and
+  // LSE = (m + log2 l)·ln 2.
   def softmax {L: Lifetime}{t: DType}{x: Lifetime}{f: Nat}(blocks: Val(L, Grain.uniform, DType.u32))(mask: Mask(L))
-      (scale: Val(L, Grain.uniform, DType.f32))(out: AttnOut(L, t))(own: OOwn(L, t))(buf: ScoreBuffer(x))(side: RowSide(x))(m: Lifetime)
+      (scale: Val(L, Grain.uniform, DType.f32))(out: AttnOut(L, t))(own: OOwn(L, t, f))(buf: ScoreBuffer(x))(side: RowSide(x))(m: Lifetime)
       (e: Ctx(m, Group.warps(f, 4)))[aligned: Eq(Nat, Nat.mod(f, 4), 0)]: Pair(Ctx(m, Group.warps(f, 4)), Unit) := {
     let (e, minusInfinity) := fconst(e, minusInfinityBits)
     let (e, mReg) := reg(e, minusInfinity)
@@ -196,7 +183,7 @@ namespace PingPong {
 
   // The CTA, given the launch, each tile's authority over its rows of O, and the permit. Tensor memory: each tile's
   // score buffer in one half.
-  def cta {l: Lifetime}{t: DType}(e: Ctx(l, PairCta))(g: Launch(l, t))(own0: OOwn(l, t))(own1: OOwn(l, t))(permit: TmemPermit(l)): Ctx(l, PairCta) := {
+  def cta {l: Lifetime}{t: DType}(e: Ctx(l, PairCta))(g: Launch(l, t))(own0: OOwn(l, t, 0))(own1: OOwn(l, t, 4))(permit: TmemPermit(l)): Ctx(l, PairCta) := {
     // The rings, innermost the V ring, around the roles.
     let rings := fun (x0: Lifetime)(x1: Lifetime)(b0: ScoreBuffer(x0))(b1: ScoreBuffer(x1))(r0: RowSide(x0))(r1: RowSide(x1))(s0: MmaSide(x0))
         (s1: MmaSide(x1))(e: Ctx(l, PairCta)): Pair(Ctx(l, PairCta), Unit) =>
@@ -233,7 +220,7 @@ namespace PingPong {
 
   // The kernel `name`, causal or not, writing O as `t` (f32 or bf16).
   def kernel (name: String)(causal: Bool)(t: DType): Program :=
-    pairAttentionKernel(name, causal, t, fun (l: Lifetime)(e: Ctx(l, PairCta))(g: Launch(l, t))(own0: OOwn(l, t))(own1: OOwn(l, t))
+    pairAttentionKernel(name, causal, t, fun (l: Lifetime)(e: Ctx(l, PairCta))(g: Launch(l, t))(own0: OOwn(l, t, 0))(own1: OOwn(l, t, 4))
         (permit: TmemPermit(l)): Ctx(l, PairCta) => cta(e, g, own0, own1, permit))
 }
 

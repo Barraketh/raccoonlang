@@ -8,7 +8,7 @@
 # - Writing a chunk of P twice or not at all: not expressible. `writeProbs` writes one chunk per chunk of the row, and
 #   a `Row` comes only from `loadRow` or `mapRow`, so it has 16.
 # - Swapping both tiles' buffers between the warpgroups: allowed, and a wrong result, not a race. Each warpgroup then
-#   computes the other tile's scores and stores them as its own rows (`rowInPair`), each row once.
+#   computes the other tile's scores and stores them as its own rows (`rowInPairCta`), each row once.
 # - Committing a buffer with no new scores in it (`commitBuffer` straight after `issuePV` inside the loop): a wrong
 #   result, not a race. The commit still follows the product, so Ô is quiescent and S's stale columns are only read.
 # - Trip counts that differ between the issuer and a warpgroup: a deadlock (M11), not a race.
@@ -18,9 +18,9 @@ SOURCE = "encoding/examples/attention_pingpong.rac"
 MUTANTS = [
     dict(
         name="probs_before_load_completes", expect="ImplicitReconstructionFailed",
-        mentions="Core.writeProbs: expected an application of Core.Read",
+        mentions="Core.writeProbs: expected an application of Core.Loaded",
         why="Writes P over S's upper half from the buffer as `awaitScores` gave it, before the row's loads complete: a "
-            "store to P could overtake a load of the S columns under it. `writeProbs` writes through the `Read` that "
+            "store to P could overtake a load of the S columns under it. `writeProbs` writes through the `Loaded` that "
             "only `loadRow`'s `wait::ld` makes.",
         old="""      let (e, p) := writeProbs(e, buf, read, t, fun""",
         new="""      let (e, p) := writeProbs(e, buf, scored, t, fun""",
@@ -36,13 +36,13 @@ MUTANTS = [
       let (e, scored) := awaitScores(e, buf, st)""",
     ),
     dict(
-        name="scores_before_product", expect="TypeMismatch", mentions="Core.Issued",
+        name="scores_before_product", expect="TypeMismatch", mentions="Core.Holding",
         why="Issues tile 0's next scores before its product: S_{i+1} would overwrite P_i while PV_i has not yet read it. "
-            "After `awaitProbs` the buffer is `Published`, which only `issuePV` takes; `issueScores` needs the `Issued` "
+            "After `awaitProbs` the buffer is `Published`, which only `issuePV` takes; `issueScores` needs the `Holding` "
             "that the product gives back.",
         old="""        let (e, (s0, v)) := product(e, b0, s0, v)
         let (e, k) := hold(e, kr, ck)
-        let (e, (s0, (q0, k))) := scores(e, b0, s0, q0r, q0, k)""",
+        let (e, (s0, (q0, k))) := issueS(e, b0, s0, q0r, q0, k)""",
         new="""        let (e, published) := awaitProbs(e, b0, s0)
         let (e, k) := hold(e, kr, ck)
         let (e, (s0, (q0, k))) := issueScores(e, w, b0, published, q0r, q0, kr, k)
@@ -87,5 +87,25 @@ MUTANTS = [
     let (e, final) := storeFinal(e, buf, final, inv, fmul(fadd(mMax, logSum), ln2), out, own)
     (closeRows(e, final), Unit.unit)""",
         new="""    (e, Unit.unit)""",
+    ),
+    dict(
+        name="wg_on_warps_8_11", expect="TypeMismatch", mentions="expected: Core.Ctx(m, Core.Group.warps(4, 4))",
+        why="Runs tile 1's softmax on warps 8 to 11 (a layout of its own, not `rolesPair`) with tile 1's authority to "
+            "store: its rows, `256·blockIdx.x + 32·warp + lane`, would be the next CTA's tile-0 rows, a write-write race "
+            "between CTAs. `OOwn` names the warpgroup that may store with it, and `pairAttentionKernel` hands out those "
+            "of warps 0 and 4 only: the role's group is then fixed by its authority, here `warps(4, 4)`.",
+        old="""  // ---- The CTA ---""",
+        new="""  def misplaced {L: Lifetime}{t: DType}{x: Lifetime}(g: Launch(L, t))(own: OOwn(L, t, 4))(buf: ScoreBuffer(x))(side: RowSide(x))
+      (m: Lifetime)(e: Ctx(m, Group.warps(8, 4))): Pair(Ctx(m, Group.warps(8, 4)), Unit) :=
+    softmax(g.blocks, g.mask, g.scale, g.out, own, buf, side, m, e)
+
+  // ---- The CTA ---""",
+    ),
+    dict(
+        name="own_swapped", expect="TypeMismatch", mentions="expected: Core.Ctx(m, Core.Group.warps(4, 4))",
+        why="Hands warpgroup 0 the authority of warpgroup 1's rows: one warpgroup could then store twice and leave the "
+            "other's rows unwritten. Each `OOwn` names its warpgroup, so the role's group must be that one.",
+        old="""g.out, own0, b0, r0""",
+        new="""g.out, own1, b0, r0""",
     ),
 ]

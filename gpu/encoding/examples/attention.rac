@@ -48,7 +48,7 @@ namespace Attn {
 
   // The kernel `name`, causal or not, writing O as `t` (f32 or bf16).
   def kernel (name: String)(causal: Bool)(t: DType): Program :=
-    attentionKernel(name, causal, t, fun (l: Lifetime)(e: Ctx(l, Cta))(g: Launch(l, t))(own: OOwn(l, t))(permit: TmemPermit(l))
+    attentionKernel(name, causal, t, fun (l: Lifetime)(e: Ctx(l, Cta))(g: Launch(l, t))(own: OOwn(l, t, groupWarp))(permit: TmemPermit(l))
         : Ctx(l, Cta) =>
       cta(e, permit, g.blocks, g.mask, g.scale, g.out, own, fun (rq: Lifetime)(rk: Lifetime)(rv: Lifetime)(qr: Ring(rq, qRing))
           (kr: Ring(rk, kRing))(vr: Ring(rv, vRing))(pq: Producer(rq))(pk: Producer(rk))(pv: Producer(rv))(m: Lifetime)(e: Ctx(m, Load))

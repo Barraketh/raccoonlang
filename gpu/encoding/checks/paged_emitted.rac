@@ -49,7 +49,7 @@ namespace P {
 
   // P written from S, published; then the output.
   def writer {l: Lifetime}{q: Lifetime}{x: Lifetime}(g: PagedLaunch(l, box, DType.f32))(accs: AccRing(q, 128))(ex: Exchange(x))(ac: AccConsumer(q))
-      (wr: ExWriter(x))(own: OOwn(l, DType.f32))(m: Lifetime)(e: Ctx(m, Wg)): Pair(Ctx(m, Wg), Unit) := {
+      (wr: ExWriter(x))(own: OOwn(l, DType.f32, groupWarp))(m: Lifetime)(e: Ctx(m, Wg)): Pair(Ctx(m, Wg), Unit) := {
     let (e, c) := takeAccConsumer(e, accs, ac)
     let (e, wa) := takeExWriter(e, ex, wr)
     let (e, one) := fconst(e, 1065353216)
@@ -67,7 +67,7 @@ namespace P {
 
   def kernel : Program :=
     pagedAttentionKernel("paged_emitted", 8, Bool.false, DType.f32,
-      fun (l: Lifetime)(e: Ctx(l, Cta))(g: PagedLaunch(l, box, DType.f32))(own: OOwn(l, DType.f32))(permit: TmemPermit(l)): Ctx(l, Cta) => {
+      fun (l: Lifetime)(e: Ctx(l, Cta))(g: PagedLaunch(l, box, DType.f32))(own: OOwn(l, DType.f32, groupWarp))(permit: TmemPermit(l)): Ctx(l, Cta) => {
         // The V ring, around the roles.
         let roles := fun (q: Lifetime)(x: Lifetime)(accs: AccRing(q, 128))(ex: Exchange(x))(ap: AccProducer(q))(ac: AccConsumer(q))(wr: ExWriter(x))
             (rd: ExReader(x))(e: Ctx(l, Cta)): Pair(Ctx(l, Cta), Unit) =>

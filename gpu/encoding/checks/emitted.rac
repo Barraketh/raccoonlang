@@ -54,7 +54,7 @@ namespace E {
 
   // P written from S, S released, a spin in `awaitAcc`, then the publish.
   def writer {l: Lifetime}{q: Lifetime}{x: Lifetime}(g: AttnLaunch(l, box, DType.bf16))(accs: AccRing(q, 128))(ex: Exchange(x))(ac: AccConsumer(q))
-      (wr: ExWriter(x))(own: OOwn(l, DType.bf16))(m: Lifetime)(e: Ctx(m, Wg)): Pair(Ctx(m, Wg), Unit) := {
+      (wr: ExWriter(x))(own: OOwn(l, DType.bf16, groupWarp))(m: Lifetime)(e: Ctx(m, Wg)): Pair(Ctx(m, Wg), Unit) := {
     let (e, c) := takeAccConsumer(e, accs, ac)
     let (e, wa) := takeExWriter(e, ex, wr)
     let (e, one) := fconst(e, 1065353216)
@@ -76,7 +76,7 @@ namespace E {
 
   def kernel : Program :=
     attentionKernel("emitted", Bool.true, DType.bf16,
-      fun (l: Lifetime)(e: Ctx(l, Cta))(g: AttnLaunch(l, box, DType.bf16))(own: OOwn(l, DType.bf16))(permit: TmemPermit(l)): Ctx(l, Cta) => {
+      fun (l: Lifetime)(e: Ctx(l, Cta))(g: AttnLaunch(l, box, DType.bf16))(own: OOwn(l, DType.bf16, groupWarp))(permit: TmemPermit(l)): Ctx(l, Cta) => {
         // The V ring, around the roles; its loader only takes and finishes the producer.
         let roles := fun (q: Lifetime)(x: Lifetime)(accs: AccRing(q, 128))(ex: Exchange(x))(ap: AccProducer(q))(ac: AccConsumer(q))(wr: ExWriter(x))
             (rd: ExReader(x))(e: Ctx(l, Cta)): Pair(Ctx(l, Cta), Unit) =>
