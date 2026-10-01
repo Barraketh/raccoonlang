@@ -1,7 +1,10 @@
 # Paged attention on the A1 kernel: design
 
-Status: design, not implemented (2026-10-01). It extends A1 (`gpu/ATTENTION.md`, as built in `gpu/encoding/`) to a KV
-cache stored in pages. It is the second step of `gpu/encoding/README.md`.
+Status: P1 built (2026-10-01), as §6 records: `Core.rac`'s paged-attention section, `examples/paged_attention.rac`,
+`harness/paged_attention_test.cu` and `rejected/paged_attention_mutants.py`; checked by generation, the certificate,
+the mutants and a compile against `gpu/stub/`, not run on hardware. P2 is design only. It extends A1
+(`gpu/ATTENTION.md`, as built in `gpu/encoding/`) to a KV cache stored in pages. It is the second step of
+`gpu/encoding/README.md`.
 
 ## 1. The target
 
@@ -110,3 +113,29 @@ schedule is its own design, after P1.
   - T1–T4 of `ATTENTION.md` §1.3 for valid tables.
 - **Mutants:** a caller-chosen page row (refused: `fillPage` takes only the block index), and a write into the cache
   (refused: no operation writes a `PageMap`).
+
+## 6. P1 as built
+
+As §1–§3 design it, with these decisions where the design left room:
+
+- **Parameters.** The kernel takes `Q_map`, `K_map`, `V_map`, `O`, `LSE`, `block_table`, `B`, `seq`, `max_pages`,
+  `scale_log2`. The launcher (`paged_attention_launch`) takes the arrays in their place (`Q`, `K`, `V`) and adds
+  `pages`, `rows_q`, `rows_kv` and `dim`, which only it reads: `Q`, `K`, `V`, `O`, `LSE`, `block_table`, `B`, `seq`,
+  `max_pages`, `pages`, `rows_q`, `rows_kv`, `dim`, `scale_log2`.
+- **"Every extent below 2³¹"** is three requirements: `B · H · seq · 128` (every row and element index of Q, O and
+  LSE fits a signed coordinate and a u32, as A1 requires), `pages · H · 128` (every row of the cache is addressable by a
+  signed coordinate; a valid table's rows then never wrap) and `B · max_pages` (every index of the table fits a u32).
+  The others follow: `pages`, `max_pages`, `seq` and `B` are each bounded by one of them.
+- **`fillPage`** checks at generation that the ring's stage is two 64 × 128 boxes (`headStage`): it loads both boxes
+  through the one cache map, typed by the first box, and a page is 128 rows. The table's guard is `gload`'s:
+  `b < B ∧ j < max_pages`, else the value 0, which is then an ordinary page number. Both bounds hold for every `b` the
+  grid makes and every `j` below `blocks`, but `j` is the caller's, so the guard is what keeps the read in the table.
+- **`H`** is checked at generation to be from 1 to 65535; a kernel with more heads could never launch (`B ≥ 1`).
+- **The table is read twice per block,** once by each `fillPage` (K's, then V's). Both reads are of the same entry of
+  a read-only input, so they agree; reading it once would need a page value the caller holds, which `fillPage`'s
+  signature rules out (`NOTES.md`).
+- **The example shares no code with A1's.** Its issuer, softmax warpgroup and CTA are copies of
+  `examples/attention.rac`'s (`NOTES.md`, "Paged attention").
+
+The generated kernel (2677 lines, 182 KB with its launcher) differs from A1's only in its parameters, the four TMA
+loads of the loader's loop, the two table reads before them, and the launcher.

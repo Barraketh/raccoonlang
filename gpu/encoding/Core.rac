@@ -2322,4 +2322,115 @@ namespace Core {
     let gen := Core.state(Key.key, body(l, Core.resume(Key.key, l, Group.cta(256), gen1), launch, OOwn.mk(l, DType.f32), TmemPermit.mk(l)))
     Core.finish(Key.key, name, Core.attnParams, Option.some(Core.attnLauncher), gen)
   }
+
+  // ---- Paged attention (gpu/encoding/PAGED.md, P1) ------------------------------------------------------------------
+
+  // A tensor map parameter over a paged K or V cache, `[pages·heads·128, 128]` bf16 with 128 contiguous, whose box is
+  // `spec`: page `p` holds 128 consecutive keys of each of the `heads` heads, head `h`'s from row `(p·heads + h)·128`.
+  // Launch contract: the host encodes it so, with 128-byte swizzle. It is only read: no operation writes through it.
+  sealed struct PageMap (l: Lifetime)(spec: TmaSpec) : Type { scope = l }
+   | mk (name: String)(heads: Nat) : PageMap(l, spec)
+
+  // The block table, a u32 matrix parameter of `rows` × `cols` (`B` × `max_pages`): entry `[b][j]` is the page holding
+  // keys 128j to 128j + 127 of sequence `b`. Only `fillPage` reads it, and nothing writes it.
+  sealed struct PageTable (l: Lifetime) : Type { scope = l }
+   | mk (name: String)(rows: Expr)(cols: Expr) : PageTable(l)
+
+  // Fills the acquired stage with the 128 rows of key block `j` of this CTA's sequence and head, through `cache`: reads
+  // the block's page `p` from the table with a guarded load (zero outside it), then loads the two 64-wide boxes at row
+  // `(p·heads + h)·128`. The sequence `b = blockIdx.y / heads`, the head `h = blockIdx.y % heads` and the row are
+  // computed here, never taken from the caller, who gives only `j`.
+  //
+  // Whatever the table holds, the loads read only the cache, or zeros: the row is computed in u32, so it wraps modulo
+  // 2^32; TMA reads it as a signed 32-bit coordinate and clips a box to the map's extents, filling the rest with zeros
+  // (A9); and since the row and the cache's extent are multiples of 128, a box lies wholly inside the cache or wholly
+  // outside it. A wrong page gives a wrong result, never a race: the stage is filled and completed as `fill` does it.
+  def fillPage {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}{L: Lifetime}{S: Lifetime}{u: Grain}
+      (e: Ctx(n, Group.lane))(ring: Ring(r, cfg))(s: Slot(r, m))(table: PageTable(L))(cache: PageMap(L, RingCfg.a(cfg)))
+      (j: Val(S, u, DType.u32)): Pair(Ctx(n, Group.lane), ProducerAt(r, m)) := {
+    match s returning Pair(Ctx(n, Group.lane), ProducerAt(r, m)) with
+    | Slot.mk => {
+      let e := Core.resume(Key.key, n, Group.lane, Core.check(Core.state(Key.key, e), Core.headStage(cfg),
+        "fillPage: a stage must be two boxes of 64 x 128, one page of one head"))
+      let heads := Expr.lit(cache.heads)
+      let b := Val.mk(n, Grain.uniform, DType.u32, Expr.bin(BinOp.div, Expr.special(Builtin.blockY), heads), Option.none(Nat))
+      let (e, p) := Core.gload(e, GMat.mk(L, DType.u32, table.name, table.rows, table.cols), b, j)
+      let h := Expr.bin(BinOp.rem, Expr.special(Builtin.blockY), heads)
+      let row := Expr.bin(BinOp.mul, Expr.bin(BinOp.add, Expr.bin(BinOp.mul, p.expr, heads), h), Expr.lit(128))
+      (Core.emitAll(Key.key, e, Core.fillCode(ring, cache.name, Expr.lit(0), row, cache.name, Expr.lit(64), row)), ProducerAt.mk(r, m))
+    }
+  }
+
+  // What each CTA of a paged-attention kernel starts with: as `AttnLaunch`, with K and V the paged cache's maps, and the
+  // block table.
+  struct PagedLaunch (l: Lifetime)(spec: TmaSpec) : Type { scope = l }
+   | mk (q: HeadMap(l, spec))(k: PageMap(l, spec))(v: PageMap(l, spec))(table: PageTable(l))(out: AttnOut(l, DType.f32))
+        (seq: Val(l, Grain.uniform, DType.u32))(blocks: Val(l, Grain.uniform, DType.u32))(q0: Val(l, Grain.uniform, DType.u32))
+        (scale: Val(l, Grain.uniform, DType.f32)) : PagedLaunch(l, spec)
+
+  def pagedParams : List(Param) :=
+    List.cons(Param.tensorMap(MapUse.load, "Q_map"), List.cons(Param.tensorMap(MapUse.load, "K_map"), List.cons(Param.tensorMap(MapUse.load, "V_map"),
+      List.cons(Param.output(DType.f32, "O"), List.cons(Param.output(DType.f32, "LSE"), List.cons(Param.input(DType.u32, "block_table"),
+      List.cons(Param.scalar(DType.u32, "B"), List.cons(Param.scalar(DType.u32, "seq"), List.cons(Param.scalar(DType.u32, "max_pages"),
+      List.cons(Param.scalar(DType.f32, "scale_log2"), List.nil(Param)))))))))))
+
+  // The host launcher of a paged-attention kernel over `heads` heads. Q is given as a `rows_q` × `dim` matrix, which must
+  // be `[B·heads·seq, 128]`, and K and V as `rows_kv` × `dim` ones, which must be `[pages·heads·128, 128]`; it encodes
+  // their maps with 64 × 128 boxes and launches a CTA of 256 threads per 128 query rows of each sequence and head, grid
+  // (seq/128, B·heads). It refuses seq = 0, seq not a multiple of 128 (A1), B = 0, B·heads > 65535 (the grid's y), a
+  // table of fewer than seq/128 columns, and extents of 2^31 or more: B·heads·seq·128 (so every row and element index
+  // of Q, O and LSE fits TMA's signed coordinates and a u32), pages·heads·128 (every row of the cache) and B·max_pages
+  // (every index of the table).
+  def pagedLauncher (heads: Nat): Launcher := {
+    let hostParams := List.cons(Param.input(DType.bf16, "Q"), List.cons(Param.input(DType.bf16, "K"), List.cons(Param.input(DType.bf16, "V"),
+      List.cons(Param.output(DType.f32, "O"), List.cons(Param.output(DType.f32, "LSE"), List.cons(Param.input(DType.u32, "block_table"),
+      List.cons(Param.scalar(DType.u32, "B"), List.cons(Param.scalar(DType.u32, "seq"), List.cons(Param.scalar(DType.u32, "max_pages"),
+      List.cons(Param.scalar(DType.u32, "pages"), List.cons(Param.scalar(DType.u32, "rows_q"), List.cons(Param.scalar(DType.u32, "rows_kv"),
+      List.cons(Param.scalar(DType.u32, "dim"), List.cons(Param.scalar(DType.f32, "scale_log2"), List.nil(Param)))))))))))))))
+    let wide := fun (name: String): Expr => Expr.cast(DType.u64, Expr.param(name))
+    let below := fun (x: Expr): Expr => Expr.bin(BinOp.lt, x, Expr.lit64(Core.i32Limit))
+    let grid := Expr.bin(BinOp.mul, wide("B"), Expr.lit(heads))
+    let qRows := Expr.bin(BinOp.mul, grid, Expr.param("seq"))
+    let kvRows := Expr.bin(BinOp.mul, Expr.bin(BinOp.mul, wide("pages"), Expr.lit(heads)), Expr.lit(128))
+    let requires := List.cons(Expr.bin(BinOp.lt, Expr.lit(0), Expr.param("seq")),
+      List.cons(Expr.bin(BinOp.eq, Expr.bin(BinOp.rem, Expr.param("seq"), Expr.lit(128)), Expr.lit(0)),
+      List.cons(Expr.bin(BinOp.lt, Expr.lit(0), Expr.param("B")), List.cons(Expr.bin(BinOp.lt, grid, Expr.lit64(65536)),
+      List.cons(below(Expr.bin(BinOp.mul, qRows, Expr.lit(128))), List.cons(Expr.bin(BinOp.eq, Expr.param("rows_q"), qRows),
+      List.cons(below(kvRows), List.cons(Expr.bin(BinOp.eq, Expr.param("rows_kv"), kvRows),
+      List.cons(Expr.bin(BinOp.eq, Expr.param("dim"), Expr.lit(128)),
+      List.cons(Expr.bin(BinOp.lt, Expr.bin(BinOp.div, Expr.param("seq"), Expr.lit(128)), Expr.bin(BinOp.add, wide("max_pages"), Expr.lit64(1))),
+      List.cons(below(Expr.bin(BinOp.mul, wide("B"), Expr.param("max_pages"))), List.nil(Expr))))))))))))
+    let map := fun (name: String)(source: String)(rows: String): MapEncoding =>
+      MapEncoding.mk(name, MapUse.load, Param.input(DType.bf16, source), rows, "dim", 64, 128)
+    let maps := List.cons(map("Q_map", "Q", "rows_q"), List.cons(map("K_map", "K", "rows_kv"), List.cons(map("V_map", "V", "rows_kv"), List.nil(MapEncoding))))
+    Launcher.mk(hostParams, requires, maps, Grid.blocks(Expr.bin(BinOp.div, Expr.param("seq"), Expr.lit(128)),
+      Expr.bin(BinOp.mul, Expr.param("B"), Expr.lit(heads))), 256)
+  }
+
+  // Forward attention over B sequences of `seq` rows and `heads` heads each, with K and V in a paged cache
+  // (gpu/encoding/PAGED.md, P1): as `attentionKernel`, with CTA `(x, y)` computing query block `x` of sequence
+  // `y / heads`, head `y % heads`, and with its host launcher (`pagedLauncher`). `heads` is a generation-time constant,
+  // from 1 to 65535. The launch contract that remains to the caller: Q is a device array of B·heads·seq·128 bf16
+  // elements, K and V ones of pages·heads·128·128, the table one of B·max_pages u32 elements, O one of B·heads·seq·128
+  // f32 elements and LSE one of B·heads·seq, and O and LSE are distinct from each other and from the inputs. Whatever
+  // the table holds is memory-safe (`fillPage`); that its entries are the sequences' pages, and that those pages hold
+  // their K and V, is the caller's promise for a correct result. Any `scale_log2` is memory-safe.
+  def pagedAttentionKernel (name: String)(heads: Nat)
+      (body: (l: Lifetime) -> Ctx(l, Group.cta(256)) -> PagedLaunch(l, TmaSpec.mk(64, 128)) -> OOwn(l, DType.f32) -> TmemPermit(l)
+        -> Ctx(l, Group.cta(256)))
+      : Program := scope l => {
+    let spec := TmaSpec.mk(64, 128)
+    let gen0 := Core.check(Core.state(Key.key, Core.start(Key.key, l, Group.cta(256))), Bool.and(Nat.blt(0, heads), Nat.blt(heads, 65536)),
+      "paged kernel: the head count must be from 1 to 65535")
+    let blocks := gen0.next
+    let gen1 := Core.push(Core.fresh(gen0), Stmt.decl(DType.u32, blocks, Expr.bin(BinOp.div, Expr.param("seq"), Expr.lit(128))))
+    let seq := Core.uniformParam(Key.key, l, DType.u32, "seq")
+    let page := fun (name: String): PageMap(l, spec) => PageMap.mk(l, spec, name, heads)
+    let q0 := Val.mk(l, Grain.uniform, DType.u32, Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(128)), Option.none(Nat))
+    let launch := PagedLaunch.mk(HeadMap.mk(l, spec, "Q_map", seq.expr), page("K_map"), page("V_map"),
+      PageTable.mk(l, "block_table", Expr.param("B"), Expr.param("max_pages")), AttnOut.mk(l, DType.f32, "O", "LSE", seq.expr), seq,
+      Val.mk(l, Grain.uniform, DType.u32, Expr.var(blocks), Option.none(Nat)), q0, Core.uniformParam(Key.key, l, DType.f32, "scale_log2"))
+    let gen := Core.state(Key.key, body(l, Core.resume(Key.key, l, Group.cta(256), gen1), launch, OOwn.mk(l, DType.f32), TmemPermit.mk(l)))
+    Core.finish(Key.key, name, Core.pagedParams, Option.some(Core.pagedLauncher(heads)), gen)
+  }
 }

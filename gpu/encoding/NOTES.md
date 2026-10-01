@@ -105,3 +105,42 @@ CPU time of the native binary, built from lemur_gpu at 9a390fe, on an idle machi
 The generated attention kernel is 2663 lines (181 KB) with its launcher: the two softmax iterations (peeled and
 looped) unroll 16 chunks per pass and 16 per rescale, and every tensor-memory address repeats the warp-quadrant
 expression.
+
+## Paged attention (P1)
+
+Observations from building `PAGED.md`'s P1 (`Core.rac`'s paged-attention section, `examples/paged_attention.rac`,
+`harness/paged_attention_test.cu`, `rejected/paged_attention_mutants.py`).
+
+1. **The example copies A1's roles.** `examples/paged_attention.rac` is `examples/attention.rac` with `Attn` renamed
+   `Paged`, `Launch` defined as `PagedLaunch`, the kernel builder and its name changed, and a new loader: about 300 lines
+   of the issuer, the softmax warpgroup (with `pass1`/`pass2` and their chunk functions), `roles` and `kernel` are
+   duplicated. They could not be shared without editing `attention.rac`: every role takes the whole `Attn.Launch(l)`
+   (`AttnLaunch`) and reads its fields, and `PagedLaunch` is another type. Sharing needs either the roles to take only
+   what they read (the issuer `blocks`; the softmax `blocks`, `scale` and `out`; the loader is the one that differs),
+   or the loader as a parameter of a kernel generic in its launch record. `diff` of the two files, after the rename,
+   shows exactly the differences; keep them in step until then.
+2. **Core repeats A1's builder.** `pagedAttentionKernel` repeats `attentionKernel`'s prologue (the `blocks`
+   declaration, `q0`, `seq`), and `pagedLauncher` restates four of `attnLauncher`'s requirements (`seq > 0`,
+   `seq mod 128 = 0`, `B > 0`, `dim = 128`) and its map encoding. Both were kept additive so that A1's output could not
+   change; a shared prologue and requirement list would not change either kernel's text.
+3. **The table is read twice per block.** `fillPage` reads its entry itself, so the loader's K and V fills each read
+   it. One read would need a page value passing from one fill to the next, and a page value in the caller's hands is
+   what `fillPage`'s signature rules out (a caller-chosen row). A sealed `PageAt` value (made only by a core read of the
+   table, consumed by fills of the same `j`) would allow it; for P1, the second read is an L1 hit.
+4. **One map for both boxes.** `fillPage` takes one `PageMap` typed by the ring's first box and loads both boxes
+   through it, so the second box's spec is checked at generation (`headStage`), not by the type. A ring of two
+   different boxes is reachable only that way (`rejected/paged_attention_mutants.py`, `half_page_box`).
+5. **What the mutants report.** A `PageMap` or `PageTable` passed where `storeO` expects an `AttnOut`, or a `PageMap`
+   where `fillHead` expects a `HeadMap`, is reported as `ImplicitReconstructionFailed` ("Cannot reconstruct implicit
+   argument L of Core.storeO: expected an application of Core.AttnOut, got Core.PageMap(…)"), not `TypeMismatch`: the
+   implicit `L` is solved from the argument's type before the types are compared. The message is clear; the kind is
+   surprising.
+6. **The harness ran against a mock.** With no GPU, `paged_attention_test.cu` was linked against a host mock of the
+   runtime and driver whose `cudaLaunchKernel` emulates the kernel's semantics (the guarded table read, the u32 row,
+   TMA's signed coordinates and clipping) with the generated launcher's own host code. Every check passed, every
+   refusal came from the generated requirements, and a mock that ignores the table failed every numerical check. The
+   mock is not in the repository; it checks the harness and the launcher, not the kernel.
+
+Timing (CPU s of the native binary, built from lemur_gpu at fb08df0, on a machine not idle, 2026-10-01):
+`gen.sh encoding/examples/paged_attention.rac` 9.1, `gen.sh encoding/examples/attention.rac` 9.0 (7.5 above, idle). The
+generated paged kernel is 2677 lines (182 KB) with its launcher.

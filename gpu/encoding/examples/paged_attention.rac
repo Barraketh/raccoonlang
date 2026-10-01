@@ -1,0 +1,378 @@
+// Paged forward attention on sm_100a (gpu/encoding/PAGED.md, P1): A1 (examples/attention.rac) with K and V read from
+// a paged cache. For B sequences of `seq` rows and 8 heads each, head dimension 128, non-causal, `seq` a multiple of
+// 128, O = softmax(scale · Q·Kᵀ)·V and LSE, from Q in bf16 `[B·8·seq, 128]` and K and V in bf16 caches
+// `[pages·8·128, 128]`, to O in f32 `[B·8·seq, 128]` and LSE in f32 `[B·8·seq]`. Page `p` of a cache holds 128
+// consecutive keys of each head, and entry `[b][j]` of the u32 block table `[B, max_pages]` is the page holding keys
+// 128j to 128j + 127 of sequence `b`. The caller passes `scale_log2` = scale · log2(e).
+//
+// One CTA of eight warps per 128 query rows of one sequence and head (ATTENTION.md §2.5). Warp 0 elects a thread that
+// loads Q once into a one-stage ring, and then each 128-key block's K and V, in the order K_0, V_0, K_1, V_1, …, into
+// two-stage rings, each from the page the block table names (`Core.fillPage`, which reads the table itself). Only the
+// loader differs from A1's: the MMA issuer, the softmax warpgroup and the CTA are A1's, copied (encoding/NOTES.md).
+// Warp 1 elects a thread that holds Q's stage across the loop, issues S_0 = Q·K_0ᵀ into the first of two
+// 128-column S buffers before the loop, and in iteration j issues S_{j+1} (when there is a next block) before
+// Ô += P_j·V_j, with P read from tensor memory. Warps 2 and 3 idle. Warps 4 to 7, the softmax warpgroup, one row per
+// thread, read S_j twice: once for the row's new maximum, once to write P_j = 2^(c·s − max) to tensor memory in bf16,
+// summing it; they release S_j, rescale Ô's row by 2^(old max − new max) (from the second block on) and publish P_j.
+// After the loop they wait for the last product and store each row of Ô divided by its sum, and its LSE.
+//
+// Tensor memory: S buffers in columns 0–255, Ô in 256–383, P in 384–447.
+//
+// Run: gpu/gen.sh gpu/encoding/examples/paged_attention.rac
+
+import encoding.Core
+
+namespace Paged {
+  open Core
+  open Cuda
+
+  // Every stage holds a 128-row block as its two 64-wide halves of the head dimension.
+  def box : TmaSpec := TmaSpec.mk(64, 128)
+  def qRing : RingCfg := RingCfg.mk(1, Paged.box, Paged.box)
+  def kRing : RingCfg := RingCfg.mk(2, Paged.box, Paged.box)
+  def vRing : RingCfg := RingCfg.mk(2, Paged.box, Paged.box)
+
+  // The first warp of the softmax warpgroup, which must be aligned.
+  def softmaxWarp : Nat := 4
+
+  // −∞ and ln 2 as f32 bits.
+  def minusInfinity : Nat := 4286578688
+  def ln2 : Nat := 1060205080
+
+  def Cta : Group := Group.cta(256)
+  def Wg0 : Group := Group.warps(0, 4)
+  def Wg1 : Group := Group.warps(Paged.softmaxWarp, 4)
+  def Load : Group := Group.warps(0, 1)
+  def Rest : Group := Group.warps(1, 3)
+  def Issue : Group := Group.warps(1, 1)
+  def Idle : Group := Group.warps(2, 2)
+  def One : Group := Group.lane
+
+  // The heads of every sequence, a generation-time constant of the kernel.
+  def heads : Nat := 8
+
+  def Launch (l: Lifetime) : Type { scope = l } := PagedLaunch(l, Paged.box)
+
+  // What each protocol hands back finished.
+  def RingDone (r: Lifetime) : Type { kind = lin, scope = r } := Pair(ProducerDone(r), ConsumerDone(r))
+  def AccDone (q: Lifetime) : Type { kind = lin, scope = q } := Pair(AccProducerDone(q), AccConsumerDone(q))
+  def ExDone (x: Lifetime) : Type { kind = lin, scope = x } := Pair(ExWriterDone(x), ExReaderDone(x))
+
+  // What each role hands back.
+  def LoaderDone (rq: Lifetime)(rk: Lifetime)(rv: Lifetime) : Type { kind = lin, scope = union(rq, union(rk, rv)) } :=
+    Pair(ProducerDone(rq), Pair(ProducerDone(rk), ProducerDone(rv)))
+  def IssuerDone (rq: Lifetime)(rk: Lifetime)(rv: Lifetime)(q: Lifetime)(x: Lifetime) : Type { kind = lin, scope = union(rq, union(rk, union(rv, union(q, x)))) } :=
+    Pair(ConsumerDone(rq), Pair(ConsumerDone(rk), Pair(ConsumerDone(rv), Pair(AccProducerDone(q), ExReaderDone(x)))))
+  def SoftmaxDone (q: Lifetime)(x: Lifetime) : Type { kind = lin, scope = union(q, x) } := Pair(AccConsumerDone(q), ExWriterDone(x))
+
+  // Everything the roles hand back, nested as the scopes that opened it close: the V ring first, the S ring last.
+  def AllDone (rq: Lifetime)(rk: Lifetime)(rv: Lifetime)(q: Lifetime)(x: Lifetime)
+      : Type { kind = lin, scope = union(rv, union(rk, union(rq, union(x, q)))) } :=
+    Pair(Paged.RingDone(rv), Pair(Paged.RingDone(rk), Pair(Paged.RingDone(rq), Pair(Paged.ExDone(x), Paged.AccDone(q)))))
+
+  // ---- The loader ------------------------------------------------------------------------------------------------------
+
+  // Q's block once, then K_j and V_j for every key block j, each from the page the table names for block j; then wait
+  // for every stage to be released.
+  def loader {l: Lifetime}{rq: Lifetime}{rk: Lifetime}{rv: Lifetime}(g: Paged.Launch(l))(qr: Ring(rq, Paged.qRing))(kr: Ring(rk, Paged.kRing))
+      (vr: Ring(rv, Paged.vRing))(pq: Producer(rq))(pk: Producer(rk))(pv: Producer(rv))(m: Lifetime)(e: Ctx(m, Paged.Load))
+      : Pair(Ctx(m, Paged.Load), Paged.LoaderDone(rq, rk, rv)) :=
+    Core.elect(e, Paged.LoaderDone(rq, rk, rv), fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, Paged.One)): Pair(Ctx(j, Paged.One), Paged.LoaderDone(rq, rk, rv)) => {
+      let block := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Paged.One))(st: Pair(ProducerAt(rk, j), ProducerAt(rv, j)))
+          : Pair(Ctx(n, Paged.One), Pair(ProducerAt(rk, j), ProducerAt(rv, j))) => {
+        let (pk, pv) := st
+        let (e, s) := Core.acquire(e, kr, pk)
+        let (e, pk) := Core.fillPage(e, kr, s, g.table, g.k, i)
+        let (e, s) := Core.acquire(e, vr, pv)
+        let (e, pv) := Core.fillPage(e, vr, s, g.table, g.v, i)
+        (e, (pk, pv))
+      }
+      let (e, pq) := Core.takeProducer(e, w, qr, pq)
+      let (e, pk) := Core.takeProducer(e, w, kr, pk)
+      let (e, pv) := Core.takeProducer(e, w, vr, pv)
+      let (e, s) := Core.acquire(e, qr, pq)
+      let (e, pq) := Core.fillHead(e, qr, s, g.q, Core.lit(0), g.q0, g.q, Core.lit(64), g.q0)
+      let (e, (pk, pv)) := Core.loop(e, g.blocks, Core.fixedPair(Core.fixedProducerAt(rk, j), Core.fixedProducerAt(rv, j)), (pk, pv), block)
+      let (e, dq) := Core.finishProducer(e, qr, pq)
+      let (e, dk) := Core.finishProducer(e, kr, pk)
+      let (e, dv) := Core.finishProducer(e, vr, pv)
+      (e, (dq, (dk, dv)))
+    })
+
+  // ---- The MMA issuer --------------------------------------------------------------------------------------------------
+
+  // The issuer's state for the scores: the held Q stage, the K ring's consumer side, and the S ring's issuing side.
+  def Scores (rq: Lifetime)(rk: Lifetime)(q: Lifetime)(j: Lifetime) : Type { kind = lin, scope = union(rq, union(rk, union(q, j))) } :=
+    Pair(ReadyUsed(rq, j), Pair(ConsumerAt(rk, j), AccProducerAt(q, j)))
+
+  def fixedScores (rq: Lifetime)(rk: Lifetime)(q: Lifetime)(j: Lifetime): Fixed(Paged.Scores(rq, rk, q, j)) :=
+    Core.fixedPair(Core.fixedReadyUsed(rq, j), Core.fixedPair(Core.fixedConsumerAt(rk, j), Core.fixedAccProducerAt(q, j)))
+
+  // The issuer's state for the products: the V ring's consumer side and the exchange's reading side.
+  def Products (rv: Lifetime)(x: Lifetime)(j: Lifetime)(o: OState) : Type { kind = lin, scope = union(rv, union(x, j)) } :=
+    Pair(ConsumerAt(rv, j), ExReaderAt(x, j, o))
+
+  // S_0 before the loop; in iteration i, S_{i+1} (when i + 1 < blocks), then Ô (+)= P_i·V_i; after the loop, release
+  // Q and wait until the softmax warpgroup has read every S buffer.
+  def issuer {l: Lifetime}{rq: Lifetime}{rk: Lifetime}{rv: Lifetime}{q: Lifetime}{x: Lifetime}(g: Paged.Launch(l))(qr: Ring(rq, Paged.qRing))
+      (kr: Ring(rk, Paged.kRing))(vr: Ring(rv, Paged.vRing))(accs: AccRing(q, 128))(ex: Exchange(x))(cq: Consumer(rq))(ck: Consumer(rk))
+      (cv: Consumer(rv))(ap: AccProducer(q))(rd: ExReader(x))(m: Lifetime)(e: Ctx(m, Paged.Issue))
+      : Pair(Ctx(m, Paged.Issue), Paged.IssuerDone(rq, rk, rv, q, x)) :=
+    Core.elect(e, Paged.IssuerDone(rq, rk, rv, q, x), fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, Paged.One))
+        : Pair(Ctx(j, Paged.One), Paged.IssuerDone(rq, rk, rv, q, x)) => {
+      // S = Q·Kᵀ for the next key block, into the next S buffer.
+      let scores := fun (n: Lifetime)(e: Ctx(n, Paged.One))(st: Paged.Scores(rq, rk, q, j)): Pair(Ctx(n, Paged.One), Paged.Scores(rq, rk, q, j)) => {
+        let (qu, (ck, ap)) := st
+        let (e, kReady) := Core.await(e, kr, ck)
+        let (e, free) := Core.acquireAcc(e, accs, ap)
+        let (e, (qu, (kUsed, filling))) := Core.mmaScores(e, w, qr, qu, kr, kReady, accs, free)
+        let (e, ck) := Core.releaseByMma(e, w, kr, kUsed)
+        let (e, ap) := Core.commitAcc(e, w, accs, filling)
+        (e, (qu, (ck, ap)))
+      }
+      let nextScores := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Paged.One))(st: Paged.Scores(rq, rk, q, j))
+          : Pair(Ctx(n, Paged.One), Paged.Scores(rq, rk, q, j)) =>
+        Core.branch(e, Core.lt(Core.add(i, Core.lit(1)), g.blocks), Paged.fixedScores(rq, rk, q, j), st,
+          fun (b: Lifetime)(e: Ctx(b, Paged.One))(st: Paged.Scores(rq, rk, q, j)): Pair(Ctx(b, Paged.One), Paged.Scores(rq, rk, q, j)) => scores(b, e, st),
+          fun (b: Lifetime)(e: Ctx(b, Paged.One))(st: Paged.Scores(rq, rk, q, j)): Pair(Ctx(b, Paged.One), Paged.Scores(rq, rk, q, j)) => (e, st))
+      let first := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Paged.One))
+          (st: Pair(Paged.Scores(rq, rk, q, j), Paged.Products(rv, x, j, OState.fresh)))
+          : Pair(Ctx(n, Paged.One), Pair(Paged.Scores(rq, rk, q, j), Paged.Products(rv, x, j, OState.held))) => {
+        let (sc, (cv, rd)) := st
+        let (e, sc) := nextScores(n, i, e, sc)
+        let (e, p) := Core.awaitP(e, ex, rd)
+        let (e, vReady) := Core.await(e, vr, cv)
+        let (e, (pUsed, vUsed)) := Core.mmaPVFirst(e, w, ex, p, vr, vReady)
+        let (e, cv) := Core.releaseByMma(e, w, vr, vUsed)
+        let (e, rd) := Core.commitPV(e, w, ex, pUsed)
+        (e, (sc, (cv, rd)))
+      }
+      let rest := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Paged.One))
+          (st: Pair(Paged.Scores(rq, rk, q, j), Paged.Products(rv, x, j, OState.held)))
+          : Pair(Ctx(n, Paged.One), Pair(Paged.Scores(rq, rk, q, j), Paged.Products(rv, x, j, OState.held))) => {
+        let (sc, (cv, rd)) := st
+        let (e, sc) := nextScores(n, i, e, sc)
+        let (e, p) := Core.awaitP(e, ex, rd)
+        let (e, vReady) := Core.await(e, vr, cv)
+        let (e, (pUsed, vUsed)) := Core.mmaPVNext(e, w, ex, p, vr, vReady)
+        let (e, cv) := Core.releaseByMma(e, w, vr, vUsed)
+        let (e, rd) := Core.commitPV(e, w, ex, pUsed)
+        (e, (sc, (cv, rd)))
+      }
+      let (e, cq) := Core.takeConsumer(e, w, qr, cq)
+      let (e, ck) := Core.takeConsumer(e, w, kr, ck)
+      let (e, cv) := Core.takeConsumer(e, w, vr, cv)
+      let (e, ap) := Core.takeAccProducer(e, w, accs, ap)
+      let (e, rd) := Core.takeExReader(e, w, ex, rd)
+      let (e, qReady) := Core.await(e, qr, cq)
+      let (e, sc) := scores(j, e, (Core.holdStage(qReady), (ck, ap)))
+      let fixed := Core.fixedPair(Paged.fixedScores(rq, rk, q, j), Core.fixedPair(Core.fixedConsumerAt(rv, j), Core.fixedExReaderAt(x, j, OState.held)))
+      let (e, ((qu, (ck, ap)), (cv, rd))) := Core.loopPeeled(e, g.blocks, fixed, (sc, (cv, rd)), first, rest)
+      let (e, cq) := Core.releaseByMma(e, w, qr, qu)
+      let (e, apDone) := Core.finishAccProducer(e, accs, ap)
+      (e, (Core.finishConsumer(cq), (Core.finishConsumer(ck), (Core.finishConsumer(cv), (apDone, Core.finishExReader(rd))))))
+    })
+
+  // ---- The softmax warpgroup -------------------------------------------------------------------------------------------
+
+  // Pass 1, one chunk: the running maximum `mx` of t = c·s over columns 8c to 8c+7 of this thread's row of S.
+  def maxChunk {n: Lifetime}{q: Lifetime}{mm: Lifetime}{Sc: Lifetime}{Sm: Lifetime}
+      (accs: AccRing(q, 128))(scale: Val(Sc, Grain.uniform, DType.f32))(mx: Reg(Sm, DType.f32))(c: Nat)[fits: Nat.le(Nat.mul(8, Nat.succ(c)), 128)]
+      (e: Ctx(n, Paged.Wg1))(full: AccFull(q, mm, Paged.softmaxWarp)): Pair(Ctx(n, Paged.Wg1), AccFull(q, mm, Paged.softmaxWarp)) := {
+    let (e, (full, s)) := Core.loadAcc8(e, accs, full, c)[fits]
+    let (e, old) := Core.get(e, mx)
+    let m01 := Core.fmax(Core.fmul(scale, s.v0), Core.fmul(scale, s.v1))
+    let m23 := Core.fmax(Core.fmul(scale, s.v2), Core.fmul(scale, s.v3))
+    let m45 := Core.fmax(Core.fmul(scale, s.v4), Core.fmul(scale, s.v5))
+    let m67 := Core.fmax(Core.fmul(scale, s.v6), Core.fmul(scale, s.v7))
+    (Core.set(e, mx, Core.fmax(old, Core.fmax(Core.fmax(m01, m23), Core.fmax(m45, m67)))), full)
+  }
+
+  // Pass 1: `mx` becomes the maximum of its value and t over the row.
+  def pass1 {n: Lifetime}{q: Lifetime}{mm: Lifetime}{Sc: Lifetime}{Sm: Lifetime}
+      (accs: AccRing(q, 128))(scale: Val(Sc, Grain.uniform, DType.f32))(mx: Reg(Sm, DType.f32))
+      (e: Ctx(n, Paged.Wg1))(full: AccFull(q, mm, Paged.softmaxWarp)): Pair(Ctx(n, Paged.Wg1), AccFull(q, mm, Paged.softmaxWarp)) := {
+    let (e, full) := Paged.maxChunk(accs, scale, mx, 0, e, full)
+    let (e, full) := Paged.maxChunk(accs, scale, mx, 1, e, full)
+    let (e, full) := Paged.maxChunk(accs, scale, mx, 2, e, full)
+    let (e, full) := Paged.maxChunk(accs, scale, mx, 3, e, full)
+    let (e, full) := Paged.maxChunk(accs, scale, mx, 4, e, full)
+    let (e, full) := Paged.maxChunk(accs, scale, mx, 5, e, full)
+    let (e, full) := Paged.maxChunk(accs, scale, mx, 6, e, full)
+    let (e, full) := Paged.maxChunk(accs, scale, mx, 7, e, full)
+    let (e, full) := Paged.maxChunk(accs, scale, mx, 8, e, full)
+    let (e, full) := Paged.maxChunk(accs, scale, mx, 9, e, full)
+    let (e, full) := Paged.maxChunk(accs, scale, mx, 10, e, full)
+    let (e, full) := Paged.maxChunk(accs, scale, mx, 11, e, full)
+    let (e, full) := Paged.maxChunk(accs, scale, mx, 12, e, full)
+    let (e, full) := Paged.maxChunk(accs, scale, mx, 13, e, full)
+    let (e, full) := Paged.maxChunk(accs, scale, mx, 14, e, full)
+    Paged.maxChunk(accs, scale, mx, 15, e, full)
+  }
+
+  // Pass 2, one chunk: p = 2^(t − max) over columns 8c to 8c+7, added to `sum` and written as chunk c of P.
+  def expChunk {n: Lifetime}{q: Lifetime}{mm: Lifetime}{x: Lifetime}{o: OState}{Sc: Lifetime}{Sm: Lifetime}{um: Grain}{Ss: Lifetime}
+      (accs: AccRing(q, 128))(ex: Exchange(x))(scale: Val(Sc, Grain.uniform, DType.f32))(mx: Val(Sm, um, DType.f32))(sum: Reg(Ss, DType.f32))
+      (c: Nat)[fitsS: Nat.le(Nat.mul(8, Nat.succ(c)), 128)][fitsP: Nat.lt(c, 16)]
+      (e: Ctx(n, Paged.Wg1))(st: Pair(AccFull(q, mm, Paged.softmaxWarp), PFree(x, mm, Paged.softmaxWarp, o, c)))
+      : Pair(Ctx(n, Paged.Wg1), Pair(AccFull(q, mm, Paged.softmaxWarp), PFree(x, mm, Paged.softmaxWarp, o, Nat.succ(c)))) := {
+    let (full, p) := st
+    let (e, (full, s)) := Core.loadAcc8(e, accs, full, c)[fitsS]
+    let (e, p0) := Core.ex2(e, Core.fsub(Core.fmul(scale, s.v0), mx))
+    let (e, p1) := Core.ex2(e, Core.fsub(Core.fmul(scale, s.v1), mx))
+    let (e, p2) := Core.ex2(e, Core.fsub(Core.fmul(scale, s.v2), mx))
+    let (e, p3) := Core.ex2(e, Core.fsub(Core.fmul(scale, s.v3), mx))
+    let (e, p4) := Core.ex2(e, Core.fsub(Core.fmul(scale, s.v4), mx))
+    let (e, p5) := Core.ex2(e, Core.fsub(Core.fmul(scale, s.v5), mx))
+    let (e, p6) := Core.ex2(e, Core.fsub(Core.fmul(scale, s.v6), mx))
+    let (e, p7) := Core.ex2(e, Core.fsub(Core.fmul(scale, s.v7), mx))
+    let (e, old) := Core.get(e, sum)
+    let e := Core.set(e, sum, Core.fadd(old, Core.fadd(Core.fadd(Core.fadd(p0, p1), Core.fadd(p2, p3)), Core.fadd(Core.fadd(p4, p5), Core.fadd(p6, p7)))))
+    let (e, p) := Core.storeP(e, ex, p, F32x8.mk(p0, p1, p2, p3, p4, p5, p6, p7))[fitsP]
+    (e, (full, p))
+  }
+
+  // Pass 2: P, every chunk, against the row's maximum `mx`; `sum` gains the row's sum of p.
+  def pass2 {n: Lifetime}{q: Lifetime}{mm: Lifetime}{x: Lifetime}{o: OState}{Sc: Lifetime}{Sm: Lifetime}{um: Grain}{Ss: Lifetime}
+      (accs: AccRing(q, 128))(ex: Exchange(x))(scale: Val(Sc, Grain.uniform, DType.f32))(mx: Val(Sm, um, DType.f32))(sum: Reg(Ss, DType.f32))
+      (e: Ctx(n, Paged.Wg1))(st: Pair(AccFull(q, mm, Paged.softmaxWarp), PFree(x, mm, Paged.softmaxWarp, o, 0)))
+      : Pair(Ctx(n, Paged.Wg1), Pair(AccFull(q, mm, Paged.softmaxWarp), PFree(x, mm, Paged.softmaxWarp, o, 16))) := {
+    let (e, st) := Paged.expChunk(accs, ex, scale, mx, sum, 0, e, st)
+    let (e, st) := Paged.expChunk(accs, ex, scale, mx, sum, 1, e, st)
+    let (e, st) := Paged.expChunk(accs, ex, scale, mx, sum, 2, e, st)
+    let (e, st) := Paged.expChunk(accs, ex, scale, mx, sum, 3, e, st)
+    let (e, st) := Paged.expChunk(accs, ex, scale, mx, sum, 4, e, st)
+    let (e, st) := Paged.expChunk(accs, ex, scale, mx, sum, 5, e, st)
+    let (e, st) := Paged.expChunk(accs, ex, scale, mx, sum, 6, e, st)
+    let (e, st) := Paged.expChunk(accs, ex, scale, mx, sum, 7, e, st)
+    let (e, st) := Paged.expChunk(accs, ex, scale, mx, sum, 8, e, st)
+    let (e, st) := Paged.expChunk(accs, ex, scale, mx, sum, 9, e, st)
+    let (e, st) := Paged.expChunk(accs, ex, scale, mx, sum, 10, e, st)
+    let (e, st) := Paged.expChunk(accs, ex, scale, mx, sum, 11, e, st)
+    let (e, st) := Paged.expChunk(accs, ex, scale, mx, sum, 12, e, st)
+    let (e, st) := Paged.expChunk(accs, ex, scale, mx, sum, 13, e, st)
+    let (e, st) := Paged.expChunk(accs, ex, scale, mx, sum, 14, e, st)
+    Paged.expChunk(accs, ex, scale, mx, sum, 15, e, st)
+  }
+
+  // The softmax warpgroup's state across key blocks: the S ring's reading side and the exchange's writing side.
+  def Softmax (q: Lifetime)(x: Lifetime)(m: Lifetime)(o: OState) : Type { kind = lin, scope = union(q, union(x, m)) } :=
+    Pair(AccConsumerAt(q, m, Paged.softmaxWarp), ExWriterAt(x, m, Paged.softmaxWarp, o))
+
+  // Each thread owns one row: its running maximum `m` (log2 units) and sum `l` are registers of the role. Per key
+  // block: await S_j; pass 1 (the new maximum); acquire P; pass 2 (P_j and its sum); release S_j; from the second block
+  // on, rescale Ô's row by α = 2^(m_old − m_new); publish P_j; l = α·l + sum. After the loop: wait for the last
+  // product, and store O = Ô/l and LSE = (m + log2 l)·ln 2.
+  def softmax {l: Lifetime}{q: Lifetime}{x: Lifetime}(g: Paged.Launch(l))(accs: AccRing(q, 128))(ex: Exchange(x))(ac: AccConsumer(q))
+      (wr: ExWriter(x))(own: OOwn(l, DType.f32))(m: Lifetime)(e: Ctx(m, Paged.Wg1)): Pair(Ctx(m, Paged.Wg1), Paged.SoftmaxDone(q, x)) := {
+    let (e, mReg) := Core.reg(e, Core.zero(DType.f32))
+    let (e, lReg) := Core.reg(e, Core.zero(DType.f32))
+    let first := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Paged.Wg1))(st: Paged.Softmax(q, x, m, OState.fresh))
+        : Pair(Ctx(n, Paged.Wg1), Paged.Softmax(q, x, m, OState.held)) => {
+      let (c, wa) := st
+      let (e, full) := Core.awaitAcc(e, accs, c)
+      let (e, lowest) := Core.fconst(e, Paged.minusInfinity)
+      let e := Core.set(e, mReg, lowest)
+      let (e, full) := Paged.pass1(accs, g.scale, mReg, e, full)
+      let (e, mNew) := Core.get(e, mReg)
+      let (e, p) := Core.acquireP(e, ex, wa)
+      let e := Core.set(e, lReg, Core.zero(DType.f32))
+      let (e, (full, p)) := Paged.pass2(accs, ex, g.scale, mNew, lReg, e, (full, p))
+      let (e, c) := Core.releaseAcc(e, accs, full)
+      let (e, wa) := Core.publishP(e, ex, p)
+      (e, (c, wa))
+    }
+    let rest := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Paged.Wg1))(st: Paged.Softmax(q, x, m, OState.held))
+        : Pair(Ctx(n, Paged.Wg1), Paged.Softmax(q, x, m, OState.held)) => {
+      let (c, wa) := st
+      let (e, full) := Core.awaitAcc(e, accs, c)
+      let (e, mOld) := Core.get(e, mReg)
+      let (e, full) := Paged.pass1(accs, g.scale, mReg, e, full)
+      let (e, mNew) := Core.get(e, mReg)
+      let (e, p) := Core.acquireP(e, ex, wa)
+      let (e, sum) := Core.reg(e, Core.zero(DType.f32))
+      let (e, (full, p)) := Paged.pass2(accs, ex, g.scale, mNew, sum, e, (full, p))
+      let (e, c) := Core.releaseAcc(e, accs, full)
+      let (e, alpha) := Core.ex2(e, Core.fsub(mOld, mNew))
+      let (e, p) := Core.rescaleO(e, ex, p, alpha)
+      let (e, wa) := Core.publishP(e, ex, p)
+      let (e, s) := Core.get(e, sum)
+      let (e, lOld) := Core.get(e, lReg)
+      (Core.set(e, lReg, Core.fma(alpha, lOld, s)), (c, wa))
+    }
+    let (e, c) := Core.takeAccConsumer(e, accs, ac)
+    let (e, wa) := Core.takeExWriter(e, ex, wr)
+    let fixed := Core.fixedPair(Core.fixedAccConsumerAt(q, m, Paged.softmaxWarp), Core.fixedExWriterAt(x, m, Paged.softmaxWarp, OState.held))
+    let (e, (c, wa)) := Core.loopPeeled(e, g.blocks, fixed, (c, wa), first, rest)
+    let (e, final) := Core.finishExWriter(e, ex, wa)
+    let (e, lSum) := Core.get(e, lReg)
+    let (e, mMax) := Core.get(e, mReg)
+    let (e, inv) := Core.rcp(e, lSum)
+    let (e, logSum) := Core.lg2(e, lSum)
+    let (e, ln2) := Core.fconst(e, Paged.ln2)
+    let (e, final) := Core.storeO(e, ex, final, inv, Core.fmul(Core.fadd(mMax, logSum), ln2), g.out, own)
+    (e, (Core.finishAccConsumer(c), Core.closeExWriter(final)))
+  }
+
+  // ---- The CTA ---------------------------------------------------------------------------------------------------------
+
+  def roles {l: Lifetime}{rq: Lifetime}{rk: Lifetime}{rv: Lifetime}{q: Lifetime}{x: Lifetime}(g: Paged.Launch(l))(qr: Ring(rq, Paged.qRing))
+      (kr: Ring(rk, Paged.kRing))(vr: Ring(rv, Paged.vRing))(accs: AccRing(q, 128))(ex: Exchange(x))(pq: Producer(rq))(cq: Consumer(rq))
+      (pk: Producer(rk))(ck: Consumer(rk))(pv: Producer(rv))(cv: Consumer(rv))(ap: AccProducer(q))(ac: AccConsumer(q))(wr: ExWriter(x))
+      (rd: ExReader(x))(own: OOwn(l, DType.f32))(e: Ctx(l, Paged.Cta)): Pair(Ctx(l, Paged.Cta), Paged.AllDone(rq, rk, rv, q, x)) := {
+    let idle := fun (m: Lifetime)(e: Ctx(m, Paged.Idle)): Pair(Ctx(m, Paged.Idle), Unit) => (e, Unit.unit)
+    let rest := fun (m: Lifetime)(e: Ctx(m, Paged.Rest)): Pair(Ctx(m, Paged.Rest), Pair(Paged.IssuerDone(rq, rk, rv, q, x), Unit)) =>
+      Core.split(e, 1, Paged.IssuerDone(rq, rk, rv, q, x), Unit,
+        fun (n: Lifetime)(e: Ctx(n, Paged.Issue)): Pair(Ctx(n, Paged.Issue), Paged.IssuerDone(rq, rk, rv, q, x)) =>
+          Paged.issuer(g, qr, kr, vr, accs, ex, cq, ck, cv, ap, rd, n, e), idle)
+    let wg0 := fun (m: Lifetime)(e: Ctx(m, Paged.Wg0))
+        : Pair(Ctx(m, Paged.Wg0), Pair(Paged.LoaderDone(rq, rk, rv), Pair(Paged.IssuerDone(rq, rk, rv, q, x), Unit))) =>
+      Core.split(e, 1, Paged.LoaderDone(rq, rk, rv), Pair(Paged.IssuerDone(rq, rk, rv, q, x), Unit),
+        fun (n: Lifetime)(e: Ctx(n, Paged.Load)): Pair(Ctx(n, Paged.Load), Paged.LoaderDone(rq, rk, rv)) => Paged.loader(g, qr, kr, vr, pq, pk, pv, n, e),
+        rest)
+    let wg1 := fun (m: Lifetime)(e: Ctx(m, Paged.Wg1)): Pair(Ctx(m, Paged.Wg1), Paged.SoftmaxDone(q, x)) => Paged.softmax(g, accs, ex, ac, wr, own, m, e)
+    let (e, (((pqd, (pkd, pvd)), ((cqd, (ckd, (cvd, (apd, rdd)))), u)), (acd, wrd))) :=
+      Core.split(e, 4, Pair(Paged.LoaderDone(rq, rk, rv), Pair(Paged.IssuerDone(rq, rk, rv, q, x), Unit)), Paged.SoftmaxDone(q, x), wg0, wg1)
+    (e, ((pvd, cvd), ((pkd, ckd), ((pqd, cqd), ((wrd, rdd), (apd, acd))))))
+  }
+
+  def kernel : Program :=
+    Core.pagedAttentionKernel("paged_attention", Paged.heads,
+      fun (l: Lifetime)(e: Ctx(l, Paged.Cta))(g: Paged.Launch(l))(own: OOwn(l, DType.f32))(permit: TmemPermit(l)): Ctx(l, Paged.Cta) => {
+        // The rings, innermost the V ring, around the roles.
+        let rings := fun (q: Lifetime)(x: Lifetime)(accs: AccRing(q, 128))(ex: Exchange(x))(ap: AccProducer(q))(ac: AccConsumer(q))(wr: ExWriter(x))
+            (rd: ExReader(x))(e: Ctx(l, Paged.Cta)): Pair(Ctx(l, Paged.Cta), Pair(Paged.ExDone(x), Paged.AccDone(q))) => {
+          let qStage := fun (rq: Lifetime)(qr: Ring(rq, Paged.qRing))(pq: Producer(rq))(cq: Consumer(rq))(e: Ctx(l, Paged.Cta))
+              : Pair(Ctx(l, Paged.Cta), Pair(Paged.RingDone(rq), Pair(Paged.ExDone(x), Paged.AccDone(q)))) => {
+            let kStage := fun (rk: Lifetime)(kr: Ring(rk, Paged.kRing))(pk: Producer(rk))(ck: Consumer(rk))(e: Ctx(l, Paged.Cta))
+                : Pair(Ctx(l, Paged.Cta), Pair(Paged.RingDone(rk), Pair(Paged.RingDone(rq), Pair(Paged.ExDone(x), Paged.AccDone(q))))) => {
+              let vStage := fun (rv: Lifetime)(vr: Ring(rv, Paged.vRing))(pv: Producer(rv))(cv: Consumer(rv))(e: Ctx(l, Paged.Cta))
+                  : Pair(Ctx(l, Paged.Cta), Paged.AllDone(rq, rk, rv, q, x)) =>
+                Paged.roles(g, qr, kr, vr, accs, ex, pq, cq, pk, ck, pv, cv, ap, ac, wr, rd, own, e)
+              Core.withRing(e, Paged.vRing, Pair(Paged.RingDone(rk), Pair(Paged.RingDone(rq), Pair(Paged.ExDone(x), Paged.AccDone(q)))), vStage)
+            }
+            Core.withRing(e, Paged.kRing, Pair(Paged.RingDone(rq), Pair(Paged.ExDone(x), Paged.AccDone(q))), kStage)
+          }
+          Core.withRing(e, Paged.qRing, Pair(Paged.ExDone(x), Paged.AccDone(q)), qStage)
+        }
+        // Tensor memory: the S ring in the lower half, the exchange in the upper.
+        let regions := fun (a: Lifetime)(t: Tmem(a, 512))(acc: Acc(a, AccState.empty))(e: Ctx(l, Paged.Cta))
+            : Pair(Ctx(l, Paged.Cta), Pair(Acc(a, AccState.empty), Unit)) =>
+          Core.splitTmem(e, t, acc, 256, Unit, fun (b: Lifetime)(c: Lifetime)(ts: Tmem(b, 256))(accS: Acc(b, AccState.empty))(to: Tmem(c, Nat.sub(512, 256)))
+              (accO: Acc(c, AccState.empty))(e: Ctx(l, Paged.Cta)): Pair(Ctx(l, Paged.Cta), Pair(Pair(Acc(b, AccState.empty), Acc(c, AccState.empty)), Unit)) => {
+            let sRing := fun (q: Lifetime)(accs: AccRing(q, 128))(ap: AccProducer(q))(ac: AccConsumer(q))(e: Ctx(l, Paged.Cta))
+                : Pair(Ctx(l, Paged.Cta), Pair(Paged.AccDone(q), Acc(c, AccState.empty))) => {
+              let exchange := fun (x: Lifetime)(ex: Exchange(x))(wr: ExWriter(x))(rd: ExReader(x))(e: Ctx(l, Paged.Cta))
+                  : Pair(Ctx(l, Paged.Cta), Pair(Paged.ExDone(x), Paged.AccDone(q))) => rings(q, x, accs, ex, ap, ac, wr, rd, e)
+              let (e, (accO, accDone)) := Core.withExchange(e, to, accO, Paged.AccDone(q), exchange)
+              (e, (accDone, accO))
+            }
+            let (e, (accS, accO)) := Core.withAccRing(e, ts, accS, 2, 128, Acc(c, AccState.empty), sRing)
+            (e, ((accS, accO), Unit.unit))
+          })
+        let (e, u) := Core.withTmem(e, permit, 512, AccState.empty, Unit, regions)
+        e
+      })
+}
+
+{ Core.render(Paged.kernel) }
