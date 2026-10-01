@@ -3,131 +3,162 @@
 Status: **draft for review** (2026-09-30). Amends `docs/kernel.md` "Universes and function types" and "Scopes and
 atoms", and `docs/language.md` "Closures" and "Scopes".
 
-Today a `scope` confines types: no position outside `scope l` is given a type that names `l`'s atom. It does not confine
-values. A closure whose code names `l` but captures nothing scoped has type `Unit -> Nat` and leaves the scope; applied
-later, it can build values at `l` and use them. Both programs below are accepted, and each spends a token of a lifetime
-whose scope has closed:
+## 1. The feature
+
+`scope l => e` opens a **scope** named `l`. The scope is open while `e` runs and closed afterwards. `l` is a
+**lifetime**: the name of a scope, or of several. A value **belongs to** `l` when its type mentions `l`, and
+`Type { scope = l }` declares a family whose values belong to `l`.
+
+The guarantee:
+
+> **Once a scope closes, nothing can hold, create or use a value that belongs to it.**
+
+Which values belong to which scopes:
+- **Data** belongs to the scopes its type's arguments name. A `List(Lease(l))` belongs to `l`.
+- **A function** belongs to the scopes of what it captures, and to the scopes its code mentions.
+- **When a scope closes**, its result's type may not mention it.
+
+A lifetime is not data: no field or list holds one. So these two are the only ways a value can belong to a scope.
+
+## 2. Examples
 
 ```raccoon
-// In the module that owns Lease and Tok.
-def stash : Unit -> Nat := scope l => fun (u: Unit): Nat => redeem(issue(Lease.mk(l)))
+inductive Lease (l: Lifetime) : Type { scope = l }
+ | mk : Lease(l)
 
-// In a client, given an export `forge (l: Lifetime): Lease(l)`.
-def late : Unit -> Nat :=
-  withLease(fun (l: Lifetime)(h: Lease(l)): Unit -> Nat => fun (u: Unit): Nat => redeem(issue(forge(l))))
+def use {l: Lifetime}(h: Lease(l)): Nat := 7
 ```
 
-So "nothing confined to `l` outlives its scope" holds today only for modules that never mint from a bare lifetime and
-never let minting code leave a scope: a discipline nothing checks. lemur2's regions design had the guarantee as a lemma
-(`../lemur2/experimental/REGIONS.md` §3: the regions a value holds, through closures and suspended computations, lie
-within its type's bound). Its computation type `Gpu S e A` recorded in `S` every region a computation touches. lemur3
-removed the computation type (its D9), and with it the half of the guarantee that covered code.
-
-This document restores it with one rule: **a lifetime that a closure's code names is one of its captures.**
-
-## 1. The guarantee
-
-**C1, reach.** A value reaches only the atoms its type's sort names. It reaches an atom through its fields, its
-closure's captures, its type and the code of its closures. The exceptions are computations that never run: one blocked
-on an opaque definition or an axiom, and, while checking, one blocked on a parameter.
-
-**C2, containment.** While no evaluation of a `scope` term is in progress, no evaluation produces, binds or uses a value
-whose type names that term's atom.
-
-C2 follows from C1 and the existing confinement check: the `scope`'s result type does not name its atom, so its result
-cannot reach it, and neither can anything that was live before the scope opened. A linear value confined to `l` is
-therefore consumed inside the scope, and none is minted after it, whatever the owning module does. Sealing decides who
-may make a value at a live lifetime; it is no longer needed to decide when.
-
-An atom still names a `scope` term, not an entry into it. Two evaluations of one term, a recursive one included, share
-the atom; the values of each are kept apart by the lifetime variable a callback binds, as now.
-
-## 2. The rule
-
-**Lambdas.** A local of type `Lifetime` that a lambda's body mentions is a capture, and contributes itself to the
-derived closure scope. A `scope`'s binder is such a local, bound to its atom; so is a lifetime parameter or lifetime
-binder bound outside the lambda. A local of type `Level` or `Kind` still contributes nothing, so naming a kind variable
-does not make a lambda linear. Mentions in types written in the body count, as they do for other captures. A written
-closure scope must contain the lifetime, else `ScopeExceeded`. The residual carries the capture as it carries any other,
-and evaluation derives the field from the lifetime the local holds.
-
-**Function types.** A function type's scope also counts the lifetime locals that its binder types and codomain mention,
-other than its own binders. They are code: a later binder type and the codomain are evaluated each time the type is
-instantiated, by checking and by evaluation alike, and can build values at a lifetime that appears only in an index:
-
-```raccoon
-// Rejected: the type's codomain builds a lease whenever it is instantiated.
-def T : Type := scope l => (x: Nat) -> Vec(Nat, count(Lease.mk(l), x))
-```
-
-Nothing else changes. An application's arguments are evaluated before it, so an application that names `l` and
-returns unscoped data keeps nothing of `l`: `scope l => useV(V.mk(l))` still leaves at type `Nat`.
-
-## 3. Why the rule suffices
-
-C1 by induction on values, with the existing rules:
-
-| Value | Reaches | Counted by |
+| # | Program | Verdict |
 |---|---|---|
-| Constructor application | its fields' atoms | the family's scope, the union of its lifetime parameters, which contains every field's type's scope (kernel.md "Inductives and matching") |
-| Lambda | its captures' atoms, and the lifetimes its code names | the derived or written closure scope: captures by their types' sorts, lifetime locals by themselves (§2) |
-| Function type | its components' atoms, and the lifetimes its binder types and codomain name | its sort's scope (§2) |
-| A family instance or a sort, as a value | the lifetimes among its arguments, or its `scope` field | its sort's scope: a family names its lifetime parameters, and a sort's sort has its scope |
-| A lifetime | — | never stored: no field or index has a sort parameter's type (kernel.md "Universes and function types"), so data holds a lifetime only in its type's arguments |
-| Proof | — | a proof never runs; deferred evidence is evaluated from its callee's type and arguments, which are counted |
-| Blocked computation | anything its code names | nothing: it never runs (§1's exception) |
+| 1 | `scope l => use(Lease.mk(l))` | accepted: the result `7 : Nat` belongs to no scope |
+| 2 | `use(scope l => Lease.mk(l))` | rejected: the result is a `Lease(l)`, and `l` has closed |
+| 3 | `scope l => List.cons(Lease.mk(l), List.nil(Lease(l)))` as a result | rejected: a `List(Lease(l))` belongs to `l` |
+| 4 | `fun (u: Unit): Nat => use(h)`, with `h := Lease.mk(l)` made inside the scope, as its result | rejected: the function captures `h`, so its type is `{ scope = l } Unit -> Nat` |
+| 5 | `scope l => fun (u: Unit): Nat => use(Lease.mk(l))` as a result | rejected: the function's code mentions `l`, so it belongs to `l` too |
+| 6 | the functions of 4 and 5, applied inside the scope | accepted: `l` is open there |
+| 7 | `scope l => fun (u: Unit): Nat => 3` as a result | accepted: the function belongs to no scope |
 
-The step that lemur2's lemma needed and Raccoon lacked is the lambda row: code is the one place a value holds a lifetime
-without holding a value of a type that names it.
+Example 5 is what this document adds. Without it, the function would leave with type `Unit -> Nat` and, called later,
+build and use a lease of a closed scope.
 
-Implicit reconstruction reads an implicit off an argument's type, and that type's scope counts it. It is not a capture
-(kernel.md "Universes and function types"), and needs none: a lambda can read an implicit at `l` only from an argument
-whose type names `l`, which its domains then count, or from a capture, which counts. A review on 2026-09-28 withdrew
-this rule over implicit reconstruction. Domains counting toward a function type's scope, and every family naming its
-lifetime parameters, were adopted after it. §5 step 2 must re-examine that case rather than assume it closed.
+**A library that lends a scope:**
 
-## 4. What changes
+```raccoon
+// In Lease's module, which seals the family, so only it can call Lease.mk.
+def withLease {S: Lifetime}{A: Type { scope = S }}{Sf: Lifetime}
+    (f: { scope = Sf } (l: Lifetime) -> Lease(l) -> A): A :=
+  scope l => f(l, Lease.mk(l))
 
-- `stash` and `late` above are refused.
-  - `stash` with `LifetimeEscapes` at its `scope`, whose type is now `{ scope = l } Unit -> Nat`.
-  - `late` with `TypeMismatch`: its inner lambda now has type `{ scope = l } Unit -> Nat`, not the callback's written
-    result `Unit -> Nat`. Writing that result instead names the callback's own binder, so `withLease`'s `A` cannot be
-    reconstructed.
-- `examples/leases/main.rac`'s `later` is refused the same way. It moves to the file's list of rejected variants.
-- `ScopeTests`' "a value whose type's sort does not name the atom may leave its scope, even when it holds the atom": the
-  closure cases become rejections. The stuck case (`count(n)` and `Eq.refl(count(n))`) stays accepted.
-- Of commit `92950ef`'s acceptances, `Eq.refl(later)` goes with `later`; propositions about `withLease(f)` for a
-  parameter `f`, and `congrArg` over `withLease`, stay accepted.
-- Callbacks that name an enclosing lifetime get that lifetime in their closure scope. The library's combinators take
-  `{ scope = Sf }` callbacks, which accept it; a callback checked against an arrow written without a closure is refused.
-  §5 step 1 measures how often.
+// A client: accepted.
+def ok : Nat := withLease(fun (l: Lifetime)(h: Lease(l)): Nat => use(h))
 
-`kernel.md` "Scopes and atoms" loses the paragraph beginning "Evaluation never makes the check. A value computed under a
-scope may leave it…", which C1 and C2 replace, and "a global value may hold an atom, though never a variable" becomes
-"a global value holds an atom only inside a computation blocked forever". `language.md` "Closures" replaces "a variable
-of `Kind` or `Lifetime` contributes nothing" with the lambda rule of §2, and "Scopes" replaces its `Unit -> Nat` example
-with the refused `stash`. `LEMUR_ON_RACCOON.md` §4.2's "A lifetime is not a capability" is superseded.
+// Rejected: A is chosen outside the callback, so it cannot mention the callback's l.
+def no : Nat := use(withLease(fun (l: Lifetime)(h: Lease(l)): Lease(l) => h))
+```
 
-## 5. Steps
+**Linear tokens.** A token `Tok(l)` declared `{ kind = lin, scope = l }` must be used exactly once, and belongs to
+`l`. So it is used up before `l` closes, and after it closes nothing can make another.
 
-1. **Measure.** Implement §2 in a worktree: `Interpreter.lambdaCaptures` and the derived scope admit lifetime locals,
-   and `piClassifierFromChecked` adds the lifetime locals a function type's binder types and codomain mention. Run
-   `sbt test` and `gpu/check.sh`. Classify every new rejection as intended (a value that reached an atom) or collateral
-   (an arrow written without a closure). An implementer at medium effort.
-2. **Attack.** A hostile reviewer at high effort tries to build a value that reaches an atom its type's sort omits:
-   through implicit reconstruction, evidence, residual re-evaluation, destructuring, the eta view, packed literals, and
-   two evaluations of one `scope` term.
-3. **Land.** The kernel change, its tests (§4, with one admitted program and the smallest mutation reaching
-   `LifetimeEscapes` or `ScopeExceeded` per row of §3), the amended documents, and `gpu/check.sh` green with the kernels
-   byte-identical.
+**In the GPU library.**
+- **C blocks.** `Gpu.loop` opens a scope for its body's C block. A `Val(m, …)` is a C variable of that block, so the
+  guarantee is "no use of a variable after its block ends".
+- **Shared reads.** A read lease that many threads share is copyable and belongs to a scope. When the scope closes,
+  every copy is gone, so the owner gets the buffer back whole without counting readers (`docs/SEPARATION_PILOT.md`
+  §5).
 
-## 6. Decisions for review
+## 3. The rule this adds
 
-1. **Function types count** the lifetimes their binder types and codomain name, rather than only lambdas. Without it,
-   §2's `T` mints at a closed lifetime each time its codomain is instantiated.
-2. **Mentions in types count**, as for other captures, rather than only term positions. It is the simpler rule and the
-   conservative one: a type in a lambda's body is evaluated when the lambda runs.
-3. **No restriction on minting**, such as lemur2's rule that only a scope primitive introduces authority for its region.
-   After §2, a module minting at a bare lifetime cannot outlive the lifetime. Who may mint stays sealing's job.
-4. **Atoms stay per term**, not per evaluation. C2 is stated for when no evaluation of the term is in progress, and
-   activations are separated by parametricity, as today.
+**A function belongs to every scope its code mentions.** Concretely:
+- **A lambda.** A lifetime that its body mentions counts as a capture, whether it is a scope's name or a lifetime
+  parameter from outside the lambda. It joins the lambda's closure scope, as a captured lease's scope does. Mentions
+  inside types written in the body count too. The lambda's own lifetime parameters don't count: whoever calls it
+  supplies them.
+- **A function type.** It belongs to the scopes its parameter types and result type mention, other than its own
+  lifetime parameters. They are code too: each time the type is instantiated they run, and they could build a lease.
+  For example, this is rejected:
+
+  ```raccoon
+  def T : Type := scope l => (x: Nat) -> Vec(Nat, count(Lease.mk(l), x))
+  ```
+
+**Unchanged:**
+- **Applications.** An application runs at once, so one that mentions `l` and returns data keeps nothing of `l`
+  (example 1).
+- **Level and kind variables.** A lambda that mentions a `Kind` or `Level` variable gains no scope.
+- **Repeated scopes.** One `scope` term, evaluated twice or re-entered by recursion, is one scope. Each callback still
+  sees its own `l`, so two of them cannot mix.
+
+## 4. Why the rule is enough
+
+A value can reach a scope only through what it is made of:
+
+| A value made of | belongs to its scopes through |
+|---|---|
+| constructor fields | its family's declared scope, which includes every field's |
+| captured values | the lambda's closure scope |
+| code that mentions a lifetime | the lambda's closure scope, or the function type's scope (§3) |
+| a type | the type's own `scope` |
+
+Two kinds of value hold a scope without belonging to it, and neither runs:
+- **Blocked computations.** One blocked on an opaque definition or an axiom never runs. While checking, a computation
+  blocked on a parameter only computes types.
+- **Proofs.** A proof never runs.
+
+So once a scope closes, nothing that can run belongs to it. The scope's result doesn't belong to it, by §1's closing
+rule, and nothing alive before the scope opened could reach it either.
+
+One question from the 2026-09-28 review must be re-examined, not assumed settled: an implicit argument reconstructed
+inside a lambda. It is read from an argument's type, which a parameter type or a capture already accounts for, but the
+review withdrew this rule over that case before the current rules on function types and families were adopted.
+
+## 5. For implementers
+
+The kernel's terms:
+- a scope's identity is an **atom**;
+- a value belongs to `l` when **its type's sort's scope** contains `l`'s atom;
+- "may not mention it" is the existing **`LifetimeEscapes`** check.
+
+The change:
+- `Interpreter.lambdaCaptures`, and the derived closure scope, admit locals of type `Lifetime`, which contribute the
+  lifetime they hold. Locals of type `Level` and `Kind` still contribute nothing.
+- `Interpreter.piClassifierFromChecked` adds the `Lifetime` locals that a function type's binder types and codomain
+  mention, other than its own binders.
+- A written closure scope that omits such a lifetime is `ScopeExceeded`.
+
+Documents:
+- `kernel.md` "Scopes and atoms": the paragraph beginning "Evaluation never makes the check. A value computed under a
+  scope may leave it…" is replaced by §1's guarantee and §4. "A global value may hold an atom, though never a variable"
+  becomes "only inside a blocked computation".
+- `language.md`:
+  - "Closures": "a variable of `Kind` or `Lifetime` contributes nothing" becomes §3's lambda rule.
+  - "Scopes": its `Unit -> Nat` example becomes example 5, rejected. Its prose uses §1's vocabulary.
+- `LEMUR_ON_RACCOON.md` §4.2's "A lifetime is not a capability" is superseded.
+
+Tests and corpus changes:
+- `ScopeTests`' "a value whose type's sort does not name the atom may leave its scope, even when it holds the atom":
+  its closure cases become rejections, and its blocked-computation cases stay accepted.
+- `examples/leases/main.rac`'s `later` is example 5, so it moves to the file's list of rejected variants.
+- Callbacks that mention an enclosing lifetime gain it in their closure scope. The `Gpu` combinators take
+  `{ scope = Sf }` callbacks, which accept that. A callback checked against an arrow written without a closure is
+  refused, and step 1 counts how often that happens.
+
+## 6. Steps
+
+1. **Measure.** Implement §5 in a worktree, run `sbt test` and `gpu/check.sh`, and classify each new rejection: a
+   value that really belonged to a closed scope, or an arrow written without a closure. An implementer at medium effort.
+2. **Attack.** A hostile reviewer at high effort tries to make a value that belongs to a scope without its type
+   saying so: through implicit arguments, evidence, re-evaluated residuals, destructuring, the eta view, packed
+   literals, and a scope entered twice.
+3. **Land.** The kernel change; tests for every row of §2 and §4, each an accepted program plus the smallest change
+   that is rejected; the amended documents. `gpu/check.sh` must stay green with byte-identical kernels.
+
+## 7. Decisions for review
+
+1. **Function types count too**, not only lambdas (§3's `T`).
+2. **Mentions inside types count**, as they do for other captures. That is simpler, and safe: a type in a lambda's
+   body runs when the lambda does.
+3. **No restriction on who mints at a lifetime.** Once every function belongs to the scopes it mentions, minting at a
+   closed scope is impossible. Who may mint at an open one stays sealing's job.
+4. **One scope per `scope` term**, not one per evaluation. Callbacks keep evaluations apart.
+5. **The documents use "scope" and "belongs to"**, with "atom" kept to `kernel.md`.
