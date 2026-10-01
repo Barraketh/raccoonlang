@@ -44,7 +44,7 @@ Steps:
 3. **Review.** Hostile review for races and protocol errors, then a code review for readability.
 
 **Paged attention.** A1 over a paged KV cache:
-- K and V are `[pages · 128, 128]`, with one page per 128-key block;
+- K and V are `[pages · H · 128, 128]`: a page holds 128 consecutive keys of every head;
 - a `block_table [B, maxPages]` (u32) gives each sequence's physical pages;
 - the loader reads the table entry for block `j` and loads that page's rows.
 

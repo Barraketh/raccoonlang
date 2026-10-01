@@ -605,7 +605,7 @@ A new §6.9, and additions to §6.1 and §6.6:
 |---|---|---|---|---|
 | `fadd`, `fsub`, `fmul`, `fmax`, `select` | argument values | nothing (pure) | the value, grain the join of its inputs' | — |
 | `fconst`, `ex2`, `lg2`, `rcp` | a context; `fconst`: bits < 2³² | a declaration and one instruction | the value, grain of the input (`fconst` uniform) | A26 |
-| `splitTmem` | `Acc(a, empty)`, `cta` context, 0 < k < cols, 32 ∣ k | nothing | two disjoint regions; closes on both `Acc`s, handing back `Acc(a, empty)` | A27, S4 |
+| `splitTmem` | `Acc(a, empty)`, `cta` context, 0 < k < cols, 64 ∣ k (A27 is stated for multiples of 64) | nothing | two disjoint regions; closes on both `Acc`s, handing back `Acc(a, empty)` | A27, S4 |
 | `holdStage` | `Ready(r, m)` | nothing | `ReadyUsed(r, m)`: the stage stays unreleased until `releaseByMma` | A12 |
 | `mmaScores` | `ReadyUsed(ra, m)`, `Ready(rb, m)`, `AccFree(q, m)`, `Elected(m)`; boxes 64 × 128, n = 128 | 8 `tcgen05.mma`, the first overwriting | `ReadyUsed` of both, `AccFilling` | A11 |
 | `loadAcc8` | `AccFull(q, m, f)`, aligned warpgroup, 8(c + 1) ≤ n | `__syncwarp`, `tcgen05.ld.32x32b.x8`, `wait::ld` | the thread's row, columns 8c–8c+7 | A13, A14 |
@@ -724,7 +724,7 @@ result, a deadlock, or a question the types do not ask. The harness (§1.3) is w
 - Reference and benchmark: FA4 (§2.7) on the same GPU, same inputs, through `flash_attn_func` with `causal=False`,
   bf16, head dimension 128, `(batch, heads) = (1, BH)`, once with `FA_DISABLE_2CTA=1` (the like-for-like
   `cta_group::1` kernel) and once by default (2-CTA). Its O is a second numerical cross-check (|O_ours − O_FA4|
-  within twice T1's bound, since both are approximate); its time is the performance reference. Throughput is
+  within twice T1's bound plus FA4's bf16 rounding of its output, 2⁻⁸ · |O_FA4|, since both are approximate); its time is the performance reference. Throughput is
   reported (TFLOP/s at 4·BH·seq²·128 FLOPs, CPU time under load noted), not judged, in A1. No closed-source library is
   benchmarked.
 - Checks: `check.sh` generates and compiles it against `stub/` (adding `tcgen05.st` and the rank-3 copy to the stub
