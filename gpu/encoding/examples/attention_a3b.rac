@@ -142,12 +142,9 @@ namespace Corrected {
         (st: CorrectAt(x, m, 8, OState.held)): Pair(Ctx(n, Group.warps(8, 4)), CorrectAt(x, m, 8, OState.held)) => {
       let (e, (r, alpha)) := awaitAlpha(e, b, st)
       let (e, grows) := voteAny(e, Core.lt(alpha, one))
-      // Each warp: rescale its quadrant when its vote says so, else keep it.
-      let rescale := fun (k: Lifetime)(e: Ctx(k, Group.warpwise(8, 4)))(r: Rescaling(x, m, 8))
-          : Pair(Ctx(k, Group.warpwise(8, 4)), Rescaling(x, m, 8)) => rescaleQuadrant(e, b, r, alpha)
-      let keep := fun (k: Lifetime)(e: Ctx(k, Group.warpwise(8, 4)))(r: Rescaling(x, m, 8))
-          : Pair(Ctx(k, Group.warpwise(8, 4)), Rescaling(x, m, 8)) => (e, r)
-      let (e, r) := branch(e, grows, fixedRescaling(x, m, 8), r, rescale, keep)
+      // Each warp rescales its quadrant when its vote says so.
+      let (e, r) := when(e, grows, fixedRescaling(x, m, 8), r, fun (k: Lifetime)(e: Ctx(k, Group.warpwise(8, 4)))(r: Rescaling(x, m, 8))
+          : Pair(Ctx(k, Group.warpwise(8, 4)), Rescaling(x, m, 8)) => rescaleQuadrant(e, b, r, alpha))
       publishRescaled(e, b, r)
     }
     let first := fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, Group.warps(8, 4)))(st: Correcting(x0, x1, m, OState.fresh))

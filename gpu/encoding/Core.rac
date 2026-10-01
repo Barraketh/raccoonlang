@@ -148,10 +148,11 @@ namespace Core {
   }
 
   // Everything generation has produced so far: the code, newest first; the next fresh name; the next free byte of
-  // dynamic shared memory; the next free named barrier; the generation-time errors found so far; and the kernel's CTA
-  // group, which every `tcgen05` instruction prints.
+  // dynamic shared memory; the next free named barrier; the generation-time errors found so far; the kernel's CTA
+  // group, which every `tcgen05` instruction prints; and the block size the kernel must be compiled for, one block per
+  // SM, once a warpgroup has set its register count (`splitWarpgroups`).
   struct Gen : Type
-   | mk (code: List(Stmt))(next: Nat)(smem: Nat)(barrier: Nat)(errors: List(String))(group: CtaGroup) : Gen
+   | mk (code: List(Stmt))(next: Nat)(smem: Nat)(barrier: Nat)(errors: List(String))(group: CtaGroup)(bounds: Option(Nat)) : Gen
 
   // The emitter for a block of lifetime `l` run by `g`.
   sealed inductive Ctx (l: Lifetime)(g: Group) : Type { kind = lin, scope = l }
@@ -174,7 +175,7 @@ namespace Core {
 
   def resume (k: Key)(l: Lifetime)(g: Group)(gen: Gen): Ctx(l, g) := Ctx.mk(l, g, gen)
 
-  def push (gen: Gen)(s: Stmt): Gen := Gen.mk(List.cons(s, gen.code), gen.next, gen.smem, gen.barrier, gen.errors, gen.group)
+  def push (gen: Gen)(s: Stmt): Gen := Gen.mk(List.cons(s, gen.code), gen.next, gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds)
 
   // `ss` in program order.
   def pushAll (gen: Gen)(ss: List(Stmt)): Gen decreases structural(ss) := {
@@ -183,9 +184,9 @@ namespace Core {
     | List.cons s more => Core.pushAll(Core.push(gen, s), more)
   }
 
-  def fresh (gen: Gen): Gen := Gen.mk(gen.code, Nat.succ(gen.next), gen.smem, gen.barrier, gen.errors, gen.group)
+  def fresh (gen: Gen): Gen := Gen.mk(gen.code, Nat.succ(gen.next), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds)
 
-  def fail (gen: Gen)(message: String): Gen := Gen.mk(gen.code, gen.next, gen.smem, gen.barrier, List.cons(message, gen.errors), gen.group)
+  def fail (gen: Gen)(message: String): Gen := Gen.mk(gen.code, gen.next, gen.smem, gen.barrier, List.cons(message, gen.errors), gen.group, gen.bounds)
 
   def check (gen: Gen)(ok: Bool)(message: String): Gen := Bool.cond(ok, Gen, gen, Core.fail(gen, message))
 
@@ -194,10 +195,10 @@ namespace Core {
   def oneCta (gen: Gen)(what: String): Gen := Core.check(gen, CtaGroup.isOne(gen.group), Text.cat(what, ": a single-CTA protocol in a pair kernel"))
 
   // A nested block's starting state: no code yet, the enclosing block's counters.
-  def child (gen: Gen): Gen := Gen.mk(List.nil(Stmt), gen.next, gen.smem, gen.barrier, gen.errors, gen.group)
+  def child (gen: Gen): Gen := Gen.mk(List.nil(Stmt), gen.next, gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds)
 
   // `parent` followed by `s`, with the counters its nested blocks reached in `last`.
-  def after (parent: Gen)(last: Gen)(s: Stmt): Gen := Gen.mk(List.cons(s, parent.code), last.next, last.smem, last.barrier, last.errors, last.group)
+  def after (parent: Gen)(last: Gen)(s: Stmt): Gen := Gen.mk(List.cons(s, parent.code), last.next, last.smem, last.barrier, last.errors, last.group, last.bounds)
 
   // Turns code kept newest first into a block in program order.
   def toBlock (code: List(Stmt))(acc: Block): Block decreases structural(code) := {
@@ -214,7 +215,7 @@ namespace Core {
 
   // Reserves `bytes` of dynamic shared memory at the next `align`-aligned offset, `Core.alignUp(gen.smem, align)`.
   def reserve (gen: Gen)(bytes: Nat)(align: Nat): Gen :=
-    Gen.mk(gen.code, gen.next, Nat.add(Core.alignUp(gen.smem, align), bytes), gen.barrier, gen.errors, gen.group)
+    Gen.mk(gen.code, gen.next, Nat.add(Core.alignUp(gen.smem, align), bytes), gen.barrier, gen.errors, gen.group, gen.bounds)
 
   def emit {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(s: Stmt): Ctx(l, g) := Core.resume(k, l, g, Core.push(Core.state(k, e), s))
 
@@ -586,13 +587,21 @@ namespace Core {
     }
   }
 
+  // A runtime branch with one arm: `yes` where the condition holds, and nothing elsewhere, where the state passes
+  // unchanged (`branch`).
+  def when {l: Lifetime}{g: Group}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sy: Lifetime}{Sc: Lifetime}{uc: Grain}
+      (e: Ctx(l, g))(cond: Val(Sc, uc, DType.bool))(fixed: Fixed(S))(state: S)
+      (yes: { scope = Sy } (m: Lifetime) -> Ctx(m, Group.arm(g, uc)) -> S -> Pair(Ctx(m, Group.arm(g, uc)), S))
+      : Pair(Ctx(l, g), S) :=
+    Core.branch(e, cond, fixed, state, yes, fun (n: Lifetime)(e: Ctx(n, Group.arm(g, uc)))(s: S): Pair(Ctx(n, Group.arm(g, uc)), S) => (e, s))
+
   // Waits for every thread of `g` at the end of a split: the CTA barrier for a whole CTA, else a fresh named barrier.
   def join (g: Group)(gen: Gen): Gen := {
     match g returning Gen with
     | Group.cta n => Core.push(gen, Stmt.sync)
     | Group.warps f c => {
       let id := gen.barrier
-      let withId := Gen.mk(gen.code, gen.next, gen.smem, Nat.succ(id), gen.errors, gen.group)
+      let withId := Gen.mk(gen.code, gen.next, gen.smem, Nat.succ(id), gen.errors, gen.group, gen.bounds)
       Core.push(Core.check(withId, Nat.ble(id, 15), "split: more than 15 named barriers"), Core.namedBarrier(id, Group.threads(g)))
     }
     | Group.lane => gen
@@ -802,11 +811,11 @@ namespace Core {
 
   def errorsToCode (errors: List(String)): List(Stmt) := List.map(errors, Stmt, fun (m: String): Stmt => Stmt.error(m))
 
-  def start (k: Key)(l: Lifetime)(g: Group)(group: CtaGroup): Ctx(l, g) := Ctx.mk(l, g, Gen.mk(List.nil(Stmt), 0, 0, 1, List.nil(String), group))
+  def start (k: Key)(l: Lifetime)(g: Group)(group: CtaGroup): Ctx(l, g) := Ctx.mk(l, g, Gen.mk(List.nil(Stmt), 0, 0, 1, List.nil(String), group, Option.none(Nat)))
 
   // A kernel the typed core built: the only thing `render` prints. A program can neither build one nor take one apart,
   // so it cannot change a kernel's code, shared memory or launcher. `bounds` is the block size it is compiled for, one
-  // block per SM, when its warpgroups set their register counts (`splitWarpgroups`).
+  // block per SM (`__launch_bounds__(n, 1)`), when its warpgroups set their register counts (`Gen`'s).
   sealed struct Program : Type
    | mk (kernel: Kernel)(bounds: Option(Nat)) : Program
 
@@ -820,9 +829,9 @@ namespace Core {
   def render (p: Program)[ok: Core.WellFormed(p)]: String := Cuda.boundedKernel(p.bounds, p.kernel)
 
   // The finished kernel: its code, then any generation errors as `#error` lines, which `render` refuses.
-  def finish (k: Key)(name: String)(params: List(Param))(launcher: Option(Launcher))(bounds: Option(Nat))(gen: Gen): Program :=
+  def finish (k: Key)(name: String)(params: List(Param))(launcher: Option(Launcher))(gen: Gen): Program :=
     Program.mk(Kernel.mk(name, params, gen.smem, Core.toBlock(gen.code, Core.toBlock(Core.errorsToCode(gen.errors), Block.done)),
-      launcher), bounds)
+      launcher), gen.bounds)
 
   // A kernel computing C (M×N) from A (M×K) and B (K×N), one CTA of `tile*tile` threads per `tile`×`tile` block of C.
   // Launch contract: grid (ceil(N/tile), ceil(M/tile)), block tile*tile, and A, B, C distinct arrays of those extents,
@@ -843,7 +852,7 @@ namespace Core {
     let params := List.cons(Param.input(t, "A"), List.cons(Param.input(t, "B"), List.cons(Param.output(t, "C"),
       List.cons(Param.scalar(DType.u32, "M"), List.cons(Param.scalar(DType.u32, "N"), List.cons(Param.scalar(DType.u32, "K"), List.nil(Param)))))))
     let g := Group.cta(Nat.mul(tile, tile))
-    Core.finish(Key.key, name, params, Option.none(Launcher), Option.none(Nat), Core.state(Key.key, body(l, Core.start(Key.key, l, g, CtaGroup.one), launch, GOwn.mk(l, t, tile))))
+    Core.finish(Key.key, name, params, Option.none(Launcher), Core.state(Key.key, body(l, Core.start(Key.key, l, g, CtaGroup.one), launch, GOwn.mk(l, t, tile))))
   }
 
   // ---- Tensor maps and the stage ring -----------------------------------------------------------------------------
@@ -1587,7 +1596,7 @@ namespace Core {
       List.append(List.map(four, Stmt, load), List.cons(Core.tmemWaitLoad, List.nil(Stmt))))))
     let place := List.cons(Stmt.decl(DType.u32, row, Expr.bin(BinOp.add, buffer, Expr.bin(BinOp.mul, Expr.special(Builtin.lane), Expr.lit(128)))),
       List.cons(Stmt.decl(DType.u32, swizzle, Expr.bin(BinOp.band, Expr.special(Builtin.lane), Expr.lit(7))), List.nil(Stmt)))
-    Core.pushAll(Gen.mk(gen.code, Nat.add(first, 34), gen.smem, gen.barrier, gen.errors, gen.group),
+    Core.pushAll(Gen.mk(gen.code, Nat.add(first, 34), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds),
       List.append(loads, List.append(place, List.map(Core.eight, Stmt, write))))
   }
 
@@ -1630,7 +1639,7 @@ namespace Core {
         let next := List.cons(Stmt.assign(stg.cur, Expr.bin(BinOp.add, Expr.var(stg.cur), Expr.lit(1))),
           List.cons(Stmt.ifElse(Expr.bin(BinOp.eq, Expr.var(stg.cur), Expr.lit(stg.bufs)), Block.seq(Stmt.assign(stg.cur, Expr.lit(0)), Block.done), Block.done),
             List.nil(Stmt)))
-        let named := Gen.mk(gen.code, Nat.add(gen.next, 2), gen.smem, gen.barrier, gen.errors, gen.group)
+        let named := Gen.mk(gen.code, Nat.add(gen.next, 2), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds)
         (Core.resume(Key.key, k, Group.warps(f, 4), Core.pushAll(named, List.append(place, List.append(store, next)))), StoreAt.mk(s, m, f))
       }
     }
@@ -1966,7 +1975,7 @@ namespace Core {
   // reconverges for the `.sync.aligned` load, and the load completes (`wait::ld`) before they are read.
   def loadRow8 (gen: Gen)(taddr: Expr): Gen := {
     let first := gen.next
-    Core.pushAll(Gen.mk(gen.code, Nat.add(first, 8), gen.smem, gen.barrier, gen.errors, gen.group),
+    Core.pushAll(Gen.mk(gen.code, Nat.add(first, 8), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds),
       List.append(Core.declOuts(DType.f32, first, 8), List.cons(Stmt.syncWarp, List.cons(Core.tmemLoad8(first, taddr), List.cons(Core.tmemWaitLoad, List.nil(Stmt))))))
   }
 
@@ -2123,7 +2132,7 @@ namespace Core {
       List.cons(Core.cvtBf16x2(Nat.add(first, 2), v.v5.expr, v.v4.expr), List.cons(Core.cvtBf16x2(Nat.add(first, 3), v.v7.expr, v.v6.expr), List.nil(Stmt)))))
     let store := List.cons(Stmt.syncWarp, List.cons(Core.tmemStore4(Core.quadrantLanes(Core.offsetBy(p, Nat.mul(4, c))), first), List.nil(Stmt)))
     let code := List.append(Core.declOuts(DType.u32, first, 4), List.append(packs, store))
-    Core.pushAll(Gen.mk(gen.code, Nat.add(first, 4), gen.smem, gen.barrier, gen.errors, gen.group), code)
+    Core.pushAll(Gen.mk(gen.code, Nat.add(first, 4), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds), code)
   }
 
   // For chunks `c` to `c + count - 1`: load the chunk of S (`loadChunk`), run `step` on it, and store the eight values
@@ -2340,7 +2349,7 @@ namespace Core {
       Stmt.decl(DType.f32, Nat.add(first, j), Expr.select(Expr.bin(BinOp.lt, Core.offsetBy(Expr.var(kv), j), Expr.var(limit)), t.expr, mask.minusInfinity))
     let values := List.cons(masked(0, v.v0), List.cons(masked(1, v.v1), List.cons(masked(2, v.v2), List.cons(masked(3, v.v3),
       List.cons(masked(4, v.v4), List.cons(masked(5, v.v5), List.cons(masked(6, v.v6), List.cons(masked(7, v.v7), List.nil(Stmt)))))))))
-    (Core.resume(Key.key, k, Group.warps(f, 4), Core.pushAll(Gen.mk(gen.code, Nat.add(first, 8), gen.smem, gen.barrier, gen.errors, gen.group),
+    (Core.resume(Key.key, k, Group.warps(f, 4), Core.pushAll(Gen.mk(gen.code, Nat.add(first, 8), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds),
       List.append(place, values))), Core.row8(Key.key, k, first))
   }
 
@@ -2420,7 +2429,7 @@ namespace Core {
       List.cons(Stmt.decl(DType.u32, row, Expr.bin(BinOp.add, out.first, Expr.var(within))),
       List.cons(Stmt.decl(DType.bool, inside, Expr.bin(BinOp.lt, Expr.var(within), out.seq)),
       List.cons(Stmt.decl(DType.f32, scale, inv), List.cons(Stmt.decl(DType.f32, logSum, lse), List.nil(Stmt))))))))
-    let placed := Core.pushAll(Gen.mk(gen.code, Nat.add(within, 5), gen.smem, gen.barrier, gen.errors, gen.group), place)
+    let placed := Core.pushAll(Gen.mk(gen.code, Nat.add(within, 5), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds), place)
     let kept := out.kept
     let value := fun (x: Expr): Expr => Core.outValue(t, Core.keptOrZero(kept, Expr.bin(BinOp.mul, x, Expr.var(scale))))
     let stored := Core.storeChunks(placed, o, out.o, Expr.var(row), Expr.var(inside), value, 0, 16)
@@ -2526,30 +2535,60 @@ namespace Core {
 
   def outAt {x: Lifetime}{h: Rescaler}(buf: ScoreBuffer(x, h)): Expr := Core.offsetBy(buf.base, 128)
 
-  // The α ring of a buffer with a correction warpgroup (`withCorrectedBuffer`). The registers of its ends, after the
-  // buffer's phases: the sender's slot and phase, then the receiver's.
-  def alphaSender {x: Lifetime}{h: Rescaler}(buf: ScoreBuffer(x, h)): Nat := Nat.add(buf.mmaPhase, 1)
+  // The α ring of a buffer whose Ô a correction warpgroup rescales: its full and empty barriers, after the buffer's two;
+  // its slot of 128 f32, after them; and the phase registers of its sending and receiving ends, after the buffer's two.
+  // One slot suffices: the softmax warpgroup sends block i + 1's α only after block i's product, which waits for the
+  // correction warpgroup's publish, which follows its receipt of block i's α. The empty barrier still orders each write
+  // after the read before it, so the ring's argument needs only the ring.
+  struct AlphaRing : Type
+   | mk (full: Nat)(empty: Nat)(slot: Nat)(sendPhase: Nat)(recvPhase: Nat) : AlphaRing
 
-  def alphaReceiver {x: Lifetime}{h: Rescaler}(buf: ScoreBuffer(x, h)): Nat := Nat.add(buf.mmaPhase, 3)
+  // The α ring of a buffer whose barriers start at byte `bars` and whose phase registers at `phases`.
+  def alphaRing (bars: Nat)(phases: Nat): AlphaRing :=
+    AlphaRing.mk(Nat.add(bars, 16), Nat.add(bars, 24), Nat.add(bars, 32), Nat.add(phases, 2), Nat.add(phases, 3))
 
-  // An end's slot and phase registers, from `slot`, both starting at 0.
-  def alphaEnd (slot: Nat): List(Stmt) :=
-    List.cons(Stmt.declMut(DType.u32, slot, Expr.lit(0)), List.cons(Stmt.declMut(DType.u32, Nat.add(slot, 1), Expr.lit(0)), List.nil(Stmt)))
+  def alphaOf {x: Lifetime}(buf: ScoreBuffer(x, Rescaler.correction)): AlphaRing := Core.alphaRing(buf.bars, buf.rowPhase)
 
-  // The full and empty barriers of the slot that register `slot` holds, after the buffer's two barriers.
-  def alphaFull {x: Lifetime}{h: Rescaler}(buf: ScoreBuffer(x, h))(slot: Nat): Expr :=
-    Expr.bin(BinOp.add, Expr.sharedAddr(Nat.add(buf.bars, 16)), Expr.bin(BinOp.mul, Expr.var(slot), Expr.lit(8)))
+  // This thread's element of the α slot: `threadIdx.x mod 128`, which in an aligned warpgroup is `32·(warp mod 4) + lane`,
+  // the row of the thread's tensor-memory lane (M12), so the same row in the softmax and the correction warpgroup.
+  def alphaRow : Expr := Expr.bin(BinOp.rem, Expr.special(Builtin.threadX), Expr.lit(128))
 
-  def alphaEmpty {x: Lifetime}{h: Rescaler}(buf: ScoreBuffer(x, h))(slot: Nat): Expr :=
-    Expr.bin(BinOp.add, Expr.sharedAddr(Nat.add(buf.bars, 32)), Expr.bin(BinOp.mul, Expr.var(slot), Expr.lit(8)))
-
-  // The slots, after the barriers, and this thread's element of the slot that register `slot` holds: element
-  // `threadIdx.x mod 128`, which in an aligned warpgroup is `32·(warp mod 4) + lane`, the row of the thread's
-  // tensor-memory lane (M12), the same in the softmax and the correction warpgroup.
-  def alphaSlots {x: Lifetime}{h: Rescaler}(buf: ScoreBuffer(x, h)): Expr := Expr.sharedPtr(DType.f32, Nat.add(buf.bars, 48))
-
-  def alphaIndex (slot: Nat): Expr :=
-    Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.var(slot), Expr.lit(128)), Expr.bin(BinOp.rem, Expr.special(Builtin.threadX), Expr.lit(128)))
+  // Opens a score buffer over a 256-column region whose Ô `h` rescales, for the callback, which must finish its sides
+  // (M15). Its barriers: S full (count 1); P full, counting the arrivals of every warpgroup that publishes to it (128
+  // for the softmax warpgroup, 256 with the correction warpgroup's); and, for a correction warpgroup, the α ring's full
+  // and empty barriers (count 128), the empty one's phase 0 completed here, so the slot starts free. Each side's first
+  // wait is at parity 0 on a phase the other side's first arrival completes.
+  def openScoreBuffer {l: Lifetime}{w: Nat}{a: Lifetime}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}
+      (k: Key)(e: Ctx(l, Group.cta(w)))(t: Tmem(a, 256))(acc: Acc(a, AccState.empty))(h: Rescaler)(X: Type { kind = kx, scope = Sx })
+      (body: { kind = kf, scope = Sf } (x: Lifetime) -> ScoreBuffer(x, h) -> RowSide(x) -> MmaSide(x) -> Ctx(l, Group.cta(w))
+        -> Pair(Ctx(l, Group.cta(w)), X))
+      : Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.empty), X)) := {
+    match acc returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.empty), X)) with
+    | Acc.mk => {
+      let gen0 := Core.oneCta(Core.state(k, e), "score buffer")
+      let bars := Core.alignUp(gen0.smem, 8)
+      let phases := gen0.next
+      let alpha := List.append(Core.barrierInits(bars, 128, 2, 2), Core.barrierCompletions(bars, 128, 3, 1))
+      let own := fun (publishers: Nat)(extra: List(Stmt)): List(Stmt) =>
+        List.append(Core.barrierInits(bars, 1, 0, 1), List.append(Core.barrierInits(bars, publishers, 1, 1), extra))
+      let gen1 := {
+        match h returning Gen with
+        | Rescaler.softmax => Core.initBarrierList(Core.fresh(Core.fresh(Core.reserve(gen0, 16, 8))), own(128, List.nil(Stmt)))
+        | Rescaler.correction =>
+          Core.initBarrierList(Core.fresh(Core.fresh(Core.fresh(Core.fresh(Core.reserve(gen0, Nat.add(32, 512), 8))))), own(256, alpha))
+      }
+      let count := {
+        match h returning Nat with
+        | Rescaler.softmax => 2
+        | Rescaler.correction => 4
+      }
+      scope x => {
+        let buf := ScoreBuffer.mk(x, h, Core.tmemBase(t), bars, phases, Nat.add(phases, 1))
+        let (e2, y) := body(x, buf, RowSide.mk(x), MmaSide.mk(x), Core.resume(k, l, Group.cta(w), gen1))
+        (Core.invalBarriers(k, e2, bars, count), (Acc.mk(a, AccState.empty), y))
+      }
+    }
+  }
 
   // Opens the score buffer over a 256-column region for the callback, which must finish both sides: each is linear and
   // belongs to the buffer's scope, which the callback's result cannot name, and its finisher is the only operation that
@@ -2560,25 +2599,10 @@ namespace Core {
       (body: { kind = kf, scope = Sf } (x: Lifetime) -> ScoreBuffer(x, Rescaler.softmax) -> RowSide(x) -> MmaSide(x)
         -> Ctx(l, Group.cta(w))
         -> Pair(Ctx(l, Group.cta(w)), X))
-      : Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.empty), X)) := {
-    match acc returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.empty), X)) with
-    | Acc.mk => {
-      let gen0 := Core.oneCta(Core.state(Key.key, e), "score buffer")
-      let bars := Core.alignUp(gen0.smem, 8)
-      let gen1 := Core.reserve(gen0, 16, 8)
-      let phases := gen1.next
-      // Each side's first wait is at parity 0 on a phase that the other side's first arrival completes.
-      let gen2 := Core.initBarrierList(Core.fresh(Core.fresh(gen1)), List.append(Core.barrierInits(bars, 1, 0, 1), Core.barrierInits(bars, 128, 1, 1)))
-      scope x => {
-        let buf := ScoreBuffer.mk(x, Rescaler.softmax, Core.tmemBase(t), bars, phases, Nat.add(phases, 1))
-        let (e2, y) := body(x, buf, RowSide.mk(x), MmaSide.mk(x), Core.resume(Key.key, l, Group.cta(w), gen2))
-        (Core.invalBarriers(Key.key, e2, bars, 2), (Acc.mk(a, AccState.empty), y))
-      }
-    }
-  }
+      : Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.empty), X)) := Core.openScoreBuffer(Key.key, e, t, acc, Rescaler.softmax, X, body)
 
   // The aligned warpgroup takes its side: its phase starts at 0, which the MMA thread's first commit completes. Of a
-  // buffer with a correction warpgroup it also takes the α ring's sending end (`alphaEnd`).
+  // buffer with a correction warpgroup it also takes the α ring's sending end, whose phase starts at 0.
   def takeRows {m: Lifetime}{f: Nat}{x: Lifetime}{h: Rescaler}
       (e: Ctx(m, Group.warps(f, 4)))(buf: ScoreBuffer(x, h))(side: RowSide(x))[aligned: Eq(Nat, Nat.mod(f, 4), 0)]
       : Pair(Ctx(m, Group.warps(f, 4)), RowsAt(x, m, f, OState.fresh)) := {
@@ -2588,7 +2612,8 @@ namespace Core {
       let regs := {
         match h returning List(Stmt) with
         | Rescaler.softmax => phase
-        | Rescaler.correction => List.append(phase, Core.alphaEnd(Core.alphaSender(buf)))
+        | Rescaler.correction => List.append(phase, List.cons(Stmt.declMut(DType.u32, Core.alphaRing(buf.bars, buf.rowPhase).sendPhase, Expr.lit(0)),
+          List.nil(Stmt)))
       }
       (Core.emitAll(Key.key, e, regs), RowsAt.mk(x, m, f, OState.fresh))
     }
@@ -2622,7 +2647,7 @@ namespace Core {
       let code := List.append(Core.declOuts(DType.f32, first, 128),
         List.cons(Stmt.syncWarp, List.append(List.map(Core.counting(0, 16), Stmt, load), List.cons(Core.tmemWaitLoad, List.nil(Stmt)))))
       let row := Row.mk(List.map(Core.counting(0, 16), F32x8(k, Grain.thread), fun (c: Nat): F32x8(k, Grain.thread) => Core.row8(Key.key, k, at(c))))
-      (Core.resume(Key.key, k, Group.warps(f, 4), Core.pushAll(Gen.mk(gen.code, Nat.add(first, 128), gen.smem, gen.barrier, gen.errors, gen.group), code)),
+      (Core.resume(Key.key, k, Group.warps(f, 4), Core.pushAll(Gen.mk(gen.code, Nat.add(first, 128), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds), code)),
         (Loaded.mk(x, m, f, o), row))
     }
   }
@@ -2796,14 +2821,12 @@ namespace Core {
   // ---- Attention: the correction warpgroup (gpu/encoding/A3B.md) ----------------------------------------------------
   //
   // A score buffer whose Ô a third aligned warpgroup rescales, off the softmax warpgroup's path (A3b). The softmax
-  // warpgroup holds S and P as in `withScoreBuffer`; the correction warpgroup holds Ô's rows from its receipt of the
-  // block's α to its publish. The two pieces meet at P full, which counts both warpgroups' arrivals (256), so the MMA
-  // thread's product waits for P written and Ô rescaled.
-  // - The α ring carries each block's α, one per row, from the softmax warpgroup to the correction warpgroup: two slots
-  //   of 128 f32 in shared memory, which thread r of either warpgroup writes or reads at element r, the row of its
-  //   tensor-memory lane (M12), with full and empty barriers of 128 arrivals (M22). The softmax warpgroup sends one α
-  //   per block after the first, after it observed the block's scores (`publishAlpha` takes `Probs`); the correction
-  //   warpgroup arrives on P full once per block, in the first after zeroing Ô, in the others after receiving α.
+  // warpgroup holds S and P as in `withScoreBuffer`; the correction warpgroup holds Ô's rows from its zeroing (block 0)
+  // or its receipt of the block's α (later blocks) to its publish. The two pieces meet at P full, which counts both
+  // warpgroups' arrivals (256), so the MMA thread's product waits for P written and Ô rescaled.
+  // - The α ring carries each block's α, one per row, from the softmax warpgroup to the correction warpgroup (M22). The
+  //   softmax warpgroup sends one α per block after the first, after it observed the block's scores (`publishAlpha`
+  //   takes `Probs`). The correction warpgroup arrives on P full once per block.
   // - The correction warpgroup's accesses to Ô in a block i ≥ 1 follow the product of block i − 1: the softmax
   //   warpgroup observed its completion (S full's phase i covers it, A3a) and then released α; the correction
   //   warpgroup acquires α and fences `after_thread_sync` before it touches Ô (A57, chained completion). Block 0's
@@ -2830,100 +2853,97 @@ namespace Core {
 
   def fixedRescaling (x: Lifetime)(m: Lifetime)(f: Nat): Fixed(Rescaling(x, m, f)) := Fixed.mk(Rescaling(x, m, f))
 
-  // Opens a score buffer with a correction warpgroup over a 256-column region for the callback, which must finish its
-  // three sides (M15). As `withScoreBuffer`, with P full counting the softmax and the correction warpgroups' arrivals
-  // (256), and with the α ring: two full and two empty barriers of 128 arrivals, each empty one's phase 0 completed
-  // here (both slots start free), then the two slots.
+  // Whether `g` runs whole warps of the aligned warpgroup `warps(f, 4)`, each converged: all four (`warps(f, 4)`), or
+  // those a warp-uniform branch runs (`warpwise(f, 4)`).
+  def ownQuadrants (g: Group)(f: Nat): Bool := {
+    match g returning Bool with
+    | Group.cta n => Bool.false
+    | Group.warps first count => Bool.and(Nat.beq(first, f), Nat.beq(count, 4))
+    | Group.lane => Bool.false
+    | Group.diverged n => Bool.false
+    | Group.warpwise first count => Bool.and(Nat.beq(first, f), Nat.beq(count, 4))
+  }
+
+  // Opens a score buffer whose Ô a correction warpgroup rescales (`openScoreBuffer`) over a 256-column region, for the
+  // callback, which must finish its three sides (M15).
   def withCorrectedBuffer {l: Lifetime}{w: Nat}{a: Lifetime}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}
       (e: Ctx(l, Group.cta(w)))(t: Tmem(a, 256))(acc: Acc(a, AccState.empty))(X: Type { kind = kx, scope = Sx })
       (body: { kind = kf, scope = Sf } (x: Lifetime) -> ScoreBuffer(x, Rescaler.correction) -> RowSide(x) -> MmaSide(x) -> CorrectionSide(x)
         -> Ctx(l, Group.cta(w)) -> Pair(Ctx(l, Group.cta(w)), X))
-      : Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.empty), X)) := {
-    match acc returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.empty), X)) with
-    | Acc.mk => {
-      let gen0 := Core.oneCta(Core.state(Key.key, e), "corrected score buffer")
-      let bars := Core.alignUp(gen0.smem, 8)
-      let gen1 := Core.reserve(gen0, Nat.add(48, Nat.mul(2, 512)), 8)
-      let first := gen1.next
-      let setup := List.append(Core.barrierInits(bars, 1, 0, 1), List.append(Core.barrierInits(bars, 256, 1, 1),
-        List.append(Core.barrierInits(bars, 128, 2, 4), Core.barrierCompletions(bars, 128, 4, 2))))
-      let gen2 := Core.initBarrierList(Gen.mk(gen1.code, Nat.add(first, 6), gen1.smem, gen1.barrier, gen1.errors, gen1.group), setup)
-      scope x => {
-        let buf := ScoreBuffer.mk(x, Rescaler.correction, Core.tmemBase(t), bars, first, Nat.add(first, 1))
-        let (e2, y) := body(x, buf, RowSide.mk(x), MmaSide.mk(x), CorrectionSide.mk(x), Core.resume(Key.key, l, Group.cta(w), gen2))
-        (Core.invalBarriers(Key.key, e2, bars, 6), (Acc.mk(a, AccState.empty), y))
-      }
-    }
-  }
+      : Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.empty), X)) :=
+    Core.openScoreBuffer(Key.key, e, t, acc, Rescaler.correction, X, fun (x: Lifetime)(buf: ScoreBuffer(x, Rescaler.correction))(r: RowSide(x))
+        (s: MmaSide(x))(e: Ctx(l, Group.cta(w))): Pair(Ctx(l, Group.cta(w)), X) => body(x, buf, r, s, CorrectionSide.mk(x), e))
 
-  // Sends the block's α to the correction warpgroup, then hands P to the MMA thread: waits until the α ring's current
-  // slot is free, writes this thread's row of it, arrives on its full barrier and moves to the next slot; then publishes
-  // (`publishCode`). It takes `Probs`, which only the block's scores give, so the warpgroup sends one α per block, after
-  // it observed the product before them complete. While Ô is `fresh`, in block 0, there is nothing to rescale and no α
-  // is sent: the correction warpgroup zeroes Ô instead. P full's phase completes only with the correction warpgroup's
-  // arrivals as well, which follow its zeroing or rescale, so Ô is `held` after.
+  // Sends the block's α to the correction warpgroup, then hands P to the MMA thread:
+  // - waits until the α slot is free (its empty barrier, at the sending end's phase);
+  // - writes this thread's row of it, arrives on its full barrier, and flips the phase;
+  // - publishes P (`publishCode`).
+  // It takes `Probs`, which only the block's scores give, so the warpgroup sends one α per block, after it observed the
+  // product before them complete. While Ô is `fresh`, in block 0, it sends none: the correction warpgroup zeroes Ô. P
+  // full's phase completes only with the correction warpgroup's arrivals as well, which follow its zeroing or rescale,
+  // so Ô is `held` after.
   def publishAlpha {k: Lifetime}{f: Nat}{x: Lifetime}{m: Lifetime}{o: OState}{S: Lifetime}{u: Grain}
       (e: Ctx(k, Group.warps(f, 4)))(buf: ScoreBuffer(x, Rescaler.correction))(p: Probs(x, m, f, o))(alpha: Val(S, u, DType.f32))
       : Pair(Ctx(k, Group.warps(f, 4)), RowsAt(x, m, f, OState.held)) := {
     match p returning Pair(Ctx(k, Group.warps(f, 4)), RowsAt(x, m, f, OState.held)) with
     | Probs.mk => {
-      let slot := Core.alphaSender(buf)
+      let ring := Core.alphaOf(buf)
       let send := fun (g: CtaGroup): List(Stmt) => {
         match o returning List(Stmt) with
         | OState.fresh => List.nil(Stmt)
-        | OState.held => List.cons(Core.mbarWait(g, Core.alphaEmpty(buf, slot), Expr.var(Nat.add(slot, 1))),
-          List.cons(Stmt.store(Core.alphaSlots(buf), Core.alphaIndex(slot), alpha.expr), List.cons(Core.mbarArrive(Core.alphaFull(buf, slot)),
-            Core.advance(slot, Nat.add(slot, 1), 2))))
+        | OState.held => List.cons(Core.mbarWait(g, Expr.sharedAddr(ring.empty), Expr.var(ring.sendPhase)),
+          List.cons(Stmt.store(Expr.sharedPtr(DType.f32, ring.slot), Core.alphaRow, alpha.expr),
+            List.cons(Core.mbarArrive(Expr.sharedAddr(ring.full)), List.cons(Core.flip(ring.sendPhase), List.nil(Stmt)))))
       }
       (Core.emitAll(Key.key, Core.emitIn(Key.key, e, send), Core.publishCode(buf)), RowsAt.mk(x, m, f, OState.held))
     }
   }
 
-  // The aligned warpgroup takes the correction side: the α ring's receiving end (`alphaEnd`), whose first wait, at
-  // parity 0, the softmax warpgroup's first send, in block 1, completes.
+  // The aligned warpgroup takes the correction side: the α ring's receiving end, whose phase starts at 0, which the
+  // softmax warpgroup's first send, in block 1, completes.
   def takeCorrection {m: Lifetime}{f: Nat}{x: Lifetime}
       (e: Ctx(m, Group.warps(f, 4)))(buf: ScoreBuffer(x, Rescaler.correction))(side: CorrectionSide(x))[aligned: Eq(Nat, Nat.mod(f, 4), 0)]
       : Pair(Ctx(m, Group.warps(f, 4)), CorrectAt(x, m, f, OState.fresh)) := {
     match side returning Pair(Ctx(m, Group.warps(f, 4)), CorrectAt(x, m, f, OState.fresh)) with
-    | CorrectionSide.mk => (Core.emitAll(Key.key, e, Core.alphaEnd(Core.alphaReceiver(buf))), CorrectAt.mk(x, m, f, OState.fresh))
+    | CorrectionSide.mk => (Core.emit(Key.key, e, Stmt.declMut(DType.u32, Core.alphaOf(buf).recvPhase, Expr.lit(0))), CorrectAt.mk(x, m, f, OState.fresh))
   }
 
-  // Block i ≥ 1: waits until the block's α has arrived, fences `after_thread_sync`, and reads this thread's; then frees
-  // the slot and moves to the next. The fence orders the warpgroup's next tensor-memory accesses after the wait, and so
-  // after the product that the softmax warpgroup observed complete before it sent α (A57).
+  // Block i ≥ 1: waits until the block's α has arrived (the slot's full barrier, at the receiving end's phase), fences
+  // `after_thread_sync`, reads this thread's, arrives on the slot's empty barrier and flips the phase. The fence orders
+  // the warpgroup's next tensor-memory accesses after the wait, and so after the product that the softmax warpgroup
+  // observed complete before it sent α (A57).
   def awaitAlpha {k: Lifetime}{f: Nat}{x: Lifetime}{m: Lifetime}
       (e: Ctx(k, Group.warps(f, 4)))(buf: ScoreBuffer(x, Rescaler.correction))(at: CorrectAt(x, m, f, OState.held))
       : Pair(Ctx(k, Group.warps(f, 4)), Pair(Rescaling(x, m, f), Val(k, Grain.thread, DType.f32))) := {
     match at returning Pair(Ctx(k, Group.warps(f, 4)), Pair(Rescaling(x, m, f), Val(k, Grain.thread, DType.f32))) with
     | CorrectAt.mk => {
-      let gen := Core.state(Key.key, e)
-      let slot := Core.alphaReceiver(buf)
-      let alpha := gen.next
-      let receive := List.cons(Core.mbarWait(gen.group, Core.alphaFull(buf, slot), Expr.var(Nat.add(slot, 1))), List.cons(Core.tcFenceAfter,
-        List.cons(Stmt.decl(DType.f32, alpha, Expr.index(Core.alphaSlots(buf), Core.alphaIndex(slot))), List.cons(Core.mbarArrive(Core.alphaEmpty(buf, slot)),
-          Core.advance(slot, Nat.add(slot, 1), 2)))))
-      (Core.resume(Key.key, k, Group.warps(f, 4), Core.pushAll(Core.fresh(gen), receive)),
-        (Rescaling.mk(x, m, f), Val.mk(k, Grain.thread, DType.f32, Expr.var(alpha), Option.none(Nat))))
+      let ring := Core.alphaOf(buf)
+      let e := Core.emitIn(Key.key, e, fun (g: CtaGroup): List(Stmt) =>
+        List.cons(Core.mbarWait(g, Expr.sharedAddr(ring.full), Expr.var(ring.recvPhase)), List.cons(Core.tcFenceAfter, List.nil(Stmt))))
+      let (e, alpha) := Core.bind(Key.key, e, Grain.thread, DType.f32, Expr.index(Expr.sharedPtr(DType.f32, ring.slot), Core.alphaRow), Option.none(Nat))
+      let e := Core.emitAll(Key.key, e, List.cons(Core.mbarArrive(Expr.sharedAddr(ring.empty)), List.cons(Core.flip(ring.recvPhase), List.nil(Stmt))))
+      (e, (Rescaling.mk(x, m, f), alpha))
     }
   }
 
-  // Block 0: every warp sets its quadrant of Ô to 0, each thread its row (`zeroRow`), so that every product
-  // accumulates, as A3a's warpgroup does. No wait: no product has touched Ô, and the first waits for this one's publish.
-  // Not a multiplication by α = 0, which could leave NaN from uninitialized tensor memory.
-  def zeroQuadrants {k: Lifetime}{f: Nat}{x: Lifetime}{m: Lifetime}
-      (e: Ctx(k, Group.warps(f, 4)))(buf: ScoreBuffer(x, Rescaler.correction))(at: CorrectAt(x, m, f, OState.fresh))
-      : Pair(Ctx(k, Group.warps(f, 4)), Rescaling(x, m, f)) := {
-    match at returning Pair(Ctx(k, Group.warps(f, 4)), Rescaling(x, m, f)) with
-    | CorrectAt.mk => (Core.resume(Key.key, k, Group.warps(f, 4), Core.zeroRow(Core.state(Key.key, e), Core.outAt(buf))), Rescaling.mk(x, m, f))
+  // Block 0: every warp of `g` sets its quadrant of Ô to 0, each thread its row (`zeroRow`), so that every product
+  // accumulates. No wait: no product has touched Ô, and the first waits for this one's publish. Not a multiplication by
+  // α = 0, which could leave NaN from uninitialized tensor memory. `g` is the warpgroup, or warps of it under a
+  // warp-uniform branch (`ownQuadrants`): each warp converged, each touching its own lanes only.
+  def zeroQuadrants {k: Lifetime}{g: Group}{f: Nat}{x: Lifetime}{m: Lifetime}
+      (e: Ctx(k, g))(buf: ScoreBuffer(x, Rescaler.correction))(at: CorrectAt(x, m, f, OState.fresh))[converged: Eq(Bool, Core.ownQuadrants(g, f), Bool.true)]
+      : Pair(Ctx(k, g), Rescaling(x, m, f)) := {
+    match at returning Pair(Ctx(k, g), Rescaling(x, m, f)) with
+    | CorrectAt.mk => (Core.resume(Key.key, k, g, Core.zeroRow(Core.state(Key.key, e), Core.outAt(buf))), Rescaling.mk(x, m, f))
   }
 
-  // Multiplies this warp's quadrant of Ô by `alpha`, each thread its row (`scaleRow`). Its group is `warpwise`: it runs
-  // under a branch on a warp vote, each warp converged for its `tcgen05.ld/st` whichever warps run it (M21), so a warp
-  // whose rows all have α = 1 can skip it; a row with α = 1 in a warp that rescales is multiplied by 1.
-  def rescaleQuadrant {k: Lifetime}{f: Nat}{x: Lifetime}{m: Lifetime}{S: Lifetime}{u: Grain}
-      (e: Ctx(k, Group.warpwise(f, 4)))(buf: ScoreBuffer(x, Rescaler.correction))(r: Rescaling(x, m, f))(alpha: Val(S, u, DType.f32))
-      : Pair(Ctx(k, Group.warpwise(f, 4)), Rescaling(x, m, f)) :=
-    (Core.resume(Key.key, k, Group.warpwise(f, 4), Core.scaleRow(Core.state(Key.key, e), Core.outAt(buf), alpha.expr)), r)
+  // Multiplies this warp's quadrant of Ô by `alpha`, each thread its row (`scaleRow`). `g` is the warpgroup, or warps of
+  // it under a branch on a warp vote (`warpwise`, M21), each warp converged for its `tcgen05.ld/st`: a warp whose rows
+  // all have α = 1 can skip it, and a row with α = 1 in a warp that rescales is multiplied by 1.
+  def rescaleQuadrant {k: Lifetime}{g: Group}{f: Nat}{x: Lifetime}{m: Lifetime}{S: Lifetime}{u: Grain}
+      (e: Ctx(k, g))(buf: ScoreBuffer(x, Rescaler.correction))(r: Rescaling(x, m, f))(alpha: Val(S, u, DType.f32))
+      [converged: Eq(Bool, Core.ownQuadrants(g, f), Bool.true)]: Pair(Ctx(k, g), Rescaling(x, m, f)) :=
+    (Core.resume(Key.key, k, g, Core.scaleRow(Core.state(Key.key, e), Core.outAt(buf), alpha.expr)), r)
 
   // Hands the rescaled Ô to the MMA thread (`publishCode`): the warpgroup's 128 of P full's arrivals.
   def publishRescaled {k: Lifetime}{f: Nat}{x: Lifetime}{m: Lifetime}
@@ -2950,11 +2970,12 @@ namespace Core {
     (e, Val.mk(l, Grain.warp, DType.bool, Expr.bin(BinOp.lt, Expr.lit(0), any.expr), Option.none(Nat)))
   }
 
-  // 2^x on the FMA units (FA4's `ex2_emulation`): x clamped to −127 (`max`); j = ⌊x⌋, by `add.rm` of 1.5·2²³ and the
-  // subtraction of 1.5·2²³; 2^(x − j) by FA4's cubic on [0, 1) (`POLY_EX2[3]`), Horner's rule by `fma.rn`; and j added
-  // to the exponent of the result's bits, from the low bits of the `add.rm`'s. No instruction flushes subnormals (A58).
-  // Measured on every f32 x of [−127, 8] (NOTES.md): within 2^−13.47 relative where 2^x is normal, x ≥ −126, and within
-  // 2^−127 absolute below; −∞ gives +0, as `ex2` does.
+  // 2^x on the FMA units (FA4's `ex2_emulation`), for x < 128: x clamped to −127 (`max`); j = ⌊x⌋, by `add.rm` of
+  // 1.5·2²³ and the subtraction of 1.5·2²³; f = x − j, in [0, 1]; 2^f by FA4's cubic (`POLY_EX2[3]`), Horner's rule by
+  // `fma.rn`; and j added to the exponent of the result's bits, from the low bits of the `add.rm`'s. No instruction
+  // flushes subnormals (A58). Measured on every f32 x of [−127, 8] (NOTES.md): within 2^−13.47 relative where 2^x is
+  // normal, x ≥ −126, and within 2^−127 absolute below; −∞ gives +0, as `ex2` does. Outside its domain it is wrong:
+  // x ≥ 128 overflows the exponent's addition (128 gives +∞, 129 gives −0), and NaN gives +0.
   def ex2emu {l: Lifetime}{g: Group}{S: Lifetime}{u: Grain}(e: Ctx(l, g))(x: Val(S, u, DType.f32)): Pair(Ctx(l, g), Val(l, u, DType.f32)) := {
     let floor := "\\n\\tmax.f32 c, %1, 0fC2FE0000;\\n\\tadd.rm.f32 r, c, 0f4B400000;\\n\\tsub.rn.f32 j, r, 0f4B400000;\\n\\tsub.rn.f32 f, c, j;"
     let poly := "\\n\\tfma.rn.f32 p, f, 0f3D9DF09D, 0f3E6906A4;\\n\\tfma.rn.f32 p, p, f, 0f3F31F519;\\n\\tfma.rn.f32 p, p, f, 0f3F800000;"
@@ -2962,27 +2983,44 @@ namespace Core {
     Core.asmValue(Key.key, e, u, Text.cat3("{\\n\\t.reg .f32 c, r, j, f, p;\\n\\t.reg .b32 k, q;", floor, Text.cat(poly, scale)), Core.one(Core.f32(x.expr)))
   }
 
-  // A CTA's right to set its warpgroups' register counts, which `splitWarpgroups` uses up: each warpgroup's count
-  // changes once, from the 128 that every warp of a 512-thread CTA compiled for one block per SM starts with.
+  // A CTA's right to set its warpgroups' register counts, which `splitWarpgroups` uses up.
   sealed inductive RegPermit (l: Lifetime) : Type { kind = lin, scope = l }
    | mk : RegPermit(l)
 
-  // `setmaxnreg` from 128 registers per thread to `count`: `.inc` above, `.dec` below, nothing at 128 (PTX §9.7.21.5).
-  def setMaxRegs (count: Nat): List(Stmt) := {
-    let set := fun (action: String): List(Stmt) =>
-      List.cons(Core.asm0(Text.cat3("setmaxnreg.", action, Text.cat3(".sync.aligned.u32 ", Text.nat(count), ";"))), List.nil(Stmt))
-    Bool.cond(Nat.blt(128, count), List(Stmt), set("inc"), Bool.cond(Nat.blt(count, 128), List(Stmt), set("dec"), List.nil(Stmt)))
+  // `setmaxnreg` from `from` registers per thread to `to`: `.inc` up, `.dec` down, nothing between equal counts
+  // (PTX §9.7.21.5).
+  def setMaxRegs (from: Nat)(to: Nat): List(Stmt) := {
+    match Nat.beq(from, to) returning List(Stmt) with
+    | Bool.true => List.nil(Stmt)
+    | Bool.false => {
+      let action := Bool.cond(Nat.blt(from, to), String, "inc", "dec")
+      List.cons(Core.asm0(Text.cat3("setmaxnreg.", action, Text.cat3(".sync.aligned.u32 ", Text.nat(to), ";"))), List.nil(Stmt))
+    }
   }
 
   // A count `setmaxnreg` takes: a multiple of 8 from 24 to 256.
   def regsOk (count: Nat): Bool := Bool.and(Nat.ble(24, count), Bool.and(Nat.ble(count, 256), Nat.isZero(Nat.mod(count, 8))))
 
+  // The role of the warpgroup `warps(f, 4)` at `count` registers per thread (A59):
+  // - first `setmaxnreg` from 128 to `count`, so it covers all of the role's code;
+  // - after the role, the warpgroup's named barrier, which `setmaxnreg` needs between two of its own, and `setmaxnreg`
+  //   back to 128, so every warp holds 128 outside the split.
+  def withRegs {kr: Kind}{Sr: Lifetime}(f: Nat)(count: Nat)
+      (role: { kind = kr, scope = Sr } (m: Lifetime) -> Ctx(m, Group.warps(f, 4)) -> Pair(Ctx(m, Group.warps(f, 4)), Unit))
+      : { kind = kr, scope = Sr } (m: Lifetime) -> Ctx(m, Group.warps(f, 4)) -> Pair(Ctx(m, Group.warps(f, 4)), Unit) :=
+    fun (m: Lifetime)(e: Ctx(m, Group.warps(f, 4))): Pair(Ctx(m, Group.warps(f, 4)), Unit) => {
+      let (e, u) := role(m, Core.emitAll(Key.key, e, Core.setMaxRegs(128, count)))
+      let joined := Core.join(Group.warps(f, 4), Core.state(Key.key, e))
+      (Core.resume(Key.key, m, Group.warps(f, 4), Core.pushAll(joined, Core.setMaxRegs(count, 128))), u)
+    }
+
   // Runs the four warpgroups of a 512-thread CTA concurrently, `group0` to `group3` on warps 0–3, 4–7, 8–11 and 12–15,
-  // each first setting its per-thread register count to `regs0` to `regs3` (`setmaxnreg`, A30), then waits for all of
-  // them. Each count must be one `setmaxnreg` takes, and together they must fit the register file,
-  // 128 · (regs0 + … + regs3) ≤ 65536 (else a generation error), so every increase finds the registers the decreases
-  // free. The `setmaxnreg` is the first instruction of its warpgroup's branch, so it covers all of the role's code, and
-  // the permit makes it the warpgroup's only one, so its direction is from 128.
+  // each at its per-thread register count `regs0` to `regs3` (`withRegs`), then waits for all of them. Each count must
+  // be one `setmaxnreg` takes, and together they must fit the register file, 128 · (regs0 + … + regs3) ≤ 65536 (else a
+  // generation error), so every increase finds the registers the decreases free; back at 128, all of them fill it
+  // exactly, so the increases back wait only for the decreases back. The kernel is then compiled for 512 threads, one
+  // block per SM (the `Gen`'s bounds), so every warp enters at 128 (A59), and the permit makes this each warpgroup's
+  // only change from 128.
   def splitWarpgroups {l: Lifetime}{k0: Kind}{S0: Lifetime}{k1: Kind}{S1: Lifetime}{k2: Kind}{S2: Lifetime}{k3: Kind}{S3: Lifetime}
       (e: Ctx(l, Group.cta(512)))(permit: RegPermit(l))(regs0: Nat)(regs1: Nat)(regs2: Nat)(regs3: Nat)
       (group0: { kind = k0, scope = S0 } (m: Lifetime) -> Ctx(m, Group.warps(0, 4)) -> Pair(Ctx(m, Group.warps(0, 4)), Unit))
@@ -2994,16 +3032,12 @@ namespace Core {
     | RegPermit.mk => {
       let counted := Core.check(Core.state(Key.key, e), Bool.and(Bool.and(Core.regsOk(regs0), Core.regsOk(regs1)), Bool.and(Core.regsOk(regs2), Core.regsOk(regs3))),
         "registers: a warpgroup's count must be a multiple of 8 from 24 to 256")
-      let e := Core.resume(Key.key, l, Group.cta(512), Core.check(counted, Nat.ble(Nat.add(Nat.add(regs0, regs1), Nat.add(regs2, regs3)), 512),
-        "registers: the warpgroups' counts exceed the register file"))
+      let fits := Core.check(counted, Nat.ble(Nat.add(Nat.add(regs0, regs1), Nat.add(regs2, regs3)), 512), "registers: the warpgroups' counts exceed the register file")
+      let e := Core.resume(Key.key, l, Group.cta(512), Gen.mk(fits.code, fits.next, fits.smem, fits.barrier, fits.errors, fits.group, Option.some(512)))
       let low := fun (m: Lifetime)(e: Ctx(m, Group.warps(0, 8))): Pair(Ctx(m, Group.warps(0, 8)), Pair(Unit, Unit)) =>
-        Core.split(e, 4, Unit, Unit,
-          fun (n: Lifetime)(e: Ctx(n, Group.warps(0, 4))): Pair(Ctx(n, Group.warps(0, 4)), Unit) => group0(n, Core.emitAll(Key.key, e, Core.setMaxRegs(regs0))),
-          fun (n: Lifetime)(e: Ctx(n, Group.warps(4, 4))): Pair(Ctx(n, Group.warps(4, 4)), Unit) => group1(n, Core.emitAll(Key.key, e, Core.setMaxRegs(regs1))))
+        Core.split(e, 4, Unit, Unit, Core.withRegs(0, regs0, group0), Core.withRegs(4, regs1, group1))
       let high := fun (m: Lifetime)(e: Ctx(m, Group.warps(8, 8))): Pair(Ctx(m, Group.warps(8, 8)), Pair(Unit, Unit)) =>
-        Core.split(e, 4, Unit, Unit,
-          fun (n: Lifetime)(e: Ctx(n, Group.warps(8, 4))): Pair(Ctx(n, Group.warps(8, 4)), Unit) => group2(n, Core.emitAll(Key.key, e, Core.setMaxRegs(regs2))),
-          fun (n: Lifetime)(e: Ctx(n, Group.warps(12, 4))): Pair(Ctx(n, Group.warps(12, 4)), Unit) => group3(n, Core.emitAll(Key.key, e, Core.setMaxRegs(regs3))))
+        Core.split(e, 4, Unit, Unit, Core.withRegs(8, regs2, group2), Core.withRegs(12, regs3, group3))
       let (e, u) := Core.split(e, 8, Pair(Unit, Unit), Pair(Unit, Unit), low, high)
       e
     }
@@ -3077,7 +3111,7 @@ namespace Core {
     let launch := TmaLaunch.mk(TMap.mk(l, sa, "A_map"), TMap.mk(l, sb, "B_map"), CMap.mk(l, "C_map"), m, n, k, TileAt.mk(bn, row0, col0))
     let gen := Core.state(Key.key, body(l, Core.start(Key.key, l, Group.cta(256), CtaGroup.one), launch, TileOwn.mk(l, bn), TmemPermit.mk(l)))
     let grid := Grid.blocks(Core.paramCeilDiv("N", bn), Core.paramCeilDiv("M", 128))
-    Core.finish(Key.key, name, Core.tmaGemmParams, Option.some(Core.tmaGemmLauncher(sa, sb, grid)), Option.none(Nat),
+    Core.finish(Key.key, name, Core.tmaGemmParams, Option.some(Core.tmaGemmLauncher(sa, sb, grid)),
       Core.check(gen, Core.gemmShapeOk(sa, sb), "kernel: boxes the ring or the tensor cores do not take"))
   }
 
@@ -3113,11 +3147,11 @@ namespace Core {
       List.cons(Stmt.decl(DType.u32, tiles, Expr.bin(BinOp.mul, Expr.var(tilesM), Expr.var(tilesN))),
       List.cons(Stmt.decl(DType.u32, bandRows, Core.minExpr(Expr.var(tilesM), Expr.lit(band))),
       List.cons(Stmt.decl(DType.u32, bandTiles, Expr.bin(BinOp.mul, Expr.var(bandRows), Expr.var(tilesN))), List.nil(Stmt))))))
-    let gen1 := Core.pushAll(Gen.mk(gen0.code, Nat.add(tilesN, 5), gen0.smem, gen0.barrier, gen0.errors, gen0.group), counts)
+    let gen1 := Core.pushAll(Gen.mk(gen0.code, Nat.add(tilesN, 5), gen0.smem, gen0.barrier, gen0.errors, gen0.group, gen0.bounds), counts)
     let e := Core.resume(Key.key, l, Group.cta(256), gen1)
     let gen := Core.state(Key.key, body(l, e, gemm, Sched.mk(l, bn, tiles, tilesM, bandRows, bandTiles), SchedOwn.mk(l, bn), TmemPermit.mk(l)))
     let grid := Grid.persistent(Expr.bin(BinOp.mul, Core.paramCeilDiv("M", 128), Core.paramCeilDiv("N", bn)))
-    Core.finish(Key.key, name, Core.tmaGemmParams, Option.some(Core.tmaGemmLauncher(sa, sb, grid)), Option.none(Nat),
+    Core.finish(Key.key, name, Core.tmaGemmParams, Option.some(Core.tmaGemmLauncher(sa, sb, grid)),
       Core.check(gen, Core.gemmShapeOk(sa, sb), "kernel: boxes the ring or the tensor cores do not take"))
   }
 
@@ -3201,7 +3235,7 @@ namespace Core {
     let launch := AttnLaunch.mk(head("Q_map"), head("K_map"), head("V_map"), Core.headOut(Key.key, l, t, seq.expr, Core.rowInHead), mask, seq,
       blocks, q0, Core.uniformParam(Key.key, l, DType.f32, "scale_log2"))
     let gen := Core.state(Key.key, body(l, e, launch, OOwn.mk(l, t, 4), TmemPermit.mk(l)))
-    Core.finish(Key.key, name, Core.attnParams(t), Option.some(Core.attnLauncher(t, 128, 256)), Option.none(Nat), gen)
+    Core.finish(Key.key, name, Core.attnParams(t), Option.some(Core.attnLauncher(t, 128, 256)), gen)
   }
 
   // What each CTA of a two-tile attention kernel starts with: as `AttnLaunch`, with each tile's first row within the
@@ -3239,13 +3273,13 @@ namespace Core {
       : Program := scope l => {
     let (e, launch) := Core.twoTileStart(Key.key, l, 384, causal, t)
     let gen := Core.state(Key.key, body(l, e, launch, OOwn.mk(l, t, 0), OOwn.mk(l, t, 4), TmemPermit.mk(l)))
-    Core.finish(Key.key, name, Core.attnParams(t), Option.some(Core.attnLauncher(t, 256, 384)), Option.none(Nat), gen)
+    Core.finish(Key.key, name, Core.attnParams(t), Option.some(Core.attnLauncher(t, 256, 384)), gen)
   }
 
   // Forward attention as `pairAttentionKernel` computes it, in FA4's CTA of 512 threads (gpu/encoding/A3B.md, A3b),
-  // whose third warpgroup rescales Ô and whose warpgroups set their register counts: compiled for 512 threads and one
-  // block per SM (`__launch_bounds__(512, 1)`), so every warp starts with 128 registers, and the body gets the
-  // `RegPermit` that `splitWarpgroups` uses up. Its launcher, its rows and its launch contract are
+  // whose third warpgroup rescales Ô and whose warpgroups set their register counts: the body gets the `RegPermit` that
+  // `splitWarpgroups` uses up, which compiles the kernel for 512 threads and one block per SM (`__launch_bounds__(512,
+  // 1)`, which caps a thread's registers at 128). Its launcher, its rows and its launch contract are
   // `pairAttentionKernel`'s, with 512 threads.
   def correctedAttentionKernel (name: String)(causal: Bool)(t: DType)
       (body: (l: Lifetime) -> Ctx(l, Group.cta(512)) -> PairLaunch(l, TmaSpec.mk(64, 128), t) -> OOwn(l, t, 0) -> OOwn(l, t, 4)
@@ -3253,7 +3287,7 @@ namespace Core {
       : Program := scope l => {
     let (e, launch) := Core.twoTileStart(Key.key, l, 512, causal, t)
     let gen := Core.state(Key.key, body(l, e, launch, OOwn.mk(l, t, 0), OOwn.mk(l, t, 4), TmemPermit.mk(l), RegPermit.mk(l)))
-    Core.finish(Key.key, name, Core.attnParams(t), Option.some(Core.attnLauncher(t, 256, 512)), Option.some(512), gen)
+    Core.finish(Key.key, name, Core.attnParams(t), Option.some(Core.attnLauncher(t, 256, 512)), gen)
   }
 
   // ---- Paged attention (gpu/encoding/PAGED.md) ----------------------------------------------------------------------
@@ -3387,7 +3421,7 @@ namespace Core {
       PageTable.mk(l, "block_table", Expr.param("B"), Expr.param("max_pages")), Core.headOut(Key.key, l, t, seq.expr, Core.rowInHead), mask, seq,
       blocks, q0, Core.uniformParam(Key.key, l, DType.f32, "scale_log2"))
     let gen := Core.state(Key.key, body(l, e, launch, OOwn.mk(l, t, 4), TmemPermit.mk(l)))
-    Core.finish(Key.key, name, Core.pagedParams(t), Option.some(Core.pagedLauncher(heads, t)), Option.none(Nat), gen)
+    Core.finish(Key.key, name, Core.pagedParams(t), Option.some(Core.pagedLauncher(heads, t)), gen)
   }
 
   // ---- Paged decode (gpu/encoding/P2.md) ----------------------------------------------------------------------------
@@ -3528,7 +3562,7 @@ namespace Core {
       PageTable.mk(l, "block_table", Expr.param("B"), Expr.param("max_pages")), out, Mask.mk(l, keys.expr, Bool.false, minusInfinity.expr, Core.rowInTile),
       count, first, Core.uniformParam(Key.key, l, DType.f32, "scale_log2"))
     let gen := Core.state(Key.key, body(l, e, launch, OOwn.mk(l, DType.f32, 4), TmemPermit.mk(l)))
-    Core.finish(Key.key, name, Core.decodeParams, Option.some(Core.decodeLauncher(heads, group)), Option.none(Nat), gen)
+    Core.finish(Key.key, name, Core.decodeParams, Option.some(Core.decodeLauncher(heads, group)), gen)
   }
 
   // ---- Paged decode: append ------------------------------------------------------------------------------------------
@@ -3707,7 +3741,7 @@ namespace Core {
       Claims.mk(l, "owners", Expr.param("epoch"), "appended", Expr.param("pages"), heads), PagedCache.mk(l, "K", "V", heads),
       NewKV.mk(l, "k_new", "v_new"))
     let gen := Core.state(Key.key, body(l, e, launch, ClaimOwn.mk(l)))
-    Core.finish(Key.key, name, Core.appendParams, Option.some(Core.appendLauncher(heads)), Option.none(Nat), gen)
+    Core.finish(Key.key, name, Core.appendParams, Option.some(Core.appendLauncher(heads)), gen)
   }
 
   // ---- Paged decode: combine -----------------------------------------------------------------------------------------
@@ -3856,7 +3890,7 @@ namespace Core {
     let splits := Core.uniformParam(Key.key, l, DType.u32, "splits")
     let launch := CombineLaunch.mk(Partials.mk(l, "Opart", "LSEpart", Expr.param("rows"), splits.expr), Combined.mk(l, "O", "LSE"), splits)
     let gen := Core.state(Key.key, body(l, Core.start(Key.key, l, Core.warpCta, CtaGroup.one), launch, CombinedOwn.mk(l)))
-    Core.finish(Key.key, name, Core.combineParams, Option.some(Core.combineLauncher), Option.none(Nat), gen)
+    Core.finish(Key.key, name, Core.combineParams, Option.some(Core.combineLauncher), gen)
   }
 
   // ---- CTA pairs (gpu/encoding/TWO_CTA.md) ----------------------------------------------------------------------------
@@ -3940,7 +3974,7 @@ namespace Core {
   // How a pair kernel ends: its request for shared memory raised to `pairShared`, then `finish`.
   def pairFinish (k: Key)(name: String)(params: List(Param))(launcher: Launcher)(gen: Gen): Program := {
     let smem := Bool.cond(Nat.ble(Core.pairShared, gen.smem), Nat, gen.smem, Core.pairShared)
-    Core.finish(k, name, params, Option.some(launcher), Option.none(Nat), Gen.mk(gen.code, gen.next, smem, gen.barrier, gen.errors, gen.group))
+    Core.finish(k, name, params, Option.some(launcher), Gen.mk(gen.code, gen.next, smem, gen.barrier, gen.errors, gen.group, gen.bounds))
   }
 
   // One thread runs `setup` and fences its inits for the cluster; then every thread of both CTAs waits at the cluster

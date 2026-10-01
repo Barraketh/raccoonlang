@@ -464,8 +464,8 @@ namespace Cuda {
     | Grid.pairs x y => "__cluster_dims__(2, 1, 1) "
   })
 
-  // As `kernel`, compiled for blocks of at most `n` threads and one block per SM (`__launch_bounds__(n, 1)`) when
-  // `bounds` is `n`.
+  // As `kernel`, with `__launch_bounds__(n, 1)` when `bounds` is `n`: blocks of at most `n` threads, at least one of
+  // them resident per SM, so `ptxas` keeps a thread's registers within 65536 / n.
   def boundedKernel (bounds: Option(Nat))(k: Kernel): String := {
     let (n, ps, bytes, body, host) := k
     let limit := Option.elim(bounds, String, "", fun (t: Nat): String => Text.cat3("__launch_bounds__(", Text.nat(t), ", 1) "))

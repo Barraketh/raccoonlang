@@ -47,17 +47,20 @@ kernel is compiled with `__launch_bounds__(512, 1)`. These counts are FA4's for 
 
 ### 3.1 The row ring: α from softmax to correction
 
-Per tile, a ring of two slots in shared memory, each slot 128 f32, one per row. Thread `r` of the softmax warpgroup
-writes row `r`'s value, and thread `r` of the correction warpgroup reads it. `r = 32 · (warp mod 4) + lane` in both
-warpgroups (M12).
+Per tile, a ring of one slot in shared memory, 128 f32, one per row. Thread `r` of the softmax warpgroup writes row
+`r`'s value, and thread `r` of the correction warpgroup reads it. `r = 32 · (warp mod 4) + lane` in both warpgroups
+(M12).
 - **Barriers.** Full and empty barriers of 128 arrivals each: all generic proxy, no fence beyond the barriers'
   release and acquire.
 - **Messages.** Per block `i ≥ 1`, α. After the loop, nothing: the softmax keeps the epilogue (§3.4).
-- **Two slots**, so the softmax warpgroup can run one block ahead of the correction.
+- **One slot.** At most one α per tile is in flight. The correction arrives on α empty before it arrives on P full;
+  P full gates `PVt_i`; `PVt_i` precedes `St_{i+1}`; and the softmax sends `α_{i+1}` only after it observed `St_{i+1}`.
+  A second slot would never be used.
+- **Both barriers stay.** The empty barrier orders each write after the read before it, so the ring's correctness
+  needs nothing outside the ring.
 
 FA4 passes `scale` through shared memory with a named barrier per warp pair, and returns the slot with a second
-barrier (`mbar_softmax_stats`). The ring is that pair of signals as one protocol, with the round argument of
-`docs/SEPARATION_PILOT.md` §4.
+barrier (`mbar_softmax_stats`).
 
 It is a new kind of ring: its producer and consumer are warpgroups writing and reading registers through shared
 memory, not TMA and MMA. Its pieces are the slots, one row each per thread.
@@ -92,7 +95,8 @@ The softmax keeps `m` unless the block's maximum exceeds it by more than 8:
 - if `m_cand − m > 8`: `m ← m_cand` and `α = 2^(m_old − m)`;
 - else α = 1 and `m` stays.
 
-So `p = 2^(s − m) ≤ 2⁸`. In bf16 that is exact in range, with the same relative precision. `l` accumulates in f32.
+So `p = 2^(s − m) ≤ 2⁸`. bf16 holds values up to 2⁸ with the same relative precision as up to 1: rounding p to bf16
+costs 2⁻⁸ relative either way. `l` accumulates in f32.
 O = Ô/l and LSE = (m + log₂ l)·ln 2 are unchanged in form. This is FA4's `rescale_threshold = 8.0` for 16-bit inputs
 (`flash_fwd_sm100.py` 2199; `softmax.py` 341–360).
 
@@ -186,25 +190,33 @@ Where the build departs from the design above as first written (2026-10-01):
   The correction warpgroup zeroes its quadrants in block 0 at once: no product has touched Ô, and the first waits for
   the zeroing's publish. `publishAlpha` sends α only when the softmax side's Ô is `held`, so the ring carries `n − 1`
   messages per tile.
-- **The row ring is part of the buffer.** `withCorrectedBuffer` opens a score buffer whose P full counts 256 arrivals
-  and which carries the α ring: its barriers and slots follow the buffer's barriers, and its four registers the
-  buffer's phases. Sending is one operation with the publish (`publishAlpha`: wait for the slot, write, arrive, then
-  publish P); receiving is one operation (`awaitAlpha`: wait, fence `after_thread_sync`, read, free the slot). A slot's
-  element is `threadIdx.x mod 128` on both sides, which is M12's row in an aligned warpgroup.
+- **The row ring is part of the buffer.** `withCorrectedBuffer` opens a score buffer (`openScoreBuffer`, which
+  `withScoreBuffer` also runs) whose P full counts 256 arrivals and which carries the α ring (`AlphaRing`): its two
+  barriers and its one slot follow the buffer's barriers, and its two phase registers the buffer's phases. Sending is
+  one operation with the publish (`publishAlpha`: wait for the slot, write, arrive, then publish P); receiving is one
+  operation (`awaitAlpha`: wait, fence `after_thread_sync`, read, free the slot). The slot's element is
+  `threadIdx.x mod 128` on both sides, which is M12's row in an aligned warpgroup. The first build had two slots,
+  which the hostile review showed are never both used (§3.1).
 - **Who rescales is in the buffer's type.** `ScoreBuffer(x, h)` with `h : Rescaler`: A3a's `rescaleRow` and
   `publishProbs` take a buffer whose rescaler is the softmax warpgroup, A3b's operations one whose rescaler is the
   correction warpgroup. Without it, A3b's softmax warpgroup could rescale Ô as A3a's does, racing the correction
   warpgroup on the same lanes (`rejected/attention_a3b_mutants.py`, `softmax_rescales_quadrant`).
 - **`setmaxnreg`** (§2): not an operation on `warps(f, 4)` but part of `splitWarpgroups`, which splits a 512-thread CTA
-  into its four warpgroups and makes each one's `setmaxnreg` the first instruction of its branch. So the count covers
-  all of the role's code, as `ptxas` needs to allocate it, and the `RegPermit` that the 512-thread builder hands out
-  makes it each warpgroup's only one, so its direction is from 128. Its counts are generation-time checked (multiples
-  of 8 from 24 to 256, at most 65536 registers in all). The kernel prints `__launch_bounds__(512, 1)`
-  (`Core.Program`'s `bounds`, `Cuda.boundedKernel`).
+  into its four warpgroups (`withRegs`):
+  - each warpgroup's branch starts with `setmaxnreg` from 128 to its count, so the count covers all of the role's
+    code, as `ptxas` needs to allocate it;
+  - it ends with the warpgroup's named barrier and `setmaxnreg` back to 128, so every warp holds 128 outside the split
+    (the joins, the invalidations, the deallocation);
+  - the `RegPermit` makes this each warpgroup's only change from 128.
+  Its counts are generation-time checked (multiples of 8 from 24 to 256, at most 65536 registers in all). Once it has
+  run, the kernel prints `__launch_bounds__(512, 1)` (the `Gen`'s and `Program`'s `bounds`, `Cuda.boundedKernel`),
+  which caps a thread at 128 registers; that every warp enters at 128 is A59's claim.
 - **Registers:** 192, 192, 72 and 56 for both kernels. FA4's non-causal `cta_group::1` kernel uses 192, 80 and 48
   (`flash_fwd_sm100.py` 380–385); A3b keeps one split.
 - **Shared roles.** The loader and the MMA issuer are A3a's, moved to `Attention.rac` (`pairLoader`, `pairIssuer`),
   generic in the warp they run on and the buffers' rescaler; A3a's example generates byte-identical CUDA.
+- **The quadrant operations** take the warpgroup or warps of it under a warp vote (`ownQuadrants`), so a rescale
+  without a skip needs no vote.
 - **Mutants** (§5 item 4): "a softmax writing a slot before its empty wait" is not expressible, since `publishAlpha`
   waits, writes and arrives in one operation. "A rescale of another warp's quadrant" is the softmax warpgroup
   rescaling Ô (`softmax_rescales_quadrant`): its warp 0 shares quadrant 0 with the correction warpgroup's warp 8.

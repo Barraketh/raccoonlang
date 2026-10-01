@@ -830,7 +830,7 @@ between the warpgroups (FA4's is off). The second, A3b, is built to the same poi
 2026-10-01): FA4's CTA of 16 warps with a correction warpgroup, the lazy rescale, the emulated exponential and the
 register split. As built:
 - **The correction warpgroup** (warps 8–11) rescales both tiles' Ô. A score buffer opened by `withCorrectedBuffer` has
-  a P full of 256 arrivals, the softmax and the correction warpgroups', and an α ring of two slots of 128 f32 with
+  a P full of 256 arrivals, the softmax and the correction warpgroups', and an α ring of one slot of 128 f32 with
   full and empty barriers of 128 arrivals, indexed by M12's row on both sides (M22). The softmax warpgroup sends α
   with its publish of P (`publishAlpha`), for every block after the first; the correction warpgroup zeroes Ô in block
   0 and, after, awaits α (`awaitAlpha`), which orders its accesses after the product before (A57).
@@ -841,8 +841,8 @@ register split. As built:
 - **The polynomial `exp2`** on the FMA units for 16 of a row's 128 columns (`ex2emu`, FA4's `cta_group::1` set), with
   its measured error in T1's budget (§1.3).
 - **`setmaxnreg`**: `splitWarpgroups` gives the softmax warpgroups 192 registers per thread, the correction warpgroup
-  72 and warps 12–15 56, each warpgroup's `setmaxnreg` the first instruction of its branch; the kernel is compiled
-  with `__launch_bounds__(512, 1)` (A30, A59).
+  72 and warps 12–15 56, each warpgroup's `setmaxnreg` the first instruction of its branch and one back to 128 its
+  last; the kernel is compiled with `__launch_bounds__(512, 1)` (A30, A59).
 - **Shared roles**: A3a's loader and issuer, unchanged, as `Attention.pairLoader` and `pairIssuer`.
 
 The items below are A3's list as first planned. A3a and A3b built the first seven, without the `exp` turn between

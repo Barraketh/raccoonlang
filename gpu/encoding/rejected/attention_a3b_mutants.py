@@ -3,16 +3,17 @@
 # refused for that rule. Run by check.sh through gpu/mutate.py.
 #
 # What is not a refusal, and so has no mutant here:
-# - A softmax writing a slot of the α ring before its empty wait: not expressible. `publishAlpha` waits for the slot,
-#   writes it and arrives on its full barrier in one operation, and it is the only writer of the ring.
-# - Reading α from a slot before its full wait: not expressible, for the same reason: `awaitAlpha` waits, fences, reads
-#   and frees the slot in one operation.
+# - A softmax writing the α slot before its empty wait: not expressible. `publishAlpha` waits for the slot, writes it
+#   and arrives on its full barrier in one operation, and it is the only writer of the ring.
+# - Reading α from the slot before its full wait: not expressible. `awaitAlpha` waits, fences, reads and frees the slot
+#   in one operation.
 # - Setting a warpgroup's register count twice: not expressible. Only `splitWarpgroups` emits `setmaxnreg`, once per
 #   warpgroup, and it uses up the kernel's one `RegPermit`, which is linear.
-# - Rescaling with every row's α, skipping no warp (a branch on a uniform `true`): allowed, and correct. A row whose α is
-#   1 is multiplied by 1.
-# - Swapping the two tiles' buffers between the correction's two calls: a wrong result, not a race, as for A3a: each
-#   tile's buffer is then still rescaled by its own α ring's values, by the warps that own its rows.
+# - Rescaling every warp's quadrant, skipping none (`rescaleQuadrant` straight on the warpgroup, no vote): allowed, and
+#   correct. `rescaleQuadrant` takes the warpgroup or warps of it under a warp vote, and a row whose α is 1 is
+#   multiplied by 1.
+# - Swapping the two tiles' buffers between the correction's two calls is refused, not a mutant of a rule of A3b's: a
+#   side is indexed by its buffer's scope, so tile 1's buffer does not take tile 0's `CorrectAt`.
 # - Trip counts that differ between the correction warpgroup and the other roles: a deadlock (M11), not a race.
 
 SOURCE = "encoding/examples/attention_a3b.rac"
@@ -21,8 +22,10 @@ MUTANTS = [
     dict(
         name="rescale_before_alpha", expect="TypeMismatch", mentions="Core.Rescaling",
         why="Rescales Ô without waiting for the block's α: the product of the block before may still be accumulating "
-            "into Ô, a read-modify-write racing the tensor cores. `rescaleQuadrant` needs the `Rescaling` that only "
-            "`awaitAlpha` (after the α ring's full wait and its fence) or block 0's `zeroQuadrants` gives.",
+            "into Ô, a read-modify-write racing the tensor cores. The branch's state must be the `Rescaling` that only "
+            "`awaitAlpha` (after the α ring's full wait and its fence) or block 0's `zeroQuadrants` gives, and it is "
+            "refused at the branch's `Fixed` evidence, `fixedRescaling`, which the side the loop hands on does not "
+            "match.",
         old="""      let (e, (r, alpha)) := awaitAlpha(e, b, st)
       let (e, grows) := voteAny(e, Core.lt(alpha, one))""",
         new="""      let (e, grows) := voteAny(e, Core.lt(one, one))
@@ -66,9 +69,9 @@ MUTANTS = [
         why="The correction warpgroup arrives on P full twice in one block: P full's phase would complete with the "
             "arrivals of two of its blocks and none of the softmax warpgroup's, and the product would read a P not yet "
             "written. `publishRescaled` consumes the block's `Rescaling`.",
-        old="""      let (e, r) := branch(e, grows, fixedRescaling(x, m, 8), r, rescale, keep)
+        old="""rescaleQuadrant(e, b, r, alpha))
       publishRescaled(e, b, r)""",
-        new="""      let (e, r) := branch(e, grows, fixedRescaling(x, m, 8), r, rescale, keep)
+        new="""rescaleQuadrant(e, b, r, alpha))
       let (e, st) := publishRescaled(e, b, r)
       publishRescaled(e, b, r)""",
     ),
