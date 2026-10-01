@@ -64,8 +64,11 @@ has a lifetime of its own, so no pair opener can run there; the openers nest onl
 keep `l`. So every thread of both CTAs runs every opener and every close, in one order, generated once: both CTAs'
 layouts and cluster barriers match by construction.
 
-**The leader.** `onLeader(e, pair, body)` emits `if (rank == 0) { … }`. The body receives `Leader(m)`, a sealed
-unrestricted fact that belongs to the arm's scope `m`, and hands back only its context.
+**The leader.** `onLeader(e, pair, only, sides, body)` emits `if (rank == 0) { … }`. The body receives `Leader(m)`, a
+sealed unrestricted fact that belongs to the arm's scope `m`, and `sides`, and hands back only its context.
+- The arm captures no linear value: what it uses up, only the leader runs. It uses up only `sides`, whose evidence
+  `only: LeaderOnly(S)` says they are the leader's alone: a pair ring's consumer, a pair accumulator ring's issuing
+  side, pairs of them, or nothing. A producer or the storing side, whose finisher each CTA must run, cannot enter it.
 - The endpoints that issue tensor-core work, a pair ring's consumer and a pair accumulator ring's issuing side, are
   taken only with a `Leader` (`takePairConsumer`, `takePairAccProducer`). Every MMA and commit consumes a token
   derived from them, so it runs in the arm without taking a `Leader` itself.
@@ -275,7 +278,11 @@ Against the design as first written:
   releases, commits and drains are the single-CTA operations, not copies with other instructions.
 - `rank` is not exported: a rank-dependent trip count of the client's would deadlock the pair (review).
 - A pair kernel asks for at least `pairShared` bytes of shared memory, one CTA per SM (review).
-- `PairTile` records the tile's width, which `storeHalf` requires of the buffer (review).
+- `PairTile` records the tile's width, which `storeHalf` requires of the buffer (review); since step 4's review, in its
+  type, `PairTile(l, w)`.
+- Since step 4's review, an `onLeader` arm captures no linear value and is handed only leader-only sides (a pair
+  ring's consumer, a pair accumulator ring's issuing side): an arm that captured a producer or the storing side could
+  run its finisher in the leader alone, and the peer would close with copies or stores in flight.
 
 ## 9. Step 4 as built: the persistent pair GEMM
 
@@ -292,6 +299,8 @@ Against the design as first written:
 - Both CTAs compute the sequence from values that are the same in both (A43, A60), so they visit one tile sequence by
   construction (M18). The sequence lives in `PairSched`, which only the pair loops take: the single-CTA loops' start,
   `blockIdx.x`, differs between the CTAs.
+- No role's loop runs in one CTA only: an `onLeader` arm cannot capture a role's side (M20), so it can run no loop of a
+  role both CTAs run.
 - The launcher starts `2·min(SMs/2, tiles)` CTAs, as FA4's static persistent scheduler does (Facts §1.10).
 
 **The roles** are tinygemm_pair's, inside a tile loop each (`forPairTiles`):
@@ -306,10 +315,12 @@ all 512 columns. Both rings' stages and phases continue from tile to tile.
 
 **The epilogue.** The single-CTA TMA-store epilogue, unchanged, on the pair accumulator ring:
 - `forHalfChunks` loops over the 8 chunks of 32 columns of this CTA's 128 rows, the rows from the `PairTile`;
-- per chunk, each warp waits until its store of two chunks ago has read its buffer (`acquireStage`), loads its 32 rows
-  of the chunk and writes them to the buffer (`stagePairAcc`), fences them to the async proxy (`fenceStage`), and its
-  lane 0 stores the 32×32 box and commits it (`storeStage`);
-- the two 16 KB staging buffers are each four warps' 4 KB, so a 128×32 subtile is four TMA stores, one per warp;
+- per chunk, each warp loads its 32 rows of the chunk into registers (`loadPairChunk`), waits until its store of two
+  chunks ago has read its buffer (`acquireStage`), writes the chunk to the buffer (`writeStage`), fences it to the async
+  proxy (`fenceStage`), and its lane 0 stores the 32×32 box and commits it (`storeStage`); the load comes first, so it
+  does not wait behind the store;
+- the staging buffers are per warp: two of 4 KB each, warp q's buffer b at byte `1024 + (2q + b)·4096`, 32 KB in all,
+  so a 128×32 subtile is four TMA stores, one per warp;
 - the warpgroup releases the accumulator after the tile's last chunk is loaded and its store issued, before any store
   completes, so the next tile's MMAs overlap the stores;
 - after its last tile, each warp's lane 0 waits for every store to complete (`finishStores`), before the pair closes.
@@ -334,7 +345,9 @@ per warp (32 KB, 1024-aligned from 1024), six stages (192 KB, from 33,792), the 
 **Approximations and open points.**
 - The accumulator is released after the tile's last chunk is loaded and stored to its staging buffer, not right after
   the last load: a loop body is generated once, so code that runs in the last iteration only would need a peeled last
-  chunk. The difference is one chunk's shared-memory writes and store issue.
+  chunk. The difference is one chunk's buffer wait, shared-memory writes and store issue.
+- Each chunk loads with four `tcgen05.ld.32x32b.x8` and one `wait::ld`; CUTLASS loads a subtile with one `.x32` and
+  waits once per tile.
 - A 128×32 subtile is four 32×32 stores, one per warp, each warp waiting for its own groups (`withStaging`), where
   CUTLASS stores one 128×32 box after a named barrier of the warpgroup.
 - The grid assumes every pair of SMs can hold a cluster. If fewer clusters are resident, the extra pairs run their

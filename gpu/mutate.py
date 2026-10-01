@@ -6,7 +6,8 @@
 # -v prints every diagnostic of every mutant.
 #
 # A table is a Python file defining SOURCE (the example, relative to gpu/) and MUTANTS, a list of dicts with keys
-# name, expect, why, old, new, and optionally mentions. `old` must occur exactly once in the source.
+# name, expect, why, old, new, and optionally mentions; a mutant that changes several places gives `edits`, a list of
+# (old, new) pairs, in place of old and new. Each `old` must occur exactly once in the source.
 import concurrent.futures, json, os, runpy, shlex, shutil, subprocess, sys, tempfile
 
 here = os.path.dirname(os.path.abspath(__file__))
@@ -23,11 +24,14 @@ def run(*args):
 
 def check(m):
     label = f"{stem}/{m['name']}"
-    if source.count(m["old"]) != 1:
-        return False, f"FAIL {label}: the snippet occurs {source.count(m['old'])} times in {table['SOURCE']}"
+    mutated = source
+    for old, new in m.get("edits", [(m.get("old"), m.get("new"))]):
+        if source.count(old) != 1:
+            return False, f"FAIL {label}: a snippet occurs {source.count(old)} times in {table['SOURCE']}"
+        mutated = mutated.replace(old, new)
     path = os.path.join(scratch, m["name"] + ".rac")
     with open(path, "w") as f:
-        f.write(source.replace(m["old"], m["new"]))
+        f.write(mutated)
     try:
         diags = json.loads(run("--json", path).stdout)
     except json.JSONDecodeError:

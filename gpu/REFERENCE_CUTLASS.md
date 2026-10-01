@@ -523,12 +523,19 @@ Our `gemm_pair` (`encoding/examples/gemm_pair.rac`, `encoding/TWO_CTA.md` §6 st
 rows.
 
 **The like-for-like kernel** among §8.2's eight is `${K}_256x256x64_2x1x1_0_tnt_align8_2sm`.
-- **The same:** the problem (`tnt`, void C, f32 D), the MMA tile, the cluster, six stages, two accumulators, the
-  epilogue's subtile and its two buffers.
+- **The same:** the problem (`tnt`, void C, f32 D), the MMA tile, the cluster, six stages, two accumulators, 32 KiB
+  of staging.
 - **Different:**
   - the scheduler: CUTLASS's CLC (§5) against our static grid (§7 item 7 expects a few percent at 8192³);
   - the order: CUTLASS's raster heuristic, swizzle off, against our bands;
-  - the stores: we store a 128×32 subtile as four 32×32 boxes, one per warp, each warp waiting for its own;
+  - the staging: CUTLASS's two 128×32 buffers, one TMA store each after a named barrier of the warpgroup, against our
+    two 32×32 buffers per warp, each warp's lane 0 storing and waiting for its own;
+  - the loads: CUTLASS's `tcgen05.ld.32x32b.x32` and one `wait::ld` per tile, against four `.x8` and a `wait::ld` per
+    chunk;
+  - the release: CUTLASS releases the accumulator right after the tile's last load; we release it after the last
+    chunk's store is issued;
+  - CUTLASS issues each subtile's store one iteration late (`DelayTmaStore`, §4), to overlap it with the next
+    subtile's loads; we issue it in its own iteration, after loading the chunk before waiting for its buffer;
   - the scopes: `.release.cluster` and `.acquire.cluster` on cross-CTA barriers (`encoding/TWO_CTA.md` §7
     decision 3), where CUTLASS uses `.cta`.
 - **Cross-checks:** the run-time-cluster kernel at cluster 2×1, and §8.5's raster sweep of the 2×1 kernel, which shows

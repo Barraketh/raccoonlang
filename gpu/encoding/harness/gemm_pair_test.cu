@@ -175,14 +175,15 @@ static int correctness() {
   std::printf("%u pairs\n", pairs);
 
   // One tile, and several; K of one slice, of more slices than the ring's six stages, and with a tail; M with the
-  // second CTA's rows partly (200, 300) or wholly (100, 129) past M; N with the second half of B partly (200, 300) or
-  // wholly (8, 100, 136) past N, and chunks of 32 columns partly past N (8, 100, 136, 1000); more tiles than pairs, so
-  // that a pair visits several tiles and the stage and accumulator rings wrap across them (4096: three or four tiles a
-  // pair on a B200's 74 pairs), and a last band of fewer rows than the others (2304: nine tile rows, bands of eight).
-  const unsigned sizes[][3] = {{256, 256, 64},    {512, 512, 512},   {256, 256, 1032},  {200, 256, 72},
-                               {300, 200, 64},    {100, 256, 128},   {129, 136, 8},     {256, 8, 64},
+  // second CTA's rows partly (129, 200, 300) or wholly (100) past M; N with the second half of B partly (136, 200, 1000)
+  // or wholly (8, 100) past N, and chunks of 32 columns partly past N (8, 100, 136, 1000); more tiles than pairs, so
+  // that a pair visits several tiles and the accumulator ring wraps across them (4096: three or four tiles a pair on a
+  // B200's 74 pairs), with the stage ring wrapping inside a tile as well (2560 × 2048, K = 520: 80 tiles of nine
+  // stages each), and a last band of fewer rows than the others (2304: nine tile rows, bands of eight).
+  const unsigned sizes[][3] = {{256, 256, 64},    {512, 512, 512},   {256, 256, 1032},   {200, 256, 72},
+                               {300, 200, 64},    {100, 256, 128},   {129, 136, 8},      {256, 8, 64},
                                {256, 100, 520},   {1, 8, 8},         {1000, 1000, 1000}, {2048, 1536, 200},
-                               {2304, 4352, 192}, {4096, 4096, 64}};
+                               {2304, 4352, 192}, {4096, 4096, 64},  {2560, 2048, 520}};
   for (auto &s : sizes) {
     Problem p(s[0], s[1], s[2], s[0] * 7919u + s[1] * 104729u + s[2]);
     size_t bad = 0;
@@ -203,8 +204,9 @@ static int correctness() {
     failures += status == cudaSuccess;
   }
   // And extents whose element index into C does not fit 32 bits, or whose rows TMA's signed coordinates cannot reach:
-  // refused by the launcher's own checks, before it reads any array.
-  const unsigned huge[][3] = {{65536, 65536, 64}, {2147483648u, 4, 64}, {256, 256, 2147483648u}};
+  // refused by the launcher's own checks, before it reads any array. Each breaks one check alone (N = 0 passes every
+  // check but M's; the map encoding, which would refuse it too, comes after them).
+  const unsigned huge[][3] = {{65536, 65536, 64}, {2147483648u, 0, 64}, {256, 256, 2147483648u}};
   for (auto &s : huge) {
     cudaError_t status = gemm_pair_launch(nullptr, nullptr, nullptr, s[0], s[1], s[2], nullptr);
     std::printf("%s M=%u N=%u K=%u refused: %s\n", status != cudaSuccess ? "ok  " : "FAIL", s[0], s[1], s[2],

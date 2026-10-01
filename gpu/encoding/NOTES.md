@@ -553,12 +553,12 @@ Observations from building `TWO_CTA.md`'s step 4 for the GEMM (`Core.rac`'s sect
    `HalfOwn(m)` needed no new family; only `fillPair` had to let the tile's lifetime differ from the maps'. The
    single-CTA schedule became generic in its tile height, first index and step (`Sched`, `schedule`), and both
    persistent builders share it; `forChunks` and `forHalfChunks` share their loop (`chunkLoop`). Every other example
-   generates byte-identical code. What is new: `PairSched`, its two loops, `forHalfChunks`, `stagePairAcc` and the
-   builder, 82 lines.
+   generates byte-identical code. What is new: `PairSched`, its two loops, `forHalfChunks` and the builder, 82 lines.
 2. **An implicit is not forced by a callback's binder.** `forHalfChunks` first took the chunks' width implicitly, from
    its body's `ChunkAt(p, n)`; the checker refuses ("cannot be implicit: it is not forced by the type of any later
-   explicit parameter"), as A3b's `withRegs` found. So it takes the accumulator ring, whose type carries the width,
-   and checks it against the tile's at generation.
+   explicit parameter"), as A3b's `withRegs` found. It took the accumulator ring for its width, and checked it against
+   the tile's at generation, until the review moved the width into `PairTile`'s type (`PairTile(l, w)`): the tile now
+   forces it, and `storeHalf`'s check became a type too.
 3. **The release cannot sit in the last chunk.** The accumulator should go back to the leader right after the tile's
    last tensor-memory load. The chunk loop is generated once, so code for the last iteration only would need the loop's
    state to change type in it, or a peeled last chunk (one more copy of the chunk's code). The release follows the
@@ -571,11 +571,15 @@ Observations from building `TWO_CTA.md`'s step 4 for the GEMM (`Core.rac`'s sect
 5. **Stores per warp.** The epilogue is the single-CTA one, whose staging buffers are per warp: a 128×32 subtile is
    four 32×32 TMA stores, each warp's lane 0 committing and waiting for its own. CUTLASS stores one 128×32 box per
    subtile after a named barrier of the warpgroup. Which is faster is a hardware question.
-6. **Two planned mutants cannot be written.** A tile sequence that differs between the CTAs needs a value
-   that differs between them, and the client has none (M18); a staging buffer written before its store finished
-   reading it needs a `StageFree` that no wait made. Their mutants try the nearest thing: the single-CTA tile loop
-   (`single_cta_schedule`, refused since the pair's schedule is a `PairSched`) and a second chunk under one wait
-   (`stage_twice_per_acquire`, a reused linear token). An accumulator released before its loads is a reused
+6. **Two planned mutants cannot be written.** A staging buffer written before its store finished reading it needs a
+   `StageFree` that no wait made; `stage_twice_per_acquire` tries a second chunk under one wait (a reused linear
+   token). A tile sequence that differs between the CTAs needs a value that differs between them, which the client
+   does not have (M18), or a role's loop run in one CTA only. The first build allowed the second: an `onLeader` arm
+   could capture linear values, so a second producer loop, or the whole epilogue, could run in the leader alone, and
+   so could a producer's drain or the stores' last wait (the review's `peer_skips_drain` and
+   `peer_skips_store_wait`). The arm now captures no linear value and is handed only leader-only sides
+   (`LeaderOnly`, M20); the four mutants are refused, by the closure's kind. `single_cta_schedule` tries the
+   single-CTA tile loop, whose start differs between the CTAs. An accumulator released before its loads is a reused
    `AccFull` (`release_before_loads`).
 7. **The grid trusts residency.** `2·min(SMs/2, tiles)` CTAs, as FA4 launches, assumes every pair of
    SMs holds a cluster. If fewer clusters fit at once, the rest run their whole tile sequences after the others. The
@@ -586,10 +590,26 @@ Observations from building `TWO_CTA.md`'s step 4 for the GEMM (`Core.rac`'s sect
    (not in the repository), the pair TinyGEMM's extended: it checks the launch (grid `2·min(SMs/2, tiles)` × 1 of 256
    threads, the requested shared memory, the C map's f32 32×32 boxes) and emulates each pair's tile sequence from its
    cluster index in steps of the cluster count, in the band order, each CTA's loads and its stores in 32×32 boxes
-   clipped to the matrix, and aborts on any element written twice. Every check passed: 14 sizes three times each at
+   clipped to the matrix, and aborts on any element written twice. Every check passed: 15 sizes three times each at
    148 SMs (74 pairs: from 1 tile to 3 or 4 tiles a pair), again at 8 SMs (4 pairs, up to 64 tiles a pair), 7
    refusals, and the timing mode on small sizes. Broken emulations were caught: the peer loading the leader's rows of
-   A (12 of 14 sizes failed), the CTAs swapping their halves of B (14), stores not clipped to N, every pair starting at
-   tile 0, and a step of one tile (each a double write), the last band taken as full (the one size whose last band is
-   shorter), one K slice only (8, every size with K > 64), and the peer storing nothing (12). The mock checks the
+   A (13 of 15 sizes failed), the CTAs swapping their halves of B (15), stores not clipped to N, every pair starting at
+   tile 0, and a step of one tile (each a double write), the last band taken as full (2, the sizes whose last band is
+   shorter), one K slice only (9, every size with K > 64), and the peer storing nothing (13). The run was repeated
+   after the review fixes, with the size the review added (2560 × 2048, K = 520). The mock checks the
    harness, the reference and the launcher, not the kernel.
+10. **The load before the wait.** The first build waited for a chunk's staging buffer (`acquireStage`) before loading
+    the chunk from tensor memory, so each load queued behind the store of two chunks ago. `stageAcc` and
+    `stageAccFull` are now split into a load (`loadAccChunk`, `loadBufferChunk`, `loadPairChunk`, giving the sealed
+    `ChunkRegs` of the block) and `writeStage`, and the chunk loads first. It costs no registers: the 32 values were
+    live from the load to the shared-memory writes before, and still are, now across the wait. The single-CTA
+    TinyGEMM's CUDA changes by the moved wait only.
+11. **An arm that captured too much.** The review found that `onLeader`'s arm could capture linear values: what it used
+    up counted as used, but only the leader ran it, so the peer could skip a producer's drain or its stores' last wait
+    and close with copies or stores in flight. The arm is now unrestricted, as `branch`'s arms are, and takes the sides
+    it may use up as its state, with evidence (`LeaderOnly`) that each is the leader's alone: a pair ring's consumer, a
+    pair accumulator ring's issuing side, pairs of them, and `Unit`. The issuer's arm now names its two sides in its
+    type.
+12. **Mutants that change several places.** The `onLeader` mutants need the pair in the producer or the epilogue, a
+    parameter and a call apart from the arm, so `mutate.py` takes `edits`, a list of replacements, beside `old` and
+    `new`.

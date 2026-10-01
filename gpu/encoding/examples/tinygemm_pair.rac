@@ -41,8 +41,9 @@ namespace TinyPair {
   // The leader's MMA issuer: accumulate every stage of both CTAs into the first buffer, releasing each stage when its
   // MMAs complete, then commit the buffer to both CTAs' warpgroups and wait until both have read it.
   def issue {n: Lifetime}{r: Lifetime}{q: Lifetime}{l: Lifetime}(lead: Leader(n))(ring: PairRing(r, ringCfg))(accs: PairAccRing(q, 256))
-      (steps: Val(l, Grain.uniform, DType.u32))(c: Consumer(r))(p: AccProducer(q))(e: Ctx(n, Issue)): Ctx(n, Issue) := {
+      (steps: Val(l, Grain.uniform, DType.u32))(sides: Pair(Consumer(r), AccProducer(q)))(e: Ctx(n, Issue)): Ctx(n, Issue) := {
     let (e, u) := elect(e, Unit, fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, One)): Pair(Ctx(j, One), Unit) => {
+      let (c, p) := sides
       let first := fun (o: Lifetime)(i: Val(o, Grain.uniform, DType.u32))(e: Ctx(o, One))(st: Pair(ConsumerAt(r, j), AccFree(q, j)))
           : Pair(Ctx(o, One), Pair(ConsumerAt(r, j), AccFilling(q, j))) => {
         let (c, acc) := st
@@ -72,7 +73,9 @@ namespace TinyPair {
   // Warp 1 of each CTA: the issuer in the leader, nothing in the other CTA.
   def issuer {r: Lifetime}{q: Lifetime}{l: Lifetime}(pair: CtaPair(l))(ring: PairRing(r, ringCfg))(accs: PairAccRing(q, 256))
       (steps: Val(l, Grain.uniform, DType.u32))(c: Consumer(r))(p: AccProducer(q))(m: Lifetime)(e: Ctx(m, Issue)): Pair(Ctx(m, Issue), Unit) :=
-    (onLeader(e, pair, fun (n: Lifetime)(lead: Leader(n))(e: Ctx(n, Issue)): Ctx(n, Issue) => issue(lead, ring, accs, steps, c, p, e)), Unit.unit)
+    (onLeader(e, pair, leaderOnlyPair(leaderOnlyConsumer(r), leaderOnlyAccProducer(q)), (c, p),
+      fun (n: Lifetime)(lead: Leader(n))(e: Ctx(n, Issue))(sides: Pair(Consumer(r), AccProducer(q))): Ctx(n, Issue) =>
+        issue(lead, ring, accs, steps, sides, e)), Unit.unit)
 
   // Each CTA's epilogue: wait for its rows of the buffer, store them, and release the buffer to the leader.
   def epilogue {l: Lifetime}{q: Lifetime}(k: Launch(l))(accs: PairAccRing(q, 256))(c: AccConsumer(q))(own: HalfOwn(l))

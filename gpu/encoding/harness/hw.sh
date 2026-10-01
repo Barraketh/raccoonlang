@@ -24,6 +24,8 @@ case $1 in
   gen)
     dir=${2:?usage: hw.sh gen DIR}
     gpu=$(cd "$here/../.." && pwd)
+    # A bundle's kernels are this checkout's: none is kept from an earlier gen.
+    rm -rf "$dir/kernels"
     mkdir -p "$dir/kernels" "$dir/harness" "$dir/probes"
     printf '%s\n' "$suites" | while IFS=: read -r name examples; do
       for x in $examples; do
@@ -43,7 +45,7 @@ case $1 in
     mkdir -p "$out"
     export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
     limit=${HW_TIMEOUT:-900}
-    nvidia-smi --query-gpu=name,driver_version,clocks.max.sm --format=csv,noheader 2>/dev/null | sed 's/^/gpu: /'
+    nvidia-smi -i "$CUDA_VISIBLE_DEVICES" --query-gpu=name,driver_version,clocks.max.sm --format=csv,noheader 2>/dev/null | sed 's/^/gpu: /'
     nvcc --version 2>/dev/null | tail -1 | sed 's/^/nvcc: /'
     summary=$(mktemp)
     printf '%s\n' "$suites" | while IFS=: read -r name examples; do

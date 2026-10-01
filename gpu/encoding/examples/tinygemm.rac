@@ -72,8 +72,9 @@ namespace Tiny {
     let chunk := fun (p: Lifetime)(ch: ChunkAt(p, 128))(co: ChunkOwn(p, 128))(e: Ctx(p, Wg))(st: Pair(Acc(a, AccState.ready), StoreAt(s, m, groupWarp)))
         : Pair(Ctx(p, Wg), Pair(Acc(a, AccState.ready), StoreAt(s, m, groupWarp))) => {
       let (acc, sa) := st
+      let (e, (acc, regs)) := loadAccChunk(e, t, acc, ch)
       let (e, free) := acquireStage(e, stg, sa)
-      let (e, (acc, written)) := stageAcc(e, t, acc, stg, free, ch)
+      let (e, written) := writeStage(e, stg, free, regs)
       let (e, fenced) := fenceStage(e, written)
       let (e, sa) := storeStage(e, stg, fenced, k.c, ch, co)
       (e, (acc, sa))

@@ -100,7 +100,7 @@ instructions), `rejected/attention_a3b_mutants.py`, and `OBLIGATIONS.md` (A57–
 accumulator ring of 2 × 256 columns across tiles, and each CTA storing its own 128 rows of a tile by TMA through two
 staging buffers per warp, the accumulator released before the stores complete. Built to the same point as A3a:
 `pairGemmPersistentKernel`, `examples/gemm_pair.rac`, `harness/gemm_pair_test.cu` (run against a host mock) and
-`harness/run_gemm_pair.sh`, `rejected/gemm_pair_mutants.py`, and `OBLIGATIONS.md` (A60, M10, M18, §6.12).
+`harness/run_gemm_pair.sh`, `rejected/gemm_pair_mutants.py`, and `OBLIGATIONS.md` (A60, M10, M18, M20, §6.12).
 
 **Paged attention.** A1 over a paged KV cache:
 - K and V are `[pages · 128, H · 128]` (FA4's layout, since P2): a page holds 128 consecutive positions of every

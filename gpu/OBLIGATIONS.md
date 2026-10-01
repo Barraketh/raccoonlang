@@ -233,7 +233,9 @@ none of them (`ATTENTION.md` §4.1), and closes its protocols on `…Done` token
   disagreement, as from a mistaken count, deadlocks: the extra fills wait in their producer's tail for releases that never come, and that CTA
   never reaches the close's cluster barrier. A persistent pair kernel's roles loop over its tiles (`forPairTiles`), each
   from `%clusterid.x` in steps of `%nclusterid.x` up to the tile count, all three the same in both CTAs (A60, M10): so
-  both CTAs visit one tile sequence, and every role the same number of tiles. No side can get a phase ahead, since each CTA's `empty[s]` receives only
+  both CTAs visit one tile sequence, and every role the same number of tiles. No role's loop runs in one CTA only: a
+  loop uses up its role's side, which an `onLeader` arm cannot capture (M20), and the leader-only sides' loop, the
+  issuer's, has no counterpart in the peer. No side can get a phase ahead, since each CTA's `empty[s]` receives only
   the leader's commits for that stage, and the leader's `full[s]` both CTAs' bytes for the same round.
 - **M19, pair resources** (pair). A pair opener (`withPairTmem`, `withPairRing`, `withPairAccRing`) takes the
   kernel's own context, `Ctx(l, …)` with the kernel's `CtaPair(l)`, so it runs in the kernel's top-level spine and
@@ -249,6 +251,12 @@ none of them (`ATTENTION.md` §4.1), and closes its protocols on `…Done` token
   them, a pair ring's consumer and a pair accumulator ring's issuing side, are taken only with a `Leader(n)`, which
   only `onLeader`'s arm holds and which belongs to the arm's scope; every MMA and commit consumes a token derived from
   those endpoints, so it runs in the arm. The arm hands back only its context.
+  The arm captures no linear value: what it uses up runs in one CTA only. It is handed the sides it may use up, which
+  must be leader-only (`LeaderOnly`): a pair ring's `Consumer` and a pair accumulator ring's `AccProducer`, whose every
+  operation is the leader's and whose finishers the peer may skip (`Core.LeaderOnly` gives why). Every other side, a
+  producer's, a warpgroup's or the storing side, has work in each CTA, and its finisher runs in code both CTAs run: so
+  each CTA drains its own producer and waits for its own stores before the closes (M15, M19). Without this, an arm
+  could finish the peer's producer or storing side in the leader alone (review of step 4).
 - **M21, `warpwise`** (A3b). A branch on a condition of grain `warp` runs its arms in `warpwise(f, c)`
   (`Group.arm`): each warp converged, the group as a whole not, since whole warps run either arm. Warp collectives on
   a warp's own lanes take that group (`rescaleQuadrant`: `tcgen05.ld`, `.st` and `wait::ld` of the warp's quadrant,
@@ -342,6 +350,14 @@ claim. Types are abbreviated; "code" is what it emits into its `Ctx`.
 | `storeStage` | `StageFenced`, `ChunkAt` and `ChunkOwn` of one chunk, `CMap` | every lane: the buffer's address and the row `row0 + 32·(warp mod 4)` (the warp index is a full-warp `__shfl_sync`, A1, so never under the lane-0 branch); lane 0: TMA store of the buffer to (`col0`, row), `commit_group`; next buffer | `StoreAt`: one more group, reading the buffer just left; the warp's rows of the chunk written once, clipped to C | A34, A35, S5 |
 | `finishStores` | `StoreAt` | lane 0: `cp.async.bulk.wait_group 0`; `__syncwarp` | `StoreDone`: every store of the warpgroup complete, reads and writes | A35, A37, A38 |
 
+In `encoding/Core.rac`, `stageAcc` and `stageAccFull` are each split in two, so that a chunk is loaded before its
+staging buffer is waited for and the load does not queue behind the store that last read the buffer:
+
+| Operation | Requires | Emits | Establishes | Relies on |
+|---|---|---|---|---|
+| `loadAccChunk`, `loadBufferChunk` | `Acc(ready)` of a region / `AccFull` of a ring's buffer, a `ChunkAt(p, n)` of its width, aligned warpgroup | 32 declarations, `__syncwarp`, `after_thread_sync`, 4 `tcgen05.ld.32x32b.x8` of the warp's lane quadrant from column 32·index, `wait::ld` | `ChunkRegs(k)`: the thread's 32 values, in registers of the block's lifetime; the loads complete, so the accumulator may be released; the `Acc`/`AccFull` handed back | A13, A14 |
+| `writeStage` | `StageFree`, `ChunkRegs(k)` of the same block | the row's address in the warp's current buffer, 8 `st.shared.v4.f32` in the 128-byte swizzle | `StageWritten`: the warp's 32 rows of the chunk in the buffer | A37 |
+
 ### 6.8 Persistent GEMM
 | Operation | Requires | Emits | Establishes | Relies on |
 |---|---|---|---|---|
@@ -370,8 +386,8 @@ The operations `gpu/encoding/Core.rac` adds to `Gpu.rac`'s (`ATTENTION.md` §3, 
 attention (`encoding/PAGED.md`). Its other operations are `Gpu.rac`'s, with the obligations of §6.1–§6.9, except for
 two things.
 - Every use of a tensor-memory region's address goes through `tmemBase` (the allocation's address plus the region's
-  offset): `mmaFirst`, `mmaNext`, `stageAcc`, `withAccRing` (and through its buffers `mmaFirstInto`, `mmaNextInto`,
-  `stageAccFull`, `eachChunk` and `writeP`) and `withExchange` address the region they are given, not column 0; only
+  offset): `mmaFirst`, `mmaNext`, `loadAccChunk`, `withAccRing` (and through its buffers `mmaFirstInto`, `mmaNextInto`,
+  `loadBufferChunk`, `eachChunk` and `writeP`) and `withExchange` address the region they are given, not column 0; only
   `withTmem`'s deallocation names the allocation's address.
 - No protocol closes on a `…Done` token (M15). `withRing`, `withAccRing`, `withExchange` and `withStaging` take a callback
   that returns the emitter and its result only. Their sides are linear and belong to the opener's scope, which the
@@ -461,15 +477,16 @@ takes. Where a pair operation differs from a single-CTA one only in what the CTA
 one: in a pair kernel every wait is `try_wait.parity.acquire.cluster` and every commit multicast to both CTAs.
 
 The persistent pair GEMM's epilogue runs the TMA-store operations of §6.7 (`withStaging`, `takeStore`, `acquireStage`,
-`fenceStage`, `storeStage`, `finishStores`) unchanged: a CTA's staging buffers, stores and bulk async-groups are its
-own (`.shared::cta`), so they need nothing of the peer, and `withStaging` emits no barrier and does not refuse in a pair
-kernel. The warpgroup releases a tile's accumulator after its chunk loop (`releasePairAcc`): every chunk's loads have
-completed (`wait::ld` in `stageAccFull`), and the stores still in flight read the staging buffers only.
+`writeStage`, `fenceStage`, `storeStage`, `finishStores`) unchanged. A CTA's staging buffers, stores and bulk
+async-groups are its own (`.shared::cta`), so `withStaging` emits no barrier and does not refuse in a pair kernel. Each
+CTA finishes its own storing side: `finishStores` runs in code both CTAs run, since an `onLeader` arm cannot capture the
+side (M20). The warpgroup releases a tile's accumulator after its chunk loop (`releasePairAcc`): every chunk's loads
+have completed (`wait::ld` in `loadPairChunk`), and the stores still in flight read the staging buffers only.
 
 | Operation | Requires | Emits | Establishes | Relies on |
 |---|---|---|---|---|
-| `pairGemmKernel` | a body; boxes pass `pairGemmShapeOk` (else a generation error) | `__cluster_dims__(2, 1, 1)`; the CTA group `two`; `%cluster_ctarank` and `%clusterid.x` read once; the kernel (parameters `A_map`, `B_map`, `C`, `M`, `N`, `K`) and its launcher (M·N < 2³², M, N, K < 2³¹, the two map encodings, grid `pairs(ceil(N / 2bh), ceil(M / 256))` of 256 threads, at least `pairShared` bytes of shared memory) | `PairGemm` (the maps, the `PairTile`: rows `256·blockIdx.y + 128·rank`, B's rows `col0 + bh·rank`, `col0 = 2bh·clusterid.x`, width 2bh; `PairOut`, K), `HalfOwn`, `CtaPair`, `TmemPermit`; a `Program` | A17, A43, A56, I6 |
-| `onLeader` | a `CtaPair` | `if (rank == 0) { body }` | the body ran in the leader only, with a `Leader(m)` of the arm's scope | M20 |
+| `pairGemmKernel` | a body; boxes pass `pairGemmShapeOk` (else a generation error) | `__cluster_dims__(2, 1, 1)`; the CTA group `two`; `%cluster_ctarank` and `%clusterid.x` read once; the kernel (parameters `A_map`, `B_map`, `C`, `M`, `N`, `K`) and its launcher (M·N < 2³², M, N, K < 2³¹, the two map encodings, grid `pairs(ceil(N / 2bh), ceil(M / 256))` of 256 threads, at least `pairShared` bytes of shared memory) | `PairGemm` (the maps, the `PairTile`: rows `256·blockIdx.y + 128·rank`, B's rows `col0 + bh·rank`, `col0 = 2bh·clusterid.x`, of width 2bh in its type; `PairOut`, K), `HalfOwn`, `CtaPair`, `TmemPermit`; a `Program` | A17, A43, A56, I6 |
+| `onLeader` | a `CtaPair`; sides `S` with `LeaderOnly(S)`; an unrestricted arm | `if (rank == 0) { body }` | the body ran in the leader only, with a `Leader(m)` of the arm's scope, and used up the sides there; no linear value used up in one CTA only but the leader-only sides | M20 |
 | `withPairTmem` | the kernel's `Ctx(l, cta)` and `CtaPair(l)`, `TmemPermit` | as `withTmem` with 512 columns and `cta_group::2`; at close `before_thread_sync`, a cluster barrier, `after_thread_sync`, warp 0's dealloc | `Tmem(a, 512)`, `Acc(a, empty)`; closes on `Acc(done)` | A44, A50, M19 |
 | `withPairRing` | the kernel's `Ctx(l, cta)` and `CtaPair(l)`; boxes pass `boxOk` | `withRing`'s layout, inits and setup arrivals, the fence, a cluster barrier; at close a cluster barrier, then thread 0's `inval`s | `PairRing`, `Producer`, `Consumer`, every stage free in both CTAs | A44, A45, M19 |
 | `takePairProducer`, `acquirePair` | as `takeProducer`, `acquire` | as theirs, the wait at cluster scope | `ProducerAt`, `Slot`: this CTA's half of the stage free (the leader's commit completed) | A49 |
@@ -484,12 +501,12 @@ completed (`wait::ld` in `stageAccFull`), and the stores still in flight read th
 | `commitPairAcc` | `AccFilling` | a commit to `full[b]` multicast to both CTAs; advance | the buffer passes to both warpgroups when its MMAs complete | A49 |
 | `finishPairAccProducer` | the issuing side | `bufs` waits on the leader's `empty`, advancing | every buffer read by both warpgroups: no tensor-core work in flight | A46 |
 | `takePairAccConsumer`, `awaitPairAcc` | an aligned warpgroup / the reading side | the side's registers / wait this CTA's `full[b]`, `after_thread_sync` | `AccConsumerAt` / `AccFull`: this CTA's rows of the buffer visible | A49, A52 |
-| `storeHalf` | `AccFull`, the `PairTile`, `PairOut`, `HalfOwn`; n the tile's width and a multiple of 8 (else a generation error) | `__syncwarp`; the row `rows + 32·(warp mod 4) + lane` and `row < M`; a loop over n/8 chunks: 8 declarations, `__syncwarp`, `tcgen05.ld.32x32b.x8`, `wait::ld`, 8 stores guarded by `row < M` and `col < N` | this CTA's half of the tile written once (`HalfOwn` consumed); `AccFull` kept | A14, A54, M12, S5 |
+| `storeHalf` | `AccFull` of a buffer of n columns, a `PairTile` of width n, `PairOut`, `HalfOwn`; n a multiple of 8 (else a generation error) | `__syncwarp`; the row `rows + 32·(warp mod 4) + lane` and `row < M`; a loop over n/8 chunks: 8 declarations, `__syncwarp`, `tcgen05.ld.32x32b.x8`, `wait::ld`, 8 stores guarded by `row < M` and `col < N` | this CTA's half of the tile written once (`HalfOwn` consumed); `AccFull` kept | A14, A54, M12, S5 |
 | `releasePairAcc` | `AccFull` | `before_thread_sync`; `mapa` of `empty[b]` to the leader's; one remote arrive per thread; advance | the buffer is free to the issuer once both warpgroups (256) arrived | A46, A52 |
 | `pairGemmPersistentKernel` | a body; a band height G > 0, boxes passing `pairGemmShapeOk` (else a generation error) | `__cluster_dims__(2, 1, 1)`; the CTA group `two`; `%cluster_ctarank`, `%clusterid.x` and `%nclusterid.x` read once; the schedule's counts for tiles of 256 × 2bh (`tilesN`, `tilesM`, `tiles`, `bandRows`, `bandTiles`, as `tmaGemmPersistentKernel`'s); the kernel (parameters `A_map`, `B_map`, `C_map`, `M`, `N`, `K`) and its launcher (`tmaGemmLauncher`'s requirements and three maps, so N mod 4 = 0; grid `2·min(SMs/2, tiles)` × 1 of 256 threads; at least `pairShared` bytes of shared memory) | `TmaGemm`, `PairSched` (the schedule from `%clusterid.x` in steps of `%nclusterid.x`, and the kernel's pair), `PairSchedOwn`, `CtaPair`, `TmemPermit`; a `Program` | A17, A43, A56, A60, I6 |
 | `forPairTiles`, `forOwnedPairTiles` | a `PairSched`, `Fixed(S)`; a `PairSchedOwn` for the owned loop | `for (t = clusterid.x; t < tiles; t += nclusterid.x)`, and in the body the tile's origin by the band order | per iteration this CTA's `PairTile` of the tile (rows `row0 + 128·rank`, B's rows `col0 + bh·rank`, width 2bh), and for the owned loop a `HalfOwn`. The band order is §6.8's bijection, and the pairs' sequences partition the tile indices (A60), so the one owning loop visits each tile once per CTA, and the two CTAs of a pair the same tiles | M5, M18, S5, A60 |
-| `forHalfChunks` | a `PairAccRing(q, n)`, a `PairTile` and its `HalfOwn`; n the tile's width (else a generation error); `Fixed(S)` | `for (c = 0; c < n/32; ++c)` | per iteration the chunk's `ChunkAt(p, n)` (rows from the tile's `rows`, this CTA's; columns `col0 + 32c` on) and a linear `ChunkOwn`: each chunk of this CTA's half of the tile once | M5, M12, S5 |
-| `stagePairAcc` | as `stageAccFull`, of a `PairAccRing` | as `stageAccFull`, from this CTA's lanes of the current buffer | as `stageAccFull` | A13, A14, A54 |
+| `forHalfChunks` | a `PairTile` of width w and its `HalfOwn`; `Fixed(S)` | `for (c = 0; c < w/32; ++c)` | per iteration the chunk's `ChunkAt(p, w)` (rows from the tile's `rows`, this CTA's; columns `col0 + 32c` on) and a linear `ChunkOwn`: each chunk of this CTA's half of the tile once | M5, M12, S5 |
+| `loadPairChunk` | as `loadBufferChunk`, of a `PairAccRing` | as `loadBufferChunk`, from this CTA's lanes of the current buffer | as `loadBufferChunk` | A13, A14, A54 |
 
 ### 6.13 The correction warpgroup
 
@@ -530,7 +547,9 @@ arguments. The audit as of this document:
 - **Output tiles and staging** (the TMA-store epilogue). `forChunks` consumes a tile's `TileOwn` and mints one
   `ChunkOwn` per chunk; `withStaging` mints the one `StoreSide`, `takeStore` turns it into the warpgroup-bound
   `StoreAt` (alignment evidence), and `acquireStage`, `stageAcc`, `stageAccFull`, `fenceStage`, `storeStage` and
-  `finishStores` each consume the token of one typestate and mint the next (§6.6, §6.7); the coordinates, buffers
+  `finishStores` each consume the token of one typestate and mint the next (§6.6, §6.7; in `encoding/Core.rac`,
+  `writeStage` in place of the two staging operations, writing the sealed `ChunkRegs` that only `loadAccChunk`,
+  `loadBufferChunk` and `loadPairChunk` make, of their block's scope, so of one chunk); the coordinates, buffers
   and the issuing lane are the library's, never an argument. `tileRow0` and `tileCol0` read a sealed tile, as
   before. The instruction builders `bulkWaitRead`, `bulkWait`, `bulkCommit`, `fenceProxyAsync`, `tmaStore2d`,
   `storeShared4`, and the helpers `onLaneZero`, `stageBuffer`, `stageChunk`, build unsealed `Stmt`s or `Gen`s,
@@ -611,8 +630,10 @@ arguments. The audit as of this document:
   The persistent pair GEMM adds the sealed `PairSched` and the linear `PairSchedOwn`, which only
   `pairGemmPersistentKernel` makes. `forPairTiles` mints a `PairTile` per tile from the sealed schedule and its pair,
   `forOwnedPairTiles` consumes the `PairSchedOwn` and mints a `HalfOwn` per tile, and `forHalfChunks` consumes a
-  `HalfOwn` and mints a `ChunkOwn` per chunk, with the rows the `PairTile`'s; `stagePairAcc` is `stageAccFull` on a
-  pair accumulator ring. `schedule`, `pairTile` and `chunkLoop` need the Key; `Cuda.smCount` and the grid
+  `HalfOwn` and mints a `ChunkOwn` per chunk, with the rows the `PairTile`'s; `loadPairChunk` is `loadBufferChunk` on a
+  pair accumulator ring. `onLeader` takes `LeaderOnly` evidence, which only `leaderOnlyUnit`, `leaderOnlyConsumer`,
+  `leaderOnlyAccProducer` and `leaderOnlyPair` make, for `Unit`, a ring's `Consumer`, an accumulator ring's
+  `AccProducer` and pairs of them (M20). `schedule`, `pairTile` and `chunkLoop` need the Key; `Cuda.smCount` and the grid
   `Grid.persistentPairs` are the printer's.
 - **The correction warpgroup** (A3b, §6.13). `withCorrectedBuffer` mints one `ScoreBuffer(x, correction)` and its
   three sides; `Rescaler` is unsealed data, but a `ScoreBuffer` is sealed, so a buffer's rescaler is its opener's.

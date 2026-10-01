@@ -1429,13 +1429,15 @@ namespace Core {
   // warp's stores is on that same thread, lane 0, and the endpoint that carries the buffer index is taken by the
   // aligned warpgroup and stays in its scope (`takeStore`), as the accumulator ring's reading side does.
   //
-  // A staging buffer's typestate: free (`StageFree`, after `acquireStage`) → written (`StageWritten`, `stageAcc`,
-  // `stageAccFull`) → fenced (`StageFenced`, `fenceStage`) → in flight (`storeStage`, back to `StoreAt`), and free again
-  // `bufs` stores later. The store endpoint is linear and belongs to the staging scope, so it is finished
+  // A chunk is loaded from tensor memory into registers (`ChunkRegs`, by `loadAccChunk`, `loadBufferChunk` or
+  // `loadPairChunk`) before its staging buffer is waited for, so the load does not queue behind the store that last read
+  // the buffer. A staging buffer's typestate: free (`StageFree`, after `acquireStage`) → written (`StageWritten`,
+  // `writeStage`, from a chunk's registers) → fenced (`StageFenced`, `fenceStage`) → in flight (`storeStage`, back to
+  // `StoreAt`), and free again `bufs` stores later. The store endpoint is linear and belongs to the staging scope, so it is finished
   // (`finishStores`, which waits for every store to complete, its only end) before `withStaging` releases the buffers.
 
-  // An output tile of 128×`bn` elements: its first row and its first column. The tile of a one-tile-per-CTA GEMM, or
-  // that a loop iteration in scope `m` visits.
+  // An output tile of `bn` columns: its first row and its first column. The tile of a one-tile-per-CTA GEMM, or that a
+  // loop iteration in scope `m` visits; its height is the schedule's (128 rows, or a pair's 256).
   sealed struct TileAt (m: Lifetime)(bn: Nat) : Type { scope = m }
    | mk (row0: Val(m, Grain.uniform, DType.u32))(col0: Val(m, Grain.uniform, DType.u32)) : TileAt(m, bn)
 
@@ -1447,8 +1449,8 @@ namespace Core {
 
   def tileCol0 {m: Lifetime}{bn: Nat}(t: TileAt(m, bn)): Val(m, Grain.uniform, DType.u32) := t.col0
 
-  // The chunk of 32 columns of a 128×`bn` tile that the iteration in scope `p` of `forChunks` stores: its index in the
-  // tile, the tile's first row, and its first column.
+  // The chunk of 32 columns of a block of 128 rows and `bn` columns that the iteration in scope `p` of a chunk loop
+  // (`forChunks`, `forHalfChunks`) stores: its index in the block, the block's first row, and its first column.
   sealed struct ChunkAt (p: Lifetime)(bn: Nat) : Type { scope = p }
    | mk (index: Expr)(row0: Expr)(col0: Expr) : ChunkAt(p, bn)
 
@@ -1549,7 +1551,8 @@ namespace Core {
 
   // Opens `bufs` staging buffers per warp of a warpgroup for the callback, which must finish the storing side: it is
   // linear and belongs to the staging scope, which the callback's result cannot name, and `finishStores` is its only
-  // end. So no store can still be reading the buffers when their shared memory is released.
+  // end. So no store can still be reading the buffers when their shared memory is released. In a pair kernel each CTA
+  // finishes its own: an `onLeader` arm, which runs in one CTA only, cannot use the side up.
   def withStaging {l: Lifetime}{w: Nat}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}
       (e: Ctx(l, Group.cta(w)))(bufs: Nat)(X: Type { kind = kx, scope = Sx })
       (body: { kind = kf, scope = Sf } (s: Lifetime) -> Staging(s) -> StoreSide(s) -> Ctx(l, Group.cta(w)) -> Pair(Ctx(l, Group.cta(w)), X))
@@ -1583,37 +1586,52 @@ namespace Core {
     | Nat.succ more => List.cons(Stmt.declOut(t, first), Core.declOuts(t, Nat.succ(first), more))
   }
 
+  // A chunk's 32 columns of this thread's row, loaded into the registers from `first` in the block of lifetime `k`
+  // (their scope), every load waited for.
+  sealed struct ChunkRegs (k: Lifetime) : Type { scope = k }
+   | mk (first: Nat) : ChunkRegs(k)
+
   // Each warp loads its 32 lanes of 32 columns of the accumulator at tensor-memory address `taddr` from column
-  // `32·index`, one row per thread, and writes them into its current staging buffer in the 128-byte swizzle the TMA
-  // store reads: row r's 16-byte group g at byte 128·r + 16·(g xor r mod 8).
-  def stageChunk (gen: Gen)(taddr: Expr)(buffer: Expr)(index: Expr): Gen := {
+  // `32·index`, one row per thread, into fresh registers, and waits for the loads.
+  def chunkLoad {k: Lifetime}{g: Group}(key: Key)(e: Ctx(k, g))(taddr: Expr)(index: Expr): Pair(Ctx(k, g), ChunkRegs(k)) := {
+    let gen := Core.state(Key.key, e)
     let first := gen.next
-    let row := Nat.add(first, 32)
-    let swizzle := Nat.add(first, 33)
     let lane := Expr.bin(BinOp.add, Expr.bin(BinOp.add, taddr, Expr.bin(BinOp.shl, Expr.bin(BinOp.mul, Core.quadrant, Expr.lit(32)), Expr.lit(16))),
       Expr.bin(BinOp.mul, index, Expr.lit(32)))
     let load := fun (i: Nat): Stmt => Core.tmemLoad8(Nat.add(first, Nat.mul(8, i)), Expr.bin(BinOp.add, lane, Expr.lit(Nat.mul(8, i))))
-    let write := fun (g: Nat): Stmt => Core.storeShared4(Expr.bin(BinOp.add, Expr.var(row),
-      Expr.bin(BinOp.shl, Expr.bin(BinOp.bxor, Expr.lit(g), Expr.var(swizzle)), Expr.lit(4))), Nat.add(first, Nat.mul(4, g)))
     let four := List.cons(0, List.cons(1, List.cons(2, List.cons(3, List.nil(Nat)))))
     // The warp reconverges before the `.sync.aligned` loads, and its loads are ordered after the tensor-core work that
     // wrote the accumulator, whoever observed it complete.
     let loads := List.append(Core.declOuts(DType.f32, first, 32), List.cons(Stmt.syncWarp, List.cons(Core.tcFenceAfter,
       List.append(List.map(four, Stmt, load), List.cons(Core.tmemWaitLoad, List.nil(Stmt))))))
-    let place := List.cons(Stmt.decl(DType.u32, row, Expr.bin(BinOp.add, buffer, Expr.bin(BinOp.mul, Expr.special(Builtin.lane), Expr.lit(128)))),
-      List.cons(Stmt.decl(DType.u32, swizzle, Expr.bin(BinOp.band, Expr.special(Builtin.lane), Expr.lit(7))), List.nil(Stmt)))
-    Core.pushAll(Gen.mk(gen.code, Nat.add(first, 34), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds),
-      List.append(loads, List.append(place, List.map(Core.eight, Stmt, write))))
+    let named := Gen.mk(gen.code, Nat.add(first, 32), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds)
+    (Core.resume(Key.key, k, g, Core.pushAll(named, loads)), ChunkRegs.mk(k, first))
   }
 
-  // Writes a chunk of the one-tile-per-CTA accumulator, whose results are ready, into the free staging buffer.
-  def stageAcc {k: Lifetime}{f: Nat}{a: Lifetime}{cols: Nat}{s: Lifetime}{m: Lifetime}{p: Lifetime}
-      (e: Ctx(k, Group.warps(f, 4)))(t: Tmem(a, cols))(acc: Acc(a, AccState.ready))(stg: Staging(s))(free: StageFree(s, m, f))
-      (chunk: ChunkAt(p, cols)): Pair(Ctx(k, Group.warps(f, 4)), Pair(Acc(a, AccState.ready), StageWritten(s, m, f))) := {
-    match free returning Pair(Ctx(k, Group.warps(f, 4)), Pair(Acc(a, AccState.ready), StageWritten(s, m, f))) with
+  // Loads a chunk of the one-tile-per-CTA accumulator, whose results are ready.
+  def loadAccChunk {k: Lifetime}{f: Nat}{a: Lifetime}{cols: Nat}{p: Lifetime}
+      (e: Ctx(k, Group.warps(f, 4)))(t: Tmem(a, cols))(acc: Acc(a, AccState.ready))(chunk: ChunkAt(p, cols))
+      : Pair(Ctx(k, Group.warps(f, 4)), Pair(Acc(a, AccState.ready), ChunkRegs(k))) := {
+    let (e, regs) := Core.chunkLoad(Key.key, e, Core.tmemBase(t), chunk.index)
+    (e, (acc, regs))
+  }
+
+  // Writes a loaded chunk into the warp's free staging buffer, in the 128-byte swizzle the TMA store reads: row r's
+  // 16-byte group g at byte 128·r + 16·(g xor r mod 8).
+  def writeStage {k: Lifetime}{f: Nat}{s: Lifetime}{m: Lifetime}
+      (e: Ctx(k, Group.warps(f, 4)))(stg: Staging(s))(free: StageFree(s, m, f))(regs: ChunkRegs(k))
+      : Pair(Ctx(k, Group.warps(f, 4)), StageWritten(s, m, f)) := {
+    match free returning Pair(Ctx(k, Group.warps(f, 4)), StageWritten(s, m, f)) with
     | StageFree.mk => {
-      let gen := Core.stageChunk(Core.state(Key.key, e), Core.tmemBase(t), Core.stageBuffer(stg), chunk.index)
-      (Core.resume(Key.key, k, Group.warps(f, 4), gen), (acc, StageWritten.mk(s, m, f)))
+      let gen := Core.state(Key.key, e)
+      let row := gen.next
+      let swizzle := Nat.add(gen.next, 1)
+      let place := List.cons(Stmt.decl(DType.u32, row, Expr.bin(BinOp.add, Core.stageBuffer(stg), Expr.bin(BinOp.mul, Expr.special(Builtin.lane), Expr.lit(128)))),
+        List.cons(Stmt.decl(DType.u32, swizzle, Expr.bin(BinOp.band, Expr.special(Builtin.lane), Expr.lit(7))), List.nil(Stmt)))
+      let write := fun (g: Nat): Stmt => Core.storeShared4(Expr.bin(BinOp.add, Expr.var(row),
+        Expr.bin(BinOp.shl, Expr.bin(BinOp.bxor, Expr.lit(g), Expr.var(swizzle)), Expr.lit(4))), Nat.add(regs.first, Nat.mul(4, g)))
+      let named := Gen.mk(gen.code, Nat.add(gen.next, 2), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds)
+      (Core.resume(Key.key, k, Group.warps(f, 4), Core.pushAll(named, List.append(place, List.map(Core.eight, Stmt, write)))), StageWritten.mk(s, m, f))
     }
   }
 
@@ -1908,15 +1926,12 @@ namespace Core {
     }
   }
 
-  // Writes a chunk of the current buffer, whose results are visible, into the free staging buffer.
-  def stageAccFull {k: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}{m: Lifetime}{s: Lifetime}{j: Lifetime}{p: Lifetime}
-      (e: Ctx(k, Group.warps(f, 4)))(ring: AccRing(q, n))(full: AccFull(q, m, f))(stg: Staging(s))(free: StageFree(s, j, f))
-      (chunk: ChunkAt(p, n)): Pair(Ctx(k, Group.warps(f, 4)), Pair(AccFull(q, m, f), StageWritten(s, j, f))) := {
-    match free returning Pair(Ctx(k, Group.warps(f, 4)), Pair(AccFull(q, m, f), StageWritten(s, j, f))) with
-    | StageFree.mk => {
-      let gen := Core.stageChunk(Core.state(Key.key, e), Core.accBuffer(ring, ring.cStage), Core.stageBuffer(stg), chunk.index)
-      (Core.resume(Key.key, k, Group.warps(f, 4), gen), (full, StageWritten.mk(s, j, f)))
-    }
+  // Loads a chunk of the current buffer, whose results are visible.
+  def loadBufferChunk {k: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}{m: Lifetime}{p: Lifetime}
+      (e: Ctx(k, Group.warps(f, 4)))(ring: AccRing(q, n))(full: AccFull(q, m, f))(chunk: ChunkAt(p, n))
+      : Pair(Ctx(k, Group.warps(f, 4)), Pair(AccFull(q, m, f), ChunkRegs(k))) := {
+    let (e, regs) := Core.chunkLoad(Key.key, e, Core.accBuffer(ring, ring.cStage), chunk.index)
+    (e, (full, regs))
   }
 
   // Tells the issuer the warpgroup has read the current buffer (every load waited for), and moves to the next buffer.
@@ -3961,14 +3976,38 @@ namespace Core {
   sealed inductive Leader (m: Lifetime) : Type { scope = m }
    | mk : Leader(m)
 
-  // Runs `body` in the leader only, `if (rank == 0) { … }`. The rank is uniform in a CTA, so the whole group runs the
-  // arm. The arm's `Leader(m)` belongs to its scope, which nothing outside the arm can name, and the arm hands back only
-  // its context.
-  def onLeader {l: Lifetime}{g: Group}{L: Lifetime}{kf: Kind}{Sf: Lifetime}(e: Ctx(l, g))(pair: CtaPair(L))
-      (body: { kind = kf, scope = Sf } (m: Lifetime) -> Leader(m) -> Ctx(m, g) -> Ctx(m, g)): Ctx(l, g) := {
+  // Evidence that the sides `S` belong in the leader alone: the peer has nothing to do with them, so a peer that never
+  // uses them up skips nothing it must do. Of the sides of a pair kernel, which has no single-CTA protocol (A29):
+  // - a pair ring's `Consumer`: only the leader waits on `full[s]`, and only its commits release `empty[s]` in both
+  //   CTAs; its finisher emits nothing;
+  // - a pair accumulator ring's `AccProducer`: only the leader issues and commits, and only it waits on `empty[b]`, the
+  //   leader's copy, which both warpgroups' arrivals reach.
+  // Every other side, a producer's, a warpgroup's, the storing side, has work in each CTA: its finisher drains or
+  // waits there.
+  sealed inductive LeaderOnly {k: Kind}{T: Lifetime}(S: Type { kind = k, scope = T }) : Type { scope = T }
+   | mk : LeaderOnly(S)
+
+  // Nothing: an arm that uses up no side.
+  def leaderOnlyUnit : LeaderOnly(Unit) := LeaderOnly.mk(Unit)
+
+  def leaderOnlyConsumer (r: Lifetime): LeaderOnly(Consumer(r)) := LeaderOnly.mk(Consumer(r))
+
+  def leaderOnlyAccProducer (q: Lifetime): LeaderOnly(AccProducer(q)) := LeaderOnly.mk(AccProducer(q))
+
+  def leaderOnlyPair {ka: Kind}{Ta: Lifetime}{A: Type { kind = ka, scope = Ta }}{kb: Kind}{Tb: Lifetime}{B: Type { kind = kb, scope = Tb }}
+      (a: LeaderOnly(A))(b: LeaderOnly(B)): LeaderOnly(Pair(A, B)) := LeaderOnly.mk(Pair(A, B))
+
+  // Runs `body` in the leader only, `if (rank == 0) { … }`, handing it `sides`, which only the leader may use up. The rank
+  // is uniform in a CTA, so the whole group runs the arm. The arm captures no linear value: what it uses up runs in one
+  // CTA only, so it may use up only what belongs in the leader alone (`LeaderOnly`), not a side whose finisher each CTA
+  // must run. The arm's `Leader(m)` belongs to its scope, which nothing outside the arm can name, and the arm hands back
+  // only its context.
+  def onLeader {l: Lifetime}{g: Group}{L: Lifetime}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sf: Lifetime}
+      (e: Ctx(l, g))(pair: CtaPair(L))(only: LeaderOnly(S))(sides: S)
+      (body: { scope = Sf } (m: Lifetime) -> Leader(m) -> Ctx(m, g) -> S -> Ctx(m, g)): Ctx(l, g) := {
     let gen := Core.state(Key.key, e)
     scope m => {
-      let done := Core.state(Key.key, body(m, Leader.mk(m), Core.resume(Key.key, m, g, Core.child(gen))))
+      let done := Core.state(Key.key, body(m, Leader.mk(m), Core.resume(Key.key, m, g, Core.child(gen)), sides))
       Core.resume(Key.key, l, g, Core.after(gen, done, Stmt.ifElse(Core.isLeader(pair), Core.blockOf(done), Block.done)))
     }
   }
@@ -4047,18 +4086,18 @@ namespace Core {
   def acquirePair {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}(e: Ctx(n, Group.lane))(ring: PairRing(r, cfg))(p: ProducerAt(r, m))
       : Pair(Ctx(n, Group.lane), Slot(r, m)) := Core.acquire(e, ring.ring, p)
 
-  // This CTA's part of the pair's output tile. The pair computes 256 rows from the tile's first, and `width` = 2·bh
-  // columns from `col0`; this CTA the 128 rows from `rows` (the tile's first plus 128·rank), from B's `bh` rows from
-  // `halfCol` (`col0` plus bh·rank). `leader` tests the rank. Only a pair kernel's builder makes one.
-  sealed struct PairTile (l: Lifetime) : Type { scope = l }
-   | mk (leader: Expr)(rows: Expr)(col0: Expr)(halfCol: Expr)(width: Nat) : PairTile(l)
+  // This CTA's part of a pair's output tile of `w` columns. The pair computes 256 rows from the tile's first, and `w`
+  // columns from `col0`; this CTA the 128 rows from `rows` (the tile's first plus 128·rank), from B's `w/2` rows from
+  // `halfCol` (`col0` plus (w/2)·rank). `leader` tests the rank. Only the pair builders and tile loops make one.
+  sealed struct PairTile (l: Lifetime)(w: Nat) : Type { scope = l }
+   | mk (leader: Expr)(rows: Expr)(col0: Expr)(halfCol: Expr) : PairTile(l, w)
 
   // Fills this CTA's half of the acquired stage at K coordinate `k0`: one box of A at this CTA's rows of the tile, and
   // one of B at its half of the tile's columns. Both are the core's, from the rank (`PairTile`), so a CTA loads only its
   // own half. Both copies complete on the leader's `full[s]` (`mapa`), which the leader first arms with both halves'
   // bytes; the peer's copies may complete there before the leader arms it, which a phase allows (A47).
-  def fillPair {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}{T: Lifetime}{L: Lifetime}{S: Lifetime}{u: Grain}
-      (e: Ctx(n, Group.lane))(ring: PairRing(r, cfg))(s: Slot(r, m))(tile: PairTile(T))
+  def fillPair {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}{T: Lifetime}{w: Nat}{L: Lifetime}{S: Lifetime}{u: Grain}
+      (e: Ctx(n, Group.lane))(ring: PairRing(r, cfg))(s: Slot(r, m))(tile: PairTile(T, w))
       (a: TMap(L, RingCfg.a(cfg)))(b: TMap(L, RingCfg.b(cfg)))(k0: Val(S, u, DType.u32))
       : Pair(Ctx(n, Group.lane), ProducerAt(r, m)) := {
     match s returning Pair(Ctx(n, Group.lane), ProducerAt(r, m)) with
@@ -4217,18 +4256,18 @@ namespace Core {
 
   // Each thread stores its own row of the current buffer to C: row `rows + 32·(warp % 4) + lane`, `rows` this CTA's
   // first (`PairTile`), which is the row of the thread's tensor-memory lane (M12), so a CTA stores only its own half of
-  // the tile; and the buffer's `n` columns from the tile's first, which must be the tile's width (else a generation
-  // error), so no CTA stores the next tile's columns. A loop loads the row 8 columns at a time and stores each element
+  // the tile; and the buffer's `n` columns from the tile's first, which the types make the tile's width, so no CTA
+  // stores the next tile's columns. A loop loads the row 8 columns at a time and stores each element
   // that lies inside C. No fence is needed: `AccFull` comes only from `awaitPairAcc`, which every thread of the
   // warpgroup ran, waiting and then fencing `after_thread_sync` itself.
   def storeHalf {k: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}{m: Lifetime}{L: Lifetime}
-      (e: Ctx(k, Group.warps(f, 4)))(ring: PairAccRing(q, n))(full: AccFull(q, m, f))(tile: PairTile(L))(out: PairOut(L))(own: HalfOwn(L))
+      (e: Ctx(k, Group.warps(f, 4)))(ring: PairAccRing(q, n))(full: AccFull(q, m, f))(tile: PairTile(L, n))(out: PairOut(L))(own: HalfOwn(L))
       : Pair(Ctx(k, Group.warps(f, 4)), AccFull(q, m, f)) := {
     match own returning Pair(Ctx(k, Group.warps(f, 4)), AccFull(q, m, f)) with
     | HalfOwn.mk => {
       let rg := ring.ring
-      let e := Core.resume(Key.key, k, Group.warps(f, 4), Core.check(Core.state(Key.key, e), Bool.and(Nat.beq(n, tile.width), Nat.isZero(Nat.mod(n, 8))),
-        "storeHalf: a buffer's columns must be the pair's tile's, a multiple of 8"))
+      let e := Core.resume(Key.key, k, Group.warps(f, 4), Core.check(Core.state(Key.key, e), Nat.isZero(Nat.mod(n, 8)),
+        "storeHalf: a buffer's columns must be a multiple of 8"))
       // Every lane computes the row, whose warp index is a full-warp `__shfl_sync`: the warp reconverges first.
       let e := Core.emit(Key.key, e, Stmt.syncWarp)
       let rowOf := Expr.bin(BinOp.add, Expr.bin(BinOp.add, tile.rows, Expr.bin(BinOp.mul, Core.quadrant, Expr.lit(32))), Expr.special(Builtin.lane))
@@ -4253,13 +4292,14 @@ namespace Core {
 
   // This CTA's part of the pair tile of `width` columns at (`row0`, `col0`): its 128 rows from `row0 + 128·rank`, and
   // B's `width/2` rows from `col0 + (width/2)·rank`.
-  def pairTile {L: Lifetime}(k: Key)(m: Lifetime)(pair: CtaPair(L))(row0: Expr)(col0: Expr)(width: Nat): PairTile(m) :=
-    PairTile.mk(m, Core.isLeader(pair), Expr.bin(BinOp.add, row0, Expr.bin(BinOp.mul, pair.rank, Expr.lit(128))), col0,
-      Expr.bin(BinOp.add, col0, Expr.bin(BinOp.mul, pair.rank, Expr.lit(Nat.div(width, 2)))), width)
+  def pairTile {L: Lifetime}(k: Key)(m: Lifetime)(pair: CtaPair(L))(row0: Expr)(col0: Expr)(width: Nat): PairTile(m, width) :=
+    PairTile.mk(m, width, Core.isLeader(pair), Expr.bin(BinOp.add, row0, Expr.bin(BinOp.mul, pair.rank, Expr.lit(128))), col0,
+      Expr.bin(BinOp.add, col0, Expr.bin(BinOp.mul, pair.rank, Expr.lit(Nat.div(width, 2)))))
 
   // What each CTA of a pair GEMM starts with: the operand maps, its part of the pair's tile, the output, and K.
   struct PairGemm (l: Lifetime)(sa: TmaSpec)(sb: TmaSpec) : Type { scope = l }
-   | mk (a: TMap(l, sa))(b: TMap(l, sb))(tile: PairTile(l))(c: PairOut(l))(k: Val(l, Grain.uniform, DType.u32)) : PairGemm(l, sa, sb)
+   | mk (a: TMap(l, sa))(b: TMap(l, sb))(tile: PairTile(l, Nat.mul(2, TmaSpec.outer(sb))))(c: PairOut(l))(k: Val(l, Grain.uniform, DType.u32))
+        : PairGemm(l, sa, sb)
 
   // Boxes a pair GEMM can take: the ring's, and the tensor cores' for a pair (`pairMmaShapeOk`).
   def pairGemmShapeOk (sa: TmaSpec)(sb: TmaSpec): Bool :=
@@ -4316,7 +4356,7 @@ namespace Core {
   // Runs `body` once per tile this CTA's pair visits, with this CTA's part of it.
   def forPairTiles {l: Lifetime}{L: Lifetime}{g: Group}{w: Nat}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sf: Lifetime}
       (e: Ctx(l, g))(sched: PairSched(L, w))(fixed: Fixed(S))(state: S)
-      (body: { scope = Sf } (m: Lifetime) -> PairTile(m) -> Ctx(m, g) -> S -> Pair(Ctx(m, g), S))
+      (body: { scope = Sf } (m: Lifetime) -> PairTile(m, w) -> Ctx(m, g) -> S -> Pair(Ctx(m, g), S))
       : Pair(Ctx(l, g), S) :=
     Core.tileLoop(e, sched.sched, fixed, state, fun (m: Lifetime)(t: TileAt(m, w))(e: Ctx(m, g))(st: S): Pair(Ctx(m, g), S) =>
       body(m, Core.pairTile(Key.key, m, sched.pair, t.row0.expr, t.col0.expr, w), e, st))
@@ -4325,35 +4365,28 @@ namespace Core {
   // the one loop that writes the output.
   def forOwnedPairTiles {l: Lifetime}{L: Lifetime}{g: Group}{w: Nat}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sf: Lifetime}
       (e: Ctx(l, g))(sched: PairSched(L, w))(own: PairSchedOwn(L, w))(fixed: Fixed(S))(state: S)
-      (body: { scope = Sf } (m: Lifetime) -> PairTile(m) -> HalfOwn(m) -> Ctx(m, g) -> S -> Pair(Ctx(m, g), S))
+      (body: { scope = Sf } (m: Lifetime) -> PairTile(m, w) -> HalfOwn(m) -> Ctx(m, g) -> S -> Pair(Ctx(m, g), S))
       : Pair(Ctx(l, g), S) := {
     match own returning Pair(Ctx(l, g), S) with
     | PairSchedOwn.mk => Core.forPairTiles(e, sched, fixed, state,
-        fun (m: Lifetime)(t: PairTile(m))(e: Ctx(m, g))(st: S): Pair(Ctx(m, g), S) => body(m, t, HalfOwn.mk(m), e, st))
+        fun (m: Lifetime)(t: PairTile(m, w))(e: Ctx(m, g))(st: S): Pair(Ctx(m, g), S) => body(m, t, HalfOwn.mk(m), e, st))
   }
 
   // Runs `body` once per chunk of 32 columns of this CTA's half of a pair tile it owns, in a loop generated once: the
   // half's authority becomes each chunk's. A chunk's rows are this CTA's 128 of the tile (`PairTile`), and its columns
-  // the tile's, as many as a buffer of `accs` has, which must be the tile's width (else a generation error): so a CTA
-  // stores its own rows of its own tile only.
-  def forHalfChunks {k: Lifetime}{g: Group}{j: Lifetime}{q: Lifetime}{n: Nat}{kd: Kind}{T: Lifetime}{S: Type { kind = kd, scope = T }}{Sf: Lifetime}
-      (e: Ctx(k, g))(accs: PairAccRing(q, n))(tile: PairTile(j))(own: HalfOwn(j))(fixed: Fixed(S))(state: S)
-      (body: { scope = Sf } (p: Lifetime) -> ChunkAt(p, n) -> ChunkOwn(p, n) -> Ctx(p, g) -> S -> Pair(Ctx(p, g), S))
+  // the tile's `w`: so a CTA stores its own rows of its own tile only.
+  def forHalfChunks {k: Lifetime}{g: Group}{j: Lifetime}{w: Nat}{kd: Kind}{T: Lifetime}{S: Type { kind = kd, scope = T }}{Sf: Lifetime}
+      (e: Ctx(k, g))(tile: PairTile(j, w))(own: HalfOwn(j))(fixed: Fixed(S))(state: S)
+      (body: { scope = Sf } (p: Lifetime) -> ChunkAt(p, w) -> ChunkOwn(p, w) -> Ctx(p, g) -> S -> Pair(Ctx(p, g), S))
       : Pair(Ctx(k, g), S) := {
     match own returning Pair(Ctx(k, g), S) with
-    | HalfOwn.mk => {
-      let e := Core.resume(Key.key, k, g, Core.check(Core.state(Key.key, e), Nat.beq(n, tile.width),
-        "forHalfChunks: a buffer's columns must be the pair's tile's"))
-      Core.chunkLoop(Key.key, e, n, tile.rows, tile.col0, state, body)
-    }
+    | HalfOwn.mk => Core.chunkLoop(Key.key, e, w, tile.rows, tile.col0, state, body)
   }
 
-  // Writes a chunk of this CTA's rows of the current buffer, whose results are visible, into the free staging buffer, as
-  // `stageAccFull` does.
-  def stagePairAcc {k: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}{m: Lifetime}{s: Lifetime}{j: Lifetime}{p: Lifetime}
-      (e: Ctx(k, Group.warps(f, 4)))(accs: PairAccRing(q, n))(full: AccFull(q, m, f))(stg: Staging(s))(free: StageFree(s, j, f))
-      (chunk: ChunkAt(p, n)): Pair(Ctx(k, Group.warps(f, 4)), Pair(AccFull(q, m, f), StageWritten(s, j, f))) :=
-    Core.stageAccFull(e, accs.ring, full, stg, free, chunk)
+  // Loads a chunk of this CTA's rows of the current buffer, whose results are visible, as `loadBufferChunk` does.
+  def loadPairChunk {k: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}{m: Lifetime}{p: Lifetime}
+      (e: Ctx(k, Group.warps(f, 4)))(accs: PairAccRing(q, n))(full: AccFull(q, m, f))(chunk: ChunkAt(p, n))
+      : Pair(Ctx(k, Group.warps(f, 4)), Pair(AccFull(q, m, f), ChunkRegs(k))) := Core.loadBufferChunk(e, accs.ring, full, chunk)
 
   // C (M×N, f32, row-major) = A (M×K) · Bᵀ as `pairGemmKernel` computes it, by CTA pairs that each loop over 256 ×
   // `2·bh` tiles of C, bh = `sb.outer`, as `PairSched` gives them, in bands of `band` tile rows: one pair per two SMs, and
