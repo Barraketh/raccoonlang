@@ -9,7 +9,7 @@
 # - Swapping A's and B's maps in a fill: both have the ring's boxes, so a wrong result, as in the single-CTA ring.
 # - A pair opener under a branch, a loop or a role: not expressible. Its context must be the kernel's own, `Ctx(l, …)`
 #   with the kernel's `CtaPair(l)`, and every such scope has a lifetime of its own (`opener_under_leader` tries it in
-#   the leader's arm).
+#   an `onLeader` arm at the kernel's level).
 
 SOURCE = "encoding/examples/tinygemm_pair.rac"
 
@@ -19,7 +19,7 @@ MUTANTS = [
         why="Runs the issuer in both CTAs: the peer would take the ring's consumer too and issue the pair's MMAs and "
             "commits a second time. Taking the consumer needs a `Leader`, which only `onLeader`'s arm holds; outside it "
             "the only one would be forged, and `Leader` is sealed.",
-        old="""    (onLeader(e, pair, leaderOnlyPair(leaderOnlyConsumer(r), leaderOnlyAccProducer(q)), (c, p),
+        old="""    (onLeader(e, pair, leaderOnlyPair(leaderOnlyConsumer(ring), leaderOnlyAccProducer(accs)), (c, p),
       fun (n: Lifetime)(lead: Leader(n))(e: Ctx(n, Issue))(sides: Pair(Consumer(r), AccProducer(q))): Ctx(n, Issue) =>
         issue(lead, ring, accs, steps, sides, e)), Unit.unit)""",
         new="""    (issue(Leader.mk(m), ring, accs, steps, (c, p), e), Unit.unit)""",
@@ -28,10 +28,10 @@ MUTANTS = [
         name="leader_escapes", expect="TypeMismatch", mentions="Core.Leader",
         why="Hands the arm's `Leader` back out of `onLeader`, so that code both CTAs run could take a consumer with it. "
             "The arm hands back only its context, and the `Leader` belongs to the arm's scope.",
-        old="""    (onLeader(e, pair, leaderOnlyPair(leaderOnlyConsumer(r), leaderOnlyAccProducer(q)), (c, p),
+        old="""    (onLeader(e, pair, leaderOnlyPair(leaderOnlyConsumer(ring), leaderOnlyAccProducer(accs)), (c, p),
       fun (n: Lifetime)(lead: Leader(n))(e: Ctx(n, Issue))(sides: Pair(Consumer(r), AccProducer(q))): Ctx(n, Issue) =>
         issue(lead, ring, accs, steps, sides, e)), Unit.unit)""",
-        new="""    (onLeader(e, pair, leaderOnlyPair(leaderOnlyConsumer(r), leaderOnlyAccProducer(q)), (c, p),
+        new="""    (onLeader(e, pair, leaderOnlyPair(leaderOnlyConsumer(ring), leaderOnlyAccProducer(accs)), (c, p),
       fun (n: Lifetime)(lead: Leader(n))(e: Ctx(n, Issue))(sides: Pair(Consumer(r), AccProducer(q))): Pair(Ctx(n, Issue), Leader(n)) =>
         (issue(lead, ring, accs, steps, sides, e), lead)), Unit.unit)""",
     ),
@@ -102,17 +102,31 @@ MUTANTS = [
         new="""    (e, Unit.unit)""",
     ),
     dict(
-        name="opener_under_leader", expect="ImplicitReconstructionFailed", mentions="Core.withPairRing",
-        why="Opens a pair ring in the leader only, inside the issuer's arm: the peer would neither lay out nor "
-            "initialize its half, and the two CTAs' layouts and cluster barriers would no longer match. A pair opener "
-            "takes the kernel's own context: a CTA-wide group, refused here, and the kernel's lifetime, which no branch "
-            "arm has. An arm at the kernel's level could not hand the opener the tensor-memory permit either: an arm "
-            "captures no linear value.",
-        old="""        issue(lead, ring, accs, steps, sides, e)), Unit.unit)""",
-        new="""{
-        let (e, u) := withPairRing(e, pair, ringCfg, Unit, fun (r2: Lifetime)(ring2: PairRing(r2, ringCfg))(p2: Producer(r2))(c2: Consumer(r2))
-            (e: Ctx(n, Issue)): Pair(Ctx(n, Issue), Unit) => (e, Unit.unit))
-        issue(lead, ring, accs, steps, sides, e)
-      }), Unit.unit)""",
+        name="opener_under_leader", expect="TypeMismatch", mentions="Core.CtaPair",
+        why="Opens a pair ring, and runs whole roles on it, in the leader only, in an arm at the kernel's level: the "
+            "peer would neither lay out nor initialize its half, and the two CTAs' layouts and cluster barriers would "
+            "no longer match. A pair opener takes the kernel's own context, `Ctx(l, …)` with the kernel's `CtaPair(l)`, "
+            "and an arm's lifetime is its own.",
+        old="""      let steps := ceilDivC(k.k, 64)
+""",
+        new="""      let steps := ceilDivC(k.k, 64)
+      let e := onLeader(e, pair, leaderOnlyUnit, Unit.unit, fun (n: Lifetime)(lead: Leader(n))(e: Ctx(n, Cta))(u: Unit): Ctx(n, Cta) => {
+        let (e, x) := withPairRing(e, pair, ringCfg, Unit, fun (r2: Lifetime)(ring2: PairRing(r2, ringCfg))(p2: Producer(r2))(c2: Consumer(r2))
+            (e: Ctx(n, Cta)): Pair(Ctx(n, Cta), Unit) =>
+          roles4(e, Unit,
+            fun (m: Lifetime)(e: Ctx(m, Load)): Pair(Ctx(m, Load), Unit) =>
+              elect(e, Unit, fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, One)): Pair(Ctx(j, One), Unit) => {
+                let (e, p) := takePairProducer(e, w, ring2, p2)
+                (finishPairProducer(e, ring2, p), Unit.unit)
+              }),
+            fun (m: Lifetime)(e: Ctx(m, Issue)): Pair(Ctx(m, Issue), Unit) =>
+              elect(e, Unit, fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, One)): Pair(Ctx(j, One), Unit) => {
+                let (e, c) := takePairConsumer(e, w, lead, ring2, c2)
+                (finishConsumer(e, c), Unit.unit)
+              }),
+            fun (m: Lifetime)(e: Ctx(m, Wg)): Pair(Ctx(m, Wg), Unit) => (e, Unit.unit)))
+        e
+      })
+""",
     ),
 ]

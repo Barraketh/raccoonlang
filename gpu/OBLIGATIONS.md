@@ -233,9 +233,13 @@ none of them (`ATTENTION.md` §4.1), and closes its protocols on `…Done` token
   disagreement, as from a mistaken count, deadlocks: the extra fills wait in their producer's tail for releases that never come, and that CTA
   never reaches the close's cluster barrier. A persistent pair kernel's roles loop over its tiles (`forPairTiles`), each
   from `%clusterid.x` in steps of `%nclusterid.x` up to the tile count, all three the same in both CTAs (A60, M10): so
-  both CTAs visit one tile sequence, and every role the same number of tiles. No role's loop runs in one CTA only: a
-  loop uses up its role's side, which an `onLeader` arm cannot capture (M20), and the leader-only sides' loop, the
-  issuer's, has no counterpart in the peer. No side can get a phase ahead, since each CTA's `empty[s]` receives only
+  both CTAs visit one tile sequence, and every role the same number of tiles. No role's loop runs in one CTA only:
+  - a loop uses up its role's side, which an `onLeader` arm cannot capture (M20, M23), and the leader-only sides'
+    loop, the issuer's, has no counterpart in the peer;
+  - no value of the leader's alone reaches code both CTAs run, so none can choose a trip count or a branch there. An
+    arm hands back only its context, and the only unrestricted mutable state it could write is a register declared
+    outside it, which `set` refuses at generation. Everything else that a write reaches (shared tiles, staging
+    buffers, global memory, tensor memory, claims) needs a linear token, which the arm cannot capture. No side can get a phase ahead, since each CTA's `empty[s]` receives only
   the leader's commits for that stage, and the leader's `full[s]` both CTAs' bytes for the same round.
 - **M19, pair resources** (pair). A pair opener (`withPairTmem`, `withPairRing`, `withPairAccRing`) takes the
   kernel's own context, `Ctx(l, …)` with the kernel's `CtaPair(l)`, so it runs in the kernel's top-level spine and
@@ -256,7 +260,8 @@ none of them (`ATTENTION.md` §4.1), and closes its protocols on `…Done` token
   operation is the leader's and whose finishers the peer may skip (`Core.LeaderOnly` gives why). Every other side, a
   producer's, a warpgroup's or the storing side, has work in each CTA, and its finisher runs in code both CTAs run: so
   each CTA drains its own producer and waits for its own stores before the closes (M15, M19). Without this, an arm
-  could finish the peer's producer or storing side in the leader alone (review of step 4).
+  could finish the peer's producer or storing side in the leader alone (review of step 4). The arm writes no register
+  declared outside it (`Gen.writable`, checked by `set`), so no value leaves it but through its context (M18).
 - **M21, `warpwise`** (A3b). A branch on a condition of grain `warp` runs its arms in `warpwise(f, c)`
   (`Group.arm`): each warp converged, the group as a whole not, since whole warps run either arm. Warp collectives on
   a warp's own lanes take that group (`rescaleQuadrant`: `tcgen05.ld`, `.st` and `wait::ld` of the warp's quadrant,
@@ -277,8 +282,28 @@ none of them (`ATTENTION.md` §4.1), and closes its protocols on `…Done` token
   never written before it is read, nor read before it is written, and each phase of P full holds one block's 256
   arrivals.
 
+- **M23, callbacks run where their group says.** A callback that may capture linear values runs exactly on the
+  threads its context's group names, in every CTA, once. A combinator whose emitted code runs a callback only under a
+  run-time condition, or several times, either narrows the context's group to the threads that run it, or takes an
+  unrestricted callback, which captures no linear value. The bug this states (review of step 4): `onLeader`'s arm ran
+  in one CTA of the pair, kept its group, and captured linear sides, so a side could be finished in the leader alone.
+  - **Narrowing:** `split`, `elect`, and the role builders on them (`Layout.roles4`, `rolesPair`, `rolesCorrected`,
+    `splitWarpgroups`, `withRegs`).
+  - **Unrestricted:** `branch`, `when`, the loops (`loop`, `loopFrom`, `loopPeeled`, `forChunks`, `forTiles`,
+    `forOwnedTiles`, `forPairTiles`, `forOwnedPairTiles`, `forHalfChunks`), `withClaim` and `onLeader`; and the
+    generation-time repetitions, which emit a callback once per chunk (`eachChunk`, `writeP`, `mapChunks`, `mapRow`).
+  - **Unconditional:** the openers (`shared`, `reads`, `withRing`, `withTmem`, `splitTmem`, `withAccHandoff`,
+    `withAccRing`, `withStaging`, `withExchange`, the score buffers and the pair openers), whose callbacks run once on
+    their context's threads.
+  Every conditional combinator has a standing mutant that uses up an outer linear token in its callback, refused by
+  the closure's kind: `append_in_loop` (`loop`), `claim_inside_arm` (`withClaim`), `store_side_captured_by_chunk_loop`
+  (`forChunks`), and in `gemm_pair_mutants.py` `stores_wait_in_branch`, `stores_wait_in_when`,
+  `stores_wait_in_loop_from`, `stores_wait_in_peeled_rest`, `stores_wait_in_tile_loop`,
+  `store_side_captured_by_owned_tile_loop`, `reader_finished_in_chunk_loop` and the four `onLeader` mutants.
+  `forTiles` and `forOwnedTiles` have no client in `encoding/`; their bodies' type is `forPairTiles`'s.
+
 M18–M20 hold for the CTA pair (`encoding/TWO_CTA.md`, `Core.rac`'s pair sections), M21 and M22 for A3b's correction
-warpgroup (`encoding/A3B.md`).
+warpgroup (`encoding/A3B.md`), and M23 for every combinator of `encoding/Core.rac`.
 
 ## 6. Operation obligations
 
@@ -289,7 +314,7 @@ claim. Types are abbreviated; "code" is what it emits into its `Ctx`.
 | Operation | Requires | Emits | Establishes | Relies on |
 |---|---|---|---|---|
 | `lit`, `zero`, `add`, `mulC`, `divC`, `remC`, `ceilDivC`, `lt`, `fma` | argument values | nothing (pure expressions) | the value's expression, grain (the join of its inputs'), and `bound` (a true exclusive upper bound, forgotten past 2^32) | A18 |
-| `reg`, `get`, `set` | a context | a declaration, read or assignment | a per-thread register of lifetime `l`; `get` is `thread` grain | I1 |
+| `reg`, `get`, `set` | a context; for `set` in `encoding/Core.rac`, a register declared inside the innermost `onLeader` arm, if any (else a generation error) | a declaration, read or assignment | a per-thread register of lifetime `l`; `get` is `thread` grain | I1, M18 |
 
 ### 6.2 Control
 | Operation | Requires | Emits | Establishes | Relies on |
@@ -486,7 +511,7 @@ have completed (`wait::ld` in `loadPairChunk`), and the stores still in flight r
 | Operation | Requires | Emits | Establishes | Relies on |
 |---|---|---|---|---|
 | `pairGemmKernel` | a body; boxes pass `pairGemmShapeOk` (else a generation error) | `__cluster_dims__(2, 1, 1)`; the CTA group `two`; `%cluster_ctarank` and `%clusterid.x` read once; the kernel (parameters `A_map`, `B_map`, `C`, `M`, `N`, `K`) and its launcher (M·N < 2³², M, N, K < 2³¹, the two map encodings, grid `pairs(ceil(N / 2bh), ceil(M / 256))` of 256 threads, at least `pairShared` bytes of shared memory) | `PairGemm` (the maps, the `PairTile`: rows `256·blockIdx.y + 128·rank`, B's rows `col0 + bh·rank`, `col0 = 2bh·clusterid.x`, of width 2bh in its type; `PairOut`, K), `HalfOwn`, `CtaPair`, `TmemPermit`; a `Program` | A17, A43, A56, I6 |
-| `onLeader` | a `CtaPair`; sides `S` with `LeaderOnly(S)`; an unrestricted arm | `if (rank == 0) { body }` | the body ran in the leader only, with a `Leader(m)` of the arm's scope, and used up the sides there; no linear value used up in one CTA only but the leader-only sides | M20 |
+| `onLeader` | a `CtaPair`; sides `S` with `LeaderOnly(S)`; an unrestricted arm, which writes no outer register | `if (rank == 0) { body }` | the body ran in the leader only, with a `Leader(m)` of the arm's scope, and used up the sides there; no linear value used up in one CTA only but the leader-only sides | M20 |
 | `withPairTmem` | the kernel's `Ctx(l, cta)` and `CtaPair(l)`, `TmemPermit` | as `withTmem` with 512 columns and `cta_group::2`; at close `before_thread_sync`, a cluster barrier, `after_thread_sync`, warp 0's dealloc | `Tmem(a, 512)`, `Acc(a, empty)`; closes on `Acc(done)` | A44, A50, M19 |
 | `withPairRing` | the kernel's `Ctx(l, cta)` and `CtaPair(l)`; boxes pass `boxOk` | `withRing`'s layout, inits and setup arrivals, the fence, a cluster barrier; at close a cluster barrier, then thread 0's `inval`s | `PairRing`, `Producer`, `Consumer`, every stage free in both CTAs | A44, A45, M19 |
 | `takePairProducer`, `acquirePair` | as `takeProducer`, `acquire` | as theirs, the wait at cluster scope | `ProducerAt`, `Slot`: this CTA's half of the stage free (the leader's commit completed) | A49 |
@@ -632,8 +657,8 @@ arguments. The audit as of this document:
   `forOwnedPairTiles` consumes the `PairSchedOwn` and mints a `HalfOwn` per tile, and `forHalfChunks` consumes a
   `HalfOwn` and mints a `ChunkOwn` per chunk, with the rows the `PairTile`'s; `loadPairChunk` is `loadBufferChunk` on a
   pair accumulator ring. `onLeader` takes `LeaderOnly` evidence, which only `leaderOnlyUnit`, `leaderOnlyConsumer`,
-  `leaderOnlyAccProducer` and `leaderOnlyPair` make, for `Unit`, a ring's `Consumer`, an accumulator ring's
-  `AccProducer` and pairs of them (M20). `schedule`, `pairTile` and `chunkLoop` need the Key; `Cuda.smCount` and the grid
+  `leaderOnlyAccProducer` and `leaderOnlyPair` make, for `Unit`, a pair ring's `Consumer` (from its `PairRing`), a pair
+  accumulator ring's `AccProducer` (from its `PairAccRing`) and pairs of them (M20). `schedule`, `pairTile` and `chunkLoop` need the Key; `Cuda.smCount` and the grid
   `Grid.persistentPairs` are the printer's.
 - **The correction warpgroup** (A3b, §6.13). `withCorrectedBuffer` mints one `ScoreBuffer(x, correction)` and its
   three sides; `Rescaler` is unsealed data, but a `ScoreBuffer` is sealed, so a buffer's rescaler is its opener's.

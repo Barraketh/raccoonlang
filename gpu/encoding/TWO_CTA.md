@@ -45,7 +45,9 @@ CTAs. For such a grid the printer declares `__cluster_dims__(2, 1, 1)` on the ke
     pair builder makes one. (It is not called `Pair`, the prelude's product type.)
   - Every opener of a pair resource takes it, with a context of the same lifetime (below).
 - **Rank.** The rank (`%cluster_ctarank`) is the core's: it chooses the leader's arm and each CTA's half, and no
-  operation hands it to client code, so no loop count or branch of the client's can differ between the CTAs (M18).
+  operation hands it to client code. An `onLeader` arm, which runs in the leader only, hands back only its context and
+  writes no register declared outside it. So no loop count or branch of the client's can differ between the CTAs
+  (M18).
   The pair's tile index is `%clusterid.x`, the same in both CTAs, so it relies on nothing about which `blockIdx.x` a
   cluster's CTAs have.
 - **The CTA group.** The builder records it in the generation state. Every `tcgen05` emitter prints its `.cta_group`
@@ -67,8 +69,11 @@ layouts and cluster barriers match by construction.
 **The leader.** `onLeader(e, pair, only, sides, body)` emits `if (rank == 0) { … }`. The body receives `Leader(m)`, a
 sealed unrestricted fact that belongs to the arm's scope `m`, and `sides`, and hands back only its context.
 - The arm captures no linear value: what it uses up, only the leader runs. It uses up only `sides`, whose evidence
-  `only: LeaderOnly(S)` says they are the leader's alone: a pair ring's consumer, a pair accumulator ring's issuing
-  side, pairs of them, or nothing. A producer or the storing side, whose finisher each CTA must run, cannot enter it.
+  `only: LeaderOnly(S)` says they are the leader's alone: a pair ring's consumer (`leaderOnlyConsumer(ring)`), a pair
+  accumulator ring's issuing side (`leaderOnlyAccProducer(accs)`), pairs of them, or nothing. A producer or the
+  storing side, whose finisher each CTA must run, cannot enter it.
+- The arm writes no register declared outside it (`set` refuses at generation), so nothing the leader alone computes
+  reaches code both CTAs run.
 - The endpoints that issue tensor-core work, a pair ring's consumer and a pair accumulator ring's issuing side, are
   taken only with a `Leader` (`takePairConsumer`, `takePairAccProducer`). Every MMA and commit consumes a token
   derived from them, so it runs in the arm without taking a `Leader` itself.
@@ -300,7 +305,8 @@ Against the design as first written:
   construction (M18). The sequence lives in `PairSched`, which only the pair loops take: the single-CTA loops' start,
   `blockIdx.x`, differs between the CTAs.
 - No role's loop runs in one CTA only: an `onLeader` arm cannot capture a role's side (M20), so it can run no loop of a
-  role both CTAs run.
+  role both CTAs run; and it writes no register declared outside it, so no flag of the leader's can make code both
+  CTAs run take another branch or count (M18).
 - The launcher starts `2·min(SMs/2, tiles)` CTAs, as FA4's static persistent scheduler does (Facts §1.10).
 
 **The roles** are tinygemm_pair's, inside a tile loop each (`forPairTiles`):

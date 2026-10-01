@@ -93,7 +93,7 @@ namespace GemmPair {
   def issuer {r: Lifetime}{q: Lifetime}{l: Lifetime}(pair: CtaPair(l))(sched: PairSched(l, 256))(ring: PairRing(r, ringCfg))
       (accs: PairAccRing(q, 256))(steps: Val(l, Grain.uniform, DType.u32))(c: Consumer(r))(p: AccProducer(q))(m: Lifetime)(e: Ctx(m, Issue))
       : Pair(Ctx(m, Issue), Unit) :=
-    (onLeader(e, pair, leaderOnlyPair(leaderOnlyConsumer(r), leaderOnlyAccProducer(q)), (c, p),
+    (onLeader(e, pair, leaderOnlyPair(leaderOnlyConsumer(ring), leaderOnlyAccProducer(accs)), (c, p),
       fun (n: Lifetime)(lead: Leader(n))(e: Ctx(n, Issue))(sides: Pair(Consumer(r), AccProducer(q))): Ctx(n, Issue) =>
         issue(lead, sched, ring, accs, steps, sides, e)), Unit.unit)
 

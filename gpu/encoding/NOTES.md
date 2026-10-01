@@ -578,7 +578,9 @@ Observations from building `TWO_CTA.md`'s step 4 for the GEMM (`Core.rac`'s sect
    could capture linear values, so a second producer loop, or the whole epilogue, could run in the leader alone, and
    so could a producer's drain or the stores' last wait (the review's `peer_skips_drain` and
    `peer_skips_store_wait`). The arm now captures no linear value and is handed only leader-only sides
-   (`LeaderOnly`, M20); the four mutants are refused, by the closure's kind. `single_cta_schedule` tries the
+   (`LeaderOnly`, M20); the four mutants are refused, by the closure's kind. The re-review found a third way, a
+   register: an arm sets an outer register, and both CTAs read it, vote on it and branch. `set` now refuses a
+   register declared outside the innermost arm (`leader_flag_tile_loop`). `single_cta_schedule` tries the
    single-CTA tile loop, whose start differs between the CTAs. An accumulator released before its loads is a reused
    `AccFull` (`release_before_loads`).
 7. **The grid trusts residency.** `2·min(SMs/2, tiles)` CTAs, as FA4 launches, assumes every pair of
@@ -607,9 +609,22 @@ Observations from building `TWO_CTA.md`'s step 4 for the GEMM (`Core.rac`'s sect
 11. **An arm that captured too much.** The review found that `onLeader`'s arm could capture linear values: what it used
     up counted as used, but only the leader ran it, so the peer could skip a producer's drain or its stores' last wait
     and close with copies or stores in flight. The arm is now unrestricted, as `branch`'s arms are, and takes the sides
-    it may use up as its state, with evidence (`LeaderOnly`) that each is the leader's alone: a pair ring's consumer, a
+    it may use up as an argument, with evidence (`LeaderOnly`) that each is the leader's alone: a pair ring's consumer, a
     pair accumulator ring's issuing side, pairs of them, and `Unit`. The issuer's arm now names its two sides in its
     type.
 12. **Mutants that change several places.** The `onLeader` mutants need the pair in the producer or the epilogue, a
     parameter and a call apart from the arm, so `mutate.py` takes `edits`, a list of replacements, beside `old` and
     `new`.
+13. **A register out of the arm.** The re-review showed that an unrestricted arm could still carry a value out: it set
+    a register declared before it, and code both CTAs ran read the register, voted on it (`voteAny`, grain `warp`)
+    and ran a second tile loop under `when` in the leader only. A deadlock, not a race. `Gen` now records the first
+    register an arm may write (`writable`, restored by `after`), and `set` refuses an older one. That cost a `Gen` field
+    and the nineteen `Gen.mk` sites one more argument each (§"CTA pairs" 2: no struct update). Registers are the only
+    unrestricted mutable state: every other write needs a linear token.
+14. **The rule the bug broke** is M23: a callback that may capture linear values runs on exactly its group's threads,
+    in every CTA; a combinator that runs a callback conditionally or repeatedly narrows the group or takes an
+    unrestricted callback. The audit found every combinator in one of the two kinds, or unconditional, and gave each
+    conditional one a standing mutant that captures an outer linear token: nine more, in `gemm_pair_mutants.py`,
+    `tinygemm_mutants.py` and `paged_append_mutants.py`. `forTiles` and `forOwnedTiles` have no client here to mutate.
+15. **The evidence names the pair handle.** `leaderOnlyConsumer(ring)` and `leaderOnlyAccProducer(accs)` take the
+    `PairRing` and `PairAccRing`, so the evidence speaks of a pair protocol's side, not of any `Consumer`.

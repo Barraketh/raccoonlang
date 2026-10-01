@@ -149,10 +149,12 @@ namespace Core {
 
   // Everything generation has produced so far: the code, newest first; the next fresh name; the next free byte of
   // dynamic shared memory; the next free named barrier; the generation-time errors found so far; the kernel's CTA
-  // group, which every `tcgen05` instruction prints; and the block size the kernel must be compiled for, one block per
-  // SM, once a warpgroup has set its register count (`splitWarpgroups`).
+  // group, which every `tcgen05` instruction prints; the block size the kernel must be compiled for, one block per
+  // SM, once a warpgroup has set its register count (`splitWarpgroups`); and the first register the code may write,
+  // which inside an `onLeader` arm is the arm's first (`set`), and 0 elsewhere.
   struct Gen : Type
-   | mk (code: List(Stmt))(next: Nat)(smem: Nat)(barrier: Nat)(errors: List(String))(group: CtaGroup)(bounds: Option(Nat)) : Gen
+   | mk (code: List(Stmt))(next: Nat)(smem: Nat)(barrier: Nat)(errors: List(String))(group: CtaGroup)(bounds: Option(Nat))
+        (writable: Nat) : Gen
 
   // The emitter for a block of lifetime `l` run by `g`.
   sealed inductive Ctx (l: Lifetime)(g: Group) : Type { kind = lin, scope = l }
@@ -175,7 +177,7 @@ namespace Core {
 
   def resume (k: Key)(l: Lifetime)(g: Group)(gen: Gen): Ctx(l, g) := Ctx.mk(l, g, gen)
 
-  def push (gen: Gen)(s: Stmt): Gen := Gen.mk(List.cons(s, gen.code), gen.next, gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds)
+  def push (gen: Gen)(s: Stmt): Gen := Gen.mk(List.cons(s, gen.code), gen.next, gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable)
 
   // `ss` in program order.
   def pushAll (gen: Gen)(ss: List(Stmt)): Gen decreases structural(ss) := {
@@ -184,9 +186,9 @@ namespace Core {
     | List.cons s more => Core.pushAll(Core.push(gen, s), more)
   }
 
-  def fresh (gen: Gen): Gen := Gen.mk(gen.code, Nat.succ(gen.next), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds)
+  def fresh (gen: Gen): Gen := Gen.mk(gen.code, Nat.succ(gen.next), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable)
 
-  def fail (gen: Gen)(message: String): Gen := Gen.mk(gen.code, gen.next, gen.smem, gen.barrier, List.cons(message, gen.errors), gen.group, gen.bounds)
+  def fail (gen: Gen)(message: String): Gen := Gen.mk(gen.code, gen.next, gen.smem, gen.barrier, List.cons(message, gen.errors), gen.group, gen.bounds, gen.writable)
 
   def check (gen: Gen)(ok: Bool)(message: String): Gen := Bool.cond(ok, Gen, gen, Core.fail(gen, message))
 
@@ -195,10 +197,11 @@ namespace Core {
   def oneCta (gen: Gen)(what: String): Gen := Core.check(gen, CtaGroup.isOne(gen.group), Text.cat(what, ": a single-CTA protocol in a pair kernel"))
 
   // A nested block's starting state: no code yet, the enclosing block's counters.
-  def child (gen: Gen): Gen := Gen.mk(List.nil(Stmt), gen.next, gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds)
+  def child (gen: Gen): Gen := Gen.mk(List.nil(Stmt), gen.next, gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable)
 
   // `parent` followed by `s`, with the counters its nested blocks reached in `last`.
-  def after (parent: Gen)(last: Gen)(s: Stmt): Gen := Gen.mk(List.cons(s, parent.code), last.next, last.smem, last.barrier, last.errors, last.group, last.bounds)
+  def after (parent: Gen)(last: Gen)(s: Stmt): Gen :=
+    Gen.mk(List.cons(s, parent.code), last.next, last.smem, last.barrier, last.errors, last.group, last.bounds, parent.writable)
 
   // Turns code kept newest first into a block in program order.
   def toBlock (code: List(Stmt))(acc: Block): Block decreases structural(code) := {
@@ -215,7 +218,7 @@ namespace Core {
 
   // Reserves `bytes` of dynamic shared memory at the next `align`-aligned offset, `Core.alignUp(gen.smem, align)`.
   def reserve (gen: Gen)(bytes: Nat)(align: Nat): Gen :=
-    Gen.mk(gen.code, gen.next, Nat.add(Core.alignUp(gen.smem, align), bytes), gen.barrier, gen.errors, gen.group, gen.bounds)
+    Gen.mk(gen.code, gen.next, Nat.add(Core.alignUp(gen.smem, align), bytes), gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable)
 
   def emit {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(s: Stmt): Ctx(l, g) := Core.resume(k, l, g, Core.push(Core.state(k, e), s))
 
@@ -336,8 +339,13 @@ namespace Core {
   def get {l: Lifetime}{g: Group}{S: Lifetime}{t: DType}(e: Ctx(l, g))(r: Reg(S, t)): Pair(Ctx(l, g), Val(l, Grain.thread, t)) :=
     Core.bind(Key.key, e, Grain.thread, t, Expr.var(r.id), Option.none(Nat))
 
-  def set {l: Lifetime}{g: Group}{S: Lifetime}{Sv: Lifetime}{u: Grain}{t: DType}(e: Ctx(l, g))(r: Reg(S, t))(v: Val(Sv, u, t)): Ctx(l, g) :=
-    Core.emit(Key.key, e, Stmt.assign(r.id, v.expr))
+  // Writes a register. Inside an `onLeader` arm only a register the arm declared: a write of an outer one would carry a
+  // value from the leader's code to code both CTAs run, where it could choose a trip count or a branch (M18).
+  def set {l: Lifetime}{g: Group}{S: Lifetime}{Sv: Lifetime}{u: Grain}{t: DType}(e: Ctx(l, g))(r: Reg(S, t))(v: Val(Sv, u, t)): Ctx(l, g) := {
+    let gen := Core.state(Key.key, e)
+    let checked := Core.check(gen, Nat.ble(gen.writable, r.id), "set: a register declared outside an `onLeader` arm, written in the leader only")
+    Core.resume(Key.key, l, g, Core.push(checked, Stmt.assign(r.id, v.expr)))
+  }
 
   // ---- sm_100a instructions ---------------------------------------------------------------------------------------
   //
@@ -601,7 +609,7 @@ namespace Core {
     | Group.cta n => Core.push(gen, Stmt.sync)
     | Group.warps f c => {
       let id := gen.barrier
-      let withId := Gen.mk(gen.code, gen.next, gen.smem, Nat.succ(id), gen.errors, gen.group, gen.bounds)
+      let withId := Gen.mk(gen.code, gen.next, gen.smem, Nat.succ(id), gen.errors, gen.group, gen.bounds, gen.writable)
       Core.push(Core.check(withId, Nat.ble(id, 15), "split: more than 15 named barriers"), Core.namedBarrier(id, Group.threads(g)))
     }
     | Group.lane => gen
@@ -811,7 +819,7 @@ namespace Core {
 
   def errorsToCode (errors: List(String)): List(Stmt) := List.map(errors, Stmt, fun (m: String): Stmt => Stmt.error(m))
 
-  def start (k: Key)(l: Lifetime)(g: Group)(group: CtaGroup): Ctx(l, g) := Ctx.mk(l, g, Gen.mk(List.nil(Stmt), 0, 0, 1, List.nil(String), group, Option.none(Nat)))
+  def start (k: Key)(l: Lifetime)(g: Group)(group: CtaGroup): Ctx(l, g) := Ctx.mk(l, g, Gen.mk(List.nil(Stmt), 0, 0, 1, List.nil(String), group, Option.none(Nat), 0))
 
   // A kernel the typed core built: the only thing `render` prints. A program can neither build one nor take one apart,
   // so it cannot change a kernel's code, shared memory or launcher. `bounds` is the block size it is compiled for, one
@@ -1604,7 +1612,7 @@ namespace Core {
     // wrote the accumulator, whoever observed it complete.
     let loads := List.append(Core.declOuts(DType.f32, first, 32), List.cons(Stmt.syncWarp, List.cons(Core.tcFenceAfter,
       List.append(List.map(four, Stmt, load), List.cons(Core.tmemWaitLoad, List.nil(Stmt))))))
-    let named := Gen.mk(gen.code, Nat.add(first, 32), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds)
+    let named := Gen.mk(gen.code, Nat.add(first, 32), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable)
     (Core.resume(Key.key, k, g, Core.pushAll(named, loads)), ChunkRegs.mk(k, first))
   }
 
@@ -1630,7 +1638,7 @@ namespace Core {
         List.cons(Stmt.decl(DType.u32, swizzle, Expr.bin(BinOp.band, Expr.special(Builtin.lane), Expr.lit(7))), List.nil(Stmt)))
       let write := fun (g: Nat): Stmt => Core.storeShared4(Expr.bin(BinOp.add, Expr.var(row),
         Expr.bin(BinOp.shl, Expr.bin(BinOp.bxor, Expr.lit(g), Expr.var(swizzle)), Expr.lit(4))), Nat.add(regs.first, Nat.mul(4, g)))
-      let named := Gen.mk(gen.code, Nat.add(gen.next, 2), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds)
+      let named := Gen.mk(gen.code, Nat.add(gen.next, 2), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable)
       (Core.resume(Key.key, k, Group.warps(f, 4), Core.pushAll(named, List.append(place, List.map(Core.eight, Stmt, write)))), StageWritten.mk(s, m, f))
     }
   }
@@ -1663,7 +1671,7 @@ namespace Core {
         let next := List.cons(Stmt.assign(stg.cur, Expr.bin(BinOp.add, Expr.var(stg.cur), Expr.lit(1))),
           List.cons(Stmt.ifElse(Expr.bin(BinOp.eq, Expr.var(stg.cur), Expr.lit(stg.bufs)), Block.seq(Stmt.assign(stg.cur, Expr.lit(0)), Block.done), Block.done),
             List.nil(Stmt)))
-        let named := Gen.mk(gen.code, Nat.add(gen.next, 2), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds)
+        let named := Gen.mk(gen.code, Nat.add(gen.next, 2), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable)
         (Core.resume(Key.key, k, Group.warps(f, 4), Core.pushAll(named, List.append(place, List.append(store, next)))), StoreAt.mk(s, m, f))
       }
     }
@@ -1996,7 +2004,7 @@ namespace Core {
   // reconverges for the `.sync.aligned` load, and the load completes (`wait::ld`) before they are read.
   def loadRow8 (gen: Gen)(taddr: Expr): Gen := {
     let first := gen.next
-    Core.pushAll(Gen.mk(gen.code, Nat.add(first, 8), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds),
+    Core.pushAll(Gen.mk(gen.code, Nat.add(first, 8), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable),
       List.append(Core.declOuts(DType.f32, first, 8), List.cons(Stmt.syncWarp, List.cons(Core.tmemLoad8(first, taddr), List.cons(Core.tmemWaitLoad, List.nil(Stmt))))))
   }
 
@@ -2153,7 +2161,7 @@ namespace Core {
       List.cons(Core.cvtBf16x2(Nat.add(first, 2), v.v5.expr, v.v4.expr), List.cons(Core.cvtBf16x2(Nat.add(first, 3), v.v7.expr, v.v6.expr), List.nil(Stmt)))))
     let store := List.cons(Stmt.syncWarp, List.cons(Core.tmemStore4(Core.quadrantLanes(Core.offsetBy(p, Nat.mul(4, c))), first), List.nil(Stmt)))
     let code := List.append(Core.declOuts(DType.u32, first, 4), List.append(packs, store))
-    Core.pushAll(Gen.mk(gen.code, Nat.add(first, 4), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds), code)
+    Core.pushAll(Gen.mk(gen.code, Nat.add(first, 4), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable), code)
   }
 
   // For chunks `c` to `c + count - 1`: load the chunk of S (`loadChunk`), run `step` on it, and store the eight values
@@ -2370,7 +2378,7 @@ namespace Core {
       Stmt.decl(DType.f32, Nat.add(first, j), Expr.select(Expr.bin(BinOp.lt, Core.offsetBy(Expr.var(kv), j), Expr.var(limit)), t.expr, mask.minusInfinity))
     let values := List.cons(masked(0, v.v0), List.cons(masked(1, v.v1), List.cons(masked(2, v.v2), List.cons(masked(3, v.v3),
       List.cons(masked(4, v.v4), List.cons(masked(5, v.v5), List.cons(masked(6, v.v6), List.cons(masked(7, v.v7), List.nil(Stmt)))))))))
-    (Core.resume(Key.key, k, Group.warps(f, 4), Core.pushAll(Gen.mk(gen.code, Nat.add(first, 8), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds),
+    (Core.resume(Key.key, k, Group.warps(f, 4), Core.pushAll(Gen.mk(gen.code, Nat.add(first, 8), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable),
       List.append(place, values))), Core.row8(Key.key, k, first))
   }
 
@@ -2450,7 +2458,7 @@ namespace Core {
       List.cons(Stmt.decl(DType.u32, row, Expr.bin(BinOp.add, out.first, Expr.var(within))),
       List.cons(Stmt.decl(DType.bool, inside, Expr.bin(BinOp.lt, Expr.var(within), out.seq)),
       List.cons(Stmt.decl(DType.f32, scale, inv), List.cons(Stmt.decl(DType.f32, logSum, lse), List.nil(Stmt))))))))
-    let placed := Core.pushAll(Gen.mk(gen.code, Nat.add(within, 5), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds), place)
+    let placed := Core.pushAll(Gen.mk(gen.code, Nat.add(within, 5), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable), place)
     let kept := out.kept
     let value := fun (x: Expr): Expr => Core.outValue(t, Core.keptOrZero(kept, Expr.bin(BinOp.mul, x, Expr.var(scale))))
     let stored := Core.storeChunks(placed, o, out.o, Expr.var(row), Expr.var(inside), value, 0, 16)
@@ -2668,7 +2676,7 @@ namespace Core {
       let code := List.append(Core.declOuts(DType.f32, first, 128),
         List.cons(Stmt.syncWarp, List.append(List.map(Core.counting(0, 16), Stmt, load), List.cons(Core.tmemWaitLoad, List.nil(Stmt)))))
       let row := Row.mk(List.map(Core.counting(0, 16), F32x8(k, Grain.thread), fun (c: Nat): F32x8(k, Grain.thread) => Core.row8(Key.key, k, at(c))))
-      (Core.resume(Key.key, k, Group.warps(f, 4), Core.pushAll(Gen.mk(gen.code, Nat.add(first, 128), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds), code)),
+      (Core.resume(Key.key, k, Group.warps(f, 4), Core.pushAll(Gen.mk(gen.code, Nat.add(first, 128), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable), code)),
         (Loaded.mk(x, m, f, o), row))
     }
   }
@@ -3054,7 +3062,7 @@ namespace Core {
       let counted := Core.check(Core.state(Key.key, e), Bool.and(Bool.and(Core.regsOk(regs0), Core.regsOk(regs1)), Bool.and(Core.regsOk(regs2), Core.regsOk(regs3))),
         "registers: a warpgroup's count must be a multiple of 8 from 24 to 256")
       let fits := Core.check(counted, Nat.ble(Nat.add(Nat.add(regs0, regs1), Nat.add(regs2, regs3)), 512), "registers: the warpgroups' counts exceed the register file")
-      let e := Core.resume(Key.key, l, Group.cta(512), Gen.mk(fits.code, fits.next, fits.smem, fits.barrier, fits.errors, fits.group, Option.some(512)))
+      let e := Core.resume(Key.key, l, Group.cta(512), Gen.mk(fits.code, fits.next, fits.smem, fits.barrier, fits.errors, fits.group, Option.some(512), fits.writable))
       let low := fun (m: Lifetime)(e: Ctx(m, Group.warps(0, 8))): Pair(Ctx(m, Group.warps(0, 8)), Pair(Unit, Unit)) =>
         Core.split(e, 4, Unit, Unit, Core.withRegs(0, regs0, group0), Core.withRegs(4, regs1, group1))
       let high := fun (m: Lifetime)(e: Ctx(m, Group.warps(8, 8))): Pair(Ctx(m, Group.warps(8, 8)), Pair(Unit, Unit)) =>
@@ -3160,7 +3168,7 @@ namespace Core {
       List.cons(Stmt.decl(DType.u32, tiles, Expr.bin(BinOp.mul, Expr.var(tilesM), Expr.var(tilesN))),
       List.cons(Stmt.decl(DType.u32, bandRows, Core.minExpr(Expr.var(tilesM), Expr.lit(band))),
       List.cons(Stmt.decl(DType.u32, bandTiles, Expr.bin(BinOp.mul, Expr.var(bandRows), Expr.var(tilesN))), List.nil(Stmt))))))
-    let gen2 := Core.pushAll(Gen.mk(gen1.code, Nat.add(tilesN, 5), gen1.smem, gen1.barrier, gen1.errors, gen1.group, gen1.bounds), counts)
+    let gen2 := Core.pushAll(Gen.mk(gen1.code, Nat.add(tilesN, 5), gen1.smem, gen1.barrier, gen1.errors, gen1.group, gen1.bounds, gen1.writable), counts)
     (gen2, Sched.mk(l, bn, height, start, step, tiles, tilesM, bandRows, bandTiles))
   }
 
@@ -3990,24 +3998,25 @@ namespace Core {
   // Nothing: an arm that uses up no side.
   def leaderOnlyUnit : LeaderOnly(Unit) := LeaderOnly.mk(Unit)
 
-  def leaderOnlyConsumer (r: Lifetime): LeaderOnly(Consumer(r)) := LeaderOnly.mk(Consumer(r))
-
-  def leaderOnlyAccProducer (q: Lifetime): LeaderOnly(AccProducer(q)) := LeaderOnly.mk(AccProducer(q))
-
   def leaderOnlyPair {ka: Kind}{Ta: Lifetime}{A: Type { kind = ka, scope = Ta }}{kb: Kind}{Tb: Lifetime}{B: Type { kind = kb, scope = Tb }}
       (a: LeaderOnly(A))(b: LeaderOnly(B)): LeaderOnly(Pair(A, B)) := LeaderOnly.mk(Pair(A, B))
 
   // Runs `body` in the leader only, `if (rank == 0) { … }`, handing it `sides`, which only the leader may use up. The rank
-  // is uniform in a CTA, so the whole group runs the arm. The arm captures no linear value: what it uses up runs in one
-  // CTA only, so it may use up only what belongs in the leader alone (`LeaderOnly`), not a side whose finisher each CTA
-  // must run. The arm's `Leader(m)` belongs to its scope, which nothing outside the arm can name, and the arm hands back
-  // only its context.
+  // is uniform in a CTA, so the whole group runs the arm. What the arm does, only the leader does, so nothing it does
+  // may reach code both CTAs run:
+  // - it captures no linear value, so it uses up only what belongs in the leader alone (`LeaderOnly`), not a side whose
+  //   finisher each CTA must run;
+  // - it writes no register declared outside it (`set` refuses at generation), so no value of the leader's alone
+  //   leaves it;
+  // - its `Leader(m)` belongs to its scope, which nothing outside the arm can name, and it hands back only its context.
   def onLeader {l: Lifetime}{g: Group}{L: Lifetime}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sf: Lifetime}
       (e: Ctx(l, g))(pair: CtaPair(L))(only: LeaderOnly(S))(sides: S)
       (body: { scope = Sf } (m: Lifetime) -> Leader(m) -> Ctx(m, g) -> S -> Ctx(m, g)): Ctx(l, g) := {
     let gen := Core.state(Key.key, e)
     scope m => {
-      let done := Core.state(Key.key, body(m, Leader.mk(m), Core.resume(Key.key, m, g, Core.child(gen)), sides))
+      let arm := Core.child(gen)
+      let fenced := Gen.mk(arm.code, arm.next, arm.smem, arm.barrier, arm.errors, arm.group, arm.bounds, arm.next)
+      let done := Core.state(Key.key, body(m, Leader.mk(m), Core.resume(Key.key, m, g, fenced), sides))
       Core.resume(Key.key, l, g, Core.after(gen, done, Stmt.ifElse(Core.isLeader(pair), Core.blockOf(done), Block.done)))
     }
   }
@@ -4027,7 +4036,7 @@ namespace Core {
   // How a pair kernel ends: its request for shared memory raised to `pairShared`, then `finish`.
   def pairFinish (k: Key)(name: String)(params: List(Param))(launcher: Launcher)(gen: Gen): Program := {
     let smem := Bool.cond(Nat.ble(Core.pairShared, gen.smem), Nat, gen.smem, Core.pairShared)
-    Core.finish(k, name, params, Option.some(launcher), Gen.mk(gen.code, gen.next, smem, gen.barrier, gen.errors, gen.group, gen.bounds))
+    Core.finish(k, name, params, Option.some(launcher), Gen.mk(gen.code, gen.next, smem, gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable))
   }
 
   // One thread runs `setup` and fences its inits for the cluster; then every thread of both CTAs waits at the cluster
@@ -4062,6 +4071,9 @@ namespace Core {
   // ring's only in what the CTA group prints run the ring's.
   sealed struct PairRing (r: Lifetime)(cfg: RingCfg) : Type { scope = r }
    | mk (ring: Ring(r, cfg)) : PairRing(r, cfg)
+
+  // A pair ring's consumer belongs in the leader alone (`LeaderOnly`).
+  def leaderOnlyConsumer {r: Lifetime}{cfg: RingCfg}(ring: PairRing(r, cfg)): LeaderOnly(Consumer(r)) := LeaderOnly.mk(Consumer(r))
 
   // Opens a pair ring for the callback, laid out as `withRing` lays out a ring, in both CTAs. The callback must finish
   // both sides, as `withRing`'s, so the close follows the producers' drains.
@@ -4142,6 +4154,9 @@ namespace Core {
   // ring's only in what the CTA group prints run the accumulator ring's.
   sealed struct PairAccRing (q: Lifetime)(n: Nat) : Type { scope = q }
    | mk (ring: AccRing(q, n)) : PairAccRing(q, n)
+
+  // A pair accumulator ring's issuing side belongs in the leader alone (`LeaderOnly`).
+  def leaderOnlyAccProducer {q: Lifetime}{n: Nat}(accs: PairAccRing(q, n)): LeaderOnly(AccProducer(q)) := LeaderOnly.mk(AccProducer(q))
 
   // Splits the accumulator of `withPairTmem` into `bufs` buffers of `n` columns for the callback, as `withAccRing` does,
   // in both CTAs. The callback must finish both sides, so the close follows the issuer's drain.

@@ -1,6 +1,6 @@
 # The append of paged decode (P2.md §5) with one mistake each: the core refuses a cache write without a claim, a claim
-# that leaves its arm, a row of the caller's choosing, a second claim, owners of the caller's making, and a claimed row
-# written twice, in a loop, or not at all. Run by check.sh through gpu/mutate.py.
+# that leaves its arm, a row of the caller's choosing, a second claim, owners of the caller's making, a claimed row
+# written twice, in a loop, or not at all, and a claim inside the claim's arm. Run by check.sh through gpu/mutate.py.
 
 SOURCE = "encoding/examples/paged_append.rac"
 
@@ -59,6 +59,14 @@ MUTANTS = [
         new="""        { let (e, u) := loop(e, lit(1000), fixedUnit, Unit.unit, fun (n: Lifetime)(i: Val(n, Grain.uniform, DType.u32))(e: Ctx(n, warpCta))(u: Unit)
             : Pair(Ctx(n, warpCta), Unit) => (appendRow(e, c, once, g.cache, g.knew), u))
           e }))""",
+    ),
+    dict(
+        name="claim_inside_arm", expect="TypeMismatch", mentions="closures differ in kind",
+        why="Claims again inside the claim's arm, with the launch's one authority to claim: the inner claim would run "
+            "only where the outer one held. The arm runs under a run-time condition, so it captures no linear value.",
+        old=ARM,
+        new="""        withClaim(appendRow(e, c, once, g.cache, g.knew), g.lens, g.table, g.claims, own,
+          fun (n: Lifetime)(e: Ctx(n, warpCta))(c2: Claimed(n))(once2: AppendOwn(n)): Ctx(n, warpCta) => appendRow(e, c2, once2, g.cache, g.knew))))""",
     ),
     dict(
         name="arm_without_append", expect="LinearUnused", mentions="once",
