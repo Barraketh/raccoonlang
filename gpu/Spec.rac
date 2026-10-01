@@ -240,9 +240,20 @@ namespace Spec {
   inductive Barrier (id: Nat)(threads: Nat) indices (s: Stmt) : Prop
    | mk : Barrier(id, threads, Stmt.instr(Instr.barSync(Expr.lit(id), Expr.lit(threads))))
 
-  // Each `bar.sync` has literal operands and an id in 1..15, and no two have one id.
+  // `s` begins with `p`.
+  inductive Prefixed (p: List(Char))(s: List(Char)) : Prop
+   | mk (rest: List(Char))(spelled: Eq(List(Char), s, List.append(p, rest))) : Prefixed(p, s)
+
+  // An asm template of a CTA barrier instruction: `bar.…`, or `barrier.…` but not the cluster barrier's.
+  def CtaBarrierTemplate (t: String): Prop :=
+    Or(Spec.Prefixed("bar.".data, t.data), And(Spec.Prefixed("barrier.".data, t.data), Not(Spec.Prefixed("barrier.cluster".data, t.data))))
+
+  // Each `bar.sync` has literal operands and an id in 1..15, and no two have one id; and no asm statement is a CTA
+  // barrier, so every named barrier is a `bar.sync` here.
   struct BarrierIds (k: Kernel) : Prop
    | mk (literal: (a: Expr) -> (b: Expr) -> Spec.InBlock(Stmt.instr(Instr.barSync(a, b)), k.body) -> Spec.LiteralPair(a, b))
+        (noTemplate: (t: String) -> (outs: List(Operand)) -> (ins: List(Operand)) -> Spec.InBlock(Stmt.asm(t, outs, ins), k.body)
+          -> Not(Spec.CtaBarrierTemplate(t)))
         (inRange: (s: Stmt) -> (id: Nat) -> (threads: Nat) -> Spec.InBlock(s, k.body) -> Spec.Barrier(id, threads, s) -> And(Nat.le(1, id), Nat.le(id, 15)))
         (distinct: (x: Stmt) -> (y: Stmt) -> (id: Nat) -> (tx: Nat) -> (ty: Nat) -> Spec.Before(Stmt, x, y, Spec.statements(k.body))
           -> Spec.Barrier(id, tx, x) -> Spec.Barrier(id, ty, y) -> False) : BarrierIds(k)
@@ -287,9 +298,24 @@ namespace Spec {
   // step advances the start address by less than 2^18 bytes.
   def SmemDescFits (d: SmemDesc): Prop := And(Nat.lt(d.lbo, 262144), And(Eq(Nat, Nat.mod(d.lbo, 16), 0), Nat.lt(d.step, 8192)))
 
-  // An instruction descriptor's fields fit Table 51: M a multiple of 16 below 512, N a multiple of 8 below 512.
-  def InstrDescFits (d: InstrDesc): Prop :=
-    And(And(Nat.lt(d.m, 512), Eq(Nat, Nat.mod(d.m, 16), 0)), And(Nat.lt(d.n, 512), Eq(Nat, Nat.mod(d.n, 8), 0)))
+  // An MMA shape: M is `m1` or `m2`, and N a multiple of `step` in `step`..256.
+  def ShapeFits (m1: Nat)(m2: Nat)(step: Nat)(d: InstrDesc): Prop :=
+    And(Or(Eq(Nat, d.m, m1), Eq(Nat, d.m, m2)), And(Nat.le(step, d.n), And(Nat.le(d.n, 256), Eq(Nat, Nat.mod(d.n, step), 0))))
+
+  // An instruction descriptor's shape is one kind::f16 has for the CTA group (PTX §9.7.18.2.1, Table 48): for one
+  // CTA, M of 64 or 128 and N a multiple of 8 up to 256; for a pair, M of 128 or 256 and N a multiple of 16 up to 256.
+  // Each then fits its field of Table 51.
+  def InstrDescFits (g: CtaGroup)(d: InstrDesc): Prop := {
+    match g returning Prop with
+    | CtaGroup.one => Spec.ShapeFits(64, 128, 8, d)
+    | CtaGroup.two => Spec.ShapeFits(128, 256, 16, d)
+  }
+
+  // The columns a tensor-memory load or store moves per thread, for its shape.
+  def TmemCountOk (shape: TmemShape)(n: Nat): Prop := {
+    match shape returning Prop with
+    | TmemShape.s32x32b => Mem(Nat, n, Spec.tmemCounts)
+  }
 
   def MmaAFits (a: MmaA): Prop := {
     match a returning Prop with
@@ -304,19 +330,47 @@ namespace Spec {
     | Option.some mask => Nat.lt(mask, 65536)
   }
 
-  // An instruction's immediates, which its template prints, are in the ranges PTX gives them, and the fields the
-  // printer packs into its descriptors fit them.
+  // An instruction's immediates, which its template prints, are in their ranges, and the fields the printer packs into
+  // its descriptors fit them. `shfl`'s lane below 32 is the library's rule: PTX reads the lane operand's low 5 bits.
   def InRange (i: Instr): Prop := {
     match i returning Prop with
-    | Instr.mma g acc a b idesc accumulate => And(Spec.MmaAFits(a), And(Spec.SmemDescFits(b), Spec.InstrDescFits(idesc)))
+    | Instr.barSync id threads => True
+    | Instr.mbarInit bar count => True
+    | Instr.mbarInval bar => True
+    | Instr.mbarArrive w bar arrival => True
+    | Instr.mbarWait s bar parity => True
+    | Instr.fenceMbarInit => True
+    | Instr.fenceProxyAsync => True
+    | Instr.tcFence side => True
+    | Instr.clusterArrive => True
+    | Instr.clusterWait => True
+    | Instr.tmaLoad g dst map x y bar => True
+    | Instr.tmaStore map x y src => True
+    | Instr.bulkCommit => True
+    | Instr.bulkWait what pending => Nat.lt(pending, Spec.u64Limit)
+    | Instr.tmemAlloc g slot cols => True
+    | Instr.tmemRelinquish g => True
+    | Instr.tmemDealloc g taddr cols => True
+    | Instr.mma g acc a b idesc accumulate => And(Spec.MmaAFits(a), And(Spec.SmemDescFits(b), Spec.InstrDescFits(g, idesc)))
     | Instr.tcCommit g bar multicast => Spec.MaskFits(multicast)
-    | Instr.tmemLoad shape dst taddr => Mem(Nat, List.length(dst), Spec.tmemCounts)
-    | Instr.tmemStore shape w taddr values => Mem(Nat, List.length(values), Spec.tmemCounts)
+    | Instr.tmemLoad shape dst taddr => Spec.TmemCountOk(shape, List.length(dst))
+    | Instr.tmemStore shape w taddr values => Spec.TmemCountOk(shape, List.length(values))
+    | Instr.tmemWait what => True
+    | Instr.elect flag => True
     | Instr.shfl d a lane => Nat.lt(lane, 32)
+    | Instr.voteAny d p => True
     | Instr.setMaxNReg change count => And(Nat.le(24, count), And(Nat.le(count, 256), Eq(Nat, Nat.mod(count, 8), 0)))
     | Instr.movF32 d bits => Nat.lt(bits, Cuda.u32Limit)
+    | Instr.ex2 d a => True
+    | Instr.lg2 d a => True
+    | Instr.ex2Emulated d a => True
+    | Instr.rcp r d a => True
+    | Instr.cvtBf16x2 d hi lo => True
+    | Instr.ldRelaxed s d addr => True
+    | Instr.casRelaxed s d addr expected desired => True
+    | Instr.movSpecial d r => True
+    | Instr.mapa d addr rank => True
     | Instr.stShared addr values => Mem(Nat, List.length(values), List.cons(2, List.cons(4, List.nil(Nat))))
-    | _ => True
   }
 
   // I4: every 32-bit literal is below 2^32, every 64-bit literal below 2^64, and every instruction is in range.

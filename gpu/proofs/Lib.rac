@@ -78,17 +78,23 @@ namespace Lib {
     Eq.trans(Eq.symm(unfolded), h)
   }
 
-  def countInSound (xs: List(Nat))(n: Nat)(h: Eq(Bool, Check.countIn(xs, n), Bool.true)): Spec.Mem(Nat, n, xs) decreases structural(xs) := {
+  def memberOfSound (xs: List(Nat))(n: Nat)(h: Eq(Bool, Check.memberOf(xs, n), Bool.true)): Spec.Mem(Nat, n, xs) decreases structural(xs) := {
     match xs returning Spec.Mem(Nat, n, xs) with
     | List.nil => False.elim(Bool.falseNeTrue(h), Spec.Mem(Nat, n, List.nil(Nat)))
     | List.cons x more => {
-      match Lib.orCases(Nat.beq(x, n), Check.countIn(more, n), h) returning Spec.Mem(Nat, n, List.cons(x, more)) with
+      match Lib.orCases(Nat.beq(x, n), Check.memberOf(more, n), h) returning Spec.Mem(Nat, n, List.cons(x, more)) with
       | Or.inl same => {
         match Lib.beqSound(x, n, same) returning Spec.Mem(Nat, n, List.cons(x, more)) with
         | Eq.refl z => Spec.Mem.here(x, more)
       }
-      | Or.inr later => Spec.Mem.there(x, more, Lib.countInSound(more, n, later))
+      | Or.inr later => Spec.Mem.there(x, more, Lib.memberOfSound(more, n, later))
     }
+  }
+
+  def notFalse (b: Bool)(h: Eq(Bool, Bool.not(b), Bool.false)): Eq(Bool, b, Bool.true) := {
+    match b returning Eq(Bool, b, Bool.true) with
+    | Bool.true => Eq.refl(Bool.true)
+    | Bool.false => False.elim(Bool.trueNeFalse(h), Eq(Bool, Bool.false, Bool.true))
   }
 
   def beqRefl (a: Nat): Eq(Bool, Nat.beq(a, a), Bool.true) decreases structural(a) := {
@@ -189,6 +195,25 @@ namespace Lib {
       match e returning False with
       | Eq.refl z => Lib.notBoth(Check.same(z, z), h, Lib.sameRefl(z))
     }
+
+  // `Check.startsWith` finds only prefixes.
+  def startsWithSound (a: List(Char))(p: List(Char))(h: Eq(Bool, Check.startsWith(a, p), Bool.true)): Spec.Prefixed(p, a)
+      decreases structural(p) := {
+    match p returning Spec.Prefixed(p, a) with
+    | List.nil => Spec.Prefixed.mk(List.nil(Char), a, Eq.refl(a))
+    | List.cons q ps => {
+      match a returning Spec.Prefixed(List.cons(q, ps), a) with
+      | List.nil => False.elim(Bool.falseNeTrue(h), Spec.Prefixed(List.cons(q, ps), List.nil(Char)))
+      | List.cons c more => {
+        let heads := Nat.beq(c.value, q.value)
+        match Lib.startsWithSound(more, ps, Lib.andRight(heads, Check.startsWith(more, ps), h)) returning Spec.Prefixed(List.cons(q, ps), List.cons(c, more)) with
+        | Spec.Prefixed.mk rest spelled => {
+          let char := congrArg(Lib.beqSound(c.value, q.value, Lib.andLeft(heads, Check.startsWith(more, ps), h)), Char, Char.mk)
+          Spec.Prefixed.mk(List.cons(q, ps), rest, Lib.consEq(Char, c, q, more, List.append(ps, rest), char, spelled))
+        }
+      }
+    }
+  }
 
   // `Check.mentions` decides membership.
   def mentionsSound (names: List(String))(name: String)(h: Eq(Bool, Check.mentions(names, name), Bool.true))

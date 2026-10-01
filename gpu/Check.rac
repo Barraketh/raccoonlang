@@ -531,6 +531,18 @@ namespace Check {
     Scan.mk(Check.NatSet.insert(st.seen, id), counted)
   }
 
+  // Whether an asm template is a CTA barrier's: `bar.…`, or `barrier.…` but not the cluster barrier's. Named barriers
+  // are `Instr.barSync`, which this checker reads; an asm one would be invisible to it.
+  def ctaBarrierChars (t: List(Char)): Bool :=
+    Bool.or(Check.startsWith(t, "bar.".data), Bool.and(Check.startsWith(t, "barrier.".data), Bool.not(Check.startsWith(t, "barrier.cluster".data))))
+
+  // An asm statement, refused if `raw`, its template a CTA barrier's.
+  def rawBarrierAt (st: Scan)(raw: Bool): Scan := {
+    match raw returning Scan with
+    | Bool.true => Scan.mk(st.seen, List.cons("asm: a CTA barrier outside `Instr.barSync`", st.found))
+    | Bool.false => st
+  }
+
   // A named barrier, with `args` its literal id and thread count if it has them.
   def barrierAt (st: Scan)(args: Option(Prod(Nat, Nat))): Scan := {
     match args returning Scan with
@@ -553,7 +565,7 @@ namespace Check {
     | Stmt.scoped body => st
     | Stmt.sync => st
     | Stmt.syncWarp => st
-    | Stmt.asm template outs ins => st
+    | Stmt.asm template outs ins => Check.rawBarrierAt(st, Check.ctaBarrierChars(template.data))
     | Stmt.instr i => {
       match i returning Scan with
       | Instr.barSync id threads => Check.barrierAt(st, Check.literalPair(id, threads))
@@ -563,8 +575,8 @@ namespace Check {
   }
 
   // I3, named barriers: each `bar.sync` (`Instr.barSync`) has literal operands, an id in 1..15 that no other
-  // `bar.sync` of the kernel has, and a thread count that is a positive multiple of 32. (A loop body is generated
-  // once, so a barrier in one has one id however often it runs.)
+  // `bar.sync` of the kernel has, and a thread count that is a positive multiple of 32; and no asm statement is a CTA
+  // barrier. (A loop body is generated once, so a barrier in one has one id however often it runs.)
   def namedBarriers (k: Kernel): List(String) :=
     Check.inOrder(Check.blockFold(Scan, k.body, Scan.mk(NatSet.empty, List.nil(String)), Check.barrierStep).found)
 
@@ -605,10 +617,10 @@ namespace Check {
   }
 
   // Whether `n` is in `xs`.
-  def countIn (xs: List(Nat))(n: Nat): Bool decreases structural(xs) := {
+  def memberOf (xs: List(Nat))(n: Nat): Bool decreases structural(xs) := {
     match xs returning Bool with
     | List.nil => Bool.false
-    | List.cons x more => Bool.or(Nat.beq(x, n), Check.countIn(more, n))
+    | List.cons x more => Bool.or(Nat.beq(x, n), Check.memberOf(more, n))
   }
 
   // The columns a tensor-memory load or store of shape `.32x32b` moves per thread (`.num`).
@@ -619,9 +631,16 @@ namespace Check {
   // the step's 32 bytes each within the shared window's 2^18 bytes.
   def smemDescFits (d: SmemDesc): Bool := Bool.and(Nat.blt(d.lbo, 262144), Bool.and(Nat.isZero(Nat.mod(d.lbo, 16)), Nat.blt(d.step, 8192)))
 
-  // An instruction descriptor's M and N fit their fields, M >> 4 in 5 bits and N >> 3 in 6.
-  def instrDescFits (d: InstrDesc): Bool :=
-    Bool.and(Bool.and(Nat.blt(d.m, 512), Nat.isZero(Nat.mod(d.m, 16))), Bool.and(Nat.blt(d.n, 512), Nat.isZero(Nat.mod(d.n, 8))))
+  // An MMA shape: M is `m1` or `m2`, and N a multiple of `step` in `step`..256.
+  def shapeFits (m1: Nat)(m2: Nat)(step: Nat)(d: InstrDesc): Bool :=
+    Bool.and(Bool.or(Nat.beq(d.m, m1), Nat.beq(d.m, m2)), Bool.and(Nat.ble(step, d.n), Bool.and(Nat.ble(d.n, 256), Nat.isZero(Nat.mod(d.n, step)))))
+
+  // An instruction descriptor's shape is one kind::f16 has for the CTA group (PTX Table 48).
+  def instrDescFits (g: CtaGroup)(d: InstrDesc): Bool := {
+    match g returning Bool with
+    | CtaGroup.one => Check.shapeFits(64, 128, 8, d)
+    | CtaGroup.two => Check.shapeFits(128, 256, 16, d)
+  }
 
   def mmaAFits (a: MmaA): Bool := {
     match a returning Bool with
@@ -635,31 +654,66 @@ namespace Check {
     | Option.some mask => Nat.blt(mask, 65536)
   }
 
-  // Whether an instruction's immediates, which its template prints, are in the ranges PTX gives them, and its
-  // descriptors' fields, which the printer packs, fit them.
+  // The columns a tensor-memory load or store moves per thread, for its shape.
+  def tmemCountOk (shape: TmemShape)(n: Nat): Bool := {
+    match shape returning Bool with
+    | TmemShape.s32x32b => Check.memberOf(Check.tmemCounts, n)
+  }
+
+  // Whether an instruction's immediates, which its template prints, are in their ranges, and its descriptors' fields,
+  // which the printer packs, fit them (OBLIGATIONS I4 says whose each range is).
   def inRange (i: Instr): Bool := {
     match i returning Bool with
-    | Instr.mma g acc a b idesc accumulate => Bool.and(Check.mmaAFits(a), Bool.and(Check.smemDescFits(b), Check.instrDescFits(idesc)))
+    | Instr.barSync id threads => Bool.true
+    | Instr.mbarInit bar count => Bool.true
+    | Instr.mbarInval bar => Bool.true
+    | Instr.mbarArrive w bar arrival => Bool.true
+    | Instr.mbarWait s bar parity => Bool.true
+    | Instr.fenceMbarInit => Bool.true
+    | Instr.fenceProxyAsync => Bool.true
+    | Instr.tcFence side => Bool.true
+    | Instr.clusterArrive => Bool.true
+    | Instr.clusterWait => Bool.true
+    | Instr.tmaLoad g dst map x y bar => Bool.true
+    | Instr.tmaStore map x y src => Bool.true
+    | Instr.bulkCommit => Bool.true
+    | Instr.bulkWait what pending => Nat.blt(pending, Check.u64Limit)
+    | Instr.tmemAlloc g slot cols => Bool.true
+    | Instr.tmemRelinquish g => Bool.true
+    | Instr.tmemDealloc g taddr cols => Bool.true
+    | Instr.mma g acc a b idesc accumulate => Bool.and(Check.mmaAFits(a), Bool.and(Check.smemDescFits(b), Check.instrDescFits(g, idesc)))
     | Instr.tcCommit g bar multicast => Check.maskFits(multicast)
-    | Instr.tmemLoad shape dst taddr => Check.countIn(Check.tmemCounts, List.length(dst))
-    | Instr.tmemStore shape w taddr values => Check.countIn(Check.tmemCounts, List.length(values))
+    | Instr.tmemLoad shape dst taddr => Check.tmemCountOk(shape, List.length(dst))
+    | Instr.tmemStore shape w taddr values => Check.tmemCountOk(shape, List.length(values))
+    | Instr.tmemWait what => Bool.true
+    | Instr.elect flag => Bool.true
     | Instr.shfl d a lane => Nat.blt(lane, 32)
+    | Instr.voteAny d p => Bool.true
     | Instr.setMaxNReg change count => Bool.and(Nat.ble(24, count), Bool.and(Nat.ble(count, 256), Nat.isZero(Nat.mod(count, 8))))
     | Instr.movF32 d bits => Nat.blt(bits, Cuda.u32Limit)
-    | Instr.stShared addr values => Check.countIn(List.cons(2, List.cons(4, List.nil(Nat))), List.length(values))
-    | _ => Bool.true
+    | Instr.ex2 d a => Bool.true
+    | Instr.lg2 d a => Bool.true
+    | Instr.ex2Emulated d a => Bool.true
+    | Instr.rcp r d a => Bool.true
+    | Instr.cvtBf16x2 d hi lo => Bool.true
+    | Instr.ldRelaxed s d addr => Bool.true
+    | Instr.casRelaxed s d addr expected desired => Bool.true
+    | Instr.movSpecial d r => Bool.true
+    | Instr.mapa d addr rank => Bool.true
+    | Instr.stShared addr values => Check.memberOf(List.cons(2, List.cons(4, List.nil(Nat))), List.length(values))
   }
 
   // Why an instruction is out of range.
   def rangeMessage (i: Instr): String := {
     match i returning String with
-    | Instr.mma g acc a b idesc accumulate => "tcgen05.mma: a descriptor's field does not fit"
+    | Instr.mma g acc a b idesc accumulate => "tcgen05.mma: a descriptor's field does not fit, or the shape is not kind::f16's"
     | Instr.tcCommit g bar multicast => "tcgen05.commit: the CTA mask does not fit 16 bits"
     | Instr.tmemLoad shape dst taddr => Text.cat3("tcgen05.ld: ", Text.nat(List.length(dst)), " columns, not a power of 2 up to 128")
     | Instr.tmemStore shape w taddr values => Text.cat3("tcgen05.st: ", Text.nat(List.length(values)), " columns, not a power of 2 up to 128")
     | Instr.shfl d a lane => Text.cat3("shfl.sync: lane ", Text.nat(lane), " is not below 32")
     | Instr.setMaxNReg change count => Text.cat3("setmaxnreg: ", Text.nat(count), " registers, not a multiple of 8 in 24..256")
     | Instr.movF32 d bits => Text.cat3("mov.b32: ", Text.nat(bits), " does not fit 32 bits")
+    | Instr.bulkWait what pending => Text.cat3("cp.async.bulk.wait_group: ", Text.nat(pending), " does not fit 64 bits")
     | Instr.stShared addr values => Text.cat3("st.shared: ", Text.nat(List.length(values)), " values, not 2 or 4")
     | _ => "an instruction out of range"
   }

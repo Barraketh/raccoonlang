@@ -93,10 +93,13 @@ meaning as a unit.
 - **I1, I2, I4, I5.** A statement's expressions include an instruction's `Cuda.instrExprs`: the expressions it prints
   as operands, packed descriptors included. `Spec.OwnExpr.instr` is stated over them, and `proofs/Instructions.rac`
   proves that `Cuda.asmOf` prints exactly those, in order.
-- **I3.** The named barrier is `Instr.barSync` in both cores. `Check.namedBarriers` reads it; an asm statement is not a
-  barrier to the checker or to `Spec.Barrier`.
-- **I4.** Every instruction is `Spec.InRange`: the immediates its template prints, and the fields the printer packs
-  into its descriptors, each in its range (OBLIGATIONS I4 lists them). `Check.inRange` decides it.
+- **I3.** The named barrier is `Instr.barSync` in both cores. `Check.namedBarriers` reads it, and refuses an asm
+  statement whose template is a CTA barrier's (`bar.…`, or `barrier.…` but not `barrier.cluster…`).
+- **I4.** Every instruction is `Spec.InRange`: the immediates its template prints, each in its range, an MMA's shape
+  one of Table 48's for its CTA group, and the fields the printer packs into its descriptors fitting them (OBLIGATIONS
+  I4 lists them). `Check.inRange` decides it, and the packers cut each field to its bits.
+- **Outside I4.** `gpu/Gpu.rac`, the old core, keeps its own descriptor packers and raw asm (`smemDesc`, `instrDesc`
+  and the instructions they feed): a second packing implementation, which no range check covers.
 - **The proofs** gained a case for `Stmt.instr` each; `Literals.rac` proves the ranges. No statement of `Spec.rac`
   got weaker for what the cores emit.
 

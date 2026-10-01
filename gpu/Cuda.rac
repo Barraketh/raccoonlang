@@ -474,14 +474,14 @@ namespace Cuda {
     def encode (bytes: Nat): Nat := Nat.div(Nat.mod(bytes, 262144), 16)
 
     // The descriptor's 64 bits: the encoded start address in its field (bits 0–14), the encoded leading byte offset in
-    // its (bits 16–30), and the fixed fields; then the step, added to the start address field. The start address is `base`'s at run
-    // time; the rest is packed at generation.
+    // its (bits 16–30), and the fixed fields; then the step's 32 bytes each, encoded, added to the start address field.
+    // The start address is `base`'s at run time; the rest is packed at generation.
     def packSmemDesc (d: SmemDesc): Expr := {
       let (base, lbo, step) := d
       Expr.bin(BinOp.add,
         Expr.bin(BinOp.bor, Expr.cast(DType.u64, Expr.bin(BinOp.shr, Expr.bin(BinOp.band, base, Expr.lit(262143)), Expr.lit(4))),
           Expr.lit64(Nat.add(Cuda.Asm.smemDescFixed, Nat.mul(Cuda.Asm.encode(lbo), Nat.pow(2, 16))))),
-        Expr.lit64(Nat.mul(2, step)))
+        Expr.lit64(Cuda.Asm.encode(Nat.mul(32, step))))
     }
 
     // Table 51's fields: D's type f32 (1 in bits 4–5), A's and B's bf16 (1 in bits 7–9 and 10–12), transpose B (bit

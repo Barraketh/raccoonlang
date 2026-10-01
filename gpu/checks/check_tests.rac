@@ -296,6 +296,17 @@ namespace T {
       T.two("bar.sync without a literal id and thread count", "bar.sync without a literal id and thread count")) :=
     Eq.refl(T.two("bar.sync without a literal id and thread count", "bar.sync without a literal id and thread count"))
 
+  // A CTA barrier in an asm statement: `bar.…`, or `barrier.…` but not the cluster barrier's.
+  def barrierTemplates : Kernel := T.plain(Block.seq(Stmt.asm("bar.sync 1, 64;", List.nil(Operand), List.nil(Operand)),
+    Block.seq(Stmt.asm("bar.warp.sync -1;", List.nil(Operand), List.nil(Operand)),
+    Block.seq(Stmt.asm("barrier.sync 0;", List.nil(Operand), List.nil(Operand)),
+    Block.seq(Stmt.asm("barrier.cluster.arrive.release.aligned;", List.nil(Operand), List.nil(Operand)),
+    T.b1(Stmt.asm("mbarrier.arrive.shared::cta.b64 _, [%0];", List.nil(Operand), List.cons(T.r(Expr.lit(0)), List.nil(Operand)))))))))
+
+  def barrierTemplatesRefused : Eq(List(String), Check.namedBarriers(T.barrierTemplates),
+      List.cons("asm: a CTA barrier outside `Instr.barSync`", T.two("asm: a CTA barrier outside `Instr.barSync`", "asm: a CTA barrier outside `Instr.barSync`"))) :=
+    Eq.refl(List.cons("asm: a CTA barrier outside `Instr.barSync`", T.two("asm: a CTA barrier outside `Instr.barSync`", "asm: a CTA barrier outside `Instr.barSync`")))
+
   // ---- I4, literals ---------------------------------------------------------------------------------------------------
 
   // Literals anywhere: in a nested block's asm operand, in a 64-bit literal, and in the launcher's requirements.
@@ -316,16 +327,16 @@ namespace T {
   def literalsWideGrid : Eq(List(String), Check.literals(T.wideGrid), T.one("32-bit literal 4294967296 does not fit 32 bits")) :=
     Eq.refl(T.one("32-bit literal 4294967296 does not fit 32 bits"))
 
-  // An instruction's operands as printed, a packed shared-memory descriptor's included: here its step makes the
-  // 64-bit literal 2 · 2^63.
+  // An instruction's operands as printed: here the count of `mbarrier.init`. A shared-memory descriptor's step past its
+  // field is out of range.
   def wideInstr : Kernel := T.plain(T.b2(Stmt.instr(Instr.mbarInit(Expr.lit(0), Expr.lit(4294967296))),
     Stmt.instr(Instr.mma(CtaGroup.one, Expr.lit(0), MmaA.tmem(Expr.lit(0)), SmemDesc.mk(Expr.lit(0), 0, 9223372036854775808),
       InstrDesc.mk(128, 256, Bool.false), Expr.lit(1)))))
 
-  def literalsWideInstr : Eq(List(String), Check.literals(T.wideInstr), List.cons("tcgen05.mma: a descriptor's field does not fit",
-      T.two("32-bit literal 4294967296 does not fit 32 bits", "64-bit literal 18446744073709551616 does not fit 64 bits"))) :=
-    Eq.refl(List.cons("tcgen05.mma: a descriptor's field does not fit",
-      T.two("32-bit literal 4294967296 does not fit 32 bits", "64-bit literal 18446744073709551616 does not fit 64 bits")))
+  def mmaMessage : String := "tcgen05.mma: a descriptor's field does not fit, or the shape is not kind::f16's"
+
+  def literalsWideInstr : Eq(List(String), Check.literals(T.wideInstr), T.two(T.mmaMessage, "32-bit literal 4294967296 does not fit 32 bits")) :=
+    Eq.refl(T.two(T.mmaMessage, "32-bit literal 4294967296 does not fit 32 bits"))
 
   // Immediates out of their ranges, and descriptor fields that would not fit: N = 512, a leading byte offset of 2^18,
   // and one not a multiple of 16. In range: a 16-bit mask, 24 registers, and four values.
@@ -347,10 +358,24 @@ namespace T {
     List.cons("setmaxnreg: 260 registers, not a multiple of 8 in 24..256", List.cons("setmaxnreg: 100 registers, not a multiple of 8 in 24..256",
     List.cons("mov.b32: 4294967296 does not fit 32 bits", List.cons("shfl.sync: lane 32 is not below 32",
     List.cons("tcgen05.ld: 0 columns, not a power of 2 up to 128", List.cons("st.shared: 3 values, not 2 or 4",
-    List.cons("tcgen05.mma: a descriptor's field does not fit", T.two("tcgen05.mma: a descriptor's field does not fit",
-      "tcgen05.mma: a descriptor's field does not fit")))))))))
+    List.cons(T.mmaMessage, T.two(T.mmaMessage, T.mmaMessage)))))))))
 
   def literalsRanged : Eq(List(String), Check.literals(T.rangedInstrs), T.rangedMessages) := Eq.refl(T.rangedMessages)
+
+  // An MMA of `idesc` in CTA group `g`.
+  def mmaOf (g: CtaGroup)(idesc: InstrDesc): Stmt :=
+    Stmt.instr(Instr.mma(g, Expr.lit(0), MmaA.tmem(Expr.lit(0)), SmemDesc.mk(Expr.lit(0), 0, 0), idesc, Expr.lit(1)))
+
+  // Table 48's shapes: one CTA's M = 256, and a pair's N = 8, are not kind::f16's; a pair's 256 × 256 and one CTA's
+  // 64 × 8 are. And a `wait_group` count of 2^64 does not fit.
+  def shapedInstrs : Kernel := T.plain(Block.seq(T.mmaOf(CtaGroup.one, InstrDesc.mk(256, 256, Bool.false)),
+    Block.seq(T.mmaOf(CtaGroup.two, InstrDesc.mk(256, 8, Bool.false)), Block.seq(T.mmaOf(CtaGroup.two, InstrDesc.mk(256, 256, Bool.false)),
+    Block.seq(T.mmaOf(CtaGroup.one, InstrDesc.mk(64, 8, Bool.false)),
+    T.b1(Stmt.instr(Instr.bulkWait(BulkWait.read, 18446744073709551616))))))))
+
+  def literalsShaped : Eq(List(String), Check.literals(T.shapedInstrs), List.cons(T.mmaMessage, T.two(T.mmaMessage,
+      "cp.async.bulk.wait_group: 18446744073709551616 does not fit 64 bits"))) :=
+    Eq.refl(List.cons(T.mmaMessage, T.two(T.mmaMessage, "cp.async.bulk.wait_group: 18446744073709551616 does not fit 64 bits")))
 
   // A launcher prints its block size and each box as 32-bit literals.
   def wideLaunch : Kernel := Kernel.mk("good", T.goodParams, 1024, T.goodBody, Option.some(Launcher.mk(T.hostParams,

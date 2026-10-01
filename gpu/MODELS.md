@@ -848,7 +848,7 @@ What this shows: the barrier operations appear in the modelled order per role, w
 (I8 in part). What it does not show: which threads run the block (I7), that the roles' trip counts agree (not needed
 for safety), and that the stage registers are not written elsewhere. The last is a simple extra scan: only `advance`'s
 statements assign them. It costs one checker in `Check.rac` and one soundness proof against a `Spec` of role traces,
-about the size of `Barriers.rac` (250 lines) plus the regular expression's semantics. This answers `OBLIGATIONS.md`
+about the size of `Barriers.rac` (304 lines) plus the regular expression's semantics. This answers `OBLIGATIONS.md`
 §9, decision 6: the AST need not record which addresses are barriers, because the typed instructions and their operand shapes
 identify them. Which threads run a block still needs groups in the AST, or layer 3.
 

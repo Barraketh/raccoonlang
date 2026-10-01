@@ -8,7 +8,7 @@ import proofs.Lib
 namespace Instructions {
   open Cuda
 
-  // `f` writes `x` as an operand of expression `x`.
+  // `f` makes an operand whose expression is its argument.
   def Keeps (f: Expr -> Operand): Prop := (x: Expr) -> Eq(Expr, Asm.operandExpr(f(x)), x)
 
   def mapKeeps (f: Expr -> Operand)(keeps: Instructions.Keeps(f))(xs: List(Expr))

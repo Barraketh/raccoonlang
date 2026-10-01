@@ -749,7 +749,9 @@ has one form of named barrier.
    `Cuda.Asm` namespace, which `open Cuda` does not open, and `CtaGroup` moved to `Cuda`, with the printer.
 4. **A new `Stmt` constructor reaches 20 exhaustive matches** across `Check.rac`, `Spec.rac` and four proofs. Each new
    case copies the `asm` case. Those matches list every `Stmt` constructor, as the house style does; a match that
-   picks one `Instr` constructor out of 37 (`barrierStep`, `rangeStep`, `resultType`) ends in a wildcard.
+   picks one `Instr` constructor out of 37 (`barrierStep`, `resultType`, `rangeMessage`) ends in a wildcard. The ones
+   that decide or state a range (`Check.inRange`, `Spec.InRange`) list every constructor, so that a new instruction
+   has to be given its range.
 5. **A result's instruction is a closure.** `Core.written` takes `Nat -> Instr`, since the variable it writes is fresh
    inside it; the closure's type carries a scope variable, `{ scope = Sf } Nat -> Instr`, as `emitIn`'s does. The
    declared type is the instruction's (`Cuda.resultType`), as evidence on `write(0)`: the result type cannot be
