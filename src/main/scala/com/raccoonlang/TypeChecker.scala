@@ -320,12 +320,13 @@ object TypeChecker {
       telescope.bodyEnv,
       telescope.outTy,
       evaluated.closureKind,
-      evaluated.closureScope
+      evaluated.closureScope,
+      evaluated.mentionedScope
     )
     CheckedPi(evaluated.copy(classifier0 = () => classifier), telescope.bodyEnv, telescope.outTy, residual)
   }
 
-  /** A function type captures nothing, so its closure is always written (spec §1): the elaborator writes it so. */
+  /** A written function type has no body to derive a closure from, so the elaborator writes its closure (spec §1). */
   private def checkPi(pi: CA.Term.Pi, env: Env, familyParams: Int): CheckedPi = {
     val telescope = checkTelescope(pi, env, familyParams)
     def written(field: CA.ClosureField, parameter: ParameterTpe): CA.ClosureField =
@@ -466,14 +467,14 @@ object TypeChecker {
               "Lambda",
               written,
               ContainedPart.Capture(capture.ref.name, capture.value.tpe),
-              part.of(capture.sort),
+              part.ofCapture(capture.value),
               term.span
             )
           }
           CA.ClosureField.Written(checked.residual)
         // A capture whose field is least contributes nothing under any instantiation, so the residual leaves it out.
         case CA.ClosureField.Omitted =>
-          CA.ClosureField.Derived(captures.filterNot(capture => part.isLeast(part.of(capture.sort))).map(_.ref))
+          CA.ClosureField.Derived(captures.filterNot(capture => part.isLeast(part.ofCapture(capture.value))).map(_.ref))
         case _: CA.ClosureField.Derived => wtf(s"The lambda ${l.name.getOrElse("fun")} was already checked")
       }
     CA.Closure(checkField(l.ty.closure.kind, Sorts.KindField), checkField(l.ty.closure.scope, Sorts.ScopeField))

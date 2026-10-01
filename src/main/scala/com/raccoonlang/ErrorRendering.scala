@@ -138,7 +138,7 @@ object ErrorRendering {
   /**
    * The "differ at" line is omitted when the unifier failed at the root. `checkFits` asks `actual ~ expected`, so `v1`
    * belongs to `actual`; both are printed expected-first to match the lines above. Function types that differ in their
-   * closures fail at the two function types, and the report names the closure fields that differ.
+   * closures, or in what their code captures, fail at the two function types, and the report names what differs.
    */
   private def renderTypeMismatch(mismatch: TypeMismatch, show: Value => String): String = {
     val expected = show(mismatch.expected)
@@ -147,14 +147,18 @@ object ErrorRendering {
       mismatch.detail.map { failure =>
         val expectedPart = show(failure.v2)
         val actualPart = show(failure.v1)
-        val closures = (failure.v2, failure.v1) match {
+        val functionParts = (failure.v2, failure.v1) match {
           case (expectedPi: Value.VPi, actualPi: Value.VPi) =>
             Vector(
               Option.when(expectedPi.closureKind != actualPi.closureKind)(
-                s"kind ${show(expectedPi.closureKind)}  vs  ${show(actualPi.closureKind)}"
+                s"closures differ in kind ${show(expectedPi.closureKind)}  vs  ${show(actualPi.closureKind)}"
               ),
               Option.when(expectedPi.closureScope != actualPi.closureScope)(
-                s"scope ${show(expectedPi.closureScope)}  vs  ${show(actualPi.closureScope)}"
+                s"closures differ in scope ${show(expectedPi.closureScope)}  vs  ${show(actualPi.closureScope)}"
+              ),
+              Option.when(expectedPi.mentionedScope != actualPi.mentionedScope)(
+                s"their code captures differ in scope ${show(expectedPi.mentionedScope)}  vs  " +
+                  show(actualPi.mentionedScope)
               )
             ).flatten
           case _ => Vector.empty
@@ -162,9 +166,9 @@ object ErrorRendering {
         val reason = if (failure.apart) "provably different" else "not reducible: stuck"
         val at =
           if (expectedPart == expected && actualPart == actual) ""
-          else if (closures.nonEmpty) s"\n  differ at: $expectedPart  vs  $actualPart"
+          else if (functionParts.nonEmpty) s"\n  differ at: $expectedPart  vs  $actualPart"
           else s"\n  differ at: $expectedPart  vs  $actualPart   ($reason)"
-        at + closures.map(field => s"\n  closures differ in $field").mkString
+        at + functionParts.map(field => s"\n  $field").mkString
       }
     s"type mismatch\n  expected: $expected\n  actual:   $actual${differ.getOrElse("")}"
   }
@@ -186,7 +190,7 @@ object ErrorRendering {
     part match {
       case ContainedPart.Capture(name, tpe)      => s"capture $name : ${show(tpe)}"
       case ContainedPart.Field(name, tpe)        => s"field $name : ${show(tpe)}"
-      case ContainedPart.LifetimeParameter(name) => s"lifetime parameter $name, which every family must name"
+      case ContainedPart.LifetimeParameter(name) => s"lifetime parameter $name, which every type former must name"
     }
 
   /** Why an implicit argument's projection could not be followed (`Projection.project`). */

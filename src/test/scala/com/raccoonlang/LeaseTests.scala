@@ -126,35 +126,41 @@ class LeaseTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  test("a closure that names the callback's lifetime but captures nothing scoped may leave it") {
+  test("a closure that captures or names the callback's lifetime belongs to it, so it cannot leave") {
     def client(body: String): String =
       "def leave : Unit -> Nat :=\n" +
         s"  withLease(fun (l: Lifetime)(h: Lease(l)): Unit -> Nat => fun (u: Unit): Nat => $body)\n\n{ leave(Unit.unit) }\n"
-    val named = client("List.length(List.nil(Lease(l)))")
-    assertEquals(outside(leaseModule, named).map(PrettyPrinter.print), Some("0"))
-    // Capturing the lease puts `l` in the closure's scope, and a lambda's type is exact wherever it stands.
-    val mismatch = expectOnly[TypeMismatch](outside(leaseModule, client("useLease(h)")))
-    assertEquals(mismatch.actual.toString, "{ scope = l } (u: Unit) -> Nat")
+    assertEquals(outside(leaseModule, client("0")).map(PrettyPrinter.print), Some("0"))
+    // Capturing the lease or naming `l` puts `l` in the closure's scope, and a lambda's type is exact wherever it
+    // stands.
+    for (body <- Vector("useLease(h)", "List.length(List.nil(Lease(l)))")) {
+      val mismatch = expectOnly[TypeMismatch](outside(leaseModule, client(body)))
+      assertEquals(mismatch.actual.toString, "{ scope = l } (u: Unit) -> Nat", body)
+    }
   }
 
-  // spec §4.2: confinement reads a type's sort, not the atoms its value holds in code, a closure or a stuck computation.
+  test("a callback that names an enclosing lifetime is at it, which a callback parameter with a closure accepts") {
+    def client(callee: String): String =
+      s"def fourth {m: Lifetime}(g: Lease(m)): Nat :=\n  $callee(fun (l: Lifetime)(h: Lease(l)): Nat => " +
+        "List.length(List.nil(Lease(m))))\n\n{ withLease(fun (m: Lifetime)(g: Lease(m)): Nat => fourth(g)) }\n"
+    val plain =
+      leaseModule + "\ndef withPlain (f: (l: Lifetime) -> Lease(l) -> Nat): Nat := scope l => f(l, Lease.mk(l))\n"
+    assertEquals(outside(plain, client("withLease")).map(PrettyPrinter.print), Some("0"))
+    val mismatch = expectOnly[TypeMismatch](outside(plain, client("withPlain")))
+    assertEquals(mismatch.actual.toString, "{ scope = m } (l: Lifetime) -> (h: Lease(l)) -> Nat")
+  }
+
+  // spec §4.2: confinement reads a type's sort, not the atoms a proof or a stuck computation holds.
   test("a type about a value computed under a scope names no atom its sort does not") {
     val example = new String(Files.readAllBytes(Paths.get("examples", "leases", "Lease.rac")), StandardCharsets.UTF_8)
-    val later =
-      "def later : Unit -> Nat :=\n" +
-        "  withLease(fun (l: Lifetime)(h: Lease(l)): Unit -> Nat => fun (u: Unit): Nat => List.length(List.nil(Lease(l))))\n"
     val callback = "(l: Lifetime) -> Lease(l) -> Nat"
     Vector(
-      later + "def same : Eq(Unit -> Nat, later, later) := Eq.refl(later)\n",
-      later + "def later2 : Unit -> Nat := fun (u: Unit): Nat => later(u)\n" +
-        "def same2 : Eq(Unit -> Nat, later2, later2) := Eq.refl(later2)\n",
       s"def runs (f: $callback): Prop := Eq(Nat, withLease(f), withLease(f))\n" +
         s"def proof (f: $callback): runs(f) := Eq.refl(withLease(f))\n",
       s"def congr (f: $callback)(g: $callback)(p: Eq($callback, f, g)): Eq(Nat, withLease(f), withLease(g)) :=\n" +
         s"  congrArg(p, Nat, fun (h: $callback): Nat => withLease(h))\n",
       "def runs : Prop := Eq(Nat, withLease(fun (l: Lifetime)(h: Lease(l)): Nat => 3), 3)\n"
     ).foreach(client => outside(example, client))
-    assertEquals(outside(example, later + "\n{ later(Unit.unit) }\n").map(PrettyPrinter.print), Some("0"))
   }
 
   test("a callback at a kind variable serves both kinds and is applied once") {

@@ -16,14 +16,13 @@ def peek {m: Lifetime}(g: Lease(m)): Nat := withLease(fun (l: Lifetime)(h: Lease
 //   redeeming `t` twice                                             LinearReused
 //   returning `issue(g)` from the callback, at type Tok(m)          withLease's A cannot name the callback's m
 //   minting one with `Tok.mk(m)` here, outside its module           SealedConstructor
+// and a function that names the lifetime belongs to it, so it cannot leave either:
+//   returning `fun (u: Unit): Nat => List.length(List.nil(Lease(m)))`
+//   from the callback, at type Unit -> Nat                         TypeMismatch: the function is at scope m
 def spend : Nat := withLease(fun (m: Lifetime)(g: Lease(m)): Nat => Nat.add(redeem(pass(issue(g))), peek(g)))
-
-// A closure may leave a lifetime when its type does not name it, even if its code does: this one holds no lease.
-def later : Unit -> Nat :=
-  withLease(fun (l: Lifetime)(h: Lease(l)): Unit -> Nat => fun (u: Unit): Nat => List.length(List.nil(Lease(l))))
 
 // `scope` opens a lifetime directly, as `withLease` does. Here too a value whose type names it cannot leave:
 // `scope l => List.nil(Lease(l))` as a definition's body is LifetimeEscapes.
 def none : Nat := scope l => List.length(List.nil(Lease(l)))
 
-{ Nat.add(plain, Nat.add(none, Nat.add(spend, later(Unit.unit)))) }
+{ Nat.add(plain, Nat.add(none, spend)) }

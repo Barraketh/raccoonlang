@@ -1,7 +1,7 @@
 # Scopes contain values
 
-Status: **draft for review** (2026-09-30). Amends `docs/kernel.md` "Universes and function types" and "Scopes and
-atoms", and `docs/language.md` "Closures" and "Scopes".
+Status: **implemented** (2026-10-01). Amends `docs/kernel.md` "Universes and function types", "Scopes and atoms",
+"Value identity" and "Maintained invariants", and `docs/language.md` "Closures", "Implicit parameters" and "Scopes".
 
 ## 1. The feature
 
@@ -74,13 +74,30 @@ def no : Nat := use(withLease(fun (l: Lifetime)(h: Lease(l)): Lease(l) => h))
   parameter from outside the lambda. It joins the lambda's closure scope, as a captured lease's scope does. Mentions
   inside types written in the body count too. The lambda's own lifetime parameters don't count: whoever calls it
   supplies them.
-- **A function type.** It belongs to the scopes its parameter types and result type mention, other than its own
-  lifetime parameters. They are code too: each time the type is instantiated they run, and they could build a lease.
-  For example, this is rejected:
+- **A function type.** It belongs to the scopes of everything its parameter types and result type capture, by the
+  lambda's rule, other than its own lifetime parameters. They are code too: each time the type is instantiated they
+  run, and they could build or use a lease. For example, both of these are rejected:
 
   ```raccoon
   def T : Type := scope l => (x: Nat) -> Vec(Nat, count(Lease.mk(l), x))
+  def U : Type := scope l => {
+    let h := Lease.mk(l)
+    (x: Nat) -> Vec(Nat, count(h, x))
+  }
   ```
+
+  These scopes are part of the function type's identity, beside its closure: `(x: Nat) -> Vec(Nat, 7)` and
+  `(x: Nat) -> Vec(Nat, count(Lease.mk(m), 7))` are different types even when `count` returns 7, so a type determines
+  what it belongs to.
+  So a callback keeps scoped locals in its body: one whose parameter or result type captures a lease fits no
+  combinator's parameter that does not.
+- **Implicit arguments.** An implicit is read off a later argument's type: through sorts, function types' closures and
+  the parts of a function type that do not depend on its own binders, a proof's proposition, constructor fields, and
+  the arguments of a family or of a prelude type former such as `Quot`. A type former names each lifetime parameter in
+  its scope, as a family does. A function type's code scopes are not read, and neither are the arguments of an opaque
+  definition's application: such an application is a blocked computation, and what its arguments hold belongs to no
+  type. Otherwise `def g {l: Lifetime}(t: Tagged(f(l))): Lease(l)`, with `f` opaque, would rebuild a lease of a closed
+  scope from a captured `t` whose type belongs to none.
 
 **Unchanged:**
 - **Applications.** An application runs at once, so one that mentions `l` and returns data keeps nothing of `l`
@@ -97,20 +114,21 @@ A value can reach a scope only through what it is made of:
 |---|---|
 | constructor fields | its family's declared scope, which includes every field's |
 | captured values | the lambda's closure scope |
-| code that mentions a lifetime | the lambda's closure scope, or the function type's scope (§3) |
+| code that mentions a lifetime or captures a value | the lambda's closure scope, or the function type's scope (§3) |
 | a type | the type's own `scope` |
 
 Two kinds of value hold a scope without belonging to it, and neither runs:
 - **Blocked computations.** One blocked on an opaque definition or an axiom never runs. While checking, a computation
-  blocked on a parameter only computes types.
+  blocked on a parameter only computes types. Its arguments are not read by implicit arguments either (§3).
 - **Proofs.** A proof never runs.
 
 So once a scope closes, nothing that can run belongs to it. The scope's result doesn't belong to it, by §1's closing
 rule, and nothing alive before the scope opened could reach it either.
 
-One question from the 2026-09-28 review must be re-examined, not assumed settled: an implicit argument reconstructed
-inside a lambda. It is read from an argument's type, which a parameter type or a capture already accounts for, but the
-review withdrew this rule over that case before the current rules on function types and families were adopted.
+An implicit argument reconstructed inside a lambda is read from an argument's type, which a parameter type or a
+capture accounts for, at a position that type's sort counts: a family names its lifetime parameters in its scope and
+contains its fields', a function type counts its closure and its code's captures, and a blocked computation's
+arguments are not read (§3).
 
 ## 5. For implementers
 
@@ -122,9 +140,12 @@ The kernel's terms:
 The change:
 - `Interpreter.lambdaCaptures`, and the derived closure scope, admit locals of type `Lifetime`, which contribute the
   lifetime they hold. Locals of type `Level` and `Kind` still contribute nothing.
-- `Interpreter.piClassifierFromChecked` adds the `Lifetime` locals that a function type's binder types and codomain
-  mention, other than its own binders.
+- A function type's mentioned scope is derived by the same function from the locals its binder types and codomain
+  capture. `Interpreter.piClassifierFromChecked` adds it to the sort, and conversion and keys compare it beside the
+  closure.
 - A written closure scope that omits such a lifetime is `ScopeExceeded`.
+- Projection's `SpineArg` steps enter only a family's application, or a trusted axiom's whose type ends in a sort
+  (`Quot`), which is checked to name its lifetime parameters in its scope by the families' containment rule.
 
 Documents:
 - `kernel.md` "Scopes and atoms": the paragraph beginning "Evaluation never makes the check. A value computed under a
@@ -155,10 +176,13 @@ Tests and corpus changes:
 
 ## 7. Decisions for review
 
-1. **Function types count too**, not only lambdas (§3's `T`).
+1. **Function types count too**, not only lambdas (§3's `T`), with the lambda's rule: everything their code
+   captures, a value or a type as well as a lifetime (§3's `U`). That scope is part of the type's identity.
 2. **Mentions inside types count**, as they do for other captures. That is simpler, and safe: a type in a lambda's
    body runs when the lambda does.
 3. **No restriction on who mints at a lifetime.** Once every function belongs to the scopes it mentions, minting at a
    closed scope is impossible. Who may mint at an open one stays sealing's job.
 4. **One scope per `scope` term**, not one per evaluation. Callbacks keep evaluations apart.
 5. **The documents use "scope" and "belongs to"**, with "atom" kept to `kernel.md`.
+6. **Implicits never read a blocked computation's arguments.** Projection through an opaque definition's application
+   could recover a lifetime, or a value, that no type counts.

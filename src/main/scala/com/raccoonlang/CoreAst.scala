@@ -87,6 +87,10 @@ object CoreAst {
     ) extends Term {
       require(binders.nonEmpty, "Pi requires at least one binder")
 
+      /** What its binder types and codomain mention: a local bound outside the Pi among these is one it captures. */
+      lazy val codeRefs: Set[CoreAst.LocalRef] =
+        (binders.map(_.ty) :+ out).foldLeft(Set.empty[CoreAst.LocalRef])((acc, term) => acc | mentionedRefs(term))
+
       lazy val refs: Set[CoreAst.LocalRef] = childRefs(this)
     }
 
@@ -153,7 +157,8 @@ object CoreAst {
 
   /**
    * A function type's or lambda's closure (spec §1): its kind, how its values may be applied, and its scope, what they
-   * hold. A function type captures nothing, so an omitted field of one is written as `Kind.unr` or `Lifetime.empty`.
+   * hold. A written function type has no body to derive a closure from, so an omitted field of one is the least,
+   * `Kind.unr` or `Lifetime.empty`; what its code captures is its mentioned scope, not its closure.
    */
   final case class Closure(kind: ClosureField, scope: ClosureField) {
     def terms: Vector[Term] = Vector(kind, scope).flatMap(_.term)

@@ -183,42 +183,56 @@ that binds no level has the sort
 ```text
 Sort { level = imax(u1, ... imax(un, v) ...),
        kind = k,
-       scope = union(C, S1, ..., Sn, SB) less the telescope's own lifetime variables }
+       scope = union(C, S1, ..., Sn, SB, M)
+               less the telescope's own lifetime variables }
 ```
 
-where each `Ai : Sort { level = ui, scope = Si }` and
-`B : Sort { level = v, scope = SB }`. The closure `{ kind = k, scope = C }` is
-the function type's closure kind and closure scope: how its values may be
-applied, and what they hold. It is evaluated where the Pi stands, outside its
-own binders, and a closure kind other than `Kind.unr` at a level that may be
-zero is `LinearProp`. A binder of type `Kind` or `Lifetime` contributes neither
-a level nor a scope. Consequently, a Pi whose codomain is a proposition lives
-in `Prop` at its scope, regardless of its domain universes. A codomain equal to
-the sort `Prop` is different: `Prop` itself lives in `Type`.
+where each `Ai : Sort { level = ui, scope = Si }`,
+`B : Sort { level = v, scope = SB }`, and `M` is the function type's mentioned
+scope: what the locals bound outside it that its binder types and codomain
+mention contribute, by the rule a lambda's captures follow below. Those are
+code, evaluated each time the type is instantiated, so the type belongs to
+everything they hold. The closure `{ kind = k, scope = C }` is the function
+type's closure kind and closure scope: how its values may be applied, and what
+they hold. It is evaluated where the Pi
+stands, outside its own binders, and a closure kind other than `Kind.unr` at a
+level that may be zero is `LinearProp`. A binder of type `Kind` or `Lifetime`
+contributes neither a level nor a scope. Consequently, a Pi whose codomain is a
+proposition lives in `Prop` at its scope, regardless of its domain universes. A
+codomain equal to the sort `Prop` is different: `Prop` itself lives in `Type`.
 
-A function type captures nothing, so the elaborator writes an omitted closure
-field of one as `Kind.unr` or `Lifetime.empty`, and a declaration's own type is
+A written function type has no body to derive a closure from, so the
+elaborator writes an omitted closure field of one as the least, `Kind.unr` or
+`Lifetime.empty`; what its code captures is its mentioned scope, not its
+closure, and a declaration's own type is
 always at that closure. A lambda's closure is part of its type and is decided by
 the lambda alone. Its captures are the locals bound outside it that its body
-mentions; its binder types and result are not its body, and implicit arguments
-are never written, so neither contributes. Each capture contributes the kind and
-scope of its type's sort, except that a variable of a sort parameter contributes
-nothing, and neither does a recursive definition's reference to itself, which
-names a global. An omitted closure field is the join of the captures' kinds or
-the union of their scopes; a written one must contain it, else `KindExceeded` or
-`ScopeExceeded` naming a capture it does not contain. That test, a family's
-declared kind against its fields' and a family's declared scope against its
-lifetime parameters are one containment rule with one implementation.
+mentions, in terms and in types written in the body; its binder types and
+result are not its body, and implicit arguments are never written, so neither
+contributes. Each capture contributes the kind and scope of its type's sort,
+and a local of type `Lifetime` contributes the lifetime it holds to the scope: a
+lambda belongs to every lifetime its code names. A variable of `Level` or `Kind`
+contributes nothing, and neither does a recursive definition's reference to
+itself, which names a global. The lambda's own lifetime binders are not
+captures: its caller supplies them. An omitted closure field is the join of the
+captures' kinds or the union of their scopes; a written one must contain it,
+else `KindExceeded` or `ScopeExceeded` naming a capture it does not contain.
+That test, a family's declared kind against its fields' and a type former's
+declared scope against its lifetime parameters are one containment rule with
+one implementation.
 
 The residual carries a derived field as the captures it is derived from. Every
 evaluation of the lambda, the one checking makes included, reads those captures
 in the environment it is evaluated in and derives the field from their values'
-types' sorts; one function does it. A capture that contributes `Kind.unr` or
-`Lifetime.empty` to a field as checking saw it is left out of that field, since
-every instantiation keeps it so: a lambda whose captures are all unrestricted
-and unscoped carries none. Sorts commute with substitution, so an evaluation
-derives what checking would derive under that instantiation. A printed residual
-shows a derived field as omitted, as the source did.
+types' sorts and the lifetimes they hold; one function does it. A capture that
+contributes `Kind.unr` or `Lifetime.empty` to a field as checking saw it is
+left out of that field, since every instantiation keeps it so: a lambda whose
+captures are all unrestricted and unscoped carries none. Sorts commute with
+substitution, so an evaluation derives what checking would derive under that
+instantiation. A function type's mentioned scope is derived by the same
+function, from the locals its binder types and codomain capture, wherever it is
+evaluated. A printed residual shows a
+derived field as omitted, as the source did.
 
 A telescope that binds a level is instead classified by `Large`. A level binder
 changes the universe of everything after it, so no sort contains the Pi. `Large`
@@ -253,7 +267,10 @@ Anywhere else a sort parameter, an expression of one, or a large reference is
 `NotAType`.
 
 Universes are non-cumulative, and so are kinds and scopes: two sorts are
-convertible only when their levels, kinds and scopes are. Constructor-field
+convertible only when their levels, kinds and scopes are. A function type's
+mentioned scope is part of its identity, beside its closure, so two function
+types are convertible only when their mentioned scopes are, and a type
+determines its sort. Constructor-field
 universe checks enforce the declared inductive's size bound, but they do not
 introduce general sort subsumption.
 
@@ -265,7 +282,18 @@ checker and proof irrelevance share. Sorts are compared only by conversion.
 An implicit binder is accepted only with a compiled projection that recovers
 it from later explicit arguments. A sort's level, kind and scope, and a function
 type's closure kind and closure scope, are projection positions; the kinds and
-scopes recover a variable only when the field is exactly that variable.
+scopes recover a variable only when the field is exactly that variable. So are
+a function type's domains, codomain and result where they do not depend on its
+own binders, a proof's proposition, a no-confusion constructor's stored fields,
+and the arguments of an application of a family or of a type former: a trusted
+axiom whose type ends in a sort, such as `Quot`, which names each of its
+lifetime parameters in its declared scope as a family does, else
+`ScopeExceeded` at the axiom. The arguments of any other application, an
+opaque definition's, another axiom's or a stuck builtin's, are not: such an
+application is a blocked computation, and what its arguments hold is counted by
+no type's sort; so is a checked recursive call. Only a type former's
+application of its whole type, one binder group, is read. A function type's
+mentioned scope is not a position either.
 Positions are searched breadth-first from the explicit arguments, and a closure
 field only once no other position is left: a closure is what a lambda derives
 from its captures, so reading an implicit elsewhere lets a lambda written
@@ -311,19 +339,33 @@ at these choke points:
   field's type;
 - an argument at a binder whose type is a sort, which is itself a type.
 
-Evaluation never makes the check. A value computed under a `scope` may leave it
-whenever its type's sort does not name the atom, even when the value itself
-holds the atom in its code, a closure's environment or a stuck computation: a
-closure whose code names `l` but captures nothing scoped, or a proposition such
-as `Eq(Unit -> Nat, f, f)` about such a closure `f`. So a global value may hold
-an atom, though never a variable. A type holds an atom its sort does not name
-only inside such values, never as a lifetime that can be read off it, because
-every family names each of its lifetime parameters in its scope (see
-[Inductives and matching](#inductives-and-matching)).
+Evaluation never makes the check, and needs none: once a `scope` closes,
+nothing can hold, create or use a value whose type's sort names its atom. A
+value reaches an atom only through what it is made of, and each part is
+counted in its type's sort's scope:
 
-A derived closure holds an atom when a capture's type's scope does (see
-[Universes and function types](#universes-and-function-types)): a capture's
-type names only atoms whose `scope` encloses the lambda.
+- a constructor's fields, through its family's declared scope, which contains
+  every field's and names every lifetime parameter (see
+  [Inductives and matching](#inductives-and-matching));
+- a lambda's captures, through its closure scope;
+- code that names a lifetime, through a lambda's closure scope or a function
+  type's scope (see
+  [Universes and function types](#universes-and-function-types));
+- a type, through its own sort.
+
+Two kinds of value hold an atom their type's sort does not name, and neither
+runs: a computation blocked on an opaque definition or an axiom, or, while
+checking, on a parameter; and a proof. Nor can an implicit read the atom back
+out of one: a blocked computation's arguments are not projection positions (see
+[Universes and function types](#universes-and-function-types)). So a global
+value may hold an atom only inside a blocked computation or a proof, and never
+a variable. The `scope`'s own type does not name its atom, by the check at its
+exit, and no value bound before the `scope` opened can name it.
+
+A derived closure holds an atom when a capture's type's scope does, or a
+captured lifetime holds it (see
+[Universes and function types](#universes-and-function-types)): either names
+only atoms whose `scope` encloses the lambda.
 
 ## Linearity
 
@@ -872,11 +914,11 @@ The bundled quotient interface is the fixed non-inductive primitive surface:
 - `Quot.mk`, `Quot.lift`, and `Quot.ind` are prelude-only builtins;
 - `Quot.sound` is an axiom identifying related representatives.
 
-`Quot` is an axiom, so no family check applies to its classifier: its scope,
-the union of the scopes of `A`'s and `r`'s types, is written by hand as part of
-the trusted bootstrap. The builtins locate their arguments in
-their declared types by binder name, so the prelude may add binders, such as
-lifetime variables, without moving them.
+`Quot` is an axiom whose type ends in a sort, a type former: its scope, the
+union of the scopes of `A`'s and `r`'s types, is written by hand as part of the
+trusted bootstrap, and checked to name `S`, `Sr` and `Sq`. The builtins
+locate their arguments in their declared types by binder name, so the prelude
+may add binders, such as lifetime variables, without moving them.
 
 `Quot.mk` is not a no-confusion constructor. Quotient equality is intentionally
 coarser than representative structure, so quotient values supply neither
@@ -1053,8 +1095,8 @@ levels (by normal form). Kinds and lifetimes key by their normal forms too, an
 atom by its id, which its `scope` term's node identity determines, but
 their conversion rule compares the normal forms itself, so the assertion checks
 their keys. A sort's key mixes in its level, kind and scope, and a Pi's key its
-closure kind, closure scope and binder modes, explicitly rather than through
-its node and captures.
+closure kind, closure scope, mentioned scope and binder modes, explicitly
+rather than through its node and captures.
 The kernel singletons `Level`, `Kind`, `Lifetime`, their classifier and `Large`
 are equal only to themselves, which object identity decides before any key is
 read.
@@ -1102,16 +1144,18 @@ Changes to the checker or evaluator must preserve these rules:
     contain whatever a value of it holds or carries in its type; its scope names
     every lifetime parameter. Each family of a mutual block is checked against
     its own declared sort, and a sibling is read by its declared sort.
-19. A function type's closure is part of its identity and its sort. A lambda's
-    closure is written or derived from its captures' types alone, never from
-    where the lambda stands, and its residual carries a derived field as those
-    captures.
+19. A function type's closure and mentioned scope are part of its identity
+    and its sort; the mentioned scope is what its binder types' and codomain's
+    captures contribute, by the rule a lambda's captures follow. A lambda's
+    closure is written or derived from its captures' types and the lifetimes
+    they hold alone, never from where the lambda stands, and its residual
+    carries a derived field as those captures.
 20. An atom is opened only by a `scope` term and is determined by that term's
     node identity, in checking and evaluation alike. It is never refinable and
     never abstracted, and no type the checker synthesizes, checks against or
     binds has a sort whose scope names it outside its `scope`; evaluation never
-    checks this. A value, a type's included, may hold an atom its type's sort
-    does not name.
+    checks this. A value, a type's included, holds an atom its type's sort
+    does not name only inside a blocked computation or a proof.
 21. A type is linear exactly when its kind is not `Kind.unr`, and one function
     decides it. Every local bound at a linear type by a lambda, a definition's
     parameters, a `let` or a pattern, `_` included, is used exactly once on
@@ -1137,3 +1181,9 @@ Changes to the checker or evaluator must preserve these rules:
     arguments, which its head and other arguments determine.
 26. A value's dependencies, key and key conclusiveness are computed when it is
     built, from its children's; no walk over a value computes them.
+27. An implicit is projected only through a value's type, sorts, function
+    types' closures and independent domains, codomains and results, a proof's
+    proposition, no-confusion constructor fields and the arguments of a
+    family's application or of a type former's single-group application,
+    never through a blocked computation's arguments. A type former names each
+    of its lifetime parameters in its declared scope.
