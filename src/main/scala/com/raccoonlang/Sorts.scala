@@ -70,6 +70,14 @@ object Sorts {
 
     def join(parts: Iterable[P]): P
 
+    /**
+     * What a lambda that captures a local holding `value` holds of this field (spec §4.3): its type's sort's, and, for
+     * the scope, the lifetime a local of `Lifetime` holds. A level variable, a kind variable and a recursive
+     * definition's reference to itself, whose type may be large, contribute the least: none is a value the lambda
+     * holds.
+     */
+    def ofCapture(value: Value): P
+
     /** `Kind.unr` or `Lifetime.empty`: the unit of the join, and what every substitution keeps. */
     def isLeast(part: P): Boolean
 
@@ -82,6 +90,7 @@ object Sorts {
     def of(sort: VSort): Kind = sort.kind
     def normalForm(value: Value): Kind = Interpreter.getKind(value)
     def join(parts: Iterable[Kind]): Kind = Kind.join(parts)
+    def ofCapture(value: Value): Kind = sortOf(value.tpe).fold(Kind.unr)(_.kind)
     def isLeast(part: Kind): Boolean = part.isUnr
     def contains(declared: Kind, part: Kind): Boolean = Kind.contains(declared, part)
     private[Sorts] def exceeded(declaration: String, declared: Kind, part: ContainedPart, partValue: Kind): TypeError =
@@ -92,6 +101,11 @@ object Sorts {
     def of(sort: VSort): Lifetime = sort.scope
     def normalForm(value: Value): Lifetime = Interpreter.getLifetime(value)
     def join(parts: Iterable[Lifetime]): Lifetime = Lifetime.union(parts)
+    def ofCapture(value: Value): Lifetime =
+      value match {
+        case lifetime: Lifetime => lifetime
+        case other              => sortOf(other.tpe).fold(Lifetime.empty)(_.scope)
+      }
     def isLeast(part: Lifetime): Boolean = part.isEmpty
     def contains(declared: Lifetime, part: Lifetime): Boolean = Lifetime.contains(declared, part)
     private[Sorts] def exceeded(
@@ -117,6 +131,30 @@ object Sorts {
       site: Span
   ): Unit =
     if (!field.contains(declared, partValue)) at(site)(fail(field.exceeded(declaration, declared, part, partValue)))
+
+  /**
+   * A type former, a family or an axiom whose type ends in a sort, names each of its lifetime parameters in its
+   * declared scope (spec §5.1): `parameters` are its binders and the values they stand for. No other binder's type can
+   * name another lifetime, since only a parameter binds one and no atom is open at a declaration, so the declared scope
+   * contains every parameter type's scope too.
+   */
+  def requireNamesLifetimeParameters(
+      declaration: String,
+      declared: Lifetime,
+      parameters: Vector[(CoreAst.Binder, Value)]
+  ): Unit =
+    parameters.foreach {
+      case (binder, lifetime: Lifetime) =>
+        requireContains(
+          ScopeField,
+          declaration,
+          declared,
+          ContainedPart.LifetimeParameter(binder.name),
+          lifetime,
+          binder.span
+        )
+      case (_, _) =>
+    }
 
   /**
    * The type is a proposition: its values are proofs. A type in `Prop` is one, and so is a large function type into a

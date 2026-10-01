@@ -93,6 +93,7 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
       _ => valueType,
       Value.Kind.unr,
       Value.Lifetime.empty,
+      Value.Lifetime.empty,
       captured.synDeps,
       ValueId.LocalId(NodeId.fresh(), Vector(captured)),
       () => typeToTypeClassifier
@@ -125,6 +126,31 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
     assertEquals(Interpreter.evalApply(materialized, Vector(symbolicValue("Arg"))), solution)
   }
 
+  test("materialize rewrites a function type's mentioned scope, which its key counts") {
+    val (id, mentioned) = FreshVar.freshValue("m", LifetimeTpe)
+    val (_, solution) = FreshVar.freshValue("n", LifetimeTpe)
+    val binder =
+      CoreAst.Binder(CoreAst.LocalRef(0, "x"), typeRef, span, CoreAst.BinderSite.Function, BinderMode.Explicit)
+    val node = NodeId.fresh()
+    def pi(scope: Value): VPi =
+      VPi(
+        Env.empty.putGlobal("Type", valueType),
+        Vector(binder),
+        _ => valueType,
+        Value.Kind.unr,
+        Value.Lifetime.empty,
+        scope.asInstanceOf[Value.Lifetime],
+        scope.synDeps,
+        ValueId.LocalId(node, Vector.empty),
+        () => typeToTypeClassifier
+      )
+    val materialized =
+      ValueOps.materialize(pi(mentioned), EqStore.empty.allow(DepSet(id)).addLink(id, solution)).asInstanceOf[VPi]
+    assertEquals[Value, Value](materialized.mentionedScope, solution)
+    assertEquals(materialized.key, pi(solution).key)
+    assertNotEquals(pi(mentioned).key, pi(solution).key)
+  }
+
   test("under-captured core lambda fails on uncaptured local access") {
     val capturedRef = CoreAst.LocalRef(0, "captured")
     val argRef = CoreAst.LocalRef(1, "arg")
@@ -138,6 +164,7 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
       Vector(binder),
       _ => valueType,
       Value.Kind.unr,
+      Value.Lifetime.empty,
       Value.Lifetime.empty,
       DepSet.empty,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),

@@ -154,12 +154,13 @@ class EvidenceFieldTests extends munit.FunSuite with TestSupport {
     typecheckDecls(source)
     assertEquals(forcings(evaluatesTo(source + "{ loop(200) }", "200")), 0L)
     assertEquals(forcings(evaluatesTo(source + "{ (Checked.mk(10, 7), 1) }", "Pair.mk(Checked.mk(7), 1)")), 0L)
-    // Each call projects an implicit through a stored constructor field and through an opaque application's argument,
-    // each read alone, beside evidence that is not read.
+    // Each call projects an implicit through a stored constructor field, and one through a family's argument that is an
+    // opaque application, each read alone, beside evidence that is not read. An opaque application's own arguments are
+    // not projection positions.
     val projecting =
       source + "opaque def tag (n: Nat)[h: Eq(Bool, spin(10), Bool.true)]: Nat := n\n\n" +
         "struct Tagged (t: Nat) : Type\n | mk : Tagged(t)\n\n" +
-        "def untag {t: Nat}(x: Tagged(tag(t))): Nat := t\n\n" +
+        "def untag {t: Nat}(x: Tagged(t)): Nat := 1\n\n" +
         "def at {i: Nat}(c: Checked(10))(p: Eq(Checked(10), c, Checked.mk(10, i))): Nat := i\n\n" +
         "def again (n: Nat): Nat decreases structural(n) := match n returning Nat with\n" +
         " | Nat.zero => 0\n | Nat.succ k => {\n    let c := Checked.mk(10, 1)\n" +

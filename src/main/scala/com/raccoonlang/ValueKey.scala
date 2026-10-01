@@ -219,12 +219,13 @@ object ValueKey {
       id: Value.ValueId,
       binders: Vector[CoreAst.Binder],
       closureKind: Value.Kind,
-      closureScope: Value.Lifetime
+      closureScope: Value.Lifetime,
+      mentionedScope: Value.Lifetime
   ): Key = {
     val modes = binders.foldLeft(mixLong(valueIdKey(tag(Tag.Pi), id), binders.length.toLong)) { (key, binder) =>
       mixLong(key, modeKey(binder.mode))
     }
-    mixKey(mixKey(modes, closureKind.key), closureScope.key)
+    mixKey(mixKey(mixKey(modes, closureKind.key), closureScope.key), mentionedScope.key)
   }
 
   def packed(codec: Value.PackedCodec, payload: Value.PackedPayload, tpe: Value): Key = {

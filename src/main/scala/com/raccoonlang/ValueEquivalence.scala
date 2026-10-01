@@ -203,7 +203,8 @@ object ValueEquivalence {
       // A closure mismatch is reported at the two function types, whose closures say where they differ.
       var curStore =
         tryUnify(pi1.closureKind, pi2.closureKind, eqStore, innerCtx)
-          .flatMap(tryUnify(pi1.closureScope, pi2.closureScope, _, innerCtx)) match {
+          .flatMap(tryUnify(pi1.closureScope, pi2.closureScope, _, innerCtx))
+          .flatMap(tryUnify(pi1.mentionedScope, pi2.mentionedScope, _, innerCtx)) match {
           case Right(closureStore) => closureStore
           case Left(_)             => return Left(UnifyFailure(pi1, pi2, apart = false))
         }

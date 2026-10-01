@@ -58,6 +58,9 @@ expression captures (§4.3). A function type captures nothing, so on a function
 type an omitted field is `Kind.unr` or `Lifetime.empty`. On a lambda it is the
 join over what the lambda captures.
 
+(Superseded by `docs/SCOPE_CONTAINMENT.md`: a function type belongs to the
+scopes of what its code captures, and a lambda to the lifetimes its body names.)
+
 A lambda's type is determined by the lambda alone: its binders, its result,
 and its closure, written or derived. Where the lambda stands never changes it.
 `fun (u: Unit): Nat => 0` captures nothing and has type `Unit -> Nat`
@@ -494,6 +497,11 @@ is not a local: it is never linked by refinement (§6.2) and never abstracted.
 Printed output spells an atom as its binder. A residual keeps the `scope` term
 with its node identity and never gives it a fresh one, which would open a
 different atom.
+
+(§4.2 and §4.3 are superseded by `docs/SCOPE_CONTAINMENT.md`: a lifetime a
+lambda's body names is a capture, a function type belongs to what its code
+captures, and a value whose type does not name a closed scope holds it only
+inside a blocked computation or a proof.)
 
 **4.2 Outside its scope an atom cannot be named in a type.** A type whose
 sort's scope names an atom whose `scope` binder is not in the ambient context is

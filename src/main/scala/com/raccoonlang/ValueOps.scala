@@ -120,6 +120,7 @@ object ValueOps {
         env = materializeEnv(pi.env),
         closureKind = materializeParameter(pi.closureKind),
         closureScope = materializeParameter(pi.closureScope),
+        mentionedScope = materializeParameter(pi.mentionedScope),
         synDeps = materializeDeps(pi.synDeps),
         id = materializeId(pi.id),
         classifier0 = () => materializeClassifier(pi.tpe)(store)

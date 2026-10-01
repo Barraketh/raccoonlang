@@ -32,6 +32,7 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
       out,
       Value.Kind.unr,
       Value.Lifetime.empty,
+      Value.Lifetime.empty,
       deps(captures: _*),
       ValueId.LocalId(id, captures),
       () => typeToTypeClassifier
@@ -64,6 +65,25 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
     assert(ValueEquivalence.tryUnify(left, right, meta).isLeft)
   }
 
+  test("Pi definitional equality compares what the function types' code captures") {
+    val m = FreshVar.freshValue("m", LifetimeTpe)._2.asInstanceOf[Value.Lifetime]
+    def at(mentioned: Value.Lifetime): VPi =
+      VPi(
+        env,
+        Vector(binder),
+        _ => Sorts.Type,
+        Value.Kind.unr,
+        Value.Lifetime.empty,
+        mentioned,
+        mentioned.synDeps,
+        ValueId.LocalId(NodeId.fresh(), Vector.empty),
+        () => typeToTypeClassifier
+      )
+    assert(ValueEquivalence.keyAssertionsEnabled)
+    assert(ValueEquivalence.defEq(at(m), at(m)))
+    assert(!ValueEquivalence.defEq(at(m), at(Value.Lifetime.empty)))
+  }
+
   test("Pi definitional equality distinguishes telescope grouping") {
     val yRef = CoreAst.LocalRef(1, "y")
     val yBinder = CoreAst.Binder(yRef, typeSort, span, CoreAst.BinderSite.Function, BinderMode.Explicit)
@@ -72,6 +92,7 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
       Vector(binder, yBinder),
       _ => Sorts.Type,
       Value.Kind.unr,
+      Value.Lifetime.empty,
       Value.Lifetime.empty,
       DepSet.empty,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
@@ -87,11 +108,13 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
           _ => Sorts.Type,
           Value.Kind.unr,
           Value.Lifetime.empty,
+          Value.Lifetime.empty,
           DepSet.empty,
           ValueId.LocalId(NodeId.fresh(), Vector.empty),
           () => typeToTypeClassifier
         ),
       Value.Kind.unr,
+      Value.Lifetime.empty,
       Value.Lifetime.empty,
       DepSet.empty,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
@@ -119,11 +142,13 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
           _ => Sorts.Type,
           Value.Kind.unr,
           Value.Lifetime.empty,
+          Value.Lifetime.empty,
           DepSet.empty,
           ValueId.LocalId(NodeId.fresh(), Vector.empty),
           () => typeToTypeClassifier
         ),
       Value.Kind.unr,
+      Value.Lifetime.empty,
       Value.Lifetime.empty,
       DepSet.empty,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),

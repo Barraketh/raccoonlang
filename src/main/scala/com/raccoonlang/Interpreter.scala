@@ -109,7 +109,8 @@ object Interpreter {
    * The sort of a Pi, derived from the env it closed over (spec §2.4). Its level right-folds the binder types' levels
    * with imax over the codomain's, which reduces to Prop for a Prop-valued codomain and to ordinary max for a
    * definitely positive one. Its kind is its closure kind alone. Its scope unites its closure scope, what its values
-   * hold, with the binder types' scopes and the codomain's, less the lifetimes the group itself binds, since the caller
+   * hold, with the binder types' scopes, the codomain's and `mentionedScope`, what the captures of its binder types and
+   * codomain contribute, as a lambda's captures do, less the lifetimes the group itself binds, since the caller
    * supplies them. A kind or lifetime binder contributes no level and no scope. Computing it per instance means a
    * residual Pi re-evaluated with concrete parameters gets the concrete sort, not the declaration-time one. A Pi that
    * binds a level is `Large`: the level changes the universe of everything after it, so no sort contains the Pi.
@@ -122,7 +123,8 @@ object Interpreter {
       freshEnv: Env,
       outV: Value,
       closureKind: Kind,
-      closureScope: Lifetime
+      closureScope: Lifetime,
+      mentionedScope: Lifetime
   ): Classifier = {
     val freshValues = binders.map(binder => freshEnv(binder.localRef))
     if (freshValues.exists(_.tpe eq LevelTpe)) Large
@@ -136,7 +138,11 @@ object Interpreter {
       }
       // A lifetime binder enters as its own variable, which the caller supplies.
       val ownLifetimes = freshValues.collect { case lifetime: Lifetime => lifetime.vars }.foldLeft(DepSet.empty)(_ ++ _)
-      val scope = Lifetime.less(Lifetime.union(closureScope +: domSorts.map(_.scope) :+ outSort.scope), ownLifetimes)
+      val scope =
+        Lifetime.less(
+          Lifetime.union(closureScope +: mentionedScope +: domSorts.map(_.scope) :+ outSort.scope),
+          ownLifetimes
+        )
       val outLevel = outSort.level
       val level =
         if (Sorts.isProp(outSort)) outLevel
@@ -159,10 +165,11 @@ object Interpreter {
       baseEnv: Env,
       out: CoreAst.Term,
       closureKind: Kind,
-      closureScope: Lifetime
+      closureScope: Lifetime,
+      mentionedScope: Lifetime
   ): Classifier = {
     val freshEnv = BinderOps.freshen(binders, baseEnv)
-    piClassifierFromChecked(binders, freshEnv, evalTerm(out, freshEnv), closureKind, closureScope)
+    piClassifierFromChecked(binders, freshEnv, evalTerm(out, freshEnv), closureKind, closureScope, mentionedScope)
   }
 
   /**
@@ -176,6 +183,25 @@ object Interpreter {
       case CoreAst.ClosureField.Omitted           => wtf("An omitted closure field reached evaluation before checking")
     }
 
+  /**
+   * An axiom's head. One whose type, past all its binder groups, is a sort is a type former, whose arguments projection
+   * reads; it names each lifetime parameter in its declared scope, as a family does (spec §5.1).
+   */
+  private def axiomHead(name: String, tpe: Value): ConstType = {
+    @tailrec
+    def telescope(parameters: Vector[(CoreAst.Binder, Value)], tpe: Value): ConstType =
+      tpe match {
+        case pi: VPi =>
+          val freshEnv = BinderOps.freshen(pi)
+          telescope(parameters ++ pi.binders.map(binder => binder -> freshEnv(binder.localRef)), pi.codomain(freshEnv))
+        case sort: VSort =>
+          Sorts.requireNamesLifetimeParameters(s"Axiom $name", sort.scope, parameters)
+          TypeFormer
+        case _ => Symbol
+      }
+    telescope(Vector.empty, tpe)
+  }
+
   private[raccoonlang] def evalPi(pi: CTerm.Pi, env: Env): VPi = {
     val capturedRefs = CapturedRefs.getCapturedRefs(pi, env)
     val closedEnv = env.closeForEval(capturedRefs)
@@ -183,6 +209,8 @@ object Interpreter {
     val id = ValueId.LocalId(pi.id, captureVals)
     val closureKind = evalClosureField(pi.closure.kind, Sorts.KindField, env)
     val closureScope = evalClosureField(pi.closure.scope, Sorts.ScopeField, env)
+    // The Pi's own binders are not in `env`, so these are the locals bound outside it that its code mentions.
+    val mentionedScope = derivedField(Sorts.ScopeField, (pi.codeRefs intersect env.localRefs).toVector, env)
 
     val synDeps = DepSet.newBuilder
     captureVals.foreach { v =>
@@ -190,6 +218,7 @@ object Interpreter {
     }
     synDeps.unionInPlace(closureKind.synDeps)
     synDeps.unionInPlace(closureScope.synDeps)
+    synDeps.unionInPlace(mentionedScope.synDeps)
 
     VPi(
       closedEnv,
@@ -197,40 +226,36 @@ object Interpreter {
       codomain = env => evalTerm(pi.out, env),
       closureKind,
       closureScope,
+      mentionedScope,
       synDeps.result(),
       id,
-      classifier0 = () => piClassifier(pi.binders, closedEnv, pi.out, closureKind, closureScope),
+      classifier0 = () => piClassifier(pi.binders, closedEnv, pi.out, closureKind, closureScope, mentionedScope),
       knownPropValued = pi.knownPropValued
     )
   }
 
-  /** A local a lambda captures, and the sort of its type, which is what it contributes to the lambda's closure. */
-  private[raccoonlang] final case class Capture(ref: CoreAst.LocalRef, value: Value, sort: VSort)
+  /** A local a lambda captures, which contributes to its closure what `Sorts.Field.ofCapture` reads off its value. */
+  private[raccoonlang] final case class Capture(ref: CoreAst.LocalRef, value: Value)
 
   /**
-   * The locals a lambda captures (spec §4.3): those bound outside it, in `env`, that its body mentions, each
-   * contributing the sort of its type. The binder types and result are not the body, and implicit arguments are never
-   * written, so neither contributes. A variable of a sort parameter is not a value and contributes nothing. Neither
-   * does a recursive definition's reference to itself, the one local whose type may be large: it names a global, which
-   * a lambda does not capture (spec §3.3). The residual lists them, in ref id order. A capture is read forced, as a
-   * closure's environment holds it: a destructured evidence field may be bound unforced.
+   * The locals a lambda captures (spec §4.3): those bound outside it, in `env`, that its body mentions, in terms and in
+   * types written in the body. The binder types and result are not the body, and implicit arguments are never written,
+   * so neither contributes. The residual lists them, in ref id order. A capture is read forced, as a closure's
+   * environment holds it: a destructured evidence field may be bound unforced.
    */
   private[raccoonlang] def lambdaCaptures(l: CTerm.Lam, env: Env): Vector[Capture] =
-    l.bodyRefs.toVector
-      .sortBy(_.id)
-      .flatMap(ref =>
-        env.locals.get(ref).map(Value.forced).flatMap(value => Sorts.sortOf(value.tpe).map(Capture(ref, value, _)))
-      )
+    l.bodyRefs.toVector.sortBy(_.id).flatMap(ref => env.locals.get(ref).map(value => Capture(ref, Value.forced(value))))
 
   /**
-   * A lambda's derived closure field (spec §4.3): the join of that field of its captures' sorts, read in `env`, where
+   * A lambda's derived closure field (spec §4.3): the join of what its captures contribute to it, read in `env`, where
    * the lambda stands. Checking and evaluation both derive it here from the residual's captures, and sorts commute with
    * substitution, so evaluation agrees with what checking derived.
    */
   private def derivedField[P <: Value](field: Sorts.Field[P], captures: Vector[CoreAst.LocalRef], env: Env): P =
-    field.join(captures.flatMap { ref =>
-      val capture = env.locals.getOrElse(ref, wtf(s"The derived closure's capture ${ref.name} is unbound"))
-      Sorts.sortOf(Value.forced(capture).tpe).map(field.of)
+    field.join(captures.map { ref =>
+      field.ofCapture(
+        Value.forced(env.locals.getOrElse(ref, wtf(s"The derived closure's capture ${ref.name} is unbound")))
+      )
     })
 
   private def evalRef(ref: CTerm.Ref, env: Env): Value = {
@@ -660,7 +685,7 @@ object Interpreter {
             case Decl.AxiomDecl(name, ty, _) =>
               if (!trusted) fail(UntrustedAxiom(name))
               val tyV = TypeChecker.checkDeclType(ty, env).value
-              env.putGlobal(name, publishedValue(VConst(name, Symbol, tyV), tyV))
+              env.putGlobal(name, publishedValue(VConst(name, axiomHead(name, tyV), tyV), tyV))
 
             case d: Decl.InductiveDecl =>
               InductiveChecks.evalInductiveBlock(Decl.InductiveBlock(Vector(d), d.span), env)

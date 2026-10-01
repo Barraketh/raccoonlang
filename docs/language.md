@@ -311,6 +311,12 @@ Call sites never write implicit arguments. Every implicit must be recoverable
 from the type of a later explicit argument. The checker records that structural
 projection and reconstructs the implicit both while checking and while
 evaluating residual terms. An implicit binder that is not forced is rejected.
+The projection reads sorts, function types' closures and the parts of a
+function type that do not depend on its own binders, a proof's proposition, a
+constructor's stored fields, and the arguments of a family or of a prelude type
+former such as `Quot`. It never reads the arguments of a blocked application,
+an opaque definition's, another axiom's or a stuck builtin's:
+`def g {l: Lifetime}(t: Box(f(l))): Nat` is rejected when `f` is opaque.
 
 Implicit and explicit binders may be interleaved. Reconstruction must still
 come from a later explicit argument, and call sites supply all explicit
@@ -517,22 +523,43 @@ later domain of the same chain it is a parse error, and so is a `level` field,
 an empty list, or an unknown or repeated field. The token after the first name
 tells a closure `{ kind = ...` from an implicit binder `{ kind: ...`. A closure
 is part of the function type, compared exactly like the rest of it, and a
-function type is at its closure's kind and counts its closure's scope.
+function type is at its closure's kind and counts its closure's scope. A
+function type also belongs to the scopes of what its parameter types and result
+type capture, by the rule below for a lambda's captures, other than its own
+lifetime parameters: they are code, which runs each time the type is
+instantiated. Those scopes are part of the function type, so
+`(x: Nat) -> Box(7)` and `(x: Nat) -> Box(use(Lease.mk(l)))` are different
+types, though `use` returns 7.
 
-A function type captures nothing, so an omitted closure field of one is
-`Kind.unr` or `Lifetime.empty`, and a definition's own type is always at those.
+A written function type has no body to derive a closure from, so an omitted
+closure field of one is the least, `Kind.unr` or `Lifetime.empty`, and a
+definition's own type is always at those. What its code captures is its
+mentioned scope above, not its closure.
 A lambda's closure is written after `fun`, and each omitted field is derived
 from what the lambda captures: the locals bound outside it that its body
-mentions. Its binder types and result type are not its body. The derived kind
-joins the captures' types' kinds, and the derived scope unites their scopes; a
-variable of `Kind` or `Lifetime` contributes nothing. So `delay`'s lambda,
-which captures `h: Lease(l)`, has type `{ scope = l } Unit -> Nat`, and a
-lambda that captures nothing has an unrestricted, empty closure wherever it
-stands: checking `fun (u: Unit): Nat => 0` against `{ scope = l } Unit -> Nat`
-is a `TypeMismatch`. A written closure field must contain what the captures
-derive, else `KindExceeded` or `ScopeExceeded`. That is also how a function
-value is lifted to a larger closure:
+mentions, in terms and in types written in the body. Its binder types and
+result type are not its body. The derived kind joins the captures' types'
+kinds, and the derived scope unites their scopes. A variable of `Lifetime` is a
+capture too, which contributes the lifetime it holds: a lambda belongs to every
+lifetime its code names, whether a `scope`'s name or a lifetime parameter from
+outside the lambda. The lambda's own lifetime parameters are not captures,
+since its caller supplies them, and a variable of `Kind` or `Level` contributes
+nothing. So `delay`'s lambda, which captures `h: Lease(l)`, has type
+`{ scope = l } Unit -> Nat`, as does `fun (u: Unit): Nat => use(Lease.mk(l))`
+in `delay`'s body, and a lambda that captures nothing has an unrestricted,
+empty closure wherever it stands: checking `fun (u: Unit): Nat => 0` against
+`{ scope = l } Unit -> Nat` is a `TypeMismatch`. A written closure field must
+contain what the captures derive, else `KindExceeded` or `ScopeExceeded`. That
+is also how a function value is lifted to a larger closure:
 `fun { kind = k, scope = S } (x: A): B => f(x)`.
+
+A lambda's binder types and result type are its function type's code, so what
+they capture belongs to that type, and a parameter's function type written
+without the capture does not match it. A callback passed to a combinator keeps
+scoped locals in its body: `fun (u: Unit): Nat => use(h)` fits a parameter
+`{ scope = S } Unit -> Nat`, while
+`fun (u: Unit): Box(use(h)) => Box.mk(7)` fits no parameter `Unit -> Box(7)`,
+though `use` returns 7.
 
 ## Terms and local blocks
 
@@ -657,8 +684,11 @@ position `(Nat, Bool)` is a pair of types, a value of `Pair(Type, Type)`.
 
 ### Scopes
 
-`scope l => e` opens a fresh atom and binds `l` to the lifetime holding it,
-then denotes the value of `e`. Its type is `e`'s type. `scope` is a keyword at
+`scope l => e` opens a scope named `l`, binds `l` to the lifetime naming it,
+and denotes the value of `e`. Its type is `e`'s type. The scope is open while
+`e` runs and closed afterwards. A value belongs to a scope when its type
+mentions it, and once the scope closes, nothing can hold, create or use a value
+that belongs to it. `scope` is a keyword at
 the start of a term, and a field name inside a field list; the body extends as
 far to the right as a lambda body does:
 
@@ -671,27 +701,33 @@ def use {l: Lifetime}(h: Lease(l)): Nat := 0
 def ok : Nat := scope l => use(Lease.mk(l))
 ```
 
-The atom is unique to the `scope` term: two `scope` terms open two atoms, while
-running one term twice, a recursive call included, opens the same one. Printed
-output spells an atom as its binder.
+The scope is unique to the `scope` term: two `scope` terms open two scopes,
+while running one term twice, a recursive call included, opens the same one.
+Printed output spells a scope as its binder.
 
-Outside its `scope`, an atom cannot be named in a type. A type whose sort's
-scope names an atom whose `scope` does not enclose it is `LifetimeEscapes`. That
+Outside its `scope` term, a scope cannot be named in a type. A type whose
+sort's scope names a scope that does not enclose it is `LifetimeEscapes`. That
 is checked on every type a term has or is checked against, on the type of every
 local at its binder, and on every argument that is a type, which is confined
 through its own sort. So `use(scope l => Lease.mk(l))` is rejected: the
-`scope`'s own type `Lease(l)` is at `Type { scope = l }`, which names its atom
-where `l` is no longer bound. So is `def T : Type := scope l => Lease(l)`,
-whose body's type is that sort. A value whose type's sort does not name the
-atom may leave, even when its code does: in
-`scope l => fun (u: Unit): Nat => use(Lease.mk(l))`, the lambda has type
-`Unit -> Nat`, since a lifetime is not a value and the lambda captures nothing
-scoped. Capturing a local of type `Lease(l)` instead would give the lambda type
-`{ scope = l } Unit -> Nat`, which cannot leave. A proposition about the first
-lambda, such as `Eq(Unit -> Nat, f, f)`, is at `Prop` and may leave too.
+`scope`'s own type `Lease(l)` is at `Type { scope = l }`, which names `l` where
+it is no longer open. So is `def T : Type := scope l => Lease(l)`, whose body's
+type is that sort.
 
-An atom is not a variable: matching never links it to another lifetime, while a
-lifetime variable may be linked to it. Nothing checks a `scope` at run time.
+What a value belongs to is read off its type's sort: data belongs to the scopes
+its family's arguments name, a function to the scopes of what it captures and
+of the lifetimes its code names, and a type to its own sort's scope. So
+`scope l => fun (u: Unit): Nat => use(Lease.mk(l))` is rejected as well: the
+lambda names `l`, so its type is `{ scope = l } Unit -> Nat`, which cannot
+leave. Applied inside the scope it is accepted, and so is
+`scope l => fun (u: Unit): Nat => 3`, which belongs to no scope. A computation
+blocked on an opaque definition, an axiom or a builtin, and a proof, may hold a
+scope's lifetime without belonging to it, since neither runs, and no implicit
+reads it back out.
+
+A scope's name is not a variable: matching never links it to another lifetime,
+while a lifetime variable may be linked to it. Nothing checks a `scope` at run
+time.
 
 ## Inductive families
 

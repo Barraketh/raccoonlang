@@ -12,10 +12,11 @@ import scala.collection.mutable
  *
  *   - `compile` pattern-matches the *evaluated* types of the explicit binders (as patterns over the implicits' fresh
  *     vars) and produces a per-implicit `Spec` — which provided argument to start from and the path to walk. Every
- *     position used is rigid (irreducible head applications, no-confusion constructor fields, sort fields and levels,
- *     Pi closures and domains), so following the same path on the actual arguments at any later time re-derives the
- *     value. Projection is a *choice*, not a proof: application checking re-verifies every argument against its
- *     instantiated binder type, so soundness never rests on injectivity of these positions.
+ *     position used is rigid (family and type-former applications, no-confusion constructor fields, sort fields and
+ *     levels, Pi closures and domains; never a blocked application's arguments), so following the same path on the
+ *     actual arguments at any later time re-derives the value. Projection is a *choice*, not a proof: application
+ *     checking re-verifies every argument against its instantiated binder type, so soundness never rests on injectivity
+ *     of these positions.
  *   - `project` follows a Spec against actual argument values. It is the single implementation used by check-time
  *     application, run-world residual evaluation, and check-world evaluation of checked syntax (match motives,
  *     termination measures, lambda-body quoting).
@@ -31,7 +32,10 @@ object Projection {
     /** value -> its type. */
     case object Tpe extends Step
 
-    /** Application of an irreducible constant head (inductive family, axiom, opaque symbol) -> arg. */
+    /**
+     * Application of a family or of a type-former axiom -> arg. A blocked computation's arguments are not positions:
+     * what they hold is counted by no type's sort.
+     */
     final case class SpineArg(head: String, idx: Int) extends Step
 
     /** No-confusion constructor value -> stored field (family args are erased from storage). */
@@ -191,10 +195,11 @@ object Projection {
         queue.append((root, steps :+ Step.Tpe, tpe))
       }
 
+    // A blocked computation's arguments are not projection positions: what they hold is not counted by the type's sort.
     def rigidHead(head: VConst): Boolean =
       head.constType match {
-        case Inductive(_) => true
-        case Symbol       => true
+        case Inductive(_) | TypeFormer => true
+        case Symbol                    => false
       }
 
     def visit(root: Int, steps: Vector[Step], v: Value): Unit = {
@@ -361,6 +366,8 @@ object Projection {
       if ((binderTypes :+ out).exists(_.synDeps.intersects(firstIds))) None
       else {
         // The remaining group keeps the closure: it is the same function's, applied one binder further. It keeps the
+        // whole group's mentioned scope, a superset of what the remaining binders' code captures, which is harmless:
+        // only positions inside it are read, and no implicit is bound to the copy itself. It keeps the
         // node identity and captures too, which is sound: a Pi's key counts its binders (docs/kernel.md#value-identity),
         // so the only Pis sharing this key are this node's, at these captures, less as many leading binders.
         Some(
@@ -368,8 +375,15 @@ object Projection {
             env = firstEnv,
             binders = remaining,
             synDeps = pi.synDeps,
-            classifier0 =
-              () => Interpreter.piClassifierFromChecked(remaining, fullEnv, out, pi.closureKind, pi.closureScope)
+            classifier0 = () =>
+              Interpreter.piClassifierFromChecked(
+                remaining,
+                fullEnv,
+                out,
+                pi.closureKind,
+                pi.closureScope,
+                pi.mentionedScope
+              )
           )
         )
       }

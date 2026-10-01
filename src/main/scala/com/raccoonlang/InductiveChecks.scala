@@ -485,20 +485,12 @@ object InductiveChecks {
         case other       => at(decl.header.resultTy.span) { fail(InductiveTypeNotASort(other)) }
       }
       // spec §5.1: the declared scope may mention only the family's parameters, and it names each lifetime parameter,
-      // so it is exactly their union. No field's, parameter's or index's type can name another lifetime, since only a
-      // parameter binds one and no atom is open at a declaration, so each of their scopes lies within it unchecked.
-      decl.header.binders.zip(familyArgs).foreach {
-        case (binder, lifetime: Lifetime) =>
-          Sorts.requireContains(
-            Sorts.ScopeField,
-            s"Family ${decl.header.name}",
-            declaredSort.scope,
-            ContainedPart.LifetimeParameter(binder.name),
-            lifetime,
-            binder.span
-          )
-        case _ =>
-      }
+      // so it is exactly their union.
+      Sorts.requireNamesLifetimeParameters(
+        s"Family ${decl.header.name}",
+        declaredSort.scope,
+        decl.header.binders.zip(familyArgs)
+      )
       FamilySignature(decl, familyType, declaredSort, familyArgs)
     }
   }

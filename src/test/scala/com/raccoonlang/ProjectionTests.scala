@@ -6,21 +6,23 @@ import com.raccoonlang.telescope.Projection
 class ProjectionTests extends munit.FunSuite with TestSupport {
   override protected val suitePrelude: Prelude.Config = Prelude.test
 
-  test("Pi-codomain projection peels one binder from a grouped telescope") {
+  test("Pi-codomain projection peels one binder from a grouped telescope, keeping what its code captures") {
     val span = Span(0, 0)
     val env = Env.empty
     val typeSort = CoreTestTerms.sortAt(CoreAst.Form.LevelOne, span)
     val x = CoreAst.Binder(CoreAst.LocalRef(0, "x"), typeSort, span, CoreAst.BinderSite.Function, BinderMode.Explicit)
     val y = CoreAst.Binder(CoreAst.LocalRef(1, "y"), typeSort, span, CoreAst.BinderSite.Function, BinderMode.Explicit)
+    val mentioned = FreshVar.freshValue("m", LifetimeTpe)._2.asInstanceOf[Value.Lifetime]
     val grouped = VPi(
       env,
       Vector(x, y),
       _ => Sorts.Type,
       Value.Kind.unr,
       Value.Lifetime.empty,
-      DepSet.empty,
+      mentioned,
+      mentioned.synDeps,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
-      () => Sorts.sort(Level.succ(Level.one), Value.Kind.unr, Value.Lifetime.empty)
+      () => Sorts.sort(Level.succ(Level.one), Value.Kind.unr, mentioned)
     )
     val root = VConst("f", Symbol, grouped)
     val tail = Projection
@@ -28,6 +30,8 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
       .fold(failure => fail(failure.toString), identity)
 
     assertEquals(tail.asInstanceOf[VPi].binders.map(_.localRef), Vector(y.localRef))
+    // The remaining group is the same function type's, so its sort counts the same captures.
+    assert(Sorts.sortOf(tail).exists(_.scope == mentioned), tail.tpe)
     assert(
       Projection
         .project(Projection.Spec(0, Vector(Projection.Step.PiCodomain)), Vector(tail))
@@ -52,6 +56,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
       Vector(x, y),
       _ => Sorts.Type,
       Value.Kind.unr,
+      Value.Lifetime.empty,
       Value.Lifetime.empty,
       DepSet.empty,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),

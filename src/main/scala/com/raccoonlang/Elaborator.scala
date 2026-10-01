@@ -521,7 +521,7 @@ object Elaborator {
     val piEnv = env.enterLocalScope
     val (binders, binderEnv) = elabBinders(pi.binders, CA.BinderSite.Function, piEnv)
     val body = elabTerm(pi.body, binderEnv)
-    // A function type captures nothing, so an omitted closure field is Kind.unr or Lifetime.empty (spec §1).
+    // A written function type has no body to derive a closure from, so an omitted field is the least (spec §1).
     val closure = elabClosure(pi.closure, CA.Closure.unrestricted(pi.span), env)
     CA.Term.Pi(binders, body, closure, pi.span, NodeId.fresh())
   }

@@ -150,12 +150,15 @@ class ClosureTests extends munit.FunSuite with TestSupport {
 
     typecheckDecls(program("0"))
     expectOnly[TypeMismatch](typecheckDecls(program("useV(v)")))
-    // A captured type variable carries its sort's scope; a captured lifetime is not a value.
+    // A captured type variable carries its sort's scope, and a captured lifetime the lifetime it holds.
     typecheckDecls(
       "def f {S: Lifetime}(A: Type { scope = S }): { scope = S } Unit -> Type { scope = S } := " +
         "fun (u: Unit): Type { scope = S } => A\n"
     )
-    typecheckDecls(withFamilies("def f (l: Lifetime): Unit -> Nat := fun (u: Unit): Nat => useV(V.mk(l))\n"))
+    def mentioning(result: String): String =
+      withFamilies(s"def f (l: Lifetime): $result := fun (u: Unit): Nat => useV(V.mk(l))\n")
+    typecheckDecls(mentioning("{ scope = l } Unit -> Nat"))
+    expectOnly[TypeMismatch](typecheckDecls(mentioning("Unit -> Nat")))
   }
 
   test("a closure derived in a refined branch names a variable by any local bound to it") {
