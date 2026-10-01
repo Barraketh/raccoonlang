@@ -283,6 +283,7 @@ namespace Check {
     | Grid.blocks x y => List.cons(x, List.cons(y, List.nil(Expr)))
     | Grid.persistent tiles => List.cons(tiles, List.nil(Expr))
     | Grid.pairs x y => List.cons(x, List.cons(y, List.nil(Expr)))
+    | Grid.persistentPairs tiles => List.cons(tiles, List.nil(Expr))
   }
 
   // The expressions a launcher evaluates on the host: its requirements, then its grid's extent.

@@ -1,8 +1,8 @@
 #!/bin/sh
 # One hardware session for gpu/encoding: every harness, built against its generated kernels, then the probes.
 #
-#   gpu/encoding/harness/hw.sh gen DIR    here: generate every example's CUDA into DIR, with the harnesses and the
-#                                         probes, so that the GPU box needs no JVM (needs $RACCOON, as gpu/gen.sh)
+#   gpu/encoding/harness/hw.sh gen DIR    here: generate every example's CUDA into DIR, with the harnesses, their run
+#                                         scripts and the probes, so that the GPU box needs no JVM (needs $RACCOON)
 #   DIR/hw.sh run [name …]                on an sm_100a box with nvcc (CUDA 12.9) and GNU timeout: build and run every
 #                                         harness, or those named, then the probes; print a summary
 #
@@ -15,7 +15,8 @@ attention_pingpong:attention_pingpong
 attention_a3b:attention_a3b
 paged_attention:paged_attention
 paged_decode:paged_append paged_decode paged_combine
-tinygemm_pair:tinygemm_pair'
+tinygemm_pair:tinygemm_pair
+gemm_pair:gemm_pair'
 
 here=$(cd "$(dirname "$0")" && pwd)
 
@@ -33,7 +34,7 @@ case $1 in
     done || exit 1
     cp "$here"/*.cu "$here"/*.h "$dir/harness/"
     cp "$gpu"/probes/*.cu "$gpu"/probes/*.h "$gpu"/probes/run.sh "$dir/probes/"
-    cp "$here/hw.sh" "$dir/hw.sh"
+    cp "$here/hw.sh" "$here"/run_*.sh "$dir/"
     echo "bundle: $dir (copy it to the box, then: sh hw.sh run)"
     ;;
   run)

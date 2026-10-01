@@ -514,3 +514,54 @@ cd ~/cutlass && sed -i -e 's/= half_t;/= cutlass::bfloat16_t;/' \
 cd ~/cutlass && time cmake --build build --target 70_blackwell_fp16_gemm -j"$(nproc)"
 cd ~/cutlass && for S in 8192 4096; do ./build/examples/70_blackwell_gemm/70_blackwell_fp16_gemm --m=$S --n=$S --k=$S --iterations=100; done
 ```
+
+### 8.8 The pair GEMM against CUTLASS
+
+Our `gemm_pair` (`encoding/examples/gemm_pair.rac`, `encoding/TWO_CTA.md` §6 step 4) is §7's items 1–4 together:
+2-SM 256×256×64 tiles, cluster 2×1, six stages of 32 KiB, two accumulators of 256 columns, a TMA-store epilogue in
+128×32 subtiles through 32 KiB of staging, and a static persistent grid of one pair per two SMs, in bands of 8 tile
+rows.
+
+**The like-for-like kernel** among §8.2's eight is `${K}_256x256x64_2x1x1_0_tnt_align8_2sm`.
+- **The same:** the problem (`tnt`, void C, f32 D), the MMA tile, the cluster, six stages, two accumulators, the
+  epilogue's subtile and its two buffers.
+- **Different:**
+  - the scheduler: CUTLASS's CLC (§5) against our static grid (§7 item 7 expects a few percent at 8192³);
+  - the order: CUTLASS's raster heuristic, swizzle off, against our bands;
+  - the stores: we store a 128×32 subtile as four 32×32 boxes, one per warp, each warp waiting for its own;
+  - the scopes: `.release.cluster` and `.acquire.cluster` on cross-CTA barriers (`encoding/TWO_CTA.md` §7
+    decision 3), where CUTLASS uses `.cta`.
+- **Cross-checks:** the run-time-cluster kernel at cluster 2×1, and §8.5's raster sweep of the 2×1 kernel, which shows
+  how much order matters to CUTLASS.
+
+**Timing.** CUTLASS's `Runtime` is the mean over its profiling iterations. Our harness prints the median, the fastest
+and the mean of 100 runs after 20 warm-up runs, each run between its own events. Compare means with means. Both reuse
+one copy of the operands (`--workspace-count=1` below).
+
+Here, generate the bundle, which holds every kernel's CUDA, the harnesses and the run scripts, and copy it to the box:
+
+```bash
+RACCOON=… gpu/encoding/harness/run_gemm_pair.sh gen ~/bundle
+```
+
+On the box, after §8.1–8.3, our kernel and then CUTLASS's, in one session:
+
+```bash
+cd ~/bundle && sh run_gemm_pair.sh run
+```
+
+```bash
+cd ~/cutlass && for S in 8192 4096; do build/tools/profiler/cutlass_profiler --operation=Gemm \
+  --kernels="${K}_256x256x64_2x1x1_0_tnt_align8_2sm" --m=$S --n=$S --k=$S --alpha=1 --beta=0 --workspace-count=1 \
+  --providers=cutlass --verification-providers=device --warmup-iterations=20 --profiling-iterations=100 \
+  --output=pair_$S.csv && summ pair_$S.gemm.csv; done
+```
+
+```bash
+cd ~/cutlass && build/tools/profiler/cutlass_profiler --operation=Gemm --kernels="${K}_256x256x64_0x0x1_0_tnt_align8_2sm" \
+  --m=8192 --n=8192 --k=8192 --alpha=1 --beta=0 --cluster_m=2 --cluster_n=1 --cluster_m_fallback=2 --cluster_n_fallback=1 \
+  --workspace-count=1 --providers=cutlass --verification-providers=device --warmup-iterations=20 \
+  --profiling-iterations=100 --output=pair_cluster.csv && summ pair_cluster.gemm.csv
+```
+
+`run_gemm_pair.sh run` records the SM clock before and after its timing; record CUTLASS's the same way (§8.6).

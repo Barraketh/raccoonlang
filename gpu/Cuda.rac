@@ -97,13 +97,15 @@ namespace Cuda {
   struct MapEncoding : Type
    | mk (param: String)(use: MapUse)(source: Param)(rows: String)(cols: String)(inner: Nat)(outer: Nat) : MapEncoding
 
-  // How many CTAs a launcher starts: `x` × `y`; for a persistent kernel, one per SM but no more than `tiles`; or, for
-  // a kernel of CTA pairs, `x` × `y` pairs, each a cluster of two CTAs along x, the kernel declaring the cluster's shape
-  // (`__cluster_dims__(2, 1, 1)`), so `2x` × `y` CTAs.
+  // How many CTAs a launcher starts: `x` × `y`; for a persistent kernel, one per SM but no more than `tiles`; for a
+  // kernel of CTA pairs, `x` × `y` pairs, each a cluster of two CTAs along x, the kernel declaring the cluster's shape
+  // (`__cluster_dims__(2, 1, 1)`), so `2x` × `y` CTAs; or, for a persistent kernel of CTA pairs, one pair per two SMs
+  // but no more than `tiles` pairs, along x.
   inductive Grid : Type
    | blocks (x: Expr)(y: Expr) : Grid
    | persistent (tiles: Expr) : Grid
    | pairs (x: Expr)(y: Expr) : Grid
+   | persistentPairs (tiles: Expr) : Grid
 
   // A host function `<kernel>_launch` taking `params` and a stream: it fails with `cudaErrorInvalidValue` unless every
   // condition in `requires` holds, encodes `maps`, and launches `grid` of CTAs of `block` threads with the kernel's
@@ -428,18 +430,24 @@ namespace Cuda {
     }
   }
 
+  // A persistent grid's lines: the device's SM count, `gpu_sms`, and the tile count, `gpu_tiles`; then `rest`.
+  def smCount (tiles: Expr)(rest: String): String := {
+    let query := "if (cudaGetDevice(&gpu_device) != cudaSuccess || cudaDeviceGetAttribute(&gpu_sms, cudaDevAttrMultiProcessorCount, gpu_device) != cudaSuccess) {"
+    Cuda.line(1, "int gpu_device = 0;", Cuda.line(1, "int gpu_sms = 0;", Cuda.line(1, query,
+      Cuda.line(2, "return cudaErrorInvalidValue;", Cuda.line(1, "}",
+      Cuda.line(1, Text.cat3("const unsigned gpu_tiles = ", Cuda.expr(tiles), ";"), rest))))))
+  }
+
   // The grid's extent, after any lines that compute it.
   def gridDims (g: Grid)(rest: String -> String): String := {
     match g returning String with
     | Grid.blocks x y => rest(Text.cat3("dim3(", Cuda.expr(x), Text.cat3(", ", Cuda.expr(y), ")")))
     | Grid.pairs x y => rest(Text.cat3("dim3(", Cuda.expr(Expr.bin(BinOp.mul, Expr.lit(2), x)), Text.cat3(", ", Cuda.expr(y), ")")))
-    | Grid.persistent tiles => {
-      let query := "if (cudaGetDevice(&gpu_device) != cudaSuccess || cudaDeviceGetAttribute(&gpu_sms, cudaDevAttrMultiProcessorCount, gpu_device) != cudaSuccess) {"
-      Cuda.line(1, "int gpu_device = 0;", Cuda.line(1, "int gpu_sms = 0;", Cuda.line(1, query,
-        Cuda.line(2, "return cudaErrorInvalidValue;", Cuda.line(1, "}",
-        Cuda.line(1, Text.cat3("const unsigned gpu_tiles = ", Cuda.expr(tiles), ";"),
-        rest("dim3(gpu_tiles < static_cast<unsigned>(gpu_sms) ? gpu_tiles : static_cast<unsigned>(gpu_sms))")))))))
-    }
+    | Grid.persistent tiles =>
+      Cuda.smCount(tiles, rest("dim3(gpu_tiles < static_cast<unsigned>(gpu_sms) ? gpu_tiles : static_cast<unsigned>(gpu_sms))"))
+    | Grid.persistentPairs tiles =>
+      Cuda.smCount(tiles, Cuda.line(1, "const unsigned gpu_pairs = static_cast<unsigned>(gpu_sms) / 2u;",
+        rest("dim3(2u * (gpu_tiles < gpu_pairs ? gpu_tiles : gpu_pairs))")))
   }
 
   def launcher (name: String)(kernelParams: List(Param))(bytes: Nat)(l: Launcher): String := {
@@ -462,6 +470,7 @@ namespace Cuda {
     | Grid.blocks x y => ""
     | Grid.persistent tiles => ""
     | Grid.pairs x y => "__cluster_dims__(2, 1, 1) "
+    | Grid.persistentPairs tiles => "__cluster_dims__(2, 1, 1) "
   })
 
   // As `kernel`, with `__launch_bounds__(n, 1)` when `bounds` is `n`: blocks of at most `n` threads, at least one of

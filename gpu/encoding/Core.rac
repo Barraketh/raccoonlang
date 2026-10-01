@@ -1456,6 +1456,24 @@ namespace Core {
   sealed inductive ChunkOwn (p: Lifetime)(bn: Nat) : Type { kind = lin, scope = p }
    | mk : ChunkOwn(p, bn)
 
+  // The loop of `forChunks` over the chunks of a 128×`bn` block from row `row0` and column `col0`.
+  def chunkLoop {k: Lifetime}{g: Group}{kd: Kind}{T: Lifetime}{S: Type { kind = kd, scope = T }}{Sf: Lifetime}
+      (key: Key)(e: Ctx(k, g))(bn: Nat)(row0: Expr)(col0: Expr)(state: S)
+      (body: { scope = Sf } (p: Lifetime) -> ChunkAt(p, bn) -> ChunkOwn(p, bn) -> Ctx(p, g) -> S -> Pair(Ctx(p, g), S))
+      : Pair(Ctx(k, g), S) := {
+    let gen := Core.check(Core.state(Key.key, e), Bool.and(Nat.blt(0, bn), Nat.isZero(Nat.mod(bn, 32))),
+      "epilogue: a tile's columns must be a positive multiple of 32")
+    let c := gen.next
+    scope p => {
+      let chunkCol := Expr.bin(BinOp.add, col0, Expr.bin(BinOp.mul, Expr.var(c), Expr.lit(32)))
+      let (inner, after) := body(p, ChunkAt.mk(p, bn, Expr.var(c), row0, chunkCol), ChunkOwn.mk(p, bn),
+        Core.resume(Key.key, p, g, Core.child(Core.fresh(gen))), state)
+      let done := Core.state(Key.key, inner)
+      let s := Stmt.forLoop(c, Expr.lit(0), Expr.lit(Nat.div(bn, 32)), Core.blockOf(done))
+      (Core.resume(Key.key, k, g, Core.after(gen, done, s)), after)
+    }
+  }
+
   // Runs `body` once per chunk of 32 columns of a tile it owns, in a loop generated once: the tile's authority becomes
   // each chunk's.
   def forChunks {k: Lifetime}{g: Group}{j: Lifetime}{bn: Nat}{kd: Kind}{T: Lifetime}{S: Type { kind = kd, scope = T }}{Sf: Lifetime}
@@ -1463,19 +1481,7 @@ namespace Core {
       (body: { scope = Sf } (p: Lifetime) -> ChunkAt(p, bn) -> ChunkOwn(p, bn) -> Ctx(p, g) -> S -> Pair(Ctx(p, g), S))
       : Pair(Ctx(k, g), S) := {
     match own returning Pair(Ctx(k, g), S) with
-    | TileOwn.mk => {
-      let gen := Core.check(Core.state(Key.key, e), Bool.and(Nat.blt(0, bn), Nat.isZero(Nat.mod(bn, 32))),
-        "epilogue: a tile's columns must be a positive multiple of 32")
-      let c := gen.next
-      scope p => {
-        let col0 := Expr.bin(BinOp.add, tile.col0.expr, Expr.bin(BinOp.mul, Expr.var(c), Expr.lit(32)))
-        let (inner, after) := body(p, ChunkAt.mk(p, bn, Expr.var(c), tile.row0.expr, col0), ChunkOwn.mk(p, bn),
-          Core.resume(Key.key, p, g, Core.child(Core.fresh(gen))), state)
-        let done := Core.state(Key.key, inner)
-        let s := Stmt.forLoop(c, Expr.lit(0), Expr.lit(Nat.div(bn, 32)), Core.blockOf(done))
-        (Core.resume(Key.key, k, g, Core.after(gen, done, s)), after)
-      }
-    }
+    | TileOwn.mk => Core.chunkLoop(Key.key, e, bn, tile.row0.expr, tile.col0.expr, state, body)
   }
 
   // A tensor map parameter over the f32 output C, which the kernel stores through in boxes of 32×32 elements with the
@@ -1655,14 +1661,15 @@ namespace Core {
 
   // ---- Persistent GEMM: the tile schedule --------------------------------------------------------------------------
 
-  // The 128×`bn` output tiles of a persistent GEMM, `tilesM` tile rows of `tiles` in all (the constants those names
-  // hold), in the order the kernel visits them: bands of `bandRows` tile rows (the builder's band height, or every tile
-  // row if there are fewer), a band's tiles column by column, `bandTiles` of them in each band but the last, which may
-  // have fewer rows. So tile index `t` is a bijection onto the tiles (`tileLoop`). CTA `b` visits tile indices b,
-  // b + gridDim.x, b + 2·gridDim.x, …, so no two CTAs visit one tile; and the CTAs that run at once visit a few bands'
-  // worth of rows of A and columns of B, which stay in L2.
+  // The `height`×`bn` output tiles of a persistent GEMM, `tilesM` tile rows of `tiles` in all (the constants those
+  // names hold), in the order the kernel visits them: bands of `bandRows` tile rows (the builder's band height, or every
+  // tile row if there are fewer), a band's tiles column by column, `bandTiles` of them in each band but the last, which
+  // may have fewer rows. So tile index `t` is a bijection onto the tiles (`tileLoop`). A visitor (a CTA, or a CTA pair)
+  // visits the tile indices from `start` in steps of `step`, where `start` is its index among `step` visitors (`blockIdx.x`
+  // of `gridDim.x` CTAs), so no two visitors visit one tile; and the visitors that run at once visit a few bands' worth
+  // of rows of A and columns of B, which stay in L2.
   sealed struct Sched (l: Lifetime)(bn: Nat) : Type { scope = l }
-   | mk (tiles: Nat)(tilesM: Nat)(bandRows: Nat)(bandTiles: Nat) : Sched(l, bn)
+   | mk (height: Nat)(start: Expr)(step: Expr)(tiles: Nat)(tilesM: Nat)(bandRows: Nat)(bandTiles: Nat) : Sched(l, bn)
 
   // Authority to write, once each, the tiles this CTA visits.
   sealed inductive SchedOwn (l: Lifetime)(bn: Nat) : Type { kind = lin, scope = l }
@@ -1671,7 +1678,7 @@ namespace Core {
   // `(a < b) ? a : b`.
   def minExpr (a: Expr)(b: Expr): Expr := Expr.select(Expr.bin(BinOp.lt, a, b), a, b)
 
-  // The loop over this CTA's tiles, generated once; `body` sees the iteration's tile. Tile index `t` lies in band
+  // The loop over the visitor's tiles, generated once; `body` sees the iteration's tile. Tile index `t` lies in band
   // `t / bandTiles`, whose first tile row is `first` and which has `rows` = min(bandRows, tilesM - first) > 0 tile
   // rows (t < tiles makes first < tilesM); its `i`th tile, `i` = t - band·bandTiles < rows·tilesN, is at tile row
   // first + i % rows and tile column i / rows. Within a band that is a bijection from [0, rows·tilesN) onto its rows ×
@@ -1687,14 +1694,13 @@ namespace Core {
     let rows := Core.minExpr(Expr.bin(BinOp.sub, Expr.var(sched.tilesM), first), Expr.var(sched.bandRows))
     let i := Expr.bin(BinOp.sub, Expr.var(t), Expr.bin(BinOp.mul, band, Expr.var(sched.bandTiles)))
     // Expressions rather than declarations, which a role that does not use the tile's origin would leave unused.
-    let row0 := Expr.bin(BinOp.mul, Expr.bin(BinOp.add, first, Expr.bin(BinOp.rem, i, rows)), Expr.lit(128))
+    let row0 := Expr.bin(BinOp.mul, Expr.bin(BinOp.add, first, Expr.bin(BinOp.rem, i, rows)), Expr.lit(sched.height))
     let col0 := Expr.bin(BinOp.mul, Expr.bin(BinOp.div, i, rows), Expr.lit(bn))
     scope m => {
       let tile := TileAt.mk(bn, Val.mk(m, Grain.uniform, DType.u32, row0, Option.none(Nat)), Val.mk(m, Grain.uniform, DType.u32, col0, Option.none(Nat)))
       let (inner, after) := body(m, tile, Core.resume(Key.key, m, g, Core.child(Core.fresh(gen))), state)
       let done := Core.state(Key.key, inner)
-      let s := Stmt.forStride(t, Expr.special(Builtin.blockX), Expr.var(sched.tiles), Expr.special(Builtin.gridX),
-        Core.blockOf(done))
+      let s := Stmt.forStride(t, sched.start, Expr.var(sched.tiles), sched.step, Core.blockOf(done))
       (Core.resume(Key.key, l, g, Core.after(gen, done, s)), after)
     }
   }
@@ -3123,6 +3129,26 @@ namespace Core {
         (m: Val(l, Grain.uniform, DType.u32))(n: Val(l, Grain.uniform, DType.u32))(k: Val(l, Grain.uniform, DType.u32))
         : TmaGemm(l, sa, sb)
 
+  // Declares a schedule's counts for tiles of `height` × `bn` and bands of `band` tile rows, which must be positive (else
+  // a generation error): `tilesN`, `tilesM`, `tiles = tilesM·tilesN`, `bandRows = min(tilesM, band)` and
+  // `bandTiles = bandRows·tilesN`, all below 2^32 by the launchers' extent checks. A visitor visits from tile index
+  // `start` in steps of `step`.
+  def schedule (k: Key)(l: Lifetime)(gen0: Gen)(height: Nat)(bn: Nat)(band: Nat)(start: Expr)(step: Expr): Pair(Gen, Sched(l, bn)) := {
+    let gen1 := Core.check(gen0, Nat.blt(0, band), "schedule: a band must have at least one tile row")
+    let tilesN := gen1.next
+    let tilesM := Nat.add(tilesN, 1)
+    let tiles := Nat.add(tilesN, 2)
+    let bandRows := Nat.add(tilesN, 3)
+    let bandTiles := Nat.add(tilesN, 4)
+    let counts := List.cons(Stmt.decl(DType.u32, tilesN, Core.paramCeilDiv("N", bn)),
+      List.cons(Stmt.decl(DType.u32, tilesM, Core.paramCeilDiv("M", height)),
+      List.cons(Stmt.decl(DType.u32, tiles, Expr.bin(BinOp.mul, Expr.var(tilesM), Expr.var(tilesN))),
+      List.cons(Stmt.decl(DType.u32, bandRows, Core.minExpr(Expr.var(tilesM), Expr.lit(band))),
+      List.cons(Stmt.decl(DType.u32, bandTiles, Expr.bin(BinOp.mul, Expr.var(bandRows), Expr.var(tilesN))), List.nil(Stmt))))))
+    let gen2 := Core.pushAll(Gen.mk(gen1.code, Nat.add(tilesN, 5), gen1.smem, gen1.barrier, gen1.errors, gen1.group, gen1.bounds), counts)
+    (gen2, Sched.mk(l, bn, height, start, step, tiles, tilesM, bandRows, bandTiles))
+  }
+
   // The GEMM of `tmaGemmKernel`, computed by one CTA per SM (at most one per tile) that loops over the 128×`bn` tiles
   // of C as `Sched` assigns them, in bands of `band` tile rows. The kernel comes with its host launcher; its remaining
   // contract is that A, B and C are distinct device arrays of M×K, N×K and M×N elements.
@@ -3135,21 +3161,9 @@ namespace Core {
     let n := Core.uniformParam(Key.key, l, DType.u32, "N")
     let k := Core.uniformParam(Key.key, l, DType.u32, "K")
     let gemm := TmaGemm.mk(TMap.mk(l, sa, "A_map"), TMap.mk(l, sb, "B_map"), CMap.mk(l, "C_map"), m, n, k)
-    let gen0 := Core.check(Core.state(Key.key, Core.start(Key.key, l, Group.cta(256), CtaGroup.one)), Nat.blt(0, band),
-      "schedule: a band must have at least one tile row")
-    let tilesN := gen0.next
-    let tilesM := Nat.add(tilesN, 1)
-    let tiles := Nat.add(tilesN, 2)
-    let bandRows := Nat.add(tilesN, 3)
-    let bandTiles := Nat.add(tilesN, 4)
-    let counts := List.cons(Stmt.decl(DType.u32, tilesN, Core.paramCeilDiv("N", bn)),
-      List.cons(Stmt.decl(DType.u32, tilesM, Core.paramCeilDiv("M", 128)),
-      List.cons(Stmt.decl(DType.u32, tiles, Expr.bin(BinOp.mul, Expr.var(tilesM), Expr.var(tilesN))),
-      List.cons(Stmt.decl(DType.u32, bandRows, Core.minExpr(Expr.var(tilesM), Expr.lit(band))),
-      List.cons(Stmt.decl(DType.u32, bandTiles, Expr.bin(BinOp.mul, Expr.var(bandRows), Expr.var(tilesN))), List.nil(Stmt))))))
-    let gen1 := Core.pushAll(Gen.mk(gen0.code, Nat.add(tilesN, 5), gen0.smem, gen0.barrier, gen0.errors, gen0.group, gen0.bounds), counts)
-    let e := Core.resume(Key.key, l, Group.cta(256), gen1)
-    let gen := Core.state(Key.key, body(l, e, gemm, Sched.mk(l, bn, tiles, tilesM, bandRows, bandTiles), SchedOwn.mk(l, bn), TmemPermit.mk(l)))
+    let (gen1, sched) := Core.schedule(Key.key, l, Core.state(Key.key, Core.start(Key.key, l, Group.cta(256), CtaGroup.one)), 128, bn, band,
+      Expr.special(Builtin.blockX), Expr.special(Builtin.gridX))
+    let gen := Core.state(Key.key, body(l, Core.resume(Key.key, l, Group.cta(256), gen1), gemm, sched, SchedOwn.mk(l, bn), TmemPermit.mk(l)))
     let grid := Grid.persistent(Expr.bin(BinOp.mul, Core.paramCeilDiv("M", 128), Core.paramCeilDiv("N", bn)))
     Core.finish(Key.key, name, Core.tmaGemmParams, Option.some(Core.tmaGemmLauncher(sa, sb, grid)),
       Core.check(gen, Core.gemmShapeOk(sa, sb), "kernel: boxes the ring or the tensor cores do not take"))
@@ -4043,8 +4057,8 @@ namespace Core {
   // one of B at its half of the tile's columns. Both are the core's, from the rank (`PairTile`), so a CTA loads only its
   // own half. Both copies complete on the leader's `full[s]` (`mapa`), which the leader first arms with both halves'
   // bytes; the peer's copies may complete there before the leader arms it, which a phase allows (A47).
-  def fillPair {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}{L: Lifetime}{S: Lifetime}{u: Grain}
-      (e: Ctx(n, Group.lane))(ring: PairRing(r, cfg))(s: Slot(r, m))(tile: PairTile(L))
+  def fillPair {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}{T: Lifetime}{L: Lifetime}{S: Lifetime}{u: Grain}
+      (e: Ctx(n, Group.lane))(ring: PairRing(r, cfg))(s: Slot(r, m))(tile: PairTile(T))
       (a: TMap(L, RingCfg.a(cfg)))(b: TMap(L, RingCfg.b(cfg)))(k0: Val(S, u, DType.u32))
       : Pair(Ctx(n, Group.lane), ProducerAt(r, m)) := {
     match s returning Pair(Ctx(n, Group.lane), ProducerAt(r, m)) with
@@ -4237,6 +4251,12 @@ namespace Core {
     }
   }
 
+  // This CTA's part of the pair tile of `width` columns at (`row0`, `col0`): its 128 rows from `row0 + 128·rank`, and
+  // B's `width/2` rows from `col0 + (width/2)·rank`.
+  def pairTile {L: Lifetime}(k: Key)(m: Lifetime)(pair: CtaPair(L))(row0: Expr)(col0: Expr)(width: Nat): PairTile(m) :=
+    PairTile.mk(m, Core.isLeader(pair), Expr.bin(BinOp.add, row0, Expr.bin(BinOp.mul, pair.rank, Expr.lit(128))), col0,
+      Expr.bin(BinOp.add, col0, Expr.bin(BinOp.mul, pair.rank, Expr.lit(Nat.div(width, 2)))), width)
+
   // What each CTA of a pair GEMM starts with: the operand maps, its part of the pair's tile, the output, and K.
   struct PairGemm (l: Lifetime)(sa: TmaSpec)(sb: TmaSpec) : Type { scope = l }
    | mk (a: TMap(l, sa))(b: TMap(l, sb))(tile: PairTile(l))(c: PairOut(l))(k: Val(l, Grain.uniform, DType.u32)) : PairGemm(l, sa, sb)
@@ -4266,13 +4286,94 @@ namespace Core {
       : Program := scope l => {
     let bh := sb.outer
     let (e, (pair, cluster)) := Core.pairStart(Key.key, l, 256)
-    let rows := Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.special(Builtin.blockY), Expr.lit(256)), Expr.bin(BinOp.mul, pair.rank, Expr.lit(128)))
-    let col0 := Expr.bin(BinOp.mul, cluster, Expr.lit(Nat.mul(2, bh)))
-    let tile := PairTile.mk(l, Core.isLeader(pair), rows, col0, Expr.bin(BinOp.add, col0, Expr.bin(BinOp.mul, pair.rank, Expr.lit(bh))), Nat.mul(2, bh))
+    let row0 := Expr.bin(BinOp.mul, Expr.special(Builtin.blockY), Expr.lit(256))
+    let tile := Core.pairTile(Key.key, l, pair, row0, Expr.bin(BinOp.mul, cluster, Expr.lit(Nat.mul(2, bh))), Nat.mul(2, bh))
     let launch := PairGemm.mk(TMap.mk(l, sa, "A_map"), TMap.mk(l, sb, "B_map"), tile, PairOut.mk(l, "C", Expr.param("M"), Expr.param("N")),
       Core.uniformParam(Key.key, l, DType.u32, "K"))
     let gen := Core.state(Key.key, body(l, e, launch, HalfOwn.mk(l), pair, TmemPermit.mk(l)))
     Core.pairFinish(Key.key, name, Core.pairGemmParams, Core.pairGemmLauncher(sa, sb),
+      Core.check(gen, Core.pairGemmShapeOk(sa, sb), "pair kernel: boxes the ring or the pair's tensor cores do not take"))
+  }
+
+  // ---- CTA pairs: the persistent GEMM (gpu/encoding/TWO_CTA.md §6, step 4) -------------------------------------------
+  //
+  // Each pair loops over the 256 × `w` tiles of C that `PairSched` gives it, and each CTA stores its own 128 rows of
+  // each tile by TMA from the pair's accumulator ring, in chunks of 32 columns through the staging buffers of the
+  // single-CTA epilogue (`withStaging`, `acquireStage`, `fenceStage`, `storeStage`, `finishStores`): the stores and
+  // their bulk async-groups are each CTA's own.
+
+  // The schedule of a persistent pair GEMM: `Sched`'s band order over the pair tiles, 256 × `w`, of which each pair
+  // visits the tile indices from its cluster's index, `%clusterid.x`, in steps of the cluster count, `%nclusterid.x`.
+  // Both are the same in both CTAs of a pair (A43), so both CTAs visit one tile sequence (M18). Only the pair builder
+  // makes one, with the kernel's pair, whose rank chooses each CTA's part of a tile.
+  sealed struct PairSched (l: Lifetime)(w: Nat) : Type { scope = l }
+   | mk (sched: Sched(l, w))(pair: CtaPair(l)) : PairSched(l, w)
+
+  // Authority to write, once each, this CTA's halves of the tiles its pair visits.
+  sealed inductive PairSchedOwn (l: Lifetime)(w: Nat) : Type { kind = lin, scope = l }
+   | mk : PairSchedOwn(l, w)
+
+  // Runs `body` once per tile this CTA's pair visits, with this CTA's part of it.
+  def forPairTiles {l: Lifetime}{L: Lifetime}{g: Group}{w: Nat}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sf: Lifetime}
+      (e: Ctx(l, g))(sched: PairSched(L, w))(fixed: Fixed(S))(state: S)
+      (body: { scope = Sf } (m: Lifetime) -> PairTile(m) -> Ctx(m, g) -> S -> Pair(Ctx(m, g), S))
+      : Pair(Ctx(l, g), S) :=
+    Core.tileLoop(e, sched.sched, fixed, state, fun (m: Lifetime)(t: TileAt(m, w))(e: Ctx(m, g))(st: S): Pair(Ctx(m, g), S) =>
+      body(m, Core.pairTile(Key.key, m, sched.pair, t.row0.expr, t.col0.expr, w), e, st))
+
+  // Runs `body` once per tile this CTA's pair visits, with this CTA's part of it and the authority to write that part:
+  // the one loop that writes the output.
+  def forOwnedPairTiles {l: Lifetime}{L: Lifetime}{g: Group}{w: Nat}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sf: Lifetime}
+      (e: Ctx(l, g))(sched: PairSched(L, w))(own: PairSchedOwn(L, w))(fixed: Fixed(S))(state: S)
+      (body: { scope = Sf } (m: Lifetime) -> PairTile(m) -> HalfOwn(m) -> Ctx(m, g) -> S -> Pair(Ctx(m, g), S))
+      : Pair(Ctx(l, g), S) := {
+    match own returning Pair(Ctx(l, g), S) with
+    | PairSchedOwn.mk => Core.forPairTiles(e, sched, fixed, state,
+        fun (m: Lifetime)(t: PairTile(m))(e: Ctx(m, g))(st: S): Pair(Ctx(m, g), S) => body(m, t, HalfOwn.mk(m), e, st))
+  }
+
+  // Runs `body` once per chunk of 32 columns of this CTA's half of a pair tile it owns, in a loop generated once: the
+  // half's authority becomes each chunk's. A chunk's rows are this CTA's 128 of the tile (`PairTile`), and its columns
+  // the tile's, as many as a buffer of `accs` has, which must be the tile's width (else a generation error): so a CTA
+  // stores its own rows of its own tile only.
+  def forHalfChunks {k: Lifetime}{g: Group}{j: Lifetime}{q: Lifetime}{n: Nat}{kd: Kind}{T: Lifetime}{S: Type { kind = kd, scope = T }}{Sf: Lifetime}
+      (e: Ctx(k, g))(accs: PairAccRing(q, n))(tile: PairTile(j))(own: HalfOwn(j))(fixed: Fixed(S))(state: S)
+      (body: { scope = Sf } (p: Lifetime) -> ChunkAt(p, n) -> ChunkOwn(p, n) -> Ctx(p, g) -> S -> Pair(Ctx(p, g), S))
+      : Pair(Ctx(k, g), S) := {
+    match own returning Pair(Ctx(k, g), S) with
+    | HalfOwn.mk => {
+      let e := Core.resume(Key.key, k, g, Core.check(Core.state(Key.key, e), Nat.beq(n, tile.width),
+        "forHalfChunks: a buffer's columns must be the pair's tile's"))
+      Core.chunkLoop(Key.key, e, n, tile.rows, tile.col0, state, body)
+    }
+  }
+
+  // Writes a chunk of this CTA's rows of the current buffer, whose results are visible, into the free staging buffer, as
+  // `stageAccFull` does.
+  def stagePairAcc {k: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}{m: Lifetime}{s: Lifetime}{j: Lifetime}{p: Lifetime}
+      (e: Ctx(k, Group.warps(f, 4)))(accs: PairAccRing(q, n))(full: AccFull(q, m, f))(stg: Staging(s))(free: StageFree(s, j, f))
+      (chunk: ChunkAt(p, n)): Pair(Ctx(k, Group.warps(f, 4)), Pair(AccFull(q, m, f), StageWritten(s, j, f))) :=
+    Core.stageAccFull(e, accs.ring, full, stg, free, chunk)
+
+  // C (M×N, f32, row-major) = A (M×K) · Bᵀ as `pairGemmKernel` computes it, by CTA pairs that each loop over 256 ×
+  // `2·bh` tiles of C, bh = `sb.outer`, as `PairSched` gives them, in bands of `band` tile rows: one pair per two SMs, and
+  // at most one per tile. Each CTA stores its 128 rows of a tile through the tensor map `C_map` (`storeStage`). The
+  // kernel comes with its host launcher (`tmaGemmLauncher`, with a persistent grid of pairs); its remaining contract is
+  // that A, B and C are distinct device arrays of M×K, N×K and M×N elements.
+  def pairGemmPersistentKernel (name: String)(sa: TmaSpec)(sb: TmaSpec)(band: Nat)
+      (body: (l: Lifetime) -> Ctx(l, Group.cta(256)) -> TmaGemm(l, sa, sb) -> PairSched(l, Nat.mul(2, TmaSpec.outer(sb)))
+        -> PairSchedOwn(l, Nat.mul(2, TmaSpec.outer(sb))) -> CtaPair(l) -> TmemPermit(l) -> Ctx(l, Group.cta(256)))
+      : Program := scope l => {
+    let w := Nat.mul(2, sb.outer)
+    let (e, (pair, cluster)) := Core.pairStart(Key.key, l, 256)
+    let (e, clusters) := Core.readSpecial(Key.key, e, "nclusterid.x")
+    let gemm := TmaGemm.mk(TMap.mk(l, sa, "A_map"), TMap.mk(l, sb, "B_map"), CMap.mk(l, "C_map"), Core.uniformParam(Key.key, l, DType.u32, "M"),
+      Core.uniformParam(Key.key, l, DType.u32, "N"), Core.uniformParam(Key.key, l, DType.u32, "K"))
+    let (gen, sched) := Core.schedule(Key.key, l, Core.state(Key.key, e), 256, w, band, cluster, clusters.expr)
+    let gen := Core.state(Key.key, body(l, Core.resume(Key.key, l, Group.cta(256), gen), gemm, PairSched.mk(sched, pair),
+      PairSchedOwn.mk(l, w), pair, TmemPermit.mk(l)))
+    let grid := Grid.persistentPairs(Expr.bin(BinOp.mul, Core.paramCeilDiv("M", 256), Core.paramCeilDiv("N", w)))
+    Core.pairFinish(Key.key, name, Core.tmaGemmParams, Core.tmaGemmLauncher(sa, sb, grid),
       Core.check(gen, Core.pairGemmShapeOk(sa, sb), "pair kernel: boxes the ring or the pair's tensor cores do not take"))
   }
 }

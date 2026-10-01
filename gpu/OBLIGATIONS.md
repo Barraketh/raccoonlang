@@ -51,8 +51,8 @@ A19–A33 are the attention core's (`gpu/encoding/Core.rac`, `ATTENTION.md` §4.
 score buffer's (A3a, `encoding/A3.md`); none is exercised yet, since no attention kernel has run on hardware. A34–A38 are the TMA-store epilogue's, numbered
 A19–A23 before the attention core's assumptions took those numbers. A40–A42 are paged decode's
 (`encoding/P2.md`), and A43–A56 the CTA pair's (`encoding/TWO_CTA.md`, with the facts and citations in
-`encoding/TWO_CTA_FACTS.md`), and A57–A59 the correction warpgroup's (A3b, `encoding/A3B.md`), none
-exercised.
+`encoding/TWO_CTA_FACTS.md`), A57–A59 the correction warpgroup's (A3b, `encoding/A3B.md`), and A60 the persistent
+pair GEMM's (`encoding/TWO_CTA.md` §6 step 4), none exercised.
 
 | # | Assumption | Source | Confidence |
 |---|---|---|---|
@@ -115,6 +115,7 @@ exercised.
 | A57 | (A3b) Chained completion. A `tcgen05` operation whose completion thread A observes through an mbarrier wait and `tcgen05.fence::after_thread_sync`, followed by A's arrive (release) on a second mbarrier, then B's wait (acquire) on that phase and B's `tcgen05.fence::after_thread_sync`, is complete before B's later `tcgen05` operations. The correction warpgroup (B) rescales Ô after the softmax warpgroup (A) observed the product before (S full) and sent α. | PTX ISA 9.4 §9.7.18.6.3 (the fences compose with mbarrier operations "to establish an ordering between the tcgen05 operations across threads"), §9.7.18.11.1; FA4 relies on it without the fence (`flash_fwd_sm100.py` 2700: "by the time softmax has signaled the correction warps, S_i must have been done, so O_i-1 must have been done as well") | medium-high; to be probed |
 | A58 | (A3b) `max.f32`, `add.rm.f32`, `sub.rn.f32`, `fma.rn.f32`, `shl.b32` and `add.s32` compute as PTX specifies, IEEE and without flushing subnormals (no `.ftz`), so `ex2emu`'s error is the one measured on the host by emulating them (`encoding/NOTES.md` §"A3b"): 2⁻¹³·⁴⁷ relative for x ∈ [−126, 8], 2⁻¹²⁷ absolute for x ∈ [−127, −126). | PTX ISA 9.4 §9.7.3.3 (`add`), §9.7.3.4 (`sub`), §9.7.3.6 (`fma`), §9.7.3.12 (`max`), §9.7.9.8 (`shl`), §9.7.1.1 (`add.s32`) | high |
 | A59 | (A3b) In a kernel compiled with `__launch_bounds__(512, 1)` whose warpgroups run `setmaxnreg`, every warp enters with 128 registers per thread (the bounds cap a thread at 128 and ask one resident block per SM; that the count is then exactly 128 is the claim), and `ptxas` allocates the code a `setmaxnreg` dominates within its count (each role's, since it is the first instruction of the role's branch), spilling rather than exceeding it. | PTX §9.7.21.5 ("the kernel has been launched with a valid value of maximum number of per-thread registers"); CUTLASS's and FA4's warp-specialized kernels | medium; `-Xptxas -v` on hardware |
+| A60 | (pair, persistent) `%nclusterid.x` is the number of clusters along x of the launch, the same in every thread of the grid, and the clusters' `%clusterid.x` are 0 to `%nclusterid.x − 1`, one cluster each. With the launcher's grid of 2P × 1 CTAs and `__cluster_dims__(2, 1, 1)` (A43), there are P clusters, so the pairs' tile sequences (from `%clusterid.x` in steps of `%nclusterid.x`) partition the tile indices. | PTX §10.12 (`%clusterid`), §10.13 (`%nclusterid`) | high |
 
 ## 4. Structural invariants of emitted code
 
@@ -163,8 +164,10 @@ the invariants and protocols. Each was found necessary; several were found by re
   indices, loop and tile indices, a shared read at a uniform index of a tile that no thread may write until a
   barrier (M4, M7), a read at a uniform index of a kernel input (the decode prologue's length, `encoding/P2.md`
   §3), or a full-warp `shfl.sync` broadcast from one lane (A42) in a CTA of one warp (the append's claim,
-  `encoding/P2.md` §2). An input is read-only for the whole launch: no thread of it writes one, and the launch contract of every
-  builder that reads one says that nothing else does either, since a concurrent writer of an input is a race on it.
+  `encoding/P2.md` §2), or a cluster index (`%clusterid.x` and `%nclusterid.x`, read by the pair builders: the same
+  in every thread of a CTA, and of both CTAs of a pair, A43 and A60). An input is read-only for the whole launch: no
+  thread of it writes one, and the launch contract of every builder that reads one says that nothing else does either,
+  since a concurrent writer of an input is a race on it.
   A value is `warp` (the same in every lane of a warp) only if it comes from a warp vote (`voteAny`) or from `warp`
   and `uniform` values.
 - **M11, deadlock is not a race.** Rings are FIFOs whose producer tails drain every release. Roles that disagree on
@@ -228,7 +231,9 @@ none of them (`ATTENTION.md` §4.1), and closes its protocols on `…Done` token
   choose the leader's arm and each CTA's half, and the client's other values are the launch's parameters, literals and
   loop indices, the same in both CTAs, or thread-grain values, which no loop count or uniform branch takes. A
   disagreement, as from a mistaken count, deadlocks: the extra fills wait in their producer's tail for releases that never come, and that CTA
-  never reaches the close's cluster barrier. No side can get a phase ahead, since each CTA's `empty[s]` receives only
+  never reaches the close's cluster barrier. A persistent pair kernel's roles loop over its tiles (`forPairTiles`), each
+  from `%clusterid.x` in steps of `%nclusterid.x` up to the tile count, all three the same in both CTAs (A60, M10): so
+  both CTAs visit one tile sequence, and every role the same number of tiles. No side can get a phase ahead, since each CTA's `empty[s]` receives only
   the leader's commits for that stage, and the leader's `full[s]` both CTAs' bytes for the same round.
 - **M19, pair resources** (pair). A pair opener (`withPairTmem`, `withPairRing`, `withPairAccRing`) takes the
   kernel's own context, `Ctx(l, …)` with the kernel's `CtaPair(l)`, so it runs in the kernel's top-level spine and
@@ -341,7 +346,7 @@ claim. Types are abbreviated; "code" is what it emits into its `Ctx`.
 | Operation | Requires | Emits | Establishes | Relies on |
 |---|---|---|---|---|
 | `tmaGemmPersistentKernel` | a band height G > 0 (else `#error`) | `tilesM`, `tilesN`, `tiles = tilesM·tilesN`, `bandRows = min(tilesM, G)`, `bandTiles = bandRows·tilesN`, all below 2^32 by the launcher's extent checks | `Sched`, `SchedOwn` | A18 |
-| `forTiles`, `forOwnedTiles` | `Fixed(S)`; `SchedOwn` for the owned loop | `for (t = blockIdx.x; t < tiles; t += gridDim.x)`, and in the body the tile's origin by the band order (`DESIGN.md` §6) | per iteration a `TileAt`, and for the owned loop a `TileOwn`. **Obligation:** the band order is a bijection from `[0, tiles)` onto the tiles for every M, N and G > 0 (the last band may have fewer rows), so CTAs visit disjoint tiles, and the one owning loop visits each tile once. Argued in `Gpu.tileLoop`; checked exhaustively on the host for grids up to 48×48 tiles and G ≤ 20, and on the GPU by coverage (`harness/gemm_test.cu`) | M5, S5, A18 |
+| `forTiles`, `forOwnedTiles` | `Fixed(S)`; `SchedOwn` for the owned loop | `for (t = blockIdx.x; t < tiles; t += gridDim.x)` (the schedule's start and step), and in the body the tile's origin by the band order (`DESIGN.md` §6) | per iteration a `TileAt`, and for the owned loop a `TileOwn`. **Obligation:** the band order is a bijection from `[0, tiles)` onto the tiles for every M, N and G > 0 (the last band may have fewer rows), so CTAs visit disjoint tiles, and the one owning loop visits each tile once. Argued in `Gpu.tileLoop`; checked exhaustively on the host for grids up to 48×48 tiles and G ≤ 20, and on the GPU by coverage (`harness/gemm_test.cu`) | M5, S5, A18 |
 | `withAccRing` | `Acc(empty)`, bufs·n ≤ cols | full (count 1) and empty (count 128) barriers per buffer, thread 0 then arriving with count 128 on each empty barrier, completing its phase 0; `inval` at close | producer and consumer sides; closes on both `…Done`, handing back `Acc(empty)` | A6–A8 |
 | `takeAccProducer` / `takeAccConsumer` | an elected lane / an aligned warpgroup | the side's registers (0/0 and 0/0) | the side, bound to that thread or warpgroup | M6 |
 | `acquireAcc` | producer side | wait `empty[buf]`, `after_thread_sync` | `AccFree`: the epilogue's loads of the buffer are done | A6, A13 |
@@ -455,6 +460,12 @@ operations take the `PairRing` or `PairAccRing`, which only the pair openers mak
 takes. Where a pair operation differs from a single-CTA one only in what the CTA group prints, it runs the single-CTA
 one: in a pair kernel every wait is `try_wait.parity.acquire.cluster` and every commit multicast to both CTAs.
 
+The persistent pair GEMM's epilogue runs the TMA-store operations of §6.7 (`withStaging`, `takeStore`, `acquireStage`,
+`fenceStage`, `storeStage`, `finishStores`) unchanged: a CTA's staging buffers, stores and bulk async-groups are its
+own (`.shared::cta`), so they need nothing of the peer, and `withStaging` emits no barrier and does not refuse in a pair
+kernel. The warpgroup releases a tile's accumulator after its chunk loop (`releasePairAcc`): every chunk's loads have
+completed (`wait::ld` in `stageAccFull`), and the stores still in flight read the staging buffers only.
+
 | Operation | Requires | Emits | Establishes | Relies on |
 |---|---|---|---|---|
 | `pairGemmKernel` | a body; boxes pass `pairGemmShapeOk` (else a generation error) | `__cluster_dims__(2, 1, 1)`; the CTA group `two`; `%cluster_ctarank` and `%clusterid.x` read once; the kernel (parameters `A_map`, `B_map`, `C`, `M`, `N`, `K`) and its launcher (M·N < 2³², M, N, K < 2³¹, the two map encodings, grid `pairs(ceil(N / 2bh), ceil(M / 256))` of 256 threads, at least `pairShared` bytes of shared memory) | `PairGemm` (the maps, the `PairTile`: rows `256·blockIdx.y + 128·rank`, B's rows `col0 + bh·rank`, `col0 = 2bh·clusterid.x`, width 2bh; `PairOut`, K), `HalfOwn`, `CtaPair`, `TmemPermit`; a `Program` | A17, A43, A56, I6 |
@@ -475,6 +486,10 @@ one: in a pair kernel every wait is `try_wait.parity.acquire.cluster` and every 
 | `takePairAccConsumer`, `awaitPairAcc` | an aligned warpgroup / the reading side | the side's registers / wait this CTA's `full[b]`, `after_thread_sync` | `AccConsumerAt` / `AccFull`: this CTA's rows of the buffer visible | A49, A52 |
 | `storeHalf` | `AccFull`, the `PairTile`, `PairOut`, `HalfOwn`; n the tile's width and a multiple of 8 (else a generation error) | `__syncwarp`; the row `rows + 32·(warp mod 4) + lane` and `row < M`; a loop over n/8 chunks: 8 declarations, `__syncwarp`, `tcgen05.ld.32x32b.x8`, `wait::ld`, 8 stores guarded by `row < M` and `col < N` | this CTA's half of the tile written once (`HalfOwn` consumed); `AccFull` kept | A14, A54, M12, S5 |
 | `releasePairAcc` | `AccFull` | `before_thread_sync`; `mapa` of `empty[b]` to the leader's; one remote arrive per thread; advance | the buffer is free to the issuer once both warpgroups (256) arrived | A46, A52 |
+| `pairGemmPersistentKernel` | a body; a band height G > 0, boxes passing `pairGemmShapeOk` (else a generation error) | `__cluster_dims__(2, 1, 1)`; the CTA group `two`; `%cluster_ctarank`, `%clusterid.x` and `%nclusterid.x` read once; the schedule's counts for tiles of 256 × 2bh (`tilesN`, `tilesM`, `tiles`, `bandRows`, `bandTiles`, as `tmaGemmPersistentKernel`'s); the kernel (parameters `A_map`, `B_map`, `C_map`, `M`, `N`, `K`) and its launcher (`tmaGemmLauncher`'s requirements and three maps, so N mod 4 = 0; grid `2·min(SMs/2, tiles)` × 1 of 256 threads; at least `pairShared` bytes of shared memory) | `TmaGemm`, `PairSched` (the schedule from `%clusterid.x` in steps of `%nclusterid.x`, and the kernel's pair), `PairSchedOwn`, `CtaPair`, `TmemPermit`; a `Program` | A17, A43, A56, A60, I6 |
+| `forPairTiles`, `forOwnedPairTiles` | a `PairSched`, `Fixed(S)`; a `PairSchedOwn` for the owned loop | `for (t = clusterid.x; t < tiles; t += nclusterid.x)`, and in the body the tile's origin by the band order | per iteration this CTA's `PairTile` of the tile (rows `row0 + 128·rank`, B's rows `col0 + bh·rank`, width 2bh), and for the owned loop a `HalfOwn`. The band order is §6.8's bijection, and the pairs' sequences partition the tile indices (A60), so the one owning loop visits each tile once per CTA, and the two CTAs of a pair the same tiles | M5, M18, S5, A60 |
+| `forHalfChunks` | a `PairAccRing(q, n)`, a `PairTile` and its `HalfOwn`; n the tile's width (else a generation error); `Fixed(S)` | `for (c = 0; c < n/32; ++c)` | per iteration the chunk's `ChunkAt(p, n)` (rows from the tile's `rows`, this CTA's; columns `col0 + 32c` on) and a linear `ChunkOwn`: each chunk of this CTA's half of the tile once | M5, M12, S5 |
+| `stagePairAcc` | as `stageAccFull`, of a `PairAccRing` | as `stageAccFull`, from this CTA's lanes of the current buffer | as `stageAccFull` | A13, A14, A54 |
 
 ### 6.13 The correction warpgroup
 
@@ -593,6 +608,12 @@ arguments. The audit as of this document:
   `Stmt`s, `Expr`s, `String`s, `Nat`s, `Bool`s and launchers, which reach a kernel only through the Key; `emitIn`,
   `readSpecial`, `toLeader`, `ringAt`, `accRingAt`, `pairStart`, `pairFinish`, `tmemScope`, `closePair` and
   `mmaPairStage` need it.
+  The persistent pair GEMM adds the sealed `PairSched` and the linear `PairSchedOwn`, which only
+  `pairGemmPersistentKernel` makes. `forPairTiles` mints a `PairTile` per tile from the sealed schedule and its pair,
+  `forOwnedPairTiles` consumes the `PairSchedOwn` and mints a `HalfOwn` per tile, and `forHalfChunks` consumes a
+  `HalfOwn` and mints a `ChunkOwn` per chunk, with the rows the `PairTile`'s; `stagePairAcc` is `stageAccFull` on a
+  pair accumulator ring. `schedule`, `pairTile` and `chunkLoop` need the Key; `Cuda.smCount` and the grid
+  `Grid.persistentPairs` are the printer's.
 - **The correction warpgroup** (A3b, §6.13). `withCorrectedBuffer` mints one `ScoreBuffer(x, correction)` and its
   three sides; `Rescaler` is unsealed data, but a `ScoreBuffer` is sealed, so a buffer's rescaler is its opener's.
   `publishAlpha`, `takeCorrection`, `zeroQuadrants`, `awaitAlpha`, `rescaleQuadrant` and `publishRescaled` each consume

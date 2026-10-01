@@ -7,7 +7,8 @@ checks, the mutants of `ATTENTION.md` §5 (`rejected/`), the host harnesses and 
 query tiles in ping-pong (`A3.md`), to the same point; then P2, paged decode with append (`P2.md`: three kernels,
 their harness against a host mock, mutants, A40–A42, M17, §6.11); then CTA pairs (`TWO_CTA.md`, steps 1 and 2: the
 core and a pair TinyGEMM), to the same point as A3a; then A3b, a correction warpgroup (`A3B.md`), to A3a's point (A57–A59, M21, M22,
-§6.13). Nothing has run on a GPU; `NOTES.md` records what was
+§6.13); then the persistent pair GEMM (`TWO_CTA.md` step 4), to the same point, with a run script for its first
+hardware session. Nothing has run on a GPU; `NOTES.md` records what was
 awkward, and what the review removed. A
 fresh copy of the typed core (`gpu/Gpu.rac`) in which the library grows the features it lacks, starting with forward
 attention, then paged attention. `gpu/Gpu.rac` and its GEMM examples stay as they are, so the kernels that ran on a
@@ -94,6 +95,13 @@ core's correction-warpgroup section and `correctedAttentionKernel`, `Layout.role
 `examples/attention_a3b.rac`, `harness/attention_a3b_test.cu` (run against a host mock that emulates the exponential's
 instructions), `rejected/attention_a3b_mutants.py`, and `OBLIGATIONS.md` (A57–A59, M21, M22, §6.13).
 
+**The persistent pair GEMM** (`TWO_CTA.md` §6 step 4; `gpu/REFERENCE_CUTLASS.md` §7 items 1–4). CUTLASS's 2-SM
+256×256×64 configuration: one pair per two SMs loops over the 256×256 tiles of C in bands, a six-stage pair ring, an
+accumulator ring of 2 × 256 columns across tiles, and each CTA storing its own 128 rows of a tile by TMA through two
+staging buffers per warp, the accumulator released before the stores complete. Built to the same point as A3a:
+`pairGemmPersistentKernel`, `examples/gemm_pair.rac`, `harness/gemm_pair_test.cu` (run against a host mock) and
+`harness/run_gemm_pair.sh`, `rejected/gemm_pair_mutants.py`, and `OBLIGATIONS.md` (A60, M10, M18, §6.12).
+
 **Paged attention.** A1 over a paged KV cache:
 - K and V are `[pages · 128, H · 128]` (FA4's layout, since P2): a page holds 128 consecutive positions of every
   head;
@@ -110,12 +118,15 @@ blocks, with the query heads of one KV head packed into its query tile; and a co
 **Hardware.** Nothing runs on a GPU until a kernel is expected to be competitive with CUTLASS or FA4 (the user's rule,
 2026-10-01). A1 by design is not (`ATTENTION.md` §2.1), nor are A2 and paged attention, built on its schedule, so they
 are checked by generation, the checkers, the mutants and a C++ compile against `gpu/stub/`; the harnesses have run
-against a host mock of the runtime (`NOTES.md`).
+against a host mock of the runtime (`NOTES.md`). The persistent pair GEMM is the first kernel expected to be
+competitive: `harness/run_gemm_pair.sh` checks and times it on a box, next to CUTLASS's like-for-like kernels
+(`gpu/REFERENCE_CUTLASS.md` §8.8).
 
 When a hardware session happens, `harness/hw.sh` runs every harness and the probes in it:
 - `hw.sh gen DIR` generates every example's CUDA here into a bundle;
 - `sh hw.sh run`, on the box, builds each harness against its kernels with `nvcc`, runs it under a time limit, then
-  runs the probes and prints a summary.
+  runs the probes and prints a summary;
+- `sh run_gemm_pair.sh run`, on the box, checks the pair GEMM, then times it.
 The box needs no JVM.
 
 ## Layout
@@ -130,6 +141,7 @@ The box needs no JVM.
   `attention_a3b.rac` its correction role.
 - `checks/`: unit tests of emitted code.
 - `rejected/`: programs and mutant tables the core must refuse.
-- `harness/`: host test programs for hardware runs, and `hw.sh`, which runs them all in one session.
+- `harness/`: host test programs for hardware runs, `hw.sh`, which runs them all in one session, and
+  `run_gemm_pair.sh`, the pair GEMM's check and timing.
 
 `gpu/check.sh` covers this directory like the rest.

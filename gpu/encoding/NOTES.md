@@ -543,3 +543,53 @@ Observations from building `A3B.md`'s A3b (`Core.rac`'s correction-warpgroup sec
     [−0.5, 0.5), and the cubic's coefficients reversed (192). Two variants that are not bugs passed every check: the
     maximum moved on every block (no lag), and no column emulated. After the review fixes (one slot, the registers back
     to 128, the corrected `add.rm`) the run was repeated, and every check passed again.
+
+## The persistent pair GEMM
+
+Observations from building `TWO_CTA.md`'s step 4 for the GEMM (`Core.rac`'s section "CTA pairs: the persistent GEMM",
+`examples/gemm_pair.rac`, `harness/gemm_pair_test.cu`, `harness/run_gemm_pair.sh`, `rejected/gemm_pair_mutants.py`).
+
+1. **Little new code.** The pair's families were already indexed by a lifetime, so a tile loop's `PairTile(m)` and
+   `HalfOwn(m)` needed no new family; only `fillPair` had to let the tile's lifetime differ from the maps'. The
+   single-CTA schedule became generic in its tile height, first index and step (`Sched`, `schedule`), and both
+   persistent builders share it; `forChunks` and `forHalfChunks` share their loop (`chunkLoop`). Every other example
+   generates byte-identical code. What is new: `PairSched`, its two loops, `forHalfChunks`, `stagePairAcc` and the
+   builder, 82 lines.
+2. **An implicit is not forced by a callback's binder.** `forHalfChunks` first took the chunks' width implicitly, from
+   its body's `ChunkAt(p, n)`; the checker refuses ("cannot be implicit: it is not forced by the type of any later
+   explicit parameter"), as A3b's `withRegs` found. So it takes the accumulator ring, whose type carries the width,
+   and checks it against the tile's at generation.
+3. **The release cannot sit in the last chunk.** The accumulator should go back to the leader right after the tile's
+   last tensor-memory load. The chunk loop is generated once, so code for the last iteration only would need the loop's
+   state to change type in it, or a peeled last chunk (one more copy of the chunk's code). The release follows the
+   loop instead: after the last chunk's shared-memory writes and its store's issue, before any store completes. Not
+   measured; the chunk's writes are a small part of a tile's mainloop.
+4. **A grid constructor costs five files.** `Grid.persistentPairs` needed a case in `Cuda.gridDims`,
+   `Cuda.clusterDims`, `Check.gridExprs`, `Spec.GridExpr` and `proofs/Fold.rac`'s `gridMem`, as `Grid.pairs` did
+   (§"CTA pairs" 4). A grid that were a launch shape (CTAs or pairs) times an extent (fixed or persistent) would take
+   one.
+5. **Stores per warp.** The epilogue is the single-CTA one, whose staging buffers are per warp: a 128×32 subtile is
+   four 32×32 TMA stores, each warp's lane 0 committing and waiting for its own. CUTLASS stores one 128×32 box per
+   subtile after a named barrier of the warpgroup. Which is faster is a hardware question.
+6. **Two planned mutants cannot be written.** A tile sequence that differs between the CTAs needs a value
+   that differs between them, and the client has none (M18); a staging buffer written before its store finished
+   reading it needs a `StageFree` that no wait made. Their mutants try the nearest thing: the single-CTA tile loop
+   (`single_cta_schedule`, refused since the pair's schedule is a `PairSched`) and a second chunk under one wait
+   (`stage_twice_per_acquire`, a reused linear token). An accumulator released before its loads is a reused
+   `AccFull` (`release_before_loads`).
+7. **The grid trusts residency.** `2·min(SMs/2, tiles)` CTAs, as FA4 launches, assumes every pair of
+   SMs holds a cluster. If fewer clusters fit at once, the rest run their whole tile sequences after the others. The
+   launcher does not ask `cudaOccupancyMaxActiveClusters`; the first hardware run's time will tell.
+8. **Size and time.** The generated kernel is 400 lines with its launcher (332 without), and 230,496 bytes of shared
+   memory. Checking and generating the example takes 1.6 CPU s; the mutant table about 10 s of wall time.
+9. **The harness ran against a mock.** `gemm_pair_test.cu` was linked against a host mock of the runtime and driver
+   (not in the repository), the pair TinyGEMM's extended: it checks the launch (grid `2·min(SMs/2, tiles)` × 1 of 256
+   threads, the requested shared memory, the C map's f32 32×32 boxes) and emulates each pair's tile sequence from its
+   cluster index in steps of the cluster count, in the band order, each CTA's loads and its stores in 32×32 boxes
+   clipped to the matrix, and aborts on any element written twice. Every check passed: 14 sizes three times each at
+   148 SMs (74 pairs: from 1 tile to 3 or 4 tiles a pair), again at 8 SMs (4 pairs, up to 64 tiles a pair), 7
+   refusals, and the timing mode on small sizes. Broken emulations were caught: the peer loading the leader's rows of
+   A (12 of 14 sizes failed), the CTAs swapping their halves of B (14), stores not clipped to N, every pair starting at
+   tile 0, and a step of one tile (each a double write), the last band taken as full (the one size whose last band is
+   shorter), one K slice only (8, every size with K > 64), and the peer storing nothing (12). The mock checks the
+   harness, the reference and the launcher, not the kernel.

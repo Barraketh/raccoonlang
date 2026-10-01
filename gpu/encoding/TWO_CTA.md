@@ -2,7 +2,9 @@
 
 Status: steps 1 and 2 of §6 built (2026-10-01): the core's pair sections in `Core.rac`, `examples/tinygemm_pair.rac`,
 `harness/tinygemm_pair_test.cu` (run against a host mock), `rejected/tinygemm_pair_mutants.py`, and `OBLIGATIONS.md`
-(A43–A56, M18–M20, §6.12). Nothing has run on a GPU. §8 says what building changed. The facts are in
+(A43–A56, M18–M20, §6.12). Step 4's GEMM built (2026-10-01): the persistent pair GEMM, `examples/gemm_pair.rac`, with
+its harness (run against a host mock), its run script and mutants, and `OBLIGATIONS.md` (A60, M10, M18, §6.12).
+Nothing has run on a GPU. §8 says what building steps 1 and 2 changed, §9 how step 4 is built. The facts are in
 `gpu/encoding/TWO_CTA_FACTS.md`: FA4 at `616b0e8`, CUTLASS at `0b55a2f` and PTX 9.4, each with citations. "Facts §n"
 below refers to that note.
 
@@ -227,6 +229,11 @@ The `MODELS.md` changes:
 4. **For competitiveness, separately:** the TMA-store epilogue and a persistent schedule
    (`gpu/REFERENCE_CUTLASS.md` §7, items 1 and 7; `gpu/ATTENTION.md` §6). Without them neither kernel reaches
    CUTLASS's or FA4's time, whatever the MMA.
+   - **The GEMM** (built, §9): `examples/gemm_pair.rac`, REFERENCE_CUTLASS §7 items 1–4 together, CUTLASS's 2-SM
+     256×256×64 configuration with a static persistent schedule. It comes with `harness/gemm_pair_test.cu` (run
+     against a host mock), `harness/run_gemm_pair.sh` for the hardware session (REFERENCE_CUTLASS §8.8), and
+     `rejected/gemm_pair_mutants.py`.
+   - **Attention:** not built; it waits for step 3.
 5. **Hardware probes on the first session:**
    - the cross-CTA async-proxy ordering;
    - the operand split;
@@ -269,3 +276,69 @@ Against the design as first written:
 - `rank` is not exported: a rank-dependent trip count of the client's would deadlock the pair (review).
 - A pair kernel asks for at least `pairShared` bytes of shared memory, one CTA per SM (review).
 - `PairTile` records the tile's width, which `storeHalf` requires of the buffer (review).
+
+## 9. Step 4 as built: the persistent pair GEMM
+
+`Core.rac`'s section "CTA pairs: the persistent GEMM" and `examples/gemm_pair.rac`.
+
+**The problem and the tiles.** REFERENCE_CUTLASS's `tnt` problem. A pair computes a 256×256 tile of C; each CTA loads
+128 rows of A and 128 of the tile's 256 rows of B per stage, and stores its own 128 rows of the tile.
+
+**The schedule.**
+- `pairGemmPersistentKernel` reads `%nclusterid.x` besides the rank and `%clusterid.x`, and declares the single-CTA
+  schedule's counts (`schedule`) for tiles of 256 × 256.
+- Each pair visits the tile indices from `%clusterid.x` in steps of `%nclusterid.x`, in the band order of the
+  single-CTA persistent GEMM, bands of `band` = 8 tile rows (2048 rows of A, as G = 16 at 128-row tiles).
+- Both CTAs compute the sequence from values that are the same in both (A43, A60), so they visit one tile sequence by
+  construction (M18). The sequence lives in `PairSched`, which only the pair loops take: the single-CTA loops' start,
+  `blockIdx.x`, differs between the CTAs.
+- The launcher starts `2·min(SMs/2, tiles)` CTAs, as FA4's static persistent scheduler does (Facts §1.10).
+
+**The roles** are tinygemm_pair's, inside a tile loop each (`forPairTiles`):
+- each CTA's loader fills its half of one stage per K slice of every tile;
+- the leader's issuer takes a free accumulator per tile, issues four MMAs of M = 256, N = 256 per stage, releases each
+  stage by a multicast commit, and commits the accumulator to both CTAs;
+- each CTA's warpgroup waits for its rows of the accumulator, stores them, and releases the accumulator to the
+  leader. Only the epilogue's loop owns its tiles (`forOwnedPairTiles`, `HalfOwn`).
+
+**The rings.** A pair ring of six stages of 32 KB per CTA, and a pair accumulator ring of two buffers of 256 columns,
+all 512 columns. Both rings' stages and phases continue from tile to tile.
+
+**The epilogue.** The single-CTA TMA-store epilogue, unchanged, on the pair accumulator ring:
+- `forHalfChunks` loops over the 8 chunks of 32 columns of this CTA's 128 rows, the rows from the `PairTile`;
+- per chunk, each warp waits until its store of two chunks ago has read its buffer (`acquireStage`), loads its 32 rows
+  of the chunk and writes them to the buffer (`stagePairAcc`), fences them to the async proxy (`fenceStage`), and its
+  lane 0 stores the 32×32 box and commits it (`storeStage`);
+- the two 16 KB staging buffers are each four warps' 4 KB, so a 128×32 subtile is four TMA stores, one per warp;
+- the warpgroup releases the accumulator after the tile's last chunk is loaded and its store issued, before any store
+  completes, so the next tile's MMAs overlap the stores;
+- after its last tile, each warp's lane 0 waits for every store to complete (`finishStores`), before the pair closes.
+- The TMA store clips to the matrix (A34), so the edge tiles need no guard. The launcher requires N mod 4 = 0.
+
+**Shared memory** per CTA: the tensor-memory slot (4 bytes), the accumulator ring's barriers (32), two staging buffers
+per warp (32 KB, 1024-aligned from 1024), six stages (192 KB, from 33,792), the ring's barriers (96): 230,496 bytes.
+`Check.sharedSize` refuses more than 232,448 when the kernel renders.
+
+**Per tile**, with S = K/64 stages:
+
+| | Leader | Each CTA |
+|---|---|---|
+| MMAs | 4S | |
+| commits | S + 1 | |
+| barrier waits | S + 1 (issuer) | S (loader), 1 per warpgroup thread |
+| TMA loads | | 2S |
+| TMA stores, commit groups | | 32 (8 per warp) |
+| `wait_group.read 1` | | 32 (8 per warp) |
+| remote arrivals | | 128 (one per warpgroup thread) |
+
+**Approximations and open points.**
+- The accumulator is released after the tile's last chunk is loaded and stored to its staging buffer, not right after
+  the last load: a loop body is generated once, so code that runs in the last iteration only would need a peeled last
+  chunk. The difference is one chunk's shared-memory writes and store issue.
+- A 128×32 subtile is four 32×32 stores, one per warp, each warp waiting for its own groups (`withStaging`), where
+  CUTLASS stores one 128×32 box after a named barrier of the warpgroup.
+- The grid assumes every pair of SMs can hold a cluster. If fewer clusters are resident, the extra pairs run their
+  whole tile sequences after the others: correct, but up to twice as slow. The runtime's
+  `cudaOccupancyMaxActiveClusters` tells how many are resident; the launcher does not ask it. The first run's time
+  will show it, against the pairs the harness prints.
+
