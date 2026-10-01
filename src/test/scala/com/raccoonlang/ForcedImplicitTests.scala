@@ -387,4 +387,46 @@ class ForcedImplicitTests extends munit.FunSuite with TestSupport {
     expectTypeError[TypeMismatch](p)
   }
 
+  // The family parameters later arguments determine are implicit, so writing them is an arity error that says so.
+  test("a constructor's arity error names its explicit parameters and its implicit family parameters") {
+    def arityMessage(call: String)(implicit loc: munit.Location): String = {
+      val structs =
+        """
+          |struct Cell (A: Type)(n: Peano) : Type
+          | | mk (value: A)(index: Peano) : Cell(A, n)
+          |struct Same (A: Type) : Type
+          | | mk (value: A) : Same(A)
+          |""".stripMargin
+      ErrorRendering.render(expectTypeError[ArityMismatch](natDecls + structs + "{ " + call + " }"), None)
+    }
+    assertEquals(
+      arityMessage("Cell.mk(Peano.zero, Peano.zero)"),
+      "Cannot apply Cell.mk - expected 3 params (n, value, index), got 2; " +
+        "family parameter A is implicit, determined by the other arguments"
+    )
+    assertEquals(
+      arityMessage("Same.mk(Peano, Peano.zero)"),
+      "Cannot apply Same.mk - expected 1 params (value), got 2; " +
+        "family parameter A is implicit, determined by the other arguments"
+    )
+    assertEquals(arityMessage("Peano.succ()"), "Cannot apply Peano.succ - expected 1 params (_), got 0")
+  }
+
+  // A constructor with no fields takes its family's type parameter, which determines the parameters before it.
+  test("a fieldless constructor's arity error names the family parameters its explicit one determines") {
+    assertEquals(
+      ErrorRendering.render(expectTypeError[ArityMismatch]("{ List.nil() }", Prelude.default), None),
+      "Cannot apply List.nil - expected 1 params (A), got 0; " +
+        "family parameters u, S are implicit, determined by the other arguments"
+    )
+  }
+
+  test("a function's arity error names its explicit parameters") {
+    val p = natDecls + "def pick {A: Type}(a: A)(b: A): A := a\n\n{ pick(Peano.zero) }\n"
+    assertEquals(
+      ErrorRendering.render(expectTypeError[ArityMismatch](p), None),
+      "Cannot apply pick - expected 2 params (a, b), got 1"
+    )
+  }
+
 }

@@ -1,0 +1,5 @@
+
+<root>/main.rac:4:26: error: Cannot apply Cell.mk - expected 3 params (n, value, index), got 4; family parameter A is implicit, determined by the other arguments
+def c : Cell(Bool, 3) := Cell.mk(Bool, 3, Bool.true, 0)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: in definition c

@@ -3,7 +3,8 @@ package com.raccoonlang
 /**
  * Wherever a line break separates two items, any number of blank lines and comment-only lines may stand in its place:
  * between a block's statements and around them, between a match's cases, between an inductive's constructors and after
- * the last one, between imports. Cases and constructors still begin on their own lines (ParseErrorTests).
+ * the last one, between imports, around a definition's `decreases` keyword. Cases and constructors still begin on their
+ * own lines (ParseErrorTests).
  *
  * Each program is a vector of lines. It is run once with every separating line break single, then once for each line
  * break and each gap standing in its place, and must mean the same every time.
@@ -139,6 +140,34 @@ class LineLayoutTests extends munit.FunSuite with TestSupport {
       assertEquals(expectTypeError[MissingCase](program(nested, gap)), MissingCase("Bool.false"))
       assertEquals(PrettyPrinter.print(runProgram(program(s"{\n    $nested\n  }", gap))), "3")
     }
+  }
+
+  // Without its clause a recursive definition is rejected, so each layout that runs has read the clause.
+  test("a decreases clause may start a line after the result type, its specification too, in a mutual group too") {
+    def lines(header: String => String): Vector[String] =
+      Vector(
+        header("def f (n: Nat): Nat"),
+        "  match n returning Nat with",
+        "  | .zero => 0",
+        "  | .succ m => f(m)",
+        "}",
+        "mutual {",
+        header("  def even (n: Nat): Bool"),
+        "    match n returning Bool with",
+        "    | .zero => Bool.true",
+        "    | .succ m => odd(m)",
+        "  }",
+        header("  def odd (n: Nat): Bool"),
+        "    match n returning Bool with",
+        "    | .zero => Bool.false",
+        "    | .succ m => even(m)",
+        "  }",
+        "}",
+        "{ Bool.cond(even(4), Nat, Nat.succ(f(3)), 7) }"
+      )
+    everyGap(lines(head => s"$head decreases structural(n) := {"), "1")
+    everyGap(lines(head => s"$head\n      decreases structural(n) := {").flatMap(_.split('\n')), "1")
+    everyGap(lines(head => s"$head decreases\n      structural(n) := {").flatMap(_.split('\n')), "1")
   }
 
   test("imports may be separated by blank and comment lines") {

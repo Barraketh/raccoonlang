@@ -232,7 +232,9 @@ A function type that binds a level is *large*: no sort contains it, so a large
 type fits no position that requires a type. Only a declaration's own type can
 be large, so a level-polymorphic declaration is used only applied. Naming one
 anywhere but as the head of an application is `NotAType`: `let f := id` is
-rejected, and `fun (x: Nat): Nat => id(x)` is written instead. A large function
+rejected, and `fun (x: Nat): Nat => id(x)` is written instead. As the base of
+a selection `id.f`, it names nothing, as any base whose type is not a family
+instance does, and `id.f` is `NotFound`. A large function
 type whose result is a proposition is still a proposition, so a
 level-polymorphic lemma such as `Eq.symm` is a proof like any other. A kind or
 lifetime binder does not make a type large.
@@ -983,6 +985,19 @@ def add (a: Nat)(b: Nat): Nat decreases structural(b) := {
 }
 ```
 
+The clause continues the definition's header, so it may start the line after
+the result type, and its specification the line after `decreases`, in a
+`mutual` group as anywhere:
+
+```raccoon
+def add (a: Nat)(b: Nat): Nat
+    decreases structural(b) := {
+  match b returning Nat with
+  | Nat.zero => a
+  | Nat.succ p => add(Nat.succ(a), p)
+}
+```
+
 Three specifications are available:
 
 - `decreases structural(x)` requires the recursive call's `x` argument to be
@@ -1159,9 +1174,13 @@ Dotted names resolve their first segment as follows:
 
 A definition's own name and its peers' are not locals, which is why a field's
 forms win over them. If the first segment is local, the remaining path is
-projection syntax. Once a
-global first segment is selected, resolution continues inside that object and
-does not backtrack to another open. Prefix a path with `_root_.` to bypass
+projection syntax. Once a global first segment is selected, resolution
+continues inside that object and does not backtrack to another open. Where no
+child matches, the rest of the path is projection syntax from the object's
+declaration, or `NotFound` when the object is only a namespace. A
+projection from anything whose type is not a family instance has no selector,
+so it names nothing: `Nat.mod`, where `Nat` has no child `mod`, is `NotFound`
+for `Nat.mod`, in a term as in a type. Prefix a path with `_root_.` to bypass
 locals, a field's forms, the current namespace, and opens.
 
 `open` takes a snapshot of a namespace's existing children:

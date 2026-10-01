@@ -13,6 +13,14 @@ object ErrorRendering {
       case CannotApplyNonFunction(got) => s"Cannot apply non-fn type ${show(got)}"
       case ArityMismatch(expected, got, ArityMismatch.Arguments) =>
         s"Cannot apply function - expected $expected params, got $got"
+      case ArityMismatch(expected, got, ArityMismatch.Call(callee, explicit, implicitFamily)) =>
+        val named = if (explicit.isEmpty) "" else explicit.mkString(" (", ", ", ")")
+        val determined = "implicit, determined by the other arguments"
+        val implicitNote =
+          if (implicitFamily.isEmpty) ""
+          else if (implicitFamily.length == 1) s"; family parameter ${implicitFamily.head} is $determined"
+          else s"; family parameters ${implicitFamily.mkString(", ")} are $determined"
+        s"Cannot apply $callee - expected $expected params$named, got $got$implicitNote"
       case ArityMismatch(expected, got, ArityMismatch.Evidence) =>
         s"Cannot supply evidence - expected $expected proofs, got $got"
       case ArityMismatch(expected, got, ArityMismatch.Fields) =>

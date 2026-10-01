@@ -263,7 +263,9 @@ else:
   family or constructor, and a definition's lambda at that type.
 
 Anywhere else a sort parameter, an expression of one, or a large reference is
-`NotAType`.
+`NotAType`, except as the base of a selection `b.f`: only a value of a family
+instance has selectors, so any other base, these included, makes `b.f`
+`NotFound`.
 
 Universes are non-cumulative, and so are kinds and scopes: two sorts are
 convertible only when their levels, kinds and scopes are. A function type's

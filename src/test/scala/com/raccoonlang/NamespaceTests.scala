@@ -590,4 +590,23 @@ class NamespaceTests extends munit.FunSuite with TestSupport {
 
     assert(LanguageParser.parseProgram(p).isInstanceOf[Failure])
   }
+
+  // A dotted name whose prefix is a global or a local and whose rest is not its namespace's is a selection; one from a
+  // base outside every family names nothing.
+  test("an unknown qualified name is not found where it is written, in a term and in a type") {
+    def unknown(source: String, name: String)(implicit loc: munit.Location): Unit = notFound(source, name, name)
+    def notFound(source: String, name: String, written: String)(implicit loc: munit.Location): Unit = {
+      val diagnostic = interceptDiagnostic(typecheckDecls(source, Prelude.default))
+      assertEquals(diagnostic.error, NotFound(name))
+      assertEquals(diagnostic.span.map(span => source.substring(span.start, span.end)), Some(written))
+    }
+    unknown("{ Nat.isZero(Nat.mod(5, 2)) }", "Nat.mod")
+    unknown("def f (n: Nat.Small): Nat := 0", "Nat.Small")
+    unknown("def f (n: Nat): List(Nat.Small) := List.nil(Nat)", "Nat.Small")
+    unknown("def f {A: Type}(x: A.Item): Nat := 0", "A.Item")
+    unknown("def f (A: Type): Nat := A.size", "A.size")
+    unknown("def f : Nat := List.size", "List.size")
+    // A value of a family selects through the family's namespace, which names the selector it lacks.
+    notFound("def f : Nat := Nat.zero.size", "Nat.size", "Nat.zero.size")
+  }
 }

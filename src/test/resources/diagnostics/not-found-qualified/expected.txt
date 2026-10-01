@@ -1,0 +1,6 @@
+
+<root>/main.rac:1:39: error: Nat.mod not found
+def half (n: Nat): Bool := Nat.isZero(Nat.mod(n, 2))
+                                      ^^^^^^^
+note: in argument 1 (n) of Nat.isZero
+note: in definition half

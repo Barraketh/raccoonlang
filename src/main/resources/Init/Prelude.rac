@@ -319,11 +319,13 @@ namespace List {
     | List.cons head tail => Nat.succ(List.length(tail))
   }
 
-  def reverse {u: Level}{S: Lifetime}{A: Sort { level = u, scope = S }} (xs: List(A)): List(A) decreases structural(xs) := {
+  def reverseOnto {u: Level}{S: Lifetime}{A: Sort { level = u, scope = S }} (xs: List(A))(acc: List(A)): List(A) decreases structural(xs) := {
     match xs returning List(A) with
-    | List.nil => List.nil(A)
-    | List.cons head tail => List.append(List.reverse(tail), List.cons(head, List.nil(A)))
+    | List.nil => acc
+    | List.cons head tail => List.reverseOnto(tail, List.cons(head, acc))
   }
+
+  def reverse {u: Level}{S: Lifetime}{A: Sort { level = u, scope = S }} (xs: List(A)): List(A) := List.reverseOnto(xs, List.nil(A))
 
   def any {u: Level}{S: Lifetime}{Sp: Lifetime}{A: Sort { level = u, scope = S }} (xs: List(A))(p: { scope = Sp } A -> Bool): Bool decreases structural(xs) := {
     match xs returning Bool with

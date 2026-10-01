@@ -600,12 +600,14 @@ object LanguageParser {
         .flatSpanned(sourceId)
         .map { case (measureTerm, span) => DecreaseSpec.Measure(measureTerm, span) }
 
-    kw("decreases") ~/ (structural | lexicographic | measure)
+    // The specification follows the keyword on its line or starts a later one.
+    val keyword = (skipWS ~ P("decreases") ~ (lineSep | wsSep)).named("Kw(decreases)")
+    keyword ~/ (structural | lexicographic | measure).named("structural(x), lexicographic(x, ...) or measure(e)")
   }
 
-  // def foo (a: A)(c : C): D := body
+  /** `def foo (a: A)(c : C): D := body`. A `decreases` clause continues the header, so it may start a later line. */
   private def constP(implicit sourceId: Option[SourceId]): Parser[ConstDecl] =
-    (kw("def") ~/ declHeader ~ decreasesP.? ~
+    (kw("def") ~/ declHeader ~ (skipAllWs ~ decreasesP).? ~
       (sym(":=") ~/ skipAllWs ~ constBody))
       .flatSpanned(sourceId)
       .map { case (header, decreases, body, span) =>

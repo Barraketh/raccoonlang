@@ -1,0 +1,3 @@
+def half (n: Nat): Bool := Nat.isZero(Nat.mod(n, 2))
+
+{ half(4) }
