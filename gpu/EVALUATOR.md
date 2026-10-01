@@ -123,10 +123,28 @@ after the join, with counts that fit the pool. What it takes now:
 
 ## 4. The evaluator
 
-**Where.** It runs on the host, not in Raccoon: the interpreter takes about 30 s to *generate* an attention kernel.
-- It reads a kernel's AST, exported by the library (a JSON printer next to `Core.render`).
-- It reads a launch: grid, parameters and buffers, given by a host test.
-- Its language is a decision (§9).
+**Where: in Raccoon** (§9, decision 3).
+- **Why.** The evaluator is then the formal semantics of generated code. Tests, the hardware battery and proofs all talk
+  about one definition. A typical proof states that a kernel's result equals a simple single-threaded function.
+- **Input.** It reads a kernel's AST directly, a `Cuda.Kernel` value, and a launch: grid, parameters and buffers.
+- **The risk is speed.** The smallest meaningful attention test is roughly 10⁷–10⁸ evaluation steps: a few CTAs of
+  384–512 threads, thousands of statements per thread per key block, and about 4M multiply-adds per S product. The
+  interpreter takes about 30 s to *generate* such a kernel. So §8 starts with a measurement.
+- **The scalar domain is a parameter.**
+  - Concrete f32 and bf16 run the tests and the battery.
+  - An exact, abstract ring serves the proofs: "the kernel computes this algebraic expression" is then an equality.
+    Floating-point error is a separate question with bounds; online softmax and the tensor cores' accumulation order
+    make a kernel's bits differ from a naive reference's.
+- **Floating point, for now:** f32 and bf16 operations are trusted builtins under the prelude's obligations, and the
+  battery (§5) checks them against the hardware bit for bit.
+- **Floating point, on the horizon:** a precise model of the floating-point semantics and the hardware, in Raccoon.
+  The builtins then become an optimization of that model.
+- **Proofs over every schedule** split in two:
+  - the library's adequacy argument: a well-typed client's kernel is race-free, so its result does not depend on the
+    schedule;
+  - reasoning about a single, deterministic schedule.
+
+  Proof by evaluation covers concrete inputs only; proofs for all inputs go by induction over the evaluator.
 
 **State:**
 - global buffers, typed, with their extents;
@@ -220,7 +238,10 @@ argument.
 
 1. **Typed instructions.** Built (§3). Every example generates byte-identical CUDA, and `Check.rac` keeps its
    proofs.
-2. **Evaluator v0.**
+2. **A performance spike.** Evaluate the smallest TinyGEMM (one tile) in Raccoon and report evaluation steps per second
+   against the target of about 10⁷ steps per test. The result decides whether the interpreter work (`gpu/ROADMAP.md` C1)
+   comes first.
+3. **Evaluator v0, in Raccoon.**
    - **Content:**
      - the exact numerics subset;
      - sequentially consistent memory with the happens-before race check;
@@ -230,20 +251,28 @@ argument.
    - **Size:** the largest step, a few thousand lines. Most of it is the TMA box and swizzle layouts, the
      shared-memory descriptors, the tensor-memory layouts (M = 128 and M = 256, a pair's halves) and the MMA operand
      forms.
-3. **The battery** in `hw.sh`.
-4. **Weak memory and the proxies.** `MODELS.md`'s ordering rules O1–O6 become checks: a read counts as ordered only
+4. **The battery** in `hw.sh`. It also checks the floating-point builtins.
+5. **Weak memory and the proxies.** `MODELS.md`'s ordering rules O1–O6 become checks: a read counts as ordered only
    through the fence and barrier chain those rules name. This is where the evaluator says most that hardware runs
    cannot, because a missing fence often works on hardware.
-5. **A Raccoon statement of the same semantics**, for the proofs.
+6. **Proofs against the evaluator.**
+   - First, functional correctness over the exact domain, on one schedule.
+   - Then the library's adequacy argument (`docs/proposals/SAFETY_PROBLEMS.md` §1).
+7. **On the horizon:** a precise model of floating point and the hardware, in Raccoon.
+8. **Only if speed stalls:** a fast twin in Scala or C++, differentially tested against the Raccoon evaluator on small
+   cases. The Raccoon evaluator stays the reference.
 
 ## 9. Decisions
 
 1. **Build it, staged as §8**, rather than more hand-written mocks. *Proposed; for the user.*
 2. **Typed instructions first.** They pay for themselves without the evaluator. `Stmt.asm` remains, for `Gpu.rac`
    only.
-3. **The evaluator's language**: Scala in this repository (an sbt subproject next to the checker), or standalone C++
-   next to the harnesses. *Open.*
+3. **The evaluator is written in Raccoon** (the user, 2026-10-01). It is the semantics that proofs are stated against.
+   Speed is the risk, measured first (§8 step 2). A fast twin is a fallback, never the reference.
 4. **Bit-exact only where PTX states the result**, and within documented bounds elsewhere, rather than a claim of
    bit-identity everywhere.
 5. **The evaluator replaces the hand-written mocks** for validating harnesses.
 6. **FMA contraction**: `-fmad=false` for every kernel, or explicit `fma` and rounding in the printer. *Open.*
+7. **The scalar domain is a parameter**: concrete f32 and bf16 for tests, an exact ring for proofs.
+8. **Floating point is trusted builtins for now**, checked by the battery. A precise model in Raccoon is on the
+   horizon.
