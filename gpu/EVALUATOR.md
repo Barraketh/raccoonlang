@@ -149,7 +149,7 @@ product and sum (§9).
 | The append's columns | yes | the race check: lanes 16–31 of warp (b, h) write warp (b, h+1)'s elements. The last head writes the next row |
 | The bf16 comparison | yes | bf16 stores round to nearest even, so the harness fails as it did on hardware |
 | The `setmaxnreg` deadlock | likely | the register pool, plus a random schedule in which the correction warpgroup finishes first |
-| 184 registers | no | `ptxas` is not modelled |
+| 184 registers | no; `gpu/encoding/REGISTERS.md` catches it | `ptxas` is not modelled here. Register budgets and a spill check after `ptxas` are their own design |
 | A3a's rows from the warp number | yes | a cross-CTA write-write race |
 | P2's recomputed page | only with a test that writes the table during the launch | the race check |
 | `onLeader`'s skipped store wait | yes | the exit check: the peer exits with a bulk group pending |
