@@ -261,6 +261,37 @@ class PreludeTests extends munit.FunSuite with TestSupport {
     assertEquals(ctorName(inhabitedRes), "Nat.zero")
   }
 
+  test("List.reverse reverses, and in checking takes time linear in the list") {
+    val reversed = runProgram(
+      "{ List.reverse(List.cons(1, List.cons(2, List.cons(3, List.nil(Nat))))) }"
+    )
+    assertEquals(PrettyPrinter.print(reversed), "List.cons(3, List.cons(2, List.cons(1, List.nil)))")
+    assertEquals(PrettyPrinter.print(runProgram("{ List.reverse(List.nil(Nat)) }")), "List.nil")
+    // Reversing by appending each element to the reversed tail is quadratic: this took tens of seconds.
+    val length = 4000
+    val upto =
+      """def upto (n: Nat)(acc: List(Nat)): List(Nat) decreases structural(n) := {
+        |  match n returning List(Nat) with
+        |  | .zero => acc
+        |  | .succ m => upto(m, List.cons(n, acc))
+        |}
+        |""".stripMargin
+    val list = s"upto($length, List.nil(Nat))"
+    val source = upto +
+      s"def twice : Eq(List(Nat), List.reverse($list), List.reverse(List.reverse(List.reverse($list)))) := " +
+      s"Eq.refl(List.reverse($list))\n" +
+      s"{ List.length(List.reverse($list)) }"
+    // CPU time of the checking thread, so a loaded machine does not fail the bound.
+    val threads = java.lang.management.ManagementFactory.getThreadMXBean
+    val (result, nanos) = Execution.onStack(64L << 20) {
+      val start = threads.getCurrentThreadCpuTime
+      val value = runProgram(source)
+      (value, threads.getCurrentThreadCpuTime - start)
+    }
+    assertEquals(PrettyPrinter.print(result), length.toString)
+    assert(nanos < 10L * 1000 * 1000 * 1000, s"reversing $length elements took ${nanos / 1000000} ms of CPU time")
+  }
+
   test("Prelude typeclass seed APIs derive and reduce") {
     typecheckDecls(
       """

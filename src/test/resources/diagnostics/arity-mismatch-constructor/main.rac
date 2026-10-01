@@ -1,0 +1,6 @@
+struct Cell (A: Type)(n: Nat) : Type
+ | mk (value: A)(index: Nat) : Cell(A, n)
+
+def c : Cell(Bool, 3) := Cell.mk(Bool, 3, Bool.true, 0)
+
+{ c }

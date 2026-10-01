@@ -52,7 +52,15 @@ final case class ArityMismatch(expected: Int, got: Int, counted: ArityMismatch.C
 
 object ArityMismatch {
   sealed trait Counted
+
+  /** A form's arguments, or an application's in evaluation. */
   case object Arguments extends Counted
+
+  /**
+   * A checked call's arguments, against `callee` 's explicit binders, named by `explicit`. `implicitFamily` names a
+   * constructor's family parameters that later arguments determine, which are implicit, so a call does not write them.
+   */
+  final case class Call(callee: String, explicit: Vector[String], implicitFamily: Vector[String]) extends Counted
 
   /** A call's bracket group, against its function's evidence binders (PROOF_BY_EVALUATION §1.3). */
   case object Evidence extends Counted

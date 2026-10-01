@@ -192,8 +192,16 @@ object TypeChecker {
         // explicit binders. `(a:A) -> (b:B) -> C` takes one argument and returns a function;
         // `(a:A)(b:B) -> C` takes two. Supplying the wrong number is an arity error here, not a
         // descent into the codomain — `f(x)(y)` is how a nested group is reached.
-        if (providedArgs.length != pi.numExplicit)
-          fail(ArityMismatch(pi.numExplicit, providedArgs.length, ArityMismatch.Arguments))
+        if (providedArgs.length != pi.numExplicit) {
+          // A constructor's telescope starts with its family's parameters, implicit where later arguments determine them.
+          val familyParams = fnValue match {
+            case head: ConstructorHead => head.numErasedFamilyArgs
+            case _                     => 0
+          }
+          val implicitFamily = binders.take(familyParams).filter(_.mode == BinderMode.Implicit).map(_.name)
+          val explicit = binders.filter(_.mode == BinderMode.Explicit).map(_.name)
+          fail(ArityMismatch(pi.numExplicit, providedArgs.length, ArityMismatch.Call(callee, explicit, implicitFamily)))
+        }
         if (providedEvidence.nonEmpty && providedEvidence.length != pi.numEvidence)
           fail(ArityMismatch(pi.numEvidence, providedEvidence.length, ArityMismatch.Evidence))
 
@@ -428,9 +436,10 @@ object TypeChecker {
       env: Env
   ): CheckedTerm = {
     val vType = base.value.tpe
+    // A base outside every family has no selectors, so the selection names nothing: `base.field` is not found.
     val family = vType match {
       case InductiveFamilyValue(instance) => instance
-      case _                              => fail(NotAType(vType))
+      case _                              => fail(NotFound(s"${PrettyPrinter.printTerm(base.residual)}.$field"))
     }
     val selectorName = s"${family.head.name}.$field"
     if (!env.globals.contains(selectorName)) fail(NotFound(selectorName))
@@ -708,7 +717,8 @@ object TypeChecker {
 
   /**
    * An application's head: the one position where a reference whose type is large may stand, since a level-polymorphic
-   * declaration is used only applied (spec §2.2).
+   * declaration is used only applied (spec §2.2). A selection's base is checked as one too: whatever is not a type
+   * there has no selectors, which `checkSelect` reports as the selected name not found.
    */
   private def checkHead(term: CA.Term, env: Env): CheckedTerm = at(term.span)(synthesize(term, env))
 
@@ -761,7 +771,7 @@ object TypeChecker {
         if (!ValueEquivalence.defEq(checked.value.tpe, layout.stringTpe))
           wtf("String literal evaluator returned the wrong type")
         checked
-      case CA.Term.Select(base, field, span) => checkSelect(checkTerm(base, env), field, span, env)
+      case CA.Term.Select(base, field, span) => checkSelect(checkHead(base, env), field, span, env)
       case app: CA.Term.App =>
         val checkedFn = checkHead(app.fn, env)
         val checkedApp =

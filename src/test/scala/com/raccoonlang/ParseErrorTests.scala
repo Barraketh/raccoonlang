@@ -187,6 +187,16 @@ class ParseErrorTests extends munit.FunSuite {
     expectParses("def opaque (n: Nat): Nat := n\n\n{ opaque(0) }\n")
   }
 
+  test("a malformed decreases clause is reported where it goes wrong, on the header's line or the next") {
+    val specification = "Failed to parse structural(x), lexicographic(x, ...) or measure(e)"
+    Vector(" ", "\n    ", "\n\n  // the metric\n    ").foreach { before =>
+      expectParseError(s"def f (n: Nat): Nat${before}decreases @structral(n) := n\n", specification)
+      expectParseError(s"def f (n: Nat): Nat${before}decreases structural(n@ := n\n", "Failed to parse SymTight())")
+    }
+    expectParseError("def f (n: Nat): Nat decreases\n    @structral(n) := n\n", specification)
+    expectParseError("def f (n: Nat): Nat@\n\n{ 0 }\n", "Failed to parse Sym(:=)")
+  }
+
   test("a parse failure names what was expected, never a parser object") {
     expectParseError("def f : Nat := 0\n@)\n", "Failed to parse end of input")
     expectParseError("def f (n: Nat): Nat := Nat.add(n@\n", "Failed to parse LayoutSymTight())")
