@@ -29,10 +29,11 @@ the readability review and for quality-of-life work on Raccoon. Each says what w
 5. **A `branch` for one optional step.** Issuing S_{j+1} only when `j + 1 < blocks` (`nextScores` in `issuer`) needs a
    `branch` whose state is the whole score-issuing state (`Scores`, with `fixedScores` built from three `fixed…`) and an
    empty `no` arm with the full closure type.
-6. **Redundant fences in pass 1 and pass 2.** `loadAcc8` fences `after_thread_sync` before every load, as the GEMM's
-   `stageChunk` does, although every thread holding `AccFull` waited and fenced itself in `awaitAcc` (`Core.rac`,
-   `loadAcc8`): 32 fences per key block where one would do. Kept for M9's "whoever observed it" until the review
-   settles whether `AccFull` can reach a thread that did not wait.
+6. **Fences where the waiting thread is the loading one.** `loadAcc8` first fenced `after_thread_sync` before every
+   load, as the GEMM's `stageChunk` does: 32 fences per key block. Review settled that `AccFull` comes only from
+   `awaitAcc` in the same aligned warpgroup, every thread of which waited and fenced, so M9 does not apply and the
+   fence is gone. `stageChunk` and `storeO` still fence once each; whether a token records who fenced is a question
+   the GEMM epilogue shares.
 7. **`tmemBase` special-cases offset 0** (`Core.rac`, `tmemBase`) so that the GEMMs' generated code stays byte-identical
    to `gpu/Gpu.rac`'s (`(v0 + 0u)` would otherwise appear in every MMA). `offsetBy`/`boxAt` do the same for box and
    column offsets.
@@ -90,17 +91,17 @@ the readability review and for quality-of-life work on Raccoon. Each says what w
 
 ## Timing
 
-CPU time of the native binary (`target/graalvm/raccoon`), on an idle machine, 2026-10-01:
+CPU time of the native binary, built from lemur_gpu at 9a390fe, on an idle machine, 2026-10-01:
 
 | What | CPU s |
 |---|---|
 | checking `Core.rac` with `Check`, `Cuda`, `Text` (an empty file importing `encoding.Core`) | 0.3 |
 | `gen.sh encoding/examples/tinygemm.rac` | 0.9 |
 | checking `examples/attention.rac` without its final expression | 2.7 |
-| `gen.sh encoding/examples/attention.rac` (checking, generation, the certificate, printing) | 7.9 |
-| checking `checks/emitted.rac` | 2.6 |
-| `gpu/check.sh`, everything | 48 (40 wall) |
+| `gen.sh encoding/examples/attention.rac` (checking, generation, the certificate, printing) | 7.5 |
+| checking `checks/emitted.rac` | 2.9 |
+| `gpu/check.sh`, everything | 35 (26 wall) |
 
-The generated attention kernel is 2726 lines (185 KB) with its launcher: the two softmax iterations (peeled and
+The generated attention kernel is 2663 lines (181 KB) with its launcher: the two softmax iterations (peeled and
 looped) unroll 16 chunks per pass and 16 per rescale, and every tensor-memory address repeats the warp-quadrant
 expression.

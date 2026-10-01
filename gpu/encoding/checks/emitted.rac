@@ -1,10 +1,13 @@
 // Unit tests of code the attention core emits (gpu/ATTENTION.md §6), stated as theorems that checking proves by
 // evaluating the rendered kernel. Run by check.sh, which requires this file to check without a diagnostic.
 //
-// The kernel is a minimal client of the exchange, not a working one (its MMA thread never fills the S ring, so it
-// would wait forever): only its code is tested.
+// The kernel is a minimal client of the exchange, not a working one (its roles disagree on how many S buffers are
+// filled, so it would wait forever): only its code is tested.
 // - Tensor memory is split in halves, and the exchange lives in the upper one, so its products' D operand (Ô) and A
 //   operand (P) carry the half's offset, 256 columns, through `tmemBase`.
+// - The lower half is split again at `E.inner` (128 columns), and the S ring, of one buffer, lives in the second
+//   quarter, so the MMA issued into it (`mmaFirstInto`, through the ring's buffer address) carries the offset 128,
+//   through `tmemBase` and a nested split. `rejected/split_mutants.py` splits at 32 instead, which the core refuses.
 // - The softmax warpgroup, after its last `storeP`, releases S and spins in `awaitAcc` for the next S before
 //   `publishP` (which the types allow), so `publishP` must reconverge the warp with `__syncwarp` before the
 //   `.sync.aligned` `tcgen05.wait::st`.
@@ -18,6 +21,9 @@ namespace E {
 
   def box : TmaSpec := TmaSpec.mk(64, 128)
   def vRing : RingCfg := RingCfg.mk(2, E.box, E.box)
+
+  // Where the lower half is split: the S ring starts this many columns in.
+  def inner : Nat := 128
 
   def Cta : Group := Group.cta(256)
   def Wg0 : Group := Group.warps(0, 4)
@@ -34,13 +40,18 @@ namespace E {
   def AllDone (rv: Lifetime)(q: Lifetime)(x: Lifetime) : Type { kind = lin, scope = union(rv, union(x, q)) } :=
     Pair(Pair(ProducerDone(rv), ConsumerDone(rv)), Pair(Pair(ExWriterDone(x), ExReaderDone(x)), Pair(AccProducerDone(q), AccConsumerDone(q))))
 
-  // One product into the exchange, then the S ring's issuing side closed unused.
+  // One S into the S ring, from a stage of the V ring; then one product into the exchange.
   def issuer {rv: Lifetime}{q: Lifetime}{x: Lifetime}(vr: Ring(rv, E.vRing))(accs: AccRing(q, 128))(ex: Exchange(x))(cv: Consumer(rv))
       (ap: AccProducer(q))(rd: ExReader(x))(m: Lifetime)(e: Ctx(m, E.Issue)): Pair(Ctx(m, E.Issue), E.IssuerDone(rv, q, x)) :=
     Core.elect(e, E.IssuerDone(rv, q, x), fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, E.One)): Pair(Ctx(j, E.One), E.IssuerDone(rv, q, x)) => {
       let (e, cv) := Core.takeConsumer(e, w, vr, cv)
       let (e, ap) := Core.takeAccProducer(e, w, accs, ap)
       let (e, rd) := Core.takeExReader(e, w, ex, rd)
+      let (e, s) := Core.await(e, vr, cv)
+      let (e, free) := Core.acquireAcc(e, accs, ap)
+      let (e, (sUsed, filling)) := Core.mmaFirstInto(e, w, vr, s, accs, free)
+      let (e, cv) := Core.releaseByMma(e, w, vr, sUsed)
+      let (e, ap) := Core.commitAcc(e, w, accs, filling)
       let (e, p) := Core.awaitP(e, ex, rd)
       let (e, v) := Core.await(e, vr, cv)
       let (e, (used, vUsed)) := Core.mmaPVFirst(e, w, ex, p, vr, v)
@@ -126,7 +137,13 @@ namespace E {
               let (e, (accO, accDone)) := Core.withExchange(e, to, accO, Pair(AccProducerDone(q), AccConsumerDone(q)), exchange)
               (e, (accDone, accO))
             }
-            let (e, (accS, accO)) := Core.withAccRing(e, ts, accS, 2, 128, Acc(c, AccState.empty), sRing)
+            let quarters := fun (b1: Lifetime)(b2: Lifetime)(tu: Tmem(b1, E.inner))(accU: Acc(b1, AccState.empty))
+                (tr: Tmem(b2, Nat.sub(256, E.inner)))(accR: Acc(b2, AccState.empty))(e: Ctx(l, E.Cta))
+                : Pair(Ctx(l, E.Cta), Pair(Pair(Acc(b1, AccState.empty), Acc(b2, AccState.empty)), Acc(c, AccState.empty))) => {
+              let (e, (accR, accO)) := Core.withAccRing(e, tr, accR, 1, 128, Acc(c, AccState.empty), sRing)
+              (e, ((accU, accR), accO))
+            }
+            let (e, (accS, accO)) := Core.splitTmem(e, ts, accS, E.inner, Acc(c, AccState.empty), quarters)
             (e, ((accS, accO), Unit.unit))
           })
         let (e, u) := Core.withTmem(e, permit, 512, AccState.empty, Unit, regions)
@@ -202,6 +219,16 @@ namespace E {
   def pvIntoUpperHalf : Eq(Nat, E.starting(Text.cat(E.pvMma, "\"r\"((v1 + 256u)), ")), 8) := Eq.refl(8)
 
   def pvFirstFromP : Eq(Nat, E.starting(Text.cat(E.pvMma, "\"r\"((v1 + 256u)), \"r\"(((v1 + 256u) + 128u)), ")), 1) := Eq.refl(1)
+
+  // An MMA with both operands in shared memory: its template, up to its operands.
+  def ssMma : String :=
+    "asm volatile(\"{\\n\\t.reg .pred p;\\n\\tsetp.ne.b32 p, %4, 0;\\n\\ttcgen05.mma.cta_group::1.kind::f16 [%0], %1, %2, %3, p;\\n\\t}\" :  : "
+
+  // The S ring's one buffer starts at the second quarter, v1 + 128 (v2 is the ring's issuing stage): all 4 MMAs of
+  // the S write there.
+  def sCount : Eq(Nat, E.starting(E.ssMma), 4) := Eq.refl(4)
+
+  def sIntoSecondQuarter : Eq(Nat, E.starting(Text.cat(E.ssMma, "\"r\"(((v1 + 128u) + (v2 * 128u))), ")), 4) := Eq.refl(4)
 
   // `awaitAcc`'s wait and fence, then `publishP`: the warp reconverges before `wait::st`.
   def syncBeforeWaitSt : Eq(Bool, E.occurs(E.lines, List.cons("asm volatile(\"tcgen05.fence::after_thread_sync;\" :  :  : \"memory\");",

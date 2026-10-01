@@ -173,7 +173,7 @@ stored with `n` (the head dimension) contiguous: B is MN-major. The instruction 
 between the two 64-element halves of the head dimension (the two boxes, 16384 bytes apart) and SBO the distance
 between groups of 8 key rows (1024 bytes). Each MMA step of K = 16 key rows advances the start address by 2048 bytes,
 a whole number of 1024-byte swizzle atoms, so the descriptor's base offset stays 0 (§9.7.18.4.1 Shared memory
-descriptor, Table 50).
+descriptor, Table 49).
 
 The first product needs no new descriptor kind: `S = Q·Kᵀ` is TinyGEMM's `A·Bᵀ` with both operands K-major, but its
 K dimension (the head dimension, 128) spans the two 64-wide boxes of each stage, so one S is 8 MMAs, 4 per box pair.
@@ -699,6 +699,10 @@ result, a deadlock, or a question the types do not ask. The harness (§1.3) is w
 - **The wrong data in a ring.** Loading V into the K ring (both are `Ring(r, cfg)` with equal boxes), or a K block at
   the wrong row. A tensor tag on `HeadMap` and `RingCfg` would refuse the first; it is cheap, but it changes
   `TmaSpec`, which the GEMM track shares, so it is left to that merge (§7.1).
+- **A block row at or past `seq`.** With A1's rank-2 maps over `[BH·seq, 128]` (`encoding/README.md`), `fillHead`
+  adds the caller's row to the head's first row unbounded, so a row ≥ `seq` loads the next heads' rows (or zeros past
+  the matrix, which TMA clips). The maps are only read, so it is a wrong result, not a race; A2's rank-3 maps would
+  zero-fill it.
 - **Storing P chunk c from S chunk c′ ≠ c.** `storeP` checks coverage, not provenance.
 - **Omitting the causal or tail mask** (A2), or masking with the wrong comparison. T1's causal and tail sizes catch
   it.

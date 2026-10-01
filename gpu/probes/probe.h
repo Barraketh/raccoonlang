@@ -76,8 +76,8 @@ inline const char *stage_name(uint32_t s) {
 
 // ---- Descriptors ---------------------------------------------------------------------------------------------------
 
-// Shared-memory matrix descriptor (PTX §9.7.18.4.1, Table 50): start address >> 4 in bits 0–13, leading byte offset
-// >> 4 in 16–29, stride byte offset >> 4 in 32–45, the fixed version 1 in 46–48, base offset 0 in 49–51 (every
+// Shared-memory matrix descriptor (PTX §9.7.18.4.1, Table 49): start address >> 4 in bits 0–14, leading byte offset
+// >> 4 in 16–30, stride byte offset >> 4 in 32–45, the fixed version 1 in 46–48, base offset 0 in 49–51 (every
 // operand here starts 1024-byte aligned, or 32·s bytes into an aligned K-major atom as TinyGEMM's K steps do), LBO
 // mode 0 (bit 52), swizzle mode 2 = 128-byte swizzle in 61–63. With lbo = 0 and sbo = 1024 this is exactly TinyGEMM's
 // descriptor (Gpu.rac `smemDesc`: high word 4611756662049472512).

@@ -7,7 +7,7 @@
 // base offset 0, read B as the canonical MN-major layout ((T,8,m),(8,k)):((1,T,LBO),(8T,SBO))?
 //
 // PTX ISA 9.4: §9.7.18.3.1–3 (shared-memory matrix layouts, the canonical layouts); §9.7.18.4.1 (shared-memory
-// descriptor, Table 50); §9.7.18.4.2 (instruction descriptor, Table 51: bit 16 transpose B); §9.7.18.10.3 (Table 65:
+// descriptor, Table 49); §9.7.18.4.2 (instruction descriptor, Table 51: bit 16 transpose B); §9.7.18.10.3 (Table 65:
 // 16-bit B may be MN-major with 128-byte swizzle); §9.7.18.10.10.1 `tcgen05.mma`.
 //
 // A is 128 × 128 in shared memory, K-major (TinyGEMM's layout and descriptors), as Q is in the first product. Eight

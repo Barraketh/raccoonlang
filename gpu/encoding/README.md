@@ -1,7 +1,8 @@
 # gpu/encoding: the next GPU core
 
 Status: started 2026-10-01; A1's core, example and unit checks built (step 1 and the first part of step 2 below),
-not run on hardware; `NOTES.md` records what was awkward. A fresh copy of the typed core (`gpu/Gpu.rac`) in which the library grows the features it
+not run on hardware; `NOTES.md` records what was awkward. Still to do in step 2: `rejected/` (the mutants of
+`ATTENTION.md` §5), the harness, and `OBLIGATIONS.md` §6–§7 rows for the new operations. A fresh copy of the typed core (`gpu/Gpu.rac`) in which the library grows the features it
 lacks, starting with forward attention, then paged attention. `gpu/Gpu.rac` and its GEMM examples stay as they are, so
 the kernels that ran on a B200 keep running while this design settles.
 

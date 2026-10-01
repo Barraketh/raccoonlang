@@ -946,8 +946,10 @@ namespace Core {
   sealed struct HeadMap (l: Lifetime)(spec: TmaSpec) : Type { scope = l }
    | mk (name: String)(seq: Expr) : HeadMap(l, spec)
 
-  // As `fill`, through head maps, at rows `a1` and `b1` of this CTA's head (`blockIdx.y`), whose first row the core
-  // computes: the caller chooses a row within the head, never the head.
+  // As `fill`, through head maps, at rows `a1` and `b1` counted from the first row of this CTA's head (`blockIdx.y`),
+  // which the core computes, so the caller does not name the head. Nothing bounds the row by `seq`: a row at or past
+  // `seq` reads the next heads' rows, or zeros past the matrix (TMA clips). That is a wrong result, not a race: the
+  // maps are only read.
   def fillHead {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}{L: Lifetime}{S0: Lifetime}{S1: Lifetime}{S2: Lifetime}{S3: Lifetime}
       {u0: Grain}{u1: Grain}{u2: Grain}{u3: Grain}
       (e: Ctx(n, Group.lane))(ring: Ring(r, cfg))(s: Slot(r, m))
@@ -1078,7 +1080,8 @@ namespace Core {
 
   // Splits a region into its first `k` columns and the rest, for the callback, which must hand both back with no
   // tensor-core work in flight (as `Acc` always is); the whole comes back `empty`. `k` must be a positive multiple of
-  // 32, the allocation unit (PTX §9.7.18.1.2), below `cols`. Nothing is emitted: the halves are the region's columns
+  // 64 below `cols`: the allocation unit is 32 columns (PTX §9.7.18.1.2), but the text states no alignment for MMA and
+  // `tcgen05.ld/st` addresses, and multiples of 64 are what A27 assumes and H3 tests. Nothing is emitted: the halves are the region's columns
   // from offsets 0 and `k` (`tmemBase`), in fresh scopes, and their `Acc`s are rejoined only when both come back.
   def splitTmem {l: Lifetime}{w: Nat}{a: Lifetime}{cols: Nat}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}
       (e: Ctx(l, Group.cta(w)))(t: Tmem(a, cols))(acc: Acc(a, AccState.empty))(k: Nat)(X: Type { kind = kx, scope = Sx })
@@ -1088,8 +1091,8 @@ namespace Core {
       : Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.empty), X)) := {
     match acc returning Pair(Ctx(l, Group.cta(w)), Pair(Acc(a, AccState.empty), X)) with
     | Acc.mk => {
-      let ok := Bool.and(Nat.blt(0, k), Bool.and(Nat.blt(k, cols), Nat.isZero(Nat.mod(k, 32))))
-      let gen := Core.check(Core.state(Key.key, e), ok, "tensor memory: a split must be a positive multiple of 32 columns below the region's")
+      let ok := Bool.and(Nat.blt(0, k), Bool.and(Nat.blt(k, cols), Nat.isZero(Nat.mod(k, 64))))
+      let gen := Core.check(Core.state(Key.key, e), ok, "tensor memory: a split must be a positive multiple of 64 columns below the region's")
       scope b => {
         scope c => {
           let (e2, ((lower, upper), x)) := body(b, c, Tmem.mk(b, k, t.addr, t.offset), Acc.mk(b, AccState.empty),
@@ -1150,8 +1153,8 @@ namespace Core {
     }
   }
 
-  // A shared-memory matrix descriptor (PTX §9.7.18.4.1, Table 50) for a 128-byte-swizzled bf16 box at `addr`, advanced
-  // by `k` steps of sixteen K-major elements: start address >> 4, leading byte offset `lbo` >> 4 at bit 16, stride byte
+  // A shared-memory matrix descriptor (PTX §9.7.18.4.1, Table 49) for a 128-byte-swizzled bf16 box at `addr`, advanced
+  // by `k` steps of sixteen K-major elements: start address >> 4, leading byte offset `lbo` >> 4 in bits 16–30, stride byte
   // offset 1024 >> 4 at bit 32, version 1 at bit 46, swizzle 2 at 61. A K-major box has no leading byte offset (0); an
   // MN-major operand's is the distance between its 64-element halves of M or N.
   def descHigh : Nat := Nat.add(Nat.mul(64, Nat.pow(2, 32)), Nat.add(Nat.pow(2, 46), Nat.mul(2, Nat.pow(2, 61))))
@@ -1829,13 +1832,13 @@ namespace Core {
       List.append(Core.declOuts(DType.f32, first, 8), List.cons(Stmt.syncWarp, List.cons(Core.tmemLoad8(first, taddr), List.cons(Core.tmemWaitLoad, List.nil(Stmt))))))
   }
 
-  // Columns 8c to 8c+7 of this thread's row of the reading side's current buffer (PTX §9.7.18.8.3, §9.7.18.8.5): the
-  // loads are ordered after the tensor-core work that wrote the buffer, whoever observed it complete, as the GEMM
-  // epilogue's are. The values cannot outlive the block that loaded them.
+  // Columns 8c to 8c+7 of this thread's row of the reading side's current buffer (PTX §9.7.18.8.3, §9.7.18.8.5). No
+  // fence is needed: `AccFull` comes only from `awaitAcc`, which every thread of this warpgroup ran, waiting and then
+  // fencing `after_thread_sync` itself. The values cannot outlive the block that loaded them.
   def loadAcc8 {k: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}{m: Lifetime}
       (e: Ctx(k, Group.warps(f, 4)))(ring: AccRing(q, n))(full: AccFull(q, m, f))(c: Nat)[fits: Nat.le(Nat.mul(8, Nat.succ(c)), n)]
       : Pair(Ctx(k, Group.warps(f, 4)), Pair(AccFull(q, m, f), F32x8(k, Grain.thread))) := {
-    let gen := Core.push(Core.state(Key.key, e), Core.tcFenceAfter)
+    let gen := Core.state(Key.key, e)
     let taddr := Core.quadrantLanes(Core.offsetBy(Core.accBuffer(ring, ring.cStage), Nat.mul(8, c)))
     (Core.resume(Key.key, k, Group.warps(f, 4), Core.loadRow8(gen, taddr)), (full, Core.row8(Key.key, k, gen.next)))
   }
@@ -2157,7 +2160,9 @@ namespace Core {
       let placed := Core.pushAll(Gen.mk(gen.code, Nat.add(within, 5), gen.smem, gen.barrier, gen.errors), place)
       let stored := Core.storeChunks(placed, ex.base, out.o, Expr.var(row), Expr.var(inside), Expr.var(scale), 0, 16)
       let lseStore := Stmt.ifElse(Expr.var(inside), Block.seq(Stmt.store(Expr.param(out.lse), Expr.var(row), Expr.var(logSum)), Block.done), Block.done)
-      (Core.resume(Key.key, k, Group.warps(f, 4), Core.push(stored, lseStore)), o)
+      // The loads are ordered before whatever follows a thread barrier, such as an MMA into a region reopened in the
+      // same columns (PTX §9.7.18.6.4.4).
+      (Core.resume(Key.key, k, Group.warps(f, 4), Core.push(Core.push(stored, lseStore), Core.tcFenceBefore)), o)
     }
   }
 
