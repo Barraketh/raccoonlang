@@ -8,8 +8,9 @@ query tiles in ping-pong (`A3.md`), to the same point; then P2, paged decode wit
 their harness against a host mock, mutants, A40–A42, M17, §6.11); then CTA pairs (`TWO_CTA.md`, steps 1 and 2: the
 core and a pair TinyGEMM), to the same point as A3a; then A3b, a correction warpgroup (`A3B.md`), to A3a's point (A57–A59, M21, M22,
 §6.13); then the persistent pair GEMM (`TWO_CTA.md` step 4), to the same point, with a run script for its first
-hardware session, which ran every kernel on a B200 (below). `NOTES.md` records what was awkward, and what the review
-removed.
+hardware session, which ran every kernel but TinyGEMM on a B200 (below). TinyGEMM has not run on hardware; its
+harness, `harness/tinygemm_test.cu`, is the retired core's GEMM harness, which ran its predecessor. `NOTES.md` records
+what was awkward, and what the review removed.
 
 The core began as a fresh copy of the library's first core, `gpu/Gpu.rac`, in which the library grew the features it
 lacked, starting with forward attention, then paged attention. `gpu/Gpu.rac` and its GEMM examples are retired: this
@@ -144,8 +145,8 @@ The box needs no JVM.
   `attention_a3b.rac` its correction role.
 - `checks/`: unit tests of emitted code, and `generic_render.rac`, a client's function that forwards `render`'s
   certificate.
-- `rejected/`: programs and mutant tables the core must refuse. The programs, and the first mutants of
-  `tinygemm_mutants.py`, began as the retired core's.
+- `rejected/`: programs and mutant tables the core must refuse. The programs, and the mutants of
+  `tinygemm_mutants.py` from `fill_without_acquire` on, began as the retired core's.
 - `harness/`: host test programs for hardware runs, `hw.sh`, which runs them all in one session, and
   `run_gemm_pair.sh`, the pair GEMM's check and timing.
 

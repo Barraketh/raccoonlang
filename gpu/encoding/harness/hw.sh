@@ -15,6 +15,7 @@ attention_pingpong:attention_pingpong
 attention_a3b:attention_a3b
 paged_attention:paged_attention
 paged_decode:paged_append paged_decode paged_combine
+tinygemm:tinygemm
 tinygemm_pair:tinygemm_pair
 gemm_pair:gemm_pair'
 

@@ -871,7 +871,7 @@ the softmax warpgroups and without a split exchange; the persistent schedule and
   192 registers). `tcgen05.ld.red` would give the maximum for free but is not on sm_100a (A32, withdrawn).
 - The polynomial `exp2` on the FMA units for part of each row (the fixture's §6, FA4's `ex2_emu_freq`), with its error
   in T1's budget.
-- A persistent schedule over (tile, head) pairs, with `forTiles`, and the TMA-store epilogue from the GEMM track.
+- A persistent schedule over (tile, head) pairs, with a tile loop as `tileLoop`'s, and the TMA-store epilogue from the GEMM track.
   `withExchange` is one-shot today, and it needs a `cta` context, so it cannot be reopened inside a role's tile loop:
   a persistent kernel needs a tile transition on both sides (`OFinal` back to a `fresh` writer after `storeO`, and the
   reader's `held` back to `fresh`), each side's phase register continuing across tiles as the accumulator ring's do.

@@ -1626,16 +1626,12 @@ namespace Core {
   // The `height`×`bn` output tiles of a persistent GEMM, `tilesM` tile rows of `tiles` in all (the constants those
   // names hold), in the order the kernel visits them: bands of `bandRows` tile rows (the builder's band height, or every
   // tile row if there are fewer), a band's tiles column by column, `bandTiles` of them in each band but the last, which
-  // may have fewer rows. So tile index `t` is a bijection onto the tiles (`tileLoop`). A visitor (a CTA, or a CTA pair)
-  // visits the tile indices from `start` in steps of `step`, where `start` is its index among `step` visitors (`blockIdx.x`
-  // of `gridDim.x` CTAs), so no two visitors visit one tile; and the visitors that run at once visit a few bands' worth
-  // of rows of A and columns of B, which stay in L2.
+  // may have fewer rows. So tile index `t` is a bijection onto the tiles (`tileLoop`). A visitor (a CTA pair) visits
+  // the tile indices from `start` in steps of `step`, where `start` is its index among `step` visitors (`PairSched`), so
+  // no two visitors visit one tile; and the visitors that run at once visit a few bands' worth of rows of A and
+  // columns of B, which stay in L2.
   sealed struct Sched (l: Lifetime)(bn: Nat) : Type { scope = l }
    | mk (height: Nat)(start: Expr)(step: Expr)(tiles: Nat)(tilesM: Nat)(bandRows: Nat)(bandTiles: Nat) : Sched(l, bn)
-
-  // Authority to write, once each, the tiles this CTA visits.
-  sealed inductive SchedOwn (l: Lifetime)(bn: Nat) : Type { kind = lin, scope = l }
-   | mk : SchedOwn(l, bn)
 
   // `(a < b) ? a : b`.
   def minExpr (a: Expr)(b: Expr): Expr := Expr.select(Expr.bin(BinOp.lt, a, b), a, b)
@@ -1665,24 +1661,6 @@ namespace Core {
       let s := Stmt.forStride(t, sched.start, Expr.var(sched.tiles), sched.step, Core.blockOf(done))
       (Core.resume(Key.key, l, g, Core.after(gen, done, s)), after)
     }
-  }
-
-  // Runs `body` once per tile this CTA visits.
-  def forTiles {l: Lifetime}{L: Lifetime}{g: Group}{bn: Nat}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}{Sf: Lifetime}
-      (e: Ctx(l, g))(sched: Sched(L, bn))(fixed: Fixed(S))(state: S)
-      (body: { scope = Sf } (m: Lifetime) -> TileAt(m, bn) -> Ctx(m, g) -> S -> Pair(Ctx(m, g), S))
-      : Pair(Ctx(l, g), S) := Core.tileLoop(e, sched, fixed, state, body)
-
-  // Runs `body` once per tile this CTA visits, with the authority to write that tile: the one loop that writes the
-  // output.
-  def forOwnedTiles {l: Lifetime}{L: Lifetime}{g: Group}{bn: Nat}{k: Kind}{T: Lifetime}{S: Type { kind = k, scope = T }}
-      {Sf: Lifetime}
-      (e: Ctx(l, g))(sched: Sched(L, bn))(own: SchedOwn(L, bn))(fixed: Fixed(S))(state: S)
-      (body: { scope = Sf } (m: Lifetime) -> TileAt(m, bn) -> TileOwn(m, bn) -> Ctx(m, g) -> S -> Pair(Ctx(m, g), S))
-      : Pair(Ctx(l, g), S) := {
-    match own returning Pair(Ctx(l, g), S) with
-    | SchedOwn.mk => Core.tileLoop(e, sched, fixed, state,
-        fun (m: Lifetime)(tile: TileAt(m, bn))(e: Ctx(m, g))(st: S): Pair(Ctx(m, g), S) => body(m, tile, TileOwn.mk(m, bn), e, st))
   }
 
   // ---- Persistent GEMM: the accumulator ring -----------------------------------------------------------------------
@@ -1816,17 +1794,6 @@ namespace Core {
         let gen := Core.mmaRingStage(Key.key, Core.state(Key.key, e), ring, Core.accBuffer(accs, accs.pStage), n, Bool.true)
         (Core.resume(Key.key, k, Group.lane, gen), (ReadyUsed.mk(r, m), AccFilling.mk(q, m)))
       }
-    }
-  }
-
-  // Further tensor-core work, accumulating A·B from the ready stage into the buffer.
-  def mmaNextInto {k: Lifetime}{m: Lifetime}{r: Lifetime}{cfg: RingCfg}{q: Lifetime}{n: Nat}
-      (e: Ctx(k, Group.lane))(w: Elected(m))(ring: Ring(r, cfg))(rd: Ready(r, m))(accs: AccRing(q, n))(acc: AccFilling(q, m))
-      : Pair(Ctx(k, Group.lane), Pair(ReadyUsed(r, m), AccFilling(q, m))) := {
-    match rd returning Pair(Ctx(k, Group.lane), Pair(ReadyUsed(r, m), AccFilling(q, m))) with
-    | Ready.mk => {
-      let gen := Core.mmaRingStage(Key.key, Core.state(Key.key, e), ring, Core.accBuffer(accs, accs.pStage), n, Bool.false)
-      (Core.resume(Key.key, k, Group.lane, gen), (ReadyUsed.mk(r, m), acc))
     }
   }
 
@@ -3112,26 +3079,6 @@ namespace Core {
       List.cons(Stmt.decl(DType.u32, bandTiles, Expr.bin(BinOp.mul, Expr.var(bandRows), Expr.var(tilesN))), List.nil(Stmt))))))
     let gen2 := Core.pushAll(Gen.mk(gen1.code, Nat.add(tilesN, 5), gen1.smem, gen1.barrier, gen1.errors, gen1.group, gen1.writable), counts)
     (gen2, Sched.mk(l, bn, height, start, step, tiles, tilesM, bandRows, bandTiles))
-  }
-
-  // The GEMM of `tmaGemmKernel`, computed by one CTA per SM (at most one per tile) that loops over the 128×`bn` tiles
-  // of C as `Sched` assigns them, in bands of `band` tile rows. The kernel comes with its host launcher; its remaining
-  // contract is that A, B and C are distinct device arrays of M×K, N×K and M×N elements.
-  def tmaGemmPersistentKernel (name: String)(sa: TmaSpec)(sb: TmaSpec)(band: Nat)
-      (body: (l: Lifetime) -> Ctx(l, Group.cta(256)) -> TmaGemm(l, sa, sb) -> Sched(l, TmaSpec.outer(sb)) -> SchedOwn(l, TmaSpec.outer(sb))
-        -> TmemPermit(l) -> Ctx(l, Group.cta(256)))
-      : Program := scope l => {
-    let bn := sb.outer
-    let m := Core.uniformParam(Key.key, l, DType.u32, "M")
-    let n := Core.uniformParam(Key.key, l, DType.u32, "N")
-    let k := Core.uniformParam(Key.key, l, DType.u32, "K")
-    let gemm := TmaGemm.mk(TMap.mk(l, sa, "A_map"), TMap.mk(l, sb, "B_map"), CMap.mk(l, "C_map"), m, n, k)
-    let (gen1, sched) := Core.schedule(Key.key, l, Core.state(Key.key, Core.start(Key.key, l, Group.cta(256), CtaGroup.one)), 128, bn, band,
-      Expr.special(Builtin.blockX), Expr.special(Builtin.gridX))
-    let gen := Core.state(Key.key, body(l, Core.resume(Key.key, l, Group.cta(256), gen1), gemm, sched, SchedOwn.mk(l, bn), TmemPermit.mk(l)))
-    let grid := Grid.persistent(Expr.bin(BinOp.mul, Core.paramCeilDiv("M", 128), Core.paramCeilDiv("N", bn)))
-    Core.finish(Key.key, name, Core.tmaGemmParams, Option.some(Core.tmaGemmLauncher(sa, sb, grid)), 256, 1,
-      Core.check(gen, Core.gemmShapeOk(sa, sb), "kernel: boxes the ring or the tensor cores do not take"))
   }
 
   // ---- The attention kernel -----------------------------------------------------------------------------------------

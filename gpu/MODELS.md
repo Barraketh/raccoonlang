@@ -8,10 +8,12 @@ modules that the core imports (`OBLIGATIONS.md` §9, decisions 2 and 3).
 
 The models describe the protocols of `Gpu.rac`, the library's first core, now retired, as of 0767971.
 `encoding/Core.rac` began as a copy of it and keeps these protocols; the protocols it added since (the exchange, CTA
-pairs, the correction warpgroup) are not modelled. The models include two later changes to the protocols: the setup's
-arrivals that complete phase 0 of the barriers a producer waits on first, so producers start at phase 0 (§1.2), and
-the fence after `await`'s wait (§1.6). `lemur_gpu` has also replaced the per-element epilogue with TMA stores through
-staging buffers (975f093), a protocol of bulk async-groups and proxy fences that these models do not yet cover. §6 says how they extend to it, and V1 (§7) must start from it.
+pairs, the correction warpgroup) are not modelled. The single-CTA persistent GEMM's loop and MMA (`forTiles`,
+`mmaNextInto`) are gone from the core; the persistent pair GEMM's loops (`forPairTiles`) run the same tile order. The
+models include two later changes to the protocols: the setup's arrivals that complete phase 0 of the barriers a producer
+waits on first, so producers start at phase 0 (§1.2), and the fence after `await`'s wait (§1.6). `lemur_gpu` has also
+replaced the per-element epilogue with TMA stores through staging buffers (975f093), a protocol of bulk async-groups and
+proxy fences that these models do not yet cover. §6 says how they extend to it, and V1 (§7) must start from it.
 
 In short:
 - **Models** (§1): an mbarrier is a phase bit, a pending arrival count and a transaction count; a TMA copy and a
@@ -23,14 +25,13 @@ In short:
   asynchronous completions, the drain and invalidation.
 - **Properties** (§3): generation-indexed statements, stronger than race freedom. The j-th read of a stage reads its
   j-th fill, every wait's parity test agrees with the phase its side means, and the roles join quiescent.
-- **Proof** (§4): exhaustive exploration by an unverified search whose result, an inductive invariant, is checked by
-  a small checker proved sound once. At S = 6 the faithful model has 1.0 to 1.3 million states, about two hours of
+- **Proof** (§4): exhaustive exploration by an unverified search whose result, an inductive invariant, is checked by a
+  small checker proved sound once. At S = 6 the faithful model has 1.0 to 1.3 million states, about two hours of
   evaluation (§4.1). The same finite check becomes generic in S (and, less securely, in the number of buffers and
-  readers) by projecting the ring onto one stage: the projection of an S-stage ring is a stuttering of the one-stage ring, which has 88 states (with
-  loops that may end at any wait).
-  **Recommended, provisionally:** the projection route (§4.2), with per-configuration runs of the whole ring as
-  cross-checks. A proof by invariants over linear, erased permissions, if Raccoon gains them, would use the same models
-  and properties (§4.4).
+  readers) by projecting the ring onto one stage: the projection of an S-stage ring is a stuttering of the one-stage
+  ring, which has 88 states (with loops that may end at any wait). **Recommended, provisionally:** the projection route
+  (§4.2), with per-configuration runs of the whole ring as cross-checks. A proof by invariants over linear, erased
+  permissions, if Raccoon gains them, would use the same models and properties (§4.4).
 - **Link to the library** (§5): at layer 2 a reviewer compares the model with the emitted code (§2.6). A cheap
   syntactic checker over the emitted AST can confirm each role's barrier operations, operands and order.
 
@@ -98,11 +99,11 @@ Readings and gaps:
   and the immediately preceding one, where they return True (§9.7.15.16.19). A wait whose parity names a phase two or
   more behind has no defined result: that is the ABA question. The model gives the defined cases the hardware's
   observable meaning, success iff `ph ≠ p`, and property P3 (§3) keeps every wait of the protocols in the defined set.
-- **The fresh barrier.** A parity-1 wait on a barrier that has never completed a phase names a "preceding phase"
-  that does not exist, so it is outside §9.7.15.16.19's defined set. Practice relies on its succeeding at once (CUTLASS's
+- **The fresh barrier.** A parity-1 wait on a barrier that has never completed a phase names a "preceding phase" that
+  does not exist, so it is outside §9.7.15.16.19's defined set. Practice relies on its succeeding at once (CUTLASS's
   `make_producer_start_state`, DeepGEMM's `wait(phase ^ 1)` on its empty barriers), but the ISA does not say so. No
-  protocol here relies on it any more: the setup completes phase 0 of every barrier a producer waits on first, so
-  each producer starts at phase 0 and its first wait is on the immediately preceding phase, which is defined.
+  protocol here relies on it any more: the setup completes phase 0 of every barrier a producer waits on first, so each
+  producer starts at phase 0 and its first wait is on the immediately preceding phase, which is defined.
 - **Over-arrival.** An arrive of `c` on a barrier with `pend < c` is an error in the model (P5). PTX is silent on it;
   the CUDA Programming Guide (§4.10.2) requires an arrival only while the barrier's counter is non-zero. So it stays
   undefined. PTX does state a related rule (§9.7.15.16.5.1): in each phase, at least one `test_wait` or `try_wait` must
@@ -216,18 +217,17 @@ O7 is vacuous there. It is not vacuous for the TMA-store epilogue (§6), whose g
 `fenceStage` fences, and nothing writes with generic stores what an MMA read: the stages are written only by TMA
 loads, and dynamic shared memory is never reused for another purpose within a kernel (bump allocation).
 
-**O1 needs the fence.** `tcgen05.fence::after_thread_sync` is what orders an asynchronous `tcgen05` operation after
-a prior mbarrier wait (§9.7.18.6.3). The standard memory-model mechanisms also apply to `tcgen05` instructions
-(ibid.), but they say nothing of an asynchronous operation issued after a wait, and the ISA states that after such a
-wait "`tcgen05.fence::after_thread_sync` is needed" (§9.7.18.6.4.2, Example 2). Every pattern of the ISA that goes
-from a wait to a
-`tcgen05.mma` has it (§9.7.18.6.4.3; §9.7.18.6.4.4, Example 1). So `await` emits `wait; tcgen05.fence::after_thread_sync`,
-as DeepGEMM does. CUTLASS's TMA-to-UMMA pipeline omits it, and also the fences the ISA requires for O3 and O4. The
-visibility half of O1 does not come from `try_wait`'s own rule for `cp.async.bulk` (§9.7.15.16.19), which covers the
-copies a thread requested before a release arrive: the ring issues its copies after `arrive.expect_tx`. It comes from
-the copy's complete-tx, which has release semantics at cluster scope (§9.7.10.28.5.3), and from the mbarrier-based
-completion mechanism, under which the threads participating in the barrier may access the results once the phase is
-complete (§9.7.10.28.1.2).
+**O1 needs the fence.** `tcgen05.fence::after_thread_sync` is what orders an asynchronous `tcgen05` operation after a
+prior mbarrier wait (§9.7.18.6.3). The standard memory-model mechanisms also apply to `tcgen05` instructions (ibid.),
+but they say nothing of an asynchronous operation issued after a wait, and the ISA states that after such a wait
+"`tcgen05.fence::after_thread_sync` is needed" (§9.7.18.6.4.2, Example 2). Every pattern of the ISA that goes from a
+wait to a `tcgen05.mma` has it (§9.7.18.6.4.3; §9.7.18.6.4.4, Example 1). So `await` emits `wait;
+tcgen05.fence::after_thread_sync`, as DeepGEMM does. CUTLASS's TMA-to-UMMA pipeline omits it, and also the fences the
+ISA requires for O3 and O4. The visibility half of O1 does not come from `try_wait`'s own rule for `cp.async.bulk`
+(§9.7.15.16.19), which covers the copies a thread requested before a release arrive: the ring issues its copies after
+`arrive.expect_tx`. It comes from the copy's complete-tx, which has release semantics at cluster scope (§9.7.10.28.5.3),
+and from the mbarrier-based completion mechanism, under which the threads participating in the barrier may access the
+results once the phase is complete (§9.7.10.28.1.2).
 
 **O2 needs no fence**, by a chain the ISA states link by link:
 - the plain commit arrives upon the overall completion of the MMAs it tracks, reads included (§9.7.18.12.1; contrast
@@ -525,13 +525,13 @@ hold vacuously. So every such rule has a second constructor, taken when its requ
 distinguished error state; the properties of §3 are then the one statement "the error state is unreachable", which is
 what `certify` checks. §1.2's "requires" means this. The Python and Raccoon explorers already work this way.
 
-**The model as a relation.** For review, each model is stated as an inductive `Step(s, t)`, one constructor per row
-of §2 (and one per violation), each citing its rule. The checker runs an executable `succ(s): List(State)`, proved
-complete per model: `Step(s, t) → Mem(t, succ(s))`. To keep that proof out of F2's reach (no `inspect`), each
-constructor takes its guard as a Bool evidence argument, `[g: Eq(Bool, guard(s), Bool.true)]`, and `succ`
-concatenates one generator per rule, each a match on that same guard. So each completeness case is an
-`unlessOk`-style lemma over a variable (`proofs/NOTES.md` F2, P1). Expect about 20 rules per ring, each 10 to 30 lines of proof. F5 (no catch-all)
-applies to every case split on a program counter.
+**The model as a relation.** For review, each model is stated as an inductive `Step(s, t)`, one constructor per row of
+§2 (and one per violation), each citing its rule. The checker runs an executable `succ(s): List(State)`, proved complete
+per model: `Step(s, t) → Mem(t, succ(s))`. To keep that proof out of F2's reach (no `inspect`), each constructor takes
+its guard as a Bool evidence argument, `[g: Eq(Bool, guard(s), Bool.true)]`, and `succ` concatenates one generator per
+rule, each a match on that same guard. So each completeness case is an `unlessOk`-style lemma over a variable
+(`proofs/NOTES.md` F2, P1). Expect about 20 rules per ring, each 10 to 30 lines of proof. F5 (no catch-all) applies to
+every case split on a program counter.
 
 **Encoding and the visited set.** A state is a struct of small naturals and lists of small naturals. Its key is the
 mixed-radix number of its fields (base 16, the queue with a length prefix, so the key is injective). The set is
@@ -672,8 +672,9 @@ and P4 is a conjunction over stages. So they hold for every S if they hold for S
 drain at its first acquire.
 
 The claim rests on four lemmas, each generic in S and none about interleavings:
-- **R1, round-robin phases.** A side's registers name `s` for the j-th time (from 0) with phase `j mod 2`. Proof: induction on the advances, with the ghost pair `(round, stage)`; `advance` either
-  increments `stage` or wraps it to 0 and increments `round`, and the phase is `round`'s parity. No `div` or `mod`.
+- **R1, round-robin phases.** A side's registers name `s` for the j-th time (from 0) with phase `j mod 2`. Proof:
+  induction on the advances, with the ghost pair `(round, stage)`; `advance` either increments `stage` or wraps it to 0
+  and increments `round`, and the phase is `round`'s parity. No `div` or `mod`.
 - **R2, non-interference.** A step whose side's registers name `s' ≠ s` touches no object of `s`. The one exception
   is a commit, which also waits for MMAs of other stages issued before it, and that only delays its CommitFire.
   Delay is stuttering, since S = 1 allows any delay (no fairness). Proof: by cases on the step. It needs the stages'
@@ -845,13 +846,13 @@ and for each elected block (`if (flag)` after `elect.sync`) or warpgroup block, 
 - the inits, and the setup's arrives on exactly the barriers a producer waits on first, precede a
   `fence.mbarrier_init` and a `__syncthreads`, and the invals follow the last role's join.
 
-What this shows: the barrier operations appear in the modelled order per role, with the modelled operands and fences
-(I8 in part). What it does not show: which threads run the block (I7), that the roles' trip counts agree (not needed
-for safety), and that the stage registers are not written elsewhere. The last is a simple extra scan: only `advance`'s
+What this shows: the barrier operations appear in the modelled order per role, with the modelled operands and fences (I8
+in part). What it does not show: which threads run the block (I7), that the roles' trip counts agree (not needed for
+safety), and that the stage registers are not written elsewhere. The last is a simple extra scan: only `advance`'s
 statements assign them. It costs one checker in `Check.rac` and one soundness proof against a `Spec` of role traces,
-about the size of `Barriers.rac` (304 lines) plus the regular expression's semantics. This answers `OBLIGATIONS.md`
-§9, decision 6: the AST need not record which addresses are barriers, because the typed instructions and their operand shapes
-identify them. Which threads run a block still needs groups in the AST, or layer 3.
+about the size of `Barriers.rac` (304 lines) plus the regular expression's semantics. This answers `OBLIGATIONS.md` §9,
+decision 6: the AST need not record which addresses are barriers, because the typed instructions and their operand
+shapes identify them. Which threads run a block still needs groups in the AST, or layer 3.
 
 ## 6. What is left out, and the other tracks
 

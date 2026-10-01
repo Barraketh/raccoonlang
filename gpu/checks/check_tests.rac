@@ -212,7 +212,7 @@ namespace T {
   // The launcher runs on the host, where no variable is declared.
   def hostVar : Kernel := Kernel.mk("good", T.goodParams, 1024, T.goodBody, Option.some(Launcher.mk(T.hostParams,
     List.cons(Expr.bin(BinOp.lt, Expr.var(0), Expr.param("N")), List.nil(Expr)), List.cons(T.encodeA, List.nil(MapEncoding)),
-    Grid.persistent(Expr.param("N")), 256)))
+    Grid.persistentPairs(Expr.param("N")), 256)))
 
   def scopedHostVar : Eq(List(String), Check.scoping(T.hostVar), T.one("launcher: v0 is not a host variable")) :=
     Eq.refl(T.one("launcher: v0 is not a host variable"))
@@ -309,7 +309,7 @@ namespace T {
       T.two("64-bit literal 18446744073709551616 does not fit 64 bits", "32-bit literal 4294967297 does not fit 32 bits")))
 
   def wideGrid : Kernel := Kernel.mk("good", T.goodParams, 0, Block.done, Option.some(Launcher.mk(T.hostParams, List.nil(Expr),
-    List.cons(T.encodeA, List.nil(MapEncoding)), Grid.persistent(Expr.lit(4294967296)), 256)))
+    List.cons(T.encodeA, List.nil(MapEncoding)), Grid.persistentPairs(Expr.lit(4294967296)), 256)))
 
   def literalsWideGrid : Eq(List(String), Check.literals(T.wideGrid), T.one("32-bit literal 4294967296 does not fit 32 bits")) :=
     Eq.refl(T.one("32-bit literal 4294967296 does not fit 32 bits"))

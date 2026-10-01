@@ -111,7 +111,6 @@ namespace Spec {
   inductive GridExpr (root: Expr) indices (g: Grid) : Prop
    | blocksX (y: Expr) : GridExpr(root, Grid.blocks(root, y))
    | blocksY (x: Expr) : GridExpr(root, Grid.blocks(x, root))
-   | persistent : GridExpr(root, Grid.persistent(root))
    | pairsX (y: Expr) : GridExpr(root, Grid.pairs(root, y))
    | pairsY (x: Expr) : GridExpr(root, Grid.pairs(x, root))
    | persistentPairs : GridExpr(root, Grid.persistentPairs(root))
@@ -235,7 +234,7 @@ namespace Spec {
    | mk : Barrier(id, threads, Stmt.instr(Instr.barSync(Expr.lit(id), Expr.lit(threads))))
 
   // Each `bar.sync` has literal operands and an id in 1..15, and no two have one id. The AST prints a named barrier
-  // only as `Instr.barSync`, so every named barrier is a `bar.sync` here.
+  // in 1..15 only as `Instr.barSync`, so every such barrier is a `bar.sync` here.
   struct BarrierIds (k: Kernel) : Prop
    | mk (literal: (a: Expr) -> (b: Expr) -> Spec.InBlock(Stmt.instr(Instr.barSync(a, b)), k.body) -> Spec.LiteralPair(a, b))
         (inRange: (s: Stmt) -> (id: Nat) -> (threads: Nat) -> Spec.InBlock(s, k.body) -> Spec.Barrier(id, threads, s) -> And(Nat.le(1, id), Nat.le(id, 15)))

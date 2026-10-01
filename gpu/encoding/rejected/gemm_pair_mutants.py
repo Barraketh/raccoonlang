@@ -96,14 +96,6 @@ MUTANTS = [
         new="""    (finishAccConsumer(e, c), Unit.unit)""",
     ),
     dict(
-        name="single_cta_schedule", expect="ImplicitReconstructionFailed", mentions="Core.Sched",
-        why="Runs the producer's tile loop as a single-CTA kernel's, from `blockIdx.x` in steps of `gridDim.x`: the two "
-            "CTAs of a pair would load different tiles' halves into one stage. The pair's schedule is a `PairSched`, "
-            "which only the pair loops take.",
-        old="""      let (e, p) := forPairTiles(e, sched, fixedProducerAt(r, j), p, tile)""",
-        new="""      let (e, p) := forTiles(e, sched, fixedProducerAt(r, j), p, tile)""",
-    ),
-    dict(
         name="shared_memory_over", expect="EvidenceNotDischarged", mentions="more than sm_100a's 232448",
         why="Deepens the ring to seven stages: 7 × 32 KB of stages and 32 KB of staging buffers exceed what a CTA may "
             "have. The kernel's dynamic shared memory is checked against sm_100a's limit when it is rendered.",
@@ -254,5 +246,12 @@ MUTANTS = [
       let (e, (c, sa)) := forOwnedPairTiles(e, sched, own, fixedPair(fixedAccConsumerAt(q, m, 4), fixedStoreAt(s, m, 4)), (c, sa), tile)
       finishAccConsumer(finishStores(e, stg, sa), c)
     }), Unit.unit)""")],
+    ),
+    dict(
+        name="band_of_no_rows", expect="EvidenceNotDischarged", mentions="a band must have at least one tile row",
+        why="Orders the tiles in bands of zero tile rows: tile index t would lie in band t / 0, so the order would be no "
+            "bijection onto the tiles. `schedule` makes a zero band a generation error.",
+        old="""  def band : Nat := 8""",
+        new="""  def band : Nat := 0""",
     ),
 ]

@@ -135,7 +135,7 @@ The results choose the next performance items (B5).
   shared with other sessions.
 
 **Checks:**
-- Run the checks with `RACCOON=$PWD/target/graalvm/raccoon sh gpu/check.sh` (about 130 s; 186 ok at this commit).
+- Run the checks with `RACCOON=$PWD/target/graalvm/raccoon sh gpu/check.sh` (about 130 s; 189 ok at this commit).
 - The register check needs the CUDA toolkit. NVIDIA ships none for macOS, so it runs in a container: `colima start`,
   then `docker build -t raccoon-cuda:12.9 gpu/toolkit`, then `gpu/toolkit/cuda.sh nvcc …`. Without it, `check.sh`
   prints one "skipped" line.

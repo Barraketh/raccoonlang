@@ -96,7 +96,7 @@ it (`barrierFresh`), and an id is seen after its barrier (`NatSets.inserted`). T
 split on `Check.literal` of each (`pairShape`, `twoLiterals`, `literalSome`), which is the only place the proof
 inspects expressions. The checker's step was named (`barrierStep`), and the decision it matched on became an argument
 of `barrierAt` (`args`), so the lemmas case on variables (F2). `Instr.barSync` is the only statement that prints a
-named barrier. (While the retired `Gpu.rac` had raw `asm` statements, the spec also required that none be a CTA
+named barrier in 1..15. (While the retired `Gpu.rac` had raw `asm` statements, the spec also required that none be a CTA
 barrier, proved through `Lib.startsWithSound`; both went with `Stmt.asm`.)
 
 **I4, literals.** Spec: every `n` that `Lit32(k, n)` (a `lit` in the body or the launcher's expressions, the block

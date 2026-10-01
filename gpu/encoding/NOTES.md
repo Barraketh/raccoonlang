@@ -580,8 +580,8 @@ Observations from building `TWO_CTA.md`'s step 4 for the GEMM (`Core.rac`'s sect
    `peer_skips_store_wait`). The arm now captures no linear value and is handed only leader-only sides
    (`LeaderOnly`, M20); the four mutants are refused, by the closure's kind. The re-review found a third way, a
    register: an arm sets an outer register, and both CTAs read it, vote on it and branch. `set` now refuses a
-   register declared outside the innermost arm (`leader_flag_tile_loop`). `single_cta_schedule` tries the
-   single-CTA tile loop, whose start differs between the CTAs. An accumulator released before its loads is a reused
+   register declared outside the innermost arm (`leader_flag_tile_loop`). `single_cta_schedule` tried the
+   single-CTA tile loop, whose start differs between the CTAs (removed since, with that loop). An accumulator released before its loads is a reused
    `AccFull` (`release_before_loads`).
 7. **The grid trusts residency.** `2·min(SMs/2, tiles)` CTAs, as FA4 launches, assumes every pair of
    SMs holds a cluster. If fewer clusters fit at once, the rest run their whole tile sequences after the others. The
@@ -625,7 +625,8 @@ Observations from building `TWO_CTA.md`'s step 4 for the GEMM (`Core.rac`'s sect
     in every CTA; a combinator that runs a callback conditionally or repeatedly narrows the group or takes an
     unrestricted callback. The audit found every combinator in one of the two kinds, or unconditional, and gave each
     conditional one a standing mutant that captures an outer linear token: nine more, in `gemm_pair_mutants.py`,
-    `tinygemm_mutants.py` and `paged_append_mutants.py`. `forTiles` and `forOwnedTiles` have no client here to mutate.
+    `tinygemm_mutants.py` and `paged_append_mutants.py`. `forTiles` and `forOwnedTiles` had no client here
+    to mutate, and are removed since.
 15. **The evidence names the pair handle.** `leaderOnlyConsumer(ring)` and `leaderOnlyAccProducer(accs)` take the
     `PairRing` and `PairAccRing`, so the evidence speaks of a pair protocol's side, not of any `Consumer`.
 
@@ -731,7 +732,7 @@ Observations from building `Registers.rac`, the bounds in every builder, and the
     trusted; without the toolkit nothing catches it. This is the typed-instructions remedy of REGISTERS.md §9 in small,
     on the printed text.
 13. **Two builders' bounds are never compiled.** `tiledKernel` and `tmaGemmPersistentKernel` have no example in
-    `encoding/`, so the register check never sees their kernels.
+    `encoding/`, so the register check never sees their kernels. (`tmaGemmPersistentKernel` is removed since.)
 
 ## Typed instructions (EVALUATOR.md step 1)
 
@@ -747,8 +748,8 @@ example is byte-identical to the templates' output. `Gpu.namedBarrier`, in the r
 3. **Opened names clash at the `open`.** A `Cuda.asmIn` met `Gpu.asmIn` in `gpu/checks/generic_render.rac`, which
    opened both, and `Cuda.CtaGroup` met `Core.CtaGroup` in every file that opens both. The printer's helpers live in the
    `Cuda.Asm` namespace, which `open Cuda` does not open, and `CtaGroup` moved to `Cuda`, with the printer.
-4. **A new `Stmt` constructor reaches 20 exhaustive matches** across `Check.rac`, `Spec.rac` and four proofs. Each new
-   case copies the `asm` case. Those matches list every `Stmt` constructor, as the house style does; a match that
+4. **A new `Stmt` constructor reached 20 exhaustive matches** across `Check.rac`, `Spec.rac` and four proofs. Each new
+   case copied the `asm` case (`Stmt.asm` is gone since, with the retired `Gpu.rac`). Those matches list every `Stmt` constructor, as the house style does; a match that
    picks one `Instr` constructor out of 37 (`barrierStep`, `resultType`, `rangeMessage`) ends in a wildcard. The ones
    that decide or state a range (`Check.inRange`, `Spec.InRange`) list every constructor, so that a new instruction
    has to be given its range.

@@ -281,7 +281,6 @@ namespace Check {
   def gridExprs (g: Grid): List(Expr) := {
     match g returning List(Expr) with
     | Grid.blocks x y => List.cons(x, List.cons(y, List.nil(Expr)))
-    | Grid.persistent tiles => List.cons(tiles, List.nil(Expr))
     | Grid.pairs x y => List.cons(x, List.cons(y, List.nil(Expr)))
     | Grid.persistentPairs tiles => List.cons(tiles, List.nil(Expr))
   }
@@ -556,7 +555,7 @@ namespace Check {
 
   // I3, named barriers: each `bar.sync` (`Instr.barSync`) has literal operands, an id in 1..15 that no other
   // `bar.sync` of the kernel has, and a thread count that is a positive multiple of 32. The AST prints a named
-  // barrier only as `Instr.barSync`. (A loop body is generated once, so a barrier in one has one id however often it
+  // barrier in 1..15 only as `Instr.barSync`. (A loop body is generated once, so a barrier in one has one id however often it
   // runs.)
   def namedBarriers (k: Kernel): List(String) :=
     Check.inOrder(Check.blockFold(Scan, k.body, Scan.mk(NatSet.empty, List.nil(String)), Check.barrierStep).found)

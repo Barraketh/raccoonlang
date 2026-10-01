@@ -1,5 +1,5 @@
-# The encoding core's TinyGEMM with one mistake each: every rule of the Blackwell layer (gpu/DESIGN.md) refuses the
-# program that breaks it. A protocol's side, with no `…Done` token to hand back, is linear and belongs to its opener's
+# The encoding core's TinyGEMM with one mistake each: each rule of the Blackwell layer (gpu/DESIGN.md) that TinyGEMM
+# exercises refuses the program that breaks it. A protocol's side, with no `…Done` token to hand back, is linear and belongs to its opener's
 # scope, so a role that ends without its finisher is refused as leaving it unused; and one finished inside the chunk
 # loop, whose body captures no linear value, is refused too (M23). Run by check.sh through gpu/mutate.py.
 
@@ -126,9 +126,9 @@ MUTANTS = [
         new="",
     ),
     dict(
-        name="store_before_handoff", expect="TypeMismatch",
-        why="Reads the accumulator without waiting for the issuer's commit: `loadAccChunk` needs `Acc(a, ready)`, "
-            "which only `recvAcc` makes.",
+        name="store_before_handoff", expect="TypeMismatch", mentions="Lifetime.union(Lifetime.union(Lifetime.union(a, h), s), m)",
+        why="Reads the accumulator without waiting for the issuer's commit: `forChunks`'s state is `Acc(a, ready)`, "
+            "which only `recvAcc` makes; `recv` is an `AccRecv` of the handoff's scope.",
         old="""    let (e, acc) := recvAcc(e, hd, recv)
     let (e, sa) := takeStore(e, stg, side)
     let (e, (acc, sa)) := forChunks(e, k.tile, own, fixedPair(fixedAcc(a, AccState.ready), fixedStoreAt(s, m, groupWarp)), (acc, sa), chunk)""",
@@ -206,5 +206,24 @@ MUTANTS = [
         why="Counts the K slices by dividing by zero: `ceilDivC` asks for a positive divisor as evidence.",
         old="""ceilDivC(k.k, 64)""",
         new="""ceilDivC(k.k, 0)""",
+    ),
+    dict(
+        name="store_before_fence", expect="ImplicitReconstructionFailed", mentions="StageFenced",
+        why="Issues the TMA store without the proxy fence: the threads' `st.shared` writes are not ordered before the "
+            "async proxy's reads of the buffer. `storeStage` needs the `StageFenced` that `fenceStage` hands out.",
+        old="""      let (e, fenced) := fenceStage(e, written)
+      let (e, sa) := storeStage(e, stg, fenced, k.c, ch, co)""",
+        new="""      let (e, sa) := storeStage(e, stg, written, k.c, ch, co)""",
+    ),
+    dict(
+        name="epilogue_misaligned", expect="EvidenceNotDischarged", mentions="aligned of Core.takeStore",
+        why="Takes the storing side on warps 5 to 8: a warp reads the tensor-memory lanes of its rank in its aligned "
+            "warpgroup, so an unaligned group would store rows of C from another warp's lanes. `takeStore` asks for "
+            "the alignment as evidence.",
+        old="""  def kernel : Program :=""",
+        new="""  def misaligned {s: Lifetime}(stg: Staging(s))(side: StoreSide(s))(m: Lifetime)(e: Ctx(m, Group.warps(5, 4)))
+      : Pair(Ctx(m, Group.warps(5, 4)), StoreAt(s, m, 5)) := takeStore(e, stg, side)
+
+  def kernel : Program :=""",
     ),
 ]

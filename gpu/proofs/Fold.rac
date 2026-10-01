@@ -329,7 +329,6 @@ namespace Fold {
     match h returning Spec.Mem(Expr, root, Check.gridExprs(g)) with
     | Spec.GridExpr.blocksX y => Spec.Mem.here(root, List.cons(y, List.nil(Expr)))
     | Spec.GridExpr.blocksY x => Spec.Mem.there(x, List.cons(root, List.nil(Expr)), Spec.Mem.here(root, List.nil(Expr)))
-    | Spec.GridExpr.persistent => Spec.Mem.here(root, List.nil(Expr))
     | Spec.GridExpr.pairsX y => Spec.Mem.here(root, List.cons(y, List.nil(Expr)))
     | Spec.GridExpr.pairsY x => Spec.Mem.there(x, List.cons(root, List.nil(Expr)), Spec.Mem.here(root, List.nil(Expr)))
     | Spec.GridExpr.persistentPairs => Spec.Mem.here(root, List.nil(Expr))

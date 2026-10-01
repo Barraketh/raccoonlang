@@ -6,9 +6,9 @@ plan of §8, verified in Raccoon. `DESIGN.md` explains the design; this document
 
 ## 1. The claim
 
-Let `P` be any Raccoon program that type-checks against `gpu/Prelude.rac`, imports the encoding core
-(`encoding.Core`, `gpu/encoding/Core.rac`), and prints `Core.render(p)` for a `Program p`. Then the printed CUDA C++, compiled for sm_100a and launched by its generated
-launcher (or, for a kernel without one, as its builder's launch contract says), satisfies:
+Let `P` be any Raccoon program that type-checks against `gpu/Prelude.rac`, imports the encoding core (`encoding.Core`,
+`gpu/encoding/Core.rac`), and prints `Core.render(p)` for a `Program p`. Then the printed CUDA C++, compiled for sm_100a
+and launched by its generated launcher (or, for a kernel without one, as its builder's launch contract says), satisfies:
 
 - **S1, no data race.** No two accesses to one shared- or global-memory location, at least one a write, from
   different threads or from a thread and an asynchronous unit (TMA, tensor cores), are unordered by the CUDA/PTX
@@ -54,11 +54,11 @@ Each assumption is our reading of NVIDIA's documentation and CUTLASS's usage. "E
 `DESIGN.md` §7 depend on it and passed; that supports the assumption but does not prove it.
 
 A19–A33 are the attention core's (`gpu/encoding/Core.rac`, `ATTENTION.md` §4.3, which numbers them so), and A39 its
-score buffer's (A3a, `encoding/A3.md`); none is exercised yet, since no attention kernel has run on hardware. A34–A38 are the TMA-store epilogue's, numbered
-A19–A23 before the attention core's assumptions took those numbers. A40–A42 are paged decode's
-(`encoding/P2.md`), and A43–A56 the CTA pair's (`encoding/TWO_CTA.md`, with the facts and citations in
-`encoding/TWO_CTA_FACTS.md`), A57–A59 the correction warpgroup's (A3b, `encoding/A3B.md`), and A60 the persistent
-pair GEMM's (`encoding/TWO_CTA.md` §6 step 4), none exercised.
+score buffer's (A3a, `encoding/A3.md`); none is exercised yet, since no attention kernel has run on hardware. A34–A38
+are the TMA-store epilogue's, numbered A19–A23 before the attention core's assumptions took those numbers. A40–A42 are
+paged decode's (`encoding/P2.md`), and A43–A56 the CTA pair's (`encoding/TWO_CTA.md`, with the facts and citations in
+`encoding/TWO_CTA_FACTS.md`), A57–A59 the correction warpgroup's (A3b, `encoding/A3B.md`), and A60 the persistent pair
+GEMM's (`encoding/TWO_CTA.md` §6 step 4), none exercised.
 
 | # | Assumption | Source | Confidence |
 |---|---|---|---|
@@ -134,7 +134,7 @@ the builders do.
 |---|---|---|
 | I1 | Every variable is declared once per kernel, before use, in an enclosing C scope. | Fresh names from `Gen`; lifetimes (M2). Checked on the output by `Check.scoping`: each id declared once, used only in the C scope of its declaration and after it (a loop's variable in its body), and no variable, thread, block or grid index, shared address or array element in the launcher. |
 | I2 | Dynamic shared-memory regions are disjoint and aligned as requested. Total ≤ 232448 bytes. Dynamic memory only with a launcher. Never mixed with static arrays. | Bump allocation (`reserve`). Checked on the output by `Check.sharedMemory`: the total, the launcher, no static array with dynamic memory, and every constant offset into the buffer inside it. Disjointness, alignment, and offsets plus run-time indices are not in the AST. |
-| I3 | Each join's named barrier has its own id in 1..15, and its count is its group's threads. | `join`, with a check. Checked on the output by `Check.namedBarriers`: each `bar.sync` (`Cuda.Instr.barSync`, the only statement that prints a named barrier) has literal operands, an id in 1..15 that no other has, and a count that is a positive multiple of 32. That the count is its group's is not in the AST. |
+| I3 | Each join's named barrier has its own id in 1..15, and its count is its group's threads. | `join`, with a check. Checked on the output by `Check.namedBarriers`: each `bar.sync` (`Cuda.Instr.barSync`, the only statement that prints a named barrier in 1..15) has literal operands, an id in 1..15 that no other has, and a count that is a positive multiple of 32. That the count is its group's is not in the AST. |
 | I4 | Every `u32` literal is below 2^32, and every immediate an instruction prints is in range. | Checked on the output by `Check.literals`: every 32-bit literal of the kernel and its launcher, and the launcher's block size and boxes, below 2^32; every 64-bit literal below 2^64. The other `u` literals the printer writes, shared-window offsets and the launch's shared bytes, are bounded by I2's check in the body; I1's keeps shared addresses out of the launcher. Every instruction `InRange`. The immediates the printer writes, in PTX's ranges: `setmaxnreg`'s count (a multiple of 8 in 24..256), `mov.b32`'s bits (below 2^32), the multicast commit's CTA mask (its 16-bit register), `cp.async.bulk.wait_group`'s count (a 64-bit constant), the vector widths of `tcgen05.ld`/`st` (`.num`, a power of 2 up to 128) and `st.shared` (2 or 4); and `shfl`'s lane below 32, the library's rule (PTX reads the operand's low 5 bits). The descriptors: an instruction descriptor's shape is one of Table 48's for kind::f16 and its CTA group, which then fits Table 51's fields; a shared-memory descriptor's leading byte offset (a multiple of 16 below 2^18) and step (below 2^13) fit Table 49's fields. Not checked: that a shared-memory descriptor's run-time start address plus its step stays in the window. |
 | I5 | The kernel's name is a C identifier; every other printed name is the library's. | `uniformParam` needs the Key (M8). Checked on the output by `Check.names`: the kernel's, the parameters' and the tensor maps' names are C identifiers the printer does not declare itself (`v` and digits, `gpu_…`, the launcher's locals), none is the kernel's name, each is declared once in its function, and every parameter an expression names is its function's. C++ keywords, CUDA's names and host library symbols are not excluded: the first two fail to compile, but an `extern "C"` kernel named as a host symbol is not ruled out. |
 | I6 | The launcher passes the kernel's parameters in order. It asks for and launches with exactly the kernel's dynamic shared memory. It encodes each operand's tensor map with its `TMap` box, bf16 and 128-byte swizzle, and the output's as `CMap` says (f32, 32×32, 128-byte swizzle). It launches the grid the builder assumes. | The printer passes the parameters in order and the kernel's shared memory, and takes a map's element type from its source. Checked on the output by `Check.launcher`: the launcher declares each non-map parameter as the kernel does, and encodes each tensor map exactly once, for the use (load or store) the kernel's parameter declares, over one of the launcher's own arrays of the kind and element type that use needs (a bf16 input to load, an f32 output to store; two maps may share an array), with two u32 scalars of its own. That the body loads only through load maps and stores only through store maps, the box beyond fitting 32 bits, and the grid are the builders'. |
@@ -185,13 +185,14 @@ of them, and closed its protocols on `…Done` tokens instead of M15.
 - **M12, row affinity.** Every per-row access (tensor-memory loads and stores of the 32x32b shape, `storeO`'s global
   row) computes its row from the executing thread, never from an argument: a tensor-memory lane from `warp mod 4` and
   the lane (`quadrantLanes`), a global row from the builder's row expression (`AttnOut`'s, `Mask`'s), which reads the
-  warp and lane, and the `AttnOut`'s first row of the CTA, which reads the block indices. A global row is the CTA's only for the warpgroups the builder meant, so the store needs the `OOwn` of
-  that warpgroup (`OOwn(l, t, f)`): one tile's CTA hands that of warps 4–7, the pair kernel those of warps 0–3 and 4–7
-  (`storeO`, `storeFinal`). Per-row data (the statistics registers) never crosses threads except through a core protocol that
-  indexes both sides the same way, so each thread's running maximum and sum describe the row its loads read. The
-  statistics registers are data, not protocol state: they choose no barrier, phase or buffer, so they need no
-  endpoint token and M6 does not apply to them; a wrong value is a wrong result, not a race. They are thread-bound
-  anyway, by M2: they are declared in the warpgroup's side of a split, so no other role can name them.
+  warp and lane, and the `AttnOut`'s first row of the CTA, which reads the block indices. A global row is the CTA's only
+  for the warpgroups the builder meant, so the store needs the `OOwn` of that warpgroup (`OOwn(l, t, f)`): one tile's
+  CTA hands that of warps 4–7, the pair kernel those of warps 0–3 and 4–7 (`storeO`, `storeFinal`). Per-row data (the
+  statistics registers) never crosses threads except through a core protocol that indexes both sides the same way, so
+  each thread's running maximum and sum describe the row its loads read. The statistics registers are data, not protocol
+  state: they choose no barrier, phase or buffer, so they need no endpoint token and M6 does not apply to them; a wrong
+  value is a wrong result, not a race. They are thread-bound anyway, by M2: they are declared in the warpgroup's side of
+  a split, so no other role can name them.
 - **M13, thread-written tensor memory.** A thread-written tensor-memory operand (P, and Ô after a rescale) is
   published only by the sealed sequence `__syncwarp`, `wait::st`, `fence::before_thread_sync`, arrive (`publishP`),
   and consumed only after wait, `fence::after_thread_sync` (`awaitP`) (PTX §9.7.18.6.4.4). This extends M9 to the
@@ -200,15 +201,16 @@ of them, and closed its protocols on `…Done` tokens instead of M15.
   chunks written (`PFree(…, next)`), and the publishing operation requires the full count (`publishP` needs 16).
 - **M15, sides end in their finishers** (the readability review). A protocol's sides (`withRing`'s, `withAccRing`'s,
   `withExchange`'s and `withStaging`'s endpoints and every typestate token derived from them, `OFinal` included) are
-  linear and belong to the opener's scope, which the callback's result cannot name (`docs/implemented/SCOPE_CONTAINMENT.md`), so
-  the callback uses every side up before the opener closes. Every operation that takes a side gives one back, except
-  its finisher: the waiting finishers `finishProducer`, `finishAccProducer` and `finishStores` (drains and waits), and
-  `finishExWriter` (a wait, giving `OFinal`, which only `closeExWriter` ends); and the code-free `finishConsumer`,
-  `finishAccConsumer`, `finishExReader` and `closeExWriter`, whose sides' issued work is released to the waiting side.
-  So a close follows the drain, as a `…Done` token's return made it do (M7, M11). A new operation that took a side
-  and gave none back would have to drain as the waiting finishers do. A3a's score buffer adds the waiting `awaitFinal`
-  (giving `Final`, which only `closeRows` ends) and the code-free `finishMma` and `closeRows`; A3b's correction side
-  the code-free `finishCorrection`, whose every publish waited for its stores.
+  linear and belong to the opener's scope, which the callback's result cannot name
+  (`docs/implemented/SCOPE_CONTAINMENT.md`), so the callback uses every side up before the opener closes. Every
+  operation that takes a side gives one back, except its finisher: the waiting finishers `finishProducer`,
+  `finishAccProducer` and `finishStores` (drains and waits), and `finishExWriter` (a wait, giving `OFinal`, which only
+  `closeExWriter` ends); and the code-free `finishConsumer`, `finishAccConsumer`, `finishExReader` and `closeExWriter`,
+  whose sides' issued work is released to the waiting side. So a close follows the drain, as a `…Done` token's return
+  made it do (M7, M11). A new operation that took a side and gave none back would have to drain as the waiting finishers
+  do. A3a's score buffer adds the waiting `awaitFinal` (giving `Final`, which only `closeRows` ends) and the code-free
+  `finishMma` and `closeRows`; A3b's correction side the code-free `finishCorrection`, whose every publish waited for
+  its stores.
 - **M16, overlays** (A3a). Where one region's columns are read and then overwritten, the write takes the token that
   only the completed reads give. Threads writing over what they read (P over S) write from `Loaded`, which only
   `loadRow` makes, after its `wait::ld`; the tensor cores writing over what an earlier MMA of the same thread reads
@@ -217,12 +219,13 @@ of them, and closed its protocols on `…Done` tokens instead of M15.
   Between the two sides the reads are ordered by the buffer's barriers, as M9 and M13 order the exchange's.
 - **M17, claims** (P2's append, `encoding/P2.md` §2). A write whose target the run-time data chooses needs a fact
   about that data, and the fact is a claim. Three things carry it:
-  - **Exclusivity**, from the atomic. Every write of an owner word in a launch stores that launch's epoch (step 3's
-    CAS stores `epoch·2^32 + b`, and nothing else writes the owners), so once a word holds the launch's epoch no claim
-    changes it, and two claims of one word that hold are for one sequence and one head, so one warp. A failed CAS
-    found the launch's epoch, so none needs a retry. The step 1 read must be single-copy atomic (A41): a torn read
-    could pair this launch's epoch with another word's sequence. This holds for any start values of the owners and
-    any epochs; a reused epoch can refuse a claim, or re-admit a sequence's own earlier claim, never two sequences. `encoding/harness/claim_model.py` checks it on every interleaving.
+  - **Exclusivity**, from the atomic. Every write of an owner word in a launch stores that launch's epoch (step 3's CAS
+    stores `epoch·2^32 + b`, and nothing else writes the owners), so once a word holds the launch's epoch no claim
+    changes it, and two claims of one word that hold are for one sequence and one head, so one warp. A failed CAS found
+    the launch's epoch, so none needs a retry. The step 1 read must be single-copy atomic (A41): a torn read could pair
+    this launch's epoch with another word's sequence. This holds for any start values of the owners and any epochs; a
+    reused epoch can refuse a claim, or re-admit a sequence's own earlier claim, never two sequences.
+    `encoding/harness/claim_model.py` checks it on every interleaving.
   - **Confinement**, from the arm. `withClaim` runs its arm only where the claim holds, and the row the warp writes is
     the one lane 0 claimed, by data flow (the broadcast), not a lane's own reading of the table. `Claimed`, which only
     the arm receives, belongs to its scope, and the arm returns the emitter alone.
@@ -236,27 +239,30 @@ of them, and closed its protocols on `…Done` tokens instead of M15.
   client code reads a value that differs between the CTAs: the rank is the core's (`CtaPair`), which uses it only to
   choose the leader's arm and each CTA's half, and the client's other values are the launch's parameters, literals and
   loop indices, the same in both CTAs, or thread-grain values, which no loop count or uniform branch takes. A
-  disagreement, as from a mistaken count, deadlocks: the extra fills wait in their producer's tail for releases that never come, and that CTA
-  never reaches the close's cluster barrier. A persistent pair kernel's roles loop over its tiles (`forPairTiles`), each
-  from `%clusterid.x` in steps of `%nclusterid.x` up to the tile count, all three the same in both CTAs (A60, M10): so
-  both CTAs visit one tile sequence, and every role the same number of tiles. No role's loop runs in one CTA only:
+  disagreement, as from a mistaken count, deadlocks: the extra fills wait in their producer's tail for releases that
+  never come, and that CTA never reaches the close's cluster barrier. A persistent pair kernel's roles loop over its
+  tiles (`forPairTiles`), each from `%clusterid.x` in steps of `%nclusterid.x` up to the tile count, all three the same
+  in both CTAs (A60, M10): so both CTAs visit one tile sequence, and every role the same number of tiles. No role's loop
+  runs in one CTA only:
   - a loop uses up its role's side, which an `onLeader` arm cannot capture (M20, M23), and the leader-only sides'
     loop, the issuer's, has no counterpart in the peer;
-  - no value of the leader's alone reaches code both CTAs run, so none can choose a trip count or a branch there. An
-    arm hands back only its context, and the only unrestricted mutable state it could write is a register declared
-    outside it, which `set` refuses at generation. Everything else that a write reaches (shared tiles, staging
-    buffers, global memory, tensor memory, claims) needs a linear token, which the arm cannot capture. No side can get a phase ahead, since each CTA's `empty[s]` receives only
-  the leader's commits for that stage, and the leader's `full[s]` both CTAs' bytes for the same round.
-- **M19, pair resources** (pair). A pair opener (`withPairTmem`, `withPairRing`, `withPairAccRing`) takes the
-  kernel's own context, `Ctx(l, …)` with the kernel's `CtaPair(l)`, so it runs in the kernel's top-level spine and
-  never under a branch, loop, role or other scope, each of which has a lifetime of its own. Every thread of both CTAs
-  runs every opener and close, in one order, from one generated text, so both CTAs' layouts are equal. An opener
-  publishes its barriers (A45) before its callback runs; its close waits at a cluster barrier (A44) after the
-  callback, whose sides have all been finished (M15), then invalidates or frees. The single-CTA openers (`withRing`,
-  `withTmem`, `withAccHandoff`, `withAccRing`, `withExchange`, `withScoreBuffer`, `withCorrectedBuffer`) read the kernel's CTA group from the
-  generation state and refuse in a pair kernel, and every `tcgen05` instruction prints that group, so a kernel uses one
-  (A29). Every barrier wait and commit prints the group's form too (`.acquire.cluster`, the commit multicast to both
-  CTAs). A pair kernel asks for at least `pairShared` bytes of shared memory, so its CTAs have SMs of their own (A56).
+  - no value of the leader's alone reaches code both CTAs run, so none can choose a trip count or a branch there. An arm
+    hands back only its context, and the only unrestricted mutable state it could write is a register declared outside
+    it, which `set` refuses at generation. Everything else that a write reaches (shared tiles, staging buffers, global
+    memory, tensor memory, claims) needs a linear token, which the arm cannot capture. No side can get a phase ahead,
+    since each CTA's `empty[s]` receives only the leader's commits for that stage, and the leader's `full[s]` both CTAs'
+    bytes for the same round.
+- **M19, pair resources** (pair). A pair opener (`withPairTmem`, `withPairRing`, `withPairAccRing`) takes the kernel's
+  own context, `Ctx(l, …)` with the kernel's `CtaPair(l)`, so it runs in the kernel's top-level spine and never under a
+  branch, loop, role or other scope, each of which has a lifetime of its own. Every thread of both CTAs runs every
+  opener and close, in one order, from one generated text, so both CTAs' layouts are equal. An opener publishes its
+  barriers (A45) before its callback runs; its close waits at a cluster barrier (A44) after the callback, whose sides
+  have all been finished (M15), then invalidates or frees. The single-CTA openers (`withRing`, `withTmem`,
+  `withAccHandoff`, `withAccRing`, `withExchange`, `withScoreBuffer`, `withCorrectedBuffer`) read the kernel's CTA group
+  from the generation state and refuse in a pair kernel, and every `tcgen05` instruction prints that group, so a kernel
+  uses one (A29). Every barrier wait and commit prints the group's form too (`.acquire.cluster`, the commit multicast to
+  both CTAs). A pair kernel asks for at least `pairShared` bytes of shared memory, so its CTAs have SMs of their own
+  (A56).
 - **M20, the leader** (pair). Tensor-core work and commits are issued only in the leader. The endpoints that issue
   them, a pair ring's consumer and a pair accumulator ring's issuing side, are taken only with a `Leader(n)`, which
   only `onLeader`'s arm holds and which belongs to the arm's scope; every MMA and commit consumes a token derived from
@@ -295,8 +301,8 @@ of them, and closed its protocols on `…Done` tokens instead of M15.
   in one CTA of the pair, kept its group, and captured linear sides, so a side could be finished in the leader alone.
   - **Narrowing:** `split`, `elect`, and the role builders on them (`Layout.roles4`, `rolesPair`, `rolesCorrected`,
     `splitWarpgroups`, `withShare`).
-  - **Unrestricted:** `branch`, `when`, the loops (`loop`, `loopFrom`, `loopPeeled`, `forChunks`, `forTiles`,
-    `forOwnedTiles`, `forPairTiles`, `forOwnedPairTiles`, `forHalfChunks`), `withClaim` and `onLeader`; and the
+  - **Unrestricted:** `branch`, `when`, the loops (`loop`, `loopFrom`, `loopPeeled`, `forChunks`, `forPairTiles`,
+    `forOwnedPairTiles`, `forHalfChunks`), `withClaim` and `onLeader`; and the
     generation-time repetitions, which emit a callback once per chunk (`eachChunk`, `writeP`, `mapChunks`, `mapRow`).
   - **Unconditional:** the openers (`shared`, `reads`, `withRing`, `withTmem`, `splitTmem`, `withAccHandoff`,
     `withAccRing`, `withStaging`, `withExchange`, the score buffers and the pair openers), whose callbacks run once on
@@ -306,14 +312,13 @@ of them, and closed its protocols on `…Done` tokens instead of M15.
   (`forChunks`), and in `gemm_pair_mutants.py` `stores_wait_in_branch`, `stores_wait_in_when`,
   `stores_wait_in_loop_from`, `stores_wait_in_peeled_rest`, `stores_wait_in_tile_loop`,
   `store_side_captured_by_owned_tile_loop`, `reader_finished_in_chunk_loop` and the four `onLeader` mutants.
-  `forTiles` and `forOwnedTiles` have no client in `encoding/`; their bodies' type is `forPairTiles`'s.
 - **M24, register shares** (`encoding/REGISTERS.md`). A warpgroup's register count changes only through its share,
   which only `encoding/Registers.rac` makes and ends:
   - **The pool.** A kernel that changes counts has the CTA's register pool, `RegPool(l, threads, b)`, created by its
     builder (`Registers.pool`) at the budget b of the threads and residency it compiles for, so every warp enters at
     b (A59). It is unrestricted: evidence of b, which the context does not carry.
-  - **The split** (`Registers.split`) gives each warpgroup of a 512-thread CTA its `RegShare(l, f, b, count)`, linear, if
-    the counts fit the pool: each one `setmaxnreg` takes, and 128 · Σ counts ≤ 512 · b (evidence). So every first
+  - **The split** (`Registers.split`) gives each warpgroup of a 512-thread CTA its `RegShare(l, f, b, count)`, linear,
+    if the counts fit the pool: each one `setmaxnreg` takes, and 128 · Σ counts ≤ 512 · b (evidence). So every first
     increase finds the registers the first decreases free.
   - **The emitters** (`Core.withShare`, `Core.regsBack`) need the Key and a share, and print the change its type
     states: from the share's b to its count as the first instruction of warpgroup f's branch, and back to b after the
@@ -341,8 +346,8 @@ warpgroup (`encoding/A3B.md`), M23 for every combinator of `encoding/Core.rac`, 
 Each sealed operation must emit code that establishes what its result types claim, given what its argument types
 claim. Types are abbreviated; "code" is what it emits into its `Ctx`.
 
-§6.1–§6.9 state the operations the core began with, as the retired `Gpu.rac` built them. The core keeps them, with
-the changes §6.10 lists and the notes headed "In `encoding/Core.rac`".
+§6.1–§6.9 state the operations the core began with, as a copy of the retired `Gpu.rac`. Where they close a protocol
+on a `…Done` token, §6.10 says how the core closes it instead.
 
 ### 6.1 Values and registers
 | Operation | Requires | Emits | Establishes | Relies on |
@@ -395,7 +400,6 @@ the changes §6.10 lists and the notes headed "In `encoding/Core.rac`".
 | `mmaFirst`, `mmaNext` | `Ready(r, m)`, `Elected(m)`, `Acc(empty)` / `AccPending(a, m)`; shape passes `mmaShapeOk` (M = 128, N = cols) | K/16 `tcgen05.mma` from the stage's descriptors into the accumulator, the first overwriting | `ReadyUsed(r, m)`, `AccPending(a, m)` | A11 |
 | `sendAcc` | `AccPending(a, m)`, `Elected(m)` | `tcgen05.commit` to the handoff | the handoff completes when every MMA completed | A12 |
 | `recvAcc` | `AccRecv` | wait the handoff at parity 0, `after_thread_sync` | `Acc(ready)`: every column written (N = cols) and visible | A6, A13 |
-| `stageAcc` | `Acc(ready)`, `StageFree`, a `ChunkAt(p, cols)` of the accumulator's width, aligned warpgroup | as `stageAccFull` (§6.7), from the accumulator's columns | `StageWritten`, the accumulator still `ready` | A13, A14 |
 
 ### 6.7 The output
 | Operation | Requires | Emits | Establishes | Relies on |
@@ -404,13 +408,12 @@ the changes §6.10 lists and the notes headed "In `encoding/Core.rac`".
 | `withStaging` | `cta` context, bufs > 0 | 4·bufs buffers of 4096 bytes, 1024-byte aligned | `Staging`, `StoreSide`; closes only on `StoreDone`, when no store reads the buffers | I2, A34 |
 | `takeStore` | aligned warpgroup `warps(f, 4)` in scope `m` (evidence) | the buffer-index register, 0 | `StoreAt(s, m, f)`: every warp's current buffer free, no store of its lane 0 in flight | M6, A35 |
 | `acquireStage` | `StoreAt` | lane 0: `cp.async.bulk.wait_group.read (bufs − 1)`; `__syncwarp` | `StageFree`: the store that last read the current buffer, `bufs` groups back, finished reading, before any thread's next write | A35, A36, A37 |
-| `stageAccFull` | `AccFull`, `StageFree`, a `ChunkAt(p, n)` of the buffer's width | `__syncwarp`, `after_thread_sync`, 4 `tcgen05.ld.32x32b.x8`, `wait::ld`, 8 `st.shared.v4.f32` of the thread's row in the 128-byte swizzle | `StageWritten`: the warp's 32 rows of the chunk in the buffer; the loads complete, so the accumulator may be released | A13, A14 |
 | `fenceStage` | `StageWritten` | every thread `fence.proxy.async.shared::cta`, `__syncwarp` | `StageFenced`: the writes ordered before any async-proxy read issued after | A36, A37 |
 | `storeStage` | `StageFenced`, `ChunkAt` and `ChunkOwn` of one chunk, `CMap` | every lane: the buffer's address and the row `row0 + 32·(warp mod 4)` (the warp index is a full-warp `__shfl_sync`, A1, so never under the lane-0 branch); lane 0: TMA store of the buffer to (`col0`, row), `commit_group`; next buffer | `StoreAt`: one more group, reading the buffer just left; the warp's rows of the chunk written once, clipped to C | A34, A35, S5 |
 | `finishStores` | `StoreAt` | lane 0: `cp.async.bulk.wait_group 0`; `__syncwarp` | `StoreDone`: every store of the warpgroup complete, reads and writes | A35, A37, A38 |
 
-In `encoding/Core.rac`, `stageAcc` and `stageAccFull` are each split in two, so that a chunk is loaded before its
-staging buffer is waited for and the load does not queue behind the store that last read the buffer:
+A chunk is loaded before its staging buffer is waited for, so that the load does not queue behind the store that
+last read the buffer:
 
 | Operation | Requires | Emits | Establishes | Relies on |
 |---|---|---|---|---|
@@ -420,22 +423,21 @@ staging buffer is waited for and the load does not queue behind the store that l
 ### 6.8 Persistent GEMM
 | Operation | Requires | Emits | Establishes | Relies on |
 |---|---|---|---|---|
-| `tmaGemmPersistentKernel` | a band height G > 0 (else `#error`) | `tilesM`, `tilesN`, `tiles = tilesM·tilesN`, `bandRows = min(tilesM, G)`, `bandTiles = bandRows·tilesN`, all below 2^32 by the launcher's extent checks | `Sched`, `SchedOwn` | A18 |
-| `forTiles`, `forOwnedTiles` | `Fixed(S)`; `SchedOwn` for the owned loop | `for (t = blockIdx.x; t < tiles; t += gridDim.x)` (the schedule's start and step), and in the body the tile's origin by the band order (`DESIGN.md` §6) | per iteration a `TileAt`, and for the owned loop a `TileOwn`. **Obligation:** the band order is a bijection from `[0, tiles)` onto the tiles for every M, N and G > 0 (the last band may have fewer rows), so CTAs visit disjoint tiles, and the one owning loop visits each tile once. Argued in `Core.tileLoop`; checked exhaustively on the host for grids up to 48×48 tiles and G ≤ 20, and on the GPU by coverage (the retired core's `harness/gemm_test.cu`) | M5, S5, A18 |
+| `schedule`, `tileLoop` | a band height G > 0 (else `#error`); `Fixed(S)` for the loop | `tilesM`, `tilesN`, `tiles = tilesM·tilesN`, `bandRows = min(tilesM, G)`, `bandTiles = bandRows·tilesN`, all below 2^32 by the launcher's extent checks; `for (t = start; t < tiles; t += step)`, and in the body the tile's origin by the band order (`DESIGN.md` §6) | `Sched`; per iteration a `TileAt`. **Obligation:** the band order is a bijection from `[0, tiles)` onto the tiles for every M, N and G > 0 (the last band may have fewer rows), so visitors with disjoint start sequences visit disjoint tiles. Argued in `Core.tileLoop`; checked exhaustively on the host for grids up to 48×48 tiles and G ≤ 20 (`encoding/harness/tinygemm_test.cu`) | M5, S5, A18 |
 | `withAccRing` | `Acc(empty)`, bufs·n ≤ cols | full (count 1) and empty (count 128) barriers per buffer, thread 0 then arriving with count 128 on each empty barrier, completing its phase 0; `inval` at close | producer and consumer sides; closes on both `…Done`, handing back `Acc(empty)` | A6–A8 |
 | `takeAccProducer` / `takeAccConsumer` | an elected lane / an aligned warpgroup | the side's registers (0/0 and 0/0) | the side, bound to that thread or warpgroup | M6 |
 | `acquireAcc` | producer side | wait `empty[buf]`, `after_thread_sync` | `AccFree`: the epilogue's loads of the buffer are done | A6, A13 |
-| `mmaFirstInto`, `mmaNextInto` | `Ready`, `AccFree` / `AccFilling`; N = n | MMAs into the buffer's columns | `AccFilling` | A11 |
+| `mmaFirstInto` | `Ready`, `AccFree`; N = n | MMAs into the buffer's columns | `AccFilling` | A11 |
 | `commitAcc` | `AccFilling`, `Elected(m)` | `tcgen05.commit` to `full[buf]`, advance | the buffer completes when its MMAs do | A12 |
 | `finishAccProducer` | producer side | `bufs` waits on `empty`, advancing | every buffer was read: no tensor-core work in flight | A6 |
 | `awaitAcc` | consumer side | wait `full[buf]`, `after_thread_sync` | `AccFull`: the buffer's results are visible | A6, A13 |
-| `releaseAcc` | `AccFull` | `before_thread_sync`, 128 arrivals on `empty[buf]`, advance | the buffer is free to the issuer: every chunk's loads completed (`wait::ld` in `stageAccFull`) | A13 |
+| `releaseAcc` | `AccFull` | `before_thread_sync`, 128 arrivals on `empty[buf]`, advance | the buffer is free to the issuer: every chunk's loads completed (`wait::ld` in `loadBufferChunk`) | A13 |
 
 ### 6.9 Kernels
 | Operation | Requires | Emits | Establishes | Relies on |
 |---|---|---|---|---|
 | `tiledKernel` | a body over `cta(tile²)` | `__launch_bounds__(tile², 1)`; the kernel; no launcher | a `Program` | I1–I7 |
-| `tmaGemmKernel`, `tmaGemmPersistentKernel` | a body; boxes pass `gemmShapeOk` | `__launch_bounds__(256, 1)`; the kernel (parameters `A_map`, `B_map`, `C_map`, `M`, `N`, `K`) and its launcher (extent checks, `N mod 4 = 0`, the three map encodings, shared-memory attribute, grid); for `tmaGemmKernel` the CTA's `TileAt` from the block indices and its `TileOwn` | a `Program` | A17, A34, I6 |
+| `tmaGemmKernel` | a body; boxes pass `gemmShapeOk` | `__launch_bounds__(256, 1)`; the kernel (parameters `A_map`, `B_map`, `C_map`, `M`, `N`, `K`) and its launcher (extent checks, `N mod 4 = 0`, the three map encodings, shared-memory attribute, grid); for `tmaGemmKernel` the CTA's `TileAt` from the block indices and its `TileOwn` | a `Program` | A17, A34, I6 |
 | `finish` | the Key; the CTA's threads n and its residency r, as its builder states them | `#error` lines for every generation error | the `Program`, with its bounds (n, r) | — |
 | `render` | a `Program`; `Check.WellFormed` of its kernel, discharged by evaluating the checkers | `__launch_bounds__(n, r)` of the `Program`; the printed kernel | no generation error; I1–I6 as far as the AST shows them; a thread's registers within `Registers.budget(n, r)`, so the kernel never fails to launch for lack of them | the printer, `gpu/Check.rac` |
 
@@ -444,18 +446,18 @@ staging buffer is waited for and the load does not queue behind the store that l
 The operations `gpu/encoding/Core.rac` adds to those of §6.1–§6.9 (`ATTENTION.md` §3, §4.2), as built for A1, A2 and
 paged attention (`encoding/PAGED.md`). Its other operations keep the obligations of §6.1–§6.9, except for two things.
 - Every use of a tensor-memory region's address goes through `tmemBase` (the allocation's address plus the region's
-  offset): `mmaFirst`, `mmaNext`, `loadAccChunk`, `withAccRing` (and through its buffers `mmaFirstInto`, `mmaNextInto`,
+  offset): `mmaFirst`, `mmaNext`, `loadAccChunk`, `withAccRing` (and through its buffers `mmaFirstInto`,
   `loadBufferChunk`, `eachChunk` and `writeP`) and `withExchange` address the region they are given, not column 0; only
   `withTmem`'s deallocation names the allocation's address.
-- No protocol closes on a `…Done` token (M15). `withRing`, `withAccRing`, `withExchange` and `withStaging` take a callback
-  that returns the emitter and its result only. Their sides are linear and belong to the opener's scope, which the
-  result's type cannot name, so the callback uses every side up before the close (`docs/implemented/SCOPE_CONTAINMENT.md`), and
-  the one operation per side that uses it up without handing it on is its finisher. `finishProducer`,
-  `finishAccProducer` and `finishStores` emit §6.5, §6.8 and §6.7's waits and return the emitter; `finishExWriter`
-  waits and gives `OFinal`, which `closeExWriter` ends; `finishConsumer`, `finishAccConsumer`, `finishExReader` and
-  `closeExWriter` emit nothing, since everything their side issued is released to the waiting side. So each close
-  still follows the drain that §6.5–§6.8 tie to their `…Done` tokens, by the obligation that every other operation
-  taking a side gives a side back (§7).
+- No protocol closes on a `…Done` token (M15). `withRing`, `withAccRing`, `withExchange` and `withStaging` take a
+  callback that returns the emitter and its result only. Their sides are linear and belong to the opener's scope, which
+  the result's type cannot name, so the callback uses every side up before the close
+  (`docs/implemented/SCOPE_CONTAINMENT.md`), and the one operation per side that uses it up without handing it on is its
+  finisher. `finishProducer`, `finishAccProducer` and `finishStores` emit §6.5, §6.8 and §6.7's waits and return the
+  emitter; `finishExWriter` waits and gives `OFinal`, which `closeExWriter` ends; `finishConsumer`, `finishAccConsumer`,
+  `finishExReader` and `closeExWriter` emit nothing, since everything their side issued is released to the waiting side.
+  So each close still follows the drain that §6.5–§6.8 tie to their `…Done` tokens, by the obligation that every other
+  operation taking a side gives a side back (§7).
 
 | Operation | Requires | Emits | Establishes | Relies on |
 |---|---|---|---|---|
@@ -593,83 +595,83 @@ score buffer's other operations are §6.10's, with `rescaleRow` and `publishProb
 Every operation that a client can call without the Key, and that builds a sealed value, must be sound on any
 arguments. The audit as of this document:
 
-- **Values.** `lit`, `zero`, `add`, `mulC`, `divC`, `remC`, `ceilDivC`, `lt`, `fma` build expressions from the
-  library's own parts, with `u32` width checked on the output by `Check.literals` (I4). `tileRow0` and `tileCol0` read a sealed tile.
-- **Evidence.** `fixedUnit`, `fixedPair` and the per-family `fixed…` (among them `fixedAccFull` and `fixedStoreAt`) exist
-  only for one-valued types. None exists for `StageFree`, `StageWritten` or `StageFenced`, so a chunk's protocol runs
-  in straight-line code.
+- **Values.** `lit`, `zero`, `add`, `mulC`, `divC`, `remC`, `ceilDivC`, `lt`, `fma` build expressions from the library's
+  own parts, with `u32` width checked on the output by `Check.literals` (I4). `tileRow0` and `tileCol0` read a sealed
+  tile.
+- **Evidence.** `fixedUnit`, `fixedPair` and the per-family `fixed…` (among them `fixedAccFull` and `fixedStoreAt`)
+  exist only for one-valued types. None exists for `StageFree`, `StageWritten` or `StageFenced`, so a chunk's protocol
+  runs in straight-line code.
 - **Endings.** `release`, `skipTmem`, `finishConsumer` and `finishAccConsumer` consume authority; none mints any.
 - **Unsealed data.** `Gen` helpers (`push`, `fresh`, `child`, `after`, `check`, …) and instruction builders (`mbarInit`,
-  `mbarArriveCount`, `barrierCompletions`, `mmaIssue`, …) build unsealed `Gen` and `Stmt` values. These reach a kernel only through operations that need the
-  Key (`resume`, `emit`, `finish`).
+  `mbarArriveCount`, `barrierCompletions`, `mmaIssue`, …) build unsealed `Gen` and `Stmt` values. These reach a kernel
+  only through operations that need the Key (`resume`, `emit`, `finish`).
 - **Output tiles and staging** (the TMA-store epilogue). `forChunks` consumes a tile's `TileOwn` and mints one
-  `ChunkOwn` per chunk; `withStaging` mints the one `StoreSide`, `takeStore` turns it into the warpgroup-bound
-  `StoreAt` (alignment evidence), and `acquireStage`, `stageAcc`, `stageAccFull`, `fenceStage`, `storeStage` and
-  `finishStores` each consume the token of one typestate and mint the next (§6.6, §6.7; in `encoding/Core.rac`,
-  `writeStage` in place of the two staging operations, writing the sealed `ChunkRegs` that only `loadAccChunk`,
-  `loadBufferChunk` and `loadPairChunk` make, of their block's scope, so of one chunk); the coordinates, buffers
-  and the issuing lane are the library's, never an argument. `tileRow0` and `tileCol0` read a sealed tile, as
-  before. The instruction builders `bulkWaitRead`, `bulkWait`, `bulkCommit`, `fenceProxyAsync`, `tmaStore2d`,
-  `storeShared4`, and the helpers `onLaneZero`, `stageBuffer`, `stageChunk`, build unsealed `Stmt`s or `Gen`s,
-  which reach a kernel only through the Key.
+  `ChunkOwn` per chunk; `withStaging` mints the one `StoreSide`, `takeStore` turns it into the warpgroup-bound `StoreAt`
+  (alignment evidence), and `acquireStage`, `writeStage`, `fenceStage`, `storeStage` and `finishStores` each consume the
+  token of one typestate and mint the next (§6.7); `writeStage` writes the sealed `ChunkRegs` that only `loadAccChunk`,
+  `loadBufferChunk` and `loadPairChunk` make, of their block's scope, so of one chunk; the coordinates, buffers and the
+  issuing lane are the library's, never an argument. `tileRow0` and `tileCol0` read a sealed tile, as before. The
+  instruction builders `bulkWaitRead`, `bulkWait`, `bulkCommit`, `fenceProxyAsync`, `tmaStore2d`, `storeShared4`, and
+  the helpers `onLaneZero` and `stageBuffer` build unsealed `Stmt`s or `Gen`s, which reach a kernel only through the
+  Key.
 - **Found by this audit.** `uniformParam` built a `Val` from any name, typed `uniform`. It now needs the Key.
 
-- **The attention core** (`gpu/encoding/Core.rac`, §6.10). The f32 operations (`fadd`, `fsub`, `fmul`, `fmax`,
-  `select`, `fconst`, `ex2`, `lg2`, `rcp`) and the unsealed `F32x8.mk` build values from the library's own `Val`s,
-  and a `Val` carries no authority; `fconst`'s bits are checked at generation, and `written`, which emits an
-  instruction, needs the Key. `holdStage` mints no authority, only renames a stage already held.
-  `fixedReadyUsed`, `fixedExWriterAt` and `fixedExReaderAt` are evidence for fieldless one-valued families only.
-  `splitTmem` mints two `Acc` tokens from one, over disjoint columns (the core's arithmetic), and takes back both
-  before it returns the one; that is sound only while every use of a region's address goes through `tmemBase`.
-  `fillBlock` is `fill` with the head coordinate and both columns the core's, from one map and one row, and
-  `fillPage` `fill` with the row the core's, from the table. `eachChunk` and `writeP` run a client's step, an
-  unrestricted function of values to code and values, on chunks they load under the buffer's `AccFull`; the loads,
-  the chunk count and P's stores are theirs, so the step can neither load outside that window nor skip or repeat a
-  chunk of P. `rescaleO` and `mmaPV` read `OState` themselves: an undefined Ô is overwritten, never rescaled or
-  accumulated. `finishProducer`, `finishAccProducer`, `finishStores`, `finishConsumer`, `finishAccConsumer`,
-  `closeExWriter` and `finishExReader` consume a side and mint nothing, and they are the only operations that take a
-  side without giving one back (`finishExWriter`, the writer's wait, gives `OFinal`, a side that only `closeExWriter`
-  ends): that is what lets the protocols close without `…Done` tokens (§6.10, M15), so a new operation that took a
-  side and gave none back would have to drain as the waiting finishers do. `maskedScores` builds values from values and the
-  sealed `Mask`; it emits no barrier, ring or tensor-memory operation, and a wrong block or chunk is a wrong result. In a causal kernel it
-  emits warp collectives (`__syncwarp`, and the row's full-mask `__shfl_sync`), which are sound because it takes a
-  `warps(f, 4)` context: a per-thread branch arm's group is `diverged`, so no part of a warp can reach it alone
-  (`encoding/rejected/attention_mutants.py`, `mask_in_thread_branch`). The unsealed
-  `AttnLaunch.mk` and `PagedLaunch.mk` build a launch from sealed maps, table, output and mask and from `Val`s:
-  `blocks` and `q0` choose trip counts and coordinates only, so a wrong one deadlocks (M11) or loads the wrong rows
-  (`ATTENTION.md` §5), and `seq` and `scale` are data, a wrong one a wrong result; none can race, since `storeO` takes
-  its rows and guard from `AttnOut`, which is sealed. `outTypeOk`, `outValue`, `rowInHead` and `minusInfinityBits`
-  build `Bool`s, `Expr`s and a `Nat`; `attnStart` needs the Key. The instruction builders `cvtBf16x2`, `tmemStore4`,
-  `tmemStore8`, `tmemWaitStore` and `mmaIssueTmemA`, and the helpers `quadrantLanes`, `loadRow8`, `rescaleChunks`,
-  `pvSteps`, `storeChunks`, `fillCode`, `mmaBoxes`, `pBase`, `pFullBar`, `pEmptyBar`, `flip`, `eight`, `offsetBy`,
-  `boxAt`, `tmemBase`, `isHeadBox`, `headStage`, `attnParams`, `attnLauncher`, `pagedParams` and `pagedLauncher`, build
-  unsealed `Expr`s, `Stmt`s, `Gen`s, `Bool`s and launchers, which reach a kernel only through the Key, as does `storeP`,
-  now the `Gen` of one chunk of P; `row8`, `fbin`, `pvStage`, `mmaRingStage`, `loadChunk`, `chunksFrom` and
-  `pChunksFrom` need it. `overwritesO` builds a `Bool`.
+- **The attention core** (`gpu/encoding/Core.rac`, §6.10). The f32 operations (`fadd`, `fsub`, `fmul`, `fmax`, `select`,
+  `fconst`, `ex2`, `lg2`, `rcp`) and the unsealed `F32x8.mk` build values from the library's own `Val`s, and a `Val`
+  carries no authority; `fconst`'s bits are checked at generation, and `written`, which emits an instruction, needs the
+  Key. `holdStage` mints no authority, only renames a stage already held. `fixedReadyUsed`, `fixedExWriterAt` and
+  `fixedExReaderAt` are evidence for fieldless one-valued families only. `splitTmem` mints two `Acc` tokens from one,
+  over disjoint columns (the core's arithmetic), and takes back both before it returns the one; that is sound only while
+  every use of a region's address goes through `tmemBase`. `fillBlock` is `fill` with the head coordinate and both
+  columns the core's, from one map and one row, and `fillPage` `fill` with the row the core's, from the table.
+  `eachChunk` and `writeP` run a client's step, an unrestricted function of values to code and values, on chunks they
+  load under the buffer's `AccFull`; the loads, the chunk count and P's stores are theirs, so the step can neither load
+  outside that window nor skip or repeat a chunk of P. `rescaleO` and `mmaPV` read `OState` themselves: an undefined Ô
+  is overwritten, never rescaled or accumulated. `finishProducer`, `finishAccProducer`, `finishStores`,
+  `finishConsumer`, `finishAccConsumer`, `closeExWriter` and `finishExReader` consume a side and mint nothing, and they
+  are the only operations that take a side without giving one back (`finishExWriter`, the writer's wait, gives `OFinal`,
+  a side that only `closeExWriter` ends): that is what lets the protocols close without `…Done` tokens (§6.10, M15), so
+  a new operation that took a side and gave none back would have to drain as the waiting finishers do. `maskedScores`
+  builds values from values and the sealed `Mask`; it emits no barrier, ring or tensor-memory operation, and a wrong
+  block or chunk is a wrong result. In a causal kernel it emits warp collectives (`__syncwarp`, and the row's full-mask
+  `__shfl_sync`), which are sound because it takes a `warps(f, 4)` context: a per-thread branch arm's group is
+  `diverged`, so no part of a warp can reach it alone (`encoding/rejected/attention_mutants.py`,
+  `mask_in_thread_branch`). The unsealed `AttnLaunch.mk` and `PagedLaunch.mk` build a launch from sealed maps, table,
+  output and mask and from `Val`s: `blocks` and `q0` choose trip counts and coordinates only, so a wrong one deadlocks
+  (M11) or loads the wrong rows (`ATTENTION.md` §5), and `seq` and `scale` are data, a wrong one a wrong result; none
+  can race, since `storeO` takes its rows and guard from `AttnOut`, which is sealed. `outTypeOk`, `outValue`,
+  `rowInHead` and `minusInfinityBits` build `Bool`s, `Expr`s and a `Nat`; `attnStart` needs the Key. The instruction
+  builders `cvtBf16x2`, `tmemStore4`, `tmemStore8`, `tmemWaitStore` and `mmaIssueTmemA`, and the helpers
+  `quadrantLanes`, `loadRow8`, `rescaleChunks`, `pvSteps`, `storeChunks`, `fillCode`, `mmaBoxes`, `pBase`, `pFullBar`,
+  `pEmptyBar`, `flip`, `eight`, `offsetBy`, `boxAt`, `tmemBase`, `isHeadBox`, `headStage`, `attnParams`, `attnLauncher`,
+  `pagedParams` and `pagedLauncher`, build unsealed `Expr`s, `Stmt`s, `Gen`s, `Bool`s and launchers, which reach a
+  kernel only through the Key, as does `storeP`, now the `Gen` of one chunk of P; `row8`, `fbin`, `pvStage`,
+  `mmaRingStage`, `loadChunk`, `chunksFrom` and `pChunksFrom` need it. `overwritesO` builds a `Bool`.
 - **The score buffer** (A3a, §6.10). `loopFrom` is `loop` from another first index (`loop` is `loopFrom` from 0).
-  `PairLaunch.mk`, unsealed, is as `AttnLaunch.mk`: `q0` and `q1` choose coordinates only. `mapRow` runs a client's step on a `Row`'s values and returns a `Row` of as many chunks; a `Row` is
-  sealed, so its 16 chunks come only from `loadRow`, and `writeProbs` writes exactly one chunk of P per chunk.
-  `fixedRowsAt` and `fixedMmaAt` are evidence for fieldless one-valued families. `takeRows`, `awaitScores`,
-  `loadRow`, `writeProbs`, `rescaleRow`, `publishProbs`, `awaitFinal`, `storeFinal`, `takeMma`, `issueScores`,
-  `awaitProbs`, `issuePV` and `commitBuffer` each consume a side's token and mint the next, and `closeRows` and
-  `finishMma` consume one and mint none: they are its finishers (M15). `storeRow`, `counting`, `scoresFull`,
-  `probsFull`, `probsAt`, `outAt`, `mapChunks`, `probChunks`, `scaleRow`, `rowInPairCta` and `upToTile` build unsealed `Gen`s,
-  `Expr`s and lists, which reach a kernel only through the Key; `attnStart` needs it.
+  `PairLaunch.mk`, unsealed, is as `AttnLaunch.mk`: `q0` and `q1` choose coordinates only. `mapRow` runs a client's step
+  on a `Row`'s values and returns a `Row` of as many chunks; a `Row` is sealed, so its 16 chunks come only from
+  `loadRow`, and `writeProbs` writes exactly one chunk of P per chunk. `fixedRowsAt` and `fixedMmaAt` are evidence for
+  fieldless one-valued families. `takeRows`, `awaitScores`, `loadRow`, `writeProbs`, `rescaleRow`, `publishProbs`,
+  `awaitFinal`, `storeFinal`, `takeMma`, `issueScores`, `awaitProbs`, `issuePV` and `commitBuffer` each consume a side's
+  token and mint the next, and `closeRows` and `finishMma` consume one and mint none: they are its finishers (M15).
+  `storeRow`, `counting`, `scoresFull`, `probsFull`, `probsAt`, `outAt`, `mapChunks`, `probChunks`, `scaleRow`,
+  `rowInPairCta` and `upToTile` build unsealed `Gen`s, `Expr`s and lists, which reach a kernel only through the Key;
+  `attnStart` needs it.
 - **Paged decode** (`encoding/P2.md`, §6.11). `fillGroup` is `fill` with the row the core's and the bytes of a box of
   `group` rows. `withClaim` consumes the linear `ClaimOwn` and mints `Claimed` only inside the arm it emits under the
   broadcast flag; `Claimed` is sealed and of the arm's scope, and the arm is unrestricted, so it captures no linear
   value, and mints the linear `AppendOwn` there too, which only `appendRow` uses up. `appendRow` takes the row from
-  `Claimed` and the columns from the warp and lane. `storeCombined` consumes `CombinedOwn`. `F32x4.splat`, `map`,
-  `zip` and `columns`, `Reg4.mk`, `reg4`, `get4` and `set4` build values and registers from values and registers, as
-  `F32x8.mk`, `reg`, `get` and `set` do; `written`, which emits an instruction, needs the Key. `splitLse` and `splitRow` read the sealed `Partials` with their guard. The unsealed `DecodeLaunch`,
-  `AppendLaunch` and `CombineLaunch` build launches from sealed parts and `Val`s: `blocks` and `first` (decode) and
-  `splits` (combine) choose trip counts and table entries only, so a wrong one deadlocks (M11), reads a wrong page or
-  split (guarded), or computes a wrong result. `F32x4.mk` builds values from values. `warpCta`, `wideParam`,
-  `belowI32`, `cacheRequires`, `cacheMaps`, `fillBoxes`, `rowInTile`, `keptOrZero`, `storeRow`,
-  `splitRowOf`, `laneColumns`, `columnStores`, `decodeArrays`, `decodeParams`, `decodeLauncher`,
-  `appendParams`, `appendLauncher`, `combineParams` and `combineLauncher` build unsealed `Group`s, `Expr`s, `Stmt`s,
-  `Gen`s, `String`s and launchers, which reach a kernel only through the Key; `headOut`, which builds an `AttnOut`,
-  needs it.
+  `Claimed` and the columns from the warp and lane. `storeCombined` consumes `CombinedOwn`. `F32x4.splat`, `map`, `zip`
+  and `columns`, `Reg4.mk`, `reg4`, `get4` and `set4` build values and registers from values and registers, as
+  `F32x8.mk`, `reg`, `get` and `set` do; `written`, which emits an instruction, needs the Key. `splitLse` and `splitRow`
+  read the sealed `Partials` with their guard. The unsealed `DecodeLaunch`, `AppendLaunch` and `CombineLaunch` build
+  launches from sealed parts and `Val`s: `blocks` and `first` (decode) and `splits` (combine) choose trip counts and
+  table entries only, so a wrong one deadlocks (M11), reads a wrong page or split (guarded), or computes a wrong result.
+  `F32x4.mk` builds values from values. `warpCta`, `wideParam`, `belowI32`, `cacheRequires`, `cacheMaps`, `fillBoxes`,
+  `rowInTile`, `keptOrZero`, `storeRow`, `splitRowOf`, `laneColumns`, `columnStores`, `decodeArrays`, `decodeParams`,
+  `decodeLauncher`, `appendParams`, `appendLauncher`, `combineParams` and `combineLauncher` build unsealed `Group`s,
+  `Expr`s, `Stmt`s, `Gen`s, `String`s and launchers, which reach a kernel only through the Key; `headOut`, which builds
+  an `AttnOut`, needs it.
 - **The CTA pair** (§6.12). `CtaPair`, `Leader`, `PairTile`, `PairOut`, `HalfOwn`, `PairRing` and `PairAccRing` are
   sealed, and only `pairGemmKernel`, `onLeader` and the pair openers make them. No operation hands a client the rank
   (M18). `onLeader` mints a `Leader` that belongs to its arm and hands back only the arm's context. `takePairProducer`,
@@ -679,19 +681,18 @@ arguments. The audit as of this document:
   or, as the single-CTA finishers, none; `fillPair` and `storeHalf` take their rows from the sealed `PairTile`, never
   from the caller. The unsealed `PairGemm.mk` builds a launch from sealed parts and a `Val`, K, which chooses trip
   counts only (M18). `oneCta`, `ringLayout`, `accRingLayout`, `setupBarriers`, `publishBarriers`, `clusterSync`,
-  `waitScope`, `arriveHere`, `mbarArriveRemote`, `tmaLoad2dPair`, `isLeader`, `pairShared`, `pairMmaShapeOk`, `pairGemmShapeOk`,
-  `pairGemmParams`, `gemmHostParams`, `gemmRequires`, `operandMaps` and `pairGemmLauncher` build unsealed `Gen`s,
-  `Stmt`s, `Expr`s, `String`s, `Nat`s, `Bool`s and launchers, which reach a kernel only through the Key; `emitIn`,
-  `readSpecial`, `toLeader`, `ringAt`, `accRingAt`, `pairStart`, `pairFinish`, `tmemScope`, `closePair` and
-  `mmaPairStage` need it.
-  The persistent pair GEMM adds the sealed `PairSched` and the linear `PairSchedOwn`, which only
-  `pairGemmPersistentKernel` makes. `forPairTiles` mints a `PairTile` per tile from the sealed schedule and its pair,
-  `forOwnedPairTiles` consumes the `PairSchedOwn` and mints a `HalfOwn` per tile, and `forHalfChunks` consumes a
+  `waitScope`, `arriveHere`, `mbarArriveRemote`, `tmaLoad2dPair`, `isLeader`, `pairShared`, `pairMmaShapeOk`,
+  `pairGemmShapeOk`, `pairGemmParams`, `gemmHostParams`, `gemmRequires`, `operandMaps` and `pairGemmLauncher` build
+  unsealed `Gen`s, `Stmt`s, `Expr`s, `String`s, `Nat`s, `Bool`s and launchers, which reach a kernel only through the
+  Key; `emitIn`, `readSpecial`, `toLeader`, `ringAt`, `accRingAt`, `pairStart`, `pairFinish`, `tmemScope`, `closePair`
+  and `mmaPairStage` need it. The persistent pair GEMM adds the sealed `PairSched` and the linear `PairSchedOwn`, which
+  only `pairGemmPersistentKernel` makes. `forPairTiles` mints a `PairTile` per tile from the sealed schedule and its
+  pair, `forOwnedPairTiles` consumes the `PairSchedOwn` and mints a `HalfOwn` per tile, and `forHalfChunks` consumes a
   `HalfOwn` and mints a `ChunkOwn` per chunk, with the rows the `PairTile`'s; `loadPairChunk` is `loadBufferChunk` on a
   pair accumulator ring. `onLeader` takes `LeaderOnly` evidence, which only `leaderOnlyUnit`, `leaderOnlyConsumer`,
   `leaderOnlyAccProducer` and `leaderOnlyPair` make, for `Unit`, a pair ring's `Consumer` (from its `PairRing`), a pair
-  accumulator ring's `AccProducer` (from its `PairAccRing`) and pairs of them (M20). `schedule`, `pairTile` and `chunkLoop` need the Key; `Cuda.smCount` and the grid
-  `Grid.persistentPairs` are the printer's.
+  accumulator ring's `AccProducer` (from its `PairAccRing`) and pairs of them (M20). `schedule`, `pairTile` and
+  `chunkLoop` need the Key; `Cuda.smCount` and the grid `Grid.persistentPairs` are the printer's.
 - **The correction warpgroup** (A3b, §6.13). `withCorrectedBuffer` mints one `ScoreBuffer(x, correction)` and its
   three sides; `Rescaler` is unsealed data, but a `ScoreBuffer` is sealed, so a buffer's rescaler is its opener's.
   `publishAlpha`, `takeCorrection`, `zeroQuadrants`, `awaitAlpha`, `rescaleQuadrant` and `publishRescaled` each consume
@@ -708,13 +709,12 @@ arguments. The audit as of this document:
   `twoTileStart` need it).
 - **The register pool** (`gpu/encoding/Registers.rac`, M24). It declares `RegPool`, sealed and unrestricted, and
   `RegShare`, sealed and linear, and emits nothing. `split` mints a pool's four shares, under the evidence `fits`;
-  `join` uses four shares up and mints nothing; `budget`, `countOk` and `fits` build numbers and `Bool`s. `pool` mints
-  a pool from nothing, and is the one trusted operation: only a kernel builder may call it, with the threads and
-  residency the builder passes to `finish` (`correctedAttentionKernel`: 512 and 1). Nothing checks that, since sealing
-  is per file and `Registers.rac` cannot need the Key without importing `Core`, which imports it (`encoding/REGISTERS.md`
-  §9). A client's pool at the kernel's own count is the builder's pool again; one at another count makes
-  `splitWarpgroups` print changes from a count the warps do not hold, which the register check refuses
-  (`pool_at_other_count`).
+  `join` uses four shares up and mints nothing; `budget`, `countOk` and `fits` build numbers and `Bool`s. `pool` mints a
+  pool from nothing, and is the one trusted operation: only a kernel builder may call it, with the threads and residency
+  the builder passes to `finish` (`correctedAttentionKernel`: 512 and 1). Nothing checks that, since sealing is per file
+  and `Registers.rac` cannot need the Key without importing `Core`, which imports it (`encoding/REGISTERS.md` §9). A
+  client's pool at the kernel's own count is the builder's pool again; one at another count makes `splitWarpgroups`
+  print changes from a count the warps do not hold, which the register check refuses (`pool_at_other_count`).
 - **The examples' shared modules** (`gpu/encoding/Layout.rac`, `gpu/encoding/Attention.rac`) are clients: they declare
   no sealed family and need no Key. `Layout.roles4` is `split` three times, `Layout.rolesPair` four times,
   `Layout.rolesCorrected` `splitWarpgroups` and `split` three times. `Attention.pairLoader` and `pairIssuer` are A3a's
@@ -728,22 +728,22 @@ The goal is that `Program.mk` takes a proof, `Program.mk (k: Kernel)(safe: Safe(
 and Raccoon's type checker checks. Sealing then carries the guarantee to every client without reflecting Raccoon's
 own typing. We approach it in three layers, each useful alone.
 
-**Layer 1: structural invariants.** I1–I8 as a checker over `Cuda.Kernel`, together with a soundness statement for
-each against a small syntactic specification (for example, the declared names at each program point). `render`
-requires a proof that the checkers find nothing (§9.5). Where the kernel is concrete, which is always at generation, the
-proof is `Eq.refl` evaluated by conversion. Alternatively, I1 becomes intrinsic: an AST indexed by the names in
-scope. Needs Raccoon's evaluation-discharged evidence and an evaluator that scales (`docs/implemented/PROOF_BY_EVALUATION.md`).
+**Layer 1: structural invariants.** I1–I8 as a checker over `Cuda.Kernel`, together with a soundness statement for each
+against a small syntactic specification (for example, the declared names at each program point). `render` requires a
+proof that the checkers find nothing (§9.5). Where the kernel is concrete, which is always at generation, the proof is
+`Eq.refl` evaluated by conversion. Alternatively, I1 becomes intrinsic: an AST indexed by the names in scope. Needs
+Raccoon's evaluation-discharged evidence and an evaluator that scales (`docs/implemented/PROOF_BY_EVALUATION.md`).
 
-Status: the checkers are built (`gpu/Check.rac`), one for the generation errors and one each for I1–I6 as far as the
-AST shows them (§4), with unit tests (`gpu/checks/`). `Core.render` requires their certificate, `Check.WellFormed`,
-which a client's `Core.render(p)` discharges by evaluation, and a failing checker is reported as
-`EvidenceNotDischarged`, naming its field and showing its messages, which print as string literals although they are
-computed. On the retired core's persistent GEMM the checkers, with checking `Check.rac` itself, added about 0.2 s when they were
-built. A whole CLI run that generates it (starting the JVM, checking, printing) takes about 3.3 s of wall time, and the
-restructuring for the soundness proofs changed it by less than the noise, 0.1 s (`gpu/proofs/NOTES.md`). Each checker
-is proved sound in Raccoon (`gpu/proofs/`) against a syntactic statement of what its invariant means (`gpu/Spec.rac`),
-and `WellFormed.sound` turns `Check.WellFormed(k)` into `Spec.WellFormed(k)` for every kernel; `gpu/proofs/NOTES.md`
-records what made the proofs hard. I7 and I8 are not decidable on today's AST (§9.6).
+Status: the checkers are built (`gpu/Check.rac`), one for the generation errors and one each for I1–I6 as far as the AST
+shows them (§4), with unit tests (`gpu/checks/`). `Core.render` requires their certificate, `Check.WellFormed`, which a
+client's `Core.render(p)` discharges by evaluation, and a failing checker is reported as `EvidenceNotDischarged`, naming
+its field and showing its messages, which print as string literals although they are computed. On the retired core's
+persistent GEMM the checkers, with checking `Check.rac` itself, added about 0.2 s when they were built. A whole CLI run
+that generates it (starting the JVM, checking, printing) takes about 3.3 s of wall time, and the restructuring for the
+soundness proofs changed it by less than the noise, 0.1 s (`gpu/proofs/NOTES.md`). Each checker is proved sound in
+Raccoon (`gpu/proofs/`) against a syntactic statement of what its invariant means (`gpu/Spec.rac`), and
+`WellFormed.sound` turns `Check.WellFormed(k)` into `Spec.WellFormed(k)` for every kernel; `gpu/proofs/NOTES.md` records
+what made the proofs hard. I7 and I8 are not decidable on today's AST (§9.6).
 
 **Layer 2: protocols.** Abstract models of A6, A9 and A12 (an mbarrier as phase, pending arrivals and expected
 bytes; TMA fills and tensor-core commits as asynchronous events), the stage ring, accumulator ring, handoff and

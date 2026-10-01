@@ -7,15 +7,15 @@ which ran on a B200 (§7). `encoding/Core.rac` began as a copy of `Gpu.rac` and 
 - the epilogue loads a chunk from tensor memory (`loadAccChunk`, `loadBufferChunk`) before it waits for the chunk's
   staging buffer, and writes it there after (`writeStage`; `encoding/NOTES.md`, item 10).
 
-This document uses the current names. Its examples are the encoding core's TinyGEMM (`encoding/examples/tinygemm.rac`)
-and the retired persistent GEMM, whose builder `tmaGemmPersistentKernel` the core keeps. `gpu/README.md` describes the
-library as a whole.
+This document uses the core's current names. Its example is the encoding core's TinyGEMM
+(`encoding/examples/tinygemm.rac`). §6 describes the retired single-CTA persistent GEMM, whose design the persistent
+pair GEMM keeps. `gpu/README.md` describes the library as a whole.
 
 The target is the structure of a minimal warp-specialized Blackwell GEMM ("TinyGEMM"): a TMA producer warp fills a
 ring of shared-memory stages, one elected thread of an MMA warp issues `tcgen05.mma` into a tensor-memory accumulator
 and releases each stage by `tcgen05.commit`, and an epilogue warpgroup reads the accumulator with `tcgen05.ld` and
-stores the output through shared memory with TMA. Everything below is typed by the three rules of the spike: a linear emitter threaded through all
-code, lifetime-scoped values, and fieldless authority tokens.
+stores the output through shared memory with TMA. Everything below is typed by three rules of the core: a linear
+emitter threaded through all code, lifetime-scoped values, and fieldless authority tokens.
 
 ## 1. Groups
 
@@ -68,9 +68,10 @@ registers the protocol owns:
     thread (which would start from stage 0 and overwrite a stage still in use), and since only the elect's own
     context has lifetime `m`, the declarations are in scope wherever the endpoint can go.
   - Both sides start at stage 0 and phase 0. A side waits at the parity of its phase, which flips when it wraps, and
-    neither side can get a round ahead of the other; so every wait names the current phase or the one just completed, the only ones `try_wait.parity` is defined for
-    (PTX §9.7.15.16.19). The producer's first wait on a stage is on the phase the initializing thread completed: a wait
-    of parity 1 on a fresh barrier, as CUTLASS and DeepGEMM start their producers, is not defined by the ISA.
+    neither side can get a round ahead of the other; so every wait names the current phase or the one just completed,
+    the only ones `try_wait.parity` is defined for (PTX §9.7.15.16.19). The producer's first wait on a stage is on the
+    phase the initializing thread completed: a wait of parity 1 on a fresh barrier, as CUTLASS and DeepGEMM start their
+    producers, is not defined by the ISA.
   - The producer `acquire`s a stage (waits `empty[s]` at its phase), receiving a linear `Slot(r, m)`, and `fill`s it:
     `mbarrier.arrive.expect_tx` for the stage's bytes, then one TMA load per operand, consuming the slot and advancing.
     `finishProducer` waits for every stage to be released (the producer tail), so no TMA can still be writing when
@@ -84,13 +85,14 @@ registers the protocol owns:
     accumulator handoff and the accumulator ring close the same way.
   - No type mentions an iteration count, so a loop body over the ring is generated once. Mismatched trip counts
     between the two sides deadlock; they cannot race.
-- **Tensor memory** (`withTmem`, in the whole CTA): the kernel hands out one linear `TmemPermit`, which `withTmem`
-  uses up: warp 0 allocates `n` columns (`tcgen05.alloc` into a shared word, then `relinquish_alloc_permit`, after
-  which a second allocation would be illegal), the CTA synchronizes with the `tcgen05.fence` pair, and the callback
-  receives `Acc(a, empty)`. The callback must hand back the accumulator (`Acc` never has tensor-core work in flight),
-  in the state `withTmem` is told (`ready` for TinyGEMM, `empty` after an accumulator ring); the CTA synchronizes
-  again and warp 0 deallocates. `ready` means holds results: only `recvAcc` makes it, after MMAs that wrote every
-  column (the MMA's N is exactly the accumulator's columns, and the epilogue reads exactly that many). A kernel without tensor memory gives the permit up with `skipTmem`.
+- **Tensor memory** (`withTmem`, in the whole CTA): the kernel hands out one linear `TmemPermit`, which `withTmem` uses
+  up: warp 0 allocates `n` columns (`tcgen05.alloc` into a shared word, then `relinquish_alloc_permit`, after which a
+  second allocation would be illegal), the CTA synchronizes with the `tcgen05.fence` pair, and the callback receives
+  `Acc(a, empty)`. The callback must hand back the accumulator (`Acc` never has tensor-core work in flight), in the
+  state `withTmem` is told (`ready` for TinyGEMM, `empty` after an accumulator ring); the CTA synchronizes again and
+  warp 0 deallocates. `ready` means holds results: only `recvAcc` makes it, after MMAs that wrote every column (the
+  MMA's N is exactly the accumulator's columns, and the epilogue reads exactly that many). A kernel without tensor
+  memory gives the permit up with `skipTmem`.
 - **Accumulator**: `Acc(a, empty)` → `mmaFirst` (the first MMA of the stage has `enable_input_d = 0`, since tensor
   memory is not zeroed) → `AccPending(a, m)` → `mmaNext` (accumulating) → `sendAcc` commits it to a one-shot mbarrier
   (`withAccHandoff`). The epilogue's `recvAcc` waits for the barrier, fences `after_thread_sync`, and receives
@@ -114,15 +116,15 @@ registers the protocol owns:
     operations guard those instructions with `lane == 0` themselves, and the endpoint cannot reach other threads (the
     per-thread lesson of the rings). Another group (a single warp, another role, the whole CTA) has no context the
     operations accept.
-  - **A buffer's typestate**, per chunk: `acquireStage` (lane 0 waits `cp.async.bulk.wait_group.read (bufs − 1)`,
-    then `__syncwarp`) → `StageFree`: the current buffer was last read by the store `bufs` stores ago, since each store
-    is one group and the buffers are used in turn, and that store has finished reading it; the warp's threads write
-    after the wait. `writeStage` (`st.shared.v4` of a chunk's registers, which `loadAccChunk` or `loadBufferChunk`
-    loaded before the wait: `tcgen05.ld`, `wait::ld`) → `StageWritten`. `fenceStage` (`fence.proxy.async.shared::cta` in every thread, `__syncwarp`) → `StageFenced`: the
-    writes are ordered before the async proxy's reads, and lane 0 is past every thread's fence. `storeStage` (lane 0:
-    `cp.async.bulk.tensor.2d.global.shared::cta.bulk_group`, `cp.async.bulk.commit_group`; every thread: next buffer)
-    → in flight, back to `StoreAt`. `finishStores` (lane 0: `cp.async.bulk.wait_group 0`, `__syncwarp`) uses the side
-    up.
+  - **A buffer's typestate**, per chunk: `acquireStage` (lane 0 waits `cp.async.bulk.wait_group.read (bufs − 1)`, then
+    `__syncwarp`) → `StageFree`: the current buffer was last read by the store `bufs` stores ago, since each store is
+    one group and the buffers are used in turn, and that store has finished reading it; the warp's threads write after
+    the wait. `writeStage` (`st.shared.v4` of a chunk's registers, which `loadAccChunk` or `loadBufferChunk` loaded
+    before the wait: `tcgen05.ld`, `wait::ld`) → `StageWritten`. `fenceStage` (`fence.proxy.async.shared::cta` in every
+    thread, `__syncwarp`) → `StageFenced`: the writes are ordered before the async proxy's reads, and lane 0 is past
+    every thread's fence. `storeStage` (lane 0: `cp.async.bulk.tensor.2d.global.shared::cta.bulk_group`,
+    `cp.async.bulk.commit_group`; every thread: next buffer) → in flight, back to `StoreAt`. `finishStores` (lane 0:
+    `cp.async.bulk.wait_group 0`, `__syncwarp`) uses the side up.
   - The tokens between acquiring and storing have no `Fixed` evidence, so a chunk's protocol runs in straight-line
     code; `StoreAt` is `Fixed`, and the invariant it stands for (the current buffer's last store is at least `bufs`
     groups back) holds whether an arm or an iteration stored or not.
@@ -138,18 +140,18 @@ registers the protocol owns:
 
 A tensor map parameter's type carries its box (`TMap(l, spec)`; bf16 elements and 128-byte swizzle are fixed). `fill`
 requires the maps' boxes to be the ring's, the stage buffers are laid out from the same boxes, and the `tcgen05.mma`
-shared-memory descriptors (start address, stride byte offset 1024, version 1, 128-byte swizzle, K advanced 32 bytes
-per step) and the instruction descriptor (f32 accumulator, bf16 operands, both K-major, M, N) are computed from them.
-The dynamic buffer is declared 1024-byte aligned, and a kernel may not also declare static shared arrays (`Core.render`
-refuses it, `Check.sharedMemory`), which would come first in the shared window. So TMA writes, the MMA reads, and the host's
-`cuTensorMapEncodeTiled` call cannot disagree about layout: the kernel
-comes with a generated host launcher (`<name>_launch`) that encodes the operands' maps from the same boxes, and the
-output's (f32, boxes of 32×32 elements, 128-byte swizzle) as `CMap` says, checks the extents TMA's signed coordinates
-and the tile counts need and that a row of C is a multiple of 16 bytes, sets the dynamic shared memory, and launches
-the grid the kernel assumes. What remains to the caller is that A, B and C are distinct device arrays of M×K, N×K
-and M×N elements. Shapes the tensor cores or the epilogue do not support are generation-time errors: `withRing` takes
-only boxes 64 elements (one 128-byte swizzle row) wide and a multiple of 8 rows (so every stage is 1024-byte aligned),
-and an MMA needs M = 128 and N a multiple of 16 up to 256, equal to the accumulator's columns.
+shared-memory descriptors (start address, stride byte offset 1024, version 1, 128-byte swizzle, K advanced 32 bytes per
+step) and the instruction descriptor (f32 accumulator, bf16 operands, both K-major, M, N) are computed from them. The
+dynamic buffer is declared 1024-byte aligned, and a kernel may not also declare static shared arrays (`Core.render`
+refuses it, `Check.sharedMemory`), which would come first in the shared window. So TMA writes, the MMA reads, and the
+host's `cuTensorMapEncodeTiled` call cannot disagree about layout: the kernel comes with a generated host launcher
+(`<name>_launch`) that encodes the operands' maps from the same boxes, and the output's (f32, boxes of 32×32 elements,
+128-byte swizzle) as `CMap` says, checks the extents TMA's signed coordinates and the tile counts need and that a row of
+C is a multiple of 16 bytes, sets the dynamic shared memory, and launches the grid the kernel assumes. What remains to
+the caller is that A, B and C are distinct device arrays of M×K, N×K and M×N elements. Shapes the tensor cores or the
+epilogue do not support are generation-time errors: `withRing` takes only boxes 64 elements (one 128-byte swizzle row)
+wide and a multiple of 8 rows (so every stage is 1024-byte aligned), and an MMA needs M = 128 and N a multiple of 16 up
+to 256, equal to the accumulator's columns.
 
 ## 4. Output
 
@@ -199,6 +201,8 @@ chunk has been staged, not right after its last load.
 | ending the epilogue with stores in flight | the storing side is linear, and only `finishStores` uses it up |
 | finishing the stores inside the chunk loop | a loop body captures no linear value |
 | a second tensor-memory allocation | `TmemPermit` is linear |
+| a TMA store without the proxy fence | `storeStage` needs `StageFenced` |
+| an unaligned epilogue warpgroup | `takeStore` asks for the alignment as evidence |
 | a static shared array beside the dynamic buffer | `Check.sharedMemory` |
 | a kernel name that is not a C identifier, or is a launcher parameter's | `Check.names` |
 | a literal wider than 32 bits | `Check.literals` |
@@ -207,8 +211,12 @@ chunk has been staged, not right after its last load.
 
 ## 6. The persistent kernel
 
-The persistent GEMM (`tmaGemmPersistentKernel`; its example, `examples/persistent_gemm.rac`, was retired with
-`Gpu.rac`) keeps TinyGEMM's roles but launches one CTA per SM (at most one per tile), each looping
+This section describes the single-CTA persistent GEMM of the retired `Gpu.rac` (`examples/persistent_gemm.rac`), in
+its names. Its builder is gone from the core. Its successor, the persistent pair GEMM (`encoding/TWO_CTA.md` §6 step
+4, `encoding/examples/gemm_pair.rac`), keeps its tile order, accumulator ring and output staging, with the pair's
+loops (`forPairTiles`, `forOwnedPairTiles`) in place of `forTiles` and `forOwnedTiles`.
+
+The persistent GEMM kept TinyGEMM's roles but launched one CTA per SM (at most one per tile), each looping
 over the 128×`bn` tiles of C that `Sched` assigns it (tile index `t` visited by CTA `t mod gridDim.x`), and gives tensor
 memory two accumulators, so the epilogue of one tile overlaps the MMAs of the next. The stage ring runs on across
 tiles. What is new:
@@ -217,7 +225,7 @@ tiles. What is new:
   by column within a band: index `t` lies in band `t / (G·tilesN)`, at tile row `first + i mod rows` and tile column
   `i / rows`, where `first` is the band's first tile row, `rows = min(G, tilesM − first)` and `i` is `t`'s place in
   the band. The last band may have fewer rows, and within each band the map is a bijection onto its rows × columns,
-  so the tile indices `[0, tiles)` map one to one onto the tiles, for every M, N and positive G (§6.7 of
+  so the tile indices `[0, tiles)` map one to one onto the tiles, for every M, N and positive G (§6.8 of
   `OBLIGATIONS.md`; a zero G is a generation error). Row-major order made each wave of CTAs read all of B; in bands,
   the CTAs running at once read `G` rows of tiles of A and a few columns of tiles of B, which stay in L2.
 
@@ -226,19 +234,19 @@ tiles. What is new:
   agree on the tiles. `forOwnedTiles` consumes the CTA's `SchedOwn` and also hands each iteration a linear
   `TileOwn(m, bn)`: the one loop that may write the output, once per tile. `forChunks` takes both, so a tile is
   written by the CTA the schedule gives it to, once, at the coordinates the schedule computed.
-- **Accumulator ring.** `withAccRing(e, t, acc, bufs, n, X, body)` splits `withTmem`'s accumulator into `bufs`
-  buffers of `n` columns, with a full barrier (arrival count one) and an empty barrier (arrival count 128) per
-  buffer; the initializing thread completes each empty barrier's phase 0 with one arrive of count 128, so every
-  buffer starts free and both sides start at phase 0. The MMA thread takes the producer side (`takeAccProducer`, as for the stage ring) and per tile runs
-  `acquireAcc` (wait empty, `tcgen05.fence::after_thread_sync`) → `AccFree` → `mmaFirstInto` → `AccFilling` →
-  `mmaNextInto`… → `commitAcc` (`tcgen05.commit` to full). The epilogue takes the consumer side as the whole aligned
-  warpgroup (`takeAccConsumer`, with the alignment proof), so its 128 threads run every ring operation together and
-  keep identical stage and phase registers: `awaitAcc` (wait full, fence) → `AccFull` → `forChunks` over the tile,
-  staging each chunk, loaded by `loadBufferChunk` (§4) → `releaseAcc` (`tcgen05.fence::before_thread_sync`, 128 arrivals on
-  empty), once every chunk's loads have completed; the stores themselves may still be in flight, since they read
-  shared memory, not tensor memory. `finishAccProducer` waits until the epilogue has read
-  every buffer, so the accumulator goes back to `withTmem`, `empty`, with no tensor-core work in flight. As with the
-  stage ring, trip counts that disagree deadlock; they cannot race.
+- **Accumulator ring.** `withAccRing(e, t, acc, bufs, n, X, body)` splits `withTmem`'s accumulator into `bufs` buffers
+  of `n` columns, with a full barrier (arrival count one) and an empty barrier (arrival count 128) per buffer; the
+  initializing thread completes each empty barrier's phase 0 with one arrive of count 128, so every buffer starts free
+  and both sides start at phase 0. The MMA thread takes the producer side (`takeAccProducer`, as for the stage ring) and
+  per tile runs `acquireAcc` (wait empty, `tcgen05.fence::after_thread_sync`) → `AccFree` → `mmaFirstInto` →
+  `AccFilling` → `mmaNextInto`… → `commitAcc` (`tcgen05.commit` to full). The epilogue takes the consumer side as the
+  whole aligned warpgroup (`takeAccConsumer`, with the alignment proof), so its 128 threads run every ring operation
+  together and keep identical stage and phase registers: `awaitAcc` (wait full, fence) → `AccFull` → `forChunks` over
+  the tile, staging each chunk, loaded by `loadBufferChunk` (§4) → `releaseAcc` (`tcgen05.fence::before_thread_sync`,
+  128 arrivals on empty), once every chunk's loads have completed; the stores themselves may still be in flight, since
+  they read shared memory, not tensor memory. `finishAccProducer` waits until the epilogue has read every buffer, so the
+  accumulator goes back to `withTmem`, `empty`, with no tensor-core work in flight. As with the stage ring, trip counts
+  that disagree deadlock; they cannot race.
 - **Output staging.** The epilogue takes the storing side once, before its tile loop, and finishes it after, so
   stores of one tile are still reading their buffers while the next tile's chunks are staged; `acquireStage` waits
   for them only when their buffer comes round again. Shared memory: the stage ring's 192 KiB, the staging's 32 KiB and
@@ -285,5 +293,6 @@ arch=compute_100a,code=sm_100a`. The round-1 review's probe that skips the produ
 since the `Fixed` rule) was also run, generated by the library before that fix: it passes while the ring never wraps
 (K ≤ 256) and dies with an unspecified launch failure at K = 1024, once a stage is refilled before its release.
 
-The examples and the harness this round ran were retired with `Gpu.rac`. The encoding core's harnesses run as
-`encoding/README.md` describes (`encoding/harness/hw.sh`).
+The examples this round ran were retired with `Gpu.rac`. Its harness is now `encoding/harness/tinygemm_test.cu`, for
+the encoding core's TinyGEMM, and runs with the other harnesses as `encoding/README.md` describes
+(`encoding/harness/hw.sh`).
