@@ -1,9 +1,9 @@
 package com.raccoonlang
 
 /**
- * Pair expressions (docs/implemented/PAIRS_AND_PRELUDE.md §4): in a term position `(a, b)` is the active prelude's `Pair.mk(a, b)`,
- * checked as that application, whatever is in scope. Each rule has an admitted program and the smallest mutation that
- * reaches its diagnostic.
+ * Pair expressions (docs/implemented/PAIRS_AND_PRELUDE.md §4): in a term position `(a, b)` is the active prelude's
+ * `Pair.mk(a, b)`, checked as that application, whatever is in scope. Each rule has an admitted program and the
+ * smallest mutation that reaches its diagnostic.
  */
 class PairExpressionTests extends munit.FunSuite with TestSupport {
 

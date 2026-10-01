@@ -1,9 +1,9 @@
 package com.raccoonlang
 
 /**
- * A wildcard case (docs/implemented/WILDCARD_CASE.md): `| _ => e`, last in its match, stands for one case per reachable constructor
- * no other case names, each binding its fields anonymously and checking `e` under its own refinement. The residual is
- * that expansion.
+ * A wildcard case (docs/implemented/WILDCARD_CASE.md): `| _ => e`, last in its match, stands for one case per reachable
+ * constructor no other case names, each binding its fields anonymously and checking `e` under its own refinement. The
+ * residual is that expansion.
  */
 class WildcardCaseTests extends munit.FunSuite with TestSupport {
 

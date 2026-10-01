@@ -3,10 +3,11 @@ package com.raccoonlang
 import com.raccoonlang.Value._
 
 /**
- * Value metadata at construction (docs/implemented/PROOF_BY_EVALUATION.md §2.3): a value's dependencies, key and whether its key is
- * conclusive are computed when it is built, from its children's, so publishing a global, materializing and deciding an
- * equation by key walk nothing, and the key assertion rechecks a verdict on a work stack of its own. The values here
- * are built directly, deeper than evaluation builds them, and each is used on a thread of the JVM's default stack.
+ * Value metadata at construction (docs/implemented/PROOF_BY_EVALUATION.md §2.3): a value's dependencies, key and
+ * whether its key is conclusive are computed when it is built, from its children's, so publishing a global,
+ * materializing and deciding an equation by key walk nothing, and the key assertion rechecks a verdict on a work stack
+ * of its own. The values here are built directly, deeper than evaluation builds them, and each is used on a thread of
+ * the JVM's default stack.
  */
 class ValueMetadataTests extends munit.FunSuite with TestSupport {
   private val env = Prelude.default.checkedEnv

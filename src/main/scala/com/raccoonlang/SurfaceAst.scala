@@ -135,7 +135,8 @@ object SurfaceAst {
     final case class PatternVar(name: String, span: Span)
 
     /**
-     * `| _ => body`: a case for each reachable constructor no other case of its match names (docs/implemented/WILDCARD_CASE.md).
+     * `| _ => body`: a case for each reachable constructor no other case of its match names
+     * (docs/implemented/WILDCARD_CASE.md).
      */
     final case class Wildcard(body: Term, span: Span)
   }

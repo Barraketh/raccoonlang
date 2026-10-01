@@ -108,7 +108,7 @@ class DiagnosticSnapshotTests extends munit.FunSuite with Goldens {
    * snapshot case named after it that reports it and nothing else, and some test expects it as a program's only error.
    */
   test("every diagnostic spec §9 lists has its own snapshot case and a test that expects it alone") {
-    val spec = Files.readString(Paths.get("docs", "LEMUR_ON_RACCOON.md"))
+    val spec = Files.readString(Paths.get("docs", "implemented", "LEMUR_ON_RACCOON.md"))
     val section = spec.substring(spec.indexOf("## 9. Diagnostics"))
     val block = section.substring(section.indexOf("```text") + "```text".length)
     val listed = block.substring(0, block.indexOf("```")).split("[,\\s]+").filter(_.nonEmpty).toVector

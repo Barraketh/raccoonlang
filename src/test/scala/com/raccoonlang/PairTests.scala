@@ -1,10 +1,10 @@
 package com.raccoonlang
 
 /**
- * The bundled prelude's `Pair` (docs/implemented/PAIRS_AND_PRELUDE.md §2): a pair of types at any level above `Prop`, at the kind
- * and scope its components give it. Every implicit is forced by the constructor's fields, and it has no selectors, so a
- * value is taken apart by `match`. Each rule has an admitted program and the smallest mutation that reaches its
- * diagnostic.
+ * The bundled prelude's `Pair` (docs/implemented/PAIRS_AND_PRELUDE.md §2): a pair of types at any level above `Prop`,
+ * at the kind and scope its components give it. Every implicit is forced by the constructor's fields, and it has no
+ * selectors, so a value is taken apart by `match`. Each rule has an admitted program and the smallest mutation that
+ * reaches its diagnostic.
  */
 class PairTests extends munit.FunSuite with TestSupport {
 

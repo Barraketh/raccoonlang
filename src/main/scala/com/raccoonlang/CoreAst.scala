@@ -147,7 +147,8 @@ object CoreAst {
     /**
      * A match's cases, then its wildcard case if it has one. Checking expands a wildcard into the cases it stands for,
      * so a residual has none. `equation` is the local every case binds after its fields to the equation between the
-     * scrutinee and the case's constructor applied to them, where `match h : e` names it (docs/implemented/MATCH_EQUATION.md).
+     * scrutinee and the case's constructor applied to them, where `match h : e` names it
+     * (docs/implemented/MATCH_EQUATION.md).
      */
     final case class Match(
         scrut: Term,

@@ -80,7 +80,10 @@ final case class MissingCase(ctor: String) extends TypeError
 /** A wildcard case that stands for no constructor: the other cases name every reachable one. */
 case object RedundantCase extends TypeError
 
-/** A match naming its equation on a value of a family with indices (docs/implemented/MATCH_EQUATION.md §2), located at the name. */
+/**
+ * A match naming its equation on a value of a family with indices (docs/implemented/MATCH_EQUATION.md §2), located at
+ * the name.
+ */
 final case class MatchEquationIndexed(family: String) extends TypeError
 
 /** A match naming its equation, or a prelude declaring `Eq`, where no `Eq` is the equality family (MatchEquation). */
