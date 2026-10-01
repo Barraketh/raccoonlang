@@ -461,8 +461,9 @@ The kernel is `include/cutlass/gemm/kernel/sm100_gemm_tma_warpspecialized.hpp` (
   `fence.mbarrier_init.release.cluster`; `barrier.cluster.arrive.relaxed` (§9.7.15.4, Examples).
 - **A pattern nobody emits.** The same examples show "Acquire remote barrier state via async proxy":
   `barrier.cluster.wait.acquire; fence.proxy.async::generic.acquire.sync_restrict::shared::cluster.cluster`. Neither
-  CUTLASS nor FA4 emits this proxy fence. Whether a `cta_group::2` TMA that signals a peer's barrier needs it is
-  **unknown**.
+  CUTLASS nor FA4 emits this proxy fence. A `cta_group::2` TMA that signals a peer's barrier does not need it
+  (resolved, 2026-10-01): the TMA accesses its mbarrier through the generic proxy (§9.7.10.28.5.3), so the barrier
+  state the cluster barrier publishes is generic-proxy state.
 - **Special registers:**
   - `%cluster_ctarank`: rank in the cluster across dimensions, `0 ≤ … < %cluster_nctarank` (§10.16, §10.17);
   - `%clusterid` / `%nclusterid`: the cluster's id in the grid and the grid's cluster count (§10.12, §10.13);
@@ -542,6 +543,9 @@ The kernel is `include/cutlass/gemm/kernel/sm100_gemm_tma_warpspecialized.hpp` (
 
 ### 5.2 New assumptions (proposed A40+)
 
+Final numbers in `OBLIGATIONS.md` §3, after P2 took A40–A42: A40–A44 here are A43–A47 there, A45 is A48, A46 A49,
+A47 A50, A48 A51, A49 A52, A50 A53, A51 A55, and A52 A54; A56 (one CTA per SM) is new.
+
 | # | Assumption | Source |
 |---|---|---|
 | A40 | A kernel launched with cluster dimensions `(2,1,1)`, by `cudaLaunchKernelEx` with `cudaLaunchAttributeClusterDimension` or by `__cluster_dims__(2,1,1)`, runs as clusters of two co-scheduled CTAs. The grid's x must be a multiple of 2. The two CTAs of a cluster have `%cluster_ctarank` 0 and 1 and form one CTA pair, rank 0 even. | PTX §2.2.2, §9.7.18.5.1, §10.16, §11.7.1; CUTLASS `cluster_launch.hpp` 102–112, 166 |
@@ -564,8 +568,8 @@ The kernel is `include/cutlass/gemm/kernel/sm100_gemm_tma_warpspecialized.hpp` (
 - **Scope of remote arrives and waits.** FA4 and CUTLASS use `.cta`. The ISA examples and the CUDA guide use
   `.cluster`. A43 and A49 take `.cluster`. The cost is unmeasured (the DSL comment says it is "measurably slower",
   `cute_arch_mbar.py` 437–441).
-- **The async-generic proxy fence** after `barrier.cluster.wait` for remote barrier state (§9.7.15.4 example): unknown
-  whether TMA `::2` needs it (§3.7).
+- *Resolved:* **the async-generic proxy fence** after `barrier.cluster.wait` for remote barrier state (§9.7.15.4
+  example) is not needed: a TMA accesses its mbarrier through the generic proxy (§9.7.10.28.5.3; §3.7).
 - **Unwaited remote arrivals at exit.** FA4's last correction release, and CUTLASS's last accumulator release before
   the leader's tail: A51 requires each to be waited on or ordered by a cluster barrier.
 - **Which CTA issues.** PTX allows either (§3.1). A45 fixes the even one.

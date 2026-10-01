@@ -52,7 +52,7 @@ MUTANTS = [
             "the leader's half. A CTA's half comes only from the builder's `PairTile`, computed from the rank, and "
             "`PairTile` is sealed.",
         old="""        fillPair(e, ring, s, k.tile, k.a, k.b, mulC(i, 64))""",
-        new="""        fillPair(e, ring, s, PairTile.mk(lit(1).expr, lit(0).expr, lit(0).expr, lit(0).expr), k.a, k.b, mulC(i, 64))""",
+        new="""        fillPair(e, ring, s, PairTile.mk(lit(1).expr, lit(0).expr, lit(0).expr, lit(0).expr, 256), k.a, k.b, mulC(i, 64))""",
     ),
     dict(
         name="store_other_rows", expect="SealedConstructor", mentions="Core.PairTile",
@@ -60,7 +60,16 @@ MUTANTS = [
             "one row of C. `storeHalf` computes a thread's row from the builder's `PairTile`, so a CTA's rows are its "
             "own, and `PairTile` is sealed.",
         old="""    let (e, full) := storeHalf(e, accs, full, k.tile, k.c, own)""",
-        new="""    let (e, full) := storeHalf(e, accs, full, PairTile.mk(lit(1).expr, lit(128).expr, lit(0).expr, lit(0).expr), k.c, own)""",
+        new="""    let (e, full) := storeHalf(e, accs, full, PairTile.mk(lit(1).expr, lit(128).expr, lit(0).expr, lit(0).expr, 256), k.c, own)""",
+    ),
+    dict(
+        name="store_past_the_tile", expect="EvidenceNotDischarged", mentions="storeHalf: a buffer's columns must be the pair's tile's",
+        why="Halves B's box, so the pair's tile is 128 columns wide while its accumulator buffers stay 256: each CTA "
+            "would store 256 columns, the next pair's half of them included. `storeHalf` requires the buffer's "
+            "columns to be the tile's width, which the builder records in the `PairTile` (and the pair's MMA refuses "
+            "the shape too).",
+        old="""  def boxB : TmaSpec := TmaSpec.mk(64, 128)""",
+        new="""  def boxB : TmaSpec := TmaSpec.mk(64, 64)""",
     ),
     dict(
         name="close_with_producer_unfinished", expect="LinearUnused", mentions="p has a linear type",

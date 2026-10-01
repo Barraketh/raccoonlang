@@ -83,7 +83,7 @@ over both CTAs' shared and tensor memory: the kernel's CTA group in the generati
 tensor memory, stage ring and accumulator ring, and cluster barriers at their publication and close. Built to the same
 point as A3a: `pairGemmKernel`, `examples/tinygemm_pair.rac` (a 256×256 tile per pair, the epilogue scalar),
 `harness/tinygemm_pair_test.cu` (run against a host mock), `rejected/tinygemm_pair_mutants.py`, and `OBLIGATIONS.md`
-(A43–A55, M18–M20, §6.12).
+(A43–A56, M18–M20, §6.12).
 
 **Paged attention.** A1 over a paged KV cache:
 - K and V are `[pages · 128, H · 128]` (FA4's layout, since P2): a page holds 128 consecutive positions of every

@@ -2,7 +2,7 @@
 
 Status: steps 1 and 2 of §6 built (2026-10-01): the core's pair sections in `Core.rac`, `examples/tinygemm_pair.rac`,
 `harness/tinygemm_pair_test.cu` (run against a host mock), `rejected/tinygemm_pair_mutants.py`, and `OBLIGATIONS.md`
-(A43–A55, M18–M20, §6.12). Nothing has run on a GPU. §8 says what building changed. The facts are in
+(A43–A56, M18–M20, §6.12). Nothing has run on a GPU. §8 says what building changed. The facts are in
 `gpu/encoding/TWO_CTA_FACTS.md`: FA4 at `616b0e8`, CUTLASS at `0b55a2f` and PTX 9.4, each with citations. "Facts §n"
 below refers to that note.
 
@@ -42,14 +42,19 @@ CTAs. For such a grid the printer declares `__cluster_dims__(2, 1, 1)` on the ke
   - `CtaPair(l)` is a sealed, unrestricted handle to the kernel's pair, of the kernel's own lifetime `l`, and only a
     pair builder makes one. (It is not called `Pair`, the prelude's product type.)
   - Every opener of a pair resource takes it, with a context of the same lifetime (below).
-- **Rank.** `rank(pair)` is a uniform `Val` (`%cluster_ctarank`). The pair's tile index is `%clusterid.x`, the same in
-  both CTAs, so it relies on nothing about which `blockIdx.x` a cluster's CTAs have.
+- **Rank.** The rank (`%cluster_ctarank`) is the core's: it chooses the leader's arm and each CTA's half, and no
+  operation hands it to client code, so no loop count or branch of the client's can differ between the CTAs (M18).
+  The pair's tile index is `%clusterid.x`, the same in both CTAs, so it relies on nothing about which `blockIdx.x` a
+  cluster's CTAs have.
 - **The CTA group.** The builder records it in the generation state. Every `tcgen05` emitter prints its `.cta_group`
   from there, and the single-CTA openers (`withRing`, `withTmem`, `withAccHandoff`, `withAccRing`, `withExchange`,
   `withScoreBuffer`) refuse to generate in a pair kernel. So a kernel uses one group (A29) by construction, and a
   CTA-group mismatch is a generation error. All six refuse, not only the two that allocate or split tensor memory:
   `withPairTmem` hands out an ordinary `Tmem` and `Acc`, which every single-CTA protocol would otherwise accept, and a
   single-CTA ring's consumer issues commits.
+- **What the group prints.** Besides `.cta_group`, the group chooses the form of every barrier wait (`.acquire.cluster`
+  in a pair kernel) and commit (multicast to both CTAs, mask `0b11`). So a pair ring's and a pair accumulator ring's
+  waits, releases, commits and drains are the single-CTA operations' own code.
 
 **Where pair openers run.** A pair opener (`withPairTmem`, `withPairRing`, `withPairAccRing`) takes the kernel's own
 context, `Ctx(l, …)` with the `CtaPair(l)` of the same `l`. A branch arm, loop body, role, split side or `onLeader` arm
@@ -94,6 +99,9 @@ Each side's finisher has drained before its role joins (M15). So by step 2:
 The kernel's last close is followed only by exit, and a CTA exits after the cluster barrier, so neither CTA exits
 while its peer can reach it (A55).
 
+Nested resources close one after another, each with its own cluster barrier, so the pair GEMM ends with three in a
+row where the first would order what the later two need: a known small cost, not optimized.
+
 This replaces CUTLASS's per-resource handshakes (Facts §2, "TMEM handshake"). It also leaves no unwaited arrivals, as
 FA4's final correction release does (Facts §1.8). Every arrival is drained by its finisher, and every close follows a
 cluster barrier. Both CTAs run the same closes in the same order, so a collective dealloc cannot hang behind the
@@ -122,8 +130,12 @@ takes.
 
 **Pair tensor memory** (`withPairTmem(e, pair, permit, done, X, body)`, `withTmem`'s callback).
 - **Allocation.** Always all 512 columns, by warp 0 of each CTA, with `tcgen05.alloc.cta_group::2`. A 512-column
-  allocation starts at column 0, so both CTAs' addresses are equal without CUTLASS's premise that they are (Facts
-  §5.2, A47). FA4 does the same (Facts §1.2).
+  allocation starts at column 0, so both CTAs' addresses are equal without CUTLASS's premise that they are (A50). FA4
+  does the same (Facts §1.2).
+- **One CTA per SM.** PTX does not say whether the first warp of a `::2` allocation holds its columns while it waits
+  for the peer's, so two clusters sharing two SMs could each hold one SM's 512 columns and wait for the other's. A pair
+  kernel therefore asks for more than half of an SM's shared memory (`pairShared`, padding a smaller request), which
+  keeps each of its CTAs alone on its SM (A56).
 - **Each CTA's region.** Each CTA's `Tmem(a, 512)` is its own 128 lanes. The MMA writes both CTAs' regions at one
   address. `splitTmem` works on it as today.
 - **Release.** Relinquish follows the allocation; dealloc comes after the close's cluster barrier.
@@ -166,7 +178,7 @@ The pieces of `docs/SEPARATION_PILOT.md` now span two CTAs. The rules carry over
 
 ## 5. Assumptions
 
-Numbered A43–A55 in `OBLIGATIONS.md` §3, after P2's A40–A42, in this table's order, with A55 for the exit rule of §3.
+Numbered A43–A56 in `OBLIGATIONS.md` §3, after P2's A40–A42, in this table's order.
 The confidence column says how much of each comes from the PTX text alone.
 
 | Name | Statement | Basis | Confidence |
@@ -184,6 +196,7 @@ The confidence column says how much of each comes from the PTX text alone.
 | Cross-CTA async proxy | a TMA write into one CTA's shared memory and an MMA read of it issued by the other CTA are ordered by the barrier chain alone | not in PTX (§8.9.5 is "same thread block"); CUTLASS and FA4 rely on it | **low–medium: probe it on hardware, and ask NVIDIA** |
 | Own tensor memory | `tcgen05.ld/st` reach only the executing CTA's tensor memory | PTX §9.7.18.8 | high |
 | Peer lifetime | nothing is assumed of an access to a CTA that has exited or closed the resource: every remote access precedes the close's cluster barrier | PTX §2.2.2 | — (a design choice) |
+| One CTA per SM | a CTA asking for more than half of an SM's shared memory is alone on its SM, so no two clusters' 512-column allocations meet | CUDA guide (228 KB per SM); PTX §9.7.18.7.1 is silent on a waiting allocation | high |
 
 The `MODELS.md` changes:
 - §1.2's "a negative tx does not happen" no longer holds;
@@ -193,7 +206,7 @@ The `MODELS.md` changes:
 ## 6. Plan
 
 1. **Core** (built):
-   - `pairStart`, `CtaPair`, `rank`, `onLeader`/`Leader`;
+   - `pairStart`, `CtaPair`, `onLeader`/`Leader`;
    - the CTA group in the generation state, read by the `tcgen05` emitters;
    - `withPairRing`, `withPairTmem`, a pair accumulator ring;
    - the cluster-barrier closes and initialization;
@@ -206,7 +219,7 @@ The `MODELS.md` changes:
    - a single-CTA opener in a pair kernel;
    - a pair opener under `onLeader`;
    - a fill of the caller's coordinates and barrier, and one of a forged half;
-   - a store of the other CTA's rows;
+   - a store of the other CTA's rows, and one past the tile's columns;
    - a close with each side unfinished. A close without the cluster barrier needs no mutant: the close emits it.
 
    It settles the protocol shape, not performance: it is not persistent, and its epilogue stores scalars.
@@ -251,3 +264,8 @@ Against the design as first written:
 - `Leader` is required where the tensor-core endpoints are taken, not by every MMA and commit.
 - The core, not the client, computes a CTA's half for fills, so a wrong half is unwritable.
 - The multicast commit's mask is a `.b16` register in the template.
+- The CTA group chooses the barrier waits' and commits' form as well as `.cta_group`, so the pair rings' waits,
+  releases, commits and drains are the single-CTA operations, not copies with other instructions.
+- `rank` is not exported: a rank-dependent trip count of the client's would deadlock the pair (review).
+- A pair kernel asks for at least `pairShared` bytes of shared memory, one CTA per SM (review).
+- `PairTile` records the tile's width, which `storeHalf` requires of the buffer (review).

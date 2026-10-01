@@ -855,7 +855,7 @@ identify them. Which threads run a block still needs groups in the AST, or layer
 ## 6. What is left out, and the other tracks
 
 Left out today, beyond §1.7: remote (cluster) barriers, multicast commits, 2-CTA MMAs and cluster barriers, which
-`gpu/encoding`'s pair kernel uses (`encoding/TWO_CTA.md`, A43–A55) but no model covers yet; TMA multicast,
+`gpu/encoding`'s pair kernel uses (`encoding/TWO_CTA.md`, A43–A56) but no model covers yet; TMA multicast,
 `tcgen05.st`/`tcgen05.cp`, named
 barriers between roles other than the split joins, and liveness. The models extend as follows.
 

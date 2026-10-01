@@ -419,10 +419,9 @@ Observations from building `TWO_CTA.md`'s steps 1 and 2 (`Core.rac`'s pair secti
 `harness/tinygemm_pair_test.cu`, `rejected/tinygemm_pair_mutants.py`).
 
 1. **Reading the CTA group consumes the context.** `Ctx` is linear, so an emitter cannot look at the generation state
-   and then emit: every `tcgen05` emitter that read nothing before (`sendAcc`, `releaseByMma`, `commitAcc`,
-   `commitPV`, `commitBuffer`) now takes the state, builds its instruction from `gen.group` and resumes, where it used
-   `emit`. Five call sites grew two lines each. A non-consuming read of a context's generation state, or an `emit`
-   whose statement is a function of the group, would keep them one line.
+   and then emit. Every barrier wait and commit now prints the group's form, so their emitters pass a function of the
+   group to `emitIn` (a lambda `fun (g: CtaGroup): List(Stmt) => …` where they built a list), at thirteen wait sites
+   and five commits. A non-consuming read of a context's generation state would keep them as they were.
 2. **No struct update.** `Gen` gained a field, and every one of its sixteen `Gen.mk(…)` constructions in `Core.rac`
    had to name it, though none changes it: most of them only bump `next`. A functional update (`{gen with next := …}`)
    would have made the change one line.
@@ -434,20 +433,23 @@ Observations from building `TWO_CTA.md`'s steps 1 and 2 (`Core.rac`'s pair secti
    `Spec.GridExpr` and `proofs/Fold.rac`'s `gridMem`.
 5. **A 16-bit operand.** The multicast commit's CTA mask is a 16-bit operand, and `Cuda.DType` has no 16-bit integer
    for an `"h"` constraint, so the template sets the mask in a `.b16` register of its own block.
-6. **Wrappers per pair operation.** A pair ring's operations differ from a ring's in one instruction each (a wait at
-   cluster scope, a `::2` copy to the leader's barrier, a multicast commit), but each needs its own sealed entry point,
-   so the pair sections hold seventeen operations, four of them one-line delegations to the single-CTA ones
-   (`takePairProducer`, `takePairConsumer`, `takePairAccProducer`, `takePairAccConsumer`) or near copies (`acquirePair`,
-   `awaitPair`, `acquirePairAcc`, `awaitPairAcc`). Sharing the token families, with the sealed `PairRing` wrapping a
-   `Ring`, kept the types from doubling: sealed selectors are private, so a client cannot unwrap a `PairRing` and run
-   a single-CTA operation on it.
+6. **Delegations per pair operation.** Since the group chooses the wait and commit forms (item 1), most pair ring
+   operations are the single-CTA ones, but each still needs its own entry point on the sealed `PairRing` or
+   `PairAccRing`: twelve of the pair sections' operations are one-line delegations. Merging them into the
+   single-CTA operations would let the `Leader`-free takes and the caller-coordinate `fill` reach a pair ring. Sharing
+   the token families, with the sealed `PairRing` wrapping a `Ring`, kept the types from doubling: sealed selectors are
+   private, so a client cannot unwrap a `PairRing` and run a single-CTA operation on it.
 7. **What the mutants can say.** Two of the brief's mistakes cannot be written, so their mutants show the nearest
    attempt refused: a consumer outside `onLeader` needs a `Leader`, which outside the arm only a forged one could be
    (`SealedConstructor`); a fill or store of the other CTA's half needs a `PairTile` of other rows, likewise forged.
    The `Leader` escaping its arm is a `TypeMismatch`, since the arm hands back only its context, not a scope error.
-8. **The rank selects nothing a client writes.** Rows and halves come from the sealed `PairTile`, so the example never
-   names the rank; `rank` is exported for the attention kernels to come, and nothing uses it yet.
-9. **The harness ran against a mock.** `tinygemm_pair_test.cu` was linked against a host mock of the runtime and
+8. **The rank is the core's.** Rows and halves come from the sealed `PairTile`, so the example never names the rank.
+   The review found that an exported `rank` let a client's trip count differ between the CTAs, which deadlocks the
+   pair; it is no longer exported, and the attention kernels to come will need their per-CTA coordinates from the
+   core as the GEMM does.
+9. **One CTA per SM by padding.** Nothing in the launcher API states occupancy, so the pair builder pads its shared
+   memory request to more than half an SM's (`pairShared`), wasting up to 116 KB when a pair kernel needs less.
+10. **The harness ran against a mock.** `tinygemm_pair_test.cu` was linked against a host mock of the runtime and
    driver (not in the repository) whose `cudaLaunchKernel` checks the pair grid (`2·ceil(N/256)` × `ceil(M/256)`, 256
    threads) and emulates each pair per CTA: each CTA's A rows and half of B through the rank-2 maps with zero fill, the
    leader's M = 256 product of each CTA's rows with both halves, and each CTA's guarded stores of its own rows, behind

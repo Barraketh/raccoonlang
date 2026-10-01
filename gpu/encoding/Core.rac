@@ -2,7 +2,7 @@
 // with forward attention (gpu/ATTENTION.md §3, stages A1 and A2). Every family that carries authority or names generated code is sealed, so only this file can
 // make one. A kernel is an ordinary Raccoon program over these operations; evaluating it builds a `Cuda.Kernel`.
 //
-// Four rules carry the safety argument:
+// Five rules carry the safety argument:
 // - An emitter `Ctx(l, g)` is linear and every operation threads it, so code is emitted in the order the program's
 //   authority flows. `g` says which threads run the code, so a collective cannot sit where some of them are missing.
 // - Every value and register lives in the lifetime of the block that declared it, so a value made in a loop body,
@@ -18,6 +18,10 @@
 //   operation on a side hands it on, except its finisher. The finisher of a ring's producer, of the exchange's writer
 //   and of the storing side waits until nothing is in flight; the other sides' finishers emit nothing, since what
 //   they issue is released to the waiting side.
+// - A kernel has one CTA group, which its builder records in the generation state: every `tcgen05` instruction, barrier
+//   wait and commit prints it, and the single-CTA protocols' openers refuse in a pair kernel. A pair resource's opener
+//   takes the kernel's own context, of the lifetime of its `CtaPair(l)`, so it runs only in the kernel's top-level
+//   spine: both CTAs of a pair run every opener and close, in one order, and lay their resources out alike.
 //
 // The sm_100a operations (TMA, mbarrier, tcgen05) follow CUTLASS's inline assembly; gpu/DESIGN.md §7 records their
 // runs on a B200. Those attention adds are checked against the PTX ISA 9.4 text, by section, and have not run.
@@ -195,6 +199,13 @@ namespace Core {
   def emitAll {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(ss: List(Stmt)): Ctx(l, g) :=
     Core.resume(k, l, g, Core.pushAll(Core.state(k, e), ss))
 
+  // Emits the code `code` makes for the kernel's CTA group: the code of a barrier wait or a tensor-core instruction,
+  // which print it.
+  def emitIn {l: Lifetime}{g: Group}{Sf: Lifetime}(k: Key)(e: Ctx(l, g))(code: { scope = Sf } CtaGroup -> List(Stmt)): Ctx(l, g) := {
+    let gen := Core.state(k, e)
+    Core.resume(k, l, g, Core.pushAll(gen, code(gen.group)))
+  }
+
   def reject {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(message: String): Ctx(l, g) :=
     Core.resume(k, l, g, Core.fail(Core.state(k, e), message))
 
@@ -332,18 +343,18 @@ namespace Core {
 
   def mbarInval (bar: Expr): Stmt := Core.asmIn("mbarrier.inval.shared::cta.b64 [%0];", Core.one(Core.r(bar)))
 
-  // A wait loop on `try_wait.parity` with the semantics qualifiers `sem` (none: the defaults, `.acquire.cta`).
-  def waitTemplate (sem: String): String :=
-    Text.cat3("{\\n\\t.reg .pred P1;\\n\\tLAB_WAIT:\\n\\tmbarrier.try_wait.parity", sem,
-      ".shared::cta.b64 P1, [%0], %1;\\n\\t@P1 bra DONE;\\n\\tbra LAB_WAIT;\\n\\tDONE:\\n\\t}")
+  // A wait's semantics: the defaults, `.acquire.cta`, in a single-CTA kernel; in a pair kernel, whose barriers the
+  // peer's arrivals, TMA completions and commits reach, `.acquire.cluster` (PTX §9.7.15.16.19).
+  def waitSem (group: CtaGroup): String := {
+    match group returning String with
+    | CtaGroup.one => ""
+    | CtaGroup.two => ".acquire.cluster"
+  }
 
   // Spins until the phase of `bar` with parity `parity` has completed.
-  def mbarWait (bar: Expr)(parity: Expr): Stmt := Core.asmIn(Core.waitTemplate(""), Core.two(Core.r(bar), Core.r(parity)))
-
-  // As `mbarWait`, acquiring at cluster scope: the wait on a barrier that the peer CTA's arrivals, TMA completions or
-  // commits reach (PTX §9.7.15.16.19).
-  def mbarWaitCluster (bar: Expr)(parity: Expr): Stmt :=
-    Core.asmIn(Core.waitTemplate(".acquire.cluster"), Core.two(Core.r(bar), Core.r(parity)))
+  def mbarWait (group: CtaGroup)(bar: Expr)(parity: Expr): Stmt :=
+    Core.asmIn(Text.cat3("{\\n\\t.reg .pred P1;\\n\\tLAB_WAIT:\\n\\tmbarrier.try_wait.parity", Core.waitSem(group),
+      ".shared::cta.b64 P1, [%0], %1;\\n\\t@P1 bra DONE;\\n\\tbra LAB_WAIT;\\n\\tDONE:\\n\\t}"), Core.two(Core.r(bar), Core.r(parity)))
 
   def mbarArriveExpectTx (bar: Expr)(bytes: Nat): Stmt :=
     Core.asmIn("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;", Core.two(Core.r(bar), Core.r(Expr.lit(bytes))))
@@ -378,9 +389,18 @@ namespace Core {
     Core.asmIn(Text.cat3("{\\n\\t.reg .pred p;\\n\\tsetp.ne.b32 p, %4, 0;\\n\\ttcgen05.mma.", CtaGroup.qualifier(group), ".kind::f16 [%0], %1, %2, %3, p;\\n\\t}"),
       List.cons(Core.r(tmem), List.cons(Core.l64(descA), List.cons(Core.l64(descB), Core.two(Core.r(Expr.lit(idesc)), Core.r(Expr.lit(accumulate)))))))
 
-  // Arrives on `bar` once every tensor-core operation this thread issued so far has completed.
-  def mmaCommit (group: CtaGroup)(bar: Expr): Stmt :=
-    Core.asmIn(Text.cat3("tcgen05.commit.", CtaGroup.qualifier(group), ".mbarrier::arrive::one.shared::cluster.b64 [%0];"), Core.one(Core.r(bar)))
+  // Arrives on `bar` once every tensor-core operation this thread issued so far has completed. In a pair kernel it
+  // arrives on the barrier at `bar`'s offset in both CTAs, CTA mask 0b11 (PTX §9.7.18.12.1), set in a `.b16` register:
+  // a 16-bit operand would need a 16-bit C type.
+  def mmaCommit (group: CtaGroup)(bar: Expr): Stmt := {
+    let template := {
+      match group returning String with
+      | CtaGroup.one => "tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%0];"
+      | CtaGroup.two =>
+        "{\\n\\t.reg .b16 mask;\\n\\tmov.b16 mask, 3;\\n\\ttcgen05.commit.cta_group::2.mbarrier::arrive::one.shared::cluster.multicast::cluster.b64 [%0], mask;\\n\\t}"
+    }
+    Core.asmIn(template, Core.one(Core.r(bar)))
+  }
 
   // `c` to `c + count − 1`.
   def counting (c: Nat)(count: Nat): List(Nat) decreases structural(count) := {
@@ -935,6 +955,10 @@ namespace Core {
     RingLayout.mk(Core.fresh(Core.fresh(Core.fresh(Core.fresh(gen3)))), base, bars, gen3.next, setup)
   }
 
+  // The ring in scope `r` that `at` lays out.
+  def ringAt (k: Key)(r: Lifetime)(cfg: RingCfg)(at: RingLayout): Ring(r, cfg) :=
+    Ring.mk(r, cfg, at.base, at.bars, at.regs, Nat.add(at.regs, 1), Nat.add(at.regs, 2), Nat.add(at.regs, 3))
+
   // Opens a stage ring for the callback, which must finish both endpoints: each is linear and belongs to the ring's
   // scope, which the callback's result cannot name, and its finisher is the only operation that uses it up without
   // handing it on. The producer's finish waits until every stage it filled was released, so no copy into the ring's
@@ -946,8 +970,8 @@ namespace Core {
       : Pair(Ctx(l, Group.cta(w)), X) := {
     let at := Core.ringLayout(Core.oneCta(Core.state(Key.key, e), "ring"), cfg)
     scope r => {
-      let ring := Ring.mk(r, cfg, at.base, at.bars, at.regs, Nat.add(at.regs, 1), Nat.add(at.regs, 2), Nat.add(at.regs, 3))
-      let (e2, x) := body(r, ring, Producer.mk(r), Consumer.mk(r), Core.resume(Key.key, l, Group.cta(w), Core.initBarrierList(at.gen, at.setup)))
+      let (e2, x) := body(r, Core.ringAt(Key.key, r, cfg, at), Producer.mk(r), Consumer.mk(r),
+        Core.resume(Key.key, l, Group.cta(w), Core.initBarrierList(at.gen, at.setup)))
       (Core.invalBarriers(Key.key, e2, at.bars, Nat.mul(2, cfg.stages)), x)
     }
   }
@@ -979,7 +1003,8 @@ namespace Core {
       : Pair(Ctx(n, Group.lane), Slot(r, m)) := {
     match p returning Pair(Ctx(n, Group.lane), Slot(r, m)) with
     | ProducerAt.mk =>
-      (Core.emit(Key.key, e, Core.mbarWait(Core.emptyBar(ring, ring.pStage), Expr.var(ring.pPhase))), Slot.mk(r, m))
+      (Core.emitIn(Key.key, e, fun (g: CtaGroup): List(Stmt) => List.cons(Core.mbarWait(g, Core.emptyBar(ring, ring.pStage), Expr.var(ring.pPhase)),
+        List.nil(Stmt))), Slot.mk(r, m))
   }
 
   // The producer's fill of its current stage: one TMA box through map `a` at (`a0`, `a1`) into the stage's first box and
@@ -1043,13 +1068,12 @@ namespace Core {
     }
   }
 
-  // `count` waits, with `wait`, on the barriers from byte `emptyBase` on, from the side's current stage and phase on.
-  def drain (wait: Expr -> Expr -> Stmt)(stage: Nat)(phase: Nat)(emptyBase: Nat)(stages: Nat)(count: Nat): List(Stmt) decreases structural(count) := {
+  def drain (group: CtaGroup)(stage: Nat)(phase: Nat)(emptyBase: Nat)(stages: Nat)(count: Nat): List(Stmt) decreases structural(count) := {
     match count returning List(Stmt) with
     | Nat.zero => List.nil(Stmt)
     | Nat.succ more => {
       let bar := Expr.bin(BinOp.add, Expr.sharedAddr(emptyBase), Expr.bin(BinOp.mul, Expr.var(stage), Expr.lit(8)))
-      List.cons(wait(bar, Expr.var(phase)), List.append(Core.advance(stage, phase, stages), Core.drain(wait, stage, phase, emptyBase, stages, more)))
+      List.cons(Core.mbarWait(group, bar, Expr.var(phase)), List.append(Core.advance(stage, phase, stages), Core.drain(group, stage, phase, emptyBase, stages, more)))
     }
   }
 
@@ -1060,7 +1084,7 @@ namespace Core {
     match p returning Ctx(n, Group.lane) with
     | ProducerAt.mk => {
       let emptyBase := Nat.add(ring.bars, Nat.mul(8, cfg.stages))
-      Core.emitAll(Key.key, e, Core.drain(Core.mbarWait, ring.pStage, ring.pPhase, emptyBase, cfg.stages, cfg.stages))
+      Core.emitIn(Key.key, e, fun (g: CtaGroup): List(Stmt) => Core.drain(g, ring.pStage, ring.pPhase, emptyBase, cfg.stages, cfg.stages))
     }
   }
 
@@ -1070,8 +1094,8 @@ namespace Core {
       : Pair(Ctx(n, Group.lane), Ready(r, m)) := {
     match c returning Pair(Ctx(n, Group.lane), Ready(r, m)) with
     | ConsumerAt.mk => {
-      let wait := List.cons(Core.mbarWait(Core.fullBar(ring, ring.cStage), Expr.var(ring.cPhase)), List.cons(Core.tcFenceAfter, List.nil(Stmt)))
-      (Core.emitAll(Key.key, e, wait), Ready.mk(r, m))
+      let wait := fun (g: CtaGroup): List(Stmt) => List.cons(Core.mbarWait(g, Core.fullBar(ring, ring.cStage), Expr.var(ring.cPhase)), List.cons(Core.tcFenceAfter, List.nil(Stmt)))
+      (Core.emitIn(Key.key, e, wait), Ready.mk(r, m))
     }
   }
 
@@ -1233,10 +1257,7 @@ namespace Core {
     match s returning Ctx(n, Group.lane) with
     | AccSend.mk => {
       match acc returning Ctx(n, Group.lane) with
-      | AccPending.mk => {
-        let gen := Core.state(Key.key, e)
-        Core.resume(Key.key, n, Group.lane, Core.push(gen, Core.mmaCommit(gen.group, Expr.sharedAddr(hd.bar))))
-      }
+      | AccPending.mk => Core.emitIn(Key.key, e, fun (g: CtaGroup): List(Stmt) => List.cons(Core.mmaCommit(g, Expr.sharedAddr(hd.bar)), List.nil(Stmt)))
     }
   }
 
@@ -1245,8 +1266,8 @@ namespace Core {
       : Pair(Ctx(n, g), Acc(a, AccState.ready)) := {
     match rv returning Pair(Ctx(n, g), Acc(a, AccState.ready)) with
     | AccRecv.mk => {
-      let wait := List.cons(Core.mbarWait(Expr.sharedAddr(hd.bar), Expr.lit(0)), List.cons(Core.tcFenceAfter, List.nil(Stmt)))
-      (Core.emitAll(Key.key, e, wait), Acc.mk(a, AccState.ready))
+      let wait := fun (g: CtaGroup): List(Stmt) => List.cons(Core.mbarWait(g, Expr.sharedAddr(hd.bar), Expr.lit(0)), List.cons(Core.tcFenceAfter, List.nil(Stmt)))
+      (Core.emitIn(Key.key, e, wait), Acc.mk(a, AccState.ready))
     }
   }
 
@@ -1347,9 +1368,9 @@ namespace Core {
       (e: Ctx(n, Group.lane))(w: Elected(m))(ring: Ring(r, cfg))(u: ReadyUsed(r, m)): Pair(Ctx(n, Group.lane), ConsumerAt(r, m)) := {
     match u returning Pair(Ctx(n, Group.lane), ConsumerAt(r, m)) with
     | ReadyUsed.mk => {
-      let gen := Core.state(Key.key, e)
-      let release := List.cons(Core.mmaCommit(gen.group, Core.emptyBar(ring, ring.cStage)), Core.advance(ring.cStage, ring.cPhase, cfg.stages))
-      (Core.resume(Key.key, n, Group.lane, Core.pushAll(gen, release)), ConsumerAt.mk(r, m))
+      let release := fun (g: CtaGroup): List(Stmt) =>
+        List.cons(Core.mmaCommit(g, Core.emptyBar(ring, ring.cStage)), Core.advance(ring.cStage, ring.cPhase, cfg.stages))
+      (Core.emitIn(Key.key, e, release), ConsumerAt.mk(r, m))
     }
   }
 
@@ -1737,6 +1758,10 @@ namespace Core {
       List.append(inits, Core.barrierCompletions(bars, readers, bufs, bufs)))
   }
 
+  // The accumulator ring in scope `q` that `at` lays out, of `bufs` buffers of `n` columns from the region `t`.
+  def accRingAt {a: Lifetime}{cols: Nat}(k: Key)(q: Lifetime)(n: Nat)(t: Tmem(a, cols))(bufs: Nat)(at: AccRingLayout): AccRing(q, n) :=
+    AccRing.mk(q, n, Core.tmemBase(t), bufs, at.bars, at.regs, Nat.add(at.regs, 1), Nat.add(at.regs, 2), Nat.add(at.regs, 3))
+
   // Splits the accumulator of `withTmem` into `bufs` buffers of `n` columns for the callback, which must finish both
   // sides: each is linear and belongs to the ring's scope, which the callback's result cannot name, and its finisher is
   // the only operation that uses it up without handing it on. The issuer's finish waits until the epilogue has read
@@ -1751,8 +1776,8 @@ namespace Core {
     | Acc.mk => {
       let at := Core.accRingLayout(Core.oneCta(Core.state(Key.key, e), "accumulator ring"), cols, bufs, n, 128)
       scope q => {
-        let ring := AccRing.mk(q, n, Core.tmemBase(t), bufs, at.bars, at.regs, Nat.add(at.regs, 1), Nat.add(at.regs, 2), Nat.add(at.regs, 3))
-        let (e2, x) := body(q, ring, AccProducer.mk(q), AccConsumer.mk(q), Core.resume(Key.key, l, Group.cta(w), Core.initBarrierList(at.gen, at.setup)))
+        let (e2, x) := body(q, Core.accRingAt(Key.key, q, n, t, bufs, at), AccProducer.mk(q), AccConsumer.mk(q),
+          Core.resume(Key.key, l, Group.cta(w), Core.initBarrierList(at.gen, at.setup)))
         (Core.invalBarriers(Key.key, e2, at.bars, Nat.mul(2, bufs)), (Acc.mk(a, AccState.empty), x))
       }
     }
@@ -1774,8 +1799,8 @@ namespace Core {
       (p: AccProducerAt(q, m)): Pair(Ctx(k, Group.lane), AccFree(q, m)) := {
     match p returning Pair(Ctx(k, Group.lane), AccFree(q, m)) with
     | AccProducerAt.mk => {
-      let wait := List.cons(Core.mbarWait(Core.accEmptyBar(ring, ring.pStage), Expr.var(ring.pPhase)), List.cons(Core.tcFenceAfter, List.nil(Stmt)))
-      (Core.emitAll(Key.key, e, wait), AccFree.mk(q, m))
+      let wait := fun (g: CtaGroup): List(Stmt) => List.cons(Core.mbarWait(g, Core.accEmptyBar(ring, ring.pStage), Expr.var(ring.pPhase)), List.cons(Core.tcFenceAfter, List.nil(Stmt)))
+      (Core.emitIn(Key.key, e, wait), AccFree.mk(q, m))
     }
   }
 
@@ -1809,9 +1834,9 @@ namespace Core {
       (e: Ctx(k, Group.lane))(w: Elected(m))(ring: AccRing(q, n))(acc: AccFilling(q, m)): Pair(Ctx(k, Group.lane), AccProducerAt(q, m)) := {
     match acc returning Pair(Ctx(k, Group.lane), AccProducerAt(q, m)) with
     | AccFilling.mk => {
-      let gen := Core.state(Key.key, e)
-      let commit := List.cons(Core.mmaCommit(gen.group, Core.accFullBar(ring, ring.pStage)), Core.advance(ring.pStage, ring.pPhase, ring.bufs))
-      (Core.resume(Key.key, k, Group.lane, Core.pushAll(gen, commit)), AccProducerAt.mk(q, m))
+      let commit := fun (g: CtaGroup): List(Stmt) =>
+        List.cons(Core.mmaCommit(g, Core.accFullBar(ring, ring.pStage)), Core.advance(ring.pStage, ring.pPhase, ring.bufs))
+      (Core.emitIn(Key.key, e, commit), AccProducerAt.mk(q, m))
     }
   }
 
@@ -1819,7 +1844,8 @@ namespace Core {
   def finishAccProducer {k: Lifetime}{q: Lifetime}{n: Nat}{m: Lifetime}(e: Ctx(k, Group.lane))(ring: AccRing(q, n))
       (p: AccProducerAt(q, m)): Ctx(k, Group.lane) := {
     match p returning Ctx(k, Group.lane) with
-    | AccProducerAt.mk => Core.emitAll(Key.key, e, Core.drain(Core.mbarWait, ring.pStage, ring.pPhase, Core.accEmptyBase(ring), ring.bufs, ring.bufs))
+    | AccProducerAt.mk =>
+      Core.emitIn(Key.key, e, fun (g: CtaGroup): List(Stmt) => Core.drain(g, ring.pStage, ring.pPhase, Core.accEmptyBase(ring), ring.bufs, ring.bufs))
   }
 
   // An aligned warpgroup takes the reading side: its buffer starts at 0, none yet full.
@@ -1838,8 +1864,8 @@ namespace Core {
       (e: Ctx(k, Group.warps(f, 4)))(ring: AccRing(q, n))(c: AccConsumerAt(q, m, f)): Pair(Ctx(k, Group.warps(f, 4)), AccFull(q, m, f)) := {
     match c returning Pair(Ctx(k, Group.warps(f, 4)), AccFull(q, m, f)) with
     | AccConsumerAt.mk => {
-      let wait := List.cons(Core.mbarWait(Core.accFullBar(ring, ring.cStage), Expr.var(ring.cPhase)), List.cons(Core.tcFenceAfter, List.nil(Stmt)))
-      (Core.emitAll(Key.key, e, wait), AccFull.mk(q, m, f))
+      let wait := fun (g: CtaGroup): List(Stmt) => List.cons(Core.mbarWait(g, Core.accFullBar(ring, ring.cStage), Expr.var(ring.cPhase)), List.cons(Core.tcFenceAfter, List.nil(Stmt)))
+      (Core.emitIn(Key.key, e, wait), AccFull.mk(q, m, f))
     }
   }
 
@@ -2059,8 +2085,8 @@ namespace Core {
       (e: Ctx(k, Group.warps(f, 4)))(ex: Exchange(x))(at: ExWriterAt(x, m, f, o)): Pair(Ctx(k, Group.warps(f, 4)), PFree(x, m, f, o, 0)) := {
     match at returning Pair(Ctx(k, Group.warps(f, 4)), PFree(x, m, f, o, 0)) with
     | ExWriterAt.mk => {
-      let wait := List.cons(Core.mbarWait(Core.pEmptyBar(ex), Expr.var(ex.wPhase)), List.cons(Core.tcFenceAfter, List.nil(Stmt)))
-      (Core.emitAll(Key.key, e, wait), PFree.mk(x, m, f, o, 0))
+      let wait := fun (g: CtaGroup): List(Stmt) => List.cons(Core.mbarWait(g, Core.pEmptyBar(ex), Expr.var(ex.wPhase)), List.cons(Core.tcFenceAfter, List.nil(Stmt)))
+      (Core.emitIn(Key.key, e, wait), PFree.mk(x, m, f, o, 0))
     }
   }
 
@@ -2153,8 +2179,8 @@ namespace Core {
       (e: Ctx(k, Group.warps(f, 4)))(ex: Exchange(x))(at: ExWriterAt(x, m, f, OState.held)): Pair(Ctx(k, Group.warps(f, 4)), OFinal(x, m, f)) := {
     match at returning Pair(Ctx(k, Group.warps(f, 4)), OFinal(x, m, f)) with
     | ExWriterAt.mk => {
-      let wait := List.cons(Core.mbarWait(Core.pEmptyBar(ex), Expr.var(ex.wPhase)), List.cons(Core.tcFenceAfter, List.nil(Stmt)))
-      (Core.emitAll(Key.key, e, wait), OFinal.mk(x, m, f))
+      let wait := fun (g: CtaGroup): List(Stmt) => List.cons(Core.mbarWait(g, Core.pEmptyBar(ex), Expr.var(ex.wPhase)), List.cons(Core.tcFenceAfter, List.nil(Stmt)))
+      (Core.emitIn(Key.key, e, wait), OFinal.mk(x, m, f))
     }
   }
 
@@ -2177,8 +2203,8 @@ namespace Core {
       : Pair(Ctx(k, Group.lane), PReady(x, m, o)) := {
     match at returning Pair(Ctx(k, Group.lane), PReady(x, m, o)) with
     | ExReaderAt.mk => {
-      let wait := List.cons(Core.mbarWait(Core.pFullBar(ex), Expr.var(ex.rPhase)), List.cons(Core.tcFenceAfter, List.nil(Stmt)))
-      (Core.emitAll(Key.key, e, wait), PReady.mk(x, m, o))
+      let wait := fun (g: CtaGroup): List(Stmt) => List.cons(Core.mbarWait(g, Core.pFullBar(ex), Expr.var(ex.rPhase)), List.cons(Core.tcFenceAfter, List.nil(Stmt)))
+      (Core.emitIn(Key.key, e, wait), PReady.mk(x, m, o))
     }
   }
 
@@ -2228,9 +2254,8 @@ namespace Core {
       : Pair(Ctx(k, Group.lane), ExReaderAt(x, m, OState.held)) := {
     match u returning Pair(Ctx(k, Group.lane), ExReaderAt(x, m, OState.held)) with
     | PUsed.mk => {
-      let gen := Core.state(Key.key, e)
-      (Core.resume(Key.key, k, Group.lane, Core.pushAll(gen, List.cons(Core.mmaCommit(gen.group, Core.pEmptyBar(ex)), List.cons(Core.flip(ex.rPhase), List.nil(Stmt))))),
-        ExReaderAt.mk(x, m, OState.held))
+      let commit := fun (g: CtaGroup): List(Stmt) => List.cons(Core.mmaCommit(g, Core.pEmptyBar(ex)), List.cons(Core.flip(ex.rPhase), List.nil(Stmt)))
+      (Core.emitIn(Key.key, e, commit), ExReaderAt.mk(x, m, OState.held))
     }
   }
 
@@ -2509,9 +2534,9 @@ namespace Core {
       (e: Ctx(k, Group.warps(f, 4)))(buf: ScoreBuffer(x))(at: RowsAt(x, m, f, o)): Pair(Ctx(k, Group.warps(f, 4)), Scored(x, m, f, o)) := {
     match at returning Pair(Ctx(k, Group.warps(f, 4)), Scored(x, m, f, o)) with
     | RowsAt.mk => {
-      let wait := List.cons(Core.mbarWait(Core.scoresFull(buf), Expr.var(buf.rowPhase)), List.cons(Core.tcFenceAfter, List.cons(Core.flip(buf.rowPhase),
+      let wait := fun (g: CtaGroup): List(Stmt) => List.cons(Core.mbarWait(g, Core.scoresFull(buf), Expr.var(buf.rowPhase)), List.cons(Core.tcFenceAfter, List.cons(Core.flip(buf.rowPhase),
         List.nil(Stmt))))
-      (Core.emitAll(Key.key, e, wait), Scored.mk(x, m, f, o))
+      (Core.emitIn(Key.key, e, wait), Scored.mk(x, m, f, o))
     }
   }
 
@@ -2618,8 +2643,8 @@ namespace Core {
       (e: Ctx(k, Group.warps(f, 4)))(buf: ScoreBuffer(x))(at: RowsAt(x, m, f, OState.held)): Pair(Ctx(k, Group.warps(f, 4)), Final(x, m, f)) := {
     match at returning Pair(Ctx(k, Group.warps(f, 4)), Final(x, m, f)) with
     | RowsAt.mk => {
-      let wait := List.cons(Core.mbarWait(Core.scoresFull(buf), Expr.var(buf.rowPhase)), List.cons(Core.tcFenceAfter, List.nil(Stmt)))
-      (Core.emitAll(Key.key, e, wait), Final.mk(x, m, f))
+      let wait := fun (g: CtaGroup): List(Stmt) => List.cons(Core.mbarWait(g, Core.scoresFull(buf), Expr.var(buf.rowPhase)), List.cons(Core.tcFenceAfter, List.nil(Stmt)))
+      (Core.emitIn(Key.key, e, wait), Final.mk(x, m, f))
     }
   }
 
@@ -2664,9 +2689,9 @@ namespace Core {
       : Pair(Ctx(k, Group.lane), Published(x, m)) := {
     match at returning Pair(Ctx(k, Group.lane), Published(x, m)) with
     | MmaAt.mk => {
-      let wait := List.cons(Core.mbarWait(Core.probsFull(buf), Expr.var(buf.mmaPhase)), List.cons(Core.tcFenceAfter, List.cons(Core.flip(buf.mmaPhase),
+      let wait := fun (g: CtaGroup): List(Stmt) => List.cons(Core.mbarWait(g, Core.probsFull(buf), Expr.var(buf.mmaPhase)), List.cons(Core.tcFenceAfter, List.cons(Core.flip(buf.mmaPhase),
         List.nil(Stmt))))
-      (Core.emitAll(Key.key, e, wait), Published.mk(x, m))
+      (Core.emitIn(Key.key, e, wait), Published.mk(x, m))
     }
   }
 
@@ -2687,10 +2712,8 @@ namespace Core {
   def commitBuffer {k: Lifetime}{m: Lifetime}{x: Lifetime}(e: Ctx(k, Group.lane))(w: Elected(m))(buf: ScoreBuffer(x))(s: Holding(x, m))
       : Pair(Ctx(k, Group.lane), MmaAt(x, m)) := {
     match s returning Pair(Ctx(k, Group.lane), MmaAt(x, m)) with
-    | Holding.mk => {
-      let gen := Core.state(Key.key, e)
-      (Core.resume(Key.key, k, Group.lane, Core.push(gen, Core.mmaCommit(gen.group, Core.scoresFull(buf)))), MmaAt.mk(x, m))
-    }
+    | Holding.mk =>
+      (Core.emitIn(Key.key, e, fun (g: CtaGroup): List(Stmt) => List.cons(Core.mmaCommit(g, Core.scoresFull(buf)), List.nil(Stmt))), MmaAt.mk(x, m))
   }
 
   // The MMA thread's side's end, which emits nothing: everything it issued was committed (`MmaAt` comes only from
@@ -2725,18 +2748,30 @@ namespace Core {
   // launches `grid`. TMA coordinates are signed 32-bit, and the tile schedule counts tiles in 32 bits. A row of C must
   // be a multiple of 16 bytes: `cuTensorMapEncodeTiled` requires it of the stride, and a TMA store clips a box to the
   // matrix only at 16-byte granularity of its rows.
-  def tmaGemmLauncher (sa: TmaSpec)(sb: TmaSpec)(grid: Grid): Launcher := {
-    let hostParams := List.cons(Param.input(DType.bf16, "A"), List.cons(Param.input(DType.bf16, "B"), List.cons(Param.output(DType.f32, "C"),
+  // A GEMM launcher's host parameters: A, B, C and their extents.
+  def gemmHostParams : List(Param) :=
+    List.cons(Param.input(DType.bf16, "A"), List.cons(Param.input(DType.bf16, "B"), List.cons(Param.output(DType.f32, "C"),
       List.cons(Param.scalar(DType.u32, "M"), List.cons(Param.scalar(DType.u32, "N"), List.cons(Param.scalar(DType.u32, "K"), List.nil(Param)))))))
+
+  // What every GEMM launcher refuses: an element index of C that does not fit 32 bits, and extents TMA's signed 32-bit
+  // coordinates cannot reach.
+  def gemmRequires : List(Expr) := {
     let below := fun (x: Expr)(limit: Nat): Expr => Expr.bin(BinOp.lt, x, Expr.lit64(limit))
-    let requires := List.cons(below(Expr.bin(BinOp.mul, Expr.cast(DType.u64, Expr.param("M")), Expr.param("N")), Cuda.u32Limit),
+    List.cons(below(Expr.bin(BinOp.mul, Expr.cast(DType.u64, Expr.param("M")), Expr.param("N")), Cuda.u32Limit),
       List.cons(below(Expr.param("M"), Core.i32Limit), List.cons(below(Expr.param("N"), Core.i32Limit),
-        List.cons(below(Expr.param("K"), Core.i32Limit),
-        List.cons(Expr.bin(BinOp.eq, Expr.bin(BinOp.rem, Expr.param("N"), Expr.lit(4)), Expr.lit(0)), List.nil(Expr))))))
-    let maps := List.cons(MapEncoding.mk("A_map", MapUse.load, Param.input(DType.bf16, "A"), "M", "K", sa.inner, sa.outer),
-      List.cons(MapEncoding.mk("B_map", MapUse.load, Param.input(DType.bf16, "B"), "N", "K", sb.inner, sb.outer),
-      List.cons(MapEncoding.mk("C_map", MapUse.store, Param.output(DType.f32, "C"), "M", "N", 32, 32), List.nil(MapEncoding))))
-    Launcher.mk(hostParams, requires, maps, grid, 256)
+        List.cons(below(Expr.param("K"), Core.i32Limit), List.nil(Expr)))))
+  }
+
+  // The operands' maps: A (M×K) in boxes `sa`, B (N×K) in boxes `sb`.
+  def operandMaps (sa: TmaSpec)(sb: TmaSpec): List(MapEncoding) :=
+    List.cons(MapEncoding.mk("A_map", MapUse.load, Param.input(DType.bf16, "A"), "M", "K", sa.inner, sa.outer),
+      List.cons(MapEncoding.mk("B_map", MapUse.load, Param.input(DType.bf16, "B"), "N", "K", sb.inner, sb.outer), List.nil(MapEncoding)))
+
+  def tmaGemmLauncher (sa: TmaSpec)(sb: TmaSpec)(grid: Grid): Launcher := {
+    let rowsOfC := Expr.bin(BinOp.eq, Expr.bin(BinOp.rem, Expr.param("N"), Expr.lit(4)), Expr.lit(0))
+    let cMap := MapEncoding.mk("C_map", MapUse.store, Param.output(DType.f32, "C"), "M", "N", 32, 32)
+    Launcher.mk(Core.gemmHostParams, List.append(Core.gemmRequires, List.cons(rowsOfC, List.nil(Expr))),
+      List.append(Core.operandMaps(sa, sb), List.cons(cMap, List.nil(MapEncoding))), grid, 256)
   }
 
   // C (M×N, f32, row-major) = A (M×K) · Bᵀ, with B given as N×K, both bf16 and K contiguous, read through tensor maps
@@ -3522,7 +3557,9 @@ namespace Core {
   // A pair kernel runs as clusters of two CTAs, ranks 0 and 1. Rank 0, the leader, issues every tensor-core
   // instruction; both CTAs run every other role. Waits are local and arrivals cross, at cluster scope: each CTA's TMA
   // copies complete on the leader's full barrier, the leader's commits arrive on both CTAs' barriers at once, and the
-  // warpgroups arrive on the leader's barriers through `mapa`.
+  // warpgroups arrive on the leader's barriers through `mapa`. The kernel's CTA group is `two`, so every barrier wait
+  // and commit prints its pair form (`mbarWait`, `mmaCommit`), and a pair protocol runs the single-CTA protocol's code
+  // for everything else.
   //
   // A pair resource lies at the same offsets in both CTAs. Its offsets are computed at generation by the one program
   // both CTAs run, and its opener takes the kernel's own context, `Ctx(l, …)` with the kernel's `CtaPair(l)`, which no
@@ -3557,19 +3594,11 @@ namespace Core {
     Core.asmIn("cp.async.bulk.tensor.2d.cta_group::2.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1, {%3, %4}], [%2];",
       List.cons(Core.r(dst), List.cons(Core.l64(Expr.paramAddr(map)), List.cons(Core.r(bar), Core.two(Core.r(c0), Core.r(c1))))))
 
-  // `mmaCommit` that arrives once on the barrier at `bar`'s offset in each CTA of the pair, CTA mask 0b11 (PTX
-  // §9.7.18.12.1).
-  def mmaCommitBoth (group: CtaGroup)(bar: Expr): Stmt :=
-    Core.asmIn(Text.cat3("{\\n\\t.reg .b16 mask;\\n\\tmov.b16 mask, 3;\\n\\ttcgen05.commit.", CtaGroup.qualifier(group),
-      ".mbarrier::arrive::one.shared::cluster.multicast::cluster.b64 [%0], mask;\\n\\t}"), Core.one(Core.r(bar)))
-
   // The kernel's pair: the value of this CTA's rank, read once. Only a pair kernel's builder makes one, of the kernel's
-  // own lifetime.
+  // own lifetime. The rank is the core's: it chooses the leader's arm and each CTA's half, and no client code reads it,
+  // so the two CTAs run one trip count of every loop (M18).
   sealed struct CtaPair (l: Lifetime) : Type { scope = l }
    | mk (rank: Expr) : CtaPair(l)
-
-  // This CTA's rank in the pair: 0, the leader, or 1.
-  def rank {l: Lifetime}(pair: CtaPair(l)): Val(l, Grain.uniform, DType.u32) := Val.mk(l, Grain.uniform, DType.u32, pair.rank, Option.some(2))
 
   def isLeader {l: Lifetime}(pair: CtaPair(l)): Expr := Expr.bin(BinOp.eq, pair.rank, Expr.lit(0))
 
@@ -3597,6 +3626,16 @@ namespace Core {
     (e, (CtaPair.mk(l, rank.expr), cluster.expr))
   }
 
+  // The dynamic shared memory a pair kernel asks for at least: more than half of an SM's 228 KB, so that no two of its
+  // CTAs share an SM, and two clusters' collective 512-column allocations cannot wait on each other (A56).
+  def pairShared : Nat := 118785
+
+  // How a pair kernel ends: its request for shared memory raised to `pairShared`, then `finish`.
+  def pairFinish (k: Key)(name: String)(params: List(Param))(launcher: Launcher)(gen: Gen): Program := {
+    let smem := Bool.cond(Nat.ble(Core.pairShared, gen.smem), Nat, gen.smem, Core.pairShared)
+    Core.finish(k, name, params, Option.some(launcher), Gen.mk(gen.code, gen.next, smem, gen.barrier, gen.errors, gen.group))
+  }
+
   // One thread runs `setup` and fences its inits for the cluster; then every thread of both CTAs waits at the cluster
   // barrier, after which the peer's remote arrivals, multicast commits and TMA completions may reach the barriers.
   def publishBarriers (gen: Gen)(setup: List(Stmt)): Gen := Core.pushAll(Core.setupBarriers(gen, setup), Core.clusterSync)
@@ -3608,8 +3647,9 @@ namespace Core {
 
   // Allocates all 512 columns of tensor memory in both CTAs, by warp 0 of each, collectively (`cta_group::2`), using up
   // the CTA's permit, for the callback, which hands the accumulator back as `withTmem`'s does. A 512-column allocation
-  // starts at column 0, so a region has one address in both CTAs. Warp 0 of each CTA frees the columns after a cluster
-  // barrier, which every thread of both CTAs reaches once its roles have joined.
+  // starts at column 0, so a region has one address in both CTAs; the pair kernel's shared memory keeps its CTAs on SMs
+  // of their own (`pairShared`). Warp 0 of each CTA frees the columns after a cluster barrier, which every thread of
+  // both CTAs reaches once its roles have joined.
   def withPairTmem {l: Lifetime}{w: Nat}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}
       (e: Ctx(l, Group.cta(w)))(pair: CtaPair(l))(permit: TmemPermit(l))(done: AccState)(X: Type { kind = kx, scope = Sx })
       (body: { kind = kf, scope = Sf } (a: Lifetime) -> Tmem(a, 512) -> Acc(a, AccState.empty) -> Ctx(l, Group.cta(w))
@@ -3624,7 +3664,8 @@ namespace Core {
   // A stage ring spanning the pair: each stage is two halves, one in each CTA at the same offset, and so are the
   // barriers. Each CTA's producer fills its own half; the leader's consumer reads both, through the leader's `full[s]`,
   // and releases both CTAs' `empty[s]` with one commit. Its sides are the ring's (`Producer`, `Consumer` and their
-  // tokens), and its operations take the `PairRing`, which only `withPairRing` makes.
+  // tokens), and its operations take the `PairRing`, which only `withPairRing` makes; those that differ from the
+  // ring's only in what the CTA group prints run the ring's.
   sealed struct PairRing (r: Lifetime)(cfg: RingCfg) : Type { scope = r }
    | mk (ring: Ring(r, cfg)) : PairRing(r, cfg)
 
@@ -3637,8 +3678,7 @@ namespace Core {
       : Pair(Ctx(l, Group.cta(w)), X) := {
     let at := Core.ringLayout(Core.state(Key.key, e), cfg)
     scope r => {
-      let ring := Ring.mk(r, cfg, at.base, at.bars, at.regs, Nat.add(at.regs, 1), Nat.add(at.regs, 2), Nat.add(at.regs, 3))
-      let (e2, x) := body(r, PairRing.mk(ring), Producer.mk(r), Consumer.mk(r),
+      let (e2, x) := body(r, PairRing.mk(Core.ringAt(Key.key, r, cfg, at)), Producer.mk(r), Consumer.mk(r),
         Core.resume(Key.key, l, Group.cta(w), Core.publishBarriers(at.gen, at.setup)))
       (Core.closePair(Key.key, e2, at.bars, Nat.mul(2, cfg.stages)), x)
     }
@@ -3648,19 +3688,15 @@ namespace Core {
   def takePairProducer {m: Lifetime}{r: Lifetime}{cfg: RingCfg}(e: Ctx(m, Group.lane))(w: Elected(m))(ring: PairRing(r, cfg))
       (p: Producer(r)): Pair(Ctx(m, Group.lane), ProducerAt(r, m)) := Core.takeProducer(e, w, ring.ring, p)
 
-  // The producer waits until its CTA's half of its current stage is free: its own `empty[s]`, which the leader's
-  // commit releases.
+  // The producer waits on its own `empty[s]` until its CTA's half of its current stage is free, as `acquire` does.
   def acquirePair {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}(e: Ctx(n, Group.lane))(ring: PairRing(r, cfg))(p: ProducerAt(r, m))
-      : Pair(Ctx(n, Group.lane), Slot(r, m)) := {
-    match p returning Pair(Ctx(n, Group.lane), Slot(r, m)) with
-    | ProducerAt.mk => (Core.emit(Key.key, e, Core.mbarWaitCluster(Core.emptyBar(ring.ring, ring.ring.pStage), Expr.var(ring.ring.pPhase))), Slot.mk(r, m))
-  }
+      : Pair(Ctx(n, Group.lane), Slot(r, m)) := Core.acquire(e, ring.ring, p)
 
-  // This CTA's part of the pair's output tile. The pair computes 256 rows from the tile's first, and `2·bh` columns
-  // from `col0`; this CTA the 128 rows from `rows` (the tile's first plus 128·rank), from B's `bh` rows from `halfCol`
-  // (`col0` plus bh·rank). `leader` tests the rank. Only a pair kernel's builder makes one.
+  // This CTA's part of the pair's output tile. The pair computes 256 rows from the tile's first, and `width` = 2·bh
+  // columns from `col0`; this CTA the 128 rows from `rows` (the tile's first plus 128·rank), from B's `bh` rows from
+  // `halfCol` (`col0` plus bh·rank). `leader` tests the rank. Only a pair kernel's builder makes one.
   sealed struct PairTile (l: Lifetime) : Type { scope = l }
-   | mk (leader: Expr)(rows: Expr)(col0: Expr)(halfCol: Expr) : PairTile(l)
+   | mk (leader: Expr)(rows: Expr)(col0: Expr)(halfCol: Expr)(width: Nat) : PairTile(l)
 
   // Fills this CTA's half of the acquired stage at K coordinate `k0`: one box of A at this CTA's rows of the tile, and
   // one of B at its half of the tile's columns. Both are the core's, from the rank (`PairTile`), so a CTA loads only its
@@ -3672,54 +3708,35 @@ namespace Core {
       : Pair(Ctx(n, Group.lane), ProducerAt(r, m)) := {
     match s returning Pair(Ctx(n, Group.lane), ProducerAt(r, m)) with
     | Slot.mk => {
-      let full := Core.fullBar(ring.ring, ring.ring.pStage)
-      let dst := Core.stageAddr(ring.ring, ring.ring.pStage)
+      let rg := ring.ring
+      let full := Core.fullBar(rg, rg.pStage)
+      let dst := Core.stageAddr(rg, rg.pStage)
       let (e, leaderFull) := Core.toLeader(Key.key, e, full)
       let arm := Stmt.ifElse(tile.leader, Block.seq(Core.mbarArriveExpectTx(full, Nat.mul(2, Core.stageBytes(cfg))), Block.done), Block.done)
       let copies := List.cons(Core.tmaLoad2dPair(dst, a.name, k0.expr, tile.rows, leaderFull.expr),
         List.cons(Core.tmaLoad2dPair(Core.offsetBy(dst, Core.boxBytes(cfg.a)), b.name, k0.expr, tile.halfCol, leaderFull.expr), List.nil(Stmt)))
-      (Core.emitAll(Key.key, e, List.cons(arm, List.append(copies, Core.advance(ring.ring.pStage, ring.ring.pPhase, cfg.stages)))), ProducerAt.mk(r, m))
+      (Core.emitAll(Key.key, e, List.cons(arm, List.append(copies, Core.advance(rg.pStage, rg.pPhase, cfg.stages)))), ProducerAt.mk(r, m))
     }
   }
 
   // The producer's tail, as `finishProducer`'s: waits until every stage of its CTA's half has been released.
   def finishPairProducer {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}(e: Ctx(n, Group.lane))(ring: PairRing(r, cfg))(p: ProducerAt(r, m))
-      : Ctx(n, Group.lane) := {
-    match p returning Ctx(n, Group.lane) with
-    | ProducerAt.mk => {
-      let emptyBase := Nat.add(ring.ring.bars, Nat.mul(8, cfg.stages))
-      Core.emitAll(Key.key, e, Core.drain(Core.mbarWaitCluster, ring.ring.pStage, ring.ring.pPhase, emptyBase, cfg.stages, cfg.stages))
-    }
-  }
+      : Ctx(n, Group.lane) := Core.finishProducer(e, ring.ring, p)
 
   // The leader's elected thread takes the consumer, as `takeConsumer` does. Only the leader reads the pair's stages, so
   // the consumer is taken only where a `Leader` is in scope.
   def takePairConsumer {m: Lifetime}{n: Lifetime}{r: Lifetime}{cfg: RingCfg}(e: Ctx(m, Group.lane))(w: Elected(m))(lead: Leader(n))
       (ring: PairRing(r, cfg))(c: Consumer(r)): Pair(Ctx(m, Group.lane), ConsumerAt(r, m)) := Core.takeConsumer(e, w, ring.ring, c)
 
-  // The consumer waits until both halves of its current stage have landed, on the leader's `full[s]`; the fence orders
-  // the tensor-core work it issues next after the wait.
+  // The consumer waits on the leader's `full[s]` until both halves of its current stage have landed, as `await` does.
   def awaitPair {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}(e: Ctx(n, Group.lane))(ring: PairRing(r, cfg))(c: ConsumerAt(r, m))
-      : Pair(Ctx(n, Group.lane), Ready(r, m)) := {
-    match c returning Pair(Ctx(n, Group.lane), Ready(r, m)) with
-    | ConsumerAt.mk => {
-      let wait := List.cons(Core.mbarWaitCluster(Core.fullBar(ring.ring, ring.ring.cStage), Expr.var(ring.ring.cPhase)), List.cons(Core.tcFenceAfter, List.nil(Stmt)))
-      (Core.emitAll(Key.key, e, wait), Ready.mk(r, m))
-    }
-  }
+      : Pair(Ctx(n, Group.lane), Ready(r, m)) := Core.await(e, ring.ring, c)
 
-  // Releases the stage in both CTAs when the thread's tensor-core work reading it completes, with one commit to both
-  // CTAs' `empty[s]`, and moves to the next stage.
+  // Releases the stage in both CTAs when the thread's tensor-core work reading it completes, as `releaseByMma` does:
+  // the pair's commit arrives on both CTAs' `empty[s]`.
   def releasePair {n: Lifetime}{m: Lifetime}{r: Lifetime}{cfg: RingCfg}
-      (e: Ctx(n, Group.lane))(w: Elected(m))(ring: PairRing(r, cfg))(u: ReadyUsed(r, m)): Pair(Ctx(n, Group.lane), ConsumerAt(r, m)) := {
-    match u returning Pair(Ctx(n, Group.lane), ConsumerAt(r, m)) with
-    | ReadyUsed.mk => {
-      let gen := Core.state(Key.key, e)
-      let release := List.cons(Core.mmaCommitBoth(gen.group, Core.emptyBar(ring.ring, ring.ring.cStage)),
-        Core.advance(ring.ring.cStage, ring.ring.cPhase, cfg.stages))
-      (Core.resume(Key.key, n, Group.lane, Core.pushAll(gen, release)), ConsumerAt.mk(r, m))
-    }
-  }
+      (e: Ctx(n, Group.lane))(w: Elected(m))(ring: PairRing(r, cfg))(u: ReadyUsed(r, m)): Pair(Ctx(n, Group.lane), ConsumerAt(r, m)) :=
+    Core.releaseByMma(e, w, ring.ring, u)
 
   // ---- CTA pairs: the accumulator ring and the MMAs -----------------------------------------------------------------------
 
@@ -3727,7 +3744,8 @@ namespace Core {
   // holding its own 128 rows. The leader's issuing thread fills a buffer and commits it to `full[b]` in both CTAs at
   // once; each CTA's warpgroup waits on its own copy, reads its rows and arrives on the leader's `empty[b]`, whose count
   // is both warpgroups', 256, and which only the leader waits on. Its sides are the accumulator ring's, and its
-  // operations take the `PairAccRing`, which only `withPairAccRing` makes.
+  // operations take the `PairAccRing`, which only `withPairAccRing` makes; those that differ from the accumulator
+  // ring's only in what the CTA group prints run the accumulator ring's.
   sealed struct PairAccRing (q: Lifetime)(n: Nat) : Type { scope = q }
    | mk (ring: AccRing(q, n)) : PairAccRing(q, n)
 
@@ -3742,8 +3760,7 @@ namespace Core {
     | Acc.mk => {
       let at := Core.accRingLayout(Core.state(Key.key, e), cols, bufs, n, 256)
       scope q => {
-        let ring := AccRing.mk(q, n, Core.tmemBase(t), bufs, at.bars, at.regs, Nat.add(at.regs, 1), Nat.add(at.regs, 2), Nat.add(at.regs, 3))
-        let (e2, x) := body(q, PairAccRing.mk(ring), AccProducer.mk(q), AccConsumer.mk(q),
+        let (e2, x) := body(q, PairAccRing.mk(Core.accRingAt(Key.key, q, n, t, bufs, at)), AccProducer.mk(q), AccConsumer.mk(q),
           Core.resume(Key.key, l, Group.cta(w), Core.publishBarriers(at.gen, at.setup)))
         (Core.closePair(Key.key, e2, at.bars, Nat.mul(2, bufs)), (Acc.mk(a, AccState.empty), x))
       }
@@ -3754,17 +3771,9 @@ namespace Core {
   def takePairAccProducer {m: Lifetime}{n: Lifetime}{q: Lifetime}{c: Nat}(e: Ctx(m, Group.lane))(w: Elected(m))(lead: Leader(n))
       (ring: PairAccRing(q, c))(p: AccProducer(q)): Pair(Ctx(m, Group.lane), AccProducerAt(q, m)) := Core.takeAccProducer(e, w, ring.ring, p)
 
-  // Waits until both CTAs' warpgroups have read the current buffer, on the leader's `empty[b]`; the tensor cores may
-  // then overwrite it.
+  // Waits on the leader's `empty[b]` until both CTAs' warpgroups have read the current buffer, as `acquireAcc` does.
   def acquirePairAcc {k: Lifetime}{q: Lifetime}{n: Nat}{m: Lifetime}(e: Ctx(k, Group.lane))(ring: PairAccRing(q, n))
-      (p: AccProducerAt(q, m)): Pair(Ctx(k, Group.lane), AccFree(q, m)) := {
-    match p returning Pair(Ctx(k, Group.lane), AccFree(q, m)) with
-    | AccProducerAt.mk => {
-      let wait := List.cons(Core.mbarWaitCluster(Core.accEmptyBar(ring.ring, ring.ring.pStage), Expr.var(ring.ring.pPhase)),
-        List.cons(Core.tcFenceAfter, List.nil(Stmt)))
-      (Core.emitAll(Key.key, e, wait), AccFree.mk(q, m))
-    }
-  }
+      (p: AccProducerAt(q, m)): Pair(Ctx(k, Group.lane), AccFree(q, m)) := Core.acquireAcc(e, ring.ring, p)
 
   // What the tensor cores accept for a pair: each CTA's half as `mmaShapeOk` has it, A's 128 rows, with M = 256 over the
   // pair, and N = `2·sb.outer`, B's rows split between the CTAs, a multiple of 16 up to 256 and exactly the buffer's
@@ -3808,43 +3817,24 @@ namespace Core {
     }
   }
 
-  // Commits the thread's tensor-core work on the buffer to its `full[b]` in both CTAs, and moves to the next buffer.
+  // Commits the thread's work on the buffer, as `commitAcc` does: the pair's commit arrives on both CTAs' `full[b]`.
   def commitPairAcc {k: Lifetime}{m: Lifetime}{q: Lifetime}{n: Nat}
-      (e: Ctx(k, Group.lane))(w: Elected(m))(ring: PairAccRing(q, n))(acc: AccFilling(q, m)): Pair(Ctx(k, Group.lane), AccProducerAt(q, m)) := {
-    match acc returning Pair(Ctx(k, Group.lane), AccProducerAt(q, m)) with
-    | AccFilling.mk => {
-      let gen := Core.state(Key.key, e)
-      let commit := List.cons(Core.mmaCommitBoth(gen.group, Core.accFullBar(ring.ring, ring.ring.pStage)),
-        Core.advance(ring.ring.pStage, ring.ring.pPhase, ring.ring.bufs))
-      (Core.resume(Key.key, k, Group.lane, Core.pushAll(gen, commit)), AccProducerAt.mk(q, m))
-    }
-  }
+      (e: Ctx(k, Group.lane))(w: Elected(m))(ring: PairAccRing(q, n))(acc: AccFilling(q, m)): Pair(Ctx(k, Group.lane), AccProducerAt(q, m)) :=
+    Core.commitAcc(e, w, ring.ring, acc)
 
   // The issuer's tail, as `finishAccProducer`'s: waits until both warpgroups have read every buffer.
   def finishPairAccProducer {k: Lifetime}{q: Lifetime}{n: Nat}{m: Lifetime}(e: Ctx(k, Group.lane))(ring: PairAccRing(q, n))
-      (p: AccProducerAt(q, m)): Ctx(k, Group.lane) := {
-    match p returning Ctx(k, Group.lane) with
-    | AccProducerAt.mk =>
-      Core.emitAll(Key.key, e, Core.drain(Core.mbarWaitCluster, ring.ring.pStage, ring.ring.pPhase, Core.accEmptyBase(ring.ring), ring.ring.bufs,
-        ring.ring.bufs))
-  }
+      (p: AccProducerAt(q, m)): Ctx(k, Group.lane) := Core.finishAccProducer(e, ring.ring, p)
 
   // An aligned warpgroup of each CTA takes the reading side, as `takeAccConsumer` does.
   def takePairAccConsumer {m: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}
       (e: Ctx(m, Group.warps(f, 4)))[aligned: Eq(Nat, Nat.mod(f, 4), 0)](ring: PairAccRing(q, n))(c: AccConsumer(q))
       : Pair(Ctx(m, Group.warps(f, 4)), AccConsumerAt(q, m, f)) := Core.takeAccConsumer(e, ring.ring, c)[aligned]
 
-  // Waits on this CTA's own `full[b]` until the current buffer's tensor-core work has completed; its rows are then
-  // visible to the warpgroup.
+  // Waits on this CTA's own `full[b]` until the current buffer's work has completed, as `awaitAcc` does.
   def awaitPairAcc {k: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}{m: Lifetime}
-      (e: Ctx(k, Group.warps(f, 4)))(ring: PairAccRing(q, n))(c: AccConsumerAt(q, m, f)): Pair(Ctx(k, Group.warps(f, 4)), AccFull(q, m, f)) := {
-    match c returning Pair(Ctx(k, Group.warps(f, 4)), AccFull(q, m, f)) with
-    | AccConsumerAt.mk => {
-      let wait := List.cons(Core.mbarWaitCluster(Core.accFullBar(ring.ring, ring.ring.cStage), Expr.var(ring.ring.cPhase)),
-        List.cons(Core.tcFenceAfter, List.nil(Stmt)))
-      (Core.emitAll(Key.key, e, wait), AccFull.mk(q, m, f))
-    }
-  }
+      (e: Ctx(k, Group.warps(f, 4)))(ring: PairAccRing(q, n))(c: AccConsumerAt(q, m, f)): Pair(Ctx(k, Group.warps(f, 4)), AccFull(q, m, f)) :=
+    Core.awaitAcc(e, ring.ring, c)
 
   // Tells the issuer the warpgroup has read the current buffer (every load waited for): each thread arrives on the
   // leader's `empty[b]` through `mapa`, the leader's own threads too, so the code is the same in both CTAs (M13 across
@@ -3853,10 +3843,10 @@ namespace Core {
       (e: Ctx(k, Group.warps(f, 4)))(ring: PairAccRing(q, n))(full: AccFull(q, m, f)): Pair(Ctx(k, Group.warps(f, 4)), AccConsumerAt(q, m, f)) := {
     match full returning Pair(Ctx(k, Group.warps(f, 4)), AccConsumerAt(q, m, f)) with
     | AccFull.mk => {
+      let rg := ring.ring
       let e := Core.emit(Key.key, e, Core.tcFenceBefore)
-      let (e, leaderEmpty) := Core.toLeader(Key.key, e, Core.accEmptyBar(ring.ring, ring.ring.cStage))
-      let release := List.cons(Core.mbarArriveRemote(leaderEmpty.expr), Core.advance(ring.ring.cStage, ring.ring.cPhase, ring.ring.bufs))
-      (Core.emitAll(Key.key, e, release), AccConsumerAt.mk(q, m, f))
+      let (e, leaderEmpty) := Core.toLeader(Key.key, e, Core.accEmptyBar(rg, rg.cStage))
+      (Core.emitAll(Key.key, e, List.cons(Core.mbarArriveRemote(leaderEmpty.expr), Core.advance(rg.cStage, rg.cPhase, rg.bufs))), AccConsumerAt.mk(q, m, f))
     }
   }
 
@@ -3872,16 +3862,18 @@ namespace Core {
 
   // Each thread stores its own row of the current buffer to C: row `rows + 32·(warp % 4) + lane`, `rows` this CTA's
   // first (`PairTile`), which is the row of the thread's tensor-memory lane (M12), so a CTA stores only its own half of
-  // the tile. A loop loads the row 8 columns at a time and stores each element that lies inside C. No fence is needed:
-  // `AccFull` comes only from `awaitPairAcc`, which every thread of the warpgroup ran, waiting and then fencing
-  // `after_thread_sync` itself.
+  // the tile; and the buffer's `n` columns from the tile's first, which must be the tile's width (else a generation
+  // error), so no CTA stores the next tile's columns. A loop loads the row 8 columns at a time and stores each element
+  // that lies inside C. No fence is needed: `AccFull` comes only from `awaitPairAcc`, which every thread of the
+  // warpgroup ran, waiting and then fencing `after_thread_sync` itself.
   def storeHalf {k: Lifetime}{f: Nat}{q: Lifetime}{n: Nat}{m: Lifetime}{L: Lifetime}
       (e: Ctx(k, Group.warps(f, 4)))(ring: PairAccRing(q, n))(full: AccFull(q, m, f))(tile: PairTile(L))(out: PairOut(L))(own: HalfOwn(L))
       : Pair(Ctx(k, Group.warps(f, 4)), AccFull(q, m, f)) := {
     match own returning Pair(Ctx(k, Group.warps(f, 4)), AccFull(q, m, f)) with
     | HalfOwn.mk => {
-      let e := Core.resume(Key.key, k, Group.warps(f, 4), Core.check(Core.state(Key.key, e), Bool.and(Nat.blt(0, n), Nat.isZero(Nat.mod(n, 8))),
-        "storeHalf: a buffer's columns must be a positive multiple of 8"))
+      let rg := ring.ring
+      let e := Core.resume(Key.key, k, Group.warps(f, 4), Core.check(Core.state(Key.key, e), Bool.and(Nat.beq(n, tile.width), Nat.isZero(Nat.mod(n, 8))),
+        "storeHalf: a buffer's columns must be the pair's tile's, a multiple of 8"))
       // Every lane computes the row, whose warp index is a full-warp `__shfl_sync`: the warp reconverges first.
       let e := Core.emit(Key.key, e, Stmt.syncWarp)
       let rowOf := Expr.bin(BinOp.add, Expr.bin(BinOp.add, tile.rows, Expr.bin(BinOp.mul, Core.quadrant, Expr.lit(32))), Expr.special(Builtin.lane))
@@ -3891,7 +3883,7 @@ namespace Core {
         let columns := Core.mulC(c, 8)
         let gen := Core.state(Key.key, e)
         let first := gen.next  // `loadRow8`'s eight values
-        let loaded := Core.loadRow8(gen, Core.quadrantLanes(Expr.bin(BinOp.add, Core.accBuffer(ring.ring, ring.ring.cStage), columns.expr)))
+        let loaded := Core.loadRow8(gen, Core.quadrantLanes(Expr.bin(BinOp.add, Core.accBuffer(rg, rg.cStage), columns.expr)))
         let (e, col) := Core.bind(Key.key, Core.resume(Key.key, p, Group.warps(f, 4), loaded), Grain.uniform, DType.u32,
           Expr.bin(BinOp.add, tile.col0, columns.expr), Option.none(Nat))
         let store := fun (j: Nat): Stmt => Stmt.ifElse(Expr.bin(BinOp.land, inside.expr, Expr.bin(BinOp.lt, Core.offsetBy(col.expr, j), out.n)),
@@ -3916,20 +3908,11 @@ namespace Core {
     List.cons(Param.tensorMap(MapUse.load, "A_map"), List.cons(Param.tensorMap(MapUse.load, "B_map"), List.cons(Param.output(DType.f32, "C"),
       List.cons(Param.scalar(DType.u32, "M"), List.cons(Param.scalar(DType.u32, "N"), List.cons(Param.scalar(DType.u32, "K"), List.nil(Param)))))))
 
-  // The host launcher of a pair GEMM whose CTAs load boxes `sa` of A and `sb` of B: it encodes A_map and B_map as
-  // `TMap` says, and launches one pair per 256 × `2·sb.outer` tile of C (`Grid.pairs`). TMA coordinates are signed
-  // 32-bit, and an element's index into C is a u32.
-  def pairGemmLauncher (sa: TmaSpec)(sb: TmaSpec): Launcher := {
-    let hostParams := List.cons(Param.input(DType.bf16, "A"), List.cons(Param.input(DType.bf16, "B"), List.cons(Param.output(DType.f32, "C"),
-      List.cons(Param.scalar(DType.u32, "M"), List.cons(Param.scalar(DType.u32, "N"), List.cons(Param.scalar(DType.u32, "K"), List.nil(Param)))))))
-    let below := fun (x: Expr)(limit: Nat): Expr => Expr.bin(BinOp.lt, x, Expr.lit64(limit))
-    let requires := List.cons(below(Expr.bin(BinOp.mul, Expr.cast(DType.u64, Expr.param("M")), Expr.param("N")), Cuda.u32Limit),
-      List.cons(below(Expr.param("M"), Core.i32Limit), List.cons(below(Expr.param("N"), Core.i32Limit), List.cons(below(Expr.param("K"), Core.i32Limit),
-        List.nil(Expr)))))
-    let maps := List.cons(MapEncoding.mk("A_map", MapUse.load, Param.input(DType.bf16, "A"), "M", "K", sa.inner, sa.outer),
-      List.cons(MapEncoding.mk("B_map", MapUse.load, Param.input(DType.bf16, "B"), "N", "K", sb.inner, sb.outer), List.nil(MapEncoding)))
-    Launcher.mk(hostParams, requires, maps, Grid.pairs(Core.paramCeilDiv("N", Nat.mul(2, sb.outer)), Core.paramCeilDiv("M", 256)), 256)
-  }
+  // The host launcher of a pair GEMM whose CTAs load boxes `sa` of A and `sb` of B: the GEMMs' requirements and operand
+  // maps, and one pair per 256 × `2·sb.outer` tile of C (`Grid.pairs`).
+  def pairGemmLauncher (sa: TmaSpec)(sb: TmaSpec): Launcher :=
+    Launcher.mk(Core.gemmHostParams, Core.gemmRequires, Core.operandMaps(sa, sb),
+      Grid.pairs(Core.paramCeilDiv("N", Nat.mul(2, sb.outer)), Core.paramCeilDiv("M", 256)), 256)
 
   // C (M×N, f32, row-major) = A (M×K) · Bᵀ, with B given as N×K, both bf16 and K contiguous, by CTA pairs
   // (gpu/encoding/TWO_CTA.md): one pair of CTAs of 256 threads per 256 × `2·bh` tile of C, bh = `sb.outer`, cluster
@@ -3942,14 +3925,13 @@ namespace Core {
       : Program := scope l => {
     let bh := sb.outer
     let (e, (pair, cluster)) := Core.pairStart(Key.key, l, 256)
-    let rank := pair.rank
-    let rows := Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.special(Builtin.blockY), Expr.lit(256)), Expr.bin(BinOp.mul, rank, Expr.lit(128)))
+    let rows := Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.special(Builtin.blockY), Expr.lit(256)), Expr.bin(BinOp.mul, pair.rank, Expr.lit(128)))
     let col0 := Expr.bin(BinOp.mul, cluster, Expr.lit(Nat.mul(2, bh)))
-    let tile := PairTile.mk(l, Core.isLeader(pair), rows, col0, Expr.bin(BinOp.add, col0, Expr.bin(BinOp.mul, rank, Expr.lit(bh))))
+    let tile := PairTile.mk(l, Core.isLeader(pair), rows, col0, Expr.bin(BinOp.add, col0, Expr.bin(BinOp.mul, pair.rank, Expr.lit(bh))), Nat.mul(2, bh))
     let launch := PairGemm.mk(TMap.mk(l, sa, "A_map"), TMap.mk(l, sb, "B_map"), tile, PairOut.mk(l, "C", Expr.param("M"), Expr.param("N")),
       Core.uniformParam(Key.key, l, DType.u32, "K"))
     let gen := Core.state(Key.key, body(l, e, launch, HalfOwn.mk(l), pair, TmemPermit.mk(l)))
-    Core.finish(Key.key, name, Core.pairGemmParams, Option.some(Core.pairGemmLauncher(sa, sb)),
+    Core.pairFinish(Key.key, name, Core.pairGemmParams, Core.pairGemmLauncher(sa, sb),
       Core.check(gen, Core.pairGemmShapeOk(sa, sb), "pair kernel: boxes the ring or the pair's tensor cores do not take"))
   }
 }
