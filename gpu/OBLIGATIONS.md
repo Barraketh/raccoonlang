@@ -141,8 +141,9 @@ the invariants and protocols. Each was found necessary; several were found by re
   (`after_thread_sync`) before loading it, whoever observed the commit.
 - **M10, grain.** A value is `uniform` only if it comes from uniform sources: literals, parameters, block and grid
   indices, loop and tile indices, a shared read at a uniform index of a tile that no thread may write until a
-  barrier (M4, M7), or a read at a uniform index of a kernel input (the decode prologue's length, `encoding/P2.md`
-  §3). An input is read-only for the whole launch: no thread of it writes one, and the launch contract of every
+  barrier (M4, M7), a read at a uniform index of a kernel input (the decode prologue's length, `encoding/P2.md`
+  §3), or a full-warp `shfl.sync` broadcast from one lane (A42) in a CTA of one warp (the append's claim,
+  `encoding/P2.md` §2). An input is read-only for the whole launch: no thread of it writes one, and the launch contract of every
   builder that reads one says that nothing else does either, since a concurrent writer of an input is a race on it.
 - **M11, deadlock is not a race.** Rings are FIFOs whose producer tails drain every release. Roles that disagree on
   trip counts block forever; none can get a phase ahead.
@@ -189,7 +190,7 @@ none of them (`ATTENTION.md` §4.1), and closes its protocols on `…Done` token
     changes it, and two claims of one word that hold are for one sequence and one head, so one warp. A failed CAS
     found the launch's epoch, so none needs a retry. The step 1 read must be single-copy atomic (A41): a torn read
     could pair this launch's epoch with another word's sequence. This holds for any start values of the owners and
-    any epochs; a reused epoch only refuses claims. `harness/claim_model.py` checks it on every interleaving.
+    any epochs; a reused epoch can refuse a claim, or re-admit a sequence's own earlier claim, never two sequences. `harness/claim_model.py` checks it on every interleaving.
   - **Confinement**, from the arm. `withClaim` runs its arm only where the claim holds, and the row the warp writes is
     the one lane 0 claimed, by data flow (the broadcast), not a lane's own reading of the table. `Claimed`, which only
     the arm receives, belongs to its scope, and the arm returns the emitter alone.

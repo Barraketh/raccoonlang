@@ -3069,9 +3069,9 @@ namespace Core {
   // `lens` one of B u32 elements, Opart one of splits·B·heads·group·128 f32 elements and LSEpart one of
   // splits·B·heads·group, Opart and LSEpart are distinct from each other and from the inputs, and nothing writes an
   // input during the launch. Whatever the table, the lengths and the cache hold is memory-safe (`fillPage`). For a
-  // correct result, the table's entries are the sequences' pages, `lens[b] + 1 ≤ 128·max_pages`, those pages hold the
-  // sequences' K and V, and V is finite in every row of every page a sequence's table names (a last page's unused rows
-  // included).
+  // correct result, the table's entries are the sequences' pages, `lens[b] + 1 ≤ 128·max_pages` and `lens[b] < 2³² − 1`,
+  // those pages hold the sequences' K and V, and V is finite in every row of every page a sequence's table names (a
+  // last page's unused rows included).
   def decodeKernel (name: String)(heads: Nat)(group: Nat)
       (body: (l: Lifetime) -> Ctx(l, Group.cta(256)) -> DecodeLaunch(l, TmaSpec.mk(64, 128)) -> OOwn(l, DType.f32, 4) -> TmemPermit(l)
         -> Ctx(l, Group.cta(256)))
@@ -3271,7 +3271,8 @@ namespace Core {
   // owners run one at a time, as on one stream (M17). Whatever the table, the lengths and the owners hold is memory-safe
   // and race-free: a write needs a claim, a claim a page below `pages`, and the claims of one launch are exclusive
   // whatever the owners held before it. For each launch's claims to be fresh, the owners start at 0 and the host
-  // increases `epoch` at every launch from 1; a reused epoch can only refuse claims.
+  // increases `epoch` at every launch from 1; a reused epoch can refuse a claim, or re-admit a sequence's own earlier
+  // claim of a word, and never admits two sequences.
   def appendKernel (name: String)(heads: Nat)
       (body: (l: Lifetime) -> Ctx(l, Core.warpCta) -> AppendLaunch(l) -> ClaimOwn(l) -> Ctx(l, Core.warpCta))
       : Program := scope l => {
