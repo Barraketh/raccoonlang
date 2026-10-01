@@ -40,12 +40,17 @@ for f in "$here"/checks/*.rac "$here"/proofs/*.rac "$here"/encoding/checks/*.rac
   got=$(run --json "$f" 2>/dev/null | python3 -c 'import json,sys; [print("L%d %s: %s" % (x["startLine"], x["kind"], x["message"])) for x in json.load(sys.stdin)]' 2>/dev/null || echo crashed)
   if [ -z "$got" ]; then echo "ok   $what"; else echo "FAIL $what"; printf '%s\n' "$got"; status=1; fi
 done
-# Hardware test harnesses are host code: the same stubs check them.
-for h in "$here"/harness/*.cu; do
+# Hardware test harnesses are host code: the same stubs check them. The FA4 comparison needs a GPU and PyTorch, so it
+# is only compiled.
+for h in "$here"/harness/*.cu "$here"/encoding/harness/*.cu; do
   if command -v clang++ >/dev/null && ! clang++ -std=c++17 -fsyntax-only -Wall -Werror -I "$here/stub" \
       -include "$here/stub/cuda_stub.h" -x c++ "$h"; then
-    echo "FAIL $(basename "$h") does not compile"; status=1
-  else echo "ok   harness/$(basename "$h")"; fi
+    echo "FAIL $(name "$h") does not compile"; status=1
+  else echo "ok   $(name "$h")"; fi
+done
+for p in "$here"/encoding/harness/*.py; do
+  if python3 -c 'import sys; compile(open(sys.argv[1]).read(), sys.argv[1], "exec")' "$p"; then echo "ok   $(name "$p")"
+  else echo "FAIL $(name "$p") does not compile"; status=1; fi
 done
 # So are the hardware probes, whose shared header's inline assembly is rewritten as a generated kernel's is.
 if command -v clang++ >/dev/null; then

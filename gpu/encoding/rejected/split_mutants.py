@@ -1,5 +1,5 @@
 # Tensor-memory splits the core must refuse: checks/emitted.rac with one change each. Run by check.sh through
-# gpu/mutate.py. (The mutants of the attention example, gpu/ATTENTION.md §5, are still to come.)
+# gpu/mutate.py. The mutants of the attention example (gpu/ATTENTION.md §5) are in attention_mutants.py.
 
 SOURCE = "encoding/checks/emitted.rac"
 

@@ -121,7 +121,7 @@ registers the protocol owns:
     groups back) holds whether an arm or an iteration stored or not.
   - `finishStores` waits for completion, reads and writes, where CUTLASS's sm100 epilogue without C does not wait
     and the CUDA guide's example waits for the reads (`.read`): the PTX ISA states no rule for bulk stores
-    outstanding when their thread exits, and this needs none (`OBLIGATIONS.md` A23).
+    outstanding when their thread exits, and this needs none (`OBLIGATIONS.md` A38).
 - **The first K step** is peeled: `loopPeeled(e, count, init, first, rest)` emits the first iteration unconditionally,
   then a loop from 1. So the accumulator type changes once, in straight-line code, and every loop body keeps its state
   type. With `count = 0` the first iteration still runs; TMA fills out-of-bounds boxes with zeros, so the accumulator
