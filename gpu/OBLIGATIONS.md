@@ -134,7 +134,7 @@ the builders do.
 |---|---|---|
 | I1 | Every variable is declared once per kernel, before use, in an enclosing C scope. | Fresh names from `Gen`; lifetimes (M2). Checked on the output by `Check.scoping`: each id declared once, used only in the C scope of its declaration and after it (a loop's variable in its body), and no variable, thread, block or grid index, shared address or array element in the launcher. |
 | I2 | Dynamic shared-memory regions are disjoint and aligned as requested. Total ≤ 232448 bytes. Dynamic memory only with a launcher. Never mixed with static arrays. | Bump allocation (`reserve`). Checked on the output by `Check.sharedMemory`: the total, the launcher, no static array with dynamic memory, and every constant offset into the buffer inside it. Disjointness, alignment, and offsets plus run-time indices are not in the AST. |
-| I3 | Each join's named barrier has its own id in 1..15, and its count is its group's threads. | `join`, with a check. Checked on the output by `Check.namedBarriers`: each `bar.sync` (the asm template `Gpu.namedBarrier` emits) has literal operands, an id in 1..15 that no other has, and a count that is a positive multiple of 32. That the count is its group's is not in the AST. |
+| I3 | Each join's named barrier has its own id in 1..15, and its count is its group's threads. | `join`, with a check. Checked on the output by `Check.namedBarriers`: each `bar.sync` (the asm template `Gpu.namedBarrier` emits, or the instruction `Cuda.Instr.barSync` of `encoding/Core.rac`) has literal operands, an id in 1..15 that no other has, and a count that is a positive multiple of 32. That the count is its group's is not in the AST. |
 | I4 | Every `u32` literal is below 2^32. | Checked on the output by `Check.literals`: every 32-bit literal of the kernel and its launcher, and the launcher's block size and boxes, below 2^32; every 64-bit literal below 2^64. The other `u` literals the printer writes, shared-window offsets and the launch's shared bytes, are bounded by I2's check in the body; I1's keeps shared addresses out of the launcher. |
 | I5 | The kernel's name is a C identifier; every other printed name is the library's. | `uniformParam` needs the Key (M8). Checked on the output by `Check.names`: the kernel's, the parameters' and the tensor maps' names are C identifiers the printer does not declare itself (`v` and digits, `gpu_…`, the launcher's locals), none is the kernel's name, each is declared once in its function, and every parameter an expression names is its function's. C++ keywords, CUDA's names and host library symbols are not excluded: the first two fail to compile, but an `extern "C"` kernel named as a host symbol is not ruled out. |
 | I6 | The launcher passes the kernel's parameters in order. It asks for and launches with exactly the kernel's dynamic shared memory. It encodes each operand's tensor map with its `TMap` box, bf16 and 128-byte swizzle, and the output's as `CMap` says (f32, 32×32, 128-byte swizzle). It launches the grid the builder assumes. | The printer passes the parameters in order and the kernel's shared memory, and takes a map's element type from its source. Checked on the output by `Check.launcher`: the launcher declares each non-map parameter as the kernel does, and encodes each tensor map exactly once, for the use (load or store) the kernel's parameter declares, over one of the launcher's own arrays of the kind and element type that use needs (a bf16 input to load, an f32 output to store; two maps may share an array), with two u32 scalars of its own. That the body loads only through load maps and stores only through store maps, the box beyond fitting 32 bits, and the grid are the builders'. |
@@ -329,7 +329,8 @@ none of them (`ATTENTION.md` §4.1), and closes its protocols on `…Done` token
   - that only a builder creates a pool, with the threads and residency it prints (§7, and §2's carve-out). The
     language seals per file, so `Registers.pool` is a definition any module can call; a pool at another per-thread
     count prints changes from a count the warps do not hold, which the register check refuses;
-  - that Core prints no `setmaxnreg` but through `withShare` and `regsBack`. Its raw `asm` statements could.
+  - that Core prints no `setmaxnreg` but through `withShare` and `regsBack`. Core could build an
+    `Instr.setMaxNReg` elsewhere; it has no raw `asm` (`EVALUATOR.md` §3).
 
 M18–M20 hold for the CTA pair (`encoding/TWO_CTA.md`, `Core.rac`'s pair sections), M21 and M22 for A3b's correction
 warpgroup (`encoding/A3B.md`), M23 for every combinator of `encoding/Core.rac`, and M24 for the register pool of
@@ -580,7 +581,7 @@ score buffer's other operations are §6.10's, with `rescaleRow` and `publishProb
 | `publishRescaled` | `Rescaling(x, m, f)`, `warps(f, 4)` context | `__syncwarp`, `wait::st`, `before_thread_sync`, one arrival on P full | `CorrectAt(x, m, f, held)`: Ô handed to the MMA thread | A19, A20, M13 |
 | `finishCorrection` | `CorrectAt(x, m, f, held)` | nothing | the side used up | — |
 | `voteAny` | `warps(f, c)` context, a bool value | a u32 declaration and `vote.sync.any.pred` with a full mask of the value | a bool of grain `warp`: whether the value holds in any lane of the warp | A4, A31, M10 |
-| `ex2emu` | a context, any group; an f32 value x < 128 (its domain; not checked) | a declaration and one `asm` of `max.f32`, `add.rm.f32`, `sub.rn.f32` ×2, `fma.rn.f32` ×3, `shl.b32` and `add.s32` (FA4's `ex2_emulation`) | 2^x within 2⁻¹³·⁴⁷ relative for x ∈ [−126, 8] and 2⁻¹²⁷ absolute for x ∈ [−127, −126); +0 for x < −127 and −∞; wrong for x ≥ 128 and NaN (NaN gives +0); grain of the input | A58 |
+| `ex2emu` | a context, any group; an f32 value x < 128 (its domain; not checked) | a declaration and one `Instr.ex2Emulated`: `max.f32`, `add.rm.f32`, `sub.rn.f32` ×2, `fma.rn.f32` ×3, `shl.b32` and `add.s32` (FA4's `ex2_emulation`) | 2^x within 2⁻¹³·⁴⁷ relative for x ∈ [−126, 8] and 2⁻¹²⁷ absolute for x ∈ [−127, −126); +0 for x < −127 and −∞; wrong for x ≥ 128 and NaN (NaN gives +0); grain of the input | A58 |
 | `splitWarpgroups` (`withShare`, `regsBack`) | `cta(512)` context, a `RegPool(L, 512, b)`, four counts that fit it (`Registers.fits`: each a multiple of 8 from 24 to 256, and 128 · Σ ≤ 512 · b; evidence); four bodies on warps 0–3, 4–7, 8–11 and 12–15 | `split` at warp 8, then at 4 and at 12; each warpgroup's branch runs `setmaxnreg` from b to its share's count (`.inc` up, `.dec` down, none if equal) and its body; after the join, each warpgroup `setmaxnreg` back to b, in warpgroup order (`regsBack`), so every first increase precedes every increase back; then `__syncthreads()` | the four bodies ran, each at its count; every warp holds b after the split; the shares used up (M24) | A3, A30, A59, I3, M24 |
 | `when` | as `branch`, one arm | as `branch`, with an empty else arm | the state after the arm, or unchanged | M5 |
 | `correctedAttentionKernel` | as `pairAttentionKernel` | as `pairAttentionKernel`, with a CTA of 512 threads (the launcher's block 512) and `__launch_bounds__(512, 1)` | as `pairAttentionKernel`, and the CTA's register pool, `Registers.pool(l, 512, 1)`: `RegPool(l, 512, 128)` | A17, A59, I6, M24 |
@@ -613,8 +614,8 @@ arguments. The audit as of this document:
 
 - **The attention core** (`gpu/encoding/Core.rac`, §6.10). The f32 operations (`fadd`, `fsub`, `fmul`, `fmax`,
   `select`, `fconst`, `ex2`, `lg2`, `rcp`) and the unsealed `F32x8.mk` build values from the library's own `Val`s,
-  and a `Val` carries no authority; `fconst`'s bits are checked at generation, and `asmValue`, which prints an
-  instruction template, needs the Key. `holdStage` mints no authority, only renames a stage already held.
+  and a `Val` carries no authority; `fconst`'s bits are checked at generation, and `written`, which emits an
+  instruction, needs the Key. `holdStage` mints no authority, only renames a stage already held.
   `fixedReadyUsed`, `fixedExWriterAt` and `fixedExReaderAt` are evidence for fieldless one-valued families only.
   `splitTmem` mints two `Acc` tokens from one, over disjoint columns (the core's arithmetic), and takes back both
   before it returns the one; that is sound only while every use of a region's address goes through `tmemBase`.
@@ -658,13 +659,12 @@ arguments. The audit as of this document:
   value, and mints the linear `AppendOwn` there too, which only `appendRow` uses up. `appendRow` takes the row from
   `Claimed` and the columns from the warp and lane. `storeCombined` consumes `CombinedOwn`. `F32x4.splat`, `map`,
   `zip` and `columns`, `Reg4.mk`, `reg4`, `get4` and `set4` build values and registers from values and registers, as
-  `F32x8.mk`, `reg`, `get` and `set` do; `asmOut`, which prints a template, needs the Key. `splitLse` and `splitRow` read the sealed `Partials` with their guard. The unsealed `DecodeLaunch`,
+  `F32x8.mk`, `reg`, `get` and `set` do; `written`, which emits an instruction, needs the Key. `splitLse` and `splitRow` read the sealed `Partials` with their guard. The unsealed `DecodeLaunch`,
   `AppendLaunch` and `CombineLaunch` build launches from sealed parts and `Val`s: `blocks` and `first` (decode) and
   `splits` (combine) choose trip counts and table entries only, so a wrong one deadlocks (M11), reads a wrong page or
   split (guarded), or computes a wrong result. `F32x4.mk` builds values from values. `warpCta`, `wideParam`,
   `belowI32`, `cacheRequires`, `cacheMaps`, `fillBoxes`, `rowInTile`, `keptOrZero`, `storeRow`,
-  `splitRowOf`, `laneColumns`, `columnStores`, `globalAt`, `loadRelaxed64`, `casRelaxed64`, `broadcastLane0`,
-  `decodeArrays`, `decodeParams`, `decodeLauncher`,
+  `splitRowOf`, `laneColumns`, `columnStores`, `decodeArrays`, `decodeParams`, `decodeLauncher`,
   `appendParams`, `appendLauncher`, `combineParams` and `combineLauncher` build unsealed `Group`s, `Expr`s, `Stmt`s,
   `Gen`s, `String`s and launchers, which reach a kernel only through the Key; `headOut`, which builds an `AttnOut`,
   needs it.
@@ -698,7 +698,7 @@ arguments. The audit as of this document:
   builds a value from a value, of grain `warp` because the vote makes it so; a `warp`-grain value from anything else
   would let a branch run `warpwise` arms on a condition that differs within a warp. `Grain.warp` is a constructor
   any client can name, but only on `Val`s, which are sealed: a client cannot make a `Val` of a grain the core did not
-  give it. `ex2emu` builds a value; its template is the core's. `splitWarpgroups` divides a register pool and emits
+  give it. `ex2emu` builds a value; its instruction is the core's. `splitWarpgroups` divides a register pool and emits
   every `setmaxnreg`, through `withShare` and `regsBack`, which need the Key and a share (M24). `when` is `branch`
   with an empty else arm. `AlphaRing.mk`, `alphaRing` and `alphaOf` build offsets and register names, which grant
   nothing; `ownQuadrants`, `zeroRow`, `publishCode`, `alphaRow`, `setMaxRegs` and `twoTileStart` build unsealed

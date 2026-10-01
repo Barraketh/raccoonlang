@@ -28,6 +28,7 @@ namespace SharedMemory {
       | Stmt.sync => h
       | Stmt.syncWarp => h
       | Stmt.asm template outs ins => h
+      | Stmt.instr i => h
       | Stmt.error message => h
     }
 

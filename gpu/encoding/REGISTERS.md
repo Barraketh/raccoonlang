@@ -56,8 +56,9 @@ a control combinator's signature, which this rule does not reach (§9, decision 
   it, at the count their kernel is compiled for, is a stated obligation (`OBLIGATIONS.md` §2 and §7, M24). A client's
   pool at another count makes changes from a count the warps do not hold; the register check (§5) refuses that
   kernel, when the toolkit is there.
-- **Core's raw assembly stays trusted.** Core owns all emission, so it could still print a `setmaxnreg` through its raw
-  `asm` statements, outside the emitters that need a share. That it does not is reviewed. The register check reads
+- **Core's emission stays trusted.** Core owns all emission, so it could still build an `Instr.setMaxNReg` outside the
+  emitters that need a share. That it does not is reviewed. (It had raw `asm` statements here too; since typed
+  instructions, `EVALUATOR.md` §3, it has none.) The register check reads
   every `setmaxnreg` of an example's output against the split's rule, which a stray one breaks unless it happens to
   fit it.
 
@@ -321,7 +322,7 @@ Two kernels sit at their limit:
 
 **Open questions for the user:**
 1. **How to check what stays trusted.** Today a module that owns a family cannot emit, its minting function is
-   callable by any module, and Core could print a `setmaxnreg` through raw `asm` (§2, "The language limit").
+   callable by any module, and Core could emit a `setmaxnreg` outside a split (§2, "The language limit").
 
    **A token only Core can mint** (the user's question): `Registers.pool` would take a linear token of Core's, so
    only Core could call it.
@@ -337,10 +338,10 @@ Two kernels sit at their limit:
    2. **Exports to named modules.** `Registers.pool` exported to `Core` only.
    3. **Sealing shared with named modules** (say, `Registers.rac` and `Core.rac`). The module could then need the
       `Key`, emit its own instructions, and mint only for a builder.
-   4. **Typed instructions** (`gpu/EVALUATOR.md`, step 1), with a `Check.rac` rule on the generated AST: every
+   4. **Typed instructions** (`gpu/EVALUATOR.md`, step 1, built), with a `Check.rac` rule on the generated AST: every
       `setmaxnreg` is a warpgroup's entry change in a split, or a change back after its join, with counts that fit
-      the pool. This checks Core's own emission, raw `asm` included, as a certificate of each kernel. No language
-      change.
+      the pool. This checks Core's own emission as a certificate of each kernel. No language change. EVALUATOR.md §3
+      says what the rule takes now.
    5. **A layering in which only the top layer can render.** It likely needs contexts indexed by their kernel.
       Unexamined.
 

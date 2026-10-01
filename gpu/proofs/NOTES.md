@@ -84,16 +84,18 @@ the launcher's step is `hostUse`.
 a `Stmt.shared` anywhere in the body means the size is 0; every `sharedAddr`/`sharedPtr` offset is below the size.
 Two small Bool/Nat facts (`orNot`, `notPositive`).
 
-**I3, named barriers.** Spec: every `bar.sync` in the body (an asm statement with its template) has
-`LiteralOperands` (no outputs, two `lit` inputs); every `Barrier(id, threads, s)` in the body has `id` in 1..15 and
+**I3, named barriers.** Spec: every `bar.sync` in the body that is an asm statement with its template has
+`LiteralOperands` (no outputs, two `lit` inputs), and every `Instr.barSync(a, b)` has `LiteralPair(a, b)` (two
+`lit`s); every `Barrier(id, threads, s)` in the body has `id` in 1..15 and
 `threads` positive with `Nat.mod(threads, 32) = 0`; and no two barriers, one `Before` the other in
 `Spec.statements(k.body)` (every statement at any depth, in program order), have one id. Distinctness needs places,
 which `InBlock` does not have (two identical `bar.sync 1, 64` are one statement to it), hence the flattening. The
 proof first turns the checker's `blockFold` into a `List.foldl` over `Spec.statements` (`Fold.blockFusion`, generic in
 the walk's state), then reasons about a flat walk: ids seen stay seen (`stepSeen`), a barrier's id was not seen before
 it (`barrierFresh`), and an id is seen after its barrier (`NatSets.inserted`). The literal operands come from a case
-split on the operand lists and on `Check.literal` of each (`shape`, `twoLiterals`, `literalSome`), which is the only
-place the proof inspects expressions. The checker's step was named (`barrierStep`), and the decisions it matched on
+split on the operand lists and on `Check.literal` of each (`shape`, `twoLiterals`, `literalSome`; `pairShape` for an
+instruction), which is the only place the proof inspects expressions. A `Spec.Barrier` is either form; the checker's
+step reduces both to `Check.barrier`, so each lemma has one case per form with the same proof. The checker's step was named (`barrierStep`), and the decisions it matched on
 became arguments of `barrierAt` (`isBarrier`, `args`), so the lemmas case on variables (F2).
 
 **I4, literals.** Spec: every `n` that `Lit32(k, n)` (a `lit` in the body or the launcher's expressions, the block

@@ -66,6 +66,7 @@ namespace Spec {
       | Stmt.sync => List.nil(Stmt)
       | Stmt.syncWarp => List.nil(Stmt)
       | Stmt.asm template outs ins => List.nil(Stmt)
+      | Stmt.instr i => List.nil(Stmt)
       | Stmt.error message => List.nil(Stmt)
     }
 
@@ -83,7 +84,8 @@ namespace Spec {
    | there (z: A)(rest: List(A))(h: Before(A, x, y, rest)) : Before(A, x, y, List.cons(z, rest))
 
   // `x` is, or is inside, an expression that statement `s` holds itself (not in its blocks): an initializer, an
-  // assigned or stored value, a store's address or index, a loop's header, a branch's condition, an asm operand.
+  // assigned or stored value, a store's address or index, a loop's header, a branch's condition, an asm operand, an
+  // operand an instruction prints (`Cuda.asmOf`).
   inductive OwnExpr (x: Expr) indices (s: Stmt) : Prop
    | decl (t: DType)(id: Nat)(init: Expr)(h: SubExpr(x, init)) : OwnExpr(x, Stmt.decl(t, id, init))
    | declMut (t: DType)(id: Nat)(init: Expr)(h: SubExpr(x, init)) : OwnExpr(x, Stmt.declMut(t, id, init))
@@ -104,6 +106,8 @@ namespace Spec {
        : OwnExpr(x, Stmt.asm(template, outs, ins))
    | asmIn (template: String)(outs: List(Operand))(ins: List(Operand))(o: Operand)(operand: Mem(Operand, o, ins))(h: SubExpr(x, o.e))
        : OwnExpr(x, Stmt.asm(template, outs, ins))
+   | instrOut (i: Instr)(o: Operand)(operand: Mem(Operand, o, Cuda.asmOf(i).outs))(h: SubExpr(x, o.e)) : OwnExpr(x, Stmt.instr(i))
+   | instrIn (i: Instr)(o: Operand)(operand: Mem(Operand, o, Cuda.asmOf(i).ins))(h: SubExpr(x, o.e)) : OwnExpr(x, Stmt.instr(i))
 
   // `x` occurs in an expression of block `b`.
   inductive ExprIn (x: Expr)(b: Block) : Prop
@@ -154,6 +158,7 @@ namespace Spec {
     | Stmt.sync => List.nil(Nat)
     | Stmt.syncWarp => List.nil(Nat)
     | Stmt.asm template outs ins => List.nil(Nat)
+    | Stmt.instr i => List.nil(Nat)
     | Stmt.error message => List.nil(Nat)
   }
 
@@ -228,7 +233,7 @@ namespace Spec {
 
   // ---- I3, named barriers -------------------------------------------------------------------------------------------
 
-  // The template of `bar.sync id, threads`, the named barrier `Gpu.namedBarrier` emits.
+  // The template of `bar.sync id, threads`, the named barrier `Gpu.namedBarrier` emits as an asm statement.
   def barrierTemplate : String := "bar.sync %0, %1;"
 
   // No outputs, and two inputs that are 32-bit literals.
@@ -236,15 +241,21 @@ namespace Spec {
    | mk (c: String)(id: Nat)(d: String)(threads: Nat)
        : LiteralOperands(List.nil(Operand), List.cons(Operand.mk(c, Expr.lit(id)), List.cons(Operand.mk(d, Expr.lit(threads)), List.nil(Operand))))
 
-  // `s` is the named barrier `bar.sync id, threads`.
+  // Two 32-bit literals.
+  inductive LiteralPair indices (a: Expr)(b: Expr) : Prop
+   | mk (id: Nat)(threads: Nat) : LiteralPair(Expr.lit(id), Expr.lit(threads))
+
+  // `s` is the named barrier `bar.sync id, threads`: an asm statement of its template, or the instruction.
   inductive Barrier (id: Nat)(threads: Nat) indices (s: Stmt) : Prop
-   | mk (c: String)(d: String)
+   | asm (c: String)(d: String)
        : Barrier(id, threads, Stmt.asm(Spec.barrierTemplate, List.nil(Operand),
            List.cons(Operand.mk(c, Expr.lit(id)), List.cons(Operand.mk(d, Expr.lit(threads)), List.nil(Operand)))))
+   | instr : Barrier(id, threads, Stmt.instr(Instr.barSync(Expr.lit(id), Expr.lit(threads))))
 
   // Each `bar.sync` has literal operands and an id in 1..15, and no two have one id.
   struct BarrierIds (k: Kernel) : Prop
    | mk (literal: (outs: List(Operand)) -> (ins: List(Operand)) -> Spec.InBlock(Stmt.asm(Spec.barrierTemplate, outs, ins), k.body) -> Spec.LiteralOperands(outs, ins))
+        (literalInstr: (a: Expr) -> (b: Expr) -> Spec.InBlock(Stmt.instr(Instr.barSync(a, b)), k.body) -> Spec.LiteralPair(a, b))
         (inRange: (s: Stmt) -> (id: Nat) -> (threads: Nat) -> Spec.InBlock(s, k.body) -> Spec.Barrier(id, threads, s) -> And(Nat.le(1, id), Nat.le(id, 15)))
         (distinct: (x: Stmt) -> (y: Stmt) -> (id: Nat) -> (tx: Nat) -> (ty: Nat) -> Spec.Before(Stmt, x, y, Spec.statements(k.body))
           -> Spec.Barrier(id, tx, x) -> Spec.Barrier(id, ty, y) -> False) : BarrierIds(k)

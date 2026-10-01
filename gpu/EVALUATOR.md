@@ -1,6 +1,6 @@
 # An evaluator for generated kernels
 
-Status: **proposal** (2026-10-01), not implemented. It follows the first B200 session (`gpu/encoding/NOTES.md`,
+Status: **proposal** (2026-10-01). Step 1, typed instructions, is built (§3); the evaluator is not. It follows the first B200 session (`gpu/encoding/NOTES.md`,
 "Hardware session"), whose failures and the hostile reviews before it share one shape: the generated code did
 something other than what was meant.
 
@@ -40,37 +40,81 @@ Two parts:
 
 ## 3. Typed instructions
 
-**Today.** `Cuda.Stmt` covers plain C: declarations, stores, loops, branches and `__syncthreads`. Every PTX
-instruction goes through `Stmt.asm(template, outs, ins)`, about 35 distinct instructions at 47 sites in `Core.rac`.
-- The certificate checker cannot see them: `Check.rac` notes that I7 and I8 are not checked because "the AST does not
-  record which threads run a block or what a barrier is for".
-- Descriptors are integers packed by hand, then printed into strings.
+Status: **built** (step 1 of §8).
 
-**The change.** A constructor `Stmt.instr(i: Instr)`, with `Instr` covering what the encoding core emits:
+**Before.** `Cuda.Stmt` covered plain C: declarations, stores, loops, branches and `__syncthreads`. Every PTX
+instruction went through `Stmt.asm(template, outs, ins)`, about 35 distinct instructions at 47 sites in `Core.rac`.
+- The certificate checker could not see them, beyond matching `bar.sync`'s template.
+- Descriptors were integers packed by hand, then printed into strings.
 
-| Family | Instructions |
+**Now.** `Stmt.instr(i: Instr)`, in `gpu/Cuda.rac`. `gpu/encoding/Core.rac` emits every PTX instruction through it, and
+has no `Stmt.asm` left. `Registers.rac` emits none.
+- **Operands** are `Expr`s.
+- **Results** are variable ids: the instruction writes the fresh variable `d`, which a `declOut` before it declares
+  (`Core.written`).
+- **Qualifiers** are fields of their own types: `CtaGroup`, `BarrierScope`, `Scope`, `Window`, `Arrival`, `ThreadSync`,
+  `BulkWait`, `TmemWait`, `TmemShape`, `Word`, `Rounding`, `RegChange`, `SpecialReg`. A count that PTX takes as an
+  immediate (`wait_group`'s, `setmaxnreg`'s, `shfl`'s lane, the multicast mask) is a `Nat`. A vector's width is its
+  operand list's length (`.x8`, `.v4`).
+- **Descriptors** are values with named fields:
+  - `InstrDesc(m, n, transposeB)`, the MMA instruction descriptor. The printer packs it at generation
+    (`Cuda.packInstrDesc`) into a 32-bit literal operand.
+  - `SmemDesc(base, lbo, step)`, a shared-memory descriptor. `base` is a run-time address, so the printer packs it
+    into a C expression evaluated at run time (`Cuda.packSmemDesc`): `base`'s bits shifted and masked, or-ed with a
+    64-bit literal of the fixed fields and the leading byte offset, plus the step.
+- **Printing.** `Cuda.asmOf(i)` lowers an instruction to the inline assembly CUTLASS uses for it: a template and its
+  operands. `Stmt.asm` and `Stmt.instr` print through one function, `Cuda.asmText`. Every example under
+  `gpu/examples/` and `gpu/encoding/examples/` generates byte-identical CUDA.
+- **`Stmt.asm` stays** for `gpu/Gpu.rac`, the old core, which the evaluator does not run.
+
+**The constructors:**
+
+| Family | Constructors |
 |---|---|
-| mbarrier | `init`, `inval`, `arrive` (local or remote, count, expect-tx), `try_wait.parity` (scope) |
-| barriers | named `bar.sync`, `barrier.cluster.arrive/wait` |
-| fences | `tcgen05.fence::before/after_thread_sync`, `fence.proxy.async`, `fence.mbarrier_init` |
-| TMA | load (rank, CTA group, barrier), store, `commit_group`, `wait_group` |
-| tcgen05 | `alloc`, `dealloc`, `relinquish`, `mma` (decoded instruction and shared-memory descriptors, CTA group), `commit` (mask), `ld`/`st` (shape), `wait` |
-| warp | `elect`, `shfl.idx`, `vote.any` |
-| registers | `setmaxnreg` |
-| math | `ex2.approx`, `lg2.approx`, `rcp.rn`, `cvt.rn.bf16x2` |
-| atomics | `ld.relaxed`, `atom.cas` |
-| cluster | `%clusterid`, `%nclusterid`, `mapa` |
+| mbarrier | `mbarInit`, `mbarInval`, `mbarArrive` (scope, window, `Arrival.one`/`count`/`expectTx`), `mbarWait` (scope; a spin on `try_wait.parity`) |
+| barriers | `barSync`, `clusterArrive`, `clusterWait` |
+| fences | `fenceMbarInit`, `fenceProxyAsync`, `tcFence` (`before`/`after`) |
+| TMA | `tmaLoad` (CTA group), `tmaStore`, `bulkCommit`, `bulkWait` (`read`/`complete`, pending) |
+| tcgen05 | `tmemAlloc`, `tmemRelinquish`, `tmemDealloc`, `mma` (CTA group, A as `MmaA.smem`/`tmem`, B's `SmemDesc`, `InstrDesc`), `commit` (CTA group, multicast mask), `tmemLoad`/`tmemStore` (shape), `tmemWait` (`load`/`store`) |
+| warp | `elect`, `shfl`, `voteAny` |
+| registers | `setMaxNReg` (`inc`/`dec`, count) |
+| math | `movF32`, `ex2`, `lg2`, `ex2Emulated`, `rcp` (rounding), `cvtBf16x2` |
+| global memory | `ldRelaxed`, `casRelaxed` (scope) |
+| cluster | `movSpecial` (`%cluster_ctarank`, `%clusterid.x`, `%nclusterid.x`), `mapa` |
+| shared memory | `stShared` |
 
-**What stays the same:**
-- **The printed text.** The printer produces the same CUDA. The step's test is that every example still generates
-  byte-identical code.
-- **`Stmt.asm`.** It stays for `gpu/Gpu.rac`, the old core, which the evaluator does not run.
+**Blocks of their own.** Some instructions print as a short PTX block, as their templates did: `mbarWait`'s spin loop,
+`mma`'s predicate, `commit`'s mask register, `elect`'s flag, `voteAny`'s predicates, the `cvta` of `ldRelaxed` and
+`casRelaxed`. `ex2Emulated` is FA4's sequence of f32 and integer instructions. The evaluator gives each its
+meaning as a unit.
 
-**Worth it without the evaluator:**
-- `Core.rac`'s emitters read as instructions, not strings.
-- Descriptors are values with named fields.
-- `Check.rac` can state invariants over instructions: which barrier a wait names, and which group runs an aligned
-  instruction.
+**The certificate.**
+- **I1, I2, I4, I5.** A statement's expressions include the operands its instruction prints (`Cuda.asmOf`), so the
+  scoping, shared-memory, literal and name checks see an instruction's operands as they saw a template's, packed
+  descriptors included. `Spec.OwnExpr` has `instrOut` and `instrIn`, stated over `Cuda.asmOf(i)`'s operands.
+- **I3.** `Check.namedBarriers` reads `Instr.barSync` as well as the template of `Gpu.namedBarrier`. `Spec.Barrier` has
+  an `instr` form, and `Spec.BarrierIds` a `literalInstr` field: each `barSync` has literal operands. Both kinds share
+  one set of ids.
+- **The proofs** gained a case for each, and `pairShape` and `literalInstrAt` for `literalInstr`. No statement of
+  `Spec.rac` got weaker.
+
+**Not yet used.** No `Check.rac` rule reads an instruction beyond `barSync`. Two are now possible:
+- which barrier a wait names, and which group runs an aligned instruction (I7, I8), once the AST records which threads
+  run a block;
+- the `setmaxnreg` placement rule of `encoding/REGISTERS.md` §9 (below).
+
+**The `setmaxnreg` placement rule.** Every `setMaxNReg` is a warpgroup's entry change in a split, or its change back
+after the join, with counts that fit the pool. What it takes now:
+- **Finding them** is done: a fold over `Instr.setMaxNReg`, and Core has no raw `asm` that could hide one.
+- **The pool.** The rule needs the kernel's threads and residency. `Cuda.boundedKernel` takes them beside the kernel;
+  `Kernel` would carry them.
+- **The warpgroup.** The rule needs which warps run the arm a `setMaxNReg` heads. The AST does not record it. A split
+  prints as `if (warp < f + k)`, so the checker could read warp ranges off such conditions, or `Stmt` could record a
+  split's groups. The second is the I7 work.
+- **The join.** The change back and the CTA barrier after it (REGISTERS.md §3) are statements after the branch: a
+  pattern the checker matches.
+- **The proof.** A `Spec` statement of the rule, and its soundness proof. The rule is about positions in the tree, as
+  I3's distinctness is, so it would reuse `Spec.statements` and `Fold.blockFusion`.
 
 ## 4. The evaluator
 
@@ -169,7 +213,7 @@ argument.
 
 ## 8. Plan and cost
 
-1. **Typed instructions.** One worker round. Every example generates byte-identical CUDA, and `Check.rac` keeps its
+1. **Typed instructions.** Built (§3). Every example generates byte-identical CUDA, and `Check.rac` keeps its
    proofs.
 2. **Evaluator v0.**
    - **Content:**

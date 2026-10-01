@@ -129,30 +129,10 @@ namespace Core {
     }
   }
 
-  // How many CTAs a kernel's tensor-core instructions span (their `.cta_group`): one CTA, or a CTA pair. A kernel uses
-  // one value throughout (A29), which its builder records.
-  inductive CtaGroup : Type
-   | one : CtaGroup
-   | two : CtaGroup
-
-  namespace CtaGroup {
-    def qualifier (g: CtaGroup): String := {
-      match g returning String with
-      | CtaGroup.one => "cta_group::1"
-      | CtaGroup.two => "cta_group::2"
-    }
-
-    def isOne (g: CtaGroup): Bool := {
-      match g returning Bool with
-      | CtaGroup.one => Bool.true
-      | CtaGroup.two => Bool.false
-    }
-  }
-
   // Everything generation has produced so far: the code, newest first; the next fresh name; the next free byte of
   // dynamic shared memory; the next free named barrier; the generation-time errors found so far; the kernel's CTA
-  // group, which every `tcgen05` instruction prints; and the first register the code may write, which inside an
-  // `onLeader` arm is the arm's first (`set`), and 0 elsewhere.
+  // group, which every `tcgen05` instruction prints and which a kernel keeps throughout (A29); and the first register
+  // the code may write, which inside an `onLeader` arm is the arm's first (`set`), and 0 elsewhere.
   struct Gen : Type
    | mk (code: List(Stmt))(next: Nat)(smem: Nat)(barrier: Nat)(errors: List(String))(group: CtaGroup)(writable: Nat) : Gen
 
@@ -194,7 +174,14 @@ namespace Core {
 
   // Refuses the opener `what` of a single-CTA protocol in a pair kernel, whose tensor-core instructions are all
   // `cta_group::2` (A29): a single-CTA protocol's tensor-core work would be issued by both CTAs.
-  def oneCta (gen: Gen)(what: String): Gen := Core.check(gen, CtaGroup.isOne(gen.group), Text.cat(what, ": a single-CTA protocol in a pair kernel"))
+  def oneCta (gen: Gen)(what: String): Gen := {
+    let single := {
+      match gen.group returning Bool with
+      | CtaGroup.one => Bool.true
+      | CtaGroup.two => Bool.false
+    }
+    Core.check(gen, single, Text.cat(what, ": a single-CTA protocol in a pair kernel"))
+  }
 
   // A nested block's starting state: no code yet, the enclosing block's counters.
   def child (gen: Gen): Gen := Gen.mk(List.nil(Stmt), gen.next, gen.smem, gen.barrier, gen.errors, gen.group, gen.writable)
@@ -349,88 +336,65 @@ namespace Core {
 
   // ---- sm_100a instructions ---------------------------------------------------------------------------------------
   //
-  // Each is the inline assembly CUTLASS uses for the operation, with its operands. None has been through ptxas here.
+  // Each is a typed instruction (`Cuda.Instr`), which prints as the inline assembly CUTLASS uses for it. None has been
+  // through ptxas here.
 
-  def r (x: Expr): Operand := Operand.mk("r", x)
+  def namedBarrier (id: Nat)(threads: Nat): Stmt := Stmt.instr(Instr.barSync(Expr.lit(id), Expr.lit(threads)))
 
-  def l64 (x: Expr): Operand := Operand.mk("l", x)
+  def mbarInit (bar: Expr)(count: Nat): Stmt := Stmt.instr(Instr.mbarInit(bar, Expr.lit(count)))
 
-  def f32 (x: Expr): Operand := Operand.mk("f", x)
+  def fenceBarrierInit : Stmt := Stmt.instr(Instr.fenceMbarInit)
 
-  def one (a: Operand): List(Operand) := List.cons(a, List.nil(Operand))
+  def mbarInval (bar: Expr): Stmt := Stmt.instr(Instr.mbarInval(bar))
 
-  def two (a: Operand)(b: Operand): List(Operand) := List.cons(a, Core.one(b))
-
-  def asm0 (template: String): Stmt := Stmt.asm(template, List.nil(Operand), List.nil(Operand))
-
-  def asmIn (template: String)(ins: List(Operand)): Stmt := Stmt.asm(template, List.nil(Operand), ins)
-
-  def namedBarrier (id: Nat)(threads: Nat): Stmt := Core.asmIn(Check.barrierTemplate, Core.two(Core.r(Expr.lit(id)), Core.r(Expr.lit(threads))))
-
-  def mbarInit (bar: Expr)(count: Nat): Stmt :=
-    Core.asmIn("mbarrier.init.shared::cta.b64 [%0], %1;", Core.two(Core.r(bar), Core.r(Expr.lit(count))))
-
-  def fenceBarrierInit : Stmt := Core.asm0("fence.mbarrier_init.release.cluster;")
-
-  def mbarInval (bar: Expr): Stmt := Core.asmIn("mbarrier.inval.shared::cta.b64 [%0];", Core.one(Core.r(bar)))
-
-  // A wait's semantics: the defaults, `.acquire.cta`, in a single-CTA kernel; in a pair kernel, whose barriers the
-  // peer's arrivals, TMA completions and commits reach, `.acquire.cluster` (PTX §9.7.15.16.19).
-  def waitSem (group: CtaGroup): String := {
-    match group returning String with
-    | CtaGroup.one => ""
-    | CtaGroup.two => ".acquire.cluster"
+  // A wait's scope: the CTA's, the default, in a single-CTA kernel; in a pair kernel, whose barriers the peer's
+  // arrivals, TMA completions and commits reach, the cluster's (PTX §9.7.15.16.19).
+  def waitScope (group: CtaGroup): BarrierScope := {
+    match group returning BarrierScope with
+    | CtaGroup.one => BarrierScope.cta
+    | CtaGroup.two => BarrierScope.cluster
   }
 
   // Spins until the phase of `bar` with parity `parity` has completed.
-  def mbarWait (group: CtaGroup)(bar: Expr)(parity: Expr): Stmt :=
-    Core.asmIn(Text.cat3("{\\n\\t.reg .pred P1;\\n\\tLAB_WAIT:\\n\\tmbarrier.try_wait.parity", Core.waitSem(group),
-      ".shared::cta.b64 P1, [%0], %1;\\n\\t@P1 bra DONE;\\n\\tbra LAB_WAIT;\\n\\tDONE:\\n\\t}"), Core.two(Core.r(bar), Core.r(parity)))
+  def mbarWait (group: CtaGroup)(bar: Expr)(parity: Expr): Stmt := Stmt.instr(Instr.mbarWait(Core.waitScope(group), bar, parity))
 
-  def mbarArriveExpectTx (bar: Expr)(bytes: Nat): Stmt :=
-    Core.asmIn("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;", Core.two(Core.r(bar), Core.r(Expr.lit(bytes))))
+  // An arrival on this CTA's barrier at `bar`, releasing at CTA scope.
+  def arriveHere (bar: Expr)(arrival: Arrival): Stmt := Stmt.instr(Instr.mbarArrive(BarrierScope.cta, Window.cta, bar, arrival))
 
-  def mbarArrive (bar: Expr): Stmt := Core.asmIn("mbarrier.arrive.shared::cta.b64 _, [%0];", Core.one(Core.r(bar)))
+  def mbarArriveExpectTx (bar: Expr)(bytes: Nat): Stmt := Core.arriveHere(bar, Arrival.expectTx(Expr.lit(bytes)))
+
+  def mbarArrive (bar: Expr): Stmt := Core.arriveHere(bar, Arrival.one)
 
   // `count` arrivals at once, at most the pending ones.
-  def mbarArriveCount (bar: Expr)(count: Nat): Stmt :=
-    Core.asmIn("mbarrier.arrive.shared::cta.b64 _, [%0], %1;", Core.two(Core.r(bar), Core.r(Expr.lit(count))))
+  def mbarArriveCount (bar: Expr)(count: Nat): Stmt := Core.arriveHere(bar, Arrival.count(Expr.lit(count)))
 
   def tmaLoad2d (dst: Expr)(map: String)(c0: Expr)(c1: Expr)(bar: Expr): Stmt :=
-    Core.asmIn("cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1, {%3, %4}], [%2];",
-      List.cons(Core.r(dst), List.cons(Core.l64(Expr.paramAddr(map)), List.cons(Core.r(bar), Core.two(Core.r(c0), Core.r(c1))))))
+    Stmt.instr(Instr.tmaLoad(CtaGroup.one, dst, Expr.paramAddr(map), c0, c1, bar))
 
-  // The `tcgen05` instructions take the kernel's CTA group, `group`, which they print.
-  def tmemAlloc (group: CtaGroup)(slot: Expr)(cols: Nat): Stmt :=
-    Core.asmIn(Text.cat3("tcgen05.alloc.", CtaGroup.qualifier(group), ".sync.aligned.shared::cta.b32 [%0], %1;"),
-      Core.two(Core.r(slot), Core.r(Expr.lit(cols))))
+  // The `tcgen05` instructions take the kernel's CTA group, `group`.
+  def tmemAlloc (group: CtaGroup)(slot: Expr)(cols: Nat): Stmt := Stmt.instr(Instr.tmemAlloc(group, slot, Expr.lit(cols)))
 
-  def tmemRelinquish (group: CtaGroup): Stmt :=
-    Core.asm0(Text.cat3("tcgen05.relinquish_alloc_permit.", CtaGroup.qualifier(group), ".sync.aligned;"))
+  def tmemRelinquish (group: CtaGroup): Stmt := Stmt.instr(Instr.tmemRelinquish(group))
 
-  def tmemDealloc (group: CtaGroup)(taddr: Expr)(cols: Nat): Stmt :=
-    Core.asmIn(Text.cat3("tcgen05.dealloc.", CtaGroup.qualifier(group), ".sync.aligned.b32 %0, %1;"), Core.two(Core.r(taddr), Core.r(Expr.lit(cols))))
+  def tmemDealloc (group: CtaGroup)(taddr: Expr)(cols: Nat): Stmt := Stmt.instr(Instr.tmemDealloc(group, taddr, Expr.lit(cols)))
 
-  def tcFenceBefore : Stmt := Core.asm0("tcgen05.fence::before_thread_sync;")
+  def tcFenceBefore : Stmt := Stmt.instr(Instr.tcFence(ThreadSync.before))
 
-  def tcFenceAfter : Stmt := Core.asm0("tcgen05.fence::after_thread_sync;")
+  def tcFenceAfter : Stmt := Stmt.instr(Instr.tcFence(ThreadSync.after))
 
   // D (in tensor memory) = A·B, plus D when `accumulate` is 1.
-  def mmaIssue (group: CtaGroup)(tmem: Expr)(descA: Expr)(descB: Expr)(idesc: Nat)(accumulate: Nat): Stmt :=
-    Core.asmIn(Text.cat3("{\\n\\t.reg .pred p;\\n\\tsetp.ne.b32 p, %4, 0;\\n\\ttcgen05.mma.", CtaGroup.qualifier(group), ".kind::f16 [%0], %1, %2, %3, p;\\n\\t}"),
-      List.cons(Core.r(tmem), List.cons(Core.l64(descA), List.cons(Core.l64(descB), Core.two(Core.r(Expr.lit(idesc)), Core.r(Expr.lit(accumulate)))))))
+  def mmaIssue (group: CtaGroup)(tmem: Expr)(descA: SmemDesc)(descB: SmemDesc)(idesc: InstrDesc)(accumulate: Nat): Stmt :=
+    Stmt.instr(Instr.mma(group, tmem, MmaA.smem(descA), descB, idesc, Expr.lit(accumulate)))
 
   // Arrives on `bar` once every tensor-core operation this thread issued so far has completed. In a pair kernel it
-  // arrives on the barrier at `bar`'s offset in both CTAs, CTA mask 0b11 (PTX §9.7.18.12.1), set in a `.b16` register:
-  // a 16-bit operand would need a 16-bit C type.
+  // arrives on the barrier at `bar`'s offset in both CTAs, CTA mask 0b11 (PTX §9.7.18.12.1).
   def mmaCommit (group: CtaGroup)(bar: Expr): Stmt := {
-    let template := {
-      match group returning String with
-      | CtaGroup.one => "tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%0];"
-      | CtaGroup.two =>
-        "{\\n\\t.reg .b16 mask;\\n\\tmov.b16 mask, 3;\\n\\ttcgen05.commit.cta_group::2.mbarrier::arrive::one.shared::cluster.multicast::cluster.b64 [%0], mask;\\n\\t}"
+    let multicast := {
+      match group returning Option(Nat) with
+      | CtaGroup.one => Option.none(Nat)
+      | CtaGroup.two => Option.some(3)
     }
-    Core.asmIn(template, Core.one(Core.r(bar)))
+    Stmt.instr(Instr.commit(group, bar, multicast))
   }
 
   // `c` to `c + count − 1`.
@@ -442,70 +406,60 @@ namespace Core {
 
   def eight : List(Nat) := Core.counting(0, 8)
 
-  def outs8 (first: Nat): List(Operand) := List.map(Core.eight, Operand, fun (j: Nat): Operand => Operand.mk("=f", Expr.var(Nat.add(first, j))))
-
   // Eight columns of this thread's tensor-memory lane into the fresh registers `first` to `first + 7`.
-  def tmemLoad8 (first: Nat)(taddr: Expr): Stmt :=
-    Stmt.asm("tcgen05.ld.sync.aligned.32x32b.x8.b32 {%0, %1, %2, %3, %4, %5, %6, %7}, [%8];", Core.outs8(first), Core.one(Core.r(taddr)))
+  def tmemLoad8 (first: Nat)(taddr: Expr): Stmt := Stmt.instr(Instr.tmemLoad(TmemShape.s32x32b, Core.counting(first, 8), taddr))
 
-  def tmemWaitLoad : Stmt := Core.asm0("tcgen05.wait::ld.sync.aligned;")
+  def tmemWaitLoad : Stmt := Stmt.instr(Instr.tmemWait(TmemWait.load))
 
   // Waits until every `tcgen05.st` this thread issued has completed (PTX §9.7.18.8.5).
-  def tmemWaitStore : Stmt := Core.asm0("tcgen05.wait::st.sync.aligned;")
+  def tmemWaitStore : Stmt := Stmt.instr(Instr.tmemWait(TmemWait.store))
 
-  // Eight 32-bit values (here f32) into eight columns of this thread's lane from `taddr` (PTX §9.7.18.8.4).
-  def tmemStore8 (taddr: Expr)(vs: List(Expr)): Stmt :=
-    Core.asmIn("tcgen05.st.sync.aligned.32x32b.x8.b32 [%0], {%1, %2, %3, %4, %5, %6, %7, %8};", List.cons(Core.r(taddr), List.map(vs, Operand, Core.f32)))
+  // Eight f32 values into eight columns of this thread's lane from `taddr` (PTX §9.7.18.8.4).
+  def tmemStore8 (taddr: Expr)(vs: List(Expr)): Stmt := Stmt.instr(Instr.tmemStore(TmemShape.s32x32b, Word.f32, taddr, vs))
 
   // The 32-bit registers `first` to `first + 3` into four columns of this thread's lane from `taddr`.
   def tmemStore4 (taddr: Expr)(first: Nat): Stmt :=
-    Core.asmIn("tcgen05.st.sync.aligned.32x32b.x4.b32 [%0], {%1, %2, %3, %4};", List.cons(Core.r(taddr), List.cons(Core.r(Expr.var(first)),
-      List.cons(Core.r(Expr.var(Nat.add(first, 1))), Core.two(Core.r(Expr.var(Nat.add(first, 2))), Core.r(Expr.var(Nat.add(first, 3))))))))
+    Stmt.instr(Instr.tmemStore(TmemShape.s32x32b, Word.u32, taddr, List.map(Core.counting(first, 4), Expr, Expr.var)))
 
   // The fresh 32-bit register `d` := `hi` and `lo` rounded to bf16, `hi` in the upper half (PTX §9.7.10.24 `cvt`: "the
   // value converted from input a is stored in the upper half of d").
-  def cvtBf16x2 (d: Nat)(hi: Expr)(lo: Expr): Stmt :=
-    Stmt.asm("cvt.rn.bf16x2.f32 %0, %1, %2;", Core.one(Operand.mk("=r", Expr.var(d))), Core.two(Core.f32(hi), Core.f32(lo)))
+  def cvtBf16x2 (d: Nat)(hi: Expr)(lo: Expr): Stmt := Stmt.instr(Instr.cvtBf16x2(d, hi, lo))
 
   // As `mmaIssue`, with A in tensor memory at `atmem` (PTX §9.7.18.10.10.1, the `[a-tmem]` form of syntax 1).
-  def mmaIssueTmemA (group: CtaGroup)(tmem: Expr)(atmem: Expr)(descB: Expr)(idesc: Nat)(accumulate: Nat): Stmt :=
-    Core.asmIn(Text.cat3("{\\n\\t.reg .pred p;\\n\\tsetp.ne.b32 p, %4, 0;\\n\\ttcgen05.mma.", CtaGroup.qualifier(group), ".kind::f16 [%0], [%1], %2, %3, p;\\n\\t}"),
-      List.cons(Core.r(tmem), List.cons(Core.r(atmem), List.cons(Core.l64(descB), Core.two(Core.r(Expr.lit(idesc)), Core.r(Expr.lit(accumulate)))))))
+  def mmaIssueTmemA (group: CtaGroup)(tmem: Expr)(atmem: Expr)(descB: SmemDesc)(idesc: InstrDesc)(accumulate: Nat): Stmt :=
+    Stmt.instr(Instr.mma(group, tmem, MmaA.tmem(atmem), descB, idesc, Expr.lit(accumulate)))
+
+  // ---- Instruction results -----------------------------------------------------------------------------------------
+
+  // Declares a fresh value of type `t` that the instruction `write(d)` writes, `d` its variable.
+  def written {l: Lifetime}{g: Group}{Sf: Lifetime}(k: Key)(e: Ctx(l, g))(u: Grain)(t: DType)(write: { scope = Sf } Nat -> Instr)
+      : Pair(Ctx(l, g), Val(l, u, t)) := {
+    let gen := Core.state(k, e)
+    let code := List.cons(Stmt.declOut(t, gen.next), List.cons(Stmt.instr(write(gen.next)), List.nil(Stmt)))
+    (Core.resume(k, l, g, Core.pushAll(Core.fresh(gen), code)), Val.mk(l, u, t, Expr.var(gen.next), Option.none(Nat)))
+  }
 
   // ---- f32 instructions --------------------------------------------------------------------------------------------
   //
   // Instructions without a C operator, each writing a fresh f32. None is collective, so any group may use them.
 
-  // Declares a fresh value of type `t` that the instruction `template` writes, its operand %0 under `constraint`, from
-  // `ins` (%1 on).
-  def asmOut {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(u: Grain)(t: DType)(constraint: String)(template: String)(ins: List(Operand))
-      : Pair(Ctx(l, g), Val(l, u, t)) := {
-    let gen := Core.state(k, e)
-    let code := List.cons(Stmt.declOut(t, gen.next), List.cons(Stmt.asm(template, Core.one(Operand.mk(constraint, Expr.var(gen.next))), ins), List.nil(Stmt)))
-    (Core.resume(k, l, g, Core.pushAll(Core.fresh(gen), code)), Val.mk(l, u, t, Expr.var(gen.next), Option.none(Nat)))
-  }
-
-  // Declares a fresh f32 that the instruction `template` writes, its operand %0, from `ins` (%1 on).
-  def asmValue {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(u: Grain)(template: String)(ins: List(Operand)): Pair(Ctx(l, g), Val(l, u, DType.f32)) :=
-    Core.asmOut(k, e, u, DType.f32, "=f", template, ins)
-
   // The f32 whose bits are `bits` (PTX §9.7.10.3 `mov`), which must be below 2^32.
   def fconst {l: Lifetime}{g: Group}(e: Ctx(l, g))(bits: Nat): Pair(Ctx(l, g), Val(l, Grain.uniform, DType.f32)) := {
     let checked := Core.resume(Key.key, l, g, Core.check(Core.state(Key.key, e), Nat.blt(bits, Cuda.u32Limit), "fconst: the bits do not fit 32 bits"))
-    Core.asmValue(Key.key, checked, Grain.uniform, Text.cat3("mov.b32 %0, ", Text.nat(bits), ";"), List.nil(Operand))
+    Core.written(Key.key, checked, Grain.uniform, DType.f32, fun (d: Nat): Instr => Instr.movF32(d, bits))
   }
 
   // 2^x, within 2 ulp, with subnormals flushed (PTX §9.7.3.21).
   def ex2 {l: Lifetime}{g: Group}{S: Lifetime}{u: Grain}(e: Ctx(l, g))(x: Val(S, u, DType.f32)): Pair(Ctx(l, g), Val(l, u, DType.f32)) :=
-    Core.asmValue(Key.key, e, u, "ex2.approx.ftz.f32 %0, %1;", Core.one(Core.f32(x.expr)))
+    Core.written(Key.key, e, u, DType.f32, fun (d: Nat): Instr => Instr.ex2(d, x.expr))
 
   // log2(x), with subnormals flushed (PTX §9.7.3.20).
   def lg2 {l: Lifetime}{g: Group}{S: Lifetime}{u: Grain}(e: Ctx(l, g))(x: Val(S, u, DType.f32)): Pair(Ctx(l, g), Val(l, u, DType.f32)) :=
-    Core.asmValue(Key.key, e, u, "lg2.approx.ftz.f32 %0, %1;", Core.one(Core.f32(x.expr)))
+    Core.written(Key.key, e, u, DType.f32, fun (d: Nat): Instr => Instr.lg2(d, x.expr))
 
   // 1/x, rounded to nearest even (PTX §9.7.3.13).
   def rcp {l: Lifetime}{g: Group}{S: Lifetime}{u: Grain}(e: Ctx(l, g))(x: Val(S, u, DType.f32)): Pair(Ctx(l, g), Val(l, u, DType.f32)) :=
-    Core.asmValue(Key.key, e, u, "rcp.rn.f32 %0, %1;", Core.one(Core.f32(x.expr)))
+    Core.written(Key.key, e, u, DType.f32, fun (d: Nat): Instr => Instr.rcp(Rounding.rn, d, x.expr))
 
   // ---- Fixed state -------------------------------------------------------------------------------------------------
 
@@ -643,8 +597,6 @@ namespace Core {
   sealed inductive Elected (m: Lifetime) : Type { scope = m }
    | mk : Elected(m)
 
-  def electAsm : String := "{\\n\\t.reg .b32 rx;\\n\\t.reg .pred px;\\n\\telect.sync rx|px, 0xffffffff;\\n\\t@px mov.u32 %0, 1;\\n\\t}"
-
   // Runs `body` on one thread of a warp, then reconverges the warp.
   def elect {l: Lifetime}{f: Nat}{kx: Kind}{Sx: Lifetime}{kf: Kind}{Sf: Lifetime}
       (e: Ctx(l, Group.warps(f, 1)))(X: Type { kind = kx, scope = Sx })
@@ -653,7 +605,7 @@ namespace Core {
     let gen := Core.state(Key.key, e)
     let flag := gen.next
     let pre := Core.push(Core.push(Core.fresh(gen), Stmt.declMut(DType.u32, flag, Expr.zero(DType.u32))),
-      Stmt.asm(Core.electAsm, List.cons(Operand.mk("+r", Expr.var(flag)), List.nil(Operand)), List.nil(Operand)))
+      Stmt.instr(Instr.elect(flag)))
     scope m => {
       let (inner, x) := body(m, Elected.mk(m), Core.resume(Key.key, m, Group.lane, Core.child(pre)))
       let done := Core.state(Key.key, inner)
@@ -1315,32 +1267,14 @@ namespace Core {
     }
   }
 
-  // A shared-memory matrix descriptor (PTX §9.7.18.4.1, Table 49) for a 128-byte-swizzled bf16 box at `addr`, advanced
-  // by `k` steps of sixteen K-major elements: start address >> 4, leading byte offset `lbo` >> 4 in bits 16–30, stride byte
-  // offset 1024 >> 4 at bit 32, version 1 at bit 46, swizzle 2 at 61. A K-major box has no leading byte offset (0); an
-  // MN-major operand's is the distance between its 64-element halves of M or N.
-  def descHigh : Nat := Nat.add(Nat.mul(64, Nat.pow(2, 32)), Nat.add(Nat.pow(2, 46), Nat.mul(2, Nat.pow(2, 61))))
-
-  def smemDesc (addr: Expr)(lbo: Nat)(k: Nat): Expr :=
-    Expr.bin(BinOp.add,
-      Expr.bin(BinOp.bor, Expr.cast(DType.u64, Expr.bin(BinOp.shr, Expr.bin(BinOp.band, addr, Expr.lit(262143)), Expr.lit(4))),
-        Expr.lit64(Nat.add(Core.descHigh, Nat.mul(Nat.div(lbo, 16), Nat.pow(2, 16))))),
-      Expr.lit64(Nat.mul(2, k)))
-
-  // The instruction descriptor (PTX §9.7.18.4.2, Table 51) for f32 += bf16 · bf16 of shape M×N, A K-major, and B
-  // K-major or, with `transposeB` (bit 16), MN-major.
-  def instrDesc (m: Nat)(n: Nat)(transposeB: Bool): Nat :=
-    Nat.add(Bool.cond(transposeB, Nat, Nat.pow(2, 16), 0),
-      Nat.add(16, Nat.add(128, Nat.add(1024, Nat.add(Nat.mul(Nat.pow(2, 17), Nat.div(n, 8)), Nat.mul(Nat.pow(2, 24), Nat.div(m, 16)))))))
-
   // `count` K steps over one box pair, both K-major: A's box at `a`, B's at `b`. The first step overwrites the
   // accumulator when `overwrite`.
-  def mmaSteps (group: CtaGroup)(a: Expr)(b: Expr)(idesc: Nat)(taddr: Expr)(overwrite: Bool)(k: Nat)(count: Nat): List(Stmt) decreases structural(count) := {
+  def mmaSteps (group: CtaGroup)(a: Expr)(b: Expr)(idesc: InstrDesc)(taddr: Expr)(overwrite: Bool)(k: Nat)(count: Nat): List(Stmt) decreases structural(count) := {
     match count returning List(Stmt) with
     | Nat.zero => List.nil(Stmt)
     | Nat.succ more => {
       let accumulate := Bool.cond(Bool.and(overwrite, Nat.isZero(k)), Nat, 0, 1)
-      List.cons(Core.mmaIssue(group, taddr, Core.smemDesc(a, 0, k), Core.smemDesc(b, 0, k), idesc, accumulate),
+      List.cons(Core.mmaIssue(group, taddr, SmemDesc.mk(a, 0, k), SmemDesc.mk(b, 0, k), idesc, accumulate),
         Core.mmaSteps(group, a, b, idesc, taddr, overwrite, Nat.succ(k), more))
     }
   }
@@ -1354,7 +1288,7 @@ namespace Core {
   // The MMAs, of instruction descriptor `idesc`, over box pairs `i` to `i + count - 1`: A's boxes of shape `sa` from
   // `a`, B's of shape `sb` from `b`, each pair one 64-element slice of K. Only the very first step overwrites, when
   // `first`.
-  def mmaBoxes (group: CtaGroup)(a: Expr)(sa: TmaSpec)(b: Expr)(sb: TmaSpec)(idesc: Nat)(taddr: Expr)(first: Bool)(i: Nat)(count: Nat): List(Stmt)
+  def mmaBoxes (group: CtaGroup)(a: Expr)(sa: TmaSpec)(b: Expr)(sb: TmaSpec)(idesc: InstrDesc)(taddr: Expr)(first: Bool)(i: Nat)(count: Nat): List(Stmt)
       decreases structural(count) := {
     match count returning List(Stmt) with
     | Nat.zero => List.nil(Stmt)
@@ -1374,7 +1308,7 @@ namespace Core {
   // D (+)= A·Bᵀ over `boxes` slices of K (`mmaBoxes`), into the accumulator at `taddr` of `cols` columns.
   def mmaStage (k: Key)(gen: Gen)(a: Expr)(sa: TmaSpec)(b: Expr)(sb: TmaSpec)(boxes: Nat)(taddr: Expr)(cols: Nat)(first: Bool): Gen :=
     Core.pushAll(Core.check(gen, Core.mmaShapeOk(sa, sb, cols), "mma: unsupported shape"),
-      Core.mmaBoxes(gen.group, a, sa, b, sb, Core.instrDesc(sa.outer, sb.outer, Bool.false), taddr, first, 0, boxes))
+      Core.mmaBoxes(gen.group, a, sa, b, sb, InstrDesc.mk(sa.outer, sb.outer, Bool.false), taddr, first, 0, boxes))
 
   // The MMAs of a GEMM ring's current stage, which holds one box of A and then one of B.
   def mmaRingStage {r: Lifetime}{cfg: RingCfg}(k: Key)(gen: Gen)(ring: Ring(r, cfg))(taddr: Expr)(cols: Nat)(first: Bool): Gen := {
@@ -1529,23 +1463,21 @@ namespace Core {
   sealed inductive StageFenced (s: Lifetime)(m: Lifetime)(f: Nat) : Type { kind = lin, scope = union(s, m) }
    | mk : StageFenced(s, m, f)
 
-  def bulkWaitRead (pending: Nat): Stmt := Core.asm0(Text.cat3("cp.async.bulk.wait_group.read ", Text.nat(pending), ";"))
+  def bulkWaitRead (pending: Nat): Stmt := Stmt.instr(Instr.bulkWait(BulkWait.read, pending))
 
-  def bulkWait (pending: Nat): Stmt := Core.asm0(Text.cat3("cp.async.bulk.wait_group ", Text.nat(pending), ";"))
+  def bulkWait (pending: Nat): Stmt := Stmt.instr(Instr.bulkWait(BulkWait.complete, pending))
 
-  def bulkCommit : Stmt := Core.asm0("cp.async.bulk.commit_group;")
+  def bulkCommit : Stmt := Stmt.instr(Instr.bulkCommit)
 
-  def fenceProxyAsync : Stmt := Core.asm0("fence.proxy.async.shared::cta;")
+  def fenceProxyAsync : Stmt := Stmt.instr(Instr.fenceProxyAsync)
 
   // Stores the box at shared address `src` to the tensor at coordinates (`c0`, `c1`), contiguous dimension first.
   def tmaStore2d (map: String)(c0: Expr)(c1: Expr)(src: Expr): Stmt :=
-    Core.asmIn("cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%0, {%2, %3}], [%1];",
-      List.cons(Core.l64(Expr.paramAddr(map)), List.cons(Core.r(src), Core.two(Core.r(c0), Core.r(c1)))))
+    Stmt.instr(Instr.tmaStore(Expr.paramAddr(map), c0, c1, src))
 
   // Four f32 registers from `first` into shared memory at `addr`.
   def storeShared4 (addr: Expr)(first: Nat): Stmt :=
-    Core.asmIn("st.shared.v4.f32 [%0], {%1, %2, %3, %4};", List.cons(Core.r(addr), List.cons(Core.f32(Expr.var(first)),
-      List.cons(Core.f32(Expr.var(Nat.add(first, 1))), Core.two(Core.f32(Expr.var(Nat.add(first, 2))), Core.f32(Expr.var(Nat.add(first, 3))))))))
+    Stmt.instr(Instr.stShared(addr, List.map(Core.counting(first, 4), Expr, Expr.var)))
 
   def laneZero : Expr := Expr.bin(BinOp.eq, Expr.special(Builtin.lane), Expr.lit(0))
 
@@ -2283,8 +2215,8 @@ namespace Core {
     | Nat.zero => List.nil(Stmt)
     | Nat.succ more => {
       let accumulate := Bool.cond(Bool.and(overwrite, Nat.isZero(s)), Nat, 0, 1)
-      List.cons(Core.mmaIssueTmemA(group, o, Core.offsetBy(p, Nat.mul(8, s)), Core.smemDesc(Core.boxAt(v, 2048, s), lbo, 0),
-        Core.instrDesc(128, 128, Bool.true), accumulate), Core.pvSteps(group, o, p, v, lbo, overwrite, Nat.succ(s), more))
+      List.cons(Core.mmaIssueTmemA(group, o, Core.offsetBy(p, Nat.mul(8, s)), SmemDesc.mk(Core.boxAt(v, 2048, s), lbo, 0),
+        InstrDesc.mk(128, 128, Bool.true), accumulate), Core.pvSteps(group, o, p, v, lbo, overwrite, Nat.succ(s), more))
     }
   }
 
@@ -2997,23 +2929,17 @@ namespace Core {
   // of grain `warp`. Every lane of the warp runs it, so the group is whole warps.
   def voteAny {l: Lifetime}{f: Nat}{c: Nat}{S: Lifetime}{u: Grain}(e: Ctx(l, Group.warps(f, c)))(cond: Val(S, u, DType.bool))
       : Pair(Ctx(l, Group.warps(f, c)), Val(l, Grain.warp, DType.bool)) := {
-    let vote := "{\\n\\t.reg .pred p, q;\\n\\tsetp.ne.u32 p, %1, 0;\\n\\tvote.sync.any.pred q, p, 0xffffffff;\\n\\tselp.u32 %0, 1, 0, q;\\n\\t}"
-    let (e, any) := Core.asmOut(Key.key, e, Grain.warp, DType.u32, "=r", vote, Core.one(Core.r(Expr.select(cond.expr, Expr.lit(1), Expr.lit(0)))))
+    let p := Expr.select(cond.expr, Expr.lit(1), Expr.lit(0))
+    let (e, any) := Core.written(Key.key, e, Grain.warp, DType.u32, fun (d: Nat): Instr => Instr.voteAny(d, p))
     (e, Val.mk(l, Grain.warp, DType.bool, Expr.bin(BinOp.lt, Expr.lit(0), any.expr), Option.none(Nat)))
   }
 
-  // 2^x on the FMA units (FA4's `ex2_emulation`), for x < 128: x clamped to −127 (`max`); j = ⌊x⌋, by `add.rm` of
-  // 1.5·2²³ and the subtraction of 1.5·2²³; f = x − j, in [0, 1]; 2^f by FA4's cubic (`POLY_EX2[3]`), Horner's rule by
-  // `fma.rn`; and j added to the exponent of the result's bits, from the low bits of the `add.rm`'s. No instruction
+  // 2^x on the FMA units (FA4's `ex2_emulation`, which `Cuda.ex2Emulation` describes), for x < 128. No instruction
   // flushes subnormals (A58). Measured on every f32 x of [−127, 8] (NOTES.md): within 2^−13.47 relative where 2^x is
   // normal, x ≥ −126, and within 2^−127 absolute below; −∞ gives +0, as `ex2` does. Outside its domain it is wrong:
   // x ≥ 128 overflows the exponent's addition (128 gives +∞, 129 gives −0), and NaN gives +0.
-  def ex2emu {l: Lifetime}{g: Group}{S: Lifetime}{u: Grain}(e: Ctx(l, g))(x: Val(S, u, DType.f32)): Pair(Ctx(l, g), Val(l, u, DType.f32)) := {
-    let floor := "\\n\\tmax.f32 c, %1, 0fC2FE0000;\\n\\tadd.rm.f32 r, c, 0f4B400000;\\n\\tsub.rn.f32 j, r, 0f4B400000;\\n\\tsub.rn.f32 f, c, j;"
-    let poly := "\\n\\tfma.rn.f32 p, f, 0f3D9DF09D, 0f3E6906A4;\\n\\tfma.rn.f32 p, p, f, 0f3F31F519;\\n\\tfma.rn.f32 p, p, f, 0f3F800000;"
-    let scale := "\\n\\tmov.b32 k, r;\\n\\tshl.b32 k, k, 23;\\n\\tmov.b32 q, p;\\n\\tadd.s32 q, k, q;\\n\\tmov.b32 %0, q;\\n\\t}"
-    Core.asmValue(Key.key, e, u, Text.cat3("{\\n\\t.reg .f32 c, r, j, f, p;\\n\\t.reg .b32 k, q;", floor, Text.cat(poly, scale)), Core.one(Core.f32(x.expr)))
-  }
+  def ex2emu {l: Lifetime}{g: Group}{S: Lifetime}{u: Grain}(e: Ctx(l, g))(x: Val(S, u, DType.f32)): Pair(Ctx(l, g), Val(l, u, DType.f32)) :=
+    Core.written(Key.key, e, u, DType.f32, fun (d: Nat): Instr => Instr.ex2Emulated(d, x.expr))
 
   // `setmaxnreg` from `from` registers per thread to `to`: `.inc` up, `.dec` down, nothing between equal counts
   // (PTX §9.7.21.5).
@@ -3021,8 +2947,8 @@ namespace Core {
     match Nat.beq(from, to) returning List(Stmt) with
     | Bool.true => List.nil(Stmt)
     | Bool.false => {
-      let action := Bool.cond(Nat.blt(from, to), String, "inc", "dec")
-      List.cons(Core.asm0(Text.cat3("setmaxnreg.", action, Text.cat3(".sync.aligned.u32 ", Text.nat(to), ";"))), List.nil(Stmt))
+      let change := Bool.cond(Nat.blt(from, to), RegChange, RegChange.inc, RegChange.dec)
+      List.cons(Stmt.instr(Instr.setMaxNReg(change, to)), List.nil(Stmt))
     }
   }
 
@@ -3660,18 +3586,6 @@ namespace Core {
   struct AppendLaunch (l: Lifetime) : Type { scope = l }
    | mk (lens: Lengths(l))(table: PageTable(l))(claims: Claims(l))(cache: PagedCache(l))(knew: NewKV(l)) : AppendLaunch(l)
 
-  // `op` on the global address `a` that the generic address operand %1 converts to.
-  def globalAt (op: String): String := Text.cat3("{\\n\\t.reg .u64 a;\\n\\tcvta.to.global.u64 a, %1;\\n\\t", op, "\\n\\t}")
-
-  // `%0 = *%1`, a single-copy-atomic 64-bit read (A41).
-  def loadRelaxed64 : String := Core.globalAt("ld.relaxed.gpu.global.b64 %0, [a];")
-
-  // `%0 = atom.cas(*%1, %2, %3)`: the old value, and %3 stored if it equalled %2 (A41).
-  def casRelaxed64 : String := Core.globalAt("atom.relaxed.gpu.global.cas.b64 %0, [a], %2, %3;")
-
-  // Lane 0's 32-bit `%1`, in every lane of a converged warp (A42).
-  def broadcastLane0 : String := "shfl.sync.idx.b32 %0, %1, 0, 31, 0xffffffff;"
-
   // Claims, for this warp's sequence `b` and head `h` (`blockIdx.x = b·heads + h`), the page holding the sequence's new
   // position; runs `held`, on the whole warp, where the claim holds; and lane 0 reports it in `appended[blockIdx.x]`, 1
   // where it holds and 0 where it does not (P2.md §2). Lane 0 alone reads the position `pos = lens[b]` and the page
@@ -3712,14 +3626,15 @@ namespace Core {
             Expr.bin(BinOp.add, Expr.bin(BinOp.mul, page.expr, heads), Expr.bin(BinOp.rem, Expr.special(Builtin.blockX), heads)))
           let (e, mine) := Core.bind(Key.key, e, Grain.thread, DType.u64, Expr.bin(BinOp.bor, Expr.bin(BinOp.shl, wide(claims.epoch), Expr.lit(32)), wide(b.expr)),
             Option.none(Nat))
-          let (e, cur) := Core.asmOut(Key.key, e, Grain.thread, DType.u64, "=l", Core.loadRelaxed64, Core.one(Core.l64(owner)))
+          // A single-copy-atomic 64-bit read (A41).
+          let (e, cur) := Core.written(Key.key, e, Grain.thread, DType.u64, fun (d: Nat): Instr => Instr.ldRelaxed(Scope.gpu, d, owner))
           let current := Val.mk(n, Grain.thread, DType.bool, Expr.bin(BinOp.eq, Expr.bin(BinOp.shr, cur.expr, Expr.lit(32)), claims.epoch), Option.none(Nat))
           let holds := fun (x: Expr): Expr => Expr.select(Expr.bin(BinOp.eq, x, mine.expr), Expr.lit(1), Expr.lit(0))
           Core.branch(e, current, Core.fixedUnit, u,
             fun (k: Lifetime)(e: Ctx(k, Group.diverged(32)))(u: Unit): Pair(Ctx(k, Group.diverged(32)), Unit) => (assign(e, flag, holds(cur.expr)), u),
             fun (k: Lifetime)(e: Ctx(k, Group.diverged(32)))(u: Unit): Pair(Ctx(k, Group.diverged(32)), Unit) => {
-              let (e, prev) := Core.asmOut(Key.key, e, Grain.thread, DType.u64, "=l", Core.casRelaxed64,
-                List.cons(Core.l64(owner), Core.two(Core.l64(cur.expr), Core.l64(mine.expr))))
+              let (e, prev) := Core.written(Key.key, e, Grain.thread, DType.u64, fun (d: Nat): Instr =>
+                Instr.casRelaxed(Scope.gpu, d, owner, cur.expr, mine.expr))
               (assign(e, flag, Expr.select(Expr.bin(BinOp.eq, prev.expr, cur.expr), Expr.lit(1), Expr.lit(0))), u)
             })
         }
@@ -3728,8 +3643,8 @@ namespace Core {
       let (e, u) := Core.branch(e, Val.mk(l, Grain.thread, DType.bool, Core.laneZero, Option.none(Nat)), Core.fixedUnit, Unit.unit, claim, skip)
       // Every lane: lane 0's result and row, the warp reconverged first (A42).
       let e := Core.emit(Key.key, e, Stmt.syncWarp)
-      let (e, ok) := Core.asmOut(Key.key, e, Grain.uniform, DType.u32, "=r", Core.broadcastLane0, Core.one(Core.r(Expr.var(flag.id))))
-      let (e, claimed) := Core.asmOut(Key.key, e, Grain.uniform, DType.u32, "=r", Core.broadcastLane0, Core.one(Core.r(Expr.var(row.id))))
+      let (e, ok) := Core.written(Key.key, e, Grain.uniform, DType.u32, fun (d: Nat): Instr => Instr.shfl(d, Expr.var(flag.id), 0))
+      let (e, claimed) := Core.written(Key.key, e, Grain.uniform, DType.u32, fun (d: Nat): Instr => Instr.shfl(d, Expr.var(row.id), 0))
       let (e, u) := Core.branch(e, Val.mk(l, Grain.uniform, DType.bool, Expr.bin(BinOp.lt, Expr.lit(0), ok.expr), Option.none(Nat)), Core.fixedUnit, u,
         fun (m: Lifetime)(e: Ctx(m, Core.warpCta))(u: Unit): Pair(Ctx(m, Core.warpCta), Unit) => (held(m, e, Claimed.mk(m, claimed.expr), AppendOwn.mk(m)), u),
         fun (m: Lifetime)(e: Ctx(m, Core.warpCta))(u: Unit): Pair(Ctx(m, Core.warpCta), Unit) => (e, u))
@@ -3970,28 +3885,26 @@ namespace Core {
   // `barrier.cluster`, which every thread of both CTAs runs: the arrive releases and the wait acquires, at cluster
   // scope (PTX §9.7.15.3). Both are `.aligned`, so the warp reconverges first: the publish follows thread 0's branch.
   def clusterSync : List(Stmt) :=
-    List.cons(Stmt.syncWarp, List.cons(Core.asm0("barrier.cluster.arrive.release.aligned;"),
-      List.cons(Core.asm0("barrier.cluster.wait.acquire.aligned;"), List.nil(Stmt))))
+    List.cons(Stmt.syncWarp, List.cons(Stmt.instr(Instr.clusterArrive), List.cons(Stmt.instr(Instr.clusterWait), List.nil(Stmt))))
 
-  // The special register `name`, the same in every thread of the CTA (PTX §10).
-  def readSpecial {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(name: String): Pair(Ctx(l, g), Val(l, Grain.uniform, DType.u32)) :=
-    Core.asmOut(k, e, Grain.uniform, DType.u32, "=r", Text.cat3("mov.u32 %0, %%", name, ";"), List.nil(Operand))
+  // The special register `r`, the same in every thread of the CTA (PTX §10).
+  def readSpecial {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(r: SpecialReg): Pair(Ctx(l, g), Val(l, Grain.uniform, DType.u32)) :=
+    Core.written(k, e, Grain.uniform, DType.u32, fun (d: Nat): Instr => Instr.movSpecial(d, r))
 
   // The address in the leader's shared memory of the object at `addr` in this CTA's (PTX §9.7.10.26): the leader's own
   // copy of a barrier, at the same offset.
   def toLeader {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(addr: Expr): Pair(Ctx(l, g), Val(l, Grain.thread, DType.u32)) :=
-    Core.asmOut(k, e, Grain.thread, DType.u32, "=r", "mapa.shared::cluster.u32 %0, %1, %2;", Core.two(Core.r(addr), Core.r(Expr.lit(0))))
+    Core.written(k, e, Grain.thread, DType.u32, fun (d: Nat): Instr => Instr.mapa(d, addr, Expr.lit(0)))
 
   // One arrival on the barrier at `remote`, a `.shared::cluster` address, releasing at cluster scope (PTX
   // §9.7.15.16.16).
-  def mbarArriveRemote (remote: Expr): Stmt := Core.asmIn("mbarrier.arrive.release.cluster.shared::cluster.b64 _, [%0];", Core.one(Core.r(remote)))
+  def mbarArriveRemote (remote: Expr): Stmt := Stmt.instr(Instr.mbarArrive(BarrierScope.cluster, Window.cluster, remote, Arrival.one))
 
   // `tmaLoad2d` of a CTA pair: the box lands in the issuing CTA's shared memory at `dst`, and its bytes complete on the
   // barrier at `bar`, which may be the peer's (PTX §9.7.10.28.5.3). The qualifiers are in the order of CUTLASS's
   // `SM100_TMA_2SM_LOAD`.
   def tmaLoad2dPair (dst: Expr)(map: String)(c0: Expr)(c1: Expr)(bar: Expr): Stmt :=
-    Core.asmIn("cp.async.bulk.tensor.2d.cta_group::2.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1, {%3, %4}], [%2];",
-      List.cons(Core.r(dst), List.cons(Core.l64(Expr.paramAddr(map)), List.cons(Core.r(bar), Core.two(Core.r(c0), Core.r(c1))))))
+    Stmt.instr(Instr.tmaLoad(CtaGroup.two, dst, Expr.paramAddr(map), c0, c1, bar))
 
   // The kernel's pair: the value of this CTA's rank, read once. Only a pair kernel's builder makes one, of the kernel's
   // own lifetime. The rank is the core's: it chooses the leader's arm and each CTA's half, and no client code reads it,
@@ -4045,8 +3958,8 @@ namespace Core {
   // How a pair kernel starts, in CTAs of `w` threads: its CTA group is `two`, and every thread reads its CTA's rank and
   // its cluster's index along x once. Returns the context, the pair and the cluster's index.
   def pairStart (k: Key)(l: Lifetime)(w: Nat): Pair(Ctx(l, Group.cta(w)), Pair(CtaPair(l), Expr)) := {
-    let (e, rank) := Core.readSpecial(k, Core.start(k, l, Group.cta(w), CtaGroup.two), "cluster_ctarank")
-    let (e, cluster) := Core.readSpecial(k, e, "clusterid.x")
+    let (e, rank) := Core.readSpecial(k, Core.start(k, l, Group.cta(w), CtaGroup.two), SpecialReg.clusterCtaRank)
+    let (e, cluster) := Core.readSpecial(k, e, SpecialReg.clusterIdX)
     (e, (CtaPair.mk(l, rank.expr), cluster.expr))
   }
 
@@ -4218,7 +4131,7 @@ namespace Core {
   def mmaPairStage {r: Lifetime}{cfg: RingCfg}(k: Key)(gen: Gen)(ring: Ring(r, cfg))(taddr: Expr)(cols: Nat)(first: Bool): Gen := {
     let stage := Core.stageAddr(ring, ring.cStage)
     Core.pushAll(Core.check(gen, Core.pairMmaShapeOk(cfg.a, cfg.b, cols), "pair mma: unsupported shape"),
-      Core.mmaBoxes(gen.group, stage, cfg.a, Core.offsetBy(stage, Core.boxBytes(cfg.a)), cfg.b, Core.instrDesc(256, Nat.mul(2, cfg.b.outer), Bool.false),
+      Core.mmaBoxes(gen.group, stage, cfg.a, Core.offsetBy(stage, Core.boxBytes(cfg.a)), cfg.b, InstrDesc.mk(256, Nat.mul(2, cfg.b.outer), Bool.false),
         taddr, first, 0, 1))
   }
 
@@ -4435,7 +4348,7 @@ namespace Core {
       : Program := scope l => {
     let w := Nat.mul(2, sb.outer)
     let (e, (pair, cluster)) := Core.pairStart(Key.key, l, 256)
-    let (e, clusters) := Core.readSpecial(Key.key, e, "nclusterid.x")
+    let (e, clusters) := Core.readSpecial(Key.key, e, SpecialReg.nclusterIdX)
     let gemm := TmaGemm.mk(TMap.mk(l, sa, "A_map"), TMap.mk(l, sb, "B_map"), CMap.mk(l, "C_map"), Core.uniformParam(Key.key, l, DType.u32, "M"),
       Core.uniformParam(Key.key, l, DType.u32, "N"), Core.uniformParam(Key.key, l, DType.u32, "K"))
     let (gen, sched) := Core.schedule(Key.key, l, Core.state(Key.key, e), 256, w, band, cluster, clusters.expr)

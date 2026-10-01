@@ -92,6 +92,11 @@ namespace Barriers {
     | Stmt.sync => h
     | Stmt.syncWarp => h
     | Stmt.asm template outs ins => Barriers.atFound(st, Check.same(template, Check.barrierTemplate), Check.barrierArgs(outs, ins), h)
+    | Stmt.instr i => {
+      match i returning Fold.Empty(st.found) with
+      | Instr.barSync id threads => Barriers.atFound(st, Bool.true, Check.literalPair(id, threads), h)
+      | _ => h
+    }
     | Stmt.error message => h
   }
 
@@ -129,6 +134,11 @@ namespace Barriers {
     | Stmt.sync => h
     | Stmt.syncWarp => h
     | Stmt.asm template outs ins => Barriers.atSeen(st, Check.same(template, Check.barrierTemplate), Check.barrierArgs(outs, ins), n, h)
+    | Stmt.instr i => {
+      match i returning Eq(Bool, Check.NatSet.member(Check.barrierStep(st, Stmt.instr(i)).seen, n), Bool.true) with
+      | Instr.barSync id threads => Barriers.atSeen(st, Bool.true, Check.literalPair(id, threads), n, h)
+      | _ => h
+    }
     | Stmt.error message => h
   }
 
@@ -138,7 +148,8 @@ namespace Barriers {
     match mem returning Barriers.Ok(id, threads) with
     | Spec.Mem.here rest => {
       match bar returning Barriers.Ok(id, threads) with
-      | Spec.Barrier.mk c d => Barriers.barrierOk(st, id, threads, Barriers.walkFound(rest, Check.barrier(st, id, threads), h))
+      | Spec.Barrier.asm c d => Barriers.barrierOk(st, id, threads, Barriers.walkFound(rest, Check.barrier(st, id, threads), h))
+      | Spec.Barrier.instr => Barriers.barrierOk(st, id, threads, Barriers.walkFound(rest, Check.barrier(st, id, threads), h))
     }
     | Spec.Mem.there x rest inRest => Barriers.atBarrier(y, rest, inRest, Check.barrierStep(st, x), h, id, threads, bar)
   }
@@ -149,7 +160,9 @@ namespace Barriers {
     match mem returning False with
     | Spec.Mem.here rest => {
       match bar returning False with
-      | Spec.Barrier.mk c d =>
+      | Spec.Barrier.asm c d =>
+        Lib.notBoth(Check.NatSet.member(st.seen, id), Barriers.barrierFresh(st, id, threads, Barriers.walkFound(rest, Check.barrier(st, id, threads), h)), seen)
+      | Spec.Barrier.instr =>
         Lib.notBoth(Check.NatSet.member(st.seen, id), Barriers.barrierFresh(st, id, threads, Barriers.walkFound(rest, Check.barrier(st, id, threads), h)), seen)
     }
     | Spec.Mem.there x rest inRest => Barriers.freshAt(y, rest, inRest, Check.barrierStep(st, x), h, id, Barriers.stepSeen(st, x, id, seen), threads, bar)
@@ -160,8 +173,8 @@ namespace Barriers {
     match before returning False with
     | Spec.Before.here rest later => {
       match barX returning False with
-      | Spec.Barrier.mk c d =>
-        Barriers.freshAt(y, rest, later, Check.barrier(st, id, tx), h, id, NatSets.inserted(st.seen, id), ty, barY)
+      | Spec.Barrier.asm c d => Barriers.freshAt(y, rest, later, Check.barrier(st, id, tx), h, id, NatSets.inserted(st.seen, id), ty, barY)
+      | Spec.Barrier.instr => Barriers.freshAt(y, rest, later, Check.barrier(st, id, tx), h, id, NatSets.inserted(st.seen, id), ty, barY)
     }
     | Spec.Before.there z rest inRest => Barriers.distinct(rest, x, y, inRest, Check.barrierStep(st, z), h, id, tx, ty, barX, barY)
   }
@@ -251,6 +264,28 @@ namespace Barriers {
     | Spec.Mem.there x rest inRest => Barriers.literalAt(outs, ins, rest, inRest, Check.barrierStep(st, x), h)
   }
 
+  // An instruction `bar.sync a, b` the walk accepted has literal operands.
+  def pairShape (st: Scan)(a: Expr)(b: Expr)(h: Fold.Empty(Check.barrierAt(st, Bool.true, Check.literalPair(a, b)).found)): Spec.LiteralPair(a, b) := {
+    let goal := Spec.LiteralPair(a, b)
+    let literals := fun (id: Nat)(n: Nat)(first: Eq(Option(Nat), Check.literal(a), Option.some(id)))
+        (second: Eq(Option(Nat), Check.literal(b), Option.some(n))): goal => {
+      match Barriers.literalSome(a, id, first) returning goal with
+      | Eq.refl x => {
+        match Barriers.literalSome(b, n, second) returning goal with
+        | Eq.refl y => Spec.LiteralPair.mk(id, n)
+      }
+    }
+    Barriers.twoLiterals(st, Check.literal(a), Check.literal(b), h, goal, literals)
+  }
+
+  def literalInstrAt (a: Expr)(b: Expr)(xs: List(Stmt))(mem: Spec.Mem(Stmt, Stmt.instr(Instr.barSync(a, b)), xs))(st: Scan)
+      (h: Fold.Empty(List.foldl(xs, Scan, st, Check.barrierStep).found)): Spec.LiteralPair(a, b) decreases structural(xs) := {
+    let s := Stmt.instr(Instr.barSync(a, b))
+    match mem returning Spec.LiteralPair(a, b) with
+    | Spec.Mem.here rest => Barriers.pairShape(st, a, b, Barriers.walkFound(rest, Check.barrierStep(st, s), h))
+    | Spec.Mem.there x rest inRest => Barriers.literalInstrAt(a, b, rest, inRest, Check.barrierStep(st, x), h)
+  }
+
   // ---- The theorem --------------------------------------------------------------------------------------------------
 
   def sound (k: Kernel)(h: Eq(List(String), Check.namedBarriers(k), List.nil(String))): Spec.NamedBarriers(k) := {
@@ -262,6 +297,8 @@ namespace Barriers {
     let literal := fun (outs: List(Operand))(ins: List(Operand))(occ: Spec.InBlock(Stmt.asm(Spec.barrierTemplate, outs, ins), k.body))
         : Spec.LiteralOperands(outs, ins) =>
       Barriers.literalAt(outs, ins, flat, Fold.blockMem(Stmt.asm(Spec.barrierTemplate, outs, ins), k.body, occ), start, flatWalk)
+    let literalInstr := fun (a: Expr)(b: Expr)(occ: Spec.InBlock(Stmt.instr(Instr.barSync(a, b)), k.body)): Spec.LiteralPair(a, b) =>
+      Barriers.literalInstrAt(a, b, flat, Fold.blockMem(Stmt.instr(Instr.barSync(a, b)), k.body, occ), start, flatWalk)
     let inRange := fun (s: Stmt)(id: Nat)(threads: Nat)(occ: Spec.InBlock(s, k.body))(bar: Spec.Barrier(id, threads, s)): And(Nat.le(1, id), Nat.le(id, 15)) =>
       Barriers.atBarrier(s, flat, Fold.blockMem(s, k.body, occ), start, flatWalk, id, threads, bar).left
     let counted := fun (s: Stmt)(id: Nat)(threads: Nat)(occ: Spec.InBlock(s, k.body))(bar: Spec.Barrier(id, threads, s))
@@ -269,6 +306,6 @@ namespace Barriers {
       Barriers.atBarrier(s, flat, Fold.blockMem(s, k.body, occ), start, flatWalk, id, threads, bar).right
     let distinct := fun (x: Stmt)(y: Stmt)(id: Nat)(tx: Nat)(ty: Nat)(before: Spec.Before(Stmt, x, y, flat))(barX: Spec.Barrier(id, tx, x))
         (barY: Spec.Barrier(id, ty, y)): False => Barriers.distinct(flat, x, y, before, start, flatWalk, id, tx, ty, barX, barY)
-    And.intro(Spec.BarrierIds.mk(k, literal, inRange, distinct), counted)
+    And.intro(Spec.BarrierIds.mk(k, literal, literalInstr, inRange, distinct), counted)
   }
 }

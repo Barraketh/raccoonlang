@@ -21,6 +21,10 @@ namespace T {
 
   def r (x: Expr): Operand := Operand.mk("r", x)
 
+  def exprs (x: Expr)(y: Expr): List(Expr) := List.cons(x, List.cons(y, List.nil(Expr)))
+
+  def barSync (id: Nat)(threads: Nat): Stmt := Stmt.instr(Instr.barSync(Expr.lit(id), Expr.lit(threads)))
+
   def bar (id: Nat)(threads: Nat): Stmt := Stmt.asm(Check.barrierTemplate, List.nil(Operand), List.cons(T.r(Expr.lit(id)), List.cons(T.r(Expr.lit(threads)), List.nil(Operand))))
 
   def n : Param := Param.scalar(DType.u32, "N")
@@ -200,6 +204,16 @@ namespace T {
       List.cons("v5 used before its declaration", T.two("v6 used before its declaration", "v7 used before its declaration"))) :=
     Eq.refl(List.cons("v5 used before its declaration", T.two("v6 used before its declaration", "v7 used before its declaration")))
 
+  // An instruction's result and its operands are uses.
+  def undeclaredInstr : Kernel := T.plain(T.b2(Stmt.instr(Instr.ex2(8, Expr.var(9))),
+    Stmt.instr(Instr.tmemStore(TmemShape.s32x32b, Word.f32, Expr.var(10), T.exprs(Expr.lit(0), Expr.var(11))))))
+
+  def scopedUndeclaredInstr : Eq(List(String), Check.scoping(T.undeclaredInstr),
+      List.cons("v8 used before its declaration", List.cons("v9 used before its declaration",
+        T.two("v10 used before its declaration", "v11 used before its declaration")))) :=
+    Eq.refl(List.cons("v8 used before its declaration", List.cons("v9 used before its declaration",
+      T.two("v10 used before its declaration", "v11 used before its declaration"))))
+
   // The launcher runs on the host, where no variable is declared.
   def hostVar : Kernel := Kernel.mk("good", T.goodParams, 1024, T.goodBody, Option.some(Launcher.mk(T.hostParams,
     List.cons(Expr.bin(BinOp.lt, Expr.var(0), Expr.param("N")), List.nil(Expr)), List.cons(T.encodeA, List.nil(MapEncoding)),
@@ -286,6 +300,22 @@ namespace T {
     Eq.refl(List.cons("bar.sync without a literal id and thread count",
       T.two("bar.sync without a literal id and thread count", "bar.sync without a literal id and thread count")))
 
+  // The typed instruction is a named barrier as the template is, and the two share one set of ids.
+  def barrierInstrs : Kernel := T.plain(T.b3(T.barSync(0, 32), T.barSync(4, 48), Stmt.scoped(T.b2(T.bar(5, 32), T.barSync(5, 64)))))
+
+  def barriersInstrs : Eq(List(String), Check.namedBarriers(T.barrierInstrs), List.cons("bar.sync 0: the id is outside 1..15",
+      T.two("bar.sync 4: waits for 48 threads, not a positive multiple of 32", "bar.sync 5: the id is already another barrier's"))) :=
+    Eq.refl(List.cons("bar.sync 0: the id is outside 1..15",
+      T.two("bar.sync 4: waits for 48 threads, not a positive multiple of 32", "bar.sync 5: the id is already another barrier's")))
+
+  // An instruction `bar.sync` with a variable id, or a 64-bit literal count.
+  def barrierInstrOperands : Kernel := T.plain(T.b2(Stmt.instr(Instr.barSync(Expr.param("N"), Expr.lit(32))),
+    Stmt.instr(Instr.barSync(Expr.lit(1), Expr.lit64(32)))))
+
+  def barriersInstrOperands : Eq(List(String), Check.namedBarriers(T.barrierInstrOperands),
+      T.two("bar.sync without a literal id and thread count", "bar.sync without a literal id and thread count")) :=
+    Eq.refl(T.two("bar.sync without a literal id and thread count", "bar.sync without a literal id and thread count"))
+
   // ---- I4, literals ---------------------------------------------------------------------------------------------------
 
   // Literals anywhere: in a nested block's asm operand, in a 64-bit literal, and in the launcher's requirements.
@@ -305,6 +335,16 @@ namespace T {
 
   def literalsWideGrid : Eq(List(String), Check.literals(T.wideGrid), T.one("32-bit literal 4294967296 does not fit 32 bits")) :=
     Eq.refl(T.one("32-bit literal 4294967296 does not fit 32 bits"))
+
+  // An instruction's operands as printed, a packed shared-memory descriptor's included: here its step makes the
+  // 64-bit literal 2 · 2^63.
+  def wideInstr : Kernel := T.plain(T.b2(Stmt.instr(Instr.mbarInit(Expr.lit(0), Expr.lit(4294967296))),
+    Stmt.instr(Instr.mma(CtaGroup.one, Expr.lit(0), MmaA.tmem(Expr.lit(0)), SmemDesc.mk(Expr.lit(0), 0, 9223372036854775808),
+      InstrDesc.mk(128, 256, Bool.false), Expr.lit(1)))))
+
+  def literalsWideInstr : Eq(List(String), Check.literals(T.wideInstr),
+      T.two("32-bit literal 4294967296 does not fit 32 bits", "64-bit literal 18446744073709551616 does not fit 64 bits")) :=
+    Eq.refl(T.two("32-bit literal 4294967296 does not fit 32 bits", "64-bit literal 18446744073709551616 does not fit 64 bits"))
 
   // A launcher prints its block size and each box as 32-bit literals.
   def wideLaunch : Kernel := Kernel.mk("good", T.goodParams, 1024, T.goodBody, Option.some(Launcher.mk(T.hostParams,

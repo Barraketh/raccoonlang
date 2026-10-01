@@ -732,3 +732,26 @@ Observations from building `Registers.rac`, the bounds in every builder, and the
     on the printed text.
 13. **Two builders' bounds are never compiled.** `tiledKernel` and `tmaGemmPersistentKernel` have no example in
     `encoding/`, so the register check never sees their kernels.
+
+## Typed instructions (EVALUATOR.md step 1)
+
+`Cuda.Instr` replaces Core's inline-assembly templates; `Cuda.asmOf` prints each as its template did. Every rendered
+example is byte-identical to the templates' output.
+
+**Friction.**
+1. **`scope` is a keyword.** PTX calls the qualifier `.scope`, but a field or function cannot be named `scope`: the
+   instructions' fields are `level`, and the printer's function is `memoryScope`.
+2. **No partial application.** `List.map(values, Operand, Cuda.wordIn(w))` needs `wordIn` to return a function, so it
+   matches on `w` and returns `Cuda.u32In` or `Cuda.f32In`.
+3. **Opened names clash at the `open`.** `Cuda.asmIn` met `Gpu.asmIn` in `checks/generic_render.rac`, which opens
+   both (as `one` and `two` would have), and `Cuda.CtaGroup` met `Core.CtaGroup` in every file that opens both. The printer's helpers
+   took names of their own (`ops1`, `ops2`, `effect`, `writes`), and `CtaGroup` moved to `Cuda`, with the printer.
+4. **A new `Stmt` constructor reaches 20 exhaustive matches** across `Check.rac`, `Spec.rac` and four proofs. Each new
+   case copies the `asm` case. Wildcards would shorten them, but the house style lists every constructor.
+5. **A result's instruction is a closure.** `Core.written` takes `Nat -> Instr`, since the variable it writes is fresh
+   inside it; the closure's type carries a scope variable, `{ scope = Sf } Nat -> Instr`, as `emitIn`'s does.
+6. **The spec reads the printer.** `Spec.OwnExpr`'s instruction forms quantify over `Cuda.asmOf(i)`'s operands, so
+   the statement of I1, I2, I4 and I5 covers exactly what is printed, packed descriptors included, and `asmOf` is part
+   of what is trusted, as `Cuda.paramName` already was.
+7. **The checker builds templates.** Folding over an instruction's operands evaluates `Cuda.asmOf`, template included.
+   It did not show in the check's time.

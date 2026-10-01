@@ -1,5 +1,5 @@
-// A small CUDA C++ AST and its printer. It knows nothing about safety: the `Gpu` module is the only producer of
-// kernels, and this file only renders what it is given.
+// A small CUDA C++ AST and its printer. It knows nothing about safety: the cores (`gpu/Gpu.rac` and
+// `gpu/encoding/Core.rac`) are the only producers of kernels, and this file only renders what it is given.
 
 import Text
 
@@ -58,6 +58,177 @@ namespace Cuda {
   struct Operand : Type
    | mk (constraint: String)(e: Expr) : Operand
 
+  // ---- PTX instructions --------------------------------------------------------------------------------------------
+  //
+  // The PTX instructions gpu/encoding's core emits (`Instr`): operands are expressions, a result is the variable it
+  // writes, and qualifiers are fields. Each prints as one inline-assembly statement (`Cuda.asmOf`). Sections are of
+  // the PTX ISA 9.4.
+
+  // How many CTAs a tensor-core instruction spans (`.cta_group`): one CTA, or a CTA pair.
+  inductive CtaGroup : Type
+   | one : CtaGroup
+   | two : CtaGroup
+
+  // The threads an mbarrier operation synchronizes with directly (its `.scope`, §9.7.15.16): the CTA's, the default,
+  // or the cluster's.
+  inductive BarrierScope : Type
+   | cta : BarrierScope
+   | cluster : BarrierScope
+
+  // A memory operation's scope (§8.5).
+  inductive Scope : Type
+   | cta : Scope
+   | cluster : Scope
+   | gpu : Scope
+
+  // The shared-memory window an address is in: this CTA's (`.shared::cta`), or the cluster's (`.shared::cluster`),
+  // where it may name a peer CTA's shared memory.
+  inductive Window : Type
+   | cta : Window
+   | cluster : Window
+
+  // What an mbarrier arrival does (§9.7.15.16.16): one arrival; `n` arrivals at once; or an expect-tx operation of
+  // `bytes`, then one arrival (`.expect_tx`).
+  inductive Arrival : Type
+   | one : Arrival
+   | count (n: Expr) : Arrival
+   | expectTx (bytes: Expr) : Arrival
+
+  // Which side of a thread synchronization a `tcgen05.fence` orders this thread's tensor-core operations on
+  // (§9.7.18.11.1).
+  inductive ThreadSync : Type
+   | before : ThreadSync
+   | after : ThreadSync
+
+  // What `cp.async.bulk.wait_group` waits for (§9.7.10.28.6.2): the reads of the bulk groups' sources (`.read`), or
+  // their completion.
+  inductive BulkWait : Type
+   | read : BulkWait
+   | complete : BulkWait
+
+  // What `tcgen05.wait` waits for (§9.7.18.8.5): this thread's `tcgen05.ld`s, or its `tcgen05.st`s.
+  inductive TmemWait : Type
+   | load : TmemWait
+   | store : TmemWait
+
+  // A tensor-memory load's or store's shape (§9.7.18.8.3): `.32x32b`, each thread of the warp one lane of 32-bit
+  // columns.
+  inductive TmemShape : Type
+   | s32x32b : TmemShape
+
+  // The C type of a 32-bit register operand.
+  inductive Word : Type
+   | u32 : Word
+   | f32 : Word
+
+  // An IEEE rounding mode (§6.5.2): to nearest even, toward zero, toward −∞, toward +∞.
+  inductive Rounding : Type
+   | rn : Rounding
+   | rz : Rounding
+   | rm : Rounding
+   | rp : Rounding
+
+  // Which way a `setmaxnreg` moves a thread's register count (§9.7.21.5).
+  inductive RegChange : Type
+   | inc : RegChange
+   | dec : RegChange
+
+  // A special register (§10.16, §10.12, §10.13): `%cluster_ctarank`, `%clusterid.x`, `%nclusterid.x`.
+  inductive SpecialReg : Type
+   | clusterCtaRank : SpecialReg
+   | clusterIdX : SpecialReg
+   | nclusterIdX : SpecialReg
+
+  // A shared-memory matrix descriptor (§9.7.18.4.1, Table 49) for a 128-byte-swizzled bf16 box at shared-window
+  // address `base`, advanced by `step` steps of sixteen K-major elements (32 bytes): its leading byte offset is `lbo`, its
+  // stride byte offset 1024, its version 1 and its swizzle mode 128 bytes. A K-major box has no leading byte offset
+  // (0); an MN-major operand's is the distance between its 64-element halves of M or N. `base` is a run-time value, so
+  // the descriptor is packed at run time, by the expression `Cuda.packSmemDesc` builds.
+  struct SmemDesc : Type
+   | mk (base: Expr)(lbo: Nat)(step: Nat) : SmemDesc
+
+  // An MMA's instruction descriptor (§9.7.18.4.2, Table 51) for f32 += bf16 · bf16 of shape `m` × `n`, A K-major, and
+  // B K-major or, with `transposeB`, MN-major. It is packed at generation (`Cuda.packInstrDesc`).
+  struct InstrDesc : Type
+   | mk (m: Nat)(n: Nat)(transposeB: Bool) : InstrDesc
+
+  // An MMA's A operand: a shared-memory descriptor, or tensor memory at an address (§9.7.18.10.10.1).
+  inductive MmaA : Type
+   | smem (desc: SmemDesc) : MmaA
+   | tmem (addr: Expr) : MmaA
+
+  // A PTX instruction. A result is the fresh variable `d` it writes, which a declaration before it declares. Some
+  // print as a short PTX block of their own, named by their constructor: `mbarWait` spins on `mbarrier.try_wait`,
+  // `mma` sets its predicate, `elect` writes its flag, `ex2Emulated` is a sequence of f32 instructions.
+  inductive Instr : Type
+    // Named barrier `id`, for `threads` threads (`bar.sync`, §9.7.15.1).
+   | barSync (id: Expr)(threads: Expr) : Instr
+    // The mbarrier at `bar` (§9.7.15.16): initialized for `count` arrivals; invalidated; arrived on, at `bar` in
+    // `window`, releasing at `level`; waited for until its phase of parity `parity` completes, acquiring at `level`.
+   | mbarInit (bar: Expr)(count: Expr) : Instr
+   | mbarInval (bar: Expr) : Instr
+   | mbarArrive (level: BarrierScope)(window: Window)(bar: Expr)(arrival: Arrival) : Instr
+   | mbarWait (level: BarrierScope)(bar: Expr)(parity: Expr) : Instr
+    // Fences (§9.7.15.4): mbarrier initializations, released at cluster scope; this thread's generic-proxy writes to
+    // shared memory, before the async proxy's accesses; tensor-core operations, on `side` of a thread
+    // synchronization (§9.7.18.11.1).
+   | fenceMbarInit : Instr
+   | fenceProxyAsync : Instr
+   | tcFence (side: ThreadSync) : Instr
+    // The cluster barrier's arrive, releasing, and wait, acquiring (`barrier.cluster`, §9.7.15.3).
+   | clusterArrive : Instr
+   | clusterWait : Instr
+    // A 2-D box of the tensor map at generic address `map`, at coordinates (`x`, `y`): loaded to shared address `dst`,
+    // completing on the mbarrier at `bar` (§9.7.10.28.5.3); stored from shared address `src` in a bulk group.
+   | tmaLoad (group: CtaGroup)(dst: Expr)(map: Expr)(x: Expr)(y: Expr)(bar: Expr) : Instr
+   | tmaStore (map: Expr)(x: Expr)(y: Expr)(src: Expr) : Instr
+    // Closes this thread's bulk group; waits until at most `pending` of its bulk groups have not finished `what`
+    // (§9.7.10.28.6).
+   | bulkCommit : Instr
+   | bulkWait (what: BulkWait)(pending: Nat) : Instr
+    // Tensor memory (§9.7.18.7.1): `cols` columns allocated, their address written to shared address `slot`; the right
+    // to allocate given up; `cols` columns at `taddr` freed.
+   | tmemAlloc (group: CtaGroup)(slot: Expr)(cols: Expr) : Instr
+   | tmemRelinquish (group: CtaGroup) : Instr
+   | tmemDealloc (group: CtaGroup)(taddr: Expr)(cols: Expr) : Instr
+    // D (in tensor memory at `d`) = A·B, plus D when `accumulate` is not 0, of kind f16 (§9.7.18.10.10.1): the types
+    // are `idesc`'s.
+   | mma (group: CtaGroup)(d: Expr)(a: MmaA)(b: SmemDesc)(idesc: InstrDesc)(accumulate: Expr) : Instr
+    // One arrival on the mbarrier at `bar` once this thread's tensor-core operations complete; with `multicast`, at
+    // `bar`'s offset in each CTA of that CTA mask (§9.7.18.12.1).
+   | commit (group: CtaGroup)(bar: Expr)(multicast: Option(Nat)) : Instr
+    // Columns of this thread's lane at `taddr`: loaded, one per f32 variable of `dst`; stored, one per value of
+    // `values`; and the wait for them (§9.7.18.8).
+   | tmemLoad (shape: TmemShape)(dst: List(Nat))(taddr: Expr) : Instr
+   | tmemStore (shape: TmemShape)(w: Word)(taddr: Expr)(values: List(Expr)) : Instr
+   | tmemWait (what: TmemWait) : Instr
+    // Warp-wide: `flag` set to 1 in the one lane `elect.sync` chooses (§9.7.15.15); `d` := lane `lane`'s `a`
+    // (`shfl.sync.idx`, §9.7.10.6); `d` := whether `p` is not 0 in any lane, as 1 or 0 (`vote.sync.any`, §9.7.15.10).
+   | elect (flag: Nat) : Instr
+   | shfl (d: Nat)(a: Expr)(lane: Nat) : Instr
+   | voteAny (d: Nat)(p: Expr) : Instr
+    // This warp's register count per thread moved to `count` (§9.7.21.5).
+   | setMaxNReg (change: RegChange)(count: Nat) : Instr
+    // f32 results: the f32 of bits `bits` (`mov.b32`, §9.7.10.3); 2^a and log2(a), approximate, subnormals flushed
+    // (§9.7.3.21, §9.7.3.20); 2^a on the FMA units (`Cuda.ex2Emulation`); 1/a, rounded by `rounding` (§9.7.3.13).
+   | movF32 (d: Nat)(bits: Nat) : Instr
+   | ex2 (d: Nat)(a: Expr) : Instr
+   | lg2 (d: Nat)(a: Expr) : Instr
+   | ex2Emulated (d: Nat)(a: Expr) : Instr
+   | rcp (rounding: Rounding)(d: Nat)(a: Expr) : Instr
+    // The 32-bit `d` := `hi` and `lo` rounded to nearest-even bf16, `hi` in the upper half (§9.7.10.24).
+   | cvtBf16x2 (d: Nat)(hi: Expr)(lo: Expr) : Instr
+    // 64-bit, relaxed at `level`, on the global address that generic address `addr` converts to (§9.7.10.8,
+    // §9.7.15.5): `d` := the value; `d` := `atom.cas`'s old value, `desired` stored if it equalled `expected`.
+   | ldRelaxed (level: Scope)(d: Nat)(addr: Expr) : Instr
+   | casRelaxed (level: Scope)(d: Nat)(addr: Expr)(expected: Expr)(desired: Expr) : Instr
+    // `d` := the special register `r`.
+   | movSpecial (d: Nat)(r: SpecialReg) : Instr
+    // `d` := the address in CTA `rank`'s shared memory of the object at shared address `addr` (`mapa`, §9.7.10.26).
+   | mapa (d: Nat)(addr: Expr)(rank: Expr) : Instr
+    // The f32 `values`, two or four of them, to shared memory at `addr` (`st.shared.v2`, `.v4`, §9.7.10.11).
+   | stShared (addr: Expr)(values: List(Expr)) : Instr
+
   mutual {
     inductive Stmt : Type
      | decl (t: DType)(id: Nat)(init: Expr) : Stmt
@@ -73,6 +244,7 @@ namespace Cuda {
      | sync : Stmt
      | syncWarp : Stmt
      | asm (template: String)(outs: List(Operand))(ins: List(Operand)) : Stmt
+     | instr (i: Instr) : Stmt
      | error (message: String) : Stmt
 
     inductive Block : Type
@@ -201,6 +373,262 @@ namespace Cuda {
     }
   }
 
+  // ---- Instructions as inline assembly -----------------------------------------------------------------------------
+
+  // An inline-assembly statement: its template, and its output and input operands, numbered `%0` on in that order.
+  struct Asm : Type
+   | mk (template: String)(outs: List(Operand))(ins: List(Operand)) : Asm
+
+  def asmText (a: Asm): String := {
+    let (template, outs, ins) := a
+    Text.cat3("asm volatile(\"", template, Text.cat3("\" : ", Cuda.operands(outs), Text.cat3(" : ", Cuda.operands(ins), " : \"memory\");")))
+  }
+
+  def u32In (x: Expr): Operand := Operand.mk("r", x)
+
+  def u64In (x: Expr): Operand := Operand.mk("l", x)
+
+  def f32In (x: Expr): Operand := Operand.mk("f", x)
+
+  def wordIn (w: Word): Expr -> Operand := {
+    match w returning Expr -> Operand with
+    | Word.u32 => Cuda.u32In
+    | Word.f32 => Cuda.f32In
+  }
+
+  def ops1 (a: Operand): List(Operand) := List.cons(a, List.nil(Operand))
+
+  def ops2 (a: Operand)(b: Operand): List(Operand) := List.cons(a, Cuda.ops1(b))
+
+  // An instruction without outputs.
+  def effect (template: String)(ins: List(Operand)): Asm := Asm.mk(template, List.nil(Operand), ins)
+
+  // An instruction writing the variable `d` under `constraint`, its `%0`, from `ins`.
+  def writes (template: String)(constraint: String)(d: Nat)(ins: List(Operand)): Asm :=
+    Asm.mk(template, Cuda.ops1(Operand.mk(constraint, Expr.var(d))), ins)
+
+  // `%first, %(first + 1), …`, `count` operand numbers.
+  def numbered (first: Nat)(count: Nat): String decreases structural(count) := {
+    match count returning String with
+    | Nat.zero => ""
+    | Nat.succ more => {
+      match more returning String with
+      | Nat.zero => Text.cat("%", Text.nat(first))
+      | Nat.succ rest => Text.cat3("%", Text.nat(first), Text.cat(", ", Cuda.numbered(Nat.succ(first), more)))
+    }
+  }
+
+  // A vector operand of `count` registers from operand `first` on.
+  def vector (first: Nat)(count: Nat): String := Text.cat3("{", Cuda.numbered(first, count), "}")
+
+  def ctaGroup (g: CtaGroup): String := {
+    match g returning String with
+    | CtaGroup.one => "cta_group::1"
+    | CtaGroup.two => "cta_group::2"
+  }
+
+  // An mbarrier operation's `.sem.scope`, `sem` its ordering: none at the default scope, `.cta`.
+  def barrierScope (sem: String)(s: BarrierScope): String := {
+    match s returning String with
+    | BarrierScope.cta => ""
+    | BarrierScope.cluster => Text.cat(sem, ".cluster")
+  }
+
+  def memoryScope (s: Scope): String := {
+    match s returning String with
+    | Scope.cta => ".cta"
+    | Scope.cluster => ".cluster"
+    | Scope.gpu => ".gpu"
+  }
+
+  def window (w: Window): String := {
+    match w returning String with
+    | Window.cta => ".shared::cta"
+    | Window.cluster => ".shared::cluster"
+  }
+
+  def tmemShape (s: TmemShape): String := {
+    match s returning String with
+    | TmemShape.s32x32b => ".32x32b"
+  }
+
+  def rounding (r: Rounding): String := {
+    match r returning String with
+    | Rounding.rn => ".rn"
+    | Rounding.rz => ".rz"
+    | Rounding.rm => ".rm"
+    | Rounding.rp => ".rp"
+  }
+
+  def specialReg (r: SpecialReg): String := {
+    match r returning String with
+    | SpecialReg.clusterCtaRank => "cluster_ctarank"
+    | SpecialReg.clusterIdX => "clusterid.x"
+    | SpecialReg.nclusterIdX => "nclusterid.x"
+  }
+
+  // Table 49's fixed fields: stride byte offset 1024 >> 4 at bit 32, version 1 at bit 46, swizzle mode 2 (128 bytes)
+  // at bit 61.
+  def smemDescFixed : Nat := Nat.add(Nat.mul(64, Nat.pow(2, 32)), Nat.add(Nat.pow(2, 46), Nat.mul(2, Nat.pow(2, 61))))
+
+  // The descriptor's 64 bits: the start address (its low 18 bits) >> 4 in bits 0–14, the leading byte offset >> 4 in
+  // bits 16–30, and the fixed fields; then the step, added to the start address field.
+  def packSmemDesc (d: SmemDesc): Expr := {
+    let (base, lbo, step) := d
+    Expr.bin(BinOp.add,
+      Expr.bin(BinOp.bor, Expr.cast(DType.u64, Expr.bin(BinOp.shr, Expr.bin(BinOp.band, base, Expr.lit(262143)), Expr.lit(4))),
+        Expr.lit64(Nat.add(Cuda.smemDescFixed, Nat.mul(Nat.div(lbo, 16), Nat.pow(2, 16))))),
+      Expr.lit64(Nat.mul(2, step)))
+  }
+
+  // Table 51's fields: D's type f32 (1 in bits 4–5), A's and B's bf16 (1 in bits 7–9 and 10–12), transpose B (bit
+  // 16), N >> 3 (bits 17–22) and M >> 4 (bits 24–28).
+  def packInstrDesc (d: InstrDesc): Nat := {
+    let (m, n, transposeB) := d
+    Nat.add(Bool.cond(transposeB, Nat, Nat.pow(2, 16), 0),
+      Nat.add(16, Nat.add(128, Nat.add(1024, Nat.add(Nat.mul(Nat.pow(2, 17), Nat.div(n, 8)), Nat.mul(Nat.pow(2, 24), Nat.div(m, 16)))))))
+  }
+
+  // `op` on the global address `a` that the generic address operand %1 converts to.
+  def globalAt (op: String): String := Text.cat3("{\\n\\t.reg .u64 a;\\n\\tcvta.to.global.u64 a, %1;\\n\\t", op, "\\n\\t}")
+
+  // FA4's `ex2_emulation`, for x = %1 < 128: x clamped to −127 (`max`); j = ⌊x⌋, by `add.rm` of 1.5·2²³ and the
+  // subtraction of 1.5·2²³; f = x − j, in [0, 1]; 2^f by FA4's cubic (`POLY_EX2[3]`), Horner's rule by `fma.rn`; and j
+  // added to the exponent of the result's bits, from the low bits of the `add.rm`'s.
+  def ex2Emulation : String := {
+    let floor := "\\n\\tmax.f32 c, %1, 0fC2FE0000;\\n\\tadd.rm.f32 r, c, 0f4B400000;\\n\\tsub.rn.f32 j, r, 0f4B400000;\\n\\tsub.rn.f32 f, c, j;"
+    let poly := "\\n\\tfma.rn.f32 p, f, 0f3D9DF09D, 0f3E6906A4;\\n\\tfma.rn.f32 p, p, f, 0f3F31F519;\\n\\tfma.rn.f32 p, p, f, 0f3F800000;"
+    let scale := "\\n\\tmov.b32 k, r;\\n\\tshl.b32 k, k, 23;\\n\\tmov.b32 q, p;\\n\\tadd.s32 q, k, q;\\n\\tmov.b32 %0, q;\\n\\t}"
+    Text.cat3("{\\n\\t.reg .f32 c, r, j, f, p;\\n\\t.reg .b32 k, q;", floor, Text.cat(poly, scale))
+  }
+
+  // An instruction as the inline assembly CUTLASS uses for it.
+  def asmOf (i: Instr): Asm := {
+    match i returning Asm with
+    | Instr.barSync id threads => Cuda.effect("bar.sync %0, %1;", Cuda.ops2(Cuda.u32In(id), Cuda.u32In(threads)))
+    | Instr.mbarInit bar count => Cuda.effect("mbarrier.init.shared::cta.b64 [%0], %1;", Cuda.ops2(Cuda.u32In(bar), Cuda.u32In(count)))
+    | Instr.mbarInval bar => Cuda.effect("mbarrier.inval.shared::cta.b64 [%0];", Cuda.ops1(Cuda.u32In(bar)))
+    | Instr.mbarArrive s w bar arrival => {
+      let at := Text.cat(Cuda.barrierScope(".release", s), Cuda.window(w))
+      match arrival returning Asm with
+      | Arrival.one => Cuda.effect(Text.cat3("mbarrier.arrive", at, ".b64 _, [%0];"), Cuda.ops1(Cuda.u32In(bar)))
+      | Arrival.count n => Cuda.effect(Text.cat3("mbarrier.arrive", at, ".b64 _, [%0], %1;"), Cuda.ops2(Cuda.u32In(bar), Cuda.u32In(n)))
+      | Arrival.expectTx bytes =>
+        Cuda.effect(Text.cat3("mbarrier.arrive.expect_tx", at, ".b64 _, [%0], %1;"), Cuda.ops2(Cuda.u32In(bar), Cuda.u32In(bytes)))
+    }
+    | Instr.mbarWait s bar parity =>
+      Cuda.effect(Text.cat3("{\\n\\t.reg .pred P1;\\n\\tLAB_WAIT:\\n\\tmbarrier.try_wait.parity", Cuda.barrierScope(".acquire", s),
+        ".shared::cta.b64 P1, [%0], %1;\\n\\t@P1 bra DONE;\\n\\tbra LAB_WAIT;\\n\\tDONE:\\n\\t}"), Cuda.ops2(Cuda.u32In(bar), Cuda.u32In(parity)))
+    | Instr.fenceMbarInit => Cuda.effect("fence.mbarrier_init.release.cluster;", List.nil(Operand))
+    | Instr.fenceProxyAsync => Cuda.effect("fence.proxy.async.shared::cta;", List.nil(Operand))
+    | Instr.tcFence side => {
+      match side returning Asm with
+      | ThreadSync.before => Cuda.effect("tcgen05.fence::before_thread_sync;", List.nil(Operand))
+      | ThreadSync.after => Cuda.effect("tcgen05.fence::after_thread_sync;", List.nil(Operand))
+    }
+    | Instr.clusterArrive => Cuda.effect("barrier.cluster.arrive.release.aligned;", List.nil(Operand))
+    | Instr.clusterWait => Cuda.effect("barrier.cluster.wait.acquire.aligned;", List.nil(Operand))
+    // The CTA group is printed after the dimension, in the order of CUTLASS's `SM100_TMA_2SM_LOAD`; `.cta_group::1` is
+    // the default, and not printed.
+    | Instr.tmaLoad g dst map x y bar => {
+      let group := {
+        match g returning String with
+        | CtaGroup.one => ""
+        | CtaGroup.two => ".cta_group::2"
+      }
+      Cuda.effect(Text.cat3("cp.async.bulk.tensor.2d", group, ".shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1, {%3, %4}], [%2];"),
+        List.cons(Cuda.u32In(dst), List.cons(Cuda.u64In(map), List.cons(Cuda.u32In(bar), Cuda.ops2(Cuda.u32In(x), Cuda.u32In(y))))))
+    }
+    | Instr.tmaStore map x y src =>
+      Cuda.effect("cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%0, {%2, %3}], [%1];",
+        List.cons(Cuda.u64In(map), List.cons(Cuda.u32In(src), Cuda.ops2(Cuda.u32In(x), Cuda.u32In(y)))))
+    | Instr.bulkCommit => Cuda.effect("cp.async.bulk.commit_group;", List.nil(Operand))
+    | Instr.bulkWait what pending => {
+      let read := {
+        match what returning String with
+        | BulkWait.read => ".read"
+        | BulkWait.complete => ""
+      }
+      Cuda.effect(Text.cat3("cp.async.bulk.wait_group", read, Text.cat3(" ", Text.nat(pending), ";")), List.nil(Operand))
+    }
+    | Instr.tmemAlloc g slot cols =>
+      Cuda.effect(Text.cat3("tcgen05.alloc.", Cuda.ctaGroup(g), ".sync.aligned.shared::cta.b32 [%0], %1;"), Cuda.ops2(Cuda.u32In(slot), Cuda.u32In(cols)))
+    | Instr.tmemRelinquish g => Cuda.effect(Text.cat3("tcgen05.relinquish_alloc_permit.", Cuda.ctaGroup(g), ".sync.aligned;"), List.nil(Operand))
+    | Instr.tmemDealloc g taddr cols =>
+      Cuda.effect(Text.cat3("tcgen05.dealloc.", Cuda.ctaGroup(g), ".sync.aligned.b32 %0, %1;"), Cuda.ops2(Cuda.u32In(taddr), Cuda.u32In(cols)))
+    // The predicate enable-input-d is set from the 32-bit `accumulate`.
+    | Instr.mma g d a b idesc accumulate => {
+      let (aText, aOperand) := {
+        match a returning Pair(String, Operand) with
+        | MmaA.smem desc => ("%1", Cuda.u64In(Cuda.packSmemDesc(desc)))
+        | MmaA.tmem addr => ("[%1]", Cuda.u32In(addr))
+      }
+      let template := Text.cat3("{\\n\\t.reg .pred p;\\n\\tsetp.ne.b32 p, %4, 0;\\n\\ttcgen05.mma.", Cuda.ctaGroup(g),
+        Text.cat3(".kind::f16 [%0], ", aText, ", %2, %3, p;\\n\\t}"))
+      Cuda.effect(template, List.cons(Cuda.u32In(d), List.cons(aOperand, List.cons(Cuda.u64In(Cuda.packSmemDesc(b)),
+        Cuda.ops2(Cuda.u32In(Expr.lit(Cuda.packInstrDesc(idesc))), Cuda.u32In(accumulate))))))
+    }
+    // The CTA mask is set in a `.b16` register: a 16-bit operand would need a 16-bit C type.
+    | Instr.commit g bar multicast => {
+      let head := Text.cat3("tcgen05.commit.", Cuda.ctaGroup(g), ".mbarrier::arrive::one.shared::cluster")
+      let text := Option.elim(multicast, String, Text.cat(head, ".b64 [%0];"), fun (mask: Nat): String =>
+        Text.cat3("{\\n\\t.reg .b16 mask;\\n\\tmov.b16 mask, ", Text.nat(mask), Text.cat3(";\\n\\t", head, ".multicast::cluster.b64 [%0], mask;\\n\\t}")))
+      Cuda.effect(text, Cuda.ops1(Cuda.u32In(bar)))
+    }
+    | Instr.tmemLoad shape dst taddr => {
+      let n := List.length(dst)
+      let template := Text.cat3("tcgen05.ld.sync.aligned", Cuda.tmemShape(shape), Text.cat3(".x", Text.nat(n),
+        Text.cat3(".b32 ", Cuda.vector(0, n), Text.cat3(", [%", Text.nat(n), "];"))))
+      Asm.mk(template, List.map(dst, Operand, fun (v: Nat): Operand => Operand.mk("=f", Expr.var(v))), Cuda.ops1(Cuda.u32In(taddr)))
+    }
+    | Instr.tmemStore shape w taddr values => {
+      let n := List.length(values)
+      let template := Text.cat3("tcgen05.st.sync.aligned", Cuda.tmemShape(shape), Text.cat3(".x", Text.nat(n),
+        Text.cat3(".b32 [%0], ", Cuda.vector(1, n), ";")))
+      Cuda.effect(template, List.cons(Cuda.u32In(taddr), List.map(values, Operand, Cuda.wordIn(w))))
+    }
+    | Instr.tmemWait what => {
+      match what returning Asm with
+      | TmemWait.load => Cuda.effect("tcgen05.wait::ld.sync.aligned;", List.nil(Operand))
+      | TmemWait.store => Cuda.effect("tcgen05.wait::st.sync.aligned;", List.nil(Operand))
+    }
+    | Instr.elect flag =>
+      Cuda.writes("{\\n\\t.reg .b32 rx;\\n\\t.reg .pred px;\\n\\telect.sync rx|px, 0xffffffff;\\n\\t@px mov.u32 %0, 1;\\n\\t}", "+r", flag,
+        List.nil(Operand))
+    | Instr.shfl d a lane =>
+      Cuda.writes(Text.cat3("shfl.sync.idx.b32 %0, %1, ", Text.nat(lane), ", 31, 0xffffffff;"), "=r", d, Cuda.ops1(Cuda.u32In(a)))
+    | Instr.voteAny d p =>
+      Cuda.writes("{\\n\\t.reg .pred p, q;\\n\\tsetp.ne.u32 p, %1, 0;\\n\\tvote.sync.any.pred q, p, 0xffffffff;\\n\\tselp.u32 %0, 1, 0, q;\\n\\t}",
+        "=r", d, Cuda.ops1(Cuda.u32In(p)))
+    | Instr.setMaxNReg change count => {
+      let way := {
+        match change returning String with
+        | RegChange.inc => "inc"
+        | RegChange.dec => "dec"
+      }
+      Cuda.effect(Text.cat3("setmaxnreg.", way, Text.cat3(".sync.aligned.u32 ", Text.nat(count), ";")), List.nil(Operand))
+    }
+    | Instr.movF32 d bits => Cuda.writes(Text.cat3("mov.b32 %0, ", Text.nat(bits), ";"), "=f", d, List.nil(Operand))
+    | Instr.ex2 d a => Cuda.writes("ex2.approx.ftz.f32 %0, %1;", "=f", d, Cuda.ops1(Cuda.f32In(a)))
+    | Instr.lg2 d a => Cuda.writes("lg2.approx.ftz.f32 %0, %1;", "=f", d, Cuda.ops1(Cuda.f32In(a)))
+    | Instr.ex2Emulated d a => Cuda.writes(Cuda.ex2Emulation, "=f", d, Cuda.ops1(Cuda.f32In(a)))
+    | Instr.rcp r d a => Cuda.writes(Text.cat3("rcp", Cuda.rounding(r), ".f32 %0, %1;"), "=f", d, Cuda.ops1(Cuda.f32In(a)))
+    | Instr.cvtBf16x2 d hi lo => Cuda.writes("cvt.rn.bf16x2.f32 %0, %1, %2;", "=r", d, Cuda.ops2(Cuda.f32In(hi), Cuda.f32In(lo)))
+    | Instr.ldRelaxed s d addr =>
+      Cuda.writes(Cuda.globalAt(Text.cat3("ld.relaxed", Cuda.memoryScope(s), ".global.b64 %0, [a];")), "=l", d, Cuda.ops1(Cuda.u64In(addr)))
+    | Instr.casRelaxed s d addr expected desired =>
+      Cuda.writes(Cuda.globalAt(Text.cat3("atom.relaxed", Cuda.memoryScope(s), ".global.cas.b64 %0, [a], %2, %3;")), "=l", d,
+        List.cons(Cuda.u64In(addr), Cuda.ops2(Cuda.u64In(expected), Cuda.u64In(desired))))
+    // `%%` is a `%` in a template with operands.
+    | Instr.movSpecial d r => Cuda.writes(Text.cat3("mov.u32 %0, %%", Cuda.specialReg(r), ";"), "=r", d, List.nil(Operand))
+    | Instr.mapa d addr rank => Cuda.writes("mapa.shared::cluster.u32 %0, %1, %2;", "=r", d, Cuda.ops2(Cuda.u32In(addr), Cuda.u32In(rank)))
+    | Instr.stShared addr values => {
+      let n := List.length(values)
+      Cuda.effect(Text.cat3("st.shared.v", Text.nat(n), Text.cat3(".f32 [%0], ", Cuda.vector(1, n), ";")),
+        List.cons(Cuda.u32In(addr), List.map(values, Operand, Cuda.f32In)))
+    }
+  }
+
   def indent (depth: Nat): String decreases structural(depth) := {
     match depth returning String with
     | Nat.zero => ""
@@ -247,11 +675,8 @@ namespace Cuda {
       | Stmt.scoped body => Cuda.line(depth, "{", Cuda.block(Nat.succ(depth), body, Cuda.line(depth, "}", rest)))
       | Stmt.sync => Cuda.line(depth, "__syncthreads();", rest)
       | Stmt.syncWarp => Cuda.line(depth, "__syncwarp();", rest)
-      | Stmt.asm template outs ins => {
-        let text := Text.cat3("asm volatile(\"", template, Text.cat3("\" : ", Cuda.operands(outs),
-          Text.cat3(" : ", Cuda.operands(ins), " : \"memory\");")))
-        Cuda.line(depth, text, rest)
-      }
+      | Stmt.asm template outs ins => Cuda.line(depth, Cuda.asmText(Asm.mk(template, outs, ins)), rest)
+      | Stmt.instr i => Cuda.line(depth, Cuda.asmText(Cuda.asmOf(i)), rest)
       | Stmt.error message => Cuda.line(depth, Text.cat3("#error \"", message, "\""), rest)
     }
 
