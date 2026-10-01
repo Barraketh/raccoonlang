@@ -1,6 +1,6 @@
 // The structural invariants of a kernel (gpu/OBLIGATIONS.md §4), decided on its AST. Each checker returns the
 // violations of one invariant, as messages, and none when the kernel keeps it. `WellFormed` is the certificate
-// `Gpu.render` requires, so a kernel that breaks one, or carries a generation error, is never printed.
+// `Core.render` requires, so a kernel that breaks one, or carries a generation error, is never printed.
 // I7 and I8 are not here: the AST does not record which threads run a block, or which shared offsets hold an mbarrier
 // over its lifetime.
 
@@ -228,7 +228,6 @@ namespace Check {
   // expressions are the statement's own, and an instruction's are those it prints as operands (`Cuda.instrExprs`).
   def stmtExprs (A: Type)(s: Stmt)(acc: A)(f: A -> Expr -> A): A := {
     let each := fun (a: A)(x: Expr): A => Check.exprFold(A, x, a, f)
-    let operands := fun (a: A)(os: List(Operand)): A => List.foldl(os, A, a, fun (b: A)(o: Operand): A => each(b, o.e))
     match s returning A with
     | Stmt.decl t id init => each(acc, init)
     | Stmt.declMut t id init => each(acc, init)
@@ -242,7 +241,6 @@ namespace Check {
     | Stmt.scoped body => acc
     | Stmt.sync => acc
     | Stmt.syncWarp => acc
-    | Stmt.asm template outs ins => operands(operands(acc, outs), ins)
     | Stmt.instr i => List.foldl(Cuda.instrExprs(i), A, acc, each)
     | Stmt.error message => acc
   }
@@ -264,7 +262,6 @@ namespace Check {
       | Stmt.scoped body => Check.blockFold(A, body, here, f)
       | Stmt.sync => here
       | Stmt.syncWarp => here
-      | Stmt.asm template outs ins => here
       | Stmt.instr i => here
       | Stmt.error message => here
     }
@@ -320,13 +317,12 @@ namespace Check {
     | Stmt.scoped body => found
     | Stmt.sync => found
     | Stmt.syncWarp => found
-    | Stmt.asm template outs ins => found
     | Stmt.instr i => found
     | Stmt.error message => List.cons(message, found)
   }
 
   // Generation errors: the messages of the kernel's `#error` lines, in order. Every check a builder makes while
-  // generating (`Gpu.check`) ends up as one.
+  // generating (`Core.check`) ends up as one.
   def errors (k: Kernel): List(String) := Check.inOrder(Check.blockFold(List(String), k.body, List.nil(String), Check.errorStep))
 
   // Why variable `id` is not in scope, where `seen` holds the variables declared so far.
@@ -380,7 +376,6 @@ namespace Check {
     | Stmt.scoped body => visible
     | Stmt.sync => visible
     | Stmt.syncWarp => visible
-    | Stmt.asm template outs ins => visible
     | Stmt.instr i => visible
     | Stmt.error message => visible
   }
@@ -403,7 +398,6 @@ namespace Check {
       | Stmt.scoped body => Check.scopeBlock(visible, body, used)
       | Stmt.sync => used
       | Stmt.syncWarp => used
-      | Stmt.asm template outs ins => used
       | Stmt.instr i => used
       | Stmt.error message => used
     }
@@ -429,10 +423,10 @@ namespace Check {
     | Leaf.shared offset => List.cons("launcher: dynamic shared memory is not host memory", found)
   }
 
-  // I1, scoping: each variable is declared once in the kernel, and used (in an expression, an operand of an asm
-  // statement or an instruction, or as an assignment's target) only in the C scope of its declaration and after it.
-  // The launcher runs on the host, where no variable, thread, block or grid index, dynamic shared buffer or array
-  // element (the arrays are device memory) is in scope.
+  // I1, scoping: each variable is declared once in the kernel, and used (in an expression, an operand of an
+  // instruction, or as an assignment's target) only in the C scope of its declaration and after it. The launcher runs
+  // on the host, where no variable, thread, block or grid index, dynamic shared buffer or array element (the arrays
+  // are device memory) is in scope.
   def scoping (k: Kernel): List(String) := {
     let body := Check.scopeBlock(NatSet.empty, k.body, Scan.mk(NatSet.empty, List.nil(String)))
     Check.inOrder(Check.hostExprs(List(String), k.launcher, body.found, Check.hostUse))
@@ -469,7 +463,6 @@ namespace Check {
     | Stmt.scoped body => found
     | Stmt.sync => found
     | Stmt.syncWarp => found
-    | Stmt.asm template outs ins => found
     | Stmt.instr i => found
     | Stmt.error message => found
   }
@@ -531,18 +524,6 @@ namespace Check {
     Scan.mk(Check.NatSet.insert(st.seen, id), counted)
   }
 
-  // Whether an asm template is a CTA barrier's: `bar.…`, or `barrier.…` but not the cluster barrier's. Named barriers
-  // are `Instr.barSync`, which this checker reads; an asm one would be invisible to it.
-  def ctaBarrierChars (t: List(Char)): Bool :=
-    Bool.or(Check.startsWith(t, "bar.".data), Bool.and(Check.startsWith(t, "barrier.".data), Bool.not(Check.startsWith(t, "barrier.cluster".data))))
-
-  // An asm statement, refused if `raw`, its template a CTA barrier's.
-  def rawBarrierAt (st: Scan)(raw: Bool): Scan := {
-    match raw returning Scan with
-    | Bool.true => Scan.mk(st.seen, List.cons("asm: a CTA barrier outside `Instr.barSync`", st.found))
-    | Bool.false => st
-  }
-
   // A named barrier, with `args` its literal id and thread count if it has them.
   def barrierAt (st: Scan)(args: Option(Prod(Nat, Nat))): Scan := {
     match args returning Scan with
@@ -565,7 +546,6 @@ namespace Check {
     | Stmt.scoped body => st
     | Stmt.sync => st
     | Stmt.syncWarp => st
-    | Stmt.asm template outs ins => Check.rawBarrierAt(st, Check.ctaBarrierChars(template.data))
     | Stmt.instr i => {
       match i returning Scan with
       | Instr.barSync id threads => Check.barrierAt(st, Check.literalPair(id, threads))
@@ -575,8 +555,9 @@ namespace Check {
   }
 
   // I3, named barriers: each `bar.sync` (`Instr.barSync`) has literal operands, an id in 1..15 that no other
-  // `bar.sync` of the kernel has, and a thread count that is a positive multiple of 32; and no asm statement is a CTA
-  // barrier. (A loop body is generated once, so a barrier in one has one id however often it runs.)
+  // `bar.sync` of the kernel has, and a thread count that is a positive multiple of 32. The AST prints a named
+  // barrier only as `Instr.barSync`. (A loop body is generated once, so a barrier in one has one id however often it
+  // runs.)
   def namedBarriers (k: Kernel): List(String) :=
     Check.inOrder(Check.blockFold(Scan, k.body, Scan.mk(NatSet.empty, List.nil(String)), Check.barrierStep).found)
 
@@ -954,7 +935,7 @@ namespace Check {
         [namesOk: Eq(List(String), names, List.nil(String))]
         [launcherOk: Eq(List(String), launcher, List.nil(String))] : Clean(errors, scoping, shared, barriers, literals, names, launcher)
 
-  // That kernel `k` carries no generation error and keeps I1 to I6 as far as its AST shows them: what `Gpu.render`
+  // That kernel `k` carries no generation error and keeps I1 to I6 as far as its AST shows them: what `Core.render`
   // requires of a kernel it prints. On a concrete kernel it is discharged by evaluating the checkers.
   def WellFormed (k: Kernel): Prop :=
     Check.Clean(Check.errors(k), Check.scoping(k), Check.sharedMemory(k), Check.namedBarriers(k), Check.literals(k), Check.names(k),

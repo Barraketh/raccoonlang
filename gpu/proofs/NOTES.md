@@ -14,19 +14,19 @@ the whole certificate, `WellFormed.sound: Check.WellFormed(k) -> Spec.WellFormed
 
 | Checker | Spec (`Spec.rac`) | Proof | Lines |
 |---|---|---|---|
-| (shared) | occurrence relations and program order, 126 lines | `Fold.rac`: the traversal lemmas | 459 |
-| (shared) | | `Lib.rac`: Bool, Nat, List and string facts | 239 |
+| (shared) | occurrence relations and program order, 121 lines | `Fold.rac`: the traversal lemmas | 436 |
+| (shared) | | `Lib.rac`: Bool, Nat, List and string facts | 214 |
 | (shared) | | `NatSet.rac`: `Check.NatSet` is a set | 148 |
 | (shared) | | `Instructions.rac`: `Cuda.asmOf` prints `Cuda.instrExprs` | 65 |
 | `errors` | `NoErrors`, 5 lines | `Errors.rac` | 20 |
-| I1 `scoping` | `Scoping`, `StmtScope`, `BlockScope`, `declaredBy`, `Uses`, `Binds`, `DeviceOnly`, 72 lines | `Scoping.rac` | 523 |
-| I2 `sharedMemory` | `SharedMemory`, `SharedAt`, 18 lines | `SharedMemory.rac` | 110 |
-| I3 `namedBarriers` | `NamedBarriers`, `BarrierIds`, `BarrierCounts`, `Barrier`, `LiteralPair`, `CtaBarrierTemplate`, 36 lines | `Barriers.rac` | 304 |
+| I1 `scoping` | `Scoping`, `StmtScope`, `BlockScope`, `declaredBy`, `Uses`, `Binds`, `DeviceOnly`, 71 lines | `Scoping.rac` | 517 |
+| I2 `sharedMemory` | `SharedMemory`, `SharedAt`, 18 lines | `SharedMemory.rac` | 109 |
+| I3 `namedBarriers` | `NamedBarriers`, `BarrierIds`, `BarrierCounts`, `Barrier`, `LiteralPair`, 26 lines | `Barriers.rac` | 248 |
 | I4 `literals` | `Literals`, `Lit32`, `Lit64`, `InRange` and its parts, 113 lines | `Literals.rac` | 203 |
 | I5 `names` | `Names`, `Chosen`, `CIdent`, `PrinterName`, `Declared`, `Twice`, …, 61 lines | `Names.rac` | 271 |
 | I6 `launcher` | `LauncherOk`, `Launched`, `NotMap`, `MapSource`, 27 lines | `Launcher.rac` | 352 |
 | certificate | `WellFormed`, 7 lines | `WellFormed.rac` | 21 |
-| **total** | 479 | | 2715 |
+| **total** | 463 | | 2604 |
 
 Check time. Each proof file checks in 1.4 to 2.3 s of wall time, most of it loading `Check.rac` (a file that loads
 only the prelude takes 0.8 s); `WellFormed.rac`, which loads every proof, takes 2.3 s. `check.sh` gains the 11 files
@@ -95,9 +95,9 @@ the walk's state), then reasons about a flat walk: ids seen stay seen (`stepSeen
 it (`barrierFresh`), and an id is seen after its barrier (`NatSets.inserted`). The literal operands come from a case
 split on `Check.literal` of each (`pairShape`, `twoLiterals`, `literalSome`), which is the only place the proof
 inspects expressions. The checker's step was named (`barrierStep`), and the decision it matched on became an argument
-of `barrierAt` (`args`), so the lemmas case on variables (F2). Both cores emit the barrier as `Instr.barSync`, and
-no asm statement may be a CTA barrier (`Spec.CtaBarrierTemplate`: `bar.…`, or `barrier.…` but not
-`barrier.cluster…`). That proof reads the template's prefix off the checker's `Check.startsWith` (`Lib.startsWithSound`).
+of `barrierAt` (`args`), so the lemmas case on variables (F2). `Instr.barSync` is the only statement that prints a
+named barrier. (While the retired `Gpu.rac` had raw `asm` statements, the spec also required that none be a CTA
+barrier, proved through `Lib.startsWithSound`; both went with `Stmt.asm`.)
 
 **I4, literals.** Spec: every `n` that `Lit32(k, n)` (a `lit` in the body or the launcher's expressions, the block
 size, a box dimension) is `Nat.lt(n, Cuda.u32Limit)`, and every `Lit64` below 2^64. The checker tests `Nat.blt`, which

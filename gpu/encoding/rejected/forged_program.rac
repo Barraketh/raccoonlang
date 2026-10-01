@@ -1,9 +1,9 @@
 // expect: SealedConstructor
-// A kernel built by hand and passed off as one the typed core built. Only Gpu builds a `Program`, the one thing
-// `Gpu.render` prints.
-import Gpu
+// A kernel built by hand and passed off as one the typed core built. Only Core builds a `Program`, the one thing
+// `Core.render` prints.
+import encoding.Core
 namespace T {
-  open Gpu
+  open Core
   open Cuda
 
   def raw : Kernel := Kernel.mk("raw", List.cons(Param.output(DType.f32, "C"), List.nil(Param)), 0,
@@ -11,4 +11,4 @@ namespace T {
 
   def kernel : Program := Program.mk(T.raw)
 }
-{ Gpu.render(T.kernel) }
+{ Core.render(T.kernel) }

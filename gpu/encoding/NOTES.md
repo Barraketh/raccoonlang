@@ -37,7 +37,7 @@ the readability review and for quality-of-life work on Raccoon. Each says what w
    the GEMM epilogue shares.
 7. **`tmemBase` special-cases offset 0** (`Core.rac`, `tmemBase`) so that the GEMMs' generated code stays byte-identical
    to `gpu/Gpu.rac`'s (`(v0 + 0u)` would otherwise appear in every MMA). `offsetBy`/`boxAt` do the same for box and
-   column offsets.
+   column offsets. `Gpu.rac` is retired since (`gpu/ROADMAP.md`, A5); the special cases stay, and keep the renders.
 8. **Fixed shapes in types.** `mmaScores` takes `AccRing(q, 128)` and checks both rings' boxes at generation; the
    exchange's layout (Ô at +0, P at +128) and `Tmem(a, 256)` are fixed in `withExchange`; `storeO` takes
    `AttnOut(L, DType.f32)` only, although `AttnOut` has a type parameter (A2's bf16 output).
@@ -428,7 +428,7 @@ Observations from building `TWO_CTA.md`'s steps 1 and 2 (`Core.rac`'s pair secti
 3. **`Pair` is taken.** The design's `Pair(l)` collides with the prelude's product type, which every signature of
    the core uses; the handle is `CtaPair(l)`.
 4. **Shared printer types.** The cluster shape is a property of the kernel, but `Cuda.Kernel` and `Cuda.Launcher` are
-   shared with `gpu/Gpu.rac`, which must not change, so neither could gain a field. The shape rides on the launcher's
+   shared with `gpu/Gpu.rac`, which must not change, so neither could gain a field (`Gpu.rac` is retired since). The shape rides on the launcher's
    grid instead (`Grid.pairs`), which costs a constructor in `Cuda.Grid` and a case each in `Check.gridExprs`,
    `Spec.GridExpr` and `proofs/Fold.rac`'s `gridMem`.
 5. **A 16-bit operand.** The multicast commit's CTA mask is a 16-bit operand, and `Cuda.DType` has no 16-bit integer
@@ -475,7 +475,7 @@ Observations from building `A3B.md`'s A3b (`Core.rac`'s correction-warpgroup sec
    and never used it; the C++ compile of `check.sh` (`-Werror`) refused the unused variable. Block 0 now sends no α:
    `publishAlpha` sends only when the softmax side's Ô is `held`. The correction warpgroup zeroes Ô in block 0 without
    a wait, since no product has touched Ô, so its first publish can come before the softmax's.
-3. **`__launch_bounds__` had no place.** `Cuda.Kernel` is `Gpu.rac`'s too, so it gained no field. `Core.Program` has
+3. **`__launch_bounds__` had no place.** `Cuda.Kernel` was `Gpu.rac`'s too (retired since), so it gained no field. `Core.Program` has
    `bounds`, `render` prints through `Cuda.boundedKernel`, and `Cuda.kernel` is `boundedKernel` without bounds. The
    `Gen` records the bounds when `splitWarpgroups` emits `setmaxnreg`, and `finish` hands them on, so no other builder
    names them; every `Gen.mk` carries the field.
@@ -736,16 +736,16 @@ Observations from building `Registers.rac`, the bounds in every builder, and the
 ## Typed instructions (EVALUATOR.md step 1)
 
 `Cuda.Instr` replaces Core's inline-assembly templates; `Cuda.asmOf` prints each as its template did. Every rendered
-example is byte-identical to the templates' output. `Gpu.namedBarrier` emits `Instr.barSync` too, so the certificate
-has one form of named barrier.
+example is byte-identical to the templates' output. `Gpu.namedBarrier`, in the retired first core, emitted
+`Instr.barSync` too, so the certificate had one form of named barrier.
 
 **Friction.**
 1. **`scope` is a keyword.** PTX calls the qualifier `.scope`, but a field or function cannot be named `scope`: the
    instructions' fields are `level`, and the printer's function is `memoryScope`.
 2. **No partial application.** `List.map(values, Operand, Cuda.Asm.wordIn(w))` needs `wordIn` to return a function,
    so it matches on `w` and returns `Cuda.Asm.u32In` or `Cuda.Asm.f32In`.
-3. **Opened names clash at the `open`.** A `Cuda.asmIn` met `Gpu.asmIn` in `checks/generic_render.rac`, which opens
-   both, and `Cuda.CtaGroup` met `Core.CtaGroup` in every file that opens both. The printer's helpers live in the
+3. **Opened names clash at the `open`.** A `Cuda.asmIn` met `Gpu.asmIn` in `gpu/checks/generic_render.rac`, which
+   opened both, and `Cuda.CtaGroup` met `Core.CtaGroup` in every file that opens both. The printer's helpers live in the
    `Cuda.Asm` namespace, which `open Cuda` does not open, and `CtaGroup` moved to `Cuda`, with the printer.
 4. **A new `Stmt` constructor reaches 20 exhaustive matches** across `Check.rac`, `Spec.rac` and four proofs. Each new
    case copies the `asm` case. Those matches list every `Stmt` constructor, as the house style does; a match that

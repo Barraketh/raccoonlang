@@ -60,7 +60,7 @@ it costs one select.
 
 ### 1.3 The numerical contract
 
-The harness (`harness/attention_test.cu`, §6) computes a reference in double precision from the same bf16 inputs:
+The harness (`encoding/harness/attention_test.cu`, §6) computes a reference in double precision from the same bf16 inputs:
 `s`, `LSE` and `O` exactly as in §1.2's first block, with `scale_log2` as passed, and rounds it to f32 before
 comparing. The bounds below are worst-case bounds for the harness's range: `seq` ≤ 2¹⁴, |Q| ≤ 8, |K| ≤ 1, |V| ≤ 1.
 A run passes when:
@@ -328,7 +328,7 @@ The offset must reach every use of a region's address, or a half would alias the
 fields become private in effect: one accessor, `tmemBase(t) = addr + offset`, is the only way the core reads a
 region's address (every current use is rewritten to it), and only `withTmem`'s own `dealloc` names the allocation's
 address, which it keeps itself. `storeRows` takes an address expression and needs no change once its callers pass
-`tmemBase`. A mutant runs `mmaFirst` on the upper half of a split and checks, in a `checks/` unit test of the emitted
+`tmemBase`. A mutant runs `mmaFirst` on the upper half of a split and checks, in an `encoding/checks/` unit test of the emitted
 code, that its address carries the offset.
 
 ### 3.2 Holding a stage across a loop
@@ -794,8 +794,8 @@ result, a deadlock, or a question the types do not ask. The harness (§1.3) is w
   `mmaStage` (§3.3); the exchange (§3.4); `eachChunk` and `F32x8` (§3.5); the math of §3.6; `HeadMap`, `fillBlock`,
   and rank-3 encodings in `Cuda.MapEncoding` and `Check.launcher`, with `Spec.rac` and the launcher checker's proof
   updated (§3.7); `AttnOut`, `OOwn`, `storeO` (§3.8); `attentionKernel` (§3.10).
-- Example: `examples/attention.rac`, the schedule of §2.
-- Harness: `harness/attention_test.cu` (`seq` ∈ {128, 256, 1024, 4096}, `BH` ∈ {1, 3, 16}); T1–T4; launcher
+- Example: `encoding/examples/attention.rac`, the schedule of §2.
+- Harness: `encoding/harness/attention_test.cu` (`seq` ∈ {128, 256, 1024, 4096}, `BH` ∈ {1, 3, 16}); T1–T4; launcher
   refusals (`seq` = 0, `seq` = 200, `BH` = 0, `BH` = 65536, `BH·seq·128` ≥ 2³¹).
 - Reference and benchmark: FA4 (§2.7) on the same GPU, same inputs, through `flash_attn_func` with `causal=False`,
   bf16, head dimension 128, `(batch, heads) = (1, BH)`, once with `FA_DISABLE_2CTA=1` (the like-for-like
@@ -804,7 +804,7 @@ result, a deadlock, or a question the types do not ask. The harness (§1.3) is w
   reported (TFLOP/s at 4·BH·seq²·128 FLOPs, CPU time under load noted), not judged, in A1. No closed-source library is
   benchmarked.
 - Checks: `check.sh` generates and compiles it against `stub/` (adding `tcgen05.st` and the rank-3 copy to the stub
-  headers); `attention_mutants.py` (§5); `checks/` unit tests of the emitted code: rank-3 encodings, `mmaFirst` on the
+  headers); `attention_mutants.py` (§5); `encoding/checks/` unit tests of the emitted code: rank-3 encodings, `mmaFirst` on the
   upper half of a `splitTmem` carrying the offset (§3.1), and a program that spins in `awaitAcc` between writing P
   and `publishP` emitting `__syncwarp` before `wait::st` (§3.4); OBLIGATIONS.md §3, §5, §6 and §7 updated.
   On hardware: ptxas, the harness, compute-sanitizer, and experiments H1–H5, H1 and H2 first.
@@ -814,7 +814,7 @@ result, a deadlock, or a question the types do not ask. The harness (§1.3) is w
 a non-causal f32 and a causal bf16 kernel each; the harnesses run both at the sizes below (the contiguous one
 also at A1's), and have run against a host mock of the runtime (`encoding/NOTES.md`).
 - Core: masks (§3.9); `blocks` for causal; `storeO` for bf16; the launcher accepts any `seq` ≥ 1.
-- Example: `examples/attention_causal.rac`, or one example with a `causal` parameter.
+- Example: `encoding/examples/attention_causal.rac`, or one example with a `causal` parameter.
 - Harness: causal and non-causal at `seq` ∈ {1, 127, 129, 1000, 4096}, `BH` ≥ 3 so that every head has neighbours;
   bf16 output with T1's bound plus bf16 rounding of O (2⁻⁸ · |O_ref| more). In the contiguous `[BH, seq, 128]` layout
   there are no rows past `seq` to guard with sentinels: row `seq` of one head is row 0 of the next. A store past a
@@ -879,7 +879,10 @@ the softmax warpgroups and without a split exchange; the persistent schedule and
 
 ## 7. Interactions with the other tracks
 
-### 7.1 `Gpu.rac` sections this touches
+### 7.1 Core sections this touches
+
+Written when the core was `Gpu.rac`, now retired. The sections are now `encoding/Core.rac`'s, and the GEMM track's
+changes landed there too.
 
 | Section | Change | GEMM-performance track | Merge |
 |---|---|---|---|
@@ -914,8 +917,8 @@ attention uses `cta_group::1` throughout.
 
 ## 8. Review
 
-An adversarial review (2026-09-30, one reviewer, against the PTX ISA 9.4 text and `Gpu.rac`) found no blocker: no
-race, phase alias or deadlock in the schedule of §2.5, and every refusal of §5 held. It checked, and found correct,
+An adversarial review (2026-09-30, one reviewer, against the PTX ISA 9.4 text and `Gpu.rac`, then the core) found no
+blocker: no race, phase alias or deadlock in the schedule of §2.5, and every refusal of §5 held. It checked, and found correct,
 the phase registers and arrival counts of the exchange (still correct under the later change of start state, a
 relabelling: the writer now starts at phase 0, on a phase that initialization completes), quiescence at every close, the `OState` transitions, holding
 Q across the loop, that the MMA thread's loop is writable with `loopPeeled` and a uniform `branch`, the MN-major

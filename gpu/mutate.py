@@ -1,7 +1,7 @@
 # Runs a table of mutations of an example: each mutant replaces one snippet of the example's source and must be
 # refused with a given diagnostic kind (whose message, if the mutant says so, mentions a given name).
 #
-#   python3 gpu/mutate.py [-v] gpu/rejected/tinygemm_mutants.py     (with $RACCOON set, as for check.sh)
+#   python3 gpu/mutate.py [-v] gpu/encoding/rejected/tinygemm_mutants.py    (with $RACCOON set, as for check.sh)
 #
 # -v prints every diagnostic of every mutant.
 #

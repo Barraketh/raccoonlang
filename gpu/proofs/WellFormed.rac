@@ -1,4 +1,4 @@
-// The whole certificate: a kernel `Gpu.render` prints (`Check.WellFormed`) has no generation error and keeps I1 to I6
+// The whole certificate: a kernel `Core.render` prints (`Check.WellFormed`) has no generation error and keeps I1 to I6
 // as far as its AST shows them (`Spec.WellFormed`).
 
 import proofs.Errors

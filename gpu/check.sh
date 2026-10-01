@@ -1,10 +1,10 @@
 #!/bin/sh
-# Checks the spike: every example must generate code, every file under rejected/ must fail with the diagnostic
-# kind named on its `// expect:` line (with a message that mentions the text of its `// mentions:` line, if it has
-# one), every mutant in a rejected/*_mutants.py table must be refused as the table says (see mutate.py), and every file
-# under checks/ and proofs/ must check without a diagnostic, and every model check (`*_model.py` under
-# encoding/harness/) must pass. The same holds of encoding/ (the next core,
-# encoding/README.md), whose examples/, rejected/ and checks/ are laid out as these.
+# Checks the GPU library (the core in encoding/, encoding/README.md): every example under encoding/examples/ must
+# generate code, every file under encoding/rejected/ must fail with the diagnostic kind named on its `// expect:` line
+# (with a message that mentions the text of its `// mentions:` line, if it has one), every mutant in an
+# encoding/rejected/*_mutants.py table must be refused as the table says (see mutate.py), every file under checks/,
+# proofs/ and encoding/checks/ must check without a diagnostic, and every model check (`*_model.py` under
+# encoding/harness/) must pass.
 #
 # The per-file checks run in parallel, one per processor (CHECK_JOBS overrides the count), and report in a fixed
 # order; each mutant table then runs its mutants in parallel itself.
@@ -38,10 +38,8 @@ one() {
       out=$(run --raw "$f" 2>&1)
       if printf '%s' "$out" | grep -q "error:"; then echo "FAIL $(name "$f")"; printf '%s\n' "$out"; return 1
       elif ! printf '%s' "$out" | cxx; then echo "FAIL $(name "$f"): generated C++ does not compile"; return 1
-      else
-        case $f in "$here"/encoding/examples/*) printf '%s' "$out" | registers || { echo "FAIL $(name "$f")"; return 1; } ;; esac
-        echo "ok   $(name "$f")"
-      fi ;;
+      elif ! printf '%s' "$out" | registers; then echo "FAIL $(name "$f")"; return 1
+      else echo "ok   $(name "$f")"; fi ;;
     rejected)
       want=$(sed -n 's#^// expect: ##p' "$f" | head -1)
       mentions=$(sed -n 's#^// mentions: ##p' "$f" | head -1)
@@ -79,10 +77,10 @@ if [ "$1" = --task ]; then
 fi
 
 tasks() {
-  for f in "$here"/examples/*.rac "$here"/encoding/examples/*.rac; do [ -e "$f" ] && echo "example $f"; done
-  for f in "$here"/rejected/*.rac "$here"/encoding/rejected/*.rac; do [ -e "$f" ] && echo "rejected $f"; done
+  for f in "$here"/encoding/examples/*.rac; do [ -e "$f" ] && echo "example $f"; done
+  for f in "$here"/encoding/rejected/*.rac; do [ -e "$f" ] && echo "rejected $f"; done
   for f in "$here"/checks/*.rac "$here"/proofs/*.rac "$here"/encoding/checks/*.rac; do [ -e "$f" ] && echo "clean $f"; done
-  for f in "$here"/harness/*.cu "$here"/encoding/harness/*.cu; do [ -e "$f" ] && echo "harness $f"; done
+  for f in "$here"/encoding/harness/*.cu; do [ -e "$f" ] && echo "harness $f"; done
   for f in "$here"/encoding/harness/*.py; do
     case $f in *_model.py) echo "model $f" ;; *) [ -e "$f" ] && echo "python $f" ;; esac
   done
@@ -114,7 +112,7 @@ if command -v clang++ >/dev/null; then
   done
   rm -r "$probes"
 fi
-for t in "$here"/rejected/*_mutants.py "$here"/encoding/rejected/*_mutants.py; do
+for t in "$here"/encoding/rejected/*_mutants.py; do
   [ -e "$t" ] || continue
   python3 "$here/mutate.py" "$t" || status=1
 done

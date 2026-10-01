@@ -1,16 +1,17 @@
 # GPU library: protocol models (verification layer 2)
 
 Status: design for review. Nothing here is implemented. It designs layer 2 of `OBLIGATIONS.md` §8: abstract models of
-the asynchronous hardware the protocols use (A6, A9, A12 and the ordering facts of A6–A14), the protocols of `Gpu.rac`
-as transition systems over them, the safety properties those systems must have under every interleaving of their
-roles, and how to prove them in Raccoon. The models are to live in `gpu/model/` as Raccoon modules that `Gpu` imports
-(`OBLIGATIONS.md` §9, decisions 2 and 3).
+the asynchronous hardware the protocols use (A6, A9, A12 and the ordering facts of A6–A14), the GEMM protocols of the
+core (`encoding/Core.rac`) as transition systems over them, the safety properties those systems must have under every
+interleaving of their roles, and how to prove them in Raccoon. The models are to live in `gpu/model/` as Raccoon
+modules that the core imports (`OBLIGATIONS.md` §9, decisions 2 and 3).
 
-The models describe `Gpu.rac` as of 0767971, with two later changes to the protocols: the setup's arrivals that
-complete phase 0 of the barriers a producer waits on first, so producers start at phase 0 (§1.2), and the fence after
-`await`'s wait (§1.6). `lemur_gpu` has also replaced the per-element epilogue with TMA stores
-through staging buffers (975f093), a protocol of bulk async-groups and proxy fences that these models do not yet
-cover. §6 says how they extend to it, and V1 (§7) must start from it.
+The models describe the protocols of `Gpu.rac`, the library's first core, now retired, as of 0767971.
+`encoding/Core.rac` began as a copy of it and keeps these protocols; the protocols it added since (the exchange, CTA
+pairs, the correction warpgroup) are not modelled. The models include two later changes to the protocols: the setup's
+arrivals that complete phase 0 of the barriers a producer waits on first, so producers start at phase 0 (§1.2), and
+the fence after `await`'s wait (§1.6). `lemur_gpu` has also replaced the per-element epilogue with TMA stores through
+staging buffers (975f093), a protocol of bulk async-groups and proxy fences that these models do not yet cover. §6 says how they extend to it, and V1 (§7) must start from it.
 
 In short:
 - **Models** (§1): an mbarrier is a phase bit, a pending arrival count and a transaction count; a TMA copy and a
@@ -89,7 +90,7 @@ Rules. Each names its instruction and ISA source.
 The **setup** of a protocol is Init of each of its barriers followed, for each barrier a producer waits on before
 anyone arrives on it (the stage ring's `empty[s]`, count 1, and the accumulator ring's `accEmpty[b]`, count 128), by
 one Arrive with `c = count`, by the same thread: that completes phase 0, so the barrier starts with `ph = 1`,
-`pend = count`, `tx = 0`, `n = 1`. `withRing` and `withAccRing` emit it (`Gpu.barrierCompletions`); the handoff's
+`pend = count`, `tx = 0`, `n = 1`. `withRing` and `withAccRing` emit it (`Core.barrierCompletions`); the handoff's
 barrier, which no producer waits on, gets none.
 
 Readings and gaps:
@@ -262,9 +263,9 @@ A generic-proxy writer in the producer's place would need `fence.proxy.async.sha
 ### 2.1 Common structure
 
 - **Roles.** A role is a small program over the rules of §1, run by one thread (an elected lane) or, for the
-  epilogue, by each of the 128 threads of an aligned warpgroup. Its registers are the ones `Gpu.rac` declares, a
+  epilogue, by each of the 128 threads of an aligned warpgroup. Its registers are the ones the core declares, a
   stage index and a phase bit per side, plus a program counter.
-- **Advance.** `advance(st, ph, n)`: `st += 1`; if `st = n` then `st = 0`, `ph = 1 − ph` (`Gpu.advance`). It is
+- **Advance.** `advance(st, ph, n)`: `st += 1`; if `st = n` then `st = 0`, `ph = 1 − ph` (`Core.advance`). It is
   local and unobservable, so it is folded into the step before it.
 - **Loops.** No type mentions an iteration count, and the models do not either. Where a role's loop continues or ends
   is a nondeterministic choice. For safety, choices are unconstrained, so every trip count and every mismatch is
@@ -293,7 +294,7 @@ State:
   phase 0 completed (`n = 1`); the TMA set (§1.3), `Q(C)` (§1.4);
 - ghosts (§3).
 
-Steps (each one rule of §1, or an atomic group that `Gpu.rac` emits as consecutive instructions of one thread):
+Steps (each one rule of §1, or an atomic group that the core emits as consecutive instructions of one thread):
 
 | Role | From | Step | To | Emitted by |
 |---|---|---|---|---|
@@ -369,7 +370,7 @@ used.
 
 ### 2.6 The model against the emitted code
 
-What a reviewer compares at layer 2, each row one sealed operation of `Gpu.rac` and the model steps it must emit:
+What a reviewer compares at layer 2, each row one sealed operation of the core and the model steps it must emit:
 
 | Operation | Emits | Model |
 |---|---|---|
@@ -438,7 +439,7 @@ an ABA wait, reads a stage twice without a race: it would read the old data agai
 that, and P3 names its cause. P3 alone would accept a ring whose copies complete a phase early, for instance a wrong
 expected byte count equal to one of the two boxes. P2's "no copy in flight" rejects that. That case is a failure of
 the §1.3 assumption `stageBytes = boxBytes(a) + boxBytes(b)`, which the model states as an assumption and §5 links to
-`Gpu.stageBytes`. P4 is the only property that sees the tail. The explorer's mutants (§4.1) are each caught by at
+`Core.stageBytes`. P4 is the only property that sees the tail. The explorer's mutants (§4.1) are each caught by at
 least one of these; the table names the first violation the explorer reports:
 
 | Mutant (one change to the model) | Caught by |
@@ -614,7 +615,7 @@ would not change the verdict.
 **Verdict.** Route (a) works today for S ≤ 4 on the faithful model, and to S = 6 only on the reduced one. Each
 reduction is a lemma to prove (a Lipton-style mover argument for the atomic groups, a simulation for the merged
 copies). And every check of a module that states the certificate re-runs the evaluation: Raccoon keeps no proof cache
-between runs. A certificate of minutes inside `Gpu`, which every client loads, is not acceptable. Stated per
+between runs. A certificate of minutes inside the core, which every client loads, is not acceptable. Stated per
 configuration in a separate module that `check.sh` runs, it is. The deciding problem is that S is the client's choice
 (`RingCfg`), so a per-configuration proof either fixes the S values the library accepts or runs at the client's
 render.
@@ -798,7 +799,7 @@ unverified checker) is needed on either route; V2 and V3 are the steps a permiss
   when the fuel is a parameter. It looks like F9's normalization into blocked matches, reached by a match on a
   partially known application (not investigated further). The workaround is to keep every argument of an
   evaluation-heavy function a parameter until the call that makes them all concrete.
-- **No proof cache.** A certificate stated inside `Gpu` is re-evaluated by every client's check. Finite checks that
+- **No proof cache.** A certificate stated inside the core is re-evaluated by every client's check. Finite checks that
   take more than a second belong in separate modules, which only `check.sh` loads.
 
 ## 5. Connection to the library
@@ -806,7 +807,7 @@ unverified checker) is needed on either route; V2 and V3 are the steps a permiss
 ### 5.1 At layer 2
 
 The model states the protocol the library intends. The link is the table of §2.6, which a reviewer compares with
-`Gpu.rac`'s emitted instructions, together with the assumptions the model makes of the code:
+the core's emitted instructions, together with the assumptions the model makes of the code:
 - a role's steps are the emitted instructions, in program order, run by one thread (M6) or by each thread of the
   aligned warpgroup;
 - barrier addresses: `full + 8·stage` and `empty + 8·stage` are distinct for distinct stages and never alias a stage

@@ -12,8 +12,8 @@ commit that added this file.
 - Support kernels like paged attention, competitive with CUTLASS and open FlashAttention (FA4), not cuBLAS.
 - Later, establish what it takes to prove the encoding correct without changing it.
 
-**The library** is `gpu/encoding/` (`README.md` lists its files). `gpu/Gpu.rac` and `gpu/examples/` are the old core,
-kept only until it is retired (§2, A5).
+**The library** is `gpu/encoding/` (`README.md` lists its files). The old core, `gpu/Gpu.rac` and `gpu/examples/`, is
+retired (§2, A5).
 
 **Built, each with a hostile review; all of it ran on a B200 on 2026-10-01:**
 
@@ -47,7 +47,7 @@ kept only until it is retired (§2, A5).
 ## 2. What remains
 
 ### A. Library safety
-1. **Evaluator v0** (`gpu/EVALUATOR.md` §4, §8 step 2).
+1. **Evaluator v0** (`gpu/EVALUATOR.md` §4), in Raccoon, after a performance spike (EVALUATOR.md §8 step 2).
    - **What it does:** it runs generated kernels on the host, with bounds, race, deadlock and exit checks, under
      explored schedules. It replaces the hand-written host mocks.
    - **Why:** two of the four hardware bugs, and every race the reviews found, were generated code doing other than
@@ -59,8 +59,10 @@ kept only until it is retired (§2, A5).
    its threads, residency and split groups), then one per resource family.
 4. **Per-resource sealed modules** (`REGISTERS.md` §2), one family at a time. This partly waits on the sealing decision
    (§4, C2).
-5. **Retire the old core** (`Gpu.rac`, `gpu/examples/`). The encoding core covers what it did. Removing it deletes the
-   remaining raw-asm path in `Check.rac`/`Spec.rac` and the second descriptor packer. Small.
+5. **Retire the old core** (`Gpu.rac`, `gpu/examples/`). **Done.** It went with its harness, its programs and mutants
+   that had to be refused, the raw-asm statement `Stmt.asm` (and its cases in `Check.rac`, `Spec.rac` and the
+   proofs), and its second descriptor packer. Its refused programs, its TinyGEMM mutants and its generic-render check
+   moved to `encoding/`.
 6. **Optional: index arithmetic through layouts** (CuTe-style shape and stride). The core's row, column and wrap
    formulas would become generation-time facts. Discussed and judged library work; not scheduled.
 
@@ -94,7 +96,7 @@ kept only until it is retired (§2, A5).
 - **A1:** the evaluator, in its own directory. It should come before more complex kernels: pair attention is the most
   bug-prone kernel we would write next.
 - **B1 and B2:** pair attention, with the FA4 comparison at realistic sizes.
-- **A5:** retire the old core.
+- **A5:** retire the old core (done).
 - **C1:** the user's language thread.
 
 **Phase 2: hardware session 2**, once pair attention passes review and runs clean under the evaluator:
@@ -111,13 +113,12 @@ The results choose the next performance items (B5).
 - landing on `clean_history` after the kernel specs.
 
 ## 4. Open decisions (the user's)
-1. **The evaluator's language:** Scala in this repository, or standalone C++ next to the harnesses (EVALUATOR.md §9).
+1. **The evaluator's language:** settled: the evaluator is written in Raccoon (2026-10-01; EVALUATOR.md §9).
 2. **FMA contraction:** compile with `-fmad=false`, or have the printer emit explicit `fma` (EVALUATOR.md §9).
 3. **Hardware timing:** does the next session wait for pair attention, or come earlier to measure the launch-bounds
    change?
-4. **The old core:** retire `Gpu.rac` now?
-5. **Sealing across modules** (REGISTERS.md §9): which remedy, or typed instructions plus `Check.rac` placement rules.
-6. **Earlier, still open:**
+4. **Sealing across modules** (REGISTERS.md §9): which remedy, or typed instructions plus `Check.rac` placement rules.
+5. **Earlier, still open:**
    - the `match h : e` equation using the prelude's `Eq` (`docs/implemented/MATCH_EQUATION.md`);
    - lambda result-type synthesis, which is not done, since it would need readback;
    - named implicit instantiation (`docs/proposals/NAMED_IMPLICITS.md`).
@@ -134,7 +135,7 @@ The results choose the next performance items (B5).
   shared with other sessions.
 
 **Checks:**
-- Run the checks with `RACCOON=$PWD/target/graalvm/raccoon sh gpu/check.sh` (about 130 s; 206 ok at this commit).
+- Run the checks with `RACCOON=$PWD/target/graalvm/raccoon sh gpu/check.sh` (about 130 s; 186 ok at this commit).
 - The register check needs the CUDA toolkit. NVIDIA ships none for macOS, so it runs in a container: `colima start`,
   then `docker build -t raccoon-cuda:12.9 gpu/toolkit`, then `gpu/toolkit/cuda.sh nvcc …`. Without it, `check.sh`
   prints one "skipped" line.

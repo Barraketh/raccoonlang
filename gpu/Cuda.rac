@@ -1,5 +1,5 @@
-// A small CUDA C++ AST and its printer. It knows nothing about safety: the cores (`gpu/Gpu.rac` and
-// `gpu/encoding/Core.rac`) are the only producers of kernels, and this file only renders what it is given.
+// A small CUDA C++ AST and its printer. It knows nothing about safety: the core (`gpu/encoding/Core.rac`) is the only
+// producer of kernels, and this file only renders what it is given.
 
 import Text
 
@@ -60,7 +60,7 @@ namespace Cuda {
 
   // ---- PTX instructions --------------------------------------------------------------------------------------------
   //
-  // The PTX instructions the cores emit (`Instr`): operands are expressions, a result is the variable it writes, and
+  // The PTX instructions the core emits (`Instr`): operands are expressions, a result is the variable it writes, and
   // qualifiers are fields. Each prints as one inline-assembly statement (`Cuda.asmOf`). Sections are of the PTX ISA
   // 9.4.
 
@@ -245,7 +245,6 @@ namespace Cuda {
      | scoped (body: Block) : Stmt
      | sync : Stmt
      | syncWarp : Stmt
-     | asm (template: String)(outs: List(Operand))(ins: List(Operand)) : Stmt
      | instr (i: Instr) : Stmt
      | error (message: String) : Stmt
 
@@ -779,7 +778,6 @@ namespace Cuda {
       | Stmt.scoped body => Cuda.line(depth, "{", Cuda.block(Nat.succ(depth), body, Cuda.line(depth, "}", rest)))
       | Stmt.sync => Cuda.line(depth, "__syncthreads();", rest)
       | Stmt.syncWarp => Cuda.line(depth, "__syncwarp();", rest)
-      | Stmt.asm template outs ins => Cuda.line(depth, Asm.text(Asm.mk(template, outs, ins)), rest)
       | Stmt.instr i => Cuda.line(depth, Asm.text(Cuda.asmOf(i)), rest)
       | Stmt.error message => Cuda.line(depth, Text.cat3("#error \"", message, "\""), rest)
     }

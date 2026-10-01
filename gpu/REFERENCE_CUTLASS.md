@@ -4,6 +4,10 @@ Status: research note, 2026-09-30. It records how CUTLASS's Blackwell (sm100) GE
 (`DESIGN.md` §6) does, what that implies for the library's discipline (`OBLIGATIONS.md`), what to change first, and the
 commands for the next hardware session (§8). We benchmark against open-source code only; cuBLAS is not a reference.
 
+**History.** "Ours" in §1–§7 and §8.6 is `persistent_gemm.rac`, the persistent GEMM of `Gpu.rac`, the library's first
+core. Both are retired, and those measurements are history. §8.8 and §8.9 measure their successor, the encoding core's
+pair GEMM (`encoding/examples/gemm_pair.rac`).
+
 **Source read.** CUTLASS at commit `0b55a2f691d69981583568fd9eb69687b1f0de8a` ("update 4.8 release", 2026-09-23),
 BSD-3. Paths below are relative to its root; line numbers are at that commit. PTX semantics are cited by instruction
 name from the PTX ISA (the online edition is 9.4; CUDA 12.9 ships an earlier one, whose section numbers differ).
@@ -484,7 +488,8 @@ cd ~/cutlass && build/tools/profiler/cutlass_profiler --operation=Gemm \
 
 ### 8.6 Our kernel in the same session
 
-Run ours on the same machine right after CUTLASS, as `DESIGN.md` §7 does (current head of the branch, grouped order),
+This was the plan for the retired `persistent_gemm.rac`; §8.8 replaces it for the pair GEMM. Run ours on the same
+machine right after CUTLASS, as `DESIGN.md` §7 did (current head of the branch, grouped order),
 and the variants of the table in §7. One new variant separates the data-movement bound: **without stores and MMAs,
 with grouped order**. If it falls well below 0.622 ms, part of that figure was DRAM misses that grouping removes, and
 items 3-5 gain less than §7 estimates; if it stays near 0.62 ms, the bound is the fill rate or L2 bandwidth, and item 5

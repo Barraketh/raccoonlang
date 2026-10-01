@@ -40,9 +40,10 @@ in the canonical 128-byte-swizzled layouts (checked at start-up against a second
 the plans, and checks the results exactly: all operands are small integers or multiples of 1/4, so every product and
 sum is exact in f32 whatever the order of accumulation (except H5's, which measures the error).
 
-The encodings reuse TinyGEMM's, which ran on a B200 (`gpu/Gpu.rac`: `smemDesc`, `instrDesc`, the `tcgen05` and
-mbarrier templates): the shared-memory descriptor with SBO 1024, version 1 and 128-byte swizzle, and the instruction
-descriptor 136316048 (bf16 × bf16 → f32, both K-major, M = N = 128). Every probe includes that path as a control or
+The encodings reuse TinyGEMM's, which ran on a B200. The retired `gpu/Gpu.rac` generated them first; now
+`Cuda.Asm.packSmemDesc`, `Cuda.Asm.packInstrDesc` and the `tcgen05` and mbarrier templates of `Cuda.asmOf` do. They
+are the shared-memory descriptor with SBO 1024, version 1 and 128-byte swizzle, and the instruction descriptor
+136316048 (bf16 × bf16 → f32, both K-major, M = N = 128). Every probe includes that path as a control or
 as its measurement, so a broken probe shows as a failed control rather than as a false verdict.
 
 Robustness:

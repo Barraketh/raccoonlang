@@ -15,9 +15,9 @@
 // Thread 0 records the stage it reached in mapped host memory, which the host can still read when the kernel faults,
 // so a failing case says how far it got. A wait that times out records that and traps.
 //
-// The inline assembly follows the TinyGEMM that `gpu/Gpu.rac` generates, whose encodings ran on a B200: the
-// shared-memory descriptor (SBO 1024, version 1, 128-byte swizzle) and the instruction descriptor 136316048 (bf16 ×
-// bf16 → f32, both K-major, M = N = 128). Each asm statement is on one line, so `gpu/stub/asm_calls.py` can rewrite it
+// The inline assembly follows the TinyGEMM that the retired `gpu/Gpu.rac` generated, whose encodings ran on a B200:
+// the shared-memory descriptor (SBO 1024, version 1, 128-byte swizzle) and the instruction descriptor 136316048
+// (bf16 × bf16 → f32, both K-major, M = N = 128). Each asm statement is on one line, so `gpu/stub/asm_calls.py` can rewrite it
 // for a host compiler (`gpu/check.sh`).
 #pragma once
 #include <cuda_runtime.h>
@@ -80,7 +80,7 @@ inline const char *stage_name(uint32_t s) {
 // >> 4 in 16–30, stride byte offset >> 4 in 32–45, the fixed version 1 in 46–48, base offset 0 in 49–51 (every
 // operand here starts 1024-byte aligned, or 32·s bytes into an aligned K-major atom as TinyGEMM's K steps do), LBO
 // mode 0 (bit 52), swizzle mode 2 = 128-byte swizzle in 61–63. With lbo = 0 and sbo = 1024 this is exactly TinyGEMM's
-// descriptor (Gpu.rac `smemDesc`: high word 4611756662049472512).
+// descriptor (`Cuda.Asm.packSmemDesc`: high word 4611756662049472512).
 __host__ __device__ inline uint64_t smem_desc(uint32_t addr, uint32_t lbo, uint32_t sbo) {
   return uint64_t((addr & 0x3FFFFu) >> 4) | (uint64_t((lbo >> 4) & 0x3FFFu) << 16) |
          (uint64_t((sbo >> 4) & 0x3FFFu) << 32) | (1ull << 46) | (2ull << 61);

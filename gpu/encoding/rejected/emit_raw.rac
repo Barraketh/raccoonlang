@@ -1,7 +1,7 @@
 // expect: SealedConstructor
 // The module's emission helpers are public definitions, but calling one needs a key only the module can build.
-import Gpu
+import encoding.Core
 namespace T {
-  def raw {l: Lifetime}{g: Gpu.Group}(e: Gpu.Ctx(l, g)) : Gpu.Ctx(l, g) := Gpu.emit(Gpu.Key.key, e, Cuda.Stmt.sync)
+  def raw {l: Lifetime}{g: Core.Group}(e: Core.Ctx(l, g)) : Core.Ctx(l, g) := Core.emit(Core.Key.key, e, Cuda.Stmt.sync)
 }
 { 0 }

@@ -1,0 +1,25 @@
+// expect: EvidenceNotDischarged
+// mentions: Check.Clean.noErrors
+// A shared read whose index is not provably below the array's length. Index arithmetic is checked while generating,
+// where every bound is concrete, so this kernel carries a generation error, which `Core.render` refuses to print:
+// ty * 16 + tx + 1 reaches 256 for the last thread.
+import encoding.Core
+namespace T {
+  open Core
+  open Cuda
+  def G : Group := Group.cta(256)
+
+  def kernel : Program := Core.tiledKernel("bad", DType.f32, 16,
+    fun (l: Lifetime)(e: Ctx(l, T.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, T.G) =>
+      Core.shared(e, DType.f32, 256, fun (a: Lifetime)(sa: Smem(a, DType.f32, 256))(ta: Tile(a, DType.f32, 256, TileState.empty))(e: Ctx(l, T.G)): Ctx(l, T.G) => {
+        let (e, t) := Core.storeMine(e, sa, ta, Core.zero(DType.f32))
+        let (e, t) := Core.sync1(e, t)
+        let use := fun (r: Lifetime)(rd: SRead(a, r, DType.f32, 256))(e: Ctx(l, T.G)): Pair(Ctx(l, T.G), Val(l, Grain.thread, DType.f32)) =>
+          Core.sread(e, sa, rd, Core.add(Core.add(Core.mulC(k.ty, 16), k.tx), Core.lit(1)))
+        let (e, (t, v)) := Core.reads(e, t, use)
+        let (e, t) := Core.sync1(e, t)
+        let _ := Core.release(t)
+        Core.gstore(e, k.c, c, v)
+      }))
+}
+{ Core.render(T.kernel) }

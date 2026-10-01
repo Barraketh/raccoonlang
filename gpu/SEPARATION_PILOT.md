@@ -15,12 +15,12 @@ correct in Raccoon, without changing it, is later research. It will likely need 
 scopes in the language.
 
 "Clean" is judged by reviewing the working code once it runs: whether it reads well, and whether it carries
-incidental complexity. `gpu/Gpu.rac` supports less than this design targets, so it is a starting point, not a
-baseline.
+incidental complexity. `gpu/Gpu.rac`, the library's first core, now retired, supported less than this design
+targets, so it was a starting point, not a baseline.
 
 Each protocol below gives:
 1. its pieces, on paper;
-2. an encoding in Raccoon, starting from `Gpu.rac` where it has one;
+2. an encoding in Raccoon, starting from `Gpu.rac`'s where it had one;
 3. why the encoding keeps the pieces valid;
 4. candidate changes to try in the code.
 
@@ -46,7 +46,7 @@ waiter.
 | A sealed linear token | an exclusive piece: it cannot be copied (no second holder), or dropped (it is handed back or consumed by an operation that accounts for it) |
 | An unrestricted value confined to a scope | a shared piece, valid while its scope is open. Every copy is gone when the scope closes, so the lender gets the whole back without counting (`SCOPE_CONTAINMENT`) |
 | A callback that binds a lifetime | lending: the callback's result cannot mention the lifetime, so nothing lent leaves it |
-| A linear token that belongs to the lent scope | conservation: the scope closes only once every such token is used up, and an operation uses one up without handing it on only once every use is finished (`gpu/encoding`'s finishers; `gpu/Gpu.rac` still has the callback return a `…Done` token) |
+| A linear token that belongs to the lent scope | conservation: the scope closes only once every such token is used up, and an operation uses one up without handing it on only once every use is finished (`gpu/encoding`'s finishers) |
 | Sealing | only the module's operations mint or consume pieces |
 | `Ctx(l, g)`, linear | the one emitter: code is emitted in the order authority flows, into block `l`, run by group `g` |
 | An evidence argument | a fact about generation-time values (`0 < S`, alignment) |

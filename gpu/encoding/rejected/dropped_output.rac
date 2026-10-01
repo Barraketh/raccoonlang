@@ -1,12 +1,12 @@
 // expect: LinearUnused
 // Authority over the output block cannot be silently dropped.
-import Gpu
+import encoding.Core
 namespace T {
-  open Gpu
+  open Core
   open Cuda
   def G : Group := Group.cta(256)
 
-  def kernel : Program := Gpu.tiledKernel("bad", DType.f32, 16,
+  def kernel : Program := Core.tiledKernel("bad", DType.f32, 16,
     fun (l: Lifetime)(e: Ctx(l, T.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, T.G) => e)
 }
-{ Gpu.render(T.kernel) }
+{ Core.render(T.kernel) }

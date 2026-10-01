@@ -1,25 +1,25 @@
 // expect: TypeMismatch
 // Filling a shared tile under a per-thread branch leaves some elements unwritten, so the tile could not become
 // `ready`. `storeMine` needs the converged CTA.
-import Gpu
+import encoding.Core
 namespace T {
-  open Gpu
+  open Core
   open Cuda
   def G : Group := Group.cta(256)
   def D : Group := Group.diverged(256)
   def Tl (a: Lifetime) : Type { kind = lin, scope = a } := Tile(a, DType.f32, 256, TileState.empty)
 
-  def kernel : Program := Gpu.tiledKernel("bad", DType.f32, 16,
+  def kernel : Program := Core.tiledKernel("bad", DType.f32, 16,
     fun (l: Lifetime)(e: Ctx(l, T.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, T.G) =>
-      Gpu.shared(e, DType.f32, 256, fun (a: Lifetime)(sa: Smem(a, DType.f32, 256))(ta: T.Tl(a))(e: Ctx(l, T.G)): Ctx(l, T.G) => {
+      Core.shared(e, DType.f32, 256, fun (a: Lifetime)(sa: Smem(a, DType.f32, 256))(ta: T.Tl(a))(e: Ctx(l, T.G)): Ctx(l, T.G) => {
         let yes := fun (m: Lifetime)(e: Ctx(m, T.D))(t: T.Tl(a)): Pair(Ctx(m, T.D), T.Tl(a)) => {
-          let (e, t) := Gpu.storeMine(e, sa, t, Gpu.zero(DType.f32))
+          let (e, t) := Core.storeMine(e, sa, t, Core.zero(DType.f32))
           (e, t)
         }
         let no := fun (m: Lifetime)(e: Ctx(m, T.D))(t: T.Tl(a)): Pair(Ctx(m, T.D), T.Tl(a)) => (e, t)
-        let (e, t) := Gpu.branch(e, Gpu.lt(k.row, k.m), Gpu.fixedTile(a, DType.f32, 256, TileState.empty), ta, yes, no)
-        let _ := Gpu.release(t)
-        Gpu.gstore(e, k.c, c, Gpu.zero(DType.f32))
+        let (e, t) := Core.branch(e, Core.lt(k.row, k.m), Core.fixedTile(a, DType.f32, 256, TileState.empty), ta, yes, no)
+        let _ := Core.release(t)
+        Core.gstore(e, k.c, c, Core.zero(DType.f32))
       }))
 }
-{ Gpu.render(T.kernel) }
+{ Core.render(T.kernel) }

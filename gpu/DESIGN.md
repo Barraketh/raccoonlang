@@ -1,9 +1,15 @@
 # GPU library: design of the Blackwell layer
 
-Status: implemented in `Gpu.rac` and exercised by `examples/tinygemm.rac` and `examples/persistent_gemm.rac` (§6); both
-ran correctly on a B200 (§7) before the TMA-store epilogue (§2, §4), the fence after `await`'s wait and the arrivals at
-initialization that complete phase 0 of the producers' barriers (§2), none of which has yet run on hardware.
-`gpu/README.md` describes the spike as a whole.
+Status: first built in `Gpu.rac`, the library's first core, now retired, for a TinyGEMM and a persistent GEMM (§6),
+which ran on a B200 (§7). `encoding/Core.rac` began as a copy of `Gpu.rac` and keeps this design, with these changes:
+- protocols close without `…Done` tokens: a side is linear and belongs to its opener's scope, and only its finisher
+  uses it up (`encoding/README.md`, step 3);
+- the epilogue loads a chunk from tensor memory (`loadAccChunk`, `loadBufferChunk`) before it waits for the chunk's
+  staging buffer, and writes it there after (`writeStage`; `encoding/NOTES.md`, item 10).
+
+This document uses the current names. Its examples are the encoding core's TinyGEMM (`encoding/examples/tinygemm.rac`)
+and the retired persistent GEMM, whose builder `tmaGemmPersistentKernel` the core keeps. `gpu/README.md` describes the
+library as a whole.
 
 The target is the structure of a minimal warp-specialized Blackwell GEMM ("TinyGEMM"): a TMA producer warp fills a
 ring of shared-memory stages, one elected thread of an MMA warp issues `tcgen05.mma` into a tensor-memory accumulator
@@ -38,7 +44,7 @@ one arm or one iteration returned, while at run time either arm, or any number o
 sound only if the state cannot record which. A state type that did, such as a sum of typestates
 (`before(ProducerAt) | after(Slot)`), would let one arm wait, the other not, and the code after the branch assume the
 wait. So `branch`, `loop`, `loopPeeled` (for the iterations after the first, which runs exactly once) and the tile
-loops take `Fixed(S)`: evidence, which only `Gpu` can build, that every value of `S` is the same one. It exists for
+loops take `Fixed(S)`: evidence, which only the core can build, that every value of `S` is the same one. It exists for
 `Unit`, for pairs of fixed types, and for each fieldless token family (`fixedTile`, `fixedProducerAt`, …). Values
 that change at run time live in registers (`Reg`), which the unrestricted arms and bodies capture.
 
@@ -53,8 +59,8 @@ registers the protocol owns:
 - **Stage ring** (`withRing`, in the whole CTA): allocates `S` shared stages (1024-byte aligned, for the 128-byte
   swizzle) and `2S` mbarriers (`full[s]`, `empty[s]`), initializes them on one thread, which also arrives once on each
   `empty[s]` so that its phase 0 is complete and every stage starts free, then `fence.mbarrier_init` and a CTA barrier,
-  and hands its callback a `Producer(r)` and a `Consumer(r)` endpoint. The callback must return
-  `ProducerDone(r)` and `ConsumerDone(r)`, so both sides finish before the ring's storage can be reused.
+  and hands its callback a `Producer(r)` and a `Consumer(r)` endpoint. Both are linear and belong to the ring's scope,
+  and only their finishers use them up, so both sides finish before the ring's storage can be reused.
   - **Taking an endpoint.** A side's stage index and phase bit are registers, and registers are per thread. So an
     endpoint is used by exactly one thread: an elected thread takes it (`takeProducer`, `takeConsumer`, which need the
     elect's `Elected(m)` and a context of lifetime `m` itself), which declares the side's registers in the elected
@@ -97,9 +103,9 @@ registers the protocol owns:
   so `AccPending(a, m)` and the used stage `ReadyUsed(r, m)` carry the elect's scope `m`: they are committed by the
   thread that issued them, before its elect ends.
 - **Output staging** (`withStaging`, in the whole CTA): allocates `bufs` staging buffers of 32×32 f32 (4096 bytes,
-  1024-byte aligned) per warp of an aligned warpgroup, and hands its callback an untaken `StoreSide(s)`; the callback
-  must return `StoreDone(s)`, so no TMA store still reads the buffers when their shared memory is released or the
-  kernel ends.
+  1024-byte aligned) per warp of an aligned warpgroup, and hands its callback an untaken `StoreSide(s)`. The side is
+  linear and belongs to the staging scope, and only `finishStores` uses it up, so no TMA store still reads the buffers
+  when their shared memory is released or the kernel ends.
   - **Taking the side.** The aligned warpgroup takes it (`takeStore`, with the alignment proof), declaring its current
     buffer index as a register of each of its 128 threads, which run every operation on it together and so keep one
     index; `StoreAt(s, m, f)` is confined to the warpgroup's scope `m`. A TMA store is issued by one thread, and
@@ -111,11 +117,12 @@ registers the protocol owns:
   - **A buffer's typestate**, per chunk: `acquireStage` (lane 0 waits `cp.async.bulk.wait_group.read (bufs − 1)`,
     then `__syncwarp`) → `StageFree`: the current buffer was last read by the store `bufs` stores ago, since each store
     is one group and the buffers are used in turn, and that store has finished reading it; the warp's threads write
-    after the wait. `stageAcc` / `stageAccFull` (`tcgen05.ld` into registers, `wait::ld`, `st.shared.v4`) →
-    `StageWritten`. `fenceStage` (`fence.proxy.async.shared::cta` in every thread, `__syncwarp`) → `StageFenced`: the
+    after the wait. `writeStage` (`st.shared.v4` of a chunk's registers, which `loadAccChunk` or `loadBufferChunk`
+    loaded before the wait: `tcgen05.ld`, `wait::ld`) → `StageWritten`. `fenceStage` (`fence.proxy.async.shared::cta` in every thread, `__syncwarp`) → `StageFenced`: the
     writes are ordered before the async proxy's reads, and lane 0 is past every thread's fence. `storeStage` (lane 0:
     `cp.async.bulk.tensor.2d.global.shared::cta.bulk_group`, `cp.async.bulk.commit_group`; every thread: next buffer)
-    → in flight, back to `StoreAt`. `finishStores` (lane 0: `cp.async.bulk.wait_group 0`, `__syncwarp`) → `StoreDone`.
+    → in flight, back to `StoreAt`. `finishStores` (lane 0: `cp.async.bulk.wait_group 0`, `__syncwarp`) uses the side
+    up.
   - The tokens between acquiring and storing have no `Fixed` evidence, so a chunk's protocol runs in straight-line
     code; `StoreAt` is `Fixed`, and the invariant it stands for (the current buffer's last store is at least `bufs`
     groups back) holds whether an arm or an iteration stored or not.
@@ -133,7 +140,7 @@ A tensor map parameter's type carries its box (`TMap(l, spec)`; bf16 elements an
 requires the maps' boxes to be the ring's, the stage buffers are laid out from the same boxes, and the `tcgen05.mma`
 shared-memory descriptors (start address, stride byte offset 1024, version 1, 128-byte swizzle, K advanced 32 bytes
 per step) and the instruction descriptor (f32 accumulator, bf16 operands, both K-major, M, N) are computed from them.
-The dynamic buffer is declared 1024-byte aligned, and a kernel may not also declare static shared arrays (`Gpu.render`
+The dynamic buffer is declared 1024-byte aligned, and a kernel may not also declare static shared arrays (`Core.render`
 refuses it, `Check.sharedMemory`), which would come first in the shared window. So TMA writes, the MMA reads, and the host's
 `cuTensorMapEncodeTiled` call cannot disagree about layout: the kernel
 comes with a generated host launcher (`<name>_launch`) that encodes the operands' maps from the same boxes, and the
@@ -174,12 +181,12 @@ chunk has been staged, not right after its last load.
 
 ## 5. Mutations to refuse
 
-`rejected/tinygemm_mutants.py` holds TinyGEMM with one mistake each, run by `check.sh` through `mutate.py`:
+`encoding/rejected/tinygemm_mutants.py` holds TinyGEMM with one mistake each, run by `check.sh` through `mutate.py`:
 
 | Mutant | Refused by |
 |---|---|
 | filling a stage without `acquire` | `fill` needs a `Slot` |
-| leaving the ring without the producer tail | only `finishProducer` makes `ProducerDone` |
+| leaving the ring without the producer tail | the producer is linear, and only `finishProducer` uses it up |
 | running the producer on the whole warp | only an elected thread can take an endpoint |
 | handing a taken endpoint to a later elect | `ProducerAt(r, j)` cannot leave `j` |
 | MMA on a stage without `await` | `mmaFirst` needs `Ready` |
@@ -187,16 +194,21 @@ chunk has been staged, not right after its last load.
 | releasing a stage twice | a release consumes the used stage (`ReadyUsed` is linear) |
 | the first K step inside the loop | a loop body's state keeps one type |
 | never committing the MMAs | `AccPending` and `AccSend` are linear |
-| storing before the handoff | `stageAcc` needs `Acc(a, ready)` |
-| writing a staging buffer before `wait_group.read` | `stageAcc` needs `StageFree` |
-| ending the epilogue with stores in flight | only `finishStores` makes `StoreDone` |
+| storing before the handoff | `loadAccChunk` needs `Acc(a, ready)` |
+| writing a staging buffer before `wait_group.read` | `writeStage` needs `StageFree` |
+| ending the epilogue with stores in flight | the storing side is linear, and only `finishStores` uses it up |
+| finishing the stores inside the chunk loop | a loop body captures no linear value |
 | a second tensor-memory allocation | `TmemPermit` is linear |
-| M = 64 boxes | generation-time shape check |
-| an unaligned epilogue warpgroup | `takeStore` asks for the alignment as evidence |
+| a static shared array beside the dynamic buffer | `Check.sharedMemory` |
+| a kernel name that is not a C identifier, or is a launcher parameter's | `Check.names` |
+| a literal wider than 32 bits | `Check.literals` |
+| boxes narrower than the swizzle, M = 64 boxes | generation-time shape checks |
+| K steps counted by dividing by zero | `ceilDivC` asks for a positive divisor as evidence |
 
 ## 6. The persistent kernel
 
-`examples/persistent_gemm.rac` keeps TinyGEMM's roles but launches one CTA per SM (at most one per tile), each looping
+The persistent GEMM (`tmaGemmPersistentKernel`; its example, `examples/persistent_gemm.rac`, was retired with
+`Gpu.rac`) keeps TinyGEMM's roles but launches one CTA per SM (at most one per tile), each looping
 over the 128×`bn` tiles of C that `Sched` assigns it (tile index `t` visited by CTA `t mod gridDim.x`), and gives tensor
 memory two accumulators, so the epilogue of one tile overlaps the MMAs of the next. The stage ring runs on across
 tiles. What is new:
@@ -222,7 +234,7 @@ tiles. What is new:
   `mmaNextInto`… → `commitAcc` (`tcgen05.commit` to full). The epilogue takes the consumer side as the whole aligned
   warpgroup (`takeAccConsumer`, with the alignment proof), so its 128 threads run every ring operation together and
   keep identical stage and phase registers: `awaitAcc` (wait full, fence) → `AccFull` → `forChunks` over the tile,
-  staging each chunk with `stageAccFull` (§4) → `releaseAcc` (`tcgen05.fence::before_thread_sync`, 128 arrivals on
+  staging each chunk, loaded by `loadBufferChunk` (§4) → `releaseAcc` (`tcgen05.fence::before_thread_sync`, 128 arrivals on
   empty), once every chunk's loads have completed; the stores themselves may still be in flight, since they read
   shared memory, not tensor memory. `finishAccProducer` waits until the epilogue has read
   every buffer, so the accumulator goes back to `withTmem`, `empty`, with no tensor-core work in flight. As with the
@@ -233,7 +245,7 @@ tiles. What is new:
   the barriers come to 230496 bytes, under the 232448 an SM has.
 - **Launcher.** The host launcher queries the SM count and launches `min(tiles, SMs)` CTAs.
 
-`rejected/persistent_gemm_mutants.py` refuses storing a tile twice, storing to a tile of the program's choosing,
+Its mutants, retired with it, refused storing a tile twice, storing to a tile of the program's choosing,
 a second owning loop, reading an accumulator before `awaitAcc`, releasing it before the store, MMAs into a buffer not
 yet acquired, writing a staging buffer before `wait_group.read`, a TMA store before the proxy fence, waiting for the
 stores on one warp of the four whose lanes 0 issued them, ending the epilogue with stores in flight, bands of no tile
@@ -241,12 +253,15 @@ rows, and an issuer that does not drain.
 
 ## 7. On hardware
 
+This section records the hardware round of the retired core's GEMMs. The encoding core's kernels and their hardware
+session are in `encoding/README.md` and `encoding/NOTES.md`.
+
 `check.sh` compiles the generated C++ against stub headers, with each inline assembly statement replaced by calls
 over its operands, which checks everything but the templates. The templates follow CUTLASS; they are checked by
-ptxas and by runs on an sm_100a GPU. `harness/gemm_test.cu` compares a generated kernel with a CPU reference exactly
-(inputs are small multiples of 1/4, so every sum is exact), over whole, partial and tiny tiles and several tiles per
-CTA, three runs each, with sentinel guard bands around C; checks that the launcher refuses extents TMA cannot
-encode; and reports throughput.
+ptxas and by runs on an sm_100a GPU. The retired core's harness, `harness/gemm_test.cu`, compared a generated kernel
+with a CPU reference exactly (inputs are small multiples of 1/4, so every sum is exact), over whole, partial and tiny
+tiles and several tiles per CTA, three runs each, with sentinel guard bands around C; checked that the launcher
+refuses extents TMA cannot encode; and reported throughput.
 
 **Results** (2026-09-29, one NVIDIA B200, driver 580.126, CUDA 12.9, on vast.ai):
 
@@ -270,20 +285,5 @@ arch=compute_100a,code=sm_100a`. The round-1 review's probe that skips the produ
 since the `Fixed` rule) was also run, generated by the library before that fix: it passes while the ring never wraps
 (K ≤ 256) and dies with an unspecified launch failure at K = 1024, once a stage is refilled before its release.
 
-To reproduce:
-
-```bash
-gpu/gen.sh gpu/examples/tinygemm.rac > tinygemm.cu
-```
-
-```bash
-nvcc -std=c++17 -O2 -gencode arch=compute_100a,code=sm_100a -o tinygemm_test tinygemm.cu gpu/harness/gemm_test.cu -lcuda && ./tinygemm_test
-```
-
-```bash
-gpu/gen.sh gpu/examples/persistent_gemm.rac > persistent_gemm.cu
-```
-
-```bash
-nvcc -std=c++17 -O2 -gencode arch=compute_100a,code=sm_100a -DGEMM_LAUNCH=persistent_gemm_launch -o persistent_test persistent_gemm.cu gpu/harness/gemm_test.cu -lcuda && ./persistent_test
-```
+The examples and the harness this round ran were retired with `Gpu.rac`. The encoding core's harnesses run as
+`encoding/README.md` describes (`encoding/harness/hw.sh`).

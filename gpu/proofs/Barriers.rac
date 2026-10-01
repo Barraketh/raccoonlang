@@ -67,12 +67,6 @@ namespace Barriers {
     | Option.some idThreads => Barriers.barrierFound(st, idThreads.fst, idThreads.snd, h)
   }
 
-  def rawFound (st: Scan)(raw: Bool)(h: Fold.Empty(Check.rawBarrierAt(st, raw).found)): Fold.Empty(st.found) := {
-    match raw returning Fold.Empty(st.found) with
-    | Bool.true => False.elim(Fold.consNotEmpty("asm: a CTA barrier outside `Instr.barSync`", st.found, h), Fold.Empty(st.found))
-    | Bool.false => h
-  }
-
   def stepFound (st: Scan)(s: Stmt)(h: Fold.Empty(Check.barrierStep(st, s).found)): Fold.Empty(st.found) := {
     match s returning Fold.Empty(st.found) with
     | Stmt.decl t id init => h
@@ -87,7 +81,6 @@ namespace Barriers {
     | Stmt.scoped body => h
     | Stmt.sync => h
     | Stmt.syncWarp => h
-    | Stmt.asm template outs ins => Barriers.rawFound(st, Check.ctaBarrierChars(template.data), h)
     | Stmt.instr i => {
       match i returning Fold.Empty(st.found) with
       | Instr.barSync id threads => Barriers.atFound(st, Check.literalPair(id, threads), h)
@@ -110,13 +103,6 @@ namespace Barriers {
     | Option.some idThreads => NatSets.kept(st.seen, idThreads.fst, n, h)
   }
 
-  def rawSeen (st: Scan)(raw: Bool)(n: Nat)(h: Eq(Bool, Check.NatSet.member(st.seen, n), Bool.true))
-      : Eq(Bool, Check.NatSet.member(Check.rawBarrierAt(st, raw).seen, n), Bool.true) := {
-    match raw returning Eq(Bool, Check.NatSet.member(Check.rawBarrierAt(st, raw).seen, n), Bool.true) with
-    | Bool.true => h
-    | Bool.false => h
-  }
-
   def stepSeen (st: Scan)(s: Stmt)(n: Nat)(h: Eq(Bool, Check.NatSet.member(st.seen, n), Bool.true))
       : Eq(Bool, Check.NatSet.member(Check.barrierStep(st, s).seen, n), Bool.true) := {
     match s returning Eq(Bool, Check.NatSet.member(Check.barrierStep(st, s).seen, n), Bool.true) with
@@ -132,7 +118,6 @@ namespace Barriers {
     | Stmt.scoped body => h
     | Stmt.sync => h
     | Stmt.syncWarp => h
-    | Stmt.asm template outs ins => Barriers.rawSeen(st, Check.ctaBarrierChars(template.data), n, h)
     | Stmt.instr i => {
       match i returning Eq(Bool, Check.NatSet.member(Check.barrierStep(st, Stmt.instr(i)).seen, n), Bool.true) with
       | Instr.barSync id threads => Barriers.atSeen(st, Check.literalPair(id, threads), n, h)
@@ -241,43 +226,6 @@ namespace Barriers {
     | Spec.Mem.there x rest inRest => Barriers.literalAt(a, b, rest, inRest, Check.barrierStep(st, x), h)
   }
 
-  // ---- No CTA barrier in an asm statement -------------------------------------------------------------------------
-
-  def rawFalse (st: Scan)(raw: Bool)(h: Fold.Empty(Check.rawBarrierAt(st, raw).found)): Eq(Bool, raw, Bool.false) := {
-    match raw returning Eq(Bool, raw, Bool.false) with
-    | Bool.true => False.elim(Fold.consNotEmpty("asm: a CTA barrier outside `Instr.barSync`", st.found, h), Eq(Bool, Bool.true, Bool.false))
-    | Bool.false => Eq.refl(Bool.false)
-  }
-
-  def refusedAt (t: String)(outs: List(Operand))(ins: List(Operand))(xs: List(Stmt))(mem: Spec.Mem(Stmt, Stmt.asm(t, outs, ins), xs))(st: Scan)
-      (h: Fold.Empty(List.foldl(xs, Scan, st, Check.barrierStep).found)): Eq(Bool, Check.ctaBarrierChars(t.data), Bool.false) decreases structural(xs) := {
-    let s := Stmt.asm(t, outs, ins)
-    match mem returning Eq(Bool, Check.ctaBarrierChars(t.data), Bool.false) with
-    | Spec.Mem.here rest => Barriers.rawFalse(st, Check.ctaBarrierChars(t.data), Barriers.walkFound(rest, Check.barrierStep(st, s), h))
-    | Spec.Mem.there x rest inRest => Barriers.refusedAt(t, outs, ins, rest, inRest, Check.barrierStep(st, x), h)
-  }
-
-  // A template the checker passed is no CTA barrier's.
-  def notCtaBarrier (t: String)(passed: Eq(Bool, Check.ctaBarrierChars(t.data), Bool.false))(raw: Spec.CtaBarrierTemplate(t)): False := {
-    let atChars := fun (cs: List(Char)): Prop => Eq(Bool, Check.ctaBarrierChars(cs), Bool.false)
-    match raw returning False with
-    | Or.inl bar => {
-      match bar returning False with
-      | Spec.Prefixed.mk rest spelled => Bool.trueNeFalse(Eq.subst(spelled, Level.zero, atChars, passed))
-    }
-    | Or.inr barrier => {
-      match barrier.left returning False with
-      | Spec.Prefixed.mk rest spelled => {
-        let cluster := Lib.notFalse(Check.startsWith(rest, "cluster".data), Eq.subst(spelled, Level.zero, atChars, passed))
-        match Lib.startsWithSound(rest, "cluster".data, cluster) returning False with
-        | Spec.Prefixed.mk tail onward => {
-          let whole := Eq.trans(spelled, congrArg(onward, List(Char), fun (cs: List(Char)): List(Char) => List.append("barrier.".data, cs)))
-          barrier.right(Spec.Prefixed.mk("barrier.cluster".data, tail, whole))
-        }
-      }
-    }
-  }
-
   // ---- The theorem --------------------------------------------------------------------------------------------------
 
   def sound (k: Kernel)(h: Eq(List(String), Check.namedBarriers(k), List.nil(String))): Spec.NamedBarriers(k) := {
@@ -288,10 +236,6 @@ namespace Barriers {
       Fold.inOrder(walk.found, h))
     let literal := fun (a: Expr)(b: Expr)(occ: Spec.InBlock(Stmt.instr(Instr.barSync(a, b)), k.body)): Spec.LiteralPair(a, b) =>
       Barriers.literalAt(a, b, flat, Fold.blockMem(Stmt.instr(Instr.barSync(a, b)), k.body, occ), start, flatWalk)
-    let noTemplate := fun (t: String)(outs: List(Operand))(ins: List(Operand))(occ: Spec.InBlock(Stmt.asm(t, outs, ins), k.body))
-        : Not(Spec.CtaBarrierTemplate(t)) =>
-      fun (raw: Spec.CtaBarrierTemplate(t)): False =>
-        Barriers.notCtaBarrier(t, Barriers.refusedAt(t, outs, ins, flat, Fold.blockMem(Stmt.asm(t, outs, ins), k.body, occ), start, flatWalk), raw)
     let inRange := fun (s: Stmt)(id: Nat)(threads: Nat)(occ: Spec.InBlock(s, k.body))(bar: Spec.Barrier(id, threads, s)): And(Nat.le(1, id), Nat.le(id, 15)) =>
       Barriers.atBarrier(s, flat, Fold.blockMem(s, k.body, occ), start, flatWalk, id, threads, bar).left
     let counted := fun (s: Stmt)(id: Nat)(threads: Nat)(occ: Spec.InBlock(s, k.body))(bar: Spec.Barrier(id, threads, s))
@@ -299,6 +243,6 @@ namespace Barriers {
       Barriers.atBarrier(s, flat, Fold.blockMem(s, k.body, occ), start, flatWalk, id, threads, bar).right
     let distinct := fun (x: Stmt)(y: Stmt)(id: Nat)(tx: Nat)(ty: Nat)(before: Spec.Before(Stmt, x, y, flat))(barX: Spec.Barrier(id, tx, x))
         (barY: Spec.Barrier(id, ty, y)): False => Barriers.distinct(flat, x, y, before, start, flatWalk, id, tx, ty, barX, barY)
-    And.intro(Spec.BarrierIds.mk(k, literal, noTemplate, inRange, distinct), counted)
+    And.intro(Spec.BarrierIds.mk(k, literal, inRange, distinct), counted)
   }
 }

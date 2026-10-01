@@ -42,7 +42,6 @@ namespace Scoping {
     | Stmt.scoped body => w
     | Stmt.sync => w
     | Stmt.syncWarp => w
-    | Stmt.asm template outs ins => w
     | Stmt.instr i => w
     | Stmt.error message => w
   }
@@ -119,7 +118,6 @@ namespace Scoping {
       | Stmt.scoped body => Scoping.blockAcc(v, body, u, h)
       | Stmt.sync => h
       | Stmt.syncWarp => h
-      | Stmt.asm template outs ins => h
       | Stmt.instr i => h
       | Stmt.error message => h
     }
@@ -158,7 +156,6 @@ namespace Scoping {
       | Stmt.scoped body => Scoping.blockSeen(v, body, u, n, h)
       | Stmt.sync => h
       | Stmt.syncWarp => h
-      | Stmt.asm template outs ins => h
       | Stmt.instr i => h
       | Stmt.error message => h
     }
@@ -323,7 +320,6 @@ namespace Scoping {
         | Stmt.scoped body => Scoping.seenAfterBlock(y, body, inner, id, bind, v, u, h)
         | Stmt.sync => Scoping.nothingInside(y, inner, goal)
         | Stmt.syncWarp => Scoping.nothingInside(y, inner, goal)
-        | Stmt.asm template outs ins => Scoping.nothingInside(y, inner, goal)
         | Stmt.instr i => Scoping.nothingInside(y, inner, goal)
         | Stmt.error message => Scoping.nothingInside(y, inner, goal)
       }
@@ -373,7 +369,6 @@ namespace Scoping {
         | Stmt.scoped body => Scoping.freshBlock(y, body, inner, id, bind, v, u, seen, h)
         | Stmt.sync => Scoping.nothingInside(y, inner, False)
         | Stmt.syncWarp => Scoping.nothingInside(y, inner, False)
-        | Stmt.asm template outs ins => Scoping.nothingInside(y, inner, False)
         | Stmt.instr i => Scoping.nothingInside(y, inner, False)
         | Stmt.error message => Scoping.nothingInside(y, inner, False)
       }
@@ -440,7 +435,6 @@ namespace Scoping {
         | Stmt.scoped body => Scoping.distinctBlock(x, y, body, inner, id, bindX, bindY, v, u, h)
         | Stmt.sync => Scoping.nothingBefore(x, y, inner)
         | Stmt.syncWarp => Scoping.nothingBefore(x, y, inner)
-        | Stmt.asm template outs ins => Scoping.nothingBefore(x, y, inner)
         | Stmt.instr i => Scoping.nothingBefore(x, y, inner)
         | Stmt.error message => Scoping.nothingBefore(x, y, inner)
       }

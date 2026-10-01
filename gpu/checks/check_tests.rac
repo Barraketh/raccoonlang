@@ -19,8 +19,6 @@ namespace T {
 
   def b3 (s: Stmt)(t: Stmt)(u: Stmt): Block := Block.seq(s, T.b2(t, u))
 
-  def r (x: Expr): Operand := Operand.mk("r", x)
-
   def exprs (x: Expr)(y: Expr): List(Expr) := List.cons(x, List.cons(y, List.nil(Expr)))
 
   def bar (id: Nat)(threads: Nat): Stmt := Stmt.instr(Instr.barSync(Expr.lit(id), Expr.lit(threads)))
@@ -53,7 +51,7 @@ namespace T {
       T.b1(Stmt.scoped(T.b1(Stmt.decl(DType.u32, 3, Expr.sharedAddr(1023))))),
       T.b1(Stmt.store(Expr.param("C"), Expr.var(0), Expr.zero(DType.f32)))),
     Block.seq(T.bar(2, 32),
-    Block.seq(Stmt.asm("cp.async", List.nil(Operand), List.cons(Operand.mk("l", Expr.paramAddr("A_map")), List.nil(Operand))),
+    Block.seq(Stmt.instr(Instr.tmaLoad(CtaGroup.one, Expr.sharedAddr(0), Expr.paramAddr("A_map"), Expr.lit(0), Expr.lit(0), Expr.sharedAddr(8))),
     Block.seq(Stmt.forStride(4, Expr.special(Builtin.blockX), Expr.var(0), Expr.special(Builtin.gridX),
       T.b2(Stmt.declOut(DType.f32, 5), Stmt.decl(DType.u64, 6, Expr.lit64(18446744073709551615)))),
     Block.done))))))
@@ -93,7 +91,7 @@ namespace T {
 
   def goodFullShared : Eq(List(String), Check.sharedMemory(T.goodFull), T.none) := Eq.refl(T.none)
 
-  // The certificate itself, discharged at a call as `Gpu.render` discharges it.
+  // The certificate itself, discharged at a call as `Core.render` discharges it.
   def certified (k: Kernel)[ok: Check.WellFormed(k)]: Bool := Bool.true
 
   def goodWellFormed : Eq(Bool, T.certified(T.good), Bool.true) := Eq.refl(Bool.true)
@@ -183,9 +181,9 @@ namespace T {
   def scopedRedeclared : Eq(List(String), Check.scoping(T.redeclared), T.two("v0 declared twice", "v0 declared twice")) :=
     Eq.refl(T.two("v0 declared twice", "v0 declared twice"))
 
-  // A branch's condition, an asm input, and a store's index and value are uses.
+  // A branch's condition, an instruction's operand, and a store's index and value are uses.
   def undeclaredOperands : Kernel := T.plain(T.b3(Stmt.ifElse(Expr.var(1), Block.done, Block.done),
-    Stmt.asm("mov", List.nil(Operand), List.cons(T.r(Expr.var(2)), List.nil(Operand))),
+    Stmt.instr(Instr.mbarInval(Expr.var(2))),
     Stmt.store(Expr.param("N"), Expr.var(3), Expr.var(4))))
 
   def scopedUndeclaredOperands : Eq(List(String), Check.scoping(T.undeclaredOperands),
@@ -194,13 +192,12 @@ namespace T {
     Eq.refl(List.cons("v1 used before its declaration", List.cons("v2 used before its declaration",
       T.two("v3 used before its declaration", "v4 used before its declaration"))))
 
-  // An assignment's target, a store's operands and an asm operand are uses.
-  def undeclaredUses : Kernel := T.plain(T.b3(Stmt.assign(5, Expr.lit(0)), Stmt.store(Expr.var(6), Expr.lit(0), Expr.lit(0)),
-    Stmt.asm("mov", List.cons(Operand.mk("=r", Expr.var(7)), List.nil(Operand)), List.nil(Operand))))
+  // An assignment's target and a store's operands are uses.
+  def undeclaredUses : Kernel := T.plain(T.b2(Stmt.assign(5, Expr.lit(0)), Stmt.store(Expr.var(6), Expr.lit(0), Expr.lit(0))))
 
   def scopedUndeclaredUses : Eq(List(String), Check.scoping(T.undeclaredUses),
-      List.cons("v5 used before its declaration", T.two("v6 used before its declaration", "v7 used before its declaration"))) :=
-    Eq.refl(List.cons("v5 used before its declaration", T.two("v6 used before its declaration", "v7 used before its declaration")))
+      T.two("v5 used before its declaration", "v6 used before its declaration")) :=
+    Eq.refl(T.two("v5 used before its declaration", "v6 used before its declaration"))
 
   // An instruction's result and its operands are uses.
   def undeclaredInstr : Kernel := T.plain(T.b2(Stmt.instr(Instr.ex2(8, Expr.var(9))),
@@ -296,22 +293,12 @@ namespace T {
       T.two("bar.sync without a literal id and thread count", "bar.sync without a literal id and thread count")) :=
     Eq.refl(T.two("bar.sync without a literal id and thread count", "bar.sync without a literal id and thread count"))
 
-  // A CTA barrier in an asm statement: `bar.…`, or `barrier.…` but not the cluster barrier's.
-  def barrierTemplates : Kernel := T.plain(Block.seq(Stmt.asm("bar.sync 1, 64;", List.nil(Operand), List.nil(Operand)),
-    Block.seq(Stmt.asm("bar.warp.sync -1;", List.nil(Operand), List.nil(Operand)),
-    Block.seq(Stmt.asm("barrier.sync 0;", List.nil(Operand), List.nil(Operand)),
-    Block.seq(Stmt.asm("barrier.cluster.arrive.release.aligned;", List.nil(Operand), List.nil(Operand)),
-    T.b1(Stmt.asm("mbarrier.arrive.shared::cta.b64 _, [%0];", List.nil(Operand), List.cons(T.r(Expr.lit(0)), List.nil(Operand)))))))))
-
-  def barrierTemplatesRefused : Eq(List(String), Check.namedBarriers(T.barrierTemplates),
-      List.cons("asm: a CTA barrier outside `Instr.barSync`", T.two("asm: a CTA barrier outside `Instr.barSync`", "asm: a CTA barrier outside `Instr.barSync`"))) :=
-    Eq.refl(List.cons("asm: a CTA barrier outside `Instr.barSync`", T.two("asm: a CTA barrier outside `Instr.barSync`", "asm: a CTA barrier outside `Instr.barSync`")))
-
   // ---- I4, literals ---------------------------------------------------------------------------------------------------
 
-  // Literals anywhere: in a nested block's asm operand, in a 64-bit literal, and in the launcher's requirements.
+  // Literals anywhere: in a nested block's instruction operand, in a 64-bit literal, and in the launcher's
+  // requirements.
   def wideLiterals : Kernel := Kernel.mk("good", T.goodParams, 0,
-    T.b2(Stmt.scoped(T.b1(Stmt.asm("mov", List.nil(Operand), List.cons(T.r(Expr.bin(BinOp.add, Expr.lit(1), Expr.lit(4294967296))), List.nil(Operand))))),
+    T.b2(Stmt.scoped(T.b1(Stmt.instr(Instr.mbarInval(Expr.bin(BinOp.add, Expr.lit(1), Expr.lit(4294967296)))))),
       Stmt.decl(DType.u64, 0, Expr.lit64(18446744073709551616))),
     Option.some(Launcher.mk(T.hostParams, List.cons(Expr.bin(BinOp.lt, Expr.param("N"), Expr.lit(4294967297)), List.nil(Expr)),
       List.cons(T.encodeA, List.nil(MapEncoding)), Grid.blocks(Expr.param("N"), Expr.lit(1)), 256)))
@@ -426,7 +413,7 @@ namespace T {
 
   // A parameter named in the body, by value or by address, is one of the kernel's.
   def unknownParams : Kernel := T.plain(T.b2(Stmt.decl(DType.u32, 0, Expr.param("M")),
-    Stmt.asm("mov", List.nil(Operand), List.cons(Operand.mk("l", Expr.paramAddr("B_map")), List.nil(Operand)))))
+    Stmt.instr(Instr.tmaStore(Expr.paramAddr("B_map"), Expr.lit(0), Expr.lit(0), Expr.sharedAddr(0)))))
 
   def namesUnknownParams : Eq(List(String), Check.names(T.unknownParams), T.two("kernel: M is not a parameter", "kernel: B_map is not a parameter")) :=
     Eq.refl(T.two("kernel: M is not a parameter", "kernel: B_map is not a parameter"))

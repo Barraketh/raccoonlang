@@ -1,0 +1,39 @@
+// expect: EvidenceNotDischarged
+// mentions: Check.Clean.sharedOk
+// A SIMT kernel that opens a stage ring. Its dynamic shared memory (here more than an SM has) would be asked for by
+// no launcher, so the ring's barriers would lie outside the CTA's shared memory: only a kernel with a launcher may
+// use dynamic shared memory, and never more than sm_100a has. The kernel generates without error; `Core.render`
+// refuses it on its shared-memory invariant (I2).
+import encoding.Core
+namespace T {
+  open Core
+  open Cuda
+  def G : Group := Group.cta(256)
+  def box : TmaSpec := TmaSpec.mk(64, 256)
+  def cfg : RingCfg := RingCfg.mk(8, T.box, T.box)
+
+  def kernel : Program := Core.tiledKernel("tiledring", DType.f32, 16,
+    fun (l: Lifetime)(e: Ctx(l, T.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, T.G) => {
+      let body := fun (r: Lifetime)(ring: Ring(r, T.cfg))(p: Producer(r))(q: Consumer(r))(e: Ctx(l, T.G)): Pair(Ctx(l, T.G), Unit) => {
+        let prod := fun (m: Lifetime)(e: Ctx(m, Group.warps(0, 1))): Pair(Ctx(m, Group.warps(0, 1)), Unit) =>
+          Core.elect(e, Unit, fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, Group.lane)): Pair(Ctx(j, Group.lane), Unit) => {
+            let (e, pa) := Core.takeProducer(e, w, ring, p)
+            (Core.finishProducer(e, ring, pa), Unit.unit)
+          })
+        let cons := fun (m: Lifetime)(e: Ctx(m, Group.warps(1, 1))): Pair(Ctx(m, Group.warps(1, 1)), Unit) =>
+          Core.elect(e, Unit, fun (j: Lifetime)(w: Elected(j))(e: Ctx(j, Group.lane)): Pair(Ctx(j, Group.lane), Unit) => {
+            let (e, ca) := Core.takeConsumer(e, w, ring, q)
+            (Core.finishConsumer(e, ca), Unit.unit)
+          })
+        let idle := fun (m: Lifetime)(e: Ctx(m, Group.warps(2, 6))): Pair(Ctx(m, Group.warps(2, 6)), Unit) => (e, Unit.unit)
+        let rest := fun (m: Lifetime)(e: Ctx(m, Group.warps(1, 7))): Pair(Ctx(m, Group.warps(1, 7)), Pair(Unit, Unit)) =>
+          Core.split(e, 1, Unit, Unit, cons, idle)
+        let (e, (u, (v, x))) := Core.split(e, 1, Unit, Pair(Unit, Unit), prod, rest)
+        (e, Unit.unit)
+      }
+      let (e, u) := Core.withRing(e, T.cfg, Unit, body)
+      let (e, x) := Core.gload(e, k.a, k.row, k.col)
+      Core.gstore(e, k.c, c, x)
+    })
+}
+{ Core.render(T.kernel) }

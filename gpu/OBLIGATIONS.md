@@ -6,8 +6,8 @@ plan of §8, verified in Raccoon. `DESIGN.md` explains the design; this document
 
 ## 1. The claim
 
-Let `P` be any Raccoon program that type-checks against `gpu/Prelude.rac`, imports `Gpu`, and prints
-`Gpu.render(p)` for a `Program p`. Then the printed CUDA C++, compiled for sm_100a and launched by its generated
+Let `P` be any Raccoon program that type-checks against `gpu/Prelude.rac`, imports the encoding core
+(`encoding.Core`, `gpu/encoding/Core.rac`), and prints `Core.render(p)` for a `Program p`. Then the printed CUDA C++, compiled for sm_100a and launched by its generated
 launcher (or, for a kernel without one, as its builder's launch contract says), satisfies:
 
 - **S1, no data race.** No two accesses to one shared- or global-memory location, at least one a write, from
@@ -26,7 +26,7 @@ launcher (or, for a kernel without one, as its builder's launch contract says), 
 
 Not claimed:
 - **Liveness.** Roles whose loops run different trip counts deadlock (they cannot race).
-- **Functional correctness.** That a GEMM computes a product is tested (`harness/`), not claimed.
+- **Functional correctness.** That a kernel computes what it should is tested (`encoding/harness/`), not claimed.
 - **Performance.**
 - **Launches that break the contract.** A launcher called with arrays smaller than its extents, or aliasing arrays.
 
@@ -39,10 +39,10 @@ Not claimed:
 - The platform assumptions of §3: our reading of the PTX ISA and CUDA semantics.
 - nvcc, ptxas, the driver and the hardware.
 
-Everything else is `gpu/Gpu.rac`, whose operations must meet §6, and the typing discipline of §5, which makes
-clients use them correctly. For `gpu/encoding/` it is `Core.rac` and `Registers.rac`.
+Everything else is `gpu/encoding/Core.rac` and `gpu/encoding/Registers.rac`, whose operations must meet §6, and the
+typing discipline of §5, which makes clients use them correctly.
 
-**A carve-out from §1 for `gpu/encoding/`.** Its claim is for programs that do not call `Registers.pool`, which only
+**A carve-out from §1.** The claim is for programs that do not call `Registers.pool`, which only
 the kernel builders may call (§7, M24). The language cannot refuse a client's call, since sealing is per file; a
 client's pool at a count other than its kernel's makes `setmaxnreg` changes from a count the warps do not hold, which
 PTX leaves undefined. `check.sh`'s register check refuses such a kernel when the CUDA toolkit is present
@@ -72,7 +72,7 @@ pair GEMM's (`encoding/TWO_CTA.md` §6 step 4), none exercised.
 | A8 | `mbarrier.inval` ends a barrier: any operation but `init` on its storage is then undefined, so no arrival or complete-tx may land after it. Its storage may be initialized again: a ring reopened in a loop is initialized again by thread 0 right after its own `inval`, in program order, the CTA barrier being the join before the `inval` (so every other thread's last use precedes both). Initializing a live barrier is undefined and not relied on. | PTX ISA 9.4 §9.7.15.16.12, §9.7.15.16.13 (Example 2 initializes again after `inval` and `bar.cta.sync`) | high |
 | A9 | `cp.async.bulk.tensor.2d…mbarrier::complete_tx::bytes` writes the box into shared memory asynchronously, zero-filling (and counting) elements outside the tensor, and on completion performs one complete-tx of the box's bytes on the barrier, with release semantics at cluster scope. A thread whose wait observes that phase sees the writes. The destination must be 128-byte aligned, and 1024-byte aligned for 128-byte swizzle atoms. | PTX ISA 9.4 §9.7.10.28.5.3, §9.7.10.28.1.2, §9.7.15.16.6; CUDA driver `cuTensorMapEncodeTiled` | high, exercised |
 | A10 | `tcgen05.alloc` / `relinquish_alloc_permit` / `dealloc` are warp-collective. Alloc writes the address to shared memory and takes a power of two ≥ 32 columns. A CTA may not allocate after relinquishing. Dealloc requires no tensor-core operation pending on those columns. | PTX `tcgen05` | high, exercised |
-| A11 | `tcgen05.mma.cta_group::1.kind::f16`, issued by one thread, is asynchronous: it reads shared memory through the descriptors and writes D in tensor memory, with row i of an M = 128 result in lane i and N consecutive columns. Accumulate-disable overwrites D. The descriptor and instruction-descriptor bit layouts are as in `Gpu.smemDesc`/`instrDesc`. | PTX, CUTLASS `mma_sm100_desc.hpp` | medium-high, exercised (bit-exact results) |
+| A11 | `tcgen05.mma.cta_group::1.kind::f16`, issued by one thread, is asynchronous: it reads shared memory through the descriptors and writes D in tensor memory, with row i of an M = 128 result in lane i and N consecutive columns. Accumulate-disable overwrites D. The descriptor and instruction-descriptor bit layouts are as in `Cuda.Asm.packSmemDesc`/`packInstrDesc`. | PTX, CUTLASS `mma_sm100_desc.hpp` | medium-high, exercised (bit-exact results) |
 | A12 | `tcgen05.commit…mbarrier::arrive::one` arrives on the barrier once every `tcgen05.mma`, `tcgen05.cp` and `tcgen05.shift` issued earlier by the executing thread has completed, reads and writes (not its `tcgen05.ld`/`.st`, which `tcgen05.wait` tracks), and implicitly performs `tcgen05.fence::before_thread_sync`. | PTX ISA 9.4 §9.7.18.12.1 (overall completion, unlike `.sync_restrict::shared::read::mma::a`), §9.7.18.6.2.1.1 (what it tracks), §9.7.18.6.4.2 (Example 2) | high, exercised |
 | A13 | After observing a completion through a thread synchronization (an mbarrier wait or a barrier), `tcgen05.fence::after_thread_sync` orders later tensor-core operations, MMAs and loads, after it; the ISA states the fence is needed there, and we assume no other ordering of an asynchronous `tcgen05` operation after a wait. Before signalling one, `tcgen05.fence::before_thread_sync` orders earlier tensor-core operations (loads) before it. | PTX ISA 9.4 §9.7.18.6.3 (which also says the standard mechanisms apply), §9.7.18.6.4 (§9.7.18.6.4.2, Example 2: the fence "is needed") | high |
 | A14 | `tcgen05.ld.32x32b.x8` is warp-collective: warp w reads lanes 32·(w mod 4) to +31, thread t lane 32·(w mod 4)+t, 8 consecutive 32-bit columns into its registers, valid after `tcgen05.wait::ld`. | PTX | high, exercised |
@@ -126,7 +126,7 @@ pair GEMM's (`encoding/TWO_CTA.md` §6 step 4), none exercised.
 ## 4. Structural invariants of emitted code
 
 These are properties of the printed kernel alone, and all but I7 and I8 are decidable on its AST (§8 layer 1).
-`Gpu.render` prints only a kernel that carries no generation error and passes the checkers of `gpu/Check.rac` named
+`Core.render` prints only a kernel that carries no generation error and passes the checkers of `gpu/Check.rac` named
 below (`Check.WellFormed`, §9.5), so the parts of I1–I6 those checkers decide hold of every printed kernel, whatever
 the builders do.
 
@@ -134,7 +134,7 @@ the builders do.
 |---|---|---|
 | I1 | Every variable is declared once per kernel, before use, in an enclosing C scope. | Fresh names from `Gen`; lifetimes (M2). Checked on the output by `Check.scoping`: each id declared once, used only in the C scope of its declaration and after it (a loop's variable in its body), and no variable, thread, block or grid index, shared address or array element in the launcher. |
 | I2 | Dynamic shared-memory regions are disjoint and aligned as requested. Total ≤ 232448 bytes. Dynamic memory only with a launcher. Never mixed with static arrays. | Bump allocation (`reserve`). Checked on the output by `Check.sharedMemory`: the total, the launcher, no static array with dynamic memory, and every constant offset into the buffer inside it. Disjointness, alignment, and offsets plus run-time indices are not in the AST. |
-| I3 | Each join's named barrier has its own id in 1..15, and its count is its group's threads. | `join`, with a check. Checked on the output by `Check.namedBarriers`: each `bar.sync` (`Cuda.Instr.barSync`, which both cores emit) has literal operands, an id in 1..15 that no other has, and a count that is a positive multiple of 32; and no asm statement is a CTA barrier (`bar.…`, or `barrier.…` but not `barrier.cluster…`). That the count is its group's is not in the AST. |
+| I3 | Each join's named barrier has its own id in 1..15, and its count is its group's threads. | `join`, with a check. Checked on the output by `Check.namedBarriers`: each `bar.sync` (`Cuda.Instr.barSync`, the only statement that prints a named barrier) has literal operands, an id in 1..15 that no other has, and a count that is a positive multiple of 32. That the count is its group's is not in the AST. |
 | I4 | Every `u32` literal is below 2^32, and every immediate an instruction prints is in range. | Checked on the output by `Check.literals`: every 32-bit literal of the kernel and its launcher, and the launcher's block size and boxes, below 2^32; every 64-bit literal below 2^64. The other `u` literals the printer writes, shared-window offsets and the launch's shared bytes, are bounded by I2's check in the body; I1's keeps shared addresses out of the launcher. Every instruction `InRange`. The immediates the printer writes, in PTX's ranges: `setmaxnreg`'s count (a multiple of 8 in 24..256), `mov.b32`'s bits (below 2^32), the multicast commit's CTA mask (its 16-bit register), `cp.async.bulk.wait_group`'s count (a 64-bit constant), the vector widths of `tcgen05.ld`/`st` (`.num`, a power of 2 up to 128) and `st.shared` (2 or 4); and `shfl`'s lane below 32, the library's rule (PTX reads the operand's low 5 bits). The descriptors: an instruction descriptor's shape is one of Table 48's for kind::f16 and its CTA group, which then fits Table 51's fields; a shared-memory descriptor's leading byte offset (a multiple of 16 below 2^18) and step (below 2^13) fit Table 49's fields. Not checked: that a shared-memory descriptor's run-time start address plus its step stays in the window. |
 | I5 | The kernel's name is a C identifier; every other printed name is the library's. | `uniformParam` needs the Key (M8). Checked on the output by `Check.names`: the kernel's, the parameters' and the tensor maps' names are C identifiers the printer does not declare itself (`v` and digits, `gpu_…`, the launcher's locals), none is the kernel's name, each is declared once in its function, and every parameter an expression names is its function's. C++ keywords, CUDA's names and host library symbols are not excluded: the first two fail to compile, but an `extern "C"` kernel named as a host symbol is not ruled out. |
 | I6 | The launcher passes the kernel's parameters in order. It asks for and launches with exactly the kernel's dynamic shared memory. It encodes each operand's tensor map with its `TMap` box, bf16 and 128-byte swizzle, and the output's as `CMap` says (f32, 32×32, 128-byte swizzle). It launches the grid the builder assumes. | The printer passes the parameters in order and the kernel's shared memory, and takes a map's element type from its source. Checked on the output by `Check.launcher`: the launcher declares each non-map parameter as the kernel does, and encodes each tensor map exactly once, for the use (load or store) the kernel's parameter declares, over one of the launcher's own arrays of the kind and element type that use needs (a bf16 input to load, an f32 output to store; two maps may share an array), with two u32 scalars of its own. That the body loads only through load maps and stores only through store maps, the box beyond fitting 32 bits, and the grid are the builders'. |
@@ -161,7 +161,7 @@ the invariants and protocols. Each was found necessary; several were found by re
   thread. So an endpoint is taken by one elected thread, or by one exact aligned warpgroup, and stays in that scope.
 - **M7, reused storage is released quiescent** (round 2). A loop body's shared array is one array (A16), so a tile is
   released only `empty`, after the barrier that ends its reads.
-- **M8, only the typed core prints** (rounds 2 and 3, and this document). Only `Gpu.render` of a sealed `Program`
+- **M8, only the typed core prints** (rounds 2 and 3, and this document). Only `Core.render` of a sealed `Program`
   prints a kernel, and only the builders make one. A printed string is the library's own or a checked kernel name.
   `uniformParam`, which names parameters, needs the Key.
 - **M9, re-fence after a join** (round 1). Threads that receive an accumulator through a thread barrier fence
@@ -179,8 +179,8 @@ the invariants and protocols. Each was found necessary; several were found by re
 - **M11, deadlock is not a race.** Rings are FIFOs whose producer tails drain every release. Roles that disagree on
   trip counts block forever; none can get a phase ahead.
 
-M12–M15 hold for `gpu/encoding/Core.rac`, the attention core, which has the operations they govern; `Gpu.rac` has
-none of them (`ATTENTION.md` §4.1), and closes its protocols on `…Done` tokens instead of M15.
+M12–M15 govern operations the attention work added to the core (`ATTENTION.md` §4.1). The retired `Gpu.rac` had none
+of them, and closed its protocols on `…Done` tokens instead of M15.
 
 - **M12, row affinity.** Every per-row access (tensor-memory loads and stores of the 32x32b shape, `storeO`'s global
   row) computes its row from the executing thread, never from an argument: a tensor-memory lane from `warp mod 4` and
@@ -222,7 +222,7 @@ none of them (`ATTENTION.md` §4.1), and closes its protocols on `…Done` token
     changes it, and two claims of one word that hold are for one sequence and one head, so one warp. A failed CAS
     found the launch's epoch, so none needs a retry. The step 1 read must be single-copy atomic (A41): a torn read
     could pair this launch's epoch with another word's sequence. This holds for any start values of the owners and
-    any epochs; a reused epoch can refuse a claim, or re-admit a sequence's own earlier claim, never two sequences. `harness/claim_model.py` checks it on every interleaving.
+    any epochs; a reused epoch can refuse a claim, or re-admit a sequence's own earlier claim, never two sequences. `encoding/harness/claim_model.py` checks it on every interleaving.
   - **Confinement**, from the arm. `withClaim` runs its arm only where the claim holds, and the row the warp writes is
     the one lane 0 claimed, by data flow (the broadcast), not a lane's own reading of the table. `Claimed`, which only
     the arm receives, belongs to its scope, and the arm returns the emitter alone.
@@ -330,7 +330,7 @@ none of them (`ATTENTION.md` §4.1), and closes its protocols on `…Done` token
     language seals per file, so `Registers.pool` is a definition any module can call; a pool at another per-thread
     count prints changes from a count the warps do not hold, which the register check refuses;
   - that Core prints no `setmaxnreg` but through `withShare` and `regsBack`. Core could build an
-    `Instr.setMaxNReg` elsewhere; it has no raw `asm` (`EVALUATOR.md` §3).
+    `Instr.setMaxNReg` elsewhere; the AST has no raw `asm` (`EVALUATOR.md` §3).
 
 M18–M20 hold for the CTA pair (`encoding/TWO_CTA.md`, `Core.rac`'s pair sections), M21 and M22 for A3b's correction
 warpgroup (`encoding/A3B.md`), M23 for every combinator of `encoding/Core.rac`, and M24 for the register pool of
@@ -340,6 +340,9 @@ warpgroup (`encoding/A3B.md`), M23 for every combinator of `encoding/Core.rac`, 
 
 Each sealed operation must emit code that establishes what its result types claim, given what its argument types
 claim. Types are abbreviated; "code" is what it emits into its `Ctx`.
+
+§6.1–§6.9 state the operations the core began with, as the retired `Gpu.rac` built them. The core keeps them, with
+the changes §6.10 lists and the notes headed "In `encoding/Core.rac`".
 
 ### 6.1 Values and registers
 | Operation | Requires | Emits | Establishes | Relies on |
@@ -418,7 +421,7 @@ staging buffer is waited for and the load does not queue behind the store that l
 | Operation | Requires | Emits | Establishes | Relies on |
 |---|---|---|---|---|
 | `tmaGemmPersistentKernel` | a band height G > 0 (else `#error`) | `tilesM`, `tilesN`, `tiles = tilesM·tilesN`, `bandRows = min(tilesM, G)`, `bandTiles = bandRows·tilesN`, all below 2^32 by the launcher's extent checks | `Sched`, `SchedOwn` | A18 |
-| `forTiles`, `forOwnedTiles` | `Fixed(S)`; `SchedOwn` for the owned loop | `for (t = blockIdx.x; t < tiles; t += gridDim.x)` (the schedule's start and step), and in the body the tile's origin by the band order (`DESIGN.md` §6) | per iteration a `TileAt`, and for the owned loop a `TileOwn`. **Obligation:** the band order is a bijection from `[0, tiles)` onto the tiles for every M, N and G > 0 (the last band may have fewer rows), so CTAs visit disjoint tiles, and the one owning loop visits each tile once. Argued in `Gpu.tileLoop`; checked exhaustively on the host for grids up to 48×48 tiles and G ≤ 20, and on the GPU by coverage (`harness/gemm_test.cu`) | M5, S5, A18 |
+| `forTiles`, `forOwnedTiles` | `Fixed(S)`; `SchedOwn` for the owned loop | `for (t = blockIdx.x; t < tiles; t += gridDim.x)` (the schedule's start and step), and in the body the tile's origin by the band order (`DESIGN.md` §6) | per iteration a `TileAt`, and for the owned loop a `TileOwn`. **Obligation:** the band order is a bijection from `[0, tiles)` onto the tiles for every M, N and G > 0 (the last band may have fewer rows), so CTAs visit disjoint tiles, and the one owning loop visits each tile once. Argued in `Core.tileLoop`; checked exhaustively on the host for grids up to 48×48 tiles and G ≤ 20, and on the GPU by coverage (the retired core's `harness/gemm_test.cu`) | M5, S5, A18 |
 | `withAccRing` | `Acc(empty)`, bufs·n ≤ cols | full (count 1) and empty (count 128) barriers per buffer, thread 0 then arriving with count 128 on each empty barrier, completing its phase 0; `inval` at close | producer and consumer sides; closes on both `…Done`, handing back `Acc(empty)` | A6–A8 |
 | `takeAccProducer` / `takeAccConsumer` | an elected lane / an aligned warpgroup | the side's registers (0/0 and 0/0) | the side, bound to that thread or warpgroup | M6 |
 | `acquireAcc` | producer side | wait `empty[buf]`, `after_thread_sync` | `AccFree`: the epilogue's loads of the buffer are done | A6, A13 |
@@ -438,9 +441,8 @@ staging buffer is waited for and the load does not queue behind the store that l
 
 ### 6.10 The attention core
 
-The operations `gpu/encoding/Core.rac` adds to `Gpu.rac`'s (`ATTENTION.md` §3, §4.2), as built for A1, A2 and paged
-attention (`encoding/PAGED.md`). Its other operations are `Gpu.rac`'s, with the obligations of §6.1–§6.9, except for
-two things.
+The operations `gpu/encoding/Core.rac` adds to those of §6.1–§6.9 (`ATTENTION.md` §3, §4.2), as built for A1, A2 and
+paged attention (`encoding/PAGED.md`). Its other operations keep the obligations of §6.1–§6.9, except for two things.
 - Every use of a tensor-memory region's address goes through `tmemBase` (the allocation's address plus the region's
   offset): `mmaFirst`, `mmaNext`, `loadAccChunk`, `withAccRing` (and through its buffers `mmaFirstInto`, `mmaNextInto`,
   `loadBufferChunk`, `eachChunk` and `writeP`) and `withExchange` address the region they are given, not column 0; only
@@ -632,7 +634,7 @@ arguments. The audit as of this document:
   sealed `Mask`; it emits no barrier, ring or tensor-memory operation, and a wrong block or chunk is a wrong result. In a causal kernel it
   emits warp collectives (`__syncwarp`, and the row's full-mask `__shfl_sync`), which are sound because it takes a
   `warps(f, 4)` context: a per-thread branch arm's group is `diverged`, so no part of a warp can reach it alone
-  (`rejected/attention_mutants.py`, `mask_in_thread_branch`). The unsealed
+  (`encoding/rejected/attention_mutants.py`, `mask_in_thread_branch`). The unsealed
   `AttnLaunch.mk` and `PagedLaunch.mk` build a launch from sealed maps, table, output and mask and from `Val`s:
   `blocks` and `q0` choose trip counts and coordinates only, so a wrong one deadlocks (M11) or loads the wrong rows
   (`ATTENTION.md` §5), and `seq` and `scale` are data, a wrong one a wrong result; none can race, since `storeO` takes
@@ -722,7 +724,7 @@ A new public operation must be added to this list with its argument.
 
 ## 8. Verification plan
 
-The goal is that `Program.mk` takes a proof, `Program.mk (k: Kernel)(safe: Safe(k))`, which only `Gpu` can build
+The goal is that `Program.mk` takes a proof, `Program.mk (k: Kernel)(safe: Safe(k))`, which only the core can build
 and Raccoon's type checker checks. Sealing then carries the guarantee to every client without reflecting Raccoon's
 own typing. We approach it in three layers, each useful alone.
 
@@ -733,10 +735,10 @@ proof is `Eq.refl` evaluated by conversion. Alternatively, I1 becomes intrinsic:
 scope. Needs Raccoon's evaluation-discharged evidence and an evaluator that scales (`docs/implemented/PROOF_BY_EVALUATION.md`).
 
 Status: the checkers are built (`gpu/Check.rac`), one for the generation errors and one each for I1–I6 as far as the
-AST shows them (§4), with unit tests (`gpu/checks/`). `Gpu.render` requires their certificate, `Check.WellFormed`,
-which a client's `Gpu.render(p)` discharges by evaluation, and a failing checker is reported as
+AST shows them (§4), with unit tests (`gpu/checks/`). `Core.render` requires their certificate, `Check.WellFormed`,
+which a client's `Core.render(p)` discharges by evaluation, and a failing checker is reported as
 `EvidenceNotDischarged`, naming its field and showing its messages, which print as string literals although they are
-computed. On the persistent GEMM the checkers, with checking `Check.rac` itself, added about 0.2 s when they were
+computed. On the retired core's persistent GEMM the checkers, with checking `Check.rac` itself, added about 0.2 s when they were
 built. A whole CLI run that generates it (starting the JVM, checking, printing) takes about 3.3 s of wall time, and the
 restructuring for the soundness proofs changed it by less than the noise, 0.1 s (`gpu/proofs/NOTES.md`). Each checker
 is proved sound in Raccoon (`gpu/proofs/`) against a syntactic statement of what its invariant means (`gpu/Spec.rac`),
@@ -769,9 +771,9 @@ The hardware harness stays, as a check of those assumptions.
 ## 9. Decisions
 
 Settled in review (2026-09-30):
-1. **Layer 1 is a checker first.** An intrinsically scoped AST would change most of `Gpu.rac`; the checker, with
+1. **Layer 1 is a checker first.** An intrinsically scoped AST would change most of the core; the checker, with
    a certificate required of what is printed (§9.5), does not.
-2. **The models live in `gpu/model/`**, as Raccoon modules that `Gpu` imports.
+2. **The models live in `gpu/model/`**, as Raccoon modules that the core imports.
 3. **Model only what the protocols need.** Of A6–A14, model the ordering facts the protocols need, extending the
    models as proofs demand, each extension citing its source.
 4. **The "Establishes" column of §6 becomes Raccoon propositions** as layer 3 is reached, so that its triples are
@@ -782,9 +784,10 @@ Settled in implementing layer 1 (2026-09-30):
 5. **The certificate is on `render`, not on `Program.mk`.** An evidence field on `Program.mk` would need `finish` to
    prove the certificate of a generic kernel, and the library has no idiom for inspecting a computed Bool and
    branching on its proof (a dependent if). `render` is the only path that prints a kernel, so a certificate there
-   reaches every client all the same: `render` requires `Gpu.WellFormed(p)`, that is `Check.WellFormed(p.kernel)`,
+   reaches every client all the same: `render` requires `Core.WellFormed(p)`, that is `Check.WellFormed(p.kernel)`,
    which is discharged where a program renders its concrete kernel. A client's own function over programs states
-   `Gpu.WellFormed(p)` to forward the proof, since it cannot read a program's kernel (`gpu/checks/generic_render.rac`).
+   `Core.WellFormed(p)` to forward the proof, since it cannot read a program's kernel
+   (`gpu/encoding/checks/generic_render.rac`).
    `finish` no longer checks I2, I4 or I5; the checkers decide them on the output, and a generation error is refused
    by `Check.errors`.
 6. **I7 and I8 wait for layer 2.** Deciding them on the output needs the AST to record which threads run each block

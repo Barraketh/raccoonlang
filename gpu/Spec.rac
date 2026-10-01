@@ -65,7 +65,6 @@ namespace Spec {
       | Stmt.scoped body => Spec.statements(body)
       | Stmt.sync => List.nil(Stmt)
       | Stmt.syncWarp => List.nil(Stmt)
-      | Stmt.asm template outs ins => List.nil(Stmt)
       | Stmt.instr i => List.nil(Stmt)
       | Stmt.error message => List.nil(Stmt)
     }
@@ -84,7 +83,7 @@ namespace Spec {
    | there (z: A)(rest: List(A))(h: Before(A, x, y, rest)) : Before(A, x, y, List.cons(z, rest))
 
   // `x` is, or is inside, an expression that statement `s` holds itself (not in its blocks): an initializer, an
-  // assigned or stored value, a store's address or index, a loop's header, a branch's condition, an asm operand, an
+  // assigned or stored value, a store's address or index, a loop's header, a branch's condition, an
   // expression an instruction prints as an operand (`Cuda.instrExprs`).
   inductive OwnExpr (x: Expr) indices (s: Stmt) : Prop
    | decl (t: DType)(id: Nat)(init: Expr)(h: SubExpr(x, init)) : OwnExpr(x, Stmt.decl(t, id, init))
@@ -102,10 +101,6 @@ namespace Spec {
    | strideStep (id: Nat)(start: Expr)(stop: Expr)(step: Expr)(body: Block)(h: SubExpr(x, step))
        : OwnExpr(x, Stmt.forStride(id, start, stop, step, body))
    | cond (c: Expr)(yes: Block)(no: Block)(h: SubExpr(x, c)) : OwnExpr(x, Stmt.ifElse(c, yes, no))
-   | asmOut (template: String)(outs: List(Operand))(ins: List(Operand))(o: Operand)(operand: Mem(Operand, o, outs))(h: SubExpr(x, o.e))
-       : OwnExpr(x, Stmt.asm(template, outs, ins))
-   | asmIn (template: String)(outs: List(Operand))(ins: List(Operand))(o: Operand)(operand: Mem(Operand, o, ins))(h: SubExpr(x, o.e))
-       : OwnExpr(x, Stmt.asm(template, outs, ins))
    | instr (i: Instr)(y: Expr)(operand: Mem(Expr, y, Cuda.instrExprs(i)))(h: SubExpr(x, y)) : OwnExpr(x, Stmt.instr(i))
 
   // `x` occurs in an expression of block `b`.
@@ -156,7 +151,6 @@ namespace Spec {
     | Stmt.scoped body => List.nil(Nat)
     | Stmt.sync => List.nil(Nat)
     | Stmt.syncWarp => List.nil(Nat)
-    | Stmt.asm template outs ins => List.nil(Nat)
     | Stmt.instr i => List.nil(Nat)
     | Stmt.error message => List.nil(Nat)
   }
@@ -240,20 +234,10 @@ namespace Spec {
   inductive Barrier (id: Nat)(threads: Nat) indices (s: Stmt) : Prop
    | mk : Barrier(id, threads, Stmt.instr(Instr.barSync(Expr.lit(id), Expr.lit(threads))))
 
-  // `s` begins with `p`.
-  inductive Prefixed (p: List(Char))(s: List(Char)) : Prop
-   | mk (rest: List(Char))(spelled: Eq(List(Char), s, List.append(p, rest))) : Prefixed(p, s)
-
-  // An asm template of a CTA barrier instruction: `bar.…`, or `barrier.…` but not the cluster barrier's.
-  def CtaBarrierTemplate (t: String): Prop :=
-    Or(Spec.Prefixed("bar.".data, t.data), And(Spec.Prefixed("barrier.".data, t.data), Not(Spec.Prefixed("barrier.cluster".data, t.data))))
-
-  // Each `bar.sync` has literal operands and an id in 1..15, and no two have one id; and no asm statement is a CTA
-  // barrier, so every named barrier is a `bar.sync` here.
+  // Each `bar.sync` has literal operands and an id in 1..15, and no two have one id. The AST prints a named barrier
+  // only as `Instr.barSync`, so every named barrier is a `bar.sync` here.
   struct BarrierIds (k: Kernel) : Prop
    | mk (literal: (a: Expr) -> (b: Expr) -> Spec.InBlock(Stmt.instr(Instr.barSync(a, b)), k.body) -> Spec.LiteralPair(a, b))
-        (noTemplate: (t: String) -> (outs: List(Operand)) -> (ins: List(Operand)) -> Spec.InBlock(Stmt.asm(t, outs, ins), k.body)
-          -> Not(Spec.CtaBarrierTemplate(t)))
         (inRange: (s: Stmt) -> (id: Nat) -> (threads: Nat) -> Spec.InBlock(s, k.body) -> Spec.Barrier(id, threads, s) -> And(Nat.le(1, id), Nat.le(id, 15)))
         (distinct: (x: Stmt) -> (y: Stmt) -> (id: Nat) -> (tx: Nat) -> (ty: Nat) -> Spec.Before(Stmt, x, y, Spec.statements(k.body))
           -> Spec.Barrier(id, tx, x) -> Spec.Barrier(id, ty, y) -> False) : BarrierIds(k)

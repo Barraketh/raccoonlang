@@ -1,5 +1,5 @@
-// The typed GPU core of gpu/encoding (README.md): a copy of gpu/Gpu.rac that grows what the library lacks, starting
-// with forward attention (gpu/ATTENTION.md §3, stages A1 and A2). Every family that carries authority or names generated code is sealed, so only this file can
+// The typed GPU core of gpu/encoding (README.md): begun as a copy of gpu/Gpu.rac, the library's first core, now
+// retired, it grew what the library lacked, starting with forward attention (gpu/ATTENTION.md §3, stages A1 and A2). Every family that carries authority or names generated code is sealed, so only this file can
 // make one; the CTA's register pool and its shares are `Registers.rac`'s (REGISTERS.md), whose client this file is. A kernel
 // is an ordinary Raccoon program over these operations; evaluating it builds a `Cuda.Kernel`.
 //

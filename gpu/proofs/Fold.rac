@@ -179,13 +179,6 @@ namespace Fold {
   def exprKeeps (f: List(String) -> Expr -> List(String))(keeps: Fold.Keeps(Expr, f)): Fold.Keeps(Expr, Fold.exprStep(f)) :=
     fun (a: List(String))(x: Expr)(h: Fold.Empty(Check.exprFold(List(String), x, a, f))): Fold.Empty(a) => Fold.exprFoldAcc(x, a, f, keeps, h)
 
-  // `stmtExprs`'s step over an asm operand list.
-  def operandStep (f: List(String) -> Expr -> List(String)): List(String) -> Operand -> List(String) :=
-    fun (b: List(String))(o: Operand): List(String) => Check.exprFold(List(String), o.e, b, f)
-
-  def operandKeeps (f: List(String) -> Expr -> List(String))(keeps: Fold.Keeps(Expr, f)): Fold.Keeps(Operand, Fold.operandStep(f)) :=
-    fun (b: List(String))(o: Operand)(h: Fold.Empty(Check.exprFold(List(String), o.e, b, f))): Fold.Empty(b) => Fold.exprFoldAcc(o.e, b, f, keeps, h)
-
   def stmtExprsAcc (s: Stmt)(acc: List(String))(f: List(String) -> Expr -> List(String))(keeps: Fold.Keeps(Expr, f))
       (h: Fold.Empty(Check.stmtExprs(List(String), s, acc, f))): Fold.Empty(acc) := {
     let each := fun (a: List(String))(x: Expr): List(String) => Check.exprFold(List(String), x, a, f)
@@ -208,11 +201,6 @@ namespace Fold {
     | Stmt.scoped body => h
     | Stmt.sync => h
     | Stmt.syncWarp => h
-    | Stmt.asm template outs ins => {
-      let step := Fold.operandStep(f)
-      let beforeIns := Fold.foldlAcc(Operand, ins, List.foldl(outs, List(String), acc, step), step, Fold.operandKeeps(f, keeps), h)
-      Fold.foldlAcc(Operand, outs, acc, step, Fold.operandKeeps(f, keeps), beforeIns)
-    }
     | Stmt.instr i => Fold.foldlAcc(Expr, Cuda.instrExprs(i), acc, Fold.exprStep(f), Fold.exprKeeps(f, keeps), h)
     | Stmt.error message => h
   }
@@ -221,7 +209,6 @@ namespace Fold {
   def stmtExprsAt (y: Expr)(s: Stmt)(own: Spec.OwnExpr(y, s))(acc: List(String))(f: List(String) -> Expr -> List(String))
       (keeps: Fold.Keeps(Expr, f))(h: Fold.Empty(Check.stmtExprs(List(String), s, acc, f))): Fold.Empty(f(List.nil(String), y)) := {
     let each := fun (a: List(String))(x: Expr): List(String) => Check.exprFold(List(String), x, a, f)
-    let step := Fold.operandStep(f)
     match own returning Fold.Empty(f(List.nil(String), y)) with
     | Spec.OwnExpr.decl t id init sub => Fold.exprFoldAt(y, init, sub, acc, f, keeps, h)
     | Spec.OwnExpr.declMut t id init sub => Fold.exprFoldAt(y, init, sub, acc, f, keeps, h)
@@ -244,14 +231,6 @@ namespace Fold {
       Fold.exprFoldAt(y, stop, sub, each(acc, start), f, keeps, Fold.exprFoldAcc(step, each(each(acc, start), stop), f, keeps, h))
     | Spec.OwnExpr.strideStep id start stop step body sub => Fold.exprFoldAt(y, step, sub, each(each(acc, start), stop), f, keeps, h)
     | Spec.OwnExpr.cond c yes no sub => Fold.exprFoldAt(y, c, sub, acc, f, keeps, h)
-    | Spec.OwnExpr.asmOut template outs ins o mem sub => {
-      let beforeIns := Fold.foldlAcc(Operand, ins, List.foldl(outs, List(String), acc, step), step, Fold.operandKeeps(f, keeps), h)
-      Fold.exprFoldAt(y, o.e, sub, List.nil(String), f, keeps, Fold.foldlAt(Operand, o, outs, mem, acc, step, Fold.operandKeeps(f, keeps), beforeIns))
-    }
-    | Spec.OwnExpr.asmIn template outs ins o mem sub => {
-      let atO := Fold.foldlAt(Operand, o, ins, mem, List.foldl(outs, List(String), acc, step), step, Fold.operandKeeps(f, keeps), h)
-      Fold.exprFoldAt(y, o.e, sub, List.nil(String), f, keeps, atO)
-    }
     | Spec.OwnExpr.instr i root mem sub =>
       Fold.exprFoldAt(y, root, sub, List.nil(String), f, keeps,
         Fold.foldlAt(Expr, root, Cuda.instrExprs(i), mem, acc, Fold.exprStep(f), Fold.exprKeeps(f, keeps), h))
@@ -277,7 +256,6 @@ namespace Fold {
       | Stmt.scoped body => Fold.blockFoldAcc(body, here, g, keeps, h)
       | Stmt.sync => h
       | Stmt.syncWarp => h
-      | Stmt.asm template outs ins => h
       | Stmt.instr i => h
       | Stmt.error message => h
     }
@@ -415,7 +393,6 @@ namespace Fold {
       | Stmt.scoped body => Fold.blockFusion(A, body, here, f)
       | Stmt.sync => Eq.refl(here)
       | Stmt.syncWarp => Eq.refl(here)
-      | Stmt.asm template outs ins => Eq.refl(here)
       | Stmt.instr i => Eq.refl(here)
       | Stmt.error message => Eq.refl(here)
     }

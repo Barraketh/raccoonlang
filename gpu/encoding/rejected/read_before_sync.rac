@@ -1,0 +1,21 @@
+// expect: TypeMismatch
+// Reading a tile right after every thread wrote its own element, with no barrier between: `reads` needs `ready`,
+// and the tile is `written`.
+import encoding.Core
+namespace T {
+  open Core
+  open Cuda
+  def G : Group := Group.cta(256)
+
+  def kernel : Program := Core.tiledKernel("bad", DType.f32, 16,
+    fun (l: Lifetime)(e: Ctx(l, T.G))(k: Launch(l, DType.f32, 16))(c: GOwn(l, DType.f32, 16)): Ctx(l, T.G) =>
+      Core.shared(e, DType.f32, 256, fun (a: Lifetime)(sa: Smem(a, DType.f32, 256))(ta: Tile(a, DType.f32, 256, TileState.empty))(e: Ctx(l, T.G)): Ctx(l, T.G) => {
+        let (e, t) := Core.storeMine(e, sa, ta, Core.zero(DType.f32))
+        let use := fun (r: Lifetime)(rd: SRead(a, r, DType.f32, 256))(e: Ctx(l, T.G)): Pair(Ctx(l, T.G), Val(l, Grain.thread, DType.f32)) =>
+          Core.sread(e, sa, rd, k.tx)
+        let (e, (t, v)) := Core.reads(e, t, use)
+        let _ := Core.release(t)
+        Core.gstore(e, k.c, c, v)
+      }))
+}
+{ Core.render(T.kernel) }

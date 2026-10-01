@@ -1,4 +1,4 @@
-# gpu/encoding: the next GPU core
+# gpu/encoding: the GPU core
 
 Status: started 2026-10-01; steps 1 and 2 below done for A1, paged attention (P1) and A2 (causal and non-causal
 masking, any `seq` ≥ 1, bf16 output, for both kernels) except the hardware runs: the core, the examples, the unit
@@ -8,19 +8,19 @@ query tiles in ping-pong (`A3.md`), to the same point; then P2, paged decode wit
 their harness against a host mock, mutants, A40–A42, M17, §6.11); then CTA pairs (`TWO_CTA.md`, steps 1 and 2: the
 core and a pair TinyGEMM), to the same point as A3a; then A3b, a correction warpgroup (`A3B.md`), to A3a's point (A57–A59, M21, M22,
 §6.13); then the persistent pair GEMM (`TWO_CTA.md` step 4), to the same point, with a run script for its first
-hardware session. Nothing has run on a GPU; `NOTES.md` records what was
-awkward, and what the review removed. A
-fresh copy of the typed core (`gpu/Gpu.rac`) in which the library grows the features it lacks, starting with forward
-attention, then paged attention. `gpu/Gpu.rac` and its GEMM examples stay as they are, so the kernels that ran on a
-B200 keep running while this design settles.
+hardware session, which ran every kernel on a B200 (below). `NOTES.md` records what was awkward, and what the review
+removed.
+
+The core began as a fresh copy of the library's first core, `gpu/Gpu.rac`, in which the library grew the features it
+lacked, starting with forward attention, then paged attention. `gpu/Gpu.rac` and its GEMM examples are retired: this
+is the library's only core.
 
 ## Why a copy
 
 Sealing is per file: only the file that declares `Ctx`, `Val` and the authority tokens can build them. So new
-operations cannot live in a module that imports `Gpu`. They need a core of their own. `Core.rac` starts as `Gpu.rac`
-(with the PTX 9.4 fixes: `await` fences `after_thread_sync`; producers' first waits are on a real, init-completed
-phase) under the namespace `Core`. It imports `Cuda`, `Check` and `Text` from `gpu/`, which it shares with the GEMM
-library.
+operations could not live in a module that imported `Gpu`; they needed a core of their own. `Core.rac` started as
+`Gpu.rac` (with the PTX 9.4 fixes: `await` fences `after_thread_sync`; producers' first waits are on a real,
+init-completed phase) under the namespace `Core`. It imports `Cuda`, `Check` and `Text` from `gpu/`.
 
 How the code is judged: once it works, by reviewing it for readability and incidental complexity. What its tokens mean,
 and why each operation is safe, is argued on paper in `gpu/SEPARATION_PILOT.md`.
@@ -142,8 +142,10 @@ The box needs no JVM.
   issuer of two query tiles, which `examples/attention_pingpong.rac` and `examples/attention_a3b.rac` run.
 - `examples/`: kernels; `attention_pingpong.rac` and `attention_a3b.rac` hold their softmax roles themselves, and
   `attention_a3b.rac` its correction role.
-- `checks/`: unit tests of emitted code.
-- `rejected/`: programs and mutant tables the core must refuse.
+- `checks/`: unit tests of emitted code, and `generic_render.rac`, a client's function that forwards `render`'s
+  certificate.
+- `rejected/`: programs and mutant tables the core must refuse. The programs, and the first mutants of
+  `tinygemm_mutants.py`, began as the retired core's.
 - `harness/`: host test programs for hardware runs, `hw.sh`, which runs them all in one session, and
   `run_gemm_pair.sh`, the pair GEMM's check and timing.
 
