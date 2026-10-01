@@ -323,7 +323,7 @@ arguments. The audit as of this document:
   before it returns the one; that is sound only while every use of a region's address goes through `tmemBase`.
   `fillHead` is `fill` with the head coordinate the core's, and `fillPage` `fill` with the row the core's, from the
   table. `closeExWriter` and `finishExReader` consume authority. `maskedScores` builds values from values and the
-  sealed `Mask`; it emits no protocol operation, and a wrong block or chunk is a wrong result. In a causal kernel it
+  sealed `Mask`; it emits no barrier, ring or tensor-memory operation, and a wrong block or chunk is a wrong result. In a causal kernel it
   emits warp collectives (`__syncwarp`, and the row's full-mask `__shfl_sync`), which are sound because it takes a
   `warps(f, 4)` context: a per-thread branch arm's group is `diverged`, so no part of a warp can reach it alone
   (`rejected/attention_mutants.py`, `mask_in_thread_branch`). The unsealed

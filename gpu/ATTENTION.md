@@ -574,7 +574,7 @@ limit `min(seq, q + 1)` (causal; the row `q` declared first, after `__syncwarp`,
 evaluate it in part of the warp) or `seq`, and eight `t'_j = (kv0 + j < limit) ? t_j : −∞`. The guard is the
 example's (`usable`), applied to the maximum each block's exponents and rescale use; the running maximum keeps the
 unguarded value. No row of a launch the launcher accepts is masked whole in its first block, since key 0 is inside the
-sequence and at or before every query, so the guard never fires; it costs one select per block. For `seq` a multiple
+sequence and at or before every query, so with finite scores the guard never fires; it costs one select per block. For `seq` a multiple
 of 128 the non-causal kernel computes A1's values, every mask being true, up to nvcc's contraction: the select between
 `c · s` and the subtraction of the maximum likely keeps `(c · s) − m` from becoming one FMA, a rounding of `p` well
 inside §1.3's bounds.
