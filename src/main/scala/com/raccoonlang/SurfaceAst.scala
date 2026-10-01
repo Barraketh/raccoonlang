@@ -82,7 +82,7 @@ object SurfaceAst {
 
     /**
      * A match's cases, then its wildcard case if it has one, which is always its last. `match h : e` names its equation
-     * `h`, which every case binds after its fields (docs/MATCH_EQUATION.md).
+     * `h`, which every case binds after its fields (docs/implemented/MATCH_EQUATION.md).
      */
     final case class Match(
         scrut: Term,
@@ -135,7 +135,7 @@ object SurfaceAst {
     final case class PatternVar(name: String, span: Span)
 
     /**
-     * `| _ => body`: a case for each reachable constructor no other case of its match names (docs/WILDCARD_CASE.md).
+     * `| _ => body`: a case for each reachable constructor no other case of its match names (docs/implemented/WILDCARD_CASE.md).
      */
     final case class Wildcard(body: Term, span: Span)
   }

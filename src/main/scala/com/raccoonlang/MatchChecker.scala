@@ -149,7 +149,7 @@ object MatchChecker {
     // Outside a sealed family's module no match opens its values, so no case, `.short` form included, names its
     // constructors (spec §7.1).
     Sealing.requireAccessible(inductiveMeta.seal, None, t.span)
-    // A named equation (docs/MATCH_EQUATION.md) states `Eq(T, e, C(p̄, x̄))`: a proposition, which holds no token, so `T`
+    // A named equation (docs/implemented/MATCH_EQUATION.md) states `Eq(T, e, C(p̄, x̄))`: a proposition, which holds no token, so `T`
     // is unrestricted, and well typed in every case without refinement only for a family without indices.
     val equality = t.equation.map { equation =>
       if (Linearity.isLinear(scrutTpe)) tokenInTypeOrProof(scrutChecked)
@@ -190,7 +190,7 @@ object MatchChecker {
 
     val unnamed = inductiveCtorNames.filterNot(name => written.exists(_.ctorName == name))
 
-    // The match's cases: the written ones, and for a wildcard (docs/WILDCARD_CASE.md) a case for each constructor no
+    // The match's cases: the written ones, and for a wildcard (docs/implemented/WILDCARD_CASE.md) a case for each constructor no
     // written case names that `required` holds of, which is exactly those a missing case is reported for. Each is the
     // case written out at the wildcard: a fresh copy of its body, and a fresh anonymous local for every field, as `_`
     // would bind. A wildcard stands for at least one.

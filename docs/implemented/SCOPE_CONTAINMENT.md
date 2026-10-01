@@ -64,7 +64,7 @@ def no : Nat := use(withLease(fun (l: Lifetime)(h: Lease(l)): Lease(l) => h))
 - **C blocks.** `Gpu.loop` opens a scope for its body's C block. A `Val(m, …)` is a C variable of that block, so the
   guarantee is "no use of a variable after its block ends".
 - **Shared reads.** A read lease that many threads share is copyable and belongs to a scope. When the scope closes,
-  every copy is gone, so the owner gets the buffer back whole without counting readers (`docs/SEPARATION_PILOT.md`
+  every copy is gone, so the owner gets the buffer back whole without counting readers (`gpu/SEPARATION_PILOT.md`
   §5).
 
 ## 3. The rule this adds

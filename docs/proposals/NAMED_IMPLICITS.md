@@ -44,7 +44,7 @@ let (e, (c, wa)) := loopPeeled(e, blocks, fixed, (c, wa), block{o := OState.fres
   callback's lifetime binder, as `withLease`'s `A`, is written outside that binder too, so it cannot name the
   callback's lifetime.
 - **Scope.** `f{a := e}` captures `e`. As any function value, it belongs to every scope its code captures
-  (`docs/SCOPE_CONTAINMENT.md`).
+  (`docs/implemented/SCOPE_CONTAINMENT.md`).
 - **Evaluation.** `f{a := e}` applies `f` to `e` as its implicit argument. A residual prints it as written.
 
 ## 3. Why it is safe

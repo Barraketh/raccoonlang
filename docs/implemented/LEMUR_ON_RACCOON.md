@@ -1,5 +1,8 @@
 # Lifetimes, linear types and scopes
 
+Status: **implemented** (2026-09-29). `docs/language.md` and `docs/kernel.md` state its rules, and this document stays
+as the design record. `docs/implemented/SCOPE_CONTAINMENT.md` and `docs/implemented/NO_OPAQUE.md` amend it.
+
 This document specifies three additions to Raccoon. A sort gains two
 parameters beside its level: a kind, which says whether each value of its
 types is used exactly once, and a scope, the set of atoms its types' values may
@@ -58,7 +61,7 @@ expression captures (§4.3). A function type captures nothing, so on a function
 type an omitted field is `Kind.unr` or `Lifetime.empty`. On a lambda it is the
 join over what the lambda captures.
 
-(Superseded by `docs/SCOPE_CONTAINMENT.md`: a function type belongs to the
+(Superseded by `docs/implemented/SCOPE_CONTAINMENT.md`: a function type belongs to the
 scopes of what its code captures, and a lambda to the lifetimes its body names.)
 
 A lambda's type is determined by the lambda alone: its binders, its result,
@@ -108,7 +111,7 @@ anywhere else is `NotAType`, because there its type must be a type.
 | a function type or lambda binder | no | no | yes |
 | `scope l =>` | – | – | yes |
 
-(Superseded: `opaque def` is removed, `docs/NO_OPAQUE.md`.)
+(Superseded: `opaque def` is removed, `docs/implemented/NO_OPAQUE.md`.)
 
 A header is the binders written before a declaration's `:`. A header binder
 may be explicit or a forced implicit, as today. A function type written after
@@ -189,7 +192,7 @@ last row reads the sort off that type:
 | `{ kind = k, scope = S } (x1: A1) ... (xn: An) -> B`, binding no level | `Sort { level = imax as today, kind = k, scope = union(S, scope(A1), ..., scope(An), scope(B)) }`, less the group's own lifetime variables; a kind or lifetime binder contributes no level and no scope, and only the closure contributes to the kind |
 | a function type binding a level | `Large` |
 | a family instance `D(p*, i*)` | the declared classifier of §5.1 under `p*`, and nothing else |
-| any other neutral type | the sort its type states: a type variable `A: Type { kind = k, scope = S }`, or `F(e*)` for a local `F`, states it under the arguments; an `opaque def` or `axiom` application and a blocked `match` state the sort of the declared result or motive (superseded: `opaque def` is removed, `docs/NO_OPAQUE.md`) |
+| any other neutral type | the sort its type states: a type variable `A: Type { kind = k, scope = S }`, or `F(e*)` for a local `F`, states it under the arguments; an `opaque def` or `axiom` application and a blocked `match` state the sort of the declared result or motive (superseded: `opaque def` is removed, `docs/implemented/NO_OPAQUE.md`) |
 
 `Large` is internal to the kernel. A program cannot write it or bind a variable
 of it, and it is not a sort, so a large type fits no position that requires a
@@ -391,7 +394,7 @@ involves a variable is tracked, since its binder's extent must be valid when
 the variable is `lin`. Locals of unrestricted type are not tracked. A value
 outside every binder is never tracked, so its type may not be linear
 (`LinearGlobal`). That is a `def` or `opaque def` (superseded: `opaque def` is
-removed, `docs/NO_OPAQUE.md`), which every reference uses,
+removed, `docs/implemented/NO_OPAQUE.md`), which every reference uses,
 and the program's result, the entry module's final `{ … }`. Nothing uses the
 result, and it would otherwise be the one place a token could be dropped
 outside its module. Axioms belong to the trusted prelude (§7.3).
@@ -501,7 +504,7 @@ Printed output spells an atom as its binder. A residual keeps the `scope` term
 with its node identity and never gives it a fresh one, which would open a
 different atom.
 
-(§4.2 and §4.3 are superseded by `docs/SCOPE_CONTAINMENT.md`: a lifetime a
+(§4.2 and §4.3 are superseded by `docs/implemented/SCOPE_CONTAINMENT.md`: a lifetime a
 lambda's body names is a capture, a function type belongs to what its code
 captures, and a value whose type does not name a closed scope holds it only
 inside a blocked computation or a proof.)
@@ -719,7 +722,7 @@ trusted prelude declares axioms and builtins, and none of them yields a value
 of a sealed family except by applying its constructors (obligation T2, §7.3). A
 neutral of a sealed family is a parameter that a caller supplied, a blocked
 computation, or an opaque definition whose checked body built it (superseded:
-`opaque def` is removed, `docs/NO_OPAQUE.md`). So structure
+`opaque def` is removed, `docs/implemented/NO_OPAQUE.md`). So structure
 eta and proof reconstruction apply to sealed families as to any other, and open
 nothing the module did not build.
 
@@ -729,7 +732,7 @@ of values are computed from the full declaration in every module. An
 `opaque def` is unchanged: its body is checked,
 and it does not unfold after publication, in any module. Its application's
 sort is the sort of its declared result (§2.4). (Superseded: `opaque def` is
-removed, `docs/NO_OPAQUE.md`.)
+removed, `docs/implemented/NO_OPAQUE.md`.)
 
 **7.3 Axioms.** Only the trusted prelude declares axioms. An `axiom` in any
 other module is `UntrustedAxiom`. A program that needs an assumption the bundled

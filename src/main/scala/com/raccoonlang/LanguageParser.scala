@@ -518,7 +518,7 @@ object LanguageParser {
   /**
    * `returning` continues the header, so it may start the next line, as an arrow or a parameter group may. A wildcard
    * case is the last case of its match, so a match has at most one. `match h : e` names the match's equation `h`
-   * (docs/MATCH_EQUATION.md); no term is followed by `:`, so a name and a colon start one.
+   * (docs/implemented/MATCH_EQUATION.md); no term is followed by `:`, so a name and a colon start one.
    */
   private def matchP(implicit sourceId: Option[SourceId]): Parser[Match] = {
     val equation = (ident.spanned(sourceId).map(name => PatternVar(name.value, name.span)) ~ sym(':')).?

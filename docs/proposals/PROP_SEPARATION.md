@@ -1,7 +1,7 @@
 # Prop outside the universe hierarchy
 
-Status: **draft for review** (2026-09-30). First of three specs for a safer kernel, with `docs/NOMINAL_FAMILIES.md`
-(which builds on it) and `docs/REFINEMENT_CERTIFICATES.md` (which builds on both).
+Status: **draft for review** (2026-09-30). First of three specs for a safer kernel, with `docs/proposals/NOMINAL_FAMILIES.md`
+(which builds on it) and `docs/proposals/REFINEMENT_CERTIFICATES.md` (which builds on both).
 
 Today `Prop` is `Sort { level = Level.zero }`, the bottom of the universe hierarchy. A level variable may later be
 instantiated to zero, so whether a type is a proposition is not always known when it is checked: `Option(A)` at
@@ -189,9 +189,9 @@ constraints to stay sound.
 `docs/kernel.md`: "Universes and function types" (the sort rules, the removed `imax` fold, `LinearProp`),
 "Definitional equality", "Apartness", "Linearity", "Inductives and matching" (universe bounds), "Proofs and
 elimination", "Evidence arguments", "Structure eta and projections", "Termination", "Maintained invariants".
-`docs/language.md`: "Universes", "Destructuring", "Bundled prelude". `docs/PAIRS_AND_PRELUDE.md` §2.3 (a `Prod` of a
-proof and a value becomes `Subtype` or a `Type` struct with a proof field), `docs/PROOF_BY_EVALUATION.md` §1.9,
-`docs/LEMUR_ON_RACCOON.md` §2.3, §2.4 and §8.
+`docs/language.md`: "Universes", "Destructuring", "Bundled prelude". `docs/implemented/PAIRS_AND_PRELUDE.md` §2.3 (a `Prod` of a
+proof and a value becomes `Subtype` or a `Type` struct with a proof field), `docs/implemented/PROOF_BY_EVALUATION.md` §1.9,
+`docs/implemented/LEMUR_ON_RACCOON.md` §2.3, §2.4 and §8.
 
 ## 10. Steps
 

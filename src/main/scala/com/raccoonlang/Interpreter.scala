@@ -590,7 +590,7 @@ object Interpreter {
   /**
    * The env a branch of `m` runs in when its scrutinee is `scrut`: its pattern's locals bound to the scrutinee's
    * fields, and the match's equation, if it names one, to deferred evidence of the case's equation, which is the
-   * canonical proof of it when forced (docs/MATCH_EQUATION.md).
+   * canonical proof of it when forced (docs/implemented/MATCH_EQUATION.md).
    */
   private def branchEnv(m: CTerm.Match, branch: CoreAst.Case, scrut: Value, args: Vector[Value], env: Env): Env = {
     // Every caller supplies a scrutinee's stored fields to a branch MatchChecker already matched
