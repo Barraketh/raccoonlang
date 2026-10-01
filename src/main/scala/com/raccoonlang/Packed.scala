@@ -78,6 +78,10 @@ object Packed {
   private val opsEnabled = new DynamicVariable[Boolean](true)
   private[raccoonlang] def withOpsDisabled[A](body: => A): A = opsEnabled.withValue(false)(body)
 
+  /** A constructor applied to its stored fields at `tpe`: packed where it is literal data, and canonical as a proof. */
+  private[raccoonlang] def construct(head: ConstructorHead, storedArgs: Vector[Value], tpe: Value): Value =
+    Value.canonicalizeProof(foldCtor(head, storedArgs, tpe).getOrElse(VCtor(head, storedArgs, tpe)))
+
   private[raccoonlang] def foldCtor(
       head: ConstructorHead,
       storedArgs: Vector[Value],

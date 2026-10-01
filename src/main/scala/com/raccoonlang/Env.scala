@@ -8,6 +8,7 @@ object Env {
       globals = Map.empty,
       locals = VectorMap.empty,
       nativeLiterals = NativeLiteralState.empty,
+      equality = Left("no prelude has finished loading"),
       localRefs = Set.empty,
       openAtoms = DepSet.empty,
       sealedMembers = Map.empty
@@ -77,10 +78,14 @@ object GlobalBinding {
 //
 // `sealedMembers` is checker-only too: each constructor and selector of a sealed family, by global name, with its
 // family's seal, which the checker consults where a global name is resolved (Sealing).
+//
+// `equality` is the trusted prelude's `Eq`, validated at the end of prelude loading, which a match's equation is
+// stated with, or why there is none (MatchEquation).
 final case class Env(
     globals: Map[String, GlobalBinding],
     locals: VectorMap[CoreAst.LocalRef, Value],
     nativeLiterals: NativeLiteralState,
+    equality: Either[String, MatchEquation.ValidatedEquality],
     private[raccoonlang] val localRefs: Set[CoreAst.LocalRef],
     private[raccoonlang] val openAtoms: DepSet,
     private[raccoonlang] val sealedMembers: Map[String, Sealing.Seal]
@@ -172,6 +177,12 @@ final case class Env(
     nativeLiterals.stringLayout match {
       case Some(_) => wtf("Validated String layout is already installed")
       case None    => copy(nativeLiterals = nativeLiterals.copy(stringLayout = Some(layout)))
+    }
+
+  private[raccoonlang] def installEquality(validated: Either[String, MatchEquation.ValidatedEquality]): Env =
+    equality match {
+      case Right(_) => wtf("The validated equality family is already installed")
+      case Left(_)  => copy(equality = validated)
     }
 
   private[raccoonlang] def installNatLayout(layout: Packed.ValidatedNatLayout): Env =

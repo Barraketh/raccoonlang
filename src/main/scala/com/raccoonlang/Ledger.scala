@@ -95,8 +95,8 @@ object Ledger {
         sequence(ref, CA.children(term))
       case pi: CA.Term.Pi => boundary(ref, pi, pi.refs)
       // A lambda's children are its type and body: its `decreases` clause is not a use (spec §3.2).
-      case lam: CA.Term.Lam                                    => boundary(ref, lam, lam.refs)
-      case CA.Term.Match(scrut, motive, cases, wildcard, _, _) =>
+      case lam: CA.Term.Lam                                       => boundary(ref, lam, lam.refs)
+      case CA.Term.Match(scrut, motive, cases, wildcard, _, _, _) =>
         // The ledger reads residuals, and checking expands a wildcard into the cases it stands for.
         wildcard.foreach(w => wtf(s"An unexpanded wildcard case at ${w.span} reached the ledger"))
         val branches = if (cases.isEmpty) ended else cases.map(c => uses(ref, c.body)).reduceLeft(_ or _)

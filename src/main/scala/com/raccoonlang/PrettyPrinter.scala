@@ -265,7 +265,9 @@ object PrettyPrinter {
     def printMatch(m: CoreAst.Term.Match): Vector[Piece] = {
       val wildcard = m.wildcard.map(w => Later(() => Vector(Text("| _ => "), term(w.body))))
       val cases = separated(m.cases.map(c => Later(() => printCase(c))) ++ wildcard, " ")
-      (Text("match ") +: printTermAtom(m.scrut)) ++ Vector(Text(" returning "), term(m.motive), Text(" with ")) ++ cases
+      val equation = m.equation.map(v => Text(s"${v.ref.name} : ")).toVector
+      (Text("match ") +: equation) ++ printTermAtom(m.scrut) ++
+        Vector(Text(" returning "), term(m.motive), Text(" with ")) ++ cases
     }
   }
 
@@ -402,7 +404,7 @@ object PrettyPrinter {
    */
   private def fieldProjection(thunk: Value.NeutralThunk): Option[Vector[Piece]] =
     thunk.term match {
-      case CoreAst.Term.Match(CoreAst.Term.LocalRef(scrutinee, _), _, Vector(branch), None, _, _) =>
+      case CoreAst.Term.Match(CoreAst.Term.LocalRef(scrutinee, _), _, Vector(branch), None, None, _, _) =>
         val fieldIdx = branch.body match {
           case CoreAst.Term.LocalRef(ref, _) => branch.argRefs.indexOf(ref)
           case _                             => -1

@@ -163,6 +163,7 @@ object StructEta {
         CTerm.LocalRef(motiveRef, span),
         Vector(branch),
         wildcard = None,
+        equation = None,
         span,
         NodeId.fresh()
       )

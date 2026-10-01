@@ -517,13 +517,15 @@ object LanguageParser {
 
   /**
    * `returning` continues the header, so it may start the next line, as an arrow or a parameter group may. A wildcard
-   * case is the last case of its match, so a match has at most one.
+   * case is the last case of its match, so a match has at most one. `match h : e` names the match's equation `h`
+   * (docs/MATCH_EQUATION.md); no term is followed by `:`, so a name and a colon start one.
    */
   private def matchP(implicit sourceId: Option[SourceId]): Parser[Match] = {
-    (kw("match") ~/ term ~ (skipAllWs ~ kw("returning") ~/ typeTerm).named("returning clause") ~
+    val equation = (ident.spanned(sourceId).map(name => PatternVar(name.value, name.span)) ~ sym(':')).?
+    (kw("match") ~/ equation ~ term ~ (skipAllWs ~ kw("returning") ~/ typeTerm).named("returning clause") ~
       kwTight("with") ~/ lineEnd ~ (lineSep ~ matchCase).rep(0))
       .flatSpanned(sourceId)
-      .map { case (scrut, motive, written, sp) =>
+      .map { case (equation, scrut, motive, written, sp) =>
         written.dropRight(1).foreach {
           case Left(wildcard) =>
             throw ParseError(
@@ -533,7 +535,8 @@ object LanguageParser {
             )
           case Right(_) => ()
         }
-        Match(scrut, motive, written.collect { case Right(c) => c }, written.lastOption.flatMap(_.left.toOption), sp)
+        val cases = written.collect { case Right(c) => c }
+        Match(scrut, motive, cases, written.lastOption.flatMap(_.left.toOption), equation, sp)
       }
   }
 

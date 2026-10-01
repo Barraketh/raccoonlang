@@ -246,12 +246,19 @@ object Elaborator {
     /** `_` binds an anonymous local (spec §1): it has a ref, as every local does, but no name resolves to it. */
     def bind(name: String, allowShadow: Boolean): (CA.LocalRef, ResolveEnv) =
       if (name == "_") allocate(name)
-      else if (reservedLocals.contains(name)) fail(AlreadyDefined(name))
-      else if (!allowShadow && scopes.head.contains(name)) fail(AlreadyDefined(name))
       else {
         val (ref, nextEnv) = allocate(name)
-        (ref, nextEnv.copy(scopes = (scopes.head + (name -> ref)) :: scopes.tail))
+        (ref, nextEnv.bindAllocated(name, ref, allowShadow))
       }
+
+    /**
+     * Bind `name` to `ref`, allocated before. A match's equation is one local, allocated once and bound in every case
+     * after its fields.
+     */
+    def bindAllocated(name: String, ref: CA.LocalRef, allowShadow: Boolean): ResolveEnv =
+      if (reservedLocals.contains(name)) fail(AlreadyDefined(name))
+      else if (!allowShadow && scopes.head.contains(name)) fail(AlreadyDefined(name))
+      else copy(scopes = (scopes.head + (name -> ref)) :: scopes.tail)
   }
 
   private object ResolveEnv {
@@ -401,6 +408,7 @@ object Elaborator {
             )
           ),
           wildcard = None,
+          equation = None,
           field.span
         )
 
@@ -447,10 +455,11 @@ object Elaborator {
         val (inBinders, inner) = group(header.params)
         closure(written) ++ inBinders ++ freeIdentifiers(header.ty, inner) ++ freeIdentifiers(body, inner)
       case SA.Term.Scope(name, body, _) => freeIdentifiers(body, bound + name)
-      case SA.Term.Match(scrut, motive, cases, wildcard, _) =>
+      case SA.Term.Match(scrut, motive, cases, wildcard, equation, _) =>
+        val inCases = bound ++ equation.map(_.name)
         free(scrut) ++ free(motive) ++
-          cases.flatMap(c => freeIdentifiers(c.body, bound ++ c.patternVars.map(_.name))) ++
-          wildcard.toVector.flatMap(w => free(w.body))
+          cases.flatMap(c => freeIdentifiers(c.body, inCases ++ c.patternVars.map(_.name))) ++
+          wildcard.toVector.flatMap(w => freeIdentifiers(w.body, inCases))
       case SA.Term.Body(statements, out, _) =>
         // Lets scope left to right, each one's own value outside it; an open binds no local.
         val (inLets, inner) =
@@ -731,17 +740,27 @@ object Elaborator {
         }
       }
       CA.Term.Body(checkedLets.result(), elabTerm(b.out, bodyEnv), b.span)
-    case SA.Term.Match(scrut, motive, cases, wildcard, sp) =>
+    case SA.Term.Match(scrut, motive, cases, wildcard, equation, sp) =>
+      // The equation is one local, which every case binds after its fields, and the scrutinee and motive do not see.
+      val (boundEquation, casesEnv) = equation.fold((Option.empty[(SA.Term.PatternVar, CA.LocalRef)], env)) { written =>
+        val (ref, nextEnv) = env.allocate(written.name)
+        (Some(written -> ref), nextEnv)
+      }
+      def withEquation(caseEnv: ResolveEnv): ResolveEnv =
+        boundEquation.fold(caseEnv) { case (written, ref) =>
+          at(written.span) { caseEnv.bindAllocated(written.name, ref, allowShadow = false) }
+        }
       CA.Term.Match(
         elabTerm(scrut, env),
         elabTerm(motive, env),
         cases.map { c =>
-          val caseEnv = env.enterLocalScope
-          val (patternVars, bodyEnv) =
+          val caseEnv = casesEnv.enterLocalScope
+          val (patternVars, fieldsEnv) =
             c.patternVars.foldLeft((Vector.empty[CA.PatternVar], caseEnv)) { case ((curVars, curEnv), patternVar) =>
               val (ref, nextEnv) = curEnv.bind(patternVar.name, allowShadow = false)
               (curVars :+ CA.PatternVar(ref, patternVar.span), nextEnv)
             }
+          val bodyEnv = withEquation(fieldsEnv)
           val (ctorName, isFullyQualified) =
             if (c.useShortName) (c.ctorPath.head, false)
             else {
@@ -752,8 +771,9 @@ object Elaborator {
             }
           CA.Case(ctorName, isFullyQualified, patternVars, elabTerm(c.body, bodyEnv), c.span)
         },
-        // A wildcard binds no local: the fields of the cases it stands for are anonymous.
-        wildcard.map(w => CA.Wildcard(elabTerm(w.body, env), w.span)),
+        // A wildcard binds no field: the fields of the cases it stands for are anonymous.
+        wildcard.map(w => CA.Wildcard(elabTerm(w.body, withEquation(casesEnv.enterLocalScope)), w.span)),
+        boundEquation.map { case (written, ref) => CA.PatternVar(ref, written.span) },
         sp,
         NodeId.fresh()
       )

@@ -146,13 +146,15 @@ object CoreAst {
 
     /**
      * A match's cases, then its wildcard case if it has one. Checking expands a wildcard into the cases it stands for,
-     * so a residual has none.
+     * so a residual has none. `equation` is the local every case binds after its fields to the equation between the
+     * scrutinee and the case's constructor applied to them, where `match h : e` names it (docs/MATCH_EQUATION.md).
      */
     final case class Match(
         scrut: Term,
         motive: Term,
         cases: Vector[Case],
         wildcard: Option[Wildcard],
+        equation: Option[PatternVar],
         span: Span,
         id: NodeId
     ) extends Term {
@@ -277,7 +279,7 @@ object CoreAst {
         lets.flatMap(let => let.ty.toVector :+ let.value) :+ res
       case Term.Lam(ty, body, _, _, _, _, _) => Vector(ty, body)
       case Term.Scope(_, body, _, _)         => Vector(body)
-      case Term.Match(scrut, motive, cases, wildcard, _, _) =>
+      case Term.Match(scrut, motive, cases, wildcard, _, _, _) =>
         Vector(scrut, motive) ++ cases.map(_.body) ++ wildcard.map(_.body)
     }
 
@@ -377,14 +379,15 @@ object CoreAst {
         case Term.Scope(ref, body, span, _) =>
           val fresh = bind(ref)
           Term.Scope(fresh, copy(body), span, NodeId.fresh())
-        case Term.Match(scrut, motive, cases, wildcard, span, _) =>
+        case Term.Match(scrut, motive, cases, wildcard, equation, span, _) =>
           val (copiedScrut, copiedMotive) = (copy(scrut), copy(motive))
+          val copiedEquation = equation.map(v => PatternVar(bind(v.ref), v.span))
           val copiedCases = cases.map { c =>
             val vars = c.patternVars.map(v => PatternVar(bind(v.ref), v.span))
             c.copy(patternVars = vars, body = copy(c.body))
           }
           val copiedWildcard = wildcard.map(w => w.copy(body = copy(w.body)))
-          Term.Match(copiedScrut, copiedMotive, copiedCases, copiedWildcard, span, NodeId.fresh())
+          Term.Match(copiedScrut, copiedMotive, copiedCases, copiedWildcard, copiedEquation, span, NodeId.fresh())
       }
     copy(term)
   }

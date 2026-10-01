@@ -525,10 +525,32 @@ listing every case, written or expanded, in constructor declaration order, so
 it converts with the match written out in full in that order; evaluation,
 conversion and the ledger never meet a wildcard.
 
+A match may name its equation, `match h : e`. The scrutinee's type `T` must be
+unrestricted, else `LinearInType` at the scrutinee, since the equation is a
+proposition about it, and its family must have no indices, else
+`MatchEquationIndexed` at `h`; both are checked once, at the match. Each case,
+an expanded one included, binds `h` after its fields, as a proof of
+`Eq(T, e′, C(p̄, x̄))`: `e′` is the checked scrutinee and `x̄` the case's
+fields, both under the case's refinement, and `C(p̄, x̄)` is the constructor
+value refinement unifies the scrutinee with, at `T`. Without indices it has type
+`T` in every case, so the equation is well typed without refinement. `h`'s type
+is confined at its binder as a field's is; it is unrestricted, so the ledger
+does not track it. Nothing is rewritten by it: the motive and the other locals
+are as they would be without it. `Eq` is the validated equality family of the
+trusted prelude (see [Equality](#equality)), so the hypothesis is true whenever
+the case runs. A case no run reaches has an unprovable `h`, as it may already
+have impossible fields. The residual keeps `h`, and a wildcard's fresh copies
+of its body rename the equation of a match inside it, as every local it binds.
+
 Evaluation reduces a match only when the scrutinee exposes a justified
 constructor view. Otherwise it retains a blocked match with the dependencies
 that could make reevaluation productive, whose type is the motive evaluated in
-the match's environment.
+the match's environment. A match that takes a case, by a constructor view or a
+structure-eta view, binds its equation, if it names one, to deferred evidence of
+`Eq(T, v, C(p̄, v̄))`, `v` the scrutinee's value and `v̄` the fields as bound;
+since `v` is that view, its canonical proof is `Eq.refl(v)`. A blocked match
+binds nothing. Comparing two blocked matches case by case binds each one's
+equation in the same way, at the fresh fields.
 
 ## Proofs and elimination
 
@@ -696,7 +718,8 @@ canonical proof of the binder's type, evaluated in the Pi's environment with
 every earlier argument bound, computed only when forced. Applying a head forces
 none of it: a lambda binds it unforced in its body's environment, and any other
 head, an axiom's say, stores it unforced among the arguments of the
-application it builds. Those two are where deferred evidence stands, and both
+application it builds. A match's named equation is bound to it too, in the
+environment of the case taken. Those are where deferred evidence stands, and they
 force it where it is read: the environment where the local is looked up or a
 value closes over it, and the application where its arguments themselves are
 read, as a use of them does. Anything else that reaches deferred evidence is a
@@ -1070,6 +1093,23 @@ list that ends first is `nil` against `cons`. So two distinct literals are
 apart when one ends first or a character where they differ is apart, as it is
 when `Char.ofNat` builds a constructor around its scalar. The bundled prelude
 does not currently install this layout.
+
+### Equality
+
+At the end of prelude loading, the prelude's declaration named `Eq` is
+validated as the equality family: an unsealed
+
+```text
+Eq {u: Level}{S: Lifetime}(A: Sort { level = u, scope = S }) indices (x: A)(y: A) : Prop { scope = S }
+Eq.refl (x: A) : Eq(A, x, x)
+```
+
+with its binders in one group. A match's named equation is stated with it, and
+with nothing else: a module's own `Eq` is not consulted. Where there is no
+validated `Eq`, because the prelude declares none, declares another, or is
+still loading, so that its own declarations are being checked, a named
+equation is `MatchEquationUnavailable`, with the reason; nothing else about the
+prelude changes. The family is checked, not trusted, so it adds no obligation.
 
 ## Value identity
 

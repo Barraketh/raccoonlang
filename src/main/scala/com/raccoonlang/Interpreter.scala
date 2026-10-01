@@ -265,7 +265,7 @@ object Interpreter {
     }
     res match {
       case h: ConstructorHead if h.totalArity == 0 =>
-        Value.canonicalizeProof(Packed.foldCtor(h, Vector.empty, h.tpe).getOrElse(VCtor(h, Vector.empty, h.tpe)))
+        Packed.construct(h, Vector.empty, h.tpe)
       case _ => res
     }
   }
@@ -292,11 +292,7 @@ object Interpreter {
           case h: ConstructorHead =>
             val resultTy = pi.codomain(envWithArgs)
             val storedArgs = Value.constructorStoredArgs(h, vArgs)
-            Step.Done(
-              Value.canonicalizeProof(
-                Packed.foldCtor(h, storedArgs, resultTy).getOrElse(VCtor(h, storedArgs, resultTy))
-              )
-            )
+            Step.Done(Packed.construct(h, storedArgs, resultTy))
           // Every non-reducing head builds one new application layer over itself. An existing
           // neutral stays the head rather than being flattened into the new spine: flattening
           // would destroy positional-projection arity. A blocked head propagates its blockers,
@@ -537,11 +533,11 @@ object Interpreter {
     evalTerm(m.scrut, env) match {
       // The fields are bound as stored, so matching forces no evidence field; a branch forces one where it reads it.
       // Exhaustiveness is settled by MatchChecker: a constructor-form scrutinee always has a branch.
-      case ConstructorForm.Stored(ctorName, args) =>
+      case scrut @ ConstructorForm.Stored(ctorName, args) =>
         val branch = m.cases
           .find(c => c.ctorName == ctorName)
           .getOrElse(wtf(s"Checked match has no branch for constructor $ctorName"))
-        Step.Tail(branch.body, branchEnv(branch, args, env))
+        Step.Tail(branch.body, branchEnv(m, branch, scrut, args, env))
       case proof: VProof => Step.Done(evalProofMatch(m, proof, env))
       case other         =>
         // Structure eta (rule 1): a neutral at an eta-eligible struct type has an eta view, so the
@@ -554,7 +550,7 @@ object Interpreter {
               case Vector(single) => single
               case _              => wtf(s"Eta-eligible struct match has ${m.cases.length} cases")
             }
-            Step.Tail(branch.body, branchEnv(branch, etaFields, env))
+            Step.Tail(branch.body, branchEnv(m, branch, other, etaFields, env))
           // We are either blocked or stuck
           case None =>
             val headBlockers = other match {
@@ -582,16 +578,36 @@ object Interpreter {
     NeutralThunk(m, closedEnv, ValueId.LocalId(m.id, closedEnv.locals.values.toVector), outType, blockedOn)
   }
 
-  private[raccoonlang] def evalBranch(branch: CoreAst.Case, args: Vector[Value], env: Env): Value =
-    evalTerm(branch.body, branchEnv(branch, args, env))
+  private[raccoonlang] def evalBranch(
+      m: CTerm.Match,
+      branch: CoreAst.Case,
+      scrut: Value,
+      args: Vector[Value],
+      env: Env
+  ): Value =
+    evalTerm(branch.body, branchEnv(m, branch, scrut, args, env))
 
-  /** The env a branch's body runs in: its pattern's locals bound to the scrutinee's fields. */
-  private def branchEnv(branch: CoreAst.Case, args: Vector[Value], env: Env): Env = {
+  /**
+   * The env a branch of `m` runs in when its scrutinee is `scrut`: its pattern's locals bound to the scrutinee's
+   * fields, and the match's equation, if it names one, to deferred evidence of the case's equation, which is the
+   * canonical proof of it when forced (docs/MATCH_EQUATION.md).
+   */
+  private def branchEnv(m: CTerm.Match, branch: CoreAst.Case, scrut: Value, args: Vector[Value], env: Env): Env = {
     // Every caller supplies a scrutinee's stored fields to a branch MatchChecker already matched
     // against that constructor's arity.
     if (args.length != branch.argRefs.length)
       wtf(s"Checked branch for ${branch.ctorName} binds ${branch.argRefs.length} fields, got ${args.length}")
-    bindFields(branch.argRefs, args, env)
+    val fieldsEnv = bindFields(branch.argRefs, args, env)
+    m.equation.fold(fieldsEnv) { equation =>
+      val equality =
+        env.equality.fold(reason => wtf(s"A checked match equation reached an env where $reason"), identity)
+      val ctor = env(branch.ctorName) match {
+        case head: ConstructorHead => head
+        case other                 => wtf(s"Checked case ${branch.ctorName} names $other, not a constructor")
+      }
+      val evidence = new DeferredEvidence(() => MatchEquation.proposition(equality, scrut, ctor, args))
+      fieldsEnv.putLocal(equation.ref, evidence)
+    }
   }
 
   /** A pattern's locals bound to a constructor's fields, each in the canonical form for its exact type. */
@@ -732,19 +748,22 @@ object Interpreter {
   private[raccoonlang] def addPreludeDecl(env: Env, decl: Decl): Env = evalDecl(decl, env, trusted = true)
 
   /**
-   * Install the native literal layouts of a completed prelude. A prelude that declares `Nat` or `String` must present
-   * the exact checked source layout, so a malformed representation is rejected rather than silently left without
-   * literals. Validation failure rejects the candidate without mutating the environment the declarations were streamed
-   * into.
+   * Install the native literal layouts and the equality family of a completed prelude. A prelude that declares `Nat` or
+   * `String` must present the exact checked source layout, so a malformed representation is rejected rather than
+   * silently left without literals. Validation failure rejects the candidate without mutating the environment the
+   * declarations were streamed into. An `Eq` that is not the equality family leaves only named match equations
+   * unavailable, with the reason (MatchEquation).
    */
   private[raccoonlang] def finishPrelude(env: Env): Env = {
     val withNat =
       if (env.nativeLiterals.natLayout.isEmpty && env.globals.contains(NatCodec.familyName))
         env.installNatLayout(Packed.validateNatFamily(env))
       else env
-    if (withNat.nativeLiterals.stringLayout.isEmpty && withNat.globals.contains("String"))
-      withNat.installStringLayout(Packed.validateStringLayout(withNat))
-    else withNat
+    val withString =
+      if (withNat.nativeLiterals.stringLayout.isEmpty && withNat.globals.contains("String"))
+        withNat.installStringLayout(Packed.validateStringLayout(withNat))
+      else withNat
+    withString.installEquality(MatchEquation.validate(withString))
   }
 
   private[raccoonlang] def buildPreludeEnv(core: Program): Env =
