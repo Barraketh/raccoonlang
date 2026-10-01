@@ -245,7 +245,7 @@ The required rejections:
    (open question 2).
 4. **Runtime-indexed tokens through `Val` handles** (§7).
 5. **DV-P2's two encodings are both written**, and the code review picks one (§7).
+6. **The fresh barrier becomes a real phase.** Done in `gpu/` (44143d9).
+7. **`await` emits `after_thread_sync`.** Done in `gpu/` (44143d9).
 8. **"Clean" is decided by reviewing working code** for readability and incidental complexity, not by comparison
    with `Gpu.rac` (§0).
-6. **The fresh barrier becomes a real phase.** Done in `gpu/`, pending review.
-7. **`await` emits `after_thread_sync`.** Done in `gpu/`, pending review.
