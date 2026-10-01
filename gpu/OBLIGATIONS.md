@@ -140,8 +140,8 @@ the invariants and protocols. Each was found necessary; several were found by re
 - **M11, deadlock is not a race.** Rings are FIFOs whose producer tails drain every release. Roles that disagree on
   trip counts block forever; none can get a phase ahead.
 
-M12–M14 hold for `gpu/encoding/Core.rac`, the attention core, which has the operations they govern; `Gpu.rac` has
-none of them (`ATTENTION.md` §4.1).
+M12–M15 hold for `gpu/encoding/Core.rac`, the attention core, which has the operations they govern; `Gpu.rac` has
+none of them (`ATTENTION.md` §4.1), and closes its protocols on `…Done` tokens instead of M15.
 
 - **M12, row affinity.** Every per-row access (tensor-memory loads and stores of the 32x32b shape, `storeO`'s global
   row) computes its row from the executing thread (`warp mod 4`, lane), never from an argument (`quadrantLanes`,
@@ -156,6 +156,15 @@ none of them (`ATTENTION.md` §4.1).
   opposite direction.
 - **M14, coverage indices.** Where a buffer must be written whole before it is published (P), its token counts the
   chunks written (`PFree(…, next)`), and the publishing operation requires the full count (`publishP` needs 16).
+- **M15, sides end in their finishers** (the readability review). A protocol's sides (`withRing`'s, `withAccRing`'s,
+  `withExchange`'s and `withStaging`'s endpoints and every typestate token derived from them, `OFinal` included) are
+  linear and belong to the opener's scope, which the callback's result cannot name (`docs/SCOPE_CONTAINMENT.md`), so
+  the callback uses every side up before the opener closes. Every operation that takes a side gives one back, except
+  its finisher: the waiting finishers `finishProducer`, `finishAccProducer` and `finishStores` (drains and waits), and
+  `finishExWriter` (a wait, giving `OFinal`, which only `closeExWriter` ends); and the code-free `finishConsumer`,
+  `finishAccConsumer`, `finishExReader` and `closeExWriter`, whose sides' issued work is released to the waiting side.
+  So a close follows the drain, as a `…Done` token's return made it do (M7, M11). A new operation that took a side
+  and gave none back would have to drain as the waiting finishers do.
 
 ## 6. Operation obligations
 
@@ -258,7 +267,7 @@ two things.
   offset): `mmaFirst`, `mmaNext`, `stageAcc`, `withAccRing` (and through its buffers `mmaFirstInto`, `mmaNextInto`,
   `stageAccFull`, `eachChunk` and `writeP`) and `withExchange` address the region they are given, not column 0; only
   `withTmem`'s deallocation names the allocation's address.
-- No protocol closes on a `…Done` token. `withRing`, `withAccRing`, `withExchange` and `withStaging` take a callback
+- No protocol closes on a `…Done` token (M15). `withRing`, `withAccRing`, `withExchange` and `withStaging` take a callback
   that returns the emitter and its result only. Their sides are linear and belong to the opener's scope, which the
   result's type cannot name, so the callback uses every side up before the close (`docs/SCOPE_CONTAINMENT.md`), and
   the one operation per side that uses it up without handing it on is its finisher. `finishProducer`,
@@ -337,8 +346,9 @@ arguments. The audit as of this document:
   chunk of P. `rescaleO` and `mmaPV` read `OState` themselves: an undefined Ô is overwritten, never rescaled or
   accumulated. `finishProducer`, `finishAccProducer`, `finishStores`, `finishConsumer`, `finishAccConsumer`,
   `closeExWriter` and `finishExReader` consume a side and mint nothing, and they are the only operations that take a
-  side without giving one back: that is what lets the protocols close without `…Done` tokens (§6.10), so a new
-  operation that took a side and gave none back would have to drain as these do. `maskedScores` builds values from values and the
+  side without giving one back (`finishExWriter`, the writer's wait, gives `OFinal`, a side that only `closeExWriter`
+  ends): that is what lets the protocols close without `…Done` tokens (§6.10, M15), so a new operation that took a
+  side and gave none back would have to drain as the waiting finishers do. `maskedScores` builds values from values and the
   sealed `Mask`; it emits no barrier, ring or tensor-memory operation, and a wrong block or chunk is a wrong result. In a causal kernel it
   emits warp collectives (`__syncwarp`, and the row's full-mask `__shfl_sync`), which are sound because it takes a
   `warps(f, 4)` context: a per-thread branch arm's group is `diverged`, so no part of a warp can reach it alone

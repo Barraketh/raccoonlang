@@ -733,7 +733,7 @@ The public-surface audit of `OBLIGATIONS.md` §7 gains:
 | a causal or tail mask by per-thread `if` around the loads | the arm is `diverged`, which `eachChunk` does not accept |
 | a mask of the caller's own (non-causal in a causal kernel, or another `seq`) | `Mask` is sealed; only the builders make one |
 | releasing the Q stage inside the loop, then using it | `releaseByMma` consumes `ReadyUsed` |
-| closing tensor memory with a product in flight, or the S ring or a stage ring undrained | each side is linear and of its protocol's scope, so it is used up before the close; only `finishExWriter`'s wait (and `finishAccProducer`'s, `finishProducer`'s drain) uses up a side without handing it on (`LinearUnused`) |
+| closing tensor memory with a product in flight, or the S ring or a stage ring undrained | each side is linear and of its protocol's scope, so it is used up before the close (`LinearUnused` otherwise), and only its finisher uses it up without handing a side back: the waiting finishers `finishProducer`, `finishAccProducer`, `finishStores` and `finishExWriter` (whose `OFinal` only `closeExWriter` ends), and the code-free `finishConsumer`, `finishAccConsumer`, `finishExReader` and `closeExWriter` (`OBLIGATIONS.md` M15) |
 | loading one half of a stage from another map or row | not expressible: `fillBlock` takes one map and one row for both halves |
 
 What the design cannot refuse. None of these is a race, a broken collective or a protocol error; each is a wrong
