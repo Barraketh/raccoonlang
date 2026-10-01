@@ -389,12 +389,18 @@ namespace Core {
   //
   // Instructions without a C operator, each writing a fresh f32. None is collective, so any group may use them.
 
-  // Declares a fresh f32 that the instruction `template` writes, its operand %0, from `ins` (%1 on).
-  def asmValue {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(u: Grain)(template: String)(ins: List(Operand)): Pair(Ctx(l, g), Val(l, u, DType.f32)) := {
+  // Declares a fresh value of type `t` that the instruction `template` writes, its operand %0 under `constraint`, from
+  // `ins` (%1 on).
+  def asmOut {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(u: Grain)(t: DType)(constraint: String)(template: String)(ins: List(Operand))
+      : Pair(Ctx(l, g), Val(l, u, t)) := {
     let gen := Core.state(k, e)
-    let code := List.cons(Stmt.declOut(DType.f32, gen.next), List.cons(Stmt.asm(template, Core.one(Operand.mk("=f", Expr.var(gen.next))), ins), List.nil(Stmt)))
-    (Core.resume(k, l, g, Core.pushAll(Core.fresh(gen), code)), Val.mk(l, u, DType.f32, Expr.var(gen.next), Option.none(Nat)))
+    let code := List.cons(Stmt.declOut(t, gen.next), List.cons(Stmt.asm(template, Core.one(Operand.mk(constraint, Expr.var(gen.next))), ins), List.nil(Stmt)))
+    (Core.resume(k, l, g, Core.pushAll(Core.fresh(gen), code)), Val.mk(l, u, t, Expr.var(gen.next), Option.none(Nat)))
   }
+
+  // Declares a fresh f32 that the instruction `template` writes, its operand %0, from `ins` (%1 on).
+  def asmValue {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(u: Grain)(template: String)(ins: List(Operand)): Pair(Ctx(l, g), Val(l, u, DType.f32)) :=
+    Core.asmOut(k, e, u, DType.f32, "=f", template, ins)
 
   // The f32 whose bits are `bits` (PTX §9.7.10.3 `mov`), which must be below 2^32.
   def fconst {l: Lifetime}{g: Group}(e: Ctx(l, g))(bits: Nat): Pair(Ctx(l, g), Val(l, Grain.uniform, DType.f32)) := {
@@ -3008,25 +3014,30 @@ namespace Core {
         (blocks: Val(l, Grain.uniform, DType.u32))(first: Val(l, Grain.uniform, DType.u32))(scale: Val(l, Grain.uniform, DType.f32))
         : DecodeLaunch(l, spec)
 
+  // The decode kernel's parameters after its three maps, which its launcher passes on as they are.
+  def decodeArrays : List(Param) :=
+    List.cons(Param.output(DType.f32, "Opart"), List.cons(Param.output(DType.f32, "LSEpart"), List.cons(Param.input(DType.u32, "block_table"),
+      List.cons(Param.input(DType.u32, "lens"), List.cons(Param.scalar(DType.u32, "B"), List.cons(Param.scalar(DType.u32, "max_pages"),
+      List.cons(Param.scalar(DType.f32, "scale_log2"), List.nil(Param))))))))
+
   def decodeParams : List(Param) :=
     List.cons(Param.tensorMap(MapUse.load, "Q_map"), List.cons(Param.tensorMap(MapUse.load, "K_map"), List.cons(Param.tensorMap(MapUse.load, "V_map"),
-      List.cons(Param.output(DType.f32, "Opart"), List.cons(Param.output(DType.f32, "LSEpart"), List.cons(Param.input(DType.u32, "block_table"),
-      List.cons(Param.input(DType.u32, "lens"), List.cons(Param.scalar(DType.u32, "B"), List.cons(Param.scalar(DType.u32, "max_pages"),
-      List.cons(Param.scalar(DType.f32, "scale_log2"), List.nil(Param)))))))))))
+      Core.decodeArrays)))
 
-  // The host launcher of a decode kernel over `heads` KV heads of `group` query heads each. Q is given as a `rows_q` ×
-  // `dim` matrix, which must be `[B·heads·group, 128]`, and the cache as `cacheRequires` says; it encodes Q's map with
-  // 64 × `group` boxes and the cache's with 64 × 128, and launches a CTA of 256 threads per split and KV head of each
-  // sequence: grid (splits, B·heads). It refuses B = 0, B·heads > 65535 (the grid's y), splits = 0, and extents of 2^31
-  // or more: B·heads·group·splits·128 (every row and element index of the partials, and so of Q, fits TMA's signed
-  // coordinates and a u32), pages·128 (every row of the cache) and B·max_pages (every index of the table).
+  // The host launcher of a decode kernel over `heads` KV heads of `group` query heads each. It takes Q, K and V for the
+  // maps, the kernel's other parameters, and the extents only it reads: `splits`, `pages`, `rows_q`, `rows_kv`,
+  // `cols_kv` and `dim`. Q is given as a `rows_q` × `dim` matrix, which must be `[B·heads·group, 128]`, and the cache as
+  // `cacheRequires` says; it encodes Q's map with 64 × `group` boxes and the cache's with 64 × 128, and launches a CTA of
+  // 256 threads per split and KV head of each sequence: grid (splits, B·heads). It refuses B = 0, B·heads > 65535 (the
+  // grid's y), splits = 0, and extents of 2^31 or more: B·heads·group·splits·128 (every row and element index of the
+  // partials, and so of Q, fits TMA's signed coordinates and a u32), pages·128 (every row of the cache) and B·max_pages
+  // (every index of the table).
   def decodeLauncher (heads: Nat)(group: Nat): Launcher := {
+    let scalar := fun (name: String): Param => Param.scalar(DType.u32, name)
+    let extents := List.cons(scalar("splits"), List.cons(scalar("pages"), List.cons(scalar("rows_q"), List.cons(scalar("rows_kv"),
+      List.cons(scalar("cols_kv"), List.cons(scalar("dim"), List.nil(Param)))))))
     let hostParams := List.cons(Param.input(DType.bf16, "Q"), List.cons(Param.input(DType.bf16, "K"), List.cons(Param.input(DType.bf16, "V"),
-      List.cons(Param.output(DType.f32, "Opart"), List.cons(Param.output(DType.f32, "LSEpart"), List.cons(Param.input(DType.u32, "block_table"),
-      List.cons(Param.input(DType.u32, "lens"), List.cons(Param.scalar(DType.u32, "B"), List.cons(Param.scalar(DType.u32, "max_pages"),
-      List.cons(Param.scalar(DType.u32, "splits"), List.cons(Param.scalar(DType.u32, "pages"), List.cons(Param.scalar(DType.u32, "rows_q"),
-      List.cons(Param.scalar(DType.u32, "rows_kv"), List.cons(Param.scalar(DType.u32, "cols_kv"), List.cons(Param.scalar(DType.u32, "dim"),
-      List.cons(Param.scalar(DType.f32, "scale_log2"), List.nil(Param)))))))))))))))))
+      List.append(Core.decodeArrays, extents))))
     let grid := Expr.bin(BinOp.mul, Core.wideParam("B"), Expr.lit(heads))
     let qRows := Expr.bin(BinOp.mul, Core.wideParam("B"), Expr.lit(Nat.mul(heads, group)))
     let requires := List.cons(Expr.bin(BinOp.lt, Expr.lit(0), Expr.param("B")), List.cons(Expr.bin(BinOp.lt, grid, Expr.lit64(65536)),
@@ -3043,63 +3054,54 @@ namespace Core {
   // computes split `s` of the key blocks of KV head `h = y % heads` of sequence `b = y / heads`, for the `group` query
   // heads that share it. `heads` (1 to 65535) and `group` (1 to 128) are generation-time constants.
   //
-  // The prologue, which every thread runs before the roles split, computes the CTA's key blocks once: the sequence's
-  // `keys = lens[b] + 1` (its cached keys and the new one) lie in `n = ceil(keys / 128)` blocks, and with
-  // `c = ceil(n / gridDim.x)` split `s` takes blocks `first = s·c` to `end = min(n, first + c)`. Every value is uniform:
-  // the length is read at one address, `b`'s, of an input that no thread writes. The roles count the split's blocks
-  // from 0, so to them the split is a sequence of its own keys, `keys − 128·first` of them, which is the mask's limit
+  // The prologue, which every thread runs before the roles split, computes the CTA's key blocks once. The sequence's
+  // `len = lens[b]` cached keys and its new one lie in `n = len / 128 + 1` blocks, and with `c = ceil(n / gridDim.x)`
+  // split `s` takes blocks `first = s·c` to `end = min(n, first + c)`. Every value is uniform: the length is read at
+  // one address, `b`'s, of an input that no thread writes during the launch (M10). The roles count the split's blocks
+  // from 0, so to them the split is a sequence of its own keys, `len − 128·first + 1` of them, which is the mask's limit
   // (A2's non-causal mask), and the loader reads block `first + i` of the table. A split with no blocks (`first ≥ end`,
   // when there are more splits than blocks) still runs one, block `first`, with no keys, so that every role runs
-  // `max(end − first, 1)` blocks, as `loop` and `loopPeeled` both then do; its sum of probabilities is 0, its LSE −∞,
-  // and `storeO` stores its O as 0.
+  // `count ≥ 1` blocks, as `loop` and `loopPeeled` both then do; its sum of probabilities is 0, its LSE −∞, and `storeO`
+  // stores its O as 0.
   //
   // With its host launcher (`decodeLauncher`). The launch contract that remains to the caller: Q is a device array of
   // B·heads·group·128 bf16 elements, K and V ones of pages·128·heads·128, the table one of B·max_pages u32 elements,
   // `lens` one of B u32 elements, Opart one of splits·B·heads·group·128 f32 elements and LSEpart one of
-  // splits·B·heads·group, and Opart and LSEpart are distinct from each other and from the inputs. Whatever the table,
-  // the lengths and the cache hold is memory-safe (`fillPage`). For a correct result, the table's entries are the
-  // sequences' pages, `lens[b] + 1 ≤ 128·max_pages`, those pages hold the sequences' K and V, and V is finite in every
-  // row of every page a sequence's table names (a last page's unused rows included).
+  // splits·B·heads·group, Opart and LSEpart are distinct from each other and from the inputs, and nothing writes an
+  // input during the launch. Whatever the table, the lengths and the cache hold is memory-safe (`fillPage`). For a
+  // correct result, the table's entries are the sequences' pages, `lens[b] + 1 ≤ 128·max_pages`, those pages hold the
+  // sequences' K and V, and V is finite in every row of every page a sequence's table names (a last page's unused rows
+  // included).
   def decodeKernel (name: String)(heads: Nat)(group: Nat)
       (body: (l: Lifetime) -> Ctx(l, Group.cta(256)) -> DecodeLaunch(l, TmaSpec.mk(64, 128)) -> OOwn(l, DType.f32, 4) -> TmemPermit(l)
         -> Ctx(l, Group.cta(256)))
       : Program := scope l => {
     let spec := TmaSpec.mk(64, 128)
-    let gen0 := Core.check(Core.state(Key.key, Core.start(Key.key, l, Group.cta(256))),
+    let e := Core.resume(Key.key, l, Group.cta(256), Core.check(Core.state(Key.key, Core.start(Key.key, l, Group.cta(256))),
       Bool.and(Bool.and(Nat.blt(0, heads), Nat.blt(heads, 65536)), Bool.and(Nat.blt(0, group), Nat.ble(group, 128))),
-      "decode kernel: the KV heads must be from 1 to 65535, and the query heads of each from 1 to 128")
-    let b := gen0.next
-    let keys := Nat.add(b, 1)
-    let n := Nat.add(b, 2)
-    let per := Nat.add(b, 3)
-    let first := Nat.add(b, 4)
-    let end := Nat.add(b, 5)
-    let nonEmpty := Nat.add(b, 6)
-    let count := Nat.add(b, 7)
-    let ownKeys := Nat.add(b, 8)
-    let v := fun (id: Nat): Expr => Expr.var(id)
+      "decode kernel: the KV heads must be from 1 to 65535, and the query heads of each from 1 to 128"))
+    let uniform := fun (e: Ctx(l, Group.cta(256)))(t: DType)(x: Expr): Pair(Ctx(l, Group.cta(256)), Val(l, Grain.uniform, t)) =>
+      Core.bind(Key.key, e, Grain.uniform, t, x, Option.none(Nat))
     let gridX := Expr.special(Builtin.gridX)
-    let prologue := List.cons(Stmt.decl(DType.u32, b, Expr.bin(BinOp.div, Expr.special(Builtin.blockY), Expr.lit(heads))),
-      List.cons(Stmt.decl(DType.u32, keys, Expr.bin(BinOp.add, Expr.index(Expr.param("lens"), v(b)), Expr.lit(1))),
-      List.cons(Stmt.decl(DType.u32, n, Expr.bin(BinOp.div, Expr.bin(BinOp.add, v(keys), Expr.lit(127)), Expr.lit(128))),
-      List.cons(Stmt.decl(DType.u32, per, Expr.bin(BinOp.div, Expr.bin(BinOp.add, v(n), Expr.bin(BinOp.sub, gridX, Expr.lit(1))), gridX)),
-      List.cons(Stmt.decl(DType.u32, first, Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), v(per))),
-      List.cons(Stmt.decl(DType.u32, end, Core.minExpr(v(n), Expr.bin(BinOp.add, v(first), v(per)))),
-      List.cons(Stmt.decl(DType.bool, nonEmpty, Expr.bin(BinOp.lt, v(first), v(end))),
-      List.cons(Stmt.decl(DType.u32, count, Expr.select(v(nonEmpty), Expr.bin(BinOp.sub, v(end), v(first)), Expr.lit(1))),
-      List.cons(Stmt.decl(DType.u32, ownKeys, Expr.select(v(nonEmpty), Expr.bin(BinOp.sub, v(keys), Expr.bin(BinOp.mul, v(first), Expr.lit(128))), Expr.lit(0))),
-      List.nil(Stmt))))))))))
-    let gen1 := Core.pushAll(Gen.mk(gen0.code, Nat.add(b, 9), gen0.smem, gen0.barrier, gen0.errors), prologue)
-    let (e, minusInfinity) := Core.fconst(Core.resume(Key.key, l, Group.cta(256), gen1), Core.minusInfinityBits)
-    let uniform := fun (id: Nat): Val(l, Grain.uniform, DType.u32) => Val.mk(l, Grain.uniform, DType.u32, v(id), Option.none(Nat))
+    let (e, b) := uniform(e, DType.u32, Expr.bin(BinOp.div, Expr.special(Builtin.blockY), Expr.lit(heads)))
+    let (e, len) := uniform(e, DType.u32, Expr.index(Expr.param("lens"), b.expr))
+    let (e, n) := uniform(e, DType.u32, Expr.bin(BinOp.add, Expr.bin(BinOp.div, len.expr, Expr.lit(128)), Expr.lit(1)))
+    let (e, per) := uniform(e, DType.u32, Expr.bin(BinOp.div, Expr.bin(BinOp.add, n.expr, Expr.bin(BinOp.sub, gridX, Expr.lit(1))), gridX))
+    let (e, first) := uniform(e, DType.u32, Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), per.expr))
+    let (e, end) := uniform(e, DType.u32, Core.minExpr(n.expr, Expr.bin(BinOp.add, first.expr, per.expr)))
+    let (e, nonEmpty) := uniform(e, DType.bool, Expr.bin(BinOp.lt, first.expr, end.expr))
+    let (e, count) := uniform(e, DType.u32, Expr.select(nonEmpty.expr, Expr.bin(BinOp.sub, end.expr, first.expr), Expr.lit(1)))
+    let ownKeys := Expr.bin(BinOp.add, Expr.bin(BinOp.sub, len.expr, Expr.bin(BinOp.mul, first.expr, Expr.lit(128))), Expr.lit(1))
+    let (e, keys) := uniform(e, DType.u32, Expr.select(nonEmpty.expr, ownKeys, Expr.lit(0)))
+    let (e, minusInfinity) := Core.fconst(e, Core.minusInfinityBits)
     let page := fun (name: String): PageMap(l, spec) => PageMap.mk(l, spec, name, heads)
     // The CTA's rows of the partials: split `s` of KV head `y`'s `group` rows, from row `s·B·heads·group + y·group`.
     let rows := Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.bin(BinOp.mul, Expr.param("B"), Expr.lit(Nat.mul(heads, group)))),
       Expr.bin(BinOp.mul, Expr.special(Builtin.blockY), Expr.lit(group)))
-    let out := AttnOut.mk(l, DType.f32, "Opart", "LSEpart", Expr.lit(group), Core.rowInTile, rows, Option.some(v(nonEmpty)))
+    let out := AttnOut.mk(l, DType.f32, "Opart", "LSEpart", Expr.lit(group), Core.rowInTile, rows, Option.some(nonEmpty.expr))
     let launch := DecodeLaunch.mk(GroupMap.mk(l, "Q_map", group), page("K_map"), page("V_map"),
-      PageTable.mk(l, "block_table", Expr.param("B"), Expr.param("max_pages")), out, Mask.mk(l, v(ownKeys), Bool.false, minusInfinity.expr, Core.rowInTile),
-      uniform(count), uniform(first), Core.uniformParam(Key.key, l, DType.f32, "scale_log2"))
+      PageTable.mk(l, "block_table", Expr.param("B"), Expr.param("max_pages")), out, Mask.mk(l, keys.expr, Bool.false, minusInfinity.expr, Core.rowInTile),
+      count, first, Core.uniformParam(Key.key, l, DType.f32, "scale_log2"))
     let gen := Core.state(Key.key, body(l, e, launch, OOwn.mk(l, DType.f32, 4), TmemPermit.mk(l)))
     Core.finish(Key.key, name, Core.decodeParams, Option.some(Core.decodeLauncher(heads, group)), gen)
   }
@@ -3119,10 +3121,14 @@ namespace Core {
 
   // That this warp's claim holds: the warp of sequence `b` and head `h` (`blockIdx.x = b·heads + h`) is the only one
   // that writes, in this launch, head `h`'s rows of the page holding the sequence's new position, which is cache row
-  // `row`. Only `withClaim` makes one, in the arm that runs where the claim holds, and it belongs to that arm's scope,
-  // so no code outside the arm can use it.
+  // `row`, the one lane 0 claimed. Only `withClaim` makes one, in the arm that runs where the claim holds, and it
+  // belongs to that arm's scope.
   sealed struct Claimed (m: Lifetime) : Type { scope = m }
    | mk (row: Expr) : Claimed(m)
+
+  // The authority to write the claimed row, once: `withClaim` hands one to its arm, and only `appendRow` uses it.
+  sealed inductive AppendOwn (m: Lifetime) : Type { kind = lin, scope = m }
+   | mk : AppendOwn(m)
 
   // A writable paged cache of `heads` KV heads: K and V, `[pages·128, heads·128]` bf16 vector parameters, which only
   // `appendRow` writes.
@@ -3150,95 +3156,88 @@ namespace Core {
   def broadcastLane0 : String := "shfl.sync.idx.b32 %0, %1, 0, 31, 0xffffffff;"
 
   // Claims, for this warp's sequence `b` and head `h` (`blockIdx.x = b·heads + h`), the page holding the sequence's new
-  // position `pos = lens[b]`; runs `held` with the claim, on the whole warp, where it holds; and lane 0 reports it in
-  // `appended[blockIdx.x]`, 1 where it holds and 0 where it does not (P2.md §2). The page `p` is table entry
-  // `[b][pos / 128]`, which every lane reads. The claim is refused when that entry lies outside the table
+  // position; runs `held`, on the whole warp, where the claim holds; and lane 0 reports it in `appended[blockIdx.x]`, 1
+  // where it holds and 0 where it does not (P2.md §2). Lane 0 alone reads the position `pos = lens[b]` and the page
+  // `p`, table entry `[b][pos / 128]`. The claim is refused when that entry lies outside the table
   // (`pos / 128 ≥ max_pages`) or names no page (`p ≥ pages`). Otherwise lane 0 claims owner word `w = p·heads + h` for
-  // `mine = epoch·2^32 + b`:
+  // `mine = epoch·2^32 + b` (M17):
   // 1. it reads `cur = owners[w]`, single-copy atomic (A41);
   // 2. if `cur`'s epoch is this launch's, the claim holds iff `cur = mine`;
-  // 3. else `prev = atom.cas(owners[w], cur, mine)`, and the claim holds iff `prev = cur` (it stored `mine`) or
-  //    `prev = mine` (another claim for `b` did).
-  // In one launch, every write of an owner word stores this launch's epoch: so once a word holds it, no claim changes
-  // it, two warps whose claims of one word hold are for one sequence, and one head, so one warp; and a failed CAS found
-  // this launch's epoch, so it needs no retry. That holds whatever the host's epochs are, within one launch; launches
-  // sharing the owners run one at a time (the launch contract). Lane 0 broadcasts the result, so it is the same in
-  // every lane, and the arm runs on the whole warp or not at all. Each step is the core's: the caller gives no page,
-  // row or sequence.
+  // 3. else the claim holds iff `atom.cas(owners[w], cur, mine)` returns `cur`, that is, iff it stored `mine`.
+  // Lane 0 then broadcasts the result and the claimed row, so the arm runs on the whole warp or not at all, and every
+  // lane writes the row lane 0 claimed. The caller gives no page, row or sequence. The arm receives the claim and the
+  // authority to write its row once (`AppendOwn`); it is unrestricted and returns only the emitter, so it captures no
+  // linear value and hands nothing out.
   def withClaim {l: Lifetime}{L: Lifetime}{Sf: Lifetime}(e: Ctx(l, Core.warpCta))(lens: Lengths(L))(table: PageTable(L))(claims: Claims(L))
-      (own: ClaimOwn(L))(held: { scope = Sf } (m: Lifetime) -> Ctx(m, Core.warpCta) -> Claimed(m) -> Ctx(m, Core.warpCta))
+      (own: ClaimOwn(L))
+      (held: { scope = Sf } (m: Lifetime) -> Ctx(m, Core.warpCta) -> Claimed(m) -> AppendOwn(m) -> Ctx(m, Core.warpCta))
       : Ctx(l, Core.warpCta) := {
     match own returning Ctx(l, Core.warpCta) with
     | ClaimOwn.mk => {
-      let gen := Core.state(Key.key, e)
-      let b := gen.next
-      let pos := Nat.add(b, 1)
-      let page := Nat.add(b, 2)
-      let row := Nat.add(b, 3)
-      let word := Nat.add(b, 4)
-      let held0 := Nat.add(b, 5)
-      let mine := Nat.add(b, 6)
-      let cur := Nat.add(b, 7)
-      let seen := Nat.add(b, 8)
-      let prev := Nat.add(b, 9)
-      let ok := Nat.add(b, 10)
       let heads := Expr.lit(claims.heads)
-      let v := fun (id: Nat): Expr => Expr.var(id)
-      let j := Expr.bin(BinOp.div, v(pos), Expr.lit(128))
-      let entry := Expr.index(Expr.param(table.name), Expr.bin(BinOp.add, Expr.bin(BinOp.mul, v(b), table.cols), j))
-      let owner := Expr.bin(BinOp.add, Expr.param(claims.owners), v(word))
       let wide := fun (x: Expr): Expr => Expr.cast(DType.u64, x)
-      // Every lane: the sequence, its new position, the page (`pages`, which no claim accepts, outside the table), the
-      // new row and the owner word.
-      let place := List.cons(Stmt.decl(DType.u32, b, Expr.bin(BinOp.div, Expr.special(Builtin.blockX), heads)),
-        List.cons(Stmt.decl(DType.u32, pos, Expr.index(Expr.param(lens.name), v(b))),
-        List.cons(Stmt.decl(DType.u32, page, Expr.select(Expr.bin(BinOp.lt, j, table.cols), entry, claims.pages)),
-        List.cons(Stmt.decl(DType.u32, row, Expr.bin(BinOp.add, Expr.bin(BinOp.mul, v(page), Expr.lit(128)), Expr.bin(BinOp.rem, v(pos), Expr.lit(128)))),
-        List.cons(Stmt.decl(DType.u32, word, Expr.bin(BinOp.add, Expr.bin(BinOp.mul, v(page), heads), Expr.bin(BinOp.rem, Expr.special(Builtin.blockX),
-          heads))),
-        List.cons(Stmt.declMut(DType.u32, held0, Expr.lit(0)), List.nil(Stmt)))))))
-      // Lane 0: steps 1 to 3, `seen` being the word's value in this launch.
-      let cas := List.cons(Stmt.declOut(DType.u64, prev),
-        List.cons(Stmt.asm(Core.casRelaxed64, Core.one(Operand.mk("=l", v(prev))), List.cons(Core.l64(owner), Core.two(Core.l64(v(cur)), Core.l64(v(mine))))),
-        List.cons(Stmt.assign(seen, Expr.select(Expr.bin(BinOp.eq, v(prev), v(cur)), v(mine), v(prev))), List.nil(Stmt))))
-      let claim := List.cons(Stmt.decl(DType.u64, mine, Expr.bin(BinOp.bor, Expr.bin(BinOp.shl, wide(claims.epoch), Expr.lit(32)), wide(v(b)))),
-        List.cons(Stmt.declOut(DType.u64, cur), List.cons(Stmt.asm(Core.loadRelaxed64, Core.one(Operand.mk("=l", v(cur))), Core.one(Core.l64(owner))),
-        List.cons(Stmt.declOut(DType.u64, seen),
-        List.cons(Stmt.ifElse(Expr.bin(BinOp.eq, Expr.bin(BinOp.shr, v(cur), Expr.lit(32)), claims.epoch), Block.seq(Stmt.assign(seen, v(cur)), Block.done),
-          Core.toBlock(List.reverse(cas), Block.done)),
-        List.cons(Stmt.assign(held0, Expr.select(Expr.bin(BinOp.eq, v(seen), v(mine)), Expr.lit(1), Expr.lit(0))), List.nil(Stmt)))))))
-      let lane0 := Expr.bin(BinOp.land, Core.laneZero, Expr.bin(BinOp.lt, v(page), claims.pages))
-      let decide := List.cons(Stmt.ifElse(lane0, Core.toBlock(List.reverse(claim), Block.done), Block.done),
-        List.cons(Stmt.syncWarp, List.cons(Stmt.declOut(DType.u32, ok),
-        List.cons(Stmt.asm(Core.broadcastLane0, Core.one(Operand.mk("=r", v(ok))), Core.one(Core.r(v(held0)))), List.nil(Stmt)))))
-      let decided := Core.pushAll(Gen.mk(gen.code, Nat.add(b, 11), gen.smem, gen.barrier, gen.errors), List.append(place, decide))
-      scope m => {
-        let arm := Core.state(Key.key, held(m, Core.resume(Key.key, m, Core.warpCta, Core.child(decided)), Claimed.mk(m, v(row))))
-        let ran := Core.after(decided, arm, Stmt.ifElse(Expr.bin(BinOp.lt, Expr.lit(0), v(ok)), Core.blockOf(arm), Block.done))
-        let report := Stmt.store(Expr.param(claims.appended), Expr.special(Builtin.blockX), v(ok))
-        Core.resume(Key.key, l, Core.warpCta, Core.pushAll(ran, Core.onLaneZero(List.cons(report, List.nil(Stmt)))))
+      let assign := fun {n: Lifetime}(e: Ctx(n, Group.diverged(32)))(r: Reg(l, DType.u32))(x: Expr): Ctx(n, Group.diverged(32)) =>
+        Core.emit(Key.key, e, Stmt.assign(r.id, x))
+      let (e, b) := Core.bind(Key.key, e, Grain.uniform, DType.u32, Expr.bin(BinOp.div, Expr.special(Builtin.blockX), heads), Option.none(Nat))
+      let (e, flag) := Core.reg(e, Core.lit(0))
+      let (e, row) := Core.reg(e, Core.lit(0))
+      let skip := fun (n: Lifetime)(e: Ctx(n, Group.diverged(32)))(u: Unit): Pair(Ctx(n, Group.diverged(32)), Unit) => (e, u)
+      // Lane 0: the position and its page (`pages`, which no claim accepts, outside the table), then steps 1 to 3.
+      let claim := fun (m: Lifetime)(e: Ctx(m, Group.diverged(32)))(u: Unit): Pair(Ctx(m, Group.diverged(32)), Unit) => {
+        let (e, pos) := Core.bind(Key.key, e, Grain.thread, DType.u32, Expr.index(Expr.param(lens.name), b.expr), Option.none(Nat))
+        let j := Expr.bin(BinOp.div, pos.expr, Expr.lit(128))
+        let entry := Expr.index(Expr.param(table.name), Expr.bin(BinOp.add, Expr.bin(BinOp.mul, b.expr, table.cols), j))
+        let (e, page) := Core.bind(Key.key, e, Grain.thread, DType.u32, Expr.select(Expr.bin(BinOp.lt, j, table.cols), entry, claims.pages),
+          Option.none(Nat))
+        let stake := fun (n: Lifetime)(e: Ctx(n, Group.diverged(32)))(u: Unit): Pair(Ctx(n, Group.diverged(32)), Unit) => {
+          let e := assign(e, row, Expr.bin(BinOp.add, Expr.bin(BinOp.mul, page.expr, Expr.lit(128)), Expr.bin(BinOp.rem, pos.expr, Expr.lit(128))))
+          let owner := Expr.bin(BinOp.add, Expr.param(claims.owners),
+            Expr.bin(BinOp.add, Expr.bin(BinOp.mul, page.expr, heads), Expr.bin(BinOp.rem, Expr.special(Builtin.blockX), heads)))
+          let (e, mine) := Core.bind(Key.key, e, Grain.thread, DType.u64, Expr.bin(BinOp.bor, Expr.bin(BinOp.shl, wide(claims.epoch), Expr.lit(32)), wide(b.expr)),
+            Option.none(Nat))
+          let (e, cur) := Core.asmOut(Key.key, e, Grain.thread, DType.u64, "=l", Core.loadRelaxed64, Core.one(Core.l64(owner)))
+          let current := Val.mk(n, Grain.thread, DType.bool, Expr.bin(BinOp.eq, Expr.bin(BinOp.shr, cur.expr, Expr.lit(32)), claims.epoch), Option.none(Nat))
+          let holds := fun (x: Expr): Expr => Expr.select(Expr.bin(BinOp.eq, x, mine.expr), Expr.lit(1), Expr.lit(0))
+          Core.branch(e, current, Core.fixedUnit, u,
+            fun (k: Lifetime)(e: Ctx(k, Group.diverged(32)))(u: Unit): Pair(Ctx(k, Group.diverged(32)), Unit) => (assign(e, flag, holds(cur.expr)), u),
+            fun (k: Lifetime)(e: Ctx(k, Group.diverged(32)))(u: Unit): Pair(Ctx(k, Group.diverged(32)), Unit) => {
+              let (e, prev) := Core.asmOut(Key.key, e, Grain.thread, DType.u64, "=l", Core.casRelaxed64,
+                List.cons(Core.l64(owner), Core.two(Core.l64(cur.expr), Core.l64(mine.expr))))
+              (assign(e, flag, Expr.select(Expr.bin(BinOp.eq, prev.expr, cur.expr), Expr.lit(1), Expr.lit(0))), u)
+            })
+        }
+        Core.branch(e, Val.mk(m, Grain.thread, DType.bool, Expr.bin(BinOp.lt, page.expr, claims.pages), Option.none(Nat)), Core.fixedUnit, u, stake, skip)
       }
+      let (e, u) := Core.branch(e, Val.mk(l, Grain.thread, DType.bool, Core.laneZero, Option.none(Nat)), Core.fixedUnit, Unit.unit, claim, skip)
+      // Every lane: lane 0's result and row, the warp reconverged first (A42).
+      let e := Core.emit(Key.key, e, Stmt.syncWarp)
+      let (e, ok) := Core.asmOut(Key.key, e, Grain.uniform, DType.u32, "=r", Core.broadcastLane0, Core.one(Core.r(Expr.var(flag.id))))
+      let (e, claimed) := Core.asmOut(Key.key, e, Grain.uniform, DType.u32, "=r", Core.broadcastLane0, Core.one(Core.r(Expr.var(row.id))))
+      let (e, u) := Core.branch(e, Val.mk(l, Grain.uniform, DType.bool, Expr.bin(BinOp.lt, Expr.lit(0), ok.expr), Option.none(Nat)), Core.fixedUnit, u,
+        fun (m: Lifetime)(e: Ctx(m, Core.warpCta))(u: Unit): Pair(Ctx(m, Core.warpCta), Unit) => (held(m, e, Claimed.mk(m, claimed.expr), AppendOwn.mk(m)), u),
+        fun (m: Lifetime)(e: Ctx(m, Core.warpCta))(u: Unit): Pair(Ctx(m, Core.warpCta), Unit) => (e, u))
+      Core.emitAll(Key.key, e, Core.onLaneZero(List.cons(Stmt.store(Expr.param(claims.appended), Expr.special(Builtin.blockX), ok.expr), List.nil(Stmt))))
     }
   }
 
-  // Writes this warp's new K and V into the claimed row of the cache: each lane copies its eight columns, `8·lane` to
-  // `8·lane + 7`, of row `blockIdx.x` of the new K into columns `128h + 8·lane` on of the claim's row of K, and of the
-  // new V into V likewise. The row comes from the claim and the columns from the warp and the lane, never from the
-  // caller: so the warp writes only the rows its claim holds, and each lane its own columns of them.
-  def appendRow {n: Lifetime}{m: Lifetime}{L: Lifetime}(e: Ctx(n, Core.warpCta))(c: Claimed(m))(cache: PagedCache(L))(knew: NewKV(L))
-      : Ctx(n, Core.warpCta) := {
-    let gen := Core.state(Key.key, e)
-    let src := gen.next
-    let dst := Nat.add(src, 1)
-    let lane := Expr.bin(BinOp.mul, Expr.special(Builtin.lane), Expr.lit(8))
-    let col := Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.bin(BinOp.rem, Expr.special(Builtin.blockX), Expr.lit(cache.heads)), Expr.lit(128)), lane)
-    let place := List.cons(Stmt.decl(DType.u32, src, Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(128)), lane)),
-      List.cons(Stmt.decl(DType.u64, dst, Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.cast(DType.u64, c.row), Expr.lit(Nat.mul(cache.heads, 128))), col)),
-      List.nil(Stmt)))
-    let copy := fun (to: String)(from: String): List(Stmt) => List.map(Core.eight, Stmt, fun (j: Nat): Stmt =>
-      Stmt.store(Expr.param(to), Core.offsetBy(Expr.var(dst), j), Expr.index(Expr.param(from), Core.offsetBy(Expr.var(src), j))))
-    let code := List.append(place, List.append(copy(cache.k, knew.k), copy(cache.v, knew.v)))
-    Core.resume(Key.key, n, Core.warpCta, Core.pushAll(Gen.mk(gen.code, Nat.add(src, 2), gen.smem, gen.barrier, gen.errors), code))
+  // Writes this warp's new K and V into the claimed row of the cache, once (`AppendOwn`): each lane copies its eight
+  // columns, `8·lane` to `8·lane + 7`, of row `blockIdx.x` of the new K into columns `128h + 8·lane` on of the claim's
+  // row of K, and of the new V into V likewise. The row comes from the claim and the columns from the warp and the
+  // lane, never from the caller: so the warp writes only the row its claim holds, and each lane its own columns of it.
+  def appendRow {n: Lifetime}{m: Lifetime}{L: Lifetime}(e: Ctx(n, Core.warpCta))(c: Claimed(m))(once: AppendOwn(m))(cache: PagedCache(L))
+      (knew: NewKV(L)): Ctx(n, Core.warpCta) := {
+    match once returning Ctx(n, Core.warpCta) with
+    | AppendOwn.mk => {
+      let lane := Expr.bin(BinOp.mul, Expr.special(Builtin.lane), Expr.lit(8))
+      let col := Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.bin(BinOp.rem, Expr.special(Builtin.blockX), Expr.lit(cache.heads)), Expr.lit(128)), lane)
+      let (e, src) := Core.bind(Key.key, e, Grain.thread, DType.u32, Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(128)), lane),
+        Option.none(Nat))
+      let (e, dst) := Core.bind(Key.key, e, Grain.thread, DType.u64,
+        Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.cast(DType.u64, c.row), Expr.lit(Nat.mul(cache.heads, 128))), col), Option.none(Nat))
+      let copy := fun (to: String)(from: String): List(Stmt) => List.map(Core.eight, Stmt, fun (j: Nat): Stmt =>
+        Stmt.store(Expr.param(to), Core.offsetBy(dst.expr, j), Expr.index(Expr.param(from), Core.offsetBy(src.expr, j))))
+      Core.emitAll(Key.key, e, List.append(copy(cache.k, knew.k), copy(cache.v, knew.v)))
+    }
   }
 
   def appendParams : List(Param) :=
@@ -3247,22 +3246,19 @@ namespace Core {
       List.cons(Param.output(DType.u64, "owners"), List.cons(Param.output(DType.u32, "appended"), List.cons(Param.scalar(DType.u32, "max_pages"),
       List.cons(Param.scalar(DType.u32, "pages"), List.cons(Param.scalar(DType.u32, "epoch"), List.nil(Param))))))))))))
 
-  // The host launcher of an append kernel over `heads` KV heads: one warp per sequence and head, grid (B·heads). It
-  // refuses B = 0, epoch = 0 (the owners start at 0, which would read as claims of sequence 0 in epoch 0), and extents
-  // of 2^31 or more: B·heads·128 (every element of the new K and V, and so every warp and report), pages·128 (every row
-  // of the cache), pages·heads (every owner word) and B·max_pages (every index of the table).
+  // The host launcher of an append kernel over `heads` KV heads: the kernel's parameters and `B`, which only it reads;
+  // one warp per sequence and head, grid (B·heads). It refuses B = 0, epoch = 0 (so that zeroed owners hold no claim of
+  // the first launch: a freshness matter, not a safety one), and extents of 2^31 or more: B·heads·128 (every element of
+  // the new K and V, and so every warp and report), pages·128 (every row of the cache), pages·heads (every owner word)
+  // and B·max_pages (every index of the table).
   def appendLauncher (heads: Nat): Launcher := {
-    let hostParams := List.cons(Param.output(DType.bf16, "K"), List.cons(Param.output(DType.bf16, "V"), List.cons(Param.input(DType.bf16, "k_new"),
-      List.cons(Param.input(DType.bf16, "v_new"), List.cons(Param.input(DType.u32, "lens"), List.cons(Param.input(DType.u32, "block_table"),
-      List.cons(Param.output(DType.u64, "owners"), List.cons(Param.output(DType.u32, "appended"), List.cons(Param.scalar(DType.u32, "B"),
-      List.cons(Param.scalar(DType.u32, "max_pages"), List.cons(Param.scalar(DType.u32, "pages"), List.cons(Param.scalar(DType.u32, "epoch"),
-      List.nil(Param)))))))))))))
     let requires := List.cons(Expr.bin(BinOp.lt, Expr.lit(0), Expr.param("B")), List.cons(Expr.bin(BinOp.lt, Expr.lit(0), Expr.param("epoch")),
       List.cons(Core.belowI32(Expr.bin(BinOp.mul, Core.wideParam("B"), Expr.lit(Nat.mul(heads, 128)))),
       List.cons(Core.belowI32(Expr.bin(BinOp.mul, Core.wideParam("pages"), Expr.lit(128))),
       List.cons(Core.belowI32(Expr.bin(BinOp.mul, Core.wideParam("pages"), Expr.lit(heads))),
       List.cons(Core.belowI32(Expr.bin(BinOp.mul, Core.wideParam("B"), Expr.param("max_pages"))), List.nil(Expr)))))))
-    Launcher.mk(hostParams, requires, List.nil(MapEncoding), Grid.blocks(Expr.bin(BinOp.mul, Expr.param("B"), Expr.lit(heads)), Expr.lit(1)), 32)
+    Launcher.mk(List.append(Core.appendParams, List.cons(Param.scalar(DType.u32, "B"), List.nil(Param))), requires, List.nil(MapEncoding),
+      Grid.blocks(Expr.bin(BinOp.mul, Expr.param("B"), Expr.lit(heads)), Expr.lit(1)), 32)
   }
 
   // Appends each sequence's new K and V to the paged cache (P2.md §2): warp `blockIdx.x = b·heads + h`, one per CTA,
@@ -3271,10 +3267,11 @@ namespace Core {
   // (`appendLauncher`). The launch contract that remains to the caller: K and V are device arrays of pages·128·heads·128
   // bf16 elements, the new K and V ones of B·heads·128, `lens` one of B u32 elements, the table one of B·max_pages,
   // `owners` one of pages·heads u64 elements and `appended` one of B·heads u32 elements, the outputs distinct from each
-  // other and from the inputs; launches that share the cache and its owners run one at a time, as on one stream, and the
-  // owners start at 0 with `epoch` from 1. Whatever the table and the lengths hold is memory-safe and race-free: a write
-  // needs a claim, and a claim a page below `pages`. For each launch's claims to be fresh, the host increases `epoch` at
-  // every launch; a reused one can only refuse claims.
+  // other and from the inputs; nothing writes an input during the launch; and launches that share the cache and its
+  // owners run one at a time, as on one stream (M17). Whatever the table, the lengths and the owners hold is memory-safe
+  // and race-free: a write needs a claim, a claim a page below `pages`, and the claims of one launch are exclusive
+  // whatever the owners held before it. For each launch's claims to be fresh, the owners start at 0 and the host
+  // increases `epoch` at every launch from 1; a reused epoch can only refuse claims.
   def appendKernel (name: String)(heads: Nat)
       (body: (l: Lifetime) -> Ctx(l, Core.warpCta) -> AppendLaunch(l) -> ClaimOwn(l) -> Ctx(l, Core.warpCta))
       : Program := scope l => {
@@ -3307,6 +3304,48 @@ namespace Core {
   struct F32x4 (l: Lifetime)(u: Grain) : Type { scope = l }
    | mk (v0: Val(l, u, DType.f32))(v1: Val(l, u, DType.f32))(v2: Val(l, u, DType.f32))(v3: Val(l, u, DType.f32)) : F32x4(l, u)
 
+  namespace F32x4 {
+    // `x` in every column.
+    def splat {l: Lifetime}{u: Grain}(x: Val(l, u, DType.f32)): F32x4(l, u) := F32x4.mk(x, x, x, x)
+
+    // `f` of each column.
+    def map {S: Lifetime}{u: Grain}{S2: Lifetime}{u2: Grain}{Sf: Lifetime}(v: F32x4(S, u))
+        (f: { scope = Sf } Val(S, u, DType.f32) -> Val(S2, u2, DType.f32)): F32x4(S2, u2) :=
+      F32x4.mk(f(v.v0), f(v.v1), f(v.v2), f(v.v3))
+
+    // `f` of each column of `a` and the same column of `b`.
+    def zip {Sa: Lifetime}{ua: Grain}{Sb: Lifetime}{ub: Grain}{S2: Lifetime}{u2: Grain}{Sf: Lifetime}(a: F32x4(Sa, ua))(b: F32x4(Sb, ub))
+        (f: { scope = Sf } Val(Sa, ua, DType.f32) -> Val(Sb, ub, DType.f32) -> Val(S2, u2, DType.f32)): F32x4(S2, u2) :=
+      F32x4.mk(f(a.v0, b.v0), f(a.v1, b.v1), f(a.v2, b.v2), f(a.v3, b.v3))
+
+    // The columns in order.
+    def columns {l: Lifetime}{u: Grain}(v: F32x4(l, u)): List(Val(l, u, DType.f32)) :=
+      List.cons(v.v0, List.cons(v.v1, List.cons(v.v2, List.cons(v.v3, List.nil(Val(l, u, DType.f32))))))
+  }
+
+  // Four f32 registers, one per column of this lane's columns of a row.
+  struct Reg4 (l: Lifetime) : Type { scope = l }
+   | mk (r0: Reg(l, DType.f32))(r1: Reg(l, DType.f32))(r2: Reg(l, DType.f32))(r3: Reg(l, DType.f32)) : Reg4(l)
+
+  def reg4 {l: Lifetime}{g: Group}{S: Lifetime}{u: Grain}(e: Ctx(l, g))(init: F32x4(S, u)): Pair(Ctx(l, g), Reg4(l)) := {
+    let (e, r0) := Core.reg(e, init.v0)
+    let (e, r1) := Core.reg(e, init.v1)
+    let (e, r2) := Core.reg(e, init.v2)
+    let (e, r3) := Core.reg(e, init.v3)
+    (e, Reg4.mk(r0, r1, r2, r3))
+  }
+
+  def get4 {l: Lifetime}{g: Group}{S: Lifetime}(e: Ctx(l, g))(r: Reg4(S)): Pair(Ctx(l, g), F32x4(l, Grain.thread)) := {
+    let (e, v0) := Core.get(e, r.r0)
+    let (e, v1) := Core.get(e, r.r1)
+    let (e, v2) := Core.get(e, r.r2)
+    let (e, v3) := Core.get(e, r.r3)
+    (e, F32x4.mk(v0, v1, v2, v3))
+  }
+
+  def set4 {l: Lifetime}{g: Group}{S: Lifetime}{Sv: Lifetime}{u: Grain}(e: Ctx(l, g))(r: Reg4(S))(v: F32x4(Sv, u)): Ctx(l, g) :=
+    Core.set(Core.set(Core.set(Core.set(e, r.r0, v.v0), r.r1, v.v1), r.r2, v.v2), r.r3, v.v3)
+
   // What each warp of a combine kernel starts with: the partials, the output, and the number of splits.
   struct CombineLaunch (l: Lifetime) : Type { scope = l }
    | mk (parts: Partials(l))(out: Combined(l))(splits: Val(l, Grain.uniform, DType.u32)) : CombineLaunch(l)
@@ -3315,9 +3354,12 @@ namespace Core {
   def splitRowOf {L: Lifetime}(parts: Partials(L))(s: Expr): Expr :=
     Expr.bin(BinOp.add, Expr.bin(BinOp.mul, s, parts.rows), Expr.special(Builtin.blockX))
 
+  // This lane's first column of a row of 128: `4·lane`.
+  def laneColumns : Expr := Expr.bin(BinOp.mul, Expr.special(Builtin.lane), Expr.lit(4))
+
   // Split `s`'s LSE of this warp's output row, read by every lane, or 0 where `s` is not below the number of splits:
-  // any `s` reads inside `LSEpart`. Every lane reads one address of an input that no thread writes, so the value has
-  // the grain of `s`.
+  // any `s` reads inside `LSEpart`. Every lane reads one address of an input that no thread writes during the launch,
+  // so the value has the grain of `s` (M10).
   def splitLse {l: Lifetime}{g: Group}{L: Lifetime}{S: Lifetime}{u: Grain}(e: Ctx(l, g))(parts: Partials(L))(s: Val(S, u, DType.u32))
       : Pair(Ctx(l, g), Val(l, u, DType.f32)) := {
     let read := Expr.index(Expr.param(parts.lse), Core.splitRowOf(parts, s.expr))
@@ -3328,19 +3370,25 @@ namespace Core {
   // below the number of splits: any `s` reads inside `Opart`.
   def splitRow {l: Lifetime}{g: Group}{L: Lifetime}{S: Lifetime}{u: Grain}(e: Ctx(l, g))(parts: Partials(L))(s: Val(S, u, DType.u32))
       : Pair(Ctx(l, g), F32x4(l, Grain.thread)) := {
-    let gen := Core.state(Key.key, e)
-    let inside := gen.next
-    let at := Nat.add(inside, 1)
-    let first := Nat.add(inside, 2)
-    let place := List.cons(Stmt.decl(DType.bool, inside, Expr.bin(BinOp.lt, s.expr, parts.splits)),
-      List.cons(Stmt.decl(DType.u32, at, Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Core.splitRowOf(parts, s.expr), Expr.lit(128)),
-        Expr.bin(BinOp.mul, Expr.special(Builtin.lane), Expr.lit(4)))), List.nil(Stmt)))
-    let column := fun (j: Nat): Stmt => Stmt.decl(DType.f32, Nat.add(first, j),
-      Expr.select(Expr.var(inside), Expr.index(Expr.param(parts.o), Core.offsetBy(Expr.var(at), j)), Expr.zero(DType.f32)))
-    let code := List.append(place, List.cons(column(0), List.cons(column(1), List.cons(column(2), List.cons(column(3), List.nil(Stmt))))))
-    let value := fun (j: Nat): Val(l, Grain.thread, DType.f32) => Val.mk(l, Grain.thread, DType.f32, Expr.var(Nat.add(first, j)), Option.none(Nat))
-    (Core.resume(Key.key, l, g, Core.pushAll(Gen.mk(gen.code, Nat.add(first, 4), gen.smem, gen.barrier, gen.errors), code)),
-      F32x4.mk(value(0), value(1), value(2), value(3)))
+    let (e, inside) := Core.bind(Key.key, e, Grain.thread, DType.bool, Expr.bin(BinOp.lt, s.expr, parts.splits), Option.none(Nat))
+    let (e, at) := Core.bind(Key.key, e, Grain.thread, DType.u32,
+      Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Core.splitRowOf(parts, s.expr), Expr.lit(128)), Core.laneColumns), Option.none(Nat))
+    let column := fun (e: Ctx(l, g))(j: Nat): Pair(Ctx(l, g), Val(l, Grain.thread, DType.f32)) =>
+      Core.bind(Key.key, e, Grain.thread, DType.f32, Expr.select(inside.expr, Expr.index(Expr.param(parts.o), Core.offsetBy(at.expr, j)), Expr.zero(DType.f32)),
+        Option.none(Nat))
+    let (e, v0) := column(e, 0)
+    let (e, v1) := column(e, 1)
+    let (e, v2) := column(e, 2)
+    let (e, v3) := column(e, 3)
+    (e, F32x4.mk(v0, v1, v2, v3))
+  }
+
+  // Stores `xs` as bf16 (`outValue`) into `name` from element `at + j` on, one element each.
+  def columnStores {S: Lifetime}{u: Grain}(name: String)(at: Expr)(j: Nat)(xs: List(Val(S, u, DType.f32))): List(Stmt) decreases structural(xs) := {
+    match xs returning List(Stmt) with
+    | List.nil => List.nil(Stmt)
+    | List.cons x more => List.cons(Stmt.store(Expr.param(name), Core.offsetBy(at, j), Core.outValue(DType.bf16, x.expr)),
+      Core.columnStores(name, at, Nat.succ(j), more))
   }
 
   // Stores this warp's combined row `blockIdx.x`: each lane its four columns of O, rounded to bf16 (`outValue`), and
@@ -3350,15 +3398,11 @@ namespace Core {
       (e: Ctx(l, Core.warpCta))(out: Combined(L))(own: CombinedOwn(L))(o: F32x4(S, u))(lse: Val(S2, u2, DType.f32)): Ctx(l, Core.warpCta) := {
     match own returning Ctx(l, Core.warpCta) with
     | CombinedOwn.mk => {
-      let gen := Core.state(Key.key, e)
-      let at := gen.next
-      let place := Stmt.decl(DType.u32, at, Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(128)),
-        Expr.bin(BinOp.mul, Expr.special(Builtin.lane), Expr.lit(4))))
-      let column := fun (j: Nat)(x: Val(S, u, DType.f32)): Stmt =>
-        Stmt.store(Expr.param(out.o), Core.offsetBy(Expr.var(at), j), Core.outValue(DType.bf16, x.expr))
-      let stores := List.cons(place, List.cons(column(0, o.v0), List.cons(column(1, o.v1), List.cons(column(2, o.v2), List.cons(column(3, o.v3),
-        Core.onLaneZero(List.cons(Stmt.store(Expr.param(out.lse), Expr.special(Builtin.blockX), lse.expr), List.nil(Stmt))))))))
-      Core.resume(Key.key, l, Core.warpCta, Core.pushAll(Gen.mk(gen.code, Nat.add(at, 1), gen.smem, gen.barrier, gen.errors), stores))
+      let (e, at) := Core.bind(Key.key, e, Grain.thread, DType.u32,
+        Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(128)), Core.laneColumns), Option.none(Nat))
+      let stores := Core.columnStores(out.o, at.expr, 0, F32x4.columns(o))
+      let lseStore := Core.onLaneZero(List.cons(Stmt.store(Expr.param(out.lse), Expr.special(Builtin.blockX), lse.expr), List.nil(Stmt)))
+      Core.emitAll(Key.key, e, List.append(stores, lseStore))
     }
   }
 
@@ -3379,7 +3423,8 @@ namespace Core {
   // of `rows` from the splits' LSEs (`splitLse`) and rows (`splitRow`), and stores it once (`storeCombined`). With its
   // host launcher (`combineLauncher`). The launch contract that remains to the caller: Opart is a device array of
   // splits·rows·128 f32 elements and LSEpart one of splits·rows, O one of rows·128 bf16 elements and LSE one of rows f32
-  // elements, distinct from each other and from the inputs. Any input values are memory-safe.
+  // elements, distinct from each other and from the inputs, and nothing writes an input during the launch. Any input
+  // values are memory-safe.
   def combineKernel (name: String)(body: (l: Lifetime) -> Ctx(l, Core.warpCta) -> CombineLaunch(l) -> CombinedOwn(l) -> Ctx(l, Core.warpCta))
       : Program := scope l => {
     let splits := Core.uniformParam(Key.key, l, DType.u32, "splits")

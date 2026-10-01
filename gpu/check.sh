@@ -2,7 +2,8 @@
 # Checks the spike: every example must generate code, every file under rejected/ must fail with the diagnostic
 # kind named on its `// expect:` line (with a message that mentions the text of its `// mentions:` line, if it has
 # one), every mutant in a rejected/*_mutants.py table must be refused as the table says (see mutate.py), and every file
-# under checks/ and proofs/ must check without a diagnostic. The same holds of encoding/ (the next core,
+# under checks/ and proofs/ must check without a diagnostic, and every model check (`*_model.py` under
+# encoding/harness/) must pass. The same holds of encoding/ (the next core,
 # encoding/README.md), whose examples/, rejected/ and checks/ are laid out as these.
 #
 # The per-file checks run in parallel, one per processor (CHECK_JOBS overrides the count), and report in a fixed
@@ -51,6 +52,10 @@ one() {
     python)
       if python3 -c 'import sys; compile(open(sys.argv[1]).read(), sys.argv[1], "exec")' "$f"; then echo "ok   $(name "$f")"
       else echo "FAIL $(name "$f") does not compile"; return 1; fi ;;
+    # Model checks (`*_model.py`) run, and fail with their program.
+    model)
+      if out=$(python3 "$f" 2>&1); then echo "ok   $(name "$f")"
+      else echo "FAIL $(name "$f")"; printf '%s\n' "$out"; return 1; fi ;;
   esac
 }
 
@@ -65,7 +70,9 @@ tasks() {
   for f in "$here"/rejected/*.rac "$here"/encoding/rejected/*.rac; do [ -e "$f" ] && echo "rejected $f"; done
   for f in "$here"/checks/*.rac "$here"/proofs/*.rac "$here"/encoding/checks/*.rac; do [ -e "$f" ] && echo "clean $f"; done
   for f in "$here"/harness/*.cu "$here"/encoding/harness/*.cu; do [ -e "$f" ] && echo "harness $f"; done
-  for f in "$here"/encoding/harness/*.py; do [ -e "$f" ] && echo "python $f"; done
+  for f in "$here"/encoding/harness/*.py; do
+    case $f in *_model.py) echo "model $f" ;; *) [ -e "$f" ] && echo "python $f" ;; esac
+  done
 }
 status=0
 results=$(mktemp -d)

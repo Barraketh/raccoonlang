@@ -373,7 +373,7 @@ Observations from building `P2.md` (`Core.rac`'s paged-decode section, `examples
 9. **Comparisons.** `BinOp` has no `!=` and `Expr` no negation, so the claim's branch tests "the word holds this
    launch's epoch" and puts the CAS in the else arm, and the decode prologue names `nonEmpty` rather than `empty`.
    Neither reads worse.
-10. **The combine's accumulators.** Four registers with a `get` and a `set` per split (`accumulate`), where four
+10. **The combine's accumulators.** A `Reg4`, read whole and written whole per split (`get4`, `set4`), where four
     values would do: there is no public `bind` (§1, item 4).
 11. **One example, three kernels.** `G` is a generation-time constant (it is Q's box height), so the decode example
     renders `paged_decode_g1`, `_g4` and `_g8`: about 27 CPU s, and 10,005 lines with their launchers. The append and
@@ -387,5 +387,28 @@ Observations from building `P2.md` (`Core.rac`'s paged-decode section, `examples
     decode after it), out-of-range and epoch appends; 38 refusals). Broken emulations were caught: claims that ignore
     the owners (`noclaim`) or overwrite a current one (`steal`), each in the collision and reused-epoch checks; an
     entry past the table read as column 0 (`nobound`); floor-sized splits (6 checks), no length mask (28), empty splits
-    not zeroed (19), a CTA storing G + 1 rows (28), and an unweighted combine (19). P1's harness, moved to the new layout, passed against the same mock. The mock
-    checks the harness, the references and the launchers, not the kernels.
+    not zeroed (19), a CTA storing G + 1 rows (28), and an unweighted combine (19). P1's harness, moved to the new
+    layout, passed against the same mock. The mock checks the harness, the references and the launchers, not the
+    kernels. It runs each claim at once, so it never exercises the concurrent path, a CAS that fails because another
+    warp claimed the word between its load and its CAS; `harness/claim_model.py` checks that path instead (item 13).
+13. **A model check.** `harness/claim_model.py` runs every interleaving of the claim's load and CAS for three warps of
+    one word, from every start value, at three epochs, and requires at most one claim to hold; it also shows that two
+    overlapping launches can both hold one. It takes a fraction of a second, so `check.sh` runs it (a `model` kind)
+    rather than only compiling it.
+
+**The hostile review** (2026-10-01) found:
+- **A race on the row.** Every lane read `lens` and the table to compute its own row, but only lane 0's page was
+  claimed: a writer of the table between lane 0's read and another lane's would send that lane to a page another warp
+  claimed. Lane 0 now reads them alone and broadcasts the row with the result, so the row is the claimed one by data
+  flow. The launch contracts now also say that nothing writes an input during a launch (M10).
+- **Writes that repeat.** `appendRow` twice, in a loop, or not at all all checked, so "written once" (S5) was false and
+  `appended` meant "claimed". The arm now receives a linear `AppendOwn` that `appendRow` uses up (`append_twice`,
+  `append_in_loop`, `arm_without_append`).
+- **A wrapping block count.** `n = (lens[b] + 1 + 127) / 128` wrapped for lengths near 2^32; it is now
+  `lens[b] / 128 + 1`, and a split's keys `(lens[b] − 128·first) + 1`.
+- **Overstated docs.** The claim's step 3 had a second success case (`prev = mine`) that one launch cannot reach;
+  `claim_leaves_arm` is refused by the arm's result type, not by its scope (no mutant is refused by the scope alone);
+  the owners' start value and the refusal of epoch 0 are about freshness, not safety.
+- **Readability.** Hand-numbered ids and rebuilt `Gen`s in the decode prologue and the claim (now `bind`, `reg`,
+  `asmOut` and `branch`), unrolled columns in the combine (now `F32x4.map`, `zip`, `Reg4`), launcher parameter lists
+  written twice (now derived from the kernels'), and a nested `Bool.cond` in `Cuda.headers` (now a rule per header).

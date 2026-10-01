@@ -4,7 +4,7 @@
 // appends only if it claims its last page's rows of the head (`owners [pages·8]`, u64, for the launch's `epoch`), so
 // two sequences whose tables name one last page never write the same rows; `appended [B·8]` says which did.
 //
-// One warp per sequence and head: claim (`Core.withClaim`), then write the claimed row (`Core.appendRow`).
+// One warp per sequence and head: claim (`Core.withClaim`), then write the claimed row, once (`Core.appendRow`).
 //
 // Run: gpu/gen.sh gpu/encoding/examples/paged_append.rac
 
@@ -19,8 +19,8 @@ namespace Append {
 
   def kernel : Program :=
     appendKernel("paged_append", heads, fun (l: Lifetime)(e: Ctx(l, warpCta))(g: AppendLaunch(l))(own: ClaimOwn(l)): Ctx(l, warpCta) =>
-      withClaim(e, g.lens, g.table, g.claims, own, fun (m: Lifetime)(e: Ctx(m, warpCta))(c: Claimed(m)): Ctx(m, warpCta) =>
-        appendRow(e, c, g.cache, g.knew)))
+      withClaim(e, g.lens, g.table, g.claims, own, fun (m: Lifetime)(e: Ctx(m, warpCta))(c: Claimed(m))(once: AppendOwn(m)): Ctx(m, warpCta) =>
+        appendRow(e, c, once, g.cache, g.knew)))
 }
 
 { Core.render(Append.kernel) }

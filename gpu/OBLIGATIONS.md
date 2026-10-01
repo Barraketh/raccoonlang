@@ -141,8 +141,9 @@ the invariants and protocols. Each was found necessary; several were found by re
   (`after_thread_sync`) before loading it, whoever observed the commit.
 - **M10, grain.** A value is `uniform` only if it comes from uniform sources: literals, parameters, block and grid
   indices, loop and tile indices, a shared read at a uniform index of a tile that no thread may write until a
-  barrier (M4, M7), or a read at a uniform index of a kernel input, which no thread of the launch writes (the decode
-  prologue's length, `encoding/P2.md` §3).
+  barrier (M4, M7), or a read at a uniform index of a kernel input (the decode prologue's length, `encoding/P2.md`
+  §3). An input is read-only for the whole launch: no thread of it writes one, and the launch contract of every
+  builder that reads one says that nothing else does either, since a concurrent writer of an input is a race on it.
 - **M11, deadlock is not a race.** Rings are FIFOs whose producer tails drain every release. Roles that disagree on
   trip counts block forever; none can get a phase ahead.
 
@@ -182,16 +183,20 @@ none of them (`ATTENTION.md` §4.1), and closes its protocols on `…Done` token
   `takeMma` makes it before any publish, when no P exists, and `issueScores` hands it on.
   Between the two sides the reads are ordered by the buffer's barriers, as M9 and M13 order the exchange's.
 - **M17, claims** (P2's append, `encoding/P2.md` §2). A write whose target the run-time data chooses needs a fact
-  about that data, and the fact is a claim: `withClaim` runs its arm only where the claim holds, and `Claimed`, which
-  only that arm receives and which belongs to its scope, is what `appendRow` writes under. A claim of an owner word is
-  exclusive within one launch: every write of an owner word in a launch stores that launch's epoch (step 3's CAS
-  stores `epoch·2^32 + b`, and nothing else writes the owners), so once a word holds the launch's epoch no claim changes
-  it, and two claims of one word that hold are for one sequence and one head, so one warp. A failed CAS found the
-  launch's epoch, so none needs a retry. The step 1 read must be single-copy atomic (A41): a torn read could pair this
-  launch's epoch with another word's sequence. Nothing about the host's epochs can make two claims hold: a reused
-  epoch only refuses claims. The argument is about one launch: launches that share the owners must not overlap, as
-  two launches on two streams with epochs 5 and 6 would each see the other's epoch as old, and both CAS steps would
-  succeed. The launch contract says so, as any kernel that writes memory another kernel reads needs it.
+  about that data, and the fact is a claim. Three things carry it:
+  - **Exclusivity**, from the atomic. Every write of an owner word in a launch stores that launch's epoch (step 3's
+    CAS stores `epoch·2^32 + b`, and nothing else writes the owners), so once a word holds the launch's epoch no claim
+    changes it, and two claims of one word that hold are for one sequence and one head, so one warp. A failed CAS
+    found the launch's epoch, so none needs a retry. The step 1 read must be single-copy atomic (A41): a torn read
+    could pair this launch's epoch with another word's sequence. This holds for any start values of the owners and
+    any epochs; a reused epoch only refuses claims. `harness/claim_model.py` checks it on every interleaving.
+  - **Confinement**, from the arm. `withClaim` runs its arm only where the claim holds, and the row the warp writes is
+    the one lane 0 claimed, by data flow (the broadcast), not a lane's own reading of the table. `Claimed`, which only
+    the arm receives, belongs to its scope, and the arm returns the emitter alone.
+  - **Exactly once**, from linearity. The arm receives a linear `AppendOwn`, which only `appendRow` uses up.
+  The argument is about one launch: launches that share the owners must not overlap, as two launches on two streams
+  with epochs 5 and 6 would each see the other's epoch as old, and both CAS steps would succeed. The launch contract
+  says so, as any kernel that writes memory another kernel reads needs it.
 
 ## 6. Operation obligations
 
@@ -340,9 +345,9 @@ and operations, with the rows `storeO` takes from its `AttnOut`. The append and 
 | Operation | Requires | Emits | Establishes | Relies on |
 |---|---|---|---|---|
 | `fillGroup` | as `fill`; a ring whose stages are two 64 × 128 boxes (else a generation error); a `GroupMap` of `group` rows | `arrive.expect_tx(2 · group · 128)`, two TMA loads of `group` rows at row `blockIdx.y · group`, columns 0 and 64, into the stage's two halves | as `fill`; the stage's first `group` rows of each half hold the CTA's queries, the others are never loaded | A9, A40 |
-| `decodeKernel` | a body; 1 ≤ H ≤ 65535, 1 ≤ G ≤ 128 (else a generation error) | the prologue, once, before the roles: `b = blockIdx.y / H`, `keys = lens[b] + 1`, `n = ceil(keys / 128)`, `c = ceil(n / gridDim.x)`, `first = blockIdx.x · c`, `end = min(n, first + c)`, `nonEmpty = first < end`, `count = nonEmpty ? end − first : 1`, the split's keys `nonEmpty ? keys − 128 · first : 0`; −∞; the kernel (parameters `Q_map`, `K_map`, `V_map`, `Opart`, `LSEpart`, `block_table`, `lens`, `B`, `max_pages`, `scale_log2`) and its launcher (refusing B = 0, B · H ≥ 65536, splits = 0, splits · B · H · G · 128 ≥ 2³¹, rows_q ≠ B · H · G, dim ≠ 128, B · max_pages ≥ 2³¹, and the cache's pages · 128 ≥ 2³¹, rows_kv ≠ pages · 128, cols_kv ≠ H · 128; Q's map with 64 × G boxes; grid (splits, B · H) of 256 threads) | `DecodeLaunch`: the `GroupMap`, the `PageMap`s, the `PageTable`, the `AttnOut` of the CTA's G rows of the partials (from `blockIdx.x · B · H · G + blockIdx.y · G`, O kept where `nonEmpty`), A2's non-causal `Mask` with the split's keys as its limit, `count` and `first` (uniform, M10), `scale_log2`; `OOwn`, `TmemPermit`; a `Program`. Every role runs `count ≥ 1` blocks | A17, I6, M10, M11 |
-| `withClaim` | `ClaimOwn(L)` (linear: one claim per warp), `Lengths`, `PageTable`, `Claims`, a `warpCta` context, an unrestricted arm | every lane: `b = blockIdx.x / H`, `pos = lens[b]`, `p` = table entry `[b][pos / 128]` if `pos / 128 < max_pages` else `pages`, the row `128p + pos mod 128`, the word `p · H + blockIdx.x mod H`; lane 0, if `p < pages`: `mine = epoch · 2³² + b`, `cur` by `ld.relaxed.gpu.global.b64`, then `seen = cur` if `cur`'s epoch is `epoch`, else `prev` by `atom.relaxed.gpu.global.cas.b64(cur → mine)` and `seen = prev = cur ? mine : prev`, and the flag `seen = mine`; `__syncwarp`; the flag broadcast by `shfl.sync.idx`; `if (flag) { arm }`; lane 0 stores the flag at `appended[blockIdx.x]` | the arm runs, on the whole warp, only where this warp's claim of `(p, h)` holds, with `Claimed(m)` of the arm's scope; at most one warp's claim of a word holds in a launch (M17); `appended[blockIdx.x]` written once | A41, A42, M17, S1, S5 |
-| `appendRow` | `Claimed(m)`, `PagedCache`, `NewKV`, a `warpCta` context | each lane: 8 copies of `k_new[blockIdx.x · 128 + 8 · lane + j]` to K at the claim's row, column `(blockIdx.x mod H) · 128 + 8 · lane + j` (64-bit index), and of V likewise | the warp writes only rows its claim holds, each lane its own 8 columns of them; the row lies inside the cache (`p < pages`) | M17, S1 |
+| `decodeKernel` | a body; 1 ≤ H ≤ 65535, 1 ≤ G ≤ 128 (else a generation error) | the prologue, once, before the roles: `b = blockIdx.y / H`, `len = lens[b]`, `n = len / 128 + 1`, `c = ceil(n / gridDim.x)`, `first = blockIdx.x · c`, `end = min(n, first + c)`, `nonEmpty = first < end`, `count = nonEmpty ? end − first : 1`, the split's keys `nonEmpty ? (len − 128 · first) + 1 : 0`; −∞; the kernel (parameters `Q_map`, `K_map`, `V_map`, `Opart`, `LSEpart`, `block_table`, `lens`, `B`, `max_pages`, `scale_log2`) and its launcher (refusing B = 0, B · H ≥ 65536, splits = 0, splits · B · H · G · 128 ≥ 2³¹, rows_q ≠ B · H · G, dim ≠ 128, B · max_pages ≥ 2³¹, and the cache's pages · 128 ≥ 2³¹, rows_kv ≠ pages · 128, cols_kv ≠ H · 128; Q's map with 64 × G boxes; grid (splits, B · H) of 256 threads) | `DecodeLaunch`: the `GroupMap`, the `PageMap`s, the `PageTable`, the `AttnOut` of the CTA's G rows of the partials (from `blockIdx.x · B · H · G + blockIdx.y · G`, O kept where `nonEmpty`), A2's non-causal `Mask` with the split's keys as its limit, `count` and `first` (uniform, M10), `scale_log2`; `OOwn`, `TmemPermit`; a `Program`. Every role runs `count ≥ 1` blocks | A17, I6, M10, M11 |
+| `withClaim` | `ClaimOwn(L)` (linear: one claim per warp), `Lengths`, `PageTable`, `Claims`, a `warpCta` context, an unrestricted arm that returns the emitter alone | every lane: `b = blockIdx.x / H`, the flag and the row registers, 0. Lane 0: `pos = lens[b]`, `p` = table entry `[b][pos / 128]` if `pos / 128 < max_pages`, else `pages`; if `p < pages`: the row `128p + pos mod 128`, `mine = epoch · 2³² + b`, `cur` by `ld.relaxed.gpu.global.b64` of word `p · H + blockIdx.x mod H`; if `cur`'s epoch is `epoch`, the flag `cur = mine`, else the flag `atom.relaxed.gpu.global.cas.b64(word, cur, mine) = cur`. Every lane: `__syncwarp`; the flag and the row broadcast from lane 0 by `shfl.sync.idx`; `if (0 < flag) { arm }`; lane 0 stores the flag at `appended[blockIdx.x]` | the arm runs, on the whole warp, only where this warp's claim of `(p, h)` holds, with `Claimed(m)` of lane 0's row and a linear `AppendOwn(m)`, both of the arm's scope; at most one warp's claim of a word holds in a launch | A41, A42, M17 |
+| `appendRow` | `Claimed(m)`, `AppendOwn(m)` (linear, used up), `PagedCache`, `NewKV`, a `warpCta` context | each lane: 8 copies of `k_new[blockIdx.x · 128 + 8 · lane + j]` to K at the claim's row, column `(blockIdx.x mod H) · 128 + 8 · lane + j` (64-bit index), and of V likewise | the warp writes, once, only the row its claim holds, each lane its own 8 columns of it; the row lies inside the cache (`p < pages`) | M17 |
 | `appendKernel` | a body; 1 ≤ H ≤ 65535 (else a generation error) | the kernel (parameters `K`, `V`, `k_new`, `v_new`, `lens`, `block_table`, `owners`, `appended`, `max_pages`, `pages`, `epoch`) and its launcher (refusing B = 0, epoch = 0, B · H · 128 ≥ 2³¹, pages · 128 ≥ 2³¹, pages · H ≥ 2³¹, B · max_pages ≥ 2³¹; grid (B · H) of 32 threads) | `AppendLaunch`, one `ClaimOwn` per warp; a `Program` | A17, I6 |
 | `splitLse`, `splitRow` | `Partials`, a split index `s` (any value) | `s < splits ? LSEpart[s · rows + blockIdx.x] : 0`; the lane's 4 columns `s < splits ? Opart[(s · rows + blockIdx.x) · 128 + 4 · lane + j] : 0` | the values, `s`'s grain for the LSE (one address, of an input), thread grain for the row; every read inside the partials | M10 |
 | `storeCombined` | `CombinedOwn(L)` (linear), `Combined`, a `warpCta` context, four f32 values and one | each lane: 4 stores of `O[blockIdx.x · 128 + 4 · lane + j]` as bf16; lane 0: `LSE[blockIdx.x]` | the warp's row of O and LSE written once, each element by one lane | S5 |
@@ -442,13 +447,16 @@ arguments. The audit as of this document:
 - **Paged decode** (`encoding/P2.md`, §6.11). `fillGroup` is `fill` with the row the core's and the bytes of a box of
   `group` rows. `withClaim` consumes the linear `ClaimOwn` and mints `Claimed` only inside the arm it emits under the
   broadcast flag; `Claimed` is sealed and of the arm's scope, and the arm is unrestricted, so it captures no linear
-  value. `appendRow` takes the row from `Claimed` and the columns from the warp and lane. `storeCombined` consumes
-  `CombinedOwn`. `splitLse` and `splitRow` read the sealed `Partials` with their guard. The unsealed `DecodeLaunch`,
+  value, and mints the linear `AppendOwn` there too, which only `appendRow` uses up. `appendRow` takes the row from
+  `Claimed` and the columns from the warp and lane. `storeCombined` consumes `CombinedOwn`. `F32x4.splat`, `map`,
+  `zip` and `columns`, `Reg4.mk`, `reg4`, `get4` and `set4` build values and registers from values and registers, as
+  `F32x8.mk`, `reg`, `get` and `set` do; `asmOut`, which prints a template, needs the Key. `splitLse` and `splitRow` read the sealed `Partials` with their guard. The unsealed `DecodeLaunch`,
   `AppendLaunch` and `CombineLaunch` build launches from sealed parts and `Val`s: `blocks` and `first` (decode) and
   `splits` (combine) choose trip counts and table entries only, so a wrong one deadlocks (M11), reads a wrong page or
   split (guarded), or computes a wrong result. `F32x4.mk` builds values from values. `warpCta`, `wideParam`,
   `belowI32`, `cacheRequires`, `cacheMaps`, `fillBoxes`, `rowInTile`, `keptOrZero`, `storeRow`,
-  `splitRowOf`, `globalAt`, `loadRelaxed64`, `casRelaxed64`, `broadcastLane0`, `decodeParams`, `decodeLauncher`,
+  `splitRowOf`, `laneColumns`, `columnStores`, `globalAt`, `loadRelaxed64`, `casRelaxed64`, `broadcastLane0`,
+  `decodeArrays`, `decodeParams`, `decodeLauncher`,
   `appendParams`, `appendLauncher`, `combineParams` and `combineLauncher` build unsealed `Group`s, `Expr`s, `Stmt`s,
   `Gen`s, `String`s and launchers, which reach a kernel only through the Key; `headOut`, which builds an `AttnOut`,
   needs it.

@@ -34,13 +34,13 @@
 
 extern "C" cudaError_t paged_append_launch(__nv_bfloat16 *K, __nv_bfloat16 *V, const __nv_bfloat16 *k_new,
                                            const __nv_bfloat16 *v_new, const unsigned *lens, const unsigned *block_table,
-                                           unsigned long long *owners, unsigned *appended, unsigned B,
-                                           unsigned max_pages, unsigned pages, unsigned epoch, cudaStream_t stream);
+                                           unsigned long long *owners, unsigned *appended, unsigned max_pages,
+                                           unsigned pages, unsigned epoch, unsigned B, cudaStream_t stream);
 #define DECODE_LAUNCH(name)                                                                                          \
   extern "C" cudaError_t name(const __nv_bfloat16 *Q, const __nv_bfloat16 *K, const __nv_bfloat16 *V, float *Opart, \
                               float *LSEpart, const unsigned *block_table, const unsigned *lens, unsigned B,         \
-                              unsigned max_pages, unsigned splits, unsigned pages, unsigned rows_q, unsigned rows_kv, \
-                              unsigned cols_kv, unsigned dim, float scale_log2, cudaStream_t stream)
+                              unsigned max_pages, float scale_log2, unsigned splits, unsigned pages, unsigned rows_q, \
+                              unsigned rows_kv, unsigned cols_kv, unsigned dim, cudaStream_t stream)
 DECODE_LAUNCH(paged_decode_g1_launch);
 DECODE_LAUNCH(paged_decode_g4_launch);
 DECODE_LAUNCH(paged_decode_g8_launch);
@@ -238,7 +238,7 @@ struct Cache {
   };
   Appended append(bool reuse) {
     std::vector<float> wantK = k, wantV = v;
-    CHECK(paged_append_launch(dK, dV, dKNew, dVNew, dLens, dTable, dOwners, dAppended, b, maxPages, pages, epoch, nullptr));
+    CHECK(paged_append_launch(dK, dV, dKNew, dVNew, dLens, dTable, dOwners, dAppended, maxPages, pages, epoch, b, nullptr));
     CHECK(cudaDeviceSynchronize());
     if (!reuse) ++epoch;
     Appended out;
@@ -263,8 +263,8 @@ struct Kernel {
   const char *name;
   unsigned group;
   cudaError_t (*launch)(const __nv_bfloat16 *, const __nv_bfloat16 *, const __nv_bfloat16 *, float *, float *,
-                        const unsigned *, const unsigned *, unsigned, unsigned, unsigned, unsigned, unsigned, unsigned,
-                        unsigned, unsigned, float, cudaStream_t);
+                        const unsigned *, const unsigned *, unsigned, unsigned, float, unsigned, unsigned, unsigned,
+                        unsigned, unsigned, unsigned, cudaStream_t);
 };
 
 static const Kernel kernels[] = {{"paged_decode_g1", 1, paged_decode_g1_launch},
@@ -314,8 +314,8 @@ static size_t decode(const Kernel &kernel, Cache &c, unsigned splits, uint32_t s
   lsePart.reset();
   lse.reset();
   CHECK(cudaMemset(dO, 0xff, (size_t(rows) * D + 2 * D) * sizeof(__nv_bfloat16)));
-  CHECK(kernel.launch(dQ, c.dK, c.dV, oPart.data, lsePart.data, c.dTable, c.dLens, c.b, c.maxPages, splits, c.pages, rows,
-                      c.pages * D, W, D, scaleLog2, nullptr));
+  CHECK(kernel.launch(dQ, c.dK, c.dV, oPart.data, lsePart.data, c.dTable, c.dLens, c.b, c.maxPages, scaleLog2, splits, c.pages,
+                      rows, c.pages * D, W, D, nullptr));
   CHECK(paged_combine_launch(oPart.data, lsePart.data, dO + D, lse.data, rows, splits, nullptr));
   CHECK(cudaDeviceSynchronize());
   size_t bad = 0;
@@ -497,8 +497,8 @@ static int refusals() {
   const unsigned bigPages = ((1u << 31) + D - 1) / D;
   // The append: {B, max_pages, pages, epoch}.
   auto append = [&c](unsigned b, unsigned maxPages, unsigned pages, unsigned epoch) {
-    return paged_append_launch(c.dK, c.dV, c.dKNew, c.dVNew, c.dLens, c.dTable, c.dOwners, c.dAppended, b, maxPages, pages,
-                               epoch, nullptr);
+    return paged_append_launch(c.dK, c.dV, c.dKNew, c.dVNew, c.dLens, c.dTable, c.dOwners, c.dAppended, maxPages, pages,
+                               epoch, b, nullptr);
   };
   check("append B = 0", append(0, 1, 1, 1));
   check("append epoch = 0", append(1, 1, 1, 0));
@@ -510,8 +510,8 @@ static int refusals() {
     const unsigned g = k.group, rq = H * g;
     auto decode = [&c, &k](unsigned b, unsigned maxPages, unsigned splits, unsigned pages, unsigned rowsQ, unsigned rowsKv,
                            unsigned colsKv, unsigned dim) {
-      return k.launch(nullptr, c.dK, c.dV, nullptr, nullptr, c.dTable, c.dLens, b, maxPages, splits, pages, rowsQ, rowsKv,
-                      colsKv, dim, scaleLog2, nullptr);
+      return k.launch(nullptr, c.dK, c.dV, nullptr, nullptr, c.dTable, c.dLens, b, maxPages, scaleLog2, splits, pages, rowsQ,
+                      rowsKv, colsKv, dim, nullptr);
     };
     const std::string n = k.name;
     const unsigned bigB = 65535 / H + 1, bigSplits = (1u << 31) / (rq * D) + 1;

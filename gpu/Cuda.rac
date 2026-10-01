@@ -320,12 +320,17 @@ namespace Cuda {
     | Param.tensorMap u n => Bool.false
   })
 
-  // Headers a kernel needs: the driver API's CUtensorMap and bf16 when it takes tensor maps, the runtime API when it
-  // has a launcher, and bf16 when a launched kernel without tensor maps has bf16 parameters; nothing otherwise.
+  // `#include <header>` where `wanted`.
+  def include (wanted: Bool)(header: String): String := Bool.cond(wanted, String, Text.cat3("#include <", header, ">\n"), "")
+
+  // Headers a kernel needs, then a blank line if it needs any: the driver API's when it takes tensor maps (CUtensorMap),
+  // bf16's when it takes tensor maps (of bf16) or bf16 parameters, and the runtime API's when it has a launcher.
   def headers (ps: List(Param))(launched: Bool)(rest: String): String := {
-    let runtime := Bool.cond(launched, String, Text.cat("#include <cuda_runtime.h>\n", "\n"), "\n")
-    let simt := Bool.cond(launched, String, Text.cat3(Bool.cond(Cuda.usesBf16(ps), String, "#include <cuda_bf16.h>\n", ""), runtime, rest), rest)
-    Bool.cond(Cuda.usesTensorMaps(ps), String, Text.cat3("#include <cuda.h>\n#include <cuda_bf16.h>\n", runtime, rest), simt)
+    let maps := Cuda.usesTensorMaps(ps)
+    let bf16 := Bool.or(maps, Cuda.usesBf16(ps))
+    let blank := Bool.cond(Bool.or(bf16, launched), String, "\n", "")
+    Text.cat3(Cuda.include(maps, "cuda.h"), Cuda.include(bf16, "cuda_bf16.h"),
+      Text.cat3(Cuda.include(launched, "cuda_runtime.h"), blank, rest))
   }
 
   // The dynamic shared buffer's declaration and shared-window address, when the kernel uses one.
