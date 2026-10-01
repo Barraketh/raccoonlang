@@ -3030,26 +3030,31 @@ namespace Core {
   // A count `setmaxnreg` takes: a multiple of 8 from 24 to 256.
   def regsOk (count: Nat): Bool := Bool.and(Nat.ble(24, count), Bool.and(Nat.ble(count, 256), Nat.isZero(Nat.mod(count, 8))))
 
-  // The role of the warpgroup `warps(f, 4)` at `count` registers per thread (A59):
-  // - first `setmaxnreg` from 128 to `count`, so it covers all of the role's code;
-  // - after the role, the warpgroup's named barrier, which `setmaxnreg` needs between two of its own, and `setmaxnreg`
-  //   back to 128, so every warp holds 128 outside the split.
+  // The role of the warpgroup `warps(f, 4)` at `count` registers per thread (A59): first `setmaxnreg` from 128 to
+  // `count`, so it covers all of the role's code. `splitWarpgroups` brings the warpgroup back to 128 after the join.
   def withRegs {kr: Kind}{Sr: Lifetime}(f: Nat)(count: Nat)
       (role: { kind = kr, scope = Sr } (m: Lifetime) -> Ctx(m, Group.warps(f, 4)) -> Pair(Ctx(m, Group.warps(f, 4)), Unit))
       : { kind = kr, scope = Sr } (m: Lifetime) -> Ctx(m, Group.warps(f, 4)) -> Pair(Ctx(m, Group.warps(f, 4)), Unit) :=
-    fun (m: Lifetime)(e: Ctx(m, Group.warps(f, 4))): Pair(Ctx(m, Group.warps(f, 4)), Unit) => {
-      let (e, u) := role(m, Core.emitAll(Key.key, e, Core.setMaxRegs(128, count)))
-      let joined := Core.join(Group.warps(f, 4), Core.state(Key.key, e))
-      (Core.resume(Key.key, m, Group.warps(f, 4), Core.pushAll(joined, Core.setMaxRegs(count, 128))), u)
-    }
+    fun (m: Lifetime)(e: Ctx(m, Group.warps(f, 4))): Pair(Ctx(m, Group.warps(f, 4)), Unit) =>
+      role(m, Core.emitAll(Key.key, e, Core.setMaxRegs(128, count)))
+
+  // Warpgroup `k` of a 512-thread CTA, back from `count` registers per thread to 128.
+  def regsBack (k: Nat)(count: Nat): Stmt :=
+    Stmt.ifElse(Expr.bin(BinOp.eq, Expr.bin(BinOp.div, Expr.special(Builtin.warp), Expr.lit(4)), Expr.lit(k)),
+      Core.toBlock(Core.setMaxRegs(count, 128), Block.done), Block.done)
 
   // Runs the four warpgroups of a 512-thread CTA concurrently, `group0` to `group3` on warps 0–3, 4–7, 8–11 and 12–15,
-  // each at its per-thread register count `regs0` to `regs3` (`withRegs`), then waits for all of them. Each count must
-  // be one `setmaxnreg` takes, and together they must fit the register file, 128 · (regs0 + … + regs3) ≤ 65536 (else a
-  // generation error), so every increase finds the registers the decreases free; back at 128, all of them fill it
-  // exactly, so the increases back wait only for the decreases back. The kernel is then compiled for 512 threads, one
-  // block per SM (the `Gen`'s bounds), so every warp enters at 128 (A59), and the permit makes this each warpgroup's
-  // only change from 128.
+  // each at its per-thread register count `regs0` to `regs3` (`withRegs`), then waits for all of them and brings each
+  // back to 128 (`regsBack`), so every warp holds 128 outside the split.
+  // - Each count must be one `setmaxnreg` takes, and together they must fit the register file,
+  //   128 · (regs0 + … + regs3) ≤ 65536 (else a generation error), so every first increase finds the registers the
+  //   first decreases free.
+  // - The way back follows the join, and so every warpgroup's first change: the increases back wait only for the
+  //   decreases back, which never wait. A warpgroup that went back at the end of its own role, before the join, could
+  //   take registers another warpgroup's first increase still needed, and that increase waited forever (B200,
+  //   2026-10-01).
+  // The kernel is then compiled for 512 threads, one block per SM (the `Gen`'s bounds), so every warp enters at 128
+  // (A59), and the permit makes this each warpgroup's only change from 128.
   def splitWarpgroups {l: Lifetime}{k0: Kind}{S0: Lifetime}{k1: Kind}{S1: Lifetime}{k2: Kind}{S2: Lifetime}{k3: Kind}{S3: Lifetime}
       (e: Ctx(l, Group.cta(512)))(permit: RegPermit(l))(regs0: Nat)(regs1: Nat)(regs2: Nat)(regs3: Nat)
       (group0: { kind = k0, scope = S0 } (m: Lifetime) -> Ctx(m, Group.warps(0, 4)) -> Pair(Ctx(m, Group.warps(0, 4)), Unit))
@@ -3068,7 +3073,8 @@ namespace Core {
       let high := fun (m: Lifetime)(e: Ctx(m, Group.warps(8, 8))): Pair(Ctx(m, Group.warps(8, 8)), Pair(Unit, Unit)) =>
         Core.split(e, 4, Unit, Unit, Core.withRegs(8, regs2, group2), Core.withRegs(12, regs3, group3))
       let (e, u) := Core.split(e, 8, Pair(Unit, Unit), Pair(Unit, Unit), low, high)
-      e
+      Core.emitAll(Key.key, e, List.cons(Core.regsBack(0, regs0), List.cons(Core.regsBack(1, regs1),
+        List.cons(Core.regsBack(2, regs2), List.cons(Core.regsBack(3, regs3), List.nil(Stmt))))))
     }
   }
 
@@ -3310,7 +3316,11 @@ namespace Core {
       : Program := scope l => {
     let (e, launch) := Core.twoTileStart(Key.key, l, 384, causal, t)
     let gen := Core.state(Key.key, body(l, e, launch, OOwn.mk(l, t, 0), OOwn.mk(l, t, 4), TmemPermit.mk(l)))
-    Core.finish(Key.key, name, Core.attnParams(t), Option.some(Core.attnLauncher(t, 256, 384)), gen)
+    // Compiled for 384 threads, one block per SM (`__launch_bounds__(384, 1)`), so that a thread stays within the 168
+    // registers that 384 threads leave of the SM's 65536: without the bound the causal kernel used 184, and its launch
+    // failed for lack of resources (B200, 2026-10-01).
+    let bounded := Gen.mk(gen.code, gen.next, gen.smem, gen.barrier, gen.errors, gen.group, Option.some(384), gen.writable)
+    Core.finish(Key.key, name, Core.attnParams(t), Option.some(Core.attnLauncher(t, 256, 384)), bounded)
   }
 
   // Forward attention as `pairAttentionKernel` computes it, in FA4's CTA of 512 threads (gpu/encoding/A3B.md, A3b),
@@ -3716,21 +3726,21 @@ namespace Core {
     }
   }
 
-  // Writes this warp's new K and V into the claimed row of the cache, once (`AppendOwn`): each lane copies its eight
-  // columns, `8·lane` to `8·lane + 7`, of row `blockIdx.x` of the new K into columns `128h + 8·lane` on of the claim's
-  // row of K, and of the new V into V likewise. The row comes from the claim and the columns from the warp and the
+  // Writes this warp's new K and V into the claimed row of the cache, once (`AppendOwn`): each lane copies its four
+  // columns, `4·lane` to `4·lane + 3`, of row `blockIdx.x` of the new K into columns `128h + 4·lane` on of the claim's
+  // row of K, and of the new V into V likewise. The 32 lanes cover the head's 128 columns exactly, and no other head's. The row comes from the claim and the columns from the warp and the
   // lane, never from the caller: so the warp writes only the row its claim holds, and each lane its own columns of it.
   def appendRow {n: Lifetime}{m: Lifetime}{L: Lifetime}(e: Ctx(n, Core.warpCta))(c: Claimed(m))(once: AppendOwn(m))(cache: PagedCache(L))
       (knew: NewKV(L)): Ctx(n, Core.warpCta) := {
     match once returning Ctx(n, Core.warpCta) with
     | AppendOwn.mk => {
-      let lane := Expr.bin(BinOp.mul, Expr.special(Builtin.lane), Expr.lit(8))
+      let lane := Expr.bin(BinOp.mul, Expr.special(Builtin.lane), Expr.lit(4))
       let col := Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.bin(BinOp.rem, Expr.special(Builtin.blockX), Expr.lit(cache.heads)), Expr.lit(128)), lane)
       let (e, src) := Core.bind(Key.key, e, Grain.thread, DType.u32, Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.special(Builtin.blockX), Expr.lit(128)), lane),
         Option.none(Nat))
       let (e, dst) := Core.bind(Key.key, e, Grain.thread, DType.u64,
         Expr.bin(BinOp.add, Expr.bin(BinOp.mul, Expr.cast(DType.u64, c.row), Expr.lit(Nat.mul(cache.heads, 128))), col), Option.none(Nat))
-      let copy := fun (to: String)(from: String): List(Stmt) => List.map(Core.eight, Stmt, fun (j: Nat): Stmt =>
+      let copy := fun (to: String)(from: String): List(Stmt) => List.map(Core.counting(0, 4), Stmt, fun (j: Nat): Stmt =>
         Stmt.store(Expr.param(to), Core.offsetBy(dst.expr, j), Expr.index(Expr.param(from), Core.offsetBy(src.expr, j))))
       Core.emitAll(Key.key, e, List.append(copy(cache.k, knew.k), copy(cache.v, knew.v)))
     }

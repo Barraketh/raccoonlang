@@ -205,8 +205,10 @@ Where the build departs from the design above as first written (2026-10-01):
   into its four warpgroups (`withRegs`):
   - each warpgroup's branch starts with `setmaxnreg` from 128 to its count, so the count covers all of the role's
     code, as `ptxas` needs to allocate it;
-  - it ends with the warpgroup's named barrier and `setmaxnreg` back to 128, so every warp holds 128 outside the split
-    (the joins, the invalidations, the deallocation);
+  - after the split's join, each warpgroup's `setmaxnreg` back to 128, decreases first, so every warp holds 128 for
+    the code after the split (the invalidations, the deallocation). Going back at the end of each branch, as first
+    built, deadlocked on the B200: a warpgroup that finished early increased back to 128 with registers the softmax
+    warpgroup's first increase to 192 still needed;
   - the `RegPermit` makes this each warpgroup's only change from 128.
   Its counts are generation-time checked (multiples of 8 from 24 to 256, at most 65536 registers in all). Once it has
   run, the kernel prints `__launch_bounds__(512, 1)` (the `Gen`'s and `Program`'s `bounds`, `Cuda.boundedKernel`),

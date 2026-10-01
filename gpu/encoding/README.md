@@ -120,7 +120,9 @@ blocks, with the query heads of one KV head packed into its query tile; and a co
 are checked by generation, the checkers, the mutants and a C++ compile against `gpu/stub/`; the harnesses have run
 against a host mock of the runtime (`NOTES.md`). The persistent pair GEMM is the first kernel expected to be
 competitive: `harness/run_gemm_pair.sh` checks and times it on a box, next to CUTLASS's like-for-like kernels
-(`gpu/REFERENCE_CUTLASS.md` §8.8).
+(`gpu/REFERENCE_CUTLASS.md` §8.8). The first session (2026-10-01, `NOTES.md` "Hardware session") ran every harness and
+probe on a B200: all pass after four fixes found there, and the pair GEMM is level with CUTLASS at 8192³ and 10% slower
+at 4096³.
 
 When a hardware session happens, `harness/hw.sh` runs every harness and the probes in it:
 - `hw.sh gen DIR` generates every example's CUDA here into a bundle;

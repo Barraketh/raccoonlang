@@ -134,6 +134,9 @@ template <class T> static std::vector<T> downloadVector(const T *src, size_t n) 
 // Whether two floats have the same bits (NaN included).
 static bool sameBits(float a, float b) { return std::memcmp(&a, &b, sizeof(a)) == 0; }
 
+// A float as the cache holds it: rounded to bf16 (the host keeps K, V and the new rows unrounded, the device rounded).
+static float asBf16(float x) { return fromBf16(__float2bfloat16(x)); }
+
 // The sequences, their tables and the cache, on the host and the device, with the owners of its pages.
 struct Cache {
   unsigned b, maxPages, pages;
@@ -253,7 +256,7 @@ struct Cache {
             wantK[at(s, h, lens[s]) + d] = kNew[(size_t(s) * H + h) * D + d];
             wantV[at(s, h, lens[s]) + d] = vNew[(size_t(s) * H + h) * D + d];
           }
-    for (size_t i = 0; i < k.size(); ++i) out.wrongElements += !sameBits(k[i], wantK[i]) + !sameBits(v[i], wantV[i]);
+    for (size_t i = 0; i < k.size(); ++i) out.wrongElements += !sameBits(k[i], asBf16(wantK[i])) + !sameBits(v[i], asBf16(wantV[i]));
     return out;
   }
 };

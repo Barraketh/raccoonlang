@@ -572,3 +572,20 @@ cd ~/cutlass && build/tools/profiler/cutlass_profiler --operation=Gemm --kernels
 ```
 
 `run_gemm_pair.sh run` records the SM clock before and after its timing; record CUTLASS's the same way (§8.6).
+
+### 8.9 Results (2026-10-01)
+
+One B200 (vast.ai, driver 595.91, CUDA 12.9). CUTLASS's profiler was built with three kernels (§8.8's two 2-SM 256×256
+kernels and the 1-SM 128×256), in 5 min 21 s on 160 cores; the 1-SM kernel did not run under `--cluster_m=2`. Means of
+100 runs after 20 warm-up runs, `--cluster_m=2 --cluster_n=1`:
+
+| Kernel | 8192³ | 4096³ (cold L2) | 4096³ (warm, `--workspace-count=1`) |
+|---|---|---|---|
+| CUTLASS `256x256x64_2x1x1_0_tnt_align8_2sm` | 0.658 ms (1671 TFLOP/s) | 0.0837 ms (1642) | 0.0833 ms (1651) |
+| CUTLASS `256x256x64_0x0x1_0_tnt_align8_2sm` | 0.674 ms (1631) | 0.0839 ms (1638) | 0.0836 ms (1644) |
+| ours, `gpu/encoding/examples/gemm_pair.rac` (warm) | 0.649 ms (1694; median 0.643, fastest 0.604) | — | 0.0919 ms (1496; median 0.0924) |
+
+At 8192³ the pair GEMM is level with CUTLASS (1.4% faster on the mean); at 4096³ it is 10% slower. 4096³ has 256 tiles
+for 74 pairs, 3.5 waves of a static schedule, where CUTLASS's cluster launch control balances the last wave; the
+release point and the four 32×32 store boxes per subtile (§8.8) are the other differences to measure next. The SM clock
+stayed at 1965 MHz through our timing.

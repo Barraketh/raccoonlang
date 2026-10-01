@@ -359,7 +359,7 @@ Observations from building `P2.md` (`Core.rac`'s paged-decode section, `examples
    the lambda; the lambda then captured `out`, whose scope is `L`, and `storeChunks`' unscoped `Expr -> Expr`
    parameter refused it ("closures differ in scope"). Binding `out.kept` first, a plain `Option(Expr)`, fixed it. The
    message is clear; the cause (a field projection captures its struct) is not obvious.
-5. **No vector types.** Each lane of the append copies its 16 bytes of K and of V as 8 bf16 element stores each, and
+5. **No vector types.** Each lane of the append copies its 8 bytes of K and of V as 4 bf16 element stores each, and
    the combine reads its 4 floats one by one: `Cuda.Expr` has no `uint4` or `float4`, and an `asm` for `ld.v4`/`st.v4`
    would need four declared outputs per access. The compiler may merge them; it is not measured.
 6. **`status` is the launcher's.** The design's `status` vector is a local the generated launcher declares itself
@@ -482,9 +482,9 @@ Observations from building `A3B.md`'s A3b (`Core.rac`'s correction-warpgroup sec
 4. **`setmaxnreg` is a split, not an operation.** `ptxas` allocates a role's code within a count only if the
    `setmaxnreg` dominates it, and the direction (`.inc` or `.dec`) is only known from the count before. So
    `splitWarpgroups` makes it the first instruction of each warpgroup's branch, once (a `RegPermit`), from 128 (A59),
-   and the counts are the layout's (`rolesCorrected`), not the roles'. Each branch ends with the warpgroup's named
-   barrier and `setmaxnreg` back to 128, so the code after the split (joins, invalidations, the deallocation) runs at
-   128. That costs four named barriers (nine of 15 in all). `withRegs` returns the wrapped role as a function,
+   and the counts are the layout's (`rolesCorrected`), not the roles'. After the split's join each warpgroup goes back
+   to 128 (`regsBack`), so the code after the split (invalidations, the deallocation) runs at 128. As first built,
+   each branch went back at its own end, which deadlocked on hardware (§"Hardware session", item 3). `withRegs` returns the wrapped role as a function,
    since a definition cannot be partly applied, and takes its warp `f` explicitly, since a function parameter's type
    does not force an implicit one.
 5. **The issuer and the loader are shared.** A3b's MMA order and loads are A3a's, so they moved from A3a's example to
@@ -628,3 +628,58 @@ Observations from building `TWO_CTA.md`'s step 4 for the GEMM (`Core.rac`'s sect
     `tinygemm_mutants.py` and `paged_append_mutants.py`. `forTiles` and `forOwnedTiles` have no client here to mutate.
 15. **The evidence names the pair handle.** `leaderOnlyConsumer(ring)` and `leaderOnlyAccProducer(accs)` take the
     `PairRing` and `PairAccRing`, so the evidence speaks of a pair protocol's side, not of any `Consumer`.
+
+## Hardware session (2026-10-01)
+
+One B200 on vast.ai (driver 595.91, CUDA 12.9, 160 host cores), about two hours. The bundle came from `harness/hw.sh`
+at dd64d7b; `harness/run_gemm_pair.sh` timed the pair GEMM; CUTLASS `0b55a2f`'s profiler, built with only the 2-SM
+256×256 kernels, ran next to it.
+
+| Harness | First run | After the fixes below |
+|---|---|---|
+| `attention` (A1, A2) | all 204 checks pass | — |
+| `attention_pingpong` (A3a) | non-causal passes; causal fails to launch | all pass |
+| `attention_a3b` (A3b) | hangs at BH = 16, seq = 1 | all pass |
+| `paged_attention` (P1) | all pass | — |
+| `paged_decode` (P2) | decode and combine pass; append fails | all pass |
+| `tinygemm_pair` | all pass | — |
+| `gemm_pair` | all 15 sizes and the refusals pass | — |
+| probes | H1 (A23), H2 (A24), H3 (A27) and H5 (the 1.3 score bound) hold | — |
+
+**What failed, and why.**
+1. **The append wrote two heads' columns.** P2.md had each of 32 lanes store 16 bytes of a 256-byte row, so lanes
+   16–31 wrote the next head's columns, and the last head's spilled into the next row: writes outside the claimed
+   (page, head). The design's arithmetic was wrong, and the core's `appendRow` computes the columns, so no type could
+   see it. The host mock emulated the intended copy, not the generated statements, so it passed. Fixed: four columns
+   per lane. A harness built against the old kernel fails 7 checks; against the new one, none.
+2. **The append's check compared unrounded floats.** The harness kept K and V as floats and compared the cache's
+   bf16 bits with them; every element differed. The mock stored floats unrounded, so it hid that too. Fixed: the
+   expected values are rounded to bf16 first.
+3. **A3b deadlocked in `setmaxnreg`.** Each warpgroup went back to 128 registers at the end of its own branch. With
+   one key block, the correction warpgroup finished first and increased back to 128 while a softmax warpgroup's first
+   increase to 192 was still waiting; the register file is exactly full, so that increase never completed
+   (`cuda-gdb`: two softmax warps at `setmaxnreg.inc 192`, the correction warps at `setmaxnreg.inc 128`). Fixed:
+   every warpgroup goes back after the split's join (`regsBack`). The back-at-the-end rule came from a review fix (A3b
+   F2), whose argument missed that an early increase back competes with a late first increase.
+4. **A3a's causal kernel needed 184 registers per thread**; 384 threads have 170. Fixed: `pairAttentionKernel`
+   compiles for `__launch_bounds__(384, 1)`, and `ptxas` fits it in 168 with no spills. A3.md §4 named this risk.
+
+**Lesson.** The mock checks a harness against what a kernel is meant to do. Two of the four failures were the
+difference between that and what the generated code does. A mock that executes the generated statements, or a run on
+hardware, is what checks the core's own arithmetic.
+
+**Times.** Attention times are single runs in the correctness harness at BH = 16, seq = 4096, about 1.7 waves of CTAs,
+so they compare the kernels with each other, not with FA4.
+
+| Kernel | Non-causal | Causal |
+|---|---|---|
+| A1 / A2 | 0.401 ms (343 TFLOP/s) | 0.257 ms (268 TFLOP/s) |
+| A3a | 0.298 ms (462 TFLOP/s) | 0.257 ms (267 TFLOP/s) |
+| A3b | 0.311 ms (441 TFLOP/s) | 0.262 ms (263 TFLOP/s) |
+
+The pair GEMM against CUTLASS (means of 100 runs; `gpu/REFERENCE_CUTLASS.md` §8.9):
+
+| Size | Ours | CUTLASS 2-SM 256×256, cluster 2×1 |
+|---|---|---|
+| 8192³ | 0.649 ms (1694 TFLOP/s; median 0.643) | 0.658 ms (1671 TFLOP/s) |
+| 4096³ | 0.0919 ms (1496 TFLOP/s) | 0.0837 ms cold L2, 0.0833 ms warm (1650 TFLOP/s) |

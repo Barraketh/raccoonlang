@@ -841,8 +841,8 @@ register split. As built:
 - **The polynomial `exp2`** on the FMA units for 16 of a row's 128 columns (`ex2emu`, FA4's `cta_group::1` set), with
   its measured error in T1's budget (§1.3).
 - **`setmaxnreg`**: `splitWarpgroups` gives the softmax warpgroups 192 registers per thread, the correction warpgroup
-  72 and warps 12–15 56, each warpgroup's `setmaxnreg` the first instruction of its branch and one back to 128 its
-  last; the kernel is compiled with `__launch_bounds__(512, 1)` (A30, A59).
+  72 and warps 12–15 56, each warpgroup's `setmaxnreg` the first instruction of its branch, and one back to 128 after
+  the split's join; the kernel is compiled with `__launch_bounds__(512, 1)` (A30, A59).
 - **Shared roles**: A3a's loader and issuer, unchanged, as `Attention.pairLoader` and `pairIssuer`.
 
 The items below are A3's list as first planned. A3a and A3b built the first seven, without the `exp` turn between
