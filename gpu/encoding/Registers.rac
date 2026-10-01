@@ -1,0 +1,67 @@
+// Registers as a modelled resource (gpu/encoding/REGISTERS.md): the CTA's register file and its warpgroups' shares,
+// which only this file makes and ends. It emits nothing: emission needs `Core.Key`, which only `Core.rac` can build,
+// so `Core` is this module's client, and its emitters of `setmaxnreg` require a share (REGISTERS.md §2).
+//
+// The rules:
+// - A kernel's file is minted once, by its builder (`file`), at the uniform budget its threads and residency leave.
+// - The split uses the file up and gives each warpgroup of a 512-thread CTA its share, if the counts are ones
+//   `setmaxnreg` takes and fit the file (`fits`).
+// - The join uses the four shares up, together. No operation changes a share, so a share exists only between the split
+//   and the join, at the count the split gave it (REGISTERS.md §9, decision 3).
+
+namespace Registers {
+  // An SM's register file, in 32-bit registers.
+  def smRegisters : Nat := 65536
+
+  // The registers per thread of a kernel of `threads` threads that means to run `residency` CTAs per SM: its share of
+  // the SM's file, rounded down to the allocation granularity of 8, and at most 255, the most a thread can address.
+  def budget (threads: Nat)(residency: Nat): Nat :=
+    Nat.min(255, Nat.mul(8, Nat.div(Nat.div(Registers.smRegisters, Nat.mul(threads, residency)), 8)))
+
+  // The register file of a CTA of `threads` threads at `budget` registers per thread.
+  sealed inductive RegFile (l: Lifetime)(threads: Nat)(budget: Nat) : Type { kind = lin, scope = l }
+   | mk : RegFile(l, threads, budget)
+
+  // The registers of the warpgroup of warps `f` to `f + 3`, at `count` per thread.
+  sealed inductive RegShare (l: Lifetime)(f: Nat)(count: Nat) : Type { kind = lin, scope = l }
+   | mk : RegShare(l, f, count)
+
+  // The file of a kernel of `threads` threads and `residency` CTAs per SM. Trusted: only a kernel builder calls it,
+  // once per kernel, with the threads and residency it compiles for (`__launch_bounds__`), so the file is the one
+  // `ptxas` gives the CTA (OBLIGATIONS.md §7).
+  def file (l: Lifetime)(threads: Nat)(residency: Nat): RegFile(l, threads, Registers.budget(threads, residency)) :=
+    RegFile.mk(l, threads, Registers.budget(threads, residency))
+
+  // A count `setmaxnreg` takes: a multiple of 8 from 24 to 256.
+  def countOk (count: Nat): Bool := Bool.and(Nat.ble(24, count), Bool.and(Nat.ble(count, 256), Nat.isZero(Nat.mod(count, 8))))
+
+  // Whether four warpgroups' counts fit the file of a 512-thread CTA at `budget`: each one `setmaxnreg` takes, and
+  // together no more than the file holds, 128 · (c0 + c1 + c2 + c3) ≤ 512 · budget.
+  def fits (budget: Nat)(c0: Nat)(c1: Nat)(c2: Nat)(c3: Nat): Bool :=
+    Bool.and(Bool.and(Bool.and(Registers.countOk(c0), Registers.countOk(c1)), Bool.and(Registers.countOk(c2), Registers.countOk(c3))),
+      Nat.ble(Nat.mul(128, Nat.add(Nat.add(c0, c1), Nat.add(c2, c3))), Nat.mul(512, budget)))
+
+  // Splits the file of a 512-thread CTA into its warpgroups' shares, at `c0` to `c3` registers per thread.
+  def split {l: Lifetime}{b: Nat}(regs: RegFile(l, 512, b))(c0: Nat)(c1: Nat)(c2: Nat)(c3: Nat)
+      [fits: Eq(Bool, Registers.fits(b, c0, c1, c2, c3), Bool.true)]
+      : Pair(Pair(RegShare(l, 0, c0), RegShare(l, 4, c1)), Pair(RegShare(l, 8, c2), RegShare(l, 12, c3))) := {
+    match regs returning Pair(Pair(RegShare(l, 0, c0), RegShare(l, 4, c1)), Pair(RegShare(l, 8, c2), RegShare(l, 12, c3))) with
+    | RegFile.mk => ((RegShare.mk(l, 0, c0), RegShare.mk(l, 4, c1)), (RegShare.mk(l, 8, c2), RegShare.mk(l, 12, c3)))
+  }
+
+  // Ends the four shares of a split, together.
+  def join {l: Lifetime}{c0: Nat}{c1: Nat}{c2: Nat}{c3: Nat}
+      (s0: RegShare(l, 0, c0))(s1: RegShare(l, 4, c1))(s2: RegShare(l, 8, c2))(s3: RegShare(l, 12, c3)): Unit := {
+    match s0 returning Unit with
+    | RegShare.mk => {
+      match s1 returning Unit with
+      | RegShare.mk => {
+        match s2 returning Unit with
+        | RegShare.mk => {
+          match s3 returning Unit with
+          | RegShare.mk => Unit.unit
+        }
+      }
+    }
+  }
+}

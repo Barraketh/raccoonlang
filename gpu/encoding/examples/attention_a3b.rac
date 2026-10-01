@@ -174,7 +174,7 @@ namespace Corrected {
   // The CTA, given the launch, each tile's authority over its rows of O, and the permits. Tensor memory: each tile's
   // score buffer in one half.
   def cta {l: Lifetime}{t: DType}(e: Ctx(l, CorrectedCta))(g: Launch(l, t))(own0: OOwn(l, t, 0))(own1: OOwn(l, t, 4))(permit: TmemPermit(l))
-      (regs: RegPermit(l)): Ctx(l, CorrectedCta) := {
+      (regs: Registers.RegFile(l, 512, 128)): Ctx(l, CorrectedCta) := {
     // The rings, innermost the V ring, around the roles.
     let rings := fun (x0: Lifetime)(x1: Lifetime)(b0: ScoreBuffer(x0, Rescaler.correction))(b1: ScoreBuffer(x1, Rescaler.correction))
         (r0: RowSide(x0))(r1: RowSide(x1))(s0: MmaSide(x0))(s1: MmaSide(x1))(c0: CorrectionSide(x0))(c1: CorrectionSide(x1))
@@ -219,7 +219,7 @@ namespace Corrected {
   // The kernel `name`, causal or not, writing O as `t` (f32 or bf16).
   def kernel (name: String)(causal: Bool)(t: DType): Program :=
     correctedAttentionKernel(name, causal, t, fun (l: Lifetime)(e: Ctx(l, CorrectedCta))(g: Launch(l, t))(own0: OOwn(l, t, 0))(own1: OOwn(l, t, 4))
-        (permit: TmemPermit(l))(regs: RegPermit(l)): Ctx(l, CorrectedCta) => cta(e, g, own0, own1, permit, regs))
+        (permit: TmemPermit(l))(regs: Registers.RegFile(l, 512, 128)): Ctx(l, CorrectedCta) => cta(e, g, own0, own1, permit, regs))
 }
 
 // The non-causal kernel with f32 output, then the causal one with bf16 output.

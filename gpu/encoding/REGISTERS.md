@@ -1,6 +1,7 @@
 # Registers as a modelled resource
 
-Status: **design** (2026-10-01), not implemented, except the toolkit container of §6.
+Status: steps 1–3 of §8 **built** (2026-10-01): the toolkit container, the `Registers` module with bounds in every
+builder, and the register check in `check.sh`. Steps 4 and 5 are design.
 
 ## 1. Why
 
@@ -44,6 +45,20 @@ a control combinator's signature, which this rule does not reach (§9, decision 
 | `Pairs` | `CtaPair`, `Leader`, `LeaderOnly` |
 | `Outputs` | `OOwn`, `TileOwn` |
 
+**The language limit.** Raccoon seals per file and has no private definitions, and emission is gated by Core's sealed
+`Key`. So the rule above cannot hold as stated:
+- **A module cannot emit.** It would need the `Key`, and anything Core could use to hand it over a client could call
+  too. A module also cannot import `Core` for it, since `Core` imports the module.
+- **So a module is pure.** It owns its sealed families and their only operations, and emits nothing. `Core` emits, in
+  emitters that need the `Key` and the module's tokens, so Core cannot emit an instruction of the family without the
+  token whose type states it.
+- **Minting stays trusted.** The module's minting function is a definition any module can call. That only the kernel
+  builders call it is a stated obligation (`OBLIGATIONS.md` §7, M24), not a checked one.
+- **Core's raw assembly stays trusted.** Core owns all emission, so it could still print a `setmaxnreg` through its raw
+  `asm` statements, outside the emitters that need a share. That it does not is reviewed, not checked.
+
+`Registers.rac` is built so (§3). Two remedies would close the last two points (§9, open question 1).
+
 **The trusted base.** What stays trusted is these modules plus the control combinators: the kernel builders, `split`,
 `elect`, `branch`, `when`, the loops and `onLeader`. Their obligations are stated in `OBLIGATIONS.md` and reviewed.
 That base is smaller than today's, which is all of `Core.rac`.
@@ -66,15 +81,21 @@ beyond it. A kernel can then never fail to launch for registers. At worst it spi
 
 **Per-warpgroup counts.** For a kernel whose roles need different counts (A3b: softmax 192, correction 72, the rest 56):
 - **The user** chooses the counts as generation-time numbers on the role layout, or `auto` (§5).
-- **The `Registers` module** owns the CTA's register file as a linear token, at the uniform budget.
-- **The split** (A3b's `splitWarpgroups`):
+- **The `Registers` module** (`Registers.rac`) owns the CTA's register file as a linear token,
+  `RegFile(l, threads, budget)`, at the uniform budget. The builder mints it (`Registers.file(l, threads, r)`), once.
+- **The split** (`Registers.split`, which A3b's `splitWarpgroups` calls):
   - consumes the file;
-  - checks that the counts fit it (128 · Σ counts ≤ 65,536 at 512 threads);
-  - emits each warpgroup's change as the first instruction of its branch;
-  - gives each role a `RegShare(l, f, count)`. The role cannot change its share; the share is evidence of its count,
-    for §4's check.
-- **The join** consumes every share, emits each warpgroup's change back after the join barrier (decreases first), and
-  returns the file.
+  - requires, as evidence, that the counts fit it (`Registers.fits`): each a multiple of 8 from 24 to 256, and
+    128 · Σ counts ≤ 512 · budget, which is 65,536 at A3b's budget of 128;
+  - gives each warpgroup a `RegShare(l, f, count)`, f its first warp.
+- **Core's entry emitter** (`Core.withShare`) needs the Key and warpgroup f's share. It emits the change from the
+  budget to the share's count as the first instruction of f's branch, runs the role, and hands the share on. The role
+  itself never sees the share; it cannot change its count.
+- **Core's way back** (`Core.regsBack`) needs the Key and all four shares, which leave the branches only at the split's
+  join. It emits each warpgroup's change back to the budget after the join barrier, in warpgroup order, then ends the
+  shares.
+- **The join** (`Registers.join`) consumes the four shares together. It does not give the file back, so a kernel
+  splits once (below).
 - **No user code calls `setmaxnreg`.**
 
 **Why this cannot deadlock:**
@@ -82,6 +103,34 @@ beyond it. A kernel can then never fail to launch for registers. At worst it spi
 - An increase after the join waits only for decreases after the join. Those also never wait.
 - There is no operation that changes a share between the split and the join. So a warpgroup cannot take back
   registers another warpgroup's first increase needs, which is A3b's deadlock.
+- There is one split per kernel. No barrier follows the way back, so a second split's first increase could take the
+  registers that the first split's increases back still wait for.
+
+**The invariant:** every warp holds the uniform budget before the split, and from its own change back on. It is not
+"every warp holds the budget outside a split": between the join and the last change back, warps hold different counts,
+and nothing waits for the way back to finish. So two splits in sequence can deadlock. With A3b's counts, after the
+first join:
+1. Warpgroup 0 goes back from 192 to 128, and at once enters the second split and goes up to 192 again.
+2. Warpgroup 1 does the same. The 128 registers per thread the two decreases freed are taken again.
+3. Warpgroups 2 and 3, going back up from 72 and 56, wait for registers no one will free: warpgroups 0 and 1 are in
+   their roles, waiting for the MMA warp, which is in warpgroup 3.
+
+A barrier after the way back would make sequential splits safe, at one more `__syncthreads()` in every kernel that
+changes counts. Until a kernel needs two splits, the file allows one.
+
+**What the file carries**, and why it stays:
+- **Its threads and budget**, `RegFile(l, threads, budget)`: the uniform count every warp holds before the split, so
+  the split can check the counts against the CTA's pool, and the emitters print the changes from and back to it.
+- **Its lifetime**, the kernel's: the split takes a context of that lifetime, so it runs in the kernel's top-level
+  spine, never in a role, a branch arm or a loop body, whose contexts have lifetimes of their own; and an arm or a
+  body, being unrestricted, cannot capture the file (M23).
+- **Its linearity**: one split per file. With the builder minting one file per kernel, one split per kernel.
+
+**Two departures from the first design**, both forced:
+- **The join does not return the file.** A file given back could be split again, which the last point above refuses,
+  and a share does not carry the budget, so a returned file's budget would be the caller's word.
+- **The fit is against the file**, 128 · Σ counts ≤ 512 · budget, not against 65,536. `setmaxnreg` draws on the CTA's
+  pool, which is the threads times their entry count (§7), and the two agree only at residency 1.
 
 **No change in the middle of a role.** FA4 and CUTLASS change counts only at role entry, and every kernel here does
 too. A change mid-role would need its increase covered by a decrease that cannot depend on it: a protocol between
@@ -113,9 +162,9 @@ it:
 - **Per kernel:** `ptxas -v` reports the registers and the spill stores and loads. The count must be within the
   budget, and both spill figures must be 0.
 - **Per role** (kernels that change counts): `ptxas -v` reports the entry count only. So the check disassembles the
-  kernel (`cuobjdump -sass`) and attributes local-memory instructions (`STL`, `LDL`) to roles by their code ranges.
-  The ranges are found from the generated source lines (`-lineinfo`) between a role's branch and its end.
-- **The error** names the role, its count, and its floor.
+  kernel and attributes local-memory instructions (`STL`, `LDL`) to roles by their source lines (`-lineinfo`): a
+  role is the block of generated code that starts with its `setmaxnreg`, to the block's end.
+- **The error** names the role, its count, and its floor (the floor from step 4).
 - **The user's options** are then to raise that role's count, to lower another's that has room, or to keep fewer
   values live.
 
@@ -131,25 +180,61 @@ it:
 runs this check when the image is present, and says it skipped the check when it is not. The hardware session runs it
 too, on the box's own toolkit.
 
+**As built** (`gpu/toolkit/registers.py`, run by `check.sh` on every example of `encoding/`):
+- **One compile per example:** the generated file through `cuda.sh` with `nvcc -std=c++17 -O2 -gencode
+  arch=compute_100a,code=sm_100a -c -lineinfo -Xptxas -v`, then `cuobjdump -xelf` and `nvdisasm -g`. About 3 s for
+  A3b's two kernels; the examples run in parallel with the other checks.
+- **One line per kernel:** its registers, its budget from its printed bounds, and its spill stores and loads.
+- **A kernel fails** when its registers exceed its budget, when it spills, when its SASS has any `STL` or `LDL`, and,
+  if it changes counts, when it does not enter at exactly its budget (A59). The local-memory test runs on every
+  kernel, not only those that change counts: no generated kernel means to use local memory.
+- **Attribution** gives each local-memory instruction's role, as "the role at line L (`setmaxnreg…`)", or "no role".
+  It is by line, so it is approximate:
+  - a kernel's line info can name a line of another kernel of the file whose code is the same, so roles are looked up
+    in the whole file;
+  - spill code at a block's edge can carry a neighbour's line.
+
+  In `softmax_starved` (below), the non-causal kernel's two softmax roles get 1,054 and 904 instructions, and 2 lie in
+  no role. The causal kernel's get 711 and 717, and 226 more at lines of the non-causal kernel's first softmax role;
+  its correction and MMA roles get 1 and 2, and 1 lies in no role.
+- **The budget is restated** in the check, from the bounds: the rule of `Registers.budget`, kept in Python so the check
+  needs no Raccoon run.
+- **The proof that it catches a spill** is `attention_a3b_mutants.py`'s `softmax_starved`, a mutant whose expectation is
+  `Spill` (`gpu/mutate.py`): the softmax warpgroups at 64 registers. It generates, since the counts fit the file, and the
+  check fails it, with the local-memory instructions in the first softmax role.
+- **Without the toolkit** `check.sh` prints "skipped: no CUDA toolkit" once, and skips both the check and the spill
+  mutants; `cuda.sh true` is the probe.
+
 ## 6. The toolkit on a Mac
 
 - **`gpu/toolkit/Dockerfile`:** Ubuntu 22.04 with NVIDIA's packages for CUDA 12.9: `nvcc`, `ptxas`, `cuobjdump`,
   `nvdisasm`, and the runtime and driver headers. It uses NVIDIA's `sbsa` repository on arm64 and `x86_64` elsewhere.
   Build it with `docker build -t raccoon-cuda:12.9 gpu/toolkit` (colima or Docker Desktop).
-- **`gpu/toolkit/cuda.sh`:** runs a toolkit command on the repository, mounted at its own path. Compiling needs no
-  GPU.
+- **`gpu/toolkit/cuda.sh`:** runs a toolkit command on the repository, mounted at its own path, with its standard
+  input. It never pulls the image, so without it the command fails at once. Compiling needs no GPU.
 
 ## 7. Today's kernels
 
-The changes this design makes:
-- **Bounds everywhere.** Every builder prints `__launch_bounds__(threads, r)`. A1, A2, P1, the decode, the GEMMs and
-  A3a get bounds; A3a already has them, at 384. This is the one change to generated code; behaviour is the same where
-  the budget already held.
-- **Spill checks for every kernel.** A1, A2 and P1 run 256 threads, so their budget is the 255 cap.
-- **A3b.** `splitWarpgroups` becomes the `Registers` module's split and join. Its counts stay 192/72/56. Its output is
-  unchanged: the changes back already follow the join.
+The changes this design made (built 2026-10-01):
+- **Bounds everywhere.** Every builder states its threads and residency to `Core.finish`, and `render` prints
+  `__launch_bounds__(threads, r)`. The bounds lines are the one change to generated code: every other line of every
+  example is byte-identical.
+- **The residencies:**
+  - **1 for every tensor-core kernel**, whose shared memory leaves room for one CTA per SM: A1, A2, P1, the decode,
+    the GEMMs (`(256, 1)`), A3a (`(384, 1)`) and A3b (`(512, 1)`). The 256-thread kernels' budget is the 255 cap.
+  - **32 for the one-warp SIMT kernels**, the append and the combine (`Core.warpResidency`, `(32, 32)`): the most CTAs
+    an SM holds. A one-warp kernel waits on memory, and every resident warp hides some of the wait. The budget, 64, is
+    above what either uses.
+  - **1 for `tiledKernel`**, which no example uses: the budget it leaves, 64 at 1,024 threads, is the CTA's share of
+    the file.
+- **Spill checks for every kernel** (§5).
+- **A3b.** `splitWarpgroups` is the `Registers` module's client: it splits the kernel's file and joins the shares.
+  Its counts stay 192/72/56, and its output is unchanged: the changes back already followed the join.
 
-What `ptxas` reports for today's examples at 5dbad99. These are CUDA 12.9 in the container, `sm_100a`, `-O2`;
+**The bounds change the allocation.** Given a residency of 1, `ptxas` uses more of the budget where it had used
+little. Every kernel still fits without spills; whether it is faster is a hardware question.
+
+What `ptxas` reported at 5dbad99, before the bounds. These are CUDA 12.9 in the container, `sm_100a`, `-O2`;
 every kernel's spill stores and loads are 0:
 
 | Kernel | Threads | Bounds | Registers |
@@ -164,6 +249,23 @@ every kernel's spill stores and loads are 0:
 | `tinygemm_pair` | 256 | none | 32 |
 | `paged_append`, `paged_combine` | 32 | none | 32 |
 
+What the register check reports with the bounds, the same toolkit and flags with `-lineinfo`; no kernel spills or has a
+local-memory instruction:
+
+| Kernel | Bounds | Budget | Registers |
+|---|---|---|---|
+| `attention` (A1), `paged_attention` | 256, 1 | 255 | 160 (44 before) |
+| `attention_causal` (A2), `paged_attention_causal` | 256, 1 | 255 | 168 |
+| `attention_pingpong` (A3a) | 384, 1 | 168 | 159 |
+| `attention_pingpong_causal` | 384, 1 | 168 | 168 |
+| `attention_a3b`, `attention_a3b_causal` | 512, 1 | 128 | 128 at entry |
+| `paged_decode_g1`, `_g4`, `_g8` | 256, 1 | 255 | 161 (43 before) |
+| `tinygemm` | 256, 1 | 255 | 55 |
+| `tinygemm_pair` | 256, 1 | 255 | 40 (32 before) |
+| `gemm_pair` | 256, 1 | 255 | 71 (56 before) |
+| `paged_append` | 32, 32 | 64 | 32 |
+| `paged_combine` | 32, 32 | 64 | 48 (32 before) |
+
 A3b's SASS has no `STL` or `LDL`, so no role spills. Its count changes are `USETMAXREG.TRY_ALLOC.CTAPOOL` (192) and
 `USETMAXREG.DEALLOC.CTAPOOL` (72 and 56) at the roles' entry, and back to 128 (`0x80`) after the join. So the pool
 `setmaxnreg` draws on is the CTA's, which is what §3 models.
@@ -176,9 +278,11 @@ Two kernels sit at their limit:
 
 1. **The toolkit container** (`gpu/toolkit`). Done with this document.
 2. **The `Registers` module.** Residency and budgets, bounds in every builder, and split and join in place of
-   `splitWarpgroups`' internals. Generated CUDA stays byte-identical except the bounds lines.
+   `splitWarpgroups`' internals. Generated CUDA stays byte-identical except the bounds lines. **Done:**
+   `gpu/encoding/Registers.rac`; `Core.withShare` and `Core.regsBack` are the emitters; the `RegPermit` is gone;
+   mutants `registers_over_file` and `registers_split_twice`.
 3. **The `ptxas` check in `check.sh`:** registers and spills per kernel, and per role from the SASS. A spill is a
-   failure.
+   failure. **Done:** `gpu/toolkit/registers.py` (§5), and the spill mutant `softmax_starved`.
 4. **Floors and `auto`.**
 5. **The other families' modules** (§2), one at a time.
 
@@ -193,3 +297,18 @@ Two kernels sit at their limit:
 5. **A spill is a build error**, found by `ptxas -v` per kernel and from the SASS per role. A count over budget is an
    error too.
 6. **The CUDA toolkit runs in a Linux container on the Mac** (`gpu/toolkit`).
+7. **A kernel splits its register file once.** The join ends the shares and does not give the file back (§3).
+
+**Open questions for the user:**
+1. **How to check what stays trusted.** Today a module that owns a family cannot emit, its minting function is
+   callable by any module, and Core could print a `setmaxnreg` through raw `asm` (§2, "The language limit"). Two
+   remedies:
+   - **A language feature** by which one module grants a narrow capability to another: exports to named modules, or
+     sealing shared with named modules (say, `Registers.rac` and `Core.rac`). The module could then need the `Key`,
+     emit its own instructions, and mint only for a builder.
+   - **Typed instructions** (`gpu/EVALUATOR.md`, step 1), with a `Check.rac` rule on the generated AST: every
+     `setmaxnreg` is a warpgroup's entry change in a split, or a change back after its join, with counts that fit
+     the file. This checks Core's own emission, raw `asm` included, as a certificate of each kernel.
+
+   The second is the likely route, since it needs no language change. The user decides; the language is unchanged
+   until then.

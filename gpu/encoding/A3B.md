@@ -202,17 +202,19 @@ Where the build departs from the design above as first written (2026-10-01):
   correction warpgroup. Without it, A3b's softmax warpgroup could rescale Ô as A3a's does, racing the correction
   warpgroup on the same lanes (`rejected/attention_a3b_mutants.py`, `softmax_rescales_quadrant`).
 - **`setmaxnreg`** (§2): not an operation on `warps(f, 4)` but part of `splitWarpgroups`, which splits a 512-thread CTA
-  into its four warpgroups (`withRegs`):
+  into its four warpgroups (`withShare`), as the client of the kernel's register file (`Registers.rac`,
+  `REGISTERS.md` §3):
   - each warpgroup's branch starts with `setmaxnreg` from 128 to its count, so the count covers all of the role's
     code, as `ptxas` needs to allocate it;
-  - after the split's join, each warpgroup's `setmaxnreg` back to 128, decreases first, so every warp holds 128 for
-    the code after the split (the invalidations, the deallocation). Going back at the end of each branch, as first
-    built, deadlocked on the B200: a warpgroup that finished early increased back to 128 with registers the softmax
-    warpgroup's first increase to 192 still needed;
-  - the `RegPermit` makes this each warpgroup's only change from 128.
-  Its counts are generation-time checked (multiples of 8 from 24 to 256, at most 65536 registers in all). Once it has
-  run, the kernel prints `__launch_bounds__(512, 1)` (the `Gen`'s and `Program`'s `bounds`, `Cuda.boundedKernel`),
-  which caps a thread at 128 registers; that every warp enters at 128 is A59's claim.
+  - after the split's join, each warpgroup's `setmaxnreg` back to 128, so every warp holds 128 for the code after the
+    split (the invalidations, the deallocation). Going back at the end of each branch, as first built, deadlocked on
+    the B200: a warpgroup that finished early increased back to 128 with registers the softmax warpgroup's first
+    increase to 192 still needed;
+  - the file is split once, into shares that exist only between the split and the join, so this is each warpgroup's
+    only change from 128.
+  Its counts must fit the file (multiples of 8 from 24 to 256, at most 65536 registers in all; evidence). The kernel
+  prints `__launch_bounds__(512, 1)`, which caps a thread at 128 registers; that every warp enters at 128 is A59's
+  claim, and the register check verifies it on every build.
 - **Registers:** 192, 192, 72 and 56 for both kernels. FA4's non-causal `cta_group::1` kernel uses 192, 80 and 48
   (`flash_fwd_sm100.py` 380–385); A3b keeps one split.
 - **Shared roles.** The loader and the MMA issuer are A3a's, moved to `Attention.rac` (`pairLoader`, `pairIssuer`),

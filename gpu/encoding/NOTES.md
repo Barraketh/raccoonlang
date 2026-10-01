@@ -683,3 +683,41 @@ The pair GEMM against CUTLASS (means of 100 runs; `gpu/REFERENCE_CUTLASS.md` §8
 |---|---|---|
 | 8192³ | 0.649 ms (1694 TFLOP/s; median 0.643) | 0.658 ms (1671 TFLOP/s) |
 | 4096³ | 0.0919 ms (1496 TFLOP/s) | 0.0837 ms cold L2, 0.0833 ms warm (1650 TFLOP/s) |
+
+## Registers as a resource (REGISTERS.md, steps 2 and 3)
+
+Observations from building `Registers.rac`, the bounds in every builder, and the register check
+(`gpu/toolkit/registers.py`).
+
+1. **A module cannot emit.** Sealing is per file and emission needs `Core.Key`. Handing a module the `Key` would hand
+   it to every client, and the module cannot import `Core`, which imports it. So `Registers.rac` is pure: it owns the
+   file and the shares, and `Core`'s emitters need the `Key` and a share. Its minting function, `Registers.file`, is
+   callable by any module; that only a builder calls it is a stated obligation (REGISTERS.md §2 and §9).
+2. **The join cannot give the file back.** A share is `RegShare(l, f, count)`, without the budget, so a file returned
+   by the join would take its budget from the caller. And a returned file could be split again: no barrier follows the
+   way back, so a second split's first increase could take the registers an increase back still waits for, which is
+   A3b's deadlock again. The join ends the shares, and the split spends the file.
+3. **The fit is evidence.** A pure module has no `Gen` to record a generation error in, so the counts' check is
+   `Registers.split`'s evidence. `splitWarpgroups` is generic in its counts and forwards it; `Layout.rolesCorrected`,
+   with concrete counts, discharges it. The refusal names the evidence (`Evidence fits of Core.splitWarpgroups`), not
+   the counts or the file, which the old generation error said in words.
+4. **A share forces its warpgroup.** `withRegs` took its warp `f` explicitly, since a callback's binder does not force
+   an implicit (A3b, item 4). `withShare` takes `RegShare(L, f, count)`, which forces both `f` and `count`, so the
+   branch's group and the count it prints come from the share's type.
+5. **No `open Registers`.** `Registers.split` and `join` would meet `Core.split` and every client's `split`, so `Core`,
+   `Layout` and the A3b example write `Registers.RegFile` and `Registers.RegShare`.
+6. **A returned closure states its kind.** `withShare` returns the branch as a function, which captures the linear
+   share; its type says `{ kind = lin, scope = Lifetime.union(L, Sr) }`.
+7. **The budget rule is restated in Python.** The check reads each kernel's bounds from the generated text and applies
+   `Registers.budget`'s rule itself, so it needs no Raccoon run. The two can drift; the rule is one line in each.
+8. **The bounds raise the allocation.** With a residency of 1 declared, `ptxas` spends more of the budget: A1 and P1's
+   non-causal kernels went from 44 registers to 160, the decode from 43 to 161, `gemm_pair` from 56 to 71,
+   `tinygemm_pair` from 32 to 40, the combine from 32 to 48. None spills. The effect on time is unmeasured.
+9. **Line info crosses kernels.** In a file of two kernels, `ptxas` gave some of the causal kernel's spill code lines
+   of the non-causal kernel's softmax, whose code is the same. The check looks roles up in the whole file, and the
+   attribution is by line, so it is approximate.
+10. **Cost.** The check compiles each example once in the container, about 3 s for A3b's two kernels, in parallel with
+    the other checks. The spill mutant generates A3b once more (about 40 CPU s).
+11. **The bounds left the `Gen`.** A3b's item 3 put them in the `Gen`, set by `splitWarpgroups`. Every builder now
+    states its threads and residency to `finish`, so the field is gone from `Gen` and from every `Gen.mk`, and
+    `Program` carries `(threads, residency)`. `Cuda.boundedKernel` takes the pair; `Cuda.kernel` passes none.

@@ -473,11 +473,14 @@ namespace Cuda {
     | Grid.persistentPairs tiles => "__cluster_dims__(2, 1, 1) "
   })
 
-  // As `kernel`, with `__launch_bounds__(n, 1)` when `bounds` is `n`: blocks of at most `n` threads, at least one of
-  // them resident per SM, so `ptxas` keeps a thread's registers within 65536 / n.
-  def boundedKernel (bounds: Option(Nat))(k: Kernel): String := {
+  // As `kernel`, with `__launch_bounds__(n, r)` when `bounds` is `(n, r)`: blocks of at most `n` threads, at least `r`
+  // of them resident per SM, so `ptxas` keeps a thread's registers within 65536 / (n · r).
+  def boundedKernel (bounds: Option(Pair(Nat, Nat)))(k: Kernel): String := {
     let (n, ps, bytes, body, host) := k
-    let limit := Option.elim(bounds, String, "", fun (t: Nat): String => Text.cat3("__launch_bounds__(", Text.nat(t), ", 1) "))
+    let limit := Option.elim(bounds, String, "", fun (b: Pair(Nat, Nat)): String => {
+      let (threads, blocks) := b
+      Text.cat3("__launch_bounds__(", Text.cat3(Text.nat(threads), ", ", Text.nat(blocks)), ") ")
+    })
     let head := Text.cat3("extern \"C\" __global__ void ", Text.cat3(Cuda.clusterDims(host), limit, n), Text.cat3("(", Cuda.params(ps), ") {"))
     let tail := Option.elim(host, String, "", fun (l: Launcher): String => Cuda.launcher(n, ps, bytes, l))
     let launched := Option.elim(host, Bool, Bool.false, fun (l: Launcher): Bool => Bool.true)
@@ -485,5 +488,5 @@ namespace Cuda {
   }
 
   // The kernel and its launcher as CUDA C++.
-  def kernel (k: Kernel): String := Cuda.boundedKernel(Option.none(Nat), k)
+  def kernel (k: Kernel): String := Cuda.boundedKernel(Option.none(Pair(Nat, Nat)), k)
 }

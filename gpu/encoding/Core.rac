@@ -1,6 +1,7 @@
 // The typed GPU core of gpu/encoding (README.md): a copy of gpu/Gpu.rac that grows what the library lacks, starting
 // with forward attention (gpu/ATTENTION.md §3, stages A1 and A2). Every family that carries authority or names generated code is sealed, so only this file can
-// make one. A kernel is an ordinary Raccoon program over these operations; evaluating it builds a `Cuda.Kernel`.
+// make one; the register file and its shares are `Registers.rac`'s (REGISTERS.md), whose client this file is. A kernel
+// is an ordinary Raccoon program over these operations; evaluating it builds a `Cuda.Kernel`.
 //
 // Five rules carry the safety argument:
 // - An emitter `Ctx(l, g)` is linear and every operation threads it, so code is emitted in the order the program's
@@ -29,6 +30,7 @@
 import Check
 import Cuda
 import Text
+import encoding.Registers
 
 namespace Core {
   open Cuda
@@ -149,12 +151,10 @@ namespace Core {
 
   // Everything generation has produced so far: the code, newest first; the next fresh name; the next free byte of
   // dynamic shared memory; the next free named barrier; the generation-time errors found so far; the kernel's CTA
-  // group, which every `tcgen05` instruction prints; the block size the kernel must be compiled for, one block per
-  // SM, once a warpgroup has set its register count (`splitWarpgroups`); and the first register the code may write,
-  // which inside an `onLeader` arm is the arm's first (`set`), and 0 elsewhere.
+  // group, which every `tcgen05` instruction prints; and the first register the code may write, which inside an
+  // `onLeader` arm is the arm's first (`set`), and 0 elsewhere.
   struct Gen : Type
-   | mk (code: List(Stmt))(next: Nat)(smem: Nat)(barrier: Nat)(errors: List(String))(group: CtaGroup)(bounds: Option(Nat))
-        (writable: Nat) : Gen
+   | mk (code: List(Stmt))(next: Nat)(smem: Nat)(barrier: Nat)(errors: List(String))(group: CtaGroup)(writable: Nat) : Gen
 
   // The emitter for a block of lifetime `l` run by `g`.
   sealed inductive Ctx (l: Lifetime)(g: Group) : Type { kind = lin, scope = l }
@@ -177,7 +177,7 @@ namespace Core {
 
   def resume (k: Key)(l: Lifetime)(g: Group)(gen: Gen): Ctx(l, g) := Ctx.mk(l, g, gen)
 
-  def push (gen: Gen)(s: Stmt): Gen := Gen.mk(List.cons(s, gen.code), gen.next, gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable)
+  def push (gen: Gen)(s: Stmt): Gen := Gen.mk(List.cons(s, gen.code), gen.next, gen.smem, gen.barrier, gen.errors, gen.group, gen.writable)
 
   // `ss` in program order.
   def pushAll (gen: Gen)(ss: List(Stmt)): Gen decreases structural(ss) := {
@@ -186,9 +186,9 @@ namespace Core {
     | List.cons s more => Core.pushAll(Core.push(gen, s), more)
   }
 
-  def fresh (gen: Gen): Gen := Gen.mk(gen.code, Nat.succ(gen.next), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable)
+  def fresh (gen: Gen): Gen := Gen.mk(gen.code, Nat.succ(gen.next), gen.smem, gen.barrier, gen.errors, gen.group, gen.writable)
 
-  def fail (gen: Gen)(message: String): Gen := Gen.mk(gen.code, gen.next, gen.smem, gen.barrier, List.cons(message, gen.errors), gen.group, gen.bounds, gen.writable)
+  def fail (gen: Gen)(message: String): Gen := Gen.mk(gen.code, gen.next, gen.smem, gen.barrier, List.cons(message, gen.errors), gen.group, gen.writable)
 
   def check (gen: Gen)(ok: Bool)(message: String): Gen := Bool.cond(ok, Gen, gen, Core.fail(gen, message))
 
@@ -197,11 +197,11 @@ namespace Core {
   def oneCta (gen: Gen)(what: String): Gen := Core.check(gen, CtaGroup.isOne(gen.group), Text.cat(what, ": a single-CTA protocol in a pair kernel"))
 
   // A nested block's starting state: no code yet, the enclosing block's counters.
-  def child (gen: Gen): Gen := Gen.mk(List.nil(Stmt), gen.next, gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable)
+  def child (gen: Gen): Gen := Gen.mk(List.nil(Stmt), gen.next, gen.smem, gen.barrier, gen.errors, gen.group, gen.writable)
 
   // `parent` followed by `s`, with the counters its nested blocks reached in `last`.
   def after (parent: Gen)(last: Gen)(s: Stmt): Gen :=
-    Gen.mk(List.cons(s, parent.code), last.next, last.smem, last.barrier, last.errors, last.group, last.bounds, parent.writable)
+    Gen.mk(List.cons(s, parent.code), last.next, last.smem, last.barrier, last.errors, last.group, parent.writable)
 
   // Turns code kept newest first into a block in program order.
   def toBlock (code: List(Stmt))(acc: Block): Block decreases structural(code) := {
@@ -218,7 +218,7 @@ namespace Core {
 
   // Reserves `bytes` of dynamic shared memory at the next `align`-aligned offset, `Core.alignUp(gen.smem, align)`.
   def reserve (gen: Gen)(bytes: Nat)(align: Nat): Gen :=
-    Gen.mk(gen.code, gen.next, Nat.add(Core.alignUp(gen.smem, align), bytes), gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable)
+    Gen.mk(gen.code, gen.next, Nat.add(Core.alignUp(gen.smem, align), bytes), gen.barrier, gen.errors, gen.group, gen.writable)
 
   def emit {l: Lifetime}{g: Group}(k: Key)(e: Ctx(l, g))(s: Stmt): Ctx(l, g) := Core.resume(k, l, g, Core.push(Core.state(k, e), s))
 
@@ -609,7 +609,7 @@ namespace Core {
     | Group.cta n => Core.push(gen, Stmt.sync)
     | Group.warps f c => {
       let id := gen.barrier
-      let withId := Gen.mk(gen.code, gen.next, gen.smem, Nat.succ(id), gen.errors, gen.group, gen.bounds, gen.writable)
+      let withId := Gen.mk(gen.code, gen.next, gen.smem, Nat.succ(id), gen.errors, gen.group, gen.writable)
       Core.push(Core.check(withId, Nat.ble(id, 15), "split: more than 15 named barriers"), Core.namedBarrier(id, Group.threads(g)))
     }
     | Group.lane => gen
@@ -819,13 +819,14 @@ namespace Core {
 
   def errorsToCode (errors: List(String)): List(Stmt) := List.map(errors, Stmt, fun (m: String): Stmt => Stmt.error(m))
 
-  def start (k: Key)(l: Lifetime)(g: Group)(group: CtaGroup): Ctx(l, g) := Ctx.mk(l, g, Gen.mk(List.nil(Stmt), 0, 0, 1, List.nil(String), group, Option.none(Nat), 0))
+  def start (k: Key)(l: Lifetime)(g: Group)(group: CtaGroup): Ctx(l, g) := Ctx.mk(l, g, Gen.mk(List.nil(Stmt), 0, 0, 1, List.nil(String), group, 0))
 
   // A kernel the typed core built: the only thing `render` prints. A program can neither build one nor take one apart,
-  // so it cannot change a kernel's code, shared memory or launcher. `bounds` is the block size it is compiled for, one
-  // block per SM (`__launch_bounds__(n, 1)`), when its warpgroups set their register counts (`Gen`'s).
+  // so it cannot change a kernel's code, shared memory, launcher or bounds. It is compiled for a CTA of `threads`
+  // threads and `residency` CTAs per SM (`__launch_bounds__(threads, residency)`), so `ptxas` gives a thread at most
+  // `Registers.budget(threads, residency)` registers, and the kernel never fails to launch for lack of them.
   sealed struct Program : Type
-   | mk (kernel: Kernel)(bounds: Option(Nat)) : Program
+   | mk (kernel: Kernel)(threads: Nat)(residency: Nat) : Program
 
   // That `p`'s kernel is well formed (`Check.WellFormed`): what `render` requires, which a client's own function over
   // programs states to forward a proof, since it cannot read the kernel itself.
@@ -834,12 +835,14 @@ namespace Core {
   // The kernel as CUDA C++. It must be well formed (`Check.WellFormed`), which the checker discharges by evaluating
   // `Check`'s checkers on the concrete kernel where a program renders it: one with a generation error, or that breaks
   // a structural invariant, is refused with the checker's messages and never printed.
-  def render (p: Program)[ok: Core.WellFormed(p)]: String := Cuda.boundedKernel(p.bounds, p.kernel)
+  def render (p: Program)[ok: Core.WellFormed(p)]: String := Cuda.boundedKernel(Option.some((p.threads, p.residency)), p.kernel)
 
-  // The finished kernel: its code, then any generation errors as `#error` lines, which `render` refuses.
-  def finish (k: Key)(name: String)(params: List(Param))(launcher: Option(Launcher))(gen: Gen): Program :=
+  // The finished kernel: its code, then any generation errors as `#error` lines, which `render` refuses. Every builder
+  // states the CTA's `threads` and its `residency`, the CTAs it means to run per SM: 1 for every tensor-core kernel,
+  // whose shared memory leaves room for one, and `warpResidency` for the one-warp kernels.
+  def finish (k: Key)(name: String)(params: List(Param))(launcher: Option(Launcher))(threads: Nat)(residency: Nat)(gen: Gen): Program :=
     Program.mk(Kernel.mk(name, params, gen.smem, Core.toBlock(gen.code, Core.toBlock(Core.errorsToCode(gen.errors), Block.done)),
-      launcher), gen.bounds)
+      launcher), threads, residency)
 
   // A kernel computing C (M×N) from A (M×K) and B (K×N), one CTA of `tile*tile` threads per `tile`×`tile` block of C.
   // Launch contract: grid (ceil(N/tile), ceil(M/tile)), block tile*tile, and A, B, C distinct arrays of those extents,
@@ -860,7 +863,7 @@ namespace Core {
     let params := List.cons(Param.input(t, "A"), List.cons(Param.input(t, "B"), List.cons(Param.output(t, "C"),
       List.cons(Param.scalar(DType.u32, "M"), List.cons(Param.scalar(DType.u32, "N"), List.cons(Param.scalar(DType.u32, "K"), List.nil(Param)))))))
     let g := Group.cta(Nat.mul(tile, tile))
-    Core.finish(Key.key, name, params, Option.none(Launcher), Core.state(Key.key, body(l, Core.start(Key.key, l, g, CtaGroup.one), launch, GOwn.mk(l, t, tile))))
+    Core.finish(Key.key, name, params, Option.none(Launcher), Nat.mul(tile, tile), 1, Core.state(Key.key, body(l, Core.start(Key.key, l, g, CtaGroup.one), launch, GOwn.mk(l, t, tile))))
   }
 
   // ---- Tensor maps and the stage ring -----------------------------------------------------------------------------
@@ -1612,7 +1615,7 @@ namespace Core {
     // wrote the accumulator, whoever observed it complete.
     let loads := List.append(Core.declOuts(DType.f32, first, 32), List.cons(Stmt.syncWarp, List.cons(Core.tcFenceAfter,
       List.append(List.map(four, Stmt, load), List.cons(Core.tmemWaitLoad, List.nil(Stmt))))))
-    let named := Gen.mk(gen.code, Nat.add(first, 32), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable)
+    let named := Gen.mk(gen.code, Nat.add(first, 32), gen.smem, gen.barrier, gen.errors, gen.group, gen.writable)
     (Core.resume(Key.key, k, g, Core.pushAll(named, loads)), ChunkRegs.mk(k, first))
   }
 
@@ -1638,7 +1641,7 @@ namespace Core {
         List.cons(Stmt.decl(DType.u32, swizzle, Expr.bin(BinOp.band, Expr.special(Builtin.lane), Expr.lit(7))), List.nil(Stmt)))
       let write := fun (g: Nat): Stmt => Core.storeShared4(Expr.bin(BinOp.add, Expr.var(row),
         Expr.bin(BinOp.shl, Expr.bin(BinOp.bxor, Expr.lit(g), Expr.var(swizzle)), Expr.lit(4))), Nat.add(regs.first, Nat.mul(4, g)))
-      let named := Gen.mk(gen.code, Nat.add(gen.next, 2), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable)
+      let named := Gen.mk(gen.code, Nat.add(gen.next, 2), gen.smem, gen.barrier, gen.errors, gen.group, gen.writable)
       (Core.resume(Key.key, k, Group.warps(f, 4), Core.pushAll(named, List.append(place, List.map(Core.eight, Stmt, write)))), StageWritten.mk(s, m, f))
     }
   }
@@ -1671,7 +1674,7 @@ namespace Core {
         let next := List.cons(Stmt.assign(stg.cur, Expr.bin(BinOp.add, Expr.var(stg.cur), Expr.lit(1))),
           List.cons(Stmt.ifElse(Expr.bin(BinOp.eq, Expr.var(stg.cur), Expr.lit(stg.bufs)), Block.seq(Stmt.assign(stg.cur, Expr.lit(0)), Block.done), Block.done),
             List.nil(Stmt)))
-        let named := Gen.mk(gen.code, Nat.add(gen.next, 2), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable)
+        let named := Gen.mk(gen.code, Nat.add(gen.next, 2), gen.smem, gen.barrier, gen.errors, gen.group, gen.writable)
         (Core.resume(Key.key, k, Group.warps(f, 4), Core.pushAll(named, List.append(place, List.append(store, next)))), StoreAt.mk(s, m, f))
       }
     }
@@ -2004,7 +2007,7 @@ namespace Core {
   // reconverges for the `.sync.aligned` load, and the load completes (`wait::ld`) before they are read.
   def loadRow8 (gen: Gen)(taddr: Expr): Gen := {
     let first := gen.next
-    Core.pushAll(Gen.mk(gen.code, Nat.add(first, 8), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable),
+    Core.pushAll(Gen.mk(gen.code, Nat.add(first, 8), gen.smem, gen.barrier, gen.errors, gen.group, gen.writable),
       List.append(Core.declOuts(DType.f32, first, 8), List.cons(Stmt.syncWarp, List.cons(Core.tmemLoad8(first, taddr), List.cons(Core.tmemWaitLoad, List.nil(Stmt))))))
   }
 
@@ -2161,7 +2164,7 @@ namespace Core {
       List.cons(Core.cvtBf16x2(Nat.add(first, 2), v.v5.expr, v.v4.expr), List.cons(Core.cvtBf16x2(Nat.add(first, 3), v.v7.expr, v.v6.expr), List.nil(Stmt)))))
     let store := List.cons(Stmt.syncWarp, List.cons(Core.tmemStore4(Core.quadrantLanes(Core.offsetBy(p, Nat.mul(4, c))), first), List.nil(Stmt)))
     let code := List.append(Core.declOuts(DType.u32, first, 4), List.append(packs, store))
-    Core.pushAll(Gen.mk(gen.code, Nat.add(first, 4), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable), code)
+    Core.pushAll(Gen.mk(gen.code, Nat.add(first, 4), gen.smem, gen.barrier, gen.errors, gen.group, gen.writable), code)
   }
 
   // For chunks `c` to `c + count - 1`: load the chunk of S (`loadChunk`), run `step` on it, and store the eight values
@@ -2378,7 +2381,7 @@ namespace Core {
       Stmt.decl(DType.f32, Nat.add(first, j), Expr.select(Expr.bin(BinOp.lt, Core.offsetBy(Expr.var(kv), j), Expr.var(limit)), t.expr, mask.minusInfinity))
     let values := List.cons(masked(0, v.v0), List.cons(masked(1, v.v1), List.cons(masked(2, v.v2), List.cons(masked(3, v.v3),
       List.cons(masked(4, v.v4), List.cons(masked(5, v.v5), List.cons(masked(6, v.v6), List.cons(masked(7, v.v7), List.nil(Stmt)))))))))
-    (Core.resume(Key.key, k, Group.warps(f, 4), Core.pushAll(Gen.mk(gen.code, Nat.add(first, 8), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable),
+    (Core.resume(Key.key, k, Group.warps(f, 4), Core.pushAll(Gen.mk(gen.code, Nat.add(first, 8), gen.smem, gen.barrier, gen.errors, gen.group, gen.writable),
       List.append(place, values))), Core.row8(Key.key, k, first))
   }
 
@@ -2458,7 +2461,7 @@ namespace Core {
       List.cons(Stmt.decl(DType.u32, row, Expr.bin(BinOp.add, out.first, Expr.var(within))),
       List.cons(Stmt.decl(DType.bool, inside, Expr.bin(BinOp.lt, Expr.var(within), out.seq)),
       List.cons(Stmt.decl(DType.f32, scale, inv), List.cons(Stmt.decl(DType.f32, logSum, lse), List.nil(Stmt))))))))
-    let placed := Core.pushAll(Gen.mk(gen.code, Nat.add(within, 5), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable), place)
+    let placed := Core.pushAll(Gen.mk(gen.code, Nat.add(within, 5), gen.smem, gen.barrier, gen.errors, gen.group, gen.writable), place)
     let kept := out.kept
     let value := fun (x: Expr): Expr => Core.outValue(t, Core.keptOrZero(kept, Expr.bin(BinOp.mul, x, Expr.var(scale))))
     let stored := Core.storeChunks(placed, o, out.o, Expr.var(row), Expr.var(inside), value, 0, 16)
@@ -2676,7 +2679,7 @@ namespace Core {
       let code := List.append(Core.declOuts(DType.f32, first, 128),
         List.cons(Stmt.syncWarp, List.append(List.map(Core.counting(0, 16), Stmt, load), List.cons(Core.tmemWaitLoad, List.nil(Stmt)))))
       let row := Row.mk(List.map(Core.counting(0, 16), F32x8(k, Grain.thread), fun (c: Nat): F32x8(k, Grain.thread) => Core.row8(Key.key, k, at(c))))
-      (Core.resume(Key.key, k, Group.warps(f, 4), Core.pushAll(Gen.mk(gen.code, Nat.add(first, 128), gen.smem, gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable), code)),
+      (Core.resume(Key.key, k, Group.warps(f, 4), Core.pushAll(Gen.mk(gen.code, Nat.add(first, 128), gen.smem, gen.barrier, gen.errors, gen.group, gen.writable), code)),
         (Loaded.mk(x, m, f, o), row))
     }
   }
@@ -3012,10 +3015,6 @@ namespace Core {
     Core.asmValue(Key.key, e, u, Text.cat3("{\\n\\t.reg .f32 c, r, j, f, p;\\n\\t.reg .b32 k, q;", floor, Text.cat(poly, scale)), Core.one(Core.f32(x.expr)))
   }
 
-  // A CTA's right to set its warpgroups' register counts, which `splitWarpgroups` uses up.
-  sealed inductive RegPermit (l: Lifetime) : Type { kind = lin, scope = l }
-   | mk : RegPermit(l)
-
   // `setmaxnreg` from `from` registers per thread to `to`: `.inc` up, `.dec` down, nothing between equal counts
   // (PTX §9.7.21.5).
   def setMaxRegs (from: Nat)(to: Nat): List(Stmt) := {
@@ -3027,55 +3026,61 @@ namespace Core {
     }
   }
 
-  // A count `setmaxnreg` takes: a multiple of 8 from 24 to 256.
-  def regsOk (count: Nat): Bool := Bool.and(Nat.ble(24, count), Bool.and(Nat.ble(count, 256), Nat.isZero(Nat.mod(count, 8))))
-
-  // The role of the warpgroup `warps(f, 4)` at `count` registers per thread (A59): first `setmaxnreg` from 128 to
-  // `count`, so it covers all of the role's code. `splitWarpgroups` brings the warpgroup back to 128 after the join.
-  def withRegs {kr: Kind}{Sr: Lifetime}(f: Nat)(count: Nat)
+  // The branch of warpgroup `f` at its share's `count` registers per thread (A59): first `setmaxnreg` from the file's
+  // `budget` to `count`, so it covers all of the role's code, then the role; it hands the share on to the join.
+  def withShare {L: Lifetime}{f: Nat}{count: Nat}{kr: Kind}{Sr: Lifetime}(k: Key)(budget: Nat)(share: Registers.RegShare(L, f, count))
       (role: { kind = kr, scope = Sr } (m: Lifetime) -> Ctx(m, Group.warps(f, 4)) -> Pair(Ctx(m, Group.warps(f, 4)), Unit))
-      : { kind = kr, scope = Sr } (m: Lifetime) -> Ctx(m, Group.warps(f, 4)) -> Pair(Ctx(m, Group.warps(f, 4)), Unit) :=
-    fun (m: Lifetime)(e: Ctx(m, Group.warps(f, 4))): Pair(Ctx(m, Group.warps(f, 4)), Unit) =>
-      role(m, Core.emitAll(Key.key, e, Core.setMaxRegs(128, count)))
+      : { kind = lin, scope = Lifetime.union(L, Sr) } (m: Lifetime) -> Ctx(m, Group.warps(f, 4))
+        -> Pair(Ctx(m, Group.warps(f, 4)), Registers.RegShare(L, f, count)) :=
+    fun (m: Lifetime)(e: Ctx(m, Group.warps(f, 4))): Pair(Ctx(m, Group.warps(f, 4)), Registers.RegShare(L, f, count)) => {
+      let (e, u) := role(m, Core.emitAll(k, e, Core.setMaxRegs(budget, count)))
+      (e, share)
+    }
 
-  // Warpgroup `k` of a 512-thread CTA, back from `count` registers per thread to 128.
-  def regsBack (k: Nat)(count: Nat): Stmt :=
-    Stmt.ifElse(Expr.bin(BinOp.eq, Expr.bin(BinOp.div, Expr.special(Builtin.warp), Expr.lit(4)), Expr.lit(k)),
-      Core.toBlock(Core.setMaxRegs(count, 128), Block.done), Block.done)
+  // After the split's join: each warpgroup of a 512-thread CTA back from its share's count to the file's `budget`, in
+  // warpgroup order; then the shares end.
+  def regsBack {l: Lifetime}{L: Lifetime}{c0: Nat}{c1: Nat}{c2: Nat}{c3: Nat}(k: Key)(e: Ctx(l, Group.cta(512)))(budget: Nat)
+      (s0: Registers.RegShare(L, 0, c0))(s1: Registers.RegShare(L, 4, c1))(s2: Registers.RegShare(L, 8, c2))(s3: Registers.RegShare(L, 12, c3))
+      : Ctx(l, Group.cta(512)) := {
+    let back := fun (f: Nat)(count: Nat): Stmt =>
+      Stmt.ifElse(Expr.bin(BinOp.eq, Expr.bin(BinOp.div, Expr.special(Builtin.warp), Expr.lit(4)), Expr.lit(Nat.div(f, 4))),
+        Core.toBlock(Core.setMaxRegs(count, budget), Block.done), Block.done)
+    let u := Registers.join(s0, s1, s2, s3)
+    Core.emitAll(k, e, List.cons(back(0, c0), List.cons(back(4, c1), List.cons(back(8, c2), List.cons(back(12, c3), List.nil(Stmt))))))
+  }
 
   // Runs the four warpgroups of a 512-thread CTA concurrently, `group0` to `group3` on warps 0–3, 4–7, 8–11 and 12–15,
-  // each at its per-thread register count `regs0` to `regs3` (`withRegs`), then waits for all of them and brings each
-  // back to 128 (`regsBack`), so every warp holds 128 outside the split.
-  // - Each count must be one `setmaxnreg` takes, and together they must fit the register file,
-  //   128 · (regs0 + … + regs3) ≤ 65536 (else a generation error), so every first increase finds the registers the
-  //   first decreases free.
+  // each at its per-thread register count `c0` to `c3`, then waits for all of them and brings each back to the file's
+  // budget `b`, so every warp holds `b` outside the split. It splits the file into the warpgroups' shares
+  // (`Registers.split`), which requires the counts to fit the file, so every first increase finds the registers the
+  // first decreases free. Each warpgroup's branch holds its share (`withShare`) and hands it to the join, where the way
+  // back is emitted (`regsBack`):
   // - The way back follows the join, and so every warpgroup's first change: the increases back wait only for the
   //   decreases back, which never wait. A warpgroup that went back at the end of its own role, before the join, could
   //   take registers another warpgroup's first increase still needed, and that increase waited forever (B200,
   //   2026-10-01).
-  // The kernel is then compiled for 512 threads, one block per SM (the `Gen`'s bounds), so every warp enters at 128
-  // (A59), and the permit makes this each warpgroup's only change from 128.
-  def splitWarpgroups {l: Lifetime}{k0: Kind}{S0: Lifetime}{k1: Kind}{S1: Lifetime}{k2: Kind}{S2: Lifetime}{k3: Kind}{S3: Lifetime}
-      (e: Ctx(l, Group.cta(512)))(permit: RegPermit(l))(regs0: Nat)(regs1: Nat)(regs2: Nat)(regs3: Nat)
+  // - The split uses the file up, so a kernel splits once. No barrier follows the way back, so a second split's first
+  //   increases could take the registers that the first split's increases back still wait for.
+  // Every warp enters at `b`, since the builder compiles the kernel for the file's threads and residency (A59).
+  def splitWarpgroups {l: Lifetime}{b: Nat}{k0: Kind}{S0: Lifetime}{k1: Kind}{S1: Lifetime}{k2: Kind}{S2: Lifetime}{k3: Kind}{S3: Lifetime}
+      (e: Ctx(l, Group.cta(512)))(regs: Registers.RegFile(l, 512, b))(c0: Nat)(c1: Nat)(c2: Nat)(c3: Nat)
+      [fits: Eq(Bool, Registers.fits(b, c0, c1, c2, c3), Bool.true)]
       (group0: { kind = k0, scope = S0 } (m: Lifetime) -> Ctx(m, Group.warps(0, 4)) -> Pair(Ctx(m, Group.warps(0, 4)), Unit))
       (group1: { kind = k1, scope = S1 } (m: Lifetime) -> Ctx(m, Group.warps(4, 4)) -> Pair(Ctx(m, Group.warps(4, 4)), Unit))
       (group2: { kind = k2, scope = S2 } (m: Lifetime) -> Ctx(m, Group.warps(8, 4)) -> Pair(Ctx(m, Group.warps(8, 4)), Unit))
       (group3: { kind = k3, scope = S3 } (m: Lifetime) -> Ctx(m, Group.warps(12, 4)) -> Pair(Ctx(m, Group.warps(12, 4)), Unit))
       : Ctx(l, Group.cta(512)) := {
-    match permit returning Ctx(l, Group.cta(512)) with
-    | RegPermit.mk => {
-      let counted := Core.check(Core.state(Key.key, e), Bool.and(Bool.and(Core.regsOk(regs0), Core.regsOk(regs1)), Bool.and(Core.regsOk(regs2), Core.regsOk(regs3))),
-        "registers: a warpgroup's count must be a multiple of 8 from 24 to 256")
-      let fits := Core.check(counted, Nat.ble(Nat.add(Nat.add(regs0, regs1), Nat.add(regs2, regs3)), 512), "registers: the warpgroups' counts exceed the register file")
-      let e := Core.resume(Key.key, l, Group.cta(512), Gen.mk(fits.code, fits.next, fits.smem, fits.barrier, fits.errors, fits.group, Option.some(512), fits.writable))
-      let low := fun (m: Lifetime)(e: Ctx(m, Group.warps(0, 8))): Pair(Ctx(m, Group.warps(0, 8)), Pair(Unit, Unit)) =>
-        Core.split(e, 4, Unit, Unit, Core.withRegs(0, regs0, group0), Core.withRegs(4, regs1, group1))
-      let high := fun (m: Lifetime)(e: Ctx(m, Group.warps(8, 8))): Pair(Ctx(m, Group.warps(8, 8)), Pair(Unit, Unit)) =>
-        Core.split(e, 4, Unit, Unit, Core.withRegs(8, regs2, group2), Core.withRegs(12, regs3, group3))
-      let (e, u) := Core.split(e, 8, Pair(Unit, Unit), Pair(Unit, Unit), low, high)
-      Core.emitAll(Key.key, e, List.cons(Core.regsBack(0, regs0), List.cons(Core.regsBack(1, regs1),
-        List.cons(Core.regsBack(2, regs2), List.cons(Core.regsBack(3, regs3), List.nil(Stmt))))))
-    }
+    let ((s0, s1), (s2, s3)) := Registers.split(regs, c0, c1, c2, c3)[fits]
+    let Low := Pair(Registers.RegShare(l, 0, c0), Registers.RegShare(l, 4, c1))
+    let High := Pair(Registers.RegShare(l, 8, c2), Registers.RegShare(l, 12, c3))
+    let low := fun (m: Lifetime)(e: Ctx(m, Group.warps(0, 8))): Pair(Ctx(m, Group.warps(0, 8)), Low) =>
+      Core.split(e, 4, Registers.RegShare(l, 0, c0), Registers.RegShare(l, 4, c1), Core.withShare(Key.key, b, s0, group0),
+        Core.withShare(Key.key, b, s1, group1))
+    let high := fun (m: Lifetime)(e: Ctx(m, Group.warps(8, 8))): Pair(Ctx(m, Group.warps(8, 8)), High) =>
+      Core.split(e, 4, Registers.RegShare(l, 8, c2), Registers.RegShare(l, 12, c3), Core.withShare(Key.key, b, s2, group2),
+        Core.withShare(Key.key, b, s3, group3))
+    let (e, ((s0, s1), (s2, s3))) := Core.split(e, 8, Low, High, low, high)
+    Core.regsBack(Key.key, e, b, s0, s1, s2, s3)
   }
 
   // ---- The tensor-core GEMM launch ---------------------------------------------------------------------------------
@@ -3146,7 +3151,7 @@ namespace Core {
     let launch := TmaLaunch.mk(TMap.mk(l, sa, "A_map"), TMap.mk(l, sb, "B_map"), CMap.mk(l, "C_map"), m, n, k, TileAt.mk(bn, row0, col0))
     let gen := Core.state(Key.key, body(l, Core.start(Key.key, l, Group.cta(256), CtaGroup.one), launch, TileOwn.mk(l, bn), TmemPermit.mk(l)))
     let grid := Grid.blocks(Core.paramCeilDiv("N", bn), Core.paramCeilDiv("M", 128))
-    Core.finish(Key.key, name, Core.tmaGemmParams, Option.some(Core.tmaGemmLauncher(sa, sb, grid)),
+    Core.finish(Key.key, name, Core.tmaGemmParams, Option.some(Core.tmaGemmLauncher(sa, sb, grid)), 256, 1,
       Core.check(gen, Core.gemmShapeOk(sa, sb), "kernel: boxes the ring or the tensor cores do not take"))
   }
 
@@ -3174,7 +3179,7 @@ namespace Core {
       List.cons(Stmt.decl(DType.u32, tiles, Expr.bin(BinOp.mul, Expr.var(tilesM), Expr.var(tilesN))),
       List.cons(Stmt.decl(DType.u32, bandRows, Core.minExpr(Expr.var(tilesM), Expr.lit(band))),
       List.cons(Stmt.decl(DType.u32, bandTiles, Expr.bin(BinOp.mul, Expr.var(bandRows), Expr.var(tilesN))), List.nil(Stmt))))))
-    let gen2 := Core.pushAll(Gen.mk(gen1.code, Nat.add(tilesN, 5), gen1.smem, gen1.barrier, gen1.errors, gen1.group, gen1.bounds, gen1.writable), counts)
+    let gen2 := Core.pushAll(Gen.mk(gen1.code, Nat.add(tilesN, 5), gen1.smem, gen1.barrier, gen1.errors, gen1.group, gen1.writable), counts)
     (gen2, Sched.mk(l, bn, height, start, step, tiles, tilesM, bandRows, bandTiles))
   }
 
@@ -3194,7 +3199,7 @@ namespace Core {
       Expr.special(Builtin.blockX), Expr.special(Builtin.gridX))
     let gen := Core.state(Key.key, body(l, Core.resume(Key.key, l, Group.cta(256), gen1), gemm, sched, SchedOwn.mk(l, bn), TmemPermit.mk(l)))
     let grid := Grid.persistent(Expr.bin(BinOp.mul, Core.paramCeilDiv("M", 128), Core.paramCeilDiv("N", bn)))
-    Core.finish(Key.key, name, Core.tmaGemmParams, Option.some(Core.tmaGemmLauncher(sa, sb, grid)),
+    Core.finish(Key.key, name, Core.tmaGemmParams, Option.some(Core.tmaGemmLauncher(sa, sb, grid)), 256, 1,
       Core.check(gen, Core.gemmShapeOk(sa, sb), "kernel: boxes the ring or the tensor cores do not take"))
   }
 
@@ -3278,7 +3283,7 @@ namespace Core {
     let launch := AttnLaunch.mk(head("Q_map"), head("K_map"), head("V_map"), Core.headOut(Key.key, l, t, seq.expr, Core.rowInHead), mask, seq,
       blocks, q0, Core.uniformParam(Key.key, l, DType.f32, "scale_log2"))
     let gen := Core.state(Key.key, body(l, e, launch, OOwn.mk(l, t, 4), TmemPermit.mk(l)))
-    Core.finish(Key.key, name, Core.attnParams(t), Option.some(Core.attnLauncher(t, 128, 256)), gen)
+    Core.finish(Key.key, name, Core.attnParams(t), Option.some(Core.attnLauncher(t, 128, 256)), 256, 1, gen)
   }
 
   // What each CTA of a two-tile attention kernel starts with: as `AttnLaunch`, with each tile's first row within the
@@ -3316,25 +3321,22 @@ namespace Core {
       : Program := scope l => {
     let (e, launch) := Core.twoTileStart(Key.key, l, 384, causal, t)
     let gen := Core.state(Key.key, body(l, e, launch, OOwn.mk(l, t, 0), OOwn.mk(l, t, 4), TmemPermit.mk(l)))
-    // Compiled for 384 threads, one block per SM (`__launch_bounds__(384, 1)`), so that a thread stays within the 168
-    // registers that 384 threads leave of the SM's 65536: without the bound the causal kernel used 184, and its launch
-    // failed for lack of resources (B200, 2026-10-01).
-    let bounded := Gen.mk(gen.code, gen.next, gen.smem, gen.barrier, gen.errors, gen.group, Option.some(384), gen.writable)
-    Core.finish(Key.key, name, Core.attnParams(t), Option.some(Core.attnLauncher(t, 256, 384)), bounded)
+    // The bounds keep a thread within the 168 registers that 384 threads leave of the SM's 65536: without them the
+    // causal kernel used 184, and its launch failed for lack of resources (B200, 2026-10-01).
+    Core.finish(Key.key, name, Core.attnParams(t), Option.some(Core.attnLauncher(t, 256, 384)), 384, 1, gen)
   }
 
   // Forward attention as `pairAttentionKernel` computes it, in FA4's CTA of 512 threads (gpu/encoding/A3B.md, A3b),
-  // whose third warpgroup rescales Ô and whose warpgroups set their register counts: the body gets the `RegPermit` that
-  // `splitWarpgroups` uses up, which compiles the kernel for 512 threads and one block per SM (`__launch_bounds__(512,
-  // 1)`, which caps a thread's registers at 128). Its launcher, its rows and its launch contract are
-  // `pairAttentionKernel`'s, with 512 threads.
+  // whose third warpgroup rescales Ô and whose warpgroups set their register counts: the body gets the CTA's register
+  // file, at 128 registers per thread, which `splitWarpgroups` uses up. Its launcher, its rows and its launch contract
+  // are `pairAttentionKernel`'s, with 512 threads.
   def correctedAttentionKernel (name: String)(causal: Bool)(t: DType)
       (body: (l: Lifetime) -> Ctx(l, Group.cta(512)) -> PairLaunch(l, TmaSpec.mk(64, 128), t) -> OOwn(l, t, 0) -> OOwn(l, t, 4)
-        -> TmemPermit(l) -> RegPermit(l) -> Ctx(l, Group.cta(512)))
+        -> TmemPermit(l) -> Registers.RegFile(l, 512, Registers.budget(512, 1)) -> Ctx(l, Group.cta(512)))
       : Program := scope l => {
     let (e, launch) := Core.twoTileStart(Key.key, l, 512, causal, t)
-    let gen := Core.state(Key.key, body(l, e, launch, OOwn.mk(l, t, 0), OOwn.mk(l, t, 4), TmemPermit.mk(l), RegPermit.mk(l)))
-    Core.finish(Key.key, name, Core.attnParams(t), Option.some(Core.attnLauncher(t, 256, 512)), gen)
+    let gen := Core.state(Key.key, body(l, e, launch, OOwn.mk(l, t, 0), OOwn.mk(l, t, 4), TmemPermit.mk(l), Registers.file(l, 512, 1)))
+    Core.finish(Key.key, name, Core.attnParams(t), Option.some(Core.attnLauncher(t, 256, 512)), 512, 1, gen)
   }
 
   // ---- Paged attention (gpu/encoding/PAGED.md) ----------------------------------------------------------------------
@@ -3468,7 +3470,7 @@ namespace Core {
       PageTable.mk(l, "block_table", Expr.param("B"), Expr.param("max_pages")), Core.headOut(Key.key, l, t, seq.expr, Core.rowInHead), mask, seq,
       blocks, q0, Core.uniformParam(Key.key, l, DType.f32, "scale_log2"))
     let gen := Core.state(Key.key, body(l, e, launch, OOwn.mk(l, t, 4), TmemPermit.mk(l)))
-    Core.finish(Key.key, name, Core.pagedParams(t), Option.some(Core.pagedLauncher(heads, t)), gen)
+    Core.finish(Key.key, name, Core.pagedParams(t), Option.some(Core.pagedLauncher(heads, t)), 256, 1, gen)
   }
 
   // ---- Paged decode (gpu/encoding/P2.md) ----------------------------------------------------------------------------
@@ -3480,6 +3482,11 @@ namespace Core {
 
   // The group of a CTA of one warp.
   def warpCta : Group := Group.warps(0, 1)
+
+  // The residency of a CTA of one warp: 32, the most CTAs an SM holds. A one-warp kernel waits on memory, and every
+  // resident warp hides some of that wait. Its budget, 64 registers per thread, is above what the append and the
+  // combine use (REGISTERS.md §7).
+  def warpResidency : Nat := 32
 
   // The sequences' lengths, a u32 vector parameter: sequence `b` has `lens[b]` keys in the cache before this step. Read
   // by the decode prologue and `withClaim`; nothing writes it.
@@ -3609,7 +3616,7 @@ namespace Core {
       PageTable.mk(l, "block_table", Expr.param("B"), Expr.param("max_pages")), out, Mask.mk(l, keys.expr, Bool.false, minusInfinity.expr, Core.rowInTile),
       count, first, Core.uniformParam(Key.key, l, DType.f32, "scale_log2"))
     let gen := Core.state(Key.key, body(l, e, launch, OOwn.mk(l, DType.f32, 4), TmemPermit.mk(l)))
-    Core.finish(Key.key, name, Core.decodeParams, Option.some(Core.decodeLauncher(heads, group)), gen)
+    Core.finish(Key.key, name, Core.decodeParams, Option.some(Core.decodeLauncher(heads, group)), 256, 1, gen)
   }
 
   // ---- Paged decode: append ------------------------------------------------------------------------------------------
@@ -3788,7 +3795,7 @@ namespace Core {
       Claims.mk(l, "owners", Expr.param("epoch"), "appended", Expr.param("pages"), heads), PagedCache.mk(l, "K", "V", heads),
       NewKV.mk(l, "k_new", "v_new"))
     let gen := Core.state(Key.key, body(l, e, launch, ClaimOwn.mk(l)))
-    Core.finish(Key.key, name, Core.appendParams, Option.some(Core.appendLauncher(heads)), gen)
+    Core.finish(Key.key, name, Core.appendParams, Option.some(Core.appendLauncher(heads)), 32, Core.warpResidency, gen)
   }
 
   // ---- Paged decode: combine -----------------------------------------------------------------------------------------
@@ -3937,7 +3944,7 @@ namespace Core {
     let splits := Core.uniformParam(Key.key, l, DType.u32, "splits")
     let launch := CombineLaunch.mk(Partials.mk(l, "Opart", "LSEpart", Expr.param("rows"), splits.expr), Combined.mk(l, "O", "LSE"), splits)
     let gen := Core.state(Key.key, body(l, Core.start(Key.key, l, Core.warpCta, CtaGroup.one), launch, CombinedOwn.mk(l)))
-    Core.finish(Key.key, name, Core.combineParams, Option.some(Core.combineLauncher), gen)
+    Core.finish(Key.key, name, Core.combineParams, Option.some(Core.combineLauncher), 32, Core.warpResidency, gen)
   }
 
   // ---- CTA pairs (gpu/encoding/TWO_CTA.md) ----------------------------------------------------------------------------
@@ -4025,7 +4032,7 @@ namespace Core {
     let gen := Core.state(Key.key, e)
     scope m => {
       let arm := Core.child(gen)
-      let fenced := Gen.mk(arm.code, arm.next, arm.smem, arm.barrier, arm.errors, arm.group, arm.bounds, arm.next)
+      let fenced := Gen.mk(arm.code, arm.next, arm.smem, arm.barrier, arm.errors, arm.group, arm.next)
       let done := Core.state(Key.key, body(m, Leader.mk(m), Core.resume(Key.key, m, g, fenced), sides))
       Core.resume(Key.key, l, g, Core.after(gen, done, Stmt.ifElse(Core.isLeader(pair), Core.blockOf(done), Block.done)))
     }
@@ -4044,9 +4051,9 @@ namespace Core {
   def pairShared : Nat := 118785
 
   // How a pair kernel ends: its request for shared memory raised to `pairShared`, then `finish`.
-  def pairFinish (k: Key)(name: String)(params: List(Param))(launcher: Launcher)(gen: Gen): Program := {
+  def pairFinish (k: Key)(name: String)(params: List(Param))(launcher: Launcher)(threads: Nat)(residency: Nat)(gen: Gen): Program := {
     let smem := Bool.cond(Nat.ble(Core.pairShared, gen.smem), Nat, gen.smem, Core.pairShared)
-    Core.finish(k, name, params, Option.some(launcher), Gen.mk(gen.code, gen.next, smem, gen.barrier, gen.errors, gen.group, gen.bounds, gen.writable))
+    Core.finish(k, name, params, Option.some(launcher), threads, residency, Gen.mk(gen.code, gen.next, smem, gen.barrier, gen.errors, gen.group, gen.writable))
   }
 
   // One thread runs `setup` and fences its inits for the cluster; then every thread of both CTAs waits at the cluster
@@ -4356,7 +4363,7 @@ namespace Core {
     let launch := PairGemm.mk(TMap.mk(l, sa, "A_map"), TMap.mk(l, sb, "B_map"), tile, PairOut.mk(l, "C", Expr.param("M"), Expr.param("N")),
       Core.uniformParam(Key.key, l, DType.u32, "K"))
     let gen := Core.state(Key.key, body(l, e, launch, HalfOwn.mk(l), pair, TmemPermit.mk(l)))
-    Core.pairFinish(Key.key, name, Core.pairGemmParams, Core.pairGemmLauncher(sa, sb),
+    Core.pairFinish(Key.key, name, Core.pairGemmParams, Core.pairGemmLauncher(sa, sb), 256, 1,
       Core.check(gen, Core.pairGemmShapeOk(sa, sb), "pair kernel: boxes the ring or the pair's tensor cores do not take"))
   }
 
@@ -4431,7 +4438,7 @@ namespace Core {
     let gen := Core.state(Key.key, body(l, Core.resume(Key.key, l, Group.cta(256), gen), gemm, PairSched.mk(sched, pair),
       PairSchedOwn.mk(l, w), pair, TmemPermit.mk(l)))
     let grid := Grid.persistentPairs(Expr.bin(BinOp.mul, Core.paramCeilDiv("M", 256), Core.paramCeilDiv("N", w)))
-    Core.pairFinish(Key.key, name, Core.tmaGemmParams, Core.tmaGemmLauncher(sa, sb, grid),
+    Core.pairFinish(Key.key, name, Core.tmaGemmParams, Core.tmaGemmLauncher(sa, sb, grid), 256, 1,
       Core.check(gen, Core.pairGemmShapeOk(sa, sb), "pair kernel: boxes the ring or the pair's tensor cores do not take"))
   }
 }

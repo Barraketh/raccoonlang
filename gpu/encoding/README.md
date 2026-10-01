@@ -134,6 +134,7 @@ The box needs no JVM.
 ## Layout
 
 - `Core.rac`: the core.
+- `Registers.rac`: the register file and its warpgroups' shares, which the core uses as a client (`REGISTERS.md`).
 - `Layout.rac`: the CTA of eight warps that the attention and GEMM examples share (`roles4`), A3a's of twelve
   (`rolesPair`), and A3b's of sixteen (`rolesCorrected`).
 - `Attention.rac`: the roles and CTA of forward attention, which `examples/attention.rac`,
@@ -146,4 +147,5 @@ The box needs no JVM.
 - `harness/`: host test programs for hardware runs, `hw.sh`, which runs them all in one session, and
   `run_gemm_pair.sh`, the pair GEMM's check and timing.
 
-`gpu/check.sh` covers this directory like the rest.
+`gpu/check.sh` covers this directory like the rest, and with the CUDA toolkit's container (`gpu/toolkit`) also
+compiles every example and checks its registers and spills (`gpu/toolkit/registers.py`).

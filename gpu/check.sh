@@ -8,6 +8,10 @@
 #
 # The per-file checks run in parallel, one per processor (CHECK_JOBS overrides the count), and report in a fixed
 # order; each mutant table then runs its mutants in parallel itself.
+#
+# When the CUDA toolkit's container is there (toolkit/cuda.sh), every kernel an example of encoding/ generates is also
+# compiled for sm_100a and its registers judged (toolkit/registers.py): within its budget, and no spill. So are the
+# mutant tables' spill mutants. Without the container both are skipped, which the report's first line says.
 here=$(cd "$(dirname "$0")" && pwd)
 run() { ${RACCOON:?set RACCOON to a raccoon launcher} --prelude "$here/Prelude.rac" --root "$here" "$@"; }
 # Generated C++ is compiled against stub headers when a host clang++ is available; each inline assembly statement is
@@ -16,6 +20,11 @@ cxx() {
   command -v clang++ >/dev/null || return 0
   python3 "$here/stub/asm_calls.py" | clang++ -std=c++17 -fsyntax-only -Wall -Wno-unused-parameter -Wno-parentheses-equality -Werror \
     -I "$here/stub" -include "$here/stub/cuda_stub.h" -x c++ -
+}
+# The register check of generated kernels, when the toolkit is there.
+registers() {
+  [ -n "$CUDA_TOOLKIT" ] || return 0
+  python3 "$here/toolkit/registers.py"
 }
 # A file's path below gpu/, which names it in the report.
 name() { printf '%s' "${1#"$here"/}"; }
@@ -28,7 +37,9 @@ one() {
       out=$(run --raw "$f" 2>&1)
       if printf '%s' "$out" | grep -q "error:"; then echo "FAIL $(name "$f")"; printf '%s\n' "$out"; return 1
       elif ! printf '%s' "$out" | cxx; then echo "FAIL $(name "$f"): generated C++ does not compile"; return 1
-      else echo "ok   $(name "$f")"; fi ;;
+      else echo "ok   $(name "$f")"
+        case $f in "$here"/encoding/examples/*) printf '%s' "$out" | registers || return 1 ;; esac
+      fi ;;
     rejected)
       want=$(sed -n 's#^// expect: ##p' "$f" | head -1)
       mentions=$(sed -n 's#^// mentions: ##p' "$f" | head -1)
@@ -74,6 +85,8 @@ tasks() {
     case $f in *_model.py) echo "model $f" ;; *) [ -e "$f" ] && echo "python $f" ;; esac
   done
 }
+if "$here/toolkit/cuda.sh" true < /dev/null > /dev/null 2>&1; then export CUDA_TOOLKIT=yes
+else echo "skipped: no CUDA toolkit"; fi
 status=0
 results=$(mktemp -d)
 tasks | awk '{ print NR, $0 }' > "$results/tasks"
