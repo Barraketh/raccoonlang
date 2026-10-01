@@ -54,14 +54,14 @@ Each assumption is our reading of NVIDIA's documentation and CUTLASS's usage. "E
 | A3 | `bar.sync id, n` (1 ≤ id ≤ 15, n a multiple of 32) waits for n threads arriving at barrier `id`, all threads of each participating warp, and orders memory among them as A2. | PTX `bar` | high, exercised |
 | A4 | `__syncwarp()` reconverges a warp; a `.sync.aligned` instruction must be executed by every thread of the warp, convergently. | PTX | high |
 | A5 | `elect.sync` with mask `0xffffffff` in a converged warp makes exactly one lane's predicate true. | PTX `elect` | high, exercised |
-| A6 | An mbarrier initialized with count c starts in phase 0; a phase completes when c arrivals have happened and its expected transaction bytes have all completed; `try_wait.parity p` succeeds once the phase of parity p completed, so on a fresh barrier parity 1 succeeds at once. | PTX `mbarrier` | high, exercised |
-| A7 | `fence.mbarrier_init.release.cluster` then a CTA barrier makes initialized mbarriers usable by every thread and by TMA and the tensor cores. | PTX, CUTLASS | high, exercised |
-| A8 | `mbarrier.inval` ends a barrier; its storage may then be initialized again. Initializing a live barrier again is not relied on. | PTX | medium |
-| A9 | `cp.async.bulk.tensor.2d…mbarrier::complete_tx::bytes` writes the box into shared memory asynchronously, zero-filling (and counting) elements outside the tensor, and completes the box's bytes on the barrier. A thread whose wait observes that phase sees the writes. The destination must be 128-byte aligned, and 1024-byte aligned for 128-byte swizzle atoms. | PTX `cp.async.bulk.tensor`, CUDA driver `cuTensorMapEncodeTiled` | high, exercised |
+| A6 | An mbarrier initialized with count c starts in phase 0 with c pending arrivals. An arrive of count k (1 by default) takes k of them; that k must not exceed the pending arrivals is our reading (PTX is silent; MODELS.md P5); a phase completes when its pending arrivals and its transaction count are both zero, and the next phase starts with c pending. `try_wait.parity p` is defined only for the current phase, for which it returns False, and the immediately preceding one, for which it returns True. In each phase, some wait must return True before any arrival of the next phase (PTX §9.7.15.16.5.1, which governs here; the CUDA guide's similar sentence is about `cuda::barrier`). Nothing is assumed of a parity-1 wait on a barrier that has never completed a phase: the rings complete phase 0 of every barrier a producer waits on first, at initialization. | PTX ISA 9.4 §9.7.15.16.3, §9.7.15.16.5.1, §9.7.15.16.8, §9.7.15.16.9, §9.7.15.16.12, §9.7.15.16.16, §9.7.15.16.19; CUDA Programming Guide §4.10.2 (for `cuda::barrier`: arrivals only on a non-zero counter) | high, exercised (the arrivals at initialization not yet) |
+| A7 | `fence.mbarrier_init.release.cluster` then a CTA barrier makes initialized mbarriers usable by every thread and by TMA and the tensor cores, which access the barrier through the generic proxy. | PTX ISA 9.4 §9.7.15.4 (the fence applies to the thread's prior `mbarrier.init`s), §9.7.10.28.5.3 and §9.7.18.12.1 (generic-proxy barrier access); CUTLASS | high, exercised |
+| A8 | `mbarrier.inval` ends a barrier: any operation but `init` on its storage is then undefined, so no arrival or complete-tx may land after it. Its storage may be initialized again: a ring reopened in a loop is initialized again by thread 0 right after its own `inval`, in program order, the CTA barrier being the join before the `inval` (so every other thread's last use precedes both). Initializing a live barrier is undefined and not relied on. | PTX ISA 9.4 §9.7.15.16.12, §9.7.15.16.13 (Example 2 initializes again after `inval` and `bar.cta.sync`) | high |
+| A9 | `cp.async.bulk.tensor.2d…mbarrier::complete_tx::bytes` writes the box into shared memory asynchronously, zero-filling (and counting) elements outside the tensor, and on completion performs one complete-tx of the box's bytes on the barrier, with release semantics at cluster scope. A thread whose wait observes that phase sees the writes. The destination must be 128-byte aligned, and 1024-byte aligned for 128-byte swizzle atoms. | PTX ISA 9.4 §9.7.10.28.5.3, §9.7.10.28.1.2, §9.7.15.16.6; CUDA driver `cuTensorMapEncodeTiled` | high, exercised |
 | A10 | `tcgen05.alloc` / `relinquish_alloc_permit` / `dealloc` are warp-collective. Alloc writes the address to shared memory and takes a power of two ≥ 32 columns. A CTA may not allocate after relinquishing. Dealloc requires no tensor-core operation pending on those columns. | PTX `tcgen05` | high, exercised |
 | A11 | `tcgen05.mma.cta_group::1.kind::f16`, issued by one thread, is asynchronous: it reads shared memory through the descriptors and writes D in tensor memory, with row i of an M = 128 result in lane i and N consecutive columns. Accumulate-disable overwrites D. The descriptor and instruction-descriptor bit layouts are as in `Gpu.smemDesc`/`instrDesc`. | PTX, CUTLASS `mma_sm100_desc.hpp` | medium-high, exercised (bit-exact results) |
-| A12 | `tcgen05.commit…mbarrier::arrive::one` arrives on the barrier once every asynchronous tensor-core operation issued earlier by the executing thread has completed, reads and writes. | PTX | high, exercised |
-| A13 | After observing a completion through a thread synchronization (an mbarrier wait or a barrier), `tcgen05.fence::after_thread_sync` orders later tensor-core operations after it. Before signalling one, `tcgen05.fence::before_thread_sync` orders earlier tensor-core operations (loads) before it. | PTX memory model, `tcgen05` | medium-high |
+| A12 | `tcgen05.commit…mbarrier::arrive::one` arrives on the barrier once every `tcgen05.mma`, `tcgen05.cp` and `tcgen05.shift` issued earlier by the executing thread has completed, reads and writes (not its `tcgen05.ld`/`.st`, which `tcgen05.wait` tracks), and implicitly performs `tcgen05.fence::before_thread_sync`. | PTX ISA 9.4 §9.7.18.12.1 (overall completion, unlike `.sync_restrict::shared::read::mma::a`), §9.7.18.6.2.1.1 (what it tracks), §9.7.18.6.4.2 (Example 2) | high, exercised |
+| A13 | After observing a completion through a thread synchronization (an mbarrier wait or a barrier), `tcgen05.fence::after_thread_sync` orders later tensor-core operations, MMAs and loads, after it; the ISA states the fence is needed there, and we assume no other ordering of an asynchronous `tcgen05` operation after a wait. Before signalling one, `tcgen05.fence::before_thread_sync` orders earlier tensor-core operations (loads) before it. | PTX ISA 9.4 §9.7.18.6.3 (which also says the standard mechanisms apply), §9.7.18.6.4 (§9.7.18.6.4.2, Example 2: the fence "is needed") | high |
 | A14 | `tcgen05.ld.32x32b.x8` is warp-collective: warp w reads lanes 32·(w mod 4) to +31, thread t lane 32·(w mod 4)+t, 8 consecutive 32-bit columns into its registers, valid after `tcgen05.wait::ld`. | PTX | high, exercised |
 | A15 | `extern __shared__ __align__(1024)` places the dynamic buffer 1024-byte aligned when the kernel has no static shared memory. | CUDA, CUTLASS practice | medium-high, exercised |
 | A16 | A block-scope `__shared__` array is one allocation for the whole kernel execution, whichever block declares it. | CUDA | high |
@@ -160,12 +160,12 @@ claim. Types are abbreviated; "code" is what it emits into its `Ctx`.
 ### 6.5 Stage ring
 | Operation | Requires | Emits | Establishes | Relies on |
 |---|---|---|---|---|
-| `withRing` | `cta` context; boxes pass `boxOk` | 1024-aligned stages, 2S barriers initialized (count 1) by thread 0 with fence and `__syncthreads`, and at close thread 0's `mbarrier.inval`s | `Producer`, `Consumer`; closes only on both `…Done` | A6–A8, A15, I2, I8 |
-| `takeProducer`, `takeConsumer` | `Ctx(m, lane)` with `Elected(m)` | the side's stage and phase registers (producer 0/1, consumer 0/0) | `ProducerAt(r, m)` / `ConsumerAt(r, m)`, bound to that thread | M6, A6 |
+| `withRing` | `cta` context; boxes pass `boxOk` | 1024-aligned stages, 2S barriers initialized (count 1) by thread 0, which then arrives once on each `empty[s]`, completing its phase 0, with fence and `__syncthreads`, and at close thread 0's `mbarrier.inval`s | `Producer`, `Consumer`, every stage free; closes only on both `…Done` | A6–A8, A15, I2, I8 |
+| `takeProducer`, `takeConsumer` | `Ctx(m, lane)` with `Elected(m)` | the side's stage and phase registers (producer 0/0, consumer 0/0) | `ProducerAt(r, m)` / `ConsumerAt(r, m)`, bound to that thread | M6, A6 |
 | `acquire` | `ProducerAt` | wait `empty[stage]` at the producer's phase | `Slot`: the current stage is free (its last reader's commit completed) | A6, A12 |
 | `fill` | `Slot`, maps whose boxes are the ring's | `arrive.expect_tx(stage bytes)`, two TMA loads into the stage, advance | the fill is in flight toward `full[stage]` | A9 |
 | `finishProducer` | `ProducerAt` | S more waits on `empty`, advancing | every stage was released: no copy in flight, no reader active | A6, A12 |
-| `await` | `ConsumerAt` | wait `full[stage]` at the consumer's phase | `Ready`: the stage's copies landed and are visible | A6, A9 |
+| `await` | `ConsumerAt` | wait `full[stage]` at the consumer's phase, `after_thread_sync` | `Ready`: the stage's copies landed and are visible, to this thread and to the tensor-core work it issues next | A6, A9, A13 |
 | `releaseByMma` | `ReadyUsed(r, m)`, `Elected(m)` | `tcgen05.commit` to `empty[stage]`, advance | the stage is released when this thread's MMAs reading it complete | A12 |
 | `finishConsumer` | `ConsumerAt` | nothing | `ConsumerDone` | — |
 
@@ -196,8 +196,8 @@ claim. Types are abbreviated; "code" is what it emits into its `Ctx`.
 |---|---|---|---|---|
 | `tmaGemmPersistentKernel` | a band height G > 0 (else `#error`) | `tilesM`, `tilesN`, `tiles = tilesM·tilesN`, `bandRows = min(tilesM, G)`, `bandTiles = bandRows·tilesN`, all below 2^32 by the launcher's extent checks | `Sched`, `SchedOwn` | A18 |
 | `forTiles`, `forOwnedTiles` | `Fixed(S)`; `SchedOwn` for the owned loop | `for (t = blockIdx.x; t < tiles; t += gridDim.x)`, and in the body the tile's origin by the band order (`DESIGN.md` §6) | per iteration a `TileAt`, and for the owned loop a `TileOwn`. **Obligation:** the band order is a bijection from `[0, tiles)` onto the tiles for every M, N and G > 0 (the last band may have fewer rows), so CTAs visit disjoint tiles, and the one owning loop visits each tile once. Argued in `Gpu.tileLoop`; checked exhaustively on the host for grids up to 48×48 tiles and G ≤ 20, and on the GPU by coverage (`harness/gemm_test.cu`) | M5, S5, A18 |
-| `withAccRing` | `Acc(empty)`, bufs·n ≤ cols | full (count 1) and empty (count 128) barriers per buffer; `inval` at close | producer and consumer sides; closes on both `…Done`, handing back `Acc(empty)` | A6–A8 |
-| `takeAccProducer` / `takeAccConsumer` | an elected lane / an aligned warpgroup | the side's registers (0/1 and 0/0) | the side, bound to that thread or warpgroup | M6 |
+| `withAccRing` | `Acc(empty)`, bufs·n ≤ cols | full (count 1) and empty (count 128) barriers per buffer, thread 0 then arriving with count 128 on each empty barrier, completing its phase 0; `inval` at close | producer and consumer sides; closes on both `…Done`, handing back `Acc(empty)` | A6–A8 |
+| `takeAccProducer` / `takeAccConsumer` | an elected lane / an aligned warpgroup | the side's registers (0/0 and 0/0) | the side, bound to that thread or warpgroup | M6 |
 | `acquireAcc` | producer side | wait `empty[buf]`, `after_thread_sync` | `AccFree`: the epilogue's loads of the buffer are done | A6, A13 |
 | `mmaFirstInto`, `mmaNextInto` | `Ready`, `AccFree` / `AccFilling`; N = n | MMAs into the buffer's columns | `AccFilling` | A11 |
 | `commitAcc` | `AccFilling`, `Elected(m)` | `tcgen05.commit` to `full[buf]`, advance | the buffer completes when its MMAs do | A12 |
@@ -225,7 +225,7 @@ arguments. The audit as of this document:
   in straight-line code.
 - **Endings.** `release`, `skipTmem`, `finishConsumer` and `finishAccConsumer` consume authority; none mints any.
 - **Unsealed data.** `Gen` helpers (`push`, `fresh`, `child`, `after`, `check`, …) and instruction builders (`mbarInit`,
-  `mmaIssue`, …) build unsealed `Gen` and `Stmt` values. These reach a kernel only through operations that need the
+  `mbarArriveCount`, `barrierCompletions`, `mmaIssue`, …) build unsealed `Gen` and `Stmt` values. These reach a kernel only through operations that need the
   Key (`resume`, `emit`, `finish`).
 - **Output tiles and staging** (the TMA-store epilogue). `forChunks` consumes a tile's `TileOwn` and mints one
   `ChunkOwn` per chunk; `withStaging` mints the one `StoreSide`, `takeStore` turns it into the warpgroup-bound
@@ -269,7 +269,8 @@ roles:
 - no fill of a stage whose reader has not released it;
 - no read of a stage whose fill has not completed;
 - the tail drains every outstanding operation;
-- the parity each side waits on is the phase it means.
+- the parity each side waits on is the phase it means;
+- every phase is observed by a wait before the next is arrived on.
 
 We use two routes. One is generic in the stage count S, using arithmetic lemmas. The other is per configuration, by
 a model checker written in Raccoon and proved sound once, since S is concrete at generation. Layer 2 is where the

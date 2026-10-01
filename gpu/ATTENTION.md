@@ -207,7 +207,7 @@ Softmax warpgroup, iteration `j`:
 
 1. await S full (`after_thread_sync`) for buffer `j mod 2`.
 2. Pass 1: 16 loads of 8 columns, each followed by `tcgen05.wait::ld`; `m_new = max(m, max c·s)`.
-3. Acquire the exchange: wait P empty (`PV_{j-1}` complete; passes at once for `j = 0`), `after_thread_sync`.
+3. Acquire the exchange: wait P empty (`PV_{j-1}` complete; for `j = 0`, the phase 0 that initialization completes), `after_thread_sync`.
 4. Pass 2: 16 loads again; `p = ex2(c·s − m_new)`; sum; pack pairs to bf16; 16 stores of 4 columns into P.
 5. Release S (`before_thread_sync`, arrive on S empty).
 6. For `j > 0`: `α = ex2(m − m_new)`; rescale Ô's row: 16 × (load 8, `wait::ld`, multiply, store 8).
@@ -417,8 +417,8 @@ What each emits:
 
 | Operation | Code |
 |---|---|
-| `withExchange` | P full (count 128) and P empty (count 1), initialized as `withAccRing` does; `inval` at close |
-| `takeExWriter` / `takeExReader` | the side's phase register: writer 1, reader 0 (one buffer, so no stage register) |
+| `withExchange` | P full (count 128) and P empty (count 1), initialized as `withAccRing` does (thread 0 then completes P empty's phase 0, so the writer starts at phase 0); `inval` at close |
+| `takeExWriter` / `takeExReader` | the side's phase register: writer 0, reader 0 (one buffer, so no stage register) |
 | `acquireP` | wait P empty at the writer's phase; `tcgen05.fence::after_thread_sync` |
 | `storeP` | 4 × `cvt.rn.bf16x2.f32` (pairs `2i+1, 2i` so element `2i` is in the low half); `__syncwarp`; `tcgen05.st.sync.aligned.32x32b.x4.b32` at P + 4c, the warp's lane quadrant |
 | `rescaleO` | per 8 columns of Ô: `__syncwarp`; `tcgen05.ld.32x32b.x8`; `tcgen05.wait::ld`; 8 multiplies; `tcgen05.st.32x32b.x8` |
@@ -609,7 +609,7 @@ A new §6.9, and additions to §6.1 and §6.6:
 | `holdStage` | `Ready(r, m)` | nothing | `ReadyUsed(r, m)`: the stage stays unreleased until `releaseByMma` | A12 |
 | `mmaScores` | `ReadyUsed(ra, m)`, `Ready(rb, m)`, `AccFree(q, m)`, `Elected(m)`; boxes 64 × 128, n = 128 | 8 `tcgen05.mma`, the first overwriting | `ReadyUsed` of both, `AccFilling` | A11 |
 | `loadAcc8` | `AccFull(q, m, f)`, aligned warpgroup, 8(c + 1) ≤ n | `__syncwarp`, `tcgen05.ld.32x32b.x8`, `wait::ld` | the thread's row, columns 8c–8c+7 | A13, A14 |
-| `withExchange` | `Acc(a, empty)` of 256 columns, `cta` context | P full (128), P empty (1); `inval` at close | writer and reader; closes on both `…Done`, handing back `Acc(a, empty)` | A6–A8 |
+| `withExchange` | `Acc(a, empty)` of 256 columns, `cta` context | P full (128), P empty (1), thread 0 completing P empty's phase 0 with one arrive at initialization; `inval` at close | writer and reader; closes on both `…Done`, handing back `Acc(a, empty)` | A6–A8 |
 | `takeExWriter` / `takeExReader` | aligned warpgroup / elected lane | the side's phase register | the side, bound to that warpgroup or thread | M6 |
 | `acquireP` | writer side | wait P empty, `after_thread_sync` | `PFree(…, 0)`: the last product completed, P and Ô quiescent and visible | A6, A13, A21 |
 | `storeP` | `PFree(…, c)`, c < 16 | 4 `cvt.rn.bf16x2.f32`, `__syncwarp`, `tcgen05.st.32x32b.x4` | chunk c of the thread's row of P written (pending `wait::st`) | A19, A23, A25 |
@@ -809,7 +809,8 @@ attention uses `cta_group::1` throughout.
 
 An adversarial review (2026-09-30, one reviewer, against the PTX ISA 9.4 text and `Gpu.rac`) found no blocker: no
 race, phase alias or deadlock in the schedule of §2.5, and every refusal of §5 held. It checked, and found correct,
-the phase registers and arrival counts of the exchange, quiescence at every close, the `OState` transitions, holding
+the phase registers and arrival counts of the exchange (still correct under the later change of start state, a
+relabelling: the writer now starts at phase 0, on a phase that initialization completes), quiescence at every close, the `OState` transitions, holding
 Q across the loop, that the MMA thread's loop is writable with `loopPeeled` and a uniform `branch`, the MN-major
 descriptor, the `[a-tmem]` MMA form, `cvt`'s half order, A22, A29, the math accuracies, the canaries' exactness, and
 every cited section number. What changed:

@@ -283,6 +283,10 @@ namespace Gpu {
 
   def mbarArrive (bar: Expr): Stmt := Gpu.asmIn("mbarrier.arrive.shared::cta.b64 _, [%0];", Gpu.one(Gpu.r(bar)))
 
+  // `count` arrivals at once, at most the pending ones.
+  def mbarArriveCount (bar: Expr)(count: Nat): Stmt :=
+    Gpu.asmIn("mbarrier.arrive.shared::cta.b64 _, [%0], %1;", Gpu.two(Gpu.r(bar), Gpu.r(Expr.lit(count))))
+
   def tmaLoad2d (dst: Expr)(map: String)(c0: Expr)(c1: Expr)(bar: Expr): Stmt :=
     Gpu.asmIn("cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1, {%3, %4}], [%2];",
       List.cons(Gpu.r(dst), List.cons(Gpu.l64(Expr.paramAddr(map)), List.cons(Gpu.r(bar), Gpu.two(Gpu.r(c0), Gpu.r(c1))))))
@@ -741,9 +745,20 @@ namespace Gpu {
       List.cons(Gpu.mbarInit(Expr.sharedAddr(Nat.add(bars, Nat.mul(8, i))), arrivals), Gpu.barrierInits(bars, arrivals, Nat.succ(i), more))
   }
 
-  // One thread initializes the barriers `inits` sets up, then the whole CTA waits for it.
-  def initBarrierList (gen: Gen)(inits: List(Stmt)): Gen := {
-    let all := List.append(inits, List.cons(Gpu.fenceBarrierInit, List.nil(Stmt)))
+  // Completes phase 0 of the `count` barriers from byte `bars` on, starting at the `i`th, each expecting `arrivals`
+  // arrivals: the barriers a producer waits on before anyone arrives, so its first wait, at parity 0, is on a phase
+  // that has completed and its later ones on the current phase or the one before, as `try_wait.parity` requires.
+  def barrierCompletions (bars: Nat)(arrivals: Nat)(i: Nat)(count: Nat): List(Stmt) decreases structural(count) := {
+    match count returning List(Stmt) with
+    | Nat.zero => List.nil(Stmt)
+    | Nat.succ more =>
+      List.cons(Gpu.mbarArriveCount(Expr.sharedAddr(Nat.add(bars, Nat.mul(8, i))), arrivals),
+        Gpu.barrierCompletions(bars, arrivals, Nat.succ(i), more))
+  }
+
+  // One thread runs `setup` (the barriers' inits, then any phase it completes), then the whole CTA waits for it.
+  def initBarrierList (gen: Gen)(setup: List(Stmt)): Gen := {
+    let all := List.append(setup, List.cons(Gpu.fenceBarrierInit, List.nil(Stmt)))
     let first := Expr.bin(BinOp.eq, Expr.special(Builtin.threadX), Expr.lit(0))
     Gpu.push(Gpu.push(gen, Stmt.ifElse(first, Gpu.toBlock(List.reverse(all), Block.done), Block.done)), Stmt.sync)
   }
@@ -778,7 +793,9 @@ namespace Gpu {
     let bars := Gpu.alignUp(gen1.smem, 8)
     let gen2 := Gpu.reserve(gen1, Nat.mul(16, cfg.stages), 8)
     let p := gen2.next
-    let gen4 := Gpu.initBarriers(Gpu.fresh(Gpu.fresh(Gpu.fresh(Gpu.fresh(gen2)))), bars, Nat.mul(2, cfg.stages))
+    // Every stage starts free: each `empty[s]` has completed phase 0.
+    let setup := List.append(Gpu.barrierInits(bars, 1, 0, Nat.mul(2, cfg.stages)), Gpu.barrierCompletions(bars, 1, cfg.stages, cfg.stages))
+    let gen4 := Gpu.initBarrierList(Gpu.fresh(Gpu.fresh(Gpu.fresh(Gpu.fresh(gen2)))), setup)
     scope r => {
       let ring := Ring.mk(r, cfg, base, bars, p, Nat.add(p, 1), Nat.add(p, 2), Nat.add(p, 3))
       let (e2, ((pd, cd), x)) :=
@@ -791,14 +808,15 @@ namespace Gpu {
     }
   }
 
-  // The elected thread takes an endpoint, declaring its registers in the elected block: stage 0, and the phase a
-  // fresh barrier has just completed for the producer (every stage starts free) or not yet completed for the consumer.
-  // The context's lifetime is the elect's own, so the registers are in scope wherever the endpoint can go.
+  // The elected thread takes an endpoint, declaring its registers in the elected block: stage 0, and phase 0, which
+  // `withRing` completed on every `empty[s]` for the producer (every stage starts free) and which no `full[s]` has yet
+  // completed for the consumer. The context's lifetime is the elect's own, so the registers are in scope wherever the
+  // endpoint can go.
   def takeProducer {m: Lifetime}{r: Lifetime}{cfg: RingCfg}(e: Ctx(m, Group.lane))(w: Elected(m))(ring: Ring(r, cfg))
       (p: Producer(r)): Pair(Ctx(m, Group.lane), ProducerAt(r, m)) := {
     match p returning Pair(Ctx(m, Group.lane), ProducerAt(r, m)) with
     | Producer.mk => {
-      let regs := List.cons(Stmt.declMut(DType.u32, ring.pStage, Expr.lit(0)), List.cons(Stmt.declMut(DType.u32, ring.pPhase, Expr.lit(1)), List.nil(Stmt)))
+      let regs := List.cons(Stmt.declMut(DType.u32, ring.pStage, Expr.lit(0)), List.cons(Stmt.declMut(DType.u32, ring.pPhase, Expr.lit(0)), List.nil(Stmt)))
       (Gpu.emitAll(Key.key, e, regs), ProducerAt.mk(r, m))
     }
   }
@@ -861,12 +879,15 @@ namespace Gpu {
     }
   }
 
-  // The consumer waits until its current stage is full, and may then read it.
+  // The consumer waits until its current stage is full, and may then read it: the fence orders the tensor-core work it
+  // issues next after the wait.
   def await {n: Lifetime}{r: Lifetime}{m: Lifetime}{cfg: RingCfg}(e: Ctx(n, Group.lane))(ring: Ring(r, cfg))(c: ConsumerAt(r, m))
       : Pair(Ctx(n, Group.lane), Ready(r, m)) := {
     match c returning Pair(Ctx(n, Group.lane), Ready(r, m)) with
-    | ConsumerAt.mk =>
-      (Gpu.emit(Key.key, e, Gpu.mbarWait(Gpu.fullBar(ring, ring.cStage), Expr.var(ring.cPhase))), Ready.mk(r, m))
+    | ConsumerAt.mk => {
+      let wait := List.cons(Gpu.mbarWait(Gpu.fullBar(ring, ring.cStage), Expr.var(ring.cPhase)), List.cons(Gpu.tcFenceAfter, List.nil(Stmt)))
+      (Gpu.emitAll(Key.key, e, wait), Ready.mk(r, m))
+    }
   }
 
   def finishConsumer {r: Lifetime}{m: Lifetime}(c: ConsumerAt(r, m)): ConsumerDone(r) := {
@@ -1452,8 +1473,10 @@ namespace Gpu {
       let bars := Gpu.alignUp(gen0.smem, 8)
       let gen1 := Gpu.reserve(gen0, Nat.mul(16, bufs), 8)
       let p := gen1.next
+      // Every buffer starts free: each `empty[b]` has completed phase 0, by all 128 arrivals at once.
       let inits := List.append(Gpu.barrierInits(bars, 1, 0, bufs), Gpu.barrierInits(bars, 128, bufs, bufs))
-      let gen2 := Gpu.initBarrierList(Gpu.fresh(Gpu.fresh(Gpu.fresh(Gpu.fresh(gen1)))), inits)
+      let setup := List.append(inits, Gpu.barrierCompletions(bars, 128, bufs, bufs))
+      let gen2 := Gpu.initBarrierList(Gpu.fresh(Gpu.fresh(Gpu.fresh(Gpu.fresh(gen1)))), setup)
       scope q => {
         let ring := AccRing.mk(q, n, t.addr, bufs, bars, p, Nat.add(p, 1), Nat.add(p, 2), Nat.add(p, 3))
         let (e2, ((pd, cd), x)) :=
@@ -1467,12 +1490,13 @@ namespace Gpu {
     }
   }
 
-  // The elected thread takes the issuing side: its buffer starts at 0, every buffer free.
+  // The elected thread takes the issuing side: its buffer starts at 0, and its phase at 0, which `withAccRing`
+  // completed on every `empty[b]`, so every buffer is free.
   def takeAccProducer {m: Lifetime}{q: Lifetime}{n: Nat}(e: Ctx(m, Group.lane))(w: Elected(m))(ring: AccRing(q, n))
       (p: AccProducer(q)): Pair(Ctx(m, Group.lane), AccProducerAt(q, m)) := {
     match p returning Pair(Ctx(m, Group.lane), AccProducerAt(q, m)) with
     | AccProducer.mk => {
-      let regs := List.cons(Stmt.declMut(DType.u32, ring.pStage, Expr.lit(0)), List.cons(Stmt.declMut(DType.u32, ring.pPhase, Expr.lit(1)), List.nil(Stmt)))
+      let regs := List.cons(Stmt.declMut(DType.u32, ring.pStage, Expr.lit(0)), List.cons(Stmt.declMut(DType.u32, ring.pPhase, Expr.lit(0)), List.nil(Stmt)))
       (Gpu.emitAll(Key.key, e, regs), AccProducerAt.mk(q, m))
     }
   }

@@ -1,7 +1,8 @@
 # GPU library: design of the Blackwell layer
 
 Status: implemented in `Gpu.rac` and exercised by `examples/tinygemm.rac` and `examples/persistent_gemm.rac` (§6); both
-ran correctly on a B200 (§7) before the TMA-store epilogue (§2, §4), which has not yet run on hardware.
+ran correctly on a B200 (§7) before the TMA-store epilogue (§2, §4), the fence after `await`'s wait and the arrivals at
+initialization that complete phase 0 of the producers' barriers (§2), none of which has yet run on hardware.
 `gpu/README.md` describes the spike as a whole.
 
 The target is the structure of a minimal warp-specialized Blackwell GEMM ("TinyGEMM"): a TMA producer warp fills a
@@ -50,8 +51,9 @@ Everything the hardware does asynchronously is typed by tokens that must be cons
 registers the protocol owns:
 
 - **Stage ring** (`withRing`, in the whole CTA): allocates `S` shared stages (1024-byte aligned, for the 128-byte
-  swizzle) and `2S` mbarriers (`full[s]`, `empty[s]`), initializes them on one thread with `fence.mbarrier_init` and a
-  CTA barrier, and hands its callback a `Producer(r)` and a `Consumer(r)` endpoint. The callback must return
+  swizzle) and `2S` mbarriers (`full[s]`, `empty[s]`), initializes them on one thread, which also arrives once on each
+  `empty[s]` so that its phase 0 is complete and every stage starts free, then `fence.mbarrier_init` and a CTA barrier,
+  and hands its callback a `Producer(r)` and a `Consumer(r)` endpoint. The callback must return
   `ProducerDone(r)` and `ConsumerDone(r)`, so both sides finish before the ring's storage can be reused.
   - **Taking an endpoint.** A side's stage index and phase bit are registers, and registers are per thread. So an
     endpoint is used by exactly one thread: an elected thread takes it (`takeProducer`, `takeConsumer`, which need the
@@ -59,11 +61,16 @@ registers the protocol owns:
     block and yields `ProducerAt(r, m)` / `ConsumerAt(r, m)`. Those are confined to `m`, so they cannot pass to another
     thread (which would start from stage 0 and overwrite a stage still in use), and since only the elect's own
     context has lifetime `m`, the declarations are in scope wherever the endpoint can go.
+  - Both sides start at stage 0 and phase 0. A side waits at the parity of its phase, which flips when it wraps, and
+    neither side can get a round ahead of the other; so every wait names the current phase or the one just completed, the only ones `try_wait.parity` is defined for
+    (PTX §9.7.15.16.19). The producer's first wait on a stage is on the phase the initializing thread completed: a wait
+    of parity 1 on a fresh barrier, as CUTLASS and DeepGEMM start their producers, is not defined by the ISA.
   - The producer `acquire`s a stage (waits `empty[s]` at its phase), receiving a linear `Slot(r, m)`, and `fill`s it:
     `mbarrier.arrive.expect_tx` for the stage's bytes, then one TMA load per operand, consuming the slot and advancing.
     `finishProducer` waits for every stage to be released (the producer tail), so no TMA can still be writing when
     the ring closes.
-  - The consumer `await`s a stage (waits `full[s]` at its phase), receiving a linear `Ready(r, m)` that authorizes
+  - The consumer `await`s a stage (waits `full[s]` at its phase, then `tcgen05.fence::after_thread_sync`, which
+    orders the tensor-core work it issues next after the wait), receiving a linear `Ready(r, m)` that authorizes
     reading the stage, and releases it when its tensor-core work completes (`tcgen05.commit` to `empty[s]`).
     A synchronous release (`mbarrier.arrive`), for a consumer that reads the stage with ordinary loads, is not built.
   - When the ring closes, every thread is past its last use of the barriers (the roles' join), and one thread
@@ -209,7 +216,8 @@ tiles. What is new:
   written by the CTA the schedule gives it to, once, at the coordinates the schedule computed.
 - **Accumulator ring.** `withAccRing(e, t, acc, bufs, n, X, body)` splits `withTmem`'s accumulator into `bufs`
   buffers of `n` columns, with a full barrier (arrival count one) and an empty barrier (arrival count 128) per
-  buffer. The MMA thread takes the producer side (`takeAccProducer`, as for the stage ring) and per tile runs
+  buffer; the initializing thread completes each empty barrier's phase 0 with one arrive of count 128, so every
+  buffer starts free and both sides start at phase 0. The MMA thread takes the producer side (`takeAccProducer`, as for the stage ring) and per tile runs
   `acquireAcc` (wait empty, `tcgen05.fence::after_thread_sync`) → `AccFree` → `mmaFirstInto` → `AccFilling` →
   `mmaNextInto`… → `commitAcc` (`tcgen05.commit` to full). The epilogue takes the consumer side as the whole aligned
   warpgroup (`takeAccConsumer`, with the alignment proof), so its 128 threads run every ring operation together and

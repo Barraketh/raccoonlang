@@ -3,7 +3,8 @@
 A feasibility spike of a GPU library written in Raccoon: a kernel is an ordinary Raccoon program over a sealed core,
 and evaluating it builds a CUDA AST, which prints as CUDA C++. It runs on unmodified Raccoon with a custom trusted
 prelude. Its two sm_100a GEMMs ran correctly on a B200, the persistent one at 980 TFLOP/s against cuBLAS's 2147
-(`DESIGN.md` §7), before their TMA-store epilogue, which has not yet run on hardware.
+(`DESIGN.md` §7), before their TMA-store epilogue, the fence after the stage ring's consumer wait and the arrivals
+that complete phase 0 of the producers' barriers at initialization, none of which has yet run on hardware.
 
 | File | Role |
 |---|---|

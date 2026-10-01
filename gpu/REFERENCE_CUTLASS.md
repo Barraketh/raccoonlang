@@ -303,7 +303,11 @@ warp, the MMA warp and two idle ones, which could decrease together.
 
 **Where we are stricter than CUTLASS**, deliberately: one elect for the whole MMA loop (M6) rather than a fresh
 `elect.sync` per instruction; `tcgen05.fence::before_thread_sync` before releasing an accumulator where CUTLASS relies
-on `wait::ld` alone; a producer tail and invalidation on every ring. None of these costs measurable time.
+on `wait::ld` alone; a producer tail and invalidation on every ring. None of these costs measurable time. Also
+stricter, and not yet measured: `tcgen05.fence::after_thread_sync` after the consumer's wait on a full stage, before
+its MMAs (`await`; CUTLASS has none, DeepGEMM does); and arrivals at initialization that complete phase 0 of every
+barrier a producer waits on first, so producers start at phase 0 instead of waiting at parity 1 on a fresh barrier
+(`MODELS.md` §1.2).
 
 ## 7. Prioritized changes
 

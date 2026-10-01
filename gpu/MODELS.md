@@ -6,7 +6,9 @@ as transition systems over them, the safety properties those systems must have u
 roles, and how to prove them in Raccoon. The models are to live in `gpu/model/` as Raccoon modules that `Gpu` imports
 (`OBLIGATIONS.md` §9, decisions 2 and 3).
 
-The models describe `Gpu.rac` as of 0767971. `lemur_gpu` has since replaced the per-element epilogue with TMA stores
+The models describe `Gpu.rac` as of 0767971, with two later changes to the protocols: the setup's arrivals that
+complete phase 0 of the barriers a producer waits on first, so producers start at phase 0 (§1.2), and the fence after
+`await`'s wait (§1.6). `lemur_gpu` has also replaced the per-element epilogue with TMA stores
 through staging buffers (975f093), a protocol of bulk async-groups and proxy fences that these models do not yet
 cover. §6 says how they extend to it, and V1 (§7) must start from it.
 
@@ -31,11 +33,10 @@ In short:
 - **Link to the library** (§5): at layer 2 a reviewer compares the model with the emitted code (§2.6). A cheap
   syntactic checker over the emitted AST can confirm each role's barrier operations, operands and order.
 
-Section numbers of the PTX ISA change between versions, so rules cite the ISA (version 9.x, "Parallel
-Synchronization and Communication Instructions: mbarrier" and the `tcgen05` and `cp.async.bulk.tensor` sections) by
-subsection title. "Unknown" marks a question the documentation does not settle, as far as this design found. The
-wording of the ISA was not available verbatim while this was written: every citation must be checked against the
-text in V1 (§7).
+Rules cite the PTX ISA, version 9.4, by section number ("PTX §…"); section numbers change between versions. §1's
+citations of the `mbarrier`, `cp.async.bulk.tensor`, `tcgen05` and memory-model rules were checked against the 9.4
+text, and so were the ordering facts O1–O7 (§1.6). "Unknown" marks a question the documentation does not settle, as
+far as this design found. Citations elsewhere in this document that give no section number were not checked.
 
 ## 1. Semantic models
 
@@ -67,48 +68,66 @@ State of barrier `b`, and one ghost:
 
 | Field | Values | Source |
 |---|---|---|
-| `ph(b)` | the current phase's parity, 0 or 1 | "Contents of the mbarrier object": the current phase |
+| `ph(b)` | the current phase's parity, 0 or 1 | PTX §9.7.15.16.3: the current phase |
 | `pend(b)` | pending arrivals of the current phase, 0 to `count(b)` | ibid., pending arrival count |
-| `count(b)` | expected arrivals per phase, 1 to 2^20 − 1 | ibid., expected arrival count; `mbarrier.init` |
-| `tx(b)` | transaction count of the current phase, −(2^20 − 1) to 2^20 − 1 | ibid., tx-count; "Tracking asynchronous operations" |
-| `n(b)` (ghost) | completed phases, a natural number: `ph(b) = n(b) mod 2` | none (definition) |
+| `count(b)` | expected arrivals per phase, 1 to 2^20 − 1 | ibid., expected arrival count, Table 43 (`.layout::v0`, the default); §9.7.15.16.12 |
+| `tx(b)` | transaction count of the current phase, −(2^20 − 1) to 2^20 − 1 | ibid., tx-count; §9.7.15.16.6 |
+| `n(b)` (ghost) | completed phases, a natural number: `ph(b) = n(b) mod 2` | none (definition; §9.7.15.16.5.1 numbers the phases 0, 1, 2, …) |
 
 Rules. Each names its instruction and ISA source.
 
 | Rule | Instruction | Effect | Source |
 |---|---|---|---|
-| Init | `mbarrier.init.shared::cta.b64 [b], c` | `ph = 0`, `pend = c`, `count = c`, `tx = 0`, `n = 0` | `mbarrier.init` |
-| Arrive | `mbarrier.arrive.shared::cta.b64 _, [b]` | if `pend = 0`: error (P5); else `pend −= 1`; then Complete | "Arrive-on operation"; `mbarrier.arrive` |
-| ArriveTx | `mbarrier.arrive.expect_tx.shared::cta.b64 _, [b], x` | `tx += x`, then Arrive, as one step | `mbarrier.arrive` (`.expect_tx` performs expect-tx before the arrive-on) |
-| CompleteTx | a TMA copy's completion (§1.3) | `tx −= x`; then Complete | "Tracking asynchronous operations": complete-tx |
-| Complete | (part of the above) | if `pend = 0` and `tx = 0`: `ph ← 1 − ph`, `pend ← count`, `n += 1` | "Phase Completion" |
-| Wait | `mbarrier.try_wait.parity.shared::cta.b64 P, [b], p` in a loop | enabled iff `ph(b) ≠ p`; no effect | `mbarrier.test_wait/try_wait`: `.parity` tests the completion of the phase of parity `p`, which must be the current phase or the one immediately before it |
-| Inval | `mbarrier.inval.shared::cta.b64 [b]` | if not quiescent (below): error (P4); else `b` is no longer a barrier | `mbarrier.inval` |
+| Init | `mbarrier.init.shared::cta.b64 [b], c` | `ph = 0`, `pend = c`, `count = c`, `tx = 0`, `n = 0` | PTX §9.7.15.16.12 |
+| Arrive | `mbarrier.arrive.shared::cta.b64 _, [b]`, or with a count `c` (`…, [b], c`; 1 when absent) | if `pend < c`: error (P5); else `pend −= c`; then Complete | §9.7.15.16.9; §9.7.15.16.16 (`count` within Table 43's range) |
+| ArriveTx | `mbarrier.arrive.expect_tx.shared::cta.b64 _, [b], x` | `tx += x`, then Arrive (`c = 1`), as one step | §9.7.15.16.16 (`.expect_tx` performs expect-tx before the arrive-on, whose count is 1); §9.7.15.16.6.1 |
+| CompleteTx | a TMA copy's completion (§1.3) | `tx −= x`; then Complete | §9.7.15.16.6.2 |
+| Complete | (part of the above) | if `pend = 0` and `tx = 0`: `ph ← 1 − ph`, `pend ← count`, `n += 1` | §9.7.15.16.8 |
+| Wait | `mbarrier.try_wait.parity.shared::cta.b64 P, [b], p` in a loop | enabled iff `ph(b) ≠ p`; no effect | §9.7.15.16.19: `.parity` tests the completion of the phase of parity `p`, which must be the current phase or the one immediately before it |
+| Inval | `mbarrier.inval.shared::cta.b64 [b]` | if not quiescent (below): error (P4); else `b` is no longer a barrier | §9.7.15.16.13 |
+
+The **setup** of a protocol is Init of each of its barriers followed, for each barrier a producer waits on before
+anyone arrives on it (the stage ring's `empty[s]`, count 1, and the accumulator ring's `accEmpty[b]`, count 128), by
+one Arrive with `c = count`, by the same thread: that completes phase 0, so the barrier starts with `ph = 1`,
+`pend = count`, `tx = 0`, `n = 1`. `withRing` and `withAccRing` emit it (`Gpu.barrierCompletions`); the handoff's
+barrier, which no producer waits on, gets none.
 
 Readings and gaps:
-- **Wait.** The ISA defines the parity test only for the current phase and the immediately preceding one. The model
-  gives it the hardware's observable meaning: success iff `ph ≠ p`. Whether a wait whose parity names a phase two or
-  more behind means anything is exactly the ABA question. The protocols must never ask it, and property P3 (§3) says
-  they don't.
-- **The fresh barrier.** On a barrier in phase 0 that has never completed, a parity-1 wait succeeds at once (A6). The
-  ISA's "immediately preceding phase" does not exist here, so the ISA does not settle this. CUTLASS relies on it
-  (producer start state), and so do `takeProducer` and `takeAccProducer`. **Unknown** from the text; exercised on B200.
-- **Over-arrival.** An arrive on a barrier with `pend = 0` is an error in the model (P5). What the hardware does is
-  **unknown**: the ISA gives no defined result that a protocol could rely on.
+- **Wait.** `test_wait` and `try_wait` are defined only for the current, incomplete phase, where they return False,
+  and the immediately preceding one, where they return True (§9.7.15.16.19). A wait whose parity names a phase two or
+  more behind has no defined result: that is the ABA question. The model gives the defined cases the hardware's
+  observable meaning, success iff `ph ≠ p`, and property P3 (§3) keeps every wait of the protocols in the defined set.
+- **The fresh barrier.** A parity-1 wait on a barrier that has never completed a phase names a "preceding phase"
+  that does not exist, so it is outside §9.7.15.16.19's defined set. Practice relies on its succeeding at once (CUTLASS's
+  `make_producer_start_state`, DeepGEMM's `wait(phase ^ 1)` on its empty barriers), but the ISA does not say so. No
+  protocol here relies on it any more: the setup completes phase 0 of every barrier a producer waits on first, so
+  each producer starts at phase 0 and its first wait is on the immediately preceding phase, which is defined.
+- **Over-arrival.** An arrive of `c` on a barrier with `pend < c` is an error in the model (P5). PTX is silent on it;
+  the CUDA Programming Guide (§4.10.2) requires an arrival only while the barrier's counter is non-zero. So it stays
+  undefined. PTX does state a related rule (§9.7.15.16.5.1): in each phase, at least one `test_wait` or `try_wait` must
+  return True before any arrive-on of the next phase. That is property P8 (§3).
 - **A negative `tx`.** In general a complete-tx may precede its expect-tx within a phase, and the phase cannot
   complete while `pend > 0`, so the model allows it. In these protocols it does not happen: `arrive.expect_tx` precedes
   the copies in program order. The range is the ISA's. A stage is at most 2 × 64 × 256 × 2 = 65,536
   bytes (`boxOk`), within 2^20 − 1.
 - **Inval.** The model requires, at `Inval(b)`: no thread waiting on `b`, no operation in flight that will arrive on
-  or complete-tx on `b`, `pend = count`, and `tx = 0`. The ISA says operations other than `init` on an invalidated
-  barrier are undefined, and that its memory must be invalidated before reuse. Whether invalidation with pending
-  arrivals or transactions is defined is **unknown**, so the model is conservative. Initializing again after `inval`
-  (A8) is outside one model instance: a new `withRing` is a new instance.
-- **Memory order.** `arrive` has release semantics and `try_wait` acquire semantics, at CTA scope, by default (the
-  instructions' `.sem` defaults). The protocols use them only for the generic-proxy side of the handoffs (§1.6).
+  or complete-tx on `b`, `pend = count`, and `tx = 0`. PTX is silent on arrivals or transactions pending at `inval`,
+  but any `mbarrier` operation other than `init` on a location that holds no valid barrier is undefined
+  (§9.7.15.16.13), so a complete-tx or a commit's arrival that lands after `inval` is undefined. The model stays
+  conservative. `init` of a location holding a live barrier is undefined (§9.7.15.16.12); `init` again after `inval`
+  and a `bar.cta.sync` is the ISA's own example (§9.7.15.16.13, Example 2), which confirms A8. That is outside one
+  model instance: a new `withRing` is a new instance.
+- **Memory order.** `arrive` has release semantics and `try_wait` acquire semantics, at CTA scope, by default
+  (§9.7.15.16.16, §9.7.15.16.19: the `.sem` defaults). The protocols use them only for the generic-proxy side of the
+  handoffs (§1.6).
 - **Init visibility (A7).** `fence.mbarrier_init.release.cluster` then `__syncthreads` makes initialized barriers
-  visible to every thread and to the asynchronous units. The model starts each protocol after that point: Init is not
-  interleaved with any other step. `withRing`, `withAccHandoff` and `withAccRing` emit exactly this prefix.
+  visible to every thread and to the asynchronous units. TMA and `tcgen05.commit` access their barrier through the
+  generic proxy (§9.7.10.28.5.3, §9.7.18.12.1), so no proxy fence is needed for them. The model starts each protocol
+  after that point: the setup is not interleaved with any other step. `withRing`, `withAccHandoff` and `withAccRing`
+  emit exactly this prefix, the setup's arrives before the fence. `fence.mbarrier_init` covers only the prior
+  `init`s, and the setup's arrive has the default `.release.cta`; within one CTA the `__syncthreads` orders it. Once a
+  ring spans a cluster (2-CTA), the setup's arrive needs `.release.cluster`, or a cluster fence, before the cluster
+  barrier.
 
 ### 1.3 TMA bulk tensor copy
 
@@ -117,17 +136,18 @@ one thread (`tmaLoad2d`):
 
 | Rule | Effect | Source |
 |---|---|---|
-| Issue | adds a copy `(dst, bytes, b)` to the TMA unit's set; from now on `dst` is being written (any part, at any time) | `cp.async.bulk.tensor`: asynchronous, completion mechanism `.mbarrier::complete_tx::bytes` |
-| Land | removes the copy; its writes are done; CompleteTx(`b`, `bytes`) | ibid.: on completion a complete-tx with the byte count is performed on the barrier |
+| Issue | adds a copy `(dst, bytes, b)` to the TMA unit's set; from now on `dst` is being written (any part, at any time) | PTX §9.7.10.28.5.3 (`cp.async.bulk.tensor`): asynchronous, completion mechanism `.mbarrier::complete_tx::bytes` |
+| Land | removes the copy; its writes are done; CompleteTx(`b`, `bytes`) | ibid.: upon the copy's completion, one complete-tx whose count is the bytes copied is performed on the barrier; §9.7.15.16.6 |
 
 `bytes` is the whole box: elements outside the tensor are zero-filled and counted (A9, `cuTensorMapEncodeTiled`). The
 model does not look at the global source, which the copies only read, or at the tensor map. A shared::cta address is a
 valid shared::cluster address of the executing CTA, which is what `tmaLoad2d` passes. Both copies of a fill complete
 on the stage's full barrier, and the fill's `ArriveTx` expects `stageBytes(cfg) = boxBytes(a) + boxBytes(b)`. **The
 model assumes that equality**: with an expectation a proper sub-sum of the copies' bytes could reach, a phase would
-complete with a copy still writing (§3.2). Whether a copy may perform its complete-tx in several parts, as its bytes
-land, is **unknown**. With the equality above it does not matter, since `tx` reaches 0 only when every byte of every
-copy is counted. Without the equality, the early-completion hazard would exist at that finer grain.
+complete with a copy still writing (§3.2). A copy performs its complete-tx once, at its completion, with its whole
+byte count (§9.7.10.28.5.3; §9.7.15.16.6: "upon completion of each of the asynchronous operations"), and that
+complete-tx has release semantics at cluster scope. So a phase completes only when every copy it expects has completed,
+given the equality.
 
 ### 1.4 Tensor-core operations and `tcgen05.commit`
 
@@ -135,27 +155,29 @@ Each thread `T` that issues tensor-core work has a queue `Q(T)` in issue order:
 
 | Rule | Instruction | Effect | Source |
 |---|---|---|---|
-| MmaIssue | `tcgen05.mma.cta_group::1.kind::f16 [d], descA, descB, idesc, p` | appends `Mma(reads, writes)`: the shared-memory stage behind the descriptors, the tensor-memory columns at `d` | `tcgen05.mma`: asynchronous |
+| MmaIssue | `tcgen05.mma.cta_group::1.kind::f16 [d], descA, descB, idesc, p` | appends `Mma(reads, writes)`: the shared-memory stage behind the descriptors, the tensor-memory columns at `d` | PTX §9.7.18.10.10.1; §9.7.18.6.1: asynchronous |
 | MmaDone | (asynchronous) | removes any `Mma` of `Q(T)`: its reads and writes are done | ibid. |
-| CommitIssue | `tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [b]` | appends `Commit(b)` | `tcgen05.commit`: the barrier tracks the completion of all prior asynchronous `tcgen05` operations of the executing thread |
-| CommitFire | (asynchronous) | enabled for a `Commit(b)` with no `Mma` before it in `Q(T)`; removes it; Arrive(`b`) | ibid., `.mbarrier::arrive::one`: one arrive-on when the tracked operations complete |
+| CommitIssue | `tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [b]` | appends `Commit(b)` | §9.7.18.12.1: the barrier tracks the completion of all prior asynchronous `tcgen05` operations of the executing thread whose completion is observed through an mbarrier, `tcgen05.mma`, `.cp` and `.shift` (§9.7.18.6.2.1.1), not `tcgen05.ld`/`.st` |
+| CommitFire | (asynchronous) | enabled for a `Commit(b)` with no `Mma` before it in `Q(T)`; removes it; Arrive(`b`) | ibid., `.mbarrier::arrive::one`: one arrive-on, of count 1, at cluster scope, upon the completion of the tracked operations |
 
 - **Grouping.** An MMA step issues K/16 = 4 `tcgen05.mma` with no barrier operation between them, and its commit
   covers all of them. The model folds them into one `Mma` whose interval is the union of theirs. That only widens
   intervals, so it is sound for race detection.
 - **Completion order.** The model lets MMAs complete in any order, and commits fire in any order their guards allow.
-  The ISA says some `tcgen05` instruction pairs of one thread are implicitly pipelined, including `tcgen05.commit`
-  after prior `mma` (the reviewer found this through summaries of the ISA text, not the text itself). Whether that
-  makes completions, and commits' arrivals, observable in issue order is **unknown** to this design. The model does not
-  rely on it, which costs states (§4.1) but no soundness.
-- **The implicit fence.** `tcgen05.commit` implies `tcgen05.fence::before_thread_sync` (as this design reads the ISA; the
-  review could not confirm it from the text), which is
-  what makes its arrival order the MMAs' reads before the waiting thread's later operations (A12, A13).
+  That is required, not a simplification: asynchronous `tcgen05` operations may execute and complete in an order other
+  than their issue order (§9.7.18.6.2). The pipelined pairs of §9.7.18.6.2 order only accesses to operands in tensor
+  memory, and §9.7.18.6.5 excludes the MMAs' shared-memory accesses from the pipelining rules. The implicitly
+  pipelined pair `mma → commit` (§9.7.18.6.2.1.1) is exactly CommitFire's guard, and no pair orders two commits. So
+  neither completions nor commits' arrivals are observable in issue order, and the model may not assume they are
+  (§4.1 measured what that would have saved).
+- **The implicit fence.** `tcgen05.commit` implicitly performs `tcgen05.fence::before_thread_sync` (§9.7.18.6.4.2,
+  Example 2), which is what makes its arrival order the MMAs' accesses before the waiting thread's later operations
+  (A12, A13).
 
 ### 1.5 Tensor-memory loads
 
 `tcgen05.ld.sync.aligned.32x32b.x8` issued by a warp starts a read of its lane quadrant's columns, and the thread's
-`tcgen05.wait::ld` ends every read it started (A14; `tcgen05.ld`, `tcgen05.wait`). `storeRows` pairs each load with
+`tcgen05.wait::ld` ends every read it started (A14; PTX §9.7.18.8.3, §9.7.18.8.5). `storeRows` pairs each load with
 its wait, so a thread's reads of a buffer form one interval, from the first `ld` of the tile to the last `wait::ld`.
 The model's epilogue thread is `await → read → release`, with `read` that interval.
 
@@ -166,13 +188,13 @@ can depend on:
 
 | # | Fact | From | Used by |
 |---|---|---|---|
-| O1 | A TMA copy's writes are done before its complete-tx. A thread whose wait observes the phase that complete-tx helped complete sees the writes, and so do the tensor-core operations it issues afterwards. | A6, A9 | ring: `await` → MMA |
-| O2 | An MMA's reads and writes are done before the arrival of a later commit of its thread. After a wait observing that phase, later TMA writes to its sources are ordered after its reads. | A12 | ring: `releaseByMma` → `acquire` → `fill`; the drains |
-| O3 | After O2's wait, `tcgen05.fence::after_thread_sync` orders the waiter's later tensor-core operations and loads after the MMAs' writes. | A12, A13 | `recvAcc`, `awaitAcc` → `tcgen05.ld` |
-| O4 | A thread's `wait::ld` ends its loads. `tcgen05.fence::before_thread_sync` then `mbarrier.arrive`, observed by a wait followed by `tcgen05.fence::after_thread_sync`, orders the loads before the waiter's later MMAs. | A13, A14 | `releaseAcc` → `acquireAcc` → MMA |
+| O1 | A TMA copy's writes are done before its complete-tx, which has release semantics at cluster scope (PTX §9.7.10.28.5.3). A thread whose wait (acquire by default) observes the phase that complete-tx helped complete sees the writes (§9.7.10.28.1.2). The tensor-core operations it issues afterwards are ordered after the wait by a `tcgen05.fence::after_thread_sync` between them (§9.7.18.6.3), which the ISA states is needed before an asynchronous `tcgen05` operation after such a wait (§9.7.18.6.4.2), and which `await` emits. | A6, A9, A13 | ring: `await` → MMA |
+| O2 | An MMA's reads and writes are done before the arrival of a later commit of its thread. After a wait observing that phase, later TMA writes to its sources are ordered after its reads, with no fence (derived below). | A12 | ring: `releaseByMma` → `acquire` → `fill`; the drains |
+| O3 | After O2's wait, `tcgen05.fence::after_thread_sync` orders the waiter's later tensor-core operations and loads after the MMAs' writes (§9.7.18.6.3; §9.7.18.6.4.4, Example 2). | A12, A13 | `recvAcc`, `awaitAcc` → `tcgen05.ld` |
+| O4 | A thread's `wait::ld` ends its loads. `tcgen05.fence::before_thread_sync` then `mbarrier.arrive`, observed by a wait followed by `tcgen05.fence::after_thread_sync`, orders the loads before the waiter's later MMAs (§9.7.18.6.4.4, Example 1). | A13, A14 | `releaseAcc` → `acquireAcc` → MMA |
 | O5 | A thread barrier (`__syncthreads`, `bar.sync`) orders the memory accesses of the threads before it before those after it. | A2, A3 | tile typestate; init and inval; the roles' join |
-| O6 | Initialized barriers are visible to every thread and unit after `fence.mbarrier_init` and a CTA barrier. | A7 | every protocol's start |
-| O7 | A generic-proxy write to shared memory that an async-proxy access (TMA, MMA) will read, or a generic read of what an async-proxy access wrote, must be separated from it by `fence.proxy.async`, whatever barrier chain orders them. | PTX memory model, proxies; `fence.proxy.async` | none at 0767971; the TMA-store epilogue of `lemur_gpu` (§6) |
+| O6 | Initialized barriers are visible to every thread and unit after `fence.mbarrier_init` and a CTA barrier (§9.7.15.4: the fence applies to the thread's prior `mbarrier.init`s). | A7 | every protocol's start |
+| O7 | A generic-proxy write to shared memory that an async-proxy access (a TMA store, an MMA) will read must be followed, in each writing thread, by `fence.proxy.async.shared::cta`, before the synchronization that orders it before the async operation's issue (§9.7.10.28.2; §9.7.18.6.5; CUDA Programming Guide §4.12.2.1). A generic read of what a TMA load wrote needs no fence once the load's completion is observed: the completion of a `cp.async.bulk` operation carries an implicit generic-async proxy fence (§9.7.10.28.2). A generic write after an async-proxy read, as when a staging buffer is written again after a TMA store read it, is ordered by the issuing thread's `cp.async.bulk.wait_group.read`, which waits until the group's operations have finished reading their sources (§9.7.10.28.6.2), then a warp barrier; that rests on A20. | A20, A21, A22 | none in the protocols of §2; the TMA-store epilogue (`fenceStage`, §6) |
 
 With these, a race in the memory model's sense needs two conflicting accesses that no chain of O1–O6 orders. In the
 model every such chain is realised the same way: the first access's interval ends, an arrival or complete-tx follows,
@@ -183,17 +205,36 @@ it as part of each role's program (§2.6), and the link checker of §5.3 can con
 
 O7 is why interval disjointness is not enough by itself. A role that wrote a stage with `st.shared` and handed it to
 the tensor cores through the barrier chain would satisfy P1–P5 and still race. The model therefore tags accesses with
-their proxy (§1.1), and a hand-off from one proxy to the other without O7's fence is a violation. At 0767971 every
-access to a stage or to tensor memory is async-proxy or `tcgen05.ld`, and the handoffs are async to async, so O7 is
-vacuous there. It is not vacuous on `lemur_gpu`.
+their proxy (§1.1), and a hand-off from one proxy to the other without O7's fence is a violation. Every access to a
+stage or to tensor memory in §2's protocols is async-proxy or `tcgen05.ld`, and their handoffs are async to async, so
+O7 is vacuous there. It is not vacuous for the TMA-store epilogue (§6), whose generic writes of a staging buffer
+`fenceStage` fences, and nothing writes with generic stores what an MMA read: the stages are written only by TMA
+loads, and dynamic shared memory is never reused for another purpose within a kernel (bump allocation).
 
-Two orderings are taken on trust with less support than the others. First, `await` is a bare wait, followed by MMAs
-with no `tcgen05.fence::after_thread_sync` (O1). Second, symmetrically, the producer's wait on `empty[s]` observes a
-commit and then issues TMA writes into the stage the MMAs read, with no fence either (O2). CUTLASS's TMA-to-UMMA
-pipeline does the same, and the B200 runs pass. But
-whether the ISA's tcgen05 memory-consistency rules order an MMA's shared-memory reads after a preceding mbarrier wait
-without that fence is **unknown** from the text, and likewise whether a TMA write issued after a wait that observed a
-commit is ordered after the committed MMAs' reads. This is open question 1 (§8).
+**O1 needs the fence.** `tcgen05.fence::after_thread_sync` is what orders an asynchronous `tcgen05` operation after
+a prior mbarrier wait (§9.7.18.6.3). The standard memory-model mechanisms also apply to `tcgen05` instructions
+(ibid.), but they say nothing of an asynchronous operation issued after a wait, and the ISA states that after such a
+wait "`tcgen05.fence::after_thread_sync` is needed" (§9.7.18.6.4.2, Example 2). Every pattern of the ISA that goes
+from a wait to a
+`tcgen05.mma` has it (§9.7.18.6.4.3; §9.7.18.6.4.4, Example 1). So `await` emits `wait; tcgen05.fence::after_thread_sync`,
+as DeepGEMM does. CUTLASS's TMA-to-UMMA pipeline omits it, and also the fences the ISA requires for O3 and O4. The
+visibility half of O1 does not come from `try_wait`'s own rule for `cp.async.bulk` (§9.7.15.16.19), which covers the
+copies a thread requested before a release arrive: the ring issues its copies after `arrive.expect_tx`. It comes from
+the copy's complete-tx, which has release semantics at cluster scope (§9.7.10.28.5.3), and from the mbarrier-based
+completion mechanism, under which the threads participating in the barrier may access the results once the phase is
+complete (§9.7.10.28.1.2).
+
+**O2 needs no fence**, by a chain the ISA states link by link:
+- the plain commit arrives upon the overall completion of the MMAs it tracks, reads included (§9.7.18.12.1; contrast
+  `.sync_restrict::shared::read::mma::a`, which arrives once the A operands are read and "does not signal the overall
+  completion");
+- the commit implicitly performs `tcgen05.fence::before_thread_sync` (§9.7.18.6.4.2, Example 2), and the producer's
+  acquiring wait observes its arrival;
+- a `cp.async.bulk` operation is ordered after the issuing thread's prior instructions (§8.9.1.1), here the wait;
+- the MMA's read and the copy's write are both async-proxy accesses by one CTA, so base causality order between them is
+  proxy-preserved without an alias fence (§8.9.5).
+
+A generic-proxy writer in the producer's place would need `fence.proxy.async.shared::cta` after the wait (O7).
 
 ### 1.7 Left out of the models
 
@@ -240,10 +281,11 @@ For `S` stages (`RingCfg.stages`), with barriers `full[s]` and `empty[s]` (count
 producer `P` (an elected lane of the load warp) and a consumer `C` (the elected lane of the MMA warp, the issuer).
 
 State:
-- `P`: `pc ∈ {acquire, fill, drain(i) (0 ≤ i < S), done}`, `ps < S`, `pp ∈ {0, 1}`, initially `(acquire, 0, 1)`
+- `P`: `pc ∈ {acquire, fill, drain(i) (0 ≤ i < S), done}`, `ps < S`, `pp ∈ {0, 1}`, initially `(acquire, 0, 0)`
   (`takeProducer`);
 - `C`: `pc ∈ {await, mma, commit, done}`, `cs < S`, `cp`, initially `(await, 0, 0)` (`takeConsumer`);
-- the `2S` barriers (§1.2), the TMA set (§1.3), `Q(C)` (§1.4);
+- the `2S` barriers (§1.2), initially as the setup leaves them: each `full[s]` in phase 0, each `empty[s]` with
+  phase 0 completed (`n = 1`); the TMA set (§1.3), `Q(C)` (§1.4);
 - ghosts (§3).
 
 Steps (each one rule of §1, or an atomic group that `Gpu.rac` emits as consecutive instructions of one thread):
@@ -282,7 +324,8 @@ behave as one for every property. The model has one representative receiver.
 ### 2.4 The accumulator ring (persistent GEMM)
 
 `bufs` buffers of `n` columns, barriers `accFull[b]` (count 1) and `accEmpty[b]` (count 128):
-- the issuer as producer: `aps`, `app`, initially 0 and 1 (`takeAccProducer`);
+- the issuer as producer: `aps`, `app`, initially 0 and 0 (`takeAccProducer`), each `accEmpty[b]` with phase 0
+  completed by the setup's 128 arrivals (§1.2), each `accFull[b]` in phase 0;
 - the 128 epilogue threads as consumers, each with its own `acs`, `acp`, initially 0 and 0 (`takeAccConsumer`
   declares them in each thread; they stay equal only if every thread runs the same steps).
 
@@ -325,16 +368,16 @@ What a reviewer compares at layer 2, each row one sealed operation of `Gpu.rac` 
 
 | Operation | Emits | Model |
 |---|---|---|
-| `withRing` | thread 0: `mbarrier.init` ×2S (count 1), `fence.mbarrier_init`; `__syncthreads`; after the body, thread 0: `mbarrier.inval` ×2S. `withRing` emits no barrier before the invals: the join is the `__syncthreads` of the CTA-level `split` inside the body, which the typing forces (`ProducerDone` and `ConsumerDone` exist only inside elected lanes, which the body reaches only through splits) | Init (outside the interleaving), Join, Inval |
-| `takeProducer` / `takeConsumer` | registers 0/1 and 0/0 in the elected block | initial `(0, 1)` / `(0, 0)` |
+| `withRing` | thread 0: `mbarrier.init` ×2S (count 1), `mbarrier.arrive` (count 1) on each `empty + 8·s`, `fence.mbarrier_init`; `__syncthreads`; after the body, thread 0: `mbarrier.inval` ×2S. `withRing` emits no barrier before the invals: the join is the `__syncthreads` of the CTA-level `split` inside the body, which the typing forces (`ProducerDone` and `ConsumerDone` exist only inside elected lanes, which the body reaches only through splits) | Init and the setup (outside the interleaving), Join, Inval |
+| `takeProducer` / `takeConsumer` | registers 0/0 and 0/0 in the elected block | initial `(0, 0)` / `(0, 0)` |
 | `acquire` | wait `empty + 8·ps`, parity `pp` | P: acquire |
 | `fill` | `arrive.expect_tx(full + 8·ps, stageBytes)`, TMA A to `stage(ps)`, TMA B to `stage(ps) + boxBytes(a)`, both on `full + 8·ps`; advance(ps, pp, S) | P: fill |
 | `finishProducer` | S × (wait `empty + 8·ps` at `pp`; advance) | P: drain |
-| `await` | wait `full + 8·cs`, parity `cp` (no fence) | C: await |
+| `await` | wait `full + 8·cs`, parity `cp`; `tcgen05.fence::after_thread_sync` | C: await |
 | `mmaFirst…`, `mmaNext…` | K/16 × `tcgen05.mma` reading `stage(cs)` | C: mma |
 | `releaseByMma` | `tcgen05.commit(empty + 8·cs)`; advance(cs, cp, S) | C: commit |
 | `withAccHandoff`, `sendAcc`, `recvAcc` | init count 1; commit; wait parity 0 + fence after; inval | §2.3 |
-| `withAccRing` | init `accFull` count 1, `accEmpty` count 128; inval | §2.4 |
+| `withAccRing` | init `accFull` count 1, `accEmpty` count 128, then one `mbarrier.arrive` of count 128 on each `accEmpty`; inval | §2.4 |
 | `acquireAcc`, `commitAcc`, `finishAccProducer` | wait + fence after; commit + advance; `bufs` × (wait; advance) | §2.4 issuer |
 | `awaitAcc`, `storeTile`, `releaseAcc` | wait + fence after; fence after, (`__syncwarp`, `ld`, `wait::ld`, stores) per 8 columns; fence before, arrive, advance | §2.4 thread |
 | `storeMine`, `sync1`/`sync2`, `reads`/`sread`, `release` | store; `__syncthreads`; loads; nothing | §2.5 |
@@ -345,12 +388,13 @@ Stated on the states and steps of §2. They use ghost counters, which are part o
 no hardware counterpart:
 - per stage `s`: `fills(s)`, fills started (ArriveTx); `landed(s)`, fills whose copies all landed; `reads(s)`, MMAs
   issued on `s`; `released(s)`, commits to `empty[s]` fired;
-- per wait: the completion it **means**. The consumer's j-th wait on `full[s]` means completion j + 1 (the j-th fill).
-  The producer's j-th wait on `empty[s]` (acquire or drain) means completion j, where completion 0 is the virtual one
-  of the fresh barrier.
+- per wait: the completion it **means**, counting waits and fills from 0. The consumer's j-th wait on `full[s]`
+  means completion j + 1 (the j-th fill). The producer's j-th wait on `empty[s]` (acquire or drain) also means
+  completion j + 1: completion 1 is the setup's arrive (§1.2), and completion j + 1, for j ≥ 1, the release of the
+  (j − 1)-th fill. So both sides start at phase 0, and `n(empty[s]) = 1 + released(s)`.
 
 In the finite models these counters appear only as bounded differences (`fills(s) − reads(s) ∈ {0, 1}`,
-`n(b) − meant ∈ {0, 1}`). A step that would leave the bound is a violation, so the finite model is exact for them.
+`meant − n(b) ∈ {0, 1}`). A step that would leave the bound is a violation, so the finite model is exact for them.
 
 ### 3.1 The stage ring
 
@@ -371,7 +415,16 @@ In the finite models these counters appear only as bounded differences (`fills(s
   may be reused by what follows `withRing`. That no tensor-core operation is pending at `withTmem`'s `dealloc` (A10)
   is P4 of the combined system: the issuer's `Q(C)` also holds the handoff's commit (TinyGEMM) or the accumulator
   ring's (persistent), and a protocol's own P4 speaks only of its own entries.
-- **P5, no over-arrival.** No Arrive or CommitFire on a barrier with `pend = 0`.
+- **P5, no over-arrival.** No Arrive of `c` on a barrier with `pend < c`, and no CommitFire on one with `pend = 0`.
+- **P8, every phase observed before the next is arrived on.** No arrive-on (Arrive, ArriveTx, CommitFire) on a
+  barrier `b` with `n(b) ≥ 1`, unless some Wait on `b` has succeeded since its phase `n(b) − 1` completed (PTX
+  §9.7.15.16.5.1). The protocols meet it because every arrival of a barrier's next phase is causally after a successful
+  wait on its last one: the producer's ArriveTx on `full[s]` follows its wait on `empty[s]`, which observed the
+  consumer's commit, issued after the consumer's wait on `full[s]` succeeded; the commit to `empty[s]` follows the
+  consumer's wait on `full[s]`, which observed a fill issued after the producer's wait on `empty[s]` succeeded; and
+  the first arrival after the setup's, a commit to `empty[s]`, follows the producer's first wait on `empty[s]`. The
+  accumulator ring is the same with the issuer and the 128 threads for the two sides; the handoff completes one
+  phase.
 
 ### 3.2 Why these, and not less
 
@@ -386,11 +439,21 @@ least one of these; the table names the first violation the explorer reports:
 | Mutant (one change to the model) | Caught by |
 |---|---|
 | the commit may fire before the MMA it covers completes | P1 (a fill starts while the read is in flight) at S = 1 and 3; P4 first at S = 2 and 4 |
-| producer starts at phase 0 | P3 at the first acquire (and it would deadlock) |
+| producer starts at phase 1 | P3 at the first acquire (and it would deadlock) |
 | consumer starts at phase 1 | P3 at the first await |
 | the drain waits S − 1 stages | P4 |
 | no drain | P4 |
 | `acquireAcc` does not wait | P6 (an MMA into a buffer not yet read) |
+
+The explorers (§4.1) predate the setup of §1.2 and did not check P8. They ran the model in which every barrier starts
+fresh and each producer at phase 1, relying on the fresh barrier's parity-1 wait. That model differs from this one
+only by flipping `ph` of the barriers the setup completes and the producers' phase registers, and by shifting both
+the ghost `n(b)` of those barriers and the completion each producer wait means by one. That is a relabelling under
+which every Wait's outcome, and so every behaviour, is the same, and P3 survives it because its two sides shift
+together. So the counts of §4.1 carry over to this model without P8's ghost bit (§4.1), which adds states, and the
+results above carry over with "phase 1" for the producer's mutant here standing for that model's "phase 0", provided
+the explorer checked P3's bound in the form §3 now states (`meant − n(b) ∈ {0, 1}`; earlier versions of this
+document had the sign reversed). V1 must run the setup and P8 as stated.
 
 What the properties do not see:
 - a ring whose registers name one stage and whose address expressions another, or whose stages overlap (§5);
@@ -450,7 +513,8 @@ Each state is expanded twice, once by the search and once by the checker, so thi
 with no fuel argument and no worklist invariant, where F11 says walks with state are the expensive proofs.
 
 **Violations are an error state.** A property violated by a step (P1, P2, P3, P5, an over-arrival, an Inval without
-quiescence) must not merely disable the step: in a safety check a disabled step is a deadlock, and the property would
+quiescence, P8, for which each barrier carries a ghost bit set by a successful Wait and cleared by Complete) must not
+merely disable the step: in a safety check a disabled step is a deadlock, and the property would
 hold vacuously. So every such rule has a second constructor, taken when its requirement fails, that leads to a
 distinguished error state; the properties of §3 are then the one statement "the error state is unreachable", which is
 what `certify` checks. §1.2's "requires" means this. The Python and Raccoon explorers already work this way.
@@ -556,10 +620,10 @@ render.
 
 The direct route states an invariant over unbounded ghost counters and proves it preserved by every step, for every
 S. The core of it:
-- the producer's registers are `ps = F mod S` and `pp = (1 + ⌊F/S⌋) mod 2` after F fills, and the consumer's are the
+- the producer's registers are `ps = F mod S` and `pp = ⌊F/S⌋ mod 2` after F fills, and the consumer's are the
   same in R reads;
 - per stage, `released(s) ≤ reads(s) ≤ landed(s) ≤ fills(s) ≤ released(s) + 1`;
-- `n(full[s]) = landed(s)` and `n(empty[s]) = released(s)`;
+- `n(full[s]) = landed(s)` and `n(empty[s]) = 1 + released(s)` (the setup's completion);
 - `Q(C)`'s entries are in stage order from the oldest unreleased stage;
 - each in-flight copy belongs to the fill `fills(s)`.
 
@@ -602,8 +666,7 @@ and P4 is a conjunction over stages. So they hold for every S if they hold for S
 drain at its first acquire.
 
 The claim rests on four lemmas, each generic in S and none about interleavings:
-- **R1, round-robin phases.** A side's registers name `s` for the j-th time with phase `j mod 2` (consumer) or `(j +
-  1) mod 2` (producer). Proof: induction on the advances, with the ghost pair `(round, stage)`; `advance` either
+- **R1, round-robin phases.** A side's registers name `s` for the j-th time (from 0) with phase `j mod 2`. Proof: induction on the advances, with the ghost pair `(round, stage)`; `advance` either
   increments `stage` or wraps it to 0 and increments `round`, and the phase is `round`'s parity. No `div` or `mod`.
 - **R2, non-interference.** A step whose side's registers name `s' ≠ s` touches no object of `s`. The one exception
   is a commit, which also waits for MMAs of other stages issued before it, and that only delays its CommitFire.
@@ -632,7 +695,9 @@ This is the weaker half of the route. The same projection onto one buffer reduce
 stage-ring steps by one MMA group per tile. This is a projection too: the issuer's stage-ring waits become stutters,
 and a tile's MMAs become one group whose interval covers theirs. It needs its own simulation lemma, of the size of R2.
 
-**128 threads to one representative (R4).** The intended argument:
+**128 threads to one representative (R4).** Phase 0 of `accEmpty[b]` is completed by the setup's one arrive of
+count 128 (§1.2), outside the interleaving; in the one-thread projection the setup arrives once, with `c = 1`. The
+argument is about the phases from 1 on:
 - a phase of `accEmpty[b]` needs 128 arrivals;
 - no thread arrives twice on `accEmpty[b]` within one phase (R4);
 - so the 128 arrivals come one from each thread, including a chosen thread `t`;
@@ -766,12 +831,13 @@ would find each protocol's instructions by their templates (`Gpu.mbarWait`, `mba
 and for each elected block (`if (flag)` after `elect.sync`) or warpgroup block, check that:
 - the barrier operations have the role's shape, matched on the AST's structure rather than on a flat trace. For the
   producer: the step body `B = wait(E+8·ps, pp) arrive_tx(F+8·ps, bytes) tma(·, F+8·ps) tma(·, F+8·ps) advance(ps, pp,
-  S)`; the role `decl(ps, 0) decl(pp, 1) L D`, where `L` is `loopPeeled`'s `{ B } for (i = 1; …) { B }`, possibly
+  S)`; the role `decl(ps, 0) decl(pp, 0) L D`, where `L` is `loopPeeled`'s `{ B } for (i = 1; …) { B }`, possibly
   inside a tile `for` that may run zero times, and `D` is S copies of `wait(E+8·ps, pp) advance(ps, pp, S)`;
 - the operands are the ring's: the base offsets `E` and `F` are the ring's barrier bases, the registers are the side's,
   `S` in the advance is the ring's stage count, and `bytes` is the sum of the boxes;
-- every `wait` that precedes a `tcgen05.ld` or MMA on the accumulator is followed by `tcgen05.fence::after_thread_sync`;
-- the inits precede a `fence.mbarrier_init` and a `__syncthreads`, and the invals follow the last role's join.
+- every `wait` that precedes a `tcgen05.ld` or a `tcgen05.mma` is followed by `tcgen05.fence::after_thread_sync`;
+- the inits, and the setup's arrives on exactly the barriers a producer waits on first, precede a
+  `fence.mbarrier_init` and a `__syncthreads`, and the invals follow the last role's join.
 
 What this shows: the barrier operations appear in the modelled order per role, with the modelled operands and fences
 (I8 in part). What it does not show: which threads run the block (I7), that the roles' trip counts agree (not needed
@@ -859,15 +925,20 @@ independent of V2–V4 and can go at any point after V1.
 
 ## 8. Open questions
 
-1. **O1's fence.** Does the ISA order a `tcgen05.mma`'s shared-memory reads after a preceding `mbarrier.try_wait` that
-   observed a TMA's complete-tx, without `tcgen05.fence::after_thread_sync`? `await` emits none, as CUTLASS does. If
-   not, `await` needs the fence, and the model's O1 row changes. The same question for O2: is a TMA write issued after
-   a wait that observed a commit ordered after the committed MMAs' shared-memory reads?
-2. **The fresh barrier's parity-1 wait** (A6): observed and relied on, not stated in the ISA text as far as this
-   design found.
-3. **Invalidation with pending state**, and over-arrival: undefined or unspecified? The model forbids both.
-4. **Completion order of one thread's `tcgen05` operations and commits.** If the ISA guarantees issue order, the model
-   may assume it (§4.1: 8 to 20% fewer states), but nothing needs it.
+Questions 1 to 4 are answered from the PTX ISA 9.4 text; they stay listed so that references to them keep their
+numbers.
+
+1. **O1's fence** (answered, §1.6). Without `tcgen05.fence::after_thread_sync` the ISA does not order a
+   `tcgen05.mma` after a preceding wait, so `await` now emits the fence. O2 needs none: a TMA write issued after a wait
+   that observed a commit is ordered after the committed MMAs' reads by the chain of §1.6.
+2. **The fresh barrier's parity-1 wait** (answered, §1.2). Outside the ISA's defined set; no protocol relies on it
+   since the setup completes phase 0 of every barrier a producer waits on first.
+3. **Invalidation with pending state, and over-arrival** (answered, §1.2). PTX is silent on both; an operation landing
+   on an invalidated barrier is undefined, and the CUDA Programming Guide forbids an arrival on a zero counter. The
+   model forbids both. PTX's rule that each phase be observed before the next is arrived on is P8.
+4. **Completion order of one thread's `tcgen05` operations and commits** (answered, §1.4). The ISA does not guarantee
+   issue order: they may complete out of order, and no pipelined pair orders shared-memory accesses or two commits. The
+   model keeps any order.
 5. **Where the per-configuration certificates live**, if any are kept: a separate module per S that `check.sh` loads,
    or none once V3 lands.
 6. **P7.** Should deadlock freedom under the launch contract be claimed, now that the models could check it per
