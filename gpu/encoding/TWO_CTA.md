@@ -168,7 +168,7 @@ a hardware item, and `.cta` is a later, separately argued change.
 
 ## 4. Why it is safe
 
-The pieces of `docs/SEPARATION_PILOT.md` now span two CTAs. The rules carry over with three additions.
+The pieces of `gpu/SEPARATION_PILOT.md` now span two CTAs. The rules carry over with three additions.
 - **A pair stage is one piece of two halves.**
   - Each CTA's producer holds its own half from `acquire` to `fill`.
   - The leader's consumer holds both halves from `await` to `releaseByMma`, through the leader's `full[s]` (both

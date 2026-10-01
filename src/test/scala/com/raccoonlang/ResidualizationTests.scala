@@ -414,7 +414,7 @@ class ResidualizationTests extends munit.FunSuite {
     }
   }
 
-  // A wildcard's residual is its expansion (docs/WILDCARD_CASE.md): a case per reachable constructor no written case
+  // A wildcard's residual is its expansion (docs/implemented/WILDCARD_CASE.md): a case per reachable constructor no written case
   // names, each binding its fields anonymously, none for a constructor apart from the scrutinee's type.
   test("a wildcard residualizes as the cases it stands for") {
     val p =

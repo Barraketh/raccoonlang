@@ -1,7 +1,7 @@
 package com.raccoonlang
 
 /**
- * A wildcard case (docs/WILDCARD_CASE.md): `| _ => e`, last in its match, stands for one case per reachable constructor
+ * A wildcard case (docs/implemented/WILDCARD_CASE.md): `| _ => e`, last in its match, stands for one case per reachable constructor
  * no other case names, each binding its fields anonymously and checking `e` under its own refinement. The residual is
  * that expansion.
  */

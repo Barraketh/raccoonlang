@@ -200,7 +200,7 @@ none of them (`ATTENTION.md` §4.1), and closes its protocols on `…Done` token
   chunks written (`PFree(…, next)`), and the publishing operation requires the full count (`publishP` needs 16).
 - **M15, sides end in their finishers** (the readability review). A protocol's sides (`withRing`'s, `withAccRing`'s,
   `withExchange`'s and `withStaging`'s endpoints and every typestate token derived from them, `OFinal` included) are
-  linear and belong to the opener's scope, which the callback's result cannot name (`docs/SCOPE_CONTAINMENT.md`), so
+  linear and belong to the opener's scope, which the callback's result cannot name (`docs/implemented/SCOPE_CONTAINMENT.md`), so
   the callback uses every side up before the opener closes. Every operation that takes a side gives one back, except
   its finisher: the waiting finishers `finishProducer`, `finishAccProducer` and `finishStores` (drains and waits), and
   `finishExWriter` (a wait, giving `OFinal`, which only `closeExWriter` ends); and the code-free `finishConsumer`,
@@ -446,7 +446,7 @@ two things.
   `withTmem`'s deallocation names the allocation's address.
 - No protocol closes on a `…Done` token (M15). `withRing`, `withAccRing`, `withExchange` and `withStaging` take a callback
   that returns the emitter and its result only. Their sides are linear and belong to the opener's scope, which the
-  result's type cannot name, so the callback uses every side up before the close (`docs/SCOPE_CONTAINMENT.md`), and
+  result's type cannot name, so the callback uses every side up before the close (`docs/implemented/SCOPE_CONTAINMENT.md`), and
   the one operation per side that uses it up without handing it on is its finisher. `finishProducer`,
   `finishAccProducer` and `finishStores` emit §6.5, §6.8 and §6.7's waits and return the emitter; `finishExWriter`
   waits and gives `OFinal`, which `closeExWriter` ends; `finishConsumer`, `finishAccConsumer`, `finishExReader` and
@@ -730,7 +730,7 @@ own typing. We approach it in three layers, each useful alone.
 each against a small syntactic specification (for example, the declared names at each program point). `render`
 requires a proof that the checkers find nothing (§9.5). Where the kernel is concrete, which is always at generation, the
 proof is `Eq.refl` evaluated by conversion. Alternatively, I1 becomes intrinsic: an AST indexed by the names in
-scope. Needs Raccoon's evaluation-discharged evidence and an evaluator that scales (`docs/PROOF_BY_EVALUATION.md`).
+scope. Needs Raccoon's evaluation-discharged evidence and an evaluator that scales (`docs/implemented/PROOF_BY_EVALUATION.md`).
 
 Status: the checkers are built (`gpu/Check.rac`), one for the generation errors and one each for I1–I6 as far as the
 AST shows them (§4), with unit tests (`gpu/checks/`). `Gpu.render` requires their certificate, `Check.WellFormed`,

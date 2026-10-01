@@ -1,7 +1,7 @@
 # Refinement certificates
 
-Status: **draft for review** (2026-09-30). Third of three specs, after `docs/PROP_SEPARATION.md` and
-`docs/NOMINAL_FAMILIES.md`, whose principles N1–N3 it uses.
+Status: **draft for review** (2026-09-30). Third of three specs, after `docs/proposals/PROP_SEPARATION.md` and
+`docs/proposals/NOMINAL_FAMILIES.md`, whose principles N1–N3 it uses.
 
 Dependent pattern matching draws two kinds of conclusion from unification:
 - **Pruning.** A constructor whose equations are *apart* is unreachable, so its case is omitted. One wrong omission

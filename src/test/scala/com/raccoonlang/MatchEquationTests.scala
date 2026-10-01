@@ -1,7 +1,7 @@
 package com.raccoonlang
 
 /**
- * A match that names its equation (docs/MATCH_EQUATION.md): `match h : e` binds `h : Eq(T, e, C(p̄, x̄))` in the case
+ * A match that names its equation (docs/implemented/MATCH_EQUATION.md): `match h : e` binds `h : Eq(T, e, C(p̄, x̄))` in the case
  * of each constructor `C` with fields `x̄`, and evaluation binds it to the canonical proof where a case is taken.
  */
 class MatchEquationTests extends munit.FunSuite with TestSupport {

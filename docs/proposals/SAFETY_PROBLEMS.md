@@ -15,7 +15,7 @@ Related problems that are written up elsewhere:
 - **Sorts.** A sort `Sort { level, kind, scope }` gives a type's universe level, its kind (`unr` or `lin`, where linear
   values are used exactly once) and its scope.
 - **Scopes.** `scope l => e` opens a fresh lifetime `l`. A value that belongs to `l` cannot be held, made or used once
-  `l` closes (`docs/SCOPE_CONTAINMENT.md`). A function belongs to every scope its code captures.
+  `l` closes (`docs/implemented/SCOPE_CONTAINMENT.md`). A function belongs to every scope its code captures.
 - **Sealed families.** A family declared `sealed` can be constructed and taken apart only in its own file. Other files
   get its values only from that file's functions.
 - **Forced implicits.** An implicit argument must be recoverable from the types of later explicit arguments.
@@ -30,7 +30,7 @@ Related problems that are written up elsewhere:
   where `g` is the group of threads running it. The printed CUDA is what runs on the GPU.
 - **Tokens.** Authority over on-chip resources is a sealed linear token: a ring stage that may be filled, an
   accumulator that may be read, a warpgroup's registers, the right to store rows of the output. Each token stands for a
-  piece of a resource (`docs/SEPARATION_PILOT.md`). Each operation consumes some pieces and produces others.
+  piece of a resource (`gpu/SEPARATION_PILOT.md`). Each operation consumes some pieces and produces others.
 - **Protocols.** Protocols between roles are typestate on tokens: a producer side and a consumer side, each moving
   through its states.
 - **Facts about run-time data.** A fact about run-time data is a sealed value minted where the fact was checked. For
@@ -52,7 +52,7 @@ Related problems that are written up elsewhere:
 **The situation.** Client code is checked by Raccoon's type system. The library's safety then follows from three facts,
 none of which Raccoon states:
 - **What tokens mean.** Each sealed linear token stands for a piece of a resource: shared memory, tensor memory,
-  registers, barrier phases, rows of the output (`docs/SEPARATION_PILOT.md` §1–§5).
+  registers, barrier phases, rows of the output (`gpu/SEPARATION_PILOT.md` §1–§5).
 - **What operations do.** Each operation of `Core.rac` turns the pieces it consumes into the pieces it produces, and
   the code it emits respects that: it touches only what its pieces cover, and it waits where it must.
 - **What the language guarantees.** A well-typed client uses each linear token exactly once, never after its scope

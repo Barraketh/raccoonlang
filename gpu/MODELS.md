@@ -512,7 +512,7 @@ checked per configuration only, and not proved.
   each successor's fields against the encoding's ranges before keying it (the experiment's base-16 key is injective
   only for S ≤ 8 and arrival counts below 16, so it would collide on `accEmpty`'s count of 128);
 - `[ok: Eq(Bool, certify(ring(6), search(ring(6))), Bool.true)]` then discharges by evaluation
-  (`docs/PROOF_BY_EVALUATION.md` §1).
+  (`docs/implemented/PROOF_BY_EVALUATION.md` §1).
 
 Each state is expanded twice, once by the search and once by the checker, so this doubles the work. That buys a proof
 with no fuel argument and no worklist invariant, where F11 says walks with state are the expensive proofs.

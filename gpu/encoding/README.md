@@ -23,7 +23,7 @@ phase) under the namespace `Core`. It imports `Cuda`, `Check` and `Text` from `g
 library.
 
 How the code is judged: once it works, by reviewing it for readability and incidental complexity. What its tokens mean,
-and why each operation is safe, is argued on paper in `docs/SEPARATION_PILOT.md`.
+and why each operation is safe, is argued on paper in `gpu/SEPARATION_PILOT.md`.
 
 ## Plan
 
@@ -109,7 +109,7 @@ staging buffers per warp, the accumulator released before the stores complete. B
 - the loader reads the table entry for block `j` and loads that page's rows.
 
 TMA clipping keeps reads inside the cache whatever the table holds. That the entry is a valid page of the sequence is a
-fact about the table, argued in `docs/SEPARATION_PILOT.md` §6.
+fact about the table, argued in `gpu/SEPARATION_PILOT.md` §6.
 
 **Paged decode (P2).** `P2.md`: an append kernel that writes each sequence's new K and V under a claim of its last
 page, checked by an atomic per page and head; a decode kernel that runs A2's roles over splits of each sequence's key

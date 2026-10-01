@@ -1,7 +1,7 @@
 package com.raccoonlang
 
 /**
- * Evidence arguments discharged by rule 1 (docs/PROOF_BY_EVALUATION.md §1.1–1.7): an evidence binder `[h: P]` in a
+ * Evidence arguments discharged by rule 1 (docs/implemented/PROOF_BY_EVALUATION.md §1.1–1.7): an evidence binder `[h: P]` in a
  * definition's, a lambda's or a function type's telescope, discharged at each application by evaluating `P` there and
  * applying a constructor whose fields its result type determines, or supplied in a bracket group `f(x)[p]`. Each rule
  * has an admitted program and the smallest mutation that reaches its diagnostic.

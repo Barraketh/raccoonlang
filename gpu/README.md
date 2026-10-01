@@ -65,7 +65,7 @@ each generated kernel against `stub/`.
 Index bounds are checked while generating, where every size is concrete: a read that is not provably in bounds is a
 generation error, recorded in the kernel as an `#error` line, so `render` refuses the kernel. Preconditions on the
 numbers a call is given (a positive tile or divisor, an aligned warpgroup) are evidence arguments instead
-(`docs/PROOF_BY_EVALUATION.md`): the checker discharges each by evaluation where the call stands, and refuses a false
+(`docs/implemented/PROOF_BY_EVALUATION.md`): the checker discharges each by evaluation where the call stands, and refuses a false
 one with `EvidenceNotDischarged`, so the program never generates.
 
 The Blackwell layer extends the same rules to asynchronous hardware (`DESIGN.md`): warp roles made by `split` and

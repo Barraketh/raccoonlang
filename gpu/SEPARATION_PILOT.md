@@ -1,7 +1,8 @@
 # Encoding the GPU library's resources in Raccoon: pilot
 
-Status: **draft, for discussion** (2026-10-01). Nothing here is implemented. It assumes `docs/SCOPE_CONTAINMENT.md`
-(landed) and `docs/NO_OPAQUE.md`.
+Status: **draft, for discussion** (2026-10-01). The meanings it gives are still on paper. Decisions 6 and 7 landed in
+`gpu/` (44143d9), and paged attention's append took a checked claim (`gpu/encoding/P2.md`) rather than §7's
+encodings. It assumes `docs/implemented/SCOPE_CONTAINMENT.md` and `docs/implemented/NO_OPAQUE.md`.
 
 ## 0. The aim
 

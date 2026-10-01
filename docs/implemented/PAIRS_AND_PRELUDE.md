@@ -1,8 +1,8 @@
 # Pairs, destructuring and the trusted prelude
 
-Status: **approved design, not yet implemented**. As each change lands,
-`docs/language.md` and `docs/kernel.md` state its rules, and this document stays
-as the design record.
+Status: **implemented** (2026-09-29). `docs/language.md` and `docs/kernel.md`
+state its rules, and this document stays as the design record; §8 records what
+implementation decided.
 
 This document specifies four changes, driven by the GPU library spike in
 `gpu/`, where most lines of a kernel thread a linear emitter and tokens through
@@ -72,7 +72,7 @@ today's: `Quot` and `Quot.sound` as axioms; `Quot.mk`, `Quot.lift` and
 `Quot.ind` as builtins; the native Nat operations; the `Nat` layout; no sealed
 family.
 
-**1.5 Documents.** `docs/LEMUR_ON_RACCOON.md` §3.4's last sentence and §7.1's
+**1.5 Documents.** `docs/implemented/LEMUR_ON_RACCOON.md` §3.4's last sentence and §7.1's
 and §7.3's prelude rules, `docs/kernel.md`'s Sealing section and its paragraph
 on axioms, and `docs/language.md`'s Sealed families and Bundled prelude
 sections restate the bans; each is rewritten to cite §1.2 instead.
@@ -307,7 +307,7 @@ those:
    `Pair` today are renamed: 19 declarations across 8 test files,
    `examples/universe_polymorphic_vec.rac`, the `struct` example in
    `docs/language.md`, and the lifetime-indexed example of
-   `docs/LEMUR_ON_RACCOON.md` §6.2 and §7.3.
+   `docs/implemented/LEMUR_ON_RACCOON.md` §6.2 and §7.3.
 2. **Levels.** `Pair` is level-polymorphic above `Prop`, as §2.1 declares, and
    holds types at any level. That declaration checks on today's kernel as a
    custom prelude addition, with linear and unrestricted instances.

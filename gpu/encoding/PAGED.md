@@ -29,7 +29,7 @@ The pieces:
   `H` is a generation-time constant of the kernel (the core divides only by constants), with one kernel per head
   count.
 
-P2, below, is decode with append. It is where the resource questions of `docs/SEPARATION_PILOT.md` §6–§7 arise.
+P2, below, is decode with append. It is where the resource questions of `gpu/SEPARATION_PILOT.md` §6–§7 arise.
 
 ## 2. What changes from A1
 
@@ -77,7 +77,7 @@ The paged loads add no hazard, whatever the table holds:
   and the computed row wraps modulo 2³² before the copy reads it as signed. So every load reads only the cache, or
   zeros.
 - **Protocol.** `fillPage` is `fill` with another address: the same arrive, the same two boxes into the same stage, so
-  the stage ring's argument (`docs/SEPARATION_PILOT.md` §4) is unchanged.
+  the stage ring's argument (`gpu/SEPARATION_PILOT.md` §4) is unchanged.
 - **The table read.** It is a guarded load of a read-only input, and the kernel writes neither the table nor the cache.
 
 What the table's contents decide is **correctness**, not safety. A wrong page gives wrong attention, never a race or an
@@ -93,7 +93,7 @@ The first kernel with a resource question.
   `position = len_b`.
 - **Exclusivity.** Two sequences must not share a last page, or two CTAs append into one page.
 
-The encodings `docs/SEPARATION_PILOT.md` §6–§7 propose are the ones to build:
+The encodings `gpu/SEPARATION_PILOT.md` §6–§7 propose are the ones to build:
 - a write token for the tail of a page chosen at run time, indexed by its register's handle;
 - a scoped read lease over the page's prefix, held by the attention reads while the tail is written;
 - for the table, a choice: validate it on the device, a pre-pass checking that last pages are distinct, or state
@@ -103,7 +103,7 @@ That choice decides whether the write token is minted by a checked operation or 
 the pilot's open question 3 in concrete form.
 
 P2's query shape (a few rows per sequence) also needs a different tile than A1's 128 query rows. The decode schedule is
-FlashDecoding's split over the key blocks, with its merge (`docs/SEPARATION_PILOT.md` §6, "split-KV partials"). That
+FlashDecoding's split over the key blocks, with its merge (`gpu/SEPARATION_PILOT.md` §6, "split-KV partials"). That
 schedule is its own design, after P1.
 
 ## 5. Checks

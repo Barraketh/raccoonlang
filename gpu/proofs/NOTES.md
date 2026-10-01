@@ -293,7 +293,7 @@ function's match.
 *Feature:* a `match e as b with (h: Eq(Bool, e, b))` form (Agda's `with … in`, Lean's `match h : e with`) that
 abstracts `e` in the goal and in the hypotheses and hands the branch the equation.
 
-*Now (2026-10-01):* `match h : e` exists (docs/MATCH_EQUATION.md). It hands each case the equation, without abstracting
+*Now (2026-10-01):* `match h : e` exists (docs/implemented/MATCH_EQUATION.md). It hands each case the equation, without abstracting
 `e`. With `match z : Nat.isZero(n)`, `t`'s `Bool.true` case is `z`, and in its `Bool.false` case
 `Eq.subst(z, Level.zero, fun (b: Bool): Prop => Eq(Nat, gOf(b), 0), h)` turns `h` into `Eq(Nat, 1, 0)`, `gOf` being
 `g`'s match restated over a variable. The proofs here were not rewritten with it.
@@ -360,7 +360,7 @@ Arms (trivial ones) per such match: `Errors.keeps` 14 (13), `Literals.keeps` 15 
 `Spec.inner` and `Spec.declaredBy` 14 (10).
 
 *Feature:* a wildcard case, checked once per remaining constructor under its refinement; or a tactic combinator
-(`cases s <;> first | exact h | …`). *Done:* the wildcard case `| _ => e` (docs/WILDCARD_CASE.md); `Errors.keeps`
+(`cases s <;> first | exact h | …`). *Done:* the wildcard case `| _ => e` (docs/implemented/WILDCARD_CASE.md); `Errors.keeps`
 uses it, the other lemmas are left as written.
 
 ### F6. A `struct` in `Prop` with a data field is rejected

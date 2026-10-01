@@ -1,7 +1,7 @@
 # Nominal Type families
 
-Status: **draft for review** (2026-09-30). Second of three specs, after `docs/PROP_SEPARATION.md` (which it assumes:
-every family is declared either in `Prop` or in a `Type`) and before `docs/REFINEMENT_CERTIFICATES.md` (which uses the
+Status: **draft for review** (2026-09-30). Second of three specs, after `docs/proposals/PROP_SEPARATION.md` (which it assumes:
+every family is declared either in `Prop` or in a `Type`) and before `docs/proposals/REFINEMENT_CERTIFICATES.md` (which uses the
 principles stated here).
 
 Match refinement already treats every inductive family head as injective: from `w : W(List(y))`, where `W`'s only
@@ -28,7 +28,7 @@ Their scope is exact:
   application that is stuck: `axiom T : Type` may be `Nat`. A type that evaluates to a family instance is compared by
   its head after evaluation, as conversion already does.
 - **Not `Prop` families.** A `Prop` family head is neither injective nor generative. Refinement decomposes it only at the
-  root of the scrutinee's own type, where the eliminator justifies it (`docs/REFINEMENT_CERTIFICATES.md` §2). Two
+  root of the scrutinee's own type, where the eliminator justifies it (`docs/proposals/REFINEMENT_CERTIFICATES.md` §2). Two
   reasons, the first sufficient on its own:
   - With an impredicative `Prop` and proof irrelevance, a proposition carries no more than a truth value. So an
     injective `Prop` family is an injection of a large type into a tiny one. Miquel's observation, reported by Hur on
@@ -145,7 +145,7 @@ test (`Higher (F: Type -> Type) : Type` in `InductiveCheckTest`), which moves to
 - **Documentation.** `docs/kernel.md` gets a section "Nominal families" stating N1–N3, their scope and the size rule,
   beside quotient soundness as the kernel's stated principles. "Apartness" and "Refinement unification" cite it.
 
-`docs/REFINEMENT_CERTIFICATES.md` then turns these from unifier behaviour into principles a proof term may use: its
+`docs/proposals/REFINEMENT_CERTIFICATES.md` then turns these from unifier behaviour into principles a proof term may use: its
 certificates invoke N1–N3 as named kernel constants, and refinement stops relying on the unifier's own classification.
 
 ## 5. Tests

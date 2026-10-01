@@ -23,7 +23,7 @@ object Frame {
   /** One branch of a match, named by its constructor and the fields it binds. */
   final case class InBranch(ctor: String, args: Vector[String]) extends Frame
 
-  /** One case a wildcard stands for, named by its constructor (docs/WILDCARD_CASE.md). */
+  /** One case a wildcard stands for, named by its constructor (docs/implemented/WILDCARD_CASE.md). */
   final case class InWildcard(ctor: String) extends Frame
 }
 
@@ -80,7 +80,7 @@ final case class MissingCase(ctor: String) extends TypeError
 /** A wildcard case that stands for no constructor: the other cases name every reachable one. */
 case object RedundantCase extends TypeError
 
-/** A match naming its equation on a value of a family with indices (docs/MATCH_EQUATION.md §2), located at the name. */
+/** A match naming its equation on a value of a family with indices (docs/implemented/MATCH_EQUATION.md §2), located at the name. */
 final case class MatchEquationIndexed(family: String) extends TypeError
 
 /** A match naming its equation, or a prelude declaring `Eq`, where no `Eq` is the equality family (MatchEquation). */

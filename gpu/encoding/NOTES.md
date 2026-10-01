@@ -216,7 +216,7 @@ changed, and what friction remains.
 - **The unrolled chunk calls** (item 1; F2). `eachChunk` (pass 1) and `writeP` (pass 2) recurse over the chunks
   inside the core and hand a step each chunk's values and index; `loadAcc8` and `storeP`, their `fits` evidence and
   `PFree`'s per-chunk index steps, are internal. M14 holds by construction, and the example no longer needs
-  `match h : e` (`docs/MATCH_EQUATION.md`).
+  `match h : e` (`docs/implemented/MATCH_EQUATION.md`).
 - **The peeled copies** (items 3 and 10; F3). `mmaPV` overwrites when its `PReady` is `fresh`, and `rescaleO` emits
   nothing while Ô is `fresh`, so each role writes one loop body generic in `OState` and passes it as both `loopPeeled`
   arguments. The softmax's maximum starts at −∞ and its sum at 0, so the first block is the others' code: `α` =

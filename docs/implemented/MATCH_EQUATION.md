@@ -73,7 +73,7 @@ constructor applied to those fields, so the equation holds by reflexivity.
 - **`Eq`:** the trusted prelude's, validated at the end of prelude loading as exactly the equality family
   (`docs/kernel.md#equality`), so a module's own `Eq` cannot make `h` false. Without one, and in the prelude's own
   declarations, a named equation is `MatchEquationUnavailable`.
-- **Combined with a wildcard case** (`docs/WILDCARD_CASE.md`): each expanded case gets its own `h` at its own
+- **Combined with a wildcard case** (`docs/implemented/WILDCARD_CASE.md`): each expanded case gets its own `h` at its own
   constructor.
 
 ## 5. Tests
