@@ -359,7 +359,7 @@ namespace Core {
   def mbarWait (group: CtaGroup)(bar: Expr)(parity: Expr): Stmt := Stmt.instr(Instr.mbarWait(Core.waitScope(group), bar, parity))
 
   // An arrival on this CTA's barrier at `bar`, releasing at CTA scope.
-  def arriveHere (bar: Expr)(arrival: Arrival): Stmt := Stmt.instr(Instr.mbarArrive(BarrierScope.cta, Window.cta, bar, arrival))
+  def arriveHere (bar: Expr)(arrival: Arrival): Stmt := Stmt.instr(Instr.mbarArrive(Window.cta, bar, arrival))
 
   def mbarArriveExpectTx (bar: Expr)(bytes: Nat): Stmt := Core.arriveHere(bar, Arrival.expectTx(Expr.lit(bytes)))
 
@@ -394,7 +394,7 @@ namespace Core {
       | CtaGroup.one => Option.none(Nat)
       | CtaGroup.two => Option.some(3)
     }
-    Stmt.instr(Instr.commit(group, bar, multicast))
+    Stmt.instr(Instr.tcCommit(group, bar, multicast))
   }
 
   // `c` to `c + count − 1`.
@@ -431,9 +431,10 @@ namespace Core {
 
   // ---- Instruction results -----------------------------------------------------------------------------------------
 
-  // Declares a fresh value of type `t` that the instruction `write(d)` writes, `d` its variable.
+  // Declares a fresh value that the instruction `write(d)` writes, `d` its variable, of the instruction's result type
+  // `t` (`Cuda.resultType`, which does not depend on the variable).
   def written {l: Lifetime}{g: Group}{Sf: Lifetime}(k: Key)(e: Ctx(l, g))(u: Grain)(t: DType)(write: { scope = Sf } Nat -> Instr)
-      : Pair(Ctx(l, g), Val(l, u, t)) := {
+      [typed: Eq(Option(DType), Cuda.resultType(write(0)), Option.some(t))]: Pair(Ctx(l, g), Val(l, u, t)) := {
     let gen := Core.state(k, e)
     let code := List.cons(Stmt.declOut(t, gen.next), List.cons(Stmt.instr(write(gen.next)), List.nil(Stmt)))
     (Core.resume(k, l, g, Core.pushAll(Core.fresh(gen), code)), Val.mk(l, u, t, Expr.var(gen.next), Option.none(Nat)))
@@ -2934,7 +2935,7 @@ namespace Core {
     (e, Val.mk(l, Grain.warp, DType.bool, Expr.bin(BinOp.lt, Expr.lit(0), any.expr), Option.none(Nat)))
   }
 
-  // 2^x on the FMA units (FA4's `ex2_emulation`, which `Cuda.ex2Emulation` describes), for x < 128. No instruction
+  // 2^x on the FMA units (FA4's `ex2_emulation`, which `Cuda.Asm.ex2Emulation` describes), for x < 128. No instruction
   // flushes subnormals (A58). Measured on every f32 x of [−127, 8] (NOTES.md): within 2^−13.47 relative where 2^x is
   // normal, x ≥ −126, and within 2^−127 absolute below; −∞ gives +0, as `ex2` does. Outside its domain it is wrong:
   // x ≥ 128 overflows the exponent's addition (128 gives +∞, 129 gives −0), and NaN gives +0.
@@ -3898,7 +3899,7 @@ namespace Core {
 
   // One arrival on the barrier at `remote`, a `.shared::cluster` address, releasing at cluster scope (PTX
   // §9.7.15.16.16).
-  def mbarArriveRemote (remote: Expr): Stmt := Stmt.instr(Instr.mbarArrive(BarrierScope.cluster, Window.cluster, remote, Arrival.one))
+  def mbarArriveRemote (remote: Expr): Stmt := Stmt.instr(Instr.mbarArrive(Window.cluster, remote, Arrival.one))
 
   // `tmaLoad2d` of a CTA pair: the box lands in the issuing CTA's shared memory at `dst`, and its bytes complete on the
   // barrier at `bar`, which may be the peer's (PTX §9.7.10.28.5.3). The qualifiers are in the order of CUTLASS's

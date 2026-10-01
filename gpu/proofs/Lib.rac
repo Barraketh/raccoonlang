@@ -65,6 +65,32 @@ namespace Lib {
     }
   }
 
+  def isZeroSound (n: Nat)(h: Eq(Bool, Nat.isZero(n), Bool.true)): Eq(Nat, n, 0) := {
+    match n returning Eq(Nat, n, 0) with
+    | Nat.zero => Eq.refl(0)
+    | Nat.succ m => False.elim(Bool.falseNeTrue(h), Eq(Nat, Nat.succ(m), 0))
+  }
+
+  // `Nat.blt` is `Nat.lt`'s test. On two variables its definition unfolds; applied to a literal above the unfolding
+  // limit it would not, so this lemma converts.
+  def bltSound (n: Nat)(m: Nat)(h: Eq(Bool, Nat.blt(n, m), Bool.true)): Nat.lt(n, m) := {
+    let unfolded : Eq(Bool, Nat.blt(n, m), Nat.ble(Nat.succ(n), m)) := Eq.refl(Nat.blt(n, m))
+    Eq.trans(Eq.symm(unfolded), h)
+  }
+
+  def countInSound (xs: List(Nat))(n: Nat)(h: Eq(Bool, Check.countIn(xs, n), Bool.true)): Spec.Mem(Nat, n, xs) decreases structural(xs) := {
+    match xs returning Spec.Mem(Nat, n, xs) with
+    | List.nil => False.elim(Bool.falseNeTrue(h), Spec.Mem(Nat, n, List.nil(Nat)))
+    | List.cons x more => {
+      match Lib.orCases(Nat.beq(x, n), Check.countIn(more, n), h) returning Spec.Mem(Nat, n, List.cons(x, more)) with
+      | Or.inl same => {
+        match Lib.beqSound(x, n, same) returning Spec.Mem(Nat, n, List.cons(x, more)) with
+        | Eq.refl z => Spec.Mem.here(x, more)
+      }
+      | Or.inr later => Spec.Mem.there(x, more, Lib.countInSound(more, n, later))
+    }
+  }
+
   def beqRefl (a: Nat): Eq(Bool, Nat.beq(a, a), Bool.true) decreases structural(a) := {
     match a returning Eq(Bool, Nat.beq(a, a), Bool.true) with
     | Nat.zero => Eq.refl(Bool.true)

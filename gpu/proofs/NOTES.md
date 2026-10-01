@@ -14,18 +14,19 @@ the whole certificate, `WellFormed.sound: Check.WellFormed(k) -> Spec.WellFormed
 
 | Checker | Spec (`Spec.rac`) | Proof | Lines |
 |---|---|---|---|
-| (shared) | occurrence relations and program order, 120 lines | `Fold.rac`: the traversal lemmas | 450 |
-| (shared) | | `Lib.rac`: Bool, Nat, List and string facts | 188 |
+| (shared) | occurrence relations and program order, 126 lines | `Fold.rac`: the traversal lemmas | 459 |
+| (shared) | | `Lib.rac`: Bool, Nat, List and string facts | 214 |
 | (shared) | | `NatSet.rac`: `Check.NatSet` is a set | 148 |
-| `errors` | `NoErrors`, 5 lines | `Errors.rac` | 32 |
-| I1 `scoping` | `Scoping`, `StmtScope`, `BlockScope`, `declaredBy`, `Uses`, `Binds`, `DeviceOnly`, 72 lines | `Scoping.rac` | 517 |
-| I2 `sharedMemory` | `SharedMemory`, `SharedAt`, 18 lines | `SharedMemory.rac` | 109 |
-| I3 `namedBarriers` | `NamedBarriers`, `BarrierIds`, `BarrierCounts`, `Barrier`, `LiteralOperands`, 31 lines | `Barriers.rac` | 274 |
-| I4 `literals` | `Literals`, `Lit32`, `Lit64`, 29 lines | `Literals.rac` | 115 |
+| (shared) | | `Instructions.rac`: `Cuda.asmOf` prints `Cuda.instrExprs` | 65 |
+| `errors` | `NoErrors`, 5 lines | `Errors.rac` | 20 |
+| I1 `scoping` | `Scoping`, `StmtScope`, `BlockScope`, `declaredBy`, `Uses`, `Binds`, `DeviceOnly`, 72 lines | `Scoping.rac` | 523 |
+| I2 `sharedMemory` | `SharedMemory`, `SharedAt`, 18 lines | `SharedMemory.rac` | 110 |
+| I3 `namedBarriers` | `NamedBarriers`, `BarrierIds`, `BarrierCounts`, `Barrier`, `LiteralPair`, 25 lines | `Barriers.rac` | 250 |
+| I4 `literals` | `Literals`, `Lit32`, `Lit64`, `InRange` and its parts, 70 lines | `Literals.rac` | 187 |
 | I5 `names` | `Names`, `Chosen`, `CIdent`, `PrinterName`, `Declared`, `Twice`, …, 61 lines | `Names.rac` | 271 |
 | I6 `launcher` | `LauncherOk`, `Launched`, `NotMap`, `MapSource`, 27 lines | `Launcher.rac` | 352 |
 | certificate | `WellFormed`, 7 lines | `WellFormed.rac` | 21 |
-| **total** | 382 | | 2477 |
+| **total** | 425 | | 2620 |
 
 Check time. Each proof file checks in 1.4 to 2.3 s of wall time, most of it loading `Check.rac` (a file that loads
 only the prelude takes 0.8 s); `WellFormed.rac`, which loads every proof, takes 2.3 s. `check.sh` gains the 11 files
@@ -84,25 +85,30 @@ the launcher's step is `hostUse`.
 a `Stmt.shared` anywhere in the body means the size is 0; every `sharedAddr`/`sharedPtr` offset is below the size.
 Two small Bool/Nat facts (`orNot`, `notPositive`).
 
-**I3, named barriers.** Spec: every `bar.sync` in the body that is an asm statement with its template has
-`LiteralOperands` (no outputs, two `lit` inputs), and every `Instr.barSync(a, b)` has `LiteralPair(a, b)` (two
-`lit`s); every `Barrier(id, threads, s)` in the body has `id` in 1..15 and
+**I3, named barriers.** Spec: every `Instr.barSync(a, b)` in the body has `LiteralPair(a, b)` (two `lit`s); every
+`Barrier(id, threads, s)` in the body has `id` in 1..15 and
 `threads` positive with `Nat.mod(threads, 32) = 0`; and no two barriers, one `Before` the other in
 `Spec.statements(k.body)` (every statement at any depth, in program order), have one id. Distinctness needs places,
 which `InBlock` does not have (two identical `bar.sync 1, 64` are one statement to it), hence the flattening. The
 proof first turns the checker's `blockFold` into a `List.foldl` over `Spec.statements` (`Fold.blockFusion`, generic in
 the walk's state), then reasons about a flat walk: ids seen stay seen (`stepSeen`), a barrier's id was not seen before
 it (`barrierFresh`), and an id is seen after its barrier (`NatSets.inserted`). The literal operands come from a case
-split on the operand lists and on `Check.literal` of each (`shape`, `twoLiterals`, `literalSome`; `pairShape` for an
-instruction), which is the only place the proof inspects expressions. A `Spec.Barrier` is either form; the checker's
-step reduces both to `Check.barrier`, so each lemma has one case per form with the same proof. The checker's step was named (`barrierStep`), and the decisions it matched on
-became arguments of `barrierAt` (`isBarrier`, `args`), so the lemmas case on variables (F2).
+split on `Check.literal` of each (`pairShape`, `twoLiterals`, `literalSome`), which is the only place the proof
+inspects expressions. The checker's step was named (`barrierStep`), and the decision it matched on became an argument
+of `barrierAt` (`args`), so the lemmas case on variables (F2). Both cores emit the barrier as `Instr.barSync`; an
+asm statement is not a barrier to the checker or the spec.
 
 **I4, literals.** Spec: every `n` that `Lit32(k, n)` (a `lit` in the body or the launcher's expressions, the block
 size, a box dimension) is `Nat.lt(n, Cuda.u32Limit)`, and every `Lit64` below 2^64. The checker tests `Nat.blt`, which
 reaches `Nat.lt` through `Literals.bltIsLt` (F1). The printer's other `u` literals, shared-window offsets and the
 launch's shared bytes, are left to I2, which bounds them in the body, and I1, which keeps shared addresses out of the
-launcher.
+launcher. Every instruction is `InRange`: the immediates its template prints and the fields the printer packs into its
+descriptors. The checker tests each by a Bool (`Check.inRange`), which `Literals.inRange` turns into the proposition,
+case by case.
+
+**Instructions.** The statements of I1, I2, I4 and I5 quantify over an instruction's `Cuda.instrExprs`.
+`Instructions.printed` proves that `Cuda.asmOf` prints exactly those as its operands, in order: by cases, with a
+lemma for each list the printer maps (`tmemLoad`'s outputs, `tmemStore`'s and `stShared`'s values).
 
 **I5, names.** Spec: the kernel's name is `Chosen` (a `CIdent`, a letter or `_` then letters, digits and `_`, and
 not a `PrinterName`: `v` and digits, `gpu_…`, or one of the launcher's locals); the parameters' names are
@@ -472,9 +478,8 @@ walk is a recursion over an open AST. Evaluation inside them is local and small:
 - a step applied to a constructor reduces by conversion (`Check.literalStep(found, Expr.lit(v))` to
   `Check.u32Printed(…)`), and a Bool condition converts to the spec's Prop;
 - a few steps are genuine evaluations of closed terms: that a name spelled `gpu_` then anything starts with `gpu_`
-  (`Eq.refl(Bool.true)`, since `Check.startsWith` recurses on the literal prefix); that `Spec.barrierTemplate` is
-  `Check.same` as `Check.barrierTemplate` and `Check.barrierArgs` of two literal operands is their pair (both reduce
-  inside `Barriers.atBarrier`); and that `Spec.printerLocals` is `Check.printerLocals`.
+  (`Eq.refl(Bool.true)`, since `Check.startsWith` recurses on the literal prefix); that `Check.literalPair` of two
+  literals is their pair (it reduces inside `Barriers.atBarrier`); and that `Spec.printerLocals` is `Check.printerLocals`.
 
 The induction is everywhere else: the traversals (`Fold.rac`, the same two lemmas for each of four traversal shapes),
 the sets (`NatSet.rac`), the Bool reflection (`Lib.rac`, `Launcher.rac`), the name lists (`Names.rac`), and the

@@ -1,7 +1,8 @@
 // The structural invariants of a kernel (gpu/OBLIGATIONS.md §4), decided on its AST. Each checker returns the
 // violations of one invariant, as messages, and none when the kernel keeps it. `WellFormed` is the certificate
 // `Gpu.render` requires, so a kernel that breaks one, or carries a generation error, is never printed.
-// I7 and I8 are not here: the AST does not record which threads run a block, or which addresses are barriers.
+// I7 and I8 are not here: the AST does not record which threads run a block, or which shared offsets hold an mbarrier
+// over its lifetime.
 
 import Cuda
 import Text
@@ -224,7 +225,7 @@ namespace Check {
   }
 
   // `f` folded over every expression a statement holds itself, not in its blocks, in printed order. A loop's header
-  // expressions are the statement's own, and an instruction's are the operands it prints (`Cuda.asmOf`).
+  // expressions are the statement's own, and an instruction's are those it prints as operands (`Cuda.instrExprs`).
   def stmtExprs (A: Type)(s: Stmt)(acc: A)(f: A -> Expr -> A): A := {
     let each := fun (a: A)(x: Expr): A => Check.exprFold(A, x, a, f)
     let operands := fun (a: A)(os: List(Operand)): A => List.foldl(os, A, a, fun (b: A)(o: Operand): A => each(b, o.e))
@@ -242,10 +243,7 @@ namespace Check {
     | Stmt.sync => acc
     | Stmt.syncWarp => acc
     | Stmt.asm template outs ins => operands(operands(acc, outs), ins)
-    | Stmt.instr i => {
-      let a := Cuda.asmOf(i)
-      operands(operands(acc, a.outs), a.ins)
-    }
+    | Stmt.instr i => List.foldl(Cuda.instrExprs(i), A, acc, each)
     | Stmt.error message => acc
   }
 
@@ -504,10 +502,6 @@ namespace Check {
     Check.inOrder(Check.blockExprs(List(String), k.body, statics, Check.offsetStep(bytes)))
   }
 
-  // The template of the named barrier `Gpu.namedBarrier` emits, `bar.sync id, threads`, by which it is known here.
-  // gpu/encoding's core emits the typed `Instr.barSync` instead.
-  def barrierTemplate : String := "bar.sync %0, %1;"
-
   def literal (x: Expr): Option(Nat) := {
     match Check.leaf(x) returning Option(Nat) with
     | Leaf.other => Option.none(Nat)
@@ -525,26 +519,6 @@ namespace Check {
     Option.bind(Check.literal(id), Prod(Nat, Nat), fun (i: Nat): Option(Prod(Nat, Nat)) =>
       Option.map(Check.literal(threads), Prod(Nat, Nat), fun (n: Nat): Prod(Nat, Nat) => Prod.mk(i, n)))
 
-  // A named barrier's id and thread count: no outputs, and two inputs that are 32-bit literals.
-  def barrierArgs (outs: List(Operand))(ins: List(Operand)): Option(Prod(Nat, Nat)) := {
-    let two := {
-      match ins returning Option(Prod(Nat, Nat)) with
-      | List.nil => Option.none(Prod(Nat, Nat))
-      | List.cons a more => {
-        match more returning Option(Prod(Nat, Nat)) with
-        | List.nil => Option.none(Prod(Nat, Nat))
-        | List.cons b rest => {
-          match rest returning Option(Prod(Nat, Nat)) with
-          | List.nil => Check.literalPair(a.e, b.e)
-          | List.cons c others => Option.none(Prod(Nat, Nat))
-        }
-      }
-    }
-    match outs returning Option(Prod(Nat, Nat)) with
-    | List.nil => two
-    | List.cons o others => Option.none(Prod(Nat, Nat))
-  }
-
   // A named barrier with id `id` and `threads` threads, where `st.seen` holds the ids of those before it.
   def barrier (st: Scan)(id: Nat)(threads: Nat): Scan := {
     let name := Text.cat("bar.sync ", Text.nat(id))
@@ -557,16 +531,11 @@ namespace Check {
     Scan.mk(Check.NatSet.insert(st.seen, id), counted)
   }
 
-  // An asm statement or an instruction, which is a named barrier if it is `bar.sync` (`isBarrier`), with `args` its
-  // literal id and thread count if it has them.
-  def barrierAt (st: Scan)(isBarrier: Bool)(args: Option(Prod(Nat, Nat))): Scan := {
-    match isBarrier returning Scan with
-    | Bool.false => st
-    | Bool.true => {
-      match args returning Scan with
-      | Option.none => Scan.mk(st.seen, List.cons("bar.sync without a literal id and thread count", st.found))
-      | Option.some idThreads => Check.barrier(st, idThreads.fst, idThreads.snd)
-    }
+  // A named barrier, with `args` its literal id and thread count if it has them.
+  def barrierAt (st: Scan)(args: Option(Prod(Nat, Nat))): Scan := {
+    match args returning Scan with
+    | Option.none => Scan.mk(st.seen, List.cons("bar.sync without a literal id and thread count", st.found))
+    | Option.some idThreads => Check.barrier(st, idThreads.fst, idThreads.snd)
   }
 
   // A statement, checked if it is a named barrier, where `st.seen` holds the ids of the barriers before it.
@@ -584,18 +553,18 @@ namespace Check {
     | Stmt.scoped body => st
     | Stmt.sync => st
     | Stmt.syncWarp => st
-    | Stmt.asm template outs ins => Check.barrierAt(st, Check.same(template, Check.barrierTemplate), Check.barrierArgs(outs, ins))
+    | Stmt.asm template outs ins => st
     | Stmt.instr i => {
       match i returning Scan with
-      | Instr.barSync id threads => Check.barrierAt(st, Bool.true, Check.literalPair(id, threads))
+      | Instr.barSync id threads => Check.barrierAt(st, Check.literalPair(id, threads))
       | _ => st
     }
     | Stmt.error message => st
   }
 
-  // I3, named barriers: each `bar.sync`, an asm statement or an instruction, has literal operands, an id in 1..15 that
-  // no other `bar.sync` of the kernel has, and a thread count that is a positive multiple of 32. (A loop body is
-  // generated once, so a barrier in one has one id however often it runs.)
+  // I3, named barriers: each `bar.sync` (`Instr.barSync`) has literal operands, an id in 1..15 that no other
+  // `bar.sync` of the kernel has, and a thread count that is a positive multiple of 32. (A loop body is generated
+  // once, so a barrier in one has one id however often it runs.)
   def namedBarriers (k: Kernel): List(String) :=
     Check.inOrder(Check.blockFold(Scan, k.body, Scan.mk(NatSet.empty, List.nil(String)), Check.barrierStep).found)
 
@@ -635,9 +604,78 @@ namespace Check {
     | Option.some l => List.foldl(l.maps, List(String), Check.u32Printed(found, "launcher: a block of ", l.block), Check.boxStep)
   }
 
-  // I4, literals: every 32-bit literal, in the kernel and its launcher, is below 2^32, and every 64-bit one below 2^64.
+  // Whether `n` is in `xs`.
+  def countIn (xs: List(Nat))(n: Nat): Bool decreases structural(xs) := {
+    match xs returning Bool with
+    | List.nil => Bool.false
+    | List.cons x more => Bool.or(Nat.beq(x, n), Check.countIn(more, n))
+  }
+
+  // The columns a tensor-memory load or store of shape `.32x32b` moves per thread (`.num`).
+  def tmemCounts : List(Nat) := List.cons(1, List.cons(2, List.cons(4, List.cons(8, List.cons(16, List.cons(32, List.cons(64,
+    List.cons(128, List.nil(Nat)))))))))
+
+  // A shared-memory descriptor's packed fields fit: the leading byte offset in its 14 bits, in units of 16 bytes, and
+  // the step's 32 bytes each within the shared window's 2^18 bytes.
+  def smemDescFits (d: SmemDesc): Bool := Bool.and(Nat.blt(d.lbo, 262144), Bool.and(Nat.isZero(Nat.mod(d.lbo, 16)), Nat.blt(d.step, 8192)))
+
+  // An instruction descriptor's M and N fit their fields, M >> 4 in 5 bits and N >> 3 in 6.
+  def instrDescFits (d: InstrDesc): Bool :=
+    Bool.and(Bool.and(Nat.blt(d.m, 512), Nat.isZero(Nat.mod(d.m, 16))), Bool.and(Nat.blt(d.n, 512), Nat.isZero(Nat.mod(d.n, 8))))
+
+  def mmaAFits (a: MmaA): Bool := {
+    match a returning Bool with
+    | MmaA.smem desc => Check.smemDescFits(desc)
+    | MmaA.tmem addr => Bool.true
+  }
+
+  def maskFits (multicast: Option(Nat)): Bool := {
+    match multicast returning Bool with
+    | Option.none => Bool.true
+    | Option.some mask => Nat.blt(mask, 65536)
+  }
+
+  // Whether an instruction's immediates, which its template prints, are in the ranges PTX gives them, and its
+  // descriptors' fields, which the printer packs, fit them.
+  def inRange (i: Instr): Bool := {
+    match i returning Bool with
+    | Instr.mma g acc a b idesc accumulate => Bool.and(Check.mmaAFits(a), Bool.and(Check.smemDescFits(b), Check.instrDescFits(idesc)))
+    | Instr.tcCommit g bar multicast => Check.maskFits(multicast)
+    | Instr.tmemLoad shape dst taddr => Check.countIn(Check.tmemCounts, List.length(dst))
+    | Instr.tmemStore shape w taddr values => Check.countIn(Check.tmemCounts, List.length(values))
+    | Instr.shfl d a lane => Nat.blt(lane, 32)
+    | Instr.setMaxNReg change count => Bool.and(Nat.ble(24, count), Bool.and(Nat.ble(count, 256), Nat.isZero(Nat.mod(count, 8))))
+    | Instr.movF32 d bits => Nat.blt(bits, Cuda.u32Limit)
+    | Instr.stShared addr values => Check.countIn(List.cons(2, List.cons(4, List.nil(Nat))), List.length(values))
+    | _ => Bool.true
+  }
+
+  // Why an instruction is out of range.
+  def rangeMessage (i: Instr): String := {
+    match i returning String with
+    | Instr.mma g acc a b idesc accumulate => "tcgen05.mma: a descriptor's field does not fit"
+    | Instr.tcCommit g bar multicast => "tcgen05.commit: the CTA mask does not fit 16 bits"
+    | Instr.tmemLoad shape dst taddr => Text.cat3("tcgen05.ld: ", Text.nat(List.length(dst)), " columns, not a power of 2 up to 128")
+    | Instr.tmemStore shape w taddr values => Text.cat3("tcgen05.st: ", Text.nat(List.length(values)), " columns, not a power of 2 up to 128")
+    | Instr.shfl d a lane => Text.cat3("shfl.sync: lane ", Text.nat(lane), " is not below 32")
+    | Instr.setMaxNReg change count => Text.cat3("setmaxnreg: ", Text.nat(count), " registers, not a multiple of 8 in 24..256")
+    | Instr.movF32 d bits => Text.cat3("mov.b32: ", Text.nat(bits), " does not fit 32 bits")
+    | Instr.stShared addr values => Text.cat3("st.shared: ", Text.nat(List.length(values)), " values, not 2 or 4")
+    | _ => "an instruction out of range"
+  }
+
+  // A statement, which must not be an instruction out of range.
+  def rangeStep (found: List(String))(s: Stmt): List(String) := {
+    match s returning List(String) with
+    | Stmt.instr i => Check.unless(found, Check.inRange(i), fun (u: Unit): String => Check.rangeMessage(i))
+    | _ => found
+  }
+
+  // I4, literals: every 32-bit literal, in the kernel and its launcher, is below 2^32, and every 64-bit one below 2^64;
+  // and every instruction's immediates and descriptor fields are in their ranges (`rangeStep`).
   def literals (k: Kernel): List(String) := {
-    let exprs := Check.hostExprs(List(String), k.launcher, Check.blockExprs(List(String), k.body, List.nil(String), Check.literalStep),
+    let ranges := Check.blockFold(List(String), k.body, List.nil(String), Check.rangeStep)
+    let exprs := Check.hostExprs(List(String), k.launcher, Check.blockExprs(List(String), k.body, ranges, Check.literalStep),
       Check.literalStep)
     Check.inOrder(Check.launcherSizes(k.launcher, exprs))
   }

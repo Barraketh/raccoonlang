@@ -57,8 +57,7 @@ a control combinator's signature, which this rule does not reach (§9, decision 
   pool at another count makes changes from a count the warps do not hold; the register check (§5) refuses that
   kernel, when the toolkit is there.
 - **Core's emission stays trusted.** Core owns all emission, so it could still build an `Instr.setMaxNReg` outside the
-  emitters that need a share. That it does not is reviewed. (It had raw `asm` statements here too; since typed
-  instructions, `EVALUATOR.md` §3, it has none.) The register check reads
+  emitters that need a share. That it does not is reviewed. The register check reads
   every `setmaxnreg` of an example's output against the split's rule, which a stray one breaks unless it happens to
   fit it.
 

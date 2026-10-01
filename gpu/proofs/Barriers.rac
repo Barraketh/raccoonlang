@@ -19,12 +19,6 @@ namespace Barriers {
   def countMessage (id: Nat)(threads: Nat): Unit -> String := fun (u: Unit): String =>
     Text.cat3(Text.cat("bar.sync ", Text.nat(id)), ": waits for ", Text.cat(Text.nat(threads), " threads, not a positive multiple of 32"))
 
-  def isZeroSound (n: Nat)(h: Eq(Bool, Nat.isZero(n), Bool.true)): Eq(Nat, n, 0) := {
-    match n returning Eq(Nat, n, 0) with
-    | Nat.zero => Eq.refl(0)
-    | Nat.succ m => False.elim(Bool.falseNeTrue(h), Eq(Nat, Nat.succ(m), 0))
-  }
-
   def someInj (a: Nat)(b: Nat)(h: Eq(Option(Nat), Option.some(a), Option.some(b))): Eq(Nat, a, b) := {
     match h returning Eq(Nat, Option.getD(Option.some(a), a), Option.getD(Option.some(b), a)) with
     | Eq.refl z => Eq.refl(Option.getD(z, a))
@@ -51,7 +45,7 @@ namespace Barriers {
       Fold.unlessFound(inRange, Bool.not(Check.NatSet.member(st.seen, id)), Barriers.freshMessage(id), freshOk))
     let range := And.intro(Lib.andLeft(Nat.ble(1, id), Nat.ble(id, 15), rangeOk), Lib.andRight(Nat.ble(1, id), Nat.ble(id, 15), rangeOk))
     let count := And.intro(Lib.andLeft(Nat.blt(0, threads), Nat.isZero(Nat.mod(threads, 32)), countedOk),
-      Barriers.isZeroSound(Nat.mod(threads, 32), Lib.andRight(Nat.blt(0, threads), Nat.isZero(Nat.mod(threads, 32)), countedOk)))
+      Lib.isZeroSound(Nat.mod(threads, 32), Lib.andRight(Nat.blt(0, threads), Nat.isZero(Nat.mod(threads, 32)), countedOk)))
     And.intro(range, count)
   }
 
@@ -67,14 +61,10 @@ namespace Barriers {
 
   // ---- The walk -----------------------------------------------------------------------------------------------------
 
-  def atFound (st: Scan)(isBarrier: Bool)(args: Option(Prod(Nat, Nat)))(h: Fold.Empty(Check.barrierAt(st, isBarrier, args).found)): Fold.Empty(st.found) := {
-    match isBarrier returning Fold.Empty(st.found) with
-    | Bool.false => h
-    | Bool.true => {
-      match args returning Fold.Empty(st.found) with
-      | Option.none => False.elim(Fold.consNotEmpty("bar.sync without a literal id and thread count", st.found, h), Fold.Empty(st.found))
-      | Option.some idThreads => Barriers.barrierFound(st, idThreads.fst, idThreads.snd, h)
-    }
+  def atFound (st: Scan)(args: Option(Prod(Nat, Nat)))(h: Fold.Empty(Check.barrierAt(st, args).found)): Fold.Empty(st.found) := {
+    match args returning Fold.Empty(st.found) with
+    | Option.none => False.elim(Fold.consNotEmpty("bar.sync without a literal id and thread count", st.found, h), Fold.Empty(st.found))
+    | Option.some idThreads => Barriers.barrierFound(st, idThreads.fst, idThreads.snd, h)
   }
 
   def stepFound (st: Scan)(s: Stmt)(h: Fold.Empty(Check.barrierStep(st, s).found)): Fold.Empty(st.found) := {
@@ -91,10 +81,10 @@ namespace Barriers {
     | Stmt.scoped body => h
     | Stmt.sync => h
     | Stmt.syncWarp => h
-    | Stmt.asm template outs ins => Barriers.atFound(st, Check.same(template, Check.barrierTemplate), Check.barrierArgs(outs, ins), h)
+    | Stmt.asm template outs ins => h
     | Stmt.instr i => {
       match i returning Fold.Empty(st.found) with
-      | Instr.barSync id threads => Barriers.atFound(st, Bool.true, Check.literalPair(id, threads), h)
+      | Instr.barSync id threads => Barriers.atFound(st, Check.literalPair(id, threads), h)
       | _ => h
     }
     | Stmt.error message => h
@@ -107,15 +97,11 @@ namespace Barriers {
   }
 
   // Ids once seen stay seen.
-  def atSeen (st: Scan)(isBarrier: Bool)(args: Option(Prod(Nat, Nat)))(n: Nat)(h: Eq(Bool, Check.NatSet.member(st.seen, n), Bool.true))
-      : Eq(Bool, Check.NatSet.member(Check.barrierAt(st, isBarrier, args).seen, n), Bool.true) := {
-    match isBarrier returning Eq(Bool, Check.NatSet.member(Check.barrierAt(st, isBarrier, args).seen, n), Bool.true) with
-    | Bool.false => h
-    | Bool.true => {
-      match args returning Eq(Bool, Check.NatSet.member(Check.barrierAt(st, Bool.true, args).seen, n), Bool.true) with
-      | Option.none => h
-      | Option.some idThreads => NatSets.kept(st.seen, idThreads.fst, n, h)
-    }
+  def atSeen (st: Scan)(args: Option(Prod(Nat, Nat)))(n: Nat)(h: Eq(Bool, Check.NatSet.member(st.seen, n), Bool.true))
+      : Eq(Bool, Check.NatSet.member(Check.barrierAt(st, args).seen, n), Bool.true) := {
+    match args returning Eq(Bool, Check.NatSet.member(Check.barrierAt(st, args).seen, n), Bool.true) with
+    | Option.none => h
+    | Option.some idThreads => NatSets.kept(st.seen, idThreads.fst, n, h)
   }
 
   def stepSeen (st: Scan)(s: Stmt)(n: Nat)(h: Eq(Bool, Check.NatSet.member(st.seen, n), Bool.true))
@@ -133,10 +119,10 @@ namespace Barriers {
     | Stmt.scoped body => h
     | Stmt.sync => h
     | Stmt.syncWarp => h
-    | Stmt.asm template outs ins => Barriers.atSeen(st, Check.same(template, Check.barrierTemplate), Check.barrierArgs(outs, ins), n, h)
+    | Stmt.asm template outs ins => h
     | Stmt.instr i => {
       match i returning Eq(Bool, Check.NatSet.member(Check.barrierStep(st, Stmt.instr(i)).seen, n), Bool.true) with
-      | Instr.barSync id threads => Barriers.atSeen(st, Bool.true, Check.literalPair(id, threads), n, h)
+      | Instr.barSync id threads => Barriers.atSeen(st, Check.literalPair(id, threads), n, h)
       | _ => h
     }
     | Stmt.error message => h
@@ -148,8 +134,7 @@ namespace Barriers {
     match mem returning Barriers.Ok(id, threads) with
     | Spec.Mem.here rest => {
       match bar returning Barriers.Ok(id, threads) with
-      | Spec.Barrier.asm c d => Barriers.barrierOk(st, id, threads, Barriers.walkFound(rest, Check.barrier(st, id, threads), h))
-      | Spec.Barrier.instr => Barriers.barrierOk(st, id, threads, Barriers.walkFound(rest, Check.barrier(st, id, threads), h))
+      | Spec.Barrier.mk => Barriers.barrierOk(st, id, threads, Barriers.walkFound(rest, Check.barrier(st, id, threads), h))
     }
     | Spec.Mem.there x rest inRest => Barriers.atBarrier(y, rest, inRest, Check.barrierStep(st, x), h, id, threads, bar)
   }
@@ -160,9 +145,7 @@ namespace Barriers {
     match mem returning False with
     | Spec.Mem.here rest => {
       match bar returning False with
-      | Spec.Barrier.asm c d =>
-        Lib.notBoth(Check.NatSet.member(st.seen, id), Barriers.barrierFresh(st, id, threads, Barriers.walkFound(rest, Check.barrier(st, id, threads), h)), seen)
-      | Spec.Barrier.instr =>
+      | Spec.Barrier.mk =>
         Lib.notBoth(Check.NatSet.member(st.seen, id), Barriers.barrierFresh(st, id, threads, Barriers.walkFound(rest, Check.barrier(st, id, threads), h)), seen)
     }
     | Spec.Mem.there x rest inRest => Barriers.freshAt(y, rest, inRest, Check.barrierStep(st, x), h, id, Barriers.stepSeen(st, x, id, seen), threads, bar)
@@ -173,8 +156,7 @@ namespace Barriers {
     match before returning False with
     | Spec.Before.here rest later => {
       match barX returning False with
-      | Spec.Barrier.asm c d => Barriers.freshAt(y, rest, later, Check.barrier(st, id, tx), h, id, NatSets.inserted(st.seen, id), ty, barY)
-      | Spec.Barrier.instr => Barriers.freshAt(y, rest, later, Check.barrier(st, id, tx), h, id, NatSets.inserted(st.seen, id), ty, barY)
+      | Spec.Barrier.mk => Barriers.freshAt(y, rest, later, Check.barrier(st, id, tx), h, id, NatSets.inserted(st.seen, id), ty, barY)
     }
     | Spec.Before.there z rest inRest => Barriers.distinct(rest, x, y, inRest, Check.barrierStep(st, z), h, id, tx, ty, barX, barY)
   }
@@ -205,14 +187,14 @@ namespace Barriers {
     | Expr.paramAddr name => Barriers.noneNotSome(n, h, goal)
   }
 
-  // `Check.barrierArgs`'s pairing of an id with the second operand's literal. (A lambda cannot be written in a binder's
+  // `Check.literalPair`'s pairing of an id with the second operand's literal. (A lambda cannot be written in a binder's
   // type.)
   def pairWith (second: Option(Nat)): Nat -> Option(Prod(Nat, Nat)) :=
     fun (id: Nat): Option(Prod(Nat, Nat)) => Option.map(second, Prod(Nat, Nat), fun (n: Nat): Prod(Nat, Nat) => Prod.mk(id, n))
 
   // A barrier the walk accepted had two literals, in continuation style: `found` is what follows from them.
   def twoLiterals (st: Scan)(first: Option(Nat))(second: Option(Nat))
-      (h: Fold.Empty(Check.barrierAt(st, Bool.true, Option.bind(first, Prod(Nat, Nat), Barriers.pairWith(second))).found))
+      (h: Fold.Empty(Check.barrierAt(st, Option.bind(first, Prod(Nat, Nat), Barriers.pairWith(second))).found))
       (P: Prop)(found: (id: Nat) -> (n: Nat) -> Eq(Option(Nat), first, Option.some(id)) -> Eq(Option(Nat), second, Option.some(n)) -> P): P := {
     let message := "bar.sync without a literal id and thread count"
     match first returning P with
@@ -224,48 +206,8 @@ namespace Barriers {
     }
   }
 
-  def shape (st: Scan)(outs: List(Operand))(ins: List(Operand))(h: Fold.Empty(Check.barrierAt(st, Bool.true, Check.barrierArgs(outs, ins)).found))
-      : Spec.LiteralOperands(outs, ins) := {
-    let message := "bar.sync without a literal id and thread count"
-    let refused := fun (P: Prop)(e: Fold.Empty(List.cons(message, st.found))): P => False.elim(Fold.consNotEmpty(message, st.found, e), P)
-    match outs returning Spec.LiteralOperands(outs, ins) with
-    | List.cons o others => refused(Spec.LiteralOperands(List.cons(o, others), ins), h)
-    | List.nil => {
-      match ins returning Spec.LiteralOperands(List.nil(Operand), ins) with
-      | List.nil => refused(Spec.LiteralOperands(List.nil(Operand), List.nil(Operand)), h)
-      | List.cons a more => {
-        match more returning Spec.LiteralOperands(List.nil(Operand), List.cons(a, more)) with
-        | List.nil => refused(Spec.LiteralOperands(List.nil(Operand), List.cons(a, List.nil(Operand))), h)
-        | List.cons b rest => {
-          match rest returning Spec.LiteralOperands(List.nil(Operand), List.cons(a, List.cons(b, rest))) with
-          | List.cons c others => refused(Spec.LiteralOperands(List.nil(Operand), List.cons(a, List.cons(b, List.cons(c, others)))), h)
-          | List.nil => {
-            let goal := Spec.LiteralOperands(List.nil(Operand), List.cons(a, List.cons(b, List.nil(Operand))))
-            let literals := fun (id: Nat)(n: Nat)(first: Eq(Option(Nat), Check.literal(a.e), Option.some(id)))
-                (second: Eq(Option(Nat), Check.literal(b.e), Option.some(n))): goal => {
-              match Barriers.literalSome(a.e, id, first) returning goal with
-              | Eq.refl x => {
-                match Barriers.literalSome(b.e, n, second) returning goal with
-                | Eq.refl y => Spec.LiteralOperands.mk(a.constraint, id, b.constraint, n)
-              }
-            }
-            Barriers.twoLiterals(st, Check.literal(a.e), Check.literal(b.e), h, goal, literals)
-          }
-        }
-      }
-    }
-  }
-
-  def literalAt (outs: List(Operand))(ins: List(Operand))(xs: List(Stmt))(mem: Spec.Mem(Stmt, Stmt.asm(Spec.barrierTemplate, outs, ins), xs))(st: Scan)
-      (h: Fold.Empty(List.foldl(xs, Scan, st, Check.barrierStep).found)): Spec.LiteralOperands(outs, ins) decreases structural(xs) := {
-    let s := Stmt.asm(Spec.barrierTemplate, outs, ins)
-    match mem returning Spec.LiteralOperands(outs, ins) with
-    | Spec.Mem.here rest => Barriers.shape(st, outs, ins, Barriers.walkFound(rest, Check.barrierStep(st, s), h))
-    | Spec.Mem.there x rest inRest => Barriers.literalAt(outs, ins, rest, inRest, Check.barrierStep(st, x), h)
-  }
-
-  // An instruction `bar.sync a, b` the walk accepted has literal operands.
-  def pairShape (st: Scan)(a: Expr)(b: Expr)(h: Fold.Empty(Check.barrierAt(st, Bool.true, Check.literalPair(a, b)).found)): Spec.LiteralPair(a, b) := {
+  // A `bar.sync a, b` the walk accepted has literal operands.
+  def pairShape (st: Scan)(a: Expr)(b: Expr)(h: Fold.Empty(Check.barrierAt(st, Check.literalPair(a, b)).found)): Spec.LiteralPair(a, b) := {
     let goal := Spec.LiteralPair(a, b)
     let literals := fun (id: Nat)(n: Nat)(first: Eq(Option(Nat), Check.literal(a), Option.some(id)))
         (second: Eq(Option(Nat), Check.literal(b), Option.some(n))): goal => {
@@ -278,12 +220,12 @@ namespace Barriers {
     Barriers.twoLiterals(st, Check.literal(a), Check.literal(b), h, goal, literals)
   }
 
-  def literalInstrAt (a: Expr)(b: Expr)(xs: List(Stmt))(mem: Spec.Mem(Stmt, Stmt.instr(Instr.barSync(a, b)), xs))(st: Scan)
+  def literalAt (a: Expr)(b: Expr)(xs: List(Stmt))(mem: Spec.Mem(Stmt, Stmt.instr(Instr.barSync(a, b)), xs))(st: Scan)
       (h: Fold.Empty(List.foldl(xs, Scan, st, Check.barrierStep).found)): Spec.LiteralPair(a, b) decreases structural(xs) := {
     let s := Stmt.instr(Instr.barSync(a, b))
     match mem returning Spec.LiteralPair(a, b) with
     | Spec.Mem.here rest => Barriers.pairShape(st, a, b, Barriers.walkFound(rest, Check.barrierStep(st, s), h))
-    | Spec.Mem.there x rest inRest => Barriers.literalInstrAt(a, b, rest, inRest, Check.barrierStep(st, x), h)
+    | Spec.Mem.there x rest inRest => Barriers.literalAt(a, b, rest, inRest, Check.barrierStep(st, x), h)
   }
 
   // ---- The theorem --------------------------------------------------------------------------------------------------
@@ -294,11 +236,8 @@ namespace Barriers {
     let flat := Spec.statements(k.body)
     let flatWalk := Eq.subst(Fold.blockFusion(Scan, k.body, start, Check.barrierStep), Level.zero, fun (sc: Scan): Prop => Fold.Empty(sc.found),
       Fold.inOrder(walk.found, h))
-    let literal := fun (outs: List(Operand))(ins: List(Operand))(occ: Spec.InBlock(Stmt.asm(Spec.barrierTemplate, outs, ins), k.body))
-        : Spec.LiteralOperands(outs, ins) =>
-      Barriers.literalAt(outs, ins, flat, Fold.blockMem(Stmt.asm(Spec.barrierTemplate, outs, ins), k.body, occ), start, flatWalk)
-    let literalInstr := fun (a: Expr)(b: Expr)(occ: Spec.InBlock(Stmt.instr(Instr.barSync(a, b)), k.body)): Spec.LiteralPair(a, b) =>
-      Barriers.literalInstrAt(a, b, flat, Fold.blockMem(Stmt.instr(Instr.barSync(a, b)), k.body, occ), start, flatWalk)
+    let literal := fun (a: Expr)(b: Expr)(occ: Spec.InBlock(Stmt.instr(Instr.barSync(a, b)), k.body)): Spec.LiteralPair(a, b) =>
+      Barriers.literalAt(a, b, flat, Fold.blockMem(Stmt.instr(Instr.barSync(a, b)), k.body, occ), start, flatWalk)
     let inRange := fun (s: Stmt)(id: Nat)(threads: Nat)(occ: Spec.InBlock(s, k.body))(bar: Spec.Barrier(id, threads, s)): And(Nat.le(1, id), Nat.le(id, 15)) =>
       Barriers.atBarrier(s, flat, Fold.blockMem(s, k.body, occ), start, flatWalk, id, threads, bar).left
     let counted := fun (s: Stmt)(id: Nat)(threads: Nat)(occ: Spec.InBlock(s, k.body))(bar: Spec.Barrier(id, threads, s))
@@ -306,6 +245,6 @@ namespace Barriers {
       Barriers.atBarrier(s, flat, Fold.blockMem(s, k.body, occ), start, flatWalk, id, threads, bar).right
     let distinct := fun (x: Stmt)(y: Stmt)(id: Nat)(tx: Nat)(ty: Nat)(before: Spec.Before(Stmt, x, y, flat))(barX: Spec.Barrier(id, tx, x))
         (barY: Spec.Barrier(id, ty, y)): False => Barriers.distinct(flat, x, y, before, start, flatWalk, id, tx, ty, barX, barY)
-    And.intro(Spec.BarrierIds.mk(k, literal, literalInstr, inRange, distinct), counted)
+    And.intro(Spec.BarrierIds.mk(k, literal, inRange, distinct), counted)
   }
 }

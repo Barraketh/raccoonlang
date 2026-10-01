@@ -736,22 +736,27 @@ Observations from building `Registers.rac`, the bounds in every builder, and the
 ## Typed instructions (EVALUATOR.md step 1)
 
 `Cuda.Instr` replaces Core's inline-assembly templates; `Cuda.asmOf` prints each as its template did. Every rendered
-example is byte-identical to the templates' output.
+example is byte-identical to the templates' output. `Gpu.namedBarrier` emits `Instr.barSync` too, so the certificate
+has one form of named barrier.
 
 **Friction.**
 1. **`scope` is a keyword.** PTX calls the qualifier `.scope`, but a field or function cannot be named `scope`: the
    instructions' fields are `level`, and the printer's function is `memoryScope`.
-2. **No partial application.** `List.map(values, Operand, Cuda.wordIn(w))` needs `wordIn` to return a function, so it
-   matches on `w` and returns `Cuda.u32In` or `Cuda.f32In`.
-3. **Opened names clash at the `open`.** `Cuda.asmIn` met `Gpu.asmIn` in `checks/generic_render.rac`, which opens
-   both (as `one` and `two` would have), and `Cuda.CtaGroup` met `Core.CtaGroup` in every file that opens both. The printer's helpers
-   took names of their own (`ops1`, `ops2`, `effect`, `writes`), and `CtaGroup` moved to `Cuda`, with the printer.
+2. **No partial application.** `List.map(values, Operand, Cuda.Asm.wordIn(w))` needs `wordIn` to return a function,
+   so it matches on `w` and returns `Cuda.Asm.u32In` or `Cuda.Asm.f32In`.
+3. **Opened names clash at the `open`.** A `Cuda.asmIn` met `Gpu.asmIn` in `checks/generic_render.rac`, which opens
+   both, and `Cuda.CtaGroup` met `Core.CtaGroup` in every file that opens both. The printer's helpers live in the
+   `Cuda.Asm` namespace, which `open Cuda` does not open, and `CtaGroup` moved to `Cuda`, with the printer.
 4. **A new `Stmt` constructor reaches 20 exhaustive matches** across `Check.rac`, `Spec.rac` and four proofs. Each new
-   case copies the `asm` case. Wildcards would shorten them, but the house style lists every constructor.
+   case copies the `asm` case. Those matches list every `Stmt` constructor, as the house style does; a match that
+   picks one `Instr` constructor out of 37 (`barrierStep`, `rangeStep`, `resultType`) ends in a wildcard.
 5. **A result's instruction is a closure.** `Core.written` takes `Nat -> Instr`, since the variable it writes is fresh
-   inside it; the closure's type carries a scope variable, `{ scope = Sf } Nat -> Instr`, as `emitIn`'s does.
-6. **The spec reads the printer.** `Spec.OwnExpr`'s instruction forms quantify over `Cuda.asmOf(i)`'s operands, so
-   the statement of I1, I2, I4 and I5 covers exactly what is printed, packed descriptors included, and `asmOf` is part
-   of what is trusted, as `Cuda.paramName` already was.
-7. **The checker builds templates.** Folding over an instruction's operands evaluates `Cuda.asmOf`, template included.
-   It did not show in the check's time.
+   inside it; the closure's type carries a scope variable, `{ scope = Sf } Nat -> Instr`, as `emitIn`'s does. The
+   declared type is the instruction's (`Cuda.resultType`), as evidence on `write(0)`: the result type cannot be
+   computed into `Val`'s index from an `Option`, and does not depend on the variable.
+6. **The printer's operands are proved.** `Spec.OwnExpr` quantifies over `Cuda.instrExprs(i)`, a structural list;
+   `proofs/Instructions.rac` proves that `asmOf` prints exactly those as operands. That a template prints no
+   expression of its own is read off `asmOf`, not proved: its templates are strings and `Text.nat`.
+7. **Ranges are checked on the output.** An instruction's immediates and packed descriptor fields are I4's
+   (`Check.inRange`), so a builder's out-of-range value refuses the kernel, as an out-of-range literal does, rather
+   than as a generation error at the emitter: Core's emitters build `Stmt`s without a `Gen` to record one in.

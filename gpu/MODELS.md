@@ -831,8 +831,8 @@ semantics exists. The hard part is the semantics of warp-level control flow, not
 ### 5.3 A cheap syntactic link now
 
 Possible now, and recommended as a separate step (V5): a checker `Check.protocols` over the emitted `Cuda.Kernel`. It
-would find each protocol's instructions by their templates (`Gpu.mbarWait`, `mbarArriveExpectTx`, `tmaLoad2d`,
-`mmaCommit`, `mbarArrive`, `mbarInit`, `mbarInval`, which are the library's own strings, as `Check.barrierTemplate` is),
+would find each protocol's instructions by their typed forms in `gpu/encoding` (`Instr.mbarWait`, `mbarArrive`,
+`tmaLoad`, `tcCommit`, `mbarInit`, `mbarInval`, `gpu/EVALUATOR.md` §3), as `Check.namedBarriers` finds `Instr.barSync`,
 and for each elected block (`if (flag)` after `elect.sync`) or warpgroup block, check that:
 - the barrier operations have the role's shape, matched on the AST's structure rather than on a flat trace. For the
   producer: the step body `B = wait(E+8·ps, pp) arrive_tx(F+8·ps, bytes) tma(·, F+8·ps) tma(·, F+8·ps) advance(ps, pp,
@@ -848,8 +848,8 @@ What this shows: the barrier operations appear in the modelled order per role, w
 (I8 in part). What it does not show: which threads run the block (I7), that the roles' trip counts agree (not needed
 for safety), and that the stage registers are not written elsewhere. The last is a simple extra scan: only `advance`'s
 statements assign them. It costs one checker in `Check.rac` and one soundness proof against a `Spec` of role traces,
-about the size of `Barriers.rac` (274 lines) plus the regular expression's semantics. This answers `OBLIGATIONS.md`
-§9, decision 6: the AST need not record which addresses are barriers, because the templates and the operand shapes
+about the size of `Barriers.rac` (250 lines) plus the regular expression's semantics. This answers `OBLIGATIONS.md`
+§9, decision 6: the AST need not record which addresses are barriers, because the typed instructions and their operand shapes
 identify them. Which threads run a block still needs groups in the AST, or layer 3.
 
 ## 6. What is left out, and the other tracks

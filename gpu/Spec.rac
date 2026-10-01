@@ -85,7 +85,7 @@ namespace Spec {
 
   // `x` is, or is inside, an expression that statement `s` holds itself (not in its blocks): an initializer, an
   // assigned or stored value, a store's address or index, a loop's header, a branch's condition, an asm operand, an
-  // operand an instruction prints (`Cuda.asmOf`).
+  // expression an instruction prints as an operand (`Cuda.instrExprs`).
   inductive OwnExpr (x: Expr) indices (s: Stmt) : Prop
    | decl (t: DType)(id: Nat)(init: Expr)(h: SubExpr(x, init)) : OwnExpr(x, Stmt.decl(t, id, init))
    | declMut (t: DType)(id: Nat)(init: Expr)(h: SubExpr(x, init)) : OwnExpr(x, Stmt.declMut(t, id, init))
@@ -106,8 +106,7 @@ namespace Spec {
        : OwnExpr(x, Stmt.asm(template, outs, ins))
    | asmIn (template: String)(outs: List(Operand))(ins: List(Operand))(o: Operand)(operand: Mem(Operand, o, ins))(h: SubExpr(x, o.e))
        : OwnExpr(x, Stmt.asm(template, outs, ins))
-   | instrOut (i: Instr)(o: Operand)(operand: Mem(Operand, o, Cuda.asmOf(i).outs))(h: SubExpr(x, o.e)) : OwnExpr(x, Stmt.instr(i))
-   | instrIn (i: Instr)(o: Operand)(operand: Mem(Operand, o, Cuda.asmOf(i).ins))(h: SubExpr(x, o.e)) : OwnExpr(x, Stmt.instr(i))
+   | instr (i: Instr)(y: Expr)(operand: Mem(Expr, y, Cuda.instrExprs(i)))(h: SubExpr(x, y)) : OwnExpr(x, Stmt.instr(i))
 
   // `x` occurs in an expression of block `b`.
   inductive ExprIn (x: Expr)(b: Block) : Prop
@@ -233,29 +232,17 @@ namespace Spec {
 
   // ---- I3, named barriers -------------------------------------------------------------------------------------------
 
-  // The template of `bar.sync id, threads`, the named barrier `Gpu.namedBarrier` emits as an asm statement.
-  def barrierTemplate : String := "bar.sync %0, %1;"
-
-  // No outputs, and two inputs that are 32-bit literals.
-  inductive LiteralOperands indices (outs: List(Operand))(ins: List(Operand)) : Prop
-   | mk (c: String)(id: Nat)(d: String)(threads: Nat)
-       : LiteralOperands(List.nil(Operand), List.cons(Operand.mk(c, Expr.lit(id)), List.cons(Operand.mk(d, Expr.lit(threads)), List.nil(Operand))))
-
   // Two 32-bit literals.
   inductive LiteralPair indices (a: Expr)(b: Expr) : Prop
    | mk (id: Nat)(threads: Nat) : LiteralPair(Expr.lit(id), Expr.lit(threads))
 
-  // `s` is the named barrier `bar.sync id, threads`: an asm statement of its template, or the instruction.
+  // `s` is the named barrier `bar.sync id, threads`.
   inductive Barrier (id: Nat)(threads: Nat) indices (s: Stmt) : Prop
-   | asm (c: String)(d: String)
-       : Barrier(id, threads, Stmt.asm(Spec.barrierTemplate, List.nil(Operand),
-           List.cons(Operand.mk(c, Expr.lit(id)), List.cons(Operand.mk(d, Expr.lit(threads)), List.nil(Operand)))))
-   | instr : Barrier(id, threads, Stmt.instr(Instr.barSync(Expr.lit(id), Expr.lit(threads))))
+   | mk : Barrier(id, threads, Stmt.instr(Instr.barSync(Expr.lit(id), Expr.lit(threads))))
 
   // Each `bar.sync` has literal operands and an id in 1..15, and no two have one id.
   struct BarrierIds (k: Kernel) : Prop
-   | mk (literal: (outs: List(Operand)) -> (ins: List(Operand)) -> Spec.InBlock(Stmt.asm(Spec.barrierTemplate, outs, ins), k.body) -> Spec.LiteralOperands(outs, ins))
-        (literalInstr: (a: Expr) -> (b: Expr) -> Spec.InBlock(Stmt.instr(Instr.barSync(a, b)), k.body) -> Spec.LiteralPair(a, b))
+   | mk (literal: (a: Expr) -> (b: Expr) -> Spec.InBlock(Stmt.instr(Instr.barSync(a, b)), k.body) -> Spec.LiteralPair(a, b))
         (inRange: (s: Stmt) -> (id: Nat) -> (threads: Nat) -> Spec.InBlock(s, k.body) -> Spec.Barrier(id, threads, s) -> And(Nat.le(1, id), Nat.le(id, 15)))
         (distinct: (x: Stmt) -> (y: Stmt) -> (id: Nat) -> (tx: Nat) -> (ty: Nat) -> Spec.Before(Stmt, x, y, Spec.statements(k.body))
           -> Spec.Barrier(id, tx, x) -> Spec.Barrier(id, ty, y) -> False) : BarrierIds(k)
@@ -292,10 +279,51 @@ namespace Spec {
    | body (h: Spec.ExprIn(Expr.lit64(n), k.body)) : Lit64(k, n)
    | host (h: Spec.HostExpr(k, Expr.lit64(n))) : Lit64(k, n)
 
-  // I4: every 32-bit literal is below 2^32, and every 64-bit literal below 2^64.
+  // The columns a tensor-memory load or store of shape `.32x32b` moves per thread (PTX §9.7.18.8.3, `.num`).
+  def tmemCounts : List(Nat) := List.cons(1, List.cons(2, List.cons(4, List.cons(8, List.cons(16, List.cons(32, List.cons(64,
+    List.cons(128, List.nil(Nat)))))))))
+
+  // A shared-memory descriptor's fields fit Table 49: the leading byte offset is a multiple of 16 below 2^18, and the
+  // step advances the start address by less than 2^18 bytes.
+  def SmemDescFits (d: SmemDesc): Prop := And(Nat.lt(d.lbo, 262144), And(Eq(Nat, Nat.mod(d.lbo, 16), 0), Nat.lt(d.step, 8192)))
+
+  // An instruction descriptor's fields fit Table 51: M a multiple of 16 below 512, N a multiple of 8 below 512.
+  def InstrDescFits (d: InstrDesc): Prop :=
+    And(And(Nat.lt(d.m, 512), Eq(Nat, Nat.mod(d.m, 16), 0)), And(Nat.lt(d.n, 512), Eq(Nat, Nat.mod(d.n, 8), 0)))
+
+  def MmaAFits (a: MmaA): Prop := {
+    match a returning Prop with
+    | MmaA.smem desc => Spec.SmemDescFits(desc)
+    | MmaA.tmem addr => True
+  }
+
+  // A multicast commit's CTA mask fits its 16-bit register.
+  def MaskFits (multicast: Option(Nat)): Prop := {
+    match multicast returning Prop with
+    | Option.none => True
+    | Option.some mask => Nat.lt(mask, 65536)
+  }
+
+  // An instruction's immediates, which its template prints, are in the ranges PTX gives them, and the fields the
+  // printer packs into its descriptors fit them.
+  def InRange (i: Instr): Prop := {
+    match i returning Prop with
+    | Instr.mma g acc a b idesc accumulate => And(Spec.MmaAFits(a), And(Spec.SmemDescFits(b), Spec.InstrDescFits(idesc)))
+    | Instr.tcCommit g bar multicast => Spec.MaskFits(multicast)
+    | Instr.tmemLoad shape dst taddr => Mem(Nat, List.length(dst), Spec.tmemCounts)
+    | Instr.tmemStore shape w taddr values => Mem(Nat, List.length(values), Spec.tmemCounts)
+    | Instr.shfl d a lane => Nat.lt(lane, 32)
+    | Instr.setMaxNReg change count => And(Nat.le(24, count), And(Nat.le(count, 256), Eq(Nat, Nat.mod(count, 8), 0)))
+    | Instr.movF32 d bits => Nat.lt(bits, Cuda.u32Limit)
+    | Instr.stShared addr values => Mem(Nat, List.length(values), List.cons(2, List.cons(4, List.nil(Nat))))
+    | _ => True
+  }
+
+  // I4: every 32-bit literal is below 2^32, every 64-bit literal below 2^64, and every instruction is in range.
   struct Literals (k: Kernel) : Prop
    | mk (u32: (n: Nat) -> Spec.Lit32(k, n) -> Nat.lt(n, Cuda.u32Limit))
-        (u64: (n: Nat) -> Spec.Lit64(k, n) -> Nat.lt(n, Spec.u64Limit)) : Literals(k)
+        (u64: (n: Nat) -> Spec.Lit64(k, n) -> Nat.lt(n, Spec.u64Limit))
+        (ranges: (i: Instr) -> Spec.InBlock(Stmt.instr(i), k.body) -> Spec.InRange(i)) : Literals(k)
 
   // ---- I5, names ----------------------------------------------------------------------------------------------------
 

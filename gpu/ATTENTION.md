@@ -502,8 +502,9 @@ lifetime, so they cannot outlive the block that loaded them.
 
 ### 3.6 Fp32 math and constants
 
-The AST needs no change: float arithmetic prints through the untyped `BinOp`s (`Val` carries the type), and the
-instructions without a C operator print as inline assembly with an output operand, as `tmemLoad8` does.
+Float arithmetic prints through the untyped `BinOp`s (`Val` carries the type). The instructions without a C operator
+are typed instructions with a result (`Cuda.Instr`, gpu/EVALUATOR.md §3), which print as inline assembly with an
+output operand.
 
 | Operation | Emits | PTX |
 |---|---|---|
@@ -518,8 +519,8 @@ instructions without a C operator print as inline assembly with an output operan
 | `rcp(e, x)` | `rcp.rn.f32` | §9.7.3.13 `rcp` |
 
 `ex2`, `lg2`, `rcp` and `fconst` take the emitter because they declare a register; their result has the grain of
-their input (`fconst`: uniform). None is collective, so any group may use them, including `diverged`. The asm-value
-builder is `Key`-guarded (M8): a client cannot emit an arbitrary template. The conversion to bf16 is not a public
+their input (`fconst`: uniform). None is collective, so any group may use them, including `diverged`. The builder of
+an instruction's result, `written`, is `Key`-guarded (M8): a client cannot emit an arbitrary instruction. The conversion to bf16 is not a public
 operation: `writeP` packs, so a client cannot swap halves (A25), and A2's bf16 output converts inside `storeO`.
 
 nvcc contracts `(a * b) - c` into an FMA by default (`-fmad=true`), so the printed arithmetic is not bit-for-bit the

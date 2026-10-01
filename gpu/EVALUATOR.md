@@ -48,34 +48,35 @@ instruction went through `Stmt.asm(template, outs, ins)`, about 35 distinct inst
 - Descriptors were integers packed by hand, then printed into strings.
 
 **Now.** `Stmt.instr(i: Instr)`, in `gpu/Cuda.rac`. `gpu/encoding/Core.rac` emits every PTX instruction through it, and
-has no `Stmt.asm` left. `Registers.rac` emits none.
+has no `Stmt.asm` left. `Registers.rac` emits none. `gpu/Gpu.rac` emits its named barrier through it.
 - **Operands** are `Expr`s.
 - **Results** are variable ids: the instruction writes the fresh variable `d`, which a `declOut` before it declares
-  (`Core.written`).
+  (`Core.written`), of the instruction's result type (`Cuda.resultType`).
 - **Qualifiers** are fields of their own types: `CtaGroup`, `BarrierScope`, `Scope`, `Window`, `Arrival`, `ThreadSync`,
   `BulkWait`, `TmemWait`, `TmemShape`, `Word`, `Rounding`, `RegChange`, `SpecialReg`. A count that PTX takes as an
   immediate (`wait_group`'s, `setmaxnreg`'s, `shfl`'s lane, the multicast mask) is a `Nat`. A vector's width is its
   operand list's length (`.x8`, `.v4`).
 - **Descriptors** are values with named fields:
   - `InstrDesc(m, n, transposeB)`, the MMA instruction descriptor. The printer packs it at generation
-    (`Cuda.packInstrDesc`) into a 32-bit literal operand.
+    (`Cuda.Asm.packInstrDesc`) into a 32-bit literal operand, each field cut to its bits.
   - `SmemDesc(base, lbo, step)`, a shared-memory descriptor. `base` is a run-time address, so the printer packs it
-    into a C expression evaluated at run time (`Cuda.packSmemDesc`): `base`'s bits shifted and masked, or-ed with a
-    64-bit literal of the fixed fields and the leading byte offset, plus the step.
-- **Printing.** `Cuda.asmOf(i)` lowers an instruction to the inline assembly CUTLASS uses for it: a template and its
-  operands. `Stmt.asm` and `Stmt.instr` print through one function, `Cuda.asmText`. Every example under
-  `gpu/examples/` and `gpu/encoding/examples/` generates byte-identical CUDA.
-- **`Stmt.asm` stays** for `gpu/Gpu.rac`, the old core, which the evaluator does not run.
+    into a C expression evaluated at run time (`Cuda.Asm.packSmemDesc`): `base`'s bits shifted and masked, or-ed with
+    a 64-bit literal of the fixed fields and the encoded leading byte offset, plus the step.
+- **Printing.** `Cuda.asmOf(i)` lowers an instruction to inline assembly: a template and its operands. The forms are
+  CUTLASS's where it has the instruction, FA4's for `ex2Emulated`, and the core's own for the rest. `Stmt.asm` and
+  `Stmt.instr` print through one function, `Cuda.Asm.text`. The printer's parts are in `Cuda.Asm`, which `open Cuda`
+  does not open. Every example under `gpu/examples/` and `gpu/encoding/examples/` generates byte-identical CUDA.
+- **`Stmt.asm` stays** for the rest of `gpu/Gpu.rac`, the old core, which the evaluator does not run.
 
 **The constructors:**
 
 | Family | Constructors |
 |---|---|
-| mbarrier | `mbarInit`, `mbarInval`, `mbarArrive` (scope, window, `Arrival.one`/`count`/`expectTx`), `mbarWait` (scope; a spin on `try_wait.parity`) |
+| mbarrier | `mbarInit`, `mbarInval`, `mbarArrive` (window, whose scope it releases at; `Arrival.one`/`count`/`expectTx`), `mbarWait` (scope; a spin on `try_wait.parity`) |
 | barriers | `barSync`, `clusterArrive`, `clusterWait` |
 | fences | `fenceMbarInit`, `fenceProxyAsync`, `tcFence` (`before`/`after`) |
 | TMA | `tmaLoad` (CTA group), `tmaStore`, `bulkCommit`, `bulkWait` (`read`/`complete`, pending) |
-| tcgen05 | `tmemAlloc`, `tmemRelinquish`, `tmemDealloc`, `mma` (CTA group, A as `MmaA.smem`/`tmem`, B's `SmemDesc`, `InstrDesc`), `commit` (CTA group, multicast mask), `tmemLoad`/`tmemStore` (shape), `tmemWait` (`load`/`store`) |
+| tcgen05 | `tmemAlloc`, `tmemRelinquish`, `tmemDealloc`, `mma` (CTA group, A as `MmaA.smem`/`tmem`, B's `SmemDesc`, `InstrDesc`), `tcCommit` (CTA group, multicast mask), `tmemLoad`/`tmemStore` (shape), `tmemWait` (`load`/`store`) |
 | warp | `elect`, `shfl`, `voteAny` |
 | registers | `setMaxNReg` (`inc`/`dec`, count) |
 | math | `movF32`, `ex2`, `lg2`, `ex2Emulated`, `rcp` (rounding), `cvtBf16x2` |
@@ -84,21 +85,22 @@ has no `Stmt.asm` left. `Registers.rac` emits none.
 | shared memory | `stShared` |
 
 **Blocks of their own.** Some instructions print as a short PTX block, as their templates did: `mbarWait`'s spin loop,
-`mma`'s predicate, `commit`'s mask register, `elect`'s flag, `voteAny`'s predicates, the `cvta` of `ldRelaxed` and
+`mma`'s predicate, `tcCommit`'s mask register, `elect`'s flag, `voteAny`'s predicates, the `cvta` of `ldRelaxed` and
 `casRelaxed`. `ex2Emulated` is FA4's sequence of f32 and integer instructions. The evaluator gives each its
 meaning as a unit.
 
 **The certificate.**
-- **I1, I2, I4, I5.** A statement's expressions include the operands its instruction prints (`Cuda.asmOf`), so the
-  scoping, shared-memory, literal and name checks see an instruction's operands as they saw a template's, packed
-  descriptors included. `Spec.OwnExpr` has `instrOut` and `instrIn`, stated over `Cuda.asmOf(i)`'s operands.
-- **I3.** `Check.namedBarriers` reads `Instr.barSync` as well as the template of `Gpu.namedBarrier`. `Spec.Barrier` has
-  an `instr` form, and `Spec.BarrierIds` a `literalInstr` field: each `barSync` has literal operands. Both kinds share
-  one set of ids.
-- **The proofs** gained a case for each, and `pairShape` and `literalInstrAt` for `literalInstr`. No statement of
-  `Spec.rac` got weaker.
+- **I1, I2, I4, I5.** A statement's expressions include an instruction's `Cuda.instrExprs`: the expressions it prints
+  as operands, packed descriptors included. `Spec.OwnExpr.instr` is stated over them, and `proofs/Instructions.rac`
+  proves that `Cuda.asmOf` prints exactly those, in order.
+- **I3.** The named barrier is `Instr.barSync` in both cores. `Check.namedBarriers` reads it; an asm statement is not a
+  barrier to the checker or to `Spec.Barrier`.
+- **I4.** Every instruction is `Spec.InRange`: the immediates its template prints, and the fields the printer packs
+  into its descriptors, each in its range (OBLIGATIONS I4 lists them). `Check.inRange` decides it.
+- **The proofs** gained a case for `Stmt.instr` each; `Literals.rac` proves the ranges. No statement of `Spec.rac`
+  got weaker for what the cores emit.
 
-**Not yet used.** No `Check.rac` rule reads an instruction beyond `barSync`. Two are now possible:
+**Not yet used.** No `Check.rac` rule reads an instruction's place in the kernel. Two are now possible:
 - which barrier a wait names, and which group runs an aligned instruction (I7, I8), once the AST records which threads
   run a block;
 - the `setmaxnreg` placement rule of `encoding/REGISTERS.md` §9 (below).

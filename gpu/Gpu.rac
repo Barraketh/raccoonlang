@@ -264,7 +264,7 @@ namespace Gpu {
 
   def asmIn (template: String)(ins: List(Operand)): Stmt := Stmt.asm(template, List.nil(Operand), ins)
 
-  def namedBarrier (id: Nat)(threads: Nat): Stmt := Gpu.asmIn(Check.barrierTemplate, Gpu.two(Gpu.r(Expr.lit(id)), Gpu.r(Expr.lit(threads))))
+  def namedBarrier (id: Nat)(threads: Nat): Stmt := Stmt.instr(Instr.barSync(Expr.lit(id), Expr.lit(threads)))
 
   def mbarInit (bar: Expr)(count: Nat): Stmt :=
     Gpu.asmIn("mbarrier.init.shared::cta.b64 [%0], %1;", Gpu.two(Gpu.r(bar), Gpu.r(Expr.lit(count))))

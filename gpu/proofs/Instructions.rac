@@ -1,0 +1,65 @@
+// The printer prints an instruction's expressions as its operands: the operands of `Cuda.asmOf(i)` are exactly
+// `Cuda.instrExprs(i)`, in order. So the statement of I1, I2, I4 and I5 over `instrExprs` covers every expression an
+// instruction prints. (That a template prints no expression of its own, only numbers, is read off `asmOf`: its
+// templates are built from strings and `Text.nat`.)
+
+import proofs.Lib
+
+namespace Instructions {
+  open Cuda
+
+  // `f` writes `x` as an operand of expression `x`.
+  def Keeps (f: Expr -> Operand): Prop := (x: Expr) -> Eq(Expr, Asm.operandExpr(f(x)), x)
+
+  def mapKeeps (f: Expr -> Operand)(keeps: Instructions.Keeps(f))(xs: List(Expr))
+      : Eq(List(Expr), List.map(List.map(xs, Operand, f), Expr, Asm.operandExpr), xs) decreases structural(xs) := {
+    match xs returning Eq(List(Expr), List.map(List.map(xs, Operand, f), Expr, Asm.operandExpr), xs) with
+    | List.nil => Eq.refl(List.nil(Expr))
+    | List.cons x more =>
+      Lib.consEq(Expr, Asm.operandExpr(f(x)), x, List.map(List.map(more, Operand, f), Expr, Asm.operandExpr), more, keeps(x),
+        Instructions.mapKeeps(f, keeps, more))
+  }
+
+  def wordKeeps (w: Word): Instructions.Keeps(Asm.wordIn(w)) := {
+    match w returning Instructions.Keeps(Asm.wordIn(w)) with
+    | Word.u32 => fun (x: Expr): Eq(Expr, x, x) => Eq.refl(x)
+    | Word.f32 => fun (x: Expr): Eq(Expr, x, x) => Eq.refl(x)
+  }
+
+  def f32Keeps : Instructions.Keeps(Asm.f32In) := fun (x: Expr): Eq(Expr, x, x) => Eq.refl(x)
+
+  // A load's outputs, then its other operands.
+  def loadExprs (dst: List(Nat))(ys: List(Operand))
+      : Eq(List(Expr), List.map(List.append(List.map(dst, Operand, Asm.f32Out), ys), Expr, Asm.operandExpr),
+          List.append(List.map(dst, Expr, Expr.var), List.map(ys, Expr, Asm.operandExpr))) decreases structural(dst) := {
+    match dst returning Eq(List(Expr), List.map(List.append(List.map(dst, Operand, Asm.f32Out), ys), Expr, Asm.operandExpr),
+        List.append(List.map(dst, Expr, Expr.var), List.map(ys, Expr, Asm.operandExpr))) with
+    | List.nil => Eq.refl(List.map(ys, Expr, Asm.operandExpr))
+    | List.cons v more =>
+      congrArg(Instructions.loadExprs(more, ys), List(Expr), fun (t: List(Expr)): List(Expr) => List.cons(Expr.var(v), t))
+  }
+
+  def printed (i: Instr): Eq(List(Expr), Asm.exprs(Cuda.asmOf(i)), Cuda.instrExprs(i)) := {
+    match i returning Eq(List(Expr), Asm.exprs(Cuda.asmOf(i)), Cuda.instrExprs(i)) with
+    | Instr.mbarArrive w bar arrival => {
+      match arrival returning Eq(List(Expr), Asm.exprs(Cuda.asmOf(Instr.mbarArrive(w, bar, arrival))), Cuda.instrExprs(Instr.mbarArrive(w, bar, arrival))) with
+      | Arrival.one => Eq.refl(List.cons(bar, List.nil(Expr)))
+      | Arrival.count n => Eq.refl(List.cons(bar, List.cons(n, List.nil(Expr))))
+      | Arrival.expectTx bytes => Eq.refl(List.cons(bar, List.cons(bytes, List.nil(Expr))))
+    }
+    | Instr.mma g acc a b idesc accumulate => {
+      let goal := fun (x: MmaA): Prop => Eq(List(Expr), Asm.exprs(Cuda.asmOf(Instr.mma(g, acc, x, b, idesc, accumulate))),
+        Cuda.instrExprs(Instr.mma(g, acc, x, b, idesc, accumulate)))
+      match a returning goal(a) with
+      | MmaA.smem desc => Eq.refl(Cuda.instrExprs(Instr.mma(g, acc, MmaA.smem(desc), b, idesc, accumulate)))
+      | MmaA.tmem addr => Eq.refl(Cuda.instrExprs(Instr.mma(g, acc, MmaA.tmem(addr), b, idesc, accumulate)))
+    }
+    | Instr.tmemLoad shape dst taddr => Instructions.loadExprs(dst, Asm.ops1(Asm.u32In(taddr)))
+    | Instr.tmemStore shape w taddr values =>
+      congrArg(Instructions.mapKeeps(Asm.wordIn(w), Instructions.wordKeeps(w), values), List(Expr),
+        fun (t: List(Expr)): List(Expr) => List.cons(taddr, t))
+    | Instr.stShared addr values =>
+      congrArg(Instructions.mapKeeps(Asm.f32In, Instructions.f32Keeps, values), List(Expr), fun (t: List(Expr)): List(Expr) => List.cons(addr, t))
+    | _ => Eq.refl(Cuda.instrExprs(i))
+  }
+}

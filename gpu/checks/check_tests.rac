@@ -23,9 +23,7 @@ namespace T {
 
   def exprs (x: Expr)(y: Expr): List(Expr) := List.cons(x, List.cons(y, List.nil(Expr)))
 
-  def barSync (id: Nat)(threads: Nat): Stmt := Stmt.instr(Instr.barSync(Expr.lit(id), Expr.lit(threads)))
-
-  def bar (id: Nat)(threads: Nat): Stmt := Stmt.asm(Check.barrierTemplate, List.nil(Operand), List.cons(T.r(Expr.lit(id)), List.cons(T.r(Expr.lit(threads)), List.nil(Operand))))
+  def bar (id: Nat)(threads: Nat): Stmt := Stmt.instr(Instr.barSync(Expr.lit(id), Expr.lit(threads)))
 
   def n : Param := Param.scalar(DType.u32, "N")
 
@@ -290,29 +288,11 @@ namespace T {
       T.two("bar.sync 1: waits for 48 threads, not a positive multiple of 32", "bar.sync 2: waits for 0 threads, not a positive multiple of 32")) :=
     Eq.refl(T.two("bar.sync 1: waits for 48 threads, not a positive multiple of 32", "bar.sync 2: waits for 0 threads, not a positive multiple of 32"))
 
-  // A `bar.sync` whose operands are not two literal inputs: a variable id, an output, a third input.
-  def barrierOperands : Kernel := T.plain(T.b3(Stmt.asm(Check.barrierTemplate, List.nil(Operand), List.cons(T.r(Expr.param("N")), List.cons(T.r(Expr.lit(32)), List.nil(Operand)))),
-    Stmt.asm(Check.barrierTemplate, List.cons(T.r(Expr.lit(1)), List.nil(Operand)), List.cons(T.r(Expr.lit(1)), List.cons(T.r(Expr.lit(32)), List.nil(Operand)))),
-    Stmt.asm(Check.barrierTemplate, List.nil(Operand), List.cons(T.r(Expr.lit(1)), List.cons(T.r(Expr.lit(32)), List.cons(T.r(Expr.lit(0)), List.nil(Operand)))))))
-
-  def barriersOperands : Eq(List(String), Check.namedBarriers(T.barrierOperands), List.cons("bar.sync without a literal id and thread count",
-      T.two("bar.sync without a literal id and thread count", "bar.sync without a literal id and thread count"))) :=
-    Eq.refl(List.cons("bar.sync without a literal id and thread count",
-      T.two("bar.sync without a literal id and thread count", "bar.sync without a literal id and thread count")))
-
-  // The typed instruction is a named barrier as the template is, and the two share one set of ids.
-  def barrierInstrs : Kernel := T.plain(T.b3(T.barSync(0, 32), T.barSync(4, 48), Stmt.scoped(T.b2(T.bar(5, 32), T.barSync(5, 64)))))
-
-  def barriersInstrs : Eq(List(String), Check.namedBarriers(T.barrierInstrs), List.cons("bar.sync 0: the id is outside 1..15",
-      T.two("bar.sync 4: waits for 48 threads, not a positive multiple of 32", "bar.sync 5: the id is already another barrier's"))) :=
-    Eq.refl(List.cons("bar.sync 0: the id is outside 1..15",
-      T.two("bar.sync 4: waits for 48 threads, not a positive multiple of 32", "bar.sync 5: the id is already another barrier's")))
-
-  // An instruction `bar.sync` with a variable id, or a 64-bit literal count.
-  def barrierInstrOperands : Kernel := T.plain(T.b2(Stmt.instr(Instr.barSync(Expr.param("N"), Expr.lit(32))),
+  // A `bar.sync` with a variable id, or a 64-bit literal count.
+  def barrierOperands : Kernel := T.plain(T.b2(Stmt.instr(Instr.barSync(Expr.param("N"), Expr.lit(32))),
     Stmt.instr(Instr.barSync(Expr.lit(1), Expr.lit64(32)))))
 
-  def barriersInstrOperands : Eq(List(String), Check.namedBarriers(T.barrierInstrOperands),
+  def barriersOperands : Eq(List(String), Check.namedBarriers(T.barrierOperands),
       T.two("bar.sync without a literal id and thread count", "bar.sync without a literal id and thread count")) :=
     Eq.refl(T.two("bar.sync without a literal id and thread count", "bar.sync without a literal id and thread count"))
 
@@ -342,9 +322,35 @@ namespace T {
     Stmt.instr(Instr.mma(CtaGroup.one, Expr.lit(0), MmaA.tmem(Expr.lit(0)), SmemDesc.mk(Expr.lit(0), 0, 9223372036854775808),
       InstrDesc.mk(128, 256, Bool.false), Expr.lit(1)))))
 
-  def literalsWideInstr : Eq(List(String), Check.literals(T.wideInstr),
-      T.two("32-bit literal 4294967296 does not fit 32 bits", "64-bit literal 18446744073709551616 does not fit 64 bits")) :=
-    Eq.refl(T.two("32-bit literal 4294967296 does not fit 32 bits", "64-bit literal 18446744073709551616 does not fit 64 bits"))
+  def literalsWideInstr : Eq(List(String), Check.literals(T.wideInstr), List.cons("tcgen05.mma: a descriptor's field does not fit",
+      T.two("32-bit literal 4294967296 does not fit 32 bits", "64-bit literal 18446744073709551616 does not fit 64 bits"))) :=
+    Eq.refl(List.cons("tcgen05.mma: a descriptor's field does not fit",
+      T.two("32-bit literal 4294967296 does not fit 32 bits", "64-bit literal 18446744073709551616 does not fit 64 bits")))
+
+  // Immediates out of their ranges, and descriptor fields that would not fit: N = 512, a leading byte offset of 2^18,
+  // and one not a multiple of 16. In range: a 16-bit mask, 24 registers, and four values.
+  def rangedInstrs : Kernel := T.plain(Block.seq(Stmt.instr(Instr.tcCommit(CtaGroup.two, Expr.lit(0), Option.some(65536))),
+    Block.seq(Stmt.instr(Instr.tcCommit(CtaGroup.two, Expr.lit(0), Option.some(65535))),
+    Block.seq(Stmt.instr(Instr.setMaxNReg(RegChange.inc, 260)), Block.seq(Stmt.instr(Instr.setMaxNReg(RegChange.dec, 24)),
+    Block.seq(Stmt.instr(Instr.setMaxNReg(RegChange.dec, 100)), Block.seq(Stmt.instr(Instr.movF32(0, 4294967296)),
+    Block.seq(Stmt.instr(Instr.shfl(1, Expr.lit(0), 32)),
+    Block.seq(Stmt.instr(Instr.tmemLoad(TmemShape.s32x32b, List.nil(Nat), Expr.lit(0))),
+    Block.seq(Stmt.instr(Instr.tmemStore(TmemShape.s32x32b, Word.u32, Expr.lit(0), T.exprs(Expr.lit(0), Expr.lit(1)))),
+    Block.seq(Stmt.instr(Instr.stShared(Expr.lit(0), List.cons(Expr.lit(0), T.exprs(Expr.lit(1), Expr.lit(2))))),
+    Block.seq(Stmt.instr(Instr.stShared(Expr.lit(0), List.cons(Expr.lit(0), List.cons(Expr.lit(1), T.exprs(Expr.lit(2), Expr.lit(3)))))),
+    Block.seq(Stmt.instr(Instr.mma(CtaGroup.one, Expr.lit(0), MmaA.tmem(Expr.lit(0)), SmemDesc.mk(Expr.lit(0), 0, 0), InstrDesc.mk(128, 512, Bool.false), Expr.lit(1))),
+    Block.seq(Stmt.instr(Instr.mma(CtaGroup.one, Expr.lit(0), MmaA.smem(SmemDesc.mk(Expr.lit(0), 262144, 0)), SmemDesc.mk(Expr.lit(0), 0, 0),
+      InstrDesc.mk(128, 256, Bool.false), Expr.lit(1))),
+    T.b1(Stmt.instr(Instr.mma(CtaGroup.one, Expr.lit(0), MmaA.tmem(Expr.lit(0)), SmemDesc.mk(Expr.lit(0), 8, 0), InstrDesc.mk(128, 256, Bool.false), Expr.lit(1))))))))))))))))))
+
+  def rangedMessages : List(String) := List.cons("tcgen05.commit: the CTA mask does not fit 16 bits",
+    List.cons("setmaxnreg: 260 registers, not a multiple of 8 in 24..256", List.cons("setmaxnreg: 100 registers, not a multiple of 8 in 24..256",
+    List.cons("mov.b32: 4294967296 does not fit 32 bits", List.cons("shfl.sync: lane 32 is not below 32",
+    List.cons("tcgen05.ld: 0 columns, not a power of 2 up to 128", List.cons("st.shared: 3 values, not 2 or 4",
+    List.cons("tcgen05.mma: a descriptor's field does not fit", T.two("tcgen05.mma: a descriptor's field does not fit",
+      "tcgen05.mma: a descriptor's field does not fit")))))))))
+
+  def literalsRanged : Eq(List(String), Check.literals(T.rangedInstrs), T.rangedMessages) := Eq.refl(T.rangedMessages)
 
   // A launcher prints its block size and each box as 32-bit literals.
   def wideLaunch : Kernel := Kernel.mk("good", T.goodParams, 1024, T.goodBody, Option.some(Launcher.mk(T.hostParams,

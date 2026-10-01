@@ -220,7 +220,7 @@ The `MODELS.md` changes:
    - the CTA group in the generation state, read by the `tcgen05` emitters;
    - `withPairRing`, `withPairTmem`, a pair accumulator ring;
    - the cluster-barrier closes and initialization;
-   - `mapa`, remote arrive, multicast commit and the `::2` TMA as instruction templates.
+   - `mapa`, remote arrive, multicast commit and the `::2` TMA as instructions.
    The single-CTA examples generate byte-identical code.
 2. **Pair TinyGEMM** (`examples/tinygemm_pair.rac`, built): a 256×256 output tile per pair, each CTA 128×256. Stages are
    A 128×64 plus half of B, 128×64, per CTA, in a ring of four. The accumulator ring is 2 × 256 columns, of which the
@@ -278,7 +278,7 @@ Against the design as first written:
 - All six single-CTA openers refuse in a pair kernel, not only `withTmem` and `withAccRing`.
 - `Leader` is required where the tensor-core endpoints are taken, not by every MMA and commit.
 - The core, not the client, computes a CTA's half for fills, so a wrong half is unwritable.
-- The multicast commit's mask is a `.b16` register in the template.
+- The multicast commit's mask is a `.b16` register in the instruction's PTX block.
 - The CTA group chooses the barrier waits' and commits' form as well as `.cta_group`, so the pair rings' waits,
   releases, commits and drains are the single-CTA operations, not copies with other instructions.
 - `rank` is not exported: a rank-dependent trip count of the client's would deadlock the pair (review).
