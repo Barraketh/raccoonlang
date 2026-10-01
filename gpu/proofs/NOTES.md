@@ -355,7 +355,8 @@ Arms (trivial ones) per such match: `Errors.keeps` 14 (13), `Literals.keeps` 15 
 `Spec.inner` and `Spec.declaredBy` 14 (10).
 
 *Feature:* a wildcard case, checked once per remaining constructor under its refinement; or a tactic combinator
-(`cases s <;> first | exact h | …`).
+(`cases s <;> first | exact h | …`). *Done:* the wildcard case `| _ => e` (docs/WILDCARD_CASE.md); `Errors.keeps`
+uses it, the other lemmas are left as written.
 
 ### F6. A `struct` in `Prop` with a data field is rejected
 

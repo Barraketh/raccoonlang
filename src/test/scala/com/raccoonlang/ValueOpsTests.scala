@@ -243,6 +243,7 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
           span
         )
       ),
+      wildcard = None,
       span,
       NodeId.fresh()
     )
@@ -278,6 +279,7 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
       CTerm.LocalRef(scrutRef, span),
       motive = typeRef,
       cases = Vector(CoreAst.Case("C", isFullyQualified = true, Vector.empty, CTerm.LocalRef(capturedRef, span), span)),
+      wildcard = None,
       span,
       NodeId.fresh()
     )
@@ -335,6 +337,7 @@ class ValueOpsTests extends munit.FunSuite with DiagnosticAssertions {
           span
         )
       ),
+      wildcard = None,
       span,
       NodeId.fresh()
     )

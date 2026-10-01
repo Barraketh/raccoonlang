@@ -100,6 +100,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           span
         )
       ),
+      None,
       span,
       NodeId.fresh()
     )
@@ -116,6 +117,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           span
         )
       ),
+      None,
       span,
       NodeId.fresh()
     )
@@ -298,6 +300,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           span
         )
       ),
+      None,
       span,
       NodeId.fresh()
     )
@@ -314,6 +317,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           span
         )
       ),
+      None,
       span,
       NodeId.fresh()
     )
@@ -412,6 +416,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           span
         )
       ),
+      None,
       span,
       NodeId.fresh()
     )
@@ -428,6 +433,7 @@ class RecursiveDefBlockTests extends munit.FunSuite with DiagnosticAssertions {
           span
         )
       ),
+      None,
       span,
       NodeId.fresh()
     )

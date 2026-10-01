@@ -831,6 +831,30 @@ match n returning Nat with
 | .succ p => p
 ```
 
+A match's last case may be the wildcard `| _ => e`, which stands for a case
+for each reachable constructor the other cases do not name, binding its fields
+anonymously:
+
+```raccoon
+def isZero (n: Nat): Bool := {
+  match n returning Bool with
+  | Nat.zero => Bool.true
+  | _ => Bool.false
+}
+```
+
+`e` is checked once for each constructor it stands for, under that case's own
+refinement, as if the case were written out with `_` for each field; a
+diagnostic in one of them names its constructor. A constructor apart from the
+scrutinee's family instance needs no case, so the wildcard does not stand for
+it. A wildcard that stands for no constructor is `RedundantCase`. A wildcard
+anywhere but last, a second one, or one that binds fields is a parse error. A
+nested match takes every case that follows it, so a match nested in a case
+other than the last is written in braces. The wildcard covers whole
+constructors: there are no nested patterns. Because `e` is checked once per
+constructor, matching the same scrutinee again inside `e` needs, in each of
+those checks, only the case for that constructor.
+
 ### Result types and `returning`
 
 A match result type is its motive, which every match writes with
@@ -883,8 +907,8 @@ Leaving out `eat(t)` in one branch is `LinearUnused(t)`, reported at the
 binder, and `Nat.add(eat(t), eat(t))` is `LinearReused(t)`, reported at the
 second use. A path that reuses a local is reported as reused, even where
 another path leaves it unused. Matching a linear value consumes it, and its
-fields must each be used once in the branch, so a wildcard over a linear field
-is `LinearUnused`. A [destructuring](#destructuring) consumes its value the same
+fields must each be used once in the branch, so `_` for a linear field is
+`LinearUnused`. A [destructuring](#destructuring) consumes its value the same
 way, and each local it binds is used once in the rest of the block. A match
 with no branch ends every path through it and so uses every linear local still
 unused there; nothing after it is on those paths. A `decreases` clause is not a

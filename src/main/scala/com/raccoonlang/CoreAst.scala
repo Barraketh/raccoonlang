@@ -9,6 +9,7 @@ package com.raccoonlang
 // A few fields exist only after checking — `Binder.projection`, `Pi.knownPropValued`, and
 // `Lam.recursivePeers`. Each defaults to the "not yet checked" value, so the parser and elaborator
 // never mention them. A lambda's derived closure field is likewise empty until the checker derives it.
+// `Match.wildcard` exists only before checking, which expands it (MatchChecker).
 //
 // A Pi, lambda, match and `scope` carry their node identity (NodeId) as a field of their own, with no default: whoever
 // makes one of these nodes allocates it a fresh identity, and whoever rebuilds one, as the checker does with its
@@ -143,10 +144,15 @@ object CoreAst {
      */
     final case class Scope(ref: CoreAst.LocalRef, body: Term, span: Span, id: NodeId) extends Term
 
+    /**
+     * A match's cases, then its wildcard case if it has one. Checking expands a wildcard into the cases it stands for,
+     * so a residual has none.
+     */
     final case class Match(
         scrut: Term,
         motive: Term,
         cases: Vector[Case],
+        wildcard: Option[Wildcard],
         span: Span,
         id: NodeId
     ) extends Term {
@@ -271,8 +277,8 @@ object CoreAst {
         lets.flatMap(let => let.ty.toVector :+ let.value) :+ res
       case Term.Lam(ty, body, _, _, _, _, _) => Vector(ty, body)
       case Term.Scope(_, body, _, _)         => Vector(body)
-      case Term.Match(scrut, motive, cases, _, _) =>
-        Vector(scrut, motive) ++ cases.map(_.body)
+      case Term.Match(scrut, motive, cases, wildcard, _, _) =>
+        Vector(scrut, motive) ++ cases.map(_.body) ++ wildcard.map(_.body)
     }
 
   /**
@@ -304,6 +310,84 @@ object CoreAst {
       case Term.GlobalRef(name, _) => names(name)
       case other                   => children(other).exists(mentionsGlobal(_, names))
     }
+
+  /**
+   * The term written out again: the same syntax, with a fresh node identity for every node that carries one and a fresh
+   * local for every local it binds, its references renamed to match. It shares no identity with `term`, so its
+   * closures, stuck matches and `scope` atoms are its own (docs/kernel.md#value-identity); the locals it mentions
+   * without binding are kept. `term` is elaborated, not checked: it has no derived closure or recursive peer table. A
+   * wildcard's expansion copies its body for each case it stands for (MatchChecker).
+   */
+  private[raccoonlang] def freshCopy(term: Term): Term = {
+    // Local ids are unique to their binder, so one renaming serves the whole term. Each binder is renamed before its
+    // scope is copied, which is where it is written.
+    val renamed = scala.collection.mutable.HashMap.empty[LocalRef, LocalRef]
+    def bind(ref: LocalRef): LocalRef = {
+      val fresh = SyntheticLocalRef.fresh(ref.name)
+      renamed(ref) = fresh
+      fresh
+    }
+    def local(ref: LocalRef): LocalRef = renamed.getOrElse(ref, ref)
+    def field(written: ClosureField): ClosureField =
+      written match {
+        case ClosureField.Written(term) => ClosureField.Written(copy(term))
+        case ClosureField.Omitted       => ClosureField.Omitted
+        case ClosureField.Derived(_)    => wtf("A fresh copy of a checked lambda")
+      }
+    // A function type's closure stands outside its binders; each binder's type sees the binders before it.
+    def pi(written: Term.Pi): Term.Pi = {
+      val closure = Closure(field(written.closure.kind), field(written.closure.scope))
+      val binders = written.binders.map { binder =>
+        val ty = copy(binder.ty)
+        binder.copy(localRef = bind(binder.localRef), ty = ty)
+      }
+      written.copy(binders = binders, out = copy(written.out), closure = closure, id = NodeId.fresh())
+    }
+    def decreases(spec: DecreaseSpec): DecreaseSpec =
+      spec match {
+        case DecreaseSpec.Lexicographic(args, span) => DecreaseSpec.Lexicographic(args.map(local), span)
+        case DecreaseSpec.Measure(term, span)       => DecreaseSpec.Measure(copy(term), span)
+      }
+    def copy(term: Term): Term =
+      term match {
+        case _: Term.GlobalRef | _: Term.NatLit | _: Term.StrLit => term
+        case Term.LocalRef(ref, span)                            => Term.LocalRef(local(ref), span)
+        case Term.Select(base, name, span)                       => Term.Select(copy(base), name, span)
+        case Term.Sort(level, kind, scope, span) => Term.Sort(copy(level), copy(kind), copy(scope), span)
+        case Term.FormOp(form, args, span)       => Term.FormOp(form, args.map(copy), span)
+        case Term.App(fn, args, evidence, span)  => Term.App(copy(fn), args.map(copy), evidence.map(copy), span)
+        case written: Term.Pi                    => pi(written)
+        case Term.Body(lets, res, span)          =>
+          // A let's value and type stand outside what it binds.
+          val copied = lets.map { let =>
+            val (ty, value) = (let.ty.map(copy), copy(let.value))
+            val pattern = let.pattern match {
+              case LetPattern.Local(ref) => LetPattern.Local(bind(ref))
+              case LetPattern.Fields(vars, span) =>
+                LetPattern.Fields(vars.map(v => PatternVar(bind(v.ref), v.span)), span)
+            }
+            Let(pattern, ty, value, let.span)
+          }
+          Term.Body(copied, copy(res), span)
+        case lam: Term.Lam =>
+          val ty = pi(lam.ty)
+          val recursion = lam.recursion.map(r => Recursion(bind(r.selfRef), decreases(r.decreases)))
+          if (lam.recursivePeers.nonEmpty) wtf("A fresh copy of a checked lambda")
+          Term.Lam(ty, copy(lam.body), lam.span, NodeId.fresh(), lam.name, recursion)
+        case Term.Scope(ref, body, span, _) =>
+          val fresh = bind(ref)
+          Term.Scope(fresh, copy(body), span, NodeId.fresh())
+        case Term.Match(scrut, motive, cases, wildcard, span, _) =>
+          val (copiedScrut, copiedMotive) = (copy(scrut), copy(motive))
+          val copiedCases = cases.map { c =>
+            val vars = c.patternVars.map(v => PatternVar(bind(v.ref), v.span))
+            c.copy(patternVars = vars, body = copy(c.body))
+          }
+          val copiedWildcard = wildcard.map(w => w.copy(body = copy(w.body)))
+          Term.Match(copiedScrut, copiedMotive, copiedCases, copiedWildcard, span, NodeId.fresh())
+      }
+    copy(term)
+  }
 
   // Let: let x := foo, or a destructuring: let (a, b) := foo
   final case class Let(
@@ -389,6 +473,12 @@ object CoreAst {
   ) {
     def argRefs: Vector[LocalRef] = patternVars.map(_.ref)
   }
+
+  /**
+   * `| _ => body`, located at the whole case: one case for each reachable constructor no other case names, binding its
+   * fields anonymously (docs/WILDCARD_CASE.md). `MatchChecker` expands it.
+   */
+  final case class Wildcard(body: Term, span: Span)
 
   /** The local a case's or a destructuring's pattern binds for one constructor field, and where it is written. */
   final case class PatternVar(ref: LocalRef, span: Span)

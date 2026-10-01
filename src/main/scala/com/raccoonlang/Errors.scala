@@ -22,6 +22,9 @@ object Frame {
 
   /** One branch of a match, named by its constructor and the fields it binds. */
   final case class InBranch(ctor: String, args: Vector[String]) extends Frame
+
+  /** One case a wildcard stands for, named by its constructor (docs/WILDCARD_CASE.md). */
+  final case class InWildcard(ctor: String) extends Frame
 }
 
 /**
@@ -65,6 +68,9 @@ final case class DuplicateCase(ctor: String) extends TypeError
 final case class UnreachableCase(ctor: String) extends TypeError
 
 final case class MissingCase(ctor: String) extends TypeError
+
+/** A wildcard case that stands for no constructor: the other cases name every reachable one. */
+case object RedundantCase extends TypeError
 
 final case class VarAlreadyLinked(id: Long) extends TypeError
 

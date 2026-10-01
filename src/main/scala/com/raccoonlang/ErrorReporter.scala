@@ -125,5 +125,6 @@ object ErrorReporter {
       case Frame.InEvidence(index, binder, callee)    => s"evidence $index ($binder) of $callee"
       case Frame.InBranch(ctor, args) if args.isEmpty => s"branch $ctor"
       case Frame.InBranch(ctor, args)                 => s"branch $ctor ${args.mkString(" ")}"
+      case Frame.InWildcard(ctor)                     => s"the wildcard case for $ctor"
     }
 }
