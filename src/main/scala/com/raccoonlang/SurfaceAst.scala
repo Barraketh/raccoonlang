@@ -80,12 +80,16 @@ object SurfaceAst {
     // Scope: scope l => body
     final case class Scope(name: String, body: Term, span: Span) extends Term
 
-    /** A match's cases, then its wildcard case if it has one, which is always its last. */
+    /**
+     * A match's cases, then its wildcard case if it has one, which is always its last. `match h : e` names its equation
+     * `h`, which every case binds after its fields (docs/MATCH_EQUATION.md).
+     */
     final case class Match(
         scrut: Term,
         motive: Term,
         cases: Vector[Case],
         wildcard: Option[Wildcard],
+        equation: Option[PatternVar],
         span: Span
     ) extends Term
 

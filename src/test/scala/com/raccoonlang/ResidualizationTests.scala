@@ -207,7 +207,7 @@ class ResidualizationTests extends munit.FunSuite {
           |""".stripMargin
 
     resultTerm(checkBody(p, withStuckBool).term) match {
-      case CA.Term.Match(_, _, cases, None, _, _) =>
+      case CA.Term.Match(_, _, cases, None, None, _, _) =>
         assertEquals(cases.map(_.ctorName).toSet, Set("Bool.true", "Bool.false"))
         cases.foreach(c => assert(containsGlobal(c.body, "id")))
       case other => fail(s"Expected stuck match with literal branches, got $other")
@@ -228,7 +228,7 @@ class ResidualizationTests extends munit.FunSuite {
           |""".stripMargin
 
     resultTerm(checkBody(p, withStuckBool).term) match {
-      case CA.Term.Match(scrut, _, _, None, _, _) =>
+      case CA.Term.Match(scrut, _, _, None, None, _, _) =>
         assert(containsGlobal(scrut, "idBool"))
         assert(containsGlobal(scrut, "stuckBool"))
       case other => fail(s"Expected stuck match residual, got $other")
@@ -404,6 +404,7 @@ class ResidualizationTests extends munit.FunSuite {
             ),
             _,
             None,
+            None,
             _,
             _
           ) =>
@@ -430,7 +431,7 @@ class ResidualizationTests extends munit.FunSuite {
         |""".stripMargin
 
     checkLastDeclBody(p, Prelude.default) match {
-      case CA.Term.Lam(_, CA.Term.Match(_, _, cases, None, _, _), _, _, _, _, _) =>
+      case CA.Term.Lam(_, CA.Term.Match(_, _, cases, None, None, _, _), _, _, _, _, _) =>
         assertEquals(
           cases.map(c => (c.ctorName, c.argRefs.map(_.name))),
           Vector(
@@ -463,7 +464,7 @@ class ResidualizationTests extends munit.FunSuite {
         |""".stripMargin
 
     checkLastDeclBody(p, Prelude.default) match {
-      case CA.Term.Lam(_, CA.Term.Match(_, _, cases, None, _, _), _, _, _, _, _) =>
+      case CA.Term.Lam(_, CA.Term.Match(_, _, cases, None, None, _, _), _, _, _, _, _) =>
         val lams = cases.tail.map(_.body).collect { case lam: CA.Term.Lam => lam }
         assertEquals(lams.length, 2)
         assertEquals(lams.map(_.id).distinct.length, 2)

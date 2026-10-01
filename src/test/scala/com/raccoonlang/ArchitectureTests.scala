@@ -60,7 +60,7 @@ class ArchitectureTests extends munit.FunSuite {
       _ != "Ledger.scala"
     ),
     Rule(
-      "tokens stay out of types and proofs by one test, in TypeChecker.synthesize, the only place LinearInType is raised",
+      "tokens stay out of types and proofs by one test, TypeChecker.tokenInTypeOrProof, which alone raises LinearInType",
       raw"\bLinearInType\(".r,
       Set("TypeChecker.scala", "Errors.scala", "ErrorRendering.scala")
     ),

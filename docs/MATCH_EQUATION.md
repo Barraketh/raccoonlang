@@ -1,6 +1,6 @@
 # A match that names its equation
 
-Status: **draft** (2026-10-01). A quality-of-life feature for `gpu/proofs/NOTES.md` F2 ("no `inspect`") and
+Status: **implemented** (2026-10-01). A quality-of-life feature for `gpu/proofs/NOTES.md` F2 ("no `inspect`") and
 `gpu/encoding/NOTES.md` item 3 ("no dependent `if` for evidence").
 
 ## 1. The feature
@@ -64,12 +64,15 @@ constructor applied to those fields, so the equation holds by reflexivity.
 ## 4. Implementation
 
 - **Parser:** `match ident : term returning …`.
-- **Surface and Core ASTs:** `Match.equation: Option[LocalRef]`.
+- **Surface and Core ASTs:** `Match.equation`, the equation's local and where it is written.
 - **Elaborator:** binds `h` in every case's scope, after the fields.
 - **`MatchChecker`:** in each case, binds `h` at `Eq(T, scrutinee, C(p̄, x̄))`, built from the checked scrutinee and the
   case's fields, then checks the body. `MatchEquationIndexed` and the linearity rule are checked once, at the match.
 - **Evaluation:** binds `h` to the canonical proof, deferred like evidence, when a case is taken.
 - **Printer.**
+- **`Eq`:** the trusted prelude's, validated at the end of prelude loading as exactly the equality family
+  (`docs/kernel.md#equality`), so a module's own `Eq` cannot make `h` false. Without one, and in the prelude's own
+  declarations, a named equation is `MatchEquationUnavailable`.
 - **Combined with a wildcard case** (`docs/WILDCARD_CASE.md`): each expanded case gets its own `h` at its own
   constructor.
 

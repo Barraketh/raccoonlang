@@ -857,6 +857,49 @@ constructors: there are no nested patterns. Because `e` is checked once per
 constructor, matching the same scrutinee again inside `e` needs, in each of
 those checks, only the case for that constructor.
 
+### Naming the equation
+
+`match h : e returning M with …` names the match's equation `h`. In the case
+for constructor `C` with fields `x̄`, `h` is a proof of
+`Eq(T, e, C(p̄, x̄))`, where `T` is `e`'s type, `p̄` its parameters and `e` the
+scrutinee as written. So a case knows what a computed value was computed from,
+and can pass that fact on, for example as evidence:
+
+```raccoon
+def needs (n: Nat)(c: Nat)[fits: Nat.le(Nat.mul(8, Nat.succ(c)), n)]: Nat := c
+
+def loadFrom (n: Nat)(c: Nat)(left: Nat): Nat decreases structural(left) := {
+  match left returning Nat with
+  | Nat.zero => 0
+  | Nat.succ more => {
+    match fits : Nat.ble(Nat.mul(8, Nat.succ(c)), n) returning Nat with
+    | Bool.true => Nat.add(needs(n, c)[fits], loadFrom(n, Nat.succ(c), more))
+    | Bool.false => 0
+  }
+}
+```
+
+`Nat.le(a, b)` is `Eq(Bool, Nat.ble(a, b), Bool.true)`, so in the `true` case
+`fits` is the evidence `needs` asks for; without it the application is
+`EvidenceNotDischarged`, since the test is stuck on `n`.
+
+`h` is in scope in every case, after its fields, and nowhere else: not in the
+scrutinee or the motive. It is a proof, so it may be used any number of times.
+Nothing is rewritten by it: the motive and the other hypotheses keep mentioning
+`e`, and a proof that needs `e` replaced uses `h` with `Eq.subst`. With a
+wildcard, each case the wildcard stands for has its own `h`, at its own
+constructor. The scrutinee's family must have no indices, else
+`MatchEquationIndexed`, and its type must be unrestricted: a scrutinee of
+linear type would put a token in a proposition, which is `LinearInType`. The
+equation is stated with the prelude's `Eq`, which must be the equality family;
+otherwise, and in the prelude's own declarations, a named equation is
+`MatchEquationUnavailable`.
+
+When the program runs, a case is taken only when the scrutinee's value `v` is
+its constructor applied to its fields, so `h` is the canonical proof,
+`Eq.refl(v)`; it is evaluated only if something looks at it. A residual match
+keeps its equation and prints as `match h : e`.
+
 ### Result types and `returning`
 
 A match result type is its motive, which every match writes with

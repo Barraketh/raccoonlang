@@ -27,13 +27,6 @@ class EvidenceFieldTests extends munit.FunSuite with TestSupport {
     (at, failure.reason)
   }
 
-  /** The deferred proofs forced while `body` runs; see EvidenceTests.forcings. */
-  private def forcings(body: => Any): Long = {
-    val before = Value.DeferredEvidence.forcings.get()
-    body
-    Value.DeferredEvidence.forcings.get() - before
-  }
-
   private val fin = "struct Fin (n: Nat) : Type\n | mk (i: Nat)[h: Nat.lt(i, n)] : Fin(n)\n\n"
 
   private val both = "struct Both (a: Prop)(b: Prop) : Prop\n | mk [x: a][y: b] : Both(a, b)\n\n"

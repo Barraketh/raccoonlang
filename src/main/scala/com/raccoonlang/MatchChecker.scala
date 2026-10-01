@@ -56,9 +56,7 @@ object MatchChecker {
       // equation cannot leave a field's type over parameters nothing binds. Only the fresh fields are unknowns:
       // they are exactly what the constructor value mentions beyond the scrutinee type.
       val (fields, resultTy) = BinderOps.freshCtorFields(h, family.args, fieldRefs)
-      val ctorValue = Value.canonicalizeProof(
-        Packed.foldCtor(h, fields, resultTy).getOrElse(VCtor(h, fields, resultTy))
-      )
+      val ctorValue = Packed.construct(h, fields, resultTy)
       val ctorRefinable = refinableIn(ctorValue, ctorValue.synDeps -- scrutTpe.synDeps)
       val valueRefinable = rootRefinable(scrut) ++ ctorRefinable
       val typeRefinable = refinableIn(scrutTpe, scrutTpe.synDeps) ++ ctorRefinable
@@ -100,12 +98,14 @@ object MatchChecker {
 
   /**
    * The branch boundary: locates and frames failures in the pattern and the refined environment around the body.
-   * `frame` names the case, as written or as the wildcard stands for it.
+   * `frame` names the case, as written or as the wildcard stands for it. `equation` is the match's equation local, if
+   * it names one, with the proposition it proves in this case.
    */
   private def checkBranch(
       br: CA.Case,
       frame: Frame,
       args: Seq[Value],
+      equation: Option[(CA.LocalRef, Value)],
       envWithScrut: Env,
       expectedTy: Value
   ): CA.Case =
@@ -115,9 +115,14 @@ object MatchChecker {
         // Proof recovery stores recursive proof fields shallowly. Crossing the pattern boundary exposes one such
         // field, so put it into the canonical form for its exact type. A field's type is its local's type at its
         // binder, so it is confined there (spec §4.2).
-        val branchEnv = br.argRefs.zip(args).foldLeft(envWithScrut) { case (curEnv, (ref, argVal)) =>
+        val fieldsEnv = br.argRefs.zip(args).foldLeft(envWithScrut) { case (curEnv, (ref, argVal)) =>
           requireInScope(argVal.tpe, curEnv)
           curEnv.putLocal(ref, Value.canonicalizeProof(argVal))
+        }
+        // The equation is a hypothesis after the fields, confined as they are, and unrestricted, as every proof is.
+        val branchEnv = equation.fold(fieldsEnv) { case (ref, proposition) =>
+          requireInScope(proposition, fieldsEnv)
+          fieldsEnv.putLocal(ref, Value.canonicalizeProof(VProof(proposition)))
         }
         val branchRes = checkTerm(br.body, expectedTy, branchEnv)
         // Each field is released to the ledger at the branch's extent (spec §6.1), a wildcard's included, and an unused
@@ -144,6 +149,24 @@ object MatchChecker {
     // Outside a sealed family's module no match opens its values, so no case, `.short` form included, names its
     // constructors (spec §7.1).
     Sealing.requireAccessible(inductiveMeta.seal, None, t.span)
+    // A named equation (docs/MATCH_EQUATION.md) states `Eq(T, e, C(p̄, x̄))`: a proposition, which holds no token, so `T`
+    // is unrestricted, and well typed in every case without refinement only for a family without indices.
+    val equality = t.equation.map { equation =>
+      if (Linearity.isLinear(scrutTpe)) tokenInTypeOrProof(scrutChecked)
+      if (inductiveMeta.familyArity != inductiveMeta.block.key.numParams)
+        at(equation.span)(fail(MatchEquationIndexed(inductiveName)))
+      equation.ref -> env.equality.fold(reason => at(equation.span)(fail(MatchEquationUnavailable(reason))), identity)
+    }
+    // The equation of the case for `ctorName`, where the scrutinee is `branchScrut` and the fields are `fields`.
+    def equationIn(ctorName: String, branchScrut: Value, fields: Vector[Value]): Option[(CA.LocalRef, Value)] =
+      equality.map { case (ref, validated) =>
+        ref -> MatchEquation.proposition(
+          validated,
+          branchScrut,
+          constructorHead(ctorName, inductiveFamily, env),
+          fields
+        )
+      }
     val inductiveCtorNames = inductiveMeta.constructorNames
     val written = t.cases.map { c =>
       val matching =
@@ -203,7 +226,8 @@ object MatchChecker {
         }
 
         val br = cases.find(_.ctorName == ctorName).getOrElse(fail(MissingCase(ctorName)))
-        Map(ctorName -> checkBranch(br, frameOf(br), storedArgs, env, motiveTy))
+        val equation = equationIn(ctorName, scrut, storedArgs)
+        Map(ctorName -> checkBranch(br, frameOf(br), storedArgs, equation, env, motiveTy))
 
       case _ =>
         val reachableMap = reachableByType.map(info => info.name -> info).toMap
@@ -223,7 +247,8 @@ object MatchChecker {
               val branchEnv = ValueOps.materializeEnv(env, branchStore)
               val branchArgs = info.fieldArgs.map(arg => ValueOps.materialize(arg, branchStore))
               val branchMotiveTy = ValueOps.materialize(motiveTy, branchStore)
-              Some(ctorName -> checkBranch(br, frameOf(br), branchArgs, branchEnv, branchMotiveTy))
+              val equation = equationIn(ctorName, ValueOps.materialize(scrut, branchStore), branchArgs)
+              Some(ctorName -> checkBranch(br, frameOf(br), branchArgs, equation, branchEnv, branchMotiveTy))
           }
         }.toMap
     }
@@ -235,7 +260,15 @@ object MatchChecker {
       if (t.wildcard.isEmpty) written.map(_.ctorName) else inductiveCtorNames.filter(checkedByCtor.contains)
     val checkedCases = order.map(name => checkedByCtor.getOrElse(name, wtf(s"Unchecked reachable case $name")))
     val checkedMatch =
-      CA.Term.Match(scrutChecked.residual, checkedMotive.residual, checkedCases, wildcard = None, t.span, t.id)
+      CA.Term.Match(
+        scrutChecked.residual,
+        checkedMotive.residual,
+        checkedCases,
+        wildcard = None,
+        t.equation,
+        t.span,
+        t.id
+      )
     CheckedTerm(Interpreter.evalTerm(checkedMatch, env), checkedMatch)
   }
 

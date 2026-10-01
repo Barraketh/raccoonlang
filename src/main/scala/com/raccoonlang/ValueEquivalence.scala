@@ -324,8 +324,8 @@ object ValueEquivalence {
                     val (fields, resultType) = BinderOps.freshCtorFields(head, family.args, leftCase.argRefs)
                     step(resultType, leftScrutinee.tpe) && step(resultType, rightScrutinee.tpe) &&
                     step(
-                      Interpreter.evalBranch(leftCase, fields, left.env),
-                      Interpreter.evalBranch(rightCase, fields, right.env)
+                      Interpreter.evalBranch(left.term, leftCase, leftScrutinee, fields, left.env),
+                      Interpreter.evalBranch(right.term, rightCase, rightScrutinee, fields, right.env)
                     )
                   case _ => false
                 }

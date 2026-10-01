@@ -45,16 +45,6 @@ class EvidenceTests extends munit.FunSuite with TestSupport {
 
   private val three = families + "def three (n: Nat)[h: Eq(Nat, n, 3)]: Nat := n\n\n"
 
-  /**
-   * The deferred proofs evaluation forces while `body` runs. The counter is global, which is sound while suites run one
-   * at a time in the forked test JVM, as build.sbt has them.
-   */
-  private def forcings(body: => Any): Long = {
-    val before = Value.DeferredEvidence.forcings.get()
-    body
-    Value.DeferredEvidence.forcings.get() - before
-  }
-
   test("an evidence argument is discharged by evaluating its proposition where the application stands") {
     evaluatesTo(three + "{ three(3) }", "3")
     evaluatesTo(three + "{ three(Nat.add(1, 2)) }", "3")

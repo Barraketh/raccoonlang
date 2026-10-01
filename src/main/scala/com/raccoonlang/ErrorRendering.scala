@@ -31,6 +31,9 @@ object ErrorRendering {
       case MissingCase(ctor)                   => s"Missing case : $ctor"
       case RedundantCase =>
         "Redundant wildcard case: every constructor the scrutinee can be built by already has a case"
+      case MatchEquationIndexed(family) =>
+        s"A match names its equation only on a family without indices, but $family has indices"
+      case MatchEquationUnavailable(reason) => s"Match equation unavailable: $reason"
       case VarAlreadyLinked(id)             => s"FreshVar $id already linked"
       case NotAType(value)                  => s"${show(value)} is not a type"
       case NonInductiveMatch(tpe)           => s"Cannot match on non-inductive type ${show(tpe)}"

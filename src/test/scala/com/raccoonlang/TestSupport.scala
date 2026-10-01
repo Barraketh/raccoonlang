@@ -73,6 +73,16 @@ trait TestSupport extends DiagnosticAssertions { this: munit.FunSuite =>
   }
 
   /** The time `body` takes, in milliseconds, with its result. */
+  /**
+   * The deferred proofs evaluation forces while `body` runs. The counter is global, which is sound while suites run one
+   * at a time in the forked test JVM, as build.sbt has them.
+   */
+  protected def forcings(body: => Any): Long = {
+    val before = Value.DeferredEvidence.forcings.get()
+    body
+    Value.DeferredEvidence.forcings.get() - before
+  }
+
   protected def timed[A](body: => A): (A, Long) = {
     val start = System.nanoTime()
     val result = body
