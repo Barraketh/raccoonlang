@@ -1,9 +1,9 @@
 package com.raccoonlang
 
 /**
- * Structure eta as rules (StructEta): `s ≡ mk(s.f1, …, s.fn)` holds definitionally for binders, opaque constants,
- * axioms, and blocked matches alike, decided fieldwise through the eta view rather than by any representation — and
- * never for recursive, indexed, or Prop-instantiated structs.
+ * Structure eta as rules (StructEta): `s ≡ mk(s.f1, …, s.fn)` holds definitionally for binders, axioms, and blocked
+ * matches alike, decided fieldwise through the eta view rather than by any representation — and never for recursive,
+ * indexed, or Prop-instantiated structs.
  */
 class StructEtaTests extends munit.FunSuite with TestSupport {
   override protected val suitePrelude: Prelude.Config = Prelude.test
@@ -87,17 +87,6 @@ class StructEtaTests extends munit.FunSuite with TestSupport {
           |// p is not forced by the fields (p(val) is not invertible), so it stays explicit.
           |def eta {A: Type}{p: A -> Prop} (s: Sub(A, p)): Eq(Sub(A, p), s, Sub.mk(p, s.val, s.property)) :=
           |  Eq.refl(s)
-          |""".stripMargin
-    )
-  }
-
-  test("opaque constant eta: an opaque struct global is its constructor of projections") {
-    typecheckDecls(
-      natAndCouple +
-        """
-          |opaque def c : Couple(Peano, Peano) := Couple.mk(Peano.zero, Peano.zero)
-          |
-          |def eta : Eq(Couple(Peano, Peano), c, Couple.mk(c.fst, c.snd)) := Eq.refl(c)
           |""".stripMargin
     )
   }
@@ -237,9 +226,9 @@ class StructEtaTests extends munit.FunSuite with TestSupport {
     typecheckDecls(
       natAndCouple +
         """
-          |opaque def p : Couple(Peano, Peano) := Couple.mk(Peano.zero, Peano.zero)
-          |def selectorIsProjection : Eq(Peano, Couple.fst(p), p.fst) := Eq.refl(p.fst)
-          |def etaThroughSelectors : Eq(Couple(Peano, Peano), p, Couple.mk(p.fst, p.snd)) := Eq.refl(p)
+          |def selectorIsProjection (p: Couple(Peano, Peano)): Eq(Peano, Couple.fst(p), p.fst) := Eq.refl(p.fst)
+          |def etaThroughSelectors (p: Couple(Peano, Peano)): Eq(Couple(Peano, Peano), p, Couple.mk(p.fst, p.snd)) :=
+          |  Eq.refl(p)
           |""".stripMargin
     )
   }
@@ -278,10 +267,7 @@ class StructEtaTests extends munit.FunSuite with TestSupport {
         |struct Sig (A: Type)(B: A -> Type) : Type
         | | mk (fst: A)(snd: B(fst)) : Sig(A, B)
         |
-        |opaque def anyA : Type := Peano
-        |opaque def anyB : anyA -> Type := fun (_: anyA): Type => Peano
-        |
-        |def useDependent (s: Sig(anyA, anyB)): anyB(s.fst) := {
+        |def useDependent (anyA: Type)(anyB: anyA -> Type)(s: Sig(anyA, anyB)): anyB(s.fst) := {
         |  match s returning anyB(s.fst) with
         |  | Sig.mk a b => b
         |}

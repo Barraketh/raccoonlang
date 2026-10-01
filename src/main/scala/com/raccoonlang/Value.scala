@@ -1286,8 +1286,7 @@ object Value {
   case object TypeFormer extends ConstType
 
   /**
-   * Any other axiom's, an opaque definition's, a stuck builtin's or a checked recursive call's head: an application of
-   * it is blocked.
+   * Any other axiom's, a stuck builtin's or a checked recursive call's head: an application of it is blocked.
    */
   case object Symbol extends ConstType
 

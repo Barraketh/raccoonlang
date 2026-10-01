@@ -350,21 +350,6 @@ class TypingTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  test("nullary top-level opaque def body must match declared type") {
-    val p =
-      """
-        |inductive Peano : Type
-        | | zero : Peano
-        | | succ (_: Peano) : Peano
-        |
-        |opaque def bad : Peano := Type
-        |""".stripMargin
-
-    interceptError[TypeMismatch] {
-      typecheckDecls(p)
-    }
-  }
-
   /**
    * Grouping is part of a function type's identity, and the surface syntax is where a written type's grouping is
    * decided: an unparenthesised arrow chain is ONE binder group, while a parenthesised Pi in body position is a nested,

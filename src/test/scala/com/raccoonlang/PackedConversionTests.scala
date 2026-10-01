@@ -117,8 +117,8 @@ class PackedConversionTests extends munit.FunSuite with TestSupport {
 
   test("a character that compares stuck leaves two literals apart only where one ends first") {
     // Here `Char.ofNat` wraps each scalar in an axiom, so no two decoded characters compare apart.
-    val opaque = Prelude.fromSource(
-      "opaque-chars",
+    val scrambled = Prelude.fromSource(
+      "scrambled-chars",
       TestSupport.bundledPreludeSource + "\naxiom scramble : (n: Nat) -> Nat\n" +
         TestSupport.stringLayoutSource("Char.mk(scramble(value))"),
       Set(Prelude.ImportPath)
@@ -129,7 +129,7 @@ class PackedConversionTests extends munit.FunSuite with TestSupport {
         |  match h returning False with
         |}
         |""".stripMargin,
-      opaque
+      scrambled
     )
     expectTypeError[MissingCase](
       """
@@ -137,9 +137,10 @@ class PackedConversionTests extends munit.FunSuite with TestSupport {
         |  match h returning False with
         |}
         |""".stripMargin,
-      opaque
+      scrambled
     )
-    val mismatch = expectTypeError[TypeMismatch]("def wrong : Eq(String, \"xab\", \"xac\") := Eq.refl(\"xab\")", opaque)
+    val mismatch =
+      expectTypeError[TypeMismatch]("def wrong : Eq(String, \"xab\", \"xac\") := Eq.refl(\"xab\")", scrambled)
     assertEquals(differAt(mismatch), ("proj[String,0](\"c\")", "proj[String,0](\"b\")", false))
   }
 

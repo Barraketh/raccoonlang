@@ -61,18 +61,15 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
     interceptError[UnreachableCase] { typecheckDecls(p) }
   }
 
-  test("non-exhaustive: opaque scrutinee application should still require succ case") {
+  test("non-exhaustive: blocked scrutinee application should still require succ case") {
     val p =
       """
         |inductive Peano : Type
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |// Opaque on purpose: evaluator will keep this as a Symbol head
-        |opaque def g (n: Peano): Peano := Peano.zero
-        |
-        |def bad (n: Peano): Peano := {
-        |  // scrutinee is neutral/opaque application: g n
+        |def bad (g: (n: Peano) -> Peano)(n: Peano): Peano := {
+        |  // scrutinee is a blocked application: g n
         |  match g(n) returning Peano with
         |  | Peano.zero => Peano.zero
         |}
@@ -82,16 +79,14 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
     interceptError[MissingCase] { typecheckDecls(p) }
   }
 
-  test("exhaustive: opaque scrutinee application should typecheck") {
+  test("exhaustive: blocked scrutinee application should typecheck") {
     val p =
       """
         |inductive Peano : Type
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |opaque def g (n: Peano): Peano := n
-        |
-        |def ok (n: Peano): Peano := {
+        |def ok (g: (n: Peano) -> Peano)(n: Peano): Peano := {
         |  match g(n) returning Peano with
         |  | Peano.zero => Peano.zero
         |  | Peano.succ x => x
@@ -99,7 +94,6 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
         |
         |""".stripMargin
 
-    // Should typecheck (even if it evaluates to a stuck match at runtime for opaque g).
     typecheckDecls(p)
   }
 
@@ -164,27 +158,30 @@ class MatchExhaustivenessTests extends munit.FunSuite with TestSupport {
 
   // A stuck match's type is its written motive, evaluated where the match stands.
   test("a stuck match has its returning clause as its type, instantiated at the call") {
-    val p =
+    val prelude = TestSupport.preludeAssuming(
+      TestSupport.testPreludeSource,
       """
         |inductive Peano : Type
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
+        |axiom n : Peano
+        |""".stripMargin
+    )
+    val p =
+      """
         |def f {A: Type}(x: Peano)(y: A): A := {
         |  match x returning A with
         |  | Peano.zero => y
         |  | Peano.succ _ => y
         |}
         |
-        |opaque def n : Peano := Peano.zero
-        |opaque def a : Peano := Peano.zero
-        |
-        |{ f(n, a) }
+        |{ f(n, Peano.zero) }
         |""".stripMargin
 
     // Applied to a neutral scrutinee the match is stuck, and its type is the motive instantiated
     // at the call: A := Peano.
-    val result = runProgram(p)
+    val result = runProgram(p, prelude)
     result match {
       case Value.VCtor(head, _, _) => fail(s"Expected a stuck match, got constructor ${head.name}")
       case _                       =>

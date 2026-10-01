@@ -71,7 +71,7 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
     // Projection compilation must retain structural defEq as the fallback after key bucketing.
     typecheckDecls(
       """
-        |opaque def truthFn (_: Nat): True := True.intro
+        |def truthFn (_: Nat): True := True.intro
         |
         |def chooseFn {h: (x: Nat) -> True}
         |    (e: Eq((x: Nat) -> True, truthFn, truthFn)): (x: Nat) -> True := h
@@ -118,7 +118,7 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
         |inductive PolyBox {u: Level}(A: Sort { level = u }) : Sort { level = u }
         | | mk (value: A) : PolyBox(A)
         |
-        |opaque def boxedTrue : PolyBox(True) := PolyBox.mk(True.intro)
+        |def boxedTrue : PolyBox(True) := PolyBox.mk(True.intro)
         |
         |def observe (P: Prop)(box: PolyBox(P)): Nat := {
         |  match box returning Nat with
@@ -134,7 +134,7 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
   test("proof irrelevance is unchanged by constructor canonicalization") {
     typecheckDecls(
       """
-        |opaque def zeroEq : Eq(Nat, Nat.zero, Nat.zero) := Eq.refl(Nat.zero)
+        |def zeroEq : Eq(Nat, Nat.zero, Nat.zero) := Eq.refl(Nat.zero)
         |
         |def mixed : Eq(
         |  Eq(Nat, Nat.zero, Nat.zero),
@@ -327,7 +327,7 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
         |inductive PolyUnit (u: Level) indices (n: Peano) : Sort { level = u }
         | | mk : PolyUnit(u, Peano.zero)
         |
-        |opaque def makerType (u: Level): (n: Peano) -> PolyUnit(u, Peano.zero) :=
+        |def makerType (u: Level): (n: Peano) -> PolyUnit(u, Peano.zero) :=
         |  fun (n: Peano): PolyUnit(u, Peano.zero) => PolyUnit.mk(u)
         |
         |def probe (u: Level)(x: PolyUnit(u, Peano.zero)): Peano := {
@@ -395,28 +395,12 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
     )
   }
 
-  test("an opaque diagonal equality proof canonicalizes to refl and eliminates") {
+  test("a defined diagonal equality proof has the same canonical constructor as refl") {
     // Eq's declaration records that refl can be reconstructed exactly when the two endpoints
-    // coincide. Runtime canonicalization follows that recipe; it does not run unification.
+    // coincide. Publication follows that recipe; it does not run unification.
     val res = runProgram(
       """
-        |opaque def zeroEq : Eq(Nat, Nat.zero, Nat.zero) := Eq.refl(Nat.zero)
-        |
-        |{
-        |  Eq.subst(zeroEq, Level.one, fun (n: Nat): Type => Bool, Bool.true)
-        |}
-        |""".stripMargin
-    )
-    res match {
-      case Value.VCtor(head, _, _) => assertEquals(head.name, "Bool.true")
-      case other                   => fail(s"Expected the diagonal cast to reduce to Bool.true, got $other")
-    }
-  }
-
-  test("an opaque diagonal equality proof has the same canonical constructor as refl") {
-    val res = runProgram(
-      """
-        |opaque def zeroEq : Eq(Nat, Nat.zero, Nat.zero) := Eq.refl(Nat.zero)
+        |def zeroEq : Eq(Nat, Nat.zero, Nat.zero) := Eq.refl(Nat.zero)
         |
         |{ zeroEq }
         |""".stripMargin
@@ -433,7 +417,7 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
   test("canonical diagonal proofs preserve congruence of execution") {
     typecheckDecls(
       """
-        |opaque def zeroEq : Eq(Nat, Nat.zero, Nat.zero) := Eq.refl(Nat.zero)
+        |def zeroEq : Eq(Nat, Nat.zero, Nat.zero) := Eq.refl(Nat.zero)
         |
         |def cast (p: Eq(Nat, Nat.zero, Nat.zero)): Bool :=
         |  Eq.subst(p, Level.one, fun (_: Nat): Type => Bool, Bool.true)
@@ -539,10 +523,10 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  test("opaque proof functions also canonicalize to eta-lambdas") {
+  test("a proof function definition publishes as an eta-lambda") {
     val function = runProgram(
       """
-        |opaque def reflish (n: Nat): Eq(Nat, n, n) := Eq.refl(n)
+        |def reflish (n: Nat): Eq(Nat, n, n) := Eq.refl(n)
         |
         |{ reflish }
         |""".stripMargin
@@ -554,7 +538,7 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
 
     val applied = runProgram(
       """
-        |opaque def reflish (n: Nat): Eq(Nat, n, n) := Eq.refl(n)
+        |def reflish (n: Nat): Eq(Nat, n, n) := Eq.refl(n)
         |
         |{
         |  Eq.subst(reflish(Nat.zero), Level.one, fun (_: Nat): Type => Bool, Bool.true)
@@ -594,7 +578,7 @@ class ProofCollapseTests extends munit.FunSuite with TestSupport {
         |inductive DependentProof : Prop
         | | mk (h: (n: Nat) -> True) (same: Eq(True, h(Nat.zero), h(Nat.zero))) : DependentProof
         |
-        |opaque def recovered : DependentProof :=
+        |def recovered : DependentProof :=
         |  DependentProof.mk(fun (n: Nat): True => True.intro, Eq.refl(True.intro))
         |""".stripMargin
     )

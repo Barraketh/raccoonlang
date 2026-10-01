@@ -76,7 +76,7 @@ Any other equation stops the procedure without a certificate. That covers:
 - lambdas;
 - a `Prop`-family head nested in an index;
 - the second component of a total space whose first components are not convertible (a heterogeneous equation);
-- an opaque type.
+- an axiomatized type.
 
 **Generated `noConfusion`.** For each `Type` family with constructors, the declaration also generates, as ordinary
 Raccoon definitions checked once at declaration:

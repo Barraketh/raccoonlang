@@ -24,7 +24,7 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
     }
   }
 
-  // Quotient values provide no constructor no-confusion or injectivity (docs/kernel.md#axioms-opacity-and-quotients).
+  // Quotient values provide no constructor no-confusion or injectivity (docs/kernel.md#axioms-and-quotients).
   test("Quot.mk is not disjoint: refl stays reachable for equalities between distinct representatives") {
     val err = expectTypeError[MissingCase](
       """
@@ -38,7 +38,7 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
     assertEquals(err.ctor, "Eq.refl")
   }
 
-  // Quotient values provide no constructor no-confusion or injectivity (docs/kernel.md#axioms-opacity-and-quotients).
+  // Quotient values provide no constructor no-confusion or injectivity (docs/kernel.md#axioms-and-quotients).
   test("Quot.mk is not injective: match refinement cannot derive representative equality") {
     expectTypeError[TypeMismatch](
       """
@@ -52,50 +52,90 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
     )
   }
 
-  // Quotient values provide no constructor no-confusion or injectivity (docs/kernel.md#axioms-opacity-and-quotients).
-  test("congruence failures under opaque heads are not refutations") {
+  // Quotient values provide no constructor no-confusion or injectivity (docs/kernel.md#axioms-and-quotients).
+  test("congruence failures under blocked heads are not refutations") {
     // Eq(g(mk true), g(mk false)) is provable via congrArg over Quot.sound, so unification failing
     // on the arguments of the non-injective head g must not prune the refl case.
+    val equation = "Eq(Nat, g(Quot.mk(TrivRel, Bool.true)), g(Quot.mk(TrivRel, Bool.false)))"
+    // `g` a parameter.
     val err = expectTypeError[MissingCase](
-      """
-        |def TrivRel (a: Bool)(b: Bool): Prop := True
-        |
-        |opaque def g (q: Quot(Bool, TrivRel)): Nat := 0
-        |
-        |def gEq : Eq(Nat, g(Quot.mk(TrivRel, Bool.true)), g(Quot.mk(TrivRel, Bool.false))) :=
-        |  congrArg(Quot.sound(Bool.true, Bool.false, TrivRel, True.intro), Nat, g)
-        |
-        |def boom (p: Eq(Nat, g(Quot.mk(TrivRel, Bool.true)), g(Quot.mk(TrivRel, Bool.false)))): False := {
-        |  match p returning False with
-        |}
-        |""".stripMargin
+      s"""
+         |def TrivRel (a: Bool)(b: Bool): Prop := True
+         |
+         |def gEq (g: (q: Quot(Bool, TrivRel)) -> Nat): $equation :=
+         |  congrArg(Quot.sound(Bool.true, Bool.false, TrivRel, True.intro), Nat, g)
+         |
+         |def boom (g: (q: Quot(Bool, TrivRel)) -> Nat)(p: $equation): False := {
+         |  match p returning False with
+         |}
+         |""".stripMargin
     )
     assertEquals(err.ctor, "Eq.refl")
+    // `g` an axiom.
+    val assumed = TestSupport.preludeAssuming(
+      TestSupport.bundledPreludeSource,
+      "def TrivRel (a: Bool)(b: Bool): Prop := True\n\naxiom g (q: Quot(Bool, TrivRel)): Nat\n"
+    )
+    val axiomErr = expectTypeError[MissingCase](
+      s"""
+         |def gEq : $equation := congrArg(Quot.sound(Bool.true, Bool.false, TrivRel, True.intro), Nat, g)
+         |
+         |def boom (p: $equation): False := {
+         |  match p returning False with
+         |}
+         |""".stripMargin,
+      assumed
+    )
+    assertEquals(axiomErr.ctor, "Eq.refl")
   }
 
-  // Opaque applications are not invertible refinement frames (docs/kernel.md#refinement-unification).
-  test("match refinement negative: opaque function applications do not refine their arguments") {
+  /** The test prelude with `Peano`, `MyFalse` and `f`, an axiom whose applications are blocked. */
+  private val withStuckF: Prelude.Config = TestSupport.preludeAssuming(
+    TestSupport.testPreludeSource,
+    """
+      |inductive Peano : Type
+      | | zero : Peano
+      | | succ (_: Peano) : Peano
+      |
+      |inductive MyFalse : Prop
+      |
+      |axiom f (n: Peano): Peano
+      |""".stripMargin
+  )
+
+  // Blocked applications are not invertible refinement frames (docs/kernel.md#refinement-unification).
+  test("match refinement negative: blocked function applications do not refine their arguments") {
     // Eq(f(x), f(y)) does not force x = y for a non-injective head: unification must not
-    // link x := y beneath the opaque frame f, so the refl branch stays unrefined.
+    // link x := y beneath the blocked frame f, so the refl branch stays unrefined.
     val p =
       """
         |inductive Peano : Type
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |opaque def f (n: Peano): Peano := n
-        |
-        |def injF (x: Peano)(y: Peano)(h: Eq(Peano, f(x), f(y))): Eq(Peano, x, y) := {
+        |def injF (f: (n: Peano) -> Peano)(x: Peano)(y: Peano)(h: Eq(Peano, f(x), f(y))): Eq(Peano, x, y) := {
         |  match h returning Eq(Peano, x, y) with
         |  | Eq.refl z => Eq.refl(x)
         |}
         |""".stripMargin
 
     interceptError[TypeMismatch] { typecheckDecls(p, Prelude.test) }
+    // `f` an axiom.
+    interceptError[TypeMismatch] {
+      typecheckDecls(
+        """
+          |def injF (x: Peano)(y: Peano)(h: Eq(Peano, f(x), f(y))): Eq(Peano, x, y) := {
+          |  match h returning Eq(Peano, x, y) with
+          |  | Eq.refl z => Eq.refl(x)
+          |}
+          |""".stripMargin,
+        withStuckF
+      )
+    }
   }
 
-  // Opaque applications are not invertible refinement frames (docs/kernel.md#refinement-unification).
-  test("match refinement negative: stuck opaque-head equations keep the refl case required") {
+  // Blocked applications are not invertible refinement frames (docs/kernel.md#refinement-unification).
+  test("match refinement negative: stuck blocked-head equations keep the refl case required") {
     // The same equation is stuck, not apart: a no-cases match must not prune refl.
     val p =
       """
@@ -105,21 +145,27 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
         |
         |inductive MyFalse : Prop
         |
-        |opaque def f (n: Peano): Peano := n
-        |
-        |def boom (x: Peano)(y: Peano)(h: Eq(Peano, f(x), f(y))): MyFalse := {
+        |def boom (f: (n: Peano) -> Peano)(x: Peano)(y: Peano)(h: Eq(Peano, f(x), f(y))): MyFalse := {
         |  match h returning MyFalse with
         |}
         |""".stripMargin
 
     interceptError[MissingCase] { typecheckDecls(p, Prelude.test) }
+    // `f` an axiom.
+    interceptError[MissingCase] {
+      typecheckDecls(
+        "def boom (x: Peano)(y: Peano)(h: Eq(Peano, f(x), f(y))): MyFalse := {\n  match h returning MyFalse with\n}\n",
+        withStuckF
+      )
+    }
   }
 
   // Proof constructors provide no apartness evidence (docs/kernel.md#proofs-and-elimination).
   test("Constructor apartness does not apply to proofs (irrelevance makes inl/inr proofs equal)") {
-    // Eq(Or(p,p), inl hp, inr hq) is provable by proof irrelevance (getH's body), so match
-    // reachability must not prune the refl case on the inl/inr constructor clash.
-    val p =
+    // Eq(Or(p,p), inl hp, inr hq) is provable by proof irrelevance (getH), so match reachability
+    // must not prune the refl case on the inl/inr constructor clash, whether the scrutinee is
+    // getH's application or a stuck application of a parameter that may be getH.
+    val decls =
       """
         |inductive False : Prop
         |
@@ -127,20 +173,14 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
         | | inl (left: a) : Or(a, b)
         | | inr (right: b) : Or(a, b)
         |
-        |opaque def getH {p: Prop}(hp: p)(hq: p): Eq(Or(p, p), Or.inl(p, hp), Or.inr(p, hq)) := Eq.refl(Or.inl(p, hp))
-        |
-        |def boom {p: Prop}(hp: p)(hq: p): False := {
-        |  match getH(hp, hq) returning False with
-        |}
+        |def getH {p: Prop}(hp: p)(hq: p): Eq(Or(p, p), Or.inl(p, hp), Or.inr(p, hq)) := Eq.refl(Or.inl(p, hp))
         |""".stripMargin
-
-    LanguageParser.parseProgram(p) match {
-      case Success(value, _, _) =>
-        val core = Elaborator.elab(value, Prelude.test)
-        interceptError[MissingCase] { Interpreter.run(core, Prelude.test) }
-      case err: Failure =>
-        fail(s"Failed to parse: $err, ${p.substring(err.curIdx)}")
-    }
+    val direct = "def boom {p: Prop}(hp: p)(hq: p): False := {\n  match getH(hp, hq) returning False with\n}\n"
+    val throughParameter =
+      "def boom {p: Prop}(get: (hp: p)(hq: p) -> Eq(Or(p, p), Or.inl(p, hp), Or.inr(p, hq)))(hp: p)(hq: p): False := {\n" +
+        "  match get(hp, hq) returning False with\n}\n"
+    for (boom <- Vector(direct, throughParameter))
+      assertEquals(expectTypeError[MissingCase](decls + boom, Prelude.test).ctor, "Eq.refl")
   }
 
   // Family-head clashes do not establish apartness for propositions (docs/kernel.md#apartness).

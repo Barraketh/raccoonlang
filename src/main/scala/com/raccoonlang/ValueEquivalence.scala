@@ -152,9 +152,8 @@ object ValueEquivalence {
     /**
      * Heads whose applications may be decomposed invertibly: the equation `H as ~ H bs` forces the argument equations
      * definitionally. True for constructors of genuine inductives (no-confusion) and for inductive family heads
-     * (definitional injectivity of type formers). Everything else — opaque constants, axioms, quotient constructors,
-     * blocked heads — is an arbitrary function: decomposition is only a solving heuristic, and its failures prove
-     * nothing.
+     * (definitional injectivity of type formers). Everything else — axioms, quotient constructors, blocked heads — is
+     * an arbitrary function: decomposition is only a solving heuristic, and its failures prove nothing.
      *
      * Note this is about invertibility (links and failure pass-through), not apartness: head *clashes* are refutations
      * only for data constructors (see the VCtor case). Family-head clashes prove nothing propositionally — under

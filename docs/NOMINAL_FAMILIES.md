@@ -24,7 +24,7 @@ For **`Type` families** (declared in a `Type`, not in `Prop`), with `F` and `G` 
 
 Their scope is exact:
 
-- **Inductive heads only.** Nothing is claimed about an opaque constant or axiom of type `Type`, or a type-level
+- **Inductive heads only.** Nothing is claimed about an axiom of type `Type`, or a type-level
   application that is stuck: `axiom T : Type` may be `Nat`. A type that evaluates to a family instance is compared by
   its head after evaluation, as conversion already does.
 - **Not `Prop` families.** A `Prop` family head is neither injective nor generative. Refinement decomposes it only at the
@@ -158,7 +158,7 @@ certificates invoke N1–N3 as named kernel constants, and refinement stops rely
 - `Nat` against `Nat -> Nat`, and `Type` against `Nat` in an index, are apart (N3).
 - A `Prop`-family head nested in an index does not decompose: `Eq(Prop, And(P, Q), And(R, S))` gives no link
   `P := R`.
-- An opaque or axiom type does not decompose or clash: `axiom T : Type` against `Nat` is stuck.
+- An axiom type does not decompose or clash: `axiom T : Type` against `Nat` is stuck.
 - The existing soundness regressions stay green.
 
 ## 6. Steps

@@ -23,7 +23,7 @@ object InductiveChecks {
   //
   // - isDirectOccurrence identifies a value that is exactly the target.
   // - mayOccurIn is the conservative fallback for values we do not inspect
-  //   structurally, such as neutral computations and opaque leaves.
+  //   structurally, such as neutral computations and axiom applications.
   private sealed trait PositivityTarget {
     def isDirectOccurrence(value: Value): Boolean
     def mayOccurIn(value: Value): Boolean

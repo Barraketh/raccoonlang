@@ -108,6 +108,8 @@ anywhere else is `NotAType`, because there its type must be a type.
 | a function type or lambda binder | no | no | yes |
 | `scope l =>` | – | – | yes |
 
+(Superseded: `opaque def` is removed, `docs/NO_OPAQUE.md`.)
+
 A header is the binders written before a declaration's `:`. A header binder
 may be explicit or a forced implicit, as today. A function type written after
 the `:` is a function type like any other. So
@@ -187,7 +189,7 @@ last row reads the sort off that type:
 | `{ kind = k, scope = S } (x1: A1) ... (xn: An) -> B`, binding no level | `Sort { level = imax as today, kind = k, scope = union(S, scope(A1), ..., scope(An), scope(B)) }`, less the group's own lifetime variables; a kind or lifetime binder contributes no level and no scope, and only the closure contributes to the kind |
 | a function type binding a level | `Large` |
 | a family instance `D(p*, i*)` | the declared classifier of §5.1 under `p*`, and nothing else |
-| any other neutral type | the sort its type states: a type variable `A: Type { kind = k, scope = S }`, or `F(e*)` for a local `F`, states it under the arguments; an `opaque def` or `axiom` application and a blocked `match` state the sort of the declared result or motive |
+| any other neutral type | the sort its type states: a type variable `A: Type { kind = k, scope = S }`, or `F(e*)` for a local `F`, states it under the arguments; an `opaque def` or `axiom` application and a blocked `match` state the sort of the declared result or motive (superseded: `opaque def` is removed, `docs/NO_OPAQUE.md`) |
 
 `Large` is internal to the kernel. A program cannot write it or bind a variable
 of it, and it is not a sort, so a large type fits no position that requires a
@@ -388,7 +390,8 @@ refines it. A local whose type's kind
 involves a variable is tracked, since its binder's extent must be valid when
 the variable is `lin`. Locals of unrestricted type are not tracked. A value
 outside every binder is never tracked, so its type may not be linear
-(`LinearGlobal`). That is a `def` or `opaque def`, which every reference uses,
+(`LinearGlobal`). That is a `def` or `opaque def` (superseded: `opaque def` is
+removed, `docs/NO_OPAQUE.md`), which every reference uses,
 and the program's result, the entry module's final `{ … }`. Nothing uses the
 result, and it would otherwise be the one place a token could be dropped
 outside its module. Axioms belong to the trusted prelude (§7.3).
@@ -715,7 +718,8 @@ Every value of a sealed family comes from its constructors, because only the
 trusted prelude declares axioms and builtins, and none of them yields a value
 of a sealed family except by applying its constructors (obligation T2, §7.3). A
 neutral of a sealed family is a parameter that a caller supplied, a blocked
-computation, or an opaque definition whose checked body built it. So structure
+computation, or an opaque definition whose checked body built it (superseded:
+`opaque def` is removed, `docs/NO_OPAQUE.md`). So structure
 eta and proof reconstruction apply to sealed families as to any other, and open
 nothing the module did not build.
 
@@ -724,7 +728,8 @@ what the checker knows. Kinds, scopes, coverage, apartness and the conversion
 of values are computed from the full declaration in every module. An
 `opaque def` is unchanged: its body is checked,
 and it does not unfold after publication, in any module. Its application's
-sort is the sort of its declared result (§2.4).
+sort is the sort of its declared result (§2.4). (Superseded: `opaque def` is
+removed, `docs/NO_OPAQUE.md`.)
 
 **7.3 Axioms.** Only the trusted prelude declares axioms. An `axiom` in any
 other module is `UntrustedAxiom`. A program that needs an assumption the bundled

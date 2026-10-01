@@ -192,7 +192,7 @@ object Packed {
         h
       case _ => reject(s"`${NatCodec.succName}` is not a unary `Nat` constructor")
     }
-    // Force both constructor validations before issuing the otherwise opaque capability.
+    // Force both constructor validations before issuing the otherwise unchecked capability.
     val _ = (zero, succ)
     new ValidatedNatLayout(family)
   }
@@ -221,7 +221,7 @@ object Packed {
     def reject(reason: String): Nothing = fail(NativeOperationDeclarationMismatch(name, reason))
     val lam = value match {
       case actual: VLam => actual
-      case _            => reject("declaration is not a transparent applicable lambda")
+      case _            => reject("declaration is not an applicable lambda")
     }
     lam.id match {
       case ValueId.Const(actual) if actual == name =>
@@ -366,7 +366,7 @@ object Packed {
               reject("`Char.ofNat` is not `Nat -> Char`")
           case _ => reject("`Char.ofNat` is not `Nat -> Char`")
         }
-      case _ => reject("`Char.ofNat` is not a transparent applicable lambda")
+      case _ => reject("`Char.ofNat` is not an applicable lambda")
     }
 
     Vector("Nat" -> nat, "Char" -> char, "List Char" -> listChar, "Char.ofNat" -> charOfNat).foreach {

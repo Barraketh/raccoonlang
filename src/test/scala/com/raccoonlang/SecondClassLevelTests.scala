@@ -9,7 +9,7 @@ class SecondClassLevelTests extends munit.FunSuite with TestSupport {
 
   test("a level binder is admitted in a declaration's header") {
     typecheckDecls("def f {u: Level}(A: Sort { level = u })(x: A): A := x\n")
-    typecheckDecls("opaque def f (u: Level)(A: Sort { level = u }): Sort { level = u } := A\n")
+    typecheckDecls("def f (u: Level)(A: Sort { level = u }): Sort { level = u } := A\n")
     // Only the trusted prelude declares axioms (§7.3).
     val axiom = "axiom f {u: Level}(A: Sort { level = u }): Sort { level = u }\n"
     TestSupport.preludeAssuming(TestSupport.testPreludeSource, axiom).checkedEnv

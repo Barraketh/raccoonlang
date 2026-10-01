@@ -461,11 +461,10 @@ object CoreAst {
     }
 
   object Decl {
-    // Constant: name : type [:= value]. Opaque definitions keep only their symbolic head in the environment.
+    // Constant: name : type [:= value].
     // `sealedBy` is the seal of the family whose generated selector this is, when that family is sealed: the selector is
     // kept to the family's module, as its constructors are.
     final case class ConstDecl(
-        isOpaque: Boolean,
         name: String,
         ty: Term,
         body: ConstBody,

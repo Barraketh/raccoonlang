@@ -638,7 +638,7 @@ object TypeChecker {
 
   /**
    * A declaration's type: a type, or a large function type, since only a declaration's own type may bind a level (spec
-   * §2.2). A definition, opaque definition, axiom, family or constructor may therefore be level-polymorphic.
+   * §2.2). A definition, axiom, family or constructor may therefore be level-polymorphic.
    */
   def checkDeclType(term: CA.Term, env: Env): CheckedTerm =
     at(term.span) {

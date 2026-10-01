@@ -182,6 +182,11 @@ class ParseErrorTests extends munit.FunSuite {
     expectParses("def f : Nat := Nat.succ(1) // (a comment)\n")
   }
 
+  test("opaque is an ordinary identifier, so an opaque definition is a parse error") {
+    expectParseError("opaque @def f : Nat := 0\n", "Failed to parse end of input")
+    expectParses("def opaque (n: Nat): Nat := n\n\n{ opaque(0) }\n")
+  }
+
   test("a parse failure names what was expected, never a parser object") {
     expectParseError("def f : Nat := 0\n@)\n", "Failed to parse end of input")
     expectParseError("def f (n: Nat): Nat := Nat.add(n@\n", "Failed to parse LayoutSymTight())")

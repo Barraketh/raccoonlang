@@ -30,10 +30,10 @@ class LeaseTests extends munit.FunSuite with TestSupport {
     val core = Elaborator.elab(outsideProgram(leaseModule, client), suitePrelude)
     val env = core.decls.dropRight(1).foldLeft(suitePrelude.checkedEnv)((env, decl) => Interpreter.evalDecl(decl, env))
     val (bodyEnv, body) = core.decls.last match {
-      case CA.Decl.ConstDecl(_, _, _, CA.ConstBody.TermBody(lam: CA.Term.Lam), _, _) =>
+      case CA.Decl.ConstDecl(_, _, CA.ConstBody.TermBody(lam: CA.Term.Lam), _, _) =>
         (BinderOps.checkBinders(lam.ty.binders, env, familyParams = 0, lam.ty.span).env, lam.body)
-      case CA.Decl.ConstDecl(_, _, _, CA.ConstBody.TermBody(body), _, _) => (env, body)
-      case other                                                         => fail(s"Expected a definition, got $other")
+      case CA.Decl.ConstDecl(_, _, CA.ConstBody.TermBody(body), _, _) => (env, body)
+      case other                                                      => fail(s"Expected a definition, got $other")
     }
     body match {
       case call: CA.Term.App => (bodyEnv, call, TypeChecker.checkTerm(call, bodyEnv))

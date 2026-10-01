@@ -1,15 +1,15 @@
 package com.raccoonlang
 
 class InterpreterTests extends munit.FunSuite {
-  private def getValue(s: String): Value = {
+  private def getValue(s: String): Value = getValue(s, Prelude.test)
+
+  private def getValue(s: String, prelude: Prelude.Config): Value =
     LanguageParser.parseProgram(s) match {
       case Success(value, _, _) =>
-        val core = Elaborator.elab(value, Prelude.test)
-        Interpreter.run(core, Prelude.test).getOrElse(fail("Program has no body"))
+        val core = Elaborator.elab(value, prelude)
+        Interpreter.run(core, prelude).getOrElse(fail("Program has no body"))
       case err: Failure => fail(s"Failed to parse: $err, ${s.substring(err.curIdx)}")
     }
-
-  }
 
   // Shape comparison helpers use the ordinary pattern view of constructor arguments.
   sealed trait Shape
@@ -100,7 +100,8 @@ class InterpreterTests extends munit.FunSuite {
   }
 
   test("a function-valued neutral match can be applied") {
-    val p =
+    val prelude = TestSupport.preludeAssuming(
+      TestSupport.testPreludeSource,
       """
         |inductive Peano : Type
         | | zero : Peano
@@ -110,7 +111,11 @@ class InterpreterTests extends munit.FunSuite {
         | | true : Bool
         | | false : Bool
         |
-        |opaque def b : Bool := Bool.true
+        |axiom b : Bool
+        |""".stripMargin
+    )
+    val p =
+      """
         |def choose : Peano -> Peano := {
         |  match b returning Peano -> Peano with
         |  | Bool.true => fun (n: Peano): Peano => n
@@ -120,7 +125,7 @@ class InterpreterTests extends munit.FunSuite {
         |{ choose(Peano.zero) }
         |""".stripMargin
 
-    getValue(p) match {
+    getValue(p, prelude) match {
       case Value.VApp(thunk: Value.NeutralThunk, Vector(_), _, blockedOn)
           if thunk.blockedOn.isEmpty && blockedOn.isEmpty =>
       case other => fail(s"expected a nested application of the neutral match, got: $other")

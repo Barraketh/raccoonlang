@@ -13,10 +13,10 @@ residual construction form one trusted implementation. There is no smaller
 independent kernel that rechecks a certificate produced by those components.
 
 A declaration is checked once. The checked value is then published in the
-environment and trusted by later declarations. Transparent definitions publish
-their evaluated values. Data-valued opaque definitions and axioms publish
-symbolic heads; proof-valued declarations are canonicalized from their exact
-propositions before publication.
+environment and trusted by later declarations. Every definition is transparent
+and publishes its evaluated value. Data-valued axioms publish symbolic heads;
+proof-valued declarations are canonicalized from their exact propositions
+before publication.
 
 Checking and evaluation recurse on the host stack, except where evaluation
 continues in tail position ([Evaluation depth](#evaluation-depth)). A stack
@@ -124,7 +124,7 @@ A key mismatch decides only that two values are not definitionally equal, so a
 mismatch that one of these rules refutes at the two values' heads is decided
 by the rule, whatever the keys.
 
-Proof constructors, quotient constructors, family heads, opaque applications,
+Proof constructors, quotient constructors, family heads, axiom applications,
 level, kind and lifetime failures, and ordinary unification failures do not
 produce apartness. No two kinds and no two lifetimes are apart, so refinement
 never prunes a branch on one.
@@ -259,9 +259,8 @@ else:
   which is checked against that parameter rather than synthesized alone. A term
   of another type there, another sort parameter's included, is a type mismatch;
 - a reference whose type is large stands only as the head of an application;
-- a large type is admitted only as a declaration's type: a definition, opaque
-  definition, axiom, family or constructor, and a definition's lambda at that
-  type.
+- a large type is admitted only as a declaration's type: a definition, axiom,
+  family or constructor, and a definition's lambda at that type.
 
 Anywhere else a sort parameter, an expression of one, or a large reference is
 `NotAType`.
@@ -288,8 +287,8 @@ own binders, a proof's proposition, a no-confusion constructor's stored fields,
 and the arguments of an application of a family or of a type former: a trusted
 axiom whose type ends in a sort, such as `Quot`, which names each of its
 lifetime parameters in its declared scope as a family does, else
-`ScopeExceeded` at the axiom. The arguments of any other application, an
-opaque definition's, another axiom's or a stuck builtin's, are not: such an
+`ScopeExceeded` at the axiom. The arguments of any other application, another
+axiom's, a stuck builtin's or a parameter's, are not: such an
 application is a blocked computation, and what its arguments hold is counted by
 no type's sort; so is a checked recursive call. Only a type former's
 application of its whole type, one binder group, is read. A function type's
@@ -354,8 +353,8 @@ counted in its type's sort's scope:
 - a type, through its own sort.
 
 Two kinds of value hold an atom their type's sort does not name, and neither
-runs: a computation blocked on an opaque definition or an axiom, or, while
-checking, on a parameter; and a proof. Nor can an implicit read the atom back
+runs: a computation blocked on an axiom or a builtin, or, while checking, on a
+parameter; and a proof. Nor can an implicit read the atom back
 out of one: a blocked computation's arguments are not projection positions (see
 [Universes and function types](#universes-and-function-types)). So a global
 value may hold an atom only inside a blocked computation or a proof, and never
@@ -384,8 +383,8 @@ pattern field, whose extent is its branch. A pattern binds a local for every
 field, a `_` an anonymous one no name resolves to, and so do `let _` and a
 destructuring's `_`. Whether a local is tracked is decided once, from its
 type at its binder, so refinement never changes it. A value outside every
-binder is never tracked, so its type may not be linear: a definition or opaque
-definition, which every reference uses, and the program's result, which
+binder is never tracked, so its type may not be linear: a definition, which
+every reference uses, and the program's result, which
 nothing uses, are `LinearGlobal` when their type is linear. The result is
 checked once the entry program's body has checked, and reported where its
 type comes from, as a mismatch is; an imported module has no body.
@@ -675,7 +674,7 @@ arguments, and evaluating it gives each evidence binder deferred evidence: the
 canonical proof of the binder's type, evaluated in the Pi's environment with
 every earlier argument bound, computed only when forced. Applying a head forces
 none of it: a lambda binds it unforced in its body's environment, and any other
-head, an opaque definition's say, stores it unforced among the arguments of the
+head, an axiom's say, stores it unforced among the arguments of the
 application it builds. Those two are where deferred evidence stands, and both
 force it where it is read: the environment where the local is looked up or a
 value closes over it, and the application where its arguments themselves are
@@ -818,8 +817,8 @@ yields a value of a sealed family except by applying its constructors
 (obligation T2, see
 [Trusted bootstrap and native values](#trusted-bootstrap-and-native-values)),
 so every value of a sealed family was built from its constructors: a neutral
-of one is a parameter a caller supplied, a blocked computation, or an opaque
-definition whose checked body built it. Eta and reconstruction therefore open
+of one is a parameter a caller supplied or a blocked computation. Eta and
+reconstruction therefore open
 nothing the module did not build. A match in the module opens a proof that a
 module function returned, although the function's body never runs, since the
 proof is reconstructed from its proposition.
@@ -852,11 +851,11 @@ strictly positive inductive data.
   predecessor descent.
 
 Every metric must have a genuine non-Prop inductive type. Proofs, quotients,
-and values of axiomatized or opaque types are rejected as metrics.
+and values of axiomatized types are rejected as metrics.
 
 While checking a recursive body, a raw recursive reference is valid only as
 the head of a direct call whose metric decreases. It cannot escape into a
-closure, constructor field, argument, return value, or opaque application.
+closure, constructor field, argument, return value, or blocked application.
 Runtime recursion uses the already checked lambda and performs no further
 decrease test.
 
@@ -880,12 +879,15 @@ finish instead of reporting `EvaluationTooDeep`. Recursion outside tail
 position is bounded by the host stack, whose exhaustion is that diagnostic
 (see [Trust boundary](#trust-boundary)).
 
-## Axioms, opacity, and quotients
+## Axioms and quotients
 
-Axioms and opaque definitions break closed canonicity. A closed value of an
-inductive type may remain a symbolic or blocked application instead of reducing
-to a constructor. Kernel code must therefore never assume that every closed
-inductive value is constructor-headed.
+Every definition is transparent: it reduces during checking and evaluation.
+Only the trusted prelude introduces names that do not compute, its axioms and
+builtins, so a closed value of an inductive type reduces to a constructor
+unless one of them blocks it. Axioms do break closed canonicity: such a value
+may remain a symbolic or blocked application instead of reducing to a
+constructor. Kernel code must therefore never assume that every closed
+inductive value is constructor-headed, nor that an open one is while checking.
 
 Only a trusted prelude declares axioms. An `axiom` in any other module is
 `UntrustedAxiom`, reported at the declaration before its type is checked. A
@@ -1121,7 +1123,7 @@ Changes to the checker or evaluator must preserve these rules:
 7. Structure eta applies only to checked non-Prop, nonrecursive,
    zero-index singleton families, sealed or not.
 8. Recursive calls are accepted only from genuine structural descent.
-9. Axiom, opaque, and quotient values are allowed to remain closed neutrals.
+9. Axiom and quotient values are allowed to remain closed neutrals.
 10. Native equations and literal layouts are installed only by a selected
     trusted prelude and remain attached to validated values, not global names.
 11. A value key never decides an equation the conversion rules would decide

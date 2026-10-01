@@ -29,7 +29,7 @@ class KindLifetimeTests extends munit.FunSuite with TestSupport {
   test("a declaration's header and a family parameter may bind a kind or a lifetime") {
     typecheckDecls("def f {k: Kind}{S: Lifetime}(A: Type { kind = k, scope = S })(x: A): A := x\n")
     typecheckDecls(
-      "opaque def f (k: Kind)(S: Lifetime): Sort { level = succ(one), scope = S } := Type { kind = k, scope = S }\n"
+      "def f (k: Kind)(S: Lifetime): Sort { level = succ(one), scope = S } := Type { kind = k, scope = S }\n"
     )
     typecheckDecls(
       "inductive Box {k: Kind}{S: Lifetime}(A: Type { kind = k, scope = S }) : Type { scope = S }\n | mk : Box(A)\n"

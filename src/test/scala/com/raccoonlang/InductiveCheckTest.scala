@@ -2,38 +2,47 @@ package com.raccoonlang
 
 class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
 
-  private def elab(src: String): CoreAst.Program =
+  private def elab(src: String, prelude: Prelude.Config): CoreAst.Program =
     LanguageParser.parseProgram(src) match {
       case Success(value, _, _) =>
-        Elaborator.elab(value, Prelude.test)
+        Elaborator.elab(value, prelude)
       case err: Failure => fail(s"Failed to parse: $err, ${src.substring(err.curIdx)}")
     }
 
   private def elabAndRun(src: String): Env =
-    elab(src).decls.foldLeft(Prelude.test.checkedEnv) { case (curEnv, decl) =>
+    elab(src, Prelude.test).decls.foldLeft(Prelude.test.checkedEnv) { case (curEnv, decl) =>
       Interpreter.evalDecl(decl, curEnv)
     }
 
-  private def elabAndTypecheck(src: String): Unit = {
-    Interpreter.run(elab(src), Prelude.test)
+  private def elabAndTypecheck(src: String, prelude: Prelude.Config): Unit = {
+    Interpreter.run(elab(src, prelude), prelude)
     ()
   }
+
+  /** The test prelude followed by `assumptions`, which may declare axioms. */
+  private def assuming(assumptions: String): Prelude.Config =
+    TestSupport.preludeAssuming(TestSupport.testPreludeSource, assumptions)
 
   private def boxDecl: CoreAst.Decl.InductiveDecl =
     elab(
       """
         |inductive Box (A: Type) : Type
         | | mk (value: A): Box(A)
-        |""".stripMargin
+        |""".stripMargin,
+      Prelude.test
     ).decls.head.asInstanceOf[CoreAst.Decl.InductiveDecl]
 
   private val blockSpan = Span(0, 0)
 
   private def global(name: String): CoreAst.Term = CoreAst.Term.GlobalRef(name, blockSpan)
 
-  /** A neutral global of type `ty`: an opaque definition, a symbol whatever `body` built. */
-  private def opaque(name: String, ty: CoreAst.Term, body: CoreAst.Term): CoreAst.Decl =
-    CoreAst.Decl.ConstDecl(isOpaque = true, name, ty, CoreAst.ConstBody.TermBody(body), None, blockSpan)
+  /**
+   * `env` with a neutral global of type `ty`: an axiom, as only a trusted prelude declares one. These tests build their
+   * environments declaration by declaration, so the axiom is added as a prelude declaration after the families its type
+   * names.
+   */
+  private def assume(name: String, ty: CoreAst.Term, env: Env): Env =
+    Interpreter.addPreludeDecl(env, CoreAst.Decl.AxiomDecl(name, ty, blockSpan))
 
   private def sortAt(level: CoreAst.Form): CoreAst.Term = CoreTestTerms.sortAt(level, blockSpan)
 
@@ -301,17 +310,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
     assert(oddMeta.block.positiveParams.isEmpty)
     assert(!oddMeta.projectionInfo.get.etaEligible)
 
-    val oddWitness =
-      opaque(
-        "oddWitness",
-        global("Odd"),
-        CoreAst.Term.App(global("Odd.succ"), Vector(global("Even.zero")), Vector.empty, blockSpan)
-      )
-    val matchEnv =
-      Interpreter.evalDecl(
-        opaque("evenWitness", global("Even"), global("Even.zero")),
-        Interpreter.evalDecl(oddWitness, env)
-      )
+    val matchEnv = assume("evenWitness", global("Even"), assume("oddWitness", global("Odd"), env))
     val evenMatch = CoreAst.Term.Match(
       global("evenWitness"),
       motive = global("Even"),
@@ -406,7 +405,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   }
 
   test("mutual blocks reject non-uniform parameters on recursive sibling fields") {
-    val base = Interpreter.evalDecl(opaque("Carrier", typeSort, propSort), Prelude.test.checkedEnv)
+    val base = assume("Carrier", typeSort, Prelude.test.checkedEnv)
 
     interceptError[NonStrictlyPositive] {
       Interpreter.evalDecl(nonUniformRecursiveMutual, base)
@@ -453,7 +452,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         |
         |""".stripMargin
 
-    interceptError[InductiveTypeNotASort] { elabAndTypecheck(p) }
+    interceptError[InductiveTypeNotASort] { elabAndTypecheck(p, Prelude.test) }
   }
 
   test("Inductive type must be a Sort (Pi case): inductive Bad(A: Type) : A") {
@@ -468,7 +467,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         |
         |""".stripMargin
 
-    interceptError[InductiveTypeNotASort] { elabAndTypecheck(p) }
+    interceptError[InductiveTypeNotASort] { elabAndTypecheck(p, Prelude.test) }
   }
 
   test("Constructor result must be inductive head: ctor returns Peano, not Bad") {
@@ -483,7 +482,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         |
         |""".stripMargin
 
-    interceptError[InvalidConstructorResult] { elabAndTypecheck(p) }
+    interceptError[InvalidConstructorResult] { elabAndTypecheck(p, Prelude.test) }
   }
 
   test("Field universe too large: (A: Sort Level.one) in Type inductive") {
@@ -494,7 +493,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         |
         |""".stripMargin
 
-    interceptError[InductiveUniverseTooSmall] { elabAndTypecheck(p) }
+    interceptError[InductiveUniverseTooSmall] { elabAndTypecheck(p, Prelude.test) }
   }
 
   test("Non-strict positivity: function-typed field with Bad in domain (f: Bad -> Bad)") {
@@ -505,20 +504,20 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         |
         |""".stripMargin
 
-    interceptError[NonStrictlyPositive] { elabAndTypecheck(p) }
+    interceptError[NonStrictlyPositive] { elabAndTypecheck(p, Prelude.test) }
   }
 
   test("Non-strict positivity: aligned universes under other constructor F args (Wrap u (Bad u))") {
     val p =
       """
-        |opaque def Wrap(A: Sort { level = zero }): Sort { level = zero } := A
-        |
         |inductive Bad : Sort { level = zero }
         | | con(x: Wrap(Bad)): Bad
         |
         |""".stripMargin
 
-    interceptError[NonStrictlyPositive] { elabAndTypecheck(p) }
+    interceptError[NonStrictlyPositive] {
+      elabAndTypecheck(p, assuming("axiom Wrap (A: Sort { level = zero }): Sort { level = zero }\n"))
+    }
   }
 
   test("Constructor result must use family params uniformly") {
@@ -533,7 +532,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         |
         |""".stripMargin
 
-    interceptError[NonUniformInductiveParam] { elabAndTypecheck(p) }
+    interceptError[NonUniformInductiveParam] { elabAndTypecheck(p, Prelude.test) }
   }
 
   test("Constructor result must have full family arity") {
@@ -548,7 +547,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         |
         |""".stripMargin
 
-    interceptError[ArityMismatch] { elabAndTypecheck(p) }
+    interceptError[ArityMismatch] { elabAndTypecheck(p, Prelude.test) }
   }
 
   test("Constructor implicit binders may bind indices after params when a field forces them") {
@@ -564,7 +563,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         |
         |""".stripMargin
 
-    elabAndTypecheck(p)
+    elabAndTypecheck(p, Prelude.test)
   }
 
   test("Constructor-declared implicits must be forced by fields; family demotion does not apply") {
@@ -579,7 +578,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         |
         |""".stripMargin
 
-    interceptError[NonForcedImplicitParam] { elabAndTypecheck(p) }
+    interceptError[NonForcedImplicitParam] { elabAndTypecheck(p, Prelude.test) }
   }
 
   test("Constructor binders may not shadow family params") {
@@ -590,7 +589,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         |
         |""".stripMargin
 
-    interceptError[AlreadyDefined] { elabAndTypecheck(p) }
+    interceptError[AlreadyDefined] { elabAndTypecheck(p, Prelude.test) }
   }
 
   test("Constructor implicit binders include inductive params") {
@@ -601,7 +600,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         |
         |""".stripMargin
 
-    elabAndTypecheck(p)
+    elabAndTypecheck(p, Prelude.test)
   }
 
   test("Hidden constructor binders may not shadow family params") {
@@ -616,7 +615,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         |
         |""".stripMargin
 
-    interceptError[AlreadyDefined] { elabAndTypecheck(p) }
+    interceptError[AlreadyDefined] { elabAndTypecheck(p, Prelude.test) }
   }
 
   test("Nested strictly positive: recursive occurrence under positive List parameter") {
@@ -631,7 +630,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         |
         |""".stripMargin
 
-    elabAndTypecheck(p)
+    elabAndTypecheck(p, Prelude.test)
   }
 
   test("Nested non-positive: recursive occurrence under forbidden container parameter") {
@@ -649,7 +648,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         |
         |""".stripMargin
 
-    interceptError[NonStrictlyPositive] { elabAndTypecheck(p) }
+    interceptError[NonStrictlyPositive] { elabAndTypecheck(p, Prelude.test) }
   }
 
   test("Nested non-positive: container parameter contravariant in later family argument") {
@@ -663,7 +662,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         |
         |""".stripMargin
 
-    interceptError[NonStrictlyPositive] { elabAndTypecheck(p) }
+    interceptError[NonStrictlyPositive] { elabAndTypecheck(p, Prelude.test) }
   }
 
   test("Nested metadata: dependent family argument tracks its own variable") {
@@ -703,7 +702,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         |
         |""".stripMargin
 
-    interceptError[NonStrictlyPositive] { elabAndTypecheck(p) }
+    interceptError[NonStrictlyPositive] { elabAndTypecheck(p, Prelude.test) }
   }
 
   test("Nested non-positive: recursive occurrence in constructor-valued family argument") {
@@ -717,7 +716,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         |
         |""".stripMargin
 
-    interceptError[NonStrictlyPositive] { elabAndTypecheck(p) }
+    interceptError[NonStrictlyPositive] { elabAndTypecheck(p, Prelude.test) }
   }
 
   test("Nested metadata: a higher-kinded parameter is positive when only its result is stored") {
@@ -738,14 +737,16 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
     }
   }
 
-  test("Nested non-positive: opaque dependent family argument type is conservative") {
-    val p =
+  test("Nested non-positive: an axiomatized dependent family argument type is conservative") {
+    val assumptions =
       """
         |struct TypeBox (A: Type) : Sort { level = succ(one) }
         | | mk (T: Type) : TypeBox(A)
         |
-        |opaque def typeBox (A: Type): TypeBox(A) := TypeBox.mk(A, A)
-        |
+        |axiom typeBox (A: Type): TypeBox(A)
+        |""".stripMargin
+    val p =
+      """
         |inductive Box (A: Type)(F: (typeBox(A).T)) : Type
         | | mk : Box(A, F)
         |
@@ -754,6 +755,6 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         |
         |""".stripMargin
 
-    interceptError[NonStrictlyPositive] { elabAndTypecheck(p) }
+    interceptError[NonStrictlyPositive] { elabAndTypecheck(p, assuming(assumptions)) }
   }
 }

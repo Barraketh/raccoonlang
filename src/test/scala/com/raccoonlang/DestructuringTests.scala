@@ -99,8 +99,6 @@ class DestructuringTests extends munit.FunSuite with TestSupport {
         | | mk (a: A)(b: B) : Loose(A, B)
         |
         |def NatPair : Type := Prod(Nat, Nat)
-        |
-        |opaque def Hidden : Type := Prod(Nat, Nat)
         |""".stripMargin
     // A type a transparent definition computes to an instance is one.
     typecheckDecls(families + program("", "NatPair"))
@@ -113,7 +111,7 @@ class DestructuringTests extends munit.FunSuite with TestSupport {
     assertEquals(notDestructurable(families, "", "And(True, True)"), "And(True, True)")
     assertEquals(notDestructurable(families, "{A: Type}", "A"), "A")
     assertEquals(notDestructurable(families, "", "Nat -> Nat"), "Nat -> Nat")
-    assertEquals(notDestructurable(families, "", "Hidden"), "Hidden")
+    assertEquals(notDestructurable(families, "(F: Nat -> Type)", "F(0)"), "F(0)")
     // An instance at a level that may be zero is outside Prop where it is checked.
     typecheckDecls(families + program("{u: Level}{A: Sort { level = u }}", "Loose(A, A)"))
     assertEquals(notDestructurable(families, "", "Loose(True, True)"), "Loose(True, True)")
@@ -143,7 +141,7 @@ class DestructuringTests extends munit.FunSuite with TestSupport {
         |  Eq.refl(Prod.mk(True.intro, both))
         |
         |// An equation between variables has no reconstructed proof, so this proof has no constructor form.
-        |def opaqueProof (x: Nat)(y: Nat)(h: Prod(Eq(Nat, x, y), True)): Eq(Nat, count(h), 2) := Eq.refl(2)
+        |def stuckProof (x: Nat)(y: Nat)(h: Prod(Eq(Nat, x, y), True)): Eq(Nat, count(h), 2) := Eq.refl(2)
         |""".stripMargin
     evaluatesTo(defs + "{ Nat.add(count(Prod.mk(True.intro, True.intro)), count(Prod.mk(1, True.intro))) }\n", "4")
   }
@@ -297,7 +295,7 @@ class DestructuringTests extends munit.FunSuite with TestSupport {
     val lets = "let (a, _) := p\n  let ((b, c), (d, (e, f))) := q\n  let g := b"
     val source =
       s"def x (p: Prod(Nat, Nat))(q: Prod(Prod(Nat, Nat), Prod(Nat, Prod(Nat, Nat)))): Nat := {\n  $lets\n  a\n}\n"
-    val body = parse(source).decls.collectFirst { case CoreAst.Decl.ConstDecl(_, "x", _, body, _, _) => body }
+    val body = parse(source).decls.collectFirst { case CoreAst.Decl.ConstDecl("x", _, body, _, _) => body }
     val elaborated = body match {
       case Some(CoreAst.ConstBody.TermBody(lam: CoreAst.Term.Lam)) => lam
       case other                                                   => fail(s"Expected a lambda, got $other")
@@ -311,7 +309,7 @@ class DestructuringTests extends munit.FunSuite with TestSupport {
     // A destructuring of a named field stays its own let.
     val separate = "def y (q: Prod(Prod(Nat, Nat), Nat)): Nat := {\n  let (t, d) := q\n  let (b, c) := t\n  b\n}\n"
     parse(separate).decls.collectFirst {
-      case CoreAst.Decl.ConstDecl(_, "y", _, CoreAst.ConstBody.TermBody(lam: CoreAst.Term.Lam), _, _) => lam.body
+      case CoreAst.Decl.ConstDecl("y", _, CoreAst.ConstBody.TermBody(lam: CoreAst.Term.Lam), _, _) => lam.body
     } match {
       case Some(body) => assertEquals(PrettyPrinter.printTerm(body), "{ let (t, d) := q\nlet (b, c) := t \n b }")
       case None       => fail("Expected a lambda")

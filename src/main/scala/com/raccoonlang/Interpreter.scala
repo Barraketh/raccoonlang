@@ -625,9 +625,9 @@ object Interpreter {
   }
 
   // Proof publication (docs/kernel.md#proofs-and-elimination): exact type alone chooses a reconstructed constructor,
-  // a proof eta-lambda, or `VProof`; transparency and the value's origin are irrelevant. Data has
-  // no such policy: an opaque def or axiom of struct type publishes as the plain symbol, and
-  // structure eta reaches it through the rules rather than through its representation.
+  // a proof eta-lambda, or `VProof`; the value's origin is irrelevant. Data has no such policy: an axiom of struct type
+  // publishes as the plain symbol, and structure eta reaches it through the rules rather than through its
+  // representation.
   private def publishedValue(value: Value, ty: Value): Value =
     if (Sorts.isProposition(ty)) Value.canonicalizeProof(value)
     else value
@@ -651,10 +651,9 @@ object Interpreter {
       at(decl.span) {
         try
           decl match {
-            case Decl.ConstDecl(isOpaque, name, ty, body, sealedBy, _) =>
+            case Decl.ConstDecl(name, ty, body, sealedBy, _) =>
               val installed = body match {
                 case CoreAst.ConstBody.Builtin(_) =>
-                  if (isOpaque) wtf("Builtin declarations cannot be opaque")
                   if (!trusted) fail(ReservedKernelName(name))
                   val tyV = TypeChecker.checkDeclType(ty, env).value
                   // A builtin's native body reads its arguments as values, and an evidence argument is an erased proof
@@ -673,10 +672,9 @@ object Interpreter {
                   // A global is never tracked, so none may be linear (spec §3.2).
                   if (Linearity.isLinear(checkedTy)) at(ty.span)(fail(LinearGlobal(Some(name), checkedTy)))
                   val checked = TypeChecker.checkTerm(term, checkedTy, env)
-                  val value = if (isOpaque) VConst(name, Symbol, checkedTy) else checked.value
                   val published =
-                    if (trusted && Packed.opNames(name)) Packed.nativeOp(name, value, env)
-                    else publishedValue(value, checkedTy)
+                    if (trusted && Packed.opNames(name)) Packed.nativeOp(name, checked.value, env)
+                    else publishedValue(checked.value, checkedTy)
                   env.putGlobal(name, published)
               }
               // A sealed family's selectors are kept to its module, as its constructors are (spec §7.1).
