@@ -1,6 +1,6 @@
 # A wildcard case
 
-Status: **draft** (2026-10-01). A quality-of-life feature: `gpu/proofs/NOTES.md` F5's most repeated cost.
+Status: **implemented** (2026-10-01). A quality-of-life feature: `gpu/proofs/NOTES.md` F5's most repeated cost.
 
 ## 1. The feature
 
@@ -28,8 +28,9 @@ code gains the same, for example a function on `Group` that cares about one cons
   case's environment and refinement, exactly as if the case had been written out with `_` for every field. So a
   wildcard over a constructor with a linear field is `LinearUnused` at the wildcard, as a written `_` would be.
 - **The residual is the expansion.** The checked match has one case per constructor, each with the wildcard's body.
-  Evaluation, conversion, the ledger and the termination checker see only written-out cases. A `scope` or lambda
-  inside the body is one term in every expanded case, as one term evaluated twice is.
+  Evaluation, conversion, the ledger and the termination checker see only written-out cases. Each expanded case's
+  body is a fresh copy of `e`, with fresh node identities and locals, so a `scope` or lambda inside it is a separate
+  term in each case, as in the written-out match.
 - **Diagnostics name the constructor.** A failure inside an expanded case says which constructor it was checked for.
 
 ## 3. Why it is safe

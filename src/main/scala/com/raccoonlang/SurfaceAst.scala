@@ -80,10 +80,12 @@ object SurfaceAst {
     // Scope: scope l => body
     final case class Scope(name: String, body: Term, span: Span) extends Term
 
+    /** A match's cases, then its wildcard case if it has one, which is always its last. */
     final case class Match(
         scrut: Term,
         motive: Term,
         cases: Vector[Case],
+        wildcard: Option[Wildcard],
         span: Span
     ) extends Term
 
@@ -127,6 +129,11 @@ object SurfaceAst {
 
     /** A pattern's variable for one constructor field, `_` included, where it is written. */
     final case class PatternVar(name: String, span: Span)
+
+    /**
+     * `| _ => body`: a case for each reachable constructor no other case of its match names (docs/WILDCARD_CASE.md).
+     */
+    final case class Wildcard(body: Term, span: Span)
   }
 
   /**

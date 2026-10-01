@@ -221,10 +221,10 @@ object PrettyPrinter {
         val decrease = recursion.toVector.flatMap(r => Text(" ") +: printDecreaseSpec(r.decreases))
         (Text("fun ") +: printCoreClosure(ty.closure)) ++ printBinders(ty.binders) ++
           Vector(Text(": "), term(ty.out)) ++ decrease ++ Vector(Text(" => "), term(body))
-      case CoreAst.Term.Scope(ref, body, _, _)   => Vector(Text(s"scope ${ref.name} => "), term(body))
-      case m @ CoreAst.Term.Match(_, _, _, _, _) => printMatch(m)
-      case b: CoreAst.Term.Body                  => printBody(b)
-      case CoreAst.Term.Select(base, field, _)   => printTermAtom(base) :+ Text(s"[$field]")
+      case CoreAst.Term.Scope(ref, body, _, _) => Vector(Text(s"scope ${ref.name} => "), term(body))
+      case m: CoreAst.Term.Match               => printMatch(m)
+      case b: CoreAst.Term.Body                => printBody(b)
+      case CoreAst.Term.Select(base, field, _) => printTermAtom(base) :+ Text(s"[$field]")
       case CoreAst.Term.App(fn, args, evidence, _) =>
         val evidencePieces =
           if (evidence.isEmpty) Vector.empty
@@ -261,8 +261,10 @@ object PrettyPrinter {
       Vector(Text(s"| $ctor$args => "), term(c.body))
     }
 
+    /** A checked match prints its cases as checked: a wildcard prints only before checking expands it. */
     def printMatch(m: CoreAst.Term.Match): Vector[Piece] = {
-      val cases = separated(m.cases.map(c => Later(() => printCase(c))), " ")
+      val wildcard = m.wildcard.map(w => Later(() => Vector(Text("| _ => "), term(w.body))))
+      val cases = separated(m.cases.map(c => Later(() => printCase(c))) ++ wildcard, " ")
       (Text("match ") +: printTermAtom(m.scrut)) ++ Vector(Text(" returning "), term(m.motive), Text(" with ")) ++ cases
     }
   }
@@ -400,7 +402,7 @@ object PrettyPrinter {
    */
   private def fieldProjection(thunk: Value.NeutralThunk): Option[Vector[Piece]] =
     thunk.term match {
-      case CoreAst.Term.Match(CoreAst.Term.LocalRef(scrutinee, _), _, Vector(branch), _, _) =>
+      case CoreAst.Term.Match(CoreAst.Term.LocalRef(scrutinee, _), _, Vector(branch), None, _, _) =>
         val fieldIdx = branch.body match {
           case CoreAst.Term.LocalRef(ref, _) => branch.argRefs.indexOf(ref)
           case _                             => -1

@@ -411,8 +411,8 @@ not a use.
 A second use on some path is `LinearReused`, located at that use; otherwise no
 use on some path is `LinearUnused`, located at the binder. So matching a
 linear scrutinee consumes it once, and its fields are released to the ledger
-at the branch's extent, where a wildcard over a linear field is
-`LinearUnused`. A destructuring consumes its value the same way, and releases
+at the branch's extent, where `_` for a linear field is `LinearUnused`. A
+destructuring consumes its value the same way, and releases
 its locals at the rest of its block, each reported at its component. A struct
 selector is a definition whose body is a match, so applying one to a linear
 value is that value's use. The ledger is one walk, an exhaustive match over
@@ -503,6 +503,25 @@ result indices to the scrutinee type's. An omitted constructor is valid
 only when its result is apart from the exact scrutinee type. A stuck equation
 keeps the constructor reachable and provides no refinement; the fields keep
 their types at the scrutinee's parameters.
+
+A match's last case may be a wildcard, `| _ => e`. Before any case is checked,
+the checker expands it into one case for each constructor the written cases do
+not name and a missing case would be reported for: when the scrutinee is in
+constructor form, its own constructor; otherwise every constructor whose result
+is not apart from the scrutinee type. Each expanded case is the case written
+out at the wildcard: every field bound to a fresh anonymous local, located at
+the wildcard, and a fresh copy of `e` for its body, with fresh node identities
+and fresh locals for everything `e` binds, so no two cases share a closure, a
+stuck match or a `scope` atom ([Value identity](#value-identity)). Its
+refinement, its ledger (an unused linear field is `LinearUnused` at the
+wildcard) and the termination check of a recursive call in `e` are that case's.
+A wildcard that stands for no constructor is `RedundantCase`, located at it. A
+failure while checking an expanded case names the constructor it was expanded
+for; the ledger of a local bound outside the match runs on the whole match
+afterwards, and reports a use in `e` without it. The residual is the expansion,
+listing every case, written or expanded, in constructor declaration order, so
+it converts with the match written out in full in that order; evaluation,
+conversion and the ledger never meet a wildcard.
 
 Evaluation reduces a match only when the scrutinee exposes a justified
 constructor view. Otherwise it retains a blocked match with the dependencies
@@ -1064,7 +1083,9 @@ identity only when one rebuilds the other. A span only locates a node, so two
 nodes written at one span are still two. Syntax the elaborator duplicates is
 as many nodes: a selector's result type, its field's type as written under
 `let`s binding the earlier fields it mentions, is elaborated once as its
-header's codomain and once as its match's motive. Captured values, in binding
+header's codomain and once as its match's motive. A wildcard's expansion
+copies its body afresh for each case, every node in it with a fresh identity
+(`CoreAst.freshCopy`). Captured values, in binding
 order, are part of closure identity, and a Pi's key counts its binders, so a
 Pi that drops leading binders its remainder does not depend on keeps its
 node's identity. Packed keys include the codec, canonical payload, and packed

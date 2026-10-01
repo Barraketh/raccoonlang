@@ -324,6 +324,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
           blockSpan
         )
       ),
+      wildcard = None,
       blockSpan,
       NodeId.fresh()
     )
@@ -339,6 +340,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
           blockSpan
         )
       ),
+      wildcard = None,
       blockSpan,
       NodeId.fresh()
     )

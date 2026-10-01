@@ -400,6 +400,7 @@ object Elaborator {
               field.span
             )
           ),
+          wildcard = None,
           field.span
         )
 
@@ -446,8 +447,10 @@ object Elaborator {
         val (inBinders, inner) = group(header.params)
         closure(written) ++ inBinders ++ freeIdentifiers(header.ty, inner) ++ freeIdentifiers(body, inner)
       case SA.Term.Scope(name, body, _) => freeIdentifiers(body, bound + name)
-      case SA.Term.Match(scrut, motive, cases, _) =>
-        free(scrut) ++ free(motive) ++ cases.flatMap(c => freeIdentifiers(c.body, bound ++ c.patternVars.map(_.name)))
+      case SA.Term.Match(scrut, motive, cases, wildcard, _) =>
+        free(scrut) ++ free(motive) ++
+          cases.flatMap(c => freeIdentifiers(c.body, bound ++ c.patternVars.map(_.name))) ++
+          wildcard.toVector.flatMap(w => free(w.body))
       case SA.Term.Body(statements, out, _) =>
         // Lets scope left to right, each one's own value outside it; an open binds no local.
         val (inLets, inner) =
@@ -728,7 +731,7 @@ object Elaborator {
         }
       }
       CA.Term.Body(checkedLets.result(), elabTerm(b.out, bodyEnv), b.span)
-    case SA.Term.Match(scrut, motive, cases, sp) =>
+    case SA.Term.Match(scrut, motive, cases, wildcard, sp) =>
       CA.Term.Match(
         elabTerm(scrut, env),
         elabTerm(motive, env),
@@ -749,6 +752,8 @@ object Elaborator {
             }
           CA.Case(ctorName, isFullyQualified, patternVars, elabTerm(c.body, bodyEnv), c.span)
         },
+        // A wildcard binds no local: the fields of the cases it stands for are anonymous.
+        wildcard.map(w => CA.Wildcard(elabTerm(w.body, env), w.span)),
         sp,
         NodeId.fresh()
       )

@@ -496,22 +496,45 @@ object LanguageParser {
     shortName | globalPath
   }
 
-  private def matchCase(implicit sourceId: Option[SourceId]): Parser[Case] = {
+  /** One case of a match: a constructor's, or the wildcard `| _ => e` (Left), whose head is `_` and binds no fields. */
+  private def matchCase(implicit sourceId: Option[SourceId]): Parser[Either[Wildcard, Case]] = {
     val patternVar = argName.spanned(sourceId).map(name => PatternVar(name.value, name.span))
-    (sym("|") ~/ caseHead ~ (wsSep ~ patternVar).rep(0) ~ sym("=>") ~/ skipAllWs ~ term ~ lineEnd)
+    val wildcardHead = P("_").map(_ => Option.empty[(Vector[String], Boolean)])
+    val head = wildcardHead | caseHead.map(Option(_))
+    (sym("|") ~/ head ~ (wsSep ~ patternVar).rep(0) ~ sym("=>") ~/ skipAllWs ~ term ~ lineEnd)
       .flatSpanned(sourceId)
-      .map { case (ctorPath, useShortName, patternVars, body, span) =>
-        Case(ctorPath, useShortName, patternVars, body, span)
+      .map {
+        case (Some((ctorPath, useShortName)), patternVars, body, span) =>
+          Right(Case(ctorPath, useShortName, patternVars, body, span))
+        case (None, patternVars, body, span) =>
+          patternVars.headOption.foreach { field =>
+            throw ParseError(field.span.start, field.span.start, "A wildcard case binds no fields")
+          }
+          Left(Wildcard(body, span))
       }
       .named("Case")
   }
 
-  /** `returning` continues the header, so it may start the next line, as an arrow or a parameter group may. */
+  /**
+   * `returning` continues the header, so it may start the next line, as an arrow or a parameter group may. A wildcard
+   * case is the last case of its match, so a match has at most one.
+   */
   private def matchP(implicit sourceId: Option[SourceId]): Parser[Match] = {
     (kw("match") ~/ term ~ (skipAllWs ~ kw("returning") ~/ typeTerm).named("returning clause") ~
       kwTight("with") ~/ lineEnd ~ (lineSep ~ matchCase).rep(0))
       .flatSpanned(sourceId)
-      .map { case (scrut, motive, cases, sp) => Match(scrut, motive, cases, sp) }
+      .map { case (scrut, motive, written, sp) =>
+        written.dropRight(1).foreach {
+          case Left(wildcard) =>
+            throw ParseError(
+              wildcard.span.start,
+              wildcard.span.start,
+              "A wildcard case is the last case of its match; a nested match takes every case after it, so brace it"
+            )
+          case Right(_) => ()
+        }
+        Match(scrut, motive, written.collect { case Right(c) => c }, written.lastOption.flatMap(_.left.toOption), sp)
+      }
   }
 
   sealed trait TermTrailer

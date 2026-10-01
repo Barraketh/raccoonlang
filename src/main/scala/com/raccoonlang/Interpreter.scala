@@ -531,7 +531,9 @@ object Interpreter {
         wtf(s"Unresolved field selection .$field reached evaluation")
     }
 
-  private def matchStep(m: CTerm.Match, env: Env): Step =
+  private def matchStep(m: CTerm.Match, env: Env): Step = {
+    // Checking expands a wildcard into the cases it stands for, so only a checked match reaches evaluation.
+    m.wildcard.foreach(w => wtf(s"An unexpanded wildcard case at ${w.span} reached evaluation"))
     evalTerm(m.scrut, env) match {
       // The fields are bound as stored, so matching forces no evidence field; a branch forces one where it reads it.
       // Exhaustiveness is settled by MatchChecker: a constructor-form scrutinee always has a branch.
@@ -563,6 +565,7 @@ object Interpreter {
             Step.Done(Value.canonicalizeProof(stuckMatchThunk(m, env, evalTerm(m.motive, env), blockedOn)))
         }
     }
+  }
 
   private[raccoonlang] def typeCollapseDeps(tpe: Value): DepSet = {
     val classifierLevel = TypeChecker.getUniverse(tpe).level

@@ -158,7 +158,14 @@ object StructEta {
     val branch =
       CoreAst.Case(ctorName, isFullyQualified = true, fieldRefs.map(CoreAst.PatternVar(_, span)), body, span)
     val term =
-      CTerm.Match(CTerm.LocalRef(selfRef, span), CTerm.LocalRef(motiveRef, span), Vector(branch), span, NodeId.fresh())
+      CTerm.Match(
+        CTerm.LocalRef(selfRef, span),
+        CTerm.LocalRef(motiveRef, span),
+        Vector(branch),
+        wildcard = None,
+        span,
+        NodeId.fresh()
+      )
     Projector(selfRef, motiveRef, term)
   }
 }

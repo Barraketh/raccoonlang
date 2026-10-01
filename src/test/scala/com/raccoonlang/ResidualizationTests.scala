@@ -207,7 +207,7 @@ class ResidualizationTests extends munit.FunSuite {
           |""".stripMargin
 
     resultTerm(checkBody(p, withStuckBool).term) match {
-      case CA.Term.Match(_, _, cases, _, _) =>
+      case CA.Term.Match(_, _, cases, None, _, _) =>
         assertEquals(cases.map(_.ctorName).toSet, Set("Bool.true", "Bool.false"))
         cases.foreach(c => assert(containsGlobal(c.body, "id")))
       case other => fail(s"Expected stuck match with literal branches, got $other")
@@ -228,7 +228,7 @@ class ResidualizationTests extends munit.FunSuite {
           |""".stripMargin
 
     resultTerm(checkBody(p, withStuckBool).term) match {
-      case CA.Term.Match(scrut, _, _, _, _) =>
+      case CA.Term.Match(scrut, _, _, None, _, _) =>
         assert(containsGlobal(scrut, "idBool"))
         assert(containsGlobal(scrut, "stuckBool"))
       case other => fail(s"Expected stuck match residual, got $other")
@@ -403,12 +403,83 @@ class ResidualizationTests extends munit.FunSuite {
               _
             ),
             _,
+            None,
             _,
             _
           ) =>
         assertEquals(self, scrut)
         assertEquals(fieldType, bound)
       case other => fail(s"Expected the selector match to return { let T := Boxed.T(self); T }, got $other")
+    }
+  }
+
+  // A wildcard's residual is its expansion (docs/WILDCARD_CASE.md): a case per reachable constructor no written case
+  // names, each binding its fields anonymously, none for a constructor apart from the scrutinee's type.
+  test("a wildcard residualizes as the cases it stands for") {
+    val p =
+      """
+        |inductive Shape indices (n: Nat) : Type
+        | | point : Shape(Nat.zero)
+        | | line (a: Nat) : Shape(Nat.succ(Nat.zero))
+        | | square (a: Nat)(b: Nat) : Shape(Nat.succ(Nat.zero))
+        | | cube (a: Nat) : Shape(Nat.succ(Nat.zero))
+        |
+        |def size (s: Shape(Nat.succ(Nat.zero))): Nat := match s returning Nat with
+        | | Shape.line a => a
+        | | _ => Nat.zero
+        |""".stripMargin
+
+    checkLastDeclBody(p, Prelude.default) match {
+      case CA.Term.Lam(_, CA.Term.Match(_, _, cases, None, _, _), _, _, _, _, _) =>
+        assertEquals(
+          cases.map(c => (c.ctorName, c.argRefs.map(_.name))),
+          Vector(
+            "Shape.line" -> Vector("a"),
+            "Shape.square" -> Vector("_", "_"),
+            "Shape.cube" -> Vector("_")
+          )
+        )
+        assert(cases.tail.forall(c => containsGlobal(c.body, "Nat.zero")))
+        // Each field is its own fresh local.
+        assertEquals(cases.tail.flatMap(_.argRefs).distinct.length, 3)
+      case other => fail(s"Expected a checked lambda over the expanded match, got $other")
+    }
+  }
+
+  // Each expanded case's body is the wildcard's body written out again: its own node identity, and its own locals for
+  // what it binds, referred to by its own body.
+  test("a wildcard's cases each have a fresh copy of its body") {
+    val p =
+      """
+        |inductive Three : Type
+        | | a : Three
+        | | b : Three
+        | | c : Three
+        |
+        |def pick (t: Three): Nat -> Nat := match t returning Nat -> Nat with
+        | | Three.a => fun (x: Nat): Nat => x
+        | | _ => fun (y: Nat): Nat => { let z := y
+        |   z }
+        |""".stripMargin
+
+    checkLastDeclBody(p, Prelude.default) match {
+      case CA.Term.Lam(_, CA.Term.Match(_, _, cases, None, _, _), _, _, _, _, _) =>
+        val lams = cases.tail.map(_.body).collect { case lam: CA.Term.Lam => lam }
+        assertEquals(lams.length, 2)
+        assertEquals(lams.map(_.id).distinct.length, 2)
+        val binders = lams.map(_.ty.binders.head.localRef)
+        assertEquals(binders.distinct.length, 2)
+        lams.zip(binders).foreach { case (lam, y) =>
+          lam.body match {
+            case CA.Term.Body(Vector(CA.Let(CA.LetPattern.Local(z), _, CA.Term.LocalRef(value, _), _)), res, _) =>
+              assertEquals(value, y)
+              assertEquals(res, CA.Term.LocalRef(z, res.span))
+            case other => fail(s"Expected the copied block, got $other")
+          }
+        }
+        val mentioned = lams.flatMap(lam => CA.children(lam.body).collect { case CA.Term.LocalRef(ref, _) => ref })
+        assertEquals(mentioned.distinct.length, 4)
+      case other => fail(s"Expected a checked lambda over the expanded match, got $other")
     }
   }
 
