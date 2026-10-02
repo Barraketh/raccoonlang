@@ -34,19 +34,19 @@ class PrettyPrinterTests extends munit.FunSuite with TestSupport {
   }
 
   test("sorts print as their formers") {
-    val src = "axiom f : {u: Level} -> (A: Sort { level = succ(u) }) -> (P: Prop) -> Sort { level = max(u, one) }\n"
+    val src = "axiom f : {u: Level} -> (A: Type { level = succ(u)}) -> (P: Prop) -> Type { level = max(u, one) }\n"
     val printed = PrettyPrinter.printTerm(axiomType(src, "f"))
 
     assertEquals(
       printed,
-      "{u: Level} -> (A: Sort { level = Level.succ(u) }) -> (P: Prop) -> Sort { level = Level.max(u, Level.one) }"
+      "{u: Level} -> (A: Type { level = Level.succ(u) }) -> (P: Prop) -> Type { level = Level.max(u, Level.one) }"
     )
     axiomType(s"axiom g : $printed\n", "g")
-    val two = PrettyPrinter.print(runProgram("{ Sort { level = succ(one) } }"))
-    assertEquals(two, "Sort { level = Level.succ(Level.one) }")
+    val two = PrettyPrinter.print(runProgram("{ Type { level = one} }"))
+    assertEquals(two, "Type { level = Level.one }")
     // A constant level prints as its forms, not a numeral, so the sort reads back as itself.
-    assert(ValueEquivalence.defEq(runProgram(s"{ $two }"), runProgram("{ Sort { level = succ(one) } }")))
-    assertEquals(PrettyPrinter.print(runProgram("{ Sort { level = one } }")), "Type")
+    assert(ValueEquivalence.defEq(runProgram(s"{ $two }"), runProgram("{ Type { level = one} }")))
+    assertEquals(PrettyPrinter.print(runProgram("{ Type { level = zero} }")), "Type")
   }
 
   test("a sort prints the kind and scope it does not leave at their defaults") {
@@ -61,8 +61,8 @@ class PrettyPrinterTests extends munit.FunSuite with TestSupport {
     axiomType(s"axiom g : $printed\n", "g")
     assertEquals(PrettyPrinter.print(runProgram("{ Type { kind = lin, scope = empty } }")), "Type { kind = Kind.lin }")
     assertEquals(
-      PrettyPrinter.print(runProgram("{ Sort { level = succ(one), kind = unr } }")),
-      "Sort { level = Level.succ(Level.one) }"
+      PrettyPrinter.print(runProgram("{ Type { level = one, kind = unr } }")),
+      "Type { level = Level.one }"
     )
   }
 

@@ -266,7 +266,7 @@ class ResidualizationTests extends munit.FunSuite {
         assert(implicitBinder.mode == BinderMode.Implicit, "expected leading binder to stay implicit in the residual")
         assert(implicitBinder.projection.isDefined, "expected forced implicit binder to carry a projection spec")
         implicitBinder.ty match {
-          case CA.Term.Sort(CA.Term.FormOp(CA.Form.LevelOne, _, _), _, _, _) =>
+          case CA.Term.Sort(CA.Term.FormOp(CA.Form.LevelZero, _, _), _, _, _) =>
           case other => fail(s"Expected Type binder annotation, got $other")
         }
         val explicitBinder = pi.binders(1)
@@ -337,7 +337,7 @@ class ResidualizationTests extends munit.FunSuite {
       case pi: CA.Term.Pi =>
         assert(pi.binders.head.mode == BinderMode.Explicit, "expected explicit binder to stay explicit in the residual")
         pi.binders.head.ty match {
-          case CA.Term.Sort(CA.Term.FormOp(CA.Form.LevelOne, _, _), _, _, _) =>
+          case CA.Term.Sort(CA.Term.FormOp(CA.Form.LevelZero, _, _), _, _, _) =>
           case other => fail(s"Expected Type binder, got $other")
         }
         pi.out match {
@@ -352,7 +352,7 @@ class ResidualizationTests extends munit.FunSuite {
   test("a declaration header's residual preserves implicit level binders") {
     val p =
       """
-        |def f {u: Level}(A: Sort { level = u }): Sort { level = u } := A
+        |def f {u: Level}(A: Type { level = u}): Type { level = u} := A
         |""".stripMargin
 
     checkLastDeclType(p) match {
@@ -379,7 +379,7 @@ class ResidualizationTests extends munit.FunSuite {
   test("a generated selector's match residualizes its field type, under its earlier fields, as its motive") {
     val p =
       """
-        |struct Boxed : Sort { level = succ(one) }
+        |struct Boxed : Type { level = one}
         | | mk (T: Type)(x: T) : Boxed
         |""".stripMargin
 

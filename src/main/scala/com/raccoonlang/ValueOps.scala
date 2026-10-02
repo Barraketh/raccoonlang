@@ -70,8 +70,8 @@ object ValueOps {
         case p: VPacked                 => p
         case deferred: DeferredEvidence => deferred.escaped
       }
-      // Deferred collapse: a type may resolve to a proposition only once its metas solve
-      // (e.g. u := 0); the proof policy applies at that point (docs/kernel.md#proofs-and-elimination). Deferred struct
+      // A type meta may resolve to a proposition; the proof policy applies after materializing it
+      // (docs/kernel.md#proofs-and-elimination). Deferred struct
       // expansion deliberately does NOT happen here: materialization reaches inside values
       // (projection bases, thunk envs), and wrapping an interior copy while bare copies circulate
       // would split the representation with no mixed defEq rule to reunite it (StructEta).
@@ -103,11 +103,13 @@ object ValueOps {
       classifier match {
         case sort: VSort =>
           if (mayNeedMaterialization(sort))
-            Sorts.sort(
-              materializeParameter(sort.level),
-              materializeParameter(sort.kind),
-              materializeParameter(sort.scope)
-            )
+            if (Sorts.isProp(sort)) Sorts.prop(materializeParameter(sort.scope))
+            else
+              Sorts.sort(
+                materializeParameter(sort.level),
+                materializeParameter(sort.kind),
+                materializeParameter(sort.scope)
+              )
           else sort
         case Large => Large
       }

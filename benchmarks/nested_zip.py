@@ -59,14 +59,14 @@ def raccoon_source(size: int, transparent_zip: bool) -> str:
  | zero : Nat
  | succ (m: Nat) : Nat
 
-inductive Vec {{u: Level}}(A: Sort {{ level = u }}) indices (n: Nat) : Sort {{ level = max(one, u) }}
+inductive Vec {{u: Level}}(A: Type {{ level = u }}) indices (n: Nat) : Type {{ level = u }}
  | nil : Vec(A, Nat.zero)
  | cons (n: Nat)(tail: Vec(A, n))(head: A) : Vec(A, Nat.succ(n))
 
-inductive Pair {{u1: Level}}{{u2: Level}}(A: Sort {{ level = u1 }})(B: Sort {{ level = u2 }}) : Sort {{ level = max(u1, u2) }}
+inductive Pair {{u1: Level}}{{u2: Level}}(A: Type {{ level = u1 }})(B: Type {{ level = u2 }}) : Type {{ level = max(u1, u2) }}
  | mk (a: A)(b: B) : Pair(A, B)
 
-{unfold} zip {{u1: Level}}{{u2: Level}}{{A: Sort {{ level = u1 }}}}{{B: Sort {{ level = u2 }}}}(n: Nat)(va: Vec(A, n))(vb: Vec(B, n)) : Vec(Pair(A, B), n) decreases structural(n) := {{
+{unfold} zip {{u1: Level}}{{u2: Level}}{{A: Type {{ level = u1 }}}}{{B: Type {{ level = u2 }}}}(n: Nat)(va: Vec(A, n))(vb: Vec(B, n)) : Vec(Pair(A, B), n) decreases structural(n) := {{
   let R := Pair(A, B)
   match va returning Vec(R, n) with
   | Vec.nil => Vec.nil(R)
@@ -76,7 +76,7 @@ inductive Pair {{u1: Level}}{{u2: Level}}(A: Sort {{ level = u1 }})(B: Sort {{ l
   }}
 }}
 
-def consume {{u: Level}}{{A: Sort {{ level = u }}}}{{n: Nat}}(w: Vec(A, n)) : Nat := Nat.zero
+def consume {{u: Level}}{{A: Type {{ level = u }}}}{{n: Nat}}(w: Vec(A, n)) : Nat := Nat.zero
 
 def bench (n: Nat)(v: Vec(Nat, n)) : Nat := {{
 {chr(10).join(lets)}

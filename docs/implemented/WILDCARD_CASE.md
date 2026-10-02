@@ -10,7 +10,7 @@ constructor's own refinement.
 
 ```raccoon
 match s returning Fold.Empty(found) with
-| Stmt.error message => False.elim(Fold.consNotEmpty(message, found, h), Fold.Empty(found))
+| Stmt.error message => False.elimP(Fold.consNotEmpty(message, found, h), Fold.Empty(found))
 | _ => h
 ```
 

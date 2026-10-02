@@ -16,18 +16,13 @@ object Interpreter {
     val pieces = Vector.newBuilder[Level]
     if (l.c > 0 || l.terms.isEmpty) pieces += Level.const(l.c)
     l.terms.foreach { case (atom, k) =>
-      val base = atom match {
-        case Level.ParamAtom(id) =>
-          eqStore.subst.get(id) match {
-            case Some(sol) =>
-              eqStore.force(sol) match {
-                case next: Level => normalizeLevel(next, eqStore)
-                case other       => wtf(s"Level variable $id solved to the non-level $other")
-              }
-            case None => Level.mk(id)
+      val base = eqStore.subst.get(atom) match {
+        case Some(sol) =>
+          eqStore.force(sol) match {
+            case next: Level => normalizeLevel(next, eqStore)
+            case other       => wtf(s"Level variable $atom solved to the non-level $other")
           }
-        case Level.IMaxAtom(lhs, rhs) =>
-          Level.imax(normalizeLevel(lhs, eqStore), normalizeLevel(rhs, eqStore))
+        case None => Level.mk(atom)
       }
       pieces += Level.addOffset(base, k)
     }
@@ -106,17 +101,9 @@ object Interpreter {
     BinderOps.instantiateFull(fnTpe.binders, baseEnv, args)
 
   /**
-   * The sort of a Pi, derived from the env it closed over (spec §2.4). Its level right-folds the binder types' levels
-   * with imax over the codomain's, which reduces to Prop for a Prop-valued codomain and to ordinary max for a
-   * definitely positive one. Its kind is its closure kind alone. Its scope unites its closure scope, what its values
-   * hold, with the binder types' scopes, the codomain's and `mentionedScope`, what the captures of its binder types and
-   * codomain contribute, as a lambda's captures do, less the lifetimes the group itself binds, since the caller
-   * supplies them. A kind or lifetime binder contributes no level and no scope. Computing it per instance means a
-   * residual Pi re-evaluated with concrete parameters gets the concrete sort, not the declaration-time one. A Pi that
-   * binds a level is `Large`: the level changes the universe of everything after it, so no sort contains the Pi.
-   *
-   * A closure kind other than `Kind.unr` at a level that may be zero is `LinearProp` (spec §2.3); substitution keeps a
-   * level that is never zero, so only checking can reach it.
+   * A Pi into Prop is impredicative and unrestricted; a data Pi takes the maximum of its domain and codomain levels.
+   * Proposition domains contribute zero. Scope joins the closure, mentioned captures, domains and codomain, less the
+   * lifetimes supplied by this binder group. A level binder makes the Pi Large.
    */
   private[raccoonlang] def piClassifierFromChecked(
       binders: Vector[CoreAst.Binder],
@@ -127,6 +114,8 @@ object Interpreter {
       mentionedScope: Lifetime
   ): Classifier = {
     val freshValues = binders.map(binder => freshEnv(binder.localRef))
+    if (Sorts.isProposition(outV) && !closureKind.isUnr)
+      fail(KindExceeded("Proposition-valued function", Kind.unr, ContainedPart.Field("codomain", outV), closureKind))
     if (freshValues.exists(_.tpe eq LevelTpe)) Large
     else {
       val outSort = TypeChecker.getUniverse(outV)
@@ -143,21 +132,9 @@ object Interpreter {
           Lifetime.union(closureScope +: mentionedScope +: domSorts.map(_.scope) :+ outSort.scope),
           ownLifetimes
         )
-      val outLevel = outSort.level
-      val level =
-        if (Sorts.isProp(outSort)) outLevel
-        else if (Level.isNeverZero(outLevel)) Level.max(domSorts.map(_.level) :+ outLevel)
-        else domSorts.map(_.level).foldRight(outLevel)(Level.imax)
-      Sorts.checkedSort(level, closureKind, scope)
+      if (Sorts.isProp(outSort)) Sorts.prop(scope)
+      else Sorts.sort(Level.max(domSorts.map(_.level) :+ outSort.level), closureKind, scope)
     }
-  }
-
-  /** Cache only proposition classifications that cannot change when level parameters are instantiated. */
-  private[raccoonlang] def stablePiPropClassification(outV: Value): Option[Boolean] = {
-    val outSort = TypeChecker.getUniverse(outV)
-    if (Sorts.isProp(outSort)) Some(true)
-    else if (Level.isNeverZero(outSort.level)) Some(false)
-    else None
   }
 
   private def piClassifier(
@@ -230,7 +207,10 @@ object Interpreter {
       synDeps.result(),
       id,
       classifier0 = () => piClassifier(pi.binders, closedEnv, pi.out, closureKind, closureScope, mentionedScope),
-      knownPropValued = pi.knownPropValued
+      isPropValued = pi.knownPropValued.getOrElse {
+        val fresh = BinderOps.freshen(pi.binders, closedEnv)
+        Sorts.isProposition(evalTerm(pi.out, fresh))
+      }
     )
   }
 
@@ -467,7 +447,6 @@ object Interpreter {
       case CoreAst.Form.LevelOne      => Level.one
       case CoreAst.Form.LevelSucc     => Level.succ(getLevel(args(0)))
       case CoreAst.Form.LevelMax      => Level.max(args.map(getLevel))
-      case CoreAst.Form.LevelIMax     => Level.imax(getLevel(args(0)), getLevel(args(1)))
       case CoreAst.Form.KindUnr       => Kind.unr
       case CoreAst.Form.KindLin       => Kind.lin
       case CoreAst.Form.KindJoin      => Kind.join(args.map(getKind))
@@ -515,7 +494,8 @@ object Interpreter {
       case b: CTerm.Body =>
         Step.Tail(b.res, b.lets.foldLeft(env)((curEnv, l) => bindLet(l.pattern, evalTerm(l.value, curEnv), curEnv)))
       // The interpreter binds a scope's variable to its atom and makes none of its checks (spec §8).
-      case scope: CTerm.Scope => Step.Tail(scope.body, env.putLocal(scope.ref, Atoms.of(scope)))
+      case scope: CTerm.Scope   => Step.Tail(scope.body, env.putLocal(scope.ref, Atoms.of(scope)))
+      case CTerm.Prop(scope, _) => Step.Done(Sorts.prop(getLifetime(evalTerm(scope, env))))
       case CTerm.Sort(level, kind, scope, _) =>
         Step.Done(
           Sorts.sort(getLevel(evalTerm(level, env)), getKind(evalTerm(kind, env)), getLifetime(evalTerm(scope, env)))
@@ -553,19 +533,13 @@ object Interpreter {
             Step.Tail(branch.body, branchEnv(m, branch, other, etaFields, env))
           // We are either blocked or stuck
           case None =>
-            val headBlockers = other match {
+            val blockedOn = other match {
               case Blocker(blockedOn) => blockedOn
               case _                  => DepSet.empty
             }
-            val blockedOn = headBlockers ++ typeCollapseDeps(other.tpe)
             Step.Done(Value.canonicalizeProof(stuckMatchThunk(m, env, evalTerm(m.motive, env), blockedOn)))
         }
     }
-  }
-
-  private[raccoonlang] def typeCollapseDeps(tpe: Value): DepSet = {
-    val classifierLevel = TypeChecker.getUniverse(tpe).level
-    if (Level.isNeverZero(classifierLevel)) DepSet.empty else classifierLevel.synDeps
   }
 
   private[raccoonlang] def stuckMatchThunk(

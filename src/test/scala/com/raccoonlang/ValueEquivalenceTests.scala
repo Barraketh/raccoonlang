@@ -7,7 +7,7 @@ import scala.concurrent.{Await, ExecutionContext, Future}
 
 class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
   private val span = Span(0, 0)
-  private val typeSort: CoreAst.Term = CoreTestTerms.sortAt(CoreAst.Form.LevelOne, span)
+  private val typeSort: CoreAst.Term = CoreTestTerms.sortAt(CoreAst.Form.LevelZero, span)
   private val binderRef = CoreAst.LocalRef(0, "x")
   private val binder = CoreAst.Binder(binderRef, typeSort, Span(0, 0), CoreAst.BinderSite.Function, BinderMode.Explicit)
   private val env = Env.empty
@@ -35,11 +35,12 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
       Value.Lifetime.empty,
       deps(captures: _*),
       ValueId.LocalId(id, captures),
-      () => typeToTypeClassifier
+      () => typeToTypeClassifier,
+      isPropValued = false
     )
 
   test("sorts compare only by conversion, never structurally") {
-    assert(ValueEquivalence.defEq(Sorts.sort(Level.one, Value.Kind.unr, Value.Lifetime.empty), Sorts.Type))
+    assert(ValueEquivalence.defEq(Sorts.sort(Level.zero, Value.Kind.unr, Value.Lifetime.empty), Sorts.Type))
     intercept[InternalError](Sorts.Type == Sorts.sort(Level.one, Value.Kind.unr, Value.Lifetime.empty))
     intercept[InternalError](Sorts.Prop.hashCode())
   }
@@ -77,7 +78,8 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
         mentioned,
         mentioned.synDeps,
         ValueId.LocalId(NodeId.fresh(), Vector.empty),
-        () => typeToTypeClassifier
+        () => typeToTypeClassifier,
+        isPropValued = false
       )
     assert(ValueEquivalence.keyAssertionsEnabled)
     assert(ValueEquivalence.defEq(at(m), at(m)))
@@ -96,7 +98,8 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
       Value.Lifetime.empty,
       DepSet.empty,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
-      () => typeToTypeClassifier
+      () => typeToTypeClassifier,
+      isPropValued = false
     )
     val nested = VPi(
       env,
@@ -111,14 +114,16 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
           Value.Lifetime.empty,
           DepSet.empty,
           ValueId.LocalId(NodeId.fresh(), Vector.empty),
-          () => typeToTypeClassifier
+          () => typeToTypeClassifier,
+          isPropValued = false
         ),
       Value.Kind.unr,
       Value.Lifetime.empty,
       Value.Lifetime.empty,
       DepSet.empty,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
-      () => typeToTypeClassifier
+      () => typeToTypeClassifier,
+      isPropValued = false
     )
 
     // Grouping is part of a function type's identity: `(x: A)(y: A) -> Type` is a 2-ary function
@@ -145,17 +150,19 @@ class ValueEquivalenceTests extends munit.FunSuite with TestSupport {
           Value.Lifetime.empty,
           DepSet.empty,
           ValueId.LocalId(NodeId.fresh(), Vector.empty),
-          () => typeToTypeClassifier
+          () => typeToTypeClassifier,
+          isPropValued = false
         ),
       Value.Kind.unr,
       Value.Lifetime.empty,
       Value.Lifetime.empty,
       DepSet.empty,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
-      () => typeToTypeClassifier
+      () => typeToTypeClassifier,
+      isPropValued = false
     )
     val applicationEnv = env.putGlobal("nested", VConst("nested", Symbol, nested))
-    val ref = CoreTestTerms.sortAt(CoreAst.Form.LevelZero, span)
+    val ref = CoreTestTerms.prop(span)
     val first = CoreAst.Term.App(CoreAst.Term.GlobalRef("nested", span), Vector(ref), Vector.empty, span)
     val application = CoreAst.Term.App(first, Vector(ref), Vector.empty, span)
 

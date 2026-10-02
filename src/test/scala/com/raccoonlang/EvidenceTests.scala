@@ -260,7 +260,7 @@ class EvidenceTests extends munit.FunSuite with TestSupport {
     assertEquals(expectOnly[NotAProposition](typecheckDecls("def f [h: Nat]: Nat := 0\n")).binder, "h")
     expectOnly[NotAProposition](typecheckDecls("def f (n: Nat): Nat := (fun [h: Bool]: Nat => n)()\n"))
     expectOnly[NotAProposition](typecheckDecls("def f (g: [l: Lifetime] -> Nat): Nat := 0\n"))
-    expectOnly[NotAProposition](typecheckDecls("def f {u: Level}(P: Sort { level = u })[h: P]: Nat := 0\n"))
+    expectOnly[NotAProposition](typecheckDecls("def f {u: Level}(P: Type { level = u})[h: P]: Nat := 0\n"))
     // A proposition a definition computes is one.
     evaluatesTo(
       "def isThree (n: Nat): Prop := Eq(Nat, n, 3)\n\ndef f (n: Nat)[h: isThree(n)]: Nat := n\n\n{ f(3) }",

@@ -162,7 +162,7 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
 
   // Proof constructors provide no apartness evidence (docs/kernel.md#proofs-and-elimination).
   test("Constructor apartness does not apply to proofs (irrelevance makes inl/inr proofs equal)") {
-    // Eq(Or(p,p), inl hp, inr hq) is provable by proof irrelevance (getH), so match reachability
+    // EqProof(Or(p,p), inl hp, inr hq) is provable by proof irrelevance (getH), so match reachability
     // must not prune the refl case on the inl/inr constructor clash, whether the scrutinee is
     // getH's application or a stuck application of a parameter that may be getH.
     val decls =
@@ -173,14 +173,17 @@ class ConsistencyTests extends munit.FunSuite with TestSupport {
         | | inl (left: a) : Or(a, b)
         | | inr (right: b) : Or(a, b)
         |
-        |def getH {p: Prop}(hp: p)(hq: p): Eq(Or(p, p), Or.inl(p, hp), Or.inr(p, hq)) := Eq.refl(Or.inl(p, hp))
+        |inductive EqProof (P: Prop) indices (x: P)(y: P) : Prop
+        | | refl (x: P) : EqProof(P, x, x)
+        |
+        |def getH {p: Prop}(hp: p)(hq: p): EqProof(Or(p, p), Or.inl(p, hp), Or.inr(p, hq)) := EqProof.refl(Or.inl(p, hp))
         |""".stripMargin
     val direct = "def boom {p: Prop}(hp: p)(hq: p): False := {\n  match getH(hp, hq) returning False with\n}\n"
     val throughParameter =
-      "def boom {p: Prop}(get: (hp: p)(hq: p) -> Eq(Or(p, p), Or.inl(p, hp), Or.inr(p, hq)))(hp: p)(hq: p): False := {\n" +
+      "def boom {p: Prop}(get: (hp: p)(hq: p) -> EqProof(Or(p, p), Or.inl(p, hp), Or.inr(p, hq)))(hp: p)(hq: p): False := {\n" +
         "  match get(hp, hq) returning False with\n}\n"
     for (boom <- Vector(direct, throughParameter))
-      assertEquals(expectTypeError[MissingCase](decls + boom, Prelude.test).ctor, "Eq.refl")
+      assertEquals(expectTypeError[MissingCase](decls + boom, Prelude.test).ctor, "EqProof.refl")
   }
 
   // Family-head clashes do not establish apartness for propositions (docs/kernel.md#apartness).

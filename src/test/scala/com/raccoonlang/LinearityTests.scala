@@ -429,7 +429,9 @@ class LinearityTests extends munit.FunSuite with TestSupport {
       LinearUnused("t")
     )
     // A linear function into a proposition is refused at its type, before anything holds it.
-    expectOnly[LinearProp](typecheckDecls("def f : Unit -> True := fun { kind = lin } (u: Unit): True => True.intro\n"))
+    expectOnly[KindExceeded](
+      typecheckDecls("def f : Unit -> True := fun { kind = lin } (u: Unit): True => True.intro\n")
+    )
   }
 
   test("a lambda inside a type that consumes its own linear parameter is refused; a named one is not") {

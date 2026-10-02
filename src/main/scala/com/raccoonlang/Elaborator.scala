@@ -444,8 +444,8 @@ object Elaborator {
       case SA.Term.Pair(fst, snd, _)             => free(fst) ++ free(snd)
       case SA.Term.Sort(level, kind, scope, _) =>
         val written = level match {
-          case SA.Term.SortLevel.Written(written)             => Vector(written)
-          case SA.Term.SortLevel.Zero | SA.Term.SortLevel.One => Vector.empty
+          case SA.Term.SortLevel.Written(written)              => Vector(written)
+          case SA.Term.SortLevel.Zero | SA.Term.SortLevel.Prop => Vector.empty
         }
         (written ++ kind ++ scope).flatMap(free)
       case SA.Term.Pi(written, binders, body, _) =>
@@ -686,17 +686,22 @@ object Elaborator {
     case SA.Term.Sort(level, kind, scope, sp) =>
       // `Type` and `Prop` fix the level, and an omitted kind or scope is Kind.unr or Lifetime.empty (spec §1).
       def fixed(form: CA.Form): CA.Term = CA.Term.FormOp(form, Vector.empty, sp)
-      val levelTerm = level match {
-        case SA.Term.SortLevel.Zero          => fixed(CA.Form.LevelZero)
-        case SA.Term.SortLevel.One           => fixed(CA.Form.LevelOne)
-        case SA.Term.SortLevel.Written(term) => elabField(term, CA.Parameter.Level, env)
+      val scopeTerm = scope.fold(fixed(CA.Form.LifetimeEmpty))(elabField(_, CA.Parameter.Lifetime, env))
+      level match {
+        case SA.Term.SortLevel.Prop => CA.Term.Prop(scopeTerm, sp)
+        case dataLevel =>
+          val levelTerm = dataLevel match {
+            case SA.Term.SortLevel.Zero          => fixed(CA.Form.LevelZero)
+            case SA.Term.SortLevel.Written(term) => elabField(term, CA.Parameter.Level, env)
+            case SA.Term.SortLevel.Prop          => wtf("Proposition handled above")
+          }
+          CA.Term.Sort(
+            levelTerm,
+            kind.fold(fixed(CA.Form.KindUnr))(elabField(_, CA.Parameter.Kind, env)),
+            scopeTerm,
+            sp
+          )
       }
-      CA.Term.Sort(
-        levelTerm,
-        kind.fold(fixed(CA.Form.KindUnr))(elabField(_, CA.Parameter.Kind, env)),
-        scope.fold(fixed(CA.Form.LifetimeEmpty))(elabField(_, CA.Parameter.Lifetime, env)),
-        sp
-      )
     case pi: SA.Term.Pi => elabPi(pi, env)
     case l: SA.Term.Lam =>
       // A lambda's omitted closure field is derived from its captures by the checker (spec §4.3).

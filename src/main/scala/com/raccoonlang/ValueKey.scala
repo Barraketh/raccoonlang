@@ -44,7 +44,6 @@ object ValueKey {
     val LocalId = 17
     val Packed = 18
     val LevelParamAtom = 19
-    val LevelIMaxAtom = 20
     val SortParameter = 21
     val Large = 22
     val KindTpe = 23
@@ -144,13 +143,6 @@ object ValueKey {
         mixValues(mixLong(mixKey(key, tag(Tag.LocalId)), nodeId.value.toLong), captures)
     }
 
-  private def levelAtomKey(atom: Value.Level.Atom): Key =
-    atom match {
-      case Value.Level.ParamAtom(id) => mixLong(tag(Tag.LevelParamAtom), id.toLong)
-      case Value.Level.IMaxAtom(lhs, rhs) =>
-        mixKey(mixKey(tag(Tag.LevelIMaxAtom), lhs.key), rhs.key)
-    }
-
   /** A set of variables in ascending id order, so the key depends on the set and not on how it was built. */
   private def mixVars(key: Key, vars: DepSet): Key = {
     var cur = key
@@ -169,10 +161,10 @@ object ValueKey {
   val sortParameter: Key = tag(Tag.SortParameter)
   val large: Key = tag(Tag.Large)
 
-  def level(terms: Map[Value.Level.Atom, Int], c: Int): Key = {
+  def level(terms: Map[Value.VarId, Int], c: Int): Key = {
     var cur = mixLong(tag(Tag.Level), c.toLong)
     val sortedTerms = terms.iterator
-      .map { case (atom, offset) => (levelAtomKey(atom), offset) }
+      .map { case (atom, offset) => (mixLong(tag(Tag.LevelParamAtom), atom.toLong), offset) }
       .toArray
       .sortBy(_._1)
     var idx = 0
@@ -189,8 +181,8 @@ object ValueKey {
   def lifetime(vars: DepSet): Key = mixVars(tag(Tag.Lifetime), vars)
 
   /** Every field explicitly: two sorts at one level differ when their kinds or scopes do. */
-  def sort(level: Value.Level, kind: Value.Kind, scope: Value.Lifetime): Key =
-    mixKey(mixKey(mixKey(tag(Tag.Sort), level.key), kind.key), scope.key)
+  def sort(isProp: Boolean, level: Value.Level, kind: Value.Kind, scope: Value.Lifetime): Key =
+    mixKey(mixKey(mixKey(mixLong(tag(Tag.Sort), if (isProp) 1 else 0), level.key), kind.key), scope.key)
 
   def constant(name: String): Key = mixString(tag(Tag.Const), name)
 

@@ -2,27 +2,12 @@ package com.raccoonlang
 
 class SubsingletonTests extends munit.FunSuite with TestSupport {
 
-  test("propositions have a Subsingleton witness") {
-    typecheckDecls(
-      """
-        |def trueSubsingleton : Subsingleton(True) := propSubsingleton(True)
-        |""".stripMargin
-    )
+  test("proposition instances of Subsingleton are rejected") {
+    expectOnly[ImplicitReconstructionFailed](typecheckDecls("def bad : Subsingleton(True) := True.intro\n"))
   }
 
-  test("Subsingleton.elim proves equality between proofs of the same proposition") {
-    val res =
-      runProgram(
-        """
-          |{
-          |  Subsingleton.elim(propSubsingleton(True))(True.intro, True.intro)
-          |}
-          |""".stripMargin
-      )
-
-    res.tpe match {
-      case Value.VApp(Value.VConst("Eq", _, _), Vector(_, _, Value.VConst("True", _, _), _, _), _, _) =>
-      case other => fail(s"Expected equality proof over True, got $other")
-    }
+  test("proof irrelevance transports predicates without a Subsingleton witness") {
+    typecheckDecls("def irrel (P: Prop)(Q: P -> Prop)(h1: P)(h2: P)(q: Q(h1)): Q(h2) := q\n")
   }
+
 }

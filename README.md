@@ -21,7 +21,7 @@ Raccoon currently provides:
 - evidence parameters, `[h: P]`, whose proposition each call discharges by
   evaluating it when the call is checked, and whose proofs are erased when the
   program runs;
-- `Prop`, `Type`, and `Sort { level = u, kind = k, scope = S }`, whose
+- `Prop { scope = S }` and `Type { level = u, kind = k, scope = S }`, whose
   universe levels, kinds and lifetimes are second-class parameters of sorts,
   families and declarations, normalized and compared exactly;
 - strictly positive inductive families with parameters and indices, whose
@@ -47,14 +47,14 @@ Raccoon currently provides:
 - a bundled prelude that is polymorphic in lifetimes as well as levels.
 
 ```raccoon
-inductive Vec {u: Level}(A: Sort { level = u }) indices (n: Nat)
-    : Sort { level = max(one, u) }
+inductive Vec {u: Level}(A: Type { level = u }) indices (n: Nat)
+    : Type { level = u }
  | nil : Vec(A, Nat.zero)
  | cons (n: Nat)(tail: Vec(A, n))(head: A) : Vec(A, Nat.succ(n))
 
-def length {u: Level}{A: Sort { level = u }}{n: Nat}(xs: Vec(A, n)): Nat := n
+def length {u: Level}{A: Type { level = u }}{n: Nat}(xs: Vec(A, n)): Nat := n
 
-def appendOne {u: Level}{A: Sort { level = u }}{n: Nat}(xs: Vec(A, n))(x: A)
+def appendOne {u: Level}{A: Type { level = u }}{n: Nat}(xs: Vec(A, n))(x: A)
     : Vec(A, Nat.succ(n)) := Vec.cons(n, xs, x)
 
 { length(appendOne(Vec.nil(Nat), 0)) }

@@ -183,8 +183,8 @@ class EvidenceFieldTests extends munit.FunSuite with TestSupport {
     evaluatesTo(twice + "def need [h: Twice(Eq(Nat, 3, 3))]: Nat := 1\n\n{ need() }", "1")
     // A field's proposition over the family's arguments and an earlier field's proof.
     val gemm =
-      "struct GemmShape (m: Nat)(n: Nat) : Prop\n" +
-        " | mk [mOk: Eq(Nat, Nat.mul(m, 2), 256)][nOk: Eq(Nat, n, 128)][same: Eq(Eq(Nat, n, 128), nOk, nOk)] : " +
+      "struct Depends {P: Prop}(h: P) : Prop\n | mk : Depends(h)\nstruct GemmShape (m: Nat)(n: Nat) : Prop\n" +
+        " | mk [mOk: Eq(Nat, Nat.mul(m, 2), 256)][nOk: Eq(Nat, n, 128)][same: Depends(nOk)] : " +
         "GemmShape(m, n)\n\n"
     evaluatesTo(gemm + "def need [h: GemmShape(128, 128)]: Nat := 1\n\n{ need() }", "1")
     // Rule 1 still takes a fieldless instance of an eligible family.
@@ -231,12 +231,9 @@ class EvidenceFieldTests extends munit.FunSuite with TestSupport {
       notDischarged(two + "def need [h: Two]: Nat := 1\n\n{ need() }", "h", "need"),
       ("Two", EvidenceNotDischarged.NoConstructor)
     )
-    // A family that is a proposition only at one level is not declared in Prop.
-    val poly = "struct Poly (u: Level) : Sort { level = u }\n | mk [h: True] : Poly(u)\n\n"
-    assertEquals(
-      notDischarged(poly + "def need [h: Poly(Level.zero)]: Nat := 1\n\n{ need() }", "h", "need")._2,
-      EvidenceNotDischarged.NoConstructor
-    )
+    // Data families remain data at zero and cannot be evidence arguments.
+    val poly = "struct Poly (u: Level) : Type { level = u }\n | mk [h: True] : Poly(u)\n\n"
+    expectOnly[NotAProposition](typecheckDecls(poly + "def need [h: Poly(Level.zero)]: Nat := 1\n"))
     // A field that is not evidence.
     val data = "struct Data : Prop\n | mk (h: True) : Data\n\n"
     assertEquals(

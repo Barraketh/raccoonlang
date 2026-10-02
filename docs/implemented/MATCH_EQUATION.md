@@ -37,7 +37,8 @@ The same form gives proofs the equation F2 asks for, in place of a mirror defini
 
 ## 2. The rules
 
-- **Unrestricted scrutinee.** The scrutinee's type must be unrestricted. A linear scrutinee would put a token in a
+- **Unrestricted data scrutinee.** The scrutinee's type must be data in `Type` and unrestricted. Equality does not
+  range over proofs, so a proof scrutinee is `MatchEquationUnavailable`. A linear scrutinee would put a token in a
   proposition, which is `LinearInType`.
 - **No indices.** The scrutinee's family has no indices, so `C(p̄, x̄)` has type `T` in every case and the equation is
   well typed without refinement. An indexed family is `MatchEquationIndexed`, located at `h`. Allowing it is an
@@ -45,7 +46,7 @@ The same form gives proofs the equation F2 asks for, in place of a mirror defini
 - **`h` is a proof, used freely.** It is a local of a proposition, so it is unrestricted, and it is confined like any
   local by its type's scope.
 - **No rewriting.** The motive and other hypotheses are not rewritten by the equation. A proof that needs `e` replaced
-  uses `h` with `Eq.subst`. Rewriting the goal is a larger feature, and a separate one.
+  uses `h` with `Eq.subst` for data or `Eq.substP` for propositions. Rewriting the goal is a larger feature, and a separate one.
 - **Evaluation.** A case runs only when the scrutinee's value is `C` applied to the fields' values. There `h`'s
   proposition is `Eq(T, C(p̄, v̄), C(p̄, v̄))`, and `h` is bound to its canonical proof, `Eq.refl`, as every proof is
   canonicalized. A match that blocks binds nothing.

@@ -83,15 +83,15 @@ sections restate the bans; each is rewritten to cite §1.2 instead.
 
 ```raccoon
 inductive Pair {u: Level}{v: Level}{k1: Kind}{k2: Kind}{S: Lifetime}{T: Lifetime}
-    (A: Sort { level = succ(u), kind = k1, scope = S })(B: Sort { level = succ(v), kind = k2, scope = T })
-    : Sort { level = succ(max(u, v)), kind = join(k1, k2), scope = union(S, T) }
+    (A: Type { level = u, kind = k1, scope = S })(B: Type { level = v, kind = k2, scope = T })
+    : Type { level = max(u, v), kind = join(k1, k2), scope = union(S, T) }
  | mk (fst: A)(snd: B) : Pair(A, B)
 ```
 
 An instance is at the kind and scope its components give it:
 `Pair(Tok(l), Nat)` is at `Type { kind = lin, scope = l }`,
 `Pair(Nat, Bool)` at `Type`, and `Pair(Type, Type)` at
-`Sort { level = succ(one) }`. Every implicit is forced from the constructor's fields,
+`Type { level = one }`. Every implicit is forced from the constructor's fields,
 so `Pair.mk(a, b)` writes neither the types nor their kinds, levels or scopes.
 
 **2.2 Why a new family.** `Prod` is unchanged. Made kind-polymorphic, it would
@@ -100,9 +100,9 @@ lose its selectors: `Prod.fst` binds `snd` and drops it, which is
 `Pair` is an `inductive` for the same reason and has no selectors; its values
 are taken apart by destructuring (§3) or `match`.
 
-**2.3 Components are types.** A component's level is a successor, as every sort
-at a kind variable must be (`LinearProp`). A proof is paired with a value by
-`Prod`, `Sigma` or `Subtype`.
+**2.3 Components are data types.** Data levels start at zero, and linear kinds
+are permitted at every data level. A proof is paired with a value by `Subtype`
+or a `Type` structure with a proof field.
 
 ## 3. Destructuring
 
@@ -160,10 +160,9 @@ constructor is written.
 **3.8 Evaluation.** Evaluation binds the names to the eta view of the
 scrutinee's value, as a one-branch match on an eta-eligible family already does.
 Such a value always has an eta view, so a destructuring never blocks. Its
-checked form therefore carries no motive, and nothing is written for one. Where
-evaluation instantiates a level-polymorphic instance's levels to zero, putting it
-in `Prop`, each name is bound to its field's canonical projection, which for such
-an instance is a proof, so a destructuring still never blocks. The residual keeps
+checked form therefore carries no motive, and nothing is written for one. Data
+families remain in `Type` at every universe level, and only data families are
+eta-eligible. The residual keeps
 the destructuring as binding forms (a nested pattern as a destructuring into an
 anonymous local followed by a destructuring of it), and the printer folds them
 back and prints the pattern as written. Structural descent reads the same eta view, so a destructured name
@@ -308,7 +307,7 @@ those:
    `examples/universe_polymorphic_vec.rac`, the `struct` example in
    `docs/language.md`, and the lifetime-indexed example of
    `docs/implemented/LEMUR_ON_RACCOON.md` §6.2 and §7.3.
-2. **Levels.** `Pair` is level-polymorphic above `Prop`, as §2.1 declares, and
+2. **Levels.** `Pair` is level-polymorphic in `Type`, as §2.1 declares, and
    holds types at any level. That declaration checks on today's kernel as a
    custom prelude addition, with linear and unrestricted instances.
 3. **Arity.** No flattening in patterns (§3.3) and only binary pair
@@ -320,9 +319,7 @@ those:
 5. **Inventory, not a flag.** §1.4 makes the trusted surface visible in review.
    A CLI flag printing a custom prelude's inventory is deferred.
 6. **Decided during implementation, for ratification.** §3.2 was implemented
-   literally (outside `Prop` where checked; a level-polymorphic instance may land
-   in `Prop` at evaluation, §3.8), after a first cut refused any instance whose
-   level may be zero. §4.1's lookup is the prelude's names, which differs from a
+   for Type families; universe instantiation never changes this eligibility. §4.1's lookup is the prelude's names, which differs from a
    literal root lookup only for a program declaring its own root `Pair.mk` under a
    prelude without one (`NotFound`). Pairs are allowed among a type's arguments
    (§4.2), and §4.3's no-space rule was added after review found `f (1, 2)`

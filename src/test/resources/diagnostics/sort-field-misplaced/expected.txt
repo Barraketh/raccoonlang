@@ -1,4 +1,4 @@
 
-<root>/main.rac:1:18: error: Failed to parse module <root>/main.rac: Misplaced field level: Type fixes the level
-def f (A: Type { level = Level.one })(x: A): A := x
+<root>/main.rac:1:18: error: Failed to parse module <root>/main.rac: Misplaced field level: Prop fixes the level
+def f (A: Prop { level = Level.one })(x: A): A := x
                  ^

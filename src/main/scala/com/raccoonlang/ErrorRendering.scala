@@ -95,14 +95,9 @@ object ErrorRendering {
       case NonUniformInductiveParam(inductive, ctor, param, got) =>
         s"Constructor $ctor of $inductive returns non-uniform parameter $param as ${show(got)}"
       case InductiveUniverseTooSmall(inductive, where, fieldTy, fieldUniverse, inductiveUniverse) =>
-        s"Inductive $inductive lives in Sort { level = ${show(inductiveUniverse)} }, " +
-          s"but $where has type ${show(fieldTy)} : Sort { level = ${show(fieldUniverse)} }"
-      case InductiveTypeNotASort(tpe) => s"Inductive type must be a Sort, got ${show(tpe)} instead"
-      case LinearProp(kind, level)    =>
-        // The level is not never zero, so a constant one is zero.
-        val levelIsZero = if (level.terms.isEmpty) "is zero" else s"${show(level)} may be zero"
-        s"A sort of kind ${show(kind)} needs a level that is never zero, but its level $levelIsZero; proofs are " +
-          "unrestricted"
+        s"Inductive $inductive lives in Type { level = ${show(inductiveUniverse)} }, " +
+          s"but $where has type ${show(fieldTy)} : Type { level = ${show(fieldUniverse)} }"
+      case InductiveTypeNotASort(tpe) => s"Inductive type must be a sort, got ${show(tpe)} instead"
       case KindExceeded(declaration, declared, part, partKind) =>
         s"$declaration is declared at kind ${show(declared)}, which does not contain the kind ${show(partKind)} " +
           s"of ${renderPart(part, show)}"

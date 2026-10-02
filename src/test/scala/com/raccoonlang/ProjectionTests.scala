@@ -9,7 +9,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
   test("Pi-codomain projection peels one binder from a grouped telescope, keeping what its code captures") {
     val span = Span(0, 0)
     val env = Env.empty
-    val typeSort = CoreTestTerms.sortAt(CoreAst.Form.LevelOne, span)
+    val typeSort = CoreTestTerms.sortAt(CoreAst.Form.LevelZero, span)
     val x = CoreAst.Binder(CoreAst.LocalRef(0, "x"), typeSort, span, CoreAst.BinderSite.Function, BinderMode.Explicit)
     val y = CoreAst.Binder(CoreAst.LocalRef(1, "y"), typeSort, span, CoreAst.BinderSite.Function, BinderMode.Explicit)
     val mentioned = FreshVar.freshValue("m", LifetimeTpe)._2.asInstanceOf[Value.Lifetime]
@@ -22,7 +22,8 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
       mentioned,
       mentioned.synDeps,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
-      () => Sorts.sort(Level.succ(Level.one), Value.Kind.unr, mentioned)
+      () => Sorts.sort(Level.succ(Level.one), Value.Kind.unr, mentioned),
+      isPropValued = false
     )
     val root = VConst("f", Symbol, grouped)
     val tail = Projection
@@ -42,7 +43,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
   test("Pi-result projection crosses dependent grouped binders") {
     val span = Span(0, 0)
     val env = Env.empty
-    val typeSort = CoreTestTerms.sortAt(CoreAst.Form.LevelOne, span)
+    val typeSort = CoreTestTerms.sortAt(CoreAst.Form.LevelZero, span)
     val x = CoreAst.Binder(CoreAst.LocalRef(0, "x"), typeSort, span, CoreAst.BinderSite.Function, BinderMode.Explicit)
     val y = CoreAst.Binder(
       CoreAst.LocalRef(1, "y"),
@@ -60,7 +61,8 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
       Value.Lifetime.empty,
       DepSet.empty,
       ValueId.LocalId(NodeId.fresh(), Vector.empty),
-      () => Sorts.sort(Level.succ(Level.one), Value.Kind.unr, Value.Lifetime.empty)
+      () => Sorts.sort(Level.succ(Level.one), Value.Kind.unr, Value.Lifetime.empty),
+      isPropValued = false
     )
 
     assert(
@@ -350,7 +352,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |inductive Peano : Type
         | | zero : Peano
         |
-        |inductive Pack : Sort { level = succ(one) }
+        |inductive Pack : Type { level = one}
         | | mk {A: Type} (x: A) : Pack
         |
         |inductive Wrap (p: Pack) : Type
@@ -391,7 +393,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |struct CoupleU {u1: Level}{u2: Level}(A: Sort { level = u1 })(B: Sort { level = u2 }) : Sort { level = max(u1, u2) }
+        |struct CoupleU {u1: Level}{u2: Level}(A: Type { level = u1})(B: Type { level = u2}) : Type { level = max(u1, u2) }
         | | mk (fst: A)(snd: B) : CoupleU(A, B)
         |
         |def idF (F: CoupleU(Type, Type))(x: F.fst): F.fst := x
@@ -409,7 +411,7 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
         |inductive Peano : Type
         | | zero : Peano
         |
-        |struct CoupleU {u1: Level}{u2: Level}(A: Sort { level = u1 })(B: Sort { level = u2 }) : Sort { level = max(u1, u2) }
+        |struct CoupleU {u1: Level}{u2: Level}(A: Type { level = u1})(B: Type { level = u2}) : Type { level = max(u1, u2) }
         | | mk (fst: A)(snd: B) : CoupleU(A, B)
         |
         |struct UsesF (F: CoupleU(Type, Type)) : Type
@@ -667,21 +669,13 @@ class ProjectionTests extends munit.FunSuite with TestSupport {
     typecheckDecls(p)
   }
 
-  test("a generic struct projection remains valid when its instance specializes to Prop") {
-    val p =
-      """
-        |inductive True : Prop
-        | | intro : True
-        |
-        |struct PolyBox {u: Level}(A: Sort { level = u }) : Sort { level = u }
-        | | mk (value: A) : PolyBox(A)
-        |
-        |def get {u: Level}{A: Sort { level = u }} (box: PolyBox(A)): A := box.value
-        |
-        |def gotTrue (boxedTrue: PolyBox(True)): True := get(boxedTrue)
-        |""".stripMargin
-
-    typecheckDecls(p)
+  test("generic struct projection rejects a proposition instance") {
+    val definitions =
+      "inductive True : Prop\n | intro : True\nstruct PolyBox {u: Level}(A: Type { level = u }) : Type { level = u }\n | mk (value: A) : PolyBox(A)\ndef get {u: Level}{A: Type { level = u }}(box: PolyBox(A)): A := box.value\n"
+    typecheckDecls(definitions)
+    expectOnly[ImplicitReconstructionFailed](
+      typecheckDecls(definitions + "def bad (box: PolyBox(True)): True := get(box)\n")
+    )
   }
 
   test("Prop projection permits an unused preceding data field") {

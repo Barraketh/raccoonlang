@@ -26,7 +26,7 @@ class PropTests extends munit.FunSuite with TestSupport {
   // Universe / Pi-formation tests for Prop
   // ---------------------------------------------------------------------------
 
-  test("Prop is Sort 0 and has type Type") {
+  test("Prop has type Type") {
     val res = runProgram(
       """
         |{ Prop }
@@ -39,12 +39,12 @@ class PropTests extends munit.FunSuite with TestSupport {
     }
 
     res.tpe match {
-      case sort: VSort => assertEquals(sort.level, Value.Level.one)
+      case sort: VSort => assertEquals(sort.level, Value.Level.zero)
       case other       => fail(s"Expected Prop : Type, got: $other")
     }
   }
 
-  test("Pi into Prop-the-sort from Type lives in Sort 2 (Prop : Sort 1, not a proposition)") {
+  test("Pi into Prop-the-sort from Type lives in Type at level one") {
     val res = runProgram(
       """
         |inductive Peano : Type
@@ -60,10 +60,10 @@ class PropTests extends munit.FunSuite with TestSupport {
       case other  => fail(s"Expected Pi value, got: $other")
     }
 
-    assert(ValueEquivalence.defEq(res.tpe, Sorts.sort(Level.const(2), Value.Kind.unr, Value.Lifetime.empty)))
+    assert(ValueEquivalence.defEq(res.tpe, Sorts.sort(Level.one, Value.Kind.unr, Value.Lifetime.empty)))
   }
 
-  test("Dependent Pi into Prop-the-sort lives in Sort 2") {
+  test("Dependent Pi into Prop-the-sort lives in Type at level one") {
     val res = runProgram(
       """
         |inductive Peano : Type
@@ -79,7 +79,7 @@ class PropTests extends munit.FunSuite with TestSupport {
       case other  => fail(s"Expected Pi value, got: $other")
     }
 
-    assert(ValueEquivalence.defEq(res.tpe, Sorts.sort(Level.const(2), Value.Kind.unr, Value.Lifetime.empty)))
+    assert(ValueEquivalence.defEq(res.tpe, Sorts.sort(Level.one, Value.Kind.unr, Value.Lifetime.empty)))
   }
 
   test("Pi over proof binder into Type stays in Type") {
@@ -102,7 +102,7 @@ class PropTests extends munit.FunSuite with TestSupport {
     }
 
     res.tpe match {
-      case sort: VSort => assertEquals(sort.level, Value.Level.one)
+      case sort: VSort => assertEquals(sort.level, Value.Level.zero)
       case other       => fail(s"Expected (P: Prop) -> Peano to live in Type, got: $other")
     }
   }
@@ -145,7 +145,7 @@ class PropTests extends munit.FunSuite with TestSupport {
         | | left : Amb
         | | right : Amb
         |
-        |def sameProof (p: Amb): Eq(Amb, p, Amb.right) := Eq.refl(p)
+        |def sameProof (Q: Amb -> Prop)(p: Amb)(q: Q(p)): Q(Amb.right) := q
         |""".stripMargin
 
     typecheckDecls(p)
@@ -173,7 +173,7 @@ class PropTests extends munit.FunSuite with TestSupport {
         | | intro (A: Type) : HasCarrier
         |
         |inductive HasSort (u: Level) : Prop
-        | | intro (A: Sort { level = u }) : HasSort(u)
+        | | intro (A: Type { level = u}) : HasSort(u)
         |""".stripMargin
 
     typecheckDecls(p)

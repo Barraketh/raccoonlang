@@ -131,20 +131,18 @@ never prunes a branch on one.
 
 ## Universes and function types
 
-A sort is a Core term of its own with three fields, a level, a kind and a
-scope: `Sort { level = e, kind = k, scope = S }`. `Type` and `Prop` elaborate
-to it at `Level.one` and `Level.zero`, and an omitted kind or scope to
-`Kind.unr` or `Lifetime.empty`. The primitive universe equations are:
+The sort formers are `Type { level = e, kind = k, scope = S }` for data and
+`Prop { scope = S }` for propositions. Data levels begin at zero; omitted
+fields are `Level.zero`, `Kind.unr` and `Lifetime.empty`. `Prop` has no level
+or kind. The primitive universe equations are:
 
 ```text
-Prop = Sort { level = Level.zero }
-Type = Sort { level = Level.one }
-Prop : Type
-Sort { level = u, kind = k, scope = S } : Sort { level = Level.succ(u), scope = S }
+Prop { scope = S } : Type { scope = S }
+Type { level = u, kind = k, scope = S } : Type { level = Level.succ(u), scope = S }
 ```
 
 `Level`, `Kind` and `Lifetime` are the sort parameters. Their forms,
-`Level.zero`, `Level.one`, `Level.succ`, `Level.max`, `Level.imax`, `Kind.unr`,
+`Level.zero`, `Level.one`, `Level.succ`, `Level.max`, `Kind.unr`,
 `Kind.lin`, `Kind.join`, `Lifetime.empty` and `Lifetime.union`, are Core terms
 too, always applied to all of their arguments. The kernel owns the parameters,
 their forms and the sort formers: no declaration introduces them, the prelude
@@ -154,8 +152,6 @@ Every sort parameter expression is normalized at birth, and its only neutrals
 are variables:
 
 - Levels normalize to maxima of offset atoms plus an optional constant.
-  `imax(a, b)` reduces when `b` is known to be zero or positive and otherwise
-  remains a conditional atom.
 - A lifetime is the set of its lifetime variables and atoms (see
   [Scopes and atoms](#scopes-and-atoms)); `Lifetime.union` is set union.
 - A kind is `Kind.lin` or a set of kind variables, the empty set being
@@ -167,10 +163,8 @@ deduplicate, so one implementation of union, join and containment serves the
 checker and the evaluator. A kind or lifetime has no neutral other than a
 variable or an atom, so no two of them are ever apart.
 
-A sort of a kind other than `Kind.unr` must have a level that is never zero,
-since proofs are unrestricted; the checker rejects any other sort term with
-`LinearProp`. Substitution preserves both a level that is never zero and the
-kind `Kind.unr`, so every sort the kernel builds satisfies the rule.
+Data sorts admit every kind at every level. Proofs are unrestricted: a
+function type into a proposition must have closure kind `Kind.unr`.
 
 A telescope
 
@@ -181,22 +175,21 @@ A telescope
 that binds no level has the sort
 
 ```text
-Sort { level = imax(u1, ... imax(un, v) ...),
+Type { level = max(u1, ..., un, v),
        kind = k,
        scope = union(C, S1, ..., Sn, SB, M)
                less the telescope's own lifetime variables }
 ```
 
-where each `Ai : Sort { level = ui, scope = Si }`,
-`B : Sort { level = v, scope = SB }`, and `M` is the function type's mentioned
+where each `Ai : Type { level = ui, scope = Si }`,
+`B : Type { level = v, scope = SB }`, and `M` is the function type's mentioned
 scope: what the locals bound outside it that its binder types and codomain
 mention contribute, by the rule a lambda's captures follow below. Those are
 code, evaluated each time the type is instantiated, so the type belongs to
 everything they hold. The closure `{ kind = k, scope = C }` is the function
 type's closure kind and closure scope: how its values may be applied, and what
 they hold. It is evaluated where the Pi
-stands, outside its own binders, and a closure kind other than `Kind.unr` at a
-level that may be zero is `LinearProp`. A binder of type `Kind` or `Lifetime`
+stands, outside its own binders. A proposition domain contributes level zero. A binder of type `Kind` or `Lifetime`
 contributes neither a level nor a scope. Consequently, a Pi whose codomain is a
 proposition lives in `Prop` at its scope, regardless of its domain universes. A
 codomain equal to the sort `Prop` is different: `Prop` itself lives in `Type`.
@@ -275,7 +268,7 @@ determines its sort. Constructor-field
 universe checks enforce the declared inductive's size bound, but they do not
 introduce general sort subsumption.
 
-A sort is `Prop` exactly when its level is zero, and a type is a proposition
+A sort is `Prop` exactly when it has the proposition tag, and a type is a proposition
 exactly when its sort is `Prop` (a Pi by its codomain, so a large Pi into a
 proposition is one too). The kernel has one definition of each, which the
 checker and proof irrelevance share. Sorts are compared only by conversion.
@@ -645,7 +638,7 @@ is that constructor applied to them, canonicalized as every proof is.
 
 **Rule 2.** `P′` is an instance `F(ā)` of an evidence-eligible family, and no
 constructor fits rule 1. A family is evidence-eligible when it is declared in
-`Prop` (its sort is `Prop` itself, not a level that may be zero), has one
+`Prop` , has one
 constructor and no indices, no field type of its constructor mentions a family
 of its inductive block, and every field is an evidence field; eligibility is
 recorded when the family is checked. Each field's type, in order, is evaluated
@@ -808,11 +801,8 @@ A destructuring `let (x1, …, xn) := e` binds each local, transparently, to its
 field of the eta view of `e`'s value, in checking and in evaluation alike. So
 it has no motive, never blocks, and a destructured local is a structural
 subterm of `e`'s value exactly as a one-branch match's field is. It is admitted
-only at an eligible instance outside `Prop`, but evaluation may instantiate a
-sort-polymorphic instance's levels to zero, putting it in `Prop`. There each
-local is bound to its field's canonical projection, which for a proof field is
-the canonical proof of its type, as a one-branch match on a constructor-form
-proof would bind it, so a destructuring still never blocks. A nested pattern is
+only at an eligible `Type` family instance. Data universe substitution never
+changes a data family into a proposition. A nested pattern is
 a destructuring into an anonymous local followed by a destructuring of that
 local, so each level is checked alike.
 
@@ -1100,7 +1090,7 @@ At the end of prelude loading, the prelude's declaration named `Eq` is
 validated as the equality family: an unsealed
 
 ```text
-Eq {u: Level}{S: Lifetime}(A: Sort { level = u, scope = S }) indices (x: A)(y: A) : Prop { scope = S }
+Eq {u: Level}{S: Lifetime}(A: Type { level = u, scope = S }) indices (x: A)(y: A) : Prop { scope = S }
 Eq.refl (x: A) : Eq(A, x, x)
 ```
 
@@ -1203,7 +1193,8 @@ Changes to the checker or evaluator must preserve these rules:
     declaration's type.
 16. Kinds and lifetimes exist only in normal form, so their structural
     equality is definitional equality; no two of them are apart.
-17. A sort whose kind is not `Kind.unr` has a level that is never zero.
+17. Proposition classification is fixed when a type is formed; substituting
+    data levels cannot change it. Proof-valued closures are unrestricted.
 18. A family's kind and scope are declared, never derived. An instance's sort
     is the declared sort under its arguments, and its declared kind and scope
     contain whatever a value of it holds or carries in its type; its scope names

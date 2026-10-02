@@ -61,12 +61,12 @@ class MatchRefinementTests extends munit.FunSuite with TestSupport {
         | | zero : Peano
         | | succ (p: Peano) : Peano
         |
-        |inductive Vec (u: Level)(A: Sort { level = u }) indices (n: Peano) : Sort { level = max(one, u) }
+        |inductive Vec (u: Level)(A: Type { level = u}) indices (n: Peano) : Type { level = u}
         | | nil : Vec(u, A, Peano.zero)
         | | cons (n: Peano) (xs: Vec(u, A, n)) (x: A) : Vec(u, A, Peano.succ(n))
         |
-        |def keepVec (n: Peano)(v: Vec(Level.one, Peano, n)): Vec(Level.one, Peano, n) := {
-        |  match v returning Vec(Level.one, Peano, n) with
+        |def keepVec (n: Peano)(v: Vec(Level.zero, Peano, n)): Vec(Level.zero, Peano, n) := {
+        |  match v returning Vec(Level.zero, Peano, n) with
         |  | Vec.nil => v
         |  | Vec.cons k xs x => v
         |}

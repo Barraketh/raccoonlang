@@ -74,8 +74,8 @@ class MatchEquationTests extends munit.FunSuite with TestSupport {
         |  match z : Nat.isZero(n) returning Eq(Bool, Nat.isZero(n), Bool.true) with
         |  | Bool.true => z
         |  | Bool.false => {
-        |    let one := Eq.subst(z, Level.zero, fun (b: Bool): Prop => Eq(Nat, gOf(b), 0), h)
-        |    False.elim(Nat.succNeZero(0, one), Eq(Bool, Nat.isZero(n), Bool.true))
+        |    let one := Eq.substP(z, fun (b: Bool): Prop => Eq(Nat, gOf(b), 0), h)
+        |    False.elimP(Nat.succNeZero(0, one), Eq(Bool, Nat.isZero(n), Bool.true))
         |  }
         |}
         |""".stripMargin
@@ -185,7 +185,7 @@ class MatchEquationTests extends munit.FunSuite with TestSupport {
     val (red, notRed) = ("Eq(Color, pick(n), Color.red)", "Eq(Bool, isRed(pick(n)), Bool.false)")
     val goal = s"Or($red, $notRed)"
     val proof =
-      "Eq.subst(Eq.symm(h), Level.zero, fun (d: Color): Prop => Eq(Bool, isRed(d), Bool.false), Eq.refl(Bool.false))"
+      "Eq.substP(Eq.symm(h), fun (d: Color): Prop => Eq(Bool, isRed(d), Bool.false), Eq.refl(Bool.false))"
     def source(cases: String): String =
       color + s"def notRed (n: Nat): $goal := {\n  match h : pick(n) returning $goal with\n$cases  | _ => Or.inr($red, $proof)\n}\n"
     typecheckDecls(source(s"  | Color.red => Or.inl($notRed, h)\n"))

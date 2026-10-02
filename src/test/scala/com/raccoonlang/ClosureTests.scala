@@ -115,10 +115,10 @@ class ClosureTests extends munit.FunSuite with TestSupport {
     )
   }
 
-  test("a linear closure into a proposition is LinearProp") {
+  test("a linear closure into a proposition is KindExceeded") {
     typecheckDecls("def f (g: Unit -> True): Nat := 0\n")
-    expectOnly[LinearProp](typecheckDecls("def f (g: { kind = lin } Unit -> True): Nat := 0\n"))
-    expectOnly[LinearProp](typecheckDecls("def f {k: Kind}(g: { kind = k } Unit -> True): Nat := 0\n"))
+    expectOnly[KindExceeded](typecheckDecls("def f (g: { kind = lin } Unit -> True): Nat := 0\n"))
+    expectOnly[KindExceeded](typecheckDecls("def f {k: Kind}(g: { kind = k } Unit -> True): Nat := 0\n"))
   }
 
   test("a closure field forces a variable only when it is exactly that variable") {
@@ -194,18 +194,18 @@ class ClosureTests extends munit.FunSuite with TestSupport {
     expectOnly[TypeMismatch](typecheckDecls(program("{ kind = lin } Unit -> Nat")))
   }
 
-  test("a lambda that captures a linear value into a proposition is LinearProp") {
+  test("a lambda that captures a linear value into a proposition is KindExceeded") {
     def program(body: String): String =
       withFamilies(s"def f (l: Lifetime)(t: Tok(l)): Nat := {\n  let p := fun (u: Unit): True => $body\n  eat(t)\n}\n")
 
     typecheckDecls(program("True.intro"))
-    expectOnly[LinearProp](typecheckDecls(program("match t returning True with\n    | Tok.mk => True.intro")))
+    expectOnly[KindExceeded](typecheckDecls(program("match t returning True with\n    | Tok.mk => True.intro")))
   }
 
   test("a recursive definition's reference to itself is not a capture") {
     val p =
       """
-        |def count {u: Level}{A: Sort { level = u }}(a: A)(n: Nat): Nat decreases structural(n) :=
+        |def count {u: Level}{A: Type { level = u}}(a: A)(n: Nat): Nat decreases structural(n) :=
         |  match n returning Nat with
         |  | Nat.zero => 0
         |  | Nat.succ m => (fun (x: Nat): Nat => Nat.succ(count(a, m)))(0)

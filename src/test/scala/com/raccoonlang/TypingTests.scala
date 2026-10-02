@@ -269,7 +269,7 @@ class TypingTests extends munit.FunSuite with TestSupport {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Peano) : Sort { level = one }
+        |inductive Vec (A: Type) indices (n: Peano) : Type { level = zero}
         | | nil : Vec(A, Peano.zero)
         | | cons (n: Peano) (xs: Vec(A, n)) (x: A): Vec(A, Peano.succ(n))
         |
@@ -288,7 +288,7 @@ class TypingTests extends munit.FunSuite with TestSupport {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Peano) : Sort { level = one }
+        |inductive Vec (A: Type) indices (n: Peano) : Type { level = zero}
         | | nil : Vec(A, Peano.zero)
         | | cons (n: Peano) (xs: Vec(A, n)) (x: A): Vec(A, Peano.succ(n))
         |

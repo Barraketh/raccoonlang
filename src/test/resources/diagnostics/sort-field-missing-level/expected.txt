@@ -1,4 +1,4 @@
 
-<root>/main.rac:1:11: error: Failed to parse module <root>/main.rac: Sort requires a level field
-def f (A: Sort { kind = unr })(x: A): A := x
-          ^
+<root>/main.rac:1:18: error: Failed to parse module <root>/main.rac: Misplaced field level: Prop fixes the level
+def f (P: Prop { level = zero })(h: P): P := h
+                 ^

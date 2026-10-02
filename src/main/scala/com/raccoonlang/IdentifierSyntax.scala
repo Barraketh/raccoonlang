@@ -24,7 +24,6 @@ private[raccoonlang] object IdentifierSyntax {
     "indices",
     "in",
     "scope",
-    "Sort",
     "Type",
     "Prop"
   )

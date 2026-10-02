@@ -220,9 +220,6 @@ final case class InductiveUniverseTooSmall(
 
 final case class InductiveTypeNotASort(tpe: Value) extends TypeError
 
-/** A sort of a kind other than `Kind.unr` at a level that may be zero (spec §2.3): proofs are unrestricted. */
-final case class LinearProp(kind: Value.Kind, level: Value.Level) extends TypeError
-
 /** A declared kind that does not contain the kind of `part` (spec §2.6), such as a family's constructor field. */
 final case class KindExceeded(declaration: String, declared: Value.Kind, part: ContainedPart, partKind: Value.Kind)
   extends TypeError

@@ -61,8 +61,8 @@ class AxiomTests extends munit.FunSuite with TestSupport {
 
   test("the prelude's Quot binds lifetimes, and the same declaration in a program is UntrustedAxiom") {
     val quot =
-      "axiom Quot2 {u: Level}{S: Lifetime}{Sr: Lifetime}{Sq: Lifetime}(A: Sort { level = u, scope = S })" +
-        "(r: { scope = Sr } A -> A -> Prop { scope = Sq }): Sort { level = u, scope = union(S, union(Sr, Sq)) }\n"
+      "axiom Quot2 {u: Level}{S: Lifetime}{Sr: Lifetime}{Sq: Lifetime}(A: Type { level = u, scope = S })" +
+        "(r: { scope = Sr } A -> A -> Prop { scope = Sq }): Type { level = u, scope = union(S, union(Sr, Sq)) }\n"
     TestSupport.preludeAssuming(TestSupport.bundledPreludeSource, quot).checkedEnv
     assertEquals(expectOnly[UntrustedAxiom](typecheckDecls(quot)), UntrustedAxiom("Quot2"))
   }

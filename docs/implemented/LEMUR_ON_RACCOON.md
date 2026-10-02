@@ -17,9 +17,8 @@ rather than choosing.
 ## 1. Syntax
 
 ```text
-Sort      ::= Sort { Field, ..., Field }         -- level required
-            | Type [{ Field, ..., Field }]       -- level is Level.one
-            | Prop [{ Field, ..., Field }]       -- level is Level.zero
+Sort      ::= Type [{ Field, ..., Field }]       -- data level defaults to zero
+            | Prop [{ scope = e }]               -- unrestricted proofs
 Field     ::= level = e | kind = e | scope = e   -- e a level, kind or lifetime expression (§2.2)
 Closure   ::= { Field, ..., Field }              -- kind and scope only
 Function  ::= [Closure] Group                    -- Group: one binder group as today, as in
@@ -32,14 +31,13 @@ Decl      ::= [sealed] inductive D (params) indices (indices) : Sort
             | [sealed] struct   D (params) indices (indices) : Sort
 ```
 
-`Sort`, `Type` and `Prop` are the sort formers. `Sort` is not a function, and
-`Sort(u)` is not a term. A sort's parameters are supplied by name, in any
+`Type` and `Prop` are the sort formers. `Sort` syntax is removed. A sort's parameters are supplied by name, in any
 order: `level`, `kind` and `scope`. An omitted `kind` is `Kind.unr` and an
 omitted `scope` is `Lifetime.empty`. That is what the shorter spelling means,
-not something inferred. `Type` and `Prop` fix the level, so `level` in their
-field list is a parse error, as it is in a closure. A field list is nonempty,
+not something inferred. `Type` defaults to level zero; `Prop` permits only
+scope, and a closure permits only kind and scope. A field list is nonempty,
 and an unknown or repeated field is a parse error. So `Type` is
-`Sort { level = Level.one, kind = Kind.unr, scope = Lifetime.empty }`, and
+`Type { level = Level.zero, kind = Kind.unr, scope = Lifetime.empty }`, and
 every program written without fields keeps its meaning.
 
 A field's value is a level, kind or lifetime expression (§2.2), elaborated with
@@ -78,15 +76,15 @@ a local is bound.
 
 ## 2. Sorts
 
-**2.1 Sorts.** `Sort { level = u, kind = k, scope = S }` is the sort of types at
+**2.1 Sorts.** `Type { level = u, kind = k, scope = S }` is the sort of types at
 level `u` whose values are used as kind `k` says (§3.1) and depend on at most
 the atoms in `S` (§4).
-`Sort { level = u, kind = k, scope = S } : Sort { level = Level.succ(u), scope = S }`.
+`Type { level = u, kind = k, scope = S } : Type { level = Level.succ(u), scope = S }`.
 A type is an unrestricted value, and it carries at most the atoms its values
 may depend on (§2.4). A type is confined by the atoms its sort's scope names
 (§4.2), and a sort by its own scope. Levels are as today, except that they are
-second-class (§2.2). The three parameters never interact, except that a sort of
-a kind other than `Kind.unr` has a level that is never zero (§2.3). A type's
+second-class (§2.2). The three data sort fields are independent: data sorts permit any kind at
+every level (§2.3). A type's
 sort is given by §2.4, and the type checks against a sort exactly when all
 three parameters are equal (§2.6).
 
@@ -116,8 +114,8 @@ anywhere else is `NotAType`, because there its type must be a type.
 A header is the binders written before a declaration's `:`. A header binder
 may be explicit or a forced implicit, as today. A function type written after
 the `:` is a function type like any other. So
-`def f : {u: Level} -> Sort { level = u } -> Nat := …` is `NotAType`, and is
-written `def f {u: Level}(A: Sort { level = u }): Nat := …`.
+`def f : {u: Level} -> Type { level = u} -> Nat := …` is `NotAType`, and is
+written `def f {u: Level}(A: Type { level = u}): Nat := …`.
 
 The asymmetry has a reason:
 - A level binder changes the universe of everything after it. So a function type
@@ -136,7 +134,7 @@ The asymmetry has a reason:
 
 An expression of a sort parameter is exactly one of these:
 - a level: a level variable, `Level.zero`, `Level.one`, `Level.succ(e)`,
-  `Level.max(e, e)` or `Level.imax(e, e)`;
+  `Level.max(e, e)`;
 - a kind: a kind variable, `Kind.unr`, `Kind.lin` or `Kind.join(e, e)`;
 - a lifetime: a lifetime variable, `Lifetime.empty` or `Lifetime.union(e, e)`.
   A `scope` binder's variable denotes its atom (§4.1).
@@ -149,7 +147,7 @@ in a parameter position:
 
 Anywhere else, such as a `match` scrutinee, a block's result, or an argument at
 an ordinary binder, it is `NotAType`. Conversely, a term of another type at a
-parameter position, such as `Lease(Nat.zero)` or `Sort { level = Nat.zero }`,
+parameter position, such as `Lease(Nat.zero)` or `Type { level = Nat.zero}`,
 is `TypeMismatch`, as any ill-typed argument is.
 
 **2.3 Normal forms.** A sort parameter expression is normalized at birth, and
@@ -171,16 +169,9 @@ branch on a lifetime or kind equation (§6.2). For the same reason such an
 equation is never refutable, which is one reason only the trusted prelude
 declares axioms (§7.3).
 
-A sort of a kind other than `Kind.unr` must have a level that is never zero,
-else `LinearProp`, because proofs are unrestricted. So each of these is
-`LinearProp`:
-- `Prop { kind = lin }`;
-- `Sort { level = u, kind = k }` for a level variable `u` and a kind variable
-  `k`;
-- a `{ kind = lin }` function type into a proposition.
-
-A kind-polymorphic sort is written `Type { kind = k }` or
-`Sort { level = succ(u), kind = k }`.
+Data sorts admit every kind at every data level. `Prop` has only a scope;
+its proofs are unrestricted, and proposition-valued function types require
+closure kind `Kind.unr`.
 
 **2.4 Sort of a type.** `kind(T)` and `scope(T)` are the kind and scope of
 `T`'s sort, which `T`'s shape gives. A neutral value carries its type, so the
@@ -188,8 +179,8 @@ last row reads the sort off that type:
 
 | `T` | sort of `T` |
 |---|---|
-| `Sort { level = u, kind = k, scope = S }` | `Sort { level = succ(u), scope = S }` |
-| `{ kind = k, scope = S } (x1: A1) ... (xn: An) -> B`, binding no level | `Sort { level = imax as today, kind = k, scope = union(S, scope(A1), ..., scope(An), scope(B)) }`, less the group's own lifetime variables; a kind or lifetime binder contributes no level and no scope, and only the closure contributes to the kind |
+| `Type { level = u, kind = k, scope = S }` | `Type { level = succ(u), scope = S }` |
+| `{ kind = k, scope = S } (x1: A1) ... (xn: An) -> B`, binding no level | `Type { level = max of domain and codomain levels (proposition domains contribute zero), kind = k, scope = union(S, scope(A1), ..., scope(An), scope(B)) }`, less the group's own lifetime variables; a kind or lifetime binder contributes no level and no scope, and only the closure contributes to the kind |
 | a function type binding a level | `Large` |
 | a family instance `D(p*, i*)` | the declared classifier of §5.1 under `p*`, and nothing else |
 | any other neutral type | the sort its type states: a type variable `A: Type { kind = k, scope = S }`, or `F(e*)` for a local `F`, states it under the arguments; an `opaque def` or `axiom` application and a blocked `match` state the sort of the declared result or motive (superseded: `opaque def` is removed, `docs/implemented/NO_OPAQUE.md`) |
@@ -218,7 +209,8 @@ and for a function type:
 - the codomain's scope counts what calling it produces;
 - the domains' scopes count what can be read off its type.
 
-This is how a universe level takes `imax` over the domains and the codomain.
+Data function types take the maximum domain and codomain level; a function
+into a proposition is in Prop irrespective of its domains.
 
 A type is itself a value, a struct whose readable fields are its components:
 - a family instance's arguments;
@@ -228,12 +220,12 @@ A type's level, kind and scope are fields of its own type, its sort. For
 `a: P(h)`, `h` is read off `a`'s type, and the level off that type's sort. A
 type's scope as a value therefore counts its components, as a struct's scope
 counts its fields. The rules above guarantee that a type in
-`Sort { …, scope = S }` carries at most `S`:
+`Type { …, scope = S }` carries at most `S`:
 - §5.1 for a family instance;
 - this row for a function type;
 - exact instantiation for a type variable.
 
-So the sort of `Sort { …, scope = S }` is at scope `S` (first row). A type's
+So the sort of `Type { …, scope = S }` is at scope `S` (first row). A type's
 kind says how the value itself may be used. So a function type's kind is
 its closure kind alone: an unrestricted function may return a linear value it
 creates, and a linear function may return an unrestricted value.
@@ -307,7 +299,7 @@ only which diagnostic an ill-typed program gets.
 Every polymorphic prelude declaration carries a lifetime variable:
 - beside each type parameter, `Prop`-valued ones included;
 - for the sort in each type-family parameter's codomain, as
-  `motive: A -> Sort { level = v, scope = Sm }` does in `Eq.subst`.
+  `motive: A -> Type { level = v, scope = Sm }` does in `Eq.subst`.
 
 Every higher-order prelude declaration also carries a lifetime variable for each
 function-typed parameter's closure scope. A definition that omits them accepts
@@ -327,7 +319,7 @@ inductive List {S: Lifetime}(A: Type { scope = S }) : Type { scope = S }
  | nil : List(A)
  | cons (head: A) (tail: List(A)) : List(A)
 
-inductive Eq {u: Level}{S: Lifetime}(A: Sort { level = u, scope = S })
+inductive Eq {u: Level}{S: Lifetime}(A: Type { level = u, scope = S })
     indices (x: A)(y: A) : Prop { scope = S }
  | refl (x: A) : Eq(A, x, x)
 ```
@@ -784,15 +776,14 @@ of tokens declares its own.
   - A level-polymorphic declaration's type is large (§2.4), so the declaration
     is used only applied.
   - `Level` is no longer a type.
-  - `Level.succ`, `Level.max` and `Level.imax` are forms of the language, not
+  - `Level.succ` and `Level.max` are forms of the language, not
     prelude builtins.
 
   Today's kernel gives a function type that binds a level a universe that
   mentions that binder; `Large` replaces it.
 
-  Level arithmetic, `imax` and forcing are otherwise unchanged. A sort's kind
-  and scope ride beside the level, are forced the same way (§2.7), and interact
-  with it only through `LinearProp` (§2.3).
+  Data level arithmetic and forcing are otherwise unchanged. A data sort's
+  kind and scope are forced alongside its level (§2.7). Prop is separate.
 - **Implicit reconstruction.** A recovered `Lifetime` argument is subject to
   §4.2 wherever it enters a type's sort.
 - **The eta-adapter is removed.** Today a function name or lambda checked against
@@ -838,7 +829,7 @@ of tokens declares its own.
 ## 9. Diagnostics
 
 ```text
-LinearUnused, LinearReused, LinearInType, LinearGlobal, LinearProp,
+LinearUnused, LinearReused, LinearInType, LinearGlobal,
 LifetimeEscapes, KindExceeded, ScopeExceeded, SealedConstructor, UntrustedAxiom
 ```
 
@@ -848,7 +839,7 @@ named above. These field-list errors are parse
 errors:
 - an unknown, repeated or misplaced field;
 - an empty field list;
-- a missing `level` in `Sort`;
+- a `level` or `kind` field in `Prop`;
 - a closure before a later domain;
 - a `match` without `returning`.
 

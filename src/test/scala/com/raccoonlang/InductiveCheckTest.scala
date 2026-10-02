@@ -46,8 +46,8 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
 
   private def sortAt(level: CoreAst.Form): CoreAst.Term = CoreTestTerms.sortAt(level, blockSpan)
 
-  private val typeSort: CoreAst.Term = sortAt(CoreAst.Form.LevelOne)
-  private val propSort: CoreAst.Term = sortAt(CoreAst.Form.LevelZero)
+  private val typeSort: CoreAst.Term = sortAt(CoreAst.Form.LevelZero)
+  private val propSort: CoreAst.Term = CoreTestTerms.prop(blockSpan)
 
   private def mutualEvenOdd(evenRecursiveFieldType: CoreAst.Term = global("Odd")): CoreAst.Decl.InductiveBlock = {
     val oddField =
@@ -493,7 +493,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
     val p =
       """
         |inductive Small : Type
-        | | mk (A: Sort { level = one }): Small
+        | | mk (A: Type { level = zero}): Small
         |
         |""".stripMargin
 
@@ -514,13 +514,13 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   test("Non-strict positivity: aligned universes under other constructor F args (Wrap u (Bad u))") {
     val p =
       """
-        |inductive Bad : Sort { level = zero }
+        |inductive Bad : Type { level = zero}
         | | con(x: Wrap(Bad)): Bad
         |
         |""".stripMargin
 
     interceptError[NonStrictlyPositive] {
-      elabAndTypecheck(p, assuming("axiom Wrap (A: Sort { level = zero }): Sort { level = zero }\n"))
+      elabAndTypecheck(p, assuming("axiom Wrap (A: Type { level = zero}): Type { level = zero}\n"))
     }
   }
 
@@ -531,7 +531,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Peano) : Sort { level = one }
+        |inductive Vec (A: Type) indices (n: Peano) : Type { level = zero}
         | | mk (B: Type)(n: Peano): Vec(B, n)
         |
         |""".stripMargin
@@ -546,7 +546,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Peano) : Sort { level = one }
+        |inductive Vec (A: Type) indices (n: Peano) : Type { level = zero}
         | | bad : Vec(A)
         |
         |""".stripMargin
@@ -561,7 +561,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Peano) : Sort { level = one }
+        |inductive Vec (A: Type) indices (n: Peano) : Type { level = zero}
         | | nil : Vec(A, Peano.zero)
         | | cons {n: Peano}(tail: Vec(A, n))(head: A): Vec(A, Peano.succ(n))
         |
@@ -577,7 +577,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
         | | zero : Peano
         | | succ (_: Peano) : Peano
         |
-        |inductive Vec (A: Type) indices (n: Peano) : Sort { level = one }
+        |inductive Vec (A: Type) indices (n: Peano) : Type { level = zero}
         | | bad {n: Peano}: Vec(A, n)
         |
         |""".stripMargin
@@ -588,7 +588,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   test("Constructor binders may not shadow family params") {
     val p =
       """
-        |struct Bad (A: Type) : Sort { level = succ(one) }
+        |struct Bad (A: Type) : Type { level = one}
         | | mk (A: Type): Bad(A)
         |
         |""".stripMargin
@@ -599,7 +599,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   test("Constructor implicit binders include inductive params") {
     val p =
       """
-        |inductive Bad (A: Type)(B: Type) : Sort { level = one }
+        |inductive Bad (A: Type)(B: Type) : Type { level = zero}
         | | inl (a: A) : Bad(A, B)
         |
         |""".stripMargin
@@ -658,10 +658,10 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   test("Nested non-positive: container parameter contravariant in later family argument") {
     val p =
       """
-        |inductive Box {u: Level}(A: Sort { level = u })(F: A -> Type) : Sort { level = max(u, one) }
+        |inductive Box {u: Level}(A: Type { level = u})(F: A -> Type) : Type { level = max(u, one) }
         | | mk : Box(A, F)
         |
-        |inductive Bad : Sort { level = succ(one) }
+        |inductive Bad : Type { level = one }
         | | con {F: Bad -> Type} (x: Box(Bad, F)) : Bad
         |
         |""".stripMargin
@@ -687,7 +687,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   test("Nested metadata: true source indices never become positivity capabilities") {
     val p =
       """
-        |inductive Indexed (A: Type) indices (F: Type -> A) : Sort { level = succ(one) }
+        |inductive Indexed (A: Type) indices (F: Type -> A) : Type { level = one}
         | | mk (F: Type -> A): Indexed(A, F)
         |""".stripMargin
 
@@ -744,7 +744,7 @@ class InductiveCheckTest extends munit.FunSuite with DiagnosticAssertions {
   test("Nested non-positive: an axiomatized dependent family argument type is conservative") {
     val assumptions =
       """
-        |struct TypeBox (A: Type) : Sort { level = succ(one) }
+        |struct TypeBox (A: Type) : Type { level = one}
         | | mk (T: Type) : TypeBox(A)
         |
         |axiom typeBox (A: Type): TypeBox(A)

@@ -1,4 +1,4 @@
 
-<root>/main.rac:1:26: error: Failed to parse module <root>/main.rac: Misplaced field level: Type fixes the level
-def apply (h: (A: Type { level = Level.one }) -> Nat): Nat := 0
+<root>/main.rac:1:26: error: Failed to parse module <root>/main.rac: Misplaced field level: Prop fixes the level
+def apply (h: (A: Prop { level = Level.one }) -> Nat): Nat := 0
                          ^

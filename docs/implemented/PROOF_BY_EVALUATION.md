@@ -124,7 +124,7 @@ At run time, as in §1.6, a construction stores an erased proof without evaluati
 on a constructor must still be forced; an evidence field is not an implicit and needs no forcing.
 
 **1.9 Termination of discharge.** A family `F` is **evidence-eligible** at a discharge site when:
-1. `F` is declared in `Prop` (its sort is `Prop` itself, not a level that may become zero), and has one constructor
+1. `F` is declared in `Prop`, and has one constructor
    and no indices (a `struct`);
 2. `F` is not recursive: no field's type mentions `F` or a member of its mutual block;
 3. every field of its constructor is an evidence field;
