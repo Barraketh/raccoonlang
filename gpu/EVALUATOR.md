@@ -684,6 +684,97 @@ Final [scalar JVM](../target/performance/unboxed-eval-scalars/jvm-final-frozen.l
 Provenance records source, test, config, binary and log hashes and the per-seed JFR paths. Instrumented, overlapping,
 whole-process-JFR and preliminary representation experiments are superseded for conclusions.
 
+### Unified default Core evaluator (2026-10-02)
+
+`Interpreter.evalTerm`, `evalApply`, `runLam`, thunk forcing and the compatibility `PreparedEval.Prepared.run` now enter
+one frame machine. Its single loop handles application order, lets, scope, matching, calls, returns and tail calls for
+checked and open Core. Root references and closed nullary sort forms use the same semantic helpers without allocating
+a frame. There is no opt-in switch for execution; the historical `--prepared-frames` benchmark flag remains a
+compatibility control and invokes the same machine in this revision.
+
+Plans contain only syntax and local addresses. Separate bounded thread-local caches distinguish expression and
+function-body plans; a nested call obtains an isolated session, retaining at most eight idle sessions per thread.
+An invocation-scoped, 1,024-entry identity memo keeps checked Core closure layout eligibility and its plan, and is
+cleared on return or error. Unsupported raw metadata, binder mismatches and overlapping local references use immutable
+`Env` bindings *inside this same loop*. A closure, dependent Pi, deferred equation or stuck match receives an immutable
+capture, never a reusable slot bank. Native scalar operations retain their validated exact owner/type and overflow
+guards. Plan construction still traverses syntax on the host stack: an extremely deep unused child in hand-built Core
+can exhaust it before an earlier runtime error. Once planned, explicit arguments run left to right, supplied App
+evidence syntax remains ignored, and runtime errors retain their order.
+
+The final `sbt validate` suite passed 996/996, including explicit expected-result/error tests for raw applications,
+lexical restoration, malformed binder metadata, duplicate refs, proof binding, same-thread reentry after a failure,
+neutral/equation matches and deep non-tail calls. The revised `EvaluationTooDeep` tests use genuine checker/helper
+recursion; non-tail Core calls now succeed on a small physical `--stack`.
+
+The matched TinyGEMM runs used the actual checked source kernel, two warmups and three timed invocations per seed,
+serially, with JFR off. Each invocation passed the full 16,384-cell Z/257 oracle and exact counts of 1,048,576
+multiplies and 1,048,576 adds, plus the same warp, async, TMA and MMA counters. The timer covers the default
+`Interpreter.evalApply(run, Vector(prepared))` call, including its one-element argument vector, but excludes source
+loading/checking and output materialization. `source_api_load_check_ns` separately includes the source API setup.
+The parent is committed `fd7308d`; its prepared mode is the former opt-in execution tier. JVM runs used Oracle
+GraalVM 21.0.12, `-Xmx2g -ea`, and the same TinyGEMM source fixture on each revision. Seconds below are medians of
+three samples.
+
+| JVM mode | Seed 17 | Seed 83 | Source load/check |
+| --- | ---: | ---: | ---: |
+| Parent default | 9.552 | 9.518 | 8.786 |
+| Parent prepared | 7.946 | 7.746 | 8.829 |
+| Unified default | **8.512** | **8.572** | 9.743 |
+
+The unified default is 10.9% and 9.9% faster than the former default, but 7.1% and 10.7% slower than the former
+prepared mode on these two JVM seeds. Its source setup is about 10.9% slower than parent default in these separate
+processes; unification did not remove preparation cost from checking. An ordinary `Main` render of
+`gpu/encoding/examples/attention_pingpong.rac` with `--json` used five separate JVM processes per revision (two
+warmups, three samples): parent median 7.551 s, unified median 7.941 s, a 5.2% regression. Every JSON run printed
+exactly `[]`. A separate `--raw` invocation produced **identical** 696,817-byte CUDA output in both revisions,
+SHA-256 `c7799ca4d1ac07a8190a78d829b12d205f4fc013cf3547bff4f48b6df7feeb0a`.
+
+Native images used the same GraalVM 21.0.12 builder command, `--parallelism=4 -J-Xmx3g --enable-monitoring=jfr -ea`;
+the build reported O2, armv8-a, ML-inferred PGO and Serial GC. JFR was disabled during timing. The parent binary is
+SHA-256 `b482f8294502731f57e2df6cce3f0d39642fe51194646e5b60c0f5d293e19eee`; the frozen unified binary is
+`d6da1d2c47b45d5391f5a957d614e06a649e7eb4834cc52f573cf122a64f8236`. Native source load/check was
+11.707 s for parent default, 12.676 s for parent prepared and 11.313 s for unified default.
+
+| Native mode | Seed 17 | Seed 83 |
+| --- | ---: | ---: |
+| Parent default | 17.492 | 17.549 |
+| Parent prepared | 13.518 | 13.567 |
+| Unified default | **13.105** | **12.926** |
+
+The unified native default is 25.1% and 26.3% faster than the parent default. It was slightly faster than parent
+prepared in this one serial comparison (3.1% and 4.7%); those small differences should be treated as comparable
+performance without a reverse-order control. The earlier unified image measured 12.872/12.847 s before a raw-arity
+error-order fix and is retained only as diagnostic evidence. No RSS or allocation reduction is claimed for this
+unification.
+
+The original attention rendering command was also measured as a **whole-process native Main** run, not as a TinyGEMM
+`evalApply` invocation. Both `Main` images used those same GraalVM build flags and the original
+`--prelude gpu/Prelude.rac --root gpu --raw gpu/encoding/examples/attention_pingpong.rac` arguments. Standard output
+was captured and checked on every invocation; each of the five runs per revision exited successfully with empty
+stderr and the identical 696,817-byte CUDA digest above. Two warmups preceded three timed runs, JFR off:
+
+| Native `Main --raw` | Three whole-process wall samples | Median |
+| --- | --- | ---: |
+| Parent default | 8.352, 8.411, 8.389 s | 8.389 s |
+| Unified default | 7.415, 7.377, 7.348 s | **7.377 s** |
+
+The unified native render is 12.1% faster in this matched run, while the JVM `Main --json` comparison above was 5.2%
+slower. The parent native Main image SHA-256 is
+`061663517e53bd2932e3820d2c7144a546a9b204333204b62d77cd8929bb00a5`; the unified Main image is
+`3bc82555eb9b048698772f75b5d19d661fef679e2cd958c656e7715f911444a5`.
+
+The exact commands, source/test diff fingerprint, per-sample logs, output hashes, image/build hashes and validation
+hash are recorded in [unified evaluator provenance](../target/performance/unified-evaluator/provenance.txt). The
+[JVM default](../target/performance/unified-evaluator/candidate-jvm-default-final-warm2-sample3.log),
+[native default](../target/performance/unified-evaluator/candidate-native-default-final-warm2-sample3.log),
+[attention JSON](../target/performance/unified-evaluator/candidate-attention-default-final-warm2-sample3.json) and
+[attention CUDA](../target/performance/unified-evaluator/candidate-attention-final-raw.cu) artifacts are preserved
+beside their parent controls in ignored `target/performance`. The
+[native Main whole-process samples](../target/performance/unified-evaluator/candidate-native-main-attention-raw-warm2-sample3.json)
+and its [parent control](../target/performance/unified-evaluator/parent-fd7308d-native-main-attention-raw-warm2-sample3.json)
+are kept there too.
+
 ### Historical checkpoint: source-level buffer workload (2026-10-02)
 
 This checkpoint measures foundation buffer-operation throughput; it is not a TinyGEMM evaluator. The TinyGEMM

@@ -192,7 +192,10 @@ result:
 - the body of a core lambda applied in tail position.
 
 A procedure written with accumulators, using `match` rather than `Bool.and` for short-circuiting (evaluation is
-strict), runs in constant host stack. Recursion that is not in tail position remains bounded by the stack.
+strict), runs in constant host stack. **Current implementation:** the unified frame evaluator also stores non-tail
+Core calls and pending expression work in explicit frames. The host-stack bounds measured in this historical proposal
+no longer describe Core call depth; checker and semantic-helper recursion can still overflow and yield
+`EvaluationTooDeep` at the same diagnostic boundaries.
 
 **2.5 Exhaustion is a diagnostic.** Checking and evaluation run on a dedicated thread whose stack is set by a
 `--stack` flag (default 256MB). A stack overflow is caught at the boundary of the declaration being checked or the

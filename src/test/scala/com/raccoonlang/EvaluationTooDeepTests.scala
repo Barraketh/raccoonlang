@@ -9,12 +9,21 @@ class EvaluationTooDeepTests extends munit.FunSuite with TestSupport {
   private val SmallStack = 512L << 10
   private val LargeStack = 256L << 20
 
-  /** Non-tail recursion: one level of host recursion per unit of its argument. */
+  /** Core non-tail calls now use reusable frames and can exceed a small Java stack. */
   private val count =
     """def count (n: Nat): Nat decreases structural(n) := {
       |  match n returning Nat with
       |  | Nat.zero => Nat.zero
       |  | Nat.succ k => Nat.succ(count(k))
+      |}
+      |""".stripMargin
+
+  /** Classifying each dependent Pi still recurses through the checker and its semantic helpers. */
+  private val nest =
+    """def nest (n: Nat): Type decreases structural(n) := {
+      |  match n returning Type with
+      |  | Nat.zero => Nat
+      |  | Nat.succ k => (x: Nat) -> nest(k)
       |}
       |""".stripMargin
 
@@ -39,8 +48,8 @@ class EvaluationTooDeepTests extends munit.FunSuite with TestSupport {
     }
 
   test("deep recursion that a declaration's type evaluates is EvaluationTooDeep at that declaration") {
-    val deep = "def deep : Eq(Nat, count(100000), 100000) := Eq.refl(100000)"
-    val source = count + deep + "\n"
+    val deep = "def deep : Type := nest(100000)"
+    val source = nest + deep + "\n"
     assertEquals(
       located(source, interceptDiagnostics(runOn(SmallStack, source))),
       Vector((EvaluationTooDeep, deep, Vector(Frame.InDefinition("deep"))))
@@ -49,19 +58,19 @@ class EvaluationTooDeepTests extends munit.FunSuite with TestSupport {
 
   test("deep recursion while evaluating the program's result is EvaluationTooDeep at the result") {
     // The result is the block's contents, as the parser locates a program's body.
-    val result = "let small := count(3)\n  let big := count(100000)\n  Nat.add(small, big)"
-    val source = count + "{\n  " + result + "\n}\n"
+    val result = "nest(100000)"
+    val source = nest + "{\n  " + result + "\n}\n"
     val diagnostics = interceptDiagnostics(runOn(SmallStack, source))
     assertEquals(located(source, diagnostics), Vector((EvaluationTooDeep, result, Vector.empty)))
   }
 
   test("checking stops at EvaluationTooDeep, reporting what it found before and nothing after") {
     val source =
-      count +
+      nest +
         """def before : Nat := Bool.true
-          |def deep : Eq(Nat, count(100000), 100000) := Eq.refl(100000)
+          |def deep : Type := nest(100000)
           |def after : Nat := Bool.false
-          |{ count(100000) }
+          |{ nest(100000) }
           |""".stripMargin
     val diagnostics = interceptDiagnostics(runOn(SmallStack, source))
     assertEquals(
@@ -77,15 +86,15 @@ class EvaluationTooDeepTests extends munit.FunSuite with TestSupport {
     assertEquals(runOn(SmallStack, source).map(PrettyPrinter.print), Some("10"))
   }
 
-  test("the stack a program is checked on is the one chosen") {
+  test("explicit non-tail frames evaluate deeply on a small physical stack") {
     val source = count + "{ count(20000) }\n"
-    assertEquals(interceptDiagnostics(runOn(SmallStack, source)).map(_.error), Vector(EvaluationTooDeep))
+    assertEquals(runOn(SmallStack, source).map(PrettyPrinter.print), Some("20000"))
     assertEquals(runOn(LargeStack, source).map(PrettyPrinter.print), Some("20000"))
   }
 
   test("an overflow in a prelude declaration is EvaluationTooDeep at that declaration") {
     // Literals wait for the completed prelude, so the depth is built by doubling: 2^20.
-    val deep = "def deep : Nat := count(" + "double(" * 20 + "Nat.succ(Nat.zero)" + ")" * 20 + ")"
+    val deep = "def deep : Type := nest(" + "double(" * 20 + "Nat.succ(Nat.zero)" + ")" * 20 + ")"
     val double =
       """def double (n: Nat): Nat decreases structural(n) := {
         |  match n returning Nat with
@@ -93,8 +102,8 @@ class EvaluationTooDeepTests extends munit.FunSuite with TestSupport {
         |  | Nat.succ k => Nat.succ(Nat.succ(double(k)))
         |}
         |""".stripMargin
-    val prelude = TestSupport.preludeAssuming(TestSupport.bundledPreludeSource, count + double + deep)
-    val source = TestSupport.preludeSourceAssuming(TestSupport.bundledPreludeSource, count + double + deep)
+    val prelude = TestSupport.preludeAssuming(TestSupport.bundledPreludeSource, nest + double + deep)
+    val source = TestSupport.preludeSourceAssuming(TestSupport.bundledPreludeSource, nest + double + deep)
     assertEquals(
       located(source, Vector(interceptDiagnostic(Execution.onStack(SmallStack)(prelude.checkedEnv)))),
       Vector((EvaluationTooDeep, deep, Vector(Frame.InDefinition("deep"))))

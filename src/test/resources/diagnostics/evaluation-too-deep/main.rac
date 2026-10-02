@@ -1,9 +1,9 @@
-def count (n: Nat): Nat decreases structural(n) := {
-  match n returning Nat with
-  | Nat.zero => Nat.zero
-  | Nat.succ k => Nat.succ(count(k))
+def nest (n: Nat): Type decreases structural(n) := {
+  match n returning Type with
+  | Nat.zero => Nat
+  | Nat.succ k => (x: Nat) -> nest(k)
 }
 
-def deep : Eq(Nat, count(1000000), 1000000) := Eq.refl(1000000)
+def deep : Type := nest(100000)
 
-{ count(3) }
+{ 0 }

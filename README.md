@@ -112,6 +112,9 @@ bytes, or of KiB, MiB or GiB with the suffix `k`, `m` or `g` in either case, as
 for `-Xss`: `512k`, `256m`, `1g`. A declaration whose checking exhausts that
 stack, or a final expression whose evaluation does, is `EvaluationTooDeep`
 there, and checking stops: no later declaration is checked.
+Core expression calls use explicit reusable frames, including non-tail calls;
+`--stack` limits the checker, execution-plan construction and semantic helpers
+that still recurse on the host stack.
 
 With `--json`, stdout carries a single JSON array and nothing else — no progress
 log and no program result — so a tool can read it directly:
