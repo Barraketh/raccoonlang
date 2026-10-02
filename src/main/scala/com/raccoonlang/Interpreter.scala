@@ -212,9 +212,10 @@ object Interpreter {
     synDeps.unionInPlace(closureScope.synDeps)
     synDeps.unionInPlace(mentionedScope.synDeps)
 
-    val codomain = new CheckedPiCodomain(pi.binders, pi.codomainIndependent) {
-      override def apply(env: Env): Value = evalTerm(pi.out, env)
-    }
+    val codomain =
+      new CheckedPiCodomain(pi.binders, pi.codomainIndependent, Some(pi.codomainBinderIndices), closedEnv) {
+        override def apply(env: Env): Value = evalTerm(pi.out, env)
+      }
 
     VPi(
       closedEnv,
@@ -304,7 +305,7 @@ object Interpreter {
           case lam: VLam =>
             lamStep(lam, vArgs)
           case h: ConstructorHead =>
-            val resultTy = pi.constructorResultType(envWithArgs)
+            val resultTy = pi.constructorResultType(vArgs, envWithArgs)
             val storedArgs = Value.constructorStoredArgs(h, vArgs)
             if (delayedStringAppend eq null) Step.Done(Packed.construct(h, storedArgs, resultTy))
             else {

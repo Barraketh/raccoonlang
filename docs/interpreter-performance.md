@@ -1,5 +1,18 @@
 # Interpreter performance
 
+## Checked constructor result specialization (2026-10-02)
+
+At base `c6599774890b42b4c4bb9985a20b07c4253572d7`, a constructor result was cached only when its codomain mentioned none of its own binders. The checked Pi now records the exact binder indices mentioned anywhere in the codomain, including nested closures. Constructor application binds only those arguments when evaluating a dependent result. Each checked Pi instance keeps at most four closed results, matched by the identity of the relevant actual values, so reuse preserves their exact type annotations and nominal owner. Unresolved or blocked inputs and results do not enter the cache. A changed closure, environment, or binder vector falls back to full instantiation; the existing independent result path is unchanged. The specialization retains canonical proof checks for arguments on its dependent path. Implicit projection specs were already compiled before this change; no projection compilation claim is made here.
+
+The one-tile exact-ring TinyGEMM checked-source harness ran on Oracle GraalVM 21.0.12 with `java -Xmx2g -ea`, two warmups and three timed samples per seed. API load/check, preparation, output extraction and the host oracle stayed outside `Interpreter.evalApply(run, Vector(prepared))`. Baseline was run from the frozen base worktree, then the candidate from the isolated `codex/call-type-plans` checkout, with no concurrent heavy build or benchmark. These are sequential, unpaired JVM observations; they do not measure the cache hit rate or isolate slicing from memoization.
+
+| Seed | Base samples (s), median | Candidate samples (s), median | Observed median change |
+| --- | --- | --- | ---: |
+| 17 | 11.491, 11.481, 11.597; **11.491** | 9.624, 9.563, 9.545; **9.563** | −16.8% |
+| 83 | 11.517, 11.513, 11.496; **11.513** | 9.545, 9.572, 9.590; **9.572** | −16.9% |
+
+Every warmup and timed run passed the complete 16,384-cell output oracle and expected counters: 1,251 warp steps, 88 async completions, 98,304 TMA bytes, 1,048,576 scalar multiplies and adds each, four MMA instructions, 64 tensor-memory loads and 16 stores. `sbt validate` passed 967 tests. Raw [baseline](../target/performance/call-type-plans/jvm-baseline.log), [candidate](../target/performance/call-type-plans/jvm-candidate.log), and [validation](../target/performance/call-type-plans/validate.log) logs are preserved in ignored `target/performance`; their hashes and the measured source hashes are in [provenance](../target/performance/call-type-plans/provenance.txt). Native performance is unmeasured for this isolated change.
+
 ## Soundness integration on `soundness_performance`
 
 This snapshot layers the reviewed 22-file performance delta from `438be1281f7fbaa7aa34ee4ce2b1bdc306f3ad08` to `fbee3bf469565d17145f050ca2cd696d50d7b850` onto `soundness_improvements` at `acaf536ec836f55fcb2b024e2badc6814521678f`. The soundness branch remains the base: nominal family classifiers, proposition/data separation, checked refutations, Prelude proofs, and soundness tests are retained. Two small compatibility edits accompany the merge: the soundness helper now closes an empty-capture environment through `Env.closeForEval(Set.empty)`, and a hand-built data-valued `VPi` test supplies the current `isPropValued = false` field. The measured source and test diff against `acaf536` has SHA-256 `4e7da421a5241242716604d9d24043cd0d8dd1603653c3ba2839e0292eed1e1d`.
