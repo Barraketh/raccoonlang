@@ -32,7 +32,8 @@ object TinyGemmSpikeBenchmark {
       warmups: Int,
       samples: Int,
       jfrDirectory: Option[Path],
-      jfrSettings: Option[Path]
+      jfrSettings: Option[Path],
+      preparedFrames: Boolean
   )
   private final case class Api(
       kernel: Value,
@@ -111,6 +112,15 @@ object TinyGemmSpikeBenchmark {
     }
     val api = decodeApi(entry.value, entry.strings)
     EvaluatorSpikeBenchmark.requireTinyKernel(api.kernel)
+    val framePlan = if (options.preparedFrames) {
+      Some(
+        PreparedEval
+          .prepare(api.run)
+          .getOrElse(
+            throw new IllegalStateException("Checked TinyGEMM run is not eligible for prepared frames")
+          )
+      )
+    } else None
     val apiLoadNs = System.nanoTime() - setupStart
 
     val natType = prelude.checkedEnv("Nat")
@@ -127,7 +137,10 @@ object TinyGemmSpikeBenchmark {
     println(s"warmups=${options.warmups}")
     println(s"timed_samples=${options.samples}")
     println(
-      "timed_region=Interpreter.evalApply(run, Vector(prepared)); includes one-element argument-vector construction"
+      if (options.preparedFrames)
+        "timed_region=PreparedEval.run(Vector(prepared)); includes one-element argument-vector construction"
+      else
+        "timed_region=Interpreter.evalApply(run, Vector(prepared)); includes one-element argument-vector construction"
     )
     println("output_materialization=outside timed region")
     profile.foreach { jfr =>
@@ -147,7 +160,7 @@ object TinyGemmSpikeBenchmark {
 
       def checkedRun(phase: String, recordTo: Option[Path] = None): Sample = {
         val runProfile = recordTo.flatMap(path => profile.map(jfr => jfr.configuration -> path))
-        val invocation = timedRun(api.run, work.prepared, runProfile)
+        val invocation = timedRun(api.run, work.prepared, runProfile, framePlan)
         val validationStart = if (profile.nonEmpty) System.nanoTime() else 0L
         val result = invocation.result
         val stats = decodeStats(applyOnStack(api.stats, result))
@@ -226,28 +239,34 @@ object TinyGemmSpikeBenchmark {
     var samples = DefaultSamples
     var jfrDirectory: Option[Path] = None
     var jfrSettings: Option[Path] = None
+    var preparedFrames = false
     var index = 0
     while (index < args.length) {
       val flag = args(index)
-      if (index + 1 >= args.length) usage(s"missing value after $flag")
-      flag match {
-        case "--warmups" | "--samples" =>
-          val value = args(index + 1).toIntOption.getOrElse(usage(s"invalid integer for $flag: ${args(index + 1)}"))
-          if (flag == "--warmups") warmups = value else samples = value
-        case "--jfr-dir"      => jfrDirectory = Some(Paths.get(args(index + 1)).toAbsolutePath.normalize)
-        case "--jfr-settings" => jfrSettings = Some(Paths.get(args(index + 1)).toAbsolutePath.normalize)
-        case other            => usage(s"unknown argument: $other")
+      if (flag == "--prepared-frames") {
+        preparedFrames = true
+        index += 1
+      } else {
+        if (index + 1 >= args.length) usage(s"missing value after $flag")
+        flag match {
+          case "--warmups" | "--samples" =>
+            val value = args(index + 1).toIntOption.getOrElse(usage(s"invalid integer for $flag: ${args(index + 1)}"))
+            if (flag == "--warmups") warmups = value else samples = value
+          case "--jfr-dir"      => jfrDirectory = Some(Paths.get(args(index + 1)).toAbsolutePath.normalize)
+          case "--jfr-settings" => jfrSettings = Some(Paths.get(args(index + 1)).toAbsolutePath.normalize)
+          case other            => usage(s"unknown argument: $other")
+        }
+        index += 2
       }
-      index += 2
     }
     if (warmups < 0) usage("--warmups must be non-negative")
     if (samples < 1) usage("--samples must be positive")
-    Options(warmups, samples, jfrDirectory, jfrSettings)
+    Options(warmups, samples, jfrDirectory, jfrSettings, preparedFrames)
   }
 
   private def usage(message: String): Nothing =
     throw new IllegalArgumentException(
-      s"$message\nUsage: TinyGemmSpikeBenchmark [--warmups N] [--samples N] [--jfr-dir DIR --jfr-settings FILE]"
+      s"$message\nUsage: TinyGemmSpikeBenchmark [--warmups N] [--samples N] [--prepared-frames] [--jfr-dir DIR --jfr-settings FILE]"
     )
 
   private def decodeApi(value: Value, strings: Option[Value.ValidatedStringLayout]): Api = {
@@ -554,13 +573,18 @@ object TinyGemmSpikeBenchmark {
   private def timedRun(
       run: Value,
       prepared: Value,
-      profile: Option[(Configuration, Path)]
+      profile: Option[(Configuration, Path)],
+      framePlan: Option[PreparedEval.Prepared]
   ): TimedInvocation =
     Execution.onStack(StackBytes) {
+      def invoke(): Value = framePlan match {
+        case Some(plan) => plan.run(Vector(prepared))
+        case None       => Interpreter.evalApply(run, Vector(prepared))
+      }
       profile match {
         case None =>
           val start = System.nanoTime()
-          val result = Interpreter.evalApply(run, Vector(prepared))
+          val result = invoke()
           TimedInvocation(System.nanoTime() - start, result, None, None)
         case Some((configuration, path)) =>
           val recording = new Recording(configuration)
@@ -580,7 +604,7 @@ object TinyGemmSpikeBenchmark {
           val runStart = System.nanoTime()
           var result: Value = null
           var runFailure: Throwable = null
-          try result = Interpreter.evalApply(run, Vector(prepared))
+          try result = invoke()
           catch { case thrown: Throwable => runFailure = thrown }
           val elapsedNs = System.nanoTime() - runStart
           val runEnd = System.nanoTime()

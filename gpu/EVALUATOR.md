@@ -573,6 +573,42 @@ comparison. The candidate patch is preserved as
 `2f923a657fd64cd4e6735e33dc583bb57e97207034f70414a43bda30adb46fd6`), and `TinyDevice.rac` was restored byte-for-
 byte to the baseline source before this report update.
 
+### Prepared execution frames for the checked TinyGEMM evaluator (2026-10-02)
+
+An opt-in `PreparedEval.prepare` compiles a checked, data-valued Core lambda into immutable plans. The session uses
+numeric local addresses and reusable value slots for parameters, recursive peers, lets and match fields. Its loop
+keeps application arguments and non-tail continuations in reusable banks and reuses the current frame for tail Core
+calls. All-explicit Core calls copy arguments directly between slots. Ref, application, block, match and literal nodes
+use this tier; Pi, lambda creation, scope and other nodes run through the ordinary interpreter after materializing a
+fresh, ordered immutable `Env` at the whole-term boundary. Escaping closures, dependent Pi values, stuck matches and
+deferred evidence therefore hold no reusable slot arrays. Native applications retain their existing generic path.
+Preparation is explicit and tied to the exact checked lambda and its captured context; `Interpreter.evalApply` remains
+the default. `TinyGemmSpikeBenchmark --prepared-frames` switches only the timed `run(prepared)` call and still runs the
+same checked Raccoon source, kernel AST, output oracle and counters.
+
+The stage-1 checked constructor-plan commit `90d6da9` is the parent of this frame comparison. Both JVM modes used the
+same compiled candidate, Oracle GraalVM 21.0.12, `java -Xmx2g -ea`, two warmups and three timed samples per seed.
+They ran sequentially without concurrent heavy work. Values below are timed `run(prepared)` evaluations in seconds;
+source loading, preparation and output validation were outside the timer. The samples are unpaired, so these numbers
+show an observed workload win rather than a causal allocation breakdown.
+
+| Seed | Generic samples; median | Prepared samples; median | Observed median change |
+| --- | --- | --- | ---: |
+| 17 | 9.588, 9.554, 9.585; **9.585** | 8.145, 7.868, 7.822; **7.868** | −17.9% |
+| 83 | 9.504, 9.525, 9.409; **9.504** | 7.982, 8.088, 8.023; **8.023** | −15.6% |
+
+Every invocation in both modes passed the exact 16,384-cell Z/257 oracle and expected counters: 1,251 warp steps,
+88 asynchronous completions, 98,304 TMA bytes, 1,048,576 multiplies and adds each, four MMA instructions, 64 tensor
+memory loads and 16 stores. `sbt validate` passed 976 tests, including differential checks for nested closure capture
+identity and reuse, recursive and mutual calls, deferred evidence, neutral matches, dependent Pi captures and fallback.
+The final additional same-thread reentry test passed in the focused 10-test frame suite.
+JVM allocated bytes and native-image performance have not been measured for this stage. The
+[generic](../target/performance/reusable-eval-frames/jvm-generic.log),
+[prepared](../target/performance/reusable-eval-frames/jvm-prepared.log) and
+[validation](../target/performance/reusable-eval-frames/validate.log) logs are saved in ignored `target/performance`;
+their hashes and source provenance are in
+[provenance](../target/performance/reusable-eval-frames/provenance.txt).
+
 ### Historical checkpoint: source-level buffer workload (2026-10-02)
 
 This checkpoint measures foundation buffer-operation throughput; it is not a TinyGEMM evaluator. The TinyGEMM

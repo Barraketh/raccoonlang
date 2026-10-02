@@ -348,7 +348,7 @@ object Interpreter {
    * looks at the proof (PROOF_BY_EVALUATION §1.6). The proposition is its binder type evaluated where every binder
    * before it is bound, as checking evaluated it.
    */
-  private def residualArguments(fn: Value, vArgs: Vector[Value]): Vector[Value] =
+  private[raccoonlang] def residualArguments(fn: Value, vArgs: Vector[Value]): Vector[Value] =
     fn.tpe match {
       case pi: VPi if pi.numExplicit != pi.binders.length =>
         // A binder type is evaluated before the application inside it has been checked, so both of
@@ -702,7 +702,7 @@ object Interpreter {
    * A data-valued result is stuck: reconstructible propositions have already canonicalized to `VCtor` and use the
    * ordinary path.
    */
-  private def evalProofMatch(m: CTerm.Match, scrut: VProof, env: Env): Value = {
+  private[raccoonlang] def evalProofMatch(m: CTerm.Match, scrut: VProof, env: Env): Value = {
     val outType = evalTerm(m.motive, env)
     if (Sorts.isProposition(outType)) Value.canonicalizeProof(VProof(outType))
     else stuckMatchThunk(m, env, outType, scrut.tpe.synDeps)
