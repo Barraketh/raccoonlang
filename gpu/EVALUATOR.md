@@ -1,6 +1,6 @@
 # An evaluator for generated kernels
 
-Status: **proposal** (2026-10-01). Step 1, typed instructions, is built (§3). The bounded one-tile TinyGEMM evaluator spike is complete, including integrated validation and native timing. Its evidence recommends interpreter performance work (C1) before expanding evaluator v0; it does not quantify a likely optimization gain. It follows the first B200 session (`gpu/encoding/NOTES.md`,
+Status: **proposal** (updated 2026-10-02; originally 2026-10-01). Step 1, typed instructions, is built (§3). The bounded one-tile TinyGEMM evaluator spike is complete, including integrated validation, native timing and first-pass JVM/native profiles. JVM samples point to interpreter binding/application and proof handling; native JFR samples identify polling sites rather than exclusive method costs. A source-only ring-helper fusion A/B did not establish a reliable speedup. The evidence still supports interpreter performance work (C1) before expanding evaluator v0, but does not quantify broad redesign savings. It follows the first B200 session (`gpu/encoding/NOTES.md`,
 "Hardware session"), whose failures and the hostile reviews before it share one shape: the generated code did
 something other than what was meant.
 
@@ -237,9 +237,10 @@ argument.
    proofs.
 2. **A performance spike.** Execute the smallest TinyGEMM (one tile) from its checked `Cuda.Kernel` AST in Raccoon,
    first in the exact-ring domain, and report retired warp steps and scalar work with measured timings. The completed
-   measurement recommends interpreter performance work (`gpu/ROADMAP.md` C1) before expanding evaluator v0: the
-   exact-ring tile takes about 19.8 s in the native driver. No profile currently attributes that time to components,
-   so the spike does not estimate savings from any particular interpreter redesign.
+   exact-ring tile takes about 19.8 s in the native driver and recommends interpreter performance work
+   (`gpu/ROADMAP.md` C1) before expanding evaluator v0. Profiles now give JVM sampled-work guidance, while the native
+   JFR profile is only a polling-site distribution; neither justifies converting a sampled share into native seconds
+   saved. A matched source-level ring-helper fusion A/B tested one narrow candidate but showed no reliable speedup.
 3. **Evaluator v0, in Raccoon.**
    - **Content:**
      - the exact numerics subset;
@@ -400,8 +401,177 @@ target/performance/tinygemm-spike/raccoon-tinygemm-spike-regpool-fix --warmups 1
 
 The actual tile takes about 19.8 s in the native driver while performing 2,097,152 exact-ring scalar operations and
 retiring 1,251 warp statements. This supports prioritizing interpreter performance work (C1) before expanding
-evaluator v0, but it does not show which subsystem dominates or predict savings from a proposed redesign. There is no
-profile of this run. Do not extrapolate its MMA-heavy tile rate to attention or the proposed 10⁷-step target.
+evaluator v0. The profile follow-up below narrows likely interpreter costs but does not predict savings from a broad
+redesign. Do not extrapolate this MMA-heavy tile rate to attention or the proposed 10⁷-step target.
+
+### Profile follow-up: interpreter attribution (2026-10-02)
+
+These profiles use the same checked one-CTA `M=N=128, K=64` exact-ring kernel and seeds as the bounded spike above.
+They sample one timed `run(prepared)` evaluation per seed after two warmups. Recording setup/control, module setup,
+input preparation, output extraction and the independent oracle are outside the reported invocation; JFR sampling
+overhead occurs during the timed evaluation. The timed call includes construction of its one-element argument vector.
+The profiles confirm that generic interpreter and environment work deserves attention, but they do not provide a
+component-level speedup estimate.
+
+| JVM attribution group | Seed 17 | Seed 83 | Rough budget after normalizing to unprofiled JVM median |
+|---|---:|---:|---:|
+| Disjoint direct leaves: `Env.bindRuntimeLocals`, `Env.containsLocal`, `Env.runtimeValueOrNull` | 136/611 (22.26%) | 149/659 (22.61%) | 2.447 s / 2.487 s |
+| Disjoint direct leaves: `Value.canonicalizeProof`, `Env.assertCanonicalProof` | 62/611 (10.15%) | 55/659 (8.35%) | 1.115 s / 0.918 s |
+| Inclusive unique-method union: argument/type reconstruction (`Interpreter.residualArguments`, `VPi.constructorResultType`, `Projection.project`) | 178/611 (29.13%) | 197/659 (29.89%) | 3.202 s / 3.288 s |
+| Inclusive unique-method union: binding/proof checks (`Env` leaves above plus proof canonicalization/assertion) | 242/611 (39.61%) | 243/659 (36.87%) | 4.354 s / 4.055 s |
+
+The JVM profiles contain 611 and 659 evaluator-thread CPU samples over 10.262 s and 10.230 s recordings. The first
+two rows are disjoint leaf samples; the latter rows count a method at most once per stack and overlap with each other
+and with the leaf rows. The rough seconds multiply each share by the corresponding unprofiled JVM medians (10.993 s
+and 10.998 s); they are sampled-work budgets, not realizable savings or hard ceilings for a whole-method refactor.
+About 81% of stacks reach the 64-frame limit, which censors deeper inclusive callers. Weighted JVM allocation
+sampling estimates 30.31 GB and 30.18 GB allocated during the two recorded evaluations. The largest sampled sites
+include `Env.bindRuntimeLocals` (6.58/4.02 GB), `Vector.iterator` (3.23/3.21 GB),
+`BinderOps.instantiateFullRuntime` (2.65/2.94 GB), and `Interpreter.residualArguments` (2.35/3.26 GB). These are
+sampling estimates, not retained memory. Top-level JVM GC pauses total 313 ms and 285 ms in the two recordings.
+
+Native attribution is different and must not be compared numerically with the JVM leaf table. Every raw evaluator
+sample shares the same leading nine frames; its first frame is `RecurringCallbackTimer.invokeCallback` inside a
+recurring-callback/safepoint envelope. The corrected analyzer removes the verified eight-frame prefix and its one
+verified terminal safepoint frame (nine frames total); generated SVM frames after it remain visible. Beneath that prefix,
+`Env.bindRuntimeLocals` is the first application frame in 85.25% and 84.74% of evaluator-thread samples, while
+`ValueKey.packed` is first in 4.82% and 5.20%. This is a polling-site distribution,
+not exclusive time inside those methods: do not multiply 85% by native wall time or compare it with JVM leaf shares.
+The native recordings contain 2,115 and 2,116 evaluator samples over 20.519 s and 20.600 s; around 81% of their
+stacks also reach the 64-frame limit. The JFR-enabled timed samples were 20.537 s and 20.614 s, versus JFR-disabled
+single-run calibrations of 19.759 s and 19.752 s, an observed difference of about 0.78 s and 0.86 s (roughly 4%).
+The calibration and profile runs used different warmup counts, so this is not an isolated causal estimate of JFR
+overhead. Native JFR produced no weighted allocation samples. Its top-level GC pause records sum to 1.131 s and
+1.111 s; all 664 and 839 distinct GC ids match, with 7 and 8 extra pause records sharing those ids and no unmatched
+records. The native async sample is unsymbolized and provides no independent Java-method attribution.
+
+The first source-level A/B candidate was a narrow test of `TinyDevice.dotRows`: each actual K16 MMA executes
+16,384 outputs × 16 scalar iterations, and the four emitted MMAs total 1,048,576 ring multiply-add iterations.
+Replacing the two `Ring.mul`/`Ring.add` applications and their nested normalization with the equivalent single
+`Nat.mod(Nat.add(acc, Nat.mul(a, b)), 257)` expression would remove two Raccoon helper applications and one
+`Nat.mod` application per scalar iteration while preserving exact `Nat.mul`/`Nat.add` behavior and the measured
+scalar counters. The matched native comparison below did not establish a reliable speedup; the source-call reduction
+does not imply that the entire Env sampled budget is attributable to those helpers.
+
+The JVM samples give three more specific, overlapping opportunities to test, not savings forecasts. Compiling checked
+runtime local references to frame/slot addresses and reducing activation-binding metadata targets the roughly 2.45–2.49 s
+direct Env-leaf budget; it must preserve lexical captures, lifetime scope, and proof checks. Specializing cached closed
+implicit projections and constructor-result types by checked owner/type parameters targets the 3.20–3.29 s inclusive
+argument/type reconstruction union; cache keys and invalidation must preserve unresolved metavariables, refinement
+dependencies, nominal owner identity and materialized-environment semantics. A fast canonical-proof classification
+for validated non-propositional packed data targets
+the 0.92–1.12 s direct proof-leaf budget, while retaining canonicalization assertions and every proof,
+unresolved-metavariable and evidence case. One narrow proof-path candidate is to let `canonicalizeProof` rely on the checked immutable
+`VPacked` construction invariant: its private constructor already requires `tpe.synDeps.isEmpty` and a
+non-propositional type, although `canonicalizeProof` currently rechecks the proposition classification. Any fast
+return must keep binding assertions and all proof, unresolved-metavariable and evidence handling intact; the sampled
+proof group includes other value shapes,
+so it cannot be credited wholesale to `VPacked`. These rough JVM budgets overlap, include callees and sampling noise,
+and are not hard ceilings or expected gains. The native first-visible `ValueKey.packed` share suggests separately
+testing packed-key cost without weakening canonical keys. Source inspection also finds 16,384 output-cell stores,
+each performing two persistent
+`Memory.set` updates. At depth 14, that is about 458,752 copied tree branches plus leaves. The final
+`allOutputCellsValid` pass makes 32,768
+indexed gets; a paired traversal could visit about 65,534 nodes in the two complete trees rather than roughly 491,520
+lookup nodes. These are source-structure counts, not measured time budgets. Batching or tree traversal might reduce
+structural work, but there is no timing attribution for either path. Any batching must retain per-cell bounds,
+coverage, overlap, value and layout checks. These candidates follow from source structure and profile guidance only;
+each needs its own exact-output A/B before it can support a performance claim.
+
+The candidate and restored source fingerprints, full timing samples, sampler-overlap exclusion, and restoration check
+are documented in `native-fusion-ablation-protocol.md` (SHA-256
+`7dc205f7a87b292757e68338ae8d0acba92bbc48520eb25413351565d5e42952`); the source fingerprints are also recorded in
+`profile-source-fingerprints.txt` (SHA-256
+`280bac0003c1ed21b26f667ba4bfa01451db63c1fe9ed6c52ff5bc566c0cae06`). The checksum-verified profile artifact
+manifest includes both files.
+
+The raw recordings, analyzer outputs, settings and baseline binary are preserved in
+`target/performance/tinygemm-profile/`. The kernel/interpreter source is baseline commit
+`b2c6e742883b8128d9c2b8da01de066885d40f40`; the profiling-only host harness adds JFR recording controls outside the
+timed call. The native profile executable was built on macOS arm64 (`armv8-a`) with GraalVM Native Image 21.0.12+7.1,
+O2, default ML-inferred PGO, Serial GC, four image workers, a 3 GiB image heap and `--enable-monitoring=jfr`. JFR settings are in
+`profile.jfc`: Java execution samples are configured at 10 ms, native method samples at 20 ms, and allocation
+sampling at the medium setting. Attribution summaries are `jvm-profile-attribution.txt` and
+`native-profile-attribution-corrected.txt`; the latter supersedes the earlier `native-profile-attribution.txt`.
+JFR reported no data loss; the native recordings had no weighted object allocation samples.
+
+The profile provenance hashes are:
+
+| Artifact | SHA-256 |
+|---|---|
+| `TinyGemmSpikeBenchmark.scala` profile harness | `ee79e28fe4c3425f109c58b3c5f441b93eb3f4ea49e2e0bef84b30aab2852988` |
+| `raccoon-tinygemm-jfr` native executable | `876b1be1cae0960745f01a285ed28b68b8f287a26dc87faa5384da6d64657ded` |
+| `profile.jfc` | `6fc5bd1ac1cde8aacd004f0a0be6a43de314e096dfc880a4582836f6fa91e64c` |
+| `jvm-profile-attribution.txt` | `0a91dca699226b7d8b699f6713856567055c1801588179983421ff4c84cb3276` |
+| `native-profile-attribution-corrected.txt` | `b54ade4194558ed9894765a3c11fcfff301fd93e19b9bcecc515b386daa35ce6` |
+| JVM seed 17 raw recording | `d6d9ea15d75867e9fd942dcbc742e59c3488a1fe2b2eeb8cfb6ff60690f30850` |
+| JVM seed 83 raw recording | `b0738395ff2c3a41b18dcd5e563288c66a4ebf4d70e46f7081bc4492b083eda6` |
+| Native seed 17 raw recording | `2a1fc27ace9fc0c0328c96b48367d1c90ed8c21222f0199b5d1b34914af47776` |
+| Native seed 83 raw recording | `d99d304e264ddc546ae025aa3c995ebc1d8a10fadde0987363ab8fbbb0f57d96` |
+| `jvm-jfr-2warmups-1sample.log` | `7ffff317a1d56993370b6604b5eb0fa119fecb32894bcb76e17e39b74550e234` |
+| `native-jfr-2warmups-1sample.log` | `44f8875ac7a71c2c7f0496a569550484880ec3cc5d841021a742e3fd77f00238` |
+| `native-jfr-disabled-calibration.log` | `565d3256ba3045abccb1acbd2833e8f7acce1ff1a5f5b09316a3ceac93f8f469` |
+| `native-build-jfr.log` | `2d30982179ee7cb30b59c57801b7beb9db87436f70d0825bbd17e00294ce65ac` |
+
+The complete 36-file, checksum-verified profile artifact manifest is
+`target/performance/tinygemm-profile/profile-artifacts-final.sha256` (SHA-256
+`9dbcfda1f367af878e99f2b2ec9d2edc87d43261a8327e76f153d4e7d0cd5392`).
+
+Reproduce the JVM profile and its unprofiled baseline from the repository root with:
+
+```sh
+sbt -batch -no-colors compile graalvmNativeImageClasspath
+mkdir -p target/performance/tinygemm-profile/jvm-recordings target/performance/tinygemm-profile/native-recordings
+cp /Library/Java/JavaVirtualMachines/graalvm-21.jdk/Contents/Home/lib/jfr/profile.jfc \
+  target/performance/tinygemm-profile/profile.jfc
+java -Xmx2g -ea -cp "$(cat target/graalvm/classpath.txt)" com.raccoonlang.TinyGemmSpikeBenchmark \
+  --warmups 2 --samples 3
+java -Xmx2g -ea -cp "$(cat target/graalvm/classpath.txt)" com.raccoonlang.TinyGemmSpikeBenchmark \
+  --warmups 2 --samples 1 \
+  --jfr-dir target/performance/tinygemm-profile/jvm-recordings \
+  --jfr-settings target/performance/tinygemm-profile/profile.jfc
+```
+
+Rebuild and reproduce the native profile with:
+
+```sh
+MAIN_CLASS=com.raccoonlang.TinyGemmSpikeBenchmark OUTPUT_DIR=target/performance/tinygemm-profile \
+  OUTPUT_NAME=raccoon-tinygemm-jfr scripts/build-graal-native.sh --parallelism=4 -J-Xmx3g \
+  --enable-monitoring=jfr
+target/performance/tinygemm-profile/raccoon-tinygemm-jfr --warmups 1 --samples 1
+target/performance/tinygemm-profile/raccoon-tinygemm-jfr --warmups 2 --samples 1 \
+  --jfr-dir target/performance/tinygemm-profile/native-recordings \
+  --jfr-settings target/performance/tinygemm-profile/profile.jfc
+```
+
+The source-only candidate and restored baseline used the same native executable, JFR disabled, one warmup and three
+timed samples per seed. Every invocation matched the exact-ring oracle and the expected counters. The table gives
+per-seed timed invocation medians; the earlier seed 83 baseline is shown only as context because an asynchronous
+sampling diagnostic may have overlapped its final sample.
+
+| Loaded Raccoon source | Seed 17 median (s) | Seed 83 median (s) | Notes |
+|---|---:|---:|---|
+| Initial baseline (`TinyDevice.rac` SHA-256 `a32737aadc9e21b159031bbc3318e62284f49d78bf24eaeac0d32b796da3ff16`) | 19.611470542 | 19.802249875 | Seed 17 is clean; seed 83 is contaminated context and excluded from comparison. |
+| `dotRows` fused candidate (source SHA-256 `fa96be8a80b405dbd623c362d3acb9b0df5a7e74843bd1a57a0ecd5c61311e91`) | 20.086442292 | 20.373352333 | Nominally 4.69% and 1.23% below the subsequent restored baseline. |
+| Restored baseline (`TinyDevice.rac` SHA-256 `a32737aadc9e21b159031bbc3318e62284f49d78bf24eaeac0d32b796da3ff16`) | 21.074847791 | 20.628011208 | Same original source and executable as the initial baseline. |
+
+The seed 17 restored-baseline median is 7.46% slower than its earlier clean baseline median; the candidate is 2.42%
+slower than that earlier baseline despite looking 4.69% faster than the later repeat. Seed 83's candidate is only
+1.23% below its clean restored repeat, and its earlier baseline value is excluded. The same-source drift is larger
+than the apparent candidate benefit, so this experiment is inconclusive and does not support retaining or prioritizing
+the fusion for speed. Exact outputs and counters passed for both source variants. The preserved original executable
+`raccoon-tinygemm-jfr` has SHA-256
+`876b1be1cae0960745f01a285ed28b68b8f287a26dc87faa5384da6d64657ded`; the candidate and restored logs are
+`native-fusion-candidate-1warmup-3samples.log` (SHA-256
+`3d277733450d2263c4ffe8885d8a83839fba3e5ef52621251cc9bf9dbb4aec3d`) and
+`native-fusion-restored-baseline-1warmup-3samples.log` (SHA-256
+`5522826df10754d65d60502aa87cb91f09b141d1722193acf041be0aa0931d36`). The initial baseline log is
+`native-baseline-jfr-disabled-1warmup-3samples.log` (SHA-256
+`7dd8968560919f3b6eb55b2f3c26c9a32aaedefe2c3109b50d98ba3bca727549`); its seed 83 median is not used as a clean
+comparison. The candidate patch is preserved as
+`tinydevice-dotrows-fusion-ablation-applicable.patch` (SHA-256
+`2f923a657fd64cd4e6735e33dc583bb57e97207034f70414a43bda30adb46fd6`), and `TinyDevice.rac` was restored byte-for-
+byte to the baseline source before this report update.
 
 ### Historical checkpoint: source-level buffer workload (2026-10-02)
 

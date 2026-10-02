@@ -1,6 +1,11 @@
 package com.raccoonlang
 
+import java.nio.file.Files
+import java.nio.file.Path
 import java.nio.file.Paths
+
+import jdk.jfr.Configuration
+import jdk.jfr.Recording
 
 /**
  * Opt-in host driver for the source TinyGEMM evaluator spike. All source setup and result checking are outside the
@@ -23,7 +28,12 @@ object TinyGemmSpikeBenchmark {
   private val DefaultSamples = 3
   private val Seeds = Vector(17, 83)
 
-  private final case class Options(warmups: Int, samples: Int)
+  private final case class Options(
+      warmups: Int,
+      samples: Int,
+      jfrDirectory: Option[Path],
+      jfrSettings: Option[Path]
+  )
   private final case class Api(
       kernel: Value,
       prepare: Value,
@@ -37,6 +47,7 @@ object TinyGemmSpikeBenchmark {
       strings: Option[Value.ValidatedStringLayout]
   )
   private final case class InputPair(a: Vector[Int], b: Vector[Int])
+  private final case class PhaseTimes(prepareNs: Long, inputExtractionNs: Long, oracleNs: Long)
   private[raccoonlang] final case class Stats(
       warpSteps: Long,
       asyncCompletions: Long,
@@ -50,11 +61,46 @@ object TinyGemmSpikeBenchmark {
     def scalarOps: Long = scalarMuls + scalarAdds
   }
   private[raccoonlang] final case class MutantCheck(name: String, category: String, stats: Stats)
-  private final case class Sample(elapsedNs: Long, stats: Stats)
-  private final case class Work(seed: Int, prepared: Value, input: InputPair, expected: Vector[Int])
+  private final case class Sample(
+      elapsedNs: Long,
+      stats: Stats,
+      postRunValidationNs: Long,
+      profileControlNs: Option[Long],
+      profileThread: Option[(String, Long)]
+  )
+  private final case class Work(
+      seed: Int,
+      prepared: Value,
+      input: InputPair,
+      expected: Vector[Int],
+      phaseTimes: Option[PhaseTimes]
+  )
+  private final case class JfrProfile(directory: Path, configuration: Configuration, settingsLoadNs: Long)
+  private final case class TimedInvocation(
+      elapsedNs: Long,
+      result: Value,
+      profileControlNs: Option[Long],
+      profileThread: Option[(String, Long)]
+  )
 
   def main(args: Array[String]): Unit = {
     val options = parseArgs(args)
+    require(
+      options.jfrDirectory.isDefined == options.jfrSettings.isDefined,
+      "--jfr-dir and --jfr-settings must be supplied together"
+    )
+    val profile = for {
+      directory <- options.jfrDirectory
+      settingsPath <- options.jfrSettings
+    } yield {
+      require(options.samples == 1, "JFR profiling expects exactly one timed sample per seed")
+      require(options.warmups >= 2, "JFR profiling expects at least two warmups per seed")
+      require(Files.isRegularFile(settingsPath), s"JFR settings file does not exist: $settingsPath")
+      Files.createDirectories(directory)
+      val settingsStart = System.nanoTime()
+      val configuration = Configuration.create(settingsPath)
+      JfrProfile(directory, configuration, System.nanoTime() - settingsStart)
+    }
     val root = Paths.get(sys.props.getOrElse("raccoon.repoRoot", ".")).toAbsolutePath.normalize
     val gpuRoot = root.resolve("gpu")
     val prelude = Prelude.fromPath(gpuRoot.resolve("Prelude.rac"))
@@ -68,7 +114,7 @@ object TinyGemmSpikeBenchmark {
     val apiLoadNs = System.nanoTime() - setupStart
 
     val natType = prelude.checkedEnv("Nat")
-    val works = prepareWorks(api, natType, Seeds)
+    val works = prepareWorks(api, natType, Seeds, measurePhases = profile.nonEmpty)
 
     val mmaCount = ExpectedScalarOpsPerKind
     println("evaluator_spike=tinygemm-z257")
@@ -80,16 +126,33 @@ object TinyGemmSpikeBenchmark {
     println(s"expected_scalar_adds=$mmaCount")
     println(s"warmups=${options.warmups}")
     println(s"timed_samples=${options.samples}")
-    println("timed_region=Interpreter.evalApply(run, prepared) only")
+    println(
+      "timed_region=Interpreter.evalApply(run, Vector(prepared)); includes one-element argument-vector construction"
+    )
     println("output_materialization=outside timed region")
+    profile.foreach { jfr =>
+      println(s"jfr_settings_load_ns=${jfr.settingsLoadNs}")
+      println(s"jfr_settings=${options.jfrSettings.get.toAbsolutePath.normalize}")
+      println(s"jfr_profile_directory=${jfr.directory.toAbsolutePath.normalize}")
+      println("jfr_recording_region=per-seed reported timed region only; recording control remains outside timer")
+    }
 
     works.foreach { work =>
+      work.phaseTimes.foreach { phases =>
+        println(s"seed_${work.seed}_prepare_ns=${phases.prepareNs}")
+        println(s"seed_${work.seed}_input_extraction_ns=${phases.inputExtractionNs}")
+        println(s"seed_${work.seed}_host_oracle_ns=${phases.oracleNs}")
+      }
       var firstStats: Option[Stats] = None
 
-      def checkedRun(phase: String): (Long, Stats) = {
-        val (elapsedNs, result) = timedRun(api.run, work.prepared)
+      def checkedRun(phase: String, recordTo: Option[Path] = None): Sample = {
+        val runProfile = recordTo.flatMap(path => profile.map(jfr => jfr.configuration -> path))
+        val invocation = timedRun(api.run, work.prepared, runProfile)
+        val validationStart = if (profile.nonEmpty) System.nanoTime() else 0L
+        val result = invocation.result
         val stats = decodeStats(applyOnStack(api.stats, result))
         validateSuccess(api, result, stats, work.expected, work.seed, phase)
+        val validationNs = if (profile.nonEmpty) System.nanoTime() - validationStart else 0L
         firstStats match {
           case Some(reference) =>
             require(
@@ -98,17 +161,35 @@ object TinyGemmSpikeBenchmark {
             )
           case None => firstStats = Some(stats)
         }
-        (elapsedNs, stats)
+        Sample(invocation.elapsedNs, stats, validationNs, invocation.profileControlNs, invocation.profileThread)
       }
 
-      (0 until options.warmups).foreach { _ =>
-        checkedRun("warmup")
+      (0 until options.warmups).foreach { index =>
+        val warmupStart = if (profile.nonEmpty) System.nanoTime() else 0L
+        val warmup = checkedRun("warmup")
+        if (profile.nonEmpty) {
+          println(s"seed_${work.seed}_warmup_${index + 1}_eval_ns=${warmup.elapsedNs}")
+          println(s"seed_${work.seed}_warmup_${index + 1}_post_run_validation_ns=${warmup.postRunValidationNs}")
+          println(s"seed_${work.seed}_warmup_${index + 1}_phase_wall_ns=${System.nanoTime() - warmupStart}")
+        }
       }
 
       val samples = Vector.tabulate(options.samples) { index =>
-        val (elapsedNs, stats) = checkedRun(s"sample ${index + 1}")
-        println(s"seed_${work.seed}_sample_${index + 1}_invocation_ns=$elapsedNs")
-        Sample(elapsedNs, stats)
+        val recordTo = profile.map(_.directory.resolve(s"tinygemm-seed-${work.seed}-sample-${index + 1}.jfr"))
+        val sample = checkedRun(s"sample ${index + 1}", recordTo)
+        println(s"seed_${work.seed}_sample_${index + 1}_invocation_ns=${sample.elapsedNs}")
+        if (profile.nonEmpty) {
+          println(s"seed_${work.seed}_sample_${index + 1}_post_run_validation_ns=${sample.postRunValidationNs}")
+          println(
+            s"seed_${work.seed}_sample_${index + 1}_profile_control_outside_timer_ns=${sample.profileControlNs.getOrElse(0L)}"
+          )
+          sample.profileThread.foreach { case (name, id) =>
+            println(s"seed_${work.seed}_sample_${index + 1}_jfr_run_thread_name=$name")
+            println(s"seed_${work.seed}_sample_${index + 1}_jfr_run_thread_id=$id")
+          }
+          println(s"seed_${work.seed}_sample_${index + 1}_jfr_path=${recordTo.get.toAbsolutePath.normalize}")
+        }
+        sample
       }
 
       val sortedSamples = samples.sortBy(_.elapsedNs)
@@ -143,25 +224,31 @@ object TinyGemmSpikeBenchmark {
   private def parseArgs(args: Array[String]): Options = {
     var warmups = DefaultWarmups
     var samples = DefaultSamples
+    var jfrDirectory: Option[Path] = None
+    var jfrSettings: Option[Path] = None
     var index = 0
     while (index < args.length) {
       val flag = args(index)
       if (index + 1 >= args.length) usage(s"missing value after $flag")
-      val value = args(index + 1).toIntOption.getOrElse(usage(s"invalid integer for $flag: ${args(index + 1)}"))
       flag match {
-        case "--warmups" => warmups = value
-        case "--samples" => samples = value
-        case other       => usage(s"unknown argument: $other")
+        case "--warmups" | "--samples" =>
+          val value = args(index + 1).toIntOption.getOrElse(usage(s"invalid integer for $flag: ${args(index + 1)}"))
+          if (flag == "--warmups") warmups = value else samples = value
+        case "--jfr-dir"      => jfrDirectory = Some(Paths.get(args(index + 1)).toAbsolutePath.normalize)
+        case "--jfr-settings" => jfrSettings = Some(Paths.get(args(index + 1)).toAbsolutePath.normalize)
+        case other            => usage(s"unknown argument: $other")
       }
       index += 2
     }
     if (warmups < 0) usage("--warmups must be non-negative")
     if (samples < 1) usage("--samples must be positive")
-    Options(warmups, samples)
+    Options(warmups, samples, jfrDirectory, jfrSettings)
   }
 
   private def usage(message: String): Nothing =
-    throw new IllegalArgumentException(s"$message\nUsage: TinyGemmSpikeBenchmark [--warmups N] [--samples N]")
+    throw new IllegalArgumentException(
+      s"$message\nUsage: TinyGemmSpikeBenchmark [--warmups N] [--samples N] [--jfr-dir DIR --jfr-settings FILE]"
+    )
 
   private def decodeApi(value: Value, strings: Option[Value.ValidatedStringLayout]): Api = {
     val (kernel, rest0) = pair(value, "TinyGemmApi")
@@ -191,10 +278,13 @@ object TinyGemmSpikeBenchmark {
 
   private def decodePair(value: Value, label: String): (Value, Value) = pair(value, label)
 
-  private def prepareWorks(api: Api, natType: Value, seeds: Vector[Int]): Vector[Work] = {
+  private def prepareWorks(api: Api, natType: Value, seeds: Vector[Int], measurePhases: Boolean): Vector[Work] = {
     val works = seeds.map { seed =>
+      val prepareStart = if (measurePhases) System.nanoTime() else 0L
       val preparedOption = applyOnStack(api.prepare, api.kernel, Value.VPacked.nat(BigInt(seed), natType))
       val prepared = optionSome(preparedOption, s"prepare(seed=$seed)")
+      val prepareNs = if (measurePhases) System.nanoTime() - prepareStart else 0L
+      val inputExtractionStart = if (measurePhases) System.nanoTime() else 0L
       val (aValues, bValues) = decodePair(applyOnStack(api.inputs, prepared), s"inputs(seed=$seed)")
       val a = decodeNatList(aValues, s"A(seed=$seed)")
       val b = decodeNatList(bValues, s"B(seed=$seed)")
@@ -204,8 +294,13 @@ object TinyGemmSpikeBenchmark {
       require(b.forall(x => x >= 0 && x < RingModulus), s"B(seed=$seed) contains a value outside Z/$RingModulus")
       requireCoordinateDependent("A", seed, a)
       requireCoordinateDependent("B", seed, b)
+      val inputExtractionNs = if (measurePhases) System.nanoTime() - inputExtractionStart else 0L
       val input = InputPair(a, b)
-      Work(seed, prepared, input, exactMatmul(input))
+      val oracleStart = if (measurePhases) System.nanoTime() else 0L
+      val expected = exactMatmul(input)
+      val oracleNs = if (measurePhases) System.nanoTime() - oracleStart else 0L
+      val phaseTimes = if (measurePhases) Some(PhaseTimes(prepareNs, inputExtractionNs, oracleNs)) else None
+      Work(seed, prepared, input, expected, phaseTimes)
     }
     require(works.map(_.seed).distinct.length >= 2, "TinyGEMM spike requires at least two distinct input seeds")
     require(works.map(_.input.a).distinct.length == works.length, "different seeds produced identical A inputs")
@@ -235,7 +330,7 @@ object TinyGemmSpikeBenchmark {
     val api = decodeApi(entry.value, entry.strings)
     EvaluatorSpikeBenchmark.requireTinyKernel(api.kernel)
     val natType = prelude.checkedEnv("Nat")
-    prepareWorks(api, natType, seeds).map { work =>
+    prepareWorks(api, natType, seeds, measurePhases = false).map { work =>
       def runOnce(phase: String): Stats = {
         val result = applyOnStack(api.run, work.prepared)
         val stats = decodeStats(applyOnStack(api.stats, result))
@@ -456,11 +551,53 @@ object TinyGemmSpikeBenchmark {
   private def applyOnStack(function: Value, arguments: Value*): Value =
     Execution.onStack(StackBytes) { Interpreter.evalApply(function, arguments.toVector) }
 
-  private def timedRun(run: Value, prepared: Value): (Long, Value) =
+  private def timedRun(
+      run: Value,
+      prepared: Value,
+      profile: Option[(Configuration, Path)]
+  ): TimedInvocation =
     Execution.onStack(StackBytes) {
-      val start = System.nanoTime()
-      val result = Interpreter.evalApply(run, Vector(prepared))
-      (System.nanoTime() - start, result)
+      profile match {
+        case None =>
+          val start = System.nanoTime()
+          val result = Interpreter.evalApply(run, Vector(prepared))
+          TimedInvocation(System.nanoTime() - start, result, None, None)
+        case Some((configuration, path)) =>
+          val recording = new Recording(configuration)
+          recording.setName(path.getFileName.toString)
+          recording.setToDisk(true)
+          val controlStart = System.nanoTime()
+          try recording.start()
+          catch {
+            case startFailure: Throwable =>
+              try recording.close()
+              catch { case closeFailure: Throwable => startFailure.addSuppressed(closeFailure) }
+              throw startFailure
+          }
+          val recordingStarted = System.nanoTime()
+          val runThread = Thread.currentThread()
+          val runThreadIdentity = (runThread.getName, runThread.threadId())
+          val runStart = System.nanoTime()
+          var result: Value = null
+          var runFailure: Throwable = null
+          try result = Interpreter.evalApply(run, Vector(prepared))
+          catch { case thrown: Throwable => runFailure = thrown }
+          val elapsedNs = System.nanoTime() - runStart
+          val runEnd = System.nanoTime()
+          var recordingFailure: Throwable = null
+          try {
+            recording.stop()
+            recording.dump(path)
+          } catch { case thrown: Throwable => recordingFailure = thrown }
+          finally recording.close()
+          val controlNs = (recordingStarted - controlStart) + (System.nanoTime() - runEnd)
+          if (runFailure != null) {
+            if (recordingFailure != null) runFailure.addSuppressed(recordingFailure)
+            throw runFailure
+          }
+          if (recordingFailure != null) throw recordingFailure
+          TimedInvocation(elapsedNs, result, Some(controlNs), Some(runThreadIdentity))
+      }
     }
 
   private def validateSuccess(
