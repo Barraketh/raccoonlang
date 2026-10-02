@@ -11,6 +11,8 @@ From `CoreAst` onward, declaration checking, evaluation, conversion,
 unification, inductive validation, match refinement, termination checking, and
 residual construction form one trusted implementation. There is no smaller
 independent kernel that rechecks a certificate produced by those components.
+Constructor exclusion does, however, require a local refutation checked by the
+ordinary typechecker, as described under [Checked constructor exclusion](#checked-constructor-exclusion).
 
 A declaration is checked once. The checked value is then published in the
 environment and trusted by later declarations. Every definition is transparent
@@ -102,8 +104,10 @@ refinement store.
 
 ### Apartness
 
-Apartness is the stronger result used to omit an unreachable match branch. It
-is produced only by evidence that supports propositional no-confusion:
+Apartness is the unifier's stronger result proposing an unreachable match
+branch. The match checker requires a checked local refutation before omission
+([Checked constructor exclusion](#checked-constructor-exclusion)). The unifier
+proposes it only for evidence supporting propositional no-confusion:
 
 - a clash between distinct constructors of a non-Prop inductive, when both
   constructor heads carry checked no-confusion evidence and the two values are
@@ -190,8 +194,10 @@ recovery-based large elimination, quotients, proposed propositional
 extensionality, proof irrelevance, structure eta, annotations and polymorphism.
 It is relative to the stated calculus and a consistent trusted prelude. It does
 not prove collision freedom of the existing finite ValueKey hashes, or verify
-every coverage/refinement implementation path. Local checked refutation
-certificates remain a separate implementation obligation.
+every coverage/refinement implementation path. Constructor exclusions are now
+guarded by local checked refutations; their hypothesis schema and restricted
+nominal premise factory remain trusted, as do ordinary conversion and branch
+substitutions.
 
 ## Universes and function types
 
@@ -560,15 +566,56 @@ A branch's fields enter fresh, at the scrutinee type's own parameter arguments.
 Parameters are uniform, so they need no equation: refinement relates the
 scrutinee to the constructor applied to those fields, and the constructor's
 result indices to the scrutinee type's. An omitted constructor is valid
-only when its result is apart from the exact scrutinee type. A stuck equation
-keeps the constructor reachable and provides no refinement; the fields keep
+only when a refutation of its constructor hypotheses passes ordinary checking.
+Apartness and known-constructor clashes propose this check. Failed synthesis,
+failed checking or a stuck equation keeps the constructor reachable and provides
+no candidate refinement; the fields keep
 their types at the scrutinee's parameters.
+
+### Checked constructor exclusion
+
+For each proposed constructor exclusion, fresh rigid fields enter the original
+match context at the scrutinee family's parameters. Their types and constructor
+application are independently checked. Eligible index coordinates contribute
+homogeneous equalities: both domains must be convertible, unrestricted data.
+Proof coordinates are omitted. An unrestricted data scrutinee also contributes
+its equality with the constructor when their complete types are convertible.
+Linear, possibly linear and proof scrutinees supply only index equations.
+These are a conservative subset of the constructor consequences: omitted
+heterogeneous coordinates can prevent a refutation, but cannot establish one.
+
+A synthesized ordinary term must check against a private empty proposition in
+that context. The proposed inner substitutions and partially failed stores are
+never supplied to this check. Coverage, wildcard expansion, written
+`UnreachableCase`, known-constructor shortcuts and the Prop empty-fiber
+large-elimination exception all consume that same certified reachability result.
+Failure retains the constructor with no candidate branch store. Successful
+unifier stores continue to refine branches unchanged; they are not certified.
+
+The private Eq, empty proposition and transport definition are ordinarily
+checked independently of the source prelude. Constructor no-confusion uses
+complete checked discriminators and complete Eq eliminations, with internal
+helpers generated on demand. Certificate discharge is disabled while checking
+these terms so missing cases cannot bootstrap their own justification.
+N1–N3 instead require narrowly trusted private theorem premises: their signatures
+and typed family/form assumptions are checked independently of the unifier
+verdict. Only checked Type families and approved Type forms qualify, as in
+[Nominal Type families](#nominal-type-families). The constructor-hypothesis schema
+and this nominal premise factory remain trusted. This is ordinary checking
+within the current kernel, not an independent consistency proof.
+
+Unsupported quotation, blocked applications, heterogeneous fields and value-only
+linear contradictions conservatively retain cases. In particular, a known linear
+constructor does not alone justify omitting its alternatives. Quotation is
+ordinarily checked and preserves rigid Type structure; it does not introduce
+assumed aliases. See [the implementation specification](proposals/REFINEMENT_CERTIFICATES.md)
+for the proof construction and tested fault boundaries.
 
 A match's last case may be a wildcard, `| _ => e`. Before any case is checked,
 the checker expands it into one case for each constructor the written cases do
-not name and a missing case would be reported for: when the scrutinee is in
-constructor form, its own constructor; otherwise every constructor whose result
-is not apart from the scrutinee type. Each expanded case is the case written
+not name and a missing case would be reported for: every constructor retained
+by the certified reachability result, including for a constructor-form
+scrutinee. Each expanded case is the case written
 out at the wildcard: every field bound to a fresh anonymous local, located at
 the wildcard, and a fresh copy of `e` for its body, with fresh node identities
 and fresh locals for everything `e` binds, so no two cases share a closure, a

@@ -97,7 +97,9 @@ retired (§2, A5).
   bug-prone kernel we would write next.
 - **B1 and B2:** pair attention, with the FA4 comparison at realistic sizes.
 - **A5:** retire the old core (done).
-- **C1:** the user's language thread.
+- **C1:** the user's language thread. The consistency series on `soundness_improvements` now implements Prop
+  separation, size-bounded nominal Type families and local checked constructor exclusion. Branch substitutions remain
+  unchanged; link certificates are outside that series. See `docs/proposals/REFINEMENT_CERTIFICATES.md`.
 
 **Phase 2: hardware session 2**, once pair attention passes review and runs clean under the evaluator:
 - correctness of everything, including B4;

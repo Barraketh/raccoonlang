@@ -731,6 +731,13 @@ object TypeChecker {
    */
   private var linearSubterm: Option[CheckedTerm] = None
 
+  /** Speculative ordinary checking must restore the enclosing token trace even when synthesis rejects the term. */
+  private[raccoonlang] def preservingSynthesisState[A](body: => A): A = {
+    val before = linearSubterm
+    try body
+    finally linearSubterm = before
+  }
+
   /**
    * A term's own type, whatever position it stands at; the callers above decide what the position admits. Every term
    * the checker sees is synthesized here, so this is where each synthesized type is confined (spec §4.2), and where a

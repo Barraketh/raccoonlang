@@ -136,7 +136,9 @@ the existing finite-hash equality shortcut and coverage/refinement implementatio
   beside quotient soundness as the kernel's stated principles. "Apartness" and "Refinement unification" cite it.
 
 `docs/proposals/REFINEMENT_CERTIFICATES.md` then turns these from unifier behaviour into principles a proof term may use: its
-certificates invoke N1–N3 as named kernel constants, and refinement stops relying on the unifier's own classification.
+exclusion certificates invoke narrowly trusted private N1–N3 theorem premises with independently checked signatures
+and typed family/form assumptions. Constructor pruning now requires an ordinary checked refutation; successful
+unifier links and their classification remain unchanged and trusted. No link certificates are implemented.
 
 ## 5. Tests
 
