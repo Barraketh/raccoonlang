@@ -30,6 +30,79 @@ namespace Evaluator {
       Memory.mk(extent, Memory.filledTree(depth, extent, initial))
     }
 
+    // Build a balanced power-of-two memory directly from its indices. This is useful when an evaluator operation
+    // produces a whole immutable tile: constructing it by repeated `set` would copy the same tree paths over and over.
+    def tabulateTree {u: Level}{S: Lifetime}{A: Type { level = u, scope = S }} (depth: Nat)(extent: Nat)(start: Nat)(at: Nat -> A)
+        : MemoryTree(A) decreases structural(depth) := {
+      match depth returning MemoryTree(A) with
+      | Nat.zero => MemoryTree.leaf(at(start))
+      | Nat.succ rest => {
+        let leftExtent := Nat.div(extent, 2)
+        let left := Memory.tabulateTree(rest, leftExtent, start, at)
+        let right := Memory.tabulateTree(rest, leftExtent, Nat.add(start, leftExtent), at)
+        MemoryTree.branch(leftExtent, left, right)
+      }
+    }
+
+    def tabulatePow2 {u: Level}{S: Lifetime}{A: Type { level = u, scope = S }} (depth: Nat)(at: Nat -> A): Memory(A) := {
+      let extent := Nat.pow(2, depth)
+      Memory.mk(extent, Memory.tabulateTree(depth, extent, 0, at))
+    }
+
+    // Internal helper for replacing one complete, naturally aligned power-of-two subtree. Bulk device transfers use
+    // this to materialize a contiguous swizzled tile without repeated persistent point writes.
+    def replaceTree {u: Level}{S: Lifetime}{A: Type { level = u, scope = S }} (tree: MemoryTree(A))(extent: Nat)(treeStart: Nat)
+        (targetStart: Nat)(targetExtent: Nat)(targetDepth: Nat)(at: Nat -> A): Option(MemoryTree(A))
+        decreases structural(tree) := {
+      match tree returning Option(MemoryTree(A)) with
+      | MemoryTree.leaf old => {
+        match Bool.and(Nat.beq(extent, targetExtent), Nat.beq(treeStart, targetStart)) returning Option(MemoryTree(A)) with
+        | Bool.true => Option.some(Memory.tabulateTree(targetDepth, targetExtent, targetStart, at))
+        | Bool.false => Option.none(MemoryTree(A))
+      }
+      | MemoryTree.branch leftExtent left right => {
+        let leftEnd := Nat.add(treeStart, leftExtent)
+        match Bool.and(Nat.beq(extent, targetExtent), Nat.beq(treeStart, targetStart)) returning Option(MemoryTree(A)) with
+        | Bool.true => Option.some(Memory.tabulateTree(targetDepth, targetExtent, targetStart, at))
+        | Bool.false => {
+          match Nat.ble(Nat.add(targetStart, targetExtent), leftEnd) returning Option(MemoryTree(A)) with
+          | Bool.true => {
+            match Memory.replaceTree(left, leftExtent, treeStart, targetStart, targetExtent, targetDepth, at)
+                returning Option(MemoryTree(A)) with
+            | Option.none => Option.none(MemoryTree(A))
+            | Option.some changed => Option.some(MemoryTree.branch(leftExtent, changed, right))
+          }
+          | Bool.false => {
+            match Nat.ble(leftEnd, targetStart) returning Option(MemoryTree(A)) with
+            | Bool.true => {
+              match Memory.replaceTree(right, Nat.sub(extent, leftExtent), leftEnd, targetStart, targetExtent, targetDepth, at)
+                  returning Option(MemoryTree(A)) with
+              | Option.none => Option.none(MemoryTree(A))
+            | Option.some changed => Option.some(MemoryTree.branch(leftExtent, left, changed))
+            }
+            | Bool.false => Option.none(MemoryTree(A))
+          }
+        }
+      }
+    }
+
+    def replacePow2 {u: Level}{S: Lifetime}{A: Type { level = u, scope = S }} (memory: Memory(A))(start: Nat)(depth: Nat)
+        (at: Nat -> A): Option(Memory(A)) := {
+      match memory returning Option(Memory(A)) with
+      | Memory.mk extent root => {
+        let targetExtent := Nat.pow(2, depth)
+        let inBounds := Nat.ble(Nat.add(start, targetExtent), extent)
+        let aligned := Nat.isZero(Nat.mod(start, targetExtent))
+        match Bool.and(inBounds, aligned) returning Option(Memory(A)) with
+        | Bool.false => Option.none(Memory(A))
+        | Bool.true => {
+          match Memory.replaceTree(root, extent, 0, start, targetExtent, depth, at) returning Option(Memory(A)) with
+          | Option.none => Option.none(Memory(A))
+          | Option.some changed => Option.some(Memory.mk(extent, changed))
+        }
+      }
+    }
+
     def capacity {u: Level}{S: Lifetime}{A: Type { level = u, scope = S }} (memory: Memory(A)): Nat := {
       match memory returning Nat with
       | Memory.mk extent root => extent

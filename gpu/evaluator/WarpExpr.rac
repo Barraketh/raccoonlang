@@ -1,0 +1,603 @@
+// Lane-wise evaluation of the Cuda expression subset used by the TinyGEMM warp machine.
+// This module has no scheduler or instruction policy; it evaluates the AST operands supplied by WarpMachine.
+
+import Check
+import Cuda
+import evaluator.TinyDevice
+
+namespace Evaluator {
+  namespace WarpExpr {
+    inductive EvalValue : Type
+     | vector (values: List(Nat)) : EvalValue
+     | parameterAddress (name: String) : EvalValue
+     | sharedPointer (dtype: Cuda.DType)(byteBase: Nat) : EvalValue
+     | bad (message: String) : EvalValue
+
+    struct Register : Type
+     | mk (id: Nat)(values: List(Nat))(initializedMask: Nat) : Register
+
+    def laneMask (mask: Nat)(lane: Nat): Bool :=
+      Nat.beq(Nat.mod(Nat.div(mask, Nat.pow(2, lane)), 2), 1)
+
+    def maskCountLoop (mask: Nat)(lane: Nat)(remaining: Nat)(count: Nat): Nat decreases structural(remaining) := {
+      match remaining returning Nat with
+      | Nat.zero => count
+      | Nat.succ rest => {
+        let next := Bool.cond(WarpExpr.laneMask(mask, lane), Nat, Nat.succ(count), count)
+        WarpExpr.maskCountLoop(mask, Nat.succ(lane), rest, next)
+      }
+    }
+
+    def maskCount (mask: Nat): Nat := WarpExpr.maskCountLoop(mask, 0, 32, 0)
+
+    def maskUnionLoop (left: Nat)(right: Nat)(lane: Nat)(remaining: Nat)(result: Nat)
+        : Nat decreases structural(remaining) := {
+      match remaining returning Nat with
+      | Nat.zero => result
+      | Nat.succ rest => {
+        let present := Bool.or(WarpExpr.laneMask(left, lane), WarpExpr.laneMask(right, lane))
+        let bit := Bool.cond(present, Nat, Nat.pow(2, lane), 0)
+        WarpExpr.maskUnionLoop(left, right, Nat.succ(lane), rest, Nat.add(result, bit))
+      }
+    }
+
+    def maskUnion (left: Nat)(right: Nat): Nat := WarpExpr.maskUnionLoop(left, right, 0, 32, 0)
+
+    def maskCoversLoop (available: Nat)(required: Nat)(lane: Nat)(remaining: Nat): Bool decreases structural(remaining) := {
+      match remaining returning Bool with
+      | Nat.zero => Bool.true
+      | Nat.succ rest => {
+        let present := Bool.or(Bool.not(WarpExpr.laneMask(required, lane)), WarpExpr.laneMask(available, lane))
+        Bool.and(present, WarpExpr.maskCoversLoop(available, required, Nat.succ(lane), rest))
+      }
+    }
+
+    def maskWithinWarp (mask: Nat): Bool := Nat.beq(mask, Nat.mod(mask, Nat.pow(2, 32)))
+
+    def maskCovers (available: Nat)(required: Nat): Bool :=
+      Bool.and(WarpExpr.maskWithinWarp(available),
+        Bool.and(WarpExpr.maskWithinWarp(required), WarpExpr.maskCoversLoop(available, required, 0, 32)))
+
+    def splitMaskLoop (values: List(Nat))(activeMask: Nat)(lane: Nat)(remaining: Nat)(yes: Nat)(no: Nat)
+        : Pair(Nat, Nat) decreases structural(remaining) := {
+      match remaining returning Pair(Nat, Nat) with
+      | Nat.zero => (yes, no)
+      | Nat.succ rest => {
+        match values returning Pair(Nat, Nat) with
+        | List.nil => WarpExpr.splitMaskLoop(List.nil(Nat), activeMask, Nat.succ(lane), rest, yes, no)
+        | List.cons condition more => {
+          match WarpExpr.laneMask(activeMask, lane) returning Pair(Nat, Nat) with
+          | Bool.false => WarpExpr.splitMaskLoop(more, activeMask, Nat.succ(lane), rest, yes, no)
+          | Bool.true => {
+            let bit := Nat.pow(2, lane)
+            match Nat.isZero(condition) returning Pair(Nat, Nat) with
+            | Bool.true => WarpExpr.splitMaskLoop(more, activeMask, Nat.succ(lane), rest, yes, Nat.add(no, bit))
+            | Bool.false => WarpExpr.splitMaskLoop(more, activeMask, Nat.succ(lane), rest, Nat.add(yes, bit), no)
+          }
+        }
+      }
+    }
+
+    def splitMask (values: List(Nat))(activeMask: Nat): Pair(Nat, Nat) :=
+      WarpExpr.splitMaskLoop(values, activeMask, 0, 32, 0, 0)
+
+    def repeatLoop (value: Nat)(remaining: Nat): List(Nat) decreases structural(remaining) := {
+      match remaining returning List(Nat) with
+      | Nat.zero => List.nil(Nat)
+      | Nat.succ rest => List.cons(value, WarpExpr.repeatLoop(value, rest))
+    }
+
+    def uniform (value: Nat): List(Nat) := WarpExpr.repeatLoop(value, 32)
+
+    def laneValuesLoop (first: Nat)(warpId: Nat)(remaining: Nat): List(Nat) decreases structural(remaining) := {
+      match remaining returning List(Nat) with
+      | Nat.zero => List.nil(Nat)
+      | Nat.succ rest => {
+        let thread := Nat.add(Nat.mul(warpId, 32), first)
+        List.cons(thread, WarpExpr.laneValuesLoop(Nat.succ(first), warpId, rest))
+      }
+    }
+
+    def lanes (warpId: Nat): List(Nat) := WarpExpr.laneValuesLoop(0, warpId, 32)
+
+    def laneNumbersLoop (lane: Nat)(remaining: Nat): List(Nat) decreases structural(remaining) := {
+      match remaining returning List(Nat) with
+      | Nat.zero => List.nil(Nat)
+      | Nat.succ rest => List.cons(lane, WarpExpr.laneNumbersLoop(Nat.succ(lane), rest))
+    }
+
+    def laneNumbers : List(Nat) := WarpExpr.laneNumbersLoop(0, 32)
+
+    def findRegister (registers: List(Register))(id: Nat): Option(Register) decreases structural(registers) := {
+      match registers returning Option(Register) with
+      | List.nil => Option.none(Register)
+      | List.cons register rest => {
+        match register returning Option(Register) with
+        | Register.mk got values initializedMask => {
+          match Nat.beq(got, id) returning Option(Register) with
+          | Bool.true => Option.some(register)
+          | Bool.false => WarpExpr.findRegister(rest, id)
+        }
+      }
+    }
+
+    def replaceRegister (registers: List(Register))(id: Nat)(values: List(Nat))(initializedMask: Nat)
+        : List(Register) decreases structural(registers) := {
+      match registers returning List(Register) with
+      | List.nil => List.cons(Register.mk(id, values, WarpExpr.maskUnion(initializedMask, 0)), List.nil(Register))
+      | List.cons register rest => {
+        match register returning List(Register) with
+        | Register.mk got oldValues oldMask => {
+          match Nat.beq(got, id) returning List(Register) with
+          | Bool.true => List.cons(Register.mk(id, values, WarpExpr.maskUnion(initializedMask, 0)), rest)
+          | Bool.false => List.cons(register, WarpExpr.replaceRegister(rest, id, values, initializedMask))
+        }
+      }
+    }
+
+    // Declaration is a replacement: a loop or chunk that reuses an id cannot inherit the preceding iteration's mask.
+    def declare (registers: List(Register))(id: Nat)(values: List(Nat))(initializedMask: Nat): List(Register) :=
+      WarpExpr.replaceRegister(registers, id, values, initializedMask)
+
+    def mergeValuesLoop (oldValues: List(Nat))(newValues: List(Nat))(writeMask: Nat)(lane: Nat)
+        : List(Nat) decreases structural(oldValues) := {
+      match oldValues returning List(Nat) with
+      | List.nil => List.nil(Nat)
+      | List.cons old rest => {
+        match newValues returning List(Nat) with
+        | List.nil => List.cons(old, WarpExpr.mergeValuesLoop(rest, List.nil(Nat), writeMask, Nat.succ(lane)))
+        | List.cons fresh more => {
+          let selected := Bool.cond(WarpExpr.laneMask(writeMask, lane), Nat, fresh, old)
+          List.cons(selected, WarpExpr.mergeValuesLoop(rest, more, writeMask, Nat.succ(lane)))
+        }
+      }
+    }
+
+    def zeroVector : List(Nat) := WarpExpr.uniform(0)
+
+    def writeMasked (registers: List(Register))(id: Nat)(values: List(Nat))(writeMask: Nat): List(Register) := {
+      match WarpExpr.findRegister(registers, id) returning List(Register) with
+      | Option.none => WarpExpr.declare(registers, id, values, writeMask)
+      | Option.some register => {
+        match register returning List(Register) with
+        | Register.mk got oldValues oldMask => {
+          let merged := WarpExpr.mergeValuesLoop(oldValues, values, writeMask, 0)
+          WarpExpr.declare(registers, id, merged, WarpExpr.maskUnion(oldMask, writeMask))
+        }
+      }
+    }
+
+    def read (registers: List(Register))(id: Nat)(activeMask: Nat): EvalValue := {
+      match WarpExpr.findRegister(registers, id) returning EvalValue with
+      | Option.none => EvalValue.bad("read of an undeclared warp register")
+      | Option.some register => {
+        match register returning EvalValue with
+        | Register.mk got values initializedMask => {
+          match Nat.beq(List.length(values), 32) returning EvalValue with
+          | Bool.false => EvalValue.bad("warp register is not a 32-lane vector")
+          | Bool.true => {
+            match WarpExpr.maskCovers(initializedMask, activeMask) returning EvalValue with
+            | Bool.false => EvalValue.bad("warp register read includes an uninitialized active lane")
+            | Bool.true => EvalValue.vector(values)
+          }
+        }
+      }
+    }
+
+    def dimension (inputs: TinyDevice.Inputs)(name: String): Option(Nat) := {
+      let (m, (n, k)) := TinyDevice.dimensions(inputs)
+      match Check.same(name, "M") returning Option(Nat) with
+      | Bool.true => Option.some(m)
+      | Bool.false => {
+        match Check.same(name, "N") returning Option(Nat) with
+        | Bool.true => Option.some(n)
+        | Bool.false => {
+          match Check.same(name, "K") returning Option(Nat) with
+          | Bool.true => Option.some(k)
+          | Bool.false => Option.none(Nat)
+        }
+      }
+    }
+
+    def specialValues (special: Cuda.Builtin)(warpId: Nat): List(Nat) := {
+      match special returning List(Nat) with
+      | Cuda.Builtin.threadX => WarpExpr.lanes(warpId)
+      | Cuda.Builtin.blockX => WarpExpr.uniform(0)
+      | Cuda.Builtin.blockY => WarpExpr.uniform(0)
+      | Cuda.Builtin.gridX => WarpExpr.uniform(1)
+      | Cuda.Builtin.warp => WarpExpr.uniform(warpId)
+      | Cuda.Builtin.lane => WarpExpr.laneNumbers
+    }
+
+    def sameDType (left: Cuda.DType)(right: Cuda.DType): Bool := {
+      match left returning Bool with
+      | Cuda.DType.u32 => {
+        match right returning Bool with
+        | Cuda.DType.u32 => Bool.true
+        | _ => Bool.false
+      }
+      | Cuda.DType.u64 => {
+        match right returning Bool with
+        | Cuda.DType.u64 => Bool.true
+        | _ => Bool.false
+      }
+      | Cuda.DType.f32 => {
+        match right returning Bool with
+        | Cuda.DType.f32 => Bool.true
+        | _ => Bool.false
+      }
+      | Cuda.DType.bf16 => {
+        match right returning Bool with
+        | Cuda.DType.bf16 => Bool.true
+        | _ => Bool.false
+      }
+      | Cuda.DType.bool => {
+        match right returning Bool with
+        | Cuda.DType.bool => Bool.true
+        | _ => Bool.false
+      }
+    }
+
+    def sharedWidth (dtype: Cuda.DType): Option(Nat) := {
+      match dtype returning Option(Nat) with
+      | Cuda.DType.u32 => Option.some(4)
+      | Cuda.DType.f32 => Option.some(4)
+      | Cuda.DType.bf16 => Option.some(2)
+      | _ => Option.none(Nat)
+    }
+
+    def bitwiseLoop (op: Cuda.BinOp)(left: Nat)(right: Nat)(remaining: Nat)(weight: Nat)(result: Nat)
+        : Nat decreases structural(remaining) := {
+      match remaining returning Nat with
+      | Nat.zero => result
+      | Nat.succ rest => {
+        match Bool.and(Nat.isZero(left), Nat.isZero(right)) returning Nat with
+        | Bool.true => result
+        | Bool.false => {
+          let leftBit := Nat.beq(Nat.mod(left, 2), 1)
+          let rightBit := Nat.beq(Nat.mod(right, 2), 1)
+          let set := {
+            match op returning Bool with
+            | Cuda.BinOp.band => Bool.and(leftBit, rightBit)
+            | Cuda.BinOp.bor => Bool.or(leftBit, rightBit)
+            | Cuda.BinOp.bxor => Bool.xor(leftBit, rightBit)
+            | _ => Bool.false
+          }
+          let next := Bool.cond(set, Nat, Nat.add(result, weight), result)
+          WarpExpr.bitwiseLoop(op, Nat.div(left, 2), Nat.div(right, 2), rest,
+            Nat.add(weight, weight), next)
+        }
+      }
+    }
+
+    def bitwise (op: Cuda.BinOp)(left: Nat)(right: Nat): Nat :=
+      WarpExpr.bitwiseLoop(op, left, right, 64, 1, 0)
+
+    def readSharedLoop (storage: TinyDevice.Storage)(addresses: List(Nat))(dtype: Cuda.DType)(activeMask: Nat)
+        (lane: Nat): EvalValue decreases structural(addresses) := {
+      match addresses returning EvalValue with
+      | List.nil => EvalValue.vector(List.nil(Nat))
+      | List.cons address rest => {
+        match WarpExpr.laneMask(activeMask, lane) returning EvalValue with
+        | Bool.false => {
+          match WarpExpr.readSharedLoop(storage, rest, dtype, activeMask, Nat.succ(lane)) returning EvalValue with
+          | EvalValue.vector values => EvalValue.vector(List.cons(0, values))
+          | EvalValue.bad message => EvalValue.bad(message)
+          | _ => EvalValue.bad("shared-memory index returned a non-vector result")
+        }
+        | Bool.true => {
+          match TinyDevice.readShared(storage, address, dtype) returning EvalValue with
+          | Option.none => EvalValue.bad("shared-memory index is out of bounds or misaligned")
+          | Option.some value => {
+            match WarpExpr.readSharedLoop(storage, rest, dtype, activeMask, Nat.succ(lane)) returning EvalValue with
+            | EvalValue.vector values => EvalValue.vector(List.cons(value, values))
+            | EvalValue.bad message => EvalValue.bad(message)
+            | _ => EvalValue.bad("shared-memory index returned a non-vector result")
+          }
+        }
+      }
+    }
+
+    def scalarBinary (op: Cuda.BinOp)(a: Nat)(b: Nat): Option(Nat) := {
+      match op returning Option(Nat) with
+      | Cuda.BinOp.add => Option.some(Nat.add(a, b))
+      | Cuda.BinOp.sub => Option.some(Nat.sub(a, b))
+      | Cuda.BinOp.mul => Option.some(Nat.mul(a, b))
+      | Cuda.BinOp.div => {
+        match Nat.isZero(b) returning Option(Nat) with
+        | Bool.true => Option.none(Nat)
+        | Bool.false => Option.some(Nat.div(a, b))
+      }
+      | Cuda.BinOp.rem => {
+        match Nat.isZero(b) returning Option(Nat) with
+        | Bool.true => Option.none(Nat)
+        | Bool.false => Option.some(Nat.mod(a, b))
+      }
+      | Cuda.BinOp.lt => Option.some(Bool.cond(Nat.blt(a, b), Nat, 1, 0))
+      | Cuda.BinOp.eq => Option.some(Bool.cond(Nat.beq(a, b), Nat, 1, 0))
+      | Cuda.BinOp.land => Option.some(Bool.cond(Bool.and(Bool.not(Nat.isZero(a)), Bool.not(Nat.isZero(b))), Nat, 1, 0))
+      | Cuda.BinOp.shl => {
+        match Nat.blt(b, 64) returning Option(Nat) with
+        | Bool.false => Option.some(0)
+        | Bool.true => Option.some(Nat.mul(a, Nat.pow(2, b)))
+      }
+      | Cuda.BinOp.shr => {
+        match Nat.blt(b, 64) returning Option(Nat) with
+        | Bool.false => Option.some(0)
+        | Bool.true => Option.some(Nat.div(a, Nat.pow(2, b)))
+      }
+      | Cuda.BinOp.bor => Option.some(WarpExpr.bitwise(Cuda.BinOp.bor, a, b))
+      | Cuda.BinOp.band => Option.some(WarpExpr.bitwise(Cuda.BinOp.band, a, b))
+      | Cuda.BinOp.bxor => Option.some(WarpExpr.bitwise(Cuda.BinOp.bxor, a, b))
+    }
+
+
+    def vectorBinaryLoop (op: Cuda.BinOp)(left: List(Nat))(right: List(Nat))(activeMask: Nat)(lane: Nat)
+        : EvalValue decreases structural(left) := {
+      match left returning EvalValue with
+      | List.nil => {
+        match right returning EvalValue with
+        | List.nil => EvalValue.vector(List.nil(Nat))
+        | _ => EvalValue.bad("binary expression has mismatched lane widths")
+      }
+      | List.cons a moreA => {
+        match right returning EvalValue with
+        | List.nil => EvalValue.bad("binary expression has mismatched lane widths")
+        | List.cons b moreB => {
+          match WarpExpr.laneMask(activeMask, lane) returning EvalValue with
+          | Bool.false => {
+            match WarpExpr.vectorBinaryLoop(op, moreA, moreB, activeMask, Nat.succ(lane)) returning EvalValue with
+            | EvalValue.vector values => EvalValue.vector(List.cons(0, values))
+            | EvalValue.bad message => EvalValue.bad(message)
+            | _ => EvalValue.bad("binary expression returned a non-vector result")
+          }
+          | Bool.true => {
+            match WarpExpr.scalarBinary(op, a, b) returning EvalValue with
+            | Option.none => EvalValue.bad("integer division by zero in a warp expression")
+            | Option.some value => {
+              match WarpExpr.vectorBinaryLoop(op, moreA, moreB, activeMask, Nat.succ(lane)) returning EvalValue with
+              | EvalValue.vector values => EvalValue.vector(List.cons(value, values))
+              | EvalValue.bad message => EvalValue.bad(message)
+              | _ => EvalValue.bad("binary expression returned a non-vector result")
+            }
+          }
+        }
+      }
+    }
+
+    def castScalar (dtype: Cuda.DType)(value: Nat): Option(Nat) := {
+      match dtype returning Option(Nat) with
+      | Cuda.DType.u32 => Option.some(Nat.mod(value, Cuda.u32Limit))
+      | Cuda.DType.u64 => Option.some(Nat.mod(value, Nat.pow(2, 64)))
+      | Cuda.DType.bool => Option.some(Bool.cond(Nat.isZero(value), Nat, 0, 1))
+      | _ => Option.none(Nat)
+    }
+
+
+    def castLoop (dtype: Cuda.DType)(values: List(Nat))(activeMask: Nat)(lane: Nat): EvalValue
+        decreases structural(values) := {
+      match values returning EvalValue with
+      | List.nil => EvalValue.vector(List.nil(Nat))
+      | List.cons value rest => {
+        match WarpExpr.laneMask(activeMask, lane) returning EvalValue with
+        | Bool.false => {
+          match WarpExpr.castLoop(dtype, rest, activeMask, Nat.succ(lane)) returning EvalValue with
+          | EvalValue.vector more => EvalValue.vector(List.cons(0, more))
+          | EvalValue.bad message => EvalValue.bad(message)
+          | _ => EvalValue.bad("cast returned a non-vector result")
+        }
+        | Bool.true => {
+          match WarpExpr.castScalar(dtype, value) returning EvalValue with
+          | Option.none => EvalValue.bad("floating-point casts are outside the exact-ring expression subset")
+          | Option.some casted => {
+            match WarpExpr.castLoop(dtype, rest, activeMask, Nat.succ(lane)) returning EvalValue with
+            | EvalValue.vector more => EvalValue.vector(List.cons(casted, more))
+            | EvalValue.bad message => EvalValue.bad(message)
+            | _ => EvalValue.bad("cast returned a non-vector result")
+          }
+        }
+      }
+    }
+
+    def vectorMaxLoop (left: List(Nat))(right: List(Nat))(activeMask: Nat)(lane: Nat)
+        : EvalValue decreases structural(left) := {
+      match left returning EvalValue with
+      | List.nil => {
+        match right returning EvalValue with
+        | List.nil => EvalValue.vector(List.nil(Nat))
+        | _ => EvalValue.bad("max expression has mismatched lane widths")
+      }
+      | List.cons a moreA => {
+        match right returning EvalValue with
+        | List.nil => EvalValue.bad("max expression has mismatched lane widths")
+        | List.cons b moreB => {
+          match WarpExpr.laneMask(activeMask, lane) returning EvalValue with
+          | Bool.false => {
+            match WarpExpr.vectorMaxLoop(moreA, moreB, activeMask, Nat.succ(lane)) returning EvalValue with
+            | EvalValue.vector more => EvalValue.vector(List.cons(0, more))
+            | EvalValue.bad message => EvalValue.bad(message)
+            | _ => EvalValue.bad("max expression returned a non-vector result")
+          }
+          | Bool.true => {
+            let value := Bool.cond(Nat.ble(a, b), Nat, b, a)
+            match WarpExpr.vectorMaxLoop(moreA, moreB, activeMask, Nat.succ(lane)) returning EvalValue with
+            | EvalValue.vector more => EvalValue.vector(List.cons(value, more))
+            | EvalValue.bad message => EvalValue.bad(message)
+            | _ => EvalValue.bad("max expression returned a non-vector result")
+          }
+        }
+      }
+    }
+
+    def mergeVectorLoop (yesValues: List(Nat))(noValues: List(Nat))(yesMask: Nat)(lane: Nat)
+        : Option(List(Nat)) decreases structural(yesValues) := {
+      match yesValues returning Option(List(Nat)) with
+      | List.nil => {
+        match noValues returning Option(List(Nat)) with
+        | List.nil => Option.some(List.nil(Nat))
+        | _ => Option.none(List(Nat))
+      }
+      | List.cons yesValue yesRest => {
+        match noValues returning Option(List(Nat)) with
+        | List.nil => Option.none(List(Nat))
+        | List.cons noValue noRest => {
+          let value := Bool.cond(WarpExpr.laneMask(yesMask, lane), Nat, yesValue, noValue)
+          match WarpExpr.mergeVectorLoop(yesRest, noRest, yesMask, Nat.succ(lane)) returning Option(List(Nat)) with
+          | Option.none => Option.none(List(Nat))
+          | Option.some more => Option.some(List.cons(value, more))
+        }
+      }
+    }
+
+    def mergeSelected (yesValue: EvalValue)(noValue: EvalValue)(yesMask: Nat)(noMask: Nat): EvalValue := {
+      match Nat.isZero(WarpExpr.maskCount(yesMask)) returning EvalValue with
+      | Bool.true => noValue
+      | Bool.false => {
+        match Nat.isZero(WarpExpr.maskCount(noMask)) returning EvalValue with
+        | Bool.true => yesValue
+        | Bool.false => {
+          match yesValue returning EvalValue with
+          | EvalValue.vector yesValues => {
+            match noValue returning EvalValue with
+            | EvalValue.vector noValues => {
+              match WarpExpr.mergeVectorLoop(yesValues, noValues, yesMask, 0) returning EvalValue with
+              | Option.some values => EvalValue.vector(values)
+              | Option.none => EvalValue.bad("select expressions have mismatched lane widths")
+            }
+            | EvalValue.bad message => EvalValue.bad(message)
+            | _ => EvalValue.bad("select expressions have incompatible value kinds")
+          }
+          | EvalValue.parameterAddress yesName => {
+            match noValue returning EvalValue with
+            | EvalValue.parameterAddress noName => {
+              match Check.same(yesName, noName) returning EvalValue with
+              | Bool.true => EvalValue.parameterAddress(yesName)
+              | Bool.false => EvalValue.bad("lane-varying parameter addresses are unsupported")
+            }
+            | EvalValue.bad message => EvalValue.bad(message)
+            | _ => EvalValue.bad("select expressions have incompatible value kinds")
+          }
+          | EvalValue.sharedPointer yesType yesBase => {
+            match noValue returning EvalValue with
+            | EvalValue.sharedPointer noType noBase => {
+              match Bool.and(WarpExpr.sameDType(yesType, noType), Nat.beq(yesBase, noBase)) returning EvalValue with
+              | Bool.true => EvalValue.sharedPointer(yesType, yesBase)
+              | Bool.false => EvalValue.bad("lane-varying shared pointers are unsupported")
+            }
+            | EvalValue.bad message => EvalValue.bad(message)
+            | _ => EvalValue.bad("select expressions have incompatible value kinds")
+          }
+          | EvalValue.bad message => EvalValue.bad(message)
+        }
+      }
+    }
+
+    def byteAddressesLoop (indexValues: List(Nat))(byteBase: Nat)(width: Nat): List(Nat) decreases structural(indexValues) := {
+      match indexValues returning List(Nat) with
+      | List.nil => List.nil(Nat)
+      | List.cons index rest =>
+        List.cons(Nat.add(byteBase, Nat.mul(index, width)), WarpExpr.byteAddressesLoop(rest, byteBase, width))
+    }
+
+
+    def byteAddresses (indexValues: List(Nat))(byteBase: Nat)(width: Nat): List(Nat) :=
+      WarpExpr.byteAddressesLoop(indexValues, byteBase, width)
+
+    def eval (inputs: TinyDevice.Inputs)(storage: TinyDevice.Storage)(warpId: Nat)(activeMask: Nat)
+        (registers: List(Register))(expr: Cuda.Expr): EvalValue decreases structural(expr) := {
+      match Nat.isZero(activeMask) returning EvalValue with
+      | Bool.true => EvalValue.vector(WarpExpr.zeroVector)
+      | Bool.false => {
+        match expr returning EvalValue with
+        | Cuda.Expr.var id => WarpExpr.read(registers, id, activeMask)
+        | Cuda.Expr.lit value => EvalValue.vector(WarpExpr.uniform(value))
+        | Cuda.Expr.lit64 value => EvalValue.vector(WarpExpr.uniform(value))
+        | Cuda.Expr.zero dtype => EvalValue.vector(WarpExpr.zeroVector)
+        | Cuda.Expr.param name => {
+          match WarpExpr.dimension(inputs, name) returning EvalValue with
+          | Option.none => EvalValue.bad("unsupported scalar parameter")
+          | Option.some value => EvalValue.vector(WarpExpr.uniform(value))
+        }
+        | Cuda.Expr.special special => EvalValue.vector(WarpExpr.specialValues(special, warpId))
+        | Cuda.Expr.bin op left right => {
+          match WarpExpr.eval(inputs, storage, warpId, activeMask, registers, left) returning EvalValue with
+          | EvalValue.bad message => EvalValue.bad(message)
+          | EvalValue.vector leftValues => {
+            match op returning EvalValue with
+            | Cuda.BinOp.land => {
+              let (rightMask, ignored) := WarpExpr.splitMask(leftValues, activeMask)
+              match WarpExpr.eval(inputs, storage, warpId, rightMask, registers, right) returning EvalValue with
+              | EvalValue.bad message => EvalValue.bad(message)
+              | EvalValue.vector rightValues => WarpExpr.vectorBinaryLoop(Cuda.BinOp.land, leftValues, rightValues, activeMask, 0)
+              | _ => EvalValue.bad("logical expression operand is not a lane vector")
+            }
+            | _ => {
+              match WarpExpr.eval(inputs, storage, warpId, activeMask, registers, right) returning EvalValue with
+              | EvalValue.bad message => EvalValue.bad(message)
+              | EvalValue.vector rightValues => WarpExpr.vectorBinaryLoop(op, leftValues, rightValues, activeMask, 0)
+              | _ => EvalValue.bad("binary expression operand is not a lane vector")
+            }
+          }
+          | _ => EvalValue.bad("binary expression operand is not a lane vector")
+        }
+        | Cuda.Expr.max left right => {
+          match WarpExpr.eval(inputs, storage, warpId, activeMask, registers, left) returning EvalValue with
+          | EvalValue.bad message => EvalValue.bad(message)
+          | EvalValue.vector leftValues => {
+            match WarpExpr.eval(inputs, storage, warpId, activeMask, registers, right) returning EvalValue with
+            | EvalValue.bad message => EvalValue.bad(message)
+            | EvalValue.vector rightValues => WarpExpr.vectorMaxLoop(leftValues, rightValues, activeMask, 0)
+            | _ => EvalValue.bad("max expression operand is not a lane vector")
+          }
+          | _ => EvalValue.bad("max expression operand is not a lane vector")
+        }
+        | Cuda.Expr.fma a b c => EvalValue.bad("floating-point FMA is outside the exact-ring expression subset")
+        | Cuda.Expr.select condition yes no => {
+          match WarpExpr.eval(inputs, storage, warpId, activeMask, registers, condition) returning EvalValue with
+          | EvalValue.bad message => EvalValue.bad(message)
+          | EvalValue.vector conditions => {
+            let (yesMask, noMask) := WarpExpr.splitMask(conditions, activeMask)
+            let yesValue := WarpExpr.eval(inputs, storage, warpId, yesMask, registers, yes)
+            let noValue := WarpExpr.eval(inputs, storage, warpId, noMask, registers, no)
+            WarpExpr.mergeSelected(yesValue, noValue, yesMask, noMask)
+          }
+          | _ => EvalValue.bad("select condition is not a lane vector")
+        }
+        | Cuda.Expr.index base index => {
+          match WarpExpr.eval(inputs, storage, warpId, activeMask, registers, base) returning EvalValue with
+          | EvalValue.bad message => EvalValue.bad(message)
+          | EvalValue.sharedPointer dtype byteBase => {
+            match WarpExpr.sharedWidth(dtype) returning EvalValue with
+            | Option.none => EvalValue.bad("shared pointer dtype is outside the supported load subset")
+            | Option.some width => {
+              match WarpExpr.eval(inputs, storage, warpId, activeMask, registers, index) returning EvalValue with
+              | EvalValue.bad message => EvalValue.bad(message)
+              | EvalValue.vector indexValues => {
+                match Nat.beq(List.length(indexValues), 32) returning EvalValue with
+                | Bool.false => EvalValue.bad("shared pointer index is not a 32-lane vector")
+                | Bool.true => {
+                  let addresses := WarpExpr.byteAddresses(indexValues, byteBase, width)
+                  WarpExpr.readSharedLoop(storage, addresses, dtype, activeMask, 0)
+                }
+              }
+              | _ => EvalValue.bad("shared pointer index is not a lane vector")
+            }
+          }
+          | EvalValue.parameterAddress name => EvalValue.bad("indexing parameter addresses is unsupported in TinyGEMM")
+          | EvalValue.vector values => EvalValue.bad("index base is a value vector, not a typed pointer")
+        }
+        | Cuda.Expr.cast dtype value => {
+          match WarpExpr.eval(inputs, storage, warpId, activeMask, registers, value) returning EvalValue with
+          | EvalValue.bad message => EvalValue.bad(message)
+          | EvalValue.vector values => WarpExpr.castLoop(dtype, values, activeMask, 0)
+          | _ => EvalValue.bad("cast operand is not a lane vector")
+        }
+        | Cuda.Expr.sharedAddr offset => EvalValue.vector(WarpExpr.uniform(offset))
+        | Cuda.Expr.sharedPtr dtype offset => EvalValue.sharedPointer(dtype, offset)
+        | Cuda.Expr.paramAddr name => EvalValue.parameterAddress(name)
+      }
+    }
+
+
+  }
+}

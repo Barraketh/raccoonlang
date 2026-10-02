@@ -6,20 +6,43 @@ import scala.collection.immutable.SeqMap
 import scala.reflect.ClassTag
 
 object ValueOps {
-  def materialize(value: Value, eqStore: EqStore): Value = Materialize.materialize(value)(eqStore)
+  def materialize(value: Value, eqStore: EqStore): Value =
+    if (value.synDeps.intersects(eqStore.solvedIds)) new Materializer(eqStore).materialize(value)
+    else value
 
-  def materializeEnv(env: Env, eqStore: EqStore): Env = Materialize.materializeEnv(env)(eqStore)
+  def materializeEnv(env: Env, eqStore: EqStore): Env = new Materializer(eqStore).materializeEnv(env)
 
   /** An application's stored argument or a local, materialized, unforced evidence staying unforced. */
-  def materializeArgument(arg: Value, eqStore: EqStore): Value = Materialize.materializeArgument(arg)(eqStore)
+  def materializeArgument(arg: Value, eqStore: EqStore): Value =
+    arg match {
+      case deferred: DeferredEvidence =>
+        val store = eqStore
+        deferred.map(value => ValueOps.materialize(value, store))
+      case other => materialize(other, eqStore)
+    }
 
-  private object Materialize {
+  private[raccoonlang] def newMaterializer(eqStore: EqStore): Materializer = new Materializer(eqStore)
+
+  /** A delayed classifier is a separate root operation and must not retain the session that built its Pi. */
+  private[raccoonlang] def materializeClassifier(classifier: Classifier, eqStore: EqStore): Classifier =
+    classifier match {
+      case sort: VSort if !sort.synDeps.intersects(eqStore.solvedIds) => sort
+      case Large                                                      => Large
+      case _ => new Materializer(eqStore).materializeClassifier(classifier)
+    }
+
+  /** One identity memo scoped to one immutable equality store and one eager materialization root. */
+  private[raccoonlang] final class Materializer private[ValueOps] (val eqStore: EqStore) {
+    private val values = new java.util.IdentityHashMap[Value, Value]()
+    private val envs = new java.util.IdentityHashMap[Env, Env]()
 
     /**
      * Each local materialized as an argument is: one bound to unforced evidence, as a destructuring binds it, stays so.
      */
-    def materializeEnv(env: Env)(implicit eqStore: EqStore): Env =
-      env
+    def materializeEnv(env: Env): Env = {
+      if (envs.containsKey(env)) return envs.get(env)
+
+      val rebuilt = env
         .copy(
           baseLocals = SeqMap.from(env.baseLocals.iterator.map { case (ref, value) =>
             ref -> materializeArgument(value)
@@ -30,12 +53,24 @@ object ValueOps {
           runtimeFrames = env.runtimeFrames.map(_.mapValues(materializeArgument))
         )
         .rebuildRuntimeLookupIndex
+      envs.put(env, rebuilt)
+      rebuilt
+    }
 
-    def materialize(value: Value)(implicit eqStore: EqStore): Value = {
+    def materialize(value: Value): Value = {
+      if (values.containsKey(value)) return values.get(value)
       if (!mayNeedMaterialization(value)) return value
 
-      val resolved = Interpreter.resolveInEqStore(value, eqStore)
-      if (!mayNeedMaterialization(resolved)) return resolved
+      val resolved = Interpreter.resolveInEqStore(value, this)
+      if (values.containsKey(resolved)) {
+        val cached = values.get(resolved)
+        values.put(value, cached)
+        return cached
+      }
+      if (!mayNeedMaterialization(resolved)) {
+        values.put(value, resolved)
+        return resolved
+      }
 
       val rebuilt = resolved match {
         case _: ParameterTpe | SortParameter | Large => resolved
@@ -48,7 +83,7 @@ object ValueOps {
         case app: VApp =>
           val (head, tpe, blockedOn) = (app.head, app.tpe, app.blockedOn)
           val materializedHead = materialize(head)
-          val materializedArgs = app.storedArgs.map(materializeArgument(_))
+          val materializedArgs = app.storedArgs.map(materializeArgument)
           val materializedTpe = materialize(tpe)
           (materializedHead, blockedOn) match {
             case (h: ConstructorHead, blockers) if blockers.isEmpty =>
@@ -70,7 +105,7 @@ object ValueOps {
         case pi: VPi =>
           materializePi(pi)
         case VLam(tpe, id, body) =>
-          VLam(materializePi(tpe), materializeId(id), materializeLamBody(body))
+          VLam(materialize(tpe).asInstanceOf[VPi], materializeId(id), materializeLamBody(body))
         case p: VProof =>
           VProof(materialize(p.tpe))
         // A packed literal's type is closed (VPacked requires it), so it never reaches here:
@@ -83,31 +118,36 @@ object ValueOps {
       // expansion deliberately does NOT happen here: materialization reaches inside values
       // (projection bases, thunk envs), and wrapping an interior copy while bare copies circulate
       // would split the representation with no mixed defEq rule to reunite it (StructEta).
-      Value.canonicalizeProof(rebuilt)
+      val canonical = Value.canonicalizeProof(rebuilt)
+      values.put(value, canonical)
+      if (resolved ne value) values.put(resolved, canonical)
+      canonical
     }
 
     /**
      * An application's stored argument. Unforced evidence stays unforced, its proposition materialized when it is
-     * forced: materializing is not a use of the proof.
+     * forced: materializing is not a use of the proof. The delayed mapping starts a fresh session when it is forced.
      */
-    def materializeArgument(arg: Value)(implicit eqStore: EqStore): Value =
+    def materializeArgument(arg: Value): Value =
       arg match {
-        case deferred: DeferredEvidence => deferred.map(materialize(_))
-        case other                      => materialize(other)
+        case deferred: DeferredEvidence =>
+          val store = eqStore
+          deferred.map(value => ValueOps.materialize(value, store))
+        case other => materialize(other)
       }
 
     // Constant time: a value's dependencies are computed when it is built.
-    private def mayNeedMaterialization(value: Value)(implicit eqStore: EqStore): Boolean =
+    private def mayNeedMaterialization(value: Value): Boolean =
       value.synDeps.intersects(eqStore.solvedIds)
 
     /** A level, kind or lifetime, which resolves to a normal form of the same sort parameter. */
-    private def materializeParameter[P <: Value: ClassTag](parameter: P)(implicit eqStore: EqStore): P =
-      Interpreter.resolveInEqStore(parameter, eqStore) match {
+    private def materializeParameter[P <: Value: ClassTag](parameter: P): P =
+      Interpreter.resolveInEqStore(parameter, this) match {
         case normal: P => normal
         case other     => wtf(s"$parameter : ${parameter.tpe} materialized to $other : ${other.tpe}")
       }
 
-    private def materializeClassifier(classifier: Classifier)(implicit eqStore: EqStore): Classifier =
+    def materializeClassifier(classifier: Classifier): Classifier =
       classifier match {
         case sort: VSort =>
           if (mayNeedMaterialization(sort))
@@ -122,10 +162,10 @@ object ValueOps {
         case Large => Large
       }
 
-    private def materializePi(pi: VPi)(implicit eqStore: EqStore): VPi = {
-      // The classifier stays lazy: force the original thunk only on demand, then rewrite solved
-      // metas under this (immutable) store.
+    private def materializePi(pi: VPi): VPi = {
+      // The classifier stays lazy. Its closure retains the original Pi and immutable store, never this session.
       val store = eqStore
+      val originalPi = pi
       pi.copy(
         env = materializeEnv(pi.env),
         closureKind = materializeParameter(pi.closureKind),
@@ -133,20 +173,20 @@ object ValueOps {
         mentionedScope = materializeParameter(pi.mentionedScope),
         synDeps = materializeDeps(pi.synDeps),
         id = materializeId(pi.id),
-        classifier0 = () => materializeClassifier(pi.tpe)(store)
+        classifier0 = () => ValueOps.materializeClassifier(originalPi.tpe, store)
       )
     }
 
-    private def materializeId(id: ValueId)(implicit eqStore: EqStore): ValueId =
+    private def materializeId(id: ValueId): ValueId =
       id match {
         case local: ValueId.LocalId => materializeLocalId(local)
         case other                  => other
       }
 
-    private def materializeLocalId(id: ValueId.LocalId)(implicit eqStore: EqStore): ValueId.LocalId =
-      ValueId.LocalId(id.nodeId, id.captures.map(materialize(_)))
+    private def materializeLocalId(id: ValueId.LocalId): ValueId.LocalId =
+      ValueId.LocalId(id.nodeId, id.captures.map(materialize))
 
-    private def materializeLamBody(body: LamBody)(implicit eqStore: EqStore): LamBody =
+    private def materializeLamBody(body: LamBody): LamBody =
       body match {
         case LamBody.Core(term, env) => LamBody.Core(term, materializeEnv(env))
         case LamBody.Native(run, env, isRawRecursive) =>
@@ -154,7 +194,7 @@ object ValueOps {
         case LamBody.ProofEta => LamBody.ProofEta
       }
 
-    private def materializeDeps(deps: DepSet)(implicit eqStore: EqStore): DepSet = {
+    private def materializeDeps(deps: DepSet): DepSet = {
       val res = DepSet.newBuilder
       deps.foreach { id =>
         eqStore.subst.get(id) match {

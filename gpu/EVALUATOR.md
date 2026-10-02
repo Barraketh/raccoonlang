@@ -1,6 +1,6 @@
 # An evaluator for generated kernels
 
-Status: **proposal** (2026-10-01). Step 1, typed instructions, is built (§3); the evaluator is not. It follows the first B200 session (`gpu/encoding/NOTES.md`,
+Status: **proposal** (2026-10-01). Step 1, typed instructions, is built (§3). The bounded one-tile TinyGEMM evaluator spike is complete, including integrated validation and native timing. Its evidence recommends interpreter performance work (C1) before expanding evaluator v0; it does not quantify a likely optimization gain. It follows the first B200 session (`gpu/encoding/NOTES.md`,
 "Hardware session"), whose failures and the hostile reviews before it share one shape: the generated code did
 something other than what was meant.
 
@@ -235,9 +235,11 @@ argument.
 
 1. **Typed instructions.** Built (§3). Every example generates byte-identical CUDA, and `Check.rac` keeps its
    proofs.
-2. **A performance spike.** Evaluate the smallest TinyGEMM (one tile) in Raccoon and report evaluation steps per second
-   against the target of about 10⁷ steps per test. The result decides whether the interpreter work (`gpu/ROADMAP.md` C1)
-   comes first.
+2. **A performance spike.** Execute the smallest TinyGEMM (one tile) from its checked `Cuda.Kernel` AST in Raccoon,
+   first in the exact-ring domain, and report retired warp steps and scalar work with measured timings. The completed
+   measurement recommends interpreter performance work (`gpu/ROADMAP.md` C1) before expanding evaluator v0: the
+   exact-ring tile takes about 19.8 s in the native driver. No profile currently attributes that time to components,
+   so the spike does not estimate savings from any particular interpreter redesign.
 3. **Evaluator v0, in Raccoon.**
    - **Content:**
      - the exact numerics subset;
@@ -259,7 +261,149 @@ argument.
 8. **Only if speed stalls:** a fast twin in Scala or C++, differentially tested against the Raccoon evaluator on small
    cases. The Raccoon evaluator stays the reference.
 
-### Checkpoint: source-level buffer workload (2026-10-02)
+### TinyGEMM spike: one generated tile in the exact-ring domain (2026-10-02)
+
+**Status: the bounded spike is complete; its result recommends C1 performance work before evaluator v0.** This is a
+bounded execution experiment, not evaluator v0 and not a hardware-equivalence claim. It runs the generated `Tiny.kernel` AST
+after `Core.checkedKernel` supplies its existing `WellFormed` evidence. The kernel and the `prepare`, `run`, and
+extraction closures are created in one checked module environment so nominal `Cuda` families stay identical. The
+preparation path validates the actual launcher parameters, tensor-map declarations, launch requirements and evaluated
+dimensions; unsupported shapes or map encodings are rejected instead of being inferred from parameter names.
+
+The supported launch is exactly one CTA for `M = N = 128`, `K = 64`: 256 threads in eight 32-lane warps. Its Raccoon
+inputs are deterministic, coordinate-dependent elements of `Z/257`. The ring domain makes every product and sum exact;
+the BF16 input maps and F32 output map determine element widths, swizzled addresses and descriptor checks, not floating-
+point values. Loading/checking the module, constructing the AST, preparing each seed's inputs, extracting results and
+the independent indexed reference calculation all happen outside the timed `run` invocation. Each run constructs fresh
+shared, tensor and output storage. The host oracle computes all 16,384 results by ordinary indexed matrix
+multiplication in `Z/257`; it does not interpret or replace the generated kernel.
+
+`WarpMachine` interprets the actual AST's reached expression and statement subset. Each warp carries 32-lane register
+vectors, initialization masks, an active mask, and nested branch/loop frames. Branches split and later reconverge lane
+masks; the `for` stop is the AST's exclusive bound. Unknown expressions or instructions fail explicitly. The scheduler
+is one deterministic round-robin warp order. TMA and tensor-core requests capture evaluated operands in a FIFO event
+queue; queued work is completed in order when no warp can retire another statement. A successful AST statement
+retirement increments `warpSteps`; blocked waits do not. Event completions and ring-scalar operations have separate
+counters. The source assigns warp 0 to the producer, warp 1 to the MMA issuer, warps 2 and 3 to idle roles, and warps 4–7
+to the epilogue. Fuel bounds execution and a stalled machine reports deadlock.
+
+The data layer consumes only evaluated requests and owns no kernel traversal or scheduling. It resolves input/output
+maps against the checked launcher's actual `MapEncoding`s and bounds every byte access by the declared dynamic shared
+extent. It models the two 64-by-128 BF16 TMA input boxes, the four-stage shared ring, its encoded shared-memory
+descriptors, and the generated 128-byte swizzle when reading operands. The four emitted `tcgen05.mma` instructions are
+executed separately: each uses its own descriptor-selected 16-wide K slice, accumulator address, shape and accumulate
+flag. There is no fused K=64 host shortcut. Each instruction performs 128×128×16 ring multiplies and additions, for
+exact totals of 1,048,576 multiplications and 1,048,576 additions across the four instructions. The epilogue uses the
+actual tensor-memory address and issuing warpgroup quadrant; each 32-column chunk and warp issues four `.x8` loads at
+column offsets 0, 8, 16 and 24, then writes its addressed 32×32 F32 staging tile with TMA. Output coverage checks
+reject overlaps and omissions before the host extracts the final matrix.
+
+The expected successful-run counters are four MMA instructions, 64 tensor-memory loads, 16 TMA stores, and 88 queued
+event completions (two input TMA loads, four MMAs, two commits, 64 tensor-memory loads and 16 stores). TMA transfers
+account for 32,768 input bytes plus 65,536 output bytes. The scalar counters are 1,048,576 multiplications and the same
+number of additions. Each run retires 1,251 AST statements. At the native median this is about 63.2 retired statements
+per second; the 2,097,152 ring operations are measured separately, not expanded into synthetic warp steps.
+
+The control layer tracks nine mbarrier locations used by this kernel (four ring-full, four ring-empty and one
+accumulator handoff), plus the emitted named/CTA barriers. Arrival and expected transaction-byte completion advance a
+barrier phase; waits observe the completed phase without consuming it, so multiple epilogue warps can wait on the same
+handoff. TMA arrivals and tensor-core commit events retain the barrier phase captured at issue. Tensor-memory load
+results remain deferred until a successful full-warp `tcgen05.wait::ld`. The reached aligned operations enforce their
+required full-warp masks, while per-thread side-effect operations are accepted only for one active lane.
+`setMaxNReg` is rejected as unsupported because this spike does not model the SM register pool.
+
+Focused source fixtures mutate the generated AST rather than substituting a GEMM body. They include a valid descriptor
+mutation that repeats one K slice and must complete with a matrix different from the independent oracle, alongside
+invalid descriptors and output offsets, out-of-bounds shared storage, partial aligned/load-wait masks, unsupported
+instructions (including `setMaxNReg` register-pool behavior), missing TMA bytes, missing bulk commit, fuel exhaustion
+and non-quiescent exit. The host run compares two asymmetric input seeds against the oracle. Integrated validation
+passed all 964 tests, including those cases.
+
+Source checking initially exhausted a 2 GiB JVM heap while repeatedly traversing shared environment/value DAGs. An
+invocation-local materialization memo and visited-node reference traversal were added to avoid repeating that work. The
+earlier failing check and the current clean Tiny API source check are from different source snapshots, so they do not
+establish a source-check speedup. In the final native driver run, API loading and checking took 11.551 s before timing; this setup and input preparation,
+output extraction and oracle checking are outside the timed `run` invocation.
+
+**Validation:** `sbt scalafmtAll` passed and reformatted three Scala sources. The final post-register-pool-fix
+`sbt validate` passed all 964 tests, including the `unsupported-regpool` mutation, which requires `setMaxNReg` to fail
+explicitly. The TinyGEMM two-seed/reuse test took 56.702 s and the mutation suite took 20.992 s. Logs are preserved at
+`target/performance/tinygemm-spike/scalafmt.log` and `target/performance/tinygemm-spike/validate-regpool-fix.log`.
+
+**Limits of this spike.** This is an exact-ring model for the reached one-CTA TinyGEMM shape only. Its memory/events are
+sequentially consistent and FIFO; there is no race detector, vector-clock happens-before relation, alternate or
+exhaustive schedule, or weak-memory model. `fenceMbarInit`, `fenceProxyAsync` and `tcFence` are ordering no-ops in this
+abstraction, so absent or moved fence mutations are not detected. `tcgen05.relinquish` checks full-warp participation
+without modeling permit bookkeeping, and `setMaxNReg` fails explicitly because register-pool effects are unsupported.
+`bulkWait.read` conservatively
+waits for full TMA-store event completion; it does not separate read-complete from store-complete or model general bulk
+groups. Floating-point/BF16 rounding, hardware MMA behavior, TMA outside the validated maps/shape, other kernels,
+clusters, and general CUDA are not covered. This spike does not establish the planned 10⁷ warp-step target or complete
+the differential GPU battery.
+
+**Preliminary JVM result:** the first bounded end-to-end run completed for both asymmetric seeds and matched all 16,384
+outputs per seed to the independent host oracle. Each run retired 1,251 warp statements and reported the expected 88
+event completions, 98,304 TMA bytes, 1,048,576 scalar multiplies and adds, four MMAs, 64 tensor-memory loads and 16 TMA
+stores. These are one-sample JVM timings with no warmup; source API load/check took 8.700 s outside the timed
+invocations. Input preparation, output extraction and oracle validation are also outside the timer. The raw run is
+`target/performance/tinygemm-spike/tiny-jvm-one-sample-3.log`.
+
+| Seed | Timed `run` invocation | Retired warp steps/s |
+|---:|---:|---:|
+| 17 | 10.815150292 s | 115.67 |
+| 83 | 10.801340000 s | 115.82 |
+
+The step rate counts successfully retired warp statements only; scalar MMA work is reported separately and is not
+expanded into synthetic warp steps.
+
+The JVM samples above are preliminary and are not a controlled JVM-versus-native comparison: they use one sample per
+seed without warmup, while the native run below uses one warmup and three samples.
+
+**Final native result:** the post-register-pool-fix executable completed one warmup and three timed samples for each
+seed. All eight invocations matched all 16,384 outputs to the independent exact-ring oracle, with complete coverage and the expected
+1,251 warp statements, 88 event completions, 98,304 TMA bytes, 1,048,576 multiplies and additions, four MMAs, 64
+tensor-memory loads and 16 stores. The timed region is only `Interpreter.evalApply(run, prepared)`; source API
+load/check, input preparation, output materialization and oracle validation are outside it.
+
+| Seed | Three timed samples (s) | Median (s) | Retired statements/s | Scalar ring ops/s |
+|---:|---|---:|---:|---:|
+| 17 | 19.775651416, 19.928258375, 19.774071792 | 19.775651416 | 63.26 | 106,047.18 |
+| 83 | 19.745183875, 19.956359708, 19.801870834 | 19.801870834 | 63.18 | 105,906.76 |
+
+The final API load/check took 11.551 s before timing. The benchmark process took 175.74 s wall, 174.49 s user CPU plus 0.84 s system CPU, with
+652,509,184 bytes maximum resident set and 640,534,592 bytes peak footprint. These process figures include startup,
+module load/check, warmup, all timed calls and untimed validation; they are not per-invocation memory measurements.
+
+The measured code/test snapshot is parent `617c4c8bab2ef39053f5d121f51e4acfef71993a` plus the files identified by
+SHA-256 fingerprint `6fd62c1e64c6d30a9fa764d7100ee0b50112129b8241982b91a03898462cbb9b`. Its file/path manifests are
+`target/performance/tinygemm-spike/fingerprint-code-test-final-files.sha256` and
+`target/performance/tinygemm-spike/fingerprint-code-test-final-paths.txt`. The tested executable
+`target/performance/tinygemm-spike/raccoon-tinygemm-spike-regpool-fix` has SHA-256
+`aff445682ee3ba34b7d9d82021e380cf04c6230426f67b387c33933432befbb0`. The raw benchmark and build logs are
+`target/performance/tinygemm-spike/tiny-native-regpool-fix-default.log` and
+`target/performance/tinygemm-spike/native-build-regpool-fix.log`. The final native artifact integrity manifest is
+`target/performance/tinygemm-spike/native-artifact-hashes-regpool-fix.sha256` (SHA-256
+`fef79366b68b52fe33fd3d94d94c11d451a9cc323c2c1d429b877cc756a07a48`); the pre-fix binary and logs are preserved
+separately in `target/performance/tinygemm-spike/native-artifacts-pre-regpool.sha256` (SHA-256
+`7a50ce97efd08cac0e01632ff0472713c7f2157bf99f3d681a169b1fdc139e54`).
+
+The executable was built with the default optimized native settings: GraalVM Native Image Oracle GraalVM 21.0.12+7.1
+and Java 21.0.12+7-LTS, macOS arm64 (`armv8-a`), Apple clang 17.0.0, O2, Serial GC, four image threads, a 3 GiB
+image-build heap, and default assertions (no assertion-suppression flags). Reproduce the build and benchmark with:
+
+```sh
+MAIN_CLASS=com.raccoonlang.TinyGemmSpikeBenchmark OUTPUT_DIR=target/performance/tinygemm-spike \
+  OUTPUT_NAME=raccoon-tinygemm-spike-regpool-fix \
+  scripts/build-graal-native.sh --parallelism=4 -J-Xmx3g
+target/performance/tinygemm-spike/raccoon-tinygemm-spike-regpool-fix --warmups 1 --samples 3
+```
+
+The actual tile takes about 19.8 s in the native driver while performing 2,097,152 exact-ring scalar operations and
+retiring 1,251 warp statements. This supports prioritizing interpreter performance work (C1) before expanding
+evaluator v0, but it does not show which subsystem dominates or predict savings from a proposed redesign. There is no
+profile of this run. Do not extrapolate its MMA-heavy tile rate to attention or the proposed 10⁷-step target.
+
+### Historical checkpoint: source-level buffer workload (2026-10-02)
 
 This checkpoint measures foundation buffer-operation throughput; it is not a TinyGEMM evaluator. The TinyGEMM
 definitions now live in the body-free `gpu/encoding/TinyGemm.rac`; the existing `gpu/encoding/examples/tinygemm.rac`
@@ -310,10 +454,11 @@ Across fresh driver processes, Tiny AST entry load/check (including the first pr
 and 572.669 ms; the benchmark entry load/check then took 4.389, 4.338, and 4.355 ms. Their respective medians were
 577.517 ms and 4.355 ms. All result checks matched an independent, untimed host checksum oracle.
 
-The workload and driver do not model generated CUDA instructions, warps, synchronization, asynchronous events, or
-floating-point operations. There is no 10⁷-warp-step result and no completed TinyGEMM claim. The full instruction/event
-evaluator and the final step-2 decision remain pending. `sbt validate` passed 955 tests, including the source foundation
-fixture; the focused spike suite passed all 3 tests, and independent source/test review was clean. Native build logs,
+At this historical checkpoint, the workload and driver did not model generated CUDA instructions, warps,
+synchronization, asynchronous events, or floating-point operations. It had no 10⁷-warp-step result and no completed
+TinyGEMM claim; the full instruction/event evaluator and step-2 decision were still pending at that time. `sbt validate`
+passed 955 tests, including the source foundation fixture; the focused spike suite passed all 3 tests, and independent
+source/test review was clean. Native build logs,
 sample logs, comparison bytes and provenance are preserved under `target/performance/evaluator-spike/` and adjacent
 `target/performance/evaluator-spike-*` files (ignored by Git).
 

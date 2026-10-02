@@ -1,0 +1,1245 @@
+// Pure addressed storage semantics for the checked one-CTA TinyGEMM evaluator slice. Scalars carry exact values in
+// Z/257; bf16/f32 affect only byte width and shared-memory layout, not the arithmetic domain.
+
+import Check
+import Cuda
+import evaluator.DeviceApi
+import evaluator.Memory
+import evaluator.Ring
+
+namespace Evaluator {
+  namespace TinyDevice {
+    sealed struct Inputs : Type
+     | mk (m: Nat)(n: Nat)(k: Nat)(dynamicSharedBytes: Nat)
+          (aMap: Cuda.MapEncoding)(bMap: Cuda.MapEncoding)(cMap: Cuda.MapEncoding)
+          (a: Evaluator.Memory(Nat))(b: Evaluator.Memory(Nat)) : Inputs
+
+    sealed struct Storage : Type
+     | mk (inputs: Inputs)(dynamicSharedBytes: Nat)(sharedWords: Evaluator.Memory(Nat))(output: Evaluator.Memory(Nat))
+          (tmem: Evaluator.Memory(Nat))(tmemAddress: Nat)(tmemColumns: Nat)(tmemAllocated: Bool)(tmemInitialized: Bool)
+          (coverage: Evaluator.Memory(Nat))(outputWrites: Nat) : Storage
+
+    struct DeviceCompletion : Type
+     | mk (storage: Storage)(registerWrites: List(DeviceApi.RegisterWrite))(transferBytes: Nat)(scalarMuls: Nat)
+          (scalarAdds: Nat)(fault: Option(DeviceApi.Fault)) : DeviceCompletion
+
+    inductive MapKind : Type
+     | a : MapKind
+     | b : MapKind
+     | c : MapKind
+
+    def ok (storage: Storage): DeviceCompletion :=
+      DeviceCompletion.mk(storage, List.nil(DeviceApi.RegisterWrite), 0, 0, 0, Option.none(DeviceApi.Fault))
+
+    def failed (storage: Storage)(message: String): DeviceCompletion :=
+      DeviceCompletion.mk(storage, List.nil(DeviceApi.RegisterWrite), 0, 0, 0,
+        Option.some(DeviceApi.Fault.mk(message)))
+
+    def completed (storage: Storage)(writes: List(DeviceApi.RegisterWrite))(bytes: Nat)(muls: Nat)(adds: Nat): DeviceCompletion :=
+      DeviceCompletion.mk(storage, writes, bytes, muls, adds, Option.none(DeviceApi.Fault))
+
+    def sameDType (left: Cuda.DType)(right: Cuda.DType): Bool := {
+      match left returning Bool with
+      | Cuda.DType.u32 => {
+        match right returning Bool with
+        | Cuda.DType.u32 => Bool.true
+        | _ => Bool.false
+      }
+      | Cuda.DType.u64 => {
+        match right returning Bool with
+        | Cuda.DType.u64 => Bool.true
+        | _ => Bool.false
+      }
+      | Cuda.DType.f32 => {
+        match right returning Bool with
+        | Cuda.DType.f32 => Bool.true
+        | _ => Bool.false
+      }
+      | Cuda.DType.bf16 => {
+        match right returning Bool with
+        | Cuda.DType.bf16 => Bool.true
+        | _ => Bool.false
+      }
+      | Cuda.DType.bool => {
+        match right returning Bool with
+        | Cuda.DType.bool => Bool.true
+        | _ => Bool.false
+      }
+    }
+
+    def sameUse (left: Cuda.MapUse)(right: Cuda.MapUse): Bool := {
+      match left returning Bool with
+      | Cuda.MapUse.load => {
+        match right returning Bool with
+        | Cuda.MapUse.load => Bool.true
+        | _ => Bool.false
+      }
+      | Cuda.MapUse.store => {
+        match right returning Bool with
+        | Cuda.MapUse.store => Bool.true
+        | _ => Bool.false
+      }
+    }
+
+    def sameParam (left: Cuda.Param)(right: Cuda.Param): Bool := {
+      match left returning Bool with
+      | Cuda.Param.input t n => {
+        match right returning Bool with
+        | Cuda.Param.input u m => Bool.and(TinyDevice.sameDType(t, u), Check.same(n, m))
+        | _ => Bool.false
+      }
+      | Cuda.Param.output t n => {
+        match right returning Bool with
+        | Cuda.Param.output u m => Bool.and(TinyDevice.sameDType(t, u), Check.same(n, m))
+        | _ => Bool.false
+      }
+      | Cuda.Param.scalar t n => {
+        match right returning Bool with
+        | Cuda.Param.scalar u m => Bool.and(TinyDevice.sameDType(t, u), Check.same(n, m))
+        | _ => Bool.false
+      }
+      | Cuda.Param.tensorMap use n => {
+        match right returning Bool with
+        | Cuda.Param.tensorMap other name => Bool.and(TinyDevice.sameUse(use, other), Check.same(n, name))
+        | _ => Bool.false
+      }
+    }
+
+    def sameMap (left: Cuda.MapEncoding)(right: Cuda.MapEncoding): Bool := {
+      match left returning Bool with
+      | Cuda.MapEncoding.mk param use source rows cols inner outer => {
+        match right returning Bool with
+        | Cuda.MapEncoding.mk otherParam otherUse otherSource otherRows otherCols otherInner otherOuter =>
+          Bool.and(Check.same(param, otherParam),
+            Bool.and(TinyDevice.sameUse(use, otherUse),
+              Bool.and(TinyDevice.sameParam(source, otherSource),
+                Bool.and(Check.same(rows, otherRows),
+                  Bool.and(Check.same(cols, otherCols),
+                    Bool.and(Nat.beq(inner, otherInner), Nat.beq(outer, otherOuter)))))))
+      }
+    }
+
+    def mapA (map: Cuda.MapEncoding): Bool := TinyDevice.sameMap(map,
+      Cuda.MapEncoding.mk("A_map", Cuda.MapUse.load, Cuda.Param.input(Cuda.DType.bf16, "A"), "M", "K", 64, 128))
+
+    def mapB (map: Cuda.MapEncoding): Bool := TinyDevice.sameMap(map,
+      Cuda.MapEncoding.mk("B_map", Cuda.MapUse.load, Cuda.Param.input(Cuda.DType.bf16, "B"), "N", "K", 64, 128))
+
+    def mapC (map: Cuda.MapEncoding): Bool := TinyDevice.sameMap(map,
+      Cuda.MapEncoding.mk("C_map", Cuda.MapUse.store, Cuda.Param.output(Cuda.DType.f32, "C"), "M", "N", 32, 32))
+
+    def sameBinOp (left: Cuda.BinOp)(right: Cuda.BinOp): Bool := {
+      match left returning Bool with
+      | Cuda.BinOp.add => {
+        match right returning Bool with
+        | Cuda.BinOp.add => Bool.true
+        | _ => Bool.false
+      }
+      | Cuda.BinOp.div => {
+        match right returning Bool with
+        | Cuda.BinOp.div => Bool.true
+        | _ => Bool.false
+      }
+      | Cuda.BinOp.lt => {
+        match right returning Bool with
+        | Cuda.BinOp.lt => Bool.true
+        | _ => Bool.false
+      }
+      | Cuda.BinOp.rem => {
+        match right returning Bool with
+        | Cuda.BinOp.rem => Bool.true
+        | _ => Bool.false
+      }
+      | Cuda.BinOp.eq => {
+        match right returning Bool with
+        | Cuda.BinOp.eq => Bool.true
+        | _ => Bool.false
+      }
+      | Cuda.BinOp.mul => {
+        match right returning Bool with
+        | Cuda.BinOp.mul => Bool.true
+        | _ => Bool.false
+      }
+      | _ => Bool.false
+    }
+
+    def isParam (expr: Cuda.Expr)(name: String): Bool := {
+      match expr returning Bool with
+      | Cuda.Expr.param got => Check.same(got, name)
+      | _ => Bool.false
+    }
+
+    def isLit (expr: Cuda.Expr)(value: Nat): Bool := {
+      match expr returning Bool with
+      | Cuda.Expr.lit got => Nat.beq(got, value)
+      | _ => Bool.false
+    }
+
+    def isCeilDiv128 (expr: Cuda.Expr)(name: String): Bool := {
+      match expr returning Bool with
+      | Cuda.Expr.bin outer top divisor => {
+        match top returning Bool with
+        | Cuda.Expr.bin inner input padding => Bool.and(TinyDevice.sameBinOp(outer, Cuda.BinOp.div),
+            Bool.and(TinyDevice.sameBinOp(inner, Cuda.BinOp.add),
+              Bool.and(TinyDevice.isParam(input, name),
+                Bool.and(TinyDevice.isLit(padding, 127), TinyDevice.isLit(divisor, 128)))))
+        | _ => Bool.false
+      }
+      | _ => Bool.false
+    }
+
+    def sameParams (left: List(Cuda.Param))(right: List(Cuda.Param)): Bool decreases structural(left) := {
+      match left returning Bool with
+      | List.nil => {
+        match right returning Bool with
+        | List.nil => Bool.true
+        | _ => Bool.false
+      }
+      | List.cons p more => {
+        match right returning Bool with
+        | List.nil => Bool.false
+        | List.cons q rest => Bool.and(TinyDevice.sameParam(p, q), TinyDevice.sameParams(more, rest))
+      }
+    }
+
+    def expectedKernelParams (params: List(Cuda.Param)): Bool := {
+      let expected := List.cons(Cuda.Param.tensorMap(Cuda.MapUse.load, "A_map"),
+        List.cons(Cuda.Param.tensorMap(Cuda.MapUse.load, "B_map"),
+          List.cons(Cuda.Param.tensorMap(Cuda.MapUse.store, "C_map"),
+            List.cons(Cuda.Param.scalar(Cuda.DType.u32, "M"),
+              List.cons(Cuda.Param.scalar(Cuda.DType.u32, "N"),
+                List.cons(Cuda.Param.scalar(Cuda.DType.u32, "K"), List.nil(Cuda.Param)))))))
+      TinyDevice.sameParams(params, expected)
+    }
+
+    def expectedHostParams (params: List(Cuda.Param)): Bool := {
+      let expected := List.cons(Cuda.Param.input(Cuda.DType.bf16, "A"),
+        List.cons(Cuda.Param.input(Cuda.DType.bf16, "B"),
+          List.cons(Cuda.Param.output(Cuda.DType.f32, "C"),
+            List.cons(Cuda.Param.scalar(Cuda.DType.u32, "M"),
+              List.cons(Cuda.Param.scalar(Cuda.DType.u32, "N"),
+                List.cons(Cuda.Param.scalar(Cuda.DType.u32, "K"), List.nil(Cuda.Param)))))))
+      TinyDevice.sameParams(params, expected)
+    }
+
+    def expectedMaps (maps: List(Cuda.MapEncoding)): Bool := {
+      match maps returning Bool with
+      | List.nil => Bool.false
+      | List.cons a rest1 => {
+        match rest1 returning Bool with
+        | List.nil => Bool.false
+        | List.cons b rest2 => {
+          match rest2 returning Bool with
+          | List.nil => Bool.false
+          | List.cons c rest3 => {
+            match rest3 returning Bool with
+            | List.nil => Bool.and(TinyDevice.mapA(a), Bool.and(TinyDevice.mapB(b), TinyDevice.mapC(c)))
+            | _ => Bool.false
+          }
+        }
+      }
+    }
+
+    def expectedGrid (grid: Cuda.Grid): Bool := {
+      match grid returning Bool with
+      | Cuda.Grid.blocks x y => Bool.and(TinyDevice.isCeilDiv128(x, "N"), TinyDevice.isCeilDiv128(y, "M"))
+      | _ => Bool.false
+    }
+
+    def isLit64 (expr: Cuda.Expr)(value: Nat): Bool := {
+      match expr returning Bool with
+      | Cuda.Expr.lit64 got => Nat.beq(got, value)
+      | _ => Bool.false
+    }
+
+    def isScalarBound (expr: Cuda.Expr)(name: String)(limit: Nat): Bool := {
+      match expr returning Bool with
+      | Cuda.Expr.bin op left right => Bool.and(TinyDevice.sameBinOp(op, Cuda.BinOp.lt),
+          Bool.and(TinyDevice.isParam(left, name), TinyDevice.isLit64(right, limit)))
+      | _ => Bool.false
+    }
+
+    def isProductBound (expr: Cuda.Expr): Bool := {
+      match expr returning Bool with
+      | Cuda.Expr.bin outer product limit => {
+        match product returning Bool with
+        | Cuda.Expr.bin inner left right => {
+          match left returning Bool with
+          | Cuda.Expr.cast dtype casted => Bool.and(TinyDevice.sameBinOp(outer, Cuda.BinOp.lt),
+              Bool.and(TinyDevice.sameBinOp(inner, Cuda.BinOp.mul),
+                Bool.and(TinyDevice.sameDType(dtype, Cuda.DType.u64),
+                  Bool.and(TinyDevice.isParam(casted, "M"),
+                    Bool.and(TinyDevice.isParam(right, "N"), TinyDevice.isLit64(limit, 4294967296))))))
+          | _ => Bool.false
+        }
+        | _ => Bool.false
+      }
+      | _ => Bool.false
+    }
+
+    def isNMultipleFour (expr: Cuda.Expr): Bool := {
+      match expr returning Bool with
+      | Cuda.Expr.bin outer rem zero => {
+        match rem returning Bool with
+        | Cuda.Expr.bin inner n four => Bool.and(TinyDevice.sameBinOp(outer, Cuda.BinOp.eq),
+            Bool.and(TinyDevice.sameBinOp(inner, Cuda.BinOp.rem),
+              Bool.and(TinyDevice.isParam(n, "N"), Bool.and(TinyDevice.isLit(four, 4), TinyDevice.isLit(zero, 0)))))
+        | _ => Bool.false
+      }
+      | _ => Bool.false
+    }
+
+    def requirementsOk (requires: List(Cuda.Expr))(m: Nat)(n: Nat)(k: Nat): Bool := {
+      match requires returning Bool with
+      | List.cons product rest1 => {
+        match rest1 returning Bool with
+        | List.cons boundM rest2 => {
+          match rest2 returning Bool with
+          | List.cons boundN rest3 => {
+            match rest3 returning Bool with
+            | List.cons boundK rest4 => {
+              match rest4 returning Bool with
+              | List.cons multiple rest5 => {
+                match rest5 returning Bool with
+                | List.nil => {
+                  let declared := Bool.and(TinyDevice.isProductBound(product),
+                    Bool.and(TinyDevice.isScalarBound(boundM, "M", 2147483648),
+                      Bool.and(TinyDevice.isScalarBound(boundN, "N", 2147483648),
+                        Bool.and(TinyDevice.isScalarBound(boundK, "K", 2147483648), TinyDevice.isNMultipleFour(multiple)))))
+                  let valuesOk := Bool.and(Nat.blt(Nat.mul(m, n), 4294967296),
+                    Bool.and(Nat.blt(m, 2147483648),
+                      Bool.and(Nat.blt(n, 2147483648),
+                        Bool.and(Nat.blt(k, 2147483648), Nat.isZero(Nat.mod(n, 4))))))
+                  Bool.and(declared, valuesOk)
+                }
+                | _ => Bool.false
+              }
+              | _ => Bool.false
+            }
+            | _ => Bool.false
+          }
+          | _ => Bool.false
+        }
+        | _ => Bool.false
+      }
+      | _ => Bool.false
+    }
+
+    def inputAValue (seed: Nat)(index: Nat): Nat := {
+      let row := Nat.div(index, 64)
+      let col := Nat.mod(index, 64)
+      Evaluator.Ring.ofNat(Nat.add(seed,
+        Nat.add(Nat.mul(row, 3), Nat.add(Nat.mul(col, 5), Nat.mul(Nat.mod(Nat.add(row, 1), 17), Nat.mod(Nat.add(col, 2), 13))))))
+    }
+
+    def inputBValue (seed: Nat)(index: Nat): Nat := {
+      let row := Nat.div(index, 64)
+      let col := Nat.mod(index, 64)
+      Evaluator.Ring.ofNat(Nat.add(Nat.mul(seed, 7),
+        Nat.add(Nat.mul(row, 11), Nat.add(Nat.mul(col, 2), Nat.mul(Nat.mod(Nat.add(row, 4), 19), Nat.mod(Nat.add(col, 1), 11))))))
+    }
+
+    def outputSentinel : Nat := Evaluator.Ring.modulus
+
+    def memoryValues (memory: Evaluator.Memory(Nat))(index: Nat)(remaining: Nat): List(Nat) decreases structural(remaining) := {
+      match remaining returning List(Nat) with
+      | Nat.zero => List.nil(Nat)
+      | Nat.succ rest => {
+        let value := Option.getD(Evaluator.Memory.get(memory, index), TinyDevice.outputSentinel)
+        List.cons(value, TinyDevice.memoryValues(memory, Nat.succ(index), rest))
+      }
+    }
+
+    // Setup input arrays as deterministic, nonuniform row-major data. This is outside the timed machine invocation.
+    def prepare (kernel: Cuda.Kernel)(m: Nat)(n: Nat)(k: Nat)(seed: Nat): Option(Inputs) := {
+      match kernel returning Option(Inputs) with
+      | Cuda.Kernel.mk name params dynamicShared body launcher => {
+        let kernelOk := Bool.and(Check.same(name, "tinygemm"),
+          Bool.and(TinyDevice.expectedKernelParams(params),
+            Bool.and(Nat.beq(m, 128), Bool.and(Nat.beq(n, 128), Nat.beq(k, 64)))))
+        let sharedOk := Bool.and(Nat.blt(0, dynamicShared),
+          Bool.and(Nat.ble(dynamicShared, 262144), Nat.isZero(Nat.mod(dynamicShared, 4))))
+        match Bool.and(kernelOk, sharedOk) returning Option(Inputs) with
+        | Bool.false => Option.none(Inputs)
+        | Bool.true => {
+          match launcher returning Option(Inputs) with
+          | Option.none => Option.none(Inputs)
+          | Option.some actual => {
+            match actual returning Option(Inputs) with
+            | Cuda.Launcher.mk hostParams requires maps grid block => {
+              let launchOk := Bool.and(TinyDevice.expectedHostParams(hostParams),
+                Bool.and(TinyDevice.expectedMaps(maps),
+                  Bool.and(TinyDevice.expectedGrid(grid),
+                    Bool.and(TinyDevice.requirementsOk(requires, m, n, k), Nat.beq(block, 256)))))
+              match launchOk returning Option(Inputs) with
+              | Bool.false => Option.none(Inputs)
+              | Bool.true => {
+                match maps returning Option(Inputs) with
+                | List.cons aMap rest1 => {
+                  match rest1 returning Option(Inputs) with
+                  | List.cons bMap rest2 => {
+                    match rest2 returning Option(Inputs) with
+                    | List.cons cMap rest3 => {
+                      match rest3 returning Option(Inputs) with
+                      | List.nil => {
+                        let a := Evaluator.Memory.tabulatePow2(13, fun (index: Nat): Nat => TinyDevice.inputAValue(seed, index))
+                        let b := Evaluator.Memory.tabulatePow2(13, fun (index: Nat): Nat => TinyDevice.inputBValue(seed, index))
+                        Option.some(Inputs.mk(m, n, k, dynamicShared, aMap, bMap, cMap, a, b))
+                      }
+                      | _ => Option.none(Inputs)
+                    }
+                    | _ => Option.none(Inputs)
+                  }
+                  | _ => Option.none(Inputs)
+                }
+                | _ => Option.none(Inputs)
+              }
+            }
+          }
+        }
+      }
+    }
+
+
+    // The shared backing has 256 KiB of 32-bit words, while every access checks the exact kernel-declared dynamic
+    // extent. The larger power-of-two envelope makes persistent path-copy indexing simple without granting more bytes.
+    def beginRun (inputs: Inputs)(dynamicSharedBytes: Nat): Option(Storage) := {
+      match inputs returning Option(Storage) with
+      | Inputs.mk m n k expectedShared aMap bMap cMap a b => {
+        match Nat.beq(dynamicSharedBytes, expectedShared) returning Option(Storage) with
+        | Bool.false => Option.none(Storage)
+        | Bool.true => {
+          let shared := Evaluator.Memory.allocPow2(16, 0)
+          let output := Evaluator.Memory.allocPow2(14, TinyDevice.outputSentinel)
+          let tmem := Evaluator.Memory.allocPow2(14, TinyDevice.outputSentinel)
+          let coverage := Evaluator.Memory.allocPow2(14, 0)
+          Option.some(Storage.mk(inputs, dynamicSharedBytes, shared, output, tmem, 0, 0, Bool.false, Bool.false, coverage, 0))
+        }
+      }
+    }
+
+    def dimensions (inputs: Inputs): Pair(Nat, Pair(Nat, Nat)) := {
+      match inputs returning Pair(Nat, Pair(Nat, Nat)) with
+      | Inputs.mk m n k dynamic aMap bMap cMap a b => (m, (n, k))
+    }
+
+    def inputArray (inputs: Inputs)(source: Cuda.Param): Option(Evaluator.Memory(Nat)) := {
+      match inputs returning Option(Evaluator.Memory(Nat)) with
+      | Inputs.mk m n k dynamic aMap bMap cMap a b => {
+        match source returning Option(Evaluator.Memory(Nat)) with
+        | Cuda.Param.input dtype name => {
+          match dtype returning Option(Evaluator.Memory(Nat)) with
+          | Cuda.DType.bf16 => {
+            match Bool.and(Check.same(name, "A"), TinyDevice.sameParam(source, Cuda.Param.input(Cuda.DType.bf16, "A"))) returning Option(Evaluator.Memory(Nat)) with
+            | Bool.true => Option.some(a)
+            | Bool.false => {
+              match Bool.and(Check.same(name, "B"), TinyDevice.sameParam(source, Cuda.Param.input(Cuda.DType.bf16, "B"))) returning Option(Evaluator.Memory(Nat)) with
+              | Bool.true => Option.some(b)
+              | Bool.false => Option.none(Evaluator.Memory(Nat))
+            }
+          }
+          | _ => Option.none(Evaluator.Memory(Nat))
+        }
+        | _ => Option.none(Evaluator.Memory(Nat))
+      }
+    }
+
+    def readParam (storage: Storage)(source: Cuda.Param)(index: Nat): Option(Nat) := {
+      match storage returning Option(Nat) with
+      | Storage.mk inputs dynamicShared shared output tmem taddr tmemCols allocated initialized coverage writes => {
+        match TinyDevice.inputArray(inputs, source) returning Option(Nat) with
+        | Option.none => Option.none(Nat)
+        | Option.some values => Evaluator.Memory.get(values, index)
+      }
+    }
+
+    def storageShared (storage: Storage): Pair(Nat, Evaluator.Memory(Nat)) := {
+      match storage returning Pair(Nat, Evaluator.Memory(Nat)) with
+      | Storage.mk inputs dynamicShared shared output tmem taddr tmemCols allocated initialized coverage writes => (dynamicShared, shared)
+    }
+
+    def replaceSharedWords (storage: Storage)(words: Evaluator.Memory(Nat)): Storage := {
+      match storage returning Storage with
+      | Storage.mk inputs dynamicShared shared output tmem taddr tmemCols allocated initialized coverage writes =>
+        Storage.mk(inputs, dynamicShared, words, output, tmem, taddr, tmemCols, allocated, initialized, coverage, writes)
+    }
+
+    def replaceOutput (storage: Storage)(values: Evaluator.Memory(Nat)): Storage := {
+      match storage returning Storage with
+      | Storage.mk inputs dynamicShared shared output tmem taddr tmemCols allocated initialized coverage writes =>
+        Storage.mk(inputs, dynamicShared, shared, values, tmem, taddr, tmemCols, allocated, initialized, coverage, writes)
+    }
+
+    def replaceOutputState (storage: Storage)(values: Evaluator.Memory(Nat))(coverage: Evaluator.Memory(Nat))(writes: Nat): Storage := {
+      match storage returning Storage with
+      | Storage.mk inputs dynamicShared shared output tmem taddr tmemCols allocated initialized oldCoverage oldWrites =>
+        Storage.mk(inputs, dynamicShared, shared, values, tmem, taddr, tmemCols, allocated, initialized, coverage, writes)
+    }
+
+    def storageOutput (storage: Storage): Evaluator.Memory(Nat) := {
+      match storage returning Evaluator.Memory(Nat) with
+      | Storage.mk inputs dynamicShared shared output tmem taddr tmemCols allocated initialized coverage writes => output
+    }
+
+    def outputList (storage: Storage): List(Nat) := TinyDevice.memoryValues(TinyDevice.storageOutput(storage), 0, 16384)
+
+    def outputCoverage (storage: Storage): Pair(Evaluator.Memory(Nat), Nat) := {
+      match storage returning Pair(Evaluator.Memory(Nat), Nat) with
+      | Storage.mk inputs dynamicShared shared output tmem address columns allocated initialized coverage writes => (coverage, writes)
+    }
+
+    def allOutputCellsValid (output: Evaluator.Memory(Nat))(coverage: Evaluator.Memory(Nat))(index: Nat)(remaining: Nat)
+        : Bool decreases structural(remaining) := {
+      match remaining returning Bool with
+      | Nat.zero => Bool.true
+      | Nat.succ rest => {
+        match Evaluator.Memory.get(output, index) returning Bool with
+        | Option.none => Bool.false
+        | Option.some value => {
+          match Evaluator.Memory.get(coverage, index) returning Bool with
+          | Option.none => Bool.false
+          | Option.some seen => Bool.and(Nat.blt(value, Evaluator.Ring.modulus),
+              Bool.and(Nat.beq(seen, 1), TinyDevice.allOutputCellsValid(output, coverage, Nat.succ(index), rest)))
+        }
+      }
+    }
+
+    def outputComplete (storage: Storage): Bool := {
+      match storage returning Bool with
+      | Storage.mk inputs dynamicShared shared output tmem address columns allocated initialized coverage writes =>
+        Bool.and(Nat.beq(writes, 16384), TinyDevice.allOutputCellsValid(output, coverage, 0, 16384))
+    }
+
+    def tmemQuiescent (storage: Storage): Bool := {
+      match storage returning Bool with
+      | Storage.mk inputs dynamicShared shared output tmem address columns allocated initialized coverage writes => Bool.not(allocated)
+    }
+
+    def outputParam (source: Cuda.Param): Bool := TinyDevice.sameParam(source, Cuda.Param.output(Cuda.DType.f32, "C"))
+
+    def maskHas (mask: Nat)(lane: Nat): Bool := Nat.beq(Nat.mod(Nat.div(mask, Nat.pow(2, lane)), 2), 1)
+
+    def writeGlobalLoop (storage: Storage)(remainingIndices: List(Nat))(values: List(Nat))(mask: Nat)(lane: Nat): Option(Storage) decreases structural(remainingIndices) := {
+      match remainingIndices returning Option(Storage) with
+      | List.nil => {
+        match values returning Option(Storage) with
+        | List.nil => Option.some(storage)
+        | _ => Option.none(Storage)
+      }
+      | List.cons index rest => {
+        match values returning Option(Storage) with
+        | List.nil => Option.none(Storage)
+        | List.cons value more => {
+          match TinyDevice.maskHas(mask, lane) returning Option(Storage) with
+          | Bool.false => TinyDevice.writeGlobalLoop(storage, rest, more, mask, Nat.succ(lane))
+          | Bool.true => {
+            let output := TinyDevice.storageOutput(storage)
+            match Evaluator.Memory.set(output, index, value) returning Option(Storage) with
+            | Option.none => Option.none(Storage)
+            | Option.some changed => TinyDevice.writeGlobalLoop(TinyDevice.replaceOutput(storage, changed), rest, more, mask, Nat.succ(lane))
+          }
+        }
+      }
+    }
+
+    def writeGlobalLanes (storage: Storage)(source: Cuda.Param)(laneAddresses: DeviceApi.LaneVector)(laneValues: DeviceApi.LaneVector)(mask: Nat): Option(Storage) := {
+      match TinyDevice.outputParam(source) returning Option(Storage) with
+      | Bool.false => Option.none(Storage)
+      | Bool.true => TinyDevice.writeGlobalLoop(storage, DeviceApi.LaneVector.toList(laneAddresses), DeviceApi.LaneVector.toList(laneValues), mask, 0)
+    }
+
+    def inputAList (inputs: Inputs): List(Nat) := {
+      match inputs returning List(Nat) with
+      | Inputs.mk m n k dynamic aMap bMap cMap a b => TinyDevice.memoryValues(a, 0, 8192)
+    }
+
+    def inputBList (inputs: Inputs): List(Nat) := {
+      match inputs returning List(Nat) with
+      | Inputs.mk m n k dynamic aMap bMap cMap a b => TinyDevice.memoryValues(b, 0, 8192)
+    }
+
+    def replaceTmem (storage: Storage)(values: Evaluator.Memory(Nat))(address: Nat)(columns: Nat)(allocated: Bool)(initialized: Bool): Storage := {
+      match storage returning Storage with
+      | Storage.mk inputs dynamicShared shared output tmem oldAddress oldColumns oldAllocated oldInitialized coverage writes =>
+        Storage.mk(inputs, dynamicShared, shared, output, values, address, columns, allocated, initialized, coverage, writes)
+    }
+
+    def sharedAddressOk (storage: Storage)(byteAddr: Nat)(width: Nat)(alignment: Nat): Bool := {
+      match storage returning Bool with
+      | Storage.mk inputs dynamicShared shared output tmem taddr tmemCols allocated initialized coverage writes =>
+        Bool.and(Nat.isZero(Nat.mod(byteAddr, alignment)),
+          Nat.ble(Nat.add(byteAddr, width), dynamicShared))
+    }
+
+    def readShared (storage: Storage)(byteAddr: Nat)(dtype: Cuda.DType): Option(Nat) := {
+      let (dynamicShared, words) := TinyDevice.storageShared(storage)
+      match dtype returning Option(Nat) with
+      | Cuda.DType.bf16 => {
+        match TinyDevice.sharedAddressOk(storage, byteAddr, 2, 2) returning Option(Nat) with
+        | Bool.false => Option.none(Nat)
+        | Bool.true => {
+          match Evaluator.Memory.get(words, Nat.div(byteAddr, 4)) returning Option(Nat) with
+          | Option.none => Option.none(Nat)
+          | Option.some word => {
+            let half := Nat.mod(byteAddr, 4)
+            Option.some(Bool.cond(Nat.isZero(half), Nat, Nat.mod(word, 65536), Nat.div(word, 65536)))
+          }
+        }
+      }
+      | Cuda.DType.f32 => {
+        match TinyDevice.sharedAddressOk(storage, byteAddr, 4, 4) returning Option(Nat) with
+        | Bool.false => Option.none(Nat)
+        | Bool.true => Evaluator.Memory.get(words, Nat.div(byteAddr, 4))
+      }
+      | Cuda.DType.u32 => {
+        match TinyDevice.sharedAddressOk(storage, byteAddr, 4, 4) returning Option(Nat) with
+        | Bool.false => Option.none(Nat)
+        | Bool.true => Evaluator.Memory.get(words, Nat.div(byteAddr, 4))
+      }
+      | _ => Option.none(Nat)
+    }
+
+    def writeShared (storage: Storage)(byteAddr: Nat)(value: Nat)(dtype: Cuda.DType): Option(Storage) := {
+      match dtype returning Option(Storage) with
+      | Cuda.DType.bf16 => {
+        match Bool.and(TinyDevice.sharedAddressOk(storage, byteAddr, 2, 2), Nat.blt(value, 65536)) returning Option(Storage) with
+        | Bool.false => Option.none(Storage)
+        | Bool.true => {
+          let (dynamicShared, words) := TinyDevice.storageShared(storage)
+          let wordIndex := Nat.div(byteAddr, 4)
+          match Evaluator.Memory.get(words, wordIndex) returning Option(Storage) with
+          | Option.none => Option.none(Storage)
+          | Option.some oldWord => {
+            let half := Nat.mod(byteAddr, 4)
+            let retained := Bool.cond(Nat.isZero(half), Nat, Nat.mul(Nat.div(oldWord, 65536), 65536), Nat.mod(oldWord, 65536))
+            let shifted := Bool.cond(Nat.isZero(half), Nat, value, Nat.mul(value, 65536))
+            let word := Nat.add(retained, shifted)
+            match Evaluator.Memory.set(words, wordIndex, word) returning Option(Storage) with
+            | Option.none => Option.none(Storage)
+            | Option.some changed => Option.some(TinyDevice.replaceSharedWords(storage, changed))
+          }
+        }
+      }
+      | Cuda.DType.f32 => {
+        match Bool.and(TinyDevice.sharedAddressOk(storage, byteAddr, 4, 4), Nat.blt(value, 4294967296)) returning Option(Storage) with
+        | Bool.false => Option.none(Storage)
+        | Bool.true => {
+          let (dynamicShared, words) := TinyDevice.storageShared(storage)
+          match Evaluator.Memory.set(words, Nat.div(byteAddr, 4), value) returning Option(Storage) with
+          | Option.none => Option.none(Storage)
+          | Option.some changed => Option.some(TinyDevice.replaceSharedWords(storage, changed))
+        }
+      }
+      | Cuda.DType.u32 => {
+        match Bool.and(TinyDevice.sharedAddressOk(storage, byteAddr, 4, 4), Nat.blt(value, 4294967296)) returning Option(Storage) with
+        | Bool.false => Option.none(Storage)
+        | Bool.true => {
+          let (dynamicShared, words) := TinyDevice.storageShared(storage)
+          match Evaluator.Memory.set(words, Nat.div(byteAddr, 4), value) returning Option(Storage) with
+          | Option.none => Option.none(Storage)
+          | Option.some changed => Option.some(TinyDevice.replaceSharedWords(storage, changed))
+        }
+      }
+      | _ => Option.none(Storage)
+    }
+
+    def readSharedLanesLoop (storage: Storage)(addresses: List(Nat))(mask: Nat)(dtype: Cuda.DType)(lane: Nat)
+        : Option(List(Nat)) decreases structural(addresses) := {
+      match addresses returning Option(List(Nat)) with
+      | List.nil => Option.some(List.nil(Nat))
+      | List.cons address rest => {
+        match TinyDevice.maskHas(mask, lane) returning Option(List(Nat)) with
+        | Bool.false => {
+          match TinyDevice.readSharedLanesLoop(storage, rest, mask, dtype, Nat.succ(lane)) returning Option(List(Nat)) with
+          | Option.none => Option.none(List(Nat))
+          | Option.some values => Option.some(List.cons(0, values))
+        }
+        | Bool.true => {
+          match TinyDevice.readShared(storage, address, dtype) returning Option(List(Nat)) with
+          | Option.none => Option.none(List(Nat))
+          | Option.some value => {
+            match TinyDevice.readSharedLanesLoop(storage, rest, mask, dtype, Nat.succ(lane)) returning Option(List(Nat)) with
+            | Option.none => Option.none(List(Nat))
+            | Option.some values => Option.some(List.cons(value, values))
+          }
+        }
+      }
+    }
+
+    def readSharedLanes (storage: Storage)(addresses: DeviceApi.LaneVector)(mask: Nat)(dtype: Cuda.DType)
+        : Option(DeviceApi.LaneVector) := {
+      let values := TinyDevice.readSharedLanesLoop(storage, DeviceApi.LaneVector.toList(addresses), mask, dtype, 0)
+      match values returning Option(DeviceApi.LaneVector) with
+      | Option.none => Option.none(DeviceApi.LaneVector)
+      | Option.some lanes => DeviceApi.LaneVector.ofList(lanes)
+    }
+
+    def writeSharedLanesLoop (storage: Storage)(addresses: List(Nat))(values: List(Nat))(mask: Nat)(dtype: Cuda.DType)(lane: Nat)
+        : Option(Storage) decreases structural(addresses) := {
+      match addresses returning Option(Storage) with
+      | List.nil => {
+        match values returning Option(Storage) with
+        | List.nil => Option.some(storage)
+        | _ => Option.none(Storage)
+      }
+      | List.cons address rest => {
+        match values returning Option(Storage) with
+        | List.nil => Option.none(Storage)
+        | List.cons value more => {
+          match TinyDevice.maskHas(mask, lane) returning Option(Storage) with
+          | Bool.false => TinyDevice.writeSharedLanesLoop(storage, rest, more, mask, dtype, Nat.succ(lane))
+          | Bool.true => {
+            match TinyDevice.writeShared(storage, address, value, dtype) returning Option(Storage) with
+            | Option.none => Option.none(Storage)
+            | Option.some changed => TinyDevice.writeSharedLanesLoop(changed, rest, more, mask, dtype, Nat.succ(lane))
+          }
+        }
+      }
+    }
+
+    def writeSharedLanes (storage: Storage)(addresses: DeviceApi.LaneVector)(values: DeviceApi.LaneVector)(mask: Nat)(dtype: Cuda.DType)
+        : Option(Storage) := {
+      match TinyDevice.writeSharedLanesLoop(storage, DeviceApi.LaneVector.toList(addresses), DeviceApi.LaneVector.toList(values),
+          mask, dtype, 0) returning Option(Storage) with
+      | Option.none => Option.none(Storage)
+      | Option.some changed => Option.some(changed)
+    }
+
+    // The hardware swizzle XORs the three 16-byte group bits with the low three row bits.
+    def xor3Loop (left: Nat)(right: Nat)(bits: Nat): Nat decreases structural(bits) := {
+      match bits returning Nat with
+      | Nat.zero => 0
+      | Nat.succ rest => {
+        let leftBit := Nat.mod(left, 2)
+        let rightBit := Nat.mod(right, 2)
+        let low := Bool.cond(Nat.beq(leftBit, rightBit), Nat, 0, 1)
+        Nat.add(low, Nat.mul(2, TinyDevice.xor3Loop(Nat.div(left, 2), Nat.div(right, 2), rest)))
+      }
+    }
+
+    def xor3 (left: Nat)(right: Nat): Nat := TinyDevice.xor3Loop(left, right, 3)
+
+    def inputScalar (inputs: Inputs)(source: Cuda.Param)(index: Nat): Option(Nat) := {
+      match inputs returning Option(Nat) with
+      | Inputs.mk m n k dynamic aMap bMap cMap a b => {
+        match source returning Option(Nat) with
+        | Cuda.Param.input dtype name => {
+          match dtype returning Option(Nat) with
+          | Cuda.DType.bf16 => {
+            match Bool.and(Check.same(name, "A"), TinyDevice.sameParam(source, Cuda.Param.input(Cuda.DType.bf16, "A"))) returning Option(Nat) with
+            | Bool.true => Evaluator.Memory.get(a, index)
+            | Bool.false => {
+              match Bool.and(Check.same(name, "B"), TinyDevice.sameParam(source, Cuda.Param.input(Cuda.DType.bf16, "B"))) returning Option(Nat) with
+              | Bool.true => Evaluator.Memory.get(b, index)
+              | Bool.false => Option.none(Nat)
+            }
+          }
+          | _ => Option.none(Nat)
+        }
+        | _ => Option.none(Nat)
+      }
+    }
+
+    def mapKind (inputs: Inputs)(resolved: DeviceApi.ResolvedMap): Option(MapKind) := {
+      match inputs returning Option(MapKind) with
+      | Inputs.mk m n k dynamic aMap bMap cMap a b => {
+        match resolved returning Option(MapKind) with
+        | DeviceApi.ResolvedMap.mk encoding rows cols => {
+          match Bool.and(TinyDevice.sameMap(encoding, aMap),
+              Bool.and(Nat.beq(rows, m), Nat.beq(cols, k))) returning Option(MapKind) with
+          | Bool.true => Option.some(MapKind.a)
+          | Bool.false => {
+            match Bool.and(TinyDevice.sameMap(encoding, bMap),
+                Bool.and(Nat.beq(rows, n), Nat.beq(cols, k))) returning Option(MapKind) with
+            | Bool.true => Option.some(MapKind.b)
+            | Bool.false => {
+              match Bool.and(TinyDevice.sameMap(encoding, cMap),
+                  Bool.and(Nat.beq(rows, m), Nat.beq(cols, n))) returning Option(MapKind) with
+              | Bool.true => Option.some(MapKind.c)
+              | Bool.false => Option.none(MapKind)
+            }
+          }
+        }
+      }
+    }
+
+    def sourceOfMap (map: DeviceApi.ResolvedMap): Cuda.Param := {
+      match map returning Cuda.Param with
+      | DeviceApi.ResolvedMap.mk encoding rows cols => {
+        match encoding returning Cuda.Param with
+        | Cuda.MapEncoding.mk param use source mapRows mapCols inner outer => source
+      }
+    }
+
+    def inputWord (inputs: Inputs)(map: DeviceApi.ResolvedMap)(x: Nat)(y: Nat)(dstByte: Nat)(wordIndex: Nat): Nat := {
+      match map returning Nat with
+      | DeviceApi.ResolvedMap.mk encoding rows cols => {
+        let relativeWord := Nat.sub(wordIndex, Nat.div(dstByte, 4))
+        let row := Nat.div(relativeWord, 32)
+        let withinRow := Nat.mod(relativeWord, 32)
+        let physicalGroup := Nat.div(withinRow, 4)
+        let wordInGroup := Nat.mod(withinRow, 4)
+        let logicalGroup := TinyDevice.xor3(physicalGroup, Nat.mod(row, 8))
+        let col := Nat.add(x, Nat.add(Nat.mul(logicalGroup, 8), Nat.mul(wordInGroup, 2)))
+        let source := TinyDevice.sourceOfMap(map)
+        let lower := Option.getD(TinyDevice.inputScalar(inputs, source, Nat.add(Nat.mul(Nat.add(y, row), cols), col)), TinyDevice.outputSentinel)
+        let upper := Option.getD(TinyDevice.inputScalar(inputs, source, Nat.add(Nat.mul(Nat.add(y, row), cols), Nat.succ(col))), TinyDevice.outputSentinel)
+        Nat.add(lower, Nat.mul(upper, 65536))
+      }
+    }
+
+    def storageInputs (storage: Storage): Inputs := {
+      match storage returning Inputs with
+      | Storage.mk inputs dynamicShared shared output tmem taddr tmemCols allocated initialized coverage writes => inputs
+    }
+
+    def loadInputChunks (shared: Evaluator.Memory(Nat))(inputs: Inputs)(map: DeviceApi.ResolvedMap)(dstByte: Nat)(x: Nat)(y: Nat)
+        (chunk: Nat)(remaining: Nat): Option(Evaluator.Memory(Nat)) decreases structural(remaining) := {
+      match remaining returning Option(Evaluator.Memory(Nat)) with
+      | Nat.zero => Option.some(shared)
+      | Nat.succ rest => {
+        let chunkByte := Nat.add(dstByte, Nat.mul(chunk, 1024))
+        match Evaluator.Memory.replacePow2(shared, Nat.div(chunkByte, 4), 8,
+            fun (wordIndex: Nat): Nat => TinyDevice.inputWord(inputs, map, x, y, dstByte, wordIndex))
+            returning Option(Evaluator.Memory(Nat)) with
+        | Option.none => Option.none(Evaluator.Memory(Nat))
+        | Option.some changed => TinyDevice.loadInputChunks(changed, inputs, map, dstByte, x, y, Nat.succ(chunk), rest)
+      }
+    }
+
+    def loadInputBox (storage: Storage)(map: DeviceApi.ResolvedMap)(dstByte: Nat)(x: Nat)(y: Nat): Option(Storage) := {
+      match storage returning Option(Storage) with
+      | Storage.mk inputs dynamicShared shared output tmem taddr tmemCols allocated initialized coverage writes => {
+        match TinyDevice.loadInputChunks(shared, inputs, map, dstByte, x, y, 0, 16) returning Option(Storage) with
+        | Option.none => Option.none(Storage)
+        | Option.some changed => Option.some(TinyDevice.replaceSharedWords(storage, changed))
+      }
+    }
+
+    def validInputLoad (storage: Storage)(map: DeviceApi.ResolvedMap)(dstByte: Nat)(x: Nat)(y: Nat): Bool := {
+      let mapIsInput := {
+        match TinyDevice.mapKind(TinyDevice.storageInputs(storage), map) returning Bool with
+        | Option.some kind => {
+          match kind returning Bool with
+          | MapKind.a => Bool.true
+          | MapKind.b => Bool.true
+          | MapKind.c => Bool.false
+        }
+        | _ => Bool.false
+      }
+      let inputsOk := {
+        match map returning Bool with
+        | DeviceApi.ResolvedMap.mk encoding rows cols => {
+          match encoding returning Bool with
+          | Cuda.MapEncoding.mk param use source mapRows mapCols inner outer =>
+            Bool.and(Nat.beq(inner, 64), Bool.and(Nat.beq(outer, 128),
+              Bool.and(Nat.beq(x, 0), Bool.and(Nat.beq(y, 0), Bool.and(Nat.beq(rows, 128), Nat.beq(cols, 64))))))
+        }
+      }
+      Bool.and(mapIsInput, Bool.and(inputsOk,
+        Bool.and(Nat.isZero(Nat.mod(dstByte, 1024)), TinyDevice.sharedAddressOk(storage, dstByte, 16384, 1024))))
+    }
+
+    def storageTmem (storage: Storage): Pair(Evaluator.Memory(Nat), Pair(Nat, Pair(Nat, Pair(Bool, Bool)))) := {
+      match storage returning Pair(Evaluator.Memory(Nat), Pair(Nat, Pair(Nat, Pair(Bool, Bool)))) with
+      | Storage.mk inputs dynamicShared shared output tmem address columns allocated initialized coverage writes =>
+        (tmem, (address, (columns, (allocated, initialized))))
+    }
+
+    def allocTmem (storage: Storage)(slotByte: Nat)(columns: Nat): Option(Storage) := {
+      let (_, (address, (oldColumns, (allocated, initialized)))) := TinyDevice.storageTmem(storage)
+      match Bool.and(Bool.not(allocated), Nat.beq(columns, 128)) returning Option(Storage) with
+      | Bool.false => Option.none(Storage)
+      | Bool.true => {
+        match TinyDevice.writeShared(storage, slotByte, 0, Cuda.DType.u32) returning Option(Storage) with
+        | Option.none => Option.none(Storage)
+        | Option.some withSlot => {
+          Option.some(TinyDevice.replaceTmem(withSlot, Evaluator.Memory.allocPow2(14, TinyDevice.outputSentinel), 0, columns, Bool.true, Bool.false))
+        }
+      }
+    }
+
+    def deallocTmem (storage: Storage)(address: Nat)(columns: Nat): Option(Storage) := {
+      let (tmem, (allocatedAddress, (allocatedColumns, (allocated, initialized)))) := TinyDevice.storageTmem(storage)
+      match Bool.and(allocated,
+          Bool.and(Nat.beq(address, allocatedAddress),
+            Bool.and(Nat.beq(columns, allocatedColumns), Nat.beq(columns, 128)))) returning Option(Storage) with
+      | Bool.false => Option.none(Storage)
+      | Bool.true => Option.some(TinyDevice.replaceTmem(storage, tmem, allocatedAddress, 0, Bool.false, Bool.false))
+    }
+
+    def tmemRead (storage: Storage)(row: Nat)(column: Nat): Option(Nat) := {
+      let (memory, (address, (columns, (allocated, initialized)))) := TinyDevice.storageTmem(storage)
+      match Bool.and(allocated, Bool.and(initialized, Bool.and(Nat.blt(row, 128), Nat.blt(column, columns)))) returning Option(Nat) with
+      | Bool.false => Option.none(Nat)
+      | Bool.true => {
+        match Evaluator.Memory.get(memory, Nat.add(Nat.mul(row, columns), column)) returning Option(Nat) with
+        | Option.none => Option.none(Nat)
+        | Option.some value => {
+          match Nat.blt(value, Evaluator.Ring.modulus) returning Option(Nat) with
+          | Bool.true => Option.some(value)
+          | Bool.false => Option.none(Nat)
+        }
+      }
+    }
+
+    def tmemWrite (storage: Storage)(row: Nat)(column: Nat)(value: Nat): Option(Storage) := {
+      let (memory, (address, (columns, (allocated, initialized)))) := TinyDevice.storageTmem(storage)
+      match Bool.and(allocated, Bool.and(initialized, Bool.and(Nat.blt(row, 128), Nat.blt(column, columns)))) returning Option(Storage) with
+      | Bool.false => Option.none(Storage)
+      | Bool.true => {
+        match Nat.blt(value, Evaluator.Ring.modulus) returning Option(Storage) with
+        | Bool.false => Option.none(Storage)
+        | Bool.true => {
+          match Evaluator.Memory.set(memory, Nat.add(Nat.mul(row, columns), column), value) returning Option(Storage) with
+          | Option.none => Option.none(Storage)
+          | Option.some changed => Option.some(TinyDevice.replaceTmem(storage, changed, address, columns, allocated, initialized))
+        }
+      }
+    }
+
+    def loadRequest (storage: Storage)(map: DeviceApi.ResolvedMap)(dstByte: Nat)(x: Nat)(y: Nat): DeviceCompletion := {
+      match TinyDevice.validInputLoad(storage, map, dstByte, x, y) returning DeviceCompletion with
+      | Bool.false => TinyDevice.failed(storage, "TinyDevice: unsupported TMA input map, coordinate, box, or shared destination")
+      | Bool.true => {
+        match TinyDevice.loadInputBox(storage, map, dstByte, x, y) returning DeviceCompletion with
+        | Option.none => TinyDevice.failed(storage, "TinyDevice: TMA input box could not be materialized")
+        | Option.some changed => TinyDevice.completed(changed, List.nil(DeviceApi.RegisterWrite), 16384, 0, 0)
+      }
+    }
+
+    def storeStateCell (storage: Storage)(map: DeviceApi.ResolvedMap)(x: Nat)(y: Nat)(srcByte: Nat)(row: Nat)(col: Nat)
+        (state: Pair(Evaluator.Memory(Nat), Pair(Evaluator.Memory(Nat), Nat)))
+        : Option(Pair(Evaluator.Memory(Nat), Pair(Evaluator.Memory(Nat), Nat))) := {
+      let (output, (coverage, writes)) := state
+      let address := Nat.add(srcByte,
+        Nat.add(Nat.mul(row, 128),
+          Nat.add(Nat.mul(16, TinyDevice.xor3(Nat.div(col, 4), Nat.mod(row, 8))), Nat.mul(4, Nat.mod(col, 4)))))
+      let index := Nat.add(Nat.mul(Nat.add(y, row), 128), Nat.add(x, col))
+      match Evaluator.Memory.get(coverage, index) returning Option(Pair(Evaluator.Memory(Nat), Pair(Evaluator.Memory(Nat), Nat))) with
+      | Option.none => Option.none(Pair(Evaluator.Memory(Nat), Pair(Evaluator.Memory(Nat), Nat)))
+      | Option.some seen => {
+        match Nat.isZero(seen) returning Option(Pair(Evaluator.Memory(Nat), Pair(Evaluator.Memory(Nat), Nat))) with
+        | Bool.false => Option.none(Pair(Evaluator.Memory(Nat), Pair(Evaluator.Memory(Nat), Nat)))
+        | Bool.true => {
+          match TinyDevice.readShared(storage, address, Cuda.DType.f32) returning Option(Pair(Evaluator.Memory(Nat), Pair(Evaluator.Memory(Nat), Nat))) with
+          | Option.none => Option.none(Pair(Evaluator.Memory(Nat), Pair(Evaluator.Memory(Nat), Nat)))
+          | Option.some value => {
+            match Nat.blt(value, Evaluator.Ring.modulus) returning Option(Pair(Evaluator.Memory(Nat), Pair(Evaluator.Memory(Nat), Nat))) with
+            | Bool.false => Option.none(Pair(Evaluator.Memory(Nat), Pair(Evaluator.Memory(Nat), Nat)))
+            | Bool.true => {
+              match Evaluator.Memory.set(output, index, value) returning Option(Pair(Evaluator.Memory(Nat), Pair(Evaluator.Memory(Nat), Nat))) with
+              | Option.none => Option.none(Pair(Evaluator.Memory(Nat), Pair(Evaluator.Memory(Nat), Nat)))
+              | Option.some changedOutput => {
+                match Evaluator.Memory.set(coverage, index, 1) returning Option(Pair(Evaluator.Memory(Nat), Pair(Evaluator.Memory(Nat), Nat))) with
+                | Option.none => Option.none(Pair(Evaluator.Memory(Nat), Pair(Evaluator.Memory(Nat), Nat)))
+                | Option.some changedCoverage => Option.some((changedOutput, (changedCoverage, Nat.succ(writes))))
+              }
+            }
+          }
+        }
+      }
+    }
+
+    def storeColumns (storage: Storage)(map: DeviceApi.ResolvedMap)(x: Nat)(y: Nat)(srcByte: Nat)(row: Nat)(col: Nat)(remaining: Nat)
+        (state: Pair(Evaluator.Memory(Nat), Pair(Evaluator.Memory(Nat), Nat)))
+        : Option(Pair(Evaluator.Memory(Nat), Pair(Evaluator.Memory(Nat), Nat))) decreases structural(remaining) := {
+      match remaining returning Option(Pair(Evaluator.Memory(Nat), Pair(Evaluator.Memory(Nat), Nat))) with
+      | Nat.zero => Option.some(state)
+      | Nat.succ rest => {
+        match TinyDevice.storeStateCell(storage, map, x, y, srcByte, row, col, state)
+            returning Option(Pair(Evaluator.Memory(Nat), Pair(Evaluator.Memory(Nat), Nat))) with
+        | Option.none => Option.none(Pair(Evaluator.Memory(Nat), Pair(Evaluator.Memory(Nat), Nat)))
+        | Option.some changed => TinyDevice.storeColumns(storage, map, x, y, srcByte, row, Nat.succ(col), rest, changed)
+      }
+    }
+
+    def storeRows (storage: Storage)(map: DeviceApi.ResolvedMap)(x: Nat)(y: Nat)(srcByte: Nat)(row: Nat)(remaining: Nat)
+        (state: Pair(Evaluator.Memory(Nat), Pair(Evaluator.Memory(Nat), Nat)))
+        : Option(Pair(Evaluator.Memory(Nat), Pair(Evaluator.Memory(Nat), Nat))) decreases structural(remaining) := {
+      match remaining returning Option(Pair(Evaluator.Memory(Nat), Pair(Evaluator.Memory(Nat), Nat))) with
+      | Nat.zero => Option.some(state)
+      | Nat.succ rest => {
+        match TinyDevice.storeColumns(storage, map, x, y, srcByte, row, 0, 32, state)
+            returning Option(Pair(Evaluator.Memory(Nat), Pair(Evaluator.Memory(Nat), Nat))) with
+        | Option.none => Option.none(Pair(Evaluator.Memory(Nat), Pair(Evaluator.Memory(Nat), Nat)))
+        | Option.some afterRow => TinyDevice.storeRows(storage, map, x, y, srcByte, Nat.succ(row), rest, afterRow)
+      }
+    }
+
+    def validOutputStore (storage: Storage)(map: DeviceApi.ResolvedMap)(x: Nat)(y: Nat)(srcByte: Nat): Bool := {
+      let mapIsOutput := {
+        match TinyDevice.mapKind(TinyDevice.storageInputs(storage), map) returning Bool with
+        | Option.some kind => {
+          match kind returning Bool with
+          | MapKind.c => Bool.true
+          | _ => Bool.false
+        }
+        | _ => Bool.false
+      }
+      let tileOk := {
+        match map returning Bool with
+        | DeviceApi.ResolvedMap.mk encoding rows cols => {
+          match encoding returning Bool with
+          | Cuda.MapEncoding.mk param use source mapRows mapCols inner outer =>
+            Bool.and(Nat.beq(inner, 32), Bool.and(Nat.beq(outer, 32),
+              Bool.and(Nat.beq(Nat.mod(x, 32), 0), Bool.and(Nat.beq(Nat.mod(y, 32), 0),
+                Bool.and(Nat.ble(Nat.add(x, 32), cols), Nat.ble(Nat.add(y, 32), rows))))))
+        }
+      }
+      Bool.and(mapIsOutput, Bool.and(tileOk,
+        Bool.and(Nat.isZero(Nat.mod(srcByte, 1024)), TinyDevice.sharedAddressOk(storage, srcByte, 4096, 1024))))
+    }
+
+    def storeRequest (storage: Storage)(map: DeviceApi.ResolvedMap)(x: Nat)(y: Nat)(srcByte: Nat): DeviceCompletion := {
+      match TinyDevice.validOutputStore(storage, map, x, y, srcByte) returning DeviceCompletion with
+      | Bool.false => TinyDevice.failed(storage, "TinyDevice: unsupported TMA output map, coordinate, box, or shared source")
+      | Bool.true => {
+        let state := (TinyDevice.storageOutput(storage), TinyDevice.outputCoverage(storage))
+        match TinyDevice.storeRows(storage, map, x, y, srcByte, 0, 32, state)
+            returning DeviceCompletion with
+        | Option.none => TinyDevice.failed(storage, "TinyDevice: TMA output store overlapped, read invalid data, or exceeded output bounds")
+        | Option.some afterStore => {
+          let (output, (coverage, writes)) := afterStore
+          let changed := TinyDevice.replaceOutputState(storage, output, coverage, writes)
+          TinyDevice.completed(changed, List.nil(DeviceApi.RegisterWrite), 4096, 0, 0)
+        }
+      }
+    }
+
+    def operandAddress (baseByte: Nat)(step: Nat)(row: Nat)(localK: Nat): Nat := {
+      let k := Nat.add(Nat.mul(step, 16), localK)
+      Nat.add(baseByte,
+        Nat.add(Nat.mul(row, 128),
+          Nat.add(Nat.mul(16, TinyDevice.xor3(Nat.div(k, 8), Nat.mod(row, 8))), Nat.mul(2, Nat.mod(k, 8)))))
+    }
+
+    def operandRow (storage: Storage)(baseByte: Nat)(step: Nat)(row: Nat)(localK: Nat)(remaining: Nat)
+        : List(Nat) decreases structural(remaining) := {
+      match remaining returning List(Nat) with
+      | Nat.zero => List.nil(Nat)
+      | Nat.succ rest => {
+        let address := TinyDevice.operandAddress(baseByte, step, row, localK)
+        let value := Option.getD(TinyDevice.readShared(storage, address, Cuda.DType.bf16), TinyDevice.outputSentinel)
+        List.cons(value, TinyDevice.operandRow(storage, baseByte, step, row, Nat.succ(localK), rest))
+      }
+    }
+
+    def operandRows (storage: Storage)(baseByte: Nat)(step: Nat): Evaluator.Memory(List(Nat)) :=
+      Evaluator.Memory.tabulatePow2(7, fun (row: Nat): List(Nat) => TinyDevice.operandRow(storage, baseByte, step, row, 0, 16))
+
+    def rowPayloadOk (values: List(Nat))(remaining: Nat): Bool decreases structural(remaining) := {
+      match remaining returning Bool with
+      | Nat.zero => {
+        match values returning Bool with
+        | List.nil => Bool.true
+        | _ => Bool.false
+      }
+      | Nat.succ rest => {
+        match values returning Bool with
+        | List.nil => Bool.false
+        | List.cons value more => Bool.and(Nat.blt(value, Evaluator.Ring.modulus), TinyDevice.rowPayloadOk(more, rest))
+      }
+    }
+
+    def operandRowsOk (rows: Evaluator.Memory(List(Nat)))(row: Nat)(remaining: Nat): Bool decreases structural(remaining) := {
+      match remaining returning Bool with
+      | Nat.zero => Bool.true
+      | Nat.succ rest => {
+        match Evaluator.Memory.get(rows, row) returning Bool with
+        | Option.none => Bool.false
+        | Option.some values => Bool.and(TinyDevice.rowPayloadOk(values, 16), TinyDevice.operandRowsOk(rows, Nat.succ(row), rest))
+      }
+    }
+
+    def dotRows (left: List(Nat))(right: List(Nat))(accumulator: Nat): Nat decreases structural(left) := {
+      match left returning Nat with
+      | List.nil => accumulator
+      | List.cons a moreLeft => {
+        match right returning Nat with
+        | List.nil => TinyDevice.outputSentinel
+        | List.cons b moreRight => TinyDevice.dotRows(moreLeft, moreRight, Evaluator.Ring.add(accumulator, Evaluator.Ring.mul(a, b)))
+      }
+    }
+
+    def tmemReady (storage: Storage): Bool := {
+      match storage returning Bool with
+      | Storage.mk inputs dynamicShared shared output tmem address columns allocated initialized coverage writes =>
+        Bool.and(allocated, Bool.and(initialized, Bool.and(Nat.beq(address, 0), Nat.beq(columns, 128))))
+    }
+
+    def tmemMmaReady (storage: Storage)(accumulate: Nat): Bool := {
+      match storage returning Bool with
+      | Storage.mk inputs dynamicShared shared output tmem address columns allocated initialized coverage writes =>
+        Bool.and(allocated, Bool.and(Nat.beq(address, 0),
+          Bool.and(Nat.beq(columns, 128), Bool.or(Nat.isZero(accumulate), initialized))))
+    }
+
+    def isOneCtaGroup (group: Cuda.CtaGroup): Bool := {
+      match group returning Bool with
+      | Cuda.CtaGroup.one => Bool.true
+      | _ => Bool.false
+    }
+
+    def validOperandPair (storage: Storage)(a: DeviceApi.OperandDesc)(b: DeviceApi.OperandDesc)(m: Nat)(n: Nat)
+        (transposeB: Bool)(accumulate: Nat): Bool := {
+      match a returning Bool with
+      | DeviceApi.OperandDesc.mk aBase aLbo aStep => {
+        match b returning Bool with
+        | DeviceApi.OperandDesc.mk bBase bLbo bStep => {
+          let ringStart := 33792
+          let ringEnd := 164864
+          let ringOffset := Nat.sub(aBase, ringStart)
+          let shapeOk := Bool.and(Nat.beq(m, 128), Bool.and(Nat.beq(n, 128), Bool.not(transposeB)))
+          let descOk := Bool.and(Nat.beq(aLbo, 0),
+            Bool.and(Nat.beq(bLbo, 0), Bool.and(Nat.beq(aStep, bStep), Nat.blt(aStep, 4))))
+          let stageOk := Bool.and(Nat.ble(ringStart, aBase),
+            Bool.and(Nat.isZero(Nat.mod(ringOffset, 32768)),
+              Bool.and(Nat.ble(Nat.add(aBase, 32768), ringEnd), Nat.beq(bBase, Nat.add(aBase, 16384)))))
+          Bool.and(TinyDevice.tmemMmaReady(storage, accumulate),
+            Bool.and(shapeOk, Bool.and(descOk, Bool.and(Nat.ble(accumulate, 1), stageOk))))
+        }
+      }
+    }
+
+    def validMma (storage: Storage)(desc: DeviceApi.MmaDesc): Bool := {
+      match desc returning Bool with
+      | DeviceApi.MmaDesc.mk group acc a b idesc accumulate => {
+        match a returning Bool with
+        | DeviceApi.MmaSource.shared aDesc => {
+          match idesc returning Bool with
+        | Cuda.InstrDesc.mk m n transposeB => Bool.and(TinyDevice.isOneCtaGroup(group),
+              Bool.and(Nat.beq(acc, 0), TinyDevice.validOperandPair(storage, aDesc, b, m, n, transposeB, accumulate)))
+        }
+        | DeviceApi.MmaSource.tensorMemory address => Bool.false
+      }
+    }
+
+    def cellResult (storage: Storage)(aRows: Evaluator.Memory(List(Nat)))(bRows: Evaluator.Memory(List(Nat)))
+        (index: Nat)(accumulate: Nat): Nat := {
+      let row := Nat.div(index, 128)
+      let col := Nat.mod(index, 128)
+      let aRow := Option.getD(Evaluator.Memory.get(aRows, row), List.nil(Nat))
+      let bRow := Option.getD(Evaluator.Memory.get(bRows, col), List.nil(Nat))
+      let start := {
+        match Nat.isZero(accumulate) returning Nat with
+        | Bool.true => 0
+        | Bool.false => Option.getD(TinyDevice.tmemRead(storage, row, col), TinyDevice.outputSentinel)
+      }
+      TinyDevice.dotRows(aRow, bRow, start)
+    }
+
+    def mmaRequest (storage: Storage)(desc: DeviceApi.MmaDesc): DeviceCompletion := {
+      match TinyDevice.validMma(storage, desc) returning DeviceCompletion with
+      | Bool.false => TinyDevice.failed(storage, "TinyDevice: unsupported MMA group, accumulator, descriptor, shape, or allocation")
+      | Bool.true => {
+        match desc returning DeviceCompletion with
+        | DeviceApi.MmaDesc.mk group acc aSource b idesc accumulate => {
+          match aSource returning DeviceCompletion with
+          | DeviceApi.MmaSource.shared a => {
+            match a returning DeviceCompletion with
+            | DeviceApi.OperandDesc.mk aBase aLbo aStep => {
+              match b returning DeviceCompletion with
+              | DeviceApi.OperandDesc.mk bBase bLbo bStep => {
+                let aRows := TinyDevice.operandRows(storage, aBase, aStep)
+                let bRows := TinyDevice.operandRows(storage, bBase, bStep)
+                match Bool.and(TinyDevice.operandRowsOk(aRows, 0, 128), TinyDevice.operandRowsOk(bRows, 0, 128)) returning DeviceCompletion with
+                | Bool.false => TinyDevice.failed(storage, "TinyDevice: MMA operand descriptor addressed a non-ring shared value")
+                | Bool.true => {
+                  let next := Evaluator.Memory.tabulatePow2(14,
+                    fun (index: Nat): Nat => TinyDevice.cellResult(storage, aRows, bRows, index, accumulate))
+                  match TinyDevice.storageTmem(storage) returning DeviceCompletion with
+                  | Pair.mk old rest => {
+                    let (address, (columns, (allocated, initialized))) := rest
+                    let changed := TinyDevice.replaceTmem(storage, next, address, columns, allocated, Bool.true)
+                    TinyDevice.completed(changed, List.nil(DeviceApi.RegisterWrite), 0, 262144, 262144)
+                  }
+                }
+              }
+            }
+          }
+          | DeviceApi.MmaSource.tensorMemory address => TinyDevice.failed(storage, "TinyDevice: tensor-memory A operand is unsupported")
+        }
+      }
+    }
+
+    def sameTmemShape (left: Cuda.TmemShape)(right: Cuda.TmemShape): Bool := {
+      match left returning Bool with
+      | Cuda.TmemShape.s32x32b => {
+        match right returning Bool with
+        | Cuda.TmemShape.s32x32b => Bool.true
+      }
+    }
+
+    def tmemLoadColumn (storage: Storage)(quadrant: Nat)(column: Nat)(lane: Nat)(remaining: Nat)
+        : Option(List(Nat)) decreases structural(remaining) := {
+      match remaining returning Option(List(Nat)) with
+      | Nat.zero => Option.some(List.nil(Nat))
+      | Nat.succ rest => {
+        match TinyDevice.tmemRead(storage, Nat.add(Nat.mul(quadrant, 32), lane), column) returning Option(List(Nat)) with
+        | Option.none => Option.none(List(Nat))
+        | Option.some value => {
+          match TinyDevice.tmemLoadColumn(storage, quadrant, column, Nat.succ(lane), rest) returning Option(List(Nat)) with
+          | Option.none => Option.none(List(Nat))
+          | Option.some more => Option.some(List.cons(value, more))
+        }
+      }
+    }
+
+    def tmemLoadRegisters (storage: Storage)(quadrant: Nat)(firstColumn: Nat)(ids: List(Nat))(offset: Nat)
+        : Option(List(DeviceApi.RegisterWrite)) decreases structural(ids) := {
+      match ids returning Option(List(DeviceApi.RegisterWrite)) with
+      | List.nil => Option.some(List.nil(DeviceApi.RegisterWrite))
+      | List.cons id rest => {
+        match TinyDevice.tmemLoadColumn(storage, quadrant, Nat.add(firstColumn, offset), 0, 32)
+            returning Option(List(DeviceApi.RegisterWrite)) with
+        | Option.none => Option.none(List(DeviceApi.RegisterWrite))
+        | Option.some lanes => {
+          match DeviceApi.LaneVector.ofList(lanes) returning Option(List(DeviceApi.RegisterWrite)) with
+          | Option.none => Option.none(List(DeviceApi.RegisterWrite))
+          | Option.some values => {
+            match TinyDevice.tmemLoadRegisters(storage, quadrant, firstColumn, rest, Nat.succ(offset))
+                returning Option(List(DeviceApi.RegisterWrite)) with
+            | Option.none => Option.none(List(DeviceApi.RegisterWrite))
+            | Option.some writes => Option.some(List.cons(DeviceApi.RegisterWrite.mk(id, values), writes))
+          }
+        }
+      }
+    }
+
+    def validTmemLoad (storage: Storage)(shape: Cuda.TmemShape)(ids: List(Nat))(baseAddress: Nat)
+        (warpGroupPosition: Nat)(activeMask: Nat): Bool := {
+      let quadrantOk := Bool.and(Nat.blt(warpGroupPosition, 4),
+        Nat.beq(Nat.div(baseAddress, 65536), Nat.mul(warpGroupPosition, 32)))
+      let firstColumn := Nat.mod(baseAddress, 65536)
+      let columnsOk := Bool.and(Nat.isZero(Nat.mod(firstColumn, 8)),
+        Bool.and(Nat.blt(firstColumn, 128), Nat.ble(Nat.add(firstColumn, 8), 128)))
+      Bool.and(TinyDevice.sameTmemShape(shape, Cuda.TmemShape.s32x32b),
+        Bool.and(Nat.beq(List.length(ids), 8),
+          Bool.and(Nat.beq(activeMask, DeviceApi.LaneVector.fullMask),
+            Bool.and(Nat.blt(baseAddress, 4294967296),
+              Bool.and(TinyDevice.tmemReady(storage), Bool.and(quadrantOk, columnsOk))))))
+    }
+
+    def tmemLoadRequest (storage: Storage)(shape: Cuda.TmemShape)(ids: List(Nat))(baseAddress: Nat)
+        (warpGroupPosition: Nat)(activeMask: Nat): DeviceCompletion := {
+      match TinyDevice.validTmemLoad(storage, shape, ids, baseAddress, warpGroupPosition, activeMask) returning DeviceCompletion with
+      | Bool.false => TinyDevice.failed(storage, "TinyDevice: unsupported tensor-memory load shape, address, mask, or allocation")
+      | Bool.true => {
+        match TinyDevice.tmemLoadRegisters(storage, warpGroupPosition, Nat.mod(baseAddress, 65536), ids, 0)
+            returning DeviceCompletion with
+        | Option.none => TinyDevice.failed(storage, "TinyDevice: tensor-memory load addressed an unwritten cell")
+        | Option.some writes => TinyDevice.completed(storage, writes, 0, 0, 0)
+      }
+    }
+
+    def complete (storage: Storage)(request: DeviceApi.DataRequest): DeviceCompletion := {
+      match request returning DeviceCompletion with
+      | DeviceApi.DataRequest.tmaLoad map dstByte x y => TinyDevice.loadRequest(storage, map, dstByte, x, y)
+      | DeviceApi.DataRequest.mma desc => TinyDevice.mmaRequest(storage, desc)
+      | DeviceApi.DataRequest.tmemLoad shape ids baseAddress warpGroupPosition activeMask =>
+        TinyDevice.tmemLoadRequest(storage, shape, ids, baseAddress, warpGroupPosition, activeMask)
+      | DeviceApi.DataRequest.tmaStore map x y srcByte => TinyDevice.storeRequest(storage, map, x, y, srcByte)
+    }
+  }
+}

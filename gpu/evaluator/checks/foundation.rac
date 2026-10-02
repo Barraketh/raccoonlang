@@ -17,6 +17,9 @@ namespace EvaluatorChecks {
 
   def boolMemory : Evaluator.Memory(Bool) := Evaluator.Memory.allocPow2(2, Bool.false)
   def boolUpdated : Evaluator.Memory(Bool) := Option.getD(Evaluator.Memory.set(boolMemory, 2, Bool.true), boolMemory)
+  def tabulated : Evaluator.Memory(Nat) := Evaluator.Memory.tabulatePow2(4, fun (index: Nat): Nat => Nat.add(index, 10))
+  def rangeReplaced : Evaluator.Memory(Nat) := Option.getD(
+    Evaluator.Memory.replacePow2(tile, 4096, 2, fun (index: Nat): Nat => Nat.add(index, 100)), tile)
 
   def reads (memory: Evaluator.Memory(Nat))(index: Nat)(expected: Nat): Bool := {
     match Evaluator.Memory.get(memory, index) returning Bool with
@@ -54,6 +57,18 @@ namespace EvaluatorChecks {
     Bool.and(EvaluatorChecks.boolReads(boolUpdated, 2, Bool.true), EvaluatorChecks.boolReads(boolMemory, 2, Bool.false)),
     EvaluatorChecks.boolReads(boolUpdated, 1, Bool.false))
 
+  def tabulateChecks : Bool := Bool.and(
+    Nat.beq(Evaluator.Memory.capacity(tabulated), 16),
+    Bool.and(EvaluatorChecks.reads(tabulated, 0, 10),
+      Bool.and(EvaluatorChecks.reads(tabulated, 7, 17), EvaluatorChecks.reads(tabulated, 15, 25))))
+
+  def rangeReplacementChecks : Bool := Bool.and(
+    Bool.and(EvaluatorChecks.reads(rangeReplaced, 4096, 4196), EvaluatorChecks.reads(rangeReplaced, 4099, 4199)),
+    Bool.and(Bool.and(EvaluatorChecks.reads(rangeReplaced, 4095, 0), EvaluatorChecks.reads(rangeReplaced, 4100, 0)),
+      Bool.and(EvaluatorChecks.reads(tile, 4096, 0),
+        Bool.and(Option.isNone(Evaluator.Memory.replacePow2(tile, 16384, 0, fun (index: Nat): Nat => index)),
+          Option.isNone(Evaluator.Memory.replacePow2(tile, 1, 2, fun (index: Nat): Nat => index))))))
+
   def ringArithmetic : Bool := Bool.and(
     Bool.and(Nat.beq(Evaluator.Ring.ofNat(514), 0), Nat.beq(Evaluator.Ring.add(250, 10), 3)),
     Nat.beq(Evaluator.Ring.mul(20, 20), 143))
@@ -62,7 +77,9 @@ namespace EvaluatorChecks {
     Bool.and(EvaluatorChecks.persistentReads,
       Bool.and(EvaluatorChecks.outOfBounds,
         Bool.and(EvaluatorChecks.singleCellChecks,
-          Bool.and(EvaluatorChecks.genericValueChecks, EvaluatorChecks.ringArithmetic)))))
+          Bool.and(EvaluatorChecks.genericValueChecks,
+            Bool.and(EvaluatorChecks.tabulateChecks,
+              Bool.and(EvaluatorChecks.rangeReplacementChecks, EvaluatorChecks.ringArithmetic)))))))
 
   def exactChecksHold : Eq(Bool, EvaluatorChecks.exactChecks, Bool.true) := Eq.refl(Bool.true)
 }

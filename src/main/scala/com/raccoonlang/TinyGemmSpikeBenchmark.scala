@@ -1,0 +1,570 @@
+package com.raccoonlang
+
+import java.nio.file.Paths
+
+/**
+ * Opt-in host driver for the source TinyGEMM evaluator spike. All source setup and result checking are outside the
+ * timed `run(prepared)` invocation; the independent oracle consumes the actual prepared A/B arrays.
+ */
+object TinyGemmSpikeBenchmark {
+  private val StackBytes = 256L << 20
+  private val M = 128
+  private val N = 128
+  private val K = 64
+  private val RingModulus = 257
+  private val ExpectedScalarOpsPerKind = M.toLong * N.toLong * K.toLong
+  private val ExpectedWarpSteps = 1251L
+  private val ExpectedMmaInstructions = 4L
+  private val ExpectedAsyncCompletions = 88L
+  private val ExpectedTmaBytes = 98304L
+  private val ExpectedTmemLoads = 64L
+  private val ExpectedTmaStores = 16L
+  private val DefaultWarmups = 1
+  private val DefaultSamples = 3
+  private val Seeds = Vector(17, 83)
+
+  private final case class Options(warmups: Int, samples: Int)
+  private final case class Api(
+      kernel: Value,
+      prepare: Value,
+      run: Value,
+      inputs: Value,
+      outputs: Value,
+      stats: Value,
+      errors: Value,
+      mutantNames: Value,
+      runMutant: Value,
+      strings: Option[Value.ValidatedStringLayout]
+  )
+  private final case class InputPair(a: Vector[Int], b: Vector[Int])
+  private[raccoonlang] final case class Stats(
+      warpSteps: Long,
+      asyncCompletions: Long,
+      tmaBytes: Long,
+      scalarMuls: Long,
+      scalarAdds: Long,
+      mmaInstructions: Long,
+      tmemLoads: Long,
+      tmaStores: Long
+  ) {
+    def scalarOps: Long = scalarMuls + scalarAdds
+  }
+  private[raccoonlang] final case class MutantCheck(name: String, category: String, stats: Stats)
+  private final case class Sample(elapsedNs: Long, stats: Stats)
+  private final case class Work(seed: Int, prepared: Value, input: InputPair, expected: Vector[Int])
+
+  def main(args: Array[String]): Unit = {
+    val options = parseArgs(args)
+    val root = Paths.get(sys.props.getOrElse("raccoon.repoRoot", ".")).toAbsolutePath.normalize
+    val gpuRoot = root.resolve("gpu")
+    val prelude = Prelude.fromPath(gpuRoot.resolve("Prelude.rac"))
+
+    val setupStart = System.nanoTime()
+    val entry = Execution.onStack(StackBytes) {
+      EvaluatorSpikeBenchmark.checkedEntry(gpuRoot.resolve("evaluator/TinyGemmApi.rac"), gpuRoot, prelude)
+    }
+    val api = decodeApi(entry.value, entry.strings)
+    EvaluatorSpikeBenchmark.requireTinyKernel(api.kernel)
+    val apiLoadNs = System.nanoTime() - setupStart
+
+    val natType = prelude.checkedEnv("Nat")
+    val works = prepareWorks(api, natType, Seeds)
+
+    val mmaCount = ExpectedScalarOpsPerKind
+    println("evaluator_spike=tinygemm-z257")
+    println(s"source_api_load_check_ns=$apiLoadNs")
+    println(s"shape=M$M-N$N-K$K")
+    println(s"ring_modulus=$RingModulus")
+    println(s"seeds=${Seeds.mkString(",")}")
+    println(s"expected_scalar_multiplies=$mmaCount")
+    println(s"expected_scalar_adds=$mmaCount")
+    println(s"warmups=${options.warmups}")
+    println(s"timed_samples=${options.samples}")
+    println("timed_region=Interpreter.evalApply(run, prepared) only")
+    println("output_materialization=outside timed region")
+
+    works.foreach { work =>
+      var firstStats: Option[Stats] = None
+
+      def checkedRun(phase: String): (Long, Stats) = {
+        val (elapsedNs, result) = timedRun(api.run, work.prepared)
+        val stats = decodeStats(applyOnStack(api.stats, result))
+        validateSuccess(api, result, stats, work.expected, work.seed, phase)
+        firstStats match {
+          case Some(reference) =>
+            require(
+              stats == reference,
+              s"seed=${work.seed} $phase counters changed when reusing Prepared: $reference vs $stats"
+            )
+          case None => firstStats = Some(stats)
+        }
+        (elapsedNs, stats)
+      }
+
+      (0 until options.warmups).foreach { _ =>
+        checkedRun("warmup")
+      }
+
+      val samples = Vector.tabulate(options.samples) { index =>
+        val (elapsedNs, stats) = checkedRun(s"sample ${index + 1}")
+        println(s"seed_${work.seed}_sample_${index + 1}_invocation_ns=$elapsedNs")
+        Sample(elapsedNs, stats)
+      }
+
+      val sortedSamples = samples.sortBy(_.elapsedNs)
+      val medianNs = median(sortedSamples.map(_.elapsedNs))
+      val representativeStats = sortedSamples(sortedSamples.length / 2).stats
+      val warpStepsPerSecond = rate(representativeStats.warpSteps, medianNs)
+      val scalarOpsPerSecond = rate(representativeStats.scalarOps, medianNs)
+      val tenMillionStepNs =
+        if (warpStepsPerSecond == 0.0) Double.PositiveInfinity else 1.0e7 * 1.0e9 / warpStepsPerSecond
+
+      println(s"seed_${work.seed}_checked_outputs=${work.expected.length}")
+      println(s"seed_${work.seed}_coverage=16384_of_16384_no_257_sentinel")
+      println(s"seed_${work.seed}_median_invocation_ns=$medianNs")
+      println(s"seed_${work.seed}_warp_steps=${representativeStats.warpSteps}")
+      println(s"seed_${work.seed}_async_event_completions=${representativeStats.asyncCompletions}")
+      println(s"seed_${work.seed}_tma_bytes=${representativeStats.tmaBytes}")
+      println(s"seed_${work.seed}_scalar_muls=${representativeStats.scalarMuls}")
+      println(s"seed_${work.seed}_scalar_adds=${representativeStats.scalarAdds}")
+      println(s"seed_${work.seed}_mma_instructions=${representativeStats.mmaInstructions}")
+      println(s"seed_${work.seed}_tmem_loads=${representativeStats.tmemLoads}")
+      println(s"seed_${work.seed}_tma_stores=${representativeStats.tmaStores}")
+      println(f"seed_${work.seed}_warp_steps_per_second=$warpStepsPerSecond%.2f")
+      println(f"seed_${work.seed}_scalar_ops_per_second=$scalarOpsPerSecond%.2f")
+      println(
+        f"seed_${work.seed}_ten_million_step_extrapolation_seconds=${tenMillionStepNs / 1.0e9}%.3f (MMA-heavy mix)"
+      )
+    }
+
+    println("scope_caveat=TinyGEMM MMA-heavy exact-ring spike; not FP, broad hardware, or v0 race-coverage evidence")
+  }
+
+  private def parseArgs(args: Array[String]): Options = {
+    var warmups = DefaultWarmups
+    var samples = DefaultSamples
+    var index = 0
+    while (index < args.length) {
+      val flag = args(index)
+      if (index + 1 >= args.length) usage(s"missing value after $flag")
+      val value = args(index + 1).toIntOption.getOrElse(usage(s"invalid integer for $flag: ${args(index + 1)}"))
+      flag match {
+        case "--warmups" => warmups = value
+        case "--samples" => samples = value
+        case other       => usage(s"unknown argument: $other")
+      }
+      index += 2
+    }
+    if (warmups < 0) usage("--warmups must be non-negative")
+    if (samples < 1) usage("--samples must be positive")
+    Options(warmups, samples)
+  }
+
+  private def usage(message: String): Nothing =
+    throw new IllegalArgumentException(s"$message\nUsage: TinyGemmSpikeBenchmark [--warmups N] [--samples N]")
+
+  private def decodeApi(value: Value, strings: Option[Value.ValidatedStringLayout]): Api = {
+    val (kernel, rest0) = pair(value, "TinyGemmApi")
+    val (prepare, rest1) = pair(rest0, "TinyGemmApi function bundle")
+    val (run, rest2) = pair(rest1, "TinyGemmApi function bundle")
+    val (inputs, rest3) = pair(rest2, "TinyGemmApi function bundle")
+    val (outputs, rest4) = pair(rest3, "TinyGemmApi function bundle")
+    val (stats, rest5) = pair(rest4, "TinyGemmApi function bundle")
+    val (errors, rest6) = pair(rest5, "TinyGemmApi function bundle")
+    val (mutantNames, runMutant) = pair(rest6, "TinyGemmApi malformed-case bundle")
+    Api(kernel, prepare, run, inputs, outputs, stats, errors, mutantNames, runMutant, strings)
+  }
+
+  private def pair(value: Value, label: String): (Value, Value) =
+    value match {
+      case Value.VCtor(head, fields, _) if head.name == "Pair.mk" && fields.length == 2 => (fields(0), fields(1))
+      case other => throw new IllegalArgumentException(s"Expected Pair.mk for $label, got $other")
+    }
+
+  private def optionSome(value: Value, label: String): Value =
+    value match {
+      case Value.VCtor(head, fields, _) if head.name == "Option.some" && fields.length == 1 => fields.head
+      case Value.VCtor(head, _, _) if head.name == "Option.none" =>
+        throw new IllegalStateException(s"$label returned None")
+      case other => throw new IllegalArgumentException(s"Expected Option result for $label, got $other")
+    }
+
+  private def decodePair(value: Value, label: String): (Value, Value) = pair(value, label)
+
+  private def prepareWorks(api: Api, natType: Value, seeds: Vector[Int]): Vector[Work] = {
+    val works = seeds.map { seed =>
+      val preparedOption = applyOnStack(api.prepare, api.kernel, Value.VPacked.nat(BigInt(seed), natType))
+      val prepared = optionSome(preparedOption, s"prepare(seed=$seed)")
+      val (aValues, bValues) = decodePair(applyOnStack(api.inputs, prepared), s"inputs(seed=$seed)")
+      val a = decodeNatList(aValues, s"A(seed=$seed)")
+      val b = decodeNatList(bValues, s"B(seed=$seed)")
+      require(a.length == M * K, s"A(seed=$seed) has ${a.length} values, expected ${M * K}")
+      require(b.length == N * K, s"B(seed=$seed) has ${b.length} values, expected ${N * K}")
+      require(a.forall(x => x >= 0 && x < RingModulus), s"A(seed=$seed) contains a value outside Z/$RingModulus")
+      require(b.forall(x => x >= 0 && x < RingModulus), s"B(seed=$seed) contains a value outside Z/$RingModulus")
+      requireCoordinateDependent("A", seed, a)
+      requireCoordinateDependent("B", seed, b)
+      val input = InputPair(a, b)
+      Work(seed, prepared, input, exactMatmul(input))
+    }
+    require(works.map(_.seed).distinct.length >= 2, "TinyGEMM spike requires at least two distinct input seeds")
+    require(works.map(_.input.a).distinct.length == works.length, "different seeds produced identical A inputs")
+    require(works.map(_.input.b).distinct.length == works.length, "different seeds produced identical B inputs")
+    require(works.map(_.expected).distinct.length == works.length, "different seeds produced identical output matrices")
+
+    val oracleTransposeDisagreements = works.map { work =>
+      work.expected.indices.count { index =>
+        val row = index / N
+        val col = index % N
+        work.expected(index) != work.expected(col * N + row)
+      }
+    }
+    require(oracleTransposeDisagreements.forall(_ > 0), "seed fixtures did not produce an asymmetric C matrix")
+    works
+  }
+
+  /** One untimed, fully checked source run per seed for the focused Scala integration suite. */
+  private[raccoonlang] def verifySeeds(
+      gpuRoot: java.nio.file.Path,
+      prelude: Prelude.Config,
+      seeds: Vector[Int]
+  ): Vector[Stats] = {
+    val entry = Execution.onStack(StackBytes) {
+      EvaluatorSpikeBenchmark.checkedEntry(gpuRoot.resolve("evaluator/TinyGemmApi.rac"), gpuRoot, prelude)
+    }
+    val api = decodeApi(entry.value, entry.strings)
+    EvaluatorSpikeBenchmark.requireTinyKernel(api.kernel)
+    val natType = prelude.checkedEnv("Nat")
+    prepareWorks(api, natType, seeds).map { work =>
+      def runOnce(phase: String): Stats = {
+        val result = applyOnStack(api.run, work.prepared)
+        val stats = decodeStats(applyOnStack(api.stats, result))
+        validateSuccess(api, result, stats, work.expected, work.seed, phase)
+        stats
+      }
+      val first = runOnce("integration test first run")
+      val second = runOnce("integration test prepared reuse")
+      require(first == second, s"seed=${work.seed} counters changed when reusing Prepared: $first vs $second")
+      first
+    }
+  }
+
+  /** Exercise source-owned malformed ASTs through WarpMachine, not through a host-side evaluator model. */
+  private[raccoonlang] def verifyMutants(
+      gpuRoot: java.nio.file.Path,
+      prelude: Prelude.Config
+  ): Vector[MutantCheck] = {
+    val entry = Execution.onStack(StackBytes) {
+      EvaluatorSpikeBenchmark.checkedEntry(gpuRoot.resolve("evaluator/TinyGemmApi.rac"), gpuRoot, prelude)
+    }
+    val api = decodeApi(entry.value, entry.strings)
+    EvaluatorSpikeBenchmark.requireTinyKernel(api.kernel)
+    val namedMutants = decodeStringList(api.mutantNames, api.strings)
+    val expectedCategories = Vector(
+      "wrong-k-slice" -> "complete-mismatch",
+      "descriptor" -> "device-fault",
+      "output-offset" -> "device-fault",
+      "out-of-bounds" -> "device-fault",
+      "partial-aligned" -> "invalid-state",
+      "partial-wait" -> "invalid-state",
+      "unsupported" -> "unsupported",
+      "unsupported-regpool" -> "unsupported",
+      "missing-commit" -> "deadlocked",
+      "missing-tma-completion" -> "deadlocked",
+      "fuel" -> "fuel-exhausted",
+      "not-quiescent" -> "not-quiescent"
+    )
+    require(
+      namedMutants
+        .map(_._1)
+        .toSet == expectedCategories.map(_._1).toSet && namedMutants.length == expectedCategories.length,
+      s"TinyGemmApi malformed-case names differed: ${namedMutants.map(_._1).mkString(",")}"
+    )
+    val expectedByName = expectedCategories.toMap
+    val natType = prelude.checkedEnv("Nat")
+    val generousFuel = Value.VPacked.nat(BigInt(10000000), natType)
+    val oracleSeed = 17
+    val oraclePrepared = optionSome(
+      applyOnStack(api.prepare, api.kernel, Value.VPacked.nat(BigInt(oracleSeed), natType)),
+      s"prepare(seed=$oracleSeed) for valid K-slice mutant"
+    )
+    val (oracleA, oracleB) = decodePair(applyOnStack(api.inputs, oraclePrepared), s"inputs(seed=$oracleSeed)")
+    val oracleInput = InputPair(
+      decodeNatList(oracleA, s"A(seed=$oracleSeed)"),
+      decodeNatList(oracleB, s"B(seed=$oracleSeed)")
+    )
+    require(
+      oracleInput.a.length == M * K && oracleInput.b.length == N * K,
+      "seed-17 mutant oracle inputs had wrong lengths"
+    )
+    require(oracleInput.a.forall(x => x >= 0 && x < RingModulus), "seed-17 mutant oracle A is outside Z/257")
+    require(oracleInput.b.forall(x => x >= 0 && x < RingModulus), "seed-17 mutant oracle B is outside Z/257")
+    requireCoordinateDependent("A", oracleSeed, oracleInput.a)
+    requireCoordinateDependent("B", oracleSeed, oracleInput.b)
+    val expectedOracle = exactMatmul(oracleInput)
+
+    namedMutants.map { case (name, sourceName) =>
+      val fuel = if (name == "fuel") Value.VPacked.nat(BigInt(1), natType) else generousFuel
+      val result = applyOnStack(api.runMutant, sourceName, fuel)
+      result match {
+        case Value.VCtor(head, _, _) if head.name == "Evaluator.WarpMachine.MachineResult.complete" =>
+          require(name == "wrong-k-slice", s"mutant $name unexpectedly completed")
+          val values = decodeNatList(applyOnStack(api.outputs, result), s"mutant $name outputs")
+          require(values.length == M * N, s"mutant $name produced ${values.length} outputs, expected ${M * N}")
+          require(
+            values.forall(x => x >= 0 && x < RingModulus),
+            s"mutant $name produced a value outside Z/$RingModulus"
+          )
+          require(!values.contains(RingModulus), s"mutant $name retained output sentinel $RingModulus")
+          require(values != expectedOracle, "valid K-slice mutant unexpectedly matched the seed-17 independent oracle")
+          val counts = decodeStats(applyOnStack(api.stats, result))
+          require(
+            counts.warpSteps == ExpectedWarpSteps,
+            s"valid K-slice mutant counted ${counts.warpSteps} warp statements, expected $ExpectedWarpSteps"
+          )
+          require(
+            counts.asyncCompletions == ExpectedAsyncCompletions,
+            "valid K-slice mutant did not complete the expected event count"
+          )
+          require(counts.tmaBytes == ExpectedTmaBytes, "valid K-slice mutant transferred an unexpected byte count")
+          require(
+            counts.scalarMuls == ExpectedScalarOpsPerKind,
+            "valid K-slice mutant counted an unexpected multiply count"
+          )
+          require(counts.scalarAdds == ExpectedScalarOpsPerKind, "valid K-slice mutant counted an unexpected add count")
+          require(
+            counts.mmaInstructions == ExpectedMmaInstructions,
+            "valid K-slice mutant completed an unexpected MMA count"
+          )
+          require(
+            counts.tmemLoads == ExpectedTmemLoads,
+            "valid K-slice mutant counted an unexpected tensor-memory load count"
+          )
+          require(counts.tmaStores == ExpectedTmaStores, "valid K-slice mutant counted an unexpected TMA store count")
+          MutantCheck(name, "complete-mismatch", counts)
+        case Value.VCtor(head, _, _) if head.name == "Evaluator.WarpMachine.MachineResult.failed" =>
+          require(
+            name != "wrong-k-slice",
+            s"valid K-slice mutant failed: ${render(applyOnStack(api.errors, result), api.strings)}"
+          )
+          val category = render(applyOnStack(api.errors, result), api.strings)
+          val expectedCategory = expectedByName(name)
+          require(
+            category.startsWith(expectedCategory),
+            s"mutant $name reported '$category', expected category '$expectedCategory'"
+          )
+          if (name == "partial-wait") {
+            require(
+              category.contains("tcgen05.wait::ld") && category.contains("all 32 lanes") && category.contains(
+                "participate"
+              ),
+              s"partial-wait failed before the aligned full-participation guard: '$category'"
+            )
+          }
+          if (name == "unsupported-regpool") {
+            require(
+              category.contains("setmaxnreg register-pool behavior is not modeled"),
+              s"unsupported-regpool did not report the unmodeled register-pool behavior: '$category'"
+            )
+          }
+          val counts = decodeStats(applyOnStack(api.stats, result))
+          if (name == "missing-tma-completion") {
+            require(
+              counts.asyncCompletions < ExpectedAsyncCompletions,
+              s"missing-TMA-completion retired ${counts.asyncCompletions} events, expected fewer than $ExpectedAsyncCompletions"
+            )
+            require(
+              counts.tmaBytes < ExpectedTmaBytes,
+              s"missing-TMA-completion transferred ${counts.tmaBytes} bytes, expected fewer than $ExpectedTmaBytes"
+            )
+            require(
+              counts.mmaInstructions == 0L,
+              s"missing-TMA-completion reached ${counts.mmaInstructions} MMA instructions before failing"
+            )
+          }
+          require(
+            decodeNatList(applyOnStack(api.outputs, result), s"mutant $name outputs").isEmpty,
+            s"failed mutant $name exposed output values"
+          )
+          MutantCheck(name, expectedCategory, counts)
+        case other =>
+          throw new IllegalArgumentException(s"mutant $name returned an unknown result: ${render(other, api.strings)}")
+      }
+    }
+  }
+
+  private def decodeNatList(value: Value, label: String): Vector[Int] = {
+    val result = Vector.newBuilder[Int]
+    var current = value
+    var index = 0
+    var done = false
+    while (!done) {
+      current match {
+        case Value.VCtor(head, fields, _) if head.name == "List.nil" && fields.isEmpty => done = true
+        case Value.VCtor(head, fields, _) if head.name == "List.cons" && fields.length == 2 =>
+          val n = EvaluatorSpikeBenchmark.natOf(fields(0))
+          require(n.isValidInt, s"$label[$index]=$n does not fit an Int")
+          result += n.toInt
+          current = fields(1)
+          index += 1
+        case other => throw new IllegalArgumentException(s"Malformed $label list at index $index: $other")
+      }
+    }
+    result.result()
+  }
+
+  private def decodeStringList(
+      value: Value,
+      strings: Option[Value.ValidatedStringLayout]
+  ): Vector[(String, Value)] = {
+    val result = Vector.newBuilder[(String, Value)]
+    var current = value
+    var index = 0
+    var done = false
+    while (!done) {
+      current match {
+        case Value.VCtor(head, fields, _) if head.name == "List.nil" && fields.isEmpty => done = true
+        case Value.VCtor(head, fields, _) if head.name == "List.cons" && fields.length == 2 =>
+          val text = PrettyPrinter
+            .rawString(fields(0), strings)
+            .getOrElse(
+              throw new IllegalArgumentException(s"Malformed source String in mutantNames[$index]")
+            )
+          result += ((text, fields(0)))
+          current = fields(1)
+          index += 1
+        case other => throw new IllegalArgumentException(s"Malformed mutantNames list at index $index: $other")
+      }
+    }
+    result.result()
+  }
+
+  private def decodeStats(value: Value): Stats =
+    value match {
+      case Value.VCtor(head, fields, _) if head.name == "Evaluator.WarpMachine.Stats.mk" && fields.length == 8 =>
+        val values = fields.zipWithIndex.map { case (field, i) => natLong(field, s"Stats field $i") }
+        Stats(values(0), values(1), values(2), values(3), values(4), values(5), values(6), values(7))
+      case other => throw new IllegalArgumentException(s"Expected eight-field Stats.mk, got $other")
+    }
+
+  private def natLong(value: Value, label: String): Long = {
+    val number = EvaluatorSpikeBenchmark.natOf(value)
+    require(number.isValidLong, s"$label=$number does not fit a Long")
+    number.toLong
+  }
+
+  private def applyOnStack(function: Value, arguments: Value*): Value =
+    Execution.onStack(StackBytes) { Interpreter.evalApply(function, arguments.toVector) }
+
+  private def timedRun(run: Value, prepared: Value): (Long, Value) =
+    Execution.onStack(StackBytes) {
+      val start = System.nanoTime()
+      val result = Interpreter.evalApply(run, Vector(prepared))
+      (System.nanoTime() - start, result)
+    }
+
+  private def validateSuccess(
+      api: Api,
+      result: Value,
+      stats: Stats,
+      expected: Vector[Int],
+      seed: Int,
+      phase: String
+  ): Unit = {
+    result match {
+      case Value.VCtor(head, _, _) if head.name == "Evaluator.WarpMachine.MachineResult.complete" =>
+      case Value.VCtor(head, _, _) if head.name == "Evaluator.WarpMachine.MachineResult.failed" =>
+        val diagnostic = render(applyOnStack(api.errors, result), api.strings)
+        val failedStats = decodeStats(applyOnStack(api.stats, result))
+        throw new IllegalStateException(s"seed=$seed $phase failed: $diagnostic; counters=$failedStats")
+      case other =>
+        throw new IllegalArgumentException(
+          s"seed=$seed $phase returned unknown MachineResult: ${render(other, api.strings)}"
+        )
+    }
+
+    val values = decodeNatList(applyOnStack(api.outputs, result), s"C(seed=$seed,$phase)")
+    require(values.length == M * N, s"seed=$seed $phase produced ${values.length} outputs, expected ${M * N}")
+    require(values.forall(x => x >= 0 && x < RingModulus), s"seed=$seed $phase produced a value outside Z/$RingModulus")
+    require(!values.contains(RingModulus), s"seed=$seed $phase retained the uninitialized output sentinel $RingModulus")
+    val mismatch = expected.indices.find(i => values(i) != expected(i))
+    require(
+      mismatch.isEmpty,
+      mismatch.fold("")(i =>
+        s"seed=$seed $phase C[${i / N},${i % N}] mismatch: expected ${expected(i)}, got ${values(i)}"
+      )
+    )
+    require(
+      stats.scalarMuls == ExpectedScalarOpsPerKind,
+      s"seed=$seed $phase counted ${stats.scalarMuls} multiplies, expected $ExpectedScalarOpsPerKind"
+    )
+    require(
+      stats.scalarAdds == ExpectedScalarOpsPerKind,
+      s"seed=$seed $phase counted ${stats.scalarAdds} adds, expected $ExpectedScalarOpsPerKind"
+    )
+    require(
+      stats.mmaInstructions == ExpectedMmaInstructions,
+      s"seed=$seed $phase completed ${stats.mmaInstructions} MMA requests, expected $ExpectedMmaInstructions"
+    )
+    require(
+      stats.warpSteps == ExpectedWarpSteps,
+      s"seed=$seed $phase counted ${stats.warpSteps} executed warp statements, expected $ExpectedWarpSteps"
+    )
+    require(
+      stats.asyncCompletions == ExpectedAsyncCompletions,
+      s"seed=$seed $phase counted ${stats.asyncCompletions} async completions, expected $ExpectedAsyncCompletions"
+    )
+    require(
+      stats.tmaBytes == ExpectedTmaBytes,
+      s"seed=$seed $phase transferred ${stats.tmaBytes} TMA bytes, expected $ExpectedTmaBytes"
+    )
+    require(
+      stats.tmemLoads == ExpectedTmemLoads,
+      s"seed=$seed $phase counted ${stats.tmemLoads} tensor-memory loads, expected $ExpectedTmemLoads"
+    )
+    require(
+      stats.tmaStores == ExpectedTmaStores,
+      s"seed=$seed $phase counted ${stats.tmaStores} TMA stores, expected $ExpectedTmaStores"
+    )
+  }
+
+  private def requireCoordinateDependent(kind: String, seed: Int, values: Vector[Int]): Unit = {
+    val row0 = values.take(K)
+    val row1 = values.slice(K, 2 * K)
+    require(row0.distinct.length > 1, s"$kind(seed=$seed) does not vary along K")
+    require(row0 != row1, s"$kind(seed=$seed) does not vary by row")
+  }
+
+  /** Independent host-only exact Z/257 matrix multiplication over row-major source inputs. */
+  private def exactMatmul(input: InputPair): Vector[Int] = {
+    val output = Array.ofDim[Int](M * N)
+    var row = 0
+    while (row < M) {
+      var col = 0
+      while (col < N) {
+        var sum = 0
+        var k = 0
+        while (k < K) {
+          sum = (sum + input.a(row * K + k) * input.b(col * K + k)) % RingModulus
+          k += 1
+        }
+        output(row * N + col) = sum
+        col += 1
+      }
+      row += 1
+    }
+    output.toVector
+  }
+
+  private def median(values: Vector[Long]): Double = {
+    val sorted = values.sorted
+    if (sorted.length % 2 == 1) sorted(sorted.length / 2).toDouble
+    else (sorted(sorted.length / 2 - 1).toDouble + sorted(sorted.length / 2).toDouble) / 2.0
+  }
+
+  private def rate(count: Long, elapsedNs: Double): Double =
+    if (count == 0L || elapsedNs <= 0.0) 0.0 else count.toDouble * 1.0e9 / elapsedNs
+
+  private def render(value: Value, strings: Option[Value.ValidatedStringLayout]): String =
+    PrettyPrinter.rawString(value, strings).getOrElse(PrettyPrinter.print(value, strings))
+}

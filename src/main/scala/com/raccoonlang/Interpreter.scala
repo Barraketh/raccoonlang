@@ -62,25 +62,40 @@ object Interpreter {
    */
   private[raccoonlang] def resolveInEqStore(v: Value, eqStore: EqStore): Value = {
     val v0 = eqStore.force(v)
+    val needsResolution =
+      v0 match {
+        case Blocked(blockedOn) => blockedOn.intersects(eqStore.solvedIds)
+        case l: Level           => l.synDeps.intersects(eqStore.solvedIds)
+        case k: Kind            => k.synDeps.intersects(eqStore.solvedIds)
+        case l: Lifetime        => l.synDeps.intersects(eqStore.solvedIds)
+        case _                  => false
+      }
+    if (needsResolution) resolveInEqStore(v0, ValueOps.newMaterializer(eqStore)) else v0
+  }
+
+  /** Internal recursive resolver; one materialization session follows all reductions and forced thunks. */
+  private[raccoonlang] def resolveInEqStore(v: Value, materializer: ValueOps.Materializer): Value = {
+    val eqStore = materializer.eqStore
+    val v0 = eqStore.force(v)
     v0 match {
       case Blocked(blockedOn) if blockedOn.intersects(eqStore.solvedIds) =>
         v0 match {
           // Reapplied to its arguments as stored, which forces no evidence, as applying does not. Its evidence is
           // deferred afresh at the head it now has, so that the head and the other arguments still determine it.
           case app: VApp =>
-            val h0 = ValueOps.materialize(resolveInEqStore(app.head, eqStore), eqStore)
+            val h0 = materializer.materialize(resolveInEqStore(app.head, materializer))
             val materializedArgs =
-              evidenceDeferredAt(h0, app.storedArgs).map(arg => ValueOps.materializeArgument(arg, eqStore))
+              evidenceDeferredAt(h0, app.storedArgs).map(materializer.materializeArgument)
             h0 match {
               case lam: VLam =>
                 val res = runLam(lam, materializedArgs)
-                resolveInEqStore(res, eqStore)
+                resolveInEqStore(res, materializer)
               case nextHead @ Blocker(nextBlockedOn) =>
-                VBlockedApp(nextHead, materializedArgs, ValueOps.materialize(app.tpe, eqStore), nextBlockedOn)
+                VBlockedApp(nextHead, materializedArgs, materializer.materialize(app.tpe), nextBlockedOn)
               case other =>
-                resolveInEqStore(evalApply(other, materializedArgs), eqStore)
+                resolveInEqStore(evalApply(other, materializedArgs), materializer)
             }
-          case vm: NeutralThunk => resolveInEqStore(forceThunk(vm, eqStore), eqStore)
+          case vm: NeutralThunk => resolveInEqStore(forceThunk(vm, materializer), materializer)
           case _                => wtf(s"Blocked extractor matched unexpected value $v0")
         }
 
@@ -454,8 +469,8 @@ object Interpreter {
     }
   }
 
-  private def forceThunk(thunk: NeutralThunk, eqStore: EqStore): Value =
-    evalSteps(matchStep(thunk.term, ValueOps.materializeEnv(thunk.env, eqStore)))
+  private def forceThunk(thunk: NeutralThunk, materializer: ValueOps.Materializer): Value =
+    evalSteps(matchStep(thunk.term, materializer.materializeEnv(thunk.env)))
 
   private def evalLam(l: CTerm.Lam, env: Env): Value = evalLam(l, evalPi(l.ty, env), env)
 

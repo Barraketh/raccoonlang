@@ -1,0 +1,75 @@
+// Shared data requests between the Tiny warp-control interpreter and its addressed storage semantics.
+// This module has no scheduler or storage policy: WarpMachine captures evaluated operands in requests, and TinyDevice
+// applies them to its separate storage value when the deterministic event queue retires them.
+
+import Cuda
+
+namespace Evaluator {
+  namespace DeviceApi {
+    // Lane values are kept as a small list because the machine only models one 32-lane warp at a time. All constructors
+    // exposed to clients validate the fixed width; TinyGEMM instructions that require a converged warp also validate
+    // their active mask before making a request.
+    sealed struct LaneVector : Type
+     | mk (lanes: List(Nat)) : LaneVector
+
+    namespace LaneVector {
+      def width : Nat := 32
+
+      def ofList (values: List(Nat)): Option(LaneVector) := {
+        match Nat.beq(List.length(values), LaneVector.width) returning Option(LaneVector) with
+        | Bool.true => Option.some(LaneVector.mk(values))
+        | Bool.false => Option.none(LaneVector)
+      }
+
+      def toList (lanes: LaneVector): List(Nat) := {
+        match lanes returning List(Nat) with
+        | LaneVector.mk xs => xs
+      }
+
+      def fullMask : Nat := 4294967295
+
+      def repeat (count: Nat)(value: Nat): List(Nat) decreases structural(count) := {
+        match count returning List(Nat) with
+        | Nat.zero => List.nil(Nat)
+        | Nat.succ more => List.cons(value, LaneVector.repeat(more, value))
+      }
+
+      def uniform (value: Nat): LaneVector := LaneVector.mk(LaneVector.repeat(LaneVector.width, value))
+    }
+
+    // A resolved handle retains the exact map declaration from Kernel.launcher.maps and the evaluated dimensions named
+    // by that declaration. It is never synthesized from a parameter name or an assumed TinyGEMM box shape.
+    struct ResolvedMap : Type
+     | mk (encoding: Cuda.MapEncoding)(rows: Nat)(cols: Nat) : ResolvedMap
+
+    // The K-major shared-memory descriptor after evaluating its runtime base expression. The supported TinyGEMM path
+    // validates the encoded descriptor fields against the checked kernel before the storage layer applies them.
+    struct OperandDesc : Type
+     | mk (baseByte: Nat)(lbo: Nat)(step: Nat) : OperandDesc
+
+    inductive MmaSource : Type
+     | shared (desc: OperandDesc) : MmaSource
+     | tensorMemory (address: Nat) : MmaSource
+
+    // One emitted tcgen05.mma request. Each request represents only the instruction's own descriptor-selected K slice;
+    // the four instructions in TinyGEMM remain four distinct queued events.
+    struct MmaDesc : Type
+     | mk (group: Cuda.CtaGroup)(acc: Nat)(a: MmaSource)(b: OperandDesc)(idesc: Cuda.InstrDesc)
+          (accumulate: Nat) : MmaDesc
+
+    struct RegisterWrite : Type
+     | mk (id: Nat)(values: LaneVector) : RegisterWrite
+
+    // All expression operands have already been evaluated by WarpMachine. A queued request therefore cannot re-read a
+    // mutable local, guess a lane, or interpret kernel control when it eventually completes.
+    inductive DataRequest : Type
+     | tmaLoad (map: ResolvedMap)(dstByte: Nat)(x: Nat)(y: Nat) : DataRequest
+     | mma (desc: MmaDesc) : DataRequest
+     | tmemLoad (shape: Cuda.TmemShape)(dstIds: List(Nat))(baseAddress: Nat)(warpGroupPosition: Nat)
+          (activeMask: Nat) : DataRequest
+     | tmaStore (map: ResolvedMap)(x: Nat)(y: Nat)(srcByte: Nat) : DataRequest
+
+    inductive Fault : Type
+     | mk (message: String) : Fault
+  }
+}
