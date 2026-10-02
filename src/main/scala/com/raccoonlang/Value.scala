@@ -59,9 +59,9 @@ object Value {
       // A Pi's own type is a classifier, never a proposition — skip without forcing it.
       // Metas remain linkable, constructor heads remain applicable, and the raw recursive lambda
       // remains executable until checking has validated every recursive call.
-      case _: VPi | _: Var | _: ConstructorHead   => value
-      case VLam(_, _, LamBody.Native(_, _, true)) => value
-      case _ if !Sorts.isProposition(value.tpe)   => value
+      case _: VPi | _: Var | _: ConstructorHead      => value
+      case VLam(_, _, LamBody.Native(_, _, true, _)) => value
+      case _ if !Sorts.isProposition(value.tpe)      => value
       // A constructor application already in canonical form keeps it.
       case ConstructorApp(head) if ProofReconstruction.isCanonicalConstructor(value.tpe, head) => value
       case _ =>
@@ -217,9 +217,9 @@ object Value {
         case lam: VLam =>
           walk(lam.tpe)
           lam.body match {
-            case LamBody.Core(_, env)      => walkEnv(env)
-            case LamBody.Native(_, env, _) => walkEnv(env)
-            case LamBody.ProofEta          =>
+            case LamBody.Core(_, env)         => walkEnv(env)
+            case LamBody.Native(_, env, _, _) => walkEnv(env)
+            case LamBody.ProofEta             =>
           }
           lam.id match {
             case ValueId.Const(_)           =>
@@ -244,7 +244,12 @@ object Value {
     final case class Core(term: CoreAst.Term.Lam, env: Env) extends LamBody {
       override val synDeps: DepSet = envDeps(env)
     }
-    final case class Native(run: (Vector[Value], Env) => Value, env: Env, isRawRecursive: Boolean) extends LamBody {
+    final case class Native(
+        run: (Vector[Value], Env) => Value,
+        env: Env,
+        isRawRecursive: Boolean,
+        scalarCapability: Option[Packed.ScalarNatCapability] = None
+    ) extends LamBody {
       override val synDeps: DepSet = envDeps(env)
     }
 

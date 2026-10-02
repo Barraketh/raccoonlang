@@ -602,12 +602,87 @@ Every invocation in both modes passed the exact 16,384-cell Z/257 oracle and exp
 memory loads and 16 stores. `sbt validate` passed 976 tests, including differential checks for nested closure capture
 identity and reuse, recursive and mutual calls, deferred evidence, neutral matches, dependent Pi captures and fallback.
 The final additional same-thread reentry test passed in the focused 10-test frame suite.
-JVM allocated bytes and native-image performance have not been measured for this stage. The
+JVM allocated bytes and native-image performance had not been measured at this checkpoint; the matched follow-up is
+below. The
 [generic](../target/performance/reusable-eval-frames/jvm-generic.log),
 [prepared](../target/performance/reusable-eval-frames/jvm-prepared.log) and
 [validation](../target/performance/reusable-eval-frames/validate.log) logs are saved in ignored `target/performance`;
 their hashes and source provenance are in
 [provenance](../target/performance/reusable-eval-frames/provenance.txt).
+
+### Unboxed checked Nat intermediates in prepared frames (2026-10-02)
+
+The prepared evaluator now carries nonnegative Nat values as `Long` or `BigInt` payloads through its reusable slots
+and a local result register. The exact validated Nat type is the slot discriminator; an ordinary `Value` has no Nat
+type entry. A slot caches an immutable `VPacked` on its first generic read, and escaping closures, dependent work,
+matches and unsupported applications use the ordinary boxed path. Tail calls stage arguments before frame reuse.
+Only `Packed.nativeOp` can issue an operation capability, attached to its exact published native lambda after the
+trusted declaration has been checked. Application requires that owner identity, an enabled native operation, and
+the caller's exact validated Nat layout. Small `Nat.add/sub/mul/div/mod` operands use exact Long equations; overflow
+and BigInt operands use the original native path. Small `Nat.beq/ble/blt` operands return the existing validated Bool
+constructors. Printed names, copied or materialized lambdas, and hand-built Pis cannot enter the specialized path.
+Proof canonicalization and deferred evidence checks remain at generic binding and boxing boundaries.
+
+The final source passed `sbt validate` (**984/984**) and the focused scalar/frame suite (**17/17**), including
+overflow, BigInt, zero division/modulus, disabled native operations, nominal-context and owner guards, deferred
+evidence, closure capture and tail-frame reuse. All TinyGEMM warmups and samples used the actual checked Raccoon
+kernel, passed the exact 16,384-cell Z/257 oracle, and produced 1,251 retired steps, 88 completions, 98,304 TMA
+bytes, 1,048,576 scalar multiplies and adds each, four MMAs, 64 tensor-memory loads and 16 stores. API checking,
+preparation, extraction and oracle checks remained outside the timed invocation.
+
+The matched JVM comparison ran final frozen scalar source against committed frame-only source with Oracle GraalVM
+21.0.12, `java -Xmx2g -ea`, two warmups and three timed samples per seed, serially. Times are seconds; the small
+observed differences are within the range seen across adjacent frame controls.
+
+| Seed | Frame-only samples; median | Scalar samples; median |
+| --- | --- | --- |
+| 17 | 7.974, 7.850, 7.906; **7.906** | 7.847, 7.800, 7.806; **7.806** |
+| 83 | 7.976, 7.892, 7.878; **7.892** | 7.844, 7.799, 7.873; **7.844** |
+
+Three native images were built from frozen `c659977`, committed frame-only `683d2ce`, and the final scalar source
+using the same Oracle GraalVM 21.0.12 command flags: `--parallelism=4 -J-Xmx3g --enable-monitoring=jfr -ea`.
+The new c659 image is a matched control; the older image without explicit `-ea` remains historical evidence only.
+Each native run used two warmups and three timed samples per seed, no JFR during timing, and ran alone. The frame and
+scalar binaries were measured in both orders. The matched c659 control was rebuilt and run separately **after** those
+two pairs; its median is repeated in the first two rows for comparison, not as an interleaved third run. Per-seed
+median seconds are:
+
+| Run order | Seed | c659 generic | Frame-only prepared | Scalar prepared | Scalar vs frame |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Frame → scalar | 17 | 20.448 | 13.652 | 13.280 | −2.7% |
+| Frame → scalar | 83 | 20.464 | 13.626 | 13.283 | −2.5% |
+| Scalar → frame | 17 | — | 13.843 | 13.201 | −4.6% |
+| Scalar → frame | 83 | — | 13.826 | 13.309 | −3.7% |
+
+The combined plans, frames and scalar source is about 35% faster than the matched c659 native control on this
+one-tile exact-ring workload. The isolated scalar contribution is modest but repeats in both native run orders.
+Whole-process peak RSS varies in direction across orders, so these runs do not establish an RSS reduction.
+
+Per-seed JVM JFR recordings used the same checked source, `profile.jfc` (10 ms Java sampling), two warmups and one
+recorded timed sample, with the harness-reported evaluator thread IDs 40 and 53. Full 128-frame export found no
+recorded truncated stacks (maximum depths 31–32) and no `jdk.DataLoss`. Weighted `ObjectAllocationSample` estimates
+for the timed evaluator thread were **15.54/15.12 GB** frame-only and **10.94/10.37 GB** scalar (seeds 17/83), about
+30% lower in this sampled comparison. The frame-only `Vector.tabulate` allocation leaf accounted for an estimated
+4.81/5.84 GB; scalar's largest remaining allocation leaves were `Interpreter.residualArguments` (2.19/1.67 GB) and
+`PreparedEval.applyApplication` (1.43/1.75 GB). Top-level GC pause durations summed to 0.130/0.126 s frame-only
+and 0.102/0.099 s scalar. These are JFR estimates from separate samples, not exact allocation counters.
+
+The scalar evaluator's **exclusive CPU leaf** samples were `PreparedEval.run` 279/220 of 660/606, proof
+canonicalization 46/44, residual arguments 24/20, and an implicit projection body 24/26. **Inclusive**, overlapping
+stacks contained `PreparedEval.applyApplication` 264/285, residual arguments 86/81, and the projection body 30/35;
+the corresponding proof-binding `Env.assertCanonicalProof` counts were 28/30. The loop leaf includes dispatch and
+inlined work, so it is not a separately saveable time budget. Projection specs were already compiled; their repeated
+execution, residual argument construction and proof-binding work remain candidates for separately measured changes.
+Native JFR polling samples are not converted into section-time savings forecasts.
+
+Final [scalar JVM](../target/performance/unboxed-eval-scalars/jvm-final-frozen.log),
+[scalar native](../target/performance/unboxed-eval-scalars/native-final-scalar.log),
+[reverse native](../target/performance/unboxed-eval-scalars/native-reverse-scalar.log),
+[matched controls](../target/performance/unboxed-eval-scalars/controls),
+[validation](../target/performance/unboxed-eval-scalars/validate-final.log) and
+[provenance](../target/performance/unboxed-eval-scalars/provenance.txt) are in ignored `target/performance`.
+Provenance records source, test, config, binary and log hashes and the per-seed JFR paths. Instrumented, overlapping,
+whole-process-JFR and preliminary representation experiments are superseded for conclusions.
 
 ### Historical checkpoint: source-level buffer workload (2026-10-02)
 

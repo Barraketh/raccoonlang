@@ -188,8 +188,9 @@ object ValueOps {
 
     private def materializeLamBody(body: LamBody): LamBody =
       body match {
-        case LamBody.Core(term, env) => LamBody.Core(term, materializeEnv(env))
-        case LamBody.Native(run, env, isRawRecursive) =>
+        case LamBody.Core(term, env)                     => LamBody.Core(term, materializeEnv(env))
+        case LamBody.Native(run, env, isRawRecursive, _) =>
+          // Materialization creates a different lambda owner; its scalar capability cannot be transferred.
           LamBody.Native(run, materializeEnv(env), isRawRecursive)
         case LamBody.ProofEta => LamBody.ProofEta
       }

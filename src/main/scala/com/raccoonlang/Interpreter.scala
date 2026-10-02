@@ -442,8 +442,8 @@ object Interpreter {
       // A native body reads only the arguments it names, none of them evidence: a native operation's binders are
       // validated explicit, a builtin's are never evidence (BuiltinEvidence), and a raw recursive stub reads its
       // metric's, which is never a proof.
-      case LamBody.Native(run, nativeEnv, _) => Step.Done(run(args, nativeEnv))
-      case LamBody.ProofEta                  => Step.Done(Value.canonicalizeProof(VProof(lam.tpe.codomain(piEnv))))
+      case LamBody.Native(run, nativeEnv, _, _) => Step.Done(run(args, nativeEnv))
+      case LamBody.ProofEta                     => Step.Done(Value.canonicalizeProof(VProof(lam.tpe.codomain(piEnv))))
       case LamBody.Core(term, coreEnv) =>
         val bodyEnv = BinderOps.instantiateFullRuntime(lam.tpe.binders, lam.tpe.runtimeSlotLayout, coreEnv, args)
 
