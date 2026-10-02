@@ -96,9 +96,19 @@ object BinderOps {
   def instantiateFull(binders: Vector[CoreAst.Binder], baseEnv: Env, args: Vector[Value]): Env = {
     if (binders.length != args.length) fail(ArityMismatch(binders.length, args.length, ArityMismatch.Arguments))
 
-    binders.zip(args).foldLeft(baseEnv) { case (curEnv, (binder, value)) =>
-      bindValue(curEnv, binder, value)
-    }
+    baseEnv.bindLocals(binders, args)(_.localRef)
+  }
+
+  /** Runtime counterpart to `instantiateFull`, using the checked Pi's precomputed local-slot layout. */
+  private[raccoonlang] def instantiateFullRuntime(
+      binders: Vector[CoreAst.Binder],
+      layout: RuntimeSlotLayout,
+      baseEnv: Env,
+      args: Vector[Value]
+  ): Env = {
+    if (binders.length != args.length) fail(ArityMismatch(binders.length, args.length, ArityMismatch.Arguments))
+    if (layout.size != binders.length) wtf("Runtime Pi slot layout has inconsistent arity")
+    baseEnv.bindRuntimeLocals(layout, args)
   }
 
   // A rigid binder enters as a bare fresh Var, or — when its type is a proposition — as the

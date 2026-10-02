@@ -78,6 +78,17 @@ object Packed {
   private val opsEnabled = new DynamicVariable[Boolean](true)
   private[raccoonlang] def withOpsDisabled[A](body: => A): A = opsEnabled.withValue(false)(body)
 
+  private val StringAppendName = "String.append"
+  private val StringDataName = "String.data"
+  private val StringMkName = "String.mk"
+  private val ListAppendName = "List.append"
+
+  /** Opaque proof that every scalar was validated while extracting a String through its trusted layout. */
+  private[raccoonlang] final class ValidatedCharScalars private[Packed] (
+      private[raccoonlang] val codec: CharListCodec,
+      private[raccoonlang] val values: Vector[Int]
+  )
+
   /** A constructor applied to its stored fields at `tpe`: packed where it is literal data, and canonical as a proof. */
   private[raccoonlang] def construct(head: ConstructorHead, storedArgs: Vector[Value], tpe: Value): Value =
     Value.canonicalizeProof(foldCtor(head, storedArgs, tpe).getOrElse(VCtor(head, storedArgs, tpe)))
@@ -443,4 +454,356 @@ object Packed {
     val layout = env.nativeLiterals.stringLayout.getOrElse(fail(StringLiteralUnavailable("no validated String layout")))
     layout.eval(scalars)
   }
+
+  /**
+   * Attach the packed String.append equation only to the exact checked declarations that implement it. This runs once
+   * at trusted-prelude completion, after the final String layout has been validated and installed. An unrecognized
+   * trusted prelude remains usable: its original source declaration stays in place and keeps its source semantics.
+   */
+  private[raccoonlang] def attachStringAppend(env: Env): Env =
+    (
+      env.nativeLiterals.stringLayout,
+      env.globals.get(StringAppendName),
+      env.globals.get(ListAppendName),
+      env.globals.get(StringDataName),
+      env.globals.get(StringMkName)
+    ) match {
+      case (
+            Some(layout: SourceStringLayout),
+            Some(stringBinding),
+            Some(listBinding),
+            Some(dataBinding),
+            Some(mkBinding)
+          ) if layout.charConstructor.nonEmpty =>
+        val stringAppend = stringBinding.value(env)
+        val listAppend = listBinding.value(env)
+        val stringData = dataBinding.value(env)
+        val stringMk = mkBinding.value(env)
+        (stringAppend, listAppend, stringData, stringMk) match {
+          case (source: VLam, listLam: VLam, dataLam: VLam, mk: ConstructorHead)
+              if (mk eq layout.stringMk) && validatesStringAppend(source) && validatesListAppend(listLam) &&
+                validatesStringData(dataLam, layout) &&
+                capturesGlobalBinding(source, StringDataName, dataBinding) &&
+                capturesGlobalBinding(source, ListAppendName, listBinding) &&
+                capturesGlobalBinding(source, StringMkName, mkBinding) &&
+                capturesGlobalBinding(dataLam, StringMkName, mkBinding) =>
+            val native = nativeStringAppend(source, layout, layout.charConstructor.get)
+            Env.assertClosedGlobal(native)
+            Env.assertCanonicalProof(native)
+            env.copy(globals = env.globals.updated(StringAppendName, GlobalBinding.Strict(native)))
+          case _ => env
+        }
+      case _ => env
+    }
+
+  private def nativeStringAppend(source: VLam, layout: SourceStringLayout, charConstructor: String): VLam =
+    VLam(
+      source.tpe,
+      source.id,
+      LamBody.Native(
+        (args, _) =>
+          args match {
+            case Vector(left, right) if opsEnabled.value =>
+              (stringScalars(left, layout), stringScalars(right, layout)) match {
+                case (Some(leftData), Some(_)) if leftData.scalars.isEmpty => right
+                case (Some(leftData), Some(rightData)) =>
+                  val display = CharListAppendDisplay(
+                    leftData.scalars.length + rightData.constructorPrefixLength,
+                    rightData.hasPackedSuffix,
+                    charConstructor
+                  )
+                  val chars = VPacked.charList(
+                    layout.charListCodec,
+                    concatValidatedCharScalars(leftData, rightData),
+                    Some(display)
+                  )
+                  layout.evalAppended(chars)
+                case _ => Interpreter.runLam(source, args)
+              }
+            case _ => Interpreter.runLam(source, args)
+          },
+        Env.empty,
+        isRawRecursive = false
+      )
+    )
+
+  /** The ground String shapes the native equation may decode under this exact validated source layout. */
+  private final case class StringScalars(
+      scalars: Vector[Int],
+      codec: CharListCodec,
+      constructorPrefixLength: Int,
+      hasPackedSuffix: Boolean
+  )
+
+  /** The only minting path: both private shape records come from extraction that checked every ordinary Char. */
+  private def concatValidatedCharScalars(
+      left: StringScalars,
+      right: StringScalars
+  ): ValidatedCharScalars = {
+    require(left.codec eq right.codec, "Cannot concatenate CharLists from different validated layouts")
+    new ValidatedCharScalars(left.codec, left.scalars ++ right.scalars)
+  }
+
+  private def stringScalars(value: Value, layout: SourceStringLayout): Option[StringScalars] =
+    value match {
+      case VCtor(head, Vector(data), tpe)
+          if (head eq layout.stringMk) && ValueEquivalence.defEq(tpe, layout.stringTpe) =>
+        charListScalars(data, layout.charListCodec, layout.charConstructor)
+      case _ => None
+    }
+
+  /**
+   * Read a literal scalar list, or a source List.cons spine whose characters are exactly the validated Char.ofNat
+   * constructor over packed Unicode scalars. The latter covers small formatted strings such as Text.nat while leaving
+   * arbitrary Char values, neutral suffixes and unusual Char.ofNat definitions to the source evaluator.
+   */
+  private def charListScalars(
+      value: Value,
+      codec: CharListCodec,
+      charConstructor: Option[String]
+  ): Option[StringScalars] =
+    value match {
+      // The all-packed case is common after the first append. Reuse its immutable vector and display metadata directly;
+      // do not allocate a builder merely to copy the same scalars back into another Vector.
+      case packed: VPacked if packed.codec eq codec =>
+        packed.charScalars.map { scalars =>
+          packed.charListAppendDisplay match {
+            case Some(display) =>
+              StringScalars(scalars, codec, display.prefixLength, display.hasPackedSuffix)
+            case None =>
+              StringScalars(scalars, codec, 0, hasPackedSuffix = true)
+          }
+        }
+      case _ =>
+        val scalars = Vector.newBuilder[Int]
+        var constructorPrefixLength = 0
+        var rest = value
+        while (true) {
+          rest match {
+            case packed: VPacked if packed.codec eq codec =>
+              return packed.charScalars.map { tail =>
+                scalars ++= tail
+                val allScalars = scalars.result()
+                packed.charListAppendDisplay match {
+                  case Some(display) =>
+                    StringScalars(
+                      allScalars,
+                      codec,
+                      constructorPrefixLength + display.prefixLength,
+                      display.hasPackedSuffix
+                    )
+                  case None =>
+                    StringScalars(
+                      allScalars,
+                      codec,
+                      constructorPrefixLength,
+                      hasPackedSuffix = true
+                    )
+                }
+              }
+            case VCtor(head, Vector(), tpe)
+                if head.name == "List.nil" && head.noConfusion &&
+                  head.totalArity == head.numErasedFamilyArgs &&
+                  ValueEquivalence.defEq(tpe, codec.listCharTpe) =>
+              return Some(
+                StringScalars(
+                  scalars.result(),
+                  codec,
+                  constructorPrefixLength,
+                  hasPackedSuffix = false
+                )
+              )
+            case VCtor(head, Vector(char, tail), tpe)
+                if head.name == "List.cons" && head.noConfusion &&
+                  head.totalArity - head.numErasedFamilyArgs == 2 &&
+                  ValueEquivalence.defEq(tpe, codec.listCharTpe) =>
+              scalarOfKnownChar(char, codec, charConstructor) match {
+                case Some(scalar) =>
+                  scalars += scalar
+                  constructorPrefixLength += 1
+                  rest = tail
+                case None => return None
+              }
+            case _ => return None
+          }
+        }
+        None
+    }
+
+  private def scalarOfKnownChar(value: Value, codec: CharListCodec, charConstructor: Option[String]): Option[Int] =
+    charConstructor.flatMap { constructorName =>
+      value match {
+        case VCtor(head, Vector(code: VPacked), tpe)
+            if head.name == constructorName && head.noConfusion &&
+              head.totalArity - head.numErasedFamilyArgs == 1 &&
+              ValueEquivalence.defEq(tpe, codec.charTpe) && (code.codec eq NatCodec) &&
+              ValueEquivalence.defEq(code.tpe, codec.natTpe) =>
+          code.natValue
+            .filter(_.isValidInt)
+            .map(_.toInt)
+            .filter(UnicodeScalarString.isScalar)
+        case _ => None
+      }
+    }
+
+  private def validatesStringAppend(source: VLam): Boolean = {
+    val exactIdentity = source.id match {
+      case ValueId.Const(StringAppendName) => true
+      case _                               => false
+    }
+    val exactTelescope =
+      source.tpe.binders.length == 2 && source.tpe.binders.forall(_.mode == BinderMode.Explicit)
+    (exactIdentity, exactTelescope, source.body) match {
+      case (true, true, LamBody.Core(term, _))
+          if term.recursion.isEmpty && term.recursivePeers.isEmpty &&
+            term.ty.binders.length == 2 && term.ty.binders.forall(_.mode == BinderMode.Explicit) =>
+        val a = term.ty.binders(0).localRef
+        val b = term.ty.binders(1).localRef
+        stripEmptyBodies(term.body) match {
+          case CoreAst.Term.App(CoreAst.Term.GlobalRef("String.mk", _), Vector(data), evidence, _)
+              if evidence.isEmpty =>
+            stripEmptyBodies(data) match {
+              case CoreAst.Term.App(CoreAst.Term.GlobalRef("List.append", _), Vector(left, right), evidence0, _)
+                  if evidence0.isEmpty =>
+                isSelectorOf(left, StringDataName, a) && isSelectorOf(right, StringDataName, b)
+              case _ => false
+            }
+          case _ => false
+        }
+      case _ => false
+    }
+  }
+
+  /** Validate the exact generated projection equation used by `String.append`, not its global name alone. */
+  private def validatesStringData(source: VLam, layout: SourceStringLayout): Boolean = {
+    val exactIdentity = source.id match {
+      case ValueId.Const(StringDataName) => true
+      case _                             => false
+    }
+    val exactTelescope =
+      source.tpe.binders.length == 1 && source.tpe.binders.head.mode == BinderMode.Explicit
+    (exactIdentity, exactTelescope, source.body) match {
+      case (true, true, LamBody.Core(term, _))
+          if term.recursion.isEmpty && term.recursivePeers.isEmpty &&
+            term.ty.binders.length == 1 && term.ty.binders.head.mode == BinderMode.Explicit =>
+        val self = term.ty.binders.head.localRef
+        stripEmptyBodies(term.body) match {
+          case CoreAst.Term.Match(
+                CoreAst.Term.LocalRef(scrutinee, _),
+                _,
+                Vector(singleCase),
+                None,
+                None,
+                _,
+                _
+              ) if scrutinee == self =>
+            singleCase.ctorName == layout.stringMk.name && singleCase.patternVars.length == 1 &&
+            isLocalRef(stripEmptyBodies(singleCase.body), singleCase.patternVars.head.ref)
+          case _ => false
+        }
+      case _ => false
+    }
+  }
+
+  /**
+   * A checked source lambda resolves globals through its captured persistent environment, not the final environment
+   * passed to evaluation. `Env.putGlobal` rejects duplicate names, and env copies preserve each `GlobalBinding` object,
+   * so identity here proves that the equation uses the exact selector/constructor/append bindings validated for this
+   * native layout.
+   */
+  private def capturesGlobalBinding(source: VLam, name: String, expected: GlobalBinding): Boolean =
+    source.body match {
+      case LamBody.Core(_, capturedEnv) => capturedEnv.globals.get(name).exists(_ eq expected)
+      case _                            => false
+    }
+
+  private def validatesListAppend(source: VLam): Boolean = {
+    val exactIdentity = source.id match {
+      case ValueId.Const(ListAppendName) => true
+      case _                             => false
+    }
+    val exactTelescope =
+      source.tpe.binders.length == 5 &&
+        source.tpe.binders.map(_.mode) ==
+        Vector(BinderMode.Implicit, BinderMode.Implicit, BinderMode.Implicit, BinderMode.Explicit, BinderMode.Explicit)
+    (exactIdentity, exactTelescope, source.body) match {
+      case (true, true, LamBody.Core(term, _))
+          if term.ty.binders.length == 5 && term.recursivePeers.length == 1 && term.recursion.exists { recursion =>
+            term.recursivePeers == Vector(recursion.selfRef -> ListAppendName) &&
+            (recursion.decreases match {
+              case CoreAst.DecreaseSpec.Lexicographic(Vector(ref), _) => ref == term.ty.binders(3).localRef
+              case _                                                  => false
+            })
+          } =>
+        val xs = term.ty.binders(3).localRef
+        val ys = term.ty.binders(4).localRef
+        val self = term.recursion.get.selfRef
+        stripEmptyBodies(term.body) match {
+          case CoreAst.Term.Match(
+                CoreAst.Term.LocalRef(scrutinee, _),
+                _,
+                cases,
+                None,
+                None,
+                _,
+                _
+              ) if scrutinee == xs && cases.length == 2 =>
+            val nilCase = cases.find(_.ctorName == "List.nil")
+            val consCase = cases.find(_.ctorName == "List.cons")
+            (nilCase, consCase) match {
+              case (Some(nil), Some(cons))
+                  if nil.patternVars.isEmpty && cons.patternVars.length == 2 &&
+                    isLocalRef(stripEmptyBodies(nil.body), ys) =>
+                val head = cons.patternVars(0).ref
+                val tail = cons.patternVars(1).ref
+                stripEmptyBodies(cons.body) match {
+                  case CoreAst.Term.App(
+                        CoreAst.Term.GlobalRef("List.cons", _),
+                        Vector(CoreAst.Term.LocalRef(consHead, _), rest),
+                        evidence,
+                        _
+                      ) if evidence.isEmpty && consHead == head =>
+                    stripEmptyBodies(rest) match {
+                      case CoreAst.Term.App(
+                            CoreAst.Term.LocalRef(recursive, _),
+                            Vector(CoreAst.Term.LocalRef(recursiveTail, _), CoreAst.Term.LocalRef(recursiveYs, _)),
+                            evidence0,
+                            _
+                          ) =>
+                        recursive == self && recursiveTail == tail && recursiveYs == ys && evidence0.isEmpty
+                      case _ => false
+                    }
+                  case _ => false
+                }
+              case _ => false
+            }
+          case _ => false
+        }
+      case _ => false
+    }
+  }
+
+  private def stripEmptyBodies(term: CoreAst.Term): CoreAst.Term =
+    term match {
+      case CoreAst.Term.Body(lets, result, _) if lets.isEmpty => stripEmptyBodies(result)
+      case other                                              => other
+    }
+
+  private def isLocalRef(term: CoreAst.Term, expected: CoreAst.LocalRef): Boolean =
+    term match {
+      case CoreAst.Term.LocalRef(ref, _) => ref == expected
+      case _                             => false
+    }
+
+  private def isSelectorOf(term: CoreAst.Term, selector: String, base: CoreAst.LocalRef): Boolean =
+    term match {
+      case CoreAst.Term.App(
+            CoreAst.Term.GlobalRef(name, _),
+            Vector(CoreAst.Term.LocalRef(ref, _)),
+            evidence,
+            _
+          ) =>
+        name == selector && ref == base && evidence.isEmpty
+      case _ => false
+    }
 }

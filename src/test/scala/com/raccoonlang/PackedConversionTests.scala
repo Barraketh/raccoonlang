@@ -16,6 +16,15 @@ class PackedConversionTests extends munit.FunSuite with TestSupport {
 
   private val lengths = Vector(24, 100, 1000)
 
+  private def stringAppend(env: Env): Value.VLam =
+    env("String.append") match {
+      case lam: Value.VLam => lam
+      case other           => fail(s"Expected String.append lambda, got $other")
+    }
+
+  private def printsAsString(value: Value, env: Env): String =
+    PrettyPrinter.print(value, env.nativeLiterals.stringLayout)
+
   /** Evaluating `String.append` recurses once per character of its first argument, as checking the result does. */
   private def onLargeStack[A](body: => A): A = Execution.onStack(64L << 20)(body)
 
@@ -79,6 +88,207 @@ class PackedConversionTests extends munit.FunSuite with TestSupport {
       )
       assert(millis < 10000, s"$length shared characters took $millis ms")
     }
+  }
+
+  test("the validated String.append path packs Unicode and mixed literal constructor lists") {
+    val env = suitePrelude.checkedEnv
+    val append = stringAppend(env)
+    assert(append.body.isInstanceOf[Value.LamBody.Native])
+
+    val left = Packed.evalStrLit(Vector('a'.toInt, 0x1f600), env)
+    val right = Packed.evalStrLit(Vector(0xe9), env)
+    val joined = Interpreter.evalApply(append, Vector(left, right))
+    val sourceResult = Packed.withOpsDisabled(Interpreter.evalApply(append, Vector(left, right)))
+    assertEquals(printsAsString(joined, env), "\"a😀é\"")
+    assert(ValueEquivalence.defEq(joined, sourceResult))
+
+    val mixed = runProgram(
+      """{ String.append(String.mk(List.cons(Char.ofNat(65), ("😀").data)), "z") }""",
+      suitePrelude
+    )
+    assertEquals(printsAsString(mixed, env), "\"A😀z\"")
+    assert(mixed match {
+      case Value.VCtor(head, Vector(chars: Value.VPacked), _) =>
+        (head eq env("String.mk").asInstanceOf[Value.ConstructorHead]) &&
+        (chars.codec eq env.nativeLiterals.stringLayout.get.charListCodec)
+      case _ => false
+    })
+  }
+
+  test("packed append operands preserve Unicode, nested and mixed source representations") {
+    val env = suitePrelude.checkedEnv
+    val append = stringAppend(env)
+    val a = Packed.evalStrLit(Vector('a'.toInt, 0x1f600), env)
+    val b = Packed.evalStrLit(Vector(0xe9), env)
+    val c = Packed.evalStrLit(Vector('z'.toInt), env)
+    val nestedRight = Interpreter.evalApply(append, Vector(b, c))
+    val nestedRightDisabled = Packed.withOpsDisabled(Interpreter.evalApply(append, Vector(b, c)))
+    val mixedLeft = runProgram(
+      "{ String.mk(List.cons(Char.ofNat(65), (\"😀\").data)) }",
+      suitePrelude
+    )
+
+    Vector(
+      (a, b, a, b),
+      (a, nestedRight, a, nestedRightDisabled),
+      (mixedLeft, c, mixedLeft, c)
+    ).foreach { case (left, right, sourceLeft, sourceRight) =>
+      val enabled = Interpreter.evalApply(append, Vector(left, right))
+      val disabled = Packed.withOpsDisabled(Interpreter.evalApply(append, Vector(sourceLeft, sourceRight)))
+      assert(ValueEquivalence.defEq(enabled, disabled))
+      assertEquals(PrettyPrinter.print(enabled, None), PrettyPrinter.print(disabled, None))
+    }
+  }
+
+  test("native packed append defers only its exact application key until demand") {
+    val env = suitePrelude.checkedEnv
+    val layout = env.nativeLiterals.stringLayout.get.asInstanceOf[Value.SourceStringLayout]
+    val append = stringAppend(env)
+    val a = Packed.evalStrLit(Vector('a'.toInt), env)
+    val b = Packed.evalStrLit(Vector(0x1f600), env)
+    val c = Packed.evalStrLit(Vector('c'.toInt), env)
+
+    val first = Interpreter.evalApply(append, Vector(a, b)).asInstanceOf[Value.VApp]
+    val second = Interpreter.evalApply(append, Vector(first, c)).asInstanceOf[Value.VApp]
+    assertEquals(Value.VApp.deferredStringAppendKeyMaterialized(first), Some(false))
+    assertEquals(Value.VApp.deferredStringAppendKeyMaterialized(second), Some(false))
+    assertEquals(printsAsString(second, env), "\"a😀c\"")
+    assertEquals(Value.VApp.deferredStringAppendKeyMaterialized(first), Some(false))
+    assertEquals(Value.VApp.deferredStringAppendKeyMaterialized(second), Some(false))
+
+    val packedField = second match {
+      case Value.VCtor(head, Vector(chars: Value.VPacked), tpe) =>
+        assert(head eq layout.stringMk)
+        assert(ValueEquivalence.defEq(tpe, layout.stringTpe))
+        assert(chars.codec eq layout.charListCodec)
+        chars
+      case other => fail(s"Expected validated packed String.mk result, got $other")
+    }
+    val eagerEquivalent = Interpreter.evalApply(layout.stringMk, Vector(packedField))
+    assertEquals(Value.VApp.deferredStringAppendKeyMaterialized(second), Some(false))
+    assertEquals(second.key, eagerEquivalent.key)
+    assertEquals(second.hashCode(), eagerEquivalent.hashCode())
+    assertEquals(Value.VApp.deferredStringAppendKeyMaterialized(second), Some(true))
+    assert(ValueEquivalence.defEq(second, eagerEquivalent))
+    assertEquals(second.key, eagerEquivalent.key)
+
+    val disabled = Packed.withOpsDisabled {
+      val sourceFirst = Interpreter.evalApply(append, Vector(a, b))
+      Interpreter.evalApply(append, Vector(sourceFirst, c))
+    }
+    assert(ValueEquivalence.defEq(second, disabled))
+    assertEquals(printsAsString(disabled, env), printsAsString(second, env))
+  }
+
+  test("validated String.append scalars cover Unicode boundaries while checked packing rejects invalid scalars") {
+    val env = suitePrelude.checkedEnv
+    val append = stringAppend(env)
+    val codec = env.nativeLiterals.stringLayout.get.charListCodec
+    val scalars = Vector(0, 0x7f, 0x7ff, 0xd7ff, 0xe000, 0x10ffff)
+    val left = Packed.evalStrLit(scalars.take(3), env)
+    val right = Packed.evalStrLit(scalars.drop(3), env)
+    val joined = Interpreter.evalApply(append, Vector(left, right))
+    assertEquals(
+      joined match {
+        case Value.VCtor(_, Vector(chars: Value.VPacked), _) => chars.charScalars
+        case _                                               => None
+      },
+      Some(scalars)
+    )
+    assert(
+      ValueEquivalence.defEq(joined, Packed.withOpsDisabled(Interpreter.evalApply(append, Vector(left, right))))
+    )
+
+    Vector(0xd800, 0xdfff, 0x110000).foreach { invalid =>
+      intercept[IllegalArgumentException] {
+        Value.VPacked.charList(codec, Vector(invalid))
+      }
+      val source = s"{ String.append(String.mk(List.cons(Char.ofNat($invalid), List.nil(Char))), \"x\") }"
+      val enabled = runProgram(source)
+      val disabled = Packed.withOpsDisabled(runProgram(source))
+      assert(ValueEquivalence.defEq(enabled, disabled), s"U+${invalid.toHexString}")
+      assert(
+        enabled match {
+          case Value.VCtor(stringMk, Vector(Value.VCtor(cons, Vector(_, _), _)), _) =>
+            stringMk.name == "String.mk" && cons.name == "List.cons"
+          case _ => false
+        },
+        s"U+${invalid.toHexString} unexpectedly used the packed fast path"
+      )
+    }
+  }
+
+  test("String.append falls back for neutral suffixes and arbitrary Char values") {
+    val env = suitePrelude.checkedEnv
+    val append = stringAppend(env)
+    val left = Packed.evalStrLit(Vector('x'.toInt), env)
+    val neutral = FreshVar.freshVar("suffix", env("String"))
+    val actual = Interpreter.evalApply(append, Vector(left, neutral))
+    val sourceResult = Packed.withOpsDisabled(Interpreter.evalApply(append, Vector(left, neutral)))
+    assert(ValueEquivalence.defEq(actual, sourceResult))
+
+    val arbitrary =
+      "{ String.append(String.mk(List.cons(someChar, List.nil(Char))), \"x\") }"
+    val packedEnabled = runProgram(arbitrary, suitePrelude)
+    val packedDisabled = Packed.withOpsDisabled(runProgram(arbitrary, suitePrelude))
+    assert(ValueEquivalence.defEq(packedEnabled, packedDisabled))
+  }
+
+  test("unrecognized trusted append declarations retain their source equations") {
+    val wrongStringAppend = TestSupport
+      .stringLayoutSource("Char.mk(value)")
+      .replace(
+        "String.mk(List.append(a.data, b.data))",
+        "a"
+      )
+    val wrongStringPrelude = Prelude.fromSource(
+      "string-append-source-fallback",
+      TestSupport.bundledPreludeSource + wrongStringAppend,
+      Set(Prelude.ImportPath)
+    )
+    assert(stringAppend(wrongStringPrelude.checkedEnv).body.isInstanceOf[Value.LamBody.Core])
+    assertEquals(
+      printsAsString(runProgram("{ String.append(\"a\", \"b\") }", wrongStringPrelude), wrongStringPrelude.checkedEnv),
+      "\"a\""
+    )
+
+    val alteredListSource = TestSupport.bundledPreludeSource.replace(
+      "List.cons(head, List.append(tail, ys))",
+      "ys"
+    )
+    val wrongListPrelude = Prelude.fromSource(
+      "list-append-source-fallback",
+      alteredListSource + TestSupport.stringLayoutSource("Char.mk(value)"),
+      Set(Prelude.ImportPath)
+    )
+    assert(stringAppend(wrongListPrelude.checkedEnv).body.isInstanceOf[Value.LamBody.Core])
+    assertEquals(
+      printsAsString(runProgram("{ String.append(\"a\", \"b\") }", wrongListPrelude), wrongListPrelude.checkedEnv),
+      "\"b\""
+    )
+
+    // String's representation is still a valid one-field String layout, but its hand-written selector ignores that
+    // field. The native append must retain this source equation instead of concatenating the stored fields.
+    val alteredSelectorSource = TestSupport
+      .stringLayoutSource("Char.mk(value)")
+      .replace("mk (data: List(Char))", "mk (chars: List(Char))")
+      .replace(
+        "namespace String {\n  def append",
+        "namespace String {\n  def data (self: String): List(Char) := List.nil(Char)\n  def append"
+      )
+    val alteredSelectorPrelude = Prelude.fromSource(
+      "string-data-source-fallback",
+      TestSupport.bundledPreludeSource + alteredSelectorSource,
+      Set(Prelude.ImportPath)
+    )
+    assert(stringAppend(alteredSelectorPrelude.checkedEnv).body.isInstanceOf[Value.LamBody.Core])
+    assertEquals(
+      printsAsString(
+        runProgram("{ String.append(\"a\", \"b\") }", alteredSelectorPrelude),
+        alteredSelectorPrelude.checkedEnv
+      ),
+      "\"\""
+    )
   }
 
   test("distinct String literals are apart, and a literal against an unknown suffix is not") {

@@ -4,8 +4,6 @@ import com.raccoonlang.Value._
 import com.raccoonlang.telescope.BinderOps
 import com.raccoonlang.{CoreAst => CA}
 
-import scala.collection.immutable.VectorMap
-
 /** Pruning proposals acquire authority only through an ordinary checked refutation. Links remain unchanged. */
 private[raccoonlang] object RefinementCertificates {
   private val prefix = "\u0000refinement."
@@ -298,7 +296,7 @@ private[raccoonlang] object RefinementCertificates {
         case ref if refs(ref) => binder(ref, types(ref), CA.BinderSite.Parameter)
       }.toVector
       val all = signature.copy(binders = captures ++ signature.binders, id = NodeId.fresh())
-      val closed = env.copy(locals = VectorMap.empty, localRefs = Set.empty, openAtoms = DepSet.empty)
+      val closed = env.closeForEval(Set.empty)
       val checkedType = TypeChecker.checkDeclType(all, closed)
       val value = body match {
         case Some(term) =>

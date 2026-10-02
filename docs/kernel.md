@@ -1235,17 +1235,25 @@ Pi that drops leading binders its remainder does not depend on keeps its
 node's identity. Packed keys include the codec, canonical payload, and packed
 type.
 
-A value's key, its dependency set, and whether a mismatch of its key is
-conclusive are computed when it is built, from its own components and its
-children's, which were computed when they were built. So none is computed by a
-walk, and publishing a global, materializing and deciding an equation by key
-cost the same however deep their values. A key over host data rather than
-values, a packed literal's payload or a kind's or lifetime's variable set, is
-hashed by a loop when first read: a packed list's tail is built for each layer
-decoded, and hashing each as it is built would make decoding quadratic. An
-application's key mixes its head, its arguments less its evidence ones (see
-[Evidence arguments](#evidence-arguments)), their count, and a constructor
-application's type.
+A value's dependency set and whether a mismatch of its key is conclusive are
+computed when it is built. Most values also compute their key then, from
+their own components and their children's already-computed keys; computing or
+publishing them does not recursively walk `Value` children. A key over host
+data rather than values, such as a packed literal's payload or a kind's or
+lifetime's variable set, is hashed by a loop when first read. A packed list's
+tail is built for each layer decoded, and hashing each as it is built would
+make decoding quadratic. An application's key mixes its head, its arguments
+less its evidence ones (see [Evidence arguments](#evidence-arguments)), their
+count, and a constructor application's type.
+
+There is one bounded exception to eager application-key construction. The
+validated native `String.append` path can create a closed application of the
+exact `String.mk` constructor, whose sole field is a packed `CharList` with the
+exact validated codec and type. Its unchanged application key is computed and
+cached on first demand; this may trigger the packed scalar payload's host-data
+loop, but it does not walk `Value` children recursively. Its dependency set
+and `needsStructuralDefEq` metadata are still computed eagerly. Generic
+applications retain eager keys.
 
 A key only accelerates conversion. Equal keys must be convertible, and a key
 mismatch that conversion treats as conclusive must be unconvertible. The
